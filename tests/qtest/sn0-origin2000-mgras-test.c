@@ -440,28 +440,81 @@ static void mgras_load_dac_gamma(QTestState *qts, const uint8_t ramp[3][256])
 }
 
 /*
- * Tag a rectangle's WID without touching its colour: COLORMASKMSBS masks
- * the WID plane and COLORMASKLSBSA the colour, so a fill with the first
- * set and the second clear writes only the tag. Leaves the colour mask
- * open for the paints that follow.
+ * Give a rectangle a window ID the way the X server does: through the VC3
+ * main display-ID table (register 4), a frame table of one SRAM word per
+ * scanline pointing at a run list of (column << 5 | WID) entries ended by a
+ * column past the screen. Each tagged row is read back from SRAM, the
+ * rectangle laid over it, and a fresh run list appended, so earlier tags on
+ * the row survive, including ones a migration carried over. A zero frame
+ * entry is taken as an untagged row of WID 0: no test here writes SRAM
+ * word 0, which a reset leaves at zero.
  */
+#define MGRAS_DID_FRAME_BASE 0x0500
+#define MGRAS_DID_NEXT_ADDR  (MGRAS_DID_FRAME_BASE + 1024)
+#define MGRAS_DID_RUNS_BASE  0x2000
+
+static uint16_t mgras_vc3_sram_read(QTestState *qts, uint16_t addr)
+{
+    qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x07, addr));
+    return qtest_readw(qts, REG_VC3_RAM);
+}
+
+static void mgras_did_read_row(QTestState *qts, uint32_t y, uint8_t *did)
+{
+    uint16_t ptr = mgras_vc3_sram_read(qts, MGRAS_DID_FRAME_BASE + y);
+    uint16_t run;
+    uint8_t current;
+
+    memset(did, 0, 1280);
+    if (!ptr) {
+        return;
+    }
+    run = mgras_vc3_sram_read(qts, ptr);
+    current = run & 0x1f;
+    for (uint32_t x = 0; x < 1280;) {
+        run = mgras_vc3_sram_read(qts, ++ptr);
+        g_assert_cmpuint(run >> 5, >, x);
+        for (; x < MIN(run >> 5, 1280u); x++) {
+            did[x] = current;
+        }
+        current = run & 0x1f;
+    }
+}
+
 static void mgras_tag_wid(QTestState *qts, uint32_t x0, uint32_t y0,
                        uint32_t x1, uint32_t y1, uint8_t wid)
 {
-    qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                 MGRAS_COMMAND(REG_COLORMASKLSBSA, 0));
-    qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                 MGRAS_COMMAND(REG_COLORMASKMSBS, 0xf0));
-    qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                 MGRAS_COMMAND(REG_DRBPOINTERS, (uint32_t)wid << 16));
-    qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                 MGRAS_COMMAND(REG_BLOCK_START, (x0 << 16) | y0));
-    qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                 MGRAS_COMMAND_EXEC(REG_BLOCK_END, (x1 << 16) | y1));
-    qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                 MGRAS_COMMAND(REG_COLORMASKMSBS, 0));
-    qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                 MGRAS_COMMAND(REG_COLORMASKLSBSA, 0x00ffffff));
+    uint16_t next = mgras_vc3_sram_read(qts, MGRAS_DID_NEXT_ADDR);
+
+    if (!next) {
+        next = MGRAS_DID_RUNS_BASE;
+    }
+    qtest_writel(qts, REG_VC3_INDEXDATA,
+                 VC3_INDEXDATA(0x04, MGRAS_DID_FRAME_BASE));
+    for (uint32_t y = y0; y <= y1; y++) {
+        uint8_t did[1280];
+        uint16_t list = next;
+
+        mgras_did_read_row(qts, y, did);
+        memset(&did[x0], wid, x1 - x0 + 1);
+        qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x07, list));
+        qtest_writew(qts, REG_VC3_RAM, did[0]);
+        next++;
+        for (uint32_t x = 1; x < 1280; x++) {
+            if (did[x] != did[x - 1]) {
+                qtest_writew(qts, REG_VC3_RAM, (x << 5) | did[x]);
+                next++;
+            }
+        }
+        qtest_writew(qts, REG_VC3_RAM, 0xffe0);
+        next++;
+        qtest_writel(qts, REG_VC3_INDEXDATA,
+                     VC3_INDEXDATA(0x07, MGRAS_DID_FRAME_BASE + y));
+        qtest_writew(qts, REG_VC3_RAM, list);
+    }
+    qtest_writel(qts, REG_VC3_INDEXDATA,
+                 VC3_INDEXDATA(0x07, MGRAS_DID_NEXT_ADDR));
+    qtest_writew(qts, REG_VC3_RAM, next);
 }
 
 static void test_identity_and_aperture(void)
@@ -2491,7 +2544,11 @@ static void test_fill_mask_reads_colormasklsbsa(void)
  * colour paint. Every paint with COLORMASKMSBS clear leaves the plane
  * alone, whatever DRBPOINTERS holds at the time.
  */
-static void test_wid_plane_fill_rule(void)
+/*
+ * A pixel's WID comes from the VC3 main display-ID table, never from a
+ * drawing primitive, whatever COLORMASKMSBS and DRBPOINTERS hold.
+ */
+static void test_wid_from_display_id_table(void)
 {
     mgras_reset();
 
@@ -2513,13 +2570,13 @@ static void test_wid_plane_fill_rule(void)
     g_assert_cmphex(mgras_test_pixel(qts, 61, 61), ==, 0x66);
     g_assert_cmphex(mgras_test_wid(qts, 61, 61), ==, 0);
 
-    /* The plane fill writes WID and leaves the colour it found. */
+    /* The display-ID table sets the WID and leaves the colour alone. */
     mgras_tag_wid(qts, 60, 60, 63, 63, 7);
     g_assert_cmphex(mgras_test_wid(qts, 61, 61), ==, 7);
     g_assert_cmphex(mgras_test_pixel(qts, 61, 61), ==, 0x66);
     g_assert_cmphex(mgras_test_wid(qts, 64, 61), ==, 0);
 
-    /* A colour-only fill (COLORMASKMSBS still 0) leaves WID untouched. */
+    /* A colour-only fill leaves the WID alone. */
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  MGRAS_COMMAND(REG_DRBPOINTERS, 2 << 16));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
@@ -2532,9 +2589,9 @@ static void test_wid_plane_fill_rule(void)
     g_assert_cmphex(mgras_test_wid(qts, 61, 61), ==, 7);
 
     /*
-     * The WID tag is unconditional on the colour-paint gate: FILLMODE
-     * here excludes the rect-fill value, so no colour paints, but a
-     * nonzero COLORMASKMSBS still retags the plane.
+     * Neither does a fill with a nonzero COLORMASKMSBS and a WID-looking
+     * DRBPOINTERS; FILLMODE here also excludes the rect-fill value, so no
+     * colour paints.
      */
     qtest_writeq(qts, REG_CONTEXT_COMMAND, MGRAS_COMMAND(REG_FILLMODE, 0));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
@@ -2548,10 +2605,12 @@ static void test_wid_plane_fill_rule(void)
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  MGRAS_COMMAND_EXEC(REG_BLOCK_END, (63u << 16) | 63u));
     g_assert_cmphex(mgras_test_pixel(qts, 61, 61), ==, 0x33);
-    g_assert_cmphex(mgras_test_wid(qts, 61, 61), ==, 5);
+    g_assert_cmphex(mgras_test_wid(qts, 61, 61), ==, 7);
 
-    /* Glyph mode paints per set bit, from PACKEDCOLOR under RGB, and
-     * never touches the WID plane (it does not run through mgras_draw_fill()). */
+    /*
+     * Glyph mode paints per set bit, from PACKEDCOLOR under RGB, and
+     * leaves the WID alone.
+     */
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  MGRAS_COMMAND(REG_PP1FILLMODE, (MGRAS_LOGIC_OP_COPY << 26) | 0x2000));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
@@ -2567,10 +2626,10 @@ static void test_wid_plane_fill_rule(void)
                  MGRAS_COMMAND_EXEC(REG_CHAR_H, 0x80000000));
     g_assert_cmphex(mgras_test_pixel(qts, 60, 60), ==, 0x00010203);
     g_assert_cmphex(mgras_test_pixel(qts, 61, 60), ==, 0x33);
-    g_assert_cmphex(mgras_test_wid(qts, 60, 60), ==, 5);
-    g_assert_cmphex(mgras_test_wid(qts, 61, 60), ==, 5);
+    g_assert_cmphex(mgras_test_wid(qts, 60, 60), ==, 7);
+    g_assert_cmphex(mgras_test_wid(qts, 61, 60), ==, 7);
 
-    /* A fill with both masks open writes the colour and the tag. */
+    /* A fill with both masks open writes the colour and no WID. */
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  MGRAS_COMMAND(REG_PP1FILLMODE, MGRAS_LOGIC_OP_COPY << 26));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
@@ -2586,7 +2645,14 @@ static void test_wid_plane_fill_rule(void)
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  MGRAS_COMMAND_EXEC(REG_BLOCK_END, (63u << 16) | 63u));
     g_assert_cmphex(mgras_test_pixel(qts, 61, 61), ==, 0xef);
-    g_assert_cmphex(mgras_test_wid(qts, 61, 61), ==, 4);
+    g_assert_cmphex(mgras_test_wid(qts, 61, 61), ==, 7);
+
+    /* A second rectangle on the same rows keeps the first one's runs. */
+    mgras_tag_wid(qts, 70, 60, 71, 63, 3);
+    g_assert_cmphex(mgras_test_wid(qts, 61, 61), ==, 7);
+    g_assert_cmphex(mgras_test_wid(qts, 66, 61), ==, 0);
+    g_assert_cmphex(mgras_test_wid(qts, 70, 61), ==, 3);
+    g_assert_cmphex(mgras_test_wid(qts, 72, 61), ==, 0);
 }
 
 
@@ -5203,8 +5269,8 @@ int main(int argc, char **argv)
                    test_reset_clears_context_acknowledgements);
     qtest_add_func("sn0/origin2000/mgras/fill-mask-reads-colormasklsbsa",
                    test_fill_mask_reads_colormasklsbsa);
-    qtest_add_func("sn0/origin2000/mgras/wid-plane-fill-rule",
-                   test_wid_plane_fill_rule);
+    qtest_add_func("sn0/origin2000/mgras/wid-from-display-id-table",
+                   test_wid_from_display_id_table);
     qtest_add_func("sn0/origin2000/mgras/fill-color-reads-fillcolor-registers",
                    test_fill_color_reads_fillcolor_registers);
     qtest_add_func("sn0/origin2000/mgras/ir-alias-execute-paints-nothing",

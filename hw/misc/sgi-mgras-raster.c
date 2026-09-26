@@ -149,6 +149,22 @@
 #define MGRAS_FILLMODE_RECT_FILL_MASK 0x00500000
 #define MGRAS_FILLMODE_RECT_FILL_VALUE 0x00100000
 
+/*
+ * A primitive draws into the overlay planes when DRBPOINTERS holds the
+ * overlay pointer word and COLORMASKMSBS enables planes in bits 6:4.
+ * Inferred from captured IRIX 6.5.30 desktop sessions: every fill, glyph
+ * row, byte transfer and line the server issues for a window on its
+ * overlay visual (popup and Toolchest menus, XOR drag outlines) carries
+ * DRBPOINTERS 0x101c0, COLORMASKMSBS 0x70 and COLORMASKLSBSA 0, and no
+ * main-plane drawing carries that pointer word. How the hardware decodes
+ * the pointer word's fields is unknown, so the whole word is compared.
+ * The same word with COLORMASKMSBS 0xf0 and logic op CLEAR is how the
+ * server erases an overlay window, over the whole screen at start-up and
+ * over a popup's rectangle when it is taken down.
+ */
+#define MGRAS_DRBPOINTERS_OVERLAY 0x000101c0
+#define MGRAS_COLORMASKMSBS_OVERLAY 0x70
+
 typedef enum SGIMgrasRasterSubmissionForm {
     SGI_MGRAS_RASTER_DIRECT,
     SGI_MGRAS_RASTER_FIFO,
@@ -495,6 +511,30 @@ static void mgras_put_pixel(SGIMgrasState *s, unsigned int idx, uint32_t color,
 }
 
 
+static bool mgras_overlay_target(SGIMgrasState *s)
+{
+    return s->rss[MGRAS_RSS_DRBPOINTERS] == MGRAS_DRBPOINTERS_OVERLAY &&
+           (s->rss[MGRAS_RSS_COLORMASKMSBS] & MGRAS_COLORMASKMSBS_OVERLAY);
+}
+
+/* Overlay glyph and line ink is an index, RED >> 12, as for CI8. */
+static uint8_t mgras_overlay_ink(SGIMgrasState *s)
+{
+    return s->rss[MGRAS_RSS_RED] >> 12;
+}
+
+/*
+ * The logic op applies to the overlay index as it does to colour. No
+ * overlay plane mask is modeled: how COLORMASKMSBS bits map onto index
+ * bits is unknown, and the server only ever enables all of them.
+ */
+static void mgras_put_overlay(SGIMgrasState *s, unsigned int idx,
+                              uint8_t index, uint8_t op)
+{
+    s->overlay[idx] = mgras_logic_op(op, s->overlay[idx], index);
+}
+
+
 /* Normalize corners and clip. Returns false when nothing is visible. */
 static bool mgras_rect_bounds(uint32_t xy0, uint32_t xy1, int *x_lo, int *y_lo,
                            int *x_hi, int *y_hi)
@@ -530,8 +570,8 @@ static void mgras_fill_rect(SGIMgrasState *s, uint32_t xy0, uint32_t xy1,
 }
 
 
-static void mgras_fill_wid_rect(SGIMgrasState *s, uint32_t xy0, uint32_t xy1,
-                             uint8_t wid)
+static void mgras_fill_overlay_rect(SGIMgrasState *s, uint32_t xy0,
+                                    uint32_t xy1, uint8_t index, uint8_t op)
 {
     int x_lo, y_lo, x_hi, y_hi;
 
@@ -539,7 +579,9 @@ static void mgras_fill_wid_rect(SGIMgrasState *s, uint32_t xy0, uint32_t xy1,
         return;
     }
     for (int y = y_lo; y <= y_hi; y++) {
-        memset(&s->wid[y * SGI_MGRAS_WIDTH + x_lo], wid, x_hi - x_lo + 1);
+        for (int x = x_lo; x <= x_hi; x++) {
+            mgras_put_overlay(s, y * SGI_MGRAS_WIDTH + x, index, op);
+        }
     }
 }
 
@@ -552,29 +594,22 @@ static void mgras_draw_fill(SGIMgrasState *s)
     uint32_t color;
 
     /*
-     * COLORMASKLSBSA masks the colour and COLORMASKMSBS the WID plane, so
-     * a fill writes DRBPOINTERS bits 23:16 over its rectangle whether or
-     * not it also writes colour. A nonzero COLORMASKMSBS enables the whole
-     * WID byte; it is not applied as a bit mask over it. The capture rules
-     * that out: nine of its fills carry COLORMASKMSBS 0x70 and write WID
-     * 1, and 0x70 masked over 1 would change no bit, leaving the root
-     * window on the WID the preceding clear gave it and sending it through
-     * the wrong colour map. Inferred from the 21 fills with a nonzero
-     * COLORMASKMSBS in the retained desktop capture: 19 write no colour
-     * and tag the root window, and the whole-screen clear that both paints
-     * and tags leaves the two windows on a different entry. Where the
-     * value physically comes from is unknown, and no other primitive in
-     * the capture carries a nonzero COLORMASKMSBS.
+     * No fill writes a window ID: scanout takes each pixel's WID from the
+     * VC3's display-ID tables (sgi-mgras-display.c). The fills that carry
+     * a nonzero COLORMASKMSBS are overlay draws and clears, handled below,
+     * and the server's two start-up fills with COLORMASKMSBS 0xff and
+     * DRBPOINTERS 0x90240 (a clip-ID set-up and a plane clear) write planes
+     * nothing here displays; they are not modeled.
      */
-    if (s->rss[MGRAS_RSS_COLORMASKMSBS]) {
-        mgras_fill_wid_rect(s, s->rss[MGRAS_RSS_BLOCKXYSTARTI],
-                         s->rss[MGRAS_RSS_BLOCKXYENDI],
-                         s->rss[MGRAS_RSS_DRBPOINTERS] >> 16);
-    }
-
     if ((s->rss[MGRAS_RSS_FILLMODE] & MGRAS_FILLMODE_RECT_FILL_MASK) !=
         MGRAS_FILLMODE_RECT_FILL_VALUE) {
         return;
+    }
+    /* An overlay fill takes FILLCOLOR_R's index, as a CI8 fill does. */
+    if (mgras_overlay_target(s)) {
+        mgras_fill_overlay_rect(s, s->rss[MGRAS_RSS_BLOCKXYSTARTI],
+                                s->rss[MGRAS_RSS_BLOCKXYENDI],
+                                s->rss[MGRAS_RSS_FILLCOLOR_R], op);
     }
 
     /*
@@ -619,6 +654,7 @@ static void mgras_draw_glyph_row(SGIMgrasState *s)
     uint8_t op = s->rss[MGRAS_RSS_PP1FILLMODE] >> 26;
     uint64_t bits = ((uint64_t)s->rss[MGRAS_RSS_CHAR_H] << 32) |
                     s->rss[MGRAS_RSS_CHAR_L];
+    bool overlay = mgras_overlay_target(s);
     int y = y0 + s->glyph_row;
     int width;
 
@@ -638,6 +674,10 @@ static void mgras_draw_glyph_row(SGIMgrasState *s)
         if (set) {
             mgras_put_pixel(s, y * SGI_MGRAS_WIDTH + x0 + i, ink, op, mask,
                         format);
+            if (overlay) {
+                mgras_put_overlay(s, y * SGI_MGRAS_WIDTH + x0 + i,
+                                  mgras_overlay_ink(s), op);
+            }
         }
     }
 }
@@ -684,6 +724,10 @@ static void mgras_draw_byte_row_bytes(SGIMgrasState *s, int x0, int x1,
             }
             mgras_put_pixel(s, y * SGI_MGRAS_WIDTH + x0 + col, bytes[i], op,
                          mask, SGI_MGRAS_PIXEL_FORMAT_CI8);
+            if (mgras_overlay_target(s)) {
+                mgras_put_overlay(s, y * SGI_MGRAS_WIDTH + x0 + col, bytes[i],
+                                  op);
+            }
         }
     }
     s->glyph_unit++;
@@ -733,6 +777,19 @@ static void mgras_draw_byte_row_pairs(SGIMgrasState *s, int x0, int x1,
             }
             mgras_put_pixel(s, y * SGI_MGRAS_WIDTH + x0 + col, pixels[i], op,
                          mask, format);
+            /*
+             * Every captured overlay draw uses CI8 (the register file
+             * exposes no overlay-index derivation for a packed RGB pixel,
+             * and no capture shows this path targeting the overlay under
+             * RGB). pixels[i] is masked to 0xff under CI8 above, so it is
+             * a valid index here; skip the overlay write under RGB rather
+             * than store a truncated colour byte as an invented index.
+             */
+            if (mgras_overlay_target(s) &&
+                format == SGI_MGRAS_PIXEL_FORMAT_CI8) {
+                mgras_put_overlay(s, y * SGI_MGRAS_WIDTH + x0 + col,
+                                  pixels[i], op);
+            }
         }
     }
     s->glyph_unit++;
@@ -934,6 +991,9 @@ static void mgras_draw_point(SGIMgrasState *s)
         return;
     }
     mgras_put_pixel(s, y * SGI_MGRAS_WIDTH + x, color, op, mask, format);
+    if (mgras_overlay_target(s)) {
+        mgras_put_overlay(s, y * SGI_MGRAS_WIDTH + x, mgras_overlay_ink(s), op);
+    }
 }
 
 
@@ -969,6 +1029,7 @@ static void mgras_draw_line(SGIMgrasState *s)
     int x0 = (xy0 >> 16) & 0xffff, y0 = xy0 & 0xffff;
     int x1 = (xy1 >> 16) & 0xffff, y1 = xy1 & 0xffff;
     int dx, dy, sx, sy, err;
+    bool overlay;
 
     mgras_apply_window_origin(s, &x0, &y0);
     mgras_apply_window_origin(s, &x1, &y1);
@@ -977,6 +1038,7 @@ static void mgras_draw_line(SGIMgrasState *s)
     sx = (x0 < x1) ? 1 : -1;
     sy = (y0 < y1) ? 1 : -1;
     err = dx - dy;
+    overlay = mgras_overlay_target(s);
 
     for (;;) {
         int e2;
@@ -984,6 +1046,10 @@ static void mgras_draw_line(SGIMgrasState *s)
         if (x0 < SGI_MGRAS_WIDTH && y0 < SGI_MGRAS_HEIGHT) {
             mgras_put_pixel(s, y0 * SGI_MGRAS_WIDTH + x0, color, op, mask,
                         format);
+            if (overlay) {
+                mgras_put_overlay(s, y0 * SGI_MGRAS_WIDTH + x0,
+                                  mgras_overlay_ink(s), op);
+            }
         }
         if (x0 == x1 && y0 == y1) {
             break;

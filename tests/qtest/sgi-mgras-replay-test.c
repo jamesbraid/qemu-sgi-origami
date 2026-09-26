@@ -24,6 +24,7 @@
 #define CHAR_MODES        "../tests/data/mgras/char-modes.replay"
 #define CMAP_XMAP_WID     "../tests/data/mgras/cmap-xmap-wid.replay"
 #define ROOT_ICON         "../tests/data/mgras/root-icon.replay"
+#define OVERLAY           "../tests/data/mgras/overlay.replay"
 #define INVALID_REPLAY    "../tests/data/mgras/invalid.replay"
 #define INVALID_BOUNDS    "../tests/data/mgras/invalid-bounds.replay"
 #define INVALID_EXTRA     "../tests/data/mgras/invalid-extra.replay"
@@ -89,7 +90,8 @@ static uint32_t pixel(QTestState *qts, uint32_t x, uint32_t y,
                                       "x-test-pixel");
 }
 
-static uint32_t wid(QTestState *qts, uint32_t x, uint32_t y)
+static uint32_t plane_value(QTestState *qts, uint32_t x, uint32_t y,
+                            const char *property)
 {
     qtest_qmp_assert_success(qts,
         "{'execute': 'qom-set', 'arguments': {'path': %s, "
@@ -99,7 +101,7 @@ static uint32_t wid(QTestState *qts, uint32_t x, uint32_t y)
         "{'execute': 'qom-set', 'arguments': {'path': %s, "
         "'property': 'x-test-pixel-y', 'value': %u}}",
         MGRAS_QOM_PATH, y);
-    return qom_get_uint(qts, "x-test-wid");
+    return qom_get_uint(qts, property);
 }
 
 static void replay_mmio(QTestState *qts, const char *path, unsigned int line,
@@ -224,26 +226,27 @@ static void replay_pixels(QTestState *qts, const char *path, unsigned int line,
     }
 }
 
-static void replay_wid(QTestState *qts, const char *path, unsigned int line,
-                       char **words)
+/* Check one byte-wide plane: the WID tag or the overlay index. */
+static void replay_plane(QTestState *qts, const char *path, unsigned int line,
+                         char **words, const char *property)
 {
     uint64_t x, y, expected, actual;
 
     if (!words[1] || !words[2] || !words[3] || words[4]) {
-        g_error("%s:%u: wid requires X Y VALUE", path, line);
+        g_error("%s:%u: %s requires X Y VALUE", path, line, words[0]);
     }
     x = parse_number(path, line, words[1]);
     y = parse_number(path, line, words[2]);
     expected = parse_number(path, line, words[3]);
     if (x >= SI_NATIVE_WIDTH || y >= SI_NATIVE_HEIGHT ||
         expected > UINT8_MAX) {
-        g_error("%s:%u: wid value is outside the current model range", path,
-                line);
+        g_error("%s:%u: %s value is outside the current model range", path,
+                line, words[0]);
     }
-    actual = wid(qts, x, y);
+    actual = plane_value(qts, x, y, property);
     if (actual != expected) {
-        g_error("%s:%u: wid (%" PRIu64 ",%" PRIu64 ") returned 0x%02" PRIx64
-                ", expected 0x%02" PRIx64, path, line, x, y, actual,
+        g_error("%s:%u: %s (%" PRIu64 ",%" PRIu64 ") returned 0x%02" PRIx64
+                ", expected 0x%02" PRIx64, path, line, words[0], x, y, actual,
                 expected);
     }
 }
@@ -296,7 +299,9 @@ static void replay_line(QTestState *qts, const char *path, unsigned int line,
     } else if (!strcmp(words[0], "pixels")) {
         replay_pixels(qts, path, line, words);
     } else if (!strcmp(words[0], "wid")) {
-        replay_wid(qts, path, line, words);
+        replay_plane(qts, path, line, words, "x-test-wid");
+    } else if (!strcmp(words[0], "overlay")) {
+        replay_plane(qts, path, line, words, "x-test-overlay");
     } else {
         g_error("%s:%u: unknown or malformed operation '%s'", path, line,
                 words[0]);
@@ -580,6 +585,60 @@ static void test_root_icon(void)
     run_replay(ROOT_ICON, false);
 }
 
+static void test_overlay(void)
+{
+    run_replay(OVERLAY, false);
+}
+
+/*
+ * Save the machine at the fixture's "# checkpoint" line and replay the rest
+ * against the restored copy, whose checks need the overlay plane and the
+ * per-WID overlay modes to have crossed the migration stream.
+ */
+static void test_overlay_migration(void)
+{
+    g_autofree char *contents = NULL;
+    g_autofree char *checkpoint_path = NULL;
+    g_autofree char *end_line = NULL;
+    g_autofree char *start_line = NULL;
+    g_auto(GStrv) lines = NULL;
+    g_autoptr(GError) error = NULL;
+    unsigned int marker = 0;
+    int fd;
+
+    g_assert_true(g_file_get_contents(OVERLAY, &contents, NULL, &error));
+    g_assert_no_error(error);
+    lines = g_strsplit(contents, "\n", -1);
+    for (unsigned int i = 0; lines[i]; i++) {
+        if (!strcmp(lines[i], "# checkpoint")) {
+            marker = i + 1;
+            break;
+        }
+    }
+    g_assert_cmpuint(marker, >, 0);
+
+    fd = g_file_open_tmp("sgi-mgras-overlay-XXXXXX.state", &checkpoint_path,
+                         &error);
+    g_assert_no_error(error);
+    close(fd);
+    unlink(checkpoint_path);
+    end_line = g_strdup_printf("%u", marker);
+    start_line = g_strdup_printf("%u", marker + 1);
+
+    g_setenv("MGRAS_END_LINE", end_line, true);
+    g_setenv("MGRAS_CHECKPOINT_SAVE", checkpoint_path, true);
+    run_replay(OVERLAY, false);
+    g_unsetenv("MGRAS_CHECKPOINT_SAVE");
+    g_unsetenv("MGRAS_END_LINE");
+
+    g_setenv("MGRAS_CHECKPOINT_LOAD", checkpoint_path, true);
+    g_setenv("MGRAS_START_LINE", start_line, true);
+    run_replay(OVERLAY, false);
+    g_unsetenv("MGRAS_CHECKPOINT_LOAD");
+    g_unsetenv("MGRAS_START_LINE");
+    unlink(checkpoint_path);
+}
+
 static void test_invalid_replay(const char *path, const char *message)
 {
     if (g_test_subprocess()) {
@@ -664,6 +723,8 @@ int main(int argc, char **argv)
     qtest_add_func("sgi-mgras/char-modes", test_char_modes);
     qtest_add_func("sgi-mgras/cmap-xmap-wid", test_cmap_xmap_wid);
     qtest_add_func("sgi-mgras/root-icon", test_root_icon);
+    qtest_add_func("sgi-mgras/overlay", test_overlay);
+    qtest_add_func("sgi-mgras/overlay-migration", test_overlay_migration);
     qtest_add_func("sgi-mgras/invalid-number", test_invalid_number);
     qtest_add_func("sgi-mgras/invalid-bounds", test_invalid_bounds);
     qtest_add_func("sgi-mgras/invalid-extra", test_invalid_extra);

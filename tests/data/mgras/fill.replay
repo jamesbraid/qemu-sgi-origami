@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 # Synthetic fill through the MGRAS command FIFO. Scanout resolves every
 # pixel through the colour map its WID's XMAP mode selects, so the fill is
-# painted under a tagged WID and a loaded palette entry.
+# painted where the VC3 main display-ID table names WID 5 and a palette
+# entry is loaded.
 write 1 0x073c08 0x55
 read 1 0x073c08 0x55
 write 4 0x072038 0x06246800
@@ -89,10 +90,26 @@ write 4 0x070d18 0x11223300
 write 1 0x071c88 0x14
 write 4 0x071e00 0x000000a0
 
-# --- only a fill with a zero colour mask and COLORMASKMSBS set tags WID ---
+# --- VC3 main display-ID table (register 4): WID 5 over (10,10)-(13,13) ---
+write 4 0x072038 0x04050000
+write 4 0x072038 0x07200000
+write 2 0x072190 0x0000
+write 2 0x072190 0x0145
+write 2 0x072190 0x01c0
+write 2 0x072190 0xffe0
+write 4 0x072038 0x07050a00
+write 2 0x072190 0x2000
+write 2 0x072190 0x2000
+write 2 0x072190 0x2000
+write 2 0x072190 0x2000
+wid 10 10 5
+wid 14 10 0
+wid 10 14 0
+
+# --- a fill with a zero colour mask and COLORMASKMSBS set writes no WID ---
 write 8 0x120400 0x0019630400000000
 write 8 0x120400 0x00196204000000f0
-write 8 0x120400 0x00196d0400050000
+write 8 0x120400 0x00196d0400090000
 write 8 0x120400 0x0019100400100000
 write 8 0x120400 0x00184604000a000a
 write 8 0x120400 0x001c4704000d000d

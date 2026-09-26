@@ -7,6 +7,35 @@
 
 #define MGRAS_CURSOR_CMAP_INDEX 0x1c
 
+/*
+ * The VC3 takes each pixel's window ID (the XMAP entry it resolves
+ * through) from display-ID tables in its SRAM, one for the main planes and
+ * one for the overlay. Register 4 or 5 points at a frame table with one
+ * word per scanline; each word points at that line's run list, whose
+ * 16-bit entries carry a starting column in bits 15:5 and a window ID in
+ * bits 4:0. The first entry applies from column 0 and each later one from
+ * its own column; a column past the screen edge (0xffe0) ends the line.
+ * This table layout is inferred, not published: MAME's Newport model
+ * walks its display-ID table this way (refs/mame
+ * b1da4a1b278cf41300e95cce35b4d1f03a22023e), and every table the IRIX
+ * 6.5.30 X server builds matches a walk under that layout. It is not the
+ * VC2's published DENTRY register: on the VC2, register 5 is DENTRY but
+ * register 4 is CCURSX, the hardware cursor's X position (Linux
+ * include/video/newport.h), a different purpose entirely. Which VC3
+ * register serves which planes -- 4 for the main planes, 5 for the
+ * overlay -- likewise comes from the traces, not from the VC2's register
+ * roles: the X server rebuilds the table at register 5's address with a
+ * menu's own ID over exactly the menu's rectangle when it posts a popup
+ * or Toolchest menu on its overlay visual, and loads that ID's overlay
+ * colour map just before; it rebuilds register 4's table with ID 9,
+ * whose main mode is an RGB mode, over its RGB windows and ID 1 (the
+ * root window's map) everywhere else.
+ */
+#define MGRAS_VC3_MAIN_DID_ENTRY 0x04
+#define MGRAS_VC3_OVERLAY_DID_ENTRY 0x05
+#define MGRAS_DID_COLUMN_SHIFT 5
+#define MGRAS_DID_MASK 0x1f
+
 
 /*
  * A WID selects an XMAP mode, whose bits 9:5 select the colour map. The
@@ -43,25 +72,90 @@ static uint32_t mgras_gamma_apply(SGIMgrasState *s, uint32_t bgr)
     return (b << 16) | (g << 8) | r;
 }
 
+static void mgras_did_line(SGIMgrasState *s, unsigned int entry_reg,
+                           unsigned int y, uint8_t *did)
+{
+    const uint16_t mask = SGI_MGRAS_VC3_SRAM_WORDS - 1;
+    uint16_t ptr = s->vc3_sram[(s->vc3_reg[entry_reg] + y) & mask];
+    uint16_t run = s->vc3_sram[ptr & mask];
+    uint8_t current = run & MGRAS_DID_MASK;
+    unsigned int steps = 0;
+
+    run = s->vc3_sram[++ptr & mask];
+    for (unsigned int x = 0; x < SGI_MGRAS_WIDTH; x++) {
+        /* Bound the walk; a guest table can repeat a column forever. */
+        while ((run >> MGRAS_DID_COLUMN_SHIFT) == x &&
+               steps++ < SGI_MGRAS_WIDTH) {
+            current = run & MGRAS_DID_MASK;
+            run = s->vc3_sram[++ptr & mask];
+        }
+        did[x] = current;
+    }
+}
+
+uint8_t sgi_mgras_display_did(SGIMgrasState *s, bool overlay, unsigned int x,
+                              unsigned int y)
+{
+    uint8_t did[SGI_MGRAS_WIDTH];
+
+    if (x >= SGI_MGRAS_WIDTH || y >= SGI_MGRAS_HEIGHT) {
+        return 0;
+    }
+    mgras_did_line(s, overlay ? MGRAS_VC3_OVERLAY_DID_ENTRY :
+                   MGRAS_VC3_MAIN_DID_ENTRY, y, did);
+    return did[x];
+}
+
+/*
+ * A nonzero overlay index covers the main planes when the pixel's WID has
+ * its overlay enabled, resolved through the map that WID's overlay mode
+ * names in bits 7:3; index 0 is transparent. The X server's own
+ * SERVER_OVERLAY_VISUALS property advertises transparent pixel 0 for its
+ * overlay visual (guest console capture irix-20260926T050306-f62509,
+ * console/ioc3-a.log line 272: visual 0x23, TransparentPixel, value 0),
+ * and it never loads entry 0 of the overlay maps. The mode fields are
+ * inferred (see SGI_MGRAS_XMAP_OVERLAY_MODE); an overlay drawn over a WID
+ * whose overlay is disabled stays invisible.
+ */
+static bool mgras_overlay_bgr(SGIMgrasState *s, int i, uint8_t did,
+                              uint32_t *bgr)
+{
+    uint8_t index = s->overlay[i];
+    uint32_t mode = s->xmap_overlay_mode[did];
+    uint32_t entry;
+
+    if (!index || !(mode & 1)) {
+        return false;
+    }
+    entry = s->cmap[((mode >> 3) & 0x1f) * 256 + index];
+    *bgr = ((entry & 0xff00) << 8) | ((entry >> 8) & 0xff00) | (entry >> 24);
+    return true;
+}
+
 /*
  * Resolve one pixel to mgras_cmap_rgb()'s native 0x00BBGGRR order, keyed by
  * the per-pixel format tag (sgi-mgras.h). CI8 indexes through the WID's
  * colour map as before. RGB is a direct 0x00RRGGBB triple a paint wrote
  * (see mgras_draw_fill() and its siblings in hw/misc/sgi-mgras-raster.c)
  * and bypasses the CMAP entirely; only its R and B bytes need swapping
- * to this function's native order. The WID plane still tags an RGB
- * pixel (fills tag it unconditionally, see mgras_draw_fill()), but nothing
- * here reads that tag: no register or capture is known to source a map
- * a direct-colour pixel would use.
+ * to this function's native order. An RGB pixel's main WID is not read:
+ * no register or capture is known to source a map a direct-colour pixel
+ * would use. A visible overlay pixel covers either kind.
  */
-static uint32_t mgras_resolve_pixel_bgr(SGIMgrasState *s, int i)
+static uint32_t mgras_resolve_pixel_bgr(SGIMgrasState *s, int i,
+                                        uint8_t main_did, uint8_t overlay_did)
 {
+    uint32_t overlay;
+
+    if (mgras_overlay_bgr(s, i, overlay_did, &overlay)) {
+        return overlay;
+    }
     if (s->format[i] == SGI_MGRAS_PIXEL_FORMAT_RGB) {
         uint32_t rgb = s->front[i] & 0x00ffffff;
 
         return ((rgb & 0xff) << 16) | (rgb & 0xff00) | ((rgb >> 16) & 0xff);
     }
-    return mgras_cmap_rgb(s, s->wid[i], s->front[i] & 0xff);
+    return mgras_cmap_rgb(s, main_did, s->front[i] & 0xff);
 }
 
 /* The cursor uses mask and select planes from VC3 SRAM. */
@@ -126,11 +220,19 @@ static bool mgras_gfx_update(void *opaque)
      * bypasses the map. Either way the gamma table applies uniformly, so
      * every pixel reaches the display through the same final stage.
      */
-    for (int i = 0; i < SGI_MGRAS_WIDTH * SGI_MGRAS_HEIGHT; i++) {
-        uint32_t rgb = mgras_gamma_apply(s, mgras_resolve_pixel_bgr(s, i));
+    for (int y = 0; y < SGI_MGRAS_HEIGHT; y++) {
+        uint8_t main_did[SGI_MGRAS_WIDTH], overlay_did[SGI_MGRAS_WIDTH];
 
-        s->display_buffer[i] = ((rgb & 0xff) << 16) | (rgb & 0x00ff00) |
-                               ((rgb >> 16) & 0xff);
+        mgras_did_line(s, MGRAS_VC3_MAIN_DID_ENTRY, y, main_did);
+        mgras_did_line(s, MGRAS_VC3_OVERLAY_DID_ENTRY, y, overlay_did);
+        for (int x = 0; x < SGI_MGRAS_WIDTH; x++) {
+            int i = y * SGI_MGRAS_WIDTH + x;
+            uint32_t rgb = mgras_gamma_apply(s,
+                mgras_resolve_pixel_bgr(s, i, main_did[x], overlay_did[x]));
+
+            s->display_buffer[i] = ((rgb & 0xff) << 16) | (rgb & 0x00ff00) |
+                                   ((rgb >> 16) & 0xff);
+        }
     }
     if (s->cursor_enabled) {
         mgras_composite_cursor(s);

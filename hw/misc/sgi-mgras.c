@@ -343,7 +343,8 @@ static uint64_t mgras_read_internal(SGIMgrasState *s, hwaddr addr,
     case SGI_MGRAS_SCRATCH_COMMAND: return s->scratch_command;
     case SGI_MGRAS_BRINGUP_ARG_3: return s->bringup_arg_3;
     case SGI_MGRAS_VC3_ARG: return s->vc3_arg;
-    case SGI_MGRAS_RE_ARG: return s->re_arg;
+    case SGI_MGRAS_XMAP_OVERLAY_MODE:
+        return s->xmap_overlay_mode[s->xmap_index];
     /* XMAP selection and per-visual modes are an approximation. */
     case SGI_MGRAS_XMAP_MAIN_MODE: return s->xmap_mode[s->xmap_index];
     case SGI_MGRAS_I2C_SCRATCH: return s->i2c_scratch;
@@ -548,7 +549,10 @@ static void mgras_write(void *opaque, hwaddr addr, uint64_t value,
         mgras_update_irq(s);
         return;
     case SGI_MGRAS_VC3_ARG: s->vc3_arg = value; return;
-    case SGI_MGRAS_RE_ARG: s->re_arg = value; return;
+    case SGI_MGRAS_XMAP_OVERLAY_MODE:
+        s->xmap_overlay_mode[s->xmap_index] = value;
+        s->dirty = true;
+        return;
     /* Per-visual mode storage and scanout interpretation are approximate. */
     case SGI_MGRAS_XMAP_MAIN_MODE:
         s->xmap_mode[s->xmap_index] = value;
@@ -707,6 +711,11 @@ static void mgras_write(void *opaque, hwaddr addr, uint64_t value,
         case 0x01:
             s->dirty = true;
             break;
+        /* The display-ID table pointers; see sgi-mgras-display.c. */
+        case 0x04:
+        case 0x05:
+            s->dirty = true;
+            break;
         case 0x02: s->cursor_x = data16; s->dirty = true; break;
         case 0x03: s->cursor_y = data16; s->dirty = true; break;
         case 0x1d: {
@@ -797,8 +806,8 @@ static void mgras_reset_enter(Object *obj, ResetType type)
     }
     memset(s->front, 0, SGI_MGRAS_WIDTH * SGI_MGRAS_HEIGHT * sizeof(*s->front));
     memset(s->back, 0, SGI_MGRAS_WIDTH * SGI_MGRAS_HEIGHT * sizeof(*s->back));
-    memset(s->wid, 0, SGI_MGRAS_WIDTH * SGI_MGRAS_HEIGHT);
     memset(s->format, 0, SGI_MGRAS_WIDTH * SGI_MGRAS_HEIGHT);
+    memset(s->overlay, 0, SGI_MGRAS_WIDTH * SGI_MGRAS_HEIGHT);
     memset(s->hq, 0, sizeof(s->hq));
     for (int slot = 0; slot < 2; slot++) {
         memset(s->ge[slot], 0, sizeof(uint32_t) * SGI_MGRAS_GE_WORDS);
@@ -828,6 +837,7 @@ static void mgras_reset_enter(Object *obj, ResetType type)
         s->xmap_mode[i] = 0x7a4;
         s->xmap_buf_select[i] = 0;
     }
+    memset(s->xmap_overlay_mode, 0, sizeof(s->xmap_overlay_mode));
     s->xmap_index = 0;
     s->cmap_selector = 0;
     s->cmap_position = 0;
@@ -859,7 +869,6 @@ static void mgras_reset_enter(Object *obj, ResetType type)
     memset(s->dma_desc_30000, 0, sizeof(s->dma_desc_30000));
     s->bringup_arg_3 = 0;
     s->vc3_arg = 0;
-    s->re_arg = 0;
     s->hq_status_extra = 0;
     s->hq_vector_dest_upper = s->hq_vector_dest_lower = s->hq_vectors = 0;
     s->hq_config_a = s->hq_config_b = s->hq_enable = 0;
@@ -905,8 +914,8 @@ static void mgras_realize(DeviceState *dev, Error **errp)
     s->front = g_new0(uint32_t, SGI_MGRAS_WIDTH * SGI_MGRAS_HEIGHT);
     s->back = g_new0(uint32_t, SGI_MGRAS_WIDTH * SGI_MGRAS_HEIGHT);
     s->front_count = s->back_count = SGI_MGRAS_WIDTH * SGI_MGRAS_HEIGHT;
-    s->wid = g_new0(uint8_t, SGI_MGRAS_WIDTH * SGI_MGRAS_HEIGHT);
     s->format = g_new0(uint8_t, SGI_MGRAS_WIDTH * SGI_MGRAS_HEIGHT);
+    s->overlay = g_new0(uint8_t, SGI_MGRAS_WIDTH * SGI_MGRAS_HEIGHT);
     s->ge[SGI_MGRAS_GE_SLOT_A] = g_new0(uint32_t, SGI_MGRAS_GE_WORDS);
     s->ge[SGI_MGRAS_GE_SLOT_B] = g_new0(uint32_t, SGI_MGRAS_GE_WORDS);
     s->display_buffer = g_new0(uint32_t, SGI_MGRAS_WIDTH * SGI_MGRAS_HEIGHT);
@@ -926,7 +935,8 @@ static void mgras_unrealize(DeviceState *dev)
     timer_del(s->retrace_timer); timer_free(s->retrace_timer);
     address_space_destroy(&s->fabric_as);
     qemu_graphic_console_close(s->con);
-    g_free(s->front); g_free(s->back); g_free(s->wid); g_free(s->format);
+    g_free(s->front); g_free(s->back); g_free(s->format);
+    g_free(s->overlay);
     g_free(s->ge[SGI_MGRAS_GE_SLOT_A]); g_free(s->ge[SGI_MGRAS_GE_SLOT_B]);
     g_free(s->display_buffer);
 }
@@ -975,6 +985,18 @@ static bool mgras_back_count_valid(void *opaque, int version_id)
     return s->back_count == SGI_MGRAS_WIDTH * SGI_MGRAS_HEIGHT;
 }
 
+/*
+ * Version 11 (introduced by the XMAP swap-mask select commit) still carries
+ * both the retired per-pixel WID plane and the unindexed overlay-mode word
+ * on the wire: that commit only added xmap_buf_select, it did not touch
+ * either field. The WID-to-overlay and overlay-mode-to-per-WID-array cutover
+ * lands at version 12, so streams from 9, 10 and 11 all need the old layout.
+ */
+static bool mgras_stream_before_v12(void *opaque, int version_id)
+{
+    return version_id < 12;
+}
+
 static bool mgras_ge_lengths_valid(void *opaque, int version_id)
 {
     SGIMgrasState *s = opaque;
@@ -989,7 +1011,7 @@ static bool mgras_ge_lengths_valid(void *opaque, int version_id)
  * changes.
  */
 static const VMStateDescription vmstate_sgi_mgras = {
-    .name = TYPE_SGI_MGRAS, .version_id = 11, .minimum_version_id = 11,
+    .name = TYPE_SGI_MGRAS, .version_id = 12, .minimum_version_id = 9,
     .post_load = mgras_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32(front_count, SGIMgrasState),
@@ -1001,11 +1023,14 @@ static const VMStateDescription vmstate_sgi_mgras = {
         VMSTATE_VALIDATE("back plane length is fixed", mgras_back_count_valid),
         VMSTATE_VARRAY_UINT32(back, SGIMgrasState, back_count, 0,
                               vmstate_info_uint32, uint32_t),
-        /* The WID plane has the same dimensions as the front color plane. */
-        VMSTATE_VARRAY_UINT32(wid, SGIMgrasState, front_count, 0,
-                              vmstate_info_uint8, uint8_t),
-        /* Likewise the per-pixel format tag; see mgras_put_pixel(). */
+        /* Streams before version 12 carry the retired per-pixel WID plane. */
+        VMSTATE_UNUSED_BUFFER(mgras_stream_before_v12, 0,
+                              SGI_MGRAS_WIDTH * SGI_MGRAS_HEIGHT),
+        /* The per-pixel format tag; see mgras_put_pixel(). */
         VMSTATE_VARRAY_UINT32(format, SGIMgrasState, front_count, 10,
+                              vmstate_info_uint8, uint8_t),
+        /* So does the overlay plane. */
+        VMSTATE_VARRAY_UINT32(overlay, SGIMgrasState, front_count, 12,
                               vmstate_info_uint8, uint8_t),
         VMSTATE_UINT32_ARRAY(hq, SGIMgrasState, 5120),
         VMSTATE_UINT32_V(hq_words, SGIMgrasState, 2),
@@ -1075,7 +1100,10 @@ static const VMStateDescription vmstate_sgi_mgras = {
         VMSTATE_UINT32_ARRAY(dma_desc_30000, SGIMgrasState, 1),
         VMSTATE_UINT32(bringup_arg_3, SGIMgrasState),
         VMSTATE_UINT32(vc3_arg, SGIMgrasState),
-        VMSTATE_UINT32(re_arg, SGIMgrasState),
+        /* Before version 12 this was one unindexed overlay-mode word. */
+        VMSTATE_UNUSED_BUFFER(mgras_stream_before_v12, 0, 4),
+        VMSTATE_UINT32_ARRAY_V(xmap_overlay_mode, SGIMgrasState,
+                               SGI_MGRAS_XMAP_ENTRIES, 12),
         VMSTATE_UINT32(hq_status_extra, SGIMgrasState),
         VMSTATE_UINT32(hq_vector_dest_upper, SGIMgrasState),
         VMSTATE_UINT32(hq_vector_dest_lower, SGIMgrasState),
@@ -1113,8 +1141,8 @@ static const VMStateDescription vmstate_sgi_mgras = {
         VMSTATE_UINT8(xmap_index, SGIMgrasState),
         VMSTATE_UINT32_ARRAY(xmap_mode, SGIMgrasState,
                              SGI_MGRAS_XMAP_ENTRIES),
-        VMSTATE_UINT32_ARRAY(xmap_buf_select, SGIMgrasState,
-                             SGI_MGRAS_XMAP_ENTRIES),
+        VMSTATE_UINT32_ARRAY_V(xmap_buf_select, SGIMgrasState,
+                               SGI_MGRAS_XMAP_ENTRIES, 11),
         VMSTATE_TIMER_PTR_V(retrace_timer, SGIMgrasState, 2),
         VMSTATE_END_OF_LIST()
     }
@@ -1174,16 +1202,16 @@ static void mgras_test_get_display_pixel(Object *obj, Visitor *v,
     visit_type_uint32(v, name, &value, errp);
 }
 
-/* Expose the current model WID tag for replay diagnostics. */
+/* Expose the main-plane window ID scanout uses, for replay diagnostics. */
 static void mgras_test_get_wid(Object *obj, Visitor *v, const char *name,
                             void *opaque, Error **errp)
 {
     SGIMgrasState *s = SGI_MGRAS(obj);
     uint32_t value = 0;
 
-    if (DEVICE(obj)->realized && s->test_pixel_x < SGI_MGRAS_WIDTH &&
-        s->test_pixel_y < SGI_MGRAS_HEIGHT) {
-        value = s->wid[s->test_pixel_y * SGI_MGRAS_WIDTH + s->test_pixel_x];
+    if (DEVICE(obj)->realized) {
+        value = sgi_mgras_display_did(s, false, s->test_pixel_x,
+                                      s->test_pixel_y);
     }
     visit_type_uint32(v, name, &value, errp);
 }
@@ -1198,6 +1226,21 @@ static void mgras_test_get_format(Object *obj, Visitor *v, const char *name,
     if (DEVICE(obj)->realized && s->test_pixel_x < SGI_MGRAS_WIDTH &&
         s->test_pixel_y < SGI_MGRAS_HEIGHT) {
         value = s->format[s->test_pixel_y * SGI_MGRAS_WIDTH + s->test_pixel_x];
+    }
+    visit_type_uint32(v, name, &value, errp);
+}
+
+/* Expose the overlay index for replay diagnostics. */
+static void mgras_test_get_overlay(Object *obj, Visitor *v, const char *name,
+                                void *opaque, Error **errp)
+{
+    SGIMgrasState *s = SGI_MGRAS(obj);
+    uint32_t value = 0;
+
+    if (DEVICE(obj)->realized && s->test_pixel_x < SGI_MGRAS_WIDTH &&
+        s->test_pixel_y < SGI_MGRAS_HEIGHT) {
+        value = s->overlay[s->test_pixel_y * SGI_MGRAS_WIDTH +
+                           s->test_pixel_x];
     }
     visit_type_uint32(v, name, &value, errp);
 }
@@ -1262,6 +1305,8 @@ static void mgras_instance_init(Object *obj)
                         NULL, NULL, NULL);
     object_property_add(obj, "x-test-format", "uint32", mgras_test_get_format,
                         NULL, NULL, NULL);
+    object_property_add(obj, "x-test-overlay", "uint32",
+                        mgras_test_get_overlay, NULL, NULL, NULL);
     object_property_add_uint64_ptr(obj, "x-test-last-interrupt-addr",
                                    &s->test_last_interrupt_addr,
                                    OBJ_PROP_FLAG_READ);
