@@ -607,6 +607,7 @@ static bool sgi_kona_finish_realize(SGIXioBoardState *board, Error **errp)
     s->textport_expect_sync = true;
 
     s->framebuffer = g_new0(uint32_t, SGI_KONA_FB_WIDTH * SGI_KONA_FB_HEIGHT);
+    s->framebuffer_count = SGI_KONA_FB_WIDTH * SGI_KONA_FB_HEIGHT;
     s->con = qemu_graphic_console_create(DEVICE(s), 0, &sgi_kona_display_ops,
                                          s);
     sgi_kona_display_ensure_surface(s);
@@ -744,10 +745,40 @@ static const Property sgi_kona_properties[] = {
     DEFINE_PROP_UINT32("probe-value", SGIKonaState, probe_value, 0),
 };
 
+static bool sgi_kona_framebuffer_count_valid(void *opaque, int version_id)
+{
+    SGIKonaState *s = opaque;
+
+    return s->framebuffer_count == SGI_KONA_FB_WIDTH * SGI_KONA_FB_HEIGHT;
+}
+
+/*
+ * Rebuild the host-only display surface over the just-loaded framebuffer
+ * and force a repaint, matching hw/misc/sgi-mgras.c's own post_load
+ * precedent (mgras_post_load() unconditionally sets s->dirty = true for
+ * the same reason): finish_realize() already bound the console's surface
+ * to this object's own framebuffer pointer before this load ran, so no
+ * pointer changed and no rebind is strictly required, but the migrated
+ * pixel contents replaced the surface's backing memory by a path other
+ * than sgi_kona_draw_point(), and the destination console has never
+ * rendered anything from it -- forcing the flag guarantees the first
+ * frame it shows is correct regardless of the dirty bit's value at the
+ * source's own migration point.
+ */
+static int sgi_kona_post_load(void *opaque, int version_id)
+{
+    SGIKonaState *s = opaque;
+
+    sgi_kona_display_ensure_surface(s);
+    s->framebuffer_dirty = true;
+    return 0;
+}
+
 static const VMStateDescription vmstate_sgi_kona = {
     .name = TYPE_SGI_KONA,
     .version_id = 1,
     .minimum_version_id = 1,
+    .post_load = sgi_kona_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32(widget_control, SGIKonaState),
         VMSTATE_UINT32(onewire_reg, SGIKonaState),
@@ -803,6 +834,21 @@ static const VMStateDescription vmstate_sgi_kona = {
         VMSTATE_VARRAY_UINT32_ALLOC(bitmap_payload, SGIKonaState,
                                    bitmap_payload_expected, 0,
                                    vmstate_info_uint32, uint32_t),
+
+        /*
+         * The framebuffer itself: canonical guest-visible pixel state,
+         * not derived, so it is migrated -- matching hw/misc/sgi-mgras.c's
+         * own front/back plane precedent (VMSTATE_UINT32(*_count) +
+         * VMSTATE_VALIDATE + VMSTATE_VARRAY_UINT32, non-allocating: the
+         * buffer already exists, sized and allocated by
+         * sgi_kona_finish_realize(), before this load runs).
+         */
+        VMSTATE_UINT32(framebuffer_count, SGIKonaState),
+        VMSTATE_VALIDATE("framebuffer length is fixed",
+                         sgi_kona_framebuffer_count_valid),
+        VMSTATE_VARRAY_UINT32(framebuffer, SGIKonaState, framebuffer_count, 0,
+                              vmstate_info_uint32, uint32_t),
+        VMSTATE_BOOL(framebuffer_dirty, SGIKonaState),
         VMSTATE_END_OF_LIST()
     },
 };

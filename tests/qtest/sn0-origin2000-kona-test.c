@@ -28,6 +28,7 @@
 #include "libqtest.h"
 #include "qobject/qdict.h"
 #include "qobject/qjson.h"
+#include "sgi-migrate.h"
 #include "sgi-test.h"
 
 #define SMALL_WINDOW_SIZE UINT64_C(0x1000000)
@@ -70,6 +71,17 @@
 #define MACHINE_ARGS \
     "-M origin2000 -device sgi-kona,id=kona0,module=99,slot=8," \
     "fabric=/machine/crossbow0-spare-fabric[0]"
+
+/*
+ * origin2000's default topology is the full four-node/multi-CPU module
+ * sn-catalogue.json describes, with a matching multi-gigabyte default RAM
+ * size -- fine for every other case here, which shares one already-running
+ * instance for plain register I/O, but too large to migrate twice (once
+ * per instance) inside a single qtest's time budget. Pinned down the same
+ * way sn0-origin2000-mgras-test.c's own MIGRATION_ARGS does, for the same
+ * machine type and the same reason.
+ */
+#define MIGRATION_ARGS MACHINE_ARGS " -smp 8 -m 256M"
 
 #define KONA_QOM_PATH "/machine/module99/kona0"
 
@@ -884,6 +896,53 @@ static void test_reset_clears_increment2_state(void)
     g_assert_false(more_pending);
 }
 
+/*
+ * Independent review (Origami PR #1799) found the framebuffer pixel array
+ * missing from vmstate_sgi_kona despite the header's own claim of parity
+ * with hw/misc/sgi-mgras.c's migrated front/back planes. Draw a pixel
+ * through the textport, migrate to a second instance, and read it back on
+ * the destination: proves the array itself crossed over, not only the
+ * registers and framing state the cases above already exercise. Follows
+ * sn0-origin2000-mgras-test.c's own test_migration() -- the closest
+ * sibling, another origin2000 xtalk-board graphics device with a migrated
+ * pixel array and the same x-test-pixel introspection pattern -- rather
+ * than tests/qtest/sgi-command-port-test.c's generic "-M none" fixture,
+ * whose destination waits on "-incoming defer" plus a separate
+ * migrate-incoming QMP command: mgras's own precedent instead starts the
+ * destination directly with "-incoming <uri>" on its command line and
+ * neither instance needs -S, so this follows suit rather than inventing a
+ * third convention.
+ */
+static void test_migration(void)
+{
+    g_autofree char *tmpfs = NULL;
+    g_autofree char *uri = NULL;
+    g_autofree char *dest_cmdline = NULL;
+    GError *err = NULL;
+    QTestState *from, *to;
+
+    tmpfs = g_dir_make_tmp("sn0-kona-migration-XXXXXX", &err);
+    g_assert_no_error(err);
+    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+
+    from = qtest_init(MIGRATION_ARGS);
+    dest_cmdline = g_strdup_printf(MIGRATION_ARGS " -incoming %s", uri);
+    to = qtest_init(dest_cmdline);
+
+    kona_textport_push(from, 0x2, (uint32_t[]){ 0x00c0ffee }, 1);
+    kona_textport_push(from, 0x6, (uint32_t[]){ 640, 480 }, 2);
+    g_assert_cmphex(kona_test_pixel(from, 640, 480), ==, 0x00c0ffee);
+
+    sgi_migrate_stopped(from, uri);
+
+    g_assert_cmphex(kona_test_pixel(to, 640, 480), ==, 0x00c0ffee);
+    /* An untouched coordinate migrates as zero, not stale host memory. */
+    g_assert_cmphex(kona_test_pixel(to, 641, 480), ==, 0);
+
+    qtest_quit(to);
+    qtest_quit(from);
+}
+
 int main(int argc, char **argv)
 {
     int ret;
@@ -936,6 +995,7 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/origin2000/kona/"
                    "textport-unknown-selector-resynchronizes",
                    test_textport_unknown_selector_resynchronizes);
+    qtest_add_func("sn0/origin2000/kona/migration", test_migration);
 
     ret = g_test_run();
     qtest_quit(qts);
