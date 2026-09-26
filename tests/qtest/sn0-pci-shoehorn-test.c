@@ -19,6 +19,13 @@
  * sgi-pci-expansion, which does no such wiring, leaves that interrupt dead
  * -- the RED baseline the shoehorn's wiring turns GREEN.
  *
+ * Third, the card carries its own board record: a DS2505-class part on the
+ * IOC3's one-wire bus, beside the station-address part, holding the
+ * PCI_ENET 030-1155-002 rev D record a real card reports
+ * (docs/datasheets/sgi-cad-duo-pci-card.md, "Board-identity record on the
+ * IOC3 one-wire bus"). The same card behind a plain sgi-pci-expansion
+ * carries only the station-address part.
+ *
  * The same checks then run on the board the origin2000-pci-shoehorn
  * topology places itself: the compiled catalogue fits the shoehorn into
  * Origin 2000's IO2 position, crossbow0 widget 12, as a startup-attached
@@ -87,6 +94,39 @@ typedef struct {
 #define CD_INT_ENABLE_SET(c) (CAD_DUO_WINDOW(c) + 0x20)
 #define CD_KBD_TRANSMIT(c)   (CAD_DUO_WINDOW(c) + 0x0a8)
 #define INT_KEYBOARD        (1u << 22)   /* SuperIO keyboard/mouse status bit */
+
+/* The IOC3's MicroLAN engine and the pin-control bit routing it to its pin. */
+#define CD_MICROLAN(c)       (CAD_DUO_WINDOW(c) + 0x30)
+#define CD_PIN_CONTROL_SET(c) (CAD_DUO_WINDOW(c) + 0x34)
+#define PIN_MICROLAN_ENABLE  (1u << 21)
+#define MICROLAN_LEVEL       (1u << 0)
+#define MICROLAN_DONE        (1u << 1)
+
+#define OW_SEARCH_ROM        0xf0
+#define OW_MATCH_ROM         0x55
+#define OW_READ_MEMORY       0xf0    /* the same byte, once a part is matched */
+#define OW_FAMILY_DS2501_UNW 0x91    /* the station-address part */
+#define OW_FAMILY_DS2505     0x0b    /* the board record */
+
+#define RECORD_PAGE          32
+#define RECORD_SIZE          64
+#define RECORD_CRC_RESIDUE   0xb001
+
+/*
+ * The record the card's part stores (the Cad Duo datasheet's page image):
+ * placeholder barcode OCADDUO001, part 030-1155-002, revision D, name
+ * PCI_ENET, each page closed by its inverted CRC-16.
+ */
+static const uint8_t cad_duo_record[RECORD_SIZE] = {
+    0x01, 0x4f, 0x43, 0x41, 0x44, 0x44, 0x55, 0x4f,
+    0x30, 0x30, 0x31, 0x20, 0x20, 0x20, 0x20, 0x20,
+    0x20, 0x20, 0x20, 0x20, 0x20, 0x30, 0x33, 0x30,
+    0x2d, 0x31, 0x31, 0x35, 0x35, 0x2d, 0x6e, 0x0f,
+    0x20, 0x20, 0x20, 0x30, 0x30, 0x32, 0x44, 0x20,
+    0x20, 0x20, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+    0x50, 0x43, 0x49, 0x5f, 0x45, 0x4e, 0x45, 0x54,
+    0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0xeb, 0x2b,
+};
 
 /* The adapter Bridge's own interrupt-forwarding registers. */
 #define BRIDGE_INT_ENABLE(c)     (WIDGET_BASE((c)->widget) + 0x108 + REG_DATA)
@@ -239,6 +279,224 @@ static void test_cad_duo_ps2_interrupt_reaches_hub(const void *data)
 }
 
 /*
+ * One bit slot on the Cad Duo's MicroLAN, with the widths OpenBSD's and
+ * Linux's masters use (docs/datasheets/ioc3.md, "GPIO and MicroLAN").
+ */
+static bool ow_slot(QTestState *qts, const ShoehornCase *c,
+                    unsigned int pulse, unsigned int sample)
+{
+    uint32_t v;
+
+    qtest_writel(qts, CD_MICROLAN(c), (pulse << 10) | (sample << 2));
+    v = qtest_readl(qts, CD_MICROLAN(c));
+    g_assert_cmphex(v & MICROLAN_DONE, ==, MICROLAN_DONE);
+    return v & MICROLAN_LEVEL;
+}
+
+#define OW_RESET(q, c)      ow_slot((q), (c), 520, 65)
+#define OW_READ(q, c)       ow_slot((q), (c), 6, 13)
+#define OW_WRITE_ONE(q, c)  ow_slot((q), (c), 6, 13)
+#define OW_WRITE_ZERO(q, c) ow_slot((q), (c), 80, 30)
+
+static void ow_write_byte(QTestState *qts, const ShoehornCase *c, uint8_t byte)
+{
+    unsigned int i;
+
+    for (i = 0; i < 8; i++) {
+        if ((byte >> i) & 1) {
+            OW_WRITE_ONE(qts, c);
+        } else {
+            OW_WRITE_ZERO(qts, c);
+        }
+    }
+}
+
+static uint8_t ow_read_byte(QTestState *qts, const ShoehornCase *c)
+{
+    unsigned int i;
+    uint8_t byte = 0;
+
+    for (i = 0; i < 8; i++) {
+        if (OW_READ(qts, c)) {
+            byte |= 1u << i;
+        }
+    }
+    return byte;
+}
+
+/* The ROM identity's CRC-8: 0x8c reflected, seeded zero. */
+static uint8_t ow_crc8(uint64_t rom)
+{
+    unsigned int byte, bit;
+    uint8_t crc = 0;
+
+    for (byte = 0; byte < 8; byte++) {
+        crc ^= rom >> (byte * 8);
+        for (bit = 0; bit < 8; bit++) {
+            crc = (crc & 1) ? (crc >> 1) ^ 0x8c : crc >> 1;
+        }
+    }
+    return crc;
+}
+
+/* CRC-16, reflected polynomial 0xa001, as Linux checks SGI records. */
+static uint16_t ow_crc16(const uint8_t *data, unsigned int len)
+{
+    unsigned int i, bit;
+    uint16_t crc = 0;
+
+    for (i = 0; i < len; i++) {
+        crc ^= data[i];
+        for (bit = 0; bit < 8; bit++) {
+            crc = (crc & 1) ? (crc >> 1) ^ 0xa001 : crc >> 1;
+        }
+    }
+    return crc;
+}
+
+/*
+ * One pass of the standard Search ROM walk (Maxim AN187), zero branch
+ * first; chain each result and `*last_discrepancy` into the next pass.
+ */
+static uint64_t ow_search_pass(QTestState *qts, const ShoehornCase *c,
+                               uint64_t rom, unsigned int *last_discrepancy)
+{
+    unsigned int bit_number, last_zero = 0;
+    uint64_t found = 0;
+
+    g_assert_false(OW_RESET(qts, c));       /* pulled low: someone answers */
+    ow_write_byte(qts, c, OW_SEARCH_ROM);
+    for (bit_number = 1; bit_number <= 64; bit_number++) {
+        bool bit = OW_READ(qts, c);
+        bool complement = OW_READ(qts, c);
+        bool direction;
+
+        g_assert_false(bit && complement);
+        if (bit != complement) {
+            direction = bit;
+        } else if (bit_number == *last_discrepancy) {
+            direction = true;
+        } else if (bit_number > *last_discrepancy) {
+            direction = false;
+            last_zero = bit_number;
+        } else {
+            direction = (rom >> (bit_number - 1)) & 1;
+            if (!direction) {
+                last_zero = bit_number;
+            }
+        }
+        if (direction) {
+            found |= UINT64_C(1) << (bit_number - 1);
+            OW_WRITE_ONE(qts, c);
+        } else {
+            OW_WRITE_ZERO(qts, c);
+        }
+    }
+    *last_discrepancy = last_zero;
+    g_assert_cmphex(ow_crc8(found), ==, 0);
+    return found;
+}
+
+/* Discover every part on the Cad Duo's bus; returns how many. */
+static unsigned int ow_search_all(QTestState *qts, const ShoehornCase *c,
+                                  uint64_t *rom, unsigned int max)
+{
+    unsigned int last_discrepancy = 0;
+    unsigned int count = 0;
+
+    qtest_writel(qts, CD_PIN_CONTROL_SET(c), PIN_MICROLAN_ENABLE);
+    do {
+        g_assert_cmpuint(count, <, max);
+        rom[count] = ow_search_pass(qts, c, count ? rom[count - 1] : 0,
+                                    &last_discrepancy);
+        count++;
+    } while (last_discrepancy != 0);
+    return count;
+}
+
+/*
+ * Select `rom` by Match ROM, as OpenBSD's owserial and the firmware do on a
+ * multi-part bus, and read `len` bytes from address 0 with Read Memory.
+ */
+static void ow_read_memory(QTestState *qts, const ShoehornCase *c,
+                           uint64_t rom, uint8_t *out, unsigned int len)
+{
+    unsigned int i;
+
+    g_assert_false(OW_RESET(qts, c));
+    ow_write_byte(qts, c, OW_MATCH_ROM);
+    for (i = 0; i < 8; i++) {
+        ow_write_byte(qts, c, (uint8_t)(rom >> (i * 8)));
+    }
+    ow_write_byte(qts, c, OW_READ_MEMORY);
+    ow_write_byte(qts, c, 0x00);
+    ow_write_byte(qts, c, 0x00);
+    for (i = 0; i < len; i++) {
+        out[i] = ow_read_byte(qts, c);
+    }
+}
+
+/*
+ * The fitted card's IOC3 bus carries two parts: the station-address part
+ * and a DS2505-class part holding the card's own record, which reads back
+ * as the datasheet's page image, each page leaving the CRC-16 residue, with
+ * unprogrammed memory past it.
+ */
+static void test_cad_duo_carries_its_board_record(const void *data)
+{
+    const ShoehornCase *c = data;
+    QTestState *qts = qtest_init(c->args);
+    uint8_t memory[RECORD_SIZE + RECORD_PAGE];
+    uint64_t rom[4], record_rom = 0;
+    bool station = false;
+    unsigned int i, n;
+
+    cad_duo_map(qts, c);
+    n = ow_search_all(qts, c, rom, G_N_ELEMENTS(rom));
+    g_assert_cmpuint(n, ==, 2);
+    for (i = 0; i < n; i++) {
+        switch (rom[i] & 0xff) {
+        case OW_FAMILY_DS2501_UNW:
+            station = true;
+            break;
+        case OW_FAMILY_DS2505:
+            record_rom = rom[i];
+            break;
+        default:
+            g_assert_not_reached();
+        }
+    }
+    g_assert_true(station);
+    g_assert_cmphex(record_rom, !=, 0);
+
+    ow_read_memory(qts, c, record_rom, memory, sizeof(memory));
+    g_assert_cmpmem(memory, RECORD_SIZE, cad_duo_record, RECORD_SIZE);
+    g_assert_cmphex(ow_crc16(memory, RECORD_PAGE), ==, RECORD_CRC_RESIDUE);
+    g_assert_cmphex(ow_crc16(memory + RECORD_PAGE, RECORD_PAGE), ==,
+                    RECORD_CRC_RESIDUE);
+    for (i = RECORD_SIZE; i < sizeof(memory); i++) {
+        g_assert_cmphex(memory[i], ==, 0xff);
+    }
+    qtest_quit(qts);
+}
+
+/*
+ * A bare sgi-ioc3 given no record, behind a plain expansion board, keeps
+ * the station-address part alone.
+ */
+static void test_bare_card_has_no_board_record(const void *data)
+{
+    const ShoehornCase *c = data;
+    QTestState *qts = qtest_init(c->args);
+    uint64_t rom[4];
+
+    cad_duo_map(qts, c);
+    g_assert_cmpuint(ow_search_all(qts, c, rom, G_N_ELEMENTS(rom)), ==, 1);
+    g_assert_cmphex(rom[0] & 0xff, ==, OW_FAMILY_DS2501_UNW);
+    qtest_quit(qts);
+}
+
+/*
  * The catalogue-placed board's widget is alive from reset, like the BaseIO
  * at widget 8, the two host nodes at 9 and 10 and SI Viz at 15: it is part
  * of crossbow0's configured startup population, not a link brought up after
@@ -271,11 +529,17 @@ int main(int argc, char **argv)
     qtest_add_data_func("sn0/pci-shoehorn/cad-duo-ps2-interrupt-reaches-hub",
                         &device_case,
                         test_cad_duo_ps2_interrupt_reaches_hub);
+    qtest_add_data_func("sn0/pci-shoehorn/cad-duo-board-record",
+                        &device_case, test_cad_duo_carries_its_board_record);
+    qtest_add_data_func("sn0/pci-shoehorn/bare-card-has-no-board-record",
+                        &expansion_case, test_bare_card_has_no_board_record);
     qtest_add_data_func("sn0/pci-shoehorn/placed/widget-alive-at-startup",
                         NULL, test_placed_widget_is_alive_at_startup);
     qtest_add_data_func("sn0/pci-shoehorn/placed/cad-duo-enumerates",
                         &placed_case, test_cad_duo_enumerates);
     qtest_add_data_func("sn0/pci-shoehorn/placed/cad-duo-interrupt-reaches-hub",
                         &placed_case, test_cad_duo_ps2_interrupt_reaches_hub);
+    qtest_add_data_func("sn0/pci-shoehorn/placed/cad-duo-board-record",
+                        &placed_case, test_cad_duo_carries_its_board_record);
     return g_test_run();
 }

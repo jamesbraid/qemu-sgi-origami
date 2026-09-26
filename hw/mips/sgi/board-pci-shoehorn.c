@@ -138,8 +138,9 @@ struct SGIPciShoehornState {
 };
 
 /*
- * Fit an SGI Cad Duo card at cad_duo_slot on the internal Bridge's bus and
- * wire its SuperIO interrupt to the Bridge pin its own slot's INTB maps to.
+ * Fit an SGI Cad Duo card at cad_duo_slot on the internal Bridge's bus, with
+ * its own PCI_ENET board record on the card's one-wire bus, and wire its
+ * SuperIO interrupt to the Bridge pin its own slot's INTB maps to.
  * The subsystem id is the "not observed" placeholder the reviewed datasheet
  * establishes; left at the class default the chip resolves through
  * sgi_ioc3_board()'s fall-through to the CAD DUO population.
@@ -155,6 +156,14 @@ static bool pci_shoehorn_fit_cad_duo(SGIPciShoehornState *s, Error **errp)
                          SGI_IOC3_SUBSYS_CAD_DUO_PCI_CARD_UNCAPTURED);
     qdev_prop_set_uint64(DEVICE(ioc3), "onewire-serial",
                          s->cad_duo_onewire_serial);
+    qdev_prop_set_string(DEVICE(ioc3), "board-part",
+                         SGI_IOC3_CAD_DUO_BOARD_PART);
+    qdev_prop_set_string(DEVICE(ioc3), "board-barcode",
+                         SGI_IOC3_CAD_DUO_BOARD_BARCODE);
+    qdev_prop_set_string(DEVICE(ioc3), "board-revision",
+                         SGI_IOC3_CAD_DUO_BOARD_REVISION);
+    qdev_prop_set_string(DEVICE(ioc3), "board-name",
+                         SGI_IOC3_CAD_DUO_BOARD_NAME);
     if (!pci_realize_and_unref(ioc3, bus, errp)) {
         return false;
     }
