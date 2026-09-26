@@ -93,6 +93,10 @@ foreach speed : ['quick', 'thorough']
       test_suites = suites
       if testname == 'mips64-openbsd_install'
         test_suites = suites + ['func-install']
+      elif testname in ['mips64-openbsd_login',
+                       'mips64-openbsd_net_transfer',
+                       'mips64-xframe_pci']
+        test_suites = suites + ['func-openbsd']
       endif
       if fs.exists('generic' / 'test_' + test + '.py')
         testfile = 'generic' / 'test_' + test + '.py'
