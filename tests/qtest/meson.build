@@ -145,6 +145,8 @@ slow_qtests = {
   # measured 32.23s-57.39s, close enough to the 60s default that a slower
   # run would time out. Budget three times the highest measured run.
   'sn0-pci-carrier-test': 180,
+  # Four cases, each starting its own machine; budgeted like the carrier's.
+  'sn0-menet-test': 180,
 }
 
 qtest_priorities = {
@@ -473,6 +475,7 @@ qtests_mips64 = \
                                                    'sn-builder-test',
                                                    'sn0-pci-shoehorn-test',
                                                    'sn0-pci-carrier-test',
+                                                   'sn0-menet-test',
                                                    'sn0-gigachannel-test'] : []) + \
   (config_all_devices.has_key('CONFIG_SGI_SN0') and
    config_all_devices.has_key('CONFIG_SGI_SN1') ?

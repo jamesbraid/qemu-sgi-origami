@@ -1,9 +1,10 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * sgi-xio-baseio: the Origin 2000 and Onyx2 standard XIO I/O board
- * (BaseIO), an sgi-xio-board subclass that creates its own Bridge and an
- * sgi-baseio (the "io6" preset) behind it -- the removable-card
- * carrier docs/designs/sn-machine-model-architecture.md's "Base I/O"
+ * sgi-xio-baseio: an Origin 2000 and Onyx2 XIO I/O board built from a
+ * Bridge and an sgi-baseio preset behind it -- the standard BaseIO
+ * ("io6"), the BaseIO-G ("io6g") or the MENET ("menet"). An
+ * sgi-xio-board subclass: the removable-card carrier
+ * docs/designs/sn-machine-model-architecture.md's "Base I/O"
  * table names. See sgi-baseio's own header and hw/mips/sgi/baseio.c for
  * the population this board's preset builds; this file owns only what
  * is specific to the card: its own Bridge and the card's fitted-part
@@ -35,9 +36,15 @@
  * unbacked) under the "io6" preset, which never builds that chip.
  * "preset" selects which internal sgi-baseio preset
  * this card builds, "io6" by default; "io6g" builds the same
- * card with the MediaIO daughtercard's second IOC3 fitted. Both name
- * the same physical board part and Bridge revision, so this class's own
- * fitted-part identity is looked up from the same preset. "flash-drive"
+ * card with the MediaIO daughtercard's second IOC3 fitted; "menet"
+ * builds the four-IOC3 MENET board. This class's own fitted-part
+ * identity, the widget a card must sit at and whether its Bridge carries
+ * a flash part are all looked up from the same preset: the BaseIO presets
+ * are fixed at IO1 with the flash, the MENET fits any XIO slot and has
+ * no flash, and a preset that is not an XIO card is refused. The MENET's
+ * chips have no console, record, parallel or clock backend to take; the
+ * internal sgi-baseio refuses a parallel id, and this class a flash id,
+ * for a preset without the part. "flash-drive"
  * names the image behind the card's own flash part on the Bridge's flash
  * port, the BASEIO PROM the IP27 PROM loads from it; this file owns that
  * part too, since it is a fitted part of the card and not of the
@@ -63,9 +70,6 @@
 
 #define TYPE_SGI_XIO_BASEIO "sgi-xio-baseio"
 OBJECT_DECLARE_SIMPLE_TYPE(SGIXioBaseioState, SGI_XIO_BASEIO)
-
-/* BaseIO is fixed at IO1 (ip27-origin2000.yaml, baseio-bridge widget 8). */
-#define XIO_BASEIO_WIDGET 8
 
 /* Placeholder; no reviewed source assigns a serial to this board class. */
 #define XIO_BASEIO_SERIAL_PLACEHOLDER 0x060504030201ULL
@@ -172,15 +176,21 @@ static bool xio_baseio_build_widget(SGIXioBoardState *board, Error **errp)
                   "packets travel");
         return false;
     }
-    if (board->slot != XIO_BASEIO_WIDGET) {
-        error_setg(errp, "sgi-xio-baseio is fixed at crosstalk widget %u",
-                  XIO_BASEIO_WIDGET);
+    if (!identity || !identity->xio_widget) {
+        error_setg(errp, "sgi-xio-baseio: '%s' names no XIO card "
+                  "preset; expected io6, io6g or menet",
+                  s->preset ? s->preset : "(unset)");
         return false;
     }
-    if (!identity) {
-        error_setg(errp, "sgi-xio-baseio: '%s' names no known baseio "
-                  "preset; expected io6 or io6g",
-                  s->preset ? s->preset : "(unset)");
+    if (identity->xio_widget != SGI_BASEIO_XIO_ANY_WIDGET &&
+        board->slot != identity->xio_widget) {
+        error_setg(errp, "sgi-xio-baseio preset '%s' is fixed at crosstalk "
+                  "widget %u", s->preset, identity->xio_widget);
+        return false;
+    }
+    if (!identity->bridge_flash && s->flash_drive_id) {
+        error_setg(errp, "sgi-xio-baseio preset '%s' fits no flash part for "
+                  "flash-drive '%s'", s->preset, s->flash_drive_id);
         return false;
     }
 
@@ -198,13 +208,15 @@ static bool xio_baseio_build_widget(SGIXioBoardState *board, Error **errp)
     qdev_prop_set_uint32(bridge, "fabric-node-shift", s->fabric_node_shift);
     qdev_prop_set_uint32(bridge, "fabric-widget-shift",
                          s->fabric_widget_shift);
-    if (!xio_baseio_build_flash(s, errp)) {
-        return false;
+    if (identity->bridge_flash) {
+        if (!xio_baseio_build_flash(s, errp)) {
+            return false;
+        }
+        object_property_set_link(
+            OBJECT(bridge), "flash",
+            OBJECT(sysbus_mmio_get_region(SYS_BUS_DEVICE(s->flash), 0)),
+            &error_abort);
     }
-    object_property_set_link(
-        OBJECT(bridge), "flash",
-        OBJECT(sysbus_mmio_get_region(SYS_BUS_DEVICE(s->flash), 0)),
-        &error_abort);
     if (!sysbus_realize(SYS_BUS_DEVICE(bridge), errp)) {
         return false;
     }
@@ -310,7 +322,8 @@ static void xio_baseio_class_init(ObjectClass *oc, const void *data)
     DeviceClass *dc = DEVICE_CLASS(oc);
     SGIXioBoardClass *bc = SGI_XIO_BOARD_CLASS(oc);
 
-    dc->desc = "Origin 2000 / Onyx2 BaseIO board";
+    dc->desc = "Origin 2000 / Onyx2 Bridge-based XIO I/O board (BaseIO, "
+               "MENET)";
     dc->vmsd = &vmstate_xio_baseio;
     /*
      * Ordinarily fitted per module by the machine, at most one per
