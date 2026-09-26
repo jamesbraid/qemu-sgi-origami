@@ -466,6 +466,33 @@ static void test_identity_and_aperture(void)
     g_assert_cmphex(qtest_readl(qts, REG_DIRECT_COPY_READY), ==, 0x100);
 }
 
+/*
+ * Inferred (see the read/write-side comments above these two cases in
+ * mgras_read_internal()/mgras_write()): the reserved halves of the
+ * 64-bit-aligned widget-register slots read zero and ignore writes
+ * rather than raising a guest error a real access hits. Reading
+ * REG_IDENTIFICATION back unchanged after writing both proves the write
+ * side does not alias into the neighboring real register.
+ */
+static void test_widget_reserved_halves_raz_wi(void)
+{
+    uint32_t identification;
+
+    mgras_reset();
+
+    g_assert_cmphex(qtest_readl(qts, MGRAS_REG(0x000000)), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, MGRAS_REG(0x000020)), ==, 0);
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+
+    identification = qtest_readl(qts, REG_IDENTIFICATION);
+    qtest_writel(qts, MGRAS_REG(0x000000), 0xffffffff);
+    qtest_writel(qts, MGRAS_REG(0x000020), 0xffffffff);
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, MGRAS_REG(0x000000)), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, MGRAS_REG(0x000020)), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, REG_IDENTIFICATION), ==, identification);
+}
+
 
 static void test_widget_control_is_plain_storage(void)
 {
@@ -4703,6 +4730,8 @@ int main(int argc, char **argv)
 
     qtest_add_func("sn0/origin2000/mgras/identity-and-aperture",
                    test_identity_and_aperture);
+    qtest_add_func("sn0/origin2000/mgras/widget-reserved-halves-raz-wi",
+                   test_widget_reserved_halves_raz_wi);
     qtest_add_func("sn0/origin2000/mgras/widget-control-is-plain-storage",
                    test_widget_control_is_plain_storage);
     qtest_add_func("sn0/origin2000/mgras/generic-bringup-step",
