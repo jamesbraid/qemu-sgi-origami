@@ -994,6 +994,9 @@ static void test_bte_error_after_progress(void)
     qtest_writeq(s, REG_BASE + BTE0 + 0x18, 1 << 4);
     g_assert_cmphex(qtest_readq(s, REG_BASE + BTE0), ==, 2 | (1 << 16));
     g_assert_cmphex(dma_readq(s, 0x140000), ==, 2 | (1 << 16));
+    /* The model's choice: both addresses name the failed line. */
+    g_assert_cmphex(qtest_readq(s, REG_BASE + BTE0 + 8), ==, 0x2000000);
+    g_assert_cmphex(qtest_readq(s, REG_BASE + BTE0 + 0x10), ==, 0x130080);
     dma_read(s, 0x130000, actual, sizeof(actual));
     g_assert_cmpmem(actual, 128, source, 128);
     g_assert_cmpmem(actual + 128, 128, unchanged + 128, 128);
