@@ -40,10 +40,6 @@
  * checked prose rather than raw captures alone. Incomplete captures cannot
  * establish selector-last order for excluded entries. Unknown counts and
  * word order remain unknown.
- *
- * The supporting contract is draft and awaits independent review. Device
- * register wiring must not treat these tables as settled until that review
- * is complete.
  */
 #ifndef HW_MISC_SGI_KONA_PORTS_H
 #define HW_MISC_SGI_KONA_PORTS_H
