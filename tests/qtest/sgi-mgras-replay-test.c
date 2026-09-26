@@ -25,6 +25,7 @@
 #define CMAP_XMAP_WID     "../tests/data/mgras/cmap-xmap-wid.replay"
 #define ROOT_ICON         "../tests/data/mgras/root-icon.replay"
 #define OVERLAY           "../tests/data/mgras/overlay.replay"
+#define DMA_IMAGE_TRANSFER "../tests/data/mgras/dma-image-transfer.replay"
 #define INVALID_REPLAY    "../tests/data/mgras/invalid.replay"
 #define INVALID_BOUNDS    "../tests/data/mgras/invalid-bounds.replay"
 #define INVALID_EXTRA     "../tests/data/mgras/invalid-extra.replay"
@@ -37,6 +38,9 @@
 #define INVALID_OVERFLOW  "../tests/data/mgras/invalid-overflow.replay"
 #define INVALID_WID_BOUNDS "../tests/data/mgras/invalid-wid-bounds.replay"
 #define INVALID_MISMATCH  "../tests/data/mgras/invalid-mismatch.replay"
+#define INVALID_DMA_EXTRA "../tests/data/mgras/invalid-dma-extra.replay"
+#define INVALID_DMA_HEX_MISMATCH \
+    "../tests/data/mgras/invalid-dma-hex-mismatch.replay"
 #define MGRAS_MMIO_SIZE      (2 * MiB)
 #define SI_NATIVE_WIDTH   1280
 #define SI_NATIVE_HEIGHT  1024
@@ -168,6 +172,57 @@ static void replay_mmio(QTestState *qts, const char *path, unsigned int line,
     }
 }
 
+/*
+ * A replay has no guest memory behind it, so a captured sgi_mgras_dma_chunk
+ * event is the only way a host-to-screen DMA draw's source bytes reach a
+ * replayed session. ADDR is the plain node-offset address the capturing
+ * guest wrote to, exactly as sgi_mgras_dma_chunk recorded it -- not the
+ * fully composed fabric address sgi_mgras_xio_compose() derives from it
+ * (the widget shifted into the high bits) -- because qtest_memwrite only
+ * reaches ordinary guest RAM at the plain address; the fabric address
+ * exists solely to route the model's own dma_memory_read() through
+ * s->fabric_as and preloading there leaves the plain address, and so the
+ * model's read, untouched. HEX is the same lowercase, unseparated hex-pair
+ * encoding qemu_hexdump_to_buffer() writes into the trace;
+ * MGRAS_DMA_CHUNK_MAX_BYTES in hw/misc/sgi-mgras-raster.c bounds a single
+ * captured chunk the same way.
+ */
+#define REPLAY_DMA_MAX_BYTES 4096
+
+static void replay_dma(QTestState *qts, const char *path, unsigned int line,
+                       char **words)
+{
+    uint64_t addr, len;
+    size_t hexlen;
+    g_autofree uint8_t *bytes = NULL;
+
+    if (!words[1] || !words[2] || !words[3] || words[4]) {
+        g_error("%s:%u: dma requires ADDR LEN HEX", path, line);
+    }
+    addr = parse_number(path, line, words[1]);
+    len = parse_number(path, line, words[2]);
+    if (!len || len > REPLAY_DMA_MAX_BYTES) {
+        g_error("%s:%u: dma length %" PRIu64 " is out of range", path, line,
+                len);
+    }
+    hexlen = strlen(words[3]);
+    if (hexlen != len * 2) {
+        g_error("%s:%u: dma hex length does not match LEN %" PRIu64, path,
+                line, len);
+    }
+    bytes = g_malloc(len);
+    for (uint64_t i = 0; i < len; i++) {
+        int hi = g_ascii_xdigit_value(words[3][i * 2]);
+        int lo = g_ascii_xdigit_value(words[3][i * 2 + 1]);
+
+        if (hi < 0 || lo < 0) {
+            g_error("%s:%u: dma hex is not valid hex", path, line);
+        }
+        bytes[i] = (uint8_t)((hi << 4) | lo);
+    }
+    qtest_memwrite(qts, addr, bytes, len);
+}
+
 static void replay_pixel(QTestState *qts, const char *path, unsigned int line,
                          char **words, bool display)
 {
@@ -292,6 +347,8 @@ static void replay_line(QTestState *qts, const char *path, unsigned int line,
         replay_mmio(qts, path, line, words, true);
     } else if (!strcmp(words[0], "read")) {
         replay_mmio(qts, path, line, words, false);
+    } else if (!strcmp(words[0], "dma")) {
+        replay_dma(qts, path, line, words);
     } else if (!strcmp(words[0], "pixel")) {
         replay_pixel(qts, path, line, words, false);
     } else if (!strcmp(words[0], "display-pixel")) {
@@ -565,6 +622,77 @@ static void test_checkpoint_boundary_runs_once(void)
     unlink(trace_load_path);
 }
 
+/*
+ * checkpoint-boundary-once proves the MMIO-count contract at a line
+ * boundary; neither it nor replay-screendump ever look at what a
+ * screendump taken after MGRAS_CHECKPOINT_LOAD actually contains. Split
+ * fill.replay before its display-enable write (line 129: the two
+ * display-pixel assertions straddling it show display_enabled flips
+ * there) so the loaded process both restores painted-but-not-yet-shown
+ * state through post_load and then enables the display itself, and
+ * compare its screendump byte for byte against one from an uninterrupted
+ * run of the same fixture.
+ */
+static void test_checkpoint_screendump_matches_uninterrupted_replay(void)
+{
+    g_autofree char *full_path = NULL;
+    g_autofree char *split_path = NULL;
+    g_autofree char *checkpoint_path = NULL;
+    g_autofree char *full_contents = NULL;
+    g_autofree char *split_contents = NULL;
+    gsize full_len, split_len;
+    g_autoptr(GError) error = NULL;
+    int fd;
+
+    fd = g_file_open_tmp("checkpoint-full-XXXXXX.ppm", &full_path, &error);
+    g_assert_no_error(error);
+    close(fd);
+    unlink(full_path);
+    fd = g_file_open_tmp("checkpoint-split-XXXXXX.ppm", &split_path, &error);
+    g_assert_no_error(error);
+    close(fd);
+    unlink(split_path);
+    fd = g_file_open_tmp("checkpoint-XXXXXX.state", &checkpoint_path,
+                         &error);
+    g_assert_no_error(error);
+    close(fd);
+    unlink(checkpoint_path);
+
+    g_setenv("MGRAS_SCREENDUMP", full_path, true);
+    run_replay(DEFAULT_REPLAY, false);
+    g_unsetenv("MGRAS_SCREENDUMP");
+
+    g_setenv("MGRAS_END_LINE", "116", true);
+    g_setenv("MGRAS_CHECKPOINT_SAVE", checkpoint_path, true);
+    run_replay(DEFAULT_REPLAY, false);
+    g_unsetenv("MGRAS_CHECKPOINT_SAVE");
+    g_unsetenv("MGRAS_END_LINE");
+
+    g_setenv("MGRAS_CHECKPOINT_LOAD", checkpoint_path, true);
+    g_setenv("MGRAS_START_LINE", "117", true);
+    g_setenv("MGRAS_SCREENDUMP", split_path, true);
+    run_replay(DEFAULT_REPLAY, false);
+    g_unsetenv("MGRAS_CHECKPOINT_LOAD");
+    g_unsetenv("MGRAS_START_LINE");
+    g_unsetenv("MGRAS_SCREENDUMP");
+
+    g_assert_true(g_file_get_contents(full_path, &full_contents, &full_len,
+                                      &error));
+    g_assert_no_error(error);
+    g_assert_true(g_file_get_contents(split_path, &split_contents,
+                                      &split_len, &error));
+    g_assert_no_error(error);
+    g_assert_cmpuint(full_len, ==, split_len);
+    if (memcmp(full_contents, split_contents, full_len) != 0) {
+        g_error("checkpoint-load screendump differs from the uninterrupted "
+                "replay's screendump (%zu bytes)", full_len);
+    }
+
+    unlink(full_path);
+    unlink(split_path);
+    unlink(checkpoint_path);
+}
+
 static void test_cmap_high_byte(void)
 {
     run_replay(CMAP_HIGH_BYTE, false);
@@ -637,6 +765,25 @@ static void test_overlay_migration(void)
     g_unsetenv("MGRAS_CHECKPOINT_LOAD");
     g_unsetenv("MGRAS_START_LINE");
     unlink(checkpoint_path);
+}
+
+/*
+ * A captured sgi_mgras_dma_chunk pair is the only way a replayed host-to-
+ * screen DMA draw's source bytes reach the model: DMA_IMAGE_TRANSFER's two
+ * 'dma' lines preload the page-list entry and the pixel row at their plain
+ * node addresses, exactly matching what
+ * sn0-origin2000-mgras-test.c's test_dma_image_transfer_traces_source_chunks
+ * proved a real capture of this same register sequence records, before the
+ * kick that makes the model read them back. The fixture also carries its
+ * own command-channel handshake (copied from fill.replay), since unlike a
+ * real capture -- which already contains the guest's own context entry
+ * earlier in the session -- a synthetic fixture built straight from a qtest
+ * register sequence has to supply it explicitly, or REG_CONTEXT_COMMAND
+ * ignores every paint command that follows.
+ */
+static void test_dma_image_transfer(void)
+{
+    run_replay(DMA_IMAGE_TRANSFER, false);
 }
 
 static void test_invalid_replay(const char *path, const char *message)
@@ -717,6 +864,17 @@ static void test_invalid_mismatch(void)
                         "*invalid-mismatch.replay:2: pixel (0, 0)*");
 }
 
+static void test_invalid_dma_extra(void)
+{
+    test_invalid_replay(INVALID_DMA_EXTRA, "*dma requires ADDR LEN HEX*");
+}
+
+static void test_invalid_dma_hex_mismatch(void)
+{
+    test_invalid_replay(INVALID_DMA_HEX_MISMATCH,
+                        "*dma hex length does not match LEN*");
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -726,12 +884,15 @@ int main(int argc, char **argv)
     qtest_add_func("sgi-mgras/masked-read", test_masked_read);
     qtest_add_func("sgi-mgras/checkpoint-boundary-once",
                    test_checkpoint_boundary_runs_once);
+    qtest_add_func("sgi-mgras/checkpoint-screendump-matches-replay",
+                   test_checkpoint_screendump_matches_uninterrupted_replay);
     qtest_add_func("sgi-mgras/cmap-high-byte", test_cmap_high_byte);
     qtest_add_func("sgi-mgras/char-modes", test_char_modes);
     qtest_add_func("sgi-mgras/cmap-xmap-wid", test_cmap_xmap_wid);
     qtest_add_func("sgi-mgras/root-icon", test_root_icon);
     qtest_add_func("sgi-mgras/overlay", test_overlay);
     qtest_add_func("sgi-mgras/overlay-migration", test_overlay_migration);
+    qtest_add_func("sgi-mgras/dma-image-transfer", test_dma_image_transfer);
     qtest_add_func("sgi-mgras/invalid-number", test_invalid_number);
     qtest_add_func("sgi-mgras/invalid-bounds", test_invalid_bounds);
     qtest_add_func("sgi-mgras/invalid-extra", test_invalid_extra);
@@ -744,5 +905,8 @@ int main(int argc, char **argv)
     qtest_add_func("sgi-mgras/invalid-overflow", test_invalid_overflow);
     qtest_add_func("sgi-mgras/invalid-wid-bounds", test_invalid_wid_bounds);
     qtest_add_func("sgi-mgras/invalid-mismatch", test_invalid_mismatch);
+    qtest_add_func("sgi-mgras/invalid-dma-extra", test_invalid_dma_extra);
+    qtest_add_func("sgi-mgras/invalid-dma-hex-mismatch",
+                   test_invalid_dma_hex_mismatch);
     return g_test_run();
 }
