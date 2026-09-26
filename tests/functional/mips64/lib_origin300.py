@@ -266,3 +266,50 @@ def launch_args(assets, cpus, scratch):
         '-accel', 'tcg,thread=multi',
     ]
     return machine, argv
+
+
+def _next_mac(mac, step):
+    value = (int(mac.replace(':', ''), 16) + step) & ((1 << 48) - 1)
+    return ':'.join(f'{(value >> shift) & 0xff:02x}'
+                    for shift in range(40, -8, -8))
+
+
+def launch_args_two_chassis(assets, populations, scratch):
+    """The -M property string and argv fragment for the two-chassis
+    Origin 300 (topology=origin300-two-chassis), each chassis with its
+    own boot flash seeded for its own processor count and its own
+    identity records.
+
+    populations is the per-node processor counts in node order, (4, 4)
+    or (2, 2) and so on. QEMU splits each identity-record list evenly
+    across the two L1s in node order, so node 1's chassis and board
+    records take indices 2 and 3 and its SPD records 6 to 11; its
+    generated IO8 board record carries the MAC one past node 0's, the
+    same step tools/origami_lib/prom.py takes. Node 1's L1 console is
+    serial line 5, left unconnected here; the master's is line 0.
+    """
+    machine, argv = launch_args(assets, populations[0], scratch)
+    node_dir = os.path.join(scratch, 'node1')
+    os.makedirs(node_dir, exist_ok=True)
+    firmware_path = resolve_asset(assets, FIRMWARE_REL, FIRMWARE_SHA256)
+    boot_flash = os.path.join(node_dir, 'ip35-boot-flash.raw')
+    _build_boot_flash(firmware_path, populations[1], boot_flash)
+    board_path = os.path.join(node_dir, 'origin300-io8-board-eeprom.bin')
+    _write(board_path, _build_io8_board_eeprom_record(
+        _next_mac(NETWORK_MAC, 1)))
+
+    extra = []
+    for option in machine.split(',')[1:]:
+        key, _sep, value = option.partition('=')
+        array, _dot, index = key.partition('.')
+        stride = 6 if array == 'spd-eeprom' else 2
+        if array == 'board-eeprom' and index == '1':
+            value = board_path
+        extra.append(f'{array}.{int(index) + stride}={value}')
+    machine = ','.join([machine, *extra,
+                        'topology=origin300-two-chassis',
+                        'population=' + ':'.join(map(str, populations))])
+    argv[argv.index('-m') + 1] = '1024M'
+    argv[argv.index('-smp') + 1] = str(sum(populations))
+    argv += ['-drive', f'if=pflash,index=1,file={boot_flash},format=raw']
+    return machine, argv

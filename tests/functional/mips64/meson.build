@@ -35,6 +35,10 @@ test_mips64_timeouts = {
   # boot passed three runs in a row with no failure. 240 keeps well over
   # three times the measured total for a contended host.
   'origin300_prom' : 240,
+  # One stock-PROM boot of the two-chassis pair to the menu: 364 s measured
+  # against the debug build at host load 60 (test_origin300_two_chassis_
+  # prom.py's own docstring); 1200 is that script's own class budget.
+  'origin300_two_chassis_prom' : 1200,
   # One test method per origin200-matrix row, quick and thorough speeds
   # alike, in this one script (test_origin200_prom.py) -- merged from
   # what were four separate scripts (test_origin200_matrix.py,
@@ -216,6 +220,7 @@ tests_mips64_system_thorough = [
   'origin200_gigachannel_prom',
   'graphics_matrix_thorough',
   'origin300_prom',
+  'origin300_two_chassis_prom',
   'prom_diagnostics',
   'prom_pod',
   'prom_fx',
