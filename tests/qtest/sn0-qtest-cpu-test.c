@@ -18,6 +18,9 @@
 #define R12000_CPU_1_32 "R12000,r12000-prid=0xe12,r12000-fpu-id=0x4567," \
     "r12000-reset-mode=0x19a683,r12000-scache-bytes=1048576," \
     "r12000-scache-block-words=32"
+#define R12000_CPU_1_FPU "R12000,r12000-prid=0xe12,r12000-fpu-id=0x4568," \
+    "r12000-reset-mode=0x198683,r12000-scache-bytes=1048576," \
+    "r12000-scache-block-words=16"
 #define R12000_MAILBOX 0x00200000
 
 #define DATA_BASE 0x20001220000ULL
@@ -824,6 +827,26 @@ static void r12000_emit_reg(UserCode *p, unsigned int rt, unsigned int rd,
     user_i(p, 43, 26, rt, offset);
 }
 
+static void r12000_mtc0_sel(UserCode *p, unsigned int rt, unsigned int rd,
+                             unsigned int sel)
+{
+    user_emit(p, 0x40800000 | (rt << 16) | (rd << 11) | sel);
+    for (unsigned int i = 0; i < 4; i++) {
+        user_emit(p, 0);
+    }
+}
+
+static void r12000_emit_reg_sel(UserCode *p, unsigned int rt,
+                                unsigned int rd, unsigned int sel,
+                                unsigned int offset)
+{
+    user_emit(p, 0x40000000 | (rt << 16) | (rd << 11) | sel);
+    for (unsigned int i = 0; i < 4; i++) {
+        user_emit(p, 0);
+    }
+    user_i(p, 43, 26, rt, offset);
+}
+
 static void r12000_build_probe(UserCode *p, bool wide_block)
 {
     uint32_t upper = wide_block ? 0xa00f : 0xa007;
@@ -866,6 +889,15 @@ static void r12000_build_probe(UserCode *p, bool wide_block)
     user_i(p, 9, 9, 9, 64);
     user_i(p, 47, 9, 0x07, 0);
     r12000_emit_reg(p, 8, 28, 20);
+    /* Keep an enabled, stopped counter's bit 31 high across migration. */
+    user_li(p, 8, 0x80000011);
+    r12000_mtc0_sel(p, 8, 25, 1);
+    user_li(p, 8, 0x30); /* event 1, interrupt enabled */
+    r12000_mtc0_sel(p, 8, 25, 0);
+    user_mfc0(p, 8, 16);
+    user_i(p, 14, 8, 8, 1); /* change the Config K0 bit before cold reset */
+    user_mtc0(p, 8, 16);
+    r12000_emit_reg(p, 8, 16, 44);
     user_i(p, 9, 0, 8, 1);
     user_i(p, 43, 26, 8, 24);
     loop = p->pos;
@@ -879,11 +911,18 @@ static void r12000_build_probe(UserCode *p, bool wide_block)
     user_i(p, 13, 9, 9, lower);
     user_i(p, 47, 9, 0x07, 0);
     r12000_emit_reg(p, 8, 28, 36);
+    r12000_emit_reg(p, 8, 29, 48);
+    user_emit(p, 0x44480000); /* cfc1 t0, fcr0 */
+    user_i(p, 43, 26, 8, 52);
+    r12000_emit_reg_sel(p, 8, 25, 1, 56);
+    r12000_emit_reg(p, 8, 13, 60);
     user_i(p, 9, 0, 8, 1);
     user_i(p, 43, 26, 8, 40);
     user_park(p);
     g_assert_cmpuint(loop, <, p->pos);
 }
+
+static void r12000_wait_mailbox(QTestState *qts, unsigned int offset);
 
 static void r12000_run_profile(const char *profile, bool wide_block,
                               uint32_t expected_prid, uint32_t expected_mode,
@@ -891,7 +930,7 @@ static void r12000_run_profile(const char *profile, bool wide_block,
 {
     g_autofree UserCode *image = g_new0(UserCode, 1);
     g_autofree char *path = NULL;
-    uint8_t mailbox[28] = { 0 };
+    uint8_t mailbox[64] = { 0 };
     QTestState *qts;
     int64_t deadline;
     int fd;
@@ -918,7 +957,6 @@ static void r12000_run_profile(const char *profile, bool wide_block,
         }
         g_usleep(1000);
     } while (g_get_monotonic_time() < deadline);
-    qtest_quit(qts);
     g_assert_cmphex(ldl_be_p(mailbox + 24), ==, 1);
     g_assert_cmphex(ldl_be_p(mailbox), ==, expected_prid);
     g_assert_cmphex(ldl_be_p(mailbox + 4) & 0x1ffffff, ==, expected_mode);
@@ -928,6 +966,21 @@ static void r12000_run_profile(const char *profile, bool wide_block,
     g_assert_cmphex(ldl_be_p(mailbox + 16), ==, wide_block ? 0x22220022 :
                                                       0x11110111);
     g_assert_cmphex(ldl_be_p(mailbox + 20), ==, 0x22220022);
+    g_assert_cmphex(ldl_be_p(mailbox + 44) & 0x1ffffff, ==,
+                    expected_mode ^ 1);
+    memset(mailbox, 0, sizeof(mailbox));
+    qtest_memwrite(qts, R12000_MAILBOX, mailbox, sizeof(mailbox));
+    qtest_system_reset(qts);
+    r12000_wait_mailbox(qts, 24);
+    qtest_memread(qts, R12000_MAILBOX, mailbox, sizeof(mailbox));
+    g_assert_cmphex(ldl_be_p(mailbox), ==, expected_prid);
+    g_assert_cmphex(ldl_be_p(mailbox + 4) & 0x1ffffff, ==, expected_mode);
+    g_assert_cmphex(ldl_be_p(mailbox + 8), ==, expected_fpu);
+    g_assert_cmphex(ldl_be_p(mailbox + 16), ==, wide_block ? 0x22220022 :
+                                                      0x11110111);
+    g_assert_cmphex(ldl_be_p(mailbox + 44) & 0x1ffffff, ==,
+                    expected_mode ^ 1);
+    qtest_quit(qts);
 }
 
 static void test_r12000_profile_16(void)
@@ -938,6 +991,66 @@ static void test_r12000_profile_16(void)
 static void test_r12000_profile_32(void)
 {
     r12000_run_profile(R12000_CPU_2, true, 0xe24, 0x1aa683, 0x7654);
+}
+
+static void test_r12000_performance_ip7(void)
+{
+    g_autofree UserCode *image = g_new0(UserCode, 1);
+    g_autofree char *path = NULL;
+    uint8_t mailbox[24] = { 0 };
+    QTestState *qts;
+    unsigned int wait, branch;
+    int fd;
+
+    user_li(image, 26, 0xa0000000 | R12000_MAILBOX);
+    user_mfc0(image, 8, CP0_COUNT);
+    user_i(image, 9, 8, 8, (uint16_t)-1);
+    user_mtc0(image, 8, CP0_COMPARE);
+    user_mfc0(image, 8, 12);
+    user_li(image, 9, ~4u); /* leave error level to count kernel cycles */
+    user_emit(image, (8 << 21) | (9 << 16) | (8 << 11) | 0x24);
+    user_mtc0(image, 8, 12);
+    user_li(image, 8, 0x7ff00000);
+    r12000_mtc0_sel(image, 8, 25, 1);
+    r12000_emit_reg_sel(image, 8, 25, 1, 0);
+    r12000_emit_reg(image, 8, CP0_CAUSE, 4);
+    user_li(image, 8, 0x12); /* cycles, interrupt enabled, kernel mode */
+    r12000_mtc0_sel(image, 8, 25, 0);
+    wait = image->pos;
+    user_mfc0(image, 8, CP0_CAUSE);
+    for (unsigned int i = 0; i < 4; i++) {
+        user_emit(image, 0);
+    }
+    user_i(image, 12, 8, 9, CAUSE_IP7);
+    branch = user_branch(image, 4, 9, 0);
+    user_patch(image, branch, wait);
+    user_emit(image, 0);
+    r12000_emit_reg_sel(image, 8, 25, 1, 8);
+    r12000_emit_reg(image, 8, CP0_CAUSE, 12);
+    user_li(image, 8, 0x02); /* leave counting on, disable its interrupt */
+    r12000_mtc0_sel(image, 8, 25, 0);
+    r12000_emit_reg(image, 8, CP0_CAUSE, 16);
+    user_i(image, 9, 0, 8, 1);
+    user_i(image, 43, 26, 8, 20);
+    user_park(image);
+
+    fd = g_file_open_tmp("r12000-perf-XXXXXX", &path, NULL);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(write(fd, image->bytes, sizeof(image->bytes)), ==,
+                    sizeof(image->bytes));
+    close(fd);
+    qts = qtest_initf("-M malta -m 64M -nic none -vga none -cpu %s "
+                      "-bios %s -accel tcg -S", R12000_CPU_1, path);
+    unlink(path);
+    qtest_qmp_assert_success(qts, "{ 'execute': 'cont' }");
+    r12000_wait_mailbox(qts, 20);
+    qtest_memread(qts, R12000_MAILBOX, mailbox, sizeof(mailbox));
+    g_assert_cmphex(ldl_be_p(mailbox) & 0x80000000, ==, 0);
+    g_assert_cmphex(ldl_be_p(mailbox + 4) & CAUSE_IP7, ==, 0);
+    g_assert_cmphex(ldl_be_p(mailbox + 8) & 0x80000000, ==, 0x80000000);
+    g_assert_cmphex(ldl_be_p(mailbox + 12) & CAUSE_IP7, ==, CAUSE_IP7);
+    g_assert_cmphex(ldl_be_p(mailbox + 16) & CAUSE_IP7, ==, 0);
+    qtest_quit(qts);
 }
 
 static void test_r12000_requires_profile(void)
@@ -1041,6 +1154,14 @@ static void r12000_migrate_profile(const char *profile, bool wide_block)
     qtest_memread(to, R12000_MAILBOX + 36, value, sizeof(value));
     g_assert_cmphex(ldl_be_p(value), ==, wide_block ? 0x22220022 :
                                                 0x11110111);
+    qtest_memread(to, R12000_MAILBOX + 48, value, sizeof(value));
+    g_assert_cmphex(ldl_be_p(value) & 0x80000000u, ==, 0x80000000u);
+    qtest_memread(to, R12000_MAILBOX + 52, value, sizeof(value));
+    g_assert_cmphex(ldl_be_p(value), ==, wide_block ? 0x7654 : 0x4567);
+    qtest_memread(to, R12000_MAILBOX + 56, value, sizeof(value));
+    g_assert_cmphex((uint32_t)ldl_be_p(value), ==, 0x80000011u);
+    qtest_memread(to, R12000_MAILBOX + 60, value, sizeof(value));
+    g_assert_cmphex(ldl_be_p(value) & CAUSE_IP7, ==, CAUSE_IP7);
     qtest_quit(from);
     qtest_quit(to);
     unlink(image);
@@ -1058,7 +1179,7 @@ static void test_r12000_migrate_32(void)
     r12000_migrate_profile(R12000_CPU_2, true);
 }
 
-static void test_r12000_migrate_rejects_different_block_size(void)
+static void r12000_migrate_rejects_profile(const char *destination)
 {
     g_autofree char *image = r12000_probe_image(false);
     g_autofree char *dir = g_dir_make_tmp("r12000-mismatch-XXXXXX", NULL);
@@ -1071,7 +1192,7 @@ static void test_r12000_migrate_rejects_different_block_size(void)
                        "-bios %s -accel tcg -S", R12000_CPU_1, image);
     to = qtest_initf("-M malta -m 64M -nic none -vga none -cpu %s "
                      "-bios %s -accel tcg -incoming %s -S",
-                     R12000_CPU_1_32, image, uri);
+                     destination, image, uri);
     qtest_qmp_assert_success(from, "{ 'execute': 'cont' }");
     r12000_wait_mailbox(from, 24);
     qtest_qmp_assert_success(from, "{ 'execute': 'stop' }");
@@ -1088,6 +1209,16 @@ static void test_r12000_migrate_rejects_different_block_size(void)
     unlink(image);
     g_unlink(socket);
     g_assert_cmpint(g_rmdir(dir), ==, 0);
+}
+
+static void test_r12000_migrate_rejects_different_block_size(void)
+{
+    r12000_migrate_rejects_profile(R12000_CPU_1_32);
+}
+
+static void test_r12000_migrate_rejects_different_fpu_id(void)
+{
+    r12000_migrate_rejects_profile(R12000_CPU_1_FPU);
 }
 
 int main(int argc, char **argv)
@@ -1111,10 +1242,13 @@ int main(int argc, char **argv)
                        test_r12000_rejects_inconsistent_profile);
         qtest_add_func("/r12000/profile-16-words", test_r12000_profile_16);
         qtest_add_func("/r12000/profile-32-words", test_r12000_profile_32);
+        qtest_add_func("/r12000/performance-ip7", test_r12000_performance_ip7);
         qtest_add_func("/r12000/migrate-16-words", test_r12000_migrate_16);
         qtest_add_func("/r12000/migrate-32-words", test_r12000_migrate_32);
         qtest_add_func("/r12000/migrate-incompatible-block",
                        test_r12000_migrate_rejects_different_block_size);
+        qtest_add_func("/r12000/migrate-incompatible-fpu-id",
+                       test_r12000_migrate_rejects_different_fpu_id);
     }
     return g_test_run();
 }
