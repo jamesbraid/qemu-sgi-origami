@@ -389,6 +389,18 @@ class ConsoleTests(unittest.TestCase):
         with self.assertRaises(HarnessError):
             console.capture_value("echo", "x", rb"N=(\d+)")
 
+    def test_expect_from_an_offset_ignores_earlier_output(self):
+        # After a reboot the previous boot's login prompt is still in the
+        # buffer; a wait from the new boot's offset must not match it.
+        console, _guest = self._console([b"login: MARK-first-0\r\n",
+                                         b"MARK-second-0\r\n"])
+        console.run("boot one", "first")
+        console.run("boot two", "second")
+
+        self.assertIsNotNone(console.expect(rb"login:", 1))
+        with self.assertRaises(HarnessError):
+            console.expect(rb"login:", 1, start=len(console.buf))
+
     def test_a_tripwire_while_waiting_is_a_guest_fault(self):
         console, _guest = self._console([b"panic: it fell over\r\n"])
 

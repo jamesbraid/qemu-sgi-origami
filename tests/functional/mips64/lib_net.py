@@ -103,10 +103,13 @@ class Console:
                 "the emulator exited and the console has nothing further "
                 "to read")
 
-    def expect(self, pattern, timeout, what=None):
+    def expect(self, pattern, timeout, what=None, start=0):
+        """Wait for pattern at or after buffer offset start. A caller
+        that reboots the guest passes the offset the new boot began at,
+        so the previous boot's prompt cannot satisfy the wait."""
         rx = re.compile(pattern) if isinstance(pattern, bytes) else pattern
         deadline = time.monotonic() + timeout
-        start = 0
+        floor = start
         trip_from = len(self.buf)
         while True:
             m = rx.search(self.buf, start)
@@ -120,7 +123,7 @@ class Console:
                 raise HarnessError(
                     f"timed out after {timeout}s waiting for "
                     f"{what or rx.pattern!r}")
-            start = max(0, len(self.buf) - _MATCH_WINDOW)
+            start = max(floor, len(self.buf) - _MATCH_WINDOW)
             self._pump()
 
     def send(self, text):
