@@ -66,6 +66,13 @@
  * Once wired, the SuperIO interrupt takes the same Bridge->Crossbow->Hub
  * path any card interrupt does: the Bridge composes an interrupt packet for
  * the host node's Hub, the Crossbow routes it, and the Hub latches it.
+ *
+ * "sio-slot" fits SGI's dual-serial PCI card (030-1657-003, PCI_SIO_UFC)
+ * instead: an IOC3 with serial ports A and B and nothing else, its own
+ * board record on the chip's one-wire bus. IRIX 6.5.30 takes that card's
+ * SuperIO interrupt from line B even with no Ethernet on the chip, so it
+ * is wired to pin slot ^ 4 like the Cad Duo's. The adapter has one PCI
+ * position, so only one of the two slot properties may be set.
  */
 
 #include "qemu/osdep.h"
@@ -121,6 +128,8 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIPciShoehornState, SGI_PCI_SHOEHORN)
  * identity instead.
  */
 #define PCI_SHOEHORN_CAD_DUO_ONEWIRE 0x0d0c0b0a0908ULL
+/* The dual-serial card's record part serial, the next placeholder along. */
+#define PCI_SHOEHORN_SIO_ONEWIRE 0x100f0e0d0c0bULL
 
 struct SGIPciShoehornState {
     SGIXioBoardState parent_obj;
@@ -133,37 +142,67 @@ struct SGIPciShoehornState {
     char *pci_bus_name;
     uint32_t cad_duo_slot;
     uint64_t cad_duo_onewire_serial;
+    uint32_t sio_slot;
+    uint64_t sio_onewire_serial;
 
     SGIBridgeState *bridge;
 };
 
 /*
- * Fit an SGI Cad Duo card at cad_duo_slot on the internal Bridge's bus, with
- * its own PCI_ENET board record on the card's one-wire bus, and wire its
- * SuperIO interrupt to the Bridge pin its own slot's INTB maps to.
- * The subsystem id is the "not observed" placeholder the reviewed datasheet
- * establishes; left at the class default the chip resolves through
- * sgi_ioc3_board()'s fall-through to the CAD DUO population.
+ * A card the adapter can carry: an sgi-ioc3 with the card's own subsystem
+ * id, population and board record. The Cad Duo keeps the class's automatic
+ * population, which its placeholder subsystem id resolves to the CAD DUO
+ * fall-through. serial_prop names the one-wire part the board's own serial
+ * goes to: the Cad Duo's station-address part, or, on the dual-serial card,
+ * which has no Ethernet and so no station-address part, its record part.
  */
-static bool pci_shoehorn_fit_cad_duo(SGIPciShoehornState *s, Error **errp)
+typedef struct PciShoehornCard {
+    const char *child_name;
+    const char *serial_prop;
+    uint16_t subsystem_id;
+    uint32_t population;
+    const char *part;
+    const char *barcode;
+    const char *revision;
+    const char *name;
+} PciShoehornCard;
+
+static const PciShoehornCard pci_shoehorn_cad_duo = {
+    "cad-duo", "onewire-serial", SGI_IOC3_SUBSYS_CAD_DUO_PCI_CARD_UNCAPTURED,
+    SGI_IOC3_POPULATION_AUTO,
+    SGI_IOC3_CAD_DUO_BOARD_PART, SGI_IOC3_CAD_DUO_BOARD_BARCODE,
+    SGI_IOC3_CAD_DUO_BOARD_REVISION, SGI_IOC3_CAD_DUO_BOARD_NAME,
+};
+
+static const PciShoehornCard pci_shoehorn_sio_ufc = {
+    "sio-ufc", "board-onewire-serial", SGI_IOC3_SUBSYS_SIO_UFC_UNCAPTURED,
+    SGI_IOC3_POPULATION_SERIAL_A | SGI_IOC3_POPULATION_SERIAL_B,
+    SGI_IOC3_SIO_UFC_BOARD_PART, SGI_IOC3_SIO_UFC_BOARD_BARCODE,
+    SGI_IOC3_SIO_UFC_BOARD_REVISION, SGI_IOC3_SIO_UFC_BOARD_NAME,
+};
+
+/*
+ * Fit a card at slot on the internal Bridge's bus, with its board record on
+ * the card's one-wire bus, and wire its SuperIO interrupt to the Bridge pin
+ * its own slot's INTB maps to.
+ */
+static bool pci_shoehorn_fit_card(SGIPciShoehornState *s,
+                                  const PciShoehornCard *card,
+                                  uint32_t slot, uint64_t onewire_serial,
+                                  Error **errp)
 {
     PCIBus *bus = PCI_HOST_BRIDGE(s->bridge)->bus;
     PCIDevice *ioc3;
 
-    ioc3 = pci_new(PCI_DEVFN(s->cad_duo_slot, 0), TYPE_SGI_IOC3);
-    object_property_add_child(OBJECT(s), "cad-duo", OBJECT(ioc3));
-    qdev_prop_set_uint16(DEVICE(ioc3), "subsystem-id",
-                         SGI_IOC3_SUBSYS_CAD_DUO_PCI_CARD_UNCAPTURED);
-    qdev_prop_set_uint64(DEVICE(ioc3), "onewire-serial",
-                         s->cad_duo_onewire_serial);
-    qdev_prop_set_string(DEVICE(ioc3), "board-part",
-                         SGI_IOC3_CAD_DUO_BOARD_PART);
-    qdev_prop_set_string(DEVICE(ioc3), "board-barcode",
-                         SGI_IOC3_CAD_DUO_BOARD_BARCODE);
-    qdev_prop_set_string(DEVICE(ioc3), "board-revision",
-                         SGI_IOC3_CAD_DUO_BOARD_REVISION);
-    qdev_prop_set_string(DEVICE(ioc3), "board-name",
-                         SGI_IOC3_CAD_DUO_BOARD_NAME);
+    ioc3 = pci_new(PCI_DEVFN(slot, 0), TYPE_SGI_IOC3);
+    object_property_add_child(OBJECT(s), card->child_name, OBJECT(ioc3));
+    qdev_prop_set_uint16(DEVICE(ioc3), "subsystem-id", card->subsystem_id);
+    qdev_prop_set_uint32(DEVICE(ioc3), "population", card->population);
+    qdev_prop_set_uint64(DEVICE(ioc3), card->serial_prop, onewire_serial);
+    qdev_prop_set_string(DEVICE(ioc3), "board-part", card->part);
+    qdev_prop_set_string(DEVICE(ioc3), "board-barcode", card->barcode);
+    qdev_prop_set_string(DEVICE(ioc3), "board-revision", card->revision);
+    qdev_prop_set_string(DEVICE(ioc3), "board-name", card->name);
     if (!pci_realize_and_unref(ioc3, bus, errp)) {
         return false;
     }
@@ -174,8 +213,7 @@ static bool pci_shoehorn_fit_cad_duo(SGIPciShoehornState *s, Error **errp)
      * this file's header and the datasheet.
      */
     qdev_connect_gpio_out(DEVICE(ioc3), 0,
-                          qdev_get_gpio_in(DEVICE(s->bridge),
-                                           s->cad_duo_slot ^ 4));
+                          qdev_get_gpio_in(DEVICE(s->bridge), slot ^ 4));
     return true;
 }
 
@@ -193,6 +231,18 @@ static bool pci_shoehorn_build_widget(SGIXioBoardState *board, Error **errp)
         s->cad_duo_slot >= SGI_BRIDGE_PINS) {
         error_setg(errp, "sgi-pci-shoehorn cad-duo-slot must name a Bridge "
                    "device slot, 0 to %u", SGI_BRIDGE_PINS - 1);
+        return false;
+    }
+    if (s->sio_slot != SGI_PCI_SHOEHORN_NO_CARD &&
+        s->sio_slot >= SGI_BRIDGE_PINS) {
+        error_setg(errp, "sgi-pci-shoehorn sio-slot must name a Bridge "
+                   "device slot, 0 to %u", SGI_BRIDGE_PINS - 1);
+        return false;
+    }
+    if (s->cad_duo_slot != SGI_PCI_SHOEHORN_NO_CARD &&
+        s->sio_slot != SGI_PCI_SHOEHORN_NO_CARD) {
+        error_setg(errp, "sgi-pci-shoehorn has one PCI position: set "
+                   "cad-duo-slot or sio-slot, not both");
         return false;
     }
 
@@ -223,7 +273,13 @@ static bool pci_shoehorn_build_widget(SGIXioBoardState *board, Error **errp)
     }
 
     if (s->cad_duo_slot != SGI_PCI_SHOEHORN_NO_CARD &&
-        !pci_shoehorn_fit_cad_duo(s, errp)) {
+        !pci_shoehorn_fit_card(s, &pci_shoehorn_cad_duo, s->cad_duo_slot,
+                               s->cad_duo_onewire_serial, errp)) {
+        return false;
+    }
+    if (s->sio_slot != SGI_PCI_SHOEHORN_NO_CARD &&
+        !pci_shoehorn_fit_card(s, &pci_shoehorn_sio_ufc, s->sio_slot,
+                               s->sio_onewire_serial, errp)) {
         return false;
     }
 
@@ -251,6 +307,10 @@ static const Property pci_shoehorn_properties[] = {
                        SGI_PCI_SHOEHORN_NO_CARD),
     DEFINE_PROP_UINT64("cad-duo-onewire-serial", SGIPciShoehornState,
                        cad_duo_onewire_serial, PCI_SHOEHORN_CAD_DUO_ONEWIRE),
+    DEFINE_PROP_UINT32("sio-slot", SGIPciShoehornState, sio_slot,
+                       SGI_PCI_SHOEHORN_NO_CARD),
+    DEFINE_PROP_UINT64("sio-onewire-serial", SGIPciShoehornState,
+                       sio_onewire_serial, PCI_SHOEHORN_SIO_ONEWIRE),
 };
 
 /* No state of its own outside the internal Bridge and IOC3, which carry it. */

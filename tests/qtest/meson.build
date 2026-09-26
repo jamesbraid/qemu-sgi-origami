@@ -139,7 +139,9 @@ slow_qtests = {
   # measured 27.05s-55.74s, and a sixth run at the same load was killed at
   # the 60s default, timing out at 60.68s. Budget three times the highest
   # completed run.
-  'sn0-pci-shoehorn-test': 170,
+  # The dual-serial card's four cases took it to 13; one loaded run took
+  # 130.77s. Budget three times that.
+  'sn0-pci-shoehorn-test': 390,
   # The carrier's three cases -- widget liveness, a card in each slot, and
   # the refused fourth slot -- each start their own machine. 3 runs
   # measured 32.23s-57.39s, close enough to the 60s default that a slower

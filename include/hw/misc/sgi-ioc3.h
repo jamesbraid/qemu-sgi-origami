@@ -84,6 +84,24 @@ struct SGIIOC3BusState {
 #define SGI_IOC3_CAD_DUO_BOARD_NAME     "PCI_ENET"
 #define SGI_IOC3_CAD_DUO_BOARD_BARCODE  "OCADDUO001"
 
+/*
+ * SGI's dual-serial PCI card: an IOC3 wired for serial ports A and B only
+ * (docs/datasheets/sgi-ioc3-boards.md in the Origami tree). IRIX 6.5.30
+ * and the IP27 PROM recognise it by the 030-1657- or 030-1664- prefix of
+ * the record on the chip's own one-wire bus. A reseller list names
+ * 030-1657-003 "SERIAL I/O CARD (UFC), PCI", and OpenBSD's IOC3 driver
+ * calls the board PCI_SIO_UFC. No held capture prints the record, so its
+ * revision is a declared placeholder and its name the OpenBSD candidate.
+ * The barcode is a placeholder too, since a real one names one unit.
+ * Its subsystem id is uncaptured too, the same placeholder as the Cad
+ * Duo's.
+ */
+#define SGI_IOC3_SIO_UFC_BOARD_PART     "030-1657-003"
+#define SGI_IOC3_SIO_UFC_BOARD_REVISION "A"
+#define SGI_IOC3_SIO_UFC_BOARD_NAME     "PCI_SIO_UFC"
+#define SGI_IOC3_SIO_UFC_BOARD_BARCODE  "OSIOUFC001"
+#define SGI_IOC3_SUBSYS_SIO_UFC_UNCAPTURED 0xFFFF
+
 #define SGI_IOC3_SUBSYSTEM_ID   SGI_IOC3_SUBSYS_IP29_SYSBOARD
 
 #define SGI_IOC3_BAR_SIZE       (1 * MiB)
