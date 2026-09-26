@@ -45,6 +45,13 @@ typedef struct SNPromDataState SNPromDataState;
  * counts -- SN0's ECC and directory back doors, by way of sn0.c's own
  * callback; NULL when a generation tracks no such counter (sgi-sn1-node
  * does not supply one).
+ *
+ * A processor that latches the phase and never hands off -- a secondary
+ * left in the PROM at its monitor, or one the PROM disables -- stays
+ * watched, so the timer samples it at 100 Hz of guest time for as long
+ * as it stays there. The straggler limit (straggler_polls below) stops
+ * the sampling of a slot that stays mapped, not of one that stays in the
+ * phase.
  */
 typedef struct SNPromDataPoll {
     QEMUTimer *timer;
@@ -74,14 +81,13 @@ typedef struct SNPromDataPoll {
  *
  * data is the private block itself, always allocated but mapped above the
  * filter -- and fast_allowed set -- only where the owning node's realize
- * passed fast to sn_promdata_init(); poll then names that node's shared
- * SNPromDataPoll, used to arm the stack-pointer sample and to report the
- * peer write counter, and is set whenever this slice is present, fast or
- * not, since sn_promdata_trace_phase() runs at every latch and every
- * leave regardless. filter_uncached is a second window, installed into
- * the caller's cpu_uncached container only when fast, that keeps an
- * uncached reference routed to the filter alone even while data answers
- * the cached one -- see sn_promdata_init()'s cpu_uncached parameter.
+ * passed fast to sn_promdata_init(). poll names that node's shared
+ * SNPromDataPoll, armed at every latch, fast or not, and used to report
+ * the peer write counter; it is set whenever this slice is present.
+ * filter_uncached is a second window, installed into the caller's
+ * cpu_uncached container only when fast, that keeps an uncached
+ * reference routed to the filter alone even while data answers the
+ * cached one -- see sn_promdata_init()'s cpu_uncached parameter.
  */
 struct SNPromDataState {
     MIPSCPU *cpu;
@@ -118,9 +124,8 @@ struct SNPromDataState {
  * promdata[] array (so the callback can reach every slice without the
  * caller's node type); peer_writes/peer are an optional extra write
  * counter sn_promdata_trace_phase() adds to its trace line, or NULL
- * where a generation has none. Only allocates the timer -- the part the
- * fast path actually needs -- when fast is true; sn_promdata_poll_free()
- * is always safe to call afterwards, fast or not.
+ * where a generation has none. Always allocates the timer: every node
+ * polls for the OS handoff, whether or not it enables the fast path.
  */
 void sn_promdata_poll_init(SNPromDataPoll *poll, SNPromDataState *slots,
                            unsigned int count,
@@ -137,14 +142,13 @@ void sn_promdata_poll_free(SNPromDataPoll *poll);
  * copy_local routing overlay described above, at window_carrier_base +
  * copy_offset.
  *
- * When fast is true (poll must then have been initialised with fast set
- * too), this also maps the private block itself above the filter and
- * gives the processor a second, uncached address space: cpu_uncached and
- * cpu_uncached_alias are the caller's own per-CPU storage for that space
- * (mirroring cpu_sysmem's own construction) and are only touched in this
- * case; name_prefix (for example "sn0.node0.cpu0") names every region
- * sn_promdata_init() creates, suffixed the way each generation's own
- * calling code used to spell them ("<prefix>.promdata",
+ * When fast is true, this also maps the private block itself above the
+ * filter and gives the processor a second, uncached address space:
+ * cpu_uncached and cpu_uncached_alias are the caller's own per-CPU storage
+ * for that space (mirroring cpu_sysmem's own construction) and are only
+ * touched in this case; name_prefix (for example "sn0.node0.cpu0") names
+ * every region sn_promdata_init() creates, suffixed the way each
+ * generation's own calling code used to spell them ("<prefix>.promdata",
  * "<prefix>.promdata-filter", "<prefix>.prom-copy-local",
  * "<prefix>.uncached", "<prefix>.uncached.memory" and
  * "<prefix>.promdata-filter.uncached").
@@ -165,11 +169,12 @@ void sn_promdata_init(SNPromDataState *s, Object *owner, MIPSCPU *cpu,
                       const char *name_prefix);
 
 /*
- * Reapplies how far a post_load slice's cache-only phase had got,
- * including re-arming the node's poll if the migrated state was fast and
- * this node's own realize allocated a timer to serve it -- a destination
- * started without promdata-fast has none, even for a stream that carries
- * fast set from a source that did.
+ * Reapplies how far a post_load slice's cache-only phase had got, and
+ * resumes the node's poll for a slice still mapped or still in the phase.
+ * A stream carrying fast set into a destination started without
+ * promdata-fast is therefore polled and released at the stack switch;
+ * before every node polled, that destination had no timer and left the
+ * block mapped.
  */
 void sn_promdata_apply_load(SNPromDataState *s);
 

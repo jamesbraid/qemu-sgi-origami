@@ -157,16 +157,21 @@ static void sn_promdata_trace_phase(SNPromDataState *s, const char *event)
  * for a live straggler to reach its own exit, not so many that a truly
  * disabled processor keeps the node's 100 Hz timer running indefinitely.
  *
- * A slot that has released its fast mapping but not yet left the phase
- * stays watched too, unbounded by the straggler count above: the fast
- * path's own accesses never reach sn_promdata_is_private() in the first
- * place (data answers them directly, above the filter), so a processor
+ * A slot still in the phase without its fast mapping -- released, or
+ * never mapped because the node leaves the fast path off -- stays
+ * watched too, unbounded by the straggler count above: only a filter
+ * access runs sn_promdata_is_private(), and the fast path's own accesses
+ * never reach the filter (data answers them directly), so a processor
  * that never again touches the small filter window after its own stack
  * switch -- every processor but the one doing the boot's node-ID
  * renumbering, on a measured eight-processor boot -- would otherwise
  * never run that reactive detector again and would keep phase_private,
  * and this window's prom-copy-local alias, latched for the rest of its
  * run. sn_promdata_check_stack() applies the same handoff test here.
+ * The price is that a processor which stays in the phase for good -- a
+ * secondary parked in the PROM, or one the PROM disables -- is sampled at
+ * 100 Hz for as long as it stays, on a node without the fast path as on
+ * one with it.
  */
 static void sn_promdata_check_stack(CPUState *cs, run_on_cpu_data data);
 static void sn_promdata_leave_private(CPUState *cs, run_on_cpu_data data);
