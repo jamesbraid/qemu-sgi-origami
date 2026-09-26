@@ -92,16 +92,19 @@ test_mips64_timeouts = {
   # expected release. BOOT_TIMEOUT_SECONDS in test_irix_installed_boot.py
   # keeps a 60s margin under this.
   'irix_installed_boot' : 960,
-  # Three IRIX boots of root-diags.qcow2 in sequence, one per Origin 2000
-  # topology: the four-node PCI shoehorn and PCI carrier modules (eight
-  # CPUs, 256 MiB) and the two-CPU, 256 MiB one-node module, each to a
-  # root shell and a few commands, plus a typed-keystroke read on the
-  # shoehorn.
+  # Seven IRIX boots of root-diags.qcow2 in sequence: one per Origin 2000
+  # topology (the four-node PCI shoehorn and PCI carrier modules, eight
+  # CPUs and 256 MiB, and the two-CPU, 256 MiB one-node module), then
+  # four more of the one-node for its BaseIO-G: one for the port checks,
+  # and a boot, an IRIX reboot and a relaunch after a 120s stop for the
+  # NVRAM and clock checks.
   # LOGIN_BUDGET_SECONDS in test_irix_origin2000_topologies.py records
-  # the measured boot times; each boot gets that 1500s to its shell and
-  # each shell step its own 180s, and 5400 covers all three boots
-  # running out their login budget in sequence.
-  'irix_origin2000_topologies' : 5400,
+  # the measured boot times; each boot gets that 1500s to its shell
+  # (10500 for seven), the stop 120s, olrti 600s and sfplay 900s; 13500
+  # leaves about 1400s for the ordinary shell steps, which take seconds
+  # each. Measured on a build-fast binary: 210s for the port test and 13
+  # minutes for the NVRAM test.
+  'irix_origin2000_topologies' : 13500,
   # Boot the installed IRIX 6.5.30 disk on the Origin 2000's one-node
   # module (two CPUs, 256 MiB) with SI/MGRAS graphics to the xdm
   # icon-chooser greeter (no login) and check the resulting screendump.

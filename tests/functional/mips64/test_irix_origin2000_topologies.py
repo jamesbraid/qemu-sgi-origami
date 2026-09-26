@@ -22,6 +22,19 @@ through the stock IP27 PROM to an IRIX 6.5.30 root shell:
     router. The PROM finds one node, two CPUs and 256 MB and passes its
     diagnostics, and IRIX runs both processors with that memory.
 
+The one-node module is also the catalogue's BaseIO-G machine: QEMU
+builds its IO1 board as io6g from the topology alone. Two more tests
+check that board through IRIX. One boot covers its ports: both IOC3s and
+RAD1 in hinv, olrti's internal real-time interrupt loopback, ef0's
+station address and a ping, a line out of each of three serial ports to
+a host file, a CD-ROM on the second SCSI controller, and RAD1 playback to
+a host wav file. The other covers what the board keeps: parallel-port
+numbering and an nvram variable across an IRIX reboot, and the variable
+and the Timekeeper clock across a full stop and relaunch of QEMU on the
+same NVRAM image. Archived captures of the same checks are in the
+project checkout (docs/boot-logs/irix.boot.2026-09-26T00:22:42-07:00 and
+docs/boot-logs/irix.boot.2026-09-25T01:30:46-07:00).
+
 Before this, the only evidence for these topologies was archived boot
 captures in the project checkout (docs/boot-logs/irix.boot.
 2026-09-24T10:16:40-07:00, ...T10:27:28-07:00 and ...T12:13:48-07:00)
@@ -32,8 +45,9 @@ The disk is the published golden-with-diagnostics image
 (`assets/irix/6.5.30/root-diags.qcow2`), the disk those captures booted,
 opened with snapshot=on so no run writes it. IRIX numbers devices from
 the disk's own /etc/ioconfig.conf history, not from the topology, so the
-names asserted below (ef1, /hw/input1, SCSI controllers 2 and 3) hold
-for this disk and would differ on another. Every boot starts from the
+names asserted below (ef1, /hw/input1, SCSI controllers 2 and 3,
+/dev/ttyd3 and ttyd4 for the MediaIO ports) hold for this disk and would
+differ on another. Every boot starts from the
 same golden state, so they are deterministic here.
 
 Machine profile: the topology's own catalogue population, the release's
@@ -44,8 +58,10 @@ for graphics: root-diags.qcow2 carries no driver for the SI head, and
 test_mgras_greeter.py owns that path on its own disk.
 """
 
+import calendar
 import os
 import re
+import struct
 import sys
 import time
 
@@ -106,6 +122,51 @@ LINK_LINE_RE = re.compile(r'^l\S+\s.*\s(\S+) -> (\S+)\s*$', re.MULTILINE)
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
+# The one-node module's BaseIO-G, as IRIX names it once the board's
+# identity record gives the slot its name: the board IOC3 at PCI device 2
+# enumerates at pci/4, the MediaIO IOC3 at pci/6 and RAD1 at pci/7.
+BASEIO_G = '/hw/module/1/slot/io1/baseio/pci'
+
+# An explicit station address for the board IOC3's Ethernet. QEMU never
+# rewrites an explicit mac=, so the address netstat reports can only have
+# come through the model's one-wire Ethernet-address part.
+EF0_MAC = '08:00:69:0e:c6:01'
+
+# QEMU's user-mode network: the guest takes an alias on it and pings the
+# gateway. The disk's own ef0 address is on a network QEMU does not route.
+USER_NET_ALIAS = '10.0.2.15'
+USER_NET_GATEWAY = '10.0.2.2'
+
+# The shipped confidence tone the RAD1 playback check plays. Without
+# icount the model's stream stretches in time (docs/NOW.md in the project
+# checkout records 1.35 to more than 15 times the source length), so the
+# check asserts samples arrived, not a duration.
+CONFIDENCE_TONE = '/usr/lib/Confidence/audioOut44.aiff'
+SFPLAY_TIMEOUT_SECONDS = 900
+
+# The Timekeeper's 32 KiB storage image and the 16-byte clock reference
+# beside it, the pair the M48T35 model reads as sgi-nvram0 and
+# sgi-nvram0-clock (tools/origami_lib/nvram.py in the project checkout
+# creates the same two files for run irix --nvram-store).
+NVRAM_BYTES = 0x8000
+NVRAM_CLOCK_BYTES = 16
+
+# How long QEMU stays fully stopped between the two launches that share
+# the Timekeeper image, and how far the guest clock may differ from the
+# host's elapsed time across them. The tolerance covers two console round
+# trips; a clock that dropped the stopped interval is off by all of it.
+STOPPED_SECONDS = 120
+CLOCK_TOLERANCE_SECONDS = 20
+
+# A fixed guest date well away from the host's, so a clock that fell back
+# to host time on the relaunch cannot pass. The same setting as the
+# archived clock capture docs/boot-logs/irix.boot.2026-09-25T01:30:46-07:00
+# (project checkout).
+GUEST_DATE_SET = '010112002030'
+GUEST_DATE_FMT = '%Y-%m-%d %H:%M:%S'
+GUEST_DATE_RE = re.compile(r'DATE=(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d)')
+
+
 
 class _Console(IrixConsole):
     STEP_TIMEOUT = STEP_TIMEOUT_SECONDS
@@ -115,25 +176,39 @@ def _text(data):
     return _ANSI_RE.sub('', bytes(data).decode('utf-8', errors='replace'))
 
 
-def _drive_to_shell(con, budget):
+def _drive_to_shell(con, budget, start=0):
     """Answer the System Maintenance Menu with Start System, log in as
     root, answer TERM and switch to /bin/sh. Returns the PROM's output up
     to the menu, which carries its configuration and diagnostics
-    summary."""
+    summary.
+
+    A PROM whose NVRAM says to autoboot skips the menu and goes straight
+    to the kernel: an IRIX reboot, or a relaunch on a kept NVRAM image,
+    comes up that way. The login prompt then ends the PROM output
+    instead. start is the console offset this boot began at, so a
+    reboot's menu or prompt is not matched in the previous boot's
+    output."""
     deadline = time.monotonic() + budget
 
     def left(cap):
         return max(1.0, min(cap, deadline - time.monotonic()))
 
-    menu = con.expect(rb"Option\?", left(budget), what="the maintenance menu")
-    prom = _text(con.buf[:menu.start()])
-    con.send("1")
-    con.expect(rb"login:", left(budget), what="the console login prompt")
+    first = con.expect(re.compile(rb"Option\?|console login:"),
+                       left(budget), what="the maintenance menu",
+                       start=start)
+    prom = _text(con.buf[start:first.start()])
+    pos = first.end()
+    if first.group(0) == b"Option?":
+        con.send("1")
+        pos = con.expect(rb"login:", left(budget),
+                         what="the console login prompt", start=pos).end()
     con.send("root")
-    con.expect(rb"TERM\s*=\s*\(", left(120), what="the TERM prompt")
+    pos = con.expect(rb"TERM\s*=\s*\(", left(120), what="the TERM prompt",
+                     start=pos).end()
     con.send("")
     # The login csh prompt is "<hostname> <history number># ".
-    con.expect(rb"[0-9]# ", left(120), what="the login csh prompt")
+    con.expect(rb"[0-9]# ", left(120), what="the login csh prompt",
+               start=pos)
     con.send("exec /bin/sh")
     con.run("PATH=/usr/sbin:/usr/bin:/sbin:/bin:/usr/etc:/usr/bsd:$PATH; "
             "export PATH", "shinit", timeout=int(left(120)))
@@ -178,20 +253,47 @@ def od_bytes(listing):
     return re.findall(r'\b[0-9a-f]{2}\b', listing)
 
 
+def guest_epoch(con, tag):
+    """The guest's UTC time as seconds since the epoch, and the host's at
+    the moment the guest's answer arrived."""
+    text = _output(con, "date -u '+DATE=%Y-%m-%d %H:%M:%S'", tag)
+    host = time.time()
+    match = GUEST_DATE_RE.search(text)
+    if match is None:
+        raise HarnessError(f'{tag}: date printed no DATE= line: {text!r}')
+    guest = calendar.timegm(time.strptime(match.group(1), GUEST_DATE_FMT))
+    return guest, host
+
+
+def wav_nonzero_samples(path):
+    """How many 16-bit sample words after the 44-byte header are not
+    zero. QEMU's wav backend leaves the header's lengths at zero, so the
+    data is read from byte 44 to the end of the file."""
+    with open(path, 'rb') as wav:
+        data = wav.read()[44:]
+    count = len(data) // 2
+    return sum(1 for word in struct.unpack(f'<{count}h', data[:count * 2])
+               if word)
+
+
 if QemuSystemTest is not None:
 
     class IrixOrigin2000Topologies(QemuSystemTest):
         """Boots IRIX on three Origin 2000 catalogue topologies and
         requires the PROM and IRIX to report what each one builds."""
 
-        def _boot(self, topology, smp, memory_mib, extra_args=()):
+        def _boot(self, topology, smp, memory_mib, extra_args=(),
+                  name=None, audio=('-audio', 'none'),
+                  nic='user,id=net0'):
             """Launch the topology and drive it to a root Bourne shell.
             Returns (vm, console, PROM output up to the menu, console
-            log path)."""
+            log path). name keeps two launches in one test apart; audio
+            and nic replace the default arguments for those backends."""
             assets = require_assets(self, FIRMWARE_REL, DISK_REL)
             prom, disk = assets[FIRMWARE_REL], assets[DISK_REL]
+            name = name or topology
 
-            vm = self.get_vm(name=topology)
+            vm = self.get_vm(name=name)
             vm.set_machine(f"{MACHINES['origin2000']},topology={topology},"
                            "debug-leds=off")
             vm.set_console()
@@ -199,11 +301,11 @@ if QemuSystemTest is not None:
                 '-accel', 'tcg,thread=multi',
                 '-cpu', 'R10000', '-smp', str(smp), '-m', str(memory_mib),
                 '-bios', str(prom),
-                '-audio', 'none',
+                *audio,
                 '-drive',
                 f'if=none,id=disk0,file={disk},format=qcow2,snapshot=on',
                 '-device', 'scsi-hd,bus=scsi.0,scsi-id=1,lun=0,drive=disk0',
-                '-nic', 'user,id=net0',
+                '-nic', nic,
                 # Start paused: the four-node PROM can reset the machine
                 # within seconds of power-on, and the RESET event that
                 # raises can reach the QMP client ahead of its
@@ -216,7 +318,7 @@ if QemuSystemTest is not None:
                 hard=vm.exitcode() is not None))
 
             # lib_net's Console appends; start each run's log empty.
-            log_path = self.log_file(f'{topology}-console.log')
+            log_path = self.log_file(f'{name}-console.log')
             open(log_path, 'wb').close()
             con = _Console(vm.console_socket, log_path,
                            exited=lambda: vm.exitcode() is not None)
@@ -225,8 +327,8 @@ if QemuSystemTest is not None:
             try:
                 prom_text = _drive_to_shell(con, LOGIN_BUDGET_SECONDS)
             except HarnessError as exc:
-                self.fail(f'{topology}: {exc} -- console log: {log_path}')
-            self.log.info('%s: root shell after %.0fs', topology,
+                self.fail(f'{name}: {exc} -- console log: {log_path}')
+            self.log.info('%s: root shell after %.0fs', name,
                           time.monotonic() - started)
             return vm, con, prom_text, log_path
 
@@ -360,6 +462,206 @@ if QemuSystemTest is not None:
             self.assertRegex(
                 hinv, r'Main memory size: 256 Mbytes',
                 f'IRIX does not see 256 MB -- console log: {log_path}')
+
+        @skipBigDataTest()
+        @skipSlowTest()
+        @skipIfMissingEnv('ORIGAMI_ASSETS')
+        def test_one_node_baseio_g_ports(self):
+            """The one-node module's BaseIO-G, port by port, in one boot:
+            both IOC3s and RAD1 in hinv, the internal real-time interrupt
+            loopback, the Ethernet station address and traffic, the board
+            IOC3's second serial port and both MediaIO serial ports to
+            host files, a CD-ROM on the second SCSI controller, and RAD1
+            playback to a host wav file."""
+            host_file = {port: self.scratch_file(f'{port}.out')
+                         for port in ('ioc3-b', 'mio-a', 'mio-b')}
+            wav = self.scratch_file('rad1.wav')
+            vm, con, prom, log_path = self._boot(
+                'origin2000-one-node', 2, 256, (
+                    # QEMU serial line 1 is the board IOC3's port B, the
+                    # guest's ttyd2; set_console() owns line 0.
+                    '-chardev', f'file,id=ioc3b,path={host_file["ioc3-b"]}',
+                    '-serial', 'chardev:ioc3b',
+                    '-chardev', f'file,id=mioa,path={host_file["mio-a"]}',
+                    '-chardev', f'file,id=miob,path={host_file["mio-b"]}',
+                    '-global', 'sgi-xio-baseio.mio-chardev-a=mioa',
+                    '-global', 'sgi-xio-baseio.mio-chardev-b=miob',
+                    # An empty drive: IRIX lists the unit from its inquiry
+                    # data alone.
+                    '-device', 'scsi-cd,bus=scsi.1,scsi-id=4,lun=0'),
+                name='origin2000-one-node-baseio-g-ports',
+                audio=('-audiodev', f'wav,id=rad1,path={wav}',
+                       '-global', 'sgi-rad1-audio.audiodev=rad1'),
+                nic=f'user,id=net0,mac={EF0_MAC}')
+            where = f'console log: {log_path}'
+
+            hinv = _output(con, 'hinv', 'hinv')
+            for serial in (1, 2, 3, 4):
+                self.assertRegex(
+                    hinv, rf'IOC3/IOC4 serial port: tty{serial}\b',
+                    f'hinv lists no tty{serial} -- {where}')
+            self.assertRegex(
+                hinv, r'Integral Fast Ethernet: ef0, .*slot io1, pci 2\b',
+                f'hinv lists no board-IOC3 Ethernet -- {where}')
+            self.assertRegex(hinv, r'IOC3 parallel port: plp\d',
+                             f'hinv lists no MediaIO parallel port -- {where}')
+            self.assertRegex(hinv, r'Iris Audio Processor: version RAD',
+                             f'hinv lists no RAD1 -- {where}')
+            self.assertIn('IOC3/IOC4 external interrupts: 1', hinv,
+                          f'hinv lists no real-time interrupt -- {where}')
+            # IRIX 6.5.30 prints the PCI identity in hex; the owner's
+            # inventory the BaseIO datasheet cites, from another release,
+            # prints "vendor 4265, device 5) pci slot 7".
+            self.assertRegex(
+                _output(con, 'hinv -v | grep 0x10a9', 'hinvv'),
+                r'vendor 0x10a9, device 0x0005\) PCI slot 7\b',
+                f'hinv -v places no RAD1 at PCI slot 7 -- {where}')
+
+            olrti = _output(
+                con, f'/usr/diags/bin/olrti -vertex {BASEIO_G}/4 '
+                '-internal', 'olrti', timeout=600)
+            self.assertRegex(olrti, r'RSLT internal\s+PASS',
+                             f'olrti internal loopback -- {where}')
+
+            netstat = _output(con, 'netstat -ia', 'netstat')
+            self.assertRegex(netstat, r'(?m)^ef0\s',
+                             f'netstat -ia lists no ef0 -- {where}')
+            self.assertIn(EF0_MAC, netstat,
+                          f'ef0 does not report {EF0_MAC} -- {where}')
+            self.assertEqual(con.run(
+                f'ifconfig ef0 alias {USER_NET_ALIAS} netmask 255.255.255.0',
+                'alias'), 0, f'ifconfig alias -- {where}')
+            ping = _output(con, f'ping -c 5 {USER_NET_GATEWAY}', 'ping')
+            self.assertIn('5 packets transmitted, 5 packets received', ping,
+                          f'ping over ef0 -- {where}')
+
+            # Which /dev/ttyd names the disk gives each port depends on its
+            # ioconfig history (see the module docstring), so the test
+            # proves each one is the intended chip's port by device number
+            # before writing to it.
+            ports = {'ioc3-b': ('/dev/ttyd2', f'{BASEIO_G}/4/tty/2/d'),
+                     'mio-a': ('/dev/ttyd3', f'{BASEIO_G}/6/tty/1/d'),
+                     'mio-b': ('/dev/ttyd4', f'{BASEIO_G}/6/tty/2/d')}
+            numbers = device_numbers(_output(
+                con, 'ls -lL ' + ' '.join(p for pair in ports.values()
+                                          for p in pair), 'ttys'))
+            for port, (dev, vertex) in ports.items():
+                self.assertIn(vertex, numbers, f'no {vertex} -- {where}')
+                self.assertEqual(numbers.get(dev), numbers[vertex],
+                                 f'{dev} is not {vertex} -- {where}')
+                self.assertEqual(con.run(f'echo origami-{port} > {dev}',
+                                         f'write-{port}'), 0,
+                                 f'writing {dev} -- {where}')
+            deadline = time.monotonic() + 30
+            while time.monotonic() < deadline:
+                received = {}
+                for port, path in host_file.items():
+                    with open(path, 'rb') as out:
+                        received[port] = out.read()
+                if all(f'origami-{port}'.encode() in data
+                       for port, data in received.items()):
+                    break
+                time.sleep(1)
+            for port, data in received.items():
+                self.assertIn(f'origami-{port}'.encode(), data,
+                              f'the line written to {ports[port][0]} never '
+                              f'reached the host -- {where}')
+
+            # IRIX files a CD-ROM under the scsi class, not disk.
+            self.assertRegex(
+                _output(con, 'hinv -c scsi', 'cdrom'),
+                r'CDROM: unit 4 on SCSI controller 1\b',
+                f'hinv -c scsi lists no CD-ROM on controller 1 -- {where}')
+
+            self.assertEqual(
+                con.run(f'/usr/sbin/sfplay {CONFIDENCE_TONE}', 'sfplay',
+                        timeout=SFPLAY_TIMEOUT_SECONDS), 0,
+                f'sfplay -- {where}')
+            self.assertGreater(
+                wav_nonzero_samples(wav), 0,
+                f'RAD1 playback reached {wav} as silence -- {where}')
+
+        @skipBigDataTest()
+        @skipSlowTest()
+        @skipIfMissingEnv('ORIGAMI_ASSETS')
+        def test_one_node_baseio_g_reboot_and_stop(self):
+            """What the BaseIO-G keeps across a reboot and across a full
+            stop of QEMU. A fresh Timekeeper image and clock reference back
+            both launches. The first launch sets an IRIX nvram variable and
+            a fixed date, and removes every parallel-port entry from
+            /etc/ioconfig.conf; after an in-process reboot the one live
+            parallel port is plp1 and the variable reads back. QEMU is
+            then stopped, left stopped, and relaunched on the same image:
+            the variable still reads back, and the guest clock has
+            advanced by the host's elapsed time, stopped interval
+            included."""
+            nvram = self.scratch_file('nvram0.raw')
+            clock = self.scratch_file('nvram0.clock')
+            with open(nvram, 'wb') as image:
+                image.write(bytes(NVRAM_BYTES))
+            with open(clock, 'wb') as image:
+                image.write(bytes(NVRAM_CLOCK_BYTES))
+            timekeeper = (
+                '-drive', f'if=none,id=sgi-nvram0,file={nvram},format=raw',
+                '-drive',
+                f'if=none,id=sgi-nvram0-clock,file={clock},format=raw')
+
+            vm, con, prom, log_path = self._boot(
+                'origin2000-one-node', 2, 256, timekeeper,
+                name='origin2000-one-node-baseio-g-first')
+            where = f'console log: {log_path}'
+
+            # The disk carries a parallel entry from an Origin 200 install
+            # at a hardware-graph path this machine does not have, which
+            # holds unit 1; this boot then records the live port behind it.
+            ioconfig = _output(con, 'cat /etc/ioconfig.conf', 'ioconfig')
+            self.assertRegex(ioconfig,
+                             r'(?m)^1 \S+/MotherBoard/\S+/ecpp\s*$',
+                             f'the disk no longer carries the stale '
+                             f'parallel entry this check removes -- {where}')
+            self.assertRegex(ioconfig, rf'(?m)^\d+ {BASEIO_G}/6/ecpp\s*$',
+                             f'IRIX recorded no MediaIO parallel entry -- '
+                             f'{where}')
+            for cmd, tag in (
+                    ("grep -v '/ecpp$' /etc/ioconfig.conf > /tmp/ioc",
+                     'dropecpp'),
+                    ('cp /tmp/ioc /etc/ioconfig.conf', 'putioc'),
+                    ('nvram volume 42', 'nvramset'),
+                    (f'date {GUEST_DATE_SET}', 'dateset'),
+                    ('sync', 'sync')):
+                self.assertEqual(con.run(cmd, tag), 0, f'{cmd} -- {where}')
+
+            start = len(con.buf)
+            con.send('reboot')
+            try:
+                _drive_to_shell(con, LOGIN_BUDGET_SECONDS, start=start)
+            except HarnessError as exc:
+                self.fail(f'reboot: {exc} -- {where}')
+            self.assertRegex(
+                _output(con, 'hinv | grep parallel', 'plp'),
+                r'IOC3 parallel port: plp1\b',
+                f'with no parallel history the port is not plp1 -- {where}')
+            self.assertIn('42', _output(con, 'nvram volume', 'nvramreboot'),
+                          f'nvram volume lost across a reboot -- {where}')
+
+            guest_before, host_before = guest_epoch(con, 'datebefore')
+            self.assertEqual(con.run('sync', 'sync2'), 0, where)
+            vm.shutdown()
+            time.sleep(STOPPED_SECONDS)
+
+            vm, con, prom, log_path = self._boot(
+                'origin2000-one-node', 2, 256, timekeeper,
+                name='origin2000-one-node-baseio-g-second')
+            where = f'console log: {log_path}'
+            guest_after, host_after = guest_epoch(con, 'dateafter')
+            self.assertIn('42', _output(con, 'nvram volume', 'nvramstop'),
+                          f'nvram volume lost across a stop -- {where}')
+            self.assertLess(
+                abs((guest_after - guest_before) -
+                    (host_after - host_before)), CLOCK_TOLERANCE_SECONDS,
+                f'guest clock advanced {guest_after - guest_before}s while '
+                f'the host advanced {host_after - host_before:.0f}s '
+                f'including {STOPPED_SECONDS}s stopped -- {where}')
 
 
 if __name__ == '__main__':
