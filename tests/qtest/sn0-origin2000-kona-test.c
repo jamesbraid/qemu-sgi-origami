@@ -448,14 +448,16 @@ static void test_probe_reads_documented_reset_state(void)
 }
 
 /*
- * Increment 2 has no reset method of its own either (see kona_reset()'s
- * own comment): a case's own mailbox/textport/framebuffer state can still
- * be sitting there for the next one. Mailbox and framing state are always
- * self-contained regardless -- sgi_kona_mailbox_enqueue() fully replaces
- * the queue and length on every push, and every packet handler finishes
- * by rearming textport_expect_sync -- but the framebuffer is never
- * cleared, so pixel-rendering cases below each use their own previously
- * untouched coordinates rather than assuming a blank buffer.
+ * kona_reset()'s call to qtest_system_reset() now clears every increment-2
+ * field too (sgi_kona_reset_hold(), hw/misc/sgi-kona.c) --
+ * test_reset_clears_increment2_state() below is the claim that checks it.
+ * Mailbox and framing state were always self-contained regardless of
+ * reset -- sgi_kona_mailbox_enqueue() fully replaces the queue and length
+ * on every push, and every packet handler finishes by rearming
+ * textport_expect_sync -- but the pixel-rendering cases below still each
+ * use their own previously untouched coordinates: harmless now that reset
+ * also clears the framebuffer, and it keeps each case's assertions
+ * independent of case-run order either way.
  */
 
 static void test_credit_register_reads_fixed_zero(void)
@@ -770,6 +772,118 @@ static void test_reset_clears_plain_storage(void)
     g_assert_cmphex(qtest_readl(qts, REG_ONEWIRE), ==, 0);
 }
 
+/*
+ * Independent review (Origami PR #1799) found increment 2's own fields
+ * left out of the widget's existing reset method: sgi_kona_reset_hold()
+ * clears widget_control/onewire_reg but stopped there. This is the claim
+ * that the fix (hw/misc/sgi-kona.c) covers every field increment 2 added:
+ * the register window, the mailbox queue, the textport command port's
+ * framing state and the framebuffer.
+ *
+ * Two phases, dirtied and reset separately: the textport's generic-framer
+ * mid-packet state and its bitmap mid-payload state are mutually
+ * exclusive (the bitmap interceptor only engages once selector 0xa is
+ * seen, and while engaged no word reaches the generic framer), so no
+ * single dirty pass can leave both at once.
+ *
+ * Phase 1 dirties the generic framer with selector 0x3 (argc 4),
+ * deliberately not the verification probe's own argc (selector 0x9,
+ * argc 1): a framer left stuck mid packet would otherwise misconsume the
+ * probe's own words at the same argc and coincidentally complete with
+ * the same net effect, passing even though reset never ran. With
+ * mismatched argc, a stuck framer instead misaligns word consumption and
+ * the probe genuinely fails to complete.
+ */
+static void test_reset_clears_increment2_state(void)
+{
+    uint32_t reply;
+    bool more_pending;
+
+    kona_reset();
+
+    qtest_writel(qts, REG_LOW_WINDOW_WRITE, 0x23);
+    qtest_writel(qts, REG_RESET_ARG, 3);
+    qtest_writel(qts, REG_RESET_STROBE, 1);
+    qtest_writel(qts, REG_EEPROM_ENABLE, 1);
+    qtest_writel(qts, REG_EEPROM_ADDR, KONA_EEPROM_CHECKED_ADDR);
+
+    kona_textport_push(qts, 0x2, (uint32_t[]){ 0x00c0ffee }, 1);
+    kona_textport_push(qts, 0x6, (uint32_t[]){ 700, 700 }, 2);
+    g_assert_cmphex(kona_test_pixel(qts, 700, 700), ==, 0x00c0ffee);
+
+    /* An undrained mailbox reply, left queued with its cause bit set. */
+    kona_textport_push(qts, 0x9, (uint32_t[]){ 0 }, 1);
+    g_assert_cmphex(qtest_readl(qts, REG_INT_CAUSE) & KONA_INT_CAUSE_MAILBOX,
+                    ==, KONA_INT_CAUSE_MAILBOX);
+
+    /*
+     * The generic framer mid-packet: a sync word, selector 0x3, and two
+     * of its four established arguments.
+     */
+    qtest_writel(qts, REG_TEXTPORT, 1);
+    qtest_writel(qts, REG_TEXTPORT, 0x3);
+    qtest_writel(qts, REG_TEXTPORT, 0x11);
+    qtest_writel(qts, REG_TEXTPORT, 0x22);
+
+    qtest_system_reset(qts);
+
+    g_assert_cmphex(qtest_readl(qts, REG_LOW_WINDOW_WRITE), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, REG_RESET_ARG), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, REG_RESET_STROBE), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, REG_EEPROM_ENABLE), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, REG_EEPROM_ADDR), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, REG_INT_CAUSE) & KONA_INT_CAUSE_MAILBOX,
+                    ==, 0);
+    g_assert_cmphex(qtest_readl(qts, REG_MAILBOX), ==, 0);
+    g_assert_cmphex(kona_test_pixel(qts, 700, 700), ==, 0);
+
+    /*
+     * A fresh, complete sync probe must still complete correctly. See
+     * this function's own comment for why selector 0x3's mismatched argc
+     * makes this a genuine discriminator rather than a coincidental pass.
+     */
+    kona_textport_push(qts, 0x9, (uint32_t[]){ 0 }, 1);
+    g_assert_cmphex(qtest_readl(qts, REG_INT_CAUSE) & KONA_INT_CAUSE_MAILBOX,
+                    ==, KONA_INT_CAUSE_MAILBOX);
+    reply = kona_mailbox_drain_one(qts, &more_pending);
+    g_assert_cmphex(reply, ==, 0x1234abcd);
+    g_assert_false(more_pending);
+
+    /*
+     * Phase 2: the bitmap interceptor mid-payload instead. An 8x8 bitmap
+     * needs two packed payload words; send only the first, leaving the
+     * blit mid-transaction.
+     */
+    kona_reset();
+
+    qtest_writel(qts, REG_TEXTPORT, 1);
+    qtest_writel(qts, REG_TEXTPORT, 0xa);
+    qtest_writel(qts, REG_TEXTPORT, 500);
+    qtest_writel(qts, REG_TEXTPORT, 500);
+    qtest_writel(qts, REG_TEXTPORT, 8);
+    qtest_writel(qts, REG_TEXTPORT, 8);
+    qtest_writel(qts, REG_TEXTPORT, 0);
+    qtest_writel(qts, REG_TEXTPORT, 0);
+    qtest_writel(qts, REG_TEXTPORT, 0xffffffff);
+    g_assert_cmphex(kona_test_pixel(qts, 500, 500), ==, 0);
+
+    qtest_system_reset(qts);
+
+    g_assert_cmphex(kona_test_pixel(qts, 500, 500), ==, 0);
+
+    /*
+     * A fresh sync probe must still complete: a bitmap left stuck
+     * mid-payload would instead swallow this probe's own leading sync
+     * word as its second payload word and never resynchronize.
+     */
+    kona_textport_push(qts, 0x9, (uint32_t[]){ 0 }, 1);
+    g_assert_cmphex(qtest_readl(qts, REG_INT_CAUSE) & KONA_INT_CAUSE_MAILBOX,
+                    ==, KONA_INT_CAUSE_MAILBOX);
+    reply = kona_mailbox_drain_one(qts, &more_pending);
+    g_assert_cmphex(reply, ==, 0x1234abcd);
+    g_assert_false(more_pending);
+}
+
 int main(int argc, char **argv)
 {
     int ret;
@@ -792,6 +906,8 @@ int main(int argc, char **argv)
                    test_onewire_ktown_identity);
     qtest_add_func("sn0/origin2000/kona/reset-clears-plain-storage",
                    test_reset_clears_plain_storage);
+    qtest_add_func("sn0/origin2000/kona/reset-clears-increment-2-state",
+                   test_reset_clears_increment2_state);
     qtest_add_func("sn0/origin2000/kona/credit-register-reads-fixed-zero",
                    test_credit_register_reads_fixed_zero);
     qtest_add_func("sn0/origin2000/kona/low-window-write-is-plain-storage",
