@@ -499,6 +499,9 @@
 #
 # @io8: the Origin 300 IO-8
 #
+# @fuel: Fuel IP34 XBridge head.  An IOC3 identity marks the populated
+#     head; the other head is empty.
+#
 # @io9: the IO-9
 #
 # @pci-shoehorn: the Origin 2000 PCI-XTALK ADAPTER (PCI shoehorn), a
@@ -536,7 +539,7 @@
 # Since: 11.2
 ##
 { 'enum': 'SGIModelIoBoardPreset',
-  'data': ['ip29-io', 'ip29-io-crosstown', 'ip30', 'io6', 'io6g', 'io8', 'io9',
+  'data': ['ip29-io', 'ip29-io-crosstown', 'ip30', 'io6', 'io6g', 'io8', 'fuel', 'io9',
            'pci-shoehorn', 'pci-carrier', 'gigachannel', 'menet', 'kona',
            'mscsi', 'mgras', 'odyssey', 'vbrick'] }
 

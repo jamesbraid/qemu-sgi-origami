@@ -310,6 +310,7 @@ static void check_io_board_presets(const SGIModelTopology *t)
                       preset == SGI_MODEL_IO_BOARD_PRESET_IO6 ||
                       preset == SGI_MODEL_IO_BOARD_PRESET_IO6G ||
                       preset == SGI_MODEL_IO_BOARD_PRESET_IO8 ||
+                      preset == SGI_MODEL_IO_BOARD_PRESET_FUEL ||
                       preset == SGI_MODEL_IO_BOARD_PRESET_PCI_SHOEHORN ||
                       preset == SGI_MODEL_IO_BOARD_PRESET_PCI_CARRIER ||
                       preset == SGI_MODEL_IO_BOARD_PRESET_GIGACHANNEL ||
@@ -331,7 +332,7 @@ static void check_io_board_presets(const SGIModelTopology *t)
  * Bedrock node's XBridge is not a separate crosstalk-attached board the
  * way a Hub's onboard or Crossbow-attached board is; a Bedrock
  * topology's io-boards entries are checked by
- * check_bedrock_has_populated_io8() below instead.
+ * check_bedrock_has_populated_io() below instead.
  */
 static void check_xio_attachments(const SGIModelTopology *t)
 {
@@ -481,27 +482,26 @@ static void check_slots_are_unoccupied(const SGIModelTopology *t)
 }
 
 /*
- * A Bedrock topology's one node ships a populated IO-8 board: a preset's
- * fitted IOC3 one-wire serial is the one fact left, after the
- * ownership-rule trim, that distinguishes a populated head from an
- * empty one (Origin 300's second XBridge head carries no population).
+ * A Bedrock topology has one populated I/O head. Its IOC3 identity
+ * distinguishes that record from the empty XBridge head.
  */
-static void check_bedrock_has_populated_io8(const SGIModelTopology *t)
+static void check_bedrock_has_populated_io(const SGIModelTopology *t)
 {
-    bool has_populated_io8 = false;
+    bool has_populated_io = false;
     const SGIModelIoBoardList *entry;
 
     if (node0(t)->asic_kind != SGI_MODEL_ASIC_KIND_BEDROCK) {
         return;
     }
     for (entry = t->io_boards; entry; entry = entry->next) {
-        if (entry->value->preset == SGI_MODEL_IO_BOARD_PRESET_IO8 &&
+        if ((entry->value->preset == SGI_MODEL_IO_BOARD_PRESET_IO8 ||
+             entry->value->preset == SGI_MODEL_IO_BOARD_PRESET_FUEL) &&
             entry->value->has_ioc3_serial) {
-            has_populated_io8 = true;
+            has_populated_io = true;
             break;
         }
     }
-    g_assert_true(has_populated_io8);
+    g_assert_true(has_populated_io);
 }
 
 static char *catalogue_path(void)
@@ -550,7 +550,7 @@ static void test_every_topology_is_well_formed(void)
         check_xio_slots(t);
         check_origin2000_node_slots(t);
         check_slots_are_unoccupied(t);
-        check_bedrock_has_populated_io8(t);
+        check_bedrock_has_populated_io(t);
     }
     g_assert_cmpuint(topology_count, >, 0);
 }

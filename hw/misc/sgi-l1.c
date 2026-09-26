@@ -1493,6 +1493,12 @@ static void l1_request_frame(SGIL1State *s, const uint8_t *p, unsigned length)
     }
     case 2:
     case 3:
+        if (command == 3 && !strcmp(s->brick_type, "unknown")) {
+            qemu_log_mask(LOG_UNIMP,
+                          "sgi-l1: brick identity not configured\n");
+            error = -104;
+            break;
+        }
         fields[0] = 0;
         stl_be_p(fields + 1, (s->rack << 6) | s->bay);
         field_count = 1;
@@ -1987,8 +1993,8 @@ static void l1_realize(DeviceState *dev, Error **errp)
         s->brick_type = g_strdup("ip45");
     }
     if (strcmp(s->brick_type, "ip45") && strcmp(s->brick_type, "ip35") &&
-        strcmp(s->brick_type, "ip37")) {
-        error_setg(errp, "L1 brick-type must be ip45, ip35 or ip37");
+        strcmp(s->brick_type, "ip37") && strcmp(s->brick_type, "unknown")) {
+        error_setg(errp, "L1 brick-type must be ip45, ip35, ip37 or unknown");
         return;
     }
     if (s->debug_switches > 0xffff || s->processors > 32 ||

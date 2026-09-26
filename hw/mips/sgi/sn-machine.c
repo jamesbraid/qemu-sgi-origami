@@ -235,6 +235,10 @@ struct SGIMachineState {
     strList *chassis_eeprom;
     strList *board_eeprom;
     strList *spd_eeprom;
+    uint64_t fuel_board_id_word;
+    bool fuel_board_id_word_set;
+    uint16_t fuel_ioc3_subsystem_id;
+    bool fuel_ioc3_subsystem_id_set;
 };
 
 /*
@@ -1700,22 +1704,22 @@ static bool sgi_machine_instantiate_vbrick(
 }
 
 /*
- * The IO-8's fixed devices: an sgi-baseio (the "io8" preset) on the
- * Bedrock node's own XBridge head F, reached through
+ * Bedrock-board I/O: an sgi-baseio preset on the node's XBridge head F,
+ * reached through
  * sn1_node_xbridge_pci_bus() (sn1-node.c) with this attachment's own
  * widget number -- the same attachment record every other product's
  * direct-attach board reads its widget from (Origin 200's onboard
  * Bridge in sgi_machine_instantiate_ip29_io(); an attachment with
  * crossbar_index -1, so sgi_machine_index_xio_attachments() already
  * buckets it as a board-owning entry rather than a Crossbow one). The
- * XBridge always answers both of its heads -- one carries the IO-8, the
+ * XBridge always answers both heads -- one carries the fitted I/O, the
  * other stays inert -- so an io_boards
  * entry with no fitted IOC3 one-wire serial names the empty head, and
  * building nothing for it is correct, not a fault. Resolves every
  * backend id from this record and the command line, the policy
  * sn1_node_build_io8() applied before this step moved it here.
  */
-static bool sgi_machine_instantiate_io8(
+static bool sgi_machine_instantiate_bedrock_io(
     SGIMachineState *s, const SGIModelTopology *t,
     const SGIModelIoBoard *record, unsigned int board_index,
     const SGIModelXioAttachment *attachment, Error **errp)
@@ -1731,10 +1735,18 @@ static bool sgi_machine_instantiate_io8(
     bus = sn1_node_xbridge_pci_bus(node, attachment->widget);
     baseio = qdev_new(TYPE_SGI_BASEIO);
     object_property_add_child(OBJECT(node), "baseio", OBJECT(baseio));
-    qdev_prop_set_string(baseio, "preset", "io8");
+    qdev_prop_set_string(baseio, "preset",
+                         record->preset == SGI_MODEL_IO_BOARD_PRESET_FUEL ?
+                         "fuel" : "io8");
+    if (record->preset == SGI_MODEL_IO_BOARD_PRESET_FUEL) {
+        qdev_prop_set_uint32(baseio, "fuel-subsystem-id",
+                             s->fuel_ioc3_subsystem_id);
+    }
     object_property_set_link(OBJECT(baseio), "pci-bus", OBJECT(bus),
                              &error_abort);
-    qdev_prop_set_uint64(baseio, "onewire-serial", record->ioc3_serial);
+    if (record->preset != SGI_MODEL_IO_BOARD_PRESET_FUEL) {
+        qdev_prop_set_uint64(baseio, "onewire-serial", record->ioc3_serial);
+    }
     /*
      * The onboard IOC3's Timekeeper storage: an indexed `-drive if=mtd`
      * first, else a bare `-drive if=none,id=sgi-nvramN` by name, N the
@@ -1821,8 +1833,9 @@ static bool sgi_machine_instantiate_io_board(
                                                    attachment, "io6g",
                                                    errp);
     case SGI_MODEL_IO_BOARD_PRESET_IO8:
-        return sgi_machine_instantiate_io8(s, t, record, board_index,
-                                           attachment, errp);
+    case SGI_MODEL_IO_BOARD_PRESET_FUEL:
+        return sgi_machine_instantiate_bedrock_io(s, t, record, board_index,
+                                                  attachment, errp);
     case SGI_MODEL_IO_BOARD_PRESET_PCI_SHOEHORN:
         return sgi_machine_instantiate_pci_shoehorn(s, record, board_index,
                                                     attachment, errp);
@@ -2453,6 +2466,31 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
         g_string_free(names, true);
         return false;
     }
+    if (!strcmp(smc->product, "fuel") && !s->fuel_board_id_word_set) {
+        error_setg(errp, "fuel requires an experimental fuel-board-id-word "
+                   "launch input; the physical reset word is unknown");
+        return false;
+    }
+    if (!strcmp(smc->product, "fuel") &&
+        (s->fuel_board_id_word & 0xf000) != 0x4000) {
+        error_setg(errp, "fuel-board-id-word must identify Fuel in bits "
+                   "15:12 (0x4); the remaining bits are experimental");
+        return false;
+    }
+    if (!strcmp(smc->product, "fuel") && !s->fuel_ioc3_subsystem_id_set) {
+        error_setg(errp, "fuel requires an experimental "
+                   "fuel-ioc3-subsystem-id launch input; the physical "
+                   "PCI subsystem identity is unknown");
+        return false;
+    }
+    if (strcmp(smc->product, "fuel") && s->fuel_board_id_word_set) {
+        error_setg(errp, "fuel-board-id-word applies only to -M fuel");
+        return false;
+    }
+    if (strcmp(smc->product, "fuel") && s->fuel_ioc3_subsystem_id_set) {
+        error_setg(errp, "fuel-ioc3-subsystem-id applies only to -M fuel");
+        return false;
+    }
     if (sgi_machine_has_identity_records(s)) {
         g_autofree const SGIModelController **controllers = NULL;
         size_t controller_count;
@@ -2687,6 +2725,11 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
             }
             qdev_prop_set_uint32(DEVICE(node), "nr-cpus",
                                  requested[node_index]);
+            if (!strcmp(smc->product, "fuel")) {
+                qdev_prop_set_bit(DEVICE(node), "fuel-experiment", true);
+                qdev_prop_set_uint64(DEVICE(node), "board-id-word",
+                                     s->fuel_board_id_word);
+            }
             qdev_prop_set_bit(DEVICE(node), "last-node",
                               node_index == node_count - 1);
             qdev_prop_set_uint32(DEVICE(node), "l1-bay",
@@ -3462,6 +3505,50 @@ static void sgi_machine_set_elsc_dip_switches(Object *obj, Visitor *v,
     }
 }
 
+static void sgi_machine_get_fuel_board_id_word(Object *obj, Visitor *v,
+                                                const char *name, void *opaque,
+                                                Error **errp)
+{
+    uint64_t value = SGI_MACHINE(obj)->fuel_board_id_word;
+
+    visit_type_uint64(v, name, &value, errp);
+}
+
+static void sgi_machine_set_fuel_board_id_word(Object *obj, Visitor *v,
+                                                const char *name, void *opaque,
+                                                Error **errp)
+{
+    uint64_t value;
+
+    if (visit_type_uint64(v, name, &value, errp)) {
+        SGI_MACHINE(obj)->fuel_board_id_word = value;
+        SGI_MACHINE(obj)->fuel_board_id_word_set = true;
+    }
+}
+
+static void sgi_machine_get_fuel_ioc3_subsystem_id(Object *obj, Visitor *v,
+                                                    const char *name,
+                                                    void *opaque,
+                                                    Error **errp)
+{
+    uint16_t value = SGI_MACHINE(obj)->fuel_ioc3_subsystem_id;
+
+    visit_type_uint16(v, name, &value, errp);
+}
+
+static void sgi_machine_set_fuel_ioc3_subsystem_id(Object *obj, Visitor *v,
+                                                    const char *name,
+                                                    void *opaque,
+                                                    Error **errp)
+{
+    uint16_t value;
+
+    if (visit_type_uint16(v, name, &value, errp)) {
+        SGI_MACHINE(obj)->fuel_ioc3_subsystem_id = value;
+        SGI_MACHINE(obj)->fuel_ioc3_subsystem_id_set = true;
+    }
+}
+
 /*
  * Asks each Hub for its own currently derived reachability, replacing
  * the fabric's central "routes" property: the same string, from each
@@ -3620,6 +3707,21 @@ static void sgi_machine_class_init(ObjectClass *oc, const void *data)
     object_class_property_set_description(oc, "elsc-dip-switches",
         "Set the eight physical ELSC DIP switches as asserted bits. The "
         "controller reports their active-low wire value to firmware.");
+
+    object_class_property_add(oc, "fuel-board-id-word", "uint64",
+                              sgi_machine_get_fuel_board_id_word,
+                              sgi_machine_set_fuel_board_id_word, NULL, NULL);
+    object_class_property_set_description(oc, "fuel-board-id-word",
+        "Experimental full 64-bit Fuel board-identification response; "
+        "required for -M fuel because its physical reset value is unknown.");
+
+    object_class_property_add(oc, "fuel-ioc3-subsystem-id", "uint16",
+                              sgi_machine_get_fuel_ioc3_subsystem_id,
+                              sgi_machine_set_fuel_ioc3_subsystem_id,
+                              NULL, NULL);
+    object_class_property_set_description(oc, "fuel-ioc3-subsystem-id",
+        "Experimental Fuel IOC3 PCI subsystem ID; required for -M fuel "
+        "because its physical configuration-space value is unknown.");
 
     object_class_property_add_str(oc, "routes", sgi_machine_get_routes, NULL);
     object_class_property_set_description(oc, "routes",
