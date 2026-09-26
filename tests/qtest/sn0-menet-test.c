@@ -26,6 +26,7 @@
  */
 
 #include "qemu/osdep.h"
+#include <sys/wait.h>
 #include "libqtest.h"
 #include "qobject/qdict.h"
 #include "qobject/qlist.h"
@@ -231,6 +232,82 @@ static void test_superio_reaches_hub(const void *data)
     qtest_quit(qts);
 }
 
+/*
+ * Run QEMU with args and require it to refuse them with message: an error
+ * exit, not a signal. Each caller passes -accel qtest, which stands in for
+ * the PROM the machine otherwise demands before it builds any board.
+ */
+static void assert_qemu_rejects(const char *const args[], const char *message)
+{
+    g_autofree char *error_output = NULL;
+    int wait_status = 0;
+
+    g_assert_true(g_spawn_sync(NULL, (char **)args, NULL, 0, NULL, NULL,
+                              NULL, &error_output, &wait_status, NULL));
+    g_assert_false(g_spawn_check_exit_status(wait_status, NULL));
+    g_assert_false(WIFSIGNALED(wait_status));
+    g_assert_nonnull(strstr(error_output, message));
+}
+
+/*
+ * The MENET's chips have no console, record or MediaIO port and no clock,
+ * so an id for one of those is refused rather than dropped.
+ */
+static void test_menet_refuses_backends_it_cannot_take(const void *data)
+{
+    static const char *const props[] = {
+        "chardev-a", "chardev-b", "record-a", "record-b",
+        "mio-chardev-a", "mio-chardev-b",
+    };
+    size_t i;
+
+    for (i = 0; i < ARRAY_SIZE(props); i++) {
+        g_autofree char *device = g_strdup_printf(
+            "sgi-xio-baseio,preset=menet,module=99,slot=11,"
+            "fabric=/machine/crossbow0-spare-fabric[0],"
+            "fabric-widget-shift=48,%s=spare", props[i]);
+        g_autofree char *message = g_strdup_printf(
+            "preset 'menet' fits nothing to take %s 'spare'", props[i]);
+        const char *args[] = {
+            qtest_qemu_binary(NULL), "-M", "origin2000", "-accel", "qtest",
+            "-display", "none",
+            "-chardev", "null,id=spare", "-device", device, NULL
+        };
+
+        assert_qemu_rejects(args, message);
+    }
+    {
+        const char *args[] = {
+            qtest_qemu_binary(NULL), "-M", "origin2000", "-accel", "qtest",
+            "-display", "none",
+            "-drive", "if=none,id=spare,driver=null-co",
+            "-device", "sgi-xio-baseio,preset=menet,module=99,slot=11,"
+            "fabric=/machine/crossbow0-spare-fabric[0],"
+            "fabric-widget-shift=48,nvram-drive=spare", NULL
+        };
+
+        assert_qemu_rejects(args,
+                            "preset 'menet' fits nothing to take nvram-drive");
+    }
+}
+
+/*
+ * The plain BaseIO builds no MediaIO chip, so its MediaIO serial ids are
+ * refused the same way.
+ */
+static void test_io6_refuses_mediaio_ports(const void *data)
+{
+    const char *args[] = {
+        qtest_qemu_binary(NULL), "-M", "origin2000", "-accel", "qtest",
+            "-display", "none",
+        "-chardev", "null,id=spare",
+        "-global", "sgi-xio-baseio.mio-chardev-a=spare", NULL
+    };
+
+    assert_qemu_rejects(args,
+                        "preset 'io6' fits nothing to take mio-chardev-a");
+}
+
 /* The catalogue-placed board's widget is alive from reset. */
 static void test_placed_widget_is_alive_at_startup(const void *data)
 {
@@ -257,6 +334,10 @@ int main(int argc, char **argv)
                         test_onewire_serials_distinct);
     qtest_add_data_func("sn0/menet/superio-reaches-hub", &device_case,
                         test_superio_reaches_hub);
+    qtest_add_data_func("sn0/menet/refuses-backends-it-cannot-take", NULL,
+                        test_menet_refuses_backends_it_cannot_take);
+    qtest_add_data_func("sn0/menet/io6-refuses-mediaio-ports", NULL,
+                        test_io6_refuses_mediaio_ports);
     qtest_add_data_func("sn0/menet/placed/widget-alive-at-startup", NULL,
                         test_placed_widget_is_alive_at_startup);
     qtest_add_data_func("sn0/menet/placed/ioc3s-enumerate", &placed_case,
