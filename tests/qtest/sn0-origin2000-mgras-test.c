@@ -169,6 +169,15 @@ static QTestState *qts;
 #define MGRAS_FILLMODE_RECT_FILL_VALUE 0x00100000
 
 /*
+ * Stippled lines: FILLMODE 0x20 gates each pixel on the 0x15a pattern and
+ * 0x40 paints clear bits with BKGRD_RG/BKGRD_BA; see
+ * MGRAS_RSS_LINE_STIPPLE in hw/misc/sgi-mgras-raster.c.
+ */
+#define REG_LINE_STIPPLE              0x15a
+#define MGRAS_FILLMODE_STIPPLE        0x00000020
+#define MGRAS_FILLMODE_STIPPLE_OPAQUE 0x00000060
+
+/*
  * A rect fill's colour comes from these registers, not PACKEDCOLOR: CI8
  * masks FILLCOLOR_R to a CMAP index byte, RGB packs the low byte of each
  * of the three high nibbles; see mgras_draw_fill() in hw/misc/sgi-mgras-raster.c.
@@ -4466,6 +4475,96 @@ static void test_re_line_ci8_reads_red_channel(void)
 
 
 /*
+ * FILLMODE 0x60 draws an opaque stippled line: a set bit of the 0x15a
+ * pattern paints the line colour and a clear bit the BKGRD_RG/BKGRD_BA
+ * background. The pattern starts at the line's first pixel with bit 31,
+ * not at screen x % 32 == 0. The IRIX 6.5.30 greeter draws its icon
+ * bodies this way (see MGRAS_RSS_LINE_STIPPLE in
+ * hw/misc/sgi-mgras-raster.c). The line starts at an odd x so that
+ * screen-aligned indexing would swap every pixel, and the background's
+ * three channels differ so that a swapped channel shows.
+ */
+static void test_re_line_opaque_stipple_starts_at_line(void)
+{
+    mgras_reset();
+
+    mgras_enter_context(qts);
+
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_PP1FILLMODE,
+                               (MGRAS_LOGIC_OP_COPY << 26) |
+                               MGRAS_PP1FILLMODE_RGB));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_COLORMASKLSBSA, 0x00ffffff));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_PACKEDCOLOR, 0x00aabbcc));
+    /* Background (0x12, 0x34, 0x56) in the server's 12-bit channel form. */
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_BKGRD_RG, (0x12u << 4) | (0x34u << 16)));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_BKGRD_BA, 0x56u << 4));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_FILLMODE, MGRAS_FILLMODE_STIPPLE_OPAQUE));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_LINE_STIPPLE, 0xaaaaaaaa));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_RE_POINT, (33u << 16) | 10u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND_EXEC(REG_RE_LINE, (36u << 16) | 10u));
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_STATUS) & 0x80000000, ==, 0);
+
+    /* 0xaaaaaaaa sets the line's first, third, ... pixels. */
+    g_assert_cmphex(mgras_test_pixel(qts, 33, 10), ==, 0x00aabbcc);
+    g_assert_cmphex(mgras_test_pixel(qts, 34, 10), ==, 0x00123456);
+    g_assert_cmphex(mgras_test_pixel(qts, 35, 10), ==, 0x00aabbcc);
+    g_assert_cmphex(mgras_test_pixel(qts, 36, 10), ==, 0x00123456);
+    g_assert_cmphex(mgras_test_pixel(qts, 37, 10), ==, 0);
+}
+
+/*
+ * FILLMODE 0x20 without 0x40 is transparent: a clear pattern bit leaves
+ * the pixel alone. The greeter's text cursor is drawn this way over the
+ * name field, as a 2-pixel stem from pattern 0x30c30c30. Under CI8 the
+ * line colour is RED's index, and a stale BKGRD_RG must not show.
+ */
+static void test_re_line_transparent_stipple_keeps_clear_bits(void)
+{
+    mgras_reset();
+
+    mgras_enter_context(qts);
+
+    /* A solid CI8 line of index 0x16 under the stippled one. */
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_COLORMASKLSBSA, 0xff));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, MGRAS_COMMAND(REG_RED, 0x16000));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_RE_POINT, (454u << 16) | 700u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND_EXEC(REG_RE_LINE, (459u << 16) | 700u));
+
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, MGRAS_COMMAND(REG_RED, 0));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, MGRAS_COMMAND(REG_BKGRD_RG, 0x14));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_FILLMODE, MGRAS_FILLMODE_STIPPLE));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_LINE_STIPPLE, 0x30c30c30));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_RE_POINT, (454u << 16) | 700u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND_EXEC(REG_RE_LINE, (459u << 16) | 700u));
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_STATUS) & 0x80000000, ==, 0);
+
+    /* The six pixels read pattern bits 31:26, 0b001100. */
+    g_assert_cmphex(mgras_test_pixel(qts, 454, 700), ==, 0x16);
+    g_assert_cmphex(mgras_test_pixel(qts, 455, 700), ==, 0x16);
+    g_assert_cmphex(mgras_test_pixel(qts, 456, 700), ==, 0);
+    g_assert_cmphex(mgras_test_pixel(qts, 457, 700), ==, 0);
+    g_assert_cmphex(mgras_test_pixel(qts, 458, 700), ==, 0x16);
+    g_assert_cmphex(mgras_test_pixel(qts, 459, 700), ==, 0x16);
+}
+
+
+/*
  * XYWIN (0x115) carries a per-window screen origin that RE_POINT/RE_LINE
  * add to their own coordinate whenever its x field is nonzero: a retained
  * greeter capture's icon-panel outlines otherwise land in a "ghost
@@ -5463,6 +5562,12 @@ int main(int argc, char **argv)
                    test_re_point_ci8_reads_red_channel);
     qtest_add_func("sn0/origin2000/mgras/re-line-ci8-reads-red-channel",
                    test_re_line_ci8_reads_red_channel);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "re-line-opaque-stipple-starts-at-line",
+                   test_re_line_opaque_stipple_starts_at_line);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "re-line-transparent-stipple-keeps-clear-bits",
+                   test_re_line_transparent_stipple_keeps_clear_bits);
     qtest_add_func("sn0/origin2000/mgras/"
                    "re-point-execute-applies-xywin-origin",
                    test_re_point_execute_applies_xywin_origin);
