@@ -1152,8 +1152,7 @@ static void sn1_node_create_cpus(SN1NodeState *node, MachineState *machine)
 
     if (node->promdata_filter) {
         sn_promdata_poll_init(&node->promdata_poll, node->promdata,
-                              SGI_SN1_NODE_MAX_CPUS, node->promdata_fast,
-                              NULL, NULL);
+                              SGI_SN1_NODE_MAX_CPUS, NULL, NULL);
     }
 
     for (i = 0; i < node->nr_cpus; i++) {

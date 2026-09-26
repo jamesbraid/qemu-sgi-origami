@@ -30,10 +30,9 @@
 typedef struct SNPromDataState SNPromDataState;
 
 /*
- * One node's shared poll, live only while the fast path is enabled.
- * While any of the node's processors has its private block mapped as
- * RAM, or has released that mapping without yet leaving the private
- * phase, the timer samples that processor every SN_PROMDATA_POLL_NS of
+ * One node's shared poll. While any of the node's processors has its
+ * private block mapped as RAM, or is still in the private phase, the
+ * timer samples that processor every SN_PROMDATA_POLL_NS of
  * guest time, on its own thread, until none remain watched
  * (sn_promdata_poll_cb() in sn-promdata.c). Each sample checks the
  * exit's stack switch and, once that has happened, the phase's own
@@ -124,7 +123,7 @@ struct SNPromDataState {
  * is always safe to call afterwards, fast or not.
  */
 void sn_promdata_poll_init(SNPromDataPoll *poll, SNPromDataState *slots,
-                           unsigned int count, bool fast,
+                           unsigned int count,
                            uint64_t (*peer_writes)(const void *peer),
                            const void *peer);
 void sn_promdata_poll_free(SNPromDataPoll *poll);

@@ -570,6 +570,159 @@ static void test_l1_uart_local_form_is_the_readers(void)
     qtest_quit(qts);
 }
 
+/*
+ * The PROM's cache-as-RAM phase keeps the PROM's RAM-copy range, like the
+ * data window, reader-local; it has to end at the OS handoff even for a
+ * processor that never touches the data window again. Otherwise, once the
+ * nodes carry different numbers, a processor on node 1 storing to node
+ * field zero in that range still lands in its own node's memory instead of
+ * node 0's.
+ *
+ * Guest code does it: every processor reads a node tag from its own
+ * memory; node 0's processors park, node 1's enter the phase exactly as
+ * the PROM does (boot-status bit 1 in FPR 0 and a cached load in the data
+ * window, running from the flash), withdraw both, and jump to a RAM loop
+ * that never touches the window. There they report ready and wait for the
+ * host to renumber node 1 and say go, then store a marker at the RAM-copy
+ * address with node field zero.
+ */
+#define HANDOFF_CODE UINT64_C(0x200000)
+#define HANDOFF_FLAGS UINT64_C(0x300000)
+#define HANDOFF_NODE_TAG (HANDOFF_FLAGS + 0x0)
+#define HANDOFF_GO (HANDOFF_FLAGS + 0x8)
+#define HANDOFF_DONE (HANDOFF_FLAGS + 0x10)
+#define HANDOFF_READY (HANDOFF_FLAGS + 0x18)
+#define PROM_RAM_COPY UINT64_C(0x1a00000)
+#define HANDOFF_MARKER UINT64_C(0x5a5a5a5a)
+
+static char *create_handoff_prom(void)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree uint8_t *image = g_malloc0(PROM_SIZE);
+    char *path = NULL;
+    int fd;
+
+    stl_be_p(image + 0x000, 0x100000ff); /* beq zero, zero, 0x400 */
+    stl_be_p(image + 0x004, 0x00000000); /* nop */
+    for (unsigned int offset = 0x200; offset <= 0x380; offset += 0x80) {
+        stl_be_p(image + offset, 0x1000ffff); /* beq zero, zero, self */
+    }
+    /* Status: coprocessor 1 usable and 64-bit kernel addressing. */
+    stl_be_p(image + 0x400, 0x400c6000); /* mfc0 t4, Status */
+    stl_be_p(image + 0x404, 0x3c0d2000); /* lui t5, 0x2000 -- CU1 */
+    stl_be_p(image + 0x408, 0x018d6025); /* or t4, t4, t5 */
+    stl_be_p(image + 0x40c, 0x358c0080); /* ori t4, t4, Status.KX */
+    stl_be_p(image + 0x410, 0x408c6000); /* mtc0 t4, Status */
+    stl_be_p(image + 0x414, 0x00000000); /* nop */
+    stl_be_p(image + 0x418, 0x00000000); /* nop */
+    /* The node tag, uncached, from this processor's own node. */
+    stl_be_p(image + 0x41c, 0x3c08a030); /* lui t0, 0xa030 */
+    stl_be_p(image + 0x420, 0x8d090000); /* lw t1, 0(t0) */
+    stl_be_p(image + 0x424, 0x11200015); /* beq t1, zero, 0x47c -- node 0 */
+    stl_be_p(image + 0x428, 0x00000000); /* nop */
+    /* Enter the phase: bit 1 in FPR 0, then a cached load in the window. */
+    stl_be_p(image + 0x42c, 0x340a0002); /* ori t2, zero, 2 */
+    stl_be_p(image + 0x430, 0x448a0000); /* mtc1 t2, $f0 */
+    stl_be_p(image + 0x434, 0x3c0ba800); /* lui t3, 0xa800 -- XKPHYS cached */
+    stl_be_p(image + 0x438, 0x000b583c); /* dsll32 t3, t3, 0 */
+    stl_be_p(image + 0x43c, 0x3c0c0010); /* lui t4, 0x0010 -- the window */
+    stl_be_p(image + 0x440, 0x016c5825); /* or t3, t3, t4 */
+    stl_be_p(image + 0x444, 0xdd6d0000); /* ld t5, 0(t3) */
+    stl_be_p(image + 0x448, 0x00000000); /* nop */
+    /* Hand off: clear the bit and leave the flash for RAM. */
+    stl_be_p(image + 0x44c, 0x44800000); /* mtc1 zero, $f0 */
+    stl_be_p(image + 0x450, 0x3c08a020); /* lui t0, 0xa020 */
+    stl_be_p(image + 0x454, 0x01000008); /* jr t0 */
+    stl_be_p(image + 0x458, 0x00000000); /* nop */
+    stl_be_p(image + 0x47c, 0x1000ffff); /* beq zero, zero, self */
+    stl_be_p(image + 0x480, 0x00000000); /* nop */
+
+    fd = g_file_open_tmp("sn1-cross-node-handoff-XXXXXX.bin", &path, &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(write(fd, image, PROM_SIZE), ==, (ssize_t)PROM_SIZE);
+    g_assert_cmpint(close(fd), ==, 0);
+    return path;
+}
+
+/* The RAM loop, uncached: report ready, wait for go, store, report done. */
+static const uint32_t handoff_loop[] = {
+    0x3c08a030, /* lui t0, 0xa030 */
+    0x34090001, /* ori t1, zero, 1 */
+    0xad090018, /* sw t1, 0x18(t0) -- ready */
+    0x8d0a0008, /* lw t2, 8(t0) -- go */
+    0x1140fffe, /* beq t2, zero, -2 */
+    0x00000000, /* nop */
+    0x3c0ba1a0, /* lui t3, 0xa1a0 -- the RAM-copy range */
+    0x3c0c5a5a, /* lui t4, 0x5a5a */
+    0x358c5a5a, /* ori t4, t4, 0x5a5a */
+    0xad6c0000, /* sw t4, 0(t3) */
+    0xad090010, /* sw t1, 0x10(t0) -- done */
+    0x1000ffff, /* beq zero, zero, self */
+    0x00000000, /* nop */
+};
+
+static void write_handoff_loop(QTestState *qts, uint64_t base)
+{
+    for (unsigned int i = 0; i < ARRAY_SIZE(handoff_loop); i++) {
+        qtest_writel(qts, base + HANDOFF_CODE + 4 * i, handoff_loop[i]);
+    }
+}
+
+static void test_prom_copy_range_leaves_at_handoff(void)
+{
+    g_autofree char *prom = NULL;
+    g_autofree char *quoted = NULL;
+    QTestState *qts;
+    uint64_t value = 0;
+    unsigned int tries;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+    prom = create_handoff_prom();
+    quoted = g_shell_quote(prom);
+    qts = qtest_initf(MACHINE_ARGS " -bios %s -accel tcg,thread=multi "
+                      "-no-shutdown -S", quoted);
+    qtest_writeq(qts, BEDROCK_LOCAL + MD_MEMORY_CONFIG, MD_INSTALLED_SELECT2);
+    peer_access(qts, MD_MEMORY_CONFIG, true, MD_INSTALLED_SELECT2);
+    write_handoff_loop(qts, 0);
+    qtest_writeq(qts, HANDOFF_NODE_TAG, 0);
+    qtest_writeq(qts, HANDOFF_GO, 0);
+    qtest_writeq(qts, PROM_RAM_COPY, 0);
+    set_node_number(qts, 1, 1);
+    write_handoff_loop(qts, NODE(1));
+    qtest_writeq(qts, NODE(1) + HANDOFF_NODE_TAG, UINT64_C(1) << 32);
+    qtest_writeq(qts, NODE(1) + HANDOFF_GO, 0);
+    qtest_writeq(qts, NODE(1) + HANDOFF_READY, 0);
+    qtest_writeq(qts, NODE(1) + PROM_RAM_COPY, 0);
+    set_node_number(qts, 1, 0);
+
+    qtest_qmp_assert_success(qts, "{'execute':'cont'}");
+    for (tries = 0; tries < 500; tries++) {
+        if (cpu_readq(qts, 2, HANDOFF_READY, &value) && (value >> 32) == 1) {
+            break;
+        }
+        g_usleep(10000);
+    }
+    g_assert_cmphex(value >> 32, ==, 1);
+    /* Give the handoff time to be noticed: many of its poll periods. */
+    g_usleep(500000);
+
+    set_node_number(qts, 1, 1);
+    qtest_writeq(qts, HANDOFF_GO, UINT64_C(1) << 32);
+    for (tries = 0; tries < 500; tries++) {
+        if ((qtest_readq(qts, HANDOFF_DONE) >> 32) == 1) {
+            break;
+        }
+        g_usleep(10000);
+    }
+    g_assert_cmphex(qtest_readq(qts, HANDOFF_DONE) >> 32, ==, 1);
+    g_assert_cmphex(qtest_readq(qts, PROM_RAM_COPY) >> 32, ==, HANDOFF_MARKER);
+    g_assert_cmphex(qtest_readq(qts, NODE(1) + PROM_RAM_COPY), ==, 0);
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     int ret;
@@ -598,6 +751,8 @@ int main(int argc, char **argv)
                    test_local_boot_view_is_the_readers);
     qtest_add_func("sn1/cross-node/l1-uart-local-form-is-the-readers",
                    test_l1_uart_local_form_is_the_readers);
+    qtest_add_func("sn1/cross-node/prom-copy-range-leaves-at-handoff",
+                   test_prom_copy_range_leaves_at_handoff);
     qtest_add_func("sn1/cross-node/remote-interrupt-reaches-the-peer",
                    test_remote_interrupt_reaches_the_peer);
     qtest_add_func("sn1/cross-node/bte-data-goes-by-number",

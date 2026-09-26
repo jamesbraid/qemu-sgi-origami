@@ -628,7 +628,7 @@ static void sn0_node_create_cpus(SN0NodeState *node)
 
     if (node->promdata_filter) {
         sn_promdata_poll_init(&node->promdata_poll, node->promdata,
-                              SN0_MAX_CPUS_PER_NODE, node->promdata_fast,
+                              SN0_MAX_CPUS_PER_NODE,
                               sn0_promdata_peer_writes, node);
     }
 
