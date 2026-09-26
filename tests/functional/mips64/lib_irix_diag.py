@@ -67,14 +67,8 @@ REASONS = {
         'no IOC3 on this flavour brings out a PS/2 keyboard',
     'no-scsi-card':
         'no add-in SCSI card in this composition',
-    'no-rti':
-        'IRIX presents no IOC3 external-interrupt vertex for olrti on this '
-        'flavour',
     'no-olenet':
         'olenet is not in the field_diags_irix package on root-diags.qcow2',
-    'not-ip45':
-        'the Online Diagnostics manual (108-0286-007) does not list this '
-        'diagnostic for IP45',
     'no-parallel':
         'no IOC3 on this flavour brings out a parallel port',
     'no-parallel-connector':
@@ -84,13 +78,9 @@ REASONS = {
         'a reboot and relaunch of the four-node module would add 560 to '
         '900s of boot to a row that already takes most of a nightly job; '
         'the one-node row covers the same BaseIO Timekeeper model',
-    'four-node-relaunch':
-        'a reboot and relaunch of the four-node module would add 560 to '
-        '900s of boot to a row that already takes most of a nightly job; '
-        'the one-node row covers the same BaseIO Timekeeper model',
     'parallel-own-history':
-        'the disk was installed on this machine, so its parallel-port '
-        'history already names this port and clearing it renumbers nothing',
+        'the disk was installed on an Origin 200, so its parallel-port '
+        'history already names this port and clearing it renumbers nothing'
 }
 
 # The composed tape identity IRIX's driver recognizes as a DAT: the
