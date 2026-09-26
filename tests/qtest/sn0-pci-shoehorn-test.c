@@ -35,6 +35,7 @@
  */
 
 #include "qemu/osdep.h"
+#include <sys/wait.h>
 #include "libqtest.h"
 #include "qobject/qdict.h"
 #include "sgi-test.h"
@@ -94,6 +95,10 @@ typedef struct {
 #define CD_INT_ENABLE_SET(c) (CAD_DUO_WINDOW(c) + 0x20)
 #define CD_KBD_TRANSMIT(c)   (CAD_DUO_WINDOW(c) + 0x0a8)
 #define INT_KEYBOARD        (1u << 22)   /* SuperIO keyboard/mouse status bit */
+/* Serial port A's 16550 and its pass-through SuperIO source. */
+#define CD_SERIAL_A_IER(c)    (CAD_DUO_WINDOW(c) + 0x020178 + 1)
+#define IER_THRI              0x02
+#define SIO_SRC_A_PASSTHROUGH (1u << 6)
 
 /* The IOC3's MicroLAN engine and the pin-control bit routing it to its pin. */
 #define CD_MICROLAN(c)       (CAD_DUO_WINDOW(c) + 0x30)
@@ -169,6 +174,33 @@ static const uint8_t cad_duo_record[RECORD_SIZE] = {
 
 #define PLACED_ARGS \
     "-M origin2000,topology=origin2000-pci-shoehorn -display none"
+
+/* The same adapter carrying the dual-serial card instead of the Cad Duo. */
+#define SIO_ARGS \
+    "-M origin2000 -display none -device sgi-pci-shoehorn," \
+    "module=99,slot=11,fabric=/machine/crossbow0-spare-fabric[0]," \
+    "fabric-widget-shift=48,sio-slot=" G_STRINGIFY(CAD_DUO_DEVICE)
+
+/*
+ * The dual-serial card's record (docs/datasheets/sgi-ioc3-boards.md in the
+ * Origami tree): placeholder barcode OSIOUFC001, the reseller-cited part
+ * 030-1657-003, a declared placeholder revision A and the OpenBSD-sourced
+ * name PCI_SIO_UFC.
+ */
+static const uint8_t sio_record[RECORD_SIZE] = {
+    0x01, 0x4f, 0x53, 0x49, 0x4f, 0x55, 0x46, 0x43,
+    0x30, 0x30, 0x31, 0x20, 0x20, 0x20, 0x20, 0x20,
+    0x20, 0x20, 0x20, 0x20, 0x20, 0x30, 0x33, 0x30,
+    0x2d, 0x31, 0x36, 0x35, 0x37, 0x2d, 0x02, 0xa0,
+    0x20, 0x20, 0x20, 0x30, 0x30, 0x33, 0x41, 0x20,
+    0x20, 0x20, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+    0x50, 0x43, 0x49, 0x5f, 0x53, 0x49, 0x4f, 0x5f,
+    0x55, 0x46, 0x43, 0x20, 0x20, 0x20, 0x70, 0xbe,
+};
+
+static const ShoehornCase sio_case = {
+    SIO_ARGS, SHOEHORN_WIDGET, CAD_DUO_DEVICE,
+};
 
 static const ShoehornCase expansion_case = {
     EXPANSION_ARGS, SHOEHORN_WIDGET, CAD_DUO_DEVICE,
@@ -497,6 +529,114 @@ static void test_bare_card_has_no_board_record(const void *data)
 }
 
 /*
+ * The dual-serial card enumerates as an IOC3 with the uncaptured subsystem
+ * placeholder, and has serial ports and nothing else.
+ */
+static void test_sio_enumerates(const void *data)
+{
+    const ShoehornCase *c = data;
+    QTestState *qts = qtest_init(c->args);
+    static const char *const absent[] = {
+        "eth", "kbc", "parallel", "rtc", "ds1685", "onewire-part",
+    };
+    size_t i;
+
+    g_assert_cmphex(qtest_readl(qts, CFG0(c)), ==, CAD_DUO_ID_PAIR);
+    g_assert_cmphex(qtest_readl(qts, CFG0(c) + PCI_SUBSYSTEM), ==,
+                    CAD_DUO_SUBSYSTEM);
+    for (i = 0; i < ARRAY_SIZE(absent); i++) {
+        g_autofree char *path = g_strdup_printf(
+            "/machine/module99/slot11/sio-ufc/%s", absent[i]);
+        g_autoptr(QDict) response = qtest_qmp(qts,
+            "{'execute': 'qom-list', 'arguments': {'path': %s}}", path);
+
+        g_assert_true(qdict_haskey(response, "error"));
+    }
+    {
+        g_autoptr(QDict) response = qtest_qmp(qts,
+            "{'execute': 'qom-list', 'arguments': {'path': "
+            "'/machine/module99/slot11/sio-ufc/serial[1]'}}");
+
+        g_assert_false(qdict_haskey(response, "error"));
+    }
+    qtest_quit(qts);
+}
+
+/*
+ * The card's one-wire bus carries its record part alone: no Ethernet, so
+ * no station-address part.
+ */
+static void test_sio_carries_its_board_record(const void *data)
+{
+    const ShoehornCase *c = data;
+    QTestState *qts = qtest_init(c->args);
+    uint8_t memory[RECORD_SIZE + RECORD_PAGE];
+    uint64_t rom[4];
+    unsigned int i;
+
+    cad_duo_map(qts, c);
+    g_assert_cmpuint(ow_search_all(qts, c, rom, G_N_ELEMENTS(rom)), ==, 1);
+    g_assert_cmphex(rom[0] & 0xff, ==, OW_FAMILY_DS2505);
+    ow_read_memory(qts, c, rom[0], memory, sizeof(memory));
+    g_assert_cmpmem(memory, RECORD_SIZE, sio_record, RECORD_SIZE);
+    g_assert_cmphex(ow_crc16(memory, RECORD_PAGE), ==, RECORD_CRC_RESIDUE);
+    g_assert_cmphex(ow_crc16(memory + RECORD_PAGE, RECORD_PAGE), ==,
+                    RECORD_CRC_RESIDUE);
+    for (i = RECORD_SIZE; i < sizeof(memory); i++) {
+        g_assert_cmphex(memory[i], ==, 0xff);
+    }
+    qtest_quit(qts);
+}
+
+/*
+ * A serial interrupt on the card raises its SuperIO output, which the
+ * adapter wires to the card's INTB, Bridge pin slot ^ 4, and reaches node
+ * 0's Hub; the card's own INTA pin stays low.
+ */
+static void test_sio_serial_interrupt_reaches_hub(const void *data)
+{
+    const ShoehornCase *c = data;
+    QTestState *qts = qtest_init(c->args);
+
+    cad_duo_map(qts, c);
+    qtest_writel(qts, BRIDGE_INT_DEST_UPPER(c), HUB_WIDGET_ON_XBOW << 16);
+    qtest_writel(qts, BRIDGE_INT_DEST_LOWER(c), HUB_INT_MODIFY_OFFSET);
+    qtest_writel(qts, BRIDGE_INT_HOST(c, SUPERIO_PIN(c)),
+                 (INT_HOST_PACKET_IO_NASID0 << 8) | CAD_DUO_INT_NUMBER);
+    qtest_writel(qts, BRIDGE_INT_ENABLE(c), 1u << SUPERIO_PIN(c));
+    qtest_writel(qts, CD_INT_ENABLE_SET(c), SIO_SRC_A_PASSTHROUGH);
+    qtest_writeb(qts, CD_SERIAL_A_IER(c), IER_THRI);
+    g_assert_cmphex(qtest_readl(qts, BRIDGE_INT_STATUS(c)) &
+                    ((1u << SUPERIO_PIN(c)) | (1u << c->device)), ==,
+                    1u << SUPERIO_PIN(c));
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_INT_PEND0) &
+                    (1ULL << CAD_DUO_INT_NUMBER), ==,
+                    1ULL << CAD_DUO_INT_NUMBER);
+    qtest_quit(qts);
+}
+
+/* The adapter has one PCI position, so it takes one card. */
+static void test_one_card_only(const void *data)
+{
+    const char *args[] = {
+        qtest_qemu_binary(NULL), "-M", "origin2000", "-accel", "qtest",
+        "-display", "none", "-device",
+        "sgi-pci-shoehorn,module=99,slot=11,"
+        "fabric=/machine/crossbow0-spare-fabric[0],fabric-widget-shift=48,"
+        "cad-duo-slot=1,sio-slot=2", NULL
+    };
+    g_autofree char *error_output = NULL;
+    int wait_status = 0;
+
+    g_assert_true(g_spawn_sync(NULL, (char **)args, NULL, 0, NULL, NULL,
+                              NULL, &error_output, &wait_status, NULL));
+    g_assert_false(g_spawn_check_exit_status(wait_status, NULL));
+    g_assert_false(WIFSIGNALED(wait_status));
+    g_assert_nonnull(strstr(error_output,
+                            "set cad-duo-slot or sio-slot, not both"));
+}
+
+/*
  * The catalogue-placed board's widget is alive from reset, like the BaseIO
  * at widget 8, the two host nodes at 9 and 10 and SI Viz at 15: it is part
  * of crossbow0's configured startup population, not a link brought up after
@@ -533,6 +673,14 @@ int main(int argc, char **argv)
                         &device_case, test_cad_duo_carries_its_board_record);
     qtest_add_data_func("sn0/pci-shoehorn/bare-card-has-no-board-record",
                         &expansion_case, test_bare_card_has_no_board_record);
+    qtest_add_data_func("sn0/pci-shoehorn/sio-enumerates", &sio_case,
+                        test_sio_enumerates);
+    qtest_add_data_func("sn0/pci-shoehorn/sio-board-record", &sio_case,
+                        test_sio_carries_its_board_record);
+    qtest_add_data_func("sn0/pci-shoehorn/sio-serial-interrupt-reaches-hub",
+                        &sio_case, test_sio_serial_interrupt_reaches_hub);
+    qtest_add_data_func("sn0/pci-shoehorn/one-card-only", NULL,
+                        test_one_card_only);
     qtest_add_data_func("sn0/pci-shoehorn/placed/widget-alive-at-startup",
                         NULL, test_placed_widget_is_alive_at_startup);
     qtest_add_data_func("sn0/pci-shoehorn/placed/cad-duo-enumerates",
