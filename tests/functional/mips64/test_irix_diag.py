@@ -76,7 +76,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from lib_irix_diag import (FLAVOURS, MANIFEST, CheckFailed, ClockReading,
-                           OutOfTime, clock_error, device_numbers,
+                           NoConsole, OutOfTime, clock_error, device_numbers,
                            diag_problems, guest_date, launch_args,
                            link_targets, od_bytes, parse_row,
                            command_output, drive_to_shell,
@@ -87,6 +87,7 @@ from lib_net import HarnessError, IrixConsole
 from lib_prom import FORK_ROOT, require_assets, run_record
 
 try:
+    from qemu.machine.machine import QEMUMachineError
     from qemu_test import QemuSystemTest, get_qemu_img
     from qemu_test import skipSlowTest, skipBigDataTest, skipIfMissingEnv
 except (ImportError, RuntimeError):
@@ -323,11 +324,17 @@ if QemuSystemTest is not None:
             """After a timed-out command, interrupt it and see whether the
             shell answers again, so one hung check does not time out every
             check after it."""
-            self.here.con.sock.sendall(b'\x03\n')
+            if self.here is None:
+                return False
+            # A failed reboot leaves no shell to resynchronise; the
+            # persistence check stops the machine and relaunches it.
+            if check == 'reboot':
+                return True
             try:
+                self.here.con.sock.sendall(b'\x03\n')
                 self.here.con.run('true', self._tag(f'resync-{check}'),
                                   self._left(RESYNC_TIMEOUT_SECONDS))
-            except (HarnessError, OutOfTime):
+            except (HarnessError, OutOfTime, OSError):
                 return False
             return True
 
@@ -622,8 +629,16 @@ if QemuSystemTest is not None:
             self.first.vm.shutdown()
             self._left(STOPPED_SECONDS)
             time.sleep(STOPPED_SECONDS)
-            self.here = self._launch(f'{self.row.id}-relaunch',
-                                     relaunch=True)
+            try:
+                self.here = self._launch(f'{self.row.id}-relaunch',
+                                         relaunch=True)
+            except (HarnessError, QEMUMachineError) as exc:
+                # The first launch's console closed with it, so there is
+                # no shell left for the checks after this one.
+                self.here = None
+                console = self.log_file(f'{self.row.id}-relaunch-console.log')
+                raise NoConsole(f'the relaunch did not reach a shell: {exc} '
+                                f'-- console log: {console}') from exc
             after = self._clock('dateafter')
             name, value = NVRAM_VARIABLE
             self._expect(re.search(rf'(?m)^{value}\s*$',
