@@ -49,6 +49,12 @@ struct I2CWire {
      */
     int64_t now;
     bool advancing;
+    /*
+     * A line re-evaluation asked for while a tick is publishing runs once
+     * that tick has told every observer, so none of them sees the later
+     * event first. Neither field outlives the tick that set it.
+     */
+    bool ticking, retick;
     bool scl, sda, occupied, start_hold;
     bool address_byte, ack, read_valid, read_prepare_pending;
     uint8_t bits, byte;
@@ -710,6 +716,7 @@ static void i2c_wire_tick(I2CWire *wire, int64_t now)
     int64_t low_started = 0;
     bool running_low = false;
 
+    wire->ticking = true;
     for (unsigned i = 0; i < bus->master_count; i++) {
         I2CWireMaster *m = &wire->masters[i];
 
@@ -988,6 +995,12 @@ publish:
                 wire->master_observe[i](wire->master_opaque[i], &event);
             }
         }
+    }
+    wire->ticking = false;
+    if (wire->retick) {
+        wire->retick = false;
+        i2c_wire_tick(wire, now);
+        return;
     }
     i2c_wire_schedule(wire);
 }
@@ -1299,6 +1312,58 @@ int i2c_wire_reset_master(I2CBus *base, uint32_t master)
     m->scl_low = false;
     m->deadline = -1;
     i2c_wire_schedule(bus->wire);
+    return 0;
+}
+
+int i2c_wire_release_slave(I2CSlave *slave)
+{
+    BusState *parent = qdev_get_parent_bus(DEVICE(slave));
+    I2cWire *bus = parent ?
+        (I2cWire *)object_dynamic_cast(OBJECT(parent), TYPE_I2C_WIRE) : NULL;
+    I2CBus *base;
+    I2CWire *wire;
+    I2CWireSlave *st;
+    I2CNode *node, *next;
+
+    if (!bus || !bus->wire) {
+        return -EINVAL;
+    }
+    wire = bus->wire;
+    base = base_bus(bus);
+    if (wire->error) {
+        return wire->error;
+    }
+    /* Everything already due happens before the slave lets go. */
+    if (!wire->advancing && !wire->ticking) {
+        i2c_wire_advance_to(wire, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
+    }
+
+    st = ws(bus, slave);
+    st->wire_hold = st->wire_hold_pending = false;
+    st->wire_hold_phase = 0;
+    st->wire_service_pending = false;
+    st->wire_service_phase = 0;
+    st->wire_service_kind = I2C_WIRE_SERVICE_COUNT;
+    QLIST_FOREACH_SAFE(node, &base->current_devs, next, next) {
+        if (node->elt == slave) {
+            QLIST_REMOVE(node, next);
+            g_free(node);
+        }
+    }
+    if (QLIST_EMPTY(&base->current_devs)) {
+        /* Nothing selected is left to acknowledge or to send a bit. */
+        wire->ack = false;
+        wire->read_valid = false;
+        wire->read_prepare_pending = false;
+        wire->read_prepare_phase = 0;
+    }
+
+    /* The lines follow at once; a STOP they now form is a STOP. */
+    if (wire->ticking) {
+        wire->retick = true;
+    } else {
+        i2c_wire_tick(wire, i2c_wire_instant(wire));
+    }
     return 0;
 }
 
