@@ -709,6 +709,55 @@ static bool bus_free_everywhere(QTestState *qts)
 }
 
 /*
+ * The same deadline STOP, landing after an acknowledged byte of a read from
+ * the controller. The acknowledgement tells the controller to send on, and
+ * it drives the next byte's first bit, a zero for an ASCII answer, onto SDA.
+ * No STOP can form under that until the controller lets go, which it does
+ * when its recovery count runs out and it reinitializes. Until then every
+ * grant wait on the module fails; after it the bus must be free again and
+ * the grants must be moving.
+ */
+#define RECOVERY_NS         (INT64_C(5000) * SERVICE_PERIOD_NS)
+#define RECOVERY_STEP_NS    (10 * SERVICE_PERIOD_NS)
+
+static void test_stop_after_acked_read_byte_recovers(void)
+{
+    QTestState *qts = start_module();
+    static const uint8_t request[] = { 3, 'v', 'e', 'r',
+                                       (uint8_t)-(3 + 'v' + 'e' + 'r') };
+    int64_t stopped;
+
+    wait_for_global_grant(qts, GRANT_BASE);
+    g_assert_true(start_transfer(qts, 0, MSC_ADDRESS, false));
+    for (unsigned i = 0; i < sizeof(request); i++) {
+        g_assert_true(send_byte(qts, 0, request[i]));
+    }
+    g_assert_true(restart_transfer(qts, 0, MSC_ADDRESS, true));
+    discard_byte(qts, 0);
+    g_assert_cmpuint(take_byte(qts, 0, false), >=, 2);
+    g_assert_cmphex(take_byte(qts, 0, false), ==, 'o');
+
+    adapter_write(qts, 0, I2C_CTRL, CTL_STOP);
+    stopped = qtest_clock_step(qts, SERVICE_PERIOD_NS);
+    g_assert_false(bus_free_everywhere(qts));
+
+    for (;;) {
+        int64_t now = qtest_clock_step(qts, RECOVERY_STEP_NS);
+
+        for (unsigned node = 0; node < ADAPTER_COUNT; node++) {
+            g_assert_cmphex(adapter_read(qts, node, I2C_CTRL) &
+                            (STS_BER | STS_LAB), ==, 0);
+        }
+        if (bus_free_everywhere(qts)) {
+            break;
+        }
+        g_assert_cmpint(now - stopped, <, RECOVERY_NS + RECOVERY_STEP_NS);
+    }
+    wait_for_next_global_grant(qts, adapter_read(qts, 0, I2C_DATA));
+    qtest_quit(qts);
+}
+
+/*
  * A held STOP goes out after the byte, not in place of its completion: the
  * host that wrote it still sees PIN go active for that byte, and sees it
  * while the transfer is open, before the STOP reaches the line.
@@ -1307,6 +1356,8 @@ int main(int argc, char **argv)
                    test_invalid_address_stop_releases_wire);
     qtest_add_func("/sn0/o2000-module-management/mid-byte-stop",
                    test_mid_byte_stop_releases_wire);
+    qtest_add_func("/sn0/o2000-module-management/stop-after-acked-read-byte",
+                   test_stop_after_acked_read_byte_recovers);
     qtest_add_func("/sn0/o2000-module-management/held-stop-after-byte",
                    test_held_stop_follows_the_finished_byte);
     qtest_add_func("/sn0/o2000-module-management/lost-arbitration-held-stop",

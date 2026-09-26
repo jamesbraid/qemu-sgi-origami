@@ -84,6 +84,13 @@ static void mgmt_reset_state(SN0ModuleManagementState *s)
  * module reset reaches the nodes through the reset line the machine wires.
  * The endpoint loses its framing queues and keeps everything that is not a
  * queue, which is as much as the datasheet gives this path.
+ *
+ * Reinitialising the controller's own PCF8584 also ends what its slave half
+ * was driving. The recovery count exists for a bus that stays busy, and the
+ * one way this controller keeps it busy by itself is a read a node
+ * acknowledged and then tried to STOP: the controller goes on to the next
+ * byte and holds SDA at its first bit, so the node's STOP cannot form. Once
+ * the endpoint lets go, that STOP completes and the bus is free again.
  */
 static void mgmt_reinitialize(SN0ModuleManagementState *s)
 {
@@ -94,6 +101,7 @@ static void mgmt_reinitialize(SN0ModuleManagementState *s)
                       "driving the shared wire\n");
     }
     sgi_elsc_reinitialize(s->msc);
+    i2c_wire_release_slave(I2C_SLAVE(s->msc));
 }
 
 static void mgmt_recovery_tick(SN0ModuleManagementState *s)
