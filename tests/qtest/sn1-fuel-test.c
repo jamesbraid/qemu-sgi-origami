@@ -13,6 +13,8 @@
 #define BEDROCK_PI1 (SPACE_XTALK + UINT64_C(0x01800000) + 0x200000)
 #define PI_CPU_PRESENT_A 0x40
 #define PI_CPU_PRESENT_B 0x48
+#define PI_CPU_ENABLE_A 0x50
+#define PI_CPU_ENABLE_B 0x58
 #define XTALK_WIDGET(w) (SPACE_XTALK + (uint64_t)(w) * UINT64_C(0x1000000))
 #define PCI_CONFIG(w, d) (XTALK_WIDGET(w) + 0x20000 + (d) * 0x1000)
 #define BOARD_ID_HYPOTHESIS UINT64_C(0x4abc)
@@ -84,6 +86,25 @@ static void test_fuel_board_and_cpu(const void *data)
     qtest_system_reset(qts);
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL_REGISTERS + BOARD_ID_OFFSET),
                     ==, BOARD_ID_HYPOTHESIS);
+    qtest_quit(qts);
+}
+
+static void test_fuel_cpu_grant(const void *data)
+{
+    const char *prom = data;
+    QTestState *qts = fuel_start(prom);
+
+    g_assert_cmphex(qtest_readq(qts, BEDROCK_LOCAL + PI_CPU_ENABLE_A), ==, 1);
+    g_assert_cmphex(qtest_readq(qts, BEDROCK_LOCAL + PI_CPU_ENABLE_B), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, BEDROCK_PI1 + PI_CPU_ENABLE_A), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, BEDROCK_PI1 + PI_CPU_ENABLE_B), ==, 0);
+    qtest_writeq(qts, BEDROCK_LOCAL + PI_CPU_ENABLE_A, 0);
+    g_assert_cmphex(qtest_readq(qts, BEDROCK_LOCAL + PI_CPU_ENABLE_A), ==, 0);
+    qtest_system_reset(qts);
+    g_assert_cmphex(qtest_readq(qts, BEDROCK_LOCAL + PI_CPU_ENABLE_A), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, BEDROCK_LOCAL + PI_CPU_ENABLE_B), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, BEDROCK_PI1 + PI_CPU_ENABLE_A), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, BEDROCK_PI1 + PI_CPU_ENABLE_B), ==, 0);
     qtest_quit(qts);
 }
 
@@ -215,6 +236,7 @@ int main(int argc, char **argv)
     g_test_init(&argc, &argv, NULL);
     prom = fuel_test_prom();
     qtest_add_data_func("fuel/board-and-cpu", prom, test_fuel_board_and_cpu);
+    qtest_add_data_func("fuel/cpu-grant", prom, test_fuel_cpu_grant);
     qtest_add_data_func("fuel/pci", prom, test_fuel_pci);
     qtest_add_data_func("fuel/memory", prom, test_fuel_memory);
     qtest_add_data_func("fuel/rejects-other-board-code", prom,
