@@ -10,6 +10,7 @@
 #include "qemu/main-loop.h"
 #include "qapi/error.h"
 #include "system/address-spaces.h"
+#include "system/cpus.h"
 #include "system/reset.h"
 #include "trace.h"
 #include "cpu.h"
@@ -199,8 +200,14 @@ static void sn_promdata_poll_cb(void *opaque)
                 continue;
             }
         }
-        async_run_on_cpu(CPU(s->cpu), sn_promdata_check_stack,
-                         RUN_ON_CPU_HOST_PTR(s));
+        /*
+         * A processor that is not running yet has the previous sample
+         * still queued; one is enough, however long it stays stopped.
+         */
+        if (cpu_work_list_empty(CPU(s->cpu))) {
+            async_run_on_cpu(CPU(s->cpu), sn_promdata_check_stack,
+                             RUN_ON_CPU_HOST_PTR(s));
+        }
         rearm = true;
     }
     if (rearm) {
@@ -210,7 +217,7 @@ static void sn_promdata_poll_cb(void *opaque)
 }
 
 void sn_promdata_poll_init(SNPromDataPoll *poll, SNPromDataState *slots,
-                          unsigned int count, bool fast,
+                          unsigned int count,
                           uint64_t (*peer_writes)(const void *peer),
                           const void *peer)
 {
@@ -218,8 +225,17 @@ void sn_promdata_poll_init(SNPromDataPoll *poll, SNPromDataState *slots,
     poll->count = count;
     poll->peer_writes = peer_writes;
     poll->peer = peer;
-    poll->timer = fast ?
-        timer_new_ns(QEMU_CLOCK_VIRTUAL, sn_promdata_poll_cb, poll) : NULL;
+    /*
+     * Every node polls, fast or not: a processor that never touches the
+     * filter window after the OS handoff never runs the per-access
+     * handoff test, and would keep the phase -- and with it the
+     * reader-local routing of the window and of the PROM's RAM-copy range
+     * -- for the rest of its run. On a machine of several nodes that
+     * routing sends another node's memory at those addresses to the
+     * reader's own. The fast path only decides whether the private block
+     * is mapped as RAM.
+     */
+    poll->timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, sn_promdata_poll_cb, poll);
 }
 
 void sn_promdata_poll_free(SNPromDataPoll *poll)
@@ -249,11 +265,10 @@ static void sn_promdata_latch(SNPromDataState *s)
     if (s->fast_allowed) {
         s->fast = true;
         memory_region_set_enabled(&s->data, true);
-        if (!timer_pending(s->poll->timer)) {
-            timer_mod(s->poll->timer,
-                     qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
-                     SN_PROMDATA_POLL_NS);
-        }
+    }
+    if (!timer_pending(s->poll->timer)) {
+        timer_mod(s->poll->timer,
+                 qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + SN_PROMDATA_POLL_NS);
     }
     sn_promdata_trace_phase(s, "latch");
 }
@@ -485,9 +500,7 @@ static void sn_promdata_reset(void *opaque)
         memory_region_set_enabled(&s->copy_local, false);
     }
     memory_region_set_enabled(&s->data, false);
-    if (s->poll->timer) {
-        timer_del(s->poll->timer);
-    }
+    timer_del(s->poll->timer);
 }
 
 void sn_promdata_apply_load(SNPromDataState *s)
@@ -500,12 +513,8 @@ void sn_promdata_apply_load(SNPromDataState *s)
                                       !s->leaving_private);
         }
         memory_region_set_enabled(&s->data, s->fast);
-        /*
-         * A destination started without promdata-fast has no timer:
-         * fast came from the source's migrated state, but this node
-         * never allocated one to serve it.
-         */
-        if (s->fast && s->poll->timer) {
+        /* Resume watching a slot still mapped or still in the phase. */
+        if (s->fast || (s->phase_private && !s->leaving_private)) {
             sn_promdata_poll_cb(s->poll);
         }
     }
