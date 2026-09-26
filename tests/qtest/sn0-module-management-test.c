@@ -1054,82 +1054,22 @@ static void test_module_serial_rom_on_every_node(void)
     qtest_quit(qts);
 }
 
-static void test_module_serial_search_and_match(void)
+/*
+ * Keep the machine's Hub relay and both identity pages covered here.
+ * test-onewire covers search/match and DS2502 stream CRC and status.
+ */
+static void test_module_serial_memory_pages(void)
 {
     QTestState *qts = start_module();
-    uint8_t found[8] = { 0 };
-
-    g_assert_true(onewire_reset(qts, 0));
-    onewire_write_byte(qts, 0, 0xf0);
-    for (unsigned bit = 0; bit < 64; bit++) {
-        bool value = onewire_read_bit(qts, 0);
-        bool complement = onewire_read_bit(qts, 0);
-
-        g_assert_cmpint(value, !=, complement);
-        found[bit / 8] |= value << (bit % 8);
-        onewire_write_bit(qts, 0, value);
-    }
-    g_assert_cmpmem(found, sizeof(found), module_rom, sizeof(module_rom));
-
-    g_assert_true(onewire_reset(qts, 0));
-    onewire_write_byte(qts, 0, 0x55);
-    for (unsigned i = 0; i < sizeof(module_rom); i++) {
-        onewire_write_byte(qts, 0, module_rom[i] ^ (i == 0));
-    }
-    onewire_write_byte(qts, 0, 0xf0);
-    g_assert_cmphex(onewire_read_byte(qts, 0), ==, 0xff);
-    qtest_quit(qts);
-}
-
-static void test_module_serial_memory_and_crc(void)
-{
-    QTestState *qts = start_module();
-    uint8_t bytes[128];
+    uint8_t bytes[sizeof(module_pages)];
 
     onewire_start_read(qts, 1, 0xf0, 0);
     g_assert_cmphex(onewire_read_byte(qts, 1), ==, 0x8d);
     for (unsigned i = 0; i < sizeof(bytes); i++) {
         bytes[i] = onewire_read_byte(qts, 1);
     }
-    g_assert_cmpmem(bytes, sizeof(module_pages), module_pages,
+    g_assert_cmpmem(bytes, sizeof(bytes), module_pages,
                     sizeof(module_pages));
-    for (unsigned i = sizeof(module_pages); i < sizeof(bytes); i++) {
-        g_assert_cmphex(bytes[i], ==, 0xff);
-    }
-    g_assert_cmphex(onewire_read_byte(qts, 1), ==, 0xf6);
-
-    onewire_start_read(qts, 1, 0xf0, 0x20);
-    g_assert_cmphex(onewire_read_byte(qts, 1), ==, 0x4c);
-    for (unsigned i = 0; i < 32; i++) {
-        g_assert_cmphex(onewire_read_byte(qts, 1), ==, module_pages[32 + i]);
-    }
-    qtest_quit(qts);
-}
-
-static void test_module_serial_generated_crc_and_status(void)
-{
-    static const uint8_t status[8] = {
-        0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00,
-    };
-    QTestState *qts = start_module();
-
-    onewire_start_read(qts, 2, 0xc3, 0);
-    g_assert_cmphex(onewire_read_byte(qts, 2), ==, 0xb7);
-    for (unsigned i = 0; i < 32; i++) {
-        g_assert_cmphex(onewire_read_byte(qts, 2), ==, module_pages[i]);
-    }
-    g_assert_cmphex(onewire_read_byte(qts, 2), ==, 0xa6);
-    for (unsigned i = 32; i < 64; i++) {
-        g_assert_cmphex(onewire_read_byte(qts, 2), ==, module_pages[i]);
-    }
-    g_assert_cmphex(onewire_read_byte(qts, 2), ==, 0x4d);
-
-    onewire_start_read(qts, 2, 0xaa, 0);
-    g_assert_cmphex(onewire_read_byte(qts, 2), ==, 0x9c);
-    for (unsigned i = 0; i < sizeof(status); i++) {
-        g_assert_cmphex(onewire_read_byte(qts, 2), ==, status[i]);
-    }
-    g_assert_cmphex(onewire_read_byte(qts, 2), ==, 0xfc);
     qtest_quit(qts);
 }
 
@@ -1144,10 +1084,9 @@ static void test_module_serial_generated_crc_and_status(void)
  * still generic -- sgi_sn0_module_management_identity_pages in
  * hw/misc/sgi-sn0-module-management.c derives both one-wire pages from
  * the module's own serial field, not a literal -- and
- * test_module_serial_generated_crc_and_status above
- * already reads both the controller and the Hub relay for the shipped
- * module against that derivation; only the check that a second serial
- * value also round-trips is not ported.
+ * test_module_serial_memory_pages above reads both pages through the Hub
+ * relay for the shipped module; only the check that a second serial value
+ * also round-trips is not ported.
  */
 
 static void test_module_serial_reset_preserves_identity(void)
@@ -1386,12 +1325,8 @@ int main(int argc, char **argv)
                    test_dip_switches_reach_the_controller);
     qtest_add_func("/sn0/o2000-module-management/module-serial-rom",
                    test_module_serial_rom_on_every_node);
-    qtest_add_func("/sn0/o2000-module-management/module-serial-search",
-                   test_module_serial_search_and_match);
     qtest_add_func("/sn0/o2000-module-management/module-serial-memory",
-                   test_module_serial_memory_and_crc);
-    qtest_add_func("/sn0/o2000-module-management/module-serial-crc-status",
-                   test_module_serial_generated_crc_and_status);
+                   test_module_serial_memory_pages);
     qtest_add_func("/sn0/o2000-module-management/module-serial-reset",
                    test_module_serial_reset_preserves_identity);
     qtest_add_func("/sn0/o2000-module-management/module-serial-module-number",
