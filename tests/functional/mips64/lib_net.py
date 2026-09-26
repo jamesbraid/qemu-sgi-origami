@@ -35,12 +35,19 @@ class GuestFault(HarnessError):
 
 
 # The three faults an OpenBSD/IP27 guest shows when it wedges rather than
-# answers. Shared by the login, install and transfer runs, which all drive
-# the same kernel.
+# answers. Shared by the install and transfer runs, which drive the same
+# kernel.
 OPENBSD_TRIPWIRES = (
     ("the guest fell into its kernel debugger", re.compile(r"[\r\n]+ddb>")),
     ("the guest panicked", re.compile(r"panic: ")),
     ("the guest took a bus error", re.compile(r"Trap cause = 7")),
+)
+
+OPENBSD_LOGIN_STAGES = (
+    ("never selected the root device",
+     re.compile(r"root device\s*:|root on sd0a\b")),
+    ("never reached the login prompt", re.compile(r"login:")),
+    ("never reached a root shell prompt", re.compile(r"# ")),
 )
 
 # How much of the received buffer a pattern is matched against on each
@@ -207,9 +214,7 @@ def drive_irix_to_shell(con, budget):
 
 
 def login_steps(netboot_steps, password, as_bytes=False):
-    """The PROM netboot dialogue followed by the questions an OpenBSD/IP27
-    kernel asks on its way to a root shell: the root device, the swap
-    device's default, the login name, and the password.
+    """The PROM netboot dialogue followed by OpenBSD root login.
 
     netboot_steps is lib_prom.prom_netboot_steps()'s own three steps, so
     the caller keeps naming its own boot file. as_bytes encodes each
@@ -217,14 +222,10 @@ def login_steps(netboot_steps, password, as_bytes=False):
     only compiles a pattern when it is bytes); the responses stay str
     either way.
 
-    The swap-device answer is a bare newline taking the default, and is
-    not separately asserted anywhere: reaching the login prompt already
-    proves it was answered, since the kernel does not print "login:"
-    without getting past it.
+    The caller handles optional root and swap device questions between
+    netboot and login. The kernel can select sd0a without asking either.
     """
     steps = tuple(netboot_steps) + (
-        (r"root device\s*:", "sd0a\n"),
-        (r"swap device[^:]*:", "\n"),
         (r"login:", "root\n"),
         (r"[Pp]assword:", password + "\n"),
     )

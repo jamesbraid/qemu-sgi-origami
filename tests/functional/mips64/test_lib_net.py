@@ -24,7 +24,8 @@ import tempfile
 import threading
 import unittest
 
-from lib_net import (DHCP_NAMES, OPENBSD_TRIPWIRES, Console, GuestFault,
+from lib_net import (DHCP_NAMES, OPENBSD_LOGIN_STAGES, OPENBSD_TRIPWIRES,
+                     Console, GuestFault,
                      HarnessError, IrixConsole, dhcp_kind,
                      drive_irix_to_shell, lease_established, login_steps,
                      ordered_stages, summarise_pcap)
@@ -132,13 +133,8 @@ class SummarisePcapTests(unittest.TestCase):
         }))
 
 
-# The login run's own three ordered markers, as its verdict names them.
-LOGIN_STAGES = (
-    ("never reached the root device question",
-     re.compile(r"root device\s*:")),
-    ("never reached the login prompt", re.compile(r"login:")),
-    ("never reached a root shell prompt", re.compile(r"# ")),
-)
+# The network boot asserts these stages before checking transfers.
+LOGIN_STAGES = OPENBSD_LOGIN_STAGES
 
 # The install run's own progression, shortened to the three stages that
 # exercise ordering: a banner, a prompt that must occur twice, and a
@@ -165,6 +161,12 @@ class OrderedStagesTests(unittest.TestCase):
         self.assertEqual(
             ordered_stages(A_LOGIN, LOGIN_STAGES, OPENBSD_TRIPWIRES), [])
 
+    def test_automatic_root_selection_is_a_pass(self):
+        transcript = ("root on sd0a\r\nlogin: root\r\nPassword:\r\n"
+                      "Last login: Mon\r\n# ")
+        self.assertEqual(
+            ordered_stages(transcript, LOGIN_STAGES, OPENBSD_TRIPWIRES), [])
+
     def test_only_the_first_stage_not_reached_is_named(self):
         # A run that hung right after a correct password, before the shell
         # prompt printed, fails on the shell -- and says nothing about the
@@ -177,12 +179,12 @@ class OrderedStagesTests(unittest.TestCase):
             ["never reached a root shell prompt"])
 
     def test_a_later_marker_without_an_earlier_one_does_not_count(self):
-        # A "login:" with no "root device:" answered first is not a run
+        # A "login:" with no root selection first is not a run
         # that reached that stage.
         self.assertEqual(
             ordered_stages("login: root\r\nPassword:\r\n# \r\n",
                            LOGIN_STAGES),
-            ["never reached the root device question"])
+            ["never selected the root device"])
 
     def test_a_marker_before_its_turn_does_not_satisfy_its_stage(self):
         # A bare "# " before "login:" is not an earlier shell: the search
@@ -219,7 +221,7 @@ class OrderedStagesTests(unittest.TestCase):
 
     def test_an_empty_transcript_fails_on_the_first_stage(self):
         self.assertEqual(ordered_stages("", LOGIN_STAGES),
-                         ["never reached the root device question"])
+                         ["never selected the root device"])
 
     def test_a_wedge_before_the_end_fails_and_is_named(self):
         # The property this scorer exists for: a guest that fell into its
@@ -273,12 +275,10 @@ class LoginStepsTests(unittest.TestCase):
 
         self.assertEqual(steps[:len(self.NETBOOT)], self.NETBOOT)
 
-    def test_the_kernels_own_questions_are_answered_in_order(self):
+    def test_login_questions_follow_the_netboot_dialogue(self):
         steps = login_steps(self.NETBOOT, "origami123")
 
         self.assertEqual(steps[len(self.NETBOOT):], (
-            (r"root device\s*:", "sd0a\n"),
-            (r"swap device[^:]*:", "\n"),
             (r"login:", "root\n"),
             (r"[Pp]assword:", "origami123\n"),
         ))

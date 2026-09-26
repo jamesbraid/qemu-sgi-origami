@@ -20,7 +20,7 @@ content-addressed (generic/linux-ip27-net/<sha>/vmlinux and
 generic/gentoo/<sha>/gentoo-rootfs.img). Guarded by @skipBigDataTest()
 (a 2 GiB disk) and @skipSlowTest() (the boot is minutes) plus
 @skipIfMissingEnv('ORIGAMI_ASSETS') and a skipTest at method entry --
-the same guards test_openbsd_login.py keeps.
+the same guards test_openbsd_net_transfer.py keeps.
 
 The machine matches the verified milestone boot: -M
 origin200,topology=origin200-dual -cpu R10000 -m 256 (128 MiB per node),
@@ -84,8 +84,7 @@ def missing_multiuser_markers(log):
 
 
 # Where ORIGAMI_ASSETS resolves the networked kernel and the Gentoo rootfs,
-# the same idiom as test_openbsd_login.py: ORIGAMI_ASSETS names a CHECKOUT,
-# not assets/ itself.
+# ORIGAMI_ASSETS names a checkout, not its assets/ directory.
 KERNEL_REL = os.path.join('assets', 'linux-ip27-net', 'vmlinux')
 DISK_REL = os.path.join('assets', 'gentoo', 'gentoo-rootfs.img')
 
@@ -103,7 +102,7 @@ MEMORY_MIB = 256
 # real measurement of the netbooted boot (see this module's own
 # docstring for why one could not be taken here). Still a margin under
 # the meson timeout registered for this test (mips64/meson.build), the
-# same shape test_openbsd_login.py keeps.
+# same shape test_openbsd_net_transfer.py keeps.
 BOOT_TIMEOUT_SECONDS = 1200
 
 # The guest's port 22, forwarded to this host port. A fixed high port: the
@@ -143,7 +142,7 @@ class LinuxMultiuser(QemuSystemTest):
     """Boots the networked Gentoo disk and requires a networked
     multiuser system with a live ssh service. See this module's
     docstring for the contract; this class only wires it to a real
-    boot, the division test_openbsd_login.py keeps between its pure
+    boot, the division test_openbsd_net_transfer.py keeps between its pure
     verdict and its own QemuSystemTest."""
 
     @skipBigDataTest()
@@ -191,7 +190,7 @@ class LinuxMultiuser(QemuSystemTest):
             # A VM that crashed or exited on its own has already left; a
             # graceful shutdown() against an already-dead process still
             # raises AbnormalShutdown even though qemu is gone. Matches
-            # test_openbsd_login.py's own reasoning.
+            # test_openbsd_net_transfer.py's own reasoning.
             vm.shutdown(hard=vm.exitcode() is not None)
 
         if not transcript:

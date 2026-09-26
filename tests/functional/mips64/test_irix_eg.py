@@ -317,7 +317,7 @@ PROM_SHA256 = (
     "c2c69bf33c375b43ec7ac511fab41ddf595be1b6838ae717e58a9a1273437fdd"
 )
 
-# 128 MiB, the same size and reasoning test_openbsd_login.py uses: at or
+# 128 MiB, the same size and reasoning test_openbsd_net_transfer.py uses: at or
 # below 128 MiB the guest's whole memory bank fits the one slot the machine
 # backs, so the filed >128MiB memory-map defects have no address at which to
 # appear. A real multiuser IRIX boot needs the headroom over the 64 MiB the
