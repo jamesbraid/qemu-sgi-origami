@@ -115,17 +115,25 @@ class ManifestTests(unittest.TestCase):
                                     'mediaio runs.*mediaio_ports'):
             parse_row('m', 1, _line(mediaio=RUN))
 
-    def test_reboot_and_parallel_need_the_relaunch(self):
-        for check in ('reboot', 'parallel'):
+    def test_the_reboot_checks_and_parallel_need_the_relaunch(self):
+        for check in ('reboot', 'warm_boot', 'parallel'):
+            cells = dict.fromkeys(('reboot', 'warm_boot', 'parallel'),
+                                  'no-parallel')
+            cells[check] = RUN
+            if check == 'warm_boot':
+                cells['reboot'] = RUN
             with self.subTest(check=check):
                 with self.assertRaisesRegex(MatrixError,
-                                            f'{check} runs.*persistence'):
+                                            'runs.*persistence'):
                     parse_row('m', 1, _line(
                         row_id='origin2000_one_node',
                         persistence='no-parallel', mediaio=RUN, rad1=RUN,
-                        parallel=RUN if check == 'parallel' else
-                        'no-parallel',
-                        reboot=RUN if check == 'reboot' else 'no-parallel'))
+                        **cells))
+
+    def test_a_warm_boot_needs_the_reboot(self):
+        with self.assertRaisesRegex(MatrixError,
+                                    'warm_boot runs, but reboot does not'):
+            parse_row('m', 1, _line(reboot='no-parallel'))
 
     def test_a_duplicate_row_is_refused(self):
         with tempfile.NamedTemporaryFile('w', suffix='.matrix') as manifest:
@@ -391,6 +399,12 @@ class LaunchArgsTests(unittest.TestCase):
         self.assertNotRegex('Mem enabled             = 1128 MB',
                             facts['the enabled memory'])
 
+    def test_prom_facts_after_a_reboot_leave_out_the_diagnostics(self):
+        row = next(r for r in parse_manifest() if r.id == 'origin200')
+        facts = dict(prom_facts(FLAVOURS['origin200'], row, diags=False))
+        self.assertNotIn('every power-on diagnostic passing', facts)
+        self.assertIn('the enabled memory', facts)
+
     def test_the_flavours_match_the_quick_relaunch_contract(self):
         self.assertFalse(FLAVOURS['origin300'].dip_switches)
         flavour = replace(FLAVOURS['origin200'], dip_switches=False)
@@ -473,6 +487,16 @@ class ConsoleTests(unittest.TestCase):
             b'TERM = (vt100) ', b'IRIS 1# ', b'# ', _marker_reply(b'')])
         phases = []
         drive_to_shell(con, 30, phases, menu=False)
+        self.assertEqual(phases[0][0],
+                         'PROM autoboot, kernel and init to login')
+
+    def test_a_boot_after_a_reboot_ignores_the_first_boots_prompts(self):
+        first = b'Option? 1\r\nconsole login: root\r\nIRIS 1# '
+        con = self._console(first + self.AUTOBOOT, [
+            b'TERM = (vt100) ', b'IRIS 1# ', b'# ', _marker_reply(b'')])
+        phases = []
+        prom = drive_to_shell(con, 30, phases, menu=False, start=len(first))
+        self.assertTrue(prom.startswith('IP27 PROM'))
         self.assertEqual(phases[0][0],
                          'PROM autoboot, kernel and init to login')
 
