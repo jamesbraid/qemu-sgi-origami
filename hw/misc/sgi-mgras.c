@@ -279,7 +279,8 @@ static uint64_t mgras_read_internal(SGIMgrasState *s, hwaddr addr,
         return 0;
     }
     if (size == 1 && addr != SGI_MGRAS_I2C_SCRATCH && addr != 0x071208 &&
-        addr != 0x071c88 && addr != 0x071308) {
+        addr != 0x071c88 && addr != 0x071308 && addr != SGI_MGRAS_I2C_STROBE &&
+        addr != 0x071708) {
         mgras_error(s, addr, size, "unsupported byte read");
         return 0;
     }
@@ -329,6 +330,12 @@ static uint64_t mgras_read_internal(SGIMgrasState *s, hwaddr addr,
     /* XMAP selection and per-visual modes are an approximation. */
     case SGI_MGRAS_XMAP_MAIN_MODE: return s->xmap_mode[s->xmap_index];
     case SGI_MGRAS_I2C_SCRATCH: return s->i2c_scratch;
+    /*
+     * Byte reads mirror the write side's no-op treatment (case
+     * SGI_MGRAS_I2C_STROBE below): approximated fixed idle/ack value. No
+     * public source documents this port's read-back semantics.
+     */
+    case SGI_MGRAS_I2C_STROBE: return 0;
     case SGI_MGRAS_REPP_STATUS_1: return s->repp_status[0];
     case SGI_MGRAS_REPP_STATUS_3: return s->repp_status[1];
     case SGI_MGRAS_REPP_STATUS_4: return s->repp_status[2];
@@ -478,7 +485,9 @@ static void mgras_write(void *opaque, hwaddr addr, uint64_t value,
     if (size == 1 && addr != SGI_MGRAS_I2C_SCRATCH &&
         addr != SGI_MGRAS_I2C_STROBE && addr != SGI_MGRAS_VC3_INDEX &&
         addr != 0x071c88 && addr != SGI_MGRAS_DAC_LUT_INDEX_LOW &&
-        addr != SGI_MGRAS_DAC_LUT_DATA_2 && addr != SGI_MGRAS_DAC_CONFIG) {
+        addr != SGI_MGRAS_DAC_LUT_DATA_2 && addr != SGI_MGRAS_DAC_CONFIG &&
+        addr != SGI_MGRAS_REPP_STATUS_1 && addr != SGI_MGRAS_REPP_STATUS_4 &&
+        addr != SGI_MGRAS_VC3_ARG) {
         mgras_error(s, addr, size, "unsupported byte write");
         return;
     }

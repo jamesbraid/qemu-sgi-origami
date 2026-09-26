@@ -533,6 +533,19 @@ static void test_i2c_probe_loopback(void)
     g_assert_cmphex(qtest_readb(qts, REG_I2C_SCRATCH), ==, 0xaa);
 }
 
+/*
+ * REG_I2C_STROBE's byte write above was already accepted as a no-op; this
+ * proves the read side now mirrors it, answering the approximated
+ * idle/ack value instead of raising a guest error.
+ */
+static void test_i2c_strobe_byte_read(void)
+{
+    mgras_reset();
+
+    g_assert_cmphex(qtest_readb(qts, REG_I2C_STROBE), ==, 0);
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+}
+
 
 static void test_repp_sync_handshake(void)
 {
@@ -562,6 +575,31 @@ static void test_repp_sync_handshake(void)
     g_assert_cmphex(qtest_readb(qts, REG_XMAP_INDEX), ==, 0x1c);
     g_assert_cmphex(qtest_readl(qts, REG_REPP_SYNC) & 0x00000f0f, ==,
                      0x00000101);
+}
+
+/*
+ * PP1SELECT (0x071c08, REG_REPP_STATUS_1) and CONFIGB (0x071d08,
+ * REG_REPP_STATUS_4) are the two REPP status ports gxemul's
+ * impactsr-bsd.h and OpenBSD's impactreg.h declare byte-wide
+ * (IMPACTSR_REG8). test_repp_sync_handshake above already covers their
+ * word-width storage; this proves the newly accepted byte width is the
+ * same plain storage, at no width other than the ones now allowed.
+ */
+static void test_repp_status_byte_writes(void)
+{
+    mgras_reset();
+
+    qtest_writeb(qts, REG_REPP_STATUS_1, 0x14);
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, REG_REPP_STATUS_1), ==, 0x14);
+
+    qtest_writeb(qts, REG_REPP_STATUS_4, 0x21);
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, REG_REPP_STATUS_4), ==, 0x21);
+
+    mgras_reset();
+    mgras_write_width(qts, REG_REPP_STATUS_1, 2, 0xff);
+    mgras_assert_width_error(qts, REG_REPP_STATUS_1);
 }
 
 /*
@@ -853,6 +891,19 @@ static void test_board_bringup_scratch_registers(void)
                     0x482b0400000000ULL);
     g_assert_cmphex(qtest_readl(qts, MGRAS_REG(0x011058)), ==, 0xffffffff);
     g_assert_cmphex(qtest_readl(qts, MGRAS_REG(0x070d88)), ==, 0x3000000);
+}
+
+/*
+ * 0x070d88 (VC3_ARG) already stores and echoes a word write above; this
+ * proves the newly accepted byte width behaves the same way.
+ */
+static void test_vc3_arg_byte_write(void)
+{
+    mgras_reset();
+
+    qtest_writeb(qts, MGRAS_REG(0x070d88), 0x77);
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, MGRAS_REG(0x070d88)), ==, 0x77);
 }
 
 
@@ -1626,6 +1677,21 @@ static void test_board_bringup_byte_poll_bit_position(void)
 
     g_assert_cmphex(qtest_readl(qts, MGRAS_REG(0x071208)), ==, 0x08000000);
     g_assert_cmphex(qtest_readb(qts, MGRAS_REG(0x071208)) & 0x8, ==, 0x8);
+}
+
+/*
+ * 0x071708 already returns zero at word width (see the unresolved
+ * revision field comment above its read-side case); this proves the
+ * newly accepted byte width gives the same answer without raising a
+ * guest error.
+ */
+static void test_unresolved_revision_byte_read(void)
+{
+    mgras_reset();
+
+    g_assert_cmphex(qtest_readl(qts, MGRAS_REG(0x071708)), ==, 0);
+    g_assert_cmphex(qtest_readb(qts, MGRAS_REG(0x071708)), ==, 0);
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
 }
 
 static void test_board_info_byte_read_does_not_raise_error(void)
@@ -4645,8 +4711,12 @@ int main(int argc, char **argv)
                    test_reset_registers_are_plain_storage);
     qtest_add_func("sn0/origin2000/mgras/i2c-probe-loopback",
                    test_i2c_probe_loopback);
+    qtest_add_func("sn0/origin2000/mgras/i2c-strobe-byte-read",
+                   test_i2c_strobe_byte_read);
     qtest_add_func("sn0/origin2000/mgras/repp-sync-handshake",
                    test_repp_sync_handshake);
+    qtest_add_func("sn0/origin2000/mgras/repp-status-byte-writes",
+                   test_repp_status_byte_writes);
     qtest_add_func("sn0/origin2000/mgras/xmap-buf-select-write",
                    test_xmap_buf_select_write);
     qtest_add_func("sn0/origin2000/mgras/visual-register-read-widths",
@@ -4669,6 +4739,8 @@ int main(int argc, char **argv)
                    test_write_path_fixes_dont_raise_the_sticky_error);
     qtest_add_func("sn0/origin2000/mgras/board-bringup-scratch-registers",
                    test_board_bringup_scratch_registers);
+    qtest_add_func("sn0/origin2000/mgras/vc3-arg-byte-write",
+                   test_vc3_arg_byte_write);
     qtest_add_func("sn0/origin2000/mgras/dma-map-slot-registers",
                    test_dma_map_slot_registers);
     qtest_add_func("sn0/origin2000/mgras/dma-map-close-and-discard",
@@ -4692,6 +4764,8 @@ int main(int argc, char **argv)
                    test_byte_row_pairs_rgb_survives_dma_copy);
     qtest_add_func("sn0/origin2000/mgras/board-bringup-byte-poll-bit-position",
                    test_board_bringup_byte_poll_bit_position);
+    qtest_add_func("sn0/origin2000/mgras/unresolved-revision-byte-read",
+                   test_unresolved_revision_byte_read);
     qtest_add_func("sn0/origin2000/mgras/board-info-byte-read-no-error",
                    test_board_info_byte_read_does_not_raise_error);
     qtest_add_func("sn0/origin2000/mgras/hq-upload-readback",
