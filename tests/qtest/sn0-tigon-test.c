@@ -27,6 +27,7 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include "sgi-test.h"
+#include "sgi-migrate.h"
 
 /* Crosstalk space and the Bridge's widget window inside it. */
 #define BRIDGE_WIDGET   8
@@ -2275,27 +2276,6 @@ static void test_reset_restores_configured_mac(const void *data)
     close(sv[0]);
 }
 
-static void tigon_migrate(QTestState *from, const char *uri)
-{
-    qtest_qmp_assert_success(from,
-        "{ 'execute': 'migrate', 'arguments': { 'uri': %s } }", uri);
-
-    g_test_timer_start();
-    for (;;) {
-        QDict *ret = qtest_qmp_assert_success_ref(from,
-            "{ 'execute': 'query-migrate' }");
-        g_autofree char *status = g_strdup(qdict_get_str(ret, "status"));
-
-        qobject_unref(ret);
-        g_assert_cmpstr(status, !=, "failed");
-        if (g_str_equal(status, "completed")) {
-            break;
-        }
-        g_assert(g_test_timer_elapsed() < 30);
-        g_usleep(1000);
-    }
-}
-
 /* Migration preserves the station address currently filtering traffic. */
 static void test_programmed_mac_survives_migration(const void *data)
 {
@@ -2333,7 +2313,7 @@ static void test_programmed_mac_survives_migration(const void *data)
         to_sv[1], uri);
     to = qtest_init(dest_args);
     close(to_sv[1]);
-    tigon_migrate(from, uri);
+    sgi_migrate_stopped(from, uri);
 
     /* The configured address must remain inactive after migration. */
     net_send_frame(to_sv[0], rx_frame_ours, sizeof(rx_frame_ours));
@@ -2495,7 +2475,7 @@ static void test_interrupt_coalesce_count_does_not_wrap(const void *data)
     g_assert_cmphex(qtest_readl(from, TX_CONS_PHYS), ==, TX_PENDING);
     g_assert_false(irq_asserted(from));
 
-    tigon_migrate(from, uri);
+    sgi_migrate_stopped(from, uri);
     qtest_quit(from);
     close(from_sv[0]);
     seed_near_limit_tx_count(stream_path);
@@ -2575,7 +2555,7 @@ static void test_transmit_coalesce_migration_from_v3(const void *data)
         to_sv[1], uri);
     to = qtest_init(dest_args);
     close(to_sv[1]);
-    tigon_migrate(from, uri);
+    sgi_migrate_stopped(from, uri);
 
     g_assert_true(irq_asserted(to));
     qtest_writel(to, WINDOW_TIGON + TI_MB_HOSTINTR, 0);
@@ -2628,7 +2608,7 @@ static void test_transmit_coalesce_count_migration_current(const void *data)
         to_sv[1], uri);
     to = qtest_init(dest_args);
     close(to_sv[1]);
-    tigon_migrate(from, uri);
+    sgi_migrate_stopped(from, uri);
 
     g_assert_false(irq_asserted(to));
     net_recv_timeout(to_sv[0], 5);
@@ -2684,7 +2664,7 @@ static void test_transmit_coalesce_deadline_migration_current(const void *data)
         to_sv[1], uri);
     to = qtest_init(dest_args);
     close(to_sv[1]);
-    tigon_migrate(from, uri);
+    sgi_migrate_stopped(from, uri);
 
     g_assert_false(irq_asserted(to));
     qtest_clock_step(to, 900000);
