@@ -1987,12 +1987,14 @@ static void mgras_raster_command_fifo_dispatch(SGIMgrasState *s)
      * IRIX 6.5.30 client's __Mgr_ReturnMode clears flag 17, writes the query,
      * then polls flag 17 with no bound and reads 0x028004 once it is set.
      * Approximated: the model has the answer as soon as the arguments
-     * arrive, and the answer is zero (see the 0x028004 read). Which answer
-     * each query index expects is unknown. The discriminating tests are
-     * hq-query-sets-flag-after-arguments and hq-query-flag-only-from-query.
+     * arrive, and the answer is zero; it replaces the GE revision 0x028004
+     * held since reset. Which answer each query index expects is unknown.
+     * The discriminating tests are hq-query-sets-flag-after-arguments and
+     * hq-query-flag-only-from-query.
      */
     if (s->cmd_token_class == MGRAS_CMD_HDR_CLASS_HQ &&
         reg == MGRAS_HQ_OP_QUERY) {
+        s->ge_report = 0;
         s->hq_flags |= MGRAS_HQ_FLAG_QUERY;
         return;
     }

@@ -66,6 +66,112 @@
 #define MGRAS_DAC_REG_ID 0x0300
 #define MGRAS_DAC_REG_REVISION 0x0b00
 
+/*
+ * The eight XIO IMPACT variants, from the per-variant table in
+ * docs/datasheets/mgras-board-identity.md. The labels are that document's:
+ *
+ * - SI+T and ESI+T come from owner gfxinfo captures of real boards. Their
+ *   revisions are established; 0x072488 bit 7, which IRIX never reads, is
+ *   approximated as 0, and so is the whole 0x072408 byte beyond "path 0
+ *   holds TRAM, path 1 does not" (0x0c).
+ * - SI and ESI are inferred from those two boards with the TRAM taken
+ *   away: nobody has captured gfxinfo from a textureless board. 0x072408
+ *   is approximated as 0x0f, both TRAM paths absent.
+ * - SSI, MXI, ESSI and EMXI have no capture at all. Their counts and
+ *   names are established by the OCTANE Technical Report and IRIX's own
+ *   decode; product ID 2 (over 3), the MGRAS revision and every ASIC
+ *   revision are approximated with the matching one-GE board's values.
+ *
+ * Only 0x071308 is left out: its bits 7:4 are the attached monitor's ID,
+ * not the board's.
+ */
+static const SGIMgrasBoard mgras_boards[] = {
+    {
+        .name = "si", .hinv_name = "SI",
+        .ge_count = 1, .re_count = 1, .tram_count = 0,
+        .version1 = 0x45, .version0 = 0x0f,
+        .hq_revision = 2, .ge_revision = 2, .re4_revision = 2,
+        .pp1_revision = 0, .vc3_revision = 0, .cmap_revision = 3,
+        .ra_revision = 0, .video_option = false,
+        .implemented = true,
+    }, {
+        .name = "si-t", .hinv_name = "SI with texture option",
+        .ge_count = 1, .re_count = 1, .tram_count = 4,
+        .version1 = 0x45, .version0 = 0x0c,
+        .hq_revision = 2, .ge_revision = 2, .re4_revision = 2,
+        .pp1_revision = 0, .vc3_revision = 0, .cmap_revision = 3,
+        .ra_revision = 0, .video_option = false,
+    }, {
+        .name = "ssi", .hinv_name = "SSI",
+        .ge_count = 2, .re_count = 2, .tram_count = 0,
+        .version1 = 0x46, .version0 = 0x0f,
+        .hq_revision = 2, .ge_revision = 2, .re4_revision = 2,
+        .pp1_revision = 0, .vc3_revision = 0, .cmap_revision = 3,
+        .ra_revision = 0, .video_option = false,
+    }, {
+        .name = "mxi", .hinv_name = "MXI",
+        .ge_count = 2, .re_count = 2, .tram_count = 4,
+        .version1 = 0x46, .version0 = 0x00,
+        .hq_revision = 2, .ge_revision = 2, .re4_revision = 2,
+        .pp1_revision = 0, .vc3_revision = 0, .cmap_revision = 3,
+        .ra_revision = 0, .video_option = false,
+    }, {
+        /*
+         * Approximated beyond identity: the model renders an E-series
+         * board exactly as its first-generation counterpart. The GE is
+         * never executed, and no capture shows the later ASICs (GE12,
+         * PP1 revision E, MGRAS revision 4) behaving differently to
+         * software. A guest that relies on a GE12 or PP1 E difference
+         * will not see it.
+         */
+        .name = "esi", .hinv_name = "ESI",
+        .ge_count = 1, .re_count = 1, .tram_count = 0,
+        .version1 = 0x51, .version0 = 0x0f,
+        .hq_revision = 2, .ge_revision = 3, .re4_revision = 2,
+        .pp1_revision = 4, .vc3_revision = 0, .cmap_revision = 3,
+        .ra_revision = 0, .video_option = false,
+        .implemented = true,
+    }, {
+        .name = "esi-t", .hinv_name = "ESI with texture option",
+        .ge_count = 1, .re_count = 1, .tram_count = 4,
+        .version1 = 0x51, .version0 = 0x0c,
+        .hq_revision = 2, .ge_revision = 3, .re4_revision = 2,
+        .pp1_revision = 4, .vc3_revision = 0, .cmap_revision = 3,
+        .ra_revision = 0, .video_option = false,
+    }, {
+        .name = "essi", .hinv_name = "ESSI",
+        .ge_count = 2, .re_count = 2, .tram_count = 0,
+        .version1 = 0x52, .version0 = 0x0f,
+        .hq_revision = 2, .ge_revision = 3, .re4_revision = 2,
+        .pp1_revision = 4, .vc3_revision = 0, .cmap_revision = 3,
+        .ra_revision = 0, .video_option = false,
+    }, {
+        .name = "emxi", .hinv_name = "EMXI",
+        .ge_count = 2, .re_count = 2, .tram_count = 4,
+        .version1 = 0x52, .version0 = 0x00,
+        .hq_revision = 2, .ge_revision = 3, .re4_revision = 2,
+        .pp1_revision = 4, .vc3_revision = 0, .cmap_revision = 3,
+        .ra_revision = 0, .video_option = false,
+    },
+};
+
+static const SGIMgrasBoard *mgras_find_board(const char *name)
+{
+    for (size_t i = 0; i < ARRAY_SIZE(mgras_boards); i++) {
+        if (g_str_equal(mgras_boards[i].name, name)) {
+            return &mgras_boards[i];
+        }
+    }
+    return NULL;
+}
+
+/* 0x071708: RA revision 6:4, CMAP revision 2:0, bit 7 set: no video option. */
+static uint8_t mgras_cmap_ra_byte(const SGIMgrasBoard *b)
+{
+    return (b->video_option ? 0 : 0x80) | (b->ra_revision & 7) << 4 |
+           (b->cmap_revision & 7);
+}
+
 /* Send an interrupt-modify write to the selected fabric address. */
 static void mgras_send_packet(SGIMgrasState *s, hwaddr where, uint8_t vector,
                            bool set)
@@ -369,9 +475,19 @@ static uint64_t mgras_read_internal(SGIMgrasState *s, hwaddr addr,
      * offsets; treat them as read-zero rather than raising a guest error
      * a real access hits.
      */
-    case 0x000000:
     case 0x000020:
         return 0;
+    /*
+     * Bits 31:28 are the HQ revision the IRIX kernel reads with a 32-bit
+     * load (mgras-board-identity.md). How they relate to the widget
+     * identification word at 0x000004 is unknown; a 64-bit read keeps
+     * the low word at zero as before.
+     */
+    case 0x000000: {
+        uint32_t v = (uint32_t)(s->board->hq_revision & 0xf) << 28;
+
+        return size == 8 ? (uint64_t)v << 32 : v;
+    }
     case 0x000004:
         return (s->revision << 28) | (s->part << 12) |
                (s->manufacturer << 1) | 1;
@@ -384,29 +500,42 @@ static uint64_t mgras_read_internal(SGIMgrasState *s, hwaddr addr,
     /* The unresolved prefix state is stored and echoed without decoding it. */
     case 0x011000: return s->prefix;
     case SGI_MGRAS_RESET_ARG: return s->reset_arg;
-    /* Fixed functional-approximation population value. */
-    case SGI_MGRAS_RESET_CONTROL: return 0x0f000000;
     /*
-     * Fixed functional-approximation inventory value, preserved across
-     * supported access widths. On this big-endian bus a byte read returns
-     * the word's most significant byte, 0x21; bits 1:0 of that byte are
-     * the geometry-engine count Linux reads
-     * (docs/designs/2026-09-24-mgras-family-architecture.md).
+     * The board-version bytes, each the top byte of its word: TRAM
+     * presence per raster path here, product ID, MGRAS revision and GE
+     * count at SGI_MGRAS_BOARD_INVENTORY. On this big-endian bus a byte
+     * read returns that top byte. Writes do not change them.
      */
+    case SGI_MGRAS_RESET_CONTROL:
+        return (uint32_t)s->board->version0 << 24;
     case SGI_MGRAS_BOARD_INVENTORY:
-        return size == 1 ? 0x21 : 0x21000000;
-    /* Unresolved revision fields use zero as a functional approximation. */
-    case 0x071708:
+        return size == 1 ? s->board->version1 :
+               (uint32_t)s->board->version1 << 24;
+    case 0x071708: {
+        uint8_t v = mgras_cmap_ra_byte(s->board);
+
+        return size == 1 ? v : (uint32_t)v << 24;
+    }
+    /*
+     * IRIX reads this just before 0x028004 and discards it. What hardware
+     * returns is unobserved; zero is an approximation, kept distinct from
+     * the GE revision so a guest that took its revision from here would
+     * see the difference.
+     */
     case 0x028000:
         return 0;
     /*
-     * The answer to the class-0 opcode 0xa2 query, read once after HQ flag
-     * bit 17 is set. Its value for each query index is unknown
-     * (mgras-gl-commands.md); zero is an approximation that the first
-     * OpenGL context experiment tests.
+     * After the GE program verifies, the kernel takes the GE revision from
+     * the low byte here; 3 or more marks an E-series board. Every class-0
+     * 0xa2 query, whether the kernel's own (MgrasFinish, index 0x1fa) or
+     * the OpenGL client's, is answered here once HQ flag bit 17 is set
+     * (see mgras_raster_command_fifo_dispatch()). Approximated: the model
+     * holds the GE revision from reset until the first query of either
+     * kind, then answers zero. When real hardware replaces the revision,
+     * and what each query returns, are unknown.
      */
     case 0x028004:
-        return 0;
+        return s->ge_report;
     /*
      * The kernel's GFX_GETBOARDINFO handler performs a one-byte read here
      * on every OpenGL context query; the captured flow answers 0 and
@@ -443,7 +572,7 @@ static uint64_t mgras_read_internal(SGIMgrasState *s, hwaddr addr,
      */
     case SGI_MGRAS_REPP_STATUS_3:
         if (s->xmap_index == MGRAS_XMAP_CONFIG_REVISION) {
-            return 0;
+            return s->board->pp1_revision;
         }
         if (s->xmap_index == MGRAS_XMAP_CONFIG_FIFO_CAPACITY) {
             return 1;
@@ -488,7 +617,8 @@ static uint64_t mgras_read_internal(SGIMgrasState *s, hwaddr addr,
     case 0x020200: return 0;
     /* Readback grammar is unsupported. These are fixed approximations. */
     case 0x02c574: return 0x8;
-    case 0x02c578: return 0x100;
+    /* Bits 7:4 are the RE4 revision; the rest is approximated. */
+    case 0x02c578: return 0x100 | (s->board->re4_revision & 0xf) << 4;
     /* Preserve the approximated status bit across supported access widths. */
     case 0x071208: return size == 1 ? 0x08 : 0x08000000;
     case 0x071c88: return s->xmap_index << 2;
@@ -504,8 +634,12 @@ static uint64_t mgras_read_internal(SGIMgrasState *s, hwaddr addr,
         if (s->vc3_index == MGRAS_VC3_RAM_ADDR) {
             v = s->vc3_ram_addr;
         }
+        /*
+         * Register 0x1f carries the VC3 revision in bits 7:6, as both the
+         * IRIX kernel and SGI's IDE read it; the other bits echo storage.
+         */
         if (s->vc3_index == 0x1f) {
-            v &= ~0x60; /* Functional-approximation revision value. */
+            v = (v & ~0xc0) | (s->board->vc3_revision & 3) << 6;
         }
         return size == 2 ? v : (uint32_t)v << 16;
     }
@@ -999,6 +1133,7 @@ static void mgras_reset_enter(Object *obj, ResetType type)
     memset(s->fifo_threshold, 0, sizeof(s->fifo_threshold));
     s->sched_arg_1 = s->sched_arg_2 = s->sched_arg_3 = s->sched_arg_4 = 0;
     s->hq_flags = 0;
+    s->ge_report = s->board->ge_revision;
     s->lowater_asserted = s->general_asserted = s->error_asserted = false;
     s->retrace_no_dest_logged = false;
 }
@@ -1027,12 +1162,62 @@ static void mgras_reset_exit(Object *obj, ResetType type)
               NANOSECONDS_PER_SECOND / 60);
 }
 
+/*
+ * Select the descriptor. A board with TRAM or a second GE and RE would
+ * make IRIX drive texture and multi-engine paths the model does not have,
+ * so it is refused unless x-unimplemented-board asks for it anyway; then
+ * it is presented with a LOG_UNIMP note naming what is missing.
+ */
+static bool mgras_realize_board(SGIMgrasState *s, Error **errp)
+{
+    const char *name = s->board_name ? s->board_name : "si";
+    const SGIMgrasBoard *b = mgras_find_board(name);
+    g_autoptr(GString) missing = NULL;
+
+    if (!b) {
+        g_autoptr(GString) names = g_string_new(NULL);
+
+        for (size_t i = 0; i < ARRAY_SIZE(mgras_boards); i++) {
+            g_string_append_printf(names, "%s%s", i ? ", " : "",
+                                   mgras_boards[i].name);
+        }
+        error_setg(errp, "sgi-mgras: unknown board '%s'", name);
+        error_append_hint(errp, "Valid boards: %s\n", names->str);
+        return false;
+    }
+    if (!b->implemented) {
+        missing = g_string_new(NULL);
+        if (b->tram_count) {
+            g_string_append(missing, "texture (TE1 and TRAM)");
+        }
+        if (b->ge_count > 1 || b->re_count > 1) {
+            g_string_append_printf(missing, "%sa second GE and RE",
+                                   missing->len ? " and " : "");
+        }
+        if (!s->unimplemented_board) {
+            error_setg(errp, "sgi-mgras: board '%s' (%s) needs %s, which "
+                       "the model does not implement", b->name, b->hinv_name,
+                       missing->str);
+            error_append_hint(errp, "Implemented boards: si, esi\n");
+            return false;
+        }
+        qemu_log_mask(LOG_UNIMP, "sgi-mgras: presenting board '%s' (%s) "
+                      "without %s; IRIX will drive paths the model ignores\n",
+                      b->name, b->hinv_name, missing->str);
+    }
+    s->board = b;
+    return true;
+}
+
 static void mgras_realize(DeviceState *dev, Error **errp)
 {
     SGIMgrasState *s = SGI_MGRAS(dev);
     if (!s->fabric) {
         error_setg(errp, "sgi-mgras needs the fabric its interrupt packets "
                   "travel");
+        return;
+    }
+    if (!mgras_realize_board(s, errp)) {
         return;
     }
     s->front = g_new0(uint32_t, SGI_MGRAS_WIDTH * SGI_MGRAS_HEIGHT);
@@ -1137,7 +1322,7 @@ static bool mgras_ge_lengths_valid(void *opaque, int version_id)
  * changes.
  */
 static const VMStateDescription vmstate_sgi_mgras = {
-    .name = TYPE_SGI_MGRAS, .version_id = 15, .minimum_version_id = 9,
+    .name = TYPE_SGI_MGRAS, .version_id = 16, .minimum_version_id = 9,
     .post_load = mgras_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32(front_count, SGIMgrasState),
@@ -1280,6 +1465,7 @@ static const VMStateDescription vmstate_sgi_mgras = {
         VMSTATE_UINT32_V(gl_vertex_count, SGIMgrasState, 15),
         VMSTATE_UINT32_2DARRAY_V(gl_vertex, SGIMgrasState, 3, 4, 15),
         VMSTATE_UINT32_2DARRAY_V(gl_vertex_color, SGIMgrasState, 3, 4, 15),
+        VMSTATE_UINT32_V(ge_report, SGIMgrasState, 16),
         VMSTATE_END_OF_LIST()
     }
 };
@@ -1288,6 +1474,10 @@ static const Property mgras_properties[] = {
     DEFINE_PROP_UINT32("revision", SGIMgrasState, revision, 0),
     DEFINE_PROP_UINT32("part", SGIMgrasState, part, 0xc003),
     DEFINE_PROP_UINT32("manufacturer", SGIMgrasState, manufacturer, 0x02aa),
+    DEFINE_PROP_STRING("board", SGIMgrasState, board_name),
+    /* Present a board the model cannot render; for identity experiments. */
+    DEFINE_PROP_BOOL("x-unimplemented-board", SGIMgrasState,
+                     unimplemented_board, false),
     DEFINE_PROP_LINK("fabric", SGIMgrasState, fabric, TYPE_MEMORY_REGION,
                      MemoryRegion *),
     DEFINE_PROP_UINT64("fabric-base", SGIMgrasState, fabric_base, 0),
