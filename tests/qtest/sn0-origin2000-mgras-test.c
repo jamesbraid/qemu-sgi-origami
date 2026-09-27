@@ -5140,6 +5140,228 @@ static void test_inline_block_uses_20_bit_length(void)
 }
 
 
+/*
+ * The OpenGL client's own words on the main port, as the IRIX 6.5.30
+ * IP27GR532 libGLcore.so frames them (mgras-gl-commands.md, "Decoded
+ * commands"): glViewport 0x3310, glClearColor 0xba10, glClear's colour
+ * token 0x1500 and glFlush 0x3600.
+ */
+#define GL_VIEWPORT_HDR       0x00003310
+#define GL_CLEAR_COLOR_HDR    0x0000ba10
+#define GL_CLEAR_COLOR_BUFFER 0x00001500
+#define GL_FLUSH              0x00003600
+
+/*
+ * The 63-word context image the IRIX kernel wrote for the probe's GL
+ * context, a 128x128 window whose top-left pixel is at screen (256, 256)
+ * (run irix-20260927T135825-92207b, seq 3959112). Word 2 is the window's
+ * lower-left corner as (y << 16) | x with y counted up from the bottom of
+ * the screen, word 3 is 0x11, and words 11 and 12 are the window's column
+ * and row ranges in the 0x147/0x148 layout. The other words are carried
+ * over unchanged.
+ */
+static const uint32_t gl_context_image[MGRAS_CONTEXT_WORDS] = {
+    0x39e9, 0x2c000000, 0x2800100, 0x11, 0, 0x124f8, 0xfb50414, 0, 0,
+    0xffa3, 0, 0x100017f, 0x28002ff, 0x90240, 0x2800100, 0x90240, 1, 1,
+    0x1000100, 0x17f017f, 0x800080, 0x11400000, 8, 0, 0xcac, 0xc004504, 0,
+    0xff, 0xff, 0x10, 0, 0, 0, 0, 0, 0, 0x4ff, 0x3ff, 0xffffff, 0xffffff,
+};
+
+/*
+ * Switch to a GL context whose window has its lower-left pixel at column
+ * x and at row y counted from the bottom of the screen.
+ */
+static void mgras_enter_gl_window(QTestState *qts, uint32_t x, uint32_t y,
+                                  uint32_t w, uint32_t h, uint32_t clip)
+{
+    uint32_t image[MGRAS_CONTEXT_WORDS];
+
+    memcpy(image, gl_context_image, sizeof(image));
+    image[2] = image[14] = (y << 16) | x;
+    image[3] = clip;
+    image[11] = (x << 16) | (x + w - 1);
+    image[12] = (y << 16) | (y + h - 1);
+
+    qtest_writel(qts, REG_PREFIX, 0);
+    qtest_writel(qts, REG_ENTRY, MGRAS_ENTRY_WORD);
+    qtest_writel(qts, REG_PENDING_ACK, MGRAS_PENDING_FLAGS);
+    for (int i = 0; i < MGRAS_CONTEXT_WORDS; i++) {
+        qtest_writel(qts, REG_CONTEXT_COMMAND, image[i]);
+    }
+    g_assert_cmphex(qtest_readl(qts, REG_PENDING) & MGRAS_PENDING_CONTEXT, ==,
+                    MGRAS_PENDING_CONTEXT);
+    qtest_writel(qts, REG_PENDING_ACK, MGRAS_PENDING_CONTEXT);
+}
+
+static void gl_word(QTestState *qts, uint32_t word)
+{
+    qtest_writel(qts, REG_CONTEXT_COMMAND, word);
+}
+
+static void gl_float(QTestState *qts, float value)
+{
+    uint32_t bits;
+
+    memcpy(&bits, &value, sizeof(bits));
+    gl_word(qts, bits);
+}
+
+static void gl_viewport(QTestState *qts, uint32_t x, uint32_t y, uint32_t w,
+                        uint32_t h)
+{
+    gl_word(qts, GL_VIEWPORT_HDR);
+    gl_word(qts, x);
+    gl_word(qts, y);
+    gl_word(qts, w);
+    gl_word(qts, h);
+}
+
+static void gl_clear_color(QTestState *qts, float r, float g, float b,
+                           float a)
+{
+    gl_word(qts, GL_CLEAR_COLOR_HDR);
+    gl_float(qts, r);
+    gl_float(qts, g);
+    gl_float(qts, b);
+    gl_float(qts, a);
+}
+
+/* One screendump, 0xRRGGBB per pixel. */
+static uint32_t *mgras_screendump(QTestState *qts)
+{
+    g_autofree char *path = NULL;
+    g_autofree char *contents = NULL;
+    g_autoptr(GError) error = NULL;
+    uint32_t *rgb = g_new(uint32_t, 1280 * 1024);
+    const uint8_t *pixels;
+    gsize length;
+    int fd;
+
+    fd = g_file_open_tmp("sgi-mgras-gl-XXXXXX.ppm", &path, &error);
+    g_assert_no_error(error);
+    close(fd);
+    qtest_qmp_assert_success(qts,
+        "{'execute': 'screendump', 'arguments': {'filename': %s}}", path);
+    g_assert_true(g_file_get_contents(path, &contents, &length, &error));
+    g_assert_no_error(error);
+    unlink(path);
+    g_assert_true(g_str_has_prefix(contents, "P6\n1280 1024\n255\n"));
+    g_assert_cmpuint(length, ==, strlen("P6\n1280 1024\n255\n") +
+                     1280 * 1024 * 3);
+    pixels = (const uint8_t *)contents + strlen("P6\n1280 1024\n255\n");
+    for (int i = 0; i < 1280 * 1024; i++) {
+        rgb[i] = (pixels[i * 3] << 16) | (pixels[i * 3 + 1] << 8) |
+                 pixels[i * 3 + 2];
+    }
+    return rgb;
+}
+
+/*
+ * The probe's clear case: glViewport(0, 0, 128, 128), glClearColor(1, 0,
+ * 1, 1), glClear(GL_COLOR_BUFFER_BIT), glFlush, in a 128x128 window whose
+ * top-left pixel is at (256, 256). Every window pixel becomes magenta and
+ * nothing outside it changes (OpenGL 1.2.1, 4.2.3: a clear passes only the
+ * pixel ownership, scissor and dither steps, and colour 1.0 converts to
+ * all ones by 2.13.9).
+ */
+static void test_gl_clear_fills_the_window(void)
+{
+    g_autofree uint32_t *rgb = NULL;
+
+    mgras_reset();
+
+    mgras_enter_gl_window(qts, 256, 640, 128, 128, 0x11);
+    qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x1e, 0x4));
+    gl_viewport(qts, 0, 0, 128, 128);
+    gl_clear_color(qts, 1, 0, 1, 1);
+    gl_word(qts, GL_CLEAR_COLOR_BUFFER);
+    gl_word(qts, GL_FLUSH);
+
+    g_assert_cmphex(mgras_test_pixel(qts, 256, 256), ==, 0xff00ff);
+    g_assert_cmphex(mgras_test_format(qts, 256, 256), ==,
+                    MGRAS_PIXEL_FORMAT_RGB);
+    rgb = mgras_screendump(qts);
+    for (int y = 250; y < 390; y++) {
+        for (int x = 250; x < 390; x++) {
+            bool inside = x >= 256 && x < 384 && y >= 256 && y < 384;
+
+            if (rgb[y * 1280 + x] != (inside ? 0xff00ff : 0)) {
+                g_error("pixel (%d, %d) is 0x%06x", x, y, rgb[y * 1280 + x]);
+            }
+        }
+    }
+}
+
+/*
+ * A clear covers the window, not the viewport (OpenGL 1.2.1, 4.2.3), and
+ * lands wherever the context image puts the window.
+ */
+static void test_gl_clear_ignores_the_viewport(void)
+{
+    mgras_reset();
+
+    /* Rows 200-231 from the bottom are screen rows 792-823. */
+    mgras_enter_gl_window(qts, 100, 200, 64, 32, 0x11);
+    gl_viewport(qts, 0, 0, 8, 8);
+    gl_clear_color(qts, 0, 1, 0, 1);
+    gl_word(qts, GL_CLEAR_COLOR_BUFFER);
+
+    g_assert_cmphex(mgras_test_pixel(qts, 100, 792), ==, 0x00ff00);
+    g_assert_cmphex(mgras_test_pixel(qts, 163, 823), ==, 0x00ff00);
+    g_assert_cmphex(mgras_test_pixel(qts, 163, 792), ==, 0x00ff00);
+    g_assert_cmphex(mgras_test_pixel(qts, 99, 792), ==, 0);
+    g_assert_cmphex(mgras_test_pixel(qts, 164, 823), ==, 0);
+    g_assert_cmphex(mgras_test_pixel(qts, 100, 791), ==, 0);
+    g_assert_cmphex(mgras_test_pixel(qts, 100, 824), ==, 0);
+}
+
+/*
+ * Without the image's window rectangle (word 3 not 0x11) the model does not
+ * know which pixels the window owns, so the clear paints nothing.
+ */
+static void test_gl_clear_needs_the_window_rectangle(void)
+{
+    mgras_reset();
+
+    mgras_enter_gl_window(qts, 256, 640, 128, 128, 0);
+    gl_viewport(qts, 0, 0, 128, 128);
+    gl_clear_color(qts, 1, 1, 1, 1);
+    gl_word(qts, GL_CLEAR_COLOR_BUFFER);
+
+    g_assert_cmphex(mgras_test_pixel(qts, 300, 300), ==, 0);
+    g_assert_cmphex(mgras_test_format(qts, 300, 300), ==,
+                    MGRAS_PIXEL_FORMAT_CI8);
+}
+
+/*
+ * The server gives the probe's window display ID 14 and XMAP mode 0x1408
+ * (run irix-20260927T135825-92207b, seq 3899859-3899880). Bits 9:5 of that
+ * mode are zero, so an indexed pixel left under the window resolves
+ * through colour map 0, which the server never loads, and shows black. A
+ * GL clear stores direct colour, which bypasses the map.
+ */
+static void test_gl_clear_shows_through_a_direct_colour_display_id(void)
+{
+    mgras_reset();
+
+    mgras_enter_gl_window(qts, 256, 640, 128, 128, 0x11);
+    qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x1e, 0x4));
+    /* WID 0's reset mode 0x7a4 selects map 29; make index 0 white there. */
+    mgras_write_cmap_entry(qts, 29, 0, 0xffffff00);
+    qtest_writeb(qts, REG_XMAP_INDEX, 14 << 2);
+    qtest_writel(qts, REG_XMAP_MAIN_MODE, 0x1408);
+    g_assert_cmphex(mgras_test_display_pixel(qts, 256, 256), ==, 0xffffff);
+    mgras_tag_wid(qts, 256, 256, 259, 256, 14);
+    g_assert_cmphex(mgras_test_display_pixel(qts, 256, 256), ==, 0);
+    g_assert_cmphex(mgras_test_display_pixel(qts, 260, 256), ==, 0xffffff);
+
+    gl_viewport(qts, 0, 0, 128, 128);
+    gl_clear_color(qts, 1, 0, 1, 1);
+    gl_word(qts, GL_CLEAR_COLOR_BUFFER);
+    g_assert_cmphex(mgras_test_display_pixel(qts, 256, 256), ==, 0xff00ff);
+    g_assert_cmphex(mgras_test_display_pixel(qts, 260, 256), ==, 0xff00ff);
+}
+
 static void test_hq_flags_fence_token_sets_bit(void)
 {
     mgras_reset();
@@ -6845,6 +7067,15 @@ int main(int argc, char **argv)
                    test_hq_query_flag_only_from_query);
     qtest_add_func("sn0/origin2000/mgras/inline-block-uses-20-bit-length",
                    test_inline_block_uses_20_bit_length);
+    qtest_add_func("sn0/origin2000/mgras/gl-clear-fills-the-window",
+                   test_gl_clear_fills_the_window);
+    qtest_add_func("sn0/origin2000/mgras/gl-clear-ignores-the-viewport",
+                   test_gl_clear_ignores_the_viewport);
+    qtest_add_func("sn0/origin2000/mgras/gl-clear-needs-the-window-rectangle",
+                   test_gl_clear_needs_the_window_rectangle);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "gl-clear-shows-through-a-direct-colour-display-id",
+                   test_gl_clear_shows_through_a_direct_colour_display_id);
     qtest_add_func("sn0/origin2000/mgras/hq-flags-set-and-clear",
                    test_hq_flags_set_and_clear);
     qtest_add_func("sn0/origin2000/mgras/hq-flags-fence-token-sets-bit",

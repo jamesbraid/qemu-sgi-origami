@@ -363,6 +363,12 @@ struct SGIMgrasState {
     uint32_t cmd_token_words_remaining;
     uint32_t cmd_token_payload[SGI_MGRAS_CMD_TOKEN_MAX_PAYLOAD_WORDS];
     uint32_t cmd_token_payload_count;
+    /*
+     * OpenGL command state (hw/misc/sgi-mgras-gl.c): one set for the
+     * board, not saved or restored with a context. Colours keep the IEEE
+     * single bits the client wrote.
+     */
+    uint32_t gl_clear_color[4];
     uint64_t retraces;
     uint8_t xmap_index;
     uint32_t xmap_mode[SGI_MGRAS_XMAP_ENTRIES];
