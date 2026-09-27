@@ -22,6 +22,8 @@
 #define IOC3 (BRIDGE + 0x600000)
 #define UART_A (IOC3 + 0x20178)
 #define IOC3_SERIAL_IRQ (1u << 6)
+#define BRIDGE_REG(offset) (BRIDGE + (offset) + 4)
+#define SUPERIO_PIN (1u << 3)
 
 static char *flash_path;
 
@@ -40,6 +42,17 @@ static QTestState *octane_start_serial(int *sock)
         "-M octane -m 128M -cpu R10000 -bios %s -S", quoted);
 
     return qtest_init_with_serial(args, sock);
+}
+
+static uint32_t octane_cpu_cause(QTestState *qts)
+{
+    g_autofree char *registers = qtest_hmp(qts, "info registers");
+    const char *field = strstr(registers, "Cause");
+    uint32_t cause;
+
+    g_assert_nonnull(field);
+    g_assert_cmpint(sscanf(field, "Cause %" SCNx32, &cause), ==, 1);
+    return cause;
 }
 
 static void test_widgets_and_memory(void)
@@ -229,6 +242,56 @@ static void test_serial_a_chardev(void)
     qtest_quit(qts);
 }
 
+static void test_serial_a_interrupt_route(void)
+{
+    int sock;
+    QTestState *qts = octane_start_serial(&sock);
+    const uint8_t sent = 'R';
+    struct timeval deadline = { .tv_sec = 5 };
+
+    g_assert_cmpint(setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO,
+                               &deadline, sizeof(deadline)), ==, 0);
+    qtest_writel(qts, CFG(2) + 0x10, 0x10000000);
+    qtest_writel(qts, CFG(2) + 0x04, 0x00000002);
+    qtest_writel(qts, BRIDGE + 0x200 + 8 * 2 + 4, 0x1100);
+    qtest_writel(qts, BRIDGE_REG(0x030), 8u << 16);
+    qtest_writel(qts, BRIDGE_REG(0x038), 0x80);
+    qtest_writel(qts, BRIDGE_REG(0x130 + 8 * 3), 3);
+    qtest_writel(qts, BRIDGE_REG(0x118), SUPERIO_PIN);
+    qtest_writeb(qts, UART_A + 3, 0x03);
+    qtest_writeb(qts, UART_A + 1, 0x01);
+    g_assert_cmpint(write(sock, &sent, 1), ==, 1);
+
+    g_test_timer_start();
+    while (!(qtest_readb(qts, UART_A + 5) & 1)) {
+        g_assert_cmpfloat(g_test_timer_elapsed(), <, 5.0);
+        g_usleep(1000);
+    }
+    g_assert_cmphex(qtest_readl(qts, IOC3 + 0x1c) & IOC3_SERIAL_IRQ, ==,
+                    IOC3_SERIAL_IRQ);
+    g_assert_cmphex(qtest_readl(qts, BRIDGE_REG(0x100)) & SUPERIO_PIN, ==, 0);
+    qtest_writel(qts, IOC3 + 0x20, IOC3_SERIAL_IRQ);
+    g_assert_cmphex(qtest_readl(qts, BRIDGE_REG(0x100)) & SUPERIO_PIN, ==,
+                    SUPERIO_PIN);
+    qtest_writel(qts, IOC3 + 0x24, IOC3_SERIAL_IRQ);
+    g_assert_cmphex(qtest_readl(qts, BRIDGE_REG(0x100)) & SUPERIO_PIN, ==, 0);
+    qtest_writel(qts, IOC3 + 0x20, IOC3_SERIAL_IRQ);
+    qtest_writel(qts, BRIDGE_REG(0x108), SUPERIO_PIN);
+    g_assert_cmphex(qtest_readq(qts, HEART + 0x10030) & (1u << 3), ==,
+                    1u << 3);
+    g_assert_cmphex(octane_cpu_cause(qts) & 0x400, ==, 0);
+    qtest_writeq(qts, HEART + 0x10000, 1u << 3);
+    g_assert_cmphex(octane_cpu_cause(qts) & 0x400, ==, 0x400);
+
+    g_assert_cmphex(qtest_readb(qts, UART_A), ==, sent);
+    g_assert_cmphex(qtest_readl(qts, IOC3 + 0x1c) & IOC3_SERIAL_IRQ, ==, 0);
+    g_assert_cmphex(qtest_readl(qts, BRIDGE_REG(0x100)) & SUPERIO_PIN, ==, 0);
+    g_assert_cmphex(qtest_readq(qts, HEART + 0x10030) & (1u << 3), ==, 0);
+    g_assert_cmphex(octane_cpu_cause(qts) & 0x400, ==, 0);
+    close(sock);
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     int fd;
@@ -244,6 +307,8 @@ int main(int argc, char **argv)
     qtest_add_func("/octane/firmware-rejections", test_firmware_rejections);
     qtest_add_func("/octane/serial-a-loopback", test_serial_a_loopback);
     qtest_add_func("/octane/serial-a-chardev", test_serial_a_chardev);
+    qtest_add_func("/octane/serial-a-interrupt-route",
+                   test_serial_a_interrupt_route);
     qtest_add_func("/octane/heart-interrupt-levels",
                    test_heart_interrupt_levels);
     int result = g_test_run();
