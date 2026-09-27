@@ -40,9 +40,8 @@ login_verdict() below is login_origin()'s own three-stage progression and
 its wedge trip wires, scored by lib_net.ordered_stages(); that function's
 unit tests (test_lib_net.py) pin the ordering and trip-wire rules down
 without booting anything. This file only wires it to a real boot:
-_drive_login() drives the console through the same ordered questions
-login_origin() answers (root device, swap device default, login,
-password), against this fork's own framework console socket
+_drive_login() answers the device questions when the kernel asks them,
+then logs in through this fork's framework console socket
 (QEMUMachine.console_socket via QemuSystemTest.get_vm(), the same real
 API lib_prom.py's own drive_console() drives). _drive_login() also breaks
 out of its read loop early on a trip-wire match, matching login_origin()'s
@@ -130,21 +129,19 @@ LOGIN_STEPS = login_steps(prom_netboot_steps(NETBOOT_BOOTFILE),
                           ROOT_PASSWORD)
 _TAIL_MAX = 4096
 
-# The run's own three ordered markers. The swap-device answer is not
-# separately asserted: reaching the login prompt already proves it was
-# answered, since the kernel does not print "login:" without getting past
-# it.
+# The kernel can prompt for a root device or select sd0a automatically.
+# Reaching login proves the swap device was also selected.
 STAGES = (
-    ("never reached the root device question",
-     re.compile(r"root device\s*:")),
+    ("never selected the root device",
+     re.compile(r"root device\s*:|root on sd0a\b")),
     ("never reached the login prompt", re.compile(r"login:")),
     ("never reached a root shell prompt", re.compile(r"# ")),
 )
 
 
 def login_verdict(transcript):
-    """PASS iff transcript shows, in order: the root device question
-    answered, the login prompt, and a root shell prompt -- and none of
+    """PASS iff transcript shows, in order: root device selection,
+    the login prompt, and a root shell prompt -- and none of
     OPENBSD_TRIPWIRES fires before that shell prompt is reached (or
     anywhere in the transcript, if it is never reached).
 
