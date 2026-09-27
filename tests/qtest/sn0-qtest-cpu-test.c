@@ -718,21 +718,24 @@ static void build_timer_register_test(UserCode *p)
     user_mtc0(p, 10, CP0_COMPARE);
     user_mfc0(p, 9, CP0_CAUSE);
     user_i(p, 43, 26, 9, 8);          /* future Compare is still clear */
+    user_mfc0(p, 8, CP0_COUNT);
+    user_i(p, 43, 26, 8, 12);         /* prove the sample preceded Compare */
     loop = p->pos;
 
     user_mfc0(p, 8, CP0_COUNT);
     user_emit(p, (8u << 21) | (10u << 16) | (11u << 11) | 0x2b);
     back = user_branch(p, 5, 11, 0);
     user_patch(p, back, loop);
+    user_i(p, 43, 26, 8, 16);
     user_mfc0(p, 9, CP0_CAUSE);
-    user_i(p, 43, 26, 9, 12);         /* equality match after deadline */
+    user_i(p, 43, 26, 9, 20);         /* equality match after deadline */
     user_mfc0(p, 8, CP0_COUNT);
     user_i(p, 9, 8, 8, (uint16_t)-1);
     user_mtc0(p, 8, CP0_COMPARE);
     user_mfc0(p, 9, CP0_CAUSE);
-    user_i(p, 43, 26, 9, 16);         /* clearing a delivered match */
+    user_i(p, 43, 26, 9, 24);         /* clearing a delivered match */
     user_i(p, 9, 0, 9, 1);
-    user_i(p, 43, 26, 9, 20);
+    user_i(p, 43, 26, 9, 28);
     user_park(p);
 }
 
@@ -740,7 +743,7 @@ static void run_cpu_timer_test(const char *machine, const char *cpu)
 {
     g_autofree UserCode *image = g_new0(UserCode, 1);
     g_autofree char *path = NULL;
-    uint8_t mailbox[24] = { 0 };
+    uint8_t mailbox[32] = { 0 };
     QTestState *qts;
     int64_t deadline;
     int fd;
@@ -755,25 +758,28 @@ static void run_cpu_timer_test(const char *machine, const char *cpu)
     g_assert_cmpint(write(fd, image->bytes, sizeof(image->bytes)), ==,
                     sizeof(image->bytes));
     close(fd);
-    qts = qtest_initf("%s -cpu %s -bios %s -accel tcg,thread=multi -S",
+    qts = qtest_initf("%s -cpu %s -bios %s -accel tcg,thread=single "
+                      "-icount shift=10,sleep=off -S",
                       machine, cpu, path);
     unlink(path);
     qtest_qmp_assert_success(qts, "{ 'execute': 'cont' }");
     deadline = g_get_monotonic_time() + 30 * G_TIME_SPAN_SECOND;
     do {
         qtest_memread(qts, TIMER_MAILBOX, mailbox, sizeof(mailbox));
-        if (ldl_be_p(mailbox + 20)) {
+        if (ldl_be_p(mailbox + 28)) {
             break;
         }
         g_usleep(1000);
     } while (g_get_monotonic_time() < deadline);
     qtest_quit(qts);
-    g_assert_cmpuint(ldl_be_p(mailbox + 20), ==, 1);
+    g_assert_cmpuint(ldl_be_p(mailbox + 28), ==, 1);
     g_assert_cmphex(ldl_be_p(mailbox) & CAUSE_IP7, ==, CAUSE_IP7);
     g_assert_cmphex(ldl_be_p(mailbox + 4) & CAUSE_IP7, ==, 0);
     g_assert_cmphex(ldl_be_p(mailbox + 8) & CAUSE_IP7, ==, 0);
-    g_assert_cmphex(ldl_be_p(mailbox + 12) & CAUSE_IP7, ==, CAUSE_IP7);
-    g_assert_cmphex(ldl_be_p(mailbox + 16) & CAUSE_IP7, ==, 0);
+    g_assert_cmpuint(ldl_be_p(mailbox + 12), <, TIMER_TARGET);
+    g_assert_cmpuint(ldl_be_p(mailbox + 16), >=, TIMER_TARGET);
+    g_assert_cmphex(ldl_be_p(mailbox + 20) & CAUSE_IP7, ==, CAUSE_IP7);
+    g_assert_cmphex(ldl_be_p(mailbox + 24) & CAUSE_IP7, ==, 0);
 }
 
 static void test_r10000_timer(void)
