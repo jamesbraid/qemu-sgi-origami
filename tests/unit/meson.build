@@ -8,7 +8,7 @@ fork_unit_tests = [
   'test-sgi-o2000-module-mgmt', 'test-sgi-o2000-module-mgmt-real',
   'test-sgi-router', 'test-sn0-fabric-routed', 'test-sn1-topology',
   'test-sn-model', 'test-sgi-bedrock-ni', 'test-sgi-rad1-audio-pcm',
-  'test-sgi-kona-ports',
+  'test-sgi-kona-ports', 'test-sgi-kona-gl-decode',
 ]
 
 tests = {
@@ -203,6 +203,7 @@ if have_system
     'test-sgi-bedrock-ni': ['../../hw/misc/sgi-bedrock-ni-regs.c'],
     'test-sgi-kona-ports': ['../../hw/misc/sgi-command-port.c',
                             '../../hw/misc/sgi-kona-ports.c'],
+    'test-sgi-kona-gl-decode': ['../../hw/misc/sgi-kona-gl-decode.c'],
     'test-iov': [],
     'test-opts-visitor': [testqapi],
     'test-xs-node': [qom],
