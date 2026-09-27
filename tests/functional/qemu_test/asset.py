@@ -352,4 +352,5 @@ class LocalAsset(Asset):
         actual = self._hash(path) if self.hash is not None else None
         if actual is not None and actual != self.hash:
             raise AssetError(
-                self, f'Hash {actual} does not match {self.hash}: {path}')
+                self,
+                f'Hash {actual} does not match {self.hash}: {path}')

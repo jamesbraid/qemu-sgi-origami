@@ -1,3 +1,5 @@
+.. SPDX-License-Identifier: GPL-2.0-or-later
+
 Bare-metal MIPS regression ROMs
 ==============================
 
