@@ -236,6 +236,27 @@ static SGIModelNodePopulationList *whole_population(
 }
 
 /*
+ * A second row, ahead of @rows, fitting only node 0 and accepting one
+ * processor, graded @grade: the builder must refuse building it, for
+ * the reason each fixture's row gives it.
+ */
+static SGIModelNodePopulationList *node0_row(SGIModelNodePopulationList *rows,
+                                             SGIModelEvidenceGrade grade)
+{
+    SGIModelNodePopulationList *entry = g_new0(SGIModelNodePopulationList, 1);
+    SGIModelNodePopulation *row = g_new0(SGIModelNodePopulation, 1);
+    SGIModelCpuPopulation *one = g_new0(SGIModelCpuPopulation, 1);
+
+    QAPI_LIST_PREPEND(row->nodes, 0);
+    QAPI_LIST_PREPEND(one->cpus_per_node, 1);
+    QAPI_LIST_PREPEND(row->supported_cpu_populations, one);
+    row->grade = grade;
+    entry->value = row;
+    entry->next = rows;
+    return entry;
+}
+
+/*
  * Console field test fixture: a two-node topology with console=1, each
  * node carrying its own base I/O controller the way Origin 200's two-tower
  * wiring does (node/module/xtalk/board values copied from the
@@ -503,7 +524,7 @@ static const TypeInfo console_test_type = {
  * memory_population() then requires the requested per-node size to match
  * this node's shipped bank-mib total exactly, so only 768 MiB is ever
  * accepted here, the same "shipped population only" contract
- * origin2000-module's own nodes are documented to want.
+ * origin2000-rack's own nodes are documented to want.
  */
 static SGIModelCpuSlot bank_test_cpu_slots[] = {
     { .interface = 0, .slot = 0, .assembly = &console_test_r10000_180mhz },
@@ -891,10 +912,16 @@ static void sn_builder_fault_test_register_types(void)
         xtalk_attachment_list(console_test_xtalk, ARRAY_SIZE(console_test_xtalk));
     console_test_topology.io_boards =
         io_board_list(console_test_io_boards, ARRAY_SIZE(console_test_io_boards));
-    console_test_topology.node_populations = whole_population(
+    /*
+     * nodes=1 fits node 0 alone and leaves out node 1, whose own board
+     * and console the fixture carries: a row the builder cannot make,
+     * whatever its grade.
+     */
+    console_test_topology.node_populations = node0_row(whole_population(
         &console_test_topology,
         cpu_population_list(console_test_populations,
-                            ARRAY_SIZE(console_test_populations)));
+                            ARRAY_SIZE(console_test_populations))),
+        SGI_MODEL_EVIDENCE_GRADE_ESTABLISHED);
 
     bank_test_nodes[0].cpu_slots =
         cpu_slot_list(bank_test_cpu_slots, ARRAY_SIZE(bank_test_cpu_slots));
@@ -939,10 +966,12 @@ static void sn_builder_fault_test_register_types(void)
     bedrock_test_topology.io_boards =
         io_board_list(bedrock_test_io_boards,
                      ARRAY_SIZE(bedrock_test_io_boards));
-    bedrock_test_topology.node_populations = whole_population(
+    /* nodes=1 is a row whose evidence does not settle it. */
+    bedrock_test_topology.node_populations = node0_row(whole_population(
         &bedrock_test_topology,
         cpu_population_list(bedrock_test_populations,
-                            ARRAY_SIZE(bedrock_test_populations)));
+                            ARRAY_SIZE(bedrock_test_populations))),
+        SGI_MODEL_EVIDENCE_GRADE_UNKNOWN);
 
     type_register_static(&console_test_type);
     type_register_static(&bank_test_type);

@@ -124,6 +124,45 @@ static bool machine_has_child(QTestState *qts, const char *path,
     return found;
 }
 
+static int64_t qom_get_int(QTestState *qts, const char *path,
+                           const char *property)
+{
+    g_autoptr(QDict) response = qtest_qmp(qts,
+        "{ 'execute': 'qom-get', 'arguments': {"
+        "  'path': %s, 'property': %s } }", path, property);
+
+    return qdict_get_int(response, "return");
+}
+
+/*
+ * The Router port at each end of a cable, from 108-0170-001 Table 6-1:
+ * Router 1 port 5 to n1, 4 to n2 and 6 to Router 2's port 6; Router 2
+ * port 5 to n3 and 4 to n4. A Hub's end is its one port, 0, and so are
+ * both ends of a Null Router.
+ */
+static void assert_cable_ports(QTestState *qts, const char *path,
+                               const char *name)
+{
+    static const struct {
+        const char *name;
+        unsigned int end0, end1;
+    } ports[] = {
+        { "r1-node1", 5, 0 }, { "r1-node2", 4, 0 }, { "r1-r2", 6, 6 },
+        { "r2-node3", 5, 0 }, { "r2-node4", 4, 0 }, { "null-router", 0, 0 },
+    };
+
+    for (size_t i = 0; i < G_N_ELEMENTS(ports); i++) {
+        if (g_str_equal(ports[i].name, name)) {
+            g_assert_cmpint(qom_get_int(qts, path, "end0-index"), ==,
+                            ports[i].end0);
+            g_assert_cmpint(qom_get_int(qts, path, "end1-index"), ==,
+                            ports[i].end1);
+            return;
+        }
+    }
+    g_assert_not_reached();
+}
+
 static uint32_t crossbow_read(QTestState *qts, unsigned int cpu,
                               uint64_t offset)
 {
@@ -176,7 +215,10 @@ static void test_population(const void *data)
                         i < c->routers);
     }
     for (i = 0; i < G_N_ELEMENTS(c->cables) && c->cables[i]; i++) {
+        g_autofree char *path = g_strdup_printf("/machine/%s", c->cables[i]);
+
         g_assert_true(machine_has_child(qts, "/machine", c->cables[i]));
+        assert_cable_ports(qts, path, c->cables[i]);
         cables++;
     }
     /* No cable beyond the row's: every cable name any row uses. */
@@ -297,6 +339,39 @@ static void assert_refused(const char *args, const char *message)
     }
 }
 
+/*
+ * An absent node board has no boot flash: a two-node machine takes a
+ * pflash drive for each of its two node boards and asks for no more.
+ */
+static void test_absent_nodes_take_no_flash(const void *data)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree uint8_t *blank = g_malloc0(0x100000);
+    g_autofree char *paths[2] = { NULL, NULL };
+    QTestState *qts;
+
+    for (int i = 0; i < 2; i++) {
+        int fd = g_file_open_tmp("sn-node-population-flash-XXXXXX.bin",
+                                 &paths[i], &error);
+
+        g_assert_no_error(error);
+        close(fd);
+        g_assert_true(g_file_set_contents(paths[i], (const char *)blank,
+                                          0x100000, &error));
+        g_assert_no_error(error);
+    }
+    qts = qtest_initf("-M origin2000,nodes=2 -smp 4 -m 128M -display none "
+                      "-drive if=pflash,index=0,file=%s,format=raw "
+                      "-drive if=pflash,index=1,file=%s,format=raw",
+                      paths[0], paths[1]);
+    g_assert_true(machine_has_child(qts, "/machine", "node1"));
+    g_assert_false(machine_has_child(qts, "/machine", "node2"));
+    qtest_quit(qts);
+    for (int i = 0; i < 2; i++) {
+        g_assert_cmpint(unlink(paths[i]), ==, 0);
+    }
+}
+
 static void test_refusals(const void *data)
 {
     /* A count with no row. */
@@ -362,6 +437,8 @@ int main(int argc, char **argv)
     qtest_add_data_func("sn/node-population/default-is-the-most", NULL,
                         test_default_is_the_most);
     qtest_add_data_func("sn/node-population/refusals", NULL, test_refusals);
+    qtest_add_data_func("sn/node-population/absent-nodes-take-no-flash",
+                        NULL, test_absent_nodes_take_no_flash);
     qtest_add_data_func("sn/node-population/one-node-first-bank", NULL,
                         test_one_node_first_bank);
     return g_test_run();

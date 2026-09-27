@@ -34,7 +34,7 @@
 
 /* IO4, the empty XIO slot a `-device` board takes: crossbow0 widget 11. */
 #define DEVICE_WIDGET       11
-/* Origin 2000 IO5 (origin2000-module.yaml): crossbow0 widget 14. */
+/* Origin 2000 IO5 (origin2000-rack.yaml): crossbow0 widget 14. */
 #define PLACED_WIDGET       14
 
 #define MENET_IOC3S         4

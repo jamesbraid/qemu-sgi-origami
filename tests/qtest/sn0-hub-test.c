@@ -6427,7 +6427,7 @@ int main(int argc, char **argv)
                         NULL, test_an_extended_read_serves_a_blank_page);
     qtest_add_data_func("sn0/hub/one-wire-memory-read-ends-with-crc",
                         NULL, test_a_memory_read_ends_with_its_crc);
-    qtest_add_data_func("sn0/hub/origin2000-module-identity-present",
+    qtest_add_data_func("sn0/hub/origin2000-rack-identity-present",
                         NULL, test_origin2000_hubs_carry_module_identity);
     qtest_add_data_func("sn0/hub/pending-banks-reject-writes", NULL,
                         test_the_pending_banks_reject_writes);
