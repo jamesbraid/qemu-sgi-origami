@@ -767,6 +767,9 @@ static bool baseio_build_fuel(SGIBaseioState *s, Error **errp)
     qdev_prop_set_uint64(DEVICE(ioc3), "onewire-serial", s->onewire_serial);
     qdev_prop_set_uint16(DEVICE(ioc3), "subsystem-id",
                          s->fuel_subsystem_id);
+    qdev_prop_set_uint8(DEVICE(ioc3), "phy-addr", 1);
+    object_property_set_bool(OBJECT(ioc3), "phy-dp83843", true,
+                             &error_abort);
     if (s->fuel_rtc_low11_mirror && s->nvram_drive_id) {
         BlockBackend *blk = blk_by_name(s->nvram_drive_id);
 
