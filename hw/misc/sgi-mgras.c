@@ -147,7 +147,8 @@ static void mgras_update_irq(SGIMgrasState *s)
     /* The low-water top-level mask bit is unknown and remains unsupported. */
     bool lowater = !!(s->pending & MGRAS_PENDING_LOWATER);
     bool general = !!(s->pending & s->irq_mask &
-                      (MGRAS_PENDING_FLAGS | MGRAS_PENDING_CONTEXT));
+                      (MGRAS_PENDING_FLAGS | MGRAS_PENDING_CONTEXT |
+                       SGI_MGRAS_PENDING_SWAP));
     bool error = !!(s->pending & s->irq_mask & MGRAS_PENDING_ERROR);
 
     uint8_t lowater_vector = s->hq_vectors >> MGRAS_HQ_VECTOR_LOWATER_SHIFT;
@@ -166,6 +167,12 @@ static void mgras_update_irq(SGIMgrasState *s)
         s->error_asserted = error;
         mgras_deliver_widget_error(s, error);
     }
+}
+
+void sgi_mgras_raise_pending(SGIMgrasState *s, uint32_t sources)
+{
+    s->pending |= sources;
+    mgras_update_irq(s);
 }
 
 static void mgras_error(SGIMgrasState *s, hwaddr addr, unsigned size,

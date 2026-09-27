@@ -35,10 +35,12 @@
 /*
  * Class-0 opcodes the HQ answers itself. The query is 0x0000a20c and three
  * arguments; the client then polls HQ flag bit 17 and reads the answer at
- * 0x028004.
+ * 0x028004. The swap is the single word 0x00003700 and raises general
+ * interrupt source 10.
  */
 #define MGRAS_CMD_HDR_CLASS_HQ 0x0000
 #define MGRAS_HQ_OP_QUERY 0xa2
+#define MGRAS_HQ_OP_SWAP 0x37
 #define MGRAS_HQ_FLAG_QUERY 0x00020000
 
 
@@ -355,7 +357,8 @@ static void mgras_command_fifo_token(SGIMgrasState *s, uint32_t token)
         return;
     }
 
-    if (cmd_class == MGRAS_CMD_HDR_CLASS_HQ && reg == MGRAS_HQ_OP_QUERY) {
+    if (cmd_class == MGRAS_CMD_HDR_CLASS_HQ &&
+        (reg == MGRAS_HQ_OP_QUERY || reg == MGRAS_HQ_OP_SWAP)) {
         s->cmd_token_class = MGRAS_CMD_HDR_CLASS_HQ;
         s->cmd_token_reg = reg;
         s->cmd_token_payload_count = 0;
@@ -1968,6 +1971,24 @@ static void mgras_raster_command_fifo_dispatch(SGIMgrasState *s)
     if (s->cmd_token_class == MGRAS_CMD_HDR_CLASS_HQ &&
         reg == MGRAS_HQ_OP_QUERY) {
         s->hq_flags |= MGRAS_HQ_FLAG_QUERY;
+        return;
+    }
+
+    /*
+     * Established (mgras-hq4.md, "Swap scheduling"): MgrasSchedSwapBuf
+     * enables source 10, writes 0x3700 and sleeps until its handler sees
+     * source 10. Inferred there: the board raises it once the work queued
+     * ahead of the word has drained, so the flip follows the rendering.
+     * Approximated: the model executes each command as it arrives, so
+     * nothing is queued ahead and it raises the source when the word is
+     * consumed. The XMAP
+     * buffer selection itself is the kernel's MgrasSchedSwapTask, not
+     * this word. The discriminating tests are
+     * swap-command-raises-interrupt-10 and swap-command-needs-enable.
+     */
+    if (s->cmd_token_class == MGRAS_CMD_HDR_CLASS_HQ &&
+        reg == MGRAS_HQ_OP_SWAP) {
+        sgi_mgras_raise_pending(s, SGI_MGRAS_PENDING_SWAP);
         return;
     }
 

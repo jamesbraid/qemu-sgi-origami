@@ -198,6 +198,12 @@ struct SGIMgrasClass {
     ResettablePhases parent_phases;
 };
 
+/* General interrupt source 10: the swap command has been reached. */
+#define SGI_MGRAS_PENDING_SWAP 0x00000400
+
+/* Latch general interrupt sources and update the interrupt lines. */
+void sgi_mgras_raise_pending(SGIMgrasState *s, uint32_t sources);
+
 /*
  * Composes a guest-visible widget/address pair into a fabric address space
  * offset, matching whichever addressing mode the machine wired up (packet
