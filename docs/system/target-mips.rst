@@ -83,9 +83,11 @@ The SGI Scalable Node family emulation (\"origin200\", \"origin2000\",
 \"origin300\") supports the Hub and Bedrock node ASICs, their SCSI,
 Ethernet, serial and NVRAM peripherals, and each product's own system
 controller. Every product boots only through its own stock PROM image,
-given with ``-bios``; there is no direct kernel boot. See
-:doc:`../specs/sgi-sn` for the family's products, its ``topology=``
-and population rules, and its board devices.
+given with ``-bios``; there is no direct kernel boot. The Origin 200 can
+also be built with a GIGAchannel expansion cabinet
+(``topology=origin200-gigachannel``). See :doc:`../specs/sgi-sn` for the
+family's products, its ``topology=`` and population rules, and its board
+devices.
 
 .. include:: cpu-models-mips.rst.inc
 

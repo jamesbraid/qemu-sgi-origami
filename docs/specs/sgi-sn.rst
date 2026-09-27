@@ -245,6 +245,67 @@ answers the Bridge's whole face at every widget the Hub decodes; the link
 into a Crossbow port carries packets instead. Ports connect before either
 side realizes.
 
+GIGAchannel expansion cabinet
+-----------------------------
+
+The Origin 200 GIGAchannel is a separate I/O cabinet holding a Crossbow, a
+Bridge with four PCI slots and five XIO slots. Fitting it moves the module's
+own base I/O behind the cabinet's Crossbow. Two topologies build it:
+
+``-M origin200,topology=origin200-gigachannel``
+  One node, with the same ``-smp`` and ``-m`` choices as ``origin200``. The
+  machine builds the cabinet's Crossbow with the Hub on widget 10 (link A),
+  the IP29 base I/O Bridge on widget 9 and the cabinet's own I/O on widget
+  8. The IP29 board reports the Crosstown extension board record beside its
+  own.
+
+``-M origin200,topology=origin200-gigachannel-loopback``
+  The converted module with a loopback cable instead of a cabinet: the plain
+  ``origin200`` wiring, base I/O Bridge directly on the Hub at widget 8, with
+  the Crosstown extension board record added.
+
+The cabinet's own I/O is ``sgi-gigachannel``
+(``hw/mips/sgi/board-gigachannel.c``). The machine places it, so it is not
+``-device``-creatable. It is a Bridge at widget revision 4 carrying the
+cabinet interface board's record, ``XBOX_DUALXTOWN``, which the firmware
+reports at ``io7``. Its four PCI slots are Bridge devices 0 to 3 on the bus
+``pci.gigachannel1``, so a PCI card joins the cabinet with
+``bus=pci.gigachannel1,addr=N``.
+
+The Bridge's external-flash port has two chip selects:
+
+- The base chip select, widget offset ``0xc0_0000``, is where the IP27 PROM
+  loads its BASEIO PROM from on a GIGAchannel. The option
+  ``-drive if=none,id=sgi-gigachannel-flash0,file=IMAGE,format=raw`` fits a
+  flash part there holding ``IMAGE``, a BaseIO flash image. The number counts
+  cabinets. With no such drive nothing is fitted: the PROM takes a bus
+  error in the window, prints ``Retrying using the IP27 PROM internal copy
+  of BASEIO PROM`` and continues from its own reduced copy.
+- The second chip select, widget offset ``0xe0_0000``, holds the cabinet
+  system controller's 16-bit status word. Both the BASEIO PROM and IRIX read
+  it, and neither writes it. The word is the
+  ``sgi-gigachannel.system-controller-status`` property, default 0 (no
+  redundant power supply, nothing to report), set with ``-global``. For
+  example, ``-global sgi-gigachannel.system-controller-status=0x40`` reports
+  a redundant supply with redundancy intact. The word reads the same at
+  every halfword of the chip select, and writes are logged under
+  ``-d unimp`` and dropped.
+
+What is approximated:
+
+- The flash part is the Origin 2000 BaseIO card's, an identity the PROM's
+  loader accepts. The part SGI fitted in the cabinet is not known.
+- The status word is fixed at start-up. IRIX polls it about once a minute
+  and reacts to blower, over-temperature and power-supply events, but the
+  model cannot change the word while the guest runs, so none of those
+  events can occur. How the real word decodes across its chip select, what
+  its upper byte holds and what a write does are not known.
+- The board records ride Bridge one-wire lines chosen from where real
+  inventories list them, with placeholder barcodes and serials.
+- The Crossbow is the Origin 2000 module's Crossbow revision.
+- Two-module systems, a cabinet on the slave module and a converted module
+  with neither cabinet nor loopback are not built.
+
 Devices
 =======
 
