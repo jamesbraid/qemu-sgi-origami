@@ -174,6 +174,9 @@ static const char *const l1_reasons[] = { "", "COMMAND", "PANEL", "OS" };
 /* The stored brick-type character the identity request returns. */
 static uint32_t l1_brick_type_character(SGIL1State *s)
 {
+    if (!strcmp(s->brick_type, "ip34")) {
+        return 0x61;
+    }
     if (!strcmp(s->brick_type, "ip35")) {
         return 0x43;
     }
@@ -1992,9 +1995,11 @@ static void l1_realize(DeviceState *dev, Error **errp)
     if (!s->brick_type) {
         s->brick_type = g_strdup("ip45");
     }
-    if (strcmp(s->brick_type, "ip45") && strcmp(s->brick_type, "ip35") &&
-        strcmp(s->brick_type, "ip37") && strcmp(s->brick_type, "unknown")) {
-        error_setg(errp, "L1 brick-type must be ip45, ip35, ip37 or unknown");
+    if (strcmp(s->brick_type, "ip34") && strcmp(s->brick_type, "ip45") &&
+        strcmp(s->brick_type, "ip35") && strcmp(s->brick_type, "ip37") &&
+        strcmp(s->brick_type, "unknown")) {
+        error_setg(errp, "L1 brick-type must be ip34, ip45, ip35, "
+                   "ip37 or unknown");
         return;
     }
     if (s->debug_switches > 0xffff || s->processors > 32 ||
