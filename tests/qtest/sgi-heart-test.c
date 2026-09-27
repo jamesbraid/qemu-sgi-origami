@@ -492,7 +492,8 @@ static void test_widget_errors(void)
                      MEMTX_ERROR);
     g_assert_cmpuint(qtest_writel_tx(s, HEART_WIDGET + 0x64, 0), ==,
                      MEMTX_ERROR);
-    g_assert_cmpuint(qtest_writeq_tx(s, HEART_WIDGET + 0x60, 0), ==,
+    g_assert_cmpuint(qtest_writeq_tx(s, HEART_WIDGET + 0x60,
+                                    0xdeadbeef3ff62c07ULL), ==,
                      MEMTX_OK);
     g_assert_cmphex(qtest_readq(s, HEART_WIDGET + 0x60), ==, 0);
     g_assert_cmphex(qtest_readq(s, HEART_WIDGET + 0x68), ==,
