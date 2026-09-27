@@ -127,9 +127,14 @@ static bool mgras_overlay_bgr(SGIMgrasState *s, int i, uint8_t did,
  * colour map as before. RGB is a direct 0x00RRGGBB triple a paint wrote
  * (see mgras_draw_fill() and its siblings in hw/misc/sgi-mgras-raster.c)
  * and bypasses the CMAP entirely; only its R and B bytes need swapping
- * to this function's native order. An RGB pixel's main WID is not read:
- * no register or capture is known to source a map a direct-colour pixel
- * would use. A visible overlay pixel covers either kind.
+ * to this function's native order. RGB12 is the 0xBGR nibble form a
+ * 12-bit window's paint stores; each nibble widens to eight bits by
+ * repeating itself, so 0xf is full scale. How the hardware widens a
+ * four-bit channel is not known: shifting alone would show the white the
+ * Icon Catalog draws its icons' bodies on as 240. Neither direct form's
+ * main WID is read: no register or capture is known to source a map a
+ * direct-colour pixel would use. A visible overlay pixel covers every
+ * kind.
  */
 static uint32_t mgras_resolve_pixel_bgr(SGIMgrasState *s, int i,
                                         uint8_t main_did, uint8_t overlay_did)
@@ -143,6 +148,13 @@ static uint32_t mgras_resolve_pixel_bgr(SGIMgrasState *s, int i,
         uint32_t rgb = s->front[i] & 0x00ffffff;
 
         return ((rgb & 0xff) << 16) | (rgb & 0xff00) | ((rgb >> 16) & 0xff);
+    }
+    if (s->format[i] == SGI_MGRAS_PIXEL_FORMAT_RGB12) {
+        uint32_t r = s->front[i] & 0xf;
+        uint32_t g = (s->front[i] >> 4) & 0xf;
+        uint32_t b = (s->front[i] >> 8) & 0xf;
+
+        return (b * 0x11) << 16 | (g * 0x11) << 8 | r * 0x11;
     }
     return mgras_cmap_rgb(s, main_did, s->front[i] & 0xff);
 }
