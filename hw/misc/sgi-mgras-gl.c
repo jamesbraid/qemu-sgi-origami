@@ -10,8 +10,8 @@
  * engine's function, not of its program.
  *
  * What it preserves: the pixels that colour and depth clears and
- * flat-shaded, untextured triangles, transformed by the modelview and
- * projection matrices and depth tested, leave in the
+ * untextured triangles, flat or smooth shaded, transformed by the
+ * modelview and projection matrices and depth tested, leave in the
  * window, and the main-port framing, so the words
  * after a packet still parse as headers. What it does not: the
  * raster-engine register writes the GE would make, the timing of the
@@ -114,6 +114,8 @@ typedef struct MgrasGLWindow {
 typedef struct MgrasGLVertex {
     int64_t x, y;         /* window position in 1/256 pixel */
     double z;             /* window depth; [0, 1] inside the view volume */
+    double inv_w;         /* 1 / clip w, for perspective-correct colour */
+    double rgb[3];
 } MgrasGLVertex;
 
 bool sgi_mgras_gl_header(uint32_t header)
@@ -202,7 +204,9 @@ void sgi_mgras_gl_reset(SGIMgrasState *s)
  * A component clamped to [0, 1] and rounded to the nearest of eight bits
  * (OpenGL 1.2.1, 2.13.9). The 12-bit-per-channel visual the probe uses
  * (visual 0x30, 12 red bits) is stored at the eight bits a direct-colour
- * pixel holds in this model; 0.0 and 1.0 are exact either way.
+ * pixel holds in this model; 0.0 and 1.0 are exact either way, and how
+ * the board reduces an interpolated 12-bit value is not published. The
+ * discriminating test is gl-smooth-rounds-to-the-nearest-step.
  */
 static uint32_t mgras_gl_channel(double c)
 {
@@ -491,6 +495,11 @@ static bool mgras_gl_transform(SGIMgrasState *s, int i, MgrasGLVertex *out)
     out->x = llround(xw * (1 << MGRAS_GL_SUBPIXEL_BITS));
     out->y = llround(yw * (1 << MGRAS_GL_SUBPIXEL_BITS));
     out->z = (clip[2] / clip[3] + 1.0) / 2.0;
+    out->inv_w = 1.0 / clip[3];
+    for (int k = 0; k < 3; k++) {
+        out->rgb[k] = MIN(MAX(mgras_gl_float(s->gl_vertex_color[i][k]),
+                              0.0f), 1.0f);
+    }
     return true;
 }
 
@@ -507,8 +516,8 @@ static bool mgras_gl_transform(SGIMgrasState *s, int i, MgrasGLVertex *out)
  * vertex with w <= 0 drops the whole triangle
  * (gl-triangle-with-negative-w-is-dropped).
  *
- * Depth is interpolated linearly in window coordinates (OpenGL 1.2.1,
- * 3.5.1).
+ * Depth is interpolated linearly in window coordinates and colour with
+ * the perspective correction of equation 3.4 (OpenGL 1.2.1, 3.5.1).
  */
 static void mgras_gl_triangle(SGIMgrasState *s)
 {
@@ -519,16 +528,9 @@ static void mgras_gl_triangle(SGIMgrasState *s)
     int vx = s->gl_viewport[0], vy = s->gl_viewport[1];
     int vw = s->gl_viewport[2], vh = s->gl_viewport[3];
     int px0, px1, py0, py1;
+    bool smooth = s->gl_shade_model != MGRAS_GL_FLAT;
     uint32_t flat_rgb;
 
-    if (s->gl_shade_model != MGRAS_GL_FLAT &&
-        (memcmp(s->gl_vertex_color[0], provoking,
-                sizeof(s->gl_vertex_color[0])) ||
-         memcmp(s->gl_vertex_color[1], provoking,
-                sizeof(s->gl_vertex_color[1])))) {
-        qemu_log_mask(LOG_UNIMP, "sgi-mgras: smooth-shaded GL triangle "
-                      "drawn flat in its third vertex's colour\n");
-    }
     /* Table 2.9: an independent triangle's third vertex provokes. */
     flat_rgb = (mgras_gl_channel(mgras_gl_float(provoking[0])) << 16) |
                (mgras_gl_channel(mgras_gl_float(provoking[1])) << 8) |
@@ -578,6 +580,7 @@ static void mgras_gl_triangle(SGIMgrasState *s)
             int64_t e1 = mgras_gl_edge(&v[2], &v[0], cx, cy);
             int64_t e2 = mgras_gl_edge(&v[0], &v[1], cx, cy);
             double b1, b2, z;
+            uint32_t rgb = flat_rgb;
             uint32_t zq, *stored;
 
             if (!mgras_gl_owns(&v[1], &v[2], e0) ||
@@ -601,7 +604,20 @@ static void mgras_gl_triangle(SGIMgrasState *s)
                     *stored = zq;
                 }
             }
-            mgras_gl_put(s, win.ox + px, win.oy + py, flat_rgb);
+            if (smooth) {
+                double w0 = (1.0 - b1 - b2) * v[0].inv_w;
+                double w1 = b1 * v[1].inv_w, w2 = b2 * v[2].inv_w;
+                double sum = w0 + w1 + w2;
+
+                rgb = 0;
+                for (int k = 0; k < 3; k++) {
+                    double c = (w0 * v[0].rgb[k] + w1 * v[1].rgb[k] +
+                                w2 * v[2].rgb[k]) / sum;
+
+                    rgb = (rgb << 8) | mgras_gl_channel(c);
+                }
+            }
+            mgras_gl_put(s, win.ox + px, win.oy + py, rgb);
         }
     }
     s->dirty = true;
