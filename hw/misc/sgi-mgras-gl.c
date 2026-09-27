@@ -9,9 +9,9 @@
  * says those commands produce. This is an approximation of the geometry
  * engine's function, not of its program.
  *
- * What it preserves: the pixels that a colour clear and flat-shaded,
- * untextured triangles, transformed by the modelview and projection
- * matrices, leave in the
+ * What it preserves: the pixels that colour and depth clears and
+ * flat-shaded, untextured triangles, transformed by the modelview and
+ * projection matrices and depth tested, leave in the
  * window, and the main-port framing, so the words
  * after a packet still parse as headers. What it does not: the
  * raster-engine register writes the GE would make, the timing of the
@@ -29,16 +29,21 @@
 #define MGRAS_GL_BEGIN_TRIANGLES 0x00001a00
 #define MGRAS_GL_END_TRIANGLES   0x00002400
 #define MGRAS_GL_CLEAR_COLOR_BUF 0x00001500
+#define MGRAS_GL_CLEAR_DEPTH_BUF 0x00004a00
 #define MGRAS_GL_VIEWPORT        0x00003310
 #define MGRAS_GL_FLUSH           0x00003600
 #define MGRAS_GL_SHADE_MODEL     0x00004704
 #define MGRAS_GL_CLEAR_COLOR     0x0000ba10
+#define MGRAS_GL_CLEAR_DEPTH     0x0000bc04
 #define MGRAS_GL_MATRIX_MODE     0x00002a04
 #define MGRAS_GL_LOAD_MATRIX     0x00002b40
 #define MGRAS_GL_LOAD_IDENTITY   0x00002c00
 #define MGRAS_GL_MULT_MATRIX     0x00002d40
 #define MGRAS_GL_FRUSTUM         0x00003418
 #define MGRAS_GL_ORTHO           0x00003518
+#define MGRAS_GL_DEPTH_MASK      0x00003c04
+#define MGRAS_GL_DEPTH_FUNC      0x00004304
+#define MGRAS_GL_DEPTH_TEST      0x00006604
 
 /* Vertex-attribute headers: the class names the source format. */
 #define MGRAS_GL_VERTEX2F        0x40000008
@@ -51,6 +56,12 @@
 #define MGRAS_GL_SMOOTH          0x1d01
 #define MGRAS_GL_MODELVIEW       0x1700
 #define MGRAS_GL_PROJECTION      0x1701
+
+/* glDepthFunc's word is the function minus GL_NEVER (OpenGL 4.1.5). */
+enum {
+    MGRAS_GL_NEVER, MGRAS_GL_LESS, MGRAS_GL_EQUAL, MGRAS_GL_LEQUAL,
+    MGRAS_GL_GREATER, MGRAS_GL_NOTEQUAL, MGRAS_GL_GEQUAL, MGRAS_GL_ALWAYS,
+};
 
 /*
  * The window the current context draws into, from the 63-word image the
@@ -84,6 +95,15 @@
  */
 #define MGRAS_GL_SUBPIXEL_BITS   8
 
+/*
+ * The depth plane holds 24 bits, the Z width the Octane Technical Report
+ * (section 4.2.3) gives the RE4, and glClearDepth's word is already
+ * scaled to it (mgras-gl-commands.md). A fragment's window depth is
+ * rounded to the nearest step, the model's choice; the discriminating
+ * test is gl-depth-rounds-to-24-bits.
+ */
+#define MGRAS_GL_DEPTH_MAX       0xffffff
+
 /* Screen columns, and rows counted up from the bottom of the screen. */
 typedef struct MgrasGLWindow {
     int ox, oy;           /* the window's lower-left pixel */
@@ -93,6 +113,7 @@ typedef struct MgrasGLWindow {
 /* A vertex after transformation, ready to rasterize. */
 typedef struct MgrasGLVertex {
     int64_t x, y;         /* window position in 1/256 pixel */
+    double z;             /* window depth; [0, 1] inside the view volume */
 } MgrasGLVertex;
 
 bool sgi_mgras_gl_header(uint32_t header)
@@ -102,16 +123,21 @@ bool sgi_mgras_gl_header(uint32_t header)
     case MGRAS_GL_BEGIN_TRIANGLES:
     case MGRAS_GL_END_TRIANGLES:
     case MGRAS_GL_CLEAR_COLOR_BUF:
+    case MGRAS_GL_CLEAR_DEPTH_BUF:
     case MGRAS_GL_VIEWPORT:
     case MGRAS_GL_FLUSH:
     case MGRAS_GL_SHADE_MODEL:
     case MGRAS_GL_CLEAR_COLOR:
+    case MGRAS_GL_CLEAR_DEPTH:
     case MGRAS_GL_MATRIX_MODE:
     case MGRAS_GL_LOAD_MATRIX:
     case MGRAS_GL_LOAD_IDENTITY:
     case MGRAS_GL_MULT_MATRIX:
     case MGRAS_GL_FRUSTUM:
     case MGRAS_GL_ORTHO:
+    case MGRAS_GL_DEPTH_MASK:
+    case MGRAS_GL_DEPTH_FUNC:
+    case MGRAS_GL_DEPTH_TEST:
     case MGRAS_GL_VERTEX2F:
     case MGRAS_GL_VERTEX3F:
     case MGRAS_GL_VERTEX4F:
@@ -166,6 +192,10 @@ void sgi_mgras_gl_reset(SGIMgrasState *s)
     s->gl_matrix_mode = MGRAS_GL_MODELVIEW;
     mgras_gl_identity(s->gl_modelview);
     mgras_gl_identity(s->gl_projection);
+    s->gl_depth_test = 0;
+    s->gl_depth_func = MGRAS_GL_LESS;
+    s->gl_depth_mask = 1;
+    s->gl_clear_depth = MGRAS_GL_DEPTH_MAX;
 }
 
 /*
@@ -221,27 +251,42 @@ static void mgras_gl_put(SGIMgrasState *s, int x, int y, uint32_t rgb)
     s->format[idx] = SGI_MGRAS_PIXEL_FORMAT_RGB;
 }
 
+static uint32_t *mgras_gl_depth(SGIMgrasState *s, int x, int y)
+{
+    return &s->depth[(SGI_MGRAS_HEIGHT - 1 - y) * SGI_MGRAS_WIDTH + x];
+}
+
 /*
  * OpenGL 1.2.1, 4.2.3: a clear passes only the pixel ownership, scissor
  * and dither steps, and the viewport does not bound it. The model takes
  * ownership as the image's window rectangle, which is the whole window
  * when nothing covers it; the scissor test and dithering are not
- * modelled.
+ * modelled. A depth clear writes only when the depth mask allows.
  */
-static void mgras_gl_clear(SGIMgrasState *s)
+static void mgras_gl_clear(SGIMgrasState *s, bool depth)
 {
     MgrasGLWindow win;
-    uint32_t rgb;
+    uint32_t rgb = 0;
 
     if (!mgras_gl_window(s, &win)) {
         return;
     }
-    rgb = (mgras_gl_channel(mgras_gl_float(s->gl_clear_color[0])) << 16) |
-          (mgras_gl_channel(mgras_gl_float(s->gl_clear_color[1])) << 8) |
-          mgras_gl_channel(mgras_gl_float(s->gl_clear_color[2]));
+    if (depth && !s->gl_depth_mask) {
+        return;
+    }
+    if (!depth) {
+        rgb = (mgras_gl_channel(mgras_gl_float(s->gl_clear_color[0])) << 16) |
+              (mgras_gl_channel(mgras_gl_float(s->gl_clear_color[1])) << 8) |
+              mgras_gl_channel(mgras_gl_float(s->gl_clear_color[2]));
+    }
     for (int y = win.y0; y <= win.y1; y++) {
         for (int x = win.x0; x <= win.x1; x++) {
-            mgras_gl_put(s, x, y, rgb);
+            if (depth) {
+                *mgras_gl_depth(s, x, y) =
+                    s->gl_clear_depth & MGRAS_GL_DEPTH_MAX;
+            } else {
+                mgras_gl_put(s, x, y, rgb);
+            }
         }
     }
     s->dirty = true;
@@ -376,10 +421,32 @@ static bool mgras_gl_owns(const MgrasGLVertex *a, const MgrasGLVertex *b,
     return b->y < a->y || (b->y == a->y && b->x < a->x);
 }
 
+static bool mgras_gl_depth_passes(uint32_t func, uint32_t z, uint32_t stored)
+{
+    switch (func) {
+    case MGRAS_GL_NEVER:
+        return false;
+    case MGRAS_GL_LESS:
+        return z < stored;
+    case MGRAS_GL_EQUAL:
+        return z == stored;
+    case MGRAS_GL_LEQUAL:
+        return z <= stored;
+    case MGRAS_GL_GREATER:
+        return z > stored;
+    case MGRAS_GL_NOTEQUAL:
+        return z != stored;
+    case MGRAS_GL_GEQUAL:
+        return z >= stored;
+    default:
+        return true;
+    }
+}
+
 /*
  * Transform one vertex (OpenGL 1.2.1, 2.10): object to eye by the
  * modelview, eye to clip by the projection, the divide by w and the
- * viewport map. Arithmetic is double
+ * viewport map with the default depth range [0, 1]. Arithmetic is double
  * precision, not the GE's; a result that differs only in rounding is
  * within the probe's margins. A vertex with w <= 0 needs clipping the
  * model does not do, and returns false.
@@ -423,18 +490,25 @@ static bool mgras_gl_transform(SGIMgrasState *s, int i, MgrasGLVertex *out)
     }
     out->x = llround(xw * (1 << MGRAS_GL_SUBPIXEL_BITS));
     out->y = llround(yw * (1 << MGRAS_GL_SUBPIXEL_BITS));
+    out->z = (clip[2] / clip[3] + 1.0) / 2.0;
     return true;
 }
 
 /*
  * Transform, map and rasterize the collected triangle.
  *
- * Clipping to the view volume is approximated by bounding the fragments
- * to the viewport rectangle, which matches it in x and y for a positive
- * w; z is not clipped and no depth is stored. A vertex with w <= 0 drops
- * the triangle. The discriminating tests are
- * gl-triangle-bounded-by-the-viewport and
- * gl-triangle-with-negative-w-is-dropped.
+ * Clipping to the view volume is approximated. In x and y the fragments
+ * are bounded by the viewport rectangle, which matches clipping for a
+ * positive w; the discriminating test is
+ * gl-triangle-bounded-by-the-viewport. In z a fragment whose interpolated
+ * window depth lies outside [0, 1] is dropped: window depth is affine in
+ * window x and y over the triangle, so that removes exactly the part
+ * beyond the near or far plane (gl-triangle-clipped-at-the-far-plane). A
+ * vertex with w <= 0 drops the whole triangle
+ * (gl-triangle-with-negative-w-is-dropped).
+ *
+ * Depth is interpolated linearly in window coordinates (OpenGL 1.2.1,
+ * 3.5.1).
  */
 static void mgras_gl_triangle(SGIMgrasState *s)
 {
@@ -503,11 +577,29 @@ static void mgras_gl_triangle(SGIMgrasState *s)
             int64_t e0 = mgras_gl_edge(&v[1], &v[2], cx, cy);
             int64_t e1 = mgras_gl_edge(&v[2], &v[0], cx, cy);
             int64_t e2 = mgras_gl_edge(&v[0], &v[1], cx, cy);
+            double b1, b2, z;
+            uint32_t zq, *stored;
 
             if (!mgras_gl_owns(&v[1], &v[2], e0) ||
                 !mgras_gl_owns(&v[2], &v[0], e1) ||
                 !mgras_gl_owns(&v[0], &v[1], e2)) {
                 continue;
+            }
+            b1 = (double)e1 / area;
+            b2 = (double)e2 / area;
+            z = v[0].z + b1 * (v[1].z - v[0].z) + b2 * (v[2].z - v[0].z);
+            if (!(z >= 0.0 && z <= 1.0)) {
+                continue;
+            }
+            zq = (uint32_t)llround(z * MGRAS_GL_DEPTH_MAX);
+            stored = mgras_gl_depth(s, win.ox + px, win.oy + py);
+            if (s->gl_depth_test) {
+                if (!mgras_gl_depth_passes(s->gl_depth_func, zq, *stored)) {
+                    continue;
+                }
+                if (s->gl_depth_mask) {
+                    *stored = zq;
+                }
             }
             mgras_gl_put(s, win.ox + px, win.oy + py, flat_rgb);
         }
@@ -577,7 +669,13 @@ void sgi_mgras_gl_execute(SGIMgrasState *s, uint32_t header,
         memcpy(s->gl_clear_color, payload, sizeof(s->gl_clear_color));
         return;
     case MGRAS_GL_CLEAR_COLOR_BUF:
-        mgras_gl_clear(s);
+        mgras_gl_clear(s, false);
+        return;
+    case MGRAS_GL_CLEAR_DEPTH:
+        s->gl_clear_depth = payload[0];
+        return;
+    case MGRAS_GL_CLEAR_DEPTH_BUF:
+        mgras_gl_clear(s, true);
         return;
     case MGRAS_GL_SHADE_MODEL:
         s->gl_shade_model = payload[0];
@@ -591,6 +689,20 @@ void sgi_mgras_gl_execute(SGIMgrasState *s, uint32_t header,
     case MGRAS_GL_FRUSTUM:
     case MGRAS_GL_ORTHO:
         mgras_gl_matrix_command(s, header, payload);
+        return;
+    case MGRAS_GL_DEPTH_TEST:
+        /*
+         * glEnable(GL_DEPTH_TEST) sent 0x6604 with 1 and no other word in
+         * the probe's depth case, and every context setup sends it with 0
+         * (run irix-20260927T172059-fdbada).
+         */
+        s->gl_depth_test = payload[0] != 0;
+        return;
+    case MGRAS_GL_DEPTH_FUNC:
+        s->gl_depth_func = payload[0] & 7;
+        return;
+    case MGRAS_GL_DEPTH_MASK:
+        s->gl_depth_mask = payload[0] != 0;
         return;
     case MGRAS_GL_COLOR3F:
         memcpy(s->gl_color, payload, 3 * sizeof(uint32_t));

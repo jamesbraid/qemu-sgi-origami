@@ -338,6 +338,9 @@ struct SGIMgrasState {
     uint32_t *back;
     uint32_t front_count;
     uint32_t back_count;
+    /* 24-bit depth plane, one value per pixel of the screen. */
+    uint32_t *depth;
+    uint32_t depth_count;
     /*
      * Per-pixel colour-format tag, one of the SGI_MGRAS_PIXEL_FORMAT_*
      * values above: CI8 selects the indexed plane (front holds an 8-bit
@@ -417,6 +420,10 @@ struct SGIMgrasState {
     /* IEEE single bits, column-major as glLoadMatrixf lays a matrix out. */
     uint32_t gl_modelview[16];
     uint32_t gl_projection[16];
+    uint32_t gl_depth_test;
+    uint32_t gl_depth_func;
+    uint32_t gl_depth_mask;
+    uint32_t gl_clear_depth;
     uint64_t retraces;
     uint8_t xmap_index;
     uint32_t xmap_mode[SGI_MGRAS_XMAP_ENTRIES];

@@ -1046,6 +1046,7 @@ static void mgras_reset_enter(Object *obj, ResetType type)
     }
     memset(s->front, 0, SGI_MGRAS_WIDTH * SGI_MGRAS_HEIGHT * sizeof(*s->front));
     memset(s->back, 0, SGI_MGRAS_WIDTH * SGI_MGRAS_HEIGHT * sizeof(*s->back));
+    memset(s->depth, 0, SGI_MGRAS_WIDTH * SGI_MGRAS_HEIGHT * sizeof(*s->depth));
     memset(s->format, 0, SGI_MGRAS_WIDTH * SGI_MGRAS_HEIGHT);
     memset(s->overlay, 0, SGI_MGRAS_WIDTH * SGI_MGRAS_HEIGHT);
     memset(s->hq, 0, sizeof(s->hq));
@@ -1213,7 +1214,9 @@ static bool mgras_build_widget(SGIXioBoardState *board, Error **errp)
     }
     s->front = g_new0(uint32_t, SGI_MGRAS_WIDTH * SGI_MGRAS_HEIGHT);
     s->back = g_new0(uint32_t, SGI_MGRAS_WIDTH * SGI_MGRAS_HEIGHT);
+    s->depth = g_new0(uint32_t, SGI_MGRAS_WIDTH * SGI_MGRAS_HEIGHT);
     s->front_count = s->back_count = SGI_MGRAS_WIDTH * SGI_MGRAS_HEIGHT;
+    s->depth_count = SGI_MGRAS_WIDTH * SGI_MGRAS_HEIGHT;
     s->format = g_new0(uint8_t, SGI_MGRAS_WIDTH * SGI_MGRAS_HEIGHT);
     s->overlay = g_new0(uint8_t, SGI_MGRAS_WIDTH * SGI_MGRAS_HEIGHT);
     s->ge[SGI_MGRAS_GE_SLOT_A] = g_new0(uint32_t, SGI_MGRAS_GE_WORDS);
@@ -1250,7 +1253,7 @@ static void mgras_unrealize(DeviceState *dev)
     timer_del(s->retrace_timer); timer_free(s->retrace_timer);
     address_space_destroy(&s->fabric_as);
     qemu_graphic_console_close(s->con);
-    g_free(s->front); g_free(s->back); g_free(s->format);
+    g_free(s->front); g_free(s->back); g_free(s->depth); g_free(s->format);
     g_free(s->overlay);
     g_free(s->ge[SGI_MGRAS_GE_SLOT_A]); g_free(s->ge[SGI_MGRAS_GE_SLOT_B]);
     g_free(s->display_buffer);
@@ -1481,6 +1484,12 @@ static const VMStateDescription vmstate_sgi_mgras = {
         VMSTATE_UINT32_V(gl_matrix_mode, SGIMgrasState, 17),
         VMSTATE_UINT32_ARRAY_V(gl_modelview, SGIMgrasState, 16, 17),
         VMSTATE_UINT32_ARRAY_V(gl_projection, SGIMgrasState, 16, 17),
+        VMSTATE_UINT32_V(gl_depth_test, SGIMgrasState, 17),
+        VMSTATE_UINT32_V(gl_depth_func, SGIMgrasState, 17),
+        VMSTATE_UINT32_V(gl_depth_mask, SGIMgrasState, 17),
+        VMSTATE_UINT32_V(gl_clear_depth, SGIMgrasState, 17),
+        VMSTATE_VARRAY_UINT32(depth, SGIMgrasState, depth_count, 17,
+                              vmstate_info_uint32, uint32_t),
         VMSTATE_END_OF_LIST()
     }
 };
