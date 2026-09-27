@@ -177,6 +177,9 @@ AddressSpace *sgi_bridge_plain_dma_as(PCIDevice *dev);
 #define SGI_BRIDGE_PACKET_ADDRESS_BITS 48
 
 MemoryRegion *sgi_bridge_packet_face(SGIBridgeState *s);
+bool sgi_bridge_install_flash_read_view(SGIBridgeState *s,
+                                        const uint8_t *image, size_t size,
+                                        Error **errp);
 
 /*
  * The local register block: 64 KB decoded, the first 0x300 bytes defined, one
@@ -234,6 +237,8 @@ struct SGIBridgeState {
      * unpopulated unless a board links what it fits there as "flash-select1".
      */
     MemoryRegion flash_window;
+    MemoryRegion flash_read_view;
+    MemoryRegion flash_boundary;
     MemoryRegion *flash;
     MemoryRegion *flash_select1;
 

@@ -253,6 +253,7 @@ test_mips64_timeouts = {
 }
 
 tests_mips64_system_quick = [
+  'octane_flash_execution',
   'sn0_smp',
   'sn0_reset',
   'sn1_l1_reset',
