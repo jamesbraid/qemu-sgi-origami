@@ -2904,7 +2904,10 @@ static void md_watch_expire(void *opaque)
     for (unsigned i = 0; i < SGI_BEDROCK_MD_WATCHED_LINES; i++) {
         SGIBedrockMDWatchedLine *line = &s->watched[i];
 
-        if (line->active && line->used_ns <= idle) {
+        if (line->active && line->touched) {
+            line->touched = false;
+            line->used_ns = idle + MD_WATCH_IDLE_NS;
+        } else if (line->active && line->used_ns <= idle) {
             trace_sgi_bedrock_md_watch_release(line->index);
             md_watched_line_release(s, line);
         }
@@ -2988,7 +2991,7 @@ bool sgi_bedrock_md_processor_request(SGIBedrockMDState *s, uint16_t pointer,
         if (!holder) {
             continue;
         }
-        line->used_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+        line->touched = true;
         switch (request) {
         case SGI_BEDROCK_MD_INDEX_WRITEBACK_INVALIDATE:
         case SGI_BEDROCK_MD_HIT_WRITEBACK_INVALIDATE:
@@ -3056,6 +3059,10 @@ static void md_watch_line(SGIBedrockMDState *s, uint32_t index)
     for (unsigned i = 0; i < SGI_BEDROCK_MD_WATCHED_LINES; i++) {
         SGIBedrockMDWatchedLine *line = &s->watched[i];
 
+        if (line->touched) {
+            line->touched = false;
+            line->used_ns = now;
+        }
         if (line->active && line->index == index) {
             line->used_ns = now;
             return;
@@ -3087,6 +3094,7 @@ static void md_watch_line(SGIBedrockMDState *s, uint32_t index)
     md_watched_line_release(s, slot);
     slot->index = index;
     slot->used_ns = now;
+    slot->touched = false;
     slot->active = md_overlay_place(s, &slot->mr,
                                     (uint64_t)index * MD_DIRECTORY_LINE,
                                     &slot->address, &slot->placed, 2);
@@ -3449,6 +3457,7 @@ static const VMStateDescription vmstate_md_watched_line = {
         VMSTATE_UINT32(index, SGIBedrockMDWatchedLine),
         VMSTATE_BOOL(active, SGIBedrockMDWatchedLine),
         VMSTATE_INT64(used_ns, SGIBedrockMDWatchedLine),
+        VMSTATE_BOOL(touched, SGIBedrockMDWatchedLine),
         VMSTATE_END_OF_LIST()
     },
 };

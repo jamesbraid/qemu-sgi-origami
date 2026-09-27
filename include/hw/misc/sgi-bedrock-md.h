@@ -120,6 +120,12 @@ typedef struct SGIBedrockMDWatchedLine {
     bool placed;
     /* Last backdoor access or processor request, in virtual time. */
     int64_t used_ns;
+    /*
+     * A cache instruction or prefetch named the line since used_ns was
+     * last stamped. Those run outside an I/O access, where the virtual
+     * clock cannot be read under icount, so they mark the line instead.
+     */
+    bool touched;
 } SGIBedrockMDWatchedLine;
 
 struct SGIBedrockMDState {

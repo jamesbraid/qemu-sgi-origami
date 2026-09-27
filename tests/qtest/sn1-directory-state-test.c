@@ -51,6 +51,14 @@
 #define POINTER(_p) (((_p) << 8) | 0x1)
 #define SHARED(_vector) (((_vector) << 8) | 0x2)
 
+/*
+ * The memory unit stops overlaying a line idle for a second of virtual
+ * time. Under a real-time clock a processor thread the host leaves waiting
+ * that long between two steps loses the line mid-scenario, so the clock
+ * counts instructions instead.
+ */
+#define ICOUNT "-icount shift=3,sleep=off"
+
 #define POLL_TRIES 500
 #define POLL_INTERVAL_US 10000
 
@@ -268,7 +276,7 @@ static QTestState *start_scenario(const Scenario *sc, char **prom)
     *prom = create_prom(sc);
     quoted = g_shell_quote(*prom);
     s = qtest_initf("-M origin300 -cpu R14000 -smp %s -m 512M -bios %s "
-                    "-accel tcg,thread=multi -no-shutdown -S", sc->cpus,
+                    "-accel tcg " ICOUNT " -no-shutdown -S", sc->cpus,
                     quoted);
     qtest_writeq(s, SN1_MD_MEMORY_CONFIG, SN1_MD_INSTALLED_SELECT2);
     if (sc->premium) {
@@ -819,7 +827,7 @@ static void test_released_line_state_migrates(void)
     s = start_scenario(&sc, &prom);
     quoted = g_shell_quote(prom);
     to = qtest_initf("-M origin300 -cpu R14000 -smp %s -m 512M -bios %s "
-                     "-accel tcg,thread=multi -no-shutdown -S "
+                     "-accel tcg " ICOUNT " -no-shutdown -S "
                      "-incoming defer", sc.cpus, quoted);
     wait_steps(s, 2);
     for (tries = 0; tries < POLL_TRIES; tries++) {
