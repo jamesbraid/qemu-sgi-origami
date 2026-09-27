@@ -5,9 +5,14 @@
  * Origami tree). The board is the "mscsi" preset of sgi-xio-baseio, built
  * from the existing Bridge and ISP1040 models.
  *
- * A `-device sgi-xio-baseio,preset=mscsi` board attaches through an
- * Origin 2000's crossbow0 spare fabric widget 11, as the MENET's own test
- * does.
+ * Two placements run the same checks. A `-device sgi-xio-baseio,
+ * preset=mscsi` board attaches through an Origin 2000's crossbow0 spare
+ * fabric widget 11, as the MENET's own test does. The
+ * origin200-gigachannel-xio topology fits two boards in the GIGAchannel
+ * cabinet, at io2 (Crossbow widget 11) and io4 (widget 13), with a MENET
+ * at io3 (widget 12) between them: the XIO population of a captured
+ * one-module system (docs/datasheets/sgi-gigachannel.md in the Origami
+ * tree, "Crossbow link assignment").
  *
  * The contract, from a real IP27 PROM inventory of an MSCSI board and
  * real IRIX inventories:
@@ -54,6 +59,22 @@ typedef struct {
 
 static const MscsiCase device_case = {
     DEVICE_ARGS, DEVICE_WIDGET, "/machine/module99/slot11/baseio",
+};
+
+#define PLACED_ARGS \
+    "-M origin200,topology=origin200-gigachannel-xio -display none"
+/* The cabinet's io2 and io4 positions: Crossbow links B and D. */
+#define IO2_WIDGET          11
+#define IO3_WIDGET          12
+#define IO4_WIDGET          13
+/* The Hub (A), the IP29 Bridge (9) and the cabinet Bridge (8). */
+#define CABINET_LINKS       0x0700
+
+static const MscsiCase io2_case = {
+    PLACED_ARGS, IO2_WIDGET, "/machine/module1/slot11/baseio",
+};
+static const MscsiCase io4_case = {
+    PLACED_ARGS, IO4_WIDGET, "/machine/module1/slot13/baseio",
 };
 
 /* A 32-bit crosstalk read through CPU 0's own Hub. */
@@ -214,6 +235,24 @@ static void test_mscsi_refuses_backends_it_cannot_take(const void *data)
     }
 }
 
+/*
+ * The populated cabinet's three boards are alive from reset, and io5 and
+ * io6 (links E and F) stay empty.
+ */
+static void test_placed_widgets_are_alive_at_startup(const void *data)
+{
+    QTestState *qts = qtest_init(PLACED_ARGS);
+    g_autoptr(QDict) response = qtest_qmp(qts,
+        "{'execute': 'qom-get', 'arguments': {'path': '/machine/crossbow0',"
+        "'property': 'startup-links-alive'}}");
+
+    g_assert_false(qdict_haskey(response, "error"));
+    g_assert_cmphex(qdict_get_int(response, "return"), ==,
+                    CABINET_LINKS | (1u << IO2_WIDGET) | (1u << IO3_WIDGET) |
+                    (1u << IO4_WIDGET));
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -228,5 +267,17 @@ int main(int argc, char **argv)
                         test_mscsi_is_not_a_baseio_preset);
     qtest_add_data_func("sn0/mscsi/refuses-backends-it-cannot-take", NULL,
                         test_mscsi_refuses_backends_it_cannot_take);
+    qtest_add_data_func("sn0/mscsi/placed/widgets-alive-at-startup", NULL,
+                        test_placed_widgets_are_alive_at_startup);
+    qtest_add_data_func("sn0/mscsi/placed/io2/bridge-revision", &io2_case,
+                        test_bridge_revision);
+    qtest_add_data_func("sn0/mscsi/placed/io2/isps-enumerate", &io2_case,
+                        test_isps_enumerate);
+    qtest_add_data_func("sn0/mscsi/placed/io2/population", &io2_case,
+                        test_population);
+    qtest_add_data_func("sn0/mscsi/placed/io4/bridge-revision", &io4_case,
+                        test_bridge_revision);
+    qtest_add_data_func("sn0/mscsi/placed/io4/isps-enumerate", &io4_case,
+                        test_isps_enumerate);
     return g_test_run();
 }

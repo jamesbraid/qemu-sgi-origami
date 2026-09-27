@@ -1367,20 +1367,22 @@ static bool sgi_machine_instantiate_pci_shoehorn(
 }
 
 /*
- * The MENET XIO card: an sgi-xio-baseio with the "menet" preset, which
- * owns the card's Bridge, board record and four IOC3s. The catalogue's
+ * An XIO card the catalogue places in any slot: an sgi-xio-baseio with the
+ * "menet" or "mscsi" preset, which owns the card's Bridge, board record
+ * and chips, on its own PCI bus pci.<preset><N>. The MENET's catalogue
  * IOC3 serial is device 0's one-wire part; the preset numbers the other
  * three from it. The chips' serial ports take no host backend: the
- * console lines belong to the module's BaseIO.
+ * console lines belong to the module's BaseIO. The MSCSI has no IOC3.
  */
-static bool sgi_machine_instantiate_menet(
+static bool sgi_machine_instantiate_xio_card(
     SGIMachineState *s, const SGIModelIoBoard *record,
     unsigned int board_index, const SGIModelXtalkAttachment *attachment,
-    Error **errp)
+    const char *preset, Error **errp)
 {
     DeviceState *dev = qdev_new(TYPE_SGI_XIO_BASEIO);
     g_autofree char *name = g_strdup_printf("io-board%u", board_index);
-    g_autofree char *bus_name = g_strdup_printf("pci.menet%u", board_index);
+    g_autofree char *bus_name = g_strdup_printf("pci.%s%u", preset,
+                                                board_index);
 
     object_property_add_child(OBJECT(s), name, OBJECT(dev));
     object_unref(OBJECT(dev));
@@ -1392,7 +1394,7 @@ static bool sgi_machine_instantiate_menet(
         qdev_prop_set_uint64(dev, "ioc3-onewire-serial", record->ioc3_serial);
     }
     qdev_prop_set_string(dev, "pci-bus-name", bus_name);
-    qdev_prop_set_string(dev, "preset", "menet");
+    qdev_prop_set_string(dev, "preset", preset);
     return sgi_machine_attach_xio_card(s, dev, board_index, attachment, errp);
 }
 
@@ -1650,8 +1652,11 @@ static bool sgi_machine_instantiate_io_board(
         return sgi_machine_instantiate_gigachannel(s, t, record, board_index,
                                                    attachment, errp);
     case SGI_MODEL_IO_BOARD_PRESET_MENET:
-        return sgi_machine_instantiate_menet(s, record, board_index,
-                                             attachment, errp);
+        return sgi_machine_instantiate_xio_card(s, record, board_index,
+                                                attachment, "menet", errp);
+    case SGI_MODEL_IO_BOARD_PRESET_MSCSI:
+        return sgi_machine_instantiate_xio_card(s, record, board_index,
+                                                attachment, "mscsi", errp);
     case SGI_MODEL_IO_BOARD_PRESET_KONA:
         return sgi_machine_instantiate_kona(s, t, record, board_index,
                                             attachment, errp);
