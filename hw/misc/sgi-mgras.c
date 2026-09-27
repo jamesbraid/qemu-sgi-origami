@@ -23,6 +23,16 @@
 #define MGRAS_PENDING_LOWATER 0x00000004
 #define MGRAS_HQ_ENABLE_LOWATER 0x10
 
+/*
+ * VC3 register 0x1e: bit 2 enables the display, bit 0 enables the retrace
+ * interrupt. The IRIX 6.5.30 kernel's MgrasEnableRetraceInterrupts sets bit
+ * 0 through 0x072038; the VC2's control register uses the same two bits
+ * (Linux include/video/newport.h, VC2_CTRL_EVIRQ and VC2_CTRL_EVIDEO).
+ */
+#define MGRAS_VC3_CONTROL 0x1e
+#define MGRAS_VC3_CONTROL_VINTR 0x1
+#define MGRAS_VC3_CONTROL_DISPLAY 0x4
+
 /* Data bit 8 selects assertion in the interrupt-modify write. */
 #define MGRAS_HUB_INT_MODIFY_SET 0x100
 #define MGRAS_INT_DEST_WIDGET_SHIFT 16
@@ -123,12 +133,10 @@ static void mgras_update_irq(SGIMgrasState *s)
     bool lowater = !!(s->pending & MGRAS_PENDING_LOWATER);
     bool general = !!(s->pending & s->irq_mask &
                       (MGRAS_PENDING_FLAGS | MGRAS_PENDING_CONTEXT));
-    bool retrace = !!(s->pending & s->irq_mask & MGRAS_PENDING_RETRACE);
     bool error = !!(s->pending & s->irq_mask & MGRAS_PENDING_ERROR);
 
     uint8_t lowater_vector = s->hq_vectors >> MGRAS_HQ_VECTOR_LOWATER_SHIFT;
     uint8_t general_vector = s->hq_vectors >> MGRAS_HQ_VECTOR_GENERAL_SHIFT;
-    uint8_t retrace_vector = s->hq_vectors >> MGRAS_HQ_VECTOR_RETRACE_SHIFT;
 
     /* This approximation sends one packet for each modeled transition. */
     if (lowater != s->lowater_asserted) {
@@ -138,10 +146,6 @@ static void mgras_update_irq(SGIMgrasState *s)
     if (general != s->general_asserted) {
         s->general_asserted = general;
         mgras_deliver_hq_role(s, general, general_vector, "general");
-    }
-    if (retrace != s->retrace_asserted) {
-        s->retrace_asserted = retrace;
-        mgras_deliver_hq_role(s, retrace, retrace_vector, "retrace");
     }
     if (error != s->error_asserted) {
         s->error_asserted = error;
@@ -162,13 +166,23 @@ static void mgras_error(SGIMgrasState *s, hwaddr addr, unsigned size,
                   " width %u\n", why, addr, size);
 }
 
+/*
+ * The kernel's retrace handler acknowledges nothing on the board, and the
+ * 0x011040 enable word it programs leaves bit 0 clear, so a retrace is a
+ * message sent at every retrace while VC3 enables it, not a level held
+ * until an acknowledge. The Hub's pending bit, which the kernel clears
+ * itself, is the only latch. Retrace period and phase are approximate.
+ */
 static void mgras_retrace(void *opaque)
 {
     SGIMgrasState *s = opaque;
     if (s->display_enabled) {
         s->retraces++;
         s->pending |= MGRAS_PENDING_RETRACE;
-        mgras_update_irq(s);
+        if (s->vc3_reg[MGRAS_VC3_CONTROL] & MGRAS_VC3_CONTROL_VINTR) {
+            mgras_deliver_hq_role(s, true, s->hq_vectors >>
+                                  MGRAS_HQ_VECTOR_RETRACE_SHIFT, "retrace");
+        }
     }
     timer_mod(s->retrace_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
               NANOSECONDS_PER_SECOND / 60);
@@ -726,9 +740,9 @@ static void mgras_write(void *opaque, hwaddr addr, uint64_t value,
             s->cursor_enabled = enabled;
             break;
         }
-        case 0x1e: {
+        case MGRAS_VC3_CONTROL: {
             /* Redraw only when display enable changes. */
-            bool enabled = (data16 & 0x4) != 0;
+            bool enabled = (data16 & MGRAS_VC3_CONTROL_DISPLAY) != 0;
             if (enabled != s->display_enabled) {
                 s->dirty = true;
             }
@@ -875,8 +889,7 @@ static void mgras_reset_enter(Object *obj, ResetType type)
     memset(s->fifo_threshold, 0, sizeof(s->fifo_threshold));
     s->sched_arg_1 = s->sched_arg_2 = s->sched_arg_3 = s->sched_arg_4 = 0;
     s->hq_flags = 0;
-    s->lowater_asserted = s->general_asserted = s->retrace_asserted =
-        s->error_asserted = false;
+    s->lowater_asserted = s->general_asserted = s->error_asserted = false;
 }
 
 static void mgras_reset_hold(Object *obj, ResetType type)
@@ -965,7 +978,8 @@ static int mgras_post_load(void *opaque, int version_id)
     }
 
     sgi_mgras_display_ensure_surface(s);
-    s->display_enabled = (s->vc3_reg[0x1e] & 0x4) != 0;
+    s->display_enabled =
+        (s->vc3_reg[MGRAS_VC3_CONTROL] & MGRAS_VC3_CONTROL_DISPLAY) != 0;
     s->cursor_enabled = (s->vc3_reg[0x1d] & 0x2) != 0;
     s->dirty = true;
     return 0;
@@ -1120,7 +1134,8 @@ static const VMStateDescription vmstate_sgi_mgras = {
         VMSTATE_UINT32(hq_flags, SGIMgrasState),
         VMSTATE_BOOL(lowater_asserted, SGIMgrasState),
         VMSTATE_BOOL(general_asserted, SGIMgrasState),
-        VMSTATE_BOOL(retrace_asserted, SGIMgrasState),
+        /* The retired retrace line state; retrace is now a message. */
+        VMSTATE_UNUSED(1),
         VMSTATE_BOOL(error_asserted, SGIMgrasState),
         VMSTATE_UINT32_ARRAY(rss, SGIMgrasState, 0x200),
         VMSTATE_UINT32(glyph_row, SGIMgrasState),

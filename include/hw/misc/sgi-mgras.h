@@ -272,7 +272,6 @@ struct SGIMgrasState {
     /* Interrupt sources keep independent transition state. */
     bool lowater_asserted;
     bool general_asserted;
-    bool retrace_asserted;
     bool error_asserted;
     /* Host-only qtest introspection. Not guest state and not migrated. */
     uint32_t test_pixel_x;

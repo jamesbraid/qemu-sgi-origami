@@ -8,6 +8,7 @@
  */
 
 #include "qemu/osdep.h"
+#include "qemu/bswap.h"
 #include "qemu/timer.h"
 #include "libqtest.h"
 #include "qobject/qdict.h"
@@ -2349,35 +2350,99 @@ static void test_general_interrupt_vector(void)
 }
 
 
+/*
+ * The IRIX 6.5.30 kernel connects its retrace handler to the third of the
+ * board's crosstalk interrupts, places that vector in bits 23:16 of the HQ
+ * vector word, and enables retrace interrupts by setting bit 0 of VC3
+ * register 0x1e. It never sets bit 0 of the 0x011040 enable word (it writes
+ * 0x3008a200 there), and the handler acknowledges nothing on the board: the
+ * Hub's own pending bit is the only latch, which the kernel clears itself.
+ * So the retrace interrupt is gated by the VC3 bit and arrives again at every
+ * retrace. Aim the vector at the local Hub's interrupt-modify register and
+ * watch the Hub's pending bit.
+ */
+#define HUB_BASE                UINT64_C(0x20001000000)
+#define HUB_PI_INT_MODIFY       0x90
+#define HUB_PI_INT_PEND0        0x98
+/* The destination words the IRIX 6.5.30 kernel programs for node 0's Hub. */
+#define KERNEL_HQ_DEST_UPPER    0x29008000
+#define KERNEL_HQ_DEST_LOWER    0x01800090
+#define KERNEL_IRQ_MASK         0x3008a200
+#define VC3_CONTROL             0x1e
+#define VC3_CONTROL_VINTR       0x1
+#define VC3_CONTROL_DISPLAY     0x4
+
+static uint64_t mgras_hub_read(uint64_t offset)
+{
+    uint8_t bytes[8];
+
+    g_assert_true(qtest_memread_cpu(qts, 0, HUB_BASE + offset, bytes,
+                                    sizeof(bytes)));
+    return ldq_be_p(bytes);
+}
+
+static void mgras_hub_write(uint64_t offset, uint64_t value)
+{
+    uint8_t bytes[8];
+
+    stq_be_p(bytes, value);
+    g_assert_true(qtest_memwrite_cpu(qts, 0, HUB_BASE + offset, bytes,
+                                     sizeof(bytes)));
+}
+
+static void mgras_retrace_to_hub(unsigned int retrace_vector)
+{
+    qtest_writel(qts, REG_HQ_VECTOR_DEST_UPPER, KERNEL_HQ_DEST_UPPER);
+    qtest_writel(qts, REG_HQ_VECTOR_DEST_LOWER, KERNEL_HQ_DEST_LOWER);
+    qtest_writel(qts, REG_HQ_VECTORS, retrace_vector << 16);
+    qtest_writel(qts, REG_IRQ_MASK, KERNEL_IRQ_MASK);
+}
+
 static void test_retrace_interrupt_vector(void)
 {
     const unsigned int retrace_vector = 54;
-    const unsigned int error_vector = 55;
-    const uint64_t expected_addr =
-        ((uint64_t)HQ_WIDGET << 48) | HQ_REG_OFFSET;
+    const uint64_t bit = UINT64_C(1) << retrace_vector;
 
     mgras_reset();
-
-    qtest_writel(qts, REG_INT_DEST_UPPER,
-                 (HUB_WIDGET << 16) | (error_vector << 24));
-    qtest_writel(qts, REG_INT_DEST_LOWER, HUB_REG_OFFSET);
-
-    qtest_writel(qts, REG_HQ_VECTOR_DEST_UPPER, HQ_WIDGET << 24);
-    qtest_writel(qts, REG_HQ_VECTOR_DEST_LOWER, HQ_REG_OFFSET);
-    qtest_writel(qts, REG_HQ_VECTORS, retrace_vector << 16);
-
-    qtest_writel(qts, REG_IRQ_MASK, MGRAS_PENDING_RETRACE);
-    qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x1e, 0x4));
-
+    mgras_retrace_to_hub(retrace_vector);
+    qtest_writel(qts, REG_VC3_INDEXDATA,
+                 VC3_INDEXDATA(VC3_CONTROL,
+                               VC3_CONTROL_DISPLAY | VC3_CONTROL_VINTR));
+    g_assert_cmphex(mgras_hub_read(HUB_PI_INT_PEND0) & bit, ==, 0);
 
     qtest_clock_step(qts, NANOSECONDS_PER_SECOND / 60);
-
-    g_assert_cmphex(qtest_readl(qts, REG_PENDING) & MGRAS_PENDING_RETRACE, ==,
-                     MGRAS_PENDING_RETRACE);
-    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-last-interrupt-addr"),
-                     ==, expected_addr);
+    g_assert_cmphex(mgras_hub_read(HUB_PI_INT_PEND0) & bit, ==, bit);
     g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-last-interrupt-value"),
                      ==, retrace_vector | 0x100);
+
+    /* The kernel clears the Hub bit; the next retrace must set it again. */
+    mgras_hub_write(HUB_PI_INT_MODIFY, retrace_vector);
+    g_assert_cmphex(mgras_hub_read(HUB_PI_INT_PEND0) & bit, ==, 0);
+    qtest_clock_step(qts, NANOSECONDS_PER_SECOND / 60);
+    g_assert_cmphex(mgras_hub_read(HUB_PI_INT_PEND0) & bit, ==, bit);
+
+    /* Clearing the VC3 enable stops further retrace interrupts. */
+    qtest_writel(qts, REG_VC3_INDEXDATA,
+                 VC3_INDEXDATA(VC3_CONTROL, VC3_CONTROL_DISPLAY));
+    mgras_hub_write(HUB_PI_INT_MODIFY, retrace_vector);
+    qtest_clock_step(qts, NANOSECONDS_PER_SECOND / 30);
+    g_assert_cmphex(mgras_hub_read(HUB_PI_INT_PEND0) & bit, ==, 0);
+}
+
+/* The 0x011040 enable word does not stand in for the VC3 enable. */
+static void test_retrace_interrupt_needs_vc3_enable(void)
+{
+    const unsigned int retrace_vector = 54;
+    const uint64_t bit = UINT64_C(1) << retrace_vector;
+
+    mgras_reset();
+    mgras_retrace_to_hub(retrace_vector);
+    qtest_writel(qts, REG_IRQ_MASK, 0xffffffff);
+    qtest_writel(qts, REG_VC3_INDEXDATA,
+                 VC3_INDEXDATA(VC3_CONTROL, VC3_CONTROL_DISPLAY));
+
+    qtest_clock_step(qts, NANOSECONDS_PER_SECOND / 30);
+    g_assert_cmphex(mgras_hub_read(HUB_PI_INT_PEND0) & bit, ==, 0);
 }
 
 
@@ -5733,6 +5798,8 @@ int main(int argc, char **argv)
                    test_general_interrupt_vector);
     qtest_add_func("sn0/origin2000/mgras/retrace-interrupt-vector",
                    test_retrace_interrupt_vector);
+    qtest_add_func("sn0/origin2000/mgras/retrace-interrupt-needs-vc3-enable",
+                   test_retrace_interrupt_needs_vc3_enable);
     qtest_add_func("sn0/origin2000/mgras/widget-error-interrupt-vector",
                    test_widget_error_interrupt_vector);
     qtest_add_func("sn0/origin2000/mgras/fifo-occupancy-always-drained",
