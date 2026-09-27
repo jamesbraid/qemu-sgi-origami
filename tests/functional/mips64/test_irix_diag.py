@@ -656,6 +656,12 @@ if QemuSystemTest is not None:
             finally:
                 for phase, seconds in phases:
                     self._phase(f'warm boot: {phase}', seconds)
+            # The kernel asks the PROM to skip its diagnostics on a reboot
+            # it requests, and the PROM says so; a PROM that ran them, or
+            # printed nothing, was not reset by IRIX's own request.
+            self._expect('Skipping diags as requested by kernel' in prom,
+                         'the PROM after the reboot did not skip its '
+                         'diagnostics at the kernel\'s request')
             for what, pattern in prom_facts(self.flavour, self.row,
                                             diags=False):
                 self._expect(re.search(pattern, prom),
