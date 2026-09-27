@@ -204,9 +204,6 @@ struct SGIMachineState {
      */
     SGIXtalkCrossbowLink *crossbow_links;
 
-    /* MGRAS boards built so far, which picks the next one's qdev id. */
-    unsigned int mgras_count;
-
     /*
      * One fabric proxy per empty XIO slot the topology names
      * (t->xtalk_slots, in order), for a board fitted there at launch by
@@ -1517,50 +1514,21 @@ static bool sgi_machine_instantiate_kona(
 }
 
 /*
- * The SI/MXI (MGRAS) graphics board: a plain sysbus device, not an
- * sgi-xio-board, whose one MMIO region answers both the CPU's widget
- * accesses and packets routed to its widget. Its interrupt writes leave
- * through "fabric", which must exist when it realizes, before the
- * Crossbow does; the board's crossbow link proxy stands in, and
- * sgi_machine_realize_crossbars() aliases the real ingress onto it.
- *
- * The first MGRAS keeps qdev id and QOM name "mgras", which screendump
- * device= and existing tests use; each later one is "mgrasN", N counting
- * MGRAS boards in catalogue order.
+ * The SI/MXI (MGRAS) graphics board: an XIO board whose one MMIO region
+ * answers both the CPU's widget accesses and packets routed to its
+ * widget, with no Bridge. It attaches like any other XIO card, and like
+ * them it is named by its slot: screendump device=io3 on an Origin 2000
+ * that fits one in IO3.
  */
 static bool sgi_machine_instantiate_mgras(
-    SGIMachineState *s, unsigned int board_index,
-    const SGIModelXtalkAttachment *attachment, Error **errp)
+    SGIMachineState *s, const SGIModelIoBoard *record,
+    unsigned int board_index, const SGIModelXtalkAttachment *attachment,
+    Error **errp)
 {
     DeviceState *dev = qdev_new(TYPE_SGI_MGRAS);
-    g_autofree char *name = s->mgras_count ?
-        g_strdup_printf("mgras%u", s->mgras_count) : g_strdup("mgras");
-    g_autofree char *proxy_name =
-        g_strdup_printf("io-board%u-packet-proxy", board_index);
-    SGIXtalkCrossbowLink *crossbow_link =
-        &s->crossbow_links[s->num_nodes + board_index];
 
-    s->mgras_count++;
-    object_property_add_child(OBJECT(s), name, OBJECT(dev));
-    object_unref(OBJECT(dev));
-    /* Set directly: qdev_set_id() would reparent under /machine/peripheral. */
-    dev->id = g_strdup(name);
-
-    if (!object_property_set_link(
-            OBJECT(dev), "fabric",
-            OBJECT(sgi_xtalk_crossbow_link_prepare(crossbow_link, OBJECT(s),
-                                                   proxy_name)),
-            errp)) {
-        return false;
-    }
-    qdev_prop_set_uint32(dev, "fabric-widget-shift",
-                         SGI_BRIDGE_PACKET_ADDRESS_BITS);
-    if (!sysbus_realize(SYS_BUS_DEVICE(dev), errp)) {
-        return false;
-    }
-    return sgi_xbow_attach_widget(
-        s->crossbars[attachment->crossbar_index], attachment->widget,
-        sysbus_mmio_get_region(SYS_BUS_DEVICE(dev), 0), errp);
+    sgi_machine_add_xio_board(s, dev, record, board_index, attachment);
+    return sgi_machine_attach_xio_card(s, dev, board_index, attachment, errp);
 }
 
 /*
@@ -1706,8 +1674,8 @@ static bool sgi_machine_instantiate_io_board(
         return sgi_machine_instantiate_kona(s, t, record, board_index,
                                             attachment, errp);
     case SGI_MODEL_IO_BOARD_PRESET_MGRAS:
-        return sgi_machine_instantiate_mgras(s, board_index, attachment,
-                                             errp);
+        return sgi_machine_instantiate_mgras(s, record, board_index,
+                                             attachment, errp);
     default:
         error_setg(errp, "topology '%s' io board %u names an unsupported "
                   "preset for this family", t->name, board_index);
@@ -3351,16 +3319,18 @@ static void sgi_machine_class_init(ObjectClass *oc, const void *data)
     mc->smp_props.prefer_sockets = true;
 
     /*
-     * Both classes are TYPE_SYS_BUS_DEVICE (sgi-xio-board's own parent);
-     * qdev's -device path refuses any dynamic sysbus device the machine
-     * has not named here, on top of each class's own user_creatable.
-     * sgi_machine_build_crossbars()/sgi_machine_done() are what a late
-     * instance of either one plugs into.
+     * Every XIO board class is TYPE_SYS_BUS_DEVICE (sgi-xio-board's own
+     * parent); qdev's -device path refuses any dynamic sysbus device the
+     * machine has not named here, on top of each class's own
+     * user_creatable. An empty XIO slot's fabric proxy
+     * (sgi_machine_prepare_slot_links(), finished by sgi_machine_done())
+     * is what a late board plugs into.
      */
     machine_class_allow_dynamic_sysbus_dev(mc, TYPE_SGI_PCI_EXPANSION);
     machine_class_allow_dynamic_sysbus_dev(mc, TYPE_SGI_PCI_SHOEHORN);
     machine_class_allow_dynamic_sysbus_dev(mc, TYPE_SGI_XIO_BASEIO);
     machine_class_allow_dynamic_sysbus_dev(mc, TYPE_SGI_KONA);
+    machine_class_allow_dynamic_sysbus_dev(mc, TYPE_SGI_MGRAS);
 
     object_class_property_add_str(oc, "topology", sgi_machine_get_topology,
                                   sgi_machine_set_topology);

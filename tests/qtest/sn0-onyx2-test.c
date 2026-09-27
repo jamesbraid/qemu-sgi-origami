@@ -90,7 +90,6 @@ static void test_rack_places_kona_at_io3(void)
     g_assert_cmphex(qom_uint(qts, "/machine/crossbow0",
                              "startup-links-alive") &
                     0xff00, ==, 0x8700);
-    g_assert_false(qom_has_child(qts, "/machine", "mgras"));
     qtest_quit(qts);
 }
 
@@ -106,7 +105,6 @@ static void test_deskside_places_kona_at_io4(void)
                              "startup-links-alive") &
                     0xff00, ==, 0x8700);
     g_assert_false(qom_has_child(qts, "/machine", "crossbow1"));
-    g_assert_false(qom_has_child(qts, "/machine", "mgras"));
     qtest_quit(qts);
 }
 

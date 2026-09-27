@@ -2,8 +2,8 @@
 #ifndef HW_MISC_SGI_MGRAS_H
 #define HW_MISC_SGI_MGRAS_H
 
-#include "hw/core/sysbus.h"
 #include "hw/core/resettable.h"
+#include "hw/mips/sgi/xio-board.h"
 #include "system/memory.h"
 #include "qom/object.h"
 #include "qemu/units.h"
@@ -194,8 +194,9 @@ OBJECT_DECLARE_TYPE(SGIMgrasState, SGIMgrasClass, SGI_MGRAS)
 #define SGI_MGRAS_PIXEL_FORMAT_RGB12 2
 
 struct SGIMgrasClass {
-    SysBusDeviceClass parent_class;
+    SGIXioBoardClass parent_class;
     ResettablePhases parent_phases;
+    DeviceUnrealize parent_unrealize;
 };
 
 /*
@@ -242,7 +243,7 @@ bool sgi_mgras_xio_compose(SGIMgrasState *s, unsigned int widget,
                       uint64_t address, hwaddr *fabric);
 
 struct SGIMgrasState {
-    SysBusDevice parent_obj;
+    SGIXioBoardState parent_obj;
     MemoryRegion regs;
     MemoryRegion *fabric;
     uint64_t fabric_base;

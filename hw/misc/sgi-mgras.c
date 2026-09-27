@@ -9,6 +9,7 @@
 #include "hw/misc/sgi-mgras-display.h"
 #include "hw/misc/sgi-mgras-gl.h"
 #include "hw/misc/sgi-mgras-raster.h"
+#include "hw/mips/sgi/xtalk-link.h"
 #include "migration/vmstate.h"
 #include "qapi/error.h"
 #include "qapi/visitor.h"
@@ -1209,16 +1210,23 @@ static bool mgras_realize_board(SGIMgrasState *s, Error **errp)
     return true;
 }
 
-static void mgras_realize(DeviceState *dev, Error **errp)
+/*
+ * The board's widget: one MMIO region answers both a processor's access
+ * and a packet routed to this widget. Built before the base class moves
+ * the board under its module, so nothing here may depend on the board's
+ * QOM path; the console, which does, comes in mgras_finish_realize().
+ */
+static bool mgras_build_widget(SGIXioBoardState *board, Error **errp)
 {
-    SGIMgrasState *s = SGI_MGRAS(dev);
+    SGIMgrasState *s = SGI_MGRAS(board);
+
     if (!s->fabric) {
         error_setg(errp, "sgi-mgras needs the fabric its interrupt packets "
                   "travel");
-        return;
+        return false;
     }
     if (!mgras_realize_board(s, errp)) {
-        return;
+        return false;
     }
     s->front = g_new0(uint32_t, SGI_MGRAS_WIDTH * SGI_MGRAS_HEIGHT);
     s->back = g_new0(uint32_t, SGI_MGRAS_WIDTH * SGI_MGRAS_HEIGHT);
@@ -1228,19 +1236,41 @@ static void mgras_realize(DeviceState *dev, Error **errp)
     s->ge[SGI_MGRAS_GE_SLOT_A] = g_new0(uint32_t, SGI_MGRAS_GE_WORDS);
     s->ge[SGI_MGRAS_GE_SLOT_B] = g_new0(uint32_t, SGI_MGRAS_GE_WORDS);
     s->display_buffer = g_new0(uint32_t, SGI_MGRAS_WIDTH * SGI_MGRAS_HEIGHT);
-    s->con = qemu_graphic_console_create(dev, 0, &sgi_mgras_display_ops, s);
-    memory_region_init_io(&s->regs, OBJECT(dev), &mgras_ops, s,
+    memory_region_init_io(&s->regs, OBJECT(s), &mgras_ops, s,
                            "sgi-mgras.regs", SGI_MGRAS_MMIO_SIZE);
-    sysbus_init_mmio(SYS_BUS_DEVICE(dev), &s->regs);
+    sysbus_init_mmio(SYS_BUS_DEVICE(s), &s->regs);
     address_space_init(&s->fabric_as, s->fabric, "sgi-mgras.fabric");
     s->retrace_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, mgras_retrace, s);
+    board->cpu_face = &s->regs;
+    board->packet_face = &s->regs;
+    /*
+     * A board fitted at an empty slot claims that slot's fabric proxy so
+     * the machine brings its widget alive both ways; the catalogue's own
+     * attach and a fixture's plain sink make this a no-op.
+     */
+    sgi_xtalk_crossbow_link_claim_fabric(s->fabric, board->cpu_face,
+                                         board->packet_face);
+    return true;
+}
+
+/* Runs once the board sits at its final QOM path, which its console names. */
+static bool mgras_finish_realize(SGIXioBoardState *board, Error **errp)
+{
+    SGIMgrasState *s = SGI_MGRAS(board);
+    DeviceState *dev = DEVICE(board);
+
+    s->con = qemu_graphic_console_create(dev, 0, &sgi_mgras_display_ops, s);
     device_cold_reset(dev);
     sgi_mgras_display_ensure_surface(s);
+    return true;
 }
 
 static void mgras_unrealize(DeviceState *dev)
 {
     SGIMgrasState *s = SGI_MGRAS(dev);
+    SGIMgrasClass *mc = SGI_MGRAS_GET_CLASS(dev);
+
+    mc->parent_unrealize(dev);
     timer_del(s->retrace_timer); timer_free(s->retrace_timer);
     address_space_destroy(&s->fabric_as);
     qemu_graphic_console_close(s->con);
@@ -1675,17 +1705,27 @@ static void mgras_class_init(ObjectClass *oc, const void *data)
     DeviceClass *dc = DEVICE_CLASS(oc);
     ResettableClass *rc = RESETTABLE_CLASS(oc);
     SGIMgrasClass *mc = SGI_MGRAS_CLASS(oc);
+    SGIXioBoardClass *bc = SGI_XIO_BOARD_CLASS(oc);
 
-    dc->realize = mgras_realize;
-    dc->unrealize = mgras_unrealize;
+    bc->build_widget = mgras_build_widget;
+    bc->finish_realize = mgras_finish_realize;
+    device_class_set_parent_unrealize(dc, mgras_unrealize,
+                                      &mc->parent_unrealize);
     resettable_class_set_parent_phases(rc, mgras_reset_enter, mgras_reset_hold,
                                        mgras_reset_exit, &mc->parent_phases);
-    dc->vmsd = &vmstate_sgi_mgras; dc->desc = "SGI MGRAS functional endpoint";
+    dc->vmsd = &vmstate_sgi_mgras;
+    dc->desc = "SGI MGRAS (SI/MXI) graphics XIO board";
+    /*
+     * Ordinarily fitted by the catalogue, and also -device-creatable at an
+     * empty XIO slot it names (slot=io3), which hands it that slot's
+     * fabric (xio-board.c).
+     */
+    dc->user_creatable = true;
     device_class_set_props(dc, mgras_properties);
 }
 
 static const TypeInfo mgras_types[] = {{
-    .name = TYPE_SGI_MGRAS, .parent = TYPE_SYS_BUS_DEVICE,
+    .name = TYPE_SGI_MGRAS, .parent = TYPE_SGI_XIO_BOARD,
     .instance_size = sizeof(SGIMgrasState), .class_size = sizeof(SGIMgrasClass),
     .instance_init = mgras_instance_init,
     .class_init = mgras_class_init }};

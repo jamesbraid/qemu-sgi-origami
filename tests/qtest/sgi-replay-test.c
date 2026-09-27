@@ -63,7 +63,7 @@ static const ReplayHead replay_heads[] = {
                    "-smp 2 -m 256M",
         .mmio_base = SPACE_XTALK + (0xfULL << 24),
         .mmio_size = 2 * MiB,
-        .qom_path = "/machine/mgras",
+        .qom_path = "/machine/module0/io3",
         .width = 1280,
         .height = 1024,
         .trace = "-trace enable=sgi_mgras_mmio "
