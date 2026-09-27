@@ -59,30 +59,31 @@ OBJECT_DECLARE_TYPE(SGIMgrasState, SGIMgrasClass, SGI_MGRAS)
 #define SGI_MGRAS_SYNC_STATUS 0x061038
 
 /*
- * A captured post-login desktop session loads a 256-row, three-channel
- * gamma-correction table through these two ports
- * (docs/notebooks/si-dac-gamma-20260924.md in the Origami repository
- * records the capture). The capture holds three such loads. In the
- * first two, 0x071810 sees eight writes immediately before the row
- * writes start (0xd00, 0x400, 0x500, 0x600, 0x700, 0x800, 0x402, then
- * 0); the third load writes it only once. Only the final write in
- * every case is confirmed zero and resets the load position to row 0,
- * channel 0; the earlier values in the first two loads are unexplained.
- * The model resets the load position on any write to this port, zero
- * or not, matching every captured write's observed effect. 0x071890 is
- * a data port, not an index: each write stores its high byte into the
- * current row/channel and advances channel (red, green, blue), then
- * row. The prior names (DAC_LUT_INDEX for the data port, DAC_LUT_DATA_1
- * for the reset) had the roles backwards; a real guest never accesses
- * either at the width those names' first implementation assumed.
- * 0x071910's role bracketing a load is observed but unconfirmed, so it
- * retains opaque state.
+ * DAC ports. 0x071810 is the DAC address, a halfword with the register
+ * number in its high byte. A byte write to 0x071811 sets that register
+ * number, not the halfword's low byte: SGI's IDE address test reads it
+ * back in bits 15:8. Only a halfword write sets the low byte (0x0402).
+ * 0x071910 moves one byte of the addressed register. SGI's IDE DAC reset
+ * programs registers 0x0d00, 0x0400 (pixel mask), 0x0500-0x0800 (command
+ * registers) and 0x0402 (cursor) this way and reads them back, and a
+ * captured desktop session writes the same addresses in the same order
+ * before each gamma load, then address 0. 0x071890 is the gamma-table
+ * data port: each write stores its high byte into the current
+ * row/channel and advances channel (red, green, blue), then row. The
+ * model resets the load position on any halfword address write, which
+ * every captured load ends with 0.
  */
 #define SGI_MGRAS_DAC_LUT_INDEX 0x071810
 #define SGI_MGRAS_DAC_LUT_DATA 0x071890
 #define SGI_MGRAS_DAC_LUT_DATA_2 0x071910
 
 #define SGI_MGRAS_DAC_CONFIG 0x071988
+
+/*
+ * One byte per DAC register address the address halfword can select, all
+ * plain storage: an approximation of a DAC whose register map is unknown.
+ */
+#define SGI_MGRAS_DAC_REGS 0x10000
 
 #define SGI_MGRAS_DAC_LUT_INDEX_LOW 0x071811
 
@@ -233,6 +234,8 @@ struct SGIMgrasState {
      * not an observed one.
      */
     uint8_t dac_gamma[3][256];
+    /* DAC registers addressed through DAC_LUT_INDEX, data at DAC_LUT_DATA_2. */
+    uint8_t dac_reg[SGI_MGRAS_DAC_REGS];
     uint32_t config_table[SGI_MGRAS_CONFIG_TABLE_WORDS];
     uint32_t bringup_flag;
     uint32_t bringup_arg_2;

@@ -941,6 +941,88 @@ static void test_dac_lut_load(void)
 }
 
 /*
+ * SGI's Octane IDE DAC reset (mg_dacreset, ide.IP30 6.5.30 at
+ * 0xa800000020854920) addresses DAC registers through REG_DAC_LUT_INDEX,
+ * a halfword whose high byte is the register number, and moves their
+ * data through REG_DAC_LUT_DATA_2 a byte at a time. It fails the board
+ * unless the address reads back, register 3 (the DAC ID) is 0x79 with
+ * register 0xb (its revision) at 1 -- or 0x76 with 0, which it warns
+ * about -- and each register it programs reads back under mask 0xff.
+ * A captured IRIX desktop session programs the same registers, in the
+ * same order, before each gamma-table load (0x0600 takes 0xec there).
+ */
+static void test_dac_register_file_matches_ide_reset(void)
+{
+    static const struct {
+        uint16_t addr;
+        uint8_t value;
+    } regs[] = {
+        { 0x0400, 0xff }, { 0x0500, 0x89 }, { 0x0600, 0xe4 },
+        { 0x0700, 0xc0 }, { 0x0800, 0x06 }, { 0x0402, 0x01 },
+    };
+    uint8_t id, rev;
+
+    mgras_reset();
+    qtest_writeb(qts, REG_DAC_CONFIG, 3);
+    qtest_writeb(qts, REG_DAC_CONFIG, 2);
+    qtest_writeb(qts, REG_DAC_CONFIG, 3);
+    /* Register number 5 through the byte port: command register 1. */
+    qtest_writeb(qts, REG_DAC_LUT_INDEX_LOW, 5);
+    qtest_writeb(qts, REG_DAC_LUT_DATA_2, 0x89);
+    qtest_writew(qts, REG_DAC_LUT_INDEX, 0x0500);
+    g_assert_cmphex(qtest_readb(qts, REG_DAC_LUT_DATA_2), ==, 0x89);
+    qtest_writew(qts, REG_DAC_LUT_INDEX, 0x0d00);
+    qtest_writeb(qts, REG_DAC_LUT_DATA_2, 0x40);
+
+    qtest_writew(qts, REG_DAC_LUT_INDEX, 0);
+    g_assert_cmphex((qtest_readw(qts, REG_DAC_LUT_INDEX) >> 8) & 0xff, ==, 0);
+
+    qtest_writew(qts, REG_DAC_LUT_INDEX, 0x0300);
+    id = qtest_readb(qts, REG_DAC_LUT_DATA_2);
+    qtest_writew(qts, REG_DAC_LUT_INDEX, 0x0b00);
+    rev = qtest_readb(qts, REG_DAC_LUT_DATA_2);
+    g_assert_true((id == 0x79 && rev == 1) || (id == 0x76 && rev == 0));
+
+    for (int i = 0; i < ARRAY_SIZE(regs); i++) {
+        qtest_writew(qts, REG_DAC_LUT_INDEX, regs[i].addr);
+        qtest_writeb(qts, REG_DAC_LUT_DATA_2, regs[i].value);
+    }
+    for (int i = 0; i < ARRAY_SIZE(regs); i++) {
+        qtest_writew(qts, REG_DAC_LUT_INDEX, regs[i].addr);
+        g_assert_cmphex(qtest_readb(qts, REG_DAC_LUT_DATA_2), ==,
+                        regs[i].value);
+    }
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+}
+
+/*
+ * SGI's Octane IDE DAC address test (mg_dacaddrreg, ide.IP30 6.5.30 at
+ * 0xa800000020853c2c) writes a byte to 0x071811 and requires it back in
+ * bits 15:8 of the halfword at 0x071810, the register number. It then
+ * writes the halfword with the pattern in its high byte and checks the
+ * same byte. The halfword's low byte is never compared.
+ */
+static void test_dac_address_byte_port(void)
+{
+    static const uint8_t patterns[] = {
+        0x00, 0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80, 0xff,
+    };
+
+    mgras_reset();
+    for (int i = 0; i < ARRAY_SIZE(patterns); i++) {
+        qtest_writeb(qts, REG_DAC_LUT_INDEX_LOW, patterns[i]);
+        g_assert_cmphex((qtest_readw(qts, REG_DAC_LUT_INDEX) >> 8) & 0xff, ==,
+                        patterns[i]);
+    }
+    for (int i = 0; i < ARRAY_SIZE(patterns); i++) {
+        qtest_writew(qts, REG_DAC_LUT_INDEX, (uint16_t)patterns[i] << 8);
+        g_assert_cmphex((qtest_readw(qts, REG_DAC_LUT_INDEX) >> 8) & 0xff, ==,
+                        patterns[i]);
+    }
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+}
+
+/*
  * SGI's Octane IDE VC3 register test (mg_vc3internalreg, ide.IP30 6.5.30
  * at 0xa80000002083da2c) stops video timing, then writes walking-one,
  * walking-zero, 0 and 0xffff patterns to VC3 registers 0-0x13 and reads
@@ -5684,9 +5766,12 @@ static void test_migration(void)
                  MGRAS_COMMAND(REG_BLOCK_START, (2u << 16) | 2u));
 
     qtest_writel(from, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x1e, 0x4));
+    qtest_writew(from, REG_DAC_LUT_INDEX, 0x0600);
+    qtest_writeb(from, REG_DAC_LUT_DATA_2, 0xe4);
 
     sgi_migrate_stopped(from, uri);
 
+    g_assert_cmphex(qtest_readb(to, REG_DAC_LUT_DATA_2), ==, 0xe4);
     g_assert_cmphex(qtest_readl(to, REG_GE_READ_2), ==, 0);
     g_assert_cmphex(qtest_readl(to, REG_GE_READ_1), ==, 0);
     g_assert_cmphex(qtest_readl(to, REG_CONTEXT_COMMAND), ==,
@@ -6166,6 +6251,10 @@ int main(int argc, char **argv)
                    test_hq_status_hiwater_poll_bit);
     qtest_add_func("sn0/origin2000/mgras/hq-status-independent-of-error",
                    test_hq_status_independent_of_sticky_error);
+    qtest_add_func("sn0/origin2000/mgras/dac-address-byte-port",
+                   test_dac_address_byte_port);
+    qtest_add_func("sn0/origin2000/mgras/dac-register-file-matches-ide-reset",
+                   test_dac_register_file_matches_ide_reset);
     qtest_add_func("sn0/origin2000/mgras/vc3-registers-read-back",
                    test_vc3_registers_read_back);
     qtest_add_func("sn0/origin2000/mgras/dac-lut-load",
