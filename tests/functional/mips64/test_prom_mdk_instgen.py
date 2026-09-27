@@ -43,7 +43,7 @@ from lib_prom_mdk_instgen import (END_PASS, INSTGEN_COMMAND, NETBOOT_PATH,
                                   verdict)
 
 
-MDK_REL = os.path.join('assets', 'boot', 'mdk', 'cpu.mdk')
+MDK_REL = os.path.join('boot', 'mdk', 'cpu.mdk')
 
 # A thousand passes took about forty minutes under a host contended to
 # nearly twice its cores, and a fraction of that quiet. 3540 keeps the
@@ -72,7 +72,7 @@ class PromMdkInstgen(QemuSystemTest):
         shutil.copyfile(mdk, staged)
         return root
 
-    @skipIfMissingEnv('ORIGAMI_ASSETS')
+    @skipIfMissingEnv('QEMU_TEST_SGI_ASSET_DIR')
     def test_prom_mdk_instgen(self):
         assets = require_assets(self, FIRMWARE_REL, MDK_REL)
         prom, mdk = assets[FIRMWARE_REL], assets[MDK_REL]

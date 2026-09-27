@@ -51,7 +51,7 @@ from lib_prom_fx import LEDGERS_EXPECTED, NBLOCKS, NETBOOT_PATH, verdict
 from lib_prom_mdk import payload_identity_problems
 
 
-FX_REL = os.path.join('assets', 'boot', '6.5-base', 'fx.64')
+FX_REL = os.path.join('boot', '6.5-base', 'fx.64')
 # The 6.5-base disc's fx.64, as tools/extract-irix boot records it.
 FX_SHA256 = (
     "c4cbacad625ee4587e24ba69f4610293383452b0c69114a4e3b3804e1e8b3100"
@@ -136,7 +136,7 @@ class PromFx(QemuSystemTest):
             disk.truncate(SCRATCH_DISK_BYTES)
         return path
 
-    @skipIfMissingEnv('ORIGAMI_ASSETS')
+    @skipIfMissingEnv('QEMU_TEST_SGI_ASSET_DIR')
     def test_prom_fx(self):
         assets = require_assets(self, FIRMWARE_REL, FX_REL)
         prom, fx = assets[FIRMWARE_REL], assets[FX_REL]

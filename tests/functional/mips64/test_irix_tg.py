@@ -41,13 +41,13 @@ docstring says why each clause is scored the way it is.
 
 Guarded by @skipBigDataTest() (the disk is multi-gigabyte) and @skipSlowTest()
 (a real multiuser IRIX boot is minutes), on top of
-@skipIfMissingEnv('ORIGAMI_ASSETS') (skips only when the env var itself is
+@skipIfMissingEnv('QEMU_TEST_SGI_ASSET_DIR') (skips only when the env var itself is
 unset) and a self.fail() at method entry if it is set but the PROM or
 installed disk is missing -- a missing asset with the env var set means CI
 provisioning failed, not a reason to skip quietly, matching
 test_irix_eg_net.py. The installed IRIX disk is not committed (the fork
 ships no IRIX bits); a runner provisions it at
-<ORIGAMI_ASSETS>/assets/irix/6.5.30/root.qcow2 the same way the firmware and
+<QEMU_TEST_SGI_ASSET_DIR>/irix/6.5.30/root.qcow2 the same way the firmware and
 miniroot kernel are provisioned out of band.
 """
 
@@ -146,12 +146,12 @@ except (ImportError, RuntimeError):
 
 RELEASE = "6.5.30"
 
-# Where ORIGAMI_ASSETS resolves the real PROM and the installed IRIX disk.
-# ORIGAMI_ASSETS names a CHECKOUT (one with its own assets/ directory), not
-# assets/ itself, matching test_irix_eg_net.py's FIRMWARE_REL.
-FIRMWARE_REL = os.path.join('assets', 'firmware', RELEASE,
+# Where QEMU_TEST_SGI_ASSET_DIR resolves the real PROM and the installed IRIX disk.
+# QEMU_TEST_SGI_ASSET_DIR points directly at the asset directory,
+# direct asset root, matching test_irix_eg_net.py's FIRMWARE_REL.
+FIRMWARE_REL = os.path.join('firmware', RELEASE,
                             'ip27prom.payload.bin')
-DISK_REL = os.path.join('assets', 'irix', RELEASE, 'root.qcow2')
+DISK_REL = os.path.join('irix', RELEASE, 'root.qcow2')
 
 # The release-matched PROM SHA-256, so a stale or wrong-release firmware is
 # caught before a boot is spent on it. Same digest test_irix_eg_net.py carries.
@@ -276,7 +276,7 @@ if QemuSystemTest is not None:
 
         @skipBigDataTest()
         @skipSlowTest()
-        @skipIfMissingEnv('ORIGAMI_ASSETS')
+        @skipIfMissingEnv('QEMU_TEST_SGI_ASSET_DIR')
         def test_irix_tg(self):
             assets = require_assets(self, FIRMWARE_REL, DISK_REL)
             prom, disk = assets[FIRMWARE_REL], assets[DISK_REL]

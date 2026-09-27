@@ -21,15 +21,15 @@ release and platform, then a clean shutdown.
 
 Ports test_irix_diag.py's own real-PROM boot and login scaffolding
 (single CPU, 64 MiB, user-mode networking, the release's own PROM) onto
-the plain installed disk (`assets/irix/6.5.30/root.qcow2`) instead of the
+the plain installed disk (`irix/6.5.30/root.qcow2`) instead of the
 golden-with-diagnostics one -- root.qcow2 is the base image
 root-diags.qcow2 is built from by adding the field_diags_irix product
 (see that file's own docstring), so the same boot profile applies up to
 and past login.
 
 Where this file differs from test_irix_diag.py on purpose: a developer
-with ORIGAMI_ASSETS unset gets the usual skip (there is nothing to run
-against at all), but a run where ORIGAMI_ASSETS IS set and the PROM or
+with QEMU_TEST_SGI_ASSET_DIR unset gets the usual skip (there is nothing to run
+against at all), but a run where QEMU_TEST_SGI_ASSET_DIR IS set and the PROM or
 disk is simply missing FAILS rather than silently skipping.
 test_irix_diag.py's skipTest() on a missing asset is exactly the bug
 this test does not repeat: a provisioning failure has to show up as a
@@ -55,9 +55,9 @@ except (ImportError, RuntimeError):
 
 
 RELEASE = "6.5.30"
-FIRMWARE_REL = os.path.join('assets', 'firmware', RELEASE,
+FIRMWARE_REL = os.path.join('firmware', RELEASE,
                             'ip27prom.payload.bin')
-DISK_REL = os.path.join('assets', 'irix', RELEASE, 'root.qcow2')
+DISK_REL = os.path.join('irix', RELEASE, 'root.qcow2')
 
 # The installed IRIX single-node machine: one CPU, 64 MiB, the release's
 # own PROM, user-mode networking so IRIX's network init completes without
@@ -115,7 +115,7 @@ if QemuSystemTest is not None:
 
         @skipBigDataTest()
         @skipSlowTest()
-        @skipIfMissingEnv('ORIGAMI_ASSETS')
+        @skipIfMissingEnv('QEMU_TEST_SGI_ASSET_DIR')
         def test_irix_installed_boot(self):
             assets = require_assets(self, FIRMWARE_REL, DISK_REL)
             prom, disk = assets[FIRMWARE_REL], assets[DISK_REL]

@@ -23,7 +23,7 @@ companions exercise without booting; this file only wires them to real
 boots, the same division the four absorbed scripts each kept.
 
 One meson target now covers the whole family instead of four: every row
-needs ORIGAMI_ASSETS (the real firmware), which is exactly the "tests that
+needs QEMU_TEST_SGI_ASSET_DIR (the real firmware), which is exactly the "tests that
 fetch assets" case this directory's own meson.build already carves out for
 the thorough suite (see that file's header comment) -- the one manifest row
 that used to run under the quick suite (prom_full_boot_mttcg) gained nothing
@@ -38,11 +38,12 @@ import os
 import time
 
 from qemu_test import QemuSystemTest
+from qemu_test.asset import AssetError, LocalAsset
 
 from lib_matrix import (AttemptResult, MatrixError, machine_props,
                         matrix_rows, parse_row, peek_row, prom_args,
                         qemu_args, verdict)
-from lib_prom import FIRMWARE_REL, MARK, codes_seen, mark_reached, resolve_asset
+from lib_prom import FIRMWARE_REL, MARK, codes_seen, mark_reached
 from lib_prom_copy_speed import (COPY_BRACKET_END, COPY_BRACKET_MAX_SECONDS,
                                  COPY_BRACKET_START, copy_is_fast,
                                  record_first_seen)
@@ -60,6 +61,7 @@ POLL_INTERVAL_SECONDS = 0.05
 # the smallest real boot (one CPU, one node), the same cell test_prom_boot.py
 # and test_prom_copy_speed.py each built by hand before this merge.
 COPY_SPEED_CELL_ID = 'prom_full_boot_1cpu'
+PROM_SHA256 = 'c2c69bf33c375b43ec7ac511fab41ddf595be1b6838ae717e58a9a1273437fdd'
 
 
 def _boot_one_attempt(test, cell, attempt_index, first_seen=None):
@@ -82,30 +84,15 @@ def _boot_one_attempt(test, cell, attempt_index, first_seen=None):
 
     # Every cell boots the real PROM now that the synthesized-firmware
     # axis is gone. Resolve it the same way the absorbed scripts did
-    # (ORIGAMI_ASSETS names a checkout, not the assets/ directory
-    # itself) and skip if it is not provisioned, rather than launching
+    # (QEMU_TEST_SGI_ASSET_DIR points directly at the asset directory) and
+    # skip if it is not provisioned, rather than launching
     # a machine with no firmware at all.
-    assets_root = os.environ.get('ORIGAMI_ASSETS')
-    if not assets_root:
-        # No decorator covers this cell test -- every row needs
-        # ORIGAMI_ASSETS now, so the unset case is handled here rather
-        # than by @skipIfMissingEnv. A developer with no assets
-        # provisioned gets the usual skip.
-        test.skipTest(
-            'ORIGAMI_ASSETS is not set -- point it at a checkout '
-            'with the real PROM image extracted (tools/extract-irix '
-            'prom) to run this test')
-    firmware_path = resolve_asset(assets_root, FIRMWARE_REL)
+    try:
+        firmware_path = test.ASSET_FIRMWARE.fetch()
+    except AssetError as exc:
+        test.fail(str(exc))
     if firmware_path is None:
-        # ORIGAMI_ASSETS IS set, so a missing firmware image is a
-        # provisioning failure, not an absent-assets developer run,
-        # and must fail loudly: a silent skip here would let a
-        # real firmware-boot regression pass CI unnoticed.
-        test.fail(
-            'ORIGAMI_ASSETS is set but no firmware is present '
-            f'at <ORIGAMI_ASSETS>/{FIRMWARE_REL} -- provision it '
-            '(nightly assets) rather than silently skipping a '
-            'claimed capability')
+        test.skipTest('QEMU_TEST_SGI_ASSET_DIR is not set: no PROM to run')
     vm.add_args(*prom_args(firmware_path))
 
     try:
@@ -321,6 +308,8 @@ class OriginPromMatrix(QemuSystemTest):
     target now (see this module's docstring for why). See _make() above
     for what each row does; the manifest, not this class, is the source
     of truth for what cells exist."""
+
+    ASSET_FIRMWARE = LocalAsset(FIRMWARE_REL, PROM_SHA256)
 
 
 register_matrix_cells(OriginPromMatrix, 'quick')

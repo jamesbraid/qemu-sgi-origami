@@ -94,7 +94,7 @@ def missing_assertions(log, cpus=1):
 # tools/sashlib.py's own RELEASES table, SHA-256 digests copied verbatim.
 # The prom/tftp Path entries sashlib.py carries alongside them point at
 # the project checkout's own assets/ layout; this port's real boot below
-# resolves the same relative layout under ORIGAMI_ASSETS itself (see
+# resolves the same relative layout under QEMU_TEST_SGI_ASSET_DIR itself (see
 # FIRMWARE_REL/TFTP_REL), so only the digests are reproduced here.
 RELEASES = {
     "6.5-base": {

@@ -165,17 +165,17 @@ def reached_kernel_entry(transcript):
 # is spent on it.
 RELEASE = "6.5.30"
 
-# Where ORIGAMI_ASSETS resolves the real firmware and boot tree, matching
-# test_prom_sash.py's FIRMWARE_REL/TFTP_REL: ORIGAMI_ASSETS names a
-# CHECKOUT (one with its own assets/ directory), not assets/ itself.
-FIRMWARE_REL = os.path.join('assets', 'firmware', RELEASE,
+# Where QEMU_TEST_SGI_ASSET_DIR resolves the real firmware and boot tree, matching
+# test_prom_sash.py's FIRMWARE_REL/TFTP_REL: QEMU_TEST_SGI_ASSET_DIR points
+# directly at the directory containing those files.
+FIRMWARE_REL = os.path.join('firmware', RELEASE,
                             'ip27prom.payload.bin')
-TFTP_REL = os.path.join('assets', 'boot', RELEASE)
+TFTP_REL = os.path.join('boot', RELEASE)
 KERNEL_NAME = 'unix.IP27'
 
 # The release-matched PROM and miniroot-kernel SHA-256 digests. The PROM
 # digest matches tools/sashlib.py's RELEASES["6.5.30"] and test_prom_sash's
-# own copy; the kernel digest is assets/MANIFEST.sha256's own
+# own copy; the kernel digest is MANIFEST.sha256's own
 # boot/6.5.30/unix.IP27 row.
 PROM_SHA256 = (
     "c2c69bf33c375b43ec7ac511fab41ddf595be1b6838ae717e58a9a1273437fdd"
@@ -264,7 +264,7 @@ class IrixMiniroot(QemuSystemTest):
     class.
     """
 
-    @skipIfMissingEnv('ORIGAMI_ASSETS')
+    @skipIfMissingEnv('QEMU_TEST_SGI_ASSET_DIR')
     def test_irix_miniroot(self):
         kernel_rel = os.path.join(TFTP_REL, KERNEL_NAME)
         assets = require_assets(self, FIRMWARE_REL, kernel_rel)

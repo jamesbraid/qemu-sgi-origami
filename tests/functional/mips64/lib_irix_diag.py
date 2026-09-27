@@ -650,9 +650,9 @@ class Flavour:
     title: str
     machine: str
     nodes: int
-    firmware: str = os.path.join('assets', 'firmware', '6.5.30',
+    firmware: str = os.path.join('firmware', '6.5.30',
                                  'ip27prom.payload.bin')
-    disk: str = os.path.join('assets', 'irix', '6.5.30', 'root-diags.qcow2')
+    disk: str = os.path.join('irix', '6.5.30', 'root-diags.qcow2')
     cpu: str = 'R10000'
     # hinv -v lines, as (what, regex).
     hinv_facts: tuple = ()
@@ -887,9 +887,9 @@ FLAVOURS = {
     'origin300': Flavour(
         title='Origin 300: the IO8 IOC3',
         machine='origin300', nodes=1, cpu='R14000',
-        firmware=os.path.join('assets', 'firmware', '6.5.30',
+        firmware=os.path.join('firmware', '6.5.30',
                               'ip35prom.payload.bin'),
-        disk=os.path.join('assets', 'irix', '6.5.30',
+        disk=os.path.join('irix', '6.5.30',
                           'root-diags-origin300.qcow2'),
         hinv_facts=(
             ('IOC3 serial port A', r'IOC3/IOC4 serial port: tty3\b'),

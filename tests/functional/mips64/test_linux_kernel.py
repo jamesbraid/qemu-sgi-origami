@@ -10,7 +10,7 @@ Ports tools/linux-usercheck's one-, two-, and four-CPU checks, in the
 PROJECT checkout, into this fork's own functional-test framework, the same
 way test_prom_boot.py ports tools/boot-gate and test_diag.py ports
 tools/diag-gate. linux-usercheck boots the mainline Linux/IP27 kernel
-(assets/linux-ip27/vmlinux, built by tools/linux-userspace with an
+(linux-ip27/vmlinux, built by tools/linux-userspace with an
 embedded freestanding userspace stub) -- no disk, no terminal device for
 the guest -- and requires the console transcript to contain Linux's own
 "Attempted to kill init! exitcode=0x0000NN00" panic line with the exact
@@ -27,7 +27,7 @@ same command-monitor dialogue test_prom_sash.py drives (lib_prom's
 prom_netboot_steps(), imported below): the System Maintenance Menu's
 option 5, a stale netaddr cleared, then `boot -f bootp()/vmlinux` over
 QEMU's own SLIRP usermode networking, serving the kernel straight out of
-its ORIGAMI_ASSETS directory (no staged copy -- SLIRP's own TFTP server
+its QEMU_TEST_SGI_ASSET_DIR directory (no staged copy -- SLIRP's own TFTP server
 only ever reads it). This replaces a direct `-kernel` load: the plan this
 test belongs to retires synthesized firmware, so no product boots any
 other way any more, and the mainline kernel is a 64-bit ELF the PROM
@@ -151,11 +151,11 @@ def missing_assertions(log, cpus):
     return verdict(log, MARKERS[cpus])
 
 
-# Where ORIGAMI_ASSETS resolves the built kernel, matching tools/linux-run's
-# own default kernel path ("assets/linux-ip27/vmlinux", project checkout)
-# and lib_prom.FIRMWARE_REL's own idiom: ORIGAMI_ASSETS names a CHECKOUT,
-# not assets/ itself.
-KERNEL_REL = os.path.join('assets', 'linux-ip27', 'vmlinux')
+# Where QEMU_TEST_SGI_ASSET_DIR resolves the built kernel, matching tools/linux-run's
+# own default kernel path ("linux-ip27/vmlinux", Origami source tree)
+# and lib_prom.FIRMWARE_REL's own idiom: QEMU_TEST_SGI_ASSET_DIR points
+# directly at the directory containing those files.
+KERNEL_REL = os.path.join('linux-ip27', 'vmlinux')
 
 # The boot file this test's own SLIRP TFTP server serves the kernel under
 # -- see prom_netboot_steps()'s own docstring for why this need not match
@@ -167,8 +167,8 @@ NETBOOT_STEPS = prom_netboot_steps(NETBOOT_BOOTFILE)
 
 # Per-boot FAILURE-detection budgets, not typical run time -- real
 # measurements, not guesses: a run of this exact test against real
-# provisioned assets (podman, this worktree mounted read-write and a
-# checkout carrying assets/ mounted read-only as ORIGAMI_ASSETS) reached
+# provisioned assets (podman, this worktree mounted read-write and the asset
+# directory mounted read-only as QEMU_TEST_SGI_ASSET_DIR) reached
 # its exit sentinel in 52s at one CPU, 58s at two, and 310s at four, on a
 # host already busy running other work. Each of these times now covers a
 # real PROM power-on self-test and netboot on top of the kernel's own
@@ -276,7 +276,7 @@ class LinuxKernel(QemuSystemTest):
 
         return transcript
 
-    @skipIfMissingEnv('ORIGAMI_ASSETS')
+    @skipIfMissingEnv('QEMU_TEST_SGI_ASSET_DIR')
     def test_one_cpu(self):
         name = 'linux_kernel_1cpu'
         transcript = self._boot_and_capture(cpus=1, mem_mib=64, name=name)
@@ -287,7 +287,7 @@ class LinuxKernel(QemuSystemTest):
             ', '.join(missing) +
             f' (full transcript: {self.log_file(f"{name}.log")})')
 
-    @skipIfMissingEnv('ORIGAMI_ASSETS')
+    @skipIfMissingEnv('QEMU_TEST_SGI_ASSET_DIR')
     def test_two_cpu(self):
         name = 'linux_kernel_2cpu'
         transcript = self._boot_and_capture(cpus=2, mem_mib=64, name=name)
@@ -298,7 +298,7 @@ class LinuxKernel(QemuSystemTest):
             ', '.join(missing) +
             f' (full transcript: {self.log_file(f"{name}.log")})')
 
-    @skipIfMissingEnv('ORIGAMI_ASSETS')
+    @skipIfMissingEnv('QEMU_TEST_SGI_ASSET_DIR')
     def test_four_cpu(self):
         name = 'linux_kernel_4cpu'
         transcript = self._boot_and_capture(cpus=4, mem_mib=128, name=name)

@@ -60,9 +60,11 @@ class Asset:
     def __str__(self):
         return str(self.cache_file)
 
+
     def _check(self, cache_file):
-        if self.hash is None:
-            return True
+        return self.hash is None or self.hash == self._hash(cache_file)
+
+    def _hash(self, cache_file):
         if len(self.hash) == 64:
             hl = hashlib.sha256()
         else:
@@ -76,7 +78,7 @@ class Asset:
                     break
                 hl.update(chunk)
 
-        return self.hash == hl.hexdigest()
+        return hl.hexdigest()
 
     def valid(self):
         '''Check whether the file exists in the cache and has the right hash'''
@@ -291,3 +293,63 @@ class Asset:
 
         with open(cache_tstamp, "w", encoding='utf-8'):
             Asset.precache_suite(tests)
+
+
+class LocalAsset(Asset):
+    '''An optional, checksum-verified file supplied by the test runner.
+
+    The SGI functional tests use a directory populated outside QEMU because
+    some of their inputs are not distributable.  This class deliberately
+    does not download or copy those files into the normal asset cache.
+    '''
+    ENV_VAR = 'QEMU_TEST_SGI_ASSET_DIR'
+
+    def __init__(self, path, hashsum, *, asset_dir=None):
+        self.path = Path(path)
+        if (not self.path.parts or self.path.is_absolute() or
+                '..' in self.path.parts):
+            raise ValueError('local asset path must be relative')
+        if hashsum is not None and len(hashsum) != 64:
+            raise ValueError('local asset checksum must be SHA-256')
+        self.asset_dir = asset_dir
+        super().__init__(f'{self.ENV_VAR}/{self.path.as_posix()}',
+                         hashsum or 'local')
+        self.hash = hashsum
+
+    def local_file(self):
+        root = self.asset_dir or os.environ.get(self.ENV_VAR)
+        return Path(root, self.path) if root else None
+
+    def __str__(self):
+        path = self.local_file()
+        return str(path) if path else f'<{self.ENV_VAR}>/{self.path}'
+
+    def valid(self):
+        path = self.local_file()
+        if path is None:
+            return False
+        if not path.is_file():
+            raise AssetError(self, f'Local file is missing: {path}')
+        self._check_local_file(path)
+        return True
+
+    def available(self):
+        return self.valid()
+
+    def fetchable(self):
+        return False
+
+    def fetch(self):
+        path = self.local_file()
+        if path is None:
+            return None
+        if not path.is_file():
+            raise AssetError(self, f'Local file is missing: {path}')
+        self._check_local_file(path)
+        return str(path)
+
+    def _check_local_file(self, path):
+        actual = self._hash(path) if self.hash is not None else None
+        if actual is not None and actual != self.hash:
+            raise AssetError(
+                self, f'Hash {actual} does not match {self.hash}: {path}')

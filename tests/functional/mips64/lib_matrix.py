@@ -239,7 +239,7 @@ def prom_args(firmware_path):
     '-d', 'trace:sgi_hub_led'] -- both parts matter: -bios hands the
     machine the real firmware, and the trace event is what emits the
     progress codes pass_condition_met() reads. Given a falsy path (the
-    image is not provisioned under ORIGAMI_ASSETS), returns [] -- callers
+    image is not provisioned under QEMU_TEST_SGI_ASSET_DIR), returns [] -- callers
     can call this unconditionally rather than guarding it with an if, and
     let the missing -bios show up as a boot that never emits a progress
     code rather than a KeyError building the argv. Matches

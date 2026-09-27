@@ -111,10 +111,10 @@ the same reason the network transfer test uses 128 MiB.
 Guarded by @skipBigDataTest() (the install media total several hundred
 MB) and @skipSlowTest() (a full install is 20-30 minutes) -- the
 framework's own env-var-gated decorators, matching test_openbsd_net_transfer.py
--- on top of @skipIfMissingEnv('ORIGAMI_ASSETS') for a developer with no
+-- on top of @skipIfMissingEnv('QEMU_TEST_SGI_ASSET_DIR') for a developer with no
 assets at all. The install media are published to the forge asset store
 now (nightly provisioning for them is being added separately, out of
-this test's own scope), so ORIGAMI_ASSETS being set with an install
+this test's own scope), so QEMU_TEST_SGI_ASSET_DIR being set with an install
 input missing underneath it is a provisioning failure, not an
 absent-assets run, and fails the test loudly rather than skipping it.
 
@@ -180,10 +180,10 @@ def install_verdict(transcript):
     }
 
 
-# Where ORIGAMI_ASSETS resolves the install media, matching
-# test_openbsd_net_transfer.py's own KERNEL_REL/DISK_REL idiom: ORIGAMI_ASSETS
-# names a CHECKOUT, not assets/ itself.
-RELEASE_REL = os.path.join('assets', 'openbsd', '6.9')
+# Where QEMU_TEST_SGI_ASSET_DIR resolves the install media, matching
+# test_openbsd_net_transfer.py's own KERNEL_REL/DISK_REL idiom: QEMU_TEST_SGI_ASSET_DIR
+# points directly at the asset directory.
+RELEASE_REL = os.path.join('openbsd', '6.9')
 # The install ramdisk. Also the TFTP bootfile name the PROM's netboot
 # command asks the SLIRP back end for -- it is both the asset's own name
 # and the name it is served under, so one constant names both.
@@ -579,7 +579,7 @@ class OpenbsdInstall(QemuSystemTest):
 
     @skipBigDataTest()
     @skipSlowTest()
-    @skipIfMissingEnv('ORIGAMI_ASSETS')
+    @skipIfMissingEnv('QEMU_TEST_SGI_ASSET_DIR')
     def test_openbsd_install(self):
         kernel_rel = os.path.join(RELEASE_REL, INSTALL_KERNEL_NAME)
         sets_rels = [os.path.join(RELEASE_REL, name)

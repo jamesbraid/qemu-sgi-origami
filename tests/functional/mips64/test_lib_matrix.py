@@ -371,15 +371,15 @@ class PromArgsTest(unittest.TestCase):
 
     def test_prom_args_with_resolved_firmware(self):
         self.assertEqual(
-            prom_args('/some/checkout/assets/firmware/6.5-base/'
+            prom_args('/some/sgi-assets/firmware/6.5-base/'
                       'ip27prom.payload.bin'),
-            ['-bios', '/some/checkout/assets/firmware/6.5-base/'
+            ['-bios', '/some/sgi-assets/firmware/6.5-base/'
                       'ip27prom.payload.bin',
              '-d', 'trace:sgi_hub_led'])
 
     def test_prom_args_without_firmware(self):
         # resolve_asset() returns None when the image is not
-        # provisioned under ORIGAMI_ASSETS, and the caller passes that
+        # provisioned under QEMU_TEST_SGI_ASSET_DIR, and the caller passes that
         # straight through -- must contribute no args at all.
         self.assertEqual(prom_args(None), [])
 

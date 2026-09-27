@@ -10,8 +10,8 @@ MDK 1.6 is SGI's own PROM-bootable field diagnostic for the Origin
 200/2000/Onyx2: a standalone kernel with built-in hardware tests, booted
 from the maintenance menu's command monitor exactly as an operating
 system is. It never shipped on IRIX media -- the binaries come off the
-Internal Support Tools 2.7 disc; `tools/extract-irix mdk` in the project
-checkout lands them under <ORIGAMI_ASSETS>/assets/boot/mdk, and the find,
+Internal Support Tools 2.7 disc; the asset provisioning process places
+them under <QEMU_TEST_SGI_ASSET_DIR>/boot/mdk, and the find,
 the extraction, and the full per-test results on this machine are in the
 project checkout's docs/notebooks/firmware-diags.md.
 
@@ -61,7 +61,7 @@ from lib_prom_mdk import (NETBOOT_PATH, artifact_identity_problems,
 # MDK command (see this module's docstring).
 # ---------------------------------------------------------------------------
 
-MDK_REL = os.path.join('assets', 'boot', 'mdk', 'cpu.mdk')
+MDK_REL = os.path.join('boot', 'mdk', 'cpu.mdk')
 
 # Boot to the menu is a few minutes under a contended host; the kernel
 # netboot leg is seconds; pcache announces "about 5 minutes" and took
@@ -91,7 +91,7 @@ class PromMdk(QemuSystemTest):
         shutil.copyfile(mdk, staged)
         return root
 
-    @skipIfMissingEnv('ORIGAMI_ASSETS')
+    @skipIfMissingEnv('QEMU_TEST_SGI_ASSET_DIR')
     def test_prom_mdk(self):
         assets = require_assets(self, FIRMWARE_REL, MDK_REL)
         prom, mdk = assets[FIRMWARE_REL], assets[MDK_REL]

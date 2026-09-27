@@ -24,7 +24,7 @@ lib_prom.py follows.
 Every image this module builds (the boot flash and the synthesized node
 and IO8 identity records) is written fresh into the caller's own scratch
 directory, never into the asset tree. The firmware image and the two
-SPD records are read from ORIGAMI_ASSETS.
+SPD records are read from QEMU_TEST_SGI_ASSET_DIR.
 """
 
 import hashlib
@@ -32,7 +32,7 @@ import os
 
 from lib_prom import resolve_asset
 
-FIRMWARE_REL = os.path.join('assets', 'firmware', '6.5.30',
+FIRMWARE_REL = os.path.join('firmware', '6.5.30',
                             'ip35prom.payload.bin')
 FIRMWARE_SHA256 = (
     '554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b')
@@ -77,10 +77,10 @@ NETWORK_MAC = '08:00:69:12:34:56'
 # (tools/origami_lib/prom.py's own ORIGIN300_SPD_INPUTS comment).
 SPD_INPUTS = (
     ('spd-eeprom.3',
-     os.path.join('assets', 'eeprom', 'origin300-dimm2-spd.bin'),
+     os.path.join('eeprom', 'origin300-dimm2-spd.bin'),
      'a8bb5857941fefae8e11037fe98b01d199199bd34eb059b269a8c4b6875ca0d3'),
     ('spd-eeprom.5',
-     os.path.join('assets', 'eeprom', 'origin300-dimm3-spd.bin'),
+     os.path.join('eeprom', 'origin300-dimm3-spd.bin'),
      '9e60c3400772d227b91c5d61cea8de7f89777d41377516de072944c26cef4aa7'),
 )
 
@@ -259,7 +259,7 @@ def launch_args(assets, cpus, scratch):
     """The -M property string and the remaining argv fragment for a real
     Origin 300 stock-PROM boot with cpus processors fitted.
 
-    assets is ORIGAMI_ASSETS; the caller's own require_assets(self,
+    assets is QEMU_TEST_SGI_ASSET_DIR; the caller's own require_assets(self,
     *ASSET_SPECS) call should already have resolved and skip/failed on
     every asset this needs. scratch is a fresh, writable, per-test
     directory (self.workdir): the boot flash and the synthesized node and

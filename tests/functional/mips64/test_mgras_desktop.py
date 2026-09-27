@@ -69,9 +69,9 @@ except (ImportError, RuntimeError):
 
 
 RELEASE = '6.5.30'
-FIRMWARE_REL = os.path.join('assets', 'firmware', RELEASE,
+FIRMWARE_REL = os.path.join('firmware', RELEASE,
                             'ip27prom.payload.bin')
-DISK_REL = os.path.join('assets', 'irix', RELEASE, 'root-si.qcow2')
+DISK_REL = os.path.join('irix', RELEASE, 'root-si.qcow2')
 
 # The stock deskside fits a plain BaseIO and no graphics, so
 # baseio-preset=io6g asks for the BaseIO-G, whose second IOC3 carries the
@@ -150,7 +150,7 @@ if QemuSystemTest is not None:
 
         @skipBigDataTest()
         @skipSlowTest()
-        @skipIfMissingEnv('ORIGAMI_ASSETS')
+        @skipIfMissingEnv('QEMU_TEST_SGI_ASSET_DIR')
         def test_mgras_desktop(self):
             assets = require_assets(self, FIRMWARE_REL, DISK_REL)
             prom, disk = assets[FIRMWARE_REL], assets[DISK_REL]

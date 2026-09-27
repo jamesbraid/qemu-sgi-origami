@@ -31,7 +31,7 @@ from qemu_test import wait_for_console_pattern
 
 # The BASEIO PROM shipped beside the node PROM, and the cabinet flash part
 # it fills: 1 MiB, erased (0xff) past the image.
-BASEIO_FLASH_REL = (os.path.join('assets', 'firmware', '6.5.30',
+BASEIO_FLASH_REL = (os.path.join('firmware', '6.5.30',
                                  'io6prom.img'),
                     '024d2f28b526933e8f00d964fefdfcd9'
                     'b0e873d504a43d9307099579e2b59ae9')
@@ -52,7 +52,7 @@ class Origin200GigachannelProm(QemuSystemTest):
                          '-m', mem, '-bios', str(prom), *extra)
         self.vm.launch()
 
-    @skipIfMissingEnv('ORIGAMI_ASSETS')
+    @skipIfMissingEnv('QEMU_TEST_SGI_ASSET_DIR')
     def test_cabinet_loads_the_flash_image(self):
         image = require_assets(self, BASEIO_FLASH_REL)[BASEIO_FLASH_REL[0]]
         flash = self.scratch_file('gigachannel-flash.raw')
@@ -74,7 +74,7 @@ class Origin200GigachannelProm(QemuSystemTest):
         wait_for_console_pattern(self, 'ALL DIAGS PASSED')
         self.vm.shutdown()
 
-    @skipIfMissingEnv('ORIGAMI_ASSETS')
+    @skipIfMissingEnv('QEMU_TEST_SGI_ASSET_DIR')
     def test_cabinet_takes_the_xbox_path(self):
         self.launch('origin200-gigachannel', 2, '128M')
         wait_for_console_pattern(
@@ -85,7 +85,7 @@ class Origin200GigachannelProm(QemuSystemTest):
         wait_for_console_pattern(self, 'ALL DIAGS PASSED')
         self.vm.shutdown()
 
-    @skipIfMissingEnv('ORIGAMI_ASSETS')
+    @skipIfMissingEnv('QEMU_TEST_SGI_ASSET_DIR')
     def test_loopback_takes_the_plain_path(self):
         self.launch('origin200-gigachannel-loopback', 1, '64M')
         wait_for_console_pattern(self, 'Loading BASEIO prom ....',

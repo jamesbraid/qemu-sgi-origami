@@ -28,7 +28,7 @@ failed check; the per-check results and the time each boot phase and
 check took are written to <flavour>-summary.json.
 
 The disks are the published golden-with-diagnostics images:
-`assets/irix/6.5.30/root-diags.qcow2`, the installed IRIX 6.5.30 root
+`irix/6.5.30/root-diags.qcow2`, the installed IRIX 6.5.30 root
 with the `field_diags_irix` product added and its environment loaded by
 a post-install reboot (the project checkout's irix-online-diagnostics
 notebook records how it is built and why the reboot matters), and
@@ -199,7 +199,7 @@ NVRAM_VARIABLE = ('pagecolor', '2a2a2a')
 TYPED_KEYS = ('a', 'b')
 TYPED_BYTES = ['1c', 'f0', '1c', '32', 'f0', '32']
 
-MEDIUM_REL = os.path.join('assets', 'irix', '6.5.30', 'olcdrom-medium.raw')
+MEDIUM_REL = os.path.join('irix', '6.5.30', 'olcdrom-medium.raw')
 MEDIUM_SHA256 = \
     'ba0a1466d7125cd350ee4f047677d7a3d9f8a8ed8b13469c92042cfa0bd07829'
 
@@ -246,7 +246,7 @@ if QemuSystemTest is not None:
             assets = require_assets(self, flavour.firmware, flavour.disk,
                                     (MEDIUM_REL, MEDIUM_SHA256))
             self.assets = {
-                'root': os.environ['ORIGAMI_ASSETS'],
+                'root': os.environ['QEMU_TEST_SGI_ASSET_DIR'],
                 'firmware': assets[flavour.firmware],
                 'disk': assets[flavour.disk],
                 'medium': assets[MEDIUM_REL],
@@ -812,7 +812,7 @@ if QemuSystemTest is not None:
 
         @skipBigDataTest()
         @skipSlowTest()
-        @skipIfMissingEnv('ORIGAMI_ASSETS')
+        @skipIfMissingEnv('QEMU_TEST_SGI_ASSET_DIR')
         def test_row(self):
             self._run_row(row_id)
 
