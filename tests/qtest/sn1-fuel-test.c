@@ -23,6 +23,7 @@
 #define PCI_CONFIG(w, d) (XTALK_WIDGET(w) + 0x20000 + (d) * 0x1000)
 #define BOARD_ID_HYPOTHESIS UINT64_C(0x4abc)
 #define IOC3_BAR 0x10000000
+#define FUEL_IOC3_ONEWIRE_SERIAL UINT64_C(0x5e7000000003)
 #define IOC3_WINDOW (XTALK_WIDGET(15) + 0x800000)
 #define IOC3_SERIAL_A 0x20178
 #define IOC3_SERIAL_B 0x20170
@@ -93,6 +94,20 @@ static void fuel_map_ioc3(QTestState *qts)
                  PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER);
     qtest_writel(qts, XTALK_WIDGET(15) + 0x200 + 4 * 8 + 4,
                  (1U << 12) | (IOC3_BAR >> 20));
+}
+
+static void test_fuel_ioc3_identity(const void *data)
+{
+    QTestState *qts = fuel_start(data);
+    g_autoptr(QDict) response = qtest_qmp(qts,
+        "{'execute':'qom-get','arguments':{"
+        "'path':'/machine/node0/baseio/ioc3',"
+        "'property':'onewire-serial'}}");
+
+    g_assert_false(qdict_haskey(response, "error"));
+    g_assert_cmphex(qdict_get_int(response, "return"), ==,
+                    FUEL_IOC3_ONEWIRE_SERIAL);
+    qtest_quit(qts);
 }
 
 static void test_fuel_board_and_cpu(const void *data)
@@ -444,6 +459,8 @@ int main(int argc, char **argv)
     qtest_add_data_func("fuel/board-id-migration", prom,
                         test_fuel_board_id_migration);
     qtest_add_data_func("fuel/pci", prom, test_fuel_pci);
+    qtest_add_data_func("fuel/ioc3-identity", prom,
+                        test_fuel_ioc3_identity);
     qtest_add_data_func("fuel/ps2", prom, test_fuel_ps2);
     qtest_add_data_func("fuel/memory", prom, test_fuel_memory);
     qtest_add_data_func("fuel/rejects-other-board-code", prom,
