@@ -24,6 +24,7 @@
 #include "qemu/osdep.h"
 #include "qemu/bswap.h"
 #include "libqtest.h"
+#include "qobject/qdict.h"
 #include "sgi-test.h"
 
 #define SN1_MD_MEMORY_CONFIG (SPACE_XTALK + UINT64_C(0x01800000) + 0x780008)
@@ -652,30 +653,92 @@ static void test_debugger_read(void)
 }
 
 /*
- * A line left idle for a second is dropped from the ones followed. A
- * processor's dirty copy of it is taken as replaced, so it is written back
- * and the line unowned, as a secondary-cache replacement of a dirty block
- * does (R10000 User's Manual version 2.0, the processor block write
- * protocol).
+ * Whether the system view maps @address to a region of @type ("ram" or
+ * "i/o"): an overlay the memory unit places over a followed line shows as
+ * I/O over the RAM.
  */
-static void test_idle_dirty_line_written_back(void)
+static bool flat_view_type_is(QTestState *s, uint64_t address,
+                              const char *type)
+{
+    g_autofree char *mtree = qtest_hmp(s, "info mtree -f");
+    const char *view = strstr(mtree, "Root memory region: system");
+    const char *end;
+    bool found = false;
+
+    g_assert_nonnull(view);
+    end = strstr(view + 1, "\nFlatView #");
+    if (!end) {
+        end = view + strlen(view);
+    }
+    for (const char *line = strchr(view, '\n'); line && line < end;
+         line = strchr(line + 1, '\n')) {
+        uint64_t start, last;
+        char region[32];
+
+        if (sscanf(line, " %" SCNx64 "-%" SCNx64 " (prio %*d, %31[^)])",
+                   &start, &last, region) == 3 &&
+            address >= start && address <= last) {
+            found = !strcmp(region, type);
+            break;
+        }
+    }
+    return found;
+}
+
+/*
+ * After the host's go-ahead, read the word again, which follows the line
+ * once more, then write the line back with a hit flush and publish the
+ * word and Status.CH.
+ */
+static void resume_after_release(Program *p)
+{
+    unsigned int wait = p->pc;
+
+    emit(p, LD(R_T3, RESULT_GO, R_T2));
+    emit_branch(p, 0x04, R_T3, R_ZERO, wait); /* beq t3, zero, wait */
+    emit_publish(p, 0x10);
+    emit_hit_flush(p, 0x18);
+    emit_publish(p, 0x20);
+}
+
+/*
+ * The memory unit stops overlaying a line nobody has touched for a while,
+ * but that is the model's bookkeeping, not the hardware's: the directory
+ * word and the processor's dirty copy stay as they were. When the line is
+ * followed again the dirty copy is still there to write back.
+ */
+static void test_idle_line_keeps_its_state(void)
 {
     const Scenario sc = {
         .cpus = "2",
-        STEPS({ 0, emit_first }, { 0, store_08 }),
+        STEPS({ 0, emit_first }, { 0, store_08 },
+              { 0, resume_after_release }),
     };
     char *prom;
     QTestState *s;
+    unsigned int tries;
 
     if (!qtest_has_accel("tcg")) {
         g_test_skip("TCG is unavailable");
         return;
     }
-    s = run_scenario(&sc, &prom);
+    s = start_scenario(&sc, &prom);
+    wait_steps(s, 2);
     g_assert_cmphex(result(s, 0x08) & DIRECTORY_FIELDS, ==, POINTER(0));
-    g_usleep(1500 * 1000);
-    g_assert_cmphex(qtest_readq(s, LINE_DIRECTORY) & DIRECTORY_FIELDS, ==,
-                    UNOWNED);
+    for (tries = 0; tries < POLL_TRIES; tries++) {
+        if (flat_view_type_is(s, LINE_PHYS, "ram")) {
+            break;
+        }
+        g_usleep(POLL_INTERVAL_US);
+    }
+    g_assert_true(flat_view_type_is(s, LINE_PHYS, "ram"));
+    qtest_writeq(s, RESULT_PHYS + RESULT_GO, 1);
+    wait_steps(s, sc.nr_steps);
+    /* Released and followed again, the word is as the store left it... */
+    g_assert_cmphex(result(s, 0x10) & DIRECTORY_FIELDS, ==, POINTER(0));
+    /* ...and the processor still holds the dirty copy, which it writes back. */
+    g_assert_cmphex(result(s, 0x18) & STATUS_CH, ==, STATUS_CH);
+    g_assert_cmphex(result(s, 0x20) & DIRECTORY_FIELDS, ==, UNOWNED);
     finish(s, prom);
 }
 
@@ -702,6 +765,90 @@ static void test_absent_owner(void)
     finish(s, prom);
 }
 
+static void migrate_wait(QTestState *qts)
+{
+    int64_t deadline = g_get_monotonic_time() + 30 * G_TIME_SPAN_SECOND;
+
+    for (;;) {
+        QDict *response = qtest_qmp(qts, "{'execute':'query-migrate'}");
+        const char *status = qdict_get_str(qdict_get_qdict(response,
+                                                           "return"),
+                                           "status");
+        bool done = !strcmp(status, "completed");
+
+        g_assert_cmpstr(status, !=, "failed");
+        qobject_unref(response);
+        if (done) {
+            return;
+        }
+        g_assert_cmpint(g_get_monotonic_time(), <, deadline);
+        g_usleep(1000);
+    }
+}
+
+/*
+ * The copies of a line the unit no longer overlays are part of the
+ * machine's state: a migration taken while the line is released carries
+ * the dirty copy, and the destination writes it back when asked.
+ */
+static void test_released_line_state_migrates(void)
+{
+    const Scenario sc = {
+        .cpus = "2",
+        STEPS({ 0, emit_first }, { 0, store_08 },
+              { 0, resume_after_release }),
+    };
+    GError *error = NULL;
+    g_autofree char *directory = NULL;
+    g_autofree char *uri = NULL;
+    g_autofree char *sock = NULL;
+    g_autofree char *quoted = NULL;
+    char *prom;
+    QTestState *s, *to;
+    unsigned int tries;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+    directory = g_dir_make_tmp("sn1-directory-state-migration-XXXXXX",
+                               &error);
+    g_assert_no_error(error);
+    sock = g_build_filename(directory, "migration.sock", NULL);
+    uri = g_strdup_printf("unix:%s", sock);
+    s = start_scenario(&sc, &prom);
+    quoted = g_shell_quote(prom);
+    to = qtest_initf("-M origin300 -cpu R14000 -smp %s -m 512M -bios %s "
+                     "-accel tcg,thread=multi -no-shutdown -S "
+                     "-incoming defer", sc.cpus, quoted);
+    wait_steps(s, 2);
+    for (tries = 0; tries < POLL_TRIES; tries++) {
+        if (flat_view_type_is(s, LINE_PHYS, "ram")) {
+            break;
+        }
+        g_usleep(POLL_INTERVAL_US);
+    }
+    g_assert_true(flat_view_type_is(s, LINE_PHYS, "ram"));
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    qtest_qmp_assert_success(s,
+        "{'execute':'migrate','arguments':{'uri':%s}}", uri);
+    migrate_wait(s);
+    migrate_wait(to);
+    qtest_quit(s);
+    qtest_qmp_assert_success(to, "{'execute':'cont'}");
+    qtest_writeq(to, RESULT_PHYS + RESULT_GO, 1);
+    wait_steps(to, sc.nr_steps);
+    g_assert_cmphex(result(to, 0x10) & DIRECTORY_FIELDS, ==, POINTER(0));
+    g_assert_cmphex(result(to, 0x18) & STATUS_CH, ==, STATUS_CH);
+    g_assert_cmphex(result(to, 0x20) & DIRECTORY_FIELDS, ==, UNOWNED);
+    qtest_quit(to);
+    g_assert_cmpint(unlink(prom), ==, 0);
+    g_free(prom);
+    unlink(sock);
+    g_assert_cmpint(rmdir(directory), ==, 0);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -718,7 +865,9 @@ int main(int argc, char **argv)
                    test_uncached_accesses);
     qtest_add_func("sn1/directory-state/debugger-read", test_debugger_read);
     qtest_add_func("sn1/directory-state/absent-owner", test_absent_owner);
-    qtest_add_func("sn1/directory-state/idle-dirty-line-written-back",
-                   test_idle_dirty_line_written_back);
+    qtest_add_func("sn1/directory-state/idle-line-keeps-its-state",
+                   test_idle_line_keeps_its_state);
+    qtest_add_func("sn1/directory-state/released-line-state-migrates",
+                   test_released_line_state_migrates);
     return g_test_run();
 }

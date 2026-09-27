@@ -2591,20 +2591,44 @@ static bool md_directory_compose(const MDDirectoryEntry *entry, bool premium,
     return true;
 }
 
-static SGIBedrockMDHolder *md_line_holder(SGIBedrockMDWatchedLine *line,
+/*
+ * The processors' copies of line @index, created empty when @add. They
+ * outlive the line's slot: only a reset discards them.
+ */
+static SGIBedrockMDLineState *md_line_state(SGIBedrockMDState *s,
+                                            uint32_t index, bool add)
+{
+    SGIBedrockMDLineState *state =
+        g_hash_table_lookup(s->line_states, &index);
+
+    if (!state && add) {
+        state = g_new0(SGIBedrockMDLineState, 1);
+        state->index = index;
+        g_hash_table_insert(s->line_states, &state->index, state);
+    }
+    return state;
+}
+
+static SGIBedrockMDHolder *md_line_holder(SGIBedrockMDState *s,
+                                          SGIBedrockMDWatchedLine *line,
                                           uint16_t pointer, bool add)
 {
-    for (unsigned i = 0; i < line->holders; i++) {
-        if (line->holder[i].pointer == pointer) {
-            return &line->holder[i];
-        }
-    }
-    if (!add || line->holders == SGI_BEDROCK_MD_LINE_HOLDERS) {
+    SGIBedrockMDLineState *state = md_line_state(s, line->index, add);
+
+    if (!state) {
         return NULL;
     }
-    line->holder[line->holders].pointer = pointer;
-    line->holder[line->holders].state = MD_CACHE_INVALID;
-    return &line->holder[line->holders++];
+    for (unsigned i = 0; i < state->holders; i++) {
+        if (state->holder[i].pointer == pointer) {
+            return &state->holder[i];
+        }
+    }
+    if (!add || state->holders == SGI_BEDROCK_MD_LINE_HOLDERS) {
+        return NULL;
+    }
+    state->holder[state->holders].pointer = pointer;
+    state->holder[state->holders].state = MD_CACHE_INVALID;
+    return &state->holder[state->holders++];
 }
 
 /*
@@ -2647,6 +2671,7 @@ static uint8_t md_directory_request(SGIBedrockMDState *s,
     uint64_t old = s->directory[line->index];
     uint64_t requester = UINT64_C(1) << md_pointer_interface(pointer);
     MDDirectoryEntry entry;
+    SGIBedrockMDLineState *state;
     uint8_t granted;
     uint64_t word;
 
@@ -2666,7 +2691,7 @@ static uint8_t md_directory_request(SGIBedrockMDState *s,
             granted = MD_CACHE_SHARED;
         } else if (entry.format == MD_FORMAT_POINTER &&
                    entry.owner != pointer) {
-            SGIBedrockMDHolder *owner = md_line_holder(line, entry.owner,
+            SGIBedrockMDHolder *owner = md_line_holder(s, line, entry.owner,
                                                        false);
 
             if (owner && owner->state != MD_CACHE_INVALID) {
@@ -2691,9 +2716,10 @@ static uint8_t md_directory_request(SGIBedrockMDState *s,
         }
         break;
     case MD_REQUEST_READ_EXCLUSIVE:
-        for (unsigned i = 0; i < line->holders; i++) {
-            if (line->holder[i].pointer != pointer) {
-                line->holder[i].state = MD_CACHE_INVALID;
+        state = md_line_state(s, line->index, false);
+        for (unsigned i = 0; state && i < state->holders; i++) {
+            if (state->holder[i].pointer != pointer) {
+                state->holder[i].state = MD_CACHE_INVALID;
             }
         }
         entry.format = MD_FORMAT_POINTER;
@@ -2741,7 +2767,7 @@ static void md_watched_access(SGIBedrockMDState *s,
         return;
     }
     line->used_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
-    holder = md_line_holder(line, pointer, true);
+    holder = md_line_holder(s, line, pointer, true);
     if (!holder) {
         qemu_log_mask(LOG_UNIMP, "sgi-bedrock-md: line %u has more holders "
                       "than the model follows\n", line->index);
@@ -2840,25 +2866,14 @@ static void md_watched_lines_place(SGIBedrockMDState *s)
 }
 
 /*
- * Stop following @line. A processor still holding a copy is taken to have
- * replaced it: a dirty copy is written back, which unowns the line, and a
- * clean or shared one is dropped silently (R10000 User's Manual version
- * 2.0, the processor block write and eliminate protocols), so the word is
- * left as the processors' caches would leave it. The caller commits the
+ * Stop following @line: remove its overlay and nothing else. The directory
+ * word and the processors' copies stay exactly as they are; nothing on the
+ * hardware happens when the model stops watching. The caller commits the
  * map change.
  */
 static void md_watched_line_release(SGIBedrockMDState *s,
                                     SGIBedrockMDWatchedLine *line)
 {
-    if (line->active && !md_directory_injection_find(s, line->index)) {
-        for (unsigned i = 0; i < line->holders; i++) {
-            if (line->holder[i].state == MD_CACHE_DIRTY) {
-                md_directory_request(s, line, line->holder[i].pointer,
-                                     MD_REQUEST_WRITEBACK, false);
-            }
-        }
-    }
-    line->holders = 0;
     line->active = false;
     md_watched_line_unplace(s, line);
 }
@@ -2905,10 +2920,15 @@ static void md_watched_lines_clear(SGIBedrockMDState *s)
     for (unsigned i = 0; i < SGI_BEDROCK_MD_WATCHED_LINES; i++) {
         md_watched_line_unplace(s, &s->watched[i]);
         s->watched[i].active = false;
-        s->watched[i].holders = 0;
     }
     memory_region_transaction_commit();
     md_watched_count_update(s);
+}
+
+/* A reset, or a stream being loaded, discards every line's copies. */
+static void md_line_states_clear(SGIBedrockMDState *s)
+{
+    g_hash_table_remove_all(s->line_states);
 }
 
 void sgi_bedrock_md_line_named(SGIBedrockMDState *s, uint64_t address)
@@ -2964,7 +2984,7 @@ bool sgi_bedrock_md_processor_request(SGIBedrockMDState *s, uint16_t pointer,
             line->address != (address & ~(uint64_t)(MD_DIRECTORY_LINE - 1))) {
             continue;
         }
-        holder = md_line_holder(line, pointer, prefetch);
+        holder = md_line_holder(s, line, pointer, prefetch);
         if (!holder) {
             continue;
         }
@@ -3063,7 +3083,7 @@ static void md_watch_line(SGIBedrockMDState *s, uint32_t index)
         return;
     }
     memory_region_transaction_begin();
-    /* The line this slot followed goes as if its copies were replaced. */
+    /* The line this slot followed keeps its word and its copies. */
     md_watched_line_release(s, slot);
     slot->index = index;
     slot->used_ns = now;
@@ -3259,6 +3279,7 @@ static void md_reset_registers(SGIBedrockMDState *s)
     md_ecc_injections_clear(s);
     md_directory_injections_clear(s);
     md_watched_lines_clear(s);
+    md_line_states_clear(s);
     timer_del(s->watch_timer);
     memset(s->named, 0, sizeof(s->named));
     s->memory_error = 0;
@@ -3337,14 +3358,32 @@ static int md_post_load(void *opaque, int version_id)
     memory_region_transaction_begin();
     for (unsigned i = 0; i < SGI_BEDROCK_MD_WATCHED_LINES; i++) {
         md_watched_line_unplace(s, &s->watched[i]);
-        if (s->watched[i].holders > SGI_BEDROCK_MD_LINE_HOLDERS ||
-            (s->watched[i].active &&
-             s->watched[i].index >= s->directory_entries)) {
+        if (s->watched[i].active &&
+            s->watched[i].index >= s->directory_entries) {
             memory_region_transaction_commit();
             return -EINVAL;
         }
     }
     memory_region_transaction_commit();
+    if (s->line_state_count < 0) {
+        s->line_state_count = 0;
+        return -EINVAL;
+    }
+    for (int32_t i = 0; i < s->line_state_count; i++) {
+        SGIBedrockMDLineState *state = &s->line_state_array[i];
+
+        if (state->index >= s->directory_entries ||
+            state->holders > SGI_BEDROCK_MD_LINE_HOLDERS ||
+            g_hash_table_contains(s->line_states, &state->index)) {
+            g_clear_pointer(&s->line_state_array, g_free);
+            s->line_state_count = 0;
+            return -EINVAL;
+        }
+        state = g_memdup2(state, sizeof(*state));
+        g_hash_table_insert(s->line_states, &state->index, state);
+    }
+    g_clear_pointer(&s->line_state_array, g_free);
+    s->line_state_count = 0;
     if (s->directory_compat_count >
         SGI_BEDROCK_MD_DIRECTORY_COMPAT_ENTRIES) {
         return -EINVAL;
@@ -3410,8 +3449,17 @@ static const VMStateDescription vmstate_md_watched_line = {
         VMSTATE_UINT32(index, SGIBedrockMDWatchedLine),
         VMSTATE_BOOL(active, SGIBedrockMDWatchedLine),
         VMSTATE_INT64(used_ns, SGIBedrockMDWatchedLine),
-        VMSTATE_UINT8(holders, SGIBedrockMDWatchedLine),
-        VMSTATE_STRUCT_ARRAY(holder, SGIBedrockMDWatchedLine,
+        VMSTATE_END_OF_LIST()
+    },
+};
+
+static const VMStateDescription vmstate_md_line_state = {
+    .name = TYPE_SGI_BEDROCK_MD "-line-state",
+    .version_id = 1, .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32(index, SGIBedrockMDLineState),
+        VMSTATE_UINT8(holders, SGIBedrockMDLineState),
+        VMSTATE_STRUCT_ARRAY(holder, SGIBedrockMDLineState,
                              SGI_BEDROCK_MD_LINE_HOLDERS, 1,
                              vmstate_md_holder, SGIBedrockMDHolder),
         VMSTATE_END_OF_LIST()
@@ -3446,15 +3494,68 @@ static const VMStateDescription vmstate_md_watched = {
     },
 };
 
+static bool md_line_states_needed(void *opaque)
+{
+    SGIBedrockMDState *s = opaque;
+
+    return g_hash_table_size(s->line_states) != 0;
+}
+
+/* The per-line copies travel flattened into an array. */
+static int md_line_states_pre_save(void *opaque)
+{
+    SGIBedrockMDState *s = opaque;
+    GHashTableIter iter;
+    gpointer value;
+    uint32_t i = 0;
+
+    g_free(s->line_state_array);
+    s->line_state_count = g_hash_table_size(s->line_states);
+    s->line_state_array = g_new(SGIBedrockMDLineState, s->line_state_count);
+    g_hash_table_iter_init(&iter, s->line_states);
+    while (g_hash_table_iter_next(&iter, NULL, &value)) {
+        s->line_state_array[i++] = *(SGIBedrockMDLineState *)value;
+    }
+    return 0;
+}
+
+static void md_line_states_post_save(void *opaque)
+{
+    SGIBedrockMDState *s = opaque;
+
+    g_clear_pointer(&s->line_state_array, g_free);
+    s->line_state_count = 0;
+}
+
+static const VMStateDescription vmstate_md_line_states = {
+    .name = TYPE_SGI_BEDROCK_MD "/line-states",
+    .version_id = 1, .minimum_version_id = 1,
+    .needed = md_line_states_needed,
+    .pre_save = md_line_states_pre_save,
+    .post_save = md_line_states_post_save,
+    .fields = (const VMStateField[]) {
+        VMSTATE_INT32(line_state_count, SGIBedrockMDState),
+        VMSTATE_STRUCT_VARRAY_ALLOC(line_state_array, SGIBedrockMDState,
+                                    line_state_count, 1,
+                                    vmstate_md_line_state,
+                                    SGIBedrockMDLineState),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
 /*
- * The watched lines and the flushed-line record travel in a subsection
- * sent only when there are any, so a stream without it must leave none.
+ * The watched lines, the flushed-line record and the per-line copies travel
+ * in subsections sent only when there are any, so a stream without them
+ * must leave none.
  */
 static int md_pre_load(void *opaque)
 {
     SGIBedrockMDState *s = opaque;
 
     md_watched_lines_clear(s);
+    md_line_states_clear(s);
+    g_clear_pointer(&s->line_state_array, g_free);
+    s->line_state_count = 0;
     timer_del(s->watch_timer);
     memset(s->named, 0, sizeof(s->named));
     s->named_next = 0;
@@ -3511,6 +3612,7 @@ static const VMStateDescription vmstate_md = {
     },
     .subsections = (const VMStateDescription * const []) {
         &vmstate_md_watched,
+        &vmstate_md_line_states,
         NULL
     },
 };
@@ -3522,6 +3624,8 @@ static void md_init(Object *obj)
     s->selftest_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
                                      md_selftest_complete, s);
     s->ecc_injection_by_raw = g_hash_table_new(g_int64_hash, g_int64_equal);
+    s->line_states = g_hash_table_new_full(g_int_hash, g_int_equal, NULL,
+                                           g_free);
     s->directory_injection_by_index = g_hash_table_new(g_int_hash,
                                                        g_int_equal);
     s->ecc_retired_by_raw = g_hash_table_new(g_int64_hash, g_int64_equal);
@@ -3739,6 +3843,8 @@ static void md_finalize(Object *obj)
     timer_free(s->watch_timer);
     g_hash_table_destroy(s->ecc_injection_by_raw);
     g_hash_table_destroy(s->directory_injection_by_index);
+    g_hash_table_destroy(s->line_states);
+    g_free(s->line_state_array);
     g_hash_table_destroy(s->ecc_retired_by_raw);
     g_hash_table_destroy(s->directory_retired_by_index);
     if (s->node_as_initialized) {

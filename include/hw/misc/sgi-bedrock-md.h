@@ -75,9 +75,12 @@ typedef struct SGIBedrockMDDirectoryInjection {
  * name it are passed on by the board. A line takes one overlay, a memory
  * map change, when it is admitted; a slot is only reused once it has been
  * idle a while, which bounds that cost when software walks the whole
- * directory, and a line idle that long is released, so no overlay outlives
- * the software that read its word (docs/datasheets/bedrock-memory-
- * directory.md).
+ * directory, and a line idle that long loses its overlay, so no overlay
+ * outlives the software that read its word. Losing the overlay is the
+ * model's bookkeeping only: the processors' copies of the line are kept
+ * apart from the slot, for every line they have ever been followed on, and
+ * are there again when the line is followed again (docs/datasheets/
+ * bedrock-memory-directory.md).
  */
 #define SGI_BEDROCK_MD_WATCHED_LINES 16
 /*
@@ -101,6 +104,13 @@ typedef struct SGIBedrockMDHolder {
     uint8_t state;
 } SGIBedrockMDHolder;
 
+/* The processors' copies of one line, kept whether or not it is watched. */
+typedef struct SGIBedrockMDLineState {
+    uint32_t index;
+    uint8_t holders;
+    SGIBedrockMDHolder holder[SGI_BEDROCK_MD_LINE_HOLDERS];
+} SGIBedrockMDLineState;
+
 typedef struct SGIBedrockMDWatchedLine {
     MemoryRegion mr;
     SGIBedrockMDState *md;
@@ -110,8 +120,6 @@ typedef struct SGIBedrockMDWatchedLine {
     bool placed;
     /* Last backdoor access or processor request, in virtual time. */
     int64_t used_ns;
-    uint8_t holders;
-    SGIBedrockMDHolder holder[SGI_BEDROCK_MD_LINE_HOLDERS];
 } SGIBedrockMDWatchedLine;
 
 struct SGIBedrockMDState {
@@ -148,6 +156,11 @@ struct SGIBedrockMDState {
     GHashTable *directory_retired_by_index;
     QEMUTimer *retired_timer;
     SGIBedrockMDWatchedLine watched[SGI_BEDROCK_MD_WATCHED_LINES];
+    /* SGIBedrockMDLineState by line index, for every line ever followed. */
+    GHashTable *line_states;
+    /* The table flattened for migration; only valid around a save or load. */
+    SGIBedrockMDLineState *line_state_array;
+    int32_t line_state_count;
     /* Releases the watched lines left idle. Host-side: not migrated. */
     QEMUTimer *watch_timer;
     /* Active watched lines; read without the lock by the board's filter. */
