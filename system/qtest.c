@@ -200,6 +200,11 @@ static void *qtest_server_send_opaque;
  *
  * .. code-block:: none
  *
+ *  > writew_tx ADDR VALUE
+ *  < OK STATUS
+ *
+ * .. code-block:: none
+ *
  *  > readl ADDR
  *  < OK VALUE
  *
@@ -644,6 +649,23 @@ static void qtest_process_command(CharFrontend *chr, gchar **words)
                                     MEMTXATTRS_UNSPECIFIED, &value, 2);
         tswap16s(&value);
         qtest_sendf(chr, "OK 0x%04x 0x%08x\n", value, result);
+    } else if (strcmp(words[0], "writew_tx") == 0) {
+        uint64_t addr, value;
+        uint16_t data;
+        MemTxResult result;
+        int ret;
+
+        g_assert(words[1] && words[2]);
+        ret = qemu_strtou64(words[1], NULL, 0, &addr);
+        g_assert(ret == 0);
+        ret = qemu_strtou64(words[2], NULL, 0, &value);
+        g_assert(ret == 0 && value <= UINT16_MAX);
+
+        data = value;
+        tswap16s(&data);
+        result = address_space_write(first_cpu->as, addr,
+                                     MEMTXATTRS_UNSPECIFIED, &data, 2);
+        qtest_sendf(chr, "OK 0x%08x\n", result);
     } else if (strcmp(words[0], "writel_tx") == 0) {
         uint64_t addr, value;
         uint32_t data;
