@@ -729,14 +729,19 @@ static void test_migration(void)
     GError *error = NULL;
     g_autofree char *dir = g_dir_make_tmp("sn1-l1-migrate-XXXXXX", &error);
     g_autofree char *socket = NULL, *uri = NULL;
-    QTestState *from = start(), *to;
+    QTestState *from, *to;
     const uint8_t request[] = { 0x10, 0x0f, 0xff, 0xf0, 6, 0, 3 };
     uint8_t reply[131];
     uint16_t crc = 0xffff;
     g_assert_no_error(error);
     socket = g_build_filename(dir, "migration.sock", NULL);
     uri = g_strdup_printf("unix:%s", socket);
-    to = qtest_init("-M none -cpu R10000 -device sgi-l1,id=l1c" UART
+    from = qtest_init("-M none -cpu R10000 "
+                      "-device sgi-l1,id=l1c,brick-type-code=0x61" UART
+                      " -S");
+    qtest_sysbus_mmio_map(from, PATH, 0, BASE);
+    to = qtest_init("-M none -cpu R10000 "
+                    "-device sgi-l1,id=l1c,brick-type-code=0x43" UART
                     " -S -incoming defer");
     qtest_sysbus_mmio_map(to, PATH, 0, BASE);
     send_frame(from, request, sizeof(request), false);
@@ -755,6 +760,7 @@ static void test_migration(void)
     sgi_wait_migration_status(to, "completed", 30);
     g_assert_cmphex(qtest_readq(to, BASE + 0x18), ==, 3);
     g_assert_cmpuint(receive(to, reply), ==, 16);
+    g_assert_cmphex(reply[15], ==, 0x61);
     for (unsigned i = 4; i < sizeof(request); i++) {
         crc = fcs(crc, request[i]);
         put(to, request[i]);
@@ -764,6 +770,7 @@ static void test_migration(void)
     put(to, crc >> 8);
     qtest_writeq(to, BASE, 0x7e);
     g_assert_cmpuint(receive(to, reply), ==, 16);
+    g_assert_cmphex(reply[15], ==, 0x61);
     qtest_quit(from);
     qtest_quit(to);
     unlink(socket);

@@ -1930,7 +1930,7 @@ static const VMStateDescription vmstate_l1_selected = {
 static const VMStateDescription vmstate_l1 = {
     .name = TYPE_SGI_L1,
     .version_id = 9,
-    .minimum_version_id = 9,
+    .minimum_version_id = 7,
     .post_load = l1_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_STRUCT_ARRAY(records, SGIL1State, 48, 0,
@@ -1952,7 +1952,7 @@ static const VMStateDescription vmstate_l1 = {
         VMSTATE_UINT32(command_len, SGIL1State),
         VMSTATE_UINT32(rack, SGIL1State),
         VMSTATE_UINT32(bay, SGIL1State),
-        VMSTATE_UINT32(brick_type_code, SGIL1State),
+        VMSTATE_UINT32_V(brick_type_code, SGIL1State, 9),
         VMSTATE_UINT32(pending_rack, SGIL1State),
         VMSTATE_UINT32(pending_bay, SGIL1State),
         VMSTATE_UINT8(port_field, SGIL1State),
