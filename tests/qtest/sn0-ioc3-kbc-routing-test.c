@@ -35,8 +35,8 @@
 /* The generic ps2 keyboard's scan code set 2 make code for "a". */
 #define SCAN_A            0x1c
 
-#define BOARD_KBC "/machine/module0/slot8/baseio/ioc3/kbc"
-#define MIO_KBC   "/machine/module0/slot8/baseio/mio-ioc3/kbc"
+#define BOARD_KBC "/machine/module0/io1/baseio/ioc3/kbc"
+#define MIO_KBC   "/machine/module0/io1/baseio/mio-ioc3/kbc"
 
 /* One io6g machine serves both cases; neither leaves anything behind. */
 static QTestState *qts;

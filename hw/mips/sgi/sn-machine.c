@@ -1036,6 +1036,64 @@ static void sgi_machine_set_board_widget(DeviceState *dev, uint32_t widget)
 }
 
 /*
+ * A catalogue-built XIO board's QOM name and qdev id: its IRIX slot name
+ * (io1, io5), or m<module>-io5 where a board or empty slot in another
+ * module shares the label, so screendump device= and a card's own
+ * -device bus=io5.0 name it the way IRIX's /hw/module/1/slot/io5 does.
+ * A board the catalogue gives no label keeps io-board<N>.
+ */
+static char *sgi_machine_xio_board_name(const SGIModelTopology *t,
+                                        const SGIModelIoBoard *record,
+                                        unsigned int board_index)
+{
+    const SGIModelIoBoardList *board;
+    const SGIModelXtalkSlotList *slot;
+
+    if (!record->label) {
+        return g_strdup_printf("io-board%u", board_index);
+    }
+    for (board = t->io_boards; board; board = board->next) {
+        if (board->value != record && board->value->label &&
+            g_str_equal(board->value->label, record->label) &&
+            board->value->module_index != record->module_index) {
+            return g_strdup_printf("m%u-%s", record->module_index,
+                                   record->label);
+        }
+    }
+    for (slot = t->xtalk_slots; slot; slot = slot->next) {
+        if (g_str_equal(slot->value->label, record->label) &&
+            sgi_machine_xtalk_slot_module(t, slot->value) !=
+            record->module_index) {
+            return g_strdup_printf("m%u-%s", record->module_index,
+                                   record->label);
+        }
+    }
+    return g_strdup(record->label);
+}
+
+/*
+ * Parent a catalogue-built XIO board under the machine by its slot name,
+ * give it that name as its qdev id, and place it at its module and
+ * widget. The id also names the board's PCI bus, <id>.0.
+ */
+static void sgi_machine_add_xio_board(SGIMachineState *s, DeviceState *dev,
+                                      const SGIModelIoBoard *record,
+                                      unsigned int board_index,
+                                      const SGIModelXtalkAttachment *attachment)
+{
+    const SGIModelTopology *t = sgi_machine_topology(MACHINE(s));
+    g_autofree char *name = sgi_machine_xio_board_name(t, record,
+                                                       board_index);
+
+    object_property_add_child(OBJECT(s), name, OBJECT(dev));
+    object_unref(OBJECT(dev));
+    /* Set directly: qdev_set_id() would reparent under /machine/peripheral. */
+    dev->id = g_strdup(name);
+    qdev_prop_set_uint32(dev, "module", record->module_index);
+    sgi_machine_set_board_widget(dev, attachment->widget);
+}
+
+/*
  * The onboard IOC3's own separate one-wire identity part (the carrier's
  * chip identity is a different part); NULL when this preset's IOC3 head
  * carries no population, leaving sgi-baseio's own class default.
@@ -1207,12 +1265,6 @@ static bool sgi_machine_instantiate_baseio_card(
     Error **errp)
 {
     DeviceState *dev = qdev_new(TYPE_SGI_XIO_BASEIO);
-    g_autofree char *name = g_strdup_printf("io-board%u", board_index);
-    /*
-     * "pci.baseio<N>": two cards would otherwise share a
-     * migration-visible PCI bus name.
-     */
-    g_autofree char *bus_name = g_strdup_printf("pci.baseio%u", board_index);
     g_autofree char *nvram_id = g_strdup_printf("sgi-nvram%u", board_index);
     DriveInfo *nvram_dinfo = drive_get(IF_MTD, 0, board_index);
     BlockBackend *nvram_blk = nvram_dinfo ?
@@ -1235,16 +1287,11 @@ static bool sgi_machine_instantiate_baseio_card(
     };
     size_t i;
 
-    object_property_add_child(OBJECT(s), name, OBJECT(dev));
-    object_unref(OBJECT(dev));
-
-    qdev_prop_set_uint32(dev, "module", record->module_index);
-    sgi_machine_set_board_widget(dev, attachment->widget);
+    sgi_machine_add_xio_board(s, dev, record, board_index, attachment);
     qdev_prop_set_uint64(dev, "onewire-serial", record->serial);
     if (record->has_ioc3_serial) {
         qdev_prop_set_uint64(dev, "ioc3-onewire-serial", record->ioc3_serial);
     }
-    qdev_prop_set_string(dev, "pci-bus-name", bus_name);
     qdev_prop_set_string(dev, "preset", preset);
     if (nvram_blk) {
         qdev_prop_set_string(dev, "nvram-drive", blk_name(nvram_blk));
@@ -1289,8 +1336,8 @@ static bool sgi_machine_instantiate_baseio_card(
 /*
  * The Origin 2000 PCI Carrier Assembly: three PCI slots for third-party
  * cards (007-3456-003 printed page 34), empty until a -device fills one on
- * bus pci.carrier<N>. The slots take PCI devices 0 to 2, an approximation:
- * no source gives the carrier's device wiring.
+ * the carrier's bus, io2.0 in IO2. The slots take PCI devices 0 to 2, an
+ * approximation: no source gives the carrier's device wiring.
  */
 #define SGI_MACHINE_PCI_CARRIER_SLOTS 3
 
@@ -1315,16 +1362,9 @@ static bool sgi_machine_instantiate_pci_carrier(
     Error **errp)
 {
     DeviceState *dev = qdev_new(TYPE_SGI_PCI_EXPANSION);
-    g_autofree char *name = g_strdup_printf("io-board%u", board_index);
-    g_autofree char *bus_name = g_strdup_printf("pci.carrier%u", board_index);
 
-    object_property_add_child(OBJECT(s), name, OBJECT(dev));
-    object_unref(OBJECT(dev));
-
-    qdev_prop_set_uint32(dev, "module", record->module_index);
-    sgi_machine_set_board_widget(dev, attachment->widget);
+    sgi_machine_add_xio_board(s, dev, record, board_index, attachment);
     qdev_prop_set_uint64(dev, "onewire-serial", record->serial);
-    qdev_prop_set_string(dev, "pci-bus-name", bus_name);
     qdev_prop_set_uint32(dev, "slots", SGI_MACHINE_PCI_CARRIER_SLOTS);
     qdev_prop_set_string(dev, "board-part", SGI_MACHINE_PCI_CARRIER_PART);
     qdev_prop_set_string(dev, "board-barcode",
@@ -1341,17 +1381,18 @@ static bool sgi_machine_instantiate_pci_carrier(
  * The GIGAchannel cabinet's own I/O on Crossbow link 8, software position
  * io7: an sgi-gigachannel (board-gigachannel.c), which owns the cabinet
  * Bridge, its board record, the cabinet's status word and its BASEIO PROM
- * flash.
+ * flash. The cabinet's own Bridge sits in no XIO slot the catalogue
+ * labels, but the PROM names it io7 by that fixed position, so it takes
+ * io7 as its id and bus io7.0.
  */
+#define SGI_MACHINE_GIGACHANNEL_NAME "io7"
+
 static bool sgi_machine_instantiate_gigachannel(
     SGIMachineState *s, const SGIModelTopology *t,
     const SGIModelIoBoard *record, unsigned int board_index,
     const SGIModelXtalkAttachment *attachment, Error **errp)
 {
     DeviceState *dev = qdev_new(TYPE_SGI_GIGACHANNEL);
-    g_autofree char *name = g_strdup_printf("io-board%u", board_index);
-    g_autofree char *bus_name =
-        g_strdup_printf("pci.gigachannel%u", board_index);
     const SGIModelIoBoardList *entry;
     unsigned int cabinet = 0;
     g_autofree char *flash_id = NULL;
@@ -1372,13 +1413,14 @@ static bool sgi_machine_instantiate_gigachannel(
     flash_id = g_strdup_printf("sgi-gigachannel-flash%u", cabinet);
     flash_blk = blk_by_name(flash_id);
 
-    object_property_add_child(OBJECT(s), name, OBJECT(dev));
+    object_property_add_child(OBJECT(s), SGI_MACHINE_GIGACHANNEL_NAME,
+                              OBJECT(dev));
     object_unref(OBJECT(dev));
-
+    /* Set directly: qdev_set_id() would reparent under /machine/peripheral. */
+    dev->id = g_strdup(SGI_MACHINE_GIGACHANNEL_NAME);
     qdev_prop_set_uint32(dev, "module", record->module_index);
     sgi_machine_set_board_widget(dev, attachment->widget);
     qdev_prop_set_uint64(dev, "onewire-serial", record->serial);
-    qdev_prop_set_string(dev, "pci-bus-name", bus_name);
     if (flash_blk) {
         qdev_prop_set_string(dev, "flash-drive", blk_name(flash_blk));
     }
@@ -1391,16 +1433,9 @@ static bool sgi_machine_instantiate_pci_shoehorn(
     Error **errp)
 {
     DeviceState *dev = qdev_new(TYPE_SGI_PCI_SHOEHORN);
-    g_autofree char *name = g_strdup_printf("io-board%u", board_index);
-    g_autofree char *bus_name = g_strdup_printf("pci.shoehorn%u", board_index);
 
-    object_property_add_child(OBJECT(s), name, OBJECT(dev));
-    object_unref(OBJECT(dev));
-
-    qdev_prop_set_uint32(dev, "module", record->module_index);
-    sgi_machine_set_board_widget(dev, attachment->widget);
+    sgi_machine_add_xio_board(s, dev, record, board_index, attachment);
     qdev_prop_set_uint64(dev, "onewire-serial", record->serial);
-    qdev_prop_set_string(dev, "pci-bus-name", bus_name);
     qdev_prop_set_uint32(dev, "cad-duo-slot",
                          SGI_MACHINE_PCI_SHOEHORN_CAD_DUO_SLOT);
     if (record->has_ioc3_serial) {
@@ -1413,7 +1448,7 @@ static bool sgi_machine_instantiate_pci_shoehorn(
 /*
  * An XIO card the catalogue places in any slot: an sgi-xio-baseio with the
  * "menet" or "mscsi" preset, which owns the card's Bridge, board record
- * and chips, on its own PCI bus pci.<preset><N>. The MENET's catalogue
+ * and chips, on its own PCI bus <slot>.0 (io5.0). The MENET's catalogue
  * IOC3 serial is device 0's one-wire part; the preset numbers the other
  * three from it. The chips' serial ports take no host backend: the
  * console lines belong to the module's BaseIO. The MSCSI has no IOC3.
@@ -1424,20 +1459,12 @@ static bool sgi_machine_instantiate_xio_card(
     const char *preset, Error **errp)
 {
     DeviceState *dev = qdev_new(TYPE_SGI_XIO_BASEIO);
-    g_autofree char *name = g_strdup_printf("io-board%u", board_index);
-    g_autofree char *bus_name = g_strdup_printf("pci.%s%u", preset,
-                                                board_index);
 
-    object_property_add_child(OBJECT(s), name, OBJECT(dev));
-    object_unref(OBJECT(dev));
-
-    qdev_prop_set_uint32(dev, "module", record->module_index);
-    sgi_machine_set_board_widget(dev, attachment->widget);
+    sgi_machine_add_xio_board(s, dev, record, board_index, attachment);
     qdev_prop_set_uint64(dev, "onewire-serial", record->serial);
     if (record->has_ioc3_serial) {
         qdev_prop_set_uint64(dev, "ioc3-onewire-serial", record->ioc3_serial);
     }
-    qdev_prop_set_string(dev, "pci-bus-name", bus_name);
     qdev_prop_set_string(dev, "preset", preset);
     return sgi_machine_attach_xio_card(s, dev, board_index, attachment, errp);
 }

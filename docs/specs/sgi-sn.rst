@@ -308,9 +308,9 @@ The cabinet's own I/O is ``sgi-gigachannel``
 (``hw/mips/sgi/board-gigachannel.c``). The machine places it, so it is not
 ``-device``-creatable. It is a Bridge at widget revision 4 carrying the
 cabinet interface board's record, ``XBOX_DUALXTOWN``, which the firmware
-reports at ``io7``. Its four PCI slots are Bridge devices 0 to 3 on the bus
-``pci.gigachannel1``, so a PCI card joins the cabinet with
-``bus=pci.gigachannel1,addr=N``.
+reports at ``io7``, and the board takes ``io7`` as its id. Its four PCI
+slots are Bridge devices 0 to 3 on the bus ``io7.0``, so a PCI card joins
+the cabinet with ``bus=io7.0,addr=N``.
 
 The Bridge's external-flash port has two chip selects:
 

@@ -146,9 +146,7 @@ static bool gigachannel_build_widget(SGIXioBoardState *board, Error **errp)
                          GIGACHANNEL_BOARD_REVISION);
     qdev_prop_set_string(bridge, "board-name", GIGACHANNEL_BOARD_NAME);
     qdev_prop_set_uint64(bridge, "onewire-serial", s->onewire_serial);
-    if (s->pci_bus_name) {
-        qdev_prop_set_string(bridge, "pci-bus-name", s->pci_bus_name);
-    }
+    sgi_xio_board_name_pci_bus(SGI_XIO_BOARD(s), bridge, s->pci_bus_name);
     if (s->flash_drive_id) {
         g_autofree char *name =
             g_strdup_printf("sgi-gigachannel.module%u.flash", board->module);

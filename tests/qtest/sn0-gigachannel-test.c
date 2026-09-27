@@ -50,7 +50,7 @@
                              (dev) * 0x1000)
 #define IOC3_ID_PAIR 0x000310a9u
 #define IP29_IOC3_DEVICE 2
-#define CABINET_BUS "pci.gigachannel1"
+#define CABINET_BUS "io7.0"
 
 /*
  * The cabinet Bridge's external-flash window: the BASEIO PROM part, when
