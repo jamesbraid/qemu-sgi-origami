@@ -7301,7 +7301,7 @@
       "node-populations": [
         {
           "cables": [],
-          "grade": "established",
+          "grade": "inferred",
           "nodes": [
             0
           ],
@@ -7723,7 +7723,7 @@
       "node-populations": [
         {
           "cables": [],
-          "grade": "established",
+          "grade": "inferred",
           "nodes": [
             0
           ],
@@ -9514,7 +9514,7 @@
             3,
             4
           ],
-          "grade": "established",
+          "grade": "inferred",
           "nodes": [
             0,
             1,
@@ -10134,7 +10134,7 @@
       "node-populations": [
         {
           "cables": [],
-          "grade": "established",
+          "grade": "inferred",
           "nodes": [
             0
           ],
