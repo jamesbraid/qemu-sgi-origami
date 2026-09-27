@@ -576,24 +576,30 @@ if QemuSystemTest is not None:
         def _check_timer(self):
             # IRIX warns when a CPU has seen no scheduler clock tick for
             # ten seconds or more. Any such warning fails the row, as the
-            # one-node topology test required: a tick one whole Count wrap
-            # late ("Probable lost interrupt!") is a Compare match the CPU
-            # model missed, and a shorter gap ("Probably caused by splhi")
-            # is still a tick the guest did not get (docs/known-issues.md
-            # in the project checkout). It runs even after the row was cut
-            # short or its relaunch failed (lib_irix_diag.OBSERVERS),
-            # counting the consoles of the boots that did happen.
-            launches = [self.first] + ([self.here] if self.here not in
-                                       (None, self.first) else [])
+            # one-node topology test required. The message splits them by
+            # the seconds IRIX reports: one whole Count wrap
+            # (Flavour.wrap_seconds) is a Compare match the CPU model
+            # missed; any other gap is a tick the guest did not get for
+            # another reason (docs/known-issues.md in the project
+            # checkout). The trailer IRIX prints does not tell them apart.
+            # It runs even after the row was cut short or its relaunch
+            # failed (lib_irix_diag.OBSERVERS), counting the consoles of
+            # the boots that did happen.
+            consoles = [self.first.con]
+            if self.here not in (None, self.first):
+                consoles.append(self.here.con)
             wraps, other = 0, 0
-            for launch in launches:
-                counts = tick_warnings(text(launch.con.buf))
+            for con in consoles:
+                counts = tick_warnings(text(con.buf),
+                                       self.flavour.wrap_seconds)
                 wraps += counts[0]
                 other += counts[1]
             self._expect(wraps + other == 0,
                          f'IRIX reported {wraps + other} missed scheduler '
-                         f'ticks: {wraps} a whole Count wrap late, {other} '
-                         'after a shorter gap')
+                         f'ticks: {wraps} one whole Count wrap late '
+                         f'({self.flavour.wrap_seconds[0]} to '
+                         f'{self.flavour.wrap_seconds[1]}s), {other} after '
+                         'another gap')
 
         # -- reboot, stop and relaunch ------------------------------------
 
