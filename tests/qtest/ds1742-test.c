@@ -101,6 +101,60 @@ static void test_calendar(void)
     qtest_quit(qts);
 }
 
+static void test_invalid_dates(void)
+{
+    QTestState *qts = start("");
+
+    set_time(qts, 0x80 | 0x12, 0x34, 0x05, 0x15, 0x01, 0x24, 0x20);
+    set_time(qts, 0x59, 0x59, 0x23, 0x30, 0x02, 0x24, 0x20);
+    g_assert_cmphex(rd(qts, 0x7f9), ==, 0x92);
+    g_assert_cmphex(rd(qts, 0x7fd), ==, 0x15);
+    g_assert_cmphex(rd(qts, 0x7fe), ==, 0x01);
+    g_assert_cmphex(rd(qts, 0x7ff), ==, 0x24);
+    set_time(qts, 0x59, 0x59, 0x23, 0x29, 0x02, 0x23, 0x20);
+    g_assert_cmphex(rd(qts, 0x7f9), ==, 0x92);
+    g_assert_cmphex(rd(qts, 0x7fd), ==, 0x15);
+    g_assert_cmphex(rd(qts, 0x7fe), ==, 0x01);
+    g_assert_cmphex(rd(qts, 0x7ff), ==, 0x24);
+    set_time(qts, 0x59, 0x59, 0x23, 0x29, 0x02, 0x24, 0x20);
+    qtest_clock_step(qts, NS_PER_SEC);
+    g_assert_cmphex(rd(qts, 0x7f9), ==, 0);
+    g_assert_cmphex(rd(qts, 0x7fd), ==, 1);
+    g_assert_cmphex(rd(qts, 0x7fe), ==, 3);
+    g_assert_cmphex(rd(qts, 0x7ff), ==, 0x24);
+    qtest_quit(qts);
+}
+
+static void test_reset_with_write(void)
+{
+    QTestState *qts = start("");
+
+    set_time(qts, 0x80 | 0x12, 0x34, 0x05, 0x15, 0x01, 0x24, 0x20);
+    wr(qts, 0x7f8, 0x80);
+    wr(qts, 0x7f9, 0x80 | 0x45);
+    qtest_qmp_assert_success(qts, "{'execute':'system_reset'}");
+    g_assert_cmphex(rd(qts, 0x7f8), ==, 0xa0);
+    g_assert_cmphex(rd(qts, 0x7f9), ==, 0xc5);
+    wr(qts, 0x7f8, 0x20);
+    g_assert_cmphex(rd(qts, 0x7f9), ==, 0xc5);
+    qtest_quit(qts);
+}
+
+static void test_reset_with_read(void)
+{
+    QTestState *qts = start("");
+
+    set_time(qts, 0x12, 0x34, 0x05, 0x15, 0x01, 0x24, 0x20);
+    wr(qts, 0x7f8, 0x40);
+    qtest_clock_step(qts, 2 * NS_PER_SEC);
+    qtest_qmp_assert_success(qts, "{'execute':'system_reset'}");
+    g_assert_cmphex(rd(qts, 0x7f8), ==, 0x60);
+    g_assert_cmphex(rd(qts, 0x7f9), ==, 0x12);
+    wr(qts, 0x7f8, 0);
+    g_assert_cmphex(rd(qts, 0x7f9), ==, 0x14);
+    qtest_quit(qts);
+}
+
 static void test_stop_and_test_mode(void)
 {
     QTestState *qts = start("");
@@ -255,6 +309,9 @@ int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
     qtest_add_func("/ds1742/calendar", test_calendar);
+    qtest_add_func("/ds1742/invalid-dates", test_invalid_dates);
+    qtest_add_func("/ds1742/reset-with-write", test_reset_with_write);
+    qtest_add_func("/ds1742/reset-with-read", test_reset_with_read);
     qtest_add_func("/ds1742/stop-test-mode", test_stop_and_test_mode);
     qtest_add_func("/ds1742/migration", test_migration);
     qtest_add_func("/ds1742/restart-persistence", test_restart_persistence);
