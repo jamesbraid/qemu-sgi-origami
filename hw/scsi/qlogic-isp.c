@@ -949,13 +949,15 @@ static void qlogic_isp_mailbox_command(QLogicISPState *s)
         s->mailbox[0] = ISP_MBOX_COMPLETE;
         break;
 
-    /* The plain and A64 opcodes are one operation. */
     case ISP_MBOX_CMD_INIT_REQ_QUEUE:
     case ISP_MBOX_CMD_INIT_REQ_QUEUE_A64: {
-        uint64_t addr = ISP_MBOX_ADDR_TOP(s->mailbox) |
-                        ISP_MBOX_ADDR_HIGH(s->mailbox) |
-                        ISP_MBOX_ADDR_MID(s->mailbox) |
+        uint64_t addr = ISP_MBOX_ADDR_MID(s->mailbox) |
                         ISP_MBOX_ADDR_LOW(s->mailbox);
+
+        if (cmd == ISP_MBOX_CMD_INIT_REQ_QUEUE_A64) {
+            addr |= ISP_MBOX_ADDR_TOP(s->mailbox) |
+                    ISP_MBOX_ADDR_HIGH(s->mailbox);
+        }
 
         if (addr == 0 || s->mailbox[1] == 0) {
             s->mailbox[0] = ISP_MBOX_CMD_PARAM_ERROR;
@@ -973,10 +975,13 @@ static void qlogic_isp_mailbox_command(QLogicISPState *s)
 
     case ISP_MBOX_CMD_INIT_RSP_QUEUE:
     case ISP_MBOX_CMD_INIT_RSP_QUEUE_A64: {
-        uint64_t addr = ISP_MBOX_ADDR_TOP(s->mailbox) |
-                        ISP_MBOX_ADDR_HIGH(s->mailbox) |
-                        ISP_MBOX_ADDR_MID(s->mailbox) |
+        uint64_t addr = ISP_MBOX_ADDR_MID(s->mailbox) |
                         ISP_MBOX_ADDR_LOW(s->mailbox);
+
+        if (cmd == ISP_MBOX_CMD_INIT_RSP_QUEUE_A64) {
+            addr |= ISP_MBOX_ADDR_TOP(s->mailbox) |
+                    ISP_MBOX_ADDR_HIGH(s->mailbox);
+        }
 
         if (addr == 0 || s->mailbox[1] == 0) {
             s->mailbox[0] = ISP_MBOX_CMD_PARAM_ERROR;
