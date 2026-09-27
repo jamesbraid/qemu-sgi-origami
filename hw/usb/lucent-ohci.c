@@ -43,6 +43,7 @@ DECLARE_CLASS_CHECKERS(LucentOHCIClass, LUCENT_OHCI, TYPE_LUCENT_OHCI)
 /* FrameNumber, and HcControl's HostControllerFunctionalState. */
 #define LUCENT_OHCI_FM_NUMBER       0x3c
 #define LUCENT_OHCI_CONTROL_HCFS    0xc0
+#define LUCENT_OHCI_HCFS_RESET      0x00
 #define LUCENT_OHCI_HCFS_OPERATIONAL 0x80
 /* HcRhDescriptorA's PowerSwitchingMode and NoPowerSwitching. */
 #define LUCENT_OHCI_RHA_PSM         (1u << 8)
@@ -61,6 +62,16 @@ DECLARE_CLASS_CHECKERS(LucentOHCIClass, LUCENT_OHCI, TYPE_LUCENT_OHCI)
 #define LUCENT_OHCI_PORT_LSDA       (1u << 9)
 /* What the core's own power-off clears: PPS, CCS, PSS and PRS. */
 #define LUCENT_OHCI_PORT_POWER_OFF  0x115u
+/*
+ * The root-hub descriptors' power-on values from the USS-312 datasheet
+ * (Advance Data Sheet Rev. 5, March 2000, Tables 45 and 46): in
+ * HcRhDescriptorA, PowerOnToPowerGoodTime 10h, OverCurrentProtectionMode
+ * and PowerSwitchingMode set and NoPowerSwitching clear, beside the port
+ * count; in HcRhDescriptorB, PortPowerControlMask 0006h, masking both
+ * ports, and DeviceRemovable zero.
+ */
+#define LUCENT_OHCI_RHA_POWER_ON    0x10000900u
+#define LUCENT_OHCI_RHB_POWER_ON    0x00060000u
 
 /*
  * The reset values this part holds where the shared core's differ, after
@@ -79,6 +90,19 @@ static void lucent_ohci_reset_values(OHCIState *ohci)
 {
     ohci->intr = 0;
     ohci->fsmps = 0;
+}
+
+/*
+ * The root-hub descriptors after the device's reset, where the shared core
+ * sets NoPowerSwitching and clears HcRhDescriptorB. A HostControllerReset
+ * leaves the root hub alone (OpenHCI 1.0a section 7.1.3).
+ */
+static void lucent_ohci_root_hub_power_on(OHCIState *ohci)
+{
+    uint32_t ports = MAKE_64BIT_MASK(1, ohci->num_ports);
+
+    ohci->rhdesc_a = LUCENT_OHCI_RHA_POWER_ON | ohci->num_ports;
+    ohci->rhdesc_b = LUCENT_OHCI_RHB_POWER_ON & (ports << 16);
 }
 
 static OHCIState *lucent_ohci_core(PCIDevice *dev)
@@ -133,7 +157,7 @@ static void lucent_ohci_instance_init(Object *obj)
  * root-hub port from bit 1 of each half (section 7.4.2), and a
  * HostControllerReset leaves the root hub alone (section 7.1.3). The shared
  * core discards writes; this part keeps the bits for the ports it has.
- * Reads, and the power-on value, stay the core's.
+ * Reads stay the core's.
  */
 static uint64_t lucent_ohci_rhdesc_b_read(void *opaque, hwaddr addr,
                                           unsigned size)
@@ -169,8 +193,7 @@ static const MemoryRegionOps lucent_ohci_rhdesc_b_ops = {
  * OverCurrentProtectionMode, NoOverCurrentProtection and
  * PowerOnToPowerGoodTime writable by the driver (section 7.4.1); the shared
  * core discards writes to them. The port power overlays below act on the
- * two power-switching fields. Reads, the port count and the power-on value
- * stay the core's.
+ * two power-switching fields. Reads and the port count stay the core's.
  */
 static uint64_t lucent_ohci_rhdesc_a_read(void *opaque, hwaddr addr,
                                           unsigned size)
@@ -201,15 +224,17 @@ static const MemoryRegionOps lucent_ohci_rhdesc_a_ops = {
 };
 
 /*
- * Entering USBRESET resets the root hub, and the shared core takes
- * HcRhDescriptorB back to its power-on zero with it. OpenHCI 1.0a leaves
+ * Entering USBRESET resets the root hub, and the shared core takes both
+ * descriptors back to its own power-on values with it. OpenHCI 1.0a leaves
  * the root-hub registers out of those USBRESET preserves and says the root
  * hub "is being reset" there (section 5.1.2.1), but gives the descriptor
  * registers' reset column as "Power-On Reset" and says they are written
  * during initialization (section 7.4). The IO-8 board test requires the
- * written port bits back afterwards, so this part keeps them; the Lucent
- * OHCI datasheet marks that inferred from the test. Everything else about
- * the write, the port resets included, is the core's.
+ * written HcRhDescriptorB port bits back afterwards, so this part keeps
+ * them; the Lucent OHCI datasheet marks that inferred from the test.
+ * HcRhDescriptorA goes back to this part's power-on value rather than the
+ * core's. Everything else about the write, the port resets included, is
+ * the core's.
  */
 static uint64_t lucent_ohci_control_read(void *opaque, hwaddr addr,
                                          unsigned size)
@@ -225,9 +250,14 @@ static void lucent_ohci_control_write(void *opaque, hwaddr addr,
 {
     OHCIState *ohci = opaque;
     uint32_t rhdesc_b = ohci->rhdesc_b;
+    uint32_t hcfs = ohci->ctl & LUCENT_OHCI_CONTROL_HCFS;
 
     ohci->mem.ops->write(ohci->mem.opaque, LUCENT_OHCI_CONTROL + addr, val,
                          size);
+    if (hcfs != LUCENT_OHCI_HCFS_RESET &&
+        (ohci->ctl & LUCENT_OHCI_CONTROL_HCFS) == LUCENT_OHCI_HCFS_RESET) {
+        lucent_ohci_root_hub_power_on(ohci);
+    }
     ohci->rhdesc_b = rhdesc_b;
 }
 
@@ -437,14 +467,17 @@ static void lucent_ohci_realize(PCIDevice *dev, Error **errp)
                         4 * ohci->num_ports, &lucent_ohci_port_status_ops,
                         "lucent-ohci.rh-port-status");
     lucent_ohci_reset_values(ohci);
+    lucent_ohci_root_hub_power_on(ohci);
 }
 
 static void lucent_ohci_reset(DeviceState *d)
 {
     LucentOHCIClass *lc = LUCENT_OHCI_GET_CLASS(d);
+    OHCIState *ohci = lucent_ohci_core(PCI_DEVICE(d));
 
     lc->parent_reset(d);
-    lucent_ohci_reset_values(lucent_ohci_core(PCI_DEVICE(d)));
+    lucent_ohci_reset_values(ohci);
+    lucent_ohci_root_hub_power_on(ohci);
 }
 
 static void lucent_ohci_class_init(ObjectClass *klass, const void *data)
