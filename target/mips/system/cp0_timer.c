@@ -144,7 +144,8 @@ static bool cpu_mips_write_matches(CPUMIPSState *env, uint32_t count,
     return true;
 }
 
-void cpu_mips_store_count(CPUMIPSState *env, uint32_t count)
+static void cpu_mips_store_count_internal(CPUMIPSState *env, uint32_t count,
+                                          bool guest_write)
 {
     /*
      * This gets called from cpu_state_reset(), potentially before timer init.
@@ -154,6 +155,7 @@ void cpu_mips_store_count(CPUMIPSState *env, uint32_t count)
 
     BQL_LOCK_GUARD();
 
+    env->timer_adjacent_pending = false;
     if (env->CP0_Cause & (1 << CP0Ca_DC) || !env->timer) {
         env->CP0_Count = count;
     } else {
@@ -162,6 +164,12 @@ void cpu_mips_store_count(CPUMIPSState *env, uint32_t count)
         /* Store new count register */
         env->CP0_Count = count - (uint32_t)clock_ns_to_ticks(cpu->count_clock,
                                                              now_ns);
+        if (guest_write && env->cfg.count_compare_adjacent_recovery) {
+            env->timer_adjacent_count = count;
+            env->timer_adjacent_start_ticks =
+                clock_ns_to_ticks(cpu->count_clock, now_ns);
+            env->timer_adjacent_pending = true;
+        }
         /* Update timer timer */
         cpu_mips_timer_update(env, now_ns);
         if (cpu_mips_write_matches(env, count, env->CP0_Compare)) {
@@ -170,20 +178,43 @@ void cpu_mips_store_count(CPUMIPSState *env, uint32_t count)
     }
 }
 
+void cpu_mips_store_count(CPUMIPSState *env, uint32_t count)
+{
+    cpu_mips_store_count_internal(env, count, false);
+}
+
+void cpu_mips_store_count_guest(CPUMIPSState *env, uint32_t count)
+{
+    cpu_mips_store_count_internal(env, count, true);
+}
+
 void cpu_mips_store_compare(CPUMIPSState *env, uint32_t value)
 {
     bool matched = false;
+    bool adjacent = env->timer_adjacent_pending;
 
     BQL_LOCK_GUARD();
 
+    env->timer_adjacent_pending = false;
     env->CP0_Compare = value;
     if (!(env->CP0_Cause & (1 << CP0Ca_DC))) {
+        MIPSCPU *cpu = env_archcpu(env);
         int64_t now_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+        uint64_t now_ticks = clock_ns_to_ticks(cpu->count_clock, now_ns);
+        uint64_t elapsed = now_ticks - env->timer_adjacent_start_ticks;
+        uint32_t forward = value - env->timer_adjacent_count;
 
         /* Classify and arm against one instant, or a stall between the
          * two reads turns an imminent match into a full-wrap deferral. */
+        env->cp0_timer_ip7 = 0;
         matched = cpu_mips_write_matches(env, cpu_mips_count_at(env, now_ns),
                                          value);
+        if (adjacent && env->cfg.count_compare_adjacent_recovery &&
+            forward > 0 && forward < 0x80000000u &&
+            elapsed < 0x80000000ULL && elapsed >= forward) {
+            env->cp0_timer_ip7 = 1;
+            matched = true;
+        }
         cpu_mips_timer_update(env, now_ns);
     }
     if (matched) {

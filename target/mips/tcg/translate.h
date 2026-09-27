@@ -56,6 +56,8 @@ typedef struct DisasContext {
     bool partial_lwr_preserves_upper;
     bool ll_sc_intervening_ops_break_link;
     bool has_store_transaction;
+    bool timer_adjacent_pending;
+    bool timer_count_written;
 } DisasContext;
 
 #define DISAS_STOP       DISAS_TARGET_0

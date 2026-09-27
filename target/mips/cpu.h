@@ -91,6 +91,7 @@ typedef struct MIPSCPUConfig {
      * equal raises the interrupt at once.
      */
     bool compare_match_is_continuous;
+    bool count_compare_adjacent_recovery;
     /*
      * A word-sized MTC0 to a 64-bit EntryLo moves all sixty-four register
      * bits.
@@ -918,6 +919,10 @@ typedef struct CPUArchState {
      * source may clear what the other asserted.
      */
     uint32_t cp0_timer_ip7;
+    bool timer_adjacent_pending;
+    uint32_t timer_adjacent_count;
+    uint64_t timer_adjacent_start_ticks;
+    uint64_t timer_adjacent_migration_age_ticks;
 /*
  * CP0 Register 12
  */
@@ -1404,6 +1409,7 @@ typedef struct CPUArchState {
                             MIPS_HFLAG_HWRENA_ULR)
 
 #define TB_FLAG_MIPS_FIXADE  0x40000000
+#define TB_FLAG_MIPS_TIMER_ADJACENT 0x80000000
     target_ulong btarget;        /* Jump / branch target               */
     target_ulong bcond;          /* Branch condition (if needed)       */
 

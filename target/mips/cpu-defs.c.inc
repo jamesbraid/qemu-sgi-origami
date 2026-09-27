@@ -738,6 +738,7 @@ const mips_def_t mips_defs[] =
             .diagnostic_rw_bitmask = CP0DI_WRITABLE,
             .scache_size = R10K_SCACHE_SIZE,
             .compare_match_is_continuous = true,
+            .count_compare_adjacent_recovery = true,
             .mtc0_entrylo_moves_64_bits = true,
             .partial_lwr_preserves_upper = true,
         },
