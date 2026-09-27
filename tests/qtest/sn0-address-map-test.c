@@ -639,7 +639,7 @@ static void test_256m_memory(const void *data)
 static void test_origin2000_256m_memory(const void *data)
 {
     QTestState *qts = qtest_init(
-        "-M origin2000,topology=origin2000-deskside -smp 2 -m 256M");
+        "-M origin2000,topology=origin2000-deskside,nodes=1 -smp 2 -m 256M");
     unsigned int bank;
 
     for (bank = 0; bank < 2; bank++) {

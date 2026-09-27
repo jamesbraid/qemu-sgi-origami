@@ -29,6 +29,7 @@
 #include "qemu/osdep.h"
 #include "qemu/units.h"
 #include "qapi/error.h"
+#include "qapi/util.h"
 #include "hw/core/boards.h"
 #include "hw/core/clock.h"
 #include "hw/core/qdev-clock.h"
@@ -204,15 +205,47 @@ static uint64List *uint64_list(const uint64_t *items, size_t count)
 }
 
 /*
- * Console field test fixture: a two-node topology with console=1, each node
- * carrying its own base I/O controller the way Origin 200's two-tower wiring
- * does (node/module/xtalk/board values copied from the origin200-dual
- * configuration's own compiled catalogue entry, minus a SCSI-carrying board,
- * which the serial line contract never touches). All shipping topologies
- * have console=0, so the reordering sgi_machine_compute_serial_line() does
- * for a non-default console is otherwise never built or realized, only
- * validated. SGIMachineClass.test_topology hands this straight to
- * sgi_machine_init, so the qtest in tests/qtest/sn-builder-test.c that boots
+ * A fixture's one node-population row: it fits every node board, Router
+ * and cable the fixture names, uses no empty XIO slot, and accepts
+ * @populations. The builder reads a machine's populations from its row.
+ */
+static SGIModelNodePopulationList *whole_population(
+    const SGIModelTopology *t, SGIModelCpuPopulationList *populations)
+{
+    SGIModelNodePopulationList *entry = g_new0(SGIModelNodePopulationList, 1);
+    SGIModelNodePopulation *row = g_new0(SGIModelNodePopulation, 1);
+    uint32List **tail;
+    unsigned int i;
+
+    tail = &row->nodes;
+    for (i = 0; i < QAPI_LIST_LENGTH(t->nodes); i++) {
+        QAPI_LIST_APPEND(tail, i);
+    }
+    tail = &row->routers;
+    for (i = 0; i < QAPI_LIST_LENGTH(t->routers); i++) {
+        QAPI_LIST_APPEND(tail, i);
+    }
+    tail = &row->cables;
+    for (i = 0; i < QAPI_LIST_LENGTH(t->cables); i++) {
+        QAPI_LIST_APPEND(tail, i);
+    }
+    row->supported_cpu_populations = populations;
+    row->grade = SGI_MODEL_EVIDENCE_GRADE_ESTABLISHED;
+    entry->value = row;
+    return entry;
+}
+
+/*
+ * Console field test fixture: a two-node topology with console=1, each
+ * node carrying its own base I/O controller the way Origin 200's two-tower
+ * wiring does (node/module/xtalk/board values copied from the
+ * origin200-dual configuration's own compiled catalogue entry, minus a
+ * SCSI-carrying board, which the serial line contract never touches). All
+ * shipping topologies have console=0, so the reordering
+ * sgi_machine_compute_serial_line() does for a non-default console is
+ * otherwise never built or realized, only validated.
+ * SGIMachineClass.test_topology hands this straight to sgi_machine_init,
+ * so the qtest in tests/qtest/sn-builder-test.c that boots
  * "sn-builder-console-test" exercises the real builder, not a stand-in.
  */
 static SGIModelProcessor console_test_r10000_180mhz = {
@@ -858,9 +891,10 @@ static void sn_builder_fault_test_register_types(void)
         xtalk_attachment_list(console_test_xtalk, ARRAY_SIZE(console_test_xtalk));
     console_test_topology.io_boards =
         io_board_list(console_test_io_boards, ARRAY_SIZE(console_test_io_boards));
-    console_test_topology.supported_cpu_populations =
+    console_test_topology.node_populations = whole_population(
+        &console_test_topology,
         cpu_population_list(console_test_populations,
-                            ARRAY_SIZE(console_test_populations));
+                            ARRAY_SIZE(console_test_populations)));
 
     bank_test_nodes[0].cpu_slots =
         cpu_slot_list(bank_test_cpu_slots, ARRAY_SIZE(bank_test_cpu_slots));
@@ -882,8 +916,10 @@ static void sn_builder_fault_test_register_types(void)
         xtalk_attachment_list(console_test_xtalk, 1);
     bank_test_topology.io_boards =
         io_board_list(console_test_io_boards, 1);
-    bank_test_topology.supported_cpu_populations =
-        cpu_population_list(bank_test_populations, ARRAY_SIZE(bank_test_populations));
+    bank_test_topology.node_populations = whole_population(
+        &bank_test_topology,
+        cpu_population_list(bank_test_populations,
+                            ARRAY_SIZE(bank_test_populations)));
 
     bedrock_test_nodes[0].cpu_slots = bedrock_test_nodes[1].cpu_slots =
         cpu_slot_list(bedrock_test_cpu_slots,
@@ -903,9 +939,10 @@ static void sn_builder_fault_test_register_types(void)
     bedrock_test_topology.io_boards =
         io_board_list(bedrock_test_io_boards,
                      ARRAY_SIZE(bedrock_test_io_boards));
-    bedrock_test_topology.supported_cpu_populations =
+    bedrock_test_topology.node_populations = whole_population(
+        &bedrock_test_topology,
         cpu_population_list(bedrock_test_populations,
-                            ARRAY_SIZE(bedrock_test_populations));
+                            ARRAY_SIZE(bedrock_test_populations)));
 
     type_register_static(&console_test_type);
     type_register_static(&bank_test_type);

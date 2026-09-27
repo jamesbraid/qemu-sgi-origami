@@ -70,20 +70,26 @@ Onyx2 deskside:
      - 2, direct-linked
      - 2+2 (fixed)
      - 64, 128, 256 or 512 MiB, same on both nodes
-   * - ``origin2000-module`` (default)
+   * - ``origin2000-rack`` (default)
      - ``origin2000``
-     - 4, two Crossbows and two routers
-     - 2+2+2+2 (fixed)
+     - 1 to 4; two Crossbows, and two Routers from two nodes on
+     - 1 or 2 per node
      - 64 MiB (fixed)
+   * - ``origin2000-deskside``
+     - ``origin2000``
+     - 1 to 4; two Crossbows, a Null Router for two nodes, two Routers
+       for three or four
+     - 1 or 2 per node
+     - 64 or 256 MiB
    * - ``onyx2-rack`` (default)
      - ``onyx2``
-     - 4, two Crossbows and two routers
-     - 2+2+2+2 (fixed)
+     - 1 to 4, wired as ``origin2000-rack``
+     - 1 or 2 per node
      - 64 MiB (fixed)
    * - ``onyx2-deskside``
      - ``onyx2``
-     - 2, joined by a Null Router, one Crossbow
-     - 2+2 (fixed)
+     - 1 or 2, a Null Router for two, one Crossbow
+     - 1 or 2 per node
      - 64 MiB (fixed)
    * - ``origin300`` (default)
      - ``origin300``
@@ -91,7 +97,19 @@ Onyx2 deskside:
      - 2 or 4
      - 512 MiB (fixed)
 
-``-M origin200,topology=origin200-dual`` selects the second row; naming
+``-M origin200,topology=origin200-dual`` selects the second row. Each
+topology describes one chassis, and its catalogue record carries a
+node-population row for each count of node boards it accepts; the
+``nodes`` machine property picks the row, and defaults to the largest,
+so ``-M origin2000`` still fits four. ``-M origin2000,nodes=2`` fits node
+boards in slots ``n1`` and ``n2`` only, in the order SGI fills them: an
+absent node board has no Hub, processors, boot flash or place in the
+module controller's arbitration, and the Crossbow port it would use
+reads as an empty one. The row also decides which Routers and cables
+exist and which XIO slots a board fitted at launch may use; a slot the
+row cannot use is refused with the node board it needs. A count no row
+accepts is refused with the counts that exist, and a row whose evidence
+does not settle its wiring is refused rather than built. Naming
 a topology that is not one of a product's own (or any other unknown
 name, including ``topology=help``) makes the machine report every
 topology that product accepts and exit, since QEMU has no generic help
@@ -103,8 +121,9 @@ one of the topology's own accepted populations. ``-m`` splits evenly
 across nodes and each node's share must be one of its own accepted
 sizes -- ``origin200-dual`` accepts the same four per-node sizes
 ``origin200`` does, so its total ranges from 128 MiB to 1024 MiB, while
-``origin2000-module``'s four nodes ship a fixed 64 MiB each and accept
-no other size. ``origin300`` accepts only R14000 for ``-cpu``; the
+``origin2000-rack``'s nodes ship a fixed 64 MiB each and accept no other
+size. ``nodes`` is part of the machine configuration: a snapshot restores
+only into a machine with the same value. ``origin300`` accepts only R14000 for ``-cpu``; the
 other two accept only R10000, the default and the only member of
 their own ``valid_cpu_types``.
 

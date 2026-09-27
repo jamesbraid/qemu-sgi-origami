@@ -80,7 +80,8 @@ DISK_REL = os.path.join('assets', 'irix', RELEASE, 'root-si.qcow2')
 # hit a Crossbow link-reset race; QEMU 2324ead1d3 fixed it before this
 # profile was qualified.
 MACHINE = (MACHINES['origin2000'] +
-           ',topology=origin2000-deskside,baseio-preset=io6g,debug-leds=off')
+           ',topology=origin2000-deskside,nodes=1,baseio-preset=io6g,'
+           'debug-leds=off')
 SI_ARGS = ('-device', 'sgi-mgras,slot=io3')
 SMP = '2'
 MEMORY_MIB = 256

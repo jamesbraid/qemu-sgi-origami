@@ -164,6 +164,13 @@ struct SGIMachineState {
      * 4:2 or 2:4). NULL leaves -smp to choose.
      */
     char *population;
+    /*
+     * nodes=: how many node boards the chassis fits, in SGI's fill
+     * order; 0 until set, which fits the topology's largest row.
+     */
+    uint32_t nodes_requested;
+    /* The topology this machine builds: one row of its chassis. */
+    const SGIModelTopology *view;
     char *baseio_preset;
 
     unsigned int num_nodes;
@@ -369,7 +376,7 @@ static bool sgi_machine_topology_matches_product(const SGIModelTopology *t,
  * so a name match alone is not enough: topology= is product-scoped
  * (origin200 never builds origin2000's wiring).
  */
-static const SGIModelTopology *sgi_machine_topology(MachineState *machine)
+static const SGIModelTopology *sgi_machine_chassis(MachineState *machine)
 {
     SGIMachineState *s = SGI_MACHINE(machine);
     SGIMachineClass *smc = SGI_MACHINE_GET_CLASS(machine);
@@ -381,12 +388,83 @@ static const SGIModelTopology *sgi_machine_topology(MachineState *machine)
     }
 
     name = s->topology_name ? s->topology_name : smc->default_topology;
+    if (!name || !smc->product) {
+        return NULL;
+    }
     t = sgi_model_find_topology(name);
 
     if (t && !sgi_machine_topology_matches_product(t, smc->product)) {
         return NULL;
     }
     return t;
+}
+
+/* "1, 2, 3 or 4": a chassis's accepted node counts, for a refusal. */
+static char *sgi_machine_accepted_node_counts(const SGIModelTopology *t)
+{
+    GString *out = g_string_new(NULL);
+    const SGIModelNodePopulationList *entry;
+
+    for (entry = t->node_populations; entry; entry = entry->next) {
+        if (out->len) {
+            g_string_append(out, entry->next ? ", " : " or ");
+        }
+        g_string_append_printf(out, "%zu",
+                               QAPI_LIST_LENGTH(entry->value->nodes));
+    }
+    return g_string_free(out, false);
+}
+
+/*
+ * The topology this machine builds: the chassis topology= names, with
+ * the node-population row nodes= selects, or its largest by default. A
+ * row resting on unsettled evidence is refused, not built on a guess.
+ */
+static const SGIModelTopology *sgi_machine_resolve(MachineState *machine,
+                                                   Error **errp)
+{
+    SGIMachineState *s = SGI_MACHINE(machine);
+    const SGIModelTopology *chassis = sgi_machine_chassis(machine);
+    const SGIModelNodePopulation *row;
+
+    if (s->view) {
+        return s->view;
+    }
+    if (!chassis) {
+        error_setg(errp, "unknown topology");
+        return NULL;
+    }
+    row = s->nodes_requested ?
+        sgi_model_find_population(chassis, s->nodes_requested) :
+        sgi_model_default_population(chassis);
+    if (!row) {
+        g_autofree char *counts = sgi_machine_accepted_node_counts(chassis);
+
+        error_setg(errp, "topology '%s' fits %s node boards, not %u",
+                   chassis->name, counts, s->nodes_requested);
+        return NULL;
+    }
+    if (row->grade == SGI_MODEL_EVIDENCE_GRADE_UNKNOWN) {
+        error_setg(errp, "topology '%s' with %zu node boards rests on "
+                   "evidence that does not settle its wiring; it is not "
+                   "built", chassis->name, QAPI_LIST_LENGTH(row->nodes));
+        return NULL;
+    }
+    s->view = sgi_model_population_view(chassis, row, errp);
+    return s->view;
+}
+
+static const SGIModelTopology *sgi_machine_topology(MachineState *machine)
+{
+    return sgi_machine_resolve(machine, NULL);
+}
+
+/* The one row a machine's own built topology holds. */
+static const SGIModelNodePopulation *sgi_machine_view_row(
+    const SGIModelTopology *t)
+{
+    g_assert(t->node_populations);
+    return t->node_populations->value;
 }
 
 static unsigned int sgi_machine_population_total(
@@ -408,17 +486,21 @@ unsigned int sgi_machine_product_max_cpus(const char *product)
 
     for (entry = sgi_model_catalogue()->topologies; entry; entry = entry->next) {
         const SGIModelTopology *t = entry->value;
-        const SGIModelCpuPopulationList *population;
+        const SGIModelNodePopulationList *row;
 
         if (!sgi_machine_topology_matches_product(t, product)) {
             continue;
         }
-        for (population = t->supported_cpu_populations; population;
-             population = population->next) {
-            unsigned int total =
-                sgi_machine_population_total(population->value);
+        for (row = t->node_populations; row; row = row->next) {
+            const SGIModelCpuPopulationList *population;
 
-            max_cpus = MAX(max_cpus, total);
+            for (population = row->value->supported_cpu_populations;
+                 population; population = population->next) {
+                unsigned int total =
+                    sgi_machine_population_total(population->value);
+
+                max_cpus = MAX(max_cpus, total);
+            }
         }
     }
     return max_cpus;
@@ -474,8 +556,10 @@ static const SGIModelModule *sgi_machine_node_module(const SGIModelTopology *t,
     return NULL;
 }
 
-uint64_t sgi_machine_topology_default_ram(const SGIModelTopology *t)
+uint64_t sgi_machine_topology_default_ram(const SGIModelTopology *chassis)
 {
+    const SGIModelTopology *t = sgi_model_population_view(
+        chassis, sgi_model_default_population(chassis), &error_abort);
     g_autofree const SGIModelNode **nodes = NULL;
     uint64_t total_mib = 0;
     size_t node_count, i;
@@ -494,10 +578,13 @@ uint64_t sgi_machine_topology_default_ram(const SGIModelTopology *t)
 }
 
 unsigned int sgi_machine_topology_default_cpus(
-    const SGIModelTopology *t)
+    const SGIModelTopology *chassis)
 {
-    g_assert(t->supported_cpu_populations);
-    return sgi_machine_population_total(t->supported_cpu_populations->value);
+    const SGIModelNodePopulation *row = sgi_model_default_population(chassis);
+
+    g_assert(row && row->supported_cpu_populations);
+    return sgi_machine_population_total(
+        row->supported_cpu_populations->value);
 }
 
 /* A topology's own first node: every product measured has at least one. */
@@ -596,7 +683,8 @@ static const SGIModelCpuPopulation *sgi_machine_find_population_by_total(
     const SGIModelCpuPopulationList *entry;
 
     *second = NULL;
-    for (entry = t->supported_cpu_populations; entry; entry = entry->next) {
+    for (entry = sgi_machine_view_row(t)->supported_cpu_populations; entry;
+         entry = entry->next) {
         const SGIModelCpuPopulation *population = entry->value;
         g_autofree unsigned int *cpus_per_node = NULL;
         size_t population_node_count;
@@ -627,16 +715,34 @@ static char *sgi_machine_accepted_totals(const SGIModelTopology *t)
 {
     GString *out = g_string_new(NULL);
     const SGIModelCpuPopulationList *entry;
-    bool first = true;
+    unsigned int last = 0;
 
-    for (entry = t->supported_cpu_populations; entry; entry = entry->next) {
-        unsigned int total = sgi_machine_population_total(entry->value);
+    /* Each pass appends the next larger total, so each appears once. */
+    for (;;) {
+        unsigned int next = UINT_MAX;
 
-        if (!first) {
-            g_string_append(out, entry->next ? ", " : " or ");
+        for (entry = sgi_machine_view_row(t)->supported_cpu_populations;
+             entry; entry = entry->next) {
+            unsigned int total = sgi_machine_population_total(entry->value);
+
+            if (total > last && total < next) {
+                next = total;
+            }
         }
-        g_string_append_printf(out, "%u", total);
-        first = false;
+        if (next == UINT_MAX) {
+            break;
+        }
+        g_string_append_printf(out, "%s%u", out->len ? ", " : "", next);
+        last = next;
+    }
+    /* The last separator reads "or": "1, 2 or 4". */
+    {
+        char *comma = strrchr(out->str, ',');
+
+        if (comma) {
+            g_string_erase(out, comma - out->str, 1);
+            g_string_insert(out, comma - out->str, " or");
+        }
     }
     return g_string_free(out, false);
 }
@@ -2257,7 +2363,8 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
     SGIMachineState *s = SGI_MACHINE(machine);
     SGIMachineClass *smc = SGI_MACHINE_GET_CLASS(machine);
     MachineClass *mc = MACHINE_GET_CLASS(machine);
-    const SGIModelTopology *t = sgi_machine_topology(machine);
+    Error *local_err = NULL;
+    const SGIModelTopology *t = sgi_machine_resolve(machine, &local_err);
     const SN0ModelMemory *node_memory =
         smc->node_memory ? smc->node_memory : &sn0_hub_memory;
     g_autofree unsigned int *requested = NULL;
@@ -2272,9 +2379,15 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
     uint64_t ram_offset = 0;
     SGIModelAsicKind kind;
 
+    if (!t && sgi_machine_chassis(machine)) {
+        error_propagate_prepend(errp, local_err, "%s: ", mc->name);
+        return false;
+    }
     if (!t) {
         GString *names = g_string_new(NULL);
         const SGIModelTopologyList *entry;
+
+        error_free(local_err);
 
         for (entry = sgi_model_catalogue()->topologies; entry;
              entry = entry->next) {
@@ -2938,6 +3051,55 @@ static void sgi_machine_done(Notifier *notifier, void *data)
 }
 
 /*
+ * Why this machine cannot fit a board in XIO slot @name when its chassis
+ * has that slot but the fitted node-population row does not use it:
+ * the node board that controls it in the smallest row that does. NULL
+ * when the chassis has no such slot either.
+ */
+static char *sgi_machine_slot_needs_node(MachineState *machine,
+                                         const char *name)
+{
+    const SGIModelTopology *chassis = sgi_machine_chassis(machine);
+    const SGIModelTopology *t = sgi_machine_topology(machine);
+    const SGIModelNodePopulationList *row;
+    const SGIModelNodePopulation *smallest = NULL;
+    const SGIModelXtalkSlotList *slot;
+    uint32_t position = 0, controller = 0;
+    g_autofree const SGIModelNode **nodes = NULL;
+    size_t node_count;
+
+    for (slot = chassis->xtalk_slots; slot; slot = slot->next, position++) {
+        if (g_str_equal(slot->value->label, name)) {
+            break;
+        }
+    }
+    if (!slot) {
+        return NULL;
+    }
+    for (row = chassis->node_populations; row; row = row->next) {
+        const SGIModelPopulationSlotList *usable;
+
+        for (usable = row->value->xtalk_slots; usable; usable = usable->next) {
+            if (usable->value->slot == position &&
+                (!smallest || QAPI_LIST_LENGTH(row->value->nodes) <
+                              QAPI_LIST_LENGTH(smallest->nodes))) {
+                smallest = row->value;
+                controller = usable->value->controlling_node;
+            }
+        }
+    }
+    if (!smallest) {
+        return NULL;
+    }
+    nodes = sgi_model_node_array(chassis->nodes, &node_count);
+    return g_strdup_printf("XIO slot %s of topology '%s' needs node board "
+                           "n%u, which nodes=%zu does not fit; nodes=%zu "
+                           "and up fit it", name, chassis->name,
+                           nodes[controller]->slot, QAPI_LIST_LENGTH(t->nodes),
+                           QAPI_LIST_LENGTH(smallest->nodes));
+}
+
+/*
  * The machine's side of a board fitted by slot name (TYPE_SGI_XIO_SLOTS,
  * xio-board.h): the named empty slot's module, widget and fabric proxy.
  */
@@ -2989,6 +3151,15 @@ static MemoryRegion *sgi_machine_claim_xio_slot(Object *obj,
                 g_str_equal(board->value->label, name)) {
                 error_setg(errp, "XIO slot %s of topology '%s' already holds "
                            "the topology's own board", name, t->name);
+                return NULL;
+            }
+        }
+        {
+            g_autofree char *needs =
+                sgi_machine_slot_needs_node(MACHINE(s), name);
+
+            if (needs) {
+                error_setg(errp, "%s", needs);
                 return NULL;
             }
         }
@@ -3138,6 +3309,40 @@ static void sgi_machine_set_topology(Object *obj, const char *value,
 
     g_free(s->topology_name);
     s->topology_name = g_strdup(value);
+    s->view = NULL;
+}
+
+static void sgi_machine_get_nodes(Object *obj, Visitor *v, const char *name,
+                                  void *opaque, Error **errp)
+{
+    SGIMachineState *s = SGI_MACHINE(obj);
+    uint32_t value = s->nodes_requested;
+
+    if (!value) {
+        const SGIModelTopology *chassis = sgi_machine_chassis(MACHINE(obj));
+        const SGIModelNodePopulation *row =
+            chassis ? sgi_model_default_population(chassis) : NULL;
+
+        value = row ? QAPI_LIST_LENGTH(row->nodes) : 0;
+    }
+    visit_type_uint32(v, name, &value, errp);
+}
+
+static void sgi_machine_set_nodes(Object *obj, Visitor *v, const char *name,
+                                  void *opaque, Error **errp)
+{
+    SGIMachineState *s = SGI_MACHINE(obj);
+    uint32_t value;
+
+    if (!visit_type_uint32(v, name, &value, errp)) {
+        return;
+    }
+    if (!value) {
+        error_setg(errp, "nodes must be at least 1");
+        return;
+    }
+    s->nodes_requested = value;
+    s->view = NULL;
 }
 
 /*
@@ -3334,6 +3539,14 @@ static void sgi_machine_class_init(ObjectClass *oc, const void *data)
         "an unrecognized name (including 'help') reports every topology "
         "this product accepts.");
 
+    object_class_property_add(oc, "nodes", "uint32", sgi_machine_get_nodes,
+                              sgi_machine_set_nodes, NULL, NULL);
+    object_class_property_set_description(oc, "nodes",
+        "How many node boards the chassis fits, in the order SGI fills "
+        "its node slots (n1, then n2, and so on). Defaults to the most "
+        "the topology accepts; the count decides the Routers fitted and "
+        "which XIO slots work.");
+
     object_class_property_add_str(oc, "population",
                                   sgi_machine_get_population,
                                   sgi_machine_set_population);
@@ -3414,11 +3627,11 @@ static void origin2000_class_init(ObjectClass *oc, const void *data)
 {
     MachineClass *mc = MACHINE_CLASS(oc);
     SGIMachineClass *smc = SGI_MACHINE_CLASS(oc);
-    const SGIModelTopology *t = sgi_model_find_topology("origin2000-module");
+    const SGIModelTopology *t = sgi_model_find_topology("origin2000-rack");
 
     g_assert(t);
     smc->product = "origin2000";
-    smc->default_topology = "origin2000-module";
+    smc->default_topology = "origin2000-rack";
     smc->node_memory = &sn0_ip27_memory;
     mc->desc = t->description;
     mc->valid_cpu_types = sgi_sn0_r10000_cpu_types;
