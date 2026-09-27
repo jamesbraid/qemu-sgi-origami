@@ -216,6 +216,19 @@ named PCI bus, for an Origin 2000 module's optional XIO PCI expansion slot;
 no reviewed source gives it a fixed device population or a real board part
 number.
 
+The SI graphics board (``sgi-mgras``) is a catalogue board like any other:
+a topology gets one only where its catalogue record, preset ``mgras``, fits
+one, at the widget that record's crosstalk attachment names, and that
+attachment alone marks the widget present and alive at startup. No product
+builds one by default. Every Origin 2000 topology except
+``origin2000-ir2``, whose IO3 holds an InfiniteReality pipe, declares one at
+IO3 (Crossbow 0 widget 15), and ``origin200-gigachannel-mgras`` declares
+one in a GIGAchannel cabinet at ``io6`` (the cabinet Crossbow's widget 15). ``sgi-mgras`` is a plain sysbus
+device rather than an ``sgi-xio-board``, so it stays at ``/machine/mgras``
+instead of moving under its module. Its qdev id is ``mgras``, which QMP's
+``screendump device=`` accepts; a second board in the same topology would
+be ``mgras1``, and so on in catalogue order.
+
 Neither concrete class is ``-device``-creatable yet (``user_creatable`` is
 off on both, and on the abstract base): reaching one from the command line
 needs a machine-owned spare fabric proxy per Crossbow, built at the same
