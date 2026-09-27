@@ -2893,6 +2893,7 @@ static void test_parent_directory_ecc_interrupt(void)
  * the way the stock PROM leaves them.
  */
 #define WATCHED_LINE UINT64_C(0x580000)
+#define WATCH_SECOND 1000000000LL
 #define WATCHED_CARRIER (PROTECTION_MACHINE_BASE + (WATCHED_LINE >> 3))
 
 static QTestState *start_origin300_watch(const char *extra)
@@ -2907,6 +2908,20 @@ static QTestState *start_origin300_watch(const char *extra)
                  memory_bank_config(2, 3) | memory_bank_config(3, 3));
     assert_flat_view_type(s, WATCHED_LINE, "ram");
     return s;
+}
+
+/* A line left idle for a second stops being followed. */
+static void test_origin300_watch_idle_release(void)
+{
+    QTestState *s = start_origin300_watch("");
+
+    qtest_readq(s, WATCHED_CARRIER);
+    assert_flat_view_type(s, WATCHED_LINE, "i/o");
+    qtest_clock_step(s, WATCH_SECOND / 2);
+    assert_flat_view_type(s, WATCHED_LINE, "i/o");
+    qtest_clock_step(s, 2 * WATCH_SECOND);
+    assert_flat_view_type(s, WATCHED_LINE, "ram");
+    qtest_quit(s);
 }
 
 /* A reset forgets the lines it followed. */
@@ -3799,6 +3814,8 @@ int main(int argc, char **argv)
                    test_parent_ecc_uncorrectable_interrupt);
     qtest_add_func("sn1/bedrock-md/parent-directory-ecc-interrupt",
                    test_parent_directory_ecc_interrupt);
+    qtest_add_func("sn1/bedrock-md/origin300-watch-idle-release",
+                   test_origin300_watch_idle_release);
     qtest_add_func("sn1/bedrock-md/origin300-watch-reset",
                    test_origin300_watch_reset);
     qtest_add_func("sn1/bedrock-md/origin300-ecc-check",

@@ -2763,6 +2763,66 @@ static void md_watched_lines_place(SGIBedrockMDState *s)
     md_watched_count_update(s);
 }
 
+/*
+ * Stop following @line. A processor still holding a copy is taken to have
+ * replaced it: a dirty copy is written back, which unowns the line, and a
+ * clean or shared one is dropped silently (R10000 User's Manual version
+ * 2.0, the processor block write and eliminate protocols), so the word is
+ * left as the processors' caches would leave it. The caller commits the
+ * map change.
+ */
+static void md_watched_line_release(SGIBedrockMDState *s,
+                                    SGIBedrockMDWatchedLine *line)
+{
+    if (line->active && !md_directory_injection_find(s, line->index)) {
+        for (unsigned i = 0; i < line->holders; i++) {
+            if (line->holder[i].state == MD_CACHE_DIRTY) {
+                md_directory_request(s, line, line->holder[i].pointer,
+                                     MD_REQUEST_WRITEBACK, false);
+            }
+        }
+    }
+    line->holders = 0;
+    line->active = false;
+    md_watched_line_unplace(s, line);
+}
+
+/* Arm the release of the watched line that goes idle first. */
+static void md_watch_timer_arm(SGIBedrockMDState *s)
+{
+    int64_t first = INT64_MAX;
+
+    for (unsigned i = 0; i < SGI_BEDROCK_MD_WATCHED_LINES; i++) {
+        if (s->watched[i].active) {
+            first = MIN(first, s->watched[i].used_ns);
+        }
+    }
+    if (first == INT64_MAX) {
+        timer_del(s->watch_timer);
+    } else {
+        timer_mod(s->watch_timer, first + MD_WATCH_IDLE_NS);
+    }
+}
+
+static void md_watch_expire(void *opaque)
+{
+    SGIBedrockMDState *s = opaque;
+    int64_t idle = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) - MD_WATCH_IDLE_NS;
+
+    memory_region_transaction_begin();
+    for (unsigned i = 0; i < SGI_BEDROCK_MD_WATCHED_LINES; i++) {
+        SGIBedrockMDWatchedLine *line = &s->watched[i];
+
+        if (line->active && line->used_ns <= idle) {
+            trace_sgi_bedrock_md_watch_release(line->index);
+            md_watched_line_release(s, line);
+        }
+    }
+    memory_region_transaction_commit();
+    md_watched_count_update(s);
+    md_watch_timer_arm(s);
+}
+
 static void md_watched_lines_clear(SGIBedrockMDState *s)
 {
     memory_region_transaction_begin();
@@ -2926,15 +2986,19 @@ static void md_watch_line(SGIBedrockMDState *s, uint32_t index)
     if (!slot) {
         return;
     }
-    slot->index = index;
-    slot->holders = 0;
-    slot->used_ns = now;
     memory_region_transaction_begin();
+    /* The line this slot followed goes as if its copies were replaced. */
+    md_watched_line_release(s, slot);
+    slot->index = index;
+    slot->used_ns = now;
     slot->active = md_overlay_place(s, &slot->mr,
                                     (uint64_t)index * MD_DIRECTORY_LINE,
                                     &slot->address, &slot->placed, 2);
     memory_region_transaction_commit();
     md_watched_count_update(s);
+    if (!timer_pending(s->watch_timer)) {
+        md_watch_timer_arm(s);
+    }
     trace_sgi_bedrock_md_watch_line(index, slot->address, slot->active);
 }
 
@@ -3119,6 +3183,7 @@ static void md_reset_registers(SGIBedrockMDState *s)
     md_ecc_injections_clear(s);
     md_directory_injections_clear(s);
     md_watched_lines_clear(s);
+    timer_del(s->watch_timer);
     memset(s->named, 0, sizeof(s->named));
     s->memory_error = 0;
     s->directory_error = 0;
@@ -3227,6 +3292,7 @@ static int md_post_load(void *opaque, int version_id)
         }
     }
     md_update_memory_aliases(s);
+    md_watch_timer_arm(s);
     return 0;
 }
 
@@ -3361,6 +3427,7 @@ static void md_init(Object *obj)
     s->ecc_retired_by_raw = g_hash_table_new(g_int64_hash, g_int64_equal);
     s->directory_retired_by_index = g_hash_table_new(g_int_hash, g_int_equal);
     s->retired_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, md_retired_expire, s);
+    s->watch_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, md_watch_expire, s);
     memory_region_init_io(&s->mmio, obj, &md_ops, s, TYPE_SGI_BEDROCK_MD,
                           SGI_BEDROCK_MD_SIZE);
     sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->mmio);
@@ -3502,6 +3569,7 @@ static void md_unrealize(DeviceState *dev)
 
     timer_del(s->selftest_timer);
     timer_del(s->retired_timer);
+    timer_del(s->watch_timer);
     md_ecc_injections_clear(s);
     md_directory_injections_clear(s);
     md_watched_lines_clear(s);
@@ -3568,6 +3636,7 @@ static void md_finalize(Object *obj)
 
     timer_free(s->selftest_timer);
     timer_free(s->retired_timer);
+    timer_free(s->watch_timer);
     g_hash_table_destroy(s->ecc_injection_by_raw);
     g_hash_table_destroy(s->directory_injection_by_index);
     g_hash_table_destroy(s->ecc_retired_by_raw);

@@ -75,7 +75,9 @@ typedef struct SGIBedrockMDDirectoryInjection {
  * name it are passed on by the board. A line takes one overlay, a memory
  * map change, when it is admitted; a slot is only reused once it has been
  * idle a while, which bounds that cost when software walks the whole
- * directory (docs/datasheets/bedrock-memory-directory.md).
+ * directory, and a line idle that long is released, so no overlay outlives
+ * the software that read its word (docs/datasheets/bedrock-memory-
+ * directory.md).
  */
 #define SGI_BEDROCK_MD_WATCHED_LINES 16
 /*
@@ -144,6 +146,8 @@ struct SGIBedrockMDState {
     GHashTable *directory_retired_by_index;
     QEMUTimer *retired_timer;
     SGIBedrockMDWatchedLine watched[SGI_BEDROCK_MD_WATCHED_LINES];
+    /* Releases the watched lines left idle. Host-side: not migrated. */
+    QEMUTimer *watch_timer;
     /* Active watched lines; read without the lock by the board's filter. */
     uint32_t watched_count;
     /* Written without the lock by the processors' cache instructions. */
