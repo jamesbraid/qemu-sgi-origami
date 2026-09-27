@@ -290,7 +290,7 @@ static void octane_init_common(MachineState *machine, bool octane2)
 
     cpuclk = clock_new(OBJECT(machine), "cpu-refclk");
     /* The fitted Octane2 R12000 is reported at 360 MHz. */
-    clock_set_hz(cpuclk, octane2 ? 360000000 : 100000000);
+    clock_set_hz(cpuclk, octane2 ? 360000000 : 195000000);
     if (octane2) {
         DeviceState *dev = qdev_new(machine->cpu_type);
 
