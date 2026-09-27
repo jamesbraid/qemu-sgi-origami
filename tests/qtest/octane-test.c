@@ -128,6 +128,27 @@ static void test_widgets_and_memory(void)
     qtest_quit(qts);
 }
 
+static void test_physical_zero(void)
+{
+    QTestState *qts = octane_start();
+    uint64_t wide;
+    uint32_t word;
+    uint16_t half;
+    uint8_t byte;
+
+    g_assert_cmpuint(qtest_readq_tx(qts, 0, &wide), ==, MEMTX_OK);
+    g_assert_cmphex(wide, ==, 0);
+    g_assert_cmpuint(qtest_readb_tx(qts, 0, &byte), ==, MEMTX_ERROR);
+    g_assert_cmpuint(qtest_readw_tx(qts, 0, &half), ==, MEMTX_ERROR);
+    g_assert_cmpuint(qtest_readl_tx(qts, 0, &word), ==, MEMTX_ERROR);
+    g_assert_cmpuint(qtest_readq_tx(qts, 8, &wide), !=, MEMTX_OK);
+    g_assert_cmpuint(qtest_writeq_tx(qts, 0, 0), ==, MEMTX_ERROR);
+    qtest_system_reset(qts);
+    g_assert_cmpuint(qtest_readq_tx(qts, 0, &wide), ==, MEMTX_OK);
+    g_assert_cmphex(wide, ==, 0);
+    qtest_quit(qts);
+}
+
 static void test_flash_and_pci(void)
 {
     QTestState *qts = octane_start();
@@ -664,6 +685,7 @@ int main(int argc, char **argv)
     g_assert_cmpint(write(fd, bytes, sizeof(bytes)), ==, sizeof(bytes));
     close(fd);
     qtest_add_func("/octane/widgets-and-memory", test_widgets_and_memory);
+    qtest_add_func("/octane/physical-zero", test_physical_zero);
     qtest_add_func("/octane/flash-and-pci", test_flash_and_pci);
     qtest_add_func("/octane/firmware-rejections", test_firmware_rejections);
     qtest_add_func("/octane/pci-bar-separation", test_pci_bar_separation);

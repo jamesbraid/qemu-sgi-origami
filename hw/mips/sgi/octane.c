@@ -40,6 +40,38 @@
 #define OCTANE_PHYSICAL_SPAN (1ULL << 40)
 #define OCTANE_ATTR0_BASE (1ULL << 40)
 
+static MemTxResult octane_physical_zero_read(void *opaque, hwaddr addr,
+                                             uint64_t *value, unsigned size,
+                                             MemTxAttrs attrs)
+{
+    if (addr == 0 && size == 8) {
+        /* Synthetic zero for this profile; the physical response is unknown. */
+        *value = 0;
+        return MEMTX_OK;
+    }
+    qemu_log_mask(LOG_UNIMP, "octane: unsupported %u-byte read at "
+                  "physical 0x%" HWADDR_PRIx "\n", size, addr);
+    *value = 0;
+    return MEMTX_ERROR;
+}
+
+static MemTxResult octane_physical_zero_write(void *opaque, hwaddr addr,
+                                              uint64_t value, unsigned size,
+                                              MemTxAttrs attrs)
+{
+    qemu_log_mask(LOG_UNIMP, "octane: unsupported %u-byte write at "
+                  "physical 0x%" HWADDR_PRIx "\n", size, addr);
+    return MEMTX_ERROR;
+}
+
+static const MemoryRegionOps octane_physical_zero_ops = {
+    .read_with_attrs = octane_physical_zero_read,
+    .write_with_attrs = octane_physical_zero_write,
+    .endianness = DEVICE_BIG_ENDIAN,
+    .valid = { .min_access_size = 1, .max_access_size = 8 },
+    .impl = { .min_access_size = 1, .max_access_size = 8 },
+};
+
 static uint64_t octane_flash_read(void *opaque, hwaddr addr, unsigned size)
 {
     const uint8_t *image = opaque;
@@ -124,6 +156,7 @@ static void octane_init(MachineState *machine)
     SGIXbowState *crossbow = SGI_XBOW(xbow);
     MemoryRegion *system = get_system_memory();
     MemoryRegion *physical = g_new0(MemoryRegion, 1);
+    MemoryRegion *physical_zero = g_new0(MemoryRegion, 1);
     MemoryRegion *attr0 = g_new0(MemoryRegion, 1);
     MemoryRegion *firmware = g_new0(MemoryRegion, 1);
     MemoryRegion *proxy = g_new0(MemoryRegion, 1);
@@ -177,6 +210,10 @@ static void octane_init(MachineState *machine)
     memory_region_init(physical, OBJECT(machine), "octane.physical",
                        OCTANE_PHYSICAL_SPAN);
     memory_region_add_subregion(system, 0, physical);
+    memory_region_init_io(physical_zero, OBJECT(machine),
+                          &octane_physical_zero_ops, NULL,
+                          "octane.physical-zero", 8);
+    memory_region_add_subregion(physical, 0, physical_zero);
     memory_region_init_alias(attr0, OBJECT(machine), "octane.attr0",
                              physical, 0, OCTANE_PHYSICAL_SPAN);
     memory_region_add_subregion(system, OCTANE_ATTR0_BASE, attr0);
