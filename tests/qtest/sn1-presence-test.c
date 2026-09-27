@@ -52,7 +52,7 @@
 #include "libqtest.h"
 #include "sgi-test.h"
 
-#define BEDROCK_LOCAL (SPACE_XTALK + UINT64_C(0x01000000))
+#define BEDROCK_LOCAL (SPACE_IO + UINT64_C(0x01000000))
 #define II_SCRATCH_0 UINT64_C(0x400150)
 #define LB_SCRATCH_1 UINT64_C(0x608008)
 #define LB_SCRATCH_3 UINT64_C(0x608018)

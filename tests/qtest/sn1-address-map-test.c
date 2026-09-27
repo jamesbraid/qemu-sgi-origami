@@ -21,8 +21,8 @@
 #define SPACE_MEMORY_SPECIAL UINT64_C(0x30000000000)
 #define HUB_LOCAL_REGISTERS (SPACE_HUB + UINT64_C(0x10000000))
 
-#define BEDROCK_LOCAL (SPACE_XTALK + UINT64_C(0x01000000))
-#define BEDROCK_NODE0 (SPACE_XTALK + UINT64_C(0x01800000))
+#define BEDROCK_LOCAL (SPACE_IO + UINT64_C(0x01000000))
+#define BEDROCK_NODE0 (SPACE_IO + UINT64_C(0x01800000))
 #define BEDROCK_PI1 UINT64_C(0x200000)
 #define BEDROCK_IO UINT64_C(0x400000)
 #define BEDROCK_LB UINT64_C(0x600000)
@@ -51,8 +51,8 @@
 #define NI_PORT_STATUS UINT64_C(0x0)
 
 #define ITTE_WIDGET(w) ((uint64_t)(w) << 8)
-#define XTALK_WIDGET(w) (SPACE_XTALK + (uint64_t)(w) * UINT64_C(0x1000000))
-#define BIG_WINDOW(n) (SPACE_XTALK + UINT64_C(0x20000000) + \
+#define XTALK_WIDGET(w) (SPACE_IO + (uint64_t)(w) * UINT64_C(0x1000000))
+#define BIG_WINDOW(n) (SPACE_IO + UINT64_C(0x20000000) + \
                        (uint64_t)(n) * UINT64_C(0x20000000))
 
 #define HUB_LOCAL_REGISTERS (SPACE_HUB + UINT64_C(0x10000000))
@@ -1027,7 +1027,7 @@ static void test_crosstalk_big_window_routes(const void *data)
 
     /* The unimplemented PIO catch-all does not retain writes. */
     check_access_has_no_storage(qts,
-                                SPACE_XTALK + UINT64_C(0x10000000));
+                                SPACE_IO + UINT64_C(0x10000000));
 
     qtest_quit(qts);
 }

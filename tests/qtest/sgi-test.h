@@ -16,13 +16,16 @@
 #ifndef SGI_TEST_H
 #define SGI_TEST_H
 
-/* Crosstalk, and what sits at the far end of it. */
-#define SPACE_XTALK             UINT64_C(0x20000000000)
+/*
+ * The processor-physical I/O space (007-3410's "I/O space"), whose small
+ * and big windows reach the XIO widgets.
+ */
+#define SPACE_IO                UINT64_C(0x20000000000)
 #define DEV_MEMORY_SPACE        (1u << 12)
 
 /* The Hub and the stride between nodes. */
 #define SPACE_HUB               UINT64_C(0x10000000000)
-#define HUB_LOCAL               (SPACE_XTALK + 0x01000000)
+#define HUB_LOCAL               (SPACE_IO + 0x01000000)
 #define NODE_STRIDE             UINT64_C(0x100000000)
 #define PI_INT_PEND0            0x98
 

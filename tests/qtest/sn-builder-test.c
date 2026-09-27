@@ -499,15 +499,15 @@ static void test_explicit_fabric_must_match_its_slot(const void *data)
 /*
  * The Hub's own real crosstalk decode, confirmed against a real widget by
  * sn0-origin2000-xtalk-owner-test.c's assert_owner(): a physical read at
- * SPACE_XTALK plus a widget's small-window stride plus a register's own
+ * SPACE_IO plus a widget's small-window stride plus a register's own
  * offset reaches that widget's real chip registers through the real
  * Crossbow. Reused here read-only, on the machine's own onboard BaseIO
  * (crosstalk widget 8, the io6 preset's own xio_widgets), to observe whatever
  * the board fitted at IO4 below actually delivers to it.
  */
 #define SMALL_WINDOW_SIZE       UINT64_C(0x1000000)
-#define SMALL_WINDOW(widget)    (SPACE_XTALK + \
-                                (uint64_t)(widget) * SMALL_WINDOW_SIZE)
+#define SMALL_WINDOW(widget)    (SPACE_IO + \
+                                 (uint64_t)(widget) * SMALL_WINDOW_SIZE)
 #define REG_DATA                4
 #define BASEIO_WIDGET           8
 

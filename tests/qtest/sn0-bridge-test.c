@@ -16,7 +16,7 @@
 
 /* Crosstalk space, and the bridge's own widget window inside it. */
 #define BRIDGE_WIDGET   8
-#define BRIDGE_BASE     (SPACE_XTALK + ((uint64_t)BRIDGE_WIDGET << 24))
+#define BRIDGE_BASE     (SPACE_IO + ((uint64_t)BRIDGE_WIDGET << 24))
 
 /*
  * Origin 200's onboard Bridge, a fitted part of its node's own System
@@ -1837,7 +1837,7 @@ static void test_dma_device_window_64bit_doubleword(const void *data)
  * Delivery: a pin edge becomes a crosstalk write to the Hub's
  * interrupt-modify register, read back through the Hub's local window.
  */
-#define HUB_LOCAL_WINDOW        (SPACE_XTALK + 0x01000000)
+#define HUB_LOCAL_WINDOW        (SPACE_IO + 0x01000000)
 #define PI_INT_PEND_MOD         0x90
 #define INT_TEST_HOST_NODE      0
 #define INT_TEST_HOST_NUMBER    42
@@ -2149,7 +2149,7 @@ static uint8_t nic_crc8(uint8_t crc, uint64_t rom)
 #define HUB_NI_REGION_SIZE      (1ULL << 17)
 #define HUB_NI_NODE_MASK        (0x1ffULL << 8)
 #define HUB_NI_PIOTYPE_WRITE    1
-#define HUB_NODE_WINDOW         (SPACE_XTALK + 0x01800000)
+#define HUB_NODE_WINDOW         (SPACE_IO + 0x01800000)
 
 /*
  * A stock-PROM machine boots with every Hub programmed zero, so a

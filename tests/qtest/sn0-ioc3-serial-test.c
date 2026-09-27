@@ -21,14 +21,14 @@
 /* Crosstalk space, and the chip's window inside the console widget. */
 #define CONSOLE_WIDGET  8
 #define BRIDGE_DEVICE2  0x600000
-#define IOC3_BASE       (SPACE_XTALK + ((uint64_t)CONSOLE_WIDGET << 24) + \
+#define IOC3_BASE       (SPACE_IO + ((uint64_t)CONSOLE_WIDGET << 24) + \
                          BRIDGE_DEVICE2)
 
 /*
  * A guest's bus scan: assign the controller a PCI address and aim the
  * bridge's device window at it. The crosstalk-side offset stays fixed.
  */
-#define BRIDGE_BASE     (SPACE_XTALK + ((uint64_t)CONSOLE_WIDGET << 24))
+#define BRIDGE_BASE     (SPACE_IO + ((uint64_t)CONSOLE_WIDGET << 24))
 #define REG_DATA        4         /* registers sit at a slot's upper half */
 #define BRIDGE_CFG0     0x020000
 #define CFG0_DEVICE_STRIDE 0x1000
@@ -42,7 +42,7 @@
 /*
  * A crosstalk address one node stride up reaches the same register on
  * another node's controller: each node maps its own copy of the console
- * widget at SN0_SPACE_XTALK + (nasid << 32), the offset the dual-node model
+ * widget at SPACE_IO + (nasid << 32), the offset the dual-node model
  * uses. node_base is 0 for the console node.
  */
 #define SN0_NODE_STRIDE  0x100000000ULL

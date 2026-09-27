@@ -45,7 +45,7 @@ typedef struct {
     const char *board_path;
 } MenetCase;
 
-#define WIDGET_BASE(c)      (SPACE_XTALK + ((uint64_t)(c)->widget << 24))
+#define WIDGET_BASE(c)      (SPACE_IO + ((uint64_t)(c)->widget << 24))
 #define REG_DATA            4
 #define CFG(c, d)           (WIDGET_BASE(c) + 0x020000 + (d) * 0x1000)
 #define BRIDGE_DEVICE(c, d) (WIDGET_BASE(c) + 0x200 + 8 * (d) + REG_DATA)
@@ -332,8 +332,8 @@ static void test_io6_refuses_mediaio_ports(const void *data)
  * (docs/datasheets/xbow.md, link auxiliary status bit 5 and link status
  * bit 31, Crossbow 0's own registers at widget 0).
  */
-#define XBOW_LINK_STATUS(w) (SPACE_XTALK + 0x110 + ((w) - 8) * 0x40 + 4)
-#define XBOW_LINK_AUX(w)    (SPACE_XTALK + 0x138 + ((w) - 8) * 0x40 + 4)
+#define XBOW_LINK_STATUS(w) (SPACE_IO + 0x110 + ((w) - 8) * 0x40 + 4)
+#define XBOW_LINK_AUX(w)    (SPACE_IO + 0x138 + ((w) - 8) * 0x40 + 4)
 #define XBOW_LINK_ALIVE     (1u << 31)
 #define XBOW_AUX_PRESENT    (1u << 5)
 

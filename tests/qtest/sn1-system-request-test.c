@@ -18,7 +18,7 @@
 #include "libqtest.h"
 #include "sgi-test.h"
 
-#define SN1_MD_MEMORY_CONFIG (SPACE_XTALK + UINT64_C(0x01800000) + 0x780008)
+#define SN1_MD_MEMORY_CONFIG (SPACE_IO + UINT64_C(0x01800000) + 0x780008)
 /* Software bank zero on the installed memory, as the stock PROM leaves it. */
 #define SN1_MD_INSTALLED_SELECT2 ((UINT64_C(2) << 32) | UINT64_C(0x3300))
 

@@ -63,7 +63,7 @@ static const ReplayHead replay_heads[] = {
         .codename = "sgi-mgras",
         .machine = "-M origin2000,topology=origin2000-deskside,nodes=1 "
                    "-smp 2 -m 256M -device sgi-mgras,slot=io3",
-        .mmio_base = SPACE_XTALK + (0xfULL << 24),
+        .mmio_base = SPACE_IO + (0xfULL << 24),
         .mmio_size = 2 * MiB,
         .qom_path = "/machine/module0/io3",
         .width = 1280,

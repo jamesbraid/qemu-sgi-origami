@@ -14,7 +14,7 @@
 #include "sgi-test.h"
 
 #define BRIDGE_WIDGET   8
-#define BRIDGE_BASE     (SPACE_XTALK + ((uint64_t)BRIDGE_WIDGET << 24))
+#define BRIDGE_BASE     (SPACE_IO + ((uint64_t)BRIDGE_WIDGET << 24))
 
 /* Registers are 32 bits in the low half of an eight-byte slot; the data is at
  * the slot offset plus four. */
@@ -57,7 +57,7 @@
  * and the two handles name different boards.
  */
 #define HUB_BY_POSITION     HUB_LOCAL
-#define HUB_BY_NUMBER(n)    (SPACE_XTALK + 0x01800000 + (n) * NODE_STRIDE)
+#define HUB_BY_NUMBER(n)    (SPACE_IO + 0x01800000 + (n) * NODE_STRIDE)
 #define BRIDGE_BY_NUMBER(n) (BRIDGE_BASE + (n) * NODE_STRIDE)
 #define REG_BY_NUMBER(n, offset) \
     (BRIDGE_BY_NUMBER(n) + (offset) + REG_DATA)
@@ -194,7 +194,7 @@ static void test_invalid_address_raises_host_interrupt(const void *data)
      * packet goes.
      */
     qtest_writel(qts, REG(BRIDGE_INT_DEST_LO),
-                 (uint32_t)(HUB_LOCAL - SPACE_XTALK) + PI_INT_MODIFY);
+                 (uint32_t)(HUB_LOCAL - SPACE_IO) + PI_INT_MODIFY);
     qtest_writel(qts, REG(BRIDGE_INT_DEST_UP), 0);
     qtest_writel(qts, REG(BRIDGE_HOST_ERR), ERR_HOST_BIT);
     qtest_writel(qts, REG(BRIDGE_INT_ENABLE), INT_INVALID_ADDR);
@@ -251,7 +251,7 @@ static void route_second_chassis_host_error(QTestState *qts,
                                             unsigned int number)
 {
     qtest_writel(qts, REG_BY_NUMBER(0, BRIDGE_INT_DEST_LO),
-                 (uint32_t)(HUB_LOCAL - SPACE_XTALK) + PI_INT_MODIFY);
+                 (uint32_t)(HUB_LOCAL - SPACE_IO) + PI_INT_MODIFY);
     qtest_writel(qts, REG_BY_NUMBER(0, BRIDGE_INT_DEST_UP),
                  number << (38 - 32));
     qtest_writel(qts, REG_BY_NUMBER(0, BRIDGE_HOST_ERR), ERR_HOST_BIT);

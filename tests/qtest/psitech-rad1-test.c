@@ -28,7 +28,7 @@
 
 /* Crosstalk space and the Bridge's widget window inside it. */
 #define BRIDGE_WIDGET   8
-#define BRIDGE_BASE     (SPACE_XTALK + ((uint64_t)BRIDGE_WIDGET << 24))
+#define BRIDGE_BASE     (SPACE_IO + ((uint64_t)BRIDGE_WIDGET << 24))
 
 /*
  * Devices 0 and 1 are BaseIO's SCSI adapters and 2 is IOC3; 3 is the first

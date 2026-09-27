@@ -25,7 +25,7 @@
 
 /* Crosstalk space and the Bridge's widget window inside it. */
 #define BRIDGE_WIDGET   8
-#define BRIDGE_BASE     (SPACE_XTALK + ((uint64_t)BRIDGE_WIDGET << 24))
+#define BRIDGE_BASE     (SPACE_IO + ((uint64_t)BRIDGE_WIDGET << 24))
 
 /* A fixed station address, so the frame filters have a known target. */
 #define TIGON_MAC       "52:54:00:12:34:56"

@@ -8,7 +8,7 @@
 #include "libqtest.h"
 #include "sgi-test.h"
 
-#define BEDROCK_LOCAL (SPACE_XTALK + UINT64_C(0x01000000))
+#define BEDROCK_LOCAL (SPACE_IO + UINT64_C(0x01000000))
 #define BEDROCK_PI1 UINT64_C(0x200000)
 #define PI_CPU_ENABLE_A UINT64_C(0x50)
 #define PI_RT_COMPARE_A UINT64_C(0x108)
