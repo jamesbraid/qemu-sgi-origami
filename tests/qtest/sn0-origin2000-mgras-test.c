@@ -3147,7 +3147,8 @@ static void test_direct_byte_row(void)
  * The eight-pixel transfer's source pitch is the width plus 0x159 bits
  * 16:14, not the width rounded up to 32 bits. The IRIX 6.5.30 greeter
  * restores the 6-pixel-wide area under its text cursor from a buffer of
- * pitch 12 with 0x159 == 0x18000 (field 6): row 1 starts 4 bytes into the
+ * pitch 12 (the pitch of the DMA read that saved it) with 0x159 ==
+ * 0x18000 (field 6): row 1 starts 4 bytes into the
  * second unit and needs two units, row 2 starts a fresh unit. A 32-bit
  * pitch of 8 would start every row at a unit boundary and paint row 1
  * from the padding bytes 0x08-0x0b.
