@@ -88,22 +88,23 @@ test_mips64_timeouts = {
   # and every wait inside a row (boots, shell steps, diagnostics, reboot,
   # stop) is cut to what is left of that budget, so a slow run marks its
   # remaining checks not run and still writes <row>-summary.json before
-  # meson's timeout: 1500 + 120 = 1620 for origin200, 2280 + 120 = 2400
-  # for the one-node and carrier rows, and 2880 + 120 = 3000 for the
-  # two-chassis, shoehorn and origin300 rows. The slowest whole runs
-  # measured on 2026-09-26, with matrix code not yet committed, were 896s
-  # (origin200), 1755s (two-chassis), 2382s (one-node), 3032s (shoehorn,
-  # before its reboot and relaunch were dropped), 1934s (carrier) and
-  # 2608s (origin300, including a 300s wait on its stalled reboot, #875,
-  # now 180s). The one-node maximum came from a build carrying
-  # jamesb/qemu#866's missed Compare matches, which slowed oldisk up to
-  # ninefold; a row over its budget while #866 stands is cut short, with
-  # its summary.
+  # meson's timeout: 1500 + 120 = 1620 for origin200 and 2880 + 120 = 3000
+  # for the other five rows. The slowest whole runs measured, with matrix
+  # code not yet committed (2026-09-26), were 896s (origin200), 1755s
+  # (two-chassis), 2382s (one-node), 3032s (shoehorn, before its reboot
+  # and relaunch were dropped), 1934s (carrier) and 2608s (origin300,
+  # including a 300s wait on its stalled reboot, #875, now 180s); the
+  # one-node maximum came from a build carrying jamesb/qemu#866's missed
+  # Compare matches, which slowed oldisk up to ninefold. With the committed
+  # code on trunk 75f534457b (2026-09-27) the rows took 1071s, 1659s,
+  # 2085s, 2060s, 2124s and 1835s of their budgets, in that order; the
+  # one-node's and carrier's 2085s and 2124s were within 200s of the
+  # 2280s they had, so they now have 2880s like the others.
   'irix_diag' : 3000,
   'irix_diag_origin200' : 1620,
-  'irix_diag_origin2000_one_node' : 2400,
+  'irix_diag_origin2000_one_node' : 3000,
   'irix_diag_origin2000_pci_shoehorn' : 3000,
-  'irix_diag_origin2000_pci_carrier' : 2400,
+  'irix_diag_origin2000_pci_carrier' : 3000,
   'irix_diag_origin300' : 3000,
   # Boot the plain installed IRIX disk (265s to root login when last
   # measured; root.qcow2 is the base root-diags.qcow2 is built from) and
