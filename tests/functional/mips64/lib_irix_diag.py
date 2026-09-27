@@ -211,6 +211,12 @@ class NoConsole(CheckFailed):
     """The machine the remaining checks need never reached a shell."""
 
 
+# Checks that only read what the consoles already hold, so they still run
+# after a stop: the lost-tick count then covers every boot the row got
+# through, which is when a missed Compare match matters most.
+OBSERVERS = ('timer',)
+
+
 def run_checks(row, run_one, resync, now=time.monotonic):
     """Run each of row's checks in CHECKS order with run_one(check) and
     return {check: (status, detail, seconds)}.
@@ -219,14 +225,14 @@ def run_checks(row, run_one, resync, now=time.monotonic):
     Every check runs even after another fails, except after a guest
     fault, a spent budget, a machine with no shell, or a timed-out
     command after which resync(check) reports the shell still busy: the
-    checks after those are not run, and say why."""
+    checks after those are not run, and say why, except OBSERVERS."""
     results = {}
     stop = None
     for check in CHECKS:
         if not row.runs(check):
             results[check] = ('n/a', row.reason(check), 0)
             continue
-        if stop is not None:
+        if stop is not None and check not in OBSERVERS:
             results[check] = ('not run', stop, 0)
             continue
         began = now()
