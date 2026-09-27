@@ -161,6 +161,24 @@ static void r10k_scache_invalidate(CPUMIPSState *env, unsigned int set,
 }
 
 /*
+ * Tell the board about a request the processor puts on its system
+ * interface with no memory access behind it, and return whether the board
+ * follows a block the request found. A board that wants none leaves the
+ * hook unset.
+ */
+static bool r10k_system_request(CPUMIPSState *env, R10KSystemRequest request,
+                                hwaddr paddr, uint64_t index_mask)
+{
+    R10KState *r10k = env->r10k;
+
+    if (!r10k->system_request) {
+        return false;
+    }
+    return r10k->system_request(r10k->system_request_opaque, env_cpu(env),
+                                request, paddr, index_mask);
+}
+
+/*
  * The R10000 family's CACHE instruction, dispatched from helper_cache()
  * before the generic model: every defined operation works the diagnostic
  * arrays, and undefined combinations stay inert. @ra is the helper's own
@@ -349,6 +367,14 @@ void r10k_cache_op(CPUMIPSState *env, target_ulong addr, uint32_t op,
         unsigned int set = (paddr / R10K_SCACHE_LINE_SIZE) &
                            (r10k_scache_sets(env) - 1);
 
+        /*
+         * A block the board follows is written back if dirty, and a
+         * block write or nothing goes out on the interface either way
+         * (the processor block write and eliminate protocols).
+         */
+        r10k_system_request(env, R10K_REQUEST_INDEX_WRITEBACK_INVALIDATE,
+                            paddr, (uint64_t)(r10k_scache_sets(env) - 1) *
+                                   R10K_SCACHE_LINE_SIZE);
         if (env->r10k->scache_taglo[set * R10K_SCACHE_WAYS + way] &
             (3 << 10)) {
             r10k_scache_invalidate(env, set, way, paddr, addr);
@@ -368,7 +394,10 @@ void r10k_cache_op(CPUMIPSState *env, target_ulong addr, uint32_t op,
         unsigned int set = (paddr / R10K_SCACHE_LINE_SIZE) &
                            (r10k_scache_sets(env) - 1);
         unsigned int w;
-        bool hit = false;
+        bool hit = r10k_system_request(env, cache_operation == 0b101 ?
+                                       R10K_REQUEST_HIT_WRITEBACK_INVALIDATE :
+                                       R10K_REQUEST_HIT_INVALIDATE,
+                                       paddr, 0);
 
         for (w = 0; w < R10K_SCACHE_WAYS; w++) {
             unsigned int tag = set * R10K_SCACHE_WAYS + w;

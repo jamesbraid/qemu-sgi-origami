@@ -264,14 +264,15 @@ static void mips_cpu_reset_hold(Object *obj, ResetType type)
 
     /*
      * The R10000-family state sits behind a pointer the top-level memset does
-     * not reach, so clear it here, then copy the writable-bit masks the family
-     * defines from the CPU model. Every other processor uses the shared inline
-     * masks at the dispatch points instead and has no env->r10k at all.
+     * not reach, so clear it here, all but the board's hook, then copy the
+     * writable-bit masks the family defines from the CPU model. Every other
+     * processor uses the shared inline masks at the dispatch points instead
+     * and has no env->r10k at all.
      */
     if (env->r10k) {
         R10KState *r10k = env->r10k;
 
-        memset(r10k, 0, sizeof(*r10k));
+        memset(r10k, 0, offsetof(R10KState, system_request));
         r10k->CP0_TagLo_rw_bitmask = env->cpu_model->CP0_TagLo_rw_bitmask;
         r10k->CP0_ECC_rw_bitmask = env->cpu_model->CP0_ECC_rw_bitmask;
         r10k->CP0_Config0_preserve_bitmask =

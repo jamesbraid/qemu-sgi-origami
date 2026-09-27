@@ -77,6 +77,29 @@
 #define R10K_BPT_ENTRIES  512
 #define R10K_BPT_LINE     8
 
+/*
+ * What the processor puts on its system interface that the board sees no
+ * memory access for: a secondary-cache instruction that may write a block
+ * back or drop it, and a prefetch (R10000 User's Manual version 2.0, the
+ * processor block read, block write and eliminate protocols).
+ */
+typedef enum R10KSystemRequest {
+    R10K_REQUEST_INDEX_WRITEBACK_INVALIDATE,
+    R10K_REQUEST_HIT_WRITEBACK_INVALIDATE,
+    R10K_REQUEST_HIT_INVALIDATE,
+    R10K_REQUEST_PREFETCH_LOAD,
+    R10K_REQUEST_PREFETCH_STORE,
+} R10KSystemRequest;
+
+/*
+ * Returns whether the request found a block the board follows for this
+ * processor. An index request names a set, not a block: @index_mask is the
+ * physical address bits that select the secondary-cache set.
+ */
+typedef bool (*R10KSystemRequestFn)(void *opaque, CPUState *cs,
+                                    R10KSystemRequest request,
+                                    uint64_t paddr, uint64_t index_mask);
+
 typedef struct R10KState {
     /*
      * Writable-bit masks, copied from the CPU definition at reset. Not
@@ -166,6 +189,13 @@ typedef struct R10KState {
     uint8_t dcache_lru[R10K_DCACHE_SETS];
     uint32_t dcache_data[R10K_PCACHE_WORDS];
     uint8_t dcache_parity[R10K_PCACHE_WORDS];
+
+    /*
+     * Set by the board and kept across reset, so they stay last: reset
+     * clears the state above them only. Not migrated.
+     */
+    R10KSystemRequestFn system_request;
+    void *system_request_opaque;
 } R10KState;
 
 #endif /* MIPS_R10K_H */
