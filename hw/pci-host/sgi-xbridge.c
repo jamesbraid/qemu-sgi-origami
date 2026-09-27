@@ -9,7 +9,7 @@
 #include "hw/pci-host/sgi-xbridge.h"
 #include "hw/pci-host/sgi-bridge.h"
 #include "hw/misc/sgi-xbridge-xbow.h"
-#include "hw/mips/sgi-xtalk-port.h"
+#include "hw/mips/sgi-xio-port.h"
 #include "hw/core/hotplug.h"
 #include "hw/core/qdev-properties.h"
 #include "migration/vmstate.h"
@@ -1370,7 +1370,7 @@ static const VMStateDescription vmstate_chip = {
  * a widget whose registers nothing packet-addresses separately.
  */
 
-static const char *chip_xtalk_port_describe(Object *port, unsigned int index)
+static const char *chip_xio_port_describe(Object *port, unsigned int index)
 {
     SGIXBridgeState *s = SGI_XBRIDGE(port);
 
@@ -1385,8 +1385,8 @@ static const char *chip_xtalk_port_describe(Object *port, unsigned int index)
     }
 }
 
-static MemoryRegion *chip_xtalk_port_cpu_face(Object *port,
-                                              unsigned int index)
+static MemoryRegion *chip_xio_port_cpu_face(Object *port,
+                                            unsigned int index)
 {
     return chip_widget_view(SGI_XBRIDGE(port), index);
 }
@@ -1394,7 +1394,7 @@ static MemoryRegion *chip_xtalk_port_cpu_face(Object *port,
 static void chip_class_init(ObjectClass *oc, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
-    SGIXtalkPortClass *pc = SGI_XTALK_PORT_CLASS(oc);
+    SGIXioPortClass *pc = SGI_XIO_PORT_CLASS(oc);
 
     dc->desc = "SGI XBridge crosstalk-PCI bridge";
     dc->user_creatable = true;
@@ -1402,9 +1402,9 @@ static void chip_class_init(ObjectClass *oc, const void *data)
     dc->unrealize = chip_unrealize;
     dc->vmsd = &vmstate_chip;
     device_class_set_props(dc, chip_properties);
-    pc->describe = chip_xtalk_port_describe;
-    pc->cpu_face = chip_xtalk_port_cpu_face;
-    pc->packet_face = chip_xtalk_port_cpu_face;
+    pc->describe = chip_xio_port_describe;
+    pc->cpu_face = chip_xio_port_cpu_face;
+    pc->packet_face = chip_xio_port_cpu_face;
 }
 
 static void chip_init(Object *obj)
@@ -1462,7 +1462,7 @@ static const TypeInfo chip_type = {
     .class_init = chip_class_init,
     .instance_init = chip_init,
     .interfaces = (const InterfaceInfo[]) {
-        { TYPE_SGI_XTALK_PORT },
+        { TYPE_SGI_XIO_PORT },
         { }
     },
 };

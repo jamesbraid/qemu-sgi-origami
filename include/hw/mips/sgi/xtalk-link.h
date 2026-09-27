@@ -3,7 +3,7 @@
  * The two SN0 crosstalk link kinds: a Hub cabled straight to one widget
  * (Origin 200), and a Hub or a widget joined to a Crossbow port (Origin
  * 2000). Each owns exactly the behaviour its kind needs, reading its
- * endpoints through the crosstalk port interface (sgi-xtalk-port.h) both link
+ * endpoints through the crosstalk port interface (sgi-xio-port.h) both link
  * kinds share.
  *
  * Storage is caller-owned, matching this tree's convention for machine-built

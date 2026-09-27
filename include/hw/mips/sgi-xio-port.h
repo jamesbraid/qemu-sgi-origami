@@ -25,17 +25,17 @@
  * implementer among the three this experiment builds.
  */
 
-#ifndef HW_MIPS_SGI_XTALK_PORT_H
-#define HW_MIPS_SGI_XTALK_PORT_H
+#ifndef HW_MIPS_SGI_XIO_PORT_H
+#define HW_MIPS_SGI_XIO_PORT_H
 
 #include "qom/object.h"
 #include "system/memory.h"
 
-#define TYPE_SGI_XTALK_PORT "sgi-xtalk-port"
-typedef struct SGIXtalkPortClass SGIXtalkPortClass;
-DECLARE_CLASS_CHECKERS(SGIXtalkPortClass, SGI_XTALK_PORT, TYPE_SGI_XTALK_PORT)
+#define TYPE_SGI_XIO_PORT "sgi-xio-port"
+typedef struct SGIXioPortClass SGIXioPortClass;
+DECLARE_CLASS_CHECKERS(SGIXioPortClass, SGI_XIO_PORT, TYPE_SGI_XIO_PORT)
 
-struct SGIXtalkPortClass {
+struct SGIXioPortClass {
     InterfaceClass parent_class;
 
     /*
@@ -54,8 +54,8 @@ struct SGIXtalkPortClass {
     MemoryRegion *(*packet_face)(Object *port, unsigned int index);
 };
 
-const char *sgi_xtalk_port_describe(Object *port, unsigned int index);
-MemoryRegion *sgi_xtalk_port_cpu_face(Object *port, unsigned int index);
-MemoryRegion *sgi_xtalk_port_packet_face(Object *port, unsigned int index);
+const char *sgi_xio_port_describe(Object *port, unsigned int index);
+MemoryRegion *sgi_xio_port_cpu_face(Object *port, unsigned int index);
+MemoryRegion *sgi_xio_port_packet_face(Object *port, unsigned int index);
 
-#endif /* HW_MIPS_SGI_XTALK_PORT_H */
+#endif /* HW_MIPS_SGI_XIO_PORT_H */

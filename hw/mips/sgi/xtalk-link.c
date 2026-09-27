@@ -6,7 +6,7 @@
 
 #include "qemu/osdep.h"
 #include "hw/mips/sgi/xtalk-link.h"
-#include "hw/mips/sgi-xtalk-port.h"
+#include "hw/mips/sgi-xio-port.h"
 #include "hw/core/sysbus.h"
 #include "hw/misc/sgi-hub.h"
 #include "hw/pci-host/sgi-bridge.h"
@@ -115,8 +115,8 @@ bool sgi_xtalk_direct_link_connect(SGIXtalkDirectLink *link, Object *owner,
                                     unsigned int probe_widget,
                                     uint64_t probe_offset, Error **errp)
 {
-    MemoryRegion *hub_face = sgi_xtalk_port_cpu_face(OBJECT(&node->hub), 0);
-    MemoryRegion *widget_face = sgi_xtalk_port_cpu_face(widget_port, 0);
+    MemoryRegion *hub_face = sgi_xio_port_cpu_face(OBJECT(&node->hub), 0);
+    MemoryRegion *widget_face = sgi_xio_port_cpu_face(widget_port, 0);
     uint64_t widget_size;
     unsigned int seen = 0;
     unsigned int w;
@@ -539,8 +539,8 @@ bool sgi_xtalk_crossbow_link_attach_widget(SGIXtalkCrossbowLink *link,
                                            SGIXbowState *xbow,
                                            unsigned int widget, Error **errp)
 {
-    MemoryRegion *cpu_face = sgi_xtalk_port_cpu_face(widget_port, 0);
-    MemoryRegion *packet_face = sgi_xtalk_port_packet_face(widget_port, 0);
+    MemoryRegion *cpu_face = sgi_xio_port_cpu_face(widget_port, 0);
+    MemoryRegion *packet_face = sgi_xio_port_packet_face(widget_port, 0);
 
     link->is_hub = false;
     if (!cpu_face || !packet_face) {
@@ -556,7 +556,7 @@ bool sgi_xtalk_crossbow_link_finish(SGIXtalkCrossbowLink *link, Object *owner,
                                     const char *name, SGIXbowState *xbow,
                                     unsigned int widget, Error **errp)
 {
-    MemoryRegion *packet = sgi_xtalk_port_packet_face(OBJECT(xbow), widget);
+    MemoryRegion *packet = sgi_xio_port_packet_face(OBJECT(xbow), widget);
     g_autofree char *packet_name = g_strdup_printf("%s-packet-ingress", name);
 
     if (!packet) {
@@ -570,7 +570,7 @@ bool sgi_xtalk_crossbow_link_finish(SGIXtalkCrossbowLink *link, Object *owner,
     memory_region_set_enabled(&link->proxy, true);
 
     if (link->is_hub) {
-        MemoryRegion *cpu = sgi_xtalk_port_cpu_face(OBJECT(xbow), widget);
+        MemoryRegion *cpu = sgi_xio_port_cpu_face(OBJECT(xbow), widget);
         g_autofree char *cpu_name = g_strdup_printf("%s-cpu-ingress", name);
 
         if (!cpu) {
@@ -590,7 +590,7 @@ bool sgi_xtalk_crossbow_link_finish(SGIXtalkCrossbowLink *link, Object *owner,
 bool sgi_xtalk_xbridge_link_connect(Object *bedrock_port, DeviceState *xbridge,
                                     Error **errp)
 {
-    MemoryRegion *packet_face = sgi_xtalk_port_packet_face(bedrock_port, 0);
+    MemoryRegion *packet_face = sgi_xio_port_packet_face(bedrock_port, 0);
 
     if (!packet_face) {
         error_setg(errp, "an XBridge link's Bedrock port must already "
