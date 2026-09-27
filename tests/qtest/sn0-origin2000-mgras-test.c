@@ -229,6 +229,14 @@ static QTestState *qts;
 /* x-test-format values; see SGI_MGRAS_PIXEL_FORMAT_* in sgi-mgras.h. */
 #define MGRAS_PIXEL_FORMAT_CI8     0
 #define MGRAS_PIXEL_FORMAT_RGB     1
+#define MGRAS_PIXEL_FORMAT_RGB12   2
+
+/*
+ * The IRIX 6.5.30 server's PP1FILLMODE for a 12-bit RGB window: 0x4004 for
+ * its drawing and 0xc804 for the clear that opens it.
+ */
+#define MGRAS_PP1FILLMODE_RGB12        0x4004
+#define MGRAS_PP1FILLMODE_RGB12_CLEAR  0xc804
 
 
 #define MGRAS_STATE_TOKEN(reg, payload_bytes) \
@@ -3978,6 +3986,176 @@ static void test_pixel_format_tag_resolves_independently(void)
     g_assert_cmphex(mgras_test_display_pixel(qts, 10, 10), ==, 0x00998877);
 }
 
+static void mgras_write_fill_color(QTestState *qts, uint32_t r, uint32_t g,
+                                   uint32_t b)
+{
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, MGRAS_COMMAND(REG_FILLCOLOR_R, r));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, MGRAS_COMMAND(REG_FILLCOLOR_G, g));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, MGRAS_COMMAND(REG_FILLCOLOR_B, b));
+}
+
+/*
+ * A 12-bit RGB window's fill keeps the top four bits of each channel in
+ * the pixel's low 12 bits, red lowest as the server's 12-bit TrueColor
+ * visual masks say, and scanout widens each back to eight bits by
+ * repeating it. The values are the IRIX 6.5.30 Icon
+ * Catalog's: its pane is cleared under 0xc804 with every plane open,
+ * then redrawn under 0x4004 with COLORMASKLSBSA 0xfff, and FILLCOLOR
+ * 0x500/0x800/0xa00 is the pane's blue.
+ */
+static void test_rgb12_fill_packs_four_bit_channels(void)
+{
+    mgras_reset();
+
+    mgras_enter_context(qts);
+    qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x1e, 0x4));
+
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_FILLMODE, MGRAS_FILLMODE_RECT_FILL_VALUE));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_PP1FILLMODE,
+                               (MGRAS_LOGIC_OP_COPY << 26) |
+                               MGRAS_PP1FILLMODE_RGB12_CLEAR));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_COLORMASKLSBSA, 0x00ffffff));
+    mgras_write_fill_color(qts, 0x500, 0x800, 0xa00);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_BLOCK_START, (10u << 16) | 10u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND_EXEC(REG_BLOCK_END, (13u << 16) | 13u));
+    g_assert_cmphex(mgras_test_pixel(qts, 10, 10), ==, 0xa85);
+    g_assert_cmphex(mgras_test_format(qts, 10, 10), ==,
+                    MGRAS_PIXEL_FORMAT_RGB12);
+    g_assert_cmphex(mgras_test_display_pixel(qts, 10, 10), ==, 0x005588aa);
+
+    /* Drawing under 0x4004 through the 12-bit mask: a grey, then white. */
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_PP1FILLMODE,
+                               (MGRAS_LOGIC_OP_COPY << 26) |
+                               MGRAS_PP1FILLMODE_RGB12));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_COLORMASKLSBSA, 0xfff));
+    mgras_write_fill_color(qts, 0x5ff, 0x500, 0x50f);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_BLOCK_START, (11u << 16) | 11u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND_EXEC(REG_BLOCK_END, (11u << 16) | 11u));
+    g_assert_cmphex(mgras_test_pixel(qts, 11, 11), ==, 0x555);
+    g_assert_cmphex(mgras_test_display_pixel(qts, 11, 11), ==, 0x00555555);
+    mgras_write_fill_color(qts, 0xf00, 0xf00, 0xf00);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_BLOCK_START, (12u << 16) | 12u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND_EXEC(REG_BLOCK_END, (12u << 16) | 12u));
+    g_assert_cmphex(mgras_test_display_pixel(qts, 12, 12), ==, 0x00ffffff);
+    g_assert_cmphex(mgras_test_display_pixel(qts, 13, 13), ==, 0x005588aa);
+
+    /* The desktop's CI8 encoding, 0x4504, still paints an index. */
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_PP1FILLMODE,
+                               (MGRAS_LOGIC_OP_COPY << 26) | 0x4504));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_COLORMASKLSBSA, 0xff));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_FILLCOLOR_R, 0x1b));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_BLOCK_START, (20u << 16) | 20u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND_EXEC(REG_BLOCK_END, (20u << 16) | 20u));
+    g_assert_cmphex(mgras_test_pixel(qts, 20, 20), ==, 0x1b);
+    g_assert_cmphex(mgras_test_format(qts, 20, 20), ==, MGRAS_PIXEL_FORMAT_CI8);
+}
+
+/*
+ * Lines and glyph rows in a 12-bit window take the same four-bit channels
+ * from their whole-pixel sources: PACKEDCOLOR for set bits, BKGRD for an
+ * opaque stipple's clear bits. The Icon Catalog draws its icons' bodies
+ * as opaque stippled spans of PACKEDCOLOR 0xa0a0a0 on white and its
+ * labels as glyph rows of PACKEDCOLOR 0. The test's PACKEDCOLOR values
+ * give red and blue the same byte, so they hold whichever end of the
+ * word red is read from.
+ */
+static void test_rgb12_line_and_glyph_take_top_nibbles(void)
+{
+    mgras_reset();
+
+    mgras_enter_context(qts);
+    qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x1e, 0x4));
+
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_PP1FILLMODE,
+                               (MGRAS_LOGIC_OP_COPY << 26) |
+                               MGRAS_PP1FILLMODE_RGB12));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_COLORMASKLSBSA, 0xfff));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_FILLMODE, MGRAS_FILLMODE_STIPPLE_OPAQUE));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_PACKEDCOLOR, 0x30a030));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_BKGRD_RG, 0xf00f00));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_BKGRD_BA, 0xf00));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_LINE_STIPPLE, 0xaaaaaaaa));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND_EXEC(REG_RE_POINT, (30u << 16) | 30u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND_EXEC(REG_RE_LINE, (33u << 16) | 30u));
+    g_assert_cmphex(mgras_test_pixel(qts, 30, 30), ==, 0x3a3);
+    g_assert_cmphex(mgras_test_format(qts, 30, 30), ==,
+                    MGRAS_PIXEL_FORMAT_RGB12);
+    g_assert_cmphex(mgras_test_display_pixel(qts, 30, 30), ==, 0x0033aa33);
+    g_assert_cmphex(mgras_test_pixel(qts, 31, 30), ==, 0xfff);
+    g_assert_cmphex(mgras_test_display_pixel(qts, 31, 30), ==, 0x00ffffff);
+
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_FILLMODE, MGRAS_FILLMODE_GLYPH_ROW));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_PACKEDCOLOR, 0x10201f));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_BLOCK_START, (40u << 16) | 40u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_BLOCK_END, (47u << 16) | 40u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND_EXEC(REG_CHAR_H, 0x80000000));
+    g_assert_cmphex(mgras_test_pixel(qts, 40, 40), ==, 0x121);
+    g_assert_cmphex(mgras_test_display_pixel(qts, 40, 40), ==, 0x00112211);
+    g_assert_cmphex(mgras_test_pixel(qts, 41, 40), ==, 0);
+}
+
+/*
+ * A whole-pixel word keeps red in bits 7:0 in a 12-bit window too. The
+ * Icon Catalog's soffice icon is stippled with PACKEDCOLOR 0xf00000,
+ * which the RAD4 reference shows blue; read red-first it showed red.
+ */
+static void test_rgb12_pixel_word_reads_red_low(void)
+{
+    mgras_reset();
+
+    mgras_enter_context(qts);
+    qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x1e, 0x4));
+
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_PP1FILLMODE,
+                               (MGRAS_LOGIC_OP_COPY << 26) |
+                               MGRAS_PP1FILLMODE_RGB12));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_COLORMASKLSBSA, 0xfff));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_FILLMODE, MGRAS_FILLMODE_GLYPH_ROW));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_PACKEDCOLOR, 0xf00000));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_BLOCK_START, (40u << 16) | 40u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_BLOCK_END, (47u << 16) | 40u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND_EXEC(REG_CHAR_H, 0x80000000));
+    g_assert_cmphex(mgras_test_pixel(qts, 40, 40), ==, 0xf00);
+    g_assert_cmphex(mgras_test_display_pixel(qts, 40, 40), ==, 0x000000ff);
+}
+
 /*
  * Two tagged pixels, two XMAP modes, two colour maps, one shared index.
  * Each resolves through its own map, and a palette write to one map
@@ -5981,6 +6159,13 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/origin2000/mgras/"
                    "pixel-format-tag-resolves-independently",
                    test_pixel_format_tag_resolves_independently);
+    qtest_add_func("sn0/origin2000/mgras/rgb12-fill-packs-four-bit-channels",
+                   test_rgb12_fill_packs_four_bit_channels);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "rgb12-line-and-glyph-take-top-nibbles",
+                   test_rgb12_line_and_glyph_take_top_nibbles);
+    qtest_add_func("sn0/origin2000/mgras/rgb12-pixel-word-reads-red-low",
+                   test_rgb12_pixel_word_reads_red_low);
     qtest_add_func("sn0/origin2000/mgras/target-first-cmap-visual-selection",
                    test_target_first_cmap_visual_selection);
     qtest_add_func("sn0/origin2000/mgras/masked-out-paint-keeps-the-visual",

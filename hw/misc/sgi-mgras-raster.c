@@ -521,11 +521,69 @@ static uint32_t mgras_paint_pixel(uint8_t op, uint32_t dst, uint32_t src,
  * above. Painting code reads this at the moment of each paint and
  * records it in the per-pixel format plane (sgi-mgras.h) so scanout can
  * resolve mixed-format content within one WID.
+ *
+ * With bit 13 clear, bit 14 set and bits 10:8 zero the paint is a 12-bit
+ * RGB window's instead. The IRIX 6.5.30 server draws its CI8 windows
+ * under 0x4504 and its 24-bit ones under 0x6204. The Icon Catalog's icon
+ * pane is a window on the server's 12-bit TrueColor visual (xwininfo:
+ * depth 12, visual 0x29). The server gives it a display ID of its own
+ * whose XMAP mode it writes as 0x405 when the window opens, clears it
+ * under 0xc804 with COLORMASKLSBSA 0xffffff, and draws every fill, line
+ * and glyph row in it under 0x4004 with COLORMASKLSBSA 0xfff (run
+ * irix-20260927T035120-7dd191, seq 3803845-3829697). Its fill colours
+ * are whole nibbles (FILLCOLOR 0x500/0x800/0xa00), which is what a
+ * four-bit channel keeps of the 8-bit-in-12-bit registers. Read as CI8,
+ * each of those paints stored index 0 and the pane showed black. What
+ * the three fields mean on their own, and what bit 11 adds to the clear,
+ * is not known; only these encodings are recognised. The server also
+ * offers 12-bit PseudoColor visuals, which no capture draws to.
  */
+#define MGRAS_PP1FILLMODE_RGB 0x2000
+#define MGRAS_PP1FILLMODE_RGB12_MASK 0x6700
+#define MGRAS_PP1FILLMODE_RGB12_VALUE 0x4000
+
 static uint8_t mgras_pixel_format(SGIMgrasState *s)
 {
-    return (s->rss[MGRAS_RSS_PP1FILLMODE] & 0x2000) ? SGI_MGRAS_PIXEL_FORMAT_RGB :
-                                                    SGI_MGRAS_PIXEL_FORMAT_CI8;
+    uint32_t pp1 = s->rss[MGRAS_RSS_PP1FILLMODE];
+
+    if (pp1 & MGRAS_PP1FILLMODE_RGB) {
+        return SGI_MGRAS_PIXEL_FORMAT_RGB;
+    }
+    if ((pp1 & MGRAS_PP1FILLMODE_RGB12_MASK) == MGRAS_PP1FILLMODE_RGB12_VALUE) {
+        return SGI_MGRAS_PIXEL_FORMAT_RGB12;
+    }
+    return SGI_MGRAS_PIXEL_FORMAT_CI8;
+}
+
+/*
+ * A 12-bit pixel keeps each 0x00RRGGBB channel's top four bits, red in
+ * bits 3:0, green in bits 7:4 and blue in bits 11:8: the red, green and
+ * blue masks 0xf, 0xf0 and 0xf00 the server's xdpyinfo reports for its
+ * 12-bit TrueColor visuals, 0x29 and 0x2a (run
+ * irix-20260927T045444-f4307c, where xwininfo gives the Icon Catalog's
+ * pane depth 12 and visual 0x29). No capture reads a 12-bit pixel back,
+ * so the masks are the only evidence of the stored layout.
+ */
+static uint32_t mgras_rgb12_from_rgb(uint32_t rgb)
+{
+    return ((rgb >> 20) & 0xf) | ((rgb >> 8) & 0xf0) | ((rgb << 4) & 0xf00);
+}
+
+/*
+ * A paint's colour in the form its format stores: an index under CI8,
+ * the 0x00RRGGBB triple under RGB, that triple's nibbles under RGB12.
+ */
+static uint32_t mgras_format_color(uint8_t format, uint32_t index,
+                                   uint32_t rgb)
+{
+    switch (format) {
+    case SGI_MGRAS_PIXEL_FORMAT_CI8:
+        return index & 0xff;
+    case SGI_MGRAS_PIXEL_FORMAT_RGB12:
+        return mgras_rgb12_from_rgb(rgb);
+    default:
+        return rgb;
+    }
 }
 
 /*
@@ -535,9 +593,13 @@ static uint8_t mgras_pixel_format(SGIMgrasState *s)
  * 0xff/0xff00/0xff0000), OpenBSD's impact(4) (rasops red at bit 0, passed
  * straight to PACKEDCOLOR) and the Linux Impact framebuffer patch (red at
  * offset 0, the same word in PACKEDCOLOR and in its image blits) all use
- * that layout. The model stores 0x00RRGGBB, so such a word is swapped on
- * the way in. FILLCOLOR_R/G/B and BKGRD are per-channel registers and
- * need no swap.
+ * that layout. The IRIX 6.5.30 Icon Catalog's 12-bit pane agrees: the
+ * soffice icon's stipples carry PACKEDCOLOR 0xf00000 and show blue on
+ * the RAD4 reference, and nedit's carry 0xf0f0 and show yellow (run
+ * irix-20260927T035120-7dd191). The model stores 0x00RRGGBB, so such a
+ * word is swapped on the way in, and a 12-bit window's paint swaps it
+ * before keeping its nibbles. FILLCOLOR_R/G/B and BKGRD are per-channel
+ * registers and need no swap.
  */
 static uint32_t mgras_rgb_from_pixel_word(uint32_t word)
 {
@@ -667,11 +729,10 @@ static void mgras_draw_fill(SGIMgrasState *s)
      * byte of FILLCOLOR_R as a bare CMAP index; RGB reads all three,
      * each >> 4 to an 8-bit channel.
      */
-    color = format == SGI_MGRAS_PIXEL_FORMAT_CI8 ?
-        s->rss[MGRAS_RSS_FILLCOLOR_R] & 0xff :
+    color = mgras_format_color(format, s->rss[MGRAS_RSS_FILLCOLOR_R],
         (((s->rss[MGRAS_RSS_FILLCOLOR_R] >> 4) & 0xff) << 16) |
         (((s->rss[MGRAS_RSS_FILLCOLOR_G] >> 4) & 0xff) << 8) |
-        ((s->rss[MGRAS_RSS_FILLCOLOR_B] >> 4) & 0xff);
+        ((s->rss[MGRAS_RSS_FILLCOLOR_B] >> 4) & 0xff));
     mgras_fill_rect(s, s->rss[MGRAS_RSS_BLOCKXYSTARTI], s->rss[MGRAS_RSS_BLOCKXYENDI],
                 color, op, mask, format);
 }
@@ -695,9 +756,8 @@ static void mgras_draw_glyph_row(SGIMgrasState *s)
     int x0 = (xy0 >> 16) & 0xffff, y0 = xy0 & 0xffff;
     int x1 = (xy1 >> 16) & 0xffff, y1 = xy1 & 0xffff;
     uint8_t format = mgras_pixel_format(s);
-    uint32_t ink = format == SGI_MGRAS_PIXEL_FORMAT_CI8 ?
-        (s->rss[MGRAS_RSS_RED] >> 12) & 0xff :
-        mgras_rgb_from_pixel_word(s->rss[MGRAS_RSS_PACKEDCOLOR]);
+    uint32_t ink = mgras_format_color(format, s->rss[MGRAS_RSS_RED] >> 12,
+        mgras_rgb_from_pixel_word(s->rss[MGRAS_RSS_PACKEDCOLOR]));
     uint32_t mask = s->rss[MGRAS_RSS_COLORMASKLSBSA];
     uint8_t op = s->rss[MGRAS_RSS_PP1FILLMODE] >> 26;
     uint64_t bits = ((uint64_t)s->rss[MGRAS_RSS_CHAR_H] << 32) |
@@ -807,19 +867,20 @@ static void mgras_draw_byte_row_bytes(SGIMgrasState *s, int x0, int x1,
  * 4-byte-per-pixel DMA copies that must read those 24 bits back. In the
  * greeter and desktop captures every pair-packed transfer runs under RGB;
  * the CI8 form rests on the fixture above alone. The pixels carry the
- * same format tag as every other PP1FILLMODE-driven paint. ceil(width / 2)
- * executes cover a row, no skip, and the row advances after the last unit.
+ * same format tag as every other PP1FILLMODE-driven paint; a 12-bit
+ * window keeps each word's nibbles as it does PACKEDCOLOR's, which no
+ * capture exercises. ceil(width / 2) executes cover a row, no skip, and
+ * the row advances after the last unit.
  */
 static void mgras_draw_byte_row_pairs(SGIMgrasState *s, int x0, int x1,
                                    int y0, int y1, uint32_t mask, uint8_t op)
 {
     uint8_t format = mgras_pixel_format(s);
-    bool ci8 = format == SGI_MGRAS_PIXEL_FORMAT_CI8;
     uint32_t pixels[2] = {
-        ci8 ? s->rss[MGRAS_RSS_CHAR_H] & 0xff :
-              mgras_rgb_from_pixel_word(s->rss[MGRAS_RSS_CHAR_H]),
-        ci8 ? s->rss[MGRAS_RSS_CHAR_L] & 0xff :
-              mgras_rgb_from_pixel_word(s->rss[MGRAS_RSS_CHAR_L]),
+        mgras_format_color(format, s->rss[MGRAS_RSS_CHAR_H],
+            mgras_rgb_from_pixel_word(s->rss[MGRAS_RSS_CHAR_H])),
+        mgras_format_color(format, s->rss[MGRAS_RSS_CHAR_L],
+            mgras_rgb_from_pixel_word(s->rss[MGRAS_RSS_CHAR_L])),
     };
     int width = x1 - x0 + 1;
     int row = s->glyph_row;
@@ -929,6 +990,17 @@ static void mgras_draw_pio_pixel_pair(SGIMgrasState *s)
     uint8_t op = s->rss[MGRAS_RSS_PP1FILLMODE] >> 26;
     uint8_t format = mgras_pixel_format(s);
 
+    /*
+     * No capture sends PIO pixel pairs to a 12-bit window, and which
+     * channel order these words carry there is unknown, so the pair is
+     * reported rather than stored as a guess.
+     */
+    if (format == SGI_MGRAS_PIXEL_FORMAT_RGB12) {
+        qemu_log_mask(LOG_UNIMP, "sgi-mgras: unimplemented PIO pixel pair "
+                      "in a 12-bit window, PP1FILLMODE 0x%08x\n",
+                      s->rss[MGRAS_RSS_PP1FILLMODE]);
+        return;
+    }
     if (x0 > x1 || y0 > y1 || x0 >= SGI_MGRAS_WIDTH || y0 >= SGI_MGRAS_HEIGHT) {
         return;
     }
@@ -1059,9 +1131,8 @@ static void mgras_draw_point(SGIMgrasState *s)
 {
     uint32_t xy0 = s->rss[MGRAS_RSS_RE_POINT];
     uint8_t format = mgras_pixel_format(s);
-    uint32_t color = format == SGI_MGRAS_PIXEL_FORMAT_CI8 ?
-        (s->rss[MGRAS_RSS_RED] >> 12) & 0xff :
-        mgras_rgb_from_pixel_word(s->rss[MGRAS_RSS_PACKEDCOLOR]);
+    uint32_t color = mgras_format_color(format, s->rss[MGRAS_RSS_RED] >> 12,
+        mgras_rgb_from_pixel_word(s->rss[MGRAS_RSS_PACKEDCOLOR]));
     uint32_t mask = s->rss[MGRAS_RSS_COLORMASKLSBSA];
     uint8_t op = s->rss[MGRAS_RSS_PP1FILLMODE] >> 26;
     int x = (xy0 >> 16) & 0xffff, y = xy0 & 0xffff;
@@ -1090,11 +1161,10 @@ static uint32_t mgras_stipple_background(SGIMgrasState *s, uint8_t format)
 {
     uint32_t rg = s->rss[MGRAS_RSS_BKGRD_RG];
 
-    if (format == SGI_MGRAS_PIXEL_FORMAT_CI8) {
-        return rg & 0xff;
-    }
-    return (((rg >> 4) & 0xff) << 16) | (((rg >> 16) & 0xff) << 8) |
-           ((s->rss[MGRAS_RSS_BKGRD_BA] >> 4) & 0xff);
+    return mgras_format_color(format, rg,
+                              (((rg >> 4) & 0xff) << 16) |
+                              (((rg >> 16) & 0xff) << 8) |
+                              ((s->rss[MGRAS_RSS_BKGRD_BA] >> 4) & 0xff));
 }
 
 /*
@@ -1121,9 +1191,8 @@ static void mgras_draw_line(SGIMgrasState *s)
     uint32_t xy0 = s->rss[MGRAS_RSS_RE_POINT];
     uint32_t xy1 = s->rss[MGRAS_RSS_RE_LINE];
     uint8_t format = mgras_pixel_format(s);
-    uint32_t color = format == SGI_MGRAS_PIXEL_FORMAT_CI8 ?
-        (s->rss[MGRAS_RSS_RED] >> 12) & 0xff :
-        mgras_rgb_from_pixel_word(s->rss[MGRAS_RSS_PACKEDCOLOR]);
+    uint32_t color = mgras_format_color(format, s->rss[MGRAS_RSS_RED] >> 12,
+        mgras_rgb_from_pixel_word(s->rss[MGRAS_RSS_PACKEDCOLOR]));
     uint32_t fillmode = s->rss[MGRAS_RSS_FILLMODE];
     bool stipple = fillmode & MGRAS_FILLMODE_STIPPLE;
     bool opaque = fillmode & MGRAS_FILLMODE_STIPPLE_OPAQUE;
