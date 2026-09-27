@@ -183,7 +183,9 @@
  * aligns it itself: each of the greeter's 798 opaque stippled spans
  * carries 0xaaaaaaaa when its start x + y is even and 0x55555555 when it
  * is odd, which keeps the checkerboard fixed to the screen only if the
- * pattern restarts at each span. Every stippled line in the captures is
+ * pattern restarts at each span. That parity is the server's stipple
+ * origin, not a hardware rule: the desktop capture flips it from one
+ * drawable's batch of spans to the next. Every stippled line in the captures is
  * horizontal and preceded by its own RE_POINT and pattern, so stepping
  * one bit per drawn pixel along a diagonal or vertical line, and
  * restarting at an RE_LINE chained from the previous one, are untested
@@ -1053,6 +1055,26 @@ static void mgras_draw_point(SGIMgrasState *s)
 
 
 /*
+ * An opaque stipple's background. Under CI8 the server loads BKGRD_RG with
+ * the bare index. Under RGB the model reads red from BKGRD_RG bits 11:4,
+ * green from bits 23:16 and blue from BKGRD_BA bits 11:4, the 8-bit-in-12-
+ * bit packing of FILLCOLOR_R/G/B. Only white has been seen here, so the
+ * channel assignment is inferred; OpenBSD's impact(4) impact_putchar()
+ * packs its opaque-text background the same way (red's top nibble at
+ * BKGRD_RG bits 11:8, green at bits 23:16, blue's at BKGRD_BA bits 11:8).
+ */
+static uint32_t mgras_stipple_background(SGIMgrasState *s, uint8_t format)
+{
+    uint32_t rg = s->rss[MGRAS_RSS_BKGRD_RG];
+
+    if (format == SGI_MGRAS_PIXEL_FORMAT_CI8) {
+        return rg & 0xff;
+    }
+    return (((rg >> 4) & 0xff) << 16) | (((rg >> 16) & 0xff) << 8) |
+           ((s->rss[MGRAS_RSS_BKGRD_BA] >> 4) & 0xff);
+}
+
+/*
  * RE_LINE's own command value is the line's end point, not BLOCKXYENDI,
  * and its start is the pen position the previous RE_POINT or RE_LINE left
  * at rss[MGRAS_RSS_RE_POINT], not BLOCKXYSTARTI: of the 2,862 RE_LINE
@@ -1071,23 +1093,6 @@ static void mgras_draw_point(SGIMgrasState *s)
  * origin shift below is unexercised there and rests on the greeter
  * evidence in mgras_apply_window_origin() instead.
  */
-/*
- * An opaque stipple's background. The server loads BKGRD_RG with the bare
- * index under CI8, and under RGB with red in bits 11:4 and green in bits
- * 23:16, blue going to BKGRD_BA bits 11:4: the same 8-bit-in-12-bit
- * channel packing as FILLCOLOR_R/G/B.
- */
-static uint32_t mgras_stipple_background(SGIMgrasState *s, uint8_t format)
-{
-    uint32_t rg = s->rss[MGRAS_RSS_BKGRD_RG];
-
-    if (format == SGI_MGRAS_PIXEL_FORMAT_CI8) {
-        return rg & 0xff;
-    }
-    return (((rg >> 4) & 0xff) << 16) | (((rg >> 16) & 0xff) << 8) |
-           ((s->rss[MGRAS_RSS_BKGRD_BA] >> 4) & 0xff);
-}
-
 static void mgras_draw_line(SGIMgrasState *s)
 {
     uint32_t xy0 = s->rss[MGRAS_RSS_RE_POINT];
