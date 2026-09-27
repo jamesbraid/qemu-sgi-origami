@@ -228,6 +228,28 @@ static const MemoryRegionOps heart_absent_ops = {
     .impl = { .min_access_size = 1, .max_access_size = 8 },
 };
 
+static uint64_t heart_bank_offset(uint32_t descriptor, uint64_t capacity,
+                                  uint64_t offset)
+{
+    /* Functional probe projection; physical HEART wiring is not established. */
+    if ((descriptor & 0x803f0000U) == 0x803f0000U &&
+        ((descriptor >> 22) & 7) == 6) {
+        switch (capacity) {
+        case 64 * MiB:
+            return (offset & (32 * MiB - 1)) |
+                   ((offset & (64 * MiB)) >> 1);
+        case 128 * MiB:
+            return (offset & (32 * MiB - 1)) |
+                   ((offset & (64 * MiB)) >> 1) |
+                   ((offset & (1 * GiB)) >> 4);
+        case 256 * MiB:
+            return (offset & (128 * MiB - 1)) |
+                   ((offset & (256 * MiB)) >> 1);
+        }
+    }
+    return offset % capacity;
+}
+
 static void heart_map_bank(SGIHeartState *s, unsigned bank)
 {
     uint32_t d = s->descriptor[bank];
@@ -244,6 +266,11 @@ static void heart_map_bank(SGIHeartState *s, unsigned bank)
     }
     if (d & 0x80000000U) {
         for (unsigned unit = 0; unit < units; unit++) {
+            if (s->capacity[bank]) {
+                memory_region_set_alias_offset(&s->views[bank][unit],
+                    heart_bank_offset(d, s->capacity[bank],
+                                      (uint64_t)unit * HEART_UNIT));
+            }
             memory_region_add_subregion_overlap(memory,
                 base + (uint64_t)unit * HEART_UNIT,
                 &s->views[bank][unit], bank + 1);

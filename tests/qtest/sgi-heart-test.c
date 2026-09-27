@@ -22,6 +22,7 @@
 #define HEART_RAM 0x20000000ULL
 #define UNIT (32ULL * 1024 * 1024)
 #define PROBE_DESC 0x81bf0040U
+#define MODULO_DESC 0x817f0040U
 #define PROBE_RAM (HEART_RAM + 0x40 * UNIT)
 
 static uint32_t heart_descriptor(unsigned index)
@@ -51,8 +52,8 @@ static void test_descriptors(gconstpointer data)
     unsigned detected_units = 0;
 
     g_assert_cmphex(qtest_readq(s, HEART_REGS + 0x20), ==, 0);
-    qtest_writel(s, HEART_REGS + 0x20, PROBE_DESC);
-    g_assert_cmphex(qtest_readl(s, HEART_REGS + 0x20), ==, PROBE_DESC);
+    qtest_writel(s, HEART_REGS + 0x20, MODULO_DESC);
+    g_assert_cmphex(qtest_readl(s, HEART_REGS + 0x20), ==, MODULO_DESC);
     qtest_writeq(s, PROBE_RAM + 0x100, 0x123456789abcdef0ULL);
     for (unsigned unit = 1; unit < 64; unit++) {
         if (qtest_readq(s, PROBE_RAM + 0x100 + unit * UNIT) ==
@@ -94,6 +95,113 @@ static void test_descriptors(gconstpointer data)
     g_assert_cmphex(value, ==, 0);
     qtest_writeq(s, HEART_REGS + 0x20, 0);
     g_assert_cmphex(qtest_readq(s, HEART_REGS + 0x20), ==, 0);
+    qtest_quit(s);
+}
+
+static uint64_t projected_offset(unsigned mib, uint64_t offset)
+{
+    switch (mib) {
+    case 64:
+        return (offset & (UNIT - 1)) | ((offset & (2 * UNIT)) >> 1);
+    case 128:
+        return (offset & (UNIT - 1)) | ((offset & (2 * UNIT)) >> 1) |
+               ((offset & (1ULL << 30)) >> 4);
+    case 256:
+        return (offset & (4 * UNIT - 1)) |
+               ((offset & (8 * UNIT)) >> 1);
+    default:
+        g_assert_not_reached();
+    }
+}
+
+static void test_projection(gconstpointer data)
+{
+    unsigned mib = GPOINTER_TO_UINT(data);
+    QTestState *s = heart_start(mib, "");
+    uint64_t capacity = (uint64_t)mib << 20;
+    uint64_t discontinuity = mib == 256 ? 4 * UNIT : UNIT;
+    uint64_t alias = mib == 256 ? 4 * UNIT : UNIT;
+    uint64_t offsets[] = { 0, 8, 0x100, UNIT, 2 * UNIT,
+                           4 * UNIT, 8 * UNIT, 32 * UNIT };
+    uint64_t first = 0x1021324354657687ULL;
+    uint64_t second = 0x98a9bacbdcedfe0fULL;
+    uint32_t final_desc = 0x80000000U | ((capacity / UNIT - 1) << 16);
+
+    qtest_writel(s, HEART_REGS + 0x20, PROBE_DESC);
+    for (unsigned i = 0; i < G_N_ELEMENTS(offsets); i++) {
+        uint64_t physical = HEART_RAM + projected_offset(mib, offsets[i]);
+        uint64_t probe = PROBE_RAM + offsets[i];
+
+        qtest_writeq(s, probe, first);
+        qtest_writel(s, HEART_REGS + 0x20, final_desc);
+        g_assert_cmphex(qtest_readq(s, physical), ==, first);
+        qtest_writeq(s, physical, second);
+        qtest_writel(s, HEART_REGS + 0x20, PROBE_DESC);
+        g_assert_cmphex(qtest_readq(s, probe), ==, second);
+    }
+    qtest_writeq(s, PROBE_RAM, first);
+    qtest_writeq(s, PROBE_RAM + alias, second);
+    g_assert_cmphex(qtest_readq(s, PROBE_RAM), ==, second);
+    qtest_writeq(s, PROBE_RAM, first);
+    g_assert_cmphex(qtest_readq(s, PROBE_RAM + alias), ==, first);
+
+    qtest_writeq(s, PROBE_RAM + discontinuity - 4, first);
+    g_assert_cmphex(qtest_readl(s, PROBE_RAM + discontinuity - 4), ==,
+                    first >> 32);
+    g_assert_cmphex(qtest_readl(s, PROBE_RAM), ==, (uint32_t)first);
+
+    /* Only the base field changes; the alias choice must follow it. */
+    qtest_writel(s, HEART_REGS + 0x20, (PROBE_DESC & ~0x1ffU) | 0x60);
+    qtest_writeq(s, PROBE_RAM + 0x20 * UNIT, first);
+    g_assert_cmphex(qtest_readq(s, PROBE_RAM + 0x20 * UNIT), ==,
+                    qtest_readq(s, PROBE_RAM + 0x20 * UNIT + alias));
+
+    /* Density 5 and a short density-6 descriptor use ordinary modulo. */
+    qtest_writel(s, HEART_REGS + 0x20, MODULO_DESC);
+    qtest_writeq(s, PROBE_RAM + 0x100, first);
+    g_assert_cmphex(qtest_readq(s, PROBE_RAM + 0x100 + capacity), ==,
+                    first);
+    qtest_writel(s, HEART_REGS + 0x20,
+                 0x81800040U | ((2 * capacity / UNIT - 1) << 16));
+    qtest_writeq(s, PROBE_RAM + 0x100, second);
+    g_assert_cmphex(qtest_readq(s, PROBE_RAM + 0x100 + capacity), ==,
+                    second);
+    qtest_writel(s, HEART_REGS + 0x20, PROBE_DESC);
+    g_assert_cmphex(qtest_readq(s, PROBE_RAM + 0x100), ==, second);
+
+    /* The older path checks adjacent 32 MiB units after density changes. */
+    qtest_writel(s, HEART_REGS + 0x20, MODULO_DESC);
+    qtest_writeq(s, PROBE_RAM + 0x80, first);
+    qtest_writeq(s, PROBE_RAM + UNIT + 0x80, second);
+    g_assert_cmphex(qtest_readq(s, PROBE_RAM + 0x80), ==, first);
+
+    /* The newer path checks half its provisional descriptor size. */
+    {
+        uint64_t provisional = mib == 128 ? 4 * UNIT : 2 * capacity;
+        uint64_t half = provisional / 2;
+        uint32_t descriptor = 0x81400040U |
+                              ((provisional / UNIT - 1) << 16);
+
+        qtest_writel(s, HEART_REGS + 0x20, descriptor);
+        if (mib == 128) {
+            qtest_writeq(s, PROBE_RAM + half + 0x80, second);
+        }
+        qtest_writeq(s, PROBE_RAM + 0x80, first);
+        g_assert_cmphex(qtest_readq(s, PROBE_RAM + half + 0x80), ==,
+                        mib == 128 ? second : first);
+    }
+
+    qtest_writel(s, HEART_REGS + 0x20, final_desc);
+    for (unsigned unit = 0; unit < capacity / UNIT; unit++) {
+        qtest_writeq(s, HEART_RAM + (uint64_t)unit * UNIT,
+                     first + unit);
+    }
+    for (unsigned unit = 0; unit < capacity / UNIT; unit++) {
+        g_assert_cmphex(qtest_readq(s, HEART_RAM + (uint64_t)unit * UNIT),
+                        ==, first + unit);
+    }
+    qtest_writeq(s, HEART_RAM + capacity - 8, second);
+    g_assert_cmphex(qtest_readq(s, HEART_RAM + capacity - 8), ==, second);
     qtest_quit(s);
 }
 
@@ -384,6 +492,7 @@ static void test_reset(void)
     qtest_writel(s, HEART_REGS + 0x20, PROBE_DESC);
     g_assert_cmpuint(qtest_readq_tx(s, PROBE_RAM, &value), ==, MEMTX_OK);
     g_assert_cmphex(value, ==, 0xfeedface);
+    g_assert_cmphex(qtest_readq(s, PROBE_RAM + UNIT), ==, 0xfeedface);
     qtest_quit(s);
 }
 
@@ -413,6 +522,7 @@ static void test_migration(void)
                      heart_descriptor(i));
     }
     qtest_writeq(from, PROBE_RAM, 0x123456789abcdef0ULL);
+    qtest_writeq(from, PROBE_RAM + 2 * UNIT, 0x87654321fedcba98ULL);
     for (unsigned i = 0; i < 4; i++) {
         qtest_writeq(from, HEART_REGS + 0x10000 + 8 * i,
                      (1ULL << i) | (i == 0 ? 1ULL << 16 : 0));
@@ -434,6 +544,10 @@ static void test_migration(void)
                         heart_descriptor(i));
     }
     g_assert_cmphex(qtest_readq(to, PROBE_RAM), ==, 0x123456789abcdef0ULL);
+    g_assert_cmphex(qtest_readq(to, PROBE_RAM + 2 * UNIT), ==,
+                    0x87654321fedcba98ULL);
+    g_assert_cmphex(qtest_readq(to, PROBE_RAM + UNIT), ==,
+                    0x123456789abcdef0ULL);
     for (unsigned i = 0; i < 4; i++) {
         g_assert_cmphex(qtest_readq(to, HEART_REGS + 0x10000 + 8 * i), ==,
                         (1ULL << i) | (i == 0 ? 1ULL << 16 : 0));
@@ -704,6 +818,12 @@ int main(int argc, char **argv)
                          test_descriptors);
     g_test_add_data_func("/heart/descriptor-256m", GUINT_TO_POINTER(256),
                          test_descriptors);
+    g_test_add_data_func("/heart/projection-64m", GUINT_TO_POINTER(64),
+                         test_projection);
+    g_test_add_data_func("/heart/projection-128m", GUINT_TO_POINTER(128),
+                         test_projection);
+    g_test_add_data_func("/heart/projection-256m", GUINT_TO_POINTER(256),
+                         test_projection);
     g_test_add_func("/heart/wide-descriptor-clear",
                     test_wide_descriptor_clear);
     g_test_add_func("/heart/widget-id", test_widget_id);
