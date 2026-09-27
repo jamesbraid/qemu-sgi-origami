@@ -376,6 +376,22 @@ static void assert_device_pair_refused(const char *first, const char *second,
 }
 
 /*
+ * A board's id names it and its PCI bus, so a second device may not take
+ * one a board already holds, whether the board's own slot name or an id
+ * given outright; qdev alone would not notice once the board has moved
+ * under its module.
+ */
+static void test_board_ids_are_unique(const void *data)
+{
+    assert_device_pair_refused("sgi-xio-baseio,preset=menet,slot=io5",
+                               "sgi-xio-baseio,preset=menet,slot=io4,id=io5",
+                               "a device with id 'io5' already exists");
+    assert_device_pair_refused("sgi-xio-baseio,preset=menet,slot=io4,id=io5",
+                               "sgi-xio-baseio,preset=menet,slot=io5",
+                               "a device with id 'io5' already exists");
+}
+
+/*
  * A module's two Crossbows number their widgets alike: IO5 is Crossbow 0
  * widget 14 and IO7 Crossbow 1 widget 14. Both take a board, each on its
  * own fabric, and the two read different one-wire serials; a second
@@ -1555,6 +1571,8 @@ int main(int argc, char **argv)
                         NULL, test_fitted_boards_have_distinct_serials);
     qtest_add_data_func("sn/builder/boards-on-two-crossbows", NULL,
                         test_boards_on_two_crossbows);
+    qtest_add_data_func("sn/builder/board-ids-are-unique", NULL,
+                        test_board_ids_are_unique);
     qtest_add_data_func("sn/builder/mgras-fitted-at-a-named-slot", NULL,
                         test_mgras_fitted_at_a_named_slot);
     qtest_add_data_func("sn/builder/mgras-fitted-in-io3", NULL,

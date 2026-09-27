@@ -76,6 +76,51 @@ static bool sgi_xio_board_reparent(SGIXioBoardState *board, Error **errp)
     return qdev_set_parent_bus(dev, sysbus_get_default(), errp);
 }
 
+typedef struct SGIXioBoardIdSearch {
+    Object *self;
+    const char *id;
+    bool taken;
+} SGIXioBoardIdSearch;
+
+static int sgi_xio_board_id_search(Object *child, void *opaque)
+{
+    SGIXioBoardIdSearch *search = opaque;
+    const char *name = object_get_canonical_path_component(child);
+    Object *other;
+
+    if (!g_str_equal(name, "peripheral") && !g_str_has_prefix(name, "module")) {
+        return 0;
+    }
+    other = object_resolve_path_component(child, search->id);
+    search->taken |= other && other != search->self;
+    return 0;
+}
+
+/*
+ * A board's id names it among the machine's boards, and its PCI bus
+ * after it, so it must be unique. qdev checks a -device id only against
+ * /machine/peripheral, which every board leaves when it re-parents
+ * under its module, so look in every module container as well.
+ */
+static bool sgi_xio_board_check_id(SGIXioBoardState *board, Error **errp)
+{
+    SGIXioBoardIdSearch search = {
+        .self = OBJECT(board),
+        .id = DEVICE(board)->id,
+    };
+
+    if (!search.id) {
+        return true;
+    }
+    object_child_foreach(qdev_get_machine(), sgi_xio_board_id_search,
+                         &search);
+    if (search.taken) {
+        error_setg(errp, "a device with id '%s' already exists", search.id);
+        return false;
+    }
+    return true;
+}
+
 /* The fabric a board sends through, or NULL for one with none set. */
 static Object *sgi_xio_board_fabric(SGIXioBoardState *board)
 {
@@ -265,7 +310,8 @@ static void sgi_xio_board_realize(DeviceState *dev, Error **errp)
     } else if (!sgi_xio_board_place_by_name(board, errp)) {
         return;
     }
-    if (!sgi_xio_board_claim(board, errp)) {
+    if (!sgi_xio_board_check_id(board, errp) ||
+        !sgi_xio_board_claim(board, errp)) {
         return;
     }
     g_assert(bc->build_widget);
