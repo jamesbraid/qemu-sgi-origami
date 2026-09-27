@@ -25,6 +25,7 @@
 #define ATTR0 (1ULL << 40)
 #define UNIT 0x02000000ULL
 #define BANK0 0x80030000U
+#define OCTANE2_BANK0 0x80070000U
 #define WIDE 0x80070000U
 #define CFG(slot) (BRIDGE + 0x020000 + (slot) * 0x1000)
 #define BRIDGE_NIC (BRIDGE + 0x0b4)
@@ -77,6 +78,83 @@ static QTestState *octane_start_serial(int *sock)
         "-M octane -m 128M -cpu R10000 -bios %s -S", quoted);
 
     return qtest_init_with_serial(args, sock);
+}
+
+/* Test-owned R12000 configuration, not measured Octane2 reset values. */
+#define OCTANE2_CPU "R12000,r12000-prid=0xe24,r12000-fpu-id=0x7654," \
+    "r12000-reset-mode=0x1aa683,r12000-scache-bytes=2097152," \
+    "r12000-scache-block-words=32"
+
+static QTestState *octane2_start_args(const char *extra)
+{
+    g_autofree char *quoted = g_shell_quote(flash_path);
+
+    return qtest_initf("-M octane2 -m 256M -cpu " OCTANE2_CPU
+                       " -bios %s -S %s", quoted, extra);
+}
+
+static void test_octane2_population(void)
+{
+    QTestState *qts = octane2_start_args("");
+    uint32_t value;
+    uint64_t missing;
+
+    g_assert_cmphex(qtest_readl(qts, HEART + 0x20), ==, OCTANE2_BANK0);
+    g_assert_cmphex(qtest_readl(qts, HEART_WIDGET + 4) >> 28, ==, 6);
+    g_assert_cmpuint(qtest_readl_tx(qts, XBOW + 4, &value), ==, MEMTX_OK);
+    g_assert_cmpuint(qtest_readl_tx(qts, BRIDGE + 4, &value), ==, MEMTX_OK);
+    g_assert_cmpuint(qtest_readl_tx(qts, 0x1b000004, &value), !=, MEMTX_OK);
+    g_assert_cmphex(qtest_readl(qts, CFG(0)), ==, 0x10201077);
+    g_assert_cmphex(qtest_readl(qts, CFG(1)), ==, 0x10201077);
+    g_assert_cmphex(qtest_readl(qts, CFG(2)), ==, 0x000310a9);
+    g_assert_cmphex(qtest_readl(qts, CFG(3)), ==, RAD_PCI_ID);
+
+    qtest_writeq(qts, HIGH_RAM, 0x0123456789abcdefULL);
+    qtest_writeq(qts, RAM + 8 * UNIT - 8, 0xfedcba9876543210ULL);
+    g_assert_cmphex(qtest_readq(qts, RAM + 8 * UNIT - 8), ==,
+                    0xfedcba9876543210ULL);
+    g_assert_cmpuint(qtest_readq_tx(qts, RAM + 8 * UNIT, &missing), !=,
+                     MEMTX_OK);
+    qtest_writel(qts, HEART + 0x20, BANK0);
+    g_assert_cmpuint(qtest_readq_tx(qts, RAM + 4 * UNIT, &missing), !=,
+                     MEMTX_OK);
+    qtest_system_reset(qts);
+    g_assert_cmphex(qtest_readl(qts, HEART + 0x20), ==, OCTANE2_BANK0);
+    g_assert_cmphex(qtest_readq(qts, RAM + 8 * UNIT - 8), ==,
+                    0xfedcba9876543210ULL);
+    qtest_quit(qts);
+}
+
+static void test_octane2_serial(void)
+{
+    g_autofree char *quoted = g_shell_quote(flash_path);
+    g_autofree char *args = g_strdup_printf(
+        "-M octane2 -m 256M -cpu " OCTANE2_CPU " -bios %s -S", quoted);
+    int sock;
+    QTestState *qts = qtest_init_with_serial(args, &sock);
+    const uint8_t sent = '2';
+    uint8_t received;
+    struct timeval deadline = { .tv_sec = 5 };
+
+    g_assert_cmpint(setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO,
+                               &deadline, sizeof(deadline)), ==, 0);
+    qtest_writel(qts, CFG(2) + 0x10, 0x10000000);
+    qtest_writel(qts, CFG(2) + 0x04, 0x00000002);
+    qtest_writel(qts, BRIDGE + 0x200 + 8 * 2 + 4, 0x1100);
+    qtest_writeb(qts, UART_A + 3, 0x03);
+    qtest_writeb(qts, UART_A + 1, 0x01);
+    g_assert_cmpint(write(sock, &sent, 1), ==, 1);
+    g_test_timer_start();
+    while (!(qtest_readb(qts, UART_A + 5) & 1)) {
+        g_assert_cmpfloat(g_test_timer_elapsed(), <, 5.0);
+        g_usleep(1000);
+    }
+    g_assert_cmphex(qtest_readb(qts, UART_A), ==, sent);
+    qtest_writeb(qts, UART_A, 'O');
+    g_assert_cmpint(read(sock, &received, 1), ==, 1);
+    g_assert_cmphex(received, ==, 'O');
+    close(sock);
+    qtest_quit(qts);
 }
 
 static uint32_t octane_cpu_cause(QTestState *qts)
@@ -920,6 +998,8 @@ int main(int argc, char **argv)
     g_assert_cmpint(write(fd, bytes, sizeof(bytes)), ==, sizeof(bytes));
     close(fd);
     qtest_add_func("/octane/widgets-and-memory", test_widgets_and_memory);
+    qtest_add_func("/octane2/population", test_octane2_population);
+    qtest_add_func("/octane2/serial", test_octane2_serial);
     qtest_add_func("/octane/heart-widget-control", test_heart_widget_control);
     qtest_add_func("/octane/low-ram", test_low_ram);
     qtest_add_func("/octane/flash-and-pci", test_flash_and_pci);
