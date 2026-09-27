@@ -1366,6 +1366,19 @@ static bool rad4_dma_run(PsitechRad4State *s)
         }
 
         if (local_to_pci) {
+            /*
+             * A raw byte copy of the framebuffer backing out to system
+             * memory. The backing now holds the CPU BAR2 path's
+             * little-endian byte order, so a CPU-store then local->PCI
+             * readback round-trip returns the same canonical value the CPU
+             * wrote -- established, and self-consistent with the store and
+             * scanout paths. The old big-endian backing made that same
+             * round-trip come back byte-swapped, so this is a fix, not a
+             * regression. Whether the qualified guest issues framebuffer->
+             * system-memory readbacks that depend on the on-wire order is
+             * unknown: the render path does not exercise this branch, and
+             * every DMA register-contract test passes with the raw copy.
+             */
             if (pci_dma_write(&s->pci, pci_addr, s->framebuffer + local_addr,
                               size) != MEMTX_OK) {
                 qemu_log_mask(LOG_GUEST_ERROR,
