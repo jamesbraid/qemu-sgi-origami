@@ -48,7 +48,9 @@
 #include "system/address-spaces.h"
 #include "system/block-backend.h"
 #include "system/blockdev.h"
+#include "system/cpus.h"
 #include "system/reset.h"
+#include "system/runstate.h"
 #include "system/system.h"
 #include "cpu.h"
 #include "cpu-qom.h"
@@ -1303,6 +1305,51 @@ static void sn1_node_create_cpus(SN1NodeState *node, MachineState *machine)
     }
 }
 
+/*
+ * Ask for the reset and stop every processor, from queued work on the
+ * processor that asked for it -- the work runs at its next translation-block
+ * boundary, outside the execution loop, where a processor may be stopped;
+ * sgi_hub_request_machine_reset() in hw/misc/sgi-hub.c says why stopping
+ * them there matters.
+ */
+static void sn1_node_request_reset(CPUState *cs, run_on_cpu_data data)
+{
+    CPUState *cpu;
+
+    qemu_system_reset_request(SHUTDOWN_CAUSE_GUEST_RESET);
+    CPU_FOREACH(cpu) {
+        cpu_pause(cpu);
+    }
+}
+
+/*
+ * A Bedrock local reset restarts the node's processors at the reset
+ * vector, so the firmware runs again. No register description says so;
+ * every consumer that reboots relies on it and never jumps to the firmware
+ * itself. The stock IP35 PROM prints "Resetting the system...", writes the
+ * network interface's reset enable and then local plus port reset, and
+ * branches back into a loop; IRIX 6.5.30's restart path repeats the same
+ * two writes every 3 s; OpenBSD resets its IP35 nodes with local plus link
+ * reset. docs/datasheets/bedrock-network-interface.md carries the evidence.
+ *
+ * The model restarts the whole machine, as the Origin 200's Hub local reset
+ * and the L1's reset command already do: the node's I/O, its L1 and, on a
+ * cabled pair, the other node start again with it. What else a local reset
+ * reaches on hardware is not established. Every consumer resets every node
+ * together anyway, with a port reset or a write to each node.
+ */
+static void sn1_node_bedrock_reset(void *opaque, int n, int level)
+{
+    if (!level) {
+        return;
+    }
+    if (current_cpu) {
+        async_run_on_cpu(current_cpu, sn1_node_request_reset, RUN_ON_CPU_NULL);
+    } else {
+        qemu_system_reset_request(SHUTDOWN_CAUSE_GUEST_RESET);
+    }
+}
+
 static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
                                     Error **errp)
 {
@@ -1449,6 +1496,9 @@ static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
     qdev_connect_gpio_out_named(l1_uart_dev, "uart", 0,
                                 qdev_get_gpio_in_named(node->bedrock,
                                                        "uart-irq", 0));
+    qdev_connect_gpio_out_named(node->bedrock, "node-reset", 0,
+                                qdev_get_gpio_in_named(DEVICE(node),
+                                                       "bedrock-reset", 0));
 
     /*
      * The XBridge is a fitted part of the IP45 node board itself, as the L1
@@ -1778,6 +1828,8 @@ static void sn1_node_instance_init(Object *obj)
 
     node->cpuclk = qdev_init_clock_in(DEVICE(obj), "cpu-refclk", NULL, NULL,
                                       0);
+    qdev_init_gpio_in_named(DEVICE(obj), sn1_node_bedrock_reset,
+                            "bedrock-reset", 1);
 }
 
 static void sn1_node_instance_finalize(Object *obj)
