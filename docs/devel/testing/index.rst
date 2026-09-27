@@ -10,6 +10,7 @@ testing infrastructure.
    main
    qtest
    functional
+   sgi
    acpi-bits
    ci
    fuzzing
