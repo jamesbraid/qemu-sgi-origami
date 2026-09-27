@@ -182,6 +182,17 @@ test_mips64_timeouts = {
   # Two-chassis boot plus the router link test; red on current trunk (the
   # second hub is never discovered), bounded so the wedge costs one budget.
   'prom_mdk_router' : 1800,
+  # One target per smdk-matrix row (test_prom_smdk_origin300.py and the
+  # test_prom_smdk_origin300_<row>.py beside it), each the row's budget
+  # plus 120s, the same shape as the irix-diag-matrix rows above. The
+  # rows took 604s, 967s and 1111s (two and four processors and the pair,
+  # 2026-09-27, build-fast). The project checkout's harness runs of
+  # 2026-09-26 and 27 took 100 to 370s for a one-chassis boot and
+  # diagnostic and 740 to 2040s for a pair's, so the pair has 4200s for
+  # its four.
+  'prom_smdk_origin300' : 3000,
+  'prom_smdk_origin300_4cpu' : 3000,
+  'prom_smdk_origin300_pair' : 4320,
   # Three test methods (one, two, and four CPUs) run one after another in
   # this one script, each now netbooting the kernel through the real PROM
   # rather than a direct -kernel load. The one- and two-CPU boots are each
@@ -247,6 +258,9 @@ tests_mips64_system_thorough = [
   'prom_mdk_memory',
   'prom_mdk_instgen',
   'prom_mdk_router',
+  'prom_smdk_origin300',
+  'prom_smdk_origin300_4cpu',
+  'prom_smdk_origin300_pair',
   'irix_miniroot',
   'irix_diag',
   'irix_diag_origin200',
@@ -288,6 +302,7 @@ tests_mips64_unit = [
   'lib_net',
   'lib_origin300',
   'lib_prom',
+  'lib_prom_smdk',
   'lib_screen',
   'lib_translation_health',
   'prom_diagnostics_verdict',
