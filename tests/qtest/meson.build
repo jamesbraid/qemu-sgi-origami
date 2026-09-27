@@ -502,6 +502,7 @@ qtests_mips64 = \
                                                    'sn0-mscsi-test',
                                                    'sn0-gigachannel-test',
                                                    'sn0-origin2000-kona-test',
+                                                   'sn0-onyx2-test',
                                                    'sn0-display-heads-test'] : []) + \
   (config_all_devices.has_key('CONFIG_SGI_SN0') and
    config_all_devices.has_key('CONFIG_SGI_SN1') ?

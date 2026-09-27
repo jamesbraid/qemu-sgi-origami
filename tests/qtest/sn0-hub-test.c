@@ -488,6 +488,38 @@ static void test_origin2000_one_node_reads_node_slot_one(const void *data)
     qtest_quit(qts);
 }
 
+/*
+ * The Onyx2 deskside's 4P1G5 midplane drives 3 for node slot 1 and 2 for
+ * node slot 2, which the stock PROM and IRIX decode as the deskside's own
+ * n1 and n2 and which selects that chassis's Crossbow table. The Onyx2
+ * rack's compute module is the eight-processor module and drives 7 to 4.
+ * docs/datasheets/onyx2.md in the Origami repository, Node slot codes.
+ */
+static void test_onyx2_deskside_reads_its_own_slot_bits(const void *data)
+{
+    QTestState *qts = qtest_init(
+        "-M onyx2,topology=onyx2-deskside -smp 4 -m 128M");
+    static const uint8_t expected[] = { 3, 3, 2, 2 };
+
+    for (unsigned int cpu = 0; cpu < G_N_ELEMENTS(expected); cpu++) {
+        g_assert_cmphex(pi_cpu_readq(qts, cpu, MD_SLOT_ID_USTAT) &
+                        MD_SLOT_ID_MASK, ==, expected[cpu]);
+    }
+    qtest_quit(qts);
+}
+
+static void test_onyx2_rack_reads_the_module_slot_bits(const void *data)
+{
+    QTestState *qts = qtest_init("-M onyx2");
+    static const uint8_t expected[] = { 7, 7, 6, 6, 5, 5, 4, 4 };
+
+    for (unsigned int cpu = 0; cpu < G_N_ELEMENTS(expected); cpu++) {
+        g_assert_cmphex(pi_cpu_readq(qts, cpu, MD_SLOT_ID_USTAT) &
+                        MD_SLOT_ID_MASK, ==, expected[cpu]);
+    }
+    qtest_quit(qts);
+}
+
 /* Exact ticks over a known clock step test the rate, not just movement. */
 static void test_the_real_time_counter_runs_at_its_rate(const void *data)
 {
@@ -6211,6 +6243,10 @@ int main(int argc, char **argv)
                         test_origin2000_slot_and_processor_identity);
     qtest_add_data_func("sn0/hub/origin2000-one-node-reads-node-slot-one",
                         NULL, test_origin2000_one_node_reads_node_slot_one);
+    qtest_add_data_func("sn0/hub/onyx2-deskside-reads-its-own-slot-bits",
+                        NULL, test_onyx2_deskside_reads_its_own_slot_bits);
+    qtest_add_data_func("sn0/hub/onyx2-rack-reads-the-module-slot-bits",
+                        NULL, test_onyx2_rack_reads_the_module_slot_bits);
     qtest_add_data_func("sn0/hub/crosstalk-timeouts", NULL,
                         test_the_crosstalk_timeouts);
     qtest_add_data_func("sn0/hub/io-scratch-registers", NULL,
