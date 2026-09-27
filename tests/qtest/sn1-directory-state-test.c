@@ -978,6 +978,37 @@ static void test_ignore_ecc_keeps_the_check_field(void)
     finish(s, prom);
 }
 
+/*
+ * The unit watches the whole 4 KiB page around a line whose word software
+ * read: a load of another line on that page is followed too, and its word
+ * shows the transition when it is read afterwards.
+ */
+static void neighbour_line(Program *p)
+{
+    emit(p, LD(R_T3, 0x80, R_T0));
+    emit(p, SYNC);
+    emit(p, LD(R_T3, 0x10, R_T1));  /* the next line's word */
+    emit(p, SD(R_T3, 0x08, R_T2));
+}
+
+static void test_page_is_watched(void)
+{
+    const Scenario sc = {
+        .cpus = "2",
+        STEPS({ 0, emit_first }, { 0, neighbour_line }),
+    };
+    char *prom;
+    QTestState *s;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+    s = run_scenario(&sc, &prom);
+    g_assert_cmphex(result(s, 0x08) & DIRECTORY_FIELDS, ==, POINTER(0));
+    finish(s, prom);
+}
+
 static void migrate_wait(QTestState *qts)
 {
     int64_t deadline = g_get_monotonic_time() + 30 * G_TIME_SPAN_SECOND;
@@ -1086,6 +1117,8 @@ int main(int argc, char **argv)
                    test_block_transfer_is_not_a_processor);
     qtest_add_func("sn1/directory-state/ignore-ecc-keeps-the-check-field",
                    test_ignore_ecc_keeps_the_check_field);
+    qtest_add_func("sn1/directory-state/page-is-watched",
+                   test_page_is_watched);
     qtest_add_func("sn1/directory-state/owner-from-the-word",
                    test_owner_from_the_word);
     qtest_add_func("sn1/directory-state/sharers-from-the-word",
