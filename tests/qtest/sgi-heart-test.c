@@ -542,7 +542,8 @@ static void test_widget_errors(void)
     g_assert_cmpuint(qtest_writel_tx(s, HEART_WIDGET + 0x6c, 0), ==,
                      MEMTX_ERROR);
     g_assert_cmpuint(qtest_readq_tx(s, HEART_WIDGET + 0x70, &wide), ==,
-                     MEMTX_ERROR);
+                     MEMTX_OK);
+    g_assert_cmphex(wide, ==, 0);
     g_assert_cmpuint(qtest_writeq_tx(s, HEART_WIDGET + 0x70, 0), ==,
                      MEMTX_ERROR);
     g_assert_cmpuint(qtest_readl_tx(s, HEART_WIDGET + 0x60, &word), ==,
@@ -563,6 +564,57 @@ static void test_widget_errors(void)
     qtest_system_reset(s);
     g_assert_cmphex(qtest_readq(s, HEART_WIDGET + 0x60), ==, 0);
     g_assert_cmphex(qtest_readq(s, HEART_WIDGET + 0x68), ==, 0);
+    qtest_quit(s);
+}
+
+static void test_widget_diagnostics(void)
+{
+    static const uint64_t word_offsets[] = { 0x14, 0x1c };
+    static const uint64_t wide_offsets[] = { 0x70, 0x78, 0x90 };
+    QTestState *s = heart_start(128, "");
+    uint64_t wide;
+    uint32_t word;
+    uint16_t half;
+    uint8_t byte;
+
+    qtest_writel(s, HEART_WIDGET + 0x2c, 0x12345678);
+    qtest_writeq(s, HEART_WIDGET + 0x68, 0x3ff62c07);
+    for (unsigned i = 0; i < G_N_ELEMENTS(word_offsets); i++) {
+        uint64_t addr = HEART_WIDGET + word_offsets[i];
+
+        g_assert_cmpuint(qtest_readl_tx(s, addr, &word), ==, MEMTX_OK);
+        g_assert_cmphex(word, ==, 0);
+        g_assert_cmpuint(qtest_readb_tx(s, addr, &byte), ==, MEMTX_ERROR);
+        g_assert_cmpuint(qtest_readw_tx(s, addr, &half), ==, MEMTX_ERROR);
+        g_assert_cmpuint(qtest_readq_tx(s, addr, &wide), ==, MEMTX_ERROR);
+        g_assert_cmpuint(qtest_writel_tx(s, addr, 0), ==, MEMTX_ERROR);
+    }
+    for (unsigned i = 0; i < G_N_ELEMENTS(wide_offsets); i++) {
+        uint64_t addr = HEART_WIDGET + wide_offsets[i];
+
+        g_assert_cmpuint(qtest_readq_tx(s, addr, &wide), ==, MEMTX_OK);
+        g_assert_cmphex(wide, ==, 0);
+        g_assert_cmpuint(qtest_readb_tx(s, addr, &byte), ==, MEMTX_ERROR);
+        g_assert_cmpuint(qtest_readw_tx(s, addr, &half), ==, MEMTX_ERROR);
+        g_assert_cmpuint(qtest_readl_tx(s, addr, &word), ==, MEMTX_ERROR);
+        g_assert_cmpuint(qtest_readl_tx(s, addr + 4, &word), ==,
+                         MEMTX_ERROR);
+        g_assert_cmpuint(qtest_writeq_tx(s, addr, 0), ==, MEMTX_ERROR);
+    }
+    g_assert_cmpuint(qtest_readl_tx(s, HEART_WIDGET + 0x18, &word), ==,
+                     MEMTX_ERROR);
+    g_assert_cmpuint(qtest_readq_tx(s, HEART_WIDGET + 0x88, &wide), ==,
+                     MEMTX_ERROR);
+    g_assert_cmpuint(qtest_readq_tx(s, HEART_WIDGET + 0x98, &wide), ==,
+                     MEMTX_ERROR);
+
+    qtest_system_reset(s);
+    for (unsigned i = 0; i < G_N_ELEMENTS(word_offsets); i++) {
+        g_assert_cmphex(qtest_readl(s, HEART_WIDGET + word_offsets[i]), ==, 0);
+    }
+    for (unsigned i = 0; i < G_N_ELEMENTS(wide_offsets); i++) {
+        g_assert_cmphex(qtest_readq(s, HEART_WIDGET + wide_offsets[i]), ==, 0);
+    }
     qtest_quit(s);
 }
 
@@ -761,6 +813,11 @@ static void test_migration(void)
     g_assert_cmphex(qtest_readl(to, HEART_WIDGET + 0x2c), ==, 0x12345678);
     g_assert_cmphex(qtest_readl(to, HEART_WIDGET + 0x44), ==, 0);
     g_assert_cmphex(qtest_readq(to, HEART_WIDGET + 0x68), ==, 0x3ff62c07);
+    g_assert_cmphex(qtest_readl(to, HEART_WIDGET + 0x14), ==, 0);
+    g_assert_cmphex(qtest_readl(to, HEART_WIDGET + 0x1c), ==, 0);
+    g_assert_cmphex(qtest_readq(to, HEART_WIDGET + 0x70), ==, 0);
+    g_assert_cmphex(qtest_readq(to, HEART_WIDGET + 0x78), ==, 0);
+    g_assert_cmphex(qtest_readq(to, HEART_WIDGET + 0x90), ==, 0);
     g_assert_cmphex(qtest_readq(to, HEART_REGS), ==, 0x800);
     g_assert_cmphex(qtest_readq(to, HEART_REGS + 0x08), ==, 0x21);
     g_assert_cmphex(qtest_readq(to, HEART_REGS + 0x10), ==, 0x84000);
@@ -1060,6 +1117,7 @@ int main(int argc, char **argv)
     g_test_add_func("/heart/widget-control", test_widget_control);
     g_test_add_func("/heart/widget-timeout", test_widget_timeout);
     g_test_add_func("/heart/widget-errors", test_widget_errors);
+    g_test_add_func("/heart/widget-diagnostics", test_widget_diagnostics);
     g_test_add_func("/heart/widget-packets", test_widget_packets);
     g_test_add_func("/heart/interrupts", test_interrupts);
     g_test_add_func("/heart/reset", test_reset);

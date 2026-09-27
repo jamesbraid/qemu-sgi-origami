@@ -101,11 +101,13 @@ static MemTxResult heart_widget_read(void *opaque, hwaddr offset,
         *value = s->widget_request_timeout;
         return MEMTX_OK;
     }
-    if (offset == 0x44 && size == 4) {
+    if (size == 4 && (offset == 0x14 || offset == 0x1c ||
+                      offset == 0x44)) {
         *value = 0;
         return MEMTX_OK;
     }
-    if (offset == 0x60 && size == 8) {
+    if (size == 8 && (offset == 0x60 || offset == 0x70 ||
+                      offset == 0x78 || offset == 0x90)) {
         *value = 0;
         return MEMTX_OK;
     }
