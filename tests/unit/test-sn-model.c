@@ -224,7 +224,9 @@ static void check_io_board_presets(const SGIModelTopology *t)
                       preset == SGI_MODEL_IO_BOARD_PRESET_PCI_CARRIER ||
                       preset == SGI_MODEL_IO_BOARD_PRESET_GIGACHANNEL ||
                       preset == SGI_MODEL_IO_BOARD_PRESET_MENET ||
-                      preset == SGI_MODEL_IO_BOARD_PRESET_MSCSI);
+                      preset == SGI_MODEL_IO_BOARD_PRESET_MSCSI ||
+                      preset == SGI_MODEL_IO_BOARD_PRESET_KONA ||
+                      preset == SGI_MODEL_IO_BOARD_PRESET_MGRAS);
     }
 }
 
@@ -315,33 +317,29 @@ static void check_origin2000_node_slots(const SGIModelTopology *t)
     }
 }
 
-static void check_origin2000_io3(const SGIModelTopology *t)
+/*
+ * An xtalk-slots entry is an empty connector: no attachment may already
+ * occupy its Crossbow widget, or a fitted board and an empty slot would
+ * claim the same port.
+ */
+static void check_slots_are_unoccupied(const SGIModelTopology *t)
 {
     const SGIModelXtalkSlotList *slot_entry;
     const SGIModelXtalkAttachmentList *attachment_entry;
-    bool found = false;
 
-    if (!g_str_equal(t->product, "origin2000")) {
-        return;
-    }
     for (slot_entry = t->xtalk_slots; slot_entry;
          slot_entry = slot_entry->next) {
         const SGIModelXtalkSlot *slot = slot_entry->value;
 
-        if (g_str_equal(slot->id, "xio-slot-3")) {
-            g_assert_cmpuint(slot->crossbar_index, ==, 0);
-            g_assert_cmpuint(slot->widget, ==, 0xf);
-            g_assert_cmpuint(slot->controlling_node, ==, 0);
-            found = true;
-        }
-    }
-    g_assert_true(found);
-    for (attachment_entry = t->xtalk_attachments; attachment_entry;
-         attachment_entry = attachment_entry->next) {
-        const SGIModelXtalkAttachment *attachment = attachment_entry->value;
+        for (attachment_entry = t->xtalk_attachments; attachment_entry;
+             attachment_entry = attachment_entry->next) {
+            const SGIModelXtalkAttachment *attachment =
+                attachment_entry->value;
 
-        g_assert_false(attachment->crossbar_index == 0 &&
-                       attachment->widget == 0xf);
+            g_assert_false(attachment->crossbar_index ==
+                           (int64_t)slot->crossbar_index &&
+                           attachment->widget == slot->widget);
+        }
     }
 }
 
@@ -413,7 +411,7 @@ static void test_every_topology_is_well_formed(void)
         check_xtalk_attachments(t);
         check_xtalk_slots(t);
         check_origin2000_node_slots(t);
-        check_origin2000_io3(t);
+        check_slots_are_unoccupied(t);
         check_bedrock_has_populated_io8(t);
     }
     g_assert_cmpuint(topology_count, >, 0);
