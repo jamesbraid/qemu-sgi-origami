@@ -1485,38 +1485,18 @@ static bool sgi_machine_instantiate_kona(
     const SGIModelXtalkAttachment *attachment, Error **errp)
 {
     DeviceState *dev = qdev_new(TYPE_SGI_KONA);
-    g_autofree char *name = g_strdup_printf("io-board%u", board_index);
     g_autofree char *proxy_name =
         g_strdup_printf("io-board%u-packet-proxy", board_index);
     SGIXtalkCrossbowLink *crossbow_link =
         &s->crossbow_links[s->num_nodes + board_index];
     SGIXioBoardState *board;
 
-    object_property_add_child(OBJECT(s), name, OBJECT(dev));
-    object_unref(OBJECT(dev));
-
     /*
-     * A stable qdev id lets QMP's screendump name this head with device=,
-     * matched by qdev_find_recursive() against dev->id
-     * (ui/console.c's qemu_console_lookup_by_device_name()); with no id
-     * set, screendump can only take console index 0, whichever device
-     * that happens to be (issue #895). Reuse this board's own "io-boardN"
-     * name -- the io_boards[] index the catalogue and topology already
-     * assign it -- rather than invent a second name for the same board.
-     * Set directly, not through qdev_set_id(): that helper requires an
-     * unparented device and re-parents it under /machine/peripheral,
-     * while this device already has the QOM parent added just above
-     * (hw/pci-host/astro.c's "elroyN" id on its embedded, non-hotpluggable
-     * bridge follows the same direct-assignment idiom). sgi_xio_board_
-     * reparent() (xio-board.c) later moves this board under its module
-     * container and keeps the id as its leaf name instead of the default
-     * "slotN" -- that is what turns /machine/moduleM/slotN into
-     * /machine/moduleM/io-boardN once realize finishes.
+     * The board's slot name is its qdev id, so QMP's screendump names
+     * this head device=io3 on the rack and device=io4 on the deskside,
+     * the slot IRIX names it by (issue #895).
      */
-    dev->id = g_strdup(name);
-
-    qdev_prop_set_uint32(dev, "module", record->module_index);
-    sgi_machine_set_board_widget(dev, attachment->widget);
+    sgi_machine_add_xio_board(s, dev, record, board_index, attachment);
     object_property_set_link(
         OBJECT(dev), "fabric",
         OBJECT(sgi_xtalk_crossbow_link_prepare(crossbow_link, OBJECT(s),

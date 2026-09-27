@@ -85,6 +85,8 @@ static void test_rack_places_kona_at_io3(void)
 
     assert_widget(qts, 15, KONA_PART, KONA_MFG);
     assert_widget(qts, 8, BRIDGE_PART, BRIDGE_MFG);
+    /* The pipe is known by the slot IRIX names it under, io3. */
+    g_assert_true(qom_has_child(qts, "/machine/module0", "io3"));
     g_assert_cmphex(qom_uint(qts, "/machine/crossbow0",
                              "startup-links-alive") &
                     0xff00, ==, 0x8700);
@@ -98,6 +100,7 @@ static void test_deskside_places_kona_at_io4(void)
 
     assert_widget(qts, 8, KONA_PART, KONA_MFG);
     assert_widget(qts, 15, BRIDGE_PART, BRIDGE_MFG);
+    g_assert_true(qom_has_child(qts, "/machine/module0", "io4"));
     /* Widgets 9 and A are the two Hubs; nothing else is fitted. */
     g_assert_cmphex(qom_uint(qts, "/machine/crossbow0",
                              "startup-links-alive") &
