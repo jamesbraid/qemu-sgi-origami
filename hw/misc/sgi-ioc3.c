@@ -1529,7 +1529,7 @@ static bool sgi_ioc3_resolve_population(SGIIOC3State *s, Error **errp)
     SGIIOC3Population *population = &s->population;
     uint32_t unknown;
 
-    if (s->timekeeper_kind > SGI_IOC3_TIMEKEEPER_DS1685) {
+    if (s->timekeeper_kind > SGI_IOC3_TIMEKEEPER_DS1742) {
         error_setg(errp, "IOC3 timekeeper kind %u is unsupported",
                    s->timekeeper_kind);
         return false;
@@ -1874,6 +1874,28 @@ static void sgi_ioc3_realize(PCIDevice *dev, Error **errp)
         object_unparent(OBJECT(&s->rtc));
     }
 
+    if (s->board->timekeeper == SGI_IOC3_TIMEKEEPER_DS1742) {
+        MemoryRegion *chip;
+
+        if (!qdev_realize(DEVICE(&s->ds1742), BUS(&s->ioc3_bus), errp)) {
+            return;
+        }
+        chip = sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->ds1742), 0);
+        for (i = 0; i < ARRAY_SIZE(s->ds1742_alias); i++) {
+            g_autofree char *name = g_strdup_printf("sgi-ioc3.ds1742.%u", i);
+
+            memory_region_init_alias(&s->ds1742_alias[i], OBJECT(dev), name,
+                                     chip, 0, DS1742_SIZE);
+            memory_region_add_subregion(&s->bar,
+                                        SGI_IOC3_BYTEBUS_DEV0 +
+                                        i * DS1742_SIZE,
+                                        &s->ds1742_alias[i]);
+        }
+    } else {
+        object_property_del(OBJECT(dev), "ds1742-drive");
+        object_unparent(OBJECT(&s->ds1742));
+    }
+
     if (s->board->timekeeper == SGI_IOC3_TIMEKEEPER_DS1685) {
         if (!qdev_realize(DEVICE(&s->ds1685), BUS(&s->ioc3_bus), errp)) {
             return;
@@ -1933,6 +1955,9 @@ static void sgi_ioc3_exit(PCIDevice *dev)
     }
     if (s->board->timekeeper == SGI_IOC3_TIMEKEEPER_DS1685) {
         qdev_unrealize(DEVICE(&s->ds1685));
+    }
+    if (s->board->timekeeper == SGI_IOC3_TIMEKEEPER_DS1742) {
+        qdev_unrealize(DEVICE(&s->ds1742));
     }
 }
 
@@ -2029,6 +2054,9 @@ static void sgi_ioc3_init(Object *obj)
      */
     object_initialize_child(obj, "rtc", &s->rtc, TYPE_M48T35);
     object_initialize_child(obj, "ds1685", &s->ds1685, TYPE_DS1685);
+    object_initialize_child(obj, "ds1742", &s->ds1742, TYPE_DS1742);
+    object_property_add_alias(obj, "ds1742-drive", OBJECT(&s->ds1742),
+                              "drive");
 
     object_property_add_alias(obj, "nvram-drive", OBJECT(&s->rtc), "drive");
     object_property_add_alias(obj, "ds1685-drive",

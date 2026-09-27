@@ -11,6 +11,7 @@
 #include "hw/pci/pci_device.h"
 #include "hw/char/serial.h"
 #include "hw/rtc/ds1685.h"
+#include "hw/rtc/ds1742.h"
 #include "hw/rtc/m48t35.h"
 #include "hw/net/sgi-ioc3-eth.h"
 #include "hw/input/sgi-ioc3-kbc.h"
@@ -383,6 +384,7 @@ typedef enum SGIIOC3TimekeeperKind {
     SGI_IOC3_TIMEKEEPER_NONE = 0,
     SGI_IOC3_TIMEKEEPER_M48T35,  /* byte-bus device 0, directly addressed */
     SGI_IOC3_TIMEKEEPER_DS1685,  /* byte-bus devices 1 and 2, indirect */
+    SGI_IOC3_TIMEKEEPER_DS1742,  /* opt-in Fuel bytebus-0 experiment */
 } SGIIOC3TimekeeperKind;
 
 #define SGI_IOC3_POPULATION_ETHERNET       (1U << 0)
@@ -551,6 +553,8 @@ struct SGIIOC3State {
     /* One of these is realized, or neither; never both. */
     M48T35State rtc;
     DS1685State ds1685;
+    DS1742State ds1742;
+    MemoryRegion ds1742_alias[16];
 };
 
 #endif
