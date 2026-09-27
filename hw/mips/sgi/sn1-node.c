@@ -1952,6 +1952,7 @@ static const VMStateDescription vmstate_sn1_node = {
     .version_id = 1,
     .minimum_version_id = 1,
     .fields = (const VMStateField[]) {
+        VMSTATE_UINT64(board_id_word, SN1NodeState),
         VMSTATE_END_OF_LIST()
     },
     .subsections = (const VMStateDescription * const []) {
