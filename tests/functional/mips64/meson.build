@@ -269,6 +269,7 @@ tests_mips64_unit = [
   'lib_mgras_regions',
   'lib_mips',
   'lib_net',
+  'lib_origin300',
   'lib_prom',
   'lib_screen',
   'lib_translation_health',

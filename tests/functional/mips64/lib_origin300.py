@@ -21,8 +21,8 @@ reviewed values and byte layout; nothing here is independently
 rederived. Plain Python with no qemu_test dependency, the same rule
 lib_prom.py follows.
 
-Every image this module builds (the boot flash and the two synthesized
-IO8 identity records) is written fresh into the caller's own scratch
+Every image this module builds (the boot flash and the synthesized node
+and IO8 identity records) is written fresh into the caller's own scratch
 directory, never into the asset tree. The firmware image and the two
 SPD records are read from ORIGAMI_ASSETS.
 """
@@ -157,6 +157,54 @@ def _build_io8_board_eeprom_record(mac):
     return bytes(record)
 
 
+# The node board's own identity, L1 component 0: tools/origami_lib/
+# node_eeprom.py in the project checkout, ported the same way. IRIX builds
+# the node vertex's _nic attribute from these two areas, and the online
+# diagnostics' harness reads its machine name from that attribute: with no
+# node-board record the name stays unset and olsio dies with SIGSEGV
+# (the project checkout's olsio root-cause notebook). Every captured real
+# Origin 300 inventory shows a node board. The board names, part numbers
+# and revision are those real inventories print; everything else is a
+# placeholder, as in the IO8 records.
+NODE_BOARD_IDENTITY = {
+    2: (b'IP45_2CPU', b'030-1780-001', b'-C'),
+    4: (b'IP45_4CPU', b'030-1779-001', b'-C'),
+}
+
+
+def _build_node_chassis_eeprom_record():
+    """The component-0 chassis area: the same placeholder the IO8 uses."""
+    return _build_io8_chassis_eeprom_record()
+
+
+def _build_node_board_eeprom_record(processors):
+    """The synthetic component-0 board area for a node with processors
+    fitted, padded to the eight-byte units its length byte counts."""
+    try:
+        name, part, revision = NODE_BOARD_IDENTITY[processors]
+    except KeyError:
+        raise ValueError(
+            f'no Origin 300 node board carries {processors} processors'
+        ) from None
+    fields = (
+        _field(_IA_TYPE_ASCII, b'SYNTHETIC')
+        + _field(_IA_TYPE_ASCII, name)
+        + _field(_IA_TYPE_ASCII, b'000000')
+        + _field(_IA_TYPE_ASCII, part)
+        + bytes([0x00])  # FRU file id
+        + _field(_IA_TYPE_ASCII, revision)
+        + _field(_IA_TYPE_BINARY, bytes([0x00]))
+        + _field(_IA_TYPE_ASCII, b'00')
+        + _field(_IA_TYPE_BINARY, bytes(4)) * 3
+        + bytes([_IA_EOF])
+    )
+    units = (6 + len(fields) + 1 + 7) // 8
+    record = bytearray(bytes([0x00, units, 0x00, 0x00, 0x00, 0x00]) + fields)
+    record += bytes(units * 8 - 1 - len(record))
+    record.append((-sum(record)) & 0xFF)
+    return bytes(record)
+
+
 def _write(path, contents):
     partial = path + '.partial'
     with open(partial, 'wb') as out:
@@ -214,7 +262,7 @@ def launch_args(assets, cpus, scratch):
     assets is ORIGAMI_ASSETS; the caller's own require_assets(self,
     *ASSET_SPECS) call should already have resolved and skip/failed on
     every asset this needs. scratch is a fresh, writable, per-test
-    directory (self.workdir): the boot flash and the two synthesized
+    directory (self.workdir): the boot flash and the synthesized node and
     IO8 identity records are built there, never into the asset tree.
 
     Returns (machine, argv). origin300's machine name accepts an
@@ -233,6 +281,13 @@ def launch_args(assets, cpus, scratch):
     boot_flash = os.path.join(scratch, 'ip35-boot-flash.raw')
     _build_boot_flash(firmware_path, cpus, boot_flash)
 
+    node_chassis_path = os.path.join(scratch,
+                                     'origin300-node-chassis-eeprom.bin')
+    _write(node_chassis_path, _build_node_chassis_eeprom_record())
+
+    node_board_path = os.path.join(scratch, 'origin300-node-board-eeprom.bin')
+    _write(node_board_path, _build_node_board_eeprom_record(cpus))
+
     chassis_path = os.path.join(scratch, 'origin300-io8-chassis-eeprom.bin')
     _write(chassis_path, _build_io8_chassis_eeprom_record())
 
@@ -240,9 +295,9 @@ def launch_args(assets, cpus, scratch):
     _write(board_path, _build_io8_board_eeprom_record(NETWORK_MAC))
 
     properties = [
-        'chassis-eeprom.0=',
+        f'chassis-eeprom.0={node_chassis_path}',
         f'chassis-eeprom.1={chassis_path}',
-        'board-eeprom.0=',
+        f'board-eeprom.0={node_board_path}',
         f'board-eeprom.1={board_path}',
         'spd-eeprom.0=',
         'spd-eeprom.1=',
@@ -284,8 +339,9 @@ def launch_args_two_chassis(assets, populations, scratch):
     or (2, 2) and so on. QEMU splits each identity-record list evenly
     across the two L1s in node order, so node 1's chassis and board
     records take indices 2 and 3 and its SPD records 6 to 11; its
-    generated IO8 board record carries the MAC one past node 0's, the
-    same step tools/origami_lib/prom.py takes. Node 1's L1 console is
+    generated node board record names the board its own processor count
+    fits, and its generated IO8 board record carries the MAC one past
+    node 0's, the same steps tools/origami_lib/prom.py takes. Node 1's L1 console is
     serial line 5, left unconnected here; the master's is line 0.
     """
     machine, argv = launch_args(assets, populations[0], scratch)
@@ -294,6 +350,9 @@ def launch_args_two_chassis(assets, populations, scratch):
     firmware_path = resolve_asset(assets, FIRMWARE_REL, FIRMWARE_SHA256)
     boot_flash = os.path.join(node_dir, 'ip35-boot-flash.raw')
     _build_boot_flash(firmware_path, populations[1], boot_flash)
+    node_board_path = os.path.join(node_dir,
+                                   'origin300-node-board-eeprom.bin')
+    _write(node_board_path, _build_node_board_eeprom_record(populations[1]))
     board_path = os.path.join(node_dir, 'origin300-io8-board-eeprom.bin')
     _write(board_path, _build_io8_board_eeprom_record(
         _next_mac(NETWORK_MAC, 1)))
@@ -303,6 +362,8 @@ def launch_args_two_chassis(assets, populations, scratch):
         key, _sep, value = option.partition('=')
         array, _dot, index = key.partition('.')
         stride = 6 if array == 'spd-eeprom' else 2
+        if array == 'board-eeprom' and index == '0':
+            value = node_board_path
         if array == 'board-eeprom' and index == '1':
             value = board_path
         extra.append(f'{array}.{int(index) + stride}={value}')
