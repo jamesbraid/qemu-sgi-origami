@@ -1487,6 +1487,7 @@ F: docs/specs/sgi-*
 F: hw/mips/sn0*
 F: hw/mips/sgi/
 F: include/hw/mips/sn0*
+F: include/hw/mips/sgi-*.h
 F: include/hw/mips/sgi/
 F: hw/1wire/
 F: hw/audio/sgi-rad1-audio.c
