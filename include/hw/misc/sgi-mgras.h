@@ -188,6 +188,12 @@ OBJECT_DECLARE_TYPE(SGIMgrasState, SGIMgrasClass, SGI_MGRAS)
 
 /* Unknown command payloads remain unsupported. */
 #define SGI_MGRAS_CMD_TOKEN_MAX_PAYLOAD_WORDS 8
+/*
+ * The payload buffer: the raster, descriptor and HQ headers accept up to
+ * the limit above, and the OpenGL packets the model executes need up to
+ * 16 words, for glLoadMatrixf and glMultMatrixf.
+ */
+#define SGI_MGRAS_CMD_TOKEN_PAYLOAD_WORDS 16
 #define SGI_MGRAS_CMD_TOKEN_DISCARD UINT32_MAX
 #define SGI_MGRAS_CMD_TOKEN_MAX_DISCARD_WORDS \
     DIV_ROUND_UP(UINT8_MAX, sizeof(uint32_t))
@@ -392,7 +398,7 @@ struct SGIMgrasState {
     uint32_t cmd_token_class;
     uint32_t cmd_token_reg;
     uint32_t cmd_token_words_remaining;
-    uint32_t cmd_token_payload[SGI_MGRAS_CMD_TOKEN_MAX_PAYLOAD_WORDS];
+    uint32_t cmd_token_payload[SGI_MGRAS_CMD_TOKEN_PAYLOAD_WORDS];
     uint32_t cmd_token_payload_count;
     /*
      * OpenGL command state (hw/misc/sgi-mgras-gl.c): one set for the
@@ -407,6 +413,10 @@ struct SGIMgrasState {
     uint32_t gl_vertex_count;
     uint32_t gl_vertex[3][4];
     uint32_t gl_vertex_color[3][4];
+    uint32_t gl_matrix_mode;
+    /* IEEE single bits, column-major as glLoadMatrixf lays a matrix out. */
+    uint32_t gl_modelview[16];
+    uint32_t gl_projection[16];
     uint64_t retraces;
     uint8_t xmap_index;
     uint32_t xmap_mode[SGI_MGRAS_XMAP_ENTRIES];
