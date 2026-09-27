@@ -92,6 +92,7 @@ static void test_memory_transaction_result(void)
     const char *cpu_model = get_cpu_model_by_arch(qtest_get_arch());
     QTestState *qts;
     uint64_t value;
+    uint32_t word;
     uint64_t unassigned = 0x10000000000ULL;
 
     if (!cpu_model) {
@@ -104,6 +105,11 @@ static void test_memory_transaction_result(void)
     g_assert_cmpuint(qtest_writeq_tx(qts, unassigned, UINT64_MAX), ==,
                      MEMTX_DECODE_ERROR);
     g_assert_cmphex(qtest_readq(qts, unassigned), ==, 0);
+    g_assert_cmpuint(qtest_readl_tx(qts, unassigned, &word), ==,
+                     MEMTX_DECODE_ERROR);
+    g_assert_cmphex(word, ==, 0);
+    g_assert_cmpuint(qtest_writel_tx(qts, unassigned, UINT32_MAX), ==,
+                     MEMTX_DECODE_ERROR);
     qtest_quit(qts);
 }
 
