@@ -50,6 +50,14 @@
 
 #define MGRAS_CONTEXT_COMMAND 0x120400
 
+/*
+ * XMAP configuration register (0x071d00) selectors, as xmap_index decodes
+ * the index bytes SGI's IDE writes: 4 selects the revision, 8 the FIFO
+ * capacity.
+ */
+#define MGRAS_XMAP_CONFIG_REVISION 1
+#define MGRAS_XMAP_CONFIG_FIFO_CAPACITY 2
+
 /* Send an interrupt-modify write to the selected fabric address. */
 static void mgras_send_packet(SGIMgrasState *s, hwaddr where, uint8_t vector,
                            bool set)
@@ -380,7 +388,20 @@ static uint64_t mgras_read_internal(SGIMgrasState *s, hwaddr addr,
      */
     case SGI_MGRAS_I2C_STROBE: return 0;
     case SGI_MGRAS_REPP_STATUS_1: return s->repp_status[0];
-    case SGI_MGRAS_REPP_STATUS_3: return s->repp_status[1];
+    /*
+     * SGI's IDE XMAP test reads the XMAP revision under index byte 4 and
+     * accepts 0 or 1, and the FIFO capacity under index byte 8 and
+     * requires a low nibble of 1. Which revision the part reports is
+     * unknown; zero is the model's usual answer for an unknown revision.
+     */
+    case SGI_MGRAS_REPP_STATUS_3:
+        if (s->xmap_index == MGRAS_XMAP_CONFIG_REVISION) {
+            return 0;
+        }
+        if (s->xmap_index == MGRAS_XMAP_CONFIG_FIFO_CAPACITY) {
+            return 1;
+        }
+        return s->repp_status[1];
     case SGI_MGRAS_REPP_STATUS_4: return s->repp_status[2];
     case SGI_MGRAS_SYNC_STATUS: return s->sync_status;
     case SGI_MGRAS_BRINGUP_FLAG: return s->bringup_flag;
