@@ -582,8 +582,8 @@ static void test_l1_uart_local_form_is_the_readers(void)
  * memory; node 0's processors park, node 1's enter the phase exactly as
  * the PROM does (boot-status bit 1 in FPR 0 and a cached load in the data
  * window, running from the flash), withdraw both, and jump to a RAM loop
- * that touches the window only with its final uncached store. There they
- * report ready and wait for the
+ * that touches the window only with its uncached marker store. There
+ * they report ready and wait for the
  * host to renumber node 1 and say go, then store a marker with node field
  * zero at the RAM-copy address and, uncached, in the data window.
  */
