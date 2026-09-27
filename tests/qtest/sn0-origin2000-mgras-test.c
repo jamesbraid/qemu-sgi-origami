@@ -4029,6 +4029,64 @@ static void test_reset_refreshes_display_surface(void)
 }
 
 
+/*
+ * The VC3 cursor position registers (VC3 registers 2 and 3) name the
+ * glyph's top-left pixel plus 31 on each axis. The stock IRIX 6.5.30 server
+ * writes the pointer position minus the glyph hotspot plus 31: for the shape
+ * whose hotspot is its corner, a pointer at (48, 48) writes (79, 79). The
+ * VC2's public Linux console driver adds the same 31 to its cursor Y. A
+ * cursor drawn at the register value itself lands 31 pixels right of and
+ * below the X pointer.
+ */
+static void mgras_load_cursor_rows(QTestState *qts, uint16_t base,
+                                   const uint32_t mask[3])
+{
+    qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x07, base));
+    for (unsigned int row = 0; row < 3; row++) {
+        qtest_writew(qts, REG_VC3_RAM, mask[row] >> 16);
+        qtest_writew(qts, REG_VC3_RAM, mask[row] & 0xffff);
+    }
+    qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x01, base));
+}
+
+static void test_cursor_position_origin(void)
+{
+    /* Row 0 marks column 0, row 1 column 11 and row 2 column 10. */
+    const uint32_t mask[3] = {
+        0x80000000, 0x80000000 >> 11, 0x80000000 >> 10
+    };
+
+    mgras_reset();
+
+    mgras_enter_context(qts);
+    qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x1e, 0x4));
+    /* The cursor ink is entry 0x1c of WID 0's map, 29 under reset mode. */
+    mgras_write_cmap_entry(qts, 29, 0x1c, 0x11223300);
+    mgras_load_cursor_rows(qts, 0x400, mask);
+    qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x1d, 0x2));
+
+    qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x02, 100 + 31));
+    qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x03, 200 + 31));
+    g_assert_cmphex(mgras_test_display_pixel(qts, 100, 200), ==, 0x00112233);
+    g_assert_cmphex(mgras_test_display_pixel(qts, 111, 201), ==, 0x00112233);
+    g_assert_cmphex(mgras_test_display_pixel(qts, 131, 231), ==, 0);
+
+    g_assert_cmphex(mgras_test_display_pixel(qts, 110, 202), ==, 0x00112233);
+
+    /*
+     * A glyph partly above and left of the screen keeps its visible part.
+     * Row 2's bit lands at (-1, 1); drawn unclipped it would wrap to the
+     * last column of row 0. Row 0 lands at y = -1, before the buffer, which
+     * only a sanitizer build observes.
+     */
+    qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x02, 31 - 11));
+    qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x03, 31 - 1));
+    g_assert_cmphex(mgras_test_display_pixel(qts, 0, 0), ==, 0x00112233);
+    g_assert_cmphex(mgras_test_display_pixel(qts, 1279, 0), ==, 0);
+    g_assert_cmphex(mgras_test_display_pixel(qts, 100, 200), ==, 0);
+}
+
+
 static void test_pseudocolor_scanout_looks_up_cmap(void)
 {
     mgras_reset();
@@ -4590,8 +4648,9 @@ static void test_cursor_composites_when_enabled(void)
     qtest_writew(qts, REG_VC3_RAM, 0x4000);
     qtest_writew(qts, REG_VC3_RAM, 0x0000);
 
-    qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x02, 50));
-    qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x03, 60));
+    /* The position registers name the glyph corner plus 31. */
+    qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x02, 50 + 31));
+    qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x03, 60 + 31));
 
 
     g_assert_cmphex(mgras_test_display_pixel(qts, 50, 60), ==, 0);
@@ -6343,8 +6402,9 @@ static void test_cursor_migration(void)
     qtest_writel(from, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x07, 0x0142));
     qtest_writew(from, REG_VC3_RAM, 0x4000);
     qtest_writew(from, REG_VC3_RAM, 0x0000);
-    qtest_writel(from, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x02, 50));
-    qtest_writel(from, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x03, 60));
+    /* The position registers name the glyph corner plus 31. */
+    qtest_writel(from, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x02, 50 + 31));
+    qtest_writel(from, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x03, 60 + 31));
     qtest_writel(from, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x1d, 0x0002));
     g_assert_cmphex(mgras_test_display_pixel(from, 50, 60), ==, 0x000000ff);
 
@@ -6537,6 +6597,8 @@ int main(int argc, char **argv)
                    test_display_surface_conversion);
     qtest_add_func("sn0/origin2000/mgras/reset-refreshes-display-surface",
                    test_reset_refreshes_display_surface);
+    qtest_add_func("sn0/origin2000/mgras/cursor-position-origin",
+                   test_cursor_position_origin);
     qtest_add_func("sn0/origin2000/mgras/pseudocolor-scanout-looks-up-cmap",
                    test_pseudocolor_scanout_looks_up_cmap);
     qtest_add_func("sn0/origin2000/mgras/cmap-high-byte-packing",

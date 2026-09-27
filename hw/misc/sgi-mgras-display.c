@@ -8,6 +8,15 @@
 #define MGRAS_CURSOR_CMAP_INDEX 0x1c
 
 /*
+ * The VC3 cursor position registers hold the glyph's top-left pixel plus
+ * 31 on each axis: the stock IRIX 6.5.30 server writes the pointer position
+ * minus the hotspot plus 31, and the VC2's Linux console driver adds the
+ * same 31 to its cursor Y. See the cursor section of
+ * docs/datasheets/mgras-raster-display.md in the Origami repository.
+ */
+#define MGRAS_CURSOR_ORIGIN 31
+
+/*
  * The VC3 takes each pixel's window ID (the XMAP entry it resolves
  * through) from display-ID tables in its SRAM: register 4 points at the
  * main planes' frame table, register 5 at the overlay's. A frame table
@@ -168,10 +177,10 @@ static void mgras_composite_cursor(SGIMgrasState *s)
     uint32_t bg = 0x00ffffff;
 
     for (unsigned row = 0; row < 32; row++) {
-        uint32_t y = s->cursor_y + row;
+        int y = (int)s->cursor_y - MGRAS_CURSOR_ORIGIN + row;
         uint32_t mask_bits, sel_bits;
 
-        if (y >= SGI_MGRAS_HEIGHT) {
+        if (y < 0 || y >= SGI_MGRAS_HEIGHT) {
             continue;
         }
         mask_bits = ((uint32_t)s->vc3_sram[(base + row * 2) &
@@ -184,12 +193,12 @@ static void mgras_composite_cursor(SGIMgrasState *s)
                                (SGI_MGRAS_VC3_SRAM_WORDS - 1)];
 
         for (unsigned col = 0; col < 32; col++) {
-            uint32_t x = s->cursor_x + col;
+            int x = (int)s->cursor_x - MGRAS_CURSOR_ORIGIN + col;
             bool mask_bit = (mask_bits >> (31 - col)) & 1;
             bool sel_bit = (sel_bits >> (31 - col)) & 1;
             uint32_t rgb;
 
-            if (x >= SGI_MGRAS_WIDTH || (!mask_bit && !sel_bit)) {
+            if (x < 0 || x >= SGI_MGRAS_WIDTH || (!mask_bit && !sel_bit)) {
                 continue;
             }
             rgb = mask_bit ? ink : bg;
