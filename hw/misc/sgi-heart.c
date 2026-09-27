@@ -442,9 +442,10 @@ static void heart_realize(DeviceState *dev, Error **errp)
         uint64_t capacity = s->capacity[bank];
         g_autofree char *bank_name = g_strdup_printf("heart.bank%u", bank);
 
-        if (capacity != 0 && capacity != 128 * MiB &&
-            capacity != 256 * MiB) {
-            error_setg(errp, "HEART bank %u capacity must be 0, 128M or 256M",
+        if (capacity != 0 && capacity != 64 * MiB &&
+            capacity != 128 * MiB && capacity != 256 * MiB) {
+            error_setg(errp,
+                       "HEART bank %u capacity must be 0, 64M, 128M or 256M",
                        bank);
             return;
         }
