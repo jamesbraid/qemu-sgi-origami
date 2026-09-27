@@ -1610,8 +1610,8 @@ static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
                                                    node->xbridge_widgets[i]);
 
         if (!face) {
-            error_setg(errp, "XBridge widget %u has no crosstalk face",
-                      node->xbridge_widgets[i]);
+            error_setg(errp, "XBridge widget %u has no XIO face",
+                       node->xbridge_widgets[i]);
             return false;
         }
         object_property_set_link(OBJECT(node->bedrock), property,
@@ -1705,13 +1705,13 @@ static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
         bedrock_state = SGI_BEDROCK(node->bedrock);
         pi1 = sysbus_mmio_get_region(SYS_BUS_DEVICE(&bedrock_state->pi[1]), 0);
 
-        memory_region_init_alias(&node->cpu_local_pi_xtalk[cpu], OBJECT(node),
-                                 "sn1.cpu.local-pi-xtalk", pi1, 0,
+        memory_region_init_alias(&node->cpu_local_pi_xio[cpu], OBJECT(node),
+                                 "sn1.cpu.local-pi-xio", pi1, 0,
                                  SGI_BEDROCK_PI_SIZE);
         /* Above the claim layer's reader-local register form (priority 1). */
         memory_region_add_subregion_overlap(&node->cpu_sysmem[cpu],
                                             SN1_BEDROCK_LOCAL_ADDRESS,
-                                            &node->cpu_local_pi_xtalk[cpu], 2);
+                                            &node->cpu_local_pi_xio[cpu], 2);
     }
     memory_region_add_subregion(
         system, sn1_node_address(node, SN1_HUB_REMOTE_REGISTERS_ADDRESS),

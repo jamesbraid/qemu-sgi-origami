@@ -618,14 +618,14 @@ static MemTxResult ii_inbound_register(SGIBedrockIOState *s, hwaddr address,
     SGIBedrockIOState *target = ii_serving(s, node);
 
     if (!target) {
-        qemu_log_mask(LOG_GUEST_ERROR, "sgi-bedrock-io: crosstalk register "
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-bedrock-io: XIO register "
                       "access to node %u arrives nowhere\n", node);
         return MEMTX_DECODE_ERROR;
     }
     /* Another node's packet: that node's interface serves it as its own. */
     s = target;
     if ((window & ~II_XIO_HUB_MASK) != II_XIO_HUB_WINDOW) {
-        qemu_log_mask(LOG_UNIMP, "sgi-bedrock-io: unsupported crosstalk "
+        qemu_log_mask(LOG_UNIMP, "sgi-bedrock-io: unsupported XIO "
                       "register access at 0x%" HWADDR_PRIx "\n", window);
         return MEMTX_DECODE_ERROR;
     }

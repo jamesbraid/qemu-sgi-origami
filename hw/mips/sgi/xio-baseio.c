@@ -134,7 +134,7 @@ static bool xio_baseio_build_widget(SGIXioBoardState *board, Error **errp)
     if (board->slot >= 32 ||
         !(identity->xio_widgets & SGI_BASEIO_XIO_WIDGET(board->slot))) {
         error_setg(errp, "sgi-xio-baseio preset '%s' cannot sit at "
-                  "crosstalk widget %u", s->preset, board->slot);
+                  "XIO widget %u", s->preset, board->slot);
         return false;
     }
     if (!identity->bridge_flash && s->flash_drive_id) {

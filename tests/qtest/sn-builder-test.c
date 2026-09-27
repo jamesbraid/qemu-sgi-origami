@@ -329,7 +329,7 @@ static void test_xio_baseio_fits_only_io1(const void *data)
     assert_device_refused("sgi-xio-baseio,preset=io6,module=0,slot=15,"
                           "fabric=/machine/io9-fabric[0]",
                           "sgi-xio-baseio preset 'io6' cannot sit at "
-                          "crosstalk widget 15");
+                          "XIO widget 15");
 }
 
 /*
@@ -1133,7 +1133,7 @@ static void test_node_without_xtalk_attachment_rejected(const void *data)
     };
 
     assert_qemu_rejects(args, "node 1 names no direct-attach I/O board or "
-                        "crosstalk attachment");
+                        "XIO attachment");
 }
 
 /*

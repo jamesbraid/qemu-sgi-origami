@@ -4233,7 +4233,7 @@ static bool sgi_hub_install_origin2000_bus_error(SGIHubState *s,
         }
     }
     address_space_init(&s->origin2000_xio_as, s->xio,
-                       "sgi-hub.origin2000-xtalk");
+                       "sgi-hub.origin2000-xio");
     for (slice = 0; slice < s->cpus; slice++) {
         g_autofree char *region_name = g_strdup_printf(
             "sgi-hub.cpu%u.origin2000-bus-error", slice);
@@ -4265,8 +4265,8 @@ static void sgi_hub_realize(DeviceState *dev, Error **errp)
     sgi_hub_assert_hot_reads_match_the_table();
 
     if (!s->xio) {
-        error_setg(errp, "the Hub needs the crosstalk space its big windows "
-                         "translate into");
+        error_setg(errp, "the Hub needs the XIO space its big windows "
+                   "translate into");
         return;
     }
     if (s->xio_io_space &&
@@ -4330,8 +4330,8 @@ static void sgi_hub_realize(DeviceState *dev, Error **errp)
         return;
     }
     if (!s->xio_widget_shift) {
-        error_setg(errp, "the Hub needs the widget stride of the crosstalk "
-                         "space its big windows translate into");
+        error_setg(errp, "the Hub needs the widget stride of the XIO "
+                   "space its big windows translate into");
         return;
     }
     if (!s->net_peer_count) {
@@ -4913,7 +4913,7 @@ static void sgi_hub_init(Object *obj)
 
 static const char *sgi_hub_xio_port_describe(Object *port, unsigned int index)
 {
-    return "the Hub's crosstalk port";
+    return "the Hub's I/O interface (II)";
 }
 
 static MemoryRegion *sgi_hub_xio_port_cpu_face(Object *port,
@@ -4933,11 +4933,11 @@ bool sgi_hub_set_xio_io_space(SGIHubState *s, MemoryRegion *target,
 {
     if (DEVICE(s)->realized) {
         error_setg(errp,
-                   "cannot connect the Hub's crosstalk port after realize");
+                   "cannot connect the Hub's I/O interface (II) after realize");
         return false;
     }
     if (s->xio_io_space) {
-        error_setg(errp, "the Hub's crosstalk port is already connected");
+        error_setg(errp, "the Hub's I/O interface (II) is already connected");
         return false;
     }
     s->xio_io_space = target;

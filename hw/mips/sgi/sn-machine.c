@@ -945,9 +945,9 @@ static bool sgi_machine_index_xtalk_attachments(
         unsigned int node_index = attachment->node_index;
 
         if (node_index >= node_count) {
-            error_setg(errp, "topology '%s' crosstalk attachment %zu names "
-                      "node %u, past its %zu nodes", t->name, i, node_index,
-                      node_count);
+            error_setg(errp, "topology '%s' XIO attachment %zu names "
+                       "node %u, past its %zu nodes", t->name, i, node_index,
+                       node_count);
             return false;
         }
         if (attachment->crossbar_index < 0) {
@@ -955,7 +955,7 @@ static bool sgi_machine_index_xtalk_attachments(
             claimed[node_index] = true;
             if (board >= io_board_count) {
                 error_setg(errp, "topology '%s' names more direct-attach or "
-                          "board-owning crosstalk attachments than its %zu "
+                          "board-owning XIO attachments than its %zu "
                           "io board(s)", t->name, io_board_count);
                 return false;
             }
@@ -968,7 +968,7 @@ static bool sgi_machine_index_xtalk_attachments(
         } else {
             if (board >= io_board_count) {
                 error_setg(errp, "topology '%s' names more direct-attach or "
-                          "board-owning crosstalk attachments than its %zu "
+                          "board-owning XIO attachments than its %zu "
                           "io board(s)", t->name, io_board_count);
                 return false;
             }
@@ -985,13 +985,13 @@ static bool sgi_machine_index_xtalk_attachments(
     for (i = 0; i < node_count; i++) {
         if (!claimed[i]) {
             error_setg(errp, "topology '%s' node %zu names no direct-attach "
-                      "I/O board or crosstalk attachment", t->name, i);
+                      "I/O board or XIO attachment", t->name, i);
             return false;
         }
     }
     if (board != io_board_count) {
         error_setg(errp, "topology '%s' names %zu io board(s) but only %u "
-                  "crosstalk attachment(s) own one", t->name,
+                  "XIO attachment(s) own one", t->name,
                   io_board_count, board);
         return false;
     }
@@ -2709,7 +2709,7 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
 
                 if (record->attachment >= attachment_count) {
                     error_setg(errp, "topology '%s' io board %u names "
-                              "attachment %u, past its %zu crosstalk "
+                              "attachment %u, past its %zu XIO "
                               "attachment(s)", t->name, board_index,
                               record->attachment, attachment_count);
                     return false;

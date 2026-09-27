@@ -564,7 +564,7 @@ static MemTxResult sgi_xbow_refuse(SGIXbowState *s, hwaddr addr,
     if (size == 8) {
         qemu_log_mask(LOG_UNIMP,
                       "sgi-xbow: eight-byte %s at 0x%" HWADDR_PRIx " has no "
-                      "established crosstalk packet form; refusing rather "
+                      "established XIO packet form; refusing rather "
                       "than answering\n", is_write ? "write" : "read", addr);
         return MEMTX_ERROR;
     }
@@ -1405,8 +1405,8 @@ static void sgi_xbow_realize(DeviceState *dev, Error **errp)
         return;
     }
     if (!s->span || s->span > SGI_XBOW_PACKET_SIZE) {
-        error_setg(errp, "the crossbar needs the size of one crosstalk "
-                         "widget space, no larger than 48 address bits");
+        error_setg(errp, "the crossbar needs the size of one XIO "
+                   "widget space, no larger than 48 address bits");
         return;
     }
     if ((s->links_present_prop | s->startup_links_alive_prop |
@@ -1782,7 +1782,7 @@ static void sgi_xbow_class_init(ObjectClass *oc, const void *data)
     ResettableClass *rc = RESETTABLE_CLASS(oc);
     SGIXioPortClass *pc = SGI_XIO_PORT_CLASS(oc);
 
-    dc->desc = "SGI Crossbow crosstalk crossbar";
+    dc->desc = "SGI Crossbow XIO crossbar";
     dc->realize = sgi_xbow_realize;
     dc->unrealize = sgi_xbow_unrealize;
     dc->vmsd = &vmstate_sgi_xbow;

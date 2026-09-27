@@ -71,7 +71,7 @@ static void sgi_xio_test_board_class_init(ObjectClass *oc, const void *data)
     DeviceClass *dc = DEVICE_CLASS(oc);
     SGIXioBoardClass *bc = SGI_XIO_BOARD_CLASS(oc);
 
-    dc->desc = "Crosstalk test board, widget sgi-xio-test-target";
+    dc->desc = "XIO test board, widget sgi-xio-test-target";
     dc->user_creatable = true;
     bc->build_widget = sgi_xio_test_board_build_widget;
 }
@@ -267,7 +267,7 @@ static void sgi_xio_board_fixture_class_init(ObjectClass *oc,
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
 
-    dc->desc = "Crosstalk board deferred-attach test fixture";
+    dc->desc = "XIO board deferred-attach test fixture";
     dc->realize = sgi_xio_board_fixture_realize;
     dc->vmsd = &vmstate_sgi_xio_board_fixture;
     dc->user_creatable = true;
