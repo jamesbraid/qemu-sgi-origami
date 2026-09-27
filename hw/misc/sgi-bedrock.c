@@ -368,6 +368,10 @@ static bool bedrock_hold_ready(SGIBedrockState *s, unsigned int slot,
         /* A partner, parked until its own interface's publisher is done. */
         return s->presence_abandoned ||
                s->presence_released[slot / SGI_BEDROCK_PI_PROCESSORS];
+    case SGI_BEDROCK_HOLD_LIVENESS:
+        /* A poster, parked until its partner (the other slot) posts too. */
+        return s->presence_posted[slot ^ 1] ||
+               !bedrock_hold_slot_running(s, slot ^ 1);
     case SGI_BEDROCK_HOLD_SCRATCH1:
     default:
         return bedrock_hold_scratch1_ready(s);
@@ -440,6 +444,8 @@ static const char *bedrock_hold_kind_name(SGIBedrockHoldKind kind)
         return "presence";
     case SGI_BEDROCK_HOLD_PARTNER:
         return "partner";
+    case SGI_BEDROCK_HOLD_LIVENESS:
+        return "liveness";
     case SGI_BEDROCK_HOLD_SCRATCH1:
     default:
         return "scratch1";
@@ -777,8 +783,9 @@ static void bedrock_park_expire(void *opaque)
 
     for (unsigned int slot = 0; slot < SGI_BEDROCK_PROCESSORS; slot++) {
         if (s->park_kind[slot] && now >= s->park_deadline[slot]) {
+            /* A liveness park's partner never posting ends only that park. */
+            expired |= s->park_kind[slot] != SGI_BEDROCK_HOLD_LIVENESS;
             bedrock_park_release(s, slot, "timed out");
-            expired = true;
         }
     }
     if (expired) {
@@ -898,10 +905,33 @@ void sgi_bedrock_rt_compare_written(SGIBedrockState *s,
      */
     if (cslot < 0 ||
         (unsigned int)cslot != interface * SGI_BEDROCK_PI_PROCESSORS + slot ||
-        !s->hold_scratch1_joined[cslot]) {
+        !s->hold_scratch1_joined[cslot] || s->presence_posted[cslot]) {
         return;
     }
     s->presence_posted[cslot] = true;
+
+    /* A partner parked on its own liveness post re-checks. */
+    bedrock_park_recheck(s);
+
+    /*
+     * The pair liveness park. Each processor of a pair posts here and then
+     * polls its partner's register for the post, for 200,000 reads; a
+     * poller that gives up clears its partner's CPU enable, and the PROM
+     * reports the partner as "CPU failed early init". On hardware both
+     * processors reach the post off one clock, microseconds apart. In the
+     * model each runs its multi-second cache initialisation on its own host
+     * thread, and the partner can post after the poll has run out. So the
+     * first of a pair to post is parked, its post already stored, until its
+     * partner posts; both polls then succeed at once. A partner that never
+     * posts releases it at the bound, and the PROM disables that partner as
+     * it would a dead one. Nothing guest-visible changes.
+     */
+    if (bedrock_park_slot(s) != cslot ||
+        bedrock_hold_ready(s, (unsigned int)cslot,
+                           SGI_BEDROCK_HOLD_LIVENESS)) {
+        return;
+    }
+    bedrock_park_start(s, (unsigned int)cslot, SGI_BEDROCK_HOLD_LIVENESS);
 }
 
 void sgi_bedrock_rt_counter_read(SGIBedrockState *s)
