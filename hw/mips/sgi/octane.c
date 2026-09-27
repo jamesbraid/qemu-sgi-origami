@@ -26,7 +26,6 @@
 #include "hw/pci-host/sgi-bridge.h"
 #include "hw/pci/pci.h"
 #include "hw/scsi/qlogic-isp.h"
-#include "migration/vmstate.h"
 #include "system/address-spaces.h"
 #include "system/system.h"
 #include "target/mips/cpu.h"
@@ -40,112 +39,45 @@
 #define OCTANE_HEART_BANK0_DESC 0x80030000U
 #define OCTANE_PHYSICAL_SPAN (1ULL << 40)
 #define OCTANE_ATTR0_BASE (1ULL << 40)
-#define OCTANE_MPCONF_BASE 0x600
-#define OCTANE_MPCONF_SIZE 0x80
+#define OCTANE_LOW_RAM_SIZE 0x2000
+#define OCTANE_HIGH_GUARD_BASE 0x20000000ULL
+#define OCTANE_HIGH_GUARD_SIZE 0x4000
 
 typedef struct OctaneMachineState {
     MachineState parent;
-    MemoryRegion mpconf_region;
-    /* Synthetic; physical backing and reset contents are unknown. */
-    uint8_t mpconf[OCTANE_MPCONF_SIZE];
+    MemoryRegion low_ram;
+    MemoryRegion high_guard;
 } OctaneMachineState;
 
-static bool octane_mpconf_accept(hwaddr addr, unsigned size, bool write)
+static MemTxResult octane_high_guard_read(void *opaque, hwaddr addr,
+                                          uint64_t *value, unsigned size,
+                                          MemTxAttrs attrs)
 {
-    if ((size == 2 || size == 4 || size == 8) &&
-        !(addr & (size - 1)) && addr <= OCTANE_MPCONF_SIZE - size) {
-        return true;
-    }
-    qemu_log_mask(LOG_GUEST_ERROR,
-                  "octane: unsupported %u-byte MPCONF %s at physical "
-                  "0x%" HWADDR_PRIx "\n", size, write ? "write" : "read",
-                  OCTANE_MPCONF_BASE + addr);
-    return false;
+    qemu_log_mask(LOG_UNIMP, "octane: unsupported %u-byte read at "
+                  "physical 0x%" HWADDR_PRIx "\n", size,
+                  (hwaddr)(OCTANE_HIGH_GUARD_BASE + addr));
+    *value = 0;
+    return MEMTX_ERROR;
 }
 
-static MemTxResult octane_mpconf_read(void *opaque, hwaddr addr,
-                                     uint64_t *value, unsigned size,
-                                     MemTxAttrs attrs)
+static MemTxResult octane_high_guard_write(void *opaque, hwaddr addr,
+                                           uint64_t value, unsigned size,
+                                           MemTxAttrs attrs)
 {
-    OctaneMachineState *s = opaque;
-    uint64_t result = 0;
-
-    if (!octane_mpconf_accept(addr, size, false)) {
-        *value = 0;
-        return MEMTX_ERROR;
-    }
-    for (unsigned i = 0; i < size; i++) {
-        result = (result << 8) | s->mpconf[addr + i];
-    }
-    *value = result;
-    return MEMTX_OK;
+    qemu_log_mask(LOG_UNIMP, "octane: unsupported %u-byte write at "
+                  "physical 0x%" HWADDR_PRIx "\n", size,
+                  (hwaddr)(OCTANE_HIGH_GUARD_BASE + addr));
+    return MEMTX_ERROR;
 }
 
-static MemTxResult octane_mpconf_write(void *opaque, hwaddr addr,
-                                      uint64_t value, unsigned size,
-                                      MemTxAttrs attrs)
-{
-    OctaneMachineState *s = opaque;
-
-    if (!octane_mpconf_accept(addr, size, true)) {
-        return MEMTX_ERROR;
-    }
-    for (unsigned i = 0; i < size; i++) {
-        s->mpconf[addr + i] = value >> (8 * (size - i - 1));
-    }
-    return MEMTX_OK;
-}
-
-static const MemoryRegionOps octane_mpconf_ops = {
-    .read_with_attrs = octane_mpconf_read,
-    .write_with_attrs = octane_mpconf_write,
+static const MemoryRegionOps octane_high_guard_ops = {
+    .read_with_attrs = octane_high_guard_read,
+    .write_with_attrs = octane_high_guard_write,
     .endianness = DEVICE_BIG_ENDIAN,
     .valid = { .min_access_size = 1, .max_access_size = 8,
                .unaligned = true },
     .impl = { .min_access_size = 1, .max_access_size = 8,
               .unaligned = true },
-};
-
-static const VMStateDescription vmstate_octane_mpconf = {
-    .name = "octane/mpconf",
-    .version_id = 1,
-    .minimum_version_id = 1,
-    .fields = (const VMStateField[]) {
-        VMSTATE_UINT8_ARRAY(mpconf, OctaneMachineState, OCTANE_MPCONF_SIZE),
-        VMSTATE_END_OF_LIST()
-    },
-};
-
-static MemTxResult octane_physical_zero_read(void *opaque, hwaddr addr,
-                                             uint64_t *value, unsigned size,
-                                             MemTxAttrs attrs)
-{
-    if (addr == 0 && size == 8) {
-        /* Synthetic zero for this profile; the physical response is unknown. */
-        *value = 0;
-        return MEMTX_OK;
-    }
-    qemu_log_mask(LOG_UNIMP, "octane: unsupported %u-byte read at "
-                  "physical 0x%" HWADDR_PRIx "\n", size, addr);
-    *value = 0;
-    return MEMTX_ERROR;
-}
-
-static MemTxResult octane_physical_zero_write(void *opaque, hwaddr addr,
-                                              uint64_t value, unsigned size,
-                                              MemTxAttrs attrs)
-{
-    qemu_log_mask(LOG_UNIMP, "octane: unsupported %u-byte write at "
-                  "physical 0x%" HWADDR_PRIx "\n", size, addr);
-    return MEMTX_ERROR;
-}
-
-static const MemoryRegionOps octane_physical_zero_ops = {
-    .read_with_attrs = octane_physical_zero_read,
-    .write_with_attrs = octane_physical_zero_write,
-    .endianness = DEVICE_BIG_ENDIAN,
-    .valid = { .min_access_size = 1, .max_access_size = 8 },
-    .impl = { .min_access_size = 1, .max_access_size = 8 },
 };
 
 static uint64_t octane_flash_read(void *opaque, hwaddr addr, unsigned size)
@@ -182,7 +114,8 @@ static void octane_reset(MachineState *machine, ResetType type)
     CPUState *cpu;
 
     qemu_devices_reset(type);
-    memset(s->mpconf, 0, sizeof(s->mpconf));
+    memset(memory_region_get_ram_ptr(&s->low_ram), 0, OCTANE_LOW_RAM_SIZE);
+    memory_region_set_dirty(&s->low_ram, 0, OCTANE_LOW_RAM_SIZE);
     stl_be_p(descriptor, OCTANE_HEART_BANK0_DESC);
     if (address_space_write(&address_space_memory,
                             OCTANE_HEART_REGS + 0x20,
@@ -235,7 +168,6 @@ static void octane_init(MachineState *machine)
     SGIXbowState *crossbow = SGI_XBOW(xbow);
     MemoryRegion *system = get_system_memory();
     MemoryRegion *physical = g_new0(MemoryRegion, 1);
-    MemoryRegion *physical_zero = g_new0(MemoryRegion, 1);
     MemoryRegion *attr0 = g_new0(MemoryRegion, 1);
     MemoryRegion *firmware = g_new0(MemoryRegion, 1);
     MemoryRegion *proxy = g_new0(MemoryRegion, 1);
@@ -289,15 +221,9 @@ static void octane_init(MachineState *machine)
     memory_region_init(physical, OBJECT(machine), "octane.physical",
                        OCTANE_PHYSICAL_SPAN);
     memory_region_add_subregion(system, 0, physical);
-    memory_region_init_io(physical_zero, OBJECT(machine),
-                          &octane_physical_zero_ops, NULL,
-                          "octane.physical-zero", 8);
-    memory_region_add_subregion(physical, 0, physical_zero);
-    memory_region_init_io(&s->mpconf_region, OBJECT(machine),
-                          &octane_mpconf_ops, s, "octane.mpconf",
-                          OCTANE_MPCONF_SIZE);
-    memory_region_add_subregion(physical, OCTANE_MPCONF_BASE,
-                                &s->mpconf_region);
+    memory_region_init_ram(&s->low_ram, NULL, "octane.low-ram",
+                           OCTANE_LOW_RAM_SIZE, &error_fatal);
+    memory_region_add_subregion(physical, 0, &s->low_ram);
     memory_region_init_alias(attr0, OBJECT(machine), "octane.attr0",
                              physical, 0, OCTANE_PHYSICAL_SPAN);
     memory_region_add_subregion(system, OCTANE_ATTR0_BASE, attr0);
@@ -307,6 +233,12 @@ static void octane_init(MachineState *machine)
     object_property_set_link(OBJECT(heart), "cpu-memory", OBJECT(physical),
                              &error_fatal);
     sysbus_realize(SYS_BUS_DEVICE(heart), &error_fatal);
+    memory_region_init_io(&s->high_guard, OBJECT(machine),
+                          &octane_high_guard_ops, s, "octane.high-guard",
+                          OCTANE_HIGH_GUARD_SIZE);
+    /* Override every bank view while leaving the rest of SDRAM mapped. */
+    memory_region_add_subregion_overlap(physical, OCTANE_HIGH_GUARD_BASE,
+                                        &s->high_guard, HEART_BANKS + 1);
     memory_region_add_subregion(
         physical, OCTANE_HEART_REGS,
         sysbus_mmio_get_region(SYS_BUS_DEVICE(heart), 0));
@@ -366,10 +298,6 @@ static void octane_init(MachineState *machine)
     memory_region_add_subregion(physical, OCTANE_LONG_BRIDGE, long_view);
 
     octane_fit_pci(machine, SGI_BRIDGE(bridge));
-    if (vmstate_register(NULL, 0, &vmstate_octane_mpconf, s) < 0) {
-        error_setg(&error_fatal,
-                   "octane cannot register MPCONF migration state");
-    }
 }
 
 static void octane_class_init(ObjectClass *oc, const void *data)
