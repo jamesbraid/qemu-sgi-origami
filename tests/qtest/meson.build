@@ -98,6 +98,10 @@ slow_qtests = {
   # thirteen cases. Measured 27.53s beside two other suites at host load
   # 60; allow three times that, rounded up.
   'sn1-cross-node-test': 90,
+  # sn1-presence-test boots the four processors for each of its twelve
+  # cases, and its three silent-partner cases each wait out the model's 2 s
+  # park bound. Measured 75.33s alone; allow three times that, rounded up.
+  'sn1-presence-test': 240,
   # The merged 75-case MD file measured 79.48s alone under a 136 host load.
   # Its 60s default timed out during a six-test run. Allow three times that.
   'sn1-bedrock-md-test': 240,
