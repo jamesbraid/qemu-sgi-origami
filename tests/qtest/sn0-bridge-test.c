@@ -3217,12 +3217,13 @@ static void test_an_inbound_link_reset_stops_at_the_pci_side(const void *data)
 #define WIDGET_SHIFT    48
 
 /*
- * The Hub window an interrupt packet is addressed into with no widget field,
- * and the node stride its destination's node number is multiplied by.
+ * The Hub window a flat head's interrupt destination names, and the address
+ * bit a pin's host-address field puts node one at: the field supplies
+ * address bits 47:38, so its low bit is address bit 38.
  */
 #define HUB_WINDOW      0x01800000ULL
 #define HUB_INT_MODIFY  0x90
-#define NODE_SHIFT      32
+#define NODE_SHIFT      38
 #define NODE1_BASE      (HUB_WINDOW + (1ULL << NODE_SHIFT))
 
 /* Where the interrupt packets land, clear of the transfers above. */
@@ -3304,8 +3305,7 @@ static QTestState *head_start_with(unsigned int widget_shift, const char *extra)
         "-device sgi-xio-test-target,id=pin,size=1M "
         "-device sgi-xio-test-target,id=replaced,size=1M "
         "-device sgi-bridge,id=bridge,board-part=" BOARD_PART ","
-        "fabric=/machine/unattached/system[0],"
-        "fabric-node-shift=" stringify(NODE_SHIFT) "%s "
+        "fabric=/machine/unattached/system[0]%s "
         "-device sgi-bridge-dma-test,bus=pci,addr=%d %s",
         option, CARD_SLOT, extra);
 
@@ -3478,14 +3478,15 @@ static void drive_the_pin(QTestState *qts, int level)
 }
 
 /*
- * A pin's packet is addressed into the Hub window of the node its own
- * host-address register names, and carries that register's bit number with
- * data bit 8 set.
+ * With no widget field a pin's packet still goes where the widget-level
+ * destination pair points, flat at the fabric's base, and carries the pin's
+ * own bit number with data bit 8 set.
  */
-static void test_a_pin_packet_addresses_the_named_node(void)
+static void test_a_flat_pin_packet_lands_at_its_destination(void)
 {
     QTestState *qts = head_start(0);
 
+    aim_the_destination(qts, 0, 0, HUB_WINDOW + HUB_INT_MODIFY);
     route_the_pin(qts, 0);
     qtest_writel(qts, WIDGET_REG(BRIDGE_INT_ENABLE), 1u << PIN);
 
@@ -3503,12 +3504,15 @@ static void test_a_pin_packet_addresses_the_named_node(void)
     qtest_quit(qts);
 }
 
-/* The node the register names is multiplied by the node stride, not
- * ignored. */
-static void test_a_pin_host_address_selects_a_node(void)
+/*
+ * A pin's host-address field replaces address bits 47:38 on a flat head
+ * too, rather than naming a node the head multiplies out itself.
+ */
+static void test_a_flat_pin_host_address_replaces_the_top_bits(void)
 {
     QTestState *qts = head_start(0);
 
+    aim_the_destination(qts, 0, 0, HUB_WINDOW + HUB_INT_MODIFY);
     route_the_pin(qts, 1);
     qtest_writel(qts, WIDGET_REG(BRIDGE_INT_ENABLE), 1u << PIN);
 
@@ -4107,10 +4111,10 @@ int main(int argc, char **argv)
                     test_transfers_land_at_their_offset);
     qtest_add_func("sn0/bridge/widget/transfer-widgets",
                     test_transfers_carry_their_target_widget);
-    qtest_add_func("sn0/bridge/widget/pin-node",
-                    test_a_pin_packet_addresses_the_named_node);
-    qtest_add_func("sn0/bridge/widget/pin-node-stride",
-                    test_a_pin_host_address_selects_a_node);
+    qtest_add_func("sn0/bridge/widget/pin-flat-destination",
+                    test_a_flat_pin_packet_lands_at_its_destination);
+    qtest_add_func("sn0/bridge/widget/pin-flat-host-bits",
+                    test_a_flat_pin_host_address_replaces_the_top_bits);
     qtest_add_func("sn0/bridge/widget/error-destination",
                     test_a_chip_error_uses_the_widget_destination);
     qtest_add_func("sn0/bridge/widget/pin-widget",

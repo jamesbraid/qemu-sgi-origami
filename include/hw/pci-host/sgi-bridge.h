@@ -327,24 +327,22 @@ struct SGIBridgeState {
     AddressSpace lane_swap_as;
 
     /*
-     * The fabric interrupt packets travel: a pin rise is a write to the
-     * destination Hub's interrupt-modify register through the machine's own
-     * address space, never a direct call. The machine supplies the two
-     * constants that compose its addresses.
+     * The fabric DMA and interrupt packets travel: a pin rise is a write
+     * to the address its destination names, through the link's own address
+     * space, never a direct call.
      */
     MemoryRegion *fabric;
     AddressSpace fabric_as;
-    uint64_t fabric_base;
-    uint32_t fabric_node_shift;
 
     /*
-     * The fixed four bits above a packet address used for the destination
-     * widget. XIO carries that number in a packet header beside the
-     * address; a QEMU address space has no header, so a machine with a switch
-     * to route through has to make room for it in the address itself. Zero
-     * means it makes none, which is the answer for a chip with one peer on
-     * the other end of its link.
+     * How a (widget, XIO address) pair becomes a fabric address. An XIO
+     * packet carries the destination widget in its header beside the
+     * address; a QEMU address space has no header, so a link makes room
+     * for it in bits 51:48 (fabric_widget_shift 48). With no widget field
+     * (shift 0) the pair lands flat at fabric_base plus the address, the
+     * form a device-level test uses with system memory as the fabric.
      */
+    uint64_t fabric_base;
     uint32_t fabric_widget_shift;
 
     /* The QOM identity of this Bridge's PCI root bus. */

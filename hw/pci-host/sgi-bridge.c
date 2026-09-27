@@ -1633,14 +1633,9 @@ static int sgi_bridge_map_irq(PCIDevice *dev, int pin)
  */
 #define INT_HOST_ADDR_SHIFT     8
 #define INT_HOST_ADDR_BITS      10
-#define XIO_NODE_SHIFT          38
-#define XIO_NODE_MASK           0x1ffu
+#define XIO_HOST_ADDR_SHIFT     38
 
-/*
- * Where the Hub's interrupt-modify register sits inside a node's Hub window.
- */
-#define HUB_NODE_WINDOW         0x01800000
-#define HUB_INT_MODIFY          0x90
+/* The host's interrupt register: data bit 8 selects raise. */
 #define HUB_INT_MODIFY_SET      0x100
 
 /* A write to the host's interrupt register; data bit 8 selects raise. */
@@ -1653,13 +1648,17 @@ static void sgi_bridge_deliver_interrupt(SGIBridgeState *s, hwaddr where,
                       NULL);
 }
 
-/* Keep the packet header's widget separate from its complete address. */
+/*
+ * A (widget, XIO address) pair as the fabric address it travels at: the
+ * widget in the header bits a link makes room for, or with none, flat
+ * at the fabric's base.
+ */
 static bool sgi_bridge_compose_xio(SGIBridgeState *s,
                                    unsigned int widget, hwaddr address,
                                    hwaddr *fabric)
 {
     if (!s->fabric_widget_shift) {
-        *fabric = address;
+        *fabric = s->fabric_base + address;
         return true;
     }
     if (widget >= (1U << SGI_BRIDGE_WIDGET_BITS) ||
@@ -1673,21 +1672,6 @@ static bool sgi_bridge_compose_xio(SGIBridgeState *s,
     return true;
 }
 
-/*
- * Where a packet lands when the machine spends no bits on a widget: the Hub
- * window of the node the destination names. This substitutes a fixed window
- * offset for the address the guest programmed, so it is an approximation of
- * the chip rather than the composition below, one that agrees with the chip
- * because the guests we run point the destination pair at the Hub's own
- * interrupt-modify register. It is what this model did before the widget
- * field existed and it is kept unchanged.
- */
-static hwaddr sgi_bridge_node_packet(SGIBridgeState *s, unsigned int node,
-                                     uint64_t offset)
-{
-    return s->fabric_base + ((uint64_t)node << s->fabric_node_shift) + offset;
-}
-
 /* The widget-level destination pair: one XIO address and its widget. */
 static uint64_t sgi_bridge_int_dest(SGIBridgeState *s, unsigned int *widget)
 {
@@ -1698,6 +1682,10 @@ static uint64_t sgi_bridge_int_dest(SGIBridgeState *s, unsigned int *widget)
     return ((uint64_t)(upper & INT_DEST_ADDRESS_UPPER) << 32) | lower;
 }
 
+/*
+ * A pin's packet goes to the widget-level destination pair, with the
+ * pin's own host-address field in place of the destination's bits 47:38.
+ */
 static void sgi_bridge_send_interrupt(SGIBridgeState *s, int pin, bool set)
 {
     uint32_t host = s->reg[SGI_BRIDGE_SLOT(BRIDGE_INT_HOST(pin))];
@@ -1714,18 +1702,12 @@ static void sgi_bridge_send_interrupt(SGIBridgeState *s, int pin, bool set)
         return;
     }
 
-    if (s->fabric_widget_shift) {
-        /* The pin's own bits replace the destination's, they do not join. */
-        dest = sgi_bridge_int_dest(s, &widget);
-        dest = deposit64(dest, XIO_NODE_SHIFT, INT_HOST_ADDR_BITS, address);
-        if (!sgi_bridge_compose_xio(s, widget, dest, &where)) {
-            return;
-        }
-    } else {
-        where = sgi_bridge_node_packet(s, address & XIO_NODE_MASK,
-                                       HUB_NODE_WINDOW + HUB_INT_MODIFY);
+    /* The pin's own bits replace the destination's, they do not join. */
+    dest = sgi_bridge_int_dest(s, &widget);
+    dest = deposit64(dest, XIO_HOST_ADDR_SHIFT, INT_HOST_ADDR_BITS, address);
+    if (!sgi_bridge_compose_xio(s, widget, dest, &where)) {
+        return;
     }
-
     sgi_bridge_deliver_interrupt(s, where, host & INT_HOST_FIELD, set);
 }
 
@@ -1739,10 +1721,10 @@ static void sgi_bridge_raise_host_error(SGIBridgeState *s)
     hwaddr where;
 
     /*
-     * An unrouted error is one nobody asked for. Under a widget field this
-     * also refuses widget W at XIO address zero, which a guest could
-     * legitimately program: the guard predates the field and the register
-     * description is silent about it, so it stays as it was.
+     * An unrouted error is one nobody asked for. This also refuses widget
+     * W at XIO address zero, which a guest could legitimately program:
+     * the guard predates the widget field and the register description is
+     * silent about it, so it stays as it was.
      */
     if (!dest) {
         qemu_log_mask(LOG_GUEST_ERROR,
@@ -1750,17 +1732,9 @@ static void sgi_bridge_raise_host_error(SGIBridgeState *s)
                       "programmed; no packet sent\n");
         return;
     }
-
-    if (s->fabric_widget_shift) {
-        if (!sgi_bridge_compose_xio(s, widget, dest, &where)) {
-            return;
-        }
-    } else {
-        where = sgi_bridge_node_packet(
-            s, (dest >> XIO_NODE_SHIFT) & XIO_NODE_MASK,
-            dest & MAKE_64BIT_MASK(0, XIO_NODE_SHIFT));
+    if (!sgi_bridge_compose_xio(s, widget, dest, &where)) {
+        return;
     }
-
     sgi_bridge_deliver_interrupt(s, where, number, true);
 }
 
@@ -2548,12 +2522,10 @@ static const Property sgi_bridge_properties[] = {
     DEFINE_PROP_LINK("fabric", SGIBridgeState, fabric, TYPE_MEMORY_REGION,
                      MemoryRegion *),
     DEFINE_PROP_UINT64("fabric-base", SGIBridgeState, fabric_base, 0),
-    DEFINE_PROP_UINT32("fabric-node-shift", SGIBridgeState,
-                       fabric_node_shift, 0),
     /*
      * Which four bits of a fabric address keep the destination widget. Zero
-     * means the machine keeps none, so this belongs with fabric-base and
-     * fabric-node-shift rather than taking the Hub's xio-widget-shift name,
+     * means the fabric keeps none, so this belongs with fabric-base rather
+     * than taking the Hub's xio-widget-shift name,
      * where zero is refused because it has no such meaning.
      */
     DEFINE_PROP_UINT32("fabric-widget-shift", SGIBridgeState,
