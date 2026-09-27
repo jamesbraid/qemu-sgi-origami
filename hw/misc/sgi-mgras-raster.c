@@ -729,8 +729,8 @@ static bool mgras_clipped(SGIMgrasState *s, unsigned int idx)
 {
     uint32_t cx = s->rss[MGRAS_RSS_CLIP_X];
     uint32_t cy = s->rss[MGRAS_RSS_CLIP_Y];
-    unsigned int x = idx % SGI_MGRAS_WIDTH;
-    unsigned int row = SGI_MGRAS_HEIGHT - 1 - idx / SGI_MGRAS_WIDTH;
+    unsigned int x = idx % s->width;
+    unsigned int row = s->height - 1 - idx / s->width;
 
     if (s->rss[MGRAS_RSS_CLIP_MODE] != MGRAS_CLIP_MODE_ON) {
         return false;
@@ -782,19 +782,19 @@ static void mgras_put_overlay(SGIMgrasState *s, unsigned int idx,
 
 
 /* Normalize corners and clip. Returns false when nothing is visible. */
-static bool mgras_rect_bounds(uint32_t xy0, uint32_t xy1, int *x_lo, int *y_lo,
-                           int *x_hi, int *y_hi)
+static bool mgras_rect_bounds(SGIMgrasState *s, uint32_t xy0, uint32_t xy1,
+                              int *x_lo, int *y_lo, int *x_hi, int *y_hi)
 {
     int x0 = (xy0 >> 16) & 0xffff, y0 = xy0 & 0xffff;
     int x1 = (xy1 >> 16) & 0xffff, y1 = xy1 & 0xffff;
 
     *x_lo = MIN(x0, x1);
     *y_lo = MIN(y0, y1);
-    if (*x_lo >= SGI_MGRAS_WIDTH || *y_lo >= SGI_MGRAS_HEIGHT) {
+    if (*x_lo >= s->width || *y_lo >= s->height) {
         return false;
     }
-    *x_hi = MIN(MAX(x0, x1), SGI_MGRAS_WIDTH - 1);
-    *y_hi = MIN(MAX(y0, y1), SGI_MGRAS_HEIGHT - 1);
+    *x_hi = MIN(MAX(x0, x1), s->width - 1);
+    *y_hi = MIN(MAX(y0, y1), s->height - 1);
     return true;
 }
 
@@ -805,12 +805,12 @@ static void mgras_fill_rect(SGIMgrasState *s, uint32_t xy0, uint32_t xy1,
 {
     int x_lo, y_lo, x_hi, y_hi;
 
-    if (!mgras_rect_bounds(xy0, xy1, &x_lo, &y_lo, &x_hi, &y_hi)) {
+    if (!mgras_rect_bounds(s, xy0, xy1, &x_lo, &y_lo, &x_hi, &y_hi)) {
         return;
     }
     for (int y = y_lo; y <= y_hi; y++) {
         for (int x = x_lo; x <= x_hi; x++) {
-            mgras_put_pixel(s, y * SGI_MGRAS_WIDTH + x, color, op, mask, format);
+            mgras_put_pixel(s, y * s->width + x, color, op, mask, format);
         }
     }
 }
@@ -821,12 +821,12 @@ static void mgras_fill_overlay_rect(SGIMgrasState *s, uint32_t xy0,
 {
     int x_lo, y_lo, x_hi, y_hi;
 
-    if (!mgras_rect_bounds(xy0, xy1, &x_lo, &y_lo, &x_hi, &y_hi)) {
+    if (!mgras_rect_bounds(s, xy0, xy1, &x_lo, &y_lo, &x_hi, &y_hi)) {
         return;
     }
     for (int y = y_lo; y <= y_hi; y++) {
         for (int x = x_lo; x <= x_hi; x++) {
-            mgras_put_overlay(s, y * SGI_MGRAS_WIDTH + x, index, op);
+            mgras_put_overlay(s, y * s->width + x, index, op);
         }
     }
 }
@@ -902,13 +902,13 @@ static void mgras_draw_glyph_row(SGIMgrasState *s)
     int y = y0 + s->glyph_row;
     int width;
 
-    if (x0 > x1 || y0 > y1 || x0 >= SGI_MGRAS_WIDTH || y0 >= SGI_MGRAS_HEIGHT) {
+    if (x0 > x1 || y0 > y1 || x0 >= s->width || y0 >= s->height) {
         return;
     }
-    x1 = MIN(x1, SGI_MGRAS_WIDTH - 1);
-    y1 = MIN(y1, SGI_MGRAS_HEIGHT - 1);
+    x1 = MIN(x1, s->width - 1);
+    y1 = MIN(y1, s->height - 1);
     s->glyph_row++;
-    if (y > y1 || y >= SGI_MGRAS_HEIGHT) {
+    if (y > y1 || y >= s->height) {
         return;
     }
     width = MIN(x1 - x0 + 1, 64);
@@ -916,10 +916,10 @@ static void mgras_draw_glyph_row(SGIMgrasState *s)
         bool set = (bits >> (63 - i)) & 1;
 
         if (set) {
-            mgras_put_pixel(s, y * SGI_MGRAS_WIDTH + x0 + i, ink, op, mask,
+            mgras_put_pixel(s, y * s->width + x0 + i, ink, op, mask,
                         format);
             if (overlay) {
-                mgras_put_overlay(s, y * SGI_MGRAS_WIDTH + x0 + i,
+                mgras_put_overlay(s, y * s->width + x0 + i,
                                   mgras_overlay_ink(s), op);
             }
         }
@@ -967,17 +967,17 @@ static void mgras_draw_byte_row_bytes(SGIMgrasState *s, int x0, int x1,
     int skip = (row * pitch) % 8;
     int units_per_row = DIV_ROUND_UP(skip + width, 8);
 
-    if (y <= y1 && y < SGI_MGRAS_HEIGHT) {
+    if (y <= y1 && y < s->height) {
         for (int i = 0; i < 8; i++) {
             int col = s->glyph_unit * 8 + i - skip;
 
-            if (col < 0 || col >= width || x0 + col >= SGI_MGRAS_WIDTH) {
+            if (col < 0 || col >= width || x0 + col >= s->width) {
                 continue;
             }
-            mgras_put_pixel(s, y * SGI_MGRAS_WIDTH + x0 + col, bytes[i], op,
+            mgras_put_pixel(s, y * s->width + x0 + col, bytes[i], op,
                          mask, SGI_MGRAS_PIXEL_FORMAT_CI8);
             if (mgras_overlay_target(s)) {
-                mgras_put_overlay(s, y * SGI_MGRAS_WIDTH + x0 + col, bytes[i],
+                mgras_put_overlay(s, y * s->width + x0 + col, bytes[i],
                                   op);
             }
         }
@@ -1023,14 +1023,14 @@ static void mgras_draw_byte_row_pairs(SGIMgrasState *s, int x0, int x1,
     int y = y0 + row;
     int units_per_row = DIV_ROUND_UP(width, 2);
 
-    if (y <= y1 && y < SGI_MGRAS_HEIGHT) {
+    if (y <= y1 && y < s->height) {
         for (int i = 0; i < 2; i++) {
             int col = s->glyph_unit * 2 + i;
 
-            if (col >= width || x0 + col >= SGI_MGRAS_WIDTH) {
+            if (col >= width || x0 + col >= s->width) {
                 continue;
             }
-            mgras_put_pixel(s, y * SGI_MGRAS_WIDTH + x0 + col, pixels[i], op,
+            mgras_put_pixel(s, y * s->width + x0 + col, pixels[i], op,
                          mask, format);
             /*
              * Every captured overlay draw uses CI8 (the register file
@@ -1042,7 +1042,7 @@ static void mgras_draw_byte_row_pairs(SGIMgrasState *s, int x0, int x1,
              */
             if (mgras_overlay_target(s) &&
                 format == SGI_MGRAS_PIXEL_FORMAT_CI8) {
-                mgras_put_overlay(s, y * SGI_MGRAS_WIDTH + x0 + col,
+                mgras_put_overlay(s, y * s->width + x0 + col,
                                   pixels[i], op);
             }
         }
@@ -1068,11 +1068,11 @@ static void mgras_draw_byte_row(SGIMgrasState *s)
     uint8_t op = s->rss[MGRAS_RSS_PP1FILLMODE] >> 26;
     uint32_t packing = s->rss[MGRAS_RSS_BYTE_XFER_PACKING];
 
-    if (x0 > x1 || y0 > y1 || x0 >= SGI_MGRAS_WIDTH || y0 >= SGI_MGRAS_HEIGHT) {
+    if (x0 > x1 || y0 > y1 || x0 >= s->width || y0 >= s->height) {
         return;
     }
-    x1 = MIN(x1, SGI_MGRAS_WIDTH - 1);
-    y1 = MIN(y1, SGI_MGRAS_HEIGHT - 1);
+    x1 = MIN(x1, s->width - 1);
+    y1 = MIN(y1, s->height - 1);
 
     /*
      * The real xdm chooser ORs a row-padding field (bits 16:14) into this
@@ -1137,21 +1137,21 @@ static void mgras_draw_pio_pixel_pair(SGIMgrasState *s)
                       s->rss[MGRAS_RSS_PP1FILLMODE]);
         return;
     }
-    if (x0 > x1 || y0 > y1 || x0 >= SGI_MGRAS_WIDTH || y0 >= SGI_MGRAS_HEIGHT) {
+    if (x0 > x1 || y0 > y1 || x0 >= s->width || y0 >= s->height) {
         return;
     }
-    x1 = MIN(x1, SGI_MGRAS_WIDTH - 1);
-    y1 = MIN(y1, SGI_MGRAS_HEIGHT - 1);
+    x1 = MIN(x1, s->width - 1);
+    y1 = MIN(y1, s->height - 1);
 
     for (int i = 0; i < 2; i++) {
         int x = x0 + s->pio_x;
         int y = y0 + s->pio_y;
 
-        if (x > x1 || y > y1 || x >= SGI_MGRAS_WIDTH ||
-            y >= SGI_MGRAS_HEIGHT) {
+        if (x > x1 || y > y1 || x >= s->width ||
+            y >= s->height) {
             return;
         }
-        mgras_put_pixel(s, y * SGI_MGRAS_WIDTH + x, pixels[i], op, mask, format);
+        mgras_put_pixel(s, y * s->width + x, pixels[i], op, mask, format);
         s->pio_x++;
         if (x0 + s->pio_x > x1) {
             s->pio_x = 0;
@@ -1180,12 +1180,12 @@ static void mgras_draw_pio_pixel_pair(SGIMgrasState *s)
  * mgrasPolyFillRectSolid never writes XYWIN at all, which is why
  * BLOCKXYSTARTI/BLOCKXYENDI fills need no such adjustment.
  *
- * The y field is packed top-down (0 at the bottom, SGI_MGRAS_HEIGHT - 1
+ * The y field is packed top-down (0 at the bottom, s->height - 1
  * at the top of the window), the opposite sense from the framebuffer's
  * own top-down row order: adding it to a line/point's raw y unmodified
  * put the greeter's icon line art roughly 800 pixels too far down, past
  * the bottom of the window it was meant to land in. Flipping the field
- * with SGI_MGRAS_HEIGHT - 1 - oy before adding lines it up with the
+ * with s->height - 1 - oy before adding lines it up with the
  * measured on-screen geometry: XYWIN 0x03390146 (the capture's largest
  * cluster, 379 RE_LINE executes, raw y in [16, 113]) lands at
  * [214, 311], matching the EZsetup icon's own measured rect (y 214-312,
@@ -1200,14 +1200,14 @@ static void mgras_draw_pio_pixel_pair(SGIMgrasState *s)
  * position -- rather than the pre-fix ghost cluster near the origin or
  * the pre-fix placement roughly 800 pixels further down.
  *
- * The flip's magnitude (SGI_MGRAS_HEIGHT - 1, not some other constant)
+ * The flip's magnitude (s->height - 1, not some other constant)
  * is not capture-only: OpenBSD's impact(4) driver initializes XYWIN
  * exactly once, to IMPACTSR_YXCOORDS(0, 0x3ff) -- x field 0, y field
- * 0x3ff (1023, SGI_MGRAS_HEIGHT - 1) -- and 1,456 of the capture's 1,953
+ * 0x3ff (1023, s->height - 1) -- and 1,456 of the capture's 1,953
  * RE_LINE executes carry that same reset value, 0x03ff0000, while
  * drawing at their own already-correct absolute position (see the x != 0
  * gate above). That reset value is exactly the flip's fixed point --
- * SGI_MGRAS_HEIGHT - 1 - 0x3ff == 0 -- which is why leaving x's own gate
+ * s->height - 1 - 0x3ff == 0 -- which is why leaving x's own gate
  * on ox != 0 already excludes it: at oy == 0x3ff the corrected y term is
  * a no-op even if it were applied unconditionally. The driver never
  * exercises a nonzero-x window itself, so it settles the fixed point and
@@ -1222,30 +1222,30 @@ static void mgras_apply_window_origin(SGIMgrasState *s, int *x, int *y)
 
     if (ox != 0) {
         *x += ox;
-        *y += (SGI_MGRAS_HEIGHT - 1) - oy;
+        *y += (s->height - 1) - oy;
     }
 }
 
 /*
- * The driver never writes an oy past SGI_MGRAS_HEIGHT - 1 (see the reset
+ * The driver never writes an oy past s->height - 1 (see the reset
  * value above), but nothing here enforces that: OpenBSD's impactreg.h packs
  * XYWIN as IMPACTSR_YXCOORDS(x, y) == (y << 16) | x with no documented width
  * narrower than the 16-bit field already masked above, so a guest is free to
  * point the register anywhere in that range. An oy past 1023 drives
  * mgras_apply_window_origin()'s y term negative, and a plain
- * "x >= SGI_MGRAS_WIDTH || y >= SGI_MGRAS_HEIGHT" rejection only ever
+ * "x >= s->width || y >= s->height" rejection only ever
  * checks an upper bound: it has no "x < 0 || y < 0" term, so a negative x
  * or y sails through both sides of the OR. mgras_put_pixel()'s idx
- * parameter is unsigned, so a negative y * SGI_MGRAS_WIDTH + x then wraps
+ * parameter is unsigned, so a negative y * s->width + x then wraps
  * into a multi-gigabyte forward offset into s->front. Casting each
  * coordinate to unsigned before comparing rejects negative and over-large
  * values in the same check, without changing anything for an in-range
  * point.
  */
-static bool mgras_xy_on_screen(int x, int y)
+static bool mgras_xy_on_screen(SGIMgrasState *s, int x, int y)
 {
-    return (unsigned int)x < SGI_MGRAS_WIDTH &&
-           (unsigned int)y < SGI_MGRAS_HEIGHT;
+    return (unsigned int)x < s->width &&
+           (unsigned int)y < s->height;
 }
 
 /*
@@ -1274,12 +1274,12 @@ static void mgras_draw_point(SGIMgrasState *s)
     int x = (xy0 >> 16) & 0xffff, y = xy0 & 0xffff;
 
     mgras_apply_window_origin(s, &x, &y);
-    if (!mgras_xy_on_screen(x, y)) {
+    if (!mgras_xy_on_screen(s, x, y)) {
         return;
     }
-    mgras_put_pixel(s, y * SGI_MGRAS_WIDTH + x, color, op, mask, format);
+    mgras_put_pixel(s, y * s->width + x, color, op, mask, format);
     if (mgras_overlay_target(s)) {
-        mgras_put_overlay(s, y * SGI_MGRAS_WIDTH + x, mgras_overlay_ink(s), op);
+        mgras_put_overlay(s, y * s->width + x, mgras_overlay_ink(s), op);
     }
 }
 
@@ -1354,14 +1354,14 @@ static void mgras_draw_line(SGIMgrasState *s)
     for (;;) {
         int e2;
 
-        if (mgras_xy_on_screen(x0, y0)) {
+        if (mgras_xy_on_screen(s, x0, y0)) {
             bool set = !stipple || ((pattern >> (31 - (step & 31))) & 1);
 
             if (set) {
-                mgras_put_pixel(s, y0 * SGI_MGRAS_WIDTH + x0, color, op, mask,
+                mgras_put_pixel(s, y0 * s->width + x0, color, op, mask,
                             format);
                 if (overlay) {
-                    mgras_put_overlay(s, y0 * SGI_MGRAS_WIDTH + x0,
+                    mgras_put_overlay(s, y0 * s->width + x0,
                                       mgras_overlay_ink(s), op);
                 }
             } else if (opaque) {
@@ -1369,7 +1369,7 @@ static void mgras_draw_line(SGIMgrasState *s)
                  * No capture draws a stippled line into the overlay, so
                  * only the main planes take the background.
                  */
-                mgras_put_pixel(s, y0 * SGI_MGRAS_WIDTH + x0, background, op,
+                mgras_put_pixel(s, y0 * s->width + x0, background, op,
                             mask, format);
             }
         }
@@ -1665,11 +1665,11 @@ static void mgras_raster_dma_draw_image(SGIMgrasState *s, uint32_t kick_byte)
         return;
     }
     if (rows == 0 || bpr == 0 || x0 > x1 || y0 > y1 ||
-        x0 >= SGI_MGRAS_WIDTH || y0 >= SGI_MGRAS_HEIGHT) {
+        x0 >= s->width || y0 >= s->height) {
         return;
     }
-    x1 = MIN(x1, SGI_MGRAS_WIDTH - 1);
-    y1 = MIN(y1, SGI_MGRAS_HEIGHT - 1);
+    x1 = MIN(x1, s->width - 1);
+    y1 = MIN(y1, s->height - 1);
     width = x1 - x0 + 1;
     if (bpr % width) {
         qemu_log_mask(LOG_UNIMP, "sgi-mgras: DMA image transfer, %u "
@@ -1776,7 +1776,7 @@ static void mgras_raster_dma_draw_image(SGIMgrasState *s, uint32_t kick_byte)
                                             SGI_MGRAS_PIXEL_FORMAT_RGB;
 
                 if (x0 + (int)col <= x1) {
-                    mgras_put_pixel(s, y * SGI_MGRAS_WIDTH + x0 + (int)col,
+                    mgras_put_pixel(s, y * s->width + x0 + (int)col,
                                  color, op, mask, format);
                 }
             }
@@ -1825,11 +1825,11 @@ static void mgras_raster_dma_read_image(SGIMgrasState *s, uint32_t kick_byte)
     if (!mgras_raster_dma_select_slot(s, kick_byte, &slot)) {
         return;
     }
-    if (rows == 0 || bpr == 0 || x0 > x1 || x0 >= SGI_MGRAS_WIDTH ||
-        y0 >= SGI_MGRAS_HEIGHT || y1 >= SGI_MGRAS_HEIGHT) {
+    if (rows == 0 || bpr == 0 || x0 > x1 || x0 >= s->width ||
+        y0 >= s->height || y1 >= s->height) {
         return;
     }
-    x1 = MIN(x1, SGI_MGRAS_WIDTH - 1);
+    x1 = MIN(x1, s->width - 1);
     width = x1 - x0 + 1;
     if (bpr % width) {
         qemu_log_mask(LOG_UNIMP, "sgi-mgras: DMA image transfer, %u "
@@ -1844,8 +1844,8 @@ static void mgras_raster_dma_read_image(SGIMgrasState *s, uint32_t kick_byte)
         return;
     }
 
-    y_top = SGI_MGRAS_HEIGHT - 1 - y0;
-    y_bottom = SGI_MGRAS_HEIGHT - 1 - y1;
+    y_top = s->height - 1 - y0;
+    y_bottom = s->height - 1 - y1;
     if (y_top > y_bottom || rows != (uint32_t)(y_bottom - y_top + 1)) {
         qemu_log_mask(LOG_UNIMP, "sgi-mgras: DMA image transfer read box "
                       "does not match rows %u\n", rows);
@@ -1885,7 +1885,7 @@ static void mgras_raster_dma_read_image(SGIMgrasState *s, uint32_t kick_byte)
             if (x > x1) {
                 continue;
             }
-            stored = s->front[y * SGI_MGRAS_WIDTH + x];
+            stored = s->front[y * s->width + x];
             byte = bpp == 1 ? (uint8_t)stored :
                 b % bpp == 0 ? 0 : (uint8_t)(stored >> (8 * (b % bpp - 1)));
 

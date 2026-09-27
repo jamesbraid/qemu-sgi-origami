@@ -402,8 +402,8 @@ static bool mgras_gl_window(SGIMgrasState *s, MgrasGLWindow *win)
     win->oy = origin >> 16;
     win->x0 = clip_x >> 16;
     win->y0 = clip_y >> 16;
-    win->x1 = MIN(clip_x & 0xffff, SGI_MGRAS_WIDTH - 1);
-    win->y1 = MIN(clip_y & 0xffff, SGI_MGRAS_HEIGHT - 1);
+    win->x1 = MIN(clip_x & 0xffff, s->width - 1);
+    win->y1 = MIN(clip_y & 0xffff, s->height - 1);
     return win->x0 <= win->x1 && win->y0 <= win->y1;
 }
 
@@ -443,7 +443,7 @@ static unsigned int mgras_gl_draw_banks(SGIMgrasState *s)
 static void mgras_gl_put(SGIMgrasState *s, unsigned int banks, int x, int y,
                          uint32_t rgb)
 {
-    unsigned int idx = (SGI_MGRAS_HEIGHT - 1 - y) * SGI_MGRAS_WIDTH + x;
+    unsigned int idx = (s->height - 1 - y) * s->width + x;
 
     if (banks & 1) {
         s->front[idx] = rgb;
@@ -456,7 +456,7 @@ static void mgras_gl_put(SGIMgrasState *s, unsigned int banks, int x, int y,
 
 static uint32_t *mgras_gl_depth(SGIMgrasState *s, int x, int y)
 {
-    return &s->depth[(SGI_MGRAS_HEIGHT - 1 - y) * SGI_MGRAS_WIDTH + x];
+    return &s->depth[(s->height - 1 - y) * s->width + x];
 }
 
 /*

@@ -5082,6 +5082,35 @@ static void test_board_refused(gconstpointer data)
     }
 }
 
+/*
+ * Scanout builds each row's window IDs in stack buffers of
+ * SGI_MGRAS_MAX_WIDTH entries, and realize refuses a descriptor that names
+ * a wider screen rather than let scanout run past them. Every descriptor
+ * states 1280x1024, so every board realizes, and a fill of the whole
+ * screen reaches the display at both ends of the scanned rows.
+ */
+static void test_board_screen_fits_row_buffers(gconstpointer data)
+{
+    const MgrasBoardExpect *e = data;
+    QTestState *s = mgras_board_init(e);
+
+    mgras_enter_context(s);
+    qtest_writel(s, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x1e, 0x4));
+    mgras_write_cmap_entry(s, 29, 0x40, 0x11223300);
+    qtest_writeq(s, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_FILLMODE, MGRAS_FILLMODE_RECT_FILL_VALUE));
+    qtest_writeq(s, REG_CONTEXT_COMMAND, MGRAS_COMMAND(REG_FILLCOLOR_R, 0x40));
+    qtest_writeq(s, REG_CONTEXT_COMMAND, MGRAS_COMMAND(REG_BLOCK_START, 0));
+    qtest_writeq(s, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND_EXEC(REG_BLOCK_END, (1279u << 16) | 1023u));
+    g_assert_cmphex(mgras_test_display_pixel(s, 0, 0), ==, 0x00112233);
+    g_assert_cmphex(mgras_test_display_pixel(s, 1279, 1023), ==, 0x00112233);
+    /* Past the screen there is no pixel. */
+    g_assert_cmphex(mgras_test_display_pixel(s, 1280, 1023), ==, 0);
+    g_assert_cmphex(mgras_qom_get_uint(s, "x-test-error"), ==, 0);
+    qtest_quit(s);
+}
+
 static void test_board_unknown_refused(void)
 {
     const char *args[] = {
@@ -7624,8 +7653,10 @@ static void test_re_point_execute_applies_xywin_origin(void)
                  MGRAS_COMMAND_EXEC(REG_RE_POINT, (70u << 16) | 80u));
     g_assert_cmphex(qtest_readl(qts, REG_HQ_STATUS) & 0x80000000, ==, 0);
 
-    /* XYWIN's y field (200 here) is packed top-down; the origin applies
-     * it as SGI_MGRAS_HEIGHT - 1 - oy, not oy directly. */
+    /*
+     * XYWIN's y field (200 here) is packed top-down; the origin applies
+     * it as s->height - 1 - oy, not oy directly.
+     */
     g_assert_cmphex(mgras_test_pixel(qts, 70 + 300, 80 + (1023 - 200)), ==,
                      0x00abcdef);
     g_assert_cmphex(mgras_test_pixel(qts, 70, 80), ==, 0);
@@ -7650,8 +7681,10 @@ static void test_re_line_execute_applies_xywin_origin(void)
                  MGRAS_COMMAND_EXEC(REG_RE_LINE, (105u << 16) | 105u));
     g_assert_cmphex(qtest_readl(qts, REG_HQ_STATUS) & 0x80000000, ==, 0);
 
-    /* XYWIN's y field (200 here) is packed top-down; the origin applies
-     * it as SGI_MGRAS_HEIGHT - 1 - oy, not oy directly. */
+    /*
+     * XYWIN's y field (200 here) is packed top-down; the origin applies
+     * it as s->height - 1 - oy, not oy directly.
+     */
     g_assert_cmphex(mgras_test_pixel(qts, 100 + 300, 100 + (1023 - 200)), ==,
                      0x00112233);
     g_assert_cmphex(mgras_test_pixel(qts, 105 + 300, 105 + (1023 - 200)), ==,
@@ -7695,11 +7728,11 @@ static void test_re_line_execute_ignores_zero_x_field_xywin(void)
 
 
 /*
- * Nothing masks XYWIN's y field to SGI_MGRAS_HEIGHT - 1 the way the driver
+ * Nothing masks XYWIN's y field to s->height - 1 the way the driver
  * always writes it: a guest value past 1023 drives
- * mgras_apply_window_origin()'s "(SGI_MGRAS_HEIGHT - 1) - oy" term
- * negative. Before the fix, RE_POINT's own "x >= SGI_MGRAS_WIDTH || y >=
- * SGI_MGRAS_HEIGHT" rejection let that through -- both sides of the OR are
+ * mgras_apply_window_origin()'s "(s->height - 1) - oy" term
+ * negative. Before the fix, RE_POINT's own "x >= s->width || y >=
+ * s->height" rejection let that through -- both sides of the OR are
  * false for a negative int compared against an unsigned width -- and
  * mgras_put_pixel() took the resulting negative index in a parameter
  * declared unsigned, turning it into a multi-gigabyte forward offset into
@@ -7736,7 +7769,7 @@ static void test_re_point_execute_rejects_out_of_range_xywin_origin(void)
 /*
  * The same out-of-range XYWIN origin reaches RE_LINE through
  * mgras_apply_window_origin(), applied to both endpoints, and the line
- * loop's own "x0 < SGI_MGRAS_WIDTH && y0 < SGI_MGRAS_HEIGHT" plot check has
+ * loop's own "x0 < s->width && y0 < s->height" plot check has
  * the identical gap. The first RE_POINT here keeps XYWIN at its x-field-0
  * reset value so it safely latches the pen position before the bad XYWIN
  * below is installed, isolating RE_LINE's own check from RE_POINT's.
@@ -8731,8 +8764,12 @@ int main(int argc, char **argv)
         const MgrasBoardExpect *e = &mgras_board_expect[i];
         g_autofree char *path = g_strdup_printf(
             "sn0/origin2000/mgras/board-identity/%s", e->board);
+        g_autofree char *screen = g_strdup_printf(
+            "sn0/origin2000/mgras/board-screen-fits-row-buffers/%s",
+            e->board);
 
         qtest_add_data_func(path, e, test_board_identity);
+        qtest_add_data_func(screen, e, test_board_screen_fits_row_buffers);
         if (!e->implemented) {
             g_autofree char *refused = g_strdup_printf(
                 "sn0/origin2000/mgras/board-refused/%s", e->board);

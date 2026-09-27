@@ -77,10 +77,10 @@ static void mgras_did_line(SGIMgrasState *s, unsigned int entry_reg,
     unsigned int steps = 0;
 
     run = s->vc3_sram[++ptr & mask];
-    for (unsigned int x = 0; x < SGI_MGRAS_WIDTH; x++) {
+    for (unsigned int x = 0; x < s->width; x++) {
         /* Bound the walk; a guest table can repeat a column forever. */
         while ((run >> MGRAS_DID_COLUMN_SHIFT) == x &&
-               steps++ < SGI_MGRAS_WIDTH) {
+               steps++ < s->width) {
             current = run & MGRAS_DID_MASK;
             run = s->vc3_sram[++ptr & mask];
         }
@@ -91,9 +91,9 @@ static void mgras_did_line(SGIMgrasState *s, unsigned int entry_reg,
 uint8_t sgi_mgras_display_did(SGIMgrasState *s, bool overlay, unsigned int x,
                               unsigned int y)
 {
-    uint8_t did[SGI_MGRAS_WIDTH];
+    uint8_t did[SGI_MGRAS_MAX_WIDTH];
 
-    if (x >= SGI_MGRAS_WIDTH || y >= SGI_MGRAS_HEIGHT) {
+    if (x >= s->width || y >= s->height) {
         return 0;
     }
     mgras_did_line(s, overlay ? MGRAS_VC3_OVERLAY_DID_ENTRY :
@@ -184,7 +184,7 @@ static void mgras_composite_cursor(SGIMgrasState *s)
         int y = (int)s->cursor_y - MGRAS_CURSOR_ORIGIN + row;
         uint32_t mask_bits, sel_bits;
 
-        if (y < 0 || y >= SGI_MGRAS_HEIGHT) {
+        if (y < 0 || y >= s->height) {
             continue;
         }
         mask_bits = ((uint32_t)s->vc3_sram[(base + row * 2) &
@@ -202,11 +202,11 @@ static void mgras_composite_cursor(SGIMgrasState *s)
             bool sel_bit = (sel_bits >> (31 - col)) & 1;
             uint32_t rgb;
 
-            if (x < 0 || x >= SGI_MGRAS_WIDTH || (!mask_bit && !sel_bit)) {
+            if (x < 0 || x >= s->width || (!mask_bit && !sel_bit)) {
                 continue;
             }
             rgb = mask_bit ? ink : bg;
-            s->display_buffer[y * SGI_MGRAS_WIDTH + x] =
+            s->display_buffer[y * s->width + x] =
                 ((rgb & 0xff) << 16) | (rgb & 0x00ff00) | ((rgb >> 16) & 0xff);
         }
     }
@@ -223,7 +223,7 @@ static bool mgras_gfx_update(void *opaque)
     }
     if (!s->display_enabled) {
         memset(s->display_buffer, 0,
-              SGI_MGRAS_WIDTH * SGI_MGRAS_HEIGHT * sizeof(*s->display_buffer));
+              s->width * s->height * sizeof(*s->display_buffer));
         qemu_console_update_full(s->con);
         s->dirty = false;
         return true;
@@ -234,13 +234,13 @@ static bool mgras_gfx_update(void *opaque)
      * bypasses the map. Either way the gamma table applies uniformly, so
      * every pixel reaches the display through the same final stage.
      */
-    for (int y = 0; y < SGI_MGRAS_HEIGHT; y++) {
-        uint8_t main_did[SGI_MGRAS_WIDTH], overlay_did[SGI_MGRAS_WIDTH];
+    for (int y = 0; y < s->height; y++) {
+        uint8_t main_did[SGI_MGRAS_MAX_WIDTH], overlay_did[SGI_MGRAS_MAX_WIDTH];
 
         mgras_did_line(s, MGRAS_VC3_MAIN_DID_ENTRY, y, main_did);
         mgras_did_line(s, MGRAS_VC3_OVERLAY_DID_ENTRY, y, overlay_did);
-        for (int x = 0; x < SGI_MGRAS_WIDTH; x++) {
-            int i = y * SGI_MGRAS_WIDTH + x;
+        for (int x = 0; x < s->width; x++) {
+            int i = y * s->width + x;
             uint32_t rgb = mgras_gamma_apply(s,
                 mgras_resolve_pixel_bgr(s, i, main_did[x], overlay_did[x]));
 
@@ -269,9 +269,9 @@ void sgi_mgras_display_ensure_surface(SGIMgrasState *s)
     if (ds && surface_data(ds) == (uint8_t *)s->display_buffer) {
         return;
     }
-    ds = qemu_create_displaysurface_from(SGI_MGRAS_WIDTH, SGI_MGRAS_HEIGHT,
+    ds = qemu_create_displaysurface_from(s->width, s->height,
                                          PIXMAN_x8r8g8b8,
-                                         SGI_MGRAS_WIDTH * 4,
+                                         s->width * 4,
                                          (uint8_t *)s->display_buffer);
     qemu_console_set_surface(s->con, ds);
 }
