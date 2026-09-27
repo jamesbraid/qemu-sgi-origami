@@ -85,6 +85,9 @@
 #define IOC3_ENET_MCR_RX_OFFSET(halfwords) ((uint32_t)(halfwords) << 3)
 #define IOC3_ENET_RX_PRODUCE_ARM (1U << 31)
 #define IOC3_ENET_RX_HEADER_VALID (1U << 31)
+#define IOC3_ENET_MII_CONTROL 0x148
+#define IOC3_ENET_MII_DATA 0x14c
+#define IOC3_ENET_MII_READ (1U << 10)
 #define IOC3_RX_RING_PHYS 0x200000
 #define IOC3_RX_BUFFER_PHYS 0x201000
 #define IOC3_RX_RING_IOVA 0x40000000
@@ -407,6 +410,29 @@ static void test_fuel_ioc3_identity(const void *data)
     g_assert_false(qdict_haskey(response, "error"));
     g_assert_cmphex(qdict_get_int(response, "return"), ==,
                     FUEL_IOC3_ONEWIRE_SERIAL);
+    qtest_quit(qts);
+}
+
+static uint16_t fuel_phy_read(QTestState *qts, unsigned int address,
+                              unsigned int reg)
+{
+    qtest_writel(qts, IOC3_WINDOW + IOC3_ENET_MII_CONTROL,
+                 IOC3_ENET_MII_READ | (address << 5) | reg);
+    return qtest_readl(qts, IOC3_WINDOW + IOC3_ENET_MII_DATA) & 0xffff;
+}
+
+static void test_fuel_ioc3_phy(const void *data)
+{
+    QTestState *qts = fuel_start(data);
+
+    fuel_map_ioc3(qts);
+    g_assert_cmphex(fuel_phy_read(qts, 1, 0), !=, 0xffff);
+    g_assert_cmphex(fuel_phy_read(qts, 1, 2), ==, 0x2000);
+    g_assert_cmphex(fuel_phy_read(qts, 1, 3), ==, 0x5c10);
+    g_assert_cmphex(fuel_phy_read(qts, 31, 0), ==, 0xffff);
+    qtest_system_reset(qts);
+    fuel_map_ioc3(qts);
+    g_assert_cmphex(fuel_phy_read(qts, 1, 3), ==, 0x5c10);
     qtest_quit(qts);
 }
 
@@ -984,6 +1010,7 @@ int main(int argc, char **argv)
                         test_fuel_rtc_rejects_wrong_size);
     qtest_add_data_func("fuel/ioc3-identity", prom,
                         test_fuel_ioc3_identity);
+    qtest_add_data_func("fuel/ioc3-phy", prom, test_fuel_ioc3_phy);
     qtest_add_data_func("fuel/scsi-interrupt", prom,
                         test_fuel_scsi_interrupt);
     qtest_add_data_func("fuel/ioc3-superio-interrupt", prom,
