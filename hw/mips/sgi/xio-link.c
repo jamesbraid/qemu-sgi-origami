@@ -17,7 +17,7 @@
 #include "system/runstate.h"
 #include "sn0.h"
 
-QEMU_BUILD_BUG_ON(SGI_XIO_DIRECT_LINK_MAX_ALIASES != SN0_XTALK_WIDGETS);
+QEMU_BUILD_BUG_ON(SGI_XIO_DIRECT_LINK_MAX_ALIASES != SN0_XIO_WIDGETS);
 
 /* ---- The direct link ---- */
 
@@ -102,7 +102,7 @@ static bool sgi_xio_direct_link_wire_probe(SN0NodeState *node,
                           &sgi_xio_direct_link_probe_ops, node,
                           "sn0.prom-pi-probe", 8);
     memory_region_add_subregion_overlap(
-        &node->xtalk, SN0_XTALK_BASE(probe_widget) + probe_offset,
+        &node->xio, SN0_XIO_BASE(probe_widget) + probe_offset,
         &node->prom_pi_probe, 1);
     return true;
 }
@@ -131,14 +131,14 @@ bool sgi_xio_direct_link_connect(SGIXioDirectLink *link, Object *owner,
                    "initialized crosstalk face");
         return false;
     }
-    if (discovery_widget >= SN0_XTALK_WIDGETS || widget >= SN0_XTALK_WIDGETS) {
+    if (discovery_widget >= SN0_XIO_WIDGETS || widget >= SN0_XIO_WIDGETS) {
         error_setg(errp, "a direct link's widget numbers must be within "
                    "the crosstalk address space");
         return false;
     }
     widget_size = memory_region_size(widget_face);
 
-    for (w = 0; w < SN0_XTALK_WIDGETS; w++) {
+    for (w = 0; w < SN0_XIO_WIDGETS; w++) {
         g_autofree char *name = NULL;
 
         if (w != discovery_widget && w != widget &&
@@ -150,10 +150,10 @@ bool sgi_xio_direct_link_connect(SGIXioDirectLink *link, Object *owner,
                        "widget positions", ARRAY_SIZE(link->alias));
             return false;
         }
-        name = g_strdup_printf("sn0.xtalk.widget%u", w);
+        name = g_strdup_printf("sn0.xio.widget%u", w);
         memory_region_init_alias(&link->alias[seen], owner, name, widget_face,
                                  0, widget_size);
-        memory_region_add_subregion(hub_face, SN0_XTALK_BASE(w),
+        memory_region_add_subregion(hub_face, SN0_XIO_BASE(w),
                                     &link->alias[seen]);
         seen++;
     }
@@ -226,7 +226,7 @@ void sgi_xio_crossbow_link_claim_fabric(MemoryRegion *fabric,
 
 /*
  * The Hub's big-window "xio-io-space" mode issues a widget-addressed access: a
- * widget number and an offset within one SN0_XTALK_WIDGET_SIZE slice, the
+ * widget number and an offset within one SN0_XIO_WIDGET_SIZE slice, the
  * same shape a small or big window decodes (hw/misc/sgi-hub.c,
  * IO_BWIN_SPACE). A switched fabric instead expects a packet address, the
  * destination widget in bits 51:48; this translates one into the other before
@@ -237,7 +237,7 @@ void sgi_xio_crossbow_link_claim_fabric(MemoryRegion *fabric,
 static bool sgi_xio_crossbow_link_outbound_bounded(uint64_t offset,
                                                    unsigned size)
 {
-    return size && size <= SN0_XTALK_WIDGET_SIZE - offset;
+    return size && size <= SN0_XIO_WIDGET_SIZE - offset;
 }
 
 static MemTxResult sgi_xio_crossbow_link_outbound_read(void *opaque,
@@ -247,8 +247,8 @@ static MemTxResult sgi_xio_crossbow_link_outbound_read(void *opaque,
                                                        MemTxAttrs attrs)
 {
     SGIXioCrossbowLink *link = opaque;
-    unsigned int widget = addr >> SN0_XTALK_WIDGET_SHIFT;
-    uint64_t offset = addr & (SN0_XTALK_WIDGET_SIZE - 1);
+    unsigned int widget = addr >> SN0_XIO_WIDGET_SHIFT;
+    uint64_t offset = addr & (SN0_XIO_WIDGET_SIZE - 1);
     uint8_t bytes[8] = { 0 };
     MemTxResult result;
 
@@ -276,8 +276,8 @@ static MemTxResult sgi_xio_crossbow_link_outbound_write(void *opaque,
                                                         MemTxAttrs attrs)
 {
     SGIXioCrossbowLink *link = opaque;
-    unsigned int widget = addr >> SN0_XTALK_WIDGET_SHIFT;
-    uint64_t offset = addr & (SN0_XTALK_WIDGET_SIZE - 1);
+    unsigned int widget = addr >> SN0_XIO_WIDGET_SHIFT;
+    uint64_t offset = addr & (SN0_XIO_WIDGET_SIZE - 1);
     uint8_t bytes[8];
 
     if (widget < SGI_XBOW_FIRST_WIDGET || widget >= SGI_XBOW_WIDGETS ||
@@ -364,7 +364,7 @@ static bool sgi_xio_crossbow_link_packet_address(SGIXioCrossbowLink *link,
         return true;
     }
     if (write && size == 8 && addr == interrupt) {
-        *target = link->inbound_xtalk_base +
+        *target = link->inbound_io_base +
                  (uint64_t)nasid * link->inbound_node_stride +
                  link->inbound_modify_offset;
         return true;
@@ -500,7 +500,7 @@ bool sgi_xio_crossbow_link_attach_hub(SGIXioCrossbowLink *link,
     map = &sn0_hub_address_map;
     if (map->memory.carrier_base != 0 ||
         map->node_stride != SGI_XIO_CROSSBOW_LINK_SUPPORTED_NODE_STRIDE ||
-        map->xtalk.carrier_base != (2ULL << 40) ||
+        map->io.carrier_base != (2ULL << 40) ||
         map->hub_registers_node.offset != 0x01800000 ||
         map->hub_registers_node.size < 0x98) {
         error_setg(errp, "unsupported Hub packet address geometry");
@@ -509,7 +509,7 @@ bool sgi_xio_crossbow_link_attach_hub(SGIXioCrossbowLink *link,
 
     link->inbound_memory_size =
         SGI_XIO_CROSSBOW_LINK_SUPPORTED_NASIDS * map->node_stride;
-    link->inbound_xtalk_base = map->xtalk.carrier_base;
+    link->inbound_io_base = map->io.carrier_base;
     link->inbound_node_stride = map->node_stride;
     link->inbound_modify_offset = map->hub_registers_node.offset +
         SGI_XIO_CROSSBOW_LINK_MODIFY_OFFSET;
@@ -528,7 +528,7 @@ bool sgi_xio_crossbow_link_attach_hub(SGIXioCrossbowLink *link,
 
     memory_region_init_io(&link->cpu_refusal, owner,
                           &sgi_xio_crossbow_link_refusal_ops, link,
-                          refusal_name, SN0_XTALK_WIDGET_SIZE);
+                          refusal_name, SN0_XIO_WIDGET_SIZE);
 
     return sgi_xbow_attach_endpoint(xbow, widget, &link->cpu_refusal,
                                     &link->inbound_face, errp);
@@ -580,7 +580,7 @@ bool sgi_xio_crossbow_link_finish(SGIXioCrossbowLink *link, Object *owner,
         }
         memory_region_init_alias(&link->cpu_alias, owner, cpu_name, cpu, 0,
                                  memory_region_size(cpu));
-        memory_region_add_subregion(&link->node->xtalk, 0, &link->cpu_alias);
+        memory_region_add_subregion(&link->node->xio, 0, &link->cpu_alias);
     }
     return true;
 }

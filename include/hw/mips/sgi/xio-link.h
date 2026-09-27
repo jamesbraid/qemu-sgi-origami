@@ -53,7 +53,7 @@ typedef struct SGIXioDirectLink {
  * discovery_widget and widget are the two crosstalk positions the widget is
  * separately reachable at (a repeat is fine: the second alias is simply not
  * installed); decoded_widget_mask names every further widget the Hub decodes
- * to it, in SN0_XTALK_WIDGETS bits. probe_widget nonzero requests the PROM
+ * to it, in SN0_XIO_WIDGETS bits. probe_widget nonzero requests the PROM
  * PI-error probe, dispatched through node's
  * prom_pi_probe/prom_pi_probe_window fields at that widget's crosstalk base
  * plus probe_offset, resolved against
@@ -123,7 +123,7 @@ typedef struct SGIXioCrossbowLink {
      * The Hub-only faces prepare_hub()/attach_hub() build; unused for a
      * widget link. outbound_face is what "xio-io-space" is actually set to: the
      * Hub's big-window mode issues a widget-addressed access (a widget number
-     * and an offset within SN0_XTALK_WIDGET_SIZE, the same shape a small/big
+     * and an offset within SN0_XIO_WIDGET_SIZE, the same shape a small/big
      * window decodes), which outbound_face translates into a packet-addressed
      * one on proxy before it ever reaches the Crossbow, matching the packet
      * header a switched fabric expects.
@@ -138,7 +138,7 @@ typedef struct SGIXioCrossbowLink {
     AddressSpace inbound_local_registers;
     MemoryRegion inbound_local_register_view;
     uint64_t inbound_memory_size;
-    uint64_t inbound_xtalk_base;
+    uint64_t inbound_io_base;
     uint64_t inbound_node_stride;
     uint64_t inbound_modify_offset;
 } SGIXioCrossbowLink;

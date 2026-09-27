@@ -1129,7 +1129,7 @@ static void sgi_machine_build_crossbars(SGIMachineState *s,
         s->crossbars[i] = SGI_XBOW(crossbow);
         object_property_add_child(OBJECT(s), name, OBJECT(crossbow));
         object_unref(OBJECT(crossbow));
-        qdev_prop_set_uint64(crossbow, "span", SN0_XTALK_WIDGET_SIZE);
+        qdev_prop_set_uint64(crossbow, "span", SN0_XIO_WIDGET_SIZE);
         qdev_prop_set_bit(crossbow,
                           "complete-posted-error-address-writes", true);
         qdev_prop_set_uint32(crossbow, "revision",

@@ -45,7 +45,7 @@ typedef struct SN0ModelAddressMap {
     uint64_t node_stride;
     SN0ModelAddressSpace memory;
     SN0ModelAddressSpace hub_special;
-    SN0ModelAddressSpace xtalk;
+    SN0ModelAddressSpace io;
     SN0ModelAddressSpace memory_special;
     SN0ModelRegion node_memory;
     SN0ModelRegion hub_registers_local;
@@ -99,17 +99,17 @@ typedef struct SN0FlashImplementation {
 } SN0FlashImplementation;
 
 /*
- * Crosstalk space: a widget number and an offset; one container indexed by
- * widget, so a small window and a big window are two views of one address. A
- * translation entry supplies bits 33:29 (16 GB per widget); entry bit 12
- * picks between a widget's two spaces, and the redirection selects memory
- * space, from IRIX's write of this entry.
+ * XIO space as the Hub decodes it: a widget number and an offset; one
+ * container indexed by widget, so a small window and a big window
+ * are two views of one address. A translation entry supplies bits 33:29
+ * (16 GB per widget); entry bit 12 picks between a widget's two spaces,
+ * and the redirection selects memory space, from IRIX's write of this entry.
  */
-#define SN0_XTALK_WIDGETS       16
-#define SN0_XTALK_WIDGET_SHIFT  34
-#define SN0_XTALK_WIDGET_SIZE   (1ULL << SN0_XTALK_WIDGET_SHIFT)
-#define SN0_XTALK_BASE(widget)  ((hwaddr)(widget) << SN0_XTALK_WIDGET_SHIFT)
-#define SN0_XTALK_SIZE          (SN0_XTALK_WIDGETS * SN0_XTALK_WIDGET_SIZE)
+#define SN0_XIO_WIDGETS       16
+#define SN0_XIO_WIDGET_SHIFT  34
+#define SN0_XIO_WIDGET_SIZE   (1ULL << SN0_XIO_WIDGET_SHIFT)
+#define SN0_XIO_BASE(widget)  ((hwaddr)(widget) << SN0_XIO_WIDGET_SHIFT)
+#define SN0_XIO_SIZE          (SN0_XIO_WIDGETS * SN0_XIO_WIDGET_SIZE)
 
 /*
  * The sixteen small windows fill the bottom sixteenth, one per widget, each
@@ -119,7 +119,7 @@ typedef struct SN0FlashImplementation {
  */
 #define SN0_SMALL_WINDOW_SIZE    (16 * MiB)
 #define SN0_SMALL_WINDOW(widget) ((hwaddr)(widget) * SN0_SMALL_WINDOW_SIZE)
-#define SN0_XTALK_PORT_LAST      15
+#define SN0_XIO_WIDGET_LAST      15
 
 /* The seven big windows follow; their aim is the translation table's. */
 #define SN0_BIG_WINDOW_BASE      0x20000000
@@ -221,7 +221,7 @@ typedef struct SN0NodeState {
     SN0BackdoorState backdoor_ecc_state;
     SN0BackdoorState backdoor_dir_state;
 
-    MemoryRegion xtalk;
+    MemoryRegion xio;
     MemoryRegion prom_pi_probe;
     /*
      * Origin 200's onboard board answers the probe through its Bridge's
@@ -238,7 +238,7 @@ typedef struct SN0NodeState {
      * in the base-io-device step).
      */
     MemoryRegion *prom_pi_probe_window;
-    MemoryRegion small_window[SN0_XTALK_WIDGETS];
+    MemoryRegion small_window[SN0_XIO_WIDGETS];
     MemoryRegion mem_slot[SN0_MAX_MEMORY_BANKS][SN0_MAX_MEMORY_SLOTS];
     MemoryRegion hub_local_mem_slot[SN0_MAX_MEMORY_BANKS]
                                           [SN0_MAX_MEMORY_SLOTS];

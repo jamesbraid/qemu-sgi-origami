@@ -91,7 +91,7 @@ const SN0ModelAddressMap sn0_hub_address_map = {
         .carrier_base = 0x10000000000ULL,
         .unmapped_base = 0x9000000000000000ULL,
     },
-    .xtalk = {
+    .io = {
         .selector = 1,
         .carrier_base = 0x20000000000ULL,
         .unmapped_base = 0x9200000000000000ULL,
@@ -615,7 +615,7 @@ static void sn0_node_create_cpus(SN0NodeState *node)
     const SN0ModelAddressSpace *spaces[SN0_MAX_ADDRESS_SPACES] = {
         &map->memory,
         &map->hub_special,
-        &map->xtalk,
+        &map->io,
         &map->memory_special,
     };
     const SN0ModelRegion *memory_region = &map->node_memory;
@@ -693,7 +693,7 @@ static void sn0_node_create_cpus(SN0NodeState *node)
              * the memory-special space and the LBOOT path are likewise local.
              * Those keep the wide reader-local window.
              */
-            if (space_model == &map->xtalk) {
+            if (space_model == &map->io) {
                 const SN0ModelRegion *hub_region =
                     &map->hub_registers_local;
 
@@ -1001,16 +1001,16 @@ static void sn0_node_create_hub(SN0NodeState *node)
     const SGIModelAsicIdentity *identity = node->model_node->identity;
     const SN0ModelAddressMap *map = sn0_node_address_map();
     unsigned int node_index = node->nasid;
-    g_autofree char *xtalk_name =
-        g_strdup_printf("sn0.node%u.xtalk", node_index);
+    g_autofree char *xio_name =
+        g_strdup_printf("sn0.node%u.xio", node_index);
     g_autofree char *device_view_name =
         g_strdup_printf("sn0.node%u.hub.device-view", node_index);
     MemoryRegion *system = get_system_memory();
     MIPSCPU *cpu;
     unsigned int slice;
 
-    memory_region_init(&node->xtalk, OBJECT(node), xtalk_name,
-                       SN0_XTALK_SIZE);
+    memory_region_init(&node->xio, OBJECT(node), xio_name,
+                       SN0_XIO_SIZE);
 
     /*
      * The Hub's engines address memory as this node's processors do, minus
@@ -1066,11 +1066,11 @@ static void sn0_node_create_hub(SN0NodeState *node)
     qdev_prop_set_uint8(DEVICE(&node->hub), "onewire-kind",
                         SGI_HUB_ONEWIRE_BLANK_DS2505);
     qdev_prop_set_uint32(DEVICE(&node->hub), "xio-widget-shift",
-                         SN0_XTALK_WIDGET_SHIFT);
+                         SN0_XIO_WIDGET_SHIFT);
     object_property_set_link(OBJECT(&node->hub), "xio",
-                             OBJECT(&node->xtalk), &error_fatal);
+                             OBJECT(&node->xio), &error_fatal);
     qdev_prop_set_uint64(DEVICE(&node->hub), "io-space-base",
-                         map->xtalk.carrier_base);
+                         map->io.carrier_base);
 
     /*
      * The claim layer's wiring: the per-view containers the Hub fills, the
@@ -1131,11 +1131,11 @@ static void sn0_node_create_hub(SN0NodeState *node)
     }
 }
 
-static void sn0_node_map_xtalk_windows(SN0NodeState *node)
+static void sn0_node_map_xio_windows(SN0NodeState *node)
 {
     MemoryRegion *system = get_system_memory();
     const SN0ModelAddressMap *map = sn0_node_address_map();
-    const SN0ModelAddressSpace *xtalk = &map->xtalk;
+    const SN0ModelAddressSpace *io = &map->io;
     const SN0ModelRegion *hub_explicit = &map->hub_registers_node;
     const SN0ModelRegion *hub_local = &map->hub_registers_local;
     unsigned int node_index = node->nasid;
@@ -1143,27 +1143,27 @@ static void sn0_node_map_xtalk_windows(SN0NodeState *node)
 
     g_assert(memory_region_size(&node->hub.regs) == hub_local->size);
 
-    for (widget = 0; widget <= SN0_XTALK_PORT_LAST; widget++) {
+    for (widget = 0; widget <= SN0_XIO_WIDGET_LAST; widget++) {
         g_autofree char *name =
-            g_strdup_printf("sn0.node%u.xtalk.small%u",
+            g_strdup_printf("sn0.node%u.xio.small%u",
                             node_index, widget);
 
         memory_region_init_alias(&node->small_window[widget], OBJECT(node),
-                                 name, &node->xtalk,
-                                 SN0_XTALK_BASE(widget),
+                                 name, &node->xio,
+                                 SN0_XIO_BASE(widget),
                                  SN0_SMALL_WINDOW_SIZE);
         memory_region_add_subregion(
-            system, sn0_model_node_address(map, xtalk, node->nasid,
+            system, sn0_model_node_address(map, io, node->nasid,
                                            SN0_SMALL_WINDOW(widget)),
             &node->small_window[widget]);
     }
 
     memory_region_add_subregion(
-        system, sn0_model_node_address(map, xtalk, node->nasid,
+        system, sn0_model_node_address(map, io, node->nasid,
                                        SN0_BIG_WINDOW_BASE),
         &node->hub.bwin);
     memory_region_add_subregion(
-        system, sn0_model_region_address(map, xtalk, node->nasid,
+        system, sn0_model_region_address(map, io, node->nasid,
                                          hub_local, 0),
         &node->hub.regs);
 
@@ -1176,7 +1176,7 @@ static void sn0_node_map_xtalk_windows(SN0NodeState *node)
                                  hub_explicit->size);
     }
     memory_region_add_subregion(
-        system, sn0_model_region_address(map, xtalk, node->nasid,
+        system, sn0_model_region_address(map, io, node->nasid,
                                          hub_explicit, 0),
         &node->hub_regs_node_view);
 }
@@ -1199,7 +1199,7 @@ void sn0_map_cpu_big_windows(Object *owner, SN0NodeState **nodes,
                 (num_nodes + 1);
             MemoryRegion *nameless = &big_window_route[base];
             g_autofree char *nameless_name = g_strdup_printf(
-                "sn0.node%u.cpu%u.xtalk.nameless-bigwin",
+                "sn0.node%u.cpu%u.xio.nameless-bigwin",
                 source_node->nasid, slice);
 
             memory_region_init_alias(nameless, owner, nameless_name,
@@ -1208,7 +1208,7 @@ void sn0_map_cpu_big_windows(Object *owner, SN0NodeState **nodes,
                                          &nodes[0]->hub.bwin));
             memory_region_add_subregion(
                 &source_node->cpu_sysmem[slice],
-                map->xtalk.carrier_base + SN0_BIG_WINDOW_BASE,
+                map->io.carrier_base + SN0_BIG_WINDOW_BASE,
                 nameless);
 
             for (target = 0; target < num_nodes; target++) {
@@ -1216,7 +1216,7 @@ void sn0_map_cpu_big_windows(Object *owner, SN0NodeState **nodes,
                 MemoryRegion *route =
                     &big_window_route[base + 1 + target];
                 g_autofree char *name = g_strdup_printf(
-                    "sn0.node%u.cpu%u.xtalk.node%u.bigwin",
+                    "sn0.node%u.cpu%u.xio.node%u.bigwin",
                     source_node->nasid, slice, target_node->nasid);
 
                 memory_region_init_alias(route, owner, name,
@@ -1225,7 +1225,7 @@ void sn0_map_cpu_big_windows(Object *owner, SN0NodeState **nodes,
                                              &target_node->hub.bwin));
                 memory_region_add_subregion(
                     &source_node->cpu_sysmem[slice],
-                    sn0_model_node_address(map, &map->xtalk,
+                    sn0_model_node_address(map, &map->io,
                                            target_node->nasid,
                                            SN0_BIG_WINDOW_BASE),
                     route);
@@ -1318,7 +1318,7 @@ bool sn0_node_build_baseio(SN0NodeState *node, Object *owner,
          */
         object_property_set_link(OBJECT(bridge), "fabric",
                                  OBJECT(&node->claim_view[0]), &error_abort);
-        qdev_prop_set_uint64(bridge, "fabric-base", map->xtalk.carrier_base);
+        qdev_prop_set_uint64(bridge, "fabric-base", map->io.carrier_base);
         qdev_prop_set_uint32(bridge, "fabric-node-shift",
                              ctz64(map->node_stride));
     }
@@ -1399,7 +1399,7 @@ static void sn0_node_realize(DeviceState *dev, Error **errp)
     sn0_node_map_memory(node);
     sn0_node_map_boot_storage(node);
     sn0_node_create_hub(node);
-    sn0_node_map_xtalk_windows(node);
+    sn0_node_map_xio_windows(node);
 }
 
 static void sn0_node_instance_init(Object *obj)
