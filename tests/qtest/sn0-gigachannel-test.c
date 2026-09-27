@@ -24,12 +24,12 @@
 #include "sgi-launch.h"
 #include "sgi-test.h"
 
-#define XTALK_BASE UINT64_C(0x20000000000)
-#define XTALK_REG_DATA 4
-#define XTALK_WIDGET_SIZE UINT64_C(0x1000000)
+#define IO_SPACE UINT64_C(0x20000000000)
+#define XIO_REG_DATA 4
+#define XIO_WIDGET_SIZE UINT64_C(0x1000000)
 #define WIDGET_ID 0x0000
-#define XTALK_ID_PART(v) (((v) >> 12) & 0xffff)
-#define XTALK_ID_REVISION(v) (((v) >> 28) & 0xf)
+#define XIO_ID_PART(v) (((v) >> 12) & 0xffff)
+#define XIO_ID_REVISION(v) (((v) >> 28) & 0xf)
 #define CROSSBOW_PART 0x0000
 #define BRIDGE_PART 0xc002
 
@@ -46,7 +46,7 @@
 #define CABINET_LINKS ((1u << CABINET_WIDGET) | (1u << IP29_WIDGET) | \
                        (1u << HUB_WIDGET))
 
-#define BRIDGE_CFG0(w, dev) ((uint64_t)(w) * XTALK_WIDGET_SIZE + 0x020000 + \
+#define BRIDGE_CFG0(w, dev) ((uint64_t)(w) * XIO_WIDGET_SIZE + 0x020000 + \
                              (dev) * 0x1000)
 #define IOC3_ID_PAIR 0x000310a9u
 #define IP29_IOC3_DEVICE 2
@@ -80,11 +80,11 @@
 #define PLAIN "-M origin200"
 
 /* A 32-bit crosstalk read through CPU 0's own Hub. */
-static uint32_t xtalk_read(QTestState *qts, uint64_t offset)
+static uint32_t io_space_read(QTestState *qts, uint64_t offset)
 {
     uint8_t bytes[sizeof(uint32_t)];
 
-    g_assert_true(qtest_memread_cpu(qts, 0, XTALK_BASE + offset,
+    g_assert_true(qtest_memread_cpu(qts, 0, IO_SPACE + offset,
                                     bytes, sizeof(bytes)));
     return ldl_be_p(bytes);
 }
@@ -92,12 +92,12 @@ static uint32_t xtalk_read(QTestState *qts, uint64_t offset)
 /* A widget register, which answers in the low word of its doubleword. */
 static uint32_t widget_read(QTestState *qts, uint64_t offset)
 {
-    return xtalk_read(qts, offset + XTALK_REG_DATA);
+    return io_space_read(qts, offset + XIO_REG_DATA);
 }
 
 static uint32_t widget_id(QTestState *qts, unsigned int widget)
 {
-    return widget_read(qts, widget * XTALK_WIDGET_SIZE + WIDGET_ID);
+    return widget_read(qts, widget * XIO_WIDGET_SIZE + WIDGET_ID);
 }
 
 static QTestState *start(const char *machine, const char *extra)
@@ -115,15 +115,15 @@ static void test_widget0_marks_the_cabinet(void)
 {
     QTestState *qts = start(GIGACHANNEL, "");
 
-    g_assert_cmphex(XTALK_ID_PART(widget_id(qts, 0)), ==, CROSSBOW_PART);
+    g_assert_cmphex(XIO_ID_PART(widget_id(qts, 0)), ==, CROSSBOW_PART);
     qtest_quit(qts);
 
     qts = start(PLAIN, "");
-    g_assert_cmphex(XTALK_ID_PART(widget_id(qts, 0)), ==, BRIDGE_PART);
+    g_assert_cmphex(XIO_ID_PART(widget_id(qts, 0)), ==, BRIDGE_PART);
     qtest_quit(qts);
 
     qts = start(LOOPBACK, "");
-    g_assert_cmphex(XTALK_ID_PART(widget_id(qts, 0)), ==, BRIDGE_PART);
+    g_assert_cmphex(XIO_ID_PART(widget_id(qts, 0)), ==, BRIDGE_PART);
     qtest_quit(qts);
 }
 
@@ -169,32 +169,32 @@ static void test_bridges_at_their_links(void)
     uint32_t ip29 = widget_id(qts, IP29_WIDGET);
     uint32_t cabinet = widget_id(qts, CABINET_WIDGET);
 
-    g_assert_cmphex(XTALK_ID_PART(ip29), ==, BRIDGE_PART);
-    g_assert_cmphex(XTALK_ID_PART(cabinet), ==, BRIDGE_PART);
-    g_assert_cmpuint(XTALK_ID_REVISION(cabinet), ==, 4);
-    g_assert_cmphex(xtalk_read(qts, BRIDGE_CFG0(IP29_WIDGET,
-                                                IP29_IOC3_DEVICE)), ==,
-                    IOC3_ID_PAIR);
+    g_assert_cmphex(XIO_ID_PART(ip29), ==, BRIDGE_PART);
+    g_assert_cmphex(XIO_ID_PART(cabinet), ==, BRIDGE_PART);
+    g_assert_cmpuint(XIO_ID_REVISION(cabinet), ==, 4);
+    g_assert_cmphex(io_space_read(qts, BRIDGE_CFG0(IP29_WIDGET,
+                                                   IP29_IOC3_DEVICE)), ==,
+                                                   IOC3_ID_PAIR);
     qtest_quit(qts);
 }
 
 /* A 16-bit crosstalk read through CPU 0's own Hub. */
-static uint16_t xtalk_read16(QTestState *qts, uint64_t offset)
+static uint16_t io_space_read16(QTestState *qts, uint64_t offset)
 {
     uint8_t bytes[sizeof(uint16_t)];
 
-    g_assert_true(qtest_memread_cpu(qts, 0, XTALK_BASE + offset,
+    g_assert_true(qtest_memread_cpu(qts, 0, IO_SPACE + offset,
                                     bytes, sizeof(bytes)));
     return lduw_be_p(bytes);
 }
 
 /* A 16-bit crosstalk write through CPU 0's own Hub. */
-static void xtalk_write16(QTestState *qts, uint64_t offset, uint16_t value)
+static void io_space_write16(QTestState *qts, uint64_t offset, uint16_t value)
 {
     uint8_t bytes[sizeof(uint16_t)];
 
     stw_be_p(bytes, value);
-    g_assert_true(qtest_memwrite_cpu(qts, 0, XTALK_BASE + offset,
+    g_assert_true(qtest_memwrite_cpu(qts, 0, IO_SPACE + offset,
                                      bytes, sizeof(bytes)));
 }
 
@@ -240,19 +240,19 @@ static char *finish_logged(LoggedRun *run)
  */
 static void test_status_word(void)
 {
-    uint64_t status = CABINET_WIDGET * XTALK_WIDGET_SIZE + STATUS_WORD;
+    uint64_t status = CABINET_WIDGET * XIO_WIDGET_SIZE + STATUS_WORD;
     LoggedRun run;
     g_autofree char *log = NULL;
     QTestState *qts = start_logged(&run, "");
 
-    g_assert_cmphex(xtalk_read16(qts, status), ==, 0);
+    g_assert_cmphex(io_space_read16(qts, status), ==, 0);
     qtest_quit(qts);
     log = finish_logged(&run);
     g_assert_null(strstr(log, NO_PART_AT_STATUS));
 
     qts = start(GIGACHANNEL, "-global sgi-gigachannel."
                 "system-controller-status=0x40");
-    g_assert_cmphex(xtalk_read16(qts, status), ==, STATUS_RPS_FITTED);
+    g_assert_cmphex(io_space_read16(qts, status), ==, STATUS_RPS_FITTED);
     qtest_quit(qts);
 }
 
@@ -262,9 +262,9 @@ static void test_status_word(void)
  */
 static void test_status_word_write_dropped(void)
 {
-    uint64_t status = CABINET_WIDGET * XTALK_WIDGET_SIZE + STATUS_WORD;
-    uint64_t control = CABINET_WIDGET * XTALK_WIDGET_SIZE + BRIDGE_CONTROL +
-                       XTALK_REG_DATA;
+    uint64_t status = CABINET_WIDGET * XIO_WIDGET_SIZE + STATUS_WORD;
+    uint64_t control = CABINET_WIDGET * XIO_WIDGET_SIZE + BRIDGE_CONTROL +
+                       XIO_REG_DATA;
     LoggedRun run;
     g_autofree char *log = NULL;
     uint8_t bytes[4];
@@ -272,13 +272,13 @@ static void test_status_word_write_dropped(void)
                                    "system-controller-status=0x40");
 
     /* With the flash write enable set, so the Bridge passes it on. */
-    g_assert_true(qtest_memread_cpu(qts, 0, XTALK_BASE + control,
+    g_assert_true(qtest_memread_cpu(qts, 0, IO_SPACE + control,
                                     bytes, sizeof(bytes)));
     stl_be_p(bytes, ldl_be_p(bytes) | BRIDGE_CONTROL_FLASH_WRITE_EN);
-    g_assert_true(qtest_memwrite_cpu(qts, 0, XTALK_BASE + control,
+    g_assert_true(qtest_memwrite_cpu(qts, 0, IO_SPACE + control,
                                      bytes, sizeof(bytes)));
-    xtalk_write16(qts, status, 0x1234);
-    g_assert_cmphex(xtalk_read16(qts, status), ==, STATUS_RPS_FITTED);
+    io_space_write16(qts, status, 0x1234);
+    g_assert_cmphex(io_space_read16(qts, status), ==, STATUS_RPS_FITTED);
     qtest_quit(qts);
     log = finish_logged(&run);
     g_assert_nonnull(strstr(log, "sgi-gigachannel: write of 0x1234 to the "
@@ -300,8 +300,8 @@ static void test_flash_selects_elsewhere_empty(void)
     QTestState *qts;
 
     qts = start(GIGACHANNEL, extra);
-    xtalk_read(qts, CABINET_WIDGET * XTALK_WIDGET_SIZE + FLASH_WINDOW);
-    xtalk_read(qts, IP29_WIDGET * XTALK_WIDGET_SIZE + STATUS_WORD);
+    io_space_read(qts, CABINET_WIDGET * XIO_WIDGET_SIZE + FLASH_WINDOW);
+    io_space_read(qts, IP29_WIDGET * XIO_WIDGET_SIZE + STATUS_WORD);
     qtest_quit(qts);
 
     g_assert_true(g_file_get_contents(log, &contents, NULL, NULL));
@@ -336,9 +336,9 @@ static uint32_t flash_pattern_word(uint32_t offset)
  */
 static void test_flash_part_fitted(void)
 {
-    uint64_t window = CABINET_WIDGET * XTALK_WIDGET_SIZE + FLASH_WINDOW;
-    uint64_t control = CABINET_WIDGET * XTALK_WIDGET_SIZE + BRIDGE_CONTROL +
-                       XTALK_REG_DATA;
+    uint64_t window = CABINET_WIDGET * XIO_WIDGET_SIZE + FLASH_WINDOW;
+    uint64_t control = CABINET_WIDGET * XIO_WIDGET_SIZE + BRIDGE_CONTROL +
+                       XIO_REG_DATA;
     g_autofree char *dir = g_dir_make_tmp("sn0-gigachannel-XXXXXX", NULL);
     g_autofree char *image = g_build_filename(dir, "flash.raw", NULL);
     g_autofree uint8_t *bytes = g_malloc(FLASH_PART_SIZE);
@@ -359,27 +359,27 @@ static void test_flash_part_fitted(void)
                             "system-controller-status=0x40", image);
     qts = start(GIGACHANNEL, extra);
 
-    g_assert_cmphex(xtalk_read(qts, window), ==, flash_pattern_word(0));
-    g_assert_cmphex(xtalk_read(qts, window + 0x12344), ==,
+    g_assert_cmphex(io_space_read(qts, window), ==, flash_pattern_word(0));
+    g_assert_cmphex(io_space_read(qts, window + 0x12344), ==,
                     flash_pattern_word(0x12344));
-    g_assert_cmphex(xtalk_read(qts, window + FLASH_PART_SIZE - 4), ==,
+    g_assert_cmphex(io_space_read(qts, window + FLASH_PART_SIZE - 4), ==,
                     flash_pattern_word(FLASH_PART_SIZE - 4));
 
-    g_assert_true(qtest_memread_cpu(qts, 0, XTALK_BASE + control,
+    g_assert_true(qtest_memread_cpu(qts, 0, IO_SPACE + control,
                                     word, sizeof(word)));
     stl_be_p(word, ldl_be_p(word) | BRIDGE_CONTROL_FLASH_WRITE_EN);
-    g_assert_true(qtest_memwrite_cpu(qts, 0, XTALK_BASE + control,
+    g_assert_true(qtest_memwrite_cpu(qts, 0, IO_SPACE + control,
                                      word, sizeof(word)));
-    xtalk_write16(qts, window + FLASH_UNLOCK0, 0xaa);
-    xtalk_write16(qts, window + FLASH_UNLOCK1, 0x55);
-    xtalk_write16(qts, window + FLASH_UNLOCK0, 0x90);
-    g_assert_cmphex(xtalk_read16(qts, window), ==, FLASH_ID_MANUFACTURER);
-    g_assert_cmphex(xtalk_read16(qts, window + 2), ==, FLASH_ID_DEVICE);
-    xtalk_write16(qts, window, 0xf0);
-    g_assert_cmphex(xtalk_read(qts, window), ==, flash_pattern_word(0));
+    io_space_write16(qts, window + FLASH_UNLOCK0, 0xaa);
+    io_space_write16(qts, window + FLASH_UNLOCK1, 0x55);
+    io_space_write16(qts, window + FLASH_UNLOCK0, 0x90);
+    g_assert_cmphex(io_space_read16(qts, window), ==, FLASH_ID_MANUFACTURER);
+    g_assert_cmphex(io_space_read16(qts, window + 2), ==, FLASH_ID_DEVICE);
+    io_space_write16(qts, window, 0xf0);
+    g_assert_cmphex(io_space_read(qts, window), ==, flash_pattern_word(0));
 
-    g_assert_cmphex(xtalk_read16(qts, CABINET_WIDGET * XTALK_WIDGET_SIZE +
-                                 STATUS_WORD), ==, STATUS_RPS_FITTED);
+    g_assert_cmphex(io_space_read16(qts, CABINET_WIDGET * XIO_WIDGET_SIZE +
+                                    STATUS_WORD), ==, STATUS_RPS_FITTED);
     qtest_quit(qts);
 
     unlink(image);
@@ -394,9 +394,9 @@ static void test_loopback_takes_the_plain_path(void)
         "{'execute': 'qom-list', 'arguments': {'path': '/machine/crossbow0'}}");
 
     g_assert_true(qdict_haskey(response, "error"));
-    g_assert_cmphex(xtalk_read(qts, BRIDGE_CFG0(CABINET_WIDGET,
-                                                IP29_IOC3_DEVICE)), ==,
-                    IOC3_ID_PAIR);
+    g_assert_cmphex(io_space_read(qts, BRIDGE_CFG0(CABINET_WIDGET,
+                                                   IP29_IOC3_DEVICE)), ==,
+                                                   IOC3_ID_PAIR);
     qtest_quit(qts);
 }
 
@@ -410,7 +410,7 @@ static void test_card_enumerates_in_each_cabinet_slot(void)
             "-device sgi-ioc3,bus=" CABINET_BUS ",addr=%u", device);
         QTestState *qts = start(GIGACHANNEL, extra);
 
-        g_assert_cmphex(xtalk_read(qts, BRIDGE_CFG0(CABINET_WIDGET, device)),
+        g_assert_cmphex(io_space_read(qts, BRIDGE_CFG0(CABINET_WIDGET, device)),
                         ==, IOC3_ID_PAIR);
         qtest_quit(qts);
     }

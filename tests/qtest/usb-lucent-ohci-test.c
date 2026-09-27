@@ -83,9 +83,9 @@
 #define OHCI_DMA_PHYS              0x00100000
 
 /* Origin 200's SGI Bridge supplies the PCI host used by the mips64 test. */
-#define SGI_XTALK_SPACE            0x20000000000ULL
+#define SGI_IO_SPACE               0x20000000000ULL
 #define SGI_BRIDGE_WIDGET          8
-#define SGI_BRIDGE_BASE            (SGI_XTALK_SPACE + \
+#define SGI_BRIDGE_BASE            (SGI_IO_SPACE + \
                                     ((uint64_t)SGI_BRIDGE_WIDGET << 24))
 #define SGI_BRIDGE_REG_DATA        4
 #define SGI_BRIDGE_CFG0            0x020000

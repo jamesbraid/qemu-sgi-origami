@@ -19,7 +19,7 @@
 #include "qobject/qlist.h"
 #include "sgi-test.h"
 
-#define XTALK_REG_DATA 4
+#define XIO_REG_DATA 4
 #define XBOW_LINK_STATUS(w) (0x0110 + ((w) - 8) * 0x40)
 #define XBOW_LINK_AUX(w) (0x0138 + ((w) - 8) * 0x40)
 #define XBOW_AUX_FAILURE_MODE (1u << 6)
@@ -237,7 +237,7 @@ static uint32_t crossbow_read(QTestState *qts, unsigned int cpu,
     uint8_t bytes[sizeof(uint32_t)];
 
     g_assert_true(qtest_memread_cpu(qts, cpu,
-                                    SPACE_IO + offset + XTALK_REG_DATA,
+                                    SPACE_IO + offset + XIO_REG_DATA,
                                     bytes, sizeof(bytes)));
     return ldl_be_p(bytes);
 }

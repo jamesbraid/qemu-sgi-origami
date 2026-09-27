@@ -42,13 +42,13 @@
 #define ROUTER_NIC_DATA UINT64_C(1)
 #define ROUTER_STATUS_INPUT_PORT(value) (((value) >> 46) & 7)
 #define MEM_PROBE UINT64_C(0x800000)
-#define XTALK_BASE UINT64_C(0x20000000000)
-#define XTALK_REG_DATA 4
-#define XTALK_WIDGET_SIZE UINT64_C(0x1000000)
-#define XTALK_ID_PART(v) (((v) >> 12) & 0xffff)
-#define XTALK_ID_REVISION(v) (((v) >> 28) & 0xf)
+#define IO_SPACE UINT64_C(0x20000000000)
+#define XIO_REG_DATA 4
+#define XIO_WIDGET_SIZE UINT64_C(0x1000000)
+#define XIO_ID_PART(v) (((v) >> 12) & 0xffff)
+#define XIO_ID_REVISION(v) (((v) >> 28) & 0xf)
 #define HUB_NI_REVISION(v) (((v) >> 4) & 0xf)
-#define XTALK_ID_ALWAYS_ONE 1
+#define XIO_ID_ALWAYS_ONE 1
 
 #define HUB_PI_INT_PEND0 0x98
 #define XBOW_STATUS 0x0008
@@ -92,7 +92,7 @@
 #define IO_BWIN_OTHER_SPACE (1ULL << 12)
 #define BIG_WINDOW_BASE UINT64_C(0x20000000)
 #define BIG_WINDOW_SIZE UINT64_C(0x20000000)
-#define BIG_WINDOW(n) (XTALK_BASE + BIG_WINDOW_BASE + (n) * BIG_WINDOW_SIZE)
+#define BIG_WINDOW(n) (IO_SPACE + BIG_WINDOW_BASE + (n) * BIG_WINDOW_SIZE)
 
 /*
  * Bridge's own plain register block is deliberately four-byte-only
@@ -164,7 +164,7 @@ static uint32_t xbow_read(QTestState *qts, uint64_t offset)
     uint8_t bytes[sizeof(uint32_t)];
 
     g_assert_true(qtest_memread_cpu(qts, 0,
-                                    XTALK_BASE + offset + XTALK_REG_DATA,
+                                    IO_SPACE + offset + XIO_REG_DATA,
                                     bytes, sizeof(bytes)));
     return ldl_be_p(bytes);
 }
@@ -175,7 +175,7 @@ static void xbow_write(QTestState *qts, uint64_t offset, uint32_t value)
 
     stl_be_p(bytes, value);
     g_assert_true(qtest_memwrite_cpu(qts, 0,
-                                     XTALK_BASE + offset + XTALK_REG_DATA,
+                                     IO_SPACE + offset + XIO_REG_DATA,
                                      bytes, sizeof(bytes)));
 }
 
@@ -184,9 +184,9 @@ static uint32_t baseio_read(QTestState *qts, uint64_t offset)
     uint8_t bytes[sizeof(uint32_t)];
 
     g_assert_true(qtest_memread_cpu(qts, 0,
-                                    XTALK_BASE + BASEIO_WIDGET *
-                                    XTALK_WIDGET_SIZE + offset +
-                                    XTALK_REG_DATA,
+                                    IO_SPACE + BASEIO_WIDGET *
+                                    XIO_WIDGET_SIZE + offset +
+                                    XIO_REG_DATA,
                                     bytes, sizeof(bytes)));
     return ldl_be_p(bytes);
 }
@@ -197,9 +197,9 @@ static void baseio_write(QTestState *qts, uint64_t offset, uint32_t value)
 
     stl_be_p(bytes, value);
     g_assert_true(qtest_memwrite_cpu(qts, 0,
-                                     XTALK_BASE + BASEIO_WIDGET *
-                                     XTALK_WIDGET_SIZE + offset +
-                                     XTALK_REG_DATA,
+                                     IO_SPACE + BASEIO_WIDGET *
+                                     XIO_WIDGET_SIZE + offset +
+                                     XIO_REG_DATA,
                                      bytes, sizeof(bytes)));
 }
 
@@ -210,10 +210,10 @@ static void baseio_window_write(QTestState *qts, uint64_t offset,
 
     stl_be_p(bytes, value);
     g_assert_true(qtest_memwrite_cpu(qts, 0,
-                                     XTALK_BASE +
+                                     IO_SPACE +
                                      module_nasids[0] * NODE_STRIDE +
                                      BASEIO_WIDGET *
-                                     XTALK_WIDGET_SIZE + offset,
+                                     XIO_WIDGET_SIZE + offset,
                                      bytes, sizeof(bytes)));
 }
 
@@ -392,8 +392,8 @@ static void assert_asic_identities(QTestState *qts)
         /* Graphics-capable module: every node's Hub is code 5, Hub 2.3. */
         g_assert_cmpuint(HUB_NI_REVISION(hub_read(qts, node, NI_STATUS)),
                          ==, 5);
-        g_assert_cmpuint(XTALK_ID_REVISION(hub_read(qts, node,
-                                                    IO_WIDGET_ID)), ==, 1);
+        g_assert_cmpuint(XIO_ID_REVISION(hub_read(qts, node,
+                                                  IO_WIDGET_ID)), ==, 1);
     }
 }
 
@@ -685,18 +685,18 @@ static QTestState *start_module(void)
 }
 
 /* The production machine assembles a switch behind each node's Xtalk view. */
-static void test_xtalk_switch_visible(void)
+static void test_xio_switch_visible(void)
 {
     QTestState *qts = qtest_init(
         "-M origin2000 -smp 8 -m 256M");
     uint8_t bytes[sizeof(uint32_t)];
     uint32_t id;
 
-    g_assert_true(qtest_memread_cpu(qts, 0, XTALK_BASE + XTALK_REG_DATA,
+    g_assert_true(qtest_memread_cpu(qts, 0, IO_SPACE + XIO_REG_DATA,
                                     bytes, sizeof(bytes)));
     id = ldl_be_p(bytes);
-    g_assert_cmpuint(XTALK_ID_PART(id), ==, 0);
-    g_assert_cmphex(id & XTALK_ID_ALWAYS_ONE, ==, XTALK_ID_ALWAYS_ONE);
+    g_assert_cmpuint(XIO_ID_PART(id), ==, 0);
+    g_assert_cmphex(id & XIO_ID_ALWAYS_ONE, ==, XIO_ID_ALWAYS_ONE);
     qtest_quit(qts);
 }
 
@@ -1273,7 +1273,7 @@ static void test_baseio_dma_reaches_far_node(void)
     baseio_window_write(qts, BRIDGE_CFG0(DMA_DEVICE) + PCI_BAR0, DMA_MMIO);
     baseio_window_write(qts, BRIDGE_CFG0(DMA_DEVICE) + PCI_COMMAND,
                         PCI_COMMAND_MEMORY_MASTER);
-    baseio_window_write(qts, BRIDGE_DEVICE(DMA_DEVICE) + XTALK_REG_DATA,
+    baseio_window_write(qts, BRIDGE_DEVICE(DMA_DEVICE) + XIO_REG_DATA,
                         BRIDGE_DEV_SWAP_DIRECT | BRIDGE_DEV_MEMORY_SPACE |
                         (DMA_MMIO >> 20));
     dma_card_write(qts, DMA_REG_ADDRESS, (uint32_t)pci_far);
@@ -2029,8 +2029,8 @@ static uint32_t direct_read(QTestState *qts, uint64_t offset)
     uint8_t bytes[4];
 
     g_assert_true(qtest_memread_cpu(
-        qts, 0, XTALK_BASE + BASEIO_WIDGET * XTALK_WIDGET_SIZE + offset +
-        XTALK_REG_DATA, bytes, sizeof(bytes)));
+        qts, 0, IO_SPACE + BASEIO_WIDGET * XIO_WIDGET_SIZE + offset +
+        XIO_REG_DATA, bytes, sizeof(bytes)));
     return ldl_be_p(bytes);
 }
 
@@ -2066,8 +2066,8 @@ static void test_write_every_advertised_width(const void *data)
 
     bwin_aim(qts, BASEIO_WIDGET);
 
-    outgoing_write(qts, BRIDGE_TEST_PIN_CONTROL + XTALK_REG_DATA,
-                  SCRATCH_PATTERN, 4);
+    outgoing_write(qts, BRIDGE_TEST_PIN_CONTROL + XIO_REG_DATA,
+                   SCRATCH_PATTERN, 4);
     g_assert_cmphex(direct_read(qts, BRIDGE_TEST_PIN_CONTROL), ==,
                     SCRATCH_PATTERN);
 
@@ -2085,8 +2085,8 @@ static void test_write_every_advertised_width(const void *data)
  * attach; this checks that wiring is there once origin2000-rack has
  * actually been built.
  */
-static uint64_t xtalk_uint(QTestState *qts, const char *crossbow,
-                           const char *property)
+static uint64_t crossbow_uint(QTestState *qts, const char *crossbow,
+                              const char *property)
 {
     g_autofree char *path = g_strdup_printf("/machine/%s", crossbow);
     g_autoptr(QDict) response = qtest_qmp(qts,
@@ -2102,16 +2102,16 @@ static void assert_crossbow(QTestState *qts, const char *crossbow,
 {
     g_autofree char *path = g_strdup_printf("/machine/%s", crossbow);
 
-    g_assert_cmphex(xtalk_uint(qts, crossbow, "span"), ==,
+    g_assert_cmphex(crossbow_uint(qts, crossbow, "span"), ==,
                     UINT64_C(0x400000000));
-    g_assert_cmphex(xtalk_uint(qts, crossbow, "links-present"), ==,
+    g_assert_cmphex(crossbow_uint(qts, crossbow, "links-present"), ==,
                     startup_alive);
-    g_assert_cmphex(xtalk_uint(qts, crossbow, "startup-links-alive"), ==,
+    g_assert_cmphex(crossbow_uint(qts, crossbow, "startup-links-alive"), ==,
                     startup_alive);
     g_assert_false(qtest_qom_get_bool(qts, path, "stop-on-link-reset"));
     g_assert_true(qtest_qom_get_bool(qts, path,
                                      "complete-posted-error-address-writes"));
-    g_assert_cmphex(xtalk_uint(qts, crossbow, "link-reset-restore-alive"),
+    g_assert_cmphex(crossbow_uint(qts, crossbow, "link-reset-restore-alive"),
                     ==, startup_alive);
 }
 
@@ -2123,7 +2123,7 @@ static void assert_crossbow(QTestState *qts, const char *crossbow,
  * way every sgi-xio-board does, landing at its own slot name since this
  * builder gives it no id.
  */
-static void test_xtalk_owner(void)
+static void test_xio_owner(void)
 {
     QTestState *qts = qtest_initf("-M origin2000 -m 256M "
                                   "-nodefaults -display none -serial none");
@@ -2143,7 +2143,7 @@ static uint32_t crossbow_read(QTestState *qts, unsigned int cpu,
     uint8_t bytes[sizeof(uint32_t)];
 
     g_assert_true(qtest_memread_cpu(qts, cpu,
-                                    XTALK_BASE + offset + XTALK_REG_DATA,
+                                    IO_SPACE + offset + XIO_REG_DATA,
                                     bytes, sizeof(bytes)));
     return ldl_be_p(bytes);
 }
@@ -2203,8 +2203,8 @@ int main(int argc, char **argv)
                    test_remote_cpu_interrupts);
     qtest_add_func("sn0/origin2000/processor-mode-reset-and-release",
                    test_processor_mode_reset_and_release);
-    qtest_add_func("sn0/origin2000/xtalk-switch-visible",
-                   test_xtalk_switch_visible);
+    qtest_add_func("sn0/origin2000/xio-switch-visible",
+                   test_xio_switch_visible);
     qtest_add_func("sn0/origin2000/xbow-prom-error-writes",
                    test_xbow_prom_error_writes);
     qtest_add_func("sn0/origin2000/xbow-absent-links",
@@ -2264,6 +2264,6 @@ int main(int argc, char **argv)
                         NULL, test_read_every_advertised_width);
     qtest_add_data_func("sn0/origin2000/outgoing-hub-io/write-every-width",
                         NULL, test_write_every_advertised_width);
-    qtest_add_func("sn0/origin2000/xtalk-owner/prepare", test_xtalk_owner);
+    qtest_add_func("sn0/origin2000/xio-owner/prepare", test_xio_owner);
     return g_test_run();
 }

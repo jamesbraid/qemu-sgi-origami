@@ -30,9 +30,9 @@
 #define ROUTER_PROTECTION 0x10
 #define ROUTER_LOCAL_TABLE 0x70100
 
-#define XTALK_BASE UINT64_C(0x20000000000)
-#define XTALK_REG_DATA 4
-#define XTALK_WIDGET_SIZE UINT64_C(0x1000000)
+#define IO_SPACE UINT64_C(0x20000000000)
+#define XIO_REG_DATA 4
+#define XIO_WIDGET_SIZE UINT64_C(0x1000000)
 #define BASEIO_WIDGET 8
 
 #define BRIDGE_DEVICE(n) (0x0200 + 8 * (n))
@@ -318,7 +318,7 @@
  * BASEIO_IOC3_IRQ_PIN and BASEIO_G_MIO_IOC3_IRQ_PIN); IP29's single IOC3
  * rides input 3 instead, a different board's pin assignment.
  */
-#define BRIDGE_INT_STATUS (0x100 + XTALK_REG_DATA)
+#define BRIDGE_INT_STATUS (0x100 + XIO_REG_DATA)
 #define BRIDGE_PIN_BOARD_IOC3 (1u << 4)
 #define BRIDGE_PIN_MIO_IOC3   (1u << 6)
 
@@ -458,9 +458,9 @@ static uint32_t baseio_window_read(QTestState *qts, uint64_t offset)
     uint8_t bytes[sizeof(uint32_t)];
 
     g_assert_true(qtest_memread_cpu(qts, 0,
-                                    XTALK_BASE +
+                                    IO_SPACE +
                                     module_nasids[0] * NODE_STRIDE +
-                                    BASEIO_WIDGET * XTALK_WIDGET_SIZE +
+                                    BASEIO_WIDGET * XIO_WIDGET_SIZE +
                                     offset,
                                     bytes, sizeof(bytes)));
     return ldl_be_p(bytes);
@@ -473,10 +473,10 @@ static void baseio_window_write(QTestState *qts, uint64_t offset,
 
     stl_be_p(bytes, value);
     g_assert_true(qtest_memwrite_cpu(qts, 0,
-                                     XTALK_BASE +
+                                     IO_SPACE +
                                      module_nasids[0] * NODE_STRIDE +
                                      BASEIO_WIDGET *
-                                     XTALK_WIDGET_SIZE + offset,
+                                     XIO_WIDGET_SIZE + offset,
                                      bytes, sizeof(bytes)));
 }
 
@@ -485,9 +485,9 @@ static uint8_t baseio_window_readb(QTestState *qts, uint64_t offset)
     uint8_t value;
 
     g_assert_true(qtest_memread_cpu(qts, 0,
-                                    XTALK_BASE +
+                                    IO_SPACE +
                                     module_nasids[0] * NODE_STRIDE +
-                                    BASEIO_WIDGET * XTALK_WIDGET_SIZE +
+                                    BASEIO_WIDGET * XIO_WIDGET_SIZE +
                                     offset,
                                     &value, sizeof(value)));
     return value;
@@ -497,9 +497,9 @@ static void baseio_window_writeb(QTestState *qts, uint64_t offset,
                                  uint8_t value)
 {
     g_assert_true(qtest_memwrite_cpu(qts, 0,
-                                     XTALK_BASE +
+                                     IO_SPACE +
                                      module_nasids[0] * NODE_STRIDE +
-                                     BASEIO_WIDGET * XTALK_WIDGET_SIZE +
+                                     BASEIO_WIDGET * XIO_WIDGET_SIZE +
                                      offset,
                                      &value, sizeof(value)));
 }
@@ -510,7 +510,7 @@ static void program_baseio_ioc3(QTestState *qts)
                         IOC3_MMIO);
     baseio_window_write(qts, BRIDGE_CFG0(IOC3_DEVICE) + PCI_COMMAND,
                         PCI_COMMAND_MEMORY);
-    baseio_window_write(qts, BRIDGE_DEVICE(IOC3_DEVICE) + XTALK_REG_DATA,
+    baseio_window_write(qts, BRIDGE_DEVICE(IOC3_DEVICE) + XIO_REG_DATA,
                         BRIDGE_DEV_MEMORY_SPACE | (IOC3_MMIO >> 20));
 }
 
@@ -563,7 +563,7 @@ static void program_mio_ioc3(QTestState *qts)
                         MIO_IOC3_MMIO);
     baseio_window_write(qts, BRIDGE_CFG0(MIO_IOC3_DEVICE) + PCI_COMMAND,
                         PCI_COMMAND_MEMORY);
-    baseio_window_write(qts, BRIDGE_DEVICE(MIO_IOC3_DEVICE) + XTALK_REG_DATA,
+    baseio_window_write(qts, BRIDGE_DEVICE(MIO_IOC3_DEVICE) + XIO_REG_DATA,
                         BRIDGE_DEV_MEMORY_SPACE | (MIO_IOC3_MMIO >> 20));
 }
 
@@ -573,7 +573,7 @@ static void program_rad1(QTestState *qts)
                         MIO_RAD1_MMIO);
     baseio_window_write(qts, BRIDGE_CFG0(MIO_RAD1_DEVICE) + PCI_COMMAND,
                         PCI_COMMAND_MEMORY);
-    baseio_window_write(qts, BRIDGE_DEVICE(MIO_RAD1_DEVICE) + XTALK_REG_DATA,
+    baseio_window_write(qts, BRIDGE_DEVICE(MIO_RAD1_DEVICE) + XIO_REG_DATA,
                         BRIDGE_DEV_MEMORY_SPACE | (MIO_RAD1_MMIO >> 20));
 }
 
@@ -657,7 +657,7 @@ static void test_baseio_timekeeper_repair_stores(void)
         QTestState *qts = start_module();
         uint8_t marker = repairs[cpu & 1].marker;
         uint8_t checksum = repairs[cpu & 1].checksum;
-        uint64_t window = XTALK_BASE + UINT64_C(0x20000000) +
+        uint64_t window = IO_SPACE + UINT64_C(0x20000000) +
                           IOC3_TIMEKEEPER;
 
         if (cpu >= 2) {
@@ -922,7 +922,7 @@ static void test_io6g_rad1_status_dma_handshake(void)
      */
     baseio_window_write(qts, BRIDGE_CFG0(MIO_RAD1_DEVICE) + PCI_COMMAND,
                         PCI_COMMAND_MEMORY | RAD1_PCI_COMMAND_MASTER);
-    baseio_window_write(qts, BRIDGE_DEVICE(MIO_RAD1_DEVICE) + XTALK_REG_DATA,
+    baseio_window_write(qts, BRIDGE_DEVICE(MIO_RAD1_DEVICE) + XIO_REG_DATA,
                         BRIDGE_DEV_MEMORY_SPACE | (MIO_RAD1_MMIO >> 20));
 
     /*
@@ -1040,7 +1040,7 @@ static void test_io6g_rad1_status_dma_continuous(void)
     /* Bus mastering with Bridge swap on, as in the handshake test. */
     baseio_window_write(qts, BRIDGE_CFG0(MIO_RAD1_DEVICE) + PCI_COMMAND,
                         PCI_COMMAND_MEMORY | RAD1_PCI_COMMAND_MASTER);
-    baseio_window_write(qts, BRIDGE_DEVICE(MIO_RAD1_DEVICE) + XTALK_REG_DATA,
+    baseio_window_write(qts, BRIDGE_DEVICE(MIO_RAD1_DEVICE) + XIO_REG_DATA,
                         BRIDGE_DEV_MEMORY_SPACE | (MIO_RAD1_MMIO >> 20));
 
     /*
@@ -1190,7 +1190,7 @@ static void rad1_prepare_output(QTestState *qts, uint32_t left,
     program_rad1(qts);
     baseio_window_write(qts, BRIDGE_CFG0(MIO_RAD1_DEVICE) + PCI_COMMAND,
                         PCI_COMMAND_MEMORY | RAD1_PCI_COMMAND_MASTER);
-    baseio_window_write(qts, BRIDGE_DEVICE(MIO_RAD1_DEVICE) + XTALK_REG_DATA,
+    baseio_window_write(qts, BRIDGE_DEVICE(MIO_RAD1_DEVICE) + XIO_REG_DATA,
                         BRIDGE_DEV_MEMORY_SPACE | (MIO_RAD1_MMIO >> 20));
 
     for (i = 0; i < RAD1_OUT_RING_BYTES; i += RAD1_OUT_FRAME_BYTES) {
@@ -1251,7 +1251,7 @@ static void test_io6g_rad1_type1_output_stream(void)
     program_rad1(qts);
     baseio_window_write(qts, BRIDGE_CFG0(MIO_RAD1_DEVICE) + PCI_COMMAND,
                         PCI_COMMAND_MEMORY | RAD1_PCI_COMMAND_MASTER);
-    baseio_window_write(qts, BRIDGE_DEVICE(MIO_RAD1_DEVICE) + XTALK_REG_DATA,
+    baseio_window_write(qts, BRIDGE_DEVICE(MIO_RAD1_DEVICE) + XIO_REG_DATA,
                         BRIDGE_DEV_MEMORY_SPACE | (MIO_RAD1_MMIO >> 20));
 
     /* A known pattern in the output ring, and a cleared status ring. */
@@ -2065,9 +2065,9 @@ static void rad1_write64(QTestState *qts, uint32_t reg, uint64_t value)
     uint8_t bytes[8];
 
     stq_be_p(bytes, value);
-    g_assert_true(qtest_memwrite_cpu(qts, 0, XTALK_BASE +
+    g_assert_true(qtest_memwrite_cpu(qts, 0, IO_SPACE +
                                      module_nasids[0] * NODE_STRIDE +
-                                     BASEIO_WIDGET * XTALK_WIDGET_SIZE +
+                                     BASEIO_WIDGET * XIO_WIDGET_SIZE +
                                      MIO_RAD1_WINDOW + reg,
                                      bytes, sizeof(bytes)));
 }
@@ -2076,9 +2076,9 @@ static uint64_t rad1_read64(QTestState *qts, uint32_t reg)
 {
     uint8_t bytes[8];
 
-    g_assert_true(qtest_memread_cpu(qts, 0, XTALK_BASE +
+    g_assert_true(qtest_memread_cpu(qts, 0, IO_SPACE +
                                     module_nasids[0] * NODE_STRIDE +
-                                    BASEIO_WIDGET * XTALK_WIDGET_SIZE +
+                                    BASEIO_WIDGET * XIO_WIDGET_SIZE +
                                     MIO_RAD1_WINDOW + reg,
                                     bytes, sizeof(bytes)));
     return ldq_be_p(bytes);
@@ -2431,7 +2431,7 @@ static void test_io6g_rad1_subcode_64bit(void)
 
     for (swap = 0; swap < 2; swap++) {
         baseio_window_write(qts, BRIDGE_DEVICE(MIO_RAD1_DEVICE) +
-                            XTALK_REG_DATA,
+                            XIO_REG_DATA,
                             dev | (swap ? BRIDGE_DEV_SWAP : 0));
         for (i = 0; i < G_N_ELEMENTS(regs); i++) {
             rad1_write64(qts, regs[i], value + i + swap * 16);
@@ -2440,10 +2440,10 @@ static void test_io6g_rad1_subcode_64bit(void)
         }
     }
 
-    baseio_window_write(qts, BRIDGE_DEVICE(MIO_RAD1_DEVICE) + XTALK_REG_DATA,
+    baseio_window_write(qts, BRIDGE_DEVICE(MIO_RAD1_DEVICE) + XIO_REG_DATA,
                         dev | BRIDGE_DEV_SWAP);
     rad1_write64(qts, RAD1_SUBCODE_AES, value);
-    baseio_window_write(qts, BRIDGE_DEVICE(MIO_RAD1_DEVICE) + XTALK_REG_DATA,
+    baseio_window_write(qts, BRIDGE_DEVICE(MIO_RAD1_DEVICE) + XIO_REG_DATA,
                         dev);
     g_assert_cmphex(rad1_read64(qts, RAD1_SUBCODE_AES), ==, bswap64(value));
 }
@@ -3250,9 +3250,9 @@ static bool nic_slot(QTestState *qts, unsigned int pulse, unsigned int sample)
 {
     uint32_t nic;
 
-    baseio_window_write(qts, BRIDGE_NIC + XTALK_REG_DATA,
+    baseio_window_write(qts, BRIDGE_NIC + XIO_REG_DATA,
                         NIC_PULSE(pulse) | NIC_SAMPLE(sample));
-    nic = baseio_window_read(qts, BRIDGE_NIC + XTALK_REG_DATA);
+    nic = baseio_window_read(qts, BRIDGE_NIC + XIO_REG_DATA);
     g_assert_cmphex(nic & NIC_DONE, ==, NIC_DONE);
     return nic & NIC_LEVEL;
 }

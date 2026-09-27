@@ -60,7 +60,7 @@
 #define CAUSE_EXCCODE_MASK     0x7c
 #define CAUSE_EXCCODE_DBE      (7 << 2)
 
-#define XTALK_BASE             0x20000000000ULL
+#define IO_SPACE               0x20000000000ULL
 #define XBOW_REG_DATA          4
 #define XBOW_LINK(widget)      (0x100 + ((widget) - 8) * 0x40)
 #define XBOW_LINK_STATUS       0x10
@@ -245,7 +245,7 @@ static uint32_t cpu_xbow_link_reg(QTestState *qts, unsigned int cpu,
                                   unsigned int widget, unsigned int reg)
 {
     uint8_t bytes[4];
-    uint64_t addr = XTALK_BASE + XBOW_LINK(widget) +
+    uint64_t addr = IO_SPACE + XBOW_LINK(widget) +
                     reg + XBOW_REG_DATA;
 
     g_assert_true(qtest_memread_cpu(qts, cpu, addr, bytes, sizeof(bytes)));
