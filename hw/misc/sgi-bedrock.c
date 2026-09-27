@@ -406,6 +406,7 @@ static void bedrock_hold_flush_scratch1(SGIBedrockState *s,
     }
     s->lb.scratch[1] = s->hold_scratch1_withheld[slot];
     s->hold_scratch1_withheld_valid[slot] = false;
+    s->hold_scratch1_released = true;
 }
 
 /*
@@ -633,10 +634,20 @@ void sgi_bedrock_hold_scratch1_write(SGIBedrockState *s, uint64_t value)
         bedrock_hold_wake_kind(s, SGI_BEDROCK_HOLD_SCRATCH1);
         return;
     }
-    s->hold_scratch1_joined[slot] = true;
+    /*
+     * A second write before the barrier is over is the master's release of
+     * the others (0x7f80000 at 0x1fc01278 in the stock PROM), not a join:
+     * the master's next write to its own compare register is a progress
+     * code, not its liveness post. Every processor's join is its write in
+     * main (0x1fc69a00), after the release.
+     */
+    if (s->hold_scratch1_released) {
+        s->hold_scratch1_joined[slot] = true;
+    }
 
     if (!bedrock_hold_applicable(s) || bedrock_hold_scratch1_ready(s)) {
         s->lb.scratch[1] = value;
+        s->hold_scratch1_released = true;
         return;
     }
 
@@ -932,8 +943,10 @@ void sgi_bedrock_rt_compare_written(SGIBedrockState *s,
      * poller that gives up clears its partner's CPU enable, and the PROM
      * reports the partner as "CPU failed early init". On hardware both
      * processors reach the post off one clock, microseconds apart. In the
-     * model each runs its multi-second cache initialisation on its own host
-     * thread, and the partner can post after the poll has run out. So the
+     * model each runs the PROM's fixed 3 s real-time counter delay before it
+     * on its own host thread, which can spend most of that time waiting for
+     * a host processor, and the partner can post after the poll has run
+     * out. So the
      * first of a pair to post is parked, its post already stored, until its
      * partner posts; both polls then succeed at once. A partner that never
      * posts releases it at the bound, and the PROM disables that partner as
@@ -1017,6 +1030,7 @@ void sgi_bedrock_hold_reset(SGIBedrockState *s)
         s->presence_released[i] = false;
     }
     s->presence_abandoned = false;
+    s->hold_scratch1_released = false;
 }
 
 /* True when the window refuses the access, with the reason logged. */

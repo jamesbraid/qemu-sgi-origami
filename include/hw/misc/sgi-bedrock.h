@@ -171,15 +171,18 @@ struct SGIBedrockState {
      * whether or not a publication ever arrives. See the H4 comment in
      * sgi-bedrock.c and docs/known-issues.md.
      *
-     * The partner park's state, the same lifetime. hold_scratch1_joined: the
-     * processor has made a scratch-1 write after its first, so it is past
-     * the reset-edge join. presence_posted: its first write to its own
-     * real-time compare register after that, the post the PROM's pair
+     * The partner park's state, the same lifetime. hold_scratch1_released:
+     * the reset-edge barrier is over, its release (the master's second
+     * scratch-1 write) having landed. hold_scratch1_joined: the processor has
+     * made a scratch-1 write after that, so it is past the join; the master's
+     * release itself does not count. presence_posted: its first write to its
+     * own real-time compare register after that, the post the PROM's pair
      * liveness handshake exchanges. presence_released: the interface's
      * publisher has released the hub lock after publishing.
      */
     bool presence_seen[SGI_BEDROCK_PROCESSORS / SGI_BEDROCK_PI_PROCESSORS];
     bool presence_abandoned;
+    bool hold_scratch1_released;
     bool hold_scratch1_joined[SGI_BEDROCK_PROCESSORS];
     bool presence_posted[SGI_BEDROCK_PROCESSORS];
     bool presence_released[SGI_BEDROCK_PROCESSORS / SGI_BEDROCK_PI_PROCESSORS];

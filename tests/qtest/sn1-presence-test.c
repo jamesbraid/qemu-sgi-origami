@@ -88,12 +88,22 @@
  * partner's timed wait, 3 ms of the real-time counter, the PROM's own.
  */
 #define POST_VALUE 0x24
+
+/*
+ * The reset barrier: the master's second LB scratch 1 write, the value
+ * the stock PROM releases the other processors with, and a progress code
+ * the master then writes to its own real-time compare register before any
+ * liveness post (0x3 at 0x1fc0094c in the stock PROM).
+ */
+#define SCRATCH1_RELEASE 0x7f80000
+#define PROGRESS_CODE 0x3
 #define PARTNER_WAIT_TICKS 3750
 
 /*
  * The liveness test's values: how late B posts (half a second of the
- * real-time counter, as a descheduled host thread through the PROM's cache
- * initialisation would make it), and how many times each processor reads
+ * real-time counter, as a host thread left waiting for a host processor
+ * through the PROM's fixed 3 s real-time counter delay would make it), and
+ * how many times each processor reads
  * its partner's register before giving up. The PROM reads 200,000 times;
  * this is shorter so the test is quick, and still far longer than a partner
  * posting on time needs.
@@ -120,6 +130,7 @@
 #define R_ZERO 0
 #define R_A0 4
 #define R_A1 5
+#define R_A2 6
 #define R_T0 8
 #define R_T1 9
 #define R_T2 10
@@ -259,6 +270,8 @@ static void patch_branch(Image *p, unsigned int at, unsigned int dest)
  */
 static void emit_prologue(Image *p)
 {
+    unsigned int to_master, spin, to_released;
+
     stl_be_p(p->bytes + 0x000, 0x100000ff); /* beq zero, zero, 0x400 */
     for (unsigned int offset = 0x200; offset <= 0x380; offset += 0x80) {
         stl_be_p(p->bytes + offset, 0x1000ffff); /* beq zero, zero, self */
@@ -291,6 +304,24 @@ static void emit_prologue(Image *p)
 
     /* Every processor's first LB scratch 1 write: the reset-edge join. */
     emit_i(p, OPC_SD, R_S2, R_ZERO, 0);
+
+    /*
+     * Then the barrier's release, as the stock PROM does it: the master (A)
+     * writes the release value, and the others spin until they read it.
+     * Every later scratch 1 write stores the same value, so a late reader
+     * still sees it.
+     */
+    emit_li32(p, R_A2, SCRATCH1_RELEASE);
+    to_master = emit_branch(p, OPC_BEQ, R_T2, R_ZERO);
+    spin = p->pos;
+    emit_i(p, OPC_LD, R_S2, R_T0, 0);
+    emit_i(p, OPC_BNE, R_T0, R_A2, 0);
+    patch_branch(p, p->pos - 4, spin);
+    emit_nop(p);
+    to_released = emit_branch(p, OPC_BEQ, R_ZERO, R_ZERO);
+    patch_branch(p, to_master, p->pos);
+    emit_i(p, OPC_SD, R_S2, R_A2, 0);
+    patch_branch(p, to_released, p->pos);
 }
 
 /* Wait out @ticks of the real-time counter. */
@@ -357,13 +388,13 @@ static void build_program(Image *p)
     patch_branch(p, branch, p->pos);
 
     /* The second scratch 1 write, then publish under the hub lock. */
-    emit_i(p, OPC_SD, R_S2, R_ZERO, 0);
+    emit_i(p, OPC_SD, R_S2, R_A2, 0);
     emit_publish(p);
     to_read = emit_branch(p, OPC_BEQ, R_ZERO, R_ZERO);
 
     /* The interface's other processor: its second write, then the read. */
     patch_branch(p, to_peer, p->pos);
-    emit_i(p, OPC_SD, R_S2, R_ZERO, 0);
+    emit_i(p, OPC_SD, R_S2, R_A2, 0);
 
     patch_branch(p, to_read, p->pos);
     emit_record(p);
@@ -379,7 +410,7 @@ static void build_handshake_program(Image *p)
     unsigned int poll, to_partner, to_read;
 
     emit_prologue(p);
-    emit_i(p, OPC_SD, R_S2, R_ZERO, 0);             /* past the join */
+    emit_i(p, OPC_SD, R_S2, R_A2, 0);               /* past the join */
 
     emit_i(p, OPC_ANDI, R_T2, R_T3, 1);             /* t3 = slot */
     emit_dsll(p, R_T4, R_T3, 3);
@@ -427,9 +458,19 @@ static void emit_liveness_program(Image *p, bool b_posts)
 {
     unsigned int to_post, to_poll, poll, to_seen, to_after, to_partner = 0;
     unsigned int to_read, to_publish = 0;
+    unsigned int to_not_master;
 
     emit_prologue(p);
-    emit_i(p, OPC_SD, R_S2, R_ZERO, 0);             /* past the join */
+
+    /*
+     * The master's progress code: a write to its own compare register
+     * after the barrier's release and before its join, which is not a post.
+     */
+    to_not_master = emit_branch(p, OPC_BNE, R_T2, R_ZERO);
+    emit_i(p, OPC_ORI, R_ZERO, R_T0, PROGRESS_CODE);
+    emit_i(p, OPC_SD, R_S0, R_T0, PI_RT_COMPARE_A);
+    patch_branch(p, to_not_master, p->pos);
+    emit_i(p, OPC_SD, R_S2, R_A2, 0);               /* past the join */
 
     emit_i(p, OPC_ANDI, R_T2, R_T3, 1);             /* t3 = slot */
     emit_dsll(p, R_T4, R_T3, 3);
@@ -664,6 +705,11 @@ static void check_late_partner_post_survives_liveness_poll(const char *accel)
     for (unsigned int n = 0; n < 4; n++) {
         g_assert_cmpuint(live[n], ==, 1);
     }
+    /*
+     * A posted on time and waited for B: its progress code after the
+     * barrier's release did not count as its post and park it until B's.
+     */
+    g_assert_cmpuint(waited[0], >=, LATE_POST_TICKS / 2);
     /* And A was woken by that post, not by the park's bound. */
     g_assert_cmpuint(waited[0], <, WOKEN_BY_POST_TICKS);
 }
