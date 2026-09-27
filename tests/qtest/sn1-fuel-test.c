@@ -2,6 +2,7 @@
 /* Fuel boot-spike wiring. The board ID word and bank placement are inputs. */
 
 #include "qemu/osdep.h"
+#include "qemu/bswap.h"
 #include "libqtest.h"
 #include "qobject/qdict.h"
 #include "sgi-test.h"
@@ -45,6 +46,62 @@
 #define MEMORY_BANK_256M UINT64_C(0x10000000)
 #define HUB_LOCAL_BOOT (SPACE_HUB + UINT64_C(0x18000000))
 #define LB_REVISION (BEDROCK_LOCAL + 0x600000)
+#define FUEL_XBRIDGE 15
+#define XBRIDGE_HOST_PORT 0xa
+#define XBRIDGE_INT_STATUS 0x100
+#define XBRIDGE_INT_ENABLE 0x108
+#define XBRIDGE_INT_UPPER 0x30
+#define XBRIDGE_INT_LOWER 0x38
+#define XBRIDGE_INT_HOST(pin) (0x130 + (pin) * 8)
+#define XBRIDGE_DEVICE(slot) (0x200 + (slot) * 8)
+#define XBRIDGE_DEVICE_MEMORY (1U << 12)
+#define PI_PENDING_MODIFY 0x90
+#define PI_PENDING_0 0x98
+#define PI_MASK_0_A 0xa8
+#define PI_REMOTE_WINDOW 0x1800000
+#define MIPS_CAUSE_HARDWARE_IRQ0 (1U << 10)
+#define SCSI_BAR 0x10000000
+#define SCSI_WINDOW (XTALK_WIDGET(FUEL_XBRIDGE) + 0x400000)
+#define ISP_BUS_CTRL 0x08
+#define ISP_SEMAPHORE 0x0c
+#define ISP_MAILBOX0 0x70
+#define ISP_HOST_CMD 0xc0
+#define IOC3_INT_SERIAL_A (1U << 6)
+#define IOC3_ENET_INT_STATUS 0x0f4
+#define IOC3_ENET_INT_ENABLE 0x0f8
+#define IOC3_ENET_INT_RX_TIMER (1U << 0)
+#define IOC3_ENET_MAC_CONTROL 0x0f0
+#define IOC3_ENET_RX_CONTROL 0x0fc
+#define IOC3_ENET_RX_RING_HI 0x100
+#define IOC3_ENET_RX_RING_LO 0x104
+#define IOC3_ENET_RX_CONSUME 0x10c
+#define IOC3_ENET_RX_PRODUCE 0x110
+#define IOC3_ENET_RX_TIMER 0x114
+#define IOC3_ENET_MCR_PROMISC (1U << 1)
+#define IOC3_ENET_MCR_RX_DMA_EN (1U << 15)
+#define IOC3_ENET_MCR_RX_EN (1U << 16)
+#define IOC3_ENET_MCR_RX_OFFSET(halfwords) ((uint32_t)(halfwords) << 3)
+#define IOC3_ENET_RX_PRODUCE_ARM (1U << 31)
+#define IOC3_ENET_RX_HEADER_VALID (1U << 31)
+#define IOC3_RX_RING_PHYS 0x200000
+#define IOC3_RX_BUFFER_PHYS 0x201000
+#define IOC3_RX_RING_IOVA 0x40000000
+#define IOC3_RX_BUFFER_IOVA 0x40001000
+#define OHCI_BAR 0x10000000
+#define OHCI_WINDOW (XTALK_WIDGET(FUEL_XBRIDGE) + 0x900000)
+#define OHCI_CONTROL 0x04
+#define OHCI_INTERRUPT_STATUS 0x0c
+#define OHCI_INTERRUPT_ENABLE 0x10
+#define OHCI_HCCA 0x18
+#define OHCI_CONTROL_OPERATIONAL 0x80
+#define OHCI_CONTROL_SUSPEND 0xc0
+#define OHCI_INTERRUPT_SF 0x04
+#define OHCI_INTERRUPT_MIE 0x80000000
+#define OHCI_HCCA_PHYS 0x100000
+#define OHCI_HCCA_IOVA 0x40000000
+#define XBRIDGE_ATE0 0x10000
+#define XBRIDGE_ATE_VALID 1
+#define XBRIDGE_ATE_NO_SWAP (1U << 5)
 
 static bool fuel_cpu_readq(QTestState *qts, uint64_t address, uint64_t *value)
 {
@@ -88,6 +145,16 @@ static QTestState *fuel_start(const char *prom)
                        "-cpu R14000 -smp 1 -m 512M -bios %s -S", quoted);
 }
 
+static QTestState *fuel_start_running(const char *prom)
+{
+    g_autofree char *quoted = g_shell_quote(prom);
+
+    return qtest_initf("-M fuel,fuel-board-id-word=0x4abc,"
+                       "fuel-ioc3-subsystem-id=0xc30a,"
+                       "fuel-l1-type-code=0x61 "
+                       "-cpu R14000 -smp 1 -m 512M -bios %s", quoted);
+}
+
 static void fuel_map_ioc3(QTestState *qts)
 {
     qtest_writel(qts, PCI_CONFIG(15, 4) + 0x10, IOC3_BAR);
@@ -95,6 +162,224 @@ static void fuel_map_ioc3(QTestState *qts)
                  PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER);
     qtest_writel(qts, XTALK_WIDGET(15) + 0x200 + 4 * 8 + 4,
                  (1U << 12) | (IOC3_BAR >> 20));
+}
+
+static uint32_t fuel_xbridge_read(QTestState *qts, unsigned int offset)
+{
+    return qtest_readl(qts, XTALK_WIDGET(FUEL_XBRIDGE) + offset + 4);
+}
+
+static void fuel_xbridge_write(QTestState *qts, unsigned int offset,
+                               uint32_t value)
+{
+    qtest_writel(qts, XTALK_WIDGET(FUEL_XBRIDGE) + offset + 4, value);
+}
+
+static void fuel_route_irq(QTestState *qts, unsigned int pin,
+                           unsigned int pending_bit)
+{
+    fuel_xbridge_write(qts, XBRIDGE_INT_UPPER, XBRIDGE_HOST_PORT << 16);
+    fuel_xbridge_write(qts, XBRIDGE_INT_LOWER,
+                       PI_REMOTE_WINDOW + PI_PENDING_MODIFY);
+    fuel_xbridge_write(qts, XBRIDGE_INT_HOST(pin),
+                       (1U << 17) | pending_bit);
+    fuel_xbridge_write(qts, XBRIDGE_INT_ENABLE, 1U << pin);
+}
+
+static uint32_t fuel_cpu_cause(QTestState *qts)
+{
+    g_autofree char *registers = qtest_hmp(qts, "info registers 0");
+    const char *value_text = strstr(registers, "Cause   0x");
+    uint32_t value;
+
+    g_assert_nonnull(value_text);
+    value_text += strlen("Cause   0x");
+    g_assert_cmpint(sscanf(value_text, "%" SCNx32, &value), ==, 1);
+    return value;
+}
+
+static void fuel_expect_irq(QTestState *qts, unsigned int pin,
+                            unsigned int pending_bit)
+{
+    uint64_t pending = UINT64_C(1) << pending_bit;
+
+    g_assert_cmphex(fuel_xbridge_read(qts, XBRIDGE_INT_STATUS) & 0xff, ==,
+                    1U << pin);
+    g_assert_cmphex(qtest_readq(qts, BEDROCK_LOCAL + PI_PENDING_0), ==,
+                    pending);
+    g_assert_cmphex(fuel_cpu_cause(qts) & MIPS_CAUSE_HARDWARE_IRQ0, ==, 0);
+    qtest_writeq(qts, BEDROCK_LOCAL + PI_MASK_0_A, pending);
+    g_assert_cmphex(fuel_cpu_cause(qts) & MIPS_CAUSE_HARDWARE_IRQ0, ==,
+                    MIPS_CAUSE_HARDWARE_IRQ0);
+}
+
+static void fuel_ack_irq(QTestState *qts, unsigned int pending_bit)
+{
+    g_assert_cmphex(fuel_xbridge_read(qts, XBRIDGE_INT_STATUS) & 0xff, ==, 0);
+    qtest_writeq(qts, BEDROCK_LOCAL + PI_PENDING_MODIFY, pending_bit);
+    g_assert_cmphex(qtest_readq(qts, BEDROCK_LOCAL + PI_PENDING_0), ==, 0);
+    g_assert_cmphex(fuel_cpu_cause(qts) & MIPS_CAUSE_HARDWARE_IRQ0, ==, 0);
+}
+
+static void fuel_scsi_writew(QTestState *qts, unsigned int offset,
+                             uint16_t value)
+{
+    qtest_writew(qts, SCSI_WINDOW + offset + 2, value);
+}
+
+static uint16_t fuel_scsi_readw(QTestState *qts, unsigned int offset)
+{
+    return qtest_readw(qts, SCSI_WINDOW + offset + 2);
+}
+
+static void test_fuel_scsi_interrupt(const void *data)
+{
+    const unsigned int pin = 1, pending_bit = 17;
+    QTestState *qts = fuel_start(data);
+
+    qtest_writel(qts, PCI_CONFIG(FUEL_XBRIDGE, 1) + 0x14, SCSI_BAR);
+    qtest_writel(qts, PCI_CONFIG(FUEL_XBRIDGE, 1) + PCI_COMMAND,
+                 PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER);
+    fuel_xbridge_write(qts, XBRIDGE_DEVICE(1),
+                       XBRIDGE_DEVICE_MEMORY | (SCSI_BAR >> 20));
+    fuel_route_irq(qts, pin, pending_bit);
+    g_assert_cmphex(fuel_xbridge_read(qts, XBRIDGE_INT_STATUS) & 0xff, ==, 0);
+    fuel_scsi_writew(qts, ISP_BUS_CTRL, 0x0006);
+    g_assert_cmphex(fuel_scsi_readw(qts, ISP_BUS_CTRL), ==, 0x0006);
+    fuel_scsi_writew(qts, ISP_MAILBOX0, 0);
+    fuel_scsi_writew(qts, ISP_HOST_CMD, 0x5000);
+    g_assert_cmphex(fuel_scsi_readw(qts, ISP_SEMAPHORE) & 1, ==, 1);
+    fuel_expect_irq(qts, pin, pending_bit);
+    fuel_scsi_writew(qts, ISP_SEMAPHORE, 0);
+    fuel_scsi_writew(qts, ISP_HOST_CMD, 0x7000);
+    fuel_ack_irq(qts, pending_bit);
+    qtest_quit(qts);
+}
+
+static void test_fuel_ioc3_superio_interrupt(const void *data)
+{
+    const unsigned int pin = 0, pending_bit = 18;
+    QTestState *qts = fuel_start(data);
+
+    fuel_map_ioc3(qts);
+    fuel_route_irq(qts, pin, pending_bit);
+    qtest_writel(qts, IOC3_WINDOW + IOC3_INT_ENABLE_SET,
+                 IOC3_INT_SERIAL_A);
+    qtest_writeb(qts, IOC3_WINDOW + IOC3_SERIAL_A + 1, 0x02);
+    g_assert_cmphex(qtest_readl(qts, IOC3_WINDOW + IOC3_INT_STATUS) &
+                    IOC3_INT_SERIAL_A, ==, IOC3_INT_SERIAL_A);
+    fuel_expect_irq(qts, pin, pending_bit);
+    qtest_writeb(qts, IOC3_WINDOW + IOC3_SERIAL_A + 1, 0);
+    fuel_ack_irq(qts, pending_bit);
+    qtest_quit(qts);
+}
+
+static void test_fuel_ohci_interrupt(const void *data)
+{
+    const unsigned int pin = 5, pending_bit = 19;
+    uint8_t hcca[0x100] = { 0 };
+    QTestState *qts = fuel_start_running(data);
+
+    qtest_writeq(qts, BEDROCK_MD_CONFIG, 0x33);
+    qtest_writel(qts, PCI_CONFIG(FUEL_XBRIDGE, 5) + 0x10, OHCI_BAR);
+    qtest_writel(qts, PCI_CONFIG(FUEL_XBRIDGE, 5) + PCI_COMMAND,
+                 PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER);
+    fuel_xbridge_write(qts, XBRIDGE_DEVICE(5),
+                       XBRIDGE_DEVICE_MEMORY | (OHCI_BAR >> 20));
+    fuel_route_irq(qts, pin, pending_bit);
+    g_assert_cmphex(qtest_readl(qts, OHCI_WINDOW), ==, 0x10);
+    qtest_memwrite(qts, OHCI_HCCA_PHYS, hcca, sizeof(hcca));
+    qtest_writeq(qts, XTALK_WIDGET(FUEL_XBRIDGE) + XBRIDGE_ATE0,
+                 OHCI_HCCA_PHYS |
+                 ((uint64_t)XBRIDGE_HOST_PORT << 8) |
+                 XBRIDGE_ATE_NO_SWAP | XBRIDGE_ATE_VALID);
+    qtest_writel(qts, OHCI_WINDOW + OHCI_HCCA, OHCI_HCCA_IOVA);
+    qtest_writel(qts, OHCI_WINDOW + OHCI_INTERRUPT_ENABLE,
+                 OHCI_INTERRUPT_MIE | OHCI_INTERRUPT_SF);
+    qtest_writel(qts, OHCI_WINDOW + OHCI_CONTROL,
+                 OHCI_CONTROL_OPERATIONAL);
+    for (unsigned int i = 0; i < 64; i++) {
+        if (fuel_xbridge_read(qts, XBRIDGE_INT_STATUS) & (1U << pin)) {
+            break;
+        }
+        qtest_clock_step_next(qts);
+    }
+    fuel_expect_irq(qts, pin, pending_bit);
+    qtest_writel(qts, OHCI_WINDOW + OHCI_INTERRUPT_STATUS,
+                 OHCI_INTERRUPT_SF);
+    fuel_ack_irq(qts, pending_bit);
+    qtest_writel(qts, OHCI_WINDOW + OHCI_CONTROL, OHCI_CONTROL_SUSPEND);
+    qtest_quit(qts);
+}
+
+static void test_fuel_ioc3_ethernet_interrupt(const void *data)
+{
+    static const uint8_t frame[14] = {
+        0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff,
+        0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x08, 0x00,
+    };
+    const unsigned int pin = 4, pending_bit = 20;
+    uint8_t packet[4 + sizeof(frame)];
+    g_autofree char *quoted = g_shell_quote(data);
+    QTestState *qts;
+    int sv[2];
+
+    g_assert_cmpint(socketpair(AF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    qts = qtest_initf("-M fuel,fuel-board-id-word=0x4abc,"
+                      "fuel-ioc3-subsystem-id=0xc30a,"
+                      "fuel-l1-type-code=0x61 "
+                      "-cpu R14000 -smp 1 -m 512M -bios %s "
+                      "-nic socket,fd=%d,id=ioc3-net", quoted, sv[1]);
+    g_assert_cmpint(close(sv[1]), ==, 0);
+    qtest_writeq(qts, BEDROCK_MD_CONFIG, 0x33);
+    fuel_map_ioc3(qts);
+    fuel_route_irq(qts, pin, pending_bit);
+    qtest_writeq(qts, XTALK_WIDGET(FUEL_XBRIDGE) + XBRIDGE_ATE0,
+                 IOC3_RX_RING_PHYS |
+                 ((uint64_t)XBRIDGE_HOST_PORT << 8) |
+                 XBRIDGE_ATE_NO_SWAP | XBRIDGE_ATE_VALID);
+    qtest_writeq(qts, XTALK_WIDGET(FUEL_XBRIDGE) + XBRIDGE_ATE0 + 8,
+                 IOC3_RX_BUFFER_PHYS |
+                 ((uint64_t)XBRIDGE_HOST_PORT << 8) |
+                 XBRIDGE_ATE_NO_SWAP | XBRIDGE_ATE_VALID);
+    qtest_writel(qts, IOC3_RX_RING_PHYS, 0);
+    qtest_writel(qts, IOC3_RX_RING_PHYS + 4, IOC3_RX_BUFFER_IOVA);
+    qtest_writel(qts, IOC3_WINDOW + IOC3_ENET_MAC_CONTROL,
+                 IOC3_ENET_MCR_PROMISC | IOC3_ENET_MCR_RX_DMA_EN |
+                 IOC3_ENET_MCR_RX_EN | IOC3_ENET_MCR_RX_OFFSET(33));
+    qtest_writel(qts, IOC3_WINDOW + IOC3_ENET_INT_ENABLE,
+                 IOC3_ENET_INT_RX_TIMER);
+    qtest_writel(qts, IOC3_WINDOW + IOC3_ENET_RX_RING_HI, 0);
+    qtest_writel(qts, IOC3_WINDOW + IOC3_ENET_RX_RING_LO,
+                 IOC3_RX_RING_IOVA);
+    qtest_writel(qts, IOC3_WINDOW + IOC3_ENET_RX_TIMER, 0);
+    qtest_writel(qts, IOC3_WINDOW + IOC3_ENET_RX_CONTROL, 0);
+    qtest_writel(qts, IOC3_WINDOW + IOC3_ENET_RX_PRODUCE,
+                 8 | IOC3_ENET_RX_PRODUCE_ARM);
+    stl_be_p(packet, sizeof(frame));
+    memcpy(packet + 4, frame, sizeof(frame));
+    g_assert_cmpint(write(sv[0], packet, sizeof(packet)), ==,
+                    (int)sizeof(packet));
+    for (unsigned int i = 0; i < 200; i++) {
+        if (qtest_readl(qts, IOC3_WINDOW + IOC3_ENET_RX_CONSUME) == 8) {
+            break;
+        }
+        g_usleep(1000);
+        qtest_clock_step(qts, 50000);
+    }
+    g_assert_cmphex(qtest_readl(qts, IOC3_WINDOW + IOC3_ENET_RX_CONSUME),
+                    ==, 8);
+    g_assert_cmphex(qtest_readl(qts, IOC3_RX_BUFFER_PHYS) &
+                    IOC3_ENET_RX_HEADER_VALID, ==,
+                    IOC3_ENET_RX_HEADER_VALID);
+    g_assert_cmphex(qtest_readl(qts, IOC3_WINDOW + IOC3_ENET_INT_STATUS) &
+                    IOC3_ENET_INT_RX_TIMER, ==, IOC3_ENET_INT_RX_TIMER);
+    fuel_expect_irq(qts, pin, pending_bit);
+    qtest_writel(qts, IOC3_WINDOW + IOC3_ENET_INT_STATUS,
+                 IOC3_ENET_INT_RX_TIMER);
+    fuel_ack_irq(qts, pending_bit);
+    qtest_quit(qts);
+    g_assert_cmpint(close(sv[0]), ==, 0);
 }
 
 static void test_fuel_ioc3_identity(const void *data)
@@ -520,6 +805,14 @@ int main(int argc, char **argv)
     qtest_add_data_func("fuel/pci", prom, test_fuel_pci);
     qtest_add_data_func("fuel/ioc3-identity", prom,
                         test_fuel_ioc3_identity);
+    qtest_add_data_func("fuel/scsi-interrupt", prom,
+                        test_fuel_scsi_interrupt);
+    qtest_add_data_func("fuel/ioc3-superio-interrupt", prom,
+                        test_fuel_ioc3_superio_interrupt);
+    qtest_add_data_func("fuel/ohci-interrupt", prom,
+                        test_fuel_ohci_interrupt);
+    qtest_add_data_func("fuel/ioc3-ethernet-interrupt", prom,
+                        test_fuel_ioc3_ethernet_interrupt);
     qtest_add_data_func("fuel/ps2", prom, test_fuel_ps2);
     qtest_add_data_func("fuel/memory", prom, test_fuel_memory);
     qtest_add_data_func("fuel/rejects-other-board-code", prom,
