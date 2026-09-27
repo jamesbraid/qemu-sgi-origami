@@ -4695,6 +4695,7 @@ F: tests/vm/
 F: tests/lcitool/
 F: tests/functional/*/test_tuxrun.py
 F: scripts/archive-source.sh
+F: scripts/tests/test_archive_source.py
 F: docs/devel/testing/ci*
 F: docs/devel/testing/main.rst
 W: https://gitlab.com/qemu-project/qemu/pipelines
