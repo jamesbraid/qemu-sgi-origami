@@ -527,6 +527,22 @@ static uint8_t mgras_pixel_format(SGIMgrasState *s)
 }
 
 /*
+ * An RGB pixel word the X server passes whole -- PACKEDCOLOR, a pair-packed
+ * CHAR_H/CHAR_L pixel, a 4-byte DMA pixel -- has red in bits 7:0,
+ * 0x00BBGGRR. X.Org's impact driver (impact_shadow.c, visual masks
+ * 0xff/0xff00/0xff0000), OpenBSD's impact(4) (rasops red at bit 0, passed
+ * straight to PACKEDCOLOR) and the Linux Impact framebuffer patch (red at
+ * offset 0, the same word in PACKEDCOLOR and in its image blits) all use
+ * that layout. The model stores 0x00RRGGBB, so such a word is swapped on
+ * the way in. FILLCOLOR_R/G/B and BKGRD are per-channel registers and
+ * need no swap.
+ */
+static uint32_t mgras_rgb_from_pixel_word(uint32_t word)
+{
+    return ((word & 0xff) << 16) | (word & 0xff00) | ((word >> 16) & 0xff);
+}
+
+/*
  * A paint writes colour and its format tag together. The WID plane keeps
  * whatever tagged it.
  */
@@ -679,7 +695,7 @@ static void mgras_draw_glyph_row(SGIMgrasState *s)
     uint8_t format = mgras_pixel_format(s);
     uint32_t ink = format == SGI_MGRAS_PIXEL_FORMAT_CI8 ?
         (s->rss[MGRAS_RSS_RED] >> 12) & 0xff :
-        s->rss[MGRAS_RSS_PACKEDCOLOR] & 0x00ffffff;
+        mgras_rgb_from_pixel_word(s->rss[MGRAS_RSS_PACKEDCOLOR]);
     uint32_t mask = s->rss[MGRAS_RSS_COLORMASKLSBSA];
     uint8_t op = s->rss[MGRAS_RSS_PP1FILLMODE] >> 26;
     uint64_t bits = ((uint64_t)s->rss[MGRAS_RSS_CHAR_H] << 32) |
@@ -782,7 +798,8 @@ static void mgras_draw_byte_row_bytes(SGIMgrasState *s, int x0, int x1,
  * index in bits 7:0; a live capture's other bytes did not reliably
  * replicate that value, so only bits 7:0 are read
  * (tests/data/mgras/root-icon.replay). Under RGB (bit 13 set) each register
- * carries a whole 0x00RRGGBB pixel: the IRIX 6.5.30 greeter seeds its list
+ * carries a whole 0x00BBGGRR pixel word (see mgras_rgb_from_pixel_word()):
+ * the IRIX 6.5.30 greeter seeds its list
  * background this way with PP1FILLMODE 0xc006204 and CHAR_H/CHAR_L
  * 0x00c0c0c0/0x00c1c1c1, a grey dither, and then replicates it with
  * 4-byte-per-pixel DMA copies that must read those 24 bits back. In the
@@ -795,11 +812,12 @@ static void mgras_draw_byte_row_pairs(SGIMgrasState *s, int x0, int x1,
                                    int y0, int y1, uint32_t mask, uint8_t op)
 {
     uint8_t format = mgras_pixel_format(s);
-    uint32_t pixel_mask = format == SGI_MGRAS_PIXEL_FORMAT_CI8 ? 0xff :
-                                                               0x00ffffff;
+    bool ci8 = format == SGI_MGRAS_PIXEL_FORMAT_CI8;
     uint32_t pixels[2] = {
-        s->rss[MGRAS_RSS_CHAR_H] & pixel_mask,
-        s->rss[MGRAS_RSS_CHAR_L] & pixel_mask,
+        ci8 ? s->rss[MGRAS_RSS_CHAR_H] & 0xff :
+              mgras_rgb_from_pixel_word(s->rss[MGRAS_RSS_CHAR_H]),
+        ci8 ? s->rss[MGRAS_RSS_CHAR_L] & 0xff :
+              mgras_rgb_from_pixel_word(s->rss[MGRAS_RSS_CHAR_L]),
     };
     int width = x1 - x0 + 1;
     int row = s->glyph_row;
@@ -1041,7 +1059,7 @@ static void mgras_draw_point(SGIMgrasState *s)
     uint8_t format = mgras_pixel_format(s);
     uint32_t color = format == SGI_MGRAS_PIXEL_FORMAT_CI8 ?
         (s->rss[MGRAS_RSS_RED] >> 12) & 0xff :
-        s->rss[MGRAS_RSS_PACKEDCOLOR] & 0x00ffffff;
+        mgras_rgb_from_pixel_word(s->rss[MGRAS_RSS_PACKEDCOLOR]);
     uint32_t mask = s->rss[MGRAS_RSS_COLORMASKLSBSA];
     uint8_t op = s->rss[MGRAS_RSS_PP1FILLMODE] >> 26;
     int x = (xy0 >> 16) & 0xffff, y = xy0 & 0xffff;
@@ -1103,7 +1121,7 @@ static void mgras_draw_line(SGIMgrasState *s)
     uint8_t format = mgras_pixel_format(s);
     uint32_t color = format == SGI_MGRAS_PIXEL_FORMAT_CI8 ?
         (s->rss[MGRAS_RSS_RED] >> 12) & 0xff :
-        s->rss[MGRAS_RSS_PACKEDCOLOR] & 0x00ffffff;
+        mgras_rgb_from_pixel_word(s->rss[MGRAS_RSS_PACKEDCOLOR]);
     uint32_t fillmode = s->rss[MGRAS_RSS_FILLMODE];
     bool stipple = fillmode & MGRAS_FILLMODE_STIPPLE;
     bool opaque = fillmode & MGRAS_FILLMODE_STIPPLE_OPAQUE;
@@ -1447,14 +1465,9 @@ static void mgras_raster_dma_draw_image(SGIMgrasState *s, uint32_t kick_byte)
                  * and the Linux Impact framebuffer patch (red at offset
                  * 0). The IRIX 6.5.30 greeter's EZsetup icon agrees: read
                  * red-first it is cyan and blue-grey where the RAD4
-                 * reference shows yellow and orange.
-                 *
-                 * Known limitation: the same drivers pass this 0x00BBGGRR
-                 * word as PACKEDCOLOR and as pair-packed CHAR_H/CHAR_L
-                 * pixels, which the model still reads as 0x00RRGGBB. A
-                 * non-grey pixel drawn that way shows, and reads back by
-                 * DMA, with red and blue exchanged. Every such value in
-                 * the captures has red equal to blue, so none shows it.
+                 * reference shows yellow and orange. PACKEDCOLOR and
+                 * pair-packed pixels carry the same word; see
+                 * mgras_rgb_from_pixel_word().
                  */
                 uint32_t color = bpp == 1 ? pixel_bytes[0] :
                     ((uint32_t)pixel_bytes[3] << 16) |
