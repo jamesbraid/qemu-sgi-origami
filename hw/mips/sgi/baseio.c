@@ -754,6 +754,7 @@ static bool baseio_build_fuel(SGIBaseioState *s, Error **errp)
                          SGI_IOC3_POPULATION_ETHERNET |
                          SGI_IOC3_POPULATION_SERIAL_A |
                          SGI_IOC3_POPULATION_SERIAL_B |
+                         SGI_IOC3_POPULATION_KEYBOARD_MOUSE |
                          SGI_IOC3_POPULATION_PARALLEL);
     qdev_prop_set_uint8(DEVICE(ioc3), "timekeeper-kind",
                         SGI_IOC3_TIMEKEEPER_NONE);
@@ -783,7 +784,7 @@ static bool baseio_build_fuel(SGIBaseioState *s, Error **errp)
     baseio_note_claim(s, s->record_a_id);
     baseio_note_claim(s, s->record_b_id);
     warn_report("fuel: IOC3 subsystem ID is an experimental launch input; "
-                "PCI interrupt routing, RTC, keyboard and USB "
+                "PCI interrupt routing, RTC and USB "
                 "are not implemented");
     return true;
 }

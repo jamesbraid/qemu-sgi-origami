@@ -22,6 +22,15 @@
 #define IOC3_WINDOW (XTALK_WIDGET(15) + 0x800000)
 #define IOC3_SERIAL_A 0x20178
 #define IOC3_SERIAL_B 0x20170
+#define IOC3_INT_STATUS 0x1c
+#define IOC3_INT_ENABLE_SET 0x20
+#define IOC3_INT_KEYBOARD (1U << 22)
+#define IOC3_KBC_CONTROL 0x9c
+#define IOC3_KBC_KBD_RECEIVE 0xa0
+#define IOC3_KBC_AUX_RECEIVE 0xa4
+#define IOC3_KBC_KBD_TRANSMIT 0xa8
+#define IOC3_KBC_AUX_TRANSMIT 0xac
+#define IOC3_KBC_CLAMP_BOTH_3 0x00c00000
 #define BEDROCK_MD_CONFIG (BEDROCK_LOCAL + 0x780008)
 #define MEMORY_APERTURE UINT64_C(0)
 #define MEMORY_BANK_STRIDE UINT64_C(0x40000000)
@@ -68,6 +77,15 @@ static QTestState *fuel_start(const char *prom)
     return qtest_initf("-M fuel,fuel-board-id-word=0x4abc,"
                        "fuel-ioc3-subsystem-id=0xc30a "
                        "-cpu R14000 -smp 1 -m 512M -bios %s -S", quoted);
+}
+
+static void fuel_map_ioc3(QTestState *qts)
+{
+    qtest_writel(qts, PCI_CONFIG(15, 4) + 0x10, IOC3_BAR);
+    qtest_writel(qts, PCI_CONFIG(15, 4) + PCI_COMMAND,
+                 PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER);
+    qtest_writel(qts, XTALK_WIDGET(15) + 0x200 + 4 * 8 + 4,
+                 (1U << 12) | (IOC3_BAR >> 20));
 }
 
 static void test_fuel_board_and_cpu(const void *data)
@@ -121,11 +139,7 @@ static void test_fuel_pci(const void *data)
     g_assert_cmphex(qtest_readl(qts, PCI_CONFIG(14, 4)), ==, 0xffffffff);
     g_assert_cmphex(qtest_readl(qts, PCI_CONFIG(15, 5)), ==, 0xffffffff);
 
-    qtest_writel(qts, PCI_CONFIG(15, 4) + 0x10, IOC3_BAR);
-    qtest_writel(qts, PCI_CONFIG(15, 4) + PCI_COMMAND,
-                 PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER);
-    qtest_writel(qts, XTALK_WIDGET(15) + 0x200 + 4 * 8 + 4,
-                 (1U << 12) | (IOC3_BAR >> 20));
+    fuel_map_ioc3(qts);
     qtest_writeb(qts, IOC3_WINDOW + IOC3_SERIAL_A + 7, 0x5a);
     qtest_writeb(qts, IOC3_WINDOW + IOC3_SERIAL_B + 7, 0xa5);
     g_assert_cmphex(qtest_readb(qts, IOC3_WINDOW + IOC3_SERIAL_A + 7), ==,
@@ -141,13 +155,53 @@ static void test_fuel_pci(const void *data)
     qtest_system_reset(qts);
     g_assert_cmphex(qtest_readl(qts, PCI_CONFIG(15, 4) + PCI_COMMAND) &
                     PCI_COMMAND_MEMORY, ==, 0);
-    qtest_writel(qts, PCI_CONFIG(15, 4) + 0x10, IOC3_BAR);
-    qtest_writel(qts, PCI_CONFIG(15, 4) + PCI_COMMAND,
-                 PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER);
-    qtest_writel(qts, XTALK_WIDGET(15) + 0x200 + 4 * 8 + 4,
-                 (1U << 12) | (IOC3_BAR >> 20));
+    fuel_map_ioc3(qts);
     g_assert_cmphex(qtest_readb(qts, IOC3_WINDOW + IOC3_SERIAL_A + 3), ==, 0);
     g_assert_cmphex(qtest_readb(qts, IOC3_WINDOW + IOC3_SERIAL_B + 3), ==, 0);
+    qtest_quit(qts);
+}
+
+static void test_fuel_ps2(const void *data)
+{
+    const char *prom = data;
+    QTestState *qts = fuel_start(prom);
+
+    fuel_map_ioc3(qts);
+    g_assert_cmphex(qtest_readl(qts, IOC3_WINDOW + IOC3_KBC_KBD_RECEIVE),
+                    ==, 0);
+    g_assert_cmphex(qtest_readl(qts, IOC3_WINDOW + IOC3_KBC_AUX_RECEIVE),
+                    ==, 0);
+
+    qtest_writel(qts, IOC3_WINDOW + IOC3_KBC_CONTROL,
+                 IOC3_KBC_CLAMP_BOTH_3);
+    g_assert_cmphex(qtest_readl(qts, IOC3_WINDOW + IOC3_KBC_CONTROL), ==,
+                    IOC3_KBC_CLAMP_BOTH_3);
+    qtest_writel(qts, IOC3_WINDOW + IOC3_INT_ENABLE_SET,
+                 IOC3_INT_KEYBOARD);
+    qtest_writel(qts, IOC3_WINDOW + IOC3_KBC_KBD_TRANSMIT, 0xff);
+    qtest_writel(qts, IOC3_WINDOW + IOC3_KBC_AUX_TRANSMIT, 0xff);
+    g_assert_cmphex(qtest_readl(qts, IOC3_WINDOW + IOC3_INT_STATUS) &
+                    IOC3_INT_KEYBOARD, ==, IOC3_INT_KEYBOARD);
+    g_assert_cmphex(qtest_readl(qts, IOC3_WINDOW + IOC3_KBC_KBD_RECEIVE),
+                    ==, 0xc0faaa00);
+    g_assert_cmphex(qtest_readl(qts, IOC3_WINDOW + IOC3_KBC_AUX_RECEIVE),
+                    ==, 0xe8faaa00);
+    qtest_writel(qts, IOC3_WINDOW + IOC3_INT_STATUS, IOC3_INT_KEYBOARD);
+    g_assert_cmphex(qtest_readl(qts, IOC3_WINDOW + IOC3_INT_STATUS) &
+                    IOC3_INT_KEYBOARD, ==, 0);
+
+    qtest_writel(qts, IOC3_WINDOW + IOC3_KBC_KBD_TRANSMIT, 0xff);
+    g_assert_cmphex(qtest_readl(qts, IOC3_WINDOW + IOC3_INT_STATUS) &
+                    IOC3_INT_KEYBOARD, ==, IOC3_INT_KEYBOARD);
+    qtest_system_reset(qts);
+    fuel_map_ioc3(qts);
+    g_assert_cmphex(qtest_readl(qts, IOC3_WINDOW + IOC3_KBC_CONTROL), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, IOC3_WINDOW + IOC3_KBC_KBD_RECEIVE),
+                    ==, 0);
+    g_assert_cmphex(qtest_readl(qts, IOC3_WINDOW + IOC3_KBC_AUX_RECEIVE),
+                    ==, 0);
+    g_assert_cmphex(qtest_readl(qts, IOC3_WINDOW + IOC3_INT_STATUS) &
+                    IOC3_INT_KEYBOARD, ==, 0);
     qtest_quit(qts);
 }
 
@@ -238,6 +292,7 @@ int main(int argc, char **argv)
     qtest_add_data_func("fuel/board-and-cpu", prom, test_fuel_board_and_cpu);
     qtest_add_data_func("fuel/cpu-grant", prom, test_fuel_cpu_grant);
     qtest_add_data_func("fuel/pci", prom, test_fuel_pci);
+    qtest_add_data_func("fuel/ps2", prom, test_fuel_ps2);
     qtest_add_data_func("fuel/memory", prom, test_fuel_memory);
     qtest_add_data_func("fuel/rejects-other-board-code", prom,
                         test_fuel_rejects_other_board_code);
