@@ -49,7 +49,7 @@ system_ss.add(when: 'CONFIG_SGI_XBOW', if_true: files('sgi-xbow.c'))
 system_ss.add(when: 'CONFIG_SGI_XBRIDGE_XBOW', if_true: files('sgi-xbridge-xbow.c'))
 system_ss.add(when: 'CONFIG_SGI_MGRAS',
               if_true: files('sgi-mgras.c', 'sgi-mgras-raster.c',
-                             'sgi-mgras-display.c'))
+                             'sgi-mgras-display.c', 'sgi-mgras-gl.c'))
 system_ss.add(when: 'CONFIG_SGI_KONA', if_true: files('sgi-kona.c'))
 system_ss.add(when: 'CONFIG_SGI_KONA', if_true: files('sgi-kona-gl-decode.c'))
 system_ss.add(when: 'CONFIG_SGI_XTALK_TEST_TARGET', if_true: files('sgi-xtalk-test-target.c'))

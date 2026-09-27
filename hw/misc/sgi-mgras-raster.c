@@ -10,6 +10,7 @@
 #include "qemu/log.h"
 #include "qemu/cutils.h"
 #include "hw/misc/sgi-mgras-raster.h"
+#include "hw/misc/sgi-mgras-gl.h"
 #include "system/dma.h"
 #include "trace.h"
 
@@ -372,6 +373,24 @@ static void mgras_command_fifo_token(SGIMgrasState *s, uint32_t token)
             s->cmd_token_class = MGRAS_CMD_HDR_CLASS_DISCARD;
             return;
         }
+        if (s->cmd_token_words_remaining == 0) {
+            mgras_raster_command_fifo_dispatch(s);
+        }
+        return;
+    }
+
+    /*
+     * The OpenGL packets the model executes: glClearColor, glClear's
+     * colour token and glFlush (mgras-gl-commands.md). The
+     * class and opcode are kept like any other header's, so the payload
+     * collects and dispatches through the usual path.
+     */
+    if (sgi_mgras_gl_header(token)) {
+        s->cmd_token_class = cmd_class;
+        s->cmd_token_reg = reg;
+        s->cmd_token_payload_count = 0;
+        s->cmd_token_words_remaining =
+            mgras_command_payload_words(payload_bytes);
         if (s->cmd_token_words_remaining == 0) {
             mgras_raster_command_fifo_dispatch(s);
         }
@@ -1958,6 +1977,9 @@ static void mgras_raster_desc_bank_store(SGIMgrasState *s, uint32_t cmd_class,
 static void mgras_raster_command_fifo_dispatch(SGIMgrasState *s)
 {
     uint32_t reg = s->cmd_token_reg;
+    /* Every GL packet the model executes has a whole-word length. */
+    uint32_t gl_header = (s->cmd_token_class << 16) | (reg << 8) |
+                         (s->cmd_token_payload_count * sizeof(uint32_t));
 
     /*
      * Established as software expectation (mgras-hq4.md, "HQ flags"): the
@@ -1989,6 +2011,12 @@ static void mgras_raster_command_fifo_dispatch(SGIMgrasState *s)
     if (s->cmd_token_class == MGRAS_CMD_HDR_CLASS_HQ &&
         reg == MGRAS_HQ_OP_SWAP) {
         sgi_mgras_raise_pending(s, SGI_MGRAS_PENDING_SWAP);
+        return;
+    }
+
+    if (sgi_mgras_gl_header(gl_header)) {
+        sgi_mgras_gl_execute(s, gl_header, s->cmd_token_payload,
+                             s->cmd_token_payload_count);
         return;
     }
 

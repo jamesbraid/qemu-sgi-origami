@@ -7,6 +7,7 @@
 #include "hw/core/qdev-properties-system.h"
 #include "hw/misc/sgi-mgras.h"
 #include "hw/misc/sgi-mgras-display.h"
+#include "hw/misc/sgi-mgras-gl.h"
 #include "hw/misc/sgi-mgras-raster.h"
 #include "migration/vmstate.h"
 #include "qapi/error.h"
@@ -945,6 +946,7 @@ static void mgras_reset_enter(Object *obj, ResetType type)
     s->cmd_token_class = s->cmd_token_reg = 0;
     s->cmd_token_words_remaining = s->cmd_token_payload_count = 0;
     memset(s->cmd_token_payload, 0, sizeof(s->cmd_token_payload));
+    sgi_mgras_gl_reset(s);
     memset(s->vc3_reg, 0, sizeof(s->vc3_reg));
     memset(s->vc3_sram, 0, sizeof(s->vc3_sram));
     s->vc3_index = 0; s->vc3_ram_addr = 0;
@@ -1134,7 +1136,7 @@ static bool mgras_ge_lengths_valid(void *opaque, int version_id)
  * changes.
  */
 static const VMStateDescription vmstate_sgi_mgras = {
-    .name = TYPE_SGI_MGRAS, .version_id = 13, .minimum_version_id = 9,
+    .name = TYPE_SGI_MGRAS, .version_id = 14, .minimum_version_id = 9,
     .post_load = mgras_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32(front_count, SGIMgrasState),
@@ -1269,6 +1271,7 @@ static const VMStateDescription vmstate_sgi_mgras = {
         VMSTATE_UINT32_ARRAY_V(xmap_buf_select, SGIMgrasState,
                                SGI_MGRAS_XMAP_ENTRIES, 11),
         VMSTATE_TIMER_PTR_V(retrace_timer, SGIMgrasState, 2),
+        VMSTATE_UINT32_ARRAY_V(gl_clear_color, SGIMgrasState, 4, 14),
         VMSTATE_END_OF_LIST()
     }
 };
