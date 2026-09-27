@@ -12,6 +12,7 @@
 #include "qapi/error.h"
 #include "qemu/cutils.h"
 #include "qemu/module.h"
+#include "qobject/qnum.h"
 #include "qom/object.h"
 
 /*
@@ -116,6 +117,45 @@ static Object *sgi_xio_board_slots(void)
 }
 
 /*
+ * The one-wire identity serials a board class carries. A board fitted by
+ * slot name that leaves one at its class's shared placeholder would read
+ * the same serial as every other such board, where every fitted part's
+ * own one-wire ROM is unique; offset it by the board's module and widget
+ * so no two slots share one. The catalogue's own boards, placed by
+ * widget, set their serials outright.
+ */
+static const char *const sgi_xio_board_serial_props[] = {
+    "onewire-serial", "ioc3-onewire-serial", "cad-duo-onewire-serial",
+    "sio-onewire-serial",
+};
+
+static void sgi_xio_board_distinct_serials(SGIXioBoardState *board)
+{
+    Object *obj = OBJECT(board);
+    uint64_t position = board->module * SGI_XBOW_WIDGETS + board->slot;
+    size_t i;
+
+    for (i = 0; i < ARRAY_SIZE(sgi_xio_board_serial_props); i++) {
+        ObjectProperty *prop =
+            object_property_find(obj, sgi_xio_board_serial_props[i]);
+        QNum *defval;
+        uint64_t value, placeholder;
+
+        if (!prop || !prop->defval) {
+            continue;
+        }
+        defval = qobject_to(QNum, prop->defval);
+        value = object_property_get_uint(obj, prop->name, &error_abort);
+        if (!defval || !qnum_get_try_uint(defval, &placeholder) ||
+            value != placeholder) {
+            continue;
+        }
+        object_property_set_uint(obj, prop->name,
+                                 placeholder + (position << 8), &error_abort);
+    }
+}
+
+/*
  * A board placed by slot name: ask the machine where that slot is, and
  * hand the board the fabric the machine holds for it. The board's own
  * "fabric" is left for the machine to choose; a switched fabric carries
@@ -160,6 +200,7 @@ static bool sgi_xio_board_place_by_name(SGIXioBoardState *board,
         object_property_set_uint(obj, "fabric-widget-shift",
                                  SGI_BRIDGE_PACKET_ADDRESS_BITS, &error_abort);
     }
+    sgi_xio_board_distinct_serials(board);
     return true;
 }
 

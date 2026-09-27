@@ -35,6 +35,17 @@ static char *qom_get_str(QTestState *qts, const char *path, const char *prop)
     return value;
 }
 
+static uint64_t qom_get_uint(QTestState *qts, const char *path,
+                             const char *prop)
+{
+    QDict *r = qtest_qmp(qts, "{'execute': 'qom-get', 'arguments': "
+                         "{'path': %s, 'property': %s}}", path, prop);
+    uint64_t value = qdict_get_uint(r, "return");
+
+    qobject_unref(r);
+    return value;
+}
+
 static void assert_qemu_rejects(const char *const args[], const char *message)
 {
     g_autofree char *error_output = NULL;
@@ -1119,6 +1130,30 @@ static void test_mgras_fitted_at_a_named_slot(const void *data)
     qtest_quit(qts);
 }
 
+/*
+ * Two boards fitted at launch never share a one-wire identity: each
+ * part's ROM serial is unique, and a board left at its class's shared
+ * placeholder takes one offset by its slot.
+ */
+static void test_fitted_boards_have_distinct_serials(const void *data)
+{
+    QTestState *qts = qtest_init(
+        "-M origin2000 -display none "
+        "-device sgi-xio-baseio,preset=menet,slot=io4 "
+        "-device sgi-xio-baseio,preset=menet,slot=io5");
+    uint64_t io4_board, io5_board, io4_ioc3, io5_ioc3;
+
+    io4_board = qom_get_uint(qts, "/machine/module0/io4", "onewire-serial");
+    io5_board = qom_get_uint(qts, "/machine/module0/io5", "onewire-serial");
+    io4_ioc3 = qom_get_uint(qts, "/machine/module0/io4",
+                            "ioc3-onewire-serial");
+    io5_ioc3 = qom_get_uint(qts, "/machine/module0/io5",
+                            "ioc3-onewire-serial");
+    g_assert_cmphex(io4_board, !=, io5_board);
+    g_assert_cmphex(io4_ioc3, !=, io5_ioc3);
+    qtest_quit(qts);
+}
+
 /* Whether any child of @parent is a board of QOM type @type. */
 static bool qom_has_child_of_type(QTestState *qts, const char *parent,
                                   const char *type)
@@ -1417,6 +1452,8 @@ int main(int argc, char **argv)
     qtest_add_data_func(
         "sn/builder/origin2000-one-node-onboard-board-is-xio-baseio", NULL,
         test_origin2000_one_node_onboard_board_is_xio_baseio);
+    qtest_add_data_func("sn/builder/fitted-boards-have-distinct-serials",
+                        NULL, test_fitted_boards_have_distinct_serials);
     qtest_add_data_func("sn/builder/mgras-fitted-at-a-named-slot", NULL,
                         test_mgras_fitted_at_a_named_slot);
     qtest_add_data_func("sn/builder/mgras-placed-by-the-catalogue", NULL,
