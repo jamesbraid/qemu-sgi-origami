@@ -10,5 +10,7 @@ bool sgi_mgras_gl_header(uint32_t header);
 void sgi_mgras_gl_execute(SGIMgrasState *s, uint32_t header,
                           const uint32_t *payload, uint32_t words);
 void sgi_mgras_gl_reset(SGIMgrasState *s);
+/* Take the GL state a completed context image restores. */
+void sgi_mgras_gl_context_loaded(SGIMgrasState *s);
 
 #endif
