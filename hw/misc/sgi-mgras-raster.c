@@ -1339,6 +1339,13 @@ static void mgras_raster_dma_chunk_add(SGIMgrasState *s, MgrasDmaChunk *chunk,
                                        uint64_t addr, const uint8_t *data,
                                        size_t len)
 {
+    /*
+     * Both current call sites pass a fixed, far-smaller length (one
+     * page-list entry or one pixel byte), so this never fires today; it
+     * guards a single add too large for chunk->bytes on its own, which the
+     * chunk->active branch below does not check.
+     */
+    g_assert(len <= MGRAS_DMA_CHUNK_MAX_BYTES);
     if (!trace_event_get_state_backends(TRACE_SGI_MGRAS_DMA_CHUNK)) {
         return;
     }
