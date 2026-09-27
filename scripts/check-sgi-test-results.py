@@ -106,7 +106,7 @@ def read_report(path):
             raise ResultError('JUnit testcase is missing its name')
         classname = case.get('classname')
         identity = f'{classname}::{name}' if classname else name
-        for key in {name, _testcase_name(name),
+        for key in {name, _testcase_name(name), _suite_name(name),
                     identity}:
             found.setdefault(key, []).append(case)
         if case.findall('skipped'):

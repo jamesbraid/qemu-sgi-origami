@@ -73,6 +73,15 @@ class CheckSgiTestResults(unittest.TestCase):
                            'SGIRoms.test_sext_R10000_default',
                            'SGIRoms.test_llscscale_R10000_default'])
 
+    def test_accepts_native_exitcode_test_identity(self):
+        self.write_report('''<testsuites tests="1">
+          <testsuite name="qemu" tests="1">
+            <testcase classname="qemu"
+              name="qemu:func-quick+func-mips64 / func-mips64-lib_prom"/>
+          </testsuite>
+        </testsuites>''')
+        validate(read_report(self.junit), ['func-mips64-lib_prom'])
+
     def test_rejects_empty_or_missing_report(self):
         self.write_report('<testsuites tests="0"/>')
         self.write_expected('case\n')
