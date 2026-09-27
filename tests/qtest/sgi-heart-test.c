@@ -152,9 +152,12 @@ static void test_projection(gconstpointer data)
 
     /* Only the base field changes; the alias choice must follow it. */
     qtest_writel(s, HEART_REGS + 0x20, (PROBE_DESC & ~0x1ffU) | 0x60);
-    qtest_writeq(s, PROBE_RAM + 0x20 * UNIT, first);
-    g_assert_cmphex(qtest_readq(s, PROBE_RAM + 0x20 * UNIT), ==,
-                    qtest_readq(s, PROBE_RAM + 0x20 * UNIT + alias));
+    qtest_writeq(s, PROBE_RAM + 0x20 * UNIT + 0x100, first);
+    g_assert_cmphex(qtest_readq(s, PROBE_RAM + 0x20 * UNIT + alias + 0x100),
+                    ==, first);
+    qtest_writeq(s, PROBE_RAM + 0x20 * UNIT + alias + 0x100, second);
+    g_assert_cmphex(qtest_readq(s, PROBE_RAM + 0x20 * UNIT + 0x100), ==,
+                    second);
 
     /* Density 5 and a short density-6 descriptor use ordinary modulo. */
     qtest_writel(s, HEART_REGS + 0x20, MODULO_DESC);
