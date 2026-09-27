@@ -123,6 +123,16 @@ static bool ds1742_bcd(uint8_t val, int low, int high)
         from_bcd(val) >= low && from_bcd(val) <= high;
 }
 
+static bool ds1742_valid_date(int year, int month, int day)
+{
+    static const uint8_t days_in_month[] = {
+        31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31
+    };
+    bool leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+
+    return day <= days_in_month[month - 1] + (month == 2 && leap);
+}
+
 static bool ds1742_commit(DS1742State *s, uint8_t century)
 {
     struct tm tm = { 0 };
@@ -141,6 +151,12 @@ static bool ds1742_commit(DS1742State *s, uint8_t century)
     tm.tm_year = from_bcd(century) * 100 + from_bcd(s->staged[7]) - 1900;
     tm.tm_mon = from_bcd(s->staged[6]) - 1;
     tm.tm_mday = from_bcd(s->staged[5]);
+    if (!ds1742_valid_date(tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday)) {
+        qemu_log_mask(LOG_UNIMP,
+                      "ds1742: unsupported calendar date %04d-%02d-%02d\n",
+                      tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday);
+        return false;
+    }
     tm.tm_hour = from_bcd(s->staged[3]);
     tm.tm_min = from_bcd(s->staged[2]);
     tm.tm_sec = from_bcd(s->staged[1] & 0x7f);
