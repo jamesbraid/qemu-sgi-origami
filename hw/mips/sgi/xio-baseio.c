@@ -118,6 +118,19 @@ static bool xio_baseio_build_widget(SGIXioBoardState *board, Error **errp)
                   s->preset ? s->preset : "(unset)");
         return false;
     }
+    /*
+     * A BaseIO sits in IO1 on every chassis that takes one. Placed by
+     * slot name, only IO1 will do: the widget alone cannot say, since
+     * widget F is IO1 on the Onyx2 deskside but IO3 on the eight-processor
+     * module. Placed by widget number, as the catalogue places it, the
+     * preset's own widget set applies.
+     */
+    if (identity->xio_widgets != SGI_BASEIO_XIO_ANY_WIDGET &&
+        board->placed_by_name && !g_str_equal(board->slot_name, "io1")) {
+        error_setg(errp, "sgi-xio-baseio preset '%s' fits only XIO slot "
+                  "io1, not %s", s->preset, board->slot_name);
+        return false;
+    }
     if (board->slot >= 32 ||
         !(identity->xio_widgets & SGI_BASEIO_XIO_WIDGET(board->slot))) {
         error_setg(errp, "sgi-xio-baseio preset '%s' cannot sit at "

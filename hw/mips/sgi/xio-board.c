@@ -189,6 +189,7 @@ static bool sgi_xio_board_place_by_name(SGIXioBoardState *board,
         return false;
     }
     board->module = module;
+    board->placed_by_name = true;
     /* A board fitted by slot name is known by that name, unless given one. */
     if (!DEVICE(board)->id) {
         DEVICE(board)->id = g_strdup(board->slot_name);
