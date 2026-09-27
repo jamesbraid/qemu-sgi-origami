@@ -1890,11 +1890,15 @@ static uint64_t sn1_timer_state_word(QTestState *qts, unsigned int off)
 static void test_gdb_sn1_hold(const void *data)
 {
     g_autofree char *image = NULL, *dir = NULL, *socket_path = NULL;
+    g_autofree char *migration_path = NULL, *migration_uri = NULL;
     char reply[256], command[128];
-    QTestState *qts;
+    QTestState *qts, *to;
     uint64_t peer_before, peer_after, hub_before, hub_after;
     int options = GPOINTER_TO_INT(data);
     int fd, gdb;
+    bool migrate_vm = options & 32;
+    bool interrupt_vm = options & 64;
+    bool gdb_closed = false;
 
     if (!qtest_has_accel("tcg")) {
         g_test_skip("TCG is unavailable");
@@ -1902,7 +1906,7 @@ static void test_gdb_sn1_hold(const void *data)
     }
     gh_intervening_insn = options & 1;
     gh_wide_timer_moves = options & 2;
-    gh_interrupt_after_count = false;
+    gh_interrupt_after_count = interrupt_vm;
     gh_delay_slot_count = options & 4;
     gh_peer_timer_writes = options & 16;
     dir = g_dir_make_tmp("sn1-gdb-hold-XXXXXX", NULL);
@@ -1910,7 +1914,9 @@ static void test_gdb_sn1_hold(const void *data)
     socket_path = g_build_filename(dir, "gdb.sock", NULL);
     fd = g_file_open_tmp("sn1-gdb-hold-XXXXXX", &image, NULL);
     g_assert_cmpint(fd, >=, 0);
-    write_guest_image_with_setup(fd, emit_sn1_timer_exception,
+    write_guest_image_with_setup(fd, interrupt_vm ?
+                                 emit_gdb_timer_interrupt_handler :
+                                 emit_sn1_timer_exception,
                                  emit_sn1_timer_preamble, build_gdb_peer_hold);
     /* Origin 300 checks the entire flash image length at startup. */
     g_assert_cmpint(ftruncate(fd, PROM_SIZE), ==, 0);
@@ -1988,12 +1994,43 @@ static void test_gdb_sn1_hold(const void *data)
     gdb_peer_command(gdb, "p24", reply, sizeof(reply));
     g_assert_cmphex(g_ascii_strtoull(reply, NULL, 16) & CAUSE_IP7,
                     ==, CAUSE_IP7);
-    gdb_peer_command(gdb, "vCont;c:1", NULL, 0);
+    if (migrate_vm) {
+        migration_path = g_build_filename(dir, "migration.sock", NULL);
+        migration_uri = g_strdup_printf("unix:%s", migration_path);
+        to = qtest_initf("-M origin300 -cpu R14000 -smp 2 -bios %s "
+                         "-accel tcg,thread=multi -no-shutdown "
+                         "-incoming defer -S", image);
+        qtest_qmp_assert_success(to,
+            "{ 'execute': 'migrate-incoming', 'arguments': { 'uri': %s } }",
+            migration_uri);
+        sgi_migrate_stopped(qts, migration_uri);
+        qtest_qmp_assert_success(to, "{ 'execute': 'cont' }");
+        close(gdb);
+        gdb_closed = true;
+        qtest_quit(qts);
+        qts = to;
+    } else {
+        gdb_peer_command(gdb, "vCont;c:1", NULL, 0);
+    }
     for (unsigned int i = 0; i < POLL_TRIES; i++) {
         if (sn1_timer_state_word(qts, DONE_OFF) == DONE_MAGIC) {
             break;
         }
         g_usleep(POLL_INTERVAL_US);
+    }
+    if (interrupt_vm) {
+        g_assert_cmphex(sn1_timer_state_word(qts, EXC_MARK_OFF), ==, 0);
+        g_assert_cmphex(sn1_timer_state_word(qts, DONE_OFF), ==, DONE_MAGIC);
+        g_assert_cmphex(sn1_timer_state_word(qts, GH_EXC_CAUSE_OFF) &
+                        CAUSE_EXCCODE, ==, 0);
+        g_assert_cmphex(sn1_timer_state_word(qts, GH_EXC_EPC_OFF), ==,
+                        0xffffffff00000000ULL | IMAGE_KSEG1_BASE |
+                        gh_break_pos);
+        g_assert_cmpuint(sn1_timer_state_word(qts, GH_LATE_COUNT_OFF), >,
+                         1000);
+        g_assert_cmphex(sn1_timer_state_word(qts, GH_LATE_CAUSE_OFF) &
+                        CAUSE_IP7, ==, 0);
+        goto finish_gdb_sn1_hold;
     }
     g_test_message("R14000 %s %s: Count %" PRIu64 ", IP7 %u; "
                    "peer %" PRIu64 " -> %" PRIu64 ", Hub %" PRIu64
@@ -2014,10 +2051,15 @@ static void test_gdb_sn1_hold(const void *data)
                     ==, 0);
 
 finish_gdb_sn1_hold:
-    close(gdb);
+    if (!gdb_closed) {
+        close(gdb);
+    }
     qtest_quit(qts);
     unlink(image);
     unlink(socket_path);
+    if (migrate_vm) {
+        unlink(migration_path);
+    }
     rmdir(dir);
 }
 
@@ -2094,6 +2136,10 @@ int main(int argc, char **argv)
                             GINT_TO_POINTER(8), test_gdb_sn1_hold);
         qtest_add_data_func("mttcg/timer/gdb-sn1-independent-peer-timer",
                             GINT_TO_POINTER(16), test_gdb_sn1_hold);
+        qtest_add_data_func("mttcg/timer/gdb-sn1-migrate-between-writes",
+                            GINT_TO_POINTER(32), test_gdb_sn1_hold);
+        qtest_add_data_func("mttcg/timer/gdb-sn1-interrupt-between-writes",
+                            GINT_TO_POINTER(64), test_gdb_sn1_hold);
     }
     return g_test_run();
 }
