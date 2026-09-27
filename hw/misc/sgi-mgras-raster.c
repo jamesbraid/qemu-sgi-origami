@@ -721,16 +721,19 @@ static void mgras_draw_glyph_row(SGIMgrasState *s)
  * rather than pixel 0, and the row only advances once enough units have
  * covered its width. `skip` is that row's offset from the unit boundary,
  * (row * pitch) % 8, where the source pitch is the width plus 0x159 bits
- * 16:14. That field is inferred: pitch = width + field predicts the
+ * 16:14. That field is inferred. What settles the pitch is the
+ * greeter's text-cursor restore (6 pixels wide, field 6): its buffer is
+ * filled by a save-under DMA read whose descriptor pitch is 12, and its
+ * restored field colour lands in place only at pitch 12. The execute
+ * count alone does not decide it. Beyond that, width + field predicts the
  * execute count of every one of 1,445 eight-pixel transfers in the
  * greeter and desktop captures (tests/data/mgras/char-modes.replay among
- * them), including the greeter's text-cursor restores (6 pixels wide,
- * field 6, pitch 12), whose restored field colour lands in place only at
- * that pitch. The width rounded up to 32 bits fits every transfer but
- * those 68 restores. Painted bytes are always CI8 CMAP indices regardless
- * of PP1FILLMODE: this path carries its own 8-bit index data rather than a
- * register-selected colour, and no capture shows it under RGB, so there
- * is no RGB form to select between. mgras_draw_byte_row_pairs() differs.
+ * them), where the width rounded up to 32 bits fails the 68 cursor
+ * restores and the bare width fails two. Painted bytes are always CI8 CMAP
+ * indices regardless of PP1FILLMODE: this path carries its own 8-bit index
+ * data rather than a register-selected colour, and no capture shows it
+ * under RGB, so there is no RGB form to select between.
+ * mgras_draw_byte_row_pairs() differs.
  */
 static void mgras_draw_byte_row_bytes(SGIMgrasState *s, int x0, int x1,
                                    int y0, int y1, uint32_t mask, uint8_t op)
