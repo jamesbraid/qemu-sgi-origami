@@ -80,7 +80,7 @@ class ManifestTests(unittest.TestCase):
                                   path.read_text(encoding='utf-8')):
                 with self.subTest(row=row):
                     self.assertGreaterEqual(timeout, budgets[row] + 120)
-                    self.assertLessEqual(timeout, 2400)
+                    self.assertLessEqual(timeout, 3000)
 
     def test_a_row_parses_into_cells(self):
         row = parse_row('m', 1, _line())

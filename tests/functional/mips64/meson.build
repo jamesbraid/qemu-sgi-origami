@@ -79,30 +79,32 @@ test_mips64_timeouts = {
   'irix_miniroot' : 900,
   # One target per irix-diag-matrix row (test_irix_diag.py and the
   # test_irix_diag_<flavour>.py beside it), each selectable on its own so a
-  # nightly job can run one or two rows. The runner cancels a job at 60
-  # minutes; a job that takes about 9 minutes to provision and stays under
-  # 50 leaves about 2460s, so no row's timeout is above 2400s. Each
-  # timeout is the row's budget in irix-diag-matrix plus 120s for its
-  # summary and the machines' shutdown. Every wait inside a row (boots,
-  # shell steps, diagnostics, reboot, stop) is cut to what is left of that
-  # budget, so a slow run marks its remaining checks not run and still
-  # writes <row>-summary.json before meson's timeout: budget 1500 + 120 =
-  # 1620 for origin200 and 2280 + 120 = 2400 for the rest. The slowest
-  # whole runs measured on 2026-09-26, with matrix code not yet committed
-  # (see the commit that sets these), were 896s (origin200), 1755s
-  # (two-chassis), 2382s (one-node), 3032s (shoehorn, before its reboot
-  # and relaunch were dropped), 1934s (carrier) and 2608s (origin300);
-  # the one-node maximum came from a build carrying jamesb/qemu#866's
-  # missed Compare matches, which slowed oldisk up to ninefold, and
-  # origin300's included a 300s wait on its stalled reboot (#875), now
-  # 180s. A row over its budget while #866 stands is cut short, with its
-  # summary.
-  'irix_diag' : 2400,
+  # diagnostics-only nightly job can run one or two rows. The runner
+  # cancels a job at 60 minutes (3600s). That job reached `meson test`
+  # 153s after starting when measured, which leaves 3447s; the steps after
+  # the tests (collecting results) have not been measured, so no timeout
+  # is above 3000s, leaving them 447s. Each timeout is the row's budget in
+  # irix-diag-matrix plus 120s for its summary and the machines' shutdown,
+  # and every wait inside a row (boots, shell steps, diagnostics, reboot,
+  # stop) is cut to what is left of that budget, so a slow run marks its
+  # remaining checks not run and still writes <row>-summary.json before
+  # meson's timeout: 1500 + 120 = 1620 for origin200, 2280 + 120 = 2400
+  # for the one-node and carrier rows, and 2880 + 120 = 3000 for the
+  # two-chassis, shoehorn and origin300 rows. The slowest whole runs
+  # measured on 2026-09-26, with matrix code not yet committed, were 896s
+  # (origin200), 1755s (two-chassis), 2382s (one-node), 3032s (shoehorn,
+  # before its reboot and relaunch were dropped), 1934s (carrier) and
+  # 2608s (origin300, including a 300s wait on its stalled reboot, #875,
+  # now 180s). The one-node maximum came from a build carrying
+  # jamesb/qemu#866's missed Compare matches, which slowed oldisk up to
+  # ninefold; a row over its budget while #866 stands is cut short, with
+  # its summary.
+  'irix_diag' : 3000,
   'irix_diag_origin200' : 1620,
   'irix_diag_origin2000_one_node' : 2400,
-  'irix_diag_origin2000_pci_shoehorn' : 2400,
+  'irix_diag_origin2000_pci_shoehorn' : 3000,
   'irix_diag_origin2000_pci_carrier' : 2400,
-  'irix_diag_origin300' : 2400,
+  'irix_diag_origin300' : 3000,
   # Boot the plain installed IRIX disk (265s to root login when last
   # measured; root.qcow2 is the base root-diags.qcow2 is built from) and
   # require who -r/uname -aR to show run level 2 under the

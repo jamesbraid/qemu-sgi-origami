@@ -23,8 +23,8 @@
 #
 # id | cpus | mem | budget | prom | inventory | ethernet | serial | mediaio | rad1 | keyboard | scsi_card | olrti | olenet | oldisk | olmem | oltape | olcdrom | reboot | warm_boot | persistence | parallel | timer
 origin200 | 2 | 128 | 1500 | run | run | run | run | no-mediaio | no-mediaio | run | no-scsi-card | run | no-olenet | run | run | run | run | run | run | run | parallel-own-history | run
-origin200_dual | 4 | 128 | 2280 | run | run | run | run | no-mediaio | no-mediaio | run | no-scsi-card | run | no-olenet | run | run | run | run | run | run | run | parallel-own-history | run
+origin200_dual | 4 | 128 | 2880 | run | run | run | run | no-mediaio | no-mediaio | run | no-scsi-card | run | no-olenet | run | run | run | run | run | run | run | parallel-own-history | run
 origin2000_one_node | 2 | 256 | 2280 | run | run | run | run | run | run | run | no-scsi-card | run | no-olenet | run | run | run | run | run | run | run | run | run
-origin2000_pci_shoehorn | 8 | 256 | 2280 | run | run | run | run | no-mediaio | no-mediaio | run | no-scsi-card | run | no-olenet | run | run | run | run | four-node-relaunch | four-node-relaunch | four-node-relaunch | no-parallel | run
+origin2000_pci_shoehorn | 8 | 256 | 2880 | run | run | run | run | no-mediaio | no-mediaio | run | no-scsi-card | run | no-olenet | run | run | run | run | four-node-relaunch | four-node-relaunch | four-node-relaunch | no-parallel | run
 origin2000_pci_carrier | 8 | 256 | 2280 | run | run | run | run | no-mediaio | no-mediaio | run | run | run | no-olenet | run | run | run | run | four-node-relaunch | four-node-relaunch | four-node-relaunch | no-parallel | run
-origin300 | 2 | 512 | 2280 | run | run | run | run | no-mediaio | no-mediaio | no-keyboard | no-scsi-card | run | run | run | run | run | run | run | run | run | no-parallel-connector | run
+origin300 | 2 | 512 | 2880 | run | run | run | run | no-mediaio | no-mediaio | no-keyboard | no-scsi-card | run | run | run | run | run | run | run | run | run | no-parallel-connector | run
