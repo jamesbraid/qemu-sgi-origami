@@ -150,6 +150,7 @@ typedef struct Step {
 typedef struct Scenario {
     const char *cpus;       /* the -smp argument */
     bool premium;           /* select the premium directory format */
+    uint64_t word;          /* if nonzero, write the line's word first */
     const Step *steps;
     unsigned int nr_steps;
 } Scenario;
@@ -272,6 +273,9 @@ static QTestState *start_scenario(const Scenario *sc, char **prom)
     if (sc->premium) {
         qtest_writeq(s, SN1_MD_DIRECTORY_CONFIG, 1);
     }
+    if (sc->word) {
+        qtest_writeq(s, LINE_DIRECTORY, sc->word);
+    }
     qtest_qmp_assert_success(s, "{'execute':'cont'}");
     return s;
 }
@@ -283,7 +287,8 @@ static QTestState *run_scenario(const Scenario *sc, char **prom)
 
     wait_steps(s, sc->nr_steps);
     /* Reading the word through the backdoor is what starts following it. */
-    g_assert_cmphex(result(s, 0x00) & DIRECTORY_FIELDS, ==, UNOWNED);
+    g_assert_cmphex(result(s, 0x00) & DIRECTORY_FIELDS, ==,
+                    sc->word & DIRECTORY_FIELDS);
     return s;
 }
 
@@ -674,6 +679,29 @@ static void test_idle_dirty_line_written_back(void)
     finish(s, prom);
 }
 
+/*
+ * A word naming a processor the machine does not have -- node 1's first
+ * slot, on one node -- did not come from the protocol, and a load leaves
+ * it as it is.
+ */
+static void test_absent_owner(void)
+{
+    const Scenario sc = {
+        .cpus = "2", .word = POINTER(8),
+        STEPS({ 0, emit_first }, { 0, load_08 }),
+    };
+    char *prom;
+    QTestState *s;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+    s = run_scenario(&sc, &prom);
+    g_assert_cmphex(result(s, 0x08) & DIRECTORY_FIELDS, ==, POINTER(8));
+    finish(s, prom);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -689,6 +717,7 @@ int main(int argc, char **argv)
     qtest_add_func("sn1/directory-state/uncached-accesses",
                    test_uncached_accesses);
     qtest_add_func("sn1/directory-state/debugger-read", test_debugger_read);
+    qtest_add_func("sn1/directory-state/absent-owner", test_absent_owner);
     qtest_add_func("sn1/directory-state/idle-dirty-line-written-back",
                    test_idle_dirty_line_written_back);
     return g_test_run();
