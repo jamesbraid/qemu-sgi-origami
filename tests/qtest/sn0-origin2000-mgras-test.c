@@ -5410,15 +5410,18 @@ static const uint32_t gl_context_image[MGRAS_CONTEXT_WORDS] = {
 };
 
 /*
- * Switch to a GL context whose window has its lower-left pixel at column
- * x and at row y counted from the bottom of the screen.
+ * Switch to the GL context whose image word 0 is slot and whose window has
+ * its lower-left pixel at column x and at row y counted from the bottom of
+ * the screen.
  */
-static void mgras_enter_gl_window(QTestState *qts, uint32_t x, uint32_t y,
-                                  uint32_t w, uint32_t h, uint32_t clip)
+static void mgras_enter_gl_slot(QTestState *qts, uint32_t slot, uint32_t x,
+                                uint32_t y, uint32_t w, uint32_t h,
+                                uint32_t clip)
 {
     uint32_t image[MGRAS_CONTEXT_WORDS];
 
     memcpy(image, gl_context_image, sizeof(image));
+    image[0] = slot;
     image[2] = image[14] = (y << 16) | x;
     image[3] = clip;
     image[11] = (x << 16) | (x + w - 1);
@@ -5433,6 +5436,12 @@ static void mgras_enter_gl_window(QTestState *qts, uint32_t x, uint32_t y,
     g_assert_cmphex(qtest_readl(qts, REG_PENDING) & MGRAS_PENDING_CONTEXT, ==,
                     MGRAS_PENDING_CONTEXT);
     qtest_writel(qts, REG_PENDING_ACK, MGRAS_PENDING_CONTEXT);
+}
+
+static void mgras_enter_gl_window(QTestState *qts, uint32_t x, uint32_t y,
+                                  uint32_t w, uint32_t h, uint32_t clip)
+{
+    mgras_enter_gl_slot(qts, gl_context_image[0], x, y, w, h, clip);
 }
 
 static void gl_word(QTestState *qts, uint32_t word)
@@ -6729,6 +6738,189 @@ static void test_gl_swap_pending_matches_the_reference(void)
     gl_check_window_sha256(rgb, GL_ORTHO_SHA256);
 }
 
+/*
+ * Context image word 0 names the context's GL state: 0x3bcd and 0x5420
+ * for the two probe clients of run irix-20260927T191513-b4997c, which
+ * never re-send their state after a switch. The tests give both contexts
+ * the same window, so a model that keyed state by the window, or kept one
+ * state for the board, fails them.
+ */
+#define GL_SLOT_A             0x3bcd
+#define GL_SLOT_B             0x5420
+#define GL_SLOT_DEFAULT       0xb27
+#define GL_CONTEXT_OPENER     0x00000600
+
+static void gl_enter_slot(QTestState *qts, uint32_t slot)
+{
+    mgras_enter_gl_slot(qts, slot, 256, 640, 128, 128, 0x11);
+}
+
+/* glOrtho(0, 128, 0, 128, -1, 1): vertices in window coordinates. */
+static void gl_window_projection(QTestState *qts)
+{
+    gl_one(qts, GL_MATRIX_MODE_HDR, GL_PROJECTION);
+    gl_word(qts, GL_LOAD_IDENTITY);
+    gl_six(qts, GL_ORTHO_HDR, 0, 128, 0, 128, -1, 1);
+}
+
+/*
+ * Client a's setup in the alternate case, then client b's, which sets a
+ * smaller viewport, another clear and current colour, the identity
+ * projection, a depth test that passes nothing and the back buffer. Back
+ * in a, a clear and a triangle use a's state; back in b, b's.
+ */
+static void test_gl_state_follows_the_context_slot(void)
+{
+    mgras_reset();
+    qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x1e, 0x4));
+
+    gl_enter_slot(qts, GL_SLOT_A);
+    gl_word(qts, GL_CONTEXT_OPENER);
+    gl_viewport(qts, 0, 0, 128, 128);
+    gl_clear_color(qts, 1, 0, 0, 1);
+    gl_color3f(qts, 1, 1, 0);
+    gl_window_projection(qts);
+    gl_draw_buffer(qts, 1);
+
+    gl_enter_slot(qts, GL_SLOT_B);
+    gl_word(qts, GL_CONTEXT_OPENER);
+    gl_viewport(qts, 0, 0, 64, 64);
+    gl_clear_color(qts, 0, 1, 0, 1);
+    gl_color3f(qts, 1, 0, 1);
+    gl_one(qts, GL_DEPTH_TEST_HDR, 1);
+    gl_one(qts, GL_DEPTH_FUNC_HDR, GL_DEPTH_NEVER);
+    gl_draw_buffer(qts, 2);
+
+    gl_enter_slot(qts, GL_SLOT_A);
+    gl_word(qts, GL_CLEAR_COLOR_BUFFER);
+    gl_word(qts, GL_BEGIN_TRIANGLES);
+    gl_vertex2f(qts, 16, 16);
+    gl_vertex2f(qts, 112, 24);
+    gl_vertex2f(qts, 56, 111);
+    gl_word(qts, GL_END_TRIANGLES);
+    g_assert_cmphex(gl_window_pixel(qts, 61, 50), ==, 0xffff00);
+    g_assert_cmphex(gl_window_pixel(qts, 120, 120), ==, 0xff0000);
+
+    gl_enter_slot(qts, GL_SLOT_B);
+    gl_word(qts, GL_CLEAR_COLOR_BUFFER);
+    g_assert_cmphex(gl_window_pixel(qts, 120, 120), ==, 0xff0000);
+    qtest_writeb(qts, REG_XMAP_INDEX, 0);
+    qtest_writel(qts, REG_XMAP_BUF_SELECT, 1u);
+    g_assert_cmphex(mgras_test_display_pixel(qts, 300, 300), ==, 0x00ff00);
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+}
+
+/*
+ * The opener starts only the context it is sent in: b's opener returns b
+ * to the initial clear colour and leaves a's alone.
+ */
+static void test_gl_context_opener_resets_only_its_context(void)
+{
+    mgras_reset();
+
+    gl_enter_slot(qts, GL_SLOT_A);
+    gl_word(qts, GL_CONTEXT_OPENER);
+    gl_clear_color(qts, 1, 0, 0, 1);
+
+    gl_enter_slot(qts, GL_SLOT_B);
+    gl_clear_color(qts, 0, 1, 0, 1);
+    gl_word(qts, GL_CLEAR_COLOR_BUFFER);
+    g_assert_cmphex(gl_window_pixel(qts, 1, 1), ==, 0x00ff00);
+    gl_word(qts, GL_CONTEXT_OPENER);
+    gl_word(qts, GL_CLEAR_COLOR_BUFFER);
+    g_assert_cmphex(gl_window_pixel(qts, 1, 1), ==, 0);
+
+    gl_enter_slot(qts, GL_SLOT_A);
+    gl_word(qts, GL_CLEAR_COLOR_BUFFER);
+    g_assert_cmphex(gl_window_pixel(qts, 1, 1), ==, 0xff0000);
+}
+
+/*
+ * The kernel writes -1 in word 0 for a context with no GL state, and its
+ * default context carries 0xb27 in the captures. Both select the one
+ * state kept for no context, which a GL context's drawing leaves alone.
+ */
+static void test_gl_images_without_a_slot_share_one_state(void)
+{
+    mgras_reset();
+
+    gl_enter_slot(qts, 0xffffffff);
+    gl_clear_color(qts, 0, 0, 1, 1);
+
+    gl_enter_slot(qts, GL_SLOT_A);
+    gl_word(qts, GL_CONTEXT_OPENER);
+    gl_clear_color(qts, 1, 0, 0, 1);
+    gl_word(qts, GL_CLEAR_COLOR_BUFFER);
+    g_assert_cmphex(gl_window_pixel(qts, 1, 1), ==, 0xff0000);
+
+    gl_enter_slot(qts, GL_SLOT_DEFAULT);
+    gl_word(qts, GL_CLEAR_COLOR_BUFFER);
+    g_assert_cmphex(gl_window_pixel(qts, 1, 1), ==, 0x0000ff);
+}
+
+/*
+ * The model holds 32 slots. A 33rd replaces the one selected least
+ * recently, and a replaced slot selected again starts from OpenGL's
+ * initial state. Selecting slot 0 again after filling the table makes
+ * slot 1 the least recent, so a model that replaced the oldest entry
+ * instead, or held more than 32, would keep slot 1's green.
+ */
+static void test_gl_context_table_replaces_the_least_recent(void)
+{
+    mgras_reset();
+
+    for (int i = 0; i < 32; i++) {
+        gl_enter_slot(qts, 0x1000 + i);
+        gl_word(qts, GL_CONTEXT_OPENER);
+        gl_clear_color(qts, i == 0, i == 1, i > 1, 1);
+    }
+    gl_enter_slot(qts, 0x1000);
+    gl_enter_slot(qts, 0x1000 + 32);
+    gl_enter_slot(qts, 0x1000);
+    gl_word(qts, GL_CLEAR_COLOR_BUFFER);
+    g_assert_cmphex(gl_window_pixel(qts, 1, 1), ==, 0xff0000);
+
+    gl_enter_slot(qts, 0x1001);
+    gl_word(qts, GL_CLEAR_COLOR_BUFFER);
+    g_assert_cmphex(gl_window_pixel(qts, 1, 1), ==, 0);
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+}
+
+/*
+ * A switch can land between the vertices of a triangle: the client does
+ * not know it happened. a's first two vertices wait in a's state while b
+ * draws a whole triangle of its own, and a's third completes a's.
+ */
+static void test_gl_triangle_spans_a_context_switch(void)
+{
+    mgras_reset();
+
+    gl_enter_slot(qts, GL_SLOT_A);
+    gl_word(qts, GL_CONTEXT_OPENER);
+    gl_viewport(qts, 0, 0, 128, 128);
+    gl_color3f(qts, 1, 1, 0);
+    gl_window_projection(qts);
+    gl_word(qts, GL_BEGIN_TRIANGLES);
+    gl_vertex2f(qts, 16, 16);
+    gl_vertex2f(qts, 112, 24);
+
+    gl_enter_slot(qts, GL_SLOT_B);
+    gl_word(qts, GL_CONTEXT_OPENER);
+    gl_viewport(qts, 0, 0, 128, 128);
+    gl_color3f(qts, 1, 0, 1);
+    gl_word(qts, GL_BEGIN_TRIANGLES);
+    gl_vertex2f(qts, 0.5f, 0.5f);
+    gl_vertex2f(qts, 0.9f, 0.5f);
+    gl_vertex2f(qts, 0.5f, 0.9f);
+    gl_word(qts, GL_END_TRIANGLES);
+    g_assert_cmphex(gl_window_pixel(qts, 100, 100), ==, 0xff00ff);
+
+    gl_enter_slot(qts, GL_SLOT_A);
+    gl_vertex2f(qts, 56, 111);
+    gl_word(qts, GL_END_TRIANGLES);
+    g_assert_cmphex(gl_window_pixel(qts, 61, 50), ==, 0xffff00);
+}
+
 static void test_hq_flags_fence_token_sets_bit(void)
 {
     mgras_reset();
@@ -7991,6 +8183,48 @@ static void test_gl_state_migration(void)
     g_rmdir(tmpfs);
 }
 
+/*
+ * Every context's GL state crosses a migration, and so does which one is
+ * current: b's clear colour applies before any switch on the destination,
+ * and a's after one.
+ */
+static void test_gl_context_table_migration(void)
+{
+    g_autofree char *tmpfs = NULL;
+    g_autofree char *uri = NULL;
+    g_autofree char *dest_cmdline = NULL;
+    GError *err = NULL;
+    QTestState *from, *to;
+
+    tmpfs = g_dir_make_tmp("sn0-mgras-gl-contexts-XXXXXX", &err);
+    g_assert_no_error(err);
+    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+
+    from = qtest_init(MIGRATION_ARGS);
+    dest_cmdline = g_strdup_printf(MIGRATION_ARGS " -incoming %s", uri);
+    to = qtest_init(dest_cmdline);
+
+    gl_enter_slot(from, GL_SLOT_A);
+    gl_word(from, GL_CONTEXT_OPENER);
+    gl_clear_color(from, 1, 0, 0, 1);
+    gl_enter_slot(from, GL_SLOT_B);
+    gl_word(from, GL_CONTEXT_OPENER);
+    gl_clear_color(from, 0, 1, 0, 1);
+
+    sgi_migrate_stopped(from, uri);
+
+    gl_word(to, GL_CLEAR_COLOR_BUFFER);
+    g_assert_cmphex(mgras_test_pixel(to, 300, 300), ==, 0x00ff00);
+    gl_enter_slot(to, GL_SLOT_A);
+    gl_word(to, GL_CLEAR_COLOR_BUFFER);
+    g_assert_cmphex(mgras_test_pixel(to, 300, 300), ==, 0xff0000);
+    g_assert_cmphex(mgras_qom_get_uint(to, "x-test-error"), ==, 0);
+
+    qtest_quit(to);
+    qtest_quit(from);
+    g_rmdir(tmpfs);
+}
+
 static void test_discarded_fifo_migration(void)
 {
     g_autofree char *tmpfs = NULL;
@@ -8625,6 +8859,19 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/origin2000/mgras/"
                    "gl-swap-pending-matches-the-reference",
                    test_gl_swap_pending_matches_the_reference);
+    qtest_add_func("sn0/origin2000/mgras/gl-state-follows-the-context-slot",
+                   test_gl_state_follows_the_context_slot);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "gl-context-opener-resets-only-its-context",
+                   test_gl_context_opener_resets_only_its_context);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "gl-images-without-a-slot-share-one-state",
+                   test_gl_images_without_a_slot_share_one_state);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "gl-context-table-replaces-the-least-recent",
+                   test_gl_context_table_replaces_the_least_recent);
+    qtest_add_func("sn0/origin2000/mgras/gl-triangle-spans-a-context-switch",
+                   test_gl_triangle_spans_a_context_switch);
     qtest_add_func("sn0/origin2000/mgras/hq-flags-set-and-clear",
                    test_hq_flags_set_and_clear);
     qtest_add_func("sn0/origin2000/mgras/hq-flags-fence-token-sets-bit",
@@ -8704,6 +8951,8 @@ int main(int argc, char **argv)
                    test_context_ack_migration);
     qtest_add_func("sn0/origin2000/mgras/gl-state-migration",
                    test_gl_state_migration);
+    qtest_add_func("sn0/origin2000/mgras/gl-context-table-migration",
+                   test_gl_context_table_migration);
     qtest_add_func("sn0/origin2000/mgras/context-payload-migration",
                    test_context_payload_migration);
     qtest_add_func("sn0/origin2000/mgras/discarded-fifo-migration",

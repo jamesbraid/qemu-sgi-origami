@@ -202,39 +202,168 @@ static void mgras_gl_identity(uint32_t m[16])
     }
 }
 
+/*
+ * Context image word 0 names the context's GL state. In run
+ * irix-20260927T191513-b4997c it is 0x3bcd and 0x5420 for two GL clients,
+ * 0x237a for the X server and 0xb27 for the kernel's default context. The
+ * IRIX 6.5.30 kernel allocates the word as the context's slot in GE
+ * external RAM and writes -1 for a context with no GL state. The image
+ * carries no other GL state, the clients never re-send theirs after a
+ * switch, and nothing touches the GE ports at those switches, so the board
+ * keeps each context's state under its slot (inferred;
+ * mgras-gl-commands.md, "Per-context state").
+ *
+ * Approximated: the model keys its state by the slot address the kernel
+ * chose, not by GE external RAM contents, and never interprets the GE
+ * ports. When the kernel runs out of slots it copies one out through the
+ * GE ports and later back in, possibly under another address; the model
+ * cannot follow that. It keeps the old state under a reused address,
+ * relying on the opener to start a new context, and cannot restore a
+ * copied-back one. No capture has had enough GL contexts to show it. The
+ * model holds 32 slots and replaces the least recently loaded when a 33rd
+ * arrives. The discriminating tests are gl-state-follows-the-context-slot,
+ * gl-context-opener-resets-only-its-context and
+ * gl-context-table-replaces-the-least-recent.
+ */
+#define MGRAS_GL_IMAGE_SLOT      0
+#define MGRAS_GL_NO_SLOT         0x80000000u
+#define MGRAS_GL_DEFAULT_SLOT    0xb27
+
+static SGIMgrasGLContext *mgras_gl(SGIMgrasState *s)
+{
+    return &s->gl_context[s->gl_current];
+}
+
 /* OpenGL 1.2.1 initial state (2.7, 2.10, 2.13.7, 4.1.5, 4.2.1-4.2.3). */
-void sgi_mgras_gl_reset(SGIMgrasState *s)
+static void mgras_gl_context_init(SGIMgrasGLContext *gl)
 {
     static const float one = 1.0f;
     uint32_t one_bits;
 
     memcpy(&one_bits, &one, sizeof(one_bits));
-    memset(s->gl_viewport, 0, sizeof(s->gl_viewport));
-    memset(s->gl_clear_color, 0, sizeof(s->gl_clear_color));
+    memset(gl, 0, sizeof(*gl));
     for (int i = 0; i < 4; i++) {
-        s->gl_color[i] = one_bits;
+        gl->color[i] = one_bits;
     }
-    s->gl_shade_model = MGRAS_GL_SMOOTH;
-    s->gl_begin = 0;
-    s->gl_vertex_count = 0;
-    memset(s->gl_vertex, 0, sizeof(s->gl_vertex));
-    memset(s->gl_vertex_color, 0, sizeof(s->gl_vertex_color));
-    s->gl_matrix_mode = MGRAS_GL_MODELVIEW;
-    mgras_gl_identity(s->gl_modelview);
-    mgras_gl_identity(s->gl_projection);
-    s->gl_depth_test = 0;
-    s->gl_depth_func = MGRAS_GL_LESS;
-    s->gl_depth_mask = 1;
-    s->gl_clear_depth = MGRAS_GL_DEPTH_MAX;
-    s->gl_draw_buffers = MGRAS_GL_DRAW_FRONT;
+    gl->shade_model = MGRAS_GL_SMOOTH;
+    gl->matrix_mode = MGRAS_GL_MODELVIEW;
+    mgras_gl_identity(gl->modelview);
+    mgras_gl_identity(gl->projection);
+    gl->depth_func = MGRAS_GL_LESS;
+    gl->depth_mask = 1;
+    gl->clear_depth = MGRAS_GL_DEPTH_MAX;
+    gl->draw_buffers = MGRAS_GL_DRAW_FRONT;
+}
+
+void sgi_mgras_gl_reset(SGIMgrasState *s)
+{
+    for (int i = 0; i < SGI_MGRAS_GL_CONTEXTS; i++) {
+        mgras_gl_context_init(&s->gl_context[i]);
+    }
+    memset(s->gl_slot, 0, sizeof(s->gl_slot));
+    memset(s->gl_selected, 0, sizeof(s->gl_selected));
+    s->gl_selections = 0;
+    s->gl_current = 0;
+    s->gl_ge_port_logged = false;
     /* The value every captured GL context image restores. */
     s->gl_banks[0] = s->gl_banks[1] = 1;
 }
 
+/* The entry holding slot's state, taking a new one if it has none. */
+static unsigned int mgras_gl_lookup(SGIMgrasState *s, uint32_t slot)
+{
+    unsigned int free = 0, oldest = 0;
+
+    for (unsigned int i = 1; i < SGI_MGRAS_GL_CONTEXTS; i++) {
+        if (!s->gl_selected[i]) {
+            free = free ? free : i;
+        } else if (s->gl_slot[i] == slot) {
+            return i;
+        } else if (!oldest || s->gl_selected[i] < s->gl_selected[oldest]) {
+            oldest = i;
+        }
+    }
+    if (!free) {
+        qemu_log_mask(LOG_UNIMP, "sgi-mgras: GL context slot 0x%x replaces "
+                      "slot 0x%x, loaded least recently; that context's GL "
+                      "state is lost\n", slot, s->gl_slot[oldest]);
+        free = oldest;
+    }
+    mgras_gl_context_init(&s->gl_context[free]);
+    s->gl_slot[free] = slot;
+    return free;
+}
+
 void sgi_mgras_gl_context_loaded(SGIMgrasState *s)
 {
+    uint32_t slot = s->context[MGRAS_GL_IMAGE_SLOT];
+
     s->gl_banks[0] = s->context[MGRAS_GL_IMAGE_BANKS];
     s->gl_banks[1] = s->context[MGRAS_GL_IMAGE_BANKS + 1];
+    s->gl_ge_port_logged = false;
+    if ((slot & MGRAS_GL_NO_SLOT) || slot == MGRAS_GL_DEFAULT_SLOT) {
+        s->gl_current = 0;
+        return;
+    }
+    s->gl_current = mgras_gl_lookup(s, slot);
+    s->gl_selected[s->gl_current] = ++s->gl_selections;
+}
+
+void sgi_mgras_gl_ge_port_access(SGIMgrasState *s, hwaddr addr, bool write)
+{
+    bool loaded = false;
+
+    for (unsigned int i = 1; i < SGI_MGRAS_GL_CONTEXTS; i++) {
+        loaded |= s->gl_selected[i] != 0;
+    }
+    if (!loaded || s->gl_ge_port_logged) {
+        return;
+    }
+    s->gl_ge_port_logged = true;
+    qemu_log_mask(LOG_UNIMP, "sgi-mgras: GE port 0x%06" HWADDR_PRIx " %s "
+                  "after GL contexts were loaded; the model does not save "
+                  "or restore GL state through the GE ports\n", addr,
+                  write ? "write" : "read");
+}
+
+const VMStateDescription vmstate_sgi_mgras_gl_context = {
+    .name = TYPE_SGI_MGRAS "/gl-context",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_INT32_ARRAY(viewport, SGIMgrasGLContext, 4),
+        VMSTATE_UINT32_ARRAY(clear_color, SGIMgrasGLContext, 4),
+        VMSTATE_UINT32_ARRAY(color, SGIMgrasGLContext, 4),
+        VMSTATE_UINT32(shade_model, SGIMgrasGLContext),
+        VMSTATE_UINT32(begin, SGIMgrasGLContext),
+        VMSTATE_UINT32(vertex_count, SGIMgrasGLContext),
+        VMSTATE_UINT32_2DARRAY(vertex, SGIMgrasGLContext, 3, 4),
+        VMSTATE_UINT32_2DARRAY(vertex_color, SGIMgrasGLContext, 3, 4),
+        VMSTATE_UINT32(matrix_mode, SGIMgrasGLContext),
+        VMSTATE_UINT32_ARRAY(modelview, SGIMgrasGLContext, 16),
+        VMSTATE_UINT32_ARRAY(projection, SGIMgrasGLContext, 16),
+        VMSTATE_UINT32(depth_test, SGIMgrasGLContext),
+        VMSTATE_UINT32(depth_func, SGIMgrasGLContext),
+        VMSTATE_UINT32(depth_mask, SGIMgrasGLContext),
+        VMSTATE_UINT32(clear_depth, SGIMgrasGLContext),
+        VMSTATE_UINT32(draw_buffers, SGIMgrasGLContext),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
+bool sgi_mgras_gl_post_load(SGIMgrasState *s)
+{
+    if (s->gl_current >= SGI_MGRAS_GL_CONTEXTS ||
+        (s->gl_current && !s->gl_selected[s->gl_current])) {
+        return false;
+    }
+    for (int i = 0; i < SGI_MGRAS_GL_CONTEXTS; i++) {
+        if (s->gl_context[i].vertex_count >=
+            ARRAY_SIZE(s->gl_context[i].vertex)) {
+            return false;
+        }
+    }
+    return true;
 }
 
 /*
@@ -285,18 +414,19 @@ static bool mgras_gl_window(SGIMgrasState *s, MgrasGLWindow *win)
  */
 static unsigned int mgras_gl_draw_banks(SGIMgrasState *s)
 {
+    SGIMgrasGLContext *gl = mgras_gl(s);
     unsigned int back = s->gl_banks[0] & 1;
     unsigned int banks = 0;
 
-    if (s->gl_draw_buffers & ~(MGRAS_GL_DRAW_FRONT | MGRAS_GL_DRAW_BACK)) {
+    if (gl->draw_buffers & ~(MGRAS_GL_DRAW_FRONT | MGRAS_GL_DRAW_BACK)) {
         qemu_log_mask(LOG_UNIMP, "sgi-mgras: GL draw buffers 0x%x beyond "
                       "the front and back buffers ignored\n",
-                      s->gl_draw_buffers);
+                      gl->draw_buffers);
     }
-    if (s->gl_draw_buffers & MGRAS_GL_DRAW_FRONT) {
+    if (gl->draw_buffers & MGRAS_GL_DRAW_FRONT) {
         banks |= 1u << (back ^ 1);
     }
-    if (s->gl_draw_buffers & MGRAS_GL_DRAW_BACK) {
+    if (gl->draw_buffers & MGRAS_GL_DRAW_BACK) {
         banks |= 1u << back;
     }
     return banks;
@@ -338,6 +468,7 @@ static uint32_t *mgras_gl_depth(SGIMgrasState *s, int x, int y)
  */
 static void mgras_gl_clear(SGIMgrasState *s, bool depth)
 {
+    SGIMgrasGLContext *gl = mgras_gl(s);
     MgrasGLWindow win;
     unsigned int banks = mgras_gl_draw_banks(s);
     uint32_t rgb = 0;
@@ -345,19 +476,19 @@ static void mgras_gl_clear(SGIMgrasState *s, bool depth)
     if (!mgras_gl_window(s, &win)) {
         return;
     }
-    if (depth && !s->gl_depth_mask) {
+    if (depth && !gl->depth_mask) {
         return;
     }
     if (!depth) {
-        rgb = (mgras_gl_channel(mgras_gl_float(s->gl_clear_color[0])) << 16) |
-              (mgras_gl_channel(mgras_gl_float(s->gl_clear_color[1])) << 8) |
-              mgras_gl_channel(mgras_gl_float(s->gl_clear_color[2]));
+        rgb = (mgras_gl_channel(mgras_gl_float(gl->clear_color[0])) << 16) |
+              (mgras_gl_channel(mgras_gl_float(gl->clear_color[1])) << 8) |
+              mgras_gl_channel(mgras_gl_float(gl->clear_color[2]));
     }
     for (int y = win.y0; y <= win.y1; y++) {
         for (int x = win.x0; x <= win.x1; x++) {
             if (depth) {
                 *mgras_gl_depth(s, x, y) =
-                    s->gl_clear_depth & MGRAS_GL_DEPTH_MAX;
+                    gl->clear_depth & MGRAS_GL_DEPTH_MAX;
             } else {
                 mgras_gl_put(s, banks, x, y, rgb);
             }
@@ -391,15 +522,16 @@ static void mgras_gl_multiply(uint32_t m[16], const double b[16])
 
 static uint32_t *mgras_gl_current_matrix(SGIMgrasState *s)
 {
-    switch (s->gl_matrix_mode) {
+    SGIMgrasGLContext *gl = mgras_gl(s);
+    switch (gl->matrix_mode) {
     case MGRAS_GL_MODELVIEW:
-        return s->gl_modelview;
+        return gl->modelview;
     case MGRAS_GL_PROJECTION:
-        return s->gl_projection;
+        return gl->projection;
     default:
         qemu_log_mask(LOG_UNIMP, "sgi-mgras: GL matrix mode 0x%x is not "
                       "modelled; matrix command ignored\n",
-                      s->gl_matrix_mode);
+                      gl->matrix_mode);
         return NULL;
     }
 }
@@ -527,25 +659,26 @@ static bool mgras_gl_depth_passes(uint32_t func, uint32_t z, uint32_t stored)
  */
 static bool mgras_gl_transform(SGIMgrasState *s, int i, MgrasGLVertex *out)
 {
+    SGIMgrasGLContext *gl = mgras_gl(s);
     double obj[4], eye[4], clip[4];
-    int vx = s->gl_viewport[0], vy = s->gl_viewport[1];
-    int vw = s->gl_viewport[2], vh = s->gl_viewport[3];
+    int vx = gl->viewport[0], vy = gl->viewport[1];
+    int vw = gl->viewport[2], vh = gl->viewport[3];
     double xw, yw;
 
     for (int k = 0; k < 4; k++) {
-        obj[k] = mgras_gl_float(s->gl_vertex[i][k]);
+        obj[k] = mgras_gl_float(gl->vertex[i][k]);
     }
     for (int row = 0; row < 4; row++) {
         eye[row] = 0;
         for (int k = 0; k < 4; k++) {
-            eye[row] += mgras_gl_float(s->gl_modelview[k * 4 + row]) *
+            eye[row] += mgras_gl_float(gl->modelview[k * 4 + row]) *
                         obj[k];
         }
     }
     for (int row = 0; row < 4; row++) {
         clip[row] = 0;
         for (int k = 0; k < 4; k++) {
-            clip[row] += mgras_gl_float(s->gl_projection[k * 4 + row]) *
+            clip[row] += mgras_gl_float(gl->projection[k * 4 + row]) *
                          eye[k];
         }
     }
@@ -567,7 +700,7 @@ static bool mgras_gl_transform(SGIMgrasState *s, int i, MgrasGLVertex *out)
     out->z = (clip[2] / clip[3] + 1.0) / 2.0;
     out->inv_w = 1.0 / clip[3];
     for (int k = 0; k < 3; k++) {
-        out->rgb[k] = MIN(MAX(mgras_gl_float(s->gl_vertex_color[i][k]),
+        out->rgb[k] = MIN(MAX(mgras_gl_float(gl->vertex_color[i][k]),
                               0.0f), 1.0f);
     }
     return true;
@@ -591,15 +724,16 @@ static bool mgras_gl_transform(SGIMgrasState *s, int i, MgrasGLVertex *out)
  */
 static void mgras_gl_triangle(SGIMgrasState *s)
 {
-    const uint32_t *provoking = s->gl_vertex_color[2];
+    SGIMgrasGLContext *gl = mgras_gl(s);
+    const uint32_t *provoking = gl->vertex_color[2];
     unsigned int banks = mgras_gl_draw_banks(s);
     MgrasGLWindow win;
     MgrasGLVertex v[3];
     int64_t min_x, max_x, min_y, max_y, area;
-    int vx = s->gl_viewport[0], vy = s->gl_viewport[1];
-    int vw = s->gl_viewport[2], vh = s->gl_viewport[3];
+    int vx = gl->viewport[0], vy = gl->viewport[1];
+    int vw = gl->viewport[2], vh = gl->viewport[3];
     int px0, px1, py0, py1;
-    bool smooth = s->gl_shade_model != MGRAS_GL_FLAT;
+    bool smooth = gl->shade_model != MGRAS_GL_FLAT;
     uint32_t flat_rgb;
 
     /* Table 2.9: an independent triangle's third vertex provokes. */
@@ -667,11 +801,11 @@ static void mgras_gl_triangle(SGIMgrasState *s)
             }
             zq = (uint32_t)llround(z * MGRAS_GL_DEPTH_MAX);
             stored = mgras_gl_depth(s, win.ox + px, win.oy + py);
-            if (s->gl_depth_test) {
-                if (!mgras_gl_depth_passes(s->gl_depth_func, zq, *stored)) {
+            if (gl->depth_test) {
+                if (!mgras_gl_depth_passes(gl->depth_func, zq, *stored)) {
                     continue;
                 }
-                if (s->gl_depth_mask) {
+                if (gl->depth_mask) {
                     *stored = zq;
                 }
             }
@@ -698,9 +832,10 @@ static void mgras_gl_vertex(SGIMgrasState *s, const uint32_t *payload,
                             uint32_t components)
 {
     static const float one = 1.0f;
+    SGIMgrasGLContext *gl = mgras_gl(s);
     uint32_t *vertex;
 
-    if (s->gl_begin != MGRAS_GL_BEGIN_TRIANGLES) {
+    if (gl->begin != MGRAS_GL_BEGIN_TRIANGLES) {
         /*
          * The other primitive modes are not tracked, so this may be a
          * legal vertex of a strip, fan or line the model cannot draw.
@@ -709,40 +844,37 @@ static void mgras_gl_vertex(SGIMgrasState *s, const uint32_t *payload,
                       "glBegin(GL_TRIANGLES) ignored\n");
         return;
     }
-    vertex = s->gl_vertex[s->gl_vertex_count];
-    memset(vertex, 0, sizeof(s->gl_vertex[0]));
+    vertex = gl->vertex[gl->vertex_count];
+    memset(vertex, 0, sizeof(gl->vertex[0]));
     memcpy(&vertex[3], &one, sizeof(vertex[3]));
     memcpy(vertex, payload, components * sizeof(uint32_t));
-    memcpy(s->gl_vertex_color[s->gl_vertex_count], s->gl_color,
-           sizeof(s->gl_color));
-    if (++s->gl_vertex_count == 3) {
+    memcpy(gl->vertex_color[gl->vertex_count], gl->color,
+           sizeof(gl->color));
+    if (++gl->vertex_count == 3) {
         mgras_gl_triangle(s);
-        s->gl_vertex_count = 0;
+        gl->vertex_count = 0;
     }
 }
 
 /*
  * The client writes the opener first when it sets up a new context
  * (mgras-gl-commands.md, "Context setup opener"), and the setup that
- * follows sends no matrix, so the board must already hold the OpenGL
- * initial state then; where it keeps each context's state is unknown. The
- * model has one GL state for the board and restores the initial values
- * here, keeping the banks the context image gave. The discriminating test
- * is gl-context-setup-restores-initial-state.
+ * follows sends no matrix, so the context must already hold the OpenGL
+ * initial state then. The model restores it in the loaded context's entry
+ * alone; the other contexts and the banks the image gave are the board's.
+ * The discriminating tests are gl-context-setup-restores-initial-state and
+ * gl-context-opener-resets-only-its-context.
  */
 static void mgras_gl_context_start(SGIMgrasState *s)
 {
-    uint32_t banks[2] = { s->gl_banks[0], s->gl_banks[1] };
-
-    sgi_mgras_gl_reset(s);
-    s->gl_banks[0] = banks[0];
-    s->gl_banks[1] = banks[1];
+    mgras_gl_context_init(mgras_gl(s));
 }
 
 void sgi_mgras_gl_execute(SGIMgrasState *s, uint32_t header,
                           const uint32_t *payload, uint32_t words)
 {
     static const float one = 1.0f;
+    SGIMgrasGLContext *gl = mgras_gl(s);
 
     if (words != (header & 0xff) / sizeof(uint32_t)) {
         return;
@@ -754,26 +886,26 @@ void sgi_mgras_gl_execute(SGIMgrasState *s, uint32_t header,
     case MGRAS_GL_VIEWPORT:
         /* The client has already clamped the size (__glMgrim_Viewport). */
         for (int i = 0; i < 4; i++) {
-            s->gl_viewport[i] = (int32_t)payload[i];
+            gl->viewport[i] = (int32_t)payload[i];
         }
         return;
     case MGRAS_GL_CLEAR_COLOR:
-        memcpy(s->gl_clear_color, payload, sizeof(s->gl_clear_color));
+        memcpy(gl->clear_color, payload, sizeof(gl->clear_color));
         return;
     case MGRAS_GL_CLEAR_COLOR_BUF:
         mgras_gl_clear(s, false);
         return;
     case MGRAS_GL_CLEAR_DEPTH:
-        s->gl_clear_depth = payload[0];
+        gl->clear_depth = payload[0];
         return;
     case MGRAS_GL_CLEAR_DEPTH_BUF:
         mgras_gl_clear(s, true);
         return;
     case MGRAS_GL_SHADE_MODEL:
-        s->gl_shade_model = payload[0];
+        gl->shade_model = payload[0];
         return;
     case MGRAS_GL_MATRIX_MODE:
-        s->gl_matrix_mode = payload[0];
+        gl->matrix_mode = payload[0];
         return;
     case MGRAS_GL_LOAD_MATRIX:
     case MGRAS_GL_LOAD_IDENTITY:
@@ -788,16 +920,16 @@ void sgi_mgras_gl_execute(SGIMgrasState *s, uint32_t header,
          * the probe's depth case, and every context setup sends it with 0
          * (run irix-20260927T172059-fdbada).
          */
-        s->gl_depth_test = payload[0] != 0;
+        gl->depth_test = payload[0] != 0;
         return;
     case MGRAS_GL_DEPTH_FUNC:
-        s->gl_depth_func = payload[0] & 7;
+        gl->depth_func = payload[0] & 7;
         return;
     case MGRAS_GL_DEPTH_MASK:
-        s->gl_depth_mask = payload[0] != 0;
+        gl->depth_mask = payload[0] != 0;
         return;
     case MGRAS_GL_DRAW_BUFFER:
-        s->gl_draw_buffers = payload[0];
+        gl->draw_buffers = payload[0];
         return;
     case MGRAS_GL_BANKS:
         if (payload[0] != payload[1]) {
@@ -809,20 +941,20 @@ void sgi_mgras_gl_execute(SGIMgrasState *s, uint32_t header,
         s->gl_banks[1] = payload[1];
         return;
     case MGRAS_GL_COLOR3F:
-        memcpy(s->gl_color, payload, 3 * sizeof(uint32_t));
-        memcpy(&s->gl_color[3], &one, sizeof(s->gl_color[3]));
+        memcpy(gl->color, payload, 3 * sizeof(uint32_t));
+        memcpy(&gl->color[3], &one, sizeof(gl->color[3]));
         return;
     case MGRAS_GL_COLOR4F:
-        memcpy(s->gl_color, payload, sizeof(s->gl_color));
+        memcpy(gl->color, payload, sizeof(gl->color));
         return;
     case MGRAS_GL_BEGIN_TRIANGLES:
-        s->gl_begin = header;
-        s->gl_vertex_count = 0;
+        gl->begin = header;
+        gl->vertex_count = 0;
         return;
     case MGRAS_GL_END_TRIANGLES:
         /* A trailing partial triangle draws nothing (2.6.1). */
-        s->gl_begin = 0;
-        s->gl_vertex_count = 0;
+        gl->begin = 0;
+        gl->vertex_count = 0;
         return;
     case MGRAS_GL_VERTEX2F:
         mgras_gl_vertex(s, payload, 2);

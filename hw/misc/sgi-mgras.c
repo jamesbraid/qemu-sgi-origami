@@ -685,6 +685,9 @@ static uint64_t mgras_read(void *opaque, hwaddr addr, unsigned size)
     if (addr != MGRAS_CONTEXT_COMMAND && addr != SGI_MGRAS_SCRATCH_COMMAND) {
         trace_sgi_mgras_control_mmio(sequence, addr, value, size, false);
     }
+    if (addr >= SGI_MGRAS_GE_PORTS && addr < SGI_MGRAS_GE_PORTS_END) {
+        sgi_mgras_gl_ge_port_access(s, addr, false);
+    }
     return value;
 }
 
@@ -697,6 +700,9 @@ static void mgras_write(void *opaque, hwaddr addr, uint64_t value,
     trace_sgi_mgras_mmio(sequence, addr, value, size, true);
     if (addr != MGRAS_CONTEXT_COMMAND && addr != SGI_MGRAS_SCRATCH_COMMAND) {
         trace_sgi_mgras_control_mmio(sequence, addr, value, size, true);
+    }
+    if (addr >= SGI_MGRAS_GE_PORTS && addr < SGI_MGRAS_GE_PORTS_END) {
+        sgi_mgras_gl_ge_port_access(s, addr, true);
     }
     if ((size != 1 && size != 2 && size != 4 && size != 8) ||
         (addr & (size - 1))) {
@@ -1281,7 +1287,7 @@ static int mgras_post_load(void *opaque, int version_id)
         s->pio_x > SGI_MGRAS_WIDTH || s->pio_y > SGI_MGRAS_HEIGHT ||
         s->xmap_index >= SGI_MGRAS_XMAP_ENTRIES ||
         s->dac_lut_load_channel >= 3 ||
-        s->gl_vertex_count >= ARRAY_SIZE(s->gl_vertex)) {
+        !sgi_mgras_gl_post_load(s)) {
         return -EINVAL;
     }
 
@@ -1333,7 +1339,7 @@ static bool mgras_ge_lengths_valid(void *opaque, int version_id)
  * changes.
  */
 static const VMStateDescription vmstate_sgi_mgras = {
-    .name = TYPE_SGI_MGRAS, .version_id = 17, .minimum_version_id = 9,
+    .name = TYPE_SGI_MGRAS, .version_id = 18, .minimum_version_id = 9,
     .post_load = mgras_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32(front_count, SGIMgrasState),
@@ -1467,14 +1473,17 @@ static const VMStateDescription vmstate_sgi_mgras = {
         VMSTATE_UINT32_ARRAY_V(xmap_buf_select, SGIMgrasState,
                                SGI_MGRAS_XMAP_ENTRIES, 11),
         VMSTATE_TIMER_PTR_V(retrace_timer, SGIMgrasState, 2),
-        VMSTATE_INT32_ARRAY_V(gl_viewport, SGIMgrasState, 4, 15),
-        VMSTATE_UINT32_ARRAY_V(gl_clear_color, SGIMgrasState, 4, 14),
-        VMSTATE_UINT32_ARRAY_V(gl_color, SGIMgrasState, 4, 15),
-        VMSTATE_UINT32_V(gl_shade_model, SGIMgrasState, 15),
-        VMSTATE_UINT32_V(gl_begin, SGIMgrasState, 15),
-        VMSTATE_UINT32_V(gl_vertex_count, SGIMgrasState, 15),
-        VMSTATE_UINT32_2DARRAY_V(gl_vertex, SGIMgrasState, 3, 4, 15),
-        VMSTATE_UINT32_2DARRAY_V(gl_vertex_color, SGIMgrasState, 3, 4, 15),
+        VMSTATE_INT32_ARRAY_V(gl_context[0].viewport, SGIMgrasState, 4, 15),
+        VMSTATE_UINT32_ARRAY_V(gl_context[0].clear_color, SGIMgrasState, 4,
+                               14),
+        VMSTATE_UINT32_ARRAY_V(gl_context[0].color, SGIMgrasState, 4, 15),
+        VMSTATE_UINT32_V(gl_context[0].shade_model, SGIMgrasState, 15),
+        VMSTATE_UINT32_V(gl_context[0].begin, SGIMgrasState, 15),
+        VMSTATE_UINT32_V(gl_context[0].vertex_count, SGIMgrasState, 15),
+        VMSTATE_UINT32_2DARRAY_V(gl_context[0].vertex, SGIMgrasState, 3, 4,
+                                 15),
+        VMSTATE_UINT32_2DARRAY_V(gl_context[0].vertex_color, SGIMgrasState,
+                                 3, 4, 15),
         VMSTATE_UINT32_V(ge_report, SGIMgrasState, 16),
         /*
          * Version 17 grows the command payload to 16 words for
@@ -1483,17 +1492,34 @@ static const VMStateDescription vmstate_sgi_mgras = {
          */
         VMSTATE_SUB_ARRAY(cmd_token_payload, SGIMgrasState, 8, 8, 17,
                           vmstate_info_uint32, uint32_t),
-        VMSTATE_UINT32_V(gl_matrix_mode, SGIMgrasState, 17),
-        VMSTATE_UINT32_ARRAY_V(gl_modelview, SGIMgrasState, 16, 17),
-        VMSTATE_UINT32_ARRAY_V(gl_projection, SGIMgrasState, 16, 17),
-        VMSTATE_UINT32_V(gl_depth_test, SGIMgrasState, 17),
-        VMSTATE_UINT32_V(gl_depth_func, SGIMgrasState, 17),
-        VMSTATE_UINT32_V(gl_depth_mask, SGIMgrasState, 17),
-        VMSTATE_UINT32_V(gl_clear_depth, SGIMgrasState, 17),
-        VMSTATE_UINT32_V(gl_draw_buffers, SGIMgrasState, 17),
+        VMSTATE_UINT32_V(gl_context[0].matrix_mode, SGIMgrasState, 17),
+        VMSTATE_UINT32_ARRAY_V(gl_context[0].modelview, SGIMgrasState, 16,
+                               17),
+        VMSTATE_UINT32_ARRAY_V(gl_context[0].projection, SGIMgrasState, 16,
+                               17),
+        VMSTATE_UINT32_V(gl_context[0].depth_test, SGIMgrasState, 17),
+        VMSTATE_UINT32_V(gl_context[0].depth_func, SGIMgrasState, 17),
+        VMSTATE_UINT32_V(gl_context[0].depth_mask, SGIMgrasState, 17),
+        VMSTATE_UINT32_V(gl_context[0].clear_depth, SGIMgrasState, 17),
+        VMSTATE_UINT32_V(gl_context[0].draw_buffers, SGIMgrasState, 17),
         VMSTATE_UINT32_ARRAY_V(gl_banks, SGIMgrasState, 2, 17),
         VMSTATE_VARRAY_UINT32(depth, SGIMgrasState, depth_count, 17,
                               vmstate_info_uint32, uint32_t),
+        /*
+         * Versions 14 to 17 kept one GL state for the board, sent above as
+         * entry 0, the state used with no GL context loaded. Version 18
+         * adds the per-context entries.
+         */
+        VMSTATE_STRUCT_SUB_ARRAY(gl_context, SGIMgrasState, 1,
+                                 SGI_MGRAS_GL_CONTEXTS - 1, 18,
+                                 vmstate_sgi_mgras_gl_context,
+                                 SGIMgrasGLContext),
+        VMSTATE_UINT32_ARRAY_V(gl_slot, SGIMgrasState, SGI_MGRAS_GL_CONTEXTS,
+                               18),
+        VMSTATE_UINT64_ARRAY_V(gl_selected, SGIMgrasState,
+                               SGI_MGRAS_GL_CONTEXTS, 18),
+        VMSTATE_UINT64_V(gl_selections, SGIMgrasState, 18),
+        VMSTATE_UINT32_V(gl_current, SGIMgrasState, 18),
         VMSTATE_END_OF_LIST()
     }
 };
