@@ -184,6 +184,52 @@ static void test_firmware_rejections(void)
     g_assert_cmpint(unlink(oversized), ==, 0);
 }
 
+static void test_pci_bar_separation(void)
+{
+    QTestState *qts = octane_start();
+    const uint64_t scsi0 = BRIDGE + 0x200000;
+    const uint64_t scsi1 = BRIDGE + 0x400000;
+
+    qtest_writel(qts, CFG(0) + 0x10, 0xffffffff);
+    qtest_writel(qts, CFG(1) + 0x10, 0xffffffff);
+    qtest_writel(qts, CFG(0) + 0x14, 0xffffffff);
+    qtest_writel(qts, CFG(1) + 0x14, 0xffffffff);
+    qtest_writel(qts, CFG(2) + 0x10, 0xffffffff);
+    g_assert_cmphex(qtest_readl(qts, CFG(0) + 0x10), ==, 0xffffff01);
+    g_assert_cmphex(qtest_readl(qts, CFG(1) + 0x10), ==, 0xffffff01);
+    g_assert_cmphex(qtest_readl(qts, CFG(0) + 0x14), ==, 0xffffff00);
+    g_assert_cmphex(qtest_readl(qts, CFG(1) + 0x14), ==, 0xffffff00);
+    g_assert_cmphex(qtest_readl(qts, CFG(2) + 0x10), ==, 0xfff00000);
+
+    qtest_writel(qts, CFG(0) + 0x10, 0x00001001);
+    qtest_writel(qts, CFG(1) + 0x10, 0x00002001);
+    qtest_writel(qts, CFG(0) + 0x14, 0x10000000);
+    qtest_writel(qts, CFG(1) + 0x14, 0x11000000);
+    qtest_writel(qts, CFG(2) + 0x10, 0x12000000);
+    for (unsigned slot = 0; slot < 3; slot++) {
+        qtest_writel(qts, CFG(slot) + 0x04, 0x00000003);
+        qtest_writel(qts, BRIDGE + 0x200 + 8 * slot + 4,
+                     0x1100 + 0x10 * slot);
+    }
+    g_assert_cmphex(qtest_readl(qts, CFG(0) + 0x10), ==, 0x00001001);
+    g_assert_cmphex(qtest_readl(qts, CFG(1) + 0x10), ==, 0x00002001);
+    g_assert_cmphex(qtest_readl(qts, CFG(0) + 0x14), ==, 0x10000000);
+    g_assert_cmphex(qtest_readl(qts, CFG(1) + 0x14), ==, 0x11000000);
+    g_assert_cmphex(qtest_readl(qts, CFG(2) + 0x10), ==, 0x12000000);
+
+    qtest_writew(qts, scsi0 + 0x0c, 1);
+    g_assert_cmphex(qtest_readw(qts, scsi0 + 0x0c), ==, 1);
+    g_assert_cmphex(qtest_readw(qts, scsi1 + 0x0c), ==, 0);
+    qtest_writew(qts, scsi1 + 0x0c, 1);
+    g_assert_cmphex(qtest_readw(qts, scsi1 + 0x0c), ==, 1);
+    qtest_writeb(qts, UART_A + 7, 0x5a);
+    g_assert_cmphex(qtest_readb(qts, UART_A + 7), ==, 0x5a);
+    g_assert_cmphex(qtest_readw(qts, scsi0 + 0x0c), ==, 1);
+    g_assert_cmphex(qtest_readw(qts, scsi1 + 0x0c), ==, 1);
+    g_assert_cmphex(qtest_readl(qts, FLASH), ==, 0x12345678);
+    qtest_quit(qts);
+}
+
 static void test_heart_interrupt_levels(void)
 {
     QTestState *qts = octane_start();
@@ -422,6 +468,7 @@ int main(int argc, char **argv)
     qtest_add_func("/octane/widgets-and-memory", test_widgets_and_memory);
     qtest_add_func("/octane/flash-and-pci", test_flash_and_pci);
     qtest_add_func("/octane/firmware-rejections", test_firmware_rejections);
+    qtest_add_func("/octane/pci-bar-separation", test_pci_bar_separation);
     qtest_add_func("/octane/serial-a-loopback", test_serial_a_loopback);
     qtest_add_func("/octane/serial-a-chardev", test_serial_a_chardev);
     qtest_add_func("/octane/serial-a-interrupt-route",
