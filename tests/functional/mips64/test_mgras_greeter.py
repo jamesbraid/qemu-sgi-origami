@@ -2,7 +2,7 @@
 #
 # SI/MGRAS graphical greeter: boot the Origin 2000's built-in graphics to
 # the IRIX icon-chooser and require the 2D engine to have actually
-# painted it
+# painted it, in the right colours
 #
 # SPDX-License-Identifier: GPL-2.0-or-later
 """
@@ -122,14 +122,24 @@ docstring instead). Three regions, three structural properties:
     4 distinct colors and a 14.3% dark-pixel fraction (the glyph
     strokes) against the label boxes' light fill.
 
-Deliberately not asserted: a specific hue or absolute RGB range for any
-region, or that all four icons render as boxes (only EZsetup's does on
-this capture too -- a separate, open question about the other three
-accounts' artwork that this test does not depend on). What should hold
-across an ordinary color-pipeline change is structure: each region is
-substantially painted and internally varied, so a regression that
-flattened a real bitmap or glyph edge back into a flat fill still fails
-even if the surviving fill's own color shifted. LitPixelFractionCheck
+The structural checks alone do not say whether the greeter's colours
+are right. GREETER_COLOR_CHECKS (lib_mgras_regions.py) adds that: ten
+flat patches of the greeter's chrome -- the chooser panel, the two icon
+mats, the outer form, the name field, the hostname line, both buttons,
+the scrollbar track and the root label -- each required to show its
+expected colours within a tolerance, after accounting for SI's DAC
+gamma ramp where the reference was measured before it. Those are
+patches, not a whole-frame golden image, so the cursor and the
+timing-dependent redraw elsewhere on the screen cannot fail them.
+
+Still not asserted: that all four icons render as boxes (only EZsetup's
+does on this capture too -- a separate, open question about the other
+three accounts' artwork that this test does not depend on). The
+structural checks below stay alongside the colour checks because they
+fail differently: each region is substantially painted and internally
+varied, so a regression that flattened a real bitmap or glyph edge back
+into a flat fill still fails even if the surviving fill's own color
+happened to match. LitPixelFractionCheck
 (panel, dark-background-relative-to-content polarity) and
 DarkPixelFractionCheck (icon and label row, light-background polarity --
 see lib_screen.py's own docstring for why the fraction check's direction
@@ -148,6 +158,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from lib_mgras_regions import GREETER_COLOR_CHECKS
 from lib_prom import (FORK_ROOT, MACHINES, drive_console, require_assets,
                       run_record, utc_now)
 from lib_screen import (ColorVarietyCheck, DarkPixelFractionCheck,
@@ -303,7 +314,7 @@ SCREEN_CHECKS = (
                            min_fraction=LABEL_ROW_MIN_DARK_FRACTION),
     ColorVarietyCheck('label-row', rect=LABEL_ROW_RECT,
                       min_colors=LABEL_ROW_MIN_COLORS),
-)
+) + GREETER_COLOR_CHECKS
 
 
 if QemuSystemTest is not None:
@@ -312,7 +323,7 @@ if QemuSystemTest is not None:
         """Boots the installed IRIX disk on the Origin 2000's one-node
         module with SI/MGRAS graphics to the icon-chooser greeter and
         requires the 2D engine to have actually painted the account icon
-        and its label."""
+        and its label, in the greeter's expected colours."""
 
         @skipBigDataTest()
         @skipSlowTest()
