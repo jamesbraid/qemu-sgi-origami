@@ -15,8 +15,9 @@ machine types are emulated:
 -  A MIPS Magnum R4000 machine \"magnum\". This machine needs the
    64-bit emulator.
 
--  The SGI Scalable Node family: \"origin200\", \"origin2000\" and
-   \"origin300\". These machines need the 64-bit big-endian emulator.
+-  The SGI Scalable Node family: \"origin200\", \"origin2000\",
+   \"onyx2\" and \"origin300\". These machines need the 64-bit
+   big-endian emulator.
 
 The Malta emulation supports the following devices:
 
@@ -80,7 +81,7 @@ The Loongson-3 virtual platform emulation supports:
 -  GPEX and virtio as peripheral devices
 
 The SGI Scalable Node family emulation (\"origin200\", \"origin2000\",
-\"origin300\") supports the Hub and Bedrock node ASICs, their SCSI,
+\"onyx2\", \"origin300\") supports the Hub and Bedrock node ASICs, their SCSI,
 Ethernet, serial and NVRAM peripherals, and each product's own system
 controller. Every product boots only through its own stock PROM image,
 given with ``-bios``; there is no direct kernel boot. The Origin 200 can
