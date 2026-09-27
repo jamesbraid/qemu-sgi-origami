@@ -4021,6 +4021,48 @@
           "widget": 14
         },
         {
+          "controlling-node": 0,
+          "crossbar-index": 0,
+          "id": "xio-slot-2",
+          "label": "io2",
+          "widget": 12
+        },
+        {
+          "controlling-node": 0,
+          "crossbar-index": 0,
+          "id": "xio-slot-4",
+          "label": "io4",
+          "widget": 11
+        },
+        {
+          "controlling-node": 0,
+          "crossbar-index": 0,
+          "id": "xio-slot-6",
+          "label": "io6",
+          "widget": 13
+        },
+        {
+          "controlling-node": 1,
+          "crossbar-index": 1,
+          "id": "xio-slot-8",
+          "label": "io8",
+          "widget": 11
+        },
+        {
+          "controlling-node": 1,
+          "crossbar-index": 1,
+          "id": "xio-slot-10",
+          "label": "io10",
+          "widget": 12
+        },
+        {
+          "controlling-node": 1,
+          "crossbar-index": 1,
+          "id": "xio-slot-12",
+          "label": "io12",
+          "widget": 13
+        },
+        {
           "controlling-node": 1,
           "crossbar-index": 1,
           "id": "xio-slot-7",
@@ -4190,6 +4232,27 @@
           "id": "xio-slot-5",
           "label": "io5",
           "widget": 14
+        },
+        {
+          "controlling-node": 0,
+          "crossbar-index": 0,
+          "id": "xio-slot-2",
+          "label": "io2",
+          "widget": 12
+        },
+        {
+          "controlling-node": 0,
+          "crossbar-index": 0,
+          "id": "xio-slot-4",
+          "label": "io4",
+          "widget": 11
+        },
+        {
+          "controlling-node": 0,
+          "crossbar-index": 0,
+          "id": "xio-slot-6",
+          "label": "io6",
+          "widget": 13
         }
       ]
     },
