@@ -244,6 +244,37 @@ typedef struct SGIMgrasBoard {
     bool implemented;
 } SGIMgrasBoard;
 
+/*
+ * One OpenGL context's command state (hw/misc/sgi-mgras-gl.c). Colours and
+ * vertex components keep the IEEE single bits the client wrote.
+ */
+typedef struct SGIMgrasGLContext {
+    int32_t viewport[4];
+    uint32_t clear_color[4];
+    uint32_t color[4];
+    uint32_t shade_model;
+    uint32_t begin;
+    uint32_t vertex_count;
+    uint32_t vertex[3][4];
+    uint32_t vertex_color[3][4];
+    uint32_t matrix_mode;
+    /* IEEE single bits, column-major as glLoadMatrixf lays a matrix out. */
+    uint32_t modelview[16];
+    uint32_t projection[16];
+    uint32_t depth_test;
+    uint32_t depth_func;
+    uint32_t depth_mask;
+    uint32_t clear_depth;
+    /* The draw-buffer triple's first word: bit 0 front, bit 1 back. */
+    uint32_t draw_buffers;
+} SGIMgrasGLContext;
+
+/*
+ * Entry 0 is the state used while no GL context is loaded; the others
+ * hold one context each, keyed by its context-image word 0.
+ */
+#define SGI_MGRAS_GL_CONTEXTS 33
+
 /* General interrupt source 10: the swap command has been reached. */
 #define SGI_MGRAS_PENDING_SWAP 0x00000400
 
@@ -415,28 +446,18 @@ struct SGIMgrasState {
     uint32_t cmd_token_payload[SGI_MGRAS_CMD_TOKEN_PAYLOAD_WORDS];
     uint32_t cmd_token_payload_count;
     /*
-     * OpenGL command state (hw/misc/sgi-mgras-gl.c): one set for the
-     * board, not saved or restored with a context. Colours and vertex
-     * components keep the IEEE single bits the client wrote.
+     * OpenGL command state (hw/misc/sgi-mgras-gl.c): gl_context[gl_current]
+     * is the loaded context's. gl_slot[] holds each entry's image word 0
+     * and gl_selected[] the gl_selections count when it was last loaded,
+     * zero for a free entry.
      */
-    int32_t gl_viewport[4];
-    uint32_t gl_clear_color[4];
-    uint32_t gl_color[4];
-    uint32_t gl_shade_model;
-    uint32_t gl_begin;
-    uint32_t gl_vertex_count;
-    uint32_t gl_vertex[3][4];
-    uint32_t gl_vertex_color[3][4];
-    uint32_t gl_matrix_mode;
-    /* IEEE single bits, column-major as glLoadMatrixf lays a matrix out. */
-    uint32_t gl_modelview[16];
-    uint32_t gl_projection[16];
-    uint32_t gl_depth_test;
-    uint32_t gl_depth_func;
-    uint32_t gl_depth_mask;
-    uint32_t gl_clear_depth;
-    /* The draw-buffer triple's first word: bit 0 front, bit 1 back. */
-    uint32_t gl_draw_buffers;
+    SGIMgrasGLContext gl_context[SGI_MGRAS_GL_CONTEXTS];
+    uint32_t gl_slot[SGI_MGRAS_GL_CONTEXTS];
+    uint64_t gl_selected[SGI_MGRAS_GL_CONTEXTS];
+    uint64_t gl_selections;
+    uint32_t gl_current;
+    /* GE-port traffic logged since the last switch; not migrated. */
+    bool gl_ge_port_logged;
     /* The bank holding the back buffer, from 0x9808 or context words 16-17. */
     uint32_t gl_banks[2];
     uint64_t retraces;
