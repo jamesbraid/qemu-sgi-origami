@@ -57,7 +57,7 @@
 #include "hw/mips/sgi/baseio.h"
 #include "hw/mips/sgi/baseio-flash.h"
 #include "hw/mips/sgi/xio-board.h"
-#include "hw/mips/sgi/xtalk-link.h"
+#include "hw/mips/sgi/xio-link.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/core/sysbus.h"
 #include "hw/misc/sgi-ioc3.h"
@@ -222,8 +222,8 @@ static bool xio_baseio_build_widget(SGIXioBoardState *board, Error **errp)
      * inbound destination. A fixture wiring "fabric" to a plain sink is a
      * no-op here.
      */
-    sgi_xtalk_crossbow_link_claim_fabric(s->fabric, board->cpu_face,
-                                         board->packet_face);
+    sgi_xio_crossbow_link_claim_fabric(s->fabric, board->cpu_face,
+                                       board->packet_face);
     return true;
 }
 
@@ -284,7 +284,7 @@ static void xio_baseio_class_init(ObjectClass *oc, const void *data)
      * deskside enclosure, but also `-device`-creatable at an empty XIO
      * slot it names (slot=io5): the machine hands it that slot's fabric
      * proxy, and claiming it (build_widget()'s own
-     * sgi_xtalk_crossbow_link_claim_fabric() call) makes
+     * sgi_xio_crossbow_link_claim_fabric() call) makes
      * sgi_machine_done() bring the slot's widget alive both ways, as
      * sgi-pci-expansion's own header comment describes.
      */

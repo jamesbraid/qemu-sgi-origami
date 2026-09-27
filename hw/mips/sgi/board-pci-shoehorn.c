@@ -72,7 +72,7 @@
 
 #include "qemu/osdep.h"
 #include "hw/mips/sgi/xio-board.h"
-#include "hw/mips/sgi/xtalk-link.h"
+#include "hw/mips/sgi/xio-link.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/core/sysbus.h"
 #include "hw/misc/sgi-ioc3.h"
@@ -280,8 +280,8 @@ static bool pci_shoehorn_build_widget(SGIXioBoardState *board, Error **errp)
     board->packet_face = sgi_bridge_packet_face(s->bridge);
 
     /* Same slot fabric claim as sgi-pci-expansion; see its header. */
-    sgi_xtalk_crossbow_link_claim_fabric(s->fabric, board->cpu_face,
-                                         board->packet_face);
+    sgi_xio_crossbow_link_claim_fabric(s->fabric, board->cpu_face,
+                                       board->packet_face);
     return true;
 }
 

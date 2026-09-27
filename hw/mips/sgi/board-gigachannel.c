@@ -49,7 +49,7 @@
 #include "qemu/osdep.h"
 #include "hw/mips/sgi/baseio-flash.h"
 #include "hw/mips/sgi/xio-board.h"
-#include "hw/mips/sgi/xtalk-link.h"
+#include "hw/mips/sgi/xio-link.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/core/sysbus.h"
 #include "hw/pci/pci.h"

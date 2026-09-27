@@ -198,7 +198,7 @@ struct SGIKonaState {
 
     /*
      * Set by build_widget(), before this board re-parents: the crosstalk
-     * fabric proxy sgi_xtalk_crossbow_link_claim_fabric() claims. Required;
+     * fabric proxy sgi_xio_crossbow_link_claim_fabric() claims. Required;
      * a board realized without it refuses.
      */
     MemoryRegion *fabric;

@@ -4148,7 +4148,7 @@ bool sgi_hub_attach_module_identity(SGIHubState *s,
  * Crossbow-attached case ----
  * Through this node's crosstalk container at a fixed widget-2 offset,
  * a zero-length read latches the PI error the same way the direct link's
- * own probe does (hw/mips/sgi/xtalk-link.c). Installed only
+ * own probe does (hw/mips/sgi/xio-link.c). Installed only
  * when this Hub's crosstalk port connects to a Crossbow link, which is the
  * only thing that ever sets xtalk_io; a direct-attach node wires its own
  * probe on the widget's own device window instead and never sets it.

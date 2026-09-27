@@ -48,7 +48,7 @@
 #include "qemu/units.h"
 #include "hw/1wire/ds2502.h"
 #include "hw/mips/sgi/xio-board.h"
-#include "hw/mips/sgi/xtalk-link.h"
+#include "hw/mips/sgi/xio-link.h"
 #include "hw/misc/sgi-kona.h"
 #include "hw/misc/sgi-kona-ports.h"
 #include "hw/misc/sgi-onewire-slot.h"
@@ -607,8 +607,8 @@ static bool sgi_kona_build_widget(SGIXioBoardState *board,
      * widget's inbound destination. A fixture wiring "fabric" to a plain
      * sink is a no-op here.
      */
-    sgi_xtalk_crossbow_link_claim_fabric(s->fabric, board->cpu_face,
-                                         board->packet_face);
+    sgi_xio_crossbow_link_claim_fabric(s->fabric, board->cpu_face,
+                                       board->packet_face);
     return true;
 }
 

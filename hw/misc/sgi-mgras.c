@@ -9,7 +9,7 @@
 #include "hw/misc/sgi-mgras-display.h"
 #include "hw/misc/sgi-mgras-gl.h"
 #include "hw/misc/sgi-mgras-raster.h"
-#include "hw/mips/sgi/xtalk-link.h"
+#include "hw/mips/sgi/xio-link.h"
 #include "migration/vmstate.h"
 #include "qapi/error.h"
 #include "qapi/visitor.h"
@@ -1248,8 +1248,8 @@ static bool mgras_build_widget(SGIXioBoardState *board, Error **errp)
      * the machine brings its widget alive both ways; the catalogue's own
      * attach and a fixture's plain sink make this a no-op.
      */
-    sgi_xtalk_crossbow_link_claim_fabric(s->fabric, board->cpu_face,
-                                         board->packet_face);
+    sgi_xio_crossbow_link_claim_fabric(s->fabric, board->cpu_face,
+                                       board->packet_face);
     return true;
 }
 
