@@ -24,10 +24,12 @@
 #define SN_PROM_BOOT_STATUS_CACHE_AS_RAM (1U << 1)
 
 /*
- * How often a processor whose window is mapped as RAM samples its stack
- * pointer for the exit's stack switch. A late sample only leaves the
- * block mapped that much longer, in a span nothing fetches from the
- * window; an early one only restores the filter sooner.
+ * How often the node's poll samples each processor it watches: for the
+ * exit's stack switch while the window is mapped as RAM, and for the OS
+ * handoff while the processor is in the phase. A late stack-switch sample
+ * only leaves the block mapped that much longer, in a span nothing
+ * fetches from the window; a late handoff sample leaves the phase's
+ * reader-local routing in place that much longer.
  */
 #define SN_PROMDATA_POLL_NS (10 * SCALE_MS)
 
@@ -168,10 +170,12 @@ static void sn_promdata_trace_phase(SNPromDataState *s, const char *event)
  * never run that reactive detector again and would keep phase_private,
  * and this window's prom-copy-local alias, latched for the rest of its
  * run. sn_promdata_check_stack() applies the same handoff test here.
- * The price is that a processor which stays in the phase for good -- a
- * secondary parked in the PROM, or one the PROM disables -- is sampled at
- * 100 Hz for as long as it stays, on a node without the fast path as on
- * one with it.
+ * The price is that a processor which stays in the phase for good
+ * without its block mapped -- a secondary parked in the PROM after its
+ * stack switch, or any such processor on a node without the fast path --
+ * is sampled at 100 Hz for as long as it stays. One that stays mapped,
+ * such as a processor the PROM disables before its stack switch on a node
+ * with the fast path, is still bounded by the straggler count above.
  */
 static void sn_promdata_check_stack(CPUState *cs, run_on_cpu_data data);
 static void sn_promdata_leave_private(CPUState *cs, run_on_cpu_data data);

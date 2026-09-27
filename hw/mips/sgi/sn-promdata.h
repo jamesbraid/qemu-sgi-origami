@@ -9,10 +9,11 @@
  * implementation instead of a second copy per generation.
  *
  * Where a node's realize enables the fast path (promdata-fast, on by
- * default), the private block also answers each processor's cached
- * accesses directly as RAM once its phase latches, instead of every
- * access dispatching through the filter's MMIO path under the big lock;
- * see the struct comments below and sn-promdata.c for the mechanism.
+ * default for sgi-sn0-node and off for sgi-sn1-node), the private block
+ * also answers each processor's cached accesses directly as RAM once its
+ * phase latches, instead of every access dispatching through the
+ * filter's MMIO path under the big lock; see the struct comments below
+ * and sn-promdata.c for the mechanism.
  */
 
 #ifndef HW_MIPS_SGI_SN_PROMDATA_H
@@ -35,8 +36,8 @@ typedef struct SNPromDataState SNPromDataState;
  * timer samples that processor every SN_PROMDATA_POLL_NS of
  * guest time, on its own thread, until none remain watched
  * (sn_promdata_poll_cb() in sn-promdata.c). Each sample checks the
- * exit's stack switch and, once that has happened, the phase's own
- * handoff test directly -- the fast path's own accesses never dispatch
+ * exit's stack switch and, separately, the phase's own handoff test
+ * directly -- the fast path's own accesses never dispatch
  * through the filter, so a processor need not touch the filter window
  * again for the poll to notice it has left. slots/count name the node's
  * own promdata[] array, so the callback can walk every slice without
@@ -46,12 +47,12 @@ typedef struct SNPromDataState SNPromDataState;
  * callback; NULL when a generation tracks no such counter (sgi-sn1-node
  * does not supply one).
  *
- * A processor that latches the phase and never hands off -- a secondary
- * left in the PROM at its monitor, or one the PROM disables -- stays
- * watched, so the timer samples it at 100 Hz of guest time for as long
- * as it stays there. The straggler limit (straggler_polls below) stops
- * the sampling of a slot that stays mapped, not of one that stays in the
- * phase.
+ * A processor that stays in the phase without its block mapped and never
+ * hands off -- a secondary left in the PROM at its monitor, or any
+ * processor on a node without the fast path that the PROM disables --
+ * stays watched, so the timer samples it at 100 Hz of guest time for as
+ * long as it stays there. The straggler limit (straggler_polls below)
+ * bounds only a slot that stays mapped.
  */
 typedef struct SNPromDataPoll {
     QEMUTimer *timer;
