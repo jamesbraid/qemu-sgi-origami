@@ -127,6 +127,28 @@ static const MemoryRegionOps octane_flash_ops = {
     .impl.max_access_size = 2,
 };
 
+static uint64_t octane_blank_flash_read(void *opaque, hwaddr addr,
+                                        unsigned size)
+{
+    return 0xffff;
+}
+
+static void octane_blank_flash_write(void *opaque, hwaddr addr,
+                                     uint64_t value, unsigned size)
+{
+    qemu_log_mask(LOG_UNIMP, "octane: unsupported alternate flash write "
+                  "at 0x%" HWADDR_PRIx " value 0x%" PRIx64 "\n",
+                  addr, value);
+}
+
+static const MemoryRegionOps octane_blank_flash_ops = {
+    .read = octane_blank_flash_read,
+    .write = octane_blank_flash_write,
+    .endianness = DEVICE_BIG_ENDIAN,
+    .valid = { .min_access_size = 2, .max_access_size = 2 },
+    .impl = { .min_access_size = 2, .max_access_size = 2 },
+};
+
 static void octane_reset(MachineState *machine, ResetType type)
 {
     OctaneMachineState *s = (OctaneMachineState *)machine;
@@ -209,6 +231,7 @@ static void octane_init_common(MachineState *machine, bool octane2)
     MemoryRegion *physical = g_new0(MemoryRegion, 1);
     MemoryRegion *attr0 = g_new0(MemoryRegion, 1);
     MemoryRegion *firmware = g_new0(MemoryRegion, 1);
+    MemoryRegion *alternate_flash = g_new0(MemoryRegion, 1);
     MemoryRegion *proxy = g_new0(MemoryRegion, 1);
     MemoryRegion *proxy_route = g_new0(MemoryRegion, 1);
     MemoryRegion *short_view = g_new0(MemoryRegion, 1);
@@ -261,6 +284,9 @@ static void octane_init_common(MachineState *machine, bool octane2)
     /* Bridge dispatches into this chip while its own I/O guard is active. */
     memory_region_init_io(firmware, OBJECT(machine), &octane_flash_ops,
                           flash_image, "octane.flash", OCTANE_FLASH_SIZE);
+    memory_region_init_io(alternate_flash, OBJECT(machine),
+                          &octane_blank_flash_ops, NULL,
+                          "octane.alternate-flash", OCTANE_FLASH_SIZE);
 
     cpuclk = clock_new(OBJECT(machine), "cpu-refclk");
     /* The fitted Octane2 R12000 is reported at 360 MHz. */
@@ -324,6 +350,8 @@ static void octane_init_common(MachineState *machine, bool octane2)
     qdev_prop_set_uint32(bridge, "fabric-widget-shift", 48);
     object_property_set_link(OBJECT(bridge), "flash", OBJECT(firmware),
                              &error_fatal);
+    object_property_set_link(OBJECT(bridge), "flash-select1",
+                             OBJECT(alternate_flash), &error_fatal);
     sysbus_realize(SYS_BUS_DEVICE(bridge), &error_fatal);
     if (!sgi_bridge_install_flash_read_view(SGI_BRIDGE(bridge), flash_image,
                                             OCTANE_FLASH_SIZE, &error_fatal)) {
