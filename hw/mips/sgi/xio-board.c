@@ -22,7 +22,7 @@
 #define SGI_XIO_BOARD_UNSET SGI_XIO_BOARD_MODULE_UNSET
 
 /*
- * Every sgi-xtalk-board realized so far, attached or not: this is both the
+ * Every sgi-xio-board realized so far, attached or not: this is both the
  * module+slot uniqueness registry and the pool sgi_xio_board_attach_pending()
  * scans. Boards are few (a module has at most a handful of XIO slots), so a
  * linear scan costs nothing a hash table would be worth carrying instead.
@@ -55,7 +55,7 @@ static Object *sgi_xio_board_module_container(unsigned int module)
  * object_unparent() also drops the device's qdev bus parent as a side effect
  * of removing the old QOM child property (pnv_phb.c's comment on
  * pnv_parent_fixup() explains why), so this restores it to the system bus
- * every sgi-xtalk-board is realized on; qdev_machine_creation_done() asserts
+ * every sgi-xio-board is realized on; qdev_machine_creation_done() asserts
  * every realized device still has one.
  */
 static bool sgi_xio_board_reparent(SGIXioBoardState *board, Error **errp)

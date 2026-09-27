@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SGI KONA: the InfiniteReality graphics pipe.
- * An sgi-xtalk-board subclass whose widget answers the PROM's widget-header
+ * An sgi-xio-board subclass whose widget answers the PROM's widget-header
  * probe, its `+0x64` classification probe, the `+0x98` one-wire identity
  * chain the driver reads during board discovery, and, from increment 2,
  * the `+0x800xxx` register window and the `+0xc10000` textport command

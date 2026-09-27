@@ -8,10 +8,7 @@
  * answers the crosstalk port interface directly (see
  * hw/pci-host/sgi-bridge.c), with no board wrapper at all.
  *
- * Renamed from sgi-xtalk-board (the base-io-device step) once its only
- * onboard-only subclasses (sgi-ip29-io, sgi-io8) stopped existing: what is
- * left is exactly the removable-card scope this name states, plus the test
- * board this header also declares (see xtalk-test-board.c).
+ * The test board this header also declares lives in xtalk-test-board.c.
  *
  * Every concrete board shares two properties -- a module index and a
  * slot -- and one class method, build_widget(), that builds the board's
@@ -48,7 +45,7 @@
 #include "qemu/queue.h"
 #include "qom/object.h"
 
-#define TYPE_SGI_XIO_BOARD "sgi-xtalk-board"
+#define TYPE_SGI_XIO_BOARD "sgi-xio-board"
 OBJECT_DECLARE_TYPE(SGIXioBoardState, SGIXioBoardClass, SGI_XIO_BOARD)
 
 struct SGIXioBoardState {

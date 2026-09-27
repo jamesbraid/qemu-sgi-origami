@@ -2,7 +2,7 @@
 /*
  * SGI KONA: the InfiniteReality graphics pipe.
  *
- * An sgi-xtalk-board subclass, built the way hw/mips/sgi/xio-baseio.c
+ * An sgi-xio-board subclass, built the way hw/mips/sgi/xio-baseio.c
  * builds the BaseIO card: this file owns only the widget itself, attached
  * through the general crosstalk framework at a free Origin 2000 XIO slot.
  * The widget answers the PROM's widget-header probe at `+0x4`, its
@@ -733,7 +733,7 @@ static void sgi_kona_instance_init(Object *obj)
 /*
  * Increment 2's own host-only buffers (framebuffer, an in-flight bitmap
  * payload) and console have no unrealize hook to release them from:
- * sgi-xtalk-board fixes dc->unrealize to sgi_xio_board_unrealize(), which
+ * sgi-xio-board fixes dc->unrealize to sgi_xio_board_unrealize(), which
  * only removes a board from the pending-attach list (see hw/mips/sgi/
  * xio-board.c), and SGIXioBoardClass declares no finish_unrealize
  * counterpart to finish_realize(). instance_finalize runs unconditionally
