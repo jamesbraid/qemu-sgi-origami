@@ -120,7 +120,7 @@ static void test_octane2_population(void)
     uint64_t missing;
 
     g_assert_cmphex(qtest_readl(qts, HEART + 0x20), ==, OCTANE2_BANK0);
-    g_assert_cmphex(qtest_readl(qts, HEART_WIDGET + 4) >> 28, ==, 6);
+    g_assert_cmphex(qtest_readl(qts, HEART_WIDGET + 4), ==, 0x6c00106c);
     g_assert_cmpuint(qtest_readl_tx(qts, XBOW + 4, &value), ==, MEMTX_OK);
     g_assert_cmpuint(qtest_readl_tx(qts, BRIDGE + 4, &value), ==, MEMTX_OK);
     g_assert_cmpuint(qtest_readl_tx(qts, 0x1b000004, &value), !=, MEMTX_OK);
@@ -498,7 +498,7 @@ static void test_widgets_and_memory(void)
     g_assert_cmpuint(qtest_readl_tx(qts, XBOW + 4, &value), ==, MEMTX_OK);
     g_assert_cmpuint(qtest_readl_tx(qts, HEART_WIDGET + 4, &value), ==,
                      MEMTX_OK);
-    g_assert_cmphex(value & 0x0fffffff, ==, 0x0c00106c);
+    g_assert_cmphex(value, ==, 0x4c00106c);
     g_assert_cmpuint(qtest_readq_tx(qts, HEART_WIDGET, &missing), ==,
                      MEMTX_OK);
     g_assert_cmphex(missing, ==, (uint64_t)value);
