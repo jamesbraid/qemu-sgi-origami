@@ -151,6 +151,7 @@ static void prepare_origin300(QTestState *qts)
 static const Recipe recipes[] = {
     { "origin200", "-M origin200 -m 128M -smp 2", 0 },
     { "origin2000", "-M origin2000", 0 },
+    { "onyx2", "-M onyx2", 0 },
     { "origin300", "-M origin300", 0x1686a8, prepare_origin300 },
 };
 
