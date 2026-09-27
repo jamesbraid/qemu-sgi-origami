@@ -51,6 +51,7 @@
 #include "qemu/bswap.h"
 #include "libqtest.h"
 #include "sgi-mips-emit.h"
+#include "sgi-migrate.h"
 #include "sgi-test.h"
 
 #include <sys/socket.h>
@@ -1473,12 +1474,30 @@ static void test_unmask_by_eret_delivers(const void *data)
 #define GH_PAST_COUNT_OFF   0x2a0
 #define GH_PAST_CAUSE_OFF   0x2c0
 #define GH_DISARM_PRE_OFF   0x2e0
+#define GH_EXC_CAUSE_OFF    0x300
+#define GH_EXC_EPC_OFF      0x320
 #define GH_PEER_OFF         (PROGRESS_OFF + 8)
 #define GH_COMPARE          1000000u
 #define GH_HUB_COUNT        (HUB_LOCAL + 0x030100)
 
 static unsigned int gh_break_pos;
 static bool gh_intervening_insn;
+static bool gh_interrupt_after_count;
+
+static void emit_gdb_timer_interrupt_handler(GuestImage *img)
+{
+    emit_mfc0(img, R_T3, CP0_CAUSE, 0);
+    emit_publish(img, R_T3, GH_EXC_CAUSE_OFF);
+    emit_mfc0(img, R_T3, CP0_EPC, 0);
+    emit_publish(img, R_T3, GH_EXC_EPC_OFF);
+    emit_mtc0(img, R_T4, CP0_COMPARE, 0);
+    emit_ehb(img);
+    emit_mfc0(img, R_T3, CP0_COUNT, 0);
+    emit_publish(img, R_T3, GH_LATE_COUNT_OFF);
+    emit_mfc0(img, R_T3, CP0_CAUSE, 0);
+    emit_publish(img, R_T3, GH_LATE_CAUSE_OFF);
+    emit_done_and_halt(img);
+}
 
 static void build_gdb_peer_hold(GuestImage *img)
 {
@@ -1490,6 +1509,12 @@ static void build_gdb_peer_hold(GuestImage *img)
     /* CPU A waits for B, then writes Count with Compare well ahead. */
     emit_li(img, R_T3, 1);
     emit_wait_ge(img, R_T3, GH_PEER_OFF);
+    if (gh_interrupt_after_count) {
+        emit_mfc0(img, R_T3, CP0_STATUS, 0);
+        emit_ori(img, R_T3, R_T3, STATUS_IM7 | 1);
+        emit_mtc0(img, R_T3, CP0_STATUS, 0);
+        emit_ehb(img);
+    }
     emit_li(img, R_T3, GH_COMPARE);
     emit_mtc0(img, R_T3, CP0_COMPARE, 0);
     emit_li(img, R_T4, 1000);
@@ -1600,13 +1625,20 @@ static void gdb_peer_command(int fd, const char *command,
 static void test_gdb_peer_hold(const void *data)
 {
     g_autofree char *image = NULL, *dir = NULL, *socket_path = NULL;
+    g_autofree char *migration_path = NULL, *migration_uri = NULL;
     char reply[256], command[128];
     int fd, gdb;
     QTestState *qts;
+    QTestState *to;
     uint64_t peer_before, peer_after, hub_before, hub_after;
     uint64_t peer_count_before, peer_count_after;
+    uint64_t source_hub_at_save = 0, dest_hub_before_load = 0;
+    int options = GPOINTER_TO_INT(data);
+    bool migrate_vm = options & 4;
+    bool interrupt_vm = options & 8;
 
-    gh_intervening_insn = GPOINTER_TO_INT(data);
+    gh_intervening_insn = options & 1;
+    gh_interrupt_after_count = interrupt_vm;
 
     if (!qtest_has_accel("tcg")) {
         g_test_skip("TCG is unavailable");
@@ -1618,7 +1650,12 @@ static void test_gdb_peer_hold(const void *data)
     socket_path = g_build_filename(dir, "gdb.sock", NULL);
     fd = g_file_open_tmp("sn0-gdb-hold-XXXXXX", &image, NULL);
     g_assert_cmpint(fd, >=, 0);
-    write_guest_image(fd, build_gdb_peer_hold);
+    if (interrupt_vm) {
+        write_guest_image_with_setup(fd, emit_gdb_timer_interrupt_handler,
+                                     emit_preamble, build_gdb_peer_hold);
+    } else {
+        write_guest_image(fd, build_gdb_peer_hold);
+    }
     close(fd);
 
     qts = qtest_initf("-M origin200 -m 128M -smp 2 -cpu R10000 "
@@ -1626,7 +1663,6 @@ static void test_gdb_peer_hold(const void *data)
                       "-no-shutdown -chardev socket,path=%s,server=on,"
                       "wait=off,id=gdb0 -gdb chardev:gdb0 -S",
                       image, socket_path);
-    unlink(image);
     gdb = gdb_peer_socket(socket_path);
     gdb_peer_command(gdb, "?", reply, sizeof(reply));
     g_assert_true(reply[0] == 'T' || reply[0] == 'S');
@@ -1674,13 +1710,65 @@ static void test_gdb_peer_hold(const void *data)
     gdb_peer_command(gdb, "p24", reply, sizeof(reply));
     g_assert_cmphex(g_ascii_strtoull(reply, NULL, 16) & CAUSE_IP7,
                     ==, CAUSE_IP7);
-    gdb_peer_command(gdb, "vCont;c:1", NULL, 0);
+    if (migrate_vm) {
+        source_hub_at_save = qtest_readq(qts, GH_HUB_COUNT);
+        migration_path = g_build_filename(dir, "migration.sock", NULL);
+        migration_uri = g_strdup_printf("unix:%s", migration_path);
+        to = qtest_initf("-M origin200 -m 128M -smp 2 -cpu R10000 "
+                         "-bios %s -accel tcg,thread=multi -no-reboot "
+                         "-no-shutdown -incoming defer -S", image);
+        dest_hub_before_load = qtest_readq(to, GH_HUB_COUNT);
+        g_test_message("Hub before source save: %" PRIu64
+                       "; before destination load: %" PRIu64,
+                       source_hub_at_save, dest_hub_before_load);
+        g_assert_cmpuint(source_hub_at_save, >, dest_hub_before_load);
+        {
+            QDict *migration_reply = qtest_qmp(to,
+                "{ 'execute': 'migrate-incoming', 'arguments': { 'uri': %s } }",
+                migration_uri);
+
+            if (!qdict_haskey(migration_reply, "return")) {
+                g_test_message("incoming migration: %s",
+                    qdict_get_str(qdict_get_qdict(migration_reply, "error"),
+                                  "desc"));
+            }
+            g_assert_true(qdict_haskey(migration_reply, "return"));
+            qobject_unref(migration_reply);
+        }
+        sgi_migrate_stopped(qts, migration_uri);
+        g_test_message("Hub after destination load: %" PRIu64,
+                       qtest_readq(to, GH_HUB_COUNT));
+        qtest_qmp_assert_success(to, "{ 'execute': 'cont' }");
+        close(gdb);
+        qtest_quit(qts);
+        qts = to;
+    } else {
+        gdb_peer_command(gdb, "vCont;c:1", NULL, 0);
+    }
     g_assert_true(wait_for_cpu0_done(qts));
+    if (interrupt_vm) {
+        g_test_message("interrupt Cause 0x%" PRIx64 ", EPC 0x%" PRIx64
+                       "; handler Compare Count %" PRIu64 ", IP7 %u",
+                       state_word(qts, GH_EXC_CAUSE_OFF),
+                       state_word(qts, GH_EXC_EPC_OFF),
+                       state_word(qts, GH_LATE_COUNT_OFF),
+                       !!(state_word(qts, GH_LATE_CAUSE_OFF) & CAUSE_IP7));
+        g_assert_cmphex(state_word(qts, GH_EXC_CAUSE_OFF) & CAUSE_EXCCODE,
+                        ==, 0);
+        g_assert_cmphex(state_word(qts, GH_EXC_EPC_OFF), ==,
+                        0xffffffff00000000ULL | IMAGE_KSEG1_BASE |
+                        gh_break_pos);
+        g_assert_cmpuint(state_word(qts, GH_LATE_COUNT_OFF), >, 1000);
+        g_assert_cmphex(state_word(qts, GH_LATE_CAUSE_OFF) & CAUSE_IP7,
+                        ==, 0);
+        goto finish_gdb_peer_hold;
+    }
     g_test_message("CPU A Count after hold: %" PRIu64 "; Cause.IP7: %u",
                    state_word(qts, GH_COUNT_OFF),
                    !!(state_word(qts, GH_CAUSE_OFF) & CAUSE_IP7));
     g_assert_cmpuint(state_word(qts, GH_COUNT_OFF), >=, GH_COMPARE);
-    g_assert_cmphex(state_word(qts, GH_CAUSE_OFF) & CAUSE_IP7, ==, 0);
+    g_assert_cmphex(state_word(qts, GH_CAUSE_OFF) & CAUSE_IP7, ==,
+                    gh_intervening_insn ? 0 : CAUSE_IP7);
     g_test_message("late Compare=1000: Count %" PRIu64 ", IP7 %u; "
                    "Count-1: prior IP7 %u, Count %" PRIu64 ", IP7 %u",
                    state_word(qts, GH_LATE_COUNT_OFF),
@@ -1689,15 +1777,23 @@ static void test_gdb_peer_hold(const void *data)
                    state_word(qts, GH_PAST_COUNT_OFF),
                    !!(state_word(qts, GH_PAST_CAUSE_OFF) & CAUSE_IP7));
     g_assert_cmpuint(state_word(qts, GH_LATE_COUNT_OFF), >, 1000);
-    g_assert_cmphex(state_word(qts, GH_LATE_CAUSE_OFF) & CAUSE_IP7, ==, 0);
+    g_assert_cmphex(state_word(qts, GH_LATE_CAUSE_OFF) & CAUSE_IP7, ==,
+                    gh_intervening_insn ? 0 : CAUSE_IP7);
     g_assert_cmpuint(state_word(qts, GH_PAST_COUNT_OFF), >=, 1000);
     g_assert_cmphex(state_word(qts, GH_PAST_CAUSE_OFF) & CAUSE_IP7, ==, 0);
     g_assert_cmphex(state_word(qts, GH_DISARM_PRE_OFF) & CAUSE_IP7,
                     ==, CAUSE_IP7);
 
-    close(gdb);
+finish_gdb_peer_hold:
+    if (!migrate_vm) {
+        close(gdb);
+    }
     qtest_quit(qts);
+    unlink(image);
     unlink(socket_path);
+    if (migrate_vm) {
+        unlink(migration_path);
+    }
     rmdir(dir);
 }
 
@@ -1755,5 +1851,9 @@ int main(int argc, char **argv)
     qtest_add_data_func("mttcg/timer/gdb-peer-hold-intervening",
                         GINT_TO_POINTER(1),
                         test_gdb_peer_hold);
+    qtest_add_data_func("mttcg/timer/gdb-peer-hold-migrate",
+                        GINT_TO_POINTER(4), test_gdb_peer_hold);
+    qtest_add_data_func("mttcg/timer/gdb-peer-hold-interrupt",
+                        GINT_TO_POINTER(8), test_gdb_peer_hold);
     return g_test_run();
 }

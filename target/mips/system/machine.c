@@ -6,10 +6,19 @@
 #include "migration/qemu-file-types.h"
 #include "fpu_helper.h"
 #include "qemu/timer.h"
+#include "hw/core/clock.h"
 
 static int cpu_pre_save(void *opaque)
 {
     MIPSCPU *cpu = opaque;
+
+    if (cpu->env.timer_adjacent_pending) {
+        uint64_t now_ticks = clock_ns_to_ticks(cpu->count_clock,
+            qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
+
+        cpu->env.timer_adjacent_migration_age_ticks =
+            now_ticks - cpu->env.timer_adjacent_start_ticks;
+    }
 
     if (cpu->env.cfg.performance_counter_pairs == 4) {
         /* Serialize R14000 guest-visible values, not running clock biases. */
@@ -32,6 +41,14 @@ static int cpu_post_load(void *opaque, int version_id)
 {
     MIPSCPU *cpu = opaque;
     CPUMIPSState *env = &cpu->env;
+
+    if (env->timer_adjacent_pending) {
+        uint64_t now_ticks = clock_ns_to_ticks(cpu->count_clock,
+            qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
+
+        env->timer_adjacent_start_ticks =
+            now_ticks - env->timer_adjacent_migration_age_ticks;
+    }
 
     restore_fp_status(env);
     restore_msa_fp_status(env);
@@ -392,6 +409,34 @@ static const VMStateDescription mips_vmstate_timer = {
     }
 };
 
+static bool mips_timer_adjacent_needed(void *opaque)
+{
+    MIPSCPU *cpu = opaque;
+
+    return cpu->env.timer_adjacent_pending;
+}
+
+static int mips_timer_adjacent_post_load(void *opaque, int version_id)
+{
+    MIPSCPU *cpu = opaque;
+
+    cpu->env.timer_adjacent_pending = true;
+    return 0;
+}
+
+static const VMStateDescription mips_vmstate_timer_adjacent = {
+    .name = "cpu/r10k-timer-adjacent",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = mips_timer_adjacent_needed,
+    .post_load = mips_timer_adjacent_post_load,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32(env.timer_adjacent_count, MIPSCPU),
+        VMSTATE_UINT64(env.timer_adjacent_migration_age_ticks, MIPSCPU),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
 static bool mips_r14k_performance_needed(void *opaque)
 {
     MIPSCPU *cpu = opaque;
@@ -614,6 +659,7 @@ const VMStateDescription vmstate_mips_cpu = {
     .subsections = (const VMStateDescription * const []) {
         &mips_vmstate_nmi,
         &mips_vmstate_timer,
+        &mips_vmstate_timer_adjacent,
         &mips_vmstate_timer_ip7,
         &mips_vmstate_r14k_performance,
         &mips_vmstate_r10k,

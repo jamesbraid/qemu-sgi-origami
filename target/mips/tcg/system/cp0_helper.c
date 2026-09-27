@@ -1138,7 +1138,7 @@ void helper_mtc0_hwrena(CPUMIPSState *env, target_ulong arg1)
 
 void helper_mtc0_count(CPUMIPSState *env, target_ulong arg1)
 {
-    cpu_mips_store_count(env, arg1);
+    cpu_mips_store_count_guest(env, arg1);
 }
 
 void helper_mtc0_entryhi(CPUMIPSState *env, target_ulong arg1)
