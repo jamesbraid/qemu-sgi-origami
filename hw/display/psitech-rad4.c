@@ -428,7 +428,18 @@ struct PsitechRad4State {
     uint16_t device_id;
 
     MemoryRegion bar0;
+    /*
+     * BAR2 is a container: bar2_regs is the register/aperture MMIO map
+     * (rad4_bar2_read()/rad4_bar2_write()) across the whole BAR, fb is the
+     * framebuffer backed by real RAM overlaid on its low RAD4_FB_SIZE bytes,
+     * and fb_overlay re-traps that same range through the register handler
+     * while a partial plane mask is active. See the framebuffer/mask
+     * commentary on those fields and on rad4_apply_mask_write().
+     */
     MemoryRegion bar2;
+    MemoryRegion bar2_regs;
+    MemoryRegion fb;
+    MemoryRegion fb_overlay;
     MemoryRegion romroute;
 
     /*
@@ -469,23 +480,18 @@ struct PsitechRad4State {
     uint32_t rom_mode;
     uint32_t rom_command;
 
-    /* BAR2 framebuffer and mask. */
+    /*
+     * BAR2 framebuffer and mask. framebuffer aliases the fb RAM region's
+     * host backing (memory_region_get_ram_ptr()); the memory core migrates
+     * the region and tracks guest CPU stores to it in its DIRTY_MEMORY_VGA
+     * log. rad4_gfx_update() reads that log to find which scanlines changed;
+     * rad4_dma_run() and the partial-mask overlay path, which write the
+     * backing directly rather than through a logged access, mark their rows
+     * with memory_region_set_dirty() (rad4_mark_dirty_range()), and reset,
+     * palette/FB_WAT and cursor changes mark whole rows the same way.
+     */
     uint8_t *framebuffer;
     uint32_t mask;
-
-    /*
-     * Scanlines of the framebuffer written since the last rad4_gfx_update(),
-     * inclusive and empty when dirty_y_start > dirty_y_end. framebuffer is a
-     * plain buffer behind a masked-write MMIO trap, not a RAM MemoryRegion,
-     * so it cannot use the region dirty-bitmap helpers in
-     * hw/display/framebuffer.c; rad4_bar2_write() and rad4_dma_run()'s
-     * upload branch mark rows by hand as they write, and rad4_gfx_update()
-     * converts and pushes only this range instead of the whole frame every
-     * refresh. Not migrated: rad4_post_load() marks the whole frame dirty
-     * instead, since display_buffer below is not itself part of VMState.
-     */
-    int dirty_y_start;
-    int dirty_y_end;
 
     /*
      * Displayed color, converted from the raw framebuffer through each
@@ -659,7 +665,15 @@ static void rad4_recognizer_reset(PsitechRad4State *s)
     s->rec_index = 0;
 }
 
-/* Mark [y_start, y_end] (inclusive, clipped to the visible image) dirty. */
+/*
+ * Mark [y_start, y_end] (inclusive, clipped to the visible image) dirty in
+ * the framebuffer RAM region's DIRTY_MEMORY_VGA log, the one log
+ * rad4_gfx_update() consults. Guest CPU stores on the all-ones fast path
+ * mark themselves through the logged RAM access; this covers everyone who
+ * writes the backing behind the memory core's back (DMA, the partial-mask
+ * overlay) or changes what already-written pixels mean (palette, FB_WAT,
+ * cursor, reset).
+ */
 static void rad4_mark_dirty_rows(PsitechRad4State *s, int y_start, int y_end)
 {
     if (y_start < 0) {
@@ -671,13 +685,9 @@ static void rad4_mark_dirty_rows(PsitechRad4State *s, int y_start, int y_end)
     if (y_start > y_end) {
         return;
     }
-    if (s->dirty_y_start > s->dirty_y_end) {
-        s->dirty_y_start = y_start;
-        s->dirty_y_end = y_end;
-        return;
-    }
-    s->dirty_y_start = MIN(s->dirty_y_start, y_start);
-    s->dirty_y_end = MAX(s->dirty_y_end, y_end);
+    memory_region_set_dirty(&s->fb, (ram_addr_t)y_start * RAD4_MODE0_STRIDE,
+                            (ram_addr_t)(y_end - y_start + 1) *
+                            RAD4_MODE0_STRIDE);
 }
 
 /*
@@ -1001,7 +1011,7 @@ static void rad4_convert_scanout(PsitechRad4State *s, int y_start, int y_end)
         uint32_t *dst = s->display_buffer + (size_t)y * RAD4_MODE0_WIDTH;
 
         for (x = 0; x < RAD4_MODE0_WIDTH; x++) {
-            uint32_t word = ldl_be_p(s->framebuffer + row + x * 4);
+            uint32_t word = ldl_le_p(s->framebuffer + row + x * 4);
 
             *dst++ = rad4_pixel_to_rgb(s, word);
         }
@@ -1020,21 +1030,45 @@ static void rad4_convert_scanout(PsitechRad4State *s, int y_start, int y_end)
 static bool rad4_gfx_update(void *opaque)
 {
     PsitechRad4State *s = opaque;
+    ram_addr_t visible = (ram_addr_t)RAD4_MODE0_STRIDE * RAD4_MODE0_HEIGHT;
+    DirtyBitmapSnapshot *snap;
+    int y, first = -1, last = -1;
 
     if (s->rec_state != RAD4_REC_RECOGNIZED) {
         return true;
     }
-    if (s->dirty_y_start > s->dirty_y_end) {
+
+    /*
+     * Take and clear one dirty snapshot of the visible image, then find the
+     * span of scanlines it reports changed. A guest CPU store on the
+     * all-ones fast path lands straight in the RAM and is logged here with
+     * no MMIO exit; DMA, the partial-mask overlay and the palette/FB_WAT/
+     * cursor/reset paths feed the same log through rad4_mark_dirty_*(). Push
+     * the enclosing span, matching the single contiguous range this refresh
+     * pushed before the framebuffer moved to a RAM region.
+     */
+    snap = memory_region_snapshot_and_clear_dirty(&s->fb, 0, visible,
+                                                   DIRTY_MEMORY_VGA);
+    for (y = 0; y < RAD4_MODE0_HEIGHT; y++) {
+        if (memory_region_snapshot_get_dirty(&s->fb, snap,
+                                             (ram_addr_t)y * RAD4_MODE0_STRIDE,
+                                             RAD4_MODE0_STRIDE)) {
+            if (first < 0) {
+                first = y;
+            }
+            last = y;
+        }
+    }
+    g_free(snap);
+
+    if (first < 0) {
         trace_rad4_gfx_update_idle();
         return true;
     }
-    trace_rad4_gfx_update_push(s->dirty_y_start, s->dirty_y_end);
-    rad4_convert_scanout(s, s->dirty_y_start, s->dirty_y_end);
-    rad4_cursor_compose(s, s->dirty_y_start, s->dirty_y_end);
-    qemu_console_update(s->con, 0, s->dirty_y_start, RAD4_MODE0_WIDTH,
-                        s->dirty_y_end - s->dirty_y_start + 1);
-    s->dirty_y_start = RAD4_MODE0_HEIGHT;
-    s->dirty_y_end = -1;
+    trace_rad4_gfx_update_push(first, last);
+    rad4_convert_scanout(s, first, last);
+    rad4_cursor_compose(s, first, last);
+    qemu_console_update(s->con, 0, first, RAD4_MODE0_WIDTH, last - first + 1);
     return true;
 }
 
@@ -1304,10 +1338,24 @@ static bool rad4_dma_run(PsitechRad4State *s)
             memcpy(raw, s->framebuffer + desc_addr, sizeof(raw));
         }
 
-        pci_addr = ldl_be_p(raw);
-        local_addr = ldl_be_p(raw + 4);
-        size = ldl_be_p(raw + 8) & RAD4_DMA_SIZE_MASK;
-        next = ldl_be_p(raw + 12);
+        /*
+         * A PCI-space descriptor is PLX big-endian wire data straight from
+         * guest memory. A Local-space descriptor was written into the
+         * framebuffer through the CPU's BAR2 path, so it carries that path's
+         * little-endian byte order (see the framebuffer-endianness note on
+         * rad4_bar2_write()); decode each in its own order.
+         */
+        if (from_pci) {
+            pci_addr = ldl_be_p(raw);
+            local_addr = ldl_be_p(raw + 4);
+            size = ldl_be_p(raw + 8) & RAD4_DMA_SIZE_MASK;
+            next = ldl_be_p(raw + 12);
+        } else {
+            pci_addr = ldl_le_p(raw);
+            local_addr = ldl_le_p(raw + 4);
+            size = ldl_le_p(raw + 8) & RAD4_DMA_SIZE_MASK;
+            next = ldl_le_p(raw + 12);
+        }
 
         if (local_addr >= RAD4_FB_SIZE || size > RAD4_FB_SIZE - local_addr) {
             qemu_log_mask(LOG_GUEST_ERROR,
@@ -1356,9 +1404,15 @@ static bool rad4_dma_run(PsitechRad4State *s)
                                  "0x%x\n", pci_addr + off);
                     return false;
                 }
+                /*
+                 * The payload is PLX big-endian wire data from guest memory;
+                 * the framebuffer holds the CPU BAR2 path's little-endian
+                 * byte order, so the masked pixel is stored little-endian to
+                 * match a CPU write of the same value (rad4_bar2_write()).
+                 */
                 incoming = ldl_be_p(word);
-                old = ldl_be_p(s->framebuffer + local_addr + off);
-                stl_be_p(s->framebuffer + local_addr + off,
+                old = ldl_le_p(s->framebuffer + local_addr + off);
+                stl_le_p(s->framebuffer + local_addr + off,
                         (old & ~s->mask) | (incoming & s->mask));
                 rad4_mark_dirty_range(s, local_addr + off, 4);
             }
@@ -1472,6 +1526,19 @@ static const MemoryRegionOps rad4_romroute_ops = {
 static void rad4_apply_mask_write(PsitechRad4State *s, uint32_t val)
 {
     s->mask = val;
+    /*
+     * With the all-ones mask every guest pixel store is a plain full-word
+     * replace, so the fb RAM region alone serves BAR2's low RAD4_FB_SIZE
+     * bytes and the store lands with no MMIO exit. A partial mask is a
+     * plane mask -- each store must read-modify-write the framebuffer,
+     * which the plain RAM region cannot do -- so raise the higher-priority
+     * fb_overlay in front of that RAM for as long as the mask stays
+     * partial, routing FB accesses back through rad4_bar2_read()/
+     * rad4_bar2_write()'s masked path (the exact behaviour these registers
+     * had before the RAM region existed). Restoring the all-ones mask drops
+     * the overlay and returns to the fast path.
+     */
+    memory_region_set_enabled(&s->fb_overlay, val != 0xffffffffu);
 }
 
 static uint64_t rad4_bar2_read(void *opaque, hwaddr addr, unsigned size)
@@ -1480,7 +1547,7 @@ static uint64_t rad4_bar2_read(void *opaque, hwaddr addr, unsigned size)
     uint32_t offset = addr;
 
     if (offset < RAD4_FB_SIZE) {
-        return ldl_be_p(s->framebuffer + offset);
+        return ldl_le_p(s->framebuffer + offset);
     }
     if (offset >= RAD4_BAR2_VERT &&
         offset < RAD4_BAR2_VERT + 4 * RAD4_VERT_WORDS) {
@@ -1591,9 +1658,19 @@ static void rad4_bar2_write(void *opaque, hwaddr addr, uint64_t val,
     uint32_t v = val;
 
     if (offset < RAD4_FB_SIZE) {
-        uint32_t old = ldl_be_p(s->framebuffer + offset);
+        /*
+         * Only reached while the partial-mask overlay is up (an all-ones
+         * mask serves this range straight from the fb RAM region). The
+         * framebuffer stores pixels in this CPU BAR2 path's little-endian
+         * byte order: BAR2 is a PCI aperture, and unlike the trapped path a
+         * plain RAM region takes a guest store with no endianness
+         * adjustment, so the RAM ends up holding the value little-endian.
+         * Everything that touches the backing directly (this masked write,
+         * rad4_convert_scanout(), rad4_dma_run()) uses that same order.
+         */
+        uint32_t old = ldl_le_p(s->framebuffer + offset);
 
-        stl_be_p(s->framebuffer + offset, (old & ~s->mask) | (v & s->mask));
+        stl_le_p(s->framebuffer + offset, (old & ~s->mask) | (v & s->mask));
         rad4_mark_dirty_range(s, offset, size);
         return;
     }
@@ -1789,8 +1866,11 @@ static void rad4_reset_hold(Object *obj, ResetType type)
 
     memset(s->framebuffer, 0, RAD4_FB_SIZE);
     s->mask = 0xffffffffu;
+    /* Back to the all-ones fast path: the partial-mask overlay comes down. */
+    memory_region_set_enabled(&s->fb_overlay, false);
     /*
-     * The framebuffer just went to zero; an already-recognized display
+     * The framebuffer just went to zero through the host pointer, which
+     * the memory core's dirty log never saw; an already-recognized display
      * needs the next refresh to repaint the whole frame from that, not
      * take the idle fast path and keep showing the pre-reset
      * display_buffer indefinitely.
@@ -1843,7 +1923,6 @@ static void rad4_realize(PCIDevice *dev, Error **errp)
     PsitechRad4State *s = PSITECH_RAD4(dev);
     Object *obj = OBJECT(dev);
 
-    s->framebuffer = g_malloc0(RAD4_FB_SIZE);
     s->rgb_store = g_malloc0(0x10000);
     s->display_buffer = g_malloc0(RAD4_MODE0_WIDTH * RAD4_MODE0_HEIGHT * 4);
 
@@ -1851,8 +1930,35 @@ static void rad4_realize(PCIDevice *dev, Error **errp)
 
     memory_region_init_io(&s->bar0, obj, &rad4_bar0_ops, s,
                           "psitech-rad4-bar0", RAD4_BAR0_SIZE);
-    memory_region_init_io(&s->bar2, obj, &rad4_bar2_ops, s,
-                          "psitech-rad4-bar2", RAD4_BAR2_SIZE);
+
+    /*
+     * BAR2's register/aperture map (bar2_regs, priority 0) spans the whole
+     * BAR. The framebuffer RAM (fb, priority 1) overlays its low
+     * RAD4_FB_SIZE bytes so guest pixel stores hit RAM directly, and
+     * fb_overlay (priority 2, off unless a partial plane mask is active)
+     * re-traps that range through bar2_regs' own handler; see
+     * rad4_apply_mask_write(). No register aperture lives below
+     * RAD4_FB_SIZE (the lowest, RAD4_BAR2_RGB_LO, is at 9 MiB), so the RAM
+     * shadows only framebuffer bytes.
+     */
+    memory_region_init(&s->bar2, obj, "psitech-rad4-bar2", RAD4_BAR2_SIZE);
+    memory_region_init_io(&s->bar2_regs, obj, &rad4_bar2_ops, s,
+                          "psitech-rad4-bar2-regs", RAD4_BAR2_SIZE);
+    if (!memory_region_init_ram(&s->fb, obj, "psitech-rad4-fb",
+                                RAD4_FB_SIZE, errp)) {
+        return;
+    }
+    memory_region_set_log(&s->fb, true, DIRTY_MEMORY_VGA);
+    s->framebuffer = memory_region_get_ram_ptr(&s->fb);
+    memory_region_init_io(&s->fb_overlay, obj, &rad4_bar2_ops, s,
+                          "psitech-rad4-fb-overlay", RAD4_FB_SIZE);
+    memory_region_set_enabled(&s->fb_overlay, false);
+    memory_region_add_subregion_overlap(&s->bar2, 0, &s->bar2_regs, 0);
+    memory_region_add_subregion_overlap(&s->bar2, RAD4_BAR2_FB_BASE,
+                                        &s->fb, 1);
+    memory_region_add_subregion_overlap(&s->bar2, RAD4_BAR2_FB_BASE,
+                                        &s->fb_overlay, 2);
+
     memory_region_init_io(&s->romroute, obj, &rad4_romroute_ops, s,
                           "psitech-rad4-romroute", RAD4_ROMROUTE_SIZE);
 
@@ -1903,7 +2009,7 @@ static void rad4_exit(PCIDevice *dev)
 
     timer_free(s->frame_timer);
     qemu_graphic_console_close(s->con);
-    g_free(s->framebuffer);
+    /* s->framebuffer aliases the fb RAM region, freed with the device. */
     g_free(s->rgb_store);
     g_free(s->display_buffer);
 }
@@ -1913,14 +2019,16 @@ static int rad4_post_load(void *opaque, int version_id)
     PsitechRad4State *s = opaque;
 
     /*
-     * display_buffer is not itself part of VMState (only the raw
-     * framebuffer it is converted from is); dirty_y_start/dirty_y_end
-     * are not migrated either, and on the destination are whatever a
-     * fresh realize() left them. Without an explicit full repaint here,
-     * a migrated-in guest whose refresh finds nothing newly dirty would
-     * show a stale or blank display_buffer until the guest next writes.
+     * The framebuffer RAM arrives through the memory core's own migration,
+     * but display_buffer is not part of VMState (it is recomputed from that
+     * RAM), and the destination's dirty log starts clean. Without an
+     * explicit full repaint here, a migrated-in guest whose refresh finds
+     * nothing newly dirty would show a stale or blank display_buffer until
+     * the guest next writes.
      */
     rad4_mark_all_dirty(s);
+    /* Reinstate the partial-mask overlay iff the loaded mask is partial. */
+    memory_region_set_enabled(&s->fb_overlay, s->mask != 0xffffffffu);
     s->cursor_shown_y_start = RAD4_MODE0_HEIGHT;
     s->cursor_shown_y_end = -1;
     rad4_ensure_surface(s);
@@ -1936,8 +2044,13 @@ static int rad4_post_load(void *opaque, int version_id)
 
 static const VMStateDescription vmstate_psitech_rad4 = {
     .name = TYPE_PSITECH_RAD4,
-    .version_id = 3,
-    .minimum_version_id = 3,
+    /*
+     * Version 4 drops the framebuffer from this description: it is now a RAM
+     * MemoryRegion the memory core migrates as its own block, not a byte
+     * buffer copied out here.
+     */
+    .version_id = 4,
+    .minimum_version_id = 4,
     .post_load = rad4_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_PCI_DEVICE(pci, PsitechRad4State),
@@ -1955,8 +2068,6 @@ static const VMStateDescription vmstate_psitech_rad4 = {
         VMSTATE_UINT32(rom_desc, PsitechRad4State),
         VMSTATE_UINT32(rom_mode, PsitechRad4State),
         VMSTATE_UINT32(rom_command, PsitechRad4State),
-        VMSTATE_BUFFER_POINTER_UNSAFE(framebuffer, PsitechRad4State, 1,
-                                      RAD4_FB_SIZE),
         VMSTATE_UINT32(mask, PsitechRad4State),
         VMSTATE_UINT8(rgb_index_low, PsitechRad4State),
         VMSTATE_UINT8(rgb_index_high, PsitechRad4State),
