@@ -8,7 +8,7 @@
  * answers the crosstalk port interface directly (see
  * hw/pci-host/sgi-bridge.c), with no board wrapper at all.
  *
- * The test board this header also declares lives in xtalk-test-board.c.
+ * The test board this header also declares lives in xio-test-board.c.
  *
  * Every concrete board shares two properties -- a module index and a
  * slot -- and one class method, build_widget(), that builds the board's

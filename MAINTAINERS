@@ -1540,7 +1540,7 @@ F: tests/qtest/sn1-*
 F: tests/qtest/sn-promdata-window-test.c
 F: tests/qtest/board-test-fixture.c
 F: tests/qtest/ioc3-release-fixture.c
-F: tests/qtest/xtalk-test-board.c
+F: tests/qtest/xio-test-board.c
 F: tests/unit/test-sgi-dma.c
 F: tests/unit/test-sgi-gl.c
 F: tests/unit/test-sgi-memory.c

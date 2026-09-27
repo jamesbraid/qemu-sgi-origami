@@ -364,7 +364,7 @@ sn1_xbridge_qtests = \
     ['sn1-xbridge-chip-test', 'sn1-xbridge-xbow-test'] : []) + \
   (config_all_devices.has_key('CONFIG_SGI_SN1') ?
     ['sn1-xbridge-test'] : [])
-if not config_all_devices.has_key('CONFIG_SGI_XTALK_TEST_TARGET')
+if not config_all_devices.has_key('CONFIG_SGI_XIO_TEST_TARGET')
   sn1_xbridge_qtests = []
 elif not config_all_devices.has_key('CONFIG_SGI_BRIDGE_DMA_TEST')
   sn1_xbridge_qtests = ['sn1-xbridge-xbow-test']
@@ -387,7 +387,7 @@ endif
 # omit it where that fixture is not present in a minimal device build.
 sn0_xbow_qtests = \
   (config_all_devices.has_key('CONFIG_SGI_SN0') ? ['sn0-xbow-test'] : [])
-if not config_all_devices.has_key('CONFIG_SGI_XTALK_TEST_TARGET')
+if not config_all_devices.has_key('CONFIG_SGI_XIO_TEST_TARGET')
   sn0_xbow_qtests = []
 endif
 
@@ -425,7 +425,7 @@ sgi_bridge_card_qtests = \
   (slirp.found() and config_all_devices.has_key('CONFIG_SGI_IOC3') ?
     ['sgi-ioc3-eth-test'] : [])
 if not config_all_devices.has_key('CONFIG_SGI_BRIDGE') or \
-   not config_all_devices.has_key('CONFIG_SGI_XTALK_TEST_TARGET')
+   not config_all_devices.has_key('CONFIG_SGI_XIO_TEST_TARGET')
   sgi_bridge_card_qtests = []
 endif
 

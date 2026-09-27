@@ -67,7 +67,7 @@ qtests_mips64 = (config_all_devices.has_key('CONFIG_SGI_SN0') ?
         meson = """sn1_xbridge_qtests = \\
   (config_all_devices.has_key('CONFIG_SGI_XBRIDGE') ?
     ['sn1-xbridge-chip-test'] : [])
-if not config_all_devices.has_key('CONFIG_SGI_XTALK_TEST_TARGET')
+if not config_all_devices.has_key('CONFIG_SGI_XIO_TEST_TARGET')
   sn1_xbridge_qtests = []
 elif not config_all_devices.has_key('CONFIG_SGI_BRIDGE_DMA_TEST')
   sn1_xbridge_qtests = ['sn1-xbridge-chip-test']

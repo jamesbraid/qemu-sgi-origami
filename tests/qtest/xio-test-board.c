@@ -1,11 +1,11 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * A crosstalk board that exercises sgi-xio-board without any real
- * board: its widget is the existing sgi-xtalk-test-target, so property
+ * board: its widget is the existing sgi-xio-test-target, so property
  * validation, re-parenting and the deferred-attach hook all have
  * something to attach that carries no product-specific wiring.
  *
- * The second type here, sgi-xtalk-board-fixture, is not a board. It is
+ * The second type here, sgi-xio-board-fixture, is not a board. It is
  * the smallest stand-in for what a machine builder does with a module's
  * Crossbow: it creates one unrealized, registers the machine-init-done
  * notifier that calls sgi_xio_board_attach_pending() and realizes the
@@ -29,25 +29,25 @@
 #include "system/system.h"
 
 /*
- * hw/misc/sgi-xtalk-test-target.c declares this type entirely inside its own
+ * hw/misc/sgi-xio-test-target.c declares this type entirely inside its own
  * source file; it has no header because nothing before this file has needed
  * to name it. Only the string is needed here, to create one by type name.
  */
-#define TYPE_SGI_XTALK_TEST_TARGET "sgi-xtalk-test-target"
+#define TYPE_SGI_XIO_TEST_TARGET "sgi-xio-test-target"
 
-#define TYPE_SGI_XTALK_TEST_BOARD "sgi-xtalk-test-board"
-OBJECT_DECLARE_SIMPLE_TYPE(SGIXtalkTestBoardState, SGI_XTALK_TEST_BOARD)
+#define TYPE_SGI_XIO_TEST_BOARD "sgi-xio-test-board"
+OBJECT_DECLARE_SIMPLE_TYPE(SGIXioTestBoardState, SGI_XIO_TEST_BOARD)
 
-struct SGIXtalkTestBoardState {
+struct SGIXioTestBoardState {
     SGIXioBoardState parent_obj;
 };
 
-static bool sgi_xtalk_test_board_build_widget(SGIXioBoardState *board,
-                                              Error **errp)
+static bool sgi_xio_test_board_build_widget(SGIXioBoardState *board,
+                                            Error **errp)
 {
-    DeviceState *target = qdev_new(TYPE_SGI_XTALK_TEST_TARGET);
+    DeviceState *target = qdev_new(TYPE_SGI_XIO_TEST_TARGET);
     /*
-     * sgi-xtalk-test-target names its RAM block from its own QOM child
+     * sgi-xio-test-target names its RAM block from its own QOM child
      * name, and RAM block names are unique machine-wide, not merely
      * per-parent -- two boards both naming their widget "widget" collide
      * the instant a second board exists. module+slot together are what
@@ -66,27 +66,27 @@ static bool sgi_xtalk_test_board_build_widget(SGIXioBoardState *board,
     return true;
 }
 
-static void sgi_xtalk_test_board_class_init(ObjectClass *oc, const void *data)
+static void sgi_xio_test_board_class_init(ObjectClass *oc, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
     SGIXioBoardClass *bc = SGI_XIO_BOARD_CLASS(oc);
 
-    dc->desc = "Crosstalk test board, widget sgi-xtalk-test-target";
+    dc->desc = "Crosstalk test board, widget sgi-xio-test-target";
     dc->user_creatable = true;
-    bc->build_widget = sgi_xtalk_test_board_build_widget;
+    bc->build_widget = sgi_xio_test_board_build_widget;
 }
 
-static const TypeInfo sgi_xtalk_test_board_type = {
-    .name = TYPE_SGI_XTALK_TEST_BOARD,
+static const TypeInfo sgi_xio_test_board_type = {
+    .name = TYPE_SGI_XIO_TEST_BOARD,
     .parent = TYPE_SGI_XIO_BOARD,
-    .instance_size = sizeof(SGIXtalkTestBoardState),
-    .class_init = sgi_xtalk_test_board_class_init,
+    .instance_size = sizeof(SGIXioTestBoardState),
+    .class_init = sgi_xio_test_board_class_init,
 };
 
-#define TYPE_SGI_XTALK_BOARD_FIXTURE "sgi-xtalk-board-fixture"
-OBJECT_DECLARE_SIMPLE_TYPE(SGIXtalkBoardFixtureState, SGI_XTALK_BOARD_FIXTURE)
+#define TYPE_SGI_XIO_BOARD_FIXTURE "sgi-xio-board-fixture"
+OBJECT_DECLARE_SIMPLE_TYPE(SGIXioBoardFixtureState, SGI_XIO_BOARD_FIXTURE)
 
-struct SGIXtalkBoardFixtureState {
+struct SGIXioBoardFixtureState {
     SysBusDevice parent_obj;
 
     uint32_t module;
@@ -105,16 +105,16 @@ struct SGIXtalkBoardFixtureState {
 
 /*
  * Wide enough to hold the test target's largest RAM (16 MiB, see
- * hw/misc/sgi-xtalk-test-target.c) inside one widget's window.
+ * hw/misc/sgi-xio-test-target.c) inside one widget's window.
  */
-#define SGI_XTALK_BOARD_FIXTURE_SPAN (32 * MiB)
+#define SGI_XIO_BOARD_FIXTURE_SPAN (32 * MiB)
 
 /*
  * Widget 8 holds the attached board; widget 9 probes it because a link cannot
  * route to itself. "alive" enables port memory regions regardless of whether
  * sgi_xio_board_attach_pending() attached a board at either port.
  */
-#define SGI_XTALK_BOARD_FIXTURE_HEALTH ((1u << 8) | (1u << 9))
+#define SGI_XIO_BOARD_FIXTURE_HEALTH ((1u << 8) | (1u << 9))
 
 /*
  * qdev_machine_creation_done() requires every QOM-root device to be realized
@@ -122,7 +122,7 @@ struct SGIXtalkBoardFixtureState {
  * fixture realize(); it remains a floating, singly referenced object visible
  * to leak checks until immediately before its own realization.
  */
-static void sgi_xtalk_board_fixture_own_crossbow(SGIXtalkBoardFixtureState *s)
+static void sgi_xio_board_fixture_own_crossbow(SGIXioBoardFixtureState *s)
 {
     if (!OBJECT(s->crossbow)->parent) {
         object_property_add_child(OBJECT(s), "crossbow", OBJECT(s->crossbow));
@@ -130,19 +130,19 @@ static void sgi_xtalk_board_fixture_own_crossbow(SGIXtalkBoardFixtureState *s)
     }
 }
 
-static void sgi_xtalk_board_fixture_attempt(SGIXtalkBoardFixtureState *s)
+static void sgi_xio_board_fixture_attempt(SGIXioBoardFixtureState *s)
 {
     Error *local_err = NULL;
     bool realized;
 
-    sgi_xtalk_board_fixture_own_crossbow(s);
+    sgi_xio_board_fixture_own_crossbow(s);
     realized = DEVICE(s->crossbow)->realized;
 
     g_free(s->error);
     s->error = NULL;
     if (sgi_xio_board_attach_pending(s->crossbow, s->module, &local_err) &&
         (realized || sysbus_realize(SYS_BUS_DEVICE(s->crossbow),
-                                    &local_err))) {
+        &local_err))) {
         s->attached = true;
         return;
     }
@@ -150,31 +150,31 @@ static void sgi_xtalk_board_fixture_attempt(SGIXtalkBoardFixtureState *s)
     error_free(local_err);
 }
 
-static void sgi_xtalk_board_fixture_machine_done(Notifier *notifier,
-                                                  void *data)
+static void sgi_xio_board_fixture_machine_done(Notifier *notifier,
+                                               void *data)
 {
-    SGIXtalkBoardFixtureState *s =
-        container_of(notifier, SGIXtalkBoardFixtureState, machine_done);
+    SGIXioBoardFixtureState *s =
+        container_of(notifier, SGIXioBoardFixtureState, machine_done);
 
-    sgi_xtalk_board_fixture_attempt(s);
+    sgi_xio_board_fixture_attempt(s);
 }
 
-static bool sgi_xtalk_board_fixture_get_attached(Object *obj, Error **errp)
+static bool sgi_xio_board_fixture_get_attached(Object *obj, Error **errp)
 {
-    return SGI_XTALK_BOARD_FIXTURE(obj)->attached;
+    return SGI_XIO_BOARD_FIXTURE(obj)->attached;
 }
 
-static char *sgi_xtalk_board_fixture_get_error(Object *obj, Error **errp)
+static char *sgi_xio_board_fixture_get_error(Object *obj, Error **errp)
 {
-    SGIXtalkBoardFixtureState *s = SGI_XTALK_BOARD_FIXTURE(obj);
+    SGIXioBoardFixtureState *s = SGI_XIO_BOARD_FIXTURE(obj);
 
     return g_strdup(s->error ? s->error : "");
 }
 
-static void sgi_xtalk_board_fixture_set_retry(Object *obj, bool value,
-                                              Error **errp)
+static void sgi_xio_board_fixture_set_retry(Object *obj, bool value,
+                                            Error **errp)
 {
-    sgi_xtalk_board_fixture_attempt(SGI_XTALK_BOARD_FIXTURE(obj));
+    sgi_xio_board_fixture_attempt(SGI_XIO_BOARD_FIXTURE(obj));
 }
 
 /*
@@ -183,13 +183,13 @@ static void sgi_xtalk_board_fixture_set_retry(Object *obj, bool value,
  * hotplug that would otherwise reach it. Use with auto-attach=false and
  * "retry".
  */
-static void sgi_xtalk_board_fixture_set_realize_now(Object *obj, bool value,
-                                                     Error **errp)
+static void sgi_xio_board_fixture_set_realize_now(Object *obj, bool value,
+                                                  Error **errp)
 {
-    SGIXtalkBoardFixtureState *s = SGI_XTALK_BOARD_FIXTURE(obj);
+    SGIXioBoardFixtureState *s = SGI_XIO_BOARD_FIXTURE(obj);
     Error *local_err = NULL;
 
-    sgi_xtalk_board_fixture_own_crossbow(s);
+    sgi_xio_board_fixture_own_crossbow(s);
     g_free(s->error);
     s->error = NULL;
     if (sysbus_realize(SYS_BUS_DEVICE(s->crossbow), &local_err)) {
@@ -200,35 +200,35 @@ static void sgi_xtalk_board_fixture_set_realize_now(Object *obj, bool value,
     error_free(local_err);
 }
 
-static void sgi_xtalk_board_fixture_instance_init(Object *obj)
+static void sgi_xio_board_fixture_instance_init(Object *obj)
 {
     object_property_add_bool(obj, "attached",
-                             sgi_xtalk_board_fixture_get_attached, NULL);
+                             sgi_xio_board_fixture_get_attached, NULL);
     object_property_add_str(obj, "error",
-                            sgi_xtalk_board_fixture_get_error, NULL);
+                            sgi_xio_board_fixture_get_error, NULL);
     object_property_add_bool(obj, "retry", NULL,
-                             sgi_xtalk_board_fixture_set_retry);
+                             sgi_xio_board_fixture_set_retry);
     object_property_add_bool(obj, "realize-now", NULL,
-                             sgi_xtalk_board_fixture_set_realize_now);
+                             sgi_xio_board_fixture_set_realize_now);
 }
 
-static void sgi_xtalk_board_fixture_realize(DeviceState *dev, Error **errp)
+static void sgi_xio_board_fixture_realize(DeviceState *dev, Error **errp)
 {
-    SGIXtalkBoardFixtureState *s = SGI_XTALK_BOARD_FIXTURE(dev);
+    SGIXioBoardFixtureState *s = SGI_XIO_BOARD_FIXTURE(dev);
     DeviceState *crossbow = qdev_new(TYPE_SGI_XBOW);
 
     /*
      * Built but deliberately not yet a QOM child of anything: see
-     * sgi_xtalk_board_fixture_own_crossbow(), which parents it right before
+     * sgi_xio_board_fixture_own_crossbow(), which parents it right before
      * it is actually realized, never here.
      */
     s->crossbow = SGI_XBOW(crossbow);
 
-    qdev_prop_set_uint64(crossbow, "span", SGI_XTALK_BOARD_FIXTURE_SPAN);
+    qdev_prop_set_uint64(crossbow, "span", SGI_XIO_BOARD_FIXTURE_SPAN);
     qdev_prop_set_uint16(crossbow, "links-present",
-                         SGI_XTALK_BOARD_FIXTURE_HEALTH);
+                         SGI_XIO_BOARD_FIXTURE_HEALTH);
     qdev_prop_set_uint16(crossbow, "startup-links-alive",
-                         SGI_XTALK_BOARD_FIXTURE_HEALTH);
+                         SGI_XIO_BOARD_FIXTURE_HEALTH);
 
     /*
      * Defer Crossbow realization to machine-init-done attach_pending, as a
@@ -237,14 +237,14 @@ static void sgi_xtalk_board_fixture_realize(DeviceState *dev, Error **errp)
      * Crossbow with all devices on the initial command line.
      */
     if (s->auto_attach) {
-        s->machine_done.notify = sgi_xtalk_board_fixture_machine_done;
+        s->machine_done.notify = sgi_xio_board_fixture_machine_done;
         qemu_add_machine_init_done_notifier(&s->machine_done);
     }
 }
 
-static const Property sgi_xtalk_board_fixture_properties[] = {
-    DEFINE_PROP_UINT32("module", SGIXtalkBoardFixtureState, module, 0),
-    DEFINE_PROP_BOOL("auto-attach", SGIXtalkBoardFixtureState, auto_attach,
+static const Property sgi_xio_board_fixture_properties[] = {
+    DEFINE_PROP_UINT32("module", SGIXioBoardFixtureState, module, 0),
+    DEFINE_PROP_BOOL("auto-attach", SGIXioBoardFixtureState, auto_attach,
                      true),
 };
 
@@ -253,8 +253,8 @@ static const Property sgi_xtalk_board_fixture_properties[] = {
  * sgi-xio-board's own empty description. The embedded Crossbow carries its
  * own.
  */
-static const VMStateDescription vmstate_sgi_xtalk_board_fixture = {
-    .name = TYPE_SGI_XTALK_BOARD_FIXTURE,
+static const VMStateDescription vmstate_sgi_xio_board_fixture = {
+    .name = TYPE_SGI_XIO_BOARD_FIXTURE,
     .version_id = 1,
     .minimum_version_id = 1,
     .fields = (const VMStateField[]) {
@@ -262,30 +262,30 @@ static const VMStateDescription vmstate_sgi_xtalk_board_fixture = {
     },
 };
 
-static void sgi_xtalk_board_fixture_class_init(ObjectClass *oc,
-                                               const void *data)
+static void sgi_xio_board_fixture_class_init(ObjectClass *oc,
+                                             const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
 
     dc->desc = "Crosstalk board deferred-attach test fixture";
-    dc->realize = sgi_xtalk_board_fixture_realize;
-    dc->vmsd = &vmstate_sgi_xtalk_board_fixture;
+    dc->realize = sgi_xio_board_fixture_realize;
+    dc->vmsd = &vmstate_sgi_xio_board_fixture;
     dc->user_creatable = true;
-    device_class_set_props(dc, sgi_xtalk_board_fixture_properties);
+    device_class_set_props(dc, sgi_xio_board_fixture_properties);
 }
 
-static const TypeInfo sgi_xtalk_board_fixture_type = {
-    .name = TYPE_SGI_XTALK_BOARD_FIXTURE,
+static const TypeInfo sgi_xio_board_fixture_type = {
+    .name = TYPE_SGI_XIO_BOARD_FIXTURE,
     .parent = TYPE_SYS_BUS_DEVICE,
-    .instance_size = sizeof(SGIXtalkBoardFixtureState),
-    .instance_init = sgi_xtalk_board_fixture_instance_init,
-    .class_init = sgi_xtalk_board_fixture_class_init,
+    .instance_size = sizeof(SGIXioBoardFixtureState),
+    .instance_init = sgi_xio_board_fixture_instance_init,
+    .class_init = sgi_xio_board_fixture_class_init,
 };
 
-static void sgi_xtalk_test_board_register_types(void)
+static void sgi_xio_test_board_register_types(void)
 {
-    type_register_static(&sgi_xtalk_test_board_type);
-    type_register_static(&sgi_xtalk_board_fixture_type);
+    type_register_static(&sgi_xio_test_board_type);
+    type_register_static(&sgi_xio_board_fixture_type);
 }
 
-type_init(sgi_xtalk_test_board_register_types)
+type_init(sgi_xio_test_board_register_types)

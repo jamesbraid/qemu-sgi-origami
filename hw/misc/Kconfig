@@ -350,7 +350,7 @@ config SGI_L1
     bool
     default y if SGI_DEVICES
 
-config SGI_XTALK_TEST_TARGET
+config SGI_XIO_TEST_TARGET
     bool
     default y if SGI_DEVICES
 

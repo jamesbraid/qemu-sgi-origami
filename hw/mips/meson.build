@@ -42,7 +42,7 @@ mips_ss.add(when: 'CONFIG_SGI_NET_CABLE', if_true: files('sgi/net-cable.c'))
 mips_ss.add(when: 'CONFIG_SGI_XIO_BOARD', if_true: files('sgi/xio-board.c'))
 # Likewise for the XIO board fixture: see the comment above.
 mips_ss.add(when: 'CONFIG_SGI_XIO_BOARD_TEST',
-            if_true: files('../../tests/qtest/xtalk-test-board.c'))
+            if_true: files('../../tests/qtest/xio-test-board.c'))
 # sgi-baseio: the base I/O functional unit as one device with a preset per
 # shipped board design. Every product that carries base I/O selects this, whether or
 # not it also builds an XIO card: the IP29 and IO-8 presets have no card of
