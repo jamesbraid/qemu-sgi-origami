@@ -180,9 +180,10 @@ struct SGIMachineState {
 
     /*
      * One sgi-xio-board per Crossbow-attached io_boards[] entry, built
-     * before its own Crossbow. A direct-attach entry (Origin 200's
-     * onboard I/O, built by sn0_node_build_baseio() instead) leaves its
-     * own slot NULL: there is no board wrapper for it any more.
+     * before its own Crossbow. An entry with no board wrapper leaves its
+     * own slot NULL: a direct-attach entry (Origin 200's onboard I/O,
+     * built by sn0_node_build_baseio() instead), and an MGRAS entry,
+     * whose sgi-mgras is a plain sysbus device.
      */
     SGIXioBoardState **io_boards;
 
