@@ -23,7 +23,7 @@ struct SGIHeartXtalkTest {
     MemoryRegion packet;
     MemoryRegion missing_packet;
     MemoryRegion ram_packet;
-    qemu_irq processor[2];
+    qemu_irq processor[3];
 };
 
 static void heart_test_processor(void *opaque, int n, int level)
@@ -45,8 +45,8 @@ static void heart_test_realize(DeviceState *dev, Error **errp)
     if (!sysbus_realize(SYS_BUS_DEVICE(&s->heart), errp)) {
         return;
     }
-    qdev_init_gpio_in_named(dev, heart_test_processor, "processor-in", 2);
-    for (unsigned i = 0; i < 2; i++) {
+    qdev_init_gpio_in_named(dev, heart_test_processor, "processor-in", 3);
+    for (unsigned i = 0; i < 3; i++) {
         qdev_connect_gpio_out_named(DEVICE(&s->heart), "processor", i,
             qdev_get_gpio_in_named(dev, "processor-in", i));
     }
@@ -101,7 +101,7 @@ static void heart_test_init(Object *obj)
 
     object_initialize_child(obj, "heart", &s->heart, TYPE_SGI_HEART);
     object_initialize_child(obj, "xbow", &s->xbow, TYPE_SGI_XBOW);
-    qdev_init_gpio_out_named(DEVICE(obj), s->processor, "processor", 2);
+    qdev_init_gpio_out_named(DEVICE(obj), s->processor, "processor", 3);
 }
 
 static void heart_test_class_init(ObjectClass *klass, const void *data)
