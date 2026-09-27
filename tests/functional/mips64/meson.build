@@ -121,6 +121,13 @@ test_mips64_timeouts = {
   # the xdm greeter's own paint -- see those constants' own comments in
   # test_mgras_greeter.py for the measurements this budget is based on.
   'mgras_greeter' : 1560,
+  # The same boot as mgras_greeter carried through a graphical login:
+  # test_mgras_desktop.py's SERIAL_TIMEOUT_SECONDS (1320, the boot plus a
+  # root login and passwd on the serial console), GREETER_SETTLE_SECONDS
+  # (300) for the greeter's colours and DESKTOP_SETTLE_SECONDS (600) for
+  # the desktop's, 2220 in sequence; 2400 leaves the rest for launch,
+  # typing and shutdown.
+  'mgras_desktop' : 2400,
   # A full multiuser boot of the installed IRIX 6.5.30 disk on the real
   # PROM, then the eg (Alteon Tigon) adapter brought up and a
   # byte-checked 1 MiB TCP transfer, bulk TCP and UDP throughput runs
@@ -247,6 +254,7 @@ tests_mips64_system_thorough = [
   'irix_diag_origin300',
   'irix_installed_boot',
   'mgras_greeter',
+  'mgras_desktop',
   'irix_eg',
   'irix_tg',
   'irix_tg_perf',
