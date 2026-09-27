@@ -2759,6 +2759,19 @@ static void test_retrace_interrupt_needs_vc3_enable(void)
 
 
 /*
+ * The general line as the IRIX 6.5.30 kernel wires it: MgrasInitialize
+ * enables 0x3008a200, and mgras_attach puts the general vector in bits
+ * 15:8 of 0x011070. The Hub's pending bit for that vector shows the line.
+ */
+static void mgras_general_to_hub(unsigned int general_vector)
+{
+    qtest_writel(qts, REG_HQ_VECTOR_DEST_UPPER, KERNEL_HQ_DEST_UPPER);
+    qtest_writel(qts, REG_HQ_VECTOR_DEST_LOWER, KERNEL_HQ_DEST_LOWER);
+    qtest_writel(qts, REG_HQ_VECTORS, general_vector << 8);
+    qtest_writel(qts, REG_IRQ_MASK, KERNEL_IRQ_MASK);
+}
+
+/*
  * MgrasInitialize writes 0x3008a200 to 0x011040, MgrasSchedSwapBuf adds 0x400
  * with a plain store, and MgrasGeneralInterrupt and the context switch's
  * tail remove bits through 0x011048 (mgras-hq4.md, "Interrupt block
@@ -2777,6 +2790,87 @@ static void test_irq_enable_set_and_clear_ports(void)
     g_assert_cmphex(qtest_readl(qts, REG_IRQ_MASK), ==, KERNEL_IRQ_MASK);
     qtest_writel(qts, REG_IRQ_ENABLE_CLEAR, 0xffffffff);
     g_assert_cmphex(qtest_readl(qts, REG_IRQ_MASK), ==, 0);
+}
+
+/*
+ * MgrasSchedSwapBuf enables source 10 and writes the one word 0x3700; the
+ * handler disables the source at 0x011048 and acknowledges 0x401
+ * (mgras-hq4.md, "Swap scheduling"). That the word raises bit 10 is
+ * Inferred there; the model raises it on consuming the word.
+ */
+static void test_swap_command_raises_interrupt_10(void)
+{
+    const unsigned int general_vector = 57;
+    const uint64_t bit = UINT64_C(1) << general_vector;
+
+    mgras_reset();
+    mgras_general_to_hub(general_vector);
+    mgras_enter_context(qts);
+    g_assert_cmphex(mgras_hub_read(HUB_PI_INT_PEND0) & bit, ==, 0);
+
+    qtest_writel(qts, REG_IRQ_MASK, MGRAS_PENDING_SWAP);
+    g_assert_cmphex(qtest_readl(qts, REG_PENDING) & MGRAS_PENDING_SWAP, ==, 0);
+    qtest_writel(qts, REG_CONTEXT_COMMAND, MGRAS_SWAP_TOKEN);
+    g_assert_cmphex(qtest_readl(qts, REG_PENDING) & MGRAS_PENDING_SWAP, ==,
+                    MGRAS_PENDING_SWAP);
+    g_assert_cmphex(mgras_hub_read(HUB_PI_INT_PEND0) & bit, ==, bit);
+
+    /* MgrasGeneralInterrupt serves the source it finds enabled and pending. */
+    g_assert_cmphex(qtest_readl(qts, REG_PENDING) &
+                    qtest_readl(qts, REG_IRQ_MASK) & MGRAS_PENDING_SWAP, ==,
+                    MGRAS_PENDING_SWAP);
+    qtest_writel(qts, REG_IRQ_ENABLE_CLEAR, MGRAS_PENDING_SWAP);
+    qtest_writel(qts, REG_PENDING_ACK, MGRAS_PENDING_SWAP | 0x1);
+    g_assert_cmphex(qtest_readl(qts, REG_PENDING) & MGRAS_PENDING_SWAP, ==, 0);
+    g_assert_cmphex(mgras_hub_read(HUB_PI_INT_PEND0) & bit, ==, 0);
+}
+
+/* A swap word with source 10 disabled latches the source but stays quiet. */
+static void test_swap_command_needs_enable(void)
+{
+    const unsigned int general_vector = 57;
+    const uint64_t bit = UINT64_C(1) << general_vector;
+
+    mgras_reset();
+    mgras_general_to_hub(general_vector);
+    mgras_enter_context(qts);
+
+    qtest_writel(qts, REG_CONTEXT_COMMAND, MGRAS_SWAP_TOKEN);
+    g_assert_cmphex(qtest_readl(qts, REG_PENDING) & MGRAS_PENDING_SWAP, ==,
+                    MGRAS_PENDING_SWAP);
+    g_assert_cmphex(mgras_hub_read(HUB_PI_INT_PEND0) & bit, ==, 0);
+}
+
+/*
+ * The kernel writes 0x400 to 0x011040 with a plain store before a swap, and
+ * nothing in MgrasGeneralInterrupt, MgrasSchedSwapBufFinish or the next
+ * MgrasCtxsw writes 0x011040 again before that switch sleeps on source 19.
+ * If the store replaced the enable word, the source-19 wake would never
+ * arrive.
+ * Inferred: 0x011040 sets enables and 0x011048 clears them.
+ */
+static void test_swap_keeps_context_switch_enable(void)
+{
+    const unsigned int general_vector = 57;
+    const uint64_t bit = UINT64_C(1) << general_vector;
+
+    mgras_reset();
+    mgras_general_to_hub(general_vector);
+    mgras_enter_context(qts);
+
+    qtest_writel(qts, REG_IRQ_MASK, MGRAS_PENDING_SWAP);
+    g_assert_cmphex(qtest_readl(qts, REG_IRQ_MASK), ==,
+                    KERNEL_IRQ_MASK | MGRAS_PENDING_SWAP);
+    qtest_writel(qts, REG_CONTEXT_COMMAND, MGRAS_SWAP_TOKEN);
+    qtest_writel(qts, REG_IRQ_ENABLE_CLEAR, MGRAS_PENDING_SWAP);
+    qtest_writel(qts, REG_PENDING_ACK, MGRAS_PENDING_SWAP | 0x1);
+    g_assert_cmphex(qtest_readl(qts, REG_IRQ_MASK), ==, KERNEL_IRQ_MASK);
+
+    /* The line is low, so only the selection's source 19 can raise it. */
+    g_assert_cmphex(mgras_hub_read(HUB_PI_INT_PEND0) & bit, ==, 0);
+    qtest_writel(qts, REG_PREFIX, 0);
+    qtest_writel(qts, REG_ENTRY, MGRAS_ENTRY_WORD);
+    g_assert_cmphex(mgras_hub_read(HUB_PI_INT_PEND0) & bit, ==, bit);
 }
 
 /* Its own machine for the same reason as the general-vector case. */
@@ -6642,6 +6736,12 @@ int main(int argc, char **argv)
                    test_retrace_interrupt_needs_vc3_enable);
     qtest_add_func("sn0/origin2000/mgras/irq-enable-set-and-clear-ports",
                    test_irq_enable_set_and_clear_ports);
+    qtest_add_func("sn0/origin2000/mgras/swap-command-raises-interrupt-10",
+                   test_swap_command_raises_interrupt_10);
+    qtest_add_func("sn0/origin2000/mgras/swap-command-needs-enable",
+                   test_swap_command_needs_enable);
+    qtest_add_func("sn0/origin2000/mgras/swap-keeps-context-switch-enable",
+                   test_swap_keeps_context_switch_enable);
     qtest_add_func("sn0/origin2000/mgras/widget-error-interrupt-vector",
                    test_widget_error_interrupt_vector);
     qtest_add_func("sn0/origin2000/mgras/fifo-occupancy-always-drained",
