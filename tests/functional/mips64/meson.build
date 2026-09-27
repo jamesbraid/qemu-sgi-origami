@@ -270,6 +270,7 @@ tests_mips64_unit = [
   'lib_input',
   'lib_irix_diag',
   'lib_matrix',
+  'lib_mgras_regions',
   'lib_mips',
   'lib_net',
   'lib_prom',
