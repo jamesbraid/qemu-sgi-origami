@@ -20,11 +20,15 @@
  * ---- The external-flash port ----
  *
  * The IP27 PROM loads its BASEIO PROM from the port's base chip select on a
- * GIGAchannel (window offset 0, widget offset 0xc0_0000). Which flash part
- * SGI fitted there, its size and its image are not established, so none is
- * fitted: the base chip select bus-errors, and the PROM retries with its
- * own internal copy and says so on the console, which a real cabinet does
- * not.
+ * GIGAchannel (window offset 0, widget offset 0xc0_0000), through the same
+ * identify and copy sequence it runs at an Origin 2000 BaseIO card's
+ * port. The image is established: a real cabinet's BASEIO PROM banner is
+ * the build shipped as the BaseIO's flash image. Which part SGI fitted is
+ * not, so the model fits the BaseIO card's part (hw/mips/sgi/
+ * baseio-flash.c), an identity the loader accepts. "flash-drive" names its
+ * image. With no drive named nothing is fitted: the base chip select
+ * bus-errors, and the PROM retries with its own internal copy and says so
+ * on the console, as it would for a cabinet whose part is missing.
  *
  * The port's other chip select (widget offset 0xe0_0000) carries the
  * cabinet's system-controller status, a 16-bit word both the BASEIO PROM
@@ -43,6 +47,7 @@
  */
 
 #include "qemu/osdep.h"
+#include "hw/mips/sgi/baseio-flash.h"
 #include "hw/mips/sgi/xio-board.h"
 #include "hw/mips/sgi/xtalk-link.h"
 #include "hw/core/qdev-properties.h"
@@ -81,9 +86,11 @@ struct SGIGigachannelState {
     uint32_t fabric_widget_shift;
     uint64_t onewire_serial;
     char *pci_bus_name;
+    char *flash_drive_id;
     uint16_t status;
 
     SGIBridgeState *bridge;
+    PFlashCFI02 *flash;
     MemoryRegion status_word;
 };
 
@@ -142,6 +149,20 @@ static bool gigachannel_build_widget(SGIXioBoardState *board, Error **errp)
     if (s->pci_bus_name) {
         qdev_prop_set_string(bridge, "pci-bus-name", s->pci_bus_name);
     }
+    if (s->flash_drive_id) {
+        g_autofree char *name =
+            g_strdup_printf("sgi-gigachannel.module%u.flash", board->module);
+
+        s->flash = sgi_baseio_flash_new(OBJECT(s), name, s->flash_drive_id,
+                                        errp);
+        if (!s->flash) {
+            return false;
+        }
+        object_property_set_link(
+            OBJECT(bridge), "flash",
+            OBJECT(sysbus_mmio_get_region(SYS_BUS_DEVICE(s->flash), 0)),
+            &error_abort);
+    }
     object_property_set_link(OBJECT(bridge), "flash-select1",
                              OBJECT(&s->status_word), &error_abort);
     object_property_set_link(OBJECT(bridge), "fabric", OBJECT(s->fabric),
@@ -173,13 +194,14 @@ static const Property gigachannel_properties[] = {
     DEFINE_PROP_UINT64("onewire-serial", SGIGigachannelState, onewire_serial,
                        GIGACHANNEL_SERIAL_PLACEHOLDER),
     DEFINE_PROP_STRING("pci-bus-name", SGIGigachannelState, pci_bus_name),
+    DEFINE_PROP_STRING("flash-drive", SGIGigachannelState, flash_drive_id),
     DEFINE_PROP_UINT16("system-controller-status", SGIGigachannelState,
                        status, 0),
 };
 
 /*
- * No state of its own: the status word is a construction-time property
- * and the internal Bridge carries its own.
+ * No state of its own: the status word is a construction-time property,
+ * and the internal Bridge and the flash part carry their own.
  */
 static const VMStateDescription vmstate_gigachannel = {
     .name = TYPE_SGI_GIGACHANNEL,

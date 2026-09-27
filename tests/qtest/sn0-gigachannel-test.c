@@ -12,8 +12,9 @@
  * link 8; the Hub is on link A, and links B to F are empty XIO positions.
  * In loopback there is no Crossbow and the IP29 Bridge answers the plain
  * direct path, widget 0 included. The cabinet Bridge's external-flash port
- * fits no BASEIO flash part, which is not established, and carries the
- * cabinet's system-controller status word on its second chip select.
+ * carries the cabinet's system-controller status word on its second chip
+ * select, and on its base chip select the BASEIO PROM flash part when a
+ * drive named sgi-gigachannel-flash0 supplies its image; with none, nothing.
  */
 
 #include "qemu/osdep.h"
@@ -52,8 +53,9 @@
 #define CABINET_BUS "pci.gigachannel1"
 
 /*
- * The cabinet Bridge's external-flash window: no part on the base chip
- * select, the cabinet's system-controller status word on the other.
+ * The cabinet Bridge's external-flash window: the BASEIO PROM part, when
+ * one is fitted, on the base chip select, the cabinet's system-controller
+ * status word on the other.
  */
 #define FLASH_WINDOW 0xc00000
 #define FLASH_SELECT_SIZE 0x200000
@@ -61,6 +63,17 @@
 #define STATUS_RPS_FITTED 0x0040
 #define BRIDGE_CONTROL 0x0020
 #define BRIDGE_CONTROL_FLASH_WRITE_EN (1u << 31)
+
+/*
+ * The fitted part: 1 MB, answering the AMD autoselect sequence the IP27
+ * PROM's loader writes as 16-bit stores at word addresses 0x5555 and
+ * 0x2aaa with manufacturer 0x01 and device 0x22da.
+ */
+#define FLASH_PART_SIZE 0x100000
+#define FLASH_UNLOCK0 (2 * 0x5555)
+#define FLASH_UNLOCK1 (2 * 0x2aaa)
+#define FLASH_ID_MANUFACTURER 0x0001
+#define FLASH_ID_DEVICE 0x22da
 
 #define GIGACHANNEL "-M origin200,topology=origin200-gigachannel"
 #define LOOPBACK "-M origin200,topology=origin200-gigachannel-loopback"
@@ -273,10 +286,10 @@ static void test_status_word_write_dropped(void)
 }
 
 /*
- * No flash part is fitted on the base chip select, where the IP27 PROM
- * looks for its BASEIO PROM, and the IP29 Bridge now on link 9 carries no
- * status word: both fail the way an unpopulated widget address does, which
- * a qtest read shows only as the Bridge's own log line.
+ * Without a drive no flash part is fitted on the base chip select, where
+ * the IP27 PROM looks for its BASEIO PROM, and the IP29 Bridge now on link
+ * 9 carries no status word: both fail the way an unpopulated widget
+ * address does, which a qtest read shows only as the Bridge's own log line.
  */
 static void test_flash_selects_elsewhere_empty(void)
 {
@@ -297,6 +310,79 @@ static void test_flash_selects_elsewhere_empty(void)
     g_assert_nonnull(strstr(contents, "sgi-bridge: flash read at window "
                             "offset 0x200000 with no part there"));
     unlink(log);
+    rmdir(dir);
+}
+
+/* Every image byte a function of its offset, so each lane is distinct. */
+static uint8_t flash_pattern(uint32_t offset)
+{
+    return (uint8_t)(offset * 7 + (offset >> 8) * 13 + 0x5a);
+}
+
+static uint32_t flash_pattern_word(uint32_t offset)
+{
+    return (uint32_t)flash_pattern(offset) << 24 |
+           (uint32_t)flash_pattern(offset + 1) << 16 |
+           (uint32_t)flash_pattern(offset + 2) << 8 |
+           flash_pattern(offset + 3);
+}
+
+/*
+ * With a drive named sgi-gigachannel-flash0 the cabinet Bridge's base chip
+ * select answers the part the IP27 PROM's loader accepts, at the widget 8
+ * window it reads on a GIGAchannel: the image's bytes, big-endian, then
+ * with the flash write enable set, the autoselect identity. The status
+ * word on the other chip select answers as before.
+ */
+static void test_flash_part_fitted(void)
+{
+    uint64_t window = CABINET_WIDGET * XTALK_WIDGET_SIZE + FLASH_WINDOW;
+    uint64_t control = CABINET_WIDGET * XTALK_WIDGET_SIZE + BRIDGE_CONTROL +
+                       XTALK_REG_DATA;
+    g_autofree char *dir = g_dir_make_tmp("sn0-gigachannel-XXXXXX", NULL);
+    g_autofree char *image = g_build_filename(dir, "flash.raw", NULL);
+    g_autofree uint8_t *bytes = g_malloc(FLASH_PART_SIZE);
+    g_autofree char *extra = NULL;
+    GError *error = NULL;
+    uint8_t word[4];
+    uint32_t offset;
+    QTestState *qts;
+
+    for (offset = 0; offset < FLASH_PART_SIZE; offset++) {
+        bytes[offset] = flash_pattern(offset);
+    }
+    g_assert_true(g_file_set_contents(image, (const char *)bytes,
+                                      FLASH_PART_SIZE, &error));
+    g_assert_no_error(error);
+    extra = g_strdup_printf("-drive if=none,id=sgi-gigachannel-flash0,"
+                            "file=%s,format=raw -global sgi-gigachannel."
+                            "system-controller-status=0x40", image);
+    qts = start(GIGACHANNEL, extra);
+
+    g_assert_cmphex(xtalk_read(qts, window), ==, flash_pattern_word(0));
+    g_assert_cmphex(xtalk_read(qts, window + 0x12344), ==,
+                    flash_pattern_word(0x12344));
+    g_assert_cmphex(xtalk_read(qts, window + FLASH_PART_SIZE - 4), ==,
+                    flash_pattern_word(FLASH_PART_SIZE - 4));
+
+    g_assert_true(qtest_memread_cpu(qts, 0, XTALK_BASE + control,
+                                    word, sizeof(word)));
+    stl_be_p(word, ldl_be_p(word) | BRIDGE_CONTROL_FLASH_WRITE_EN);
+    g_assert_true(qtest_memwrite_cpu(qts, 0, XTALK_BASE + control,
+                                     word, sizeof(word)));
+    xtalk_write16(qts, window + FLASH_UNLOCK0, 0xaa);
+    xtalk_write16(qts, window + FLASH_UNLOCK1, 0x55);
+    xtalk_write16(qts, window + FLASH_UNLOCK0, 0x90);
+    g_assert_cmphex(xtalk_read16(qts, window), ==, FLASH_ID_MANUFACTURER);
+    g_assert_cmphex(xtalk_read16(qts, window + 2), ==, FLASH_ID_DEVICE);
+    xtalk_write16(qts, window, 0xf0);
+    g_assert_cmphex(xtalk_read(qts, window), ==, flash_pattern_word(0));
+
+    g_assert_cmphex(xtalk_read16(qts, CABINET_WIDGET * XTALK_WIDGET_SIZE +
+                                 STATUS_WORD), ==, STATUS_RPS_FITTED);
+    qtest_quit(qts);
+
+    unlink(image);
     rmdir(dir);
 }
 
@@ -357,6 +443,8 @@ int main(int argc, char **argv)
                    test_status_word_write_dropped);
     qtest_add_func("sn0/gigachannel/flash-selects-elsewhere-empty",
                    test_flash_selects_elsewhere_empty);
+    qtest_add_func("sn0/gigachannel/flash-part-fitted",
+                   test_flash_part_fitted);
     qtest_add_func("sn0/gigachannel/loopback-takes-the-plain-path",
                    test_loopback_takes_the_plain_path);
     qtest_add_func("sn0/gigachannel/card-enumerates-in-each-cabinet-slot",

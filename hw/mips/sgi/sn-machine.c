@@ -1296,17 +1296,37 @@ static bool sgi_machine_instantiate_pci_carrier(
 /*
  * The GIGAchannel cabinet's own I/O on Crossbow link 8, software position
  * io7: an sgi-gigachannel (board-gigachannel.c), which owns the cabinet
- * Bridge, its board record and the cabinet's status word.
+ * Bridge, its board record, the cabinet's status word and its BASEIO PROM
+ * flash.
  */
 static bool sgi_machine_instantiate_gigachannel(
-    SGIMachineState *s, const SGIModelIoBoard *record,
-    unsigned int board_index, const SGIModelXtalkAttachment *attachment,
-    Error **errp)
+    SGIMachineState *s, const SGIModelTopology *t,
+    const SGIModelIoBoard *record, unsigned int board_index,
+    const SGIModelXtalkAttachment *attachment, Error **errp)
 {
     DeviceState *dev = qdev_new(TYPE_SGI_GIGACHANNEL);
     g_autofree char *name = g_strdup_printf("io-board%u", board_index);
     g_autofree char *bus_name =
         g_strdup_printf("pci.gigachannel%u", board_index);
+    const SGIModelIoBoardList *entry;
+    unsigned int cabinet = 0;
+    g_autofree char *flash_id = NULL;
+    BlockBackend *flash_blk;
+
+    /*
+     * The cabinet's BASEIO PROM flash, by name only: -drive if=none,
+     * id=sgi-gigachannel-flash<N>, N counting cabinets rather than
+     * io_boards entries, so the first cabinet's is 0 whatever else the
+     * topology fits ahead of it.
+     */
+    for (entry = t->io_boards; entry && entry->value != record;
+         entry = entry->next) {
+        if (entry->value->preset == SGI_MODEL_IO_BOARD_PRESET_GIGACHANNEL) {
+            cabinet++;
+        }
+    }
+    flash_id = g_strdup_printf("sgi-gigachannel-flash%u", cabinet);
+    flash_blk = blk_by_name(flash_id);
 
     object_property_add_child(OBJECT(s), name, OBJECT(dev));
     object_unref(OBJECT(dev));
@@ -1315,6 +1335,9 @@ static bool sgi_machine_instantiate_gigachannel(
     qdev_prop_set_uint32(dev, "slot", attachment->widget);
     qdev_prop_set_uint64(dev, "onewire-serial", record->serial);
     qdev_prop_set_string(dev, "pci-bus-name", bus_name);
+    if (flash_blk) {
+        qdev_prop_set_string(dev, "flash-drive", blk_name(flash_blk));
+    }
     return sgi_machine_attach_xio_card(s, dev, board_index, attachment, errp);
 }
 
@@ -1592,7 +1615,7 @@ static bool sgi_machine_instantiate_io_board(
         return sgi_machine_instantiate_pci_carrier(s, record, board_index,
                                                    attachment, errp);
     case SGI_MODEL_IO_BOARD_PRESET_GIGACHANNEL:
-        return sgi_machine_instantiate_gigachannel(s, record, board_index,
+        return sgi_machine_instantiate_gigachannel(s, t, record, board_index,
                                                    attachment, errp);
     case SGI_MODEL_IO_BOARD_PRESET_MENET:
         return sgi_machine_instantiate_menet(s, record, board_index,
