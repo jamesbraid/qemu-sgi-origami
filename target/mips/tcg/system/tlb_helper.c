@@ -666,6 +666,9 @@ static int r4k_map_address(CPUMIPSState *env, hwaddr *physical, int *prot,
                              MIPS_UNCACHED_WINDOW_SHIFT;
                     attrs->mips_uncached = 1;
                 }
+                if (env->cfg.uncached_attribute) {
+                    attrs->mips_cca = cca;
+                }
 
                 *physical = window | tlb->PFN[n] | (address & (mask >> 1));
                 *prot = PAGE_READ;
