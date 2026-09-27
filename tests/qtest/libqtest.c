@@ -1437,6 +1437,20 @@ MemTxResult qtest_readw_tx(QTestState *s, uint64_t addr, uint16_t *value)
     return result;
 }
 
+MemTxResult qtest_writeb_tx(QTestState *s, uint64_t addr, uint8_t value)
+{
+    gchar **args;
+    uint64_t result;
+    int ret;
+
+    qtest_sendf(s, "writeb_tx 0x%" PRIx64 " 0x%x\n", addr, value);
+    args = qtest_rsp_args(s, 2);
+    ret = qemu_strtou64(args[1], NULL, 0, &result);
+    g_assert(!ret);
+    g_strfreev(args);
+    return result;
+}
+
 MemTxResult qtest_writeq_tx(QTestState *s, uint64_t addr, uint64_t value)
 {
     gchar **args;

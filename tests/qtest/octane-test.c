@@ -137,6 +137,24 @@ static void test_widgets_and_memory(void)
     qtest_quit(qts);
 }
 
+static void test_heart_widget_control(void)
+{
+    QTestState *qts = octane_start();
+    uint32_t word;
+
+    g_assert_cmpuint(qtest_readl_tx(qts, HEART_WIDGET + 0x24, &word), ==,
+                     MEMTX_OK);
+    g_assert_cmphex(word, ==, 0);
+    g_assert_cmpuint(qtest_writel_tx(qts, HEART_WIDGET + 0x24, 0x3ca596f0),
+                     ==, MEMTX_OK);
+    g_assert_cmphex(qtest_readl(qts, HEART_WIDGET + 0x24), ==, 0x3ca596f0);
+    g_assert_cmphex(qtest_readl(qts, ATTR0 + HEART_WIDGET + 0x24), ==,
+                    0x3ca596f0);
+    qtest_system_reset(qts);
+    g_assert_cmphex(qtest_readl(qts, HEART_WIDGET + 0x24), ==, 0);
+    qtest_quit(qts);
+}
+
 static void test_physical_zero(void)
 {
     QTestState *qts = octane_start();
@@ -669,6 +687,7 @@ static void test_reset_state(void)
     QTestState *qts = octane_start();
 
     qtest_writel(qts, HEART + 0x20, WIDE);
+    qtest_writel(qts, HEART_WIDGET + 0x24, 0x3ca596f0);
     qtest_writeq(qts, HEART + 0x10000, 1u << 3);
     qtest_writeq(qts, HEART + 0x10020, 1u << 3);
     qtest_writel(qts, CFG(2) + 0x10, 0x10000000);
@@ -679,6 +698,7 @@ static void test_reset_state(void)
 
     qtest_system_reset(qts);
     g_assert_cmphex(qtest_readl(qts, HEART + 0x20), ==, BANK0);
+    g_assert_cmphex(qtest_readl(qts, HEART_WIDGET + 0x24), ==, 0);
     g_assert_cmphex(qtest_readl(qts, ATTR0 + HEART + 0x20), ==, BANK0);
     g_assert_cmphex(qtest_readq(qts, HEART + 0x10000), ==, 0);
     g_assert_cmphex(qtest_readq(qts, HEART + 0x10030), ==, 0);
@@ -732,6 +752,7 @@ static void test_migration_state(void)
                      ==, MEMTX_OK);
 
     qtest_writel(from, HEART + 0x20, WIDE);
+    qtest_writel(from, HEART_WIDGET + 0x24, 0x3ca596f0);
     qtest_writeq(from, RAM, 0x0123456789abcdefULL);
     qtest_writeq(from, RAM + 8, 0xfedcba9876543210ULL);
     qtest_writel(from, CFG(2) + 0x10, 0x10000000);
@@ -775,6 +796,7 @@ static void test_migration_state(void)
     g_assert_cmphex(half, ==, mpconf_marker);
 
     g_assert_cmphex(qtest_readl(to, HEART + 0x20), ==, WIDE);
+    g_assert_cmphex(qtest_readl(to, HEART_WIDGET + 0x24), ==, 0x3ca596f0);
     g_assert_cmphex(qtest_readq(to, RAM), ==, 0x0123456789abcdefULL);
     g_assert_cmphex(qtest_readq(to, ATTR0 + RAM), ==,
                     0x0123456789abcdefULL);
@@ -798,6 +820,7 @@ static void test_migration_state(void)
     g_assert_cmphex(qtest_readl(to, FLASH), ==, 0x12345678);
 
     qtest_system_reset(to);
+    g_assert_cmphex(qtest_readl(to, HEART_WIDGET + 0x24), ==, 0);
     for (unsigned i = 0; i < 16; i++) {
         uint64_t actual;
 
@@ -828,6 +851,7 @@ int main(int argc, char **argv)
     g_assert_cmpint(write(fd, bytes, sizeof(bytes)), ==, sizeof(bytes));
     close(fd);
     qtest_add_func("/octane/widgets-and-memory", test_widgets_and_memory);
+    qtest_add_func("/octane/heart-widget-control", test_heart_widget_control);
     qtest_add_func("/octane/physical-zero", test_physical_zero);
     qtest_add_func("/octane/mpconf-record", test_mpconf_record);
     qtest_add_func("/octane/flash-and-pci", test_flash_and_pci);
