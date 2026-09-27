@@ -797,6 +797,31 @@ static void test_xmap_buf_select_reads_back(void)
     g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
 }
 
+/*
+ * The same IDE test reads 0x071d00 under two index bytes after writing
+ * 0xff000000 there under index byte 1. Index 4 is the XMAP revision and
+ * passes only on 0 or 1; index 8 is the FIFO capacity, whose low nibble
+ * must be 1. The IRIX bring-up path reads the revision the same way
+ * (index 4, low three bits). Neither read may echo the earlier write.
+ */
+static void test_xmap_revision_and_fifo_capacity(void)
+{
+    uint32_t rev, cap;
+
+    mgras_reset();
+    qtest_writeb(qts, REG_XMAP_INDEX, 1);
+    qtest_writel(qts, REG_REPP_STATUS_3, 0xff000000);
+
+    qtest_writeb(qts, REG_XMAP_INDEX, 4);
+    rev = qtest_readl(qts, REG_REPP_STATUS_3);
+    g_assert_true(rev == 0 || rev == 1);
+
+    qtest_writeb(qts, REG_XMAP_INDEX, 8);
+    cap = qtest_readl(qts, REG_REPP_STATUS_3);
+    g_assert_cmphex(cap & 0xf, ==, 1);
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+}
+
 typedef struct SIVisualRegisterWidth {
     uint64_t addr;
     unsigned int width;
@@ -6100,6 +6125,8 @@ int main(int argc, char **argv)
                    test_repp_status_byte_writes);
     qtest_add_func("sn0/origin2000/mgras/xmap-buf-select-reads-back",
                    test_xmap_buf_select_reads_back);
+    qtest_add_func("sn0/origin2000/mgras/xmap-revision-and-fifo-capacity",
+                   test_xmap_revision_and_fifo_capacity);
     qtest_add_func("sn0/origin2000/mgras/xmap-buf-select-write",
                    test_xmap_buf_select_write);
     qtest_add_func("sn0/origin2000/mgras/visual-register-read-widths",
