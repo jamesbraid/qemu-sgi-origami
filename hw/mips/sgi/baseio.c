@@ -135,14 +135,14 @@ static DeviceState *baseio_bus_host(PCIBus *bus)
 }
 
 /*
- * The io8 preset's chip, from the head-F bus sgi_xbridge_pci_bus()
+ * The head-F chip, from the PCI bus sgi_xbridge_pci_bus()
  * handed us: the bus's own parent is the head (SGIXBridgeHeadState,
  * itself a PCIHostState), not the outer XBridge -- the "head-f-pci-intx"
- * and "head-f-pin" GPIO groups this preset wires live on that outer
+ * and "head-f-pin" GPIO groups both head-F presets wire on that outer
  * chip (hw/pci-host/sgi-xbridge.h: "GPIO groups, all on the chip"),
  * one QOM level further up than baseio_bus_host() reaches.
  */
-static DeviceState *io8_chip_from_bus(PCIBus *bus)
+static DeviceState *baseio_xbridge_chip_from_bus(PCIBus *bus)
 {
     Object *head = OBJECT(BUS(bus)->parent);
 
@@ -593,8 +593,8 @@ static bool baseio_build_io6g(SGIBaseioState *s, Error **errp)
  * "head-f-pci-intx" raw group, itself re-driven at the chip's own
  * "head-f-pin" input the board wiring names.
  */
-static void io8_wire_intx(DeviceState *chip, unsigned int device,
-                          unsigned int pin)
+static void baseio_wire_xbridge_intx(DeviceState *chip, unsigned int device,
+                                      unsigned int pin)
 {
     qdev_connect_gpio_out_named(chip, "head-f-pci-intx",
                                 device * PCI_NUM_PINS,
@@ -604,7 +604,7 @@ static void io8_wire_intx(DeviceState *chip, unsigned int device,
 
 static bool baseio_build_io8(SGIBaseioState *s, Error **errp)
 {
-    DeviceState *chip = io8_chip_from_bus(s->pci_bus);
+    DeviceState *chip = baseio_xbridge_chip_from_bus(s->pci_bus);
     PCIDevice *scsi, *ioc3, *usb;
 
     scsi = pci_new(PCI_DEVFN(IO8_SCSI_DEVICE, 0), "qlogic-isp12160");
@@ -616,7 +616,7 @@ static bool baseio_build_io8(SGIBaseioState *s, Error **errp)
     pci_set_word(scsi->config + PCI_SUBSYSTEM_VENDOR_ID,
                 IO8_SCSI_SUBSYSTEM_VENDOR);
     pci_set_word(scsi->config + PCI_SUBSYSTEM_ID, IO8_SCSI_SUBSYSTEM_ID);
-    io8_wire_intx(chip, IO8_SCSI_DEVICE, IO8_SCSI_INTERRUPT_PIN);
+    baseio_wire_xbridge_intx(chip, IO8_SCSI_DEVICE, IO8_SCSI_INTERRUPT_PIN);
 
     ioc3 = baseio_build_ioc3(s, "ioc3", IO8_IOC3_DEVICE, IO8_IOC3_REVISION,
                              IO8_IOC3_POPULATION,
@@ -631,7 +631,7 @@ static bool baseio_build_io8(SGIBaseioState *s, Error **errp)
                 IO8_IOC3_SUBSYSTEM_VENDOR);
     pci_set_word(ioc3->config + PCI_SUBSYSTEM_ID,
                 IO8_IOC3_SUBSYSTEM_ID_NOT_OBSERVED);
-    io8_wire_intx(chip, IO8_IOC3_DEVICE, IO8_IOC3_INTERRUPT_PIN);
+    baseio_wire_xbridge_intx(chip, IO8_IOC3_DEVICE, IO8_IOC3_INTERRUPT_PIN);
     /* The chip's own internal SuperIO real-time event, not a PCI pin. */
     qdev_connect_gpio_out(DEVICE(ioc3), 0,
                           qdev_get_gpio_in_named(chip, "head-f-pin",
@@ -646,7 +646,7 @@ static bool baseio_build_io8(SGIBaseioState *s, Error **errp)
     pci_set_word(usb->config + PCI_SUBSYSTEM_VENDOR_ID,
                 IO8_USB_SUBSYSTEM_VENDOR);
     pci_set_word(usb->config + PCI_SUBSYSTEM_ID, IO8_USB_SUBSYSTEM_ID);
-    io8_wire_intx(chip, IO8_USB_DEVICE, IO8_USB_INTERRUPT_PIN);
+    baseio_wire_xbridge_intx(chip, IO8_USB_DEVICE, IO8_USB_INTERRUPT_PIN);
     return true;
 }
 
@@ -732,6 +732,7 @@ static bool baseio_build_mscsi(SGIBaseioState *s, Error **errp)
 
 static bool baseio_build_fuel(SGIBaseioState *s, Error **errp)
 {
+    DeviceState *chip = baseio_xbridge_chip_from_bus(s->pci_bus);
     PCIDevice *scsi;
     PCIDevice *ioc3;
     PCIDevice *usb;
@@ -748,6 +749,7 @@ static bool baseio_build_fuel(SGIBaseioState *s, Error **errp)
         return false;
     }
     qlogic_isp_handle_legacy_cmdline(DEVICE(scsi));
+    baseio_wire_xbridge_intx(chip, 1, 1);
 
     ioc3 = pci_new(PCI_DEVFN(4, 0), TYPE_SGI_IOC3);
     object_property_add_child(OBJECT(s), "ioc3", OBJECT(ioc3));
@@ -785,6 +787,9 @@ static bool baseio_build_fuel(SGIBaseioState *s, Error **errp)
     baseio_note_claim(s, s->chardev_b_id);
     baseio_note_claim(s, s->record_a_id);
     baseio_note_claim(s, s->record_b_id);
+    baseio_wire_xbridge_intx(chip, 4, 4);
+    qdev_connect_gpio_out(DEVICE(ioc3), 0,
+                          qdev_get_gpio_in_named(chip, "head-f-pin", 0));
 
     /* The selected 030-1707-003 revision G board reports 11c1:5802. */
     usb = pci_new(PCI_DEVFN(5, 0), "lucent-ohci");
@@ -792,9 +797,10 @@ static bool baseio_build_fuel(SGIBaseioState *s, Error **errp)
     if (!pci_realize_and_unref(usb, s->pci_bus, errp)) {
         return false;
     }
+    baseio_wire_xbridge_intx(chip, 5, 5);
 
     warn_report("fuel: IOC3 subsystem ID is an experimental launch input; "
-                "PCI interrupt routing and RTC are not implemented");
+                "interrupt wiring is approximate and RTC is not implemented");
     return true;
 }
 
