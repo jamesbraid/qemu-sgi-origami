@@ -688,6 +688,7 @@ static void test_r14000_word_loads(void)
 #define CP0_CAUSE      13
 #define CAUSE_IP7      (1u << 15)
 #define TIMER_MAILBOX  (USER_PHYS + 0x1000)
+#define TIMER_TARGET   5000000
 
 /*
  * Compare = Count - 1 arms a value that is behind the live counter by
@@ -697,24 +698,49 @@ static void test_r14000_word_loads(void)
  * IP7 clear rather than raise it - the disarming pattern OpenBSD's mips64
  * clock code depends on (sys/arch/mips64/mips64/clock.c, cp0_startclock).
  */
-static void build_compare_behind_count(UserCode *p)
+static void build_timer_register_test(UserCode *p)
 {
+    unsigned int loop, back;
+
+    user_li(p, 26, 0xa0000000 | TIMER_MAILBOX);
+    user_mtc0(p, 0, CP0_COMPARE);
+    user_mtc0(p, 0, CP0_COUNT);
+    user_mfc0(p, 9, CP0_CAUSE);
+    user_i(p, 43, 26, 9, 0);          /* pending equality match */
     user_mfc0(p, 8, CP0_COUNT);
     user_i(p, 9, 8, 8, (uint16_t)-1); /* t0 = Count - 1 */
     user_mtc0(p, 8, CP0_COMPARE);
     user_mfc0(p, 9, CP0_CAUSE);
-    user_li(p, 26, 0xa0000000 | TIMER_MAILBOX);
-    user_i(p, 43, 26, 9, 0);          /* sw t1, 0(k0): the Cause word */
+    user_i(p, 43, 26, 9, 4);          /* cleared by past Compare write */
+
+    user_mtc0(p, 0, CP0_COUNT);
+    user_li(p, 10, TIMER_TARGET);
+    user_mtc0(p, 10, CP0_COMPARE);
+    user_mfc0(p, 9, CP0_CAUSE);
+    user_i(p, 43, 26, 9, 8);          /* future Compare is still clear */
+    loop = p->pos;
+
+    user_mfc0(p, 8, CP0_COUNT);
+    user_emit(p, (8u << 21) | (10u << 16) | (11u << 11) | 0x2b);
+    back = user_branch(p, 5, 11, 0);
+    user_patch(p, back, loop);
+    user_mfc0(p, 9, CP0_CAUSE);
+    user_i(p, 43, 26, 9, 12);         /* equality match after deadline */
+    user_mfc0(p, 8, CP0_COUNT);
+    user_i(p, 9, 8, 8, (uint16_t)-1);
+    user_mtc0(p, 8, CP0_COMPARE);
+    user_mfc0(p, 9, CP0_CAUSE);
+    user_i(p, 43, 26, 9, 16);         /* clearing a delivered match */
     user_i(p, 9, 0, 9, 1);
-    user_i(p, 43, 26, 9, 4);          /* sw 1, 4(k0): the done flag */
+    user_i(p, 43, 26, 9, 20);
     user_park(p);
 }
 
-static void test_compare_behind_count_leaves_ip7_clear(void)
+static void run_cpu_timer_test(const char *machine, const char *cpu)
 {
     g_autofree UserCode *image = g_new0(UserCode, 1);
     g_autofree char *path = NULL;
-    uint8_t mailbox[8];
+    uint8_t mailbox[24] = { 0 };
     QTestState *qts;
     int64_t deadline;
     int fd;
@@ -723,26 +749,41 @@ static void test_compare_behind_count_leaves_ip7_clear(void)
         g_test_skip("TCG is unavailable");
         return;
     }
-    build_compare_behind_count(image);
+    build_timer_register_test(image);
     fd = g_file_open_tmp("sn0-cpu-timer-XXXXXX", &path, NULL);
     g_assert_cmpint(fd, >=, 0);
     g_assert_cmpint(write(fd, image->bytes, sizeof(image->bytes)), ==,
                     sizeof(image->bytes));
     close(fd);
-    qts = qtest_initf(MACHINE_SINGLE " -bios %s", path);
+    qts = qtest_initf("%s -cpu %s -bios %s -accel tcg,thread=multi -S",
+                      machine, cpu, path);
     unlink(path);
     qtest_qmp_assert_success(qts, "{ 'execute': 'cont' }");
     deadline = g_get_monotonic_time() + 30 * G_TIME_SPAN_SECOND;
     do {
         qtest_memread(qts, TIMER_MAILBOX, mailbox, sizeof(mailbox));
-        if (ldl_be_p(mailbox + 4)) {
+        if (ldl_be_p(mailbox + 20)) {
             break;
         }
         g_usleep(1000);
     } while (g_get_monotonic_time() < deadline);
-    g_assert_cmpuint(ldl_be_p(mailbox + 4), ==, 1);
-    g_assert_cmphex(ldl_be_p(mailbox) & CAUSE_IP7, ==, 0);
     qtest_quit(qts);
+    g_assert_cmpuint(ldl_be_p(mailbox + 20), ==, 1);
+    g_assert_cmphex(ldl_be_p(mailbox) & CAUSE_IP7, ==, CAUSE_IP7);
+    g_assert_cmphex(ldl_be_p(mailbox + 4) & CAUSE_IP7, ==, 0);
+    g_assert_cmphex(ldl_be_p(mailbox + 8) & CAUSE_IP7, ==, 0);
+    g_assert_cmphex(ldl_be_p(mailbox + 12) & CAUSE_IP7, ==, CAUSE_IP7);
+    g_assert_cmphex(ldl_be_p(mailbox + 16) & CAUSE_IP7, ==, 0);
+}
+
+static void test_r10000_timer(void)
+{
+    run_cpu_timer_test("-M origin200 -m 128M", "R10000");
+}
+
+static void test_r14000_timer(void)
+{
+    run_cpu_timer_test("-M malta -m 64M -nic none -vga none", "R14000");
 }
 
 int main(int argc, char **argv)
@@ -757,7 +798,9 @@ int main(int argc, char **argv)
     if (qtest_has_machine("malta")) {
         qtest_add_func("/sn0/qtest/r14000-word-loads", test_r14000_word_loads);
     }
-    qtest_add_func("/sn0/qtest/cpu-timer-compare-behind-count",
-                   test_compare_behind_count_leaves_ip7_clear);
+    qtest_add_func("/sn0/qtest/r10000-timer", test_r10000_timer);
+    if (qtest_has_machine("malta")) {
+        qtest_add_func("/sn0/qtest/r14000-timer", test_r14000_timer);
+    }
     return g_test_run();
 }
