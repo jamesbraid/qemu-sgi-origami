@@ -211,40 +211,51 @@ its ``ip29`` instance directly on its own crosstalk port, with no board
 wrapper; the Origin 300 node's ``io8`` instance is placed the same way,
 directly on its XBridge head, not through a board class.
 
-``sgi-xio-board`` (``hw/mips/sgi/xio-board.c``, renamed from
-``sgi-xtalk-board`` once its only onboard-only subclasses stopped existing)
-is the abstract base for a removable crosstalk board: the unit that plugs
-into one of a module's XIO slots. Every concrete board takes a ``module``
-and a ``slot`` (the crosstalk widget number the module's Crossbow assigns
-that position); realizing one builds its own widget-facing device, then
-re-parents the board under ``/machine/module<N>`` so ``info qom-tree`` shows
-it where the hardware puts it. Two concrete classes exist. ``sgi-xio-baseio``
-(``hw/mips/sgi/xio-baseio.c``) is the Origin 2000/Onyx2 BaseIO card: a
-removable carrier with its own Bridge and an internal ``sgi-baseio`` behind
-it running the ``baseio`` preset; the family builder creates one directly
-for every Crossbow-attached I/O board a topology places, since it is the
-only removable board any shipping product uses today. ``sgi-pci-expansion``
-(``hw/mips/sgi/board-pci-expansion.c``) is a plain Bridge with an empty,
-named PCI bus, for an Origin 2000 module's optional XIO PCI expansion slot;
-no reviewed source gives it a fixed device population or a real board part
-number.
+``sgi-xio-board`` (``hw/mips/sgi/xio-board.c``) is the abstract base for
+a removable crosstalk board: the unit that plugs into one of a module's XIO
+slots. Its concrete classes are ``sgi-xio-baseio`` (a Bridge-based card
+built from a ``sgi-baseio`` preset: ``io6``, ``io6g``, ``menet`` or
+``mscsi``), ``sgi-pci-expansion`` (a plain Bridge with an empty PCI bus),
+``sgi-pci-carrier`` (the Origin 2000 PCI Carrier Assembly, three PCI slots
+and its own board record), ``sgi-pci-shoehorn`` (a Bridge carrying one PCI
+card), ``sgi-gigachannel`` (the GIGAchannel cabinet's own Bridge),
+``sgi-kona`` (the InfiniteReality pipe) and ``sgi-mgras`` (the SI graphics
+board, whose widget answers crosstalk directly with no Bridge). Realizing a
+board builds its own widget-facing device, then re-parents the board under
+``/machine/module<N>`` so ``info qom-tree`` shows it where the hardware puts
+it.
 
-The SI graphics board (``sgi-mgras``) is a catalogue board like any other:
-a topology gets one only where its catalogue record, preset ``mgras``, fits
-one, at the widget that record's crosstalk attachment names, and that
-attachment alone marks the widget present and alive at startup. The builder
-adds none of its own accord. Every Origin 2000 topology declares one at IO3
-(Crossbow 0 widget 15), and ``origin200-gigachannel-mgras`` declares
-one in a GIGAchannel cabinet at ``io6`` (the cabinet Crossbow's widget 15). ``sgi-mgras`` is a plain sysbus
-device rather than an ``sgi-xio-board``, so it stays at ``/machine/mgras``
-instead of moving under its module. Its qdev id is ``mgras``, which QMP's
-``screendump device=`` accepts; a second board in the same topology would
-be ``mgras1``, and so on in catalogue order.
+A topology's catalogue places its own boards: the BaseIO in every Origin
+2000 and Onyx2, the KONA pipe in the ``onyx2`` topologies (``onyx2-rack``
+at IO3, Crossbow 0 widget 15, the slot its Xtown board occupies;
+``onyx2-deskside`` at XIO4, which that chassis's Crossbow puts at widget 8)
+and the GIGAchannel's cabinet Bridge. Every other XIO slot a topology names
+is empty, and a board is fitted there at launch by name::
 
-The InfiniteReality pipe (``sgi-kona``) is a catalogue board too, preset
-``kona``. The ``onyx2`` topologies fit one: ``onyx2-rack`` at IO3
-(Crossbow 0 widget 15), the slot its Xtown board occupies, and
-``onyx2-deskside`` at XIO4, which that chassis's Crossbow puts at widget 8.
+  -M origin2000 -device sgi-mgras,slot=io3
+  -M origin2000 -device sgi-xio-baseio,preset=menet,slot=io5
+  -M origin200,topology=origin200-gigachannel \
+      -device sgi-xio-baseio,preset=mscsi,slot=io2
+
+``slot=`` takes the slot's IRIX name (``io2`` to ``io12`` on an Origin 2000
+module, ``io2`` to ``io6`` in a GIGAchannel cabinet), and the machine
+supplies the module, the Crossbow widget and the fabric the board sends
+through, the ``sgi-xio-slots`` interface in ``xio-board.h``. It refuses a
+slot the topology does not have, one its own board fills, one another board
+already holds, and a module the slot is not in. A BaseIO preset fitted by
+name takes only ``io1``. ``slot=`` also still takes a Crossbow widget number
+with an explicit ``module=`` and ``fabric=``, which the builder and qtest
+fixtures use; when that fabric is a slot's own, the board must name that
+slot's module and widget. A board fitted at launch whose one-wire serials
+are left at the class's shared placeholder takes serials offset by its
+module and widget, so no two boards read the same NIC.
+
+Every XIO board is named by its IRIX slot: a catalogue board's QOM name and
+qdev id, and a launch-fitted board's id unless it is given one, is ``io1``,
+``io5`` and so on (``m<N>-io5`` where two modules share the label; the
+GIGAchannel's cabinet Bridge is ``io7``). Its PCI bus follows QEMU's
+child-bus idiom, ``<id>.0``: a card goes into the carrier in IO2 with
+``bus=io2.0``, and ``screendump device=io3`` names an SI board in IO3.
 
 The Onyx2 deskside is a different midplane, not only a different
 population. Its two node slots drive Hub slot-identity bits 3 and 2, where
@@ -256,25 +267,16 @@ eight-processor module's; the builder hands the Hub the result as its
 ``slot-bits`` property. The BaseIO-G preset accordingly fits widget F as
 well as widget 8.
 
-Neither concrete class is ``-device``-creatable yet (``user_creatable`` is
-off on both, and on the abstract base): reaching one from the command line
-needs a machine-owned spare fabric proxy per Crossbow, built at the same
-machine-done point the builder's own boards attach through, which does not
-exist yet. Until it does, ``sgi-pci-expansion`` is reachable only by a
-qtest-only fixture machine, not by any product.
-
-A board realizes once machine init has returned, but a Crossbow needs every
-one of its endpoints attached before its own realize builds the routes
-between them, so a board's realize only validates its properties, builds its
-widget and registers itself as pending; a machine that owns a module's
-Crossbow creates it unrealized, builds every board its topology places
-directly, then attaches every pending board for that Crossbow and module
-from a machine-init-done notifier before realizing the Crossbow itself.
-``origin2000`` follows this ordering for its own two Crossbows;
-``origin200`` and ``origin300`` have no Crossbow -- each places its one Base
-I/O instance directly on its node's crosstalk port, as above -- so both
-build it synchronously instead and never reach the machine-init-done
-notifier.
+A Crossbow needs every endpoint present at startup attached before its own
+realize builds the routes between them, so the builder attaches the
+topology's own boards before realizing each Crossbow. A board fitted at
+launch realizes after that: the builder prepares a fabric proxy for every
+empty slot before its Crossbow realizes, and a machine-init-done notifier
+finishes each proxy once every Crossbow has realized and, for a slot a
+board has claimed, attaches the board's widget live and brings its link
+alive. ``origin200`` and ``origin300`` have no Crossbow on the node -- each
+places its one Base I/O instance directly on its node's crosstalk port, as
+above.
 
 A crosstalk port is a QOM interface every attachable endpoint implements --
 a Hub's or Bedrock's I/O port, each Crossbow port, an XBridge head, and a

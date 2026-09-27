@@ -786,8 +786,11 @@ FLAVOURS = {
         rti_args=(f'-vertex {_O200}/3', f'-vertex {_O200_2}/3'),
     ),
     'origin2000_one_node': Flavour(
-        title='Origin 2000 one-node module: the BaseIO-G, with MediaIO',
-        machine='origin2000,topology=origin2000-one-node,debug-leds=off',
+        title='Origin 2000 one-node deskside: the BaseIO-G, with MediaIO',
+        # The stock deskside fits a plain BaseIO; baseio-preset=io6g asks
+        # for the BaseIO-G, our custom configuration.
+        machine='origin2000,topology=origin2000-deskside,'
+                'baseio-preset=io6g,debug-leds=off',
         nodes=1,
         hinv_facts=(
             ('board IOC3 serial ports', r'IOC3/IOC4 serial port: tty1\b'),
@@ -832,9 +835,9 @@ FLAVOURS = {
     'origin2000_pci_shoehorn': Flavour(
         title='Origin 2000 four-node module: the plain BaseIO, and a Cad '
               'Duo IOC3 on a PCI shoehorn in IO2',
-        machine='origin2000,topology=origin2000-pci-shoehorn,'
-                'debug-leds=off',
+        machine='origin2000,debug-leds=off',
         nodes=4,
+        extra_args=('-device', 'sgi-pci-shoehorn,slot=io2,cad-duo-slot=1'),
         hinv_facts=_IO6_FACTS + (
             ('Cad Duo Ethernet at io2, pci 1',
              r'Fast Ethernet: ef1, .*slot io2, pci 1\b'),
@@ -853,7 +856,7 @@ FLAVOURS = {
     'origin2000_pci_carrier': Flavour(
         title='Origin 2000 four-node module: the plain BaseIO, and an '
               'ISP12160 and a Cad Duo IOC3 on a PCI carrier in IO2',
-        machine='origin2000,topology=origin2000-pci-carrier,debug-leds=off',
+        machine='origin2000,debug-leds=off',
         nodes=4,
         hinv_facts=_IO6_FACTS + (
             ('Cad Duo Ethernet at io2, pci 1',
@@ -876,6 +879,7 @@ FLAVOURS = {
         # (docs/datasheets/sgi-cad-duo-pci-card.md in the project
         # checkout).
         extra_args=(
+            '-device', 'sgi-pci-carrier,slot=io2',
             '-device', 'qlogic-isp12160,bus=io2.0,addr=0',
             '-device', 'sgi-ioc3,id=carrier-ioc3,bus=io2.0,addr=1,'
             'subsystem-id=0xffff'),

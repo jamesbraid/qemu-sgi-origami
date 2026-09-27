@@ -7,7 +7,7 @@
  *
  * The board attaches at the empty XIO slot IO4 exactly as
  * sgi-pci-expansion does (tests/qtest/sn-builder-test.c): crossbow0's
- * widget 11, outside its startup-links-alive (0x8700). A processor
+ * widget 11, outside its startup-links-alive (0x0700). A processor
  * reaches the internal Bridge and the fitted Cad Duo through crossbow0's
  * real small window for widget 11.
  *
@@ -27,12 +27,11 @@
  * IOC3 one-wire bus"). The same card behind a plain sgi-pci-expansion
  * carries only the station-address part.
  *
- * The same checks then run on the board the origin2000-pci-shoehorn
- * topology places itself: the compiled catalogue fits the shoehorn into
- * Origin 2000's IO2 position, crossbow0 widget 12, as a startup-attached
- * board, with its Cad Duo at PCI device 0. That widget must be alive from
- * reset like the BaseIO's, which is what the stock PROM needs to discover
- * it rather than report the link bad.
+ * The same checks then run on a shoehorn fitted in Origin 2000's IO2
+ * position, crossbow0 widget 12, where the PCI module goes, with its Cad
+ * Duo at PCI device 1. That widget must read present and alive once the
+ * machine is up, which is what the stock PROM needs to discover it rather
+ * than report the link bad.
  */
 
 #include "qemu/osdep.h"
@@ -176,7 +175,8 @@ static const uint8_t cad_duo_record[RECORD_SIZE] = {
     "slot=io4,cad-duo-slot=" G_STRINGIFY(CAD_DUO_DEVICE)
 
 #define PLACED_ARGS \
-    "-M origin2000,topology=origin2000-pci-shoehorn -display none"
+    "-M origin2000 -display none -device sgi-pci-shoehorn,slot=io2," \
+    "cad-duo-slot=" G_STRINGIFY(PLACED_CAD_DUO)
 
 /* The same adapter carrying the dual-serial card instead of the Cad Duo. */
 #define SIO_ARGS \
@@ -637,23 +637,24 @@ static void test_one_card_only(const void *data)
 }
 
 /*
- * The catalogue-placed board's widget is alive from reset, like the BaseIO at
- * widget 8, the two host nodes at 9 and 10 and SI Viz at 15: it is part of
- * crossbow0's configured startup population, not a link brought up after
- * machine init the way a `-device` board's slot widget is. That is the
- * difference the stock PROM sees between a board it enumerates and "IO link
- * bad".
+ * A board fitted at launch is attached once every Crossbow has realized:
+ * its port then reads a widget present and the link alive
+ * (docs/datasheets/xbow.md, link auxiliary status bit 5 and link status
+ * bit 31, Crossbow 0's own registers at widget 0).
  */
-static void test_placed_widget_is_alive_at_startup(const void *data)
+#define XBOW_LINK_STATUS(w) (SPACE_XTALK + 0x110 + ((w) - 8) * 0x40 + 4)
+#define XBOW_LINK_AUX(w)    (SPACE_XTALK + 0x138 + ((w) - 8) * 0x40 + 4)
+#define XBOW_LINK_ALIVE     (1u << 31)
+#define XBOW_AUX_PRESENT    (1u << 5)
+
+static void test_fitted_widget_is_alive(const void *data)
 {
     QTestState *qts = qtest_init(PLACED_ARGS);
-    g_autoptr(QDict) response = qtest_qmp(qts,
-        "{'execute': 'qom-get', 'arguments': {'path': '/machine/crossbow0',"
-        "'property': 'startup-links-alive'}}");
 
-    g_assert_false(qdict_haskey(response, "error"));
-    g_assert_cmphex(qdict_get_int(response, "return"), ==,
-                    0x8700 | (1u << PLACED_WIDGET));
+    g_assert_cmphex(qtest_readl(qts, XBOW_LINK_AUX(PLACED_WIDGET)) &
+                    XBOW_AUX_PRESENT, ==, XBOW_AUX_PRESENT);
+    g_assert_cmphex(qtest_readl(qts, XBOW_LINK_STATUS(PLACED_WIDGET)) &
+                    XBOW_LINK_ALIVE, ==, XBOW_LINK_ALIVE);
     qtest_quit(qts);
 }
 
@@ -681,8 +682,8 @@ int main(int argc, char **argv)
                         &sio_case, test_sio_serial_interrupt_reaches_hub);
     qtest_add_data_func("sn0/pci-shoehorn/one-card-only", NULL,
                         test_one_card_only);
-    qtest_add_data_func("sn0/pci-shoehorn/placed/widget-alive-at-startup",
-                        NULL, test_placed_widget_is_alive_at_startup);
+    qtest_add_data_func("sn0/pci-shoehorn/placed/widget-alive",
+                        NULL, test_fitted_widget_is_alive);
     qtest_add_data_func("sn0/pci-shoehorn/placed/cad-duo-enumerates",
                         &placed_case, test_cad_duo_enumerates);
     qtest_add_data_func("sn0/pci-shoehorn/placed/cad-duo-interrupt-reaches-hub",

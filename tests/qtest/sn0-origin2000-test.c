@@ -2116,25 +2116,24 @@ static void assert_crossbow(QTestState *qts, const char *crossbow,
 }
 
 /*
- * The shipped module: Crossbow 1 has widgets 8-10 alive at boot (BaseIO plus
- * its two host nodes) and SI Viz at widget 0xf. Crossbow 2 has widgets 9-10
- * alive for its two host nodes; no other XIO position is populated on either.
- * BaseIO itself re-parents under its module the way every sgi-xio-board does,
- * landing at its own slot name since this builder gives it no id.
+ * The shipped module: Crossbow 1 has widgets 8-10 alive at boot (BaseIO
+ * plus its two host nodes), and IO3 at widget 0xf is empty. Crossbow 2 has
+ * widgets 9-10 alive for its two host nodes; no other XIO position is
+ * populated on either. BaseIO itself re-parents under its module the
+ * way every sgi-xio-board does, landing at its own slot name since this
+ * builder gives it no id.
  */
 static void test_xtalk_owner(void)
 {
     QTestState *qts = qtest_initf("-M origin2000 -m 256M "
                                   "-nodefaults -display none -serial none");
 
-    assert_crossbow(qts, "crossbow0", 0x8700);
+    assert_crossbow(qts, "crossbow0", 0x0700);
     assert_crossbow(qts, "crossbow1", 0x600);
     /* A qom-list on a path that does not exist fails; this one must not. */
     qobject_unref(qtest_qmp_assert_success_ref(qts,
         "{'execute': 'qom-list', 'arguments': {"
         "'path': '/machine/module0/io1'}}"));
-    g_assert_cmphex((qtest_readl(qts, UINT64_C(0x2000f000004)) >> 12) &
-                    0xffff, ==, 0xc003);
     qtest_quit(qts);
 }
 
@@ -2175,15 +2174,15 @@ static void assert_crossbow_ports(QTestState *qts, unsigned int cpu,
 }
 
 /*
- * The shipped module's two Crossbows: crossbow0 wires BaseIO, its two host
- * nodes and SI Viz; crossbow1 only its two host nodes. Node 0 (CPU 0) is a
+ * The shipped module's two Crossbows: crossbow0 wires BaseIO and its two
+ * host nodes; crossbow1 only its two host nodes. Node 0 (CPU 0) is a
  * host of crossbow0 and node 1 (CPU 2) of crossbow1.
  */
 static void test_xbow_absent_links(void)
 {
     QTestState *qts = start_control_module("");
 
-    assert_crossbow_ports(qts, 0, 0x8700);
+    assert_crossbow_ports(qts, 0, 0x0700);
     assert_crossbow_ports(qts, 2, 0x0600);
     qtest_quit(qts);
 }

@@ -11,8 +11,8 @@
  * approximates and why. This fixture fits KONA to an origin2000 the same
  * way sn-builder-test.c's boards reach it: as a `-device` at the empty
  * XIO slot IO4, crossbow0's widget 11, outside the default topology's
- * startup-links-alive (BaseIO at 8, the two host-node Hubs at 9 and 10,
- * SI Viz at 15). It takes a fixed `id=kona0`
+ * startup-links-alive (BaseIO at 8, the two host-node Hubs at 9 and
+ * 10). It takes a fixed `id=kona0`
  * so the increment-2 cases can reach its `x-test-pixel` QOM properties --
  * but unlike a plain `-device` that stays where device_add put it,
  * hw/mips/sgi/xio-board.c's own sgi_xio_board_reparent() moves every

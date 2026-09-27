@@ -212,8 +212,8 @@ typedef struct BoardCase {
 /*
  * The PCI shoehorn: assembly 030-1275-002, the REV B its label reads,
  * the XTALK_PCI name real Origin 2000 inventories print, a placeholder
- * barcode, and the Bridge D the board carries. The
- * origin2000-pci-shoehorn topology fits it in IO2, crossbow0 widget 12.
+ * barcode, and the Bridge D the board carries, fitted
+ * here in IO2, crossbow0 widget 12.
  */
 static const uint8_t shoehorn_record[RECORD_SIZE] = {
     0x01, 0x4f, 0x58, 0x54, 0x50, 0x43, 0x49, 0x30,
@@ -227,11 +227,11 @@ static const uint8_t shoehorn_record[RECORD_SIZE] = {
 };
 
 /*
- * The PCI Carrier Assembly the origin2000-pci-carrier topology fits in
- * IO2, crossbow0 widget 12: the Origin 2000 PCI cardcage's part
- * 030-1062-002, revision C and name PCI-XIO, as a real Origin 2000's
- * inventory prints them, with a placeholder barcode, on the Bridge
- * revision 3 both real PCI_XIO boards report.
+ * The PCI Carrier Assembly, fitted here in IO2, crossbow0 widget 12:
+ * the Origin 2000 PCI cardcage's part 030-1062-002, revision C and name
+ * PCI-XIO, as a real Origin 2000's inventory prints them, with a
+ * placeholder barcode, on the Bridge revision 3 both real PCI_XIO boards
+ * report.
  */
 static const uint8_t carrier_record[RECORD_SIZE] = {
     0x01, 0x4f, 0x50, 0x43, 0x49, 0x58, 0x49, 0x4f,
@@ -245,8 +245,8 @@ static const uint8_t carrier_record[RECORD_SIZE] = {
 };
 
 /*
- * The MENET XIO board the origin2000-menet topology fits in IO5,
- * crossbow0 widget 14: a real board's part 030-0873-003,
+ * The MENET XIO board, fitted here in IO5, crossbow0 widget 14:
+ * a real board's part 030-0873-003,
  * revision J and name MENET, a placeholder barcode, and the Bridge
  * revision 4 the same real board reports.
  */
@@ -262,8 +262,8 @@ static const uint8_t menet_record[RECORD_SIZE] = {
 };
 
 /*
- * The MSCSI XIO board the origin200-gigachannel-xio topology fits at the
- * GIGAchannel cabinet's io2, Crossbow widget 11
+ * The MSCSI XIO board, fitted here at the GIGAchannel cabinet's io2,
+ * Crossbow widget 11
  * (docs/datasheets/sgi-mscsi.md in the Origami tree, "Board-identity
  * record"): a real board's part 030-1243-001, revision F and name MSCSI,
  * a placeholder barcode, and the Bridge revision 3 the same real board
@@ -283,22 +283,25 @@ static const uint8_t mscsi_record[RECORD_SIZE] = {
 static const BoardCase board_cases[] = {
     {
         "pci-shoehorn",
-        "-M origin2000,topology=origin2000-pci-shoehorn -display none",
+        "-M origin2000 -display none -device sgi-pci-shoehorn,slot=io2,"
+        "cad-duo-slot=1",
         12, shoehorn_record, "030-1275-002", "XTALK_PCI", 4,
     },
     {
         "pci-carrier",
-        "-M origin2000,topology=origin2000-pci-carrier -display none",
+        "-M origin2000 -display none -device sgi-pci-carrier,slot=io2",
         12, carrier_record, "030-1062-002", "PCI-XIO", 3,
     },
     {
         "menet",
-        "-M origin2000,topology=origin2000-menet -display none",
+        "-M origin2000 -display none -device sgi-xio-baseio,preset=menet,"
+        "slot=io5",
         14, menet_record, "030-0873-003", "MENET", 4,
     },
     {
         "mscsi",
-        "-M origin200,topology=origin200-gigachannel-xio -display none",
+        "-M origin200,topology=origin200-gigachannel -display none "
+        "-device sgi-xio-baseio,preset=mscsi,slot=io2",
         11, mscsi_record, "030-1243-001", "MSCSI", 3,
     },
 };

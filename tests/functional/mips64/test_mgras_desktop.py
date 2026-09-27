@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# SI/MGRAS graphical desktop: boot the Origin 2000's built-in graphics to
+# SI/MGRAS graphical desktop: boot an Origin 2000 with an SI board in IO3 to
 # the IRIX greeter, log in as guest, and require the default desktop to
 # show its expected colours
 #
@@ -15,8 +15,8 @@ desktop that a fresh login produces.
 
 The sequence:
 
-  1. Boot the one-node
-     Origin 2000, two R10000s, 256 MiB, root-si.qcow2) and pick PROM
+  1. Boot the one-node Origin 2000 deskside with the BaseIO-G and an SI
+     board fitted in IO3 (two R10000s, 256 MiB, root-si.qcow2) and pick PROM
      menu option 1.
   2. On the serial console, log in as root and give the guest account a
      password. The stock guest account has an empty password, and xdm
@@ -73,11 +73,15 @@ FIRMWARE_REL = os.path.join('assets', 'firmware', RELEASE,
                             'ip27prom.payload.bin')
 DISK_REL = os.path.join('assets', 'irix', RELEASE, 'root-si.qcow2')
 
-# The one-node module has its own io6g BaseIO and built-in SI head. The
-# earlier four-node greeter boot could hit a Crossbow link-reset race;
-# QEMU 2324ead1d3 fixed it before this profile was qualified.
-MACHINE = (MACHINES['origin2000']
-           + ',topology=origin2000-one-node,debug-leds=off')
+# The stock deskside fits a plain BaseIO and no graphics, so
+# baseio-preset=io6g asks for the BaseIO-G, whose second IOC3 carries the
+# keyboard and mouse an interactive session needs, and SI_ARGS fits the SI
+# board into the empty IO3 slot. The earlier four-node greeter boot could
+# hit a Crossbow link-reset race; QEMU 2324ead1d3 fixed it before this
+# profile was qualified.
+MACHINE = (MACHINES['origin2000'] +
+           ',topology=origin2000-deskside,baseio-preset=io6g,debug-leds=off')
+SI_ARGS = ('-device', 'sgi-mgras,slot=io3')
 SMP = '2'
 MEMORY_MIB = 256
 
@@ -162,6 +166,7 @@ if QemuSystemTest is not None:
                 f'if=none,id=disk0,file={disk},format=qcow2,snapshot=on',
                 '-device', 'scsi-hd,bus=scsi.0,scsi-id=1,lun=0,drive=disk0',
                 '-nic', 'user,id=net0',
+                *SI_ARGS,
                 '-S')
 
             started = utc_now()
