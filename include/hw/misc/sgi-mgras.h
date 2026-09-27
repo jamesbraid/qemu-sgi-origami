@@ -198,6 +198,34 @@ struct SGIMgrasClass {
     ResettablePhases parent_phases;
 };
 
+/*
+ * What one XIO IMPACT variant answers to the reads IRIX uses to tell the
+ * variants apart (docs/datasheets/mgras-board-identity.md, "Per-variant
+ * identity"). The two version bytes are the top bytes of 32-bit reads of
+ * 0x072488 and 0x072408; the revisions land in the fields named beside
+ * each member. The counts restate what those bytes decode to, so a board
+ * the model cannot render is refused by name rather than by decoding.
+ */
+typedef struct SGIMgrasBoard {
+    const char *name;           /* the "board" property value */
+    const char *hinv_name;      /* what IRIX 6.5.x hinv prints for it */
+    uint8_t ge_count;
+    uint8_t re_count;
+    uint8_t tram_count;         /* per raster path, as gfxinfo prints it */
+    uint8_t version1;           /* 0x072488 bits 31:24 */
+    uint8_t version0;           /* 0x072408 bits 31:24 */
+    uint8_t hq_revision;        /* 0x000000 bits 31:28 */
+    uint8_t ge_revision;        /* 0x028004 bits 7:0, before any HQ query */
+    uint8_t re4_revision;       /* 0x02c578 bits 7:4 */
+    uint8_t pp1_revision;       /* 0x071d00 bits 2:0 under XMAP index 4 */
+    uint8_t vc3_revision;       /* VC3 register 0x1f bits 7:6 */
+    uint8_t cmap_revision;      /* 0x071708 bits 2:0 */
+    uint8_t ra_revision;        /* 0x071708 bits 6:4 */
+    bool video_option;          /* 0x071708 bit 7 clear */
+    /* The model renders everything IRIX drives on this board. */
+    bool implemented;
+} SGIMgrasBoard;
+
 /* General interrupt source 10: the swap command has been reached. */
 #define SGI_MGRAS_PENDING_SWAP 0x00000400
 
@@ -388,6 +416,15 @@ struct SGIMgrasState {
     uint32_t revision;
     uint32_t part;
     uint32_t manufacturer;
+    char *board_name;
+    bool unimplemented_board;
+    const SGIMgrasBoard *board;
+    /*
+     * The word 0x028004 returns: the board's GE revision until the first
+     * class-0 0xa2 query from the kernel or a client, then that query's
+     * answer.
+     */
+    uint32_t ge_report;
     /* Host scanout is derived from guest state and is not migrated. */
     QemuConsole *con;
     uint32_t *display_buffer;

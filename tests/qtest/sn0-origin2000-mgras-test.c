@@ -8,6 +8,7 @@
  */
 
 #include "qemu/osdep.h"
+#include <sys/wait.h>
 #include "qemu/bswap.h"
 #include "qemu/timer.h"
 #include "libqtest.h"
@@ -593,14 +594,16 @@ static void test_identity_and_aperture(void)
     g_assert_cmphex(qtest_readl(qts, REG_STARTUP_STATUS) & 0x1eff, ==, 0);
 
     g_assert_cmphex(qtest_readl(qts, REG_DMA_BUSY) & 0x1f, ==, 0);
-    g_assert_cmphex(qtest_readl(qts, REG_DIRECT_COPY_READY), ==, 0x100);
+    /* Bits 7:4 are the default SI board's RE4 revision, 2. */
+    g_assert_cmphex(qtest_readl(qts, REG_DIRECT_COPY_READY), ==, 0x120);
 }
 
 /*
  * Inferred (see the read/write-side comments above these two cases in
- * mgras_read_internal()/mgras_write()): the reserved halves of the
- * 64-bit-aligned widget-register slots read zero and ignore writes
- * rather than raising a guest error a real access hits. Reading
+ * mgras_read_internal()/mgras_write()): the first halves of the
+ * 64-bit-aligned widget-register slots ignore writes rather than raising
+ * a guest error a real access hits. 0x000020 reads zero; 0x000000 reads
+ * only the HQ revision in bits 31:28 (2 on the default SI board). Reading
  * REG_IDENTIFICATION back unchanged after writing both proves the write
  * side does not alias into the neighboring real register.
  */
@@ -610,7 +613,7 @@ static void test_widget_reserved_halves_raz_wi(void)
 
     mgras_reset();
 
-    g_assert_cmphex(qtest_readl(qts, MGRAS_REG(0x000000)), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, MGRAS_REG(0x000000)), ==, 0x20000000);
     g_assert_cmphex(qtest_readl(qts, MGRAS_REG(0x000020)), ==, 0);
     g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
 
@@ -618,7 +621,7 @@ static void test_widget_reserved_halves_raz_wi(void)
     qtest_writel(qts, MGRAS_REG(0x000000), 0xffffffff);
     qtest_writel(qts, MGRAS_REG(0x000020), 0xffffffff);
     g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
-    g_assert_cmphex(qtest_readl(qts, MGRAS_REG(0x000000)), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, MGRAS_REG(0x000000)), ==, 0x20000000);
     g_assert_cmphex(qtest_readl(qts, MGRAS_REG(0x000020)), ==, 0);
     g_assert_cmphex(qtest_readl(qts, REG_IDENTIFICATION), ==, identification);
 }
@@ -2335,17 +2338,16 @@ static void test_board_bringup_byte_poll_bit_position(void)
 }
 
 /*
- * 0x071708 already returns zero at word width (see the unresolved
- * revision field comment above its read-side case); this proves the
- * newly accepted byte width gives the same answer without raising a
- * guest error.
+ * 0x071708 carries the CMAP and RA revisions and the no-video-option bit
+ * in its top byte; the default SI board answers 0x83. Both the word and
+ * the byte width IRIX uses give that byte without raising a guest error.
  */
 static void test_unresolved_revision_byte_read(void)
 {
     mgras_reset();
 
-    g_assert_cmphex(qtest_readl(qts, MGRAS_REG(0x071708)), ==, 0);
-    g_assert_cmphex(qtest_readb(qts, MGRAS_REG(0x071708)), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, MGRAS_REG(0x071708)), ==, 0x83000000);
+    g_assert_cmphex(qtest_readb(qts, MGRAS_REG(0x071708)), ==, 0x83);
     g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
 }
 
@@ -4844,19 +4846,254 @@ static void test_vc3_register_file(void)
 
     qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x1f, 0x01ff));
     qtest_writeb(qts, REG_VC3_INDEX, 0x1f);
-    g_assert_cmphex(qtest_readw(qts, REG_VC3_DATA), ==, 0x019f);
+    /* Bits 7:6 read as the VC3 revision, 0 on the default SI board. */
+    g_assert_cmphex(qtest_readw(qts, REG_VC3_DATA), ==, 0x013f);
 }
 
 static void test_board_inventory_registers(void)
 {
     mgras_reset();
 
-    g_assert_cmphex(qtest_readl(qts, REG_BOARD_INVENTORY), ==, 0x21000000);
-    g_assert_cmphex(qtest_readb(qts, REG_BOARD_INVENTORY), ==, 0x21);
+    g_assert_cmphex(qtest_readl(qts, REG_BOARD_INVENTORY), ==, 0x45000000);
+    g_assert_cmphex(qtest_readb(qts, REG_BOARD_INVENTORY), ==, 0x45);
     g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
     g_assert_cmphex(qtest_readl(qts, REG_RESET_CONTROL), ==, 0x0f000000);
     qtest_writel(qts, REG_RESET_CONTROL, 0xe8000000);
     g_assert_cmphex(qtest_readl(qts, REG_RESET_CONTROL), ==, 0x0f000000);
+}
+
+/*
+ * The per-variant identity table in docs/datasheets/mgras-board-identity.md,
+ * restated from that document rather than from the model: version bytes,
+ * revisions, and the counts and hinv name IRIX 6.5.x derives from them.
+ */
+typedef struct MgrasBoardExpect {
+    const char *board;
+    bool implemented;
+    unsigned int ge, re, tram;
+    const char *hinv;
+    uint8_t version1, version0;
+    uint8_t hq, ge_revision, re4, pp1, vc3, cmap, ra;
+} MgrasBoardExpect;
+
+static const MgrasBoardExpect mgras_board_expect[] = {
+    { "si",    true,  1, 1, 0, "SI", 0x45, 0x0f, 2, 2, 2, 0, 0, 3, 0 },
+    { "si-t",  false, 1, 1, 4, "SI with texture option",
+      0x45, 0x0c, 2, 2, 2, 0, 0, 3, 0 },
+    { "ssi",   false, 2, 2, 0, "SSI", 0x46, 0x0f, 2, 2, 2, 0, 0, 3, 0 },
+    { "mxi",   false, 2, 2, 4, "MXI", 0x46, 0x00, 2, 2, 2, 0, 0, 3, 0 },
+    { "esi",   true,  1, 1, 0, "ESI", 0x51, 0x0f, 2, 3, 2, 4, 0, 3, 0 },
+    { "esi-t", false, 1, 1, 4, "ESI with texture option",
+      0x51, 0x0c, 2, 3, 2, 4, 0, 3, 0 },
+    { "essi",  false, 2, 2, 0, "ESSI", 0x52, 0x0f, 2, 3, 2, 4, 0, 3, 0 },
+    { "emxi",  false, 2, 2, 4, "EMXI", 0x52, 0x00, 2, 3, 2, 4, 0, 3, 0 },
+};
+
+#define REG_GE_STATUS          MGRAS_REG(0x028000)
+#define REG_GE_REVISION        MGRAS_REG(0x028004)
+#define REG_CMAP_RA_REVISION   MGRAS_REG(0x071708)
+#define XMAP_INDEX_PP1_REVISION 4
+
+/*
+ * The name IRIX 6.5.x hinv prints for the counts MgrasGatherInfo decodes
+ * from the two version bytes, and the E-series marker the kernel sets from
+ * a GE revision of 3 or more (mgras-board-identity.md, "The inventory word
+ * and what hinv prints"). Products 2 and 3 only: RE count equals GE count,
+ * and a TRAM path holds 4 TRAMs unless its field is 3.
+ */
+static const char *mgras_decode_hinv_name(uint8_t version1, uint8_t version0,
+                                          uint8_t ge_revision,
+                                          unsigned int *ge, unsigned int *re,
+                                          unsigned int *tram0,
+                                          unsigned int *tram1)
+{
+    unsigned int product = (version1 >> 5) & 3;
+    bool e_series = ge_revision >= 3;
+
+    g_assert_true(product == 2 || product == 3);
+    *ge = version1 & 3;
+    *re = *ge;
+    *tram0 = (version0 & 3) == 3 ? 0 : 4;
+    *tram1 = ((version0 >> 2) & 3) == 3 ? 0 : 4;
+    if (*ge == 1 && *re == 1) {
+        if (*tram0) {
+            return e_series ? "ESI with texture option" :
+                   "SI with texture option";
+        }
+        return e_series ? "ESI" : "SI";
+    }
+    if (*ge == 2 && *re == 2) {
+        if (*tram0) {
+            return e_series ? "EMXI" : "MXI";
+        }
+        return e_series ? "ESSI" : "SSI";
+    }
+    return "Impact";
+}
+
+static QTestState *mgras_board_init(const MgrasBoardExpect *e)
+{
+    g_autofree char *args = g_strdup_printf(
+        MACHINE_ARGS " -global sgi-mgras.board=%s%s", e->board,
+        e->implemented ? "" : " -global sgi-mgras.x-unimplemented-board=on");
+
+    return qtest_init(args);
+}
+
+/*
+ * Every identity read the IRIX kernel makes, at the widths it makes them,
+ * answers the datasheet's value for the selected board, and those values
+ * decode to the board's counts and hinv name.
+ */
+static void test_board_identity(gconstpointer data)
+{
+    const MgrasBoardExpect *e = data;
+    QTestState *s = mgras_board_init(e);
+    uint8_t version1, version0, ge_revision;
+    unsigned int ge, re, tram0, tram1;
+    const char *name;
+
+    version1 = qtest_readl(s, REG_BOARD_INVENTORY) >> 24;
+    version0 = qtest_readl(s, REG_RESET_CONTROL) >> 24;
+    g_assert_cmphex(version1, ==, e->version1);
+    g_assert_cmphex(qtest_readb(s, REG_BOARD_INVENTORY), ==, e->version1);
+    g_assert_cmphex(version0, ==, e->version0);
+    g_assert_cmphex(qtest_readl(s, REG_BOARD_INVENTORY) & 0x00ffffff, ==, 0);
+    g_assert_cmphex(qtest_readl(s, REG_RESET_CONTROL) & 0x00ffffff, ==, 0);
+
+    g_assert_cmphex(qtest_readl(s, MGRAS_REG(0x000000)) >> 28, ==, e->hq);
+
+    /* The kernel reads 0x028000 first and keeps only 0x028004's low byte. */
+    g_assert_cmphex(qtest_readl(s, REG_GE_STATUS), ==, 0);
+    ge_revision = qtest_readl(s, REG_GE_REVISION) & 0xff;
+    g_assert_cmphex(ge_revision, ==, e->ge_revision);
+
+    g_assert_cmphex((qtest_readl(s, REG_DIRECT_COPY_READY) >> 4) & 0xf, ==,
+                    e->re4);
+
+    qtest_writeb(s, REG_XMAP_INDEX, XMAP_INDEX_PP1_REVISION);
+    g_assert_cmphex(qtest_readl(s, REG_REPP_STATUS_3) & 7, ==, e->pp1);
+
+    qtest_writeb(s, REG_VC3_INDEX, 0x1f);
+    g_assert_cmphex((qtest_readw(s, REG_VC3_DATA) >> 6) & 3, ==, e->vc3);
+
+    g_assert_cmphex(qtest_readb(s, REG_CMAP_RA_REVISION) & 7, ==, e->cmap);
+    g_assert_cmphex((qtest_readb(s, REG_CMAP_RA_REVISION) >> 4) & 7, ==,
+                    e->ra);
+    /* Set: no video option board, as on every captured Origin board. */
+    g_assert_cmphex(qtest_readb(s, REG_CMAP_RA_REVISION) & 0x80, ==, 0x80);
+    g_assert_cmphex(qtest_readl(s, REG_CMAP_RA_REVISION), ==,
+                    (uint32_t)qtest_readb(s, REG_CMAP_RA_REVISION) << 24);
+
+    name = mgras_decode_hinv_name(version1, version0, ge_revision, &ge, &re,
+                                  &tram0, &tram1);
+    g_assert_cmpuint(ge, ==, e->ge);
+    g_assert_cmpuint(re, ==, e->re);
+    g_assert_cmpuint(tram0, ==, e->tram);
+    /* One path on a one-GE board; both alike on a two-GE board. */
+    g_assert_cmpuint(tram1, ==, e->ge == 2 ? e->tram : 0);
+    g_assert_cmpstr(name, ==, e->hinv);
+
+    g_assert_cmphex(mgras_qom_get_uint(s, "x-test-error"), ==, 0);
+    qtest_quit(s);
+}
+
+/*
+ * 0x028004 carries the GE revision from reset until the first 0xa2 query,
+ * the kernel's or a client's, which replaces it with the answer (zero); a
+ * reset brings the revision back. Uses the E-series board so the revision
+ * cannot be mistaken for the answer.
+ */
+static void test_board_ge_revision_until_query(void)
+{
+    QTestState *s = qtest_init(MACHINE_ARGS " -global sgi-mgras.board=esi");
+
+    g_assert_cmphex(qtest_readl(s, REG_GE_REVISION), ==, 3);
+    g_assert_cmphex(qtest_readl(s, REG_GE_REVISION), ==, 3);
+
+    mgras_enter_context(s);
+    qtest_writel(s, REG_HQ_FLAGS_CLEAR, MGRAS_HQ_FLAG_QUERY);
+    qtest_writel(s, REG_CONTEXT_COMMAND, MGRAS_QUERY_TOKEN);
+    qtest_writel(s, REG_CONTEXT_COMMAND, 0x3a);
+    qtest_writel(s, REG_CONTEXT_COMMAND, 0);
+    g_assert_cmphex(qtest_readl(s, REG_GE_REVISION), ==, 3);
+    qtest_writel(s, REG_CONTEXT_COMMAND, 1);
+    g_assert_cmphex(qtest_readl(s, REG_HQ_FLAGS) & MGRAS_HQ_FLAG_QUERY, ==,
+                    MGRAS_HQ_FLAG_QUERY);
+    g_assert_cmphex(qtest_readl(s, REG_GE_REVISION), ==, 0);
+
+    qtest_system_reset(s);
+    g_assert_cmphex(qtest_readl(s, REG_GE_REVISION), ==, 3);
+    qtest_quit(s);
+}
+
+/*
+ * Without a board property the model is the textureless SI, the board
+ * every existing Origin 2000 run has used.
+ */
+static void test_board_default_is_si(void)
+{
+    mgras_reset();
+
+    g_assert_cmphex(qtest_readl(qts, REG_BOARD_INVENTORY), ==, 0x45000000);
+    g_assert_cmphex(qtest_readl(qts, REG_GE_REVISION), ==, 2);
+}
+
+/*
+ * A rejection reports through error_report and exits; it must not reach
+ * the guest as a signal (SIGABRT from a failed assertion, SIGSEGV from a
+ * wild pointer). WIFSIGNALED tells the two apart where a bare nonzero
+ * exit status cannot. Reimplemented from tests/qtest/sn-builder-test.c's
+ * own assert_qemu_rejects(): a qtest binary cannot link another qtest
+ * file's static helper.
+ */
+static void assert_qemu_rejects(const char *const args[], const char *message)
+{
+    g_autofree char *error_output = NULL;
+    int wait_status = 0;
+
+    g_assert_true(g_spawn_sync(NULL, (char **)args, NULL, 0, NULL, NULL,
+                               NULL, &error_output, &wait_status, NULL));
+    g_assert_false(g_spawn_check_exit_status(wait_status, NULL));
+    g_assert_false(WIFSIGNALED(wait_status));
+    g_assert_nonnull(strstr(error_output, message));
+}
+
+/*
+ * A board with TRAM or a second GE and RE is refused at realize, naming
+ * what the model lacks, unless x-unimplemented-board asks for it. "-qtest
+ * stdio -accel qtest" gets past the machine's stock-PROM-only check the
+ * same way sn0-origin2000-kona-test.c's rejection cases do.
+ */
+static void test_board_refused(gconstpointer data)
+{
+    const MgrasBoardExpect *e = data;
+    g_autofree char *global = g_strdup_printf("sgi-mgras.board=%s", e->board);
+    g_autofree char *message = g_strdup_printf("board '%s' (%s) needs",
+                                               e->board, e->hinv);
+    const char *args[] = {
+        qtest_qemu_binary(NULL), "-M", "origin2000", "-global", global,
+        "-display", "none", "-qtest", "stdio", "-accel", "qtest", NULL
+    };
+
+    assert_qemu_rejects(args, message);
+    if (e->tram) {
+        assert_qemu_rejects(args, "texture (TE1 and TRAM)");
+    }
+    if (e->ge > 1) {
+        assert_qemu_rejects(args, "a second GE and RE");
+    }
+}
+
+static void test_board_unknown_refused(void)
+{
+    const char *args[] = {
+        qtest_qemu_binary(NULL), "-M", "origin2000",
+        "-global", "sgi-mgras.board=vpro",
+        "-display", "none", "-qtest", "stdio", "-accel", "qtest", NULL
+    };
+
+    assert_qemu_rejects(args, "unknown board 'vpro'");
 }
 
 static void test_cmap_selector_addresses_the_right_slot(void)
@@ -6724,6 +6961,19 @@ static void test_migration(void)
 
     mgras_enter_context(from);
 
+    /*
+     * A query replaces the GE revision (2 on the default SI board) at
+     * 0x028004 with its zero answer. The destination starts from reset, so
+     * it reads 2 unless that word travels with the stream.
+     */
+    g_assert_cmphex(qtest_readl(to, REG_GE_REVISION), ==, 2);
+    qtest_writel(from, REG_HQ_FLAGS_CLEAR, MGRAS_HQ_FLAG_QUERY);
+    qtest_writel(from, REG_CONTEXT_COMMAND, MGRAS_QUERY_TOKEN);
+    qtest_writel(from, REG_CONTEXT_COMMAND, 0x3a);
+    qtest_writel(from, REG_CONTEXT_COMMAND, 0);
+    qtest_writel(from, REG_CONTEXT_COMMAND, 1);
+    g_assert_cmphex(qtest_readl(from, REG_GE_REVISION), ==, 0);
+
     qtest_writel(from, REG_GE_CTRL_A, 0x200000);
     qtest_writel(from, REG_GE_DATA_A, 0x11223344);
     qtest_writel(from, REG_GE_DATA_A, 0x55667788);
@@ -6748,6 +6998,7 @@ static void test_migration(void)
     sgi_migrate_stopped(from, uri);
 
     g_assert_cmphex(qtest_readb(to, REG_DAC_LUT_DATA_2), ==, 0xe4);
+    g_assert_cmphex(qtest_readl(to, REG_GE_REVISION), ==, 0);
     g_assert_cmphex(qtest_readl(to, REG_GE_READ_2), ==, 0);
     g_assert_cmphex(qtest_readl(to, REG_GE_READ_1), ==, 0);
     g_assert_cmphex(qtest_readl(to, REG_CONTEXT_COMMAND), ==,
@@ -7401,6 +7652,25 @@ int main(int argc, char **argv)
                    test_vc3_sram_round_trip);
     qtest_add_func("sn0/origin2000/mgras/vc3-register-file",
                    test_vc3_register_file);
+    qtest_add_func("sn0/origin2000/mgras/board-default-is-si",
+                   test_board_default_is_si);
+    qtest_add_func("sn0/origin2000/mgras/board-ge-revision-until-query",
+                   test_board_ge_revision_until_query);
+    qtest_add_func("sn0/origin2000/mgras/board-unknown-refused",
+                   test_board_unknown_refused);
+    for (size_t i = 0; i < ARRAY_SIZE(mgras_board_expect); i++) {
+        const MgrasBoardExpect *e = &mgras_board_expect[i];
+        g_autofree char *path = g_strdup_printf(
+            "sn0/origin2000/mgras/board-identity/%s", e->board);
+
+        qtest_add_data_func(path, e, test_board_identity);
+        if (!e->implemented) {
+            g_autofree char *refused = g_strdup_printf(
+                "sn0/origin2000/mgras/board-refused/%s", e->board);
+
+            qtest_add_data_func(refused, e, test_board_refused);
+        }
+    }
     qtest_add_func("sn0/origin2000/mgras/board-inventory-registers",
                    test_board_inventory_registers);
     qtest_add_func("sn0/origin2000/mgras/"
