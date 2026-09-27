@@ -735,22 +735,22 @@ static void sgi_hub_bwin_follow(SGIHubState *s, unsigned int n)
 
     memory_region_transaction_begin();
     memory_region_set_enabled(&s->bwin_window[n], false);
-    if (s->xtalk_io) {
+    if (s->xio_io_space) {
         memory_region_set_enabled(&s->bwin_io_window[n], false);
     }
     if (entry & IO_BWIN_SPACE) {
-        if (!s->xtalk_io || n != 0 || slice) {
+        if (!s->xio_io_space || n != 0 || slice) {
             qemu_log_mask(LOG_UNIMP,
                           "sgi-hub: unsupported I/O big window %u, widget %"
                           PRIu64 ", slice 0x%" PRIx64 "\n", n, widget, slice);
         } else {
             memory_region_set_alias_offset(&s->bwin_io_window[n],
-                                           widget << s->xtalk_widget_shift);
+                                           widget << s->xio_widget_shift);
             memory_region_set_enabled(&s->bwin_io_window[n], true);
         }
     } else {
         memory_region_set_alias_offset(&s->bwin_window[n],
-                                       (widget << s->xtalk_widget_shift) |
+                                       (widget << s->xio_widget_shift) |
                                        slice);
         memory_region_set_enabled(&s->bwin_window[n], true);
     }
@@ -4150,7 +4150,7 @@ bool sgi_hub_attach_module_identity(SGIHubState *s,
  * a zero-length read latches the PI error the same way the direct link's
  * own probe does (hw/mips/sgi/xio-link.c). Installed only
  * when this Hub's crosstalk port connects to a Crossbow link, which is the
- * only thing that ever sets xtalk_io; a direct-attach node wires its own
+ * only thing that ever sets xio_io_space; a direct-attach node wires its own
  * probe on the widget's own device window instead and never sets it.
 */
 #define SGI_HUB_ORIGIN2000_BUS_ERROR_ADDR    0x02400208
@@ -4160,7 +4160,7 @@ bool sgi_hub_attach_module_identity(SGIHubState *s,
 static hwaddr sgi_hub_origin2000_bus_error_xtalk_offset(SGIHubState *s)
 {
     return ((hwaddr)SGI_HUB_ORIGIN2000_BUS_ERROR_WIDGET <<
-            s->xtalk_widget_shift) +
+            s->xio_widget_shift) +
            SGI_HUB_ORIGIN2000_BUS_ERROR_ADDR -
            (hwaddr)SGI_HUB_ORIGIN2000_BUS_ERROR_WIDGET *
                SGI_HUB_ORIGIN2000_SMALL_WINDOW_SIZE;
@@ -4182,7 +4182,7 @@ static MemTxResult sgi_hub_origin2000_bus_error_read(void *opaque,
         return MEMTX_ERROR;
     }
     result = address_space_read(
-        &s->origin2000_xtalk_as,
+        &s->origin2000_xio_as,
         sgi_hub_origin2000_bus_error_xtalk_offset(s) + addr, attrs, bytes,
         size);
     *data = ldn_be_p(bytes, size);
@@ -4200,7 +4200,7 @@ static MemTxResult sgi_hub_origin2000_bus_error_write(void *opaque,
 
     stn_be_p(bytes, size, data);
     return address_space_write(
-        &s->origin2000_xtalk_as,
+        &s->origin2000_xio_as,
         sgi_hub_origin2000_bus_error_xtalk_offset(s) + addr, attrs, bytes,
         size);
 }
@@ -4222,7 +4222,7 @@ static bool sgi_hub_install_origin2000_bus_error(SGIHubState *s,
 {
     unsigned int slice;
 
-    if (!s->xtalk_io) {
+    if (!s->xio_io_space) {
         return true;
     }
     for (slice = 0; slice < s->cpus; slice++) {
@@ -4232,7 +4232,7 @@ static bool sgi_hub_install_origin2000_bus_error(SGIHubState *s,
             return false;
         }
     }
-    address_space_init(&s->origin2000_xtalk_as, s->xtalk,
+    address_space_init(&s->origin2000_xio_as, s->xio,
                        "sgi-hub.origin2000-xtalk");
     for (slice = 0; slice < s->cpus; slice++) {
         g_autofree char *region_name = g_strdup_printf(
@@ -4243,7 +4243,7 @@ static bool sgi_hub_install_origin2000_bus_error(SGIHubState *s,
                               region_name, 8);
         memory_region_add_subregion_overlap(
             s->cpu_sysmem[slice],
-            s->xtalk_carrier_base + SGI_HUB_ORIGIN2000_BUS_ERROR_ADDR,
+            s->io_space_base + SGI_HUB_ORIGIN2000_BUS_ERROR_ADDR,
             &s->origin2000_bus_error[slice], 1);
     }
     return true;
@@ -4264,14 +4264,14 @@ static void sgi_hub_realize(DeviceState *dev, Error **errp)
     }
     sgi_hub_assert_hot_reads_match_the_table();
 
-    if (!s->xtalk) {
+    if (!s->xio) {
         error_setg(errp, "the Hub needs the crosstalk space its big windows "
                          "translate into");
         return;
     }
-    if (s->xtalk_io &&
-        (s->xtalk_widget_shift != 34 ||
-         memory_region_size(s->xtalk_io) != (1ULL << 38))) {
+    if (s->xio_io_space &&
+        (s->xio_widget_shift != 34 ||
+        memory_region_size(s->xio_io_space) != (1ULL << 38))) {
         error_setg(errp, "Hub I/O target requires a 34-bit widget stride "
                          "and a 38-bit address space");
         return;
@@ -4329,7 +4329,7 @@ static void sgi_hub_realize(DeviceState *dev, Error **errp)
                          "at most %u", IO_WIDGET_ID_REVISION_MAX);
         return;
     }
-    if (!s->xtalk_widget_shift) {
+    if (!s->xio_widget_shift) {
         error_setg(errp, "the Hub needs the widget stride of the crosstalk "
                          "space its big windows translate into");
         return;
@@ -4541,12 +4541,13 @@ static void sgi_hub_realize(DeviceState *dev, Error **errp)
         char *name = g_strdup_printf("sgi-hub.bigwin%u", n);
 
         memory_region_init_alias(&s->bwin_window[n], OBJECT(dev), name,
-                                 s->xtalk, 0, SGI_HUB_BWIN_SIZE);
+                                 s->xio, 0, SGI_HUB_BWIN_SIZE);
         memory_region_add_subregion(&s->bwin, (hwaddr)n * SGI_HUB_BWIN_SIZE,
                                     &s->bwin_window[n]);
-        if (s->xtalk_io) {
+        if (s->xio_io_space) {
             memory_region_init_alias(&s->bwin_io_window[n], OBJECT(dev),
-                                     name, s->xtalk_io, 0, SGI_HUB_BWIN_SIZE);
+                                     name, s->xio_io_space, 0,
+                                     SGI_HUB_BWIN_SIZE);
             memory_region_set_enabled(&s->bwin_io_window[n], false);
             memory_region_add_subregion_overlap(&s->bwin,
                                                  (hwaddr)n * SGI_HUB_BWIN_SIZE,
@@ -4624,8 +4625,8 @@ static void sgi_hub_unrealize(DeviceState *dev)
     sgi_hub_rt_hold_reset(s);
     s->claim_ready = false;
     address_space_destroy(&s->bte_as);
-    if (s->xtalk_io) {
-        address_space_destroy(&s->origin2000_xtalk_as);
+    if (s->xio_io_space) {
+        address_space_destroy(&s->origin2000_xio_as);
     }
     for (view = 0; view < SGI_HUB_CLAIM_VIEWS; view++) {
         if (!sgi_hub_claim_view_present(s, view)) {
@@ -4856,18 +4857,17 @@ static const Property sgi_hub_properties[] = {
     DEFINE_PROP_UINT8("onewire-kind", SGIHubState, onewire_kind,
                       SGI_HUB_ONEWIRE_BLANK_DS2505),
     DEFINE_PROP_UINT32("manufacturer", SGIHubState, manufacturer, 0x36),
-    DEFINE_PROP_UINT32("xtalk-widget-shift", SGIHubState,
-                       xtalk_widget_shift, 0),
-    DEFINE_PROP_LINK("xtalk-io", SGIHubState, xtalk_io, TYPE_MEMORY_REGION,
-                     MemoryRegion *),
-    DEFINE_PROP_LINK("xtalk", SGIHubState, xtalk, TYPE_MEMORY_REGION,
+    DEFINE_PROP_UINT32("xio-widget-shift", SGIHubState,
+                       xio_widget_shift, 0),
+    DEFINE_PROP_LINK("xio-io-space", SGIHubState, xio_io_space,
+                     TYPE_MEMORY_REGION, MemoryRegion *),
+    DEFINE_PROP_LINK("xio", SGIHubState, xio, TYPE_MEMORY_REGION,
                      MemoryRegion *),
     DEFINE_PROP_LINK("cpu-sysmem0", SGIHubState, cpu_sysmem[0],
                      TYPE_MEMORY_REGION, MemoryRegion *),
     DEFINE_PROP_LINK("cpu-sysmem1", SGIHubState, cpu_sysmem[1],
                      TYPE_MEMORY_REGION, MemoryRegion *),
-    DEFINE_PROP_UINT64("xtalk-carrier-base", SGIHubState,
-                       xtalk_carrier_base, 0),
+    DEFINE_PROP_UINT64("io-space-base", SGIHubState, io_space_base, 0),
     DEFINE_PROP_LINK("claim-view0", SGIHubState, claim_view[0],
                      TYPE_MEMORY_REGION, MemoryRegion *),
     DEFINE_PROP_LINK("claim-view1", SGIHubState, claim_view[1],
@@ -4902,7 +4902,7 @@ static void sgi_hub_init(Object *obj)
 /*
  * ---- The crosstalk port interface ----
  * cpu_face() is the container every widget alias a direct link installs lands
- * in: the same "xtalk" link property the Hub's own big windows translate
+ * in: the same "xio" link property the Hub's own big windows translate
  * through. packet_face() is the Hub's own engine claim view,
  * SGI_HUB_DEVICE_VIEW: what a crosstalk-attach link's inbound decoder
  * dispatches a remote nasid's packet into, the same view a Hub's own network
@@ -4919,7 +4919,7 @@ static const char *sgi_hub_xio_port_describe(Object *port, unsigned int index)
 static MemoryRegion *sgi_hub_xio_port_cpu_face(Object *port,
                                                unsigned int index)
 {
-    return SGI_HUB(port)->xtalk;
+    return SGI_HUB(port)->xio;
 }
 
 static MemoryRegion *sgi_hub_xio_port_packet_face(Object *port,
@@ -4928,18 +4928,19 @@ static MemoryRegion *sgi_hub_xio_port_packet_face(Object *port,
     return SGI_HUB(port)->claim_view[SGI_HUB_DEVICE_VIEW];
 }
 
-bool sgi_hub_set_xtalk_io(SGIHubState *s, MemoryRegion *target, Error **errp)
+bool sgi_hub_set_xio_io_space(SGIHubState *s, MemoryRegion *target,
+                              Error **errp)
 {
     if (DEVICE(s)->realized) {
         error_setg(errp,
                    "cannot connect the Hub's crosstalk port after realize");
         return false;
     }
-    if (s->xtalk_io) {
+    if (s->xio_io_space) {
         error_setg(errp, "the Hub's crosstalk port is already connected");
         return false;
     }
-    s->xtalk_io = target;
+    s->xio_io_space = target;
     return true;
 }
 

@@ -1065,11 +1065,11 @@ static void sn0_node_create_hub(SN0NodeState *node)
                         SN0_HUB_I2C_NVRAM_FIRST_ADDR : 0);
     qdev_prop_set_uint8(DEVICE(&node->hub), "onewire-kind",
                         SGI_HUB_ONEWIRE_BLANK_DS2505);
-    qdev_prop_set_uint32(DEVICE(&node->hub), "xtalk-widget-shift",
+    qdev_prop_set_uint32(DEVICE(&node->hub), "xio-widget-shift",
                          SN0_XTALK_WIDGET_SHIFT);
-    object_property_set_link(OBJECT(&node->hub), "xtalk",
+    object_property_set_link(OBJECT(&node->hub), "xio",
                              OBJECT(&node->xtalk), &error_fatal);
-    qdev_prop_set_uint64(DEVICE(&node->hub), "xtalk-carrier-base",
+    qdev_prop_set_uint64(DEVICE(&node->hub), "io-space-base",
                          map->xtalk.carrier_base);
 
     /*

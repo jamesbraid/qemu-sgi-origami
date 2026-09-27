@@ -2551,7 +2551,7 @@ static const Property sgi_bridge_properties[] = {
     /*
      * Which four bits of a fabric address keep the destination widget. Zero
      * means the machine keeps none, so this belongs with fabric-base and
-     * fabric-node-shift rather than taking the Hub's xtalk-widget-shift name,
+     * fabric-node-shift rather than taking the Hub's xio-widget-shift name,
      * where zero is refused because it has no such meaning.
      */
     DEFINE_PROP_UINT32("fabric-widget-shift", SGIBridgeState,

@@ -225,7 +225,7 @@ void sgi_xio_crossbow_link_claim_fabric(MemoryRegion *fabric,
 }
 
 /*
- * The Hub's big-window "xtalk-io" mode issues a widget-addressed access: a
+ * The Hub's big-window "xio-io-space" mode issues a widget-addressed access: a
  * widget number and an offset within one SN0_XTALK_WIDGET_SIZE slice, the
  * same shape a small or big window decodes (hw/misc/sgi-hub.c,
  * IO_BWIN_SPACE). A switched fabric instead expects a packet address, the
@@ -319,7 +319,7 @@ bool sgi_xio_crossbow_link_prepare_hub(SGIXioCrossbowLink *link,
     memory_region_init_io(&link->outbound_face, owner,
                           &sgi_xio_crossbow_link_outbound_ops, link,
                           face_name, 1ULL << 38);
-    return sgi_hub_set_xtalk_io(&node->hub, &link->outbound_face, errp);
+    return sgi_hub_set_xio_io_space(&node->hub, &link->outbound_face, errp);
 }
 
 /*

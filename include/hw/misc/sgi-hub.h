@@ -151,20 +151,25 @@ struct SGIHubState {
     MemoryRegion bwin_io_window[SGI_HUB_BWIN_ENTRIES];
     MemoryRegion bwin_empty;
 
-    /* Crosstalk space and widget stride, both the machine's to define. */
-    MemoryRegion *xtalk;
-    MemoryRegion *xtalk_io;
-    uint32_t xtalk_widget_shift;
+    /*
+     * The widget-addressed XIO space the small and big windows reach, and
+     * the widget stride within it, both the machine's to define. The
+     * I/O-space target carries a big window whose translation entry
+     * selects the widget's I/O space.
+     */
+    MemoryRegion *xio;
+    MemoryRegion *xio_io_space;
+    uint32_t xio_widget_shift;
 
     /*
-     * Origin 2000's PROM PI-error probe, installed only when xtalk_io
+     * Origin 2000's PROM PI-error probe, installed only when xio_io_space
      * connects this Hub to a Crossbow link: each processor's own physical
-     * view (the machine's to define, one per populated slice) and the carrier
-     * base this node's crosstalk space sits at within it.
+     * view (the machine's to define, one per populated slice) and the
+     * processor-physical base of the I/O space within it.
      */
     MemoryRegion *cpu_sysmem[SGI_HUB_PROCESSORS];
-    uint64_t xtalk_carrier_base;
-    AddressSpace origin2000_xtalk_as;
+    uint64_t io_space_base;
+    AddressSpace origin2000_xio_as;
     MemoryRegion origin2000_bus_error[SGI_HUB_PROCESSORS];
 
     /* The engines' view of the fabric: the device claim view, as a space. */
@@ -471,13 +476,14 @@ bool sgi_hub_attach_module_identity(SGIHubState *s,
                                     Error **errp);
 
 /*
- * Wire this Hub's own outbound big-window I/O traffic (the "xtalk-io"
+ * Wire this Hub's own outbound big-window I/O traffic (the "xio-io-space"
  * property) to target: a crosstalk-attach link's own doing, since a directly
  * attached Hub never populates it. Must run before this Hub realizes, and at
  * most once; target typically outlives the call by far (the crossbow link's
  * own proxy region, filled in once its Crossbow has realized).
  */
-bool sgi_hub_set_xtalk_io(SGIHubState *s, MemoryRegion *target, Error **errp);
+bool sgi_hub_set_xio_io_space(SGIHubState *s, MemoryRegion *target,
+                              Error **errp);
 
 /*
  * Every Hub in the machine, in canonical stride order (this Hub's own
