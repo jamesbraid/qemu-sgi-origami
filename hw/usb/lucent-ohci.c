@@ -68,7 +68,10 @@ DECLARE_CLASS_CHECKERS(LucentOHCIClass, LUCENT_OHCI, TYPE_LUCENT_OHCI)
  * HcRhDescriptorA, PowerOnToPowerGoodTime 10h, OverCurrentProtectionMode
  * and PowerSwitchingMode set and NoPowerSwitching clear, beside the port
  * count; in HcRhDescriptorB, PortPowerControlMask 0006h, masking both
- * ports, and DeviceRemovable zero.
+ * ports, and DeviceRemovable zero. Table 46 prints the mask's bits as
+ * 17:16, which cannot hold 0006h; it is placed where OpenHCI 1.0a puts
+ * PortPowerControlMask, port n at bit 16 + n (section 7.4.2). With a
+ * num-ports other than the part's two, ports past the second are unmasked.
  */
 #define LUCENT_OHCI_RHA_POWER_ON    0x10000900u
 #define LUCENT_OHCI_RHB_POWER_ON    0x00060000u
@@ -315,14 +318,16 @@ static const MemoryRegionOps lucent_ohci_fm_number_ops = {
 
 /*
  * Root-hub port power, as OpenHCI 1.0a sections 7.4.1 to 7.4.4 switch it.
- * With NoPowerSwitching set the ports are always powered and no command
- * reaches them. Otherwise PowerSwitchingMode clear lets only the global
- * commands (HcRhStatus) switch every port; set, it lets each port answer
- * only the per-port commands (HcRhPortStatus) when its PortPowerControlMask
- * bit in HcRhDescriptorB is set, and only the global ones when it is clear.
- * The shared core acts on both kinds for every port whatever the
- * descriptors say, and reports every port powered; these overlays filter
- * the commands and report PortPowerStatus as the port holds it.
+ * With NoPowerSwitching set the ports are always powered. Otherwise
+ * PowerSwitchingMode clear lets only the global commands (HcRhStatus)
+ * switch every port; set, it lets each port answer only the per-port
+ * commands (HcRhPortStatus) when its PortPowerControlMask bit in
+ * HcRhDescriptorB is set, and only the global ones when it is clear. The
+ * shared core acts on both kinds for every port whatever the descriptors
+ * say, and reports every port powered; these overlays filter the commands
+ * and report PortPowerStatus as the port holds it. That no command reaches
+ * a port while NoPowerSwitching is set is this model's reading; the
+ * specification does not say.
  */
 static bool lucent_ohci_port_switched(OHCIState *ohci, unsigned port,
                                       bool per_port)
