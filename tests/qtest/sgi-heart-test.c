@@ -6,6 +6,7 @@
 
 #define HEART_PATH "/machine/peripheral/heart"
 #define HEART_REGS 0x0ff00000ULL
+#define HEART_STATUS (HEART_REGS + 0x80)
 #define HEART_ONEWIRE (HEART_REGS + 0xb8)
 #define HEART_ONEWIRE_LO (HEART_REGS + 0xbc)
 #define HEART_ONEWIRE_COMMAND(pulse, sample) \
@@ -707,6 +708,17 @@ static void test_interrupts(void)
     qtest_quit(s);
 }
 
+static void test_processor_status(void)
+{
+    QTestState *s = heart_start(128, "");
+    uint64_t status = qtest_readq(s, HEART_STATUS);
+
+    g_assert_cmphex(status & 0xf, ==, 8);
+    g_assert_cmphex(status & 0x10, ==, 0x10);
+    g_assert_cmphex(status, ==, 0x18);
+    qtest_quit(s);
+}
+
 static void test_reset(void)
 {
     QTestState *s = heart_start(128, "");
@@ -749,7 +761,7 @@ static void test_reset(void)
     }
     g_assert_cmphex(qtest_readq(s, HEART_REGS + 0x10030), ==, 0);
     g_assert_false(qtest_get_irq(s, 1));
-    g_assert_cmphex(qtest_readq(s, HEART_REGS + 0x80), ==, 0x10);
+    g_assert_cmphex(qtest_readq(s, HEART_STATUS), ==, 0x18);
     g_assert_cmphex(qtest_readq(s, HEART_REGS + 0x50000), ==, 0);
     g_assert_cmphex(qtest_readq(s, HEART_REGS + 0x20000), ==, 0);
     g_assert_cmpuint(qtest_readq_tx(s, PROBE_RAM, &value), ==,
@@ -804,6 +816,7 @@ static void test_migration(void)
         "{'execute':'migrate-incoming', 'arguments':{'uri':%s}}", uri);
     sgi_migrate_stopped(from, uri);
     sgi_wait_migration_status(to, "completed", 30);
+    g_assert_cmphex(qtest_readq(to, HEART_STATUS), ==, 0x18);
     g_assert_cmphex(qtest_readl(to, HEART_ONEWIRE_LO) & 3, ==, 0);
     qtest_clock_step(to, 464999);
     g_assert_cmphex(qtest_readl(to, HEART_ONEWIRE_LO) & 3, ==, 0);
@@ -1120,6 +1133,7 @@ int main(int argc, char **argv)
     g_test_add_func("/heart/widget-diagnostics", test_widget_diagnostics);
     g_test_add_func("/heart/widget-packets", test_widget_packets);
     g_test_add_func("/heart/interrupts", test_interrupts);
+    g_test_add_func("/heart/processor-status", test_processor_status);
     g_test_add_func("/heart/reset", test_reset);
     g_test_add_func("/heart/migration", test_migration);
     g_test_add_func("/heart/onewire-empty", test_onewire_empty);
