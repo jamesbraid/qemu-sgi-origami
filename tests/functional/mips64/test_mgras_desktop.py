@@ -6,7 +6,7 @@
 #
 # SPDX-License-Identifier: GPL-2.0-or-later
 """
-test_mgras_greeter.py stops at the xdm greeter. Everything after a
+The same boot checks the xdm greeter before login. Everything after a
 graphical login -- Xsgi loading the DAC gamma ramp, 4Dwm drawing the
 granite backdrop from colour-index image data, the desktop icons' label
 plates, the Toolchest -- goes through SI paths the greeter never uses,
@@ -15,7 +15,7 @@ desktop that a fresh login produces.
 
 The sequence:
 
-  1. Boot the same machine profile as test_mgras_greeter.py (one-node
+  1. Boot the one-node
      Origin 2000, two R10000s, 256 MiB, root-si.qcow2) and pick PROM
      menu option 1.
   2. On the serial console, log in as root and give the guest account a
@@ -23,7 +23,7 @@ The sequence:
      refuses an empty one, so without this the graphical login cannot
      succeed. The disk is opened with snapshot=on, so the change never
      reaches the image.
-  3. Wait for the greeter's own colour checks (GREETER_COLOR_CHECKS) to
+  3. Wait for the greeter's colour and structural checks to
      pass, so the keystrokes land on a greeter that is up and drawn,
      rather than racing X's startup.
   4. Type the name and password through HMP sendkey, the same key-only
@@ -55,7 +55,8 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import lib_input
-from lib_mgras_regions import DESKTOP_COLOR_CHECKS, GREETER_COLOR_CHECKS
+from lib_mgras_greeter import GREETER_SCREEN_CHECKS
+from lib_mgras_regions import DESKTOP_COLOR_CHECKS
 from lib_prom import (FORK_ROOT, MACHINES, drive_console, require_assets,
                       run_record, utc_now)
 from lib_screen import ScreenCheckError, poll_screendump_until_checks_pass
@@ -72,8 +73,9 @@ FIRMWARE_REL = os.path.join('assets', 'firmware', RELEASE,
                             'ip27prom.payload.bin')
 DISK_REL = os.path.join('assets', 'irix', RELEASE, 'root-si.qcow2')
 
-# The same profile as test_mgras_greeter.py; see that file for why the
-# one-node module and why multi-threaded TCG.
+# The one-node module has its own io6g BaseIO and built-in SI head. The
+# earlier four-node greeter boot could hit a Crossbow link-reset race;
+# QEMU 2324ead1d3 fixed it before this profile was qualified.
 MACHINE = (MACHINES['origin2000']
            + ',topology=origin2000-one-node,debug-leds=off')
 SMP = '2'
@@ -85,8 +87,8 @@ GUEST_USER = 'guest'
 GUEST_PASSWORD = 'origami65'
 
 # Boot to the serial login prompt, then the root login and passwd on top.
-# test_mgras_greeter.py gives the boot alone 1200s; the passwd exchange
-# takes seconds.
+# The earlier greeter-only boot allowed 1200s; the passwd exchange takes
+# seconds.
 SERIAL_TIMEOUT_SECONDS = 1320
 
 # Each rule fires once, in order of the guest's prompts. The root shell
@@ -139,9 +141,7 @@ FIELD_SETTLE_SECONDS = 1.0
 if QemuSystemTest is not None:
 
     class MgrasDesktop(QemuSystemTest):
-        """Boots IRIX on the Origin 2000's SI graphics, logs in as guest
-        through the xdm greeter and requires the default desktop to show
-        its expected colours."""
+        """Check the painted SI greeter, then log in and check the desktop."""
 
         @skipBigDataTest()
         @skipSlowTest()
@@ -198,7 +198,7 @@ if QemuSystemTest is not None:
                 phase = time.monotonic()
                 try:
                     greeter = poll_screendump_until_checks_pass(
-                        self, vm, greeter_path, GREETER_COLOR_CHECKS,
+                        self, vm, greeter_path, GREETER_SCREEN_CHECKS,
                         interval_seconds=POLL_INTERVAL_SECONDS,
                         timeout_seconds=GREETER_SETTLE_SECONDS)
                 except ScreenCheckError as exc:

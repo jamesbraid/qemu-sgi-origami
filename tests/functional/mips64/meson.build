@@ -112,16 +112,8 @@ test_mips64_timeouts = {
   # expected release. BOOT_TIMEOUT_SECONDS in test_irix_installed_boot.py
   # keeps a 60s margin under this.
   'irix_installed_boot' : 960,
-  # Boot the installed IRIX 6.5.30 disk on the Origin 2000's one-node
-  # module (two CPUs, 256 MiB) with SI/MGRAS graphics to the xdm
-  # icon-chooser greeter (no login) and check the resulting screendump.
-  # Two variable-cost phases in sequence, each with its own budget in
-  # test_mgras_greeter.py: BOOT_TIMEOUT_SECONDS to the serial login:
-  # prompt, then SETTLE_TIMEOUT_SECONDS=180 polling the screendump for
-  # the xdm greeter's own paint -- see those constants' own comments in
-  # test_mgras_greeter.py for the measurements this budget is based on.
-  'mgras_greeter' : 1560,
-  # The same boot as mgras_greeter carried through a graphical login:
+  # One IRIX 6.5.30 boot checks the painted SI greeter before login,
+  # then carries through a graphical login to check the desktop:
   # test_mgras_desktop.py's SERIAL_TIMEOUT_SECONDS (1320, the boot plus a
   # root login and passwd on the serial console), GREETER_SETTLE_SECONDS
   # (300) for the greeter's colours and DESKTOP_SETTLE_SECONDS (600) for
@@ -253,7 +245,6 @@ tests_mips64_system_thorough = [
   'irix_diag_origin2000_pci_carrier',
   'irix_diag_origin300',
   'irix_installed_boot',
-  'mgras_greeter',
   'mgras_desktop',
   'irix_eg',
   'irix_tg',
