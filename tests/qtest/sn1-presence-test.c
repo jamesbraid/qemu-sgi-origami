@@ -65,6 +65,7 @@
 #define STATE_SLOT_STRIDE 0x100
 #define STATE_SEEN 0x00
 #define STATE_DONE 0x08
+#define STATE_LIVE 0x10
 
 #define DONE_MAGIC 0xd04e
 
@@ -87,6 +88,17 @@
  */
 #define POST_VALUE 0x24
 #define PARTNER_WAIT_TICKS 3750
+
+/*
+ * The liveness test's values: how late B posts (half a second of the
+ * real-time counter, as a descheduled host thread through the PROM's cache
+ * initialisation would make it), and how many times each processor reads
+ * its partner's register before giving up. The PROM reads 200,000 times;
+ * this is shorter so the test is quick, and still far longer than a partner
+ * posting on time needs.
+ */
+#define LATE_POST_TICKS 625000
+#define LIVENESS_TRIES 20000
 
 /* Each interface's own two presence bits, by interface. */
 #define PRESENCE_PI0 0x30
@@ -115,6 +127,7 @@
 #define OPC_BEQ 4
 #define OPC_BNE 5
 #define OPC_ANDI 12
+#define OPC_DADDIU 25
 #define OPC_ORI 13
 #define OPC_XORI 14
 #define OPC_LUI 15
@@ -381,6 +394,63 @@ static void build_handshake_program(Image *p)
     emit_record(p);
 }
 
+/*
+ * The liveness program: the handshake program with the PROM's bound on the
+ * pair liveness poll. Each processor reads its partner's register a fixed
+ * number of times rather than forever, and records in STATE_LIVE whether
+ * the partner's post arrived. B posts late. On the PROM a poller that gives
+ * up clears its partner's CPU enable, and the late processor is lost
+ * ("CPU failed early init"). The poll counts reads rather than timing on
+ * the real-time counter, so the partner park never sees it.
+ */
+static void build_liveness_program(Image *p)
+{
+    unsigned int to_post, poll, to_seen, to_after, to_partner, to_read;
+
+    emit_prologue(p);
+    emit_i(p, OPC_SD, R_S2, R_ZERO, 0);             /* past the join */
+
+    emit_i(p, OPC_ANDI, R_T2, R_T3, 1);             /* t3 = slot */
+    emit_dsll(p, R_T4, R_T3, 3);
+    emit_daddu(p, R_S7, R_S0, R_T4);
+    emit_i(p, OPC_XORI, R_T3, R_T4, 1);             /* the partner's slot */
+    emit_dsll(p, R_T4, R_T4, 3);
+    emit_daddu(p, R_FP, R_S0, R_T4);
+
+    /* B alone (processor number 1) posts late. */
+    emit_i(p, OPC_XORI, R_T2, R_T4, 1);             /* zero only for B */
+    to_post = emit_branch(p, OPC_BNE, R_T4, R_ZERO);
+    emit_rt_wait(p, LATE_POST_TICKS);
+    patch_branch(p, to_post, p->pos);
+
+    /* Post, then read the partner's register at most LIVENESS_TRIES times. */
+    emit_i(p, OPC_ORI, R_ZERO, R_T0, POST_VALUE);
+    emit_i(p, OPC_SD, R_S7, R_T0, PI_RT_COMPARE_A);
+    emit_li32(p, R_T5, LIVENESS_TRIES);
+    poll = p->pos;
+    emit_i(p, OPC_LD, R_FP, R_T1, PI_RT_COMPARE_A);
+    to_seen = emit_branch(p, OPC_BEQ, R_T1, R_T0);
+    emit_i(p, OPC_DADDIU, R_T5, R_T5, 0xffff);      /* one try fewer */
+    emit_i(p, OPC_BNE, R_T5, R_ZERO, 0);
+    patch_branch(p, p->pos - 4, poll);
+    emit_nop(p);
+    to_after = emit_branch(p, OPC_BEQ, R_ZERO, R_ZERO); /* gave up */
+    patch_branch(p, to_seen, p->pos);
+    emit_i(p, OPC_ORI, R_ZERO, R_T1, 1);
+    emit_i(p, OPC_SD, R_S1, R_T1, STATE_LIVE);
+    patch_branch(p, to_after, p->pos);
+
+    /* Then as the handshake program: late publishers, timed partners. */
+    to_partner = emit_branch(p, OPC_BNE, R_T3, R_ZERO);
+    emit_rt_wait(p, PUBLISH_DELAY_TICKS);
+    emit_publish(p);
+    to_read = emit_branch(p, OPC_BEQ, R_ZERO, R_ZERO);
+    patch_branch(p, to_partner, p->pos);
+    emit_rt_wait(p, PARTNER_WAIT_TICKS);
+    patch_branch(p, to_read, p->pos);
+    emit_record(p);
+}
+
 static void write_exact(int fd, const uint8_t *buf, size_t len)
 {
     size_t sent = 0;
@@ -439,7 +509,7 @@ static const char accel_icount[] =
  * hub lock must have come back free, whatever the reads were.
  */
 static void run_program(void (*build)(Image *p), const char *accel,
-                        uint64_t seen[4])
+                        uint64_t seen[4], uint64_t *live)
 {
     static const char names[4] = { 'A', 'B', 'C', 'D' };
     g_autofree char *prom = NULL;
@@ -473,6 +543,11 @@ static void run_program(void (*build)(Image *p), const char *accel,
         seen[n] = state_word(s, n, STATE_SEEN);
         g_test_message("processor %c: first presence read 0x%" PRIx64,
                        names[n], seen[n]);
+        if (live) {
+            live[n] = state_word(s, n, STATE_LIVE);
+            g_test_message("processor %c: saw its partner's post: %" PRIu64,
+                           names[n], live[n]);
+        }
     }
     for (unsigned int n = 0; n < 4; n++) {
         g_assert_cmphex(done[n], ==, DONE_MAGIC);
@@ -494,7 +569,7 @@ static void check_first_presence_read_sees_every_interface(const char *accel)
         g_test_skip("TCG is unavailable");
         return;
     }
-    run_program(build_program, accel, seen);
+    run_program(build_program, accel, seen, NULL);
     /* Neither publisher read the other interface's bits early. */
     g_assert_cmphex(seen[0], ==, PRESENCE_ALL);
     g_assert_cmphex(seen[2], ==, PRESENCE_ALL);
@@ -508,13 +583,28 @@ static void check_partner_read_sees_its_interface(const char *accel)
         g_test_skip("TCG is unavailable");
         return;
     }
-    run_program(build_handshake_program, accel, seen);
+    run_program(build_handshake_program, accel, seen, NULL);
     /* Each partner read its own interface's bits, published late. */
     g_assert_cmphex(seen[1] & PRESENCE_PI0, ==, PRESENCE_PI0);
     g_assert_cmphex(seen[3] & PRESENCE_PI1, ==, PRESENCE_PI1);
     /* And the publishers still saw both interfaces. */
     g_assert_cmphex(seen[0], ==, PRESENCE_ALL);
     g_assert_cmphex(seen[2], ==, PRESENCE_ALL);
+}
+
+static void check_late_partner_post_survives_liveness_poll(const char *accel)
+{
+    uint64_t seen[4], live[4];
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+    run_program(build_liveness_program, accel, seen, live);
+    /* Every processor saw its partner's post, B's late one included. */
+    for (unsigned int n = 0; n < 4; n++) {
+        g_assert_cmpuint(live[n], ==, 1);
+    }
 }
 
 static void test_first_presence_read_sees_every_interface(void)
@@ -547,6 +637,21 @@ static void test_partner_read_icount(void)
     check_partner_read_sees_its_interface(accel_icount);
 }
 
+static void test_late_partner_post(void)
+{
+    check_late_partner_post_survives_liveness_poll(accel_mttcg);
+}
+
+static void test_late_partner_post_round_robin(void)
+{
+    check_late_partner_post_survives_liveness_poll(accel_rr);
+}
+
+static void test_late_partner_post_icount(void)
+{
+    check_late_partner_post_survives_liveness_poll(accel_icount);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -562,5 +667,13 @@ int main(int argc, char **argv)
                    test_first_presence_read_icount);
     qtest_add_func("sn1/presence/icount/partner-read-sees-its-interface",
                    test_partner_read_icount);
+    qtest_add_func("sn1/presence/late-partner-post-survives-liveness-poll",
+                   test_late_partner_post);
+    qtest_add_func("sn1/presence/round-robin/"
+                   "late-partner-post-survives-liveness-poll",
+                   test_late_partner_post_round_robin);
+    qtest_add_func("sn1/presence/icount/"
+                   "late-partner-post-survives-liveness-poll",
+                   test_late_partner_post_icount);
     return g_test_run();
 }

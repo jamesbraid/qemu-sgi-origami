@@ -30,6 +30,7 @@ typedef enum SGIBedrockHoldKind {
     SGI_BEDROCK_HOLD_PERF_YIELD = 3,     /* H3: a monopoliser cedes a quantum */
     SGI_BEDROCK_HOLD_PRESENCE = 4,       /* H4: a publisher awaits its peer's */
     SGI_BEDROCK_HOLD_PARTNER = 5,        /* H4: partner awaits its publisher */
+    SGI_BEDROCK_HOLD_LIVENESS = 6,       /* H4: a poster awaits its partner's */
 } SGIBedrockHoldKind;
 
 struct SGIBedrockState {
