@@ -260,7 +260,7 @@ static QTestState *qts;
                 (((reg) & 0xff) << 8) | (payload_bytes)))
 
 
-#define MGRAS_QOM_PATH "/machine/mgras"
+#define MGRAS_QOM_PATH "/machine/module0/io3"
 
 static uint64_t mgras_qom_get_uint(QTestState *qts, const char *property)
 {

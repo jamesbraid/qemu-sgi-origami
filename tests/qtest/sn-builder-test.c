@@ -1044,7 +1044,7 @@ static void test_origin2000_one_node_onboard_board_is_xio_baseio(
         "-display none");
     g_autofree char *type = qom_child_type(qts, "/machine/module0", "io1");
     g_autofree char *preset = NULL;
-    g_autofree char *head = qom_child_type(qts, "/machine", "mgras");
+    g_autofree char *head = qom_child_type(qts, "/machine/module0", "io3");
 
     g_assert_cmpstr(type, ==, "sgi-xio-baseio");
     preset = qom_get_str(qts, "/machine/module0/io1", "preset");
@@ -1068,9 +1068,14 @@ static void test_origin2000_one_node_onboard_board_is_xio_baseio(
 #define WIDGET_ID_DATA 4
 #define MGRAS_WIDGET_ID ((0xc003u << 12) | (0x2aau << 1) | 1)
 
-static void assert_mgras_at_widget(QTestState *qts, unsigned int widget)
+/*
+ * An MGRAS is an XIO board named by its slot, under its module: io3 on an
+ * Origin 2000, io6 in a GIGAchannel cabinet.
+ */
+static void assert_mgras_at_widget(QTestState *qts, const char *module,
+                                   const char *slot, unsigned int widget)
 {
-    g_autofree char *head = qom_child_type(qts, "/machine", "mgras");
+    g_autofree char *head = qom_child_type(qts, module, slot);
     uint64_t bit = 1u << widget;
     uint8_t bytes[4];
 
@@ -1090,8 +1095,54 @@ static void test_mgras_placed_by_the_catalogue(const void *data)
 {
     QTestState *qts = qtest_init("-M origin2000 -display none");
 
-    assert_mgras_at_widget(qts, MGRAS_WIDGET);
+    assert_mgras_at_widget(qts, "/machine/module0", "io3", MGRAS_WIDGET);
     qtest_quit(qts);
+}
+
+/*
+ * An SI board fitted at launch at an empty slot, as a -device: it lands
+ * under its module by slot name and answers its widget identity through
+ * the Crossbow, IO5 being crossbow0's widget 14.
+ */
+static void test_mgras_fitted_at_a_named_slot(const void *data)
+{
+    QTestState *qts = qtest_init(
+        "-M origin2000 -display none -device sgi-mgras,slot=io5");
+    g_autofree char *head = qom_child_type(qts, "/machine/module0", "io5");
+    uint8_t bytes[4];
+
+    g_assert_cmpstr(head, ==, "sgi-mgras");
+    g_assert_true(qtest_memread_cpu(qts, 0, XTALK_BASE +
+                                    14 * XTALK_WIDGET_SIZE + WIDGET_ID_DATA,
+                                    bytes, sizeof(bytes)));
+    g_assert_cmphex(ldl_be_p(bytes), ==, MGRAS_WIDGET_ID);
+    qtest_quit(qts);
+}
+
+/* Whether any child of @parent is a board of QOM type @type. */
+static bool qom_has_child_of_type(QTestState *qts, const char *parent,
+                                  const char *type)
+{
+    g_autofree char *wanted = g_strdup_printf("child<%s>", type);
+    QDict *response = qtest_qmp(qts, "{ 'execute': 'qom-list',"
+                                     " 'arguments': { 'path': %s } }",
+                                     parent);
+    const QListEntry *entry;
+    bool found = false;
+
+    if (!qdict_haskey(response, "return")) {
+        qobject_unref(response);
+        return false;
+    }
+    for (entry = qlist_first(qdict_get_qlist(response, "return")); entry;
+         entry = qlist_next(entry)) {
+        QDict *item = qobject_to(QDict, qlist_entry_obj(entry));
+        const char *item_type = qdict_get_try_str(item, "type");
+
+        found |= item_type && g_str_equal(item_type, wanted);
+    }
+    qobject_unref(response);
+    return found;
 }
 
 static void test_no_mgras_without_a_catalogue_record(const void *data)
@@ -1105,9 +1156,11 @@ static void test_no_mgras_without_a_catalogue_record(const void *data)
 
     for (i = 0; i < G_N_ELEMENTS(machines); i++) {
         QTestState *qts = qtest_init(machines[i]);
-        g_autofree char *head = qom_child_type(qts, "/machine", "mgras");
 
-        g_assert_null(head);
+        g_assert_false(qom_has_child_of_type(qts, "/machine/module0",
+                                             "sgi-mgras"));
+        g_assert_false(qom_has_child_of_type(qts, "/machine/module1",
+                                             "sgi-mgras"));
         qtest_quit(qts);
     }
 }
@@ -1117,7 +1170,8 @@ static void test_mgras_in_a_gigachannel_cabinet(const void *data)
     QTestState *qts = qtest_init(
         "-M origin200,topology=origin200-gigachannel-mgras -display none");
 
-    assert_mgras_at_widget(qts, MGRAS_WIDGET);
+    assert_mgras_at_widget(qts, "/machine/module1", "io6",
+                           MGRAS_WIDGET);
     qtest_quit(qts);
 }
 
@@ -1363,6 +1417,8 @@ int main(int argc, char **argv)
     qtest_add_data_func(
         "sn/builder/origin2000-one-node-onboard-board-is-xio-baseio", NULL,
         test_origin2000_one_node_onboard_board_is_xio_baseio);
+    qtest_add_data_func("sn/builder/mgras-fitted-at-a-named-slot", NULL,
+                        test_mgras_fitted_at_a_named_slot);
     qtest_add_data_func("sn/builder/mgras-placed-by-the-catalogue", NULL,
                         test_mgras_placed_by_the_catalogue);
     qtest_add_data_func("sn/builder/no-mgras-without-a-catalogue-record",

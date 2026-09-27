@@ -10,10 +10,8 @@
  * a lookup entirely separate from the QOM composition tree those add_child()
  * calls populate, so with no id set neither head could ever be named --
  * screendump always fell back to console index 0. The fix gives each board
- * a stable id built from what the catalogue and topology already assign it:
- * MGRAS, a single fixed board, keeps the same "mgras" name its QOM child
- * already carries; a Crossbow-attached board such as KONA reuses its own
- * "io-boardN" catalogue index. This file boots a two-head composition and
+ * a stable id, its IRIX slot name: io3 for the MGRAS the default
+ * origin2000 fits at IO3. This file boots a two-head composition and
  * asserts both ids resolve, that a screendump can target each head by its
  * id, and that naming an unknown device fails cleanly instead of silently
  * falling back to console 0.
@@ -41,12 +39,12 @@
 #define MACHINE_ARGS \
     "-M origin2000 -device sgi-kona,id=kona0,slot=io4"
 
-#define MACHINE_PATH      "/machine"
-#define MGRAS_LEAF        "mgras"
+#define MGRAS_MODULE_PATH "/machine/module0"
+#define MGRAS_LEAF        "io3"
 #define KONA_MODULE_PATH  "/machine/module0"
 #define KONA_LEAF         "kona0"
 
-#define MGRAS_DEVICE_ID   "mgras"
+#define MGRAS_DEVICE_ID   "io3"
 #define KONA_DEVICE_ID    "kona0"
 #define UNKNOWN_DEVICE_ID "no-such-display-head"
 
@@ -80,7 +78,7 @@ static void assert_qom_child(const char *parent_path, const char *leaf)
 
 static void test_ids_resolve_in_qom_tree(void)
 {
-    assert_qom_child(MACHINE_PATH, MGRAS_LEAF);
+    assert_qom_child(MGRAS_MODULE_PATH, MGRAS_LEAF);
     assert_qom_child(KONA_MODULE_PATH, KONA_LEAF);
 }
 
@@ -146,7 +144,7 @@ static void test_screendump_unknown_device_fails_cleanly(void)
     unlink(path);
 
     /* The failed lookup left the machine itself alone. */
-    assert_qom_child(MACHINE_PATH, MGRAS_LEAF);
+    assert_qom_child(MGRAS_MODULE_PATH, MGRAS_LEAF);
 }
 
 int main(int argc, char **argv)
