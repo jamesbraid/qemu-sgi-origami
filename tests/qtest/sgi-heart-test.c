@@ -480,6 +480,12 @@ static void test_widget_timeout(void)
                      MEMTX_ERROR);
     g_assert_cmpuint(qtest_readb_tx(s, HEART_WIDGET + 0x44, &byte), ==,
                      MEMTX_ERROR);
+    g_assert_cmpuint(qtest_readw_tx(s, HEART_WIDGET + 0x44, &half), ==,
+                     MEMTX_ERROR);
+    g_assert_cmpuint(qtest_writeb_tx(s, HEART_WIDGET + 0x44, 0), ==,
+                     MEMTX_ERROR);
+    g_assert_cmpuint(qtest_writew_tx(s, HEART_WIDGET + 0x44, 0), ==,
+                     MEMTX_ERROR);
     g_assert_cmpuint(qtest_readl_tx(s, HEART_WIDGET + 0x48, &word), ==,
                      MEMTX_ERROR);
     g_assert_cmphex(qtest_readl(s, HEART_WIDGET + 0x2c), ==, 0x12345678);
