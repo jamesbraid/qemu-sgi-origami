@@ -577,6 +577,9 @@ if QemuSystemTest is not None:
             # Count wrap late: a Compare match the CPU model missed (see
             # docs/known-issues.md in the project checkout). A stall of the
             # emulator itself prints "Probably caused by splhi" instead.
+            # It runs even after the row was cut short or its relaunch
+            # failed (lib_irix_diag.OBSERVERS), counting the consoles of
+            # the boots that did happen.
             launches = [self.first] + ([self.here] if self.here not in
                                        (None, self.first) else [])
             misses = sum(len(re.findall(rb'Probable lost interrupt!',

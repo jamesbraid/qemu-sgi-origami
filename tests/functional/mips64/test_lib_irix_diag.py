@@ -186,6 +186,11 @@ class RunChecksTests(unittest.TestCase):
         self.assertNotIn('oltape', ran)
         self.assertIn('budget ran out during olmem', results['oltape'][1])
 
+    def test_the_timer_still_counts_after_a_stop(self):
+        ran, results = self._run({'olmem': OutOfTime('spent')})
+        self.assertIn('timer', ran)
+        self.assertEqual(results['timer'][0], 'pass')
+
     def test_a_failed_relaunch_is_recorded_and_ends_the_row(self):
         row = parse_row('m', 1, _line(row_id='origin2000_one_node',
                                       mediaio=RUN, rad1=RUN, parallel=RUN))
@@ -198,6 +203,7 @@ class RunChecksTests(unittest.TestCase):
         self.assertEqual(results['persistence'][:2],
                          ('fail', 'the relaunch timed out'))
         self.assertEqual(results['parallel'][0], 'not run')
+        self.assertEqual(results['timer'][0], 'pass')
 
 
 # Output shaped like the diagnostics' own, from the captures cited in the
