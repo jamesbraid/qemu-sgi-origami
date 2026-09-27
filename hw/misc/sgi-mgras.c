@@ -177,11 +177,20 @@ static void mgras_retrace(void *opaque)
 {
     SGIMgrasState *s = opaque;
     if (s->display_enabled) {
+        bool vintr = s->vc3_reg[MGRAS_VC3_CONTROL] & MGRAS_VC3_CONTROL_VINTR;
+        bool dest = s->hq_vector_dest_upper || s->hq_vector_dest_lower;
+
         s->retraces++;
         s->pending |= MGRAS_PENDING_RETRACE;
-        if (s->vc3_reg[MGRAS_VC3_CONTROL] & MGRAS_VC3_CONTROL_VINTR) {
+        if (vintr && dest) {
             mgras_deliver_hq_role(s, true, s->hq_vectors >>
                                   MGRAS_HQ_VECTOR_RETRACE_SHIFT, "retrace");
+        } else if (vintr && !s->retrace_no_dest_logged) {
+            /* Once per reset: a retrace comes 60 times a second. */
+            s->retrace_no_dest_logged = true;
+            qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: retrace interrupt "
+                          "enabled with no HQ vector destination programmed; "
+                          "no packets sent\n");
         }
     }
     timer_mod(s->retrace_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
@@ -890,6 +899,7 @@ static void mgras_reset_enter(Object *obj, ResetType type)
     s->sched_arg_1 = s->sched_arg_2 = s->sched_arg_3 = s->sched_arg_4 = 0;
     s->hq_flags = 0;
     s->lowater_asserted = s->general_asserted = s->error_asserted = false;
+    s->retrace_no_dest_logged = false;
 }
 
 static void mgras_reset_hold(Object *obj, ResetType type)

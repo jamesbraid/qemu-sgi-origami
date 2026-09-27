@@ -273,6 +273,8 @@ struct SGIMgrasState {
     bool lowater_asserted;
     bool general_asserted;
     bool error_asserted;
+    /* Diagnostic rate limit, not guest state and not migrated. */
+    bool retrace_no_dest_logged;
     /* Host-only qtest introspection. Not guest state and not migrated. */
     uint32_t test_pixel_x;
     uint32_t test_pixel_y;
