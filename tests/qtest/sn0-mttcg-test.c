@@ -1478,6 +1478,9 @@ static void test_unmask_by_eret_delivers(const void *data)
 #define GH_DISARM_PRE_OFF   0x2e0
 #define GH_EXC_CAUSE_OFF    0x300
 #define GH_EXC_EPC_OFF      0x320
+#define GH_PEER_WRITE_REQ_OFF 0x340
+#define GH_PEER_WRITE_DONE_OFF 0x360
+#define GH_PEER_COMPARE_OFF 0x380
 #define GH_PEER_OFF         (PROGRESS_OFF + 8)
 #define GH_COMPARE          1000000u
 #define GH_HUB_COUNT        (HUB_LOCAL + 0x030100)
@@ -1488,9 +1491,12 @@ static void test_unmask_by_eret_delivers(const void *data)
 #define SN1_STATE_HOST      (SPACE_HUB + STATE_PHYS)
 
 static unsigned int gh_break_pos;
+static unsigned int gh_count_pos;
 static bool gh_intervening_insn;
 static bool gh_interrupt_after_count;
 static bool gh_wide_timer_moves;
+static bool gh_delay_slot_count;
+static bool gh_peer_timer_writes;
 
 static void emit_gh_timer_move(GuestImage *img, int rt, int rd)
 {
@@ -1567,7 +1573,17 @@ static void build_gdb_peer_hold(GuestImage *img)
     emit_li(img, R_T3, GH_COMPARE);
     emit_mtc0(img, R_T3, CP0_COMPARE, 0);
     emit_li(img, R_T4, 1000);
-    emit_gh_timer_move(img, R_ZERO, CP0_COUNT);
+    if (gh_delay_slot_count) {
+        unsigned int branch = emit_b_fwd(img);
+
+        gh_count_pos = img->pos;
+        emit_gh_timer_move(img, R_ZERO, CP0_COUNT);
+        emit_nop(img);
+        patch_fwd(img, branch);
+    } else {
+        gh_count_pos = img->pos;
+        emit_gh_timer_move(img, R_ZERO, CP0_COUNT);
+    }
     gh_break_pos = img->pos;
     if (gh_intervening_insn) {
         emit_nop(img);
@@ -1601,6 +1617,25 @@ static void build_gdb_peer_hold(GuestImage *img)
 
     patch_fwd(img, peer);
     loop = img->pos;
+    if (gh_peer_timer_writes) {
+        unsigned int skip, already_done;
+
+        emit_ld(img, R_T3, R_T2, GH_PEER_WRITE_REQ_OFF);
+        skip = emit_beq_fwd(img, R_T3, R_ZERO);
+        emit_nop(img);
+        emit_ld(img, R_T3, R_T2, GH_PEER_WRITE_DONE_OFF);
+        already_done = emit_bne_fwd(img, R_T3, R_ZERO);
+        emit_nop(img);
+        emit_mtc0(img, R_ZERO, CP0_COUNT, 0);
+        emit_li(img, R_T4, 1000);
+        emit_mtc0(img, R_T4, CP0_COMPARE, 0);
+        emit_mfc0(img, R_T3, CP0_COMPARE, 0);
+        emit_publish(img, R_T3, GH_PEER_COMPARE_OFF);
+        emit_li(img, R_T3, 1);
+        emit_publish(img, R_T3, GH_PEER_WRITE_DONE_OFF);
+        patch_fwd(img, already_done);
+        patch_fwd(img, skip);
+    }
     emit_ld(img, R_T3, R_T2, PROGRESS_OFF);
     emit_addiu(img, R_T3, R_T3, 1);
     emit_publish(img, R_T3, PROGRESS_OFF);
@@ -1868,6 +1903,8 @@ static void test_gdb_sn1_hold(const void *data)
     gh_intervening_insn = options & 1;
     gh_wide_timer_moves = options & 2;
     gh_interrupt_after_count = false;
+    gh_delay_slot_count = options & 4;
+    gh_peer_timer_writes = options & 16;
     dir = g_dir_make_tmp("sn1-gdb-hold-XXXXXX", NULL);
     g_assert_nonnull(dir);
     socket_path = g_build_filename(dir, "gdb.sock", NULL);
@@ -1890,7 +1927,8 @@ static void test_gdb_sn1_hold(const void *data)
     g_assert_true(reply[0] == 'T' || reply[0] == 'S');
     snprintf(command, sizeof(command), "Z0,%" PRIx64 ",4",
              (uint64_t)(0xffffffff00000000ULL |
-                        IMAGE_KSEG1_BASE | gh_break_pos));
+                        IMAGE_KSEG1_BASE |
+                        ((options & 8) ? gh_count_pos : gh_break_pos)));
     gdb_peer_command(gdb, command, reply, sizeof(reply));
     g_assert_cmpstr(reply, ==, "OK");
     gdb_peer_command(gdb, "vCont;c", NULL, 0);
@@ -1912,14 +1950,34 @@ static void test_gdb_sn1_hold(const void *data)
     command[0] = 'z';
     gdb_peer_command(gdb, command, reply, sizeof(reply));
     g_assert_cmpstr(reply, ==, "OK");
+    if (options & 8) {
+        gdb_peer_command(gdb, "vCont;s:1", NULL, 0);
+        gdb_peer_reply(gdb, reply, sizeof(reply));
+        g_assert_cmpstr(reply, ==, "T05thread:01;");
+        gdb_peer_command(gdb, "Hg1", reply, sizeof(reply));
+        g_assert_cmpstr(reply, ==, "OK");
+        gdb_peer_command(gdb, "p25", reply, sizeof(reply));
+        g_assert_cmphex(g_ascii_strtoull(reply, NULL, 16), ==,
+                        0xffffffff00000000ULL | IMAGE_KSEG1_BASE |
+                        gh_break_pos);
+    }
     peer_before = sn1_timer_state_word(qts, GH_PEER_OFF);
     hub_before = qtest_readq(qts, SN1_BEDROCK_LOCAL + 0x30100);
+    if (gh_peer_timer_writes) {
+        qtest_writeq(qts, SN1_STATE_HOST + GH_PEER_WRITE_REQ_OFF + 8, 1);
+    }
     gdb_peer_command(gdb, "vCont;c:2", NULL, 0);
     g_usleep(50000);
     peer_after = sn1_timer_state_word(qts, GH_PEER_OFF);
     hub_after = qtest_readq(qts, SN1_BEDROCK_LOCAL + 0x30100);
     g_assert_cmpuint(peer_after, >, peer_before);
     g_assert_cmpuint(hub_after, >, hub_before);
+    if (gh_peer_timer_writes) {
+        g_assert_cmphex(sn1_timer_state_word(qts, GH_PEER_WRITE_DONE_OFF + 8),
+                        ==, 1);
+        g_assert_cmphex(sn1_timer_state_word(qts, GH_PEER_COMPARE_OFF + 8),
+                        ==, 1000);
+    }
     g_assert_cmpint(write(gdb, "\003", 1), ==, 1);
     gdb_peer_reply(gdb, reply, sizeof(reply));
     gdb_peer_command(gdb, "Hg1", reply, sizeof(reply));
@@ -2030,6 +2088,12 @@ int main(int argc, char **argv)
                             GINT_TO_POINTER(2), test_gdb_sn1_hold);
         qtest_add_data_func("mttcg/timer/gdb-sn1-dmtc0-intervening",
                             GINT_TO_POINTER(3), test_gdb_sn1_hold);
+        qtest_add_data_func("mttcg/timer/gdb-sn1-count-delay-slot",
+                            GINT_TO_POINTER(4), test_gdb_sn1_hold);
+        qtest_add_data_func("mttcg/timer/gdb-sn1-count-single-step",
+                            GINT_TO_POINTER(8), test_gdb_sn1_hold);
+        qtest_add_data_func("mttcg/timer/gdb-sn1-independent-peer-timer",
+                            GINT_TO_POINTER(16), test_gdb_sn1_hold);
     }
     return g_test_run();
 }
