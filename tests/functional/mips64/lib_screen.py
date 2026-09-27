@@ -48,8 +48,8 @@ real bitmap from a solid fill of the same mean brightness:
     account icon's own 98x98 rectangle -- a solid cyan fill crossed by a
     one-pixel-wide black diagonal -- and its label's glyph-text rectangle
     each carry exactly 2 distinct colors, where a flat, unbroken fill of
-    either would carry only 1. See test_mgras_greeter.py's own use of
-    this check against that same capture.
+    either would carry only 1. lib_mgras_greeter.py uses this check
+    against that same capture.
   - DarkPixelFractionCheck: does at least `min_fraction` of a rectangle's
     pixels have every channel at or below `max_channel`. This suits a
     light-background render where glyph text or chrome shows up as a
