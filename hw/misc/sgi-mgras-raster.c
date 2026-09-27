@@ -132,12 +132,14 @@
  * tests/data/mgras/root-icon.replay); every other value, including the
  * desktop backdrop's 4x4 seed weave (0x159 == 0) and its icons (0x400,
  * 0x10000), takes the eight-pixel path (see
- * tests/data/mgras/char-modes.replay). Bits 16:14 are a row-padding count
- * a capture also carries in this word (blockcopy-grammar.md) and do not
- * change which path runs.
+ * tests/data/mgras/char-modes.replay). Bits 16:14 are the source row's
+ * padding in bytes (see mgras_draw_byte_row_bytes()) and do not change
+ * which path runs.
  */
 #define MGRAS_RSS_BYTE_XFER_PACKING 0x159
 #define MGRAS_BYTE_XFER_PACKING_PAIRS 0x0080
+#define MGRAS_BYTE_XFER_PACKING_PAD_SHIFT 14
+#define MGRAS_BYTE_XFER_PACKING_PAD_MASK 0x7
 
 /*
  * A BLOCKXYENDI execute paints a solid rectangle only when FILLMODE has
@@ -711,18 +713,20 @@ static void mgras_draw_glyph_row(SGIMgrasState *s)
 /*
  * FILLMODE_BYTE_XFER delivers eight 8-bit indexed pixels per CHAR_L execute
  * (CHAR_H is staged first and never executes itself): CHAR_H's four bytes
- * MSB to LSB, then CHAR_L's four, painted left to right. The source
- * scanline the guest is transferring is padded to a 32-bit boundary before
- * it reaches the raster, so a row's first unit can start with padding
- * bytes rather than pixel 0, and the row only advances once enough units
- * have covered its width. `skip` is that row's offset from the 8-byte unit
- * boundary; the register carrying it was not identified in the capture, so
- * this is a stated approximation of the X server's 32-bit scanline
- * padding, derived by matching the painted pixel positions in a live
- * capture (tests/data/mgras/char-modes.replay):
- * skip = (row * 4 * ceil(width / 4)) % 8. It is not read from hardware
- * state. Painted bytes are always CI8 CMAP indices regardless of
- * PP1FILLMODE: this path carries its own 8-bit index data rather than a
+ * MSB to LSB, then CHAR_L's four, painted left to right. The server sends
+ * each row as the 8-byte-aligned words of its source buffer that cover
+ * it, so a row's first unit can start with bytes of the previous row
+ * rather than pixel 0, and the row only advances once enough units have
+ * covered its width. `skip` is that row's offset from the unit boundary,
+ * (row * pitch) % 8, where the source pitch is the width plus 0x159 bits
+ * 16:14. That field is inferred: pitch = width + field predicts the
+ * execute count of every one of 1,445 eight-pixel transfers in the
+ * greeter and desktop captures (tests/data/mgras/char-modes.replay among
+ * them), including the greeter's text-cursor restores (6 pixels wide,
+ * field 6, pitch 12), whose restored field colour lands in place only at
+ * that pitch. The width rounded up to 32 bits fits every transfer but
+ * those 68 restores. Painted bytes are always CI8 CMAP indices regardless
+ * of PP1FILLMODE: this path carries its own 8-bit index data rather than a
  * register-selected colour, and no capture shows it under RGB, so there
  * is no RGB form to select between. mgras_draw_byte_row_pairs() differs.
  */
@@ -738,7 +742,10 @@ static void mgras_draw_byte_row_bytes(SGIMgrasState *s, int x0, int x1,
     int width = x1 - x0 + 1;
     int row = s->glyph_row;
     int y = y0 + row;
-    int skip = (row * 4 * DIV_ROUND_UP(width, 4)) % 8;
+    int pitch = width + ((s->rss[MGRAS_RSS_BYTE_XFER_PACKING] >>
+                          MGRAS_BYTE_XFER_PACKING_PAD_SHIFT) &
+                         MGRAS_BYTE_XFER_PACKING_PAD_MASK);
+    int skip = (row * pitch) % 8;
     int units_per_row = DIV_ROUND_UP(skip + width, 8);
 
     if (y <= y1 && y < SGI_MGRAS_HEIGHT) {
