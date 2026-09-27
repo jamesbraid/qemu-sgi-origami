@@ -48,6 +48,7 @@ config SGI_OCTANE
     default y
     depends on MIPS64 && TARGET_BIG_ENDIAN
     select QLOGIC_ISP_SCSI_PCI
+    select SGI_RAD1_AUDIO
     select SGI_BRIDGE
     select SGI_IOC3
     select SGI_XBOW

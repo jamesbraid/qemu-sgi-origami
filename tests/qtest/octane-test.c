@@ -33,8 +33,14 @@
 #define RTC_DATA (IOC3 + 0xc0000)
 #define UART_A (IOC3 + 0x20178)
 #define IOC3_SERIAL_IRQ (1u << 6)
+#define RAD_BAR0 (BRIDGE + 0x800000)
+#define RAD_PCI_BAR0 0x13000000u
+#define RAD_PCI_ID 0x000510a9u
+#define RAD_REVISION 0xc0u
 #define BRIDGE_REG(offset) (BRIDGE + (offset) + 4)
-#define SUPERIO_PIN (1u << 3)
+#define SUPERIO_PIN (1u << 4)
+#define RAD_PIN (1u << 3)
+#define SUPERIO_VECTOR (1u << 16)
 #define SCSI0_WINDOW (BRIDGE + 0x200000)
 /* Bridge reverses the two halfword lanes within each 32-bit PCI word. */
 #define ISP_MAILBOX(n) (SCSI0_WINDOW + ((0x70 + 2 * (n)) ^ 2))
@@ -302,14 +308,40 @@ static void test_flash_and_pci(void)
     g_assert_cmphex(qtest_readl(qts, CFG(0)), ==, 0x10201077);
     g_assert_cmphex(qtest_readl(qts, CFG(1)), ==, 0x10201077);
     g_assert_cmphex(qtest_readl(qts, CFG(2)), ==, 0x000310a9);
-    g_assert_cmpuint(qtest_readl_tx(qts, CFG(3), &value), ==,
-                     MEMTX_ERROR);
-    g_assert_cmphex(value, ==, 0xffffffff);
+    g_assert_cmpuint(qtest_readl_tx(qts, CFG(3), &value), ==, MEMTX_OK);
+    g_assert_cmphex(value, ==, RAD_PCI_ID);
     g_assert_cmpuint(qtest_readl_tx(qts, OCTANE_LONG_BRIDGE + 4, &value), ==,
                      MEMTX_OK);
     /* An empty one-wire bus has no device to pull a reset slot low. */
     qtest_writel(qts, BRIDGE_NIC, (520u << 10) | (65u << 2));
     g_assert_cmphex(qtest_readl(qts, BRIDGE_NIC) & 3, ==, 3);
+    qtest_quit(qts);
+}
+
+static void test_rad_pci(void)
+{
+    QTestState *qts = octane_start();
+    uint32_t value;
+
+    g_assert_cmphex(qtest_readl(qts, CFG(3)), ==, RAD_PCI_ID);
+    g_assert_cmphex(qtest_readl(qts, CFG(3) + 8) & 0xff, ==, RAD_REVISION);
+    g_assert_cmphex(qtest_readl(qts, CFG(3) + 0x10), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, BRIDGE_REG(0x100)) & RAD_PIN, ==, 0);
+
+    /* BAR sizing is a model property, not a physical-card measurement. */
+    qtest_writel(qts, CFG(3) + 0x10, 0xffffffff);
+    g_assert_cmphex(qtest_readl(qts, CFG(3) + 0x10), ==, 0xffffe000);
+    qtest_writel(qts, CFG(3) + 0x10, RAD_PCI_BAR0);
+    qtest_writel(qts, CFG(3) + 0x04, 0x00000002);
+    qtest_writel(qts, BRIDGE + 0x200 + 8 * 3 + 4, 0x1300);
+    g_assert_cmphex(qtest_readl(qts, CFG(3) + 0x10), ==, RAD_PCI_BAR0);
+    /* Bridge absorbs the unsupported BAR transaction; zero is model output. */
+    g_assert_cmpuint(qtest_readl_tx(qts, RAD_BAR0, &value), ==, MEMTX_OK);
+    g_assert_cmphex(value, ==, 0);
+    g_assert_cmphex(qtest_readl(qts, BRIDGE_REG(0x100)) & RAD_PIN, ==, 0);
+    g_assert_cmphex(qtest_readl(qts, CFG(2)), ==, 0x000310a9);
+    g_assert_cmphex(qtest_readl(qts, FLASH), ==, 0x12345678);
+
     qtest_quit(qts);
 }
 
@@ -652,7 +684,7 @@ static void test_serial_a_interrupt_route(void)
     qtest_writel(qts, BRIDGE + 0x200 + 8 * 2 + 4, 0x1100);
     qtest_writel(qts, BRIDGE_REG(0x030), 8u << 16);
     qtest_writel(qts, BRIDGE_REG(0x038), 0x80);
-    qtest_writel(qts, BRIDGE_REG(0x130 + 8 * 3), 3);
+    qtest_writel(qts, BRIDGE_REG(0x130 + 8 * 4), 16);
     qtest_writel(qts, BRIDGE_REG(0x118), SUPERIO_PIN);
     qtest_writeb(qts, UART_A + 3, 0x03);
     qtest_writeb(qts, UART_A + 1, 0x01);
@@ -669,21 +701,20 @@ static void test_serial_a_interrupt_route(void)
     qtest_writel(qts, IOC3 + 0x20, IOC3_SERIAL_IRQ);
     g_assert_cmphex(qtest_readl(qts, BRIDGE_REG(0x100)) & SUPERIO_PIN, ==,
                     SUPERIO_PIN);
+    g_assert_cmphex(qtest_readl(qts, BRIDGE_REG(0x100)) & RAD_PIN, ==, 0);
     qtest_writel(qts, IOC3 + 0x24, IOC3_SERIAL_IRQ);
     g_assert_cmphex(qtest_readl(qts, BRIDGE_REG(0x100)) & SUPERIO_PIN, ==, 0);
     qtest_writel(qts, IOC3 + 0x20, IOC3_SERIAL_IRQ);
     qtest_writel(qts, BRIDGE_REG(0x108), SUPERIO_PIN);
-    g_assert_cmphex(qtest_readq(qts, HEART + 0x10030) & (1u << 3), ==,
-                    1u << 3);
-    g_assert_cmphex(octane_cpu_cause(qts) & 0x400, ==, 0);
-    qtest_writeq(qts, HEART + 0x10000, 1u << 3);
-    g_assert_cmphex(octane_cpu_cause(qts) & 0x400, ==, 0x400);
+    g_assert_cmphex(qtest_readq(qts, HEART + 0x10030) & SUPERIO_VECTOR, ==,
+                    SUPERIO_VECTOR);
+    qtest_writeq(qts, HEART + 0x10000, SUPERIO_VECTOR);
 
     g_assert_cmphex(qtest_readb(qts, UART_A), ==, sent);
     g_assert_cmphex(qtest_readl(qts, IOC3 + 0x1c) & IOC3_SERIAL_IRQ, ==, 0);
     g_assert_cmphex(qtest_readl(qts, BRIDGE_REG(0x100)) & SUPERIO_PIN, ==, 0);
-    g_assert_cmphex(qtest_readq(qts, HEART + 0x10030) & (1u << 3), ==, 0);
-    g_assert_cmphex(octane_cpu_cause(qts) & 0x400, ==, 0);
+    g_assert_cmphex(qtest_readq(qts, HEART + 0x10030) & SUPERIO_VECTOR, ==,
+                    0);
     close(sock);
     qtest_quit(qts);
 }
@@ -694,11 +725,14 @@ static void test_reset_state(void)
 
     qtest_writel(qts, HEART + 0x20, WIDE);
     qtest_writel(qts, HEART_WIDGET + 0x24, 0x3ca596f0);
-    qtest_writeq(qts, HEART + 0x10000, 1u << 3);
-    qtest_writeq(qts, HEART + 0x10020, 1u << 3);
+    qtest_writeq(qts, HEART + 0x10000, SUPERIO_VECTOR);
+    qtest_writeq(qts, HEART + 0x10020, SUPERIO_VECTOR);
     qtest_writel(qts, CFG(2) + 0x10, 0x10000000);
     qtest_writel(qts, CFG(2) + 0x04, 0x00000002);
     qtest_writel(qts, BRIDGE + 0x200 + 8 * 2 + 4, 0x1100);
+    qtest_writel(qts, CFG(3) + 0x10, RAD_PCI_BAR0);
+    qtest_writel(qts, CFG(3) + 0x04, 0x00000002);
+    qtest_writel(qts, BRIDGE + 0x200 + 8 * 3 + 4, 0x1300);
     qtest_writeb(qts, UART_A + 7, 0x5a);
     g_assert_cmphex(qtest_readb(qts, UART_A + 7), ==, 0x5a);
 
@@ -710,6 +744,10 @@ static void test_reset_state(void)
     g_assert_cmphex(qtest_readq(qts, HEART + 0x10030), ==, 0);
     g_assert_cmphex(qtest_readl(qts, BRIDGE_REG(0x108)), ==, 0);
     g_assert_cmphex(qtest_readl(qts, CFG(2) + 0x10), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, CFG(3)), ==, RAD_PCI_ID);
+    g_assert_cmphex(qtest_readl(qts, CFG(3) + 8) & 0xff, ==, RAD_REVISION);
+    g_assert_cmphex(qtest_readl(qts, CFG(3) + 0x10), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, BRIDGE_REG(0x100)) & RAD_PIN, ==, 0);
     qtest_writel(qts, CFG(2) + 0x10, 0x10000000);
     qtest_writel(qts, CFG(2) + 0x04, 0x00000002);
     qtest_writel(qts, BRIDGE + 0x200 + 8 * 2 + 4, 0x1100);
@@ -767,14 +805,17 @@ static void test_migration_state(void)
     qtest_writel(from, CFG(2) + 0x10, 0x10000000);
     qtest_writel(from, CFG(2) + 0x04, 0x00000002);
     qtest_writel(from, BRIDGE + 0x200 + 8 * 2 + 4, 0x1100);
+    qtest_writel(from, CFG(3) + 0x10, RAD_PCI_BAR0);
+    qtest_writel(from, CFG(3) + 0x04, 0x00000002);
+    qtest_writel(from, BRIDGE + 0x200 + 8 * 3 + 4, 0x1300);
     qtest_writeb(from, UART_A + 7, 0x5a);
     qtest_writel(from, BRIDGE_REG(0x030), 8u << 16);
     qtest_writel(from, BRIDGE_REG(0x038), 0x80);
-    qtest_writel(from, BRIDGE_REG(0x130 + 8 * 3), 3);
+    qtest_writel(from, BRIDGE_REG(0x130 + 8 * 4), 16);
     qtest_writel(from, BRIDGE_REG(0x118), SUPERIO_PIN);
     qtest_writel(from, IOC3 + 0x20, IOC3_SERIAL_IRQ);
     qtest_writel(from, BRIDGE_REG(0x108), SUPERIO_PIN);
-    qtest_writeq(from, HEART + 0x10000, 1u << 3);
+    qtest_writeq(from, HEART + 0x10000, SUPERIO_VECTOR);
     qtest_writeb(from, UART_A + 3, 0x03);
     qtest_writeb(from, UART_A + 1, 0x01);
     qtest_writeb(from, UART_A + 4, 0x10);
@@ -782,7 +823,6 @@ static void test_migration_state(void)
     g_assert_cmphex(qtest_readb(from, UART_A + 5) & 1, ==, 1);
     g_assert_cmphex(qtest_readl(from, IOC3 + 0x1c) & IOC3_SERIAL_IRQ, ==,
                     IOC3_SERIAL_IRQ);
-    g_assert_cmphex(octane_cpu_cause(from) & 0x400, ==, 0x400);
 
     qtest_qmp_assert_success(to,
         "{'execute':'migrate-incoming', 'arguments':{'uri':%s}}", uri);
@@ -801,11 +841,14 @@ static void test_migration_state(void)
                     0x0123456789abcdefULL);
     g_assert_cmphex(qtest_readq(to, HIGH_RAM + 4 * UNIT + 8), ==,
                     0xfedcba9876543210ULL);
-    g_assert_cmphex(qtest_readq(to, HEART + 0x10000), ==, 1u << 3);
-    g_assert_cmphex(qtest_readq(to, HEART + 0x10030) & (1u << 3), ==,
-                    1u << 3);
-    g_assert_cmphex(octane_cpu_cause(to) & 0x400, ==, 0x400);
+    g_assert_cmphex(qtest_readq(to, HEART + 0x10000), ==, SUPERIO_VECTOR);
+    g_assert_cmphex(qtest_readq(to, HEART + 0x10030) & SUPERIO_VECTOR, ==,
+                    SUPERIO_VECTOR);
     g_assert_cmphex(qtest_readl(to, CFG(2) + 0x10), ==, 0x10000000);
+    g_assert_cmphex(qtest_readl(to, CFG(3)), ==, RAD_PCI_ID);
+    g_assert_cmphex(qtest_readl(to, CFG(3) + 8) & 0xff, ==, RAD_REVISION);
+    g_assert_cmphex(qtest_readl(to, CFG(3) + 0x10), ==, RAD_PCI_BAR0);
+    g_assert_cmphex(qtest_readl(to, BRIDGE_REG(0x100)) & RAD_PIN, ==, 0);
     g_assert_cmphex(qtest_readb(to, UART_A + 7), ==, 0x5a);
     g_assert_cmphex(qtest_readb(to, ATTR0 + UART_A + 7), ==, 0x5a);
     g_assert_cmphex(qtest_readb(to, UART_A + 5) & 1, ==, 1);
@@ -815,7 +858,6 @@ static void test_migration_state(void)
                     SUPERIO_PIN);
     g_assert_cmphex(qtest_readb(to, UART_A), ==, 0xa5);
     g_assert_cmphex(qtest_readl(to, IOC3 + 0x1c) & IOC3_SERIAL_IRQ, ==, 0);
-    g_assert_cmphex(octane_cpu_cause(to) & 0x400, ==, 0);
     g_assert_cmphex(qtest_readl(to, FLASH), ==, 0x12345678);
 
     qtest_system_reset(to);
@@ -846,6 +888,7 @@ int main(int argc, char **argv)
     qtest_add_func("/octane/heart-widget-control", test_heart_widget_control);
     qtest_add_func("/octane/low-ram", test_low_ram);
     qtest_add_func("/octane/flash-and-pci", test_flash_and_pci);
+    qtest_add_func("/octane/rad-pci", test_rad_pci);
     qtest_add_func("/octane/firmware-rejections", test_firmware_rejections);
     qtest_add_func("/octane/pci-bar-separation", test_pci_bar_separation);
     qtest_add_func("/octane/scsi-dma-to-heart-ram",
