@@ -33,10 +33,12 @@ catalogue carries two sections; only ``topologies`` reaches this builder.
 ``offerings``, one entry per accepted population a launcher may select, is
 for packaging and launch tooling outside the emulator, never
 read here.
-Three products stand on this base today:
-``origin200`` and ``origin2000`` (SN0), and ``origin300`` (SN1).
-``origin300``'s own product class (``hw/mips/sgi/sn1.c``) parents
-``sgi-sn`` like the other two and names the same ``topology=``
+Four products stand on this base today:
+``origin200``, ``origin2000`` and ``onyx2`` (SN0), and ``origin300``
+(SN1). ``onyx2`` is Origin 2000 silicon with graphics: the same IP27
+node boards, memory and stock PROM, told apart only by the hardware its
+topologies fit. ``origin300``'s own product class (``hw/mips/sgi/sn1.c``)
+parents ``sgi-sn`` like the others and names the same ``topology=``
 contract and compiled descriptor this page describes; only its node
 device (``sgi-sn1-node``, ``hw/mips/sgi/sn1-node.c``) is
 product-specific, the way each SN0 node's own device is.
@@ -46,8 +48,9 @@ Products and topology
 
 A product's ``topology=`` machine property selects which configuration
 of it to build; ``-smp``, ``-m`` and ``-cpu`` then select and validate
-a population within that wiring. The compiled descriptor carries four
-topologies today:
+a population within that wiring. The compiled descriptor carries more
+topologies than this table; these are each product's default and the
+Onyx2 deskside:
 
 .. list-table::
    :header-rows: 1
@@ -71,6 +74,16 @@ topologies today:
      - ``origin2000``
      - 4, two Crossbows and two routers
      - 2+2+2+2 (fixed)
+     - 64 MiB (fixed)
+   * - ``onyx2-rack`` (default)
+     - ``onyx2``
+     - 4, two Crossbows and two routers
+     - 2+2+2+2 (fixed)
+     - 64 MiB (fixed)
+   * - ``onyx2-deskside``
+     - ``onyx2``
+     - 2, joined by a Null Router, one Crossbow
+     - 2+2 (fixed)
      - 64 MiB (fixed)
    * - ``origin300`` (default)
      - ``origin300``
@@ -219,15 +232,29 @@ number.
 The SI graphics board (``sgi-mgras``) is a catalogue board like any other:
 a topology gets one only where its catalogue record, preset ``mgras``, fits
 one, at the widget that record's crosstalk attachment names, and that
-attachment alone marks the widget present and alive at startup. No product
-builds one by default. Every Origin 2000 topology except
-``origin2000-ir2``, whose IO3 holds an InfiniteReality pipe, declares one at
-IO3 (Crossbow 0 widget 15), and ``origin200-gigachannel-mgras`` declares
+attachment alone marks the widget present and alive at startup. The builder
+adds none of its own accord. Every Origin 2000 topology declares one at IO3
+(Crossbow 0 widget 15), and ``origin200-gigachannel-mgras`` declares
 one in a GIGAchannel cabinet at ``io6`` (the cabinet Crossbow's widget 15). ``sgi-mgras`` is a plain sysbus
 device rather than an ``sgi-xio-board``, so it stays at ``/machine/mgras``
 instead of moving under its module. Its qdev id is ``mgras``, which QMP's
 ``screendump device=`` accepts; a second board in the same topology would
 be ``mgras1``, and so on in catalogue order.
+
+The InfiniteReality pipe (``sgi-kona``) is a catalogue board too, preset
+``kona``. The ``onyx2`` topologies fit one: ``onyx2-rack`` at IO3
+(Crossbow 0 widget 15), the slot its Xtown board occupies, and
+``onyx2-deskside`` at XIO4, which that chassis's Crossbow puts at widget 8.
+
+The Onyx2 deskside is a different midplane, not only a different
+population. Its two node slots drive Hub slot-identity bits 3 and 2, where
+the eight-processor module's four drive 7 to 4, and the stock PROM and IRIX
+read those as the deskside's own slot codes and switch to its Crossbow
+table: widget 8 ``io4``, 9 ``n2``, A ``n1``, F ``io1``. A catalogue node
+record carries ``hub-slot-bits`` where its midplane differs from the
+eight-processor module's; the builder hands the Hub the result as its
+``slot-bits`` property. The BaseIO-G preset accordingly fits widget F as
+well as widget 8.
 
 Neither concrete class is ``-device``-creatable yet (``user_creatable`` is
 off on both, and on the abstract base): reaching one from the command line
