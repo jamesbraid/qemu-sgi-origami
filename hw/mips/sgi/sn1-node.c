@@ -1950,10 +1950,10 @@ static const VMStateDescription vmstate_sn1_node_leds = {
 
 static const VMStateDescription vmstate_sn1_node = {
     .name = "sn1-node",
-    .version_id = 1,
+    .version_id = 2,
     .minimum_version_id = 1,
     .fields = (const VMStateField[]) {
-        VMSTATE_UINT64(board_id_word, SN1NodeState),
+        VMSTATE_UINT64_V(board_id_word, SN1NodeState, 2),
         VMSTATE_END_OF_LIST()
     },
     .subsections = (const VMStateDescription * const []) {
