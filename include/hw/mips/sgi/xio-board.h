@@ -13,44 +13,31 @@
  * left is exactly the removable-card scope this name states, plus the test
  * board this header also declares (see xtalk-test-board.c).
  *
- * Every concrete board shares two properties: a module index and a slot, the
- * crosstalk widget number the module's Crossbow assigns that position,
- * matching the product's printed slot (IO1 through IO12 on an Origin 2000
- * module), and one class method, build_widget(), that builds the board's
- * widget-facing device.
+ * Every concrete board shares two properties -- a module index and a
+ * slot -- and one class method, build_widget(), that builds the board's
+ * own widget-facing device.
  *
  * ORDERING CONTRACT
  *
- * A `-device` board realizes once the machine's init path has returned, but a
- * Crossbow needs every one of its endpoints attached before its realize
- * builds the routes between them. sgi_xbow_attach_endpoint() refuses once the
- * Crossbow is realized. So attachment cannot happen at a board's realize.
- * Instead:
+ * A Crossbow needs every endpoint present at startup attached before its
+ * own realize builds the routes between them, and sgi_xbow_attach_endpoint()
+ * refuses once it is realized. So:
  *
- *   - A board's realize only validates its properties, builds its
- *     widget, re-parents itself under /machine/module<N> (so info
- *     qom-tree shows it where the hardware puts it), and registers
- *     itself as pending. It never touches a Crossbow.
- *   - The machine builder that owns a module's Crossbow creates it
- *     unrealized, builds every board the topology places directly (order
- *     does not matter: boards attach in build order, not realize order),
- *     then registers a machine-init-done notifier
- *     (qemu_add_machine_init_done_notifier()) that calls
- *     sgi_xio_board_attach_pending() once for that Crossbow and
- *     module. By then every `-device` board has also realized, since
- *     cold-plugged devices are created before machine init is done. The
- *     notifier realizes the Crossbow only once that call succeeds.
- *   - A board built directly by the machine (onboard I/O, not
- *     user-creatable) can skip the pending list: nothing stops it calling
- *     sgi_xbow_attach_endpoint() itself before the Crossbow realizes, the
- *     way onboard I/O has always attached.
- *   - A board plugged in after the notifier has already run (a
- *     `device_add` sent once the machine is up) still realizes. Its
- *     widget builds and it re-parents under its module, but nothing
- *     attaches it: the notifier fires once, and calling
- *     sgi_xio_board_attach_pending() again against an already-realized
- *     Crossbow fails on the first pending board it finds, the same way a
- *     direct sgi_xbow_attach_endpoint() call would.
+ *   - The machine builder attaches the boards its topology places, through
+ *     each board's own crossbow link, before it realizes the Crossbow.
+ *   - A `-device` board realizes after the machine's init has returned.
+ *     Named by slot (slot=io5), its realize asks the machine
+ *     (TYPE_SGI_XIO_SLOTS below) for that empty slot's module, widget and
+ *     fabric proxy, validates its properties, builds its widget, claims the
+ *     proxy and re-parents itself under /machine/module<N>. It never
+ *     touches a Crossbow.
+ *   - The machine's init-done notifier then finishes every slot's proxy
+ *     against its realized Crossbow and, for a claimed one, attaches the
+ *     board's widget live and brings its link alive.
+ *   - sgi_xio_board_attach_pending() remains for a machine that realizes
+ *     its Crossbow only after cold-plugged boards exist, as a qtest
+ *     fixture does; a board plugged in with device_add once the machine
+ *     is up still realizes but attaches nowhere.
  */
 
 #ifndef HW_MIPS_SGI_XIO_BOARD_H

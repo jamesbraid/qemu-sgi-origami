@@ -55,12 +55,14 @@ typedef struct ReplayHead {
 static const ReplayHead replay_heads[] = {
     {
         /*
-         * The SI captures come from a one-node Origin 2000 with 256 MiB;
-         * the board answers as widget 0xf.
+         * The SI captures come from a one-node Origin 2000 with 256 MiB
+         * across node 0's first two banks; the deskside is that one-node
+         * module, the SI board is fitted in its IO3, and it answers as
+         * widget 0xf.
          */
         .codename = "sgi-mgras",
-        .machine = "-M origin2000,topology=origin2000-one-node "
-                   "-smp 2 -m 256M",
+        .machine = "-M origin2000,topology=origin2000-deskside "
+                   "-smp 2 -m 256M -device sgi-mgras,slot=io3",
         .mmio_base = SPACE_XTALK + (0xfULL << 24),
         .mmio_size = 2 * MiB,
         .qom_path = "/machine/module0/io3",
@@ -1012,7 +1014,7 @@ static void test_invalid_replay(const char *path, const char *message)
     /*
      * The child boots a real origin2000 fixture before it ever reaches
      * the invalid line. On the eight-CPU machine this harness used before
-     * it replayed on the one-node machine, that boot alone was measured at
+     * it replayed on the one-node deskside, that boot alone was measured at
      * 10.5-11s under load -- past the old 10s trap timeout with nothing
      * left over for the parse itself. Give it the same order of headroom
      * the rest of this suite's budget uses.

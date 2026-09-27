@@ -28,8 +28,9 @@
  * migration cases start their own pairs and keep the fuller machine,
  * because what they check crosses a whole machine's saved state.
  */
-#define MACHINE_ARGS "-M origin2000"
-#define MIGRATION_ARGS "-M origin2000 -smp 8 -m 256M"
+#define MACHINE_ARGS "-M origin2000 -device sgi-mgras,slot=io3"
+#define MIGRATION_ARGS \
+    "-M origin2000 -smp 8 -m 256M -device sgi-mgras,slot=io3"
 
 /*
  * Started once in main() and reset before each register case. Booting a
@@ -5073,6 +5074,7 @@ static void test_board_refused(gconstpointer data)
                                                e->board, e->hinv);
     const char *args[] = {
         qtest_qemu_binary(NULL), "-M", "origin2000", "-global", global,
+        "-device", "sgi-mgras,slot=io3",
         "-display", "none", "-qtest", "stdio", "-accel", "qtest", NULL
     };
 
@@ -5090,6 +5092,7 @@ static void test_board_unknown_refused(void)
     const char *args[] = {
         qtest_qemu_binary(NULL), "-M", "origin2000",
         "-global", "sgi-mgras.board=vpro",
+        "-device", "sgi-mgras,slot=io3",
         "-display", "none", "-qtest", "stdio", "-accel", "qtest", NULL
     };
 

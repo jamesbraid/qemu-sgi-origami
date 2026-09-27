@@ -229,7 +229,7 @@ static void test_expansion_boards_share_the_attach_contract(const void *data)
  * the default origin2000 topology IO4 is crossbow0's widget 11.
  *
  * crossbow0's own startup-links-alive (sn0-origin2000-xtalk-owner-test.c:
- * 0x8700, its onboard BaseIO, two host nodes and SI Viz) stays exactly
+ * 0x0700, its onboard BaseIO and two host nodes) stays exactly
  * that after this board attaches. sgi_machine_done() does bring the
  * slot's widget alive and register it as an inbound destination once a
  * board claims it (sgi_xbow_attach_endpoint_live() then
@@ -246,7 +246,7 @@ static void test_pci_expansion_attaches_at_a_named_slot(const void *data)
 
     g_assert_cmpstr(type, ==, "sgi-pci-expansion");
     g_assert_cmphex(xtalk_uint(qts, "crossbow0", "startup-links-alive"), ==,
-                    UINT64_C(0x8700));
+                    UINT64_C(0x0700));
     qtest_quit(qts);
 }
 
@@ -489,7 +489,7 @@ static void assert_spare_landed(QTestState *qts, uint64_t at, uint32_t seed)
  * sgi_xbow_sync_routes() disables a port's entire ingress/packet_ingress
  * region whenever that port's own sgi_xbow_alive() is false, always true
  * for the empty slot's widget this board claims (IO4, crossbow0's widget
- * 11, outside its startup-links-alive of 0x8700) -- this board's own
+ * 11, outside its startup-links-alive of 0x0700) -- this board's own
  * outbound transfers have nowhere live to
  * originate from until something marks that widget alive without also
  * counting it as one of the Crossbow's own onboard links.
@@ -523,8 +523,8 @@ static void test_pci_expansion_delivers_through_spare_fabric(const void *data)
  * ---- Inbound addressability and interrupt delivery ----
  *
  * These tests fit a `-device` board at IO4, an empty slot whose widget is
- * crossbow0's 11, outside its startup-links-alive (0x8700; BaseIO at
- * widget 8, the two host nodes at 9 and 10, SI Viz at 15). A board that
+ * crossbow0's 11, outside its startup-links-alive (0x0700 -- BaseIO at
+ * widget 8 and the two host nodes at 9 and 10). A board that
  * takes the slot's proxy is addressable at that widget, so its own Bridge
  * answers a processor through crossbow0's real small window for widget
  * 11. The same crosstalk decode SMALL_WINDOW(BASEIO_WIDGET) reaches the
@@ -888,17 +888,17 @@ static void test_origin2000_one_node_accepts_its_populations(const void *data)
  * test_origin200_dual_accepts_its_populations names it for origin200's own
  * two-node topology: left out, it would try this one node against the
  * four-node module's default total and fail, not fall back to a value
- * origin2000-one-node itself accepts.
+ * origin2000-deskside itself accepts.
  */
     QTestState *qts = qtest_init(
-        "-M origin2000,topology=origin2000-one-node -smp 2 -m 64M "
+        "-M origin2000,topology=origin2000-deskside -smp 2 -m 64M "
         "-display none");
 
     qtest_quit(qts);
 }
 
 /*
- * origin2000-one-node's own node/CPU-count contract: the topology builds
+ * origin2000-deskside's own node/CPU-count contract: the topology builds
  * exactly the one node and two CPUs its own supported-cpu-populations entry
  * names. No node1 QOM child exists, and query-cpus-fast reports both
  * sockets on node 0. sn0-origin2000-test.c's assert_cpu_inventory checks the
@@ -909,7 +909,7 @@ static void test_origin2000_one_node_has_two_cpus_on_node_zero(
     const void *data)
 {
     QTestState *qts = qtest_init(
-        "-M origin2000,topology=origin2000-one-node -smp 2 -m 64M "
+        "-M origin2000,topology=origin2000-deskside -smp 2 -m 64M "
         "-display none");
     g_autoptr(QDict) response = qtest_qmp(qts,
         "{'execute': 'query-cpus-fast'}");
@@ -1036,35 +1036,44 @@ static void test_origin2000_onboard_board_is_xio_baseio(const void *data)
 }
 
 /*
- * The one-node module's BaseIO in IO1 is the BaseIO-G, whose MediaIO
- * daughtercard fits the second IOC3 with the keyboard and mouse, and its IO3
- * position carries the SI graphics head, as the four-node module's does.
+ * The stock deskside fits a plain BaseIO in IO1 and nothing in IO3; the
+ * machine's baseio-preset=io6g asks for the BaseIO-G instead, whose
+ * MediaIO daughtercard fits the second IOC3 with the keyboard and mouse.
  */
-static void test_origin2000_one_node_onboard_board_is_xio_baseio(
+static void test_origin2000_deskside_baseio_follows_the_preset(
     const void *data)
 {
-    QTestState *qts = qtest_init(
-        "-M origin2000,topology=origin2000-one-node -smp 2 -m 64M "
-        "-display none");
-    g_autofree char *type = qom_child_type(qts, "/machine/module0", "io1");
-    g_autofree char *preset = NULL;
-    g_autofree char *head = qom_child_type(qts, "/machine/module0", "io3");
+    static const struct {
+        const char *args;
+        const char *preset;
+    } cases[] = {
+        { "-M origin2000,topology=origin2000-deskside -smp 2 -m 64M "
+          "-display none", "io6" },
+        { "-M origin2000,topology=origin2000-deskside,baseio-preset=io6g "
+          "-smp 2 -m 64M -display none", "io6g" },
+    };
+    size_t i;
 
-    g_assert_cmpstr(type, ==, "sgi-xio-baseio");
-    preset = qom_get_str(qts, "/machine/module0/io1", "preset");
-    g_assert_cmpstr(preset, ==, "io6g");
-    g_assert_cmpstr(head, ==, "sgi-mgras");
-    qtest_quit(qts);
+    for (i = 0; i < G_N_ELEMENTS(cases); i++) {
+        QTestState *qts = qtest_init(cases[i].args);
+        g_autofree char *type = qom_child_type(qts, "/machine/module0",
+                                               "io1");
+        g_autofree char *preset = NULL;
+        g_autofree char *head = qom_child_type(qts, "/machine/module0",
+                                               "io3");
+
+        g_assert_cmpstr(type, ==, "sgi-xio-baseio");
+        preset = qom_get_str(qts, "/machine/module0/io1", "preset");
+        g_assert_cmpstr(preset, ==, cases[i].preset);
+        g_assert_null(head);
+        qtest_quit(qts);
+    }
 }
 
 /*
- * MGRAS is an ordinary catalogue board: a topology gets one only where its
- * catalogue record fits one, at that record's widget, and the widget
- * shows present and alive from reset like any other fitted board. The
- * InfiniteReality topology fills the IO3 widget the builder once gave
- * MGRAS on every Origin 2000, so it is the case a product-wide rule
- * cannot build; the GIGAchannel is a second product whose cabinet slot
- * only a catalogue record can reach.
+ * MGRAS is an ordinary XIO board: no shipped topology fits one, and a
+ * board fitted at launch at an empty slot answers there. The GIGAchannel
+ * cabinet is a second product whose slots a board reaches the same way.
  */
 #define MGRAS_WIDGET 15
 #define XTALK_BASE UINT64_C(0x20000000000)
@@ -1084,10 +1093,9 @@ static void assert_mgras_at_widget(QTestState *qts, const char *module,
     uint8_t bytes[4];
 
     g_assert_cmpstr(head, ==, "sgi-mgras");
-    g_assert_cmphex(xtalk_uint(qts, "crossbow0", "links-present") & bit, ==,
-                    bit);
+    /* A board fitted at launch is attached live, not at startup. */
     g_assert_cmphex(xtalk_uint(qts, "crossbow0", "startup-links-alive") & bit,
-                    ==, bit);
+                    ==, 0);
     /* The widget identity register, read through CPU 0's Hub. */
     g_assert_true(qtest_memread_cpu(qts, 0, XTALK_BASE +
                                     widget * XTALK_WIDGET_SIZE +
@@ -1095,9 +1103,10 @@ static void assert_mgras_at_widget(QTestState *qts, const char *module,
     g_assert_cmphex(ldl_be_p(bytes), ==, MGRAS_WIDGET_ID);
 }
 
-static void test_mgras_placed_by_the_catalogue(const void *data)
+static void test_mgras_fitted_in_io3(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin2000 -display none");
+    QTestState *qts = qtest_init(
+        "-M origin2000 -display none -device sgi-mgras,slot=io3");
 
     assert_mgras_at_widget(qts, "/machine/module0", "io3", MGRAS_WIDGET);
     qtest_quit(qts);
@@ -1176,6 +1185,9 @@ static bool qom_has_child_of_type(QTestState *qts, const char *parent,
 static void test_no_mgras_without_a_catalogue_record(const void *data)
 {
     static const char *const machines[] = {
+        "-M origin2000 -display none",
+        "-M origin2000,topology=origin2000-deskside -smp 2 -m 64M "
+        "-display none",
         "-M onyx2 -display none",
         "-M onyx2,topology=onyx2-deskside -smp 4 -m 128M -display none",
         "-M origin200,topology=origin200-gigachannel -display none",
@@ -1196,7 +1208,8 @@ static void test_no_mgras_without_a_catalogue_record(const void *data)
 static void test_mgras_in_a_gigachannel_cabinet(const void *data)
 {
     QTestState *qts = qtest_init(
-        "-M origin200,topology=origin200-gigachannel-mgras -display none");
+        "-M origin200,topology=origin200-gigachannel -display none "
+        "-device sgi-mgras,slot=io6");
 
     assert_mgras_at_widget(qts, "/machine/module1", "io6",
                            MGRAS_WIDGET);
@@ -1431,24 +1444,24 @@ int main(int argc, char **argv)
         "sn/builder/origin2000-module-accepts-its-populations", NULL,
         test_origin2000_module_accepts_its_populations);
     qtest_add_data_func(
-        "sn/builder/origin2000-one-node-accepts-its-populations", NULL,
+        "sn/builder/origin2000-deskside-accepts-its-populations", NULL,
         test_origin2000_one_node_accepts_its_populations);
     qtest_add_data_func(
-        "sn/builder/origin2000-one-node-has-two-cpus-on-node-zero", NULL,
+        "sn/builder/origin2000-deskside-has-two-cpus-on-node-zero", NULL,
         test_origin2000_one_node_has_two_cpus_on_node_zero);
     qtest_add_data_func("sn/builder/origin200-onboard-board-is-ip29-preset",
                         NULL, test_origin200_onboard_board_is_ip29_preset);
     qtest_add_data_func("sn/builder/origin2000-onboard-board-is-xio-baseio",
                         NULL, test_origin2000_onboard_board_is_xio_baseio);
     qtest_add_data_func(
-        "sn/builder/origin2000-one-node-onboard-board-is-xio-baseio", NULL,
-        test_origin2000_one_node_onboard_board_is_xio_baseio);
+        "sn/builder/origin2000-deskside-baseio-follows-the-preset", NULL,
+        test_origin2000_deskside_baseio_follows_the_preset);
     qtest_add_data_func("sn/builder/fitted-boards-have-distinct-serials",
                         NULL, test_fitted_boards_have_distinct_serials);
     qtest_add_data_func("sn/builder/mgras-fitted-at-a-named-slot", NULL,
                         test_mgras_fitted_at_a_named_slot);
-    qtest_add_data_func("sn/builder/mgras-placed-by-the-catalogue", NULL,
-                        test_mgras_placed_by_the_catalogue);
+    qtest_add_data_func("sn/builder/mgras-fitted-in-io3", NULL,
+                        test_mgras_fitted_in_io3);
     qtest_add_data_func("sn/builder/no-mgras-without-a-catalogue-record",
                         NULL, test_no_mgras_without_a_catalogue_record);
     qtest_add_data_func("sn/builder/mgras-in-a-gigachannel-cabinet", NULL,

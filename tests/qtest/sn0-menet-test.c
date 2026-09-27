@@ -8,10 +8,9 @@
  *
  * Two placements run the same checks. A `-device sgi-xio-baseio,
  * preset=menet` board attaches at the empty XIO slot IO4, crossbow0 widget
- * 11, as the PCI shoehorn's own test does. The origin2000-menet topology fits
- * the board in XIO slot IO5, crossbow0 widget 14, as a startup-attached
- * board, and the origin200-gigachannel-xio topology fits one in the
- * GIGAchannel cabinet's io3 position, Crossbow widget 12.
+ * 11, as the PCI shoehorn's own test does; a second fits one in IO5,
+ * crossbow0 widget 14, and a third in the GIGAchannel cabinet's io3
+ * position, Crossbow widget 12.
  *
  * The contract, from real IRIX inventories and IRIX 6.5.30's own MENET
  * setup routine:
@@ -86,7 +85,8 @@ typedef struct {
     "slot=io4"
 
 #define PLACED_ARGS \
-    "-M origin2000,topology=origin2000-menet -display none"
+    "-M origin2000 -display none -device sgi-xio-baseio,preset=menet," \
+    "slot=io5"
 
 static const MenetCase device_case = {
     DEVICE_ARGS, DEVICE_WIDGET, "/machine/module0/io4/baseio",
@@ -96,7 +96,8 @@ static const MenetCase placed_case = {
 };
 /* The GIGAchannel cabinet's io3 position: Crossbow link C, widget 12. */
 static const MenetCase gigachannel_case = {
-    "-M origin200,topology=origin200-gigachannel-xio -display none", 12,
+    "-M origin200,topology=origin200-gigachannel -display none "
+    "-device sgi-xio-baseio,preset=menet,slot=io3", 12,
     "/machine/module1/io3/baseio",
 };
 
@@ -325,17 +326,25 @@ static void test_io6_refuses_mediaio_ports(const void *data)
                         "preset 'io6' fits nothing to take mio-chardev-a");
 }
 
-/* The catalogue-placed board's widget is alive from reset. */
-static void test_placed_widget_is_alive_at_startup(const void *data)
+/*
+ * A board fitted at launch is attached once every Crossbow has realized:
+ * its port then reads a widget present and the link alive
+ * (docs/datasheets/xbow.md, link auxiliary status bit 5 and link status
+ * bit 31, Crossbow 0's own registers at widget 0).
+ */
+#define XBOW_LINK_STATUS(w) (SPACE_XTALK + 0x110 + ((w) - 8) * 0x40 + 4)
+#define XBOW_LINK_AUX(w)    (SPACE_XTALK + 0x138 + ((w) - 8) * 0x40 + 4)
+#define XBOW_LINK_ALIVE     (1u << 31)
+#define XBOW_AUX_PRESENT    (1u << 5)
+
+static void test_fitted_widget_is_alive(const void *data)
 {
     QTestState *qts = qtest_init(PLACED_ARGS);
-    g_autoptr(QDict) response = qtest_qmp(qts,
-        "{'execute': 'qom-get', 'arguments': {'path': '/machine/crossbow0',"
-        "'property': 'startup-links-alive'}}");
 
-    g_assert_false(qdict_haskey(response, "error"));
-    g_assert_cmphex(qdict_get_int(response, "return"), ==,
-                    0x8700 | (1u << PLACED_WIDGET));
+    g_assert_cmphex(qtest_readl(qts, XBOW_LINK_AUX(PLACED_WIDGET)) &
+                    XBOW_AUX_PRESENT, ==, XBOW_AUX_PRESENT);
+    g_assert_cmphex(qtest_readl(qts, XBOW_LINK_STATUS(PLACED_WIDGET)) &
+                    XBOW_LINK_ALIVE, ==, XBOW_LINK_ALIVE);
     qtest_quit(qts);
 }
 
@@ -357,8 +366,8 @@ int main(int argc, char **argv)
                         test_menet_refuses_backends_it_cannot_take);
     qtest_add_data_func("sn0/menet/io6-refuses-mediaio-ports", NULL,
                         test_io6_refuses_mediaio_ports);
-    qtest_add_data_func("sn0/menet/placed/widget-alive-at-startup", NULL,
-                        test_placed_widget_is_alive_at_startup);
+    qtest_add_data_func("sn0/menet/placed/widget-alive", NULL,
+                        test_fitted_widget_is_alive);
     qtest_add_data_func("sn0/menet/placed/ioc3s-enumerate", &placed_case,
                         test_ioc3s_enumerate);
     qtest_add_data_func("sn0/menet/placed/populations", &placed_case,
