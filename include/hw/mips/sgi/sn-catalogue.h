@@ -28,4 +28,25 @@ const SGIModelTopology *sgi_model_find_topology(const char *name);
  */
 const char *sgi_model_default_topology(const char *product);
 
+/* @t's node-population row fitting exactly @nodes node boards, or NULL. */
+const SGIModelNodePopulation *sgi_model_find_population(
+    const SGIModelTopology *t, unsigned int nodes);
+
+/* @t's row with the most node boards: what a machine fits by default. */
+const SGIModelNodePopulation *sgi_model_default_population(
+    const SGIModelTopology *t);
+
+/*
+ * The topology a machine builds for @row of chassis @t: only the row's
+ * node boards, Routers, cables and usable XIO slots, every index
+ * renumbered to those, and a Crossbow no fitted Hub reaches left out.
+ * Its node_populations holds that one row in its own numbering. Built
+ * once per row and kept for the process lifetime, like the catalogue
+ * itself; NULL with @errp set when the row names a record out of range
+ * or keeps one that needs a node board it does not fit.
+ */
+const SGIModelTopology *sgi_model_population_view(
+    const SGIModelTopology *t, const SGIModelNodePopulation *row,
+    Error **errp);
+
 #endif /* HW_MIPS_SGI_SN_CATALOGUE_H */

@@ -601,6 +601,82 @@
   'data': { 'cpus-per-node': ['uint32'] } }
 
 ##
+# @SGIModelEvidenceGrade:
+#
+# How firmly a node-population row's facts rest on evidence, the
+# weakest of them deciding.
+#
+# @established: every fact is printed in a cited manual, shown by a
+#     real-hardware capture or read directly from disassembly
+#
+# @inferred: some fact follows from established ones without being
+#     printed or observed itself
+#
+# @unknown: some fact rests on evidence that does not settle it; the
+#     builder refuses the row until it is settled
+#
+# Since: 11.2
+##
+{ 'enum': 'SGIModelEvidenceGrade',
+  'data': ['established', 'inferred', 'unknown'] }
+
+##
+# @SGIModelPopulationSlot:
+#
+# One empty crosstalk connector position a node-population row can
+# use, and the node that controls it with that many node boards
+# fitted.
+#
+# @slot: position in the topology's own @xtalk-slots list
+#
+# @controlling-node: position in the topology's own @nodes list of the
+#     node that controls this position in this row
+#
+# Since: 11.2
+##
+{ 'struct': 'SGIModelPopulationSlot',
+  'data': { 'slot': 'uint32',
+            'controlling-node': 'uint32' } }
+
+##
+# @SGIModelNodePopulation:
+#
+# One count of node boards a chassis accepts, fitted in the order SGI
+# fills its node slots, and what that count decides: which Routers
+# and cables are fitted, which XIO slots work and which node controls
+# each, and which processor populations fit.  The `nodes` machine
+# property selects a row by its node count.
+#
+# @nodes: positions in the topology's own @nodes list of the fitted
+#     node boards, in fill order; a node board not named here is
+#     absent, with no Hub, processors, boot flash or crosstalk link
+#
+# @routers: positions in the topology's own @routers list of the
+#     fitted Routers
+#
+# @cables: positions in the topology's own @cables list of the fitted
+#     cables
+#
+# @xtalk-slots: every empty crosstalk position this row can use; a
+#     position not named here is refused to a board fitted at launch
+#
+# @supported-cpu-populations: every `-smp` population the builder
+#     accepts for this row, counting only its own fitted nodes, in
+#     @nodes order
+#
+# @grade: how firmly this row's facts rest on evidence
+#
+# Since: 11.2
+##
+{ 'struct': 'SGIModelNodePopulation',
+  'data': { 'nodes': ['uint32'],
+            'routers': ['uint32'],
+            'cables': ['uint32'],
+            'xtalk-slots': ['SGIModelPopulationSlot'],
+            'supported-cpu-populations': ['SGIModelCpuPopulation'],
+            'grade': 'SGIModelEvidenceGrade' } }
+
+##
 # @SGIModelGeneration:
 #
 # Which Scalable Node generation a topology's node boards belong to.
@@ -617,8 +693,8 @@
 ##
 # @SGIModelTopology:
 #
-# One authored configuration: a product's wiring and its shipped and
-# accepted populations.
+# One chassis a product ships in: its wiring with every node slot
+# fitted, and the counts of node boards it accepts.
 #
 # @name: catalogue name of this topology (`topology=` selects it)
 #
@@ -632,13 +708,13 @@
 #
 # @description: prose description of this configuration
 #
-# @nodes: this topology's node boards
+# @nodes: the node board each of this chassis's node slots takes
 #
 # @modules: this topology's modules or bricks
 #
-# @routers: this topology's Router boards
+# @routers: every Router any of this chassis's node counts fits
 #
-# @cables: this topology's cables
+# @cables: every cable any of this chassis's node counts fits
 #
 # @crossbars: this topology's crosstalk switches
 #
@@ -659,8 +735,10 @@
 #     manufacturing junk-bus UART when the junk-uart property is set,
 #     or -1 where this topology has none
 #
-# @supported-cpu-populations: every `-smp`/`-numa` population the
-#     builder accepts for this topology
+# @node-populations: every count of node boards this chassis accepts,
+#     one row per count; @nodes, @routers, @cables and @xtalk-slots
+#     describe the whole chassis, and a row names the part of it that
+#     count fits
 #
 # Since: 11.2
 ##
@@ -680,7 +758,7 @@
             'controllers': ['SGIModelController'],
             'console': 'int',
             'junk-uart': 'int',
-            'supported-cpu-populations': ['SGIModelCpuPopulation'] } }
+            'node-populations': ['SGIModelNodePopulation'] } }
 
 ##
 # @SGIModelConsole:

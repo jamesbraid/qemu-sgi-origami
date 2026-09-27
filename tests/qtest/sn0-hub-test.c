@@ -478,7 +478,7 @@ static void test_origin2000_slot_and_processor_identity(const void *data)
 static void test_origin2000_one_node_reads_node_slot_one(const void *data)
 {
     QTestState *qts = qtest_init(
-        "-M origin2000,topology=origin2000-deskside -smp 2 -m 64M");
+        "-M origin2000,topology=origin2000-deskside,nodes=1 -smp 2 -m 64M");
 
     g_assert_cmphex(pi_cpu_readq(qts, 0, MD_SLOT_ID_USTAT) & MD_SLOT_ID_MASK,
                     ==, 7);
@@ -518,7 +518,7 @@ static void test_onyx2_deskside_reads_its_own_slot_bits(const void *data)
 static void test_origin2000_two_node_deskside(const void *data)
 {
     QTestState *qts = qtest_init(
-        "-M origin2000,topology=origin2000-deskside-two-node -smp 4 -m 128M");
+        "-M origin2000,topology=origin2000-deskside,nodes=2 -smp 4 -m 128M");
     static const uint8_t expected[] = { 7, 7, 6, 6 };
     unsigned int node;
 
@@ -6174,7 +6174,7 @@ int main(int argc, char **argv)
                         "-M origin200",
                         test_a_node_with_no_link_reads_down);
     qtest_add_data_func("sn0/hub/a-one-node-origin2000-link-reads-down",
-                        "-M origin2000,topology=origin2000-deskside -smp 2",
+                        "-M origin2000,topology=origin2000-deskside,nodes=1 -smp 2",
                         test_a_node_with_no_link_reads_down);
     qtest_add_data_func("sn0/hub/processor-number", NULL,
                         test_processor_number);

@@ -789,7 +789,7 @@ FLAVOURS = {
         title='Origin 2000 one-node deskside: the BaseIO-G, with MediaIO',
         # The stock deskside fits a plain BaseIO; baseio-preset=io6g asks
         # for the BaseIO-G, our custom configuration.
-        machine='origin2000,topology=origin2000-deskside,'
+        machine='origin2000,topology=origin2000-deskside,nodes=1,'
                 'baseio-preset=io6g,debug-leds=off',
         nodes=1,
         hinv_facts=(

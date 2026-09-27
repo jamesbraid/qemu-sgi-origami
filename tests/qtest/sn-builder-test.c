@@ -340,13 +340,13 @@ static void test_xio_baseio_fits_only_io1(const void *data)
 static void test_named_slot_refusals(const void *data)
 {
     assert_device_refused("sgi-pci-expansion,slot=io13",
-                          "topology 'origin2000-module' has no empty XIO "
+                          "topology 'origin2000-rack' has no empty XIO "
                           "slot io13");
     assert_device_refused("sgi-pci-expansion,slot=io1",
-                          "XIO slot io1 of topology 'origin2000-module' "
+                          "XIO slot io1 of topology 'origin2000-rack' "
                           "already holds the topology's own board");
     assert_device_refused("sgi-pci-expansion,slot=io4,module=1",
-                          "XIO slot io4 of topology 'origin2000-module' is "
+                          "XIO slot io4 of topology 'origin2000-rack' is "
                           "in module 0, not module 1");
 }
 
@@ -840,18 +840,18 @@ static void test_topology_from_another_product_refused(const void *data)
  * topology= names one by string alone, so sgi_machine_topology() also checks
  * the resolved entry against this machine's own product
  * (sgi_machine_topology_matches_product) before handing it back. Origin
- * 2000's "origin2000-module" descriptor exists and resolves by name just as
+ * 2000's "origin2000-rack" descriptor exists and resolves by name just as
  * well for Origin 200's product class, so without that check Origin 200
  * would build Origin 2000's four-node wiring under its own product. The
  * product mismatch is refused the way any other unknown name is:
  * sgi_machine_topology() returns NULL either way.
  */
     const char *args[] = {
-        qtest_qemu_binary(NULL), "-M", "origin200,topology=origin2000-module",
+        qtest_qemu_binary(NULL), "-M", "origin200,topology=origin2000-rack",
         "-display", "none", NULL
     };
 
-    assert_qemu_rejects(args, "unknown topology 'origin2000-module'");
+    assert_qemu_rejects(args, "unknown topology 'origin2000-rack'");
 }
 
 /*
@@ -1002,7 +1002,7 @@ static void test_origin2000_one_node_accepts_its_populations(const void *data)
  * origin2000-deskside itself accepts.
  */
     QTestState *qts = qtest_init(
-        "-M origin2000,topology=origin2000-deskside -smp 2 -m 64M "
+        "-M origin2000,topology=origin2000-deskside,nodes=1 -smp 2 -m 64M "
         "-display none");
 
     qtest_quit(qts);
@@ -1020,7 +1020,7 @@ static void test_origin2000_one_node_has_two_cpus_on_node_zero(
     const void *data)
 {
     QTestState *qts = qtest_init(
-        "-M origin2000,topology=origin2000-deskside -smp 2 -m 64M "
+        "-M origin2000,topology=origin2000-deskside,nodes=1 -smp 2 -m 64M "
         "-display none");
     g_autoptr(QDict) response = qtest_qmp(qts,
         "{'execute': 'query-cpus-fast'}");
@@ -1162,14 +1162,14 @@ static void test_origin2000_deskside_slots(const void *data)
         const char *slot;
         const char *crossbow;
     } cases[] = {
-        { "-M origin2000,topology=origin2000-deskside -smp 2 -m 64M "
+        { "-M origin2000,topology=origin2000-deskside,nodes=1 -smp 2 -m 64M "
           "-display none -device sgi-xio-baseio,preset=mscsi,slot=io4",
           "io4", "crossbow0" },
-        { "-M origin2000,topology=origin2000-deskside-two-node -smp 4 "
+        { "-M origin2000,topology=origin2000-deskside,nodes=2 -smp 4 "
           "-m 128M -display none "
           "-device sgi-xio-baseio,preset=mscsi,slot=io4",
           "io4", "crossbow0" },
-        { "-M origin2000,topology=origin2000-deskside-two-node -smp 4 "
+        { "-M origin2000,topology=origin2000-deskside,nodes=2 -smp 4 "
           "-m 128M -display none "
           "-device sgi-xio-baseio,preset=menet,slot=io8",
           "io8", "crossbow1" },
@@ -1201,10 +1201,10 @@ static void test_origin2000_deskside_baseio_follows_the_preset(
         const char *args;
         const char *preset;
     } cases[] = {
-        { "-M origin2000,topology=origin2000-deskside -smp 2 -m 64M "
+        { "-M origin2000,topology=origin2000-deskside,nodes=1 -smp 2 -m 64M "
           "-display none", "io6" },
-        { "-M origin2000,topology=origin2000-deskside,baseio-preset=io6g "
-          "-smp 2 -m 64M -display none", "io6g" },
+        { "-M origin2000,topology=origin2000-deskside,nodes=1,"
+          "baseio-preset=io6g -smp 2 -m 64M -display none", "io6g" },
     };
     size_t i;
 
@@ -1340,7 +1340,7 @@ static void test_no_mgras_without_a_catalogue_record(const void *data)
 {
     static const char *const machines[] = {
         "-M origin2000 -display none",
-        "-M origin2000,topology=origin2000-deskside -smp 2 -m 64M "
+        "-M origin2000,topology=origin2000-deskside,nodes=1 -smp 2 -m 64M "
         "-display none",
         "-M onyx2 -display none",
         "-M onyx2,topology=onyx2-deskside -smp 4 -m 128M -display none",
