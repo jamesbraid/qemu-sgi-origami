@@ -182,6 +182,21 @@ struct SGIBedrockState {
     bool hold_scratch1_joined[SGI_BEDROCK_PROCESSORS];
     bool presence_posted[SGI_BEDROCK_PROCESSORS];
     bool presence_released[SGI_BEDROCK_PROCESSORS / SGI_BEDROCK_PI_PROCESSORS];
+
+    /*
+     * The join's parks halt the parked processor rather than block a host
+     * thread (bedrock_park_start in sgi-bedrock.c), so they work the same
+     * under every TCG scheduling mode. park_kind is the park each slot is
+     * in, zero for none; park_deadline its bound on the virtual clock, and
+     * park_timer fires at the earliest bound. park_mask is the parked slots
+     * as a migration stream carries them: a halted processor travels with
+     * its CPU state, so the destination has to know to wake it.
+     */
+    QEMUTimer *park_timer;
+    uint8_t park_kind[SGI_BEDROCK_PROCESSORS];
+    int64_t park_start[SGI_BEDROCK_PROCESSORS];
+    int64_t park_deadline[SGI_BEDROCK_PROCESSORS];
+    uint8_t park_mask;
 };
 
 bool sgi_bedrock_hub_registers_permitted(SGIBedrockState *s);

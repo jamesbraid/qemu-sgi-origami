@@ -420,12 +420,26 @@ static uint64_t state_word(QTestState *s, unsigned int number,
 }
 
 /*
- * Boot the four processors on @build's program under multi-threaded TCG,
- * wait for every one to record its first presence read, and hand back what
- * each read, by processor number. Both interfaces must have published and
- * the hub lock must have come back free, whatever the reads were.
+ * The ways TCG can schedule the four processors. The join has to hold in
+ * each: multi-threaded, where a processor's host thread can be left
+ * unscheduled; round robin, where one host thread takes the processors in
+ * turn; and instruction counting, where round robin also drives the
+ * virtual clock the real-time counter follows, so the counter only
+ * advances while some processor executes.
  */
-static void run_program(void (*build)(Image *p), uint64_t seen[4])
+static const char accel_mttcg[] = "-accel tcg,thread=multi";
+static const char accel_rr[] = "-accel tcg,thread=single";
+static const char accel_icount[] =
+    "-accel tcg,thread=single -icount shift=5,align=off,sleep=off";
+
+/*
+ * Boot the four processors on @build's program under @accel, wait for
+ * every one to record its first presence read, and hand back what each
+ * read, by processor number. Both interfaces must have published and the
+ * hub lock must have come back free, whatever the reads were.
+ */
+static void run_program(void (*build)(Image *p), const char *accel,
+                        uint64_t seen[4])
 {
     static const char names[4] = { 'A', 'B', 'C', 'D' };
     g_autofree char *prom = NULL;
@@ -437,10 +451,10 @@ static void run_program(void (*build)(Image *p), uint64_t seen[4])
     quoted = g_shell_quote(prom);
     /*
      * The accelerator named here wins over the -accel qtest libqtest
-     * appends: the race needs each processor on its own host thread.
+     * appends: guest code has to run.
      */
-    s = qtest_initf("-M origin300 -cpu R14000 -smp 4 -bios %s "
-                    "-accel tcg,thread=multi -no-shutdown -S", quoted);
+    s = qtest_initf("-M origin300 -cpu R14000 -smp 4 -bios %s %s "
+                    "-no-shutdown -S", quoted, accel);
     qtest_qmp_assert_success(s, "{'execute':'cont'}");
 
     for (unsigned int tries = 0; tries < POLL_TRIES; tries++) {
@@ -471,7 +485,7 @@ static void run_program(void (*build)(Image *p), uint64_t seen[4])
     g_assert_cmpint(unlink(prom), ==, 0);
 }
 
-static void test_first_presence_read_sees_every_interface(void)
+static void check_first_presence_read_sees_every_interface(const char *accel)
 {
     uint64_t seen[4];
 
@@ -480,13 +494,13 @@ static void test_first_presence_read_sees_every_interface(void)
         g_test_skip("TCG is unavailable");
         return;
     }
-    run_program(build_program, seen);
+    run_program(build_program, accel, seen);
     /* Neither publisher read the other interface's bits early. */
     g_assert_cmphex(seen[0], ==, PRESENCE_ALL);
     g_assert_cmphex(seen[2], ==, PRESENCE_ALL);
 }
 
-static void test_partner_read_sees_its_interface(void)
+static void check_partner_read_sees_its_interface(const char *accel)
 {
     uint64_t seen[4];
 
@@ -494,13 +508,43 @@ static void test_partner_read_sees_its_interface(void)
         g_test_skip("TCG is unavailable");
         return;
     }
-    run_program(build_handshake_program, seen);
+    run_program(build_handshake_program, accel, seen);
     /* Each partner read its own interface's bits, published late. */
     g_assert_cmphex(seen[1] & PRESENCE_PI0, ==, PRESENCE_PI0);
     g_assert_cmphex(seen[3] & PRESENCE_PI1, ==, PRESENCE_PI1);
     /* And the publishers still saw both interfaces. */
     g_assert_cmphex(seen[0], ==, PRESENCE_ALL);
     g_assert_cmphex(seen[2], ==, PRESENCE_ALL);
+}
+
+static void test_first_presence_read_sees_every_interface(void)
+{
+    check_first_presence_read_sees_every_interface(accel_mttcg);
+}
+
+static void test_partner_read_sees_its_interface(void)
+{
+    check_partner_read_sees_its_interface(accel_mttcg);
+}
+
+static void test_first_presence_read_round_robin(void)
+{
+    check_first_presence_read_sees_every_interface(accel_rr);
+}
+
+static void test_partner_read_round_robin(void)
+{
+    check_partner_read_sees_its_interface(accel_rr);
+}
+
+static void test_first_presence_read_icount(void)
+{
+    check_first_presence_read_sees_every_interface(accel_icount);
+}
+
+static void test_partner_read_icount(void)
+{
+    check_partner_read_sees_its_interface(accel_icount);
 }
 
 int main(int argc, char **argv)
@@ -510,5 +554,13 @@ int main(int argc, char **argv)
                    test_first_presence_read_sees_every_interface);
     qtest_add_func("sn1/presence/partner-read-sees-its-interface",
                    test_partner_read_sees_its_interface);
+    qtest_add_func("sn1/presence/round-robin/first-read-sees-every-interface",
+                   test_first_presence_read_round_robin);
+    qtest_add_func("sn1/presence/round-robin/partner-read-sees-its-interface",
+                   test_partner_read_round_robin);
+    qtest_add_func("sn1/presence/icount/first-read-sees-every-interface",
+                   test_first_presence_read_icount);
+    qtest_add_func("sn1/presence/icount/partner-read-sees-its-interface",
+                   test_partner_read_icount);
     return g_test_run();
 }
