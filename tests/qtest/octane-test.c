@@ -2,6 +2,7 @@
 /* Graphics-free Octane profile: synthetic RAM and raw flash policy. */
 #include "qemu/osdep.h"
 #include "libqtest.h"
+#include "sgi-migrate.h"
 #include "qobject/qdict.h"
 #include "qobject/qlist.h"
 
@@ -337,6 +338,77 @@ static void test_reset_state(void)
     qtest_quit(qts);
 }
 
+static void test_migration_state(void)
+{
+    g_autofree char *directory = NULL;
+    g_autofree char *socket = NULL;
+    g_autofree char *uri = NULL;
+    GError *error = NULL;
+    QTestState *from, *to;
+
+    directory = g_dir_make_tmp("octane-migration-XXXXXX", &error);
+    g_assert_no_error(error);
+    socket = g_build_filename(directory, "migration.sock", NULL);
+    uri = g_strdup_printf("unix:%s", socket);
+    from = octane_start();
+    to = octane_start_args("-incoming defer");
+
+    qtest_writel(from, HEART + 0x20, WIDE);
+    qtest_writeq(from, RAM, 0x0123456789abcdefULL);
+    qtest_writeq(from, RAM + 8, 0xfedcba9876543210ULL);
+    qtest_writel(from, CFG(2) + 0x10, 0x10000000);
+    qtest_writel(from, CFG(2) + 0x04, 0x00000002);
+    qtest_writel(from, BRIDGE + 0x200 + 8 * 2 + 4, 0x1100);
+    qtest_writeb(from, UART_A + 7, 0x5a);
+    qtest_writel(from, BRIDGE_REG(0x030), 8u << 16);
+    qtest_writel(from, BRIDGE_REG(0x038), 0x80);
+    qtest_writel(from, BRIDGE_REG(0x130 + 8 * 3), 3);
+    qtest_writel(from, BRIDGE_REG(0x118), SUPERIO_PIN);
+    qtest_writel(from, IOC3 + 0x20, IOC3_SERIAL_IRQ);
+    qtest_writel(from, BRIDGE_REG(0x108), SUPERIO_PIN);
+    qtest_writeq(from, HEART + 0x10000, 1u << 3);
+    qtest_writeb(from, UART_A + 3, 0x03);
+    qtest_writeb(from, UART_A + 1, 0x01);
+    qtest_writeb(from, UART_A + 4, 0x10);
+    qtest_writeb(from, UART_A, 0xa5);
+    g_assert_cmphex(qtest_readb(from, UART_A + 5) & 1, ==, 1);
+    g_assert_cmphex(qtest_readl(from, IOC3 + 0x1c) & IOC3_SERIAL_IRQ, ==,
+                    IOC3_SERIAL_IRQ);
+    g_assert_cmphex(octane_cpu_cause(from) & 0x400, ==, 0x400);
+
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming', 'arguments':{'uri':%s}}", uri);
+    sgi_migrate_stopped(from, uri);
+    sgi_wait_migration_status(to, "completed", 30);
+
+    g_assert_cmphex(qtest_readl(to, HEART + 0x20), ==, WIDE);
+    g_assert_cmphex(qtest_readq(to, RAM), ==, 0x0123456789abcdefULL);
+    g_assert_cmphex(qtest_readq(to, RAM + 4 * UNIT + 8), ==,
+                    0xfedcba9876543210ULL);
+    g_assert_cmphex(qtest_readq(to, HEART + 0x10000), ==, 1u << 3);
+    g_assert_cmphex(qtest_readq(to, HEART + 0x10030) & (1u << 3), ==,
+                    1u << 3);
+    g_assert_cmphex(octane_cpu_cause(to) & 0x400, ==, 0x400);
+    g_assert_cmphex(qtest_readl(to, CFG(2) + 0x10), ==, 0x10000000);
+    g_assert_cmphex(qtest_readb(to, UART_A + 7), ==, 0x5a);
+    g_assert_cmphex(qtest_readb(to, UART_A + 5) & 1, ==, 1);
+    g_assert_cmphex(qtest_readl(to, IOC3 + 0x1c) & IOC3_SERIAL_IRQ, ==,
+                    IOC3_SERIAL_IRQ);
+    g_assert_cmphex(qtest_readl(to, BRIDGE_REG(0x100)) & SUPERIO_PIN, ==,
+                    SUPERIO_PIN);
+    g_assert_cmphex(qtest_readb(to, UART_A), ==, 0xa5);
+    g_assert_cmphex(qtest_readl(to, IOC3 + 0x1c) & IOC3_SERIAL_IRQ, ==, 0);
+    g_assert_cmphex(octane_cpu_cause(to) & 0x400, ==, 0);
+    g_assert_cmphex(qtest_readl(to, FLASH), ==, 0x12345678);
+
+    qtest_quit(to);
+    qtest_quit(from);
+    if (g_file_test(socket, G_FILE_TEST_EXISTS)) {
+        g_assert_cmpint(g_unlink(socket), ==, 0);
+    }
+    g_assert_cmpint(g_rmdir(directory), ==, 0);
+}
+
 int main(int argc, char **argv)
 {
     int fd;
@@ -357,6 +429,7 @@ int main(int argc, char **argv)
     qtest_add_func("/octane/heart-interrupt-levels",
                    test_heart_interrupt_levels);
     qtest_add_func("/octane/reset-state", test_reset_state);
+    qtest_add_func("/octane/migration-state", test_migration_state);
     int result = g_test_run();
     unlink(flash_path);
     g_free(flash_path);
