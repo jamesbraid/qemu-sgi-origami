@@ -115,9 +115,6 @@ REASONS = {
     'pair-torpedo-unmeasured':
         'no run has yet finished torpedo on the pair, so it has no budget '
         'or row of its own',
-    'reboot-stall':
-        'an IRIX reboot on the Origin 300 stalls before the PROM restarts '
-        '(jamesb/qemu#875); a new row takes the check once that is fixed',
 }
 
 # The composed tape identity IRIX's driver recognizes as a DAT: the
