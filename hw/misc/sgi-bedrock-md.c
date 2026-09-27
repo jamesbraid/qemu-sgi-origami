@@ -91,7 +91,7 @@ static uint64_t md_directory_word_written(SGIBedrockMDState *s,
                                           uint64_t value, hwaddr offset,
                                           const uint32_t *index);
 static void md_watch_line(SGIBedrockMDState *s, uint32_t index);
-static void md_watched_lines_place(SGIBedrockMDState *s);
+static void md_watched_pages_place(SGIBedrockMDState *s);
 
 static bool md_storage(hwaddr offset, unsigned *index, uint64_t *mask)
 {
@@ -390,7 +390,7 @@ static void md_update_memory_aliases(SGIBedrockMDState *s)
     md_retired_flush_all(s);
     md_ecc_injections_place(s);
     md_directory_injections_place(s);
-    md_watched_lines_place(s);
+    md_watched_pages_place(s);
     memory_region_transaction_commit();
 }
 
@@ -2383,43 +2383,29 @@ static const MemoryRegionOps md_memory_ops = {
  * invalidates every other copy; an owner's write-back unowns the line. A
  * clean exclusive or shared copy is dropped without telling the directory.
  * The processors' requests are the R10000's (R10000 User's Manual version
- * 2.0, Table 4-2), which depend on the cache algorithm: under coherent
- * exclusive-on-write (5) a load miss reads shared and a store miss reads
- * exclusive; under coherent exclusive (4) a load miss also reads
- * exclusive; noncoherent (3) makes no coherent request; a store to a
- * shared copy upgrades. The unit sees only that an access is cached, not
- * its algorithm, so it serves every cached load as a read -- exclusive if
- * the line is unowned, per the protocol above -- and every cached store as
- * a read-exclusive. An algorithm-4 load that finds the line shared is
- * therefore recorded as a sharer rather than as the new owner, and an
- * algorithm-3 access changes state it would not.
+ * 2.0, section 4.6 and Table 4-2), and depend on the reference's cache
+ * algorithm, which each reference carries: under coherent exclusive-on-
+ * write (5) a load miss reads shared and a store miss reads exclusive;
+ * under coherent exclusive (4) a load miss reads exclusive too; a store to
+ * a shared copy upgrades; noncoherent (3) and uncached (2, 7) references
+ * make no coherent request. An access with no algorithm is a device's --
+ * the block transfer engine's, say -- which the unit serves as an I/O
+ * requester (MD_PTR_OWNER_IO in the public SN1 header), not a processor;
+ * what it does to the word then is not modelled, and it changes none.
  *
- * The model follows a line only while it is watched, and keeps each
- * processor's copy of it here rather than in the processor, as the state
- * its secondary cache would hold. Its limits:
+ * Each processor's copy of a line is kept here, apart from the pages
+ * being watched, because the directory word does not hold it: whether the
+ * owner's copy is dirty, which decides whether a flush writes the line
+ * back and unowns it or drops it silently, and whether a processor has
+ * silently dropped a clean or shared copy, which decides whether a hit
+ * cache instruction finds it, are processor cache state the directory
+ * never records. A line first seen takes its copies from its word; after
+ * that the copies persist across the page's overlay coming and going, and
+ * only a reset discards them.
  *
- * - A line is followed from the first backdoor access to its word, so
- *   accesses before that are not seen, and every copy starts invalid:
- *   the first access after admission always makes a request, where a
- *   processor already holding the line would not. Software that writes a
- *   pattern into a word and then touches the line cached -- the stock
- *   PROM's directory test does -- sees the word rewritten.
- * - Copies are never replaced by other lines: a copy leaves through a
- *   cache instruction, another processor's request, or the release of an
- *   idle line, which the model takes as a replacement.
- * - An index cache instruction drops the copy whichever way it names; the
- *   model does not track which way of its set a copy occupies.
- * - Uncached accesses make no request (Table 4-2); that the unit leaves
- *   the word alone for them, rather than recalling a cached copy, is
- *   inferred.
- * - An instruction fetch from a watched line reaches the overlay as a load
- *   and is served as a read, not as the read-shared an instruction miss
- *   makes, and code on a watched page runs one instruction at a time.
- * - DMA and other device accesses make no request. An access counts as a
- *   processor's when a processor issued it; a device making a synchronous
- *   DMA access from within a processor's I/O access would be counted as
- *   that processor's load or store; which devices here do that has not
- *   been checked.
+ * The model's one limit: the unit watches the pages whose words software
+ * most recently read or wrote through the backdoor, and a processor access
+ * to a page while it is not watched is not seen.
  *
  * Words in any state the protocol above does not produce -- busy, wait,
  * poisoned, coarse or sparse, owned by an I/O device, or naming a
@@ -2668,7 +2654,7 @@ typedef struct MDLine {
     uint64_t address;
 } MDLine;
 
-static MDLine md_page_line(const SGIBedrockMDWatchedLine *page,
+static MDLine md_page_line(const SGIBedrockMDWatchedPage *page,
                            uint64_t offset)
 {
     return (MDLine) {
@@ -2792,7 +2778,7 @@ static uint8_t md_directory_request(SGIBedrockMDState *s,
  * for a device's access made from inside one.
  */
 static void md_watched_access(SGIBedrockMDState *s,
-                              SGIBedrockMDWatchedLine *page, hwaddr offset,
+                              SGIBedrockMDWatchedPage *page, hwaddr offset,
                               bool is_write, MemTxAttrs attrs)
 {
     MDLine one = md_page_line(page, offset);
@@ -2855,7 +2841,7 @@ static MemTxResult md_watched_read(void *opaque, hwaddr offset,
                                    uint64_t *value, unsigned size,
                                    MemTxAttrs attrs)
 {
-    SGIBedrockMDWatchedLine *page = opaque;
+    SGIBedrockMDWatchedPage *page = opaque;
     MemTxResult result = md_memory_read(page->md, page->address + offset,
                                         value, size, attrs);
 
@@ -2869,7 +2855,7 @@ static MemTxResult md_watched_write(void *opaque, hwaddr offset,
                                     uint64_t value, unsigned size,
                                     MemTxAttrs attrs)
 {
-    SGIBedrockMDWatchedLine *page = opaque;
+    SGIBedrockMDWatchedPage *page = opaque;
     MemTxResult result = md_memory_write(page->md, page->address + offset,
                                          value, size, attrs);
 
@@ -2887,8 +2873,8 @@ static const MemoryRegionOps md_watched_ops = {
     .impl = { .min_access_size = 1, .max_access_size = 8, .unaligned = true },
 };
 
-static void md_watched_line_unplace(SGIBedrockMDState *s,
-                                    SGIBedrockMDWatchedLine *line)
+static void md_watched_page_unplace(SGIBedrockMDState *s,
+                                    SGIBedrockMDWatchedPage *line)
 {
     if (line->placed) {
         memory_region_del_subregion(&s->ecc_overlay, &line->mr);
@@ -2900,16 +2886,16 @@ static void md_watched_count_update(SGIBedrockMDState *s)
 {
     uint32_t count = 0;
 
-    for (unsigned i = 0; i < SGI_BEDROCK_MD_WATCHED_LINES; i++) {
+    for (unsigned i = 0; i < SGI_BEDROCK_MD_WATCHED_PAGES; i++) {
         count += s->watched[i].active;
     }
     qatomic_set(&s->watched_count, count);
 }
 
-static void md_watched_lines_place(SGIBedrockMDState *s)
+static void md_watched_pages_place(SGIBedrockMDState *s)
 {
-    for (unsigned i = 0; i < SGI_BEDROCK_MD_WATCHED_LINES; i++) {
-        SGIBedrockMDWatchedLine *line = &s->watched[i];
+    for (unsigned i = 0; i < SGI_BEDROCK_MD_WATCHED_PAGES; i++) {
+        SGIBedrockMDWatchedPage *line = &s->watched[i];
 
         if (line->active &&
             !md_overlay_place(s, &line->mr,
@@ -2927,18 +2913,18 @@ static void md_watched_lines_place(SGIBedrockMDState *s)
  * hardware happens when the model stops watching. The caller commits the
  * map change.
  */
-static void md_watched_line_release(SGIBedrockMDState *s,
-                                    SGIBedrockMDWatchedLine *line)
+static void md_watched_page_release(SGIBedrockMDState *s,
+                                    SGIBedrockMDWatchedPage *line)
 {
     line->active = false;
-    md_watched_line_unplace(s, line);
+    md_watched_page_unplace(s, line);
 }
 
-static void md_watched_lines_clear(SGIBedrockMDState *s)
+static void md_watched_pages_clear(SGIBedrockMDState *s)
 {
     memory_region_transaction_begin();
-    for (unsigned i = 0; i < SGI_BEDROCK_MD_WATCHED_LINES; i++) {
-        md_watched_line_unplace(s, &s->watched[i]);
+    for (unsigned i = 0; i < SGI_BEDROCK_MD_WATCHED_PAGES; i++) {
+        md_watched_page_unplace(s, &s->watched[i]);
         s->watched[i].active = false;
     }
     memory_region_transaction_commit();
@@ -3020,8 +3006,8 @@ bool sgi_bedrock_md_processor_request(SGIBedrockMDState *s, uint16_t pointer,
                     request == SGI_BEDROCK_MD_PREFETCH_STORE;
     bool found = false;
 
-    for (unsigned i = 0; i < SGI_BEDROCK_MD_WATCHED_LINES; i++) {
-        SGIBedrockMDWatchedLine *page = &s->watched[i];
+    for (unsigned i = 0; i < SGI_BEDROCK_MD_WATCHED_PAGES; i++) {
+        SGIBedrockMDWatchedPage *page = &s->watched[i];
         uint64_t in_page = address & (MD_WATCH_PAGE - 1);
         MDLine one = md_page_line(page, in_page);
         const MDLine *line = &one;
@@ -3086,10 +3072,10 @@ bool sgi_bedrock_md_processor_request(SGIBedrockMDState *s, uint16_t pointer,
 static void md_watch_line(SGIBedrockMDState *s, uint32_t line_index)
 {
     uint32_t index = line_index & ~(uint32_t)(MD_WATCH_PAGE_LINES - 1);
-    SGIBedrockMDWatchedLine *slot = NULL;
+    SGIBedrockMDWatchedPage *slot = NULL;
 
-    for (unsigned i = 0; i < SGI_BEDROCK_MD_WATCHED_LINES; i++) {
-        SGIBedrockMDWatchedLine *page = &s->watched[i];
+    for (unsigned i = 0; i < SGI_BEDROCK_MD_WATCHED_PAGES; i++) {
+        SGIBedrockMDWatchedPage *page = &s->watched[i];
 
         if (page->active && page->index == index) {
             page->last_use = ++s->use_clock;
@@ -3101,7 +3087,7 @@ static void md_watch_line(SGIBedrockMDState *s, uint32_t line_index)
         }
     }
     memory_region_transaction_begin();
-    md_watched_line_release(s, slot);
+    md_watched_page_release(s, slot);
     slot->index = index;
     slot->last_use = ++s->use_clock;
     slot->active = md_overlay_place(s, &slot->mr,
@@ -3116,7 +3102,7 @@ static void md_watch_line(SGIBedrockMDState *s, uint32_t line_index)
         }
     }
     md_watched_count_update(s);
-    trace_sgi_bedrock_md_watch_line(index, slot->address, slot->active);
+    trace_sgi_bedrock_md_watch_page(index, slot->address, slot->active);
 }
 
 /*
@@ -3299,7 +3285,7 @@ static void md_reset_registers(SGIBedrockMDState *s)
     memory_region_transaction_begin();
     md_ecc_injections_clear(s);
     md_directory_injections_clear(s);
-    md_watched_lines_clear(s);
+    md_watched_pages_clear(s);
     md_line_states_clear(s);
     s->use_clock = 0;
     s->memory_error = 0;
@@ -3376,8 +3362,8 @@ static int md_post_load(void *opaque, int version_id)
     md_retired_flush_all(s);
     /* The stream carries which lines are watched, not where they sit. */
     memory_region_transaction_begin();
-    for (unsigned i = 0; i < SGI_BEDROCK_MD_WATCHED_LINES; i++) {
-        md_watched_line_unplace(s, &s->watched[i]);
+    for (unsigned i = 0; i < SGI_BEDROCK_MD_WATCHED_PAGES; i++) {
+        md_watched_page_unplace(s, &s->watched[i]);
         if (s->watched[i].active &&
             s->watched[i].index >= s->directory_entries) {
             memory_region_transaction_commit();
@@ -3461,13 +3447,13 @@ static const VMStateDescription vmstate_md_holder = {
     },
 };
 
-static const VMStateDescription vmstate_md_watched_line = {
-    .name = TYPE_SGI_BEDROCK_MD "-watched-line",
+static const VMStateDescription vmstate_md_watched_page = {
+    .name = TYPE_SGI_BEDROCK_MD "-watched-page",
     .version_id = 1, .minimum_version_id = 1,
     .fields = (const VMStateField[]) {
-        VMSTATE_UINT32(index, SGIBedrockMDWatchedLine),
-        VMSTATE_BOOL(active, SGIBedrockMDWatchedLine),
-        VMSTATE_UINT64(last_use, SGIBedrockMDWatchedLine),
+        VMSTATE_UINT32(index, SGIBedrockMDWatchedPage),
+        VMSTATE_BOOL(active, SGIBedrockMDWatchedPage),
+        VMSTATE_UINT64(last_use, SGIBedrockMDWatchedPage),
         VMSTATE_END_OF_LIST()
     },
 };
@@ -3498,9 +3484,9 @@ static const VMStateDescription vmstate_md_watched = {
     .needed = md_watched_needed,
     .fields = (const VMStateField[]) {
         VMSTATE_STRUCT_ARRAY(watched, SGIBedrockMDState,
-                             SGI_BEDROCK_MD_WATCHED_LINES, 1,
-                             vmstate_md_watched_line,
-                             SGIBedrockMDWatchedLine),
+                             SGI_BEDROCK_MD_WATCHED_PAGES, 1,
+                             vmstate_md_watched_page,
+                             SGIBedrockMDWatchedPage),
         VMSTATE_UINT64(use_clock, SGIBedrockMDState),
         VMSTATE_END_OF_LIST()
     },
@@ -3564,7 +3550,7 @@ static int md_pre_load(void *opaque)
 {
     SGIBedrockMDState *s = opaque;
 
-    md_watched_lines_clear(s);
+    md_watched_pages_clear(s);
     md_line_states_clear(s);
     g_clear_pointer(&s->line_state_array, g_free);
     s->line_state_count = 0;
@@ -3684,7 +3670,7 @@ static void md_init(Object *obj)
                               &s->directory_injection[i], name,
                               MD_DIRECTORY_LINE);
     }
-    for (unsigned i = 0; i < SGI_BEDROCK_MD_WATCHED_LINES; i++) {
+    for (unsigned i = 0; i < SGI_BEDROCK_MD_WATCHED_PAGES; i++) {
         g_autofree char *name =
             g_strdup_printf(TYPE_SGI_BEDROCK_MD "-watched-page%u", i);
 
@@ -3784,7 +3770,7 @@ static void md_unrealize(DeviceState *dev)
     timer_del(s->retired_timer);
     md_ecc_injections_clear(s);
     md_directory_injections_clear(s);
-    md_watched_lines_clear(s);
+    md_watched_pages_clear(s);
     if (s->memory_alias_initialized) {
         for (unsigned bank = 0; bank < 8; bank++) {
             memory_region_del_subregion(&s->memory_mr,
