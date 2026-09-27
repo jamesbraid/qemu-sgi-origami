@@ -2,8 +2,8 @@
 /*
  * Graphics-free Octane (IP30) functional profile.
  * The public board sources fix the widget and PCI topology. The selected
- * RAM descriptor, firmware loading policy, and PCI slot assignments are
- * functional choices; firmware boot and interrupt routing remain unverified.
+ * RAM descriptor, firmware loading policy, PCI slot assignments, and SuperIO
+ * interrupt pin are functional choices; firmware boot remains unverified.
  */
 #include "qemu/osdep.h"
 #include "qemu/datadir.h"
