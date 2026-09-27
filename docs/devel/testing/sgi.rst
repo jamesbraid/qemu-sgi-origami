@@ -1,3 +1,5 @@
+.. SPDX-License-Identifier: GPL-2.0-or-later
+
 SGI machine checks
 ==================
 
@@ -5,7 +7,8 @@ Build the MIPS64 system emulator with tests, HMP, and user-mode networking enabl
 
 .. code-block:: sh
 
-   ./configure --target-list=mips64-softmmu --enable-tests --enable-hmp --enable-slirp
+   ./configure --target-list=mips64-softmmu --enable-tests \
+       --enable-hmp --enable-slirp
    ninja -C build
 
 Debian Trixie build dependencies used by the Forgejo workflows are declared in
@@ -77,7 +80,8 @@ report before the run:
        func-mips64-origin200_prom
    test "$(find build/meson-logs -maxdepth 1 -type f \
        -name 'sgi-prom*.junit.xml' | wc -l)" -eq 1
-   junit=$(find build/meson-logs -maxdepth 1 -name 'sgi-prom*.junit.xml' -print -quit)
+   junit=$(find build/meson-logs -maxdepth 1 \
+       -name 'sgi-prom*.junit.xml' -print -quit)
    python3 scripts/check-sgi-test-results.py \
        --junit "$junit" --expect build/expected.txt
 
