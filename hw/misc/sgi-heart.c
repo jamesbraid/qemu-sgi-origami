@@ -2,10 +2,13 @@
 /*
  * SGI IP30 HEART standalone processor and memory controller profile.
  * Memory population is explicit; this does not identify an Octane DIMM layout.
- * External interrupts, DMA, one-wire, compare and trigger are not modeled.
+ * The Crossbow widget accepts bounded interrupt packets. DMA, one-wire,
+ * compare and trigger are not modeled.
  */
 #include "qemu/osdep.h"
 #include "hw/misc/sgi-heart.h"
+#include "hw/mips/sgi-xtalk-port.h"
+#include "hw/core/irq.h"
 #include "hw/core/qdev-properties.h"
 #include "migration/vmstate.h"
 #include "qapi/error.h"
@@ -19,6 +22,95 @@
 #define HEART_RAM_BASE 0x20000000ULL
 #define HEART_UNIT (32 * MiB)
 #define HEART_COUNT_MASK ((1ULL << 52) - 1)
+#define HEART_LEVEL0_MASK 0x000000000000ffffULL
+#define HEART_LEVEL2_MASK 0x0003ffff00000000ULL
+#define HEART_WIDGET_SIZE 0x1000
+
+static void heart_update_irq(SGIHeartState *s)
+{
+    uint64_t enabled = s->pending & s->mask[0];
+
+    qemu_set_irq(s->processor[0], !!(enabled & HEART_LEVEL0_MASK));
+    qemu_set_irq(s->processor[1], !!(enabled & HEART_LEVEL2_MASK));
+}
+
+static MemTxResult heart_widget_read(void *opaque, hwaddr offset,
+                                     uint64_t *value, unsigned size,
+                                     MemTxAttrs attrs)
+{
+    SGIHeartState *s = opaque;
+
+    if (offset == 0x04 && size == 4) {
+        *value = ((uint32_t)s->widget_revision << 28) |
+                 (0xc001U << 12) | (0x0036U << 1);
+        return MEMTX_OK;
+    }
+    qemu_log_mask(LOG_UNIMP, "sgi-heart: unsupported widget %u-byte read "
+                  "at 0x%" HWADDR_PRIx "\n", size, offset);
+    *value = 0;
+    return MEMTX_ERROR;
+}
+
+static MemTxResult heart_widget_write(void *opaque, hwaddr offset,
+                                      uint64_t value, unsigned size,
+                                      MemTxAttrs attrs)
+{
+    qemu_log_mask(LOG_UNIMP, "sgi-heart: unsupported widget %u-byte write "
+                  "at 0x%" HWADDR_PRIx "\n", size, offset);
+    return MEMTX_ERROR;
+}
+
+static const MemoryRegionOps heart_widget_ops = {
+    .read_with_attrs = heart_widget_read,
+    .write_with_attrs = heart_widget_write,
+    .endianness = DEVICE_BIG_ENDIAN,
+    .valid = { .min_access_size = 1, .max_access_size = 8,
+               .unaligned = true },
+    .impl = { .min_access_size = 1, .max_access_size = 8,
+              .unaligned = true },
+};
+
+static MemTxResult heart_packet_read(void *opaque, hwaddr offset,
+                                     uint64_t *value, unsigned size,
+                                     MemTxAttrs attrs)
+{
+    qemu_log_mask(LOG_UNIMP, "sgi-heart: unsupported packet %u-byte read "
+                  "at 0x%" HWADDR_PRIx "\n", size, offset);
+    *value = 0;
+    return MEMTX_ERROR;
+}
+
+static MemTxResult heart_packet_write(void *opaque, hwaddr offset,
+                                      uint64_t value, unsigned size,
+                                      MemTxAttrs attrs)
+{
+    SGIHeartState *s = opaque;
+    unsigned vector = value & 0xff;
+
+    if (offset != 0x80 || size != 8 || (value & ~0x1ffULL) || vector >= 64) {
+        qemu_log_mask(LOG_UNIMP, "sgi-heart: unsupported packet %u-byte "
+                      "write at 0x%" HWADDR_PRIx " value 0x%" PRIx64 "\n",
+                      size, offset, value);
+        return MEMTX_ERROR;
+    }
+    if (value & 0x100) {
+        s->pending |= 1ULL << vector;
+    } else {
+        s->pending &= ~(1ULL << vector);
+    }
+    heart_update_irq(s);
+    return MEMTX_OK;
+}
+
+static const MemoryRegionOps heart_packet_ops = {
+    .read_with_attrs = heart_packet_read,
+    .write_with_attrs = heart_packet_write,
+    .endianness = DEVICE_BIG_ENDIAN,
+    .valid = { .min_access_size = 1, .max_access_size = 8,
+               .unaligned = true },
+    .impl = { .min_access_size = 1, .max_access_size = 8,
+              .unaligned = true },
+};
 
 static uint64_t heart_counter(SGIHeartState *s)
 {
@@ -159,14 +251,17 @@ static void heart_write(void *opaque, hwaddr offset, uint64_t value,
         case 0x10000 ... 0x10018:
             if (!(offset & 7)) {
                 s->mask[(offset - 0x10000) / 8] = value;
+                heart_update_irq(s);
                 return;
             }
             break;
         case 0x10020:
             s->pending |= value;
+            heart_update_irq(s);
             return;
         case 0x10028:
             s->pending &= ~value;
+            heart_update_irq(s);
             return;
         default:
             break;
@@ -202,7 +297,10 @@ static void heart_reset_enter(Object *obj, ResetType type)
 
 static void heart_reset_hold(Object *obj, ResetType type)
 {
-    heart_map_all(SGI_HEART(obj));
+    SGIHeartState *s = SGI_HEART(obj);
+
+    heart_map_all(s);
+    heart_update_irq(s);
 }
 
 static int heart_pre_save(void *opaque)
@@ -221,6 +319,7 @@ static int heart_post_load(void *opaque, int version_id)
     s->saved_count &= HEART_COUNT_MASK;
     s->counter_epoch_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
     heart_map_all(s);
+    heart_update_irq(s);
     return 0;
 }
 
@@ -282,6 +381,7 @@ static const Property heart_properties[] = {
     DEFINE_PROP_UINT64("bank1-size", SGIHeartState, capacity[1], 0),
     DEFINE_PROP_UINT64("bank2-size", SGIHeartState, capacity[2], 0),
     DEFINE_PROP_UINT64("bank3-size", SGIHeartState, capacity[3], 0),
+    DEFINE_PROP_UINT8("widget-revision", SGIHeartState, widget_revision, 0),
 };
 
 static void heart_init(Object *obj)
@@ -291,12 +391,36 @@ static void heart_init(Object *obj)
     memory_region_init_io(&s->registers, obj, &heart_ops, s,
                           TYPE_SGI_HEART, HEART_REG_SIZE);
     sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->registers);
+    memory_region_init_io(&s->widget, obj, &heart_widget_ops, s,
+                          "sgi-heart.widget", HEART_WIDGET_SIZE);
+    sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->widget);
+    memory_region_init_io(&s->packet, obj, &heart_packet_ops, s,
+                          "sgi-heart.packet", HEART_WIDGET_SIZE);
+    sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->packet);
+    qdev_init_gpio_out_named(DEVICE(obj), s->processor, "processor", 2);
+}
+
+static const char *heart_xtalk_describe(Object *port, unsigned int index)
+{
+    return "HEART widget";
+}
+
+static MemoryRegion *heart_xtalk_cpu_face(Object *port, unsigned int index)
+{
+    return &SGI_HEART(port)->widget;
+}
+
+static MemoryRegion *heart_xtalk_packet_face(Object *port,
+                                             unsigned int index)
+{
+    return &SGI_HEART(port)->packet;
 }
 
 static void heart_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     ResettableClass *rc = RESETTABLE_CLASS(klass);
+    SGIXtalkPortClass *pc = SGI_XTALK_PORT_CLASS(klass);
 
     dc->desc = "SGI IP30 HEART standalone functional profile";
     dc->realize = heart_realize;
@@ -305,6 +429,9 @@ static void heart_class_init(ObjectClass *klass, const void *data)
     device_class_set_props(dc, heart_properties);
     rc->phases.enter = heart_reset_enter;
     rc->phases.hold = heart_reset_hold;
+    pc->describe = heart_xtalk_describe;
+    pc->cpu_face = heart_xtalk_cpu_face;
+    pc->packet_face = heart_xtalk_packet_face;
 }
 
 static const TypeInfo heart_info = {
@@ -313,6 +440,10 @@ static const TypeInfo heart_info = {
     .instance_size = sizeof(SGIHeartState),
     .instance_init = heart_init,
     .class_init = heart_class_init,
+    .interfaces = (const InterfaceInfo[]) {
+        { TYPE_SGI_XTALK_PORT },
+        { },
+    },
 };
 
 static void heart_register_types(void)

@@ -13,9 +13,13 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIHeartState, SGI_HEART)
 struct SGIHeartState {
     SysBusDevice parent_obj;
     MemoryRegion registers;
+    MemoryRegion widget;
+    MemoryRegion packet;
+    qemu_irq processor[2];
     MemoryRegion backing[HEART_BANKS];
     MemoryRegion views[HEART_BANKS][HEART_MAX_UNITS];
     uint64_t capacity[HEART_BANKS];
+    uint8_t widget_revision;
     bool mapped[HEART_BANKS][HEART_MAX_UNITS];
 
     uint64_t mode;
