@@ -140,6 +140,12 @@ OBJECT_DECLARE_TYPE(SGIMgrasState, SGIMgrasClass, SGI_MGRAS)
  * and reads it back under index byte 0 (all 32 bits, the main buffer
  * select) and index byte 4 (low 8 bits, which it calls the overlay buffer
  * select); the kernel reading takes index 4 as a second swap-mask word.
+ * The probe's swap captures (run irix-20260927T172059-fdbada) write
+ * 0x4000 under index byte 0 at the first swap of a window with display ID
+ * 14 and 0 at its second, and those swaps must show first the frame drawn
+ * before them and then the next. Scanout therefore shows bank 1 for a
+ * pixel whose main display ID has its bit set in the index-0 word, and
+ * bank 0 otherwise; the polarity is inferred from that pairing.
  */
 #define SGI_MGRAS_XMAP_BUF_SELECT 0x071d80
 
@@ -334,6 +340,11 @@ struct SGIMgrasState {
     /* Host-only event ordering. Not guest state and not migrated. */
     uint64_t trace_sequence;
     QEMUTimer *retrace_timer;
+    /*
+     * Pixel-memory banks 0 and 1. The X server draws in bank 0; GL front
+     * and back buffers map to either (hw/misc/sgi-mgras-gl.c), and bank 1
+     * holds only direct colour.
+     */
     uint32_t *front;
     uint32_t *back;
     uint32_t front_count;
@@ -424,6 +435,10 @@ struct SGIMgrasState {
     uint32_t gl_depth_func;
     uint32_t gl_depth_mask;
     uint32_t gl_clear_depth;
+    /* The draw-buffer triple's first word: bit 0 front, bit 1 back. */
+    uint32_t gl_draw_buffers;
+    /* The bank holding the back buffer, from 0x9808 or context words 16-17. */
+    uint32_t gl_banks[2];
     uint64_t retraces;
     uint8_t xmap_index;
     uint32_t xmap_mode[SGI_MGRAS_XMAP_ENTRIES];
