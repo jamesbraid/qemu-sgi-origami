@@ -2928,8 +2928,7 @@ static void sgi_machine_done(Notifier *notifier, void *data)
  */
 static MemoryRegion *sgi_machine_claim_xio_slot(Object *obj,
                                                 const char *name,
-                                                uint32_t *module,
-                                                uint32_t *widget,
+                                                SGIXioSlotPlace *place,
                                                 Error **errp)
 {
     SGIMachineState *s = SGI_MACHINE(obj);
@@ -2948,7 +2947,8 @@ static MemoryRegion *sgi_machine_claim_xio_slot(Object *obj,
             !g_str_equal(slots[i]->label, name)) {
             continue;
         }
-        if (*module != SGI_XIO_BOARD_MODULE_UNSET && *module != slot_module) {
+        if (place->module != SGI_XIO_BOARD_MODULE_UNSET &&
+            place->module != slot_module) {
             continue;
         }
         if (found >= 0) {
@@ -2965,7 +2965,7 @@ static MemoryRegion *sgi_machine_claim_xio_slot(Object *obj,
                 error_setg(errp, "XIO slot %s of topology '%s' is in module "
                            "%u, not module %u", name, t->name,
                            sgi_machine_xtalk_slot_module(t, slots[i]),
-                           *module);
+                           place->module);
                 return NULL;
             }
         }
@@ -2986,8 +2986,11 @@ static MemoryRegion *sgi_machine_claim_xio_slot(Object *obj,
         return NULL;
     }
     s->slot_claimed[found] = true;
-    *module = sgi_machine_xtalk_slot_module(t, slots[found]);
-    *widget = slots[found]->widget;
+    place->module = sgi_machine_xtalk_slot_module(t, slots[found]);
+    place->widget = slots[found]->widget;
+    place->position = found;
+    place->name = sgi_machine_xtalk_slot_name(t, slots[found]);
+    place->label = g_strdup(slots[found]->label);
     return &s->slot_links[found].proxy;
 }
 

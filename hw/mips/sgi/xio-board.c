@@ -120,19 +120,21 @@ static Object *sgi_xio_board_slots(void)
  * The one-wire identity serials a board class carries. A board fitted by
  * slot name that leaves one at its class's shared placeholder would read
  * the same serial as every other such board, where every fitted part's
- * own one-wire ROM is unique; offset it by the board's module and widget
- * so no two slots share one. The catalogue's own boards, placed by
- * widget, set their serials outright.
+ * own one-wire ROM is unique; offset it by the slot's machine-wide
+ * position so no two slots share one. The widget alone would not do: a
+ * module's two Crossbows number their widgets alike, so IO5 and IO7 are
+ * both widget 14. The catalogue's own boards, placed by widget, set their
+ * serials outright.
  */
 static const char *const sgi_xio_board_serial_props[] = {
     "onewire-serial", "ioc3-onewire-serial", "cad-duo-onewire-serial",
     "sio-onewire-serial",
 };
 
-static void sgi_xio_board_distinct_serials(SGIXioBoardState *board)
+static void sgi_xio_board_distinct_serials(SGIXioBoardState *board,
+                                           uint32_t position)
 {
     Object *obj = OBJECT(board);
-    uint64_t position = board->module * SGI_XBOW_WIDGETS + board->slot;
     size_t i;
 
     for (i = 0; i < ARRAY_SIZE(sgi_xio_board_serial_props); i++) {
@@ -151,7 +153,8 @@ static void sgi_xio_board_distinct_serials(SGIXioBoardState *board)
             continue;
         }
         object_property_set_uint(obj, prop->name,
-                                 placeholder + (position << 8), &error_abort);
+                                 placeholder + ((uint64_t)(position + 1) << 8),
+                                 &error_abort);
     }
 }
 
@@ -166,7 +169,8 @@ static bool sgi_xio_board_place_by_name(SGIXioBoardState *board,
 {
     Object *obj = OBJECT(board);
     Object *slots = sgi_xio_board_slots();
-    uint32_t module = board->module;
+    SGIXioSlotPlace place = { .module = board->module };
+    g_autofree char *name = NULL;
     MemoryRegion *fabric;
 
     if (!slots) {
@@ -184,15 +188,21 @@ static bool sgi_xio_board_place_by_name(SGIXioBoardState *board,
         return false;
     }
     fabric = SGI_XIO_SLOTS_GET_CLASS(slots)->claim(
-        slots, board->slot_name, &module, &board->slot, errp);
+        slots, board->slot_name, &place, errp);
     if (!fabric) {
         return false;
     }
-    board->module = module;
+    name = place.name;
+    board->module = place.module;
+    board->slot = place.widget;
+    board->slot_label = place.label;
     board->placed_by_name = true;
-    /* A board fitted by slot name is known by that name, unless given one. */
+    /*
+     * A board fitted by slot name is known by the slot's machine-wide
+     * name, unless given an id of its own.
+     */
     if (!DEVICE(board)->id) {
-        DEVICE(board)->id = g_strdup(board->slot_name);
+        DEVICE(board)->id = g_steal_pointer(&name);
     }
     if (!object_property_set_link(obj, "fabric", OBJECT(fabric), errp)) {
         return false;
@@ -201,7 +211,7 @@ static bool sgi_xio_board_place_by_name(SGIXioBoardState *board,
         object_property_set_uint(obj, "fabric-widget-shift",
                                  SGI_BRIDGE_PACKET_ADDRESS_BITS, &error_abort);
     }
-    sgi_xio_board_distinct_serials(board);
+    sgi_xio_board_distinct_serials(board, place.position);
     return true;
 }
 
@@ -379,6 +389,11 @@ static void sgi_xio_board_class_init(ObjectClass *oc, const void *data)
     pc->packet_face = sgi_xio_board_xtalk_port_packet_face;
 }
 
+static void sgi_xio_board_finalize(Object *obj)
+{
+    g_free(SGI_XIO_BOARD(obj)->slot_label);
+}
+
 static const TypeInfo sgi_xio_board_types[] = {
     {
         .name = TYPE_SGI_XIO_SLOTS,
@@ -389,6 +404,7 @@ static const TypeInfo sgi_xio_board_types[] = {
         .name = TYPE_SGI_XIO_BOARD,
         .parent = TYPE_SYS_BUS_DEVICE,
         .instance_size = sizeof(SGIXioBoardState),
+        .instance_finalize = sgi_xio_board_finalize,
         .class_size = sizeof(SGIXioBoardClass),
         .class_init = sgi_xio_board_class_init,
         .abstract = true,

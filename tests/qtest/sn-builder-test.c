@@ -350,6 +350,60 @@ static void test_named_slot_refusals(const void *data)
                           "in module 0, not module 1");
 }
 
+/* Two -device boards on a blank-PROM origin2000 are refused with @message. */
+static void assert_device_pair_refused(const char *first, const char *second,
+                                       const char *message)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree uint8_t *blank = g_malloc0(0x100000);
+    g_autofree char *path = NULL;
+    int fd;
+    const char *args[] = {
+        qtest_qemu_binary(NULL), "-M", "origin2000", "-bios", NULL,
+        "-device", first, "-device", second, "-display", "none", NULL
+    };
+
+    fd = g_file_open_tmp("sn-builder-blank-bios-XXXXXX.bin", &path, &error);
+    g_assert_no_error(error);
+    close(fd);
+    g_assert_true(g_file_set_contents(path, (const char *)blank, 0x100000,
+                                      &error));
+    g_assert_no_error(error);
+    args[4] = path;
+
+    assert_qemu_rejects(args, message);
+    g_assert_cmpint(unlink(path), ==, 0);
+}
+
+/*
+ * A module's two Crossbows number their widgets alike: IO5 is Crossbow 0
+ * widget 14 and IO7 Crossbow 1 widget 14. Both take a board, each on its
+ * own fabric, and the two read different one-wire serials; a second
+ * board on either one's fabric is still refused.
+ */
+static void test_boards_on_two_crossbows(const void *data)
+{
+    QTestState *qts = qtest_init(
+        "-M origin2000 -display none "
+        "-device sgi-xio-baseio,preset=menet,slot=io5 "
+        "-device sgi-xio-baseio,preset=menet,slot=io7");
+
+    g_assert_cmphex(qom_get_uint(qts, "/machine/module0/io5",
+                                 "onewire-serial"), !=,
+                    qom_get_uint(qts, "/machine/module0/io7",
+                                 "onewire-serial"));
+    g_assert_cmphex(qom_get_uint(qts, "/machine/module0/io5",
+                                 "ioc3-onewire-serial"), !=,
+                    qom_get_uint(qts, "/machine/module0/io7",
+                                 "ioc3-onewire-serial"));
+    qtest_quit(qts);
+
+    assert_device_pair_refused(
+        "sgi-xio-baseio,preset=menet,slot=io7",
+        "sgi-pci-expansion,module=0,slot=14,fabric=/machine/io7-fabric[0]",
+        "XIO slot io7 already holds a board");
+}
+
 static void test_named_slot_takes_one_board(const void *data)
 {
     g_autoptr(GError) error = NULL;
@@ -1499,6 +1553,8 @@ int main(int argc, char **argv)
         test_origin2000_deskside_baseio_follows_the_preset);
     qtest_add_data_func("sn/builder/fitted-boards-have-distinct-serials",
                         NULL, test_fitted_boards_have_distinct_serials);
+    qtest_add_data_func("sn/builder/boards-on-two-crossbows", NULL,
+                        test_boards_on_two_crossbows);
     qtest_add_data_func("sn/builder/mgras-fitted-at-a-named-slot", NULL,
                         test_mgras_fitted_at_a_named_slot);
     qtest_add_data_func("sn/builder/mgras-fitted-in-io3", NULL,
