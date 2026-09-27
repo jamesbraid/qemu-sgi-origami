@@ -2,7 +2,7 @@
 /*
  * Graphics-head qdev id and QMP screendump-by-device qtest (issue #895).
  *
- * sgi_machine_build_mgras() and sgi_machine_instantiate_kona()
+ * sgi_machine_instantiate_mgras() and sgi_machine_instantiate_kona()
  * (hw/mips/sgi/sn-machine.c) used to parent each graphics board with only
  * object_property_add_child(), leaving dev->id unset. QMP's screendump
  * matches its device= argument against dev->id through
@@ -18,10 +18,9 @@
  * id, and that naming an unknown device fails cleanly instead of silently
  * falling back to console 0.
  *
- * No sn-catalogue.json record selects the "kona" preset yet (qapi/sgi-sn.json's
- * own @kona doc comment says so, and sgi_machine_instantiate_kona()'s own
- * comment repeats it), so this file cannot reach that function through any
- * shipped topology. It attaches KONA the same way tests/qtest/sn0-origin2000-
+ * The "kona" preset's catalogue records belong to the onyx2 topologies,
+ * which fit no MGRAS, so no shipped topology carries both heads. This file
+ * attaches KONA to an origin2000 the same way tests/qtest/sn0-origin2000-
  * kona-test.c does: a `-device sgi-kona,id=kona0,...` proxied through
  * crossbow0's spare-fabric link. That id comes from the CLI's own
  * qdev_set_id() (system/qdev-monitor.c), unaffected by this fix -- it is
@@ -29,7 +28,7 @@
  * screendump-by-device contract is proven across both heads together. Of
  * the two ids this file checks, only MGRAS's demonstrates the sn-machine.c
  * fix itself: MGRAS has no `-device` of its own to carry an id=, since
- * sgi_machine_build_mgras() runs during machine construction, not in
+ * sgi_machine_instantiate_mgras() runs during machine construction, not in
  * response to a command-line device.
  */
 
