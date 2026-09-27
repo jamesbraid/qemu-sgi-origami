@@ -20,11 +20,13 @@
 # been measured on.
 #
 # Red on sgi-origami as of 2026-09-26, each a model problem with its own
-# issue on jamesb/qemu: timer on every row (#866); reboot on origin300
-# (#875), and its ethernet ping intermittently (#868); keyboard on
-# origin2000_pci_carrier (#874); and the four-node rows' PROM power-on
-# intermittently (#872). The Origin 300 rows added since do not take the
-# reboot and warm_boot checks until #875 is fixed.
+# issue on jamesb/qemu: timer on every row (#866); the origin300 ethernet
+# ping intermittently (#868); keyboard on origin2000_pci_carrier (#874);
+# and the four-node rows' PROM power-on intermittently (#872). The Origin
+# 300 reboot stall (#875) is fixed: with every other check left out, the
+# origin300, origin300_4cpu and origin300_pair rows passed reboot,
+# warm_boot and persistence once each (2026-09-27), reaching the PROM
+# banner 13.2s, 3.0s and 3.6s after the reboot command.
 #
 # budget is the seconds the whole row may take, test start to report;
 # every wait is cut to what is left of it. meson.build gives each row's
@@ -37,7 +39,7 @@ origin2000_one_node | 2 | 256 | 2880 | run | run | run | run | run | run | run |
 origin2000_pci_shoehorn | 8 | 256 | 2880 | run | run | run | run | no-mediaio | no-mediaio | run | no-scsi-card | run | no-olenet | run | run | run | run | ip35-only | unmeasured-here | ip35-only | ip35-only | unmeasured-here | unmeasured-here | unmeasured-here | four-node-relaunch | four-node-relaunch | four-node-relaunch | no-parallel | run
 origin2000_pci_carrier | 8 | 256 | 2880 | run | run | run | run | no-mediaio | no-mediaio | run | run | run | no-olenet | run | run | run | run | ip35-only | unmeasured-here | ip35-only | ip35-only | unmeasured-here | unmeasured-here | unmeasured-here | four-node-relaunch | four-node-relaunch | four-node-relaunch | no-parallel | run
 origin300 | 2 | 512 | 5700 | run | run | run | run | no-mediaio | no-mediaio | no-keyboard | no-scsi-card | run | run | run | run | run | run | run | run | run | run | run | run | torpedo-row | run | run | run | no-parallel-connector | run
-origin300_4cpu | 4 | 512 | 5700 | run | run | run | run | no-mediaio | no-mediaio | no-keyboard | no-scsi-card | run | run | run | run | run | run | run | run | run | run | run | run | torpedo-row | reboot-stall | reboot-stall | run | no-parallel-connector | run
-origin300_pair | 8 | 1024 | 2880 | run | run | run | run | no-mediaio | no-mediaio | no-keyboard | no-scsi-card | run | run | run | run | run | run | run | run | run | run | run | pair-pandora-memory | pair-torpedo-unmeasured | reboot-stall | reboot-stall | run | no-parallel-connector | run
+origin300_4cpu | 4 | 512 | 5700 | run | run | run | run | no-mediaio | no-mediaio | no-keyboard | no-scsi-card | run | run | run | run | run | run | run | run | run | run | run | run | torpedo-row | run | run | run | no-parallel-connector | run
+origin300_pair | 8 | 1024 | 2880 | run | run | run | run | no-mediaio | no-mediaio | no-keyboard | no-scsi-card | run | run | run | run | run | run | run | run | run | run | run | pair-pandora-memory | pair-torpedo-unmeasured | run | run | run | no-parallel-connector | run
 origin300_torpedo | 2 | 512 | 8700 | run | run | torpedo-only | torpedo-only | no-mediaio | no-mediaio | no-keyboard | no-scsi-card | torpedo-only | torpedo-only | torpedo-only | torpedo-only | torpedo-only | torpedo-only | torpedo-only | torpedo-only | torpedo-only | torpedo-only | torpedo-only | torpedo-only | run | torpedo-only | torpedo-only | torpedo-only | no-parallel-connector | run
 origin300_4cpu_torpedo | 4 | 512 | 8700 | run | run | torpedo-only | torpedo-only | no-mediaio | no-mediaio | no-keyboard | no-scsi-card | torpedo-only | torpedo-only | torpedo-only | torpedo-only | torpedo-only | torpedo-only | torpedo-only | torpedo-only | torpedo-only | torpedo-only | torpedo-only | torpedo-only | run | torpedo-only | torpedo-only | torpedo-only | no-parallel-connector | run
