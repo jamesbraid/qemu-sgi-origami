@@ -61,6 +61,10 @@
 #define MGRAS_XMAP_CONFIG_REVISION 1
 #define MGRAS_XMAP_CONFIG_FIFO_CAPACITY 2
 
+/* DAC register addresses, as written to the DAC address halfword. */
+#define MGRAS_DAC_REG_ID 0x0300
+#define MGRAS_DAC_REG_REVISION 0x0b00
+
 /* Send an interrupt-modify write to the selected fabric address. */
 static void mgras_send_packet(SGIMgrasState *s, hwaddr where, uint8_t vector,
                            bool set)
@@ -298,6 +302,30 @@ static uint32_t mgras_cmap_address(SGIMgrasState *s)
            (((s->cmap_selector >> 8) + s->cmap_position) & 0xff);
 }
 
+/*
+ * DAC registers are addressed by the halfword at SGI_MGRAS_DAC_LUT_INDEX,
+ * register number in the high byte, and read and written a byte at a time
+ * through SGI_MGRAS_DAC_LUT_DATA_2. SGI's IDE DAC reset accepts ID 0x79
+ * with revision 1, or ID 0x76 with revision 0 after a warning; the model
+ * answers the pair the diagnostic takes without warning. The part and its
+ * real values are unidentified. Every other address is plain storage that
+ * reads back what was written, which is an approximation: a real DAC has
+ * read-only and unimplemented registers the model does not distinguish.
+ */
+static uint8_t mgras_dac_reg_read(SGIMgrasState *s)
+{
+    uint16_t addr = s->dac_lut_index;
+
+    switch (addr) {
+    case MGRAS_DAC_REG_ID:
+        return 0x79;
+    case MGRAS_DAC_REG_REVISION:
+        return 0x01;
+    default:
+        return s->dac_reg[addr];
+    }
+}
+
 static uint64_t mgras_read_internal(SGIMgrasState *s, hwaddr addr,
                                      unsigned size)
 {
@@ -315,12 +343,13 @@ static uint64_t mgras_read_internal(SGIMgrasState *s, hwaddr addr,
     }
     if (size == 1 && addr != SGI_MGRAS_I2C_SCRATCH && addr != 0x071208 &&
         addr != 0x071c88 && addr != 0x071308 && addr != SGI_MGRAS_I2C_STROBE &&
-        addr != 0x071708 && addr != SGI_MGRAS_BOARD_INVENTORY) {
+        addr != 0x071708 && addr != SGI_MGRAS_BOARD_INVENTORY &&
+        addr != SGI_MGRAS_DAC_LUT_DATA_2) {
         mgras_error(s, addr, size, "unsupported byte read");
         return 0;
     }
     if (size == 2 && addr != SGI_MGRAS_VC3_DATA &&
-        addr != SGI_MGRAS_VC3_RAM) {
+        addr != SGI_MGRAS_VC3_RAM && addr != SGI_MGRAS_DAC_LUT_INDEX) {
         mgras_error(s, addr, size, "unsupported halfword read");
         return 0;
     }
@@ -410,7 +439,7 @@ static uint64_t mgras_read_internal(SGIMgrasState *s, hwaddr addr,
     case SGI_MGRAS_BRINGUP_FLAG: return s->bringup_flag;
     case SGI_MGRAS_DAC_LUT_INDEX: return s->dac_lut_index;
     case SGI_MGRAS_DAC_LUT_DATA: return s->dac_lut_data[0];
-    case SGI_MGRAS_DAC_LUT_DATA_2: return s->dac_lut_data[1];
+    case SGI_MGRAS_DAC_LUT_DATA_2: return mgras_dac_reg_read(s);
     case SGI_MGRAS_DAC_CONFIG: return s->dac_config;
     case SGI_MGRAS_DAC_LUT_INDEX_LOW: return s->dac_lut_index_low;
     case 0x008000: return 0;
@@ -654,10 +683,20 @@ static void mgras_write(void *opaque, hwaddr addr, uint64_t value,
         }
         s->dirty = true;
         return;
-    case SGI_MGRAS_DAC_LUT_DATA_2: s->dac_lut_data[1] = value; return;
+    case SGI_MGRAS_DAC_LUT_DATA_2:
+        s->dac_lut_data[1] = value;
+        s->dac_reg[s->dac_lut_index & 0xffff] = value;
+        return;
     case SGI_MGRAS_DAC_CONFIG: s->dac_config = value; return;
+    /*
+     * A byte here lands in the register-number byte of the DAC address,
+     * bits 15:8 of the halfword at SGI_MGRAS_DAC_LUT_INDEX: SGI's IDE
+     * address test writes this byte and requires it back there.
+     */
     case SGI_MGRAS_DAC_LUT_INDEX_LOW:
         s->dac_lut_index_low = value;
+        s->dac_lut_index = (s->dac_lut_index & 0xffu) |
+                           ((uint32_t)(value & 0xff) << 8);
         return;
     case 0x011000:
         /* Retain the unresolved prefix and use only its presence. */
@@ -908,6 +947,7 @@ static void mgras_reset_enter(Object *obj, ResetType type)
     s->dac_lut_index_low = 0;
     s->dac_lut_load_pos = 0;
     s->dac_lut_load_channel = 0;
+    memset(s->dac_reg, 0, sizeof(s->dac_reg));
     for (int i = 0; i < 256; i++) {
         s->dac_gamma[0][i] = s->dac_gamma[1][i] = s->dac_gamma[2][i] = i;
     }
@@ -1066,7 +1106,7 @@ static bool mgras_ge_lengths_valid(void *opaque, int version_id)
  * changes.
  */
 static const VMStateDescription vmstate_sgi_mgras = {
-    .name = TYPE_SGI_MGRAS, .version_id = 12, .minimum_version_id = 9,
+    .name = TYPE_SGI_MGRAS, .version_id = 13, .minimum_version_id = 9,
     .post_load = mgras_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32(front_count, SGIMgrasState),
@@ -1140,6 +1180,7 @@ static const VMStateDescription vmstate_sgi_mgras = {
         VMSTATE_UINT8_V(dac_lut_load_pos, SGIMgrasState, 9),
         VMSTATE_UINT8_V(dac_lut_load_channel, SGIMgrasState, 9),
         VMSTATE_UINT8_2DARRAY_V(dac_gamma, SGIMgrasState, 3, 256, 9),
+        VMSTATE_UINT8_ARRAY_V(dac_reg, SGIMgrasState, SGI_MGRAS_DAC_REGS, 13),
         VMSTATE_UINT32_ARRAY(config_table, SGIMgrasState,
                              SGI_MGRAS_CONFIG_TABLE_WORDS),
         VMSTATE_UINT32(bringup_flag, SGIMgrasState),
