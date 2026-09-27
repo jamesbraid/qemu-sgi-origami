@@ -202,10 +202,8 @@ struct SGIMachineState {
      */
     SGIXtalkCrossbowLink *crossbow_links;
 
-    SGIMgrasState *mgras;
-    const SGIModelXtalkSlot *mgras_slot;
-    MemoryRegion mgras_packet_proxy;
-    MemoryRegion mgras_packet_alias;
+    /* MGRAS boards built so far, which picks the next one's qdev id. */
+    unsigned int mgras_count;
 
     /*
      * One spare fabric proxy per crossbars[] entry, for a `-device` board
@@ -940,9 +938,6 @@ static void sgi_machine_build_crossbars(SGIMachineState *s,
                 startup_alive |= 1u << attachment->widget;
             }
         }
-        if (s->mgras_slot && i == s->mgras_slot->crossbar_index) {
-            startup_alive |= 1u << s->mgras_slot->widget;
-        }
 
         s->crossbars[i] = SGI_XBOW(crossbow);
         object_property_add_child(OBJECT(s), name, OBJECT(crossbow));
@@ -1404,9 +1399,8 @@ static bool sgi_machine_instantiate_xio_card(
  * carries no PCI function, IOC3 or onewire-serial property of its own --
  * increment 1 is identity only, so this function sets only what
  * sgi-xio-board's base class and sgi-kona's own "fabric" property
- * require. No sn-catalogue.json record selects this preset yet
- * (qapi/sgi-sn.json's own @kona doc comment says so), so this path is
- * reachable only through a manual topology or a `-device sgi-kona`.
+ * require. The origin2000-ir2 topology fits one at IO3; a `-device
+ * sgi-kona` reaches the same board without a catalogue record.
  */
 static bool sgi_machine_instantiate_kona(
     SGIMachineState *s, const SGIModelTopology *t,
@@ -1463,6 +1457,53 @@ static bool sgi_machine_instantiate_kona(
     }
     board->attached = true;
     return true;
+}
+
+/*
+ * The SI/MXI (MGRAS) graphics board: a plain sysbus device, not an
+ * sgi-xio-board, whose one MMIO region answers both the CPU's widget
+ * accesses and packets routed to its widget. Its interrupt writes leave
+ * through "fabric", which must exist when it realizes, before the
+ * Crossbow does; the board's crossbow link proxy stands in, and
+ * sgi_machine_realize_crossbars() aliases the real ingress onto it.
+ *
+ * The first MGRAS keeps qdev id and QOM name "mgras", which screendump
+ * device= and existing tests use; each later one is "mgrasN", N counting
+ * MGRAS boards in catalogue order.
+ */
+static bool sgi_machine_instantiate_mgras(
+    SGIMachineState *s, unsigned int board_index,
+    const SGIModelXtalkAttachment *attachment, Error **errp)
+{
+    DeviceState *dev = qdev_new(TYPE_SGI_MGRAS);
+    g_autofree char *name = s->mgras_count ?
+        g_strdup_printf("mgras%u", s->mgras_count) : g_strdup("mgras");
+    g_autofree char *proxy_name =
+        g_strdup_printf("io-board%u-packet-proxy", board_index);
+    SGIXtalkCrossbowLink *crossbow_link =
+        &s->crossbow_links[s->num_nodes + board_index];
+
+    s->mgras_count++;
+    object_property_add_child(OBJECT(s), name, OBJECT(dev));
+    object_unref(OBJECT(dev));
+    /* Set directly: qdev_set_id() would reparent under /machine/peripheral. */
+    dev->id = g_strdup(name);
+
+    if (!object_property_set_link(
+            OBJECT(dev), "fabric",
+            OBJECT(sgi_xtalk_crossbow_link_prepare(crossbow_link, OBJECT(s),
+                                                   proxy_name)),
+            errp)) {
+        return false;
+    }
+    qdev_prop_set_uint32(dev, "fabric-widget-shift",
+                         SGI_BRIDGE_PACKET_ADDRESS_BITS);
+    if (!sysbus_realize(SYS_BUS_DEVICE(dev), errp)) {
+        return false;
+    }
+    return sgi_xbow_attach_widget(
+        s->crossbars[attachment->crossbar_index], attachment->widget,
+        sysbus_mmio_get_region(SYS_BUS_DEVICE(dev), 0), errp);
 }
 
 /*
@@ -1568,59 +1609,6 @@ static bool sgi_machine_instantiate_io8(
  * other preset once, so this dispatch trusts it and only reports the
  * case it does not recognize.
  */
-static bool sgi_machine_build_mgras(SGIMachineState *s, Error **errp)
-{
-    DeviceState *dev = qdev_new(TYPE_SGI_MGRAS);
-
-    object_property_add_child(OBJECT(s), "mgras", OBJECT(dev));
-    s->mgras = SGI_MGRAS(dev);
-    object_unref(OBJECT(dev));
-
-    /*
-     * Same rule as sgi_machine_instantiate_kona()'s own qdev id comment:
-     * a stable id lets QMP's screendump name this head with device=
-     * instead of always capturing console index 0 (issue #895). MGRAS
-     * is a single fixed board with no module/slot of its own, so its
-     * kind alone -- the same "mgras" name object_property_add_child()
-     * was just given above -- is enough; sgi-mgras.c is a plain sysbus
-     * device with no equivalent to xio-board.c's module reparent, so
-     * this id changes nothing else about its QOM path.
-     */
-    dev->id = g_strdup("mgras");
-
-    memory_region_init(&s->mgras_packet_proxy, OBJECT(s),
-                       "mgras-packet-proxy",
-                       SGI_XBOW_WIDGETS * SGI_XBOW_PACKET_SIZE);
-    memory_region_set_enabled(&s->mgras_packet_proxy, false);
-    if (!object_property_set_link(OBJECT(dev), "fabric",
-                                  OBJECT(&s->mgras_packet_proxy), errp)) {
-        return false;
-    }
-    qdev_prop_set_uint32(dev, "fabric-widget-shift",
-                        SGI_BRIDGE_PACKET_ADDRESS_BITS);
-    if (!sysbus_realize(SYS_BUS_DEVICE(dev), errp)) {
-        return false;
-    }
-
-    return sgi_xbow_attach_widget(
-        s->crossbars[s->mgras_slot->crossbar_index],
-        s->mgras_slot->widget,
-        sysbus_mmio_get_region(SYS_BUS_DEVICE(dev), 0), errp);
-}
-
-static const SGIModelXtalkSlot *sgi_machine_find_xtalk_slot(
-    const SGIModelTopology *t, const char *id)
-{
-    const SGIModelXtalkSlotList *entry;
-
-    for (entry = t->xtalk_slots; entry; entry = entry->next) {
-        if (g_str_equal(entry->value->id, id)) {
-            return entry->value;
-        }
-    }
-    return NULL;
-}
-
 static bool sgi_machine_instantiate_io_board(
     SGIMachineState *s, const SGIModelTopology *t,
     const SGIModelIoBoard *record, unsigned int board_index,
@@ -1660,6 +1648,9 @@ static bool sgi_machine_instantiate_io_board(
     case SGI_MODEL_IO_BOARD_PRESET_KONA:
         return sgi_machine_instantiate_kona(s, t, record, board_index,
                                             attachment, errp);
+    case SGI_MODEL_IO_BOARD_PRESET_MGRAS:
+        return sgi_machine_instantiate_mgras(s, board_index, attachment,
+                                             errp);
     default:
         error_setg(errp, "topology '%s' io board %u names an unsupported "
                   "preset for this family", t->name, board_index);
@@ -1701,7 +1692,7 @@ static bool sgi_machine_realize_crossbars(
         /*
          * Builder invariant: "links-present" and every endpoint the
          * builders above attached both come from the topology's xtalk
-         * attachments plus the graphics slot, so nothing a user supplies
+         * attachments, so nothing a user supplies
          * can make them differ. An endpoint on a port reported empty would
          * carry traffic to a widget firmware is told is not there.
          */
@@ -1742,19 +1733,6 @@ static bool sgi_machine_realize_crossbars(
                 errp)) {
             return false;
         }
-    }
-    if (s->mgras) {
-        SGIXbowState *crossbow =
-            s->crossbars[s->mgras_slot->crossbar_index];
-        MemoryRegion *packet =
-            sgi_xbow_packet_ingress(crossbow, s->mgras_slot->widget);
-
-        memory_region_init_alias(&s->mgras_packet_alias, OBJECT(s),
-                                 "mgras-packet-ingress", packet, 0,
-                                 memory_region_size(packet));
-        memory_region_add_subregion(&s->mgras_packet_proxy, 0,
-                                    &s->mgras_packet_alias);
-        memory_region_set_enabled(&s->mgras_packet_proxy, true);
     }
     return true;
 }
@@ -2736,14 +2714,6 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
         return false;
     }
 
-    if (sgi_machine_topology_matches_product(t, "origin2000")) {
-        s->mgras_slot = sgi_machine_find_xtalk_slot(t, "xio-slot-3");
-        if (!s->mgras_slot) {
-            error_setg(errp, "topology '%s' has no xio-slot-3", t->name);
-            return false;
-        }
-    }
-
     /*
      * Before any node realizes: the Hub's own "xtalk-io" property, once
      * set, cannot change after this node's realize, so a crossbow-attached
@@ -2855,11 +2825,6 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
                 }
             }
         }
-    }
-    if (crossbar_count &&
-        sgi_machine_topology_matches_product(t, "origin2000") &&
-        !sgi_machine_build_mgras(s, errp)) {
-        return false;
     }
     if (!sgi_machine_build_controllers(s, t, errp)) {
         return false;
