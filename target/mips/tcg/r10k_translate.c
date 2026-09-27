@@ -511,3 +511,34 @@ R10KCp0Result gen_dmtc0_r10k(DisasContext *ctx, TCGv arg, int reg, int sel,
     }
     return R10K_CP0_DONE;
 }
+
+/*
+ * PREF and PREFX. The R10000 family moves the block into its caches, which
+ * the model has none of, but the read or read-exclusive it issues for a
+ * block it does not hold is a request the rest of the system sees (R10000
+ * User's Manual version 2.0, Table 1-1 and the processor block read
+ * protocol). The helper passes it on; a user-mode build has no system to
+ * see it, and the prefetch stays a no-op there as on every other processor.
+ */
+static void gen_prefetch_r10k(DisasContext *ctx, int hint, TCGv addr)
+{
+#ifndef CONFIG_USER_ONLY
+    gen_helper_r10k_prefetch(tcg_env, addr, tcg_constant_i32(hint));
+#endif
+}
+
+void gen_pref_r10k(DisasContext *ctx, int hint, int base, int16_t offset)
+{
+    TCGv addr = tcg_temp_new();
+
+    gen_base_offset_addr(ctx, addr, base, offset);
+    gen_prefetch_r10k(ctx, hint, addr);
+}
+
+void gen_prefx_r10k(DisasContext *ctx, int hint, int base, int index)
+{
+    TCGv addr = tcg_temp_new();
+
+    gen_base_index_addr(ctx, addr, base, index);
+    gen_prefetch_r10k(ctx, hint, addr);
+}

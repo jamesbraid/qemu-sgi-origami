@@ -179,6 +179,31 @@ static bool r10k_system_request(CPUMIPSState *env, R10KSystemRequest request,
 }
 
 /*
+ * A prefetch with a load hint asks for the block to read, with a store hint
+ * for it exclusive (R10000 User's Manual version 2.0, Table 1-1); the other
+ * hints are undefined and do nothing. A prefetch takes no memory-management
+ * exception, so an address that does not translate, or translates
+ * uncached, is simply dropped.
+ */
+void helper_r10k_prefetch(CPUMIPSState *env, target_ulong addr, uint32_t hint)
+{
+    MMUAccessType access = hint & 1 ? MMU_DATA_STORE : MMU_DATA_LOAD;
+    MemTxAttrs attrs = {};
+    hwaddr paddr;
+    int prot;
+
+    if (hint > 7 || hint == 2 || hint == 3 || !env->r10k->system_request ||
+        get_physical_address(env, &paddr, &prot, addr, access,
+                             mips_env_mmu_index(env), &attrs) !=
+        TLBRET_MATCH || attrs.mips_uncached) {
+        return;
+    }
+    r10k_system_request(env, hint & 1 ? R10K_REQUEST_PREFETCH_STORE :
+                                        R10K_REQUEST_PREFETCH_LOAD,
+                        paddr, 0);
+}
+
+/*
  * The R10000 family's CACHE instruction, dispatched from helper_cache()
  * before the generic model: every defined operation works the diagnostic
  * arrays, and undefined combinations stay inert. @ra is the helper's own
