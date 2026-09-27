@@ -1053,6 +1053,30 @@ static void test_onewire_board_part_configures_geometry_record(void)
 }
 
 /*
+ * board-part shares its check, sgi_bridge_board_part_error()
+ * (include/hw/pci-host/sgi-bridge.h), with hw/pci-host/sgi-bridge.c: a
+ * malformed value must still be refused at realize, and the message KONA
+ * reports for its own rejection must name sgi-kona, not the shared check's
+ * former hard-coded "the I/O bridge" -- this device is not a bridge, and a
+ * misnamed message would send a reader chasing the wrong contract.
+ */
+static void test_board_part_invalid_is_rejected(void)
+{
+    const char *args[] = {
+        qtest_qemu_binary(NULL), "-M", "origin2000",
+        "-device",
+        "sgi-kona,id=kona2,module=99,slot=8,"
+        "fabric=/machine/crossbow0-spare-fabric[0],"
+        "board-part=030-1129",
+        "-display", "none", "-qtest", "stdio", "-accel", "qtest", NULL
+    };
+
+    assert_qemu_rejects(args,
+                        "sgi-kona board part must be 12 characters without "
+                        "a semicolon");
+}
+
+/*
  * REG_NIC (+0x9c) is the kernel driver's own offset onto the identical
  * one-wire chain REG_ONEWIRE (+0x98) carries, established by
  * kona_attach()'s call into nic_xg_vertex_info() and the disassembly
@@ -1409,6 +1433,8 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/origin2000/kona/"
                    "onewire-board-part-configures-geometry-record",
                    test_onewire_board_part_configures_geometry_record);
+    qtest_add_func("sn0/origin2000/kona/board-part-invalid-is-rejected",
+                   test_board_part_invalid_is_rejected);
     qtest_add_func("sn0/origin2000/kona/"
                    "nic-register-mirrors-onewire-register-state",
                    test_nic_register_mirrors_onewire_register_state);
