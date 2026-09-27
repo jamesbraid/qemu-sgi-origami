@@ -80,10 +80,17 @@
  *
  * Only 0x071308 is left out: its bits 7:4 are the attached monitor's ID,
  * not the board's.
+ *
+ * Every board scans out 1280x1024, the screen IRIX's default timing table
+ * sets up. Which boards also drive 1600x1200 is unsettled: the OCTANE
+ * Technical Report's feature list says only MXI does, while its Table 4.3
+ * lists SI and SSI visuals at 1600x1200 from an IRIX 5.3 and 6.2 patch.
+ * The model has no mode change, so every board keeps 1280x1024.
  */
 static const SGIMgrasBoard mgras_boards[] = {
     {
         .name = "si", .hinv_name = "SI",
+        .width = 1280, .height = 1024,
         .ge_count = 1, .re_count = 1, .tram_count = 0,
         .version1 = 0x45, .version0 = 0x0f,
         .hq_revision = 2, .ge_revision = 2, .re4_revision = 2,
@@ -92,6 +99,7 @@ static const SGIMgrasBoard mgras_boards[] = {
         .implemented = true,
     }, {
         .name = "si-t", .hinv_name = "SI with texture option",
+        .width = 1280, .height = 1024,
         .ge_count = 1, .re_count = 1, .tram_count = 4,
         .version1 = 0x45, .version0 = 0x0c,
         .hq_revision = 2, .ge_revision = 2, .re4_revision = 2,
@@ -99,6 +107,7 @@ static const SGIMgrasBoard mgras_boards[] = {
         .ra_revision = 0, .video_option = false,
     }, {
         .name = "ssi", .hinv_name = "SSI",
+        .width = 1280, .height = 1024,
         .ge_count = 2, .re_count = 2, .tram_count = 0,
         .version1 = 0x46, .version0 = 0x0f,
         .hq_revision = 2, .ge_revision = 2, .re4_revision = 2,
@@ -106,6 +115,7 @@ static const SGIMgrasBoard mgras_boards[] = {
         .ra_revision = 0, .video_option = false,
     }, {
         .name = "mxi", .hinv_name = "MXI",
+        .width = 1280, .height = 1024,
         .ge_count = 2, .re_count = 2, .tram_count = 4,
         .version1 = 0x46, .version0 = 0x00,
         .hq_revision = 2, .ge_revision = 2, .re4_revision = 2,
@@ -121,6 +131,7 @@ static const SGIMgrasBoard mgras_boards[] = {
          * will not see it.
          */
         .name = "esi", .hinv_name = "ESI",
+        .width = 1280, .height = 1024,
         .ge_count = 1, .re_count = 1, .tram_count = 0,
         .version1 = 0x51, .version0 = 0x0f,
         .hq_revision = 2, .ge_revision = 3, .re4_revision = 2,
@@ -129,6 +140,7 @@ static const SGIMgrasBoard mgras_boards[] = {
         .implemented = true,
     }, {
         .name = "esi-t", .hinv_name = "ESI with texture option",
+        .width = 1280, .height = 1024,
         .ge_count = 1, .re_count = 1, .tram_count = 4,
         .version1 = 0x51, .version0 = 0x0c,
         .hq_revision = 2, .ge_revision = 3, .re4_revision = 2,
@@ -136,6 +148,7 @@ static const SGIMgrasBoard mgras_boards[] = {
         .ra_revision = 0, .video_option = false,
     }, {
         .name = "essi", .hinv_name = "ESSI",
+        .width = 1280, .height = 1024,
         .ge_count = 2, .re_count = 2, .tram_count = 0,
         .version1 = 0x52, .version0 = 0x0f,
         .hq_revision = 2, .ge_revision = 3, .re4_revision = 2,
@@ -143,6 +156,7 @@ static const SGIMgrasBoard mgras_boards[] = {
         .ra_revision = 0, .video_option = false,
     }, {
         .name = "emxi", .hinv_name = "EMXI",
+        .width = 1280, .height = 1024,
         .ge_count = 2, .re_count = 2, .tram_count = 4,
         .version1 = 0x52, .version0 = 0x00,
         .hq_revision = 2, .ge_revision = 3, .re4_revision = 2,
@@ -1052,11 +1066,11 @@ static void mgras_reset_enter(Object *obj, ResetType type)
     if (mc->parent_phases.enter) {
         mc->parent_phases.enter(obj, type);
     }
-    memset(s->front, 0, SGI_MGRAS_WIDTH * SGI_MGRAS_HEIGHT * sizeof(*s->front));
-    memset(s->back, 0, SGI_MGRAS_WIDTH * SGI_MGRAS_HEIGHT * sizeof(*s->back));
-    memset(s->depth, 0, SGI_MGRAS_WIDTH * SGI_MGRAS_HEIGHT * sizeof(*s->depth));
-    memset(s->format, 0, SGI_MGRAS_WIDTH * SGI_MGRAS_HEIGHT);
-    memset(s->overlay, 0, SGI_MGRAS_WIDTH * SGI_MGRAS_HEIGHT);
+    memset(s->front, 0, s->width * s->height * sizeof(*s->front));
+    memset(s->back, 0, s->width * s->height * sizeof(*s->back));
+    memset(s->depth, 0, s->width * s->height * sizeof(*s->depth));
+    memset(s->format, 0, s->width * s->height);
+    memset(s->overlay, 0, s->width * s->height);
     memset(s->hq, 0, sizeof(s->hq));
     for (int slot = 0; slot < 2; slot++) {
         memset(s->ge[slot], 0, sizeof(uint32_t) * SGI_MGRAS_GE_WORDS);
@@ -1198,7 +1212,15 @@ static bool mgras_realize_board(SGIMgrasState *s, Error **errp)
                       "without %s; IRIX will drive paths the model ignores\n",
                       b->name, b->hinv_name, missing->str);
     }
+    if (b->width > SGI_MGRAS_MAX_WIDTH) {
+        error_setg(errp, "sgi-mgras: board '%s' names a %u-pixel-wide "
+                   "screen, but scanout rows hold %d pixels", b->name,
+                   b->width, SGI_MGRAS_MAX_WIDTH);
+        return false;
+    }
     s->board = b;
+    s->width = b->width;
+    s->height = b->height;
     return true;
 }
 
@@ -1220,16 +1242,16 @@ static bool mgras_build_widget(SGIXioBoardState *board, Error **errp)
     if (!mgras_realize_board(s, errp)) {
         return false;
     }
-    s->front = g_new0(uint32_t, SGI_MGRAS_WIDTH * SGI_MGRAS_HEIGHT);
-    s->back = g_new0(uint32_t, SGI_MGRAS_WIDTH * SGI_MGRAS_HEIGHT);
-    s->depth = g_new0(uint32_t, SGI_MGRAS_WIDTH * SGI_MGRAS_HEIGHT);
-    s->front_count = s->back_count = SGI_MGRAS_WIDTH * SGI_MGRAS_HEIGHT;
-    s->depth_count = SGI_MGRAS_WIDTH * SGI_MGRAS_HEIGHT;
-    s->format = g_new0(uint8_t, SGI_MGRAS_WIDTH * SGI_MGRAS_HEIGHT);
-    s->overlay = g_new0(uint8_t, SGI_MGRAS_WIDTH * SGI_MGRAS_HEIGHT);
+    s->front = g_new0(uint32_t, s->width * s->height);
+    s->back = g_new0(uint32_t, s->width * s->height);
+    s->depth = g_new0(uint32_t, s->width * s->height);
+    s->front_count = s->back_count = s->width * s->height;
+    s->depth_count = s->width * s->height;
+    s->format = g_new0(uint8_t, s->width * s->height);
+    s->overlay = g_new0(uint8_t, s->width * s->height);
     s->ge[SGI_MGRAS_GE_SLOT_A] = g_new0(uint32_t, SGI_MGRAS_GE_WORDS);
     s->ge[SGI_MGRAS_GE_SLOT_B] = g_new0(uint32_t, SGI_MGRAS_GE_WORDS);
-    s->display_buffer = g_new0(uint32_t, SGI_MGRAS_WIDTH * SGI_MGRAS_HEIGHT);
+    s->display_buffer = g_new0(uint32_t, s->width * s->height);
     memory_region_init_io(&s->regs, OBJECT(s), &mgras_ops, s,
                            "sgi-mgras.regs", SGI_MGRAS_MMIO_SIZE);
     sysbus_init_mmio(SYS_BUS_DEVICE(s), &s->regs);
@@ -1284,7 +1306,7 @@ static int mgras_post_load(void *opaque, int version_id)
         (s->cmd_token_class != SGI_MGRAS_CMD_TOKEN_DISCARD &&
          s->cmd_token_words_remaining > ARRAY_SIZE(s->cmd_token_payload)) ||
         s->dma_map_words_remaining > SGI_MGRAS_CMD_TOKEN_MAX_DISCARD_WORDS ||
-        s->pio_x > SGI_MGRAS_WIDTH || s->pio_y > SGI_MGRAS_HEIGHT ||
+        s->pio_x > s->width || s->pio_y > s->height ||
         s->xmap_index >= SGI_MGRAS_XMAP_ENTRIES ||
         s->dac_lut_load_channel >= 3 ||
         !sgi_mgras_gl_post_load(s)) {
@@ -1303,14 +1325,14 @@ static bool mgras_front_count_valid(void *opaque, int version_id)
 {
     SGIMgrasState *s = opaque;
 
-    return s->front_count == SGI_MGRAS_WIDTH * SGI_MGRAS_HEIGHT;
+    return s->front_count == s->width * s->height;
 }
 
 static bool mgras_back_count_valid(void *opaque, int version_id)
 {
     SGIMgrasState *s = opaque;
 
-    return s->back_count == SGI_MGRAS_WIDTH * SGI_MGRAS_HEIGHT;
+    return s->back_count == s->width * s->height;
 }
 
 /*
@@ -1351,9 +1373,12 @@ static const VMStateDescription vmstate_sgi_mgras = {
         VMSTATE_VALIDATE("back plane length is fixed", mgras_back_count_valid),
         VMSTATE_VARRAY_UINT32(back, SGIMgrasState, back_count, 0,
                               vmstate_info_uint32, uint32_t),
-        /* Streams before version 12 carry the retired per-pixel WID plane. */
+        /*
+         * Streams before version 12 carry the retired per-pixel WID plane,
+         * sized for the only screen the model then had.
+         */
         VMSTATE_UNUSED_BUFFER(mgras_stream_before_v12, 0,
-                              SGI_MGRAS_WIDTH * SGI_MGRAS_HEIGHT),
+                              1280 * 1024),
         /* The per-pixel format tag; see mgras_put_pixel(). */
         VMSTATE_VARRAY_UINT32(format, SGIMgrasState, front_count, 10,
                               vmstate_info_uint8, uint8_t),
@@ -1553,9 +1578,9 @@ static void mgras_test_get_pixel(Object *obj, Visitor *v, const char *name,
     SGIMgrasState *s = SGI_MGRAS(obj);
     uint32_t value = 0;
 
-    if (DEVICE(obj)->realized && s->test_pixel_x < SGI_MGRAS_WIDTH &&
-        s->test_pixel_y < SGI_MGRAS_HEIGHT) {
-        value = s->front[s->test_pixel_y * SGI_MGRAS_WIDTH + s->test_pixel_x];
+    if (DEVICE(obj)->realized && s->test_pixel_x < s->width &&
+        s->test_pixel_y < s->height) {
+        value = s->front[s->test_pixel_y * s->width + s->test_pixel_x];
     }
     visit_type_uint32(v, name, &value, errp);
 }
@@ -1571,9 +1596,9 @@ static void mgras_test_get_display_pixel(Object *obj, Visitor *v,
     if (DEVICE(obj)->realized) {
         qemu_console_hw_update(s->con);
     }
-    if (DEVICE(obj)->realized && s->test_pixel_x < SGI_MGRAS_WIDTH &&
-        s->test_pixel_y < SGI_MGRAS_HEIGHT) {
-        value = s->display_buffer[s->test_pixel_y * SGI_MGRAS_WIDTH +
+    if (DEVICE(obj)->realized && s->test_pixel_x < s->width &&
+        s->test_pixel_y < s->height) {
+        value = s->display_buffer[s->test_pixel_y * s->width +
                                   s->test_pixel_x];
     }
     visit_type_uint32(v, name, &value, errp);
@@ -1600,9 +1625,9 @@ static void mgras_test_get_format(Object *obj, Visitor *v, const char *name,
     SGIMgrasState *s = SGI_MGRAS(obj);
     uint32_t value = 0;
 
-    if (DEVICE(obj)->realized && s->test_pixel_x < SGI_MGRAS_WIDTH &&
-        s->test_pixel_y < SGI_MGRAS_HEIGHT) {
-        value = s->format[s->test_pixel_y * SGI_MGRAS_WIDTH + s->test_pixel_x];
+    if (DEVICE(obj)->realized && s->test_pixel_x < s->width &&
+        s->test_pixel_y < s->height) {
+        value = s->format[s->test_pixel_y * s->width + s->test_pixel_x];
     }
     visit_type_uint32(v, name, &value, errp);
 }
@@ -1614,9 +1639,9 @@ static void mgras_test_get_overlay(Object *obj, Visitor *v, const char *name,
     SGIMgrasState *s = SGI_MGRAS(obj);
     uint32_t value = 0;
 
-    if (DEVICE(obj)->realized && s->test_pixel_x < SGI_MGRAS_WIDTH &&
-        s->test_pixel_y < SGI_MGRAS_HEIGHT) {
-        value = s->overlay[s->test_pixel_y * SGI_MGRAS_WIDTH +
+    if (DEVICE(obj)->realized && s->test_pixel_x < s->width &&
+        s->test_pixel_y < s->height) {
+        value = s->overlay[s->test_pixel_y * s->width +
                            s->test_pixel_x];
     }
     visit_type_uint32(v, name, &value, errp);

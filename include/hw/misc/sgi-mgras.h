@@ -13,8 +13,12 @@
 OBJECT_DECLARE_TYPE(SGIMgrasState, SGIMgrasClass, SGI_MGRAS)
 
 #define SGI_MGRAS_MMIO_SIZE (2 * MiB)
-#define SGI_MGRAS_WIDTH 1280
-#define SGI_MGRAS_HEIGHT 1024
+/*
+ * The widest screen a board descriptor may name. Scanout's per-row buffers
+ * are sized by it and realize refuses a wider descriptor; everything else
+ * follows the descriptor's own width and height.
+ */
+#define SGI_MGRAS_MAX_WIDTH 1280
 #define SGI_MGRAS_CMAP_ENTRIES 8192
 #define SGI_MGRAS_XMAP_ENTRIES 32
 
@@ -230,6 +234,9 @@ typedef struct SGIMgrasBoard {
     uint8_t ge_count;
     uint8_t re_count;
     uint8_t tram_count;         /* per raster path, as gfxinfo prints it */
+    /* The screen the model scans out, in pixels. */
+    uint16_t width;
+    uint16_t height;
     uint8_t version1;           /* 0x072488 bits 31:24 */
     uint8_t version0;           /* 0x072408 bits 31:24 */
     uint8_t hq_revision;        /* 0x000000 bits 31:28 */
@@ -475,6 +482,13 @@ struct SGIMgrasState {
     char *board_name;
     bool unimplemented_board;
     const SGIMgrasBoard *board;
+    /*
+     * The board's screen, copied from its descriptor at realize. Signed so
+     * that clipping arithmetic against possibly negative coordinates stays
+     * signed.
+     */
+    int width;
+    int height;
     /*
      * The word 0x028004 returns: the board's GE revision until the first
      * class-0 0xa2 query from the kernel or a client, then that query's
