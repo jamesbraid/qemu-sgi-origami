@@ -15,6 +15,8 @@ struct SGIHeartState {
     MemoryRegion registers;
     MemoryRegion widget;
     MemoryRegion packet;
+    MemoryRegion packet_control;
+    MemoryRegion packet_ram;
     qemu_irq processor[2];
     MemoryRegion backing[HEART_BANKS];
     MemoryRegion views[HEART_BANKS][HEART_MAX_UNITS];

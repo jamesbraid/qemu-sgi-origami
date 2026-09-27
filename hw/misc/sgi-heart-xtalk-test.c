@@ -22,6 +22,7 @@ struct SGIHeartXtalkTest {
     MemoryRegion large;
     MemoryRegion packet;
     MemoryRegion missing_packet;
+    MemoryRegion ram_packet;
     qemu_irq processor[2];
 };
 
@@ -39,6 +40,8 @@ static void heart_test_realize(DeviceState *dev, Error **errp)
     MemoryRegion *packets;
 
     qdev_prop_set_uint8(DEVICE(&s->heart), "widget-revision", 4);
+    qdev_prop_set_uint64(DEVICE(&s->heart), "bank0-size", 128 * MiB);
+    qdev_prop_set_uint64(DEVICE(&s->heart), "bank1-size", 128 * MiB);
     if (!sysbus_realize(SYS_BUS_DEVICE(&s->heart), errp)) {
         return;
     }
@@ -72,11 +75,15 @@ static void heart_test_realize(DeviceState *dev, Error **errp)
     memory_region_init_alias(&s->missing_packet, OBJECT(dev),
                              "heart-test.missing-packet", packets,
                              9ULL << 48, 0x1000);
+    memory_region_init_alias(&s->ram_packet, OBJECT(dev),
+                             "heart-test.ram-packet", packets,
+                             (8ULL << 48) + 0x20000000, 256 * MiB);
     sysbus_init_mmio(SYS_BUS_DEVICE(dev), &s->registers);
     sysbus_init_mmio(SYS_BUS_DEVICE(dev), &s->small);
     sysbus_init_mmio(SYS_BUS_DEVICE(dev), &s->large);
     sysbus_init_mmio(SYS_BUS_DEVICE(dev), &s->packet);
     sysbus_init_mmio(SYS_BUS_DEVICE(dev), &s->missing_packet);
+    sysbus_init_mmio(SYS_BUS_DEVICE(dev), &s->ram_packet);
 }
 
 static const VMStateDescription vmstate_heart_test = {
