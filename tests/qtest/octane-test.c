@@ -30,6 +30,9 @@
 #define CFG(slot) (BRIDGE + 0x020000 + (slot) * 0x1000)
 #define BRIDGE_NIC (BRIDGE + 0x0b4)
 #define IOC3 (BRIDGE + 0x600000)
+#define IOC3_MICROLAN (IOC3 + 0x30)
+#define IOC3_PIN_CONTROL_SET (IOC3 + 0x34)
+#define IOC3_ENET_MII_DATA_R (IOC3 + 0x14c)
 #define RTC_INDEX (IOC3 + 0xa0000)
 #define RTC_DATA (IOC3 + 0xc0000)
 #define UART_A (IOC3 + 0x20178)
@@ -123,6 +126,73 @@ static void test_octane2_population(void)
     g_assert_cmphex(qtest_readq(qts, RAM + 8 * UNIT - 8), ==,
                     0xfedcba9876543210ULL);
     qtest_quit(qts);
+}
+
+static bool octane_onewire_slot(QTestState *qts, unsigned int pulse,
+                                unsigned int sample)
+{
+    qtest_writel(qts, IOC3_MICROLAN, (pulse << 10) | (sample << 2));
+    return qtest_readl(qts, IOC3_MICROLAN) & 1;
+}
+
+static void octane_onewire_write_byte(QTestState *qts, uint8_t value)
+{
+    for (unsigned int bit = 0; bit < 8; bit++) {
+        octane_onewire_slot(qts, value & (1u << bit) ? 6 : 80,
+                            value & (1u << bit) ? 13 : 30);
+    }
+}
+
+static uint8_t octane_onewire_read_byte(QTestState *qts)
+{
+    uint8_t value = 0;
+
+    for (unsigned int bit = 0; bit < 8; bit++) {
+        value |= octane_onewire_slot(qts, 6, 13) << bit;
+    }
+    return value;
+}
+
+static void test_octane_ioc3_ethernet(bool octane2)
+{
+    static const uint8_t mac[] = { 0x08, 0x00, 0x69, 0x12, 0x34, 0x56 };
+    QTestState *qts = octane2 ?
+        octane2_start_args("-nic user,mac=08:00:69:12:34:56") :
+        octane_start_args("-nic user,mac=08:00:69:12:34:56");
+    uint8_t page[11];
+
+    g_assert_cmphex(qtest_readl(qts, CFG(2)), ==, 0x000310a9);
+    g_assert_cmphex(qtest_readl(qts, CFG(2) + 0x2c), ==, 0xc30410a9);
+    qtest_writel(qts, CFG(2) + 0x10, 0x10000000);
+    qtest_writel(qts, CFG(2) + 0x04, 0x00000002);
+    qtest_writel(qts, BRIDGE + 0x200 + 8 * 2 + 4, 0x1100);
+    g_assert_cmphex(qtest_readl(qts, IOC3_ENET_MII_DATA_R), ==, 0xffff);
+
+    qtest_writel(qts, IOC3_PIN_CONTROL_SET, 1u << 21);
+    g_assert_false(octane_onewire_slot(qts, 520, 65));
+    octane_onewire_write_byte(qts, 0xcc); /* Skip ROM: one fitted part. */
+    octane_onewire_write_byte(qts, 0xf0); /* Read memory at byte zero. */
+    octane_onewire_write_byte(qts, 0);
+    octane_onewire_write_byte(qts, 0);
+    octane_onewire_read_byte(qts); /* Command/address CRC. */
+    for (unsigned int i = 0; i < sizeof(page); i++) {
+        page[i] = octane_onewire_read_byte(qts);
+    }
+    g_assert_cmphex(page[0], ==, 0x0a);
+    for (unsigned int i = 0; i < sizeof(mac); i++) {
+        g_assert_cmphex(page[10 - i], ==, mac[i]);
+    }
+    qtest_quit(qts);
+}
+
+static void test_octane_ethernet(void)
+{
+    test_octane_ioc3_ethernet(false);
+}
+
+static void test_octane2_ethernet(void)
+{
+    test_octane_ioc3_ethernet(true);
 }
 
 static void test_octane2_serial(void)
@@ -999,6 +1069,8 @@ int main(int argc, char **argv)
     close(fd);
     qtest_add_func("/octane/widgets-and-memory", test_widgets_and_memory);
     qtest_add_func("/octane2/population", test_octane2_population);
+    qtest_add_func("/octane2/ioc3-ethernet", test_octane2_ethernet);
+    qtest_add_func("/octane/ioc3-ethernet", test_octane_ethernet);
     qtest_add_func("/octane2/serial", test_octane2_serial);
     qtest_add_func("/octane/heart-widget-control", test_heart_widget_control);
     qtest_add_func("/octane/low-ram", test_low_ram);
