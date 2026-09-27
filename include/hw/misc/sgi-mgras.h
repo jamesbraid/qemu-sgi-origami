@@ -183,7 +183,7 @@ OBJECT_DECLARE_TYPE(SGIMgrasState, SGIMgrasClass, SGI_MGRAS)
 #define SGI_MGRAS_CMD_TOKEN_MAX_PAYLOAD_WORDS 8
 #define SGI_MGRAS_CMD_TOKEN_DISCARD UINT32_MAX
 #define SGI_MGRAS_CMD_TOKEN_MAX_DISCARD_WORDS \
-    (UINT8_MAX / sizeof(uint32_t))
+    DIV_ROUND_UP(UINT8_MAX, sizeof(uint32_t))
 
 /* Values for the per-pixel format tag; see the "format" field below. */
 #define SGI_MGRAS_PIXEL_FORMAT_CI8 0

@@ -220,6 +220,25 @@ static void mgras_raster_command_execute(
 static void mgras_raster_command_fifo_dispatch(SGIMgrasState *s);
 
 
+/*
+ * A header's payload is its byte length rounded up to whole words: the
+ * IRIX GL client writes glColor3ub as a 3-byte header and one packed word,
+ * and glVertex3s as a 6-byte header and two words.
+ */
+static uint32_t mgras_command_payload_words(uint32_t payload_bytes)
+{
+    return DIV_ROUND_UP(payload_bytes, sizeof(uint32_t));
+}
+
+/* Frame an unsupported header's payload so the next word is a header. */
+static void mgras_command_fifo_discard(SGIMgrasState *s,
+                                       uint32_t payload_bytes)
+{
+    s->cmd_token_class = MGRAS_CMD_HDR_CLASS_DISCARD;
+    s->cmd_token_payload_count = 0;
+    s->cmd_token_words_remaining = mgras_command_payload_words(payload_bytes);
+}
+
 static void mgras_command_fifo_token(SGIMgrasState *s, uint32_t token)
 {
     uint32_t cmd_class, reg, payload_bytes, true_class;
@@ -254,12 +273,14 @@ static void mgras_command_fifo_token(SGIMgrasState *s, uint32_t token)
             qemu_log_mask(LOG_UNIMP, "sgi-mgras: descriptor command-FIFO "
                           "header, class 0x%04x reg 0x%02x has unaligned "
                           "payload %u bytes\n", cmd_class, reg, payload_bytes);
+            mgras_command_fifo_discard(s, payload_bytes);
             return;
         }
         s->cmd_token_class = cmd_class;
         s->cmd_token_reg = reg;
         s->cmd_token_payload_count = 0;
-        s->cmd_token_words_remaining = payload_bytes / 4;
+        s->cmd_token_words_remaining =
+            mgras_command_payload_words(payload_bytes);
         if (s->cmd_token_words_remaining >
             SGI_MGRAS_CMD_TOKEN_MAX_PAYLOAD_WORDS) {
             qemu_log_mask(LOG_UNIMP, "sgi-mgras: command-FIFO header, "
@@ -282,12 +303,14 @@ static void mgras_command_fifo_token(SGIMgrasState *s, uint32_t token)
             qemu_log_mask(LOG_UNIMP, "sgi-mgras: command-FIFO header, "
                           "class 0x%04x reg 0x%02x has unaligned payload "
                           "%u bytes\n", cmd_class, reg, payload_bytes);
+            mgras_command_fifo_discard(s, payload_bytes);
             return;
         }
         s->cmd_token_class = true_class;
         s->cmd_token_reg = ((cmd_class & 1) << 8) | reg;
         s->cmd_token_payload_count = 0;
-        s->cmd_token_words_remaining = payload_bytes / 4;
+        s->cmd_token_words_remaining =
+            mgras_command_payload_words(payload_bytes);
         if (s->cmd_token_words_remaining >
             SGI_MGRAS_CMD_TOKEN_MAX_PAYLOAD_WORDS) {
             qemu_log_mask(LOG_UNIMP, "sgi-mgras: command-FIFO header, "
@@ -307,20 +330,14 @@ static void mgras_command_fifo_token(SGIMgrasState *s, uint32_t token)
                   "class 0x%04x reg 0x%02x payload %u bytes\n", cmd_class,
                   reg, payload_bytes);
 
-    if (payload_bytes % sizeof(uint32_t)) {
-        return;
-    }
-
     /*
-     * This class is not implemented, but its header still declares
-     * payload_bytes/4 words in the same framing as STATE/EXEC. Frame and
-     * discard them instead of leaving the next FIFO word to be mis-parsed
-     * as a new header: that mis-parse is what corrupted the rest of the
-     * burst before this fix.
+     * This class is not implemented, but its header still declares its
+     * payload in the same framing as STATE/EXEC. Frame and discard it
+     * instead of leaving the next FIFO word to be mis-parsed as a new
+     * header: that mis-parse is what corrupted the rest of the burst
+     * before this fix.
      */
-    s->cmd_token_class = MGRAS_CMD_HDR_CLASS_DISCARD;
-    s->cmd_token_payload_count = 0;
-    s->cmd_token_words_remaining = payload_bytes / 4;
+    mgras_command_fifo_discard(s, payload_bytes);
     if (s->cmd_token_words_remaining > SGI_MGRAS_CMD_TOKEN_MAX_PAYLOAD_WORDS) {
         qemu_log_mask(LOG_UNIMP, "sgi-mgras: command-FIFO token, class "
                       "0x%04x reg 0x%02x payload %u bytes exceeds %zu-byte "
