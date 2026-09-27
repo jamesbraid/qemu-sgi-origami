@@ -90,8 +90,8 @@ _VALID_ACCELS = {'icount', 'mttcg', 'wallclock', 'roundrobin'}
 _VALID_EXPECTS = {'pass', 'xfail'}
 
 # The installed-IRIX disk asset convention test_irix_diag.py and
-# test_irix_installed_boot.py already use: assets/irix/<release>/
-# <variant>.qcow2 under ORIGAMI_ASSETS, resolved with lib_prom.resolve_asset
+# test_irix_installed_boot.py already use: irix/<release>/
+# <variant>.qcow2 under QEMU_TEST_SGI_ASSET_DIR, resolved with lib_prom.resolve_asset
 # exactly as those files do. A graphics-matrix row's `disk` column is just
 # <variant>; disk_rel() below builds the same relative path those files'
 # own DISK_REL constants build by hand.
@@ -99,12 +99,12 @@ RELEASE = '6.5.30'
 
 
 def disk_rel(variant):
-    """The ORIGAMI_ASSETS-relative path of the named installed-IRIX disk
-    variant, e.g. disk_rel('root-rad4') -> 'assets/irix/6.5.30/
+    """The QEMU_TEST_SGI_ASSET_DIR-relative path of the named installed-IRIX disk
+    variant, e.g. disk_rel('root-rad4') -> 'irix/6.5.30/
     root-rad4.qcow2'. Resolve it with lib_prom.resolve_asset the same way
     every other disk-booting test in this directory resolves its own
     DISK_REL."""
-    return os.path.join('assets', 'irix', RELEASE, f'{variant}.qcow2')
+    return os.path.join('irix', RELEASE, f'{variant}.qcow2')
 
 
 @dataclass

@@ -301,12 +301,17 @@ tests_mips64_system_thorough = [
   'xframe_pci',
 ]
 
+subdir('roms')
+if sgi_roms_available
+  tests_mips64_system_thorough += ['sgi_roms']
+  test_mips64_timeouts += {'sgi_roms': 18000}
+endif
+
 # The unit tests of the lib_*.py helper modules the boot tests import,
 # plus the one verdict companion that is a parser in its own right (the
-# PROM's RSLT ledger). Plain unittest modules -- no QEMU, no assets, no
-# qemu_test import -- so they run under the venv's bare python3 rather
-# than through the qemu_test TAP machinery the lists above feed, and they
-# belong to the quick suite: the whole set is seconds.
+# PROM's RSLT ledger). These unittest modules need no QEMU or assets, but
+# their imports use the same Meson Python environment as functional tests.
+# They belong to the quick suite: the whole set is seconds.
 tests_mips64_unit = [
   'lib_evidence_capture',
   'lib_graphics_matrix',
@@ -326,8 +331,16 @@ tests_mips64_unit = [
 ]
 
 foreach test : tests_mips64_unit
+  test_env = environment()
+  test_env.set('MESON_BUILD_ROOT', meson.project_build_root())
+  test_env.prepend('PYTHONPATH',
+                   meson.project_source_root() / 'python',
+                   meson.current_source_dir() / '..',
+                   meson.current_source_dir(),
+                   separator : ':')
   test('func-mips64-' + test,
        python,
+       env: test_env,
        args: [meson.current_source_dir() / 'test_' + test + '.py'],
        suite: ['func-quick', 'func-mips64'])
 endforeach

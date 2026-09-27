@@ -197,7 +197,7 @@ def _parse_ttcp_rate(text):
 
 class HelpersTest(unittest.TestCase):
     """base._host_cksum is only reached once a live run gets as far as the
-    TCP byte-verify step, so a run without ORIGAMI_ASSETS skips straight
+    TCP byte-verify step, so a run without QEMU_TEST_SGI_ASSET_DIR skips straight
     past a regression here (test_irix_tg.py never defined it, unlike
     test_irix_eg_net.py, which test_irix_eg_perf.py's own copy of this
     call relies on). No boot needed to catch it."""
@@ -229,7 +229,7 @@ if base.QemuSystemTest is not None:
 
         @base.skipBigDataTest()
         @base.skipSlowTest()
-        @base.skipIfMissingEnv('ORIGAMI_ASSETS')
+        @base.skipIfMissingEnv('QEMU_TEST_SGI_ASSET_DIR')
         def test_irix_tg_perf(self):
             assets = base.require_assets(
                 self, base.FIRMWARE_REL, base.DISK_REL)

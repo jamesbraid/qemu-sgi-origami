@@ -6,7 +6,7 @@
 # later.  See the COPYING file in the top-level directory.
 
 
-from .asset import Asset
+from .asset import Asset, LocalAsset
 from .config import BUILD_DIR, dso_suffix
 from .cmd import is_readable_executable_file, \
     interrupt_interactive_console_until_pattern, wait_for_console_pattern, \

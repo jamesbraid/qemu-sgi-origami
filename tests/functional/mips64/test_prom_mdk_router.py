@@ -37,7 +37,7 @@ from lib_prom_mdk import mdk_extra_args, payload_identity_problems
 from lib_prom_mdk_router import NETBOOT_PATH, verdict
 
 
-MDK_REL = os.path.join('assets', 'boot', 'mdk', 'MDK_router_sso')
+MDK_REL = os.path.join('boot', 'mdk', 'MDK_router_sso')
 ROUTER_SSO_SHA256 = (
     "8caaf050bbf1a71caf0bb59944415e98c7ffd49242975c2b41e5d29cdd3108f2"
 )
@@ -65,7 +65,7 @@ class PromMdkRouter(QemuSystemTest):
         shutil.copyfile(mdk, staged)
         return root
 
-    @skipIfMissingEnv('ORIGAMI_ASSETS')
+    @skipIfMissingEnv('QEMU_TEST_SGI_ASSET_DIR')
     def test_prom_mdk_router(self):
         assets = require_assets(self, FIRMWARE_REL, MDK_REL)
         prom, mdk = assets[FIRMWARE_REL], assets[MDK_REL]

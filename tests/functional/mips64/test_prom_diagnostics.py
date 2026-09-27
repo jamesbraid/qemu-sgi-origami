@@ -102,13 +102,13 @@ from lib_prom_sash import NETBOOT_PATH, artifact_identity_problems
 # release at a time, the same way test_prom_sash.py's own RELEASE did.
 RELEASE = "6.5.30"
 
-# Where ORIGAMI_ASSETS resolves the real firmware and boot tree, matching
+# Where QEMU_TEST_SGI_ASSET_DIR resolves the real firmware and boot tree, matching
 # test_prom_boot.py's FIRMWARE_REL and tools/sash-gate's RELEASES["6.5.30"]
-# in the project checkout: ORIGAMI_ASSETS names a CHECKOUT, not assets/
-# itself.
-FIRMWARE_REL = os.path.join('assets', 'firmware', RELEASE,
+# in the project checkout: QEMU_TEST_SGI_ASSET_DIR points directly at the
+# asset directory.
+FIRMWARE_REL = os.path.join('firmware', RELEASE,
                             'ip27prom.payload.bin')
-TFTP_REL = os.path.join('assets', 'boot', RELEASE)
+TFTP_REL = os.path.join('boot', RELEASE)
 
 # diag-gate's own default (tools/diag-gate's DEFAULT_TIMEOUT_SECONDS,
 # before that tool's retirement) covered both passes and the sash leg in
@@ -164,7 +164,7 @@ class PromDiagnostics(QemuSystemTest):
         shutil.copyfile(sash, staged_sash)
         return root
 
-    @skipIfMissingEnv('ORIGAMI_ASSETS')
+    @skipIfMissingEnv('QEMU_TEST_SGI_ASSET_DIR')
     def test_prom_diagnostics(self):
         # sash64 comes from tools/sash-gate's own FLAT assets/boot/<release>
         # layout (sash64 alongside sashARCS, unix.IP27, ...), shared

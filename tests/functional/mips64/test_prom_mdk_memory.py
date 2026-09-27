@@ -45,7 +45,7 @@ from lib_prom_mdk_memory import (NETBOOT_PATH, TESTS, reached_all_completions,
                                  verdict)
 
 
-MDK_REL = os.path.join('assets', 'boot', 'mdk', 'memory.mdk')
+MDK_REL = os.path.join('boot', 'mdk', 'memory.mdk')
 
 # The PROM leg takes minutes; the battery's two long tests dominate (the
 # recorded suite ran about forty minutes under a heavily contended host,
@@ -73,7 +73,7 @@ class PromMdkMemory(QemuSystemTest):
         shutil.copyfile(mdk, staged)
         return root
 
-    @skipIfMissingEnv('ORIGAMI_ASSETS')
+    @skipIfMissingEnv('QEMU_TEST_SGI_ASSET_DIR')
     def test_prom_mdk_memory(self):
         assets = require_assets(self, FIRMWARE_REL, MDK_REL)
         prom, mdk = assets[FIRMWARE_REL], assets[MDK_REL]

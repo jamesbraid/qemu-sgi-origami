@@ -57,8 +57,8 @@ condition depends on.
 
 BOOT_TIMEOUT_SECONDS below is a real measurement, not a guess: a run of
 this exact test against real provisioned assets (podman, this worktree
-mounted read-write and a checkout carrying assets/ mounted read-only as
-ORIGAMI_ASSETS) reached XFRAME_UNCLAIMED_RE and returned PASS in about
+mounted read-write and the asset directory mounted read-only as
+QEMU_TEST_SGI_ASSET_DIR) reached XFRAME_UNCLAIMED_RE and returned PASS in about
 41s wall-clock end to end -- including podman container startup and the
 real PROM boot and netboot this port added -- on a host already busy
 running other work. 300 keeps roughly the same seven-times margin over
@@ -69,8 +69,8 @@ margin over this budget.
 Guarded the same way test_openbsd_net_transfer.py is: @skipBigDataTest() (the
 disk is 2 GiB), @skipSlowTest() (booting to firmware-plus-early-kernel is
 not instant even though this test stops well short of a full boot), and
-@skipIfMissingEnv('ORIGAMI_ASSETS') for a developer with no assets at
-all. ORIGAMI_ASSETS being set with either asset missing underneath it is
+@skipIfMissingEnv('QEMU_TEST_SGI_ASSET_DIR') for a developer with no assets at
+all. QEMU_TEST_SGI_ASSET_DIR being set with either asset missing underneath it is
 a provisioning failure, not an absent-assets run, and fails the test
 loudly rather than skipping it, the same as test_openbsd_net_transfer.py.
 """
@@ -123,8 +123,8 @@ def xframe_pci_verdict(transcript):
 # The same kernel and installed disk test_openbsd_net_transfer.py resolves --
 # this test boots the identical stock 6.9 GENERIC-IP27 image, only with
 # the xframe device added to the command line.
-KERNEL_REL = os.path.join('assets', 'openbsd', '6.9', 'bsd.IP27')
-DISK_REL = os.path.join('assets', 'openbsd', 'spike', 'root.img')
+KERNEL_REL = os.path.join('openbsd', '6.9', 'bsd.IP27')
+DISK_REL = os.path.join('openbsd', 'spike', 'root.img')
 
 # The boot file this test's own SLIRP TFTP server serves the kernel
 # under -- see prom_netboot_steps()'s own docstring for why this need
@@ -178,7 +178,7 @@ class XframePci(QemuSystemTest):
 
     @skipBigDataTest()
     @skipSlowTest()
-    @skipIfMissingEnv('ORIGAMI_ASSETS')
+    @skipIfMissingEnv('QEMU_TEST_SGI_ASSET_DIR')
     def test_xframe_pci(self):
         assets = require_assets(self, FIRMWARE_REL, KERNEL_REL, DISK_REL)
         firmware, kernel = assets[FIRMWARE_REL], assets[KERNEL_REL]

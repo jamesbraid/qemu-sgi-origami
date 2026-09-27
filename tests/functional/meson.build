@@ -137,7 +137,9 @@ foreach speed : ['quick', 'thorough']
       # 'run_target' logic below & in Makefile.include
       test('func-' + testname,
            python,
-           depends: [test_deps, test_emulator, emulator_modules, plugin_modules],
+           depends: [test_deps, test_emulator, emulator_modules, plugin_modules,
+                     get_variable('test_' + target_base + '_' + sysmode +
+                                  '_extra_deps', {}).get(test, [])],
            env: test_env,
            args: [testpath],
            protocol: 'tap',

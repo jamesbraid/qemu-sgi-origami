@@ -60,7 +60,7 @@ from lib_translation_health import assert_translation_healthy
 # ever fail the banner assertion, so this test pins its own release
 # rather than sharing the other real-PROM tests' 6.5.30 default.
 RELEASE = "6.5-base"
-FIRMWARE_REL = os.path.join('assets', 'firmware', RELEASE,
+FIRMWARE_REL = os.path.join('firmware', RELEASE,
                             'ip27prom.payload.bin')
 PROM_SHA256 = RELEASES[RELEASE]['prom_sha256']
 
@@ -133,7 +133,7 @@ class PromPod(QemuSystemTest):
     """Boots the real IP27 PROM with local-POD dip switches and
     requires verdict() to be PASS over the driven command list."""
 
-    @skipIfMissingEnv('ORIGAMI_ASSETS')
+    @skipIfMissingEnv('QEMU_TEST_SGI_ASSET_DIR')
     def test_prom_pod(self):
         prom = require_assets(self, FIRMWARE_REL)[FIRMWARE_REL]
 

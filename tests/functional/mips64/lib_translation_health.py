@@ -27,10 +27,10 @@ numbers on purpose, and `assert_translation_healthy()` is the one call a
 boot test's own console driver makes to turn a sick verdict into a
 failure that names the check instead of a timeout with no diagnosis.
 
-THE THRESHOLDS BELOW MUST MATCH tools/origami_lib/translation_health.py
-IN THE PROJECT CHECKOUT. Both read the same counters against the same
-real captures; a change to one without the other lets the two tools
-disagree about the same guest.
+QEMU owns these regression thresholds. The representative counter captures
+in test_lib_translation_health.py preserve their rationale without requiring
+an Origami checkout. Review threshold changes against those captures and a
+measured failing run.
 """
 
 from __future__ import annotations
@@ -42,8 +42,6 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 
-# See this module's docstring: kept identical to the Origami project's
-# own tools/origami_lib/translation_health.py.
 SICK_AVG_TARGET_SIZE_MAX_BYTES = 8
 SICK_MAX_TARGET_SIZE_MAX_BYTES = 8
 SICK_ZERO_OCCUPANCY_MIN_BLOCKS = 1_000_000

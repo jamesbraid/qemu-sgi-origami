@@ -44,9 +44,9 @@ from lib_prom import (FIRMWARE_REL, MACHINES, prom_netboot_steps,
                       require_assets)
 
 
-# ORIGAMI_ASSETS names the checkout containing these files.
-KERNEL_REL = os.path.join('assets', 'openbsd', '6.9', 'bsd.IP27')
-DISK_REL = os.path.join('assets', 'openbsd', 'spike', 'root.img')
+# QEMU_TEST_SGI_ASSET_DIR points directly at the asset directory.
+KERNEL_REL = os.path.join('openbsd', '6.9', 'bsd.IP27')
+DISK_REL = os.path.join('openbsd', 'spike', 'root.img')
 
 # The TFTP bootfile name the PROM's netboot command asks the SLIRP back
 # end for -- test_xframe_pci.py's own identical constant, kept equal
@@ -445,7 +445,7 @@ class OpenbsdNetTransfer(QemuSystemTest):
 
     @skipBigDataTest()
     @skipSlowTest()
-    @skipIfMissingEnv('ORIGAMI_ASSETS')
+    @skipIfMissingEnv('QEMU_TEST_SGI_ASSET_DIR')
     def test_openbsd_net_transfer(self):
         assets = require_assets(self, FIRMWARE_REL, KERNEL_REL, DISK_REL)
         firmware, kernel = assets[FIRMWARE_REL], assets[KERNEL_REL]

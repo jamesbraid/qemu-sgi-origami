@@ -6,8 +6,8 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 """
 Boots the reproducible networked disk image -- tools/gentoo-disk's Gentoo
-rootfs (assets/gentoo/gentoo-rootfs.img) rooted by the
-tools/linux-userspace --with-net kernel (assets/linux-ip27-net/vmlinux) --
+rootfs (gentoo/gentoo-rootfs.img) rooted by the
+tools/linux-userspace --with-net kernel (linux-ip27-net/vmlinux) --
 to a networked multiuser system, and proves a live network service: a
 remote TCP connection to the guest's ssh daemon over a forwarded port gets
 an SSH protocol banner back. This is the network-multiuser milestone as a
@@ -15,11 +15,11 @@ functional test, distinct from the four-CPU usercheck cell
 (test_linux_kernel.py's test_four_cpu), which proves the MTTCG
 remote-memory contract with no disk and no network.
 
-Both assets are provisioned into ORIGAMI_ASSETS by the nightly, published
-content-addressed (generic/linux-ip27-net/<sha>/vmlinux and
+The test runner supplies both assets under QEMU_TEST_SGI_ASSET_DIR. They are
+published content-addressed (generic/linux-ip27-net/<sha>/vmlinux and
 generic/gentoo/<sha>/gentoo-rootfs.img). Guarded by @skipBigDataTest()
 (a 2 GiB disk) and @skipSlowTest() (the boot is minutes) plus
-@skipIfMissingEnv('ORIGAMI_ASSETS') and a skipTest at method entry --
+@skipIfMissingEnv('QEMU_TEST_SGI_ASSET_DIR') and a skipTest at method entry --
 the same guards test_openbsd_net_transfer.py keeps.
 
 The machine matches the verified milestone boot: -M
@@ -56,6 +56,7 @@ import time
 
 from qemu_test import (QemuSystemTest, skipBigDataTest, skipIfMissingEnv,
                        skipSlowTest)
+from qemu_test.utils import get_usernet_hostfwd_port
 
 from lib_prom import (FIRMWARE_REL, MACHINES, drive_console,
                       prom_netboot_steps, require_assets, verdict)
@@ -83,10 +84,10 @@ def missing_multiuser_markers(log):
     return verdict(log, MARKERS)
 
 
-# Where ORIGAMI_ASSETS resolves the networked kernel and the Gentoo rootfs,
-# ORIGAMI_ASSETS names a checkout, not its assets/ directory.
-KERNEL_REL = os.path.join('assets', 'linux-ip27-net', 'vmlinux')
-DISK_REL = os.path.join('assets', 'gentoo', 'gentoo-rootfs.img')
+# Where QEMU_TEST_SGI_ASSET_DIR resolves the networked kernel and the Gentoo rootfs,
+# QEMU_TEST_SGI_ASSET_DIR points directly at the asset directory.
+KERNEL_REL = os.path.join('linux-ip27-net', 'vmlinux')
+DISK_REL = os.path.join('gentoo', 'gentoo-rootfs.img')
 
 # The boot file this test's own SLIRP TFTP server serves the kernel
 # under -- see prom_netboot_steps()'s own docstring for why this need
@@ -104,12 +105,6 @@ MEMORY_MIB = 256
 # the meson timeout registered for this test (mips64/meson.build), the
 # same shape test_openbsd_net_transfer.py keeps.
 BOOT_TIMEOUT_SECONDS = 1200
-
-# The guest's port 22, forwarded to this host port. A fixed high port: the
-# framework runs one functional guest at a time, so nothing else binds it
-# (the single-instance assumption tools/mttcg-smoke documents for the
-# functional cases).
-SSH_HOST_PORT = 15722
 
 LOGIN_RE = re.compile(r"[\w.-]+ login:")
 CRASH_RE = re.compile(r"Kernel panic - not sync|Oops\[|Unable to handle kernel")
@@ -147,7 +142,7 @@ class LinuxMultiuser(QemuSystemTest):
 
     @skipBigDataTest()
     @skipSlowTest()
-    @skipIfMissingEnv('ORIGAMI_ASSETS')
+    @skipIfMissingEnv('QEMU_TEST_SGI_ASSET_DIR')
     def test_linux_multiuser(self):
         assets = require_assets(self, FIRMWARE_REL, KERNEL_REL, DISK_REL)
         firmware, kernel = assets[FIRMWARE_REL], assets[KERNEL_REL]
@@ -164,10 +159,14 @@ class LinuxMultiuser(QemuSystemTest):
             '-smp', '4',
             '-accel', 'tcg,thread=multi',
             '-nic', ('user,id=n1,'
-                    f'hostfwd=tcp::{SSH_HOST_PORT}-:22,'
+                    'hostfwd=tcp::0-:22,'
                     f'tftp={os.path.dirname(kernel)},'
                     f'bootfile={NETBOOT_BOOTFILE}'))
         vm.launch()
+        ssh_host_port = get_usernet_hostfwd_port(vm)
+        self.assertIsNotNone(
+            ssh_host_port,
+            'QEMU did not report the dynamically allocated SSH forwarding port')
 
         log_path = self.log_file('linux-multiuser.log')
         banner = ''
@@ -185,7 +184,7 @@ class LinuxMultiuser(QemuSystemTest):
             missing = missing_multiuser_markers(transcript)
             if not missing:
                 time.sleep(10)
-                banner = _ssh_banner(SSH_HOST_PORT)
+                banner = _ssh_banner(ssh_host_port)
         finally:
             # A VM that crashed or exited on its own has already left; a
             # graceful shutdown() against an already-dead process still

@@ -66,23 +66,24 @@ def _boot_one_attempt(test, cell, attempt_index):
     scenario = SCENARIOS[cell.scenario]
     name = f'{cell.id}_attempt{attempt_index}'
 
-    assets_root = os.environ.get('ORIGAMI_ASSETS')
+    assets_root = os.environ.get('QEMU_TEST_SGI_ASSET_DIR')
     if not assets_root:
         test.skipTest(
-            'ORIGAMI_ASSETS is not set -- point it at a checkout with the '
+            'QEMU_TEST_SGI_ASSET_DIR is not set -- set it to the directory '
+            'with the '
             'real PROM image and the named IRIX disk variant to run this '
             'test')
     firmware_path = resolve_asset(assets_root, FIRMWARE_REL)
     disk_path = resolve_asset(assets_root, disk_rel(cell.disk))
     if not (firmware_path and disk_path):
-        # ORIGAMI_ASSETS IS set, so either missing file is a provisioning
+        # QEMU_TEST_SGI_ASSET_DIR IS set, so either missing file is a provisioning
         # failure, not an absent-assets developer run -- fail loudly
         # rather than silently skip a claimed capability, matching
         # test_irix_diag.py's own reasoning for the same distinction.
         test.fail(
-            'ORIGAMI_ASSETS is set but the PROM or disk is missing: '
-            f'need <ORIGAMI_ASSETS>/{FIRMWARE_REL} and '
-            f'<ORIGAMI_ASSETS>/{disk_rel(cell.disk)} -- provision them '
+            'QEMU_TEST_SGI_ASSET_DIR is set but the PROM or disk is missing: '
+            f'need <QEMU_TEST_SGI_ASSET_DIR>/{FIRMWARE_REL} and '
+            f'<QEMU_TEST_SGI_ASSET_DIR>/{disk_rel(cell.disk)} -- provision them '
             'rather than silently skipping a claimed capability')
 
     vm = test.get_vm(name=name)

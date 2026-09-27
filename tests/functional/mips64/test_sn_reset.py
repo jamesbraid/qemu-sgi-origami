@@ -560,8 +560,8 @@ class SN0ElscReset(_ResetCycleMixin, QemuSystemTest):
 
 # === L1 system reset (origin300/SN1) ========================================
 
-# The Origin 300's own stock PROM, under ORIGAMI_ASSETS.
-IP35_FIRMWARE_REL = os.path.join('assets', 'firmware', '6.5.30',
+# The Origin 300's own stock PROM, under QEMU_TEST_SGI_ASSET_DIR.
+IP35_FIRMWARE_REL = os.path.join('firmware', '6.5.30',
                                  'ip35prom.payload.bin')
 
 # The L1 UART's node-local registers, reached through the Hub-special
@@ -907,14 +907,14 @@ class SN1L1Reset(_ResetCycleMixin, QemuSystemTest):
             f'a peer entered a translation block after the closing L1 '
             f'frame flag write in {len(ran)} of {len(windows)} resets')
 
-    @skipIfMissingEnv('ORIGAMI_ASSETS')
+    @skipIfMissingEnv('QEMU_TEST_SGI_ASSET_DIR')
     def test_round_robin_stops_the_peer_at_the_write(self):
         """Plain single-threaded round robin, with no fixed clock: a
         regression guard, not the discriminating case below."""
         self.assert_only_the_requester_ran(
             self.run_resets('-accel', 'tcg,thread=single'))
 
-    @skipIfMissingEnv('ORIGAMI_ASSETS')
+    @skipIfMissingEnv('QEMU_TEST_SGI_ASSET_DIR')
     def test_instruction_counted_stops_the_peer_at_the_write(self):
         """Under the fixed instruction-count clock -- the mode a
         reproducible run uses -- this is the case the fix in
@@ -923,7 +923,7 @@ class SN1L1Reset(_ResetCycleMixin, QemuSystemTest):
             self.run_resets('-accel', 'tcg,thread=single',
                             '-icount', 'shift=0,align=off,sleep=off'))
 
-    @skipIfMissingEnv('ORIGAMI_ASSETS')
+    @skipIfMissingEnv('QEMU_TEST_SGI_ASSET_DIR')
     def test_multi_threaded_reset_completes(self):
         """Multi-threaded execution cannot promise the peer stopped before
         any further instruction -- it is running on its own host thread --
@@ -933,7 +933,7 @@ class SN1L1Reset(_ResetCycleMixin, QemuSystemTest):
         self.assertEqual(len(reset_windows(log, l1_committing_write)),
                          CYCLES)
 
-    @skipIfMissingEnv('ORIGAMI_ASSETS')
+    @skipIfMissingEnv('QEMU_TEST_SGI_ASSET_DIR')
     def test_console_power_down_stops_every_cpu(self):
         windows = shutdown_windows(self.run_console_power_cycles())
         self.assertEqual(len(windows), CYCLES)

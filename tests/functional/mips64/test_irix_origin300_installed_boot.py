@@ -20,7 +20,7 @@ from lib_prom import drive_console, require_assets
 from qemu_test import QemuSystemTest, skipBigDataTest, skipIfMissingEnv, skipSlowTest
 
 
-DISK_REL = os.path.join('assets', 'irix', '6.5.30',
+DISK_REL = os.path.join('irix', '6.5.30',
                         'root-diags-origin300.qcow2')
 DISK_SHA256 = (
     '150cf2c125cb3bd55764acfeec00804899ff3140cc536cf63a254765faa29390')
@@ -42,9 +42,9 @@ class IrixOrigin300InstalledBoot(QemuSystemTest):
 
     @skipBigDataTest()
     @skipSlowTest()
-    @skipIfMissingEnv('ORIGAMI_ASSETS')
+    @skipIfMissingEnv('QEMU_TEST_SGI_ASSET_DIR')
     def test_irix_origin300_installed_boot(self):
-        assets_root = os.environ['ORIGAMI_ASSETS']
+        assets_root = os.environ['QEMU_TEST_SGI_ASSET_DIR']
         assets = require_assets(
             self, *lib_origin300.ASSET_SPECS, (DISK_REL, DISK_SHA256))
         disk = assets[DISK_REL]

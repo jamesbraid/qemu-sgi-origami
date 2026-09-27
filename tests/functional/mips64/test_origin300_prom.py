@@ -55,21 +55,21 @@ from qemu_test import wait_for_console_pattern
 class Origin300Prom(QemuSystemTest):
 
     def boot_to_first_line(self, smp):
-        assets_root = os.environ.get('ORIGAMI_ASSETS')
+        assets_root = os.environ.get('QEMU_TEST_SGI_ASSET_DIR')
         prom = resolve_asset(
             assets_root,
-            os.path.join('assets', 'firmware', '6.5.30',
+            os.path.join('firmware', '6.5.30',
                          'ip35prom.payload.bin'))
         if prom is None:
             # skipIfMissingEnv above already skipped the case where
-            # ORIGAMI_ASSETS is unset entirely -- getting here means it
+            # QEMU_TEST_SGI_ASSET_DIR is unset entirely -- getting here means it
             # IS set, so a missing PROM image is a provisioning
             # failure, not an absent-assets developer run, and must
             # fail loudly rather than silently skip a claimed
             # capability.
             self.fail(
-                'ORIGAMI_ASSETS is set but the Origin 300 stock PROM is '
-                'missing at <ORIGAMI_ASSETS>/assets/firmware/6.5.30/'
+                'QEMU_TEST_SGI_ASSET_DIR is set but the Origin 300 stock PROM is '
+                'missing at <QEMU_TEST_SGI_ASSET_DIR>/firmware/6.5.30/'
                 'ip35prom.payload.bin -- provision it rather than '
                 'silently skipping a real check')
 
@@ -80,16 +80,16 @@ class Origin300Prom(QemuSystemTest):
         wait_for_console_pattern(self, 'Starting PROM Boot process')
         self.vm.shutdown()
 
-    @skipIfMissingEnv('ORIGAMI_ASSETS')
+    @skipIfMissingEnv('QEMU_TEST_SGI_ASSET_DIR')
     def test_origin300_prom(self):
         self.boot_to_first_line(2)
 
-    @skipIfMissingEnv('ORIGAMI_ASSETS')
+    @skipIfMissingEnv('QEMU_TEST_SGI_ASSET_DIR')
     def test_origin300_prom_four_cpus(self):
         self.boot_to_first_line(4)
 
     def boot_to_menu(self, cpus):
-        assets_root = os.environ.get('ORIGAMI_ASSETS')
+        assets_root = os.environ.get('QEMU_TEST_SGI_ASSET_DIR')
         require_assets(self, *lib_origin300.ASSET_SPECS)
         machine, argv = lib_origin300.launch_args(
             assets_root, cpus, self.workdir)
@@ -103,7 +103,7 @@ class Origin300Prom(QemuSystemTest):
         wait_for_console_pattern(self, 'System Maintenance Menu')
         self.vm.shutdown()
 
-    @skipIfMissingEnv('ORIGAMI_ASSETS')
+    @skipIfMissingEnv('QEMU_TEST_SGI_ASSET_DIR')
     def test_four_cpus_reach_the_menu_with_all_diags_passed(self):
         self.boot_to_menu(4)
 

@@ -158,11 +158,11 @@ class DiskRelTest(unittest.TestCase):
 
     def test_builds_the_sibling_asset_convention_path(self):
         # Matches test_irix_diag.py's own DISK_REL by hand
-        # ('assets/irix/6.5.30/root-diags.qcow2') for a different variant
+        # ('irix/6.5.30/root-diags.qcow2') for a different variant
         # name, so a new variant needs no new constant, just a new
         # manifest row naming it.
         self.assertEqual(disk_rel('root-rad4'),
-                         'assets/irix/6.5.30/root-rad4.qcow2')
+                         'irix/6.5.30/root-rad4.qcow2')
 
 
 if __name__ == '__main__':

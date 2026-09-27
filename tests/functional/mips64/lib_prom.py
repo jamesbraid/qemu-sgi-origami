@@ -5,14 +5,13 @@
 #
 # SPDX-License-Identifier: GPL-2.0-or-later
 """
-Everything here is plain Python with no qemu_test dependency, on purpose:
+Everything here has no import-time qemu_test dependency, on purpose:
 the *_verdict.py companions of the boot tests in this directory import
 from this module (and from the per-test lib_*.py modules beside it) under
-a plain `python3` or `pytest` run, where qemu_test is not importable --
-it needs MESON_BUILD_ROOT and the qemu.machine/pycotap packages meson's
-own PYTHONPATH wires in. The test_*.py modules import qemu_test
+a plain `python3` or `pytest` run. The test_*.py modules import qemu_test
 unconditionally and keep only their launch code; the logic a verdict
-companion pins lives here or in a lib_*.py module.
+companion pins lives here or in a lib_*.py module. Asset resolution imports
+qemu_test lazily when a test actually resolves a supplied file.
 """
 
 import datetime
@@ -26,13 +25,8 @@ import time
 from lib_translation_health import assert_translation_healthy
 
 
-# Where ORIGAMI_ASSETS resolves the real firmware image, matching
-# tools/containerlib.py's resolve_assets_root() and tools/pod-console's
-# DEFAULT_PROM in the project checkout: ORIGAMI_ASSETS names a CHECKOUT
-# (one with its own assets/ directory), not the assets/ directory itself --
-# confirmed against tools/README.md's own description of the variable
-# ("resolves asset paths (assets/firmware/...) against `path`").
-FIRMWARE_REL = os.path.join('assets', 'firmware', '6.5.30',
+# QEMU_TEST_SGI_ASSET_DIR points directly at this root-relative asset tree.
+FIRMWARE_REL = os.path.join('firmware', '6.5.30',
                             'ip27prom.payload.bin')
 
 # This checkout's own root, four directories above
@@ -55,18 +49,17 @@ MACHINES = {
 }
 
 
-class AssetMismatch(Exception):
+class AssetMismatch(AssertionError):
     """A provisioned file is present but is not the recorded one."""
 
 
 def resolve_asset(assets_root, rel_path, sha256=None):
-    """The absolute path of rel_path under assets_root, or None.
+    """The absolute path of rel_path under assets_root, or None if unset.
 
-    None when assets_root is falsy (ORIGAMI_ASSETS unset or empty) or
-    the file is not there -- the runner may not have it provisioned
-    yet, which every caller turns into a skip. Callers read
-    ORIGAMI_ASSETS themselves and hand the root in, so this stays pure
-    and unit-testable.
+    A configured but missing file, or a file with the wrong recorded hash,
+    raises AssetMismatch. Callers read QEMU_TEST_SGI_ASSET_DIR themselves and
+    hand the root in. The local asset import is lazy so parser-only companions
+    can import this module without Meson's qemu_test environment.
 
     A test that knows the recorded SHA-256 of a file may pass it as
     sha256: a file that is present but does not match raises
@@ -77,16 +70,13 @@ def resolve_asset(assets_root, rel_path, sha256=None):
     """
     if not assets_root:
         return None
-    path = os.path.join(assets_root, rel_path)
-    if not os.path.isfile(path):
-        return None
-    if sha256 is not None:
-        digest = file_sha256(path)
-        if digest != sha256:
-            raise AssetMismatch(
-                f'{path}: SHA-256 {digest} does not match the '
-                f'recorded {sha256}')
-    return path
+    from qemu_test.asset import AssetError, LocalAsset
+
+    asset = LocalAsset(rel_path, sha256, asset_dir=assets_root)
+    try:
+        return asset.fetch()
+    except AssetError as exc:
+        raise AssetMismatch(str(exc)) from exc
 
 
 def require_assets(test, *rels):
@@ -97,30 +87,29 @@ def require_assets(test, *rels):
     SHA-256) pair; a pair's digest is checked the way resolve_asset()
     checks it, raising AssetMismatch on a present-but-wrong file.
 
-    ORIGAMI_ASSETS unset or empty SKIPS the test: a developer with no
-    assets provisioned has nothing to run against at all. ORIGAMI_ASSETS
-    set with a file missing FAILS, naming every missing path at once --
+    QEMU_TEST_SGI_ASSET_DIR unset or empty SKIPS the test: a developer with no
+    assets provisioned has nothing to run against at all. When the variable
+    is set, a missing file FAILS and names every missing path at once --
     a provisioning failure has to show up as a red check, not as a
     quietly skipped one that lets a real regression pass unnoticed.
     """
-    assets_root = os.environ.get('ORIGAMI_ASSETS')
+    assets_root = os.environ.get('QEMU_TEST_SGI_ASSET_DIR')
     if not assets_root:
-        test.skipTest('ORIGAMI_ASSETS is not set: no assets to run against')
+        test.skipTest(
+            'QEMU_TEST_SGI_ASSET_DIR is not set: no assets to run against')
     resolved = {}
-    missing = []
+    failures = []
     for rel in rels:
         rel, sha256 = rel if isinstance(rel, tuple) else (rel, None)
-        path = resolve_asset(assets_root, rel, sha256)
-        if path is None:
-            missing.append(rel)
-        else:
+        try:
+            path = resolve_asset(assets_root, rel, sha256)
             resolved[rel] = path
-    if missing:
-        test.fail(
-            'ORIGAMI_ASSETS is set but ' +
-            ', '.join(f'<ORIGAMI_ASSETS>/{rel}' for rel in missing) +
-            ' is missing -- provision it (nightly assets) rather than '
-            'silently skipping a claimed capability')
+        except AssetMismatch as exc:
+            failures.append(f'{rel}: {exc}')
+    if failures:
+        raise AssetMismatch(
+            'QEMU_TEST_SGI_ASSET_DIR contains unusable files: ' +
+            '; '.join(failures))
     return resolved
 
 

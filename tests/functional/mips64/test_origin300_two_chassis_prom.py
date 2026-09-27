@@ -31,10 +31,10 @@ class Origin300TwoChassisProm(QemuSystemTest):
 
     timeout = 1200
 
-    @skipIfMissingEnv('ORIGAMI_ASSETS')
+    @skipIfMissingEnv('QEMU_TEST_SGI_ASSET_DIR')
     def test_eight_cpus_on_two_nodes_reach_the_menu(self):
         populations = (4, 4)
-        assets_root = os.environ.get('ORIGAMI_ASSETS')
+        assets_root = os.environ.get('QEMU_TEST_SGI_ASSET_DIR')
         require_assets(self, *lib_origin300.ASSET_SPECS)
         machine, argv = lib_origin300.launch_args_two_chassis(
             assets_root, populations, self.workdir)
