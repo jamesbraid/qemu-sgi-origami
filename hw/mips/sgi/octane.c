@@ -38,9 +38,7 @@
 #define OCTANE_FLASH_SIZE (2 * MiB)
 #define OCTANE_HEART_REGS 0x0ff00000ULL
 #define OCTANE_HEART_WIDGET 0x18000000ULL
-#define OCTANE_HEART_BANK0_DESC 0x80030000U
-/* Functional single-bank layout; the fitted DIMM layout is unmeasured. */
-#define OCTANE2_HEART_BANK0_DESC 0x80070000U
+#define OCTANE_BANK_UNIT (32 * MiB)
 #define OCTANE_PHYSICAL_SPAN (1ULL << 40)
 #define OCTANE_ATTR0_BASE (1ULL << 40)
 #define OCTANE_LOW_RAM_SIZE 0x2000
@@ -51,8 +49,25 @@ typedef struct OctaneMachineState {
     MachineState parent;
     MemoryRegion low_ram;
     MemoryRegion high_guard;
+    uint64_t bank_size[HEART_BANKS];
     bool octane2;
 } OctaneMachineState;
+
+static bool octane_valid_banks(OctaneMachineState *s, bool octane2)
+{
+    uint64_t *bank = s->bank_size;
+
+    if (octane2) {
+        return (bank[0] == 256 * MiB && !bank[1] && !bank[2] && !bank[3]) ||
+               (bank[0] == 128 * MiB && bank[1] == 128 * MiB &&
+                !bank[2] && !bank[3]) ||
+               (bank[0] == 64 * MiB && bank[1] == 64 * MiB &&
+                bank[2] == 64 * MiB && bank[3] == 64 * MiB);
+    }
+    return (bank[0] == 128 * MiB && !bank[1] && !bank[2] && !bank[3]) ||
+           (bank[0] == 64 * MiB && bank[1] == 64 * MiB &&
+            !bank[2] && !bank[3]);
+}
 
 static MemTxResult octane_high_guard_read(void *opaque, hwaddr addr,
                                           uint64_t *value, unsigned size,
@@ -116,18 +131,26 @@ static void octane_reset(MachineState *machine, ResetType type)
 {
     OctaneMachineState *s = (OctaneMachineState *)machine;
     uint8_t descriptor[4];
+    uint32_t base = 0;
     CPUState *cpu;
 
     qemu_devices_reset(type);
     memset(memory_region_get_ram_ptr(&s->low_ram), 0, OCTANE_LOW_RAM_SIZE);
     memory_region_set_dirty(&s->low_ram, 0, OCTANE_LOW_RAM_SIZE);
-    stl_be_p(descriptor, s->octane2 ? OCTANE2_HEART_BANK0_DESC :
-                            OCTANE_HEART_BANK0_DESC);
-    if (address_space_write(&address_space_memory,
-                            OCTANE_HEART_REGS + 0x20,
-                            MEMTXATTRS_UNSPECIFIED, descriptor,
-                            sizeof(descriptor)) != MEMTX_OK) {
-        error_setg(&error_fatal, "octane cannot map HEART bank 0");
+    /* Synthetic machine setup; the PROM may replace these descriptors. */
+    for (unsigned bank = 0; bank < HEART_BANKS; bank++) {
+        uint64_t capacity = s->bank_size[bank];
+        uint32_t value = capacity ?
+            0x80000000U | ((capacity / OCTANE_BANK_UNIT - 1) << 16) | base : 0;
+
+        stl_be_p(descriptor, value);
+        if (address_space_write(&address_space_memory,
+                                OCTANE_HEART_REGS + 0x20 + bank * 4,
+                                MEMTXATTRS_UNSPECIFIED, descriptor,
+                                sizeof(descriptor)) != MEMTX_OK) {
+            error_setg(&error_fatal, "octane cannot map HEART bank %u", bank);
+        }
+        base += capacity / OCTANE_BANK_UNIT;
     }
     CPU_FOREACH(cpu) {
         cpu_reset(cpu);
@@ -200,6 +223,12 @@ static void octane_init_common(MachineState *machine, bool octane2)
         error_setg(&error_fatal, "%s supports one CPU and %u MiB of RAM",
                    octane2 ? "octane2" : "octane", octane2 ? 256 : 128);
     }
+    if (!octane_valid_banks(s, octane2) ||
+        s->bank_size[0] + s->bank_size[1] + s->bank_size[2] +
+        s->bank_size[3] != machine->ram_size) {
+        error_setg(&error_fatal, "%s unsupported HEART bank population",
+                   octane2 ? "octane2" : "octane");
+    }
     if (octane2 && strcmp(machine->cpu_type,
                           MIPS_CPU_TYPE_NAME("R12000"))) {
         error_setg(&error_fatal, "octane2 requires an R12000 CPU");
@@ -259,8 +288,11 @@ static void octane_init_common(MachineState *machine, bool octane2)
     memory_region_add_subregion(system, OCTANE_ATTR0_BASE, attr0);
 
     object_property_add_child(OBJECT(machine), "heart", OBJECT(heart));
-    qdev_prop_set_uint64(heart, "bank0-size",
-                          (octane2 ? 256 : 128) * MiB);
+    for (unsigned bank = 0; bank < HEART_BANKS; bank++) {
+        g_autofree char *name = g_strdup_printf("bank%u-size", bank);
+
+        qdev_prop_set_uint64(heart, name, s->bank_size[bank]);
+    }
     if (octane2) {
         qdev_prop_set_uint8(heart, "widget-revision", 6);
     }
@@ -345,6 +377,31 @@ static void octane2_init(MachineState *machine)
     octane_init_common(machine, true);
 }
 
+static void octane_instance_init_common(Object *obj, uint64_t default_bank)
+{
+    OctaneMachineState *s = (OctaneMachineState *)obj;
+
+    s->bank_size[0] = default_bank;
+    for (unsigned bank = 0; bank < HEART_BANKS; bank++) {
+        g_autofree char *name = g_strdup_printf("bank%u-size", bank);
+
+        object_property_add_uint64_ptr(obj, name, &s->bank_size[bank],
+                                       OBJ_PROP_FLAG_READWRITE);
+        object_property_set_description(obj, name,
+                                        "Capacity of the selected HEART bank in bytes");
+    }
+}
+
+static void octane_instance_init(Object *obj)
+{
+    octane_instance_init_common(obj, 128 * MiB);
+}
+
+static void octane2_instance_init(Object *obj)
+{
+    octane_instance_init_common(obj, 256 * MiB);
+}
+
 static void octane_class_init(ObjectClass *oc, const void *data)
 {
     MachineClass *mc = MACHINE_CLASS(oc);
@@ -376,6 +433,7 @@ static const TypeInfo octane2_machine = {
     .name = MACHINE_TYPE_NAME("octane2"),
     .parent = TYPE_MACHINE,
     .instance_size = sizeof(OctaneMachineState),
+    .instance_init = octane2_instance_init,
     .class_init = octane2_class_init,
 };
 
@@ -383,6 +441,7 @@ static const TypeInfo octane_machine = {
     .name = MACHINE_TYPE_NAME("octane"),
     .parent = TYPE_MACHINE,
     .instance_size = sizeof(OctaneMachineState),
+    .instance_init = octane_instance_init,
     .class_init = octane_class_init,
 };
 
