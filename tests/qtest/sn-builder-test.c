@@ -254,7 +254,7 @@ static void test_pci_expansion_attaches_via_spare_fabric(const void *data)
 /*
  * sgi-xio-baseio additionally refuses any slot but 8 for its default io6
  * preset: BaseIO is fixed at IO1, crosstalk widget 8 (the preset's own
- * xio_widget in baseio.c), a real hardware fact rather than the free
+ * xio_widgets in baseio.c), a real hardware fact rather than the free
  * QOM-path choice "slot" is for sgi-pci-expansion above. slot=8 here
  * satisfies that check, not a coincidence with the sibling test's own
  * unrelated choice. The same configured-startup-links reasoning applies: see
@@ -275,12 +275,57 @@ static void test_xio_baseio_attaches_via_spare_fabric(const void *data)
 }
 
 /*
+ * The BaseIO-G preset also fits the Onyx2 deskside's IO1, which that
+ * midplane's Crossbow puts at widget 15 rather than 8. The plain BaseIO
+ * never sits in a deskside, so widget 15 stays refused for it: IO3 on the
+ * eight-processor module.
+ */
+static void test_xio_baseio_g_fits_the_deskside_io1(const void *data)
+{
+    QTestState *qts = qtest_init(
+        "-M origin2000 -display none -device sgi-xio-baseio,preset=io6g,"
+        "module=99,slot=15,fabric=/machine/crossbow0-spare-fabric[0],"
+        "fabric-widget-shift=48");
+    g_autofree char *type = qom_child_type(qts, "/machine/module99",
+                                           "slot15");
+
+    g_assert_cmpstr(type, ==, "sgi-xio-baseio");
+    qtest_quit(qts);
+}
+
+static void test_xio_baseio_refuses_widget_15(const void *data)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree uint8_t *blank = g_malloc0(0x100000);
+    g_autofree char *path = NULL;
+    int fd;
+    const char *args[] = {
+        qtest_qemu_binary(NULL), "-M", "origin2000", "-bios", NULL,
+        "-device", "sgi-xio-baseio,preset=io6,module=99,slot=15,"
+        "fabric=/machine/crossbow0-spare-fabric[0],fabric-widget-shift=48",
+        "-display", "none", NULL
+    };
+
+    fd = g_file_open_tmp("sn-builder-blank-bios-XXXXXX.bin", &path, &error);
+    g_assert_no_error(error);
+    close(fd);
+    g_assert_true(g_file_set_contents(path, (const char *)blank, 0x100000,
+                                      &error));
+    g_assert_no_error(error);
+    args[4] = path;
+
+    assert_qemu_rejects(args, "sgi-xio-baseio preset 'io6' cannot sit at "
+                        "crosstalk widget 15");
+    g_assert_cmpint(unlink(path), ==, 0);
+}
+
+/*
  * The Hub's own real crosstalk decode, confirmed against a real widget by
  * sn0-origin2000-xtalk-owner-test.c's assert_owner(): a physical read at
  * SPACE_XTALK plus a widget's small-window stride plus a register's own
  * offset reaches that widget's real chip registers through the real
  * Crossbow. Reused here read-only, on the machine's own onboard BaseIO
- * (crosstalk widget 8, the io6 preset's own xio_widget), to observe whatever
+ * (crosstalk widget 8, the io6 preset's own xio_widgets), to observe whatever
  * the spare-fabric board below actually delivers to it.
  */
 #define SMALL_WINDOW_SIZE       UINT64_C(0x1000000)
@@ -1224,6 +1269,10 @@ int main(int argc, char **argv)
                         test_expansion_boards_share_the_attach_contract);
     qtest_add_data_func("sn/builder/pci-expansion-attaches-via-spare-fabric",
                         NULL, test_pci_expansion_attaches_via_spare_fabric);
+    qtest_add_data_func("sn/builder/xio-baseio-g-fits-the-deskside-io1",
+                        NULL, test_xio_baseio_g_fits_the_deskside_io1);
+    qtest_add_data_func("sn/builder/xio-baseio-refuses-widget-15", NULL,
+                        test_xio_baseio_refuses_widget_15);
     qtest_add_data_func("sn/builder/xio-baseio-attaches-via-spare-fabric",
                         NULL, test_xio_baseio_attaches_via_spare_fabric);
     qtest_add_data_func("sn/builder/pci-expansion-delivers-through-spare-"

@@ -761,9 +761,11 @@ static bool baseio_build_mscsi(SGIBaseioState *s, Error **errp)
 static const SGIBaseioPreset sgi_baseio_presets[] = {
     { "ip29", { "030-1244-001", 4, "OIP2900001", "H", "IP29" },
       baseio_build_ip29 },
-    { "io6", { "030-1124-002", 4, "OBASEIO002", "J", "BASEIO", 8, true },
+    { "io6", { "030-1124-002", 4, "OBASEIO002", "J", "BASEIO",
+               SGI_BASEIO_XIO_WIDGET(8), true },
       baseio_build_io6 },
-    { "io6g", { "030-0734-002", 4, "OBASEIO001", "N", "BASEIO", 8, true },
+    { "io6g", { "030-0734-002", 4, "OBASEIO001", "N", "BASEIO",
+                SGI_BASEIO_XIO_WIDGET(8) | SGI_BASEIO_XIO_WIDGET(15), true },
       baseio_build_io6g },
     { "io8", { "030-1673-003", 0 }, baseio_build_io8 },
     { "menet", { "030-0873-003", 4, "OMENET0001", "J", "MENET",

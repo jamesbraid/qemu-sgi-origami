@@ -112,16 +112,16 @@ static bool xio_baseio_build_widget(SGIXioBoardState *board, Error **errp)
                   "packets travel");
         return false;
     }
-    if (!identity || !identity->xio_widget) {
+    if (!identity || !identity->xio_widgets) {
         error_setg(errp, "sgi-xio-baseio: '%s' names no XIO card "
                   "preset; expected io6, io6g, menet or mscsi",
                   s->preset ? s->preset : "(unset)");
         return false;
     }
-    if (identity->xio_widget != SGI_BASEIO_XIO_ANY_WIDGET &&
-        board->slot != identity->xio_widget) {
-        error_setg(errp, "sgi-xio-baseio preset '%s' is fixed at crosstalk "
-                  "widget %u", s->preset, identity->xio_widget);
+    if (board->slot >= 32 ||
+        !(identity->xio_widgets & SGI_BASEIO_XIO_WIDGET(board->slot))) {
+        error_setg(errp, "sgi-xio-baseio preset '%s' cannot sit at "
+                  "crosstalk widget %u", s->preset, board->slot);
         return false;
     }
     if (!identity->bridge_flash && s->flash_drive_id) {

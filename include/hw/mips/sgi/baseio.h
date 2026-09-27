@@ -38,15 +38,18 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIBaseioState, SGI_BASEIO)
  * are NULL for the io8 preset, whose XBridge carries no such properties
  * and keeps the older text layout.
  *
- * xio_widget and bridge_flash describe a preset the XIO card carrier
- * (sgi-xio-baseio) builds: the one crosstalk widget the card must sit
- * at, SGI_BASEIO_XIO_ANY_WIDGET for a card that fits any XIO slot, or 0
- * for a preset that is not an XIO card at all (ip29, io8), and whether
- * the card's Bridge carries the BASEIO PROM flash part. The BaseIO
- * presets are fixed at IO1 and carry the flash; the MENET and MSCSI fit
- * any slot and have none.
+ * xio_widgets and bridge_flash describe a preset the XIO card carrier
+ * (sgi-xio-baseio) builds: the crosstalk widgets the card may sit at, one
+ * bit per widget number, SGI_BASEIO_XIO_ANY_WIDGET for a card that fits
+ * any XIO slot, or 0 for a preset that is not an XIO card at all (ip29,
+ * io8), and whether the card's Bridge carries the BASEIO PROM flash part.
+ * The BaseIO presets are fixed at IO1 and carry the flash. IO1 is widget
+ * 8 on the eight-processor module, and on the Onyx2 deskside, whose
+ * midplane takes only the BaseIO-G, widget F. The MENET and MSCSI fit any
+ * slot and have none.
  */
-#define SGI_BASEIO_XIO_ANY_WIDGET UINT32_MAX
+#define SGI_BASEIO_XIO_WIDGET(n)  (1u << (n))
+#define SGI_BASEIO_XIO_ANY_WIDGET 0xff00u
 
 typedef struct SGIBaseioPresetIdentity {
     const char *board_part;
@@ -54,7 +57,7 @@ typedef struct SGIBaseioPresetIdentity {
     const char *board_barcode;
     const char *board_revision;
     const char *board_name;
-    uint32_t xio_widget;
+    uint32_t xio_widgets;
     bool bridge_flash;
 } SGIBaseioPresetIdentity;
 
