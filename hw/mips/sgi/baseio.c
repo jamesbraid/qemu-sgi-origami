@@ -734,6 +734,7 @@ static bool baseio_build_fuel(SGIBaseioState *s, Error **errp)
 {
     PCIDevice *scsi;
     PCIDevice *ioc3;
+    PCIDevice *usb;
 
     if (s->fuel_subsystem_id > UINT16_MAX) {
         error_setg(errp, "fuel preset requires an experimental IOC3 "
@@ -783,9 +784,16 @@ static bool baseio_build_fuel(SGIBaseioState *s, Error **errp)
     baseio_note_claim(s, s->chardev_b_id);
     baseio_note_claim(s, s->record_a_id);
     baseio_note_claim(s, s->record_b_id);
+
+    /* The selected 030-1707-003 revision G board reports 11c1:5802. */
+    usb = pci_new(PCI_DEVFN(5, 0), "lucent-ohci");
+    object_property_add_child(OBJECT(s), "usb", OBJECT(usb));
+    if (!pci_realize_and_unref(usb, s->pci_bus, errp)) {
+        return false;
+    }
+
     warn_report("fuel: IOC3 subsystem ID is an experimental launch input; "
-                "PCI interrupt routing, RTC and USB "
-                "are not implemented");
+                "PCI interrupt routing and RTC are not implemented");
     return true;
 }
 
