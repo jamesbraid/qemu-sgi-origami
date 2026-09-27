@@ -717,8 +717,22 @@ static void mgras_write(void *opaque, hwaddr addr, uint64_t value,
         mgras_update_irq(s); return;
     /* Store unresolved status bits separately from pending sources. */
     case 0x011020: s->hq_status_extra = value; return;
-    case 0x011040: s->irq_mask = value; mgras_update_irq(s); return;
+    /*
+     * Inferred: 0x011040 sets enables and 0x011048 clears them. The IRIX
+     * 6.5.30 kernel stores 0x400 to 0x011040 before a swap, and nothing
+     * after that writes 0x011040 again before the next MgrasCtxsw sleeps on
+     * source 19; the switch's tail clears every enable at 0x011048 before
+     * restoring the incoming context's word. With a replacing store the
+     * source-19 wake never arrives, and the switch is left to its watchdog.
+     * The discriminating tests are
+     * irq-enable-set-and-clear-ports and swap-keeps-context-switch-enable.
+     */
+    case 0x011040:
+        s->irq_mask |= value;
+        mgras_update_irq(s);
+        return;
     case 0x011048:
+        s->irq_mask &= ~(uint32_t)value;
         s->error = 0;
         s->pending &= ~MGRAS_PENDING_ERROR;
         mgras_update_irq(s);
