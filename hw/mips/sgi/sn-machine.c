@@ -1422,6 +1422,26 @@ static bool sgi_machine_instantiate_kona(
     object_property_add_child(OBJECT(s), name, OBJECT(dev));
     object_unref(OBJECT(dev));
 
+    /*
+     * A stable qdev id lets QMP's screendump name this head with device=,
+     * matched by qdev_find_recursive() against dev->id
+     * (ui/console.c's qemu_console_lookup_by_device_name()); with no id
+     * set, screendump can only take console index 0, whichever device
+     * that happens to be (issue #895). Reuse this board's own "io-boardN"
+     * name -- the io_boards[] index the catalogue and topology already
+     * assign it -- rather than invent a second name for the same board.
+     * Set directly, not through qdev_set_id(): that helper requires an
+     * unparented device and re-parents it under /machine/peripheral,
+     * while this device already has the QOM parent added just above
+     * (hw/pci-host/astro.c's "elroyN" id on its embedded, non-hotpluggable
+     * bridge follows the same direct-assignment idiom). sgi_xio_board_
+     * reparent() (xio-board.c) later moves this board under its module
+     * container and keeps the id as its leaf name instead of the default
+     * "slotN" -- that is what turns /machine/moduleM/slotN into
+     * /machine/moduleM/io-boardN once realize finishes.
+     */
+    dev->id = g_strdup(name);
+
     qdev_prop_set_uint32(dev, "module", record->module_index);
     qdev_prop_set_uint32(dev, "slot", attachment->widget);
     object_property_set_link(
@@ -1553,6 +1573,18 @@ static bool sgi_machine_build_mgras(SGIMachineState *s, Error **errp)
     object_property_add_child(OBJECT(s), "mgras", OBJECT(dev));
     s->mgras = SGI_MGRAS(dev);
     object_unref(OBJECT(dev));
+
+    /*
+     * Same rule as sgi_machine_instantiate_kona()'s own qdev id comment:
+     * a stable id lets QMP's screendump name this head with device=
+     * instead of always capturing console index 0 (issue #895). MGRAS
+     * is a single fixed board with no module/slot of its own, so its
+     * kind alone -- the same "mgras" name object_property_add_child()
+     * was just given above -- is enough; sgi-mgras.c is a plain sysbus
+     * device with no equivalent to xio-board.c's module reparent, so
+     * this id changes nothing else about its QOM path.
+     */
+    dev->id = g_strdup("mgras");
 
     memory_region_init(&s->mgras_packet_proxy, OBJECT(s),
                        "mgras-packet-proxy",
