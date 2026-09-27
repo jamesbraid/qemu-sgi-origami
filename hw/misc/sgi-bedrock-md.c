@@ -3387,6 +3387,11 @@ static bool md_watched_needed(void *opaque)
 {
     SGIBedrockMDState *s = opaque;
 
+    for (unsigned i = 0; i < SGI_BEDROCK_MD_NAMED_LINES; i++) {
+        if (s->named[i]) {
+            return true;
+        }
+    }
     return s->watched_count != 0;
 }
 
@@ -3399,12 +3404,31 @@ static const VMStateDescription vmstate_md_watched = {
                              SGI_BEDROCK_MD_WATCHED_LINES, 1,
                              vmstate_md_watched_line,
                              SGIBedrockMDWatchedLine),
+        VMSTATE_UINT64_ARRAY(named, SGIBedrockMDState,
+                             SGI_BEDROCK_MD_NAMED_LINES),
+        VMSTATE_UINT32(named_next, SGIBedrockMDState),
         VMSTATE_END_OF_LIST()
     },
 };
 
+/*
+ * The watched lines and the flushed-line record travel in a subsection
+ * sent only when there are any, so a stream without it must leave none.
+ */
+static int md_pre_load(void *opaque)
+{
+    SGIBedrockMDState *s = opaque;
+
+    md_watched_lines_clear(s);
+    timer_del(s->watch_timer);
+    memset(s->named, 0, sizeof(s->named));
+    s->named_next = 0;
+    return 0;
+}
+
 static const VMStateDescription vmstate_md = {
     .name = TYPE_SGI_BEDROCK_MD, .version_id = 8, .minimum_version_id = 1,
+    .pre_load = md_pre_load,
     .post_load = md_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT64(current_cell, SGIBedrockMDState),
