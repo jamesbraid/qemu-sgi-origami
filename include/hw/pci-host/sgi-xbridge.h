@@ -42,14 +42,14 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIXBridgeState, SGI_XBRIDGE)
 #define SGI_XBRIDGE_EXTERNAL_PORTS 6
 
 /*
- * What a machine wires, keyed by crosstalk widget number: 0 is the
+ * What a machine wires, keyed by XIO widget number: 0 is the
  * crossbar as the host's port sees it, 0xe and 0xf are the heads.
  *
  * A widget view covers the widget's whole 16 TB slot, so an access past
  * a head's 16 MB face reaches nothing there too. The views exist from
  * instance init, so a host can link them before either side is realized,
  * and are also SysBus MMIO regions 1 to 3 in that order; region 0 is the
- * whole crosstalk space. A head's PCI bus exists once the chip is realized.
+ * whole XIO space. A head's PCI bus exists once the chip is realized.
  *
  * GPIO groups, all on the chip:
  *   "head-e-pci-intx", "head-f-pci-intx": 32 outputs each, slot * 4 + pin,

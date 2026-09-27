@@ -12,7 +12,7 @@
 #include "libqtest.h"
 #include "sgi-test.h"
 
-/* Crosstalk space, and the chip's window inside the console widget. */
+/* I/O space, and the chip's window inside the console widget. */
 #define CONSOLE_WIDGET  8
 #define BRIDGE_DEVICE2  0x600000
 #define BRIDGE_DEVICE3  0x700000
@@ -24,7 +24,7 @@
 /*
  * A guest's bus scan: assign the controller a PCI address, let it master
  * the bus so its DMA engines can reach memory, and aim the bridge's device
- * window at it. The crosstalk-side offset stays fixed.
+ * window at it. The XIO-side offset stays fixed.
  */
 #define BRIDGE_BASE     (SPACE_IO + ((uint64_t)CONSOLE_WIDGET << 24))
 #define REG_DATA        4         /* registers sit at a slot's upper half */
@@ -888,7 +888,7 @@ static void test_a_board_fits_the_port_or_does_not(const void *data)
  * The Origin 2000 BaseIO-G, whose parallel port is on the MediaIO
  * daughtercard's IOC3 at Bridge device 6 rather than on the board IOC3 at
  * device 2. The BaseIO's Bridge answers at the same widget as the Origin
- * 200's, so the same crosstalk addresses reach it.
+ * 200's, so the same XIO addresses reach it.
  */
 #define IO6G_MACHINE     "-M origin2000,baseio-preset=io6g -smp 8 " \
                          "-display none"

@@ -1,10 +1,10 @@
 ==================================
-SGI XBridge crosstalk-PCI bridge
+SGI XBridge XIO-to-PCI bridge
 ==================================
 
 The XBridge is a Crossbow crossbar fused with two Bridge sections in
 one chip. A mode pin straps it either as a crossbar with the two
-bridges on internal ports 0xe and 0xf and six external crosstalk
+bridges on internal ports 0xe and 0xf and six external XIO
 ports (XBridge mode), or as two independent bridges with the crossbar
 disabled (Super Bridge mode). The Origin 300 runs XBridge mode: its
 Bedrock sits on port 0xa, the crossbar answers at widget 0, and the
@@ -132,7 +132,7 @@ A device's 4 GB of PCI space divides by its top bits:
   ``0x3fff0000`` which completes at once with nothing to drain;
 * the second gigabyte's first 8 MB goes through the translation
   table (below);
-* the upper 2 GB is the direct window: target widget and crosstalk
+* the upper 2 GB is the direct window: target widget and XIO
   bits 47:31 from the direct map register, byte swapping from the
   device register's direct-swap bit;
 * at and above ``1 << 60`` a 64-bit cycle carries target widget in
@@ -161,7 +161,7 @@ entries map pages; the rest are stored and read back.
 Translation is per page, 4 KB or 16 KB by control bit 21: the index
 is PCI bits 29:12 or 29:14 and is rejected above 511 rather than
 wrapped, the target widget is entry bits 11:8 (zero allowed here,
-unlike the 64-bit window), the crosstalk address is entry bits 47:12
+unlike the 64-bit window), the XIO address is entry bits 47:12
 with bits 13:12 ignored for 16 KB pages, and swapping follows entry
 bit 5. An invalid entry or an index past the table sets status bit
 30 and its view mirror and issues no transaction; reset bit 1 clears
@@ -177,7 +177,7 @@ Interrupts
 Eight pins per bus. Status bit *n* follows pin *n* even while
 masked. A pin's rising edge sends a set packet -- the host address
 register's number with bit 8 set -- to the interrupt destination,
-with the host register's bits 17:8 overlaid on crosstalk address bits
+with the host register's bits 17:8 overlaid on XIO address bits
 47:38; the falling edge sends a clear packet only when both the
 enable and the mode bit are set.
 
@@ -254,7 +254,7 @@ occupies, 8 to 0xd. The Origin 300's Bedrock sits on 0xa and the
 machine must say so. The crossbar's presence map is the host port and
 the two heads.
 
-The chip's first MMIO region is the crosstalk space as the host sees
+The chip's first MMIO region is the XIO space as the host sees
 it: sixteen slots of 16 TB, one per widget. Slot 0 is the crossbar's
 view for the host's port, so the status register reports the host's
 port number; slots 0xe and 0xf are the heads' whole widget spaces,

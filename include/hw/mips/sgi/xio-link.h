@@ -1,9 +1,9 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * The two SN0 crosstalk link kinds: a Hub cabled straight to one widget
+ * The two SN0 XIO link kinds: a Hub cabled straight to one widget
  * (Origin 200), and a Hub or a widget joined to a Crossbow port (Origin
  * 2000). Each owns exactly the behaviour its kind needs, reading its
- * endpoints through the crosstalk port interface (sgi-xio-port.h) both link
+ * endpoints through the XIO port interface (sgi-xio-port.h) both link
  * kinds share.
  *
  * Storage is caller-owned, matching this tree's convention for machine-built
@@ -30,8 +30,8 @@
 typedef struct SN0NodeState SN0NodeState;
 
 /*
- * The direct link: a Hub's I/O port cabled straight to one crosstalk widget.
- * Installs the widget's cpu_face as an alias at every crosstalk position the
+ * The direct link: a Hub's I/O port cabled straight to one XIO widget.
+ * Installs the widget's cpu_face as an alias at every XIO position the
  * Hub decodes to it (the Bridge answers its whole face at every non-zero
  * widget a directly linked Hub sends out its link) and wires the PROM's
  * fixed widget-2 PI-error probe through whichever of the widget's device
@@ -39,7 +39,7 @@ typedef struct SN0NodeState SN0NodeState;
  * only when probe_widget is nonzero.
  */
 
-/* Widget positions a crosstalk address space names (sn0.h's count). */
+/* Widget positions an XIO address space names (sn0.h's count). */
 #define SGI_XIO_DIRECT_LINK_MAX_ALIASES 16
 
 typedef struct SGIXioDirectLink {
@@ -50,12 +50,12 @@ typedef struct SGIXioDirectLink {
 /*
  * hub_port and widget_port must already answer cpu_face(): hub_port once
  * itsing node has realized, widget_port once its build_widget() has run.
- * discovery_widget and widget are the two crosstalk positions the widget is
+ * discovery_widget and widget are the two XIO positions the widget is
  * separately reachable at (a repeat is fine: the second alias is simply not
  * installed); decoded_widget_mask names every further widget the Hub decodes
  * to it, in SN0_XIO_WIDGETS bits. probe_widget nonzero requests the PROM
  * PI-error probe, dispatched through node's
- * prom_pi_probe/prom_pi_probe_window fields at that widget's crosstalk base
+ * prom_pi_probe/prom_pi_probe_window fields at that widget's XIO base
  * plus probe_offset, resolved against
  * widget_port's "bridge" child.
  */
@@ -81,7 +81,7 @@ bool sgi_xio_direct_link_connect(SGIXioDirectLink *link, Object *owner,
  * its now-real per-widget views as the outer port's outbound target.
  *
  * A Hub's outer face cannot be its plain cpu_face()/packet_face(): what the
- * Crossbow reads there is the Hub's whole crosstalk container and its engine
+ * Crossbow reads there is the Hub's whole XIO container and its engine
  * claim view, neither of which is what a Crossbow packet addressed to this
  * widget should reach. attach_hub() builds the narrower faces those packets
  * need instead, in node's address space and register state.

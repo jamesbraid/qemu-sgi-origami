@@ -1,8 +1,8 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * sgi-baseio: SGI's base I/O functional unit -- the IOC3 plus SCSI
- * controllers, and on the IO-8 a USB controller, as PCI devices behind a
- * crosstalk-to-PCI bridge -- as one device with a preset per shipped
+ * controllers, and on the IO-8 a USB controller, as PCI devices behind an
+ * XIO-to-PCI bridge -- as one device with a preset per shipped
  * board design (docs/designs/sn-machine-model-architecture.md, "Base
  * I/O"). This device does not own the bridge or XBridge chip itself:
  * the carrier (the SN0 node for IP29's onboard I/O, the XIO BaseIO card,
@@ -39,7 +39,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIBaseioState, SGI_BASEIO)
  * and keeps the older text layout.
  *
  * xio_widgets and bridge_flash describe a preset the XIO card carrier
- * (sgi-xio-baseio) builds: the crosstalk widgets the card may sit at, one
+ * (sgi-xio-baseio) builds: the XIO widgets the card may sit at, one
  * bit per widget number, SGI_BASEIO_XIO_ANY_WIDGET for a card that fits
  * any XIO slot, or 0 for a preset that is not an XIO card at all (ip29,
  * io8), and whether the card's Bridge carries the BASEIO PROM flash part.

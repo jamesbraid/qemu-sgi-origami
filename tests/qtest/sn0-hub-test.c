@@ -3967,7 +3967,7 @@ static void test_pi_pending_reaches_cpu_cause(const void *data)
     qtest_quit(qts);
 }
 
-static void test_the_crosstalk_link_reports_up(const void *data)
+static void test_the_xio_link_reports_up(const void *data)
 {
     uint64_t link;
     unsigned int state;
@@ -4047,7 +4047,7 @@ static void test_a_guest_can_write_the_link_enabled_bit(const void *data)
     g_assert_cmpuint((link >> 12) & 3, >=, 2);
 }
 
-/* The crossbar's per-link reset, arriving on the crosstalk link. */
+/* The crossbar's per-link reset, arriving on the XIO link. */
 static void hub_link_reset(QTestState *qts)
 {
     qtest_set_irq_in(qts, "/machine/node0/hub", "link-reset", 0, 1);
@@ -4091,7 +4091,7 @@ static void test_an_inbound_link_reset_leaves_the_link_alone(const void *data)
      * Named again on this side of the pulse, because the equality above
      * would hold just as well if both reads were wrong the same way. The
      * enable bit is the one that matters most: a Hub reporting its
-     * crosstalk link down is the quietest way to lose a machine, and
+     * XIO link down is the quietest way to lose a machine, and
      * nothing establishes that a link reset unsets it.
      */
     g_assert_cmphex(after & (1ULL << 10), ==, 1ULL << 10);
@@ -4364,7 +4364,7 @@ static void test_the_hub_identifies_itself_on_the_crossbar(const void *data)
     g_assert_cmphex((id >> 12) & 0xffff, ==, 0xc101);
     g_assert_cmpuint((id >> 28) & 0xf, !=, 0);
 
-    /* The low bit is the crosstalk contract's, inherited deliberately. */
+    /* The low bit is the XIO contract's, inherited deliberately. */
     g_assert_cmphex(id & 1, ==, 1);
 
     /* The two sources disagree, so what is asserted is the machine's
@@ -6347,8 +6347,8 @@ int main(int argc, char **argv)
                         test_io_queue_registers);
     qtest_add_data_func("sn0/hub/io-icrb-c-family", NULL,
                         test_io_icrb_c_family);
-    qtest_add_data_func("sn0/hub/crosstalk-link-reports-up", NULL,
-                        test_the_crosstalk_link_reports_up);
+    qtest_add_data_func("sn0/hub/xio-link-reports-up", NULL,
+                        test_the_xio_link_reports_up);
     qtest_add_data_func("sn0/hub/link-state-is-not-writable", NULL,
                         test_a_guest_cannot_write_the_link_state);
     qtest_add_data_func("sn0/hub/link-log-serves-a-clean-link", NULL,

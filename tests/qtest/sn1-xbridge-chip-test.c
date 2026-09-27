@@ -11,7 +11,7 @@
 #define CHIP "/machine/peripheral/xbridge"
 #define HOST_PORT 0xb
 
-/* The chip's crosstalk space: sixteen 16 TB widget slots. */
+/* The chip's XIO space: sixteen 16 TB widget slots. */
 #define BASE 0x100000000000ULL
 #define WIDGET(n) (BASE + ((uint64_t)(n) << 44))
 #define FACE 0x1000000ULL

@@ -39,7 +39,7 @@
 #define WIDGET_BIT(w)   (1u << (w))
 
 /*
- * One widget's crosstalk space. The machine gives this the size its address
+ * One widget's XIO space. The machine gives this the size its address
  * map defines; a smaller one here keeps the fixture's addresses readable and
  * exercises the property at the same time.
  */

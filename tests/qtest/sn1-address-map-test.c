@@ -771,7 +771,7 @@ static void test_origin300_four_cpu_initial_enable(const void *data)
 
 /*
  * Neither Hub-special register window is a view of Bedrock's own register
- * block: that is the crosstalk form's job alone. A store at the local-block
+ * block: that is the XIO form's job alone. A store at the local-block
  * scratch register's offset through either window must not reach the local
  * block.
  */
@@ -796,7 +796,7 @@ static void test_hub_windows_omit_bedrock_registers(const void *data)
  * doublewords below the L1 UART while it initializes a node's memory. They
  * land in an unidentified block that keeps nothing, not on the processor
  * interface's CPU enable, region-present and cached-alias registers that
- * share those offsets in the crosstalk form.
+ * share those offsets in the XIO form.
  */
 static void test_hub_unidentified_block_keeps_nothing(const void *data)
 {
@@ -1007,7 +1007,7 @@ static void test_hub_registers_refuse_denied_region(const void *data)
     qtest_quit(qts);
 }
 
-static void test_crosstalk_big_window_routes(const void *data)
+static void test_xio_big_window_routes(const void *data)
 {
     QTestState *qts = machine_start();
     uint64_t identity;
@@ -1080,7 +1080,7 @@ static void test_xbridge_topology(const void *data)
     g_assert_cmphex(identity & 1, ==, 1);
 
     /*
-     * A widget scan addresses the same chip by the physical crosstalk port
+     * A widget scan addresses the same chip by the physical XIO port
      * Bedrock actually attached it to, not only by the widget-zero local-CPU
      * shortcut above. Both name the same upstream link, so this must read
      * identically to widget 0. A field diagnostic that walks Bedrock's own
@@ -1691,15 +1691,26 @@ static void test_io8_ioc3_migration(const void *data)
 }
 
 /*
- * IO-8 uses DP83843 at MII address 1, as BASEIO PROM diagnostics require;
- * Origin 200 defaults to DP83840A at 31 (hw/net/dp83840.c, sn0-ioc3-test.c).
- * Origin 300 OpenBSD reports "nsphyter0 at iec0 phy 1: DP83843 10/100 PHY".
- * sn1.c passes the per-device sn1-model.h address through sgi-ioc3 ->
- * sgi-ioc3-eth -> dp83840's phy-addr; phy-dp83843 selects the different part.
- * This test checks identity and register 0x17 (Loopback Register) readback.
- * sgi-ioc3-eth-test.c checks actual loopback via a plain sgi-ioc3 rather than
- * full crosstalk; sn0-ioc3-test.c covers reset and autonegotiation. Here only
- * IO-8 placement and identity are asserted.
+ * The DP83843 at MII address 1, the BASEIO PROM's diagnostic hard-code,
+ * not the Origin 200's 31. hw/net/dp83840.c keeps 31 as its default;
+ * hw/mips/sgi/sn1.c threads this board's address through sn1-model.h's
+ * per-device descriptor into the eth child's "phy-addr" property, a
+ * "sgi-ioc3" -> "sgi-ioc3-eth" -> "dp83840" alias chain whose last hop
+ * already backs Origin 200's own default (tests/qtest/sn0-ioc3-test.c).
+ *
+ * A real Origin 300's OpenBSD capture confirms the address: "nsphyter0
+ * at iec0 phy 1: DP83843 10/100 PHY" (docs/datasheets/dp83840.md). The
+ * board's transceiver is also a different part, a DP83843 rather than
+ * the Origin 200's DP83840A, selected the same way through a
+ * "phy-dp83843" alias chain; this file pins its identity register and
+ * that register 0x17 (its Loopback Register there) reads back what is
+ * written. The behaviour that register selects -- turning a frame back
+ * without reaching the backend -- is tests/qtest/sgi-ioc3-eth-test.c's,
+ * reached through a plain sgi-ioc3 device rather than this board's full
+ * XIO wiring. The rest of the transceiver's own register contract
+ * -- reset, autonegotiation -- belongs to sn0-ioc3-test.c and is not
+ * repeated here; this file pins only where and as what the IO-8 board's
+ * copy answers.
  */
 static void test_transceiver_identity(const void *data)
 {
@@ -1724,7 +1735,7 @@ static void test_transceiver_identity(const void *data)
  * Read-after-write only: the loopback behaviour this register selects on the
  * DP83843 belongs to tests/qtest/sgi-ioc3-eth-test.c, which reaches the
  * register through a plain sgi-ioc3 device rather than this board's full
- * crosstalk wiring.
+ * XIO wiring.
  */
 static void test_register_0x17_reads_back_a_written_value(const void *data)
 {
@@ -1808,7 +1819,7 @@ static void test_hub_special_register_windows(const void *data)
 
 /*
  * The local window holds its own blocks (see sn1_node_create_bedrock), not
- * the PI register file, so a PI register written through the crosstalk form
+ * the PI register file, so a PI register written through the XIO form
  * must not leak through when read back at the same relative offset in the
  * local window, and a store there must not reach the PI.
  */
@@ -1825,7 +1836,7 @@ static void test_hub_local_register_window_omits_pi_registers(
     g_assert_cmphex(qtest_readq(qts, HUB_REMOTE_REGISTERS + L1_UART +
                                 L1_UART_STATUS), ==, idle);
 
-    /* PI itself still works: only the crosstalk form ever reaches it. */
+    /* PI itself still works: only the XIO form ever reaches it. */
     qtest_writeq(qts, BEDROCK_LOCAL + PI_PENDING_MODIFY, 0x107);
     g_assert_cmphex(qtest_readq(qts, BEDROCK_LOCAL + PI_PENDING_0) & 0x80,
                     ==, 0x80);
@@ -2240,7 +2251,7 @@ static void test_hub_local_l1_uart_reaches_cpu_c(const void *data)
 
     /*
      * CPU C (logical index 1, physical slot C) sits on the second processor
-     * interface and has its own crosstalk-form PI1 overlay; the Hub-special
+     * interface and has its own I/O-space PI1 overlay; the Hub-special
      * window has no per-slot view, so C reaches the same machine-wide UART as
      * CPU A.
      */
@@ -3813,8 +3824,8 @@ int main(int argc, char **argv)
                         test_hub_window_refusals);
     qtest_add_data_func("sn1/address-map/hub-registers-refuse-denied-region",
                         NULL, test_hub_registers_refuse_denied_region);
-    qtest_add_data_func("sn1/address-map/crosstalk-big-window", NULL,
-                        test_crosstalk_big_window_routes);
+    qtest_add_data_func("sn1/address-map/xio-big-window", NULL,
+                        test_xio_big_window_routes);
     qtest_add_data_func("sn1/address-map/pi1-a-irq-reaches-cpu1", NULL,
                         test_pi1_a_irq_reaches_cpu1);
     qtest_add_data_func("sn1/address-map/xbridge-topology", NULL,

@@ -61,7 +61,7 @@
 #define II_MISC_ERROR_MASK_RESET UINT64_C(0x111)
 
 /*
- * Crosstalk bit 47 selects register space over memory. The address map puts
+ * XIO bit 47 selects register space over memory. The address map puts
  * the target node in bits 46:39 and the
  * Bedrock's own registers in small window 1 of the node's I/O space in the
  * checked remote form (bit 23), 8 MB wide,
@@ -120,7 +120,7 @@ static SGIBedrockIOBTE *ii_bte(SGIBedrockIOState *s, hwaddr *offset)
 }
 
 /*
- * The node number crosstalk register packets are decoded against. Composed
+ * The node number XIO register packets are decoded against. Composed
  * into a Bedrock it is the one the local
  * block's revision word carries, which the firmware writes when it assigns
  * the node; a standalone unit keeps its
@@ -1068,14 +1068,14 @@ static void ii_realize(DeviceState *dev, Error **errp)
 }
 
 /*
- * ---- The crosstalk port interface ----
- * Nothing in this model addresses the Bedrock as a widget from the crosstalk
+ * ---- The XIO port interface ----
+ * Nothing in this model addresses the Bedrock as a widget from the XIO
  * side; the host is the originator of widget-relative traffic, never its
  * destination here, so cpu_face() has
  * nothing to answer with. packet_face() is the shared inbound window
  * (sgi_bedrock_io_inbound_rw()'s own decode):
  * what an XBridge's interrupt and register-modify packets, addressed by
- * crosstalk offset rather than by widget
+ * XIO offset rather than by widget
  * position, reach to land on this node.
 */
 

@@ -26,7 +26,7 @@
  */
 #define RX_ARRIVAL_LATENCY_NS  200000
 
-/* Crosstalk space and the Bridge's widget window inside it. */
+/* I/O space, and the Bridge's widget window inside it. */
 #define BRIDGE_WIDGET           8
 #define BRIDGE_BASE             (SPACE_IO + ((uint64_t)BRIDGE_WIDGET << 24))
 #define REG_DATA                4

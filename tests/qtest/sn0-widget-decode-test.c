@@ -1,8 +1,12 @@
 /*
- * With no crossbar, the I/O Bridge answers widgets 2-7 and 9-15 as one chip;
- * widget 0 keeps its alias and widget 1 remains the Hub. The IRIX 6.5.30
- * miniroot accesses a Bridge window through widget 2, not only SGI's usual
- * Bridge widget.
+ * The I/O bridge answers at every non-zero XIO widget, not only at the
+ * widget SGI's firmware picks for it.
+ *
+ * With no crossbar every widget address reaches the bridge, and the IRIX
+ * 6.5.30 miniroot relies on it (it names widget 2 at a bridge window).
+ * Widgets 2-7 and 9-15 answer as one chip; widget 0 keeps its alias;
+ * widget 1 stays the Hub.
+ *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
@@ -248,7 +252,7 @@ static void test_identity_is_the_bridges(const void *data)
     g_assert_false(ID_PART(id) == XBOW_PART &&
                    ID_MANUFACTURER(id) == XBOW_MANUFACTURER);
 
-    /* The lowest bit of a crosstalk widget's identity is always set. */
+    /* The lowest bit of an XIO widget's identity is always set. */
     g_assert_cmpuint(ID_ALWAYS_ONE(id), ==, 1);
 
     /* And a revision, which distinguishes an answer from an absence. */

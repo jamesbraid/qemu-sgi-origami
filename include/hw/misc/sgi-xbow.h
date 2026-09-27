@@ -1,5 +1,17 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
-/* SGI Crossbow crosstalk crossbar and nine-port routing state. */
+/*
+ * SGI Crossbow, the XIO crossbar.
+ *
+ * Copyright (c) 2026 Origami contributors
+ *
+ * Nine internal ports: eight external link controllers carrying decoded
+ * widget identities 8 through 15, and a ninth that terminates at logical
+ * widget zero, where the chip's own registers answer. Only the eight have an
+ * XIO view of their own here. Widget zero's outbound traffic is the
+ * interrupt it raises, which carries a 48-bit destination address of the
+ * target's own rather than an XIO offset, so it goes into the target's
+ * space directly instead of through an addressed route.
+ */
 
 #ifndef HW_MISC_SGI_XBOW_H
 #define HW_MISC_SGI_XBOW_H
@@ -40,7 +52,7 @@ struct SGIXbowState {
     SysBusDevice parent_obj;
 
     /*
-     * One crosstalk view per port, because a packet's route depends on where
+     * One XIO view per port, because a packet's route depends on where
      * it entered as well as where it is addressed. A port's view is disabled
      * while its own link is down, and each destination alias inside it is
      * disabled while that destination's link is down. No port carries a route
@@ -67,8 +79,8 @@ struct SGIXbowState {
     /*
      * What a packet addressed to each widget reaches, from the machine. The
      * interrupt widget zero raises carries a 48-bit destination address of
-     * the target's own rather than a crosstalk offset, so it is written into
-     * the target's space instead of through the routes a crosstalk address
+     * the target's own rather than an XIO offset, so it is written into
+     * the target's space instead of through the routes an XIO address
      * selects.
      */
     MemoryRegion *face[SGI_XBOW_LINKS];
@@ -79,7 +91,7 @@ struct SGIXbowState {
     bool stop_on_link_reset;
     bool complete_posted_error_address_writes;
 
-    /* How much crosstalk space one widget owns, which the machine defines. */
+    /* How much XIO space one widget owns, which the machine defines. */
     uint64_t span;
 
     /* What widget 0 answers with: revision, part number, manufacturer. */
@@ -151,9 +163,9 @@ struct SGIXbowState {
 };
 
 /*
- * The crosstalk view a widget attached at this number sends into. The machine
+ * The XIO view a widget attached at this number sends into. The machine
  * maps it where that widget's outbound packets appear: inside a Hub's
- * crosstalk container, or as an I/O bridge's fabric link. Each view is also
+ * XIO container, or as an I/O bridge's fabric link. Each view is also
  * published as a sysbus region, in link order, for a test that maps the ports
  * itself.
  */

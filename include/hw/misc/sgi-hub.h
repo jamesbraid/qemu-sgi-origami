@@ -477,7 +477,7 @@ bool sgi_hub_attach_module_identity(SGIHubState *s,
 
 /*
  * Wire this Hub's own outbound big-window I/O traffic (the "xio-io-space"
- * property) to target: a crosstalk-attach link's own doing, since a directly
+ * property) to target: an XIO-attach link's own doing, since a directly
  * attached Hub never populates it. Must run before this Hub realizes, and at
  * most once; target typically outlives the call by far (the crossbow link's
  * own proxy region, filled in once its Crossbow has realized).

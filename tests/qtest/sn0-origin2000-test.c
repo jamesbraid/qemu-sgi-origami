@@ -684,7 +684,7 @@ static QTestState *start_module(void)
     return start_module_with("");
 }
 
-/* The production machine assembles a switch behind each node's Xtalk view. */
+/* The production machine assembles a switch behind each node's XIO view. */
 static void test_xio_switch_visible(void)
 {
     QTestState *qts = qtest_init(

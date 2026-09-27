@@ -15,7 +15,7 @@
 #include "sgi-migrate.h"
 #include "sgi-test.h"
 
-/* Crosstalk space and the bridge that carries both controllers. */
+/* I/O space, and the bridge that carries both controllers. */
 #define CONSOLE_WIDGET  8
 #define BRIDGE_BASE     (SPACE_IO + ((uint64_t)CONSOLE_WIDGET << 24))
 

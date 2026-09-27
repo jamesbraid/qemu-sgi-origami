@@ -79,7 +79,7 @@
 #define LOOPBACK "-M origin200,topology=origin200-gigachannel-loopback"
 #define PLAIN "-M origin200"
 
-/* A 32-bit crosstalk read through CPU 0's own Hub. */
+/* A 32-bit I/O-space read through CPU 0's own Hub. */
 static uint32_t io_space_read(QTestState *qts, uint64_t offset)
 {
     uint8_t bytes[sizeof(uint32_t)];
@@ -178,7 +178,7 @@ static void test_bridges_at_their_links(void)
     qtest_quit(qts);
 }
 
-/* A 16-bit crosstalk read through CPU 0's own Hub. */
+/* A 16-bit I/O-space read through CPU 0's own Hub. */
 static uint16_t io_space_read16(QTestState *qts, uint64_t offset)
 {
     uint8_t bytes[sizeof(uint16_t)];
@@ -188,7 +188,7 @@ static uint16_t io_space_read16(QTestState *qts, uint64_t offset)
     return lduw_be_p(bytes);
 }
 
-/* A 16-bit crosstalk write through CPU 0's own Hub. */
+/* A 16-bit I/O-space write through CPU 0's own Hub. */
 static void io_space_write16(QTestState *qts, uint64_t offset, uint16_t value)
 {
     uint8_t bytes[sizeof(uint16_t)];

@@ -46,14 +46,14 @@
     "hub-registers=" IO_PATH "/sgi-bedrock-io-inbound[0] -S"
 
 /*
- * Big window 0 carries the crosstalk register form, big window 1 plain
+ * Big window 0 carries the XIO register form, big window 1 plain
  * memory, once the translation entries below are programmed. Both reach the
  * widget, which is this device's inbound region.
  */
 #define PIO_REGISTER_FORM(offset) (PIO_BASE + 0x20000000 + (offset))
 #define PIO_MEMORY_FORM(offset) (PIO_BASE + 0x40000000 + (offset))
 
-/* Crosstalk address terms of the interrupt-send form. */
+/* XIO address terms of the interrupt-send form. */
 #define XIO_REGISTER (UINT64_C(1) << 47)
 #define XIO_NODE(n) ((uint64_t)(n) << 39)
 #define HUB_REMOTE UINT64_C(0x1800000)
@@ -213,7 +213,7 @@ static void assert_ram_filled(QTestState *s, uint64_t addr, uint8_t pattern,
 }
 
 /*
- * A widget's view of the node's register space: crosstalk bit 47 set, the
+ * A widget's view of the node's register space: XIO bit 47 set, the
  * node in bits 46:39, then the Bedrock's own small window in its remote form.
  * The linked hub-registers RAM is reachable only this way.
  */
@@ -593,7 +593,7 @@ static QTestState *io_start_loopback(const char *machine, const char *extra)
      * Registers and the PIO window only. Inbound is deliberately left
      * unmapped: an address space built over a region that is also a subregion
      * of the system space renders it at that system address, so mapping
-     * inbound here would move it out of reach of the crosstalk addresses the
+     * inbound here would move it out of reach of the XIO addresses the
      * PIO window forms.
      */
     qtest_sysbus_mmio_map(s, IO_PATH, 0, REG_BASE);
@@ -779,7 +779,7 @@ static void test_bte_error_and_termination(void)
      * The deferred completion interrupt reached the node's pending-modify
      * register through the hub window: a set (bit 8) of level zero, the
      * engine's unprogrammed interrupt-address default. Reading it back the
-     * crosstalk way also confirms the write was not dropped as re-entrant.
+     * XIO way also confirms the write was not dropped as re-entrant.
      */
     g_assert_cmphex(xio_readq(s, HUB_REMOTE + 0x90), ==, UINT64_C(1) << 8);
 

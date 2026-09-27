@@ -42,7 +42,7 @@
  * The window a reference is meant for does not live in the physical address
  * on this platform: an uncached reference carries it in the attribute bits
  * above the address, and the memory system lifts that into a window. So the
- * pointer is the crosstalk attribute plus the register offset, not a
+ * pointer is the XIO attribute plus the register offset, not a
  * forty-two bit physical address, and no TLB entry is needed. Sixty-four bit
  * kernel addressing has to be enabled first, which is why the code begins in
  * the status register.
@@ -66,7 +66,7 @@ static char *create_identity_prom(void)
     stl_be_p(image + 0x408, 0x408c6000); /* mtc0 t4, Status */
     stl_be_p(image + 0x40c, 0x00000000); /* nop */
 
-    /* Uncached, crosstalk attribute, register offset. */
+    /* Uncached, I/O space, register offset. */
     stl_be_p(image + 0x410, 0x3c089200); /* lui t0, 0x9200 */
     stl_be_p(image + 0x414, 0x0008403c); /* dsll32 t0, t0, 0 */
     stl_be_p(image + 0x418, 0x3c090100); /* lui t1, 0x0100 */
@@ -186,7 +186,7 @@ static void test_each_processor_knows_its_slot(void)
 /*
  * Guest code for the four-processor population. Every processor runs the same
  * instructions and has to find its own slice: it reads the CPU number
- * register through the crosstalk local form, which resolves to the
+ * register through the XIO local form, which resolves to the
  * requester's own processor interface, and publishes a slice-stamped mark
  * into the real-time compare register that interface keeps for its own slot.
  * Four distinct registers end up holding four distinct marks only if every
@@ -211,7 +211,7 @@ static char *create_four_slot_identity_prom(void)
     stl_be_p(image + 0x408, 0x408c6000); /* mtc0 t4, Status */
     stl_be_p(image + 0x40c, 0x00000000); /* nop */
 
-    /* Uncached, crosstalk attribute, register offset. */
+    /* Uncached, I/O space, register offset. */
     stl_be_p(image + 0x410, 0x3c089200); /* lui t0, 0x9200 */
     stl_be_p(image + 0x414, 0x0008403c); /* dsll32 t0, t0, 0 */
     stl_be_p(image + 0x418, 0x3c090100); /* lui t1, 0x0100 */

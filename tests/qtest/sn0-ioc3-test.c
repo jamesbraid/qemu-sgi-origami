@@ -25,7 +25,7 @@
  */
 #define RX_ARRIVAL_LATENCY_NS  200000
 
-/* Crosstalk space, and the chip's window inside the console widget. */
+/* I/O space, and the chip's window inside the console widget. */
 #define CONSOLE_WIDGET  8
 #define BRIDGE_DEVICE2  0x600000
 #define BRIDGE_DEVICE3  0x700000
@@ -48,7 +48,7 @@
 #define TEST_IOC3_PCI_MMIO 0x18000000u
 
 /*
- * A node's crosstalk windows repeat node 0's one node stride up, and the
+ * A node's I/O-space windows repeat node 0's one node stride up, and the
  * second node carries its own bridge and its own controller, so the same
  * attach sequence works there with every address offset by the stride.
  */

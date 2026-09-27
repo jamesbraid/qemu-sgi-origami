@@ -14,7 +14,7 @@
 #include "sn0-user-image.h"
 #include "sgi-test.h"
 
-/* Crosstalk space, and the bridge's own widget window inside it. */
+/* I/O space, and the bridge's own widget window inside it. */
 #define BRIDGE_WIDGET   8
 #define BRIDGE_BASE     (SPACE_IO + ((uint64_t)BRIDGE_WIDGET << 24))
 
@@ -771,32 +771,34 @@ static void test_translation_entries_reset_clear(const void *data)
     "-M origin200,topology=origin200-dual -m 128M " \
     "-smp 4"
 
-#define NODE1_PCI_ADDR          0xa000000100bc4000ULL /* widget 0xa, xtalk
- * 0x100bc4000 */
-#define NODE1_SYS_ADDR          0x100bc4000ULL        /* node 1 RAM: NASID 1
- * << 32 + off */
-#define NODE0_TRUNCATED_ADDR    0x00bc4000ULL         /* where dropping bit 32
- * lands it */
+/* Widget 0xa, XIO address 0x100bc4000. */
+#define NODE1_PCI_ADDR          0xa000000100bc4000ULL
+/* Node 1 RAM: NASID 1 << 32 plus the offset. */
+#define NODE1_SYS_ADDR          0x100bc4000ULL
+/* Where dropping bit 32 lands it. */
+#define NODE0_TRUNCATED_ADDR    0x00bc4000ULL
 #define DMA64_SEED              0x51
 #define DMA64_LEN               16
 
-/* The read direction: a copy's 64-bit source in node 1, its destination in
- * node 0. */
-#define COPY_SRC_PCI            0xa000000100c00000ULL /* widget 0xa, xtalk
- * 0x100c00000 */
-#define COPY_SRC_SYS            0x100c00000ULL        /* node 1 RAM holding
- * the source */
-#define COPY_DST_ADDR           0x00300000u           /* a node-0 local
- * destination */
+/*
+ * The read direction: a copy's 64-bit source in node 1, its destination
+ * in node 0.
+ */
+/* Widget 0xa, XIO address 0x100c00000. */
+#define COPY_SRC_PCI            0xa000000100c00000ULL
+/* Node 1 RAM holding the source. */
+#define COPY_SRC_SYS            0x100c00000ULL
+/* A node-0 local destination. */
+#define COPY_DST_ADDR           0x00300000u
 
 /*
- * A 64-bit cycle must bypass the offset registers, including the
- * reset-active 512 MB step, where the 31-bit path would add them.
+ * A 64-bit cycle must bypass the offset registers, including the reset-active
+ * 512 MB step, where the 31-bit path would add them. The PCI
+ * address carries widget 0xa and XIO address 0xfbc000 at NASID 0.
  */
-#define DMA64_NODE0_PCI         0xa000000000fbc000ULL /* widget 0xa, xtalk
- * 0xfbc000, NASID 0 */
-#define DMA64_NODE0_SYS         0x00fbc000ULL         /* node 0 guest-phys,
- * where it must land */
+#define DMA64_NODE0_PCI         0xa000000000fbc000ULL
+/* Node 0 guest-physical, where it must land. */
+#define DMA64_NODE0_SYS         0x00fbc000ULL
 
 /* Where the transfer source's own registers are put in PCI memory space. */
 #define DMA_CARD_MMIO           CARD_MMIO(DMA_SLOT)
@@ -1708,7 +1710,7 @@ static void test_dma_direct_window_reads_the_second_node(const void *data)
 
 /*
  * A 64-bit cycle ignores the offset registers: DIRECT_MAP stays at reset
- * and the transfer must land at the bare crosstalk offset, not stepped
+ * and the transfer must land at the bare XIO offset, not stepped
  * half a gigabyte into unbacked memory.
  */
 static void test_dma_direct_window_64bit_ignores_the_offset_step(const void *data)
@@ -1730,7 +1732,7 @@ static void test_dma_direct_window_64bit_ignores_the_offset_step(const void *dat
     qtest_writel(qts, WINDOW(DMA_SLOT) + DMA_REG_SEED, DMA64_SEED);
     qtest_writel(qts, WINDOW(DMA_SLOT) + DMA_REG_GO, 1);
 
-    /* It landed at the bare crosstalk offset, not 512 MB above it. */
+    /* It landed at the bare XIO offset, not 512 MB above it. */
     qtest_memread(qts, DMA64_NODE0_SYS, seen, sizeof(seen));
     for (i = 0; i < DMA64_LEN; i++) {
         g_assert_cmpuint(seen[i], ==, (uint8_t)(DMA64_SEED + i));
@@ -1834,7 +1836,7 @@ static void test_dma_device_window_64bit_doubleword(const void *data)
 #define DMA_REG_INTERRUPT       0x10
 
 /*
- * Delivery: a pin edge becomes a crosstalk write to the Hub's
+ * Delivery: a pin edge becomes an XIO write to the Hub's
  * interrupt-modify register, read back through the Hub's local window.
  */
 #define HUB_LOCAL_WINDOW        (SPACE_IO + 0x01000000)
@@ -3139,7 +3141,7 @@ static void test_an_inbound_link_reset_stops_at_the_pci_side(const void *data)
 #define CARD_SLOT       0
 
 /*
- * The chip's crosstalk widget-number addressing, exercised on a head built
+ * The chip's XIO widget-number addressing, exercised on a head built
  * here out of test-only parts rather than the machine above: a QEMU address
  * space is flat with no widget field, so a machine with more than one peer
  * to reach spends four bits of the address on the widget number the real
@@ -3213,7 +3215,7 @@ static void test_an_inbound_link_reset_stops_at_the_pci_side(const void *data)
 #define ERR_OFF         0x1c000
 
 /*
- * The destination's upper register holds crosstalk address bits 47:32. Its
+ * The destination's upper register holds XIO address bits 47:32. Its
  * top ten are the ones a pin's own host-address register replaces, so the
  * tests fill those to tell replacing from merging, and set one below them so
  * a dropped upper half is a wrong address rather than the same one. Both sit

@@ -1,8 +1,8 @@
 ===============================
-SGI Bridge crosstalk-PCI bridge
+SGI Bridge XIO-to-PCI bridge
 ===============================
 
-The Bridge ASIC is a crosstalk widget on one side and a PCI host
+The Bridge ASIC is an XIO widget on one side and a PCI host
 bridge on the other. QEMU models it in ``hw/pci-host/sgi-bridge.c``:
 the widget-local register block, eight device windows, a PCI
 configuration window, an address translation table, the interrupt
@@ -16,7 +16,7 @@ Register block
 ==============
 
 Every register is 32 bits or narrower and occupies data bits 31:0 of
-an eight-byte slot, reachable only by a crosstalk double-word packet
+an eight-byte slot, reachable only by an XIO double-word packet
 -- a 32-bit access at the slot's offset plus four. Linux's header
 names that +4 address; OpenBSD names the slot and folds the four
 bytes in at access time. The two sources look four bytes apart
@@ -50,7 +50,7 @@ and read back zero.
 Widget 0 and the crossbar
 =========================
 
-An Origin 200 has no crossbar: the Hub's one crosstalk link ends at
+An Origin 200 has no crossbar: the Hub's one XIO link ends at
 the Bridge, so every widget address the Hub emits reaches the same
 chip, and widget 0 -- the address a real Crossbow's own registers
 answer at -- is the Bridge answering a second time. Guests read
@@ -59,7 +59,7 @@ shape from it, so the identity presented there is a machine
 property: an Origin 200 reports the Bridge's part and manufacturer,
 where a real Crossbow reports part 0 and manufacturer 0 as its true
 identity. The crossbar model (``hw/misc/sgi-xbow.c``) exists for
-machines that have one: its registers are crosstalk double-words at
+machines that have one: its registers are XIO double-words at
 their slot's offset plus four, the slot's upper half faults, and it
 claims its whole widget space so an undecoded address is a reported
 error rather than an answer from whatever sits underneath.
@@ -144,7 +144,7 @@ domains can drive one pin at once and each must hold it on its own.
 Interrupt delivery is a write across the fabric into the Hub's
 interrupt-modify register, sent on a level *transition* rather than
 while a level holds. The per-pin destination register holds a
-compressed address -- bits 17:8 are crosstalk address bits 47:38,
+compressed address -- bits 17:8 are XIO address bits 47:38,
 bits 7:0 the interrupt number -- a layout three sources state
 identically. A pin whose destination was never programmed sends
 nothing. On a falling edge a clear packet is sent only if the guest
@@ -158,18 +158,18 @@ DMA address map
 
 A device sees 4 GB of PCI address space divided by its top two bits:
 
-* below 1 GB: local, not carried to crosstalk. The model passes
+* below 1 GB: local, not carried to XIO. The model passes
   local-window DMA through to system memory, which real hardware
   does not -- a recorded fidelity gap the byte-lane swap rule
   deliberately does not mask;
 * the second gigabyte: through the translation table;
 * the upper 2 GB: the direct window -- the direct-map register's
-  offset field supplies crosstalk bits 47:31 and the low 31 PCI bits
+  offset field supplies XIO bits 47:31 and the low 31 PCI bits
   pass through. The add-512-megabytes bit resets *set* and, when the
   offset field is zero, steps the window over the processor's low
   compatibility segments.
 * at and above ``1 << 32``: a 64-bit cycle. Bits 47:0 are the
-  crosstalk address and bits 63:60 the target widget; the offset
+  XIO address and bits 63:60 the target widget; the offset
   registers are bypassed, so a NASID at bit 32 survives.
 
 Translation table
@@ -202,7 +202,7 @@ Byte lanes
 The chip's per-window swap bits (Device(x) bits 19 and 20, one for
 the direct windows and one for the translated window) enable a
 swapper that turns the crossed wiring between the big-endian
-crosstalk side and the little-endian PCI side into straight-through
+XIO side and the little-endian PCI side into straight-through
 byte numbering. A byte-addressed model is straight-through already,
 so the model corrects the *disabled* case -- the reset state, and
 the state both guests run in. The correction moves only the low two
@@ -211,7 +211,7 @@ defined within (specification Tables 65 and 73).
 
 Which window applies is judged on the raw PCI address the device
 issued, before any translation rewrites it. Local-window transfers
-are never corrected -- local space is not carried to crosstalk and
+are never corrected -- local space is not carried to XIO and
 has no swapper in its path.
 
 The IOC3 is exempt: it is a big-endian PCI part and both public
@@ -321,7 +321,7 @@ write-enable bit gating writes. Unlike the external SSRAM window,
 an unfitted flash port decodes as an error rather than completing --
 the specification ties the flash port to a fitted part, where the
 SSRAM port stays wired regardless. A fitted part answers reads of
-any crosstalk size, repeating its sixteen-bit words across the
+any XIO size, repeating its sixteen-bit words across the
 access; writes complete at sixteen bits only, on account of the
 parts' differing command sequences, and are logged and dropped,
 without an error, while the write-enable bit is clear. The model

@@ -134,7 +134,7 @@ static const uint8_t gigachannel_record[RECORD_SIZE] = {
 
 /*
  * One machine's Bridge line and the records on it. An Origin 2000's
- * crosstalk space has an address only once its node is numbered, and
+ * I/O space has an address only once its node is numbered, and
  * is reached through a processor; an Origin 200's Bridge answers at
  * node 0's space directly.
  */
@@ -194,7 +194,7 @@ static const TextLayoutCase text_layout_cases[] = {
 
 /*
  * One board whose Bridge carries a single identity part, fitted by an Origin
- * 2000 topology on node 0 without numbering it: the machine, the crosstalk
+ * 2000 topology on node 0 without numbering it: the machine, the XIO
  * widget its Bridge answers at, the board's identity record, the part number
  * and name the firmware's formatter must print from it, and the Bridge chip
  * revision the board is fitted with.
@@ -336,7 +336,7 @@ static QTestState *start_machine(const char *machine, bool numbered,
     uint64_t nasid = 0;
 
     if (numbered) {
-        /* Number node 0 so its own crosstalk space has an address. */
+        /* Number node 0 so its own I/O space has an address. */
         nasid = BASEIO_NASID;
         hub_write(qts, 0, NI_STATUS, NI_REGION_SIZE | (nasid << 8));
         g_assert_cmphex((hub_read(qts, 0, NI_STATUS) >> 8) & 0xff, ==,

@@ -354,7 +354,7 @@ if not config_all_devices.has_key('CONFIG_USB_OHCI_PCI')
   sn0_ohci_qtests = []
 endif
 
-# The XBridge qtests use test-only Crosstalk and PCI endpoints.  Keep the
+# The XBridge qtests use test-only XIO and PCI endpoints.  Keep the
 # registration visible under the device guard, then omit tests whose fixtures
 # are not present in a minimal device build. sn1-xbridge-test also carries a
 # private origin300 host-error case that needs the full SN1 board, unlike
@@ -383,7 +383,7 @@ if not config_all_devices.has_key('CONFIG_SGI_MGRAS')
 endif
 
 # The Crossbow qtest builds its own populated switch out of test-only
-# Crosstalk endpoints.  Keep the registration under the machine guard, then
+# XIO endpoints.  Keep the registration under the machine guard, then
 # omit it where that fixture is not present in a minimal device build.
 sn0_xbow_qtests = \
   (config_all_devices.has_key('CONFIG_SGI_SN0') ? ['sn0-xbow-test'] : [])

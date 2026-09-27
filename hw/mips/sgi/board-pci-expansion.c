@@ -3,7 +3,7 @@
  * sgi-pci-expansion: an Origin 2000 module's optional XIO PCI expansion
  * board on the sgi-xio-board base class.
  *
- * The Origin 2000 module descriptor reserves crosstalk position IO2 for an
+ * The Origin 2000 module descriptor reserves XIO position IO2 for an
  * optional PCI expansion, but does not establish whether a given system has
  * one fitted, nor its numeric Crossbow widget identity or any onboard
  * population beyond a bare Bridge and PCI bus. Unlike sgi-ip29-io and

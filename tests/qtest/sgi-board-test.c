@@ -172,8 +172,10 @@ static const BoardCase board_cases[] = {
         .preset = "io8",
         .chip = "chip",
         /*
-         * XBridge region 0 covers crosstalk; regions 1-3 are crossbar, head E
-         * and head F widget views, so head F is region 3.
+         * Sysbus MMIO region 0 is the whole XIO space
+         * (hw/pci-host/sgi-xbridge.c, chip_init()); 1, 2 and 3 are the
+         * per-widget views in chip_view_widget[] order (crossbar, head E,
+         * head F), so head F is region 3.
          */
         .mmio_region = 3,
         /*
@@ -248,7 +250,7 @@ static void test_widget_identity(gconstpointer data)
 }
 
 /*
- * A sub-word config access takes the crosstalk PIO byte-lane correction meant
+ * A sub-word config access takes the XIO PIO byte-lane correction meant
  * for a device's own data window (hw/pci-host/sgi-xbridge.c, xbridge_pio()'s
  * offset ^= width - size, which Bridge's own config dispatch shares) and
  * returns a byte from the wrong lane. A whole-word read is exempt (no

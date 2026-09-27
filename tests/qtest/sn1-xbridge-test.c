@@ -1183,7 +1183,7 @@ static void test_no_board_stays_inert(void)
 
 /*
  * Where an interrupt packet lands: the node's hub-register window with the
- * register flag at crosstalk address bit 47, which the head takes from bit 15
+ * register flag at XIO address bit 47, which the head takes from bit 15
  * of the destination-upper register.
  */
 #define PI_REMOTE_WINDOW 0x1800000

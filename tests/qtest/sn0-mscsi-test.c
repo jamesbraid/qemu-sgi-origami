@@ -79,7 +79,7 @@ static const MscsiCase io4_case = {
     PLACED_ARGS, IO4_WIDGET, "/machine/module1/io4/baseio",
 };
 
-/* A 32-bit crosstalk read through CPU 0's own Hub. */
+/* A 32-bit I/O-space read through CPU 0's own Hub. */
 static uint32_t io_space_read(QTestState *qts, uint64_t offset)
 {
     uint8_t bytes[sizeof(uint32_t)];

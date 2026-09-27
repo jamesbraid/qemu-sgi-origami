@@ -244,7 +244,7 @@
 /*
  * To land the RAD1's status-DMA in node-0 RAM the ring's PCI address uses
  * the Bridge's 64-bit direct form: bits 63:60 name the local Hub widget
- * (9 on crossbar 0), bits 47:0 pass through as the crosstalk offset, which
+ * (9 on crossbar 0), bits 47:0 pass through as the XIO offset, which
  * carries node 0's programmed nasid in bits 39:32 and the RAM offset below.
  * The RAD1 is a little-endian PCI device that is not byte-lane self-ordered,
  * With its Device register in the reset (swap-enabled) state, the
@@ -300,7 +300,7 @@
 /*
  * The Bridge's own board-identity NIC (one-wire master register), the same
  * offset and bit-banging contract as sn1-xbridge-onewire-test.c's, reached
- * here through BaseIO's crosstalk window instead of that file's standalone
+ * here through BaseIO's XIO window instead of that file's standalone
  * per-head sysbus mapping.
  */
 #define BRIDGE_NIC 0x0b0

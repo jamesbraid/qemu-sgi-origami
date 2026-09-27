@@ -1,8 +1,16 @@
 /*
- * libqos PCI bindings for one SGI Bridge on -M none. This bus maps the
- * Crosstalk widget, transfer memory, and allocator range. Type 0
- * configuration covers eight 4 KB devices; one full-range window maps PCI
- * memory from zero, and a slot device window maps PCI I/O.
+ * libqos PCI bindings for the SGI Bridge head
+ *
+ * The head is one Bridge on the "none" machine with a block of memory beside
+ * it, so this file owns the whole address map: where the chip's XIO
+ * face is mapped, which of its windows carries PCI I/O space, and which
+ * addresses the allocator may hand out.
+ *
+ * Three windows carry everything. Configuration space is the chip's type 0
+ * window, eight devices of 4 KB. PCI memory space is the window that reaches
+ * PCI address zero whole, so no per-card window has to be aimed. PCI I/O
+ * space is only reachable through a slot's device window, so the bus takes
+ * one over.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
@@ -14,7 +22,7 @@
 #include "qemu/bswap.h"
 #include "qemu/module.h"
 
-/* Where this bus puts the head's crosstalk face and the transfer memory. */
+/* Where this bus puts the head's XIO face and the transfer memory. */
 #define WIDGET_BASE             0x40000000ULL
 #define TRANSFER_RAM_BASE       0x02000000ULL
 #define TRANSFER_RAM_SIZE       (16 * 1024 * 1024)

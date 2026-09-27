@@ -1,11 +1,13 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /* SGI Bridge crosstalk-to-PCI host bridge. */
 /*
- * Registers are 32 bits in the upper word of an eight-byte slot. The data
- * sits at the slot's offset plus four, and the reset state is heavily
- * non-zero, so decode, reset value and writable mask all come from one table.
- * See docs/specs/sgi-bridge.rst for the register, translation, byte-lane and
- * board-identity contracts.
+ * SGI Bridge XIO-to-PCI host bridge.
+ *
+ * Registers are 32 bits in the upper word of an eight-byte slot -- the data
+ * sits at the slot's offset plus four -- and the reset state is heavily
+ * non-zero, so decode, reset value and writable mask all come from one
+ * table. See docs/specs/sgi-bridge.rst for the register, translation,
+ * byte-lane and board-identity contracts.
  */
 
 #include "qemu/osdep.h"
@@ -31,7 +33,7 @@
 /* The data half of a slot; the other half holds no register. */
 #define SGI_BRIDGE_REG_DATA     4
 
-/* Common crosstalk widget registers. */
+/* Common XIO widget registers. */
 #define BRIDGE_IDENTIFICATION   0x000
 #define BRIDGE_STATUS           0x008
 #define BRIDGE_ERR_UPPER        0x010
@@ -1305,7 +1307,7 @@ static const MemoryRegionOps sgi_bridge_ssram_ops = {
 };
 
 /*
- * The flash port is 16 bits wide, so a crosstalk read of any size is the
+ * The flash port is 16 bits wide, so an XIO read of any size is the
  * part's words read one cycle at a time with the requested byte lanes kept,
  * and a part repeats across its chip select above the address lines it
  * decodes. A chip select with nothing on it, including the whole window on a
@@ -1626,7 +1628,7 @@ static int sgi_bridge_map_irq(PCIDevice *dev, int pin)
 }
 
 /*
- * The destination, compressed: bits 17:8 are crosstalk address bits 47:38,
+ * The destination, compressed: bits 17:8 are XIO address bits 47:38,
  * bits 7:0 the interrupt number.
  */
 #define INT_HOST_ADDR_SHIFT     8
@@ -1686,7 +1688,7 @@ static hwaddr sgi_bridge_node_packet(SGIBridgeState *s, unsigned int node,
     return s->fabric_base + ((uint64_t)node << s->fabric_node_shift) + offset;
 }
 
-/* The widget-level destination pair: one crosstalk address and its widget. */
+/* The widget-level destination pair: one XIO address and its widget. */
 static uint64_t sgi_bridge_int_dest(SGIBridgeState *s, unsigned int *widget)
 {
     uint32_t upper = s->reg[SGI_BRIDGE_SLOT(BRIDGE_INT_DEST_UPPER)];
@@ -1738,7 +1740,7 @@ static void sgi_bridge_raise_host_error(SGIBridgeState *s)
 
     /*
      * An unrouted error is one nobody asked for. Under a widget field this
-     * also refuses widget W at crosstalk address zero, which a guest could
+     * also refuses widget W at XIO address zero, which a guest could
      * legitimately program: the guard predates the field and the register
      * description is silent about it, so it stays as it was.
      */
@@ -1930,7 +1932,7 @@ static IOMMUTLBEntry sgi_bridge_translate_common(SGIBridgeState *s, int slot,
     }
 
     if (addr < BRIDGE_PCI_TRANSLATED) {
-        /* Local: not carried to crosstalk at all. */
+        /* Local: not carried to XIO at all. */
         entry.translated_addr = addr & ~page_mask;
         entry.perm = IOMMU_RW;
         return entry;
@@ -2415,7 +2417,7 @@ static void sgi_bridge_realize(DeviceState *dev, Error **errp)
     qdev_init_gpio_in_named_with_opaque(dev, sgi_bridge_set_wire_irq, s, NULL,
                                         SGI_BRIDGE_PINS);
 
-    /* One crosstalk link, so one line: what the crossbar drives at us. */
+    /* One XIO link, so one line: what the crossbar drives at us. */
     qdev_init_gpio_in_named_with_opaque(dev, sgi_bridge_link_reset, s,
                                         "link-reset", 1);
 
@@ -2587,7 +2589,7 @@ static const Property sgi_bridge_properties[] = {
 };
 
 /*
- * ---- The crosstalk port interface ----
+ * ---- The XIO port interface ----
  *
  * A Bridge is a leaf widget, the direct link's own carrier when it is
  * a fitted part of a node board (IP29's onboard I/O, hw/mips/sgi/sn0.c)

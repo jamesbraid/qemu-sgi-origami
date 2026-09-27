@@ -677,7 +677,7 @@ static void sn0_node_create_cpus(SN0NodeState *node)
 
             /*
              * Per space, the public alias table (Linux asm/sn/addrs.h and
-             * sn0/addrs.h): the crosstalk space self-decodes the IALIAS, the
+             * sn0/addrs.h): the I/O space self-decodes the IALIAS, the
              * Hub's eight-megabyte register window, always. The memory
              * space's nameless window is the CALIAS: "the first n bytes of
              * memory on the reader's node", based at the cached base,
@@ -1244,7 +1244,7 @@ void sn0_map_cpu_big_windows(Object *owner, SN0NodeState **nodes,
 #define SN0_PROM_PI_PROBE_OFFSET 0x400208ULL
 
 /*
- * IP29's onboard Bridge is reachable at crosstalk widget 8 on its first
+ * IP29's onboard Bridge is reachable at XIO widget 8 on its first
  * discovery and decodes every other widget position the same way (a directly
  * linked Hub's Bridge answers its whole face at every widget the Hub decodes
  * to it) except widget 1; fixed by the chip and the System Board's wiring,
@@ -1260,12 +1260,12 @@ void sn0_map_cpu_big_windows(Object *owner, SN0NodeState **nodes,
  * it with the "ip29" preset. Unlike the Origin 2000 BaseIO card
  * (sgi-xio-baseio), this Bridge is not wrapped in any board class: it is a
  * fitted part of the System Board itself, not a removable card, so it answers
- * the crosstalk port interface directly (hw/pci-host/sgi-bridge.c) rather
+ * the XIO port interface directly (hw/pci-host/sgi-bridge.c) rather
  * than through a board's re-parenting and module/slot registry. This is the
  * physical difference between an Origin 200's integrated IP29 System Board
  * and an Origin 2000 BaseIO card.
  *
- * Called once node has realized (its Hub's claim view and crosstalk container
+ * Called once node has realized (its Hub's claim view and XIO container
  * exist by then), passing every fitted-part value and backend id the family
  * builder (sn-machine.c) already resolved from the descriptor and the command
  * line; this file owns only the Hub address-map facts (fabric-base,

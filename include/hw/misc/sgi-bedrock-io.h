@@ -10,7 +10,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIBedrockIOState, SGI_BEDROCK_IO)
 
 #define SGI_BEDROCK_IO_REG_SIZE 0x30010
 #define SGI_BEDROCK_IO_PIO_SIZE UINT64_C(0x100000000)
-/* A widget's crosstalk address: bit 47 selects registers over memory. */
+/* A widget's XIO address: bit 47 selects registers over memory. */
 #define SGI_BEDROCK_IO_INBOUND_SIZE (UINT64_C(1) << 48)
 
 typedef struct SGIBedrockIOBTE {
@@ -50,7 +50,7 @@ struct SGIBedrockIOState {
     SGIBedrockIOState *(*claimant)(void *opaque, unsigned int number);
     void *claimant_opaque;
     /*
-     * Which crosstalk widget numbers a request arriving at the shared inbound
+     * Which XIO widget numbers a request arriving at the shared inbound
      * window may credibly have come from, one bit per widget. The window
      * itself carries no source-widget field to read back, so all candidates
      * must be permitted before an unknown-source access proceeds. This is not
@@ -97,7 +97,7 @@ struct SGIBedrockIOState {
 void sgi_bedrock_io_set_dma_as(SGIBedrockIOState *s, AddressSpace *as);
 
 /*
- * How this interface finds another node's: a crosstalk register packet or a
+ * How this interface finds another node's: an XIO register packet or a
  * BTE completion interrupt naming a number other than this node's own goes to
  * the interface claimant() returns for it, which serves it as its own; with
  * none, or NULL back, it arrives nowhere. The machine that joins nodes

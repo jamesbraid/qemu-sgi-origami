@@ -61,7 +61,7 @@
 #define HUB_IO_WIDGET_STATUS    0x400008
 #define HUB_IO_WIDGET_CONTROL   0x400020
 
-/* Crosstalk ID layout; the always-one low bit is the crosstalk contract's. */
+/* XIO ID layout; the always-one low bit is the XIO contract's. */
 #define IO_WIDGET_ID_REVISION_SHIFT 28
 #define IO_WIDGET_ID_REVISION_MAX   0xf
 #define IO_WIDGET_ID_PART       (0xc101ULL << 12)
@@ -104,7 +104,7 @@
 #define IO_SCRATCH_PROM_ALIVE   (1ULL << 23)
 
 /*
- * Incoming crosstalk request buffers: only slots 7-14's C register, the ones
+ * Incoming XIO request buffers: only slots 7-14's C register, the ones
  * firmware's diagnostic scan reads. They read zero; nothing is in flight.
 */
 #define HUB_IO_ICRB_C_BASE      0x4004f0  /* slot 7's C register */
@@ -363,7 +363,7 @@
 #define IO_BWIN_SPACE           (1U << 12) /* set selects I/O space */
 #define IO_BWIN_WIDGET_SHIFT    8
 #define IO_BWIN_WIDGET_MASK     (0xfU << IO_BWIN_WIDGET_SHIFT)
-#define IO_BWIN_SLICE_MASK      0x1f       /* crosstalk address bits 33:29 */
+#define IO_BWIN_SLICE_MASK      0x1f       /* XIO address bits 33:29 */
 #define IO_BWIN_SLICE_SHIFT     29
 
 /* Network interface. */
@@ -724,7 +724,7 @@ static bool sgi_hub_md_error_entry(hwaddr addr)
 
 /*
  * Aim a window where its entry says. A window naming an absent widget lands
- * over empty crosstalk space and must not fault: guests disable them so.
+ * over empty XIO space and must not fault: guests disable them so.
 */
 static void sgi_hub_bwin_follow(SGIHubState *s, unsigned int n)
 {
@@ -2896,13 +2896,13 @@ static void sgi_hub_store_link_status(SGIHubState *s, unsigned arg,
 }
 
 /*
- * The crossbar's per-link reset, arriving on the crosstalk link. The
+ * The crossbar's per-link reset, arriving on the XIO link. The
  * published Crossbow specification establishes three effects at this end and
  * no others: the link-layer transmit buffer is cleared, link-layer protocol
  * state is reset, and width negotiation restarts. This model represents none
  * of the three, so the pulse changes nothing and says so rather than
  * substituting an effect on state the evidence does not reach. There is no
- * transmit buffer to empty, because every crosstalk access this model makes
+ * transmit buffer to empty, because every XIO access this model makes
  * completes before it returns and nothing is ever queued on the link. There
  * is no link-layer protocol state either (no running sequence numbers,
  * retry counters or credits) and the link log's two counts are served as
@@ -2918,7 +2918,7 @@ static void sgi_hub_store_link_status(SGIHubState *s, unsigned arg,
  * retained: Crossbow's own force-eight-bit control survives the pulse so
  * software can pick a mode before negotiation restarts. Unsetting the
  * link-enable bit would be the most expensive guess available, because a Hub
- * that reports its crosstalk link down loses the machine quietly. The wider
+ * that reports its XIO link down loses the machine quietly. The wider
  * I/O interface is not in this at all. Every non-link-layer Hub reset effect
  * is open.
 */
@@ -2978,7 +2978,7 @@ static void sgi_hub_write_ioq(SGIHubState *s, hwaddr addr,
 }
 
 /*
- * The link log accretes crosstalk LLP errors (check-bit counts in bits
+ * The link log accretes XIO LLP errors (check-bit counts in bits
  * 31:16, sequence-number counts in 15:0) and the emulated link commits
  * none, so the counts hold their reset zero. The 6.5.30 kernel's periodic
  * hub-statistics capture reads the log about once a second and feeds the
@@ -4055,7 +4055,7 @@ static void sgi_hub_reset_enter(Object *obj, ResetType type)
 
     /*
      * The link comes up reporting itself up, a ratified departure from the
-     * documented reset: Linux abandons its crosstalk probe on a down link.
+     * documented reset: Linux abandons its XIO probe on a down link.
     */
     s->io_link_status = IO_LINK_RESET;
     s->io_widget_control = IO_WIDGET_CONTROL_RESET;
@@ -4146,10 +4146,10 @@ bool sgi_hub_attach_module_identity(SGIHubState *s,
 /*
  * ---- Origin 2000's PROM PI-error probe, through the
  * Crossbow-attached case ----
- * Through this node's crosstalk container at a fixed widget-2 offset,
+ * Through this node's XIO container at a fixed widget-2 offset,
  * a zero-length read latches the PI error the same way the direct link's
  * own probe does (hw/mips/sgi/xio-link.c). Installed only
- * when this Hub's crosstalk port connects to a Crossbow link, which is the
+ * when this Hub's XIO port connects to a Crossbow link, which is the
  * only thing that ever sets xio_io_space; a direct-attach node wires its own
  * probe on the widget's own device window instead and never sets it.
 */
@@ -4475,7 +4475,7 @@ static void sgi_hub_realize(DeviceState *dev, Error **errp)
                              SGI_HUB_PROCESSORS);
     qdev_init_gpio_out_named(dev, s->rt_irq, "rt", SGI_HUB_PROCESSORS);
 
-    /* One crosstalk link, so one line: what the crossbar drives at us. */
+    /* One XIO link, so one line: what the crossbar drives at us. */
     qdev_init_gpio_in_named(dev, sgi_hub_link_reset, "link-reset", 1);
 
     /*
@@ -4900,11 +4900,11 @@ static void sgi_hub_init(Object *obj)
 }
 
 /*
- * ---- The crosstalk port interface ----
+ * ---- The XIO port interface ----
  * cpu_face() is the container every widget alias a direct link installs lands
  * in: the same "xio" link property the Hub's own big windows translate
  * through. packet_face() is the Hub's own engine claim view,
- * SGI_HUB_DEVICE_VIEW: what a crosstalk-attach link's inbound decoder
+ * SGI_HUB_DEVICE_VIEW: what an XIO-attach link's inbound decoder
  * dispatches a remote nasid's packet into, the same view a Hub's own network
  * interface and block-transfer engines see memory through. Always present
  * once this Hub realizes; sgi_hub_claim_view_present() requires it
@@ -4969,7 +4969,7 @@ static void sgi_hub_class_init(ObjectClass *oc, const void *data)
     dc->realize = sgi_hub_realize;
     dc->unrealize = sgi_hub_unrealize;
     /*
-     * The machine supplies the crosstalk space, the network cable and the
+     * The machine supplies the XIO space, the network cable and the
      * views.
      */
     dc->user_creatable = false;

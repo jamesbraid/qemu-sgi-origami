@@ -43,7 +43,7 @@
  */
 #define PCI_STATUS_INTERRUPT (1u << 19)
 
-/* Crosstalk space and the Bridge's widget window inside it. */
+/* I/O space, and the Bridge's widget window inside it. */
 #define BRIDGE_WIDGET   8
 #define BRIDGE_BASE     (SPACE_IO + ((uint64_t)BRIDGE_WIDGET << 24))
 
@@ -177,7 +177,7 @@
 
 /*
  * Bridge's byte-lane correction for a device-initiated DMA transfer (crosses
- * crosstalk, unlike this file's own PIO-only apertures above):
+ * XIO, unlike this file's own PIO-only apertures above):
  * tests/qtest/sn0-qlogic-isp-test.c exercises the mechanism itself. The
  * Direct window's own swap enable, and the register holding the bit that
  * clears its "add 512 megabytes" quirk, which resets set.

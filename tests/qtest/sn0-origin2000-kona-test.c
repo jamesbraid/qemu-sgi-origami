@@ -1352,7 +1352,7 @@ static void test_reset_clears_increment2_state(void)
  * the destination: proves the array itself crossed over, not only the
  * registers and framing state the cases above already exercise. Follows
  * sn0-origin2000-mgras-test.c's own test_migration() -- the closest
- * sibling, another origin2000 xtalk-board graphics device with a migrated
+ * sibling, another origin2000 sgi-xio-board graphics device with a migrated
  * pixel array and the same x-test-pixel introspection pattern -- rather
  * than tests/qtest/sgi-command-port-test.c's generic "-M none" fixture,
  * whose destination waits on "-incoming defer" plus a separate

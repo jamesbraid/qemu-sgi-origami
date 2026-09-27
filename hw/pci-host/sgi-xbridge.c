@@ -1357,7 +1357,7 @@ static const VMStateDescription vmstate_chip = {
 };
 
 /*
- * ---- The crosstalk port interface ----
+ * ---- The XIO port interface ----
  *
  * index is a widget number: 0 (the crossbar's own identity), 0xe or 0xf
  * (the heads). cpu_face() is sgi_xbridge_widget_view() itself, where a

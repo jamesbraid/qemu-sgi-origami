@@ -1,7 +1,10 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * SN0 direct and Crossbow links, Hub packet adapters, and processor refusal
- * face.
+ * The two SN0 XIO link kinds; see the header for the contract.
+ * The Hub-side packet adapters and the processor-side refusal face are
+ * moved here unaltered in behaviour from the deleted sn0-origin2000-io.c
+ * (by way of hw/mips/sgi/sn-machine.c, where the first machine-model
+ * rework had relocated them).
  */
 
 #include "qemu/osdep.h"

@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
-/* The crosstalk port interface; see the header for the contract. */
+/* The XIO port interface; see the header for the contract. */
 
 #include "qemu/osdep.h"
 #include "hw/mips/sgi-xio-port.h"

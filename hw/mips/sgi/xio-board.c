@@ -399,7 +399,7 @@ static const VMStateDescription vmstate_sgi_xio_board = {
 };
 
 /*
- * ---- The crosstalk port interface ----
+ * ---- The XIO port interface ----
  *
  * A board is always a leaf: its widget answers a processor and a packet
  * access at the one place build_widget() records, so both faces are whatever
