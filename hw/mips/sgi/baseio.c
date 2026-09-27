@@ -106,6 +106,7 @@ struct SGIBaseioState {
     uint32_t revision_override;
     uint64_t onewire_serial;
     uint32_t fuel_subsystem_id;
+    bool fuel_rtc_low11_mirror;
     char *nvram_drive_id;
     char *chardev_a_id;
     char *chardev_b_id;
@@ -760,10 +761,24 @@ static bool baseio_build_fuel(SGIBaseioState *s, Error **errp)
                          SGI_IOC3_POPULATION_KEYBOARD_MOUSE |
                          SGI_IOC3_POPULATION_PARALLEL);
     qdev_prop_set_uint8(DEVICE(ioc3), "timekeeper-kind",
+                        s->fuel_rtc_low11_mirror ?
+                        SGI_IOC3_TIMEKEEPER_DS1742 :
                         SGI_IOC3_TIMEKEEPER_NONE);
     qdev_prop_set_uint64(DEVICE(ioc3), "onewire-serial", s->onewire_serial);
     qdev_prop_set_uint16(DEVICE(ioc3), "subsystem-id",
                          s->fuel_subsystem_id);
+    if (s->fuel_rtc_low11_mirror && s->nvram_drive_id) {
+        BlockBackend *blk = blk_by_name(s->nvram_drive_id);
+
+        if (!blk) {
+            error_setg(errp, "sgi-baseio: no drive backend named '%s' for "
+                       "nvram-drive", s->nvram_drive_id);
+            object_unparent(OBJECT(ioc3));
+            return false;
+        }
+        qdev_prop_set_drive(DEVICE(ioc3), "ds1742-drive", blk);
+        baseio_note_claim(s, s->nvram_drive_id);
+    }
     if (!baseio_pass_chardev(DEVICE(ioc3), "chardev-a", s->chardev_a_id,
                              errp) ||
         !baseio_pass_chardev(DEVICE(ioc3), "chardev-b", s->chardev_b_id,
@@ -800,7 +815,8 @@ static bool baseio_build_fuel(SGIBaseioState *s, Error **errp)
     baseio_wire_xbridge_intx(chip, 5, 5);
 
     warn_report("fuel: IOC3 subsystem ID is an experimental launch input; "
-                "interrupt wiring is approximate and RTC is not implemented");
+                "interrupt wiring is approximate and RTC decode is %s",
+                s->fuel_rtc_low11_mirror ? "experimental" : "absent");
     return true;
 }
 
@@ -974,6 +990,8 @@ static const Property baseio_properties[] = {
                        SGI_IOC3_ONEWIRE_SERIAL),
     DEFINE_PROP_UINT32("fuel-subsystem-id", SGIBaseioState, fuel_subsystem_id,
                        UINT32_MAX),
+    DEFINE_PROP_BOOL("fuel-rtc-low11-mirror", SGIBaseioState,
+                     fuel_rtc_low11_mirror, false),
     DEFINE_PROP_STRING("nvram-drive", SGIBaseioState, nvram_drive_id),
     DEFINE_PROP_STRING("chardev-a", SGIBaseioState, chardev_a_id),
     DEFINE_PROP_STRING("chardev-b", SGIBaseioState, chardev_b_id),

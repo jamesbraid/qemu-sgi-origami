@@ -241,6 +241,7 @@ struct SGIMachineState {
     bool fuel_ioc3_subsystem_id_set;
     uint8_t fuel_l1_type_code;
     bool fuel_l1_type_code_set;
+    char *fuel_rtc_decode;
 };
 
 /*
@@ -1743,6 +1744,8 @@ static bool sgi_machine_instantiate_bedrock_io(
     if (record->preset == SGI_MODEL_IO_BOARD_PRESET_FUEL) {
         qdev_prop_set_uint32(baseio, "fuel-subsystem-id",
                              s->fuel_ioc3_subsystem_id);
+        qdev_prop_set_bit(baseio, "fuel-rtc-low11-mirror",
+                          s->fuel_rtc_decode != NULL);
     }
     object_property_set_link(OBJECT(baseio), "pci-bus", OBJECT(bus),
                              &error_abort);
@@ -2492,6 +2495,15 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
         s->fuel_l1_type_code != 0x34 && s->fuel_l1_type_code != 0x61) {
         error_setg(errp, "fuel-l1-type-code must be 0x34 (raw 4) or "
                    "0x61 (published IP34 code)");
+        return false;
+    }
+    if (s->fuel_rtc_decode &&
+        strcmp(s->fuel_rtc_decode, "low11-mirror")) {
+        error_setg(errp, "fuel-rtc-decode accepts only low11-mirror");
+        return false;
+    }
+    if (strcmp(smc->product, "fuel") && s->fuel_rtc_decode) {
+        error_setg(errp, "fuel-rtc-decode applies only to -M fuel");
         return false;
     }
     if (strcmp(smc->product, "fuel") && s->fuel_l1_type_code_set) {
@@ -3566,6 +3578,20 @@ static void sgi_machine_set_fuel_ioc3_subsystem_id(Object *obj, Visitor *v,
     }
 }
 
+static char *sgi_machine_get_fuel_rtc_decode(Object *obj, Error **errp)
+{
+    return g_strdup(SGI_MACHINE(obj)->fuel_rtc_decode);
+}
+
+static void sgi_machine_set_fuel_rtc_decode(Object *obj, const char *value,
+                                             Error **errp)
+{
+    SGIMachineState *s = SGI_MACHINE(obj);
+
+    g_free(s->fuel_rtc_decode);
+    s->fuel_rtc_decode = g_strdup(value);
+}
+
 static void sgi_machine_get_fuel_l1_type_code(Object *obj, Visitor *v,
                                                const char *name, void *opaque,
                                                Error **errp)
@@ -3658,6 +3684,7 @@ static void sgi_machine_instance_finalize(Object *obj)
     g_free(s->topology_name);
     g_free(s->population);
     g_free(s->baseio_preset);
+    g_free(s->fuel_rtc_decode);
     for (i = 0; i < ARRAY_SIZE(sgi_machine_identity_records); i++) {
         qapi_free_strList(*sgi_machine_identity_slot(
             obj, (void *)&sgi_machine_identity_records[i]));
@@ -3768,6 +3795,13 @@ static void sgi_machine_class_init(ObjectClass *oc, const void *data)
         "Experimental Fuel L1 local identity reply character; required "
         "because its physical stored value is unknown. Accepts 0x34 "
         "(raw 4) or 0x61 (published IP34 code).");
+
+    object_class_property_add_str(oc, "fuel-rtc-decode",
+                                  sgi_machine_get_fuel_rtc_decode,
+                                  sgi_machine_set_fuel_rtc_decode);
+    object_class_property_set_description(oc, "fuel-rtc-decode",
+        "Optional Fuel DS1742 bytebus experiment; accepts low11-mirror. "
+        "Absent by default because physical address decoding is unknown.");
 
     object_class_property_add_str(oc, "routes", sgi_machine_get_routes, NULL);
     object_class_property_set_description(oc, "routes",
