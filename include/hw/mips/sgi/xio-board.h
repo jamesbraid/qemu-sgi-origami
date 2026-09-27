@@ -81,6 +81,9 @@ struct SGIXioBoardState {
     /* The Crossbow widget the board occupies, resolved from "slot". */
     uint32_t slot;
 
+    /* Whether "slot" named an XIO slot (io5) rather than a widget number. */
+    bool placed_by_name;
+
     /*
      * Set by the concrete class's build_widget(), before this device
      * re-parents: the two faces sgi_xbow_attach_endpoint() takes. A board

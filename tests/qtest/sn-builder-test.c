@@ -250,23 +250,6 @@ static void test_pci_expansion_attaches_at_a_named_slot(const void *data)
     qtest_quit(qts);
 }
 
-/*
- * The BaseIO-G preset also fits the Onyx2 deskside's IO1, which that
- * midplane's Crossbow puts at widget 15 rather than 8. On the Origin 2000
- * module the free widget 15 is IO9, Crossbow 1's. The plain BaseIO never
- * sits in a deskside, so widget 15 stays refused for it.
- */
-static void test_xio_baseio_g_fits_the_deskside_io1(const void *data)
-{
-    QTestState *qts = qtest_init(
-        "-M origin2000 -display none -device sgi-xio-baseio,preset=io6g,"
-        "slot=io9");
-    g_autofree char *type = qom_child_type(qts, "/machine/module0", "io9");
-
-    g_assert_cmpstr(type, ==, "sgi-xio-baseio");
-    qtest_quit(qts);
-}
-
 /* Runs QEMU with one -device and checks it refuses with @message. */
 static void assert_device_refused(const char *device, const char *message)
 {
@@ -291,9 +274,19 @@ static void assert_device_refused(const char *device, const char *message)
     g_assert_cmpint(unlink(path), ==, 0);
 }
 
-static void test_xio_baseio_refuses_widget_15(const void *data)
+/*
+ * A BaseIO sits in IO1. Fitted by slot name it takes no other slot, even
+ * one whose widget, F, is IO1 on the Onyx2 deskside; placed by widget,
+ * the plain BaseIO still refuses that widget, which only a BaseIO-G on a
+ * deskside occupies.
+ */
+static void test_xio_baseio_fits_only_io1(const void *data)
 {
-    assert_device_refused("sgi-xio-baseio,preset=io6,slot=io9",
+    assert_device_refused("sgi-xio-baseio,preset=io6g,slot=io9",
+                          "sgi-xio-baseio preset 'io6g' fits only XIO slot "
+                          "io1, not io9");
+    assert_device_refused("sgi-xio-baseio,preset=io6,module=0,slot=15,"
+                          "fabric=/machine/io9-fabric[0]",
                           "sgi-xio-baseio preset 'io6' cannot sit at "
                           "crosstalk widget 15");
 }
@@ -1390,10 +1383,8 @@ int main(int argc, char **argv)
                         NULL, test_explicit_fabric_must_match_its_slot);
     qtest_add_data_func("sn/builder/pci-expansion-attaches-at-a-named-slot",
                         NULL, test_pci_expansion_attaches_at_a_named_slot);
-    qtest_add_data_func("sn/builder/xio-baseio-g-fits-the-deskside-io1",
-                        NULL, test_xio_baseio_g_fits_the_deskside_io1);
-    qtest_add_data_func("sn/builder/xio-baseio-refuses-widget-15", NULL,
-                        test_xio_baseio_refuses_widget_15);
+    qtest_add_data_func("sn/builder/xio-baseio-fits-only-io1", NULL,
+                        test_xio_baseio_fits_only_io1);
     qtest_add_data_func("sn/builder/pci-expansion-delivers-through-spare-"
                         "fabric", NULL,
                         test_pci_expansion_delivers_through_spare_fabric);
