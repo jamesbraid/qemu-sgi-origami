@@ -74,11 +74,34 @@ static void test_onewire_empty(void)
 
 static void test_onewire_present(void)
 {
-    QTestState *s = heart_start(64, "-device ds2505,bus=onewire");
+    QTestState *s = heart_start(64,
+        "-device ds2505,bus=onewire,family=0x0b");
+    uint8_t family = 0;
 
     qtest_writel(s, HEART_ONEWIRE_LO, HEART_ONEWIRE_COMMAND(500, 65));
     qtest_clock_step(s, 565000);
     g_assert_cmphex(qtest_readl(s, HEART_ONEWIRE_LO) & 3, ==, 2);
+
+    /* Read ROM is 0x33, least significant bit first. */
+    for (unsigned bit = 0; bit < 8; bit++) {
+        unsigned pulse = (0x33 & (1u << bit)) ? 6 : 80;
+        unsigned sample = pulse == 6 ? 110 : 30;
+
+        qtest_writel(s, HEART_ONEWIRE_LO,
+                     HEART_ONEWIRE_COMMAND(pulse, sample));
+        g_assert_cmphex(qtest_readl(s, HEART_ONEWIRE_LO) & 3, ==, 0);
+        qtest_clock_step(s, (pulse + sample) * 1000);
+        g_assert_cmphex(qtest_readl(s, HEART_ONEWIRE_LO) & 3, ==,
+                        pulse == 6 ? 3 : 2);
+    }
+    for (unsigned bit = 0; bit < 8; bit++) {
+        qtest_writel(s, HEART_ONEWIRE_LO, HEART_ONEWIRE_COMMAND(6, 13));
+        g_assert_cmphex(qtest_readl(s, HEART_ONEWIRE_LO) & 3, ==, 0);
+        qtest_clock_step(s, 19000);
+        family |= (qtest_readl(s, HEART_ONEWIRE_LO) & 1) << bit;
+        g_assert_cmphex(qtest_readl(s, HEART_ONEWIRE_LO) & 2, ==, 2);
+    }
+    g_assert_cmphex(family, ==, 0x0b);
     qtest_quit(s);
 }
 
