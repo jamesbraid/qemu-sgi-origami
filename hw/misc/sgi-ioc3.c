@@ -2016,19 +2016,19 @@ static void sgi_ioc3_finalize(Object *obj)
     timer_free(s->int_out_timer);
 }
 
-/*
- * The 16550s ride in this device's own migration stream rather than being
- * children with a stream each, so a board that fits none has to leave them
- * out. Saving them anyway walks a serial that was never realized, whose
- * receive-timeout timer is a null pointer the subsection test dereferences. A
- * board that fits them writes exactly the field it always did, so the format
- * is unchanged wherever it was ever produced.
- */
-static bool sgi_ioc3_serial_needed(void *opaque, int version_id)
+/* An absent port has no timer for vmstate_serial's subsection test. */
+static bool sgi_ioc3_serial_a_needed(void *opaque, int version_id)
 {
     SGIIOC3State *s = opaque;
 
-    return s->board->serial[0] || s->board->serial[1];
+    return s->board->serial[0];
+}
+
+static bool sgi_ioc3_serial_b_needed(void *opaque, int version_id)
+{
+    SGIIOC3State *s = opaque;
+
+    return s->board->serial[1];
 }
 
 static int sgi_ioc3_pre_load(void *opaque)
@@ -2127,9 +2127,12 @@ static const VMStateDescription vmstate_sgi_ioc3 = {
         VMSTATE_PCI_DEVICE(parent_obj, SGIIOC3State),
         VMSTATE_UINT32(int_status, SGIIOC3State),
         VMSTATE_UINT32(int_enable, SGIIOC3State),
-        VMSTATE_STRUCT_ARRAY_TEST(serial, SGIIOC3State, SGI_IOC3_SERIAL_PORTS,
-                                  sgi_ioc3_serial_needed, 0, vmstate_serial,
-                                  SerialState),
+        VMSTATE_STRUCT_TEST(serial[0], SGIIOC3State,
+                            sgi_ioc3_serial_a_needed, 0,
+                            vmstate_serial, SerialState),
+        VMSTATE_STRUCT_TEST(serial[1], SGIIOC3State,
+                            sgi_ioc3_serial_b_needed, 0,
+                            vmstate_serial, SerialState),
         VMSTATE_UINT8_ARRAY_V(serial_predivider, SGIIOC3State,
                               SGI_IOC3_SERIAL_PORTS, 17),
         VMSTATE_UINT8_ARRAY_V(serial_mcr_autoflow, SGIIOC3State,
