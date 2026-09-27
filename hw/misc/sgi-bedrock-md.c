@@ -2531,9 +2531,12 @@ static bool md_directory_decode(uint64_t word, bool premium,
 }
 
 /*
- * The word for @entry, keeping only the old word's local protection bit:
- * the priority, second pointer and critical-word fields a pointer entry
- * also carries are written zero, which is model policy.
+ * The word for @entry, keeping only the old word's local protection bit.
+ * The priority, second pointer and critical-word fields a pointer entry
+ * also carries, and a shared entry's unused second tag, are written zero.
+ * That is model policy: the public header names the fields but not what
+ * the unit puts in them, and the Origin 300's directory diagnostic, the
+ * one reader of transitions, checks none of them.
  */
 static bool md_directory_compose(const MDDirectoryEntry *entry, bool premium,
                                  uint64_t old, uint64_t *word)
@@ -2657,6 +2660,13 @@ static bool md_directory_entry_present(SGIBedrockMDState *s,
     return true;
 }
 
+/* The directory backdoor offset of a watched line's word. */
+static hwaddr md_line_directory_offset(const SGIBedrockMDWatchedLine *line)
+{
+    return (line->address / MD_MEMORY_BANK_SIZE) * MD_DIRECTORY_BANK_SIZE +
+           ((line->address % MD_MEMORY_BANK_SIZE) >> 3);
+}
+
 /*
  * Serve one request from @pointer against the line's directory word and
  * the other processors' copies, and return the state the requester's copy
@@ -2741,8 +2751,17 @@ static uint8_t md_directory_request(SGIBedrockMDState *s,
                       line->index);
         return granted;
     }
+    /*
+     * Written as a backdoor write is: with the ignore-ECC bit set the old
+     * check field is kept and a word that is then not a codeword starts
+     * being checked; otherwise the check field is regenerated.
+     */
+    if (s->directory_config & 2) {
+        word |= old & md_directory_check_mask(premium);
+    }
     s->directory[line->index] =
-        sgi_bedrock_md_directory_encode(word, premium) & md_directory_mask(s);
+        md_directory_word_written(s, word, md_line_directory_offset(line),
+                                  &line->index) & md_directory_mask(s);
     trace_sgi_bedrock_md_directory_request(line->index, pointer, request,
                                            old, s->directory[line->index]);
     return granted;

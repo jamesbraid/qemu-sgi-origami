@@ -159,6 +159,7 @@ typedef struct Step {
 typedef struct Scenario {
     const char *cpus;       /* the -smp argument */
     bool premium;           /* select the premium directory format */
+    bool ignore_ecc;        /* set the directory's ignore-ECC bit */
     uint64_t word;          /* if nonzero, write the line's word first */
     const Step *steps;
     unsigned int nr_steps;
@@ -279,8 +280,9 @@ static QTestState *start_scenario(const Scenario *sc, char **prom)
                     "-accel tcg " ICOUNT " -no-shutdown -S", sc->cpus,
                     quoted);
     qtest_writeq(s, SN1_MD_MEMORY_CONFIG, SN1_MD_INSTALLED_SELECT2);
-    if (sc->premium) {
-        qtest_writeq(s, SN1_MD_DIRECTORY_CONFIG, 1);
+    if (sc->premium || sc->ignore_ecc) {
+        qtest_writeq(s, SN1_MD_DIRECTORY_CONFIG,
+                     (sc->premium ? 1 : 0) | (sc->ignore_ecc ? 2 : 0));
     }
     if (sc->word) {
         qtest_writeq(s, LINE_DIRECTORY, sc->word);
@@ -944,6 +946,38 @@ static void test_block_transfer_is_not_a_processor(void)
     finish(s, prom);
 }
 
+/*
+ * With the directory's ignore-ECC bit set the unit keeps a word as written,
+ * check field included (the directory configuration register's bit 1), and
+ * so it does with the words it rewrites: the check field the line's word
+ * had goes unchanged. Without the bit it is regenerated.
+ */
+static void test_ignore_ecc_keeps_the_check_field(void)
+{
+    const Scenario sc = {
+        .cpus = "2", .ignore_ecc = true,
+        STEPS({ 0, emit_first }, { 0, load_08 }),
+    };
+    const Scenario checked = {
+        .cpus = "2",
+        STEPS({ 0, emit_first }, { 0, load_08 }),
+    };
+    char *prom;
+    QTestState *s;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+    s = run_scenario(&sc, &prom);
+    g_assert_cmphex(result(s, 0x08), ==, POINTER(0));
+    finish(s, prom);
+    s = run_scenario(&checked, &prom);
+    g_assert_cmphex(result(s, 0x08) & ~(uint64_t)DIRECTORY_FIELDS, !=, 0);
+    g_assert_cmphex(result(s, 0x08) & DIRECTORY_FIELDS, ==, POINTER(0));
+    finish(s, prom);
+}
+
 static void migrate_wait(QTestState *qts)
 {
     int64_t deadline = g_get_monotonic_time() + 30 * G_TIME_SPAN_SECOND;
@@ -1050,6 +1084,8 @@ int main(int argc, char **argv)
                    test_noncoherent_algorithm_load);
     qtest_add_func("sn1/directory-state/block-transfer-is-not-a-processor",
                    test_block_transfer_is_not_a_processor);
+    qtest_add_func("sn1/directory-state/ignore-ecc-keeps-the-check-field",
+                   test_ignore_ecc_keeps_the_check_field);
     qtest_add_func("sn1/directory-state/owner-from-the-word",
                    test_owner_from_the_word);
     qtest_add_func("sn1/directory-state/sharers-from-the-word",
