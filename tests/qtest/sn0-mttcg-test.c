@@ -1898,7 +1898,10 @@ static void test_gdb_sn1_hold(const void *data)
     int fd, gdb;
     bool migrate_vm = options & 32;
     bool interrupt_vm = options & 64;
+    bool long_hold = options & 128;
     bool gdb_closed = false;
+    uint32_t peer_count_before, peer_count_after;
+    uint64_t elapsed_ticks = 0;
 
     if (!qtest_has_accel("tcg")) {
         g_test_skip("TCG is unavailable");
@@ -1976,6 +1979,22 @@ static void test_gdb_sn1_hold(const void *data)
     g_usleep(50000);
     peer_after = sn1_timer_state_word(qts, GH_PEER_OFF);
     hub_after = qtest_readq(qts, SN1_BEDROCK_LOCAL + 0x30100);
+    if (long_hold) {
+        peer_count_before = sn1_timer_state_word(qts,
+                                                GH_PEER_COUNT_OFF + 8);
+        for (unsigned int i = 0;
+             i < 30 && elapsed_ticks <= 0x80000000ULL; i++) {
+            g_usleep(500000);
+            peer_count_after = sn1_timer_state_word(qts,
+                                                   GH_PEER_COUNT_OFF + 8);
+            elapsed_ticks += (uint32_t)(peer_count_after -
+                                        peer_count_before);
+            peer_count_before = peer_count_after;
+        }
+        g_test_message("R14000 peer Count advanced %" PRIu64
+                       " ticks during held CPU A", elapsed_ticks);
+        g_assert_cmpuint(elapsed_ticks, >, 0x80000000ULL);
+    }
     g_assert_cmpuint(peer_after, >, peer_before);
     g_assert_cmpuint(hub_after, >, hub_before);
     if (gh_peer_timer_writes) {
@@ -2044,7 +2063,9 @@ static void test_gdb_sn1_hold(const void *data)
     g_assert_cmphex(sn1_timer_state_word(qts, DONE_OFF), ==, DONE_MAGIC);
     g_assert_cmpuint(sn1_timer_state_word(qts, GH_COUNT_OFF), >=, GH_COMPARE);
     g_assert_cmphex(sn1_timer_state_word(qts, GH_CAUSE_OFF) & CAUSE_IP7, ==,
-                    gh_intervening_insn ? 0 : CAUSE_IP7);
+                    (gh_intervening_insn || long_hold) ? 0 : CAUSE_IP7);
+    g_assert_cmphex(sn1_timer_state_word(qts, GH_LATE_CAUSE_OFF) & CAUSE_IP7,
+                    ==, (gh_intervening_insn || long_hold) ? 0 : CAUSE_IP7);
     g_assert_cmphex(sn1_timer_state_word(qts, GH_DISARM_PRE_OFF) & CAUSE_IP7,
                     ==, CAUSE_IP7);
     g_assert_cmphex(sn1_timer_state_word(qts, GH_PAST_CAUSE_OFF) & CAUSE_IP7,
@@ -2140,6 +2161,8 @@ int main(int argc, char **argv)
                             GINT_TO_POINTER(32), test_gdb_sn1_hold);
         qtest_add_data_func("mttcg/timer/gdb-sn1-interrupt-between-writes",
                             GINT_TO_POINTER(64), test_gdb_sn1_hold);
+        qtest_add_data_func("mttcg/timer/gdb-sn1-half-range-hold",
+                            GINT_TO_POINTER(128), test_gdb_sn1_hold);
     }
     return g_test_run();
 }
