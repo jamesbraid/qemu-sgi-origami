@@ -54,6 +54,10 @@ test_mips64_timeouts = {
   # Two stock-PROM boots to "ALL DIAGS PASSED", each a few minutes on a
   # loaded host; 900 is the test class's own budget per boot.
   'origin200_gigachannel_prom' : 1800,
+  # One stock-PROM boot each to the command monitor's hinv -v, a few
+  # minutes on a loaded host; 900 is each test class's own budget.
+  'onyx2_deskside_prom' : 900,
+  'onyx2_rack_prom' : 900,
   # graphics-matrix's two rows (rad4_login_screen, rad4_login_screen_smp2):
   # boot IRIX 6.5.30 with RAD4 at its vendor-documented PCI slot, one CPU
   # and two, drive each to the console login prompt, wait a fixed settle
@@ -258,6 +262,8 @@ tests_mips64_system_quick = [
 tests_mips64_system_thorough = [
   'origin200_prom',
   'origin200_gigachannel_prom',
+  'onyx2_deskside_prom',
+  'onyx2_rack_prom',
   'graphics_matrix_thorough',
   'origin300_prom',
   'origin300_two_chassis_prom',
