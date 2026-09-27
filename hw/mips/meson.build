@@ -50,6 +50,10 @@ mips_ss.add(when: 'CONFIG_SGI_XIO_BOARD_TEST',
 # not it also builds an XIO card: the IP29 and IO-8 presets have no card of
 # their own, only a carrier that owns the chip directly.
 mips_ss.add(when: 'CONFIG_SGI_BASEIO', if_true: files('sgi/baseio.c'))
+# The BASEIO PROM flash part, fitted by the BaseIO XIO card and by the
+# GIGAchannel cabinet.
+mips_ss.add(when: 'CONFIG_SGI_BASEIO_FLASH',
+            if_true: files('sgi/baseio-flash.c'))
 # The Origin 2000/Onyx2 BaseIO XIO card: an sgi-xio-board subclass that
 # creates its own Bridge and an sgi-baseio (the "baseio" preset) behind it.
 mips_ss.add(when: 'CONFIG_SGI_XIO_BASEIO', if_true: files('sgi/xio-baseio.c'))
