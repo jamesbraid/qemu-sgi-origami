@@ -618,11 +618,20 @@ static bool sgi_kona_finish_realize(SGIXioBoardState *board, Error **errp)
 {
     SGIKonaState *s = SGI_KONA(board);
     bool attached[ARRAY_SIZE(sgi_kona_identity_parts)] = { false };
+    SGIBridgeBoardRecord geometry_record = sgi_kona_geometry_record;
+    const char *board_part_error;
     strList *entry;
+
+    board_part_error = sgi_bridge_board_part_error(s->board_part);
+    if (board_part_error) {
+        error_setg(errp, "%s", board_part_error);
+        return false;
+    }
+    geometry_record.part = s->board_part;
 
     s->onewire_bus = onewire_create_bus(DEVICE(s), "onewire");
     if (!sgi_kona_onewire_attach_part(
-            s, s->onewire_bus, "onewire-geometry", &sgi_kona_geometry_record,
+            s, s->onewire_bus, "onewire-geometry", &geometry_record,
             SGI_KONA_GEOMETRY_SERIAL, errp)) {
         return false;
     }
@@ -693,7 +702,8 @@ static void sgi_kona_instance_init(Object *obj)
 {
     SGIKonaState *s = SGI_KONA(obj);
 
-    /* Default: today's rack behaviour, geometry board plus Ktown. */
+    /* Default: today's rack behaviour, GE16-4 geometry board plus Ktown. */
+    s->board_part = g_strdup(sgi_kona_geometry_record.part);
     QAPI_LIST_PREPEND(s->other_identity_parts,
                       g_strdup(sgi_kona_ktown_record.part));
 
@@ -802,6 +812,12 @@ static const Property sgi_kona_properties[] = {
      * see the header comment on SGI_KONA_PROBE.
      */
     DEFINE_PROP_UINT32("probe-value", SGIKonaState, probe_value, 0),
+    /*
+     * The geometry board's own record part number; see the struct field
+     * comment on board_part. Defaults to the rack's GE16-4
+     * (030-1398-001); a deskside pipe's GE14-4 sets 030-1129-002.
+     */
+    DEFINE_PROP_STRING("board-part", SGIKonaState, board_part),
 };
 
 static bool sgi_kona_framebuffer_count_valid(void *opaque, int version_id)

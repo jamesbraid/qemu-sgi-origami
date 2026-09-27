@@ -189,6 +189,18 @@ struct SGIKonaState {
     OneWireBus *onewire_bus;
 
     /*
+     * The geometry board's own record part number: mirrors the machine-
+     * model catalogue's per-board "part" field (tools/origami_lib/
+     * model_emit.py) the same way other_identity_parts below does, so a
+     * real deskside pipe's GE14-4 board (030-1129-002) can be told apart
+     * from a rack's GE16-4 (030-1398-001, the default). Named board-part
+     * after hw/pci-host/sgi-bridge.c's own property for the same concept.
+     * Construction-time only, like manufacturer/part/revision above: not
+     * migrated.
+     */
+    char *board_part;
+
+    /*
      * Which identity parts answer on onewire_bus beyond the geometry
      * board's own record, which sgi_kona_finish_realize() always
      * attaches: mirrors the machine-model catalogue's own

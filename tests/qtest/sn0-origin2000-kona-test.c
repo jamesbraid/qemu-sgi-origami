@@ -933,6 +933,34 @@ static void test_onewire_other_identity_parts_duplicate_rejected(void)
 }
 
 /*
+ * "board-part" configures the geometry board's own record, the same way
+ * "other-identity-parts" configures which parts join it: a real deskside
+ * pipe's GE14-4 board (030-1129-002) differs from a rack's GE16-4 default
+ * (030-1398-001, test_onewire_geometry_identity() above). A fresh instance
+ * is needed, like the empty-list case above: the property is
+ * construction-time only and the default qts already carries the rack's
+ * part.
+ */
+static void test_onewire_board_part_configures_geometry_record(void)
+{
+    QTestState *s;
+    uint8_t identity[8];
+
+    s = qtest_init(
+        "-M origin2000 -device sgi-kona,id=kona2,module=99,slot=8,"
+        "fabric=/machine/crossbow0-spare-fabric[0],"
+        "board-part=030-1129-002");
+    g_assert_cmphex(qtest_readl(s, REG_PROBE), ==, 0);
+
+    kona_build_identity(identity, KONA_ONEWIRE_FAMILY, KONA_GEOMETRY_SERIAL);
+    kona_match_rom(s, identity);
+    kona_assert_onewire_identity(s, "00000001", "030-1129-002", "01",
+                                 "GEOM-BD");
+
+    qtest_quit(s);
+}
+
+/*
  * Must-fix 2: a mutated WIDGET_CONTROL and a one-wire transaction left
  * mid-slot both go back to zero on system reset (sgi_kona_reset_hold(),
  * hw/misc/sgi-kona.c), matching hw/pci-host/sgi-bridge.c's own
@@ -1140,6 +1168,9 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/origin2000/kona/"
                    "onewire-other-identity-parts-duplicate-rejected",
                    test_onewire_other_identity_parts_duplicate_rejected);
+    qtest_add_func("sn0/origin2000/kona/"
+                   "onewire-board-part-configures-geometry-record",
+                   test_onewire_board_part_configures_geometry_record);
     qtest_add_func("sn0/origin2000/kona/reset-clears-plain-storage",
                    test_reset_clears_plain_storage);
     qtest_add_func("sn0/origin2000/kona/reset-clears-increment-2-state",
