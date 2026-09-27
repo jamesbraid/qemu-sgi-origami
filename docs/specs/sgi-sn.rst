@@ -109,7 +109,11 @@ reads as an empty one. The row also decides which Routers and cables
 exist and which XIO slots a board fitted at launch may use; a slot the
 row cannot use is refused with the node board it needs. A count no row
 accepts is refused with the counts that exist, and a row whose evidence
-does not settle its wiring is refused rather than built. Naming
+does not settle its wiring is refused rather than built. ``-smp`` and
+``-m`` keep the product's defaults, which fit its most node boards: the
+machine cannot tell a default from an explicit value, so a launch with
+fewer node boards names both, as ``-M origin2000,nodes=1 -smp 2 -m 64M``
+does. Naming
 a topology that is not one of a product's own (or any other unknown
 name, including ``topology=help``) makes the machine report every
 topology that product accepts and exit, since QEMU has no generic help
