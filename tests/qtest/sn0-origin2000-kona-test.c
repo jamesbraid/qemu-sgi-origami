@@ -50,6 +50,17 @@
 #define REG_ONEWIRE        KONA_REG(0x000098)
 
 /*
+ * The kernel driver's own register offset onto the identical one-wire
+ * chain REG_ONEWIRE carries -- SGI_KONA_NIC's own header comment
+ * (include/hw/misc/sgi-kona.h) has the established/inferred evidence.
+ * Every helper below that used to hardcode REG_ONEWIRE now takes a
+ * register argument, so the same Match ROM/Read Memory/Search ROM
+ * exchanges below can run against either offset without a second,
+ * duplicated set of primitives.
+ */
+#define REG_NIC            KONA_REG(0x00009c)
+
+/*
  * Increment 2: the register window and textport command port, offsets
  * per include/hw/misc/sgi-kona.h.
  */
@@ -195,42 +206,48 @@ static void kona_reset(void)
 #define KONA_ONEWIRE_PULSE(n)  ((uint32_t)(n) << 10)
 #define KONA_ONEWIRE_SAMPLE(n) ((uint32_t)(n) << 2)
 
-static bool kona_slot(QTestState *s, unsigned int pulse, unsigned int sample)
+/*
+ * `reg` selects REG_ONEWIRE or REG_NIC: two register offsets onto the
+ * identical onewire_reg/onewire_bus state (hw/misc/sgi-kona.c), so a
+ * caller can run the exact same bit-banged exchange through either one.
+ */
+static bool kona_slot(QTestState *s, uint64_t reg, unsigned int pulse,
+                      unsigned int sample)
 {
-    uint32_t reg;
+    uint32_t val;
 
-    qtest_writel(s, REG_ONEWIRE,
+    qtest_writel(s, reg,
                  KONA_ONEWIRE_PULSE(pulse) | KONA_ONEWIRE_SAMPLE(sample));
-    reg = qtest_readl(s, REG_ONEWIRE);
-    g_assert_cmphex(reg & KONA_ONEWIRE_DONE, ==, KONA_ONEWIRE_DONE);
-    return reg & KONA_ONEWIRE_LEVEL;
+    val = qtest_readl(s, reg);
+    g_assert_cmphex(val & KONA_ONEWIRE_DONE, ==, KONA_ONEWIRE_DONE);
+    return val & KONA_ONEWIRE_LEVEL;
 }
 
-#define KONA_ONEWIRE_RESET(s) kona_slot(s, 520, 65)
-#define KONA_READ(s)          kona_slot(s, 6, 13)
-#define KONA_WRITE_ONE(s)     kona_slot(s, 6, 13)
-#define KONA_WRITE_ZERO(s)    kona_slot(s, 80, 30)
+#define KONA_ONEWIRE_RESET(s, reg) kona_slot((s), (reg), 520, 65)
+#define KONA_READ(s, reg)          kona_slot((s), (reg), 6, 13)
+#define KONA_WRITE_ONE(s, reg)     kona_slot((s), (reg), 6, 13)
+#define KONA_WRITE_ZERO(s, reg)    kona_slot((s), (reg), 80, 30)
 
-static void kona_write_byte(QTestState *s, uint8_t byte)
+static void kona_write_byte(QTestState *s, uint64_t reg, uint8_t byte)
 {
     unsigned int i;
 
     for (i = 0; i < 8; i++) {
         if ((byte >> i) & 1) {
-            KONA_WRITE_ONE(s);
+            KONA_WRITE_ONE(s, reg);
         } else {
-            KONA_WRITE_ZERO(s);
+            KONA_WRITE_ZERO(s, reg);
         }
     }
 }
 
-static uint8_t kona_read_byte(QTestState *s)
+static uint8_t kona_read_byte(QTestState *s, uint64_t reg)
 {
     unsigned int i;
     uint8_t byte = 0;
 
     for (i = 0; i < 8; i++) {
-        if (KONA_READ(s)) {
+        if (KONA_READ(s, reg)) {
             byte |= 1u << i;
         }
     }
@@ -310,15 +327,86 @@ static void kona_build_identity(uint8_t identity[8], uint8_t family,
  * contending the bus, so this needs no Search ROM discrepancy walk to
  * address either part individually.
  */
-static void kona_match_rom(QTestState *s, const uint8_t identity[8])
+static void kona_match_rom(QTestState *s, uint64_t reg,
+                           const uint8_t identity[8])
 {
     unsigned int i;
 
-    g_assert_false(KONA_ONEWIRE_RESET(s)); /* pulled low: a part answers */
-    kona_write_byte(s, 0x55);              /* Match ROM */
+    g_assert_false(KONA_ONEWIRE_RESET(s, reg)); /* pulled low: a part answers */
+    kona_write_byte(s, reg, 0x55);               /* Match ROM */
     for (i = 0; i < 8; i++) {
-        kona_write_byte(s, identity[i]);
+        kona_write_byte(s, reg, identity[i]);
     }
+}
+
+/* The same byte as DS2502_CMD_READ_MEMORY below, before any part is matched. */
+#define KONA_ONEWIRE_CMD_SEARCH_ROM 0xf0
+
+/*
+ * One pass of the standard one-wire Search ROM discrepancy walk (Maxim
+ * AN187), taking the zero branch first. Chain each pass's result and
+ * `*last_discrepancy` into the next, starting from 0 and 0.
+ * sn0-bridge-identity-test.c's own nic_search_pass() runs the identical
+ * algorithm over Bridge's NIC register; reused here rather than
+ * reimplemented because REG_ONEWIRE and REG_NIC share the same one-wire
+ * ROM-command state machine (hw/1wire/core.c) Bridge's NIC register does.
+ * This is the walk the orchestrating datasheet note's discriminating test
+ * asks for: whether +0x9c's own Search ROM finds the same parts +0x98
+ * does on a rack, and only the geometry board on a deskside pipe.
+ */
+static uint64_t kona_search_pass(QTestState *s, uint64_t reg, uint64_t rom,
+                                 unsigned int *last_discrepancy)
+{
+    unsigned int bit_number, last_zero = 0;
+    uint64_t found = 0;
+
+    /* Pulled low: someone answers. */
+    g_assert_false(KONA_ONEWIRE_RESET(s, reg));
+    kona_write_byte(s, reg, KONA_ONEWIRE_CMD_SEARCH_ROM);
+    for (bit_number = 1; bit_number <= 64; bit_number++) {
+        bool bit = KONA_READ(s, reg);
+        bool complement = KONA_READ(s, reg);
+        bool direction;
+
+        g_assert_false(bit && complement);
+        if (bit != complement) {
+            direction = bit;
+        } else if (bit_number == *last_discrepancy) {
+            direction = true;
+        } else if (bit_number > *last_discrepancy) {
+            direction = false;
+            last_zero = bit_number;
+        } else {
+            direction = (rom >> (bit_number - 1)) & 1;
+            if (!direction) {
+                last_zero = bit_number;
+            }
+        }
+        if (direction) {
+            found |= UINT64_C(1) << (bit_number - 1);
+            KONA_WRITE_ONE(s, reg);
+        } else {
+            KONA_WRITE_ZERO(s, reg);
+        }
+    }
+    *last_discrepancy = last_zero;
+    return found;
+}
+
+/* Discover every part on the chain through `reg`; returns how many. */
+static unsigned int kona_search_all(QTestState *s, uint64_t reg,
+                                    uint64_t *rom, unsigned int max)
+{
+    unsigned int last_discrepancy = 0;
+    unsigned int count = 0;
+
+    do {
+        g_assert_cmpuint(count, <, max);
+        rom[count] = kona_search_pass(s, reg, count ? rom[count - 1] : 0,
+                                      &last_discrepancy);
+        count++;
+    } while (last_discrepancy != 0);
+    return count;
 }
 
 #define DS2502_CMD_READ_MEMORY 0xf0
@@ -332,20 +420,22 @@ static void kona_match_rom(QTestState *s, const uint8_t identity[8])
  * different, unidentified one-wire part its own fixture instantiates and
  * does not apply to a DS2502.
  */
-static void kona_read_memory(QTestState *s, uint8_t out[DS2502_DATA_SIZE])
+static void kona_read_memory(QTestState *s, uint64_t reg,
+                             uint8_t out[DS2502_DATA_SIZE])
 {
     uint8_t hdr[3] = { DS2502_CMD_READ_MEMORY, 0x00, 0x00 };
     unsigned int i;
 
     for (i = 0; i < sizeof(hdr); i++) {
-        kona_write_byte(s, hdr[i]);
+        kona_write_byte(s, reg, hdr[i]);
     }
-    g_assert_cmphex(kona_read_byte(s), ==, kona_crc8(0, hdr, sizeof(hdr)));
+    g_assert_cmphex(kona_read_byte(s, reg), ==, kona_crc8(0, hdr, sizeof(hdr)));
 
     for (i = 0; i < DS2502_DATA_SIZE; i++) {
-        out[i] = kona_read_byte(s);
+        out[i] = kona_read_byte(s, reg);
     }
-    g_assert_cmphex(kona_read_byte(s), ==, kona_crc8(0, out, DS2502_DATA_SIZE));
+    g_assert_cmphex(kona_read_byte(s, reg), ==,
+                    kona_crc8(0, out, DS2502_DATA_SIZE));
 }
 
 #define KONA_RECORD_PAGE 32
@@ -722,7 +812,8 @@ static void test_unknown_offset_reads_zero_and_accepts_writes(void)
  * (ds2502_set_image() leaves whatever a 64-byte image does not cover at
  * ds2502_instance_init()'s own 0xff default).
  */
-static void kona_assert_onewire_identity(QTestState *s, const char *barcode,
+static void kona_assert_onewire_identity(QTestState *s, uint64_t reg,
+                                         const char *barcode,
                                          const char *part,
                                          const char *revision,
                                          const char *name)
@@ -731,7 +822,7 @@ static void kona_assert_onewire_identity(QTestState *s, const char *barcode,
     uint8_t expected[KONA_RECORD_SIZE];
     unsigned int i;
 
-    kona_read_memory(s, wire);
+    kona_read_memory(s, reg, wire);
 
     kona_build_expected_record(expected, barcode, part, revision, name);
     g_assert_cmpmem(wire, KONA_RECORD_SIZE, expected, KONA_RECORD_SIZE);
@@ -754,9 +845,9 @@ static void test_onewire_geometry_identity(void)
 
     kona_reset();
     kona_build_identity(identity, KONA_ONEWIRE_FAMILY, KONA_GEOMETRY_SERIAL);
-    kona_match_rom(qts, identity);
-    kona_assert_onewire_identity(qts, "00000001", "030-1398-001", "01",
-                                 "GEOM-BD");
+    kona_match_rom(qts, REG_ONEWIRE, identity);
+    kona_assert_onewire_identity(qts, REG_ONEWIRE, "00000001", "030-1398-001",
+                                 "01", "GEOM-BD");
 }
 
 static void test_onewire_ktown_identity(void)
@@ -765,8 +856,9 @@ static void test_onewire_ktown_identity(void)
 
     kona_reset();
     kona_build_identity(identity, KONA_ONEWIRE_FAMILY, KONA_KTOWN_SERIAL);
-    kona_match_rom(qts, identity);
-    kona_assert_onewire_identity(qts, "00000002", "030-1067-001", "01",
+    kona_match_rom(qts, REG_ONEWIRE, identity);
+    kona_assert_onewire_identity(qts, REG_ONEWIRE, "00000002", "030-1067-001",
+                                 "01",
                                  "KTOWN-BD");
 }
 
@@ -808,9 +900,9 @@ static void test_onewire_other_identity_parts_empty(void)
     g_assert_cmphex(qtest_readl(s, REG_PROBE), ==, 0);
 
     kona_build_identity(identity, KONA_ONEWIRE_FAMILY, KONA_GEOMETRY_SERIAL);
-    kona_match_rom(s, identity);
-    kona_assert_onewire_identity(s, "00000001", "030-1398-001", "01",
-                                 "GEOM-BD");
+    kona_match_rom(s, REG_ONEWIRE, identity);
+    kona_assert_onewire_identity(s, REG_ONEWIRE, "00000001", "030-1398-001",
+                                 "01", "GEOM-BD");
 
     /*
      * Match ROM against Ktown's own identity still sees the reset pulse
@@ -833,11 +925,11 @@ static void test_onewire_other_identity_parts_empty(void)
      * 0xff instead.
      */
     kona_build_identity(identity, KONA_ONEWIRE_FAMILY, KONA_KTOWN_SERIAL);
-    kona_match_rom(s, identity);
-    kona_write_byte(s, DS2502_CMD_READ_MEMORY);
-    kona_write_byte(s, 0x00);
-    kona_write_byte(s, 0x00);
-    g_assert_cmphex(kona_read_byte(s), ==, 0xff);
+    kona_match_rom(s, REG_ONEWIRE, identity);
+    kona_write_byte(s, REG_ONEWIRE, DS2502_CMD_READ_MEMORY);
+    kona_write_byte(s, REG_ONEWIRE, 0x00);
+    kona_write_byte(s, REG_ONEWIRE, 0x00);
+    g_assert_cmphex(kona_read_byte(s, REG_ONEWIRE), ==, 0xff);
 
     qtest_quit(s);
 }
@@ -953,9 +1045,150 @@ static void test_onewire_board_part_configures_geometry_record(void)
     g_assert_cmphex(qtest_readl(s, REG_PROBE), ==, 0);
 
     kona_build_identity(identity, KONA_ONEWIRE_FAMILY, KONA_GEOMETRY_SERIAL);
-    kona_match_rom(s, identity);
-    kona_assert_onewire_identity(s, "00000001", "030-1129-002", "01",
-                                 "GEOM-BD");
+    kona_match_rom(s, REG_ONEWIRE, identity);
+    kona_assert_onewire_identity(s, REG_ONEWIRE, "00000001", "030-1129-002",
+                                 "01", "GEOM-BD");
+
+    qtest_quit(s);
+}
+
+/*
+ * REG_NIC (+0x9c) is the kernel driver's own offset onto the identical
+ * one-wire chain REG_ONEWIRE (+0x98) carries, established by
+ * kona_attach()'s call into nic_xg_vertex_info() and the disassembly
+ * trace into nic.o's generic one-wire NIC driver -- not a second,
+ * independent chain. The most direct proof is register-level: a slot
+ * issued through one offset must read back through the other with no
+ * further pulse, since both drive and observe the identical onewire_reg
+ * field (SGI_KONA_NIC's own header comment, include/hw/misc/sgi-kona.h,
+ * has the established/inferred evidence and the discriminating test that
+ * would tell a shared register apart from two chains sharing one
+ * protocol).
+ */
+static void test_nic_register_mirrors_onewire_register_state(void)
+{
+    uint32_t via_onewire, via_nic;
+
+    kona_reset();
+
+    /* A slot driven through +0x98 reads back identically through +0x9c. */
+    KONA_WRITE_ONE(qts, REG_ONEWIRE);
+    via_onewire = qtest_readl(qts, REG_ONEWIRE);
+    via_nic = qtest_readl(qts, REG_NIC);
+    g_assert_cmphex(via_nic, ==, via_onewire);
+
+    kona_reset();
+
+    /* And the reverse: a slot driven through +0x9c reads back via +0x98. */
+    KONA_WRITE_ZERO(qts, REG_NIC);
+    via_nic = qtest_readl(qts, REG_NIC);
+    via_onewire = qtest_readl(qts, REG_ONEWIRE);
+    g_assert_cmphex(via_onewire, ==, via_nic);
+}
+
+/*
+ * The same records answer through either register: replaying
+ * test_onewire_geometry_identity() and test_onewire_ktown_identity()'s
+ * own Match ROM/Read Memory exchanges against REG_NIC on the same shared
+ * rack instance gets the identical geometry-board and Ktown records.
+ */
+static void test_nic_identity_matches_onewire_identity(void)
+{
+    uint8_t identity[8];
+
+    kona_reset();
+    kona_build_identity(identity, KONA_ONEWIRE_FAMILY, KONA_GEOMETRY_SERIAL);
+    kona_match_rom(qts, REG_NIC, identity);
+    kona_assert_onewire_identity(qts, REG_NIC, "00000001", "030-1398-001",
+                                 "01", "GEOM-BD");
+
+    kona_reset();
+    kona_build_identity(identity, KONA_ONEWIRE_FAMILY, KONA_KTOWN_SERIAL);
+    kona_match_rom(qts, REG_NIC, identity);
+    kona_assert_onewire_identity(qts, REG_NIC, "00000002", "030-1067-001",
+                                 "01", "KTOWN-BD");
+}
+
+/*
+ * Validate a Search ROM hit's own trailing CRC-8 and return the family
+ * byte and serial it encodes, the same layout kona_build_identity()
+ * builds byte by byte.
+ */
+static void kona_check_search_hit(uint64_t rom, uint8_t *family,
+                                  uint64_t *serial)
+{
+    uint8_t identity[8];
+    unsigned int i;
+
+    for (i = 0; i < 8; i++) {
+        identity[i] = (rom >> (8 * i)) & 0xff;
+    }
+    g_assert_cmphex(kona_crc8(0, identity, 7), ==, identity[7]);
+
+    *family = identity[0];
+    *serial = 0;
+    for (i = 0; i < 6; i++) {
+        *serial |= (uint64_t)identity[1 + i] << (8 * i);
+    }
+}
+
+/*
+ * The ROM search through +0x9c walks both parts on the default rack
+ * fixture (the geometry board plus Ktown, "other-identity-parts"'s own
+ * default) and only the geometry board on a deskside pipe with an empty
+ * "other-identity-parts" list -- the same configuration
+ * test_onewire_other_identity_parts_empty() above uses. Which part the
+ * search visits first is not asserted, matching
+ * sn0-bridge-identity-test.c's own test_records_match_the_datasheet(): a
+ * two-part bus's discovery order is not part of this register's
+ * contract.
+ */
+static void test_nic_search_rom_walks_rack_and_deskside(void)
+{
+    uint64_t rom[4];
+    unsigned int count, i;
+    bool seen_geometry, seen_ktown;
+    QTestState *s;
+
+    kona_reset();
+    count = kona_search_all(qts, REG_NIC, rom, ARRAY_SIZE(rom));
+    g_assert_cmpuint(count, ==, 2);
+
+    seen_geometry = seen_ktown = false;
+    for (i = 0; i < count; i++) {
+        uint8_t family;
+        uint64_t serial;
+
+        kona_check_search_hit(rom[i], &family, &serial);
+        g_assert_cmphex(family, ==, KONA_ONEWIRE_FAMILY);
+        if (serial == KONA_GEOMETRY_SERIAL) {
+            seen_geometry = true;
+        } else if (serial == KONA_KTOWN_SERIAL) {
+            seen_ktown = true;
+        } else {
+            g_assert_not_reached();
+        }
+    }
+    g_assert_true(seen_geometry);
+    g_assert_true(seen_ktown);
+
+    s = qtest_init(
+        "-M origin2000 -device '{\"driver\":\"sgi-kona\",\"id\":\"kona3\","
+        "\"module\":99,\"slot\":8,"
+        "\"fabric\":\"/machine/crossbow0-spare-fabric[0]\","
+        "\"other-identity-parts\":[]}'");
+    g_assert_cmphex(qtest_readl(s, REG_PROBE), ==, 0);
+
+    count = kona_search_all(s, REG_NIC, rom, ARRAY_SIZE(rom));
+    g_assert_cmpuint(count, ==, 1);
+    {
+        uint8_t family;
+        uint64_t serial;
+
+        kona_check_search_hit(rom[0], &family, &serial);
+        g_assert_cmphex(family, ==, KONA_ONEWIRE_FAMILY);
+        g_assert_cmphex(serial, ==, KONA_GEOMETRY_SERIAL);
+    }
 
     qtest_quit(s);
 }
@@ -966,19 +1199,24 @@ static void test_onewire_board_part_configures_geometry_record(void)
  * hw/misc/sgi-kona.c), matching hw/pci-host/sgi-bridge.c's own
  * sgi_bridge_reset_hold(). KONA_ONEWIRE_RESET()'s pulse/sample bits are
  * nonzero on their own, so onewire_reg reads back nonzero here whether or
- * not a part answers the reset pulse.
+ * not a part answers the reset pulse. REG_NIC is checked too: it is the
+ * identical onewire_reg, not a second field reset would need to know
+ * about separately.
  */
 static void test_reset_clears_plain_storage(void)
 {
     kona_reset();
     qtest_writel(qts, REG_WIDGET_CONTROL, 0xdeadbeef);
-    KONA_ONEWIRE_RESET(qts);
+    KONA_ONEWIRE_RESET(qts, REG_ONEWIRE);
     g_assert_cmphex(qtest_readl(qts, REG_WIDGET_CONTROL), !=, 0);
     g_assert_cmphex(qtest_readl(qts, REG_ONEWIRE), !=, 0);
+    g_assert_cmphex(qtest_readl(qts, REG_NIC), ==,
+                    qtest_readl(qts, REG_ONEWIRE));
 
     qtest_system_reset(qts);
     g_assert_cmphex(qtest_readl(qts, REG_WIDGET_CONTROL), ==, 0);
     g_assert_cmphex(qtest_readl(qts, REG_ONEWIRE), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, REG_NIC), ==, 0);
 }
 
 /*
@@ -1171,6 +1409,15 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/origin2000/kona/"
                    "onewire-board-part-configures-geometry-record",
                    test_onewire_board_part_configures_geometry_record);
+    qtest_add_func("sn0/origin2000/kona/"
+                   "nic-register-mirrors-onewire-register-state",
+                   test_nic_register_mirrors_onewire_register_state);
+    qtest_add_func("sn0/origin2000/kona/"
+                   "nic-identity-matches-onewire-identity",
+                   test_nic_identity_matches_onewire_identity);
+    qtest_add_func("sn0/origin2000/kona/"
+                   "nic-search-rom-walks-rack-and-deskside",
+                   test_nic_search_rom_walks_rack_and_deskside);
     qtest_add_func("sn0/origin2000/kona/reset-clears-plain-storage",
                    test_reset_clears_plain_storage);
     qtest_add_func("sn0/origin2000/kona/reset-clears-increment-2-state",
