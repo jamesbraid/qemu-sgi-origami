@@ -58,6 +58,7 @@ typedef struct DisasContext {
     bool has_store_transaction;
     bool timer_adjacent_pending;
     bool timer_count_written;
+    bool count_compare_adjacent_recovery;
 } DisasContext;
 
 #define DISAS_STOP       DISAS_TARGET_0
