@@ -25,6 +25,12 @@
 #define IOC3_SERIAL_IRQ (1u << 6)
 #define BRIDGE_REG(offset) (BRIDGE + (offset) + 4)
 #define SUPERIO_PIN (1u << 3)
+#define SCSI0_WINDOW (BRIDGE + 0x200000)
+/* Bridge reverses the two halfword lanes within each 32-bit PCI word. */
+#define ISP_MAILBOX(n) (SCSI0_WINDOW + ((0x70 + 2 * (n)) ^ 2))
+#define ISP_HOST_CMD (SCSI0_WINDOW + 0xc2)
+#define ISP_MBOX_COMPLETE 0x4000
+#define ISP_MBOX_HOST_ERROR 0x4002
 
 static char *flash_path;
 
@@ -236,6 +242,61 @@ static void test_pci_bar_separation(void)
     g_assert_cmphex(qtest_readw(qts, scsi0 + 0x0c), ==, 1);
     g_assert_cmphex(qtest_readw(qts, scsi1 + 0x0c), ==, 1);
     g_assert_cmphex(qtest_readl(qts, FLASH), ==, 0x12345678);
+    qtest_quit(qts);
+}
+
+static uint16_t octane_isp_ram_transfer(QTestState *qts, uint16_t command,
+                                        uint32_t pci_address)
+{
+    uint16_t result;
+
+    qtest_writew(qts, ISP_MAILBOX(4), 4);
+    qtest_writew(qts, ISP_MAILBOX(6), 0);
+    qtest_writew(qts, ISP_MAILBOX(7), 0);
+    qtest_writew(qts, ISP_MAILBOX(0), command);
+    qtest_writew(qts, ISP_MAILBOX(1), 0x2000);
+    qtest_writew(qts, ISP_MAILBOX(2), pci_address >> 16);
+    qtest_writew(qts, ISP_MAILBOX(3), pci_address);
+    qtest_writew(qts, ISP_HOST_CMD, 0x5000);
+    result = qtest_readw(qts, ISP_MAILBOX(0));
+    qtest_writew(qts, ISP_HOST_CMD, 0x7000);
+    qtest_writew(qts, SCSI0_WINDOW + 0x0e, 0);
+    return result;
+}
+
+static void test_scsi_dma_to_heart_ram(void)
+{
+    QTestState *qts = octane_start();
+    const uint8_t pattern[8] = { 0x10, 0x21, 0x32, 0x43,
+                                 0x54, 0x65, 0x76, 0x87 };
+    const uint8_t sentinel[8] = { 0xbb, 0xbb, 0xbb, 0xbb,
+                                  0xbb, 0xbb, 0xbb, 0xbb };
+    uint8_t seen[sizeof(pattern)];
+
+    qtest_writel(qts, CFG(0) + 0x14, 0x10000000);
+    qtest_writel(qts, CFG(0) + 0x04, 0x00000006);
+    qtest_writel(qts, BRIDGE + 0x200 + 4, 0x1100);
+    qtest_writel(qts, BRIDGE_REG(0x080), 8u << 20);
+    qtest_memwrite(qts, RAM + 0x1000, pattern, sizeof(pattern));
+    memset(seen, 0, sizeof(seen));
+    qtest_memwrite(qts, RAM + 0x2000, seen, sizeof(seen));
+    qtest_memwrite(qts, RAM + 0x3000, sentinel, sizeof(sentinel));
+
+    g_assert_cmphex(octane_isp_ram_transfer(qts, 1, 0xa0001000), ==,
+                    ISP_MBOX_COMPLETE);
+    g_assert_cmphex(octane_isp_ram_transfer(qts, 3, 0xa0002000), ==,
+                    ISP_MBOX_COMPLETE);
+    qtest_memread(qts, RAM + 0x2000, seen, sizeof(seen));
+    g_assert_cmpmem(seen, sizeof(seen), pattern, sizeof(pattern));
+
+    qtest_writel(qts, BRIDGE_REG(0x080), 9u << 20);
+    g_assert_cmphex(octane_isp_ram_transfer(qts, 3, 0xa0003000), ==,
+                    ISP_MBOX_HOST_ERROR);
+    qtest_writel(qts, BRIDGE_REG(0x080), 8u << 20);
+    g_assert_cmphex(octane_isp_ram_transfer(qts, 1, 0xa8001000), ==,
+                    ISP_MBOX_HOST_ERROR);
+    qtest_memread(qts, RAM + 0x3000, seen, sizeof(seen));
+    g_assert_cmpmem(seen, sizeof(seen), sentinel, sizeof(sentinel));
     qtest_quit(qts);
 }
 
@@ -478,6 +539,8 @@ int main(int argc, char **argv)
     qtest_add_func("/octane/flash-and-pci", test_flash_and_pci);
     qtest_add_func("/octane/firmware-rejections", test_firmware_rejections);
     qtest_add_func("/octane/pci-bar-separation", test_pci_bar_separation);
+    qtest_add_func("/octane/scsi-dma-to-heart-ram",
+                   test_scsi_dma_to_heart_ram);
     qtest_add_func("/octane/serial-a-loopback", test_serial_a_loopback);
     qtest_add_func("/octane/serial-a-chardev", test_serial_a_chardev);
     qtest_add_func("/octane/serial-a-interrupt-route",
