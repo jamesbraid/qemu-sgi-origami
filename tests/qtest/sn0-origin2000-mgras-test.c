@@ -940,6 +940,33 @@ static void test_dac_lut_load(void)
     g_assert_cmphex(qtest_readl(qts, REG_HQ_STATUS) & 0x80000000, ==, 0);
 }
 
+/*
+ * SGI's Octane IDE VC3 register test (mg_vc3internalreg, ide.IP30 6.5.30
+ * at 0xa80000002083da2c) stops video timing, then writes walking-one,
+ * walking-zero, 0 and 0xffff patterns to VC3 registers 0-0x13 and reads
+ * each straight back, all 16 bits. Register 7 is the SRAM address
+ * (VC3_RAM_ADDR in the test's own names), so it reads back as the
+ * address the write loaded.
+ */
+static void test_vc3_registers_read_back(void)
+{
+    mgras_reset();
+    qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x1e, 0));
+    /* Walking one, walking zero, then 0 and 0xffff: 34 patterns. */
+    for (int step = 0; step < 34; step++) {
+        uint16_t pattern = step < 16 ? 1u << step :
+                           step < 32 ? (uint16_t)~(1u << (step - 16)) :
+                           step == 32 ? 0 : 0xffff;
+
+        for (int reg = 0; reg <= 0x13; reg++) {
+            qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(reg, pattern));
+            qtest_writeb(qts, REG_VC3_INDEX, reg);
+            g_assert_cmphex(qtest_readw(qts, REG_VC3_DATA), ==, pattern);
+        }
+    }
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+}
+
 static void test_dac_gamma_identity_ramp_leaves_colors_unchanged(void)
 {
     uint8_t ramp[3][256];
@@ -6139,6 +6166,8 @@ int main(int argc, char **argv)
                    test_hq_status_hiwater_poll_bit);
     qtest_add_func("sn0/origin2000/mgras/hq-status-independent-of-error",
                    test_hq_status_independent_of_sticky_error);
+    qtest_add_func("sn0/origin2000/mgras/vc3-registers-read-back",
+                   test_vc3_registers_read_back);
     qtest_add_func("sn0/origin2000/mgras/dac-lut-load",
                    test_dac_lut_load);
     qtest_add_func("sn0/origin2000/mgras/dac-gamma-identity-ramp-noop",

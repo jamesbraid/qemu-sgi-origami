@@ -50,6 +50,9 @@
 
 #define MGRAS_CONTEXT_COMMAND 0x120400
 
+/* VC3 register 7 loads, and reads back, the SRAM address. */
+#define MGRAS_VC3_RAM_ADDR 0x07
+
 /*
  * XMAP configuration register (0x071d00) selectors, as xmap_index decodes
  * the index bytes SGI's IDE writes: 4 selects the revision, 8 the FIFO
@@ -452,6 +455,11 @@ static uint64_t mgras_read_internal(SGIMgrasState *s, hwaddr addr,
     case SGI_MGRAS_VC3_DATA: {
         uint16_t v = s->vc3_index < ARRAY_SIZE(s->vc3_reg) ?
                      s->vc3_reg[s->vc3_index] : 0;
+
+        /* Register 7 is the SRAM address; it reads back as loaded. */
+        if (s->vc3_index == MGRAS_VC3_RAM_ADDR) {
+            v = s->vc3_ram_addr;
+        }
         if (s->vc3_index == 0x1f) {
             v &= ~0x60; /* Functional-approximation revision value. */
         }
@@ -744,7 +752,7 @@ static void mgras_write(void *opaque, hwaddr addr, uint64_t value,
         uint8_t index = value >> 24;
         uint16_t data16 = (value >> 8) & 0xffff;
 
-        if (index == 7) {
+        if (index == MGRAS_VC3_RAM_ADDR) {
             s->vc3_ram_addr = data16;
             return;
         }
