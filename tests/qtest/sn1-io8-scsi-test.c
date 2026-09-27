@@ -1,6 +1,13 @@
 /*
- * Origin 300 IO-8 ISP12160 integration through XBridge head F.
- * Tests slot-1 placement and bidirectional transfers to Bedrock memory.
+ * The Origin 300 IO-8 board's QLogic ISP12160, reached the way a guest
+ * reaches it. Register cycles cross XIO into XBridge head F and out
+ * of head F's programmed I/O window for slot 1; the adapter's own
+ * transfers cross back through head F into Bedrock's memory.
+ *
+ * The part's own register contract belongs to sn0-isp12160-test.c and is
+ * not repeated here. What this file pins is that the board carries the
+ * adapter at the position the board puts it, and that both directions of
+ * the fabric path between it and the processor's memory work.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
@@ -746,10 +753,13 @@ static void test_registers_through_the_fabric(const void *data)
 }
 
 /*
- * Both rings reside in processor memory across crosstalk. Broken inbound DMA
- * leaves the response producer unchanged until timeout. Check completion code
- * and handle as well as a moved entry, to catch wrong-slot or wrong-command
- * status.
+ * One command from end to end. Both rings live in the processor's memory
+ * and the adapter reaches them over XIO, so an inbound path that
+ * does not work leaves the response producer where it was and the wait
+ * runs out. The handle and the completion code are asserted rather than
+ * the entry merely having changed: a status entry written into the wrong
+ * slot, or carrying another command's handle, is not this command
+ * completing.
  */
 static void test_command_reaches_memory(const void *data)
 {

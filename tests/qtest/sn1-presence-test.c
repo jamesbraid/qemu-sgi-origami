@@ -298,7 +298,7 @@ static void emit_prologue_late(Image *p, bool late_b)
         emit_nop(p);
     }
 
-    /* Uncached, crosstalk attribute: the local hub register window. */
+    /* Uncached, I/O space: the local hub register window. */
     emit_li64(p, R_S0, UINT64_C(0x9200000001000000));
     emit_li64(p, R_S2, UINT64_C(0x9200000001000000) | LB_SCRATCH_1);
     emit_li64(p, R_S3, UINT64_C(0x9200000001000000) | II_SCRATCH_0);

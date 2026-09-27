@@ -1,7 +1,10 @@
 /*
- * Test ISP12160 dual-channel SCSI registers through Crosstalk and PCI.
- * Bridge slot 3 sits beside two ISP1040s and IOC3; accesses use the guest's
- * byte correction and Crosstalk decode.
+ * SGI QLogic ISP12160 dual-channel SCSI adapter: the part's register
+ * contract through the real XIO-to-PCI path.
+ *
+ * The adapter is plugged into bridge slot 3, beside the board's own two
+ * ISP1040s and its IOC3, so every access here crosses the same byte-lane
+ * correction and XIO decode a guest driver would.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
@@ -12,7 +15,7 @@
 #include "sgi-migrate.h"
 #include "sgi-test.h"
 
-/* Crosstalk space, and the bridge's own widget window inside it. */
+/* I/O space, and the bridge's own widget window inside it. */
 #define BRIDGE_WIDGET   8
 #define BRIDGE_BASE     (SPACE_IO + ((uint64_t)BRIDGE_WIDGET << 24))
 

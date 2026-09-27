@@ -497,12 +497,12 @@ static void test_explicit_fabric_must_match_its_slot(const void *data)
 }
 
 /*
- * The Hub's own real crosstalk decode, confirmed against a real widget by
+ * The Hub's own real XIO decode, confirmed against a real widget by
  * sn0-origin2000-xtalk-owner-test.c's assert_owner(): a physical read at
  * SPACE_IO plus a widget's small-window stride plus a register's own
  * offset reaches that widget's real chip registers through the real
  * Crossbow. Reused here read-only, on the machine's own onboard BaseIO
- * (crosstalk widget 8, the io6 preset's own xio_widgets), to observe whatever
+ * (XIO widget 8, the io6 preset's own xio_widgets), to observe whatever
  * the board fitted at IO4 below actually delivers to it.
  */
 #define SMALL_WINDOW_SIZE       UINT64_C(0x1000000)
@@ -668,7 +668,7 @@ static void test_pci_expansion_delivers_through_spare_fabric(const void *data)
  * widget 8 and the two host nodes at 9 and 10). A board that
  * takes the slot's proxy is addressable at that widget, so its own Bridge
  * answers a processor through crossbow0's real small window for widget
- * 11. The same crosstalk decode SMALL_WINDOW(BASEIO_WIDGET) reaches the
+ * 11. The same XIO decode SMALL_WINDOW(BASEIO_WIDGET) reaches the
  * onboard BaseIO. Neither path needs a scratch sysbus map.
  */
 #define SPARE_WIDGET            11
@@ -713,7 +713,7 @@ static void test_pci_expansion_delivers_through_spare_fabric(const void *data)
  * the same benign fully-writable storage register sn0-bridge-widget-test.c
  * and the through-fabric test above use) round-trips a sentinel only once
  * the spare widget is an inbound destination; before that it reads back the
- * zero an unrouted crosstalk hole returns.
+ * zero an unrouted XIO hole returns.
  */
 static void test_pci_expansion_is_inbound_addressable(const void *data)
 {
@@ -780,7 +780,7 @@ static void test_pci_expansion_delivers_card_interrupt_to_hub(const void *data)
  * through crossbow0's small window for the spare widget, the very config
  * accesses a driver's own probe issues. On trunk the spare widget is no
  * inbound destination, so the identity reads back the zero an unrouted
- * crosstalk hole returns.
+ * XIO hole returns.
  */
 #define ISP12160_ID_PAIR        0x12161077u
 static void test_expansion_card_enumerates_inbound(const void *data)
@@ -1111,7 +1111,7 @@ static void test_console_field_puts_its_node_on_serial_line_zero(
 /*
  * tests/unit/test-sn-model.c checks xio_attachments/io_boards against
  * node_count once, for the compiled descriptor; this fixture corrupts a copy
- * at runtime instead, so a node missing its own crosstalk attachment only
+ * at runtime instead, so a node missing its own XIO attachment only
  * fails once sgi_machine_index_xio_attachments looks it up during real
  * construction. This must surface as sgi_machine_ init's own reported error
  * and a clean exit, not an aborting assertion or a memory-region collision

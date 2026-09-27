@@ -15,7 +15,7 @@
 #define INBOUND_BASE UINT64_C(0x20000000000)
 #define REMOTE_BASE UINT64_C(0x2000000000000)
 #define IO_REGISTERS_BASE UINT64_C(0x3000000000000)
-/* Crosstalk bit 47, small window 1 in its remote form, then the register. */
+/* XIO bit 47, small window 1 in its remote form, then the register. */
 #define HUB_REMOTE_WINDOW (UINT64_C(1) << 47 | UINT64_C(0x1800000))
 #define HUB_INTERRUPT_SEND(node, pi) \
     (INBOUND_BASE + HUB_REMOTE_WINDOW + ((uint64_t)(node) << 39) + \
@@ -581,7 +581,7 @@ static void test_parent_io_interrupt_write(void)
 }
 
 /*
- * A widget's interrupt write as the I/O interface receives it: crosstalk bit
+ * A widget's interrupt write as the I/O interface receives it: XIO bit
  * 47, the node at bit 39, small window 1 in its remote form, and the modify
  * register of the chosen interface. The I/O interface forwards it to the
  * parent's register window only after its inbound-access check and only for
@@ -628,7 +628,7 @@ static void test_parent_widget_interrupt_write(void)
 }
 
 /*
- * The I/O interface decodes crosstalk register packets against the node
+ * The I/O interface decodes XIO register packets against the node
  * number the local block's revision word carries, the one the firmware writes
  * when it assigns the node (one number per chip is the model's choice).
  * Before the write a packet for node 3 arrives nowhere; after it, that packet

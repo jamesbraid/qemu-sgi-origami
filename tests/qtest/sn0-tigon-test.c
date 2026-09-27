@@ -1,8 +1,14 @@
 /*
- * Alteon Tigon 2 (SGI "eg") PCI card on the Origin 200 Bridge.
- * A free -device slot, as in sn0-bridge-test.c, exercises Bridge decode,
- * register access, firmware ring processing and descriptor byte order over
- * the machine's crosstalk-to-PCI path; base I/O adapters are soldered down.
+ * Alteon Tigon 2 (the SGI "eg" gigabit board) behind the Origin 200 Bridge.
+ *
+ * The Tigon is an add-in PCI card, so unlike the base I/O board's soldered
+ * adapters it is instantiated with -device at a free slot and reached through
+ * that slot's own Bridge decode -- the same way tests/qtest/sn0-bridge-test.c
+ * hosts its probe card. Everything here runs on the machine's real
+ * XIO-to-PCI topology so the register contract, the firmware-mediated
+ * ring engine, and the descriptor byte order are all proven on the fabric the
+ * card actually sits on rather than a generic PCI bus that has no Bridge.
+ *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
@@ -23,7 +29,7 @@
 #include "sgi-test.h"
 #include "sgi-migrate.h"
 
-/* Crosstalk space and the Bridge's widget window inside it. */
+/* I/O space, and the Bridge's widget window inside it. */
 #define BRIDGE_WIDGET   8
 #define BRIDGE_BASE     (SPACE_IO + ((uint64_t)BRIDGE_WIDGET << 24))
 

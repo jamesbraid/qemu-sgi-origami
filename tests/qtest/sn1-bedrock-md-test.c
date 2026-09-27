@@ -37,7 +37,7 @@
 #define MEMORY_UNCORRECTABLE (UINT64_C(1) << 24)
 /* The parent's hardware-irq lines: interface, processor, then the line. */
 #define ERROR_LINE(_pi, _cpu) ((_pi) * 10 + (_cpu) * 5 + 4)
-/* The Origin 300's node-named Bedrock register window, crosstalk space. */
+/* The Origin 300's node-named Bedrock register window, I/O space. */
 #define BEDROCK_NODE_REGISTERS UINT64_C(0x20001800000)
 #define DIRECTORY_CONFIG 0x40000
 #define DIRECTORY_ERROR 0x40010
@@ -71,7 +71,7 @@
 #define PROTECTION_LAST 0x3ffffc38
 #define PROTECTION_FIRST_ABSENT 0x40000408
 #define PROTECTION_MACHINE_BASE UINT64_C(0x101c0000000)
-/* Bedrock's own registers through the crosstalk form. */
+/* Bedrock's own registers through the XIO form. */
 #define BEDROCK_LOCAL_REGISTERS UINT64_C(0x20001000000)
 #define SELFTEST_MACHINE(_x) (BEDROCK_LOCAL_REGISTERS + 0x780000 + (_x))
 #define PROTECTION_MACHINE_BANK2 \

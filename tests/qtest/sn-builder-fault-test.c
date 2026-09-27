@@ -259,7 +259,7 @@ static SGIModelNodePopulationList *node0_row(SGIModelNodePopulationList *rows,
 /*
  * Console field test fixture: a two-node topology with console=1, each
  * node carrying its own base I/O controller the way Origin 200's two-tower
- * wiring does (node/module/xtalk/board values copied from the
+ * wiring does (node/module/XIO/board values copied from the
  * origin200-dual configuration's own compiled catalogue entry, minus a
  * SCSI-carrying board, which the serial line contract never touches). All
  * shipping topologies have console=0, so the reordering
@@ -446,7 +446,7 @@ static void console_test_set_activate(Object *obj, bool value, Error **errp)
  * entry and each io-boards entry's placement, still run at every realize,
  * unlike sgi_machine_validate_topology, it is not just a validator: it
  * computes the indices the builder needs to place each board): a node with
- * no matching crosstalk attachment reaches it only once construction is
+ * no matching XIO attachment reaches it only once construction is
  * already under way. Unlike sn-builder-test.c's user-option rejection tests,
  * this runs the real builder (sgi_machine_init), the only place this gap is
  * reachable, so it forces activation the way console-test's own "activate"
@@ -562,7 +562,7 @@ static SGIModelCpuPopulation bank_test_populations[] = {
 };
 
 /*
- * sgi_machine_populate_node() requires a board and crosstalk attachment
+ * sgi_machine_populate_node() requires a board and XIO attachment
  * per node. Reuse the console fixture's node 0 IP29 BaseIO and IOC3.
  */
 static SGIModelTopology bank_test_topology = {
@@ -770,7 +770,7 @@ static const TypeInfo bedrock_test_type = {
  * subregion of two different (offset, container) placements, so sharing
  * machine->ram the way today's single realized node does would abort the
  * second add_subregion call. Neither node's I/O board is built: this fixture
- * checks addressing only, so each carries just its own local crosstalk view
+ * checks addressing only, so each carries just its own local XIO view
  * (widget zero), the one widget every Bedrock always decodes.
  */
 #define TYPE_SN_BUILDER_BEDROCK_NASID_TEST \

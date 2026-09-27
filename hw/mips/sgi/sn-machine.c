@@ -11,7 +11,7 @@
  * interrupt inputs.
  *
  * Origin 200's onboard base I/O sits directly on its one node's
- * crosstalk port: sn0.c owns it (sn0_node_build_baseio(), called from
+ * XIO port: sn0.c owns it (sn0_node_build_baseio(), called from
  * this file's own io_boards[] loop below, once every node has realized)
  * since it is a fitted part of the node's own System Board, not a
  * removable card. The Origin 2000 module's BaseIO card (sgi-xio-baseio)
@@ -197,7 +197,7 @@ struct SGIMachineState {
     SGIXioBoardState **io_boards;
 
     /*
-     * A directly attached board's own crosstalk wiring: one link per
+     * A directly attached board's own XIO wiring: one link per
      * io_boards[] entry that attaches without a Crossbow (Origin 200's
      * onboard I/O). Unused entries (a Crossbow-attached board's own)
      * stay zeroed.
@@ -976,11 +976,9 @@ static bool sgi_machine_index_xio_attachments(
         }
     }
     /*
-     * A node no attachment entry ever claimed: the same fault the
-     * deleted sgi_machine_populate_node used to catch with
-     * g_assert(board && xtalk), relocated here now that this function
-     * resolves each node's own attachment before the board path builds
-     * anything.
+     * A node no attachment entry ever claimed is a topology fault. It is
+     * caught here because this function resolves each node's own
+     * attachment before the board path builds anything.
      */
     for (i = 0; i < node_count; i++) {
         if (!claimed[i]) {
@@ -1742,7 +1740,7 @@ static bool sgi_machine_instantiate_io8(
 }
 
 /*
- * Build one io_boards entry, wire it to its own crosstalk position and
+ * Build one io_boards entry, wire it to its own XIO position and
  * realize it: IP29's onboard I/O (direct-attach), the Origin 2000
  * BaseIO card (Crossbow-attach) and the Origin 300 IO-8 (a Bedrock
  * node's own XBridge head) are different enough carriers now (sn0.c
@@ -1811,9 +1809,9 @@ static bool sgi_machine_instantiate_io_board(
  * node_attachment and board_attachment are sgi_machine_realize's own,
  * already resolved by sgi_machine_index_xio_attachments there; nothing
  * here waits for a `-device`-plugged board, unlike the deferred
- * machine-init-done hook this replaces: a crosstalk board realized after
+ * machine-init-done hook this replaces: an XIO board realized after
  * the machine returns cannot become an inbound destination on any of
- * these Crossbows (see the crosstalk port experiment's own report for
+ * these Crossbows (see the XIO port experiment's own report for
  * why), though sgi_machine_done() below still connects such a board,
  * through the proxy of the empty slot it names.
  */
@@ -1834,7 +1832,7 @@ static bool sgi_machine_realize_crossbars(
     for (i = 0; i < crossbar_count; i++) {
         /*
          * Builder invariant: "links-present" and every endpoint the
-         * builders above attached both come from the topology's xtalk
+         * builders above attached both come from the topology's XIO
          * attachments, so nothing a user supplies
          * can make them differ. An endpoint on a port reported empty would
          * carry traffic to a widget firmware is told is not there.
@@ -2616,7 +2614,7 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
 
             /*
              * Widget zero is the crossbar's own local view; the rest come
-             * one per this node's own xtalk attachment (a board slot,
+             * one per this node's own XIO attachment (a board slot,
              * populated or not -- see sn1-node.c's widget-wiring comment
              * for why an empty slot still needs one). Which of those
              * boards is actually populated is the io_boards loop's own
@@ -2992,7 +2990,7 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
      * Every port any node or board this run builds attaches through has
      * attached now, so every Crossbow can realize in one pass, here,
      * rather than waiting for a machine-init-done notifier: this
-     * experiment does not support a crosstalk board attaching later
+     * experiment does not support an XIO board attaching later
      * (see docs/plans/sn-machine-model.md, step 1's own report). A
      * `-device` board realized later reaches its Crossbow through the
      * proxy of the empty slot it names; sgi_machine_done() below finishes

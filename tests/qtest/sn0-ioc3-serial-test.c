@@ -18,7 +18,7 @@
 #include <netinet/tcp.h>
 #include "sgi-test.h"
 
-/* Crosstalk space, and the chip's window inside the console widget. */
+/* I/O space, and the chip's window inside the console widget. */
 #define CONSOLE_WIDGET  8
 #define BRIDGE_DEVICE2  0x600000
 #define IOC3_BASE       (SPACE_IO + ((uint64_t)CONSOLE_WIDGET << 24) + \
@@ -26,7 +26,7 @@
 
 /*
  * A guest's bus scan: assign the controller a PCI address and aim the
- * bridge's device window at it. The crosstalk-side offset stays fixed.
+ * bridge's device window at it. The XIO-side offset stays fixed.
  */
 #define BRIDGE_BASE     (SPACE_IO + ((uint64_t)CONSOLE_WIDGET << 24))
 #define REG_DATA        4         /* registers sit at a slot's upper half */
@@ -40,7 +40,7 @@
 #define IOC3_PCI_MMIO    0x10000000u
 
 /*
- * A crosstalk address one node stride up reaches the same register on
+ * An XIO address one node stride up reaches the same register on
  * another node's controller: each node maps its own copy of the console
  * widget at SPACE_IO + (nasid << 32), the offset the dual-node model
  * uses. node_base is 0 for the console node.

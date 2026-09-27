@@ -44,14 +44,14 @@ alias: only a full-width access operates the latch.
 Widget identity and control
 ===========================
 
-The identification register uses the common crosstalk layout --
+The identification register uses the common XIO layout --
 revision, part, manufacturer, and a lowest bit that always reads
 one. That bit is declared by no Hub source; it is inherited from the
-crosstalk contract the Bridge and crossbar both state. The control
+XIO contract the Bridge and crossbar both state. The control
 register resets with this Hub's own widget number at 1 (the
 register-level counterpart of the address map) and the crossbar
 credit at 2; the tag-mode bit reports hardware and is not writable.
-The two crosstalk timeouts are the first registers Linux writes and
+The two XIO timeouts are the first registers Linux writes and
 accept a write at reset with no unlock step.
 
 The widget status register always reads zero: this model retries
@@ -63,7 +63,7 @@ guest error. The I/O interface's two scratch registers are 36-bit
 words of four packed sub-fields, everything above bit 35 reading
 zero -- the layout SGI's own table and Linux agree on -- and the
 firmware uses register 0 as private boot state (a measured 234 reads
-against 6 writes per boot). Of the incoming-crosstalk request buffer
+against 6 writes per boot). Of the incoming-XIO request buffer
 array (fifteen slots of four sub-registers), only slots 7-14's C
 sub-register is decoded, matching the firmware's measured diagnostic
 sweep; every field a real slot would hold is zero in a model that
@@ -158,7 +158,7 @@ line asserted after software cleared the last bit it could see -- an
 interrupt storm, not a lost interrupt. The interrupt-modify register
 is the only way to change a bit -- seven bits of number, the top bit
 selecting the bank, one bit for set or clear -- and it is where a
-device interrupt arrives, as a crosstalk write from the Bridge.
+device interrupt arrives, as an XIO write from the Bridge.
 
 Scheduling assist
 =================
@@ -490,7 +490,7 @@ after a migration load. The other spaces' nameless windows are the
 position-independent aliases of asm/sn/addrs.h and stay wide and
 reader-local regardless of the register: the Hub-special space is
 the UALIAS (uncached references to the memory of the reader's node,
-its bottom 128 KiB flipped per processor), the crosstalk space's
+its bottom 128 KiB flipped per processor), the I/O space's
 window is the IALIAS (the local Hub's registers), and the
 memory-special and LBOOT paths are likewise local. Every guest we
 hold drives the register: the PROM stores the 4 KiB code once in its

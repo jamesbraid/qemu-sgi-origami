@@ -5,7 +5,7 @@
  * GIGAchannel cabinet), each carrying a Bridge or XBridge widget of its own.
  * A board that is not removable (IP29's onboard I/O, soldered to the System
  * Board rather than plugged into a slot) is not one of these; its Bridge
- * answers the crosstalk port interface directly (see
+ * answers the XIO port interface directly (see
  * hw/pci-host/sgi-bridge.c), with no board wrapper at all.
  *
  * The test board this header also declares lives in xio-test-board.c.

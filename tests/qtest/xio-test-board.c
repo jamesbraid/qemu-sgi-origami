@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * A crosstalk board that exercises sgi-xio-board without any real
+ * An XIO board that exercises sgi-xio-board without any real
  * board: its widget is the existing sgi-xio-test-target, so property
  * validation, re-parenting and the deferred-attach hook all have
  * something to attach that carries no product-specific wiring.

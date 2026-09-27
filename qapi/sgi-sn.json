@@ -409,8 +409,10 @@
 # @ip29-io: Origin 200's integrated IP29 System Board I/O
 #
 # @ip29-io-crosstown: the same IP29 I/O with the GIGAchannel's
-#     Crosstown extension board fitted in place of the XTalk jumper,
-#     which adds its own board record beside the IP29's
+#     Crosstown extension board fitted in place of the XTalk
+#     jumper board (SGI's name for it in the GIGAchannel upgrade
+#     instructions, 108-0187-001 Figure 2-3), which adds its own
+#     board record beside the IP29's
 #
 # @io6: the Origin 2000/Onyx2 plain BaseIO XIO card
 #
@@ -623,7 +625,7 @@
 ##
 # @SGIModelPopulationSlot:
 #
-# One empty crosstalk connector position a node-population row can
+# One empty XIO connector position a node-population row can
 # use, and the node that controls it with that many node boards
 # fitted.
 #
@@ -649,7 +651,7 @@
 #
 # @nodes: positions in the topology's own @nodes list of the fitted
 #     node boards, in fill order; a node board not named here is
-#     absent, with no Hub, processors, boot flash or crosstalk link
+#     absent, with no Hub, processors, boot flash or XIO link
 #
 # @routers: positions in the topology's own @routers list of the
 #     fitted Routers

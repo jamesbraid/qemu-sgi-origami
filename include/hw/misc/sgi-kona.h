@@ -197,7 +197,7 @@ struct SGIKonaState {
     SGIXioBoardState parent_obj;
 
     /*
-     * Set by build_widget(), before this board re-parents: the crosstalk
+     * Set by build_widget(), before this board re-parents: the XIO
      * fabric proxy sgi_xio_crossbow_link_claim_fabric() claims. Required;
      * a board realized without it refuses.
      */

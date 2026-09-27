@@ -26,7 +26,7 @@
 #define PCI_COMMAND_OFF     0x04
 #define PCI_SUBSYS_ID_OFF   0x2c
 
-/* Crosstalk space and the Bridge's widget window inside it. */
+/* I/O space, and the Bridge's widget window inside it. */
 #define BRIDGE_WIDGET   8
 #define BRIDGE_BASE     (SPACE_IO + ((uint64_t)BRIDGE_WIDGET << 24))
 
@@ -192,9 +192,11 @@
 #define FLASH_PROGRAM_DATA  0xa0
 
 /*
- * Device DMA crosses crosstalk and needs Bridge Direct-window byte
- * correction; PIO apertures do not. sn0-qlogic-isp-test.c tests the
- * mechanism; psitech-rad4-test.c:dma_start() uses the same setup.
+ * Bridge's byte-lane correction for a device-initiated DMA transfer
+ * (crosses XIO, unlike this file's own PIO-only apertures above):
+ * tests/qtest/sn0-qlogic-isp-test.c exercises the mechanism itself, and
+ * tests/qtest/psitech-rad4-test.c's dma_start() applies the same setup
+ * this file needs for a host-memory Render source.
  */
 #define DEV_SWAP_DIRECT         (1u << 19)
 #define PCI_DMA_DIRECT          0x80000000u

@@ -12,7 +12,7 @@ special-space window -- and both boot from a stock IP27 or IP35 PROM
 with the same container format, entry points and configuration block.
 What differs between them is typed: the node ASIC (Hub carries two
 CPUs on one processor interface; Bedrock carries four CPUs on two),
-the bridge chip behind the node's crosstalk port (Bridge on SN0,
+the bridge chip behind the node's XIO port (Bridge on SN0,
 XBridge on SN1), and the system controller (an entry-level controller
 inside the Hub itself, or a module-wide MSC, on SN0; an L1 over a UART
 on SN1).
@@ -221,7 +221,7 @@ Board devices
 =============
 
 Base I/O -- the IOC3 plus one or two SCSI controllers, and on the IO-8 a USB
-controller, behind a crosstalk-to-PCI bridge -- is one device, ``sgi-baseio``
+controller, behind an XIO-to-PCI bridge -- is one device, ``sgi-baseio``
 (``hw/mips/sgi/baseio.c``), with a preset per shipped board design rather
 than a separate class each: ``ip29`` (the Origin 200 System Board's onboard
 I/O, on the node's own Bridge), ``baseio`` (the Origin 2000/Onyx2 standard
@@ -230,12 +230,12 @@ PCI population -- a QLogic ISP12160, an IOC3 and a Lucent OHCI controller --
 placed on the SN1 node's own XBridge head F). A preset name that matches
 none of the three is refused outright. IP29's onboard I/O is soldered to the
 System Board rather than plugged into a slot, so the Origin 200 node builds
-its ``ip29`` instance directly on its own crosstalk port, with no board
+its ``ip29`` instance directly on its own XIO port, with no board
 wrapper; the Origin 300 node's ``io8`` instance is placed the same way,
 directly on its XBridge head, not through a board class.
 
 ``sgi-xio-board`` (``hw/mips/sgi/xio-board.c``) is the abstract base for
-a removable crosstalk board: the unit that plugs into one of a module's XIO
+a removable XIO board: the unit that plugs into one of a module's XIO
 slots. Its concrete classes are ``sgi-xio-baseio`` (a Bridge-based card
 built from a ``sgi-baseio`` preset: ``io6``, ``io6g``, ``menet`` or
 ``mscsi``), ``sgi-pci-expansion`` (a plain Bridge with an empty PCI bus),
@@ -243,7 +243,7 @@ built from a ``sgi-baseio`` preset: ``io6``, ``io6g``, ``menet`` or
 and its own board record), ``sgi-pci-shoehorn`` (a Bridge carrying one PCI
 card), ``sgi-gigachannel`` (the GIGAchannel cabinet's own Bridge),
 ``sgi-kona`` (the InfiniteReality pipe) and ``sgi-mgras`` (the SI graphics
-board, whose widget answers crosstalk directly with no Bridge). Realizing a
+board, whose widget answers XIO directly with no Bridge). Realizing a
 board builds its own widget-facing device, then re-parents the board under
 ``/machine/module<N>`` so ``info qom-tree`` shows it where the hardware puts
 it.
@@ -307,10 +307,10 @@ empty slot before its Crossbow realizes, and a machine-init-done notifier
 finishes each proxy once every Crossbow has realized and, for a slot a
 board has claimed, attaches the board's widget live and brings its link
 alive. ``origin200`` and ``origin300`` have no Crossbow on the node -- each
-places its one Base I/O instance directly on its node's crosstalk port, as
+places its one Base I/O instance directly on its node's XIO port, as
 above.
 
-A crosstalk port is a QOM interface every attachable endpoint implements --
+An XIO port is a QOM interface every attachable endpoint implements --
 a Hub's or Bedrock's I/O port, each Crossbow port, an XBridge head, and a
 board's own widget (``include/hw/mips/sgi-xio-port.h``). A link object
 connects two ports and owns whatever that link kind needs

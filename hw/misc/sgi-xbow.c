@@ -1,5 +1,17 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
-/* SGI Crossbow crosstalk crossbar and widget-zero registers. */
+/*
+ * SGI Crossbow XIO crossbar.
+ *
+ * Copyright (c) 2026 Origami contributors
+ *
+ * Nine ports around one crossbar: eight external links carrying decoded
+ * widget identities 8 through 15, and the ninth terminating at logical
+ * widget zero, where these registers answer. The switch translates no
+ * address and reorders no byte. A packet's destination widget selects the
+ * output port and its offset travels unchanged. Widget zero and the eight
+ * links are the only destinations a packet may name; any other number is
+ * an error reported on the port that received it.
+ */
 
 #include "qemu/osdep.h"
 #include "qapi/error.h"
@@ -278,9 +290,9 @@ static bool sgi_xbow_widget0_requesting(const SGIXbowState *s)
 /*
  * One doubleword write from widget zero to the programmed target, carrying
  * the vector in bits 7:0 and assertion in bit 8. The destination register
- * holds a 48-bit address of the target's own rather than a crosstalk offset,
- * so the packet goes into that widget's space and not through the routes a
- * crosstalk address selects.
+ * holds a 48-bit address of the target's own rather than an XIO offset,
+ * so the packet goes into that widget's space and not through the routes an
+ * XIO address selects.
  */
 static bool sgi_xbow_deliver_at(SGIXbowState *s, uint32_t upper,
                                 uint32_t lower, bool raise)
@@ -396,7 +408,7 @@ static void sgi_xbow_sync_routes(SGIXbowState *s)
 }
 
 /*
- * The first-error latch holds the crosstalk command word of the packet that
+ * The first-error latch holds the XIO command word of the packet that
  * failed and suppresses later logging until software writes it back. An
  * illegal-destination packet carries that command word, built from the
  * receiving port and the destination it named, so those errors fill the latch
@@ -548,7 +560,7 @@ static bool sgi_xbow_decode(hwaddr addr, unsigned int size, hwaddr *slot)
 }
 
 /*
- * The specification allows a register access only by a crosstalk doubleword
+ * The specification allows a register access only by an XIO doubleword
  * packet, and the established host form of that is the 32-bit access to the
  * data half. Whether this machine's adapter turns an eight-byte processor
  * access into the same packet is not established, so the model refuses that
@@ -1018,7 +1030,7 @@ static const MemoryRegionOps sgi_xbow_illegal_ops = {
 
 /*
  * Build one directed route: what a packet entering on `port` and addressed to
- * `link` reaches, in both the processor and packet crosstalk views. The
+ * `link` reaches, in both the processor and packet XIO views. The
  * destination `link`'s own face must already be set. sgi_xbow_realize()
  * builds every route this way as the Crossbow comes up, and
  * sgi_xbow_attach_endpoint_live() builds the routes into a widget attached
@@ -1741,7 +1753,7 @@ static void sgi_xbow_instance_finalize(Object *obj)
 }
 
 /*
- * ---- The crosstalk port interface ----
+ * ---- The XIO port interface ----
  *
  * Each of the eight external links is one port, addressed by index the way
  * every other public accessor here addresses it: a widget number, 8 through

@@ -4,7 +4,7 @@
  * single-XIO-slot XIO->PCI converter board on the sgi-xio-board base class,
  * optionally fitted with an SGI Cad Duo input card.
  *
- * The product is a single crosstalk (XIO) slot adapter that carries one PCI
+ * The product is a single XIO slot adapter that carries one PCI
  * card. Its silkscreen reads "PCI-XTALK ADAPTER"; SGI assembly 030-1275-002
  * (REV B) / 030-1275-004 (rev A), (c) 1997, made in USA, tested at Celestica
  * (product photographs and reseller listings, including ntc-tech and eBay).
@@ -28,9 +28,9 @@
  *
  * Like sgi-pci-expansion this board attaches through the fabric proxy of
  * the empty XIO slot it names when created with `-device` (slot=io2; Origin
- * 2000 IO2 is crosstalk widget 12), or through the ordinary startup path
+ * 2000 IO2 is XIO widget 12), or through the ordinary startup path
  * when a topology declares it. Either way its widget is a full two-way
- * crosstalk endpoint.
+ * XIO endpoint.
  *
  * ---- The fitted Cad Duo card and its keyboard/mouse interrupt ----
  *

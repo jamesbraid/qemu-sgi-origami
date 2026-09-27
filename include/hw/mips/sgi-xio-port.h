@@ -1,12 +1,12 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * The crosstalk port: a QOM interface for anything a crosstalk link can join
- * to a peer: the Hub's I/O port, a crosstalk board's widget, and (from the
+ * The XIO port: a QOM interface for anything an XIO link can join
+ * to a peer: the Hub's I/O port, an XIO board's widget, and (from the
  * Crossbow onward) one of a Crossbow's eight external ports.
  *
  * A port answers with two regions rather than one. cpu_face() is where a
  * peer's processor-addressed traffic (a small/big window access, or a
- * Crossbow's routed crosstalk access) lands to reach this port.
+ * Crossbow's routed XIO access) lands to reach this port.
  * packet_face() is where a peer's packet-addressed traffic (an interrupt, or
  * a transfer whose destination travels in the address rather than in routing
  * state) lands instead. A leaf endpoint that answers both requests the same
@@ -19,7 +19,7 @@
  * installs them, in whatever way that link kind needs. This interface carries
  * no "connect" method; every implementer already has a richer, typed way to
  * accept a peer (sgi_xbow_attach_endpoint() takes two faces and a widget
- * number; a crosstalk board's "fabric"/"fabric-base"/"fabric-node-shift"/
+ * number; an XIO board's "fabric"/"fabric-base"/"fabric-node-shift"/
  * "fabric-widget-shift" properties carry three more values a single region
  * cannot). A generic connect() would have had exactly one meaningful
  * implementer among the three this experiment builds.

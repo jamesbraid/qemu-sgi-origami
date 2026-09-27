@@ -1,7 +1,11 @@
 /*
- * Test ISP1040 SCSI access through Crosstalk, Bridge byte correction and PCI.
- * Distinct mailbox bytes expose swaps on this path; x86 libqos covers the
- * device logic.
+ * SGI QLogic ISP1040 SCSI adapter: the register window's access contract
+ * through the real XIO-to-PCI path.
+ *
+ * The x86 libqos suite proves the device's own logic; this file crosses
+ * the Bridge's byte-lane correction and XIO decode on the real
+ * topology. The reset signature is the instrument: mailbox words whose
+ * two bytes differ, so a hidden swap anywhere on the path is visible.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
@@ -10,7 +14,7 @@
 #include "libqtest.h"
 #include "sgi-test.h"
 
-/* Crosstalk space, and the bridge's own widget window inside it. */
+/* I/O space, and the bridge's own widget window inside it. */
 #define BRIDGE_WIDGET   8
 #define BRIDGE_BASE     (SPACE_IO + ((uint64_t)BRIDGE_WIDGET << 24))
 

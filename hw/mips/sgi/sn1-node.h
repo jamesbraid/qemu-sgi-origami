@@ -29,7 +29,7 @@
 
 /*
  * The four processor-selected spaces a node's window appears in (memory, Hub
- * special, crosstalk, memory special), each a 1 TiB carrier of 128 node
+ * special, I/O, memory special), each a 1 TiB carrier of 128 node
  * windows; see sn1-node.c's claim layer.
  */
 #define SN1_NODE_SPACES 4
@@ -74,7 +74,7 @@ typedef struct SN1NodeState {
     const SGIModelNode *model_node;
     /*
      * Every widget the crossbar decodes for this node (widget zero, the
-     * host's own local view, plus one per xtalk attachment), set by the
+     * host's own local view, plus one per XIO attachment), set by the
      * machine before realize.
      */
     unsigned int *xbridge_widgets;
@@ -194,13 +194,13 @@ bool sn1_node_attach_prom(SN1NodeState *node, unsigned int node_index,
                           Error **errp);
 
 /*
- * The PCI bus behind one of the node's XBridge heads (0xe or 0xf), for the
- * machine to place a populated head's fixed devices on
- * (sgi_machine_instantiate_io8() in sn-machine.c); the same attachment path
- * Origin 200's direct board and Origin 2000's Crossbow board both read their
- * crosstalk widget from, since node->xbridge is a fitted part of this node's
- * own board rather than something a board-owning attachment builds. The node
- * must already be realized.
+ * The PCI bus behind one of the node's own XBridge heads (0xe or 0xf),
+ * for the machine to place a populated head's fixed devices on
+ * (sgi_machine_instantiate_io8() in sn-machine.c) -- the same attachment
+ * path Origin 200's direct board and Origin 2000's Crossbow board both
+ * read their own XIO widget from, since node->xbridge is a fitted
+ * part of this node's own board (decision D-0026) rather than something
+ * a board-owning attachment builds. The node must already be realized.
  */
 PCIBus *sn1_node_xbridge_pci_bus(SN1NodeState *node, unsigned int widget);
 

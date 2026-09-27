@@ -4,7 +4,7 @@
  *
  * An sgi-xio-board subclass, built the way hw/mips/sgi/xio-baseio.c
  * builds the BaseIO card: this file owns only the widget itself, attached
- * through the general crosstalk framework at a free Origin 2000 XIO slot.
+ * through the general XIO board framework at a free Origin 2000 XIO slot.
  * The widget answers the PROM's widget-header probe at `+0x4`, its
  * three-bit subsystem-classification probe at `+0x64`
  * (docs/datasheets/infinitereality-host-interface.md, docs/designs/

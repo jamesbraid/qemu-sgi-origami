@@ -1,8 +1,10 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /* SGI Bridge register and host bridge definitions. */
 /*
- * One side of the chip is an ordinary crosstalk widget with the common widget
- * register block at the bottom of its 16 MB of crosstalk address space. The
+ * SGI Bridge, the XIO-to-PCI host bridge.
+ *
+ * One side of the chip is an ordinary XIO widget with the common widget
+ * register block at the bottom of its 16 MB of XIO address space. The
  * other side is a PCI host bridge with eight device slots, an eight-pin
  * interrupt controller and a translator for transfers a device initiates.
  *
@@ -123,7 +125,7 @@ AddressSpace *sgi_bridge_plain_dma_as(PCIDevice *dev);
 #define SGI_BRIDGE_BYTE_LANE_SELF_ORDERED "byte-lane-self-ordered"
 
 /*
- * The whole of the widget's crosstalk space belongs to this chip. Sized to
+ * The whole of the widget's XIO space belongs to this chip. Sized to
  * reach the PIO translated window below, not just the low CSR/cfg0/ssram/
  * small-window region.
  */
@@ -133,14 +135,14 @@ AddressSpace *sgi_bridge_plain_dma_as(PCIDevice *dev);
  * Inbound PIO translated window: a processor-initiated access landing here
  * reaches PCI memory space directly, offset by this base. Confirmed live: a
  * booted IRIX 6.5.30 kernel programs a Hub big window at exactly this widget
- * offset (widget shifted into the crosstalk address, OR'd with slice 2 at 512
+ * offset (widget shifted into the XIO address, OR'd with slice 2 at 512
  * MB granularity, landing here once the widget-select bits are routed away)
  * when mapping a PCI BAR too large for the per-slot device window, and the
  * resulting pointer's low 30 bits equal the BAR's own PCI address exactly.
  * This is the same 0x40000000-0x7fffffff range the DMA side treats as the
  * ATE-translated window, but for an inbound access the evidence shows a plain
- * offset into PCI memory space, not an ATE lookup. The ATE stores a
- * crosstalk destination, which has no reverse mapping to a PCI address.
+ * offset into PCI memory space, not an ATE lookup. The ATE stores an
+ * XIO destination, which has no reverse mapping to a PCI address.
  * "Plain offset" describes the address math only: the model still applies the
  * same byte-lane correction as the per-device windows
  * (sgi_bridge_window_correct), since this is the same
@@ -213,7 +215,7 @@ MemoryRegion *sgi_bridge_packet_face(SGIBridgeState *s);
 struct SGIBridgeState {
     PCIHostState parent_obj;
 
-    /* The widget's crosstalk space, claimed whole, and the block inside. */
+    /* The widget's XIO space, claimed whole, and the block inside. */
     MemoryRegion widget;
     MemoryRegion packet;
     MemoryRegion packet_io;
@@ -337,7 +339,7 @@ struct SGIBridgeState {
 
     /*
      * The fixed four bits above a packet address used for the destination
-     * widget. Crosstalk carries that number in a packet header beside the
+     * widget. XIO carries that number in a packet header beside the
      * address; a QEMU address space has no header, so a machine with a switch
      * to route through has to make room for it in the address itself. Zero
      * means it makes none, which is the answer for a chip with one peer on

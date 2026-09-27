@@ -7,7 +7,7 @@
  * populated I/O board (if any) and realizes it; this file owns everything the
  * node needs to become a running Origin 300: the PROM/flash policy, the
  * node's own address-space views, the CPUs, Bedrock, L1 and the XBridge, a
- * fitted part of the IP45 node board itself. The Bedrock's crosstalk port and
+ * fitted part of the IP45 node board itself. The Bedrock's XIO port and
  * the XBridge's port 0xa connect through the XBridge link
  * (hw/mips/sgi/xio-link.c) before either realizes. The IO-8's fixed devices
  * are a separate sgi-baseio (the "io8" preset, hw/mips/sgi/baseio.c) the
@@ -58,9 +58,9 @@
 #include "sn1-topology.h"
 
 /*
- * The node's crosstalk/Hub-register address decode: identical on every Origin
- * 300 measured, so constants here rather than descriptor data repeated for a
- * node kind with exactly one shipped configuration.
+ * The node's own I/O-space and Hub-register address decode: identical on
+ * every Origin 300 measured, so constants here rather than descriptor
+ * data repeated for a node kind with exactly one shipped configuration.
  */
 #define SN1_SPACE_HUB UINT64_C(0x10000000000)
 #define SN1_HUB_LOCAL_BOOT (SN1_SPACE_HUB + UINT64_C(0x18000000))
@@ -154,7 +154,7 @@ uint64_t sn1_node_canonical_address(const SN1NodeState *node,
  * the decode error. On top, a processor's view maps the reader-relative
  * forms, which always reach its node whatever its number: the reset view, the
  * Hub special local space (uncached alias, local registers and L1 UART, local
- * boot window), the Bedrock's register alias in crosstalk small window 1, and
+ * boot window), the Bedrock's register alias in XIO small window 1, and
  * the cached alias, sized from the processor interface's cached-alias
  * register.
  *
@@ -1557,18 +1557,20 @@ static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
                                                        "bedrock-reset", 0));
 
     /*
-     * The XBridge is a fitted part of the IP45 node board itself, as the L1
-     * and the boot flash are: this file creates it directly, the family
-     * builder's device like every other product's onboard base I/O. The
-     * crosstalk port experiment's link pattern joins it to the Bedrock's
-     * crosstalk port before either realizes: the XBridge link
-     * (hw/mips/sgi/xio-link.c) installs the Bedrock's packet face as the
-     * chip's "fabric": what its widget-0 conditions and both heads'
-     * interrupts reach the host through. The IO-8's fixed devices are a
-     * separate sgi-baseio (the "io8" preset) the machine places on the chip's
-     * own head F, through the same board path every other product's base I/O
-     * goes through (sgi_machine_instantiate_io_board() in sn-machine.c, via
-     * sn1_node_xbridge_pci_bus() below) once the chip itself has realized.
+     * The XBridge is a fitted part of the IP45 node board itself, as the
+     * L1 and the boot flash are (docs/designs/sn-machine-model-architecture.md,
+     * "Node devices"): this file creates it directly, the family builder's
+     * own device like every other product's onboard base I/O. The
+     * XIO port experiment's link pattern joins it to the Bedrock's
+     * own XIO port before either realizes: the XBridge link
+     * (hw/mips/sgi/xio-link.c) installs the Bedrock's packet face as
+     * the chip's "fabric" -- what its own widget-0 conditions and both
+     * heads' interrupts reach the host through. The IO-8's fixed devices
+     * are a separate sgi-baseio (the "io8" preset) the machine places on
+     * the chip's own head F, through the same board path every other
+     * product's base I/O goes through (sgi_machine_instantiate_io_board()
+     * in sn-machine.c, via sn1_node_xbridge_pci_bus() below) once the
+     * chip itself has realized.
      */
     node->xbridge = qdev_new(TYPE_SGI_XBRIDGE);
     object_property_add_child(OBJECT(node), "xbridge", OBJECT(node->xbridge));
@@ -1597,10 +1599,10 @@ static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
 
     /*
      * Every widget the crossbar decodes: the host's local view (widget zero)
-     * plus one per xtalk attachment, including a board slot with nothing
+     * plus one per XIO attachment, including a board slot with nothing
      * plugged in; its head still answers "no PCI device here" through the
      * chip itself, which a widget left undecoded could not. Read through the
-     * crosstalk port interface, as any other widget attachment in this tree
+     * XIO port interface, as any other widget attachment in this tree
      * does, rather than the chip's view accessor directly.
      */
     for (i = 0; i < node->xbridge_widget_count; i++) {
@@ -1618,7 +1620,7 @@ static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
                                  OBJECT(face), &error_abort);
     }
     /*
-     * A widget scan addresses the board by the physical crosstalk port
+     * A widget scan addresses the board by the physical XIO port
      * Bedrock actually attached it to (SN1_XBRIDGE_HOST_PORT), not only by
      * the widget-zero local-CPU shortcut wired above; both name the same
      * chip, seen through its single upstream link either way. Without this, a
@@ -1662,7 +1664,7 @@ static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
      * L1 UART's region at 0x80, and the per-processor LEDs at 0xc0. The UART
      * is the one sMDK, the Origin 300 field-diagnostic kernel, polls through
      * the local form under the stock PROM's console=d. Nothing in either
-     * window reaches the processor-interface registers: that is the crosstalk
+     * window reaches the processor-interface registers: that is the XIO
      * form's job alone, and the LED offsets used to land on PI interrupt mask
      * 1 B and the cross-call- pending registers when it did. Every other
      * offset is left undecoded.
