@@ -62,8 +62,23 @@ OBJECT_DECLARE_TYPE(SGIMgrasState, SGIMgrasClass, SGI_MGRAS)
 /* Raster synchronization completes immediately as an approximation. */
 #define SGI_MGRAS_REPP_SYNC 0x071f80
 
-/* Unknown synchronization fields retain opaque state. */
+/*
+ * PP1SELECT picks which PP1 the XMAP registers reach
+ * (docs/datasheets/mgras-dual-re.md). Established from the IRIX 6.5.30
+ * kernel: it writes ((re << 1) | pp) << 1 before a sequence meant for one
+ * PP1 and 1 before writes every PP1 must take. Two PP1s sit behind each
+ * RE, so a two-RE board has four. The model keeps a copy per PP1 of the
+ * index byte 0x071c88 and of 0x071d00, 0x071d08, 0x071d80, 0x071e00 and
+ * 0x071e80. It keeps none of 0x071f00 and 0x071f80, which read the same
+ * fixed values under every selection: an approximation the datasheet's
+ * model contract lists.
+ */
 #define SGI_MGRAS_REPP_STATUS_1 0x071c08
+#define SGI_MGRAS_PP1_SELECT SGI_MGRAS_REPP_STATUS_1
+#define SGI_MGRAS_PP1_SELECT_ALL 1
+#define SGI_MGRAS_MAX_PP1 4
+
+/* Unknown XMAP configuration fields retain opaque state, per PP1. */
 #define SGI_MGRAS_REPP_STATUS_3 0x071d00
 #define SGI_MGRAS_REPP_STATUS_4 0x071d08
 
@@ -215,6 +230,19 @@ OBJECT_DECLARE_TYPE(SGIMgrasState, SGIMgrasClass, SGI_MGRAS)
 #define SGI_MGRAS_PIXEL_FORMAT_RGB 1
 #define SGI_MGRAS_PIXEL_FORMAT_RGB12 2
 
+/*
+ * One PP1's XMAP register file: the index byte and every register it
+ * indexes. Which of a board's PP1s a guest access reaches is PP1SELECT's.
+ */
+typedef struct SGIMgrasXmap {
+    uint8_t index;
+    uint32_t config;            /* 0x071d00 */
+    uint32_t config_b;          /* 0x071d08 */
+    uint32_t mode[SGI_MGRAS_XMAP_ENTRIES];
+    uint32_t buf_select[SGI_MGRAS_XMAP_ENTRIES];
+    uint32_t overlay_mode[SGI_MGRAS_XMAP_ENTRIES];
+} SGIMgrasXmap;
+
 struct SGIMgrasClass {
     SGIXioBoardClass parent_class;
     ResettablePhases parent_phases;
@@ -308,7 +336,7 @@ struct SGIMgrasState {
     uint32_t reset_arg;
     uint32_t reset_control;
     uint32_t i2c_scratch;
-    uint32_t repp_status[3];
+    uint32_t pp1_select;
     uint32_t sync_status;
     uint32_t dac_lut_index;
     uint32_t dac_lut_data[2];
@@ -468,10 +496,13 @@ struct SGIMgrasState {
     /* The bank holding the back buffer, from 0x9808 or context words 16-17. */
     uint32_t gl_banks[2];
     uint64_t retraces;
-    uint8_t xmap_index;
-    uint32_t xmap_mode[SGI_MGRAS_XMAP_ENTRIES];
-    uint32_t xmap_buf_select[SGI_MGRAS_XMAP_ENTRIES];
-    uint32_t xmap_overlay_mode[SGI_MGRAS_XMAP_ENTRIES];
+    /*
+     * One XMAP register file per PP1 the largest board has; a board uses
+     * the first 2 * re_count. Scanout reads the first PP1's tables, an
+     * approximation: which PP1 drives which pixels is unknown, and the
+     * kernel and X server keep every PP1's tables alike.
+     */
+    SGIMgrasXmap xmap[SGI_MGRAS_MAX_PP1];
     uint16_t vc3_reg[32];
     uint8_t vc3_index;
     uint16_t vc3_ram_addr;

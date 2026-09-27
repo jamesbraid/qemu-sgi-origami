@@ -439,6 +439,117 @@ static uint8_t mgras_dac_reg_read(SGIMgrasState *s)
     }
 }
 
+/* Two PP1s sit behind each RE. */
+static unsigned int mgras_pp1_count(SGIMgrasState *s)
+{
+    return 2 * s->board->re_count;
+}
+
+/*
+ * The PP1s an XMAP write reaches, one bit each: all of the board's when
+ * PP1SELECT bit 0 is set, otherwise the one bits 2:1 name. Bits 7:3 are
+ * zero in every value the kernel writes and are ignored. A named PP1 the
+ * board does not have takes nothing.
+ */
+static unsigned int mgras_xmap_write_targets(SGIMgrasState *s)
+{
+    unsigned int pp = (s->pp1_select >> 1) & 3;
+
+    if (s->pp1_select & SGI_MGRAS_PP1_SELECT_ALL) {
+        return MAKE_64BIT_MASK(0, mgras_pp1_count(s));
+    }
+    if (pp >= mgras_pp1_count(s)) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: XMAP access to PP1 %u, "
+                      "which a board with %u RE lacks\n", pp,
+                      s->board->re_count);
+        return 0;
+    }
+    return 1u << pp;
+}
+
+/*
+ * The PP1 an XMAP read answers from, or NULL for one the board lacks. With
+ * every PP1 selected the first answers; what real hardware returns then is
+ * unknown.
+ */
+static SGIMgrasXmap *mgras_xmap_read_target(SGIMgrasState *s)
+{
+    unsigned int targets = mgras_xmap_write_targets(s);
+
+    return targets ? &s->xmap[ctz32(targets)] : NULL;
+}
+
+static uint32_t mgras_xmap_read(SGIMgrasState *s, hwaddr addr)
+{
+    SGIMgrasXmap *x = mgras_xmap_read_target(s);
+
+    if (!x) {
+        return 0;
+    }
+    switch (addr) {
+    case 0x071c88: return x->index << 2;
+    case SGI_MGRAS_XMAP_OVERLAY_MODE: return x->overlay_mode[x->index];
+    /* XMAP selection and per-visual modes are an approximation. */
+    case SGI_MGRAS_XMAP_MAIN_MODE: return x->mode[x->index];
+    case SGI_MGRAS_XMAP_BUF_SELECT: return x->buf_select[x->index];
+    /*
+     * SGI's IDE XMAP test reads the XMAP revision under index byte 4 and
+     * accepts 0 or 1, and the FIFO capacity under index byte 8 and
+     * requires a low nibble of 1. Which revision the part reports is
+     * unknown; zero is the model's usual answer for an unknown revision.
+     */
+    case SGI_MGRAS_REPP_STATUS_3:
+        if (x->index == MGRAS_XMAP_CONFIG_REVISION) {
+            return s->board->pp1_revision;
+        }
+        if (x->index == MGRAS_XMAP_CONFIG_FIFO_CAPACITY) {
+            return 1;
+        }
+        return x->config;
+    case SGI_MGRAS_REPP_STATUS_4: return x->config_b;
+    default:
+        g_assert_not_reached();
+    }
+}
+
+static void mgras_xmap_write(SGIMgrasState *s, hwaddr addr, uint32_t value)
+{
+    unsigned int targets = mgras_xmap_write_targets(s);
+
+    for (unsigned int pp = 0; pp < SGI_MGRAS_MAX_PP1; pp++) {
+        SGIMgrasXmap *x = &s->xmap[pp];
+
+        if (!(targets & (1u << pp))) {
+            continue;
+        }
+        switch (addr) {
+        case 0x071c88:
+            x->index = (value >> 2) & 0x1f;
+            break;
+        case SGI_MGRAS_XMAP_OVERLAY_MODE:
+            x->overlay_mode[x->index] = value;
+            break;
+        /* Per-visual mode storage and scanout interpretation: approximate. */
+        case SGI_MGRAS_XMAP_MAIN_MODE:
+            x->mode[x->index] = value;
+            break;
+        /* Swap-mask storage; see the header comment above the definition. */
+        case SGI_MGRAS_XMAP_BUF_SELECT:
+            x->buf_select[x->index] = value;
+            break;
+        case SGI_MGRAS_REPP_STATUS_3:
+            x->config = value;
+            break;
+        case SGI_MGRAS_REPP_STATUS_4:
+            x->config_b = value;
+            break;
+        default:
+            g_assert_not_reached();
+        }
+    }
+    s->dirty = true;
+}
+
 static uint64_t mgras_read_internal(SGIMgrasState *s, hwaddr addr,
                                      unsigned size)
 {
@@ -550,11 +661,13 @@ static uint64_t mgras_read_internal(SGIMgrasState *s, hwaddr addr,
     case SGI_MGRAS_SCRATCH_COMMAND: return s->scratch_command;
     case SGI_MGRAS_BRINGUP_ARG_3: return s->bringup_arg_3;
     case SGI_MGRAS_VC3_ARG: return s->vc3_arg;
+    case 0x071c88:
     case SGI_MGRAS_XMAP_OVERLAY_MODE:
-        return s->xmap_overlay_mode[s->xmap_index];
-    /* XMAP selection and per-visual modes are an approximation. */
-    case SGI_MGRAS_XMAP_MAIN_MODE: return s->xmap_mode[s->xmap_index];
-    case SGI_MGRAS_XMAP_BUF_SELECT: return s->xmap_buf_select[s->xmap_index];
+    case SGI_MGRAS_XMAP_MAIN_MODE:
+    case SGI_MGRAS_XMAP_BUF_SELECT:
+    case SGI_MGRAS_REPP_STATUS_3:
+    case SGI_MGRAS_REPP_STATUS_4:
+        return mgras_xmap_read(s, addr);
     case SGI_MGRAS_I2C_SCRATCH: return s->i2c_scratch;
     /*
      * Byte reads mirror the write side's no-op treatment (case
@@ -562,22 +675,7 @@ static uint64_t mgras_read_internal(SGIMgrasState *s, hwaddr addr,
      * public source documents this port's read-back semantics.
      */
     case SGI_MGRAS_I2C_STROBE: return 0;
-    case SGI_MGRAS_REPP_STATUS_1: return s->repp_status[0];
-    /*
-     * SGI's IDE XMAP test reads the XMAP revision under index byte 4 and
-     * accepts 0 or 1, and the FIFO capacity under index byte 8 and
-     * requires a low nibble of 1. Which revision the part reports is
-     * unknown; zero is the model's usual answer for an unknown revision.
-     */
-    case SGI_MGRAS_REPP_STATUS_3:
-        if (s->xmap_index == MGRAS_XMAP_CONFIG_REVISION) {
-            return s->board->pp1_revision;
-        }
-        if (s->xmap_index == MGRAS_XMAP_CONFIG_FIFO_CAPACITY) {
-            return 1;
-        }
-        return s->repp_status[1];
-    case SGI_MGRAS_REPP_STATUS_4: return s->repp_status[2];
+    case SGI_MGRAS_PP1_SELECT: return s->pp1_select;
     case SGI_MGRAS_SYNC_STATUS: return s->sync_status;
     case SGI_MGRAS_BRINGUP_FLAG: return s->bringup_flag;
     case SGI_MGRAS_DAC_LUT_INDEX: return s->dac_lut_index;
@@ -620,7 +718,6 @@ static uint64_t mgras_read_internal(SGIMgrasState *s, hwaddr addr,
     case 0x02c578: return 0x100 | (s->board->re4_revision & 0xf) << 4;
     /* Preserve the approximated status bit across supported access widths. */
     case 0x071208: return size == 1 ? 0x08 : 0x08000000;
-    case 0x071c88: return s->xmap_index << 2;
     case 0x071f00: return 1;
     /* Fixed functional-approximation synchronization value. */
     case SGI_MGRAS_REPP_SYNC: return 0x101;
@@ -786,29 +883,20 @@ static void mgras_write(void *opaque, hwaddr addr, uint64_t value,
         mgras_update_irq(s);
         return;
     case SGI_MGRAS_VC3_ARG: s->vc3_arg = value; return;
+    case 0x071c88:
     case SGI_MGRAS_XMAP_OVERLAY_MODE:
-        s->xmap_overlay_mode[s->xmap_index] = value;
-        s->dirty = true;
-        return;
-    /* Per-visual mode storage and scanout interpretation are approximate. */
     case SGI_MGRAS_XMAP_MAIN_MODE:
-        s->xmap_mode[s->xmap_index] = value;
-        s->dirty = true;
-        return;
-    /* Swap-mask storage; see the header comment above the definition. */
     case SGI_MGRAS_XMAP_BUF_SELECT:
-        s->xmap_buf_select[s->xmap_index] = value;
-        s->dirty = true;
+    case SGI_MGRAS_REPP_STATUS_3:
+    case SGI_MGRAS_REPP_STATUS_4:
+        mgras_xmap_write(s, addr, value);
         return;
     case SGI_MGRAS_RESET_CONTROL: s->reset_control = value; return;
     case SGI_MGRAS_I2C_SCRATCH: s->i2c_scratch = value; return;
     case SGI_MGRAS_I2C_STROBE: return;
-    case SGI_MGRAS_REPP_STATUS_1: s->repp_status[0] = value; return;
-    case 0x071c88:
-        s->xmap_index = (value >> 2) & 0x1f;
+    case SGI_MGRAS_PP1_SELECT:
+        s->pp1_select = value;
         return;
-    case SGI_MGRAS_REPP_STATUS_3: s->repp_status[1] = value; return;
-    case SGI_MGRAS_REPP_STATUS_4: s->repp_status[2] = value; return;
     case SGI_MGRAS_SYNC_STATUS: s->sync_status = value; return;
     case SGI_MGRAS_BRINGUP_FLAG: s->bringup_flag = value; return;
     /*
@@ -1097,12 +1185,12 @@ static void mgras_reset_enter(Object *obj, ResetType type)
     s->display_enabled = s->cursor_enabled = false;
     /* Redraw because reset changes display state and pixel storage. */
     s->dirty = true;
-    for (int i = 0; i < SGI_MGRAS_XMAP_ENTRIES; i++) {
-        s->xmap_mode[i] = 0x7a4;
-        s->xmap_buf_select[i] = 0;
+    memset(s->xmap, 0, sizeof(s->xmap));
+    for (int pp = 0; pp < SGI_MGRAS_MAX_PP1; pp++) {
+        for (int i = 0; i < SGI_MGRAS_XMAP_ENTRIES; i++) {
+            s->xmap[pp].mode[i] = 0x7a4;
+        }
     }
-    memset(s->xmap_overlay_mode, 0, sizeof(s->xmap_overlay_mode));
-    s->xmap_index = 0;
     s->cmap_selector = 0;
     s->cmap_position = 0;
     memset(s->cmap, 0, sizeof(s->cmap));
@@ -1110,7 +1198,7 @@ static void mgras_reset_enter(Object *obj, ResetType type)
     s->int_dest_upper = s->int_dest_lower = 0;
     s->widget_control = 0;
     s->reset_arg = s->reset_control = s->i2c_scratch = 0;
-    memset(s->repp_status, 0, sizeof(s->repp_status));
+    s->pp1_select = 0;
     s->sync_status = 0;
     s->dac_lut_index = 0;
     memset(s->dac_lut_data, 0, sizeof(s->dac_lut_data));
@@ -1289,6 +1377,16 @@ static void mgras_unrealize(DeviceState *dev)
     g_free(s->display_buffer);
 }
 
+static bool mgras_xmap_indices_valid(SGIMgrasState *s)
+{
+    for (int pp = 0; pp < SGI_MGRAS_MAX_PP1; pp++) {
+        if (s->xmap[pp].index >= SGI_MGRAS_XMAP_ENTRIES) {
+            return false;
+        }
+    }
+    return true;
+}
+
 /* Rebuild host-only display state from migrated VC3 state and redraw it. */
 static int mgras_post_load(void *opaque, int version_id)
 {
@@ -1307,12 +1405,21 @@ static int mgras_post_load(void *opaque, int version_id)
          s->cmd_token_words_remaining > ARRAY_SIZE(s->cmd_token_payload)) ||
         s->dma_map_words_remaining > SGI_MGRAS_CMD_TOKEN_MAX_DISCARD_WORDS ||
         s->pio_x > s->width || s->pio_y > s->height ||
-        s->xmap_index >= SGI_MGRAS_XMAP_ENTRIES ||
+        !mgras_xmap_indices_valid(s) ||
         s->dac_lut_load_channel >= 3 ||
         !sgi_mgras_gl_post_load(s)) {
         return -EINVAL;
     }
 
+    /*
+     * A stream before version 19 held one XMAP; every PP1 had what it
+     * held, as the kernel keeps them.
+     */
+    if (version_id < 19) {
+        for (int pp = 1; pp < SGI_MGRAS_MAX_PP1; pp++) {
+            s->xmap[pp] = s->xmap[0];
+        }
+    }
     sgi_mgras_display_ensure_surface(s);
     s->display_enabled =
         (s->vc3_reg[MGRAS_VC3_CONTROL] & MGRAS_VC3_CONTROL_DISPLAY) != 0;
@@ -1355,13 +1462,28 @@ static bool mgras_ge_lengths_valid(void *opaque, int version_id)
            s->ge_words[1] <= SGI_MGRAS_GE_WORDS;
 }
 
+static const VMStateDescription vmstate_sgi_mgras_xmap = {
+    .name = TYPE_SGI_MGRAS "/xmap", .version_id = 1, .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT8(index, SGIMgrasXmap),
+        VMSTATE_UINT32(config, SGIMgrasXmap),
+        VMSTATE_UINT32(config_b, SGIMgrasXmap),
+        VMSTATE_UINT32_ARRAY(mode, SGIMgrasXmap, SGI_MGRAS_XMAP_ENTRIES),
+        VMSTATE_UINT32_ARRAY(buf_select, SGIMgrasXmap,
+                             SGI_MGRAS_XMAP_ENTRIES),
+        VMSTATE_UINT32_ARRAY(overlay_mode, SGIMgrasXmap,
+                             SGI_MGRAS_XMAP_ENTRIES),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
 /*
  * Origami's unversioned machines support migration between identical builds
  * only. Change both version_id and minimum_version_id when represented state
  * changes.
  */
 static const VMStateDescription vmstate_sgi_mgras = {
-    .name = TYPE_SGI_MGRAS, .version_id = 18, .minimum_version_id = 9,
+    .name = TYPE_SGI_MGRAS, .version_id = 19, .minimum_version_id = 9,
     .post_load = mgras_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32(front_count, SGIMgrasState),
@@ -1429,7 +1551,10 @@ static const VMStateDescription vmstate_sgi_mgras = {
         VMSTATE_UINT32(reset_arg, SGIMgrasState),
         VMSTATE_UINT32(reset_control, SGIMgrasState),
         VMSTATE_UINT32(i2c_scratch, SGIMgrasState),
-        VMSTATE_UINT32_ARRAY(repp_status, SGIMgrasState, 3),
+        /* The first PP1's registers sit where the only XMAP's were. */
+        VMSTATE_UINT32(pp1_select, SGIMgrasState),
+        VMSTATE_UINT32(xmap[0].config, SGIMgrasState),
+        VMSTATE_UINT32(xmap[0].config_b, SGIMgrasState),
         VMSTATE_UINT32(sync_status, SGIMgrasState),
         VMSTATE_UINT32(dac_lut_index, SGIMgrasState),
         VMSTATE_UINT32_ARRAY(dac_lut_data, SGIMgrasState, 2),
@@ -1456,7 +1581,7 @@ static const VMStateDescription vmstate_sgi_mgras = {
         VMSTATE_UINT32(vc3_arg, SGIMgrasState),
         /* Before version 12 this was one unindexed overlay-mode word. */
         VMSTATE_UNUSED_BUFFER(mgras_stream_before_v12, 0, 4),
-        VMSTATE_UINT32_ARRAY_V(xmap_overlay_mode, SGIMgrasState,
+        VMSTATE_UINT32_ARRAY_V(xmap[0].overlay_mode, SGIMgrasState,
                                SGI_MGRAS_XMAP_ENTRIES, 12),
         VMSTATE_UINT32(hq_status_extra, SGIMgrasState),
         VMSTATE_UINT32(hq_vector_dest_upper, SGIMgrasState),
@@ -1492,10 +1617,10 @@ static const VMStateDescription vmstate_sgi_mgras = {
         VMSTATE_UINT16(vc3_ram_addr, SGIMgrasState),
         VMSTATE_UINT16_ARRAY(vc3_sram, SGIMgrasState,
                              SGI_MGRAS_VC3_SRAM_WORDS),
-        VMSTATE_UINT8(xmap_index, SGIMgrasState),
-        VMSTATE_UINT32_ARRAY(xmap_mode, SGIMgrasState,
+        VMSTATE_UINT8(xmap[0].index, SGIMgrasState),
+        VMSTATE_UINT32_ARRAY(xmap[0].mode, SGIMgrasState,
                              SGI_MGRAS_XMAP_ENTRIES),
-        VMSTATE_UINT32_ARRAY_V(xmap_buf_select, SGIMgrasState,
+        VMSTATE_UINT32_ARRAY_V(xmap[0].buf_select, SGIMgrasState,
                                SGI_MGRAS_XMAP_ENTRIES, 11),
         VMSTATE_TIMER_PTR_V(retrace_timer, SGIMgrasState, 2),
         VMSTATE_INT32_ARRAY_V(gl_context[0].viewport, SGIMgrasState, 4, 15),
@@ -1545,6 +1670,10 @@ static const VMStateDescription vmstate_sgi_mgras = {
                                SGI_MGRAS_GL_CONTEXTS, 18),
         VMSTATE_UINT64_V(gl_selections, SGIMgrasState, 18),
         VMSTATE_UINT32_V(gl_current, SGIMgrasState, 18),
+        /* Version 19 adds PP1s 1 to 3; PP1 0 is the XMAP sent above. */
+        VMSTATE_STRUCT_SUB_ARRAY(xmap, SGIMgrasState, 1,
+                                 SGI_MGRAS_MAX_PP1 - 1, 19,
+                                 vmstate_sgi_mgras_xmap, SGIMgrasXmap),
         VMSTATE_END_OF_LIST()
     }
 };

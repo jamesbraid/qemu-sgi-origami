@@ -42,7 +42,7 @@
  */
 static uint32_t mgras_cmap_rgb(SGIMgrasState *s, uint8_t visual, uint8_t index)
 {
-    uint32_t map = (s->xmap_mode[visual & 0x1f] >> 5) & 0x1f;
+    uint32_t map = (s->xmap[0].mode[visual & 0x1f] >> 5) & 0x1f;
     uint32_t entry = s->cmap[map * 256 + index];
 
     return ((entry & 0xff00) << 8) | ((entry >> 8) & 0xff00) | (entry >> 24);
@@ -116,7 +116,7 @@ static bool mgras_overlay_bgr(SGIMgrasState *s, int i, uint8_t did,
                               uint32_t *bgr)
 {
     uint8_t index = s->overlay[i];
-    uint32_t mode = s->xmap_overlay_mode[did];
+    uint32_t mode = s->xmap[0].overlay_mode[did];
     uint32_t entry;
 
     if (!index || !(mode & 1)) {
@@ -152,7 +152,7 @@ static uint32_t mgras_resolve_pixel_bgr(SGIMgrasState *s, int i,
     if (mgras_overlay_bgr(s, i, overlay_did, &overlay)) {
         return overlay;
     }
-    if ((s->xmap_buf_select[0] >> (main_did & MGRAS_DID_MASK)) & 1) {
+    if ((s->xmap[0].buf_select[0] >> (main_did & MGRAS_DID_MASK)) & 1) {
         uint32_t rgb = s->back[i] & 0x00ffffff;
 
         return ((rgb & 0xff) << 16) | (rgb & 0xff00) | ((rgb >> 16) & 0xff);

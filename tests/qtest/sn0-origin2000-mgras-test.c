@@ -719,7 +719,11 @@ static void test_repp_sync_handshake(void)
     qtest_writeb(qts, REG_XMAP_INDEX, 0x1c);
     g_assert_cmphex(qtest_readb(qts, REG_XMAP_INDEX), ==, 0x1c);
 
-    qtest_writel(qts, REG_REPP_STATUS_1, 0x50214);
+    /*
+     * 0x071c08 is PP1SELECT; 1 reaches every PP1, as the kernel leaves it
+     * after its per-PP1 loops.
+     */
+    qtest_writeb(qts, REG_REPP_STATUS_1, 1);
     qtest_writeb(qts, REG_XMAP_INDEX, 0x1c);
     qtest_writel(qts, REG_REPP_STATUS_3, 0x653);
     qtest_writel(qts, REG_REPP_STATUS_4, 0x10214);
@@ -728,7 +732,7 @@ static void test_repp_sync_handshake(void)
 
     g_assert_cmphex(qtest_readl(qts, REG_HQ_STATUS) & 0x80000000, ==, 0);
 
-    g_assert_cmphex(qtest_readl(qts, REG_REPP_STATUS_1), ==, 0x50214);
+    g_assert_cmphex(qtest_readl(qts, REG_REPP_STATUS_1), ==, 1);
     g_assert_cmphex(qtest_readl(qts, REG_REPP_STATUS_3), ==, 0x653);
     g_assert_cmphex(qtest_readl(qts, REG_REPP_STATUS_4), ==, 0x10214);
     g_assert_cmphex(qtest_readl(qts, REG_SYNC_STATUS), ==, 1);
@@ -750,9 +754,10 @@ static void test_repp_status_byte_writes(void)
 {
     mgras_reset();
 
-    qtest_writeb(qts, REG_REPP_STATUS_1, 0x14);
+    /* RE 0's second PP1, which CONFIGB below then reaches. */
+    qtest_writeb(qts, REG_REPP_STATUS_1, 0x02);
     g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
-    g_assert_cmphex(qtest_readl(qts, REG_REPP_STATUS_1), ==, 0x14);
+    g_assert_cmphex(qtest_readl(qts, REG_REPP_STATUS_1), ==, 0x02);
 
     qtest_writeb(qts, REG_REPP_STATUS_4, 0x21);
     g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
@@ -846,6 +851,260 @@ static void test_xmap_revision_and_fifo_capacity(void)
     cap = qtest_readl(qts, REG_REPP_STATUS_3);
     g_assert_cmphex(cap & 0xf, ==, 1);
     g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+}
+
+/*
+ * PP1SELECT (0x071c08) picks which PP1 the XMAP registers reach. The IRIX
+ * 6.5.30 kernel writes ((re << 1) | pp) << 1 there before its per-PP1
+ * sequences (MgrasSyncREPP, mgras_update_pp1ccv),
+ * so 0 and 2 name the two PP1s of RE 0 and 4 and 6 those of RE 1, and it
+ * writes 1 before configuring every PP1 at once (MgrasInitXMAP,
+ * MgrasSyncPPRDRAMs) and again after each per-PP1 loop
+ * (docs/datasheets/mgras-dual-re.md). A two-RE board has four PP1s, each
+ * with its own XMAP register file; 0x071f00 and 0x071f80 are the
+ * exception, kept by no PP1 (test_pp1_select_leaves_sync_registers_shared).
+ */
+#define REG_PP1_SELECT          REG_REPP_STATUS_1
+#define PP1_SELECT_ALL          1
+#define PP1_SELECT(re, pp)      ((((re) << 1) | (pp)) << 1)
+
+static void mgras_select_xmap(QTestState *s, uint8_t select, uint8_t index)
+{
+    qtest_writeb(s, REG_PP1_SELECT, select);
+    qtest_writeb(s, REG_XMAP_INDEX, index);
+}
+
+static void test_pp1_select_routes_xmap_on_two_re_board(void)
+{
+    QTestState *s = qtest_init(MACHINE_ARGS " -global sgi-mgras.board=ssi"
+                               " -global sgi-mgras.x-unimplemented-board=on");
+
+    mgras_select_xmap(s, PP1_SELECT_ALL, 0);
+    qtest_writel(s, REG_XMAP_MAIN_MODE, 0x111);
+    qtest_writel(s, REG_XMAP_BUF_SELECT, 0x5);
+    qtest_writel(s, REG_REPP_STATUS_3, 0x0018073f);
+    for (int re = 0; re < 2; re++) {
+        for (int pp = 0; pp < 2; pp++) {
+            mgras_select_xmap(s, PP1_SELECT(re, pp), 0);
+            g_assert_cmphex(qtest_readl(s, REG_XMAP_MAIN_MODE), ==, 0x111);
+            g_assert_cmphex(qtest_readl(s, REG_XMAP_BUF_SELECT), ==, 0x5);
+            g_assert_cmphex(qtest_readl(s, REG_REPP_STATUS_3), ==,
+                            0x0018073f);
+        }
+    }
+
+    /* One PP1 of RE 1 alone: the other three keep what they had. */
+    mgras_select_xmap(s, PP1_SELECT(1, 1), 0);
+    qtest_writel(s, REG_XMAP_MAIN_MODE, 0x222);
+    qtest_writel(s, REG_REPP_STATUS_3, 0x0008073f);
+    for (int re = 0; re < 2; re++) {
+        for (int pp = 0; pp < 2; pp++) {
+            bool picked = re == 1 && pp == 1;
+
+            mgras_select_xmap(s, PP1_SELECT(re, pp), 0);
+            g_assert_cmphex(qtest_readl(s, REG_XMAP_MAIN_MODE), ==,
+                            picked ? 0x222 : 0x111);
+            g_assert_cmphex(qtest_readl(s, REG_REPP_STATUS_3), ==,
+                            picked ? 0x0008073f : 0x0018073f);
+        }
+    }
+
+    /* The index register belongs to each PP1 as well. */
+    mgras_select_xmap(s, PP1_SELECT(0, 1), 8);
+    qtest_writeb(s, REG_PP1_SELECT, PP1_SELECT(0, 0));
+    g_assert_cmphex(qtest_readb(s, REG_XMAP_INDEX), ==, 0);
+    qtest_writeb(s, REG_PP1_SELECT, PP1_SELECT(0, 1));
+    g_assert_cmphex(qtest_readb(s, REG_XMAP_INDEX), ==, 8);
+
+    g_assert_cmphex(mgras_qom_get_uint(s, "x-test-error"), ==, 0);
+    qtest_quit(s);
+}
+
+/*
+ * A one-RE board has no PP1s behind 4 and 6: a write there changes nothing
+ * the board has, and the two PP1 it does have still take writes to all.
+ * What real hardware returns for a read of an absent PP1 is unknown; the
+ * model answers 0. Nothing here is a guest-visible board error.
+ */
+static void test_pp1_select_absent_pp1_on_one_re_board(void)
+{
+    mgras_reset();
+
+    mgras_select_xmap(qts, PP1_SELECT_ALL, 0);
+    qtest_writel(qts, REG_XMAP_MAIN_MODE, 0x111);
+    mgras_select_xmap(qts, PP1_SELECT(1, 0), 0);
+    qtest_writel(qts, REG_XMAP_MAIN_MODE, 0x333);
+    g_assert_cmphex(qtest_readl(qts, REG_XMAP_MAIN_MODE), ==, 0);
+
+    mgras_select_xmap(qts, PP1_SELECT(0, 0), 0);
+    g_assert_cmphex(qtest_readl(qts, REG_XMAP_MAIN_MODE), ==, 0x111);
+    mgras_select_xmap(qts, PP1_SELECT(0, 1), 0);
+    g_assert_cmphex(qtest_readl(qts, REG_XMAP_MAIN_MODE), ==, 0x111);
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+    mgras_reset();
+}
+
+/*
+ * Scanout reads the first PP1's mode tables. The kernel and X server give
+ * every PP1 the same tables, so which one scanout reads is invisible to
+ * them. Which PP1 drives which pixels is unknown, so a mode written to one
+ * other PP1 alone does not change the screen.
+ */
+static void test_pp1_scanout_follows_first_pp1(void)
+{
+    QTestState *s = qtest_init(MACHINE_ARGS " -global sgi-mgras.board=ssi"
+                               " -global sgi-mgras.x-unimplemented-board=on");
+
+    /* Map 29 is the one reset's mode 0x7a4 names; 0x384 names map 28. */
+    mgras_enter_context(s);
+    qtest_writel(s, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x1e, 0x4));
+    mgras_write_cmap_entry(s, 29, 0x40, 0x11223300);
+    mgras_write_cmap_entry(s, 28, 0x40, 0x44556600);
+    qtest_writeq(s, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_FILLMODE, MGRAS_FILLMODE_RECT_FILL_VALUE));
+    qtest_writeq(s, REG_CONTEXT_COMMAND, MGRAS_COMMAND(REG_FILLCOLOR_R, 0x40));
+    qtest_writeq(s, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_BLOCK_START, (5u << 16) | 5u));
+    qtest_writeq(s, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND_EXEC(REG_BLOCK_END, (5u << 16) | 5u));
+    g_assert_cmphex(mgras_test_display_pixel(s, 5, 5), ==, 0x00112233);
+
+    mgras_select_xmap(s, PP1_SELECT(1, 0), 0);
+    qtest_writel(s, REG_XMAP_MAIN_MODE, 0x384);
+    g_assert_cmphex(mgras_test_display_pixel(s, 5, 5), ==, 0x00112233);
+
+    mgras_select_xmap(s, PP1_SELECT(0, 0), 0);
+    qtest_writel(s, REG_XMAP_MAIN_MODE, 0x384);
+    g_assert_cmphex(mgras_test_display_pixel(s, 5, 5), ==, 0x00445566);
+    g_assert_cmphex(mgras_qom_get_uint(s, "x-test-error"), ==, 0);
+    qtest_quit(s);
+}
+
+#define REG_XMAP_SYNC_0         MGRAS_REG(0x071f00)
+#define REG_XMAP_OVERLAY_MODE   MGRAS_REG(0x071e80)
+#define MGRAS_TWO_RE_ARGS       " -global sgi-mgras.board=ssi" \
+                                " -global sgi-mgras.x-unimplemented-board=on"
+
+/* The PP1SELECT value naming PP1 n: RE n / 2, its PP1 n % 2. */
+static uint8_t mgras_pp1_select_one(unsigned int n)
+{
+    return PP1_SELECT(n / 2, n % 2);
+}
+
+/*
+ * Give each of a two-RE board's four PP1s different XMAP contents: under
+ * index 0, main mode 0x100 + n, buffer select 0x10 + n, overlay mode
+ * 0x20 + n, 0x071d00 0x1000 + n and 0x071d08 0x2000 + n, and then index
+ * byte 4 * (n + 1). No broadcast write follows, so the four stay apart.
+ */
+static void mgras_give_pp1s_distinct_xmaps(QTestState *s)
+{
+    for (unsigned int n = 0; n < 4; n++) {
+        mgras_select_xmap(s, mgras_pp1_select_one(n), 0);
+        qtest_writel(s, REG_XMAP_MAIN_MODE, 0x100 + n);
+        qtest_writel(s, REG_XMAP_BUF_SELECT, 0x10 + n);
+        qtest_writel(s, REG_XMAP_OVERLAY_MODE, 0x20 + n);
+        qtest_writel(s, REG_REPP_STATUS_3, 0x1000 + n);
+        qtest_writel(s, REG_REPP_STATUS_4, 0x2000 + n);
+        qtest_writeb(s, REG_XMAP_INDEX, 4 * (n + 1));
+    }
+}
+
+/* Read PP1 n's index byte, then its registers under index 0. */
+static void mgras_assert_pp1_xmap(QTestState *s, uint8_t select,
+                                  unsigned int n)
+{
+    qtest_writeb(s, REG_PP1_SELECT, select);
+    g_assert_cmphex(qtest_readb(s, REG_XMAP_INDEX), ==, 4 * (n + 1));
+    qtest_writeb(s, REG_XMAP_INDEX, 0);
+    g_assert_cmphex(qtest_readl(s, REG_XMAP_MAIN_MODE), ==, 0x100 + n);
+    g_assert_cmphex(qtest_readl(s, REG_XMAP_BUF_SELECT), ==, 0x10 + n);
+    g_assert_cmphex(qtest_readl(s, REG_XMAP_OVERLAY_MODE), ==, 0x20 + n);
+    g_assert_cmphex(qtest_readl(s, REG_REPP_STATUS_3), ==, 0x1000 + n);
+    g_assert_cmphex(qtest_readl(s, REG_REPP_STATUS_4), ==, 0x2000 + n);
+    qtest_writeb(s, REG_XMAP_INDEX, 4 * (n + 1));
+}
+
+/*
+ * With every PP1 selected, a read answers from PP1 0. That is an
+ * approximation: what hardware returns then is unknown
+ * (docs/datasheets/mgras-dual-re.md). The four PP1s differ first, so the
+ * answer shows which one gave it.
+ */
+static void test_pp1_select_all_reads_first_pp1(void)
+{
+    QTestState *s = qtest_init(MACHINE_ARGS MGRAS_TWO_RE_ARGS);
+
+    mgras_give_pp1s_distinct_xmaps(s);
+    mgras_assert_pp1_xmap(s, PP1_SELECT_ALL, 0);
+    g_assert_cmphex(mgras_qom_get_uint(s, "x-test-error"), ==, 0);
+    qtest_quit(s);
+}
+
+/*
+ * PP1SELECT bits 7:3 are zero in every value IRIX writes, and the model
+ * ignores them: with all five set, reads and writes reach the PP1 bits
+ * 2:1 name, or every PP1 when bit 0 is set. What hardware does with them
+ * is unknown.
+ */
+static void test_pp1_select_ignores_bits_7_to_3(void)
+{
+    QTestState *s = qtest_init(MACHINE_ARGS MGRAS_TWO_RE_ARGS);
+
+    mgras_give_pp1s_distinct_xmaps(s);
+    for (unsigned int n = 0; n < 4; n++) {
+        mgras_assert_pp1_xmap(s, 0xf8 | mgras_pp1_select_one(n), n);
+    }
+
+    mgras_select_xmap(s, 0xf8 | PP1_SELECT(1, 0), 0);
+    qtest_writel(s, REG_XMAP_MAIN_MODE, 0x999);
+    for (unsigned int n = 0; n < 4; n++) {
+        mgras_select_xmap(s, mgras_pp1_select_one(n), 0);
+        g_assert_cmphex(qtest_readl(s, REG_XMAP_MAIN_MODE), ==,
+                        n == 2 ? 0x999 : 0x100 + n);
+    }
+
+    mgras_select_xmap(s, 0xf8 | PP1_SELECT_ALL, 0);
+    qtest_writel(s, REG_XMAP_MAIN_MODE, 0x777);
+    for (unsigned int n = 0; n < 4; n++) {
+        mgras_select_xmap(s, mgras_pp1_select_one(n), 0);
+        g_assert_cmphex(qtest_readl(s, REG_XMAP_MAIN_MODE), ==, 0x777);
+    }
+    g_assert_cmphex(mgras_qom_get_uint(s, "x-test-error"), ==, 0);
+    qtest_quit(s);
+}
+
+/*
+ * 0x071f00 and 0x071f80 sit among the XMAP registers IRIX reaches through
+ * PP1SELECT, but the model keeps no copy of them for any PP1, an
+ * approximation the datasheet's model contract names: under every
+ * selection they read 1 and 0x101, and a write under any selection is
+ * dropped.
+ */
+static void test_pp1_select_leaves_sync_registers_shared(void)
+{
+    static const uint8_t selects[] = {
+        PP1_SELECT(0, 0), PP1_SELECT(0, 1), PP1_SELECT(1, 0),
+        PP1_SELECT(1, 1), PP1_SELECT_ALL,
+    };
+    QTestState *s = qtest_init(MACHINE_ARGS MGRAS_TWO_RE_ARGS);
+
+    for (size_t i = 0; i < ARRAY_SIZE(selects); i++) {
+        mgras_select_xmap(s, selects[i], 0);
+        qtest_writel(s, REG_XMAP_SYNC_0, 0x1230 + i);
+        qtest_writel(s, REG_REPP_SYNC, 0x50210 + i);
+        mgras_select_xmap(s, selects[i], 0x1c);
+        qtest_writel(s, REG_REPP_SYNC, 0x650 + i);
+    }
+    for (size_t i = 0; i < ARRAY_SIZE(selects); i++) {
+        mgras_select_xmap(s, selects[i], 0);
+        g_assert_cmphex(qtest_readl(s, REG_XMAP_SYNC_0), ==, 1);
+        g_assert_cmphex(qtest_readl(s, REG_REPP_SYNC), ==, 0x101);
+        mgras_select_xmap(s, selects[i], 0x1c);
+        g_assert_cmphex(qtest_readl(s, REG_REPP_SYNC), ==, 0x101);
+    }
+    g_assert_cmphex(mgras_qom_get_uint(s, "x-test-error"), ==, 0);
+    qtest_quit(s);
 }
 
 typedef struct SIVisualRegisterWidth {
@@ -7997,6 +8256,45 @@ static void test_migration(void)
     qtest_quit(from);
 }
 
+/*
+ * Each PP1's XMAP register file and PP1SELECT itself travel with the
+ * stream: PP1 0 in the fields the single XMAP used, PP1s 1 to 3 in the
+ * version-19 section. The four PP1s differ, so a stream that carried only
+ * one, or copied PP1 0 into the others, fails a read below.
+ */
+static void test_pp1_xmap_migration(void)
+{
+    g_autofree char *tmpfs = NULL;
+    g_autofree char *uri = NULL;
+    g_autofree char *dest_cmdline = NULL;
+    GError *err = NULL;
+    QTestState *from, *to;
+
+    tmpfs = g_dir_make_tmp("sn0-mgras-pp1-migration-XXXXXX", &err);
+    g_assert_no_error(err);
+    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+
+    from = qtest_init(MIGRATION_ARGS MGRAS_TWO_RE_ARGS);
+    dest_cmdline = g_strdup_printf(MIGRATION_ARGS MGRAS_TWO_RE_ARGS
+                                   " -incoming %s", uri);
+    to = qtest_init(dest_cmdline);
+
+    mgras_give_pp1s_distinct_xmaps(from);
+    qtest_writeb(from, REG_PP1_SELECT, PP1_SELECT(1, 0));
+
+    sgi_migrate_stopped(from, uri);
+
+    g_assert_cmphex(qtest_readl(to, REG_PP1_SELECT), ==, PP1_SELECT(1, 0));
+    for (unsigned int n = 0; n < 4; n++) {
+        mgras_assert_pp1_xmap(to, mgras_pp1_select_one(n), n);
+    }
+    g_assert_cmphex(mgras_qom_get_uint(to, "x-test-error"), ==, 0);
+
+    qtest_quit(to);
+    qtest_quit(from);
+    g_rmdir(tmpfs);
+}
+
 static void test_migration_from_v9_format_default(void)
 {
     g_autofree char *tmpfs = NULL;
@@ -8567,6 +8865,19 @@ int main(int argc, char **argv)
                    test_repp_status_byte_writes);
     qtest_add_func("sn0/origin2000/mgras/xmap-buf-select-reads-back",
                    test_xmap_buf_select_reads_back);
+    qtest_add_func("sn0/origin2000/mgras/pp1-select-routes-xmap-two-re",
+                   test_pp1_select_routes_xmap_on_two_re_board);
+    qtest_add_func("sn0/origin2000/mgras/pp1-select-absent-pp1-one-re",
+                   test_pp1_select_absent_pp1_on_one_re_board);
+    qtest_add_func("sn0/origin2000/mgras/pp1-scanout-follows-first-pp1",
+                   test_pp1_scanout_follows_first_pp1);
+    qtest_add_func("sn0/origin2000/mgras/pp1-select-all-reads-first-pp1",
+                   test_pp1_select_all_reads_first_pp1);
+    qtest_add_func("sn0/origin2000/mgras/pp1-select-ignores-bits-7-to-3",
+                   test_pp1_select_ignores_bits_7_to_3);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "pp1-select-leaves-sync-registers-shared",
+                   test_pp1_select_leaves_sync_registers_shared);
     qtest_add_func("sn0/origin2000/mgras/xmap-revision-and-fifo-capacity",
                    test_xmap_revision_and_fifo_capacity);
     qtest_add_func("sn0/origin2000/mgras/xmap-buf-select-write",
@@ -8982,6 +9293,8 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/origin2000/mgras/fifo-re-blockcopy-unsupported",
                    test_fifo_re_blockcopy_unsupported);
     qtest_add_func("sn0/origin2000/mgras/migration", test_migration);
+    qtest_add_func("sn0/origin2000/mgras/pp1-xmap-migration",
+                   test_pp1_xmap_migration);
     qtest_add_func("sn0/origin2000/mgras/migration-from-v9-format-default",
                    test_migration_from_v9_format_default);
     qtest_add_func("sn0/origin2000/mgras/context-ack-migration",
