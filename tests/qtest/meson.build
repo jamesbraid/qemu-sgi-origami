@@ -51,7 +51,7 @@ slow_qtests = {
   'sn0-hub-test': 415,
   # Routed acceptance was killed at a 120s ceiling in every parallel run
   # before this budget was raised. Measured 114.90s at 27 cases; merging in
-  # the outgoing-hub-io and xtalk-owner cases added three more
+  # the outgoing-hub-io and xio-owner cases added three more
   # private-launch boots (30 total) and measured 115.09s under the same
   # parallel CI load, so keep the same three-times-measured budget.
   'sn0-origin2000-test': 350,

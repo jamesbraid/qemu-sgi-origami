@@ -1165,7 +1165,7 @@ static void test_no_board_stays_inert(void)
  */
 #define MACHINE_ARGS "-M origin300 -cpu R14000 -smp 2"
 
-#define XTALK_WIDGET(w) (SPACE_IO + (uint64_t)(w) * UINT64_C(0x1000000))
+#define IO_WIDGET(w) (SPACE_IO + (uint64_t)(w) * UINT64_C(0x1000000))
 #define BEDROCK_LOCAL (SPACE_IO + UINT64_C(0x01000000))
 
 #define XBRIDGE_HOST_PORT 0xa
@@ -1209,16 +1209,16 @@ static char *create_prom(void)
     return path;
 }
 
-static uint32_t xtalk_reg_read(QTestState *qts, unsigned widget,
-                               uint64_t offset)
+static uint32_t widget_reg_read(QTestState *qts, unsigned widget,
+                                uint64_t offset)
 {
-    return qtest_readl(qts, XTALK_WIDGET(widget) + offset + 4);
+    return qtest_readl(qts, IO_WIDGET(widget) + offset + 4);
 }
 
-static void xtalk_reg_write(QTestState *qts, unsigned widget,
-                            uint64_t offset, uint32_t value)
+static void widget_reg_write(QTestState *qts, unsigned widget,
+                             uint64_t offset, uint32_t value)
 {
-    qtest_writel(qts, XTALK_WIDGET(widget) + offset + 4, value);
+    qtest_writel(qts, IO_WIDGET(widget) + offset + 4, value);
 }
 
 static void test_error_reaches_pending(void)
@@ -1235,25 +1235,25 @@ static void test_error_reaches_pending(void)
     for (i = 0; i < 2; i++) {
         unsigned w = head[i].widget;
 
-        xtalk_reg_write(qts, w, XBRIDGE_INT_UPPER, DESTINATION_UPPER);
-        xtalk_reg_write(qts, w, XBRIDGE_INT_LOWER,
-                        PI_REMOTE_WINDOW + PI_PENDING_MODIFY);
-        xtalk_reg_write(qts, w, XBRIDGE_HOST_ERROR, head[i].bit);
-        xtalk_reg_write(qts, w, XBRIDGE_INT_ENABLE, XBRIDGE_INVALID_ADDRESS);
-        g_assert_cmphex(xtalk_reg_read(qts, w, XBRIDGE_INT_STATUS) &
+        widget_reg_write(qts, w, XBRIDGE_INT_UPPER, DESTINATION_UPPER);
+        widget_reg_write(qts, w, XBRIDGE_INT_LOWER,
+                         PI_REMOTE_WINDOW + PI_PENDING_MODIFY);
+        widget_reg_write(qts, w, XBRIDGE_HOST_ERROR, head[i].bit);
+        widget_reg_write(qts, w, XBRIDGE_INT_ENABLE, XBRIDGE_INVALID_ADDRESS);
+        g_assert_cmphex(widget_reg_read(qts, w, XBRIDGE_INT_STATUS) &
                         XBRIDGE_INVALID_ADDRESS, ==, 0);
         /* The provoke: a store the head must post and report, not fault. */
-        xtalk_reg_write(qts, w, XBRIDGE_UNDEFINED_SLOT, 0);
-        g_assert_cmphex(xtalk_reg_read(qts, w, XBRIDGE_INT_STATUS) &
+        widget_reg_write(qts, w, XBRIDGE_UNDEFINED_SLOT, 0);
+        g_assert_cmphex(widget_reg_read(qts, w, XBRIDGE_INT_STATUS) &
                         XBRIDGE_INVALID_ADDRESS, ==, XBRIDGE_INVALID_ADDRESS);
-        g_assert_cmphex(xtalk_reg_read(qts, w, XBRIDGE_ERROR_ADDRESS_LOWER),
+        g_assert_cmphex(widget_reg_read(qts, w, XBRIDGE_ERROR_ADDRESS_LOWER),
                         ==, XBRIDGE_UNDEFINED_SLOT + 4);
         /* And the interrupt reaches the pending bit the host field names. */
         g_assert_cmphex(qtest_readq(qts, BEDROCK_LOCAL + PI_PENDING_0) &
                         (1ULL << head[i].bit), ==, 1ULL << head[i].bit);
-        xtalk_reg_write(qts, w, XBRIDGE_INT_RESET,
-                        XBRIDGE_RESET_INVALID_ADDRESS);
-        g_assert_cmphex(xtalk_reg_read(qts, w, XBRIDGE_INT_STATUS) &
+        widget_reg_write(qts, w, XBRIDGE_INT_RESET,
+                         XBRIDGE_RESET_INVALID_ADDRESS);
+        g_assert_cmphex(widget_reg_read(qts, w, XBRIDGE_INT_STATUS) &
                         XBRIDGE_INVALID_ADDRESS, ==, 0);
     }
     /* Each head named its own bit; neither named the other's. */

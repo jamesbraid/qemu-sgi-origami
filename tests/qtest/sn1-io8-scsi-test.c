@@ -19,7 +19,7 @@
 
 #define MACHINE_ARGS "-M origin300 -cpu R14000 -smp 2"
 
-#define XTALK_WIDGET(w) (SPACE_IO + (uint64_t)(w) * UINT64_C(0x1000000))
+#define IO_WIDGET(w) (SPACE_IO + (uint64_t)(w) * UINT64_C(0x1000000))
 #define IO_INBOUND_ACCESS 0x118
 
 #define BEDROCK_NODE0 (SPACE_IO + UINT64_C(0x01800000))
@@ -36,7 +36,7 @@
 #define IO8_WIDGET 0xf
 #define IO8_SCSI_SLOT 1
 #define IO8_SCSI_PIN 1
-#define IO8_SCSI_CFG (XTALK_WIDGET(IO8_WIDGET) + 0x20000 + \
+#define IO8_SCSI_CFG (IO_WIDGET(IO8_WIDGET) + 0x20000 + \
                       IO8_SCSI_SLOT * 0x1000)
 
 /*
@@ -46,7 +46,7 @@
  * slot 4 at 0x800000 and OHCI slot 5 at 0x900000; sn1-address-map-test checks
  * those devices.
  */
-#define IO8_SCSI_WINDOW (XTALK_WIDGET(IO8_WIDGET) + 0x400000)
+#define IO8_SCSI_WINDOW (IO_WIDGET(IO8_WIDGET) + 0x400000)
 
 /*
  * The device register gives the window target in MiB. A 2 MiB slot-0/1 window
@@ -310,16 +310,16 @@ static void disks_remove(DiskPair *disks)
     g_free(disks->dir);
 }
 
-static uint32_t xtalk_reg_read(QTestState *qts, unsigned int widget,
-                               uint64_t offset)
+static uint32_t widget_reg_read(QTestState *qts, unsigned int widget,
+                                uint64_t offset)
 {
-    return qtest_readl(qts, XTALK_WIDGET(widget) + offset + 4);
+    return qtest_readl(qts, IO_WIDGET(widget) + offset + 4);
 }
 
-static void xtalk_reg_write(QTestState *qts, unsigned int widget,
-                            uint64_t offset, uint32_t value)
+static void widget_reg_write(QTestState *qts, unsigned int widget,
+                             uint64_t offset, uint32_t value)
 {
-    qtest_writel(qts, XTALK_WIDGET(widget) + offset + 4, value);
+    qtest_writel(qts, IO_WIDGET(widget) + offset + 4, value);
 }
 
 /*
@@ -374,26 +374,26 @@ static void io8_scsi_attach(QTestState *qts)
     qtest_writel(qts, IO8_SCSI_CFG + PCI_BAR1, ADAPTER_MMIO);
     qtest_writel(qts, IO8_SCSI_CFG + PCI_COMMAND,
                  PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER);
-    xtalk_reg_write(qts, IO8_WIDGET, XBRIDGE_DEVICE(IO8_SCSI_SLOT),
-                    XBRIDGE_DEVICE_MEMORY | (ADAPTER_MMIO >> 20));
+    widget_reg_write(qts, IO8_WIDGET, XBRIDGE_DEVICE(IO8_SCSI_SLOT),
+                     XBRIDGE_DEVICE_MEMORY | (ADAPTER_MMIO >> 20));
 }
 
 static void io8_route_interrupt(QTestState *qts, unsigned int pin,
                                 unsigned int pending_bit)
 {
-    xtalk_reg_write(qts, IO8_WIDGET, XBRIDGE_INT_UPPER,
-                    XBRIDGE_HOST_PORT << 16);
-    xtalk_reg_write(qts, IO8_WIDGET, XBRIDGE_INT_LOWER,
-                    PI_REMOTE_WINDOW + PI_PENDING_MODIFY);
-    xtalk_reg_write(qts, IO8_WIDGET, XBRIDGE_INT_HOST(pin),
-                    (1U << 17) | pending_bit);
-    xtalk_reg_write(qts, IO8_WIDGET, XBRIDGE_INT_ENABLE, 1U << pin);
+    widget_reg_write(qts, IO8_WIDGET, XBRIDGE_INT_UPPER,
+                     XBRIDGE_HOST_PORT << 16);
+    widget_reg_write(qts, IO8_WIDGET, XBRIDGE_INT_LOWER,
+                     PI_REMOTE_WINDOW + PI_PENDING_MODIFY);
+    widget_reg_write(qts, IO8_WIDGET, XBRIDGE_INT_HOST(pin),
+                     (1U << 17) | pending_bit);
+    widget_reg_write(qts, IO8_WIDGET, XBRIDGE_INT_ENABLE, 1U << pin);
 }
 
 /* The head's interrupt status carries one bit per physical pin. */
 static unsigned head_f_pin(QTestState *qts, unsigned int pin)
 {
-    return (xtalk_reg_read(qts, IO8_WIDGET, XBRIDGE_INT_STATUS) >> pin) & 1;
+    return (widget_reg_read(qts, IO8_WIDGET, XBRIDGE_INT_STATUS) >> pin) & 1;
 }
 
 static QTestState *machine_start(void)

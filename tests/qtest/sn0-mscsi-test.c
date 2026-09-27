@@ -30,11 +30,11 @@
 #include "qobject/qlist.h"
 #include "sgi-test.h"
 
-#define XTALK_REG_DATA      4
-#define XTALK_WIDGET_SIZE   UINT64_C(0x1000000)
+#define XIO_REG_DATA        4
+#define XIO_WIDGET_SIZE     UINT64_C(0x1000000)
 #define WIDGET_ID           0x0000
-#define XTALK_ID_PART(v)    (((v) >> 12) & 0xffff)
-#define XTALK_ID_REVISION(v) (((v) >> 28) & 0xf)
+#define XIO_ID_PART(v)      (((v) >> 12) & 0xffff)
+#define XIO_ID_REVISION(v)  (((v) >> 28) & 0xf)
 #define BRIDGE_PART         0xc002
 #define MSCSI_BRIDGE_REVISION 3
 
@@ -80,7 +80,7 @@ static const MscsiCase io4_case = {
 };
 
 /* A 32-bit crosstalk read through CPU 0's own Hub. */
-static uint32_t xtalk_read(QTestState *qts, uint64_t offset)
+static uint32_t io_space_read(QTestState *qts, uint64_t offset)
 {
     uint8_t bytes[sizeof(uint32_t)];
 
@@ -91,14 +91,14 @@ static uint32_t xtalk_read(QTestState *qts, uint64_t offset)
 
 static uint64_t widget_base(const MscsiCase *c)
 {
-    return (uint64_t)c->widget * XTALK_WIDGET_SIZE;
+    return (uint64_t)c->widget * XIO_WIDGET_SIZE;
 }
 
 static uint32_t config_read(QTestState *qts, const MscsiCase *c,
                             unsigned int device, unsigned int offset)
 {
-    return xtalk_read(qts, widget_base(c) + 0x020000 + device * 0x1000 +
-                           offset);
+    return io_space_read(qts, widget_base(c) + 0x020000 + device * 0x1000 +
+                         offset);
 }
 
 /* True when the QOM object at `path` has a child property named `child`. */
@@ -127,11 +127,11 @@ static void test_bridge_revision(const void *data)
 {
     const MscsiCase *c = data;
     QTestState *qts = qtest_init(c->args);
-    uint32_t id = xtalk_read(qts, widget_base(c) + WIDGET_ID +
-                                  XTALK_REG_DATA);
+    uint32_t id = io_space_read(qts, widget_base(c) + WIDGET_ID +
+                                XIO_REG_DATA);
 
-    g_assert_cmphex(XTALK_ID_PART(id), ==, BRIDGE_PART);
-    g_assert_cmpuint(XTALK_ID_REVISION(id), ==, MSCSI_BRIDGE_REVISION);
+    g_assert_cmphex(XIO_ID_PART(id), ==, BRIDGE_PART);
+    g_assert_cmpuint(XIO_ID_REVISION(id), ==, MSCSI_BRIDGE_REVISION);
     qtest_quit(qts);
 }
 
@@ -252,9 +252,9 @@ static void test_fitted_widgets_answer(const void *data)
     g_assert_cmphex(qdict_get_int(response, "return"), ==, CABINET_LINKS);
     for (widget = IO2_WIDGET; widget <= IO4_WIDGET; widget++) {
         /* A Bridge's identification register: part 0xc002, SGI's 0x036. */
-        g_assert_cmphex((xtalk_read(qts, (uint64_t)widget *
-                                    XTALK_WIDGET_SIZE + 4) >> 1) & 0x7ff, ==,
-                        0x036);
+        g_assert_cmphex((io_space_read(qts, (uint64_t)widget *
+                                       XIO_WIDGET_SIZE + 4) >> 1) & 0x7ff, ==,
+                                       0x036);
     }
     qtest_quit(qts);
 }

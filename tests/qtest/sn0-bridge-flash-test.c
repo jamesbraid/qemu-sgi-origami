@@ -19,10 +19,10 @@
 #define ORIGIN200_MACHINE "-M origin200 -m 128M -display none"
 
 /* Position-independent crosstalk space and the per-widget small window. */
-#define XTALK_BASE UINT64_C(0x20000000000)
-#define XTALK_WIDGET_SIZE UINT64_C(0x1000000)
+#define IO_SPACE UINT64_C(0x20000000000)
+#define XIO_WIDGET_SIZE UINT64_C(0x1000000)
 #define BASEIO_WIDGET 8
-#define BRIDGE_BASE (XTALK_BASE + BASEIO_WIDGET * XTALK_WIDGET_SIZE)
+#define BRIDGE_BASE (IO_SPACE + BASEIO_WIDGET * XIO_WIDGET_SIZE)
 
 /* Registers are 32 bits in the low half of an eight-byte slot. */
 #define REG_DATA 4

@@ -51,7 +51,7 @@
 #define NI_PORT_STATUS UINT64_C(0x0)
 
 #define ITTE_WIDGET(w) ((uint64_t)(w) << 8)
-#define XTALK_WIDGET(w) (SPACE_IO + (uint64_t)(w) * UINT64_C(0x1000000))
+#define IO_WIDGET(w) (SPACE_IO + (uint64_t)(w) * UINT64_C(0x1000000))
 #define BIG_WINDOW(n) (SPACE_IO + UINT64_C(0x20000000) + \
                        (uint64_t)(n) * UINT64_C(0x20000000))
 
@@ -165,9 +165,9 @@
 
 #define IO8_USB_WIDGET 0xf
 #define IO8_USB_SLOT 5
-#define IO8_USB_CFG (XTALK_WIDGET(IO8_USB_WIDGET) + 0x20000 + \
+#define IO8_USB_CFG (IO_WIDGET(IO8_USB_WIDGET) + 0x20000 + \
                      IO8_USB_SLOT * 0x1000)
-#define IO8_USB_WINDOW (XTALK_WIDGET(IO8_USB_WIDGET) + 0x900000)
+#define IO8_USB_WINDOW (IO_WIDGET(IO8_USB_WIDGET) + 0x900000)
 #define IO8_USB_BAR 0x10000000
 #define IO8_USB_HCCA_PHYS 0x100000
 #define IO8_USB_HCCA_IOVA 0x40000000
@@ -175,9 +175,9 @@
 
 #define IO8_IOC3_WIDGET 0xf
 #define IO8_IOC3_SLOT 4
-#define IO8_IOC3_CFG (XTALK_WIDGET(IO8_IOC3_WIDGET) + 0x20000 + \
-                     IO8_IOC3_SLOT * 0x1000)
-#define IO8_IOC3_WINDOW (XTALK_WIDGET(IO8_IOC3_WIDGET) + 0x800000)
+#define IO8_IOC3_CFG (IO_WIDGET(IO8_IOC3_WIDGET) + 0x20000 + \
+                      IO8_IOC3_SLOT * 0x1000)
+#define IO8_IOC3_WINDOW (IO_WIDGET(IO8_IOC3_WIDGET) + 0x800000)
 #define IO8_IOC3_BAR 0x10000000
 #define IO8_IOC3_SERIAL_A 0x20178
 #define IO8_IOC3_SERIAL_B 0x20170
@@ -562,16 +562,16 @@ static void check_access_has_no_storage(QTestState *qts, uint64_t address)
     g_assert_cmphex(qtest_readq(qts, address), ==, before);
 }
 
-static uint32_t xtalk_reg_read(QTestState *qts, unsigned int widget,
-                               uint64_t offset)
+static uint32_t widget_reg_read(QTestState *qts, unsigned int widget,
+                                uint64_t offset)
 {
-    return qtest_readl(qts, XTALK_WIDGET(widget) + offset + 4);
+    return qtest_readl(qts, IO_WIDGET(widget) + offset + 4);
 }
 
-static void xtalk_reg_write(QTestState *qts, unsigned int widget,
-                            uint64_t offset, uint32_t value)
+static void widget_reg_write(QTestState *qts, unsigned int widget,
+                             uint64_t offset, uint32_t value)
 {
-    qtest_writel(qts, XTALK_WIDGET(widget) + offset + 4, value);
+    qtest_writel(qts, IO_WIDGET(widget) + offset + 4, value);
 }
 
 /*
@@ -1061,19 +1061,19 @@ static void test_xbridge_topology(const void *data)
     g_autoptr(QDict) response = NULL;
     uint32_t identity;
 
-    identity = xtalk_reg_read(qts, 0, 0);
+    identity = widget_reg_read(qts, 0, 0);
     g_assert_cmphex(WIDGET_REV(identity), ==, 2);
     g_assert_cmphex(WIDGET_PART(identity), ==, XBRIDGE_XBOW_PART);
     g_assert_cmphex(WIDGET_MFG(identity), ==, 0);
     g_assert_cmphex(identity & 1, ==, 1);
-    g_assert_cmphex((xtalk_reg_read(qts, 0, 8) >> 6) & 0xf, ==, 0xa);
+    g_assert_cmphex((widget_reg_read(qts, 0, 8) >> 6) & 0xf, ==, 0xa);
 
-    identity = xtalk_reg_read(qts, 0xe, 0);
+    identity = widget_reg_read(qts, 0xe, 0);
     g_assert_cmphex(WIDGET_REV(identity), ==, 2);
     g_assert_cmphex(WIDGET_PART(identity), ==, XBRIDGE_HEAD_PART);
     g_assert_cmphex(WIDGET_MFG(identity), ==, XBRIDGE_HEAD_MFG);
     g_assert_cmphex(identity & 1, ==, 1);
-    identity = xtalk_reg_read(qts, 0xf, 0);
+    identity = widget_reg_read(qts, 0xf, 0);
     g_assert_cmphex(WIDGET_REV(identity), ==, 2);
     g_assert_cmphex(WIDGET_PART(identity), ==, XBRIDGE_HEAD_PART);
     g_assert_cmphex(WIDGET_MFG(identity), ==, XBRIDGE_HEAD_MFG);
@@ -1090,7 +1090,7 @@ static void test_xbridge_topology(const void *data)
      * and that diagnostic reported no board present without ever exercising
      * the board's own PCI functions.
      */
-    identity = xtalk_reg_read(qts, XBRIDGE_HOST_PORT, 0);
+    identity = widget_reg_read(qts, XBRIDGE_HOST_PORT, 0);
     g_assert_cmphex(WIDGET_REV(identity), ==, 2);
     g_assert_cmphex(WIDGET_PART(identity), ==, XBRIDGE_XBOW_PART);
     g_assert_cmphex(WIDGET_MFG(identity), ==, 0);
@@ -1099,7 +1099,7 @@ static void test_xbridge_topology(const void *data)
     /*
      * The XBridge is a fitted part of the IP45 node board itself: sn1-node.c
      * creates it directly, as a QOM child of the node object, the same
-     * "xbridge" this test otherwise reads through xtalk_reg_*. "board-part-f"
+     * "xbridge" this test otherwise reads through widget_reg_*. "board-part-f"
      * defaults to the origin300-base.yaml catalogue's own recorded part for
      * this board, not the chip's own placeholder.
      */
@@ -1109,17 +1109,17 @@ static void test_xbridge_topology(const void *data)
     g_assert_cmpstr(qdict_get_try_str(response, "return"), ==,
                     "030-1673-003");
 
-    xtalk_reg_write(qts, 0xe, 0x20, 0x0f00320e);
-    g_assert_cmphex(xtalk_reg_read(qts, 0xe, 0x20), ==, 0x0f00321e);
-    g_assert_cmphex(xtalk_reg_read(qts, 0xf, 0x20), ==, 0x0f00320f);
-    xtalk_reg_write(qts, 0xf, 0x20, 0x0f00320d);
-    g_assert_cmphex(xtalk_reg_read(qts, 0xe, 0x20), ==, 0x0f00321e);
-    g_assert_cmphex(xtalk_reg_read(qts, 0xf, 0x20), ==, 0x0f00320d);
+    widget_reg_write(qts, 0xe, 0x20, 0x0f00320e);
+    g_assert_cmphex(widget_reg_read(qts, 0xe, 0x20), ==, 0x0f00321e);
+    g_assert_cmphex(widget_reg_read(qts, 0xf, 0x20), ==, 0x0f00320f);
+    widget_reg_write(qts, 0xf, 0x20, 0x0f00320d);
+    g_assert_cmphex(widget_reg_read(qts, 0xe, 0x20), ==, 0x0f00321e);
+    g_assert_cmphex(widget_reg_read(qts, 0xf, 0x20), ==, 0x0f00320d);
 
     /* The two head-E option positions are unpopulated. */
-    g_assert_cmphex(qtest_readl(qts, XTALK_WIDGET(0xe) + 0x21000), ==,
+    g_assert_cmphex(qtest_readl(qts, IO_WIDGET(0xe) + 0x21000), ==,
                     0xffffffff);
-    g_assert_cmphex(qtest_readl(qts, XTALK_WIDGET(0xe) + 0x22000), ==,
+    g_assert_cmphex(qtest_readl(qts, IO_WIDGET(0xe) + 0x22000), ==,
                     0xffffffff);
 
     qtest_quit(qts);
@@ -1177,9 +1177,9 @@ static void io8_ioc3_attach(QTestState *qts)
 {
     io8_ioc3_config_writel(qts, 0x10, IO8_IOC3_BAR);
     io8_ioc3_config_writel(qts, 0x04, 0x0006);
-    xtalk_reg_write(qts, IO8_IOC3_WIDGET,
-                    XBRIDGE_DEVICE(IO8_IOC3_SLOT),
-                    XBRIDGE_DEVICE_MEMORY | (IO8_IOC3_BAR >> 20));
+    widget_reg_write(qts, IO8_IOC3_WIDGET,
+                     XBRIDGE_DEVICE(IO8_IOC3_SLOT),
+                     XBRIDGE_DEVICE_MEMORY | (IO8_IOC3_BAR >> 20));
 }
 
 static uint16_t phy_read(QTestState *qts, unsigned int phy, unsigned int reg)
@@ -1198,13 +1198,13 @@ static void phy_write(QTestState *qts, unsigned int phy, unsigned int reg,
 static void io8_route_interrupt(QTestState *qts, unsigned int pin,
                                 unsigned int pending_bit)
 {
-    xtalk_reg_write(qts, IO8_IOC3_WIDGET, XBRIDGE_INT_UPPER,
-                    XBRIDGE_HOST_PORT << 16);
-    xtalk_reg_write(qts, IO8_IOC3_WIDGET, XBRIDGE_INT_LOWER,
-                    PI_REMOTE_WINDOW + PI_PENDING_MODIFY);
-    xtalk_reg_write(qts, IO8_IOC3_WIDGET, XBRIDGE_INT_HOST(pin),
-                    (1U << 17) | pending_bit);
-    xtalk_reg_write(qts, IO8_IOC3_WIDGET, XBRIDGE_INT_ENABLE, 1U << pin);
+    widget_reg_write(qts, IO8_IOC3_WIDGET, XBRIDGE_INT_UPPER,
+                     XBRIDGE_HOST_PORT << 16);
+    widget_reg_write(qts, IO8_IOC3_WIDGET, XBRIDGE_INT_LOWER,
+                     PI_REMOTE_WINDOW + PI_PENDING_MODIFY);
+    widget_reg_write(qts, IO8_IOC3_WIDGET, XBRIDGE_INT_HOST(pin),
+                     (1U << 17) | pending_bit);
+    widget_reg_write(qts, IO8_IOC3_WIDGET, XBRIDGE_INT_ENABLE, 1U << pin);
 }
 
 static uint16_t io8_usb_hcca_frame(QTestState *qts)
@@ -1228,7 +1228,7 @@ static void test_io8_usb_attachment(const void *data)
 
     identity = io8_usb_config_readl(qts, 0);
     g_assert_cmphex(identity, ==, 0x580211c1);
-    g_assert_cmphex(qtest_readl(qts, XTALK_WIDGET(0xe) + 0x25000), ==,
+    g_assert_cmphex(qtest_readl(qts, IO_WIDGET(0xe) + 0x25000), ==,
                     0xffffffff);
     g_assert_cmphex(qtest_readl(qts, IO8_USB_CFG + 0x100), ==, 0xffffffff);
     g_assert_cmphex(io8_usb_config_readl(qts, 8), ==, 0x0c031010);
@@ -1247,32 +1247,32 @@ static void test_io8_usb_attachment(const void *data)
     }
     io8_usb_config_writel(qts, 0x10, IO8_USB_BAR);
     io8_usb_config_writel(qts, 4, 6);
-    xtalk_reg_write(qts, IO8_USB_WIDGET, XBRIDGE_DEVICE(IO8_USB_SLOT),
-                    XBRIDGE_DEVICE_MEMORY | (IO8_USB_BAR >> 20));
+    widget_reg_write(qts, IO8_USB_WIDGET, XBRIDGE_DEVICE(IO8_USB_SLOT),
+                     XBRIDGE_DEVICE_MEMORY | (IO8_USB_BAR >> 20));
     g_assert_cmphex(io8_usb_readl(qts, 0), ==, 0x10);
     g_assert_cmphex(io8_usb_readl(qts, OHCI_HC_RH_DESCRIPTOR_A) & 0xff, ==,
                     2);
 
     qtest_memwrite(qts, IO8_USB_HCCA_PHYS, hcca, sizeof(hcca));
-    qtest_writeq(qts, XTALK_WIDGET(IO8_USB_WIDGET) + XBRIDGE_ATE0,
+    qtest_writeq(qts, IO_WIDGET(IO8_USB_WIDGET) + XBRIDGE_ATE0,
                  IO8_USB_HCCA_PHYS |
                  ((uint64_t)XBRIDGE_HOST_PORT << 8) |
                  XBRIDGE_ATE_NO_SWAP | XBRIDGE_ATE_VALID);
 
-    xtalk_reg_write(qts, IO8_USB_WIDGET, XBRIDGE_INT_UPPER,
-                    XBRIDGE_HOST_PORT << 16);
-    xtalk_reg_write(qts, IO8_USB_WIDGET, XBRIDGE_INT_LOWER,
-                    PI_REMOTE_WINDOW + PI_PENDING_MODIFY);
-    xtalk_reg_write(qts, IO8_USB_WIDGET,
-                    XBRIDGE_INT_HOST(XBRIDGE_USB_PIN),
-                    (1U << 17) | PI_TEST_PENDING_BIT);
-    xtalk_reg_write(qts, IO8_USB_WIDGET, XBRIDGE_INT_ENABLE,
-                    1U << XBRIDGE_USB_PIN);
+    widget_reg_write(qts, IO8_USB_WIDGET, XBRIDGE_INT_UPPER,
+                     XBRIDGE_HOST_PORT << 16);
+    widget_reg_write(qts, IO8_USB_WIDGET, XBRIDGE_INT_LOWER,
+                     PI_REMOTE_WINDOW + PI_PENDING_MODIFY);
+    widget_reg_write(qts, IO8_USB_WIDGET,
+                     XBRIDGE_INT_HOST(XBRIDGE_USB_PIN),
+                     (1U << 17) | PI_TEST_PENDING_BIT);
+    widget_reg_write(qts, IO8_USB_WIDGET, XBRIDGE_INT_ENABLE,
+                     1U << XBRIDGE_USB_PIN);
 
     g_assert_cmphex(qtest_readq(qts, BEDROCK_LOCAL + PI_PENDING_0), ==, 0);
-    g_assert_cmphex(xtalk_reg_read(qts, IO8_USB_WIDGET,
-                                  XBRIDGE_INT_STATUS) &
-                    (1U << XBRIDGE_USB_PIN), ==, 0);
+    g_assert_cmphex(widget_reg_read(qts, IO8_USB_WIDGET,
+                                    XBRIDGE_INT_STATUS) &
+                                    (1U << XBRIDGE_USB_PIN), ==, 0);
     g_assert_cmphex(cpu_cause(qts, 0) & MIPS_CAUSE_HARDWARE_IRQ0, ==, 0);
 
     io8_usb_writel(qts, OHCI_HC_HCCA, IO8_USB_HCCA_IOVA);
@@ -1283,9 +1283,9 @@ static void test_io8_usb_attachment(const void *data)
         qtest_clock_step_next(qts);
     }
     g_assert_cmphex(io8_usb_hcca_frame(qts), !=, 0);
-    g_assert_cmphex(xtalk_reg_read(qts, IO8_USB_WIDGET,
-                                  XBRIDGE_INT_STATUS) & 0xff, ==,
-                    1U << XBRIDGE_USB_PIN);
+    g_assert_cmphex(widget_reg_read(qts, IO8_USB_WIDGET,
+                                    XBRIDGE_INT_STATUS) & 0xff, ==,
+                                    1U << XBRIDGE_USB_PIN);
     g_assert_cmphex(qtest_readq(qts, BEDROCK_LOCAL + PI_PENDING_0), ==,
                     UINT64_C(1) << PI_TEST_PENDING_BIT);
     g_assert_cmphex(cpu_cause(qts, 0) & MIPS_CAUSE_HARDWARE_IRQ0, ==, 0);
@@ -1297,9 +1297,9 @@ static void test_io8_usb_attachment(const void *data)
                     MIPS_CAUSE_HARDWARE_IRQ0);
 
     io8_usb_writel(qts, OHCI_HC_INTERRUPT_STATUS, OHCI_INTERRUPT_SF);
-    g_assert_cmphex(xtalk_reg_read(qts, IO8_USB_WIDGET,
-                                  XBRIDGE_INT_STATUS) &
-                    (1U << XBRIDGE_USB_PIN), ==, 0);
+    g_assert_cmphex(widget_reg_read(qts, IO8_USB_WIDGET,
+                                    XBRIDGE_INT_STATUS) &
+                                    (1U << XBRIDGE_USB_PIN), ==, 0);
     g_assert_cmphex(qtest_readq(qts, BEDROCK_LOCAL + PI_PENDING_0), ==,
                     UINT64_C(1) << PI_TEST_PENDING_BIT);
     g_assert_cmphex(cpu_cause(qts, 0) & MIPS_CAUSE_HARDWARE_IRQ0, ==,
@@ -1326,9 +1326,9 @@ static void test_io8_usb_rejects_invalid_ate_dma(const void *data)
     qtest_memwrite(qts, IO8_USB_HCCA_PHYS, sentinel, sizeof(sentinel));
     io8_usb_config_writel(qts, 0x10, IO8_USB_BAR);
     io8_usb_config_writel(qts, 4, 6);
-    xtalk_reg_write(qts, IO8_USB_WIDGET, XBRIDGE_DEVICE(IO8_USB_SLOT),
-                    XBRIDGE_DEVICE_MEMORY | (IO8_USB_BAR >> 20));
-    qtest_writeq(qts, XTALK_WIDGET(IO8_USB_WIDGET) + XBRIDGE_ATE0,
+    widget_reg_write(qts, IO8_USB_WIDGET, XBRIDGE_DEVICE(IO8_USB_SLOT),
+                     XBRIDGE_DEVICE_MEMORY | (IO8_USB_BAR >> 20));
+    qtest_writeq(qts, IO_WIDGET(IO8_USB_WIDGET) + XBRIDGE_ATE0,
                  IO8_USB_HCCA_PHYS |
                  ((uint64_t)XBRIDGE_HOST_PORT << 8) |
                  XBRIDGE_ATE_NO_SWAP);
@@ -1337,22 +1337,22 @@ static void test_io8_usb_rejects_invalid_ate_dma(const void *data)
     io8_usb_writel(qts, OHCI_HC_CONTROL, OHCI_CONTROL_OPERATIONAL);
     qtest_clock_step_next(qts);
 
-    g_assert_cmphex(xtalk_reg_read(qts, IO8_USB_WIDGET,
-                                  XBRIDGE_INT_STATUS) &
-                    XBRIDGE_PAGE_FAULT, ==, XBRIDGE_PAGE_FAULT);
-    g_assert_cmphex(xtalk_reg_read(qts, IO8_USB_WIDGET,
-                                  XBRIDGE_ERR_UPPER) &
-                    XBRIDGE_PAGE_FAULT, ==, XBRIDGE_PAGE_FAULT);
+    g_assert_cmphex(widget_reg_read(qts, IO8_USB_WIDGET,
+                                    XBRIDGE_INT_STATUS) &
+                                    XBRIDGE_PAGE_FAULT, ==, XBRIDGE_PAGE_FAULT);
+    g_assert_cmphex(widget_reg_read(qts, IO8_USB_WIDGET,
+                                    XBRIDGE_ERR_UPPER) &
+                                    XBRIDGE_PAGE_FAULT, ==, XBRIDGE_PAGE_FAULT);
     qtest_memread(qts, IO8_USB_HCCA_PHYS, actual, sizeof(actual));
     g_assert_cmpmem(actual, sizeof(actual), sentinel, sizeof(sentinel));
 
-    xtalk_reg_write(qts, IO8_USB_WIDGET, XBRIDGE_INT_RESET, 2);
-    g_assert_cmphex(xtalk_reg_read(qts, IO8_USB_WIDGET,
-                                  XBRIDGE_INT_STATUS) &
-                    XBRIDGE_PAGE_FAULT, ==, 0);
-    g_assert_cmphex(xtalk_reg_read(qts, IO8_USB_WIDGET,
-                                  XBRIDGE_ERR_UPPER) &
-                    XBRIDGE_PAGE_FAULT, ==, 0);
+    widget_reg_write(qts, IO8_USB_WIDGET, XBRIDGE_INT_RESET, 2);
+    g_assert_cmphex(widget_reg_read(qts, IO8_USB_WIDGET,
+                                    XBRIDGE_INT_STATUS) &
+                                    XBRIDGE_PAGE_FAULT, ==, 0);
+    g_assert_cmphex(widget_reg_read(qts, IO8_USB_WIDGET,
+                                    XBRIDGE_ERR_UPPER) &
+                                    XBRIDGE_PAGE_FAULT, ==, 0);
     qtest_quit(qts);
 }
 
@@ -1365,7 +1365,7 @@ static void test_io8_ioc3_attachment(const void *data)
     g_assert_cmphex(io8_ioc3_config_readl(qts, 0x2c), ==, 0xffff10a9);
     g_assert_cmphex((io8_ioc3_config_readl(qts, 0x3c) >> 8) & 0xff, ==, 1);
 
-    g_assert_cmphex(qtest_readl(qts, XTALK_WIDGET(0xe) + 0x24000), ==,
+    g_assert_cmphex(qtest_readl(qts, IO_WIDGET(0xe) + 0x24000), ==,
                     0xffffffff);
     g_assert_cmphex(qtest_readl(qts, IO8_IOC3_CFG + 0x100), ==, 0xffffffff);
 
@@ -1499,8 +1499,8 @@ static void test_io8_ioc3_superio_interrupt(const void *data)
 
     io8_ioc3_attach(qts);
     io8_route_interrupt(qts, XBRIDGE_IOC3_SUPERIO_PIN, pending_bit);
-    g_assert_cmphex(xtalk_reg_read(qts, IO8_IOC3_WIDGET,
-                                  XBRIDGE_INT_STATUS) & 1, ==, 0);
+    g_assert_cmphex(widget_reg_read(qts, IO8_IOC3_WIDGET,
+                                    XBRIDGE_INT_STATUS) & 1, ==, 0);
 
     io8_ioc3_writel(qts, IO8_IOC3_INT_ENABLE_SET, IOC3_INT_SERIAL_A);
     qtest_writeb(qts, IO8_IOC3_WINDOW + IO8_IOC3_SERIAL_A + 1, 0x01);
@@ -1513,11 +1513,11 @@ static void test_io8_ioc3_superio_interrupt(const void *data)
     }
     g_assert_cmphex(io8_ioc3_readl(qts, IO8_IOC3_INT_STATUS) &
                     IOC3_INT_SERIAL_A, ==, IOC3_INT_SERIAL_A);
-    g_assert_cmphex(xtalk_reg_read(qts, IO8_IOC3_WIDGET,
-                                  XBRIDGE_INT_STATUS) & 1, ==, 1);
-    g_assert_cmphex(xtalk_reg_read(qts, IO8_IOC3_WIDGET,
-                                  XBRIDGE_INT_STATUS) &
-                    (1U << XBRIDGE_IOC3_ETH_PIN), ==, 0);
+    g_assert_cmphex(widget_reg_read(qts, IO8_IOC3_WIDGET,
+                                    XBRIDGE_INT_STATUS) & 1, ==, 1);
+    g_assert_cmphex(widget_reg_read(qts, IO8_IOC3_WIDGET,
+                                    XBRIDGE_INT_STATUS) &
+                                    (1U << XBRIDGE_IOC3_ETH_PIN), ==, 0);
     g_assert_cmphex(qtest_readq(qts, BEDROCK_LOCAL + PI_PENDING_0), ==,
                     pending);
     g_assert_cmphex(cpu_cause(qts, 0) & MIPS_CAUSE_HARDWARE_IRQ0, ==, 0);
@@ -1527,8 +1527,8 @@ static void test_io8_ioc3_superio_interrupt(const void *data)
                     MIPS_CAUSE_HARDWARE_IRQ0);
     g_assert_cmphex(qtest_readb(qts, IO8_IOC3_WINDOW + IO8_IOC3_SERIAL_A),
                     ==, 'S');
-    g_assert_cmphex(xtalk_reg_read(qts, IO8_IOC3_WIDGET,
-                                  XBRIDGE_INT_STATUS) & 1, ==, 0);
+    g_assert_cmphex(widget_reg_read(qts, IO8_IOC3_WIDGET,
+                                    XBRIDGE_INT_STATUS) & 1, ==, 0);
     g_assert_cmphex(qtest_readq(qts, BEDROCK_LOCAL + PI_PENDING_0), ==,
                     pending);
     qtest_writeq(qts, BEDROCK_LOCAL + PI_PENDING_MODIFY, pending_bit);
@@ -1561,11 +1561,11 @@ static void test_io8_ioc3_ethernet_dma_interrupt(const void *data)
     g_assert_cmpint(close(sv[1]), ==, 0);
 
     io8_ioc3_attach(qts);
-    qtest_writeq(qts, XTALK_WIDGET(IO8_IOC3_WIDGET) + XBRIDGE_ATE0,
+    qtest_writeq(qts, IO_WIDGET(IO8_IOC3_WIDGET) + XBRIDGE_ATE0,
                  IOC3_RX_RING_PHYS |
                  ((uint64_t)XBRIDGE_HOST_PORT << 8) |
                  XBRIDGE_ATE_NO_SWAP | XBRIDGE_ATE_VALID);
-    qtest_writeq(qts, XTALK_WIDGET(IO8_IOC3_WIDGET) + XBRIDGE_ATE0 + 8,
+    qtest_writeq(qts, IO_WIDGET(IO8_IOC3_WIDGET) + XBRIDGE_ATE0 + 8,
                  IOC3_RX_BUFFER_PHYS |
                  ((uint64_t)XBRIDGE_HOST_PORT << 8) |
                  XBRIDGE_ATE_NO_SWAP | XBRIDGE_ATE_VALID);
@@ -1604,13 +1604,13 @@ static void test_io8_ioc3_ethernet_dma_interrupt(const void *data)
                     IOC3_ENET_RX_HEADER_VALID);
     g_assert_cmphex(io8_ioc3_readl(qts, IO8_IOC3_ENET_INT_STATUS) &
                     IOC3_ENET_INT_RX_TIMER, ==, IOC3_ENET_INT_RX_TIMER);
-    g_assert_cmphex(xtalk_reg_read(qts, IO8_IOC3_WIDGET,
-                                  XBRIDGE_INT_STATUS) &
-                    (1U << XBRIDGE_IOC3_ETH_PIN), ==,
-                    1U << XBRIDGE_IOC3_ETH_PIN);
-    g_assert_cmphex(xtalk_reg_read(qts, IO8_IOC3_WIDGET,
-                                  XBRIDGE_INT_STATUS) &
-                    (1U << XBRIDGE_IOC3_SUPERIO_PIN), ==, 0);
+    g_assert_cmphex(widget_reg_read(qts, IO8_IOC3_WIDGET,
+                                    XBRIDGE_INT_STATUS) &
+                                    (1U << XBRIDGE_IOC3_ETH_PIN), ==,
+                                    1U << XBRIDGE_IOC3_ETH_PIN);
+    g_assert_cmphex(widget_reg_read(qts, IO8_IOC3_WIDGET,
+                                    XBRIDGE_INT_STATUS) &
+                                    (1U << XBRIDGE_IOC3_SUPERIO_PIN), ==, 0);
     g_assert_cmphex(qtest_readq(qts, BEDROCK_LOCAL + PI_PENDING_0), ==,
                     pending);
     g_assert_cmphex(cpu_cause(qts, 0) & MIPS_CAUSE_HARDWARE_IRQ0, ==, 0);
@@ -1620,9 +1620,9 @@ static void test_io8_ioc3_ethernet_dma_interrupt(const void *data)
                     MIPS_CAUSE_HARDWARE_IRQ0);
     io8_ioc3_writel(qts, IO8_IOC3_ENET_INT_STATUS,
                     IOC3_ENET_INT_RX_TIMER);
-    g_assert_cmphex(xtalk_reg_read(qts, IO8_IOC3_WIDGET,
-                                  XBRIDGE_INT_STATUS) &
-                    (1U << XBRIDGE_IOC3_ETH_PIN), ==, 0);
+    g_assert_cmphex(widget_reg_read(qts, IO8_IOC3_WIDGET,
+                                    XBRIDGE_INT_STATUS) &
+                                    (1U << XBRIDGE_IOC3_ETH_PIN), ==, 0);
     g_assert_cmphex(qtest_readq(qts, BEDROCK_LOCAL + PI_PENDING_0), ==,
                     pending);
     qtest_writeq(qts, BEDROCK_LOCAL + PI_PENDING_MODIFY, pending_bit);

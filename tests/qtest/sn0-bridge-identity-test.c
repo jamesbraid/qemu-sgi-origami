@@ -22,9 +22,9 @@
 #define NI_STATUS 0x600000
 #define NI_REGION_SIZE (UINT64_C(1) << 17)
 
-#define XTALK_BASE UINT64_C(0x20000000000)
-#define XTALK_REG_DATA 4
-#define XTALK_WIDGET_SIZE UINT64_C(0x1000000)
+#define IO_SPACE UINT64_C(0x20000000000)
+#define XIO_REG_DATA 4
+#define XIO_WIDGET_SIZE UINT64_C(0x1000000)
 #define BASEIO_WIDGET 8
 #define BASEIO_NASID 0x11
 
@@ -342,8 +342,8 @@ static QTestState *start_machine(const char *machine, bool numbered,
         g_assert_cmphex((hub_read(qts, 0, NI_STATUS) >> 8) & 0xff, ==,
                         nasid);
     }
-    nic_address = XTALK_BASE + nasid * NODE_STRIDE +
-                  widget * XTALK_WIDGET_SIZE + BRIDGE_NIC + XTALK_REG_DATA;
+    nic_address = IO_SPACE + nasid * NODE_STRIDE +
+                  widget * XIO_WIDGET_SIZE + BRIDGE_NIC + XIO_REG_DATA;
     nic_via_cpu = numbered;
     return qts;
 }
@@ -832,8 +832,8 @@ static void test_board_record(const void *data)
     record_field(&memory[48], 14, name);
     g_assert_cmpstr(name->str, ==, c->board_name);
 
-    id = qtest_readl(qts, XTALK_BASE + c->widget * XTALK_WIDGET_SIZE +
-                          WIDGET_ID + XTALK_REG_DATA);
+    id = qtest_readl(qts, IO_SPACE + c->widget * XIO_WIDGET_SIZE +
+                     WIDGET_ID + XIO_REG_DATA);
     g_assert_cmpuint(id >> WIDGET_ID_REVISION_SHIFT, ==, c->bridge_revision);
 
     qtest_quit(qts);

@@ -140,8 +140,8 @@ static char *qom_child_type(QTestState *qts, const char *parent,
  * `-device` board attaching through an empty slot's fabric proxy leaves the
  * Crossbow's own count of populated widgets untouched.
  */
-static uint64_t xtalk_uint(QTestState *qts, const char *crossbow,
-                           const char *property)
+static uint64_t crossbow_uint(QTestState *qts, const char *crossbow,
+                              const char *property)
 {
     g_autofree char *path = g_strdup_printf("/machine/%s", crossbow);
     g_autoptr(QDict) response = qtest_qmp(qts,
@@ -286,7 +286,7 @@ static void test_pci_expansion_attaches_at_a_named_slot(const void *data)
     g_autofree char *type = qom_child_type(qts, "/machine/module0", "io4");
 
     g_assert_cmpstr(type, ==, "sgi-pci-expansion");
-    g_assert_cmphex(xtalk_uint(qts, "crossbow0", "startup-links-alive"), ==,
+    g_assert_cmphex(crossbow_uint(qts, "crossbow0", "startup-links-alive"), ==,
                     UINT64_C(0x0700));
     qtest_quit(qts);
 }
@@ -1260,8 +1260,8 @@ static void test_origin2000_deskside_baseio_follows_the_preset(
  * cabinet is a second product whose slots a board reaches the same way.
  */
 #define MGRAS_WIDGET 15
-#define XTALK_BASE UINT64_C(0x20000000000)
-#define XTALK_WIDGET_SIZE UINT64_C(0x1000000)
+#define IO_SPACE UINT64_C(0x20000000000)
+#define XIO_WIDGET_SIZE UINT64_C(0x1000000)
 #define WIDGET_ID_DATA 4
 #define MGRAS_WIDGET_ID ((0xc003u << 12) | (0x2aau << 1) | 1)
 
@@ -1278,11 +1278,11 @@ static void assert_mgras_at_widget(QTestState *qts, const char *module,
 
     g_assert_cmpstr(head, ==, "sgi-mgras");
     /* A board fitted at launch is attached live, not at startup. */
-    g_assert_cmphex(xtalk_uint(qts, "crossbow0", "startup-links-alive") & bit,
-                    ==, 0);
+    g_assert_cmphex(crossbow_uint(qts, "crossbow0",
+                                  "startup-links-alive") & bit, ==, 0);
     /* The widget identity register, read through CPU 0's Hub. */
-    g_assert_true(qtest_memread_cpu(qts, 0, XTALK_BASE +
-                                    widget * XTALK_WIDGET_SIZE +
+    g_assert_true(qtest_memread_cpu(qts, 0, IO_SPACE +
+                                    widget * XIO_WIDGET_SIZE +
                                     WIDGET_ID_DATA, bytes, sizeof(bytes)));
     g_assert_cmphex(ldl_be_p(bytes), ==, MGRAS_WIDGET_ID);
 }
@@ -1309,8 +1309,8 @@ static void test_mgras_fitted_at_a_named_slot(const void *data)
     uint8_t bytes[4];
 
     g_assert_cmpstr(head, ==, "sgi-mgras");
-    g_assert_true(qtest_memread_cpu(qts, 0, XTALK_BASE +
-                                    14 * XTALK_WIDGET_SIZE + WIDGET_ID_DATA,
+    g_assert_true(qtest_memread_cpu(qts, 0, IO_SPACE +
+                                    14 * XIO_WIDGET_SIZE + WIDGET_ID_DATA,
                                     bytes, sizeof(bytes)));
     g_assert_cmphex(ldl_be_p(bytes), ==, MGRAS_WIDGET_ID);
     qtest_quit(qts);
