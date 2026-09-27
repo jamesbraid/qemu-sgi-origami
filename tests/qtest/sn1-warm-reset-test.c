@@ -221,7 +221,7 @@ static void check_local_reset_restarts_the_processors(const void *data)
         g_usleep(POLL_INTERVAL_US);
     }
     g_test_message("processor A started %" PRIu64 " time(s)", starts);
-    /* Once from power-on, once more from its own reset, and no more. */
+    /* Once from power-on and once more from its own reset. */
     g_assert_cmpuint(starts, ==, 2);
 
     qtest_quit(s);
