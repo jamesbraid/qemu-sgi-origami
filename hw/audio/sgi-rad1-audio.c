@@ -1288,6 +1288,37 @@ static const MemoryRegionOps sgi_rad1_audio_bar0_ops = {
     .impl.max_access_size = 4,
 };
 
+static MemTxResult sgi_rad1_octane_read(void *opaque, hwaddr addr,
+                                       uint64_t *value, unsigned size,
+                                       MemTxAttrs attrs)
+{
+    qemu_log_mask(LOG_UNIMP,
+                  "sgi-rad1-octane: unsupported %u-byte BAR0 read at "
+                  "0x%" HWADDR_PRIx "\n", size, addr);
+    *value = 0;
+    return MEMTX_ERROR;
+}
+
+static MemTxResult sgi_rad1_octane_write(void *opaque, hwaddr addr,
+                                        uint64_t value, unsigned size,
+                                        MemTxAttrs attrs)
+{
+    qemu_log_mask(LOG_UNIMP,
+                  "sgi-rad1-octane: unsupported %u-byte BAR0 write at "
+                  "0x%" HWADDR_PRIx "\n", size, addr);
+    return MEMTX_ERROR;
+}
+
+static const MemoryRegionOps sgi_rad1_octane_bar0_ops = {
+    .read_with_attrs = sgi_rad1_octane_read,
+    .write_with_attrs = sgi_rad1_octane_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid = { .min_access_size = 1, .max_access_size = 8,
+               .unaligned = true },
+    .impl = { .min_access_size = 1, .max_access_size = 8,
+              .unaligned = true },
+};
+
 static void sgi_rad1_audio_reset_hold(Object *obj, ResetType type)
 {
     SGIRad1AudioState *s = SGI_RAD1_AUDIO(obj);
@@ -1548,6 +1579,26 @@ static const VMStateDescription vmstate_sgi_rad1_audio = {
     }
 };
 
+static const VMStateDescription vmstate_sgi_rad1_octane = {
+    .name = "sgi-rad1-octane",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_PCI_DEVICE(parent_obj, SGIRad1AudioState),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
+static void sgi_rad1_octane_realize(PCIDevice *dev, Error **errp)
+{
+    SGIRad1AudioState *s = SGI_RAD1_AUDIO(dev);
+
+    memory_region_init_io(&s->bar0, OBJECT(dev), &sgi_rad1_octane_bar0_ops,
+                          s, "sgi-rad1-octane.bar0",
+                          SGI_RAD1_AUDIO_BAR0_SIZE);
+    pci_register_bar(dev, 0, PCI_BASE_ADDRESS_SPACE_MEMORY, &s->bar0);
+}
+
 static const Property sgi_rad1_audio_properties[] = {
     DEFINE_AUDIO_PROPERTIES(SGIRad1AudioState, audio_be),
     DEFINE_PROP_AUDIODEV("aes-audiodev", SGIRad1AudioState, aes_be),
@@ -1576,6 +1627,18 @@ static void sgi_rad1_audio_class_init(ObjectClass *klass, const void *data)
     set_bit(DEVICE_CATEGORY_SOUND, dc->categories);
 }
 
+static void sgi_rad1_octane_class_init(ObjectClass *klass, const void *data)
+{
+    DeviceClass *dc = DEVICE_CLASS(klass);
+    PCIDeviceClass *pc = PCI_DEVICE_CLASS(klass);
+
+    dc->desc = "SGI Octane RAD PCI shell";
+    dc->vmsd = &vmstate_sgi_rad1_octane;
+    pc->revision = 0xc0;
+    pc->realize = sgi_rad1_octane_realize;
+    pc->exit = NULL;
+}
+
 static const TypeInfo sgi_rad1_audio_types[] = {
     {
         .name = TYPE_SGI_RAD1_AUDIO,
@@ -1586,6 +1649,11 @@ static const TypeInfo sgi_rad1_audio_types[] = {
             { INTERFACE_CONVENTIONAL_PCI_DEVICE },
             { },
         },
+    },
+    {
+        .name = TYPE_SGI_RAD1_OCTANE,
+        .parent = TYPE_SGI_RAD1_AUDIO,
+        .class_init = sgi_rad1_octane_class_init,
     },
 };
 

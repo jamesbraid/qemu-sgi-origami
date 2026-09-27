@@ -18,6 +18,7 @@
 #include "qemu/bswap.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/core/sysbus.h"
+#include "hw/audio/sgi-rad1-audio.h"
 #include "hw/mips/mips.h"
 #include "hw/mips/sgi-xtalk-port.h"
 #include "hw/misc/sgi-heart.h"
@@ -154,9 +155,13 @@ static void octane_fit_pci(MachineState *machine, SGIBridgeState *bridge)
         qdev_prop_set_chr(DEVICE(pci), "chardev-a", serial_hd(0));
     }
     pci_realize_and_unref(pci, bus, &error_fatal);
-    /* Functional route from OpenBSD's first-empty-slot rule: slot 3. */
+    /* The fitted SuperIO line is Bridge input 4; Ethernet uses input 2. */
     qdev_connect_gpio_out(DEVICE(pci), 0,
-                          qdev_get_gpio_in(DEVICE(bridge), 3));
+                          qdev_get_gpio_in(DEVICE(bridge), 4));
+
+    pci = pci_new(PCI_DEVFN(3, 0), TYPE_SGI_RAD1_OCTANE);
+    object_property_add_child(OBJECT(machine), "rad", OBJECT(pci));
+    pci_realize_and_unref(pci, bus, &error_fatal);
 }
 
 static void octane_init(MachineState *machine)

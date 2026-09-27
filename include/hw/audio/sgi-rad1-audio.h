@@ -13,6 +13,7 @@
 #include "qom/object.h"
 
 #define TYPE_SGI_RAD1_AUDIO "sgi-rad1-audio"
+#define TYPE_SGI_RAD1_OCTANE "sgi-rad1-octane"
 OBJECT_DECLARE_SIMPLE_TYPE(SGIRad1AudioState, SGI_RAD1_AUDIO)
 
 #define SGI_RAD1_AUDIO_VENDOR_ID 0x10a9
