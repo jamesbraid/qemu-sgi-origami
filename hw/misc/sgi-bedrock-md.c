@@ -2569,7 +2569,8 @@ static SGIBedrockMDHolder *md_line_holder(SGIBedrockMDWatchedLine *line,
  */
 static uint8_t md_directory_request(SGIBedrockMDState *s,
                                     SGIBedrockMDWatchedLine *line,
-                                    uint16_t pointer, int request)
+                                    uint16_t pointer, int request,
+                                    bool prefetch)
 {
     bool premium = md_directory_premium(s);
     uint64_t old = s->directory[line->index];
@@ -2601,6 +2602,14 @@ static uint8_t md_directory_request(SGIBedrockMDState *s,
             }
             entry.sharers = requester |
                             UINT64_C(1) << md_pointer_interface(entry.owner);
+            entry.format = MD_FORMAT_SHARED_FINE;
+            granted = MD_CACHE_SHARED;
+        } else if (prefetch && entry.format == MD_FORMAT_UNOWNED) {
+            /*
+             * A read with the prefetch cause is served shared. Inferred
+             * from the Origin 300's directory diagnostic alone.
+             */
+            entry.sharers = requester;
             entry.format = MD_FORMAT_SHARED_FINE;
             granted = MD_CACHE_SHARED;
         } else {
@@ -2665,7 +2674,7 @@ static void md_watched_access(SGIBedrockMDState *s,
     if (!is_write) {
         if (holder->state == MD_CACHE_INVALID) {
             holder->state = md_directory_request(s, line, pointer,
-                                                 MD_REQUEST_READ);
+                                                 MD_REQUEST_READ, false);
         }
         return;
     }
@@ -2677,7 +2686,8 @@ static void md_watched_access(SGIBedrockMDState *s,
         break;
     default:
         /* A miss asks to read exclusive, a shared copy to upgrade. */
-        md_directory_request(s, line, pointer, MD_REQUEST_READ_EXCLUSIVE);
+        md_directory_request(s, line, pointer, MD_REQUEST_READ_EXCLUSIVE,
+                             false);
         break;
     }
     holder->state = MD_CACHE_DIRTY;
@@ -2765,15 +2775,127 @@ static void md_watched_lines_clear(SGIBedrockMDState *s)
     md_watched_count_update(s);
 }
 
+void sgi_bedrock_md_line_named(SGIBedrockMDState *s, uint64_t address)
+{
+    uint32_t next = qatomic_fetch_inc(&s->named_next);
+
+    /* Kept one past the line, so a zero entry names nothing. */
+    qatomic_set(&s->named[next % SGI_BEDROCK_MD_NAMED_LINES],
+                (address & ~(uint64_t)(MD_DIRECTORY_LINE - 1)) + 1);
+}
+
+static bool md_line_named(SGIBedrockMDState *s, uint64_t address)
+{
+    for (unsigned i = 0; i < SGI_BEDROCK_MD_NAMED_LINES; i++) {
+        if (qatomic_read(&s->named[i]) == address + 1) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool sgi_bedrock_md_watching(SGIBedrockMDState *s)
+{
+    return qatomic_read(&s->watched_count) != 0;
+}
+
+/*
+ * A secondary-cache instruction writes a dirty copy back and drops a clean
+ * or shared one without a word to the directory; Hit Invalidate drops even
+ * a dirty one silently (R10000 User's Manual, the processor block write and
+ * eliminate protocols). That this system sends no eliminate requests is
+ * inferred from the Origin 300's directory diagnostic. A prefetch with a
+ * load hint asks to read, with a store hint to read exclusive, and a copy
+ * already held needs neither.
+ */
+bool sgi_bedrock_md_processor_request(SGIBedrockMDState *s, uint16_t pointer,
+                                      SGIBedrockMDProcessorRequest request,
+                                      uint64_t address, uint64_t index_mask)
+{
+    bool prefetch = request == SGI_BEDROCK_MD_PREFETCH_LOAD ||
+                    request == SGI_BEDROCK_MD_PREFETCH_STORE;
+    bool found = false;
+
+    for (unsigned i = 0; i < SGI_BEDROCK_MD_WATCHED_LINES; i++) {
+        SGIBedrockMDWatchedLine *line = &s->watched[i];
+        SGIBedrockMDHolder *holder;
+
+        if (!line->active || md_directory_injection_find(s, line->index)) {
+            continue;
+        }
+        if (request == SGI_BEDROCK_MD_INDEX_WRITEBACK_INVALIDATE ?
+            (line->address ^ address) & index_mask :
+            line->address != (address & ~(uint64_t)(MD_DIRECTORY_LINE - 1))) {
+            continue;
+        }
+        holder = md_line_holder(line, pointer, prefetch);
+        if (!holder) {
+            continue;
+        }
+        line->used_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+        switch (request) {
+        case SGI_BEDROCK_MD_INDEX_WRITEBACK_INVALIDATE:
+        case SGI_BEDROCK_MD_HIT_WRITEBACK_INVALIDATE:
+            if (holder->state == MD_CACHE_DIRTY) {
+                md_directory_request(s, line, pointer, MD_REQUEST_WRITEBACK,
+                                     false);
+            }
+            /* fall through */
+        case SGI_BEDROCK_MD_HIT_INVALIDATE:
+            found |= holder->state != MD_CACHE_INVALID;
+            holder->state = MD_CACHE_INVALID;
+            break;
+        case SGI_BEDROCK_MD_PREFETCH_LOAD:
+            if (holder->state == MD_CACHE_INVALID) {
+                holder->state = md_directory_request(s, line, pointer,
+                                                     MD_REQUEST_READ, true);
+            }
+            break;
+        case SGI_BEDROCK_MD_PREFETCH_STORE:
+            if (holder->state != MD_CACHE_CLEAN &&
+                holder->state != MD_CACHE_DIRTY) {
+                md_directory_request(s, line, pointer,
+                                     MD_REQUEST_READ_EXCLUSIVE, false);
+                holder->state = MD_CACHE_CLEAN;
+            }
+            break;
+        default:
+            g_assert_not_reached();
+        }
+    }
+    return found;
+}
+
+/* The software-bank address the bank aliases give raw line @index. */
+static bool md_line_address(SGIBedrockMDState *s, uint32_t index,
+                            uint64_t *address)
+{
+    uint64_t raw = (uint64_t)index * MD_DIRECTORY_LINE;
+
+    for (unsigned bank = 0; bank < 8; bank++) {
+        if (s->bank_alias_size[bank] &&
+            raw >= s->bank_alias_base[bank] &&
+            raw - s->bank_alias_base[bank] < s->bank_alias_size[bank]) {
+            *address = bank * MD_MEMORY_BANK_SIZE +
+                       (raw - s->bank_alias_base[bank]);
+            return true;
+        }
+    }
+    return false;
+}
+
 /*
  * Software reached line @index's directory word through the backdoor:
- * follow the line from here, in a free slot or one idle for a second. With
- * none, the line is not followed.
+ * follow the line from here, in a free slot or one idle for a second. A
+ * line a processor has just flushed takes the least recently used slot
+ * whatever its age. With none, the line is not followed.
  */
 static void md_watch_line(SGIBedrockMDState *s, uint32_t index)
 {
     int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
     SGIBedrockMDWatchedLine *slot = NULL;
+    SGIBedrockMDWatchedLine *oldest = NULL;
+    uint64_t address;
 
     for (unsigned i = 0; i < SGI_BEDROCK_MD_WATCHED_LINES; i++) {
         SGIBedrockMDWatchedLine *line = &s->watched[i];
@@ -2786,11 +2908,20 @@ static void md_watch_line(SGIBedrockMDState *s, uint32_t index)
             if (!slot || slot->active) {
                 slot = line;
             }
-        } else if (line->used_ns <= now - MD_WATCH_IDLE_NS &&
-                   (!slot || (slot->active &&
-                              line->used_ns < slot->used_ns))) {
-            slot = line;
+        } else {
+            if (!oldest || line->used_ns < oldest->used_ns) {
+                oldest = line;
+            }
+            if (line->used_ns <= now - MD_WATCH_IDLE_NS &&
+                (!slot || (slot->active &&
+                           line->used_ns < slot->used_ns))) {
+                slot = line;
+            }
         }
+    }
+    if (!slot && md_line_address(s, index, &address) &&
+        md_line_named(s, address)) {
+        slot = oldest;
     }
     if (!slot) {
         return;
@@ -2988,6 +3119,7 @@ static void md_reset_registers(SGIBedrockMDState *s)
     md_ecc_injections_clear(s);
     md_directory_injections_clear(s);
     md_watched_lines_clear(s);
+    memset(s->named, 0, sizeof(s->named));
     s->memory_error = 0;
     s->directory_error = 0;
     s->current_cell = UINT64_MAX;

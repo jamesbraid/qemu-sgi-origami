@@ -78,6 +78,12 @@ typedef struct SGIBedrockMDDirectoryInjection {
  * directory (docs/datasheets/bedrock-memory-directory.md).
  */
 #define SGI_BEDROCK_MD_WATCHED_LINES 16
+/*
+ * Lines a processor lately named in a secondary-cache instruction. A
+ * directory word read soon after such a flush is being checked against the
+ * protocol, so its line is followed even when every slot is busy.
+ */
+#define SGI_BEDROCK_MD_NAMED_LINES 8
 /* Every processor of a four-node machine. */
 #define SGI_BEDROCK_MD_LINE_HOLDERS 16
 
@@ -140,6 +146,9 @@ struct SGIBedrockMDState {
     SGIBedrockMDWatchedLine watched[SGI_BEDROCK_MD_WATCHED_LINES];
     /* Active watched lines; read without the lock by the board's filter. */
     uint32_t watched_count;
+    /* Written without the lock by the processors' cache instructions. */
+    uint64_t named[SGI_BEDROCK_MD_NAMED_LINES];
+    uint32_t named_next;
     /* Set by the board: who issued a processor access. */
     SGIBedrockMDRequesterFn requester;
     void *requester_opaque;
@@ -189,6 +198,35 @@ struct SGIBedrockMDState {
 
 void sgi_bedrock_md_soft_reset(SGIBedrockMDState *s);
 
+/*
+ * Processor requests the board passes on because no memory access carries
+ * them: a secondary-cache instruction and a prefetch.
+ */
+typedef enum SGIBedrockMDProcessorRequest {
+    SGI_BEDROCK_MD_INDEX_WRITEBACK_INVALIDATE,
+    SGI_BEDROCK_MD_HIT_WRITEBACK_INVALIDATE,
+    SGI_BEDROCK_MD_HIT_INVALIDATE,
+    SGI_BEDROCK_MD_PREFETCH_LOAD,
+    SGI_BEDROCK_MD_PREFETCH_STORE,
+} SGIBedrockMDProcessorRequest;
+
+/*
+ * A processor named node memory address @address in a secondary-cache
+ * instruction; safe to call without the lock.
+ */
+void sgi_bedrock_md_line_named(SGIBedrockMDState *s, uint64_t address);
+/* Whether any line is watched; safe to call without the lock. */
+bool sgi_bedrock_md_watching(SGIBedrockMDState *s);
+/*
+ * Serve @request from the processor whose directory pointer is @pointer, at
+ * node memory address @address. An index request names every line whose
+ * address agrees with @address in the bits @index_mask selects. Returns
+ * whether the processor held a watched line the request named. Called with
+ * the lock held.
+ */
+bool sgi_bedrock_md_processor_request(SGIBedrockMDState *s, uint16_t pointer,
+                                      SGIBedrockMDProcessorRequest request,
+                                      uint64_t address, uint64_t index_mask);
 uint64_t sgi_bedrock_md_ecc_store_value(hwaddr offset, uint64_t value,
                                         unsigned size);
 /* The memory ECC code's check byte for one doubleword of data. */

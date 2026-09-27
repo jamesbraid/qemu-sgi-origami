@@ -81,9 +81,11 @@ static uint32_t rtype(int rs, int rt, int rd, int sa, unsigned funct)
 #define ANDI(_rt, _rs, _imm)    itype(0x0c, _rs, _rt, _imm)
 #define LD(_rt, _off, _base)    itype(0x37, _base, _rt, _off)
 #define SD(_rt, _off, _base)    itype(0x3f, _base, _rt, _off)
+#define CACHE(_op, _off, _base) itype(0x2f, _base, _op, _off)
 #define DSLL32(_rd, _rt)        rtype(0, _rt, _rd, 0, 0x3c)
 #define DSRL32(_rd, _rt)        rtype(0, _rt, _rd, 0, 0x3e)
 #define DADDU(_rd, _rs, _rt)    rtype(_rs, _rt, _rd, 0, 0x2d)
+#define DADDIU(_rt, _rs, _imm)  itype(0x19, _rs, _rt, _imm)
 #define SYNC                    0x0000000f
 #define NOP                     0x00000000
 
@@ -116,6 +118,16 @@ static void emit_publish(Program *p, unsigned int slot)
     emit(p, SYNC);
     emit(p, LD(R_T3, 0, R_T1));
     emit(p, SD(R_T3, slot, R_T2));
+}
+
+/* Index WriteBack Invalidate of the line's primary and secondary sets. */
+static void emit_flush(Program *p)
+{
+    emit(p, SYNC);
+    emit(p, CACHE(0x1, 0, R_T0));
+    emit(p, CACHE(0x1, 1, R_T0));
+    emit(p, CACHE(0x3, 0, R_T0));
+    emit(p, CACHE(0x3, 1, R_T0));
 }
 
 typedef void (*EmitBody)(Program *p);
@@ -235,6 +247,10 @@ static void finish(QTestState *s, char *prom)
     g_free(prom);
 }
 
+static void emit_nothing(Program *p)
+{
+}
+
 static void emit_loads_and_stores_a(Program *p)
 {
     emit(p, LD(R_T3, 0, R_T0));
@@ -272,10 +288,97 @@ static void test_loads_and_stores(void)
     finish(s, prom);
 }
 
+static void emit_flushes_a(Program *p)
+{
+    emit(p, SD(R_ZERO, 0, R_T0));
+    emit_flush(p);
+    emit_publish(p, 0x08);
+    emit(p, LD(R_T3, 0, R_T0));
+    emit_flush(p);
+    emit_publish(p, 0x10);
+    emit(p, SD(R_ZERO, 0, R_T0));
+    emit(p, SYNC);
+    emit(p, CACHE(0x17, 0, R_T0)); /* Hit WriteBack Invalidate (S) */
+    emit_publish(p, 0x18);
+}
+
+/*
+ * Read the directory words of sixteen other lines, as a walk over the
+ * directory does, which fills the unit's slots; then store to, flush and
+ * check a line 128 KiB above the one under test, which the walk left out.
+ */
+static void emit_busy_a(Program *p)
+{
+    emit(p, DADDU(R_T4, R_T1, R_ZERO));
+    for (unsigned int i = 0; i < 16; i++) {
+        emit(p, DADDIU(R_T4, R_T4, 0x200));
+        emit(p, LD(R_T3, 0, R_T4));
+    }
+    emit(p, LUI(R_T3, 0x0002));
+    emit(p, DADDU(R_T0, R_T0, R_T3));
+    emit(p, DADDIU(R_T1, R_T1, 0x4000));
+    emit(p, SD(R_ZERO, 0, R_T0));
+    emit_flush(p);
+    emit_publish(p, 0x08);
+    emit(p, LD(R_T3, 0, R_T0));
+    emit_publish(p, 0x10);
+}
+
+static void emit_flushes_c(Program *p)
+{
+    emit(p, LD(R_T3, 0, R_T0));
+    emit_flush(p);
+    emit_publish(p, 0x20);
+}
+
+static void test_flushes(void)
+{
+    char *prom;
+    QTestState *s;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+    s = run_prom(emit_flushes_a, emit_flushes_c, &prom);
+    /* The index flush writes the dirty line back, which unowns it. */
+    g_assert_cmphex(result(s, 0x08) & DIRECTORY_FIELDS, ==, UNOWNED);
+    /* A clean exclusive line is dropped without telling the directory. */
+    g_assert_cmphex(result(s, 0x10) & DIRECTORY_FIELDS, ==, POINTER(0));
+    /* The hit form writes back as the index form does. */
+    g_assert_cmphex(result(s, 0x18) & DIRECTORY_FIELDS, ==, UNOWNED);
+    /* Slot C's clean copy, flushed, leaves C the owner. */
+    g_assert_cmphex(result(s, 0x20) & DIRECTORY_FIELDS, ==, POINTER(4));
+    finish(s, prom);
+}
+
+/*
+ * The unit follows only a few lines, and reuses a slot only once it has
+ * been idle for a while; a line a processor has just flushed is followed
+ * even when every slot is busy.
+ */
+static void test_flushed_line_when_busy(void)
+{
+    char *prom;
+    QTestState *s;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+    s = run_prom(emit_busy_a, emit_nothing, &prom);
+    g_assert_cmphex(result(s, 0x08) & DIRECTORY_FIELDS, ==, UNOWNED);
+    g_assert_cmphex(result(s, 0x10) & DIRECTORY_FIELDS, ==, POINTER(0));
+    finish(s, prom);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
     qtest_add_func("sn1/directory-state/loads-and-stores",
                    test_loads_and_stores);
+    qtest_add_func("sn1/directory-state/flushes", test_flushes);
+    qtest_add_func("sn1/directory-state/flushed-line-when-busy",
+                   test_flushed_line_when_busy);
     return g_test_run();
 }

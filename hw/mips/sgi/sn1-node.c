@@ -25,6 +25,7 @@
 #include "qemu/cutils.h"
 #include "qemu/datadir.h"
 #include "qemu/log.h"
+#include "qemu/main-loop.h"
 #include "qapi/error.h"
 #include "block/block-global-state.h"
 #include "block/block-io.h"
@@ -1167,6 +1168,63 @@ static bool sn1_node_requester_pointer(void *opaque, CPUState *cs,
     return false;
 }
 
+/*
+ * A processor's secondary-cache instruction or prefetch, passed to the
+ * memory unit of the node whose memory it names. An index instruction names
+ * a set rather than a line, so it goes to every node this one reaches.
+ */
+static bool sn1_node_system_request(void *opaque, CPUState *cs,
+                                    R10KSystemRequest request, uint64_t paddr,
+                                    uint64_t index_mask)
+{
+    static const SGIBedrockMDProcessorRequest md_request[] = {
+        [R10K_REQUEST_INDEX_WRITEBACK_INVALIDATE] =
+            SGI_BEDROCK_MD_INDEX_WRITEBACK_INVALIDATE,
+        [R10K_REQUEST_HIT_WRITEBACK_INVALIDATE] =
+            SGI_BEDROCK_MD_HIT_WRITEBACK_INVALIDATE,
+        [R10K_REQUEST_HIT_INVALIDATE] = SGI_BEDROCK_MD_HIT_INVALIDATE,
+        [R10K_REQUEST_PREFETCH_LOAD] = SGI_BEDROCK_MD_PREFETCH_LOAD,
+        [R10K_REQUEST_PREFETCH_STORE] = SGI_BEDROCK_MD_PREFETCH_STORE,
+    };
+    SN1NodeState *node = opaque;
+    SN1NodeState *target[2] = { NULL, NULL };
+    SN1NodeState *home;
+    uint64_t address = paddr & (SGI_BEDROCK_MD_MEMORY_SIZE - 1);
+    uint16_t pointer;
+    bool found = false;
+
+    home = sn1_node_claimant(node, paddr >> 33);
+    if (home && request != R10K_REQUEST_PREFETCH_LOAD &&
+        request != R10K_REQUEST_PREFETCH_STORE) {
+        sgi_bedrock_md_line_named(&SGI_BEDROCK(home->bedrock)->md, address);
+    }
+    if (request == R10K_REQUEST_INDEX_WRITEBACK_INVALIDATE) {
+        target[0] = node;
+        target[1] = sn1_node_peer(node);
+    } else {
+        target[0] = home;
+    }
+    for (unsigned int i = 0; i < ARRAY_SIZE(target); i++) {
+        SGIBedrockMDState *md;
+
+        if (!target[i]) {
+            continue;
+        }
+        md = &SGI_BEDROCK(target[i]->bedrock)->md;
+        if (!sgi_bedrock_md_watching(md)) {
+            continue;
+        }
+        BQL_LOCK_GUARD();
+        if (md->requester &&
+            md->requester(md->requester_opaque, cs, &pointer)) {
+            found |= sgi_bedrock_md_processor_request(md, pointer,
+                                                      md_request[request],
+                                                      address, index_mask);
+        }
+    }
+    return found;
+}
+
 static void sn1_node_create_cpus(SN1NodeState *node, MachineState *machine)
 {
     MemoryRegion *system = get_system_memory();
@@ -1212,6 +1270,10 @@ static void sn1_node_create_cpus(SN1NodeState *node, MachineState *machine)
         cpu->store_transaction = sn1_node_store_transaction;
         cpu->store_transaction_opaque = node;
         qdev_realize(cpu_dev, NULL, &error_fatal);
+        if (cpu->env.r10k) {
+            cpu->env.r10k->system_request = sn1_node_system_request;
+            cpu->env.r10k->system_request_opaque = node;
+        }
         cpu_mips_irq_init_cpu(cpu);
         cpu_mips_clock_init(cpu);
         node->cpu[i] = cpu;
