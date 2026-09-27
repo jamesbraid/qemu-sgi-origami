@@ -1,0 +1,323 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
+/*
+ * SGI IP30 HEART standalone processor and memory controller profile.
+ * Memory population is explicit; this does not identify an Octane DIMM layout.
+ * External interrupts, DMA, one-wire, compare and trigger are not modeled.
+ */
+#include "qemu/osdep.h"
+#include "hw/misc/sgi-heart.h"
+#include "hw/core/qdev-properties.h"
+#include "migration/vmstate.h"
+#include "qapi/error.h"
+#include "qemu/units.h"
+#include "qemu/log.h"
+#include "qemu/module.h"
+#include "qemu/timer.h"
+#include "system/address-spaces.h"
+
+#define HEART_REG_SIZE 0x60008
+#define HEART_RAM_BASE 0x20000000ULL
+#define HEART_UNIT (32 * MiB)
+#define HEART_COUNT_MASK ((1ULL << 52) - 1)
+
+static uint64_t heart_counter(SGIHeartState *s)
+{
+    uint64_t elapsed = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) -
+                       s->counter_epoch_ns;
+
+    return (s->saved_count + elapsed / 80) & HEART_COUNT_MASK;
+}
+
+static uint64_t heart_absent_read(void *opaque, hwaddr offset, unsigned size)
+{
+    return 0;
+}
+
+static void heart_absent_write(void *opaque, hwaddr offset, uint64_t value,
+                               unsigned size)
+{
+}
+
+static const MemoryRegionOps heart_absent_ops = {
+    .read = heart_absent_read,
+    .write = heart_absent_write,
+    .endianness = DEVICE_BIG_ENDIAN,
+    .valid = { .min_access_size = 1, .max_access_size = 8 },
+    .impl = { .min_access_size = 1, .max_access_size = 8 },
+};
+
+static void heart_map_bank(SGIHeartState *s, unsigned bank)
+{
+    uint32_t d = s->descriptor[bank];
+    MemoryRegion *system = get_system_memory();
+    uint64_t base = HEART_RAM_BASE + (uint64_t)(d & 0x1ff) * HEART_UNIT;
+    unsigned units = (d >> 16 & 0x3f) + 1;
+
+    memory_region_transaction_begin();
+    for (unsigned unit = 0; unit < HEART_MAX_UNITS; unit++) {
+        if (s->mapped[bank][unit]) {
+            memory_region_del_subregion(system, &s->views[bank][unit]);
+            s->mapped[bank][unit] = false;
+        }
+    }
+    if (d & 0x80000000U) {
+        for (unsigned unit = 0; unit < units; unit++) {
+            memory_region_add_subregion_overlap(system,
+                base + (uint64_t)unit * HEART_UNIT,
+                &s->views[bank][unit], bank + 1);
+            s->mapped[bank][unit] = true;
+        }
+    }
+    memory_region_transaction_commit();
+}
+
+static void heart_map_all(SGIHeartState *s)
+{
+    for (unsigned bank = 0; bank < HEART_BANKS; bank++) {
+        heart_map_bank(s, bank);
+    }
+}
+
+static uint64_t heart_read(void *opaque, hwaddr offset, unsigned size)
+{
+    SGIHeartState *s = opaque;
+
+    if (offset >= 0x20 && offset < 0x40) {
+        unsigned n = (offset - 0x20) / 4;
+
+        if (size == 4) {
+            return s->descriptor[n];
+        }
+        if (size == 8 && !(n & 1)) {
+            return ((uint64_t)s->descriptor[n] << 32) |
+                   s->descriptor[n + 1];
+        }
+    }
+    if (size == 8) {
+        switch (offset) {
+        case 0x00: return s->mode;
+        case 0x08: return s->sdram_mode;
+        case 0x10: return s->mem_refresh;
+        case 0x18: return s->mem_req_arb;
+        case 0x80: return 1ULL << 4;
+        case 0x10000 ... 0x10018:
+            if (!(offset & 7)) {
+                return s->mask[(offset - 0x10000) / 8];
+            }
+            break;
+        case 0x10030: return s->pending;
+        case 0x10038: return s->pending & s->mask[0];
+        case 0x20000: return heart_counter(s);
+        case 0x50000: return 0;
+        default:
+            break;
+        }
+    }
+    qemu_log_mask(LOG_UNIMP, "sgi-heart: unsupported %u-byte read at 0x%"
+                  HWADDR_PRIx "\n", size, offset);
+    return 0;
+}
+
+static void heart_write(void *opaque, hwaddr offset, uint64_t value,
+                        unsigned size)
+{
+    SGIHeartState *s = opaque;
+
+    if (offset >= 0x20 && offset < 0x40) {
+        unsigned n = (offset - 0x20) / 4;
+
+        if (size == 4) {
+            s->descriptor[n] = value;
+            if (n < HEART_BANKS) {
+                heart_map_bank(s, n);
+            }
+            return;
+        }
+        if (size == 8 && !(n & 1)) {
+            s->descriptor[n] = value >> 32;
+            s->descriptor[n + 1] = value;
+            for (unsigned i = n; i < n + 2 && i < HEART_BANKS; i++) {
+                heart_map_bank(s, i);
+            }
+            return;
+        }
+    }
+    if (size == 8) {
+        switch (offset) {
+        case 0x00:
+            s->mode = value;
+            return;
+        case 0x08:
+            s->sdram_mode = value;
+            return;
+        case 0x10:
+            s->mem_refresh = value;
+            return;
+        case 0x18:
+            s->mem_req_arb = value;
+            return;
+        case 0x10000 ... 0x10018:
+            if (!(offset & 7)) {
+                s->mask[(offset - 0x10000) / 8] = value;
+                return;
+            }
+            break;
+        case 0x10020:
+            s->pending |= value;
+            return;
+        case 0x10028:
+            s->pending &= ~value;
+            return;
+        default:
+            break;
+        }
+    }
+    qemu_log_mask(LOG_UNIMP, "sgi-heart: unsupported %u-byte write at 0x%"
+                  HWADDR_PRIx " value 0x%" PRIx64 "\n", size, offset,
+                  value);
+}
+
+static const MemoryRegionOps heart_ops = {
+    .read = heart_read,
+    .write = heart_write,
+    .endianness = DEVICE_BIG_ENDIAN,
+    .valid = { .min_access_size = 4, .max_access_size = 8 },
+    .impl = { .min_access_size = 4, .max_access_size = 8 },
+};
+
+static void heart_reset_enter(Object *obj, ResetType type)
+{
+    SGIHeartState *s = SGI_HEART(obj);
+
+    s->mode = 0;
+    s->sdram_mode = 0;
+    s->mem_refresh = 0;
+    s->mem_req_arb = 0;
+    memset(s->descriptor, 0, sizeof(s->descriptor));
+    memset(s->mask, 0, sizeof(s->mask));
+    s->pending = 0;
+    s->saved_count = 0;
+    s->counter_epoch_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+}
+
+static void heart_reset_hold(Object *obj, ResetType type)
+{
+    heart_map_all(SGI_HEART(obj));
+}
+
+static int heart_pre_save(void *opaque)
+{
+    SGIHeartState *s = opaque;
+
+    s->saved_count = heart_counter(s);
+    s->counter_epoch_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    return 0;
+}
+
+static int heart_post_load(void *opaque, int version_id)
+{
+    SGIHeartState *s = opaque;
+
+    s->saved_count &= HEART_COUNT_MASK;
+    s->counter_epoch_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    heart_map_all(s);
+    return 0;
+}
+
+static const VMStateDescription vmstate_heart = {
+    .name = TYPE_SGI_HEART,
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .pre_save = heart_pre_save,
+    .post_load = heart_post_load,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT64(mode, SGIHeartState),
+        VMSTATE_UINT64(sdram_mode, SGIHeartState),
+        VMSTATE_UINT64(mem_refresh, SGIHeartState),
+        VMSTATE_UINT64(mem_req_arb, SGIHeartState),
+        VMSTATE_UINT32_ARRAY(descriptor, SGIHeartState, 8),
+        VMSTATE_UINT64_ARRAY(mask, SGIHeartState, 4),
+        VMSTATE_UINT64(pending, SGIHeartState),
+        VMSTATE_UINT64(saved_count, SGIHeartState),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
+static void heart_realize(DeviceState *dev, Error **errp)
+{
+    SGIHeartState *s = SGI_HEART(dev);
+
+    for (unsigned bank = 0; bank < HEART_BANKS; bank++) {
+        uint64_t capacity = s->capacity[bank];
+        g_autofree char *bank_name = g_strdup_printf("heart.bank%u", bank);
+
+        if (capacity != 0 && capacity != 128 * MiB &&
+            capacity != 256 * MiB) {
+            error_setg(errp, "HEART bank %u capacity must be 0, 128M or 256M",
+                       bank);
+            return;
+        }
+        if (capacity && !memory_region_init_ram(&s->backing[bank],
+                OBJECT(dev), bank_name, capacity, errp)) {
+            return;
+        }
+        for (unsigned unit = 0; unit < HEART_MAX_UNITS; unit++) {
+            g_autofree char *name = g_strdup_printf("heart.bank%u.unit%u",
+                                                     bank, unit);
+
+            if (capacity) {
+                memory_region_init_alias(&s->views[bank][unit], OBJECT(dev),
+                    name, &s->backing[bank],
+                    ((uint64_t)unit * HEART_UNIT) % capacity, HEART_UNIT);
+            } else {
+                memory_region_init_io(&s->views[bank][unit], OBJECT(dev),
+                    &heart_absent_ops, s, name, HEART_UNIT);
+            }
+        }
+    }
+}
+
+static const Property heart_properties[] = {
+    DEFINE_PROP_UINT64("bank0-size", SGIHeartState, capacity[0], 0),
+    DEFINE_PROP_UINT64("bank1-size", SGIHeartState, capacity[1], 0),
+    DEFINE_PROP_UINT64("bank2-size", SGIHeartState, capacity[2], 0),
+    DEFINE_PROP_UINT64("bank3-size", SGIHeartState, capacity[3], 0),
+};
+
+static void heart_init(Object *obj)
+{
+    SGIHeartState *s = SGI_HEART(obj);
+
+    memory_region_init_io(&s->registers, obj, &heart_ops, s,
+                          TYPE_SGI_HEART, HEART_REG_SIZE);
+    sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->registers);
+}
+
+static void heart_class_init(ObjectClass *klass, const void *data)
+{
+    DeviceClass *dc = DEVICE_CLASS(klass);
+    ResettableClass *rc = RESETTABLE_CLASS(klass);
+
+    dc->desc = "SGI IP30 HEART standalone functional profile";
+    dc->realize = heart_realize;
+    dc->vmsd = &vmstate_heart;
+    dc->user_creatable = true;
+    device_class_set_props(dc, heart_properties);
+    rc->phases.enter = heart_reset_enter;
+    rc->phases.hold = heart_reset_hold;
+}
+
+static const TypeInfo heart_info = {
+    .name = TYPE_SGI_HEART,
+    .parent = TYPE_SYS_BUS_DEVICE,
+    .instance_size = sizeof(SGIHeartState),
+    .instance_init = heart_init,
+    .class_init = heart_class_init,
+};
+
+static void heart_register_types(void)
+{
+    type_register_static(&heart_info);
+}
+
+type_init(heart_register_types)
