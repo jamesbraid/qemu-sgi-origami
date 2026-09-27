@@ -24,7 +24,8 @@ boots, the same division the four absorbed scripts each kept.
 
 One meson target now covers the whole family instead of four: every row
 needs QEMU_TEST_SGI_ASSET_DIR (the real firmware), which is exactly
-the "tests that fetch assets" case this directory's own meson.build already carves out for
+the "tests that fetch assets" case this directory's own meson.build already
+carves out for
 the thorough suite (see that file's header comment) -- the one manifest row
 that used to run under the quick suite (prom_full_boot_mttcg) gained nothing
 from that split, since it already no-op-skipped in a no-asset quick run.

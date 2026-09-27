@@ -77,7 +77,8 @@ def _boot_one_attempt(test, cell, attempt_index):
     disk_path = resolve_asset(assets_root, disk_rel(cell.disk))
     if not (firmware_path and disk_path):
         # QEMU_TEST_SGI_ASSET_DIR IS set, so either missing file is a
-        # provisioning failure, not an absent-assets developer run -- fail loudly
+        # provisioning failure, not an absent-assets developer run -- fail
+        # loudly
         # rather than silently skip a claimed capability, matching
         # test_irix_diag.py's own reasoning for the same distinction.
         test.fail(
