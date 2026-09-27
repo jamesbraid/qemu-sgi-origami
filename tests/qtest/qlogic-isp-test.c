@@ -105,6 +105,8 @@
 #define ISP_MBOX_CMD_MAILBOX_REG_TEST 0x0006
 #define ISP_MBOX_CMD_INIT_REQ_QUEUE  0x0010
 #define ISP_MBOX_CMD_INIT_RSP_QUEUE  0x0011
+#define ISP_MBOX_CMD_INIT_REQ_QUEUE_A64 0x0052
+#define ISP_MBOX_CMD_INIT_RSP_QUEUE_A64 0x0053
 #define ISP_MBOX_CMD_BUS_RESET       0x0018
 #define ISP_MBOX_CMD_PARAM_ERROR     0x4006
 
@@ -1303,10 +1305,8 @@ static uint16_t isp_get16(const uint8_t *entry, int off)
 }
 
 /*
- * Loads mailboxes 1, 2, 3, 6 and 7 with a queue's entry count and 64-bit
- * base address split the way OpenBSD's own driver splits it -- low half in
- * mailbox 3, next in mailbox 2, next in mailbox 7, top in mailbox 6 -- then
- * runs the given init command and returns mailbox 0.
+ * Plain queue commands load only the 32-bit address in mailboxes 2 and 3.
+ * A64 commands also load the high address in mailboxes 6 and 7.
  */
 static uint16_t isp_init_queue(QPCIDevice *dev, QPCIBar io, uint16_t cmd,
                                uint16_t count, uint64_t addr)
@@ -1314,13 +1314,11 @@ static uint16_t isp_init_queue(QPCIDevice *dev, QPCIBar io, uint16_t cmd,
     qpci_io_writew(dev, io, ISP_MAILBOX(1), count);
     qpci_io_writew(dev, io, ISP_MAILBOX(2), (addr >> 16) & 0xffff);
     qpci_io_writew(dev, io, ISP_MAILBOX(3), addr & 0xffff);
-    qpci_io_writew(dev, io, ISP_MAILBOX(6), (addr >> 48) & 0xffff);
-    qpci_io_writew(dev, io, ISP_MAILBOX(7), (addr >> 32) & 0xffff);
-    /*
-     * Only mailbox 0 is loaded fresh here: this command's arguments span
-     * mailboxes 1, 2, 3, 6 and 7, which the four-mailbox call helper would
-     * overwrite with zero if used here instead.
-     */
+    if (cmd == ISP_MBOX_CMD_INIT_REQ_QUEUE_A64 ||
+        cmd == ISP_MBOX_CMD_INIT_RSP_QUEUE_A64) {
+        qpci_io_writew(dev, io, ISP_MAILBOX(6), (addr >> 48) & 0xffff);
+        qpci_io_writew(dev, io, ISP_MAILBOX(7), (addr >> 32) & 0xffff);
+    }
     qpci_io_writew(dev, io, ISP_MAILBOX(0), cmd);
     qpci_io_writew(dev, io, ISP_REG_HOST_CMD,
                    ISP_HOST_CMD_SET_HOST_INT << ISP_HOST_CMD_SHIFT);
@@ -1441,9 +1439,13 @@ static void test_command_round_trip(void *obj, void *data,
     rqst_addr = guest_alloc(alloc, 4 * ISP_QUEUE_ENTRY_SIZE);
     resp_addr = guest_alloc(alloc, 4 * ISP_QUEUE_ENTRY_SIZE);
 
+    qpci_io_writew(dev, io, ISP_MAILBOX(6), 0xa55a);
+    qpci_io_writew(dev, io, ISP_MAILBOX(7), 0x5aa5);
     g_assert_cmphex(isp_init_queue(dev, io, ISP_MBOX_CMD_INIT_REQ_QUEUE,
                                    4, rqst_addr), ==, ISP_MBOX_COMPLETE);
     qlogic_isp_ack(dev, io);
+    qpci_io_writew(dev, io, ISP_MAILBOX(6), 0x1234);
+    qpci_io_writew(dev, io, ISP_MAILBOX(7), 0x5678);
     g_assert_cmphex(isp_init_queue(dev, io, ISP_MBOX_CMD_INIT_RSP_QUEUE,
                                    4, resp_addr), ==, ISP_MBOX_COMPLETE);
     qlogic_isp_ack(dev, io);
@@ -2387,10 +2389,10 @@ static void test_a64_inquiry_data_transfer(void *obj, void *data,
     resp_addr = guest_alloc(alloc, 4 * ISP_QUEUE_ENTRY_SIZE);
     data_addr = guest_alloc(alloc, sizeof(inquiry));
 
-    g_assert_cmphex(isp_init_queue(dev, io, ISP_MBOX_CMD_INIT_REQ_QUEUE,
+    g_assert_cmphex(isp_init_queue(dev, io, ISP_MBOX_CMD_INIT_REQ_QUEUE_A64,
                                    4, rqst_addr), ==, ISP_MBOX_COMPLETE);
     qlogic_isp_ack(dev, io);
-    g_assert_cmphex(isp_init_queue(dev, io, ISP_MBOX_CMD_INIT_RSP_QUEUE,
+    g_assert_cmphex(isp_init_queue(dev, io, ISP_MBOX_CMD_INIT_RSP_QUEUE_A64,
                                    4, resp_addr), ==, ISP_MBOX_COMPLETE);
     qlogic_isp_ack(dev, io);
 
@@ -2446,6 +2448,56 @@ static void test_a64_inquiry_data_transfer(void *obj, void *data,
     qpci_iounmap(dev, io);
 }
 
+static void test_a64_high_queues(void *obj, void *data,
+                                 QGuestAllocator *alloc)
+{
+    QQlogicIsp *isp = obj;
+    QPCIDevice *dev = &isp->dev;
+    QTestState *qts = dev->bus->qts;
+    QPCIBar io;
+    uint64_t rqst_addr, resp_addr;
+    uint64_t bridge_device = 0x40000000ULL + 4 + 0x200 + 8 * 4;
+    uint8_t entry[ISP_QUEUE_ENTRY_SIZE] = { 0 };
+    uint8_t status[ISP_QUEUE_ENTRY_SIZE];
+
+    if (!g_str_equal(qtest_get_arch(), "mips64")) {
+        g_test_skip("high queue memory belongs to the SGI Bridge test head");
+        return;
+    }
+
+    qpci_device_enable(dev);
+    io = qpci_iomap(dev, 0, NULL);
+    rqst_addr = guest_alloc(alloc, 4 * ISP_QUEUE_ENTRY_SIZE) + (1ULL << 32);
+    resp_addr = guest_alloc(alloc, 4 * ISP_QUEUE_ENTRY_SIZE) + (1ULL << 32);
+    qtest_sysbus_mmio_map(qts, "/machine/peripheral/transfer-ram", 0,
+                          0x102000000ULL);
+    /* Direct DMA must preserve the byte order of the queue entries. */
+    qtest_writel(qts, bridge_device,
+                 qtest_readl(qts, bridge_device) | (1u << 19));
+
+    g_assert_cmphex(isp_init_queue(dev, io, ISP_MBOX_CMD_INIT_REQ_QUEUE_A64,
+                                   4, rqst_addr), ==, ISP_MBOX_COMPLETE);
+    qlogic_isp_ack(dev, io);
+    g_assert_cmphex(isp_init_queue(dev, io, ISP_MBOX_CMD_INIT_RSP_QUEUE_A64,
+                                   4, resp_addr), ==, ISP_MBOX_COMPLETE);
+    qlogic_isp_ack(dev, io);
+
+    entry[0] = ISP_ENTRY_TYPE_REQUEST;
+    entry[1] = 1;
+    isp_put32(entry, ISP_REQ_OFF_HANDLE, 0x12345678);
+    isp_put16(entry, ISP_REQ_OFF_CDBLEN, 6);
+    qtest_memwrite(qts, rqst_addr, entry, sizeof(entry));
+    qpci_io_writew(dev, io, ISP_REG_REQUEST_QUEUE, 1);
+
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_RESPONSE_QUEUE), ==, 1);
+    qtest_memread(qts, resp_addr, status, sizeof(status));
+    g_assert_cmphex(status[0], ==, ISP_ENTRY_TYPE_STATUS);
+    g_assert_cmphex(isp_get32(status, ISP_STATUS_OFF_HANDLE), ==, 0x12345678);
+    g_assert_cmphex(isp_get16(status, ISP_STATUS_OFF_COMPLETION), ==,
+                    ISP_IOCB_COMPLETE);
+    qpci_iounmap(dev, io);
+}
+
 /*
  * The A64 continuation boundary, which sits at two inline segments rather
  * than four; otherwise the same shape and the same non-adjacent
@@ -2477,10 +2529,10 @@ static void test_a64_continuation_entry_segments(void *obj, void *data,
         piece[i] = guest_alloc(alloc, 64);   /* deliberately not adjacent */
     }
 
-    g_assert_cmphex(isp_init_queue(dev, io, ISP_MBOX_CMD_INIT_REQ_QUEUE,
+    g_assert_cmphex(isp_init_queue(dev, io, ISP_MBOX_CMD_INIT_REQ_QUEUE_A64,
                                    4, rqst_addr), ==, ISP_MBOX_COMPLETE);
     qlogic_isp_ack(dev, io);
-    g_assert_cmphex(isp_init_queue(dev, io, ISP_MBOX_CMD_INIT_RSP_QUEUE,
+    g_assert_cmphex(isp_init_queue(dev, io, ISP_MBOX_CMD_INIT_RSP_QUEUE_A64,
                                    4, resp_addr), ==, ISP_MBOX_COMPLETE);
     qlogic_isp_ack(dev, io);
 
@@ -2918,6 +2970,8 @@ static void qlogic_isp_register_nodes(void)
                  test_continuation_entry_segments, NULL);
     qos_add_test("a64-inquiry-data-transfer", "qlogic-isp1040",
                  test_a64_inquiry_data_transfer, NULL);
+    qos_add_test("a64-high-queues", "qlogic-isp1040",
+                 test_a64_high_queues, NULL);
     qos_add_test("a64-continuation-entry-segments", "qlogic-isp1040",
                  test_a64_continuation_entry_segments, NULL);
     qos_add_test("nvram-read-fails", "qlogic-isp1040",
