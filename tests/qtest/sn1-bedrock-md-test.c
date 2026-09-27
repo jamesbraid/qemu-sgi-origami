@@ -2910,16 +2910,22 @@ static QTestState *start_origin300_watch(const char *extra)
     return s;
 }
 
-/* A line left idle for a second stops being followed. */
-static void test_origin300_watch_idle_release(void)
+/*
+ * The unit overlays a bounded number of pages and reuses the least
+ * recently used one: sixteen other pages read after the line take its slot.
+ * Time alone releases nothing.
+ */
+static void test_origin300_watch_reuses_the_oldest(void)
 {
     QTestState *s = start_origin300_watch("");
 
     qtest_readq(s, WATCHED_CARRIER);
     assert_flat_view_type(s, WATCHED_LINE, "i/o");
-    qtest_clock_step(s, WATCH_SECOND / 2);
+    qtest_clock_step(s, 10 * WATCH_SECOND);
     assert_flat_view_type(s, WATCHED_LINE, "i/o");
-    qtest_clock_step(s, 2 * WATCH_SECOND);
+    for (unsigned int page = 1; page <= 16; page++) {
+        qtest_readq(s, WATCHED_CARRIER + page * 0x200);
+    }
     assert_flat_view_type(s, WATCHED_LINE, "ram");
     qtest_quit(s);
 }
@@ -3869,8 +3875,8 @@ int main(int argc, char **argv)
                    test_parent_ecc_uncorrectable_interrupt);
     qtest_add_func("sn1/bedrock-md/parent-directory-ecc-interrupt",
                    test_parent_directory_ecc_interrupt);
-    qtest_add_func("sn1/bedrock-md/origin300-watch-idle-release",
-                   test_origin300_watch_idle_release);
+    qtest_add_func("sn1/bedrock-md/origin300-watch-reuses-the-oldest",
+                   test_origin300_watch_reuses_the_oldest);
     qtest_add_func("sn1/bedrock-md/origin300-watch-reset",
                    test_origin300_watch_reset);
     qtest_add_func("sn1/bedrock-md/origin300-watch-migration",

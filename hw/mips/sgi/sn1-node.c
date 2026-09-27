@@ -1192,21 +1192,15 @@ static bool sn1_node_system_request(void *opaque, CPUState *cs,
     };
     SN1NodeState *node = opaque;
     SN1NodeState *target[2] = { NULL, NULL };
-    SN1NodeState *home;
     uint64_t address = paddr & (SGI_BEDROCK_MD_MEMORY_SIZE - 1);
     uint16_t pointer;
     bool found = false;
 
-    home = sn1_node_claimant(node, paddr >> 33);
-    if (home && request != R10K_REQUEST_PREFETCH_LOAD &&
-        request != R10K_REQUEST_PREFETCH_STORE) {
-        sgi_bedrock_md_line_named(&SGI_BEDROCK(home->bedrock)->md, address);
-    }
     if (request == R10K_REQUEST_INDEX_WRITEBACK_INVALIDATE) {
         target[0] = node;
         target[1] = sn1_node_peer(node);
     } else {
-        target[0] = home;
+        target[0] = sn1_node_claimant(node, paddr >> 33);
     }
     for (unsigned int i = 0; i < ARRAY_SIZE(target); i++) {
         SGIBedrockMDState *md;

@@ -2426,7 +2426,6 @@ static const MemoryRegionOps md_memory_ops = {
  * processor or interface the machine does not have -- are left alone, as
  * is a line whose directory word is marked with a check error.
  */
-#define MD_WATCH_IDLE_NS NANOSECONDS_PER_SECOND
 /* The unit watches whole 4 KiB pages: one overlay covers 32 lines. */
 #define MD_WATCH_PAGE 4096
 #define MD_WATCH_PAGE_LINES (MD_WATCH_PAGE / MD_DIRECTORY_LINE)
@@ -2815,7 +2814,7 @@ static void md_watched_access(SGIBedrockMDState *s,
         md_directory_injection_find(s, line->index)) {
         return;
     }
-    page->used_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    page->last_use = ++s->use_clock;
     holder = md_line_holder(s, line->index, pointer, true);
     if (!holder) {
         qemu_log_mask(LOG_UNIMP, "sgi-bedrock-md: line %u has more holders "
@@ -2935,45 +2934,6 @@ static void md_watched_line_release(SGIBedrockMDState *s,
     md_watched_line_unplace(s, line);
 }
 
-/* Arm the release of the watched line that goes idle first. */
-static void md_watch_timer_arm(SGIBedrockMDState *s)
-{
-    int64_t first = INT64_MAX;
-
-    for (unsigned i = 0; i < SGI_BEDROCK_MD_WATCHED_LINES; i++) {
-        if (s->watched[i].active) {
-            first = MIN(first, s->watched[i].used_ns);
-        }
-    }
-    if (first == INT64_MAX) {
-        timer_del(s->watch_timer);
-    } else {
-        timer_mod(s->watch_timer, first + MD_WATCH_IDLE_NS);
-    }
-}
-
-static void md_watch_expire(void *opaque)
-{
-    SGIBedrockMDState *s = opaque;
-    int64_t idle = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) - MD_WATCH_IDLE_NS;
-
-    memory_region_transaction_begin();
-    for (unsigned i = 0; i < SGI_BEDROCK_MD_WATCHED_LINES; i++) {
-        SGIBedrockMDWatchedLine *line = &s->watched[i];
-
-        if (line->active && line->touched) {
-            line->touched = false;
-            line->used_ns = idle + MD_WATCH_IDLE_NS;
-        } else if (line->active && line->used_ns <= idle) {
-            trace_sgi_bedrock_md_watch_release(line->index);
-            md_watched_line_release(s, line);
-        }
-    }
-    memory_region_transaction_commit();
-    md_watched_count_update(s);
-    md_watch_timer_arm(s);
-}
-
 static void md_watched_lines_clear(SGIBedrockMDState *s)
 {
     memory_region_transaction_begin();
@@ -3038,25 +2998,6 @@ static void md_line_states_clear(SGIBedrockMDState *s)
     g_hash_table_remove_all(s->line_states);
 }
 
-void sgi_bedrock_md_line_named(SGIBedrockMDState *s, uint64_t address)
-{
-    uint32_t next = qatomic_fetch_inc(&s->named_next);
-
-    /* Kept one past the line, so a zero entry names nothing. */
-    qatomic_set(&s->named[next % SGI_BEDROCK_MD_NAMED_LINES],
-                (address & ~(uint64_t)(MD_DIRECTORY_LINE - 1)) + 1);
-}
-
-static bool md_line_named(SGIBedrockMDState *s, uint64_t address)
-{
-    for (unsigned i = 0; i < SGI_BEDROCK_MD_NAMED_LINES; i++) {
-        if (qatomic_read(&s->named[i]) == address + 1) {
-            return true;
-        }
-    }
-    return false;
-}
-
 bool sgi_bedrock_md_watching(SGIBedrockMDState *s)
 {
     return qatomic_read(&s->watched_count) != 0;
@@ -3102,7 +3043,7 @@ bool sgi_bedrock_md_processor_request(SGIBedrockMDState *s, uint16_t pointer,
         if (!holder) {
             continue;
         }
-        page->touched = true;
+        page->last_use = ++s->use_clock;
         switch (request) {
         case SGI_BEDROCK_MD_INDEX_WRITEBACK_INVALIDATE:
         case SGI_BEDROCK_MD_HIT_WRITEBACK_INVALIDATE:
@@ -3136,77 +3077,33 @@ bool sgi_bedrock_md_processor_request(SGIBedrockMDState *s, uint16_t pointer,
     return found;
 }
 
-/* The software-bank address the bank aliases give raw line @index. */
-static bool md_line_address(SGIBedrockMDState *s, uint32_t index,
-                            uint64_t *address)
-{
-    uint64_t raw = (uint64_t)index * MD_DIRECTORY_LINE;
-
-    for (unsigned bank = 0; bank < 8; bank++) {
-        if (s->bank_alias_size[bank] &&
-            raw >= s->bank_alias_base[bank] &&
-            raw - s->bank_alias_base[bank] < s->bank_alias_size[bank]) {
-            *address = bank * MD_MEMORY_BANK_SIZE +
-                       (raw - s->bank_alias_base[bank]);
-            return true;
-        }
-    }
-    return false;
-}
-
 /*
  * Software reached line @index's directory word through the backdoor:
- * follow the line from here, in a free slot or one idle for a second. A
- * line a processor has just flushed takes the least recently used slot
- * whatever its age. With none, the line is not followed.
+ * watch its page from here, in a free slot or the least recently used one.
+ * Only the overlay moves; the words and copies of the page it leaves stay
+ * as they are.
  */
 static void md_watch_line(SGIBedrockMDState *s, uint32_t line_index)
 {
-    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
     uint32_t index = line_index & ~(uint32_t)(MD_WATCH_PAGE_LINES - 1);
     SGIBedrockMDWatchedLine *slot = NULL;
-    SGIBedrockMDWatchedLine *oldest = NULL;
-    uint64_t address;
 
     for (unsigned i = 0; i < SGI_BEDROCK_MD_WATCHED_LINES; i++) {
-        SGIBedrockMDWatchedLine *line = &s->watched[i];
+        SGIBedrockMDWatchedLine *page = &s->watched[i];
 
-        if (line->touched) {
-            line->touched = false;
-            line->used_ns = now;
-        }
-        if (line->active && line->index == index) {
-            line->used_ns = now;
+        if (page->active && page->index == index) {
+            page->last_use = ++s->use_clock;
             return;
         }
-        if (!line->active) {
-            if (!slot || slot->active) {
-                slot = line;
-            }
-        } else {
-            if (!oldest || line->used_ns < oldest->used_ns) {
-                oldest = line;
-            }
-            if (line->used_ns <= now - MD_WATCH_IDLE_NS &&
-                (!slot || (slot->active &&
-                           line->used_ns < slot->used_ns))) {
-                slot = line;
-            }
+        if (!slot || (slot->active &&
+                      (!page->active || page->last_use < slot->last_use))) {
+            slot = page;
         }
     }
-    if (!slot && md_line_address(s, line_index, &address) &&
-        md_line_named(s, address)) {
-        slot = oldest;
-    }
-    if (!slot) {
-        return;
-    }
     memory_region_transaction_begin();
-    /* The line this slot followed keeps its word and its copies. */
     md_watched_line_release(s, slot);
     slot->index = index;
-    slot->used_ns = now;
-    slot->touched = false;
+    slot->last_use = ++s->use_clock;
     slot->active = md_overlay_place(s, &slot->mr,
                                     (uint64_t)index * MD_DIRECTORY_LINE,
                                     &slot->address, &slot->placed, 2);
@@ -3219,9 +3116,6 @@ static void md_watch_line(SGIBedrockMDState *s, uint32_t line_index)
         }
     }
     md_watched_count_update(s);
-    if (!timer_pending(s->watch_timer)) {
-        md_watch_timer_arm(s);
-    }
     trace_sgi_bedrock_md_watch_line(index, slot->address, slot->active);
 }
 
@@ -3407,8 +3301,7 @@ static void md_reset_registers(SGIBedrockMDState *s)
     md_directory_injections_clear(s);
     md_watched_lines_clear(s);
     md_line_states_clear(s);
-    timer_del(s->watch_timer);
-    memset(s->named, 0, sizeof(s->named));
+    s->use_clock = 0;
     s->memory_error = 0;
     s->directory_error = 0;
     s->current_cell = UINT64_MAX;
@@ -3534,7 +3427,6 @@ static int md_post_load(void *opaque, int version_id)
         }
     }
     md_update_memory_aliases(s);
-    md_watch_timer_arm(s);
     return 0;
 }
 
@@ -3575,8 +3467,7 @@ static const VMStateDescription vmstate_md_watched_line = {
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32(index, SGIBedrockMDWatchedLine),
         VMSTATE_BOOL(active, SGIBedrockMDWatchedLine),
-        VMSTATE_INT64(used_ns, SGIBedrockMDWatchedLine),
-        VMSTATE_BOOL(touched, SGIBedrockMDWatchedLine),
+        VMSTATE_UINT64(last_use, SGIBedrockMDWatchedLine),
         VMSTATE_END_OF_LIST()
     },
 };
@@ -3598,11 +3489,6 @@ static bool md_watched_needed(void *opaque)
 {
     SGIBedrockMDState *s = opaque;
 
-    for (unsigned i = 0; i < SGI_BEDROCK_MD_NAMED_LINES; i++) {
-        if (s->named[i]) {
-            return true;
-        }
-    }
     return s->watched_count != 0;
 }
 
@@ -3615,9 +3501,7 @@ static const VMStateDescription vmstate_md_watched = {
                              SGI_BEDROCK_MD_WATCHED_LINES, 1,
                              vmstate_md_watched_line,
                              SGIBedrockMDWatchedLine),
-        VMSTATE_UINT64_ARRAY(named, SGIBedrockMDState,
-                             SGI_BEDROCK_MD_NAMED_LINES),
-        VMSTATE_UINT32(named_next, SGIBedrockMDState),
+        VMSTATE_UINT64(use_clock, SGIBedrockMDState),
         VMSTATE_END_OF_LIST()
     },
 };
@@ -3684,9 +3568,7 @@ static int md_pre_load(void *opaque)
     md_line_states_clear(s);
     g_clear_pointer(&s->line_state_array, g_free);
     s->line_state_count = 0;
-    timer_del(s->watch_timer);
-    memset(s->named, 0, sizeof(s->named));
-    s->named_next = 0;
+    s->use_clock = 0;
     return 0;
 }
 
@@ -3759,7 +3641,6 @@ static void md_init(Object *obj)
     s->ecc_retired_by_raw = g_hash_table_new(g_int64_hash, g_int64_equal);
     s->directory_retired_by_index = g_hash_table_new(g_int_hash, g_int_equal);
     s->retired_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, md_retired_expire, s);
-    s->watch_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, md_watch_expire, s);
     memory_region_init_io(&s->mmio, obj, &md_ops, s, TYPE_SGI_BEDROCK_MD,
                           SGI_BEDROCK_MD_SIZE);
     sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->mmio);
@@ -3901,7 +3782,6 @@ static void md_unrealize(DeviceState *dev)
 
     timer_del(s->selftest_timer);
     timer_del(s->retired_timer);
-    timer_del(s->watch_timer);
     md_ecc_injections_clear(s);
     md_directory_injections_clear(s);
     md_watched_lines_clear(s);
@@ -3968,7 +3848,6 @@ static void md_finalize(Object *obj)
 
     timer_free(s->selftest_timer);
     timer_free(s->retired_timer);
-    timer_free(s->watch_timer);
     g_hash_table_destroy(s->ecc_injection_by_raw);
     g_hash_table_destroy(s->directory_injection_by_index);
     g_hash_table_destroy(s->line_states);
