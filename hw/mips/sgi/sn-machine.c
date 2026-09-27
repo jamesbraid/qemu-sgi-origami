@@ -49,7 +49,7 @@
 #include "hw/mips/sgi-xio-port.h"
 #include "hw/mips/sgi/baseio.h"
 #include "hw/mips/sgi/xio-board.h"
-#include "hw/mips/sgi/xtalk-link.h"
+#include "hw/mips/sgi/xio-link.h"
 #include "hw/misc/sgi-elsc.h"
 #include "hw/misc/sgi-hub.h"
 #include "hw/misc/sgi-kona.h"
@@ -202,7 +202,7 @@ struct SGIMachineState {
      * onboard I/O). Unused entries (a Crossbow-attached board's own)
      * stay zeroed.
      */
-    SGIXtalkDirectLink *direct_links;
+    SGIXioDirectLink *direct_links;
 
     /*
      * A Crossbow-attached endpoint's own link: one per node, then one
@@ -210,7 +210,7 @@ struct SGIMachineState {
      * index for a board's own). Unused entries (a direct board's, or a
      * Hub-product topology's io board on a Bedrock node) stay zeroed.
      */
-    SGIXtalkCrossbowLink *crossbow_links;
+    SGIXioCrossbowLink *crossbow_links;
 
     /*
      * One fabric proxy per empty XIO slot the topology names
@@ -220,7 +220,7 @@ struct SGIMachineState {
      * has. slot_claimed marks each slot a board has taken, so a second
      * board naming it is refused.
      */
-    SGIXtalkCrossbowLink *slot_links;
+    SGIXioCrossbowLink *slot_links;
     bool *slot_claimed;
     Notifier machine_done;
 
@@ -1085,7 +1085,7 @@ static void sgi_machine_prepare_slot_links(SGIMachineState *s,
         g_autofree char *slot_name = sgi_machine_xtalk_slot_name(t, slots[i]);
         g_autofree char *name = g_strdup_printf("%s-fabric", slot_name);
 
-        sgi_xtalk_crossbow_link_prepare(&s->slot_links[i], OBJECT(s), name);
+        sgi_xio_crossbow_link_prepare(&s->slot_links[i], OBJECT(s), name);
     }
 }
 
@@ -1267,7 +1267,7 @@ static bool sgi_machine_instantiate_ip29_io(
     const SGIModelXtalkAttachment *attachment, Error **errp)
 {
     SN0NodeState *node = s->nodes[attachment->node_index];
-    SGIXtalkCrossbowLink *crossbow_link = NULL;
+    SGIXioCrossbowLink *crossbow_link = NULL;
     MemoryRegion *crossbow_fabric = NULL;
     DeviceState *bridge;
     const uint64_t *ioc3_serial = sgi_machine_io_board_ioc3_serial(record);
@@ -1298,7 +1298,7 @@ static bool sgi_machine_instantiate_ip29_io(
             g_strdup_printf("io-board%u-packet-proxy", board_index);
 
         crossbow_link = &s->crossbow_links[s->num_nodes + board_index];
-        crossbow_fabric = sgi_xtalk_crossbow_link_prepare(
+        crossbow_fabric = sgi_xio_crossbow_link_prepare(
             crossbow_link, OBJECT(s), proxy_name);
     }
     if (!sn0_node_build_baseio(
@@ -1319,7 +1319,7 @@ static bool sgi_machine_instantiate_ip29_io(
         return false;
     }
     if (crossbow_link) {
-        return sgi_xtalk_crossbow_link_attach_widget(
+        return sgi_xio_crossbow_link_attach_widget(
             crossbow_link, OBJECT(bridge),
             s->crossbars[attachment->crossbar_index], attachment->widget,
             errp);
@@ -1330,7 +1330,7 @@ static bool sgi_machine_instantiate_ip29_io(
 /*
  * The Origin 2000/Onyx2 BaseIO card: Crossbow-attached, an sgi-xio-baseio
  * instance (an sgi-xio-board, so it attaches through
- * sgi_xtalk_crossbow_link_attach_widget() like every other XIO card; the
+ * sgi_xio_crossbow_link_attach_widget() like every other XIO card; the
  * Crossbow itself realizes later, once every board and node that
  * attaches to it has -- see sgi_machine_realize's own crossbar-realize
  * pass, after this function's every caller has returned). preset names
@@ -1354,19 +1354,19 @@ static bool sgi_machine_attach_xio_card(
      * composes rather than spending address bits on a node number the
      * switch would not read. This Crossbow's own packet ingress does not
      * exist until it realizes, so the link's own proxy stands in;
-     * sgi_xtalk_crossbow_link_finish() aliases the real ingress onto it
+     * sgi_xio_crossbow_link_finish() aliases the real ingress onto it
      * once the Crossbow is built.
      */
     g_autofree char *proxy_name =
         g_strdup_printf("io-board%u-packet-proxy", board_index);
-    SGIXtalkCrossbowLink *crossbow_link =
+    SGIXioCrossbowLink *crossbow_link =
         &s->crossbow_links[s->num_nodes + board_index];
     SGIXioBoardState *board;
 
     object_property_set_link(
         OBJECT(dev), "fabric",
-        OBJECT(sgi_xtalk_crossbow_link_prepare(crossbow_link, OBJECT(s),
-                                               proxy_name)),
+        OBJECT(sgi_xio_crossbow_link_prepare(crossbow_link, OBJECT(s),
+                                             proxy_name)),
         &error_fatal);
     qdev_prop_set_uint32(dev, "fabric-widget-shift",
                          SGI_BRIDGE_PACKET_ADDRESS_BITS);
@@ -1375,7 +1375,7 @@ static bool sgi_machine_attach_xio_card(
     board = SGI_XIO_BOARD(dev);
     s->io_boards[board_index] = board;
 
-    if (!sgi_xtalk_crossbow_link_attach_widget(
+    if (!sgi_xio_crossbow_link_attach_widget(
             crossbow_link, OBJECT(board),
             s->crossbars[attachment->crossbar_index],
             attachment->widget, errp)) {
@@ -1588,7 +1588,7 @@ static bool sgi_machine_instantiate_kona(
     DeviceState *dev = qdev_new(TYPE_SGI_KONA);
     g_autofree char *proxy_name =
         g_strdup_printf("io-board%u-packet-proxy", board_index);
-    SGIXtalkCrossbowLink *crossbow_link =
+    SGIXioCrossbowLink *crossbow_link =
         &s->crossbow_links[s->num_nodes + board_index];
     SGIXioBoardState *board;
 
@@ -1615,15 +1615,15 @@ static bool sgi_machine_instantiate_kona(
     }
     object_property_set_link(
         OBJECT(dev), "fabric",
-        OBJECT(sgi_xtalk_crossbow_link_prepare(crossbow_link, OBJECT(s),
-                                               proxy_name)),
+        OBJECT(sgi_xio_crossbow_link_prepare(crossbow_link, OBJECT(s),
+                                             proxy_name)),
         &error_fatal);
 
     sysbus_realize(SYS_BUS_DEVICE(dev), &error_fatal);
     board = SGI_XIO_BOARD(dev);
     s->io_boards[board_index] = board;
 
-    if (!sgi_xtalk_crossbow_link_attach_widget(
+    if (!sgi_xio_crossbow_link_attach_widget(
             crossbow_link, OBJECT(board), s->crossbars[attachment->crossbar_index],
             attachment->widget, errp)) {
         return false;
@@ -1855,7 +1855,7 @@ static bool sgi_machine_realize_crossbars(
         if (attachment->crossbar_index < 0) {
             continue;
         }
-        if (!sgi_xtalk_crossbow_link_finish(
+        if (!sgi_xio_crossbow_link_finish(
                 &s->crossbow_links[i], OBJECT(s), name,
                 s->crossbars[attachment->crossbar_index], attachment->widget,
                 errp)) {
@@ -1870,7 +1870,7 @@ static bool sgi_machine_realize_crossbars(
         if (attachment->crossbar_index < 0) {
             continue;
         }
-        if (!sgi_xtalk_crossbow_link_finish(
+        if (!sgi_xio_crossbow_link_finish(
                 &s->crossbow_links[s->num_nodes + i], OBJECT(s), name,
                 s->crossbars[attachment->crossbar_index], attachment->widget,
                 errp)) {
@@ -2747,13 +2747,13 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
 
     /* Indexed by io_boards position, one entry per board, not by node. */
     s->io_boards = g_new0(SGIXioBoardState *, io_board_count);
-    s->direct_links = g_new0(SGIXtalkDirectLink, io_board_count);
+    s->direct_links = g_new0(SGIXioDirectLink, io_board_count);
     s->crossbars = g_new0(SGIXbowState *, crossbar_count);
     /* One crossbow link per node, then one per io_boards position. */
     s->crossbow_links =
-        g_new0(SGIXtalkCrossbowLink, node_count + io_board_count);
+        g_new0(SGIXioCrossbowLink, node_count + io_board_count);
     /* One fabric proxy per empty XIO slot; see slot_links. */
-    s->slot_links = g_new0(SGIXtalkCrossbowLink,
+    s->slot_links = g_new0(SGIXioCrossbowLink,
                            sgi_machine_topology_xtalk_slot_count(t));
     s->slot_claimed = g_new0(bool, sgi_machine_topology_xtalk_slot_count(t));
 
@@ -2885,7 +2885,7 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
                 g_autofree char *name =
                     g_strdup_printf("node%u-packet-proxy", node_index);
 
-                if (!sgi_xtalk_crossbow_link_prepare_hub(
+                if (!sgi_xio_crossbow_link_prepare_hub(
                         &s->crossbow_links[node_index], OBJECT(s), name,
                         s->nodes[node_index], errp)) {
                     return false;
@@ -2971,7 +2971,7 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
             if (attachment->crossbar_index >= 0) {
                 g_autofree char *name = g_strdup_printf("node%u", node_index);
 
-                if (!sgi_xtalk_crossbow_link_attach_hub(
+                if (!sgi_xio_crossbow_link_attach_hub(
                         &s->crossbow_links[node_index], OBJECT(s), name,
                         s->crossbars[attachment->crossbar_index],
                         attachment->widget, errp)) {
@@ -3024,7 +3024,7 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
  * Crossbow disables a not-alive port's whole ingress region
  * (hw/misc/sgi-xbow.c, sgi_xbow_sync_routes()) -- so the alias would
  * still resolve empty without the board also claiming it:
- * build_widget() calls sgi_xtalk_crossbow_link_claim_fabric() once the
+ * build_widget() calls sgi_xio_crossbow_link_claim_fabric() once the
  * board's own Bridge has built, and fabric_claimed here is what tells
  * this loop to finish the attachment. For a claimed proxy this loop first
  * registers the board's own faces as the slot widget's inbound
@@ -3057,13 +3057,13 @@ static void sgi_machine_done(Notifier *notifier, void *data)
 
     slots = sgi_model_xtalk_slot_array(t->xtalk_slots, &slot_count);
     for (i = 0; i < slot_count; i++) {
-        SGIXtalkCrossbowLink *link = &s->slot_links[i];
+        SGIXioCrossbowLink *link = &s->slot_links[i];
         SGIXbowState *crossbow = s->crossbars[slots[i]->crossbar_index];
         g_autofree char *slot_name = sgi_machine_xtalk_slot_name(t, slots[i]);
         g_autofree char *name = g_strdup_printf("%s-fabric", slot_name);
 
-        sgi_xtalk_crossbow_link_finish(link, OBJECT(s), name, crossbow,
-                                       slots[i]->widget, &error_fatal);
+        sgi_xio_crossbow_link_finish(link, OBJECT(s), name, crossbow,
+                                     slots[i]->widget, &error_fatal);
         if (link->fabric_claimed) {
             sgi_xbow_attach_endpoint_live(crossbow, slots[i]->widget,
                                           link->claimant_cpu_face,

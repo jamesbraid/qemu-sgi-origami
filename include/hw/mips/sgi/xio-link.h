@@ -14,8 +14,8 @@
  * to the machine.
  */
 
-#ifndef HW_MIPS_SGI_XTALK_LINK_H
-#define HW_MIPS_SGI_XTALK_LINK_H
+#ifndef HW_MIPS_SGI_XIO_LINK_H
+#define HW_MIPS_SGI_XIO_LINK_H
 
 #include "qom/object.h"
 #include "system/memory.h"
@@ -40,12 +40,12 @@ typedef struct SN0NodeState SN0NodeState;
  */
 
 /* Widget positions a crosstalk address space names (sn0.h's count). */
-#define SGI_XTALK_DIRECT_LINK_MAX_ALIASES 16
+#define SGI_XIO_DIRECT_LINK_MAX_ALIASES 16
 
-typedef struct SGIXtalkDirectLink {
-    MemoryRegion alias[SGI_XTALK_DIRECT_LINK_MAX_ALIASES];
+typedef struct SGIXioDirectLink {
+    MemoryRegion alias[SGI_XIO_DIRECT_LINK_MAX_ALIASES];
     unsigned int alias_count;
-} SGIXtalkDirectLink;
+} SGIXioDirectLink;
 
 /*
  * hub_port and widget_port must already answer cpu_face(): hub_port once
@@ -59,13 +59,13 @@ typedef struct SGIXtalkDirectLink {
  * plus probe_offset, resolved against
  * widget_port's "bridge" child.
  */
-bool sgi_xtalk_direct_link_connect(SGIXtalkDirectLink *link, Object *owner,
-                                    SN0NodeState *node, Object *widget_port,
-                                    unsigned int discovery_widget,
-                                    unsigned int widget,
-                                    uint32_t decoded_widget_mask,
-                                    unsigned int probe_widget,
-                                    uint64_t probe_offset, Error **errp);
+bool sgi_xio_direct_link_connect(SGIXioDirectLink *link, Object *owner,
+                                 SN0NodeState *node, Object *widget_port,
+                                 unsigned int discovery_widget,
+                                 unsigned int widget,
+                                 uint32_t decoded_widget_mask,
+                                 unsigned int probe_widget,
+                                 uint64_t probe_offset, Error **errp);
 
 /*
  * The crossbow link: a Hub's I/O port or a widget joined to one Crossbow
@@ -86,7 +86,7 @@ bool sgi_xtalk_direct_link_connect(SGIXtalkDirectLink *link, Object *owner,
  * widget should reach. attach_hub() builds the narrower faces those packets
  * need instead, in node's address space and register state.
  */
-typedef struct SGIXtalkCrossbowLink {
+typedef struct SGIXioCrossbowLink {
     /*
      * The outer endpoint's outbound proxy (a Hub's "xtalk-io" or a widget's
      * "fabric" property target) is created and installed before that endpoint
@@ -98,7 +98,7 @@ typedef struct SGIXtalkCrossbowLink {
 
     /*
      * Set once a `-device` board actually takes this link's proxy as its
-     * "fabric" property (sgi_xtalk_crossbow_link_claim_fabric()). finish()
+     * "fabric" property (sgi_xio_crossbow_link_claim_fabric()). finish()
      * aliases the real ingress onto the proxy either way, but that real
      * ingress answers only once its widget is alive; a spare widget nobody
      * claimed stays out of that count on purpose (see sgi_machine_done()), so
@@ -141,14 +141,14 @@ typedef struct SGIXtalkCrossbowLink {
     uint64_t inbound_xtalk_base;
     uint64_t inbound_node_stride;
     uint64_t inbound_modify_offset;
-} SGIXtalkCrossbowLink;
+} SGIXioCrossbowLink;
 
 /*
  * Create the proxy and return it, for the caller to install as the outer
  * endpoint's outbound property before that endpoint realizes.
  */
-MemoryRegion *sgi_xtalk_crossbow_link_prepare(SGIXtalkCrossbowLink *link,
-                                              Object *owner, const char *name);
+MemoryRegion *sgi_xio_crossbow_link_prepare(SGIXioCrossbowLink *link,
+                                            Object *owner, const char *name);
 
 /*
  * Marks a spare proxy prepare() built as actually taken by a `-device`
@@ -162,25 +162,25 @@ MemoryRegion *sgi_xtalk_crossbow_link_prepare(SGIXtalkCrossbowLink *link,
  * board's build_widget() has recorded its cpu_face and packet_face, so both
  * are ready to hand over.
  */
-void sgi_xtalk_crossbow_link_claim_fabric(MemoryRegion *fabric,
-                                          MemoryRegion *cpu_face,
-                                          MemoryRegion *packet_face);
+void sgi_xio_crossbow_link_claim_fabric(MemoryRegion *fabric,
+                                        MemoryRegion *cpu_face,
+                                        MemoryRegion *packet_face);
 
 /* Also wires node's "xtalk-io" property to the proxy prepare() built. */
-bool sgi_xtalk_crossbow_link_prepare_hub(SGIXtalkCrossbowLink *link,
+bool sgi_xio_crossbow_link_prepare_hub(SGIXioCrossbowLink *link,
                                          Object *owner, const char *name,
                                          SN0NodeState *node, Error **errp);
 
-bool sgi_xtalk_crossbow_link_attach_hub(SGIXtalkCrossbowLink *link,
+bool sgi_xio_crossbow_link_attach_hub(SGIXioCrossbowLink *link,
                                         Object *owner, const char *name,
                                         SGIXbowState *xbow, unsigned int widget,
                                         Error **errp);
-bool sgi_xtalk_crossbow_link_attach_widget(SGIXtalkCrossbowLink *link,
+bool sgi_xio_crossbow_link_attach_widget(SGIXioCrossbowLink *link,
                                            Object *widget_port,
                                            SGIXbowState *xbow,
                                            unsigned int widget, Error **errp);
 
-bool sgi_xtalk_crossbow_link_finish(SGIXtalkCrossbowLink *link, Object *owner,
+bool sgi_xio_crossbow_link_finish(SGIXioCrossbowLink *link, Object *owner,
                                     const char *name, SGIXbowState *xbow,
                                     unsigned int widget, Error **errp);
 
@@ -207,7 +207,7 @@ bool sgi_xtalk_crossbow_link_finish(SGIXtalkCrossbowLink *link, Object *owner,
  * caller's job, exactly as a widget port's typed acceptance already works
  * elsewhere in this file; that direction needs no link-owned state either.
  */
-bool sgi_xtalk_xbridge_link_connect(Object *bedrock_port, DeviceState *xbridge,
-                                    Error **errp);
+bool sgi_xio_xbridge_link_connect(Object *bedrock_port, DeviceState *xbridge,
+                                  Error **errp);
 
-#endif /* HW_MIPS_SGI_XTALK_LINK_H */
+#endif /* HW_MIPS_SGI_XIO_LINK_H */

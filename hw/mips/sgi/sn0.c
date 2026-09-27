@@ -28,7 +28,7 @@
 #include "hw/core/sysbus.h"
 #include "hw/misc/sgi-hub.h"
 #include "hw/mips/sgi/baseio.h"
-#include "hw/mips/sgi/xtalk-link.h"
+#include "hw/mips/sgi/xio-link.h"
 #include "hw/pci-host/sgi-bridge.h"
 #include "hw/pci/pci.h"
 #include "hw/mips/mips.h"
@@ -1279,7 +1279,7 @@ void sn0_map_cpu_big_windows(Object *owner, SN0NodeState **nodes,
  * attaches the Bridge it gets back through bridge_out to the Crossbow.
  */
 bool sn0_node_build_baseio(SN0NodeState *node, Object *owner,
-                           SGIXtalkDirectLink *link,
+                           SGIXioDirectLink *link,
                            MemoryRegion *crossbow_fabric,
                            uint64_t bridge_serial,
                            const uint64_t *ioc3_serial, const char *pci_bus_name,
@@ -1361,7 +1361,7 @@ bool sn0_node_build_baseio(SN0NodeState *node, Object *owner,
     if (crossbow_fabric) {
         return true;
     }
-    return sgi_xtalk_direct_link_connect(
+    return sgi_xio_direct_link_connect(
         link, owner, node, OBJECT(bridge), SN0_IP29_IO_DISCOVERY_WIDGET,
         widget, SN0_IP29_IO_DECODED_WIDGET_MASK, SN0_PROM_PI_PROBE_WIDGET,
         SN0_PROM_PI_PROBE_OFFSET, errp);

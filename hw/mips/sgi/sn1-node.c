@@ -9,7 +9,7 @@
  * node's own address-space views, the CPUs, Bedrock, L1 and the XBridge, a
  * fitted part of the IP45 node board itself. The Bedrock's crosstalk port and
  * the XBridge's port 0xa connect through the XBridge link
- * (hw/mips/sgi/xtalk-link.c) before either realizes. The IO-8's fixed devices
+ * (hw/mips/sgi/xio-link.c) before either realizes. The IO-8's fixed devices
  * are a separate sgi-baseio (the "io8" preset, hw/mips/sgi/baseio.c) the
  * machine places on the chip's head F, through sn1_node_xbridge_pci_bus()
  * below.
@@ -36,7 +36,7 @@
 #include "hw/core/qdev-properties.h"
 #include "hw/mips/sgi/baseio.h"
 #include "hw/mips/sgi/sn-machine.h"
-#include "hw/mips/sgi/xtalk-link.h"
+#include "hw/mips/sgi/xio-link.h"
 #include "hw/mips/sgi-xio-port.h"
 #include "hw/pci-host/sgi-xbridge.h"
 #include "hw/misc/sgi-bedrock.h"
@@ -1562,7 +1562,7 @@ static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
      * builder's device like every other product's onboard base I/O. The
      * crosstalk port experiment's link pattern joins it to the Bedrock's
      * crosstalk port before either realizes: the XBridge link
-     * (hw/mips/sgi/xtalk-link.c) installs the Bedrock's packet face as the
+     * (hw/mips/sgi/xio-link.c) installs the Bedrock's packet face as the
      * chip's "fabric": what its widget-0 conditions and both heads'
      * interrupts reach the host through. The IO-8's fixed devices are a
      * separate sgi-baseio (the "io8" preset) the machine places on the chip's
@@ -1587,7 +1587,7 @@ static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
                          sgi_baseio_preset_lookup("io8")->board_part);
     qdev_prop_set_uint64(node->xbridge, "onewire-serial-f",
                          SGI_XBRIDGE_NIC_PLACEHOLDER_SERIAL);
-    if (!sgi_xtalk_xbridge_link_connect(
+    if (!sgi_xio_xbridge_link_connect(
             OBJECT(&SGI_BEDROCK(node->bedrock)->io), node->xbridge, errp)) {
         return false;
     }

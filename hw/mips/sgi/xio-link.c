@@ -5,7 +5,7 @@
  */
 
 #include "qemu/osdep.h"
-#include "hw/mips/sgi/xtalk-link.h"
+#include "hw/mips/sgi/xio-link.h"
 #include "hw/mips/sgi-xio-port.h"
 #include "hw/core/sysbus.h"
 #include "hw/misc/sgi-hub.h"
@@ -17,7 +17,7 @@
 #include "system/runstate.h"
 #include "sn0.h"
 
-QEMU_BUILD_BUG_ON(SGI_XTALK_DIRECT_LINK_MAX_ALIASES != SN0_XTALK_WIDGETS);
+QEMU_BUILD_BUG_ON(SGI_XIO_DIRECT_LINK_MAX_ALIASES != SN0_XTALK_WIDGETS);
 
 /* ---- The direct link ---- */
 
@@ -25,12 +25,12 @@ QEMU_BUILD_BUG_ON(SGI_XTALK_DIRECT_LINK_MAX_ALIASES != SN0_XTALK_WIDGETS);
  * The PROM's fixed target: widget 2 (a synthetic address, not a populated
  * widget) at the Bridge's device-window offset for its error-status decode.
  */
-#define SGI_XTALK_DIRECT_LINK_PROBE_WINDOW_OFFSET 0x208ULL
+#define SGI_XIO_DIRECT_LINK_PROBE_WINDOW_OFFSET 0x208ULL
 
-static MemTxResult sgi_xtalk_direct_link_probe_read(void *opaque, hwaddr addr,
-                                                     uint64_t *data,
-                                                     unsigned int size,
-                                                     MemTxAttrs attrs)
+static MemTxResult sgi_xio_direct_link_probe_read(void *opaque, hwaddr addr,
+                                                  uint64_t *data,
+                                                  unsigned int size,
+                                                  MemTxAttrs attrs)
 {
     SN0NodeState *node = opaque;
 
@@ -41,26 +41,26 @@ static MemTxResult sgi_xtalk_direct_link_probe_read(void *opaque, hwaddr addr,
     }
     return memory_region_dispatch_read(
         node->prom_pi_probe_window,
-        SGI_XTALK_DIRECT_LINK_PROBE_WINDOW_OFFSET + addr, data,
+        SGI_XIO_DIRECT_LINK_PROBE_WINDOW_OFFSET + addr, data,
         size_memop(size) | MO_BE, attrs);
 }
 
-static MemTxResult sgi_xtalk_direct_link_probe_write(void *opaque, hwaddr addr,
-                                                      uint64_t data,
-                                                      unsigned int size,
-                                                      MemTxAttrs attrs)
+static MemTxResult sgi_xio_direct_link_probe_write(void *opaque, hwaddr addr,
+                                                   uint64_t data,
+                                                   unsigned int size,
+                                                   MemTxAttrs attrs)
 {
     SN0NodeState *node = opaque;
 
     return memory_region_dispatch_write(
         node->prom_pi_probe_window,
-        SGI_XTALK_DIRECT_LINK_PROBE_WINDOW_OFFSET + addr, data,
+        SGI_XIO_DIRECT_LINK_PROBE_WINDOW_OFFSET + addr, data,
         size_memop(size) | MO_BE, attrs);
 }
 
-static const MemoryRegionOps sgi_xtalk_direct_link_probe_ops = {
-    .read_with_attrs = sgi_xtalk_direct_link_probe_read,
-    .write_with_attrs = sgi_xtalk_direct_link_probe_write,
+static const MemoryRegionOps sgi_xio_direct_link_probe_ops = {
+    .read_with_attrs = sgi_xio_direct_link_probe_read,
+    .write_with_attrs = sgi_xio_direct_link_probe_write,
     .endianness = DEVICE_BIG_ENDIAN,
     .valid.min_access_size = 1,
     .valid.max_access_size = 8,
@@ -68,11 +68,11 @@ static const MemoryRegionOps sgi_xtalk_direct_link_probe_ops = {
     .impl.max_access_size = 8,
 };
 
-static bool sgi_xtalk_direct_link_wire_probe(SN0NodeState *node,
-                                             Object *widget_port,
-                                             unsigned int probe_widget,
-                                             uint64_t probe_offset,
-                                             Error **errp)
+static bool sgi_xio_direct_link_wire_probe(SN0NodeState *node,
+                                           Object *widget_port,
+                                           unsigned int probe_widget,
+                                           uint64_t probe_offset,
+                                           Error **errp)
 {
     /*
      * The probe is an Origin 200 (IP29) fact only; its one caller
@@ -99,7 +99,7 @@ static bool sgi_xtalk_direct_link_wire_probe(SN0NodeState *node,
     }
     node->prom_pi_probe_window = &bridge->device_window_mem[window];
     memory_region_init_io(&node->prom_pi_probe, OBJECT(node),
-                          &sgi_xtalk_direct_link_probe_ops, node,
+                          &sgi_xio_direct_link_probe_ops, node,
                           "sn0.prom-pi-probe", 8);
     memory_region_add_subregion_overlap(
         &node->xtalk, SN0_XTALK_BASE(probe_widget) + probe_offset,
@@ -107,13 +107,13 @@ static bool sgi_xtalk_direct_link_wire_probe(SN0NodeState *node,
     return true;
 }
 
-bool sgi_xtalk_direct_link_connect(SGIXtalkDirectLink *link, Object *owner,
-                                    SN0NodeState *node, Object *widget_port,
-                                    unsigned int discovery_widget,
-                                    unsigned int widget,
-                                    uint32_t decoded_widget_mask,
-                                    unsigned int probe_widget,
-                                    uint64_t probe_offset, Error **errp)
+bool sgi_xio_direct_link_connect(SGIXioDirectLink *link, Object *owner,
+                                 SN0NodeState *node, Object *widget_port,
+                                 unsigned int discovery_widget,
+                                 unsigned int widget,
+                                 uint32_t decoded_widget_mask,
+                                 unsigned int probe_widget,
+                                 uint64_t probe_offset, Error **errp)
 {
     MemoryRegion *hub_face = sgi_xio_port_cpu_face(OBJECT(&node->hub), 0);
     MemoryRegion *widget_face = sgi_xio_port_cpu_face(widget_port, 0);
@@ -160,9 +160,9 @@ bool sgi_xtalk_direct_link_connect(SGIXtalkDirectLink *link, Object *owner,
     link->alias_count = seen;
 
     if (probe_widget) {
-        return sgi_xtalk_direct_link_wire_probe(node, widget_port,
-                                                probe_widget, probe_offset,
-                                                errp);
+        return sgi_xio_direct_link_wire_probe(node, widget_port,
+                                              probe_widget, probe_offset,
+                                              errp);
     }
     return true;
 }
@@ -175,7 +175,7 @@ bool sgi_xtalk_direct_link_connect(SGIXtalkDirectLink *link, Object *owner,
  * knows whether that is a link index shifted by SGI_XBOW_PACKET_ADDRESS_BITS
  * or a nasid needing a different shift).
  */
-#define SGI_XTALK_CROSSBOW_LINK_PACKET_IO (1ULL << 47)
+#define SGI_XIO_CROSSBOW_LINK_PACKET_IO (1ULL << 47)
 
 /*
  * Every proxy this file ever hands out, keyed by its address, so
@@ -184,26 +184,26 @@ bool sgi_xtalk_direct_link_connect(SGIXtalkDirectLink *link, Object *owner,
  * caller-owned and never freed before the machine itself, so entries outlive
  * every lookup; the table only ever grows.
  */
-static GHashTable *sgi_xtalk_crossbow_link_proxies;
+static GHashTable *sgi_xio_crossbow_link_proxies;
 
-MemoryRegion *sgi_xtalk_crossbow_link_prepare(SGIXtalkCrossbowLink *link,
-                                              Object *owner, const char *name)
+MemoryRegion *sgi_xio_crossbow_link_prepare(SGIXioCrossbowLink *link,
+                                            Object *owner, const char *name)
 {
     memory_region_init(&link->proxy, owner, name,
                        SGI_XBOW_WIDGETS * SGI_XBOW_PACKET_SIZE);
     memory_region_set_enabled(&link->proxy, false);
-    if (!sgi_xtalk_crossbow_link_proxies) {
-        sgi_xtalk_crossbow_link_proxies = g_hash_table_new(NULL, NULL);
+    if (!sgi_xio_crossbow_link_proxies) {
+        sgi_xio_crossbow_link_proxies = g_hash_table_new(NULL, NULL);
     }
-    g_hash_table_add(sgi_xtalk_crossbow_link_proxies, &link->proxy);
+    g_hash_table_add(sgi_xio_crossbow_link_proxies, &link->proxy);
     return &link->proxy;
 }
 
-void sgi_xtalk_crossbow_link_claim_fabric(MemoryRegion *fabric,
-                                          MemoryRegion *cpu_face,
-                                          MemoryRegion *packet_face)
+void sgi_xio_crossbow_link_claim_fabric(MemoryRegion *fabric,
+                                        MemoryRegion *cpu_face,
+                                        MemoryRegion *packet_face)
 {
-    SGIXtalkCrossbowLink *link;
+    SGIXioCrossbowLink *link;
 
     /*
      * A board's "fabric" is a generic link property; a real machine always
@@ -214,11 +214,11 @@ void sgi_xtalk_crossbow_link_claim_fabric(MemoryRegion *fabric,
      * would. Look it up in the set prepare() populates and do nothing for
      * anything else.
      */
-    if (!sgi_xtalk_crossbow_link_proxies ||
-        !g_hash_table_contains(sgi_xtalk_crossbow_link_proxies, fabric)) {
+    if (!sgi_xio_crossbow_link_proxies ||
+        !g_hash_table_contains(sgi_xio_crossbow_link_proxies, fabric)) {
         return;
     }
-    link = container_of(fabric, SGIXtalkCrossbowLink, proxy);
+    link = container_of(fabric, SGIXioCrossbowLink, proxy);
     link->fabric_claimed = true;
     link->claimant_cpu_face = cpu_face;
     link->claimant_packet_face = packet_face;
@@ -230,23 +230,23 @@ void sgi_xtalk_crossbow_link_claim_fabric(MemoryRegion *fabric,
  * same shape a small or big window decodes (hw/misc/sgi-hub.c,
  * IO_BWIN_SPACE). A switched fabric instead expects a packet address, the
  * destination widget in bits 51:48; this translates one into the other before
- * the access ever reaches the proxy sgi_xtalk_crossbow_ link_prepare() built.
+ * the access ever reaches the proxy sgi_xio_crossbow_ link_prepare() built.
  * Moved unaltered in behaviour from the deleted sn0-origin2000-io.c's
  * SN0Origin2000HubOutgoingIO.
  */
-static bool sgi_xtalk_crossbow_link_outbound_bounded(uint64_t offset,
-                                                      unsigned size)
+static bool sgi_xio_crossbow_link_outbound_bounded(uint64_t offset,
+                                                   unsigned size)
 {
     return size && size <= SN0_XTALK_WIDGET_SIZE - offset;
 }
 
-static MemTxResult sgi_xtalk_crossbow_link_outbound_read(void *opaque,
-                                                          hwaddr addr,
-                                                          uint64_t *data,
-                                                          unsigned size,
-                                                          MemTxAttrs attrs)
+static MemTxResult sgi_xio_crossbow_link_outbound_read(void *opaque,
+                                                       hwaddr addr,
+                                                       uint64_t *data,
+                                                       unsigned size,
+                                                       MemTxAttrs attrs)
 {
-    SGIXtalkCrossbowLink *link = opaque;
+    SGIXioCrossbowLink *link = opaque;
     unsigned int widget = addr >> SN0_XTALK_WIDGET_SHIFT;
     uint64_t offset = addr & (SN0_XTALK_WIDGET_SIZE - 1);
     uint8_t bytes[8] = { 0 };
@@ -254,7 +254,7 @@ static MemTxResult sgi_xtalk_crossbow_link_outbound_read(void *opaque,
 
     *data = 0;
     if (widget < SGI_XBOW_FIRST_WIDGET || widget >= SGI_XBOW_WIDGETS ||
-        !sgi_xtalk_crossbow_link_outbound_bounded(offset, size)) {
+        !sgi_xio_crossbow_link_outbound_bounded(offset, size)) {
         qemu_log_mask(LOG_GUEST_ERROR,
                       "sn0: unsupported outgoing Hub I/O read at 0x%"
                       HWADDR_PRIx " size %u\n", addr, size);
@@ -263,25 +263,25 @@ static MemTxResult sgi_xtalk_crossbow_link_outbound_read(void *opaque,
     result = address_space_read(
         &link->outbound_packets,
         ((uint64_t)widget << SGI_XBOW_PACKET_ADDRESS_BITS) |
-        SGI_XTALK_CROSSBOW_LINK_PACKET_IO | offset, attrs, bytes + 8 - size,
+        SGI_XIO_CROSSBOW_LINK_PACKET_IO | offset, attrs, bytes + 8 - size,
         size);
     *data = ldq_be_p(bytes);
     return result;
 }
 
-static MemTxResult sgi_xtalk_crossbow_link_outbound_write(void *opaque,
-                                                           hwaddr addr,
-                                                           uint64_t data,
-                                                           unsigned size,
-                                                           MemTxAttrs attrs)
+static MemTxResult sgi_xio_crossbow_link_outbound_write(void *opaque,
+                                                        hwaddr addr,
+                                                        uint64_t data,
+                                                        unsigned size,
+                                                        MemTxAttrs attrs)
 {
-    SGIXtalkCrossbowLink *link = opaque;
+    SGIXioCrossbowLink *link = opaque;
     unsigned int widget = addr >> SN0_XTALK_WIDGET_SHIFT;
     uint64_t offset = addr & (SN0_XTALK_WIDGET_SIZE - 1);
     uint8_t bytes[8];
 
     if (widget < SGI_XBOW_FIRST_WIDGET || widget >= SGI_XBOW_WIDGETS ||
-        !sgi_xtalk_crossbow_link_outbound_bounded(offset, size)) {
+        !sgi_xio_crossbow_link_outbound_bounded(offset, size)) {
         qemu_log_mask(LOG_GUEST_ERROR,
                       "sn0: unsupported outgoing Hub I/O write at 0x%"
                       HWADDR_PRIx " size %u\n", addr, size);
@@ -291,21 +291,21 @@ static MemTxResult sgi_xtalk_crossbow_link_outbound_write(void *opaque,
     return address_space_write(
         &link->outbound_packets,
         ((uint64_t)widget << SGI_XBOW_PACKET_ADDRESS_BITS) |
-        SGI_XTALK_CROSSBOW_LINK_PACKET_IO | offset, attrs, bytes + 8 - size,
+        SGI_XIO_CROSSBOW_LINK_PACKET_IO | offset, attrs, bytes + 8 - size,
         size);
 }
 
-static const MemoryRegionOps sgi_xtalk_crossbow_link_outbound_ops = {
-    .read_with_attrs = sgi_xtalk_crossbow_link_outbound_read,
-    .write_with_attrs = sgi_xtalk_crossbow_link_outbound_write,
+static const MemoryRegionOps sgi_xio_crossbow_link_outbound_ops = {
+    .read_with_attrs = sgi_xio_crossbow_link_outbound_read,
+    .write_with_attrs = sgi_xio_crossbow_link_outbound_write,
     .endianness = DEVICE_BIG_ENDIAN,
     .valid = { .min_access_size = 1, .max_access_size = 8, .unaligned = true },
     .impl = { .min_access_size = 1, .max_access_size = 8, .unaligned = true },
 };
 
-bool sgi_xtalk_crossbow_link_prepare_hub(SGIXtalkCrossbowLink *link,
-                                         Object *owner, const char *name,
-                                         SN0NodeState *node, Error **errp)
+bool sgi_xio_crossbow_link_prepare_hub(SGIXioCrossbowLink *link,
+                                       Object *owner, const char *name,
+                                       SN0NodeState *node, Error **errp)
 {
     MemoryRegion *proxy;
     g_autofree char *packets_name =
@@ -314,10 +314,10 @@ bool sgi_xtalk_crossbow_link_prepare_hub(SGIXtalkCrossbowLink *link,
 
     link->is_hub = true;
     link->node = node;
-    proxy = sgi_xtalk_crossbow_link_prepare(link, owner, name);
+    proxy = sgi_xio_crossbow_link_prepare(link, owner, name);
     address_space_init(&link->outbound_packets, proxy, packets_name);
     memory_region_init_io(&link->outbound_face, owner,
-                          &sgi_xtalk_crossbow_link_outbound_ops, link,
+                          &sgi_xio_crossbow_link_outbound_ops, link,
                           face_name, 1ULL << 38);
     return sgi_hub_set_xtalk_io(&node->hub, &link->outbound_face, errp);
 }
@@ -339,23 +339,23 @@ bool sgi_xtalk_crossbow_link_prepare_hub(SGIXtalkCrossbowLink *link,
  * stops rather than fabricating a value.
  */
 
-#define SGI_XTALK_CROSSBOW_LINK_NASID_SHIFT         38
-#define SGI_XTALK_CROSSBOW_LINK_MODIFY_OFFSET       0x90ULL
-#define SGI_XTALK_CROSSBOW_LINK_IDENTITY            0x01600000ULL
-#define SGI_XTALK_CROSSBOW_LINK_HUB_NETWORK_IDENTITY 0x600000
-#define SGI_XTALK_CROSSBOW_LINK_SUPPORTED_NODE_STRIDE (1ULL << 32)
-#define SGI_XTALK_CROSSBOW_LINK_SUPPORTED_NASIDS    256
+#define SGI_XIO_CROSSBOW_LINK_NASID_SHIFT         38
+#define SGI_XIO_CROSSBOW_LINK_MODIFY_OFFSET       0x90ULL
+#define SGI_XIO_CROSSBOW_LINK_IDENTITY            0x01600000ULL
+#define SGI_XIO_CROSSBOW_LINK_HUB_NETWORK_IDENTITY 0x600000
+#define SGI_XIO_CROSSBOW_LINK_SUPPORTED_NODE_STRIDE (1ULL << 32)
+#define SGI_XIO_CROSSBOW_LINK_SUPPORTED_NASIDS    256
 
-#define SGI_XTALK_CROSSBOW_LINK_HUB_WIDGET_ID       0x400000
-#define SGI_XTALK_CROSSBOW_LINK_WIDGET_REGISTER_DATA 4
+#define SGI_XIO_CROSSBOW_LINK_HUB_WIDGET_ID       0x400000
+#define SGI_XIO_CROSSBOW_LINK_WIDGET_REGISTER_DATA 4
 
-static bool sgi_xtalk_crossbow_link_packet_address(SGIXtalkCrossbowLink *link,
-                                                    hwaddr addr, unsigned size,
-                                                    bool write, hwaddr *target)
+static bool sgi_xio_crossbow_link_packet_address(SGIXioCrossbowLink *link,
+                                                 hwaddr addr, unsigned size,
+                                                 bool write, hwaddr *target)
 {
-    unsigned nasid = (addr >> SGI_XTALK_CROSSBOW_LINK_NASID_SHIFT) & 0xff;
-    uint64_t interrupt = SGI_XTALK_CROSSBOW_LINK_PACKET_IO |
-        ((uint64_t)nasid << SGI_XTALK_CROSSBOW_LINK_NASID_SHIFT) |
+    unsigned nasid = (addr >> SGI_XIO_CROSSBOW_LINK_NASID_SHIFT) & 0xff;
+    uint64_t interrupt = SGI_XIO_CROSSBOW_LINK_PACKET_IO |
+        ((uint64_t)nasid << SGI_XIO_CROSSBOW_LINK_NASID_SHIFT) |
         link->inbound_modify_offset;
 
     if (size && addr < link->inbound_memory_size &&
@@ -375,25 +375,25 @@ static bool sgi_xtalk_crossbow_link_packet_address(SGIXtalkCrossbowLink *link,
     return false;
 }
 
-static MemTxResult sgi_xtalk_crossbow_link_inbound_read(void *opaque,
-                                                         hwaddr addr,
-                                                         uint64_t *data,
-                                                         unsigned size,
-                                                         MemTxAttrs attrs)
+static MemTxResult sgi_xio_crossbow_link_inbound_read(void *opaque,
+                                                      hwaddr addr,
+                                                      uint64_t *data,
+                                                      unsigned size,
+                                                      MemTxAttrs attrs)
 {
-    SGIXtalkCrossbowLink *link = opaque;
+    SGIXioCrossbowLink *link = opaque;
     uint8_t bytes[8] = { 0 };
     hwaddr target;
     MemTxResult result;
     AddressSpace *space = &link->inbound_target;
 
     *data = 0;
-    if (size == 8 && addr == (SGI_XTALK_CROSSBOW_LINK_PACKET_IO |
-                              SGI_XTALK_CROSSBOW_LINK_IDENTITY)) {
+    if (size == 8 && addr == (SGI_XIO_CROSSBOW_LINK_PACKET_IO |
+                              SGI_XIO_CROSSBOW_LINK_IDENTITY)) {
         space = &link->inbound_local_registers;
         target = 0;
-    } else if (!sgi_xtalk_crossbow_link_packet_address(link, addr, size,
-                                                        false, &target)) {
+    } else if (!sgi_xio_crossbow_link_packet_address(link, addr, size,
+                                                     false, &target)) {
         return MEMTX_ERROR;
     }
     result = address_space_read(space, target, attrs, bytes + 8 - size, size);
@@ -401,18 +401,18 @@ static MemTxResult sgi_xtalk_crossbow_link_inbound_read(void *opaque,
     return result;
 }
 
-static MemTxResult sgi_xtalk_crossbow_link_inbound_write(void *opaque,
-                                                          hwaddr addr,
-                                                          uint64_t data,
-                                                          unsigned size,
-                                                          MemTxAttrs attrs)
+static MemTxResult sgi_xio_crossbow_link_inbound_write(void *opaque,
+                                                       hwaddr addr,
+                                                       uint64_t data,
+                                                       unsigned size,
+                                                       MemTxAttrs attrs)
 {
-    SGIXtalkCrossbowLink *link = opaque;
+    SGIXioCrossbowLink *link = opaque;
     uint8_t bytes[8];
     hwaddr target;
 
-    if (!sgi_xtalk_crossbow_link_packet_address(link, addr, size, true,
-                                                &target)) {
+    if (!sgi_xio_crossbow_link_packet_address(link, addr, size, true,
+                                              &target)) {
         return MEMTX_ERROR;
     }
     stq_be_p(bytes, data);
@@ -420,26 +420,26 @@ static MemTxResult sgi_xtalk_crossbow_link_inbound_write(void *opaque,
                                bytes + 8 - size, size);
 }
 
-static const MemoryRegionOps sgi_xtalk_crossbow_link_inbound_ops = {
-    .read_with_attrs = sgi_xtalk_crossbow_link_inbound_read,
-    .write_with_attrs = sgi_xtalk_crossbow_link_inbound_write,
+static const MemoryRegionOps sgi_xio_crossbow_link_inbound_ops = {
+    .read_with_attrs = sgi_xio_crossbow_link_inbound_read,
+    .write_with_attrs = sgi_xio_crossbow_link_inbound_write,
     .endianness = DEVICE_BIG_ENDIAN,
     .valid = { .min_access_size = 1, .max_access_size = 8, .unaligned = true },
     .impl = { .min_access_size = 1, .max_access_size = 8, .unaligned = true },
 };
 
-static MemTxResult sgi_xtalk_crossbow_link_refusal(
+static MemTxResult sgi_xio_crossbow_link_refusal(
     void *opaque, hwaddr addr, uint64_t *data, unsigned size, bool is_write,
     MemTxAttrs attrs)
 {
-    SGIXtalkCrossbowLink *link = opaque;
+    SGIXioCrossbowLink *link = opaque;
 
     assert(bql_locked());
-    if (!is_write && addr == SGI_XTALK_CROSSBOW_LINK_WIDGET_REGISTER_DATA &&
+    if (!is_write && addr == SGI_XIO_CROSSBOW_LINK_WIDGET_REGISTER_DATA &&
         size == 4) {
         return memory_region_dispatch_read(
             &link->node->hub.regs,
-            SGI_XTALK_CROSSBOW_LINK_HUB_WIDGET_ID + addr, data, MO_32 | MO_BE,
+            SGI_XIO_CROSSBOW_LINK_HUB_WIDGET_ID + addr, data, MO_32 | MO_BE,
             attrs);
     }
     error_report("Origin 2000 node %u: unsupported %u-byte %s at 0x%"
@@ -455,38 +455,38 @@ static MemTxResult sgi_xtalk_crossbow_link_refusal(
     return MEMTX_ERROR;
 }
 
-static MemTxResult sgi_xtalk_crossbow_link_refusal_read(void *opaque,
-                                                         hwaddr addr,
-                                                         uint64_t *data,
-                                                         unsigned size,
-                                                         MemTxAttrs attrs)
+static MemTxResult sgi_xio_crossbow_link_refusal_read(void *opaque,
+                                                      hwaddr addr,
+                                                      uint64_t *data,
+                                                      unsigned size,
+                                                      MemTxAttrs attrs)
 {
-    return sgi_xtalk_crossbow_link_refusal(opaque, addr, data, size, false,
-                                           attrs);
+    return sgi_xio_crossbow_link_refusal(opaque, addr, data, size, false,
+                                         attrs);
 }
 
-static MemTxResult sgi_xtalk_crossbow_link_refusal_write(void *opaque,
-                                                          hwaddr addr,
-                                                          uint64_t data,
-                                                          unsigned size,
-                                                          MemTxAttrs attrs)
+static MemTxResult sgi_xio_crossbow_link_refusal_write(void *opaque,
+                                                       hwaddr addr,
+                                                       uint64_t data,
+                                                       unsigned size,
+                                                       MemTxAttrs attrs)
 {
-    return sgi_xtalk_crossbow_link_refusal(opaque, addr, NULL, size, true,
-                                           attrs);
+    return sgi_xio_crossbow_link_refusal(opaque, addr, NULL, size, true,
+                                         attrs);
 }
 
-static const MemoryRegionOps sgi_xtalk_crossbow_link_refusal_ops = {
-    .read_with_attrs = sgi_xtalk_crossbow_link_refusal_read,
-    .write_with_attrs = sgi_xtalk_crossbow_link_refusal_write,
+static const MemoryRegionOps sgi_xio_crossbow_link_refusal_ops = {
+    .read_with_attrs = sgi_xio_crossbow_link_refusal_read,
+    .write_with_attrs = sgi_xio_crossbow_link_refusal_write,
     .endianness = DEVICE_BIG_ENDIAN,
     .valid = { .min_access_size = 1, .max_access_size = 8, .unaligned = true },
     .impl = { .min_access_size = 1, .max_access_size = 8, .unaligned = true },
 };
 
-bool sgi_xtalk_crossbow_link_attach_hub(SGIXtalkCrossbowLink *link,
-                                        Object *owner, const char *name,
-                                        SGIXbowState *xbow, unsigned int widget,
-                                        Error **errp)
+bool sgi_xio_crossbow_link_attach_hub(SGIXioCrossbowLink *link,
+                                      Object *owner, const char *name,
+                                      SGIXbowState *xbow, unsigned int widget,
+                                      Error **errp)
 {
     SN0NodeState *node = link->node;
     const SN0ModelAddressMap *map;
@@ -499,7 +499,7 @@ bool sgi_xtalk_crossbow_link_attach_hub(SGIXtalkCrossbowLink *link,
     }
     map = &sn0_hub_address_map;
     if (map->memory.carrier_base != 0 ||
-        map->node_stride != SGI_XTALK_CROSSBOW_LINK_SUPPORTED_NODE_STRIDE ||
+        map->node_stride != SGI_XIO_CROSSBOW_LINK_SUPPORTED_NODE_STRIDE ||
         map->xtalk.carrier_base != (2ULL << 40) ||
         map->hub_registers_node.offset != 0x01800000 ||
         map->hub_registers_node.size < 0x98) {
@@ -508,36 +508,36 @@ bool sgi_xtalk_crossbow_link_attach_hub(SGIXtalkCrossbowLink *link,
     }
 
     link->inbound_memory_size =
-        SGI_XTALK_CROSSBOW_LINK_SUPPORTED_NASIDS * map->node_stride;
+        SGI_XIO_CROSSBOW_LINK_SUPPORTED_NASIDS * map->node_stride;
     link->inbound_xtalk_base = map->xtalk.carrier_base;
     link->inbound_node_stride = map->node_stride;
     link->inbound_modify_offset = map->hub_registers_node.offset +
-        SGI_XTALK_CROSSBOW_LINK_MODIFY_OFFSET;
+        SGI_XIO_CROSSBOW_LINK_MODIFY_OFFSET;
     memory_region_init_io(&link->inbound_face, owner,
-                          &sgi_xtalk_crossbow_link_inbound_ops, link,
+                          &sgi_xio_crossbow_link_inbound_ops, link,
                           "sn0.hub.packet", 1ULL << 48);
     address_space_init(&link->inbound_target, &node->device_view,
                        "sn0.hub.packet.target");
     memory_region_init_alias(&link->inbound_local_register_view, owner,
                              "sn0.hub.packet.local-register-view",
                              &node->hub.regs,
-                             SGI_XTALK_CROSSBOW_LINK_HUB_NETWORK_IDENTITY, 8);
+                             SGI_XIO_CROSSBOW_LINK_HUB_NETWORK_IDENTITY, 8);
     address_space_init(&link->inbound_local_registers,
                        &link->inbound_local_register_view,
                        "sn0.hub.packet.local-registers");
 
     memory_region_init_io(&link->cpu_refusal, owner,
-                          &sgi_xtalk_crossbow_link_refusal_ops, link,
+                          &sgi_xio_crossbow_link_refusal_ops, link,
                           refusal_name, SN0_XTALK_WIDGET_SIZE);
 
     return sgi_xbow_attach_endpoint(xbow, widget, &link->cpu_refusal,
                                     &link->inbound_face, errp);
 }
 
-bool sgi_xtalk_crossbow_link_attach_widget(SGIXtalkCrossbowLink *link,
-                                           Object *widget_port,
-                                           SGIXbowState *xbow,
-                                           unsigned int widget, Error **errp)
+bool sgi_xio_crossbow_link_attach_widget(SGIXioCrossbowLink *link,
+                                         Object *widget_port,
+                                         SGIXbowState *xbow,
+                                         unsigned int widget, Error **errp)
 {
     MemoryRegion *cpu_face = sgi_xio_port_cpu_face(widget_port, 0);
     MemoryRegion *packet_face = sgi_xio_port_packet_face(widget_port, 0);
@@ -552,9 +552,9 @@ bool sgi_xtalk_crossbow_link_attach_widget(SGIXtalkCrossbowLink *link,
                                     errp);
 }
 
-bool sgi_xtalk_crossbow_link_finish(SGIXtalkCrossbowLink *link, Object *owner,
-                                    const char *name, SGIXbowState *xbow,
-                                    unsigned int widget, Error **errp)
+bool sgi_xio_crossbow_link_finish(SGIXioCrossbowLink *link, Object *owner,
+                                  const char *name, SGIXbowState *xbow,
+                                  unsigned int widget, Error **errp)
 {
     MemoryRegion *packet = sgi_xio_port_packet_face(OBJECT(xbow), widget);
     g_autofree char *packet_name = g_strdup_printf("%s-packet-ingress", name);
@@ -587,8 +587,8 @@ bool sgi_xtalk_crossbow_link_finish(SGIXtalkCrossbowLink *link, Object *owner,
 
 /* ---- The XBridge link ---- */
 
-bool sgi_xtalk_xbridge_link_connect(Object *bedrock_port, DeviceState *xbridge,
-                                    Error **errp)
+bool sgi_xio_xbridge_link_connect(Object *bedrock_port, DeviceState *xbridge,
+                                  Error **errp)
 {
     MemoryRegion *packet_face = sgi_xio_port_packet_face(bedrock_port, 0);
 

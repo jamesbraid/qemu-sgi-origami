@@ -314,7 +314,7 @@ A crosstalk port is a QOM interface every attachable endpoint implements --
 a Hub's or Bedrock's I/O port, each Crossbow port, an XBridge head, and a
 board's own widget (``include/hw/mips/sgi-xio-port.h``). A link object
 connects two ports and owns whatever that link kind needs
-(``hw/mips/sgi/xtalk-link.c``): the direct link between a Hub and a Bridge
+(``hw/mips/sgi/xio-link.c``): the direct link between a Hub and a Bridge
 answers the Bridge's whole face at every widget the Hub decodes; the link
 into a Crossbow port carries packets instead. Ports connect before either
 side realizes.

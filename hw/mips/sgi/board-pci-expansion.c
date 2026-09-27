@@ -25,7 +25,7 @@
  *
  * This gives a `-device` board a two-way widget. build_widget() below
  * records its Bridge's own faces and hands them to
- * sgi_xtalk_crossbow_link_claim_fabric(), which tells sgi_machine_done()
+ * sgi_xio_crossbow_link_claim_fabric(), which tells sgi_machine_done()
  * to finish the attachment once it finishes the proxy -- without that
  * call the slot's widget stays not-alive and the Crossbow disables the
  * proxy's whole target region, same as any other not-alive port
@@ -66,7 +66,7 @@
 
 #include "qemu/osdep.h"
 #include "hw/mips/sgi/xio-board.h"
-#include "hw/mips/sgi/xtalk-link.h"
+#include "hw/mips/sgi/xio-link.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/core/sysbus.h"
 #include "hw/pci/pci.h"
@@ -165,8 +165,8 @@ static bool pci_expansion_build_widget(SGIXioBoardState *board,
      * Bridge through its Crossbow the same way it reaches any onboard widget.
      * A fixture wiring "fabric" to a plain sink is a no-op here.
      */
-    sgi_xtalk_crossbow_link_claim_fabric(s->fabric, board->cpu_face,
-                                         board->packet_face);
+    sgi_xio_crossbow_link_claim_fabric(s->fabric, board->cpu_face,
+                                       board->packet_face);
     return true;
 }
 

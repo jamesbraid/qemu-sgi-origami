@@ -16,7 +16,7 @@
 #include "hw/core/boards.h"
 #include "hw/misc/sgi-hub.h"
 #include "hw/mips/sgi/sn-catalogue.h"
-#include "hw/mips/sgi/xtalk-link.h"
+#include "hw/mips/sgi/xio-link.h"
 #include "sn-promdata.h"
 
 /*
@@ -272,7 +272,7 @@ void sn0_map_cpu_big_windows(Object *owner, SN0NodeState **nodes,
  * backends, for the claim-timing reason sgi-baseio's header explains.
  */
 bool sn0_node_build_baseio(SN0NodeState *node, Object *owner,
-                           SGIXtalkDirectLink *link,
+                           SGIXioDirectLink *link,
                            MemoryRegion *crossbow_fabric,
                            uint64_t bridge_serial,
                            const uint64_t *ioc3_serial, const char *pci_bus_name,
