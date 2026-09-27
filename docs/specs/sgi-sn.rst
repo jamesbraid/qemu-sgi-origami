@@ -247,8 +247,11 @@ name takes only ``io1``. ``slot=`` also still takes a Crossbow widget number
 with an explicit ``module=`` and ``fabric=``, which the builder and qtest
 fixtures use; when that fabric is a slot's own, the board must name that
 slot's module and widget. A board fitted at launch whose one-wire serials
-are left at the class's shared placeholder takes serials offset by its
-module and widget, so no two boards read the same NIC.
+are left at the class's shared placeholder takes serials offset by the
+slot's position among the machine's XIO slots, so no two boards fitted
+this way read the same NIC; the widget alone would not do, since a
+module's two Crossbows number their widgets alike (IO5 and IO7 are both
+widget 14). A board's id must be unique among the machine's devices.
 
 Every XIO board is named by its IRIX slot: a catalogue board's QOM name and
 qdev id, and a launch-fitted board's id unless it is given one, is ``io1``,
@@ -256,6 +259,12 @@ qdev id, and a launch-fitted board's id unless it is given one, is ``io1``,
 GIGAchannel's cabinet Bridge is ``io7``). Its PCI bus follows QEMU's
 child-bus idiom, ``<id>.0``: a card goes into the carrier in IO2 with
 ``bus=io2.0``, and ``screendump device=io3`` names an SI board in IO3.
+
+These renames and the stock topologies break saved state from earlier
+builds: a default ``-M origin2000`` snapshot carries an ``sgi-mgras``
+section the stock machine no longer has, and board ids and bus names
+changed. Migration is supported only between identical builds (Origami
+decision D-0019), so no compatibility shim is kept.
 
 The Onyx2 deskside is a different midplane, not only a different
 population. Its two node slots drive Hub slot-identity bits 3 and 2, where
