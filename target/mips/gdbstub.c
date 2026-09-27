@@ -129,7 +129,7 @@ int mips_cpu_gdb_write_register(CPUState *cs, uint8_t *mem_buf, int n)
 #endif
         break;
     case 37:
-        env->active_tc.PC = deposit64(tmp, 63, 1, 0);
+        env->active_tc.PC = deposit64(tmp, 0, 1, 0);
         if (tmp & 1) {
             env->hflags |= MIPS_HFLAG_M16;
         } else {
