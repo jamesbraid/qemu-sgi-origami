@@ -1469,6 +1469,21 @@ static bool sgi_machine_instantiate_kona(
      * the slot IRIX names it by (issue #895).
      */
     sgi_machine_add_xio_board(s, dev, record, board_index, attachment);
+    /*
+     * The pipe's one-wire records: the geometry board's own part, the
+     * rack's GE16-4 or the deskside's GE14-4, then the records after it,
+     * the rack's Ktown or none on the deskside, whose pipe has no Ktown.
+     */
+    qdev_prop_set_string(dev, "board-part", record->part);
+    if (record->has_other_identity_parts) {
+        QList *parts = qlist_new();
+        const strList *part;
+
+        for (part = record->other_identity_parts; part; part = part->next) {
+            qlist_append_str(parts, part->value);
+        }
+        qdev_prop_set_array(dev, "other-identity-parts", parts);
+    }
     object_property_set_link(
         OBJECT(dev), "fabric",
         OBJECT(sgi_xtalk_crossbow_link_prepare(crossbow_link, OBJECT(s),
