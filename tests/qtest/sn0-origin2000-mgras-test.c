@@ -5974,6 +5974,7 @@ static void test_gl_triangle_with_negative_w_is_dropped(void)
 #define GL_MODELVIEW          0x1700
 #define GL_PROJECTION         0x1701
 #define GL_TEXTURE            0x1702
+#define GL_SMOOTH             0x1d01
 #define GL_DEPTH_LESS         1
 #define GL_DEPTH_NEVER        0
 #define GL_DEPTH_EQUAL        2
@@ -6059,6 +6060,8 @@ static void gl_scene_start(QTestState *qts, uint32_t shade)
     "2411a9c279313dc62c8e536db291ba6d66abab75883d077aa70f92f127ed2746"
 #define GL_DEPTH_SHA256 \
     "92a05b9a5c7c93ddee9a6c0a7717dff6b9983c968c4229e05bb04732fff2dbfe"
+#define GL_SMOOTH_SHA256 \
+    "77ae4e7831ad45733d6a4ac20c2ed0bfc030e5f321a55d496d0028638b8b1851"
 
 /*
  * The ortho case: glOrtho(0, 128, 0, 128, -1, 1) on the projection, then
@@ -6462,6 +6465,81 @@ static void test_gl_triangle_clipped_at_the_far_plane(void)
     gl_word(qts, GL_END_TRIANGLES);
     g_assert_cmphex(gl_window_pixel(qts, 2, 63), ==, 0xffffff);
     g_assert_cmphex(gl_window_pixel(qts, 2, 64), ==, 0);
+}
+
+/*
+ * The smooth case: red, green and blue vertices at window (0.4375,
+ * 0.4375), (127.9375, 0.4375) and (64.1875, 127.9375). Every channel of
+ * every pixel is at least 1/32 of a step from a rounding tie, so any
+ * sound interpolation gives these 8,192 colours.
+ */
+static void test_gl_smooth_matches_the_reference(void)
+{
+    g_autofree uint32_t *rgb = NULL;
+
+    gl_scene_start(qts, GL_SMOOTH);
+    gl_clear_color(qts, 0, 0, 0, 1);
+    gl_word(qts, GL_CLEAR_COLOR_BUFFER);
+    gl_word(qts, GL_BEGIN_TRIANGLES);
+    gl_color3f(qts, 1, 0, 0);
+    gl_vertex3f(qts, -0.9931640625f, -0.9931640625f, 0);
+    gl_color3f(qts, 0, 1, 0);
+    gl_vertex3f(qts, 0.9990234375f, -0.9931640625f, 0);
+    gl_color3f(qts, 0, 0, 1);
+    gl_vertex3f(qts, 0.0029296875f, 0.9990234375f, 0);
+    gl_word(qts, GL_END_TRIANGLES);
+    gl_word(qts, GL_FLUSH);
+
+    rgb = mgras_screendump(qts);
+    /* Worked by hand: blue 126.125, green 63.0625, red 65.8125. */
+    g_assert_cmphex(gl_dump_pixel(rgb, 63, 63), ==, 0x423f7e);
+    g_assert_cmphex(gl_dump_pixel(rgb, 0, 0), ==, 0xff0000);
+    gl_check_window_sha256(rgb, GL_SMOOTH_SHA256);
+}
+
+/*
+ * Approximated: an interpolated colour is stored at eight bits a channel,
+ * rounded to nearest (OpenGL 1.2.1, 2.13.9); the RE4 iterates twelve bits
+ * and how the board reduces them is not published. Red runs from 0 at
+ * window x 0 to 1 at x 128 along the bottom row, so pixel 0's centre has
+ * 255 * 0.5 / 128 = 0.996 (1, truncation 0) and pixel 1's 2.988 (3,
+ * truncation 2).
+ */
+static void test_gl_smooth_rounds_to_the_nearest_step(void)
+{
+    gl_scene_start(qts, GL_SMOOTH);
+    gl_word(qts, GL_BEGIN_TRIANGLES);
+    gl_color3f(qts, 0, 0, 1);
+    gl_vertex3f(qts, -1, -1, 0);
+    gl_color3f(qts, 1, 0, 1);
+    gl_vertex3f(qts, 1, -1, 0);
+    gl_color3f(qts, 0, 0, 1);
+    gl_vertex3f(qts, -1, 1, 0);
+    gl_word(qts, GL_END_TRIANGLES);
+    g_assert_cmphex(gl_window_pixel(qts, 0, 0) >> 16, ==, 1);
+    g_assert_cmphex(gl_window_pixel(qts, 1, 0) >> 16, ==, 3);
+}
+
+/*
+ * Colour is interpolated with the perspective correction of OpenGL 1.2.1,
+ * 3.5.1 (equation 3.4). The third vertex (-2, 2, 0, 2) projects to window
+ * (0, 128) with red 1 and the others are black at w 1. At window pixel
+ * (0, 31) the screen-space weight of the third vertex is 31.5 / 128, so
+ * linear interpolation gives red 62.75 (63); corrected, the weight is
+ * (b / 2) / (1 - b / 2) = 0.1403, red 35.78 (36).
+ */
+static void test_gl_smooth_is_perspective_correct(void)
+{
+    gl_scene_start(qts, GL_SMOOTH);
+    gl_word(qts, GL_BEGIN_TRIANGLES);
+    gl_color3f(qts, 0, 0, 0);
+    gl_vertex4f(qts, -1, -1, 0, 1);
+    gl_color3f(qts, 0, 0, 0);
+    gl_vertex4f(qts, 1, -1, 0, 1);
+    gl_color3f(qts, 1, 0, 0);
+    gl_vertex4f(qts, -2, 2, 0, 2);
+    gl_word(qts, GL_END_TRIANGLES);
+    g_assert_cmphex(gl_window_pixel(qts, 0, 31), ==, 0x240000);
 }
 
 static void test_hq_flags_fence_token_sets_bit(void)
@@ -8325,6 +8403,15 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/origin2000/mgras/"
                    "gl-triangle-clipped-at-the-far-plane",
                    test_gl_triangle_clipped_at_the_far_plane);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "gl-smooth-matches-the-reference",
+                   test_gl_smooth_matches_the_reference);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "gl-smooth-rounds-to-the-nearest-step",
+                   test_gl_smooth_rounds_to_the_nearest_step);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "gl-smooth-is-perspective-correct",
+                   test_gl_smooth_is_perspective_correct);
     qtest_add_func("sn0/origin2000/mgras/hq-flags-set-and-clear",
                    test_hq_flags_set_and_clear);
     qtest_add_func("sn0/origin2000/mgras/hq-flags-fence-token-sets-bit",
