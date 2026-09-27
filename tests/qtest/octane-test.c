@@ -156,6 +156,10 @@ static void test_flash_and_pci(void)
 
 static void test_firmware_rejections(void)
 {
+    const char *absent[] = {
+        qtest_qemu_binary(NULL), "-M", "octane", "-m", "128M",
+        "-display", "none", NULL
+    };
     const char *missing[] = {
         qtest_qemu_binary(NULL), "-M", "octane", "-m", "128M",
         "-bios", "/nonexistent/octane-prom", "-display", "none", NULL
@@ -169,6 +173,11 @@ static void test_firmware_rejections(void)
         "-bios", oversized, "-display", "none", NULL
     };
 
+    g_assert_true(g_spawn_sync(NULL, (char **)absent, NULL, 0, NULL, NULL,
+                               NULL, &error_output, &status, NULL));
+    g_assert_false(g_spawn_check_exit_status(status, NULL));
+    g_assert_nonnull(strstr(error_output, "requires -bios"));
+    g_clear_pointer(&error_output, g_free);
     g_assert_cmpint(fd, >=, 0);
     g_assert_cmpint(ftruncate(fd, 2 * 1024 * 1024 + 1), ==, 0);
     close(fd);
