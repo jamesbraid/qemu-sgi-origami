@@ -2040,9 +2040,21 @@ static void test_gdb_sn1_hold(const void *data)
         qtest_writeq(qts, SN1_STATE_HOST + GH_PEER_WRITE_REQ_OFF + 8, 1);
     }
     gdb_peer_command(gdb, "vCont;c:2", NULL, 0);
-    g_usleep(50000);
-    peer_after = sn1_timer_state_word(qts, GH_PEER_OFF);
-    hub_after = qtest_readq(qts, SN1_BEDROCK_LOCAL + 0x30100);
+    for (unsigned int i = 0; i < 100; i++) {
+        g_usleep(10000);
+        peer_after = sn1_timer_state_word(qts, GH_PEER_OFF);
+        hub_after = qtest_readq(qts, SN1_BEDROCK_LOCAL + 0x30100);
+        if (peer_after > peer_before && hub_after > hub_before &&
+            (!gh_peer_timer_writes ||
+             sn1_timer_state_word(qts, GH_PEER_WRITE_DONE_OFF + 8) == 1)) {
+            break;
+        }
+    }
+    g_test_message("peer progress %" PRIu64 " -> %" PRIu64
+                   ", Bedrock %" PRIu64 " -> %" PRIu64
+                   ", peer timer write %" PRIu64,
+                   peer_before, peer_after, hub_before, hub_after,
+                   sn1_timer_state_word(qts, GH_PEER_WRITE_DONE_OFF + 8));
     if (long_hold) {
         peer_count_before = sn1_timer_state_word(qts,
                                                 GH_PEER_COUNT_OFF + 8);
@@ -2108,7 +2120,13 @@ static void test_gdb_sn1_hold(const void *data)
                         0xffffffff00000000ULL | IMAGE_KSEG1_BASE |
                         gh_reset_compare_pos);
         gdb_peer_command(gdb, "vCont;c:2", NULL, 0);
-        g_usleep(50000);
+        for (unsigned int i = 0; i < 100; i++) {
+            if ((uint32_t)sn1_timer_state_word(qts,
+                GH_PEER_COUNT_OFF + 8) > 1000) {
+                break;
+            }
+            g_usleep(10000);
+        }
         g_assert_cmpint(write(gdb, "\003", 1), ==, 1);
         gdb_peer_reply(gdb, reply, sizeof(reply));
         g_test_message("peer Count after reset: %" PRIu64,
