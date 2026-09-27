@@ -1887,6 +1887,55 @@ static uint64_t sn1_timer_state_word(QTestState *qts, unsigned int off)
     return qtest_readq(qts, SN1_STATE_HOST + off);
 }
 
+static void test_gdb_sn1_pc_write(void)
+{
+    g_autofree char *image = NULL, *dir = NULL, *socket_path = NULL;
+    char reply[256];
+    QTestState *qts;
+    int fd, gdb;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+    dir = g_dir_make_tmp("sn1-gdb-pc-XXXXXX", NULL);
+    g_assert_nonnull(dir);
+    socket_path = g_build_filename(dir, "gdb.sock", NULL);
+    fd = g_file_open_tmp("sn1-gdb-pc-XXXXXX", &image, NULL);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(ftruncate(fd, PROM_SIZE), ==, 0);
+    close(fd);
+    qts = qtest_initf("-M origin300 -cpu R14000 -bios %s "
+                      "-accel tcg -no-shutdown "
+                      "-chardev socket,path=%s,server=on,wait=off,id=gdb0 "
+                      "-gdb chardev:gdb0 -S", image, socket_path);
+    gdb = gdb_peer_socket(socket_path);
+    gdb_peer_command(gdb, "?", reply, sizeof(reply));
+    g_assert_true(reply[0] == 'T' || reply[0] == 'S');
+    gdb_peer_command(gdb, "Hg1", reply, sizeof(reply));
+    g_assert_cmpstr(reply, ==, "OK");
+    gdb_peer_command(gdb, "P25=ffffffffbfc00040", reply, sizeof(reply));
+    g_assert_cmpstr(reply, ==, "OK");
+    gdb_peer_command(gdb, "p25", reply, sizeof(reply));
+    g_assert_cmphex(g_ascii_strtoull(reply, NULL, 16), ==,
+                    UINT64_C(0xffffffffbfc00040));
+    gdb_peer_command(gdb, "P25=ffffffffbfc00041", reply, sizeof(reply));
+    g_assert_cmpstr(reply, ==, "OK");
+    gdb_peer_command(gdb, "p25", reply, sizeof(reply));
+    g_assert_cmphex(g_ascii_strtoull(reply, NULL, 16), ==,
+                    UINT64_C(0xffffffffbfc00041));
+    gdb_peer_command(gdb, "P25=ffffffffbfc00040", reply, sizeof(reply));
+    g_assert_cmpstr(reply, ==, "OK");
+    gdb_peer_command(gdb, "p25", reply, sizeof(reply));
+    g_assert_cmphex(g_ascii_strtoull(reply, NULL, 16), ==,
+                    UINT64_C(0xffffffffbfc00040));
+    close(gdb);
+    qtest_quit(qts);
+    unlink(image);
+    unlink(socket_path);
+    rmdir(dir);
+}
+
 static void test_gdb_sn1_hold(const void *data)
 {
     g_autofree char *image = NULL, *dir = NULL, *socket_path = NULL;
@@ -2151,6 +2200,7 @@ int main(int argc, char **argv)
     qtest_add_data_func("mttcg/timer/gdb-peer-hold-interrupt",
                         GINT_TO_POINTER(8), test_gdb_peer_hold);
     if (qtest_has_machine("origin300")) {
+        qtest_add_func("mttcg/gdb/sn1-pc-write", test_gdb_sn1_pc_write);
         qtest_add_data_func("mttcg/timer/gdb-sn1-mtc0-adjacent",
                             GINT_TO_POINTER(0), test_gdb_sn1_hold);
         qtest_add_data_func("mttcg/timer/gdb-sn1-mtc0-intervening",
