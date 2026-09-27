@@ -297,9 +297,7 @@ static void octane_init_common(MachineState *machine, bool octane2)
 
         qdev_prop_set_uint64(heart, name, s->bank_size[bank]);
     }
-    if (octane2) {
-        qdev_prop_set_uint8(heart, "widget-revision", 6);
-    }
+    qdev_prop_set_uint8(heart, "widget-revision", octane2 ? 6 : 4);
     object_property_set_link(OBJECT(heart), "cpu-memory", OBJECT(physical),
                              &error_fatal);
     sysbus_realize(SYS_BUS_DEVICE(heart), &error_fatal);
