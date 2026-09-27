@@ -3008,9 +3008,8 @@ static uint64_t sgi_hub_read_slot_id(SGIHubState *s, hwaddr addr,
     uint64_t value = MD_SLOT_FLASH_READY | MD_SLOT_XJMP_ID |
                      (s->slave_module ? 0 : MD_SLOT_MASTER_MODULE);
 
-    if (s->physical_slot) {
-        value = (value & ~MD_SLOT_ID_MASK) |
-                ((8 - s->physical_slot) & MD_SLOT_ID_MASK);
+    if (s->slot_bits != SGI_HUB_SLOT_BITS_UNDRIVEN) {
+        value = (value & ~MD_SLOT_ID_MASK) | (s->slot_bits & MD_SLOT_ID_MASK);
     }
     return value;
 }
@@ -4831,7 +4830,8 @@ static int sgi_hub_post_load(void *opaque, int version_id)
 
 static const Property sgi_hub_properties[] = {
     DEFINE_PROP_UINT32("nasid", SGIHubState, nasid, 0),
-    DEFINE_PROP_UINT32("physical-slot", SGIHubState, physical_slot, 0),
+    DEFINE_PROP_UINT8("slot-bits", SGIHubState, slot_bits,
+                      SGI_HUB_SLOT_BITS_UNDRIVEN),
     DEFINE_PROP_BOOL("slave-module", SGIHubState, slave_module, false),
     DEFINE_PROP_LINK("net-cable", SGIHubState, net_cable, TYPE_SGI_NET_CABLE,
                      SGINetCableState *),

@@ -26,6 +26,12 @@
 #define TYPE_SGI_HUB "sgi-hub"
 OBJECT_DECLARE_SIMPLE_TYPE(SGIHubState, SGI_HUB)
 
+/*
+ * "slot-bits" for a node in no numbered slot: the slot-identity register
+ * keeps its reset pattern.
+ */
+#define SGI_HUB_SLOT_BITS_UNDRIVEN 0xff
+
 typedef struct SGIHubModuleIdentity {
     uint8_t rom[8];
     uint8_t page[2][DS2502_PAGE_SIZE];
@@ -217,8 +223,12 @@ struct SGIHubState {
     /* Node number preprogrammed by synthesized firmware, or zero at reset. */
     uint32_t nasid;
 
-    /* Physical processor-module slot, or zero for the Origin 200. */
-    uint32_t physical_slot;
+    /*
+     * What the midplane drives on the slot-identity pins, the low three
+     * bits of the slot-identity register, or SGI_HUB_SLOT_BITS_UNDRIVEN
+     * where the node sits in no numbered slot (the Origin 200).
+     */
+    uint8_t slot_bits;
 
     /* Whether this processor module is the Origin 200 slave chassis. */
     bool slave_module;

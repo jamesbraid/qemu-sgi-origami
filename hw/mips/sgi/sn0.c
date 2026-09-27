@@ -981,6 +981,21 @@ static void sn0_node_map_boot_storage(SN0NodeState *node)
     }
 }
 
+/*
+ * What the node slot's midplane drives on the Hub's slot-identity pins.
+ * The catalogue names it where a midplane differs from the eight-processor
+ * module, whose slots 1 to 4 drive 7 to 4 (the Onyx2 deskside's drive 3
+ * and 2). Origin 200's chassis numbers no node slot and drives nothing.
+ */
+static uint8_t sn0_node_hub_slot_bits(const SGIModelNode *model_node)
+{
+    if (model_node->has_hub_slot_bits) {
+        return model_node->hub_slot_bits;
+    }
+    return model_node->slot ? 8 - model_node->slot
+                            : SGI_HUB_SLOT_BITS_UNDRIVEN;
+}
+
 static void sn0_node_create_hub(SN0NodeState *node)
 {
     const SGIModelAsicIdentity *identity = node->model_node->identity;
@@ -1011,8 +1026,8 @@ static void sn0_node_create_hub(SN0NodeState *node)
 
     qdev_prop_set_uint32(DEVICE(&node->hub), "cpus", node->nr_cpus);
     qdev_prop_set_uint32(DEVICE(&node->hub), "cpu-base", node->cpu_base);
-    qdev_prop_set_uint32(DEVICE(&node->hub), "physical-slot",
-                        node->model_node->slot);
+    qdev_prop_set_uint8(DEVICE(&node->hub), "slot-bits",
+                        sn0_node_hub_slot_bits(node->model_node));
     qdev_prop_set_bit(DEVICE(&node->hub), "slave-module", node->slave_role);
     qdev_prop_set_uint8(DEVICE(&node->hub), "ni-revision",
                         identity->ni_revision);
