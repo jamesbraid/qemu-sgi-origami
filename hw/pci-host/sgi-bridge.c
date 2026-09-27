@@ -2622,7 +2622,7 @@ static void sgi_bridge_class_init(ObjectClass *oc, const void *data)
     ResettableClass *rc = RESETTABLE_CLASS(oc);
     SGIXioPortClass *pc = SGI_XIO_PORT_CLASS(oc);
 
-    dc->desc = "SGI Bridge crosstalk-to-PCI host bridge";
+    dc->desc = "SGI Bridge XIO-to-PCI host bridge";
     dc->fw_name = "pci";
     dc->realize = sgi_bridge_realize;
     dc->unrealize = sgi_bridge_unrealize;

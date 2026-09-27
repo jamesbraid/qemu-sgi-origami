@@ -118,7 +118,7 @@ typedef struct SN1NodeState {
      * interface 1; at most two of the four (both are used only in the
      * four-processor population; the two-processor population fits one).
      */
-    MemoryRegion cpu_local_pi_xtalk[SGI_SN1_NODE_MAX_CPUS];
+    MemoryRegion cpu_local_pi_xio[SGI_SN1_NODE_MAX_CPUS];
 
     /* The node's address-space views; see sn1-node.c. */
     MemoryRegion hub_memory;

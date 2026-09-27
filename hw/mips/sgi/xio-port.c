@@ -9,7 +9,7 @@ const char *sgi_xio_port_describe(Object *port, unsigned int index)
 {
     SGIXioPortClass *pc = SGI_XIO_PORT_GET_CLASS(port);
 
-    return pc->describe ? pc->describe(port, index) : "a crosstalk port";
+    return pc->describe ? pc->describe(port, index) : "an XIO port";
 }
 
 MemoryRegion *sgi_xio_port_cpu_face(Object *port, unsigned int index)

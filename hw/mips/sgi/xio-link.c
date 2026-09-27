@@ -122,18 +122,18 @@ bool sgi_xio_direct_link_connect(SGIXioDirectLink *link, Object *owner,
     unsigned int w;
 
     if (!hub_face) {
-        error_setg(errp, "the Hub's crosstalk port has no container to "
+        error_setg(errp, "the Hub's I/O interface (II) has no container to "
                    "install a widget into");
         return false;
     }
     if (!widget_face || !memory_region_size(widget_face)) {
         error_setg(errp, "a direct link's widget must already answer an "
-                   "initialized crosstalk face");
+                   "initialized XIO face");
         return false;
     }
     if (discovery_widget >= SN0_XIO_WIDGETS || widget >= SN0_XIO_WIDGETS) {
         error_setg(errp, "a direct link's widget numbers must be within "
-                   "the crosstalk address space");
+                   "the XIO address space");
         return false;
     }
     widget_size = memory_region_size(widget_face);
@@ -545,7 +545,7 @@ bool sgi_xio_crossbow_link_attach_widget(SGIXioCrossbowLink *link,
     link->is_hub = false;
     if (!cpu_face || !packet_face) {
         error_setg(errp, "a widget crossbow attachment must already answer "
-                   "an initialized crosstalk face");
+                   "an initialized XIO face");
         return false;
     }
     return sgi_xbow_attach_endpoint(xbow, widget, cpu_face, packet_face,

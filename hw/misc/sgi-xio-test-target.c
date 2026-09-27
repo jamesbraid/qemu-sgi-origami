@@ -25,7 +25,7 @@ static void target_realize(DeviceState *dev, Error **errp)
         object_get_canonical_path_component(OBJECT(dev)));
 
     if (!s->size || s->size > 16 * MiB) {
-        error_setg(errp, "Crosstalk test RAM size must be 1 byte to 16 MiB");
+        error_setg(errp, "XIO test RAM size must be 1 byte to 16 MiB");
         return;
     }
     if (!memory_region_init_ram(&s->ram, OBJECT(s), name, s->size, errp)) {

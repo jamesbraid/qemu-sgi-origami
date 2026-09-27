@@ -152,7 +152,7 @@ static bool sgi_xio_board_claim(SGIXioBoardState *board, Error **errp)
     QTAILQ_FOREACH(other, &sgi_xio_board_all, node) {
         if (other->module == board->module && other->slot == board->slot &&
             sgi_xio_board_fabric(other) == fabric) {
-            error_setg(errp, "a crosstalk board already occupies module %u "
+            error_setg(errp, "an XIO board already occupies module %u "
                        "slot %u", board->module, board->slot);
             return false;
         }
@@ -280,12 +280,12 @@ static bool sgi_xio_board_place_by_widget(SGIXioBoardState *board,
     Object *fabric;
 
     if (board->module == SGI_XIO_BOARD_UNSET) {
-        error_setg(errp, "a crosstalk board placed by widget number requires "
+        error_setg(errp, "an XIO board placed by widget number requires "
                    "a module index");
         return false;
     }
     if (widget < SGI_XBOW_FIRST_WIDGET || widget >= SGI_XBOW_WIDGETS) {
-        error_setg(errp, "a crosstalk board slot must name a Crossbow "
+        error_setg(errp, "an XIO board slot must name a Crossbow "
                    "widget, %u to %u, or an XIO slot such as io5",
                    SGI_XBOW_FIRST_WIDGET, SGI_XBOW_WIDGETS - 1);
         return false;
@@ -308,7 +308,7 @@ static void sgi_xio_board_realize(DeviceState *dev, Error **errp)
     unsigned int widget;
 
     if (!board->slot_name) {
-        error_setg(errp, "a crosstalk board requires a slot");
+        error_setg(errp, "an XIO board requires a slot");
         return;
     }
     if (qemu_strtoui(board->slot_name, NULL, 0, &widget) == 0) {
@@ -411,7 +411,7 @@ static const VMStateDescription vmstate_sgi_xio_board = {
 static const char *sgi_xio_board_xio_port_describe(Object *port,
                                                    unsigned int index)
 {
-    return "a crosstalk board's widget";
+    return "an XIO board's widget";
 }
 
 static MemoryRegion *sgi_xio_board_xio_port_cpu_face(Object *port,
@@ -431,7 +431,7 @@ static void sgi_xio_board_class_init(ObjectClass *oc, const void *data)
     DeviceClass *dc = DEVICE_CLASS(oc);
     SGIXioPortClass *pc = SGI_XIO_PORT_CLASS(oc);
 
-    dc->desc = "SGI crosstalk board (abstract)";
+    dc->desc = "SGI XIO board (abstract)";
     dc->realize = sgi_xio_board_realize;
     dc->unrealize = sgi_xio_board_unrealize;
     dc->vmsd = &vmstate_sgi_xio_board;

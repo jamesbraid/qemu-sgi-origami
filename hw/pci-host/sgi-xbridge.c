@@ -1122,7 +1122,7 @@ struct SGIXBridgeState {
     SysBusDevice parent_obj;
     SGIXBridgeXbowState xbow;
     SGIXBridgeHeadState head[2];
-    MemoryRegion crosstalk;
+    MemoryRegion xio;
     MemoryRegion unmapped;
     MemoryRegion view[ARRAY_SIZE(chip_view_widget)];
     MemoryRegion *fabric;
@@ -1262,9 +1262,9 @@ static void chip_realize(DeviceState *dev, Error **errp)
         !sysbus_realize(SYS_BUS_DEVICE(&s->xbow), errp)) {
         return;
     }
-    memory_region_add_subregion(&s->crosstalk, 0,
-        sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->xbow),
-                               s->host_port - CHIP_LINK_FIRST));
+    memory_region_add_subregion(&s->xio, 0,
+                                sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->xbow),
+                                s->host_port - CHIP_LINK_FIRST));
     /* The external ports' forwards go out; the heads' are wired below. */
     for (n = 0; n < SGI_XBRIDGE_EXTERNAL_PORTS; n++) {
         s->warm_reset_sink[n] = qemu_allocate_irq(chip_forward,
@@ -1304,10 +1304,10 @@ static void chip_realize(DeviceState *dev, Error **errp)
             qdev_connect_gpio_out_named(DEVICE(&s->head[i]), "pci-intx", n,
                                         s->head_intx_sink[i][n]);
         }
-        memory_region_add_subregion(&s->crosstalk,
+        memory_region_add_subregion(&s->xio,
                                     (uint64_t)widget << CHIP_WIDGET_SHIFT,
                                     sysbus_mmio_get_region(
-                                        SYS_BUS_DEVICE(&s->head[i]), 0));
+                                    SYS_BUS_DEVICE(&s->head[i]), 0));
     }
 }
 
@@ -1396,7 +1396,7 @@ static void chip_class_init(ObjectClass *oc, const void *data)
     DeviceClass *dc = DEVICE_CLASS(oc);
     SGIXioPortClass *pc = SGI_XIO_PORT_CLASS(oc);
 
-    dc->desc = "SGI XBridge crosstalk-PCI bridge";
+    dc->desc = "SGI XBridge XIO-to-PCI bridge";
     dc->user_creatable = true;
     dc->realize = chip_realize;
     dc->unrealize = chip_unrealize;
@@ -1424,17 +1424,17 @@ static void chip_init(Object *obj)
      * The space and its views exist before realize: a host links the views
      * while the chip links the host's region, so neither can go first.
      */
-    memory_region_init(&s->crosstalk, obj, "sgi-xbridge.crosstalk",
+    memory_region_init(&s->xio, obj, "sgi-xbridge.xio",
                        16 * CHIP_WIDGET_SPACE);
     memory_region_init_io(&s->unmapped, obj, &chip_unmapped_ops, s,
                           "sgi-xbridge.unmapped", 16 * CHIP_WIDGET_SPACE);
-    memory_region_add_subregion_overlap(&s->crosstalk, 0, &s->unmapped, -1);
-    sysbus_init_mmio(SYS_BUS_DEVICE(s), &s->crosstalk);
+    memory_region_add_subregion_overlap(&s->xio, 0, &s->unmapped, -1);
+    sysbus_init_mmio(SYS_BUS_DEVICE(s), &s->xio);
     for (i = 0; i < ARRAY_SIZE(chip_view_widget); i++) {
         g_autofree char *name = g_strdup_printf("sgi-xbridge.widget-%x",
                                                 chip_view_widget[i]);
 
-        memory_region_init_alias(&s->view[i], obj, name, &s->crosstalk,
+        memory_region_init_alias(&s->view[i], obj, name, &s->xio,
                                  (uint64_t)chip_view_widget[i]
                                  << CHIP_WIDGET_SHIFT, CHIP_WIDGET_SPACE);
         sysbus_init_mmio(SYS_BUS_DEVICE(s), &s->view[i]);

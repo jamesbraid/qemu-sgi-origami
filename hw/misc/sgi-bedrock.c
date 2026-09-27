@@ -943,7 +943,7 @@ static MemTxResult bedrock_io_registers_read(void *opaque, hwaddr addr,
                                              uint64_t *value, unsigned size,
                                              MemTxAttrs attrs)
 {
-    qemu_log_mask(LOG_UNIMP, "sgi-bedrock: crosstalk read of hub register "
+    qemu_log_mask(LOG_UNIMP, "sgi-bedrock: XIO read of hub register "
                   "0x%" HWADDR_PRIx " is not supported\n", addr);
     *value = 0;
     return MEMTX_DECODE_ERROR;
@@ -963,7 +963,7 @@ static MemTxResult bedrock_io_registers_write(void *opaque, hwaddr addr,
         sgi_bedrock_pi_io_modify(&s->pi[1], value, s->local_region);
         return MEMTX_OK;
     default:
-        qemu_log_mask(LOG_UNIMP, "sgi-bedrock: crosstalk write of 0x%"
+        qemu_log_mask(LOG_UNIMP, "sgi-bedrock: XIO write of 0x%"
                       PRIx64 " to hub register 0x%" HWADDR_PRIx
                       " is not supported\n", value, addr);
         return MEMTX_DECODE_ERROR;

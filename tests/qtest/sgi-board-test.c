@@ -455,7 +455,7 @@ static void test_bad_module(void)
         g_test_trap_subprocess(NULL, 0, 0);
         g_test_trap_assert_failed();
         g_test_trap_assert_stderr(
-            "*a crosstalk board placed by widget number requires a module "
+            "*an XIO board placed by widget number requires a module "
             "index*");
         return;
     }
@@ -472,7 +472,7 @@ static void test_bad_slot_low(void)
         g_test_trap_subprocess(NULL, 0, 0);
         g_test_trap_assert_failed();
         g_test_trap_assert_stderr(
-            "*a crosstalk board slot must name a Crossbow widget*");
+            "*an XIO board slot must name a Crossbow widget*");
         return;
     }
     /* Below the Crossbow's first widget. */
@@ -489,7 +489,7 @@ static void test_bad_slot_high(void)
         g_test_trap_subprocess(NULL, 0, 0);
         g_test_trap_assert_failed();
         g_test_trap_assert_stderr(
-            "*a crosstalk board slot must name a Crossbow widget*");
+            "*an XIO board slot must name a Crossbow widget*");
         return;
     }
     /* At and beyond the last one. */
@@ -506,7 +506,7 @@ static void test_slot_taken_twice(void)
         g_test_trap_subprocess(NULL, 0, 0);
         g_test_trap_assert_failed();
         g_test_trap_assert_stderr(
-            "*a crosstalk board already occupies module 0 slot 8*");
+            "*an XIO board already occupies module 0 slot 8*");
         return;
     }
     s = qtest_init(
