@@ -839,6 +839,8 @@ static void test_fuel_rtc_decode(const void *data)
     qtest_writeb(qts, FUEL_RTC + 0x7ff8, 0x20);
     g_assert_cmphex(qtest_readb(qts, FUEL_RTC + 0x7f8), ==, 0x20);
     g_assert_cmphex(qtest_readb(qts, FUEL_RTC + 0x7ff8), ==, 0x20);
+    g_assert_cmphex(qtest_readb(qts, FUEL_RTC + 0x7ff), ==, 0x24);
+    g_assert_cmphex(qtest_readb(qts, FUEL_RTC + 0x7fff), ==, 0x24);
     qtest_clock_step(qts, 2 * NS_PER_SEC);
     g_assert_cmphex(qtest_readb(qts, FUEL_RTC + 0x7ff9), ==, 0x12);
     qtest_writeb(qts, FUEL_RTC + 0x7ff8, 0x40);
@@ -852,6 +854,82 @@ static void test_fuel_rtc_decode(const void *data)
     g_assert_cmphex(qtest_readb(qts, FUEL_RTC + 0x7ff8), ==, 0x60);
     g_assert_cmphex(qtest_readb(qts, FUEL_RTC + 0x7ff9), ==, frozen);
     qtest_quit(qts);
+}
+
+static void test_fuel_rtc_backing_reopen(const void *data)
+{
+    g_autofree char *path = NULL;
+    g_autofree char *quoted = NULL;
+    g_autofree char *extra = NULL;
+    QTestState *qts;
+    int fd;
+
+    fd = g_file_open_tmp("fuel-rtc-nvram-XXXXXX", &path, NULL);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(ftruncate(fd, 0x800), ==, 0);
+    g_assert_cmpint(close(fd), ==, 0);
+    quoted = g_shell_quote(path);
+    extra = g_strdup_printf("-drive if=none,id=sgi-nvram0,file=%s,format=raw",
+                            quoted);
+
+    qts = fuel_start_rtc(data, extra);
+    fuel_map_ioc3(qts);
+    qtest_writeb(qts, FUEL_RTC + 0x100, 0xa5);
+    qtest_writeb(qts, FUEL_RTC + 0x7ff7, 0x5a);
+    qtest_writeb(qts, FUEL_RTC + 0x7f8, 0x80);
+    qtest_writeb(qts, FUEL_RTC + 0x7f9, 0x34);
+    qtest_writeb(qts, FUEL_RTC + 0x7fa, 0x23);
+    qtest_writeb(qts, FUEL_RTC + 0x7fb, 0x10);
+    qtest_writeb(qts, FUEL_RTC + 0x7fc, 0x02);
+    qtest_writeb(qts, FUEL_RTC + 0x7fd, 0x25);
+    qtest_writeb(qts, FUEL_RTC + 0x7fe, 0x09);
+    qtest_writeb(qts, FUEL_RTC + 0x7ff, 0x26);
+    qtest_writeb(qts, FUEL_RTC + 0x7ff8, 0x20);
+    qtest_quit(qts);
+
+    qts = fuel_start_rtc(data, extra);
+    fuel_map_ioc3(qts);
+    g_assert_cmphex(qtest_readb(qts, FUEL_RTC + 0x900), ==, 0xa5);
+    g_assert_cmphex(qtest_readb(qts, FUEL_RTC + 0x7f7), ==, 0x5a);
+    g_assert_cmphex(qtest_readb(qts, FUEL_RTC + 0x7ff8), ==, 0x20);
+    g_assert_cmphex(qtest_readb(qts, FUEL_RTC + 0x7ff9), ==, 0x34);
+    g_assert_cmphex(qtest_readb(qts, FUEL_RTC + 0x7fff), ==, 0x26);
+    qtest_quit(qts);
+
+    g_assert_cmpint(g_unlink(path), ==, 0);
+}
+
+static void test_fuel_rtc_rejects_wrong_size(const void *data)
+{
+    const char *path;
+    g_autofree char *created = NULL;
+    g_autofree char *quoted = NULL;
+    g_autofree char *extra = NULL;
+    QTestState *qts;
+    int fd;
+
+    if (g_test_subprocess()) {
+        path = g_getenv("FUEL_RTC_BAD_IMAGE");
+        g_assert_nonnull(path);
+        quoted = g_shell_quote(path);
+        extra = g_strdup_printf(
+            "-drive if=none,id=sgi-nvram0,file=%s,format=raw", quoted);
+        qts = fuel_start_rtc(data, extra);
+        qtest_quit(qts);
+        return;
+    }
+
+    fd = g_file_open_tmp("fuel-rtc-bad-nvram-XXXXXX", &created, NULL);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(ftruncate(fd, 0x400), ==, 0);
+    g_assert_cmpint(close(fd), ==, 0);
+    g_assert_true(g_setenv("FUEL_RTC_BAD_IMAGE", created, true));
+    g_test_trap_subprocess(NULL, 0, 0);
+    g_test_trap_assert_failed();
+    g_test_trap_assert_stderr(
+        "*ds1742: backing drive must be exactly 2048 bytes*");
+    g_unsetenv("FUEL_RTC_BAD_IMAGE");
+    g_assert_cmpint(g_unlink(created), ==, 0);
 }
 
 static void test_fuel_rtc_migration(const void *data)
@@ -900,6 +978,10 @@ int main(int argc, char **argv)
     qtest_add_data_func("fuel/pci", prom, test_fuel_pci);
     qtest_add_data_func("fuel/rtc-decode", prom, test_fuel_rtc_decode);
     qtest_add_data_func("fuel/rtc-migration", prom, test_fuel_rtc_migration);
+    qtest_add_data_func("fuel/rtc-backing-reopen", prom,
+                        test_fuel_rtc_backing_reopen);
+    qtest_add_data_func("fuel/rtc-rejects-wrong-size", prom,
+                        test_fuel_rtc_rejects_wrong_size);
     qtest_add_data_func("fuel/ioc3-identity", prom,
                         test_fuel_ioc3_identity);
     qtest_add_data_func("fuel/scsi-interrupt", prom,
