@@ -380,8 +380,9 @@ static void mgras_command_fifo_token(SGIMgrasState *s, uint32_t token)
     }
 
     /*
-     * The OpenGL packets the model executes: glClearColor, glClear's
-     * colour token and glFlush (mgras-gl-commands.md). The
+     * The OpenGL packets the model executes: glViewport, glClearColor,
+     * glClear's colour token, glShadeModel, glColor3f/4f, glVertex2f/3f/4f,
+     * glBegin/glEnd for triangles and glFlush (mgras-gl-commands.md). The
      * class and opcode are kept like any other header's, so the payload
      * collects and dispatches through the usual path.
      */

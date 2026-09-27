@@ -5144,12 +5144,20 @@ static void test_inline_block_uses_20_bit_length(void)
  * The OpenGL client's own words on the main port, as the IRIX 6.5.30
  * IP27GR532 libGLcore.so frames them (mgras-gl-commands.md, "Decoded
  * commands"): glViewport 0x3310, glClearColor 0xba10, glClear's colour
- * token 0x1500 and glFlush 0x3600.
+ * token 0x1500, glShadeModel 0x4704, glColor3f 0x2000020c, glBegin and
+ * glEnd for GL_TRIANGLES 0x1a00 and 0x2400, glVertex2f 0x40000008 and
+ * glFlush 0x3600.
  */
 #define GL_VIEWPORT_HDR       0x00003310
 #define GL_CLEAR_COLOR_HDR    0x0000ba10
 #define GL_CLEAR_COLOR_BUFFER 0x00001500
+#define GL_SHADE_MODEL_HDR    0x00004704
+#define GL_COLOR3F_HDR        0x2000020c
+#define GL_BEGIN_TRIANGLES    0x00001a00
+#define GL_END_TRIANGLES      0x00002400
+#define GL_VERTEX2F_HDR       0x40000008
 #define GL_FLUSH              0x00003600
+#define GL_FLAT               0x1d00
 
 /*
  * The 63-word context image the IRIX kernel wrote for the probe's GL
@@ -5224,6 +5232,21 @@ static void gl_clear_color(QTestState *qts, float r, float g, float b,
     gl_float(qts, g);
     gl_float(qts, b);
     gl_float(qts, a);
+}
+
+static void gl_color3f(QTestState *qts, float r, float g, float b)
+{
+    gl_word(qts, GL_COLOR3F_HDR);
+    gl_float(qts, r);
+    gl_float(qts, g);
+    gl_float(qts, b);
+}
+
+static void gl_vertex2f(QTestState *qts, float x, float y)
+{
+    gl_word(qts, GL_VERTEX2F_HDR);
+    gl_float(qts, x);
+    gl_float(qts, y);
 }
 
 /* One screendump, 0xRRGGBB per pixel. */
@@ -5360,6 +5383,340 @@ static void test_gl_clear_shows_through_a_direct_colour_display_id(void)
     gl_word(qts, GL_CLEAR_COLOR_BUFFER);
     g_assert_cmphex(mgras_test_display_pixel(qts, 256, 256), ==, 0xff00ff);
     g_assert_cmphex(mgras_test_display_pixel(qts, 260, 256), ==, 0xff00ff);
+}
+
+/*
+ * Rows of the 128x128 window, counted from its top, and the first and last
+ * yellow column in each, from the independently computed expected images
+ * of the probe's triangle cases (gl_min_expected.py in Origami PR 1899,
+ * matched by Mesa llvmpipe; triangle.ppm SHA-256 a6cb9409..., moved
+ * d47f6025...). Every other window pixel is the clear colour.
+ */
+typedef struct GlSpan {
+    uint8_t row;
+    uint8_t left;
+    uint8_t right;
+} GlSpan;
+
+static const GlSpan gl_triangle_spans[] = {
+    {18, 55, 56}, {19, 55, 57}, {20, 55, 57}, {21, 54, 58}, {22, 54, 59},
+    {23, 53, 59}, {24, 53, 60}, {25, 52, 60}, {26, 52, 61}, {27, 52, 62},
+    {28, 51, 62}, {29, 51, 63}, {30, 50, 64}, {31, 50, 64}, {32, 49, 65},
+    {33, 49, 66}, {34, 49, 66}, {35, 48, 67}, {36, 48, 68}, {37, 47, 68},
+    {38, 47, 69}, {39, 47, 69}, {40, 46, 70}, {41, 46, 71}, {42, 45, 71},
+    {43, 45, 72}, {44, 44, 73}, {45, 44, 73}, {46, 44, 74}, {47, 43, 75},
+    {48, 43, 75}, {49, 42, 76}, {50, 42, 77}, {51, 41, 77}, {52, 41, 78},
+    {53, 41, 78}, {54, 40, 79}, {55, 40, 80}, {56, 39, 80}, {57, 39, 81},
+    {58, 39, 82}, {59, 38, 82}, {60, 38, 83}, {61, 37, 84}, {62, 37, 84},
+    {63, 36, 85}, {64, 36, 86}, {65, 36, 86}, {66, 35, 87}, {67, 35, 88},
+    {68, 34, 88}, {69, 34, 89}, {70, 33, 89}, {71, 33, 90}, {72, 33, 91},
+    {73, 32, 91}, {74, 32, 92}, {75, 31, 93}, {76, 31, 93}, {77, 31, 94},
+    {78, 30, 95}, {79, 30, 95}, {80, 29, 96}, {81, 29, 97}, {82, 28, 97},
+    {83, 28, 98}, {84, 28, 98}, {85, 27, 99}, {86, 27, 100}, {87, 26, 100},
+    {88, 26, 101}, {89, 25, 102}, {90, 25, 102}, {91, 25, 103}, {92, 24, 104},
+    {93, 24, 104}, {94, 23, 105}, {95, 23, 106}, {96, 23, 106}, {97, 22, 107},
+    {98, 22, 107}, {99, 21, 108}, {100, 21, 109}, {101, 20, 109},
+    {102, 20, 110}, {103, 20, 111}, {104, 19, 105}, {105, 19, 93},
+    {106, 18, 81}, {107, 18, 69}, {108, 17, 57}, {109, 17, 45}, {110, 17, 33},
+    {111, 16, 21},
+};
+static const GlSpan gl_triangle_moved_spans[] = {
+    {26, 87, 87}, {27, 86, 88}, {28, 85, 88}, {29, 84, 88}, {30, 83, 89},
+    {31, 83, 89}, {32, 82, 89}, {33, 81, 90}, {34, 80, 90}, {35, 79, 90},
+    {36, 78, 90}, {37, 78, 91}, {38, 77, 91}, {39, 76, 91}, {40, 75, 92},
+    {41, 74, 92}, {42, 74, 92}, {43, 73, 93}, {44, 72, 93}, {45, 71, 93},
+    {46, 70, 94}, {47, 69, 94}, {48, 69, 94}, {49, 68, 94}, {50, 67, 95},
+    {51, 66, 95}, {52, 65, 95}, {53, 64, 96}, {54, 64, 96}, {55, 63, 96},
+    {56, 62, 97}, {57, 61, 97}, {58, 60, 97}, {59, 59, 97}, {60, 59, 98},
+    {61, 58, 98}, {62, 57, 98}, {63, 56, 99}, {64, 55, 99}, {65, 54, 99},
+    {66, 54, 100}, {67, 53, 100}, {68, 52, 100}, {69, 51, 101}, {70, 50, 101},
+    {71, 50, 101}, {72, 49, 101}, {73, 48, 102}, {74, 47, 102}, {75, 46, 102},
+    {76, 45, 103}, {77, 45, 103}, {78, 44, 103}, {79, 43, 104}, {80, 42, 104},
+    {81, 41, 104}, {82, 40, 104}, {83, 40, 105}, {84, 39, 105}, {85, 38, 105},
+    {86, 37, 106}, {87, 36, 106}, {88, 35, 106}, {89, 35, 107}, {90, 34, 107},
+    {91, 33, 107}, {92, 32, 108}, {93, 31, 108}, {94, 30, 108}, {95, 30, 108},
+    {96, 29, 109}, {97, 28, 109}, {98, 27, 109}, {99, 26, 110}, {100, 26, 110},
+    {101, 25, 110}, {102, 24, 111}, {103, 23, 111}, {104, 22, 105},
+    {105, 21, 93}, {106, 21, 81}, {107, 20, 69}, {108, 19, 57}, {109, 18, 45},
+    {110, 17, 33}, {111, 16, 21},
+};
+
+static void gl_check_spans(const uint32_t *rgb, const GlSpan *spans,
+                           size_t count, uint32_t ink, uint32_t paper)
+{
+    size_t next = 0;
+    unsigned int drawn = 0;
+
+    for (int row = 0; row < 128; row++) {
+        const GlSpan *span = next < count && spans[next].row == row ?
+                             &spans[next++] : NULL;
+
+        for (int col = 0; col < 128; col++) {
+            bool in = span && col >= span->left && col <= span->right;
+            uint32_t got = rgb[(256 + row) * 1280 + 256 + col];
+
+            if (got != (in ? ink : paper)) {
+                g_error("window pixel (%d, %d) is 0x%06x, expected 0x%06x",
+                        col, row, got, in ? ink : paper);
+            }
+            drawn += in;
+        }
+    }
+    g_assert_cmpuint(next, ==, count);
+    g_assert_cmpuint(drawn, >, 0);
+}
+
+static void gl_draw_probe_triangle(QTestState *qts, const float v[3][2])
+{
+    mgras_enter_gl_window(qts, 256, 640, 128, 128, 0x11);
+    qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x1e, 0x4));
+    gl_viewport(qts, 0, 0, 128, 128);
+    gl_clear_color(qts, 0, 0, 1, 1);
+    gl_word(qts, GL_CLEAR_COLOR_BUFFER);
+    gl_word(qts, GL_SHADE_MODEL_HDR);
+    gl_word(qts, GL_FLAT);
+    gl_color3f(qts, 1, 1, 0);
+    gl_word(qts, GL_BEGIN_TRIANGLES);
+    for (int i = 0; i < 3; i++) {
+        gl_vertex2f(qts, v[i][0], v[i][1]);
+    }
+    gl_word(qts, GL_END_TRIANGLES);
+    gl_word(qts, GL_FLUSH);
+}
+
+/*
+ * The probe's triangle case: window vertices (16, 16), (112, 24) and
+ * (56, 111) as normalized device coordinates. A pixel is drawn exactly
+ * when its centre lies inside (OpenGL 1.2.1, 3.5.1); no centre lies on an
+ * edge, so the edge rule cannot change the census.
+ */
+static void test_gl_flat_triangle_matches_the_reference(void)
+{
+    static const float v[3][2] = {
+        { -0.75f, -0.75f }, { 0.75f, -0.625f }, { -0.125f, 0.734375f },
+    };
+    g_autofree uint32_t *rgb = NULL;
+
+    mgras_reset();
+    gl_draw_probe_triangle(qts, v);
+    rgb = mgras_screendump(qts);
+    gl_check_spans(rgb, gl_triangle_spans, ARRAY_SIZE(gl_triangle_spans),
+                   0xffff00, 0x0000ff);
+}
+
+/* Moving the third vertex to (88, 103) changes exactly the census. */
+static void test_gl_flat_triangle_moved_vertex(void)
+{
+    static const float v[3][2] = {
+        { -0.75f, -0.75f }, { 0.75f, -0.625f }, { 0.375f, 0.609375f },
+    };
+    g_autofree uint32_t *rgb = NULL;
+
+    mgras_reset();
+    gl_draw_probe_triangle(qts, v);
+    rgb = mgras_screendump(qts);
+    gl_check_spans(rgb, gl_triangle_moved_spans,
+                   ARRAY_SIZE(gl_triangle_moved_spans), 0xffff00, 0x0000ff);
+}
+
+/*
+ * Culling is off by default (OpenGL 1.2.1, 3.5.1), so the reversed
+ * winding draws the same pixels.
+ */
+static void test_gl_flat_triangle_reversed_winding(void)
+{
+    static const float v[3][2] = {
+        { -0.75f, -0.75f }, { -0.125f, 0.734375f }, { 0.75f, -0.625f },
+    };
+    g_autofree uint32_t *rgb = NULL;
+
+    mgras_reset();
+    gl_draw_probe_triangle(qts, v);
+    rgb = mgras_screendump(qts);
+    gl_check_spans(rgb, gl_triangle_spans, ARRAY_SIZE(gl_triangle_spans),
+                   0xffff00, 0x0000ff);
+}
+
+/*
+ * A flat-shaded independent triangle takes the colour current at its
+ * third vertex (OpenGL 1.2.1, 2.13.7 and Table 2.9).
+ */
+static void test_gl_flat_triangle_takes_the_third_vertex_colour(void)
+{
+    mgras_reset();
+
+    mgras_enter_gl_window(qts, 256, 640, 128, 128, 0x11);
+    gl_viewport(qts, 0, 0, 128, 128);
+    gl_word(qts, GL_SHADE_MODEL_HDR);
+    gl_word(qts, GL_FLAT);
+    gl_word(qts, GL_BEGIN_TRIANGLES);
+    gl_color3f(qts, 1, 0, 0);
+    gl_vertex2f(qts, -1, -1);
+    gl_color3f(qts, 0, 1, 0);
+    gl_vertex2f(qts, 1, -1);
+    gl_color3f(qts, 0, 0, 1);
+    gl_vertex2f(qts, -1, 1);
+    gl_word(qts, GL_END_TRIANGLES);
+
+    /* Window pixel (10, 10) from the bottom is screen (266, 373). */
+    g_assert_cmphex(mgras_test_pixel(qts, 266, 373), ==, 0x0000ff);
+    g_assert_cmphex(mgras_test_format(qts, 266, 373), ==,
+                    MGRAS_PIXEL_FORMAT_RGB);
+    /* Above the diagonal nothing is drawn. */
+    g_assert_cmphex(mgras_test_pixel(qts, 373, 266), ==, 0);
+}
+
+static void gl_vertex4f(QTestState *qts, float x, float y, float z, float w)
+{
+    gl_word(qts, 0x00000010);
+    gl_float(qts, x);
+    gl_float(qts, y);
+    gl_float(qts, z);
+    gl_float(qts, w);
+}
+
+/* Window pixel (x, y), y counted up from the bottom of the probe window. */
+static uint32_t gl_window_pixel(QTestState *qts, int x, int y)
+{
+    return mgras_test_pixel(qts, 256 + x, 383 - y);
+}
+
+/*
+ * Draw one white triangle given in window coordinates of a 128x128
+ * viewport, where NDC is x / 64 - 1, into a freshly reset probe window.
+ */
+static void gl_draw_window_triangle(QTestState *qts, const double v[3][2])
+{
+    mgras_reset();
+    mgras_enter_gl_window(qts, 256, 640, 128, 128, 0x11);
+    gl_viewport(qts, 0, 0, 128, 128);
+    gl_color3f(qts, 1, 1, 1);
+    gl_word(qts, GL_BEGIN_TRIANGLES);
+    for (int i = 0; i < 3; i++) {
+        gl_vertex2f(qts, v[i][0] / 64 - 1, v[i][1] / 64 - 1);
+    }
+    gl_word(qts, GL_END_TRIANGLES);
+}
+
+/*
+ * The first vertex sits at x 10.5 + 3/1024, a quarter of a subpixel off
+ * the 1/256 grid. Rounded to the nearest subpixel it moves to 10.5 +
+ * 1/256, and the edge to (10.5 - 20/256, 40) then passes right of the
+ * centres of window pixels (10, 0) and (10, 1), which stay undrawn.
+ * Unsnapped, the edge passes left of (10, 1)'s centre and draws it;
+ * truncated to 10.5 it draws both. No centre lies on an edge after
+ * rounding, so the edge rule plays no part.
+ */
+static void test_gl_triangle_snaps_to_the_nearest_subpixel(void)
+{
+    static const double v[3][2] = {
+        { 10.5 + 3.0 / 1024, 0 }, { 10.5 - 20.0 / 256, 40 }, { 30, 20 },
+    };
+
+    gl_draw_window_triangle(qts, v);
+    g_assert_cmphex(gl_window_pixel(qts, 10, 0), ==, 0);
+    g_assert_cmphex(gl_window_pixel(qts, 10, 1), ==, 0);
+    g_assert_cmphex(gl_window_pixel(qts, 11, 1), ==, 0xffffff);
+}
+
+/*
+ * Two pairs of triangles share an edge through pixel centres: a diagonal
+ * from (0, 0) to (16, 16) and a horizontal edge at y 8.5. OpenGL 1.2.1,
+ * 3.5.1 requires each such centre to be drawn by exactly one of the pair.
+ * The model gives it to the triangle for which the edge is a left edge
+ * (the one below and right of the diagonal) or a top edge (the one below
+ * the horizontal).
+ */
+static unsigned int gl_count_drawn(QTestState *qts, const double v[3][2],
+                                   bool diagonal)
+{
+    unsigned int drawn = 0;
+
+    gl_draw_window_triangle(qts, v);
+    for (int i = 0; i < 16; i++) {
+        uint32_t pixel = diagonal ? gl_window_pixel(qts, i, i) :
+                                    gl_window_pixel(qts, i, 8);
+
+        g_assert_true(pixel == 0 || pixel == 0xffffff);
+        drawn += pixel != 0;
+    }
+    return drawn;
+}
+
+static void test_gl_triangle_shared_edge_centres_drawn_once(void)
+{
+    static const double below_right[3][2] = {
+        { 0, 0 }, { 16, 0 }, { 16, 16 },
+    };
+    static const double above_left[3][2] = {
+        { 0, 0 }, { 16, 16 }, { 0, 16 },
+    };
+    static const double upper[3][2] = {
+        { 0, 8.5 }, { 16, 8.5 }, { 8, 16 },
+    };
+    static const double lower[3][2] = {
+        { 16, 8.5 }, { 0, 8.5 }, { 8, 1 },
+    };
+
+    g_assert_cmpuint(gl_count_drawn(qts, below_right, true), ==, 16);
+    g_assert_cmpuint(gl_count_drawn(qts, above_left, true), ==, 0);
+    g_assert_cmpuint(gl_count_drawn(qts, lower, false), ==, 16);
+    g_assert_cmpuint(gl_count_drawn(qts, upper, false), ==, 0);
+}
+
+/*
+ * The model bounds fragments to the viewport rectangle instead of clipping
+ * to the view volume. A triangle reaching NDC -5 and 5 covers the whole
+ * 64x64 viewport at (32, 32) and draws nothing outside it, though its
+ * interior extends there.
+ */
+static void test_gl_triangle_bounded_by_the_viewport(void)
+{
+    mgras_reset();
+    mgras_enter_gl_window(qts, 256, 640, 128, 128, 0x11);
+    gl_viewport(qts, 32, 32, 64, 64);
+    gl_color3f(qts, 1, 1, 1);
+    gl_word(qts, GL_BEGIN_TRIANGLES);
+    gl_vertex2f(qts, -5, -5);
+    gl_vertex2f(qts, 5, -5);
+    gl_vertex2f(qts, 0, 5);
+    gl_word(qts, GL_END_TRIANGLES);
+
+    g_assert_cmphex(gl_window_pixel(qts, 32, 32), ==, 0xffffff);
+    g_assert_cmphex(gl_window_pixel(qts, 95, 32), ==, 0xffffff);
+    g_assert_cmphex(gl_window_pixel(qts, 32, 95), ==, 0xffffff);
+    g_assert_cmphex(gl_window_pixel(qts, 95, 95), ==, 0xffffff);
+    g_assert_cmphex(gl_window_pixel(qts, 31, 64), ==, 0);
+    g_assert_cmphex(gl_window_pixel(qts, 96, 64), ==, 0);
+    g_assert_cmphex(gl_window_pixel(qts, 64, 31), ==, 0);
+    g_assert_cmphex(gl_window_pixel(qts, 64, 96), ==, 0);
+}
+
+/*
+ * A vertex with w <= 0 needs view-volume clipping, which the model does
+ * not do, so it drops the triangle. (0.5, -1, 0, -1) divides to the same
+ * point as (-0.5, 1, 0, 1), which draws.
+ */
+static void gl_draw_w_triangle(QTestState *qts, float x, float y, float w)
+{
+    mgras_reset();
+    mgras_enter_gl_window(qts, 256, 640, 128, 128, 0x11);
+    gl_viewport(qts, 0, 0, 128, 128);
+    gl_color3f(qts, 1, 1, 1);
+    gl_word(qts, GL_BEGIN_TRIANGLES);
+    gl_vertex4f(qts, -1, -1, 0, 1);
+    gl_vertex4f(qts, 1, -1, 0, 1);
+    gl_vertex4f(qts, x, y, 0, w);
+    gl_word(qts, GL_END_TRIANGLES);
+}
+
+static void test_gl_triangle_with_negative_w_is_dropped(void)
+{
+    gl_draw_w_triangle(qts, -0.5, 1, 1);
+    g_assert_cmphex(gl_window_pixel(qts, 20, 20), ==, 0xffffff);
+
+    gl_draw_w_triangle(qts, 0.5, -1, -1);
+    g_assert_cmphex(gl_window_pixel(qts, 20, 20), ==, 0);
 }
 
 static void test_hq_flags_fence_token_sets_bit(void)
@@ -7076,6 +7433,27 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/origin2000/mgras/"
                    "gl-clear-shows-through-a-direct-colour-display-id",
                    test_gl_clear_shows_through_a_direct_colour_display_id);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "gl-flat-triangle-matches-the-reference",
+                   test_gl_flat_triangle_matches_the_reference);
+    qtest_add_func("sn0/origin2000/mgras/gl-flat-triangle-moved-vertex",
+                   test_gl_flat_triangle_moved_vertex);
+    qtest_add_func("sn0/origin2000/mgras/gl-flat-triangle-reversed-winding",
+                   test_gl_flat_triangle_reversed_winding);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "gl-flat-triangle-takes-the-third-vertex-colour",
+                   test_gl_flat_triangle_takes_the_third_vertex_colour);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "gl-triangle-snaps-to-the-nearest-subpixel",
+                   test_gl_triangle_snaps_to_the_nearest_subpixel);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "gl-triangle-shared-edge-centres-drawn-once",
+                   test_gl_triangle_shared_edge_centres_drawn_once);
+    qtest_add_func("sn0/origin2000/mgras/gl-triangle-bounded-by-the-viewport",
+                   test_gl_triangle_bounded_by_the_viewport);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "gl-triangle-with-negative-w-is-dropped",
+                   test_gl_triangle_with_negative_w_is_dropped);
     qtest_add_func("sn0/origin2000/mgras/hq-flags-set-and-clear",
                    test_hq_flags_set_and_clear);
     qtest_add_func("sn0/origin2000/mgras/hq-flags-fence-token-sets-bit",

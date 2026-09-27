@@ -1084,7 +1084,8 @@ static int mgras_post_load(void *opaque, int version_id)
         s->dma_map_words_remaining > SGI_MGRAS_CMD_TOKEN_MAX_DISCARD_WORDS ||
         s->pio_x > SGI_MGRAS_WIDTH || s->pio_y > SGI_MGRAS_HEIGHT ||
         s->xmap_index >= SGI_MGRAS_XMAP_ENTRIES ||
-        s->dac_lut_load_channel >= 3) {
+        s->dac_lut_load_channel >= 3 ||
+        s->gl_vertex_count >= ARRAY_SIZE(s->gl_vertex)) {
         return -EINVAL;
     }
 
@@ -1136,7 +1137,7 @@ static bool mgras_ge_lengths_valid(void *opaque, int version_id)
  * changes.
  */
 static const VMStateDescription vmstate_sgi_mgras = {
-    .name = TYPE_SGI_MGRAS, .version_id = 14, .minimum_version_id = 9,
+    .name = TYPE_SGI_MGRAS, .version_id = 15, .minimum_version_id = 9,
     .post_load = mgras_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32(front_count, SGIMgrasState),
@@ -1271,7 +1272,14 @@ static const VMStateDescription vmstate_sgi_mgras = {
         VMSTATE_UINT32_ARRAY_V(xmap_buf_select, SGIMgrasState,
                                SGI_MGRAS_XMAP_ENTRIES, 11),
         VMSTATE_TIMER_PTR_V(retrace_timer, SGIMgrasState, 2),
+        VMSTATE_INT32_ARRAY_V(gl_viewport, SGIMgrasState, 4, 15),
         VMSTATE_UINT32_ARRAY_V(gl_clear_color, SGIMgrasState, 4, 14),
+        VMSTATE_UINT32_ARRAY_V(gl_color, SGIMgrasState, 4, 15),
+        VMSTATE_UINT32_V(gl_shade_model, SGIMgrasState, 15),
+        VMSTATE_UINT32_V(gl_begin, SGIMgrasState, 15),
+        VMSTATE_UINT32_V(gl_vertex_count, SGIMgrasState, 15),
+        VMSTATE_UINT32_2DARRAY_V(gl_vertex, SGIMgrasState, 3, 4, 15),
+        VMSTATE_UINT32_2DARRAY_V(gl_vertex_color, SGIMgrasState, 3, 4, 15),
         VMSTATE_END_OF_LIST()
     }
 };
