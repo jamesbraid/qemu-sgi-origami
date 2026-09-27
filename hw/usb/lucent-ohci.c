@@ -6,10 +6,13 @@
  * default of three, set through the inherited num-ports qdev property, a
  * fixed medium DEVSEL timing in the PCI Status word, set after the shared
  * OHCI wrapper realizes, and HcInterruptEnable's OpenHCI reset value.
+ * Register overlays below keep what the driver writes where the part's
+ * board tests require it and the shared core discards it.
  */
 
 #include "qemu/osdep.h"
 #include "qapi/error.h"
+#include "qemu/log.h"
 #include "hw/pci/pci_device.h"
 #include "hw/core/qdev-properties.h"
 #include "qom/object.h"
@@ -36,6 +39,10 @@ DECLARE_CLASS_CHECKERS(LucentOHCIClass, LUCENT_OHCI, TYPE_LUCENT_OHCI)
 /* HostControllerFunctionalState, which a write can take to USBRESET. */
 #define LUCENT_OHCI_CONTROL         0x04
 #define LUCENT_OHCI_COMMAND_HCR     0x01
+/* FrameNumber, and HcControl's HostControllerFunctionalState. */
+#define LUCENT_OHCI_FM_NUMBER       0x3c
+#define LUCENT_OHCI_CONTROL_HCFS    0xc0
+#define LUCENT_OHCI_HCFS_OPERATIONAL 0x80
 
 /*
  * The reset values this part holds where the shared core's differ, after
@@ -212,6 +219,52 @@ static const MemoryRegionOps lucent_ohci_control_ops = {
     .endianness = DEVICE_LITTLE_ENDIAN,
 };
 
+/*
+ * HcFmNumber: OpenHCI 1.0a, and the Lucent USS-312 datasheet's Table 42
+ * after it, give FrameNumber as read-only to the driver and read/write to
+ * the controller, and say nothing of what a driver write does. SGI's IO-8
+ * and IO-7 board tests for this part write it while the controller is not
+ * operational and require the value back, and the IO-8 test was retuned to
+ * drop four other fields this part does not keep while keeping this one;
+ * so this part is taken to latch a write while it is not counting frames,
+ * as the Lucent OHCI datasheet records (inferred, not measured). A write
+ * while operational is still discarded, as the core does: what the part
+ * does then is unknown.
+ */
+static uint64_t lucent_ohci_fm_number_read(void *opaque, hwaddr addr,
+                                           unsigned size)
+{
+    OHCIState *ohci = opaque;
+
+    return ohci->mem.ops->read(ohci->mem.opaque, LUCENT_OHCI_FM_NUMBER + addr,
+                               size);
+}
+
+static void lucent_ohci_fm_number_write(void *opaque, hwaddr addr,
+                                        uint64_t val, unsigned size)
+{
+    OHCIState *ohci = opaque;
+
+    ohci->mem.ops->write(ohci->mem.opaque, LUCENT_OHCI_FM_NUMBER + addr, val,
+                         size);
+    if (addr != 0 || size != 4) {
+        return;
+    }
+    if ((ohci->ctl & LUCENT_OHCI_CONTROL_HCFS) ==
+        LUCENT_OHCI_HCFS_OPERATIONAL) {
+        qemu_log_mask(LOG_UNIMP, "lucent-ohci: HcFmNumber write 0x%" PRIx64
+                      " while operational discarded\n", val);
+        return;
+    }
+    ohci->frame_number = val & 0xffff;
+}
+
+static const MemoryRegionOps lucent_ohci_fm_number_ops = {
+    .read = lucent_ohci_fm_number_read,
+    .write = lucent_ohci_fm_number_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+};
+
 /* One of the core's registers, overlaid for as long as the device lives. */
 static void lucent_ohci_overlay(PCIDevice *dev, OHCIState *ohci, hwaddr at,
                                 const MemoryRegionOps *ops, const char *name)
@@ -252,6 +305,8 @@ static void lucent_ohci_realize(PCIDevice *dev, Error **errp)
                         "lucent-ohci.rh-descriptor-a");
     lucent_ohci_overlay(dev, ohci, LUCENT_OHCI_CONTROL,
                         &lucent_ohci_control_ops, "lucent-ohci.control");
+    lucent_ohci_overlay(dev, ohci, LUCENT_OHCI_FM_NUMBER,
+                        &lucent_ohci_fm_number_ops, "lucent-ohci.fm-number");
     lucent_ohci_reset_values(ohci);
 }
 

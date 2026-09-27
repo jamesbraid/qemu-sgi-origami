@@ -55,6 +55,7 @@
 
 #define OHCI_CONTROL_OPERATIONAL   0x00000080
 #define OHCI_CONTROL_SUSPEND       0x000000c0
+#define OHCI_CONTROL_RESUME        0x00000040
 #define OHCI_COMMAND_STATUS_HCR    0x00000001
 #define OHCI_COMMAND_STATUS_CLF    0x00000002
 #define OHCI_COMMAND_STATUS_BLF    0x00000004
@@ -538,6 +539,59 @@ static void test_root_hub_descriptor_a_is_writable(void)
     lucent_ohci_close(&ohci);
 }
 
+/*
+ * FrameNumber keeps a driver's write while the controller is not counting
+ * frames: the Origin 300 IO-8 board test writes it after a controller reset
+ * with HcControl in USBRESUME, and in USBRESET, and requires the value
+ * back. OpenHCI 1.0a and the part's own datasheet list the field as
+ * read-only to the driver without saying what a write does. A controller
+ * reset still clears it.
+ */
+static void test_frame_number_latches_when_not_operational(void)
+{
+    LucentOHCI ohci = { 0 };
+
+    lucent_ohci_open(&ohci, lucent_ohci_start("lucent-ohci", ""));
+    lucent_ohci_map_bar(&ohci);
+
+    lucent_ohci_writel(&ohci, OHCI_HC_COMMAND_STATUS,
+                       OHCI_COMMAND_STATUS_HCR);
+    lucent_ohci_writel(&ohci, OHCI_HC_CONTROL, OHCI_CONTROL_RESUME);
+    lucent_ohci_writel(&ohci, OHCI_HC_FM_NUMBER, 0xffff);
+    g_assert_cmphex(lucent_ohci_readl(&ohci, OHCI_HC_FM_NUMBER), ==, 0xffff);
+    lucent_ohci_writel(&ohci, OHCI_HC_FM_NUMBER, 0x00011234);
+    g_assert_cmphex(lucent_ohci_readl(&ohci, OHCI_HC_FM_NUMBER), ==, 0x1234);
+
+    lucent_ohci_writel(&ohci, OHCI_HC_CONTROL, 0);
+    lucent_ohci_writel(&ohci, OHCI_HC_FM_NUMBER, 0xa5a5);
+    g_assert_cmphex(lucent_ohci_readl(&ohci, OHCI_HC_FM_NUMBER), ==, 0xa5a5);
+
+    lucent_ohci_writel(&ohci, OHCI_HC_COMMAND_STATUS,
+                       OHCI_COMMAND_STATUS_HCR);
+    g_assert_cmphex(lucent_ohci_readl(&ohci, OHCI_HC_FM_NUMBER), ==, 0);
+
+    lucent_ohci_close(&ohci);
+}
+
+/* While the controller counts frames, a write still leaves the count alone. */
+static void test_frame_number_write_ignored_while_operational(void)
+{
+    LucentOHCI ohci = { 0 };
+
+    lucent_ohci_open(&ohci, lucent_ohci_start("lucent-ohci", ""));
+    lucent_ohci_map_bar(&ohci);
+    lucent_ohci_configure_dma(&ohci);
+
+    lucent_ohci_writel(&ohci, OHCI_HC_HCCA, lucent_ohci_hcca_address(&ohci));
+    lucent_ohci_writel(&ohci, OHCI_HC_CONTROL, OHCI_CONTROL_OPERATIONAL);
+    lucent_ohci_writel(&ohci, OHCI_HC_FM_NUMBER, 0x8000);
+    qtest_clock_step_next(ohci.qts);
+    g_assert_cmphex(lucent_ohci_readl(&ohci, OHCI_HC_FM_NUMBER), <, 0x8000);
+
+    lucent_ohci_writel(&ohci, OHCI_HC_CONTROL, OHCI_CONTROL_SUSPEND);
+    lucent_ohci_close(&ohci);
+}
+
 static void test_frame_number_tracks_clock_while_timer_starved(void)
 {
     LucentOHCI ohci = { 0 };
@@ -755,6 +809,10 @@ int main(int argc, char **argv)
                    test_frame_number_tracks_clock_while_timer_starved);
     qtest_add_func("/lucent-ohci/frame-number-never-lags-elapsed-time",
                    test_frame_number_never_lags_elapsed_time);
+    qtest_add_func("/lucent-ohci/frame-number-latches-when-not-operational",
+                   test_frame_number_latches_when_not_operational);
+    qtest_add_func("/lucent-ohci/frame-number-write-ignored-while-operational",
+                   test_frame_number_write_ignored_while_operational);
     qtest_add_func("/lucent-ohci/migration-reuse", test_migration_reuse);
 
     return g_test_run();
