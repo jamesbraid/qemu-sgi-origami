@@ -1335,8 +1335,10 @@ static void sn1_node_request_reset(CPUState *cs, run_on_cpu_data data)
  * The model restarts the whole machine, as the Origin 200's Hub local reset
  * and the L1's reset command already do: the node's I/O, its L1 and, on a
  * cabled pair, the other node start again with it. What else a local reset
- * reaches on hardware is not established. Every consumer resets every node
- * together anyway, with a port reset or a write to each node.
+ * reaches on hardware is not established. IRIX and OpenBSD write every node,
+ * so restarting them all matches what they ask for; the PROM's own reset
+ * writes only its node, and the PROM clears the peer's reset enable after
+ * discovery, so on a cabled pair restarting the peer may over-reach.
  */
 static void sn1_node_bedrock_reset(void *opaque, int n, int level)
 {
