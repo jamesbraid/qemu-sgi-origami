@@ -111,6 +111,8 @@ static QTestState *qts;
 #define MGRAS_PENDING_LOWATER       0x00000004
 #define MGRAS_HQ_ENABLE_LOWATER     0x10
 #define MGRAS_CONTEXT_WORDS         63
+#define MGRAS_PENDING_SWAP          0x00000400
+#define REG_IRQ_ENABLE_CLEAR        MGRAS_REG(0x011048)
 #define REG_QUERY_ANSWER            MGRAS_REG(0x028004)
 #define MGRAS_SWAP_TOKEN            0x00003700
 #define MGRAS_QUERY_TOKEN           0x0000a20c
@@ -2755,6 +2757,27 @@ static void test_retrace_interrupt_needs_vc3_enable(void)
     g_assert_cmphex(mgras_hub_read(HUB_PI_INT_PEND0) & bit, ==, 0);
 }
 
+
+/*
+ * MgrasInitialize writes 0x3008a200 to 0x011040, MgrasSchedSwapBuf adds 0x400
+ * with a plain store, and MgrasGeneralInterrupt and the context switch's
+ * tail remove bits through 0x011048 (mgras-hq4.md, "Interrupt block
+ * registers as the kernel uses them").
+ */
+static void test_irq_enable_set_and_clear_ports(void)
+{
+    mgras_reset();
+
+    g_assert_cmphex(qtest_readl(qts, REG_IRQ_MASK), ==, 0);
+    qtest_writel(qts, REG_IRQ_MASK, KERNEL_IRQ_MASK);
+    qtest_writel(qts, REG_IRQ_MASK, MGRAS_PENDING_SWAP);
+    g_assert_cmphex(qtest_readl(qts, REG_IRQ_MASK), ==,
+                    KERNEL_IRQ_MASK | MGRAS_PENDING_SWAP);
+    qtest_writel(qts, REG_IRQ_ENABLE_CLEAR, MGRAS_PENDING_SWAP);
+    g_assert_cmphex(qtest_readl(qts, REG_IRQ_MASK), ==, KERNEL_IRQ_MASK);
+    qtest_writel(qts, REG_IRQ_ENABLE_CLEAR, 0xffffffff);
+    g_assert_cmphex(qtest_readl(qts, REG_IRQ_MASK), ==, 0);
+}
 
 /* Its own machine for the same reason as the general-vector case. */
 static void test_widget_error_interrupt_vector(void)
@@ -6617,6 +6640,8 @@ int main(int argc, char **argv)
                    test_retrace_interrupt_vector);
     qtest_add_func("sn0/origin2000/mgras/retrace-interrupt-needs-vc3-enable",
                    test_retrace_interrupt_needs_vc3_enable);
+    qtest_add_func("sn0/origin2000/mgras/irq-enable-set-and-clear-ports",
+                   test_irq_enable_set_and_clear_ports);
     qtest_add_func("sn0/origin2000/mgras/widget-error-interrupt-vector",
                    test_widget_error_interrupt_vector);
     qtest_add_func("sn0/origin2000/mgras/fifo-occupancy-always-drained",
