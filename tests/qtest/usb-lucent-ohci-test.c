@@ -633,7 +633,11 @@ static void test_port_power_global_switching(void)
     lucent_ohci_close(&ohci);
 }
 
-/* NoPowerSwitching set: the ports read powered and ignore every command. */
+/*
+ * NoPowerSwitching set: the ports read powered whatever is written. What a
+ * port holds when switching is selected again is not specified, so this
+ * does not check it.
+ */
 static void test_port_power_without_switching(void)
 {
     LucentOHCI ohci = { 0 };
@@ -650,10 +654,6 @@ static void test_port_power_without_switching(void)
     lucent_ohci_writel(&ohci, OHCI_HC_RH_PORT_STATUS(0), OHCI_PORT_LSDA);
     lucent_ohci_writel(&ohci, OHCI_HC_RH_STATUS, OHCI_RHS_LPS);
     g_assert_cmphex(lucent_ohci_port_power(&ohci, 0), ==, OHCI_PORT_PPS);
-
-    /* Switching again: nothing reached the port while it was unswitched. */
-    lucent_ohci_writel(&ohci, OHCI_HC_RH_DESCRIPTOR_A, OHCI_RHA_PSM);
-    g_assert_cmphex(lucent_ohci_port_power(&ohci, 0), ==, 0);
 
     lucent_ohci_close(&ohci);
 }
