@@ -392,7 +392,7 @@ static uint64_t heart_read(void *opaque, hwaddr offset, unsigned size)
         case 0x08: return s->sdram_mode;
         case 0x10: return s->mem_refresh;
         case 0x18: return s->mem_req_arb;
-        case 0x80: return 1ULL << 4;
+        case 0x80: return 0x18;
         case 0x10000 ... 0x10018:
             if (!(offset & 7)) {
                 return s->mask[(offset - 0x10000) / 8];
