@@ -101,7 +101,8 @@ esac
             names = set(archive.getnames())
         self.assertIn('tracked.txt', names)
         archived_dirs = {
-            name.split('/')[1] for name in names if name.startswith('subprojects/')
+            name.split('/')[1] for name in names
+            if name.startswith('subprojects/')
         }
         self.assertEqual(archived_dirs, expected)
         self.assertFalse(any('/.git/' in name for name in names))
