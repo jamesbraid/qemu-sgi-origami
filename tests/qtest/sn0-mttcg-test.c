@@ -53,6 +53,9 @@
 #include "sgi-mips-emit.h"
 #include "sgi-test.h"
 
+#include <sys/socket.h>
+#include <sys/un.h>
+
 #define NR_CPUS             2
 
 /*
@@ -1461,6 +1464,236 @@ static void test_unmask_by_eret_delivers(const void *data)
     qtest_quit(qts);
 }
 
+/* Probe whether GDB can hold CPU A while CPU B and virtual time run. */
+#define GH_COUNT_OFF        0x200
+#define GH_CAUSE_OFF        0x220
+#define GH_PEER_COUNT_OFF   0x240
+#define GH_LATE_COUNT_OFF   0x260
+#define GH_LATE_CAUSE_OFF   0x280
+#define GH_PAST_COUNT_OFF   0x2a0
+#define GH_PAST_CAUSE_OFF   0x2c0
+#define GH_PEER_OFF         (PROGRESS_OFF + 8)
+#define GH_COMPARE          1000000u
+#define GH_HUB_COUNT        (HUB_LOCAL + 0x030100)
+
+static unsigned int gh_break_pos;
+
+static void build_gdb_peer_hold(GuestImage *img)
+{
+    unsigned int peer, loop;
+
+    peer = emit_bne_fwd(img, R_K0, R_ZERO);
+    emit_nop(img);
+
+    /* CPU A waits for B, then writes Count with Compare well ahead. */
+    emit_li(img, R_T3, 1);
+    emit_wait_ge(img, R_T3, GH_PEER_OFF);
+    emit_li(img, R_T3, GH_COMPARE);
+    emit_mtc0(img, R_T3, CP0_COMPARE, 0);
+    emit_mtc0(img, R_ZERO, CP0_COUNT, 0);
+    gh_break_pos = img->pos;
+    emit_ehb(img);
+    emit_mfc0(img, R_T3, CP0_COUNT, 0);
+    emit_publish(img, R_T3, GH_COUNT_OFF);
+    emit_mfc0(img, R_T3, CP0_CAUSE, 0);
+    emit_publish(img, R_T3, GH_CAUSE_OFF);
+
+    /* The held CPU has already passed 1000; Compare clears the old IP7. */
+    emit_li(img, R_T3, 1000);
+    emit_mtc0(img, R_T3, CP0_COMPARE, 0);
+    emit_ehb(img);
+    emit_mfc0(img, R_T3, CP0_COUNT, 0);
+    emit_publish(img, R_T3, GH_LATE_COUNT_OFF);
+    emit_mfc0(img, R_T3, CP0_CAUSE, 0);
+    emit_publish(img, R_T3, GH_LATE_CAUSE_OFF);
+
+    /* Also exercise a past Compare write during uninterrupted execution. */
+    emit_li(img, R_T4, 10000);
+    loop = img->pos;
+    emit_addiu(img, R_T4, R_T4, -1);
+    emit_bne(img, R_T4, R_ZERO, loop);
+    emit_nop(img);
+    emit_mfc0(img, R_T4, CP0_COUNT, 0);
+    emit_publish(img, R_T4, GH_PAST_COUNT_OFF);
+    emit_addiu(img, R_T4, R_T4, -1);
+    emit_mtc0(img, R_T4, CP0_COMPARE, 0);
+    emit_ehb(img);
+    emit_mfc0(img, R_T3, CP0_CAUSE, 0);
+    emit_publish(img, R_T3, GH_PAST_CAUSE_OFF);
+    emit_done_and_halt(img);
+
+    patch_fwd(img, peer);
+    loop = img->pos;
+    emit_ld(img, R_T3, R_T2, PROGRESS_OFF);
+    emit_addiu(img, R_T3, R_T3, 1);
+    emit_publish(img, R_T3, PROGRESS_OFF);
+    emit_mfc0(img, R_T3, CP0_COUNT, 0);
+    emit_publish(img, R_T3, GH_PEER_COUNT_OFF);
+    emit_b(img, loop);
+    emit_nop(img);
+}
+
+static int gdb_peer_socket(const char *path)
+{
+    struct sockaddr_un addr = { .sun_family = AF_UNIX };
+    struct timeval timeout = { .tv_sec = 5 };
+    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpuint(strlen(path), <, sizeof(addr.sun_path));
+    g_strlcpy(addr.sun_path, path, sizeof(addr.sun_path));
+    g_assert_cmpint(setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO,
+                               &timeout, sizeof(timeout)), ==, 0);
+    g_assert_cmpint(connect(fd, (struct sockaddr *)&addr, sizeof(addr)), ==, 0);
+    return fd;
+}
+
+static char gdb_peer_byte(int fd)
+{
+    char c;
+
+    g_assert_cmpint(read(fd, &c, 1), ==, 1);
+    return c;
+}
+
+static void gdb_peer_reply(int fd, char *reply, size_t size)
+{
+    unsigned int sum = 0, expected;
+    size_t n = 0;
+    char c;
+
+    do {
+        c = gdb_peer_byte(fd);
+    } while (c != '$');
+    while ((c = gdb_peer_byte(fd)) != '#') {
+        g_assert_cmpuint(n + 1, <, size);
+        reply[n++] = c;
+        sum += (unsigned char)c;
+    }
+    expected = g_ascii_xdigit_value(gdb_peer_byte(fd)) << 4;
+    expected |= g_ascii_xdigit_value(gdb_peer_byte(fd));
+    g_assert_cmpuint(sum & 0xff, ==, expected);
+    reply[n] = 0;
+    g_assert_cmpint(write(fd, "+", 1), ==, 1);
+}
+
+static void gdb_peer_command(int fd, const char *command,
+                             char *reply, size_t size)
+{
+    g_autofree char *packet = NULL;
+    unsigned int sum = 0;
+
+    for (const char *p = command; *p; p++) {
+        sum += (unsigned char)*p;
+    }
+    packet = g_strdup_printf("$%s#%02x", command, sum & 0xff);
+    g_assert_cmpint(write(fd, packet, strlen(packet)), ==, strlen(packet));
+    g_assert_cmpint(gdb_peer_byte(fd), ==, '+');
+    if (reply) {
+        gdb_peer_reply(fd, reply, size);
+    }
+}
+
+static void test_gdb_peer_hold(const void *data)
+{
+    g_autofree char *image = NULL, *dir = NULL, *socket_path = NULL;
+    char reply[256], command[128];
+    int fd, gdb;
+    QTestState *qts;
+    uint64_t peer_before, peer_after, hub_before, hub_after;
+    uint64_t peer_count_before, peer_count_after;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+
+    dir = g_dir_make_tmp("sn0-gdb-hold-XXXXXX", NULL);
+    g_assert_nonnull(dir);
+    socket_path = g_build_filename(dir, "gdb.sock", NULL);
+    fd = g_file_open_tmp("sn0-gdb-hold-XXXXXX", &image, NULL);
+    g_assert_cmpint(fd, >=, 0);
+    write_guest_image(fd, build_gdb_peer_hold);
+    close(fd);
+
+    qts = qtest_initf("-M origin200 -m 128M -smp 2 -cpu R10000 "
+                      "-bios %s -accel tcg,thread=multi -no-reboot "
+                      "-no-shutdown -chardev socket,path=%s,server=on,"
+                      "wait=off,id=gdb0 -gdb chardev:gdb0 -S",
+                      image, socket_path);
+    unlink(image);
+    gdb = gdb_peer_socket(socket_path);
+    gdb_peer_command(gdb, "?", reply, sizeof(reply));
+    g_assert_true(reply[0] == 'T' || reply[0] == 'S');
+
+    snprintf(command, sizeof(command), "Z0,%" PRIx64 ",4",
+             (uint64_t)(0xffffffff00000000ULL |
+                        IMAGE_KSEG1_BASE | gh_break_pos));
+    gdb_peer_command(gdb, command, reply, sizeof(reply));
+    g_assert_cmpstr(reply, ==, "OK");
+    gdb_peer_command(gdb, "vCont;c", NULL, 0);
+    gdb_peer_reply(gdb, reply, sizeof(reply));
+    g_assert_cmpstr(reply, ==, "T05thread:01;");
+    g_assert_cmphex(state_word(qts, GH_COUNT_OFF), ==, 0);
+
+    command[0] = 'z';
+    gdb_peer_command(gdb, command, reply, sizeof(reply));
+    g_assert_cmpstr(reply, ==, "OK");
+    peer_before = state_word(qts, GH_PEER_OFF);
+    peer_count_before = state_word(qts, GH_PEER_COUNT_OFF + 8);
+    hub_before = qtest_readq(qts, GH_HUB_COUNT);
+
+    /* Thread 2 is CPU B. Thread 1 stays at the post-Count breakpoint. */
+    gdb_peer_command(gdb, "vCont;c:2", NULL, 0);
+    g_usleep(50000);
+    peer_after = state_word(qts, GH_PEER_OFF);
+    peer_count_after = state_word(qts, GH_PEER_COUNT_OFF + 8);
+    hub_after = qtest_readq(qts, GH_HUB_COUNT);
+    g_assert_cmphex(state_word(qts, GH_COUNT_OFF), ==, 0);
+    g_assert_cmpuint(peer_after, >, peer_before);
+    g_assert_cmpuint(peer_count_after, >, peer_count_before);
+    g_assert_cmpuint(hub_after, >, hub_before);
+    g_test_message("peer iterations: +%" PRIu64 "; peer Count: +%" PRIu64
+                   "; Hub PI_RT_COUNT: +%" PRIu64,
+                   peer_after - peer_before,
+                   peer_count_after - peer_count_before,
+                   hub_after - hub_before);
+
+    g_assert_cmpint(write(gdb, "\003", 1), ==, 1);
+    gdb_peer_reply(gdb, reply, sizeof(reply));
+    gdb_peer_command(gdb, "Hg1", reply, sizeof(reply));
+    g_assert_cmpstr(reply, ==, "OK");
+    gdb_peer_command(gdb, "p25", reply, sizeof(reply));
+    g_assert_cmphex(g_ascii_strtoull(reply, NULL, 16), ==,
+                    0xffffffff00000000ULL | IMAGE_KSEG1_BASE | gh_break_pos);
+    gdb_peer_command(gdb, "p24", reply, sizeof(reply));
+    g_assert_cmphex(g_ascii_strtoull(reply, NULL, 16) & CAUSE_IP7,
+                    ==, CAUSE_IP7);
+    gdb_peer_command(gdb, "vCont;c:1", NULL, 0);
+    g_assert_true(wait_for_cpu0_done(qts));
+    g_test_message("CPU A Count after hold: %" PRIu64 "; Cause.IP7: %u",
+                   state_word(qts, GH_COUNT_OFF),
+                   !!(state_word(qts, GH_CAUSE_OFF) & CAUSE_IP7));
+    g_assert_cmpuint(state_word(qts, GH_COUNT_OFF), >=, GH_COMPARE);
+    g_assert_cmphex(state_word(qts, GH_CAUSE_OFF) & CAUSE_IP7, ==, CAUSE_IP7);
+    g_test_message("late Compare=1000: Count %" PRIu64 ", IP7 %u; "
+                   "ordinary past Compare: Count %" PRIu64 ", IP7 %u",
+                   state_word(qts, GH_LATE_COUNT_OFF),
+                   !!(state_word(qts, GH_LATE_CAUSE_OFF) & CAUSE_IP7),
+                   state_word(qts, GH_PAST_COUNT_OFF),
+                   !!(state_word(qts, GH_PAST_CAUSE_OFF) & CAUSE_IP7));
+    g_assert_cmpuint(state_word(qts, GH_LATE_COUNT_OFF), >, 1000);
+    g_assert_cmphex(state_word(qts, GH_LATE_CAUSE_OFF) & CAUSE_IP7, ==, 0);
+    g_assert_cmpuint(state_word(qts, GH_PAST_COUNT_OFF), >,
+                     state_word(qts, GH_LATE_COUNT_OFF));
+    g_assert_cmphex(state_word(qts, GH_PAST_CAUSE_OFF) & CAUSE_IP7, ==, 0);
+
+    close(gdb);
+    qtest_quit(qts);
+    unlink(socket_path);
+    rmdir(dir);
+}
+
 static void test_tlb_random_global(const void *data)
 {
     QTestState *qts;
@@ -1510,5 +1743,7 @@ int main(int argc, char **argv)
                         test_masked_interrupt_stays_off_the_lock);
     qtest_add_data_func("mttcg/interrupt/unmask-by-eret-delivers", NULL,
                         test_unmask_by_eret_delivers);
+    qtest_add_data_func("mttcg/timer/gdb-peer-hold", NULL,
+                        test_gdb_peer_hold);
     return g_test_run();
 }
