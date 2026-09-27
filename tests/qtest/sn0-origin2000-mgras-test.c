@@ -4953,6 +4953,29 @@ static void test_hq_flags_set_and_clear(void)
 }
 
 
+/*
+ * An inline data block's header has bit 31 set and a 20-bit byte length
+ * (mgras-gl-commands.md, "Word framing"). The GL client's first GE table
+ * load is 0x80000214: five descriptor words and 128 data words. Filling
+ * the block with fence tokens shows whether any of it parsed as headers.
+ */
+static void test_inline_block_uses_20_bit_length(void)
+{
+    mgras_reset();
+
+    mgras_enter_context(qts);
+    qtest_writel(qts, REG_CONTEXT_COMMAND, 0x80000214);
+    for (int i = 0; i < 0x214 / 4; i++) {
+        qtest_writel(qts, REG_CONTEXT_COMMAND, MGRAS_FENCE_TOKEN);
+    }
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_FLAGS) & MGRAS_HQ_FLAG_FENCE, ==,
+                    0);
+    qtest_writel(qts, REG_CONTEXT_COMMAND, MGRAS_FENCE_TOKEN);
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_FLAGS) & MGRAS_HQ_FLAG_FENCE, ==,
+                    MGRAS_HQ_FLAG_FENCE);
+}
+
+
 static void test_hq_flags_fence_token_sets_bit(void)
 {
     mgras_reset();
@@ -6644,6 +6667,8 @@ int main(int argc, char **argv)
                    test_hq_vector_registers);
     qtest_add_func("sn0/origin2000/mgras/fifo-threshold-registers",
                    test_fifo_threshold_registers);
+    qtest_add_func("sn0/origin2000/mgras/inline-block-uses-20-bit-length",
+                   test_inline_block_uses_20_bit_length);
     qtest_add_func("sn0/origin2000/mgras/hq-flags-set-and-clear",
                    test_hq_flags_set_and_clear);
     qtest_add_func("sn0/origin2000/mgras/hq-flags-fence-token-sets-bit",

@@ -1048,7 +1048,7 @@ static int mgras_post_load(void *opaque, int version_id)
         s->cmd_token_payload_count > ARRAY_SIZE(s->cmd_token_payload) ||
         (s->cmd_token_class == SGI_MGRAS_CMD_TOKEN_DISCARD &&
          s->cmd_token_words_remaining >
-         SGI_MGRAS_CMD_TOKEN_MAX_DISCARD_WORDS) ||
+         SGI_MGRAS_CMD_TOKEN_MAX_BLOCK_WORDS) ||
         (s->cmd_token_class != SGI_MGRAS_CMD_TOKEN_DISCARD &&
          s->cmd_token_words_remaining > ARRAY_SIZE(s->cmd_token_payload)) ||
         s->dma_map_words_remaining > SGI_MGRAS_CMD_TOKEN_MAX_DISCARD_WORDS ||
