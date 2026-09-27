@@ -79,6 +79,165 @@ static bool qom_has_child(QTestState *qts, const char *parent,
     return false;
 }
 
+/*
+ * The pipe's one-wire chain, read the way the PROM reads it: through KONA's
+ * +0x98 bit-level register (hw/misc/sgi-kona.c), whose pulse and sample
+ * fields and done/level bits are the Bridge NIC register's. Each part is
+ * a DS2502 holding the fixed-offset board record docs/datasheets/bridge.md
+ * in the Origami tree lays out.
+ */
+#define KONA_ONEWIRE           0x98
+#define ONEWIRE_LEVEL          (1u << 0)
+#define ONEWIRE_DONE           (1u << 1)
+#define ONEWIRE_PULSE(n)       ((uint32_t)(n) << 10)
+#define ONEWIRE_SAMPLE(n)      ((uint32_t)(n) << 2)
+#define ONEWIRE_FAMILY_DS2502  0x09
+#define ONEWIRE_MATCH_ROM      0x55
+#define DS2502_READ_MEMORY     0xf0
+
+/*
+ * sgi-kona's placeholder serials: the geometry board is 1 and the Ktown
+ * 2 (hw/misc/sgi-kona.c; no capture gives real ones).
+ */
+#define GEOMETRY_SERIAL        1
+#define KTOWN_SERIAL           2
+
+/* The record's part number: nine characters at 21, three more at 35. */
+#define RECORD_PART_BASE       21
+#define RECORD_PART_DASH       35
+
+static bool onewire_slot(QTestState *qts, uint64_t reg, unsigned int pulse,
+                         unsigned int sample)
+{
+    uint32_t value;
+
+    qtest_writel(qts, reg, ONEWIRE_PULSE(pulse) | ONEWIRE_SAMPLE(sample));
+    value = qtest_readl(qts, reg);
+    g_assert_cmphex(value & ONEWIRE_DONE, ==, ONEWIRE_DONE);
+    return value & ONEWIRE_LEVEL;
+}
+
+static void onewire_write_byte(QTestState *qts, uint64_t reg, uint8_t byte)
+{
+    unsigned int i;
+
+    for (i = 0; i < 8; i++) {
+        if ((byte >> i) & 1) {
+            onewire_slot(qts, reg, 6, 13);
+        } else {
+            onewire_slot(qts, reg, 80, 30);
+        }
+    }
+}
+
+static uint8_t onewire_read_byte(QTestState *qts, uint64_t reg)
+{
+    unsigned int i;
+    uint8_t byte = 0;
+
+    for (i = 0; i < 8; i++) {
+        if (onewire_slot(qts, reg, 6, 13)) {
+            byte |= 1u << i;
+        }
+    }
+    return byte;
+}
+
+static uint8_t onewire_crc8(uint8_t crc, const uint8_t *buf, size_t len)
+{
+    size_t i;
+    unsigned int bit;
+
+    for (i = 0; i < len; i++) {
+        crc ^= buf[i];
+        for (bit = 0; bit < 8; bit++) {
+            crc = (crc & 1) ? (crc >> 1) ^ 0x8c : crc >> 1;
+        }
+    }
+    return crc;
+}
+
+/*
+ * Select the part with this serial and read its memory from address 0.
+ * Returns false when nothing answers the read, as when no part carries
+ * the serial: every deselected part leaves the bus high, so the CRC the
+ * part would echo for the command reads as 0xff instead.
+ */
+static bool kona_read_part(QTestState *qts, unsigned int widget,
+                           uint64_t serial, uint8_t record[64])
+{
+    uint64_t reg = SPACE_XTALK + widget * WIDGET_SIZE + KONA_ONEWIRE;
+    uint8_t rom[8] = { ONEWIRE_FAMILY_DS2502 };
+    uint8_t cmd[3] = { DS2502_READ_MEMORY, 0, 0 };
+    uint8_t echo;
+    unsigned int i;
+
+    for (i = 0; i < 6; i++) {
+        rom[1 + i] = (serial >> (8 * i)) & 0xff;
+    }
+    rom[7] = onewire_crc8(0, rom, 7);
+
+    /* The reset's presence pulse: some part on the chain answers. */
+    g_assert_false(onewire_slot(qts, reg, 520, 65));
+    onewire_write_byte(qts, reg, ONEWIRE_MATCH_ROM);
+    for (i = 0; i < sizeof(rom); i++) {
+        onewire_write_byte(qts, reg, rom[i]);
+    }
+    for (i = 0; i < sizeof(cmd); i++) {
+        onewire_write_byte(qts, reg, cmd[i]);
+    }
+    echo = onewire_read_byte(qts, reg);
+    if (echo == 0xff) {
+        return false;
+    }
+    g_assert_cmphex(echo, ==, onewire_crc8(0, cmd, sizeof(cmd)));
+    for (i = 0; i < 64; i++) {
+        record[i] = onewire_read_byte(qts, reg);
+    }
+    return true;
+}
+
+static void assert_record_part(const uint8_t record[64], const char *part)
+{
+    g_autofree char *got = g_strdup_printf("%.9s%.3s",
+                                           &record[RECORD_PART_BASE],
+                                           &record[RECORD_PART_DASH]);
+
+    g_assert_cmpstr(got, ==, part);
+}
+
+/*
+ * A rack pipe's geometry board is a GE16-4, 030-1398-001, and its chain
+ * also holds the Ktown's record, 030-1067-001, from the graphics module
+ * it is cabled through.
+ */
+static void test_rack_chain_holds_ge16_and_ktown(void)
+{
+    QTestState *qts = qtest_init(RACK_ARGS);
+    uint8_t record[64];
+
+    g_assert_true(kona_read_part(qts, 15, GEOMETRY_SERIAL, record));
+    assert_record_part(record, "030-1398-001");
+    g_assert_true(kona_read_part(qts, 15, KTOWN_SERIAL, record));
+    assert_record_part(record, "030-1067-001");
+    qtest_quit(qts);
+}
+
+/*
+ * A deskside pipe's geometry board is a GE14-4, 030-1129-002, and it has
+ * no Ktown: its chain holds the geometry record alone.
+ */
+static void test_deskside_chain_holds_ge14_alone(void)
+{
+    QTestState *qts = qtest_init(DESKSIDE_ARGS);
+    uint8_t record[64];
+
+    g_assert_true(kona_read_part(qts, 8, GEOMETRY_SERIAL, record));
+    assert_record_part(record, "030-1129-002");
+    g_assert_false(kona_read_part(qts, 8, KTOWN_SERIAL, record));
+    qtest_quit(qts);
+}
+
 static void test_rack_places_kona_at_io3(void)
 {
     QTestState *qts = qtest_init(RACK_ARGS);
@@ -115,5 +274,9 @@ int main(int argc, char **argv)
                    test_rack_places_kona_at_io3);
     qtest_add_func("sn0/onyx2/deskside-places-kona-at-io4",
                    test_deskside_places_kona_at_io4);
+    qtest_add_func("sn0/onyx2/rack-chain-holds-ge16-and-ktown",
+                   test_rack_chain_holds_ge16_and_ktown);
+    qtest_add_func("sn0/onyx2/deskside-chain-holds-ge14-alone",
+                   test_deskside_chain_holds_ge14_alone);
     return g_test_run();
 }
