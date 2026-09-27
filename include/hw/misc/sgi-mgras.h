@@ -185,6 +185,8 @@ OBJECT_DECLARE_TYPE(SGIMgrasState, SGIMgrasClass, SGI_MGRAS)
 #define SGI_MGRAS_CMD_TOKEN_DISCARD UINT32_MAX
 #define SGI_MGRAS_CMD_TOKEN_MAX_DISCARD_WORDS \
     DIV_ROUND_UP(UINT8_MAX, sizeof(uint32_t))
+/* An inline data block header carries a 20-bit byte length. */
+#define SGI_MGRAS_CMD_TOKEN_MAX_BLOCK_WORDS DIV_ROUND_UP(0xfffff, 4)
 
 /* Values for the per-pixel format tag; see the "format" field below. */
 #define SGI_MGRAS_PIXEL_FORMAT_CI8 0

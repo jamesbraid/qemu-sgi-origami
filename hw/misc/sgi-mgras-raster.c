@@ -21,6 +21,13 @@
 #define MGRAS_CMD_SELECTOR_EXEC 0x70001
 
 
+/*
+ * A header with bit 31 set opens an inline data block whose byte length is
+ * bits 19:0, not the 8-bit field of the other headers.
+ */
+#define MGRAS_CMD_HDR_INLINE_BLOCK 0x80000000u
+#define MGRAS_CMD_HDR_INLINE_BYTES 0x000fffffu
+
 #define MGRAS_CMD_FIFO_FENCE_CLASS 0x000e
 #define MGRAS_CMD_FIFO_FENCE_REG 0x04
 #define MGRAS_HQ_FLAG_FENCE 0x00010000
@@ -293,6 +300,19 @@ static void mgras_command_fifo_token(SGIMgrasState *s, uint32_t token)
     if (cmd_class == MGRAS_CMD_FIFO_FENCE_CLASS &&
         reg == MGRAS_CMD_FIFO_FENCE_REG && payload_bytes == 0) {
         s->hq_flags |= MGRAS_HQ_FLAG_FENCE;
+        return;
+    }
+
+    /*
+     * Established (mgras-gl-commands.md, "Word framing"): the IRIX 6.5.30
+     * OpenGL client forms these blocks for its GE table loads and batched
+     * raster register writes, for example 0x80000214 for five descriptor
+     * words and 128 data words. The class-0 opcode before the block gives
+     * it its meaning; the model does not interpret it and consumes it by
+     * length, so the words after it parse as headers again.
+     */
+    if (token & MGRAS_CMD_HDR_INLINE_BLOCK) {
+        mgras_command_fifo_discard(s, token & MGRAS_CMD_HDR_INLINE_BYTES);
         return;
     }
 
