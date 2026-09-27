@@ -1533,6 +1533,7 @@ F: tests/qtest/sgi-replay-test.c
 F: tests/qtest/sgi-*.h
 F: tests/qtest/sn0-*
 F: tests/qtest/sn-builder-test.c
+F: tests/qtest/sn-node-population-test.c
 F: tests/qtest/sn-builder-fault-test.c
 F: tests/qtest/sn1-l1-test.c
 F: tests/qtest/sn1-*

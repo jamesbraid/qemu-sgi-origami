@@ -146,6 +146,10 @@ slow_qtests = {
   # this table does.
   'sgi-replay-test': 330,
   'sn-builder-test': 460,
+  # Fourteen machines, one per chassis and node count, and eight refused
+  # launches: 28.65s with nothing else running. Budget four times that for
+  # the parallel suite's load.
+  'sn-node-population-test': 120,
   # The shoehorn's card-behind-a-plain-expansion-board and card-behind-the
   # catalogue-placed-board cases each start their own machine. 5 runs
   # measured 27.05s-55.74s, and a sixth run at the same load was killed at
@@ -496,6 +500,7 @@ qtests_mips64 = \
                                                    'sn0-qtest-cpu-test',
                                                    'sgi-debug-tools-test',
                                                    'sn-builder-test',
+                                                   'sn-node-population-test',
                                                    'sn0-pci-shoehorn-test',
                                                    'sn0-pci-carrier-test',
                                                    'sn0-menet-test',
