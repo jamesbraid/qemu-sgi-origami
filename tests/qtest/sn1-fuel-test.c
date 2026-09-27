@@ -6,6 +6,9 @@
 #include "qobject/qdict.h"
 #include "sgi-test.h"
 
+#include <poll.h>
+#include <sys/socket.h>
+
 #define HUB_LOCAL_REGISTERS (SPACE_HUB + UINT64_C(0x10000000))
 #define HUB_REMOTE_REGISTERS (SPACE_HUB + UINT64_C(0x30000000))
 #define BOARD_ID_OFFSET UINT64_C(0x4000000)
@@ -22,6 +25,9 @@
 #define IOC3_WINDOW (XTALK_WIDGET(15) + 0x800000)
 #define IOC3_SERIAL_A 0x20178
 #define IOC3_SERIAL_B 0x20170
+#define IOC3_UART_LSR 5
+#define IOC3_UART_SCR 7
+#define IOC3_UART_LSR_DR 1
 #define IOC3_INT_STATUS 0x1c
 #define IOC3_INT_ENABLE_SET 0x20
 #define IOC3_INT_KEYBOARD (1U << 22)
@@ -282,6 +288,100 @@ static void test_fuel_serial_backends(const void *data)
     qtest_quit(qts);
 }
 
+static void fuel_expect_serial_byte(int fd, char expected)
+{
+    struct pollfd pfd = { .fd = fd, .events = POLLIN };
+    char actual;
+
+    g_assert_cmpint(poll(&pfd, 1, 3000), ==, 1);
+    g_assert_cmpint(read(fd, &actual, 1), ==, 1);
+    g_assert_cmpint(actual, ==, expected);
+}
+
+static void fuel_expect_no_serial_byte(int fd)
+{
+    struct pollfd pfd = { .fd = fd, .events = POLLIN };
+
+    g_assert_cmpint(poll(&pfd, 1, 200), ==, 0);
+}
+
+static void fuel_wait_serial_input(QTestState *qts, uint64_t port)
+{
+    gint64 deadline = g_get_monotonic_time() + 3 * G_USEC_PER_SEC;
+
+    while (!(qtest_readb(qts, port + IOC3_UART_LSR) & IOC3_UART_LSR_DR)) {
+        g_assert_cmpint(g_get_monotonic_time(), <, deadline);
+        g_usleep(1000);
+    }
+}
+
+static void test_fuel_serial_bytes(const void *data)
+{
+    const char *prom = data;
+    g_autofree char *quoted = g_shell_quote(prom);
+    QTestState *qts;
+    int a[2], b[2];
+
+    g_assert_cmpint(socketpair(AF_UNIX, SOCK_STREAM, 0, a), ==, 0);
+    g_assert_cmpint(socketpair(AF_UNIX, SOCK_STREAM, 0, b), ==, 0);
+    qts = qtest_initf(
+        "-M fuel,fuel-board-id-word=0x4abc,"
+        "fuel-ioc3-subsystem-id=0xc30a "
+        "-cpu R14000 -smp 1 -m 512M -bios %s -S "
+        "-serial null "
+        "-chardev socket,id=ioc3-a,fd=%d -serial chardev:ioc3-a "
+        "-chardev socket,id=ioc3-b,fd=%d -serial chardev:ioc3-b",
+        quoted, a[1], b[1]);
+    g_assert_cmpint(close(a[1]), ==, 0);
+    g_assert_cmpint(close(b[1]), ==, 0);
+    fuel_map_ioc3(qts);
+
+    qtest_writeb(qts, IOC3_WINDOW + IOC3_SERIAL_A, 'A');
+    fuel_expect_serial_byte(a[0], 'A');
+    fuel_expect_no_serial_byte(b[0]);
+    qtest_writeb(qts, IOC3_WINDOW + IOC3_SERIAL_B, 'B');
+    fuel_expect_serial_byte(b[0], 'B');
+    fuel_expect_no_serial_byte(a[0]);
+
+    g_assert_cmpint(write(a[0], "x", 1), ==, 1);
+    fuel_wait_serial_input(qts, IOC3_WINDOW + IOC3_SERIAL_A);
+    g_assert_cmphex(qtest_readb(qts, IOC3_WINDOW + IOC3_SERIAL_B +
+                                IOC3_UART_LSR) & IOC3_UART_LSR_DR, ==, 0);
+    g_assert_cmphex(qtest_readb(qts, IOC3_WINDOW + IOC3_SERIAL_A), ==, 'x');
+    g_assert_cmpint(write(b[0], "y", 1), ==, 1);
+    fuel_wait_serial_input(qts, IOC3_WINDOW + IOC3_SERIAL_B);
+    g_assert_cmphex(qtest_readb(qts, IOC3_WINDOW + IOC3_SERIAL_A +
+                                IOC3_UART_LSR) & IOC3_UART_LSR_DR, ==, 0);
+    g_assert_cmphex(qtest_readb(qts, IOC3_WINDOW + IOC3_SERIAL_B), ==, 'y');
+
+    qtest_writeb(qts, IOC3_WINDOW + IOC3_SERIAL_A + IOC3_UART_SCR, 0x5a);
+    qtest_writeb(qts, IOC3_WINDOW + IOC3_SERIAL_B + IOC3_UART_SCR, 0xa5);
+    qtest_system_reset(qts);
+    fuel_map_ioc3(qts);
+    g_assert_cmphex(qtest_readb(qts, IOC3_WINDOW + IOC3_SERIAL_A +
+                                IOC3_UART_SCR), ==, 0);
+    g_assert_cmphex(qtest_readb(qts, IOC3_WINDOW + IOC3_SERIAL_B +
+                                IOC3_UART_SCR), ==, 0);
+
+    qtest_writeb(qts, IOC3_WINDOW + IOC3_SERIAL_A, 'C');
+    fuel_expect_serial_byte(a[0], 'C');
+    fuel_expect_no_serial_byte(b[0]);
+    qtest_writeb(qts, IOC3_WINDOW + IOC3_SERIAL_B, 'D');
+    fuel_expect_serial_byte(b[0], 'D');
+    fuel_expect_no_serial_byte(a[0]);
+
+    g_assert_cmpint(write(a[0], "m", 1), ==, 1);
+    fuel_wait_serial_input(qts, IOC3_WINDOW + IOC3_SERIAL_A);
+    g_assert_cmphex(qtest_readb(qts, IOC3_WINDOW + IOC3_SERIAL_A), ==, 'm');
+    g_assert_cmpint(write(b[0], "n", 1), ==, 1);
+    fuel_wait_serial_input(qts, IOC3_WINDOW + IOC3_SERIAL_B);
+    g_assert_cmphex(qtest_readb(qts, IOC3_WINDOW + IOC3_SERIAL_B), ==, 'n');
+
+    qtest_quit(qts);
+    g_assert_cmpint(close(a[0]), ==, 0);
+    g_assert_cmpint(close(b[0]), ==, 0);
+}
+
 int main(int argc, char **argv)
 {
     g_autofree char *prom = NULL;
@@ -300,6 +400,7 @@ int main(int argc, char **argv)
                         test_fuel_prom_copy_boundary);
     qtest_add_data_func("fuel/serial-backends", prom,
                         test_fuel_serial_backends);
+    qtest_add_data_func("fuel/serial-bytes", prom, test_fuel_serial_bytes);
     status = g_test_run();
     g_assert_cmpint(g_unlink(prom), ==, 0);
     return status;
