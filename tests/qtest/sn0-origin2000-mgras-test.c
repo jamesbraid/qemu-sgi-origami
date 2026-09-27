@@ -5951,11 +5951,13 @@ static void test_gl_triangle_with_negative_w_is_dropped(void)
 }
 
 /*
- * The GL client's matrix words as the captured probe
+ * The GL client's matrix and depth words as the captured probe
  * streams of run irix-20260927T172059-fdbada carry them (glMatrixMode
  * 0x2a04, glLoadIdentity 0x2c00, glLoadMatrixf 0x2b40 with 16 floats in
  * memory order, glMultMatrixf 0x2d40, glFrustum 0x3418 and glOrtho 0x3518
- * with the six arguments as floats).
+ * with the six arguments as floats, glEnable(GL_DEPTH_TEST) 0x6604 with 1,
+ * glDepthFunc 0x4304 with func - 0x200, glClearDepth 0xbc04 with the
+ * 24-bit value, glClear's depth token 0x4a00 and glDepthMask 0x3c04).
  */
 #define GL_MATRIX_MODE_HDR    0x00002a04
 #define GL_LOAD_MATRIX_HDR    0x00002b40
@@ -5963,10 +5965,21 @@ static void test_gl_triangle_with_negative_w_is_dropped(void)
 #define GL_MULT_MATRIX_HDR    0x00002d40
 #define GL_FRUSTUM_HDR        0x00003418
 #define GL_ORTHO_HDR          0x00003518
+#define GL_DEPTH_TEST_HDR     0x00006604
+#define GL_DEPTH_FUNC_HDR     0x00004304
+#define GL_DEPTH_MASK_HDR     0x00003c04
+#define GL_CLEAR_DEPTH_HDR    0x0000bc04
+#define GL_CLEAR_DEPTH_BUFFER 0x00004a00
 #define GL_VERTEX3F_HDR       0x2000000c
 #define GL_MODELVIEW          0x1700
 #define GL_PROJECTION         0x1701
 #define GL_TEXTURE            0x1702
+#define GL_DEPTH_LESS         1
+#define GL_DEPTH_NEVER        0
+#define GL_DEPTH_EQUAL        2
+#define GL_DEPTH_GREATER      4
+#define GL_DEPTH_ALWAYS       7
+#define GL_DEPTH_ONE          0xffffff
 
 static void gl_vertex3f(QTestState *qts, float x, float y, float z)
 {
@@ -6044,6 +6057,8 @@ static void gl_scene_start(QTestState *qts, uint32_t shade)
     "72929655985993b8505b211a3479c5841a5f93ab625cef6d0b32f7323abe99d8"
 #define GL_FRUSTUM_SHA256 \
     "2411a9c279313dc62c8e536db291ba6d66abab75883d077aa70f92f127ed2746"
+#define GL_DEPTH_SHA256 \
+    "92a05b9a5c7c93ddee9a6c0a7717dff6b9983c968c4229e05bb04732fff2dbfe"
 
 /*
  * The ortho case: glOrtho(0, 128, 0, 128, -1, 1) on the projection, then
@@ -6209,17 +6224,61 @@ static void test_gl_matrix_mode_selects_the_matrix(void)
 }
 
 /*
+ * Approximated: matrix products are stored at single precision, the
+ * precision the client sends; the GE's arithmetic is not published. With
+ * a z scale a = 1 + 2^-12 loaded and then multiplied in, a * a =
+ * 1 + 2^-11 + 2^-24 rounds to 1 + 2^-11 in single precision. At object z
+ * 1887437 / 2^21 the two products give window depths of 15942041.45 and
+ * 15942041.90 steps, which round to different 24-bit values; a second
+ * layer at z 0.900439441 with the identity matrix lands on the first.
+ */
+static void test_gl_matrix_product_is_single_precision(void)
+{
+    const float a = 1.0f + 1.0f / 4096;
+    const float scale[16] = {
+        1, 0, 0, 0, 0, 1, 0, 0, 0, 0, a, 0, 0, 0, 0, 1,
+    };
+    const float z = 1887437.0f / 2097152.0f;
+
+    gl_scene_start(qts, GL_FLAT);
+    gl_one(qts, GL_DEPTH_TEST_HDR, 1);
+    gl_one(qts, GL_DEPTH_FUNC_HDR, GL_DEPTH_ALWAYS);
+    gl_one(qts, GL_MATRIX_MODE_HDR, GL_MODELVIEW);
+    gl_matrix(qts, GL_LOAD_MATRIX_HDR, scale);
+    gl_matrix(qts, GL_MULT_MATRIX_HDR, scale);
+    gl_color3f(qts, 1, 0, 0);
+    gl_word(qts, GL_BEGIN_TRIANGLES);
+    gl_vertex3f(qts, -1, -1, z);
+    gl_vertex3f(qts, 3, -1, z);
+    gl_vertex3f(qts, -1, 3, z);
+    gl_word(qts, GL_END_TRIANGLES);
+
+    gl_word(qts, GL_LOAD_IDENTITY);
+    gl_one(qts, GL_DEPTH_FUNC_HDR, GL_DEPTH_EQUAL);
+    gl_color3f(qts, 0, 1, 0);
+    gl_word(qts, GL_BEGIN_TRIANGLES);
+    gl_vertex3f(qts, -1, -1, 0.900439441204071f);
+    gl_vertex3f(qts, 3, -1, 0.900439441204071f);
+    gl_vertex3f(qts, -1, 3, 0.900439441204071f);
+    gl_word(qts, GL_END_TRIANGLES);
+    g_assert_cmphex(gl_window_pixel(qts, 10, 10), ==, 0x00ff00);
+}
+
+/*
  * Inferred: the client's context-setup opener 0x0600 starts a new
- * context, whose matrices are OpenGL's initial ones even though the setup
- * after it sends none. A projection left by an earlier context must not
- * move or hide the new context's drawing: in the probe's capture, the
- * depth case followed the frustum case in the same X session.
+ * context, whose matrices and depth state are OpenGL's initial ones even
+ * though the setup after it sends none. A projection and depth test left
+ * by an earlier context must not shrink or hide the new context's
+ * drawing: in the probe's capture, the depth case followed the frustum
+ * case in the same X session.
  */
 static void test_gl_context_setup_restores_initial_state(void)
 {
     gl_scene_start(qts, GL_FLAT);
     gl_one(qts, GL_MATRIX_MODE_HDR, GL_PROJECTION);
     gl_six(qts, GL_FRUSTUM_HDR, -1, 1, -1, 1, 1, 8);
+    gl_one(qts, GL_DEPTH_TEST_HDR, 1);
+    gl_one(qts, GL_DEPTH_FUNC_HDR, GL_DEPTH_NEVER);
 
     gl_word(qts, 0x00000600);
     gl_viewport(qts, 0, 0, 128, 128);
@@ -6231,6 +6290,178 @@ static void test_gl_context_setup_restores_initial_state(void)
     gl_word(qts, GL_END_TRIANGLES);
     g_assert_cmphex(gl_window_pixel(qts, 1, 1), ==, 0xffffff);
     g_assert_cmphex(gl_window_pixel(qts, 60, 1), ==, 0xffffff);
+}
+
+/*
+ * The depth case: a red triangle at depth 0, then a green one on the plane
+ * z = x / 2, depth test LESS after clearing depth to 1.0. Where they
+ * overlap green is nearer left of window x 64 and red to the right; with
+ * no depth test green would cover all of the overlap.
+ */
+static void test_gl_depth_matches_the_reference(void)
+{
+    g_autofree uint32_t *rgb = NULL;
+
+    gl_scene_start(qts, GL_FLAT);
+    gl_one(qts, GL_DEPTH_TEST_HDR, 1);
+    gl_one(qts, GL_DEPTH_FUNC_HDR, GL_DEPTH_LESS);
+    gl_one(qts, GL_CLEAR_DEPTH_HDR, GL_DEPTH_ONE);
+    gl_clear_color(qts, 0, 0, 1, 1);
+    gl_word(qts, GL_CLEAR_COLOR_BUFFER);
+    gl_word(qts, GL_CLEAR_DEPTH_BUFFER);
+    gl_word(qts, GL_BEGIN_TRIANGLES);
+    gl_color3f(qts, 1, 0, 0);
+    gl_vertex3f(qts, -0.78125f, -0.71875f, 0);
+    gl_color3f(qts, 1, 0, 0);
+    gl_vertex3f(qts, 0.71875f, -0.59375f, 0);
+    gl_color3f(qts, 1, 0, 0);
+    gl_vertex3f(qts, -0.09375f, 0.78125f, 0);
+    gl_color3f(qts, 0, 1, 0);
+    gl_vertex3f(qts, -0.90625f, 0.53125f, -0.453125f);
+    gl_color3f(qts, 0, 1, 0);
+    gl_vertex3f(qts, 0.84375f, 0.40625f, 0.421875f);
+    gl_color3f(qts, 0, 1, 0);
+    gl_vertex3f(qts, 0.0625f, -0.921875f, 0.03125f);
+    gl_word(qts, GL_END_TRIANGLES);
+    gl_word(qts, GL_FLUSH);
+
+    rgb = mgras_screendump(qts);
+    g_assert_cmphex(gl_dump_pixel(rgb, 40, 60), ==, 0x00ff00);
+    g_assert_cmphex(gl_dump_pixel(rgb, 90, 50), ==, 0xff0000);
+    gl_check_window_sha256(rgb, GL_DEPTH_SHA256);
+}
+
+/* A whole-window triangle at normalized depth -1 + j / 2^24. */
+static void gl_depth_layer(QTestState *qts, int j, float r, float g)
+{
+    float z = -1.0f + (float)j / 16777216.0f;
+
+    gl_color3f(qts, r, g, 0);
+    gl_word(qts, GL_BEGIN_TRIANGLES);
+    gl_vertex3f(qts, -1, -1, z);
+    gl_vertex3f(qts, 3, -1, z);
+    gl_vertex3f(qts, -1, 3, z);
+    gl_word(qts, GL_END_TRIANGLES);
+}
+
+static uint32_t gl_depth_pair(QTestState *qts, int first, int second)
+{
+    gl_scene_start(qts, GL_FLAT);
+    gl_one(qts, GL_DEPTH_TEST_HDR, 1);
+    gl_one(qts, GL_DEPTH_FUNC_HDR, GL_DEPTH_LESS);
+    gl_one(qts, GL_CLEAR_DEPTH_HDR, GL_DEPTH_ONE);
+    gl_word(qts, GL_CLEAR_DEPTH_BUFFER);
+    gl_depth_layer(qts, first, 1, 0);
+    gl_depth_layer(qts, second, 0, 1);
+    return gl_window_pixel(qts, 10, 10);
+}
+
+/*
+ * Approximated: the depth plane holds 24 bits, the RE4's published Z
+ * width (Octane Technical Report, 4.2.3), and a fragment's window depth
+ * is rounded to the nearest of them; how the board rounds is not
+ * published. At z = -1 + j / 2^24 the stored value is j / 2 - j / 2^25:
+ * j = 4 rounds to 2 (truncation gives 1), j = 3 to 1, j = 2 to 1
+ * (truncation gives 0, and unquantized depth keeps it below j = 3's).
+ * So the second layer of (4, 3) passes LESS only under rounding, and the
+ * second of (3, 2) fails only under rounding to 24 bits.
+ */
+static void test_gl_depth_rounds_to_24_bits(void)
+{
+    g_assert_cmphex(gl_depth_pair(qts, 4, 3), ==, 0x00ff00);
+    g_assert_cmphex(gl_depth_pair(qts, 3, 2), ==, 0xff0000);
+}
+
+/*
+ * With the depth test disabled the depth buffer is not updated (OpenGL
+ * 1.2.1, 4.1.5), so a far triangle drawn after enabling it still passes
+ * against the cleared 1.0. With the test on but the mask off, the same
+ * holds (4.2.2).
+ */
+static void test_gl_depth_writes_only_when_tested_and_masked_in(void)
+{
+    for (int masked = 0; masked < 2; masked++) {
+        gl_scene_start(qts, GL_FLAT);
+        gl_one(qts, GL_DEPTH_FUNC_HDR, GL_DEPTH_LESS);
+        gl_one(qts, GL_CLEAR_DEPTH_HDR, GL_DEPTH_ONE);
+        gl_word(qts, GL_CLEAR_DEPTH_BUFFER);
+        if (masked) {
+            gl_one(qts, GL_DEPTH_TEST_HDR, 1);
+            gl_one(qts, GL_DEPTH_MASK_HDR, 0);
+        }
+        gl_depth_layer(qts, 0, 1, 0);
+        gl_one(qts, GL_DEPTH_TEST_HDR, 1);
+        gl_one(qts, GL_DEPTH_MASK_HDR, 1);
+        gl_depth_layer(qts, 1 << 23, 0, 1);
+        g_assert_cmphex(gl_window_pixel(qts, 10, 10), ==, 0x00ff00);
+    }
+}
+
+/*
+ * glDepthFunc sends func - GL_NEVER, and each comparison follows 4.1.5:
+ * NEVER draws nothing, ALWAYS draws over a nearer surface, GREATER draws
+ * only a farther one.
+ */
+static void test_gl_depth_func_follows_the_enum(void)
+{
+    static const struct {
+        uint32_t func;
+        int j;
+        uint32_t expected;
+    } cases[] = {
+        { GL_DEPTH_NEVER, 0, 0xff0000 },
+        { GL_DEPTH_ALWAYS, 1 << 24, 0x00ff00 },
+        { GL_DEPTH_GREATER, 1 << 22, 0xff0000 },
+        { GL_DEPTH_GREATER, 1 << 24, 0x00ff00 },
+    };
+
+    for (size_t i = 0; i < ARRAY_SIZE(cases); i++) {
+        gl_scene_start(qts, GL_FLAT);
+        gl_one(qts, GL_DEPTH_TEST_HDR, 1);
+        gl_one(qts, GL_DEPTH_FUNC_HDR, GL_DEPTH_ALWAYS);
+        gl_depth_layer(qts, 1 << 23, 1, 0);
+        gl_one(qts, GL_DEPTH_FUNC_HDR, cases[i].func);
+        gl_depth_layer(qts, cases[i].j, 0, 1);
+        g_assert_cmphex(gl_window_pixel(qts, 10, 10), ==, cases[i].expected);
+    }
+}
+
+/*
+ * glClear's depth token fills the window's depth with the glClearDepth
+ * value: cleared to 0, nothing passes LESS; cleared to 2^24 - 1, the same
+ * triangle draws. Pixels outside the window keep their depth.
+ */
+static void test_gl_clear_depth_sets_the_plane(void)
+{
+    for (int far = 0; far < 2; far++) {
+        gl_scene_start(qts, GL_FLAT);
+        gl_one(qts, GL_DEPTH_TEST_HDR, 1);
+        gl_one(qts, GL_DEPTH_FUNC_HDR, GL_DEPTH_LESS);
+        gl_one(qts, GL_CLEAR_DEPTH_HDR, far ? GL_DEPTH_ONE : 0);
+        gl_word(qts, GL_CLEAR_DEPTH_BUFFER);
+        gl_depth_layer(qts, 1 << 23, 0, 1);
+        g_assert_cmphex(gl_window_pixel(qts, 10, 10), ==,
+                        far ? 0x00ff00 : 0);
+    }
+}
+
+/*
+ * A fragment whose window depth lies outside [0, 1] belongs to the part
+ * of the triangle beyond the far or near plane, which clipping removes
+ * (OpenGL 1.2.1, 2.11). Window depth here is 0.25 + 1.5 * y / 128, so
+ * rows from 64 up are beyond the far plane, depth test or not.
+ */
+static void test_gl_triangle_clipped_at_the_far_plane(void)
+{
+    gl_scene_start(qts, GL_FLAT);
+    gl_color3f(qts, 1, 1, 1);
+    gl_word(qts, GL_BEGIN_TRIANGLES);
+    gl_vertex3f(qts, -1, -1, -0.5f);
+    gl_vertex3f(qts, 1, -1, -0.5f);
+    gl_vertex3f(qts, -1, 1, 2.5f);
+    gl_word(qts, GL_END_TRIANGLES);
+    g_assert_cmphex(gl_window_pixel(qts, 2, 63), ==, 0xffffff);
+    g_assert_cmphex(gl_window_pixel(qts, 2, 64), ==, 0);
 }
 
 static void test_hq_flags_fence_token_sets_bit(void)
@@ -7421,7 +7652,9 @@ static void test_context_payload_migration(void)
 
 /*
  * glLoadMatrixf carries 16 payload words, more than the 8 the parser held
- * before. A packet split by a migration resumes after its twelfth word.
+ * before, and GL state now includes the depth plane. A packet split by a
+ * migration resumes after its twelfth word, and the depth plane crosses
+ * with it.
  */
 static void test_gl_state_migration(void)
 {
@@ -7445,6 +7678,8 @@ static void test_gl_state_migration(void)
     mgras_enter_gl_window(from, 256, 640, 128, 128, 0x11);
     qtest_writel(from, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x1e, 0x4));
     gl_viewport(from, 0, 0, 128, 128);
+    gl_one(from, GL_CLEAR_DEPTH_HDR, 0);
+    gl_word(from, GL_CLEAR_DEPTH_BUFFER);
     gl_one(from, GL_MATRIX_MODE_HDR, GL_MODELVIEW);
     gl_word(from, GL_LOAD_MATRIX_HDR);
     for (int i = 0; i < 12; i++) {
@@ -7464,6 +7699,17 @@ static void test_gl_state_migration(void)
     gl_word(to, GL_END_TRIANGLES);
     g_assert_cmphex(mgras_test_pixel(to, 256 + 33, 383 - 1), ==, 0xffffff);
     g_assert_cmphex(mgras_test_pixel(to, 256 + 1, 383 - 1), ==, 0);
+
+    /* Depth cleared to 0 before the migration stops LESS after it. */
+    gl_one(to, GL_DEPTH_TEST_HDR, 1);
+    gl_one(to, GL_DEPTH_FUNC_HDR, GL_DEPTH_LESS);
+    gl_color3f(to, 0, 1, 0);
+    gl_word(to, GL_BEGIN_TRIANGLES);
+    gl_vertex3f(to, -1, -1, 0);
+    gl_vertex3f(to, 0, -1, 0);
+    gl_vertex3f(to, -1, 0, 0);
+    gl_word(to, GL_END_TRIANGLES);
+    g_assert_cmphex(mgras_test_pixel(to, 256 + 33, 383 - 1), ==, 0xffffff);
 
     g_assert_cmphex(mgras_qom_get_uint(to, "x-test-error"), ==, 0);
 
@@ -8056,8 +8302,29 @@ int main(int argc, char **argv)
                    "gl-matrix-mode-selects-the-matrix",
                    test_gl_matrix_mode_selects_the_matrix);
     qtest_add_func("sn0/origin2000/mgras/"
+                   "gl-matrix-product-is-single-precision",
+                   test_gl_matrix_product_is_single_precision);
+    qtest_add_func("sn0/origin2000/mgras/"
                    "gl-context-setup-restores-initial-state",
                    test_gl_context_setup_restores_initial_state);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "gl-depth-matches-the-reference",
+                   test_gl_depth_matches_the_reference);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "gl-depth-rounds-to-24-bits",
+                   test_gl_depth_rounds_to_24_bits);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "gl-depth-writes-only-when-tested-and-masked-in",
+                   test_gl_depth_writes_only_when_tested_and_masked_in);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "gl-depth-func-follows-the-enum",
+                   test_gl_depth_func_follows_the_enum);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "gl-clear-depth-sets-the-plane",
+                   test_gl_clear_depth_sets_the_plane);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "gl-triangle-clipped-at-the-far-plane",
+                   test_gl_triangle_clipped_at_the_far_plane);
     qtest_add_func("sn0/origin2000/mgras/hq-flags-set-and-clear",
                    test_hq_flags_set_and_clear);
     qtest_add_func("sn0/origin2000/mgras/hq-flags-fence-token-sets-bit",
