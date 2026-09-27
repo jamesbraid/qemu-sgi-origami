@@ -1398,6 +1398,36 @@ uint64_t qtest_readq(QTestState *s, uint64_t addr)
     return qtest_read(s, "readq", addr);
 }
 
+MemTxResult qtest_writeq_tx(QTestState *s, uint64_t addr, uint64_t value)
+{
+    gchar **args;
+    uint64_t result;
+    int ret;
+
+    qtest_sendf(s, "writeq_tx 0x%" PRIx64 " 0x%" PRIx64 "\n", addr, value);
+    args = qtest_rsp_args(s, 2);
+    ret = qemu_strtou64(args[1], NULL, 0, &result);
+    g_assert(!ret);
+    g_strfreev(args);
+    return result;
+}
+
+MemTxResult qtest_readq_tx(QTestState *s, uint64_t addr, uint64_t *value)
+{
+    gchar **args;
+    uint64_t result;
+    int ret;
+
+    qtest_sendf(s, "readq_tx 0x%" PRIx64 "\n", addr);
+    args = qtest_rsp_args(s, 3);
+    ret = qemu_strtou64(args[1], NULL, 0, value);
+    g_assert(!ret);
+    ret = qemu_strtou64(args[2], NULL, 0, &result);
+    g_assert(!ret);
+    g_strfreev(args);
+    return result;
+}
+
 static int hex2nib(char ch)
 {
     if (ch >= '0' && ch <= '9') {

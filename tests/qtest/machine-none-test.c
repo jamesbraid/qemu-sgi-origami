@@ -87,11 +87,33 @@ static void test_machine_cpu_cli(void)
     qtest_quit(qts);
 }
 
+static void test_memory_transaction_result(void)
+{
+    const char *cpu_model = get_cpu_model_by_arch(qtest_get_arch());
+    QTestState *qts;
+    uint64_t value;
+    uint64_t unassigned = 0x10000000000ULL;
+
+    if (!cpu_model) {
+        return;
+    }
+    qts = qtest_initf("-machine none -cpu \"%s\"", cpu_model);
+    g_assert_cmpuint(qtest_readq_tx(qts, unassigned, &value), ==,
+                     MEMTX_DECODE_ERROR);
+    g_assert_cmphex(value, ==, 0);
+    g_assert_cmpuint(qtest_writeq_tx(qts, unassigned, UINT64_MAX), ==,
+                     MEMTX_DECODE_ERROR);
+    g_assert_cmphex(qtest_readq(qts, unassigned), ==, 0);
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
 
     qtest_add_func("machine/none/cpu_option", test_machine_cpu_cli);
+    qtest_add_func("machine/none/memory_transaction_result",
+                   test_memory_transaction_result);
 
     return g_test_run();
 }

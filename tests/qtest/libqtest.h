@@ -17,6 +17,7 @@
 #ifndef LIBQTEST_H
 #define LIBQTEST_H
 
+#include "exec/memattrs.h"
 #include "qobject/qobject.h"
 #include "qobject/qdict.h"
 #include "qobject/qlist.h"
@@ -673,6 +674,26 @@ uint32_t qtest_readl(QTestState *s, uint64_t addr);
  * Returns: Value read.
  */
 uint64_t qtest_readq(QTestState *s, uint64_t addr);
+
+/**
+ * qtest_writeq_tx:
+ * @s: #QTestState instance to operate on.
+ * @addr: Guest address to write to.
+ * @value: Value being written.
+ *
+ * Writes a 64-bit value and returns its memory transaction result.
+ */
+MemTxResult qtest_writeq_tx(QTestState *s, uint64_t addr, uint64_t value);
+
+/**
+ * qtest_readq_tx:
+ * @s: #QTestState instance to operate on.
+ * @addr: Guest address to read from.
+ * @value: Receives the 64-bit value.
+ *
+ * Reads a 64-bit value and returns its memory transaction result.
+ */
+MemTxResult qtest_readq_tx(QTestState *s, uint64_t addr, uint64_t *value);
 
 /**
  * qtest_memread:

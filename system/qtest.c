@@ -170,6 +170,11 @@ static void *qtest_server_send_opaque;
  *
  * .. code-block:: none
  *
+ *  > writeq_tx ADDR VALUE
+ *  < OK STATUS
+ *
+ * .. code-block:: none
+ *
  *  > readb ADDR
  *  < OK VALUE
  *
@@ -187,6 +192,14 @@ static void *qtest_server_send_opaque;
  *
  *  > readq ADDR
  *  < OK VALUE
+ *
+ * .. code-block:: none
+ *
+ *  > readq_tx ADDR
+ *  < OK VALUE STATUS
+ *
+ * STATUS is a MemTxResult bitmask. The _tx forms preserve transaction
+ * errors that the original commands discard.
  *
  * .. code-block:: none
  *
@@ -584,6 +597,35 @@ static void qtest_process_command(CharFrontend *chr, gchar **words)
             value = cpu_inl(addr);
         }
         qtest_sendf(chr, "OK 0x%04x\n", value);
+    } else if (strcmp(words[0], "writeq_tx") == 0) {
+        uint64_t addr, value, data;
+        MemTxResult result;
+        int ret;
+
+        g_assert(words[1] && words[2]);
+        ret = qemu_strtou64(words[1], NULL, 0, &addr);
+        g_assert(ret == 0);
+        ret = qemu_strtou64(words[2], NULL, 0, &value);
+        g_assert(ret == 0);
+
+        data = value;
+        tswap64s(&data);
+        result = address_space_write(first_cpu->as, addr,
+                                     MEMTXATTRS_UNSPECIFIED, &data, 8);
+        qtest_sendf(chr, "OK 0x%08x\n", result);
+    } else if (strcmp(words[0], "readq_tx") == 0) {
+        uint64_t addr, value = UINT64_C(-1);
+        MemTxResult result;
+        int ret;
+
+        g_assert(words[1]);
+        ret = qemu_strtou64(words[1], NULL, 0, &addr);
+        g_assert(ret == 0);
+
+        result = address_space_read(first_cpu->as, addr,
+                                    MEMTXATTRS_UNSPECIFIED, &value, 8);
+        tswap64s(&value);
+        qtest_sendf(chr, "OK 0x%016" PRIx64 " 0x%08x\n", value, result);
     } else if (strcmp(words[0], "writeb") == 0 ||
                strcmp(words[0], "writew") == 0 ||
                strcmp(words[0], "writel") == 0 ||
