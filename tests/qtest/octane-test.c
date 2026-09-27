@@ -764,10 +764,10 @@ static void test_flash_and_pci(void)
     g_assert_cmphex(qtest_readl(qts, FLASH + 1), ==, 0x345678ff);
     g_assert_cmphex(qtest_readq(qts, FLASH + 1), ==,
                     0x345678ffffffffffULL);
-    /* QEMU splits this unaligned read before Bridge sees its full width. */
+    /* QEMU splits this unaligned read across the two flash selects. */
     g_assert_cmpuint(qtest_readq_tx(qts, FLASH + FLASH_SELECT_SIZE - 7,
-                                    &last), ==, MEMTX_DECODE_ERROR);
-    g_assert_cmphex(last, ==, 0xffffffffffffff00ULL);
+                                    &last), ==, MEMTX_OK);
+    g_assert_cmphex(last, ==, UINT64_MAX);
     /* Bridge drops writes while flash write enable is clear. */
     g_assert_cmpuint(qtest_writel_tx(qts, FLASH, 0), ==, MEMTX_OK);
     g_assert_cmpuint(qtest_readl_tx(qts, FLASH, &value), ==, MEMTX_OK);
@@ -784,8 +784,6 @@ static void test_flash_and_pci(void)
     g_clear_pointer(&mtree, g_free);
     mtree = qtest_hmp(qts, "info mtree -f");
     g_assert_nonnull(strstr(mtree, "sgi-bridge.flash-read"));
-    g_assert_cmpuint(qtest_readq_tx(qts, FLASH + 0x200000, &last), !=,
-                     MEMTX_OK);
     g_assert_cmphex(qtest_readl(qts, CFG(0)), ==, 0x10201077);
     g_assert_cmphex(qtest_readl(qts, CFG(1)), ==, 0x10201077);
     g_assert_cmphex(qtest_readl(qts, CFG(2)), ==, 0x000310a9);
@@ -796,6 +794,31 @@ static void test_flash_and_pci(void)
     /* An empty one-wire bus has no device to pull a reset slot low. */
     qtest_writel(qts, BRIDGE_NIC, (520u << 10) | (65u << 2));
     g_assert_cmphex(qtest_readl(qts, BRIDGE_NIC) & 3, ==, 3);
+    qtest_quit(qts);
+}
+
+static void test_alternate_flash(gconstpointer data)
+{
+    bool octane2 = GPOINTER_TO_INT(data);
+    QTestState *qts = octane2 ? octane2_start_args("") : octane_start();
+    uint16_t word;
+    uint32_t primary;
+
+    g_assert_cmpuint(qtest_readw_tx(qts, FLASH + FLASH_SELECT_SIZE, &word),
+                     ==, MEMTX_OK);
+    g_assert_cmphex(word, ==, 0xffff);
+    g_assert_cmpuint(qtest_readl_tx(qts, FLASH, &primary), ==, MEMTX_OK);
+    g_assert_cmphex(primary, ==, 0x12345678);
+
+    qtest_writel(qts, BRIDGE_REG(0x020),
+                 qtest_readl(qts, BRIDGE_REG(0x020)) | FLASH_WRITE_EN);
+    g_assert_cmpuint(qtest_writew_tx(qts, FLASH + FLASH_SELECT_SIZE, 0x1234),
+                     ==, MEMTX_OK);
+    g_assert_cmpuint(qtest_readw_tx(qts, FLASH + FLASH_SELECT_SIZE, &word),
+                     ==, MEMTX_OK);
+    g_assert_cmphex(word, ==, 0xffff);
+    g_assert_cmpuint(qtest_readl_tx(qts, FLASH, &primary), ==, MEMTX_OK);
+    g_assert_cmphex(primary, ==, 0x12345678);
     qtest_quit(qts);
 }
 
@@ -1632,6 +1655,10 @@ int main(int argc, char **argv)
     qtest_add_func("/octane/heart-widget-control", test_heart_widget_control);
     qtest_add_func("/octane/low-ram", test_low_ram);
     qtest_add_func("/octane/flash-and-pci", test_flash_and_pci);
+    qtest_add_data_func("/octane/alternate-flash", GINT_TO_POINTER(0),
+                        test_alternate_flash);
+    qtest_add_data_func("/octane2/alternate-flash", GINT_TO_POINTER(1),
+                        test_alternate_flash);
     qtest_add_func("/octane/rad-pci", test_rad_pci);
     qtest_add_func("/octane/firmware-rejections", test_firmware_rejections);
     qtest_add_func("/octane/pci-bar-separation", test_pci_bar_separation);
