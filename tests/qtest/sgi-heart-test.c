@@ -6,6 +6,10 @@
 
 #define HEART_PATH "/machine/peripheral/heart"
 #define HEART_REGS 0x0ff00000ULL
+#define HEART_ONEWIRE (HEART_REGS + 0xb8)
+#define HEART_ONEWIRE_LO (HEART_REGS + 0xbc)
+#define HEART_ONEWIRE_COMMAND(pulse, sample) \
+    (((uint64_t)(pulse) << 10) | ((uint64_t)(sample) << 2))
 #define HEART_WIDGET 0x11000000ULL
 #define HEART_PACKET (3ULL << 48)
 #define HEART_WIDGET_ID 0x4c00106cU
@@ -41,6 +45,63 @@ static QTestState *heart_start(unsigned mib, const char *extra)
     qtest_sysbus_mmio_map(s, HEART_PATH, 1, HEART_WIDGET);
     qtest_sysbus_mmio_map(s, HEART_PATH, 2, HEART_PACKET);
     return s;
+}
+
+static void test_onewire_empty(void)
+{
+    QTestState *s = heart_start(64, "");
+    uint64_t reset = HEART_ONEWIRE_COMMAND(500, 65);
+    uint64_t read = HEART_ONEWIRE_COMMAND(6, 13);
+
+    g_assert_cmphex(qtest_readq(s, HEART_ONEWIRE), ==, 0);
+    qtest_writeq(s, HEART_ONEWIRE, reset);
+    g_assert_cmphex(qtest_readq(s, HEART_ONEWIRE) & 3, ==, 0);
+    qtest_clock_step(s, 564000);
+    g_assert_cmphex(qtest_readl(s, HEART_ONEWIRE_LO) & 3, ==, 0);
+    qtest_clock_step(s, 1000);
+    g_assert_cmphex(qtest_readq(s, HEART_ONEWIRE), ==, reset | 3);
+
+    qtest_writel(s, HEART_ONEWIRE_LO, read);
+    g_assert_cmphex(qtest_readl(s, HEART_ONEWIRE_LO) & 3, ==, 0);
+    qtest_clock_step(s, 19000);
+    g_assert_cmphex(qtest_readl(s, HEART_ONEWIRE_LO), ==, read | 3);
+
+    qtest_writel(s, HEART_ONEWIRE_LO, HEART_ONEWIRE_COMMAND(80, 30));
+    qtest_clock_step(s, 110000);
+    g_assert_cmphex(qtest_readl(s, HEART_ONEWIRE_LO) & 3, ==, 2);
+    qtest_quit(s);
+}
+
+static void test_onewire_present(void)
+{
+    QTestState *s = heart_start(64, "-device ds2505,bus=onewire");
+
+    qtest_writel(s, HEART_ONEWIRE_LO, HEART_ONEWIRE_COMMAND(500, 65));
+    qtest_clock_step(s, 565000);
+    g_assert_cmphex(qtest_readl(s, HEART_ONEWIRE_LO) & 3, ==, 2);
+    qtest_quit(s);
+}
+
+static void test_onewire_replace_reset(void)
+{
+    QTestState *s = heart_start(64, "");
+    uint64_t reset = HEART_ONEWIRE_COMMAND(500, 65);
+    uint64_t read = HEART_ONEWIRE_COMMAND(6, 13);
+
+    qtest_writeq(s, HEART_ONEWIRE, reset);
+    qtest_clock_step(s, 100000);
+    qtest_writel(s, HEART_ONEWIRE_LO, read);
+    qtest_clock_step(s, 19000);
+    g_assert_cmphex(qtest_readl(s, HEART_ONEWIRE_LO), ==, read | 3);
+    qtest_clock_step(s, 500000);
+    g_assert_cmphex(qtest_readl(s, HEART_ONEWIRE_LO), ==, read | 3);
+
+    qtest_writeq(s, HEART_ONEWIRE, reset);
+    qtest_qmp_assert_success(s, "{'execute':'system_reset'}");
+    g_assert_cmphex(qtest_readq(s, HEART_ONEWIRE), ==, 0);
+    qtest_clock_step(s, 565000);
+    g_assert_cmphex(qtest_readq(s, HEART_ONEWIRE), ==, 0);
+    qtest_quit(s);
 }
 
 static void test_descriptors(gconstpointer data)
@@ -533,10 +594,18 @@ static void test_migration(void)
     qtest_writeq(from, HEART_REGS + 0x10020, 0xf | (1ULL << 16));
     g_assert_true(qtest_get_irq(from, 1));
     qtest_clock_step(from, 800);
+    qtest_writel(from, HEART_ONEWIRE_LO, HEART_ONEWIRE_COMMAND(500, 65));
+    qtest_clock_step(from, 100000);
+    g_assert_cmphex(qtest_readl(from, HEART_ONEWIRE_LO) & 3, ==, 0);
     qtest_qmp_assert_success(to,
         "{'execute':'migrate-incoming', 'arguments':{'uri':%s}}", uri);
     sgi_migrate_stopped(from, uri);
     sgi_wait_migration_status(to, "completed", 30);
+    g_assert_cmphex(qtest_readl(to, HEART_ONEWIRE_LO) & 3, ==, 0);
+    qtest_clock_step(to, 464999);
+    g_assert_cmphex(qtest_readl(to, HEART_ONEWIRE_LO) & 3, ==, 0);
+    qtest_clock_step(to, 1);
+    g_assert_cmphex(qtest_readl(to, HEART_ONEWIRE_LO) & 3, ==, 3);
     g_assert_cmphex(qtest_readl(to, HEART_WIDGET + 0x24), ==, 0x5a420ff0);
     g_assert_cmphex(qtest_readq(to, HEART_REGS), ==, 0x800);
     g_assert_cmphex(qtest_readq(to, HEART_REGS + 0x08), ==, 0x21);
@@ -569,9 +638,13 @@ static void test_migration(void)
     qtest_writeq(to, HEART_REGS + 0x10028, 1ULL << 16);
     g_assert_false(qtest_get_irq(to, 1));
     g_assert_cmphex(qtest_readq(to, HEART_REGS + 0x10030), ==, 0xf);
-    g_assert_cmphex(qtest_readq(to, HEART_REGS + 0x20000), ==, 10);
+    g_assert_cmphex(qtest_readq(to, HEART_REGS + 0x20000), ==, 7072);
     qtest_clock_step(to, 80);
-    g_assert_cmphex(qtest_readq(to, HEART_REGS + 0x20000), ==, 11);
+    g_assert_cmphex(qtest_readq(to, HEART_REGS + 0x20000), ==, 7073);
+    qtest_writel(to, HEART_ONEWIRE_LO, HEART_ONEWIRE_COMMAND(500, 65));
+    qtest_qmp_assert_success(to, "{'execute':'system_reset'}");
+    qtest_clock_step(to, 565000);
+    g_assert_cmphex(qtest_readq(to, HEART_ONEWIRE), ==, 0);
     qtest_quit(to);
     qtest_quit(from);
     if (g_file_test(socket, G_FILE_TEST_EXISTS)) {
@@ -835,6 +908,9 @@ int main(int argc, char **argv)
     g_test_add_func("/heart/interrupts", test_interrupts);
     g_test_add_func("/heart/reset", test_reset);
     g_test_add_func("/heart/migration", test_migration);
+    g_test_add_func("/heart/onewire-empty", test_onewire_empty);
+    g_test_add_func("/heart/onewire-present", test_onewire_present);
+    g_test_add_func("/heart/onewire-replace-reset", test_onewire_replace_reset);
     g_test_add_func("/heart/xtalk-routing", test_xtalk_routing);
     g_test_add_func("/heart/xtalk-dma", test_xtalk_dma);
     g_test_add_func("/heart/bridge-dma", test_bridge_dma);

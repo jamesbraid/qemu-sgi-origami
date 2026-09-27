@@ -3,10 +3,11 @@
  * SGI IP30 HEART standalone processor and memory controller profile.
  * Memory population is explicit; this does not identify an Octane DIMM layout.
  * The Crossbow widget accepts interrupt packets and mapped-RAM DMA.
- * One-wire, compare and trigger are not modeled.
+ * Compare and trigger are not modeled.
  */
 #include "qemu/osdep.h"
 #include "hw/misc/sgi-heart.h"
+#include "hw/misc/sgi-onewire-slot.h"
 #include "hw/mips/sgi-xtalk-port.h"
 #include "hw/core/irq.h"
 #include "hw/core/qdev-properties.h"
@@ -28,6 +29,48 @@
 #define HEART_WIDGET_SIZE 0x1000
 #define HEART_PACKET_SIZE (1ULL << 48)
 #define HEART_RAM_PACKET_SIZE ((HEART_MAX_UNITS + 0x1ffULL) * HEART_UNIT)
+
+#define HEART_ONEWIRE_DONE 2
+#define HEART_ONEWIRE_LEVEL 1
+
+static void heart_onewire_complete(void *opaque)
+{
+    SGIHeartState *s = opaque;
+
+    s->onewire_busy = false;
+    s->onewire_control |= HEART_ONEWIRE_DONE;
+    if (s->onewire_level) {
+        s->onewire_control |= HEART_ONEWIRE_LEVEL;
+    }
+}
+
+static void heart_onewire_refresh(SGIHeartState *s)
+{
+    if (s->onewire_busy &&
+        qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) >= s->onewire_deadline_ns) {
+        timer_del(s->onewire_timer);
+        heart_onewire_complete(s);
+    }
+}
+
+static void heart_onewire_start(SGIHeartState *s, uint64_t command)
+{
+    uint32_t pulse = (command >> 10) & 0x3ff;
+    uint32_t sample = (command >> 2) & 0xff;
+
+    if (s->onewire_busy) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sgi-heart: one-wire command replaced busy slot\n");
+    }
+    timer_del(s->onewire_timer);
+    s->onewire_control = command & ~(HEART_ONEWIRE_DONE | HEART_ONEWIRE_LEVEL);
+    s->onewire_level = sgi_onewire_slot(s->onewire_bus, pulse, sample);
+    s->onewire_busy = true;
+    /* Register units are modeled as microseconds; silicon timing is unknown. */
+    s->onewire_deadline_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+                             (int64_t)(pulse + sample) * 1000;
+    timer_mod(s->onewire_timer, s->onewire_deadline_ns);
+}
 
 static void heart_update_irq(SGIHeartState *s)
 {
@@ -302,6 +345,14 @@ static uint64_t heart_read(void *opaque, hwaddr offset, unsigned size)
                    s->descriptor[n + 1];
         }
     }
+    if (offset == 0xb8 && size == 8) {
+        heart_onewire_refresh(s);
+        return s->onewire_control;
+    }
+    if (offset == 0xbc && size == 4) {
+        heart_onewire_refresh(s);
+        return s->onewire_control;
+    }
     if (size == 8) {
         switch (offset) {
         case 0x00: return s->mode;
@@ -350,6 +401,14 @@ static void heart_write(void *opaque, hwaddr offset, uint64_t value,
             }
             return;
         }
+    }
+    if (offset == 0xb8 && size == 8) {
+        heart_onewire_start(s, value);
+        return;
+    }
+    if (offset == 0xbc && size == 4) {
+        heart_onewire_start(s, value);
+        return;
     }
     if (size == 8) {
         switch (offset) {
@@ -411,6 +470,11 @@ static void heart_reset_enter(Object *obj, ResetType type)
     s->saved_count = 0;
     s->widget_control = 0;
     s->counter_epoch_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    timer_del(s->onewire_timer);
+    s->onewire_control = 0;
+    s->onewire_level = false;
+    s->onewire_busy = false;
+    s->onewire_deadline_ns = 0;
 }
 
 static void heart_reset_hold(Object *obj, ResetType type)
@@ -427,6 +491,8 @@ static int heart_pre_save(void *opaque)
 
     s->saved_count = heart_counter(s);
     s->counter_epoch_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    s->onewire_remaining_ns = s->onewire_busy ?
+        MAX(0, s->onewire_deadline_ns - s->counter_epoch_ns) : 0;
     return 0;
 }
 
@@ -436,6 +502,12 @@ static int heart_post_load(void *opaque, int version_id)
 
     s->saved_count &= HEART_COUNT_MASK;
     s->counter_epoch_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    timer_del(s->onewire_timer);
+    if (s->onewire_busy) {
+        s->onewire_deadline_ns = s->counter_epoch_ns +
+                                 s->onewire_remaining_ns;
+        timer_mod(s->onewire_timer, s->onewire_deadline_ns);
+    }
     heart_map_all(s);
     heart_update_irq(s);
     return 0;
@@ -457,6 +529,10 @@ static const VMStateDescription vmstate_heart = {
         VMSTATE_UINT64(pending, SGIHeartState),
         VMSTATE_UINT64(saved_count, SGIHeartState),
         VMSTATE_UINT32(widget_control, SGIHeartState),
+        VMSTATE_UINT64(onewire_control, SGIHeartState),
+        VMSTATE_INT64(onewire_remaining_ns, SGIHeartState),
+        VMSTATE_BOOL(onewire_level, SGIHeartState),
+        VMSTATE_BOOL(onewire_busy, SGIHeartState),
         VMSTATE_END_OF_LIST()
     },
 };
@@ -526,6 +602,16 @@ static void heart_init(Object *obj)
     memory_region_add_subregion(&s->packet, HEART_RAM_BASE, &s->packet_ram);
     sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->packet);
     qdev_init_gpio_out_named(DEVICE(obj), s->processor, "processor", 3);
+    s->onewire_bus = onewire_create_bus(DEVICE(obj), "onewire");
+    s->onewire_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
+                                   heart_onewire_complete, s);
+}
+
+static void heart_finalize(Object *obj)
+{
+    SGIHeartState *s = SGI_HEART(obj);
+
+    timer_free(s->onewire_timer);
 }
 
 static const char *heart_xtalk_describe(Object *port, unsigned int index)
@@ -567,6 +653,7 @@ static const TypeInfo heart_info = {
     .parent = TYPE_SYS_BUS_DEVICE,
     .instance_size = sizeof(SGIHeartState),
     .instance_init = heart_init,
+    .instance_finalize = heart_finalize,
     .class_init = heart_class_init,
     .interfaces = (const InterfaceInfo[]) {
         { TYPE_SGI_XTALK_PORT },

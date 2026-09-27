@@ -3,6 +3,8 @@
 #define HW_MISC_SGI_HEART_H
 
 #include "hw/core/sysbus.h"
+#include "hw/1wire/onewire.h"
+#include "qemu/timer.h"
 
 #define TYPE_SGI_HEART "sgi-heart"
 OBJECT_DECLARE_SIMPLE_TYPE(SGIHeartState, SGI_HEART)
@@ -35,6 +37,13 @@ struct SGIHeartState {
     uint64_t pending;
     uint64_t saved_count;
     int64_t counter_epoch_ns;
+    OneWireBus *onewire_bus;
+    QEMUTimer *onewire_timer;
+    uint64_t onewire_control;
+    int64_t onewire_deadline_ns;
+    int64_t onewire_remaining_ns;
+    bool onewire_level;
+    bool onewire_busy;
 };
 
 #endif
