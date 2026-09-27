@@ -1006,8 +1006,9 @@ void sgi_bedrock_hold_reset(SGIBedrockState *s)
         s->presence_posted[slot] = false;
         /*
          * A parked processor is halted by this device alone; wake it, or a
-         * local reset (which does not restart the processors) would leave it
-         * stopped for good. The unhalt work checks park_mask when it runs.
+         * local reset would leave it stopped for good where no board
+         * restarts the processors on node-reset. The unhalt work checks
+         * park_mask when it runs.
          */
         s->park_kind[slot] = 0;
         if (s->park_mask & (1U << slot)) {
@@ -1348,6 +1349,7 @@ static void bedrock_local_reset(void *opaque, int n, int level)
          * too, alongside bedrock_reset_enter's for the ordinary reset path.
          */
         sgi_bedrock_hold_reset(s);
+        qemu_irq_pulse(s->node_reset);
     }
 }
 
@@ -1830,6 +1832,7 @@ static void bedrock_init(Object *obj)
     qdev_init_gpio_out_named(dev, s->nmi, "nmi", ARRAY_SIZE(s->nmi));
     qdev_init_gpio_out_named(dev, s->cpu_enable, "cpu-enable",
                              ARRAY_SIZE(s->cpu_enable));
+    qdev_init_gpio_out_named(dev, &s->node_reset, "node-reset", 1);
     qdev_init_gpio_in_named(dev, bedrock_forward_irq, "pi-hardware-irq",
                             ARRAY_SIZE(s->hardware_irq));
     qdev_init_gpio_in_named(dev, bedrock_forward_nmi, "pi-nmi",

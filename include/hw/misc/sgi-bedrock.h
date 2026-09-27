@@ -64,6 +64,12 @@ struct SGIBedrockState {
                            SGI_BEDROCK_PI_HW_IRQS];
     qemu_irq nmi[2 * SGI_BEDROCK_PI_PROCESSORS];
     qemu_irq cpu_enable[2 * SGI_BEDROCK_PI_PROCESSORS];
+    /*
+     * Pulsed after every node-local reset, for the board to restart the
+     * node's processors: resetting this device's own units leaves them
+     * running where they were.
+     */
+    qemu_irq node_reset;
     uint32_t processor_count;
     uint32_t processor_mask;
     uint32_t cpu_enable_initial_mask;
