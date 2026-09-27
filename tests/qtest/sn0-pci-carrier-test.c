@@ -18,7 +18,7 @@
 
 /* Any PCI card will do; the IOC3 is the one this machine already builds. */
 #define CARD_ID_PAIR        0x000310a9u
-#define CARRIER_BUS         "pci.carrier1"
+#define CARRIER_BUS         "io2.0"
 
 #define CARRIER_MACHINE \
     "-M origin2000,topology=origin2000-pci-carrier -display none"

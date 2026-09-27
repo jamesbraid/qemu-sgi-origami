@@ -89,15 +89,15 @@ typedef struct {
     "-M origin2000,topology=origin2000-menet -display none"
 
 static const MenetCase device_case = {
-    DEVICE_ARGS, DEVICE_WIDGET, "/machine/module0/slot11/baseio",
+    DEVICE_ARGS, DEVICE_WIDGET, "/machine/module0/io4/baseio",
 };
 static const MenetCase placed_case = {
-    PLACED_ARGS, PLACED_WIDGET, "/machine/module0/slot14/baseio",
+    PLACED_ARGS, PLACED_WIDGET, "/machine/module0/io5/baseio",
 };
 /* The GIGAchannel cabinet's io3 position: Crossbow link C, widget 12. */
 static const MenetCase gigachannel_case = {
     "-M origin200,topology=origin200-gigachannel-xio -display none", 12,
-    "/machine/module1/slot12/baseio",
+    "/machine/module1/io3/baseio",
 };
 
 static void ioc3_map(QTestState *qts, const MenetCase *c, unsigned int d)

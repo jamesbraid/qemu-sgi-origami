@@ -149,6 +149,10 @@ static bool sgi_xio_board_place_by_name(SGIXioBoardState *board,
         return false;
     }
     board->module = module;
+    /* A board fitted by slot name is known by that name, unless given one. */
+    if (!DEVICE(board)->id) {
+        DEVICE(board)->id = g_strdup(board->slot_name);
+    }
     if (!object_property_set_link(obj, "fabric", OBJECT(fabric), errp)) {
         return false;
     }
@@ -230,6 +234,21 @@ static void sgi_xio_board_unrealize(DeviceState *dev)
         QTAILQ_REMOVE(&sgi_xio_board_all, board, node);
         board->queued = false;
     }
+}
+
+void sgi_xio_board_name_pci_bus(SGIXioBoardState *board, DeviceState *bridge,
+                                const char *explicit)
+{
+    g_autofree char *name = NULL;
+
+    if (explicit) {
+        name = g_strdup(explicit);
+    } else if (DEVICE(board)->id) {
+        name = g_strdup_printf("%s.0", DEVICE(board)->id);
+    } else {
+        return;
+    }
+    qdev_prop_set_string(bridge, "pci-bus-name", name);
 }
 
 bool sgi_xio_board_attach_pending(SGIXbowState *crossbow,

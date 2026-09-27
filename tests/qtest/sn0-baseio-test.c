@@ -2776,7 +2776,7 @@ static void test_io6g_rad1_subcode_rejects_partial_frame(void)
 #define RAD1_NTSC_BAND_HI         16949152
 #define RAD1_PAL_BAND_LO          19607843
 #define RAD1_PAL_BAND_HI          20407139
-#define RAD1_RAD1_QOM_PATH        "/machine/module0/slot8/baseio/rad1"
+#define RAD1_RAD1_QOM_PATH        "/machine/module0/io1/baseio/rad1"
 
 /*
  * Walk @n completions from a fresh continuous start and collect the ones

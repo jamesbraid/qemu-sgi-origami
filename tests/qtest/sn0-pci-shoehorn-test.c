@@ -547,7 +547,7 @@ static void test_sio_enumerates(const void *data)
                     CAD_DUO_SUBSYSTEM);
     for (i = 0; i < ARRAY_SIZE(absent); i++) {
         g_autofree char *path = g_strdup_printf(
-            "/machine/module0/slot11/sio-ufc/%s", absent[i]);
+            "/machine/module0/io4/sio-ufc/%s", absent[i]);
         g_autoptr(QDict) response = qtest_qmp(qts,
             "{'execute': 'qom-list', 'arguments': {'path': %s}}", path);
 
@@ -556,7 +556,7 @@ static void test_sio_enumerates(const void *data)
     {
         g_autoptr(QDict) response = qtest_qmp(qts,
             "{'execute': 'qom-list', 'arguments': {'path': "
-            "'/machine/module0/slot11/sio-ufc/serial[1]'}}");
+            "'/machine/module0/io4/sio-ufc/serial[1]'}}");
 
         g_assert_false(qdict_haskey(response, "error"));
     }

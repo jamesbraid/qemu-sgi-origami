@@ -815,9 +815,9 @@ FLAVOURS = {
             SerialPort('mio-b', '/dev/ttyd4', f'{_IO6}/6/tty/2/d',
                        prop='sgi-xio-baseio.mio-chardev-b')),
         keyboards=(
-            Keyboard('/machine/module0/slot8/baseio/ioc3/kbc', f'{_IO6}/4',
+            Keyboard('/machine/module0/io1/baseio/ioc3/kbc', f'{_IO6}/4',
                      '/hw/input', '/dev/input'),
-            Keyboard('/machine/module0/slot8/baseio/mio-ioc3/kbc',
+            Keyboard('/machine/module0/io1/baseio/mio-ioc3/kbc',
                      f'{_IO6}/6', '/hw/input1', '/dev/input1')),
         rti_args=(f'-vertex {_IO6}/4',),
         # Two processors over 256 MB: the default size took 920 to 1050s.
@@ -843,7 +843,7 @@ FLAVOURS = {
         serial_ports=(
             SerialPort('ioc3-b', '/dev/ttyd2', f'{_IO6}/4/tty/2/d', line=1),),
         keyboards=(
-            Keyboard('/machine/module0/slot12/cad-duo/kbc', f'{_SHOEHORN}/1',
+            Keyboard('/machine/module0/io2/cad-duo/kbc', f'{_SHOEHORN}/1',
                      '/hw/input1', '/dev/input1'),),
         # The Cad Duo has no serial ports and no real-time interrupt.
         rti_args=(f'-vertex {_IO6}/4',),
@@ -876,8 +876,8 @@ FLAVOURS = {
         # (docs/datasheets/sgi-cad-duo-pci-card.md in the project
         # checkout).
         extra_args=(
-            '-device', 'qlogic-isp12160,bus=pci.carrier1,addr=0',
-            '-device', 'sgi-ioc3,id=carrier-ioc3,bus=pci.carrier1,addr=1,'
+            '-device', 'qlogic-isp12160,bus=io2.0,addr=0',
+            '-device', 'sgi-ioc3,id=carrier-ioc3,bus=io2.0,addr=1,'
             'subsystem-id=0xffff'),
     ),
     'origin300': Flavour(

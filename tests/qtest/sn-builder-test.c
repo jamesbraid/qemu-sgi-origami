@@ -231,8 +231,7 @@ static void test_pci_expansion_attaches_at_a_named_slot(const void *data)
 {
     QTestState *qts = qtest_init(
         "-M origin2000 -display none -device sgi-pci-expansion,slot=io4");
-    g_autofree char *type = qom_child_type(qts, "/machine/module0",
-                                           "slot11");
+    g_autofree char *type = qom_child_type(qts, "/machine/module0", "io4");
 
     g_assert_cmpstr(type, ==, "sgi-pci-expansion");
     g_assert_cmphex(xtalk_uint(qts, "crossbow0", "startup-links-alive"), ==,
@@ -251,8 +250,7 @@ static void test_xio_baseio_g_fits_the_deskside_io1(const void *data)
     QTestState *qts = qtest_init(
         "-M origin2000 -display none -device sgi-xio-baseio,preset=io6g,"
         "slot=io9");
-    g_autofree char *type = qom_child_type(qts, "/machine/module0",
-                                           "slot15");
+    g_autofree char *type = qom_child_type(qts, "/machine/module0", "io9");
 
     g_assert_cmpstr(type, ==, "sgi-xio-baseio");
     qtest_quit(qts);
@@ -380,7 +378,7 @@ static void test_explicit_fabric_must_match_its_slot(const void *data)
  */
 #define SPARE_BASE              UINT64_C(0xf0000000000)
 #define SPARE_REG(offset)       (SPARE_BASE + (offset) + REG_DATA)
-#define SPARE_BRIDGE            "/machine/module0/slot11/bridge"
+#define SPARE_BRIDGE            "/machine/module0/io4/bridge"
 #define SENTINEL                0xa5
 
 /*
@@ -497,7 +495,7 @@ static void test_pci_expansion_delivers_through_spare_fabric(const void *data)
     QTestState *qts = qtest_init(
         "-M origin2000 -display none -device sgi-pci-expansion,"
         "slot=io4 "
-        "-device sgi-bridge-dma-test,bus=pci,addr=0");
+        "-device sgi-bridge-dma-test,bus=io4.0,addr=0");
     uint64_t dest = SMALL_WINDOW(BASEIO_WIDGET) + BASEIO_RRB_EVEN;
 
     qtest_sysbus_mmio_map(qts, SPARE_BRIDGE, 0, SPARE_BASE);
@@ -1024,11 +1022,11 @@ static void test_origin200_onboard_board_is_ip29_preset(const void *data)
 static void test_origin2000_onboard_board_is_xio_baseio(const void *data)
 {
     QTestState *qts = qtest_init("-M origin2000 -display none");
-    g_autofree char *type = qom_child_type(qts, "/machine/module0", "slot8");
+    g_autofree char *type = qom_child_type(qts, "/machine/module0", "io1");
     g_autofree char *preset = NULL;
 
     g_assert_cmpstr(type, ==, "sgi-xio-baseio");
-    preset = qom_get_str(qts, "/machine/module0/slot8", "preset");
+    preset = qom_get_str(qts, "/machine/module0/io1", "preset");
     g_assert_cmpstr(preset, ==, "io6");
     qtest_quit(qts);
 }
@@ -1044,12 +1042,12 @@ static void test_origin2000_one_node_onboard_board_is_xio_baseio(
     QTestState *qts = qtest_init(
         "-M origin2000,topology=origin2000-one-node -smp 2 -m 64M "
         "-display none");
-    g_autofree char *type = qom_child_type(qts, "/machine/module0", "slot8");
+    g_autofree char *type = qom_child_type(qts, "/machine/module0", "io1");
     g_autofree char *preset = NULL;
     g_autofree char *head = qom_child_type(qts, "/machine", "mgras");
 
     g_assert_cmpstr(type, ==, "sgi-xio-baseio");
-    preset = qom_get_str(qts, "/machine/module0/slot8", "preset");
+    preset = qom_get_str(qts, "/machine/module0/io1", "preset");
     g_assert_cmpstr(preset, ==, "io6g");
     g_assert_cmpstr(head, ==, "sgi-mgras");
     qtest_quit(qts);

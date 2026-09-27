@@ -1252,7 +1252,7 @@ static void test_bte_routes_three_distinct_endpoints(void)
 static void test_baseio_dma_reaches_far_node(void)
 {
     QTestState *qts = start_module_with(
-        "-device sgi-bridge-dma-test,bus=pci.baseio0,addr=3");
+        "-device sgi-bridge-dma-test,bus=io1.0,addr=3");
     const pcibus_t pci_far =
         ((pcibus_t)LOCAL_HUB_WIDGET << 60) |
         ((pcibus_t)module_nasids[3] * NODE_STRIDE) | DMA_TARGET;
@@ -2132,7 +2132,7 @@ static void test_xtalk_owner(void)
     /* A qom-list on a path that does not exist fails; this one must not. */
     qobject_unref(qtest_qmp_assert_success_ref(qts,
         "{'execute': 'qom-list', 'arguments': {"
-        "'path': '/machine/module0/slot8'}}"));
+        "'path': '/machine/module0/io1'}}"));
     g_assert_cmphex((qtest_readl(qts, UINT64_C(0x2000f000004)) >> 12) &
                     0xffff, ==, 0xc003);
     qtest_quit(qts);

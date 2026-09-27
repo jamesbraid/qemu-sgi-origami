@@ -167,6 +167,15 @@ struct SGIXioSlotsClass {
 };
 
 /*
+ * Name the PCI bus a board's own Bridge creates: `explicit` when the board
+ * was given a "pci-bus-name", else QEMU's child-bus idiom <id>.0 from the
+ * board's own qdev id (io5.0 for a board in IO5), else the Bridge's own
+ * default.
+ */
+void sgi_xio_board_name_pci_bus(SGIXioBoardState *board, DeviceState *bridge,
+                                const char *explicit);
+
+/*
  * Attach every not-yet-attached board registered under `module` to
  * `crossbow`, each at its slot, and leave the rest for the caller to realize.
  * Stops and returns false on the first board that refuses, ordinarily because

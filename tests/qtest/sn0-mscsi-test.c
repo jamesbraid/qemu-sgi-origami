@@ -57,7 +57,7 @@ typedef struct {
     "slot=io4"
 
 static const MscsiCase device_case = {
-    DEVICE_ARGS, DEVICE_WIDGET, "/machine/module0/slot11/baseio",
+    DEVICE_ARGS, DEVICE_WIDGET, "/machine/module0/io4/baseio",
 };
 
 #define PLACED_ARGS \
@@ -70,10 +70,10 @@ static const MscsiCase device_case = {
 #define CABINET_LINKS       0x0700
 
 static const MscsiCase io2_case = {
-    PLACED_ARGS, IO2_WIDGET, "/machine/module1/slot11/baseio",
+    PLACED_ARGS, IO2_WIDGET, "/machine/module1/io2/baseio",
 };
 static const MscsiCase io4_case = {
-    PLACED_ARGS, IO4_WIDGET, "/machine/module1/slot13/baseio",
+    PLACED_ARGS, IO4_WIDGET, "/machine/module1/io4/baseio",
 };
 
 /* A 32-bit crosstalk read through CPU 0's own Hub. */
