@@ -20,7 +20,7 @@ import os
 import re
 import struct
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import lib_origin300
@@ -49,6 +49,13 @@ CHECKS = (
     'olmem',
     'oltape',
     'olcdrom',
+    'olpci',         # olpci's configuration check at the Bridge vertex
+    'olperi',        # olperi's random-instruction test on processor 0
+    'olsio',         # olsio's internal serial loopback
+    'olusb',         # olusb's USB host-controller register check
+    'olvst',         # olvst's socket network read/write
+    'pandora',       # pandora's thirty-minute system stress
+    'torpedo',       # torpedo's hour-long floating-point workload
     'reboot',        # an IRIX reboot restarts the PROM
     'warm_boot',     # IRIX boots again after it, and keeps nvram and time
     'persistence',   # nvram and the Timekeeper clock across a full stop
@@ -81,7 +88,36 @@ REASONS = {
         'warm reset through the routers',
     'parallel-own-history':
         'the disk was installed on an Origin 200, so its parallel-port '
-        'history already names this port and clearing it renumbers nothing'
+        'history already names this port and clearing it renumbers nothing',
+    'ip35-only':
+        'field_diags_irix installs it for IP35 only, and root-diags.qcow2 '
+        'does not carry it',
+    'olperi-not-ip29':
+        'the Online Diagnostics manual (108-0286-007) does not mark olperi '
+        'for IP29, and it fails there',
+    'olvst-stalls':
+        'olvst from root-diags.qcow2 passes interactively but stalled after '
+        'its start line under the functional-test container on the Origin '
+        '200',
+    'unmeasured-here':
+        'not yet run on this flavour; the Origin 300 rows run it',
+    'torpedo-row':
+        'torpedo runs in its own row: its hour-plus default leaves the rest '
+        'of the row no room in one nightly job',
+    'torpedo-only':
+        'this row boots for torpedo alone; the same machine\'s other row runs '
+        'this check',
+    'pair-pandora-memory':
+        'pandora\'s memory tests fail on the pair, 4 of 10 on a read and '
+        'write compare (the project checkout\'s run '
+        'irix-20260926T072449-b9ed8b); the row takes it once that is '
+        'explained',
+    'pair-torpedo-unmeasured':
+        'no run has yet finished torpedo on the pair, so it has no budget '
+        'or row of its own',
+    'reboot-stall':
+        'an IRIX reboot on the Origin 300 stalls before the PROM restarts '
+        '(jamesb/qemu#875); a new row takes the check once that is fixed',
 }
 
 # The composed tape identity IRIX's driver recognizes as a DAT: the
@@ -109,6 +145,9 @@ _NEEDS = {
     'scsi_card': 'scsi_card',
     'olrti': 'rti_args',
     'olenet': 'olenet_vertex',
+    'olpci': 'olpci_vertex',
+    'olsio': 'olsio_vertex',
+    'olusb': 'olusb_vertex',
     'parallel': 'parallel',
 }
 
@@ -272,6 +311,29 @@ GUEST_TRIPWIRES = (
     ('the diagnostic dumped core', 'coredump'),
 )
 
+# One loop completed with PASS, as -operator prints it: "LOOP  Completed
+# Loop 1 of 1, duration: 52.502 sec  PASS".
+_LOOP_PASS = re.compile(
+    r'LOOP\s+Completed Loop 1\s+of 1, duration: [\d.]+ sec\s+PASS\b')
+
+_OPERATOR_TRIPWIRES = (
+    ('a loop failed', re.compile(r'LOOP\s+Completed Loop.*\bFAIL\b')),
+    ('a hardware error was reported', re.compile(r'(?m)^\*{4} ?ERROR')),
+)
+
+
+def _operator_diag(subtest):
+    """A one-subtest diagnostic run under -operator: its loop passes,
+    its subtest counts one pass and no non-pass, and so does the total."""
+    return Diag(
+        ((f'{subtest} loop passed', _LOOP_PASS),
+         (f'{subtest} pass',
+          re.compile(rf'META\s+{re.escape(subtest)}\s+1\s+0\b')),
+         (f'{subtest} summary all passed',
+          re.compile(r'META\s+TOTAL\s+1\s+0\b'))),
+        _OPERATOR_TRIPWIRES)
+
+
 DIAGS = {
     # The disk exerciser's async-direct pattern pass over an 8 MiB file.
     'oldisk': Diag(
@@ -329,6 +391,34 @@ DIAGS = {
          ('olenet info pass', re.compile(r'META\s+enet-info\s+1\s+0\b')),
          ('olenet summary all passed',
           re.compile(r'META\s+TOTAL\s+2\s+0\b')))),
+    # The Origin 300 package's diagnostics below run under -operator, as
+    # the project checkout's online-diagnostics driver runs them: the
+    # LOOP line's trailing word is then each one's verdict, beside a META
+    # row per subtest.
+    'olpci': _operator_diag('pciDiagList'),
+    'olperi': _operator_diag('olperi'),
+    'olsio': _operator_diag('sioTest'),
+    'olusb': _operator_diag('usb-hc-check'),
+    'olvst': _operator_diag('olvst'),
+    # pandora prints no verdict under -operator, so it runs without it and
+    # its own RSLT line and per-class counts are read.
+    'pandora': Diag(
+        (('pandora started', re.compile(r'Pandora version')),
+         ('pandora I/O tests all passed',
+          re.compile(r'I/O Tests:\s+[1-9]\d*\s+PASSED\s+0\s+FAILED')),
+         ('pandora FPU tests all passed',
+          re.compile(r'FPU Tests:\s+[1-9]\d*\s+PASSED\s+0\s+FAILED')),
+         ('pandora MEM tests all passed',
+          re.compile(r'MEM Tests:\s+[1-9]\d*\s+PASSED\s+0\s+FAILED')),
+         ('pandora pass', re.compile(r'RSLT\s+pandora\s+PASS\b.*'
+                                     r'Pandora PASSED'))),
+        (('pandora failed', 'Pandora FAILED'),)),
+    # One loop of torpedo's one default test: no RSLT or META TOTAL under
+    # -operator, only the LOOP line.
+    'torpedo': Diag(
+        (('torpedo started', re.compile(r'REV\s+Torpedo2 version')),
+         ('torpedo loop passed', _LOOP_PASS)),
+        _OPERATOR_TRIPWIRES),
 }
 
 
@@ -585,6 +675,11 @@ class Flavour:
     # olrti's argument naming the IOC3 each loopback runs on.
     rti_args: tuple = ()
     olenet_vertex: str = None
+    # The Bridge, IOC3 and USB vertices olpci, olsio and olusb take, as
+    # bridgeloc names them.
+    olpci_vertex: str = None
+    olsio_vertex: str = None
+    olusb_vertex: str = None
     # olmem tests 80% of free memory unless MEM=<MB> bounds it
     # (108-0286-007, Table 2-3).
     olmem_args: str = ''
@@ -603,6 +698,9 @@ class Flavour:
     # The machine takes elsc-dip-switches (Origin 200 and 2000 only).
     dip_switches: bool = True
     origin300: bool = False
+    # Per-chassis processor counts for the two-chassis Origin 300; None is
+    # one chassis with the row's processors.
+    populations: tuple = None
 
 
 def prom_facts(flavour, row, diags=True):
@@ -818,6 +916,9 @@ FLAVOURS = {
             SerialPort('ioc3-b', '/dev/ttyd4', f'{_IO8}/4/tty/2/d', line=2)),
         rti_args=(f'-v {_IO8}/4',),
         olenet_vertex=f'{_IO8}/4',
+        olpci_vertex=_IO8,
+        olsio_vertex=f'{_IO8}/4',
+        olusb_vertex=f'{_IO8}/5',
         # Two processors over 512 MB: the default size took 1030 to 1250s.
         # The PROM's power-on memory test still covers all of it.
         olmem_args='MEM=128',
@@ -826,6 +927,43 @@ FLAVOURS = {
         dip_switches=False, origin300=True,
     ),
 }
+
+FLAVOURS['origin300_4cpu'] = replace(
+    FLAVOURS['origin300'], title='Origin 300 with four processors: the IO8 '
+    'IOC3')
+
+# Two chassis joined by NUMAlink, four processors each. IRIX numbers the
+# second chassis's IOC3 after the first's on this disk: tty5 and tty6, ef1,
+# external interrupts 2 (docs/boot-logs/irix.boot.2026-09-25T20:11:00-07:00
+# in the project checkout). Each chassis brings out five serial lines, its
+# L1 first, so the second chassis's IOC3 ports are lines 6 and 7 and its
+# L1, line 5, stays unconnected.
+_IO8_2 = '/hw/module/001c02/Ibrick/xtalk/15/pci'
+FLAVOURS['origin300_pair'] = replace(
+    FLAVOURS['origin300'],
+    title='Origin 300 pair: two chassis, an IO8 IOC3 in each',
+    nodes=2, populations=(4, 4),
+    hinv_facts=FLAVOURS['origin300'].hinv_facts + (
+        ('second chassis IOC3 serial port A',
+         r'IOC3/IOC4 serial port: tty5\b'),
+        ('second chassis IOC3 serial port B',
+         r'IOC3/IOC4 serial port: tty6\b'),
+        ('second chassis IOC3 Ethernet',
+         r'Fast Ethernet: ef1, .*module 001c02, pci 4\b'),
+        ('second chassis IOC3 real-time interrupt',
+         r'IOC3/IOC4 external interrupts: 2\b'),
+    ),
+    serial_ports=FLAVOURS['origin300'].serial_ports + (
+        SerialPort('chassis2-a', '/dev/ttyd5', f'{_IO8_2}/4/tty/1/d',
+                   line=6),
+        SerialPort('chassis2-b', '/dev/ttyd6', f'{_IO8_2}/4/tty/2/d',
+                   line=7)),
+    rti_args=(f'-v {_IO8}/4', f'-v {_IO8_2}/4'),
+)
+
+# The rows that boot for torpedo alone: the same machines, one launch each.
+FLAVOURS['origin300_torpedo'] = FLAVOURS['origin300']
+FLAVOURS['origin300_4cpu_torpedo'] = FLAVOURS['origin300_4cpu']
 
 
 def _serial_args(flavour, paths):
@@ -857,9 +995,13 @@ def launch_args(flavour, row, assets, paths, quick_prom=False):
     machine = flavour.machine
     argv = ['-accel', 'tcg,thread=multi', '-cpu', flavour.cpu,
             '-smp', str(row.cpus), '-m', str(row.mem)]
-    if flavour.origin300:
+    if flavour.populations:
+        machine, o300 = lib_origin300.launch_args_two_chassis(
+            assets['root'], flavour.populations, paths['scratch'])
+    elif flavour.origin300:
         machine, o300 = lib_origin300.launch_args(assets['root'], row.cpus,
                                                   paths['scratch'])
+    if flavour.origin300:
         # Keep the boot flash and identity records; this module picks the
         # processor, memory and accelerator itself.
         for flag in ('-accel', '-cpu', '-smp', '-m'):

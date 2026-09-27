@@ -79,11 +79,10 @@ test_mips64_timeouts = {
   'irix_miniroot' : 900,
   # One target per irix-diag-matrix row (test_irix_diag.py and the
   # test_irix_diag_<flavour>.py beside it), each selectable on its own so a
-  # diagnostics-only nightly job can run one or two rows. The runner
-  # cancels a job at 60 minutes (3600s). That job reached `meson test`
-  # 153s after starting when measured, which leaves 3447s; the steps after
-  # the tests (collecting results) have not been measured, so no timeout
-  # is above 3000s, leaving them 447s. Each timeout is the row's budget in
+  # diagnostics-only nightly job can run one or two rows. The nightly job
+  # is cancelled at 200 minutes (.forgejo/workflows/nightly.yml), and no
+  # timeout here is above 9000s, leaving the build, the asset downloads and
+  # the result steps 3000s. Each timeout is the row's budget in
   # irix-diag-matrix plus 120s for its summary and the machines' shutdown,
   # and every wait inside a row (boots, shell steps, diagnostics, reboot,
   # stop) is cut to what is left of that budget, so a slow run marks its
@@ -100,12 +99,26 @@ test_mips64_timeouts = {
   # 2085s, 2060s, 2124s and 1835s of their budgets, in that order; the
   # one-node's and carrier's 2085s and 2124s were within 200s of the
   # 2280s they had, so they now have 2880s like the others.
+  #
+  # The Origin 300 rows gained olpci, olperi, olsio, olusb, olvst and
+  # pandora, which took about 2000s together at two and four processors in
+  # the project checkout's online-diagnostics runs (2026-09-23 to 27), 1792s
+  # of it pandora's own thirty-minute default. With them the two- and
+  # four-processor rows took 2657s and 2562s (2026-09-27, build-fast) and
+  # have 5700s. The two-chassis row, which leaves pandora out, took 1289s
+  # after a boot of 318s, where another boot took 616s, and has 2880s.
+  # torpedo took 5115s at four processors and 5974s at two, so it has rows
+  # of its own at 8700s: a boot and torpedo alone.
   'irix_diag' : 3000,
   'irix_diag_origin200' : 1620,
   'irix_diag_origin2000_one_node' : 3000,
   'irix_diag_origin2000_pci_shoehorn' : 3000,
   'irix_diag_origin2000_pci_carrier' : 3000,
-  'irix_diag_origin300' : 3000,
+  'irix_diag_origin300' : 5820,
+  'irix_diag_origin300_4cpu' : 5820,
+  'irix_diag_origin300_pair' : 3000,
+  'irix_diag_origin300_torpedo' : 8820,
+  'irix_diag_origin300_4cpu_torpedo' : 8820,
   # Boot the plain installed IRIX disk (265s to root login when last
   # measured; root.qcow2 is the base root-diags.qcow2 is built from) and
   # require who -r/uname -aR to show run level 2 under the
@@ -241,6 +254,10 @@ tests_mips64_system_thorough = [
   'irix_diag_origin2000_pci_shoehorn',
   'irix_diag_origin2000_pci_carrier',
   'irix_diag_origin300',
+  'irix_diag_origin300_4cpu',
+  'irix_diag_origin300_pair',
+  'irix_diag_origin300_torpedo',
+  'irix_diag_origin300_4cpu_torpedo',
   'irix_installed_boot',
   'irix_origin300_installed_boot',
   'mgras_desktop',

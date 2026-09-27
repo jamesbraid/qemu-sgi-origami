@@ -53,16 +53,23 @@ The diagnostics, and why these:
   - olcdrom -- reads an emulated `scsi-cd` holding a generated data CD;
   - olrti   -- the IOC3's real-time interrupt, internal loopback only:
     the external test needs a cable from output to input;
-  - olenet  -- the IOC3 Ethernet probe, where the disk carries it.
+  - olenet  -- the IOC3 Ethernet probe, where the disk carries it;
+  - olpci, olsio, olusb -- the Origin 300 package's Bridge configuration
+    check, IOC3 serial internal loopback and USB host-controller check;
+  - olperi  -- the random-instruction test, on processor 0;
+  - olvst   -- socket-based network read and write;
+  - pandora -- its own thirty-minute default system stress;
+  - torpedo -- its own default of one loop of one floating-point test,
+    an hour and more under emulation, so the Origin 300 runs it in rows
+    of its own.
 
-olperi (the random-instruction test) is not for IP29 and fails on it;
-torpedo runs a thousand-loop FPU workload measured in guest time, which
-dilates many-fold under emulation, and a bounded run only duplicates the
-firmware MDK coverage; pandora is a thirty-minute stress run; olvht and
-linktest need a HIPPI channel or a router topology; olvst passes
-interactively but stalls under the container the functional tests run
-in. The project checkout's irix-online-diagnostics notebook
-characterizes each of them.
+The Origin 300 disk carries the fourteen commands the Online Diagnostics
+manual marks for that machine; root-diags.qcow2 carries eleven, without
+olpci, olsio and olusb. On the Origin 200 olperi is not for IP29 and
+fails on it, and olvst from that disk passes interactively but stalled
+under the container the functional tests run in. olvht and linktest
+need a HIPPI channel or a router topology. The project checkout's
+irix-online-diagnostics notebook characterizes each of them.
 """
 
 import calendar
@@ -111,7 +118,11 @@ BOOT_BUDGET_SECONDS = 1500
 STEP_TIMEOUT_SECONDS = 120
 
 # Each diagnostic's own limit, against the slowest measured: olrti 27s,
-# olenet 15s, oldisk 894s, olmem 1246s, oltape 12s, olcdrom 329s.
+# olenet 15s, oldisk 894s, olmem 1246s, oltape 12s, olcdrom 329s. The
+# Origin 300 ones, from the project checkout's online-diagnostics runs at
+# two and four processors (2026-09-23 to 27): olpci 1s, olperi 4s, olsio
+# 296s, olusb 13s, olvst 1s, pandora 1792s against its own 1800s default,
+# and torpedo 5115s at four processors and 5974s at two.
 DIAG_TIMEOUT_SECONDS = {
     'olrti': 120,
     'olenet': 120,
@@ -119,7 +130,25 @@ DIAG_TIMEOUT_SECONDS = {
     'olmem': 1800,
     'oltape': 120,
     'olcdrom': 900,
+    'olpci': 120,
+    'olperi': 120,
+    'olsio': 900,
+    'olusb': 120,
+    'olvst': 180,
+    'pandora': 2700,
+    'torpedo': 7800,
 }
+
+# How the project checkout's online-diagnostics driver runs the Origin 300
+# package's diagnostics: no colour, and -operator to keep only the tagged
+# result lines.
+OPERATOR = '-nocolor -operator'
+
+# olperi's random-instruction test on processor 0, seed 222, 1024
+# instructions, one loop: the invocation recorded working on the Origin
+# 2000 and the Origin 300 (the project checkout's online-diagnostics
+# notebook).
+OLPERI_ARGS = '-m -r 0 -s 222 -i 1024 -il 1'
 
 # After a timed-out diagnostic is interrupted it still prints its summary
 # before the shell answers again.
@@ -437,9 +466,13 @@ if QemuSystemTest is not None:
             """Prove each port's /dev name is its intended vertex by
             device number, write a line to it, and wait for the line to
             reach the port's host file."""
-            numbers = device_numbers(self._out(
-                'ls -lL ' + ' '.join(f'{p.dev} {p.vertex}' for p in ports),
-                'ttys'))
+            # One listing per port: on the two-chassis Origin 300 a single
+            # listing of four ports, a 260-character line, reached the
+            # shell with its end mangled and its end marker never printed.
+            numbers = {}
+            for port in ports:
+                numbers.update(device_numbers(self._out(
+                    f'ls -lL {port.dev} {port.vertex}', f'tty-{port.name}')))
             for port in ports:
                 self._expect(port.vertex in numbers, f'no {port.vertex}')
                 self._expect(numbers.get(port.dev) == numbers[port.vertex],
@@ -579,6 +612,31 @@ if QemuSystemTest is not None:
                          'hinv -c scsi lists no CD-ROM where expected')
             self._diag('olcdrom', '/usr/diags/bin/olcdrom -device '
                        f'{self.flavour.cd_dev}')
+
+        def _check_olpci(self):
+            self._diag('olpci', f'/usr/diags/bin/olpci {OPERATOR} '
+                       f'-v {self.flavour.olpci_vertex}')
+
+        def _check_olperi(self):
+            self._diag('olperi',
+                       f'/usr/diags/bin/olperi {OPERATOR} {OLPERI_ARGS}')
+
+        def _check_olsio(self):
+            self._diag('olsio', f'/usr/diags/bin/olsio {OPERATOR} '
+                       f'-v {self.flavour.olsio_vertex}')
+
+        def _check_olusb(self):
+            self._diag('olusb', f'/usr/diags/bin/olusb {OPERATOR} '
+                       f'-v {self.flavour.olusb_vertex}')
+
+        def _check_olvst(self):
+            self._diag('olvst', f'/usr/diags/bin/olvst {OPERATOR}')
+
+        def _check_pandora(self):
+            self._diag('pandora', '/usr/diags/bin/pandora -nocolor')
+
+        def _check_torpedo(self):
+            self._diag('torpedo', f'/usr/diags/bin/torpedo {OPERATOR}')
 
         def _check_timer(self):
             # IRIX warns when a CPU has seen no scheduler clock tick for

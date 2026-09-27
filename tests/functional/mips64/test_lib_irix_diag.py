@@ -17,6 +17,7 @@ import struct
 import tempfile
 import threading
 import unittest
+from unittest import mock
 from dataclasses import replace
 from pathlib import Path
 
@@ -42,7 +43,8 @@ def _line(row_id='origin200', cpus='2', mem='128', budget='1500', **cells):
     values = {check: RUN for check in CHECKS}
     values.update(mediaio='no-mediaio', rad1='no-mediaio',
                   scsi_card='no-scsi-card', olenet='no-olenet',
-                  parallel='parallel-own-history')
+                  parallel='parallel-own-history', olpci='ip35-only',
+                  olsio='ip35-only', olusb='ip35-only')
     values.update(cells)
     return ' | '.join([row_id, cpus, mem, budget] +
                       [values[c] for c in CHECKS])
@@ -80,7 +82,7 @@ class ManifestTests(unittest.TestCase):
                                   path.read_text(encoding='utf-8')):
                 with self.subTest(row=row):
                     self.assertGreaterEqual(timeout, budgets[row] + 120)
-                    self.assertLessEqual(timeout, 3000)
+                    self.assertLessEqual(timeout, 9000)
 
     def test_a_row_parses_into_cells(self):
         row = parse_row('m', 1, _line())
@@ -226,6 +228,42 @@ PASSES = {
 }
 
 
+def _operator(subtest, seconds='0.081'):
+    """A one-subtest -operator transcript: the TEST line the LOOP line
+    overwrites with a bare carriage return, then the META rows."""
+    return ('TEST                Test(1/1), Loop(1/1)\r'
+            f'LOOP                Completed Loop 1   of 1, duration: '
+            f'{seconds} sec   PASS   \n'
+            'META                ITERATION=1       PASSES         NON-PASSES\n'
+            f'META                {subtest:<17} 1              0\n'
+            'META                TOTAL             1              0\n')
+
+
+# The Origin 300 package's, from the project checkout's
+# irix.online-diag-origin300-4cpu-* captures.
+PASSES.update({
+    'olpci': _operator('pciDiagList'),
+    'olperi': _operator('olperi', '0.029'),
+    'olsio': _operator('sioTest', '292.961'),
+    'olusb': _operator('usb-hc-check', '1.063'),
+    'olvst': _operator('olvst', '0.070'),
+    'pandora': 'REV                 Pandora version 4.2 built on Jun 13 2002\n'
+               'INFO                I/O Tests:  2 PASSED        0 FAILED'
+               '        0 UNEXECUTED\n'
+               'INFO                FPU Tests:  4 PASSED        0 FAILED'
+               '        0 UNEXECUTED\n'
+               'INFO                MEM Tests:  5 PASSED        0 FAILED'
+               '        0 UNEXECUTED\n'
+               'INFO                GFX Tests:  0 PASSED        0 FAILED'
+               '        0 UNEXECUTED\n'
+               'RSLT pandora        PASS         PID#1191 Pandora PASSED\n',
+    'torpedo': 'REV                 Torpedo2 version 3.0 built on Jun 13 '
+               '2002 at 19:33:13\n'
+               'LOOP                Completed Loop 1   of 1, duration: '
+               '4043.738 sec   PASS\n',
+})
+
+
 class DiagVerdictTests(unittest.TestCase):
 
     def test_each_pass_transcript_is_clean(self):
@@ -257,6 +295,41 @@ class DiagVerdictTests(unittest.TestCase):
         for name, output in PASSES.items():
             with self.subTest(diag=name):
                 self.assertTrue(diag_problems(name, output + 'PANIC\n'))
+
+    def test_an_operator_loop_that_failed_fails(self):
+        output = PASSES['olsio'].replace('sec   PASS', 'sec   FAIL')
+        self.assertEqual(diag_problems('olsio', output),
+                         ['missing: sioTest loop passed',
+                          'tripwire: a loop failed'])
+
+    def test_an_operator_hardware_error_fails(self):
+        output = ('**** ERROR 000000   A device name must be specified.\n'
+                  + PASSES['olusb'])
+        self.assertEqual(diag_problems('olusb', output),
+                         ['tripwire: a hardware error was reported'])
+
+    def test_a_crashed_operator_diagnostic_fails(self):
+        output = 'CMDL                /usr/diags/bin/olsio\n' \
+                 'Memory fault(coredump)\n'
+        self.assertIn('tripwire: the diagnostic dumped core',
+                      diag_problems('olsio', output))
+
+    def test_pandora_with_failed_memory_tests_fails(self):
+        # The pair's run: four of ten memory test processes failed.
+        output = (PASSES['pandora']
+                  .replace('MEM Tests:  5 PASSED        0 FAILED',
+                           'MEM Tests:  6 PASSED        4 FAILED')
+                  .replace('PASS         PID#1191 Pandora PASSED',
+                           'FAIL         PID#1576 Pandora FAILED 4 tests'))
+        self.assertEqual(diag_problems('pandora', output),
+                         ['missing: pandora MEM tests all passed',
+                          'missing: pandora pass',
+                          'tripwire: pandora failed'])
+
+    def test_torpedo_needs_its_loop_to_pass(self):
+        output = PASSES['torpedo'].replace('LOOP', 'TEST')
+        self.assertEqual(diag_problems('torpedo', output),
+                         ['missing: torpedo loop passed'])
 
     def test_an_olcdrom_abort_fails(self):
         output = "olcdrom version 1.1\nABRT can't open device\n"
@@ -434,6 +507,62 @@ class LaunchArgsTests(unittest.TestCase):
         facts = dict(prom_facts(FLAVOURS['origin200'], row, diags=False))
         self.assertNotIn('every power-on diagnostic passing', facts)
         self.assertIn('the enabled memory', facts)
+
+    def test_the_origin300_rows_launch_their_own_population(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            paths = dict(self.PATHS, scratch=scratch,
+                         ports={n: f'{scratch}/{n}' for n in (
+                             'ioc3-a', 'ioc3-b', 'chassis2-a',
+                             'chassis2-b')})
+            calls = []
+
+            def one(assets, cpus, where):
+                calls.append(('one', cpus))
+                return 'origin300,x=1', ['-accel', 'a', '-cpu', 'c',
+                                         '-smp', str(cpus), '-m', '512M']
+
+            def pair(assets, populations, where):
+                calls.append(('pair', populations))
+                return 'origin300,topology=origin300-two-chassis', [
+                    '-accel', 'a', '-cpu', 'c', '-smp', '8', '-m', '1024M',
+                    '-drive', 'if=pflash,index=1']
+
+            with mock.patch.object(lib.lib_origin300, 'launch_args', one), \
+                    mock.patch.object(lib.lib_origin300,
+                                      'launch_args_two_chassis', pair):
+                rows = {r.id: r for r in parse_manifest()}
+                for row_id in ('origin300_4cpu', 'origin300_torpedo'):
+                    launch_args(FLAVOURS[row_id], rows[row_id], self.ASSETS,
+                                paths)
+                machine, argv = launch_args(FLAVOURS['origin300_pair'],
+                                            rows['origin300_pair'],
+                                            self.ASSETS, paths)
+        self.assertEqual(calls, [('one', 4), ('one', 2), ('pair', (4, 4))])
+        self.assertIn('topology=origin300-two-chassis', machine)
+        self.assertEqual(argv[argv.index('-smp') + 1], '8')
+        self.assertEqual(argv[argv.index('-m') + 1], '1024')
+        self.assertIn('if=pflash,index=1', argv)
+        # The second chassis's IOC3 ports are lines 6 and 7; its L1, line
+        # 5, and the first chassis's record lines stay unconnected.
+        serial = [argv[i + 1] for i, a in enumerate(argv) if a == '-serial']
+        self.assertEqual(serial, ['chardev:ioc3-a', 'chardev:ioc3-b',
+                                  'null', 'null', 'null',
+                                  'chardev:chassis2-a',
+                                  'chardev:chassis2-b'])
+
+    def test_prom_facts_name_the_pair(self):
+        row = next(r for r in parse_manifest() if r.id == 'origin300_pair')
+        facts = dict(prom_facts(FLAVOURS['origin300_pair'], row))
+        self.assertRegex('8 CPUs on 2 nodes found.',
+                         facts['the processors and nodes'])
+        self.assertRegex('Mem enabled             = 1024 MB',
+                         facts['the enabled memory'])
+
+    def test_a_torpedo_row_runs_only_torpedo_and_what_it_reads(self):
+        row = next(r for r in parse_manifest()
+                   if r.id == 'origin300_torpedo')
+        self.assertEqual([c for c in CHECKS if row.runs(c)],
+                         ['prom', 'inventory', 'torpedo', 'timer'])
 
     def test_the_flavours_match_the_quick_relaunch_contract(self):
         self.assertFalse(FLAVOURS['origin300'].dip_switches)
