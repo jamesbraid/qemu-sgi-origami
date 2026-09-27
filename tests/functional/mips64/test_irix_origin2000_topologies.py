@@ -391,6 +391,10 @@ if QemuSystemTest is not None:
             self.assertRegex(
                 hinv, r'Main memory size: 256 Mbytes',
                 f'IRIX does not see 256 MB -- console log: {log_path}')
+            self.assertNotRegex(
+                _text(con.buf),
+                r"CPU \d+ hasn't seen a scheduler clock interrupt",
+                f'IRIX missed a scheduler tick -- console log: {log_path}')
 
 
 if __name__ == '__main__':
