@@ -1,16 +1,19 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * Crosstalk board and Crossbow fixtures for property and deferred-attach
- * tests; the widget uses sgi-xtalk-test-target, with no product wiring.
- */
-
-/*
- * The target supports property validation and re-parenting. The fixture
- * stands in for a machine builder: it creates an unrealized Crossbow, then a
- * machine-init-done notifier calls sgi_xio_board_attach_pending() and
- * realizes it on success. Two read-only properties report the result; "retry"
- * repeats the attempt for a board added after the notifier. See
- * tests/qtest/sgi-xtalk-board-test.c.
+ * A crosstalk board that exercises sgi-xio-board without any real
+ * board: its widget is the existing sgi-xtalk-test-target, so property
+ * validation, re-parenting and the deferred-attach hook all have
+ * something to attach that carries no product-specific wiring.
+ *
+ * The second type here, sgi-xtalk-board-fixture, is not a board. It is
+ * the smallest stand-in for what a machine builder does with a module's
+ * Crossbow: it creates one unrealized, registers the machine-init-done
+ * notifier that calls sgi_xio_board_attach_pending() and realizes the
+ * Crossbow once that succeeds, and reports the outcome through two
+ * read-only properties so a qtest can check it without a real machine.
+ * Its own "retry" property lets a qtest run that same attempt a second
+ * time, to see what a board plugged in after the notifier already fired
+ * gets: see tests/qtest/sgi-board-test.c.
  */
 
 #include "qemu/osdep.h"
@@ -44,9 +47,11 @@ static bool sgi_xtalk_test_board_build_widget(SGIXioBoardState *board,
 {
     DeviceState *target = qdev_new(TYPE_SGI_XTALK_TEST_TARGET);
     /*
-     * The target derives its RAM-block name from its QOM child name. RAM
-     * names are machine-wide; two boards using "widget" collide. module+slot
-     * is already unique under sgi_xtalk_board_claim().
+     * sgi-xtalk-test-target names its RAM block from its own QOM child
+     * name, and RAM block names are unique machine-wide, not merely
+     * per-parent -- two boards both naming their widget "widget" collide
+     * the instant a second board exists. module+slot together are what
+     * sgi_xio_board_claim() already guarantees unique.
      */
     g_autofree char *name =
         g_strdup_printf("widget-module%u-slot%u", board->module, board->slot);
@@ -245,7 +250,7 @@ static const Property sgi_xtalk_board_fixture_properties[] = {
 
 /*
  * Test-only harness state, not guest-visible; see the same reasoning on
- * sgi-xtalk-board's own empty description. The embedded Crossbow carries its
+ * sgi-xio-board's own empty description. The embedded Crossbow carries its
  * own.
  */
 static const VMStateDescription vmstate_sgi_xtalk_board_fixture = {

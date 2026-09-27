@@ -16,7 +16,7 @@
  * so the increment-2 cases can reach its `x-test-pixel` QOM properties --
  * but unlike a plain `-device` that stays where device_add put it,
  * hw/mips/sgi/xio-board.c's own sgi_xio_board_reparent() moves every
- * sgi-xtalk-board subclass out from under /machine/peripheral and into a
+ * sgi-xio-board subclass out from under /machine/peripheral and into a
  * container named after its module once build_widget() returns, keeping
  * the `id=` name: /machine/module0/kona0, not /machine/peripheral/kona0.
  */

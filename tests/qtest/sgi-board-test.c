@@ -14,7 +14,7 @@
  * `-device`-creatable now (see its own header comment for the spare fabric
  * proxy that makes it so), but this file still runs it through the same
  * fixture's "module"/"slot"/"fabric" path, matching the other three cases;
- * sgi-xtalk-board-test.c's own attach-pending case, and sn-builder- test.c's
+ * sgi-board-test.c's own attach-pending case, and sn-builder- test.c's
  * test_pci_expansion_attaches_via_spare_fabric and test_xio_
  * baseio_attaches_via_spare_fabric (which boot the real -M origin2000
  * machine, unlike this file's bare fixture), cover the real `-device` command
@@ -45,7 +45,7 @@
  * explains why: the machine builder hands it an id, not a claimed backend);
  * an id that names no real backend must be refused at realize, naming the id,
  * rather than leaving the IOC3 silently built without it. And
- * sgi-xtalk-board, the base class sgi-pci-expansion derives from, has its own
+ * sgi-xio-board, the base class sgi-pci-expansion derives from, has its own
  * property validation, re-parenting under its module, and the deferred attach
  * hook that lets a `-device` board reach a Crossbow that must realize only
  * once every board is in; the attach-pending case uses
@@ -394,7 +394,7 @@ static void test_io8_unresolved_drive(const void *data)
 }
 
 /*
- * sgi-xtalk-board: property validation, re-parenting under its module, and
+ * sgi-xio-board: property validation, re-parenting under its module, and
  * the deferred attach hook that lets a `-device` board reach a Crossbow that
  * must realize only once every board is in.
  *
@@ -410,7 +410,7 @@ static void test_io8_unresolved_drive(const void *data)
  *
  * The attach-pending case uses sgi-xtalk-board-fixture, a test-only stand-in
  * for a machine builder: it owns one Crossbow, created unrealized, and (with
- * auto-attach left at its default) calls sgi_xtalk_board_attach_pending()
+ * auto-attach left at its default) calls sgi_xio_board_attach_pending()
  * from the real machine-init-done notifier the way a builder would, then
  * realizes the Crossbow. A second fixture with auto-attach=false does neither
  * on its own; its "realize-now" and "retry" properties let the qtest drive
@@ -542,7 +542,7 @@ static void test_reparent(void)
 
 /*
  * A board built before the machine-init-done notifier fires attaches through
- * sgi_xtalk_board_attach_pending() and is reachable through the Crossbow once
+ * sgi_xio_board_attach_pending() and is reachable through the Crossbow once
  * it realizes; a board whose Crossbow the qtest realizes by hand first
  * (standing in for one that already realized before this board could reach
  * it) is refused when the hook is then run against it.
@@ -639,15 +639,15 @@ int main(int argc, char **argv)
     qtest_add_data_func("/sgi-board/io8/unresolved-drive-refused", NULL,
                         test_io8_unresolved_drive);
 
-    qtest_add_func("/sgi-xtalk-board/bad-module", test_bad_module);
-    qtest_add_func("/sgi-xtalk-board/bad-slot-low", test_bad_slot_low);
-    qtest_add_func("/sgi-xtalk-board/bad-slot-high", test_bad_slot_high);
-    qtest_add_func("/sgi-xtalk-board/slot-taken-twice",
+    qtest_add_func("/sgi-xio-board/bad-module", test_bad_module);
+    qtest_add_func("/sgi-xio-board/bad-slot-low", test_bad_slot_low);
+    qtest_add_func("/sgi-xio-board/bad-slot-high", test_bad_slot_high);
+    qtest_add_func("/sgi-xio-board/slot-taken-twice",
                   test_slot_taken_twice);
-    qtest_add_func("/sgi-xtalk-board/slot-reused-in-another-module",
+    qtest_add_func("/sgi-xio-board/slot-reused-in-another-module",
                   test_slot_reused_in_another_module);
-    qtest_add_func("/sgi-xtalk-board/reparent", test_reparent);
-    qtest_add_func("/sgi-xtalk-board/attach-pending", test_attach_pending);
+    qtest_add_func("/sgi-xio-board/reparent", test_reparent);
+    qtest_add_func("/sgi-xio-board/attach-pending", test_attach_pending);
 
     return g_test_run();
 }
