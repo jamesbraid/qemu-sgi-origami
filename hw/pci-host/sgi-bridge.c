@@ -1551,6 +1551,78 @@ static const MemoryRegionOps sgi_bridge_flash_ops = {
     .impl.max_access_size = 8,
 };
 
+static MemTxResult sgi_bridge_flash_view_write(void *opaque, hwaddr addr,
+                                               uint64_t value, unsigned size,
+                                               MemTxAttrs attrs)
+{
+    SGIBridgeState *s = opaque;
+
+    return memory_region_dispatch_write(&s->flash_window, addr, value,
+                                        size_memop(size) | MO_BE, attrs);
+}
+
+static const MemoryRegionOps sgi_bridge_flash_view_ops = {
+    .write_with_attrs = sgi_bridge_flash_view_write,
+    .endianness = DEVICE_BIG_ENDIAN,
+    .valid = { .min_access_size = 1, .max_access_size = 8 },
+    .impl = { .min_access_size = 1, .max_access_size = 8 },
+};
+
+static MemTxResult sgi_bridge_flash_boundary_read(void *opaque, hwaddr addr,
+                                                   uint64_t *value,
+                                                   unsigned size,
+                                                   MemTxAttrs attrs)
+{
+    return sgi_bridge_flash_read(opaque,
+                                 addr + BRIDGE_FLASH_SELECT_SIZE - 8,
+                                 value, size, attrs);
+}
+
+static MemTxResult sgi_bridge_flash_boundary_write(void *opaque, hwaddr addr,
+                                                    uint64_t value,
+                                                    unsigned size,
+                                                    MemTxAttrs attrs)
+{
+    return sgi_bridge_flash_write(opaque,
+                                  addr + BRIDGE_FLASH_SELECT_SIZE - 8,
+                                  value, size, attrs);
+}
+
+static const MemoryRegionOps sgi_bridge_flash_boundary_ops = {
+    .read_with_attrs = sgi_bridge_flash_boundary_read,
+    .write_with_attrs = sgi_bridge_flash_boundary_write,
+    .endianness = DEVICE_BIG_ENDIAN,
+    .valid = { .min_access_size = 1, .max_access_size = 8 },
+    .impl = { .min_access_size = 1, .max_access_size = 8 },
+};
+
+bool sgi_bridge_install_flash_read_view(SGIBridgeState *s,
+                                        const uint8_t *image, size_t size,
+                                        Error **errp)
+{
+    size_t view_size = BRIDGE_FLASH_SELECT_SIZE - 8;
+
+    if (size != BRIDGE_FLASH_SELECT_SIZE || !s->flash) {
+        error_setg(errp, "flash read view requires a 2 MB first-select part");
+        return false;
+    }
+    if (!memory_region_init_rom_device(&s->flash_read_view, OBJECT(s),
+                                       &sgi_bridge_flash_view_ops, s,
+                                       "sgi-bridge.flash-read", view_size,
+                                       errp)) {
+        return false;
+    }
+    memcpy(memory_region_get_ram_ptr(&s->flash_read_view), image, view_size);
+    /* Bridge must handle reads whose starting offset can cross select 0. */
+    memory_region_add_subregion(&s->flash_window, 0, &s->flash_read_view);
+    memory_region_init_io(&s->flash_boundary, OBJECT(s),
+                          &sgi_bridge_flash_boundary_ops, s,
+                          "sgi-bridge.flash-boundary", 16);
+    memory_region_add_subregion(&s->flash_window, view_size,
+                                &s->flash_boundary);
+    return true;
+}
+
 /*
  * 64-bit write or 32-bit upper-half read only; a 32-bit write would leave
  * half an entry behind.

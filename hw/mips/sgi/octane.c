@@ -240,6 +240,10 @@ static void octane_init(MachineState *machine)
     object_property_set_link(OBJECT(bridge), "flash", OBJECT(firmware),
                              &error_fatal);
     sysbus_realize(SYS_BUS_DEVICE(bridge), &error_fatal);
+    if (!sgi_bridge_install_flash_read_view(SGI_BRIDGE(bridge), flash_image,
+                                            OCTANE_FLASH_SIZE, &error_fatal)) {
+        return;
+    }
 
     object_property_add_child(OBJECT(machine), "crossbow", OBJECT(xbow));
     qdev_prop_set_uint64(xbow, "span", OCTANE_SHORT_SPAN);

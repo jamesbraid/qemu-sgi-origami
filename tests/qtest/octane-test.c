@@ -15,6 +15,8 @@
 #define BRIDGE 0x1f000000ULL
 #define OCTANE_LONG_BRIDGE (15ULL << 36)
 #define FLASH (BRIDGE + 0xc00000)
+#define FLASH_SELECT_SIZE 0x200000
+#define FLASH_WRITE_EN (1u << 31)
 #define RAM 0x20000000ULL
 #define ATTR0 (1ULL << 40)
 #define UNIT 0x02000000ULL
@@ -38,12 +40,18 @@
 
 static char *flash_path;
 
-static QTestState *octane_start_args(const char *extra)
+static QTestState *octane_start_image_args(const char *image,
+                                           const char *extra)
 {
-    g_autofree char *quoted = g_shell_quote(flash_path);
+    g_autofree char *quoted = g_shell_quote(image);
 
     return qtest_initf("-M octane -m 128M -cpu R10000 -bios %s -S %s",
                        quoted, extra);
+}
+
+static QTestState *octane_start_args(const char *extra)
+{
+    return octane_start_image_args(flash_path, extra);
 }
 
 static QTestState *octane_start(void)
@@ -154,6 +162,7 @@ static void test_flash_and_pci(void)
     QTestState *qts = octane_start();
     uint32_t value;
     uint64_t last;
+    g_autofree char *mtree = qtest_hmp(qts, "info mtree -f");
     g_autoptr(QDict) listing = qtest_qmp(qts,
         "{'execute':'qom-list','arguments':{'path':'/machine/bridge'}}");
     QList *children = qdict_get_qlist(listing, "return");
@@ -164,6 +173,8 @@ static void test_flash_and_pci(void)
         g_assert_cmpstr(qdict_get_str(item, "name"), !=, "onewire-part");
     }
 
+    g_assert_nonnull(strstr(mtree, "sgi-bridge.flash-read"));
+
     g_assert_cmpuint(qtest_readl_tx(qts, FLASH, &value), ==, MEMTX_OK);
     g_assert_cmphex(value, ==, 0x12345678);
     g_assert_cmphex(qtest_readb(qts, FLASH), ==, 0x12);
@@ -172,11 +183,30 @@ static void test_flash_and_pci(void)
     g_assert_cmphex(qtest_readb(qts, FLASH + 3), ==, 0x78);
     g_assert_cmphex(qtest_readb(qts, FLASH + 4), ==, 0xff);
     g_assert_cmphex(qtest_readb(qts, FLASH + 0x1fffff), ==, 0xff);
+    g_assert_cmphex(qtest_readw(qts, FLASH + 1), ==, 0x3456);
+    g_assert_cmphex(qtest_readl(qts, FLASH + 1), ==, 0x345678ff);
+    g_assert_cmphex(qtest_readq(qts, FLASH + 1), ==,
+                    0x345678ffffffffffULL);
+    /* QEMU splits this unaligned read before Bridge sees its full width. */
+    g_assert_cmpuint(qtest_readq_tx(qts, FLASH + FLASH_SELECT_SIZE - 7,
+                                    &last), ==, MEMTX_DECODE_ERROR);
+    g_assert_cmphex(last, ==, 0xffffffffffffff00ULL);
     /* Bridge drops writes while flash write enable is clear. */
     g_assert_cmpuint(qtest_writel_tx(qts, FLASH, 0), ==, MEMTX_OK);
     g_assert_cmpuint(qtest_readl_tx(qts, FLASH, &value), ==, MEMTX_OK);
     g_assert_cmphex(value, ==, 0x12345678);
     g_assert_cmphex(qtest_readb(qts, FLASH), ==, 0x12);
+    qtest_writel(qts, BRIDGE_REG(0x020),
+                 qtest_readl(qts, BRIDGE_REG(0x020)) | FLASH_WRITE_EN);
+    qtest_writeb(qts, FLASH, 0);
+    qtest_writew(qts, FLASH, 0);
+    g_assert_cmpuint(qtest_writel_tx(qts, FLASH, 0), ==, MEMTX_OK);
+    g_assert_cmphex(qtest_readl(qts, FLASH), ==, 0x12345678);
+    qtest_system_reset(qts);
+    g_assert_cmphex(qtest_readl(qts, FLASH), ==, 0x12345678);
+    g_clear_pointer(&mtree, g_free);
+    mtree = qtest_hmp(qts, "info mtree -f");
+    g_assert_nonnull(strstr(mtree, "sgi-bridge.flash-read"));
     g_assert_cmpuint(qtest_readq_tx(qts, FLASH + 0x200000, &last), !=,
                      MEMTX_OK);
     g_assert_cmphex(qtest_readl(qts, CFG(0)), ==, 0x10201077);
@@ -605,15 +635,23 @@ static void test_migration_state(void)
     g_autofree char *directory = NULL;
     g_autofree char *socket = NULL;
     g_autofree char *uri = NULL;
+    g_autofree char *other_flash = NULL;
     GError *error = NULL;
     QTestState *from, *to;
+    int flash_fd;
 
     directory = g_dir_make_tmp("octane-migration-XXXXXX", &error);
     g_assert_no_error(error);
     socket = g_build_filename(directory, "migration.sock", NULL);
     uri = g_strdup_printf("unix:%s", socket);
+    other_flash = g_build_filename(directory, "other-flash", NULL);
+    flash_fd = g_open(other_flash, O_WRONLY | O_CREAT | O_EXCL, 0600);
+    g_assert_cmpint(flash_fd, >=, 0);
+    g_assert_cmpint(write(flash_fd, "\xaa\xbb\xcc\xdd", 4), ==, 4);
+    close(flash_fd);
     from = octane_start();
-    to = octane_start_args("-incoming defer");
+    to = octane_start_image_args(other_flash, "-incoming defer");
+    g_assert_cmphex(qtest_readl(to, FLASH), ==, 0xaabbccdd);
 
     qtest_writel(from, HEART + 0x20, WIDE);
     qtest_writeq(from, RAM, 0x0123456789abcdefULL);
@@ -671,6 +709,7 @@ static void test_migration_state(void)
     if (g_file_test(socket, G_FILE_TEST_EXISTS)) {
         g_assert_cmpint(g_unlink(socket), ==, 0);
     }
+    g_assert_cmpint(g_unlink(other_flash), ==, 0);
     g_assert_cmpint(g_rmdir(directory), ==, 0);
 }
 
