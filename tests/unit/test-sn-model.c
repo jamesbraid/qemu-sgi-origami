@@ -299,21 +299,27 @@ static void check_xtalk_slots(const SGIModelTopology *t)
 }
 
 /*
- * An Origin 2000 node board sits in node slot 1 through 4. The Hub
- * reports that slot in a three-bit reversed-sense field, and sgi-hub
- * takes slot 0 to mean the Origin 200's field layout, which the stock
- * PROM decodes as node slot 3 and so aims I/O at the wrong Crossbow port.
+ * An Origin 2000 or Onyx2 node board sits in node slot 1 through 4. The
+ * Hub reports what its midplane drives for that slot in a three-bit
+ * field, and the builder takes slot 0 to mean the Origin 200's chassis,
+ * which drives nothing; the stock PROM decodes that as node slot 3 and so
+ * aims I/O at the wrong Crossbow port. A midplane that names its own
+ * slot bits (the Onyx2 deskside) must fit that field.
  */
 static void check_origin2000_node_slots(const SGIModelTopology *t)
 {
     const SGIModelNodeList *entry;
 
-    if (!g_str_equal(t->product, "origin2000")) {
+    if (!g_str_equal(t->product, "origin2000") &&
+        !g_str_equal(t->product, "onyx2")) {
         return;
     }
     for (entry = t->nodes; entry; entry = entry->next) {
         g_assert_cmpuint(entry->value->slot, >=, 1);
         g_assert_cmpuint(entry->value->slot, <=, 4);
+        if (entry->value->has_hub_slot_bits) {
+            g_assert_cmpuint(entry->value->hub_slot_bits, <=, 7);
+        }
     }
 }
 

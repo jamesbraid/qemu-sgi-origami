@@ -1072,7 +1072,8 @@ static void test_mgras_placed_by_the_catalogue(const void *data)
 static void test_no_mgras_without_a_catalogue_record(const void *data)
 {
     static const char *const machines[] = {
-        "-M origin2000,topology=origin2000-ir2 -display none",
+        "-M onyx2 -display none",
+        "-M onyx2,topology=onyx2-deskside -smp 4 -m 128M -display none",
         "-M origin200,topology=origin200-gigachannel -display none",
     };
     size_t i;

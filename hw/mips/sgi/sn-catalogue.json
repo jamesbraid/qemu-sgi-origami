@@ -17,6 +17,240 @@
           "argument": "-serial chardev:elsc",
           "kind": "system-controller",
           "node": 0
+        }
+      ],
+      "cpus-per-node": [
+        2,
+        2
+      ],
+      "default-cpu-model": "R10000",
+      "default-topology": "onyx2-rack",
+      "dimms-per-node": [
+        2,
+        2
+      ],
+      "disk-bus": "scsi.0",
+      "display-name": "Onyx2 deskside with one InfiniteReality pipe",
+      "firmware": {
+        "argument": "-bios",
+        "asset": "assets/firmware/6.5.30/ip27prom.payload.bin",
+        "kind": "ip27-prom",
+        "per-node-flash": true,
+        "size": 1048576
+      },
+      "identity-inputs": [],
+      "install-media": [
+        "disk-image"
+      ],
+      "memory-per-node-mib": {
+        "accepted": [
+          64
+        ],
+        "default": 64
+      },
+      "needs-debug-leds-off": false,
+      "netboot-adapter": "ioc3-ethernet",
+      "networks": [
+        {
+          "argument": "-netdev ...,id=net0",
+          "kind": "ioc3-ethernet"
+        }
+      ],
+      "nodes": 2,
+      "processor": {
+        "cache-mib": 1,
+        "clock-hz": 180000000,
+        "part": "R10000"
+      },
+      "product": "onyx2",
+      "prom-dialogue": "ip27-menu",
+      "resources": [
+        {
+          "argument": "-drive if=mtd,index=N",
+          "count": 1,
+          "kind": "nvram",
+          "scope": "board",
+          "size": 32768
+        },
+        {
+          "argument": "-drive if=pflash,unit=N",
+          "count": 2,
+          "kind": "boot-flash",
+          "scope": "node",
+          "size": 1048576
+        }
+      ],
+      "smp": 4,
+      "storage": [
+        {
+          "bus": "scsi.0",
+          "targets": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7
+          ],
+          "type": "scsi"
+        },
+        {
+          "bus": "scsi.1",
+          "targets": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7
+          ],
+          "type": "scsi"
+        }
+      ],
+      "supported-guests": [
+        "irix"
+      ],
+      "synthesized-firmware-toggle": false,
+      "topology": "onyx2-deskside"
+    },
+    {
+      "console": "ioc3-serial-a",
+      "consoles": [
+        {
+          "argument": "-serial chardev:ioc3_a",
+          "kind": "console",
+          "node": 0
+        },
+        {
+          "argument": "-serial chardev:ioc3_b",
+          "kind": "second-port",
+          "node": 0
+        },
+        {
+          "argument": "-serial chardev:elsc",
+          "kind": "system-controller",
+          "node": 0
+        }
+      ],
+      "cpus-per-node": [
+        2,
+        2,
+        2,
+        2
+      ],
+      "default-cpu-model": "R10000",
+      "default-topology": "onyx2-rack",
+      "dimms-per-node": [
+        2,
+        2,
+        2,
+        2
+      ],
+      "disk-bus": "scsi.0",
+      "display-name": "Onyx2 rack with one InfiniteReality pipe",
+      "firmware": {
+        "argument": "-bios",
+        "asset": "assets/firmware/6.5.30/ip27prom.payload.bin",
+        "kind": "ip27-prom",
+        "per-node-flash": true,
+        "size": 1048576
+      },
+      "identity-inputs": [],
+      "install-media": [
+        "disk-image"
+      ],
+      "memory-per-node-mib": {
+        "accepted": [
+          64
+        ],
+        "default": 64
+      },
+      "needs-debug-leds-off": false,
+      "netboot-adapter": "ioc3-ethernet",
+      "networks": [
+        {
+          "argument": "-netdev ...,id=net0",
+          "kind": "ioc3-ethernet"
+        }
+      ],
+      "nodes": 4,
+      "processor": {
+        "cache-mib": 1,
+        "clock-hz": 180000000,
+        "part": "R10000"
+      },
+      "product": "onyx2",
+      "prom-dialogue": "ip27-menu",
+      "resources": [
+        {
+          "argument": "-drive if=mtd,index=N",
+          "count": 1,
+          "kind": "nvram",
+          "scope": "board",
+          "size": 32768
+        },
+        {
+          "argument": "-drive if=pflash,unit=N",
+          "count": 4,
+          "kind": "boot-flash",
+          "scope": "node",
+          "size": 1048576
+        }
+      ],
+      "smp": 8,
+      "storage": [
+        {
+          "bus": "scsi.0",
+          "targets": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7
+          ],
+          "type": "scsi"
+        },
+        {
+          "bus": "scsi.1",
+          "targets": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7
+          ],
+          "type": "scsi"
+        }
+      ],
+      "supported-guests": [
+        "irix"
+      ],
+      "synthesized-firmware-toggle": false,
+      "topology": "onyx2-rack"
+    },
+    {
+      "console": "ioc3-serial-a",
+      "consoles": [
+        {
+          "argument": "-serial chardev:ioc3_a",
+          "kind": "console",
+          "node": 0
+        },
+        {
+          "argument": "-serial chardev:ioc3_b",
+          "kind": "second-port",
+          "node": 0
+        },
+        {
+          "argument": "-serial chardev:elsc",
+          "kind": "system-controller",
+          "node": 0
         },
         {
           "argument": "-serial chardev:junk",
@@ -1604,125 +1838,6 @@
         2
       ],
       "disk-bus": "scsi.0",
-      "display-name": "Origin 2000 four-node module with an InfiniteReality2 pipe",
-      "firmware": {
-        "argument": "-bios",
-        "asset": "assets/firmware/6.5.30/ip27prom.payload.bin",
-        "kind": "ip27-prom",
-        "per-node-flash": true,
-        "size": 1048576
-      },
-      "identity-inputs": [],
-      "install-media": [
-        "disk-image"
-      ],
-      "memory-per-node-mib": {
-        "accepted": [
-          64
-        ],
-        "default": 64
-      },
-      "needs-debug-leds-off": false,
-      "netboot-adapter": "ioc3-ethernet",
-      "networks": [
-        {
-          "argument": "-netdev ...,id=net0",
-          "kind": "ioc3-ethernet"
-        }
-      ],
-      "nodes": 4,
-      "processor": {
-        "cache-mib": 1,
-        "clock-hz": 180000000,
-        "part": "R10000"
-      },
-      "product": "origin2000",
-      "prom-dialogue": "ip27-menu",
-      "resources": [
-        {
-          "argument": "-drive if=mtd,index=N",
-          "count": 1,
-          "kind": "nvram",
-          "scope": "board",
-          "size": 32768
-        },
-        {
-          "argument": "-drive if=pflash,unit=N",
-          "count": 4,
-          "kind": "boot-flash",
-          "scope": "node",
-          "size": 1048576
-        }
-      ],
-      "smp": 8,
-      "storage": [
-        {
-          "bus": "scsi.0",
-          "targets": [
-            1,
-            2,
-            3,
-            4,
-            5,
-            6,
-            7
-          ],
-          "type": "scsi"
-        },
-        {
-          "bus": "scsi.1",
-          "targets": [
-            1,
-            2,
-            3,
-            4,
-            5,
-            6,
-            7
-          ],
-          "type": "scsi"
-        }
-      ],
-      "supported-guests": [
-        "irix"
-      ],
-      "synthesized-firmware-toggle": false,
-      "topology": "origin2000-ir2"
-    },
-    {
-      "console": "ioc3-serial-a",
-      "consoles": [
-        {
-          "argument": "-serial chardev:ioc3_a",
-          "kind": "console",
-          "node": 0
-        },
-        {
-          "argument": "-serial chardev:ioc3_b",
-          "kind": "second-port",
-          "node": 0
-        },
-        {
-          "argument": "-serial chardev:elsc",
-          "kind": "system-controller",
-          "node": 0
-        }
-      ],
-      "cpus-per-node": [
-        2,
-        2,
-        2,
-        2
-      ],
-      "default-cpu-model": "R10000",
-      "default-topology": "origin2000-module",
-      "dimms-per-node": [
-        2,
-        2,
-        2,
-        2
-      ],
-      "disk-bus": "scsi.0",
       "display-name": "Origin 2000 four-node module with a MENET board",
       "firmware": {
         "argument": "-bios",
@@ -3189,6 +3304,789 @@
               "port": 0
             }
           ],
+          "kind": "null-router",
+          "name": "null-router"
+        }
+      ],
+      "console": 0,
+      "controllers": [
+        {
+          "id": "module-msc",
+          "kind": "msc",
+          "module-index": 0
+        }
+      ],
+      "crossbars": [
+        {
+          "id": "crossbow-0",
+          "kind": "xbow",
+          "module-index": 0,
+          "widget-revision": 2
+        }
+      ],
+      "description": "SGI Onyx2 deskside, one InfiniteReality pipe on XIO4",
+      "generation": "sn0",
+      "io-boards": [
+        {
+          "attachment": 1,
+          "carrier": "xio-slot",
+          "id": "baseio",
+          "ioc3-serial": 17592186044424,
+          "module-index": 0,
+          "other-identity-parts": [],
+          "part": "030-0734-002",
+          "preset": "io6g",
+          "revision": 4,
+          "serial": 17592186044423
+        },
+        {
+          "attachment": 4,
+          "carrier": "xio-slot",
+          "id": "io4-pipe",
+          "module-index": 0,
+          "other-identity-parts": [],
+          "part": "030-1398-001",
+          "preset": "kona",
+          "revision": 0,
+          "serial": 17592186044425
+        }
+      ],
+      "junk-uart": -1,
+      "modules": [
+        {
+          "controller-index": 0,
+          "id": "compute-module",
+          "initial-module-number": 1,
+          "nodes": [
+            0,
+            1
+          ],
+          "serial": "SGIMODULE3"
+        }
+      ],
+      "name": "onyx2-deskside",
+      "nodes": [
+        {
+          "accepted-memory-mib": [
+            64
+          ],
+          "asic-kind": "hub",
+          "bank-mib": [
+            64,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "cpu-slots": [
+            {
+              "assembly": {
+                "cache-clock-hz": 90000000,
+                "cache-mib": 1,
+                "clock-hz": 180000000,
+                "fpu-prid": 2304,
+                "id": "r10000-180mhz",
+                "kind": "R10000",
+                "mode-bits": 303146885,
+                "prid": 2342
+              },
+              "interface": 0,
+              "slot": 0
+            },
+            {
+              "assembly": {
+                "cache-clock-hz": 90000000,
+                "cache-mib": 1,
+                "clock-hz": 180000000,
+                "fpu-prid": 2304,
+                "id": "r10000-180mhz",
+                "kind": "R10000",
+                "mode-bits": 303146885,
+                "prid": 2342
+              },
+              "interface": 0,
+              "slot": 1
+            }
+          ],
+          "flash": {
+            "kind": "am29f080",
+            "size": 1048576
+          },
+          "hub-slot-bits": 3,
+          "id": "node-board-1-hub",
+          "identity": {
+            "i2c-controller": true,
+            "ni-revision": 5,
+            "serial": 17592186044417,
+            "system-controller": false,
+            "widget-revision": 1
+          },
+          "module-index": 0,
+          "slave-role": false,
+          "slot": 1
+        },
+        {
+          "accepted-memory-mib": [
+            64
+          ],
+          "asic-kind": "hub",
+          "bank-mib": [
+            64,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "cpu-slots": [
+            {
+              "assembly": {
+                "cache-clock-hz": 90000000,
+                "cache-mib": 1,
+                "clock-hz": 180000000,
+                "fpu-prid": 2304,
+                "id": "r10000-180mhz",
+                "kind": "R10000",
+                "mode-bits": 303146885,
+                "prid": 2342
+              },
+              "interface": 0,
+              "slot": 0
+            },
+            {
+              "assembly": {
+                "cache-clock-hz": 90000000,
+                "cache-mib": 1,
+                "clock-hz": 180000000,
+                "fpu-prid": 2304,
+                "id": "r10000-180mhz",
+                "kind": "R10000",
+                "mode-bits": 303146885,
+                "prid": 2342
+              },
+              "interface": 0,
+              "slot": 1
+            }
+          ],
+          "flash": {
+            "kind": "am29f080",
+            "size": 1048576
+          },
+          "hub-slot-bits": 2,
+          "id": "node-board-2-hub",
+          "identity": {
+            "i2c-controller": true,
+            "ni-revision": 5,
+            "serial": 17592186044418,
+            "system-controller": false,
+            "widget-revision": 1
+          },
+          "module-index": 0,
+          "slave-role": true,
+          "slot": 2
+        }
+      ],
+      "product": "onyx2",
+      "routers": [],
+      "supported-cpu-populations": [
+        {
+          "cpus-per-node": [
+            2,
+            2
+          ]
+        }
+      ],
+      "xtalk-attachments": [
+        {
+          "crossbar-index": 0,
+          "node-index": 0,
+          "widget": 10
+        },
+        {
+          "crossbar-index": 0,
+          "node-index": 1,
+          "widget": 9
+        },
+        {
+          "crossbar-index": 0,
+          "node-index": 0,
+          "widget": 15
+        },
+        {
+          "crossbar-index": 0,
+          "node-index": 0,
+          "widget": 8
+        }
+      ],
+      "xtalk-slots": [
+        {
+          "controlling-node": 0,
+          "crossbar-index": 0,
+          "id": "xio-slot-2",
+          "widget": 11
+        },
+        {
+          "controlling-node": 0,
+          "crossbar-index": 0,
+          "id": "xio-slot-3",
+          "widget": 14
+        },
+        {
+          "controlling-node": 0,
+          "crossbar-index": 0,
+          "id": "xio-slot-5",
+          "widget": 13
+        },
+        {
+          "controlling-node": 0,
+          "crossbar-index": 0,
+          "id": "xio-slot-6",
+          "widget": 12
+        }
+      ]
+    },
+    {
+      "cables": [
+        {
+          "ends": [
+            {
+              "index": 0,
+              "kind": "router",
+              "port": 5
+            },
+            {
+              "index": 0,
+              "kind": "node",
+              "port": 0
+            }
+          ],
+          "kind": "midplane",
+          "name": "r1-node1"
+        },
+        {
+          "ends": [
+            {
+              "index": 0,
+              "kind": "router",
+              "port": 4
+            },
+            {
+              "index": 1,
+              "kind": "node",
+              "port": 0
+            }
+          ],
+          "kind": "midplane",
+          "name": "r1-node2"
+        },
+        {
+          "ends": [
+            {
+              "index": 0,
+              "kind": "router",
+              "port": 6
+            },
+            {
+              "index": 1,
+              "kind": "router",
+              "port": 6
+            }
+          ],
+          "kind": "midplane",
+          "name": "r1-r2"
+        },
+        {
+          "ends": [
+            {
+              "index": 1,
+              "kind": "router",
+              "port": 5
+            },
+            {
+              "index": 2,
+              "kind": "node",
+              "port": 0
+            }
+          ],
+          "kind": "midplane",
+          "name": "r2-node3"
+        },
+        {
+          "ends": [
+            {
+              "index": 1,
+              "kind": "router",
+              "port": 4
+            },
+            {
+              "index": 3,
+              "kind": "node",
+              "port": 0
+            }
+          ],
+          "kind": "midplane",
+          "name": "r2-node4"
+        }
+      ],
+      "console": 0,
+      "controllers": [
+        {
+          "id": "module-msc",
+          "kind": "msc",
+          "module-index": 0
+        }
+      ],
+      "crossbars": [
+        {
+          "id": "crossbow-0",
+          "kind": "xbow",
+          "module-index": 0,
+          "widget-revision": 2
+        },
+        {
+          "id": "crossbow-1",
+          "kind": "xbow",
+          "module-index": 0,
+          "widget-revision": 2
+        }
+      ],
+      "description": "SGI Onyx2 rack, one InfiniteReality pipe cabled from IO3",
+      "generation": "sn0",
+      "io-boards": [
+        {
+          "attachment": 1,
+          "carrier": "xio-slot",
+          "id": "baseio",
+          "ioc3-serial": 17592186044424,
+          "module-index": 0,
+          "other-identity-parts": [],
+          "part": "030-0734-002",
+          "preset": "io6g",
+          "revision": 4,
+          "serial": 17592186044423
+        },
+        {
+          "attachment": 3,
+          "carrier": "xio-slot",
+          "id": "io3-pipe",
+          "module-index": 0,
+          "other-identity-parts": [
+            "030-1067-001"
+          ],
+          "part": "030-1398-001",
+          "preset": "kona",
+          "revision": 0,
+          "serial": 17592186044425
+        }
+      ],
+      "junk-uart": -1,
+      "modules": [
+        {
+          "controller-index": 0,
+          "id": "compute-module",
+          "initial-module-number": 1,
+          "nodes": [
+            0,
+            1,
+            2,
+            3
+          ],
+          "serial": "SGIMODULE1"
+        }
+      ],
+      "name": "onyx2-rack",
+      "nodes": [
+        {
+          "accepted-memory-mib": [
+            64
+          ],
+          "asic-kind": "hub",
+          "bank-mib": [
+            64,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "cpu-slots": [
+            {
+              "assembly": {
+                "cache-clock-hz": 90000000,
+                "cache-mib": 1,
+                "clock-hz": 180000000,
+                "fpu-prid": 2304,
+                "id": "r10000-180mhz",
+                "kind": "R10000",
+                "mode-bits": 303146885,
+                "prid": 2342
+              },
+              "interface": 0,
+              "slot": 0
+            },
+            {
+              "assembly": {
+                "cache-clock-hz": 90000000,
+                "cache-mib": 1,
+                "clock-hz": 180000000,
+                "fpu-prid": 2304,
+                "id": "r10000-180mhz",
+                "kind": "R10000",
+                "mode-bits": 303146885,
+                "prid": 2342
+              },
+              "interface": 0,
+              "slot": 1
+            }
+          ],
+          "flash": {
+            "kind": "am29f080",
+            "size": 1048576
+          },
+          "id": "node-board-1-hub",
+          "identity": {
+            "i2c-controller": true,
+            "ni-revision": 5,
+            "serial": 17592186044417,
+            "system-controller": false,
+            "widget-revision": 1
+          },
+          "module-index": 0,
+          "slave-role": false,
+          "slot": 1
+        },
+        {
+          "accepted-memory-mib": [
+            64
+          ],
+          "asic-kind": "hub",
+          "bank-mib": [
+            64,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "cpu-slots": [
+            {
+              "assembly": {
+                "cache-clock-hz": 90000000,
+                "cache-mib": 1,
+                "clock-hz": 180000000,
+                "fpu-prid": 2304,
+                "id": "r10000-180mhz",
+                "kind": "R10000",
+                "mode-bits": 303146885,
+                "prid": 2342
+              },
+              "interface": 0,
+              "slot": 0
+            },
+            {
+              "assembly": {
+                "cache-clock-hz": 90000000,
+                "cache-mib": 1,
+                "clock-hz": 180000000,
+                "fpu-prid": 2304,
+                "id": "r10000-180mhz",
+                "kind": "R10000",
+                "mode-bits": 303146885,
+                "prid": 2342
+              },
+              "interface": 0,
+              "slot": 1
+            }
+          ],
+          "flash": {
+            "kind": "am29f080",
+            "size": 1048576
+          },
+          "id": "node-board-2-hub",
+          "identity": {
+            "i2c-controller": true,
+            "ni-revision": 5,
+            "serial": 17592186044418,
+            "system-controller": false,
+            "widget-revision": 1
+          },
+          "module-index": 0,
+          "slave-role": true,
+          "slot": 2
+        },
+        {
+          "accepted-memory-mib": [
+            64
+          ],
+          "asic-kind": "hub",
+          "bank-mib": [
+            64,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "cpu-slots": [
+            {
+              "assembly": {
+                "cache-clock-hz": 90000000,
+                "cache-mib": 1,
+                "clock-hz": 180000000,
+                "fpu-prid": 2304,
+                "id": "r10000-180mhz",
+                "kind": "R10000",
+                "mode-bits": 303146885,
+                "prid": 2342
+              },
+              "interface": 0,
+              "slot": 0
+            },
+            {
+              "assembly": {
+                "cache-clock-hz": 90000000,
+                "cache-mib": 1,
+                "clock-hz": 180000000,
+                "fpu-prid": 2304,
+                "id": "r10000-180mhz",
+                "kind": "R10000",
+                "mode-bits": 303146885,
+                "prid": 2342
+              },
+              "interface": 0,
+              "slot": 1
+            }
+          ],
+          "flash": {
+            "kind": "am29f080",
+            "size": 1048576
+          },
+          "id": "node-board-3-hub",
+          "identity": {
+            "i2c-controller": true,
+            "ni-revision": 5,
+            "serial": 17592186044419,
+            "system-controller": false,
+            "widget-revision": 1
+          },
+          "module-index": 0,
+          "slave-role": true,
+          "slot": 3
+        },
+        {
+          "accepted-memory-mib": [
+            64
+          ],
+          "asic-kind": "hub",
+          "bank-mib": [
+            64,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "cpu-slots": [
+            {
+              "assembly": {
+                "cache-clock-hz": 90000000,
+                "cache-mib": 1,
+                "clock-hz": 180000000,
+                "fpu-prid": 2304,
+                "id": "r10000-180mhz",
+                "kind": "R10000",
+                "mode-bits": 303146885,
+                "prid": 2342
+              },
+              "interface": 0,
+              "slot": 0
+            },
+            {
+              "assembly": {
+                "cache-clock-hz": 90000000,
+                "cache-mib": 1,
+                "clock-hz": 180000000,
+                "fpu-prid": 2304,
+                "id": "r10000-180mhz",
+                "kind": "R10000",
+                "mode-bits": 303146885,
+                "prid": 2342
+              },
+              "interface": 0,
+              "slot": 1
+            }
+          ],
+          "flash": {
+            "kind": "am29f080",
+            "size": 1048576
+          },
+          "id": "node-board-4-hub",
+          "identity": {
+            "i2c-controller": true,
+            "ni-revision": 5,
+            "serial": 17592186044420,
+            "system-controller": false,
+            "widget-revision": 1
+          },
+          "module-index": 0,
+          "slave-role": true,
+          "slot": 4
+        }
+      ],
+      "product": "onyx2",
+      "routers": [
+        {
+          "chip-inputs": 15,
+          "id": "router-1",
+          "module-index": 0,
+          "part": 1,
+          "revision": 1,
+          "serial": 17592186044421,
+          "slot": 1
+        },
+        {
+          "chip-inputs": 14,
+          "id": "router-2",
+          "module-index": 0,
+          "part": 1,
+          "revision": 1,
+          "serial": 17592186044422,
+          "slot": 2
+        }
+      ],
+      "supported-cpu-populations": [
+        {
+          "cpus-per-node": [
+            2,
+            2,
+            2,
+            2
+          ]
+        }
+      ],
+      "xtalk-attachments": [
+        {
+          "crossbar-index": 0,
+          "node-index": 0,
+          "widget": 9
+        },
+        {
+          "crossbar-index": 0,
+          "node-index": 2,
+          "widget": 10
+        },
+        {
+          "crossbar-index": 0,
+          "node-index": 0,
+          "widget": 8
+        },
+        {
+          "crossbar-index": 0,
+          "node-index": 0,
+          "widget": 15
+        },
+        {
+          "crossbar-index": 1,
+          "node-index": 1,
+          "widget": 10
+        },
+        {
+          "crossbar-index": 1,
+          "node-index": 3,
+          "widget": 9
+        }
+      ],
+      "xtalk-slots": [
+        {
+          "controlling-node": 2,
+          "crossbar-index": 0,
+          "id": "pci-expansion",
+          "widget": 12
+        },
+        {
+          "controlling-node": 2,
+          "crossbar-index": 0,
+          "id": "xio-slot-4",
+          "widget": 11
+        },
+        {
+          "controlling-node": 0,
+          "crossbar-index": 0,
+          "id": "xio-slot-5",
+          "widget": 14
+        },
+        {
+          "controlling-node": 2,
+          "crossbar-index": 0,
+          "id": "xio-slot-6",
+          "widget": 13
+        },
+        {
+          "controlling-node": 1,
+          "crossbar-index": 1,
+          "id": "xio-slot-7",
+          "widget": 14
+        },
+        {
+          "controlling-node": 3,
+          "crossbar-index": 1,
+          "id": "xio-slot-8",
+          "widget": 11
+        },
+        {
+          "controlling-node": 1,
+          "crossbar-index": 1,
+          "id": "xio-slot-9",
+          "widget": 15
+        },
+        {
+          "controlling-node": 3,
+          "crossbar-index": 1,
+          "id": "xio-slot-10",
+          "widget": 12
+        },
+        {
+          "controlling-node": 1,
+          "crossbar-index": 1,
+          "id": "xio-slot-11",
+          "widget": 8
+        },
+        {
+          "controlling-node": 3,
+          "crossbar-index": 1,
+          "id": "xio-slot-12",
+          "widget": 13
+        }
+      ]
+    },
+    {
+      "cables": [
+        {
+          "ends": [
+            {
+              "index": 0,
+              "kind": "node",
+              "port": 0
+            },
+            {
+              "index": 1,
+              "kind": "node",
+              "port": 0
+            }
+          ],
           "kind": "cable",
           "name": "peer-craylink"
         }
@@ -4253,528 +5151,6 @@
         }
       ],
       "xtalk-slots": []
-    },
-    {
-      "cables": [
-        {
-          "ends": [
-            {
-              "index": 0,
-              "kind": "router",
-              "port": 5
-            },
-            {
-              "index": 0,
-              "kind": "node",
-              "port": 0
-            }
-          ],
-          "kind": "midplane",
-          "name": "r1-node1"
-        },
-        {
-          "ends": [
-            {
-              "index": 0,
-              "kind": "router",
-              "port": 4
-            },
-            {
-              "index": 1,
-              "kind": "node",
-              "port": 0
-            }
-          ],
-          "kind": "midplane",
-          "name": "r1-node2"
-        },
-        {
-          "ends": [
-            {
-              "index": 0,
-              "kind": "router",
-              "port": 6
-            },
-            {
-              "index": 1,
-              "kind": "router",
-              "port": 6
-            }
-          ],
-          "kind": "midplane",
-          "name": "r1-r2"
-        },
-        {
-          "ends": [
-            {
-              "index": 1,
-              "kind": "router",
-              "port": 5
-            },
-            {
-              "index": 2,
-              "kind": "node",
-              "port": 0
-            }
-          ],
-          "kind": "midplane",
-          "name": "r2-node3"
-        },
-        {
-          "ends": [
-            {
-              "index": 1,
-              "kind": "router",
-              "port": 4
-            },
-            {
-              "index": 3,
-              "kind": "node",
-              "port": 0
-            }
-          ],
-          "kind": "midplane",
-          "name": "r2-node4"
-        }
-      ],
-      "console": 0,
-      "controllers": [
-        {
-          "id": "module-msc",
-          "kind": "msc",
-          "module-index": 0
-        }
-      ],
-      "crossbars": [
-        {
-          "id": "crossbow-0",
-          "kind": "xbow",
-          "module-index": 0,
-          "widget-revision": 2
-        },
-        {
-          "id": "crossbow-1",
-          "kind": "xbow",
-          "module-index": 0,
-          "widget-revision": 2
-        }
-      ],
-      "description": "SGI Origin 2000 four-node module with an InfiniteReality2 pipe in IO3",
-      "generation": "sn0",
-      "io-boards": [
-        {
-          "attachment": 1,
-          "carrier": "xio-slot",
-          "id": "baseio",
-          "ioc3-serial": 17592186044424,
-          "module-index": 0,
-          "other-identity-parts": [],
-          "part": "030-1124-002",
-          "preset": "io6",
-          "revision": 4,
-          "serial": 17592186044423
-        },
-        {
-          "attachment": 3,
-          "carrier": "xio-slot",
-          "id": "io3-ir2-board",
-          "module-index": 0,
-          "other-identity-parts": [
-            "030-1067-001"
-          ],
-          "part": "030-1129-001",
-          "preset": "kona",
-          "revision": 0,
-          "serial": 17592186044425
-        }
-      ],
-      "junk-uart": -1,
-      "modules": [
-        {
-          "controller-index": 0,
-          "id": "compute-module",
-          "initial-module-number": 1,
-          "nodes": [
-            0,
-            1,
-            2,
-            3
-          ],
-          "serial": "SGIMODULE1"
-        }
-      ],
-      "name": "origin2000-ir2",
-      "nodes": [
-        {
-          "accepted-memory-mib": [
-            64
-          ],
-          "asic-kind": "hub",
-          "bank-mib": [
-            64,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0
-          ],
-          "cpu-slots": [
-            {
-              "assembly": {
-                "cache-clock-hz": 90000000,
-                "cache-mib": 1,
-                "clock-hz": 180000000,
-                "fpu-prid": 2304,
-                "id": "r10000-180mhz",
-                "kind": "R10000",
-                "mode-bits": 303146885,
-                "prid": 2342
-              },
-              "interface": 0,
-              "slot": 0
-            },
-            {
-              "assembly": {
-                "cache-clock-hz": 90000000,
-                "cache-mib": 1,
-                "clock-hz": 180000000,
-                "fpu-prid": 2304,
-                "id": "r10000-180mhz",
-                "kind": "R10000",
-                "mode-bits": 303146885,
-                "prid": 2342
-              },
-              "interface": 0,
-              "slot": 1
-            }
-          ],
-          "flash": {
-            "kind": "am29f080",
-            "size": 1048576
-          },
-          "id": "node-board-1-hub",
-          "identity": {
-            "i2c-controller": true,
-            "ni-revision": 5,
-            "serial": 17592186044417,
-            "system-controller": false,
-            "widget-revision": 1
-          },
-          "module-index": 0,
-          "slave-role": false,
-          "slot": 1
-        },
-        {
-          "accepted-memory-mib": [
-            64
-          ],
-          "asic-kind": "hub",
-          "bank-mib": [
-            64,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0
-          ],
-          "cpu-slots": [
-            {
-              "assembly": {
-                "cache-clock-hz": 90000000,
-                "cache-mib": 1,
-                "clock-hz": 180000000,
-                "fpu-prid": 2304,
-                "id": "r10000-180mhz",
-                "kind": "R10000",
-                "mode-bits": 303146885,
-                "prid": 2342
-              },
-              "interface": 0,
-              "slot": 0
-            },
-            {
-              "assembly": {
-                "cache-clock-hz": 90000000,
-                "cache-mib": 1,
-                "clock-hz": 180000000,
-                "fpu-prid": 2304,
-                "id": "r10000-180mhz",
-                "kind": "R10000",
-                "mode-bits": 303146885,
-                "prid": 2342
-              },
-              "interface": 0,
-              "slot": 1
-            }
-          ],
-          "flash": {
-            "kind": "am29f080",
-            "size": 1048576
-          },
-          "id": "node-board-2-hub",
-          "identity": {
-            "i2c-controller": true,
-            "ni-revision": 5,
-            "serial": 17592186044418,
-            "system-controller": false,
-            "widget-revision": 1
-          },
-          "module-index": 0,
-          "slave-role": true,
-          "slot": 2
-        },
-        {
-          "accepted-memory-mib": [
-            64
-          ],
-          "asic-kind": "hub",
-          "bank-mib": [
-            64,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0
-          ],
-          "cpu-slots": [
-            {
-              "assembly": {
-                "cache-clock-hz": 90000000,
-                "cache-mib": 1,
-                "clock-hz": 180000000,
-                "fpu-prid": 2304,
-                "id": "r10000-180mhz",
-                "kind": "R10000",
-                "mode-bits": 303146885,
-                "prid": 2342
-              },
-              "interface": 0,
-              "slot": 0
-            },
-            {
-              "assembly": {
-                "cache-clock-hz": 90000000,
-                "cache-mib": 1,
-                "clock-hz": 180000000,
-                "fpu-prid": 2304,
-                "id": "r10000-180mhz",
-                "kind": "R10000",
-                "mode-bits": 303146885,
-                "prid": 2342
-              },
-              "interface": 0,
-              "slot": 1
-            }
-          ],
-          "flash": {
-            "kind": "am29f080",
-            "size": 1048576
-          },
-          "id": "node-board-3-hub",
-          "identity": {
-            "i2c-controller": true,
-            "ni-revision": 5,
-            "serial": 17592186044419,
-            "system-controller": false,
-            "widget-revision": 1
-          },
-          "module-index": 0,
-          "slave-role": true,
-          "slot": 3
-        },
-        {
-          "accepted-memory-mib": [
-            64
-          ],
-          "asic-kind": "hub",
-          "bank-mib": [
-            64,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0
-          ],
-          "cpu-slots": [
-            {
-              "assembly": {
-                "cache-clock-hz": 90000000,
-                "cache-mib": 1,
-                "clock-hz": 180000000,
-                "fpu-prid": 2304,
-                "id": "r10000-180mhz",
-                "kind": "R10000",
-                "mode-bits": 303146885,
-                "prid": 2342
-              },
-              "interface": 0,
-              "slot": 0
-            },
-            {
-              "assembly": {
-                "cache-clock-hz": 90000000,
-                "cache-mib": 1,
-                "clock-hz": 180000000,
-                "fpu-prid": 2304,
-                "id": "r10000-180mhz",
-                "kind": "R10000",
-                "mode-bits": 303146885,
-                "prid": 2342
-              },
-              "interface": 0,
-              "slot": 1
-            }
-          ],
-          "flash": {
-            "kind": "am29f080",
-            "size": 1048576
-          },
-          "id": "node-board-4-hub",
-          "identity": {
-            "i2c-controller": true,
-            "ni-revision": 5,
-            "serial": 17592186044420,
-            "system-controller": false,
-            "widget-revision": 1
-          },
-          "module-index": 0,
-          "slave-role": true,
-          "slot": 4
-        }
-      ],
-      "product": "origin2000",
-      "routers": [
-        {
-          "chip-inputs": 15,
-          "id": "router-1",
-          "module-index": 0,
-          "part": 1,
-          "revision": 1,
-          "serial": 17592186044421,
-          "slot": 1
-        },
-        {
-          "chip-inputs": 14,
-          "id": "router-2",
-          "module-index": 0,
-          "part": 1,
-          "revision": 1,
-          "serial": 17592186044422,
-          "slot": 2
-        }
-      ],
-      "supported-cpu-populations": [
-        {
-          "cpus-per-node": [
-            2,
-            2,
-            2,
-            2
-          ]
-        }
-      ],
-      "xtalk-attachments": [
-        {
-          "crossbar-index": 0,
-          "node-index": 0,
-          "widget": 9
-        },
-        {
-          "crossbar-index": 0,
-          "node-index": 2,
-          "widget": 10
-        },
-        {
-          "crossbar-index": 0,
-          "node-index": 0,
-          "widget": 8
-        },
-        {
-          "crossbar-index": 0,
-          "node-index": 0,
-          "widget": 15
-        },
-        {
-          "crossbar-index": 1,
-          "node-index": 1,
-          "widget": 10
-        },
-        {
-          "crossbar-index": 1,
-          "node-index": 3,
-          "widget": 9
-        }
-      ],
-      "xtalk-slots": [
-        {
-          "controlling-node": 2,
-          "crossbar-index": 0,
-          "id": "pci-expansion",
-          "widget": 12
-        },
-        {
-          "controlling-node": 2,
-          "crossbar-index": 0,
-          "id": "xio-slot-4",
-          "widget": 11
-        },
-        {
-          "controlling-node": 0,
-          "crossbar-index": 0,
-          "id": "xio-slot-5",
-          "widget": 14
-        },
-        {
-          "controlling-node": 2,
-          "crossbar-index": 0,
-          "id": "xio-slot-6",
-          "widget": 13
-        },
-        {
-          "controlling-node": 1,
-          "crossbar-index": 1,
-          "id": "xio-slot-7",
-          "widget": 14
-        },
-        {
-          "controlling-node": 3,
-          "crossbar-index": 1,
-          "id": "xio-slot-8",
-          "widget": 11
-        },
-        {
-          "controlling-node": 1,
-          "crossbar-index": 1,
-          "id": "xio-slot-9",
-          "widget": 15
-        },
-        {
-          "controlling-node": 3,
-          "crossbar-index": 1,
-          "id": "xio-slot-10",
-          "widget": 12
-        },
-        {
-          "controlling-node": 1,
-          "crossbar-index": 1,
-          "id": "xio-slot-11",
-          "widget": 8
-        },
-        {
-          "controlling-node": 3,
-          "crossbar-index": 1,
-          "id": "xio-slot-12",
-          "widget": 13
-        }
-      ]
     },
     {
       "cables": [

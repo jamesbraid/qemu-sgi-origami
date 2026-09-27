@@ -1399,8 +1399,9 @@ static bool sgi_machine_instantiate_xio_card(
  * carries no PCI function, IOC3 or onewire-serial property of its own --
  * increment 1 is identity only, so this function sets only what
  * sgi-xio-board's base class and sgi-kona's own "fabric" property
- * require. The origin2000-ir2 topology fits one at IO3; a `-device
- * sgi-kona` reaches the same board without a catalogue record.
+ * require. The onyx2 topologies fit one, the rack at IO3 and the deskside
+ * at IO4; a `-device sgi-kona` reaches the same board without a catalogue
+ * record.
  */
 static bool sgi_machine_instantiate_kona(
     SGIMachineState *s, const SGIModelTopology *t,
@@ -2758,10 +2759,11 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
 
     /*
      * The two-chassis Origin 200's two Hub-embedded ELSCs share
-     * arbitration; a shared-controller topology (Origin 2000) has no
-     * per-node ELSC here (sgi_machine_build_controllers builds that).
+     * arbitration; a shared-controller topology (Origin 2000, and the
+     * two-node Onyx2 deskside) has no per-node ELSC here
+     * (sgi_machine_build_controllers builds that).
      */
-    if (node_count == 2) {
+    if (node_count == 2 && s->nodes[0]->hub.elsc && s->nodes[1]->hub.elsc) {
         SGIElscState *master = NULL;
         SGIElscState *slave = NULL;
 
@@ -3307,6 +3309,30 @@ static void origin2000_class_init(ObjectClass *oc, const void *data)
 }
 
 /*
+ * Onyx2 is Origin 2000 silicon: the same IP27 node boards, memory and
+ * stock PROM, told apart only by the hardware its topologies fit (a
+ * BaseIO-G and KONA pipes, and on the deskside a midplane whose node
+ * slots drive different Hub slot bits). The rack is its default.
+ */
+static void onyx2_class_init(ObjectClass *oc, const void *data)
+{
+    MachineClass *mc = MACHINE_CLASS(oc);
+    SGIMachineClass *smc = SGI_MACHINE_CLASS(oc);
+    const SGIModelTopology *t = sgi_model_find_topology("onyx2-rack");
+
+    g_assert(t);
+    smc->product = "onyx2";
+    smc->default_topology = "onyx2-rack";
+    smc->node_memory = &sn0_ip27_memory;
+    mc->desc = t->description;
+    mc->valid_cpu_types = sgi_sn0_r10000_cpu_types;
+    mc->default_cpus = sgi_machine_topology_default_cpus(t);
+    mc->max_cpus = sgi_machine_product_max_cpus("onyx2");
+    mc->default_ram_size = sgi_machine_topology_default_ram(t);
+    mc->default_ram_id = "sn0.ram";
+}
+
+/*
  * A bare -M origin2000, with no -smp at all, never runs smp_parse: the
  * generic machine_initfn default of one socket survives unless this
  * preset corrects it before realize's own validation runs. Every other
@@ -3334,6 +3360,11 @@ static const TypeInfo sgi_machine_types[] = {
         .name          = MACHINE_TYPE_NAME("origin2000"),
         .parent        = TYPE_SGI_SN_MACHINE,
         .class_init    = origin2000_class_init,
+    },
+    {
+        .name          = MACHINE_TYPE_NAME("onyx2"),
+        .parent        = TYPE_SGI_SN_MACHINE,
+        .class_init    = onyx2_class_init,
     },
 };
 
