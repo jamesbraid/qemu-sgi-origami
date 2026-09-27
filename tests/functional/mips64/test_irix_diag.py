@@ -81,7 +81,8 @@ from lib_irix_diag import (FLAVOURS, MANIFEST, CheckFailed, ClockReading,
                            diag_problems, guest_date, launch_args,
                            link_targets, od_bytes, parse_row,
                            command_output, drive_to_shell,
-                           processor_count, prom_facts, run_checks,
+                           processor_count, prom_facts, run_checks, text,
+                           tick_warnings,
                            wav_nonzero_samples)
 from lib_matrix import MatrixError, matrix_rows
 from lib_net import HarnessError, IrixConsole
@@ -573,21 +574,26 @@ if QemuSystemTest is not None:
                        f'{self.flavour.cd_dev}')
 
         def _check_timer(self):
-            # IRIX prints this when a scheduler tick arrives one whole
-            # Count wrap late: a Compare match the CPU model missed (see
-            # docs/known-issues.md in the project checkout). A stall of the
-            # emulator itself prints "Probably caused by splhi" instead.
-            # It runs even after the row was cut short or its relaunch
-            # failed (lib_irix_diag.OBSERVERS), counting the consoles of
-            # the boots that did happen.
+            # IRIX warns when a CPU has seen no scheduler clock tick for
+            # ten seconds or more. Any such warning fails the row, as the
+            # one-node topology test required: a tick one whole Count wrap
+            # late ("Probable lost interrupt!") is a Compare match the CPU
+            # model missed, and a shorter gap ("Probably caused by splhi")
+            # is still a tick the guest did not get (docs/known-issues.md
+            # in the project checkout). It runs even after the row was cut
+            # short or its relaunch failed (lib_irix_diag.OBSERVERS),
+            # counting the consoles of the boots that did happen.
             launches = [self.first] + ([self.here] if self.here not in
                                        (None, self.first) else [])
-            misses = sum(len(re.findall(rb'Probable lost interrupt!',
-                                        launch.con.buf))
-                         for launch in launches)
-            self._expect(misses == 0,
-                         f'IRIX reported {misses} lost scheduler clock '
-                         'interrupts')
+            wraps, other = 0, 0
+            for launch in launches:
+                counts = tick_warnings(text(launch.con.buf))
+                wraps += counts[0]
+                other += counts[1]
+            self._expect(wraps + other == 0,
+                         f'IRIX reported {wraps + other} missed scheduler '
+                         f'ticks: {wraps} a whole Count wrap late, {other} '
+                         'after a shorter gap')
 
         # -- reboot, stop and relaunch ------------------------------------
 

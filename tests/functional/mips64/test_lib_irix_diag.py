@@ -27,7 +27,7 @@ from lib_irix_diag import (CHECKS, FLAVOURS, REASONS, RUN, CheckFailed,
                            drive_to_shell, guest_date, launch_args,
                            link_targets, od_bytes, parse_manifest, parse_row,
                            processor_count, prom_facts, run_checks, text,
-                           wav_nonzero_samples)
+                           tick_warnings, wav_nonzero_samples)
 from lib_matrix import MatrixError
 from lib_net import Console, GuestFault, HarnessError
 
@@ -296,6 +296,17 @@ class ParserTests(unittest.TestCase):
         self.assertEqual(processor_count(
             'Processor 0: 180 MHZ IP27\nProcessor 1: 180 MHZ IP27\n'), 2)
         self.assertEqual(processor_count('no processors here'), 0)
+
+    def test_tick_warnings_counts_both_kinds(self):
+        console = ("WARNING: CPU 1 hasn't seen a scheduler clock interrupt in "
+                   '47 seconds, EPC 0xc0000000001919d0, RA: 0x0\n'
+                   '         Probable lost interrupt!\n'
+                   "WARNING: CPU 0 hasn't seen a scheduler clock interrupt in "
+                   '11 seconds, EPC 0xc000000000286418, RA: 0x0\n'
+                   '         Probably caused by splhi or spl7 delaying the '
+                   'interrupt\n')
+        self.assertEqual(tick_warnings(console), (1, 1))
+        self.assertEqual(tick_warnings('login: root\n'), (0, 0))
 
     def test_od_bytes(self):
         self.assertEqual(od_bytes(' 1c f0 1c 32 f0 32\n'),

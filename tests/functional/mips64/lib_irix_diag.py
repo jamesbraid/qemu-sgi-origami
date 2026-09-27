@@ -53,7 +53,7 @@ CHECKS = (
     'warm_boot',     # IRIX boots again after it, and keeps nvram and time
     'persistence',   # nvram and the Timekeeper clock across a full stop
     'parallel',      # parallel-port numbering from a clean ioconfig
-    'timer',         # no scheduler tick lost, over every boot of the row
+    'timer',         # no scheduler tick missed, over every boot of the row
 )
 
 RUN = 'run'
@@ -398,6 +398,22 @@ def od_bytes(listing):
     return [token for line in listing.splitlines()
             if re.fullmatch(r'\s*(?:[0-9a-f]{2}\s*)+', line)
             for token in line.split()]
+
+
+# IRIX's warning that a CPU saw no scheduler clock tick for N seconds, and
+# the line after it, which names a whole Count wrap ("Probable lost
+# interrupt!") or any other gap ("Probably caused by splhi...").
+_TICK_WARNING_RE = re.compile(
+    r"CPU \d+ hasn't seen a scheduler clock interrupt in \d+ seconds"
+    r"[^\n]*\n\s*(Probable lost interrupt!)?")
+
+
+def tick_warnings(console):
+    """(whole-wrap, other) counts of IRIX's missed-scheduler-tick warnings
+    in console text."""
+    found = _TICK_WARNING_RE.findall(console)
+    wraps = sum(1 for trailer in found if trailer)
+    return wraps, len(found) - wraps
 
 
 def guest_date(output):
