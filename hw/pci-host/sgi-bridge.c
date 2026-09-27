@@ -2591,12 +2591,13 @@ static const Property sgi_bridge_properties[] = {
 /*
  * ---- The XIO port interface ----
  *
- * A Bridge is a leaf widget, the direct link's own carrier when it is
- * a fitted part of a node board (IP29's onboard I/O, hw/mips/sgi/sn0.c)
- * rather than wrapped in a removable board's own port implementation
- * (an sgi-xio-board card, xio-board.c). index is unused: a Bridge is
- * always one widget, named by whichever position the link or Crossow
- * attaches it at.
+ * A Bridge is a leaf widget: a peer's programmed I/O lands on its widget
+ * space, and a packet on its packet face, with no destination widget in
+ * either. Its link peer's packet fabric is where its own DMA and
+ * interrupt packets go, composed as (widget << 48) | address; the link
+ * presents a leaf peer at every widget number, so this Bridge never needs
+ * to know whether a Hub or a Crossbow is on the other end. index is
+ * unused: a Bridge has one XIO port.
  */
 
 static const char *sgi_bridge_xio_port_describe(Object *port,
@@ -2605,16 +2606,38 @@ static const char *sgi_bridge_xio_port_describe(Object *port,
     return "a Bridge";
 }
 
+/* Both faces exist once the Bridge has realized, and not before. */
 static MemoryRegion *sgi_bridge_xio_port_cpu_face(Object *port,
                                                   unsigned int index)
 {
-    return sysbus_mmio_get_region(SYS_BUS_DEVICE(port), 0);
+    return DEVICE(port)->realized ?
+        sysbus_mmio_get_region(SYS_BUS_DEVICE(port), 0) : NULL;
 }
 
 static MemoryRegion *sgi_bridge_xio_port_packet_face(Object *port,
                                                      unsigned int index)
 {
-    return sgi_bridge_packet_face(SGI_BRIDGE(port));
+    return DEVICE(port)->realized ?
+        sgi_bridge_packet_face(SGI_BRIDGE(port)) : NULL;
+}
+
+static bool sgi_bridge_xio_port_connect(Object *port, unsigned int index,
+                                        const SGIXioPeer *peer, Error **errp)
+{
+    SGIBridgeState *s = SGI_BRIDGE(port);
+
+    if (DEVICE(s)->realized) {
+        error_setg(errp, "a Bridge takes its link before it realizes");
+        return false;
+    }
+    if (!peer->packet_fabric) {
+        error_setg(errp, "a Bridge's link peer must take packets");
+        return false;
+    }
+    s->fabric = peer->packet_fabric;
+    s->fabric_base = 0;
+    s->fabric_widget_shift = SGI_BRIDGE_PACKET_ADDRESS_BITS;
+    return true;
 }
 
 static void sgi_bridge_class_init(ObjectClass *oc, const void *data)
@@ -2643,6 +2666,7 @@ static void sgi_bridge_class_init(ObjectClass *oc, const void *data)
     pc->describe = sgi_bridge_xio_port_describe;
     pc->cpu_face = sgi_bridge_xio_port_cpu_face;
     pc->packet_face = sgi_bridge_xio_port_packet_face;
+    pc->connect = sgi_bridge_xio_port_connect;
 }
 
 static const TypeInfo sgi_bridge_types[] = {

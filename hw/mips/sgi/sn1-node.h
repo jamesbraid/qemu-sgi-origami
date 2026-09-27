@@ -18,6 +18,7 @@
 #include "hw/core/resettable.h"
 #include "hw/core/sysbus.h"
 #include "hw/mips/sgi/sn-catalogue.h"
+#include "hw/mips/sgi/xio-link.h"
 #include "cpu.h"
 #include "sn-promdata.h"
 
@@ -79,6 +80,9 @@ typedef struct SN1NodeState {
      */
     unsigned int *xbridge_widgets;
     size_t xbridge_widget_count;
+
+    /* The Bedrock's I/O interface linked to the XBridge's host port. */
+    SGIXioLink xbridge_link;
 
     Clock *cpuclk;
     MIPSCPU *cpu[SGI_SN1_NODE_MAX_CPUS];

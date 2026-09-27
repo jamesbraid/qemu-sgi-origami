@@ -7,18 +7,15 @@
  *
  * A preset is not itself user_creatable-reachable the way a real carrier
  * builds it (a bare Bridge or XBridge, then sgi-baseio on its bus) --
- * sgi-board-test-fixture builds exactly that pair for the "ip29", "io6" and
- * "io8" presets, the same way sgi-xio-board-fixture stands in for a
- * module's Crossbow in the XIO board base class's own qtest; see
- * tests/qtest/board-test-fixture.c. sgi-pci-expansion is also
- * `-device`-creatable now (see its own header comment for the spare fabric
- * proxy that makes it so), but this file still runs it through the same
- * fixture's "module"/"slot"/"fabric" path, matching the other three cases;
- * sgi-board-test.c's own attach-pending case, and sn-builder- test.c's
- * test_pci_expansion_attaches_via_spare_fabric and test_xio_
- * baseio_attaches_via_spare_fabric (which boot the real -M origin2000
- * machine, unlike this file's bare fixture), cover the real `-device` command
- * line instead.
+ * sgi-board-test-fixture builds exactly that pair for the "ip29",
+ * "io6" and "io8" presets; see tests/qtest/board-test-fixture.c.
+ * sgi-pci-expansion is also `-device`-creatable at an empty XIO slot
+ * (see its own header comment), but this file still runs it through the
+ * same fixture's "module"/"slot"/"fabric" path, matching the other three
+ * cases; sn-builder-test.c's test_pci_expansion_attaches_via_spare_fabric
+ * and test_xio_baseio_attaches_via_spare_fabric, which boot the real -M
+ * origin2000 machine, cover the real `-device` command line and its link
+ * to the slot's Crossbow port instead.
  *
  * Every case's internal Bridge or XBridge chip shares one register layout
  * (hw/pci-host/sgi-bridge.c and sgi-xbridge.c): a 32-bit value per eight-byte
@@ -46,12 +43,7 @@
  * an id that names no real backend must be refused at realize, naming the id,
  * rather than leaving the IOC3 silently built without it. And
  * sgi-xio-board, the base class sgi-pci-expansion derives from, has its own
- * property validation, re-parenting under its module, and the deferred attach
- * hook that lets a `-device` board reach a Crossbow that must realize only
- * once every board is in; the attach-pending case uses
- * sgi-xio-board-fixture, a test-only stand-in for a machine builder that
- * owns one Crossbow and drives the same machine-init-done attach path a real
- * builder would.
+ * property validation and re-parenting under its module.
  */
 
 #include "qemu/osdep.h"
@@ -396,9 +388,7 @@ static void test_io8_unresolved_drive(const void *data)
 }
 
 /*
- * sgi-xio-board: property validation, re-parenting under its module, and
- * the deferred attach hook that lets a `-device` board reach a Crossbow that
- * must realize only once every board is in.
+ * sgi-xio-board: property validation and re-parenting under its module.
  *
  * -M none's main system bus refuses to hot-plug a sysbus device at all (no
  * dynamic-sysbus allowance is wired up without a machine, and this packet
@@ -409,45 +399,7 @@ static void test_io8_unresolved_drive(const void *data)
  * subprocesses and check the process's own failure, the way
  * test_parent_l1_invalid_region() in sn1-bedrock-test.c checks a different
  * device's realize-time refusal.
- *
- * The attach-pending case uses sgi-xio-board-fixture, a test-only stand-in
- * for a machine builder: it owns one Crossbow, created unrealized, and (with
- * auto-attach left at its default) calls sgi_xio_board_attach_pending()
- * from the real machine-init-done notifier the way a builder would, then
- * realizes the Crossbow. A second fixture with auto-attach=false does neither
- * on its own; its "realize-now" and "retry" properties let the qtest drive
- * the same two steps by hand, which is the only way to put a Crossbow into
- * "already realized, nothing attached" without a hot-plug -M none refuses.
  */
-
-/*
- * Matches SGI_XIO_BOARD_FIXTURE_SPAN in tests/qtest/xio-test-board.c:
- * how much address space the fixture's Crossbow gives each widget.
- */
-#define WIDGET_SPAN (32ULL * 1024 * 1024)
-
-/*
- * fixture0 keeps slot 8 alive beside probe slot 9; a link never
- * routes to itself.
- */
-#define BOARD_WIDGET 8
-#define PROBE_LINK   1 /* widget 9, the second live port */
-
-#define CPU_BASE    0x40000000ULL
-#define TARGET_BASE 0x80000000ULL
-
-#define FIXTURE0 "/machine/peripheral/fixture0"
-#define FIXTURE1 "/machine/peripheral/fixture1"
-
-static char *qom_get_str(QTestState *qts, const char *path, const char *prop)
-{
-    QDict *r = qtest_qmp(qts, "{'execute': 'qom-get', 'arguments': "
-                         "{'path': %s, 'property': %s}}", path, prop);
-    char *value = g_strdup(qdict_get_str(r, "return"));
-
-    qobject_unref(r);
-    return value;
-}
 
 static void test_bad_module(void)
 {
@@ -542,69 +494,6 @@ static void test_reparent(void)
     qtest_quit(qts);
 }
 
-/*
- * A board built before the machine-init-done notifier fires attaches through
- * sgi_xio_board_attach_pending() and is reachable through the Crossbow once
- * it realizes; a board whose Crossbow the qtest realizes by hand first
- * (standing in for one that already realized before this board could reach
- * it) is refused when the hook is then run against it.
- */
-static void test_attach_pending(void)
-{
-    QTestState *qts = qtest_initf(
-        "-M none -cpu R10000 -S "
-        "-device sgi-xio-board-fixture,id=fixture0,module=0 "
-        "-device sgi-xio-test-board,id=board0,module=0,slot=%d "
-        "-device sgi-xio-board-fixture,id=fixture1,module=1,"
-        "auto-attach=false "
-        "-device sgi-xio-test-board,id=board1,module=1,slot=8",
-        BOARD_WIDGET);
-    g_autofree char *error = NULL;
-
-    /*
-     * fixture0's machine-init-done notifier runs before the first QMP reply.
-     */
-    g_assert_true(qtest_qom_get_bool(qts, FIXTURE0, "attached"));
-    error = qom_get_str(qts, FIXTURE0, "error");
-    g_assert_cmpstr(error, ==, "");
-
-    /*
-     * Write through probe widget 9's view of widget 8; read the same RAM
-     * through the target mapping.
-     */
-    qtest_sysbus_mmio_map(qts, FIXTURE0 "/crossbow", PROBE_LINK, CPU_BASE);
-    qtest_sysbus_mmio_map(qts, "/machine/module0/board0/widget-module0-slot8",
-                          0, TARGET_BASE);
-    qtest_writeq(qts, CPU_BASE + BOARD_WIDGET * WIDGET_SPAN,
-                0x1122334455667788ULL);
-    g_assert_cmphex(qtest_readq(qts, TARGET_BASE), ==,
-                    0x1122334455667788ULL);
-
-    /*
-     * board1 realized and re-parented without attaching; fixture1 has
-     * auto-attach=false and its Crossbow remains unrealized.
-     */
-    g_assert_true(
-        qtest_qom_get_bool(qts, "/machine/module1/board1", "realized"));
-    g_assert_false(qtest_qom_get_bool(qts, FIXTURE1, "attached"));
-
-    /*
-     * Put fixture1's Crossbow where a real one would be if it had already
-     * realized before board1 could reach it, then run the same hook board1
-     * was always going to need.
-     */
-    qtest_qom_set_bool(qts, FIXTURE1, "realize-now", true);
-    qtest_qom_set_bool(qts, FIXTURE1, "retry", true);
-    g_free(error);
-    error = qom_get_str(qts, FIXTURE1, "error");
-    g_assert_true(*error != '\0');
-
-    /* fixture0's earlier success is untouched by fixture1's failure. */
-    g_assert_true(qtest_qom_get_bool(qts, FIXTURE0, "attached"));
-
-    qtest_quit(qts);
-}
-
 int main(int argc, char **argv)
 {
     size_t i;
@@ -649,7 +538,6 @@ int main(int argc, char **argv)
     qtest_add_func("/sgi-xio-board/slot-reused-in-another-module",
                   test_slot_reused_in_another_module);
     qtest_add_func("/sgi-xio-board/reparent", test_reparent);
-    qtest_add_func("/sgi-xio-board/attach-pending", test_attach_pending);
 
     return g_test_run();
 }

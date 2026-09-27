@@ -28,6 +28,15 @@
  * errors */
 #define BRIDGE_INT_DEST_UP  0x030        /* interrupt destination, upper */
 #define BRIDGE_INT_DEST_LO  0x038        /* interrupt destination, lower */
+/*
+ * The destination firmware programs (PROM 6.156 at 0x1fc44700): the Hub's
+ * widget in bits 19:16, and the Hub's interrupt-modify register in the XIO
+ * I/O view, bit 47 set with the node at bit 38.
+ */
+#define HUB_XIO_WIDGET          1
+#define HUB_XIO_INT_MODIFY      0x01800090u
+#define HUB_XIO_DEST_UPPER(node) \
+    ((HUB_XIO_WIDGET << 16) | 0x8000u | ((node) << (38 - 32)))
 #define INT_INVALID_ADDR    (1u << 24)   /* address invalid for this widget */
 #define INT_RESET_ALL       0x7fu        /* clears every error group */
 #define INT_RESET_PCI_GRP   (1u << 0)    /* clears only the PCI group */
@@ -194,8 +203,8 @@ static void test_invalid_address_raises_host_interrupt(const void *data)
      * packet goes.
      */
     qtest_writel(qts, REG(BRIDGE_INT_DEST_LO),
-                 (uint32_t)(HUB_LOCAL - SPACE_IO) + PI_INT_MODIFY);
-    qtest_writel(qts, REG(BRIDGE_INT_DEST_UP), 0);
+                 HUB_XIO_INT_MODIFY);
+    qtest_writel(qts, REG(BRIDGE_INT_DEST_UP), HUB_XIO_DEST_UPPER(0));
     qtest_writel(qts, REG(BRIDGE_HOST_ERR), ERR_HOST_BIT);
     qtest_writel(qts, REG(BRIDGE_INT_ENABLE), INT_INVALID_ADDR);
 
@@ -251,9 +260,9 @@ static void route_second_chassis_host_error(QTestState *qts,
                                             unsigned int number)
 {
     qtest_writel(qts, REG_BY_NUMBER(0, BRIDGE_INT_DEST_LO),
-                 (uint32_t)(HUB_LOCAL - SPACE_IO) + PI_INT_MODIFY);
+                 HUB_XIO_INT_MODIFY);
     qtest_writel(qts, REG_BY_NUMBER(0, BRIDGE_INT_DEST_UP),
-                 number << (38 - 32));
+                 HUB_XIO_DEST_UPPER(number));
     qtest_writel(qts, REG_BY_NUMBER(0, BRIDGE_HOST_ERR), ERR_HOST_BIT);
     qtest_writel(qts, REG_BY_NUMBER(0, BRIDGE_INT_ENABLE), INT_INVALID_ADDR);
 }

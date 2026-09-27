@@ -1243,13 +1243,6 @@ static bool mgras_build_widget(SGIXioBoardState *board, Error **errp)
     s->retrace_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, mgras_retrace, s);
     board->cpu_face = &s->regs;
     board->packet_face = &s->regs;
-    /*
-     * A board fitted at an empty slot claims that slot's fabric proxy so
-     * the machine brings its widget alive both ways; the catalogue's own
-     * attach and a fixture's plain sink make this a no-op.
-     */
-    sgi_xio_crossbow_link_claim_fabric(s->fabric, board->cpu_face,
-                                       board->packet_face);
     return true;
 }
 

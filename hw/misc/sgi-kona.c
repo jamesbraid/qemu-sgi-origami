@@ -599,16 +599,6 @@ static bool sgi_kona_build_widget(SGIXioBoardState *board,
                           SGI_KONA_APERTURE_SIZE);
     board->cpu_face = &s->regs;
     board->packet_face = &s->regs;
-
-    /*
-     * Claim the spare fabric proxy now this widget's own faces exist, so
-     * sgi_machine_done() both brings the spare widget's link alive for
-     * this board's outbound packets and registers those faces as the
-     * widget's inbound destination. A fixture wiring "fabric" to a plain
-     * sink is a no-op here.
-     */
-    sgi_xio_crossbow_link_claim_fabric(s->fabric, board->cpu_face,
-                                       board->packet_face);
     return true;
 }
 

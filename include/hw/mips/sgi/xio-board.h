@@ -1,40 +1,35 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SGI XIO board base class: the removable unit that plugs into one of a
- * module's XIO slots (the BaseIO card, the PCI expansion card, a future
- * GIGAchannel cabinet), each carrying a Bridge or XBridge widget of its own.
+ * module's XIO slots (the BaseIO card, the PCI expansion card, a graphics
+ * board), each carrying a widget of its own.
  * A board that is not removable (IP29's onboard I/O, soldered to the System
  * Board rather than plugged into a slot) is not one of these; its Bridge
  * answers the XIO port interface directly (see
  * hw/pci-host/sgi-bridge.c), with no board wrapper at all.
  *
- * The test board this header also declares lives in xio-test-board.c.
- *
  * Every concrete board shares two properties -- a module index and a
  * slot -- and one class method, build_widget(), that builds the board's
- * own widget-facing device.
+ * own widget-facing device. A board is an XIO port: an XIO link
+ * (xio-link.h) hands it the fabric its widget sends through before it
+ * builds that widget, and the widget's faces to the Crossbow port once it
+ * has.
  *
- * ORDERING CONTRACT
+ * WHO LINKS A BOARD
  *
- * A Crossbow needs every endpoint present at startup attached before its
- * own realize builds the routes between them, and sgi_xbow_attach_endpoint()
- * refuses once it is realized. So:
- *
- *   - The machine builder attaches the boards its topology places, through
- *     each board's own crossbow link, before it realizes the Crossbow.
+ *   - The machine builder links the boards its topology places, each to
+ *     its Crossbow port, before it realizes the Crossbow.
  *   - A `-device` board realizes after the machine's init has returned.
  *     Named by slot (slot=io5), its realize asks the machine
- *     (TYPE_SGI_XIO_SLOTS below) for that empty slot's module, widget and
- *     fabric proxy, validates its properties, builds its widget, claims the
- *     proxy and re-parents itself under /machine/module<N>. It never
- *     touches a Crossbow.
- *   - The machine's init-done notifier then finishes every slot's proxy
- *     against its realized Crossbow and, for a claimed one, attaches the
- *     board's widget live and brings its link alive.
- *   - sgi_xio_board_attach_pending() remains for a machine that realizes
- *     its Crossbow only after cold-plugged boards exist, as a qtest
- *     fixture does; a board plugged in with device_add once the machine
- *     is up still realizes but attaches nowhere.
+ *     (TYPE_SGI_XIO_SLOTS below) to claim that empty slot. The machine
+ *     answers with the slot's module and widget and the link to the
+ *     slot's Crossbow port, which by then has realized; the board takes
+ *     its fabric from the link, builds its widget and finishes the link,
+ *     which attaches the widget to the Crossbow live. The machine's
+ *     init-done notifier brings the link alive.
+ *   - A board given its fabric outright and a widget number is linked the
+ *     same way when that fabric is a slot's Crossbow port, and otherwise
+ *     not at all, as a qtest's stand-in fabric is.
  */
 
 #ifndef HW_MIPS_SGI_XIO_BOARD_H
@@ -42,6 +37,7 @@
 
 #include "hw/core/sysbus.h"
 #include "hw/misc/sgi-xbow.h"
+#include "hw/mips/sgi/xio-link.h"
 #include "qemu/queue.h"
 #include "qom/object.h"
 
@@ -85,7 +81,7 @@ struct SGIXioBoardState {
 
     /*
      * Set by the concrete class's build_widget(), before this device
-     * re-parents: the two faces sgi_xbow_attach_endpoint() takes. A board
+     * re-parents: the board's two XIO port faces. A board
      * whose widget answers a processor and a packet at the same address may
      * point both at the same region.
      */
@@ -93,10 +89,11 @@ struct SGIXioBoardState {
     MemoryRegion *packet_face;
 
     /*
-     * Whether sgi_xio_board_attach_pending() has already wired this board
-     * into a Crossbow.
+     * The link to a slot's Crossbow port a board fitted at launch claimed
+     * from the machine, or NULL for a board the machine links itself or
+     * one linked to nothing.
      */
-    bool attached;
+    SGIXioLink *link;
 
     /* < private > */
     bool queued;
@@ -140,17 +137,17 @@ struct SGIXioBoardClass {
 /*
  * The machine side of a board placed by slot name: a machine whose
  * topology names XIO slots implements this interface, and a board's
- * realize asks it, before build_widget(), where the named slot is and
- * what the board sends through. claim() reserves an empty slot by name,
- * filling in an SGIXioSlotPlace and returning the fabric proxy the
- * machine holds for it; it refuses a slot the topology does not have,
+ * realize asks it, before build_widget(), where the named slot is.
+ * claim() reserves an empty slot by name for board, filling in an
+ * SGIXioSlotPlace and returning the link to the slot's Crossbow port with
+ * board at its other end; it refuses a slot the topology does not have,
  * one the topology already fills and one another board has claimed.
  * claim_fabric() covers a board given its fabric outright: when that
- * fabric is one of the machine's slot proxies it must match the module
- * and widget the board names and must not already be claimed, and it
- * returns the slot's machine-wide name in `*name` for the caller to free;
- * any other fabric (a qtest fixture's sink) passes and leaves `*name`
- * NULL.
+ * fabric is one of the machine's slot ports it must match the module and
+ * widget the board names and must not already be claimed, and *link
+ * comes back as that slot's link and *name as the slot's machine-wide
+ * name, for the caller to free; any other fabric (a qtest fixture's sink)
+ * passes with *link and *name NULL.
  */
 #define TYPE_SGI_XIO_SLOTS "sgi-xio-slots"
 
@@ -181,11 +178,11 @@ struct SGIXioSlotsClass {
     InterfaceClass parent_class;
 
     /*< public >*/
-    MemoryRegion *(*claim)(Object *slots, const char *name,
-                           SGIXioSlotPlace *place, Error **errp);
-    bool (*claim_fabric)(Object *slots, MemoryRegion *fabric,
+    SGIXioLink *(*claim)(Object *slots, Object *board, const char *name,
+                         SGIXioSlotPlace *place, Error **errp);
+    bool (*claim_fabric)(Object *slots, Object *board, MemoryRegion *fabric,
                          uint32_t module, uint32_t widget, char **name,
-                         Error **errp);
+                         SGIXioLink **link, Error **errp);
 };
 
 /*
@@ -196,17 +193,5 @@ struct SGIXioSlotsClass {
  */
 void sgi_xio_board_name_pci_bus(SGIXioBoardState *board, DeviceState *bridge,
                                 const char *explicit);
-
-/*
- * Attach every not-yet-attached board registered under `module` to
- * `crossbow`, each at its slot, and leave the rest for the caller to realize.
- * Stops and returns false on the first board that refuses, ordinarily because
- * `crossbow` is already realized. This is the failure
- * sgi_xbow_attach_endpoint() itself reports; a board already marked attached
- * from an earlier call is skipped. See the ordering contract above for when
- * to call this and what a late board sees.
- */
-bool sgi_xio_board_attach_pending(SGIXbowState *crossbow,
-                                    unsigned int module, Error **errp);
 
 #endif /* HW_MIPS_SGI_XIO_BOARD_H */

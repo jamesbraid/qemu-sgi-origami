@@ -1844,6 +1844,18 @@ static void test_dma_device_window_64bit_doubleword(const void *data)
 #define INT_TEST_HOST_NODE      0
 #define INT_TEST_HOST_NUMBER    42
 
+/*
+ * The destination the guests program: the Hub's widget, and its
+ * interrupt-modify register in the XIO I/O view. A pin's host field then
+ * supplies address bits 47:38, the I/O-view bit (field bit 9) above the
+ * destination node.
+ */
+#define INT_DEST_UPPER_REG      0x030
+#define INT_DEST_LOWER_REG      0x038
+#define INT_TEST_DEST_UPPER     (1u << 16)
+#define INT_TEST_DEST_LOWER     0x01800090u
+#define INT_HOST_IO_VIEW        0x200u
+
 
 /*
  * Slot 3 drives pin 3, which the base I/O controller's second
@@ -2769,8 +2781,11 @@ static void test_the_pin_ors_its_wire_and_pci_sources(const void *data)
 /* Route the test pin at node 0 with a number in the guest range. */
 static void bridge_route_pin(QTestState *qts)
 {
+    qtest_writel(qts, REG(INT_DEST_UPPER_REG), INT_TEST_DEST_UPPER);
+    qtest_writel(qts, REG(INT_DEST_LOWER_REG), INT_TEST_DEST_LOWER);
     qtest_writel(qts, REG(BRIDGE_INT_HOST(INT_TEST_SLOT)),
-                 (INT_TEST_HOST_NODE << 8) | INT_TEST_HOST_NUMBER);
+                 ((INT_HOST_IO_VIEW | INT_TEST_HOST_NODE) << 8) |
+                 INT_TEST_HOST_NUMBER);
 }
 
 static bool hub_pends_the_test_number(QTestState *qts)

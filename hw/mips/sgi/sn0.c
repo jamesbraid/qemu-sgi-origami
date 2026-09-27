@@ -1096,8 +1096,8 @@ static void sn0_node_create_hub(SN0NodeState *node)
             OBJECT(&node->local_space[slice][0]), &error_fatal);
 
         /*
-         * This processor's physical view, for the Origin 2000 bus-error
-         * aperture the Hub installs when it finds itself Crossbow-attached.
+         * This processor's physical view, where the Hub installs the
+         * PROM's widget-2 PI-error probe.
          */
         g_autofree char *sysmem_prop = g_strdup_printf("cpu-sysmem%u", slice);
 
@@ -1235,52 +1235,29 @@ void sn0_map_cpu_big_windows(Object *owner, SN0NodeState **nodes,
 }
 
 /*
- * The PROM's fixed target: widget 2 (a synthetic address, not a populated
- * widget) at the Bridge's device-window offset for its error-status decode.
- * Origin 2000's Crossbow-attached BaseIO card does not use this probe at all;
- * only IP29's onboard I/O, wired through the direct link, does.
- */
-#define SN0_PROM_PI_PROBE_WIDGET 2
-#define SN0_PROM_PI_PROBE_OFFSET 0x400208ULL
-
-/*
- * IP29's onboard Bridge is reachable at XIO widget 8 on its first
- * discovery and decodes every other widget position the same way (a directly
- * linked Hub's Bridge answers its whole face at every widget the Hub decodes
- * to it) except widget 1; fixed by the chip and the System Board's wiring,
- * the same on every Origin 200 built, so this is a device constant rather
- * than per-topology data; the compiled catalogue no longer carries it.
- */
-#define SN0_IP29_IO_DISCOVERY_WIDGET   0
-#define SN0_IP29_IO_DECODED_WIDGET_MASK 0xfffdU
-
-/*
- * IP29's onboard base I/O: the System Board's Bridge, cabled straight to this
- * node's Hub through the direct link (no Crossbow), and an sgi-baseio behind
- * it with the "ip29" preset. Unlike the Origin 2000 BaseIO card
- * (sgi-xio-baseio), this Bridge is not wrapped in any board class: it is a
- * fitted part of the System Board itself, not a removable card, so it answers
- * the XIO port interface directly (hw/pci-host/sgi-bridge.c) rather
- * than through a board's re-parenting and module/slot registry. This is the
- * physical difference between an Origin 200's integrated IP29 System Board
- * and an Origin 2000 BaseIO card.
+ * IP29's onboard base I/O: the System Board's own Bridge, cabled either
+ * straight to this node's Hub or, in a GIGAchannel module, to one of the
+ * cabinet Crossbow's ports (docs/datasheets/sgi-gigachannel.md, "Crossbow
+ * link assignment"), and an sgi-baseio behind it with the "ip29" preset.
+ * Unlike the Origin 2000 BaseIO card (sgi-xio-baseio), this Bridge is not
+ * wrapped in any board class: it is a fitted part of the System Board
+ * itself, not a removable card, so it answers the XIO port interface
+ * directly (hw/pci-host/sgi-bridge.c) -- the physical difference
+ * baseio.md draws between the two ("The Origin 200 has an integrated
+ * IP29 System Board, not an Origin 2000 BaseIO card").
  *
- * Called once node has realized (its Hub's claim view and XIO container
- * exist by then), passing every fitted-part value and backend id the family
- * builder (sn-machine.c) already resolved from the descriptor and the command
- * line; this file owns only the Hub address-map facts (fabric-base,
- * fabric-node-shift, the PROM probe's fixed widget and offset) and the
- * direct-link wiring itself.
- *
- * A GIGAchannel cabinet takes the Hub's link instead and cables this Bridge
- * to one of the cabinet Crossbow's ports. Then crossbow_fabric is that
- * Crossbow link's proxy, the Bridge addresses its packets by widget as every
- * Crossbow-attached Bridge does, no direct link is wired, and the caller
- * attaches the Bridge it gets back through bridge_out to the Crossbow.
+ * The one XIO link joins the Bridge to upstream's port upstream_index:
+ * the Bridge takes its fabric before it realizes, and upstream takes the
+ * Bridge's faces once it has. Called once node has realized, passing
+ * every fitted-part value and backend id the family builder (sn-machine.c)
+ * already resolved from the descriptor and the command line. Which widget
+ * the Bridge answers at is upstream's to decide: a directly linked Hub
+ * reaches it at every widget number but its own, and a Crossbow at the
+ * port it is cabled to.
  */
 bool sn0_node_build_baseio(SN0NodeState *node, Object *owner,
-                           SGIXioDirectLink *link,
-                           MemoryRegion *crossbow_fabric,
+                           SGIXioLink *link, Object *upstream,
+                           unsigned int upstream_index,
                            uint64_t bridge_serial,
                            const uint64_t *ioc3_serial, const char *pci_bus_name,
                            const char *nvram_drive_id,
@@ -1289,11 +1266,11 @@ bool sn0_node_build_baseio(SN0NodeState *node, Object *owner,
                            const char *record_a_id,
                            const char *record_b_id,
                            const char *parallel_chardev_id,
-                           unsigned int widget, DeviceState **bridge_out,
-                           Error **errp)
+                           DeviceState **bridge_out, Error **errp)
 {
-    const SN0ModelAddressMap *map = sn0_node_address_map();
     const SGIBaseioPresetIdentity *identity = sgi_baseio_preset_lookup("ip29");
+    g_autofree char *link_name =
+        g_strdup_printf("sn0.node%u.io-link", node->nasid);
     DeviceState *bridge, *baseio;
     PCIBus *bus;
 
@@ -1304,25 +1281,11 @@ bool sn0_node_build_baseio(SN0NodeState *node, Object *owner,
     if (pci_bus_name) {
         qdev_prop_set_string(bridge, "pci-bus-name", pci_bus_name);
     }
-    if (crossbow_fabric) {
-        object_property_set_link(OBJECT(bridge), "fabric",
-                                 OBJECT(crossbow_fabric), &error_abort);
-        qdev_prop_set_uint32(bridge, "fabric-widget-shift",
-                             SGI_BRIDGE_PACKET_ADDRESS_BITS);
-    } else {
-        /*
-         * Interrupt packets travel a processor's claim view, which resolves a
-         * node-qualified address by programmed number, not by the board's
-         * position. View zero speaks for the node; a node always has a
-         * processor.
-         */
-        object_property_set_link(OBJECT(bridge), "fabric",
-                                 OBJECT(&node->claim_view[0]), &error_abort);
-        qdev_prop_set_uint64(bridge, "fabric-base", map->io.carrier_base);
-        qdev_prop_set_uint32(bridge, "fabric-node-shift",
-                             ctz64(map->node_stride));
-    }
-    if (!sysbus_realize(SYS_BUS_DEVICE(bridge), errp)) {
+    sgi_xio_link_init(link, owner, link_name, upstream, upstream_index,
+                      OBJECT(bridge), 0);
+    if (!sgi_xio_link_connect(link, errp) ||
+        !sysbus_realize(SYS_BUS_DEVICE(bridge), errp) ||
+        !sgi_xio_link_connect(link, errp)) {
         return false;
     }
     bus = PCI_HOST_BRIDGE(bridge)->bus;
@@ -1358,13 +1321,7 @@ bool sn0_node_build_baseio(SN0NodeState *node, Object *owner,
     }
 
     *bridge_out = bridge;
-    if (crossbow_fabric) {
-        return true;
-    }
-    return sgi_xio_direct_link_connect(
-        link, owner, node, OBJECT(bridge), SN0_IP29_IO_DISCOVERY_WIDGET,
-        widget, SN0_IP29_IO_DECODED_WIDGET_MASK, SN0_PROM_PI_PROBE_WIDGET,
-        SN0_PROM_PI_PROBE_OFFSET, errp);
+    return true;
 }
 
 static void sn0_node_realize(DeviceState *dev, Error **errp)

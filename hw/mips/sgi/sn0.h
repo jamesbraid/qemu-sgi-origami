@@ -222,22 +222,6 @@ typedef struct SN0NodeState {
     SN0BackdoorState backdoor_dir_state;
 
     MemoryRegion xio;
-    MemoryRegion prom_pi_probe;
-    /*
-     * Origin 200's onboard board answers the probe through its Bridge's
-     * device-window region, dispatched to directly rather than through an
-     * address space: that window sits behind Bridge's memory/IO routing bit
-     * for its device slot (sgi-bridge.c's
-     * device_window_mem[]/device_window_io[], toggled by each slot's
-     * DEV_MEMORY_SPACE control bit), off at reset until the PROM itself
-     * configures it, while this probe is meant to reach it regardless; an
-     * address-space read respects that routing and finds nothing there before
-     * the PROM configures it; a direct dispatch does not. Resolved once, at
-     * wiring time, from the Bridge object the direct link's widget_port names
-     * directly (sn0_node_build_baseio() hands it sn0.c's Bridge, the widget
-     * in the base-io-device step).
-     */
-    MemoryRegion *prom_pi_probe_window;
     MemoryRegion small_window[SN0_XIO_WIDGETS];
     MemoryRegion mem_slot[SN0_MAX_MEMORY_BANKS][SN0_MAX_MEMORY_SLOTS];
     MemoryRegion hub_local_mem_slot[SN0_MAX_MEMORY_BANKS]
@@ -263,17 +247,17 @@ void sn0_map_cpu_big_windows(Object *owner, SN0NodeState **nodes,
                              MemoryRegion **route_out);
 
 /*
- * Builds node's onboard base I/O (a Bridge and an sgi-baseio behind it, the
- * "ip29" preset), returns the Bridge through bridge_out, and connects it
- * through the direct link, or leaves it for the caller to attach to a
- * Crossbow when crossbow_fabric is set; see the definition's comment. Called
- * once node has realized. link is the caller's storage (SGIMachineState's
- * direct_links[]); the various ids are resolved backend names, not claimed
- * backends, for the claim-timing reason sgi-baseio's header explains.
+ * Builds node's onboard base I/O (a Bridge and an sgi-baseio behind it,
+ * the "ip29" preset), joins the Bridge through link to upstream's port
+ * upstream_index (the node's own Hub, or a GIGAchannel cabinet's Crossbow
+ * port) and returns it through bridge_out. Called once node has realized.
+ * link is the caller's own storage; the various ids are resolved backend
+ * names, not claimed backends, for the claim-timing reason sgi-baseio's
+ * own header explains.
  */
 bool sn0_node_build_baseio(SN0NodeState *node, Object *owner,
-                           SGIXioDirectLink *link,
-                           MemoryRegion *crossbow_fabric,
+                           SGIXioLink *link, Object *upstream,
+                           unsigned int upstream_index,
                            uint64_t bridge_serial,
                            const uint64_t *ioc3_serial, const char *pci_bus_name,
                            const char *nvram_drive_id,
@@ -282,8 +266,7 @@ bool sn0_node_build_baseio(SN0NodeState *node, Object *owner,
                            const char *record_a_id,
                            const char *record_b_id,
                            const char *parallel_chardev_id,
-                           unsigned int widget, DeviceState **bridge_out,
-                           Error **errp);
+                           DeviceState **bridge_out, Error **errp);
 
 extern const SN0FlashImplementation sn0_flash;
 

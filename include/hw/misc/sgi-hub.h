@@ -94,6 +94,15 @@ typedef struct SGIHubCounterLine {
 #define SGI_HUB_BWIN_SIZE    (512 * MiB)
 #define SGI_HUB_BWIN_TOTAL   (SGI_HUB_BWIN_ENTRIES * SGI_HUB_BWIN_SIZE)
 
+/*
+ * The XIO widget numbers the Hub's window decode names, and its own: the
+ * address map puts the Hub at widget 1, which is also what the widget
+ * control register's number field resets to.
+ */
+#define SGI_HUB_XIO_WIDGETS 16
+#define SGI_HUB_XIO_WIDGET  1
+#define SGI_HUB_XIO_WIDGET_SHIFT 34
+
 #define SGI_HUB_POPULATION_I2C_CONTROLLER   (1U << 0)
 #define SGI_HUB_POPULATION_ELSC               (1U << 1)
 #define SGI_HUB_POPULATION_ALL               ((1U << 2) - 1)
@@ -153,24 +162,40 @@ struct SGIHubState {
 
     /*
      * The widget-addressed XIO space the small and big windows reach, and
-     * the widget stride within it, both the machine's to define. The
-     * I/O-space target carries a big window whose translation entry
-     * selects the widget's I/O space.
+     * the widget stride within it, both the machine's to define. This
+     * Hub's I/O interface fills it from its link peer.
      */
     MemoryRegion *xio;
-    MemoryRegion *xio_io_space;
     uint32_t xio_widget_shift;
 
     /*
-     * Origin 2000's PROM PI-error probe, installed only when xio_io_space
-     * connects this Hub to a Crossbow link: each processor's own physical
-     * view (the machine's to define, one per populated slice) and the
-     * processor-physical base of the I/O space within it.
+     * The I/O interface's XIO port. Its two receiving faces: packet_face
+     * decodes an inbound 48-bit XIO address into the memory or I/O view,
+     * and widget_face answers a peer's programmed I/O to this Hub's own
+     * widget number. io_out carries a big window whose translation entry
+     * selects the widget's I/O space, turning its widget-addressed access
+     * into a packet on the link. The rest is what the link peer offered:
+     * its processor face, placed in the XIO space, and its packet fabric.
+     */
+    MemoryRegion ii_packet_face;
+    MemoryRegion ii_widget_face;
+    MemoryRegion ii_io_out;
+    MemoryRegion ii_peer_widget[SGI_HUB_XIO_WIDGETS];
+    MemoryRegion ii_local_register_view;
+    AddressSpace ii_inbound_as;
+    AddressSpace ii_local_registers_as;
+    AddressSpace ii_peer_packets_as;
+    bool ii_connected;
+
+    /*
+     * The PROM's widget-2 PI-error probe, installed on each processor's
+     * own physical view (the machine's to define, one per populated
+     * slice) at the processor-physical base of the I/O space within it.
      */
     MemoryRegion *cpu_sysmem[SGI_HUB_PROCESSORS];
     uint64_t io_space_base;
-    AddressSpace origin2000_xio_as;
-    MemoryRegion origin2000_bus_error[SGI_HUB_PROCESSORS];
+    AddressSpace pi_probe_as;
+    MemoryRegion pi_probe[SGI_HUB_PROCESSORS];
 
     /* The engines' view of the fabric: the device claim view, as a space. */
     AddressSpace bte_as;
@@ -474,16 +499,6 @@ void sgi_hub_set_cpu_enable(SGIHubState *s, unsigned int cpu, bool enabled,
 bool sgi_hub_attach_module_identity(SGIHubState *s,
                                     const SGIHubModuleIdentity *identity,
                                     Error **errp);
-
-/*
- * Wire this Hub's own outbound big-window I/O traffic (the "xio-io-space"
- * property) to target: an XIO-attach link's own doing, since a directly
- * attached Hub never populates it. Must run before this Hub realizes, and at
- * most once; target typically outlives the call by far (the crossbow link's
- * own proxy region, filled in once its Crossbow has realized).
- */
-bool sgi_hub_set_xio_io_space(SGIHubState *s, MemoryRegion *target,
-                              Error **errp);
 
 /*
  * Every Hub in the machine, in canonical stride order (this Hub's own

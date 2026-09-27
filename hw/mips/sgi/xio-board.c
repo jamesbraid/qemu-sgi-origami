@@ -7,7 +7,6 @@
 #include "hw/core/qdev.h"
 #include "hw/core/sysbus.h"
 #include "hw/mips/sgi-xio-port.h"
-#include "hw/pci-host/sgi-bridge.h"
 #include "migration/vmstate.h"
 #include "qapi/error.h"
 #include "qemu/cutils.h"
@@ -22,10 +21,10 @@
 #define SGI_XIO_BOARD_UNSET SGI_XIO_BOARD_MODULE_UNSET
 
 /*
- * Every sgi-xio-board realized so far, attached or not: this is both the
- * module+slot uniqueness registry and the pool sgi_xio_board_attach_pending()
- * scans. Boards are few (a module has at most a handful of XIO slots), so a
- * linear scan costs nothing a hash table would be worth carrying instead.
+ * Every sgi-xio-board realized so far: the module+slot uniqueness
+ * registry. Boards are few (a module has at most a handful of XIO
+ * slots), so a linear scan costs nothing a hash table would be worth
+ * carrying instead.
  */
 static QTAILQ_HEAD(, SGIXioBoardState) sgi_xio_board_all =
     QTAILQ_HEAD_INITIALIZER(sgi_xio_board_all);
@@ -139,10 +138,9 @@ static Object *sgi_xio_board_fabric(SGIXioBoardState *board)
 
 /*
  * Reject a second board on the same widget of the same fabric, and
- * otherwise register this one in the pool sgi_xio_board_attach_pending()
- * reads. A module's two Crossbows number their widgets alike, so the
- * module and widget alone do not name a position; each position's
- * fabric does.
+ * otherwise register this one. A module's two Crossbows number their
+ * widgets alike, so the module and widget alone do not name a position;
+ * each position's fabric does.
  */
 static bool sgi_xio_board_claim(SGIXioBoardState *board, Error **errp)
 {
@@ -212,9 +210,8 @@ static void sgi_xio_board_distinct_serials(SGIXioBoardState *board,
 
 /*
  * A board placed by slot name: ask the machine where that slot is, and
- * hand the board the fabric the machine holds for it. The board's own
- * "fabric" is left for the machine to choose; a switched fabric carries
- * the destination widget in bits 51:48 of a Bridge's packet address.
+ * take the fabric the slot's link hands it. The board's own "fabric" is
+ * left for the link to set.
  */
 static bool sgi_xio_board_place_by_name(SGIXioBoardState *board,
                                         Error **errp)
@@ -223,7 +220,7 @@ static bool sgi_xio_board_place_by_name(SGIXioBoardState *board,
     Object *slots = sgi_xio_board_slots();
     SGIXioSlotPlace place = { .module = board->module };
     g_autofree char *name = NULL;
-    MemoryRegion *fabric;
+    SGIXioLink *link;
 
     if (!slots) {
         error_setg(errp, "this machine has no XIO slot named '%s'",
@@ -239,9 +236,9 @@ static bool sgi_xio_board_place_by_name(SGIXioBoardState *board,
                    "give it a fabric", board->slot_name);
         return false;
     }
-    fabric = SGI_XIO_SLOTS_GET_CLASS(slots)->claim(
-        slots, board->slot_name, &place, errp);
-    if (!fabric) {
+    link = SGI_XIO_SLOTS_GET_CLASS(slots)->claim(
+        slots, obj, board->slot_name, &place, errp);
+    if (!link) {
         return false;
     }
     name = place.name;
@@ -249,6 +246,7 @@ static bool sgi_xio_board_place_by_name(SGIXioBoardState *board,
     board->slot = place.widget;
     board->slot_label = place.label;
     board->placed_by_name = true;
+    board->link = link;
     /*
      * A board fitted by slot name is known by the slot's machine-wide
      * name, unless given an id of its own.
@@ -256,21 +254,15 @@ static bool sgi_xio_board_place_by_name(SGIXioBoardState *board,
     if (!DEVICE(board)->id) {
         DEVICE(board)->id = g_steal_pointer(&name);
     }
-    if (!object_property_set_link(obj, "fabric", OBJECT(fabric), errp)) {
-        return false;
-    }
-    if (object_property_find(obj, "fabric-widget-shift")) {
-        object_property_set_uint(obj, "fabric-widget-shift",
-                                 SGI_BRIDGE_PACKET_ADDRESS_BITS, &error_abort);
-    }
     sgi_xio_board_distinct_serials(board, place.position);
-    return true;
+    return sgi_xio_link_connect(link, errp);
 }
 
 /*
  * A board placed by widget number: the caller supplies module and
- * fabric. When that fabric is one of the machine's own slot proxies, the
- * machine holds the board to that slot's module and widget.
+ * fabric. When that fabric is one of the machine's own slot ports, the
+ * machine holds the board to that slot's module and widget and hands
+ * back the slot's link.
  */
 static bool sgi_xio_board_place_by_widget(SGIXioBoardState *board,
                                           unsigned int widget, Error **errp)
@@ -295,8 +287,8 @@ static bool sgi_xio_board_place_by_widget(SGIXioBoardState *board,
         object_property_get_link(obj, "fabric", &error_abort) : NULL;
     if (slots && fabric && object_dynamic_cast(fabric, TYPE_MEMORY_REGION)) {
         return SGI_XIO_SLOTS_GET_CLASS(slots)->claim_fabric(
-            slots, MEMORY_REGION(fabric), board->module, widget,
-            &board->widget_slot_name, errp);
+            slots, obj, MEMORY_REGION(fabric), board->module, widget,
+            &board->widget_slot_name, &board->link, errp);
     }
     return true;
 }
@@ -324,6 +316,7 @@ static void sgi_xio_board_realize(DeviceState *dev, Error **errp)
     }
     g_assert(bc->build_widget);
     if (!bc->build_widget(board, errp) ||
+        (board->link && !sgi_xio_link_connect(board->link, errp)) ||
         !sgi_xio_board_reparent(board, errp) ||
         (bc->finish_realize && !bc->finish_realize(board, errp))) {
         QTAILQ_REMOVE(&sgi_xio_board_all, board, node);
@@ -357,24 +350,6 @@ void sgi_xio_board_name_pci_bus(SGIXioBoardState *board, DeviceState *bridge,
     qdev_prop_set_string(bridge, "pci-bus-name", name);
 }
 
-bool sgi_xio_board_attach_pending(SGIXbowState *crossbow,
-                                    unsigned int module, Error **errp)
-{
-    SGIXioBoardState *board;
-
-    QTAILQ_FOREACH(board, &sgi_xio_board_all, node) {
-        if (board->module != module || board->attached) {
-            continue;
-        }
-        if (!sgi_xbow_attach_endpoint(crossbow, board->slot, board->cpu_face,
-                                      board->packet_face, errp)) {
-            return false;
-        }
-        board->attached = true;
-    }
-    return true;
-}
-
 static const Property sgi_xio_board_properties[] = {
     DEFINE_PROP_UINT32("module", SGIXioBoardState, module,
                        SGI_XIO_BOARD_UNSET),
@@ -384,7 +359,7 @@ static const Property sgi_xio_board_properties[] = {
 /*
  * Every field on this base is either a fixed construction-time property
  * (module, slot) or bookkeeping this process derives the same way on every
- * boot (attached, queued, the pending-list linkage); none of it is
+ * boot (the link, the registry linkage); none of it is
  * guest-visible state a migration stream needs to carry. An empty, named
  * description says so explicitly rather than leaving dc->vmsd unset, matching
  * hw/misc/sgi-xio-test-target.c.
@@ -426,6 +401,37 @@ static MemoryRegion *sgi_xio_board_xio_port_packet_face(Object *port,
     return SGI_XIO_BOARD(port)->packet_face;
 }
 
+/*
+ * The fabric the board's widget sends through: its link peer's packet
+ * fabric, the destination widget in bits 51:48. A board that already
+ * holds that same fabric, given it outright, keeps it.
+ */
+static bool sgi_xio_board_xio_port_connect(Object *port, unsigned int index,
+                                           const SGIXioPeer *peer,
+                                           Error **errp)
+{
+    Object *fabric = object_property_find(port, "fabric") ?
+        object_property_get_link(port, "fabric", &error_abort) : NULL;
+
+    if (!object_property_find(port, "fabric")) {
+        return true;
+    }
+    if (fabric && fabric != OBJECT(peer->packet_fabric)) {
+        error_setg(errp, "the board already sends through another fabric");
+        return false;
+    }
+    if (!fabric && !object_property_set_link(port, "fabric",
+                                             OBJECT(peer->packet_fabric),
+                                             errp)) {
+        return false;
+    }
+    if (object_property_find(port, "fabric-widget-shift")) {
+        object_property_set_uint(port, "fabric-widget-shift",
+                                 SGI_XIO_PACKET_ADDRESS_BITS, &error_abort);
+    }
+    return true;
+}
+
 static void sgi_xio_board_class_init(ObjectClass *oc, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
@@ -441,6 +447,7 @@ static void sgi_xio_board_class_init(ObjectClass *oc, const void *data)
     pc->describe = sgi_xio_board_xio_port_describe;
     pc->cpu_face = sgi_xio_board_xio_port_cpu_face;
     pc->packet_face = sgi_xio_board_xio_port_packet_face;
+    pc->connect = sgi_xio_board_xio_port_connect;
 }
 
 static void sgi_xio_board_finalize(Object *obj)

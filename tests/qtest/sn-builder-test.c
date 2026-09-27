@@ -135,6 +135,16 @@ static char *qom_child_type(QTestState *qts, const char *parent,
 }
 
 /*
+ * An empty XIO slot's own Crossbow port, the fabric a board given one
+ * outright names: the packet ingress of that slot's widget on its
+ * Crossbow. Origin 2000 IO4 is Crossbow 0 widget 11, IO7 Crossbow 1
+ * widget 14 and IO9 Crossbow 1 widget 15.
+ */
+#define SLOT_PORT(crossbow, widget) \
+    "/machine/crossbow" #crossbow "/sgi-xbow.widget" #widget \
+    ".ingress.packet[0]"
+
+/*
  * A Crossbow's own uint property, the same way sn0-origin2000-xtalk-
  * owner-test.c's assert_crossbow() reads one: used here to confirm a late
  * `-device` board attaching through an empty slot's fabric proxy leaves the
@@ -234,17 +244,19 @@ static void test_pci_expansion_requires_fabric(const void *data)
 }
 
 /*
- * sgi-pci-expansion and sgi-xio-baseio are -device-creatable; their
- * non-instantiable sgi-xio-board base owns module/slot. Each subclass
- * declares fabric, fabric-base, fabric-node-shift and fabric-widget-shift
- * with its own Bridge-typed link. See board-pci-expansion.c, xio-baseio.c
- * and xio-board.c.
+ * sgi-pci-expansion and sgi-xio-baseio are the two -device-creatable XIO
+ * board classes (board-pci-expansion.c, xio-baseio.c); sgi-xio-board
+ * (xio-board.c) is their shared, non-instantiable base, which owns
+ * "module" and "slot". Each subclass repeats "fabric", "fabric-base"
+ * and "fabric-widget-shift" by name and type itself
+ * -- its own internal Bridge needs the link typed on its own class, not
+ * the base -- rather than one board's -device surface differing from
+ * the other's for what is otherwise the same attach step.
  */
 static void test_expansion_boards_share_the_attach_contract(const void *data)
 {
     static const char * const shared_properties[] = {
-        "module", "slot", "fabric", "fabric-base", "fabric-node-shift",
-        "fabric-widget-shift",
+        "module", "slot", "fabric", "fabric-base", "fabric-widget-shift",
     };
     static const char * const board_classes[] = {
         "sgi-pci-expansion", "sgi-xio-baseio",
@@ -327,7 +339,7 @@ static void test_xio_baseio_fits_only_io1(const void *data)
                           "sgi-xio-baseio preset 'io6g' fits only XIO slot "
                           "io1, not io9");
     assert_device_refused("sgi-xio-baseio,preset=io6,module=0,slot=15,"
-                          "fabric=/machine/io9-fabric[0]",
+                          "fabric=" SLOT_PORT(1, 15),
                           "sgi-xio-baseio preset 'io6' cannot sit at "
                           "XIO widget 15");
 }
@@ -416,7 +428,7 @@ static void test_boards_on_two_crossbows(const void *data)
 
     assert_device_pair_refused(
         "sgi-xio-baseio,preset=menet,slot=io7",
-        "sgi-pci-expansion,module=0,slot=14,fabric=/machine/io7-fabric[0]",
+        "sgi-pci-expansion,module=0,slot=14,fabric=" SLOT_PORT(1, 14),
         "XIO slot io7 already holds a board");
 }
 
@@ -431,9 +443,9 @@ static void test_widget_boards_on_two_crossbows(const void *data)
     QTestState *qts = qtest_init(
         "-M origin2000 -display none "
         "-device sgi-pci-expansion,module=0,slot=14,"
-        "fabric=/machine/io5-fabric[0],fabric-widget-shift=48 "
+        "fabric=" SLOT_PORT(0, 14) ",fabric-widget-shift=48 "
         "-device sgi-pci-expansion,module=0,slot=14,"
-        "fabric=/machine/io7-fabric[0],fabric-widget-shift=48");
+        "fabric=" SLOT_PORT(1, 14) ",fabric-widget-shift=48");
     g_autofree char *io5 = qom_child_type(qts, "/machine/module0", "io5");
     g_autofree char *io7 = qom_child_type(qts, "/machine/module0", "io7");
 
@@ -444,8 +456,8 @@ static void test_widget_boards_on_two_crossbows(const void *data)
     /* A board that already took the slot's name as its id keeps it. */
     assert_device_pair_refused(
         "sgi-xio-baseio,preset=menet,slot=io5,id=io7",
-        "sgi-pci-expansion,module=0,slot=14,fabric=/machine/io7-fabric[0],"
-        "fabric-widget-shift=48",
+        "sgi-pci-expansion,module=0,slot=14,fabric=" SLOT_PORT(1, 14)
+        ",fabric-widget-shift=48",
         "module 0 already holds a device named 'io7'");
 }
 
@@ -485,12 +497,12 @@ static void test_explicit_fabric_must_match_its_slot(const void *data)
     QTestState *qts;
 
     assert_device_refused("sgi-pci-expansion,module=0,slot=12,"
-                          "fabric=/machine/io4-fabric[0]",
+                          "fabric=" SLOT_PORT(0, 11),
                           "fabric of XIO slot io4 is module 0 widget 11, "
                           "not the module 0 widget 12 the board names");
     qts = qtest_init("-M origin2000 -display none -device "
                      "sgi-pci-expansion,module=0,slot=11,"
-                     "fabric=/machine/io4-fabric[0],fabric-widget-shift=48");
+                     "fabric=" SLOT_PORT(0, 11) ",fabric-widget-shift=48");
     g_assert_cmpstr(qom_child_type(qts, "/machine/module0", "io4"), ==,
                     "sgi-pci-expansion");
     qtest_quit(qts);
