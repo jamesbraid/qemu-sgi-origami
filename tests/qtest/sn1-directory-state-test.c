@@ -51,14 +51,6 @@
 #define POINTER(_p) (((_p) << 8) | 0x1)
 #define SHARED(_vector) (((_vector) << 8) | 0x2)
 
-/*
- * The memory unit stops overlaying a line idle for a second of virtual
- * time. Under a real-time clock a processor thread the host leaves waiting
- * that long between two steps loses the line mid-scenario, so the clock
- * counts instructions instead.
- */
-#define ICOUNT "-icount shift=3,sleep=off"
-
 #define POLL_TRIES 500
 #define POLL_INTERVAL_US 10000
 
@@ -277,7 +269,7 @@ static QTestState *start_scenario(const Scenario *sc, char **prom)
     *prom = create_prom(sc);
     quoted = g_shell_quote(*prom);
     s = qtest_initf("-M origin300 -cpu R14000 -smp %s -m 512M -bios %s "
-                    "-accel tcg " ICOUNT " -no-shutdown -S", sc->cpus,
+                    "-accel tcg,thread=multi -no-shutdown -S", sc->cpus,
                     quoted);
     qtest_writeq(s, SN1_MD_MEMORY_CONFIG, SN1_MD_INSTALLED_SELECT2);
     if (sc->premium || sc->ignore_ecc) {
@@ -490,11 +482,10 @@ static void emit_busy(Program *p)
 }
 
 /*
- * The unit follows only a few lines, and reuses a slot only once it has
- * been idle for a while; a line a processor has just flushed is followed
- * even when every slot is busy.
+ * With every slot taken by a directory walk, reading another line's word
+ * still watches its page, in the least recently used slot.
  */
-static void test_flushed_line_when_busy(void)
+static void test_full_pool_takes_the_oldest_slot(void)
 {
     const Scenario sc = {
         .cpus = "2",
@@ -696,6 +687,19 @@ static bool flat_view_type_is(QTestState *s, uint64_t address,
 }
 
 /*
+ * Read the directory words of sixteen lines on other pages, enough to take
+ * every one of the unit's slots, so the line under test loses its overlay.
+ */
+static void evict(Program *p)
+{
+    emit(p, DADDU(R_T4, R_T1, R_ZERO));
+    for (unsigned int i = 0; i < 16; i++) {
+        emit(p, DADDIU(R_T4, R_T4, 0x200));
+        emit(p, LD(R_T3, 0, R_T4));
+    }
+}
+
+/*
  * After the host's go-ahead, read the word again, which follows the line
  * once more, then write the line back with a hit flush and publish the
  * word and Status.CH.
@@ -712,35 +716,29 @@ static void resume_after_release(Program *p)
 }
 
 /*
- * The memory unit stops overlaying a line nobody has touched for a while,
- * but that is the model's bookkeeping, not the hardware's: the directory
- * word and the processor's dirty copy stay as they were. When the line is
- * followed again the dirty copy is still there to write back.
+ * The memory unit overlays only a few pages, and reusing a slot drops the
+ * overlay of the page it held. That is the model's bookkeeping, not the
+ * hardware's: the directory word and the processor's dirty copy stay as
+ * they were, and when the line is followed again the dirty copy is still
+ * there to write back.
  */
-static void test_idle_line_keeps_its_state(void)
+static void test_evicted_line_keeps_its_state(void)
 {
     const Scenario sc = {
         .cpus = "2",
-        STEPS({ 0, emit_first }, { 0, store_08 },
+        STEPS({ 0, emit_first }, { 0, store_08 }, { 0, evict },
               { 0, resume_after_release }),
     };
     char *prom;
     QTestState *s;
-    unsigned int tries;
 
     if (!qtest_has_accel("tcg")) {
         g_test_skip("TCG is unavailable");
         return;
     }
     s = start_scenario(&sc, &prom);
-    wait_steps(s, 2);
+    wait_steps(s, 3);
     g_assert_cmphex(result(s, 0x08) & DIRECTORY_FIELDS, ==, POINTER(0));
-    for (tries = 0; tries < POLL_TRIES; tries++) {
-        if (flat_view_type_is(s, LINE_PHYS, "ram")) {
-            break;
-        }
-        g_usleep(POLL_INTERVAL_US);
-    }
     g_assert_true(flat_view_type_is(s, LINE_PHYS, "ram"));
     qtest_writeq(s, RESULT_PHYS + RESULT_GO, 1);
     wait_steps(s, sc.nr_steps);
@@ -1009,6 +1007,40 @@ static void test_page_is_watched(void)
     finish(s, prom);
 }
 
+/*
+ * Reading a followed line's word again makes it the most recently used, so
+ * fifteen other pages can come and go without taking its slot.
+ */
+static void keep_warm(Program *p)
+{
+    emit(p, DADDU(R_T4, R_T1, R_ZERO));
+    for (unsigned int i = 0; i < 20; i++) {
+        emit(p, DADDIU(R_T4, R_T4, 0x200));
+        emit(p, LD(R_T3, 0, R_T4));
+        emit(p, LD(R_T3, 0, R_T1));  /* the line under test's word */
+    }
+    emit(p, LD(R_T3, 0, R_T0));
+    emit_publish(p, 0x08);
+}
+
+static void test_recently_read_page_stays_watched(void)
+{
+    const Scenario sc = {
+        .cpus = "2",
+        STEPS({ 0, emit_first }, { 0, keep_warm }),
+    };
+    char *prom;
+    QTestState *s;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+    s = run_scenario(&sc, &prom);
+    g_assert_cmphex(result(s, 0x08) & DIRECTORY_FIELDS, ==, POINTER(0));
+    finish(s, prom);
+}
+
 static void migrate_wait(QTestState *qts)
 {
     int64_t deadline = g_get_monotonic_time() + 30 * G_TIME_SPAN_SECOND;
@@ -1039,7 +1071,7 @@ static void test_released_line_state_migrates(void)
 {
     const Scenario sc = {
         .cpus = "2",
-        STEPS({ 0, emit_first }, { 0, store_08 },
+        STEPS({ 0, emit_first }, { 0, store_08 }, { 0, evict },
               { 0, resume_after_release }),
     };
     GError *error = NULL;
@@ -1049,7 +1081,6 @@ static void test_released_line_state_migrates(void)
     g_autofree char *quoted = NULL;
     char *prom;
     QTestState *s, *to;
-    unsigned int tries;
 
     if (!qtest_has_accel("tcg")) {
         g_test_skip("TCG is unavailable");
@@ -1063,15 +1094,9 @@ static void test_released_line_state_migrates(void)
     s = start_scenario(&sc, &prom);
     quoted = g_shell_quote(prom);
     to = qtest_initf("-M origin300 -cpu R14000 -smp %s -m 512M -bios %s "
-                     "-accel tcg " ICOUNT " -no-shutdown -S "
+                     "-accel tcg,thread=multi -no-shutdown -S "
                      "-incoming defer", sc.cpus, quoted);
-    wait_steps(s, 2);
-    for (tries = 0; tries < POLL_TRIES; tries++) {
-        if (flat_view_type_is(s, LINE_PHYS, "ram")) {
-            break;
-        }
-        g_usleep(POLL_INTERVAL_US);
-    }
+    wait_steps(s, 3);
     g_assert_true(flat_view_type_is(s, LINE_PHYS, "ram"));
     qtest_qmp_assert_success(to,
         "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
@@ -1100,8 +1125,8 @@ int main(int argc, char **argv)
                    test_loads_and_stores);
     qtest_add_func("sn1/directory-state/three-readers", test_three_readers);
     qtest_add_func("sn1/directory-state/flushes", test_flushes);
-    qtest_add_func("sn1/directory-state/flushed-line-when-busy",
-                   test_flushed_line_when_busy);
+    qtest_add_func("sn1/directory-state/full-pool-takes-the-oldest-slot",
+                   test_full_pool_takes_the_oldest_slot);
     qtest_add_func("sn1/directory-state/prefetch", test_prefetch);
     qtest_add_func("sn1/directory-state/premium-format",
                    test_premium_format);
@@ -1117,14 +1142,16 @@ int main(int argc, char **argv)
                    test_block_transfer_is_not_a_processor);
     qtest_add_func("sn1/directory-state/ignore-ecc-keeps-the-check-field",
                    test_ignore_ecc_keeps_the_check_field);
+    qtest_add_func("sn1/directory-state/recently-read-page-stays-watched",
+                   test_recently_read_page_stays_watched);
     qtest_add_func("sn1/directory-state/page-is-watched",
                    test_page_is_watched);
     qtest_add_func("sn1/directory-state/owner-from-the-word",
                    test_owner_from_the_word);
     qtest_add_func("sn1/directory-state/sharers-from-the-word",
                    test_sharers_from_the_word);
-    qtest_add_func("sn1/directory-state/idle-line-keeps-its-state",
-                   test_idle_line_keeps_its_state);
+    qtest_add_func("sn1/directory-state/evicted-line-keeps-its-state",
+                   test_evicted_line_keeps_its_state);
     qtest_add_func("sn1/directory-state/released-line-state-migrates",
                    test_released_line_state_migrates);
     return g_test_run();
