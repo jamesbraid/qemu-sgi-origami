@@ -18,6 +18,8 @@
 
 
 #define MGRAS_CMD_SELECTOR_MASK 0x1fff803f
+#define MGRAS_CMD_TOKEN_LIMIT_BYTES \
+    (SGI_MGRAS_CMD_TOKEN_MAX_PAYLOAD_WORDS * sizeof(uint32_t))
 #define MGRAS_CMD_SELECTOR_STATE 0x60001
 #define MGRAS_CMD_SELECTOR_EXEC 0x70001
 
@@ -294,8 +296,7 @@ static void mgras_command_fifo_token(SGIMgrasState *s, uint32_t token)
 
     if (s->cmd_token_words_remaining > 0) {
         if (s->cmd_token_class != MGRAS_CMD_HDR_CLASS_DISCARD &&
-            s->cmd_token_payload_count <
-            SGI_MGRAS_CMD_TOKEN_MAX_PAYLOAD_WORDS) {
+            s->cmd_token_payload_count < SGI_MGRAS_CMD_TOKEN_PAYLOAD_WORDS) {
             s->cmd_token_payload[s->cmd_token_payload_count++] = token;
         }
         if (--s->cmd_token_words_remaining == 0 &&
@@ -348,7 +349,7 @@ static void mgras_command_fifo_token(SGIMgrasState *s, uint32_t token)
             qemu_log_mask(LOG_UNIMP, "sgi-mgras: command-FIFO header, "
                           "class 0x%04x reg 0x%02x payload %u bytes "
                           "exceeds %zu-byte limit\n", cmd_class, reg,
-                          payload_bytes, sizeof(s->cmd_token_payload));
+                          payload_bytes, MGRAS_CMD_TOKEN_LIMIT_BYTES);
             s->cmd_token_class = MGRAS_CMD_HDR_CLASS_DISCARD;
             return;
         }
@@ -369,7 +370,7 @@ static void mgras_command_fifo_token(SGIMgrasState *s, uint32_t token)
             SGI_MGRAS_CMD_TOKEN_MAX_PAYLOAD_WORDS) {
             qemu_log_mask(LOG_UNIMP, "sgi-mgras: HQ opcode 0x%02x payload "
                           "%u bytes exceeds %zu-byte limit\n", reg,
-                          payload_bytes, sizeof(s->cmd_token_payload));
+                          payload_bytes, MGRAS_CMD_TOKEN_LIMIT_BYTES);
             s->cmd_token_class = MGRAS_CMD_HDR_CLASS_DISCARD;
             return;
         }
@@ -380,11 +381,10 @@ static void mgras_command_fifo_token(SGIMgrasState *s, uint32_t token)
     }
 
     /*
-     * The OpenGL packets the model executes: glViewport, glClearColor,
-     * glClear's colour token, glShadeModel, glColor3f/4f, glVertex2f/3f/4f,
-     * glBegin/glEnd for triangles and glFlush (mgras-gl-commands.md). The
-     * class and opcode are kept like any other header's, so the payload
-     * collects and dispatches through the usual path.
+     * The OpenGL packets the model executes (sgi_mgras_gl_header() and
+     * mgras-gl-commands.md). The class and opcode are kept like any other
+     * header's, so the payload collects and dispatches through the usual
+     * path; the longest, glLoadMatrixf's, fills the 16-word buffer.
      */
     if (sgi_mgras_gl_header(token)) {
         s->cmd_token_class = cmd_class;
@@ -418,7 +418,7 @@ static void mgras_command_fifo_token(SGIMgrasState *s, uint32_t token)
             qemu_log_mask(LOG_UNIMP, "sgi-mgras: command-FIFO header, "
                           "class 0x%04x reg 0x%02x payload %u bytes "
                           "exceeds %zu-byte limit\n", cmd_class, reg,
-                          payload_bytes, sizeof(s->cmd_token_payload));
+                          payload_bytes, MGRAS_CMD_TOKEN_LIMIT_BYTES);
             s->cmd_token_class = MGRAS_CMD_HDR_CLASS_DISCARD;
             return;
         }
@@ -444,7 +444,7 @@ static void mgras_command_fifo_token(SGIMgrasState *s, uint32_t token)
         qemu_log_mask(LOG_UNIMP, "sgi-mgras: command-FIFO token, class "
                       "0x%04x reg 0x%02x payload %u bytes exceeds %zu-byte "
                       "limit\n", cmd_class, reg, payload_bytes,
-                      sizeof(s->cmd_token_payload));
+                      MGRAS_CMD_TOKEN_LIMIT_BYTES);
     }
 }
 
