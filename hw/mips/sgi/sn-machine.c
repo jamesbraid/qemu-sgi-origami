@@ -46,7 +46,7 @@
 #include "hw/core/qdev-properties.h"
 #include "hw/core/qdev-properties-system.h"
 #include "hw/core/sysbus.h"
-#include "hw/mips/sgi-xtalk-port.h"
+#include "hw/mips/sgi-xio-port.h"
 #include "hw/mips/sgi/baseio.h"
 #include "hw/mips/sgi/xio-board.h"
 #include "hw/mips/sgi/xtalk-link.h"

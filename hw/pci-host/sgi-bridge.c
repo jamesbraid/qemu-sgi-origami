@@ -15,7 +15,7 @@
 #include "qemu/units.h"
 #include "hw/1wire/crc.h"
 #include "hw/1wire/ds2505.h"
-#include "hw/mips/sgi-xtalk-port.h"
+#include "hw/mips/sgi-xio-port.h"
 #include "hw/misc/sgi-onewire-slot.h"
 #include "hw/pci-host/sgi-bridge.h"
 #include "hw/core/hotplug.h"
@@ -2597,20 +2597,20 @@ static const Property sgi_bridge_properties[] = {
  * attaches it at.
  */
 
-static const char *sgi_bridge_xtalk_port_describe(Object *port,
-                                                   unsigned int index)
+static const char *sgi_bridge_xio_port_describe(Object *port,
+                                                unsigned int index)
 {
     return "a Bridge";
 }
 
-static MemoryRegion *sgi_bridge_xtalk_port_cpu_face(Object *port,
-                                                     unsigned int index)
+static MemoryRegion *sgi_bridge_xio_port_cpu_face(Object *port,
+                                                  unsigned int index)
 {
     return sysbus_mmio_get_region(SYS_BUS_DEVICE(port), 0);
 }
 
-static MemoryRegion *sgi_bridge_xtalk_port_packet_face(Object *port,
-                                                        unsigned int index)
+static MemoryRegion *sgi_bridge_xio_port_packet_face(Object *port,
+                                                     unsigned int index)
 {
     return sgi_bridge_packet_face(SGI_BRIDGE(port));
 }
@@ -2620,7 +2620,7 @@ static void sgi_bridge_class_init(ObjectClass *oc, const void *data)
     DeviceClass *dc = DEVICE_CLASS(oc);
     HotplugHandlerClass *hc = HOTPLUG_HANDLER_CLASS(oc);
     ResettableClass *rc = RESETTABLE_CLASS(oc);
-    SGIXtalkPortClass *pc = SGI_XTALK_PORT_CLASS(oc);
+    SGIXioPortClass *pc = SGI_XIO_PORT_CLASS(oc);
 
     dc->desc = "SGI Bridge crosstalk-to-PCI host bridge";
     dc->fw_name = "pci";
@@ -2638,9 +2638,9 @@ static void sgi_bridge_class_init(ObjectClass *oc, const void *data)
     hc->is_hotpluggable_bus = sgi_bridge_is_hotpluggable_bus;
     rc->phases.hold = sgi_bridge_reset_hold;
     device_class_set_props(dc, sgi_bridge_properties);
-    pc->describe = sgi_bridge_xtalk_port_describe;
-    pc->cpu_face = sgi_bridge_xtalk_port_cpu_face;
-    pc->packet_face = sgi_bridge_xtalk_port_packet_face;
+    pc->describe = sgi_bridge_xio_port_describe;
+    pc->cpu_face = sgi_bridge_xio_port_cpu_face;
+    pc->packet_face = sgi_bridge_xio_port_packet_face;
 }
 
 static const TypeInfo sgi_bridge_types[] = {
@@ -2651,7 +2651,7 @@ static const TypeInfo sgi_bridge_types[] = {
         .class_init = sgi_bridge_class_init,
         .interfaces = (const InterfaceInfo[]) {
             { TYPE_HOTPLUG_HANDLER },
-            { TYPE_SGI_XTALK_PORT },
+            { TYPE_SGI_XIO_PORT },
             { },
         },
     },

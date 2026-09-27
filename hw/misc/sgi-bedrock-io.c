@@ -5,7 +5,7 @@
 #include "hw/misc/sgi-bedrock-io.h"
 #include "hw/misc/sgi-bedrock.h"
 #include "hw/core/qdev-properties.h"
-#include "hw/mips/sgi-xtalk-port.h"
+#include "hw/mips/sgi-xio-port.h"
 #include "migration/vmstate.h"
 #include "qapi/error.h"
 #include "qemu/log.h"
@@ -1079,18 +1079,18 @@ static void ii_realize(DeviceState *dev, Error **errp)
  * position, reach to land on this node.
 */
 
-static const char *ii_xtalk_port_describe(Object *port, unsigned int index)
+static const char *ii_xio_port_describe(Object *port, unsigned int index)
 {
     return "the Bedrock's I/O interface";
 }
 
-static MemoryRegion *ii_xtalk_port_cpu_face(Object *port, unsigned int index)
+static MemoryRegion *ii_xio_port_cpu_face(Object *port, unsigned int index)
 {
     return NULL;
 }
 
-static MemoryRegion *ii_xtalk_port_packet_face(Object *port,
-                                               unsigned int index)
+static MemoryRegion *ii_xio_port_packet_face(Object *port,
+                                             unsigned int index)
 {
     return &SGI_BEDROCK_IO(port)->inbound;
 }
@@ -1099,7 +1099,7 @@ static void ii_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     ResettableClass *rc = RESETTABLE_CLASS(klass);
-    SGIXtalkPortClass *pc = SGI_XTALK_PORT_CLASS(klass);
+    SGIXioPortClass *pc = SGI_XIO_PORT_CLASS(klass);
 
     dc->desc = "SGI Bedrock I/O interface";
     dc->vmsd = &vmstate_ii;
@@ -1107,9 +1107,9 @@ static void ii_class_init(ObjectClass *klass, const void *data)
     dc->realize = ii_realize;
     rc->phases.enter = ii_reset_enter;
     device_class_set_props(dc, ii_properties);
-    pc->describe = ii_xtalk_port_describe;
-    pc->cpu_face = ii_xtalk_port_cpu_face;
-    pc->packet_face = ii_xtalk_port_packet_face;
+    pc->describe = ii_xio_port_describe;
+    pc->cpu_face = ii_xio_port_cpu_face;
+    pc->packet_face = ii_xio_port_packet_face;
 }
 
 static const TypeInfo ii_info = {
@@ -1117,7 +1117,7 @@ static const TypeInfo ii_info = {
     .instance_size = sizeof(SGIBedrockIOState), .instance_init = ii_init,
     .instance_finalize = ii_finalize, .class_init = ii_class_init,
     .interfaces = (const InterfaceInfo[]) {
-        { TYPE_SGI_XTALK_PORT },
+        { TYPE_SGI_XIO_PORT },
         { }
     },
 };

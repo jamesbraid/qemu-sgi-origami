@@ -37,7 +37,7 @@
 #include "hw/mips/sgi/baseio.h"
 #include "hw/mips/sgi/sn-machine.h"
 #include "hw/mips/sgi/xtalk-link.h"
-#include "hw/mips/sgi-xtalk-port.h"
+#include "hw/mips/sgi-xio-port.h"
 #include "hw/pci-host/sgi-xbridge.h"
 #include "hw/misc/sgi-bedrock.h"
 #include "hw/misc/sgi-bedrock-flash.h"
@@ -1606,8 +1606,8 @@ static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
     for (i = 0; i < node->xbridge_widget_count; i++) {
         g_autofree char *property =
             g_strdup_printf("widget-%u", node->xbridge_widgets[i]);
-        MemoryRegion *face = sgi_xtalk_port_cpu_face(OBJECT(node->xbridge),
-                                                     node->xbridge_widgets[i]);
+        MemoryRegion *face = sgi_xio_port_cpu_face(OBJECT(node->xbridge),
+                                                   node->xbridge_widgets[i]);
 
         if (!face) {
             error_setg(errp, "XBridge widget %u has no crosstalk face",

@@ -12,7 +12,7 @@
  *
  * A cable object (sgi-net-cable) is what actually joins two ports; this
  * interface carries no "connect" method of its own, matching the crosstalk
- * port interface's reasoning (hw/mips/sgi-xtalk-port.h): the machine wires
+ * port interface's reasoning (hw/mips/sgi-xio-port.h): the machine wires
  * each device's cable-reference properties directly, and a cable resolves
  * "the other end" for whichever of its two ends calls into it.
  */

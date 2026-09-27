@@ -14,7 +14,7 @@
 #include "hw/1wire/crc.h"
 #include "hw/1wire/ds2502.h"
 #include "hw/1wire/ds2505.h"
-#include "hw/mips/sgi-xtalk-port.h"
+#include "hw/mips/sgi-xio-port.h"
 #include "hw/misc/sgi-hub.h"
 #include "hw/misc/sgi-router.h"
 #include "hw/misc/sgi-elsc.h"
@@ -4911,19 +4911,19 @@ static void sgi_hub_init(Object *obj)
  * regardless of population.
 */
 
-static const char *sgi_hub_xtalk_port_describe(Object *port, unsigned int index)
+static const char *sgi_hub_xio_port_describe(Object *port, unsigned int index)
 {
     return "the Hub's crosstalk port";
 }
 
-static MemoryRegion *sgi_hub_xtalk_port_cpu_face(Object *port,
-                                                 unsigned int index)
+static MemoryRegion *sgi_hub_xio_port_cpu_face(Object *port,
+                                               unsigned int index)
 {
     return SGI_HUB(port)->xtalk;
 }
 
-static MemoryRegion *sgi_hub_xtalk_port_packet_face(Object *port,
-                                                     unsigned int index)
+static MemoryRegion *sgi_hub_xio_port_packet_face(Object *port,
+                                                  unsigned int index)
 {
     return SGI_HUB(port)->claim_view[SGI_HUB_DEVICE_VIEW];
 }
@@ -4961,7 +4961,7 @@ static void sgi_hub_class_init(ObjectClass *oc, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
     ResettableClass *rc = RESETTABLE_CLASS(oc);
-    SGIXtalkPortClass *xpc = SGI_XTALK_PORT_CLASS(oc);
+    SGIXioPortClass *xpc = SGI_XIO_PORT_CLASS(oc);
     SGINetPortClass *npc = SGI_NET_PORT_CLASS(oc);
 
     dc->desc = "SGI SN0 Hub ASIC";
@@ -4977,9 +4977,9 @@ static void sgi_hub_class_init(ObjectClass *oc, const void *data)
     rc->phases.enter = sgi_hub_reset_enter;
     rc->phases.hold = sgi_hub_reset_hold;
     rc->phases.exit = sgi_hub_reset_exit;
-    xpc->describe = sgi_hub_xtalk_port_describe;
-    xpc->cpu_face = sgi_hub_xtalk_port_cpu_face;
-    xpc->packet_face = sgi_hub_xtalk_port_packet_face;
+    xpc->describe = sgi_hub_xio_port_describe;
+    xpc->cpu_face = sgi_hub_xio_port_cpu_face;
+    xpc->packet_face = sgi_hub_xio_port_packet_face;
     npc->describe = sgi_hub_net_port_describe;
     npc->forwards = sgi_hub_net_port_forwards;
     npc->link_state = sgi_hub_net_port_link_state;
@@ -4997,7 +4997,7 @@ static const TypeInfo sgi_hub_types[] = {
         .instance_finalize = sgi_hub_finalize,
         .class_init = sgi_hub_class_init,
         .interfaces = (const InterfaceInfo[]) {
-            { TYPE_SGI_XTALK_PORT },
+            { TYPE_SGI_XIO_PORT },
             { TYPE_SGI_NET_PORT },
             { }
         },

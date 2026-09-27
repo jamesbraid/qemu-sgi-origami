@@ -118,7 +118,7 @@ config SGI_BRIDGE
     bool
     select ONEWIRE
     select PCI
-    select SGI_XTALK_PORT
+    select SGI_XIO_PORT
 
 config SGI_XBRIDGE
     bool

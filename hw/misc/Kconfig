@@ -273,7 +273,7 @@ config SGI_HUB
     select SERIAL
     select SGI_ELSC
     select SGI_NET_PORT
-    select SGI_XTALK_PORT
+    select SGI_XIO_PORT
 
 config SGI_ELSC
     bool
@@ -324,7 +324,7 @@ config SGI_ROUTER
 
 config SGI_XBOW
     bool
-    select SGI_XTALK_PORT
+    select SGI_XIO_PORT
 
 config SGI_XBRIDGE_XBOW
     bool

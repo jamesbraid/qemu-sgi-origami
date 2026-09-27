@@ -90,12 +90,12 @@ config SGI_SN1
     select SGI_XBRIDGE
     select USB_OHCI_PCI
 
-config SGI_XTALK_PORT
+config SGI_XIO_PORT
     bool
 
 config SGI_XTALK_LINK
     bool
-    select SGI_XTALK_PORT
+    select SGI_XIO_PORT
     select SGI_XBOW
 
 config SGI_NET_PORT
@@ -108,7 +108,7 @@ config SGI_NET_CABLE
 config SGI_XIO_BOARD
     bool
     select SGI_XBOW
-    select SGI_XTALK_PORT
+    select SGI_XIO_PORT
 
 config SGI_XIO_BOARD_TEST
     bool

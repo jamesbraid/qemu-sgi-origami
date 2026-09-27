@@ -6,7 +6,7 @@
 #include "hw/core/qdev-properties.h"
 #include "hw/core/qdev.h"
 #include "hw/core/sysbus.h"
-#include "hw/mips/sgi-xtalk-port.h"
+#include "hw/mips/sgi-xio-port.h"
 #include "hw/pci-host/sgi-bridge.h"
 #include "migration/vmstate.h"
 #include "qapi/error.h"
@@ -408,20 +408,20 @@ static const VMStateDescription vmstate_sgi_xio_board = {
  * property instead.
  */
 
-static const char *sgi_xio_board_xtalk_port_describe(Object *port,
-                                                        unsigned int index)
+static const char *sgi_xio_board_xio_port_describe(Object *port,
+                                                   unsigned int index)
 {
     return "a crosstalk board's widget";
 }
 
-static MemoryRegion *sgi_xio_board_xtalk_port_cpu_face(Object *port,
-                                                          unsigned int index)
+static MemoryRegion *sgi_xio_board_xio_port_cpu_face(Object *port,
+                                                     unsigned int index)
 {
     return SGI_XIO_BOARD(port)->cpu_face;
 }
 
-static MemoryRegion *sgi_xio_board_xtalk_port_packet_face(Object *port,
-                                                             unsigned int index)
+static MemoryRegion *sgi_xio_board_xio_port_packet_face(Object *port,
+                                                        unsigned int index)
 {
     return SGI_XIO_BOARD(port)->packet_face;
 }
@@ -429,7 +429,7 @@ static MemoryRegion *sgi_xio_board_xtalk_port_packet_face(Object *port,
 static void sgi_xio_board_class_init(ObjectClass *oc, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
-    SGIXtalkPortClass *pc = SGI_XTALK_PORT_CLASS(oc);
+    SGIXioPortClass *pc = SGI_XIO_PORT_CLASS(oc);
 
     dc->desc = "SGI crosstalk board (abstract)";
     dc->realize = sgi_xio_board_realize;
@@ -438,9 +438,9 @@ static void sgi_xio_board_class_init(ObjectClass *oc, const void *data)
     device_class_set_props(dc, sgi_xio_board_properties);
     /* Only a concrete subclass is ever instantiated directly. */
     dc->user_creatable = false;
-    pc->describe = sgi_xio_board_xtalk_port_describe;
-    pc->cpu_face = sgi_xio_board_xtalk_port_cpu_face;
-    pc->packet_face = sgi_xio_board_xtalk_port_packet_face;
+    pc->describe = sgi_xio_board_xio_port_describe;
+    pc->cpu_face = sgi_xio_board_xio_port_cpu_face;
+    pc->packet_face = sgi_xio_board_xio_port_packet_face;
 }
 
 static void sgi_xio_board_finalize(Object *obj)
@@ -466,7 +466,7 @@ static const TypeInfo sgi_xio_board_types[] = {
         .class_init = sgi_xio_board_class_init,
         .abstract = true,
         .interfaces = (const InterfaceInfo[]) {
-            { TYPE_SGI_XTALK_PORT },
+            { TYPE_SGI_XIO_PORT },
             { }
         },
     },
