@@ -1,0 +1,246 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
+/*
+ * Graphics-free Octane (IP30) functional profile.
+ * The public board sources fix the widget and PCI topology. The selected
+ * RAM descriptor, firmware loading policy, and PCI slot assignments are
+ * functional choices; firmware boot and interrupt routing remain unverified.
+ */
+#include "qemu/osdep.h"
+#include "qemu/datadir.h"
+#include "qemu/units.h"
+#include "qemu/log.h"
+#include "qapi/error.h"
+#include "hw/core/boards.h"
+#include "hw/core/clock.h"
+#include "hw/core/loader.h"
+#include "qemu/module.h"
+#include "system/reset.h"
+#include "qemu/bswap.h"
+#include "hw/core/qdev-properties.h"
+#include "hw/core/sysbus.h"
+#include "hw/mips/mips.h"
+#include "hw/mips/sgi-xtalk-port.h"
+#include "hw/misc/sgi-heart.h"
+#include "hw/misc/sgi-ioc3.h"
+#include "hw/misc/sgi-xbow.h"
+#include "hw/pci-host/sgi-bridge.h"
+#include "hw/pci/pci.h"
+#include "hw/scsi/qlogic-isp.h"
+#include "system/address-spaces.h"
+#include "system/system.h"
+#include "target/mips/cpu.h"
+
+#define OCTANE_SHORT_BASE 0x10000000ULL
+#define OCTANE_SHORT_SPAN (16 * MiB)
+#define OCTANE_LONG_BRIDGE (15ULL << 36)
+#define OCTANE_FLASH_SIZE (2 * MiB)
+#define OCTANE_HEART_REGS 0x0ff00000ULL
+#define OCTANE_HEART_BANK0_DESC 0x80030000U
+
+static uint64_t octane_flash_read(void *opaque, hwaddr addr, unsigned size)
+{
+    const uint8_t *image = opaque;
+
+    return lduw_be_p(image + addr);
+}
+
+static MemTxResult octane_flash_write(void *opaque, hwaddr addr,
+                                      uint64_t value, unsigned size,
+                                      MemTxAttrs attrs)
+{
+    qemu_log_mask(LOG_GUEST_ERROR,
+                  "octane: write to read-only firmware at 0x%" HWADDR_PRIx
+                  "\n", addr);
+    return MEMTX_ERROR;
+}
+
+static const MemoryRegionOps octane_flash_ops = {
+    .read = octane_flash_read,
+    .write_with_attrs = octane_flash_write,
+    .endianness = DEVICE_BIG_ENDIAN,
+    .valid.min_access_size = 2,
+    .valid.max_access_size = 2,
+    .impl.min_access_size = 2,
+    .impl.max_access_size = 2,
+};
+
+static void octane_reset(MachineState *machine, ResetType type)
+{
+    uint8_t descriptor[4];
+    CPUState *cpu;
+
+    qemu_devices_reset(type);
+    stl_be_p(descriptor, OCTANE_HEART_BANK0_DESC);
+    if (address_space_write(&address_space_memory,
+                            OCTANE_HEART_REGS + 0x20,
+                            MEMTXATTRS_UNSPECIFIED, descriptor,
+                            sizeof(descriptor)) != MEMTX_OK) {
+        error_setg(&error_fatal, "octane cannot map HEART bank 0");
+    }
+    CPU_FOREACH(cpu) {
+        cpu_reset(cpu);
+    }
+}
+
+static void octane_fit_pci(MachineState *machine, SGIBridgeState *bridge)
+{
+    PCIBus *bus = PCI_HOST_BRIDGE(bridge)->bus;
+    PCIDevice *pci;
+
+    for (unsigned slot = 0; slot < 2; slot++) {
+        pci = pci_new(PCI_DEVFN(slot, 0), TYPE_QLOGIC_ISP1040);
+        object_property_add_child(OBJECT(machine),
+                                  slot ? "external-scsi" : "internal-scsi",
+                                  OBJECT(pci));
+        pci_realize_and_unref(pci, bus, &error_fatal);
+        qlogic_isp_handle_legacy_cmdline(DEVICE(pci));
+    }
+
+    pci = pci_new(PCI_DEVFN(2, 0), TYPE_SGI_IOC3);
+    object_property_add_child(OBJECT(machine), "ioc3", OBJECT(pci));
+    qdev_prop_set_uint16(DEVICE(pci), "subsystem-id",
+                         SGI_IOC3_SUBSYS_IP30_SYSBOARD);
+    qdev_prop_set_uint32(DEVICE(pci), "population",
+                         SGI_IOC3_POPULATION_SERIAL_A);
+    if (serial_hd(0)) {
+        qdev_prop_set_chr(DEVICE(pci), "chardev-a", serial_hd(0));
+    }
+    pci_realize_and_unref(pci, bus, &error_fatal);
+}
+
+static void octane_init(MachineState *machine)
+{
+    DeviceState *heart = qdev_new(TYPE_SGI_HEART);
+    DeviceState *xbow = qdev_new(TYPE_SGI_XBOW);
+    DeviceState *bridge = qdev_new(TYPE_SGI_BRIDGE);
+    SGIXbowState *crossbow = SGI_XBOW(xbow);
+    MemoryRegion *system = get_system_memory();
+    MemoryRegion *firmware = g_new0(MemoryRegion, 1);
+    MemoryRegion *proxy = g_new0(MemoryRegion, 1);
+    MemoryRegion *proxy_route = g_new0(MemoryRegion, 1);
+    MemoryRegion *short_view = g_new0(MemoryRegion, 1);
+    MemoryRegion *long_view = g_new0(MemoryRegion, 1);
+    MIPSCPU *cpu;
+    Clock *cpuclk;
+    g_autofree char *path = NULL;
+    int64_t size;
+    int loaded;
+    uint8_t *flash_image = g_malloc(OCTANE_FLASH_SIZE);
+
+    if (machine->ram_size != 128 * MiB || machine->smp.cpus != 1) {
+        error_setg(&error_fatal, "octane supports one CPU and 128 MiB of RAM");
+    }
+    if (!machine->firmware) {
+        error_setg(&error_fatal, "octane requires -bios with a raw image "
+                                 "of at most 2 MiB");
+    }
+    path = qemu_find_file(QEMU_FILE_TYPE_BIOS, machine->firmware);
+    size = path ? get_image_size(path, NULL) : -1;
+    if (size < 0) {
+        error_setg(&error_fatal, "octane cannot read firmware image '%s'",
+                   machine->firmware);
+    }
+    if (size > OCTANE_FLASH_SIZE) {
+        error_setg(&error_fatal, "octane firmware image '%s' exceeds 2 MiB",
+                   machine->firmware);
+    }
+
+    memset(flash_image, 0xff, OCTANE_FLASH_SIZE);
+    loaded = load_image_size(path, flash_image, OCTANE_FLASH_SIZE);
+    if (loaded != size) {
+        error_setg(&error_fatal, "octane cannot load firmware image '%s'",
+                   machine->firmware);
+    }
+    /* Bridge dispatches into this chip while its own I/O guard is active. */
+    memory_region_init_io(firmware, OBJECT(machine), &octane_flash_ops,
+                          flash_image, "octane.flash", OCTANE_FLASH_SIZE);
+
+    cpuclk = clock_new(OBJECT(machine), "cpu-refclk");
+    /* A functional timer rate until a public Octane CPU assembly is chosen. */
+    clock_set_hz(cpuclk, 100000000);
+    cpu = mips_cpu_create_with_clock(machine->cpu_type, cpuclk,
+                                     TARGET_BIG_ENDIAN);
+    cpu_mips_irq_init_cpu(cpu);
+    cpu_mips_clock_init(cpu);
+
+    object_property_add_child(OBJECT(machine), "heart", OBJECT(heart));
+    qdev_prop_set_uint64(heart, "bank0-size", 128 * MiB);
+    sysbus_realize(SYS_BUS_DEVICE(heart), &error_fatal);
+    memory_region_add_subregion(
+        system, OCTANE_HEART_REGS,
+        sysbus_mmio_get_region(SYS_BUS_DEVICE(heart), 0));
+    /* OpenBSD IP30 xheart.c registers levels 0 and 2 on CR_INT_0/2. */
+    qdev_connect_gpio_out_named(heart, "processor", 0, cpu->env.irq[2]);
+    qdev_connect_gpio_out_named(heart, "processor", 1, cpu->env.irq[4]);
+
+    memory_region_init(proxy, OBJECT(machine), "octane.bridge-fabric",
+                       SGI_XBOW_WIDGETS * SGI_XBOW_PACKET_SIZE);
+    object_property_add_child(OBJECT(machine), "bridge", OBJECT(bridge));
+    qdev_prop_set_bit(bridge, "no-board-identity", true);
+    object_property_set_link(OBJECT(bridge), "fabric", OBJECT(proxy),
+                             &error_fatal);
+    qdev_prop_set_uint32(bridge, "fabric-widget-shift", 48);
+    object_property_set_link(OBJECT(bridge), "flash", OBJECT(firmware),
+                             &error_fatal);
+    sysbus_realize(SYS_BUS_DEVICE(bridge), &error_fatal);
+
+    object_property_add_child(OBJECT(machine), "crossbow", OBJECT(xbow));
+    qdev_prop_set_uint64(xbow, "span", OCTANE_SHORT_SPAN);
+    qdev_prop_set_uint16(xbow, "links-present", (1 << 8) | (1 << 15));
+    qdev_prop_set_uint16(xbow, "startup-links-alive", (1 << 8) | (1 << 15));
+    if (!sgi_xbow_attach_endpoint(crossbow, 8,
+            sgi_xtalk_port_cpu_face(OBJECT(heart), 0),
+            sgi_xtalk_port_packet_face(OBJECT(heart), 0), &error_fatal) ||
+        !sgi_xbow_attach_endpoint(crossbow, 15,
+            sysbus_mmio_get_region(SYS_BUS_DEVICE(bridge), 0),
+            sgi_bridge_packet_face(SGI_BRIDGE(bridge)), &error_fatal)) {
+        return;
+    }
+    sysbus_realize(SYS_BUS_DEVICE(xbow), &error_fatal);
+
+    memory_region_init_alias(proxy_route, OBJECT(machine),
+                             "octane.bridge-fabric-route",
+                             sgi_xbow_packet_ingress(crossbow, 15), 0,
+                             SGI_XBOW_WIDGETS * SGI_XBOW_PACKET_SIZE);
+    memory_region_add_subregion(proxy, 0, proxy_route);
+    memory_region_init_alias(short_view, OBJECT(machine), "octane.short",
+                             sgi_xbow_ingress(crossbow, 8), 0,
+                             SGI_XBOW_WIDGETS * OCTANE_SHORT_SPAN);
+    memory_region_add_subregion(system, OCTANE_SHORT_BASE, short_view);
+    memory_region_init_alias(long_view, OBJECT(machine), "octane.bridge-long",
+                             sgi_xbow_packet_ingress(crossbow, 8),
+                             (15ULL << 48) | (1ULL << 47),
+                             SGI_BRIDGE_WIDGET_SIZE);
+    memory_region_add_subregion(system, OCTANE_LONG_BRIDGE, long_view);
+
+    octane_fit_pci(machine, SGI_BRIDGE(bridge));
+}
+
+static void octane_class_init(ObjectClass *oc, const void *data)
+{
+    MachineClass *mc = MACHINE_CLASS(oc);
+
+    mc->desc = "SGI Octane (IP30), graphics-free functional profile";
+    mc->init = octane_init;
+    mc->reset = octane_reset;
+    mc->default_cpu_type = MIPS_CPU_TYPE_NAME("R10000");
+    mc->default_cpus = 1;
+    mc->max_cpus = 1;
+    mc->default_ram_size = 128 * MiB;
+    mc->no_floppy = true;
+    mc->no_cdrom = true;
+    mc->no_parallel = true;
+}
+
+static const TypeInfo octane_machine = {
+    .name = MACHINE_TYPE_NAME("octane"),
+    .parent = TYPE_MACHINE,
+    .class_init = octane_class_init,
+};
+
+static void octane_register_types(void)
+{
+    type_register_static(&octane_machine);
+}
+
+type_init(octane_register_types)

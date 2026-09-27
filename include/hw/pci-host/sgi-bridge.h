@@ -365,12 +365,12 @@ struct SGIBridgeState {
     char *board_name;
 
     /*
-     * The MicroLAN bus. Every Bridge has one and realizes its own
-     * board-identity part on it, soldered to the board the chip is on; the
-     * bus is architecturally multi-drop, and
-     * sgi_bridge_add_onewire_board_part() adds a daughtercard's own record
-     * alongside it.
+     * The MicroLAN bus. A board without a reviewed identity may leave
+     * its part absent. The bus is architecturally multi-drop, and
+     * sgi_bridge_add_onewire_board_part() adds a daughtercard's own
+     * record alongside it.
      */
+    bool no_board_identity;
     OneWireBus *onewire_bus;
 
     /*

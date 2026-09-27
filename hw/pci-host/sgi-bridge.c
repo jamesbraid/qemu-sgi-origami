@@ -2377,8 +2377,14 @@ static void sgi_bridge_realize(DeviceState *dev, Error **errp)
 
     /* Refuse property errors before the first region exists. */
     board_part_error = sgi_bridge_board_part_error(record.part);
-    if (board_part_error) {
+    if (!s->no_board_identity && board_part_error) {
         error_setg(errp, "the I/O bridge %s", board_part_error);
+        return;
+    }
+    if (s->no_board_identity && (record.part || record.name ||
+                                 record.barcode || record.revision)) {
+        error_setg(errp, "board identity fields cannot be set when the "
+                         "one-wire board identity is absent");
         return;
     }
     if (record.name) {
@@ -2401,26 +2407,10 @@ static void sgi_bridge_realize(DeviceState *dev, Error **errp)
         return;
     }
 
-    /*
-     * The MicroLAN bus and the one board-identity part every Bridge realizes
-     * for its own board: a DS2505 EPROM, which is what the family code 0x0b
-     * names. The bus is architecturally multi-drop. A carrier fitting a
-     * daughtercard behind this same chip calls
-     * sgi_bridge_add_onewire_board_part() afterwards to add that card's own
-     * record alongside this one.
-     *
-     * The record is composed here and never again. An EPROM keeps its
-     * contents across a reset, that is what the technology is, so a chip
-     * that rebuilt the bytes on every reset was modelling something the
-     * hardware does not do. Those bytes are now the part's own migrated state
-     * as well, and state with one owner wants one writer. Reaching into a
-     * child device's storage from a parent's reset is the wrong shape
-     * whichever order the phases run in, and they run in the safe one:
-     * hw/core/resettable.c holds children before the object itself, so the
-     * ordering was never the hazard.
-     */
+    /* An unknown board identity leaves an empty MicroLAN bus. */
     s->onewire_bus = onewire_create_bus(dev, "onewire");
-    if (!sgi_bridge_onewire_attach_part(s, "onewire-part", &record,
+    if (!s->no_board_identity &&
+        !sgi_bridge_onewire_attach_part(s, "onewire-part", &record,
                                         s->onewire_serial, errp)) {
         return;
     }
@@ -2666,6 +2656,9 @@ static const Property sgi_bridge_properties[] = {
     DEFINE_PROP_UINT32("manufacturer", SGIBridgeState, manufacturer, 0x036),
     DEFINE_PROP_UINT64("onewire-serial", SGIBridgeState, onewire_serial,
                        NIC_ROM_SERIAL_DEFAULT),
+    /* Leave an unknown board record absent instead of inventing its bytes. */
+    DEFINE_PROP_BOOL("no-board-identity", SGIBridgeState,
+                     no_board_identity, false),
     DEFINE_PROP_STRING("board-part", SGIBridgeState, board_part),
     DEFINE_PROP_STRING("board-barcode", SGIBridgeState, board_barcode),
     DEFINE_PROP_STRING("board-revision", SGIBridgeState, board_revision),
