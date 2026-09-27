@@ -106,6 +106,7 @@ static int get_seg_physical_address(CPUMIPSState *env, hwaddr *physical,
         /* The algorithm decides which coherent request a miss makes. */
         if (env->cfg.uncached_attribute) {
             attrs->mips_cca = cca;
+            attrs->requester_id = env->r10k->requester_id;
         }
         *physical = physical_base | (real_address & segmask);
         *prot = PAGE_READ | PAGE_WRITE | PAGE_EXEC;

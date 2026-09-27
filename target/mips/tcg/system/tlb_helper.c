@@ -668,6 +668,7 @@ static int r4k_map_address(CPUMIPSState *env, hwaddr *physical, int *prot,
                 }
                 if (env->cfg.uncached_attribute) {
                     attrs->mips_cca = cca;
+                    attrs->requester_id = env->r10k->requester_id;
                 }
 
                 *physical = window | tlb->PFN[n] | (address & (mask >> 1));

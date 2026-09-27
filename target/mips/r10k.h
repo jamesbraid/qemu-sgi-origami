@@ -203,6 +203,12 @@ typedef struct R10KState {
     R10KSystemRequestFn system_request;
     R10KSystemWatchingFn system_watching;
     void *system_request_opaque;
+    /*
+     * The identity the board gives this processor's requests, carried in
+     * each reference's requester_id so a memory unit can tell processors
+     * apart. The board keeps it current.
+     */
+    uint16_t requester_id;
 } R10KState;
 
 #endif /* MIPS_R10K_H */
