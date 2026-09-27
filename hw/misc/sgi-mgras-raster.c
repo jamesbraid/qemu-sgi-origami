@@ -1435,15 +1435,23 @@ static void mgras_raster_dma_draw_image(SGIMgrasState *s, uint32_t kick_byte)
                 uint32_t col = b / bpp;
                 /*
                  * bpp 1 is a bare CI8 CMAP index. bpp 4 is a big-endian
-                 * 32-bit pixel with red in its low byte: bytes 3, 2 and 1
-                 * are red, green and blue, and byte 0 is not stored. The
-                 * IRIX 6.5.30 greeter's EZsetup icon is the evidence: read
-                 * the other way round it shows cyan and blue-grey where
-                 * the same server dithers it to yellow and red on the
-                 * 8-bit RAD4 reference frame, and swapping red and blue
-                 * turns each of its main colours into the reference's
-                 * hue. Only greys cross the other RGB paths in the
-                 * captures, so their channel order is not settled.
+                 * 32-bit pixel with red in bits 7:0: bytes 3, 2 and 1 are
+                 * red, green and blue, and byte 0 is not stored. The
+                 * public drivers transfer this layout under the same
+                 * pixel format (0x600) and PP1FILLMODE format bits
+                 * (0x62xx) the IRIX server uses: X.Org's impact driver
+                 * (impact_shadow.c, visual masks 0xff/0xff00/0xff0000)
+                 * and the Linux Impact framebuffer patch (red at offset
+                 * 0). The IRIX 6.5.30 greeter's EZsetup icon agrees: read
+                 * red-first it is cyan and blue-grey where the RAD4
+                 * reference shows yellow and orange.
+                 *
+                 * Known limitation: the same drivers pass this 0x00BBGGRR
+                 * word as PACKEDCOLOR and as pair-packed CHAR_H/CHAR_L
+                 * pixels, which the model still reads as 0x00RRGGBB. A
+                 * non-grey pixel drawn that way shows, and reads back by
+                 * DMA, with red and blue exchanged. Every such value in
+                 * the captures has red equal to blue, so none shows it.
                  */
                 uint32_t color = bpp == 1 ? pixel_bytes[0] :
                     ((uint32_t)pixel_bytes[3] << 16) |
@@ -1475,7 +1483,10 @@ static void mgras_raster_dma_draw_image(SGIMgrasState *s, uint32_t kick_byte)
  * value; the byte extraction below is the exact inverse of the draw
  * path's assembly, bytes 1, 2 and 3 of a 4-byte pixel carrying blue,
  * green and red. Byte 0 always reads back zero: the draw path never
- * stores it.
+ * stores it. The Linux Impact framebuffer patch's impact_smallcopy()
+ * relies on the same round trip: it reads with PP1FILLMODE 0x2200 and
+ * pixel format 0x200, the values of the IRIX server's save-under reads,
+ * and writes the words back with 0x6200 and 0x600.
  */
 static void mgras_raster_dma_read_image(SGIMgrasState *s, uint32_t kick_byte)
 {
