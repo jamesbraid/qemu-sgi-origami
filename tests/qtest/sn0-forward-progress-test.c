@@ -148,6 +148,11 @@ static void prepare_origin300(QTestState *qts)
     "r12000-reset-mode=0x1aa683,r12000-scache-bytes=2097152," \
     "r12000-scache-block-words=32"
 
+static void prepare_fuel(QTestState *qts)
+{
+    qtest_writeq(qts, ORIGIN300_BEDROCK_MD_MEMORY_CONFIG, 0x33);
+}
+
 /*
  * How each machine takes a raw image at the reset vector.  A machine
  * query-machines reports with a family processor and this table lacks is
@@ -163,6 +168,8 @@ static const Recipe recipes[] = {
     { "octane", "-M octane -m 128M -cpu R10000", 0, NULL, 0x3000 },
     { "octane2", "-M octane2 -m 256M -cpu " OCTANE2_CPU,
       0, NULL, 0x3000 },
+    { "fuel", "-M fuel,fuel-board-id-word=0x4abc,"
+              "fuel-ioc3-subsystem-id=0xc30a", 0x1686a8, prepare_fuel },
 };
 
 static const char *const r10000_family[] = {
