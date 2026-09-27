@@ -508,6 +508,34 @@ static void test_onyx2_deskside_reads_its_own_slot_bits(const void *data)
     qtest_quit(qts);
 }
 
+/*
+ * The two-node Origin 2000 deskside is the eight-processor module with node
+ * boards in node slots 1 and 2, so its Hubs read the module's own 7 and 6,
+ * not the Onyx2 deskside's 3 and 2. Its Null Router joins the two Hubs
+ * directly: each network interface reads its link up, as the Origin 200's
+ * two-module cable does, with no Router between them.
+ */
+static void test_origin2000_two_node_deskside(const void *data)
+{
+    QTestState *qts = qtest_init(
+        "-M origin2000,topology=origin2000-deskside-two-node -smp 4 -m 128M");
+    static const uint8_t expected[] = { 7, 7, 6, 6 };
+    unsigned int node;
+
+    for (unsigned int cpu = 0; cpu < G_N_ELEMENTS(expected); cpu++) {
+        g_assert_cmphex(pi_cpu_readq(qts, cpu, MD_SLOT_ID_USTAT) &
+                        MD_SLOT_ID_MASK, ==, expected[cpu]);
+    }
+    sn0_program_nasid(qts, 1);
+    for (node = 0; node < 2; node++) {
+        uint64_t hub = NODE_STRIDE * node + HUB_LOCAL;
+
+        g_assert_cmphex(qtest_readq(qts, hub + NI_STATUS) & NI_LINK_UP,
+                        ==, NI_LINK_UP);
+    }
+    qtest_quit(qts);
+}
+
 static void test_onyx2_rack_reads_the_module_slot_bits(const void *data)
 {
     QTestState *qts = qtest_init("-M onyx2");
@@ -6243,6 +6271,8 @@ int main(int argc, char **argv)
                         test_origin2000_slot_and_processor_identity);
     qtest_add_data_func("sn0/hub/origin2000-deskside-reads-node-slot-one",
                         NULL, test_origin2000_one_node_reads_node_slot_one);
+    qtest_add_data_func("sn0/hub/origin2000-two-node-deskside", NULL,
+                        test_origin2000_two_node_deskside);
     qtest_add_data_func("sn0/hub/onyx2-deskside-reads-its-own-slot-bits",
                         NULL, test_onyx2_deskside_reads_its_own_slot_bits);
     qtest_add_data_func("sn0/hub/onyx2-rack-reads-the-module-slot-bits",
