@@ -296,6 +296,7 @@ static uint64_t mgras_read_internal(SGIMgrasState *s, hwaddr addr,
     }
     if ((addr == 0x071c88 && size != 1) ||
         (addr == SGI_MGRAS_XMAP_MAIN_MODE && size != 4) ||
+        (addr == SGI_MGRAS_XMAP_BUF_SELECT && size != 4) ||
         (addr == 0x070c30 && size != 2) ||
         (addr == 0x070d18 && size != 4)) {
         mgras_error(s, addr, size, "unsupported register read width");
@@ -370,6 +371,7 @@ static uint64_t mgras_read_internal(SGIMgrasState *s, hwaddr addr,
         return s->xmap_overlay_mode[s->xmap_index];
     /* XMAP selection and per-visual modes are an approximation. */
     case SGI_MGRAS_XMAP_MAIN_MODE: return s->xmap_mode[s->xmap_index];
+    case SGI_MGRAS_XMAP_BUF_SELECT: return s->xmap_buf_select[s->xmap_index];
     case SGI_MGRAS_I2C_SCRATCH: return s->i2c_scratch;
     /*
      * Byte reads mirror the write side's no-op treatment (case

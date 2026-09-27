@@ -129,10 +129,10 @@ OBJECT_DECLARE_TYPE(SGIMgrasState, SGIMgrasClass, SGI_MGRAS)
 /*
  * Established (docs/datasheets/mgras-hq4.md, "Swap scheduling"):
  * MgrasSchedSwapBuf writes this XMAP-indexed port with the per-window swap
- * mask that takes effect at the next retrace; windows 32 and up use a
- * second mask word under index 4, which the same indexed array already
- * covers. No public driver source reads this port back, so only the
- * write side is modeled.
+ * mask that takes effect at the next retrace. SGI's IDE XMAP test writes
+ * and reads it back under index byte 0 (all 32 bits, the main buffer
+ * select) and index byte 4 (low 8 bits, which it calls the overlay buffer
+ * select); the kernel reading takes index 4 as a second swap-mask word.
  */
 #define SGI_MGRAS_XMAP_BUF_SELECT 0x071d80
 
