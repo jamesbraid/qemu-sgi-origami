@@ -128,11 +128,18 @@ config SGI_BASEIO
     select SGI_IOC3
     select USB_OHCI_PCI
 
+# The BASEIO PROM flash part a Bridge's external-flash port carries on
+# the Origin 2000 BaseIO card and in the Origin 200 GIGAchannel cabinet.
+config SGI_BASEIO_FLASH
+    bool
+    select PFLASH_CFI02
+
 config SGI_XIO_BASEIO
     bool
     select SGI_XIO_BOARD
     select SGI_BRIDGE
     select SGI_BASEIO
+    select SGI_BASEIO_FLASH
 
 config SGI_PCI_EXPANSION
     bool
