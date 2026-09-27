@@ -26,6 +26,7 @@
 #include "hw/pci-host/sgi-bridge.h"
 #include "hw/pci/pci.h"
 #include "hw/scsi/qlogic-isp.h"
+#include "migration/vmstate.h"
 #include "system/address-spaces.h"
 #include "system/system.h"
 #include "target/mips/cpu.h"
@@ -103,6 +104,16 @@ static const MemoryRegionOps octane_mpconf_ops = {
                .unaligned = true },
     .impl = { .min_access_size = 1, .max_access_size = 8,
               .unaligned = true },
+};
+
+static const VMStateDescription vmstate_octane_mpconf = {
+    .name = "octane/mpconf",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT8_ARRAY(mpconf, OctaneMachineState, OCTANE_MPCONF_SIZE),
+        VMSTATE_END_OF_LIST()
+    },
 };
 
 static MemTxResult octane_physical_zero_read(void *opaque, hwaddr addr,
@@ -355,6 +366,10 @@ static void octane_init(MachineState *machine)
     memory_region_add_subregion(physical, OCTANE_LONG_BRIDGE, long_view);
 
     octane_fit_pci(machine, SGI_BRIDGE(bridge));
+    if (vmstate_register(NULL, 0, &vmstate_octane_mpconf, s) < 0) {
+        error_setg(&error_fatal,
+                   "octane cannot register MPCONF migration state");
+    }
 }
 
 static void octane_class_init(ObjectClass *oc, const void *data)

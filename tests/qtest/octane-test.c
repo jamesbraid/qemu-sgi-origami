@@ -698,12 +698,16 @@ static void test_reset_state(void)
 
 static void test_migration_state(void)
 {
+    const uint64_t mpconf_pattern = 0x1112131415161718ULL;
+    const uint64_t mpconf_step = 0x0101010101010101ULL;
+    const uint16_t mpconf_marker = 0xa5b6;
     g_autofree char *directory = NULL;
     g_autofree char *socket = NULL;
     g_autofree char *uri = NULL;
     g_autofree char *other_flash = NULL;
     GError *error = NULL;
     QTestState *from, *to;
+    uint16_t half;
     int flash_fd;
 
     directory = g_dir_make_tmp("octane-migration-XXXXXX", &error);
@@ -718,6 +722,14 @@ static void test_migration_state(void)
     from = octane_start();
     to = octane_start_image_args(other_flash, "-incoming defer");
     g_assert_cmphex(qtest_readl(to, FLASH), ==, 0xaabbccdd);
+
+    for (unsigned i = 0; i < 16; i++) {
+        g_assert_cmpuint(qtest_writeq_tx(from, MPCONF + i * 8,
+                                         mpconf_pattern + i * mpconf_step),
+                         ==, MEMTX_OK);
+    }
+    g_assert_cmpuint(qtest_writew_tx(from, MPCONF + 0x14, mpconf_marker),
+                     ==, MEMTX_OK);
 
     qtest_writel(from, HEART + 0x20, WIDE);
     qtest_writeq(from, RAM, 0x0123456789abcdefULL);
@@ -747,6 +759,21 @@ static void test_migration_state(void)
     sgi_migrate_stopped(from, uri);
     sgi_wait_migration_status(to, "completed", 30);
 
+    for (unsigned i = 0; i < 16; i++) {
+        uint64_t expected = mpconf_pattern + i * mpconf_step;
+        uint64_t actual;
+
+        if (i == 2) {
+            expected = (expected & ~(0xffffULL << 16)) |
+                       ((uint64_t)mpconf_marker << 16);
+        }
+        g_assert_cmpuint(qtest_readq_tx(to, MPCONF + i * 8, &actual), ==,
+                         MEMTX_OK);
+        g_assert_cmphex(actual, ==, expected);
+    }
+    g_assert_cmpuint(qtest_readw_tx(to, MPCONF + 0x14, &half), ==, MEMTX_OK);
+    g_assert_cmphex(half, ==, mpconf_marker);
+
     g_assert_cmphex(qtest_readl(to, HEART + 0x20), ==, WIDE);
     g_assert_cmphex(qtest_readq(to, RAM), ==, 0x0123456789abcdefULL);
     g_assert_cmphex(qtest_readq(to, ATTR0 + RAM), ==,
@@ -769,6 +796,17 @@ static void test_migration_state(void)
     g_assert_cmphex(qtest_readl(to, IOC3 + 0x1c) & IOC3_SERIAL_IRQ, ==, 0);
     g_assert_cmphex(octane_cpu_cause(to) & 0x400, ==, 0);
     g_assert_cmphex(qtest_readl(to, FLASH), ==, 0x12345678);
+
+    qtest_system_reset(to);
+    for (unsigned i = 0; i < 16; i++) {
+        uint64_t actual;
+
+        g_assert_cmpuint(qtest_readq_tx(to, MPCONF + i * 8, &actual), ==,
+                         MEMTX_OK);
+        g_assert_cmphex(actual, ==, 0);
+    }
+    g_assert_cmpuint(qtest_readw_tx(to, MPCONF + 0x14, &half), ==, MEMTX_OK);
+    g_assert_cmphex(half, ==, 0);
 
     qtest_quit(to);
     qtest_quit(from);
