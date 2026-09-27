@@ -85,6 +85,36 @@
  */
 #define MGRAS_RSS_XYWIN 0x115
 
+/*
+ * The raster clip rectangle. The X server draws a primitive once for each
+ * box of its window's clip list: before each pass it loads the box into
+ * 0x147 and 0x148 and 0x11 into 0x14f, and after the last it loads 0 into
+ * 0x14f (mgrasPolyPoint in the IRIX 6.5.30 impactsr.so). From its
+ * arithmetic on the X box (x1, y1) to (x2, y2), end exclusive:
+ *
+ *   0x147 = x1 << 16 | (x2 - 1)
+ *   0x148 = (H - y2) << 16 | (H - 1 - y1), H the screen height
+ *
+ * so both are inclusive ranges and 0x148 counts rows from the bottom, the
+ * same sense as XYWIN's y field. That a pixel outside the box is not
+ * written is inferred: the per-box redraw only makes sense if the
+ * hardware drops what falls outside, and in a scripted desktop session
+ * (run irix-20260927T102421-204445) all 99,540 clipped CHAR_L executes
+ * (glyph rows and byte-transfer units) and 1,738 clipped IR_ALIAS
+ * transfer heads meet their box under this reading and none under an
+ * unflipped one. Line boxes hold after the XYWIN origin, so the
+ * box is in screen coordinates. Ignoring it let the Icon Catalog's icon
+ * shadows paint through the Background Setting panel stacked above them.
+ * gxemul's BSD impactsr-bsd.h names 0x14f IMPACTSR_CMD_WINMODE without
+ * giving its bits. Only 0 and 0x11 have been seen in it; which bit enables
+ * the clip is not known, so clipping at exactly 0x11 is an approximation,
+ * and any other value is logged and treated as off.
+ */
+#define MGRAS_RSS_CLIP_X 0x147
+#define MGRAS_RSS_CLIP_Y 0x148
+#define MGRAS_RSS_CLIP_MODE 0x14f
+#define MGRAS_CLIP_MODE_ON 0x11
+
 
 /*
  * Register 0x05f: function unknown. The DDX writes it 32 times with
@@ -623,6 +653,20 @@ static uint32_t mgras_rgb_from_pixel_word(uint32_t word)
     return ((word & 0xff) << 16) | (word & 0xff00) | ((word >> 16) & 0xff);
 }
 
+static bool mgras_clipped(SGIMgrasState *s, unsigned int idx)
+{
+    uint32_t cx = s->rss[MGRAS_RSS_CLIP_X];
+    uint32_t cy = s->rss[MGRAS_RSS_CLIP_Y];
+    unsigned int x = idx % SGI_MGRAS_WIDTH;
+    unsigned int row = SGI_MGRAS_HEIGHT - 1 - idx / SGI_MGRAS_WIDTH;
+
+    if (s->rss[MGRAS_RSS_CLIP_MODE] != MGRAS_CLIP_MODE_ON) {
+        return false;
+    }
+    return x < (cx >> 16) || x > (cx & 0xffff) ||
+           row < (cy >> 16) || row > (cy & 0xffff);
+}
+
 /*
  * A paint writes colour and its format tag together. The WID plane keeps
  * whatever tagged it.
@@ -630,7 +674,7 @@ static uint32_t mgras_rgb_from_pixel_word(uint32_t word)
 static void mgras_put_pixel(SGIMgrasState *s, unsigned int idx, uint32_t color,
                          uint8_t op, uint32_t mask, uint8_t format)
 {
-    if (!(mask & 0x00ffffff)) {
+    if (!(mask & 0x00ffffff) || mgras_clipped(s, idx)) {
         return;
     }
     s->front[idx] = mgras_paint_pixel(op, s->front[idx], color, mask);
@@ -658,6 +702,9 @@ static uint8_t mgras_overlay_ink(SGIMgrasState *s)
 static void mgras_put_overlay(SGIMgrasState *s, unsigned int idx,
                               uint8_t index, uint8_t op)
 {
+    if (mgras_clipped(s, idx)) {
+        return;
+    }
     s->overlay[idx] = mgras_logic_op(op, s->overlay[idx], index);
 }
 
@@ -1322,6 +1369,11 @@ static void mgras_raster_rss_write(SGIMgrasState *s, uint32_t reg,
                                     uint32_t value)
 {
     s->rss[reg] = value;
+    if (reg == MGRAS_RSS_CLIP_MODE && value != 0 &&
+        value != MGRAS_CLIP_MODE_ON) {
+        qemu_log_mask(LOG_UNIMP, "sgi-mgras: clip mode 0x%x not modelled, "
+                      "clip off\n", value);
+    }
     if (reg == MGRAS_RSS_BLOCKXYSTARTI) {
 
         s->glyph_row = 0;
