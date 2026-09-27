@@ -72,6 +72,12 @@ struct SGIXioBoardState {
     bool placed_by_name;
 
     /*
+     * For a board placed by name, the slot's IRIX label (io5), whatever
+     * module prefix "slot" was typed with.
+     */
+    char *slot_label;
+
+    /*
      * Set by the concrete class's build_widget(), before this device
      * re-parents: the two faces sgi_xbow_attach_endpoint() takes. A board
      * whose widget answers a processor and a packet at the same address may
@@ -130,8 +136,8 @@ struct SGIXioBoardClass {
  * topology names XIO slots implements this interface, and a board's
  * realize asks it, before build_widget(), where the named slot is and
  * what the board sends through. claim() reserves an empty slot by name,
- * returning its module index, its Crossbow widget and the fabric proxy
- * the machine holds for it; it refuses a slot the topology does not have,
+ * filling in an SGIXioSlotPlace and returning the fabric proxy the
+ * machine holds for it; it refuses a slot the topology does not have,
  * one the topology already fills and one another board has claimed.
  * claim_fabric() covers a board given its fabric outright: when that
  * fabric is one of the machine's slot proxies it must match the module
@@ -145,13 +151,30 @@ struct SGIXioBoardClass {
 typedef struct SGIXioSlotsClass SGIXioSlotsClass;
 DECLARE_CLASS_CHECKERS(SGIXioSlotsClass, SGI_XIO_SLOTS, TYPE_SGI_XIO_SLOTS)
 
+/*
+ * Where a claimed slot is. `module` goes in as the module the board
+ * named, or SGI_XIO_BOARD_MODULE_UNSET, and comes back as the slot's own.
+ * `position` numbers the machine's XIO slots uniquely, where the widget
+ * does not: a module's two Crossbows number their widgets alike. `name`
+ * is the slot's machine-wide name (io5, or m<N>-io5 where two modules
+ * share the label) and `label` its IRIX label (io5); the caller frees
+ * both.
+ */
+typedef struct SGIXioSlotPlace {
+    uint32_t module;
+    uint32_t widget;
+    uint32_t position;
+    char *name;
+    char *label;
+} SGIXioSlotPlace;
+
 struct SGIXioSlotsClass {
     /*< private >*/
     InterfaceClass parent_class;
 
     /*< public >*/
     MemoryRegion *(*claim)(Object *slots, const char *name,
-                           uint32_t *module, uint32_t *widget, Error **errp);
+                           SGIXioSlotPlace *place, Error **errp);
     bool (*claim_fabric)(Object *slots, MemoryRegion *fabric,
                          uint32_t module, uint32_t widget, Error **errp);
 };
