@@ -22,7 +22,13 @@ OBJECT_DECLARE_TYPE(SGIMgrasState, SGIMgrasClass, SGI_MGRAS)
 #define SGI_MGRAS_CMAP_ENTRIES 8192
 #define SGI_MGRAS_XMAP_ENTRIES 32
 
-/* Uploaded program state is retained. Its protocol is unsupported. */
+/*
+ * Uploaded program state is retained. Its protocol is unsupported.
+ * Established from MgrasDownloadGE11Ucode (IRIX 6.5.30 mgras_init.o): the
+ * kernel loads GE 0 through slot B's ports and GE 1 through slot A's,
+ * setting 0x011000 bits 5:4 to 2 and 3 for them. A one-GE board uses
+ * slot B alone.
+ */
 #define SGI_MGRAS_GE_WORDS (59392 * 3)
 #define SGI_MGRAS_GE_SLOT_A 0
 #define SGI_MGRAS_GE_SLOT_B 1

@@ -78,6 +78,12 @@
  *   decode; product ID 2 (over 3), the MGRAS revision and every ASIC
  *   revision are approximated with the matching one-GE board's values.
  *
+ * SSI and ESSI render: their second GE takes its program through the
+ * second download port, and their second RE's two PP1s have XMAP
+ * register files of their own behind PP1SELECT
+ * (docs/datasheets/mgras-dual-re.md). Drawing reaches both REs through
+ * the one command FIFO, so one set of planes stands for both.
+ *
  * Only 0x071308 is left out: its bits 7:4 are the attached monitor's ID,
  * not the board's.
  *
@@ -113,6 +119,7 @@ static const SGIMgrasBoard mgras_boards[] = {
         .hq_revision = 2, .ge_revision = 2, .re4_revision = 2,
         .pp1_revision = 0, .vc3_revision = 0, .cmap_revision = 3,
         .ra_revision = 0, .video_option = false,
+        .implemented = true,
     }, {
         .name = "mxi", .hinv_name = "MXI",
         .width = 1280, .height = 1024,
@@ -154,6 +161,7 @@ static const SGIMgrasBoard mgras_boards[] = {
         .hq_revision = 2, .ge_revision = 3, .re4_revision = 2,
         .pp1_revision = 4, .vc3_revision = 0, .cmap_revision = 3,
         .ra_revision = 0, .video_option = false,
+        .implemented = true,
     }, {
         .name = "emxi", .hinv_name = "EMXI",
         .width = 1280, .height = 1024,
@@ -1258,10 +1266,10 @@ static void mgras_reset_exit(Object *obj, ResetType type)
 }
 
 /*
- * Select the descriptor. A board with TRAM or a second GE and RE would
- * make IRIX drive texture and multi-engine paths the model does not have,
- * so it is refused unless x-unimplemented-board asks for it anyway; then
- * it is presented with a LOG_UNIMP note naming what is missing.
+ * Select the descriptor. A board with TRAM would make IRIX drive texture
+ * paths the model does not have, so it is refused unless
+ * x-unimplemented-board asks for it anyway; then it is presented with a
+ * LOG_UNIMP note naming what is missing.
  */
 static bool mgras_realize_board(SGIMgrasState *s, Error **errp)
 {
@@ -1285,15 +1293,12 @@ static bool mgras_realize_board(SGIMgrasState *s, Error **errp)
         if (b->tram_count) {
             g_string_append(missing, "texture (TE1 and TRAM)");
         }
-        if (b->ge_count > 1 || b->re_count > 1) {
-            g_string_append_printf(missing, "%sa second GE and RE",
-                                   missing->len ? " and " : "");
-        }
         if (!s->unimplemented_board) {
             error_setg(errp, "sgi-mgras: board '%s' (%s) needs %s, which "
                        "the model does not implement", b->name, b->hinv_name,
                        missing->str);
-            error_append_hint(errp, "Implemented boards: si, esi\n");
+            error_append_hint(errp, "Implemented boards: si, esi, ssi, "
+                              "essi\n");
             return false;
         }
         qemu_log_mask(LOG_UNIMP, "sgi-mgras: presenting board '%s' (%s) "
