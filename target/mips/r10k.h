@@ -92,19 +92,18 @@ typedef enum R10KSystemRequest {
 } R10KSystemRequest;
 
 /*
- * Returns whether the request found a block the board follows for this
- * processor. An index request names a set, not a block: @index_mask is the
- * physical address bits that select the secondary-cache set.
+ * The processor dispatches each such request as a 64-bit read of the
+ * board's system-request region, as the generic CACHE model dispatches
+ * tag operations to its ITC region. The offset carries the physical
+ * address, the request and, for an index request, which names a set rather
+ * than a block, the number of secondary-cache set-index bits. The value
+ * read back is nonzero when the request found a block the board follows
+ * for this processor; the reference's requester_id names the processor.
  */
-typedef bool (*R10KSystemRequestFn)(void *opaque, CPUState *cs,
-                                    R10KSystemRequest request,
-                                    uint64_t paddr, uint64_t index_mask);
-
-/*
- * Whether the board follows any block at all, asked before work a request
- * would need only if it did. Called without the lock.
- */
-typedef bool (*R10KSystemWatchingFn)(void *opaque);
+#define R10K_SYSTEM_REQUEST_PADDR_BITS 48
+#define R10K_SYSTEM_REQUEST_KIND_SHIFT 48
+#define R10K_SYSTEM_REQUEST_SET_BITS_SHIFT 52
+#define R10K_SYSTEM_REQUEST_SIZE (UINT64_C(1) << 58)
 
 typedef struct R10KState {
     /*
@@ -200,9 +199,7 @@ typedef struct R10KState {
      * Set by the board and kept across reset, so they stay last: reset
      * clears the state above them only. Not migrated.
      */
-    R10KSystemRequestFn system_request;
-    R10KSystemWatchingFn system_watching;
-    void *system_request_opaque;
+    MemoryRegion *system_requests;
     /*
      * The identity the board gives this processor's requests, carried in
      * each reference's requester_id so a memory unit can tell processors
