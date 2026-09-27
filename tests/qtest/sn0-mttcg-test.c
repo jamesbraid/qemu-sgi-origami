@@ -1927,6 +1927,9 @@ static void test_gdb_sn1_hold(const void *data)
     gdb_peer_command(gdb, "p25", reply, sizeof(reply));
     g_assert_cmphex(g_ascii_strtoull(reply, NULL, 16), ==,
                     0xffffffff00000000ULL | IMAGE_KSEG1_BASE | gh_break_pos);
+    gdb_peer_command(gdb, "p24", reply, sizeof(reply));
+    g_assert_cmphex(g_ascii_strtoull(reply, NULL, 16) & CAUSE_IP7,
+                    ==, CAUSE_IP7);
     gdb_peer_command(gdb, "vCont;c:1", NULL, 0);
     for (unsigned int i = 0; i < POLL_TRIES; i++) {
         if (sn1_timer_state_word(qts, DONE_OFF) == DONE_MAGIC) {
@@ -2018,13 +2021,15 @@ int main(int argc, char **argv)
                         GINT_TO_POINTER(4), test_gdb_peer_hold);
     qtest_add_data_func("mttcg/timer/gdb-peer-hold-interrupt",
                         GINT_TO_POINTER(8), test_gdb_peer_hold);
-    qtest_add_data_func("mttcg/timer/gdb-sn1-mtc0-adjacent",
-                        GINT_TO_POINTER(0), test_gdb_sn1_hold);
-    qtest_add_data_func("mttcg/timer/gdb-sn1-mtc0-intervening",
-                        GINT_TO_POINTER(1), test_gdb_sn1_hold);
-    qtest_add_data_func("mttcg/timer/gdb-sn1-dmtc0-adjacent",
-                        GINT_TO_POINTER(2), test_gdb_sn1_hold);
-    qtest_add_data_func("mttcg/timer/gdb-sn1-dmtc0-intervening",
-                        GINT_TO_POINTER(3), test_gdb_sn1_hold);
+    if (qtest_has_machine("origin300")) {
+        qtest_add_data_func("mttcg/timer/gdb-sn1-mtc0-adjacent",
+                            GINT_TO_POINTER(0), test_gdb_sn1_hold);
+        qtest_add_data_func("mttcg/timer/gdb-sn1-mtc0-intervening",
+                            GINT_TO_POINTER(1), test_gdb_sn1_hold);
+        qtest_add_data_func("mttcg/timer/gdb-sn1-dmtc0-adjacent",
+                            GINT_TO_POINTER(2), test_gdb_sn1_hold);
+        qtest_add_data_func("mttcg/timer/gdb-sn1-dmtc0-intervening",
+                            GINT_TO_POINTER(3), test_gdb_sn1_hold);
+    }
     return g_test_run();
 }
