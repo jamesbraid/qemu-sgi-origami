@@ -86,9 +86,6 @@ typedef struct SGIBedrockMDDirectoryInjection {
 /* Every processor of a four-node machine. */
 #define SGI_BEDROCK_MD_LINE_HOLDERS 16
 
-/* The requesting processor's directory pointer, if the board knows it. */
-typedef bool (*SGIBedrockMDRequesterFn)(void *opaque, CPUState *cpu,
-                                        uint16_t *pointer);
 /* Whether a processor with directory pointer @pointer is fitted. */
 typedef bool (*SGIBedrockMDPointerPresentFn)(void *opaque, uint16_t pointer);
 
@@ -159,8 +156,7 @@ struct SGIBedrockMDState {
     uint64_t use_clock;
     /* Active watched pages; read without the lock by the board's filter. */
     uint32_t watched_count;
-    /* Set by the board: who issued a processor access. */
-    SGIBedrockMDRequesterFn requester;
+    /* Set by the board: whether a directory pointer names a processor. */
     SGIBedrockMDPointerPresentFn pointer_present;
     void *requester_opaque;
     uint64_t memory_error;

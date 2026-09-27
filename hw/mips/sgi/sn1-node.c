@@ -311,10 +311,32 @@ void sn1_node_update_claims(SN1NodeState *node)
     memory_region_transaction_commit();
 }
 
+/*
+ * Give each processor the identity its references carry: its directory
+ * pointer, the node's number above three device bits (MD_PTR_NODE_SHFT in
+ * the public SN1 header), the device being 0 and 1 for interface 0's two
+ * slots and 4 and 5 for interface 1's (MD_PTR_SUBNODE0_MASK and
+ * MD_PTR_SUBNODE1_MASK). The number can change, so this runs again when
+ * it does.
+ */
+static void sn1_node_set_requester_ids(SN1NodeState *node)
+{
+    for (unsigned int i = 0; i < node->nr_cpus; i++) {
+        unsigned int slot = sn1_cpu_slot(node->model_node, i);
+
+        if (node->cpu[i] && node->cpu[i]->env.r10k) {
+            node->cpu[i]->env.r10k->requester_id =
+                sn1_node_number(node) << 3 | (slot & 1) | (slot & 2) << 1;
+        }
+    }
+}
+
 static void sn1_node_number_changed(Notifier *notifier, void *data)
 {
-    sn1_node_update_claims(container_of(notifier, SN1NodeState,
-                                        node_notifier));
+    SN1NodeState *node = container_of(notifier, SN1NodeState, node_notifier);
+
+    sn1_node_set_requester_ids(node);
+    sn1_node_update_claims(node);
 }
 
 static void sn1_node_cable_changed(Notifier *notifier, void *data)
@@ -429,6 +451,7 @@ static void sn1_node_init_claims(SN1NodeState *node)
     node->cable_notifier.notify = sn1_node_cable_changed;
     sgi_bedrock_lb_add_node_notifier(&SGI_BEDROCK(node->bedrock)->lb,
                                      &node->node_notifier);
+    sn1_node_set_requester_ids(node);
     sgi_bedrock_io_set_claimant(&SGI_BEDROCK(node->bedrock)->io,
                                 sn1_node_io_claimant, node);
     for (i = 0; i < ARRAY_SIZE(node->cached_alias_notifier); i++) {
@@ -1141,34 +1164,6 @@ static target_ulong sn1_node_store_transaction(MIPSCPU *cpu, MemoryRegion *mr,
     return value;
 }
 
-/*
- * The directory pointer of the processor that issued an access to a
- * node's memory, which may be on another node: that node's number above
- * three device bits (MD_PTR_NODE_SHFT in the public SN1 header), the
- * device being 0 and 1 for interface 0's two slots and 4 and 5 for
- * interface 1's (its subnode masks 0x1 and 0x4; the slot numbering is
- * inferred from the Origin 300's directory diagnostic).
- */
-static bool sn1_node_requester_pointer(void *opaque, CPUState *cs,
-                                       uint16_t *pointer)
-{
-    SN1NodeState *owner = (SN1NodeState *)
-        object_dynamic_cast(OBJECT(cs)->parent, TYPE_SGI_SN1_NODE);
-
-    if (!owner) {
-        return false;
-    }
-    for (unsigned int i = 0; i < owner->nr_cpus; i++) {
-        if (CPU(owner->cpu[i]) == cs) {
-            unsigned int slot = sn1_cpu_slot(owner->model_node, i);
-
-            *pointer = sn1_node_number(owner) << 3 | (slot & 1) |
-                       (slot & 2) << 1;
-            return true;
-        }
-    }
-    return false;
-}
 
 /*
  * A processor's secondary-cache instruction or prefetch, passed to the
@@ -1193,7 +1188,7 @@ static bool sn1_node_system_request(void *opaque, CPUState *cs,
     SN1NodeState *node = opaque;
     SN1NodeState *target[2] = { NULL, NULL };
     uint64_t address = paddr & (SGI_BEDROCK_MD_MEMORY_SIZE - 1);
-    uint16_t pointer;
+    uint16_t pointer = MIPS_CPU(cs)->env.r10k->requester_id;
     bool found = false;
 
     if (request == R10K_REQUEST_INDEX_WRITEBACK_INVALIDATE) {
@@ -1213,12 +1208,9 @@ static bool sn1_node_system_request(void *opaque, CPUState *cs,
             continue;
         }
         BQL_LOCK_GUARD();
-        if (md->requester &&
-            md->requester(md->requester_opaque, cs, &pointer)) {
-            found |= sgi_bedrock_md_processor_request(md, pointer,
-                                                      md_request[request],
-                                                      address, index_mask);
-        }
+        found |= sgi_bedrock_md_processor_request(md, pointer,
+                                                  md_request[request],
+                                                  address, index_mask);
     }
     return found;
 }
@@ -1615,7 +1607,6 @@ static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
     sysbus_realize(SYS_BUS_DEVICE(node->bedrock), &error_fatal);
     object_unref(OBJECT(node->bedrock));
     bedrock = SYS_BUS_DEVICE(node->bedrock);
-    SGI_BEDROCK(node->bedrock)->md.requester = sn1_node_requester_pointer;
     SGI_BEDROCK(node->bedrock)->md.pointer_present = sn1_node_pointer_present;
     SGI_BEDROCK(node->bedrock)->md.requester_opaque = node;
 

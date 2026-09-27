@@ -2809,11 +2809,11 @@ static void md_watched_access(SGIBedrockMDState *s,
      * the unit serves as an I/O requester, not as a processor.
      */
     if ((attrs.mips_cca != 4 && attrs.mips_cca != 5) || attrs.debug ||
-        !current_cpu || !s->requester ||
-        !s->requester(s->requester_opaque, current_cpu, &pointer) ||
         md_directory_injection_find(s, line->index)) {
         return;
     }
+    /* The processor's directory pointer, from its reference. */
+    pointer = attrs.requester_id;
     page->last_use = ++s->use_clock;
     holder = md_line_holder(s, line->index, pointer, true);
     if (!holder) {
