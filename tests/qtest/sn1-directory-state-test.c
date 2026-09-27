@@ -30,11 +30,17 @@
 /* Software bank zero on the installed memory, as the stock PROM leaves it. */
 #define SN1_MD_INSTALLED_SELECT2 ((UINT64_C(2) << 32) | UINT64_C(0x3300))
 
+/* The memory unit's directory configuration: bit 0 selects premium. */
+#define SN1_MD_DIRECTORY_CONFIG (SPACE_XTALK + UINT64_C(0x01800000) + 0x7c0000)
+
 /* The line under test and where the processors publish what they read. */
 #define LINE_PHYS 0x580000
+/* Its directory word as qtest reaches it, node zero's backdoor. */
+#define LINE_DIRECTORY (UINT64_C(0x101c0000000) + (LINE_PHYS >> 3))
 #define RESULT_PHYS 0x600000
-#define RESULT_A_DONE 0x100
-#define RESULT_C_DONE 0x108
+/* The step the processors have reached, and the host's go-ahead. */
+#define RESULT_STEP 0x100
+#define RESULT_GO 0x108
 #define RESULT_CAUSE 0x1f0
 #define RESULT_EPC 0x1f8
 
@@ -87,6 +93,8 @@ static uint32_t rtype(int rs, int rt, int rd, int sa, unsigned funct)
 #define DSRL32(_rd, _rt)        rtype(0, _rt, _rd, 0, 0x3e)
 #define DADDU(_rd, _rs, _rt)    rtype(_rs, _rt, _rd, 0, 0x2d)
 #define DADDIU(_rt, _rs, _imm)  itype(0x19, _rs, _rt, _imm)
+#define MFC0_STATUS(_rt)        (0x40000000 | ((_rt) << 16) | (12 << 11))
+#define STATUS_CH               (1u << 18)
 #define SYNC                    0x0000000f
 #define NOP                     0x00000000
 
@@ -133,16 +141,30 @@ static void emit_flush(Program *p)
 
 typedef void (*EmitBody)(Program *p);
 
+/* One step of a scenario: the processor in @slice runs @body. */
+typedef struct Step {
+    unsigned int slice;
+    EmitBody body;
+} Step;
+
+typedef struct Scenario {
+    const char *cpus;       /* the -smp argument */
+    bool premium;           /* select the premium directory format */
+    const Step *steps;
+    unsigned int nr_steps;
+} Scenario;
+
 /*
- * Both processors run the same image. Slot A runs @slot_a and raises its
- * done word; slot C waits for that word, runs @slot_c and raises its own.
+ * Every processor runs the same image and finds its slice (A to D, 0 to 3)
+ * in its CPU number. The steps run one at a time in order: each waits for
+ * the step word to reach its own index, runs, and advances the word.
  */
-static char *create_prom(EmitBody slot_a, EmitBody slot_c)
+static char *create_prom(const Scenario *sc)
 {
     g_autoptr(GError) error = NULL;
     g_autofree uint8_t *image = g_malloc0(PROM_SIZE);
     Program p = { .image = image };
-    unsigned int wait, slice_c = 0x800;
+    unsigned int block[4];
     char *path = NULL;
     int fd;
 
@@ -171,34 +193,42 @@ static char *create_prom(EmitBody slot_a, EmitBody slot_c)
     /* Node zero's directory word for the line, through the uncached form. */
     emit_address(&p, R_T1, 0x9000, 0x0001,
                  0xc0000000 | ((LINE_PHYS >> 3) & ~0xfu));
-    /* Which slot this processor is in: the PI bit of its CPU number. */
+    /* Which slice this processor is: bits 1:0 of its CPU number. */
     emit(&p, LUI(R_T4, 0x9200));
     emit(&p, DSLL32(R_T4, R_T4));
     emit(&p, LUI(R_T3, 0x0100));
     emit(&p, DADDU(R_T4, R_T4, R_T3));
     emit(&p, LD(R_T4, 0x20, R_T4));
-    emit(&p, ANDI(R_T4, R_T4, 2));
-    emit_branch(&p, 0x05, R_T4, R_ZERO, slice_c); /* bne t4, zero */
-
-    emit_publish(&p, 0x00); /* before any request */
-    slot_a(&p);
-    emit(&p, ORI(R_T3, R_ZERO, 1));
-    emit(&p, SYNC);
-    emit(&p, SD(R_T3, RESULT_A_DONE, R_T2));
+    emit(&p, ANDI(R_T4, R_T4, 3));
+    for (unsigned int slice = 0; slice < 4; slice++) {
+        block[slice] = 0x1000 + slice * 0x1000;
+        emit(&p, ORI(R_T3, R_ZERO, slice));
+        emit_branch(&p, 0x04, R_T4, R_T3, block[slice]); /* beq t4, t3 */
+    }
     emit(&p, 0x1000ffff);
     emit(&p, NOP);
 
-    g_assert_cmpuint(p.pc, <=, slice_c);
-    p.pc = slice_c;
-    wait = p.pc;
-    emit(&p, LD(R_T3, RESULT_A_DONE, R_T2));
-    emit_branch(&p, 0x04, R_T3, R_ZERO, wait); /* beq t3, zero, wait */
-    slot_c(&p);
-    emit(&p, ORI(R_T3, R_ZERO, 1));
-    emit(&p, SYNC);
-    emit(&p, SD(R_T3, RESULT_C_DONE, R_T2));
-    emit(&p, 0x1000ffff);
-    emit(&p, NOP);
+    for (unsigned int slice = 0; slice < 4; slice++) {
+        g_assert_cmpuint(p.pc, <=, block[slice]);
+        p.pc = block[slice];
+        for (unsigned int i = 0; i < sc->nr_steps; i++) {
+            unsigned int wait;
+
+            if (sc->steps[i].slice != slice) {
+                continue;
+            }
+            wait = p.pc;
+            emit(&p, LD(R_T3, RESULT_STEP, R_T2));
+            emit(&p, ORI(R_T4, R_ZERO, i));
+            emit_branch(&p, 0x05, R_T3, R_T4, wait); /* bne t3, t4, wait */
+            sc->steps[i].body(&p);
+            emit(&p, ORI(R_T3, R_ZERO, i + 1));
+            emit(&p, SYNC);
+            emit(&p, SD(R_T3, RESULT_STEP, R_T2));
+        }
+        emit(&p, 0x1000ffff);
+        emit(&p, NOP);
+    }
 
     fd = g_file_open_tmp("sn1-directory-state-prom-XXXXXX.bin", &path,
                          &error);
@@ -214,28 +244,44 @@ static uint64_t result(QTestState *s, unsigned int slot)
     return qtest_readq(s, RESULT_PHYS + slot);
 }
 
-/* Run both processors through @slot_a then @slot_c; the caller checks. */
-static QTestState *run_prom(EmitBody slot_a, EmitBody slot_c, char **prom)
+/* Wait until the processors have finished step @count or faulted. */
+static void wait_steps(QTestState *s, unsigned int count)
 {
-    g_autofree char *quoted = NULL;
-    QTestState *s;
-    unsigned int tries;
-
-    *prom = create_prom(slot_a, slot_c);
-    quoted = g_shell_quote(*prom);
-    s = qtest_initf("-M origin300 -cpu R14000 -smp 2 -m 512M -bios %s "
-                    "-accel tcg,thread=multi -no-shutdown -S", quoted);
-    qtest_writeq(s, SN1_MD_MEMORY_CONFIG, SN1_MD_INSTALLED_SELECT2);
-    qtest_qmp_assert_success(s, "{'execute':'cont'}");
-    for (tries = 0; tries < POLL_TRIES; tries++) {
-        if (result(s, RESULT_C_DONE) || result(s, RESULT_EPC)) {
+    for (unsigned int tries = 0; tries < POLL_TRIES; tries++) {
+        if (result(s, RESULT_STEP) >= count || result(s, RESULT_EPC)) {
             break;
         }
         g_usleep(POLL_INTERVAL_US);
     }
     g_assert_cmphex(result(s, RESULT_EPC), ==, 0);
-    g_assert_cmphex(result(s, RESULT_A_DONE), ==, 1);
-    g_assert_cmphex(result(s, RESULT_C_DONE), ==, 1);
+    g_assert_cmpuint(result(s, RESULT_STEP), ==, count);
+}
+
+/* Start the processors on @sc; the caller waits for the steps it needs. */
+static QTestState *start_scenario(const Scenario *sc, char **prom)
+{
+    g_autofree char *quoted = NULL;
+    QTestState *s;
+
+    *prom = create_prom(sc);
+    quoted = g_shell_quote(*prom);
+    s = qtest_initf("-M origin300 -cpu R14000 -smp %s -m 512M -bios %s "
+                    "-accel tcg,thread=multi -no-shutdown -S", sc->cpus,
+                    quoted);
+    qtest_writeq(s, SN1_MD_MEMORY_CONFIG, SN1_MD_INSTALLED_SELECT2);
+    if (sc->premium) {
+        qtest_writeq(s, SN1_MD_DIRECTORY_CONFIG, 1);
+    }
+    qtest_qmp_assert_success(s, "{'execute':'cont'}");
+    return s;
+}
+
+/* Run every step of @sc and check the word each started from. */
+static QTestState *run_scenario(const Scenario *sc, char **prom)
+{
+    QTestState *s = start_scenario(sc, prom);
+
+    wait_steps(s, sc->nr_steps);
     /* Reading the word through the backdoor is what starts following it. */
     g_assert_cmphex(result(s, 0x00) & DIRECTORY_FIELDS, ==, UNOWNED);
     return s;
@@ -248,28 +294,58 @@ static void finish(QTestState *s, char *prom)
     g_free(prom);
 }
 
-static void emit_nothing(Program *p)
+#define STEPS(...) \
+    .steps = (const Step[]) { __VA_ARGS__ }, \
+    .nr_steps = sizeof((const Step[]) { __VA_ARGS__ }) / sizeof(Step)
+
+static void emit_first(Program *p)
 {
+    emit_publish(p, 0x00);
 }
 
-static void emit_loads_and_stores_a(Program *p)
-{
-    emit(p, LD(R_T3, 0, R_T0));
-    emit_publish(p, 0x08);
-    emit(p, SD(R_ZERO, 0, R_T0));
-    emit_publish(p, 0x10);
-}
+/* Named after what they do and where they publish the word afterwards. */
+#define LOAD_STEP(_name, _slot) \
+    static void _name(Program *p) \
+    { \
+        emit(p, LD(R_T3, 0, R_T0)); \
+        emit_publish(p, _slot); \
+    }
+#define STORE_STEP(_name, _slot) \
+    static void _name(Program *p) \
+    { \
+        emit(p, SD(R_ZERO, 0, R_T0)); \
+        emit_publish(p, _slot); \
+    }
+#define FLUSH_STEP(_name, _slot) \
+    static void _name(Program *p) \
+    { \
+        emit_flush(p); \
+        emit_publish(p, _slot); \
+    }
 
-static void emit_loads_and_stores_c(Program *p)
-{
-    emit(p, LD(R_T3, 0, R_T0));
-    emit_publish(p, 0x18);
-    emit(p, SD(R_ZERO, 0, R_T0));
-    emit_publish(p, 0x20);
-}
+LOAD_STEP(load_08, 0x08)
+LOAD_STEP(load_10, 0x10)
+LOAD_STEP(load_18, 0x18)
+LOAD_STEP(load_28, 0x28)
+STORE_STEP(store_08, 0x08)
+STORE_STEP(store_10, 0x10)
+STORE_STEP(store_20, 0x20)
+FLUSH_STEP(flush_10, 0x10)
+FLUSH_STEP(flush_48, 0x48)
 
+/*
+ * A read miss on an unowned line grants it exclusive; another interface's
+ * read shares it; that processor's store takes it exclusive and invalidates
+ * the first copy, so the first processor's next read misses again and
+ * shares the line once more.
+ */
 static void test_loads_and_stores(void)
 {
+    const Scenario sc = {
+        .cpus = "2",
+        STEPS({ 0, emit_first }, { 0, load_08 }, { 0, store_10 },
+              { 2, load_18 }, { 2, store_20 }, { 0, load_28 }),
+    };
     char *prom;
     QTestState *s;
 
@@ -277,30 +353,101 @@ static void test_loads_and_stores(void)
         g_test_skip("TCG is unavailable");
         return;
     }
-    s = run_prom(emit_loads_and_stores_a, emit_loads_and_stores_c, &prom);
-    /* A read miss on an unowned line grants it exclusive to the reader. */
+    s = run_scenario(&sc, &prom);
     g_assert_cmphex(result(s, 0x08) & DIRECTORY_FIELDS, ==, POINTER(0));
-    /* A store to a line the processor holds exclusive sends nothing. */
     g_assert_cmphex(result(s, 0x10) & DIRECTORY_FIELDS, ==, POINTER(0));
-    /* Slot C's read of A's line shares it between their interfaces. */
     g_assert_cmphex(result(s, 0x18) & DIRECTORY_FIELDS, ==, SHARED(0x3));
-    /* Its store upgrades its shared copy, which takes the line exclusive. */
     g_assert_cmphex(result(s, 0x20) & DIRECTORY_FIELDS, ==, POINTER(4));
+    g_assert_cmphex(result(s, 0x28) & DIRECTORY_FIELDS, ==, SHARED(0x3));
     finish(s, prom);
 }
 
-static void emit_flushes_a(Program *p)
+/*
+ * Four processors, two to an interface. A vector bit stands for an
+ * interface, so a second reader on the owner's interface shares the line
+ * with one bit, and a reader on the other interface adds the second. A
+ * store from the fourth invalidates the three copies, and the second
+ * processor's next read shares it with the writer.
+ */
+static void test_three_readers(void)
 {
-    emit(p, SD(R_ZERO, 0, R_T0));
-    emit_flush(p);
-    emit_publish(p, 0x08);
+    const Scenario sc = {
+        .cpus = "4",
+        STEPS({ 0, emit_first }, { 0, load_08 }, { 1, load_10 },
+              { 2, load_18 }, { 3, store_20 }, { 1, load_28 }),
+    };
+    char *prom;
+    QTestState *s;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+    s = run_scenario(&sc, &prom);
+    g_assert_cmphex(result(s, 0x08) & DIRECTORY_FIELDS, ==, POINTER(0));
+    g_assert_cmphex(result(s, 0x10) & DIRECTORY_FIELDS, ==, SHARED(0x1));
+    g_assert_cmphex(result(s, 0x18) & DIRECTORY_FIELDS, ==, SHARED(0x3));
+    g_assert_cmphex(result(s, 0x20) & DIRECTORY_FIELDS, ==, POINTER(5));
+    g_assert_cmphex(result(s, 0x28) & DIRECTORY_FIELDS, ==, SHARED(0x3));
+    finish(s, prom);
+}
+
+/* Hit WriteBack Invalidate (S), then publish Status.CH at @slot. */
+static void emit_hit_flush(Program *p, unsigned int slot)
+{
+    emit(p, SYNC);
+    emit(p, CACHE(0x17, 0, R_T0));
+    emit(p, MFC0_STATUS(R_T3));
+    emit(p, SD(R_T3, slot, R_T2));
+}
+
+/* A clean copy flushed by index is gone: the hit form then misses. */
+static void clean_flush_then_hit(Program *p)
+{
     emit(p, LD(R_T3, 0, R_T0));
     emit_flush(p);
-    emit_publish(p, 0x10);
+    emit_publish(p, 0x28);
+    emit_hit_flush(p, 0x30);
+}
+
+/* The hit form finds a dirty copy, writes it back and says so. */
+static void dirty_hit_flush(Program *p)
+{
     emit(p, SD(R_ZERO, 0, R_T0));
-    emit(p, SYNC);
-    emit(p, CACHE(0x17, 0, R_T0)); /* Hit WriteBack Invalidate (S) */
-    emit_publish(p, 0x18);
+    emit_hit_flush(p, 0x38);
+    emit_publish(p, 0x40);
+}
+
+static void test_flushes(void)
+{
+    const Scenario sc = {
+        .cpus = "2",
+        STEPS({ 0, emit_first }, { 0, store_08 }, { 0, flush_10 },
+              { 0, clean_flush_then_hit }, { 0, dirty_hit_flush },
+              { 2, load_18 }, { 2, flush_48 }),
+    };
+    char *prom;
+    QTestState *s;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+    s = run_scenario(&sc, &prom);
+    g_assert_cmphex(result(s, 0x08) & DIRECTORY_FIELDS, ==, POINTER(0));
+    /* The index flush writes the dirty line back, which unowns it. */
+    g_assert_cmphex(result(s, 0x10) & DIRECTORY_FIELDS, ==, UNOWNED);
+    /* A clean exclusive copy is dropped without telling the directory... */
+    g_assert_cmphex(result(s, 0x28) & DIRECTORY_FIELDS, ==, POINTER(0));
+    /* ...but it is dropped: a hit flush of it misses. */
+    g_assert_cmphex(result(s, 0x30) & STATUS_CH, ==, 0);
+    /* A hit flush of a dirty copy hits and writes it back. */
+    g_assert_cmphex(result(s, 0x38) & STATUS_CH, ==, STATUS_CH);
+    g_assert_cmphex(result(s, 0x40) & DIRECTORY_FIELDS, ==, UNOWNED);
+    /* Slot C reads the unowned line and keeps it through its flush. */
+    g_assert_cmphex(result(s, 0x18) & DIRECTORY_FIELDS, ==, POINTER(4));
+    g_assert_cmphex(result(s, 0x48) & DIRECTORY_FIELDS, ==, POINTER(4));
+    finish(s, prom);
 }
 
 /*
@@ -308,7 +455,7 @@ static void emit_flushes_a(Program *p)
  * directory does, which fills the unit's slots; then store to, flush and
  * check a line 128 KiB above the one under test, which the walk left out.
  */
-static void emit_busy_a(Program *p)
+static void emit_busy(Program *p)
 {
     emit(p, DADDU(R_T4, R_T1, R_ZERO));
     for (unsigned int i = 0; i < 16; i++) {
@@ -319,38 +466,11 @@ static void emit_busy_a(Program *p)
     emit(p, DADDU(R_T0, R_T0, R_T3));
     emit(p, DADDIU(R_T1, R_T1, 0x4000));
     emit(p, SD(R_ZERO, 0, R_T0));
-    emit_flush(p);
     emit_publish(p, 0x08);
-    emit(p, LD(R_T3, 0, R_T0));
-    emit_publish(p, 0x10);
-}
-
-static void emit_flushes_c(Program *p)
-{
-    emit(p, LD(R_T3, 0, R_T0));
     emit_flush(p);
-    emit_publish(p, 0x20);
-}
-
-static void test_flushes(void)
-{
-    char *prom;
-    QTestState *s;
-
-    if (!qtest_has_accel("tcg")) {
-        g_test_skip("TCG is unavailable");
-        return;
-    }
-    s = run_prom(emit_flushes_a, emit_flushes_c, &prom);
-    /* The index flush writes the dirty line back, which unowns it. */
-    g_assert_cmphex(result(s, 0x08) & DIRECTORY_FIELDS, ==, UNOWNED);
-    /* A clean exclusive line is dropped without telling the directory. */
-    g_assert_cmphex(result(s, 0x10) & DIRECTORY_FIELDS, ==, POINTER(0));
-    /* The hit form writes back as the index form does. */
-    g_assert_cmphex(result(s, 0x18) & DIRECTORY_FIELDS, ==, UNOWNED);
-    /* Slot C's clean copy, flushed, leaves C the owner. */
-    g_assert_cmphex(result(s, 0x20) & DIRECTORY_FIELDS, ==, POINTER(4));
-    finish(s, prom);
+    emit_publish(p, 0x10);
+    emit(p, LD(R_T3, 0, R_T0));
+    emit_publish(p, 0x18);
 }
 
 /*
@@ -360,6 +480,10 @@ static void test_flushes(void)
  */
 static void test_flushed_line_when_busy(void)
 {
+    const Scenario sc = {
+        .cpus = "2",
+        STEPS({ 0, emit_first }, { 0, emit_busy }),
+    };
     char *prom;
     QTestState *s;
 
@@ -367,13 +491,16 @@ static void test_flushed_line_when_busy(void)
         g_test_skip("TCG is unavailable");
         return;
     }
-    s = run_prom(emit_busy_a, emit_nothing, &prom);
+    s = run_scenario(&sc, &prom);
+    /* Not followed yet: the store before the flush is not seen. */
     g_assert_cmphex(result(s, 0x08) & DIRECTORY_FIELDS, ==, UNOWNED);
-    g_assert_cmphex(result(s, 0x10) & DIRECTORY_FIELDS, ==, POINTER(0));
+    g_assert_cmphex(result(s, 0x10) & DIRECTORY_FIELDS, ==, UNOWNED);
+    /* Followed once flushed and read: the next load is seen. */
+    g_assert_cmphex(result(s, 0x18) & DIRECTORY_FIELDS, ==, POINTER(0));
     finish(s, prom);
 }
 
-static void emit_prefetch_a(Program *p)
+static void prefetches(Program *p)
 {
     emit(p, PREF(6, 0, R_T0));
     emit_publish(p, 0x08);
@@ -382,10 +509,18 @@ static void emit_prefetch_a(Program *p)
     emit_flush(p);
     emit(p, PREF(1, 0, R_T0));
     emit_publish(p, 0x18);
+    emit_flush(p);
+    emit_publish(p, 0x20);
+    emit(p, PREF(2, 0, R_T0)); /* an undefined hint */
+    emit_publish(p, 0x28);
 }
 
 static void test_prefetch(void)
 {
+    const Scenario sc = {
+        .cpus = "2",
+        STEPS({ 0, emit_first }, { 0, prefetches }),
+    };
     char *prom;
     QTestState *s;
 
@@ -393,12 +528,79 @@ static void test_prefetch(void)
         g_test_skip("TCG is unavailable");
         return;
     }
-    s = run_prom(emit_prefetch_a, emit_nothing, &prom);
+    s = run_scenario(&sc, &prom);
     /* A prefetch with a load hint reads the line shared. */
     g_assert_cmphex(result(s, 0x08) & DIRECTORY_FIELDS, ==, SHARED(0x1));
     /* A store to the shared copy upgrades it. */
     g_assert_cmphex(result(s, 0x10) & DIRECTORY_FIELDS, ==, POINTER(0));
-    /* A prefetch with a store hint reads the line exclusive. */
+    /* A prefetch with a store hint reads the line exclusive, clean... */
+    g_assert_cmphex(result(s, 0x18) & DIRECTORY_FIELDS, ==, POINTER(0));
+    /* ...so the flush drops it silently. */
+    g_assert_cmphex(result(s, 0x20) & DIRECTORY_FIELDS, ==, POINTER(0));
+    /* An undefined hint does nothing; the dropped copy asks nothing. */
+    g_assert_cmphex(result(s, 0x28) & DIRECTORY_FIELDS, ==, POINTER(0));
+    finish(s, prom);
+}
+
+/*
+ * The premium format: the same fields, with the check field at 37:32 and
+ * 48 rather than 21:16. The words are whole, check field included; the
+ * check columns are the Origin 300 directory diagnostic's own table.
+ */
+static void test_premium_format(void)
+{
+    const Scenario sc = {
+        .cpus = "2", .premium = true,
+        STEPS({ 0, emit_first }, { 0, load_08 }, { 2, load_18 },
+              { 2, store_20 }),
+    };
+    char *prom;
+    QTestState *s;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+    s = run_scenario(&sc, &prom);
+    g_assert_cmphex(result(s, 0x08), ==, UINT64_C(0x1f00000001));
+    g_assert_cmphex(result(s, 0x18), ==, UINT64_C(0x2c00000302));
+    g_assert_cmphex(result(s, 0x20), ==, UINT64_C(0xc00000401));
+    finish(s, prom);
+}
+
+/*
+ * Uncached loads and stores bypass the caches and make no coherent request
+ * (R10000 User's Manual version 2.0, Table 4-2); the memory form of the
+ * uncached window is attribute 3.
+ */
+static void uncached_accesses(Program *p)
+{
+    emit_address(p, R_T4, 0x9600, 0, LINE_PHYS);
+    emit(p, LD(R_T3, 0, R_T4));
+    emit_publish(p, 0x08);
+    emit(p, SD(R_ZERO, 0, R_T4));
+    emit_publish(p, 0x10);
+    emit(p, LD(R_T3, 0, R_T0));
+    emit_publish(p, 0x18);
+}
+
+static void test_uncached_accesses(void)
+{
+    const Scenario sc = {
+        .cpus = "2",
+        STEPS({ 0, emit_first }, { 0, uncached_accesses }),
+    };
+    char *prom;
+    QTestState *s;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+    s = run_scenario(&sc, &prom);
+    g_assert_cmphex(result(s, 0x08) & DIRECTORY_FIELDS, ==, UNOWNED);
+    g_assert_cmphex(result(s, 0x10) & DIRECTORY_FIELDS, ==, UNOWNED);
+    /* The cached load that follows is seen. */
     g_assert_cmphex(result(s, 0x18) & DIRECTORY_FIELDS, ==, POINTER(0));
     finish(s, prom);
 }
@@ -408,9 +610,14 @@ int main(int argc, char **argv)
     g_test_init(&argc, &argv, NULL);
     qtest_add_func("sn1/directory-state/loads-and-stores",
                    test_loads_and_stores);
+    qtest_add_func("sn1/directory-state/three-readers", test_three_readers);
     qtest_add_func("sn1/directory-state/flushes", test_flushes);
     qtest_add_func("sn1/directory-state/flushed-line-when-busy",
                    test_flushed_line_when_busy);
     qtest_add_func("sn1/directory-state/prefetch", test_prefetch);
+    qtest_add_func("sn1/directory-state/premium-format",
+                   test_premium_format);
+    qtest_add_func("sn1/directory-state/uncached-accesses",
+                   test_uncached_accesses);
     return g_test_run();
 }
