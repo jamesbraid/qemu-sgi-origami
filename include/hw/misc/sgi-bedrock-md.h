@@ -82,7 +82,7 @@ typedef struct SGIBedrockMDDirectoryInjection {
  * never revisits a page soon enough for more slots to spare it a map
  * change; every slot adds to each flat-view rebuild.
  */
-#define SGI_BEDROCK_MD_WATCHED_LINES 16
+#define SGI_BEDROCK_MD_WATCHED_PAGES 16
 /* Every processor of a four-node machine. */
 #define SGI_BEDROCK_MD_LINE_HOLDERS 16
 
@@ -102,7 +102,7 @@ typedef struct SGIBedrockMDLineState {
     SGIBedrockMDHolder holder[SGI_BEDROCK_MD_LINE_HOLDERS];
 } SGIBedrockMDLineState;
 
-typedef struct SGIBedrockMDWatchedLine {
+typedef struct SGIBedrockMDWatchedPage {
     MemoryRegion mr;
     SGIBedrockMDState *md;
     uint64_t address;
@@ -111,7 +111,7 @@ typedef struct SGIBedrockMDWatchedLine {
     bool placed;
     /* When the page was last used, on the unit's use counter. */
     uint64_t last_use;
-} SGIBedrockMDWatchedLine;
+} SGIBedrockMDWatchedPage;
 
 struct SGIBedrockMDState {
     SysBusDevice parent_obj;
@@ -146,7 +146,7 @@ struct SGIBedrockMDState {
     GHashTable *ecc_retired_by_raw;
     GHashTable *directory_retired_by_index;
     QEMUTimer *retired_timer;
-    SGIBedrockMDWatchedLine watched[SGI_BEDROCK_MD_WATCHED_LINES];
+    SGIBedrockMDWatchedPage watched[SGI_BEDROCK_MD_WATCHED_PAGES];
     /* SGIBedrockMDLineState by line index, for every line ever followed. */
     GHashTable *line_states;
     /* The table flattened for migration; only valid around a save or load. */

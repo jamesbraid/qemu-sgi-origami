@@ -532,8 +532,7 @@ sgi_bedrock_lb_vector_launch(uint64_t route, uint64_t params, int result, uint64
 # sgi-bedrock-md.c
 sgi_bedrock_md_perf0_read(int cpu, uint64_t value) "cpu %d MD perf counter 0 read: 0x%" PRIx64
 sgi_bedrock_md_perf0_write(int cpu, uint64_t value) "cpu %d MD perf counter 0 <- 0x%" PRIx64
-sgi_bedrock_md_watch_line(uint32_t index, uint64_t address, bool placed) "line %u at 0x%" PRIx64 " placed %d"
-sgi_bedrock_md_watch_release(uint32_t index) "line %u"
+sgi_bedrock_md_watch_page(uint32_t index, uint64_t address, bool placed) "first line %u at 0x%" PRIx64 " placed %d"
 sgi_bedrock_md_directory_request(uint32_t index, uint16_t pointer, int request, uint64_t old, uint64_t word) "line %u pointer 0x%x request %d: 0x%" PRIx64 " -> 0x%" PRIx64
 
 # sgi-ioc3.c
