@@ -205,6 +205,7 @@ if QemuSystemTest is not None:
         from register_irix_diag_row()."""
 
         clock_before = None
+        failed_consoles = ()
         rebooted_at = None
         stopped = 0
         tags = 0
@@ -267,6 +268,11 @@ if QemuSystemTest is not None:
             try:
                 prom = drive_to_shell(con, self._left(BOOT_BUDGET_SECONDS),
                                       phases, menu=not relaunch)
+            except (HarnessError, OutOfTime):
+                # Keep what a boot that never reached a shell printed, so
+                # the timer check still counts it.
+                self.failed_consoles.append(con)
+                raise
             finally:
                 for phase, seconds in phases:
                     self._phase(f'{name}: {phase}', seconds)
@@ -290,6 +296,7 @@ if QemuSystemTest is not None:
             self.deadline = started + self.row.budget
             self.flavour = FLAVOURS[self.row.id]
             self.phases, self.results = [], {}
+            self.failed_consoles = []
             self._prepare(self.flavour)
 
             try:
@@ -583,9 +590,9 @@ if QemuSystemTest is not None:
             # another reason (docs/known-issues.md in the project
             # checkout). The trailer IRIX prints does not tell them apart.
             # It runs even after the row was cut short or its relaunch
-            # failed (lib_irix_diag.OBSERVERS), counting the consoles of
-            # the boots that did happen.
-            consoles = [self.first.con]
+            # failed (lib_irix_diag.OBSERVERS), counting every console the
+            # row opened, a relaunch that never reached a shell included.
+            consoles = [self.first.con] + self.failed_consoles
             if self.here not in (None, self.first):
                 consoles.append(self.here.con)
             wraps, other = 0, 0
