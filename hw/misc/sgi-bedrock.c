@@ -188,11 +188,26 @@ bool sgi_bedrock_hub_registers_permitted(SGIBedrockState *s)
  * partner's second LB scratch 1 write lost it that way in every boot
  * measured (docs/known-issues.md).
  *
+ * The liveness handshake itself gets a park too (SGI_BEDROCK_HOLD_LIVENESS):
+ * the first of a pair to post is parked until its partner posts, since a
+ * partner descheduled by the host can otherwise post after the poll has run
+ * out. The post is recognised as a processor's first write to its own
+ * compare register after the join, whatever the value; the PROM writes
+ * nothing else there in between.
+ *
  * The join is over once every populated interface has published, so the
- * park cannot fire again until reset; and a park that times out abandons
- * the join for the rest of the reset rather than parking every later
- * release for the bound again, since a publisher that never comes is a
- * processor the PROM's own console will report as failed.
+ * parks cannot fire again until reset; and a publisher's or partner's park
+ * that times out abandons the join for the rest of the reset rather than
+ * parking every later release for the bound again, since a publisher that
+ * never comes is a processor the PROM's own console will report as failed.
+ * A liveness park that times out ends only itself: the partner that never
+ * posted is one the PROM disables, and the join goes on without it.
+ *
+ * The join state is also cleared by a migration load and by a local reset
+ * (see sgi_bedrock_hold_reset()), so a guest past the PROM that wrote LB
+ * scratch 1 twice and then its own compare register would be parked up to
+ * the bound. No such guest is known; the PROM is the only writer of LB
+ * scratch 1 seen so far.
  */
 
 typedef struct SGIBedrockHold {
@@ -653,26 +668,23 @@ static int bedrock_h3_slot(SGIBedrockState *s)
 }
 
 /*
- * H4's two parks (the publisher's and the partner's) halt the parked
- * processor instead of blocking its host thread. A blocked thread is fine
- * under multi-threaded TCG, but under round-robin or icount the one TCG
- * thread runs every processor, so a blocking park would stall the very
- * processor it waits for; that is why the join used to apply to
- * multi-threaded TCG alone and an icount boot lost processor C for good.
- * A halted processor costs the others nothing under any scheduler.
- *
- * The halt is the model's, not the guest's: the processor stops after the
- * access that parked it and resumes at the next instruction, with nothing
- * guest-visible changed. The limitation: a guest WAIT on a processor an
- * interrupt woke early could be ended early by the release; the PROM runs
- * these barriers with interrupts disabled.
- *
+ * H4's parks (the publisher's, the partner's and the pair liveness park)
+ * halt the parked processor instead of blocking its host thread. A blocked
+ * thread is fine under multi-threaded TCG, but under round-robin or icount
+ * the one TCG thread runs every processor, so a blocking park would stall
+ * the very processor it waits for; that is why the join used to apply to
+ * multi-threaded TCG alone and an icount boot lost processor C for good. A
+ * halted processor costs the others nothing under any scheduler. The halt
+ * is the model's, not the guest's: the processor stops at the end of the
+ * translation block holding the access that parked it and resumes where
+ * that block left off, with nothing guest-visible changed. The limitation:
+ * a guest WAIT on a processor an interrupt woke early could be ended early
+ * by the release; the PROM runs these barriers with interrupts disabled.
  * The bound is on the virtual clock, so an icount run stays deterministic.
  * Under multi-threaded TCG the virtual clock follows host time, as the old
- * realtime bound did.
- *
- * Only an access this node's own processor issued can park, and not a
- * processor already in a hold or a park. Returns the executing slot, or -1.
+ * realtime bound did. Only an access this node's own processor issued can
+ * park, and not a processor already in a hold or a park. Returns the
+ * executing slot, or -1.
  */
 static int bedrock_park_slot(SGIBedrockState *s)
 {
@@ -770,10 +782,11 @@ static void bedrock_park_recheck(SGIBedrockState *s)
 }
 
 /*
- * A park that reaches its bound ends the join for this reset: the
- * publisher it waited for is not coming, and parking every later release
- * for the bound again would only stretch the boot the PROM is about to
- * report on. Every other park is released with it.
+ * A publisher's or partner's park that reaches its bound ends the join for
+ * this reset: the publisher it waited for is not coming, and parking every
+ * later release for the bound again would only stretch the boot the PROM
+ * is about to report on. The remaining parks re-check against the abandoned
+ * join and release. A liveness park reaching its bound ends only itself.
  */
 static void bedrock_park_expire(void *opaque)
 {
