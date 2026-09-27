@@ -297,16 +297,25 @@ class ParserTests(unittest.TestCase):
             'Processor 0: 180 MHZ IP27\nProcessor 1: 180 MHZ IP27\n'), 2)
         self.assertEqual(processor_count('no processors here'), 0)
 
-    def test_tick_warnings_counts_both_kinds(self):
-        console = ("WARNING: CPU 1 hasn't seen a scheduler clock interrupt in "
-                   '47 seconds, EPC 0xc0000000001919d0, RA: 0x0\n'
-                   '         Probable lost interrupt!\n'
-                   "WARNING: CPU 0 hasn't seen a scheduler clock interrupt in "
-                   '11 seconds, EPC 0xc000000000286418, RA: 0x0\n'
-                   '         Probably caused by splhi or spl7 delaying the '
-                   'interrupt\n')
-        self.assertEqual(tick_warnings(console), (1, 1))
-        self.assertEqual(tick_warnings('login: root\n'), (0, 0))
+    def test_tick_warnings_classify_by_the_reported_seconds(self):
+        def warning(seconds, trailer):
+            return ("WARNING: CPU 1 hasn't seen a scheduler clock interrupt "
+                    f'in {seconds} seconds, EPC 0xc0000000001919d0, RA: 0x0\n'
+                    f'         {trailer}\n')
+        splhi = 'Probably caused by splhi or spl7 delaying the interrupt'
+        lost = 'Probable lost interrupt!'
+        console = (warning(47, lost) + warning(47, splhi) +
+                   warning(48, splhi) + warning(11, splhi) +
+                   warning(18, lost))
+        # IP27: 47 and 48s are whole wraps whatever the trailer says.
+        self.assertEqual(tick_warnings(console, (47, 48)), (3, 2))
+        # IP35: 17 to 19s is the wrap.
+        self.assertEqual(tick_warnings(console, (17, 19)), (1, 4))
+        self.assertEqual(tick_warnings('login: root\n', (47, 48)), (0, 0))
+
+    def test_every_flavour_names_its_wrap(self):
+        self.assertEqual(FLAVOURS['origin300'].wrap_seconds, (17, 19))
+        self.assertEqual(FLAVOURS['origin200'].wrap_seconds, (47, 48))
 
     def test_od_bytes(self):
         self.assertEqual(od_bytes(' 1c f0 1c 32 f0 32\n'),

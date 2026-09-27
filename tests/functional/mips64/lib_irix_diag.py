@@ -400,20 +400,23 @@ def od_bytes(listing):
             for token in line.split()]
 
 
-# IRIX's warning that a CPU saw no scheduler clock tick for N seconds, and
-# the line after it, which names a whole Count wrap ("Probable lost
-# interrupt!") or any other gap ("Probably caused by splhi...").
+# IRIX's warning that a CPU saw no scheduler clock tick for N seconds.
 _TICK_WARNING_RE = re.compile(
-    r"CPU \d+ hasn't seen a scheduler clock interrupt in \d+ seconds"
-    r"[^\n]*\n\s*(Probable lost interrupt!)?")
+    r"CPU \d+ hasn't seen a scheduler clock interrupt in (\d+) seconds")
 
 
-def tick_warnings(console):
+def tick_warnings(console, wrap_seconds):
     """(whole-wrap, other) counts of IRIX's missed-scheduler-tick warnings
-    in console text."""
-    found = _TICK_WARNING_RE.findall(console)
-    wraps = sum(1 for trailer in found if trailer)
-    return wraps, len(found) - wraps
+    in console text. A warning is a whole Count wrap when its seconds fall
+    in wrap_seconds, (low, high) inclusive: the tick came one full wrap of
+    the Count register late, a Compare match missed. The line IRIX prints
+    after the warning does not tell the two apart; whole-wrap warnings
+    carry "Probably caused by splhi" as well as "Probable lost
+    interrupt!"."""
+    low, high = wrap_seconds
+    seconds = [int(n) for n in _TICK_WARNING_RE.findall(console)]
+    wraps = sum(1 for n in seconds if low <= n <= high)
+    return wraps, len(seconds) - wraps
 
 
 def guest_date(output):
@@ -589,6 +592,10 @@ class Flavour:
     cd_dev: str = '/dev/scsi/sc1d6l0'
     cd_hinv: str = r'CDROM: unit 6 on SCSI controller 1\b'
     prom_banner: bytes = rb'IP27 PROM SGI Version'
+    # The seconds IRIX reports for a tick one whole Count wrap late: 2^32
+    # over the Count rate, 47 to 48s at the IP27's 90 MHz and 17 to 19s on
+    # the Origin 300's R14000.
+    wrap_seconds: tuple = (47, 48)
     # (a stale entry the disk carries, the live entry IRIX records, the
     # port IRIX names once both are gone).
     parallel: tuple = None
@@ -815,6 +822,7 @@ FLAVOURS = {
         # The PROM's power-on memory test still covers all of it.
         olmem_args='MEM=128',
         prom_banner=rb'IP35 PROM SGI Version|Starting PROM Boot process',
+        wrap_seconds=(17, 19),
         dip_switches=False, origin300=True,
     ),
 }
