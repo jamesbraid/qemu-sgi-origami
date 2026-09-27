@@ -188,7 +188,7 @@ QEMU_BUILD_BUG_ON(NIC_ROM_SIZE != SGI_BRIDGE_ONEWIRE_RECORD_SIZE);
 #define BRIDGE_DIRECT_512MB     (512 * MiB)
 
 #define BRIDGE_PCI_64BIT        (1ULL << 32)
-#define BRIDGE_XTALK_PASS       MAKE_64BIT_MASK(0, 48)
+#define BRIDGE_XIO_PASS         MAKE_64BIT_MASK(0, 48)
 #define BRIDGE_DIRECT64_WIDGET_SHIFT 60
 
 /* The geometry is public in the header: the machine names windows too. */
@@ -1631,8 +1631,8 @@ static int sgi_bridge_map_irq(PCIDevice *dev, int pin)
  */
 #define INT_HOST_ADDR_SHIFT     8
 #define INT_HOST_ADDR_BITS      10
-#define XTALK_NODE_SHIFT        38
-#define XTALK_NODE_MASK         0x1ffu
+#define XIO_NODE_SHIFT          38
+#define XIO_NODE_MASK           0x1ffu
 
 /*
  * Where the Hub's interrupt-modify register sits inside a node's Hub window.
@@ -1652,9 +1652,9 @@ static void sgi_bridge_deliver_interrupt(SGIBridgeState *s, hwaddr where,
 }
 
 /* Keep the packet header's widget separate from its complete address. */
-static bool sgi_bridge_compose_xtalk(SGIBridgeState *s,
-                                     unsigned int widget, hwaddr address,
-                                     hwaddr *fabric)
+static bool sgi_bridge_compose_xio(SGIBridgeState *s,
+                                   unsigned int widget, hwaddr address,
+                                   hwaddr *fabric)
 {
     if (!s->fabric_widget_shift) {
         *fabric = address;
@@ -1715,12 +1715,12 @@ static void sgi_bridge_send_interrupt(SGIBridgeState *s, int pin, bool set)
     if (s->fabric_widget_shift) {
         /* The pin's own bits replace the destination's, they do not join. */
         dest = sgi_bridge_int_dest(s, &widget);
-        dest = deposit64(dest, XTALK_NODE_SHIFT, INT_HOST_ADDR_BITS, address);
-        if (!sgi_bridge_compose_xtalk(s, widget, dest, &where)) {
+        dest = deposit64(dest, XIO_NODE_SHIFT, INT_HOST_ADDR_BITS, address);
+        if (!sgi_bridge_compose_xio(s, widget, dest, &where)) {
             return;
         }
     } else {
-        where = sgi_bridge_node_packet(s, address & XTALK_NODE_MASK,
+        where = sgi_bridge_node_packet(s, address & XIO_NODE_MASK,
                                        HUB_NODE_WINDOW + HUB_INT_MODIFY);
     }
 
@@ -1750,13 +1750,13 @@ static void sgi_bridge_raise_host_error(SGIBridgeState *s)
     }
 
     if (s->fabric_widget_shift) {
-        if (!sgi_bridge_compose_xtalk(s, widget, dest, &where)) {
+        if (!sgi_bridge_compose_xio(s, widget, dest, &where)) {
             return;
         }
     } else {
         where = sgi_bridge_node_packet(
-            s, (dest >> XTALK_NODE_SHIFT) & XTALK_NODE_MASK,
-            dest & MAKE_64BIT_MASK(0, XTALK_NODE_SHIFT));
+            s, (dest >> XIO_NODE_SHIFT) & XIO_NODE_MASK,
+            dest & MAKE_64BIT_MASK(0, XIO_NODE_SHIFT));
     }
 
     sgi_bridge_deliver_interrupt(s, where, number, true);
@@ -1948,8 +1948,8 @@ static IOMMUTLBEntry sgi_bridge_translate_common(SGIBridgeState *s, int slot,
                           "sgi-bridge: 64-bit DMA names widget 0, which the "
                           "crossbar cannot answer\n");
         }
-        if (!sgi_bridge_compose_xtalk(s, widget, addr & BRIDGE_XTALK_PASS,
-                                      &fabric)) {
+        if (!sgi_bridge_compose_xio(s, widget, addr & BRIDGE_XIO_PASS,
+                                    &fabric)) {
             return entry;
         }
         entry.translated_addr = fabric & ~page_mask;
@@ -1971,7 +1971,7 @@ static IOMMUTLBEntry sgi_bridge_translate_common(SGIBridgeState *s, int slot,
         }
 
         widget = (direct & DIRECT_WIDGET) >> DIRECT_WIDGET_SHIFT;
-        if (!sgi_bridge_compose_xtalk(s, widget, offset, &fabric)) {
+        if (!sgi_bridge_compose_xio(s, widget, offset, &fabric)) {
             return entry;
         }
         entry.translated_addr = fabric & ~page_mask;
@@ -2003,8 +2003,8 @@ static IOMMUTLBEntry sgi_bridge_translate_common(SGIBridgeState *s, int slot,
         return entry;
     }
 
-    if (!sgi_bridge_compose_xtalk(s, (ate & ATE_TARGET_WIDGET) >> 8,
-                                  ate & ATE_ADDRESS, &fabric)) {
+    if (!sgi_bridge_compose_xio(s, (ate & ATE_TARGET_WIDGET) >> 8,
+                                ate & ATE_ADDRESS, &fabric)) {
         return entry;
     }
     entry.translated_addr = fabric & ~page_mask;

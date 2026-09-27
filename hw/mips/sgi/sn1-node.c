@@ -91,7 +91,7 @@
 #define SN1_HUB_MEMORY_SIZE UINT64_C(0x10000000)
 #define SN1_HUB_LOCAL_REGISTERS_ADDRESS (SN1_SPACE_HUB + UINT64_C(0x10000000))
 #define SN1_HUB_LOCAL_REGISTERS_SIZE UINT64_C(0x8000000)
-#define SN1_XTALK_ADDRESS UINT64_C(0x20000000000)
+#define SN1_IO_SPACE_ADDRESS UINT64_C(0x20000000000)
 #define SN1_MEMORY_SPECIAL_ADDRESS UINT64_C(0x30000000000)
 #define SN1_BEDROCK_LOCAL_ADDRESS UINT64_C(0x20001000000)
 #define SN1_BEDROCK_NODE_ADDRESS UINT64_C(0x20001800000)
@@ -169,7 +169,7 @@ uint64_t sn1_node_canonical_address(const SN1NodeState *node,
 #define SN1_CACHED_ALIAS_MAX (64 * MiB)
 
 static const uint64_t sn1_node_space_base[SN1_NODE_SPACES] = {
-    0, SN1_SPACE_HUB, SN1_XTALK_ADDRESS, SN1_MEMORY_SPECIAL_ADDRESS,
+    0, SN1_SPACE_HUB, SN1_IO_SPACE_ADDRESS, SN1_MEMORY_SPECIAL_ADDRESS,
 };
 
 static MemTxResult sn1_claim_floor_read(void *opaque, hwaddr offset,
@@ -1644,7 +1644,7 @@ static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
     SGI_BEDROCK(node->bedrock)->md.requester_opaque = node;
 
     memory_region_add_subregion(
-        system, sn1_node_address(node, SN1_XTALK_ADDRESS),
+        system, sn1_node_address(node, SN1_IO_SPACE_ADDRESS),
         sysbus_mmio_get_region(bedrock, 1));
     memory_region_add_subregion_overlap(
         system, sn1_node_address(node, SN1_BEDROCK_LOCAL_ADDRESS),
