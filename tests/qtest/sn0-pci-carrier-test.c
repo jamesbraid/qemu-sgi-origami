@@ -19,7 +19,7 @@
 #include "sgi-test.h"
 
 #define CARRIER_WIDGET      12
-#define WIDGET_BASE         (SPACE_XTALK + ((uint64_t)CARRIER_WIDGET << 24))
+#define WIDGET_BASE         (SPACE_IO + ((uint64_t)CARRIER_WIDGET << 24))
 #define CFG0(dev)           (WIDGET_BASE + 0x020000 + (dev) * 0x1000)
 
 /* Any PCI card will do; the IOC3 is the one this machine already builds. */
@@ -44,12 +44,12 @@ static void test_widget_alive(void)
 {
     QTestState *qts = qtest_init(CARRIER_MACHINE);
 
-    g_assert_cmphex(qtest_readl(qts, SPACE_XTALK + 0x138 +
+    g_assert_cmphex(qtest_readl(qts, SPACE_IO + 0x138 +
                                 (CARRIER_WIDGET - 8) * 0x40 + 4) & (1u << 5),
-                    ==, 1u << 5);
-    g_assert_cmphex(qtest_readl(qts, SPACE_XTALK + 0x110 +
+                                ==, 1u << 5);
+    g_assert_cmphex(qtest_readl(qts, SPACE_IO + 0x110 +
                                 (CARRIER_WIDGET - 8) * 0x40 + 4) & (1u << 31),
-                    ==, 1u << 31);
+                                ==, 1u << 31);
     qtest_quit(qts);
 }
 

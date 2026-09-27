@@ -1165,8 +1165,8 @@ static void test_no_board_stays_inert(void)
  */
 #define MACHINE_ARGS "-M origin300 -cpu R14000 -smp 2"
 
-#define XTALK_WIDGET(w) (SPACE_XTALK + (uint64_t)(w) * UINT64_C(0x1000000))
-#define BEDROCK_LOCAL (SPACE_XTALK + UINT64_C(0x01000000))
+#define XTALK_WIDGET(w) (SPACE_IO + (uint64_t)(w) * UINT64_C(0x1000000))
+#define BEDROCK_LOCAL (SPACE_IO + UINT64_C(0x01000000))
 
 #define XBRIDGE_HOST_PORT 0xa
 #define XBRIDGE_ERROR_ADDRESS_LOWER 0x18

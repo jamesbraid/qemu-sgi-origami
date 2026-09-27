@@ -10,7 +10,7 @@
 
 /* Addresses only this test uses; the shared ones come from sgi-test.h. */
 #define BRIDGE_WIDGET           8
-#define BRIDGE_BASE             (SPACE_XTALK + ((uint64_t)BRIDGE_WIDGET << 24))
+#define BRIDGE_BASE             (SPACE_IO + ((uint64_t)BRIDGE_WIDGET << 24))
 #define REG_DATA                4
 #define REG(offset)             (BRIDGE_BASE + (offset) + REG_DATA)
 #define BRIDGE_DEVICE(n)        (0x200 + 8 * (n))

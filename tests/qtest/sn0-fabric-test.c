@@ -18,7 +18,7 @@
 #include "sgi-test.h"
 
 /* Addresses only this test uses; the shared ones come from sgi-test.h. */
-#define HUB_BY_NODE         (SPACE_XTALK + 0x01800000)
+#define HUB_BY_NODE         (SPACE_IO + 0x01800000)
 
 #define NI_STATUS           0x600000
 #define NI_SCRATCH_0        0x600100
@@ -61,7 +61,7 @@
 
 /* The Bridge at widget 8 of each node, its registers four bytes into a slot. */
 #define BRIDGE_WIDGET       8
-#define BRIDGE_BASE         (SPACE_XTALK + ((uint64_t)BRIDGE_WIDGET << 24))
+#define BRIDGE_BASE         (SPACE_IO + ((uint64_t)BRIDGE_WIDGET << 24))
 #define BRIDGE_AT(node)     (BRIDGE_BASE + (uint64_t)(node) * NODE_STRIDE)
 #define REG_DATA            4
 #define REG(node, offset)   (BRIDGE_AT(node) + (offset) + REG_DATA)

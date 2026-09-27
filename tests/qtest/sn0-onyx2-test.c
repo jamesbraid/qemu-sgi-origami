@@ -36,7 +36,7 @@ static uint32_t widget_id(QTestState *qts, unsigned int widget)
     uint8_t bytes[4];
 
     /* Through CPU 0's Hub, which every topology here attaches to Crossbow 0. */
-    g_assert_true(qtest_memread_cpu(qts, 0, SPACE_XTALK +
+    g_assert_true(qtest_memread_cpu(qts, 0, SPACE_IO +
                                     widget * WIDGET_SIZE + WIDGET_ID,
                                     bytes, sizeof(bytes)));
     return ldl_be_p(bytes);
@@ -166,7 +166,7 @@ static uint8_t onewire_crc8(uint8_t crc, const uint8_t *buf, size_t len)
 static bool kona_read_part(QTestState *qts, unsigned int widget,
                            uint64_t serial, uint8_t record[64])
 {
-    uint64_t reg = SPACE_XTALK + widget * WIDGET_SIZE + KONA_ONEWIRE;
+    uint64_t reg = SPACE_IO + widget * WIDGET_SIZE + KONA_ONEWIRE;
     uint8_t rom[8] = { ONEWIRE_FAMILY_DS2502 };
     uint8_t cmd[3] = { DS2502_READ_MEMORY, 0, 0 };
     uint8_t echo;

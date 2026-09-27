@@ -13,7 +13,7 @@
 #include "sgi-test.h"
 
 #define SMALL_WINDOW_SIZE 0x1000000ULL
-#define SMALL_WINDOW(w)   (SPACE_XTALK + (w) * SMALL_WINDOW_SIZE)
+#define SMALL_WINDOW(w)   (SPACE_IO + (w) * SMALL_WINDOW_SIZE)
 
 /* The widget SGI's firmware picks for a directly connected bridge. */
 #define BRIDGE_WIDGET     8
@@ -59,7 +59,7 @@
 
 /* From sn0-widget0-test.c: the big window and its firmware redirection. */
 #define BIG_WINDOW_SIZE 0x20000000ULL
-#define BIG_WINDOW(n)   (SPACE_XTALK + 0x20000000 + (n) * BIG_WINDOW_SIZE)
+#define BIG_WINDOW(n)   (SPACE_IO + 0x20000000 + (n) * BIG_WINDOW_SIZE)
 
 /* The window the firmware redirects widget 0 onto, and where widget 0 is. */
 #define WIDGET0_WINDOW  6
@@ -288,7 +288,7 @@ static void test_both_windows_reach_one_device(const void *data)
     uint32_t through_small, through_big;
 
     /* Not that either answers: that they answer the same. */
-    through_small = qtest_readl(qts, SPACE_XTALK + WIDGET_IDENTIFICATION +
+    through_small = qtest_readl(qts, SPACE_IO + WIDGET_IDENTIFICATION +
                                 REG_DATA);
     through_big = qtest_readl(qts, WIDGET0 + WIDGET_IDENTIFICATION + REG_DATA);
 
@@ -312,7 +312,7 @@ static void test_both_windows_reach_one_device(const void *data)
     /*
      * The small window is unaffected: it does not go through a translation.
      */
-    g_assert_cmphex(qtest_readl(qts, SPACE_XTALK + WIDGET_IDENTIFICATION +
+    g_assert_cmphex(qtest_readl(qts, SPACE_IO + WIDGET_IDENTIFICATION +
                                 REG_DATA), ==, through_small);
 
     qtest_quit(qts);
@@ -326,7 +326,7 @@ static void test_widget_0_is_the_bridge_itself(const void *data)
     /* Written state through one window, read through the other: one chip. */
     reset = qtest_readl(qts, BRIDGE_WINDOW + BRIDGE_REQUEST_TIMEOUT + REG_DATA);
     g_assert_cmphex(reset, ==,
-                    qtest_readl(qts, SPACE_XTALK + BRIDGE_REQUEST_TIMEOUT +
+                    qtest_readl(qts, SPACE_IO + BRIDGE_REQUEST_TIMEOUT +
                                 REG_DATA));
 
     /* Not the reset value; masked so truncation cannot fail it wrongly. */
@@ -336,7 +336,7 @@ static void test_widget_0_is_the_bridge_itself(const void *data)
     qtest_writel(qts, BRIDGE_WINDOW + BRIDGE_REQUEST_TIMEOUT + REG_DATA,
                  written);
 
-    g_assert_cmphex(qtest_readl(qts, SPACE_XTALK + BRIDGE_REQUEST_TIMEOUT +
+    g_assert_cmphex(qtest_readl(qts, SPACE_IO + BRIDGE_REQUEST_TIMEOUT +
                                 REG_DATA), ==, written);
 
     /* And through the big window: all three addresses are one register. */

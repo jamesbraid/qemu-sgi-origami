@@ -30,7 +30,7 @@
 
 #define SMALL_WINDOW_SIZE UINT64_C(0x1000000)
 #define SMALL_WINDOW(widget) \
-    (SPACE_XTALK + (uint64_t)(widget) * SMALL_WINDOW_SIZE)
+    (SPACE_IO + (uint64_t)(widget) * SMALL_WINDOW_SIZE)
 
 /*
  * sn-builder-test.c's own SPARE_WIDGET: KONA's board->cpu_face is a plain

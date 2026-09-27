@@ -23,7 +23,7 @@
 
 /* Addresses only this test uses; the shared ones come from sgi-test.h. */
 #define BRIDGE_WIDGET           8
-#define BRIDGE_BASE             (SPACE_XTALK + ((uint64_t)BRIDGE_WIDGET << 24))
+#define BRIDGE_BASE             (SPACE_IO + ((uint64_t)BRIDGE_WIDGET << 24))
 #define BRIDGE_BASE_FOR_NODE(n) (BRIDGE_BASE + (uint64_t)(n) * NODE_STRIDE)
 #define REG_DATA                4
 #define REG(offset)             (BRIDGE_BASE + (offset) + REG_DATA)
@@ -39,7 +39,7 @@
 #define FLASH_UNLOCK2           0x2aaa
 #define FLASH_PROGRAM_TARGET    0xe0100
 
-#define HUB_BY_NODE             (SPACE_XTALK + 0x01800000)
+#define HUB_BY_NODE             (SPACE_IO + 0x01800000)
 #define HUB_ONEWIRE             (HUB_LOCAL + 0x2000a8)
 #define HUB_ONEWIRE_DONE        (1ULL << 1)
 #define HUB_ONEWIRE_RX          (1ULL << 0)

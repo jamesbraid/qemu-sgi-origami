@@ -237,7 +237,7 @@ static uint32_t crossbow_read(QTestState *qts, unsigned int cpu,
     uint8_t bytes[sizeof(uint32_t)];
 
     g_assert_true(qtest_memread_cpu(qts, cpu,
-                                    SPACE_XTALK + offset + XTALK_REG_DATA,
+                                    SPACE_IO + offset + XTALK_REG_DATA,
                                     bytes, sizeof(bytes)));
     return ldl_be_p(bytes);
 }

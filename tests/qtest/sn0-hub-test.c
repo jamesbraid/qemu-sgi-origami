@@ -17,7 +17,7 @@
 #include "sgi-test.h"
 
 /* The half of the crossbar's widget 1 window addressed by node. */
-#define HUB_BY_NODE     (SPACE_XTALK + 0x01800000)
+#define HUB_BY_NODE     (SPACE_IO + 0x01800000)
 
 /* The boot flash's ready signal, at both positions it appears at. */
 #define MD_SLOT_ID_USTAT            0x220048
@@ -267,9 +267,9 @@
 /* The big windows, and the IOC3's serial scratch register as a target. */
 #define BIG_WINDOW_BASE 0x20000000
 #define BIG_WINDOW_SIZE 0x20000000ULL
-#define BIG_WINDOW(n)   (SPACE_XTALK + BIG_WINDOW_BASE + (n) * BIG_WINDOW_SIZE)
+#define BIG_WINDOW(n)   (SPACE_IO + BIG_WINDOW_BASE + (n) * BIG_WINDOW_SIZE)
 
-#define SMALL_WINDOW(w) (SPACE_XTALK + (uint64_t)(w) * 0x1000000)
+#define SMALL_WINDOW(w) (SPACE_IO + (uint64_t)(w) * 0x1000000)
 #define CONSOLE_WIDGET  8
 #define IOC3_SCRATCH    (0x600000 + 0x020178 + 7)
 

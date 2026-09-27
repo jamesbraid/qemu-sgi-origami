@@ -14,7 +14,7 @@
 #include "sgi-test.h"
 
 #define BRIDGE_WIDGET       8
-#define BRIDGE_BASE         (SPACE_XTALK + ((uint64_t)BRIDGE_WIDGET << 24))
+#define BRIDGE_BASE         (SPACE_IO + ((uint64_t)BRIDGE_WIDGET << 24))
 
 /* Registers are 32 bits in the low half of an eight-byte slot. */
 #define REG_DATA            4
@@ -160,7 +160,7 @@ static void test_master_timeout_raises_host_interrupt(void)
     QTestState *qts = qtest_init(MACHINE);
 
     qtest_writel(qts, REG(BRIDGE_INT_DEST_LO),
-                 (uint32_t)(HUB_LOCAL - SPACE_XTALK) + PI_INT_MODIFY);
+                 (uint32_t)(HUB_LOCAL - SPACE_IO) + PI_INT_MODIFY);
     qtest_writel(qts, REG(BRIDGE_INT_DEST_UP), 0);
     qtest_writel(qts, REG(BRIDGE_HOST_ERR), ERR_HOST_BIT);
     qtest_writel(qts, REG(BRIDGE_INT_ENABLE), INT_MASTER_TIMEOUT);

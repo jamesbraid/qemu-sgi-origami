@@ -20,8 +20,8 @@
 #define NODE_SHIFT 33
 #define NODE(n) ((uint64_t)(n) << NODE_SHIFT)
 /* The Bedrock's node-named register form, and its local alias (IALIAS). */
-#define BEDROCK_NODE(n) (SPACE_XTALK + NODE(n) + UINT64_C(0x01800000))
-#define BEDROCK_LOCAL (SPACE_XTALK + UINT64_C(0x01000000))
+#define BEDROCK_NODE(n) (SPACE_IO + NODE(n) + UINT64_C(0x01800000))
+#define BEDROCK_LOCAL (SPACE_IO + UINT64_C(0x01000000))
 #define HUB_LOCAL_REGISTERS (SPACE_HUB + UINT64_C(0x10000000))
 #define LB_REVISION UINT64_C(0x600000)
 #define LB_SCRATCH2 UINT64_C(0x608010)
@@ -377,7 +377,7 @@ static void test_bte_completion_goes_by_number(void)
  * interface's pending-modify register in the register space of a named node,
  * then forced.
  */
-#define XBRIDGE_F (SPACE_XTALK + UINT64_C(0xf) * UINT64_C(0x1000000))
+#define XBRIDGE_F (SPACE_IO + UINT64_C(0xf) * UINT64_C(0x1000000))
 #define XBRIDGE_INT_ENABLE 0x108
 #define XBRIDGE_INT_UPPER 0x30
 #define XBRIDGE_INT_LOWER 0x38

@@ -29,13 +29,13 @@
 #define CONSOLE_WIDGET  8
 #define BRIDGE_DEVICE2  0x600000
 #define BRIDGE_DEVICE3  0x700000
-#define IOC3_BASE       (SPACE_XTALK + ((uint64_t)CONSOLE_WIDGET << 24) + \
+#define IOC3_BASE       (SPACE_IO + ((uint64_t)CONSOLE_WIDGET << 24) + \
                          BRIDGE_DEVICE2)
-#define TEST_IOC3_BASE  (SPACE_XTALK + ((uint64_t)CONSOLE_WIDGET << 24) + \
+#define TEST_IOC3_BASE  (SPACE_IO + ((uint64_t)CONSOLE_WIDGET << 24) + \
                          BRIDGE_DEVICE3)
 
 /* A guest's bus scan: write the BAR, aim the bridge's device window at it. */
-#define BRIDGE_BASE     (SPACE_XTALK + ((uint64_t)CONSOLE_WIDGET << 24))
+#define BRIDGE_BASE     (SPACE_IO + ((uint64_t)CONSOLE_WIDGET << 24))
 #define REG_DATA        4         /* registers sit at a slot's upper half */
 #define BRIDGE_CFG0     0x020000
 #define CFG0_DEVICE_STRIDE 0x1000
@@ -5248,8 +5248,8 @@ static void test_a_board_fits_its_own_sub_devices(const void *data)
  */
 #define ADDIN_IOC3_DEVICE   6
 #define BRIDGE_DEVICE6      0xa00000  /* device 2's window plus 4 x 1 MB */
-#define ADDIN_IOC3_BASE     (SPACE_XTALK + \
-                            ((uint64_t)CONSOLE_WIDGET << 24) + BRIDGE_DEVICE6)
+#define ADDIN_IOC3_BASE     (SPACE_IO + \
+                             ((uint64_t)CONSOLE_WIDGET << 24) + BRIDGE_DEVICE6)
 #define ADDIN_IOC3_PCI_MMIO 0x1c000000u
 
 #define ADDIN_KBC_KBD_RECEIVE  (ADDIN_IOC3_BASE + 0x0a0)

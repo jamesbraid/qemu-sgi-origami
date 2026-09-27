@@ -28,7 +28,7 @@
 
 /* Crosstalk space and the Bridge's widget window inside it. */
 #define BRIDGE_WIDGET           8
-#define BRIDGE_BASE             (SPACE_XTALK + ((uint64_t)BRIDGE_WIDGET << 24))
+#define BRIDGE_BASE             (SPACE_IO + ((uint64_t)BRIDGE_WIDGET << 24))
 #define REG_DATA                4
 
 #define MACHINE_WITH_BRIDGE     "-M origin200"
@@ -70,7 +70,7 @@
 #define BRIDGE_INT_ENABLE       (BRIDGE_BASE + 0x108 + REG_DATA)
 #define BRIDGE_INT_MODE         (BRIDGE_BASE + 0x118 + REG_DATA)
 #define BRIDGE_INT_HOST(n)      (BRIDGE_BASE + 0x130 + 8 * (n) + REG_DATA)
-#define HUB_LOCAL_WINDOW        (SPACE_XTALK + 0x01000000)
+#define HUB_LOCAL_WINDOW        (SPACE_IO + 0x01000000)
 #define PI_INT_PEND_MOD         0x90
 #define XFRAME_IRQ_NUMBER       14
 

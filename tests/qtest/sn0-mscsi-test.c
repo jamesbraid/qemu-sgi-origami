@@ -84,7 +84,7 @@ static uint32_t xtalk_read(QTestState *qts, uint64_t offset)
 {
     uint8_t bytes[sizeof(uint32_t)];
 
-    g_assert_true(qtest_memread_cpu(qts, 0, SPACE_XTALK + offset,
+    g_assert_true(qtest_memread_cpu(qts, 0, SPACE_IO + offset,
                                     bytes, sizeof(bytes)));
     return ldl_be_p(bytes);
 }

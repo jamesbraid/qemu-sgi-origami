@@ -14,7 +14,7 @@
 #include "sgi-test.h"
 
 #define BASEIO_WIDGET   8
-#define BASEIO_BASE     (SPACE_XTALK + ((uint64_t)BASEIO_WIDGET << 24))
+#define BASEIO_BASE     (SPACE_IO + ((uint64_t)BASEIO_WIDGET << 24))
 #define REG_DATA        4         /* registers sit at a slot's upper half */
 #define BRIDGE_CFG0(n)  (0x020000 + (n) * 0x1000)
 #define BRIDGE_DEVICE(n) (0x200 + 8 * (n) + REG_DATA)

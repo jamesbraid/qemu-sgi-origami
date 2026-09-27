@@ -3502,7 +3502,7 @@ static void test_origin300_directory_ecc_check(void)
 
 /* Bedrock ECC stores as issued by the Origin 300 processor. */
 #define HUB_ECC (SPACE_HUB + UINT64_C(0x140000000))
-#define BEDROCK_NODE0 (SPACE_XTALK + UINT64_C(0x01800000))
+#define BEDROCK_NODE0 (SPACE_IO + UINT64_C(0x01800000))
 #define MD_MEMORY_CONFIG UINT64_C(0x780008)
 /*
  * Origin 300's installed memory occupies locational banks 2 and 3, not bank

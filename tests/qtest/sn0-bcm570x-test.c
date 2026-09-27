@@ -20,7 +20,7 @@
 #include "sgi-test.h"
 
 #define BRIDGE_WIDGET   8
-#define BRIDGE_BASE     (SPACE_XTALK + ((uint64_t)BRIDGE_WIDGET << 24))
+#define BRIDGE_BASE     (SPACE_IO + ((uint64_t)BRIDGE_WIDGET << 24))
 
 #define BCM_MAC         "52:54:00:bc:57:01"
 

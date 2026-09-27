@@ -66,7 +66,7 @@ typedef struct {
     unsigned int device;
 } ShoehornCase;
 
-#define WIDGET_BASE(w)      (SPACE_XTALK + ((uint64_t)(w) << 24))
+#define WIDGET_BASE(w)      (SPACE_IO + ((uint64_t)(w) << 24))
 
 /* The Bridge's own chip registers sit at a slot's upper half (+REG_DATA). */
 #define REG_DATA            4
@@ -642,8 +642,8 @@ static void test_one_card_only(const void *data)
  * (docs/datasheets/xbow.md, link auxiliary status bit 5 and link status
  * bit 31, Crossbow 0's own registers at widget 0).
  */
-#define XBOW_LINK_STATUS(w) (SPACE_XTALK + 0x110 + ((w) - 8) * 0x40 + 4)
-#define XBOW_LINK_AUX(w)    (SPACE_XTALK + 0x138 + ((w) - 8) * 0x40 + 4)
+#define XBOW_LINK_STATUS(w) (SPACE_IO + 0x110 + ((w) - 8) * 0x40 + 4)
+#define XBOW_LINK_AUX(w)    (SPACE_IO + 0x138 + ((w) - 8) * 0x40 + 4)
 #define XBOW_LINK_ALIVE     (1u << 31)
 #define XBOW_AUX_PRESENT    (1u << 5)
 

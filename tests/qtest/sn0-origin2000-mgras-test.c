@@ -17,7 +17,7 @@
 #include "sgi-migrate.h"
 #include "sgi-test.h"
 
-#define WIDGET_BASE(w)    (SPACE_XTALK + ((uint64_t)(w) << 24))
+#define WIDGET_BASE(w)    (SPACE_IO + ((uint64_t)(w) << 24))
 #define SI_WIDGET         0xf
 #define MGRAS_BASE           WIDGET_BASE(SI_WIDGET)
 #define MGRAS_REG(offset)    (MGRAS_BASE + (offset))

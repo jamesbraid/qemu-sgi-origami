@@ -17,7 +17,7 @@
 
 /* Crosstalk space and the bridge that carries both controllers. */
 #define CONSOLE_WIDGET  8
-#define BRIDGE_BASE     (SPACE_XTALK + ((uint64_t)CONSOLE_WIDGET << 24))
+#define BRIDGE_BASE     (SPACE_IO + ((uint64_t)CONSOLE_WIDGET << 24))
 
 #define BRIDGE_CFG0     0x020000
 #define CFG0_DEVICE_STRIDE 0x1000
