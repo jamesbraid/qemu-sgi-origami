@@ -62,6 +62,12 @@ static void test_descriptors(gconstpointer data)
         }
     }
     g_assert_cmpuint(detected_units, ==, mib / 32);
+    if (mib == 64) {
+        qtest_writeq(s, PROBE_RAM + 0x100 + UNIT,
+                     0x0f1e2d3c4b5a6978ULL);
+        g_assert_cmphex(qtest_readq(s, PROBE_RAM + 0x100), ==,
+                        0x123456789abcdef0ULL);
+    }
     g_assert_cmphex(qtest_readq(s, PROBE_RAM + 0x100 + span), ==,
                     0x123456789abcdef0ULL);
     qtest_writeq(s, PROBE_RAM + 0x100 + 2 * span,
@@ -88,6 +94,38 @@ static void test_descriptors(gconstpointer data)
     g_assert_cmphex(value, ==, 0);
     qtest_writeq(s, HEART_REGS + 0x20, 0);
     g_assert_cmphex(qtest_readq(s, HEART_REGS + 0x20), ==, 0);
+    qtest_quit(s);
+}
+
+static void test_two_64m_banks(void)
+{
+    QTestState *s = qtest_init("-M none -cpu R10000 -device "
+        "sgi-heart,id=heart,bank0-size=67108864,bank1-size=67108864 -S");
+    uint64_t first = HEART_RAM + 0x100;
+    uint64_t second = HEART_RAM + 2 * UNIT + 0x100;
+
+    qtest_sysbus_mmio_map(s, HEART_PATH, 0, HEART_REGS);
+    qtest_writel(s, HEART_REGS + 0x20, 0x80010000U);
+    qtest_writel(s, HEART_REGS + 0x24, 0x80010002U);
+    qtest_writeq(s, first, 0x123456789abcdef0ULL);
+    qtest_writeq(s, second, 0xfedcba9876543210ULL);
+    g_assert_cmphex(qtest_readq(s, first), ==, 0x123456789abcdef0ULL);
+    g_assert_cmphex(qtest_readq(s, second), ==, 0xfedcba9876543210ULL);
+    qtest_quit(s);
+}
+
+static void test_invalid_bank_capacity(void)
+{
+    QTestState *s;
+
+    if (!g_test_subprocess()) {
+        g_test_trap_subprocess(NULL, 0, 0);
+        g_test_trap_assert_failed();
+        g_test_trap_assert_stderr("*capacity must be 0, 64M, 128M or 256M*");
+        return;
+    }
+    s = qtest_init("-M none -cpu R10000 -device "
+                   "sgi-heart,id=heart,bank0-size=100663296 -S");
     qtest_quit(s);
 }
 
@@ -657,6 +695,11 @@ static void test_xtalk_migration(void)
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
+    g_test_add_data_func("/heart/descriptor-64m", GUINT_TO_POINTER(64),
+                         test_descriptors);
+    g_test_add_func("/heart/two-64m-banks", test_two_64m_banks);
+    g_test_add_func("/heart/invalid-bank-capacity",
+                    test_invalid_bank_capacity);
     g_test_add_data_func("/heart/descriptor-128m", GUINT_TO_POINTER(128),
                          test_descriptors);
     g_test_add_data_func("/heart/descriptor-256m", GUINT_TO_POINTER(256),
