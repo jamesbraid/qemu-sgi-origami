@@ -10,8 +10,8 @@
  * a lookup entirely separate from the QOM composition tree those add_child()
  * calls populate, so with no id set neither head could ever be named --
  * screendump always fell back to console index 0. The fix gives each board
- * a stable id, its IRIX slot name: io3 for the MGRAS the default
- * origin2000 fits at IO3. This file boots a two-head composition and
+ * a stable id, its IRIX slot name: io3 for an MGRAS fitted at IO3. This
+ * file boots a two-head composition and
  * asserts both ids resolve, that a screendump can target each head by its
  * id, and that naming an unknown device fails cleanly instead of silently
  * falling back to console 0.
