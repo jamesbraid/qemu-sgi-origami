@@ -15,7 +15,8 @@
 
 #define MGRAS_BASE           (SPACE_XTALK + (0xfULL << 24))
 #define MGRAS_REG(offset)    (MGRAS_BASE + (offset))
-#define MACHINE_ARGS      "-M origin2000 -smp 8 -m 256M"
+#define MACHINE_ARGS \
+    "-M origin2000,topology=origin2000-one-node -smp 2 -m 256M"
 #define MGRAS_QOM_PATH   "/machine/mgras"
 #define DEFAULT_REPLAY    "../tests/data/mgras/fill.replay"
 #define MINIMAL_REPLAY    "../tests/data/mgras/minimal.replay"
@@ -794,8 +795,9 @@ static void test_invalid_replay(const char *path, const char *message)
     }
     g_setenv("MGRAS_INVALID_REPLAY", path, true);
     /*
-     * The child boots a real 8-CPU origin2000 fixture before it ever
-     * reaches the invalid line, and that boot alone has been measured at
+     * The child boots a real origin2000 fixture before it ever reaches
+     * the invalid line. On the eight-CPU machine this harness used before
+     * it replayed on the one-node machine, that boot alone was measured at
      * 10.5-11s under load -- past the old 10s trap timeout with nothing
      * left over for the parse itself. Give it the same order of headroom
      * the rest of this suite's budget uses.
