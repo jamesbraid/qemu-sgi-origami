@@ -163,19 +163,28 @@ static void r10k_scache_invalidate(CPUMIPSState *env, unsigned int set,
 /*
  * Tell the board about a request the processor puts on its system
  * interface with no memory access behind it, and return whether the board
- * follows a block the request found. A board that wants none leaves the
- * hook unset.
+ * follows a block the request found. A board that wants none links no
+ * region. @set_bits is nonzero only for an index request.
  */
 static bool r10k_system_request(CPUMIPSState *env, R10KSystemRequest request,
-                                hwaddr paddr, uint64_t index_mask)
+                                hwaddr paddr, unsigned int set_bits)
 {
     R10KState *r10k = env->r10k;
+    MemTxAttrs attrs = { .requester_id = r10k->requester_id };
+    uint64_t found = 0;
 
-    if (!r10k->system_request) {
+    if (!r10k->system_requests) {
         return false;
     }
-    return r10k->system_request(r10k->system_request_opaque, env_cpu(env),
-                                request, paddr, index_mask);
+    memory_region_dispatch_read(r10k->system_requests,
+                                extract64(paddr, 0,
+                                          R10K_SYSTEM_REQUEST_PADDR_BITS) |
+                                (uint64_t)request <<
+                                R10K_SYSTEM_REQUEST_KIND_SHIFT |
+                                (uint64_t)set_bits <<
+                                R10K_SYSTEM_REQUEST_SET_BITS_SHIFT,
+                                &found, MO_64, attrs);
+    return found;
 }
 
 /*
@@ -183,22 +192,16 @@ static bool r10k_system_request(CPUMIPSState *env, R10KSystemRequest request,
  * for it exclusive (R10000 User's Manual version 2.0, Table 1-1); the other
  * hints are undefined and do nothing. A prefetch takes no memory-management
  * exception, so an address that does not translate, or translates
- * uncached, is simply dropped. Prefetches are common in copy loops, so the
- * translation is skipped while the board follows nothing.
+ * uncached, is simply dropped.
  */
 void helper_r10k_prefetch(CPUMIPSState *env, target_ulong addr, uint32_t hint)
 {
-    R10KState *r10k = env->r10k;
     MMUAccessType access = hint & 1 ? MMU_DATA_STORE : MMU_DATA_LOAD;
     MemTxAttrs attrs = {};
     hwaddr paddr;
     int prot;
 
-    if (hint > 7 || hint == 2 || hint == 3 || !r10k->system_request) {
-        return;
-    }
-    if (r10k->system_watching &&
-        !r10k->system_watching(r10k->system_request_opaque)) {
+    if (hint > 7 || hint == 2 || hint == 3 || !env->r10k->system_requests) {
         return;
     }
     if (get_physical_address(env, &paddr, &prot, addr, access,
@@ -413,8 +416,7 @@ void r10k_cache_op(CPUMIPSState *env, target_ulong addr, uint32_t op,
          * (the processor block write and eliminate protocols).
          */
         r10k_system_request(env, R10K_REQUEST_INDEX_WRITEBACK_INVALIDATE,
-                            paddr, (uint64_t)(r10k_scache_sets(env) - 1) *
-                                   R10K_SCACHE_LINE_SIZE);
+                            paddr, ctz32(r10k_scache_sets(env)));
         if (env->r10k->scache_taglo[set * R10K_SCACHE_WAYS + way] &
             (3 << 10)) {
             r10k_scache_invalidate(env, set, way, paddr, addr);

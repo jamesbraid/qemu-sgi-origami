@@ -272,7 +272,7 @@ static void mips_cpu_reset_hold(Object *obj, ResetType type)
     if (env->r10k) {
         R10KState *r10k = env->r10k;
 
-        memset(r10k, 0, offsetof(R10KState, system_request));
+        memset(r10k, 0, offsetof(R10KState, system_requests));
         r10k->CP0_TagLo_rw_bitmask = env->cpu_model->CP0_TagLo_rw_bitmask;
         r10k->CP0_ECC_rw_bitmask = env->cpu_model->CP0_ECC_rw_bitmask;
         r10k->CP0_Config0_preserve_bitmask =

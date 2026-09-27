@@ -1166,15 +1166,17 @@ static target_ulong sn1_node_store_transaction(MIPSCPU *cpu, MemoryRegion *mr,
 
 
 /*
- * A processor's secondary-cache instruction or prefetch, passed to the
- * memory unit of the node whose memory it names. An index instruction names
- * a set rather than a line, so it goes to this node and its one cabled peer,
- * all an Origin 300 pair has; a line homed on any other node would be
- * missed.
+ * A processor's secondary-cache instruction or prefetch, dispatched to the
+ * node's system-request region (R10K_SYSTEM_REQUEST_* in target/mips/r10k.h)
+ * and passed to the memory unit of the node whose memory it names. An index
+ * instruction names a set rather than a line, so it goes to this node and
+ * its one cabled peer, all an Origin 300 pair has; a line homed on any
+ * other node would be missed. It runs outside any I/O access, so it takes
+ * the lock itself, and only once a memory unit is watching anything.
  */
-static bool sn1_node_system_request(void *opaque, CPUState *cs,
-                                    R10KSystemRequest request, uint64_t paddr,
-                                    uint64_t index_mask)
+static MemTxResult sn1_node_system_request(void *opaque, hwaddr offset,
+                                           uint64_t *value, unsigned size,
+                                           MemTxAttrs attrs)
 {
     static const SGIBedrockMDProcessorRequest md_request[] = {
         [R10K_REQUEST_INDEX_WRITEBACK_INVALIDATE] =
@@ -1187,10 +1189,19 @@ static bool sn1_node_system_request(void *opaque, CPUState *cs,
     };
     SN1NodeState *node = opaque;
     SN1NodeState *target[2] = { NULL, NULL };
+    uint64_t paddr = extract64(offset, 0, R10K_SYSTEM_REQUEST_PADDR_BITS);
+    unsigned int request = extract64(offset, R10K_SYSTEM_REQUEST_KIND_SHIFT,
+                                     4);
+    unsigned int set_bits = extract64(offset,
+                                      R10K_SYSTEM_REQUEST_SET_BITS_SHIFT, 6);
+    uint64_t index_mask = ((UINT64_C(1) << set_bits) - 1) * 128;
     uint64_t address = paddr & (SGI_BEDROCK_MD_MEMORY_SIZE - 1);
-    uint16_t pointer = MIPS_CPU(cs)->env.r10k->requester_id;
     bool found = false;
 
+    *value = 0;
+    if (request >= ARRAY_SIZE(md_request)) {
+        return MEMTX_OK;
+    }
     if (request == R10K_REQUEST_INDEX_WRITEBACK_INVALIDATE) {
         target[0] = node;
         target[1] = sn1_node_peer(node);
@@ -1208,12 +1219,20 @@ static bool sn1_node_system_request(void *opaque, CPUState *cs,
             continue;
         }
         BQL_LOCK_GUARD();
-        found |= sgi_bedrock_md_processor_request(md, pointer,
+        found |= sgi_bedrock_md_processor_request(md, attrs.requester_id,
                                                   md_request[request],
                                                   address, index_mask);
     }
-    return found;
+    *value = found;
+    return MEMTX_OK;
 }
+
+static const MemoryRegionOps sn1_node_system_request_ops = {
+    .read_with_attrs = sn1_node_system_request,
+    .endianness = DEVICE_BIG_ENDIAN,
+    .valid = { .min_access_size = 8, .max_access_size = 8 },
+    .impl = { .min_access_size = 8, .max_access_size = 8 },
+};
 
 /*
  * Whether the processor a directory pointer names is fitted: the node that
@@ -1236,17 +1255,6 @@ static bool sn1_node_pointer_present(void *opaque, uint16_t pointer)
     return false;
 }
 
-/* Whether this node or its peer follows any line: without the lock. */
-static bool sn1_node_system_watching(void *opaque)
-{
-    SN1NodeState *node = opaque;
-    SN1NodeState *peer = sn1_node_peer(node);
-
-    return sgi_bedrock_md_watching(&SGI_BEDROCK(node->bedrock)->md) ||
-           (peer &&
-            sgi_bedrock_md_watching(&SGI_BEDROCK(peer->bedrock)->md));
-}
-
 static void sn1_node_create_cpus(SN1NodeState *node, MachineState *machine)
 {
     MemoryRegion *system = get_system_memory();
@@ -1258,6 +1266,9 @@ static void sn1_node_create_cpus(SN1NodeState *node, MachineState *machine)
                               SGI_SN1_NODE_MAX_CPUS, NULL, NULL);
     }
 
+    memory_region_init_io(&node->system_requests, OBJECT(node),
+                          &sn1_node_system_request_ops, node,
+                          "sn1.system-requests", R10K_SYSTEM_REQUEST_SIZE);
     for (i = 0; i < node->nr_cpus; i++) {
         g_autofree char *name = g_strdup_printf("cpu%u", i);
         g_autofree char *alias_name =
@@ -1293,9 +1304,7 @@ static void sn1_node_create_cpus(SN1NodeState *node, MachineState *machine)
         cpu->store_transaction_opaque = node;
         qdev_realize(cpu_dev, NULL, &error_fatal);
         if (cpu->env.r10k) {
-            cpu->env.r10k->system_request = sn1_node_system_request;
-            cpu->env.r10k->system_watching = sn1_node_system_watching;
-            cpu->env.r10k->system_request_opaque = node;
+            cpu->env.r10k->system_requests = &node->system_requests;
         }
         cpu_mips_irq_init_cpu(cpu);
         cpu_mips_clock_init(cpu);
