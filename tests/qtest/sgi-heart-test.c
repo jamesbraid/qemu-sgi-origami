@@ -211,6 +211,7 @@ static void test_widget_packets(void)
 {
     QTestState *s = heart_start(128, "");
     uint64_t level0 = 1ULL << 3;
+    uint64_t level1 = 1ULL << 16;
     uint64_t level2 = 1ULL << 42;
 
     qtest_irq_intercept_out_named(s, HEART_PATH, "processor");
@@ -224,31 +225,55 @@ static void test_widget_packets(void)
                      MEMTX_ERROR);
     g_assert_cmphex(qtest_readq(s, HEART_REGS + 0x10030), ==, 0);
 
-    qtest_writeq(s, HEART_REGS + 0x10000, level0 | level2);
+    qtest_writeq(s, HEART_REGS + 0x10000,
+                 level0 | level1 | level2);
     g_assert_cmpuint(qtest_writeq_tx(s, HEART_PACKET + 0x80, 0x103), ==,
                      MEMTX_OK);
     g_assert_cmphex(qtest_readq(s, HEART_REGS + 0x10030), ==, level0);
     g_assert_true(qtest_get_irq(s, 0));
     g_assert_false(qtest_get_irq(s, 1));
+    g_assert_false(qtest_get_irq(s, 2));
+    g_assert_cmpuint(qtest_writeq_tx(s, HEART_PACKET + 0x80, 0x110), ==,
+                     MEMTX_OK);
+    g_assert_cmphex(qtest_readq(s, HEART_REGS + 0x10030), ==,
+                    level0 | level1);
+    g_assert_true(qtest_get_irq(s, 1));
+    g_assert_false(qtest_get_irq(s, 2));
     g_assert_cmpuint(qtest_writeq_tx(s, HEART_PACKET + 0x80, 0x12a), ==,
                      MEMTX_OK);
     g_assert_cmphex(qtest_readq(s, HEART_REGS + 0x10038), ==,
-                    level0 | level2);
+                    level0 | level1 | level2);
     g_assert_true(qtest_get_irq(s, 0));
     g_assert_true(qtest_get_irq(s, 1));
+    g_assert_true(qtest_get_irq(s, 2));
+    qtest_writeq(s, HEART_REGS + 0x10000, level0 | level2);
+    g_assert_cmphex(qtest_readq(s, HEART_REGS + 0x10030), ==,
+                    level0 | level1 | level2);
+    g_assert_false(qtest_get_irq(s, 1));
+    qtest_writeq(s, HEART_REGS + 0x10000,
+                 level0 | level1 | level2);
+    g_assert_true(qtest_get_irq(s, 1));
+    g_assert_cmpuint(qtest_writeq_tx(s, HEART_PACKET + 0x80, 16), ==,
+                     MEMTX_OK);
+    g_assert_cmphex(qtest_readq(s, HEART_REGS + 0x10030), ==,
+                    level0 | level2);
+    g_assert_true(qtest_get_irq(s, 0));
+    g_assert_false(qtest_get_irq(s, 1));
+    g_assert_true(qtest_get_irq(s, 2));
     g_assert_cmpuint(qtest_writeq_tx(s, HEART_PACKET + 0x80, 3), ==,
                      MEMTX_OK);
     g_assert_cmphex(qtest_readq(s, HEART_REGS + 0x10030), ==, level2);
     g_assert_false(qtest_get_irq(s, 0));
-    g_assert_true(qtest_get_irq(s, 1));
+    g_assert_false(qtest_get_irq(s, 1));
+    g_assert_true(qtest_get_irq(s, 2));
     qtest_writeq(s, HEART_REGS + 0x10000, 0);
     g_assert_cmphex(qtest_readq(s, HEART_REGS + 0x10030), ==, level2);
-    g_assert_false(qtest_get_irq(s, 1));
+    g_assert_false(qtest_get_irq(s, 2));
     qtest_writeq(s, HEART_REGS + 0x10000, level2);
-    g_assert_true(qtest_get_irq(s, 1));
+    g_assert_true(qtest_get_irq(s, 2));
     g_assert_cmpuint(qtest_writeq_tx(s, HEART_PACKET + 0x80, 42), ==,
                      MEMTX_OK);
-    g_assert_false(qtest_get_irq(s, 1));
+    g_assert_false(qtest_get_irq(s, 2));
     qtest_quit(s);
 }
 
@@ -277,6 +302,7 @@ static void test_reset(void)
     uint64_t value;
     uint32_t id;
 
+    qtest_irq_intercept_out_named(s, HEART_PATH, "processor");
     qtest_writeq(s, HEART_REGS, 0x200810ULL);
     qtest_writeq(s, HEART_REGS + 0x08, 0x21);
     qtest_writeq(s, HEART_REGS + 0x10, 0x84000);
@@ -290,7 +316,9 @@ static void test_reset(void)
     for (unsigned i = 0; i < 4; i++) {
         qtest_writeq(s, HEART_REGS + 0x10000 + 8 * i, 1ULL << i);
     }
-    qtest_writeq(s, HEART_REGS + 0x10020, 0xf);
+    qtest_writeq(s, HEART_REGS + 0x10000, 1ULL << 16);
+    qtest_writeq(s, HEART_REGS + 0x10020, 0xf | (1ULL << 16));
+    g_assert_true(qtest_get_irq(s, 1));
     qtest_clock_step(s, 800);
     g_assert_cmphex(qtest_readq(s, HEART_REGS + 0x20000), ==, 10);
     qtest_qmp_assert_success(s, "{'execute':'system_reset'}");
@@ -309,6 +337,7 @@ static void test_reset(void)
         g_assert_cmphex(qtest_readq(s, HEART_REGS + 0x10000 + 8 * i), ==, 0);
     }
     g_assert_cmphex(qtest_readq(s, HEART_REGS + 0x10030), ==, 0);
+    g_assert_false(qtest_get_irq(s, 1));
     g_assert_cmphex(qtest_readq(s, HEART_REGS + 0x80), ==, 0x10);
     g_assert_cmphex(qtest_readq(s, HEART_REGS + 0x50000), ==, 0);
     g_assert_cmphex(qtest_readq(s, HEART_REGS + 0x20000), ==, 0);
@@ -334,6 +363,8 @@ static void test_migration(void)
     uri = g_strdup_printf("unix:%s", socket);
     from = heart_start(128, "");
     to = heart_start(128, "-incoming defer");
+    qtest_irq_intercept_out_named(from, HEART_PATH, "processor");
+    qtest_irq_intercept_out_named(to, HEART_PATH, "processor");
     qtest_writel(from, HEART_WIDGET + 0x24, 0x5a420ff0);
     qtest_writeq(from, HEART_REGS, 0x800);
     qtest_writeq(from, HEART_REGS + 0x08, 0x21);
@@ -345,9 +376,11 @@ static void test_migration(void)
     }
     qtest_writeq(from, PROBE_RAM, 0x123456789abcdef0ULL);
     for (unsigned i = 0; i < 4; i++) {
-        qtest_writeq(from, HEART_REGS + 0x10000 + 8 * i, 1ULL << i);
+        qtest_writeq(from, HEART_REGS + 0x10000 + 8 * i,
+                     (1ULL << i) | (i == 0 ? 1ULL << 16 : 0));
     }
-    qtest_writeq(from, HEART_REGS + 0x10020, 0xf);
+    qtest_writeq(from, HEART_REGS + 0x10020, 0xf | (1ULL << 16));
+    g_assert_true(qtest_get_irq(from, 1));
     qtest_clock_step(from, 800);
     qtest_qmp_assert_success(to,
         "{'execute':'migrate-incoming', 'arguments':{'uri':%s}}", uri);
@@ -365,10 +398,22 @@ static void test_migration(void)
     g_assert_cmphex(qtest_readq(to, PROBE_RAM), ==, 0x123456789abcdef0ULL);
     for (unsigned i = 0; i < 4; i++) {
         g_assert_cmphex(qtest_readq(to, HEART_REGS + 0x10000 + 8 * i), ==,
-                        1ULL << i);
+                        (1ULL << i) | (i == 0 ? 1ULL << 16 : 0));
     }
+    g_assert_cmphex(qtest_readq(to, HEART_REGS + 0x10030), ==,
+                    0xf | (1ULL << 16));
+    g_assert_cmphex(qtest_readq(to, HEART_REGS + 0x10038), ==,
+                    0x1 | (1ULL << 16));
+    g_assert_true(qtest_get_irq(to, 1));
+    qtest_writeq(to, HEART_REGS + 0x10000, 1);
+    g_assert_false(qtest_get_irq(to, 1));
+    g_assert_cmphex(qtest_readq(to, HEART_REGS + 0x10030) & (1ULL << 16),
+                    ==, 1ULL << 16);
+    qtest_writeq(to, HEART_REGS + 0x10000, 1 | (1ULL << 16));
+    g_assert_true(qtest_get_irq(to, 1));
+    qtest_writeq(to, HEART_REGS + 0x10028, 1ULL << 16);
+    g_assert_false(qtest_get_irq(to, 1));
     g_assert_cmphex(qtest_readq(to, HEART_REGS + 0x10030), ==, 0xf);
-    g_assert_cmphex(qtest_readq(to, HEART_REGS + 0x10038), ==, 0x1);
     g_assert_cmphex(qtest_readq(to, HEART_REGS + 0x20000), ==, 10);
     qtest_clock_step(to, 80);
     g_assert_cmphex(qtest_readq(to, HEART_REGS + 0x20000), ==, 11);
@@ -533,13 +578,13 @@ static void test_xtalk_routing(void)
                      ==, MEMTX_OK);
     g_assert_cmphex(qtest_readq(s, HEART_XTALK_REGS + 0x10030), ==, bits);
     g_assert_true(qtest_get_irq(s, 0));
-    g_assert_true(qtest_get_irq(s, 1));
+    g_assert_true(qtest_get_irq(s, 2));
     g_assert_cmpuint(qtest_writeq_tx(s, HEART_XTALK_PACKET + 0x80, 3),
                      ==, MEMTX_OK);
     g_assert_cmphex(qtest_readq(s, HEART_XTALK_REGS + 0x10030), ==,
                     1ULL << 42);
     g_assert_false(qtest_get_irq(s, 0));
-    g_assert_true(qtest_get_irq(s, 1));
+    g_assert_true(qtest_get_irq(s, 2));
     qtest_qmp_assert_success(s,
         "{'execute':'qom-set','arguments':{'path':"
         "'/machine/peripheral/heart-xtalk/xbow',"
@@ -556,7 +601,7 @@ static void test_xtalk_routing(void)
     g_assert_cmphex(id, ==, HEART_WIDGET_ID);
     g_assert_cmphex(qtest_readq(s, HEART_XTALK_REGS + 0x10030), ==, 0);
     g_assert_false(qtest_get_irq(s, 0));
-    g_assert_false(qtest_get_irq(s, 1));
+    g_assert_false(qtest_get_irq(s, 2));
     g_assert_cmpuint(qtest_readq_tx(s, HEART_MISSING_PACKET + 0x80, &value),
                      ==, MEMTX_DECODE_ERROR);
     qtest_quit(s);
@@ -584,7 +629,7 @@ static void test_xtalk_migration(void)
     g_assert_cmpuint(qtest_writeq_tx(from, HEART_XTALK_RAM + 4 * UNIT - 4,
                                      0x1021324354657687ULL), ==, MEMTX_OK);
     g_assert_true(qtest_get_irq(from, 0));
-    g_assert_true(qtest_get_irq(from, 1));
+    g_assert_true(qtest_get_irq(from, 2));
     qtest_qmp_assert_success(to,
         "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
     sgi_migrate_stopped(from, uri);
@@ -597,10 +642,10 @@ static void test_xtalk_migration(void)
     g_assert_cmphex(qtest_readq(to, HEART_XTALK_RAM + 4 * UNIT - 4), ==,
                     0x1021324354657687ULL);
     g_assert_true(qtest_get_irq(to, 0));
-    g_assert_true(qtest_get_irq(to, 1));
+    g_assert_true(qtest_get_irq(to, 2));
     qtest_writeq(to, HEART_XTALK_PACKET + 0x80, 3);
     g_assert_false(qtest_get_irq(to, 0));
-    g_assert_true(qtest_get_irq(to, 1));
+    g_assert_true(qtest_get_irq(to, 2));
     qtest_quit(to);
     qtest_quit(from);
     if (g_file_test(socket, G_FILE_TEST_EXISTS)) {

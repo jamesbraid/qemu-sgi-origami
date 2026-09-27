@@ -23,6 +23,7 @@
 #define HEART_UNIT (32 * MiB)
 #define HEART_COUNT_MASK ((1ULL << 52) - 1)
 #define HEART_LEVEL0_MASK 0x000000000000ffffULL
+#define HEART_LEVEL1_MASK 0x00000000ffff0000ULL
 #define HEART_LEVEL2_MASK 0x0003ffff00000000ULL
 #define HEART_WIDGET_SIZE 0x1000
 #define HEART_PACKET_SIZE (1ULL << 48)
@@ -33,7 +34,8 @@ static void heart_update_irq(SGIHeartState *s)
     uint64_t enabled = s->pending & s->mask[0];
 
     qemu_set_irq(s->processor[0], !!(enabled & HEART_LEVEL0_MASK));
-    qemu_set_irq(s->processor[1], !!(enabled & HEART_LEVEL2_MASK));
+    qemu_set_irq(s->processor[1], !!(enabled & HEART_LEVEL1_MASK));
+    qemu_set_irq(s->processor[2], !!(enabled & HEART_LEVEL2_MASK));
 }
 
 static MemTxResult heart_widget_read(void *opaque, hwaddr offset,
@@ -495,7 +497,7 @@ static void heart_init(Object *obj)
                           "sgi-heart.packet-ram", HEART_RAM_PACKET_SIZE);
     memory_region_add_subregion(&s->packet, HEART_RAM_BASE, &s->packet_ram);
     sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->packet);
-    qdev_init_gpio_out_named(DEVICE(obj), s->processor, "processor", 2);
+    qdev_init_gpio_out_named(DEVICE(obj), s->processor, "processor", 3);
 }
 
 static const char *heart_xtalk_describe(Object *port, unsigned int index)

@@ -41,6 +41,7 @@
 #define SUPERIO_PIN (1u << 4)
 #define RAD_PIN (1u << 3)
 #define SUPERIO_VECTOR (1u << 16)
+#define SUPERIO_CAUSE 0x800u
 #define SCSI0_WINDOW (BRIDGE + 0x200000)
 /* Bridge reverses the two halfword lanes within each 32-bit PCI word. */
 #define ISP_MAILBOX(n) (SCSI0_WINDOW + ((0x70 + 2 * (n)) ^ 2))
@@ -599,22 +600,31 @@ static void test_heart_interrupt_levels(void)
 {
     QTestState *qts = octane_start();
     const uint64_t level0 = 1;
+    const uint64_t level1 = 1ULL << 16;
     const uint64_t level2 = 1ULL << 32;
 
     qtest_irq_intercept_out_named(qts, "/machine/heart", "processor");
-    qtest_writeq(qts, HEART + 0x10020, level0 | level2);
+    qtest_writeq(qts, HEART + 0x10020, level0 | level1 | level2);
     g_assert_cmphex(qtest_readq(qts, HEART + 0x10030), ==,
-                    level0 | level2);
+                    level0 | level1 | level2);
     g_assert_false(qtest_get_irq(qts, 0));
     g_assert_false(qtest_get_irq(qts, 1));
-    qtest_writeq(qts, HEART + 0x10000, level0 | level2);
+    g_assert_false(qtest_get_irq(qts, 2));
+    qtest_writeq(qts, HEART + 0x10000, level0 | level1 | level2);
     g_assert_true(qtest_get_irq(qts, 0));
     g_assert_true(qtest_get_irq(qts, 1));
+    g_assert_true(qtest_get_irq(qts, 2));
+    qtest_writeq(qts, HEART + 0x10028, level1);
+    g_assert_true(qtest_get_irq(qts, 0));
+    g_assert_false(qtest_get_irq(qts, 1));
+    g_assert_true(qtest_get_irq(qts, 2));
+    g_assert_cmphex(qtest_readq(qts, HEART + 0x10030), ==,
+                    level0 | level2);
     qtest_writeq(qts, HEART + 0x10028, level0);
     g_assert_false(qtest_get_irq(qts, 0));
-    g_assert_true(qtest_get_irq(qts, 1));
+    g_assert_true(qtest_get_irq(qts, 2));
     qtest_writeq(qts, HEART + 0x10000, 0);
-    g_assert_false(qtest_get_irq(qts, 1));
+    g_assert_false(qtest_get_irq(qts, 2));
     qtest_quit(qts);
 }
 
@@ -708,13 +718,24 @@ static void test_serial_a_interrupt_route(void)
     qtest_writel(qts, BRIDGE_REG(0x108), SUPERIO_PIN);
     g_assert_cmphex(qtest_readq(qts, HEART + 0x10030) & SUPERIO_VECTOR, ==,
                     SUPERIO_VECTOR);
+    g_assert_cmphex(octane_cpu_cause(qts) & SUPERIO_CAUSE, ==, 0);
     qtest_writeq(qts, HEART + 0x10000, SUPERIO_VECTOR);
+    g_assert_cmphex(octane_cpu_cause(qts) & SUPERIO_CAUSE, ==,
+                    SUPERIO_CAUSE);
+    qtest_writeq(qts, HEART + 0x10000, 0);
+    g_assert_cmphex(octane_cpu_cause(qts) & SUPERIO_CAUSE, ==, 0);
+    g_assert_cmphex(qtest_readq(qts, HEART + 0x10030) & SUPERIO_VECTOR, ==,
+                    SUPERIO_VECTOR);
+    qtest_writeq(qts, HEART + 0x10000, SUPERIO_VECTOR);
+    g_assert_cmphex(octane_cpu_cause(qts) & SUPERIO_CAUSE, ==,
+                    SUPERIO_CAUSE);
+    qtest_writeq(qts, HEART + 0x10020, 1u << 3);
 
     g_assert_cmphex(qtest_readb(qts, UART_A), ==, sent);
     g_assert_cmphex(qtest_readl(qts, IOC3 + 0x1c) & IOC3_SERIAL_IRQ, ==, 0);
     g_assert_cmphex(qtest_readl(qts, BRIDGE_REG(0x100)) & SUPERIO_PIN, ==, 0);
-    g_assert_cmphex(qtest_readq(qts, HEART + 0x10030) & SUPERIO_VECTOR, ==,
-                    0);
+    g_assert_cmphex(qtest_readq(qts, HEART + 0x10030), ==, 1u << 3);
+    g_assert_cmphex(octane_cpu_cause(qts) & SUPERIO_CAUSE, ==, 0);
     close(sock);
     qtest_quit(qts);
 }
@@ -727,6 +748,8 @@ static void test_reset_state(void)
     qtest_writel(qts, HEART_WIDGET + 0x24, 0x3ca596f0);
     qtest_writeq(qts, HEART + 0x10000, SUPERIO_VECTOR);
     qtest_writeq(qts, HEART + 0x10020, SUPERIO_VECTOR);
+    g_assert_cmphex(octane_cpu_cause(qts) & SUPERIO_CAUSE, ==,
+                    SUPERIO_CAUSE);
     qtest_writel(qts, CFG(2) + 0x10, 0x10000000);
     qtest_writel(qts, CFG(2) + 0x04, 0x00000002);
     qtest_writel(qts, BRIDGE + 0x200 + 8 * 2 + 4, 0x1100);
@@ -756,7 +779,7 @@ static void test_reset_state(void)
     g_assert_cmphex(qtest_readl(qts, FLASH), ==, 0x12345678);
     g_assert_cmphex(qtest_readl(qts, ATTR0 + FLASH), ==, 0x12345678);
     g_assert_cmphex(octane_cpu_pc(qts), ==, 0xffffffffbfc00000ULL);
-    g_assert_cmphex(octane_cpu_cause(qts) & 0x400, ==, 0);
+    g_assert_cmphex(octane_cpu_cause(qts) & SUPERIO_CAUSE, ==, 0);
     qtest_quit(qts);
 }
 
@@ -823,6 +846,8 @@ static void test_migration_state(void)
     g_assert_cmphex(qtest_readb(from, UART_A + 5) & 1, ==, 1);
     g_assert_cmphex(qtest_readl(from, IOC3 + 0x1c) & IOC3_SERIAL_IRQ, ==,
                     IOC3_SERIAL_IRQ);
+    g_assert_cmphex(octane_cpu_cause(from) & SUPERIO_CAUSE, ==,
+                    SUPERIO_CAUSE);
 
     qtest_qmp_assert_success(to,
         "{'execute':'migrate-incoming', 'arguments':{'uri':%s}}", uri);
@@ -844,6 +869,15 @@ static void test_migration_state(void)
     g_assert_cmphex(qtest_readq(to, HEART + 0x10000), ==, SUPERIO_VECTOR);
     g_assert_cmphex(qtest_readq(to, HEART + 0x10030) & SUPERIO_VECTOR, ==,
                     SUPERIO_VECTOR);
+    g_assert_cmphex(octane_cpu_cause(to) & SUPERIO_CAUSE, ==,
+                    SUPERIO_CAUSE);
+    qtest_writeq(to, HEART + 0x10000, 0);
+    g_assert_cmphex(octane_cpu_cause(to) & SUPERIO_CAUSE, ==, 0);
+    g_assert_cmphex(qtest_readq(to, HEART + 0x10030) & SUPERIO_VECTOR, ==,
+                    SUPERIO_VECTOR);
+    qtest_writeq(to, HEART + 0x10000, SUPERIO_VECTOR);
+    g_assert_cmphex(octane_cpu_cause(to) & SUPERIO_CAUSE, ==,
+                    SUPERIO_CAUSE);
     g_assert_cmphex(qtest_readl(to, CFG(2) + 0x10), ==, 0x10000000);
     g_assert_cmphex(qtest_readl(to, CFG(3)), ==, RAD_PCI_ID);
     g_assert_cmphex(qtest_readl(to, CFG(3) + 8) & 0xff, ==, RAD_REVISION);
@@ -858,6 +892,7 @@ static void test_migration_state(void)
                     SUPERIO_PIN);
     g_assert_cmphex(qtest_readb(to, UART_A), ==, 0xa5);
     g_assert_cmphex(qtest_readl(to, IOC3 + 0x1c) & IOC3_SERIAL_IRQ, ==, 0);
+    g_assert_cmphex(octane_cpu_cause(to) & SUPERIO_CAUSE, ==, 0);
     g_assert_cmphex(qtest_readl(to, FLASH), ==, 0x12345678);
 
     qtest_system_reset(to);
