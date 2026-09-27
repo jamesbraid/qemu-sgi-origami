@@ -70,6 +70,9 @@
 #define OHCI_RHS_LPSC              0x00010000
 #define OHCI_RHA_PSM               0x00000100
 #define OHCI_RHA_NPS               0x00000200
+/* The USS-312 datasheet's power-on root-hub descriptors, Tables 45 and 46. */
+#define OHCI_RHA_POWER_ON          0x10000902
+#define OHCI_RHB_POWER_ON          0x00060000
 #define OHCI_PORT_CSC              0x00010000
 #define OHCI_RH_DESCRIPTOR_A_NDP   0x000000ff
 #define OHCI_MODEL_REVISION_1_0    0x00000010
@@ -510,11 +513,12 @@ static void test_usb_reset_keeps_root_hub_descriptor_b(void)
     g_assert_cmphex(lucent_ohci_readl(&ohci, OHCI_HC_RH_DESCRIPTOR_B), ==,
                     0x20006);
 
-    /* The device's own reset is a hardware reset and clears it. */
+    /* The device's own reset returns it to its power-on value. */
     qtest_qmp_assert_success(ohci.qts, "{'execute': 'system_reset'}");
     qtest_qmp_eventwait(ohci.qts, "RESET");
     lucent_ohci_map_bar(&ohci);
-    g_assert_cmphex(lucent_ohci_readl(&ohci, OHCI_HC_RH_DESCRIPTOR_B), ==, 0);
+    g_assert_cmphex(lucent_ohci_readl(&ohci, OHCI_HC_RH_DESCRIPTOR_B), ==,
+                    OHCI_RHB_POWER_ON);
 
     lucent_ohci_close(&ohci);
 }
@@ -535,7 +539,7 @@ static void test_root_hub_descriptor_a_is_writable(void)
     lucent_ohci_map_bar(&ohci);
 
     g_assert_cmphex(lucent_ohci_readl(&ohci, OHCI_HC_RH_DESCRIPTOR_A), ==,
-                    0x202);
+                    OHCI_RHA_POWER_ON);
     lucent_ohci_writel(&ohci, OHCI_HC_RH_DESCRIPTOR_A, 0);
     g_assert_cmphex(lucent_ohci_readl(&ohci, OHCI_HC_RH_DESCRIPTOR_A), ==,
                     0x002);
@@ -650,6 +654,61 @@ static void test_port_power_without_switching(void)
     /* Switching again: nothing reached the port while it was unswitched. */
     lucent_ohci_writel(&ohci, OHCI_HC_RH_DESCRIPTOR_A, OHCI_RHA_PSM);
     g_assert_cmphex(lucent_ohci_port_power(&ohci, 0), ==, 0);
+
+    lucent_ohci_close(&ohci);
+}
+
+/*
+ * The part's own power-on root-hub descriptors, from the Lucent USS-312
+ * datasheet (Advance Data Sheet Rev. 5, March 2000): HcRhDescriptorA
+ * 0x10000902 (Table 45: two ports, per-port power switching and
+ * over-current reporting, PowerOnToPowerGoodTime 10h) and HcRhDescriptorB
+ * 0x00060000 (Table 46: both ports masked), with every port unpowered
+ * (Table 48). A HostControllerReset leaves the root hub alone (OpenHCI
+ * 1.0a section 7.1.3); entering USBRESET resets it, and HcRhDescriptorA
+ * with it. The Origin 300 IO-8 board test requires both ports unpowered
+ * after a controller reset and USBRESET.
+ */
+static void test_root_hub_power_on_values(void)
+{
+    LucentOHCI ohci = { 0 };
+
+    lucent_ohci_open(&ohci, lucent_ohci_start("lucent-ohci", ""));
+    lucent_ohci_map_bar(&ohci);
+
+    g_assert_cmphex(lucent_ohci_readl(&ohci, OHCI_HC_RH_DESCRIPTOR_A), ==,
+                    OHCI_RHA_POWER_ON);
+    g_assert_cmphex(lucent_ohci_readl(&ohci, OHCI_HC_RH_DESCRIPTOR_B), ==,
+                    OHCI_RHB_POWER_ON);
+    g_assert_cmphex(lucent_ohci_port_power(&ohci, 0), ==, 0);
+    g_assert_cmphex(lucent_ohci_port_power(&ohci, 1), ==, 0);
+
+    lucent_ohci_writel(&ohci, OHCI_HC_RH_DESCRIPTOR_A, OHCI_RHA_PSM);
+    lucent_ohci_writel(&ohci, OHCI_HC_RH_PORT_STATUS(0), OHCI_PORT_PPS);
+    lucent_ohci_writel(&ohci, OHCI_HC_COMMAND_STATUS,
+                       OHCI_COMMAND_STATUS_HCR);
+    g_assert_cmphex(lucent_ohci_readl(&ohci, OHCI_HC_RH_DESCRIPTOR_A), ==,
+                    OHCI_RHA_PSM | 2);
+    g_assert_cmphex(lucent_ohci_port_power(&ohci, 0), ==, OHCI_PORT_PPS);
+
+    /* The controller reset left it in USBSUSPEND, so USBRESET is a change. */
+    lucent_ohci_writel(&ohci, OHCI_HC_CONTROL, 0);
+    g_assert_cmphex(lucent_ohci_readl(&ohci, OHCI_HC_RH_DESCRIPTOR_A), ==,
+                    OHCI_RHA_POWER_ON);
+    g_assert_cmphex(lucent_ohci_port_power(&ohci, 0), ==, 0);
+
+    lucent_ohci_writel(&ohci, OHCI_HC_RH_DESCRIPTOR_A, OHCI_RHA_PSM);
+    lucent_ohci_writel(&ohci, OHCI_HC_RH_DESCRIPTOR_B, 0);
+    lucent_ohci_writel(&ohci, OHCI_HC_RH_STATUS, OHCI_RHS_LPSC);
+    g_assert_cmphex(lucent_ohci_port_power(&ohci, 1), ==, OHCI_PORT_PPS);
+    qtest_qmp_assert_success(ohci.qts, "{'execute': 'system_reset'}");
+    qtest_qmp_eventwait(ohci.qts, "RESET");
+    lucent_ohci_map_bar(&ohci);
+    g_assert_cmphex(lucent_ohci_readl(&ohci, OHCI_HC_RH_DESCRIPTOR_A), ==,
+                    OHCI_RHA_POWER_ON);
+    g_assert_cmphex(lucent_ohci_readl(&ohci, OHCI_HC_RH_DESCRIPTOR_B), ==,
+                    OHCI_RHB_POWER_ON);
+    g_assert_cmphex(lucent_ohci_port_power(&ohci, 1), ==, 0);
 
     lucent_ohci_close(&ohci);
 }
@@ -920,6 +979,8 @@ int main(int argc, char **argv)
                    test_usb_reset_keeps_root_hub_descriptor_b);
     qtest_add_func("/lucent-ohci/root-hub-descriptor-a-is-writable",
                    test_root_hub_descriptor_a_is_writable);
+    qtest_add_func("/lucent-ohci/root-hub-power-on-values",
+                   test_root_hub_power_on_values);
     qtest_add_func("/lucent-ohci/port-power-per-port-switching",
                    test_port_power_per_port_switching);
     qtest_add_func("/lucent-ohci/port-power-global-switching",
