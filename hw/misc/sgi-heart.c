@@ -218,20 +218,20 @@ static const MemoryRegionOps heart_absent_ops = {
 static void heart_map_bank(SGIHeartState *s, unsigned bank)
 {
     uint32_t d = s->descriptor[bank];
-    MemoryRegion *system = get_system_memory();
+    MemoryRegion *memory = s->cpu_memory ?: get_system_memory();
     uint64_t base = HEART_RAM_BASE + (uint64_t)(d & 0x1ff) * HEART_UNIT;
     unsigned units = (d >> 16 & 0x3f) + 1;
 
     memory_region_transaction_begin();
     for (unsigned unit = 0; unit < HEART_MAX_UNITS; unit++) {
         if (s->mapped[bank][unit]) {
-            memory_region_del_subregion(system, &s->views[bank][unit]);
+            memory_region_del_subregion(memory, &s->views[bank][unit]);
             s->mapped[bank][unit] = false;
         }
     }
     if (d & 0x80000000U) {
         for (unsigned unit = 0; unit < units; unit++) {
-            memory_region_add_subregion_overlap(system,
+            memory_region_add_subregion_overlap(memory,
                 base + (uint64_t)unit * HEART_UNIT,
                 &s->views[bank][unit], bank + 1);
             s->mapped[bank][unit] = true;
@@ -454,6 +454,8 @@ static void heart_realize(DeviceState *dev, Error **errp)
 }
 
 static const Property heart_properties[] = {
+    DEFINE_PROP_LINK("cpu-memory", SGIHeartState, cpu_memory,
+                     TYPE_MEMORY_REGION, MemoryRegion *),
     DEFINE_PROP_UINT64("bank0-size", SGIHeartState, capacity[0], 0),
     DEFINE_PROP_UINT64("bank1-size", SGIHeartState, capacity[1], 0),
     DEFINE_PROP_UINT64("bank2-size", SGIHeartState, capacity[2], 0),

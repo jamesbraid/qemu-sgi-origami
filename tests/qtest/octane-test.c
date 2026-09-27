@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /* Graphics-free Octane profile: synthetic RAM and raw flash policy. */
 #include "qemu/osdep.h"
+#include "qemu/bswap.h"
 #include "libqtest.h"
 #include "sgi-migrate.h"
 #include "qobject/qdict.h"
@@ -15,6 +16,7 @@
 #define OCTANE_LONG_BRIDGE (15ULL << 36)
 #define FLASH (BRIDGE + 0xc00000)
 #define RAM 0x20000000ULL
+#define ATTR0 (1ULL << 40)
 #define UNIT 0x02000000ULL
 #define BANK0 0x80030000U
 #define WIDE 0x80070000U
@@ -110,9 +112,14 @@ static void test_widgets_and_memory(void)
     qtest_writel(qts, HEART + 0x20, 0);
     g_assert_cmphex(qtest_readl(qts, HEART + 0x20), ==, 0);
     g_assert_cmpuint(qtest_readq_tx(qts, RAM, &missing), !=, MEMTX_OK);
+    g_assert_cmpuint(qtest_readq_tx(qts, ATTR0 + RAM, &missing), !=,
+                     MEMTX_OK);
     qtest_system_reset(qts);
     g_assert_cmphex(qtest_readl(qts, HEART + 0x20), ==, BANK0);
+    g_assert_cmphex(qtest_readl(qts, ATTR0 + HEART + 0x20), ==, BANK0);
     g_assert_cmphex(qtest_readq(qts, RAM), ==, 0x0123456789abcdefULL);
+    g_assert_cmphex(qtest_readq(qts, ATTR0 + RAM), ==,
+                    0x0123456789abcdefULL);
     qtest_quit(qts);
 }
 
@@ -300,6 +307,75 @@ static void test_scsi_dma_to_heart_ram(void)
     qtest_quit(qts);
 }
 
+static void test_uncached_attribute_zero(void)
+{
+    static const uint32_t code[] = {
+        0x400a6000, 0x354a0080, 0x408a6000, /* Status.KX = 1 */
+        0, 0, 0, 0,
+        0x3c089000, 0x0008403c,             /* t0 = 0x9000000000000000 */
+        0x3c091f60, 0x35290028, 0x01094025, /* t0 |= IOC3 + 0x28 */
+        0x8d0b0000,                         /* lw t3, 0(t0) */
+        0x3c0c9600, 0x000c603c,             /* attr 3, ordinary RAM */
+        0x3c0d2000, 0x35ad4000, 0x018d6025,
+        0xad8b0000,                         /* RAM[0x4000] = t3 */
+        0x1000ffff, 0,
+    };
+    static const uint32_t handler[] = {
+        0x3c0c9600, 0x000c603c, 0x3c0d2000, 0x35ad4000,
+        0x018d6025, 0x340bdead, 0xad8b0000,
+        0x1000ffff, 0,
+    };
+    uint8_t image[0x400];
+    g_autofree char *path = NULL;
+    g_autoptr(GError) error = NULL;
+    QTestState *qts;
+    uint32_t result;
+    uint32_t missing;
+    int fd;
+
+    memset(image, 0xff, sizeof(image));
+    for (unsigned i = 0; i < G_N_ELEMENTS(code); i++) {
+        stl_be_p(image + 4 * i, code[i]);
+    }
+    for (unsigned i = 0; i < G_N_ELEMENTS(handler); i++) {
+        stl_be_p(image + 0x380 + 4 * i, handler[i]);
+    }
+    fd = g_file_open_tmp("octane-xkphys-XXXXXX", &path, &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(fd, >=, 0);
+    close(fd);
+    g_assert_true(g_file_set_contents(path, (const char *)image,
+                                      sizeof(image), &error));
+    g_assert_no_error(error);
+    qts = qtest_initf("-M octane -m 128M -cpu R10000 -bios %s "
+                      "-accel tcg,thread=single -S", path);
+    g_assert_cmpint(unlink(path), ==, 0);
+
+    qtest_writel(qts, CFG(2) + 0x10, 0x10000000);
+    qtest_writel(qts, CFG(2) + 0x04, 0x00000002);
+    qtest_writel(qts, BRIDGE + 0x200 + 8 * 2 + 4, 0x1100);
+    g_assert_cmphex(qtest_readl(qts, IOC3 + 0x28), ==, 0x00400000);
+    qtest_writel(qts, RAM + 0x4000, 0xdeadbeef);
+    qtest_qmp_assert_success(qts, "{'execute':'cont'}");
+    for (unsigned i = 0; i < 10000; i++) {
+        result = qtest_readl(qts, RAM + 0x4000);
+        if (result != 0xdeadbeef) {
+            break;
+        }
+        g_usleep(1000);
+    }
+    g_assert_cmphex(result, ==, 0x00400000);
+    g_assert_cmphex(qtest_readl(qts, ATTR0 + IOC3 + 0x28), ==,
+                    qtest_readl(qts, IOC3 + 0x28));
+    g_assert_cmphex(qtest_readl(qts, ATTR0 + FLASH), ==,
+                    qtest_readl(qts, FLASH));
+    qtest_writel(qts, ATTR0 + RAM + 0x5000, 0x12345678);
+    g_assert_cmphex(qtest_readl(qts, RAM + 0x5000), ==, 0x12345678);
+    g_assert_cmpuint(qtest_readl_tx(qts, ATTR0 + 0x30000000, &missing), !=,
+                     MEMTX_OK);
+    qtest_quit(qts);
+}
+
 static void test_heart_interrupt_levels(void)
 {
     QTestState *qts = octane_start();
@@ -440,6 +516,7 @@ static void test_reset_state(void)
 
     qtest_system_reset(qts);
     g_assert_cmphex(qtest_readl(qts, HEART + 0x20), ==, BANK0);
+    g_assert_cmphex(qtest_readl(qts, ATTR0 + HEART + 0x20), ==, BANK0);
     g_assert_cmphex(qtest_readq(qts, HEART + 0x10000), ==, 0);
     g_assert_cmphex(qtest_readq(qts, HEART + 0x10030), ==, 0);
     g_assert_cmphex(qtest_readl(qts, BRIDGE_REG(0x108)), ==, 0);
@@ -448,7 +525,9 @@ static void test_reset_state(void)
     qtest_writel(qts, CFG(2) + 0x04, 0x00000002);
     qtest_writel(qts, BRIDGE + 0x200 + 8 * 2 + 4, 0x1100);
     g_assert_cmphex(qtest_readb(qts, UART_A + 7), ==, 0);
+    g_assert_cmphex(qtest_readb(qts, ATTR0 + UART_A + 7), ==, 0);
     g_assert_cmphex(qtest_readl(qts, FLASH), ==, 0x12345678);
+    g_assert_cmphex(qtest_readl(qts, ATTR0 + FLASH), ==, 0x12345678);
     g_assert_cmphex(octane_cpu_pc(qts), ==, 0xffffffffbfc00000ULL);
     g_assert_cmphex(octane_cpu_cause(qts) & 0x400, ==, 0);
     qtest_quit(qts);
@@ -499,6 +578,8 @@ static void test_migration_state(void)
 
     g_assert_cmphex(qtest_readl(to, HEART + 0x20), ==, WIDE);
     g_assert_cmphex(qtest_readq(to, RAM), ==, 0x0123456789abcdefULL);
+    g_assert_cmphex(qtest_readq(to, ATTR0 + RAM), ==,
+                    0x0123456789abcdefULL);
     g_assert_cmphex(qtest_readq(to, RAM + 4 * UNIT + 8), ==,
                     0xfedcba9876543210ULL);
     g_assert_cmphex(qtest_readq(to, HEART + 0x10000), ==, 1u << 3);
@@ -507,6 +588,7 @@ static void test_migration_state(void)
     g_assert_cmphex(octane_cpu_cause(to) & 0x400, ==, 0x400);
     g_assert_cmphex(qtest_readl(to, CFG(2) + 0x10), ==, 0x10000000);
     g_assert_cmphex(qtest_readb(to, UART_A + 7), ==, 0x5a);
+    g_assert_cmphex(qtest_readb(to, ATTR0 + UART_A + 7), ==, 0x5a);
     g_assert_cmphex(qtest_readb(to, UART_A + 5) & 1, ==, 1);
     g_assert_cmphex(qtest_readl(to, IOC3 + 0x1c) & IOC3_SERIAL_IRQ, ==,
                     IOC3_SERIAL_IRQ);
@@ -541,6 +623,8 @@ int main(int argc, char **argv)
     qtest_add_func("/octane/pci-bar-separation", test_pci_bar_separation);
     qtest_add_func("/octane/scsi-dma-to-heart-ram",
                    test_scsi_dma_to_heart_ram);
+    qtest_add_func("/octane/uncached-attribute-zero",
+                   test_uncached_attribute_zero);
     qtest_add_func("/octane/serial-a-loopback", test_serial_a_loopback);
     qtest_add_func("/octane/serial-a-chardev", test_serial_a_chardev);
     qtest_add_func("/octane/serial-a-interrupt-route",
