@@ -696,6 +696,26 @@ MemTxResult qtest_writeq_tx(QTestState *s, uint64_t addr, uint64_t value);
 MemTxResult qtest_readq_tx(QTestState *s, uint64_t addr, uint64_t *value);
 
 /**
+ * qtest_writel_tx:
+ * @s: #QTestState instance to operate on.
+ * @addr: Guest address to write to.
+ * @value: Value being written.
+ *
+ * Writes a 32-bit value and returns its memory transaction result.
+ */
+MemTxResult qtest_writel_tx(QTestState *s, uint64_t addr, uint32_t value);
+
+/**
+ * qtest_readl_tx:
+ * @s: #QTestState instance to operate on.
+ * @addr: Guest address to read from.
+ * @value: Receives the 32-bit value.
+ *
+ * Reads a 32-bit value and returns its memory transaction result.
+ */
+MemTxResult qtest_readl_tx(QTestState *s, uint64_t addr, uint32_t *value);
+
+/**
  * qtest_memread:
  * @s: #QTestState instance to operate on.
  * @addr: Guest address to read from.
