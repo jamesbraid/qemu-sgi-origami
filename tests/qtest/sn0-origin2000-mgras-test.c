@@ -737,14 +737,9 @@ static void test_repp_status_byte_writes(void)
 }
 
 /*
- * XMAP_BUF_SELECT (docs/datasheets/mgras-hq4.md, "Swap scheduling") takes
- * only a word write, indexed by REG_XMAP_INDEX the same way as
- * REG_XMAP_MAIN_MODE. No public driver source ever reads this port back
- * (see the header comment above SGI_MGRAS_XMAP_BUF_SELECT), so this
- * proves the accepted write at two window-select indices, that other
- * widths still raise the width exception, and that a read still errors --
- * without touching swap/retrace behavior, which lives in
- * hw/misc/sgi-mgras-raster.c.
+ * XMAP_BUF_SELECT (docs/datasheets/mgras-hq4.md, "Swap scheduling") is a
+ * word register indexed by REG_XMAP_INDEX the same way as
+ * REG_XMAP_MAIN_MODE. Other widths raise the width exception.
  */
 static void test_xmap_buf_select_write(void)
 {
@@ -767,8 +762,39 @@ static void test_xmap_buf_select_write(void)
     mgras_assert_width_error(qts, REG_XMAP_BUF_SELECT);
 
     mgras_reset();
-    mgras_read_width(qts, REG_XMAP_BUF_SELECT, 4);
+    mgras_read_width(qts, REG_XMAP_BUF_SELECT, 1);
     mgras_assert_width_error(qts, REG_XMAP_BUF_SELECT);
+}
+
+/*
+ * SGI's Octane IDE XMAP test (mg_xmapdcbreg, ide.IP30 6.5.30 at
+ * 0xa80000002086907c) writes each of eight patterns to XMAP_BUF_SELECT
+ * and reads it back: all 32 bits under index byte 0, which it calls the
+ * main buffer select, and the low 8 bits under index byte 4, the overlay
+ * buffer select. A mismatch fails the board.
+ */
+static void test_xmap_buf_select_reads_back(void)
+{
+    static const uint32_t patterns[] = {
+        0x00000001, 0x00000002, 0x00000004, 0x00000008,
+        0x10000000, 0x20000000, 0x40000000, 0x80000000,
+    };
+
+    mgras_reset();
+    for (int i = 0; i < ARRAY_SIZE(patterns); i++) {
+        qtest_writeb(qts, REG_XMAP_INDEX, 0);
+        qtest_writel(qts, REG_XMAP_BUF_SELECT, patterns[i]);
+        qtest_writeb(qts, REG_XMAP_INDEX, 0);
+        g_assert_cmphex(qtest_readl(qts, REG_XMAP_BUF_SELECT), ==,
+                        patterns[i]);
+
+        qtest_writeb(qts, REG_XMAP_INDEX, 4);
+        qtest_writel(qts, REG_XMAP_BUF_SELECT, patterns[i] & 0xff);
+        qtest_writeb(qts, REG_XMAP_INDEX, 4);
+        g_assert_cmphex(qtest_readl(qts, REG_XMAP_BUF_SELECT) & 0xff, ==,
+                        patterns[i] & 0xff);
+    }
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
 }
 
 typedef struct SIVisualRegisterWidth {
@@ -6072,6 +6098,8 @@ int main(int argc, char **argv)
                    test_repp_sync_handshake);
     qtest_add_func("sn0/origin2000/mgras/repp-status-byte-writes",
                    test_repp_status_byte_writes);
+    qtest_add_func("sn0/origin2000/mgras/xmap-buf-select-reads-back",
+                   test_xmap_buf_select_reads_back);
     qtest_add_func("sn0/origin2000/mgras/xmap-buf-select-write",
                    test_xmap_buf_select_write);
     qtest_add_func("sn0/origin2000/mgras/visual-register-read-widths",
