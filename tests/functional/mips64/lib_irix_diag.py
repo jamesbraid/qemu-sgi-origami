@@ -75,9 +75,10 @@ REASONS = {
         'the IO8 IOC3\'s parallel function has no rear-panel connector '
         '(007-4365-002) and IRIX lists no parallel port',
     'four-node-relaunch':
-        'a reboot and relaunch of the four-node module would add 560 to '
-        '900s of boot to a row that already takes most of a nightly job; '
-        'the one-node row covers the same BaseIO Timekeeper model',
+        'a reboot and relaunch measured 316s (carrier) and 622s (shoehorn) '
+        'more on rows already near their budget; the one-node row covers the '
+        'same BaseIO Timekeeper model, and no test covers a four-node '
+        'warm reset through the routers',
     'parallel-own-history':
         'the disk was installed on an Origin 200, so its parallel-port '
         'history already names this port and clearing it renumbers nothing'
