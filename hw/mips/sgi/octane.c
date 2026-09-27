@@ -39,6 +39,71 @@
 #define OCTANE_HEART_BANK0_DESC 0x80030000U
 #define OCTANE_PHYSICAL_SPAN (1ULL << 40)
 #define OCTANE_ATTR0_BASE (1ULL << 40)
+#define OCTANE_MPCONF_BASE 0x600
+#define OCTANE_MPCONF_SIZE 0x80
+
+typedef struct OctaneMachineState {
+    MachineState parent;
+    MemoryRegion mpconf_region;
+    /* Synthetic; physical backing and reset contents are unknown. */
+    uint8_t mpconf[OCTANE_MPCONF_SIZE];
+} OctaneMachineState;
+
+static bool octane_mpconf_accept(hwaddr addr, unsigned size, bool write)
+{
+    if ((size == 2 || size == 4 || size == 8) &&
+        !(addr & (size - 1)) && addr <= OCTANE_MPCONF_SIZE - size) {
+        return true;
+    }
+    qemu_log_mask(LOG_GUEST_ERROR,
+                  "octane: unsupported %u-byte MPCONF %s at physical "
+                  "0x%" HWADDR_PRIx "\n", size, write ? "write" : "read",
+                  OCTANE_MPCONF_BASE + addr);
+    return false;
+}
+
+static MemTxResult octane_mpconf_read(void *opaque, hwaddr addr,
+                                     uint64_t *value, unsigned size,
+                                     MemTxAttrs attrs)
+{
+    OctaneMachineState *s = opaque;
+    uint64_t result = 0;
+
+    if (!octane_mpconf_accept(addr, size, false)) {
+        *value = 0;
+        return MEMTX_ERROR;
+    }
+    for (unsigned i = 0; i < size; i++) {
+        result = (result << 8) | s->mpconf[addr + i];
+    }
+    *value = result;
+    return MEMTX_OK;
+}
+
+static MemTxResult octane_mpconf_write(void *opaque, hwaddr addr,
+                                      uint64_t value, unsigned size,
+                                      MemTxAttrs attrs)
+{
+    OctaneMachineState *s = opaque;
+
+    if (!octane_mpconf_accept(addr, size, true)) {
+        return MEMTX_ERROR;
+    }
+    for (unsigned i = 0; i < size; i++) {
+        s->mpconf[addr + i] = value >> (8 * (size - i - 1));
+    }
+    return MEMTX_OK;
+}
+
+static const MemoryRegionOps octane_mpconf_ops = {
+    .read_with_attrs = octane_mpconf_read,
+    .write_with_attrs = octane_mpconf_write,
+    .endianness = DEVICE_BIG_ENDIAN,
+    .valid = { .min_access_size = 1, .max_access_size = 8,
+               .unaligned = true },
+    .impl = { .min_access_size = 1, .max_access_size = 8,
+              .unaligned = true },
+};
 
 static MemTxResult octane_physical_zero_read(void *opaque, hwaddr addr,
                                              uint64_t *value, unsigned size,
@@ -101,10 +166,12 @@ static const MemoryRegionOps octane_flash_ops = {
 
 static void octane_reset(MachineState *machine, ResetType type)
 {
+    OctaneMachineState *s = (OctaneMachineState *)machine;
     uint8_t descriptor[4];
     CPUState *cpu;
 
     qemu_devices_reset(type);
+    memset(s->mpconf, 0, sizeof(s->mpconf));
     stl_be_p(descriptor, OCTANE_HEART_BANK0_DESC);
     if (address_space_write(&address_space_memory,
                             OCTANE_HEART_REGS + 0x20,
@@ -150,6 +217,7 @@ static void octane_fit_pci(MachineState *machine, SGIBridgeState *bridge)
 
 static void octane_init(MachineState *machine)
 {
+    OctaneMachineState *s = (OctaneMachineState *)machine;
     DeviceState *heart = qdev_new(TYPE_SGI_HEART);
     DeviceState *xbow = qdev_new(TYPE_SGI_XBOW);
     DeviceState *bridge = qdev_new(TYPE_SGI_BRIDGE);
@@ -214,6 +282,11 @@ static void octane_init(MachineState *machine)
                           &octane_physical_zero_ops, NULL,
                           "octane.physical-zero", 8);
     memory_region_add_subregion(physical, 0, physical_zero);
+    memory_region_init_io(&s->mpconf_region, OBJECT(machine),
+                          &octane_mpconf_ops, s, "octane.mpconf",
+                          OCTANE_MPCONF_SIZE);
+    memory_region_add_subregion(physical, OCTANE_MPCONF_BASE,
+                                &s->mpconf_region);
     memory_region_init_alias(attr0, OBJECT(machine), "octane.attr0",
                              physical, 0, OCTANE_PHYSICAL_SPAN);
     memory_region_add_subregion(system, OCTANE_ATTR0_BASE, attr0);
@@ -303,6 +376,7 @@ static void octane_class_init(ObjectClass *oc, const void *data)
 static const TypeInfo octane_machine = {
     .name = MACHINE_TYPE_NAME("octane"),
     .parent = TYPE_MACHINE,
+    .instance_size = sizeof(OctaneMachineState),
     .class_init = octane_class_init,
 };
 
