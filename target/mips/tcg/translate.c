@@ -14841,6 +14841,9 @@ static bool decode_opc_legacy(CPUMIPSState *env, DisasContext *ctx)
         check_insn(ctx, ISA_MIPS4 | ISA_MIPS_R1 | INSN_R5900);
         check_mips4_enabled(ctx);
         gen_break_ll_link(ctx);
+        if (ctx->insn_flags & INSN_R10K) {
+            gen_pref_r10k(ctx, rt, rs, imm);
+        }
         /* Treat as NOP. */
         break;
 
@@ -15089,6 +15092,9 @@ static bool decode_opc_legacy(CPUMIPSState *env, DisasContext *ctx)
                 check_insn(ctx, ISA_MIPS4 | ISA_MIPS_R2);
                 check_mips4_enabled(ctx);
                 gen_break_ll_link(ctx);
+                if (ctx->insn_flags & INSN_R10K) {
+                    gen_prefx_r10k(ctx, rd, rs, rt);
+                }
                 /* Treat as NOP. */
                 break;
             case OPC_ALNV_PS:

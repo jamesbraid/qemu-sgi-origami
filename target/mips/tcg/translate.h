@@ -169,6 +169,8 @@ void gen_cop2_exception_r10k(DisasContext *ctx);
 bool r10k_cop1_fmt_defined(uint32_t opcode);
 void gen_movcf_s_r10k(DisasContext *ctx, int fs, int fd, int cc, int tf);
 void gen_movzn_s_r10k(DisasContext *ctx, int fs, int fd, int ft, bool on_zero);
+void gen_pref_r10k(DisasContext *ctx, int hint, int base, int16_t offset);
+void gen_prefx_r10k(DisasContext *ctx, int hint, int base, int index);
 
 /*
  * The R10000 family's implementation-dependent coprocessor 0 registers,

@@ -82,6 +82,7 @@ static uint32_t rtype(int rs, int rt, int rd, int sa, unsigned funct)
 #define LD(_rt, _off, _base)    itype(0x37, _base, _rt, _off)
 #define SD(_rt, _off, _base)    itype(0x3f, _base, _rt, _off)
 #define CACHE(_op, _off, _base) itype(0x2f, _base, _op, _off)
+#define PREF(_hint, _off, _base) itype(0x33, _base, _hint, _off)
 #define DSLL32(_rd, _rt)        rtype(0, _rt, _rd, 0, 0x3c)
 #define DSRL32(_rd, _rt)        rtype(0, _rt, _rd, 0, 0x3e)
 #define DADDU(_rd, _rs, _rt)    rtype(_rs, _rt, _rd, 0, 0x2d)
@@ -372,6 +373,36 @@ static void test_flushed_line_when_busy(void)
     finish(s, prom);
 }
 
+static void emit_prefetch_a(Program *p)
+{
+    emit(p, PREF(6, 0, R_T0));
+    emit_publish(p, 0x08);
+    emit(p, SD(R_ZERO, 0, R_T0));
+    emit_publish(p, 0x10);
+    emit_flush(p);
+    emit(p, PREF(1, 0, R_T0));
+    emit_publish(p, 0x18);
+}
+
+static void test_prefetch(void)
+{
+    char *prom;
+    QTestState *s;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+    s = run_prom(emit_prefetch_a, emit_nothing, &prom);
+    /* A prefetch with a load hint reads the line shared. */
+    g_assert_cmphex(result(s, 0x08) & DIRECTORY_FIELDS, ==, SHARED(0x1));
+    /* A store to the shared copy upgrades it. */
+    g_assert_cmphex(result(s, 0x10) & DIRECTORY_FIELDS, ==, POINTER(0));
+    /* A prefetch with a store hint reads the line exclusive. */
+    g_assert_cmphex(result(s, 0x18) & DIRECTORY_FIELDS, ==, POINTER(0));
+    finish(s, prom);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -380,5 +411,6 @@ int main(int argc, char **argv)
     qtest_add_func("sn1/directory-state/flushes", test_flushes);
     qtest_add_func("sn1/directory-state/flushed-line-when-busy",
                    test_flushed_line_when_busy);
+    qtest_add_func("sn1/directory-state/prefetch", test_prefetch);
     return g_test_run();
 }
