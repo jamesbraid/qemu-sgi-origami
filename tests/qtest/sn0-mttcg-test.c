@@ -1472,11 +1472,13 @@ static void test_unmask_by_eret_delivers(const void *data)
 #define GH_LATE_CAUSE_OFF   0x280
 #define GH_PAST_COUNT_OFF   0x2a0
 #define GH_PAST_CAUSE_OFF   0x2c0
+#define GH_DISARM_PRE_OFF   0x2e0
 #define GH_PEER_OFF         (PROGRESS_OFF + 8)
 #define GH_COMPARE          1000000u
 #define GH_HUB_COUNT        (HUB_LOCAL + 0x030100)
 
 static unsigned int gh_break_pos;
+static bool gh_intervening_insn;
 
 static void build_gdb_peer_hold(GuestImage *img)
 {
@@ -1490,29 +1492,30 @@ static void build_gdb_peer_hold(GuestImage *img)
     emit_wait_ge(img, R_T3, GH_PEER_OFF);
     emit_li(img, R_T3, GH_COMPARE);
     emit_mtc0(img, R_T3, CP0_COMPARE, 0);
+    emit_li(img, R_T4, 1000);
     emit_mtc0(img, R_ZERO, CP0_COUNT, 0);
     gh_break_pos = img->pos;
+    if (gh_intervening_insn) {
+        emit_nop(img);
+    }
+    emit_mtc0(img, R_T4, CP0_COMPARE, 0);
     emit_ehb(img);
     emit_mfc0(img, R_T3, CP0_COUNT, 0);
     emit_publish(img, R_T3, GH_COUNT_OFF);
     emit_mfc0(img, R_T3, CP0_CAUSE, 0);
     emit_publish(img, R_T3, GH_CAUSE_OFF);
 
-    /* The held CPU has already passed 1000; Compare clears the old IP7. */
-    emit_li(img, R_T3, 1000);
-    emit_mtc0(img, R_T3, CP0_COMPARE, 0);
-    emit_ehb(img);
+    /* The held CPU has passed 1000 before the Compare write executes. */
     emit_mfc0(img, R_T3, CP0_COUNT, 0);
     emit_publish(img, R_T3, GH_LATE_COUNT_OFF);
     emit_mfc0(img, R_T3, CP0_CAUSE, 0);
     emit_publish(img, R_T3, GH_LATE_CAUSE_OFF);
 
-    /* Also exercise a past Compare write during uninterrupted execution. */
-    emit_li(img, R_T4, 10000);
-    loop = img->pos;
-    emit_addiu(img, R_T4, R_T4, -1);
-    emit_bne(img, R_T4, R_ZERO, loop);
-    emit_nop(img);
+    /* Establish IP7 before checking that Count-1 disarms it. */
+    emit_li(img, R_T4, 1000);
+    emit_mtc0(img, R_T4, CP0_COUNT, 0);
+    emit_mfc0(img, R_T3, CP0_CAUSE, 0);
+    emit_publish(img, R_T3, GH_DISARM_PRE_OFF);
     emit_mfc0(img, R_T4, CP0_COUNT, 0);
     emit_publish(img, R_T4, GH_PAST_COUNT_OFF);
     emit_addiu(img, R_T4, R_T4, -1);
@@ -1603,6 +1606,8 @@ static void test_gdb_peer_hold(const void *data)
     uint64_t peer_before, peer_after, hub_before, hub_after;
     uint64_t peer_count_before, peer_count_after;
 
+    gh_intervening_insn = GPOINTER_TO_INT(data);
+
     if (!qtest_has_accel("tcg")) {
         g_test_skip("TCG is unavailable");
         return;
@@ -1675,18 +1680,20 @@ static void test_gdb_peer_hold(const void *data)
                    state_word(qts, GH_COUNT_OFF),
                    !!(state_word(qts, GH_CAUSE_OFF) & CAUSE_IP7));
     g_assert_cmpuint(state_word(qts, GH_COUNT_OFF), >=, GH_COMPARE);
-    g_assert_cmphex(state_word(qts, GH_CAUSE_OFF) & CAUSE_IP7, ==, CAUSE_IP7);
+    g_assert_cmphex(state_word(qts, GH_CAUSE_OFF) & CAUSE_IP7, ==, 0);
     g_test_message("late Compare=1000: Count %" PRIu64 ", IP7 %u; "
-                   "ordinary past Compare: Count %" PRIu64 ", IP7 %u",
+                   "Count-1: prior IP7 %u, Count %" PRIu64 ", IP7 %u",
                    state_word(qts, GH_LATE_COUNT_OFF),
                    !!(state_word(qts, GH_LATE_CAUSE_OFF) & CAUSE_IP7),
+                   !!(state_word(qts, GH_DISARM_PRE_OFF) & CAUSE_IP7),
                    state_word(qts, GH_PAST_COUNT_OFF),
                    !!(state_word(qts, GH_PAST_CAUSE_OFF) & CAUSE_IP7));
     g_assert_cmpuint(state_word(qts, GH_LATE_COUNT_OFF), >, 1000);
     g_assert_cmphex(state_word(qts, GH_LATE_CAUSE_OFF) & CAUSE_IP7, ==, 0);
-    g_assert_cmpuint(state_word(qts, GH_PAST_COUNT_OFF), >,
-                     state_word(qts, GH_LATE_COUNT_OFF));
+    g_assert_cmpuint(state_word(qts, GH_PAST_COUNT_OFF), >=, 1000);
     g_assert_cmphex(state_word(qts, GH_PAST_CAUSE_OFF) & CAUSE_IP7, ==, 0);
+    g_assert_cmphex(state_word(qts, GH_DISARM_PRE_OFF) & CAUSE_IP7,
+                    ==, CAUSE_IP7);
 
     close(gdb);
     qtest_quit(qts);
@@ -1743,7 +1750,10 @@ int main(int argc, char **argv)
                         test_masked_interrupt_stays_off_the_lock);
     qtest_add_data_func("mttcg/interrupt/unmask-by-eret-delivers", NULL,
                         test_unmask_by_eret_delivers);
-    qtest_add_data_func("mttcg/timer/gdb-peer-hold", NULL,
+    qtest_add_data_func("mttcg/timer/gdb-peer-hold-adjacent",
+                        GINT_TO_POINTER(0), test_gdb_peer_hold);
+    qtest_add_data_func("mttcg/timer/gdb-peer-hold-intervening",
+                        GINT_TO_POINTER(1),
                         test_gdb_peer_hold);
     return g_test_run();
 }
