@@ -33,6 +33,16 @@
 #define IOC3_MICROLAN (IOC3 + 0x30)
 #define IOC3_PIN_CONTROL_SET (IOC3 + 0x34)
 #define IOC3_ENET_MII_DATA_R (IOC3 + 0x14c)
+#define IOC3_ENET_MAC_CONTROL (IOC3 + 0x0f0)
+#define IOC3_ENET_INT_STATUS (IOC3 + 0x0f4)
+#define IOC3_ENET_INT_ENABLE (IOC3 + 0x0f8)
+#define IOC3_ENET_RX_RING_LO (IOC3 + 0x104)
+#define IOC3_ENET_RX_CONSUME (IOC3 + 0x10c)
+#define IOC3_ENET_RX_PRODUCE (IOC3 + 0x110)
+#define IOC3_ENET_RX_TIMER (IOC3 + 0x114)
+#define IOC3_ENET_TX_RING_LO (IOC3 + 0x12c)
+#define IOC3_ENET_TX_CONSUME (IOC3 + 0x130)
+#define IOC3_ENET_TX_PRODUCE (IOC3 + 0x134)
 #define RTC_INDEX (IOC3 + 0xa0000)
 #define RTC_DATA (IOC3 + 0xc0000)
 #define UART_A (IOC3 + 0x20178)
@@ -46,6 +56,10 @@
 #define RAD_PIN (1u << 3)
 #define SUPERIO_VECTOR (1u << 16)
 #define SUPERIO_CAUSE 0x800u
+#define ENET_PIN (1u << 2)
+#define ENET_VECTOR (1u << 17)
+#define ENET_INT_RX_TIMER (1u << 0)
+#define ENET_INT_TX_COMPLETE (1u << 22)
 #define SCSI0_WINDOW (BRIDGE + 0x200000)
 /* Bridge reverses the two halfword lanes within each 32-bit PCI word. */
 #define ISP_MAILBOX(n) (SCSI0_WINDOW + ((0x70 + 2 * (n)) ^ 2))
@@ -188,6 +202,87 @@ static void test_octane_ioc3_ethernet(bool octane2)
 static void test_octane_ethernet(void)
 {
     test_octane_ioc3_ethernet(false);
+}
+
+static uint32_t octane_cpu_cause(QTestState *qts);
+
+/* Model integration: Bridge DMA and IRQ routing, not an IP30 board contract. */
+static void test_octane_ioc3_ethernet_dma_and_interrupt(bool octane2)
+{
+    const uint32_t pci_base = 0xa0000000u;
+    const uint32_t tx_desc = 0x4000;
+    const uint32_t rx_ring = 0x8000;
+    const uint32_t rx_buf = 0xc000;
+    const uint32_t irq_bits = ENET_INT_RX_TIMER | ENET_INT_TX_COMPLETE;
+    uint8_t frame[60];
+    uint8_t landed[sizeof(frame)];
+    QTestState *qts = octane2 ? octane2_start_args("") : octane_start();
+
+    memset(frame, 0, sizeof(frame));
+    memset(frame, 0xff, 6);
+    for (unsigned int i = 6; i < sizeof(frame); i++) {
+        frame[i] = i;
+    }
+
+    qtest_writel(qts, CFG(2) + 0x10, 0x10000000);
+    qtest_writel(qts, CFG(2) + 0x04, 0x00000006);
+    qtest_writel(qts, BRIDGE + 0x200 + 8 * 2 + 4, 0x1100);
+    qtest_writel(qts, BRIDGE_REG(0x080), 8u << 20);
+
+    qtest_writel(qts, BRIDGE_REG(0x030), 8u << 16);
+    qtest_writel(qts, BRIDGE_REG(0x038), 0x80);
+    qtest_writel(qts, BRIDGE_REG(0x130 + 8 * 2), 17);
+    qtest_writel(qts, BRIDGE_REG(0x118), ENET_PIN);
+    qtest_writel(qts, BRIDGE_REG(0x108), ENET_PIN);
+    qtest_writeq(qts, HEART + 0x10000, ENET_VECTOR);
+
+    qtest_writeq(qts, RAM + rx_ring, pci_base + rx_buf);
+    qtest_writel(qts, IOC3_ENET_RX_RING_LO, pci_base + rx_ring);
+    qtest_writel(qts, IOC3_ENET_RX_TIMER, 0);
+    qtest_writel(qts, IOC3_ENET_RX_PRODUCE, 8 | (1u << 31));
+    qtest_writel(qts, IOC3_ENET_INT_ENABLE, irq_bits);
+    qtest_writel(qts, IOC3_ENET_MAC_CONTROL,
+                 (1u << 1) | (33u << 3) | (1u << 13) | (1u << 14) |
+                 (1u << 15) | (1u << 16) | (1u << 17));
+
+    qtest_writel(qts, RAM + tx_desc, sizeof(frame) | (1u << 12) |
+                 (1u << 16));
+    qtest_writel(qts, RAM + tx_desc + 4, sizeof(frame));
+    qtest_memwrite(qts, RAM + tx_desc + 24, frame, sizeof(frame));
+    qtest_writel(qts, IOC3_ENET_TX_RING_LO, pci_base + tx_desc);
+    qtest_writel(qts, IOC3_ENET_TX_PRODUCE, 128);
+
+    g_assert_cmphex(qtest_readl(qts, IOC3_ENET_TX_CONSUME), ==,
+                    128 | (1u << 31));
+    g_assert_cmphex(qtest_readl(qts, IOC3_ENET_RX_CONSUME), ==, 8);
+    g_assert_cmphex(qtest_readl(qts, RAM + rx_buf) & 0x80000000u, ==,
+                    0x80000000u);
+    qtest_memread(qts, RAM + rx_buf + 66, landed, sizeof(landed));
+    g_assert_cmpmem(landed, sizeof(landed), frame, sizeof(frame));
+    g_assert_cmphex(qtest_readl(qts, IOC3_ENET_INT_STATUS) & irq_bits, ==,
+                    irq_bits);
+    g_assert_cmphex(qtest_readl(qts, BRIDGE_REG(0x100)) & ENET_PIN, ==,
+                    ENET_PIN);
+    g_assert_cmphex(qtest_readq(qts, HEART + 0x10030) & ENET_VECTOR, ==,
+                    ENET_VECTOR);
+    g_assert_cmphex(octane_cpu_cause(qts) & SUPERIO_CAUSE, ==,
+                    SUPERIO_CAUSE);
+
+    qtest_writel(qts, IOC3_ENET_INT_STATUS, irq_bits);
+    g_assert_cmphex(qtest_readl(qts, BRIDGE_REG(0x100)) & ENET_PIN, ==, 0);
+    g_assert_cmphex(qtest_readq(qts, HEART + 0x10030) & ENET_VECTOR, ==, 0);
+    g_assert_cmphex(octane_cpu_cause(qts) & SUPERIO_CAUSE, ==, 0);
+    qtest_quit(qts);
+}
+
+static void test_octane_ethernet_dma_and_interrupt(void)
+{
+    test_octane_ioc3_ethernet_dma_and_interrupt(false);
+}
+
+static void test_octane2_ethernet_dma_and_interrupt(void)
+{
+    test_octane_ioc3_ethernet_dma_and_interrupt(true);
 }
 
 static void test_octane2_ethernet(void)
@@ -1071,6 +1166,10 @@ int main(int argc, char **argv)
     qtest_add_func("/octane2/population", test_octane2_population);
     qtest_add_func("/octane2/ioc3-ethernet", test_octane2_ethernet);
     qtest_add_func("/octane/ioc3-ethernet", test_octane_ethernet);
+    qtest_add_func("/octane/ioc3-ethernet-dma-and-interrupt",
+                   test_octane_ethernet_dma_and_interrupt);
+    qtest_add_func("/octane2/ioc3-ethernet-dma-and-interrupt",
+                   test_octane2_ethernet_dma_and_interrupt);
     qtest_add_func("/octane2/serial", test_octane2_serial);
     qtest_add_func("/octane/heart-widget-control", test_heart_widget_control);
     qtest_add_func("/octane/low-ram", test_low_ram);
