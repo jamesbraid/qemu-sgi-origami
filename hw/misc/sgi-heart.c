@@ -97,6 +97,14 @@ static MemTxResult heart_widget_read(void *opaque, hwaddr offset,
         *value = s->widget_control;
         return MEMTX_OK;
     }
+    if (offset == 0x60 && size == 8) {
+        *value = 0;
+        return MEMTX_OK;
+    }
+    if (offset == 0x68 && size == 8) {
+        *value = s->widget_error_mask;
+        return MEMTX_OK;
+    }
     qemu_log_mask(LOG_UNIMP, "sgi-heart: unsupported widget %u-byte read "
                   "at 0x%" HWADDR_PRIx "\n", size, offset);
     *value = 0;
@@ -111,6 +119,17 @@ static MemTxResult heart_widget_write(void *opaque, hwaddr offset,
 
     if (offset == 0x24 && size == 4) {
         s->widget_control = value;
+        return MEMTX_OK;
+    }
+    if (offset == 0x44 && size == 4 && value == 0) {
+        return MEMTX_OK;
+    }
+    if (offset == 0x60 && size == 8) {
+        /* No widget error producer exists in this model. */
+        return MEMTX_OK;
+    }
+    if (offset == 0x68 && size == 8) {
+        s->widget_error_mask = value;
         return MEMTX_OK;
     }
     qemu_log_mask(LOG_UNIMP, "sgi-heart: unsupported widget %u-byte write "
@@ -469,6 +488,7 @@ static void heart_reset_enter(Object *obj, ResetType type)
     s->pending = 0;
     s->saved_count = 0;
     s->widget_control = 0;
+    s->widget_error_mask = 0;
     s->counter_epoch_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
     timer_del(s->onewire_timer);
     s->onewire_control = 0;
@@ -529,6 +549,7 @@ static const VMStateDescription vmstate_heart = {
         VMSTATE_UINT64(pending, SGIHeartState),
         VMSTATE_UINT64(saved_count, SGIHeartState),
         VMSTATE_UINT32(widget_control, SGIHeartState),
+        VMSTATE_UINT32(widget_error_mask, SGIHeartState),
         VMSTATE_UINT64(onewire_control, SGIHeartState),
         VMSTATE_INT64(onewire_remaining_ns, SGIHeartState),
         VMSTATE_BOOL(onewire_level, SGIHeartState),

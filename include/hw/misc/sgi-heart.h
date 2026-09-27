@@ -26,6 +26,7 @@ struct SGIHeartState {
     uint64_t capacity[HEART_BANKS];
     uint8_t widget_revision;
     uint32_t widget_control;
+    uint32_t widget_error_mask;
     bool mapped[HEART_BANKS][HEART_MAX_UNITS];
 
     uint64_t mode;
