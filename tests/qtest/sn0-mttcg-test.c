@@ -1894,6 +1894,7 @@ static void test_gdb_sn1_hold(const void *data)
     char reply[256], command[128];
     QTestState *qts, *to;
     uint64_t peer_before, peer_after, hub_before, hub_after;
+    uint64_t source_hub_at_save, dest_hub_before_load;
     int options = GPOINTER_TO_INT(data);
     int fd, gdb;
     bool migrate_vm = options & 32;
@@ -2014,11 +2015,18 @@ static void test_gdb_sn1_hold(const void *data)
     g_assert_cmphex(g_ascii_strtoull(reply, NULL, 16) & CAUSE_IP7,
                     ==, CAUSE_IP7);
     if (migrate_vm) {
+        source_hub_at_save = qtest_readq(qts, SN1_BEDROCK_LOCAL + 0x30100);
         migration_path = g_build_filename(dir, "migration.sock", NULL);
         migration_uri = g_strdup_printf("unix:%s", migration_path);
         to = qtest_initf("-M origin300 -cpu R14000 -smp 2 -bios %s "
                          "-accel tcg,thread=multi -no-shutdown "
                          "-incoming defer -S", image);
+        dest_hub_before_load = qtest_readq(to,
+                                           SN1_BEDROCK_LOCAL + 0x30100);
+        g_test_message("Bedrock counter at source save %" PRIu64
+                       ", destination before load %" PRIu64,
+                       source_hub_at_save, dest_hub_before_load);
+        g_assert_cmpuint(source_hub_at_save, >, dest_hub_before_load);
         qtest_qmp_assert_success(to,
             "{ 'execute': 'migrate-incoming', 'arguments': { 'uri': %s } }",
             migration_uri);
