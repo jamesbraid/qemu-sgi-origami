@@ -150,6 +150,7 @@ config SGI_GIGACHANNEL
     bool
     select SGI_XIO_BOARD
     select SGI_BRIDGE
+    select SGI_BASEIO_FLASH
 
 config SGI_PCI_SHOEHORN
     bool
