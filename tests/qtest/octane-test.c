@@ -9,6 +9,7 @@
 #include "qobject/qlist.h"
 
 #include <sys/socket.h>
+#include <netinet/in.h>
 
 #define HEART 0x0ff00000ULL
 #define XBOW 0x10000000ULL
@@ -47,6 +48,7 @@
 #define RTC_INDEX (IOC3 + 0xa0000)
 #define RTC_DATA (IOC3 + 0xc0000)
 #define UART_A (IOC3 + 0x20178)
+#define UART_B (IOC3 + 0x20170)
 #define IOC3_SERIAL_IRQ (1u << 6)
 #define RAD_BAR0 (BRIDGE + 0x800000)
 #define RAD_PCI_BAR0 0x13000000u
@@ -1065,6 +1067,58 @@ static void test_serial_a_chardev(void)
     qtest_quit(qts);
 }
 
+static void test_serial_b(const void *data)
+{
+    bool octane2 = GPOINTER_TO_INT(data);
+    struct sockaddr_in addr = {
+        .sin_family = AF_INET,
+        .sin_addr.s_addr = htonl(INADDR_LOOPBACK),
+    };
+    socklen_t addrlen = sizeof(addr);
+    struct timeval deadline = { .tv_sec = 5 };
+    g_autofree char *quoted = g_shell_quote(flash_path);
+    g_autofree char *args = NULL;
+    QTestState *qts;
+    uint8_t received;
+    int listener, sock;
+
+    listener = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    g_assert_cmpint(listener, >=, 0);
+    g_assert_cmpint(bind(listener, (struct sockaddr *)&addr, sizeof(addr)),
+                    ==, 0);
+    g_assert_cmpint(getsockname(listener, (struct sockaddr *)&addr,
+                                &addrlen), ==, 0);
+    g_assert_cmpint(listen(listener, 1), ==, 0);
+    args = g_strdup_printf(
+        "-M %s -m %s -cpu %s -bios %s -S -serial none "
+        "-chardev socket,id=portb,host=127.0.0.1,port=%u "
+        "-serial chardev:portb",
+        octane2 ? "octane2" : "octane", octane2 ? "256M" : "128M",
+        octane2 ? OCTANE2_CPU : "R10000", quoted, ntohs(addr.sin_port));
+    qts = qtest_init(args);
+
+    g_assert_cmpint(setsockopt(listener, SOL_SOCKET, SO_RCVTIMEO,
+                               &deadline, sizeof(deadline)), ==, 0);
+    sock = accept(listener, NULL, NULL);
+    g_assert_cmpint(sock, >=, 0);
+    g_assert_cmpint(setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO,
+                               &deadline, sizeof(deadline)), ==, 0);
+    qtest_writel(qts, CFG(2) + 0x10, 0x10000000);
+    qtest_writel(qts, CFG(2) + 0x04, 0x00000002);
+    qtest_writel(qts, BRIDGE + 0x200 + 8 * 2 + 4, 0x1100);
+    qtest_writeb(qts, UART_B + 4, 0x10);
+    qtest_writeb(qts, UART_B, 0x5a);
+    g_assert_cmphex(qtest_readb(qts, UART_B), ==, 0x5a);
+    qtest_writeb(qts, UART_B + 4, 0);
+    qtest_writeb(qts, UART_B + 3, 3);
+    qtest_writeb(qts, UART_B, 'B');
+    g_assert_cmpint(read(sock, &received, 1), ==, 1);
+    g_assert_cmphex(received, ==, 'B');
+    close(sock);
+    close(listener);
+    qtest_quit(qts);
+}
+
 static void test_serial_a_interrupt_route(void)
 {
     int sock;
@@ -1376,6 +1430,8 @@ int main(int argc, char **argv)
     qtest_add_func("/octane/rtc-bytebus", test_rtc_bytebus);
     qtest_add_func("/octane/serial-a-loopback", test_serial_a_loopback);
     qtest_add_func("/octane/serial-a-chardev", test_serial_a_chardev);
+    qtest_add_data_func("/octane/serial-b", GINT_TO_POINTER(0), test_serial_b);
+    qtest_add_data_func("/octane2/serial-b", GINT_TO_POINTER(1), test_serial_b);
     qtest_add_func("/octane/serial-a-interrupt-route",
                    test_serial_a_interrupt_route);
     qtest_add_func("/octane/heart-interrupt-levels",

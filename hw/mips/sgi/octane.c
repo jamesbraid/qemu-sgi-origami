@@ -177,12 +177,16 @@ static void octane_fit_pci(MachineState *machine, SGIBridgeState *bridge)
                          SGI_IOC3_SUBSYS_IP30_SYSBOARD);
     qdev_prop_set_uint32(DEVICE(pci), "population",
                          SGI_IOC3_POPULATION_SERIAL_A |
+                         SGI_IOC3_POPULATION_SERIAL_B |
                          SGI_IOC3_POPULATION_ETHERNET |
                          SGI_IOC3_POPULATION_ONEWIRE_IDENTITY);
     qdev_prop_set_uint8(DEVICE(pci), "timekeeper-kind",
                        SGI_IOC3_TIMEKEEPER_DS1685);
     if (serial_hd(0)) {
         qdev_prop_set_chr(DEVICE(pci), "chardev-a", serial_hd(0));
+    }
+    if (serial_hd(1)) {
+        qdev_prop_set_chr(DEVICE(pci), "chardev-b", serial_hd(1));
     }
     pci_realize_and_unref(pci, bus, &error_fatal);
     /* The fitted SuperIO line is Bridge input 4; Ethernet uses input 2. */
