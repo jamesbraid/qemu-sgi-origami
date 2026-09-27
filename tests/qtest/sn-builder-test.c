@@ -18,6 +18,7 @@
  */
 
 #include "qemu/osdep.h"
+#include <poll.h>
 #include <sys/wait.h>
 #include "qemu/bswap.h"
 #include "libqtest.h"
@@ -46,20 +47,60 @@ static uint64_t qom_get_uint(QTestState *qts, const char *path,
     return value;
 }
 
+/*
+ * How long a refused launch may take to exit. A QEMU that wrongly accepts
+ * the arguments runs the guest instead, so without a bound this would
+ * wait for the whole test's timeout rather than fail by name.
+ */
+#define REJECT_TIMEOUT_US (60 * G_USEC_PER_SEC)
+
 static void assert_qemu_rejects(const char *const args[], const char *message)
 {
-    g_autofree char *error_output = NULL;
+    g_autoptr(GError) error = NULL;
+    g_autoptr(GString) error_output = g_string_new(NULL);
+    gint64 deadline = g_get_monotonic_time() + REJECT_TIMEOUT_US;
     int wait_status = 0;
+    int err_fd;
+    GPid pid;
 
-    g_assert_true(g_spawn_sync(NULL, (char **)args, NULL, 0, NULL, NULL,
-                              NULL, &error_output, &wait_status, NULL));
+    g_assert_true(g_spawn_async_with_pipes(NULL, (char **)args, NULL,
+                                           G_SPAWN_DO_NOT_REAP_CHILD |
+                                           G_SPAWN_STDOUT_TO_DEV_NULL,
+                                           NULL, NULL, &pid, NULL, NULL,
+                                           &err_fd, &error));
+    g_assert_no_error(error);
+    for (;;) {
+        struct pollfd pfd = { .fd = err_fd, .events = POLLIN };
+        gint64 left = deadline - g_get_monotonic_time();
+        char buf[512];
+        ssize_t n;
+
+        if (left <= 0) {
+            kill(pid, SIGKILL);
+            waitpid(pid, NULL, 0);
+            close(err_fd);
+            g_test_message("QEMU accepted %s; stderr so far: %s", args[0],
+                           error_output->str);
+            g_assert_not_reached();
+        }
+        if (poll(&pfd, 1, left / 1000 + 1) <= 0) {
+            continue;
+        }
+        n = read(err_fd, buf, sizeof(buf));
+        if (n <= 0) {
+            break;
+        }
+        g_string_append_len(error_output, buf, n);
+    }
+    close(err_fd);
+    g_assert_cmpint(waitpid(pid, &wait_status, 0), ==, pid);
     g_assert_false(g_spawn_check_exit_status(wait_status, NULL));
     /*
      * Require a reported error and normal failure exit, not SIGABRT or
      * SIGSEGV; WIFSIGNALED distinguishes signals from nonzero status.
      */
     g_assert_false(WIFSIGNALED(wait_status));
-    g_assert_nonnull(strstr(error_output, message));
+    g_assert_nonnull(strstr(error_output->str, message));
 }
 
 /*
