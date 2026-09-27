@@ -144,7 +144,17 @@ static void test_fuel_pci(const void *data)
                     0xc30a10a9);
     g_assert_cmphex(qtest_readl(qts, PCI_CONFIG(14, 1)), ==, 0xffffffff);
     g_assert_cmphex(qtest_readl(qts, PCI_CONFIG(14, 4)), ==, 0xffffffff);
-    g_assert_cmphex(qtest_readl(qts, PCI_CONFIG(15, 5)), ==, 0xffffffff);
+    g_assert_cmphex(qtest_readl(qts, PCI_CONFIG(15, 5)), ==, 0x580211c1);
+    g_assert_cmphex(qtest_readl(qts, PCI_CONFIG(15, 5) + 8) >> 8, ==,
+                    0x0c0310);
+    g_assert_cmphex(qtest_readl(qts, PCI_CONFIG(15, 5) + 0x100), ==,
+                    0xffffffff);
+    g_assert_cmphex(qtest_readl(qts, PCI_CONFIG(14, 5)), ==, 0xffffffff);
+    qtest_writel(qts, PCI_CONFIG(15, 5) + PCI_COMMAND,
+                 PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER);
+    g_assert_cmphex(qtest_readl(qts, PCI_CONFIG(15, 5) + PCI_COMMAND) &
+                    (PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER), ==,
+                    PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER);
 
     fuel_map_ioc3(qts);
     qtest_writeb(qts, IOC3_WINDOW + IOC3_SERIAL_A + 7, 0x5a);
@@ -160,6 +170,9 @@ static void test_fuel_pci(const void *data)
     g_assert_cmphex(qtest_readb(qts, IOC3_WINDOW + IOC3_SERIAL_B + 3), ==,
                     0x1f);
     qtest_system_reset(qts);
+    g_assert_cmphex(qtest_readl(qts, PCI_CONFIG(15, 5)), ==, 0x580211c1);
+    g_assert_cmphex(qtest_readl(qts, PCI_CONFIG(15, 5) + PCI_COMMAND) &
+                    (PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER), ==, 0);
     g_assert_cmphex(qtest_readl(qts, PCI_CONFIG(15, 4) + PCI_COMMAND) &
                     PCI_COMMAND_MEMORY, ==, 0);
     fuel_map_ioc3(qts);
