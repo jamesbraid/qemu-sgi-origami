@@ -16,6 +16,7 @@
 #define BANK0 0x80030000U
 #define WIDE 0x80070000U
 #define CFG(slot) (BRIDGE + 0x020000 + (slot) * 0x1000)
+#define BRIDGE_NIC (BRIDGE + 0x0b4)
 
 static char *flash_path;
 
@@ -88,7 +89,8 @@ static void test_flash_and_pci(void)
     g_assert_cmphex(qtest_readb(qts, FLASH + 3), ==, 0x78);
     g_assert_cmphex(qtest_readb(qts, FLASH + 4), ==, 0xff);
     g_assert_cmphex(qtest_readb(qts, FLASH + 0x1fffff), ==, 0xff);
-    qtest_writew(qts, FLASH, 0);
+    /* Bridge drops writes while flash write enable is clear. */
+    g_assert_cmpuint(qtest_writel_tx(qts, FLASH, 0), ==, MEMTX_OK);
     g_assert_cmpuint(qtest_readl_tx(qts, FLASH, &value), ==, MEMTX_OK);
     g_assert_cmphex(value, ==, 0x12345678);
     g_assert_cmphex(qtest_readb(qts, FLASH), ==, 0x12);
@@ -102,7 +104,40 @@ static void test_flash_and_pci(void)
     g_assert_cmphex(value, ==, 0xffffffff);
     g_assert_cmpuint(qtest_readl_tx(qts, OCTANE_LONG_BRIDGE + 4, &value), ==,
                      MEMTX_OK);
+    /* An empty one-wire bus has no device to pull a reset slot low. */
+    qtest_writel(qts, BRIDGE_NIC, (520u << 10) | (65u << 2));
+    g_assert_cmphex(qtest_readl(qts, BRIDGE_NIC) & 3, ==, 3);
     qtest_quit(qts);
+}
+
+static void test_firmware_rejections(void)
+{
+    const char *missing[] = {
+        qtest_qemu_binary(NULL), "-M", "octane", "-m", "128M",
+        "-bios", "/nonexistent/octane-prom", "-display", "none", NULL
+    };
+    g_autofree char *oversized = NULL;
+    g_autofree char *error_output = NULL;
+    int status;
+    int fd = g_file_open_tmp("octane-oversized-XXXXXX", &oversized, NULL);
+    const char *too_large[] = {
+        qtest_qemu_binary(NULL), "-M", "octane", "-m", "128M",
+        "-bios", oversized, "-display", "none", NULL
+    };
+
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(ftruncate(fd, 2 * 1024 * 1024 + 1), ==, 0);
+    close(fd);
+    g_assert_true(g_spawn_sync(NULL, (char **)missing, NULL, 0, NULL, NULL,
+                               NULL, &error_output, &status, NULL));
+    g_assert_false(g_spawn_check_exit_status(status, NULL));
+    g_assert_nonnull(strstr(error_output, "cannot read firmware image"));
+    g_clear_pointer(&error_output, g_free);
+    g_assert_true(g_spawn_sync(NULL, (char **)too_large, NULL, 0, NULL, NULL,
+                               NULL, &error_output, &status, NULL));
+    g_assert_false(g_spawn_check_exit_status(status, NULL));
+    g_assert_nonnull(strstr(error_output, "exceeds 2 MiB"));
+    g_assert_cmpint(unlink(oversized), ==, 0);
 }
 
 static void test_heart_interrupt_levels(void)
@@ -154,6 +189,7 @@ int main(int argc, char **argv)
     close(fd);
     qtest_add_func("/octane/widgets-and-memory", test_widgets_and_memory);
     qtest_add_func("/octane/flash-and-pci", test_flash_and_pci);
+    qtest_add_func("/octane/firmware-rejections", test_firmware_rejections);
     qtest_add_func("/octane/serial-a-loopback", test_serial_a_loopback);
     qtest_add_func("/octane/heart-interrupt-levels",
                    test_heart_interrupt_levels);
