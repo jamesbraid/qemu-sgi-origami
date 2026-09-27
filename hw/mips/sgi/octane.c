@@ -17,6 +17,7 @@
 #include "system/reset.h"
 #include "qemu/bswap.h"
 #include "hw/core/qdev-properties.h"
+#include "hw/core/qdev-clock.h"
 #include "hw/core/sysbus.h"
 #include "hw/audio/sgi-rad1-audio.h"
 #include "hw/mips/mips.h"
@@ -38,6 +39,8 @@
 #define OCTANE_HEART_REGS 0x0ff00000ULL
 #define OCTANE_HEART_WIDGET 0x18000000ULL
 #define OCTANE_HEART_BANK0_DESC 0x80030000U
+/* Functional single-bank layout; the fitted DIMM layout is unmeasured. */
+#define OCTANE2_HEART_BANK0_DESC 0x80070000U
 #define OCTANE_PHYSICAL_SPAN (1ULL << 40)
 #define OCTANE_ATTR0_BASE (1ULL << 40)
 #define OCTANE_LOW_RAM_SIZE 0x2000
@@ -48,6 +51,7 @@ typedef struct OctaneMachineState {
     MachineState parent;
     MemoryRegion low_ram;
     MemoryRegion high_guard;
+    bool octane2;
 } OctaneMachineState;
 
 static MemTxResult octane_high_guard_read(void *opaque, hwaddr addr,
@@ -117,7 +121,8 @@ static void octane_reset(MachineState *machine, ResetType type)
     qemu_devices_reset(type);
     memset(memory_region_get_ram_ptr(&s->low_ram), 0, OCTANE_LOW_RAM_SIZE);
     memory_region_set_dirty(&s->low_ram, 0, OCTANE_LOW_RAM_SIZE);
-    stl_be_p(descriptor, OCTANE_HEART_BANK0_DESC);
+    stl_be_p(descriptor, s->octane2 ? OCTANE2_HEART_BANK0_DESC :
+                            OCTANE_HEART_BANK0_DESC);
     if (address_space_write(&address_space_memory,
                             OCTANE_HEART_REGS + 0x20,
                             MEMTXATTRS_UNSPECIFIED, descriptor,
@@ -164,7 +169,7 @@ static void octane_fit_pci(MachineState *machine, SGIBridgeState *bridge)
     pci_realize_and_unref(pci, bus, &error_fatal);
 }
 
-static void octane_init(MachineState *machine)
+static void octane_init_common(MachineState *machine, bool octane2)
 {
     OctaneMachineState *s = (OctaneMachineState *)machine;
     DeviceState *heart = qdev_new(TYPE_SGI_HEART);
@@ -187,8 +192,15 @@ static void octane_init(MachineState *machine)
     int loaded;
     uint8_t *flash_image = g_malloc(OCTANE_FLASH_SIZE);
 
-    if (machine->ram_size != 128 * MiB || machine->smp.cpus != 1) {
-        error_setg(&error_fatal, "octane supports one CPU and 128 MiB of RAM");
+    s->octane2 = octane2;
+    if (machine->ram_size != (octane2 ? 256 : 128) * MiB ||
+        machine->smp.cpus != 1) {
+        error_setg(&error_fatal, "%s supports one CPU and %u MiB of RAM",
+                   octane2 ? "octane2" : "octane", octane2 ? 256 : 128);
+    }
+    if (octane2 && strcmp(machine->cpu_type,
+                          MIPS_CPU_TYPE_NAME("R12000"))) {
+        error_setg(&error_fatal, "octane2 requires an R12000 CPU");
     }
     if (!machine->firmware) {
         error_setg(&error_fatal, "octane requires -bios with a raw image "
@@ -216,10 +228,21 @@ static void octane_init(MachineState *machine)
                           flash_image, "octane.flash", OCTANE_FLASH_SIZE);
 
     cpuclk = clock_new(OBJECT(machine), "cpu-refclk");
-    /* A functional timer rate until a public Octane CPU assembly is chosen. */
-    clock_set_hz(cpuclk, 100000000);
-    cpu = mips_cpu_create_with_clock(machine->cpu_type, cpuclk,
-                                     TARGET_BIG_ENDIAN);
+    /* The fitted Octane2 R12000 is reported at 360 MHz. */
+    clock_set_hz(cpuclk, octane2 ? 360000000 : 100000000);
+    if (octane2) {
+        DeviceState *dev = qdev_new(machine->cpu_type);
+
+        qdev_connect_clock_in(dev, "clk-in", cpuclk);
+        object_property_set_bool(OBJECT(dev), "big-endian", true,
+                                 &error_fatal);
+        /* The required R12000 fields come from the caller's -cpu profile. */
+        qdev_realize(dev, NULL, &error_fatal);
+        cpu = MIPS_CPU(dev);
+    } else {
+        cpu = mips_cpu_create_with_clock(machine->cpu_type, cpuclk,
+                                         TARGET_BIG_ENDIAN);
+    }
     cpu_mips_irq_init_cpu(cpu);
     cpu_mips_clock_init(cpu);
 
@@ -234,7 +257,11 @@ static void octane_init(MachineState *machine)
     memory_region_add_subregion(system, OCTANE_ATTR0_BASE, attr0);
 
     object_property_add_child(OBJECT(machine), "heart", OBJECT(heart));
-    qdev_prop_set_uint64(heart, "bank0-size", 128 * MiB);
+    qdev_prop_set_uint64(heart, "bank0-size",
+                          (octane2 ? 256 : 128) * MiB);
+    if (octane2) {
+        qdev_prop_set_uint8(heart, "widget-revision", 6);
+    }
     object_property_set_link(OBJECT(heart), "cpu-memory", OBJECT(physical),
                              &error_fatal);
     sysbus_realize(SYS_BUS_DEVICE(heart), &error_fatal);
@@ -306,6 +333,16 @@ static void octane_init(MachineState *machine)
     octane_fit_pci(machine, SGI_BRIDGE(bridge));
 }
 
+static void octane_init(MachineState *machine)
+{
+    octane_init_common(machine, false);
+}
+
+static void octane2_init(MachineState *machine)
+{
+    octane_init_common(machine, true);
+}
+
 static void octane_class_init(ObjectClass *oc, const void *data)
 {
     MachineClass *mc = MACHINE_CLASS(oc);
@@ -322,6 +359,24 @@ static void octane_class_init(ObjectClass *oc, const void *data)
     mc->no_parallel = true;
 }
 
+static void octane2_class_init(ObjectClass *oc, const void *data)
+{
+    MachineClass *mc = MACHINE_CLASS(oc);
+
+    octane_class_init(oc, data);
+    mc->desc = "SGI Octane2 (IP30), graphics-free functional profile";
+    mc->init = octane2_init;
+    mc->default_cpu_type = MIPS_CPU_TYPE_NAME("R12000");
+    mc->default_ram_size = 256 * MiB;
+}
+
+static const TypeInfo octane2_machine = {
+    .name = MACHINE_TYPE_NAME("octane2"),
+    .parent = TYPE_MACHINE,
+    .instance_size = sizeof(OctaneMachineState),
+    .class_init = octane2_class_init,
+};
+
 static const TypeInfo octane_machine = {
     .name = MACHINE_TYPE_NAME("octane"),
     .parent = TYPE_MACHINE,
@@ -332,6 +387,7 @@ static const TypeInfo octane_machine = {
 static void octane_register_types(void)
 {
     type_register_static(&octane_machine);
+    type_register_static(&octane2_machine);
 }
 
 type_init(octane_register_types)
