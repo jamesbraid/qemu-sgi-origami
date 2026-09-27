@@ -1453,7 +1453,7 @@ static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
     node->l1 = qdev_new(TYPE_SGI_L1);
     object_property_add_child(OBJECT(node), "l1", OBJECT(node->l1));
     if (node->fuel_experiment) {
-        qdev_prop_set_string(node->l1, "brick-type", "unknown");
+        qdev_prop_set_string(node->l1, "brick-type", "ip34");
     }
     if (l1_console) {
         qdev_prop_set_chr(node->l1, "chardev", l1_console);

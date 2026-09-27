@@ -2212,6 +2212,36 @@ static size_t l1_eeprom_read_at(QTestState *qts, uint64_t base,
     return l1_receive_at(qts, base, reply);
 }
 
+static void test_l1_product_identity(const void *data)
+{
+    const uint8_t request[] = { 0x10, 0x0f, 0xff, 0xf0, 6, 0, 3, 0 };
+    const uint8_t origin300[] = {
+        0x30, 0, 0, 0, 0, 2, 0, 0, 0, 0, 65, 0, 0, 0, 0, 0x34
+    };
+    const uint8_t fuel[] = {
+        0x30, 0, 0, 0, 0, 2, 0, 0, 0, 0, 65, 0, 0, 0, 0, 0x61
+    };
+    g_autofree char *quoted = g_shell_quote(prom_path);
+    uint8_t reply[131];
+    QTestState *qts;
+
+    qts = machine_start_with(prom_path, "-S");
+    l1_send_at(qts, L1_UART_LOCAL_BASE, request, sizeof(request));
+    g_assert_cmpuint(l1_receive_at(qts, L1_UART_LOCAL_BASE, reply), ==,
+                     sizeof(origin300));
+    g_assert_cmpmem(reply, sizeof(origin300), origin300, sizeof(origin300));
+    qtest_quit(qts);
+
+    qts = qtest_initf("-M fuel,fuel-board-id-word=0x4abc,"
+                      "fuel-ioc3-subsystem-id=0xc30a -cpu R14000 -smp 1 "
+                      "-m 512M -bios %s -S", quoted);
+    l1_send_at(qts, L1_UART_LOCAL_BASE, request, sizeof(request));
+    g_assert_cmpuint(l1_receive_at(qts, L1_UART_LOCAL_BASE, reply), ==,
+                     sizeof(fuel));
+    g_assert_cmpmem(reply, sizeof(fuel), fuel, sizeof(fuel));
+    qtest_quit(qts);
+}
+
 /*
  * The qtest protocol itself has no per-CPU physical access: every qtest_read
  * call and every human-monitor-command "xp" dispatch goes through the first
@@ -4002,6 +4032,8 @@ int main(int argc, char **argv)
                         test_l1_uart_irq_reaches_cpu);
     qtest_add_data_func("sn1/address-map/prom-cpu-module-config", NULL,
                         test_prom_cpu_module_config);
+    qtest_add_data_func("sn1/address-map/l1-product-identity", NULL,
+                        test_l1_product_identity);
     qtest_add_data_func("sn1/address-map/l1-identity-records", NULL,
                         test_l1_identity_records_come_from_the_command_line);
     qtest_add_data_func("sn1/address-map/l1-identity-records-absent", NULL,
