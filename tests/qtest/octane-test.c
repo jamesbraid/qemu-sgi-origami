@@ -65,6 +65,7 @@
 #define ENET_INT_RX_THRESHOLD (1u << 1)
 #define ENET_INT_TX_COMPLETE (1u << 22)
 #define SCSI0_WINDOW (BRIDGE + 0x200000)
+#define BRIDGE_SWAP_DIRECT (1u << 19)
 /* Bridge reverses the two halfword lanes within each 32-bit PCI word. */
 #define ISP_MAILBOX(n) (SCSI0_WINDOW + ((0x70 + 2 * (n)) ^ 2))
 #define ISP_HOST_CMD (SCSI0_WINDOW + 0xc2)
@@ -965,6 +966,121 @@ static void test_scsi_dma_to_heart_ram(void)
     qtest_quit(qts);
 }
 
+static uint16_t octane_isp_init_queue(QTestState *qts, uint16_t command,
+                                      uint32_t pci_address)
+{
+    uint16_t result;
+
+    qtest_writew(qts, ISP_MAILBOX(1), 4);
+    qtest_writew(qts, ISP_MAILBOX(2), pci_address >> 16);
+    qtest_writew(qts, ISP_MAILBOX(3), pci_address);
+    qtest_writew(qts, ISP_MAILBOX(6), 0);
+    qtest_writew(qts, ISP_MAILBOX(7), 0);
+    qtest_writew(qts, ISP_MAILBOX(0), command);
+    qtest_writew(qts, ISP_HOST_CMD, 0x5000);
+    result = qtest_readw(qts, ISP_MAILBOX(0));
+    qtest_writew(qts, ISP_HOST_CMD, 0x7000);
+    qtest_writew(qts, SCSI0_WINDOW + 0x0e, 0);
+    return result;
+}
+
+static void test_octane2_scsi_target1_read(void)
+{
+    g_autofree char *disk_path = g_strdup("octane-scsi-XXXXXX");
+    g_autofree char *quoted_path;
+    g_autofree char *args;
+    QTestState *qts;
+    const uint32_t request = 0xa0008000;
+    const uint32_t response = 0xa0009000;
+    const uint32_t buffer = 0xa000a000;
+    const uint64_t before = RAM + 0x9e00;
+    const uint64_t after = RAM + 0xa200;
+    uint8_t entry[64] = { 0 };
+    uint8_t status[64];
+    uint8_t data[512];
+    uint8_t sector[sizeof(data)];
+    uint8_t untouched[sizeof(data)];
+    int fd;
+
+    for (size_t i = 0; i < sizeof(sector); i++) {
+        sector[i] = i * 73 + 19;
+    }
+    fd = g_mkstemp(disk_path);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(write(fd, sector, sizeof(sector)), ==, sizeof(sector));
+    g_assert_cmpint(ftruncate(fd, 1024 * 1024), ==, 0);
+    g_assert_cmpint(close(fd), ==, 0);
+    quoted_path = g_shell_quote(disk_path);
+    args = g_strdup_printf(
+        "-drive id=disk0,if=none,file=%s,format=raw "
+        "-device scsi-hd,bus=scsi.0,scsi-id=1,lun=0,drive=disk0",
+        quoted_path);
+    qts = octane2_start_args(args);
+
+    qtest_writel(qts, CFG(0) + 0x14, 0x10000000);
+    qtest_writel(qts, CFG(0) + 0x04, 0x00000006);
+    /* Keep the PCI descriptors in their little-endian byte order. */
+    qtest_writel(qts, BRIDGE + 0x200 + 4,
+                 0x1100 | BRIDGE_SWAP_DIRECT);
+    qtest_writel(qts, BRIDGE_REG(0x080), 8u << 20);
+
+    memset(data, 0xa5, sizeof(data));
+    memset(untouched, 0x5a, sizeof(untouched));
+    qtest_memwrite(qts, RAM + 0xa000, data, sizeof(data));
+    qtest_memwrite(qts, before, untouched, sizeof(untouched));
+    qtest_memwrite(qts, after, untouched, sizeof(untouched));
+
+    g_assert_cmphex(octane_isp_init_queue(qts, 0x0010, request), ==,
+                    ISP_MBOX_COMPLETE);
+    g_assert_cmphex(octane_isp_init_queue(qts, 0x0011, response), ==,
+                    ISP_MBOX_COMPLETE);
+
+    entry[0] = 0x01; /* Command entry, with no continuation. */
+    entry[1] = 1;
+    stl_le_p(entry + 4, 0x12345678);
+    stw_le_p(entry + 8, 1 << 8); /* Bus 0, target 1, LUN 0. */
+    stw_le_p(entry + 10, 6);
+    qtest_memwrite(qts, RAM + 0x8000, entry, sizeof(entry));
+    qtest_writew(qts, ISP_MAILBOX(4), 1);
+    g_assert_cmphex(qtest_readw(qts, ISP_MAILBOX(5)), ==, 1);
+    qtest_writew(qts, ISP_HOST_CMD, 0x7000);
+
+    memset(entry, 0, sizeof(entry));
+    entry[0] = 0x01;
+    entry[1] = 1;
+    stl_le_p(entry + 4, 0x07654321);
+    stw_le_p(entry + 8, 1 << 8);
+    stw_le_p(entry + 10, 10);
+    stw_le_p(entry + 18, 1);
+    entry[20] = 0x28; /* READ(10), LBA 0, one 512-byte block. */
+    entry[28] = 1;
+    stl_le_p(entry + 32, buffer);
+    stl_le_p(entry + 36, sizeof(data));
+    qtest_memwrite(qts, RAM + 0x8040, entry, sizeof(entry));
+    qtest_writew(qts, ISP_MAILBOX(4), 2);
+
+    /* File-backed READ(10) can complete after the request doorbell. */
+    for (unsigned i = 0; i < 1000 &&
+         qtest_readw(qts, ISP_MAILBOX(5)) != 2; i++) {
+        qtest_clock_step(qts, 1000);
+        g_usleep(1000);
+    }
+    g_assert_cmphex(qtest_readw(qts, ISP_MAILBOX(5)), ==, 2);
+    qtest_memread(qts, RAM + 0x9040, status, sizeof(status));
+    g_assert_cmphex(status[0], ==, 0x03);
+    g_assert_cmphex(ldl_le_p(status + 4), ==, 0x07654321);
+    g_assert_cmphex(lduw_le_p(status + 8), ==, 0); /* SCSI GOOD. */
+    g_assert_cmphex(lduw_le_p(status + 10), ==, 0); /* IOCB complete. */
+    qtest_memread(qts, RAM + 0xa000, data, sizeof(data));
+    g_assert_cmpmem(data, sizeof(data), sector, sizeof(sector));
+    qtest_memread(qts, before, data, sizeof(data));
+    g_assert_cmpmem(data, sizeof(data), untouched, sizeof(untouched));
+    qtest_memread(qts, after, data, sizeof(data));
+    g_assert_cmpmem(data, sizeof(data), untouched, sizeof(untouched));
+    qtest_quit(qts);
+    g_assert_cmpint(unlink(disk_path), ==, 0);
+}
+
 static void test_uncached_attribute_zero(void)
 {
     static const uint32_t code[] = {
@@ -1521,6 +1637,8 @@ int main(int argc, char **argv)
     qtest_add_func("/octane/pci-bar-separation", test_pci_bar_separation);
     qtest_add_func("/octane/scsi-dma-to-heart-ram",
                    test_scsi_dma_to_heart_ram);
+    qtest_add_func("/octane2/scsi-target1-read",
+                   test_octane2_scsi_target1_read);
     qtest_add_func("/octane/uncached-attribute-zero",
                    test_uncached_attribute_zero);
     qtest_add_func("/octane/rtc-bytebus", test_rtc_bytebus);
