@@ -7318,7 +7318,7 @@
               ]
             }
           ],
-          "xtalk-slots": [
+          "xio-slots": [
             {
               "controlling-node": 0,
               "slot": 0
@@ -7367,7 +7367,7 @@
               ]
             }
           ],
-          "xtalk-slots": [
+          "xio-slots": [
             {
               "controlling-node": 0,
               "slot": 0
@@ -7515,7 +7515,7 @@
       ],
       "product": "onyx2",
       "routers": [],
-      "xtalk-attachments": [
+      "xio-attachments": [
         {
           "crossbar-index": 0,
           "node-index": 0,
@@ -7537,7 +7537,7 @@
           "widget": 8
         }
       ],
-      "xtalk-slots": [
+      "xio-slots": [
         {
           "controlling-node": 0,
           "crossbar-index": 0,
@@ -7740,7 +7740,7 @@
               ]
             }
           ],
-          "xtalk-slots": [
+          "xio-slots": [
             {
               "controlling-node": 0,
               "slot": 0
@@ -7794,7 +7794,7 @@
               ]
             }
           ],
-          "xtalk-slots": [
+          "xio-slots": [
             {
               "controlling-node": 0,
               "slot": 0
@@ -7884,7 +7884,7 @@
               ]
             }
           ],
-          "xtalk-slots": [
+          "xio-slots": [
             {
               "controlling-node": 2,
               "slot": 0
@@ -7988,7 +7988,7 @@
               ]
             }
           ],
-          "xtalk-slots": [
+          "xio-slots": [
             {
               "controlling-node": 2,
               "slot": 0
@@ -8299,7 +8299,7 @@
           "slot": 2
         }
       ],
-      "xtalk-attachments": [
+      "xio-attachments": [
         {
           "crossbar-index": 0,
           "node-index": 0,
@@ -8331,7 +8331,7 @@
           "widget": 9
         }
       ],
-      "xtalk-slots": [
+      "xio-slots": [
         {
           "controlling-node": 2,
           "crossbar-index": 0,
@@ -8495,7 +8495,7 @@
               ]
             }
           ],
-          "xtalk-slots": []
+          "xio-slots": []
         }
       ],
       "nodes": [
@@ -8630,7 +8630,7 @@
       ],
       "product": "origin200",
       "routers": [],
-      "xtalk-attachments": [
+      "xio-attachments": [
         {
           "crossbar-index": -1,
           "node-index": 0,
@@ -8642,7 +8642,7 @@
           "widget": 8
         }
       ],
-      "xtalk-slots": []
+      "xio-slots": []
     },
     {
       "cables": [],
@@ -8698,7 +8698,7 @@
               ]
             }
           ],
-          "xtalk-slots": []
+          "xio-slots": []
         }
       ],
       "nodes": [
@@ -8769,14 +8769,14 @@
       ],
       "product": "origin200",
       "routers": [],
-      "xtalk-attachments": [
+      "xio-attachments": [
         {
           "crossbar-index": -1,
           "node-index": 0,
           "widget": 8
         }
       ],
-      "xtalk-slots": []
+      "xio-slots": []
     },
     {
       "cables": [],
@@ -8857,7 +8857,7 @@
               ]
             }
           ],
-          "xtalk-slots": [
+          "xio-slots": [
             {
               "controlling-node": 0,
               "slot": 0
@@ -8949,7 +8949,7 @@
       ],
       "product": "origin200",
       "routers": [],
-      "xtalk-attachments": [
+      "xio-attachments": [
         {
           "crossbar-index": 0,
           "node-index": 0,
@@ -8966,7 +8966,7 @@
           "widget": 8
         }
       ],
-      "xtalk-slots": [
+      "xio-slots": [
         {
           "controlling-node": 0,
           "crossbar-index": 0,
@@ -9058,7 +9058,7 @@
               ]
             }
           ],
-          "xtalk-slots": []
+          "xio-slots": []
         }
       ],
       "nodes": [
@@ -9129,14 +9129,14 @@
       ],
       "product": "origin200",
       "routers": [],
-      "xtalk-attachments": [
+      "xio-attachments": [
         {
           "crossbar-index": -1,
           "node-index": 0,
           "widget": 8
         }
       ],
-      "xtalk-slots": []
+      "xio-slots": []
     },
     {
       "cables": [
@@ -9312,7 +9312,7 @@
               ]
             }
           ],
-          "xtalk-slots": [
+          "xio-slots": [
             {
               "controlling-node": 0,
               "slot": 0
@@ -9365,7 +9365,7 @@
               ]
             }
           ],
-          "xtalk-slots": [
+          "xio-slots": [
             {
               "controlling-node": 0,
               "slot": 0
@@ -9459,7 +9459,7 @@
               ]
             }
           ],
-          "xtalk-slots": [
+          "xio-slots": [
             {
               "controlling-node": 0,
               "slot": 0
@@ -9567,7 +9567,7 @@
               ]
             }
           ],
-          "xtalk-slots": [
+          "xio-slots": [
             {
               "controlling-node": 0,
               "slot": 0
@@ -9886,7 +9886,7 @@
           "slot": 2
         }
       ],
-      "xtalk-attachments": [
+      "xio-attachments": [
         {
           "crossbar-index": 0,
           "node-index": 0,
@@ -9913,7 +9913,7 @@
           "widget": 10
         }
       ],
-      "xtalk-slots": [
+      "xio-slots": [
         {
           "controlling-node": 0,
           "crossbar-index": 0,
@@ -10151,7 +10151,7 @@
               ]
             }
           ],
-          "xtalk-slots": [
+          "xio-slots": [
             {
               "controlling-node": 0,
               "slot": 0
@@ -10209,7 +10209,7 @@
               ]
             }
           ],
-          "xtalk-slots": [
+          "xio-slots": [
             {
               "controlling-node": 0,
               "slot": 0
@@ -10303,7 +10303,7 @@
               ]
             }
           ],
-          "xtalk-slots": [
+          "xio-slots": [
             {
               "controlling-node": 2,
               "slot": 0
@@ -10411,7 +10411,7 @@
               ]
             }
           ],
-          "xtalk-slots": [
+          "xio-slots": [
             {
               "controlling-node": 2,
               "slot": 0
@@ -10726,7 +10726,7 @@
           "slot": 2
         }
       ],
-      "xtalk-attachments": [
+      "xio-attachments": [
         {
           "crossbar-index": 0,
           "node-index": 0,
@@ -10753,7 +10753,7 @@
           "widget": 9
         }
       ],
-      "xtalk-slots": [
+      "xio-slots": [
         {
           "controlling-node": 2,
           "crossbar-index": 0,
@@ -10975,7 +10975,7 @@
               ]
             }
           ],
-          "xtalk-slots": []
+          "xio-slots": []
         }
       ],
       "nodes": [
@@ -11160,7 +11160,7 @@
       ],
       "product": "origin300",
       "routers": [],
-      "xtalk-attachments": [
+      "xio-attachments": [
         {
           "crossbar-index": -1,
           "node-index": 0,
@@ -11182,7 +11182,7 @@
           "widget": 15
         }
       ],
-      "xtalk-slots": []
+      "xio-slots": []
     },
     {
       "cables": [],
@@ -11255,7 +11255,7 @@
               ]
             }
           ],
-          "xtalk-slots": []
+          "xio-slots": []
         }
       ],
       "nodes": [
@@ -11351,7 +11351,7 @@
       ],
       "product": "origin300",
       "routers": [],
-      "xtalk-attachments": [
+      "xio-attachments": [
         {
           "crossbar-index": -1,
           "node-index": 0,
@@ -11363,7 +11363,7 @@
           "widget": 15
         }
       ],
-      "xtalk-slots": []
+      "xio-slots": []
     }
   ],
   "version": 1

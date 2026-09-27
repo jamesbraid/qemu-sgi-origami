@@ -108,8 +108,8 @@ SGI_MODEL_DEFINE_LIST_ARRAY(SGIModelModule, module)
 SGI_MODEL_DEFINE_LIST_ARRAY(SGIModelRouter, router)
 SGI_MODEL_DEFINE_LIST_ARRAY(SGIModelCable, cable)
 SGI_MODEL_DEFINE_LIST_ARRAY(SGIModelCrossbar, crossbar)
-SGI_MODEL_DEFINE_LIST_ARRAY(SGIModelXtalkAttachment, xtalk_attachment)
-SGI_MODEL_DEFINE_LIST_ARRAY(SGIModelXtalkSlot, xtalk_slot)
+SGI_MODEL_DEFINE_LIST_ARRAY(SGIModelXioAttachment, xio_attachment)
+SGI_MODEL_DEFINE_LIST_ARRAY(SGIModelXioSlot, xio_slot)
 SGI_MODEL_DEFINE_LIST_ARRAY(SGIModelIoBoard, io_board)
 SGI_MODEL_DEFINE_LIST_ARRAY(SGIModelController, controller)
 
@@ -214,7 +214,7 @@ struct SGIMachineState {
 
     /*
      * One fabric proxy per empty XIO slot the topology names
-     * (t->xtalk_slots, in order), for a board fitted there at launch by
+     * (t->xio_slots, in order), for a board fitted there at launch by
      * slot name: prepared against the slot's widget before its Crossbow
      * realizes, and finished from machine_done below once every Crossbow
      * has. slot_claimed marks each slot a board has taken, so a second
@@ -641,13 +641,13 @@ static size_t sgi_machine_topology_io_board_count(const SGIModelTopology *t)
     return count;
 }
 
-/* Likewise for xtalk_slots. */
-static size_t sgi_machine_topology_xtalk_slot_count(const SGIModelTopology *t)
+/* Likewise for xio_slots. */
+static size_t sgi_machine_topology_xio_slot_count(const SGIModelTopology *t)
 {
-    const SGIModelXtalkSlotList *entry;
+    const SGIModelXioSlotList *entry;
     size_t count = 0;
 
-    for (entry = t->xtalk_slots; entry; entry = entry->next) {
+    for (entry = t->xio_slots; entry; entry = entry->next) {
         count++;
     }
     return count;
@@ -919,29 +919,29 @@ static int64_t sgi_machine_get_default_cpu_node_id(
 /* ---- Onboard and Crossbow-attached I/O boards ---- */
 
 /*
- * Split t->xtalk_attachments[] into each node's own entry and each
+ * Split t->xio_attachments[] into each node's own entry and each
  * io_boards[] entry's placement. A direct board (crossbar_index < 0)
  * shares its one entry with its node. A Crossbow-attached node's first
  * entry in array order is always its own host entry, so a later entry
  * repeating a node index already seen is that node's board.
  */
-static bool sgi_machine_index_xtalk_attachments(
+static bool sgi_machine_index_xio_attachments(
     const SGIModelTopology *t, unsigned int *node_attachment,
     unsigned int *board_attachment, Error **errp)
 {
     size_t node_count = sgi_machine_topology_node_count(t);
     size_t io_board_count = sgi_machine_topology_io_board_count(t);
-    g_autofree const SGIModelXtalkAttachment **attachments = NULL;
+    g_autofree const SGIModelXioAttachment **attachments = NULL;
     size_t attachment_count;
     g_autofree bool *claimed = g_new0(bool, node_count);
     unsigned int board = 0;
     size_t i;
 
-    attachments = sgi_model_xtalk_attachment_array(t->xtalk_attachments,
-                                                    &attachment_count);
+    attachments = sgi_model_xio_attachment_array(t->xio_attachments,
+                                                 &attachment_count);
 
     for (i = 0; i < attachment_count; i++) {
-        const SGIModelXtalkAttachment *attachment = attachments[i];
+        const SGIModelXioAttachment *attachment = attachments[i];
         unsigned int node_index = attachment->node_index;
 
         if (node_index >= node_count) {
@@ -1042,8 +1042,8 @@ static uint32_t sgi_machine_crossbar_part(SGIModelCrossbarKind kind)
 }
 
 /* The module an XIO slot's Crossbow sits in. */
-static uint32_t sgi_machine_xtalk_slot_module(const SGIModelTopology *t,
-                                              const SGIModelXtalkSlot *slot)
+static uint32_t sgi_machine_xio_slot_module(const SGIModelTopology *t,
+                                            const SGIModelXioSlot *slot)
 {
     g_autofree const SGIModelCrossbar **crossbars = NULL;
     size_t crossbar_count;
@@ -1057,16 +1057,16 @@ static uint32_t sgi_machine_xtalk_slot_module(const SGIModelTopology *t,
  * An XIO slot's name, unique within the machine: its IRIX label (io5),
  * or m<module>-io5 where another module has a slot of the same label.
  */
-static char *sgi_machine_xtalk_slot_name(const SGIModelTopology *t,
-                                         const SGIModelXtalkSlot *slot)
+static char *sgi_machine_xio_slot_name(const SGIModelTopology *t,
+                                       const SGIModelXioSlot *slot)
 {
-    const SGIModelXtalkSlotList *entry;
-    uint32_t module = sgi_machine_xtalk_slot_module(t, slot);
+    const SGIModelXioSlotList *entry;
+    uint32_t module = sgi_machine_xio_slot_module(t, slot);
 
-    for (entry = t->xtalk_slots; entry; entry = entry->next) {
+    for (entry = t->xio_slots; entry; entry = entry->next) {
         if (entry->value != slot &&
             g_str_equal(entry->value->label, slot->label) &&
-            sgi_machine_xtalk_slot_module(t, entry->value) != module) {
+            sgi_machine_xio_slot_module(t, entry->value) != module) {
             return g_strdup_printf("m%u-%s", module, slot->label);
         }
     }
@@ -1077,12 +1077,12 @@ static char *sgi_machine_xtalk_slot_name(const SGIModelTopology *t,
 static void sgi_machine_prepare_slot_links(SGIMachineState *s,
                                            const SGIModelTopology *t)
 {
-    g_autofree const SGIModelXtalkSlot **slots = NULL;
+    g_autofree const SGIModelXioSlot **slots = NULL;
     size_t slot_count, i;
 
-    slots = sgi_model_xtalk_slot_array(t->xtalk_slots, &slot_count);
+    slots = sgi_model_xio_slot_array(t->xio_slots, &slot_count);
     for (i = 0; i < slot_count; i++) {
-        g_autofree char *slot_name = sgi_machine_xtalk_slot_name(t, slots[i]);
+        g_autofree char *slot_name = sgi_machine_xio_slot_name(t, slots[i]);
         g_autofree char *name = g_strdup_printf("%s-fabric", slot_name);
 
         sgi_xio_crossbow_link_prepare(&s->slot_links[i], OBJECT(s), name);
@@ -1093,12 +1093,12 @@ static void sgi_machine_build_crossbars(SGIMachineState *s,
                                         const SGIModelTopology *t)
 {
     g_autofree const SGIModelCrossbar **crossbars = NULL;
-    g_autofree const SGIModelXtalkAttachment **attachments = NULL;
+    g_autofree const SGIModelXioAttachment **attachments = NULL;
     size_t crossbar_count, attachment_count, i;
 
     crossbars = sgi_model_crossbar_array(t->crossbars, &crossbar_count);
-    attachments = sgi_model_xtalk_attachment_array(t->xtalk_attachments,
-                                                    &attachment_count);
+    attachments = sgi_model_xio_attachment_array(t->xio_attachments,
+                                                 &attachment_count);
     for (i = 0; i < crossbar_count; i++) {
         const SGIModelCrossbar *descriptor = crossbars[i];
         DeviceState *crossbow = qdev_new(TYPE_SGI_XBOW);
@@ -1118,7 +1118,7 @@ static void sgi_machine_build_crossbars(SGIMachineState *s,
          */
         for (attachment_index = 0; attachment_index < attachment_count;
              attachment_index++) {
-            const SGIModelXtalkAttachment *attachment =
+            const SGIModelXioAttachment *attachment =
                 attachments[attachment_index];
 
             if ((unsigned int)attachment->crossbar_index == i) {
@@ -1174,7 +1174,7 @@ static char *sgi_machine_xio_board_name(const SGIModelTopology *t,
                                         unsigned int board_index)
 {
     const SGIModelIoBoardList *board;
-    const SGIModelXtalkSlotList *slot;
+    const SGIModelXioSlotList *slot;
 
     if (!record->label) {
         return g_strdup_printf("io-board%u", board_index);
@@ -1187,9 +1187,9 @@ static char *sgi_machine_xio_board_name(const SGIModelTopology *t,
                                    record->label);
         }
     }
-    for (slot = t->xtalk_slots; slot; slot = slot->next) {
+    for (slot = t->xio_slots; slot; slot = slot->next) {
         if (g_str_equal(slot->value->label, record->label) &&
-            sgi_machine_xtalk_slot_module(t, slot->value) !=
+            sgi_machine_xio_slot_module(t, slot->value) !=
             record->module_index) {
             return g_strdup_printf("m%u-%s", record->module_index,
                                    record->label);
@@ -1206,7 +1206,7 @@ static char *sgi_machine_xio_board_name(const SGIModelTopology *t,
 static void sgi_machine_add_xio_board(SGIMachineState *s, DeviceState *dev,
                                       const SGIModelIoBoard *record,
                                       unsigned int board_index,
-                                      const SGIModelXtalkAttachment *attachment)
+                                      const SGIModelXioAttachment *attachment)
 {
     const SGIModelTopology *t = sgi_machine_topology(MACHINE(s));
     g_autofree char *name = sgi_machine_xio_board_name(t, record,
@@ -1264,7 +1264,7 @@ static const SGIBridgeBoardRecord sgi_machine_crosstown_record = {
 static bool sgi_machine_instantiate_ip29_io(
     SGIMachineState *s, const SGIModelTopology *t,
     const SGIModelIoBoard *record, unsigned int board_index,
-    const SGIModelXtalkAttachment *attachment, Error **errp)
+    const SGIModelXioAttachment *attachment, Error **errp)
 {
     SN0NodeState *node = s->nodes[attachment->node_index];
     SGIXioCrossbowLink *crossbow_link = NULL;
@@ -1346,7 +1346,7 @@ static bool sgi_machine_instantiate_ip29_io(
  */
 static bool sgi_machine_attach_xio_card(
     SGIMachineState *s, DeviceState *dev, unsigned int board_index,
-    const SGIModelXtalkAttachment *attachment, Error **errp)
+    const SGIModelXioAttachment *attachment, Error **errp)
 {
     /*
      * A switched fabric carries the destination widget in its own packet
@@ -1388,7 +1388,7 @@ static bool sgi_machine_attach_xio_card(
 static bool sgi_machine_instantiate_baseio_card(
     SGIMachineState *s, const SGIModelTopology *t,
     const SGIModelIoBoard *record, unsigned int board_index,
-    const SGIModelXtalkAttachment *attachment, const char *preset,
+    const SGIModelXioAttachment *attachment, const char *preset,
     Error **errp)
 {
     DeviceState *dev = qdev_new(TYPE_SGI_XIO_BASEIO);
@@ -1468,7 +1468,7 @@ static bool sgi_machine_instantiate_baseio_card(
  */
 static bool sgi_machine_instantiate_pci_carrier(
     SGIMachineState *s, const SGIModelIoBoard *record,
-    unsigned int board_index, const SGIModelXtalkAttachment *attachment,
+    unsigned int board_index, const SGIModelXioAttachment *attachment,
     Error **errp)
 {
     DeviceState *dev = qdev_new(TYPE_SGI_PCI_CARRIER);
@@ -1491,7 +1491,7 @@ static bool sgi_machine_instantiate_pci_carrier(
 static bool sgi_machine_instantiate_gigachannel(
     SGIMachineState *s, const SGIModelTopology *t,
     const SGIModelIoBoard *record, unsigned int board_index,
-    const SGIModelXtalkAttachment *attachment, Error **errp)
+    const SGIModelXioAttachment *attachment, Error **errp)
 {
     DeviceState *dev = qdev_new(TYPE_SGI_GIGACHANNEL);
     const SGIModelIoBoardList *entry;
@@ -1530,7 +1530,7 @@ static bool sgi_machine_instantiate_gigachannel(
 
 static bool sgi_machine_instantiate_pci_shoehorn(
     SGIMachineState *s, const SGIModelIoBoard *record,
-    unsigned int board_index, const SGIModelXtalkAttachment *attachment,
+    unsigned int board_index, const SGIModelXioAttachment *attachment,
     Error **errp)
 {
     DeviceState *dev = qdev_new(TYPE_SGI_PCI_SHOEHORN);
@@ -1556,7 +1556,7 @@ static bool sgi_machine_instantiate_pci_shoehorn(
  */
 static bool sgi_machine_instantiate_xio_card(
     SGIMachineState *s, const SGIModelIoBoard *record,
-    unsigned int board_index, const SGIModelXtalkAttachment *attachment,
+    unsigned int board_index, const SGIModelXioAttachment *attachment,
     const char *preset, Error **errp)
 {
     DeviceState *dev = qdev_new(TYPE_SGI_XIO_BASEIO);
@@ -1583,7 +1583,7 @@ static bool sgi_machine_instantiate_xio_card(
 static bool sgi_machine_instantiate_kona(
     SGIMachineState *s, const SGIModelTopology *t,
     const SGIModelIoBoard *record, unsigned int board_index,
-    const SGIModelXtalkAttachment *attachment, Error **errp)
+    const SGIModelXioAttachment *attachment, Error **errp)
 {
     DeviceState *dev = qdev_new(TYPE_SGI_KONA);
     g_autofree char *proxy_name =
@@ -1641,7 +1641,7 @@ static bool sgi_machine_instantiate_kona(
  */
 static bool sgi_machine_instantiate_mgras(
     SGIMachineState *s, const SGIModelIoBoard *record,
-    unsigned int board_index, const SGIModelXtalkAttachment *attachment,
+    unsigned int board_index, const SGIModelXioAttachment *attachment,
     Error **errp)
 {
     DeviceState *dev = qdev_new(TYPE_SGI_MGRAS);
@@ -1657,7 +1657,7 @@ static bool sgi_machine_instantiate_mgras(
  * widget number -- the same attachment record every other product's
  * direct-attach board reads its widget from (Origin 200's onboard
  * Bridge in sgi_machine_instantiate_ip29_io(); an attachment with
- * crossbar_index -1, so sgi_machine_index_xtalk_attachments() already
+ * crossbar_index -1, so sgi_machine_index_xio_attachments() already
  * buckets it as a board-owning entry rather than a Crossbow one). The
  * XBridge always answers both of its heads -- one carries the IO-8, the
  * other stays inert (docs/datasheets/xbridge.md) -- so an io_boards
@@ -1669,7 +1669,7 @@ static bool sgi_machine_instantiate_mgras(
 static bool sgi_machine_instantiate_io8(
     SGIMachineState *s, const SGIModelTopology *t,
     const SGIModelIoBoard *record, unsigned int board_index,
-    const SGIModelXtalkAttachment *attachment, Error **errp)
+    const SGIModelXioAttachment *attachment, Error **errp)
 {
     SN1NodeState *node = SN1_NODE(s->bedrock_nodes[attachment->node_index]);
     DeviceState *baseio;
@@ -1756,7 +1756,7 @@ static bool sgi_machine_instantiate_io8(
 static bool sgi_machine_instantiate_io_board(
     SGIMachineState *s, const SGIModelTopology *t,
     const SGIModelIoBoard *record, unsigned int board_index,
-    const SGIModelXtalkAttachment *attachment, Error **errp)
+    const SGIModelXioAttachment *attachment, Error **errp)
 {
     switch (record->preset) {
     case SGI_MODEL_IO_BOARD_PRESET_IP29_IO:
@@ -1809,7 +1809,7 @@ static bool sgi_machine_instantiate_io_board(
  * each attached link's own real ingress views -- the first moment they
  * exist -- as what its outer port's own outbound traffic reaches.
  * node_attachment and board_attachment are sgi_machine_realize's own,
- * already resolved by sgi_machine_index_xtalk_attachments there; nothing
+ * already resolved by sgi_machine_index_xio_attachments there; nothing
  * here waits for a `-device`-plugged board, unlike the deferred
  * machine-init-done hook this replaces: a crosstalk board realized after
  * the machine returns cannot become an inbound destination on any of
@@ -1822,14 +1822,14 @@ static bool sgi_machine_realize_crossbars(
     const unsigned int *node_attachment, const unsigned int *board_attachment,
     Error **errp)
 {
-    g_autofree const SGIModelXtalkAttachment **attachments = NULL;
+    g_autofree const SGIModelXioAttachment **attachments = NULL;
     size_t crossbar_count = sgi_machine_topology_crossbar_count(t);
     size_t node_count = sgi_machine_topology_node_count(t);
     size_t io_board_count = sgi_machine_topology_io_board_count(t);
     size_t attachment_count, i;
 
-    attachments = sgi_model_xtalk_attachment_array(t->xtalk_attachments,
-                                                    &attachment_count);
+    attachments = sgi_model_xio_attachment_array(t->xio_attachments,
+                                                 &attachment_count);
 
     for (i = 0; i < crossbar_count; i++) {
         /*
@@ -1848,7 +1848,7 @@ static bool sgi_machine_realize_crossbars(
         }
     }
     for (i = 0; i < node_count; i++) {
-        const SGIModelXtalkAttachment *attachment =
+        const SGIModelXioAttachment *attachment =
             attachments[node_attachment[i]];
         g_autofree char *name = g_strdup_printf("node%zu", i);
 
@@ -1863,7 +1863,7 @@ static bool sgi_machine_realize_crossbars(
         }
     }
     for (i = 0; i < io_board_count; i++) {
-        const SGIModelXtalkAttachment *attachment =
+        const SGIModelXioAttachment *attachment =
             attachments[board_attachment[i]];
         g_autofree char *name = g_strdup_printf("io-board%zu", i);
 
@@ -2601,13 +2601,13 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
     }
 
     if (kind != SGI_MODEL_ASIC_KIND_HUB) {
-        g_autofree const SGIModelXtalkAttachment **attachments = NULL;
+        g_autofree const SGIModelXioAttachment **attachments = NULL;
         size_t attachment_count;
 
         uint64_t node_ram = machine->ram_size / node_count;
 
-        attachments = sgi_model_xtalk_attachment_array(t->xtalk_attachments,
-                                                        &attachment_count);
+        attachments = sgi_model_xio_attachment_array(t->xio_attachments,
+                                                     &attachment_count);
         for (node_index = 0; node_index < node_count; node_index++) {
             SN1NodeState *node = SN1_NODE(s->bedrock_nodes[node_index]);
             g_autofree unsigned int *widgets = NULL;
@@ -2689,7 +2689,7 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
         /*
          * Every node is realized now, so a head's PCI bus link property
          * exists. Each io_boards entry names its own attachment directly
-         * (record->attachment, an index into t->xtalk_attachments) rather
+         * (record->attachment, an index into t->xio_attachments) rather
          * than through node_attachment/board_attachment's claim-by-
          * crossbar resolution below: a Bedrock head is not behind a real
          * Crossbow, so there is no crossbar to claim through, and both
@@ -2754,8 +2754,8 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
         g_new0(SGIXioCrossbowLink, node_count + io_board_count);
     /* One fabric proxy per empty XIO slot; see slot_links. */
     s->slot_links = g_new0(SGIXioCrossbowLink,
-                           sgi_machine_topology_xtalk_slot_count(t));
-    s->slot_claimed = g_new0(bool, sgi_machine_topology_xtalk_slot_count(t));
+                           sgi_machine_topology_xio_slot_count(t));
+    s->slot_claimed = g_new0(bool, sgi_machine_topology_xio_slot_count(t));
 
     node_attachment = g_new0(unsigned int, node_count);
     board_attachment = g_new0(unsigned int, io_board_count);
@@ -2862,8 +2862,8 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
     }
     g_assert(ram_offset == machine->ram_size);
 
-    if (!sgi_machine_index_xtalk_attachments(t, node_attachment,
-                                             board_attachment, errp)) {
+    if (!sgi_machine_index_xio_attachments(t, node_attachment,
+                                           board_attachment, errp)) {
         return false;
     }
 
@@ -2874,12 +2874,12 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
      * Crossbow itself, and its real packet ingress, do not exist yet.
      */
     if (crossbar_count) {
-        g_autofree const SGIModelXtalkAttachment **attachments = NULL;
+        g_autofree const SGIModelXioAttachment **attachments = NULL;
         size_t attachment_count;
 
         sgi_machine_build_crossbars(s, t);
-        attachments = sgi_model_xtalk_attachment_array(t->xtalk_attachments,
-                                                        &attachment_count);
+        attachments = sgi_model_xio_attachment_array(t->xio_attachments,
+                                                     &attachment_count);
         for (node_index = 0; node_index < node_count; node_index++) {
             if (attachments[node_attachment[node_index]]->crossbar_index >= 0) {
                 g_autofree char *name =
@@ -2947,15 +2947,15 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
      */
     {
         g_autofree const SGIModelIoBoard **io_boards = NULL;
-        g_autofree const SGIModelXtalkAttachment **attachments = NULL;
+        g_autofree const SGIModelXioAttachment **attachments = NULL;
         size_t io_board_count_check, attachment_count;
 
         io_boards = sgi_model_io_board_array(t->io_boards, &io_board_count_check);
         g_assert(io_board_count_check == io_board_count);
-        attachments = sgi_model_xtalk_attachment_array(t->xtalk_attachments,
-                                                        &attachment_count);
+        attachments = sgi_model_xio_attachment_array(t->xio_attachments,
+                                                     &attachment_count);
         for (board_index = 0; board_index < io_board_count; board_index++) {
-            const SGIModelXtalkAttachment *attachment =
+            const SGIModelXioAttachment *attachment =
                 attachments[board_attachment[board_index]];
 
             if (!sgi_machine_instantiate_io_board(
@@ -2965,7 +2965,7 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
             }
         }
         for (node_index = 0; node_index < node_count; node_index++) {
-            const SGIModelXtalkAttachment *attachment =
+            const SGIModelXioAttachment *attachment =
                 attachments[node_attachment[node_index]];
 
             if (attachment->crossbar_index >= 0) {
@@ -3052,14 +3052,14 @@ static void sgi_machine_done(Notifier *notifier, void *data)
     SGIMachineState *s = container_of(notifier, SGIMachineState,
                                       machine_done);
     const SGIModelTopology *t = sgi_machine_topology(MACHINE(s));
-    g_autofree const SGIModelXtalkSlot **slots = NULL;
+    g_autofree const SGIModelXioSlot **slots = NULL;
     size_t slot_count, i;
 
-    slots = sgi_model_xtalk_slot_array(t->xtalk_slots, &slot_count);
+    slots = sgi_model_xio_slot_array(t->xio_slots, &slot_count);
     for (i = 0; i < slot_count; i++) {
         SGIXioCrossbowLink *link = &s->slot_links[i];
         SGIXbowState *crossbow = s->crossbars[slots[i]->crossbar_index];
-        g_autofree char *slot_name = sgi_machine_xtalk_slot_name(t, slots[i]);
+        g_autofree char *slot_name = sgi_machine_xio_slot_name(t, slots[i]);
         g_autofree char *name = g_strdup_printf("%s-fabric", slot_name);
 
         sgi_xio_crossbow_link_finish(link, OBJECT(s), name, crossbow,
@@ -3088,12 +3088,12 @@ static char *sgi_machine_slot_needs_node(MachineState *machine,
     const SGIModelTopology *t = sgi_machine_topology(machine);
     const SGIModelNodePopulationList *row;
     const SGIModelNodePopulation *smallest = NULL;
-    const SGIModelXtalkSlotList *slot;
+    const SGIModelXioSlotList *slot;
     uint32_t position = 0, controller = 0;
     g_autofree const SGIModelNode **nodes = NULL;
     size_t node_count;
 
-    for (slot = chassis->xtalk_slots; slot; slot = slot->next, position++) {
+    for (slot = chassis->xio_slots; slot; slot = slot->next, position++) {
         if (g_str_equal(slot->value->label, name)) {
             break;
         }
@@ -3104,7 +3104,7 @@ static char *sgi_machine_slot_needs_node(MachineState *machine,
     for (row = chassis->node_populations; row; row = row->next) {
         const SGIModelPopulationSlotList *usable;
 
-        for (usable = row->value->xtalk_slots; usable; usable = usable->next) {
+        for (usable = row->value->xio_slots; usable; usable = usable->next) {
             if (usable->value->slot == position &&
                 (!smallest || QAPI_LIST_LENGTH(row->value->nodes) <
                               QAPI_LIST_LENGTH(smallest->nodes))) {
@@ -3135,15 +3135,15 @@ static MemoryRegion *sgi_machine_claim_xio_slot(Object *obj,
 {
     SGIMachineState *s = SGI_MACHINE(obj);
     const SGIModelTopology *t = sgi_machine_topology(MACHINE(s));
-    g_autofree const SGIModelXtalkSlot **slots = NULL;
+    g_autofree const SGIModelXioSlot **slots = NULL;
     const SGIModelIoBoardList *board;
     size_t slot_count, i;
     ssize_t found = -1;
 
-    slots = sgi_model_xtalk_slot_array(t->xtalk_slots, &slot_count);
+    slots = sgi_model_xio_slot_array(t->xio_slots, &slot_count);
     for (i = 0; i < slot_count; i++) {
-        g_autofree char *slot_name = sgi_machine_xtalk_slot_name(t, slots[i]);
-        uint32_t slot_module = sgi_machine_xtalk_slot_module(t, slots[i]);
+        g_autofree char *slot_name = sgi_machine_xio_slot_name(t, slots[i]);
+        uint32_t slot_module = sgi_machine_xio_slot_module(t, slots[i]);
 
         if (!g_str_equal(slot_name, name) &&
             !g_str_equal(slots[i]->label, name)) {
@@ -3166,7 +3166,7 @@ static MemoryRegion *sgi_machine_claim_xio_slot(Object *obj,
             if (g_str_equal(slots[i]->label, name)) {
                 error_setg(errp, "XIO slot %s of topology '%s' is in module "
                            "%u, not module %u", name, t->name,
-                           sgi_machine_xtalk_slot_module(t, slots[i]),
+                           sgi_machine_xio_slot_module(t, slots[i]),
                            place->module);
                 return NULL;
             }
@@ -3197,10 +3197,10 @@ static MemoryRegion *sgi_machine_claim_xio_slot(Object *obj,
         return NULL;
     }
     s->slot_claimed[found] = true;
-    place->module = sgi_machine_xtalk_slot_module(t, slots[found]);
+    place->module = sgi_machine_xio_slot_module(t, slots[found]);
     place->widget = slots[found]->widget;
     place->position = found;
-    place->name = sgi_machine_xtalk_slot_name(t, slots[found]);
+    place->name = sgi_machine_xio_slot_name(t, slots[found]);
     place->label = g_strdup(slots[found]->label);
     return &s->slot_links[found].proxy;
 }
@@ -3217,12 +3217,12 @@ static bool sgi_machine_claim_xio_fabric(Object *obj, MemoryRegion *fabric,
 {
     SGIMachineState *s = SGI_MACHINE(obj);
     const SGIModelTopology *t = sgi_machine_topology(MACHINE(s));
-    g_autofree const SGIModelXtalkSlot **slots = NULL;
+    g_autofree const SGIModelXioSlot **slots = NULL;
     size_t slot_count, i;
 
-    slots = sgi_model_xtalk_slot_array(t->xtalk_slots, &slot_count);
+    slots = sgi_model_xio_slot_array(t->xio_slots, &slot_count);
     for (i = 0; i < slot_count; i++) {
-        uint32_t slot_module = sgi_machine_xtalk_slot_module(t, slots[i]);
+        uint32_t slot_module = sgi_machine_xio_slot_module(t, slots[i]);
 
         if (fabric != &s->slot_links[i].proxy) {
             continue;

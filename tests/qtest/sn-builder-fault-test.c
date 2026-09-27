@@ -72,16 +72,16 @@ static SGIModelModuleList *module_list(SGIModelModule *items, size_t count)
     return head;
 }
 
-static SGIModelXtalkAttachmentList *xtalk_attachment_list(
-    SGIModelXtalkAttachment *items, size_t count)
+static SGIModelXioAttachmentList *xio_attachment_list(
+    SGIModelXioAttachment *items, size_t count)
 {
-    SGIModelXtalkAttachmentList *head = NULL;
-    SGIModelXtalkAttachmentList **tail = &head;
+    SGIModelXioAttachmentList *head = NULL;
+    SGIModelXioAttachmentList **tail = &head;
     size_t i;
 
     for (i = 0; i < count; i++) {
-        SGIModelXtalkAttachmentList *entry =
-            g_new0(SGIModelXtalkAttachmentList, 1);
+        SGIModelXioAttachmentList *entry =
+            g_new0(SGIModelXioAttachmentList, 1);
 
         entry->value = &items[i];
         *tail = entry;
@@ -361,7 +361,7 @@ static SGIModelCable console_test_cables[] = {
  * IP29 Bridge decode mask and discovery widget are fixed device facts
  * in sn0.c, not topology fields.
  */
-static SGIModelXtalkAttachment console_test_xtalk[] = {
+static SGIModelXioAttachment console_test_xio[] = {
     { .crossbar_index = -1, .widget = 8, .node_index = 0 },
     { .crossbar_index = -1, .widget = 8, .node_index = 1 },
 };
@@ -441,8 +441,8 @@ static void console_test_set_activate(Object *obj, bool value, Error **errp)
 }
 
 /*
- * A descriptor fault sgi_machine_index_xtalk_attachments catches (the
- * function that splits the topology's xtalk-attachments into each node's own
+ * A descriptor fault sgi_machine_index_xio_attachments catches (the
+ * function that splits the topology's xio-attachments into each node's own
  * entry and each io-boards entry's placement, still run at every realize,
  * unlike sgi_machine_validate_topology, it is not just a validator: it
  * computes the indices the builder needs to place each board): a node with
@@ -456,9 +456,9 @@ static void console_test_set_construction_fault(Object *obj,
                                                  const char *value,
                                                  Error **errp)
 {
-    if (!strcmp(value, "node-without-xtalk-attachment")) {
+    if (!strcmp(value, "node-without-xio-attachment")) {
         /* Node 1 loses its own attachment; node 0's now answers for both. */
-        console_test_xtalk[1].node_index = 0;
+        console_test_xio[1].node_index = 0;
     } else {
         error_setg(errp, "unknown sn-builder-console-test construction "
                   "fault '%s'", value);
@@ -495,7 +495,7 @@ static void console_test_class_init(ObjectClass *oc, const void *data)
                                   console_test_set_construction_fault);
     object_class_property_set_description(oc, "construction-fault",
         "Break the fixture's descriptor in a way that only reaches "
-        "sgi_machine_index_xtalk_attachments, not tests/unit/test-sn-"
+        "sgi_machine_index_xio_attachments, not tests/unit/test-sn-"
         "model.c's static checks, then build through the real builder. "
         "Implies activate.");
 }
@@ -658,7 +658,7 @@ static SGIModelNode bedrock_test_nodes[] = {
     },
 };
 
-static SGIModelXtalkAttachment bedrock_test_xtalk[] = {
+static SGIModelXioAttachment bedrock_test_xio[] = {
     { .crossbar_index = -1, .widget = 15, .node_index = 0 },
     { .crossbar_index = -1, .widget = 15, .node_index = 1 },
 };
@@ -908,8 +908,8 @@ static void sn_builder_fault_test_register_types(void)
         module_list(console_test_modules, ARRAY_SIZE(console_test_modules));
     console_test_topology.cables =
         cable_list(console_test_cables, ARRAY_SIZE(console_test_cables));
-    console_test_topology.xtalk_attachments =
-        xtalk_attachment_list(console_test_xtalk, ARRAY_SIZE(console_test_xtalk));
+    console_test_topology.xio_attachments =
+        xio_attachment_list(console_test_xio, ARRAY_SIZE(console_test_xio));
     console_test_topology.io_boards =
         io_board_list(console_test_io_boards, ARRAY_SIZE(console_test_io_boards));
     /*
@@ -939,8 +939,8 @@ static void sn_builder_fault_test_register_types(void)
     bank_test_topology.modules =
         module_list(bank_test_modules, ARRAY_SIZE(bank_test_modules));
     /* Reuses the console fixture's own node-0 attachment and board. */
-    bank_test_topology.xtalk_attachments =
-        xtalk_attachment_list(console_test_xtalk, 1);
+    bank_test_topology.xio_attachments =
+        xio_attachment_list(console_test_xio, 1);
     bank_test_topology.io_boards =
         io_board_list(console_test_io_boards, 1);
     bank_test_topology.node_populations = whole_population(
@@ -960,9 +960,9 @@ static void sn_builder_fault_test_register_types(void)
 
     bedrock_test_topology.nodes =
         node_list(bedrock_test_nodes, ARRAY_SIZE(bedrock_test_nodes));
-    bedrock_test_topology.xtalk_attachments =
-        xtalk_attachment_list(bedrock_test_xtalk,
-                              ARRAY_SIZE(bedrock_test_xtalk));
+    bedrock_test_topology.xio_attachments =
+        xio_attachment_list(bedrock_test_xio,
+                            ARRAY_SIZE(bedrock_test_xio));
     bedrock_test_topology.io_boards =
         io_board_list(bedrock_test_io_boards,
                      ARRAY_SIZE(bedrock_test_io_boards));

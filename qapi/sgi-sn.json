@@ -17,7 +17,7 @@
 # own identity, revision or size.  A fact the same on every machine
 # fitting one chip -- a PCI function's position, an I2C address, a
 # crossbar's manufacturer id, a Router's port count, a flash's named
-# views, a crosstalk attachment's decode mask -- is a device fact
+# views, an XIO attachment's decode mask -- is a device fact
 # instead, fixed in the device model that already owns it.  An
 # `offerings` record carries what a launcher may choose, unfiltered by
 # that rule: the accepted CPU and memory populations, firmware kind
@@ -136,7 +136,7 @@
 #
 # @ni-revision: NUMAlink interface revision
 #
-# @widget-revision: crosstalk widget revision this ASIC's port answers
+# @widget-revision: XIO widget revision this ASIC's port answers
 #
 # @serial: fitted-part one-wire serial
 #
@@ -316,7 +316,7 @@
 ##
 # @SGIModelCrossbarKind:
 #
-# Which crosstalk switch a crossbar record describes.
+# Which XIO crossbar a crossbar record describes.
 #
 # @xbow: a standalone Crossbow chip
 #
@@ -330,7 +330,7 @@
 ##
 # @SGIModelCrossbar:
 #
-# One crosstalk switch.  Its manufacturer id, part number and
+# One XIO crossbar.  Its manufacturer id, part number and
 # initially-populated-links mask are fixed by @kind and are not
 # carried here.
 #
@@ -338,7 +338,7 @@
 #
 # @module-index: position in the topology's own @modules list
 #
-# @kind: which crosstalk switch this is
+# @kind: which XIO crossbar this is
 #
 # @widget-revision: fitted silicon revision
 #
@@ -351,9 +351,9 @@
             'widget-revision': 'uint8' } }
 
 ##
-# @SGIModelXtalkAttachment:
+# @SGIModelXioAttachment:
 #
-# Which node hosts a crosstalk widget: through a crossbar's numbered
+# Which node hosts an XIO widget: through a crossbar's numbered
 # link, or, with no crossbar between the node and the widget, a direct
 # attachment.  A direct attachment's decode mask and discovery widget
 # are fixed by the chip that answers it and are not carried here.
@@ -367,15 +367,15 @@
 #
 # Since: 11.2
 ##
-{ 'struct': 'SGIModelXtalkAttachment',
+{ 'struct': 'SGIModelXioAttachment',
   'data': { 'crossbar-index': 'int',
             'widget': 'uint32',
             'node-index': 'uint32' } }
 
 ##
-# @SGIModelXtalkSlot:
+# @SGIModelXioSlot:
 #
-# One physical crosstalk connector position.  A slot does not imply
+# One physical XIO slot position.  A slot does not imply
 # that its link is populated or alive.
 #
 # @id: canonical component identifier from the machine model
@@ -392,7 +392,7 @@
 #
 # Since: 11.2
 ##
-{ 'struct': 'SGIModelXtalkSlot',
+{ 'struct': 'SGIModelXioSlot',
   'data': { 'id': 'str',
             'crossbar-index': 'uint32',
             'widget': 'uint32',
@@ -444,7 +444,7 @@
 # @mscsi: the MSCSI XIO card, four QLogic ISP1040 SCSI controllers
 #
 # @mgras: the SI/MXI (MGRAS) graphics board, an XIO card whose widget
-#     answers crosstalk directly with no Bridge; the widget's own
+#     answers XIO directly with no Bridge; the widget's own
 #     identity is fixed by the device, so the record's @part,
 #     @revision and @serial are not presented to the guest
 #
@@ -627,7 +627,7 @@
 # use, and the node that controls it with that many node boards
 # fitted.
 #
-# @slot: position in the topology's own @xtalk-slots list
+# @slot: position in the topology's own @xio-slots list
 #
 # @controlling-node: position in the topology's own @nodes list of the
 #     node that controls this position in this row
@@ -657,7 +657,7 @@
 # @cables: positions in the topology's own @cables list of the fitted
 #     cables
 #
-# @xtalk-slots: every empty crosstalk position this row can use; a
+# @xio-slots: every empty XIO position this row can use; a
 #     position not named here is refused to a board fitted at launch
 #
 # @supported-cpu-populations: every `-smp` population the builder
@@ -672,7 +672,7 @@
   'data': { 'nodes': ['uint32'],
             'routers': ['uint32'],
             'cables': ['uint32'],
-            'xtalk-slots': ['SGIModelPopulationSlot'],
+            'xio-slots': ['SGIModelPopulationSlot'],
             'supported-cpu-populations': ['SGIModelCpuPopulation'],
             'grade': 'SGIModelEvidenceGrade' } }
 
@@ -716,11 +716,11 @@
 #
 # @cables: every cable any of this chassis's node counts fits
 #
-# @crossbars: this topology's crosstalk switches
+# @crossbars: this topology's XIO crossbars
 #
-# @xtalk-attachments: which node hosts each crosstalk widget
+# @xio-attachments: which node hosts each XIO widget
 #
-# @xtalk-slots: physical crosstalk connector positions, whether
+# @xio-slots: physical XIO slot positions, whether
 #     populated or not
 #
 # @io-boards: this topology's base I/O boards
@@ -736,7 +736,7 @@
 #     or -1 where this topology has none
 #
 # @node-populations: every count of node boards this chassis accepts,
-#     one row per count; @nodes, @routers, @cables and @xtalk-slots
+#     one row per count; @nodes, @routers, @cables and @xio-slots
 #     describe the whole chassis, and a row names the part of it that
 #     count fits
 #
@@ -752,8 +752,8 @@
             'routers': ['SGIModelRouter'],
             'cables': ['SGIModelCable'],
             'crossbars': ['SGIModelCrossbar'],
-            'xtalk-attachments': ['SGIModelXtalkAttachment'],
-            'xtalk-slots': ['SGIModelXtalkSlot'],
+            'xio-attachments': ['SGIModelXioAttachment'],
+            'xio-slots': ['SGIModelXioSlot'],
             'io-boards': ['SGIModelIoBoard'],
             'controllers': ['SGIModelController'],
             'console': 'int',

@@ -1109,20 +1109,20 @@ static void test_console_field_puts_its_node_on_serial_line_zero(
 }
 
 /*
- * tests/unit/test-sn-model.c checks xtalk_attachments/io_boards against
+ * tests/unit/test-sn-model.c checks xio_attachments/io_boards against
  * node_count once, for the compiled descriptor; this fixture corrupts a copy
  * at runtime instead, so a node missing its own crosstalk attachment only
- * fails once sgi_machine_index_xtalk_attachments looks it up during real
+ * fails once sgi_machine_index_xio_attachments looks it up during real
  * construction. This must surface as sgi_machine_ init's own reported error
  * and a clean exit, not an aborting assertion or a memory-region collision
  * reaching the guest as a signal.
  */
-static void test_node_without_xtalk_attachment_rejected(const void *data)
+static void test_node_without_xio_attachment_rejected(const void *data)
 {
     const char *args[] = {
         qtest_qemu_binary(NULL), "-M",
         "sn-builder-console-test,"
-        "construction-fault=node-without-xtalk-attachment",
+        "construction-fault=node-without-xio-attachment",
         "-m", "128M", "-smp", "4",
         "-cpu", "R10000",
         /*
@@ -1622,8 +1622,8 @@ int main(int argc, char **argv)
                         NULL, test_topology_from_another_product_refused);
     qtest_add_data_func("sn/builder/console-node-gets-serial-line-zero", NULL,
                         test_console_field_puts_its_node_on_serial_line_zero);
-    qtest_add_data_func("sn/builder/node-without-xtalk-attachment-rejected",
-                        NULL, test_node_without_xtalk_attachment_rejected);
+    qtest_add_data_func("sn/builder/node-without-xio-attachment-rejected",
+                        NULL, test_node_without_xio_attachment_rejected);
     qtest_add_data_func("sn/builder/unsupported-memory-population-rejected",
                         NULL, test_unsupported_memory_population_rejected);
     qtest_add_data_func("sn/builder/unbuildable-rows-rejected", NULL,

@@ -154,20 +154,20 @@ static bool sgi_model_kept(const int *map, size_t total, int64_t index)
 }
 
 /*
- * Whether each of @t's xtalk_attachments is its node's own host entry: a
+ * Whether each of @t's xio_attachments is its node's own host entry: a
  * Crossbow-attached node's first entry is, and any later one places one
- * of io_boards[] (the rule sgi_machine_index_xtalk_attachments applies).
+ * of io_boards[] (the rule sgi_machine_index_xio_attachments applies).
  */
 static bool *sgi_model_host_attachments(const SGIModelTopology *t,
                                         size_t node_total)
 {
-    size_t total = QAPI_LIST_LENGTH(t->xtalk_attachments);
+    size_t total = QAPI_LIST_LENGTH(t->xio_attachments);
     bool *host = g_new0(bool, total ? total : 1);
     g_autofree bool *seen = g_new0(bool, node_total ? node_total : 1);
-    const SGIModelXtalkAttachmentList *entry;
+    const SGIModelXioAttachmentList *entry;
     size_t i = 0;
 
-    for (entry = t->xtalk_attachments; entry; entry = entry->next, i++) {
+    for (entry = t->xio_attachments; entry; entry = entry->next, i++) {
         uint32_t node = entry->value->node_index;
 
         if (entry->value->crossbar_index >= 0 && node < node_total &&
@@ -194,8 +194,8 @@ static bool sgi_model_check_row(const SGIModelTopology *t,
     size_t router_total = QAPI_LIST_LENGTH(t->routers);
     size_t crossbar_total = QAPI_LIST_LENGTH(t->crossbars);
     size_t cable_total = QAPI_LIST_LENGTH(t->cables);
-    size_t slot_total = QAPI_LIST_LENGTH(t->xtalk_slots);
-    const SGIModelXtalkAttachmentList *attachment;
+    size_t slot_total = QAPI_LIST_LENGTH(t->xio_slots);
+    const SGIModelXioAttachmentList *attachment;
     const SGIModelPopulationSlotList *usable;
     const uint32List *cable;
     size_t i;
@@ -222,9 +222,9 @@ static bool sgi_model_check_row(const SGIModelTopology *t,
             }
         }
     }
-    for (attachment = t->xtalk_attachments, i = 0; attachment;
+    for (attachment = t->xio_attachments, i = 0; attachment;
          attachment = attachment->next, i++) {
-        const SGIModelXtalkAttachment *a = attachment->value;
+        const SGIModelXioAttachment *a = attachment->value;
 
         if (host[i]) {
             continue;
@@ -239,8 +239,8 @@ static bool sgi_model_check_row(const SGIModelTopology *t,
             return false;
         }
     }
-    for (usable = row->xtalk_slots; usable; usable = usable->next) {
-        const SGIModelXtalkSlot *slot;
+    for (usable = row->xio_slots; usable; usable = usable->next) {
+        const SGIModelXioSlot *slot;
 
         if (usable->value->slot >= slot_total) {
             error_setg(errp, "topology '%s' names XIO slot %u out of range "
@@ -248,7 +248,7 @@ static bool sgi_model_check_row(const SGIModelTopology *t,
                        usable->value->slot);
             return false;
         }
-        slot = SGI_MODEL_NTH(t->xtalk_slots, usable->value->slot);
+        slot = SGI_MODEL_NTH(t->xio_slots, usable->value->slot);
         if (!sgi_model_kept(node_map, node_total,
                             usable->value->controlling_node) ||
             !sgi_model_kept(crossbar_map, crossbar_total,
@@ -285,7 +285,7 @@ static SGIModelTopology *sgi_model_build_view(const SGIModelTopology *t,
     g_autofree int *crossbar_map =
         g_new(int, crossbar_total ? crossbar_total : 1);
     g_autofree bool *host = NULL;
-    const SGIModelXtalkAttachmentList *attachment;
+    const SGIModelXioAttachmentList *attachment;
     const SGIModelPopulationSlotList *usable;
     const SGIModelModuleList *module;
     const SGIModelRouterList *router;
@@ -311,9 +311,9 @@ static SGIModelTopology *sgi_model_build_view(const SGIModelTopology *t,
     for (i = 0; i < crossbar_total; i++) {
         crossbar_map[i] = -1;
     }
-    for (attachment = t->xtalk_attachments, i = 0; attachment;
+    for (attachment = t->xio_attachments, i = 0; attachment;
          attachment = attachment->next, i++) {
-        const SGIModelXtalkAttachment *a = attachment->value;
+        const SGIModelXioAttachment *a = attachment->value;
 
         if (host[i] && sgi_model_kept(node_map, node_total, a->node_index) &&
             a->crossbar_index < crossbar_total) {
@@ -408,11 +408,11 @@ static SGIModelTopology *sgi_model_build_view(const SGIModelTopology *t,
         }
     }
     {
-        SGIModelXtalkAttachmentList **tail = &view->xtalk_attachments;
+        SGIModelXioAttachmentList **tail = &view->xio_attachments;
 
-        for (attachment = t->xtalk_attachments, i = 0; attachment;
+        for (attachment = t->xio_attachments, i = 0; attachment;
              attachment = attachment->next, i++) {
-            SGIModelXtalkAttachment *copy;
+            SGIModelXioAttachment *copy;
 
             if (!sgi_model_kept(node_map, node_total,
                                 attachment->value->node_index)) {
@@ -428,11 +428,11 @@ static SGIModelTopology *sgi_model_build_view(const SGIModelTopology *t,
         }
     }
     {
-        SGIModelXtalkSlotList **tail = &view->xtalk_slots;
+        SGIModelXioSlotList **tail = &view->xio_slots;
 
-        for (usable = row->xtalk_slots; usable; usable = usable->next) {
-            SGIModelXtalkSlot *copy =
-                g_memdup2(SGI_MODEL_NTH(t->xtalk_slots, usable->value->slot),
+        for (usable = row->xio_slots; usable; usable = usable->next) {
+            SGIModelXioSlot *copy =
+                g_memdup2(SGI_MODEL_NTH(t->xio_slots, usable->value->slot),
                           sizeof(*copy));
 
             copy->controlling_node = node_map[usable->value->controlling_node];
@@ -459,10 +459,10 @@ static SGIModelTopology *sgi_model_build_view(const SGIModelTopology *t,
         }
     }
     {
-        SGIModelPopulationSlotList **tail = &own->xtalk_slots;
-        const SGIModelXtalkSlotList *kept;
+        SGIModelPopulationSlotList **tail = &own->xio_slots;
+        const SGIModelXioSlotList *kept;
 
-        for (kept = view->xtalk_slots, i = 0; kept; kept = kept->next, i++) {
+        for (kept = view->xio_slots, i = 0; kept; kept = kept->next, i++) {
             SGIModelPopulationSlot *place = g_new0(SGIModelPopulationSlot, 1);
 
             place->slot = i;
