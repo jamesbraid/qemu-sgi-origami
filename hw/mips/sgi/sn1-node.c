@@ -1173,7 +1173,9 @@ static bool sn1_node_requester_pointer(void *opaque, CPUState *cs,
 /*
  * A processor's secondary-cache instruction or prefetch, passed to the
  * memory unit of the node whose memory it names. An index instruction names
- * a set rather than a line, so it goes to every node this one reaches.
+ * a set rather than a line, so it goes to this node and its one cabled peer,
+ * all an Origin 300 pair has; a line homed on any other node would be
+ * missed.
  */
 static bool sn1_node_system_request(void *opaque, CPUState *cs,
                                     R10KSystemRequest request, uint64_t paddr,

@@ -2383,17 +2383,48 @@ static const MemoryRegionOps md_memory_ops = {
  * invalidates every other copy; an owner's write-back unowns the line. A
  * clean exclusive or shared copy is dropped without telling the directory.
  * The processors' requests are the R10000's (R10000 User's Manual version
- * 2.0, Table 4-2): a load miss asks to read, a store miss to read
- * exclusive, and a store to a shared copy to upgrade.
+ * 2.0, Table 4-2), which depend on the cache algorithm: under coherent
+ * exclusive-on-write (5) a load miss reads shared and a store miss reads
+ * exclusive; under coherent exclusive (4) a load miss also reads
+ * exclusive; noncoherent (3) makes no coherent request; a store to a
+ * shared copy upgrades. The unit sees only that an access is cached, not
+ * its algorithm, so it serves every cached load as a read -- exclusive if
+ * the line is unowned, per the protocol above -- and every cached store as
+ * a read-exclusive. An algorithm-4 load that finds the line shared is
+ * therefore recorded as a sharer rather than as the new owner, and an
+ * algorithm-3 access changes state it would not.
  *
  * The model follows a line only while it is watched, and keeps each
  * processor's copy of it here rather than in the processor, as the state
- * its secondary cache would hold. It has no processor caches, so a copy
- * leaves only through a cache instruction or another processor's request,
- * never through replacement. Words in any state the protocol above does
- * not produce -- busy, wait, poisoned, coarse or sparse, owned by an I/O
- * device -- are left alone, as is a line whose directory word is marked
- * with a check error.
+ * its secondary cache would hold. Its limits:
+ *
+ * - A line is followed from the first backdoor access to its word, so
+ *   accesses before that are not seen, and every copy starts invalid:
+ *   the first access after admission always makes a request, where a
+ *   processor already holding the line would not. Software that writes a
+ *   pattern into a word and then touches the line cached -- the stock
+ *   PROM's directory test does -- sees the word rewritten.
+ * - Copies are never replaced by other lines: a copy leaves through a
+ *   cache instruction, another processor's request, or the release of an
+ *   idle line, which the model takes as a replacement.
+ * - An index cache instruction drops the copy whichever way it names; the
+ *   model does not track which way of its set a copy occupies.
+ * - Uncached accesses make no request (Table 4-2); that the unit leaves
+ *   the word alone for them, rather than recalling a cached copy, is
+ *   inferred.
+ * - An instruction fetch from a watched line reaches the overlay as a load
+ *   and is served as a read, not as the read-shared an instruction miss
+ *   makes, and code on a watched page runs one instruction at a time.
+ * - DMA and other device accesses make no request. An access counts as a
+ *   processor's when a processor issued it; a device making a synchronous
+ *   DMA access from within a processor's I/O access would be counted as
+ *   that processor's load or store; which devices here do that has not
+ *   been checked.
+ *
+ * Words in any state the protocol above does not produce -- busy, wait,
+ * poisoned, coarse or sparse, owned by an I/O device, or naming a
+ * processor or interface the machine does not have -- are left alone, as
+ * is a line whose directory word is marked with a check error.
  */
 #define MD_WATCH_IDLE_NS NANOSECONDS_PER_SECOND
 
@@ -2475,7 +2506,7 @@ static bool md_directory_decode(uint64_t word, bool premium,
         if (premium) {
             entry->owner |= extract64(word, 22, 3) << 8;
         }
-        /* Device bit 1 names an I/O owner, not a processor. */
+        /* Device bit 1 names an I/O owner (MD_PTR_OWNER_IO, hubmd_next.h). */
         return !(entry->owner & 2);
     case MD_FORMAT_SHARED_FINE:
         tag1 = extract64(word, 2, 3);
@@ -2691,7 +2722,11 @@ static uint8_t md_directory_request(SGIBedrockMDState *s,
     return granted;
 }
 
-/* A processor's cached load or store reached the watched line. */
+/*
+ * A processor's cached load or store reached the watched line. The issuer
+ * is the processor running when the access arrives; see the limits above
+ * for a device's access made from inside one.
+ */
 static void md_watched_access(SGIBedrockMDState *s,
                               SGIBedrockMDWatchedLine *line, bool is_write,
                               MemTxAttrs attrs)
