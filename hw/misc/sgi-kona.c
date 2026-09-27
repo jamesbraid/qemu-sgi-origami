@@ -617,6 +617,7 @@ static bool sgi_kona_build_widget(SGIXioBoardState *board,
 static bool sgi_kona_finish_realize(SGIXioBoardState *board, Error **errp)
 {
     SGIKonaState *s = SGI_KONA(board);
+    bool attached[ARRAY_SIZE(sgi_kona_identity_parts)] = { false };
     strList *entry;
 
     s->onewire_bus = onewire_create_bus(DEVICE(s), "onewire");
@@ -627,17 +628,23 @@ static bool sgi_kona_finish_realize(SGIXioBoardState *board, Error **errp)
     }
     for (entry = s->other_identity_parts; entry; entry = entry->next) {
         const SGIKonaIdentityPart *known = NULL;
+        size_t index;
 
-        for (size_t i = 0; i < ARRAY_SIZE(sgi_kona_identity_parts); i++) {
-            if (g_str_equal(entry->value, sgi_kona_identity_parts[i].part)) {
-                known = &sgi_kona_identity_parts[i];
+        for (index = 0; index < ARRAY_SIZE(sgi_kona_identity_parts); index++) {
+            if (g_str_equal(entry->value,
+                            sgi_kona_identity_parts[index].part)) {
+                known = &sgi_kona_identity_parts[index];
                 break;
             }
         }
         if (!known) {
-            error_setg(errp,
-                      "sgi-kona: unknown other-identity-parts entry '%s'",
-                      entry->value);
+            error_setg(errp, "unknown other-identity-parts entry '%s'",
+                       entry->value);
+            return false;
+        }
+        if (attached[index]) {
+            error_setg(errp, "duplicate other-identity-parts entry '%s'",
+                       entry->value);
             return false;
         }
         if (!sgi_kona_onewire_attach_part(
@@ -645,6 +652,7 @@ static bool sgi_kona_finish_realize(SGIXioBoardState *board, Error **errp)
                 known->serial, errp)) {
             return false;
         }
+        attached[index] = true;
     }
 
     sgi_command_port_init(&s->textport, &sgi_kona_textport_ops, s,
@@ -926,6 +934,10 @@ static void sgi_kona_set_other_identity_parts(Object *obj, Visitor *v,
     SGIKonaState *s = SGI_KONA(obj);
     strList *replacement = NULL;
 
+    if (qdev_is_realized(DEVICE(obj))) {
+        qdev_prop_set_after_realize(DEVICE(obj), name, errp);
+        return;
+    }
     if (!visit_type_strList(v, name, &replacement, errp)) {
         return;
     }
@@ -961,7 +973,8 @@ static void sgi_kona_class_init(ObjectClass *oc, const void *data)
         "Identity parts to attach to the +0x98 one-wire chain beyond the "
         "geometry board's own record, by part number. Defaults to the "
         "Ktown board (030-1067-001); an empty list models a deskside "
-        "pipe with no Ktown. An unknown part number is a realize error.");
+        "pipe with no Ktown. An unknown or duplicate part number is a "
+        "realize error, and the property is fixed once realized.");
 }
 
 static const TypeInfo sgi_kona_type = {

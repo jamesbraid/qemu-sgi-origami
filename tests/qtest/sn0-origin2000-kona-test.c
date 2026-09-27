@@ -816,14 +816,28 @@ static void test_onewire_other_identity_parts_empty(void)
      * Match ROM against Ktown's own identity still sees the reset pulse
      * pulled low (geometry answers every reset regardless of which
      * identity gets selected next), but no part on this chain matches it,
-     * so the bus idles for whatever slot follows: a read slot returns 1,
-     * the same "no part present" level sgi_onewire_slot() produces
-     * against a childless bus.
+     * so the bus idles for the rest of the transaction. KONA_READ() alone
+     * cannot tell that apart from a real, matched Ktown waiting for its
+     * next command: both read a single undriven "1" either way, because
+     * neither is a complete ROM-command slot -- onewire_slave_slot_advance()
+     * (hw/1wire/core.c) never pulls low mid ROM-command, so KONA_READ()'s
+     * and KONA_WRITE_ONE()'s shared pulse/sample timing looks the same
+     * whether or not a genuine part is selected underneath it.
+     *
+     * Sending Ktown's own Read Memory header instead does discriminate: a
+     * real, selected DS2502 answers with the CRC-8 over that header
+     * (kona_read_memory() checks exactly that in
+     * test_onewire_ktown_identity() above, where Ktown genuinely answers),
+     * but with no part selected, every bit of the reply -- the echoed CRC
+     * byte included -- reads as the undriven "1", so the byte comes back
+     * 0xff instead.
      */
     kona_build_identity(identity, KONA_ONEWIRE_FAMILY, KONA_KTOWN_SERIAL);
     kona_match_rom(s, identity);
-    g_assert_true(KONA_READ(s));
-    g_assert_true(KONA_READ(s));
+    kona_write_byte(s, DS2502_CMD_READ_MEMORY);
+    kona_write_byte(s, 0x00);
+    kona_write_byte(s, 0x00);
+    g_assert_cmphex(kona_read_byte(s), ==, 0xff);
 
     qtest_quit(s);
 }
@@ -842,7 +856,7 @@ static void assert_qemu_rejects(const char *const args[], const char *message)
     int wait_status = 0;
 
     g_assert_true(g_spawn_sync(NULL, (char **)args, NULL, 0, NULL, NULL,
-                              NULL, &error_output, &wait_status, NULL));
+                               NULL, &error_output, &wait_status, NULL));
     g_assert_false(g_spawn_check_exit_status(wait_status, NULL));
     g_assert_false(WIFSIGNALED(wait_status));
     g_assert_nonnull(strstr(error_output, message));
@@ -891,6 +905,31 @@ static void test_onewire_other_identity_parts_unknown_rejected(void)
     };
 
     assert_qemu_rejects(args, "unknown other-identity-parts entry");
+}
+
+/*
+ * A repeated part number would otherwise abort the whole process:
+ * sgi_kona_onewire_attach_part() names each part's child object after its
+ * own fixed child_name ("onewire-ktown" for Ktown), and
+ * object_property_add_child() (qom/object.c) takes a second add under the
+ * same name straight through &error_abort. sgi_kona_finish_realize() must
+ * catch the repeat itself before ever attaching the same part twice, and
+ * report it the same clean, non-signal way
+ * test_onewire_other_identity_parts_unknown_rejected() above checks for an
+ * unrecognized one.
+ */
+static void test_onewire_other_identity_parts_duplicate_rejected(void)
+{
+    const char *args[] = {
+        qtest_qemu_binary(NULL), "-M", "origin2000",
+        "-device",
+        "{\"driver\":\"sgi-kona\",\"module\":99,\"slot\":8,"
+        "\"fabric\":\"/machine/crossbow0-spare-fabric[0]\","
+        "\"other-identity-parts\":[\"030-1067-001\",\"030-1067-001\"]}",
+        "-display", "none", "-qtest", "stdio", "-accel", "qtest", NULL
+    };
+
+    assert_qemu_rejects(args, "duplicate other-identity-parts entry");
 }
 
 /*
@@ -1098,6 +1137,9 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/origin2000/kona/"
                    "onewire-other-identity-parts-unknown-rejected",
                    test_onewire_other_identity_parts_unknown_rejected);
+    qtest_add_func("sn0/origin2000/kona/"
+                   "onewire-other-identity-parts-duplicate-rejected",
+                   test_onewire_other_identity_parts_duplicate_rejected);
     qtest_add_func("sn0/origin2000/kona/reset-clears-plain-storage",
                    test_reset_clears_plain_storage);
     qtest_add_func("sn0/origin2000/kona/reset-clears-increment-2-state",
