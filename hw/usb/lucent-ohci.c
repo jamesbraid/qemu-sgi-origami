@@ -7,7 +7,8 @@
  * fixed medium DEVSEL timing in the PCI Status word, set after the shared
  * OHCI wrapper realizes, and HcInterruptEnable's OpenHCI reset value.
  * Register overlays below keep what the driver writes where the part's
- * board tests require it and the shared core discards it.
+ * board tests require it and the shared core discards it, and switch
+ * root-hub port power as the root-hub descriptors select.
  */
 
 #include "qemu/osdep.h"
@@ -43,6 +44,23 @@ DECLARE_CLASS_CHECKERS(LucentOHCIClass, LUCENT_OHCI, TYPE_LUCENT_OHCI)
 #define LUCENT_OHCI_FM_NUMBER       0x3c
 #define LUCENT_OHCI_CONTROL_HCFS    0xc0
 #define LUCENT_OHCI_HCFS_OPERATIONAL 0x80
+/* HcRhDescriptorA's PowerSwitchingMode and NoPowerSwitching. */
+#define LUCENT_OHCI_RHA_PSM         (1u << 8)
+#define LUCENT_OHCI_RHA_NPS         (1u << 9)
+/* HcRhStatus, and its ClearGlobalPower and SetGlobalPower write bits. */
+#define LUCENT_OHCI_RH_STATUS       0x50
+#define LUCENT_OHCI_RHS_LPS         (1u << 0)
+#define LUCENT_OHCI_RHS_LPSC        (1u << 16)
+/*
+ * HcRhPortStatus[1], the first of one register per port, and its
+ * PortPowerStatus (SetPortPower when written) and LowSpeedDeviceAttached
+ * (ClearPortPower when written) bits.
+ */
+#define LUCENT_OHCI_RH_PORT_STATUS  0x54
+#define LUCENT_OHCI_PORT_PPS        (1u << 8)
+#define LUCENT_OHCI_PORT_LSDA       (1u << 9)
+/* What the core's own power-off clears: PPS, CCS, PSS and PRS. */
+#define LUCENT_OHCI_PORT_POWER_OFF  0x115u
 
 /*
  * The reset values this part holds where the shared core's differ, after
@@ -150,9 +168,9 @@ static const MemoryRegionOps lucent_ohci_rhdesc_b_ops = {
  * HcRhDescriptorA: OpenHCI 1.0a makes NoPowerSwitching, PowerSwitchingMode,
  * OverCurrentProtectionMode, NoOverCurrentProtection and
  * PowerOnToPowerGoodTime writable by the driver (section 7.4.1); the shared
- * core discards writes to them. The core's power commands act whatever the
- * register says, so this stores what the driver wrote and changes no port
- * behaviour. Reads, the port count and the power-on value stay the core's.
+ * core discards writes to them. The port power overlays below act on the
+ * two power-switching fields. Reads, the port count and the power-on value
+ * stay the core's.
  */
 static uint64_t lucent_ohci_rhdesc_a_read(void *opaque, hwaddr addr,
                                           unsigned size)
@@ -265,13 +283,119 @@ static const MemoryRegionOps lucent_ohci_fm_number_ops = {
     .endianness = DEVICE_LITTLE_ENDIAN,
 };
 
-/* One of the core's registers, overlaid for as long as the device lives. */
+/*
+ * Root-hub port power, as OpenHCI 1.0a sections 7.4.1 to 7.4.4 switch it.
+ * With NoPowerSwitching set the ports are always powered and no command
+ * reaches them. Otherwise PowerSwitchingMode clear lets only the global
+ * commands (HcRhStatus) switch every port; set, it lets each port answer
+ * only the per-port commands (HcRhPortStatus) when its PortPowerControlMask
+ * bit in HcRhDescriptorB is set, and only the global ones when it is clear.
+ * The shared core acts on both kinds for every port whatever the
+ * descriptors say, and reports every port powered; these overlays filter
+ * the commands and report PortPowerStatus as the port holds it.
+ */
+static bool lucent_ohci_port_switched(OHCIState *ohci, unsigned port,
+                                      bool per_port)
+{
+    bool masked = ohci->rhdesc_b & (1u << (16 + 1 + port));
+
+    if (ohci->rhdesc_a & LUCENT_OHCI_RHA_NPS) {
+        return false;
+    }
+    if (!(ohci->rhdesc_a & LUCENT_OHCI_RHA_PSM)) {
+        return !per_port;
+    }
+    return per_port == masked;
+}
+
+static uint64_t lucent_ohci_port_status_read(void *opaque, hwaddr addr,
+                                             unsigned size)
+{
+    OHCIState *ohci = opaque;
+    uint64_t val;
+
+    val = ohci->mem.ops->read(ohci->mem.opaque,
+                              LUCENT_OHCI_RH_PORT_STATUS + addr, size);
+    /* The core reads every port as powered; only NoPowerSwitching may. */
+    if (!(addr & 3) && !(ohci->rhdesc_a & LUCENT_OHCI_RHA_NPS)) {
+        val &= ~(uint64_t)LUCENT_OHCI_PORT_PPS;
+        val |= ohci->rhport[addr >> 2].ctrl & LUCENT_OHCI_PORT_PPS;
+    }
+    return val;
+}
+
+static void lucent_ohci_port_status_write(void *opaque, hwaddr addr,
+                                          uint64_t val, unsigned size)
+{
+    OHCIState *ohci = opaque;
+
+    if (!(addr & 3) && !lucent_ohci_port_switched(ohci, addr >> 2, true)) {
+        val &= ~(uint64_t)(LUCENT_OHCI_PORT_PPS | LUCENT_OHCI_PORT_LSDA);
+    }
+    ohci->mem.ops->write(ohci->mem.opaque, LUCENT_OHCI_RH_PORT_STATUS + addr,
+                         val, size);
+}
+
+static const MemoryRegionOps lucent_ohci_port_status_ops = {
+    .read = lucent_ohci_port_status_read,
+    .write = lucent_ohci_port_status_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+};
+
+static uint64_t lucent_ohci_rh_status_read(void *opaque, hwaddr addr,
+                                           unsigned size)
+{
+    OHCIState *ohci = opaque;
+
+    return ohci->mem.ops->read(ohci->mem.opaque, LUCENT_OHCI_RH_STATUS + addr,
+                               size);
+}
+
+/*
+ * The global commands go to the ports they may switch here rather than to
+ * the core, which would switch them all. A power-off clears what the
+ * core's own does, and neither changes an interrupt, as in the core.
+ */
+static void lucent_ohci_rh_status_write(void *opaque, hwaddr addr,
+                                        uint64_t val, unsigned size)
+{
+    OHCIState *ohci = opaque;
+    uint32_t power = 0;
+    unsigned i;
+
+    if (addr == 0) {
+        power = val & (LUCENT_OHCI_RHS_LPS | LUCENT_OHCI_RHS_LPSC);
+        val &= ~(uint64_t)power;
+    }
+    ohci->mem.ops->write(ohci->mem.opaque, LUCENT_OHCI_RH_STATUS + addr, val,
+                         size);
+    for (i = 0; power && i < ohci->num_ports; i++) {
+        if (!lucent_ohci_port_switched(ohci, i, false)) {
+            continue;
+        }
+        if (power & LUCENT_OHCI_RHS_LPS) {
+            ohci->rhport[i].ctrl &= ~LUCENT_OHCI_PORT_POWER_OFF;
+        }
+        if (power & LUCENT_OHCI_RHS_LPSC) {
+            ohci->rhport[i].ctrl |= LUCENT_OHCI_PORT_PPS;
+        }
+    }
+}
+
+static const MemoryRegionOps lucent_ohci_rh_status_ops = {
+    .read = lucent_ohci_rh_status_read,
+    .write = lucent_ohci_rh_status_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+};
+
+/* Some of the core's registers, overlaid for as long as the device lives. */
 static void lucent_ohci_overlay(PCIDevice *dev, OHCIState *ohci, hwaddr at,
-                                const MemoryRegionOps *ops, const char *name)
+                                uint64_t size, const MemoryRegionOps *ops,
+                                const char *name)
 {
     MemoryRegion *mr = g_new0(MemoryRegion, 1);
 
-    memory_region_init_io(mr, OBJECT(dev), ops, ohci, name, 4);
+    memory_region_init_io(mr, OBJECT(dev), ops, ohci, name, size);
     memory_region_add_subregion_overlap(&ohci->mem, at, mr, 1);
 }
 
@@ -294,19 +418,24 @@ static void lucent_ohci_realize(PCIDevice *dev, Error **errp)
      * regions are allocated rather than embedded.
      */
     ohci = lucent_ohci_core(dev);
-    lucent_ohci_overlay(dev, ohci, LUCENT_OHCI_COMMAND_STATUS,
+    lucent_ohci_overlay(dev, ohci, LUCENT_OHCI_COMMAND_STATUS, 4,
                         &lucent_ohci_command_ops,
                         "lucent-ohci.command-status");
-    lucent_ohci_overlay(dev, ohci, LUCENT_OHCI_RH_DESCRIPTOR_B,
+    lucent_ohci_overlay(dev, ohci, LUCENT_OHCI_RH_DESCRIPTOR_B, 4,
                         &lucent_ohci_rhdesc_b_ops,
                         "lucent-ohci.rh-descriptor-b");
-    lucent_ohci_overlay(dev, ohci, LUCENT_OHCI_RH_DESCRIPTOR_A,
+    lucent_ohci_overlay(dev, ohci, LUCENT_OHCI_RH_DESCRIPTOR_A, 4,
                         &lucent_ohci_rhdesc_a_ops,
                         "lucent-ohci.rh-descriptor-a");
-    lucent_ohci_overlay(dev, ohci, LUCENT_OHCI_CONTROL,
+    lucent_ohci_overlay(dev, ohci, LUCENT_OHCI_CONTROL, 4,
                         &lucent_ohci_control_ops, "lucent-ohci.control");
-    lucent_ohci_overlay(dev, ohci, LUCENT_OHCI_FM_NUMBER,
+    lucent_ohci_overlay(dev, ohci, LUCENT_OHCI_FM_NUMBER, 4,
                         &lucent_ohci_fm_number_ops, "lucent-ohci.fm-number");
+    lucent_ohci_overlay(dev, ohci, LUCENT_OHCI_RH_STATUS, 4,
+                        &lucent_ohci_rh_status_ops, "lucent-ohci.rh-status");
+    lucent_ohci_overlay(dev, ohci, LUCENT_OHCI_RH_PORT_STATUS,
+                        4 * ohci->num_ports, &lucent_ohci_port_status_ops,
+                        "lucent-ohci.rh-port-status");
     lucent_ohci_reset_values(ohci);
 }
 

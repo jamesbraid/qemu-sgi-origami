@@ -51,6 +51,7 @@
 #define OHCI_HC_LS_THRESHOLD       0x44
 #define OHCI_HC_RH_DESCRIPTOR_A    0x48
 #define OHCI_HC_RH_DESCRIPTOR_B    0x4c
+#define OHCI_HC_RH_STATUS          0x50
 #define OHCI_HC_RH_PORT_STATUS(n)  (0x54 + 4 * (n))
 
 #define OHCI_CONTROL_OPERATIONAL   0x00000080
@@ -63,6 +64,12 @@
 #define OHCI_INTERRUPT_RHSC        0x00000040
 #define OHCI_INTERRUPT_MIE         0x80000000
 #define OHCI_PORT_PES              0x00000002
+#define OHCI_PORT_PPS              0x00000100
+#define OHCI_PORT_LSDA             0x00000200
+#define OHCI_RHS_LPS               0x00000001
+#define OHCI_RHS_LPSC              0x00010000
+#define OHCI_RHA_PSM               0x00000100
+#define OHCI_RHA_NPS               0x00000200
 #define OHCI_PORT_CSC              0x00010000
 #define OHCI_RH_DESCRIPTOR_A_NDP   0x000000ff
 #define OHCI_MODEL_REVISION_1_0    0x00000010
@@ -539,6 +546,114 @@ static void test_root_hub_descriptor_a_is_writable(void)
     lucent_ohci_close(&ohci);
 }
 
+static uint32_t lucent_ohci_port_power(LucentOHCI *ohci, int port)
+{
+    return lucent_ohci_readl(ohci, OHCI_HC_RH_PORT_STATUS(port)) &
+           OHCI_PORT_PPS;
+}
+
+/*
+ * Per-port power switching, OpenHCI 1.0a sections 7.4.1 to 7.4.4: with
+ * NoPowerSwitching clear and PowerSwitchingMode set, a port whose
+ * PortPowerControlMask bit is set answers only SetPortPower and
+ * ClearPortPower, and one whose bit is clear only SetGlobalPower and
+ * ClearGlobalPower. PortPowerStatus reads the port's own power, not a
+ * constant one. The Origin 300 IO-8 board test selects this mode with
+ * both ports masked, switches each port on and off and reads it back.
+ */
+static void test_port_power_per_port_switching(void)
+{
+    LucentOHCI ohci = { 0 };
+
+    lucent_ohci_open(&ohci, lucent_ohci_start("lucent-ohci", ""));
+    lucent_ohci_map_bar(&ohci);
+
+    lucent_ohci_writel(&ohci, OHCI_HC_RH_DESCRIPTOR_A, OHCI_RHA_PSM);
+    lucent_ohci_writel(&ohci, OHCI_HC_RH_DESCRIPTOR_B, 0x60000);
+    g_assert_cmphex(lucent_ohci_port_power(&ohci, 0), ==, 0);
+    g_assert_cmphex(lucent_ohci_port_power(&ohci, 1), ==, 0);
+
+    lucent_ohci_writel(&ohci, OHCI_HC_RH_PORT_STATUS(0), OHCI_PORT_PPS);
+    g_assert_cmphex(lucent_ohci_port_power(&ohci, 0), ==, OHCI_PORT_PPS);
+    g_assert_cmphex(lucent_ohci_port_power(&ohci, 1), ==, 0);
+
+    /* Both ports masked: the global commands reach neither. */
+    lucent_ohci_writel(&ohci, OHCI_HC_RH_STATUS, OHCI_RHS_LPSC);
+    g_assert_cmphex(lucent_ohci_port_power(&ohci, 1), ==, 0);
+    lucent_ohci_writel(&ohci, OHCI_HC_RH_STATUS, OHCI_RHS_LPS);
+    g_assert_cmphex(lucent_ohci_port_power(&ohci, 0), ==, OHCI_PORT_PPS);
+
+    lucent_ohci_writel(&ohci, OHCI_HC_RH_PORT_STATUS(0), OHCI_PORT_LSDA);
+    g_assert_cmphex(lucent_ohci_port_power(&ohci, 0), ==, 0);
+
+    /* Only the first port masked: the second follows the global commands. */
+    lucent_ohci_writel(&ohci, OHCI_HC_RH_DESCRIPTOR_B, 0x20000);
+    lucent_ohci_writel(&ohci, OHCI_HC_RH_PORT_STATUS(1), OHCI_PORT_PPS);
+    g_assert_cmphex(lucent_ohci_port_power(&ohci, 1), ==, 0);
+    lucent_ohci_writel(&ohci, OHCI_HC_RH_STATUS, OHCI_RHS_LPSC);
+    g_assert_cmphex(lucent_ohci_port_power(&ohci, 0), ==, 0);
+    g_assert_cmphex(lucent_ohci_port_power(&ohci, 1), ==, OHCI_PORT_PPS);
+    lucent_ohci_writel(&ohci, OHCI_HC_RH_PORT_STATUS(1), OHCI_PORT_LSDA);
+    g_assert_cmphex(lucent_ohci_port_power(&ohci, 1), ==, OHCI_PORT_PPS);
+    lucent_ohci_writel(&ohci, OHCI_HC_RH_STATUS, OHCI_RHS_LPS);
+    g_assert_cmphex(lucent_ohci_port_power(&ohci, 1), ==, 0);
+
+    lucent_ohci_close(&ohci);
+}
+
+/*
+ * Global power switching, PowerSwitchingMode clear: only SetGlobalPower
+ * and ClearGlobalPower switch the ports, all of them together.
+ */
+static void test_port_power_global_switching(void)
+{
+    LucentOHCI ohci = { 0 };
+
+    lucent_ohci_open(&ohci, lucent_ohci_start("lucent-ohci", ""));
+    lucent_ohci_map_bar(&ohci);
+
+    lucent_ohci_writel(&ohci, OHCI_HC_RH_DESCRIPTOR_A, 0);
+    lucent_ohci_writel(&ohci, OHCI_HC_RH_DESCRIPTOR_B, 0x60000);
+    lucent_ohci_writel(&ohci, OHCI_HC_RH_PORT_STATUS(0), OHCI_PORT_PPS);
+    g_assert_cmphex(lucent_ohci_port_power(&ohci, 0), ==, 0);
+
+    lucent_ohci_writel(&ohci, OHCI_HC_RH_STATUS, OHCI_RHS_LPSC);
+    g_assert_cmphex(lucent_ohci_port_power(&ohci, 0), ==, OHCI_PORT_PPS);
+    g_assert_cmphex(lucent_ohci_port_power(&ohci, 1), ==, OHCI_PORT_PPS);
+    lucent_ohci_writel(&ohci, OHCI_HC_RH_PORT_STATUS(1), OHCI_PORT_LSDA);
+    g_assert_cmphex(lucent_ohci_port_power(&ohci, 1), ==, OHCI_PORT_PPS);
+    lucent_ohci_writel(&ohci, OHCI_HC_RH_STATUS, OHCI_RHS_LPS);
+    g_assert_cmphex(lucent_ohci_port_power(&ohci, 0), ==, 0);
+    g_assert_cmphex(lucent_ohci_port_power(&ohci, 1), ==, 0);
+
+    lucent_ohci_close(&ohci);
+}
+
+/* NoPowerSwitching set: the ports read powered and ignore every command. */
+static void test_port_power_without_switching(void)
+{
+    LucentOHCI ohci = { 0 };
+
+    lucent_ohci_open(&ohci, lucent_ohci_start("lucent-ohci", ""));
+    lucent_ohci_map_bar(&ohci);
+
+    lucent_ohci_writel(&ohci, OHCI_HC_RH_DESCRIPTOR_A, OHCI_RHA_PSM);
+    lucent_ohci_writel(&ohci, OHCI_HC_RH_DESCRIPTOR_B, 0x60000);
+    g_assert_cmphex(lucent_ohci_port_power(&ohci, 0), ==, 0);
+
+    lucent_ohci_writel(&ohci, OHCI_HC_RH_DESCRIPTOR_A, OHCI_RHA_NPS);
+    g_assert_cmphex(lucent_ohci_port_power(&ohci, 0), ==, OHCI_PORT_PPS);
+    lucent_ohci_writel(&ohci, OHCI_HC_RH_PORT_STATUS(0), OHCI_PORT_LSDA);
+    lucent_ohci_writel(&ohci, OHCI_HC_RH_STATUS, OHCI_RHS_LPS);
+    g_assert_cmphex(lucent_ohci_port_power(&ohci, 0), ==, OHCI_PORT_PPS);
+
+    /* Switching again: nothing reached the port while it was unswitched. */
+    lucent_ohci_writel(&ohci, OHCI_HC_RH_DESCRIPTOR_A, OHCI_RHA_PSM);
+    g_assert_cmphex(lucent_ohci_port_power(&ohci, 0), ==, 0);
+
+    lucent_ohci_close(&ohci);
+}
+
 /*
  * FrameNumber keeps a driver's write while the controller is not counting
  * frames: the Origin 300 IO-8 board test writes it after a controller reset
@@ -805,6 +920,12 @@ int main(int argc, char **argv)
                    test_usb_reset_keeps_root_hub_descriptor_b);
     qtest_add_func("/lucent-ohci/root-hub-descriptor-a-is-writable",
                    test_root_hub_descriptor_a_is_writable);
+    qtest_add_func("/lucent-ohci/port-power-per-port-switching",
+                   test_port_power_per_port_switching);
+    qtest_add_func("/lucent-ohci/port-power-global-switching",
+                   test_port_power_global_switching);
+    qtest_add_func("/lucent-ohci/port-power-without-switching",
+                   test_port_power_without_switching);
     qtest_add_func("/lucent-ohci/frame-number-tracks-clock-while-timer-starved",
                    test_frame_number_tracks_clock_while_timer_starved);
     qtest_add_func("/lucent-ohci/frame-number-never-lags-elapsed-time",
