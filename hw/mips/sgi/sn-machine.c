@@ -2868,7 +2868,7 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
     }
 
     /*
-     * Before any node realizes: the Hub's own "xtalk-io" property, once
+     * Before any node realizes: the Hub's own "xio-io-space" property, once
      * set, cannot change after this node's realize, so a crossbow-attached
      * node's own link claims it here, on a proxy of its own -- the
      * Crossbow itself, and its real packet ingress, do not exist yet.

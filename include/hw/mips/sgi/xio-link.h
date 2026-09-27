@@ -88,7 +88,7 @@ bool sgi_xio_direct_link_connect(SGIXioDirectLink *link, Object *owner,
  */
 typedef struct SGIXioCrossbowLink {
     /*
-     * The outer endpoint's outbound proxy (a Hub's "xtalk-io" or a widget's
+     * The outer endpoint's outbound proxy (a Hub's "xio-io-space" or a widget's
      * "fabric" property target) is created and installed before that endpoint
      * realizes, aliased onto the Crossbow's real packet ingress once finish()
      * runs.
@@ -121,7 +121,7 @@ typedef struct SGIXioCrossbowLink {
 
     /*
      * The Hub-only faces prepare_hub()/attach_hub() build; unused for a
-     * widget link. outbound_face is what "xtalk-io" is actually set to: the
+     * widget link. outbound_face is what "xio-io-space" is actually set to: the
      * Hub's big-window mode issues a widget-addressed access (a widget number
      * and an offset within SN0_XTALK_WIDGET_SIZE, the same shape a small/big
      * window decodes), which outbound_face translates into a packet-addressed
@@ -166,7 +166,7 @@ void sgi_xio_crossbow_link_claim_fabric(MemoryRegion *fabric,
                                         MemoryRegion *cpu_face,
                                         MemoryRegion *packet_face);
 
-/* Also wires node's "xtalk-io" property to the proxy prepare() built. */
+/* Also wires node's "xio-io-space" property to the proxy prepare() built. */
 bool sgi_xio_crossbow_link_prepare_hub(SGIXioCrossbowLink *link,
                                          Object *owner, const char *name,
                                          SN0NodeState *node, Error **errp);
@@ -188,7 +188,7 @@ bool sgi_xio_crossbow_link_finish(SGIXioCrossbowLink *link, Object *owner,
  * The XBridge link: an SN1 node's Bedrock joined to its XBridge's port 0xa,
  * the host port. Not the Crossbow link above under a new name: that link's
  * shape is the SN0 Hub's packet header and register-offset layout end to end
- * (SN0NodeState, sn0_hub_address_map, the Hub's widget-relative "xtalk-io"
+ * (SN0NodeState, sn0_hub_address_map, the Hub's widget-relative "xio-io-space"
  * property), none of which exists on SN1. The XBridge's crossbar section
  * routes by destination widget exactly as a Crossbow does. This is not a
  * hardware difference. The two chips this link joins attach through their
