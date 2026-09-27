@@ -312,6 +312,7 @@ static void mgras_retrace(void *opaque)
 
 static void mgras_complete_context(SGIMgrasState *s)
 {
+    sgi_mgras_gl_context_loaded(s);
     s->ready = true;
     s->protocol = 3;
     s->pending |= MGRAS_PENDING_CONTEXT;
@@ -777,6 +778,7 @@ static void mgras_write(void *opaque, hwaddr addr, uint64_t value,
     /* Swap-mask storage; see the header comment above the definition. */
     case SGI_MGRAS_XMAP_BUF_SELECT:
         s->xmap_buf_select[s->xmap_index] = value;
+        s->dirty = true;
         return;
     case SGI_MGRAS_RESET_CONTROL: s->reset_control = value; return;
     case SGI_MGRAS_I2C_SCRATCH: s->i2c_scratch = value; return;
@@ -1488,6 +1490,8 @@ static const VMStateDescription vmstate_sgi_mgras = {
         VMSTATE_UINT32_V(gl_depth_func, SGIMgrasState, 17),
         VMSTATE_UINT32_V(gl_depth_mask, SGIMgrasState, 17),
         VMSTATE_UINT32_V(gl_clear_depth, SGIMgrasState, 17),
+        VMSTATE_UINT32_V(gl_draw_buffers, SGIMgrasState, 17),
+        VMSTATE_UINT32_ARRAY_V(gl_banks, SGIMgrasState, 2, 17),
         VMSTATE_VARRAY_UINT32(depth, SGIMgrasState, depth_count, 17,
                               vmstate_info_uint32, uint32_t),
         VMSTATE_END_OF_LIST()

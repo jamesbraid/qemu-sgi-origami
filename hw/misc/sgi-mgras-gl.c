@@ -12,7 +12,7 @@
  * What it preserves: the pixels that colour and depth clears and
  * untextured triangles, flat or smooth shaded, transformed by the
  * modelview and projection matrices and depth tested, leave in the
- * window, and the main-port framing, so the words
+ * window's front or back buffer, and the main-port framing, so the words
  * after a packet still parse as headers. What it does not: the
  * raster-engine register writes the GE would make, the timing of the
  * work, any GE state visible to a later readback, and every command
@@ -43,7 +43,9 @@
 #define MGRAS_GL_ORTHO           0x00003518
 #define MGRAS_GL_DEPTH_MASK      0x00003c04
 #define MGRAS_GL_DEPTH_FUNC      0x00004304
+#define MGRAS_GL_DRAW_BUFFER     0x0000490c
 #define MGRAS_GL_DEPTH_TEST      0x00006604
+#define MGRAS_GL_BANKS           0x00009808
 
 /* Vertex-attribute headers: the class names the source format. */
 #define MGRAS_GL_VERTEX2F        0x40000008
@@ -62,6 +64,17 @@ enum {
     MGRAS_GL_NEVER, MGRAS_GL_LESS, MGRAS_GL_EQUAL, MGRAS_GL_LEQUAL,
     MGRAS_GL_GREATER, MGRAS_GL_NOTEQUAL, MGRAS_GL_GEQUAL, MGRAS_GL_ALWAYS,
 };
+
+/*
+ * The draw-buffer triple's first word: 1 in the context setup of the
+ * probe's single-buffered visual, 2 in that of its double-buffered one
+ * (run irix-20260927T172059-fdbada), where OpenGL's default draw buffer is
+ * the front and the back buffer respectively. Reading it as a bit mask of
+ * the front and back buffers is inferred from those two values; the other
+ * bits are not modelled.
+ */
+#define MGRAS_GL_DRAW_FRONT      0x1
+#define MGRAS_GL_DRAW_BACK       0x2
 
 /*
  * The window the current context draws into, from the 63-word image the
@@ -85,6 +98,19 @@ enum {
 #define MGRAS_GL_IMAGE_CLIP_X    11
 #define MGRAS_GL_IMAGE_CLIP_Y    12
 #define MGRAS_GL_CLIP_ON         0x11
+
+/*
+ * Words 16 and 17 of every captured GL context image are 1, those of the
+ * X server's images 0 (run irix-20260927T172059-fdbada). The kernel's
+ * bank token 0x9808 carries two words of the same form, 0 at a window's
+ * first swap and 1 at its second, and the swaps then show first the frame
+ * drawn before the first swap and then the one drawn between them. Both
+ * fit these words naming the pixel-memory bank that holds the back
+ * buffer, with the front buffer in the other; that the image restores
+ * them is inferred from the matching values. The model uses the first
+ * word; what distinguishes the second is unknown.
+ */
+#define MGRAS_GL_IMAGE_BANKS     16
 
 /*
  * Window coordinates are snapped to 1/256 pixel before rasterization. The
@@ -139,7 +165,9 @@ bool sgi_mgras_gl_header(uint32_t header)
     case MGRAS_GL_ORTHO:
     case MGRAS_GL_DEPTH_MASK:
     case MGRAS_GL_DEPTH_FUNC:
+    case MGRAS_GL_DRAW_BUFFER:
     case MGRAS_GL_DEPTH_TEST:
+    case MGRAS_GL_BANKS:
     case MGRAS_GL_VERTEX2F:
     case MGRAS_GL_VERTEX3F:
     case MGRAS_GL_VERTEX4F:
@@ -198,6 +226,15 @@ void sgi_mgras_gl_reset(SGIMgrasState *s)
     s->gl_depth_func = MGRAS_GL_LESS;
     s->gl_depth_mask = 1;
     s->gl_clear_depth = MGRAS_GL_DEPTH_MAX;
+    s->gl_draw_buffers = MGRAS_GL_DRAW_FRONT;
+    /* The value every captured GL context image restores. */
+    s->gl_banks[0] = s->gl_banks[1] = 1;
+}
+
+void sgi_mgras_gl_context_loaded(SGIMgrasState *s)
+{
+    s->gl_banks[0] = s->context[MGRAS_GL_IMAGE_BANKS];
+    s->gl_banks[1] = s->context[MGRAS_GL_IMAGE_BANKS + 1];
 }
 
 /*
@@ -242,17 +279,49 @@ static bool mgras_gl_window(SGIMgrasState *s, MgrasGLWindow *win)
 }
 
 /*
- * Store a direct-colour pixel at screen column x and row y counted from
- * the bottom. The GL window's WID selects an XMAP mode, 0x1408 for the
- * probe's visual, whose colour map is never loaded; an RGB pixel bypasses
- * that map (sgi-mgras-display.c), which is what makes the drawing visible.
+ * The pixel-memory banks the draw buffers select, as a mask of bank 0 and
+ * bank 1. Bank 0 is the model's front[] plane, the one the X server draws
+ * in; bank 1 is back[].
  */
-static void mgras_gl_put(SGIMgrasState *s, int x, int y, uint32_t rgb)
+static unsigned int mgras_gl_draw_banks(SGIMgrasState *s)
+{
+    unsigned int back = s->gl_banks[0] & 1;
+    unsigned int banks = 0;
+
+    if (s->gl_draw_buffers & ~(MGRAS_GL_DRAW_FRONT | MGRAS_GL_DRAW_BACK)) {
+        qemu_log_mask(LOG_UNIMP, "sgi-mgras: GL draw buffers 0x%x beyond "
+                      "the front and back buffers ignored\n",
+                      s->gl_draw_buffers);
+    }
+    if (s->gl_draw_buffers & MGRAS_GL_DRAW_FRONT) {
+        banks |= 1u << (back ^ 1);
+    }
+    if (s->gl_draw_buffers & MGRAS_GL_DRAW_BACK) {
+        banks |= 1u << back;
+    }
+    return banks;
+}
+
+/*
+ * Store a direct-colour pixel at screen column x and row y counted from
+ * the bottom, in each bank of @banks. The GL window's WID selects an XMAP
+ * mode, 0x1408 for the probe's visual, whose colour map is never loaded;
+ * an RGB pixel bypasses that map (sgi-mgras-display.c), which is what
+ * makes the drawing visible. Bank 1 holds only direct colour in this
+ * model, so it needs no format tag.
+ */
+static void mgras_gl_put(SGIMgrasState *s, unsigned int banks, int x, int y,
+                         uint32_t rgb)
 {
     unsigned int idx = (SGI_MGRAS_HEIGHT - 1 - y) * SGI_MGRAS_WIDTH + x;
 
-    s->front[idx] = rgb;
-    s->format[idx] = SGI_MGRAS_PIXEL_FORMAT_RGB;
+    if (banks & 1) {
+        s->front[idx] = rgb;
+        s->format[idx] = SGI_MGRAS_PIXEL_FORMAT_RGB;
+    }
+    if (banks & 2) {
+        s->back[idx] = rgb;
+    }
 }
 
 static uint32_t *mgras_gl_depth(SGIMgrasState *s, int x, int y)
@@ -270,6 +339,7 @@ static uint32_t *mgras_gl_depth(SGIMgrasState *s, int x, int y)
 static void mgras_gl_clear(SGIMgrasState *s, bool depth)
 {
     MgrasGLWindow win;
+    unsigned int banks = mgras_gl_draw_banks(s);
     uint32_t rgb = 0;
 
     if (!mgras_gl_window(s, &win)) {
@@ -289,7 +359,7 @@ static void mgras_gl_clear(SGIMgrasState *s, bool depth)
                 *mgras_gl_depth(s, x, y) =
                     s->gl_clear_depth & MGRAS_GL_DEPTH_MAX;
             } else {
-                mgras_gl_put(s, x, y, rgb);
+                mgras_gl_put(s, banks, x, y, rgb);
             }
         }
     }
@@ -522,6 +592,7 @@ static bool mgras_gl_transform(SGIMgrasState *s, int i, MgrasGLVertex *out)
 static void mgras_gl_triangle(SGIMgrasState *s)
 {
     const uint32_t *provoking = s->gl_vertex_color[2];
+    unsigned int banks = mgras_gl_draw_banks(s);
     MgrasGLWindow win;
     MgrasGLVertex v[3];
     int64_t min_x, max_x, min_y, max_y, area;
@@ -617,7 +688,7 @@ static void mgras_gl_triangle(SGIMgrasState *s)
                     rgb = (rgb << 8) | mgras_gl_channel(c);
                 }
             }
-            mgras_gl_put(s, win.ox + px, win.oy + py, rgb);
+            mgras_gl_put(s, banks, win.ox + px, win.oy + py, rgb);
         }
     }
     s->dirty = true;
@@ -656,11 +727,16 @@ static void mgras_gl_vertex(SGIMgrasState *s, const uint32_t *payload,
  * follows sends no matrix, so the board must already hold the OpenGL
  * initial state then; where it keeps each context's state is unknown. The
  * model has one GL state for the board and restores the initial values
- * here. The discriminating test is gl-context-setup-restores-initial-state.
+ * here, keeping the banks the context image gave. The discriminating test
+ * is gl-context-setup-restores-initial-state.
  */
 static void mgras_gl_context_start(SGIMgrasState *s)
 {
+    uint32_t banks[2] = { s->gl_banks[0], s->gl_banks[1] };
+
     sgi_mgras_gl_reset(s);
+    s->gl_banks[0] = banks[0];
+    s->gl_banks[1] = banks[1];
 }
 
 void sgi_mgras_gl_execute(SGIMgrasState *s, uint32_t header,
@@ -719,6 +795,18 @@ void sgi_mgras_gl_execute(SGIMgrasState *s, uint32_t header,
         return;
     case MGRAS_GL_DEPTH_MASK:
         s->gl_depth_mask = payload[0] != 0;
+        return;
+    case MGRAS_GL_DRAW_BUFFER:
+        s->gl_draw_buffers = payload[0];
+        return;
+    case MGRAS_GL_BANKS:
+        if (payload[0] != payload[1]) {
+            qemu_log_mask(LOG_UNIMP, "sgi-mgras: bank token words %u and "
+                          "%u differ; the model uses the first\n",
+                          payload[0], payload[1]);
+        }
+        s->gl_banks[0] = payload[0];
+        s->gl_banks[1] = payload[1];
         return;
     case MGRAS_GL_COLOR3F:
         memcpy(s->gl_color, payload, 3 * sizeof(uint32_t));

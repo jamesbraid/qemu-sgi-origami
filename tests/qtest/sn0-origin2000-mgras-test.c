@@ -5951,13 +5951,14 @@ static void test_gl_triangle_with_negative_w_is_dropped(void)
 }
 
 /*
- * The GL client's matrix and depth words as the captured probe
+ * The GL client's matrix, depth and buffer words as the captured probe
  * streams of run irix-20260927T172059-fdbada carry them (glMatrixMode
  * 0x2a04, glLoadIdentity 0x2c00, glLoadMatrixf 0x2b40 with 16 floats in
  * memory order, glMultMatrixf 0x2d40, glFrustum 0x3418 and glOrtho 0x3518
  * with the six arguments as floats, glEnable(GL_DEPTH_TEST) 0x6604 with 1,
  * glDepthFunc 0x4304 with func - 0x200, glClearDepth 0xbc04 with the
- * 24-bit value, glClear's depth token 0x4a00 and glDepthMask 0x3c04).
+ * 24-bit value, glClear's depth token 0x4a00, glDepthMask 0x3c04, the
+ * draw-buffer triple 0x490c and the kernel's bank token 0x9808).
  */
 #define GL_MATRIX_MODE_HDR    0x00002a04
 #define GL_LOAD_MATRIX_HDR    0x00002b40
@@ -5970,7 +5971,10 @@ static void test_gl_triangle_with_negative_w_is_dropped(void)
 #define GL_DEPTH_MASK_HDR     0x00003c04
 #define GL_CLEAR_DEPTH_HDR    0x0000bc04
 #define GL_CLEAR_DEPTH_BUFFER 0x00004a00
+#define GL_DRAW_BUFFER_HDR    0x0000490c
 #define GL_VERTEX3F_HDR       0x2000000c
+#define GL_SWAP               0x00003700
+#define GL_BANKS_HDR          0x00009808
 #define GL_MODELVIEW          0x1700
 #define GL_PROJECTION         0x1701
 #define GL_TEXTURE            0x1702
@@ -6016,6 +6020,40 @@ static void gl_one(QTestState *qts, uint32_t header, uint32_t value)
     gl_word(qts, value);
 }
 
+static void gl_draw_buffer(QTestState *qts, uint32_t buffers)
+{
+    gl_word(qts, GL_DRAW_BUFFER_HDR);
+    gl_word(qts, buffers);
+    gl_word(qts, 1);
+    gl_word(qts, 0);
+}
+
+/*
+ * The kernel's MgrasValidateBanks as the swap captures show it: a 64-bit
+ * store of the header and the first word, then a 32-bit store of the
+ * second (mgras-gl-commands.md, "How the client reaches the port").
+ */
+static void gl_banks(QTestState *qts, uint32_t bank)
+{
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 ((uint64_t)GL_BANKS_HDR << 32) | bank);
+    gl_word(qts, bank);
+}
+
+/*
+ * One swap as the kernel performs it in the captured swap case: the bank
+ * token, the swap token, then, once the swap interrupt is served, the main
+ * buffer-select mask at XMAP index 0 (0x4000 after the first swap of the
+ * window with display ID 14, 0 after the second).
+ */
+static void gl_swap(QTestState *qts, uint32_t bank, uint32_t mask)
+{
+    gl_banks(qts, bank);
+    gl_word(qts, GL_SWAP);
+    qtest_writeb(qts, REG_XMAP_INDEX, 0);
+    qtest_writel(qts, REG_XMAP_BUF_SELECT, mask);
+}
+
 /* The window's pixels, top row first, as the expected PPM stores them. */
 static void gl_check_window_sha256(const uint32_t *rgb, const char *expected)
 {
@@ -6046,6 +6084,22 @@ static void gl_scene_start(QTestState *qts, uint32_t shade)
     qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x1e, 0x4));
     gl_viewport(qts, 0, 0, 128, 128);
     gl_one(qts, GL_SHADE_MODEL_HDR, shade);
+}
+
+/*
+ * Window vertices (6, 98), (118, 54) and (38, 10) of the probe's ortho,
+ * swap and swap-pending cases, as normalized device coordinates.
+ */
+static void gl_ortho_triangle_ndc(QTestState *qts)
+{
+    gl_word(qts, GL_BEGIN_TRIANGLES);
+    gl_color3f(qts, 1, 1, 0);
+    gl_vertex3f(qts, -0.90625f, 0.53125f, 0);
+    gl_color3f(qts, 1, 1, 0);
+    gl_vertex3f(qts, 0.84375f, -0.15625f, 0);
+    gl_color3f(qts, 1, 1, 0);
+    gl_vertex3f(qts, -0.40625f, -0.84375f, 0);
+    gl_word(qts, GL_END_TRIANGLES);
 }
 
 /*
@@ -6540,6 +6594,139 @@ static void test_gl_smooth_is_perspective_correct(void)
     gl_vertex4f(qts, -2, 2, 0, 2);
     gl_word(qts, GL_END_TRIANGLES);
     g_assert_cmphex(gl_window_pixel(qts, 0, 31), ==, 0x240000);
+}
+
+/*
+ * Inferred from the captures: the draw-buffer triple's first word is 1 for
+ * the single-buffered visual and 2 for the double-buffered one, the
+ * front and back buffer; context-image words 16 and 17 are 1 in every GL
+ * image and the kernel's bank token carries 0 then 1 at the two swaps, so
+ * those words name the bank that holds the back buffer and the front is
+ * the other. Bank 0 is the one the X server draws in. A back-buffer clear
+ * therefore leaves bank 0 alone and shows only where the XMAP main
+ * buffer-select mask selects bank 1 for the pixel's display ID.
+ */
+static void test_gl_back_buffer_draws_into_bank_one(void)
+{
+    gl_scene_start(qts, GL_FLAT);
+    mgras_tag_wid(qts, 256, 256, 383, 383, 14);
+    gl_draw_buffer(qts, 2);
+    gl_clear_color(qts, 1, 0, 1, 1);
+    gl_word(qts, GL_CLEAR_COLOR_BUFFER);
+
+    g_assert_cmphex(mgras_test_pixel(qts, 300, 300), ==, 0);
+    g_assert_cmphex(mgras_test_display_pixel(qts, 300, 300), ==, 0);
+    qtest_writeb(qts, REG_XMAP_INDEX, 0);
+    qtest_writel(qts, REG_XMAP_BUF_SELECT, 1u << 14);
+    g_assert_cmphex(mgras_test_display_pixel(qts, 300, 300), ==, 0xff00ff);
+    /* Display ID 0 around the window still shows bank 0. */
+    g_assert_cmphex(mgras_test_display_pixel(qts, 250, 300), ==, 0);
+}
+
+/* The front buffer is the bank the back is not. */
+static void test_gl_front_buffer_is_the_other_bank(void)
+{
+    gl_scene_start(qts, GL_FLAT);
+    gl_draw_buffer(qts, 1);
+    gl_clear_color(qts, 0, 1, 0, 1);
+    gl_word(qts, GL_CLEAR_COLOR_BUFFER);
+    g_assert_cmphex(mgras_test_pixel(qts, 300, 300), ==, 0x00ff00);
+
+    gl_banks(qts, 0);
+    gl_clear_color(qts, 1, 0, 0, 1);
+    gl_word(qts, GL_CLEAR_COLOR_BUFFER);
+    g_assert_cmphex(mgras_test_pixel(qts, 300, 300), ==, 0x00ff00);
+    qtest_writeb(qts, REG_XMAP_INDEX, 0);
+    qtest_writel(qts, REG_XMAP_BUF_SELECT, 1u);
+    g_assert_cmphex(mgras_test_display_pixel(qts, 300, 300), ==, 0xff0000);
+}
+
+/*
+ * The bank token moves the back buffer: after (0, 0), which the kernel
+ * sends at a window's first swap, back-buffer drawing lands in bank 0.
+ */
+static void test_gl_bank_token_moves_the_back_buffer(void)
+{
+    gl_scene_start(qts, GL_FLAT);
+    gl_draw_buffer(qts, 2);
+    gl_banks(qts, 0);
+    gl_clear_color(qts, 0, 1, 1, 1);
+    gl_word(qts, GL_CLEAR_COLOR_BUFFER);
+    g_assert_cmphex(mgras_test_pixel(qts, 300, 300), ==, 0x00ffff);
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+}
+
+/*
+ * Inferred: a context switch restores the bank words from image words 16
+ * and 17. An image carrying 0 puts the back buffer in bank 0.
+ */
+static void test_gl_context_image_restores_the_banks(void)
+{
+    uint32_t image[MGRAS_CONTEXT_WORDS];
+
+    gl_scene_start(qts, GL_FLAT);
+    gl_banks(qts, 0);
+    memcpy(image, gl_context_image, sizeof(image));
+    qtest_writel(qts, REG_PREFIX, 0);
+    qtest_writel(qts, REG_ENTRY, MGRAS_ENTRY_WORD);
+    qtest_writel(qts, REG_PENDING_ACK, MGRAS_PENDING_FLAGS);
+    for (int i = 0; i < MGRAS_CONTEXT_WORDS; i++) {
+        qtest_writel(qts, REG_CONTEXT_COMMAND, image[i]);
+    }
+    qtest_writel(qts, REG_PENDING_ACK, MGRAS_PENDING_CONTEXT);
+    gl_draw_buffer(qts, 2);
+    gl_clear_color(qts, 1, 1, 1, 1);
+    gl_word(qts, GL_CLEAR_COLOR_BUFFER);
+    g_assert_cmphex(mgras_test_pixel(qts, 300, 300), ==, 0);
+}
+
+/*
+ * The captured swap case: the stale magenta frame, a swap that selects
+ * bank 1 for display ID 14, the scene into bank 0, a swap back. The
+ * window shows the scene, not the stale frame.
+ */
+static void test_gl_swap_matches_the_reference(void)
+{
+    g_autofree uint32_t *rgb = NULL;
+
+    gl_scene_start(qts, GL_FLAT);
+    mgras_tag_wid(qts, 256, 256, 383, 383, 14);
+    gl_draw_buffer(qts, 2);
+    gl_clear_color(qts, 1, 0, 1, 1);
+    gl_word(qts, GL_CLEAR_COLOR_BUFFER);
+    gl_swap(qts, 0, 1u << 14);
+    gl_clear_color(qts, 0, 0, 1, 1);
+    gl_word(qts, GL_CLEAR_COLOR_BUFFER);
+    gl_ortho_triangle_ndc(qts);
+    gl_swap(qts, 1, 0);
+
+    rgb = mgras_screendump(qts);
+    g_assert_cmphex(gl_dump_pixel(rgb, 64, 64), ==, 0xffff00);
+    gl_check_window_sha256(rgb, GL_ORTHO_SHA256);
+}
+
+/*
+ * The captured swap-pending case: the scene, a swap, then the stale frame
+ * into the new back buffer with no swap. The stale frame must not show.
+ */
+static void test_gl_swap_pending_matches_the_reference(void)
+{
+    g_autofree uint32_t *rgb = NULL;
+
+    gl_scene_start(qts, GL_FLAT);
+    mgras_tag_wid(qts, 256, 256, 383, 383, 14);
+    gl_draw_buffer(qts, 2);
+    gl_clear_color(qts, 0, 0, 1, 1);
+    gl_word(qts, GL_CLEAR_COLOR_BUFFER);
+    gl_ortho_triangle_ndc(qts);
+    gl_swap(qts, 0, 1u << 14);
+    gl_clear_color(qts, 1, 0, 1, 1);
+    gl_word(qts, GL_CLEAR_COLOR_BUFFER);
+    gl_word(qts, GL_FLUSH);
+
+    rgb = mgras_screendump(qts);
+    g_assert_cmphex(gl_dump_pixel(rgb, 64, 64), ==, 0xffff00);
+    gl_check_window_sha256(rgb, GL_ORTHO_SHA256);
 }
 
 static void test_hq_flags_fence_token_sets_bit(void)
@@ -7730,9 +7917,9 @@ static void test_context_payload_migration(void)
 
 /*
  * glLoadMatrixf carries 16 payload words, more than the 8 the parser held
- * before, and GL state now includes the depth plane. A packet split by a
- * migration resumes after its twelfth word, and the depth plane crosses
- * with it.
+ * before, and GL state now includes the depth plane and the second colour
+ * bank. A packet split by a migration resumes after its twelfth word, and
+ * the depth and bank contents cross with it.
  */
 static void test_gl_state_migration(void)
 {
@@ -7756,8 +7943,12 @@ static void test_gl_state_migration(void)
     mgras_enter_gl_window(from, 256, 640, 128, 128, 0x11);
     qtest_writel(from, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x1e, 0x4));
     gl_viewport(from, 0, 0, 128, 128);
+    gl_draw_buffer(from, 2);
+    gl_clear_color(from, 1, 0, 1, 1);
+    gl_word(from, GL_CLEAR_COLOR_BUFFER);
     gl_one(from, GL_CLEAR_DEPTH_HDR, 0);
     gl_word(from, GL_CLEAR_DEPTH_BUFFER);
+    gl_draw_buffer(from, 1);
     gl_one(from, GL_MATRIX_MODE_HDR, GL_MODELVIEW);
     gl_word(from, GL_LOAD_MATRIX_HDR);
     for (int i = 0; i < 12; i++) {
@@ -7789,6 +7980,10 @@ static void test_gl_state_migration(void)
     gl_word(to, GL_END_TRIANGLES);
     g_assert_cmphex(mgras_test_pixel(to, 256 + 33, 383 - 1), ==, 0xffffff);
 
+    /* The back-buffer clear crossed in bank 1. */
+    qtest_writeb(to, REG_XMAP_INDEX, 0);
+    qtest_writel(to, REG_XMAP_BUF_SELECT, 1u);
+    g_assert_cmphex(mgras_test_display_pixel(to, 300, 300), ==, 0xff00ff);
     g_assert_cmphex(mgras_qom_get_uint(to, "x-test-error"), ==, 0);
 
     qtest_quit(to);
@@ -8412,6 +8607,24 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/origin2000/mgras/"
                    "gl-smooth-is-perspective-correct",
                    test_gl_smooth_is_perspective_correct);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "gl-back-buffer-draws-into-bank-one",
+                   test_gl_back_buffer_draws_into_bank_one);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "gl-front-buffer-is-the-other-bank",
+                   test_gl_front_buffer_is_the_other_bank);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "gl-bank-token-moves-the-back-buffer",
+                   test_gl_bank_token_moves_the_back_buffer);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "gl-context-image-restores-the-banks",
+                   test_gl_context_image_restores_the_banks);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "gl-swap-matches-the-reference",
+                   test_gl_swap_matches_the_reference);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "gl-swap-pending-matches-the-reference",
+                   test_gl_swap_pending_matches_the_reference);
     qtest_add_func("sn0/origin2000/mgras/hq-flags-set-and-clear",
                    test_hq_flags_set_and_clear);
     qtest_add_func("sn0/origin2000/mgras/hq-flags-fence-token-sets-bit",

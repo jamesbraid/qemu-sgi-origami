@@ -140,7 +140,9 @@ static bool mgras_overlay_bgr(SGIMgrasState *s, int i, uint8_t did,
  * Icon Catalog draws its icons' bodies on as 240. Neither direct form's
  * main WID is read: no register or capture is known to source a map a
  * direct-colour pixel would use. A visible overlay pixel covers every
- * kind.
+ * kind. A main display ID whose bit is set in the XMAP buffer-select
+ * word under index 0 shows bank 1, which holds only the GL client's
+ * direct colour (SGI_MGRAS_XMAP_BUF_SELECT in sgi-mgras.h).
  */
 static uint32_t mgras_resolve_pixel_bgr(SGIMgrasState *s, int i,
                                         uint8_t main_did, uint8_t overlay_did)
@@ -149,6 +151,11 @@ static uint32_t mgras_resolve_pixel_bgr(SGIMgrasState *s, int i,
 
     if (mgras_overlay_bgr(s, i, overlay_did, &overlay)) {
         return overlay;
+    }
+    if ((s->xmap_buf_select[0] >> (main_did & MGRAS_DID_MASK)) & 1) {
+        uint32_t rgb = s->back[i] & 0x00ffffff;
+
+        return ((rgb & 0xff) << 16) | (rgb & 0xff00) | ((rgb >> 16) & 0xff);
     }
     if (s->format[i] == SGI_MGRAS_PIXEL_FORMAT_RGB) {
         uint32_t rgb = s->front[i] & 0x00ffffff;
