@@ -783,9 +783,10 @@ static void md_directory_error_latch(SGIBedrockMDState *s, int kind,
  * minutes on a loaded host. So lifting a mark retires its slot rather than
  * removing its overlay: a retired slot's overlay stays placed and passes
  * every access through as the memory beneath would, marking the same
- * doubleword or line again reactivates it without a map change, and
- * overlays idle for a second are removed together in one change. None of
- * this is visible to the guest.
+ * doubleword or line again reactivates it without a map change, and an
+ * overlay is removed once it has idled for a second, together with any
+ * other that has by then, in one change. None of this is visible to the
+ * guest.
  */
 #define MD_RETIRED_IDLE_NS NANOSECONDS_PER_SECOND
 
@@ -2503,6 +2504,7 @@ static void md_reset_registers(SGIBedrockMDState *s)
 {
     md_selftest_cancel(s);
     timer_del(s->retired_timer);
+    memory_region_transaction_begin();
     md_ecc_injections_clear(s);
     md_directory_injections_clear(s);
     s->memory_error = 0;
@@ -2510,6 +2512,7 @@ static void md_reset_registers(SGIBedrockMDState *s)
     s->current_cell = UINT64_MAX;
     s->memory_config = 0;
     md_update_memory_aliases(s);
+    memory_region_transaction_commit();
     s->refresh = 0;
     s->directory_config = 0;
     memset(s->storage, 0, sizeof(s->storage));
@@ -2573,6 +2576,7 @@ static int md_post_load(void *opaque, int version_id)
     g_hash_table_remove_all(s->directory_injection_by_index);
     g_hash_table_remove_all(s->ecc_retired_by_raw);
     g_hash_table_remove_all(s->directory_retired_by_index);
+    timer_del(s->retired_timer);
     /* The stream carries marks, not retired overlays: none survives it. */
     md_retired_flush_all(s);
     if (s->directory_compat_count >

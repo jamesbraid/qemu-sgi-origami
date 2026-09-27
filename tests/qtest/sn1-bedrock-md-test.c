@@ -3347,6 +3347,13 @@ static void test_ecc_marks_reused_and_migrated(void)
  * and writes plainly, a second mark there is checked, and the overlay goes
  * after the idle second or at reset.
  */
+static bool mtree_has_ecc_overlay(QTestState *s)
+{
+    g_autofree char *mtree = qtest_hmp(s, "info mtree");
+
+    return strstr(mtree, "sgi-bedrock-md-ecc-injection") != NULL;
+}
+
 static void test_ecc_lifted_mark_keeps_overlay(void)
 {
     g_autofree char *prom = empty_prom_new();
@@ -3396,11 +3403,17 @@ static void test_ecc_lifted_mark_keeps_overlay(void)
     assert_flat_view_type(s, address, "ram");
     g_assert_cmphex(qtest_readq(s, address), ==, data ^ (UINT64_C(1) << 6));
 
-    /* Reset removes a kept overlay without waiting. */
+    /*
+     * Reset removes a kept overlay without waiting. Reset also turns the
+     * bank aliases off, so look for the overlay by name rather than by
+     * what the address decodes to.
+     */
     qtest_writeb(s, carrier, ecc_column[0]);
     qtest_writeq(s, address, 0);
     assert_flat_view_type(s, address, "i/o");
+    g_assert_true(mtree_has_ecc_overlay(s));
     qtest_qmp_assert_success(s, "{'execute':'system_reset'}");
+    g_assert_false(mtree_has_ecc_overlay(s));
     qtest_writeq(s, SELFTEST_MACHINE(0x8), config);
     assert_flat_view_type(s, address, "ram");
     qtest_quit(s);
