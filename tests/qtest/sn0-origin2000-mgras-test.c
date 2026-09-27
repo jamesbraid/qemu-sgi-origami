@@ -3076,8 +3076,9 @@ static void test_direct_glyph_row_ci8_reads_red_channel(void)
  * register 0x159 selects the packing (see REG_BYTE_XFER_PACKING); this is
  * also the check that 0x159 == 0x8000 keeps that eight-pixel path. An
  * 18-column-wide rect makes the row's skip into the 8-byte unit alternate
- * 0, 4, 0, ... per row (skip = (row * 4 * ceil(width / 4)) % 8), covering
- * both values in two rows. Each unit writes a fresh CHAR_H/CHAR_L pair with
+ * 0, 4, 0, ... per row (skip = (row * pitch) % 8, the pitch 18 plus the
+ * padding field's 2 in 0x159 bits 16:14), covering both values in two
+ * rows. Each unit writes a fresh CHAR_H/CHAR_L pair with
  * distinct byte markers so a painted pixel's value names the byte that
  * produced it.
  */
@@ -3140,6 +3141,58 @@ static void test_direct_byte_row(void)
     g_assert_cmphex(mgras_test_pixel(qts, 124, 121), ==, 0x30);
     g_assert_cmphex(mgras_test_pixel(qts, 137, 121), ==, 0x3d);
     g_assert_cmphex(mgras_test_wid(qts, 137, 121), ==, 5);
+}
+
+/*
+ * The eight-pixel transfer's source pitch is the width plus 0x159 bits
+ * 16:14, not the width rounded up to 32 bits. The IRIX 6.5.30 greeter
+ * restores the 6-pixel-wide area under its text cursor from a buffer of
+ * pitch 12 with 0x159 == 0x18000 (field 6): row 1 starts 4 bytes into the
+ * second unit and needs two units, row 2 starts a fresh unit. A 32-bit
+ * pitch of 8 would start every row at a unit boundary and paint row 1
+ * from the padding bytes 0x08-0x0b.
+ */
+static void test_direct_byte_row_pitch_from_padding_field(void)
+{
+    static const uint32_t units[4][2] = {
+        { 0x00010203u, 0x04050607u },
+        { 0x08090a0bu, 0x0c0d0e0fu },
+        { 0x10111213u, 0x14151617u },
+        { 0x18191a1bu, 0x1c1d1e1fu },
+    };
+
+    mgras_reset();
+
+    mgras_enter_context(qts);
+
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_COLORMASKLSBSA, 0xff));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_FILLMODE, MGRAS_FILLMODE_BYTE_XFER));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_BYTE_XFER_PACKING, 0x18000));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_BLOCK_START, (454u << 16) | 700u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_BLOCK_END, (459u << 16) | 702u));
+    for (int i = 0; i < 4; i++) {
+        qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                     MGRAS_COMMAND(REG_CHAR_H, units[i][0]));
+        qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                     MGRAS_COMMAND_EXEC(REG_CHAR_L, units[i][1]));
+    }
+
+    /* Row 0: source bytes 0-5. */
+    g_assert_cmphex(mgras_test_pixel(qts, 454, 700), ==, 0x00);
+    g_assert_cmphex(mgras_test_pixel(qts, 459, 700), ==, 0x05);
+    /* Row 1: source bytes 12-17, across the second and third units. */
+    g_assert_cmphex(mgras_test_pixel(qts, 454, 701), ==, 0x0c);
+    g_assert_cmphex(mgras_test_pixel(qts, 457, 701), ==, 0x0f);
+    g_assert_cmphex(mgras_test_pixel(qts, 458, 701), ==, 0x10);
+    g_assert_cmphex(mgras_test_pixel(qts, 459, 701), ==, 0x11);
+    /* Row 2: source bytes 24-29, the fourth unit. */
+    g_assert_cmphex(mgras_test_pixel(qts, 454, 702), ==, 0x18);
+    g_assert_cmphex(mgras_test_pixel(qts, 459, 702), ==, 0x1d);
 }
 
 
@@ -5557,6 +5610,9 @@ int main(int argc, char **argv)
                    test_direct_glyph_row_ci8_reads_red_channel);
     qtest_add_func("sn0/origin2000/mgras/direct-byte-row",
                    test_direct_byte_row);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "direct-byte-row-pitch-from-padding-field",
+                   test_direct_byte_row_pitch_from_padding_field);
     qtest_add_func("sn0/origin2000/mgras/direct-byte-row-pairs",
                    test_direct_byte_row_pairs);
     qtest_add_func("sn0/origin2000/mgras/direct-byte-row-pairs-row-pad-bits",
