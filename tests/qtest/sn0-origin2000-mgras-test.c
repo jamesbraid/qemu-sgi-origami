@@ -876,8 +876,7 @@ static void mgras_select_xmap(QTestState *s, uint8_t select, uint8_t index)
 
 static void test_pp1_select_routes_xmap_on_two_re_board(void)
 {
-    QTestState *s = qtest_init(MACHINE_ARGS " -global sgi-mgras.board=ssi"
-                               " -global sgi-mgras.x-unimplemented-board=on");
+    QTestState *s = qtest_init(MACHINE_ARGS " -global sgi-mgras.board=ssi");
 
     mgras_select_xmap(s, PP1_SELECT_ALL, 0);
     qtest_writel(s, REG_XMAP_MAIN_MODE, 0x111);
@@ -952,8 +951,7 @@ static void test_pp1_select_absent_pp1_on_one_re_board(void)
  */
 static void test_pp1_scanout_follows_first_pp1(void)
 {
-    QTestState *s = qtest_init(MACHINE_ARGS " -global sgi-mgras.board=ssi"
-                               " -global sgi-mgras.x-unimplemented-board=on");
+    QTestState *s = qtest_init(MACHINE_ARGS " -global sgi-mgras.board=ssi");
 
     /* Map 29 is the one reset's mode 0x7a4 names; 0x384 names map 28. */
     mgras_enter_context(s);
@@ -982,8 +980,7 @@ static void test_pp1_scanout_follows_first_pp1(void)
 
 #define REG_XMAP_SYNC_0         MGRAS_REG(0x071f00)
 #define REG_XMAP_OVERLAY_MODE   MGRAS_REG(0x071e80)
-#define MGRAS_TWO_RE_ARGS       " -global sgi-mgras.board=ssi" \
-                                " -global sgi-mgras.x-unimplemented-board=on"
+#define MGRAS_TWO_RE_ARGS       " -global sgi-mgras.board=ssi"
 
 /* The PP1SELECT value naming PP1 n: RE n / 2, its PP1 n % 2. */
 static uint8_t mgras_pp1_select_one(unsigned int n)
@@ -1103,6 +1100,40 @@ static void test_pp1_select_leaves_sync_registers_shared(void)
         mgras_select_xmap(s, selects[i], 0x1c);
         g_assert_cmphex(qtest_readl(s, REG_REPP_SYNC), ==, 0x101);
     }
+    g_assert_cmphex(mgras_qom_get_uint(s, "x-test-error"), ==, 0);
+    qtest_quit(s);
+}
+
+/*
+ * Both REs of a two-RE board draw into one set of planes in the model.
+ * The OCTANE Technical Report has the second RE take alternate spans, so
+ * on hardware adjacent rows may belong to different REs; no software path
+ * IRIX uses can tell, and the model does not split them
+ * (docs/datasheets/mgras-dual-re.md). Two adjacent rows filled with
+ * different colours both read back from the planes scanout uses. A model
+ * that split the REs' pixels would have to change this deliberately.
+ */
+static void test_two_re_board_draws_one_set_of_planes(void)
+{
+    QTestState *s = qtest_init(MACHINE_ARGS MGRAS_TWO_RE_ARGS);
+
+    mgras_enter_context(s);
+    qtest_writeq(s, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_FILLMODE, MGRAS_FILLMODE_RECT_FILL_VALUE));
+    for (unsigned int y = 20; y < 24; y++) {
+        qtest_writeq(s, REG_CONTEXT_COMMAND,
+                     MGRAS_COMMAND(REG_FILLCOLOR_R, 0x30 + y));
+        qtest_writeq(s, REG_CONTEXT_COMMAND,
+                     MGRAS_COMMAND(REG_BLOCK_START, (10u << 16) | y));
+        qtest_writeq(s, REG_CONTEXT_COMMAND,
+                     MGRAS_COMMAND_EXEC(REG_BLOCK_END, (13u << 16) | y));
+    }
+    for (unsigned int y = 20; y < 24; y++) {
+        g_assert_cmphex(mgras_test_pixel(s, 10, y), ==, 0x30 + y);
+        g_assert_cmphex(mgras_test_pixel(s, 13, y), ==, 0x30 + y);
+    }
+    g_assert_cmphex(mgras_test_pixel(s, 10, 19), ==, 0);
+    g_assert_cmphex(mgras_test_pixel(s, 10, 24), ==, 0);
     g_assert_cmphex(mgras_qom_get_uint(s, "x-test-error"), ==, 0);
     qtest_quit(s);
 }
@@ -5136,12 +5167,12 @@ static const MgrasBoardExpect mgras_board_expect[] = {
     { "si",    true,  1, 1, 0, "SI", 0x45, 0x0f, 2, 2, 2, 0, 0, 3, 0 },
     { "si-t",  false, 1, 1, 4, "SI with texture option",
       0x45, 0x0c, 2, 2, 2, 0, 0, 3, 0 },
-    { "ssi",   false, 2, 2, 0, "SSI", 0x46, 0x0f, 2, 2, 2, 0, 0, 3, 0 },
+    { "ssi",   true,  2, 2, 0, "SSI", 0x46, 0x0f, 2, 2, 2, 0, 0, 3, 0 },
     { "mxi",   false, 2, 2, 4, "MXI", 0x46, 0x00, 2, 2, 2, 0, 0, 3, 0 },
     { "esi",   true,  1, 1, 0, "ESI", 0x51, 0x0f, 2, 3, 2, 4, 0, 3, 0 },
     { "esi-t", false, 1, 1, 4, "ESI with texture option",
       0x51, 0x0c, 2, 3, 2, 4, 0, 3, 0 },
-    { "essi",  false, 2, 2, 0, "ESSI", 0x52, 0x0f, 2, 3, 2, 4, 0, 3, 0 },
+    { "essi",  true,  2, 2, 0, "ESSI", 0x52, 0x0f, 2, 3, 2, 4, 0, 3, 0 },
     { "emxi",  false, 2, 2, 4, "EMXI", 0x52, 0x00, 2, 3, 2, 4, 0, 3, 0 },
 };
 
@@ -5315,8 +5346,8 @@ static void assert_qemu_rejects(const char *const args[], const char *message)
 }
 
 /*
- * A board with TRAM or a second GE and RE is refused at realize, naming
- * what the model lacks, unless x-unimplemented-board asks for it. "-qtest
+ * A board with TRAM is refused at realize, naming texture as what the model
+ * lacks, unless x-unimplemented-board asks for it. "-qtest
  * stdio -accel qtest" gets past the machine's stock-PROM-only check the
  * same way sn0-origin2000-kona-test.c's rejection cases do.
  */
@@ -5332,13 +5363,10 @@ static void test_board_refused(gconstpointer data)
         "-display", "none", "-qtest", "stdio", "-accel", "qtest", NULL
     };
 
+    /* Texture is the only thing any board still lacks. */
+    g_assert_cmpuint(e->tram, >, 0);
     assert_qemu_rejects(args, message);
-    if (e->tram) {
-        assert_qemu_rejects(args, "texture (TE1 and TRAM)");
-    }
-    if (e->ge > 1) {
-        assert_qemu_rejects(args, "a second GE and RE");
-    }
+    assert_qemu_rejects(args, "needs texture (TE1 and TRAM), which");
 }
 
 /*
@@ -8878,6 +8906,8 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/origin2000/mgras/"
                    "pp1-select-leaves-sync-registers-shared",
                    test_pp1_select_leaves_sync_registers_shared);
+    qtest_add_func("sn0/origin2000/mgras/two-re-board-draws-one-set-of-planes",
+                   test_two_re_board_draws_one_set_of_planes);
     qtest_add_func("sn0/origin2000/mgras/xmap-revision-and-fifo-capacity",
                    test_xmap_revision_and_fifo_capacity);
     qtest_add_func("sn0/origin2000/mgras/xmap-buf-select-write",
