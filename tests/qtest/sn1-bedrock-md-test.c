@@ -2924,6 +2924,61 @@ static void test_origin300_watch_idle_release(void)
     qtest_quit(s);
 }
 
+/* The followed lines, and their placement, survive a migration. */
+static void test_origin300_watch_migration(void)
+{
+    GError *error = NULL;
+    g_autofree char *directory =
+        g_dir_make_tmp("sn1-md-watch-migration-XXXXXX", &error);
+    g_autofree char *socket = NULL;
+    g_autofree char *uri = NULL;
+    QTestState *from, *to;
+
+    g_assert_no_error(error);
+    socket = g_build_filename(directory, "migration.sock", NULL);
+    uri = g_strdup_printf("unix:%s", socket);
+    from = start_origin300_watch("-S");
+    to = start_origin300_watch("-S -incoming defer");
+    qtest_readq(from, WATCHED_CARRIER);
+    assert_flat_view_type(from, WATCHED_LINE, "i/o");
+    ensure_clock_running(from);
+    migrate_pair(from, to, uri);
+    assert_flat_view_type(to, WATCHED_LINE, "i/o");
+    qtest_quit(from);
+    qtest_quit(to);
+    unlink(socket);
+    g_assert_cmpint(rmdir(directory), ==, 0);
+}
+
+/*
+ * A stream from a machine following no line leaves none followed on the
+ * destination, whatever the destination followed before it loaded.
+ */
+static void test_origin300_watch_migration_clears(void)
+{
+    GError *error = NULL;
+    g_autofree char *directory =
+        g_dir_make_tmp("sn1-md-watch-clear-XXXXXX", &error);
+    g_autofree char *socket = NULL;
+    g_autofree char *uri = NULL;
+    QTestState *from, *to;
+
+    g_assert_no_error(error);
+    socket = g_build_filename(directory, "migration.sock", NULL);
+    uri = g_strdup_printf("unix:%s", socket);
+    from = start_origin300_watch("-S");
+    to = start_origin300_watch("-S -incoming defer");
+    qtest_readq(to, WATCHED_CARRIER);
+    assert_flat_view_type(to, WATCHED_LINE, "i/o");
+    ensure_clock_running(from);
+    migrate_pair(from, to, uri);
+    assert_flat_view_type(to, WATCHED_LINE, "ram");
+    qtest_quit(from);
+    qtest_quit(to);
+    unlink(socket);
+    g_assert_cmpint(rmdir(directory), ==, 0);
+}
+
 /* A reset forgets the lines it followed. */
 static void test_origin300_watch_reset(void)
 {
@@ -3818,6 +3873,10 @@ int main(int argc, char **argv)
                    test_origin300_watch_idle_release);
     qtest_add_func("sn1/bedrock-md/origin300-watch-reset",
                    test_origin300_watch_reset);
+    qtest_add_func("sn1/bedrock-md/origin300-watch-migration",
+                   test_origin300_watch_migration);
+    qtest_add_func("sn1/bedrock-md/origin300-watch-migration-clears",
+                   test_origin300_watch_migration_clears);
     qtest_add_func("sn1/bedrock-md/origin300-ecc-check",
                    test_origin300_ecc_check);
     qtest_add_func("sn1/bedrock-md/origin300-selftest-fill",
