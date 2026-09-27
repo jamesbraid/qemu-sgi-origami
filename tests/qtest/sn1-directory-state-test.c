@@ -605,6 +605,47 @@ static void test_uncached_accesses(void)
     finish(s, prom);
 }
 
+/* Wait for the host's go-ahead, then load the line. */
+static void wait_then_load(Program *p)
+{
+    unsigned int wait = p->pc;
+
+    emit(p, LD(R_T3, RESULT_GO, R_T2));
+    emit_branch(p, 0x04, R_T3, R_ZERO, wait); /* beq t3, zero, wait */
+    emit(p, LD(R_T3, 0, R_T0));
+    emit_publish(p, 0x08);
+}
+
+/*
+ * A debugger's read of the directory word is not software's: it must not
+ * start following the line, so the load after it is not seen.
+ */
+static void test_debugger_read(void)
+{
+    const Scenario sc = {
+        .cpus = "2",
+        STEPS({ 0, wait_then_load }),
+    };
+    char *prom;
+    QTestState *s;
+    char *out;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+    s = start_scenario(&sc, &prom);
+    /* The processors are running, so 64-bit addressing is on. */
+    g_usleep(100 * 1000);
+    out = qtest_hmp(s, "x /1gx 0x90000001c00b0000");
+    g_assert_nonnull(strstr(out, "0000000000000000"));
+    g_free(out);
+    qtest_writeq(s, RESULT_PHYS + RESULT_GO, 1);
+    wait_steps(s, sc.nr_steps);
+    g_assert_cmphex(result(s, 0x08) & DIRECTORY_FIELDS, ==, UNOWNED);
+    finish(s, prom);
+}
+
 /*
  * A line left idle for a second is dropped from the ones followed. A
  * processor's dirty copy of it is taken as replaced, so it is written back
@@ -647,6 +688,7 @@ int main(int argc, char **argv)
                    test_premium_format);
     qtest_add_func("sn1/directory-state/uncached-accesses",
                    test_uncached_accesses);
+    qtest_add_func("sn1/directory-state/debugger-read", test_debugger_read);
     qtest_add_func("sn1/directory-state/idle-dirty-line-written-back",
                    test_idle_dirty_line_written_back);
     return g_test_run();
