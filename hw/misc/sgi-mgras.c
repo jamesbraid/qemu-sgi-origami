@@ -1663,7 +1663,10 @@ static const VMStateDescription vmstate_sgi_mgras = {
         /*
          * Versions 14 to 17 kept one GL state for the board, sent above as
          * entry 0, the state used with no GL context loaded. Version 18
-         * adds the per-context entries.
+         * adds the per-context entries. After an older stream loads, the
+         * table is empty and gl_current is 0, so the state the source's
+         * client was using becomes the no-context entry; that client
+         * starts from initial state at its next switch-in.
          */
         VMSTATE_STRUCT_SUB_ARRAY(gl_context, SGIMgrasState, 1,
                                  SGI_MGRAS_GL_CONTEXTS - 1, 18,

@@ -205,9 +205,11 @@ static void mgras_gl_identity(uint32_t m[16])
 /*
  * Context image word 0 names the context's GL state. In run
  * irix-20260927T191513-b4997c it is 0x3bcd and 0x5420 for two GL clients,
- * 0x237a for the X server and 0xb27 for the kernel's default context. The
- * IRIX 6.5.30 kernel allocates the word as the context's slot in GE
- * external RAM and writes -1 for a context with no GL state. The image
+ * 0x237a for the X server and 0xb27 for the kernel's default context.
+ * These are allocations observed in that run, not published values, and
+ * MGRAS_GL_DEFAULT_SLOT is the one observed there. The IRIX 6.5.30 kernel
+ * allocates the word as the context's slot in GE external RAM and writes
+ * -1 for a context with no GL state. The image
  * carries no other GL state, the clients never re-send theirs after a
  * switch, and nothing touches the GE ports at those switches, so the board
  * keeps each context's state under its slot (inferred;
