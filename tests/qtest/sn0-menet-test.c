@@ -10,7 +10,8 @@
  * preset=menet` board attaches through crossbow0's spare fabric widget 11,
  * as the PCI shoehorn's own test does. The origin2000-menet topology fits
  * the board in XIO slot IO5, crossbow0 widget 14, as a startup-attached
- * board.
+ * board, and the origin200-gigachannel-xio topology fits one in the
+ * GIGAchannel cabinet's io3 position, Crossbow widget 12.
  *
  * The contract, from real IRIX inventories and IRIX 6.5.30's own MENET
  * setup routine:
@@ -93,6 +94,11 @@ static const MenetCase device_case = {
 };
 static const MenetCase placed_case = {
     PLACED_ARGS, PLACED_WIDGET, "/machine/module0/slot14/baseio",
+};
+/* The GIGAchannel cabinet's io3 position: Crossbow link C, widget 12. */
+static const MenetCase gigachannel_case = {
+    "-M origin200,topology=origin200-gigachannel-xio -display none", 12,
+    "/machine/module1/slot12/baseio",
 };
 
 static void ioc3_map(QTestState *qts, const MenetCase *c, unsigned int d)
@@ -362,5 +368,9 @@ int main(int argc, char **argv)
                         test_populations);
     qtest_add_data_func("sn0/menet/placed/superio-reaches-hub", &placed_case,
                         test_superio_reaches_hub);
+    qtest_add_data_func("sn0/menet/gigachannel/ioc3s-enumerate",
+                        &gigachannel_case, test_ioc3s_enumerate);
+    qtest_add_data_func("sn0/menet/gigachannel/populations",
+                        &gigachannel_case, test_populations);
     return g_test_run();
 }

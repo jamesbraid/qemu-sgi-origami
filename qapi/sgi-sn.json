@@ -434,11 +434,14 @@
 #     @revision/@serial (the widget's own identity is fixed, not
 #     catalogue-driven), so no shipped topology names this preset yet
 #
+# @mscsi: the MSCSI XIO card, four QLogic ISP1040 SCSI controllers
+#
 # Since: 11.2
 ##
 { 'enum': 'SGIModelIoBoardPreset',
   'data': ['ip29-io', 'ip29-io-crosstown', 'io6', 'io6g', 'io8', 'io9',
-           'pci-shoehorn', 'pci-carrier', 'gigachannel', 'menet', 'kona'] }
+           'pci-shoehorn', 'pci-carrier', 'gigachannel', 'menet', 'kona',
+           'mscsi'] }
 
 ##
 # @SGIModelIoBoardCarrier:
@@ -478,6 +481,10 @@
 #
 # @part: fitted-part design number
 #
+# @other-identity-parts: additional one-wire board part numbers on the
+#     same carrier.  A device uses these only when its board model
+#     explicitly supports them.
+#
 # @revision: fitted-part revision
 #
 # @serial: fitted-part one-wire serial
@@ -496,6 +503,7 @@
             'carrier': 'SGIModelIoBoardCarrier',
             'attachment': 'uint32',
             'part': 'str',
+            '*other-identity-parts': ['str'],
             'revision': 'uint8',
             'serial': 'uint64',
             '*ioc3-serial': 'uint64' } }

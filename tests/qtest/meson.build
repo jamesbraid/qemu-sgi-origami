@@ -151,11 +151,11 @@ slow_qtests = {
   # measured 32.23s-57.39s, close enough to the 60s default that a slower
   # run would time out. Budget three times the highest measured run.
   'sn0-pci-carrier-test': 180,
-  # Eight cases, each starting its own machine.
+  # Thirteen cases, each starting its own machine.
   'sn0-menet-test': 180,
-  # Five cases, each starting its own machine; budgeted like the MENET's.
+  # Eleven cases, each starting its own machine; budgeted like the MENET's.
   'sn0-mscsi-test': 180,
-  # Fifteen cases, each starting its own machine. 50.58s alone after the
+  # Sixteen cases, each starting its own machine. 50.58s alone after the
   # MENET record case joined; run beside two other SN0 suites it was killed
   # at the 60s default with seven cases done. Budget three times the
   # measured solo run until a loaded run completes.
