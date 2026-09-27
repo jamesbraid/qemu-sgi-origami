@@ -3,6 +3,7 @@
 #include "qemu/osdep.h"
 #include "qemu/bswap.h"
 #include "qemu/units.h"
+#include "hw/core/clock.h"
 #include "libqtest.h"
 #include "sgi-migrate.h"
 #include "qobject/qdict.h"
@@ -113,6 +114,28 @@ static QTestState *octane2_start_args(const char *extra)
 
     return qtest_initf("-M octane2 -m 256M -cpu " OCTANE2_CPU
                        " -bios %s -S %s", quoted, extra);
+}
+
+static uint64_t octane_cpu_clock_period(QTestState *qts)
+{
+    g_autoptr(QDict) reply = qtest_qmp(qts,
+        "{'execute':'qom-get','arguments':{'path':'/machine/cpu-refclk',"
+        "'property':'qtest-clock-period'}}");
+
+    return qdict_get_int(reply, "return");
+}
+
+static void test_cpu_clock(gconstpointer data)
+{
+    bool octane2 = GPOINTER_TO_INT(data);
+    uint64_t expected = CLOCK_PERIOD_FROM_HZ(octane2 ? 360000000 :
+                                              195000000);
+    QTestState *qts = octane2 ? octane2_start_args("") : octane_start();
+
+    g_assert_cmpuint(octane_cpu_clock_period(qts), ==, expected);
+    qtest_system_reset(qts);
+    g_assert_cmpuint(octane_cpu_clock_period(qts), ==, expected);
+    qtest_quit(qts);
 }
 
 static void test_octane2_population(void)
@@ -1664,6 +1687,10 @@ int main(int argc, char **argv)
     g_assert_cmpint(write(fd, bytes, sizeof(bytes)), ==, sizeof(bytes));
     close(fd);
     qtest_add_func("/octane/widgets-and-memory", test_widgets_and_memory);
+    qtest_add_data_func("/octane/cpu-clock", GINT_TO_POINTER(0),
+                        test_cpu_clock);
+    qtest_add_data_func("/octane2/cpu-clock", GINT_TO_POINTER(1),
+                        test_cpu_clock);
     qtest_add_func("/octane2/population", test_octane2_population);
     qtest_add_func("/octane/memory-populations", test_memory_populations);
     qtest_add_func("/octane/memory-population-rejections",
