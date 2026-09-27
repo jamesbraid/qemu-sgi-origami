@@ -2,6 +2,7 @@
 /* Graphics-free Octane profile: synthetic RAM and raw flash policy. */
 #include "qemu/osdep.h"
 #include "qemu/bswap.h"
+#include "qemu/units.h"
 #include "libqtest.h"
 #include "sgi-migrate.h"
 #include "qobject/qdict.h"
@@ -140,6 +141,147 @@ static void test_octane2_population(void)
     g_assert_cmphex(qtest_readq(qts, RAM + 8 * UNIT - 8), ==,
                     0xfedcba9876543210ULL);
     qtest_quit(qts);
+}
+
+static void test_memory_populations(void)
+{
+    struct OctaneMemoryCase {
+        const char *machine;
+        const char *options;
+        unsigned size[4];
+    };
+    static const struct OctaneMemoryCase cases[] = {
+        { "octane", "", { 128, 0, 0, 0 } },
+        { "octane", ",bank0-size=67108864,bank1-size=67108864",
+          { 64, 64, 0, 0 } },
+        { "octane2", "", { 256, 0, 0, 0 } },
+        { "octane2", ",bank0-size=134217728,bank1-size=134217728",
+          { 128, 128, 0, 0 } },
+        { "octane2", ",bank0-size=67108864,bank1-size=67108864,"
+          "bank2-size=67108864,bank3-size=67108864",
+          { 64, 64, 64, 64 } },
+    };
+    g_autofree char *quoted = g_shell_quote(flash_path);
+
+    for (unsigned n = 0; n < G_N_ELEMENTS(cases); n++) {
+        const struct OctaneMemoryCase *test = &cases[n];
+        const char *cpu = !strcmp(test->machine, "octane2") ?
+            OCTANE2_CPU : "R10000";
+        unsigned base = 0;
+        QTestState *qts = qtest_initf("-M %s%s -m %uM -cpu %s -bios %s -S",
+                                     test->machine, test->options,
+                                     !strcmp(test->machine, "octane2") ?
+                                     256 : 128, cpu, quoted);
+
+        for (unsigned bank = 0; bank < 4; bank++) {
+            unsigned size = test->size[bank];
+            uint32_t descriptor = size ?
+                0x80000000U | ((size / 32 - 1) << 16) | (base / 32) : 0;
+
+            g_assert_cmphex(qtest_readl(qts, HEART + 0x20 + bank * 4), ==,
+                            descriptor);
+            if (size) {
+                uint64_t first = 0x1020304050607080ULL + bank;
+                uint64_t last = 0x8070605040302010ULL + bank;
+                uint64_t start = base ? RAM + (uint64_t)base * MiB : HIGH_RAM;
+                uint64_t end = RAM + (uint64_t)(base + size) * MiB - 8;
+
+                qtest_writeq(qts, start, first);
+                qtest_writeq(qts, end, last);
+                base += size;
+            }
+        }
+        base = 0;
+        for (unsigned bank = 0; bank < 4; bank++) {
+            if (test->size[bank]) {
+                uint64_t start = base ? RAM + (uint64_t)base * MiB : HIGH_RAM;
+                uint64_t end = RAM +
+                    (uint64_t)(base + test->size[bank]) * MiB - 8;
+
+                g_assert_cmphex(qtest_readq(qts, start), ==,
+                                0x1020304050607080ULL + bank);
+                g_assert_cmphex(qtest_readq(qts, end), ==,
+                                0x8070605040302010ULL + bank);
+                base += test->size[bank];
+            }
+        }
+        g_assert_cmpuint(base, ==, !strcmp(test->machine, "octane2") ?
+                         256 : 128);
+        {
+            uint64_t missing;
+
+            g_assert_cmpuint(qtest_readq_tx(qts, RAM + (uint64_t)base * MiB,
+                                            &missing), !=, MEMTX_OK);
+        }
+        base = 0;
+        for (unsigned bank = 0; bank < 4; bank++) {
+            uint64_t missing;
+            uint64_t start = base ? RAM + (uint64_t)base * MiB : HIGH_RAM;
+
+            qtest_writel(qts, HEART + 0x20 + bank * 4, 0);
+            g_assert_cmphex(qtest_readl(qts, HEART + 0x20 + bank * 4), ==, 0);
+            if (test->size[bank]) {
+                g_assert_cmpuint(qtest_readq_tx(qts, start, &missing), !=,
+                                 MEMTX_OK);
+            }
+            base += test->size[bank];
+        }
+        qtest_system_reset(qts);
+        for (unsigned bank = 0, offset = 0; bank < 4; bank++) {
+            unsigned size = test->size[bank];
+            uint32_t descriptor = size ?
+                0x80000000U | ((size / 32 - 1) << 16) | (offset / 32) : 0;
+
+            g_assert_cmphex(qtest_readl(qts, HEART + 0x20 + bank * 4), ==,
+                            descriptor);
+            if (size) {
+                uint64_t start = offset ?
+                    RAM + (uint64_t)offset * MiB : HIGH_RAM;
+                uint64_t end = RAM + (uint64_t)(offset + size) * MiB - 8;
+
+                g_assert_cmphex(qtest_readq(qts, start), ==,
+                                0x1020304050607080ULL + bank);
+                g_assert_cmphex(qtest_readq(qts, end), ==,
+                                0x8070605040302010ULL + bank);
+            }
+            offset += size;
+        }
+        qtest_quit(qts);
+    }
+}
+
+static void test_memory_population_rejections(void)
+{
+    static const struct {
+        const char *machine;
+        const char *ram;
+        const char *error;
+    } cases[] = {
+        { "octane,bank0-size=67108864,bank2-size=67108864", "128M",
+          "unsupported HEART bank population" },
+        { "octane,bank0-size=134217728,bank1-size=67108864", "128M",
+          "unsupported HEART bank population" },
+        { "octane2,bank0-size=134217728,bank1-size=67108864,"
+          "bank2-size=67108864", "256M",
+          "unsupported HEART bank population" },
+        { "octane2,bank0-size=67108864,bank1-size=67108864,"
+          "bank2-size=67108864,bank3-size=67108864", "128M",
+          "supports one CPU and 256 MiB of RAM" },
+    };
+
+    for (unsigned n = 0; n < G_N_ELEMENTS(cases); n++) {
+        const char *args[] = {
+            qtest_qemu_binary(NULL), "-M", cases[n].machine,
+            "-m", cases[n].ram, "-display", "none", NULL
+        };
+        g_autofree char *error_output = NULL;
+        int status;
+
+        g_assert_true(g_spawn_sync(NULL, (char **)args, NULL, 0, NULL, NULL,
+                                   NULL, &error_output, &status, NULL));
+        g_assert_false(g_spawn_check_exit_status(status, NULL));
+        g_assert_nonnull(strstr(error_output, cases[n].error));
+    }
 }
 
 static bool octane_onewire_slot(QTestState *qts, unsigned int pulse,
@@ -1026,6 +1168,53 @@ static void test_reset_state(void)
     qtest_quit(qts);
 }
 
+static void test_memory_population_migration(void)
+{
+    g_autofree char *directory = NULL;
+    g_autofree char *socket = NULL;
+    g_autofree char *uri = NULL;
+    g_autofree char *quoted = g_shell_quote(flash_path);
+    GError *error = NULL;
+    QTestState *from, *to;
+    const char *machine =
+        "octane,bank0-size=67108864,bank1-size=67108864";
+
+    directory = g_dir_make_tmp("octane-banks-migration-XXXXXX", &error);
+    g_assert_no_error(error);
+    socket = g_build_filename(directory, "migration.sock", NULL);
+    uri = g_strdup_printf("unix:%s", socket);
+    from = qtest_initf("-M %s -m 128M -cpu R10000 -bios %s -S",
+                       machine, quoted);
+    to = qtest_initf("-M %s -m 128M -cpu R10000 -bios %s -S "
+                     "-incoming defer", machine, quoted);
+
+    qtest_writeq(from, HIGH_RAM, 0x1111222233334444ULL);
+    qtest_writeq(from, RAM + 64 * MiB - 8, 0x5555666677778888ULL);
+    qtest_writeq(from, RAM + 64 * MiB, 0x9999aaaabbbbccccULL);
+    qtest_writeq(from, RAM + 128 * MiB - 8, 0xddddeeeeffff0000ULL);
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming', 'arguments':{'uri':%s}}", uri);
+    sgi_migrate_stopped(from, uri);
+    sgi_wait_migration_status(to, "completed", 30);
+
+    g_assert_cmphex(qtest_readl(to, HEART + 0x20), ==, 0x80010000U);
+    g_assert_cmphex(qtest_readl(to, HEART + 0x24), ==, 0x80010002U);
+    g_assert_cmphex(qtest_readq(to, HIGH_RAM), ==,
+                    0x1111222233334444ULL);
+    g_assert_cmphex(qtest_readq(to, RAM + 64 * MiB - 8), ==,
+                    0x5555666677778888ULL);
+    g_assert_cmphex(qtest_readq(to, RAM + 64 * MiB), ==,
+                    0x9999aaaabbbbccccULL);
+    g_assert_cmphex(qtest_readq(to, RAM + 128 * MiB - 8), ==,
+                    0xddddeeeeffff0000ULL);
+    qtest_quit(to);
+    qtest_quit(from);
+    if (g_file_test(socket, G_FILE_TEST_EXISTS)) {
+        g_assert_cmpint(g_unlink(socket), ==, 0);
+    }
+    g_assert_cmpint(g_rmdir(directory), ==, 0);
+}
+
 static void test_migration_state(void)
 {
     uint8_t low_pattern[LOW_RAM_SIZE];
@@ -1164,6 +1353,9 @@ int main(int argc, char **argv)
     close(fd);
     qtest_add_func("/octane/widgets-and-memory", test_widgets_and_memory);
     qtest_add_func("/octane2/population", test_octane2_population);
+    qtest_add_func("/octane/memory-populations", test_memory_populations);
+    qtest_add_func("/octane/memory-population-rejections",
+                   test_memory_population_rejections);
     qtest_add_func("/octane2/ioc3-ethernet", test_octane2_ethernet);
     qtest_add_func("/octane/ioc3-ethernet", test_octane_ethernet);
     qtest_add_func("/octane/ioc3-ethernet-dma-and-interrupt",
@@ -1189,6 +1381,8 @@ int main(int argc, char **argv)
     qtest_add_func("/octane/heart-interrupt-levels",
                    test_heart_interrupt_levels);
     qtest_add_func("/octane/reset-state", test_reset_state);
+    qtest_add_func("/octane/memory-population-migration",
+                   test_memory_population_migration);
     qtest_add_func("/octane/migration-state", test_migration_state);
     int result = g_test_run();
     unlink(flash_path);
