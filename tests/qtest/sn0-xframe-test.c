@@ -70,6 +70,16 @@
 #define BRIDGE_INT_ENABLE       (BRIDGE_BASE + 0x108 + REG_DATA)
 #define BRIDGE_INT_MODE         (BRIDGE_BASE + 0x118 + REG_DATA)
 #define BRIDGE_INT_HOST(n)      (BRIDGE_BASE + 0x130 + 8 * (n) + REG_DATA)
+#define BRIDGE_INT_DEST_UPPER   (BRIDGE_BASE + 0x030 + REG_DATA)
+#define BRIDGE_INT_DEST_LOWER   (BRIDGE_BASE + 0x038 + REG_DATA)
+/*
+ * The destination the guests program: the Hub's widget and its
+ * interrupt-modify register in the XIO I/O view, with the pin's host
+ * field supplying bits 47:38 -- the I/O-view bit and node 0.
+ */
+#define HUB_XIO_DEST_UPPER      (1u << 16)
+#define HUB_XIO_DEST_LOWER      0x01800090u
+#define INT_HOST_IO_VIEW_NODE0  (0x200u << 8)
 #define HUB_LOCAL_WINDOW        (SPACE_IO + 0x01000000)
 #define PI_INT_PEND_MOD         0x90
 #define XFRAME_IRQ_NUMBER       14
@@ -879,7 +889,10 @@ static void test_combined_interrupts(const void *data)
     qtest_writel(qts, BRIDGE_DEVICE(XFRAME_IRQ_SLOT),
                  DEV_MEMORY_SPACE | (PIF_BAR_PCI >> 20));
 
-    qtest_writel(qts, BRIDGE_INT_HOST(XFRAME_IRQ_SLOT), XFRAME_IRQ_NUMBER);
+    qtest_writel(qts, BRIDGE_INT_DEST_UPPER, HUB_XIO_DEST_UPPER);
+    qtest_writel(qts, BRIDGE_INT_DEST_LOWER, HUB_XIO_DEST_LOWER);
+    qtest_writel(qts, BRIDGE_INT_HOST(XFRAME_IRQ_SLOT),
+                 INT_HOST_IO_VIEW_NODE0 | XFRAME_IRQ_NUMBER);
     qtest_writel(qts, BRIDGE_INT_MODE, 0);
 
     /* Open only the two PIC masks xg programs, using 32-bit cycles. */

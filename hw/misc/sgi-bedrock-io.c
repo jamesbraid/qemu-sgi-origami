@@ -1069,15 +1069,17 @@ static void ii_realize(DeviceState *dev, Error **errp)
 
 /*
  * ---- The XIO port interface ----
+ *
  * Nothing in this model addresses the Bedrock as a widget from the XIO
- * side; the host is the originator of widget-relative traffic, never its
- * destination here, so cpu_face() has
- * nothing to answer with. packet_face() is the shared inbound window
- * (sgi_bedrock_io_inbound_rw()'s own decode):
- * what an XBridge's interrupt and register-modify packets, addressed by
- * XIO offset rather than by widget
- * position, reach to land on this node.
-*/
+ * side; the host is the originator of widget-relative traffic, never
+ * its destination here, so cpu_face() has nothing to answer with.
+ * packet_face() is the shared inbound window (sgi_bedrock_io_inbound_rw()'s
+ * own decode): what an XBridge's interrupt and register-modify packets,
+ * addressed by XIO offset rather than by widget position, reach to land on
+ * this node. The interface takes the widgets it decodes as per-widget
+ * views ("widget-N"), which the machine chooses, so its own side of the
+ * link needs nothing from the peer and implements no connect().
+ */
 
 static const char *ii_xio_port_describe(Object *port, unsigned int index)
 {

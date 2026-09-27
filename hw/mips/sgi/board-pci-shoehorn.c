@@ -26,11 +26,10 @@
  * 030-1275-00x boards pulled from Origin 200 chassis. Reseller attribution is
  * not hardware-graph evidence, so this models an Origin 2000 XIO adapter.
  *
- * Like sgi-pci-expansion this board attaches through the fabric proxy of
- * the empty XIO slot it names when created with `-device` (slot=io2; Origin
- * 2000 IO2 is XIO widget 12), or through the ordinary startup path
- * when a topology declares it. Either way its widget is a full two-way
- * XIO endpoint.
+ * Like sgi-pci-expansion this board is linked to the Crossbow port of the
+ * empty XIO slot it names when created with `-device` (slot=io2; Origin
+ * 2000 IO2 is XIO widget 12), or by the machine builder when a topology
+ * declares it. Either way its widget is a full two-way XIO endpoint.
  *
  * ---- The fitted Cad Duo card and its keyboard/mouse interrupt ----
  *
@@ -131,7 +130,6 @@ struct SGIPciShoehornState {
 
     MemoryRegion *fabric;
     uint64_t fabric_base;
-    uint32_t fabric_node_shift;
     uint32_t fabric_widget_shift;
     uint64_t onewire_serial;
     char *pci_bus_name;
@@ -258,7 +256,6 @@ static bool pci_shoehorn_build_widget(SGIXioBoardState *board, Error **errp)
     object_property_set_link(OBJECT(bridge), "fabric", OBJECT(s->fabric),
                              &error_abort);
     qdev_prop_set_uint64(bridge, "fabric-base", s->fabric_base);
-    qdev_prop_set_uint32(bridge, "fabric-node-shift", s->fabric_node_shift);
     qdev_prop_set_uint32(bridge, "fabric-widget-shift",
                          s->fabric_widget_shift);
     if (!sysbus_realize(SYS_BUS_DEVICE(bridge), errp)) {
@@ -280,8 +277,6 @@ static bool pci_shoehorn_build_widget(SGIXioBoardState *board, Error **errp)
     board->packet_face = sgi_bridge_packet_face(s->bridge);
 
     /* Same slot fabric claim as sgi-pci-expansion; see its header. */
-    sgi_xio_crossbow_link_claim_fabric(s->fabric, board->cpu_face,
-                                       board->packet_face);
     return true;
 }
 
@@ -289,8 +284,6 @@ static const Property pci_shoehorn_properties[] = {
     DEFINE_PROP_LINK("fabric", SGIPciShoehornState, fabric,
                      TYPE_MEMORY_REGION, MemoryRegion *),
     DEFINE_PROP_UINT64("fabric-base", SGIPciShoehornState, fabric_base, 0),
-    DEFINE_PROP_UINT32("fabric-node-shift", SGIPciShoehornState,
-                       fabric_node_shift, 0),
     DEFINE_PROP_UINT32("fabric-widget-shift", SGIPciShoehornState,
                        fabric_widget_shift, 0),
     DEFINE_PROP_UINT64("onewire-serial", SGIPciShoehornState,

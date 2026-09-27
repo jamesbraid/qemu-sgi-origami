@@ -82,7 +82,6 @@ struct SGIGigachannelState {
 
     MemoryRegion *fabric;
     uint64_t fabric_base;
-    uint32_t fabric_node_shift;
     uint32_t fabric_widget_shift;
     uint64_t onewire_serial;
     char *pci_bus_name;
@@ -166,7 +165,6 @@ static bool gigachannel_build_widget(SGIXioBoardState *board, Error **errp)
     object_property_set_link(OBJECT(bridge), "fabric", OBJECT(s->fabric),
                              &error_abort);
     qdev_prop_set_uint64(bridge, "fabric-base", s->fabric_base);
-    qdev_prop_set_uint32(bridge, "fabric-node-shift", s->fabric_node_shift);
     qdev_prop_set_uint32(bridge, "fabric-widget-shift",
                          s->fabric_widget_shift);
     if (!sysbus_realize(SYS_BUS_DEVICE(bridge), errp)) {
@@ -185,8 +183,6 @@ static const Property gigachannel_properties[] = {
     DEFINE_PROP_LINK("fabric", SGIGigachannelState, fabric,
                      TYPE_MEMORY_REGION, MemoryRegion *),
     DEFINE_PROP_UINT64("fabric-base", SGIGigachannelState, fabric_base, 0),
-    DEFINE_PROP_UINT32("fabric-node-shift", SGIGigachannelState,
-                       fabric_node_shift, 0),
     DEFINE_PROP_UINT32("fabric-widget-shift", SGIGigachannelState,
                        fabric_widget_shift, 0),
     DEFINE_PROP_UINT64("onewire-serial", SGIGigachannelState, onewire_serial,

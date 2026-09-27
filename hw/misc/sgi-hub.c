@@ -8,6 +8,7 @@
 #include "qemu/osdep.h"
 #include "qapi/error.h"
 #include "qemu/bswap.h"
+#include "qemu/error-report.h"
 #include "qemu/log.h"
 #include "qemu/main-loop.h"
 #include "qemu/units.h"
@@ -735,11 +736,9 @@ static void sgi_hub_bwin_follow(SGIHubState *s, unsigned int n)
 
     memory_region_transaction_begin();
     memory_region_set_enabled(&s->bwin_window[n], false);
-    if (s->xio_io_space) {
-        memory_region_set_enabled(&s->bwin_io_window[n], false);
-    }
+    memory_region_set_enabled(&s->bwin_io_window[n], false);
     if (entry & IO_BWIN_SPACE) {
-        if (!s->xio_io_space || n != 0 || slice) {
+        if (n != 0 || slice) {
             qemu_log_mask(LOG_UNIMP,
                           "sgi-hub: unsupported I/O big window %u, widget %"
                           PRIu64 ", slice 0x%" PRIx64 "\n", n, widget, slice);
@@ -4144,33 +4143,30 @@ bool sgi_hub_attach_module_identity(SGIHubState *s,
 }
 
 /*
- * ---- Origin 2000's PROM PI-error probe, through the
- * Crossbow-attached case ----
- * Through this node's XIO container at a fixed widget-2 offset,
- * a zero-length read latches the PI error the same way the direct link's
- * own probe does (hw/mips/sgi/xio-link.c). Installed only
- * when this Hub's XIO port connects to a Crossbow link, which is the
- * only thing that ever sets xio_io_space; a direct-attach node wires its own
- * probe on the widget's own device window instead and never sets it.
-*/
-#define SGI_HUB_ORIGIN2000_BUS_ERROR_ADDR    0x02400208
-#define SGI_HUB_ORIGIN2000_BUS_ERROR_WIDGET  2
-#define SGI_HUB_ORIGIN2000_SMALL_WINDOW_SIZE (16 * MiB)
+ * ---- The PROM's widget-2 PI-error probe ----
+ *
+ * The PROM's error-status workaround reads eight bytes at this node's
+ * own I/O space, widget 2's small window, offset 0x400208, expecting the
+ * access to fail and latch the issuing processor's PI error status with
+ * that address. Every node master runs it, on Origin 200 and Origin
+ * 2000 alike, with no test for a Crossbow first. A zero-offset
+ * doubleword read latches the error here; every other access passes
+ * through to whatever the XIO space holds there.
+ */
+#define SGI_HUB_PI_PROBE_ADDR       0x02400208
+#define SGI_HUB_PI_PROBE_WIDGET     2
+#define SGI_HUB_SMALL_WINDOW_SIZE   (16 * MiB)
 
-static hwaddr sgi_hub_origin2000_bus_error_xio_offset(SGIHubState *s)
+static hwaddr sgi_hub_pi_probe_xio_offset(SGIHubState *s)
 {
-    return ((hwaddr)SGI_HUB_ORIGIN2000_BUS_ERROR_WIDGET <<
-            s->xio_widget_shift) +
-           SGI_HUB_ORIGIN2000_BUS_ERROR_ADDR -
-           (hwaddr)SGI_HUB_ORIGIN2000_BUS_ERROR_WIDGET *
-               SGI_HUB_ORIGIN2000_SMALL_WINDOW_SIZE;
+    return ((hwaddr)SGI_HUB_PI_PROBE_WIDGET << s->xio_widget_shift) +
+           SGI_HUB_PI_PROBE_ADDR -
+           (hwaddr)SGI_HUB_PI_PROBE_WIDGET * SGI_HUB_SMALL_WINDOW_SIZE;
 }
 
-static MemTxResult sgi_hub_origin2000_bus_error_read(void *opaque,
-                                                      hwaddr addr,
-                                                      uint64_t *data,
-                                                      unsigned size,
-                                                      MemTxAttrs attrs)
+static MemTxResult sgi_hub_pi_probe_read(void *opaque, hwaddr addr,
+                                         uint64_t *data, unsigned size,
+                                         MemTxAttrs attrs)
 {
     SGIHubState *s = opaque;
     uint8_t bytes[8] = {};
@@ -4181,33 +4177,29 @@ static MemTxResult sgi_hub_origin2000_bus_error_read(void *opaque,
         sgi_hub_latch_prom_pi_error(s);
         return MEMTX_ERROR;
     }
-    result = address_space_read(
-        &s->origin2000_xio_as,
-        sgi_hub_origin2000_bus_error_xio_offset(s) + addr, attrs, bytes,
-        size);
+    result = address_space_read(&s->pi_probe_as,
+                                sgi_hub_pi_probe_xio_offset(s) + addr, attrs,
+                                bytes, size);
     *data = ldn_be_p(bytes, size);
     return result;
 }
 
-static MemTxResult sgi_hub_origin2000_bus_error_write(void *opaque,
-                                                       hwaddr addr,
-                                                       uint64_t data,
-                                                       unsigned size,
-                                                       MemTxAttrs attrs)
+static MemTxResult sgi_hub_pi_probe_write(void *opaque, hwaddr addr,
+                                          uint64_t data, unsigned size,
+                                          MemTxAttrs attrs)
 {
     SGIHubState *s = opaque;
     uint8_t bytes[8];
 
     stn_be_p(bytes, size, data);
-    return address_space_write(
-        &s->origin2000_xio_as,
-        sgi_hub_origin2000_bus_error_xio_offset(s) + addr, attrs, bytes,
-        size);
+    return address_space_write(&s->pi_probe_as,
+                               sgi_hub_pi_probe_xio_offset(s) + addr, attrs,
+                               bytes, size);
 }
 
-static const MemoryRegionOps sgi_hub_origin2000_bus_error_ops = {
-    .read_with_attrs = sgi_hub_origin2000_bus_error_read,
-    .write_with_attrs = sgi_hub_origin2000_bus_error_write,
+static const MemoryRegionOps sgi_hub_pi_probe_ops = {
+    .read_with_attrs = sgi_hub_pi_probe_read,
+    .write_with_attrs = sgi_hub_pi_probe_write,
     .endianness = DEVICE_BIG_ENDIAN,
     .valid.min_access_size = 1,
     .valid.max_access_size = 8,
@@ -4217,35 +4209,310 @@ static const MemoryRegionOps sgi_hub_origin2000_bus_error_ops = {
     .impl.unaligned = true,
 };
 
-static bool sgi_hub_install_origin2000_bus_error(SGIHubState *s,
-                                                  Error **errp)
+static bool sgi_hub_install_pi_probe(SGIHubState *s, Error **errp)
 {
     unsigned int slice;
 
-    if (!s->xio_io_space) {
-        return true;
-    }
     for (slice = 0; slice < s->cpus; slice++) {
         if (!s->cpu_sysmem[slice]) {
-            error_setg(errp, "a Crossbow-attached Hub needs a cpu-sysmem "
-                       "view for each of its %u processors", s->cpus);
+            error_setg(errp, "the Hub needs a cpu-sysmem view for each of "
+                       "its %u processors", s->cpus);
             return false;
         }
     }
-    address_space_init(&s->origin2000_xio_as, s->xio,
-                       "sgi-hub.origin2000-xio");
+    address_space_init(&s->pi_probe_as, s->xio, "sgi-hub.pi-probe-xio");
     for (slice = 0; slice < s->cpus; slice++) {
         g_autofree char *region_name = g_strdup_printf(
-            "sgi-hub.cpu%u.origin2000-bus-error", slice);
+            "sgi-hub.cpu%u.pi-probe", slice);
 
-        memory_region_init_io(&s->origin2000_bus_error[slice], OBJECT(s),
-                              &sgi_hub_origin2000_bus_error_ops, s,
-                              region_name, 8);
+        memory_region_init_io(&s->pi_probe[slice], OBJECT(s),
+                              &sgi_hub_pi_probe_ops, s, region_name, 8);
         memory_region_add_subregion_overlap(
-            s->cpu_sysmem[slice],
-            s->io_space_base + SGI_HUB_ORIGIN2000_BUS_ERROR_ADDR,
-            &s->origin2000_bus_error[slice], 1);
+            s->cpu_sysmem[slice], s->io_space_base + SGI_HUB_PI_PROBE_ADDR,
+            &s->pi_probe[slice], 1);
     }
+    return true;
+}
+
+/*
+ * ---- The I/O interface's XIO port ----
+ *
+ * The Hub presents one XIO port (007-3439-002 p.53), whether its link
+ * goes to a Bridge or to a Crossbow. Everything this Hub does to and
+ * from that link is decoded here, the way the Bedrock's I/O interface
+ * decodes its own (hw/misc/sgi-bedrock-io.c): the link itself only
+ * hands the two ends each other's faces.
+ */
+
+/*
+ * One widget's slice of the XIO space the windows reach: the Hub
+ * addresses 16 GB per widget, A[33:0] (007-3410-001 p.32).
+ */
+#define SGI_HUB_II_WIDGET_FACE_SIZE (1ULL << SGI_HUB_XIO_WIDGET_SHIFT)
+#define SGI_HUB_II_IO_OUT_SIZE      (SGI_HUB_XIO_WIDGETS * \
+                                     SGI_HUB_II_WIDGET_FACE_SIZE)
+
+/* XIO_Address[47] selects the I/O view rather than the memory view. */
+#define SGI_HUB_XIO_IO_VIEW         (1ULL << 47)
+/* The I/O view's node field: the 9-bit NASID at 46:38 (007-3410-001). */
+#define SGI_HUB_XIO_NASID_SHIFT     38
+#define SGI_HUB_XIO_NASID_MASK      0xff
+/* The memory view carries a system memory address in bits 39:0. */
+#define SGI_HUB_XIO_MEMORY_SIZE     (1ULL << 40)
+/* The node-explicit Hub register window and the interrupt-modify offset. */
+#define SGI_HUB_NODE_REGISTERS      0x01800000ULL
+#define SGI_HUB_XIO_INT_MODIFY      (SGI_HUB_NODE_REGISTERS + HUB_PI_INT_MODIFY)
+/*
+ * The bounded peer identity probe: node field zero, small-window field
+ * one, local, at the network-interface status register (hub-io-interface
+ * datasheet, "Bounded peer-Hub identity probe").
+ */
+#define SGI_HUB_XIO_IDENTITY        0x01600000ULL
+#define SGI_HUB_XIO_NI_STATUS       0x600000
+/* A peer's four-byte read of this widget's identification word. */
+#define SGI_HUB_WIDGET_ID_DATA      4
+
+/*
+ * Where an inbound packet goes in this node's engine claim view, which
+ * resolves a node-qualified address by programmed number: a memory-view
+ * address as it stands, or the interrupt-modify write a Bridge sends,
+ * whose node the I/O view carries at 46:38.
+ */
+static bool sgi_hub_ii_inbound_target(SGIHubState *s, hwaddr addr,
+                                      unsigned size, bool write,
+                                      hwaddr *target)
+{
+    unsigned int nasid = (addr >> SGI_HUB_XIO_NASID_SHIFT) &
+                         SGI_HUB_XIO_NASID_MASK;
+    uint64_t interrupt = SGI_HUB_XIO_IO_VIEW |
+        ((uint64_t)nasid << SGI_HUB_XIO_NASID_SHIFT) | SGI_HUB_XIO_INT_MODIFY;
+
+    if (size && addr < SGI_HUB_XIO_MEMORY_SIZE &&
+        size <= SGI_HUB_XIO_MEMORY_SIZE - addr) {
+        *target = addr;
+        return true;
+    }
+    if (write && size == 8 && addr == interrupt) {
+        *target = s->io_space_base +
+                  ((uint64_t)nasid << s->claim_node_shift) +
+                  SGI_HUB_XIO_INT_MODIFY;
+        return true;
+    }
+    qemu_log_mask(LOG_GUEST_ERROR,
+                  "sgi-hub: unsupported inbound XIO %s at 0x%" HWADDR_PRIx
+                  " size %u\n", write ? "write" : "read", addr, size);
+    return false;
+}
+
+static MemTxResult sgi_hub_ii_packet_read(void *opaque, hwaddr addr,
+                                          uint64_t *data, unsigned size,
+                                          MemTxAttrs attrs)
+{
+    SGIHubState *s = opaque;
+    uint8_t bytes[8] = { 0 };
+    AddressSpace *space = &s->ii_inbound_as;
+    MemTxResult result;
+    hwaddr target;
+
+    *data = 0;
+    if (size == 8 && addr == (SGI_HUB_XIO_IO_VIEW | SGI_HUB_XIO_IDENTITY)) {
+        space = &s->ii_local_registers_as;
+        target = 0;
+    } else if (!sgi_hub_ii_inbound_target(s, addr, size, false, &target)) {
+        return MEMTX_ERROR;
+    }
+    result = address_space_read(space, target, attrs, bytes + 8 - size, size);
+    *data = ldq_be_p(bytes);
+    return result;
+}
+
+static MemTxResult sgi_hub_ii_packet_write(void *opaque, hwaddr addr,
+                                           uint64_t data, unsigned size,
+                                           MemTxAttrs attrs)
+{
+    SGIHubState *s = opaque;
+    uint8_t bytes[8];
+    hwaddr target;
+
+    if (!sgi_hub_ii_inbound_target(s, addr, size, true, &target)) {
+        return MEMTX_ERROR;
+    }
+    stq_be_p(bytes, data);
+    return address_space_write(&s->ii_inbound_as, target, attrs,
+                               bytes + 8 - size, size);
+}
+
+static const MemoryRegionOps sgi_hub_ii_packet_ops = {
+    .read_with_attrs = sgi_hub_ii_packet_read,
+    .write_with_attrs = sgi_hub_ii_packet_write,
+    .endianness = DEVICE_BIG_ENDIAN,
+    .valid = { .min_access_size = 1, .max_access_size = 8, .unaligned = true },
+    .impl = { .min_access_size = 1, .max_access_size = 8, .unaligned = true },
+};
+
+/*
+ * A peer's programmed I/O to this Hub's widget number. Only the
+ * four-byte identification read at offset 4 has a cleared decode (the
+ * hub-io-interface datasheet leaves the short widget offsets
+ * unresolved); every other access stops rather than inventing a value.
+ */
+static MemTxResult sgi_hub_ii_widget_access(SGIHubState *s, hwaddr addr,
+                                            uint64_t *data, unsigned size,
+                                            bool is_write, MemTxAttrs attrs)
+{
+    assert(bql_locked());
+    if (!is_write && addr == SGI_HUB_WIDGET_ID_DATA && size == 4) {
+        return memory_region_dispatch_read(&s->regs,
+                                           HUB_IO_WIDGET_ID + addr, data,
+                                           MO_32 | MO_BE, attrs);
+    }
+    error_report("Hub %u: unsupported %u-byte %s at 0x%" HWADDR_PRIx
+                 " on the widget face a peer sees, which is outside its "
+                 "cleared decode; stopping instead of answering", s->stride,
+                 size, is_write ? "write" : "read", addr);
+    qemu_system_vmstop_request_prepare();
+    qemu_system_vmstop_request(RUN_STATE_INTERNAL_ERROR);
+    if (data) {
+        *data = 0;
+    }
+    return MEMTX_ERROR;
+}
+
+static MemTxResult sgi_hub_ii_widget_read(void *opaque, hwaddr addr,
+                                          uint64_t *data, unsigned size,
+                                          MemTxAttrs attrs)
+{
+    return sgi_hub_ii_widget_access(opaque, addr, data, size, false, attrs);
+}
+
+static MemTxResult sgi_hub_ii_widget_write(void *opaque, hwaddr addr,
+                                           uint64_t data, unsigned size,
+                                           MemTxAttrs attrs)
+{
+    return sgi_hub_ii_widget_access(opaque, addr, NULL, size, true, attrs);
+}
+
+static const MemoryRegionOps sgi_hub_ii_widget_ops = {
+    .read_with_attrs = sgi_hub_ii_widget_read,
+    .write_with_attrs = sgi_hub_ii_widget_write,
+    .endianness = DEVICE_BIG_ENDIAN,
+    .valid = { .min_access_size = 1, .max_access_size = 8, .unaligned = true },
+    .impl = { .min_access_size = 1, .max_access_size = 8, .unaligned = true },
+};
+
+/*
+ * A big window whose entry selects I/O space issues a widget-addressed
+ * access, a widget number and an offset within that widget's slice of
+ * the XIO space, the shape a memory-space window decodes too. On the
+ * link it becomes a packet into the I/O view: bit 47 set above the
+ * offset, the destination widget in bits 51:48. That space selection
+ * supplies the I/O class is the hub-io-interface datasheet's bounded
+ * inference from the firmware's peer identity probe.
+ */
+static bool sgi_hub_ii_io_out_packet(SGIHubState *s, hwaddr addr,
+                                     unsigned size, bool write,
+                                     hwaddr *packet)
+{
+    unsigned int widget = addr >> s->xio_widget_shift;
+    uint64_t offset = addr & ((1ULL << s->xio_widget_shift) - 1);
+
+    if (!s->ii_connected || !size ||
+        size > (1ULL << s->xio_widget_shift) - offset) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sgi-hub: unsupported I/O-space %s at 0x%" HWADDR_PRIx
+                      " size %u%s\n", write ? "write" : "read", addr, size,
+                      s->ii_connected ? "" : " with no XIO link");
+        return false;
+    }
+    *packet = ((uint64_t)widget << SGI_XIO_PACKET_ADDRESS_BITS) |
+              SGI_HUB_XIO_IO_VIEW | offset;
+    return true;
+}
+
+static MemTxResult sgi_hub_ii_io_out_read(void *opaque, hwaddr addr,
+                                          uint64_t *data, unsigned size,
+                                          MemTxAttrs attrs)
+{
+    SGIHubState *s = opaque;
+    uint8_t bytes[8] = { 0 };
+    MemTxResult result;
+    hwaddr packet;
+
+    *data = 0;
+    if (!sgi_hub_ii_io_out_packet(s, addr, size, false, &packet)) {
+        return MEMTX_ERROR;
+    }
+    result = address_space_read(&s->ii_peer_packets_as, packet, attrs,
+                                bytes + 8 - size, size);
+    *data = ldq_be_p(bytes);
+    return result;
+}
+
+static MemTxResult sgi_hub_ii_io_out_write(void *opaque, hwaddr addr,
+                                           uint64_t data, unsigned size,
+                                           MemTxAttrs attrs)
+{
+    SGIHubState *s = opaque;
+    uint8_t bytes[8];
+    hwaddr packet;
+
+    if (!sgi_hub_ii_io_out_packet(s, addr, size, true, &packet)) {
+        return MEMTX_ERROR;
+    }
+    stq_be_p(bytes, data);
+    return address_space_write(&s->ii_peer_packets_as, packet, attrs,
+                               bytes + 8 - size, size);
+}
+
+static const MemoryRegionOps sgi_hub_ii_io_out_ops = {
+    .read_with_attrs = sgi_hub_ii_io_out_read,
+    .write_with_attrs = sgi_hub_ii_io_out_write,
+    .endianness = DEVICE_BIG_ENDIAN,
+    .valid = { .min_access_size = 1, .max_access_size = 8, .unaligned = true },
+    .impl = { .min_access_size = 1, .max_access_size = 8, .unaligned = true },
+};
+
+/*
+ * Take the link peer's faces. A crossbar port's processor face already
+ * carries the destination widget at this Hub's own widget stride, so
+ * it fills the whole XIO space; a leaf peer accepts every destination,
+ * so it answers at every widget number but the Hub's own, which the
+ * processor reaches as its own registers instead.
+ */
+static bool sgi_hub_ii_connect(SGIHubState *s, const SGIXioPeer *peer,
+                               Error **errp)
+{
+    uint64_t widget_size = 1ULL << s->xio_widget_shift;
+    unsigned int widget;
+
+    if (s->ii_connected) {
+        error_setg(errp, "the Hub's I/O interface (II) is already connected");
+        return false;
+    }
+    if (!s->xio || !peer->cpu_face || !peer->packet_fabric) {
+        error_setg(errp, "the Hub's I/O interface (II) needs its XIO space "
+                   "and a peer that takes programmed I/O and packets");
+        return false;
+    }
+    for (widget = 0; widget < SGI_HUB_XIO_WIDGETS; widget++) {
+        g_autofree char *name = NULL;
+        uint64_t size;
+        hwaddr offset;
+
+        if (peer->switched ? widget != 0 : widget == SGI_HUB_XIO_WIDGET) {
+            continue;
+        }
+        name = g_strdup_printf("sgi-hub.ii.peer-widget%u", widget);
+        offset = peer->switched ? 0 : (hwaddr)widget << s->xio_widget_shift;
+        size = MIN(memory_region_size(peer->cpu_face),
+                   peer->switched ? memory_region_size(s->xio) : widget_size);
+        memory_region_init_alias(&s->ii_peer_widget[widget], OBJECT(s), name,
+                                 peer->cpu_face, 0, size);
+        memory_region_add_subregion(s->xio, offset, &s->ii_peer_widget[widget]);
+    }
+    address_space_init(&s->ii_peer_packets_as, peer->packet_fabric,
+                       "sgi-hub.ii.peer-packets");
+    s->ii_connected = true;
     return true;
 }
 
@@ -4267,13 +4534,6 @@ static void sgi_hub_realize(DeviceState *dev, Error **errp)
     if (!s->xio) {
         error_setg(errp, "the Hub needs the XIO space its big windows "
                    "translate into");
-        return;
-    }
-    if (s->xio_io_space &&
-        (s->xio_widget_shift != 34 ||
-        memory_region_size(s->xio_io_space) != (1ULL << 38))) {
-        error_setg(errp, "Hub I/O target requires a 34-bit widget stride "
-                         "and a 38-bit address space");
         return;
     }
     if (s->onewire_serial & ~MD_ONEWIRE_SERIAL_MASK) {
@@ -4329,9 +4589,9 @@ static void sgi_hub_realize(DeviceState *dev, Error **errp)
                          "at most %u", IO_WIDGET_ID_REVISION_MAX);
         return;
     }
-    if (!s->xio_widget_shift) {
-        error_setg(errp, "the Hub needs the widget stride of the XIO "
-                   "space its big windows translate into");
+    if (s->xio_widget_shift != SGI_HUB_XIO_WIDGET_SHIFT) {
+        error_setg(errp, "the Hub's XIO space gives each widget 16 GB, so "
+                   "its widget stride is %u bits", SGI_HUB_XIO_WIDGET_SHIFT);
         return;
     }
     if (!s->net_peer_count) {
@@ -4374,7 +4634,20 @@ static void sgi_hub_realize(DeviceState *dev, Error **errp)
     address_space_init(&s->bte_as, s->claim_view[SGI_HUB_DEVICE_VIEW],
                        "sgi-hub.bte");
 
-    if (!sgi_hub_install_origin2000_bus_error(s, errp)) {
+    /*
+     * The I/O interface decodes an inbound packet into the same engine
+     * view, and answers the peer identity probe from this Hub's own
+     * network-interface status register.
+     */
+    address_space_init(&s->ii_inbound_as, s->claim_view[SGI_HUB_DEVICE_VIEW],
+                       "sgi-hub.ii.inbound");
+    memory_region_init_alias(&s->ii_local_register_view, OBJECT(dev),
+                             "sgi-hub.ii.local-register-view", &s->regs,
+                             SGI_HUB_XIO_NI_STATUS, 8);
+    address_space_init(&s->ii_local_registers_as, &s->ii_local_register_view,
+                       "sgi-hub.ii.local-registers");
+
+    if (!sgi_hub_install_pi_probe(s, errp)) {
         return;
     }
 
@@ -4544,15 +4817,12 @@ static void sgi_hub_realize(DeviceState *dev, Error **errp)
                                  s->xio, 0, SGI_HUB_BWIN_SIZE);
         memory_region_add_subregion(&s->bwin, (hwaddr)n * SGI_HUB_BWIN_SIZE,
                                     &s->bwin_window[n]);
-        if (s->xio_io_space) {
-            memory_region_init_alias(&s->bwin_io_window[n], OBJECT(dev),
-                                     name, s->xio_io_space, 0,
-                                     SGI_HUB_BWIN_SIZE);
-            memory_region_set_enabled(&s->bwin_io_window[n], false);
-            memory_region_add_subregion_overlap(&s->bwin,
-                                                 (hwaddr)n * SGI_HUB_BWIN_SIZE,
-                                                 &s->bwin_io_window[n], 0);
-        }
+        memory_region_init_alias(&s->bwin_io_window[n], OBJECT(dev), name,
+                                 &s->ii_io_out, 0, SGI_HUB_BWIN_SIZE);
+        memory_region_set_enabled(&s->bwin_io_window[n], false);
+        memory_region_add_subregion_overlap(&s->bwin,
+                                            (hwaddr)n * SGI_HUB_BWIN_SIZE,
+                                            &s->bwin_io_window[n], 0);
         g_free(name);
     }
     sysbus_init_mmio(SYS_BUS_DEVICE(dev), &s->bwin);
@@ -4625,8 +4895,11 @@ static void sgi_hub_unrealize(DeviceState *dev)
     sgi_hub_rt_hold_reset(s);
     s->claim_ready = false;
     address_space_destroy(&s->bte_as);
-    if (s->xio_io_space) {
-        address_space_destroy(&s->origin2000_xio_as);
+    address_space_destroy(&s->pi_probe_as);
+    address_space_destroy(&s->ii_inbound_as);
+    address_space_destroy(&s->ii_local_registers_as);
+    if (s->ii_connected) {
+        address_space_destroy(&s->ii_peer_packets_as);
     }
     for (view = 0; view < SGI_HUB_CLAIM_VIEWS; view++) {
         if (!sgi_hub_claim_view_present(s, view)) {
@@ -4859,8 +5132,6 @@ static const Property sgi_hub_properties[] = {
     DEFINE_PROP_UINT32("manufacturer", SGIHubState, manufacturer, 0x36),
     DEFINE_PROP_UINT32("xio-widget-shift", SGIHubState,
                        xio_widget_shift, 0),
-    DEFINE_PROP_LINK("xio-io-space", SGIHubState, xio_io_space,
-                     TYPE_MEMORY_REGION, MemoryRegion *),
     DEFINE_PROP_LINK("xio", SGIHubState, xio, TYPE_MEMORY_REGION,
                      MemoryRegion *),
     DEFINE_PROP_LINK("cpu-sysmem0", SGIHubState, cpu_sysmem[0],
@@ -4897,19 +5168,37 @@ static void sgi_hub_init(Object *obj)
     object_initialize_child(obj, "i2c", &s->i2c, TYPE_PCF8584);
     s->rt_clk = qdev_init_clock_in(DEVICE(obj), "rt-clk", NULL, NULL, 0);
     clock_set_hz(s->rt_clk, PI_RT_DEFAULT_HZ);
+
+    /*
+     * The I/O interface's faces exist from here, so a link can hand them
+     * to its peer before this Hub realizes. They consult the Hub's
+     * realized state only when an access arrives.
+     */
+    memory_region_init_io(&s->ii_packet_face, obj, &sgi_hub_ii_packet_ops, s,
+                          "sgi-hub.ii.packet", SGI_XIO_PACKET_SIZE);
+    memory_region_init_io(&s->ii_widget_face, obj, &sgi_hub_ii_widget_ops, s,
+                          "sgi-hub.ii.widget", SGI_HUB_II_WIDGET_FACE_SIZE);
+    memory_region_init_io(&s->ii_io_out, obj, &sgi_hub_ii_io_out_ops, s,
+                          "sgi-hub.ii.io-out", SGI_HUB_II_IO_OUT_SIZE);
+    /*
+     * An inbound packet re-enters this Hub by design -- a Bridge's
+     * interrupt write lands on this node's own interrupt-modify register
+     * -- and an outbound one can come back through a peer the same way.
+     * None of the three holds state the re-entrancy guard could protect,
+     * so the guard is lifted for them alone; the register region keeps it.
+     */
+    s->ii_packet_face.disable_reentrancy_guard = true;
+    s->ii_widget_face.disable_reentrancy_guard = true;
+    s->ii_io_out.disable_reentrancy_guard = true;
 }
 
 /*
  * ---- The XIO port interface ----
- * cpu_face() is the container every widget alias a direct link installs lands
- * in: the same "xio" link property the Hub's own big windows translate
- * through. packet_face() is the Hub's own engine claim view,
- * SGI_HUB_DEVICE_VIEW: what an XIO-attach link's inbound decoder
- * dispatches a remote nasid's packet into, the same view a Hub's own network
- * interface and block-transfer engines see memory through. Always present
- * once this Hub realizes; sgi_hub_claim_view_present() requires it
- * regardless of population.
-*/
+ *
+ * The Hub has one XIO port, its I/O interface's, and it is a leaf: a
+ * peer's programmed I/O lands on the widget face, and a packet on the
+ * inbound decode, with no destination widget in either.
+ */
 
 static const char *sgi_hub_xio_port_describe(Object *port, unsigned int index)
 {
@@ -4919,29 +5208,19 @@ static const char *sgi_hub_xio_port_describe(Object *port, unsigned int index)
 static MemoryRegion *sgi_hub_xio_port_cpu_face(Object *port,
                                                unsigned int index)
 {
-    return SGI_HUB(port)->xio;
+    return &SGI_HUB(port)->ii_widget_face;
 }
 
 static MemoryRegion *sgi_hub_xio_port_packet_face(Object *port,
                                                   unsigned int index)
 {
-    return SGI_HUB(port)->claim_view[SGI_HUB_DEVICE_VIEW];
+    return &SGI_HUB(port)->ii_packet_face;
 }
 
-bool sgi_hub_set_xio_io_space(SGIHubState *s, MemoryRegion *target,
-                              Error **errp)
+static bool sgi_hub_xio_port_connect(Object *port, unsigned int index,
+                                     const SGIXioPeer *peer, Error **errp)
 {
-    if (DEVICE(s)->realized) {
-        error_setg(errp,
-                   "cannot connect the Hub's I/O interface (II) after realize");
-        return false;
-    }
-    if (s->xio_io_space) {
-        error_setg(errp, "the Hub's I/O interface (II) is already connected");
-        return false;
-    }
-    s->xio_io_space = target;
-    return true;
+    return sgi_hub_ii_connect(SGI_HUB(port), peer, errp);
 }
 
 void sgi_hub_set_net_peers(SGIHubState *s, SGIHubState *const *peers,
@@ -4981,6 +5260,7 @@ static void sgi_hub_class_init(ObjectClass *oc, const void *data)
     xpc->describe = sgi_hub_xio_port_describe;
     xpc->cpu_face = sgi_hub_xio_port_cpu_face;
     xpc->packet_face = sgi_hub_xio_port_packet_face;
+    xpc->connect = sgi_hub_xio_port_connect;
     npc->describe = sgi_hub_net_port_describe;
     npc->forwards = sgi_hub_net_port_forwards;
     npc->link_state = sgi_hub_net_port_link_state;

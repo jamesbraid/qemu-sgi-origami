@@ -12,32 +12,14 @@
  * `-device` demonstrator: a plain Bridge, its PCI bus named so a following
  * `-device ...,bus=<name>` can populate it.
  *
- * `-device`-creatable: build_widget() below requires "fabric" before this
- * board's realize, and every candidate fabric (a Crossbow's packet-ingress
- * region) lives under a Crossbow the family builder
- * (sn-machine.c) realizes during machine init, before a command-line
- * device exists to reach it. The builder prepares a fabric proxy for
- * every empty XIO slot its topology names; a machine-init-done notifier
- * (sgi_machine_done()) finishes each, aliasing it onto the Crossbow's real
- * packet ingress, once every Crossbow the machine builds has
- * realized. A `-device` board naming a slot (slot=io2) takes that slot's
- * proxy as its "fabric" (xio-board.c).
- *
- * This gives a `-device` board a two-way widget. build_widget() below
- * records its Bridge's own faces and hands them to
- * sgi_xio_crossbow_link_claim_fabric(), which tells sgi_machine_done()
- * to finish the attachment once it finishes the proxy -- without that
- * call the slot's widget stays not-alive and the Crossbow disables the
- * proxy's whole target region, same as any other not-alive port
- * (hw/misc/sgi-xbow.c, sgi_xbow_sync_routes()). sgi_machine_done()
- * registers the board's faces as the widget's inbound destination
- * (sgi_xbow_attach_endpoint_live(), the post-realize counterpart of the
- * sgi_xbow_attach_endpoint() an onboard board uses before its Crossbow
- * realizes) and brings its link alive (sgi_xbow_mark_widget_alive()). A
- * processor or peer widget then reaches this board's Bridge through its
- * own Crossbow, and the board's Bridge sends packets and interrupts out to
- * any populated widget -- the same both-way path an onboard widget has. A
- * slot the topology does not name, or one already filled, is refused.
+ * `-device`-creatable at an empty XIO slot it names (slot=io2): the
+ * machine hands it the link to that slot's Crossbow port, which gives
+ * the board its fabric before build_widget() runs and attaches the
+ * board's Bridge to the Crossbow once it has (xio-board.c). A processor
+ * or peer widget then reaches this board's Bridge through its own
+ * Crossbow, and the board's Bridge sends packets and interrupts out to
+ * any populated widget -- the same both-way path an onboard widget has.
+ * A slot the topology does not name, or one already filled, is refused.
  *
  * Bridge's "board-part" is a required, exactly-12-character identity register
  * value (hw/pci-host/sgi-bridge.h, sgi_bridge_board_part_error()); with no
@@ -59,9 +41,9 @@
  * established, so the first three are an approximation. 0, the default,
  * leaves every Bridge device position open.
  *
- * "fabric", "fabric-base", "fabric-node-shift" and "fabric-widget-shift" pass
- * straight through to the internal Bridge; see sgi-ip29-io's header for why
- * this board does not fix them itself.
+ * "fabric", "fabric-base" and "fabric-widget-shift" pass
+ * straight through to the internal Bridge; the link to the board's
+ * slot sets them.
  */
 
 #include "qemu/osdep.h"
@@ -89,7 +71,6 @@ struct SGIPciExpansionState {
 
     MemoryRegion *fabric;
     uint64_t fabric_base;
-    uint32_t fabric_node_shift;
     uint32_t fabric_widget_shift;
     uint64_t onewire_serial;
     char *pci_bus_name;
@@ -143,7 +124,6 @@ static bool pci_expansion_build_widget(SGIXioBoardState *board,
     object_property_set_link(OBJECT(bridge), "fabric", OBJECT(s->fabric),
                              &error_abort);
     qdev_prop_set_uint64(bridge, "fabric-base", s->fabric_base);
-    qdev_prop_set_uint32(bridge, "fabric-node-shift", s->fabric_node_shift);
     qdev_prop_set_uint32(bridge, "fabric-widget-shift",
                          s->fabric_widget_shift);
     if (!sysbus_realize(SYS_BUS_DEVICE(bridge), errp)) {
@@ -157,16 +137,6 @@ static bool pci_expansion_build_widget(SGIXioBoardState *board,
     board->cpu_face = sysbus_mmio_get_region(SYS_BUS_DEVICE(bridge), 0);
     board->packet_face = sgi_bridge_packet_face(s->bridge);
 
-    /*
-     * Claim the slot's fabric proxy now the Bridge's faces exist, so
-     * sgi_machine_done() both brings the slot widget's link alive for this
-     * board's outbound packets and registers those faces as the widget's
-     * inbound destination. A processor or peer widget reaches this board's
-     * Bridge through its Crossbow the same way it reaches any onboard widget.
-     * A fixture wiring "fabric" to a plain sink is a no-op here.
-     */
-    sgi_xio_crossbow_link_claim_fabric(s->fabric, board->cpu_face,
-                                       board->packet_face);
     return true;
 }
 
@@ -174,8 +144,6 @@ static const Property pci_expansion_properties[] = {
     DEFINE_PROP_LINK("fabric", SGIPciExpansionState, fabric,
                      TYPE_MEMORY_REGION, MemoryRegion *),
     DEFINE_PROP_UINT64("fabric-base", SGIPciExpansionState, fabric_base, 0),
-    DEFINE_PROP_UINT32("fabric-node-shift", SGIPciExpansionState,
-                       fabric_node_shift, 0),
     DEFINE_PROP_UINT32("fabric-widget-shift", SGIPciExpansionState,
                        fabric_widget_shift, 0),
     DEFINE_PROP_UINT64("onewire-serial", SGIPciExpansionState,

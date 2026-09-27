@@ -88,6 +88,7 @@ config SGI_SN1
     select SGI_IOC3
     select SGI_L1
     select SGI_XBRIDGE
+    select SGI_XIO_LINK
     select USB_OHCI_PCI
 
 config SGI_XIO_PORT
@@ -96,7 +97,6 @@ config SGI_XIO_PORT
 config SGI_XIO_LINK
     bool
     select SGI_XIO_PORT
-    select SGI_XBOW
 
 config SGI_NET_PORT
     bool
@@ -108,7 +108,7 @@ config SGI_NET_CABLE
 config SGI_XIO_BOARD
     bool
     select SGI_XBOW
-    select SGI_XIO_PORT
+    select SGI_XIO_LINK
 
 config SGI_XIO_BOARD_TEST
     bool

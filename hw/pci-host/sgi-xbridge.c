@@ -1391,6 +1391,31 @@ static MemoryRegion *chip_xio_port_cpu_face(Object *port,
     return chip_widget_view(SGI_XBRIDGE(port), index);
 }
 
+/*
+ * The link on the host port brings the chip its host: the host's packet
+ * face is where the crossbar's own conditions and both heads' interrupts
+ * reach it. It must be in place before the chip realizes, which hands it
+ * to the crossbar and both heads. This model links no other port.
+ */
+static bool chip_xio_port_connect(Object *port, unsigned int index,
+                                  const SGIXioPeer *peer, Error **errp)
+{
+    SGIXBridgeState *s = SGI_XBRIDGE(port);
+
+    if (index != s->host_port) {
+        error_setg(errp, "the XBridge links only its host port, 0x%x",
+                   s->host_port);
+        return false;
+    }
+    if (DEVICE(s)->realized || !peer->packet_face) {
+        error_setg(errp, "the XBridge takes its host's packet face before it "
+                   "realizes");
+        return false;
+    }
+    s->fabric = peer->packet_face;
+    return true;
+}
+
 static void chip_class_init(ObjectClass *oc, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
@@ -1405,6 +1430,7 @@ static void chip_class_init(ObjectClass *oc, const void *data)
     pc->describe = chip_xio_port_describe;
     pc->cpu_face = chip_xio_port_cpu_face;
     pc->packet_face = chip_xio_port_cpu_face;
+    pc->connect = chip_xio_port_connect;
 }
 
 static void chip_init(Object *obj)

@@ -300,24 +300,27 @@ eight-processor module's; the builder hands the Hub the result as its
 well as widget 8.
 
 A Crossbow needs every endpoint present at startup attached before its own
-realize builds the routes between them, so the builder attaches the
+realize builds the routes between them, so the builder links the
 topology's own boards before realizing each Crossbow. A board fitted at
-launch realizes after that: the builder prepares a fabric proxy for every
-empty slot before its Crossbow realizes, and a machine-init-done notifier
-finishes each proxy once every Crossbow has realized and, for a slot a
-board has claimed, attaches the board's widget live and brings its link
-alive. ``origin200`` and ``origin300`` have no Crossbow on the node -- each
-places its one Base I/O instance directly on its node's XIO port, as
-above.
+launch by slot name realizes after that: its realize claims the empty slot
+from the machine, takes the link to that slot's Crossbow port, and as its
+last step attaches its widget to the already realized Crossbow, which
+brings the link alive. ``origin200`` and ``origin300`` have no Crossbow on
+the node -- each places its one Base I/O instance directly on its node's
+XIO port, as above.
 
-An XIO port is a QOM interface every attachable endpoint implements --
-a Hub's or Bedrock's I/O port, each Crossbow port, an XBridge head, and a
-board's own widget (``include/hw/mips/sgi-xio-port.h``). A link object
-connects two ports and owns whatever that link kind needs
-(``hw/mips/sgi/xio-link.c``): the direct link between a Hub and a Bridge
-answers the Bridge's whole face at every widget the Hub decodes; the link
-into a Crossbow port carries packets instead. Ports connect before either
-side realizes.
+An XIO port is a QOM interface every chip at one end of an XIO link
+implements -- a Hub's or Bedrock's I/O interface, each Crossbow or XBridge
+crossbar port, a Bridge, and a board's own widget
+(``include/hw/mips/sgi-xio-port.h``). One link type
+(``hw/mips/sgi/xio-link.c``) joins two ports and does nothing but hand
+each end the other's faces: the processor face for programmed I/O and the
+packet face for widget-originated requests, the latter presented at every
+widget number when the peer is a leaf. What the far end does with the
+destination widget is the peer's own business: a Crossbow routes by it, a
+Bridge or a Hub accepts any. A Bridge sends into its link's
+widget-addressed fabric, the destination widget in bits 51:48 and the
+48-bit XIO address below.
 
 GIGAchannel expansion cabinet
 -----------------------------

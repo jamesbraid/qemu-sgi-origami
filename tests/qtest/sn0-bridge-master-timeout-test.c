@@ -22,6 +22,15 @@
 
 #define BRIDGE_INT_DEST_UP  0x030
 #define BRIDGE_INT_DEST_LO  0x038
+/*
+ * The destination firmware programs (PROM 6.156 at 0x1fc44700): the Hub's
+ * widget in bits 19:16, and the Hub's interrupt-modify register in the XIO
+ * I/O view, bit 47 set with the node at bit 38.
+ */
+#define HUB_XIO_WIDGET          1
+#define HUB_XIO_INT_MODIFY      0x01800090u
+#define HUB_XIO_DEST_UPPER(node) \
+    ((HUB_XIO_WIDGET << 16) | 0x8000u | ((node) << (38 - 32)))
 #define BRIDGE_PCI_ERR_UP   0x0d0
 #define BRIDGE_PCI_ERR_LO   0x0d8
 #define BRIDGE_INT_STATUS   0x100
@@ -160,8 +169,8 @@ static void test_master_timeout_raises_host_interrupt(void)
     QTestState *qts = qtest_init(MACHINE);
 
     qtest_writel(qts, REG(BRIDGE_INT_DEST_LO),
-                 (uint32_t)(HUB_LOCAL - SPACE_IO) + PI_INT_MODIFY);
-    qtest_writel(qts, REG(BRIDGE_INT_DEST_UP), 0);
+                 HUB_XIO_INT_MODIFY);
+    qtest_writel(qts, REG(BRIDGE_INT_DEST_UP), HUB_XIO_DEST_UPPER(0));
     qtest_writel(qts, REG(BRIDGE_HOST_ERR), ERR_HOST_BIT);
     qtest_writel(qts, REG(BRIDGE_INT_ENABLE), INT_MASTER_TIMEOUT);
 

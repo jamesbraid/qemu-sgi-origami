@@ -68,6 +68,17 @@
 #define BRIDGE_DIRECT_MAP   0x080
 #define BRIDGE_INT_ENABLE   0x108
 #define BRIDGE_INT_HOST(n)  (0x130 + 8 * (n))
+#define BRIDGE_INT_DEST_UPPER 0x030
+#define BRIDGE_INT_DEST_LOWER 0x038
+/*
+ * What firmware and the kernels program: the destination is the Hub's
+ * interrupt-modify register in the XIO I/O view (bit 47, node register
+ * window 0x01800000), and each pin's host field supplies bits 47:38,
+ * the I/O-view bit (field bit 9) above the destination node.
+ */
+#define HUB_XIO_WIDGET      1
+#define HUB_XIO_INT_MODIFY  0x01800090u
+#define INT_HOST_IO_VIEW    0x200u
 #define BRIDGE_DEVICE(n)    (0x200 + 8 * (n))
 #define DEV_SWAP_DIRECT     (1u << 19)
 #define BRIDGE_CFG0         0x020000
@@ -376,7 +387,10 @@ static void test_bridge_interrupt_reaches_the_peer_hub(const void *data)
     sn0_program_nasid(qts, 1);
 
     bridge_card_in_slot(qts, 1, 3, 0);
-    qtest_writel(qts, REG(1, BRIDGE_INT_HOST(3)), (0u << 8) | 42);
+    qtest_writel(qts, REG(1, BRIDGE_INT_DEST_UPPER), HUB_XIO_WIDGET << 16);
+    qtest_writel(qts, REG(1, BRIDGE_INT_DEST_LOWER), HUB_XIO_INT_MODIFY);
+    qtest_writel(qts, REG(1, BRIDGE_INT_HOST(3)),
+                 ((INT_HOST_IO_VIEW | 0u) << 8) | 42);
     qtest_writel(qts, REG(1, BRIDGE_INT_ENABLE), 1u << 3);
 
     qtest_writel(qts, WINDOW(1, 3) + DMA_REG_INTERRUPT, 1);
@@ -388,7 +402,7 @@ static void test_bridge_interrupt_reaches_the_peer_hub(const void *data)
 
     renumber(qts, 1, FAR_NUMBER);
     qtest_writel(qts, REG(FAR_NUMBER, BRIDGE_INT_HOST(3)),
-                 (FAR_NUMBER << 8) | 43);
+                 ((INT_HOST_IO_VIEW | FAR_NUMBER) << 8) | 43);
     qtest_writel(qts, WINDOW(FAR_NUMBER, 3) + DMA_REG_INTERRUPT, 1);
     g_assert_cmphex(qtest_readq(qts, HUB_BY_NODE + FAR_NUMBER * NODE_STRIDE +
                                 PI_INT_PEND0) & (1ULL << 43), ==,

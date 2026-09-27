@@ -10,12 +10,11 @@
  * is specific to the card: its own Bridge and the card's fitted-part
  * identity.
  *
- * "fabric", "fabric-base", "fabric-node-shift" and "fabric-widget-shift"
- * pass straight through to the internal Bridge: which Hub or fabric
- * proxy receives this board's interrupt packets is a fact about the
- * machine this board is built into, not about the board itself, so the
- * machine sets them the same way it would on a bare Bridge. "fabric" is
- * required: Bridge refuses to realize without it. "pci-bus-name" also
+ * "fabric", "fabric-base" and "fabric-widget-shift" pass straight
+ * through to the internal Bridge: which Crossbow port receives this
+ * board's packets is a fact about the machine this board is built into,
+ * not about the board itself, so the link to its slot sets them. "fabric"
+ * is required: Bridge refuses to realize without it. "pci-bus-name" also
  * passes through, unset by default: the machine building more than one
  * instance of this board -- a multi-enclosure Origin 2000's own case --
  * has to give each its own name, since two PCI buses answering to the
@@ -78,7 +77,6 @@ struct SGIXioBaseioState {
 
     MemoryRegion *fabric;
     uint64_t fabric_base;
-    uint32_t fabric_node_shift;
     uint32_t fabric_widget_shift;
     uint64_t onewire_serial;
     uint64_t ioc3_onewire_serial;
@@ -152,7 +150,6 @@ static bool xio_baseio_build_widget(SGIXioBoardState *board, Error **errp)
     object_property_set_link(OBJECT(bridge), "fabric", OBJECT(s->fabric),
                              &error_abort);
     qdev_prop_set_uint64(bridge, "fabric-base", s->fabric_base);
-    qdev_prop_set_uint32(bridge, "fabric-node-shift", s->fabric_node_shift);
     qdev_prop_set_uint32(bridge, "fabric-widget-shift",
                          s->fabric_widget_shift);
     if (identity->bridge_flash) {
@@ -215,15 +212,6 @@ static bool xio_baseio_build_widget(SGIXioBoardState *board, Error **errp)
     board->cpu_face = sysbus_mmio_get_region(SYS_BUS_DEVICE(bridge), 0);
     board->packet_face = sgi_bridge_packet_face(s->bridge);
 
-    /*
-     * Claim the slot's fabric proxy now the Bridge's own faces exist, so
-     * sgi_machine_done() both brings the slot widget's link alive for this
-     * board's outbound packets and registers those faces as the widget's
-     * inbound destination. A fixture wiring "fabric" to a plain sink is a
-     * no-op here.
-     */
-    sgi_xio_crossbow_link_claim_fabric(s->fabric, board->cpu_face,
-                                       board->packet_face);
     return true;
 }
 
@@ -239,8 +227,6 @@ static const Property xio_baseio_properties[] = {
     DEFINE_PROP_LINK("fabric", SGIXioBaseioState, fabric, TYPE_MEMORY_REGION,
                      MemoryRegion *),
     DEFINE_PROP_UINT64("fabric-base", SGIXioBaseioState, fabric_base, 0),
-    DEFINE_PROP_UINT32("fabric-node-shift", SGIXioBaseioState,
-                       fabric_node_shift, 0),
     DEFINE_PROP_UINT32("fabric-widget-shift", SGIXioBaseioState,
                        fabric_widget_shift, 0),
     DEFINE_PROP_UINT64("onewire-serial", SGIXioBaseioState, onewire_serial,
@@ -282,10 +268,7 @@ static void xio_baseio_class_init(ObjectClass *oc, const void *data)
     /*
      * Ordinarily fitted per module by the machine, at most one per
      * deskside enclosure, but also `-device`-creatable at an empty XIO
-     * slot it names (slot=io5): the machine hands it that slot's fabric
-     * proxy, and claiming it (build_widget()'s own
-     * sgi_xio_crossbow_link_claim_fabric() call) makes
-     * sgi_machine_done() bring the slot's widget alive both ways, as
+     * slot it names (slot=io5), linked to that slot's Crossbow port as
      * sgi-pci-expansion's own header comment describes.
      */
     dc->user_creatable = true;

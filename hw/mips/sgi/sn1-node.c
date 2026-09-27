@@ -1560,12 +1560,12 @@ static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
      * The XBridge is a fitted part of the IP45 node board itself, as the
      * L1 and the boot flash are (docs/designs/sn-machine-model-architecture.md,
      * "Node devices"): this file creates it directly, the family builder's
-     * own device like every other product's onboard base I/O. The
-     * XIO port experiment's link pattern joins it to the Bedrock's
-     * own XIO port before either realizes: the XBridge link
-     * (hw/mips/sgi/xio-link.c) installs the Bedrock's packet face as
-     * the chip's "fabric" -- what its own widget-0 conditions and both
-     * heads' interrupts reach the host through. The IO-8's fixed devices
+     * own device like every other product's onboard base I/O. An XIO
+     * link joins it to the Bedrock's own XIO port before either
+     * realizes: the link (hw/mips/sgi/xio-link.c) hands the XBridge the
+     * Bedrock's packet face as the chip's "fabric" -- what its own
+     * widget-0 conditions and both heads' interrupts reach the host
+     * through. The IO-8's fixed devices
      * are a separate sgi-baseio (the "io8" preset) the machine places on
      * the chip's own head F, through the same board path every other
      * product's base I/O goes through (sgi_machine_instantiate_io_board()
@@ -1589,8 +1589,10 @@ static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
                          sgi_baseio_preset_lookup("io8")->board_part);
     qdev_prop_set_uint64(node->xbridge, "onewire-serial-f",
                          SGI_XBRIDGE_NIC_PLACEHOLDER_SERIAL);
-    if (!sgi_xio_xbridge_link_connect(
-            OBJECT(&SGI_BEDROCK(node->bedrock)->io), node->xbridge, errp)) {
+    sgi_xio_link_init(&node->xbridge_link, OBJECT(node), "xbridge-link",
+                      OBJECT(&SGI_BEDROCK(node->bedrock)->io), 0,
+                      OBJECT(node->xbridge), SN1_XBRIDGE_HOST_PORT);
+    if (!sgi_xio_link_connect(&node->xbridge_link, errp)) {
         return false;
     }
     if (!sysbus_realize(SYS_BUS_DEVICE(node->xbridge), errp)) {
