@@ -4,10 +4,10 @@
  * R10000 supplies an address space only and executes no code.
  */
 #include "qemu/osdep.h"
-#include <gio/gio.h>
 #include "libqtest.h"
 #include "qobject/qdict.h"
 #include "sgi-migrate.h"
+#include "sgi-launch.h"
 
 #define BEDROCK_PATH "/machine/peripheral/bedrock"
 #define BASE 0x10000000ULL
@@ -234,21 +234,11 @@ static void test_initial_enable_rejects_empty_slot(void)
                    "cpu-enable-initial-mask=2,"
                    "dma-memory=/objects/bedrock-dma/bedrock-dma[0]",
         "-display", "none", "-accel", "qtest",
-        "-S", "-monitor", "stdio", NULL,
+        "-S", "-qmp", "stdio", NULL,
     };
-    g_autoptr(GError) error = NULL;
-    g_autofree char *error_output = NULL;
-    g_autoptr(GSubprocess) proc = g_subprocess_newv(args,
-        G_SUBPROCESS_FLAGS_STDIN_PIPE | G_SUBPROCESS_FLAGS_STDOUT_PIPE |
-        G_SUBPROCESS_FLAGS_STDERR_PIPE, &error);
 
-    g_assert_no_error(error);
-    g_assert_true(g_subprocess_communicate_utf8(proc, "quit\n", NULL,
-                                                NULL, &error_output, &error));
-    g_assert_no_error(error);
-    g_assert_false(g_subprocess_get_successful(proc));
-    g_assert_nonnull(strstr(error_output,
-        "Bedrock initial CPU enable mask selects an empty slot"));
+    assert_launch_rejected(args,
+        "Bedrock initial CPU enable mask selects an empty slot");
 }
 
 static void test_sparse_irq_and_nmi_slots(void)
