@@ -5,6 +5,7 @@
 #include "libqtest.h"
 #include "qobject/qdict.h"
 #include "sgi-test.h"
+#include "sgi-migrate.h"
 
 #include <poll.h>
 #include <sys/socket.h>
@@ -259,6 +260,42 @@ static void test_fuel_rejects_other_board_code(const void *data)
     qtest_quit(qts);
 }
 
+static void test_fuel_board_id_migration(const void *data)
+{
+    const char *prom = data;
+    g_autofree char *quoted = g_shell_quote(prom);
+    g_autoptr(GError) error = NULL;
+    g_autofree char *directory = g_dir_make_tmp("sn1-fuel-migration-XXXXXX",
+                                                &error);
+    g_autofree char *socket = NULL;
+    g_autofree char *uri = NULL;
+    QTestState *from, *to;
+
+    g_assert_no_error(error);
+    socket = g_build_filename(directory, "migration.sock", NULL);
+    uri = g_strdup_printf("unix:%s", socket);
+    from = fuel_start(prom);
+    to = qtest_initf("-M fuel,fuel-board-id-word=0x4def,"
+                     "fuel-ioc3-subsystem-id=0xc30a "
+                     "-cpu R14000 -smp 1 -m 512M -bios %s -S -incoming defer",
+                     quoted);
+    g_assert_cmphex(qtest_readq(to, HUB_LOCAL_REGISTERS + BOARD_ID_OFFSET),
+                    ==, 0x4def);
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    qtest_qmp_assert_success(from,
+        "{'execute':'migrate','arguments':{'uri':%s}}", uri);
+    sgi_wait_migration_status(from, "completed", 30);
+    sgi_wait_migration_status(to, "completed", 30);
+    g_assert_cmphex(qtest_readq(to, HUB_LOCAL_REGISTERS + BOARD_ID_OFFSET),
+                    ==, BOARD_ID_HYPOTHESIS);
+    g_assert_cmphex(qtest_readq(to, HUB_REMOTE_REGISTERS + BOARD_ID_OFFSET),
+                    ==, BOARD_ID_HYPOTHESIS);
+    qtest_quit(from);
+    qtest_quit(to);
+    g_assert_cmpint(rmdir(directory), ==, 0);
+}
+
 static void test_fuel_prom_copy_boundary(const void *data)
 {
     const char *prom = data;
@@ -391,6 +428,8 @@ int main(int argc, char **argv)
     prom = fuel_test_prom();
     qtest_add_data_func("fuel/board-and-cpu", prom, test_fuel_board_and_cpu);
     qtest_add_data_func("fuel/cpu-grant", prom, test_fuel_cpu_grant);
+    qtest_add_data_func("fuel/board-id-migration", prom,
+                        test_fuel_board_id_migration);
     qtest_add_data_func("fuel/pci", prom, test_fuel_pci);
     qtest_add_data_func("fuel/ps2", prom, test_fuel_ps2);
     qtest_add_data_func("fuel/memory", prom, test_fuel_memory);
