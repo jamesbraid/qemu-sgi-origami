@@ -106,6 +106,9 @@ static void octane_fit_pci(MachineState *machine, SGIBridgeState *bridge)
         qdev_prop_set_chr(DEVICE(pci), "chardev-a", serial_hd(0));
     }
     pci_realize_and_unref(pci, bus, &error_fatal);
+    /* Functional route from OpenBSD's first-empty-slot rule: slot 3. */
+    qdev_connect_gpio_out(DEVICE(pci), 0,
+                          qdev_get_gpio_in(DEVICE(bridge), 3));
 }
 
 static void octane_init(MachineState *machine)
