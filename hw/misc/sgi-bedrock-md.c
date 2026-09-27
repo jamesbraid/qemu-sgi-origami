@@ -589,31 +589,42 @@ static bool md_directory_accepts(void *opaque, hwaddr offset, unsigned size,
     return true;
 }
 
-static uint64_t md_directory_read(void *opaque, hwaddr offset, unsigned size)
+/*
+ * A debugger's or monitor's read of a directory word is not software
+ * looking at the state, so it does not start following the line.
+ */
+static MemTxResult md_directory_read(void *opaque, hwaddr offset,
+                                     uint64_t *value, unsigned size,
+                                     MemTxAttrs attrs)
 {
     SGIBedrockMDState *s = opaque;
     unsigned index;
 
     if (md_is_protection(offset)) {
-        if (!md_protection_translate(s, offset, &index)) {
-            return 0;
-        }
-        return s->protection[index];
+        *value = md_protection_translate(s, offset, &index) ?
+                 s->protection[index] : 0;
+        return MEMTX_OK;
     }
     if (!md_directory_translate(s, offset, &index, NULL)) {
         index = md_directory_compat_get(s, offset);
-        return s->directory_compat_values[index] &
-               ((offset & 8) ? UINT64_MAX : md_directory_mask(s));
+        *value = s->directory_compat_values[index] &
+                 ((offset & 8) ? UINT64_MAX : md_directory_mask(s));
+        return MEMTX_OK;
     }
     if (offset & 8) {
-        return s->page_counters[index];
+        *value = s->page_counters[index];
+        return MEMTX_OK;
     }
-    md_watch_line(s, index);
-    return s->directory[index] & md_directory_mask(s);
+    if (!attrs.debug) {
+        md_watch_line(s, index);
+    }
+    *value = s->directory[index] & md_directory_mask(s);
+    return MEMTX_OK;
 }
 
-static void md_directory_write(void *opaque, hwaddr offset, uint64_t value,
-                               unsigned size)
+static MemTxResult md_directory_write(void *opaque, hwaddr offset,
+                                      uint64_t value, unsigned size,
+                                      MemTxAttrs attrs)
 {
     SGIBedrockMDState *s = opaque;
     unsigned index;
@@ -622,7 +633,7 @@ static void md_directory_write(void *opaque, hwaddr offset, uint64_t value,
         if (md_protection_translate(s, offset, &index)) {
             s->protection[index] = value;
         }
-        return;
+        return MEMTX_OK;
     }
     if (!md_directory_translate(s, offset, &index, NULL)) {
         index = md_directory_compat_get(s, offset);
@@ -631,7 +642,7 @@ static void md_directory_write(void *opaque, hwaddr offset, uint64_t value,
         }
         s->directory_compat_values[index] =
             value & ((offset & 8) ? UINT64_MAX : md_directory_mask(s));
-        return;
+        return MEMTX_OK;
     }
     if (offset & 8) {
         s->page_counters[index] = value;
@@ -639,13 +650,16 @@ static void md_directory_write(void *opaque, hwaddr offset, uint64_t value,
         s->directory[index] =
             md_directory_word_written(s, value, offset, &index) &
             md_directory_mask(s);
-        md_watch_line(s, index);
+        if (!attrs.debug) {
+            md_watch_line(s, index);
+        }
     }
+    return MEMTX_OK;
 }
 
 static const MemoryRegionOps md_directory_ops = {
-    .read = md_directory_read,
-    .write = md_directory_write,
+    .read_with_attrs = md_directory_read,
+    .write_with_attrs = md_directory_write,
     .endianness = DEVICE_BIG_ENDIAN,
     .valid = {
         .min_access_size = 1,
