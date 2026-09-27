@@ -1328,7 +1328,7 @@ static bool mgras_ge_lengths_valid(void *opaque, int version_id)
  * changes.
  */
 static const VMStateDescription vmstate_sgi_mgras = {
-    .name = TYPE_SGI_MGRAS, .version_id = 16, .minimum_version_id = 9,
+    .name = TYPE_SGI_MGRAS, .version_id = 17, .minimum_version_id = 9,
     .post_load = mgras_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32(front_count, SGIMgrasState),
@@ -1449,8 +1449,7 @@ static const VMStateDescription vmstate_sgi_mgras = {
         VMSTATE_UINT32(cmd_token_class, SGIMgrasState),
         VMSTATE_UINT32(cmd_token_reg, SGIMgrasState),
         VMSTATE_UINT32(cmd_token_words_remaining, SGIMgrasState),
-        VMSTATE_UINT32_ARRAY(cmd_token_payload, SGIMgrasState,
-                             SGI_MGRAS_CMD_TOKEN_MAX_PAYLOAD_WORDS),
+        VMSTATE_UINT32_SUB_ARRAY(cmd_token_payload, SGIMgrasState, 0, 8),
         VMSTATE_UINT32(cmd_token_payload_count, SGIMgrasState),
         VMSTATE_UINT16_ARRAY(vc3_reg, SGIMgrasState, 32),
         VMSTATE_UINT8(vc3_index, SGIMgrasState),
@@ -1472,6 +1471,16 @@ static const VMStateDescription vmstate_sgi_mgras = {
         VMSTATE_UINT32_2DARRAY_V(gl_vertex, SGIMgrasState, 3, 4, 15),
         VMSTATE_UINT32_2DARRAY_V(gl_vertex_color, SGIMgrasState, 3, 4, 15),
         VMSTATE_UINT32_V(ge_report, SGIMgrasState, 16),
+        /*
+         * Version 17 grows the command payload to 16 words for
+         * glLoadMatrixf; an older stream carries the first 8, and a packet
+         * it left open had no more than that.
+         */
+        VMSTATE_SUB_ARRAY(cmd_token_payload, SGIMgrasState, 8, 8, 17,
+                          vmstate_info_uint32, uint32_t),
+        VMSTATE_UINT32_V(gl_matrix_mode, SGIMgrasState, 17),
+        VMSTATE_UINT32_ARRAY_V(gl_modelview, SGIMgrasState, 16, 17),
+        VMSTATE_UINT32_ARRAY_V(gl_projection, SGIMgrasState, 16, 17),
         VMSTATE_END_OF_LIST()
     }
 };

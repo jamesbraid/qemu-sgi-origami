@@ -5950,6 +5950,289 @@ static void test_gl_triangle_with_negative_w_is_dropped(void)
     g_assert_cmphex(gl_window_pixel(qts, 20, 20), ==, 0);
 }
 
+/*
+ * The GL client's matrix words as the captured probe
+ * streams of run irix-20260927T172059-fdbada carry them (glMatrixMode
+ * 0x2a04, glLoadIdentity 0x2c00, glLoadMatrixf 0x2b40 with 16 floats in
+ * memory order, glMultMatrixf 0x2d40, glFrustum 0x3418 and glOrtho 0x3518
+ * with the six arguments as floats).
+ */
+#define GL_MATRIX_MODE_HDR    0x00002a04
+#define GL_LOAD_MATRIX_HDR    0x00002b40
+#define GL_LOAD_IDENTITY      0x00002c00
+#define GL_MULT_MATRIX_HDR    0x00002d40
+#define GL_FRUSTUM_HDR        0x00003418
+#define GL_ORTHO_HDR          0x00003518
+#define GL_VERTEX3F_HDR       0x2000000c
+#define GL_MODELVIEW          0x1700
+#define GL_PROJECTION         0x1701
+#define GL_TEXTURE            0x1702
+
+static void gl_vertex3f(QTestState *qts, float x, float y, float z)
+{
+    gl_word(qts, GL_VERTEX3F_HDR);
+    gl_float(qts, x);
+    gl_float(qts, y);
+    gl_float(qts, z);
+}
+
+static void gl_matrix(QTestState *qts, uint32_t header, const float m[16])
+{
+    gl_word(qts, header);
+    for (int i = 0; i < 16; i++) {
+        gl_float(qts, m[i]);
+    }
+}
+
+static void gl_six(QTestState *qts, uint32_t header, float l, float r,
+                   float b, float t, float n, float f)
+{
+    gl_word(qts, header);
+    gl_float(qts, l);
+    gl_float(qts, r);
+    gl_float(qts, b);
+    gl_float(qts, t);
+    gl_float(qts, n);
+    gl_float(qts, f);
+}
+
+static void gl_one(QTestState *qts, uint32_t header, uint32_t value)
+{
+    gl_word(qts, header);
+    gl_word(qts, value);
+}
+
+/* The window's pixels, top row first, as the expected PPM stores them. */
+static void gl_check_window_sha256(const uint32_t *rgb, const char *expected)
+{
+    g_autoptr(GChecksum) sum = g_checksum_new(G_CHECKSUM_SHA256);
+
+    for (int row = 0; row < 128; row++) {
+        for (int col = 0; col < 128; col++) {
+            uint32_t p = rgb[(256 + row) * 1280 + 256 + col];
+            uint8_t bytes[3] = { p >> 16, p >> 8, p };
+
+            g_checksum_update(sum, bytes, sizeof(bytes));
+        }
+    }
+    g_assert_cmpstr(g_checksum_get_string(sum), ==, expected);
+}
+
+/* Screen pixel of window pixel (x, y), y counted up from the bottom. */
+static uint32_t gl_dump_pixel(const uint32_t *rgb, int x, int y)
+{
+    return rgb[(383 - y) * 1280 + 256 + x];
+}
+
+/* The probe's window, display on, and the state every scene case sets. */
+static void gl_scene_start(QTestState *qts, uint32_t shade)
+{
+    mgras_reset();
+    mgras_enter_gl_window(qts, 256, 640, 128, 128, 0x11);
+    qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x1e, 0x4));
+    gl_viewport(qts, 0, 0, 128, 128);
+    gl_one(qts, GL_SHADE_MODEL_HDR, shade);
+}
+
+/*
+ * SHA-256 of the 128x128 expected windows gl_min_expected.py writes for
+ * the probe's scene cases (Origami branch gl-probe-transform-depth),
+ * computed from the OpenGL 1.1 rules and matched by Mesa llvmpipe, never
+ * from this model.
+ */
+#define GL_ORTHO_SHA256 \
+    "72929655985993b8505b211a3479c5841a5f93ab625cef6d0b32f7323abe99d8"
+#define GL_FRUSTUM_SHA256 \
+    "2411a9c279313dc62c8e536db291ba6d66abab75883d077aa70f92f127ed2746"
+
+/*
+ * The ortho case: glOrtho(0, 128, 0, 128, -1, 1) on the projection, then
+ * glLoadMatrixf of a modelview that maps object (x, y) to eye
+ * (120 - 2y, x + 4). The window is the product projection x modelview
+ * applied to each vertex (OpenGL 1.2.1, 2.10); applying them in the other
+ * order, or reading the array by rows, moves the triangle off the window.
+ */
+static void test_gl_ortho_matches_the_reference(void)
+{
+    static const float modelview[16] = {
+        0, 1, 0, 0, -2, 0, 0, 0, 0, 0, 1, 0, 120, 4, 0, 1,
+    };
+    g_autofree uint32_t *rgb = NULL;
+
+    gl_scene_start(qts, GL_FLAT);
+    gl_one(qts, GL_MATRIX_MODE_HDR, GL_PROJECTION);
+    gl_word(qts, GL_LOAD_IDENTITY);
+    gl_six(qts, GL_ORTHO_HDR, 0, 128, 0, 128, -1, 1);
+    gl_one(qts, GL_MATRIX_MODE_HDR, GL_MODELVIEW);
+    gl_matrix(qts, GL_LOAD_MATRIX_HDR, modelview);
+    gl_clear_color(qts, 0, 0, 1, 1);
+    gl_word(qts, GL_CLEAR_COLOR_BUFFER);
+    gl_word(qts, GL_BEGIN_TRIANGLES);
+    gl_color3f(qts, 1, 1, 0);
+    gl_vertex3f(qts, 94, 57, 0);
+    gl_color3f(qts, 1, 1, 0);
+    gl_vertex3f(qts, 50, 1, 0);
+    gl_color3f(qts, 1, 1, 0);
+    gl_vertex3f(qts, 6, 41, 0);
+    gl_word(qts, GL_END_TRIANGLES);
+    gl_word(qts, GL_FLUSH);
+
+    rgb = mgras_screendump(qts);
+    g_assert_cmphex(gl_dump_pixel(rgb, 64, 64), ==, 0xffff00);
+    g_assert_cmphex(gl_dump_pixel(rgb, 20, 20), ==, 0x0000ff);
+    gl_check_window_sha256(rgb, GL_ORTHO_SHA256);
+}
+
+/*
+ * The frustum case: glFrustum(-1, 1, -1, 1, 1, 8) after a modelview
+ * translation of (0.25, -0.125, -3). The vertices land at eye depths 2, 4
+ * and 3, so the divide by w places the third at window y 109 1/3.
+ */
+static void test_gl_frustum_matches_the_reference(void)
+{
+    static const float modelview[16] = {
+        1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0.25f, -0.125f, -3, 1,
+    };
+    g_autofree uint32_t *rgb = NULL;
+
+    gl_scene_start(qts, GL_FLAT);
+    gl_one(qts, GL_MATRIX_MODE_HDR, GL_PROJECTION);
+    gl_word(qts, GL_LOAD_IDENTITY);
+    gl_six(qts, GL_FRUSTUM_HDR, -1, 1, -1, 1, 1, 8);
+    gl_one(qts, GL_MATRIX_MODE_HDR, GL_MODELVIEW);
+    gl_matrix(qts, GL_LOAD_MATRIX_HDR, modelview);
+    gl_clear_color(qts, 0, 0, 1, 1);
+    gl_word(qts, GL_CLEAR_COLOR_BUFFER);
+    gl_word(qts, GL_BEGIN_TRIANGLES);
+    gl_color3f(qts, 1, 1, 0);
+    gl_vertex3f(qts, -1.875f, -1.375f, 1);
+    gl_color3f(qts, 1, 1, 0);
+    gl_vertex3f(qts, 3.25f, -0.375f, -1);
+    gl_color3f(qts, 1, 1, 0);
+    gl_vertex3f(qts, 0.125f, 2.25f, 0);
+    gl_word(qts, GL_END_TRIANGLES);
+    gl_word(qts, GL_FLUSH);
+
+    rgb = mgras_screendump(qts);
+    g_assert_cmphex(gl_dump_pixel(rgb, 20, 20), ==, 0xffff00);
+    g_assert_cmphex(gl_dump_pixel(rgb, 40, 60), ==, 0x0000ff);
+    gl_check_window_sha256(rgb, GL_FRUSTUM_SHA256);
+}
+
+/*
+ * glLoadMatrixf of a translation of +0.5 in x moves a triangle 32 pixels
+ * right, and glMultMatrixf of it onto the identity does the same.
+ */
+static void gl_translated_triangle(QTestState *qts, uint32_t header)
+{
+    static const float shift[16] = {
+        1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0.5f, 0, 0, 1,
+    };
+
+    gl_scene_start(qts, GL_FLAT);
+    gl_one(qts, GL_MATRIX_MODE_HDR, GL_MODELVIEW);
+    gl_word(qts, GL_LOAD_IDENTITY);
+    gl_matrix(qts, header, shift);
+    gl_color3f(qts, 1, 1, 1);
+    gl_word(qts, GL_BEGIN_TRIANGLES);
+    gl_vertex3f(qts, -1, -1, 0);
+    gl_vertex3f(qts, 0, -1, 0);
+    gl_vertex3f(qts, -1, 0, 0);
+    gl_word(qts, GL_END_TRIANGLES);
+}
+
+static void test_gl_load_matrix_reads_columns(void)
+{
+    /* The triangle's right-angle corner moves from (0, 0) to (32, 0). */
+    gl_translated_triangle(qts, GL_LOAD_MATRIX_HDR);
+    g_assert_cmphex(gl_window_pixel(qts, 33, 1), ==, 0xffffff);
+    g_assert_cmphex(gl_window_pixel(qts, 1, 1), ==, 0);
+}
+
+/*
+ * glMultMatrixf multiplies the current matrix on the right (OpenGL 1.2.1,
+ * 2.10.2), so the argument applies to vertices first. A scale by 0.5
+ * multiplied by a translation of +0.5 in x maps x to 0.5 (x + 0.5): the
+ * triangle's corner at x -1 lands at window x 48. The other order,
+ * 0.5 x + 0.5, would put it at 64.
+ */
+static void test_gl_mult_matrix_multiplies_on_the_right(void)
+{
+    static const float half[16] = {
+        0.5f, 0, 0, 0, 0, 0.5f, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1,
+    };
+    static const float shift[16] = {
+        1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0.5f, 0, 0, 1,
+    };
+
+    gl_translated_triangle(qts, GL_MULT_MATRIX_HDR);
+    g_assert_cmphex(gl_window_pixel(qts, 33, 1), ==, 0xffffff);
+    g_assert_cmphex(gl_window_pixel(qts, 1, 1), ==, 0);
+
+    gl_scene_start(qts, GL_FLAT);
+    gl_one(qts, GL_MATRIX_MODE_HDR, GL_MODELVIEW);
+    gl_matrix(qts, GL_LOAD_MATRIX_HDR, half);
+    gl_matrix(qts, GL_MULT_MATRIX_HDR, shift);
+    gl_color3f(qts, 1, 1, 1);
+    gl_word(qts, GL_BEGIN_TRIANGLES);
+    gl_vertex3f(qts, -1, -1, 0);
+    gl_vertex3f(qts, 0, -1, 0);
+    gl_vertex3f(qts, -1, 0, 0);
+    gl_word(qts, GL_END_TRIANGLES);
+    /* Corner at window (48, 32); the other order puts it at (64, 32). */
+    g_assert_cmphex(gl_window_pixel(qts, 49, 33), ==, 0xffffff);
+    g_assert_cmphex(gl_window_pixel(qts, 47, 33), ==, 0);
+}
+
+/*
+ * Matrix commands act on the matrix glMatrixMode selects. A texture-matrix
+ * load, which the model does not use, must leave modelview alone.
+ */
+static void test_gl_matrix_mode_selects_the_matrix(void)
+{
+    static const float scale[16] = {
+        4, 0, 0, 0, 0, 4, 0, 0, 0, 0, 4, 0, 0, 0, 0, 1,
+    };
+
+    gl_scene_start(qts, GL_FLAT);
+    gl_one(qts, GL_MATRIX_MODE_HDR, GL_TEXTURE);
+    gl_matrix(qts, GL_LOAD_MATRIX_HDR, scale);
+    gl_one(qts, GL_MATRIX_MODE_HDR, GL_MODELVIEW);
+    gl_color3f(qts, 1, 1, 1);
+    gl_word(qts, GL_BEGIN_TRIANGLES);
+    gl_vertex3f(qts, -1, -1, 0);
+    gl_vertex3f(qts, -0.75f, -1, 0);
+    gl_vertex3f(qts, -1, -0.75f, 0);
+    gl_word(qts, GL_END_TRIANGLES);
+    g_assert_cmphex(gl_window_pixel(qts, 2, 2), ==, 0xffffff);
+    g_assert_cmphex(gl_window_pixel(qts, 20, 2), ==, 0);
+}
+
+/*
+ * Inferred: the client's context-setup opener 0x0600 starts a new
+ * context, whose matrices are OpenGL's initial ones even though the setup
+ * after it sends none. A projection left by an earlier context must not
+ * move or hide the new context's drawing: in the probe's capture, the
+ * depth case followed the frustum case in the same X session.
+ */
+static void test_gl_context_setup_restores_initial_state(void)
+{
+    gl_scene_start(qts, GL_FLAT);
+    gl_one(qts, GL_MATRIX_MODE_HDR, GL_PROJECTION);
+    gl_six(qts, GL_FRUSTUM_HDR, -1, 1, -1, 1, 1, 8);
+
+    gl_word(qts, 0x00000600);
+    gl_viewport(qts, 0, 0, 128, 128);
+    gl_color3f(qts, 1, 1, 1);
+    gl_word(qts, GL_BEGIN_TRIANGLES);
+    gl_vertex3f(qts, -1, -1, 0);
+    gl_vertex3f(qts, 0, -1, 0);
+    gl_vertex3f(qts, -1, 0, 0);
+    gl_word(qts, GL_END_TRIANGLES);
+    g_assert_cmphex(gl_window_pixel(qts, 1, 1), ==, 0xffffff);
+    g_assert_cmphex(gl_window_pixel(qts, 60, 1), ==, 0xffffff);
+}
+
 static void test_hq_flags_fence_token_sets_bit(void)
 {
     mgras_reset();
@@ -7136,6 +7419,59 @@ static void test_context_payload_migration(void)
     qtest_quit(from);
 }
 
+/*
+ * glLoadMatrixf carries 16 payload words, more than the 8 the parser held
+ * before. A packet split by a migration resumes after its twelfth word.
+ */
+static void test_gl_state_migration(void)
+{
+    static const float shift[16] = {
+        1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0.5f, 0, 0, 1,
+    };
+    g_autofree char *tmpfs = NULL;
+    g_autofree char *uri = NULL;
+    g_autofree char *dest_cmdline = NULL;
+    GError *err = NULL;
+    QTestState *from, *to;
+
+    tmpfs = g_dir_make_tmp("sn0-mgras-gl-migration-XXXXXX", &err);
+    g_assert_no_error(err);
+    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+
+    from = qtest_init(MIGRATION_ARGS);
+    dest_cmdline = g_strdup_printf(MIGRATION_ARGS " -incoming %s", uri);
+    to = qtest_init(dest_cmdline);
+
+    mgras_enter_gl_window(from, 256, 640, 128, 128, 0x11);
+    qtest_writel(from, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x1e, 0x4));
+    gl_viewport(from, 0, 0, 128, 128);
+    gl_one(from, GL_MATRIX_MODE_HDR, GL_MODELVIEW);
+    gl_word(from, GL_LOAD_MATRIX_HDR);
+    for (int i = 0; i < 12; i++) {
+        gl_float(from, shift[i]);
+    }
+
+    sgi_migrate_stopped(from, uri);
+
+    for (int i = 12; i < 16; i++) {
+        gl_float(to, shift[i]);
+    }
+    gl_color3f(to, 1, 1, 1);
+    gl_word(to, GL_BEGIN_TRIANGLES);
+    gl_vertex3f(to, -1, -1, 0);
+    gl_vertex3f(to, 0, -1, 0);
+    gl_vertex3f(to, -1, 0, 0);
+    gl_word(to, GL_END_TRIANGLES);
+    g_assert_cmphex(mgras_test_pixel(to, 256 + 33, 383 - 1), ==, 0xffffff);
+    g_assert_cmphex(mgras_test_pixel(to, 256 + 1, 383 - 1), ==, 0);
+
+    g_assert_cmphex(mgras_qom_get_uint(to, "x-test-error"), ==, 0);
+
+    qtest_quit(to);
+    qtest_quit(from);
+    g_rmdir(tmpfs);
+}
+
 static void test_discarded_fifo_migration(void)
 {
     g_autofree char *tmpfs = NULL;
@@ -7704,6 +8040,24 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/origin2000/mgras/"
                    "gl-triangle-with-negative-w-is-dropped",
                    test_gl_triangle_with_negative_w_is_dropped);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "gl-ortho-matches-the-reference",
+                   test_gl_ortho_matches_the_reference);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "gl-frustum-matches-the-reference",
+                   test_gl_frustum_matches_the_reference);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "gl-load-matrix-reads-columns",
+                   test_gl_load_matrix_reads_columns);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "gl-mult-matrix-multiplies-on-the-right",
+                   test_gl_mult_matrix_multiplies_on_the_right);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "gl-matrix-mode-selects-the-matrix",
+                   test_gl_matrix_mode_selects_the_matrix);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "gl-context-setup-restores-initial-state",
+                   test_gl_context_setup_restores_initial_state);
     qtest_add_func("sn0/origin2000/mgras/hq-flags-set-and-clear",
                    test_hq_flags_set_and_clear);
     qtest_add_func("sn0/origin2000/mgras/hq-flags-fence-token-sets-bit",
@@ -7781,6 +8135,8 @@ int main(int argc, char **argv)
                    test_migration_from_v9_format_default);
     qtest_add_func("sn0/origin2000/mgras/context-ack-migration",
                    test_context_ack_migration);
+    qtest_add_func("sn0/origin2000/mgras/gl-state-migration",
+                   test_gl_state_migration);
     qtest_add_func("sn0/origin2000/mgras/context-payload-migration",
                    test_context_payload_migration);
     qtest_add_func("sn0/origin2000/mgras/discarded-fifo-migration",
