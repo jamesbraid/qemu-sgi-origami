@@ -38,6 +38,8 @@ typedef struct SGIBedrockMDECCInjection {
     uint64_t raw;
     bool active;
     bool placed;
+    /* When a placed slot's mark was lifted; its overlay idles from here. */
+    int64_t retired_ns;
 } SGIBedrockMDECCInjection;
 
 /*
@@ -57,6 +59,7 @@ typedef struct SGIBedrockMDDirectoryInjection {
     uint32_t index;
     bool active;
     bool placed;
+    int64_t retired_ns;
 } SGIBedrockMDDirectoryInjection;
 
 struct SGIBedrockMDState {
@@ -84,6 +87,14 @@ struct SGIBedrockMDState {
     /* The active slots above by doubleword and by line, for lookup. */
     GHashTable *ecc_injection_by_raw;
     GHashTable *directory_injection_by_index;
+    /*
+     * Slots whose mark was lifted but whose overlay is still placed, by
+     * doubleword and by line, and the timer that removes the idle ones.
+     * Host-side only: nothing here changes what the guest sees.
+     */
+    GHashTable *ecc_retired_by_raw;
+    GHashTable *directory_retired_by_index;
+    QEMUTimer *retired_timer;
     uint64_t memory_error;
     uint64_t directory_error;
     uint64_t bank_alias_base[8];

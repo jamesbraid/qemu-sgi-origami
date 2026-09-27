@@ -82,6 +82,7 @@ static void md_selftest_sync(SGIBedrockMDState *s);
 static void md_update_memory_aliases(SGIBedrockMDState *s);
 static void md_ecc_injections_place(SGIBedrockMDState *s);
 static void md_directory_injections_place(SGIBedrockMDState *s);
+static void md_retired_flush_all(SGIBedrockMDState *s);
 static void md_node_memory_written(SGIBedrockMDState *s, uint64_t raw,
                                    unsigned size);
 static uint64_t md_directory_word_written(SGIBedrockMDState *s,
@@ -380,6 +381,8 @@ static void md_update_memory_aliases(SGIBedrockMDState *s)
         s->bank_alias_base[software_bank] = bank_base;
         s->bank_alias_size[software_bank] = bank_size;
     }
+    /* A retired overlay's place follows the old mapping. */
+    md_retired_flush_all(s);
     md_ecc_injections_place(s);
     md_directory_injections_place(s);
     memory_region_transaction_commit();
@@ -771,6 +774,30 @@ static void md_directory_error_latch(SGIBedrockMDState *s, int kind,
 }
 
 /*
+ * Placing or removing an overlay is a memory map change, and each one
+ * rebuilds the flat view of every address space. The stock PROM's memory
+ * test marks and clears the same few hundred doublewords and lines over
+ * and over: one four-processor Origin 300 boot placed 6630 overlays and
+ * removed as many, for 310 distinct doublewords and lines, and the
+ * rebuilds stretched the test from about ten seconds to two to four
+ * minutes on a loaded host. So lifting a mark retires its slot rather than
+ * removing its overlay: a retired slot's overlay stays placed and passes
+ * every access through as the memory beneath would, marking the same
+ * doubleword or line again reactivates it without a map change, and
+ * overlays idle for a second are removed together in one change. None of
+ * this is visible to the guest.
+ */
+#define MD_RETIRED_IDLE_NS NANOSECONDS_PER_SECOND
+
+static void md_retired_arm(SGIBedrockMDState *s)
+{
+    if (!timer_pending(s->retired_timer)) {
+        timer_mod(s->retired_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+                                    MD_RETIRED_IDLE_NS);
+    }
+}
+
+/*
  * Every write to node memory through the memory unit, a fetch-and-op among
  * them, asks whether it covers a marked line, so the lookup goes through a
  * table keyed by line rather than a scan of all the slots: nmem's
@@ -833,10 +860,28 @@ static bool md_overlay_place(SGIBedrockMDState *s, MemoryRegion *mr,
 static void md_directory_injection_unplace(
     SGIBedrockMDDirectoryInjection *injection)
 {
+    SGIBedrockMDState *s = injection->md;
+
     if (injection->placed) {
-        memory_region_del_subregion(&injection->md->ecc_overlay,
-                                    &injection->mr);
+        if (!injection->active) {
+            g_hash_table_remove(s->directory_retired_by_index,
+                                &injection->index);
+        }
+        memory_region_del_subregion(&s->ecc_overlay, &injection->mr);
         injection->placed = false;
+    }
+}
+
+/* Lift a line's mark, keeping its overlay placed for the next one. */
+static void md_directory_injection_retire(
+    SGIBedrockMDState *s, SGIBedrockMDDirectoryInjection *injection)
+{
+    md_directory_injection_deactivate(s, injection);
+    if (injection->placed) {
+        injection->retired_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+        g_hash_table_insert(s->directory_retired_by_index, &injection->index,
+                            injection);
+        md_retired_arm(s);
     }
 }
 
@@ -864,17 +909,36 @@ static void md_directory_injection_clear(SGIBedrockMDState *s,
         md_directory_injection_find(s, index);
 
     if (injection) {
-        md_directory_injection_unplace(injection);
-        md_directory_injection_deactivate(s, injection);
+        md_directory_injection_retire(s, injection);
     }
 }
 
 static void md_directory_injections_clear(SGIBedrockMDState *s)
 {
+    memory_region_transaction_begin();
     for (unsigned i = 0; i < SGI_BEDROCK_MD_DIRECTORY_INJECTIONS; i++) {
         md_directory_injection_unplace(&s->directory_injection[i]);
         md_directory_injection_deactivate(s, &s->directory_injection[i]);
     }
+    memory_region_transaction_commit();
+}
+
+/* A slot neither marked nor placed, removing every retired overlay if none. */
+static SGIBedrockMDDirectoryInjection *
+md_directory_injection_free(SGIBedrockMDState *s)
+{
+    for (unsigned attempt = 0; attempt < 2; attempt++) {
+        for (unsigned i = 0; i < SGI_BEDROCK_MD_DIRECTORY_INJECTIONS; i++) {
+            SGIBedrockMDDirectoryInjection *injection =
+                &s->directory_injection[i];
+
+            if (!injection->active && !injection->placed) {
+                return injection;
+            }
+        }
+        md_retired_flush_all(s);
+    }
+    return NULL;
 }
 
 static void md_directory_injection_add(SGIBedrockMDState *s, uint32_t index,
@@ -887,14 +951,19 @@ static void md_directory_injection_add(SGIBedrockMDState *s, uint32_t index,
         injection->offset = offset;
         return;
     }
-    for (unsigned i = 0; i < SGI_BEDROCK_MD_DIRECTORY_INJECTIONS; i++) {
-        injection = &s->directory_injection[i];
-        if (!injection->active) {
-            md_directory_injection_activate(s, injection, index);
-            injection->offset = offset;
-            md_directory_injection_place(s, injection);
-            return;
-        }
+    injection = g_hash_table_lookup(s->directory_retired_by_index, &index);
+    if (injection) {
+        g_hash_table_remove(s->directory_retired_by_index, &index);
+        md_directory_injection_activate(s, injection, index);
+        injection->offset = offset;
+        return;
+    }
+    injection = md_directory_injection_free(s);
+    if (injection) {
+        md_directory_injection_activate(s, injection, index);
+        injection->offset = offset;
+        md_directory_injection_place(s, injection);
+        return;
     }
     qemu_log_mask(LOG_UNIMP, "sgi-bedrock-md: directory injection table "
                   "full; reads of line %u are not checked\n", index);
@@ -980,11 +1049,79 @@ static MemTxResult md_directory_checked_read(
     return result;
 }
 
+/*
+ * An access to a retired slot's overlay does what it would do with the
+ * overlay gone: a marked line beneath is still checked and still rewritten
+ * by a write, and anything else is plain node memory.
+ */
+static MemTxResult md_retired_read(SGIBedrockMDState *s, uint64_t raw,
+                                   uint64_t *value, unsigned size,
+                                   MemTxAttrs attrs)
+{
+    SGIBedrockMDDirectoryInjection *line =
+        md_directory_injection_find(s, raw / MD_DIRECTORY_LINE);
+    MemTxResult result;
+
+    if (line) {
+        return md_directory_checked_read(line, raw % MD_DIRECTORY_LINE, value,
+                                         size, attrs);
+    }
+    switch (size) {
+    case 1:
+        *value = address_space_ldub(&s->node_as, raw, attrs, &result);
+        break;
+    case 2:
+        *value = address_space_lduw_be(&s->node_as, raw, attrs, &result);
+        break;
+    case 4:
+        *value = address_space_ldl_be(&s->node_as, raw, attrs, &result);
+        break;
+    default:
+        *value = address_space_ldq_be(&s->node_as, raw, attrs, &result);
+        break;
+    }
+    return result;
+}
+
+static MemTxResult md_retired_write(SGIBedrockMDState *s, uint64_t raw,
+                                    uint64_t value, unsigned size,
+                                    MemTxAttrs attrs)
+{
+    MemTxResult result;
+
+    switch (size) {
+    case 1:
+        address_space_stb(&s->node_as, raw, value, attrs, &result);
+        break;
+    case 2:
+        address_space_stw_be(&s->node_as, raw, value, attrs, &result);
+        break;
+    case 4:
+        address_space_stl_be(&s->node_as, raw, value, attrs, &result);
+        break;
+    default:
+        address_space_stq_be(&s->node_as, raw, value, attrs, &result);
+        break;
+    }
+    if (result == MEMTX_OK) {
+        md_node_memory_written(s, raw, size);
+    }
+    return result;
+}
+
 static MemTxResult md_directory_overlay_read(void *opaque, hwaddr offset,
                                              uint64_t *value, unsigned size,
                                              MemTxAttrs attrs)
 {
-    return md_directory_checked_read(opaque, offset, value, size, attrs);
+    SGIBedrockMDDirectoryInjection *injection = opaque;
+
+    if (!injection->active) {
+        return md_retired_read(injection->md,
+                               (uint64_t)injection->index *
+                               MD_DIRECTORY_LINE + offset,
+                               value, size, attrs);
+    }
+    return md_directory_checked_read(injection, offset, value, size, attrs);
 }
 
 /*
@@ -1161,10 +1298,26 @@ static void md_ecc_injection_deactivate(SGIBedrockMDState *s,
 
 static void md_ecc_injection_unplace(SGIBedrockMDECCInjection *injection)
 {
+    SGIBedrockMDState *s = injection->md;
+
     if (injection->placed) {
-        memory_region_del_subregion(&injection->md->ecc_overlay,
-                                    &injection->mr);
+        if (!injection->active) {
+            g_hash_table_remove(s->ecc_retired_by_raw, &injection->raw);
+        }
+        memory_region_del_subregion(&s->ecc_overlay, &injection->mr);
         injection->placed = false;
+    }
+}
+
+/* Lift a doubleword's mark, keeping its overlay placed for the next one. */
+static void md_ecc_injection_retire(SGIBedrockMDState *s,
+                                    SGIBedrockMDECCInjection *injection)
+{
+    md_ecc_injection_deactivate(s, injection);
+    if (injection->placed) {
+        injection->retired_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+        g_hash_table_insert(s->ecc_retired_by_raw, &injection->raw, injection);
+        md_retired_arm(s);
     }
 }
 
@@ -1194,16 +1347,87 @@ static void md_ecc_injection_clear(SGIBedrockMDState *s, uint64_t raw)
     SGIBedrockMDECCInjection *injection = md_ecc_injection_find(s, raw);
 
     if (injection) {
-        md_ecc_injection_unplace(injection);
-        md_ecc_injection_deactivate(s, injection);
+        md_ecc_injection_retire(s, injection);
     }
 }
 
 static void md_ecc_injections_clear(SGIBedrockMDState *s)
 {
+    memory_region_transaction_begin();
     for (unsigned i = 0; i < SGI_BEDROCK_MD_ECC_INJECTIONS; i++) {
         md_ecc_injection_unplace(&s->ecc_injection[i]);
         md_ecc_injection_deactivate(s, &s->ecc_injection[i]);
+    }
+    memory_region_transaction_commit();
+}
+
+/* A slot neither marked nor placed, removing every retired overlay if none. */
+static SGIBedrockMDECCInjection *md_ecc_injection_free(SGIBedrockMDState *s)
+{
+    for (unsigned attempt = 0; attempt < 2; attempt++) {
+        for (unsigned i = 0; i < SGI_BEDROCK_MD_ECC_INJECTIONS; i++) {
+            SGIBedrockMDECCInjection *injection = &s->ecc_injection[i];
+
+            if (!injection->active && !injection->placed) {
+                return injection;
+            }
+        }
+        md_retired_flush_all(s);
+    }
+    return NULL;
+}
+
+/*
+ * Remove the retired overlays idle since @before, all of them for
+ * INT64_MAX, in one map change. Returns when the next one comes due, or
+ * INT64_MAX when none is left.
+ */
+static int64_t md_retired_flush(SGIBedrockMDState *s, int64_t before)
+{
+    int64_t next = INT64_MAX;
+
+    memory_region_transaction_begin();
+    for (unsigned i = 0; i < SGI_BEDROCK_MD_ECC_INJECTIONS; i++) {
+        SGIBedrockMDECCInjection *injection = &s->ecc_injection[i];
+
+        if (injection->active || !injection->placed) {
+            continue;
+        }
+        if (before == INT64_MAX || injection->retired_ns <= before) {
+            md_ecc_injection_unplace(injection);
+        } else {
+            next = MIN(next, injection->retired_ns + MD_RETIRED_IDLE_NS);
+        }
+    }
+    for (unsigned i = 0; i < SGI_BEDROCK_MD_DIRECTORY_INJECTIONS; i++) {
+        SGIBedrockMDDirectoryInjection *line = &s->directory_injection[i];
+
+        if (line->active || !line->placed) {
+            continue;
+        }
+        if (before == INT64_MAX || line->retired_ns <= before) {
+            md_directory_injection_unplace(line);
+        } else {
+            next = MIN(next, line->retired_ns + MD_RETIRED_IDLE_NS);
+        }
+    }
+    memory_region_transaction_commit();
+    return next;
+}
+
+static void md_retired_flush_all(SGIBedrockMDState *s)
+{
+    md_retired_flush(s, INT64_MAX);
+}
+
+static void md_retired_expire(void *opaque)
+{
+    SGIBedrockMDState *s = opaque;
+    int64_t next = md_retired_flush(s, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) -
+                                       MD_RETIRED_IDLE_NS);
+
+    if (next != INT64_MAX) {
+        timer_mod(s->retired_timer, next);
     }
 }
 
@@ -1214,13 +1438,17 @@ static void md_ecc_injection_add(SGIBedrockMDState *s, uint64_t raw)
     if (injection) {
         return;
     }
-    for (unsigned i = 0; i < SGI_BEDROCK_MD_ECC_INJECTIONS; i++) {
-        injection = &s->ecc_injection[i];
-        if (!injection->active) {
-            md_ecc_injection_activate(s, injection, raw);
-            md_ecc_injection_place(s, injection);
-            return;
-        }
+    injection = g_hash_table_lookup(s->ecc_retired_by_raw, &raw);
+    if (injection) {
+        g_hash_table_remove(s->ecc_retired_by_raw, &raw);
+        md_ecc_injection_activate(s, injection, raw);
+        return;
+    }
+    injection = md_ecc_injection_free(s);
+    if (injection) {
+        md_ecc_injection_activate(s, injection, raw);
+        md_ecc_injection_place(s, injection);
+        return;
     }
     qemu_log_mask(LOG_UNIMP, "sgi-bedrock-md: ECC injection table full; "
                   "reads of doubleword 0x%" PRIx64 " are not checked\n",
@@ -1349,6 +1577,10 @@ static MemTxResult md_ecc_overlay_read(void *opaque, hwaddr offset,
 {
     SGIBedrockMDECCInjection *injection = opaque;
 
+    if (!injection->active) {
+        return md_retired_read(injection->md, injection->raw * 8 + offset,
+                               value, size, attrs);
+    }
     return md_ecc_checked_read(injection, injection->address, offset, value,
                                size, attrs);
 }
@@ -1362,9 +1594,12 @@ static MemTxResult md_ecc_overlay_write(void *opaque, hwaddr offset,
     SGIBedrockMDState *s = injection->md;
     uint64_t raw = injection->raw;
     MemTxResult result;
-    uint64_t data = address_space_ldq_be(&s->node_as, raw * 8, attrs,
-                                         &result);
+    uint64_t data;
 
+    if (!injection->active) {
+        return md_retired_write(s, raw * 8 + offset, value, size, attrs);
+    }
+    data = address_space_ldq_be(&s->node_as, raw * 8, attrs, &result);
     if (result != MEMTX_OK) {
         return result;
     }
@@ -2267,6 +2502,7 @@ static const MemoryRegionOps md_fetchop_ops = {
 static void md_reset_registers(SGIBedrockMDState *s)
 {
     md_selftest_cancel(s);
+    timer_del(s->retired_timer);
     md_ecc_injections_clear(s);
     md_directory_injections_clear(s);
     s->memory_error = 0;
@@ -2335,6 +2571,10 @@ static int md_post_load(void *opaque, int version_id)
      */
     g_hash_table_remove_all(s->ecc_injection_by_raw);
     g_hash_table_remove_all(s->directory_injection_by_index);
+    g_hash_table_remove_all(s->ecc_retired_by_raw);
+    g_hash_table_remove_all(s->directory_retired_by_index);
+    /* The stream carries marks, not retired overlays: none survives it. */
+    md_retired_flush_all(s);
     if (s->directory_compat_count >
         SGI_BEDROCK_MD_DIRECTORY_COMPAT_ENTRIES) {
         return -EINVAL;
@@ -2440,6 +2680,9 @@ static void md_init(Object *obj)
     s->ecc_injection_by_raw = g_hash_table_new(g_int64_hash, g_int64_equal);
     s->directory_injection_by_index = g_hash_table_new(g_int_hash,
                                                        g_int_equal);
+    s->ecc_retired_by_raw = g_hash_table_new(g_int64_hash, g_int64_equal);
+    s->directory_retired_by_index = g_hash_table_new(g_int_hash, g_int_equal);
+    s->retired_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, md_retired_expire, s);
     memory_region_init_io(&s->mmio, obj, &md_ops, s, TYPE_SGI_BEDROCK_MD,
                           SGI_BEDROCK_MD_SIZE);
     sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->mmio);
@@ -2571,6 +2814,7 @@ static void md_unrealize(DeviceState *dev)
     SGIBedrockMDState *s = SGI_BEDROCK_MD(dev);
 
     timer_del(s->selftest_timer);
+    timer_del(s->retired_timer);
     md_ecc_injections_clear(s);
     md_directory_injections_clear(s);
     if (s->memory_alias_initialized) {
@@ -2635,8 +2879,11 @@ static void md_finalize(Object *obj)
     SGIBedrockMDState *s = SGI_BEDROCK_MD(obj);
 
     timer_free(s->selftest_timer);
+    timer_free(s->retired_timer);
     g_hash_table_destroy(s->ecc_injection_by_raw);
     g_hash_table_destroy(s->directory_injection_by_index);
+    g_hash_table_destroy(s->ecc_retired_by_raw);
+    g_hash_table_destroy(s->directory_retired_by_index);
     if (s->node_as_initialized) {
         address_space_destroy(&s->node_as);
     }

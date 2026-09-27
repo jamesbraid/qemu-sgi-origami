@@ -131,6 +131,8 @@
 #define SELFTEST_DIRECTORY_ERROR 0x40058
 #define SELFTEST_MEMORY_ERROR0 0x60020
 #define SELFTEST_INTERVAL_NS 1000
+/* How long a lifted mark's overlay stays in the memory map unused. */
+#define RETIRED_IDLE_NS UINT64_C(1000000000)
 #define SELFTEST_DONE 2
 #define SELFTEST_PASSED 1
 #define SELFTEST_MEMORY_ERROR (UINT64_C(1) << 48)
@@ -3337,6 +3339,124 @@ static void test_ecc_marks_reused_and_migrated(void)
 }
 
 /*
+ * Lifting a mark keeps its overlay in the memory map until it has idled for
+ * a second, so marking the same doubleword again is not a map change: the
+ * stock PROM's memory test marks and lifts the same few hundred doublewords
+ * thousands of times, and a map change per mark made that test take
+ * minutes. The kept overlay behaves as memory: the lifted doubleword reads
+ * and writes plainly, a second mark there is checked, and the overlay goes
+ * after the idle second or at reset.
+ */
+static void test_ecc_lifted_mark_keeps_overlay(void)
+{
+    g_autofree char *prom = empty_prom_new();
+    g_autofree char *quoted_prom = g_shell_quote(prom);
+    QTestState *s = qtest_initf("-M origin300 -cpu R14000 -smp 2 "
+                                "-m 512M -bios %s -S", quoted_prom);
+    const uint64_t address = 0x506000;
+    const uint64_t carrier = ECC_BASE + ((address / 8) ^ 7);
+    const uint64_t config = (UINT64_C(2) << 32) | memory_bank_config(2, 3) |
+                            memory_bank_config(3, 3);
+    const uint64_t data = UINT64_C(0x0123456789abcdef);
+
+    qtest_writeq(s, SELFTEST_MACHINE(0x8), config);
+    qtest_writeq(s, address, data);
+    assert_flat_view_type(s, address, "ram");
+    qtest_writeb(s, carrier, ecc_of(data) ^ ecc_column[5]);
+    assert_flat_view_type(s, address, "i/o");
+
+    /* A write lifts the mark; the overlay stays and reads as memory. */
+    qtest_writeq(s, address, data);
+    assert_flat_view_type(s, address, "i/o");
+    g_assert_cmphex(qtest_readq(s, address), ==, data);
+    g_assert_cmphex(qtest_readl(s, address + 4), ==, (uint32_t)data);
+    qtest_writel(s, address, 0x76543210);
+    g_assert_cmphex(qtest_readq(s, address), ==,
+                    UINT64_C(0x7654321089abcdef));
+    qtest_writeq(s, address, data);
+    g_assert_cmphex(qtest_readb(s, carrier), ==, ecc_of(data));
+    g_assert_cmphex(qtest_readq(s, SELFTEST_MACHINE(MEMORY_ERROR)), ==, 0);
+
+    /* Marked again, the same doubleword is checked again. */
+    qtest_writeb(s, carrier, ecc_of(data) ^ ecc_column[6]);
+    g_assert_cmphex(qtest_readq(s, address), ==, data ^ (UINT64_C(1) << 6));
+    g_assert_cmphex(qtest_readq(s, SELFTEST_MACHINE(MEMORY_ERROR_CLEAR)), ==,
+                    MEMORY_ERROR_READ_CE_VALID |
+                    MEMORY_ERROR_SYNDROME(ecc_column[6]) | address);
+
+    /*
+     * The correcting read lifted it; a second's idling removes the overlay.
+     * The virtual clock's timers run only while the machine does.
+     */
+    assert_flat_view_type(s, address, "i/o");
+    ensure_clock_running(s);
+    qtest_clock_step(s, RETIRED_IDLE_NS - 1);
+    assert_flat_view_type(s, address, "i/o");
+    qtest_clock_step(s, 1);
+    assert_flat_view_type(s, address, "ram");
+    g_assert_cmphex(qtest_readq(s, address), ==, data ^ (UINT64_C(1) << 6));
+
+    /* Reset removes a kept overlay without waiting. */
+    qtest_writeb(s, carrier, ecc_column[0]);
+    qtest_writeq(s, address, 0);
+    assert_flat_view_type(s, address, "i/o");
+    qtest_qmp_assert_success(s, "{'execute':'system_reset'}");
+    qtest_writeq(s, SELFTEST_MACHINE(0x8), config);
+    assert_flat_view_type(s, address, "ram");
+    qtest_quit(s);
+    unlink(prom);
+}
+
+/*
+ * A kept overlay over a marked line does what the line's own overlay would:
+ * a read of the lifted doubleword checks the line, and a write there
+ * rewrites the line's entry.
+ */
+static void test_ecc_lifted_mark_over_marked_line(void)
+{
+    g_autofree char *prom = empty_prom_new();
+    g_autofree char *quoted_prom = g_shell_quote(prom);
+    QTestState *s = qtest_initf("-M origin300 -cpu R14000 -smp 2 "
+                                "-m 512M -bios %s -S", quoted_prom);
+    const uint64_t line = 0x506000;
+    const uint64_t address = line + 0x48;
+    const uint64_t word = (line >> 3) & UINT64_C(0x3ffffff0);
+    const uint64_t directory = PROTECTION_MACHINE_BASE + word;
+    const uint64_t carrier = ECC_BASE + ((address / 8) ^ 7);
+
+    qtest_writeq(s, SELFTEST_MACHINE(0x8),
+                 (UINT64_C(2) << 32) | memory_bank_config(2, 3) |
+                 memory_bank_config(3, 3));
+    qtest_writeq(s, SELFTEST_MACHINE(DIRECTORY_CONFIG), 1);
+    qtest_writeb(s, carrier, ecc_column[3]);
+    qtest_writeq(s, address, 0x11);
+    assert_flat_view_type(s, address, "i/o");
+
+    qtest_writeq(s, SELFTEST_MACHINE(DIRECTORY_CONFIG), 3);
+    qtest_writeq(s, directory, UINT64_C(0x0000001f00000000));
+    qtest_writeq(s, SELFTEST_MACHINE(DIRECTORY_CONFIG), 1);
+    g_assert_cmphex(qtest_readq(s, address), ==, 0x11);
+    g_assert_cmphex(qtest_readq(s, directory), ==,
+                    UINT64_C(0x0000001f00000001));
+    g_assert_cmphex(qtest_readq(s, SELFTEST_MACHINE(DIRECTORY_ERROR_CLEAR)),
+                    ==, DIRECTORY_ERROR_CE_VALID |
+                    DIRECTORY_ERROR_SYNDROME(0x1f) |
+                    DIRECTORY_ERROR_ADDRESS(word));
+    g_assert_cmphex(qtest_readq(s, SELFTEST_MACHINE(MEMORY_ERROR)), ==, 0);
+
+    /* Marked again, a write through the kept overlay rewrites the entry. */
+    qtest_writeq(s, SELFTEST_MACHINE(DIRECTORY_CONFIG), 3);
+    qtest_writeq(s, directory, UINT64_C(0x0000001f00000000));
+    qtest_writeq(s, SELFTEST_MACHINE(DIRECTORY_CONFIG), 1);
+    qtest_writeq(s, address, 0x22);
+    g_assert_cmphex(qtest_readq(s, line), ==, 0);
+    g_assert_cmphex(qtest_readq(s, address), ==, 0x22);
+    g_assert_cmphex(qtest_readq(s, SELFTEST_MACHINE(DIRECTORY_ERROR)), ==, 0);
+    qtest_quit(s);
+    unlink(prom);
+}
+
+/*
  * The Origin 300's directory diagnostic injects at the word for physical
  * 0x506000 through the machine's directory carrier and expects the
  * corrected word and the error record through the local window.
@@ -3611,6 +3731,10 @@ int main(int argc, char **argv)
     qtest_add_func("sn1/bedrock-md/directory-rewritten-by-data-write",
                    test_directory_rewritten_by_data_write);
     qtest_add_func("sn1/bedrock-md/ecc-check-many", test_ecc_check_many);
+    qtest_add_func("sn1/bedrock-md/ecc-lifted-mark-keeps-overlay",
+                   test_ecc_lifted_mark_keeps_overlay);
+    qtest_add_func("sn1/bedrock-md/ecc-lifted-mark-over-marked-line",
+                   test_ecc_lifted_mark_over_marked_line);
     qtest_add_func("sn1/bedrock-md/ecc-marks-reused-and-migrated",
                    test_ecc_marks_reused_and_migrated);
     qtest_add_func("sn1/bedrock-md/origin300-directory-ecc-check",
