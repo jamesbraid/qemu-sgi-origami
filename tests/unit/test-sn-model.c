@@ -264,18 +264,22 @@ static void check_io_board_presets(const SGIModelTopology *t)
 }
 
 /*
- * Each Hub node owns one Crosstalk attachment; remaining attachments match
- * io-boards entries one for one, as sgi_machine_index_xtalk_attachments()
- * computes at realize. Bedrock realize returns before that function: its
- * XBridge is not a separate attached board. check_bedrock_has_populated_io8()
- * checks Bedrock io-boards instead.
+ * Every node claims exactly one crosstalk attachment as its own, and the
+ * remaining attachments own the topology's io-boards entries one for
+ * one: the same split sgi_machine_index_xio_attachments() computes at
+ * realize time. Hub topologies only -- sgi_machine_realize() builds a
+ * Bedrock node and returns before that function ever runs, because a
+ * Bedrock node's XBridge is not a separate crosstalk-attached board the
+ * way a Hub's onboard or Crossbow-attached board is; a Bedrock
+ * topology's io-boards entries are checked by
+ * check_bedrock_has_populated_io8() below instead.
  */
-static void check_xtalk_attachments(const SGIModelTopology *t)
+static void check_xio_attachments(const SGIModelTopology *t)
 {
     size_t total_nodes = node_count(t);
     size_t total_boards = io_board_count(t);
     g_autofree bool *claimed = g_new0(bool, total_nodes);
-    const SGIModelXtalkAttachmentList *entry;
+    const SGIModelXioAttachmentList *entry;
     unsigned int board = 0;
     size_t i;
 
@@ -283,8 +287,8 @@ static void check_xtalk_attachments(const SGIModelTopology *t)
         return;
     }
 
-    for (entry = t->xtalk_attachments; entry; entry = entry->next) {
-        const SGIModelXtalkAttachment *attachment = entry->value;
+    for (entry = t->xio_attachments; entry; entry = entry->next) {
+        const SGIModelXioAttachment *attachment = entry->value;
         unsigned int node_index = attachment->node_index;
 
         g_assert_cmpuint(node_index, <, total_nodes);
@@ -306,23 +310,23 @@ static void check_xtalk_attachments(const SGIModelTopology *t)
     g_assert_cmpuint(board, ==, total_boards);
 }
 
-static void check_xtalk_slots(const SGIModelTopology *t)
+static void check_xio_slots(const SGIModelTopology *t)
 {
     size_t total_nodes = node_count(t);
     size_t total_crossbars = 0;
     const SGIModelCrossbarList *crossbar;
-    const SGIModelXtalkSlotList *entry;
+    const SGIModelXioSlotList *entry;
 
     for (crossbar = t->crossbars; crossbar; crossbar = crossbar->next) {
         total_crossbars++;
     }
-    for (entry = t->xtalk_slots; entry; entry = entry->next) {
-        const SGIModelXtalkSlot *slot = entry->value;
-        const SGIModelXtalkSlotList *other;
+    for (entry = t->xio_slots; entry; entry = entry->next) {
+        const SGIModelXioSlot *slot = entry->value;
+        const SGIModelXioSlotList *other;
 
         g_assert_cmpuint(slot->crossbar_index, <, total_crossbars);
         g_assert_cmpuint(slot->controlling_node, <, total_nodes);
-        for (other = t->xtalk_slots; other != entry; other = other->next) {
+        for (other = t->xio_slots; other != entry; other = other->next) {
             g_assert_cmpstr(slot->id, !=, other->value->id);
             g_assert_false(
                 slot->crossbar_index == other->value->crossbar_index &&
@@ -357,22 +361,22 @@ static void check_origin2000_node_slots(const SGIModelTopology *t)
 }
 
 /*
- * An xtalk-slots entry is an empty connector: no attachment may already
+ * An xio-slots entry is an empty connector: no attachment may already
  * occupy its Crossbow widget, or a fitted board and an empty slot would
  * claim the same port.
  */
 static void check_slots_are_unoccupied(const SGIModelTopology *t)
 {
-    const SGIModelXtalkSlotList *slot_entry;
-    const SGIModelXtalkAttachmentList *attachment_entry;
+    const SGIModelXioSlotList *slot_entry;
+    const SGIModelXioAttachmentList *attachment_entry;
 
-    for (slot_entry = t->xtalk_slots; slot_entry;
+    for (slot_entry = t->xio_slots; slot_entry;
          slot_entry = slot_entry->next) {
-        const SGIModelXtalkSlot *slot = slot_entry->value;
+        const SGIModelXioSlot *slot = slot_entry->value;
 
-        for (attachment_entry = t->xtalk_attachments; attachment_entry;
+        for (attachment_entry = t->xio_attachments; attachment_entry;
              attachment_entry = attachment_entry->next) {
-            const SGIModelXtalkAttachment *attachment =
+            const SGIModelXioAttachment *attachment =
                 attachment_entry->value;
 
             g_assert_false(attachment->crossbar_index ==
@@ -447,8 +451,8 @@ static void test_every_topology_is_well_formed(void)
         check_node_shapes(t);
         check_cables(t);
         check_io_board_presets(t);
-        check_xtalk_attachments(t);
-        check_xtalk_slots(t);
+        check_xio_attachments(t);
+        check_xio_slots(t);
         check_origin2000_node_slots(t);
         check_slots_are_unoccupied(t);
         check_bedrock_has_populated_io8(t);
