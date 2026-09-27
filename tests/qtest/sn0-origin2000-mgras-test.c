@@ -135,8 +135,14 @@ static QTestState *qts;
 #define VC3_INDEXDATA(index, data16) \
     (((uint32_t)(index) << 24) | (((uint32_t)(data16) & 0xffff) << 8))
 
-#define REG_FILL_CLIP_START     0x147
-#define REG_FILL_CLIP_END       0x148
+/*
+ * The raster clip rectangle and its enable; see MGRAS_RSS_CLIP_X in
+ * hw/misc/sgi-mgras-raster.c.
+ */
+#define REG_CLIP_X              0x147
+#define REG_CLIP_Y              0x148
+#define REG_CLIP_MODE           0x14f
+#define MGRAS_CLIP_MODE_ON      0x11
 #define REG_FILL_COLOR          0x140
 #define REG_BLOCK_START         0x46
 #define REG_BLOCK_END           0x47
@@ -356,6 +362,17 @@ static uint32_t mgras_test_wid(QTestState *qts, uint32_t x, uint32_t y)
         "{'execute': 'qom-set', 'arguments': {'path': %s, "
         "'property': 'x-test-pixel-y', 'value': %u}}", MGRAS_QOM_PATH, y);
     return mgras_qom_get_uint(qts, "x-test-wid");
+}
+
+static uint32_t mgras_test_overlay(QTestState *qts, uint32_t x, uint32_t y)
+{
+    qtest_qmp_assert_success(qts,
+        "{'execute': 'qom-set', 'arguments': {'path': %s, "
+        "'property': 'x-test-pixel-x', 'value': %u}}", MGRAS_QOM_PATH, x);
+    qtest_qmp_assert_success(qts,
+        "{'execute': 'qom-set', 'arguments': {'path': %s, "
+        "'property': 'x-test-pixel-y', 'value': %u}}", MGRAS_QOM_PATH, y);
+    return mgras_qom_get_uint(qts, "x-test-overlay");
 }
 
 static uint32_t mgras_test_format(QTestState *qts, uint32_t x, uint32_t y)
@@ -2781,7 +2798,7 @@ static void test_fifo_occupancy_always_drained(void)
 
     for (int i = 0; i < 300; i++) {
         qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                     MGRAS_COMMAND(REG_FILL_CLIP_START, i));
+                     MGRAS_COMMAND(REG_CLIP_X, i));
         g_assert_cmphex(qtest_readl(qts, REG_FIFO_STATUS) & 0xff, ==, 0);
     }
     g_assert_cmphex(qtest_readl(qts, REG_HQ_STATUS) & 0x80000000, ==, 0);
@@ -5433,6 +5450,140 @@ static void test_re_line_transparent_stipple_keeps_clear_bits(void)
 
 
 /*
+ * The X server draws a primitive once per box of its window's clip list,
+ * loading the box into 0x147/0x148 and 0x11 into 0x14f before each pass
+ * and 0 into 0x14f after the last (mgrasPolyPoint in the IRIX 6.5.30
+ * impactsr.so). 0x147 packs x1 << 16 | (x2 - 1); 0x148 packs the same
+ * rows counted from the bottom, (1024 - y2) << 16 | (1024 - y1 - 1). A
+ * pixel outside the box is not written, so a fill that covers the box
+ * paints only the box. Without this the Icon Catalog's icons painted
+ * through the Background Setting panel stacked above them.
+ */
+static uint32_t clip_y_rows(uint32_t top, uint32_t bottom)
+{
+    return ((1023u - bottom) << 16) | (1023u - top);
+}
+
+static void test_fill_honours_clip_rectangle(void)
+{
+    mgras_reset();
+
+    mgras_enter_context(qts);
+
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_COLORMASKLSBSA, 0x00ffffff));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_FILLCOLOR_R, 0x66));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_FILLMODE, MGRAS_FILLMODE_RECT_FILL_VALUE));
+    /* Box x 110-119, y 210-219, inclusive. */
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_CLIP_X, (110u << 16) | 119u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_CLIP_Y, clip_y_rows(210, 219)));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_CLIP_MODE, MGRAS_CLIP_MODE_ON));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_BLOCK_START, (100u << 16) | 200u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND_EXEC(REG_BLOCK_END, (129u << 16) | 229u));
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_STATUS) & 0x80000000, ==, 0);
+
+    g_assert_cmphex(mgras_test_pixel(qts, 110, 210), ==, 0x66);
+    g_assert_cmphex(mgras_test_pixel(qts, 119, 219), ==, 0x66);
+    g_assert_cmphex(mgras_test_pixel(qts, 109, 215), ==, 0);
+    g_assert_cmphex(mgras_test_pixel(qts, 120, 215), ==, 0);
+    g_assert_cmphex(mgras_test_pixel(qts, 115, 209), ==, 0);
+    g_assert_cmphex(mgras_test_pixel(qts, 115, 220), ==, 0);
+    g_assert_cmphex(mgras_test_pixel(qts, 100, 200), ==, 0);
+
+    /* 0x14f back to 0 lifts the clip: the same fill paints everywhere. */
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, MGRAS_COMMAND(REG_CLIP_MODE, 0));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND_EXEC(REG_BLOCK_END, (129u << 16) | 229u));
+    g_assert_cmphex(mgras_test_pixel(qts, 100, 200), ==, 0x66);
+    g_assert_cmphex(mgras_test_pixel(qts, 129, 229), ==, 0x66);
+}
+
+/*
+ * Overlay-form draws (DRBPOINTERS 0x101c0, COLORMASKMSBS bits 6:4) run
+ * inside the same per-box loop: 1,709 clipped executes in the desktop
+ * session are overlay-form, and every one meets its box. The overlay
+ * index is dropped outside the box like a colour write.
+ */
+static void test_overlay_fill_honours_clip_rectangle(void)
+{
+    mgras_reset();
+
+    mgras_enter_context(qts);
+
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_DRBPOINTERS, 0x000101c0));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_COLORMASKMSBS, 0x70));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_FILLCOLOR_R, 0x5));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_FILLMODE, MGRAS_FILLMODE_RECT_FILL_VALUE));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_CLIP_X, (110u << 16) | 119u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_CLIP_Y, clip_y_rows(210, 219)));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_CLIP_MODE, MGRAS_CLIP_MODE_ON));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_BLOCK_START, (100u << 16) | 200u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND_EXEC(REG_BLOCK_END, (129u << 16) | 229u));
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_STATUS) & 0x80000000, ==, 0);
+
+    g_assert_cmphex(mgras_test_overlay(qts, 110, 210), ==, 0x5);
+    g_assert_cmphex(mgras_test_overlay(qts, 119, 219), ==, 0x5);
+    g_assert_cmphex(mgras_test_overlay(qts, 109, 215), ==, 0);
+    g_assert_cmphex(mgras_test_overlay(qts, 115, 220), ==, 0);
+    g_assert_cmphex(mgras_test_overlay(qts, 100, 200), ==, 0);
+}
+
+/*
+ * The box is in screen coordinates: a line placed by XYWIN is clipped
+ * where it lands, not where its raw coordinates point. The desktop session
+ * this came from drew 3,617 clipped window-relative lines that meet their
+ * box only after the origin is applied.
+ */
+static void test_re_line_clip_follows_xywin_origin(void)
+{
+    mgras_reset();
+
+    mgras_enter_context(qts);
+
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_PP1FILLMODE,
+                               (MGRAS_LOGIC_OP_COPY << 26) | 0x2000));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_PACKEDCOLOR, MGRAS_PIXEL_WORD(0x00112233)));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_XYWIN, (1023u - 300u) << 16 | 200u));
+    /* Screen x 205-209 on screen row 305. */
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_CLIP_X, (205u << 16) | 209u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_CLIP_Y, clip_y_rows(305, 305)));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_CLIP_MODE, MGRAS_CLIP_MODE_ON));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND_EXEC(REG_RE_POINT, (0u << 16) | 5u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND_EXEC(REG_RE_LINE, (20u << 16) | 5u));
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_STATUS) & 0x80000000, ==, 0);
+
+    g_assert_cmphex(mgras_test_pixel(qts, 204, 305), ==, 0);
+    g_assert_cmphex(mgras_test_pixel(qts, 205, 305), ==, 0x00112233);
+    g_assert_cmphex(mgras_test_pixel(qts, 209, 305), ==, 0x00112233);
+    g_assert_cmphex(mgras_test_pixel(qts, 210, 305), ==, 0);
+    g_assert_cmphex(mgras_test_pixel(qts, 200, 305), ==, 0);
+}
+
+/*
  * XYWIN (0x115) carries a per-window screen origin that RE_POINT/RE_LINE
  * add to their own coordinate whenever its x field is nonzero: a retained
  * greeter capture's icon-panel outlines otherwise land in a "ghost
@@ -6492,6 +6643,13 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/origin2000/mgras/"
                    "re-line-execute-rejects-out-of-range-xywin-origin",
                    test_re_line_execute_rejects_out_of_range_xywin_origin);
+    qtest_add_func("sn0/origin2000/mgras/fill-honours-clip-rectangle",
+                   test_fill_honours_clip_rectangle);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "overlay-fill-honours-clip-rectangle",
+                   test_overlay_fill_honours_clip_rectangle);
+    qtest_add_func("sn0/origin2000/mgras/re-line-clip-follows-xywin-origin",
+                   test_re_line_clip_follows_xywin_origin);
     qtest_add_func("sn0/origin2000/mgras/re-char-h-execute",
                    test_re_char_h_execute);
     qtest_add_func("sn0/origin2000/mgras/fifo-re-blockcopy-unsupported",
