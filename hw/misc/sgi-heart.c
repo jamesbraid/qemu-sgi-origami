@@ -2,8 +2,8 @@
 /*
  * SGI IP30 HEART standalone processor and memory controller profile.
  * Memory population is explicit; this does not identify an Octane DIMM layout.
- * The Crossbow widget accepts bounded interrupt packets. DMA, one-wire,
- * compare and trigger are not modeled.
+ * The Crossbow widget accepts interrupt packets and mapped-RAM DMA.
+ * One-wire, compare and trigger are not modeled.
  */
 #include "qemu/osdep.h"
 #include "hw/misc/sgi-heart.h"
@@ -25,6 +25,8 @@
 #define HEART_LEVEL0_MASK 0x000000000000ffffULL
 #define HEART_LEVEL2_MASK 0x0003ffff00000000ULL
 #define HEART_WIDGET_SIZE 0x1000
+#define HEART_PACKET_SIZE (1ULL << 48)
+#define HEART_RAM_PACKET_SIZE ((HEART_MAX_UNITS + 0x1ffULL) * HEART_UNIT)
 
 static void heart_update_irq(SGIHeartState *s)
 {
@@ -70,10 +72,53 @@ static const MemoryRegionOps heart_widget_ops = {
               .unaligned = true },
 };
 
+/*
+ * Validate one QEMU memory operation before writing any byte. The packet
+ * callback sees at most eight bytes; a larger PCI DMA may issue several
+ * operations and can fail after an earlier one has completed.
+ */
+static bool heart_dma_mapped(SGIHeartState *s, hwaddr address, unsigned size)
+{
+    for (unsigned byte = 0; byte < size; byte++) {
+        hwaddr at = address + byte;
+        bool found = false;
+
+        if (at < address) {
+            return false;
+        }
+        for (int bank = HEART_BANKS - 1; bank >= 0; bank--) {
+            uint32_t d = s->descriptor[bank];
+            hwaddr base = HEART_RAM_BASE + (uint64_t)(d & 0x1ff) * HEART_UNIT;
+            hwaddr span = (uint64_t)((d >> 16 & 0x3f) + 1) * HEART_UNIT;
+
+            if ((d & 0x80000000U) && at >= base && at - base < span) {
+                found = s->capacity[bank] != 0;
+                break;
+            }
+        }
+        if (!found) {
+            return false;
+        }
+    }
+    return true;
+}
+
 static MemTxResult heart_packet_read(void *opaque, hwaddr offset,
                                      uint64_t *value, unsigned size,
                                      MemTxAttrs attrs)
 {
+    SGIHeartState *s = opaque;
+    uint8_t bytes[8];
+
+    if (offset >= HEART_RAM_BASE && heart_dma_mapped(s, offset, size)) {
+        MemTxResult result = address_space_read(&address_space_memory, offset,
+                                                attrs, bytes, size);
+
+        if (result == MEMTX_OK) {
+            *value = ldn_be_p(bytes, size);
+        }
+        return result;
+    }
     qemu_log_mask(LOG_UNIMP, "sgi-heart: unsupported packet %u-byte read "
                   "at 0x%" HWADDR_PRIx "\n", size, offset);
     *value = 0;
@@ -86,7 +131,13 @@ static MemTxResult heart_packet_write(void *opaque, hwaddr offset,
 {
     SGIHeartState *s = opaque;
     unsigned vector = value & 0xff;
+    uint8_t bytes[8];
 
+    if (offset >= HEART_RAM_BASE && heart_dma_mapped(s, offset, size)) {
+        stn_be_p(bytes, size, value);
+        return address_space_write(&address_space_memory, offset, attrs,
+                                   bytes, size);
+    }
     if (offset != 0x80 || size != 8 || (value & ~0x1ffULL) || vector >= 64) {
         qemu_log_mask(LOG_UNIMP, "sgi-heart: unsupported packet %u-byte "
                       "write at 0x%" HWADDR_PRIx " value 0x%" PRIx64 "\n",
@@ -105,6 +156,32 @@ static MemTxResult heart_packet_write(void *opaque, hwaddr offset,
 static const MemoryRegionOps heart_packet_ops = {
     .read_with_attrs = heart_packet_read,
     .write_with_attrs = heart_packet_write,
+    .endianness = DEVICE_BIG_ENDIAN,
+    .valid = { .min_access_size = 1, .max_access_size = 8,
+               .unaligned = true },
+    .impl = { .min_access_size = 1, .max_access_size = 8,
+              .unaligned = true },
+};
+
+static MemTxResult heart_packet_ram_read(void *opaque, hwaddr offset,
+                                         uint64_t *value, unsigned size,
+                                         MemTxAttrs attrs)
+{
+    return heart_packet_read(opaque, offset + HEART_RAM_BASE,
+                             value, size, attrs);
+}
+
+static MemTxResult heart_packet_ram_write(void *opaque, hwaddr offset,
+                                          uint64_t value, unsigned size,
+                                          MemTxAttrs attrs)
+{
+    return heart_packet_write(opaque, offset + HEART_RAM_BASE,
+                              value, size, attrs);
+}
+
+static const MemoryRegionOps heart_packet_ram_ops = {
+    .read_with_attrs = heart_packet_ram_read,
+    .write_with_attrs = heart_packet_ram_write,
     .endianness = DEVICE_BIG_ENDIAN,
     .valid = { .min_access_size = 1, .max_access_size = 8,
                .unaligned = true },
@@ -394,8 +471,14 @@ static void heart_init(Object *obj)
     memory_region_init_io(&s->widget, obj, &heart_widget_ops, s,
                           "sgi-heart.widget", HEART_WIDGET_SIZE);
     sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->widget);
-    memory_region_init_io(&s->packet, obj, &heart_packet_ops, s,
-                          "sgi-heart.packet", HEART_WIDGET_SIZE);
+    memory_region_init(&s->packet, obj, "sgi-heart.packet",
+                       HEART_PACKET_SIZE);
+    memory_region_init_io(&s->packet_control, obj, &heart_packet_ops, s,
+                          "sgi-heart.packet-control", HEART_WIDGET_SIZE);
+    memory_region_add_subregion(&s->packet, 0, &s->packet_control);
+    memory_region_init_io(&s->packet_ram, obj, &heart_packet_ram_ops, s,
+                          "sgi-heart.packet-ram", HEART_RAM_PACKET_SIZE);
+    memory_region_add_subregion(&s->packet, HEART_RAM_BASE, &s->packet_ram);
     sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->packet);
     qdev_init_gpio_out_named(DEVICE(obj), s->processor, "processor", 2);
 }
