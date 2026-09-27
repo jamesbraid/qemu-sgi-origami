@@ -298,9 +298,11 @@ if QemuSystemTest is not None:
                                           self._resync)
             except (HarnessError, OutOfTime) as exc:
                 console = self.log_file(self.row.id + '-console.log')
-                self.results = {check: ('not run', f'the first boot: {exc} '
-                                        f'-- console log: {console}', 0)
-                                for check in self.row.cells}
+                self.results = {
+                    check: ('not run', f'the first boot: {exc} -- console '
+                            f'log: {console}', 0) if self.row.runs(check)
+                    else ('n/a', self.row.reason(check), 0)
+                    for check in self.row.cells}
             self._phase('whole run', round(time.monotonic() - started, 1))
             self._report()
 
