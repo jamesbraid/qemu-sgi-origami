@@ -4,6 +4,7 @@
 #include "qemu/cutils.h"
 #include "hw/misc/sgi-bedrock.h"
 #include "hw/misc/sgi-l1.h"
+#include "exec/cpu-interrupt.h"
 #include "hw/core/cpu.h"
 #include "hw/core/irq.h"
 #include "hw/core/qdev-properties.h"
@@ -233,7 +234,8 @@ static CPUState *bedrock_hold_cpu(SGIBedrockState *s, unsigned int physical)
 /*
  * Populated and actually able to run -- see the deviation from the Hub
  * template above for why this does not also check the PI cpu-enable
- * register.
+ * register. A processor this device has halted for a park still counts as
+ * running: the halt is the model's, not the guest's.
  */
 static bool bedrock_hold_slot_running(SGIBedrockState *s,
                                       unsigned int physical)
@@ -244,7 +246,8 @@ static bool bedrock_hold_slot_running(SGIBedrockState *s,
         return false;
     }
     cs = bedrock_hold_cpu(s, physical);
-    return cs && !cs->halted && cpu_can_run(cs);
+    return cs && (!cs->halted || (s->park_mask & (1U << physical))) &&
+           cpu_can_run(cs);
 }
 
 /* Whether a hold is worth taking at all: this node has someone to wait on. */
@@ -494,7 +497,6 @@ static void bedrock_hold_run(CPUState *cs, run_on_cpu_data data)
     int64_t deadline;
     const char *outcome;
     bool yield = false;
-    bool timed_out = false;
     int wait_ms;
 
     if (!hold->start) {
@@ -525,7 +527,6 @@ static void bedrock_hold_run(CPUState *cs, run_on_cpu_data data)
             yield = true;
         } else if (now >= deadline) {
             outcome = "timed out";
-            timed_out = true;
         } else {
             outcome = NULL;
         }
@@ -546,19 +547,6 @@ static void bedrock_hold_run(CPUState *cs, run_on_cpu_data data)
 
     if (s->hold_id[slot] == hold->id) {
         s->hold_id[slot] = 0;
-    }
-    /*
-     * A join that timed out is over for this reset: the publisher it
-     * waited for is not coming, and parking every later release for the
-     * bound again would only stretch the boot the PROM is about to report
-     * on. Wake every other processor parked on it too.
-     */
-    if (timed_out && (kind == SGI_BEDROCK_HOLD_PRESENCE ||
-                      kind == SGI_BEDROCK_HOLD_PARTNER) &&
-        !s->presence_abandoned) {
-        s->presence_abandoned = true;
-        bedrock_hold_wake_kind(s, SGI_BEDROCK_HOLD_PRESENCE);
-        bedrock_hold_wake_kind(s, SGI_BEDROCK_HOLD_PARTNER);
     }
     /*
      * Whatever ended it, a withheld scratch-1 write lands before this
@@ -658,6 +646,147 @@ static int bedrock_h3_slot(SGIBedrockState *s)
     return s->hold_id[cslot] ? -1 : cslot;
 }
 
+/*
+ * H4's two parks (the publisher's and the partner's) halt the parked
+ * processor instead of blocking its host thread. A blocked thread is fine
+ * under multi-threaded TCG, but under round-robin or icount the one TCG
+ * thread runs every processor, so a blocking park would stall the very
+ * processor it waits for; that is why the join used to apply to
+ * multi-threaded TCG alone and an icount boot lost processor C for good.
+ * A halted processor costs the others nothing under any scheduler.
+ *
+ * The halt is the model's, not the guest's: the processor stops after the
+ * access that parked it and resumes at the next instruction, with nothing
+ * guest-visible changed. The limitation: a guest WAIT on a processor an
+ * interrupt woke early could be ended early by the release; the PROM runs
+ * these barriers with interrupts disabled.
+ *
+ * The bound is on the virtual clock, so an icount run stays deterministic.
+ * Under multi-threaded TCG the virtual clock follows host time, as the old
+ * realtime bound did.
+ *
+ * Only an access this node's own processor issued can park, and not a
+ * processor already in a hold or a park. Returns the executing slot, or -1.
+ */
+static int bedrock_park_slot(SGIBedrockState *s)
+{
+    int cslot = bedrock_hold_current_slot(s);
+
+    if (cslot < 0 || !bedrock_hold_applicable(s)) {
+        return -1;
+    }
+    return (s->hold_id[cslot] || s->park_kind[cslot]) ? -1 : cslot;
+}
+
+/* Arm the one park timer at the earliest bound still pending. */
+static void bedrock_park_arm(SGIBedrockState *s)
+{
+    int64_t earliest = INT64_MAX;
+
+    for (unsigned int slot = 0; slot < SGI_BEDROCK_PROCESSORS; slot++) {
+        if (s->park_kind[slot]) {
+            earliest = MIN(earliest, s->park_deadline[slot]);
+        }
+    }
+    if (earliest == INT64_MAX) {
+        timer_del(s->park_timer);
+    } else {
+        timer_mod(s->park_timer, earliest);
+    }
+}
+
+/*
+ * Runs on the parked processor's own thread, the way sgi-hub.c's
+ * sgi_hub_cpu_unhalt does. A release queued before the halt took effect
+ * clears the pending halt request instead, so the processor never stops.
+ */
+static void bedrock_park_unhalt(CPUState *cs, run_on_cpu_data data)
+{
+    SGIBedrockState *s = data.host_ptr;
+
+    for (unsigned int slot = 0; slot < SGI_BEDROCK_PROCESSORS; slot++) {
+        if (s->slot_cpu_index[slot] == cs->cpu_index) {
+            if (!(s->park_mask & (1U << slot)) || s->park_kind[slot]) {
+                /* Released twice, or parked again since: not ours to end. */
+                return;
+            }
+            s->park_mask &= ~(1U << slot);
+            break;
+        }
+    }
+    cpu_reset_interrupt(cs, CPU_INTERRUPT_HALT);
+    cs->halted = 0;
+}
+
+static void bedrock_park_start(SGIBedrockState *s, unsigned int slot,
+                               SGIBedrockHoldKind kind)
+{
+    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+
+    s->park_kind[slot] = kind;
+    s->park_mask |= 1U << slot;
+    s->park_start[slot] = now;
+    s->park_deadline[slot] = now + SGI_BEDROCK_HOLD_MS * SCALE_MS;
+    trace_sgi_bedrock_hold_begin(current_cpu->cpu_index,
+                                 bedrock_hold_kind_name(kind), slot, now, 0);
+    cpu_interrupt(current_cpu, CPU_INTERRUPT_HALT);
+    bedrock_park_arm(s);
+}
+
+static void bedrock_park_release(SGIBedrockState *s, unsigned int slot,
+                                 const char *outcome)
+{
+    CPUState *cs = bedrock_hold_cpu(s, slot);
+    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+
+    s->park_kind[slot] = 0;
+    /* A withheld scratch-1 write lands before this processor runs again. */
+    bedrock_hold_flush_scratch1(s, slot);
+    if (!cs) {
+        s->park_mask &= ~(1U << slot);
+        return;
+    }
+    trace_sgi_bedrock_hold_end(cs->cpu_index, outcome,
+                               (now - s->park_start[slot]) / SCALE_US, 0);
+    async_run_on_cpu(cs, bedrock_park_unhalt, RUN_ON_CPU_HOST_PTR(s));
+}
+
+/* Release every park whose condition now holds. */
+static void bedrock_park_recheck(SGIBedrockState *s)
+{
+    for (unsigned int slot = 0; slot < SGI_BEDROCK_PROCESSORS; slot++) {
+        if (s->park_kind[slot] &&
+            bedrock_hold_ready(s, slot, s->park_kind[slot])) {
+            bedrock_park_release(s, slot, "satisfied");
+        }
+    }
+    bedrock_park_arm(s);
+}
+
+/*
+ * A park that reaches its bound ends the join for this reset: the
+ * publisher it waited for is not coming, and parking every later release
+ * for the bound again would only stretch the boot the PROM is about to
+ * report on. Every other park is released with it.
+ */
+static void bedrock_park_expire(void *opaque)
+{
+    SGIBedrockState *s = opaque;
+    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    bool expired = false;
+
+    for (unsigned int slot = 0; slot < SGI_BEDROCK_PROCESSORS; slot++) {
+        if (s->park_kind[slot] && now >= s->park_deadline[slot]) {
+            bedrock_park_release(s, slot, "timed out");
+            expired = true;
+        }
+    }
+    if (expired) {
+        s->presence_abandoned = true;
+    }
+    bedrock_park_recheck(s);
+}
+
 void sgi_bedrock_perf_counter_access(SGIBedrockState *s)
 {
     int cslot = bedrock_h3_slot(s);
@@ -721,7 +850,7 @@ void sgi_bedrock_scratch3_released(SGIBedrockState *s)
         if (s->presence_seen[interface] &&
             !s->presence_released[interface]) {
             s->presence_released[interface] = true;
-            bedrock_hold_wake_kind(s, SGI_BEDROCK_HOLD_PARTNER);
+            bedrock_park_recheck(s);
         }
     }
 
@@ -730,13 +859,13 @@ void sgi_bedrock_scratch3_released(SGIBedrockState *s)
      * interface's publication waits here, with the lock free, for the other
      * interface's. Nothing to wait for once the join is over.
      */
-    cslot = bedrock_h3_slot(s);
+    cslot = bedrock_park_slot(s);
     if (cslot < 0 || !bedrock_presence_publisher(s, (unsigned int)cslot) ||
         !s->presence_seen[cslot / SGI_BEDROCK_PI_PROCESSORS] ||
         !bedrock_presence_other_pending(s, (unsigned int)cslot)) {
         return;
     }
-    bedrock_hold_start(s, (unsigned int)cslot, SGI_BEDROCK_HOLD_PRESENCE);
+    bedrock_park_start(s, (unsigned int)cslot, SGI_BEDROCK_HOLD_PRESENCE);
 }
 
 void sgi_bedrock_presence_published(SGIBedrockState *s)
@@ -753,7 +882,7 @@ void sgi_bedrock_presence_published(SGIBedrockState *s)
     trace_sgi_bedrock_presence_published(current_cpu->cpu_index, interface,
                                          bedrock_presence_pending(s));
     /* A publisher parked on H4's join re-checks it. */
-    bedrock_hold_wake_kind(s, SGI_BEDROCK_HOLD_PRESENCE);
+    bedrock_park_recheck(s);
 }
 
 void sgi_bedrock_rt_compare_written(SGIBedrockState *s,
@@ -777,7 +906,7 @@ void sgi_bedrock_rt_compare_written(SGIBedrockState *s,
 
 void sgi_bedrock_rt_counter_read(SGIBedrockState *s)
 {
-    int cslot = bedrock_h3_slot(s);
+    int cslot = bedrock_park_slot(s);
     unsigned int interface;
     int publisher;
 
@@ -796,7 +925,7 @@ void sgi_bedrock_rt_counter_read(SGIBedrockState *s)
         !s->presence_posted[publisher]) {
         return;
     }
-    bedrock_hold_start(s, (unsigned int)cslot, SGI_BEDROCK_HOLD_PARTNER);
+    bedrock_park_start(s, (unsigned int)cslot, SGI_BEDROCK_HOLD_PARTNER);
 }
 
 /*
@@ -819,6 +948,23 @@ void sgi_bedrock_hold_reset(SGIBedrockState *s)
         s->hold_scratch1_withheld_valid[slot] = false;
         s->hold_scratch1_joined[slot] = false;
         s->presence_posted[slot] = false;
+        /*
+         * A parked processor is halted by this device alone; wake it, or a
+         * local reset (which does not restart the processors) would leave it
+         * stopped for good. The unhalt work checks park_mask when it runs.
+         */
+        s->park_kind[slot] = 0;
+        if (s->park_mask & (1U << slot)) {
+            if (cs) {
+                async_run_on_cpu(cs, bedrock_park_unhalt,
+                                 RUN_ON_CPU_HOST_PTR(s));
+            } else {
+                s->park_mask &= ~(1U << slot);
+            }
+        }
+    }
+    if (s->park_timer) {
+        timer_del(s->park_timer);
     }
     s->perf_last_slot = -1;
     s->perf_run = 0;
@@ -1406,7 +1552,32 @@ static int bedrock_post_load(void *opaque, int version_id)
  * device is accounted for in the migration stream and a future field that
  * does need migrating has a place to land already reviewed for the fields
  * around it.
+ *
+ * park_mask is the one exception, and travels in a subsection sent only
+ * while a processor is parked. A parked processor is halted, and its halted
+ * flag migrates with its CPU state; without the mask, the destination would
+ * not know the halt is this device's and would never wake it. post_load's
+ * hold reset then releases it (park_kind, park_start and park_deadline stay
+ * out, as the rest of the join's scheduling state does).
  */
+static bool bedrock_park_needed(void *opaque)
+{
+    SGIBedrockState *s = opaque;
+
+    return s->park_mask != 0;
+}
+
+static const VMStateDescription vmstate_sgi_bedrock_park = {
+    .name = TYPE_SGI_BEDROCK "/park",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = bedrock_park_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT8(park_mask, SGIBedrockState),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
 static const VMStateDescription vmstate_sgi_bedrock = {
     .name = TYPE_SGI_BEDROCK,
     .version_id = 1,
@@ -1414,6 +1585,10 @@ static const VMStateDescription vmstate_sgi_bedrock = {
     .post_load = bedrock_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_END_OF_LIST()
+    },
+    .subsections = (const VMStateDescription * const []) {
+        &vmstate_sgi_bedrock_park,
+        NULL
     },
 };
 
@@ -1534,6 +1709,7 @@ static void bedrock_init(Object *obj)
     SGIBedrockState *s = SGI_BEDROCK(obj);
     DeviceState *dev = DEVICE(obj);
 
+    s->park_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, bedrock_park_expire, s);
     object_initialize_child(obj, "pi0", &s->pi[0], TYPE_SGI_BEDROCK_PI);
     object_initialize_child(obj, "pi1", &s->pi[1], TYPE_SGI_BEDROCK_PI);
     object_initialize_child(obj, "io", &s->io, TYPE_SGI_BEDROCK_IO);
@@ -1758,6 +1934,7 @@ static void bedrock_finalize(Object *obj)
 {
     SGIBedrockState *s = SGI_BEDROCK(obj);
 
+    timer_free(s->park_timer);
     if (s->dma_as_initialized) {
         address_space_destroy(&s->dma_as);
     }
