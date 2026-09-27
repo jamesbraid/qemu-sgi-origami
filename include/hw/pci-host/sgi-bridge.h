@@ -22,14 +22,21 @@
 #define TYPE_SGI_BRIDGE "sgi-bridge"
 OBJECT_DECLARE_SIMPLE_TYPE(SGIBridgeState, SGI_BRIDGE)
 
+/*
+ * Returns the fragment naming what is wrong with board_part, or NULL when
+ * it is fine. Callers own the device-specific prefix, the way
+ * hw/pci-host/sgi-bridge.c's own sgi_bridge_record_field_error() leaves its
+ * device and field names to its callers: sgi-kona shares this check
+ * (hw/misc/sgi-kona.c) and is not a bridge, so a message hard-coding "the
+ * I/O bridge" would misname the device that actually rejected it.
+ */
 static inline const char *sgi_bridge_board_part_error(const char *board_part)
 {
     if (!board_part) {
-        return "the I/O bridge board-part property is required";
+        return "board-part property is required";
     }
     if (strlen(board_part) != 12 || strchr(board_part, ';')) {
-        return "the I/O bridge board part must be 12 characters without a "
-               "semicolon";
+        return "board part must be 12 characters without a semicolon";
     }
     return NULL;
 }

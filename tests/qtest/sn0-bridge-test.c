@@ -2518,15 +2518,15 @@ typedef struct BridgeBoardPartCase {
 static const BridgeBoardPartCase invalid_board_parts[] = {
     {
         NULL,
-        "the I/O bridge board-part property is required",
+        "board-part property is required",
     },
     {
         "123-4567-8900",
-        "the I/O bridge board part must be 12 characters without a semicolon",
+        "board part must be 12 characters without a semicolon",
     },
     {
         "123;4567-890",
-        "the I/O bridge board part must be 12 characters without a semicolon",
+        "board part must be 12 characters without a semicolon",
     },
 };
 
