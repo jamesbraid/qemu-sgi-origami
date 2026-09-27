@@ -1138,6 +1138,35 @@ static target_ulong sn1_node_store_transaction(MIPSCPU *cpu, MemoryRegion *mr,
     return value;
 }
 
+/*
+ * The directory pointer of the processor that issued an access to a
+ * node's memory, which may be on another node: that node's number above
+ * three device bits (MD_PTR_NODE_SHFT in the public SN1 header), the
+ * device being 0 and 1 for interface 0's two slots and 4 and 5 for
+ * interface 1's (its subnode masks 0x1 and 0x4; the slot numbering is
+ * inferred from the Origin 300's directory diagnostic).
+ */
+static bool sn1_node_requester_pointer(void *opaque, CPUState *cs,
+                                       uint16_t *pointer)
+{
+    SN1NodeState *owner = (SN1NodeState *)
+        object_dynamic_cast(OBJECT(cs)->parent, TYPE_SGI_SN1_NODE);
+
+    if (!owner) {
+        return false;
+    }
+    for (unsigned int i = 0; i < owner->nr_cpus; i++) {
+        if (CPU(owner->cpu[i]) == cs) {
+            unsigned int slot = sn1_cpu_slot(owner->model_node, i);
+
+            *pointer = sn1_node_number(owner) << 3 | (slot & 1) |
+                       (slot & 2) << 1;
+            return true;
+        }
+    }
+    return false;
+}
+
 static void sn1_node_create_cpus(SN1NodeState *node, MachineState *machine)
 {
     MemoryRegion *system = get_system_memory();
@@ -1443,6 +1472,8 @@ static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
     sysbus_realize(SYS_BUS_DEVICE(node->bedrock), &error_fatal);
     object_unref(OBJECT(node->bedrock));
     bedrock = SYS_BUS_DEVICE(node->bedrock);
+    SGI_BEDROCK(node->bedrock)->md.requester = sn1_node_requester_pointer;
+    SGI_BEDROCK(node->bedrock)->md.requester_opaque = node;
 
     memory_region_add_subregion(
         system, sn1_node_address(node, SN1_XTALK_ADDRESS),

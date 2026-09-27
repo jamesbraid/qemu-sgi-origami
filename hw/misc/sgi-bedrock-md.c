@@ -90,6 +90,8 @@ static void md_node_memory_written(SGIBedrockMDState *s, uint64_t raw,
 static uint64_t md_directory_word_written(SGIBedrockMDState *s,
                                           uint64_t value, hwaddr offset,
                                           const uint32_t *index);
+static void md_watch_line(SGIBedrockMDState *s, uint32_t index);
+static void md_watched_lines_place(SGIBedrockMDState *s);
 
 static bool md_storage(hwaddr offset, unsigned *index, uint64_t *mask)
 {
@@ -388,6 +390,7 @@ static void md_update_memory_aliases(SGIBedrockMDState *s)
     md_retired_flush_all(s);
     md_ecc_injections_place(s);
     md_directory_injections_place(s);
+    md_watched_lines_place(s);
     memory_region_transaction_commit();
 }
 
@@ -605,6 +608,7 @@ static uint64_t md_directory_read(void *opaque, hwaddr offset, unsigned size)
     if (offset & 8) {
         return s->page_counters[index];
     }
+    md_watch_line(s, index);
     return s->directory[index] & md_directory_mask(s);
 }
 
@@ -635,6 +639,7 @@ static void md_directory_write(void *opaque, hwaddr offset, uint64_t value,
         s->directory[index] =
             md_directory_word_written(s, value, offset, &index) &
             md_directory_mask(s);
+        md_watch_line(s, index);
     }
 }
 
@@ -836,13 +841,15 @@ static void md_directory_injection_deactivate(
 }
 
 /*
- * Place an overlay of @size bytes over the memory the raw offset @raw backs,
- * at the software-bank address the bank
- * aliases give it, or leave it unplaced when no enabled bank reaches it. A
- * bank-select change moves it.
-*/
+ * Place an overlay over the memory the raw offset @raw backs, at the
+ * software-bank address the bank aliases give it, or leave it unplaced when
+ * no enabled bank reaches it. A bank-select change moves it. A checked
+ * doubleword sits above a checked line, and a watched line above both,
+ * since its own accesses go through the checks of either.
+ */
 static bool md_overlay_place(SGIBedrockMDState *s, MemoryRegion *mr,
-                             uint64_t raw, uint64_t *address, bool *placed)
+                             uint64_t raw, uint64_t *address, bool *placed,
+                             int priority)
 {
     if (*placed) {
         memory_region_del_subregion(&s->ecc_overlay, mr);
@@ -855,8 +862,7 @@ static bool md_overlay_place(SGIBedrockMDState *s, MemoryRegion *mr,
             *address = bank * MD_MEMORY_BANK_SIZE +
                        (raw - s->bank_alias_base[bank]);
             memory_region_add_subregion_overlap(&s->ecc_overlay, *address,
-                                                mr, memory_region_size(mr) ==
-                                                8 ? 1 : 0);
+                                                mr, priority);
             *placed = true;
             return true;
         }
@@ -897,7 +903,7 @@ static void md_directory_injection_place(
 {
     md_overlay_place(s, &injection->mr,
                      (uint64_t)injection->index * MD_DIRECTORY_LINE,
-                     &injection->address, &injection->placed);
+                     &injection->address, &injection->placed, 0);
 }
 
 static void md_directory_injections_place(SGIBedrockMDState *s)
@@ -1341,7 +1347,7 @@ static void md_ecc_injection_place(SGIBedrockMDState *s,
                                    SGIBedrockMDECCInjection *injection)
 {
     md_overlay_place(s, &injection->mr, injection->raw * 8,
-                     &injection->address, &injection->placed);
+                     &injection->address, &injection->placed, 1);
 }
 
 static void md_ecc_injections_place(SGIBedrockMDState *s)
@@ -2351,6 +2357,457 @@ static const MemoryRegionOps md_memory_ops = {
 };
 
 /*
+ * Directory state on processor requests.
+ *
+ * The unit rewrites a line's directory word as it serves each processor
+ * request: a read miss, a read-exclusive or upgrade, a write-back. The
+ * transitions are the Origin directory protocol's (the SGI Origin ccNUMA
+ * paper, ISCA 1997, section 3.2): a read of an unowned line, or of one the
+ * reader already owns, grants it exclusive; a read of a shared line adds
+ * the reader; a read of a line another processor owns shares it between
+ * the two; a read-exclusive or upgrade makes the requester the owner and
+ * invalidates every other copy; an owner's write-back unowns the line. A
+ * clean exclusive or shared copy is dropped without telling the directory.
+ * The processors' requests are the R10000's (R10000 User's Manual version
+ * 2.0, Table 4-2): a load miss asks to read, a store miss to read
+ * exclusive, and a store to a shared copy to upgrade.
+ *
+ * The model follows a line only while it is watched, and keeps each
+ * processor's copy of it here rather than in the processor, as the state
+ * its secondary cache would hold. It has no processor caches, so a copy
+ * leaves only through a cache instruction or another processor's request,
+ * never through replacement. Words in any state the protocol above does
+ * not produce -- busy, wait, poisoned, coarse or sparse, owned by an I/O
+ * device -- are left alone, as is a line whose directory word is marked
+ * with a check error.
+ */
+#define MD_WATCH_IDLE_NS NANOSECONDS_PER_SECOND
+
+enum {
+    MD_CACHE_INVALID,
+    MD_CACHE_SHARED,
+    MD_CACHE_CLEAN,
+    MD_CACHE_DIRTY,
+};
+
+enum {
+    MD_REQUEST_READ,
+    MD_REQUEST_READ_EXCLUSIVE,
+    MD_REQUEST_WRITEBACK,
+};
+
+enum {
+    MD_FORMAT_UNOWNED,
+    MD_FORMAT_POINTER,
+    MD_FORMAT_SHARED_FINE,
+};
+
+/* A decoded directory word, the parts of it the protocol above touches. */
+typedef struct MDDirectoryEntry {
+    unsigned format;
+    uint16_t owner;
+    uint64_t sharers;
+} MDDirectoryEntry;
+
+/*
+ * A shared-fine vector bit stands for a processor interface: interface
+ * one of node n is bit 2n + 1 across the tags. Inferred from the Origin
+ * 300's directory diagnostic, which the memory-directory datasheet
+ * records.
+ */
+static unsigned md_pointer_interface(uint16_t pointer)
+{
+    return (pointer >> 3) * 2 + ((pointer >> 2) & 1);
+}
+
+static uint64_t md_locprot_bit(bool premium)
+{
+    return UINT64_C(1) << (premium ? 38 : 22);
+}
+
+static bool md_shared_group(uint64_t *sharers, unsigned tag, uint64_t vector,
+                            unsigned width)
+{
+    if (!vector) {
+        return true;
+    }
+    if (tag * width >= 64) {
+        return false;
+    }
+    *sharers |= vector << (tag * width);
+    return true;
+}
+
+/* The public SN1 standard and premium layouts (hubmd_next.h, v2.5.40). */
+static bool md_directory_decode(uint64_t word, bool premium,
+                                MDDirectoryEntry *entry)
+{
+    unsigned width = premium ? 16 : 8;
+    unsigned tag1, tag2;
+    uint64_t vector1, vector2;
+    bool tag2valid;
+
+    entry->sharers = 0;
+    entry->owner = 0;
+    entry->format = word & 3;
+    switch (entry->format) {
+    case MD_FORMAT_UNOWNED:
+        return true;
+    case MD_FORMAT_POINTER:
+        if (extract64(word, 2, 3) != 0) {
+            return false;
+        }
+        entry->owner = extract64(word, 8, 8);
+        if (premium) {
+            entry->owner |= extract64(word, 22, 3) << 8;
+        }
+        /* Device bit 1 names an I/O owner, not a processor. */
+        return !(entry->owner & 2);
+    case MD_FORMAT_SHARED_FINE:
+        tag1 = extract64(word, 2, 3);
+        tag2 = extract64(word, 5, 3);
+        vector1 = extract64(word, 8, 8);
+        if (premium) {
+            tag1 |= extract64(word, 22, 2) << 3;
+            tag2 |= extract64(word, 54, 2) << 3;
+            vector1 |= extract64(word, 24, 8) << 8;
+            vector2 = extract64(word, 40, 8) | extract64(word, 56, 8) << 8;
+            tag2valid = extract64(word, 39, 1);
+        } else {
+            vector2 = extract64(word, 24, 8);
+            tag2valid = extract64(word, 23, 1);
+        }
+        return md_shared_group(&entry->sharers, tag1, vector1, width) &&
+               (!tag2valid ||
+                md_shared_group(&entry->sharers, tag2, vector2, width));
+    default:
+        return false;
+    }
+}
+
+/*
+ * The word for @entry, keeping only the old word's local protection bit:
+ * the priority, second pointer and critical-word fields a pointer entry
+ * also carries are written zero, which is model policy.
+ */
+static bool md_directory_compose(const MDDirectoryEntry *entry, bool premium,
+                                 uint64_t old, uint64_t *word)
+{
+    unsigned width = premium ? 16 : 8;
+    uint64_t vector[2] = { 0, 0 };
+    unsigned tag[2] = { 0, 0 };
+    unsigned groups = 0;
+
+    *word = old & md_locprot_bit(premium);
+    switch (entry->format) {
+    case MD_FORMAT_UNOWNED:
+        break;
+    case MD_FORMAT_POINTER:
+        *word |= MD_FORMAT_POINTER |
+                 (uint64_t)(entry->owner & 0xff) << 8;
+        if (premium) {
+            *word |= (uint64_t)((entry->owner >> 8) & 7) << 22;
+        }
+        break;
+    case MD_FORMAT_SHARED_FINE:
+        for (unsigned bit = 0; bit < 64; bit++) {
+            unsigned group = bit / width;
+
+            if (!(entry->sharers & (UINT64_C(1) << bit))) {
+                continue;
+            }
+            if (groups && tag[groups - 1] == group) {
+                vector[groups - 1] |= UINT64_C(1) << (bit % width);
+                continue;
+            }
+            if (groups == 2) {
+                return false;
+            }
+            tag[groups] = group;
+            vector[groups++] = UINT64_C(1) << (bit % width);
+        }
+        *word |= MD_FORMAT_SHARED_FINE | (uint64_t)(tag[0] & 7) << 2 |
+                 (uint64_t)(tag[1] & 7) << 5 | (vector[0] & 0xff) << 8;
+        if (premium) {
+            *word |= (uint64_t)(tag[0] >> 3) << 22 |
+                     ((vector[0] >> 8) & 0xff) << 24 |
+                     (uint64_t)(groups == 2) << 39 |
+                     (vector[1] & 0xff) << 40 |
+                     (uint64_t)(tag[1] >> 3) << 54 |
+                     ((vector[1] >> 8) & 0xff) << 56;
+        } else {
+            *word |= (uint64_t)(groups == 2) << 23 |
+                     (vector[1] & 0xff) << 24;
+        }
+        break;
+    default:
+        g_assert_not_reached();
+    }
+    return true;
+}
+
+static SGIBedrockMDHolder *md_line_holder(SGIBedrockMDWatchedLine *line,
+                                          uint16_t pointer, bool add)
+{
+    for (unsigned i = 0; i < line->holders; i++) {
+        if (line->holder[i].pointer == pointer) {
+            return &line->holder[i];
+        }
+    }
+    if (!add || line->holders == SGI_BEDROCK_MD_LINE_HOLDERS) {
+        return NULL;
+    }
+    line->holder[line->holders].pointer = pointer;
+    line->holder[line->holders].state = MD_CACHE_INVALID;
+    return &line->holder[line->holders++];
+}
+
+/*
+ * Serve one request from @pointer against the line's directory word and
+ * the other processors' copies, and return the state the requester's copy
+ * is granted. A word the protocol does not produce keeps its value.
+ */
+static uint8_t md_directory_request(SGIBedrockMDState *s,
+                                    SGIBedrockMDWatchedLine *line,
+                                    uint16_t pointer, int request)
+{
+    bool premium = md_directory_premium(s);
+    uint64_t old = s->directory[line->index];
+    uint64_t requester = UINT64_C(1) << md_pointer_interface(pointer);
+    MDDirectoryEntry entry;
+    uint8_t granted;
+    uint64_t word;
+
+    if (!md_directory_decode(old, premium, &entry) ||
+        md_pointer_interface(pointer) >= 64) {
+        qemu_log_mask(LOG_UNIMP, "sgi-bedrock-md: directory word 0x%016"
+                      PRIx64 " of line %u is in a state the model does not "
+                      "follow; left unchanged\n", old, line->index);
+        return request == MD_REQUEST_READ ? MD_CACHE_SHARED :
+                                            MD_CACHE_CLEAN;
+    }
+    switch (request) {
+    case MD_REQUEST_READ:
+        if (entry.format == MD_FORMAT_SHARED_FINE) {
+            entry.sharers |= requester;
+            granted = MD_CACHE_SHARED;
+        } else if (entry.format == MD_FORMAT_POINTER &&
+                   entry.owner != pointer) {
+            SGIBedrockMDHolder *owner = md_line_holder(line, entry.owner,
+                                                       false);
+
+            if (owner && owner->state != MD_CACHE_INVALID) {
+                owner->state = MD_CACHE_SHARED;
+            }
+            entry.sharers = requester |
+                            UINT64_C(1) << md_pointer_interface(entry.owner);
+            entry.format = MD_FORMAT_SHARED_FINE;
+            granted = MD_CACHE_SHARED;
+        } else {
+            entry.format = MD_FORMAT_POINTER;
+            entry.owner = pointer;
+            granted = MD_CACHE_CLEAN;
+        }
+        break;
+    case MD_REQUEST_READ_EXCLUSIVE:
+        for (unsigned i = 0; i < line->holders; i++) {
+            if (line->holder[i].pointer != pointer) {
+                line->holder[i].state = MD_CACHE_INVALID;
+            }
+        }
+        entry.format = MD_FORMAT_POINTER;
+        entry.owner = pointer;
+        granted = MD_CACHE_CLEAN;
+        break;
+    case MD_REQUEST_WRITEBACK:
+        if (entry.format == MD_FORMAT_POINTER && entry.owner == pointer) {
+            entry.format = MD_FORMAT_UNOWNED;
+        }
+        granted = MD_CACHE_INVALID;
+        break;
+    default:
+        g_assert_not_reached();
+    }
+    if (!md_directory_compose(&entry, premium, old, &word)) {
+        qemu_log_mask(LOG_UNIMP, "sgi-bedrock-md: sharers of line %u span "
+                      "more than two tags; directory word left unchanged\n",
+                      line->index);
+        return granted;
+    }
+    s->directory[line->index] =
+        sgi_bedrock_md_directory_encode(word, premium) & md_directory_mask(s);
+    trace_sgi_bedrock_md_directory_request(line->index, pointer, request,
+                                           old, s->directory[line->index]);
+    return granted;
+}
+
+/* A processor's cached load or store reached the watched line. */
+static void md_watched_access(SGIBedrockMDState *s,
+                              SGIBedrockMDWatchedLine *line, bool is_write,
+                              MemTxAttrs attrs)
+{
+    SGIBedrockMDHolder *holder;
+    uint16_t pointer;
+
+    if (attrs.mips_uncached || attrs.debug || !current_cpu ||
+        !s->requester ||
+        !s->requester(s->requester_opaque, current_cpu, &pointer) ||
+        md_directory_injection_find(s, line->index)) {
+        return;
+    }
+    line->used_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    holder = md_line_holder(line, pointer, true);
+    if (!holder) {
+        qemu_log_mask(LOG_UNIMP, "sgi-bedrock-md: line %u has more holders "
+                      "than the model follows\n", line->index);
+        return;
+    }
+    if (!is_write) {
+        if (holder->state == MD_CACHE_INVALID) {
+            holder->state = md_directory_request(s, line, pointer,
+                                                 MD_REQUEST_READ);
+        }
+        return;
+    }
+    switch (holder->state) {
+    case MD_CACHE_DIRTY:
+        return;
+    case MD_CACHE_CLEAN:
+        /* A store to a clean exclusive copy dirties it with no request. */
+        break;
+    default:
+        /* A miss asks to read exclusive, a shared copy to upgrade. */
+        md_directory_request(s, line, pointer, MD_REQUEST_READ_EXCLUSIVE);
+        break;
+    }
+    holder->state = MD_CACHE_DIRTY;
+}
+
+static MemTxResult md_watched_read(void *opaque, hwaddr offset,
+                                   uint64_t *value, unsigned size,
+                                   MemTxAttrs attrs)
+{
+    SGIBedrockMDWatchedLine *line = opaque;
+    MemTxResult result = md_memory_read(line->md, line->address + offset,
+                                        value, size, attrs);
+
+    if (result == MEMTX_OK && line->active) {
+        md_watched_access(line->md, line, false, attrs);
+    }
+    return result;
+}
+
+static MemTxResult md_watched_write(void *opaque, hwaddr offset,
+                                    uint64_t value, unsigned size,
+                                    MemTxAttrs attrs)
+{
+    SGIBedrockMDWatchedLine *line = opaque;
+    MemTxResult result = md_memory_write(line->md, line->address + offset,
+                                         value, size, attrs);
+
+    if (result == MEMTX_OK && line->active) {
+        md_watched_access(line->md, line, true, attrs);
+    }
+    return result;
+}
+
+static const MemoryRegionOps md_watched_ops = {
+    .read_with_attrs = md_watched_read,
+    .write_with_attrs = md_watched_write,
+    .endianness = DEVICE_BIG_ENDIAN,
+    .valid = { .min_access_size = 1, .max_access_size = 8, .unaligned = true },
+    .impl = { .min_access_size = 1, .max_access_size = 8, .unaligned = true },
+};
+
+static void md_watched_line_unplace(SGIBedrockMDState *s,
+                                    SGIBedrockMDWatchedLine *line)
+{
+    if (line->placed) {
+        memory_region_del_subregion(&s->ecc_overlay, &line->mr);
+        line->placed = false;
+    }
+}
+
+static void md_watched_count_update(SGIBedrockMDState *s)
+{
+    uint32_t count = 0;
+
+    for (unsigned i = 0; i < SGI_BEDROCK_MD_WATCHED_LINES; i++) {
+        count += s->watched[i].active;
+    }
+    qatomic_set(&s->watched_count, count);
+}
+
+static void md_watched_lines_place(SGIBedrockMDState *s)
+{
+    for (unsigned i = 0; i < SGI_BEDROCK_MD_WATCHED_LINES; i++) {
+        SGIBedrockMDWatchedLine *line = &s->watched[i];
+
+        if (line->active &&
+            !md_overlay_place(s, &line->mr,
+                              (uint64_t)line->index * MD_DIRECTORY_LINE,
+                              &line->address, &line->placed, 2)) {
+            line->active = false;
+        }
+    }
+    md_watched_count_update(s);
+}
+
+static void md_watched_lines_clear(SGIBedrockMDState *s)
+{
+    memory_region_transaction_begin();
+    for (unsigned i = 0; i < SGI_BEDROCK_MD_WATCHED_LINES; i++) {
+        md_watched_line_unplace(s, &s->watched[i]);
+        s->watched[i].active = false;
+        s->watched[i].holders = 0;
+    }
+    memory_region_transaction_commit();
+    md_watched_count_update(s);
+}
+
+/*
+ * Software reached line @index's directory word through the backdoor:
+ * follow the line from here, in a free slot or one idle for a second. With
+ * none, the line is not followed.
+ */
+static void md_watch_line(SGIBedrockMDState *s, uint32_t index)
+{
+    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    SGIBedrockMDWatchedLine *slot = NULL;
+
+    for (unsigned i = 0; i < SGI_BEDROCK_MD_WATCHED_LINES; i++) {
+        SGIBedrockMDWatchedLine *line = &s->watched[i];
+
+        if (line->active && line->index == index) {
+            line->used_ns = now;
+            return;
+        }
+        if (!line->active) {
+            if (!slot || slot->active) {
+                slot = line;
+            }
+        } else if (line->used_ns <= now - MD_WATCH_IDLE_NS &&
+                   (!slot || (slot->active &&
+                              line->used_ns < slot->used_ns))) {
+            slot = line;
+        }
+    }
+    if (!slot) {
+        return;
+    }
+    slot->index = index;
+    slot->holders = 0;
+    slot->used_ns = now;
+    memory_region_transaction_begin();
+    slot->active = md_overlay_place(s, &slot->mr,
+                                    (uint64_t)index * MD_DIRECTORY_LINE,
+                                    &slot->address, &slot->placed, 2);
+    memory_region_transaction_commit();
+    md_watched_count_update(s);
+    trace_sgi_bedrock_md_watch_line(index, slot->address, slot->active);
+}
+
+/*
  * Memory-special space: a fetch-and-op variable is the first doubleword of
  * each 64-byte block of node memory, and
  * the offset inside the block names the atomic operation. Only aligned 64-bit
@@ -2530,6 +2987,7 @@ static void md_reset_registers(SGIBedrockMDState *s)
     memory_region_transaction_begin();
     md_ecc_injections_clear(s);
     md_directory_injections_clear(s);
+    md_watched_lines_clear(s);
     s->memory_error = 0;
     s->directory_error = 0;
     s->current_cell = UINT64_MAX;
@@ -2602,6 +3060,18 @@ static int md_post_load(void *opaque, int version_id)
     timer_del(s->retired_timer);
     /* The stream carries marks, not retired overlays: none survives it. */
     md_retired_flush_all(s);
+    /* The stream carries which lines are watched, not where they sit. */
+    memory_region_transaction_begin();
+    for (unsigned i = 0; i < SGI_BEDROCK_MD_WATCHED_LINES; i++) {
+        md_watched_line_unplace(s, &s->watched[i]);
+        if (s->watched[i].holders > SGI_BEDROCK_MD_LINE_HOLDERS ||
+            (s->watched[i].active &&
+             s->watched[i].index >= s->directory_entries)) {
+            memory_region_transaction_commit();
+            return -EINVAL;
+        }
+    }
+    memory_region_transaction_commit();
     if (s->directory_compat_count >
         SGI_BEDROCK_MD_DIRECTORY_COMPAT_ENTRIES) {
         return -EINVAL;
@@ -2645,6 +3115,51 @@ static const VMStateDescription vmstate_md_directory_injection = {
         VMSTATE_UINT64(offset, SGIBedrockMDDirectoryInjection),
         VMSTATE_UINT32(index, SGIBedrockMDDirectoryInjection),
         VMSTATE_BOOL(active, SGIBedrockMDDirectoryInjection),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
+static const VMStateDescription vmstate_md_holder = {
+    .name = TYPE_SGI_BEDROCK_MD "-holder",
+    .version_id = 1, .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT16(pointer, SGIBedrockMDHolder),
+        VMSTATE_UINT8(state, SGIBedrockMDHolder),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
+static const VMStateDescription vmstate_md_watched_line = {
+    .name = TYPE_SGI_BEDROCK_MD "-watched-line",
+    .version_id = 1, .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32(index, SGIBedrockMDWatchedLine),
+        VMSTATE_BOOL(active, SGIBedrockMDWatchedLine),
+        VMSTATE_INT64(used_ns, SGIBedrockMDWatchedLine),
+        VMSTATE_UINT8(holders, SGIBedrockMDWatchedLine),
+        VMSTATE_STRUCT_ARRAY(holder, SGIBedrockMDWatchedLine,
+                             SGI_BEDROCK_MD_LINE_HOLDERS, 1,
+                             vmstate_md_holder, SGIBedrockMDHolder),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
+static bool md_watched_needed(void *opaque)
+{
+    SGIBedrockMDState *s = opaque;
+
+    return s->watched_count != 0;
+}
+
+static const VMStateDescription vmstate_md_watched = {
+    .name = TYPE_SGI_BEDROCK_MD "/watched",
+    .version_id = 1, .minimum_version_id = 1,
+    .needed = md_watched_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_STRUCT_ARRAY(watched, SGIBedrockMDState,
+                             SGI_BEDROCK_MD_WATCHED_LINES, 1,
+                             vmstate_md_watched_line,
+                             SGIBedrockMDWatchedLine),
         VMSTATE_END_OF_LIST()
     },
 };
@@ -2695,6 +3210,10 @@ static const VMStateDescription vmstate_md = {
                              vmstate_md_directory_injection,
                              SGIBedrockMDDirectoryInjection),
         VMSTATE_END_OF_LIST()
+    },
+    .subsections = (const VMStateDescription * const []) {
+        &vmstate_md_watched,
+        NULL
     },
 };
 
@@ -2752,6 +3271,14 @@ static void md_init(Object *obj)
                               &md_directory_overlay_ops,
                               &s->directory_injection[i], name,
                               MD_DIRECTORY_LINE);
+    }
+    for (unsigned i = 0; i < SGI_BEDROCK_MD_WATCHED_LINES; i++) {
+        g_autofree char *name =
+            g_strdup_printf(TYPE_SGI_BEDROCK_MD "-watched-line%u", i);
+
+        s->watched[i].md = s;
+        memory_region_init_io(&s->watched[i].mr, obj, &md_watched_ops,
+                              &s->watched[i], name, MD_DIRECTORY_LINE);
     }
     sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->memory_mr);
     memory_region_init_io(&s->fetchop_mmio, obj, &md_fetchop_ops, s,
@@ -2845,6 +3372,7 @@ static void md_unrealize(DeviceState *dev)
     timer_del(s->retired_timer);
     md_ecc_injections_clear(s);
     md_directory_injections_clear(s);
+    md_watched_lines_clear(s);
     if (s->memory_alias_initialized) {
         for (unsigned bank = 0; bank < 8; bank++) {
             memory_region_del_subregion(&s->memory_mr,
