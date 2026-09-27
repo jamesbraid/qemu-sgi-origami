@@ -1248,6 +1248,17 @@ static bool sn1_node_pointer_present(void *opaque, uint16_t pointer)
     return false;
 }
 
+/* Whether this node or its peer follows any line: without the lock. */
+static bool sn1_node_system_watching(void *opaque)
+{
+    SN1NodeState *node = opaque;
+    SN1NodeState *peer = sn1_node_peer(node);
+
+    return sgi_bedrock_md_watching(&SGI_BEDROCK(node->bedrock)->md) ||
+           (peer &&
+            sgi_bedrock_md_watching(&SGI_BEDROCK(peer->bedrock)->md));
+}
+
 static void sn1_node_create_cpus(SN1NodeState *node, MachineState *machine)
 {
     MemoryRegion *system = get_system_memory();
@@ -1295,6 +1306,7 @@ static void sn1_node_create_cpus(SN1NodeState *node, MachineState *machine)
         qdev_realize(cpu_dev, NULL, &error_fatal);
         if (cpu->env.r10k) {
             cpu->env.r10k->system_request = sn1_node_system_request;
+            cpu->env.r10k->system_watching = sn1_node_system_watching;
             cpu->env.r10k->system_request_opaque = node;
         }
         cpu_mips_irq_init_cpu(cpu);

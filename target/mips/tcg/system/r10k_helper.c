@@ -183,17 +183,25 @@ static bool r10k_system_request(CPUMIPSState *env, R10KSystemRequest request,
  * for it exclusive (R10000 User's Manual version 2.0, Table 1-1); the other
  * hints are undefined and do nothing. A prefetch takes no memory-management
  * exception, so an address that does not translate, or translates
- * uncached, is simply dropped.
+ * uncached, is simply dropped. Prefetches are common in copy loops, so the
+ * translation is skipped while the board follows nothing.
  */
 void helper_r10k_prefetch(CPUMIPSState *env, target_ulong addr, uint32_t hint)
 {
+    R10KState *r10k = env->r10k;
     MMUAccessType access = hint & 1 ? MMU_DATA_STORE : MMU_DATA_LOAD;
     MemTxAttrs attrs = {};
     hwaddr paddr;
     int prot;
 
-    if (hint > 7 || hint == 2 || hint == 3 || !env->r10k->system_request ||
-        get_physical_address(env, &paddr, &prot, addr, access,
+    if (hint > 7 || hint == 2 || hint == 3 || !r10k->system_request) {
+        return;
+    }
+    if (r10k->system_watching &&
+        !r10k->system_watching(r10k->system_request_opaque)) {
+        return;
+    }
+    if (get_physical_address(env, &paddr, &prot, addr, access,
                              mips_env_mmu_index(env), &attrs) !=
         TLBRET_MATCH || attrs.mips_uncached) {
         return;

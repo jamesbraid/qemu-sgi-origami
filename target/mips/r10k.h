@@ -100,6 +100,12 @@ typedef bool (*R10KSystemRequestFn)(void *opaque, CPUState *cs,
                                     R10KSystemRequest request,
                                     uint64_t paddr, uint64_t index_mask);
 
+/*
+ * Whether the board follows any block at all, asked before work a request
+ * would need only if it did. Called without the lock.
+ */
+typedef bool (*R10KSystemWatchingFn)(void *opaque);
+
 typedef struct R10KState {
     /*
      * Writable-bit masks, copied from the CPU definition at reset. Not
@@ -195,6 +201,7 @@ typedef struct R10KState {
      * clears the state above them only. Not migrated.
      */
     R10KSystemRequestFn system_request;
+    R10KSystemWatchingFn system_watching;
     void *system_request_opaque;
 } R10KState;
 
