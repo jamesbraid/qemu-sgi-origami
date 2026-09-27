@@ -6250,8 +6250,7 @@ static void gen_mtc0(DisasContext *ctx, TCGv arg, int reg, int sel)
         switch (sel) {
         case CP0_REG09__COUNT:
             gen_helper_mtc0_count(tcg_env, arg);
-            if (ctx->insn_flags & INSN_R10K &&
-                ctx->performance_counter_pairs == 2) {
+            if (ctx->count_compare_adjacent_recovery) {
                 ctx->timer_count_written = true;
                 gen_save_pc(ctx->base.pc_next + 4);
                 ctx->base.is_jmp = DISAS_EXIT;
@@ -7703,13 +7702,17 @@ static void gen_dmtc0(DisasContext *ctx, TCGv arg, int reg, int sel)
         switch (sel) {
         case CP0_REG09__COUNT:
             gen_helper_mtc0_count(tcg_env, arg);
+            ctx->base.is_jmp = DISAS_STOP;
+            if (ctx->count_compare_adjacent_recovery) {
+                ctx->timer_count_written = true;
+                gen_save_pc(ctx->base.pc_next + 4);
+                ctx->base.is_jmp = DISAS_EXIT;
+            }
             register_name = "Count";
             break;
         default:
             goto cp0_unimplemented;
         }
-        /* Stop translation as we may have switched the execution mode */
-        ctx->base.is_jmp = DISAS_STOP;
         break;
     case CP0_REGISTER_10:
         switch (sel) {
@@ -15302,6 +15305,8 @@ static void mips_tr_init_disas_context(DisasContextBase *dcbase, CPUState *cs)
     ctx->sc = (env->CP0_Config3 >> CP0C3_SC) & 1;
     ctx->CP0_LLAddr_shift = env->CP0_LLAddr_shift;
     ctx->performance_counter_pairs = env->cfg.performance_counter_pairs;
+    ctx->count_compare_adjacent_recovery =
+        env->cfg.count_compare_adjacent_recovery;
     ctx->cmgcr = (env->CP0_Config3 >> CP0C3_CMGCR) & 1;
     /* Restore delay slot state from the tb context.  */
     ctx->hflags = tb_flags & MIPS_HFLAG_TB_MASK;
@@ -15381,7 +15386,8 @@ static void mips_tr_translate_insn(DisasContextBase *dcbase, CPUState *cs)
                                          mo_endian(ctx));
         insn_bytes = 4;
         if (ctx->timer_adjacent_pending) {
-            bool compare = MASK_CP0(ctx->opcode) == OPC_MTC0 &&
+            bool compare = (MASK_CP0(ctx->opcode) == OPC_MTC0 ||
+                            MASK_CP0(ctx->opcode) == OPC_DMTC0) &&
                            extract32(ctx->opcode, 11, 5) == CP0_REGISTER_11 &&
                            extract32(ctx->opcode, 0, 3) == 0;
 
