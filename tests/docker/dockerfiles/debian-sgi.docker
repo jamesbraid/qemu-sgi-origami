@@ -17,6 +17,14 @@ RUN apt-get update && \
         ninja-build \
         pkg-config \
         python3 \
+        python3-pip \
         python3-venv \
+        python3-wheel \
         zlib1g-dev && \
     rm -rf /var/lib/apt/lists/*
+
+# Populate functional dependencies before tests run without network access.
+RUN python3 -m venv --system-site-packages /opt/qemu-tests && \
+    /opt/qemu-tests/bin/pip install --no-cache-dir \
+        pygdbmi==0.11.0.0 pylint==3.0.0
+ENV PATH="/opt/qemu-tests/bin:${PATH}"
