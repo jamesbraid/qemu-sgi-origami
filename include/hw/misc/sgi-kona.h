@@ -51,7 +51,13 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIKonaState, SGI_KONA)
  * level layout the Bridge's own NIC register and the Hub's one-wire
  * register carry (docs/datasheets/hub-onewire.md), reused here rather than
  * invented. A 32-bit write starts one bit slot; completion is reported
- * synchronously, inside the write, exactly as the Bridge does.
+ * synchronously, inside the write, exactly as the Bridge does. Established
+ * by the PROM InfiniteReality-path note's own accessor (section 9): 7,388
+ * accesses, all CPU 0, in the pre-kernel phase of every traced boot, which
+ * builds the KLCONFIG board records a rack's `hinv -m` lists from it.
+ * SGI_KONA_NIC below is the kernel driver's own register-offset view onto
+ * this identical chain -- see that macro's own comment for the evidence
+ * distinguishing established from inferred here.
  */
 #define SGI_KONA_ONEWIRE 0x000098
 
@@ -63,6 +69,28 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIKonaState, SGI_KONA)
 #define SGI_KONA_ONEWIRE_PULSE_MASK   (0x3ffu << 10)
 #define SGI_KONA_ONEWIRE_WRITABLE \
     (SGI_KONA_ONEWIRE_SAMPLE_MASK | SGI_KONA_ONEWIRE_PULSE_MASK)
+
+/*
+ * The kernel driver's own register offset for the identical one-wire chain
+ * SGI_KONA_ONEWIRE carries, not a second chain: established independently
+ * by kona_attach()'s call into nic_xg_vertex_info(), corroborated by a full
+ * disassembly trace into nic.o's generic one-wire NIC driver
+ * (nic_presence/nic_match_rom/nic_write_byte/nic_read_byte -- the same
+ * bit-banged pulse/sample/done/level primitive SGI_KONA_ONEWIRE's own
+ * driver uses, not a plain-memory ASCII-record reader). That the two
+ * offsets share one chain, rather than reaching two independent chains
+ * with the same protocol, is inferred from a four-node boot capture: 403
+ * write/read pairs at this offset cycling through the identical four
+ * 32-bit control words SGI_KONA_ONEWIRE's own 1,847 pairs use in the same
+ * run. The discriminating test neither capture settles: a register-level
+ * capture of a real pipe showing whether both offsets return the same
+ * presence and ROM-search sequence on true hardware, or a PROM
+ * disassembly path that itself reaches this offset. This model has no
+ * fields or reset/vmstate entry of its own: it reads and writes
+ * onewire_reg/onewire_bus exactly as SGI_KONA_ONEWIRE does, because
+ * nothing in the evidence distinguishes per-offset state.
+ */
+#define SGI_KONA_NIC 0x00009c
 
 /*
  * Increment 2: the register window and textport command port the PROM's

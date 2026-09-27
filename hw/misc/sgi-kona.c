@@ -13,7 +13,9 @@
  * unless the "other-identity-parts" property says otherwise, the Ktown
  * board's -- reusing hw/1wire's own DS2502 model and the shared MicroLAN
  * slot decode exactly as hw/pci-host/sgi-bridge.c's own NIC register
- * does.
+ * does. The kernel driver reaches the identical chain through a second
+ * register offset, `+0x9c` (SGI_KONA_NIC): see that macro's header
+ * comment for the established/inferred evidence.
  *
  * Increment 2 adds the register window at `+0x800xxx` (credit, mailbox,
  * cause, reset and EEPROM-fallback registers) and the PROM textport's own
@@ -422,6 +424,12 @@ static uint64_t sgi_kona_read(void *opaque, hwaddr addr,
         value = s->probe_value;
         break;
     case SGI_KONA_ONEWIRE:
+    case SGI_KONA_NIC:
+        /*
+         * Two register offsets onto one chain: see SGI_KONA_NIC's own
+         * header comment for the established/inferred evidence and the
+         * open discriminating test.
+         */
         value = s->onewire_reg;
         break;
     case SGI_KONA_LOW_WINDOW_WRITE:
@@ -478,7 +486,14 @@ static void sgi_kona_write(void *opaque, hwaddr addr,
         /* Unknown control fields are stored without interpreted effects. */
         s->widget_control = value;
         break;
-    case SGI_KONA_ONEWIRE: {
+    case SGI_KONA_ONEWIRE:
+    case SGI_KONA_NIC: {
+        /*
+         * Two register offsets onto one chain: see SGI_KONA_NIC's own
+         * header comment for the established/inferred evidence and the
+         * open discriminating test. Both offsets drive and observe the
+         * identical onewire_reg/onewire_bus state.
+         */
         uint32_t pulse = (value & SGI_KONA_ONEWIRE_PULSE_MASK) >>
                          SGI_KONA_ONEWIRE_PULSE_SHIFT;
         uint32_t sample = (value & SGI_KONA_ONEWIRE_SAMPLE_MASK) >>
