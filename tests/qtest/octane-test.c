@@ -645,6 +645,30 @@ static void test_heart_widget_control(void)
     qtest_quit(qts);
 }
 
+static void test_heart_widget_errors(void)
+{
+    QTestState *qts = octane_start();
+    uint64_t wide;
+
+    g_assert_cmpuint(qtest_readq_tx(qts, HEART_WIDGET + 0x60, &wide), ==,
+                     MEMTX_OK);
+    g_assert_cmphex(wide, ==, 0);
+    g_assert_cmpuint(qtest_writel_tx(qts, HEART_WIDGET + 0x44, 0), ==,
+                     MEMTX_OK);
+    g_assert_cmpuint(qtest_writeq_tx(qts, HEART_WIDGET + 0x60, wide), ==,
+                     MEMTX_OK);
+    g_assert_cmpuint(qtest_writeq_tx(qts, HEART_WIDGET + 0x68,
+                                    0x3ff62c07), ==, MEMTX_OK);
+    g_assert_cmphex(qtest_readq(qts, HEART_WIDGET + 0x68), ==,
+                    0x3ff62c07);
+    g_assert_cmphex(qtest_readq(qts, HEART + 0x68), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, ATTR0 + HEART_WIDGET + 0x68), ==,
+                    0x3ff62c07);
+    qtest_system_reset(qts);
+    g_assert_cmphex(qtest_readq(qts, HEART_WIDGET + 0x68), ==, 0);
+    qtest_quit(qts);
+}
+
 static void test_low_ram(void)
 {
     QTestState *qts = octane_start();
@@ -1540,6 +1564,7 @@ static void test_migration_state(void)
 
     qtest_writel(from, HEART + 0x20, WIDE);
     qtest_writel(from, HEART_WIDGET + 0x24, 0x3ca596f0);
+    qtest_writeq(from, HEART_WIDGET + 0x68, 0x3ff62c07);
     qtest_writeq(from, HIGH_RAM, 0x0123456789abcdefULL);
     qtest_writeq(from, HIGH_RAM + 8, 0xfedcba9876543210ULL);
     qtest_writel(from, CFG(2) + 0x10, 0x10000000);
@@ -1578,6 +1603,7 @@ static void test_migration_state(void)
 
     g_assert_cmphex(qtest_readl(to, HEART + 0x20), ==, WIDE);
     g_assert_cmphex(qtest_readl(to, HEART_WIDGET + 0x24), ==, 0x3ca596f0);
+    g_assert_cmphex(qtest_readq(to, HEART_WIDGET + 0x68), ==, 0x3ff62c07);
     g_assert_cmphex(qtest_readq(to, HIGH_RAM), ==, 0x0123456789abcdefULL);
     g_assert_cmphex(qtest_readq(to, ATTR0 + HIGH_RAM), ==,
                     0x0123456789abcdefULL);
@@ -1614,6 +1640,7 @@ static void test_migration_state(void)
 
     qtest_system_reset(to);
     g_assert_cmphex(qtest_readl(to, HEART_WIDGET + 0x24), ==, 0);
+    g_assert_cmphex(qtest_readq(to, HEART_WIDGET + 0x68), ==, 0);
     qtest_memread(to, 0, low_seen, sizeof(low_seen));
     g_assert_cmpmem(low_seen, sizeof(low_seen), low_zero, sizeof(low_zero));
 
@@ -1653,6 +1680,7 @@ int main(int argc, char **argv)
                    test_octane2_ethernet_dma_and_interrupt);
     qtest_add_func("/octane2/serial", test_octane2_serial);
     qtest_add_func("/octane/heart-widget-control", test_heart_widget_control);
+    qtest_add_func("/octane/heart-widget-errors", test_heart_widget_errors);
     qtest_add_func("/octane/low-ram", test_low_ram);
     qtest_add_func("/octane/flash-and-pci", test_flash_and_pci);
     qtest_add_data_func("/octane/alternate-flash", GINT_TO_POINTER(0),
