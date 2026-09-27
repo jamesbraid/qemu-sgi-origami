@@ -153,7 +153,9 @@ static void octane_fit_pci(MachineState *machine, SGIBridgeState *bridge)
     qdev_prop_set_uint16(DEVICE(pci), "subsystem-id",
                          SGI_IOC3_SUBSYS_IP30_SYSBOARD);
     qdev_prop_set_uint32(DEVICE(pci), "population",
-                         SGI_IOC3_POPULATION_SERIAL_A);
+                         SGI_IOC3_POPULATION_SERIAL_A |
+                         SGI_IOC3_POPULATION_ETHERNET |
+                         SGI_IOC3_POPULATION_ONEWIRE_IDENTITY);
     qdev_prop_set_uint8(DEVICE(pci), "timekeeper-kind",
                        SGI_IOC3_TIMEKEEPER_DS1685);
     if (serial_hd(0)) {
