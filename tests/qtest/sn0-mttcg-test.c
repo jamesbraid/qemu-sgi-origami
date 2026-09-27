@@ -117,6 +117,8 @@
 #define OPC_CP0             (0x10u << 26)
 #define OPC_MFC0            (OPC_CP0 | (0x00u << 21))
 #define OPC_MTC0            (OPC_CP0 | (0x04u << 21))
+#define OPC_DMTC0           (OPC_CP0 | (0x05u << 21))
+#define OPC_DADDU           (0x2du | OPC_SPECIAL)
 #define OPC_C0              (OPC_CP0 | (0x10u << 21))
 #define OPC_TLBWI           (OPC_C0 | 0x02u)
 #define OPC_TLBWR           (OPC_C0 | 0x06u)
@@ -1479,10 +1481,57 @@ static void test_unmask_by_eret_delivers(const void *data)
 #define GH_PEER_OFF         (PROGRESS_OFF + 8)
 #define GH_COMPARE          1000000u
 #define GH_HUB_COUNT        (HUB_LOCAL + 0x030100)
+#define SN1_BEDROCK_LOCAL   (SPACE_XTALK + UINT64_C(0x01000000))
+#define SN1_MD_MEMORY_CONFIG (SPACE_XTALK + UINT64_C(0x01800000) + 0x780008)
+#define SN1_MD_INSTALLED_SELECT2 ((UINT64_C(2) << 32) | UINT64_C(0x3300))
+#define SN1_STATE_GUEST     (UINT64_C(0x9000000000000000) | STATE_PHYS)
+#define SN1_STATE_HOST      (SPACE_HUB + STATE_PHYS)
 
 static unsigned int gh_break_pos;
 static bool gh_intervening_insn;
 static bool gh_interrupt_after_count;
+static bool gh_wide_timer_moves;
+
+static void emit_gh_timer_move(GuestImage *img, int rt, int rd)
+{
+    emit(img, (gh_wide_timer_moves ? OPC_DMTC0 : OPC_MTC0) |
+         (rt << 16) | (rd << 11));
+}
+
+static void emit_sn1_timer_preamble(GuestImage *img)
+{
+    emit_mfc0(img, R_T3, CP0_STATUS, 0);
+    emit_addiu(img, R_T4, R_ZERO, STATUS_ERL_CLEAR);
+    emit_and(img, R_T3, R_T3, R_T4);
+    emit_ori(img, R_T3, R_T3, STATUS_KX);
+    emit_mtc0(img, R_T3, CP0_STATUS, 0);
+    emit_ehb(img);
+
+    emit_li64(img, R_T4, UINT64_C(0x9200000001000000));
+    emit_ld(img, R_K0, R_T4, 0x20);
+    emit_andi(img, R_K0, R_K0, 2);
+    emit(img, (R_K0 << 16) | (R_K0 << 11) | (1 << 6) | 0x02);
+    emit_li64(img, R_T0, SN1_STATE_GUEST);
+    emit_sll(img, R_T1, R_K0, 3);
+    emit_reg3(img, OPC_DADDU, R_T2, R_T0, R_T1);
+
+    emit_mtc0(img, R_ZERO, CP0_PAGEMASK, 0);
+    emit_ehb(img);
+    emit_li(img, R_T3, ALIVE_MAGIC);
+    emit_publish(img, R_T3, ALIVE_OFF);
+}
+
+static void emit_sn1_timer_exception(GuestImage *img)
+{
+    emit_li64(img, R_K1, SN1_STATE_GUEST);
+    emit_mfc0(img, R_K0, CP0_CAUSE, 0);
+    emit_sd(img, R_K0, R_K1, EXC_CAUSE_OFF);
+    emit_mfc0(img, R_K0, CP0_EPC, 0);
+    emit_sd(img, R_K0, R_K1, EXC_EPC_OFF);
+    emit_li(img, R_K0, EXC_MAGIC);
+    emit_sd(img, R_K0, R_K1, EXC_MARK_OFF);
+    emit_spin(img);
+}
 
 static void emit_gdb_timer_interrupt_handler(GuestImage *img)
 {
@@ -1518,12 +1567,12 @@ static void build_gdb_peer_hold(GuestImage *img)
     emit_li(img, R_T3, GH_COMPARE);
     emit_mtc0(img, R_T3, CP0_COMPARE, 0);
     emit_li(img, R_T4, 1000);
-    emit_mtc0(img, R_ZERO, CP0_COUNT, 0);
+    emit_gh_timer_move(img, R_ZERO, CP0_COUNT);
     gh_break_pos = img->pos;
     if (gh_intervening_insn) {
         emit_nop(img);
     }
-    emit_mtc0(img, R_T4, CP0_COMPARE, 0);
+    emit_gh_timer_move(img, R_T4, CP0_COMPARE);
     emit_ehb(img);
     emit_mfc0(img, R_T3, CP0_COUNT, 0);
     emit_publish(img, R_T3, GH_COUNT_OFF);
@@ -1639,6 +1688,7 @@ static void test_gdb_peer_hold(const void *data)
 
     gh_intervening_insn = options & 1;
     gh_interrupt_after_count = interrupt_vm;
+    gh_wide_timer_moves = false;
 
     if (!qtest_has_accel("tcg")) {
         g_test_skip("TCG is unavailable");
@@ -1797,6 +1847,119 @@ finish_gdb_peer_hold:
     rmdir(dir);
 }
 
+static uint64_t sn1_timer_state_word(QTestState *qts, unsigned int off)
+{
+    return qtest_readq(qts, SN1_STATE_HOST + off);
+}
+
+static void test_gdb_sn1_hold(const void *data)
+{
+    g_autofree char *image = NULL, *dir = NULL, *socket_path = NULL;
+    char reply[256], command[128];
+    QTestState *qts;
+    uint64_t peer_before, peer_after, hub_before, hub_after;
+    int options = GPOINTER_TO_INT(data);
+    int fd, gdb;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+    gh_intervening_insn = options & 1;
+    gh_wide_timer_moves = options & 2;
+    gh_interrupt_after_count = false;
+    dir = g_dir_make_tmp("sn1-gdb-hold-XXXXXX", NULL);
+    g_assert_nonnull(dir);
+    socket_path = g_build_filename(dir, "gdb.sock", NULL);
+    fd = g_file_open_tmp("sn1-gdb-hold-XXXXXX", &image, NULL);
+    g_assert_cmpint(fd, >=, 0);
+    write_guest_image_with_setup(fd, emit_sn1_timer_exception,
+                                 emit_sn1_timer_preamble, build_gdb_peer_hold);
+    /* Origin 300 checks the entire flash image length at startup. */
+    g_assert_cmpint(ftruncate(fd, PROM_SIZE), ==, 0);
+    close(fd);
+
+    qts = qtest_initf("-M origin300 -cpu R14000 -smp 2 -bios %s "
+                      "-accel tcg,thread=multi -no-shutdown "
+                      "-chardev socket,path=%s,server=on,wait=off,id=gdb0 "
+                      "-gdb chardev:gdb0 -S", image, socket_path);
+    /* Map software bank zero to the installed memory before the CPUs run. */
+    qtest_writeq(qts, SN1_MD_MEMORY_CONFIG, SN1_MD_INSTALLED_SELECT2);
+    gdb = gdb_peer_socket(socket_path);
+    gdb_peer_command(gdb, "?", reply, sizeof(reply));
+    g_assert_true(reply[0] == 'T' || reply[0] == 'S');
+    snprintf(command, sizeof(command), "Z0,%" PRIx64 ",4",
+             (uint64_t)(0xffffffff00000000ULL |
+                        IMAGE_KSEG1_BASE | gh_break_pos));
+    gdb_peer_command(gdb, command, reply, sizeof(reply));
+    g_assert_cmpstr(reply, ==, "OK");
+    gdb_peer_command(gdb, "vCont;c", NULL, 0);
+    {
+        GPollFD pfd = { .fd = gdb, .events = G_IO_IN };
+
+        if (g_poll(&pfd, 1, 5000) == 0) {
+            g_test_message("R14000 breakpoint timeout: alive %" PRIu64
+                           ", exception %" PRIu64 ", EPC %" PRIx64,
+                           sn1_timer_state_word(qts, ALIVE_OFF),
+                           sn1_timer_state_word(qts, EXC_MARK_OFF),
+                           sn1_timer_state_word(qts, EXC_EPC_OFF));
+            g_test_fail();
+            goto finish_gdb_sn1_hold;
+        }
+    }
+    gdb_peer_reply(gdb, reply, sizeof(reply));
+    g_assert_cmpstr(reply, ==, "T05thread:01;");
+    command[0] = 'z';
+    gdb_peer_command(gdb, command, reply, sizeof(reply));
+    g_assert_cmpstr(reply, ==, "OK");
+    peer_before = sn1_timer_state_word(qts, GH_PEER_OFF);
+    hub_before = qtest_readq(qts, SN1_BEDROCK_LOCAL + 0x30100);
+    gdb_peer_command(gdb, "vCont;c:2", NULL, 0);
+    g_usleep(50000);
+    peer_after = sn1_timer_state_word(qts, GH_PEER_OFF);
+    hub_after = qtest_readq(qts, SN1_BEDROCK_LOCAL + 0x30100);
+    g_assert_cmpuint(peer_after, >, peer_before);
+    g_assert_cmpuint(hub_after, >, hub_before);
+    g_assert_cmpint(write(gdb, "\003", 1), ==, 1);
+    gdb_peer_reply(gdb, reply, sizeof(reply));
+    gdb_peer_command(gdb, "Hg1", reply, sizeof(reply));
+    g_assert_cmpstr(reply, ==, "OK");
+    gdb_peer_command(gdb, "p25", reply, sizeof(reply));
+    g_assert_cmphex(g_ascii_strtoull(reply, NULL, 16), ==,
+                    0xffffffff00000000ULL | IMAGE_KSEG1_BASE | gh_break_pos);
+    gdb_peer_command(gdb, "vCont;c:1", NULL, 0);
+    for (unsigned int i = 0; i < POLL_TRIES; i++) {
+        if (sn1_timer_state_word(qts, DONE_OFF) == DONE_MAGIC) {
+            break;
+        }
+        g_usleep(POLL_INTERVAL_US);
+    }
+    g_test_message("R14000 %s %s: Count %" PRIu64 ", IP7 %u; "
+                   "peer %" PRIu64 " -> %" PRIu64 ", Hub %" PRIu64
+                   " -> %" PRIu64,
+                   gh_wide_timer_moves ? "DMTC0" : "MTC0",
+                   gh_intervening_insn ? "intervening" : "adjacent",
+                   sn1_timer_state_word(qts, GH_COUNT_OFF),
+                   !!(sn1_timer_state_word(qts, GH_CAUSE_OFF) & CAUSE_IP7),
+                   peer_before, peer_after, hub_before, hub_after);
+    g_assert_cmphex(sn1_timer_state_word(qts, EXC_MARK_OFF), ==, 0);
+    g_assert_cmphex(sn1_timer_state_word(qts, DONE_OFF), ==, DONE_MAGIC);
+    g_assert_cmpuint(sn1_timer_state_word(qts, GH_COUNT_OFF), >=, GH_COMPARE);
+    g_assert_cmphex(sn1_timer_state_word(qts, GH_CAUSE_OFF) & CAUSE_IP7, ==,
+                    gh_intervening_insn ? 0 : CAUSE_IP7);
+    g_assert_cmphex(sn1_timer_state_word(qts, GH_DISARM_PRE_OFF) & CAUSE_IP7,
+                    ==, CAUSE_IP7);
+    g_assert_cmphex(sn1_timer_state_word(qts, GH_PAST_CAUSE_OFF) & CAUSE_IP7,
+                    ==, 0);
+
+finish_gdb_sn1_hold:
+    close(gdb);
+    qtest_quit(qts);
+    unlink(image);
+    unlink(socket_path);
+    rmdir(dir);
+}
+
 static void test_tlb_random_global(const void *data)
 {
     QTestState *qts;
@@ -1855,5 +2018,13 @@ int main(int argc, char **argv)
                         GINT_TO_POINTER(4), test_gdb_peer_hold);
     qtest_add_data_func("mttcg/timer/gdb-peer-hold-interrupt",
                         GINT_TO_POINTER(8), test_gdb_peer_hold);
+    qtest_add_data_func("mttcg/timer/gdb-sn1-mtc0-adjacent",
+                        GINT_TO_POINTER(0), test_gdb_sn1_hold);
+    qtest_add_data_func("mttcg/timer/gdb-sn1-mtc0-intervening",
+                        GINT_TO_POINTER(1), test_gdb_sn1_hold);
+    qtest_add_data_func("mttcg/timer/gdb-sn1-dmtc0-adjacent",
+                        GINT_TO_POINTER(2), test_gdb_sn1_hold);
+    qtest_add_data_func("mttcg/timer/gdb-sn1-dmtc0-intervening",
+                        GINT_TO_POINTER(3), test_gdb_sn1_hold);
     return g_test_run();
 }
