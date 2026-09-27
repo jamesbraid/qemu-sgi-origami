@@ -1465,9 +1465,6 @@ static void sgi_xbow_realize(DeviceState *dev, Error **errp)
                           "sgi-xbow.regs", s->span);
 
     for (port = 0; port < SGI_XBOW_LINKS; port++) {
-        g_autofree char *name =
-            g_strdup_printf("sgi-xbow.widget%u.ingress",
-                            sgi_xbow_widget(port));
         g_autofree char *view =
             g_strdup_printf("sgi-xbow.widget%u.registers",
                             sgi_xbow_widget(port));
@@ -1475,8 +1472,8 @@ static void sgi_xbow_realize(DeviceState *dev, Error **errp)
             g_strdup_printf("sgi-xbow.widget%u.illegal-destinations",
                             sgi_xbow_widget(port));
 
-        memory_region_init(&s->ingress[port], OBJECT(dev), name,
-                           SGI_XBOW_WIDGETS * s->span);
+        /* The processor view is exactly sixteen of the machine's spans. */
+        memory_region_set_size(&s->ingress[port], SGI_XBOW_WIDGETS * s->span);
         memory_region_init_alias(&s->regs_view[port], OBJECT(dev), view,
                                  &s->regs, 0, s->span);
         memory_region_add_subregion(&s->ingress[port], 0, &s->regs_view[port]);
@@ -1488,11 +1485,8 @@ static void sgi_xbow_realize(DeviceState *dev, Error **errp)
                                     s->span, &s->illegal[port]);
         sysbus_init_mmio(sbd, &s->ingress[port]);
         {
-            g_autofree char *packet = g_strdup_printf("%s.packet", name);
             g_autofree char *regs = g_strdup_printf("%s.packet", view);
 
-            memory_region_init(&s->packet_ingress[port], OBJECT(dev), packet,
-                               SGI_XBOW_WIDGETS * SGI_XBOW_PACKET_SIZE);
             memory_region_init_alias(&s->packet_regs_view[port], OBJECT(dev),
                                      regs, &s->regs, 0, s->span);
             memory_region_add_subregion(&s->packet_ingress[port], 0,
@@ -1726,6 +1720,22 @@ static void sgi_xbow_instance_init(Object *obj)
     for (link = 0; link < SGI_XBOW_LINKS; link++) {
         g_autofree char *name =
             g_strdup_printf("target-%x", sgi_xbow_widget(link));
+        g_autofree char *ingress =
+            g_strdup_printf("sgi-xbow.widget%u.ingress",
+                            sgi_xbow_widget(link));
+        g_autofree char *packet = g_strdup_printf("%s.packet", ingress);
+
+        /*
+         * Both ingress containers exist from here, so a link can hand them
+         * to the widget on this port before the Crossbow realizes; realize
+         * fills them with the register view and the routes, and sizes the
+         * processor container to the machine's span, which it does not know
+         * yet.
+         */
+        memory_region_init(&s->ingress[link], obj, ingress,
+                           SGI_XBOW_WIDGETS * SGI_XBOW_PACKET_SIZE);
+        memory_region_init(&s->packet_ingress[link], obj, packet,
+                           SGI_XBOW_WIDGETS * SGI_XBOW_PACKET_SIZE);
 
         s->link_context[link].xbow = s;
         s->link_context[link].link = link;
@@ -1757,9 +1767,9 @@ static void sgi_xbow_instance_finalize(Object *obj)
  *
  * Each of the eight external links is one port, addressed by index the way
  * every other public accessor here addresses it: a widget number, 8 through
- * 15, not a link index. Neither face exists before this Crossbow realizes
- * (sgi_xbow_realize builds ingress[]/packet_ingress[] there), so a link that
- * needs them calls in after, never before.
+ * 15, not a link index. The ports are switched: their faces carry
+ * the destination widget. Both faces exist from instance
+ * init.
  */
 
 static const char *sgi_xbow_xio_port_describe(Object *port,
@@ -1768,24 +1778,51 @@ static const char *sgi_xbow_xio_port_describe(Object *port,
     return "a Crossbow port";
 }
 
-static bool sgi_xbow_xio_port_valid(Object *port, unsigned int index)
+static bool sgi_xbow_xio_port_valid(unsigned int index)
 {
-    return DEVICE(port)->realized &&
-           index >= SGI_XBOW_FIRST_WIDGET && index < SGI_XBOW_WIDGETS;
+    return index >= SGI_XBOW_FIRST_WIDGET && index < SGI_XBOW_WIDGETS;
 }
 
 static MemoryRegion *sgi_xbow_xio_port_cpu_face(Object *port,
                                                 unsigned int index)
 {
-    return sgi_xbow_xio_port_valid(port, index) ?
+    return sgi_xbow_xio_port_valid(index) ?
         sgi_xbow_ingress(SGI_XBOW(port), index) : NULL;
 }
 
 static MemoryRegion *sgi_xbow_xio_port_packet_face(Object *port,
                                                    unsigned int index)
 {
-    return sgi_xbow_xio_port_valid(port, index) ?
+    return sgi_xbow_xio_port_valid(index) ?
         sgi_xbow_packet_ingress(SGI_XBOW(port), index) : NULL;
+}
+
+static bool sgi_xbow_xio_port_switched(Object *port, unsigned int index)
+{
+    return true;
+}
+
+/*
+ * The widget on this port becomes the destination the routes into it
+ * reach: before realize, as every widget present at startup does, or
+ * live, for a board a machine fits once this Crossbow is up.
+ */
+static bool sgi_xbow_xio_port_connect(Object *port, unsigned int index,
+                                      const SGIXioPeer *peer, Error **errp)
+{
+    SGIXbowState *s = SGI_XBOW(port);
+
+    if (peer->switched) {
+        error_setg(errp, "a Crossbow port links to a widget, not to "
+                   "another crossbar");
+        return false;
+    }
+    if (!DEVICE(s)->realized) {
+        return sgi_xbow_attach_endpoint(s, index, peer->cpu_face,
+                                        peer->packet_face, errp);
+    }
+    return sgi_xbow_attach_endpoint_live(s, index, peer->cpu_face,
+                                         peer->packet_face, errp);
 }
 
 static void sgi_xbow_class_init(ObjectClass *oc, const void *data)
@@ -1807,6 +1844,8 @@ static void sgi_xbow_class_init(ObjectClass *oc, const void *data)
     pc->describe = sgi_xbow_xio_port_describe;
     pc->cpu_face = sgi_xbow_xio_port_cpu_face;
     pc->packet_face = sgi_xbow_xio_port_packet_face;
+    pc->switched = sgi_xbow_xio_port_switched;
+    pc->connect = sgi_xbow_xio_port_connect;
 }
 
 static const TypeInfo sgi_xbow_types[] = {
