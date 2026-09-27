@@ -27,12 +27,17 @@
 
 static char *flash_path;
 
-static QTestState *octane_start(void)
+static QTestState *octane_start_args(const char *extra)
 {
     g_autofree char *quoted = g_shell_quote(flash_path);
 
-    return qtest_initf("-M octane -m 128M -cpu R10000 -bios %s -S",
-                       quoted);
+    return qtest_initf("-M octane -m 128M -cpu R10000 -bios %s -S %s",
+                       quoted, extra);
+}
+
+static QTestState *octane_start(void)
+{
+    return octane_start_args("");
 }
 
 static QTestState *octane_start_serial(int *sock)
@@ -53,6 +58,17 @@ static uint32_t octane_cpu_cause(QTestState *qts)
     g_assert_nonnull(field);
     g_assert_cmpint(sscanf(field, "Cause %" SCNx32, &cause), ==, 1);
     return cause;
+}
+
+static uint64_t octane_cpu_pc(QTestState *qts)
+{
+    g_autofree char *registers = qtest_hmp(qts, "info registers");
+    const char *field = strstr(registers, "pc=0x");
+    uint64_t pc;
+
+    g_assert_nonnull(field);
+    g_assert_cmpint(sscanf(field, "pc=0x%" SCNx64, &pc), ==, 1);
+    return pc;
 }
 
 static void test_widgets_and_memory(void)
@@ -292,6 +308,35 @@ static void test_serial_a_interrupt_route(void)
     qtest_quit(qts);
 }
 
+static void test_reset_state(void)
+{
+    QTestState *qts = octane_start();
+
+    qtest_writel(qts, HEART + 0x20, WIDE);
+    qtest_writeq(qts, HEART + 0x10000, 1u << 3);
+    qtest_writeq(qts, HEART + 0x10020, 1u << 3);
+    qtest_writel(qts, CFG(2) + 0x10, 0x10000000);
+    qtest_writel(qts, CFG(2) + 0x04, 0x00000002);
+    qtest_writel(qts, BRIDGE + 0x200 + 8 * 2 + 4, 0x1100);
+    qtest_writeb(qts, UART_A + 7, 0x5a);
+    g_assert_cmphex(qtest_readb(qts, UART_A + 7), ==, 0x5a);
+
+    qtest_system_reset(qts);
+    g_assert_cmphex(qtest_readl(qts, HEART + 0x20), ==, BANK0);
+    g_assert_cmphex(qtest_readq(qts, HEART + 0x10000), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, HEART + 0x10030), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, BRIDGE_REG(0x108)), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, CFG(2) + 0x10), ==, 0);
+    qtest_writel(qts, CFG(2) + 0x10, 0x10000000);
+    qtest_writel(qts, CFG(2) + 0x04, 0x00000002);
+    qtest_writel(qts, BRIDGE + 0x200 + 8 * 2 + 4, 0x1100);
+    g_assert_cmphex(qtest_readb(qts, UART_A + 7), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, FLASH), ==, 0x12345678);
+    g_assert_cmphex(octane_cpu_pc(qts), ==, 0xffffffffbfc00000ULL);
+    g_assert_cmphex(octane_cpu_cause(qts) & 0x400, ==, 0);
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     int fd;
@@ -311,6 +356,7 @@ int main(int argc, char **argv)
                    test_serial_a_interrupt_route);
     qtest_add_func("/octane/heart-interrupt-levels",
                    test_heart_interrupt_levels);
+    qtest_add_func("/octane/reset-state", test_reset_state);
     int result = g_test_run();
     unlink(flash_path);
     g_free(flash_path);
