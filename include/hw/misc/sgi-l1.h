@@ -80,6 +80,7 @@ struct SGIL1State {
     char *system_serial;
     char *brick_serial;
     char *brick_type;
+    uint32_t brick_type_code;
     uint32_t processors;
     GString *capture;
     /* Running a command the cabled peer relayed with ctc; not migrated. */

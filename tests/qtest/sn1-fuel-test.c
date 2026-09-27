@@ -83,7 +83,8 @@ static QTestState *fuel_start(const char *prom)
     g_autofree char *quoted = g_shell_quote(prom);
 
     return qtest_initf("-M fuel,fuel-board-id-word=0x4abc,"
-                       "fuel-ioc3-subsystem-id=0xc30a "
+                       "fuel-ioc3-subsystem-id=0xc30a,"
+                       "fuel-l1-type-code=0x61 "
                        "-cpu R14000 -smp 1 -m 512M -bios %s -S", quoted);
 }
 
@@ -282,8 +283,63 @@ static void test_fuel_rejects_other_board_code(const void *data)
     }
     g_autofree char *quoted = g_shell_quote(prom);
     QTestState *qts = qtest_initf("-M fuel,fuel-board-id-word=0x8abc,"
+                                  "fuel-ioc3-subsystem-id=0xc30a,"
+                                  "fuel-l1-type-code=0x61 "
+                                  "-cpu R14000 -smp 1 -m 512M -bios %s -S",
+                                  quoted);
+    qtest_quit(qts);
+}
+
+static void test_fuel_requires_l1_type_code(const void *data)
+{
+    const char *prom = data;
+
+    if (!g_test_subprocess()) {
+        g_test_trap_subprocess(NULL, 0, 0);
+        g_test_trap_assert_failed();
+        g_test_trap_assert_stderr("*requires an explicit fuel-l1-type-code*");
+        return;
+    }
+    g_autofree char *quoted = g_shell_quote(prom);
+    QTestState *qts = qtest_initf("-M fuel,fuel-board-id-word=0x4abc,"
                                   "fuel-ioc3-subsystem-id=0xc30a "
                                   "-cpu R14000 -smp 1 -m 512M -bios %s -S",
+                                  quoted);
+    qtest_quit(qts);
+}
+
+static void test_fuel_rejects_other_l1_type_code(const void *data)
+{
+    const char *prom = data;
+
+    if (!g_test_subprocess()) {
+        g_test_trap_subprocess(NULL, 0, 0);
+        g_test_trap_assert_failed();
+        g_test_trap_assert_stderr("*fuel-l1-type-code must be 0x34*");
+        return;
+    }
+    g_autofree char *quoted = g_shell_quote(prom);
+    QTestState *qts = qtest_initf("-M fuel,fuel-board-id-word=0x4abc,"
+                                  "fuel-ioc3-subsystem-id=0xc30a,"
+                                  "fuel-l1-type-code=0x35 "
+                                  "-cpu R14000 -smp 1 -m 512M -bios %s -S",
+                                  quoted);
+    qtest_quit(qts);
+}
+
+static void test_fuel_l1_type_code_rejects_other_machine(const void *data)
+{
+    const char *prom = data;
+
+    if (!g_test_subprocess()) {
+        g_test_trap_subprocess(NULL, 0, 0);
+        g_test_trap_assert_failed();
+        g_test_trap_assert_stderr("*applies only to -M fuel*");
+        return;
+    }
+    g_autofree char *quoted = g_shell_quote(prom);
+    QTestState *qts = qtest_initf("-M origin300,fuel-l1-type-code=0x61 "
+                                  "-cpu R14000 -smp 2 -m 512M -bios %s -S",
                                   quoted);
     qtest_quit(qts);
 }
@@ -304,7 +360,8 @@ static void test_fuel_board_id_migration(const void *data)
     uri = g_strdup_printf("unix:%s", socket);
     from = fuel_start(prom);
     to = qtest_initf("-M fuel,fuel-board-id-word=0x4def,"
-                     "fuel-ioc3-subsystem-id=0xc30a "
+                     "fuel-ioc3-subsystem-id=0xc30a,"
+                     "fuel-l1-type-code=0x61 "
                      "-cpu R14000 -smp 1 -m 512M -bios %s -S -incoming defer",
                      quoted);
     g_assert_cmphex(qtest_readq(to, HUB_LOCAL_REGISTERS + BOARD_ID_OFFSET),
@@ -345,7 +402,8 @@ static void test_fuel_serial_backends(const void *data)
     g_autofree char *quoted = g_shell_quote(prom);
     QTestState *qts = qtest_initf(
         "-M fuel,fuel-board-id-word=0x4abc,"
-        "fuel-ioc3-subsystem-id=0xc30a "
+        "fuel-ioc3-subsystem-id=0xc30a,"
+        "fuel-l1-type-code=0x61 "
         "-cpu R14000 -smp 1 -m 512M -bios %s -S "
         "-serial null -serial null -serial null "
         "-serial null -serial null", quoted);
@@ -391,7 +449,8 @@ static void test_fuel_serial_bytes(const void *data)
     g_assert_cmpint(socketpair(AF_UNIX, SOCK_STREAM, 0, b), ==, 0);
     qts = qtest_initf(
         "-M fuel,fuel-board-id-word=0x4abc,"
-        "fuel-ioc3-subsystem-id=0xc30a "
+        "fuel-ioc3-subsystem-id=0xc30a,"
+        "fuel-l1-type-code=0x61 "
         "-cpu R14000 -smp 1 -m 512M -bios %s -S "
         "-serial null "
         "-chardev socket,id=ioc3-a,fd=%d -serial chardev:ioc3-a "
@@ -465,6 +524,12 @@ int main(int argc, char **argv)
     qtest_add_data_func("fuel/memory", prom, test_fuel_memory);
     qtest_add_data_func("fuel/rejects-other-board-code", prom,
                         test_fuel_rejects_other_board_code);
+    qtest_add_data_func("fuel/requires-l1-type-code", prom,
+                        test_fuel_requires_l1_type_code);
+    qtest_add_data_func("fuel/rejects-other-l1-type-code", prom,
+                        test_fuel_rejects_other_l1_type_code);
+    qtest_add_data_func("fuel/l1-type-code-rejects-other-machine", prom,
+                        test_fuel_l1_type_code_rejects_other_machine);
     qtest_add_data_func("fuel/prom-copy-boundary", prom,
                         test_fuel_prom_copy_boundary);
     qtest_add_data_func("fuel/serial-backends", prom,

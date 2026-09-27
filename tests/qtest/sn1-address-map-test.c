@@ -2212,34 +2212,77 @@ static size_t l1_eeprom_read_at(QTestState *qts, uint64_t base,
     return l1_receive_at(qts, base, reply);
 }
 
-static void test_l1_product_identity(const void *data)
+static void l1_expect_product_identity(QTestState *qts, uint8_t code)
 {
     const uint8_t request[] = { 0x10, 0x0f, 0xff, 0xf0, 6, 0, 3, 0 };
-    const uint8_t origin300[] = {
-        0x30, 0, 0, 0, 0, 2, 0, 0, 0, 0, 65, 0, 0, 0, 0, 0x34
+    const uint8_t expected[] = {
+        0x30, 0, 0, 0, 0, 2, 0, 0, 0, 0, 65, 0, 0, 0, 0, code
     };
-    const uint8_t fuel[] = {
-        0x30, 0, 0, 0, 0, 2, 0, 0, 0, 0, 65, 0, 0, 0, 0, 0x61
-    };
-    g_autofree char *quoted = g_shell_quote(prom_path);
     uint8_t reply[131];
+
+    l1_send_at(qts, L1_UART_LOCAL_BASE, request, sizeof(request));
+    g_assert_cmpuint(l1_receive_at(qts, L1_UART_LOCAL_BASE, reply), ==,
+                     sizeof(expected));
+    g_assert_cmpmem(reply, sizeof(expected), expected, sizeof(expected));
+}
+
+static void test_l1_product_identity(const void *data)
+{
+    g_autofree char *quoted = g_shell_quote(prom_path);
+    const uint8_t fuel_codes[] = { 0x61, 0x34 };
     QTestState *qts;
 
     qts = machine_start_with(prom_path, "-S");
-    l1_send_at(qts, L1_UART_LOCAL_BASE, request, sizeof(request));
-    g_assert_cmpuint(l1_receive_at(qts, L1_UART_LOCAL_BASE, reply), ==,
-                     sizeof(origin300));
-    g_assert_cmpmem(reply, sizeof(origin300), origin300, sizeof(origin300));
+    l1_expect_product_identity(qts, 0x34);
+    qtest_system_reset(qts);
+    l1_expect_product_identity(qts, 0x34);
     qtest_quit(qts);
 
-    qts = qtest_initf("-M fuel,fuel-board-id-word=0x4abc,"
-                      "fuel-ioc3-subsystem-id=0xc30a -cpu R14000 -smp 1 "
-                      "-m 512M -bios %s -S", quoted);
-    l1_send_at(qts, L1_UART_LOCAL_BASE, request, sizeof(request));
-    g_assert_cmpuint(l1_receive_at(qts, L1_UART_LOCAL_BASE, reply), ==,
-                     sizeof(fuel));
-    g_assert_cmpmem(reply, sizeof(fuel), fuel, sizeof(fuel));
-    qtest_quit(qts);
+    for (size_t i = 0; i < ARRAY_SIZE(fuel_codes); i++) {
+        qts = qtest_initf("-M fuel,fuel-board-id-word=0x4abc,"
+                          "fuel-ioc3-subsystem-id=0xc30a,"
+                          "fuel-l1-type-code=0x%02x -cpu R14000 -smp 1 "
+                          "-m 512M -bios %s -S", fuel_codes[i], quoted);
+        l1_expect_product_identity(qts, fuel_codes[i]);
+        qtest_system_reset(qts);
+        l1_expect_product_identity(qts, fuel_codes[i]);
+        qtest_quit(qts);
+    }
+}
+
+static void test_fuel_l1_type_migration(const void *data)
+{
+    g_autofree char *quoted = g_shell_quote(prom_path);
+    g_autoptr(GError) error = NULL;
+    g_autofree char *directory = g_dir_make_tmp("sn1-fuel-l1-XXXXXX",
+                                                &error);
+    g_autofree char *socket = NULL;
+    g_autofree char *uri = NULL;
+    QTestState *from, *to;
+
+    g_assert_no_error(error);
+    socket = g_build_filename(directory, "migration.sock", NULL);
+    uri = g_strdup_printf("unix:%s", socket);
+    from = qtest_initf("-M fuel,fuel-board-id-word=0x4abc,"
+                       "fuel-ioc3-subsystem-id=0xc30a,"
+                       "fuel-l1-type-code=0x34 -cpu R14000 -smp 1 "
+                       "-m 512M -bios %s -S", quoted);
+    to = qtest_initf("-M fuel,fuel-board-id-word=0x4abc,"
+                     "fuel-ioc3-subsystem-id=0xc30a,"
+                     "fuel-l1-type-code=0x61 -cpu R14000 -smp 1 "
+                     "-m 512M -bios %s -S -incoming defer", quoted);
+    l1_expect_product_identity(from, 0x34);
+    l1_expect_product_identity(to, 0x61);
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    qtest_qmp_assert_success(from,
+        "{'execute':'migrate','arguments':{'uri':%s}}", uri);
+    sgi_wait_migration_status(from, "completed", 30);
+    sgi_wait_migration_status(to, "completed", 30);
+    l1_expect_product_identity(to, 0x34);
+    qtest_quit(from);
+    qtest_quit(to);
+    g_assert_cmpint(rmdir(directory), ==, 0);
 }
 
 /*
@@ -4034,6 +4077,8 @@ int main(int argc, char **argv)
                         test_prom_cpu_module_config);
     qtest_add_data_func("sn1/address-map/l1-product-identity", NULL,
                         test_l1_product_identity);
+    qtest_add_data_func("sn1/address-map/fuel-l1-type-migration", NULL,
+                        test_fuel_l1_type_migration);
     qtest_add_data_func("sn1/address-map/l1-identity-records", NULL,
                         test_l1_identity_records_come_from_the_command_line);
     qtest_add_data_func("sn1/address-map/l1-identity-records-absent", NULL,

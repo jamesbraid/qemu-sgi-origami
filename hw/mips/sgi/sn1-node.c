@@ -1453,7 +1453,8 @@ static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
     node->l1 = qdev_new(TYPE_SGI_L1);
     object_property_add_child(OBJECT(node), "l1", OBJECT(node->l1));
     if (node->fuel_experiment) {
-        qdev_prop_set_string(node->l1, "brick-type", "ip34");
+        qdev_prop_set_uint32(node->l1, "brick-type-code",
+                             node->fuel_l1_type_code);
     }
     if (l1_console) {
         qdev_prop_set_chr(node->l1, "chardev", l1_console);
@@ -1991,6 +1992,8 @@ static const Property sn1_node_properties[] = {
     DEFINE_PROP_UINT64("board-id-word", SN1NodeState, board_id_word,
                        SN1_BOARD_ID_VALUE),
     DEFINE_PROP_BOOL("fuel-experiment", SN1NodeState, fuel_experiment, false),
+    DEFINE_PROP_UINT32("fuel-l1-type-code", SN1NodeState,
+                       fuel_l1_type_code, 0),
     /* Set on a machine's last node: a pflash unit past it has no node. */
     DEFINE_PROP_BOOL("last-node", SN1NodeState, last_node, true),
     DEFINE_PROP_BOOL("promdata-filter", SN1NodeState, promdata_filter, true),
