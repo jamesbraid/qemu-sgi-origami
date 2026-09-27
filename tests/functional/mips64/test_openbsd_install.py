@@ -85,16 +85,11 @@ interop code already committed and cleared in the project checkout, ported
 rather than newly derived from vendor source).
 
 The sets disk is built with makefs directly (`makefs -t ffs -B be`, the
-same invocation tools/mk-disk.py's own run_makefs() uses) rather than via
-a nested podman invocation: this test process itself already runs inside
-the project's own origami-build container whenever the real install is
-driven (the built qemu-system-mips64 binary links against that image's
-own libraries, so nothing that spawns it can run anywhere else), and that
-image already carries makefs (tools/build-env/Containerfile, project
-checkout). which('makefs') below still resolves it rather than assuming a
-fixed path, and skipTest()s if it is missing -- the same defensive
-resolution get_qemu_img() (qemu_test.cmd, imported below) already applies
-to qemu-img.
+same invocation tools/mk-disk.py's own run_makefs() uses). The public Debian
+test image installs Debian's `makefs` package. which('makefs') below still
+resolves the executable rather than assuming a fixed path, and skipTest()s
+if it is missing -- the same defensive resolution get_qemu_img()
+(qemu_test.cmd, imported below) already applies to qemu-img.
 
 128 MiB, not the golden's own 256 MiB: tools/openbsd-install's own current
 default is -m 128, with its own docstring explicitly warning "do not raise
