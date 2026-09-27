@@ -111,6 +111,10 @@ static QTestState *qts;
 #define MGRAS_PENDING_LOWATER       0x00000004
 #define MGRAS_HQ_ENABLE_LOWATER     0x10
 #define MGRAS_CONTEXT_WORDS         63
+#define REG_QUERY_ANSWER            MGRAS_REG(0x028004)
+#define MGRAS_SWAP_TOKEN            0x00003700
+#define MGRAS_QUERY_TOKEN           0x0000a20c
+#define MGRAS_HQ_FLAG_QUERY         0x00020000
 
 
 #define MGRAS_FENCE_PUSH_1          0x00080b04
@@ -4954,6 +4958,49 @@ static void test_hq_flags_set_and_clear(void)
 
 
 /*
+ * __Mgr_ReturnMode clears flag 17, writes 0xa20c and three arguments, polls
+ * 0x020010 until bit 17 is set, then reads the answer at 0x028004 once
+ * (mgras-gl-commands.md, "Context setup, synchronization and queries"). The
+ * answer's value is unknown; the model answers zero.
+ */
+static void test_hq_query_sets_flag_after_arguments(void)
+{
+    mgras_reset();
+
+    mgras_enter_context(qts);
+    qtest_writel(qts, REG_HQ_FLAGS_CLEAR, MGRAS_HQ_FLAG_QUERY);
+    qtest_writel(qts, REG_CONTEXT_COMMAND, MGRAS_QUERY_TOKEN);
+    qtest_writel(qts, REG_CONTEXT_COMMAND, 0x3a);
+    qtest_writel(qts, REG_CONTEXT_COMMAND, 0);
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_FLAGS) & MGRAS_HQ_FLAG_QUERY, ==,
+                    0);
+    qtest_writel(qts, REG_CONTEXT_COMMAND, 1);
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_FLAGS) & MGRAS_HQ_FLAG_QUERY, ==,
+                    MGRAS_HQ_FLAG_QUERY);
+    g_assert_cmphex(qtest_readl(qts, REG_QUERY_ANSWER), ==, 0);
+
+    /* The arguments were consumed: the next word is a header again. */
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_FLAGS) & MGRAS_HQ_FLAG_FENCE, ==,
+                    0);
+    qtest_writel(qts, REG_CONTEXT_COMMAND, MGRAS_FENCE_TOKEN);
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_FLAGS) & MGRAS_HQ_FLAG_FENCE, ==,
+                    MGRAS_HQ_FLAG_FENCE);
+}
+
+/* Other class-0 opcodes, the swap word among them, leave flag 17 alone. */
+static void test_hq_query_flag_only_from_query(void)
+{
+    mgras_reset();
+
+    mgras_enter_context(qts);
+    qtest_writel(qts, REG_CONTEXT_COMMAND, MGRAS_SWAP_TOKEN);
+    qtest_writel(qts, REG_CONTEXT_COMMAND, 0x00003600);
+    qtest_writel(qts, REG_CONTEXT_COMMAND, MGRAS_FENCE_TOKEN);
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_FLAGS) & MGRAS_HQ_FLAG_QUERY, ==,
+                    0);
+}
+
+/*
  * An inline data block's header has bit 31 set and a 20-bit byte length
  * (mgras-gl-commands.md, "Word framing"). The GL client's first GE table
  * load is 0x80000214: five descriptor words and 128 data words. Filling
@@ -6667,6 +6714,10 @@ int main(int argc, char **argv)
                    test_hq_vector_registers);
     qtest_add_func("sn0/origin2000/mgras/fifo-threshold-registers",
                    test_fifo_threshold_registers);
+    qtest_add_func("sn0/origin2000/mgras/hq-query-sets-flag-after-arguments",
+                   test_hq_query_sets_flag_after_arguments);
+    qtest_add_func("sn0/origin2000/mgras/hq-query-flag-only-from-query",
+                   test_hq_query_flag_only_from_query);
     qtest_add_func("sn0/origin2000/mgras/inline-block-uses-20-bit-length",
                    test_inline_block_uses_20_bit_length);
     qtest_add_func("sn0/origin2000/mgras/hq-flags-set-and-clear",

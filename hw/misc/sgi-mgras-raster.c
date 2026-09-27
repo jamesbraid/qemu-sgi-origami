@@ -32,6 +32,15 @@
 #define MGRAS_CMD_FIFO_FENCE_REG 0x04
 #define MGRAS_HQ_FLAG_FENCE 0x00010000
 
+/*
+ * Class-0 opcodes the HQ answers itself. The query is 0x0000a20c and three
+ * arguments; the client then polls HQ flag bit 17 and reads the answer at
+ * 0x028004.
+ */
+#define MGRAS_CMD_HDR_CLASS_HQ 0x0000
+#define MGRAS_HQ_OP_QUERY 0xa2
+#define MGRAS_HQ_FLAG_QUERY 0x00020000
+
 
 #define MGRAS_CMD_HDR_CLASS_STATE 0x0018
 #define MGRAS_CMD_HDR_CLASS_EXEC 0x001c
@@ -336,6 +345,26 @@ static void mgras_command_fifo_token(SGIMgrasState *s, uint32_t token)
             qemu_log_mask(LOG_UNIMP, "sgi-mgras: command-FIFO header, "
                           "class 0x%04x reg 0x%02x payload %u bytes "
                           "exceeds %zu-byte limit\n", cmd_class, reg,
+                          payload_bytes, sizeof(s->cmd_token_payload));
+            s->cmd_token_class = MGRAS_CMD_HDR_CLASS_DISCARD;
+            return;
+        }
+        if (s->cmd_token_words_remaining == 0) {
+            mgras_raster_command_fifo_dispatch(s);
+        }
+        return;
+    }
+
+    if (cmd_class == MGRAS_CMD_HDR_CLASS_HQ && reg == MGRAS_HQ_OP_QUERY) {
+        s->cmd_token_class = MGRAS_CMD_HDR_CLASS_HQ;
+        s->cmd_token_reg = reg;
+        s->cmd_token_payload_count = 0;
+        s->cmd_token_words_remaining =
+            mgras_command_payload_words(payload_bytes);
+        if (s->cmd_token_words_remaining >
+            SGI_MGRAS_CMD_TOKEN_MAX_PAYLOAD_WORDS) {
+            qemu_log_mask(LOG_UNIMP, "sgi-mgras: HQ opcode 0x%02x payload "
+                          "%u bytes exceeds %zu-byte limit\n", reg,
                           payload_bytes, sizeof(s->cmd_token_payload));
             s->cmd_token_class = MGRAS_CMD_HDR_CLASS_DISCARD;
             return;
@@ -1926,6 +1955,21 @@ static void mgras_raster_desc_bank_store(SGIMgrasState *s, uint32_t cmd_class,
 static void mgras_raster_command_fifo_dispatch(SGIMgrasState *s)
 {
     uint32_t reg = s->cmd_token_reg;
+
+    /*
+     * Established as software expectation (mgras-hq4.md, "HQ flags"): the
+     * IRIX 6.5.30 client's __Mgr_ReturnMode clears flag 17, writes the query,
+     * then polls flag 17 with no bound and reads 0x028004 once it is set.
+     * Approximated: the model has the answer as soon as the arguments
+     * arrive, and the answer is zero (see the 0x028004 read). Which answer
+     * each query index expects is unknown. The discriminating tests are
+     * hq-query-sets-flag-after-arguments and hq-query-flag-only-from-query.
+     */
+    if (s->cmd_token_class == MGRAS_CMD_HDR_CLASS_HQ &&
+        reg == MGRAS_HQ_OP_QUERY) {
+        s->hq_flags |= MGRAS_HQ_FLAG_QUERY;
+        return;
+    }
 
     if (s->cmd_token_class == MGRAS_CMD_HDR_CLASS_DESC_20000 ||
         s->cmd_token_class == MGRAS_CMD_HDR_CLASS_DESC_28000 ||

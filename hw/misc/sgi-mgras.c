@@ -390,6 +390,13 @@ static uint64_t mgras_read_internal(SGIMgrasState *s, hwaddr addr,
     /* Unresolved revision fields use zero as a functional approximation. */
     case 0x071708:
     case 0x028000:
+        return 0;
+    /*
+     * The answer to the class-0 opcode 0xa2 query, read once after HQ flag
+     * bit 17 is set. Its value for each query index is unknown
+     * (mgras-gl-commands.md); zero is an approximation that the first
+     * OpenGL context experiment tests.
+     */
     case 0x028004:
         return 0;
     /*
