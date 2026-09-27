@@ -174,6 +174,9 @@ static const char *const l1_reasons[] = { "", "COMMAND", "PANEL", "OS" };
 /* The stored brick-type character the identity request returns. */
 static uint32_t l1_brick_type_character(SGIL1State *s)
 {
+    if (s->brick_type_code) {
+        return s->brick_type_code;
+    }
     if (!strcmp(s->brick_type, "ip34")) {
         return 0x61;
     }
@@ -1496,7 +1499,8 @@ static void l1_request_frame(SGIL1State *s, const uint8_t *p, unsigned length)
     }
     case 2:
     case 3:
-        if (command == 3 && !strcmp(s->brick_type, "unknown")) {
+        if (command == 3 && !s->brick_type_code &&
+            !strcmp(s->brick_type, "unknown")) {
             qemu_log_mask(LOG_UNIMP,
                           "sgi-l1: brick identity not configured\n");
             error = -104;
@@ -1828,6 +1832,7 @@ static int l1_post_load(void *opaque, int version_id)
         s->frame_len > SGI_L1_FRAME_SIZE ||
         s->port_field > 0x7f ||
         s->two_bit_setting > 3 || s->debug_switches > 0xffff ||
+        s->brick_type_code > 0xff ||
         s->log_head >= SGI_L1_LOG_ENTRIES ||
         s->log_len > SGI_L1_LOG_ENTRIES ||
         s->rack >= 0x3ff || s->bay >= 0x3f ||
@@ -1921,11 +1926,11 @@ static const VMStateDescription vmstate_l1_selected = {
     },
 };
 
-/* Version 8 also carries the selected record cache. */
+/* The selected record cache and raw identity code are controller state. */
 static const VMStateDescription vmstate_l1 = {
     .name = TYPE_SGI_L1,
-    .version_id = 8,
-    .minimum_version_id = 7,
+    .version_id = 9,
+    .minimum_version_id = 9,
     .post_load = l1_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_STRUCT_ARRAY(records, SGIL1State, 48, 0,
@@ -1947,6 +1952,7 @@ static const VMStateDescription vmstate_l1 = {
         VMSTATE_UINT32(command_len, SGIL1State),
         VMSTATE_UINT32(rack, SGIL1State),
         VMSTATE_UINT32(bay, SGIL1State),
+        VMSTATE_UINT32(brick_type_code, SGIL1State),
         VMSTATE_UINT32(pending_rack, SGIL1State),
         VMSTATE_UINT32(pending_bay, SGIL1State),
         VMSTATE_UINT8(port_field, SGIL1State),
@@ -2000,6 +2006,10 @@ static void l1_realize(DeviceState *dev, Error **errp)
         strcmp(s->brick_type, "unknown")) {
         error_setg(errp, "L1 brick-type must be ip34, ip45, ip35, "
                    "ip37 or unknown");
+        return;
+    }
+    if (s->brick_type_code > 0xff) {
+        error_setg(errp, "L1 brick-type-code must be one byte");
         return;
     }
     if (s->debug_switches > 0xffff || s->processors > 32 ||
@@ -2368,6 +2378,7 @@ static const Property l1_properties[] = {
     DEFINE_PROP_STRING("brick-serial", SGIL1State, brick_serial),
     DEFINE_PROP_UINT32("processors", SGIL1State, processors, 2),
     DEFINE_PROP_STRING("brick-type", SGIL1State, brick_type),
+    DEFINE_PROP_UINT32("brick-type-code", SGIL1State, brick_type_code, 0),
     /*
      * The network mode the L1 keeps in non-volatile memory. 422 is the mode
      * the Origin 300 User's Guide requires for a cabled pair; the factory

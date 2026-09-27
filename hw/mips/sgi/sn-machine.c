@@ -239,6 +239,8 @@ struct SGIMachineState {
     bool fuel_board_id_word_set;
     uint16_t fuel_ioc3_subsystem_id;
     bool fuel_ioc3_subsystem_id_set;
+    uint8_t fuel_l1_type_code;
+    bool fuel_l1_type_code_set;
 };
 
 /*
@@ -2481,6 +2483,21 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
                    "PCI subsystem identity is unknown");
         return false;
     }
+    if (!strcmp(smc->product, "fuel") && !s->fuel_l1_type_code_set) {
+        error_setg(errp, "fuel requires an explicit fuel-l1-type-code "
+                   "launch input; the physical L1 reply is unknown");
+        return false;
+    }
+    if (!strcmp(smc->product, "fuel") &&
+        s->fuel_l1_type_code != 0x34 && s->fuel_l1_type_code != 0x61) {
+        error_setg(errp, "fuel-l1-type-code must be 0x34 (raw 4) or "
+                   "0x61 (published IP34 code)");
+        return false;
+    }
+    if (strcmp(smc->product, "fuel") && s->fuel_l1_type_code_set) {
+        error_setg(errp, "fuel-l1-type-code applies only to -M fuel");
+        return false;
+    }
     if (strcmp(smc->product, "fuel") && s->fuel_board_id_word_set) {
         error_setg(errp, "fuel-board-id-word applies only to -M fuel");
         return false;
@@ -2727,6 +2744,8 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
                 qdev_prop_set_bit(DEVICE(node), "fuel-experiment", true);
                 qdev_prop_set_uint64(DEVICE(node), "board-id-word",
                                      s->fuel_board_id_word);
+                qdev_prop_set_uint32(DEVICE(node), "fuel-l1-type-code",
+                                     s->fuel_l1_type_code);
             }
             qdev_prop_set_bit(DEVICE(node), "last-node",
                               node_index == node_count - 1);
@@ -3547,6 +3566,27 @@ static void sgi_machine_set_fuel_ioc3_subsystem_id(Object *obj, Visitor *v,
     }
 }
 
+static void sgi_machine_get_fuel_l1_type_code(Object *obj, Visitor *v,
+                                               const char *name, void *opaque,
+                                               Error **errp)
+{
+    uint8_t value = SGI_MACHINE(obj)->fuel_l1_type_code;
+
+    visit_type_uint8(v, name, &value, errp);
+}
+
+static void sgi_machine_set_fuel_l1_type_code(Object *obj, Visitor *v,
+                                               const char *name, void *opaque,
+                                               Error **errp)
+{
+    uint8_t value;
+
+    if (visit_type_uint8(v, name, &value, errp)) {
+        SGI_MACHINE(obj)->fuel_l1_type_code = value;
+        SGI_MACHINE(obj)->fuel_l1_type_code_set = true;
+    }
+}
+
 /*
  * Asks each Hub for its own currently derived reachability, replacing
  * the fabric's central "routes" property: the same string, from each
@@ -3720,6 +3760,14 @@ static void sgi_machine_class_init(ObjectClass *oc, const void *data)
     object_class_property_set_description(oc, "fuel-ioc3-subsystem-id",
         "Experimental Fuel IOC3 PCI subsystem ID; required for -M fuel "
         "because its physical configuration-space value is unknown.");
+
+    object_class_property_add(oc, "fuel-l1-type-code", "uint8",
+                              sgi_machine_get_fuel_l1_type_code,
+                              sgi_machine_set_fuel_l1_type_code, NULL, NULL);
+    object_class_property_set_description(oc, "fuel-l1-type-code",
+        "Experimental Fuel L1 local identity reply character; required "
+        "because its physical stored value is unknown. Accepts 0x34 "
+        "(raw 4) or 0x61 (published IP34 code).");
 
     object_class_property_add_str(oc, "routes", sgi_machine_get_routes, NULL);
     object_class_property_set_description(oc, "routes",
