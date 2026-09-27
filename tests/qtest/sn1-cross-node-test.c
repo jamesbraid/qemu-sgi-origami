@@ -725,12 +725,159 @@ static void test_prom_copy_range_leaves_at_handoff(void)
     qtest_quit(qts);
 }
 
+/*
+ * The directory records a processor on another node by that node's number:
+ * a pointer is the node number above three device bits (MD_PTR_NODE_SHFT in
+ * the public SN1 header), so node 1's slice A reads as 8. Node 1's first
+ * processor reads node 0's directory word for a line, which has node 0's
+ * memory unit follow it, loads the line cached and reads the word again.
+ * Both local blocks leave reset carrying number 0, and the compatibility
+ * space names memory by number, so node 1 first reads its tag and reports
+ * ready in its own memory, then waits for the host to number it 1 and say
+ * go; after that the same addresses reach node 0, where it publishes.
+ */
+#define DIRECTORY_FLAGS UINT64_C(0x300000)
+#define DIRECTORY_TAG (DIRECTORY_FLAGS + 0x0)
+#define DIRECTORY_BEFORE (DIRECTORY_FLAGS + 0x20)
+#define DIRECTORY_AFTER (DIRECTORY_FLAGS + 0x28)
+#define DIRECTORY_DONE (DIRECTORY_FLAGS + 0x30)
+#define DIRECTORY_GO (DIRECTORY_FLAGS + 0x38)
+#define DIRECTORY_READY (DIRECTORY_FLAGS + 0x40)
+
+static uint32_t mips_i(unsigned op, int rs, int rt, uint16_t imm)
+{
+    return (op << 26) | (rs << 21) | (rt << 16) | imm;
+}
+
+static uint32_t mips_r(int rs, int rt, int rd, unsigned funct)
+{
+    return (rs << 21) | (rt << 16) | (rd << 11) | funct;
+}
+
+static char *create_remote_directory_prom(void)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree uint8_t *image = g_malloc0(PROM_SIZE);
+    const uint32_t code[] = {
+        0x400c6000,                     /* mfc0 t4, Status */
+        0x358c0080,                     /* ori t4, t4, Status.KX */
+        0x408c6000,                     /* mtc0 t4, Status */
+        0x00000000,                     /* nop */
+        mips_i(0x0f, 0, 8, 0xa030),     /* lui t0, 0xa030 -- own flags */
+        mips_i(0x23, 8, 9, 0),          /* lw t1, 0(t0) -- node tag */
+        mips_i(0x04, 9, 0, 33),         /* beq t1, zero, spin */
+        0x00000000,
+        mips_i(0x0f, 0, 12, 0x9200),    /* lui t4, 0x9200 */
+        mips_r(0, 12, 12, 0x3c),        /* dsll32 t4, t4, 0 */
+        mips_i(0x0f, 0, 11, 0x0100),    /* lui t3, 0x0100 */
+        mips_r(12, 11, 12, 0x2d),       /* daddu t4, t4, t3 */
+        mips_i(0x37, 12, 12, 0x20),     /* ld t4, 0x20(t4) -- CPU number */
+        mips_i(0x0c, 12, 12, 3),        /* andi t4, t4, 3 */
+        mips_i(0x05, 12, 0, 25),        /* bne t4, zero, spin */
+        0x00000000,
+        mips_i(0x0d, 0, 11, 1),         /* ori t3, zero, 1 */
+        mips_i(0x3f, 8, 11, 0x40),      /* sd t3, 0x40(t0) -- ready */
+        mips_i(0x23, 8, 9, 0x38),       /* go: lw t1, 0x38(t0) */
+        mips_i(0x04, 9, 0, 0xfffe),     /* beq t1, zero, go */
+        0x00000000,
+        mips_i(0x0f, 0, 10, 0xa800),    /* lui t2, 0xa800 */
+        mips_r(0, 10, 10, 0x3c),        /* dsll32 t2, t2, 0 */
+        mips_i(0x0f, 0, 11, 0x0058),    /* lui t3, 0x0058 -- the line */
+        mips_r(10, 11, 10, 0x2d),       /* daddu t2, t2, t3 */
+        mips_i(0x0f, 0, 13, 0x9000),    /* lui t5, 0x9000 */
+        mips_i(0x0d, 13, 13, 0x0001),   /* ori t5, t5, 1 */
+        mips_r(0, 13, 13, 0x3c),        /* dsll32 t5, t5, 0 */
+        mips_i(0x0f, 0, 11, 0xc00b),    /* lui t3, 0xc00b -- its word */
+        mips_r(0, 11, 11, 0x3c),        /* dsll32 t3, t3, 0 */
+        mips_r(0, 11, 11, 0x3e),        /* dsrl32 t3, t3, 0 */
+        mips_r(13, 11, 13, 0x2d),       /* daddu t5, t5, t3 */
+        mips_i(0x37, 13, 11, 0),        /* ld t3, 0(t5) */
+        mips_i(0x3f, 8, 11, 0x20),      /* sd t3, 0x20(t0) */
+        mips_i(0x37, 10, 11, 0),        /* ld t3, 0(t2) -- cached load */
+        0x0000000f,                     /* sync */
+        mips_i(0x37, 13, 11, 0),        /* ld t3, 0(t5) */
+        mips_i(0x3f, 8, 11, 0x28),      /* sd t3, 0x28(t0) */
+        mips_i(0x0d, 0, 11, 1),         /* ori t3, zero, 1 */
+        mips_i(0x3f, 8, 11, 0x30),      /* sd t3, 0x30(t0) */
+        0x1000ffff,                     /* spin: beq zero, zero, spin */
+        0x00000000,
+    };
+    char *path = NULL;
+    int fd;
+
+    stl_be_p(image + 0x000, 0x100000ff); /* beq zero, zero, 0x400 */
+    for (unsigned int offset = 0x200; offset <= 0x380; offset += 0x80) {
+        stl_be_p(image + offset, 0x1000ffff); /* beq zero, zero, self */
+    }
+    for (unsigned int i = 0; i < ARRAY_SIZE(code); i++) {
+        stl_be_p(image + 0x400 + 4 * i, code[i]);
+    }
+    fd = g_file_open_tmp("sn1-cross-node-directory-XXXXXX.bin", &path,
+                         &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(write(fd, image, PROM_SIZE), ==, (ssize_t)PROM_SIZE);
+    g_assert_cmpint(close(fd), ==, 0);
+    return path;
+}
+
+static void test_remote_reader_in_the_directory(void)
+{
+    g_autofree char *prom = NULL;
+    g_autofree char *quoted = NULL;
+    QTestState *qts;
+    uint64_t value = 0;
+    unsigned int tries;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+    prom = create_remote_directory_prom();
+    quoted = g_shell_quote(prom);
+    qts = qtest_initf(MACHINE_ARGS " -bios %s -accel tcg,thread=multi "
+                      "-no-shutdown -S", quoted);
+    qtest_writeq(qts, BEDROCK_LOCAL + MD_MEMORY_CONFIG, MD_INSTALLED_SELECT2);
+    peer_access(qts, MD_MEMORY_CONFIG, true, MD_INSTALLED_SELECT2);
+    qtest_writeq(qts, DIRECTORY_TAG, 0);
+    qtest_writeq(qts, DIRECTORY_GO, 0);
+    qtest_writeq(qts, DIRECTORY_DONE, 0);
+    set_node_number(qts, 1, 1);
+    qtest_writeq(qts, NODE(1) + DIRECTORY_TAG, UINT64_C(1) << 32);
+    qtest_writeq(qts, NODE(1) + DIRECTORY_GO, 0);
+    qtest_writeq(qts, NODE(1) + DIRECTORY_READY, 0);
+    set_node_number(qts, 1, 0);
+    qtest_qmp_assert_success(qts, "{'execute':'cont'}");
+    for (tries = 0; tries < 500; tries++) {
+        if (cpu_readq(qts, 2, DIRECTORY_READY, &value) && value == 1) {
+            break;
+        }
+        g_usleep(10000);
+    }
+    g_assert_cmphex(value, ==, 1);
+    set_node_number(qts, 1, 1);
+    qtest_writeq(qts, DIRECTORY_GO, UINT64_C(1) << 32);
+    for (tries = 0; tries < 500; tries++) {
+        if (qtest_readq(qts, DIRECTORY_DONE) == 1) {
+            break;
+        }
+        g_usleep(10000);
+    }
+    g_assert_cmphex(qtest_readq(qts, DIRECTORY_DONE), ==, 1);
+    g_assert_cmphex(qtest_readq(qts, DIRECTORY_BEFORE) & 0xff1f, ==, 0);
+    g_assert_cmphex(qtest_readq(qts, DIRECTORY_AFTER) & 0xff1f,
+                    ==, 0x0801);
+    qtest_quit(qts);
+    g_assert_cmpint(unlink(prom), ==, 0);
+}
+
 int main(int argc, char **argv)
 {
     int ret;
 
     g_test_init(&argc, &argv, NULL);
     prom_path = create_prom();
+    qtest_add_func("sn1/cross-node/remote-reader-in-the-directory",
+                   test_remote_reader_in_the_directory);
     qtest_add_func("sn1/cross-node/equal-numbers-stay-local",
                    test_equal_numbers_stay_local);
     qtest_add_func("sn1/cross-node/numbered-nodes-reach-each-other",
