@@ -4751,6 +4751,49 @@ static void test_hq_flags_fence_token_isolated(void)
                      MGRAS_HQ_FLAG_FENCE);
 }
 
+/*
+ * Established (mgras-gl-commands.md, word framing): a header's payload is
+ * (len + 3) / 4 words. The IRIX 6.5.30 GL client writes glColor3ub as
+ * 0x34800203 and one packed word, and glVertex3s as 0x39000006 and two
+ * words. Each payload below would, if read as a header, claim eight bytes
+ * and swallow the fence token that follows, so the fence bit shows whether
+ * the payload was framed.
+ */
+static void mgras_fence_after_payload(uint32_t header, const uint32_t *payload,
+                                      int words)
+{
+    mgras_reset();
+
+    mgras_enter_context(qts);
+    qtest_writel(qts, REG_CONTEXT_COMMAND, header);
+    for (int i = 0; i < words; i++) {
+        qtest_writel(qts, REG_CONTEXT_COMMAND, payload[i]);
+    }
+    qtest_writel(qts, REG_CONTEXT_COMMAND, MGRAS_FENCE_TOKEN);
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_FLAGS) & MGRAS_HQ_FLAG_FENCE, ==,
+                    MGRAS_HQ_FLAG_FENCE);
+}
+
+static void test_fifo_three_byte_payload_takes_one_word(void)
+{
+    /*
+     * The client packs its three colour bytes above bit 8, so its own word
+     * never has a length byte; the pipe must frame the word whatever it
+     * holds.
+     */
+    static const uint32_t payload[] = { 0x00000008 };
+
+    mgras_fence_after_payload(0x34800203, payload, ARRAY_SIZE(payload));
+}
+
+static void test_fifo_six_byte_payload_takes_two_words(void)
+{
+    /* glVertex3s(0, 8, 0): x << 16 | y, then z << 16. */
+    static const uint32_t payload[] = { 0x00000008, 0x00000000 };
+
+    mgras_fence_after_payload(0x39000006, payload, ARRAY_SIZE(payload));
+}
+
 
 static void test_command_accepts_hq_config_words(void)
 {
@@ -4844,20 +4887,32 @@ static void test_command_fifo_state_write_headers_not_yet_consumed(void)
     g_assert_cmphex(qtest_readl(qts, REG_HQ_STATUS) & 0x80000000, ==, 0);
 }
 
-static void test_command_fifo_rejects_malformed_payload_lengths(void)
+/*
+ * Paint one point at (x, x) with the current PACKEDCOLOR and return the
+ * pixel, so a test can show whether a discarded STATE write changed it.
+ */
+static uint32_t mgras_point_colour(unsigned int x)
+{
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_BLOCK_START, (x << 16) | x));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND_EXEC(REG_RE_POINT, (x << 16) | x));
+    return mgras_test_pixel(qts, x, x);
+}
+
+/*
+ * STATE headers the model does not execute are framed and skipped. A
+ * 6-byte header's payload is two words, rounded up as for every header
+ * with bit 31 clear; its payload words 0x8 would each claim eight bytes
+ * if read as headers and swallow the fence after them. A 36-byte header
+ * exceeds the payload buffer and is consumed whole. Neither changes
+ * PACKEDCOLOR.
+ */
+static void test_command_fifo_skips_unaligned_and_oversized_state(void)
 {
     mgras_reset();
 
     mgras_enter_context(qts);
-
-
-    qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                 MGRAS_STATE_TOKEN(REG_PACKEDCOLOR, 6));
-    qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                 (uint64_t)MGRAS_FENCE_TOKEN << 32);
-    g_assert_cmphex(qtest_readl(qts, REG_HQ_FLAGS) & MGRAS_HQ_FLAG_FENCE, ==,
-                    MGRAS_HQ_FLAG_FENCE);
-    qtest_writel(qts, REG_HQ_FLAGS_CLEAR, MGRAS_HQ_FLAG_FENCE);
 
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  MGRAS_COMMAND(REG_PACKEDCOLOR, MGRAS_PIXEL_WORD(0x00112233)));
@@ -4865,10 +4920,18 @@ static void test_command_fifo_rejects_malformed_payload_lengths(void)
                  MGRAS_COMMAND(REG_COLORMASKLSBSA, 0xffffff));
     /* RGB format: RE_POINT reads PACKEDCOLOR only under this format. */
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                 MGRAS_COMMAND(REG_PP1FILLMODE, (MGRAS_LOGIC_OP_COPY << 26) | 0x2000));
-    qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                 MGRAS_COMMAND(REG_BLOCK_START, (70u << 16) | 70u));
+                 MGRAS_COMMAND(REG_PP1FILLMODE,
+                               (MGRAS_LOGIC_OP_COPY << 26) | 0x2000));
 
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_STATE_TOKEN(REG_PACKEDCOLOR, 6));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x8 << 32) | 0x8);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 (uint64_t)MGRAS_FENCE_TOKEN << 32);
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_FLAGS) & MGRAS_HQ_FLAG_FENCE, ==,
+                    MGRAS_HQ_FLAG_FENCE);
+    qtest_writel(qts, REG_HQ_FLAGS_CLEAR, MGRAS_HQ_FLAG_FENCE);
+    g_assert_cmphex(mgras_point_colour(70), ==, 0x00112233);
 
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  MGRAS_STATE_TOKEN(REG_PACKEDCOLOR, 36));
@@ -4877,9 +4940,7 @@ static void test_command_fifo_rejects_malformed_payload_lengths(void)
                      ((uint64_t)0xdeadbeef << 32) | 0xdeadbeef);
     }
     qtest_writeq(qts, REG_CONTEXT_COMMAND, (uint64_t)0xdeadbeef << 32);
-    qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                 MGRAS_COMMAND_EXEC(REG_RE_POINT, (70u << 16) | 70u));
-    g_assert_cmphex(mgras_test_pixel(qts, 70, 70), ==, 0x00112233);
+    g_assert_cmphex(mgras_point_colour(72), ==, 0x00112233);
 
     qtest_writeq(qts, REG_CONTEXT_COMMAND, MGRAS_FENCE_TOKEN);
     g_assert_cmphex(qtest_readl(qts, REG_HQ_FLAGS) & MGRAS_HQ_FLAG_FENCE, ==,
@@ -6203,6 +6264,10 @@ int main(int argc, char **argv)
                    test_hq_flags_fence_token_sets_bit);
     qtest_add_func("sn0/origin2000/mgras/hq-flags-fence-token-isolated",
                    test_hq_flags_fence_token_isolated);
+    qtest_add_func("sn0/origin2000/mgras/fifo-3-byte-payload-is-one-word",
+                   test_fifo_three_byte_payload_takes_one_word);
+    qtest_add_func("sn0/origin2000/mgras/fifo-6-byte-payload-is-two-words",
+                   test_fifo_six_byte_payload_takes_two_words);
     qtest_add_func("sn0/origin2000/mgras/sched-arg-4-round-trip",
                    test_sched_arg_4_round_trip);
     qtest_add_func("sn0/origin2000/mgras/command-accepts-hq-config-words",
@@ -6215,8 +6280,8 @@ int main(int argc, char **argv)
                    "command-fifo-state-write-headers-not-yet-consumed",
                    test_command_fifo_state_write_headers_not_yet_consumed);
     qtest_add_func("sn0/origin2000/mgras/"
-                   "command-fifo-rejects-malformed-payload-lengths",
-                   test_command_fifo_rejects_malformed_payload_lengths);
+                   "command-fifo-skips-unaligned-and-oversized-state",
+                   test_command_fifo_skips_unaligned_and_oversized_state);
     qtest_add_func("sn0/origin2000/mgras/"
                    "command-fifo-unrecognized-class-resyncs",
                    test_command_fifo_unrecognized_class_resyncs);
