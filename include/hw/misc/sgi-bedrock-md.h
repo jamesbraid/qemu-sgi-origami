@@ -65,6 +65,45 @@ typedef struct SGIBedrockMDDirectoryInjection {
     int64_t retired_ns;
 } SGIBedrockMDDirectoryInjection;
 
+/*
+ * Lines whose directory word the unit rewrites as it serves processor
+ * requests. The hardware does this for every line; the model does it only
+ * for the few whose word software has lately read or written through the
+ * directory backdoor, the one place the state shows. Each is overlaid on
+ * the memory window so the unit sees the processors' cached loads and
+ * stores to it, and the processors' cache instructions and prefetches that
+ * name it are passed on by the board. A line takes one overlay, a memory
+ * map change, when it is admitted; a slot is only reused once it has been
+ * idle a while, which bounds that cost when software walks the whole
+ * directory (docs/datasheets/bedrock-memory-directory.md).
+ */
+#define SGI_BEDROCK_MD_WATCHED_LINES 16
+/* Every processor of a four-node machine. */
+#define SGI_BEDROCK_MD_LINE_HOLDERS 16
+
+/* The requesting processor's directory pointer, if the board knows it. */
+typedef bool (*SGIBedrockMDRequesterFn)(void *opaque, CPUState *cpu,
+                                        uint16_t *pointer);
+
+/* A processor's copy of a watched line, as its secondary cache would hold. */
+typedef struct SGIBedrockMDHolder {
+    uint16_t pointer;
+    uint8_t state;
+} SGIBedrockMDHolder;
+
+typedef struct SGIBedrockMDWatchedLine {
+    MemoryRegion mr;
+    SGIBedrockMDState *md;
+    uint64_t address;
+    uint32_t index;
+    bool active;
+    bool placed;
+    /* Last backdoor access or processor request, in virtual time. */
+    int64_t used_ns;
+    uint8_t holders;
+    SGIBedrockMDHolder holder[SGI_BEDROCK_MD_LINE_HOLDERS];
+} SGIBedrockMDWatchedLine;
+
 struct SGIBedrockMDState {
     SysBusDevice parent_obj;
     MemoryRegion mmio;
@@ -98,6 +137,12 @@ struct SGIBedrockMDState {
     GHashTable *ecc_retired_by_raw;
     GHashTable *directory_retired_by_index;
     QEMUTimer *retired_timer;
+    SGIBedrockMDWatchedLine watched[SGI_BEDROCK_MD_WATCHED_LINES];
+    /* Active watched lines; read without the lock by the board's filter. */
+    uint32_t watched_count;
+    /* Set by the board: who issued a processor access. */
+    SGIBedrockMDRequesterFn requester;
+    void *requester_opaque;
     uint64_t memory_error;
     uint64_t directory_error;
     uint64_t bank_alias_base[8];
@@ -143,6 +188,7 @@ struct SGIBedrockMDState {
 };
 
 void sgi_bedrock_md_soft_reset(SGIBedrockMDState *s);
+
 uint64_t sgi_bedrock_md_ecc_store_value(hwaddr offset, uint64_t value,
                                         unsigned size);
 /* The memory ECC code's check byte for one doubleword of data. */
