@@ -151,8 +151,8 @@ def missing_assertions(log, cpus):
     return verdict(log, MARKERS[cpus])
 
 
-# Where QEMU_TEST_SGI_ASSET_DIR resolves the built kernel, matching tools/linux-run's
-# own default kernel path ("linux-ip27/vmlinux", Origami source tree)
+# Resolve the built kernel beneath QEMU_TEST_SGI_ASSET_DIR, matching
+# tools/linux-run's own default kernel path ("linux-ip27/vmlinux", Origami source tree)
 # and lib_prom.FIRMWARE_REL's own idiom: QEMU_TEST_SGI_ASSET_DIR points
 # directly at the directory containing those files.
 KERNEL_REL = os.path.join('linux-ip27', 'vmlinux')

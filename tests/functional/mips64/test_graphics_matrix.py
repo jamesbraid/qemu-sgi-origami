@@ -76,15 +76,15 @@ def _boot_one_attempt(test, cell, attempt_index):
     firmware_path = resolve_asset(assets_root, FIRMWARE_REL)
     disk_path = resolve_asset(assets_root, disk_rel(cell.disk))
     if not (firmware_path and disk_path):
-        # QEMU_TEST_SGI_ASSET_DIR IS set, so either missing file is a provisioning
-        # failure, not an absent-assets developer run -- fail loudly
+        # QEMU_TEST_SGI_ASSET_DIR IS set, so either missing file is a
+        # provisioning failure, not an absent-assets developer run -- fail loudly
         # rather than silently skip a claimed capability, matching
         # test_irix_diag.py's own reasoning for the same distinction.
         test.fail(
             'QEMU_TEST_SGI_ASSET_DIR is set but the PROM or disk is missing: '
             f'need <QEMU_TEST_SGI_ASSET_DIR>/{FIRMWARE_REL} and '
-            f'<QEMU_TEST_SGI_ASSET_DIR>/{disk_rel(cell.disk)} -- provision them '
-            'rather than silently skipping a claimed capability')
+            f'<QEMU_TEST_SGI_ASSET_DIR>/{disk_rel(cell.disk)} -- '
+            'provision them rather than silently skipping a claimed capability')
 
     vm = test.get_vm(name=name)
     # synthesized-firmware was a real origin200-machine property once, but

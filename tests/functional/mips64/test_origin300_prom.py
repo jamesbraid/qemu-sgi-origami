@@ -68,7 +68,8 @@ class Origin300Prom(QemuSystemTest):
             # fail loudly rather than silently skip a claimed
             # capability.
             self.fail(
-                'QEMU_TEST_SGI_ASSET_DIR is set but the Origin 300 stock PROM is '
+                'QEMU_TEST_SGI_ASSET_DIR is set but the Origin 300 '
+                'stock PROM is '
                 'missing at <QEMU_TEST_SGI_ASSET_DIR>/firmware/6.5.30/'
                 'ip35prom.payload.bin -- provision it rather than '
                 'silently skipping a real check')
