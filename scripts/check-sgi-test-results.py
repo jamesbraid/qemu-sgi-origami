@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-2.0-or-later
-"""Require selected SGI tests to execute successfully in a Meson JUnit report."""
+"""Require successful SGI test results in a Meson JUnit report."""
 
 import argparse
 import json
@@ -38,16 +38,18 @@ def read_expected(path):
     try:
         lines = path.read_text(encoding='utf-8').splitlines()
     except OSError as exc:
-        raise ResultError(f"cannot read expected identities {path}: {exc}") from exc
+        raise ResultError(
+            f"cannot read expected identities {path}: {exc}") from exc
 
     expected = [line.strip() for line in lines
                 if line.strip() and not line.lstrip().startswith('#')]
     if not expected:
         raise ResultError(f"expected identity file {path} is empty")
-    duplicates = sorted(identity for identity, count in Counter(expected).items()
-                        if count > 1)
+    duplicates = sorted(
+        identity for identity, count in Counter(expected).items() if count > 1)
     if duplicates:
-        raise ResultError('duplicate expected identities: ' + ', '.join(duplicates))
+        raise ResultError(
+            'duplicate expected identities: ' + ', '.join(duplicates))
     return expected
 
 
@@ -58,7 +60,8 @@ def _count_attribute(element, attribute, actual, context):
     try:
         declared = int(value)
     except ValueError as exc:
-        raise ResultError(f"{context} has invalid {attribute} count {value!r}") from exc
+        raise ResultError(
+            f"{context} has invalid {attribute} count {value!r}") from exc
     if declared != actual:
         raise ResultError(
             f"{context} declares {declared} {attribute} but contains {actual}")
@@ -119,9 +122,11 @@ def read_report(path):
             suites.setdefault(_suite_name(name), []).extend(cases)
 
     if skips:
-        raise ResultError('JUnit report contains skipped testcases: ' + ', '.join(skips))
+        raise ResultError(
+            'JUnit report contains skipped testcases: ' + ', '.join(skips))
     if failures:
-        raise ResultError('JUnit report contains failed testcases: ' + ', '.join(failures))
+        raise ResultError(
+            'JUnit report contains failed testcases: ' + ', '.join(failures))
     return JUnitReport(found, suites)
 
 
@@ -173,7 +178,8 @@ def rom_identities(path):
     if not identities:
         raise ResultError(f"ROM suite {path} contains no cases")
     if len(set(identities)) != len(identities):
-        raise ResultError(f"ROM suite {path} generates duplicate testcase identities")
+        raise ResultError(
+            f"ROM suite {path} generates duplicate testcase identities")
     return identities
 
 
@@ -184,8 +190,10 @@ def meson_test_identities(build_dir, prefix=None, suites=None,
         output = subprocess.check_output(
             [str(meson), 'introspect', '--tests', str(build_dir)], text=True)
         tests = json.loads(output)
-    except (OSError, subprocess.CalledProcessError, json.JSONDecodeError) as exc:
-        raise ResultError(f"cannot read Meson tests from {build_dir}: {exc}") from exc
+    except (OSError, subprocess.CalledProcessError,
+            json.JSONDecodeError) as exc:
+        raise ResultError(
+            f"cannot read Meson tests from {build_dir}: {exc}") from exc
     requested_names = set(names or [])
     include_suites = {_normalise_meson_suite(suite) for suite in suites or []}
     exclude_suites = {_normalise_meson_suite(suite)
@@ -215,7 +223,8 @@ def meson_test_identities(build_dir, prefix=None, suites=None,
         raise ResultError('Meson has not registered requested tests: '
                           + ', '.join(missing))
     if not selected:
-        raise ResultError('Meson registered no tests for the requested selection')
+        raise ResultError(
+            'Meson registered no tests for the requested selection')
     return sorted(selected)
 
 
@@ -230,9 +239,9 @@ def main(argv=None):
     mode.add_argument('--junit', type=Path,
                         help='Meson JUnit XML for this invocation')
     mode.add_argument('--list-rom-identities', type=Path,
-                      help='print required testcase identities from a ROM suite file')
+                      help='print required identities from a ROM suite')
     mode.add_argument('--list-meson-tests', type=Path,
-                      help='print registered Meson test identities from a build directory')
+                      help='print registered Meson test identities')
     parser.add_argument('--prefix',
                         help='required name prefix with --list-meson-tests')
     parser.add_argument('--suite', action='append', default=[],
@@ -242,14 +251,15 @@ def main(argv=None):
     parser.add_argument('--names-from', type=Path,
                         help='select exact Meson test names from a file')
     parser.add_argument('--expect', type=Path,
-                        help='UTF-8 file with one exact testcase identity per line')
+                        help='UTF-8 file with one required identity per line')
     args = parser.parse_args(argv)
 
     try:
         if args.list_rom_identities is not None:
             if (args.expect or args.prefix or args.suite or
                     args.exclude_suite or args.names_from):
-                parser.error('Meson selection options do not apply to --list-rom-identities')
+                parser.error('Meson selection options do not apply to '
+                             '--list-rom-identities')
             print('\n'.join(rom_identities(args.list_rom_identities)))
             return 0
         if args.list_meson_tests is not None:
@@ -257,7 +267,8 @@ def main(argv=None):
                 parser.error('--expect does not apply to --list-meson-tests')
             names = read_expected(args.names_from) if args.names_from else None
             if not (args.prefix or args.suite or args.exclude_suite or names):
-                parser.error('--list-meson-tests requires a prefix, suite, or names file')
+                parser.error('--list-meson-tests requires a prefix, '
+                             'suite, or names file')
             print('\n'.join(meson_test_identities(
                 args.list_meson_tests, args.prefix, args.suite,
                 args.exclude_suite, names)))
