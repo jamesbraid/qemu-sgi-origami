@@ -153,6 +153,8 @@ slow_qtests = {
   'sn0-pci-carrier-test': 180,
   # Eight cases, each starting its own machine.
   'sn0-menet-test': 180,
+  # Five cases, each starting its own machine; budgeted like the MENET's.
+  'sn0-mscsi-test': 180,
   # Fifteen cases, each starting its own machine. 50.58s alone after the
   # MENET record case joined; run beside two other SN0 suites it was killed
   # at the 60s default with seven cases done. Budget three times the
@@ -488,6 +490,7 @@ qtests_mips64 = \
                                                    'sn0-pci-shoehorn-test',
                                                    'sn0-pci-carrier-test',
                                                    'sn0-menet-test',
+                                                   'sn0-mscsi-test',
                                                    'sn0-gigachannel-test',
                                                    'sn0-origin2000-kona-test',
                                                    'sn0-display-heads-test'] : []) + \

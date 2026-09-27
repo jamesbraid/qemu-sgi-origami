@@ -43,8 +43,8 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIBaseioState, SGI_BASEIO)
  * at, SGI_BASEIO_XIO_ANY_WIDGET for a card that fits any XIO slot, or 0
  * for a preset that is not an XIO card at all (ip29, io8), and whether
  * the card's Bridge carries the BASEIO PROM flash part. The BaseIO
- * presets are fixed at IO1 and carry the flash; the MENET fits any slot
- * and has none.
+ * presets are fixed at IO1 and carry the flash; the MENET and MSCSI fit
+ * any slot and have none.
  */
 #define SGI_BASEIO_XIO_ANY_WIDGET UINT32_MAX
 
