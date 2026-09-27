@@ -76,6 +76,46 @@ static void test_descriptors(gconstpointer data)
     qtest_quit(s);
 }
 
+static void test_wide_descriptor_clear(void)
+{
+    QTestState *s = heart_start(128, "");
+    uint64_t value;
+    uint64_t address[4];
+
+    for (unsigned i = 0; i < 4; i++) {
+        uint32_t descriptor = heart_descriptor(i);
+
+        address[i] = HEART_RAM + (uint64_t)(descriptor & 0x1ff) * UNIT;
+        qtest_writel(s, HEART_REGS + 0x20 + 4 * i, descriptor);
+        g_assert_cmphex(qtest_readl(s, HEART_REGS + 0x20 + 4 * i), ==,
+                        descriptor);
+        g_assert_cmpuint(qtest_readq_tx(s, address[i], &value), ==,
+                         MEMTX_OK);
+    }
+    g_assert_cmphex(qtest_readq(s, HEART_REGS + 0x20), ==,
+                    ((uint64_t)heart_descriptor(0) << 32) |
+                    heart_descriptor(1));
+    g_assert_cmphex(qtest_readq(s, HEART_REGS + 0x28), ==,
+                    ((uint64_t)heart_descriptor(2) << 32) |
+                    heart_descriptor(3));
+
+    qtest_writeq(s, HEART_REGS + 0x20, 0);
+    for (unsigned i = 0; i < 4; i++) {
+        g_assert_cmphex(qtest_readl(s, HEART_REGS + 0x20 + 4 * i), ==,
+                        i < 2 ? 0 : heart_descriptor(i));
+        g_assert_cmpuint(qtest_readq_tx(s, address[i], &value), ==,
+                         i < 2 ? MEMTX_DECODE_ERROR : MEMTX_OK);
+    }
+
+    qtest_writeq(s, HEART_REGS + 0x28, 0);
+    for (unsigned i = 0; i < 4; i++) {
+        g_assert_cmphex(qtest_readl(s, HEART_REGS + 0x20 + 4 * i), ==, 0);
+        g_assert_cmpuint(qtest_readq_tx(s, address[i], &value), ==,
+                         MEMTX_DECODE_ERROR);
+    }
+    qtest_quit(s);
+}
+
 static void test_interrupts(void)
 {
     QTestState *s = heart_start(128, "");
@@ -98,6 +138,7 @@ static void test_interrupts(void)
 static void test_reset(void)
 {
     QTestState *s = heart_start(128, "");
+    uint64_t value;
 
     qtest_writeq(s, HEART_REGS, 0x200810ULL);
     qtest_writeq(s, HEART_REGS + 0x08, 0x21);
@@ -130,8 +171,11 @@ static void test_reset(void)
     g_assert_cmphex(qtest_readq(s, HEART_REGS + 0x80), ==, 0x10);
     g_assert_cmphex(qtest_readq(s, HEART_REGS + 0x50000), ==, 0);
     g_assert_cmphex(qtest_readq(s, HEART_REGS + 0x20000), ==, 0);
+    g_assert_cmpuint(qtest_readq_tx(s, PROBE_RAM, &value), ==,
+                     MEMTX_DECODE_ERROR);
     qtest_writel(s, HEART_REGS + 0x20, PROBE_DESC);
-    g_assert_cmphex(qtest_readq(s, PROBE_RAM), ==, 0xfeedface);
+    g_assert_cmpuint(qtest_readq_tx(s, PROBE_RAM, &value), ==, MEMTX_OK);
+    g_assert_cmphex(value, ==, 0xfeedface);
     qtest_quit(s);
 }
 
@@ -200,6 +244,8 @@ int main(int argc, char **argv)
                          test_descriptors);
     g_test_add_data_func("/heart/descriptor-256m", GUINT_TO_POINTER(256),
                          test_descriptors);
+    g_test_add_func("/heart/wide-descriptor-clear",
+                    test_wide_descriptor_clear);
     g_test_add_func("/heart/interrupts", test_interrupts);
     g_test_add_func("/heart/reset", test_reset);
     g_test_add_func("/heart/migration", test_migration);
