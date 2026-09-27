@@ -759,6 +759,7 @@ static bool baseio_build_fuel(SGIBaseioState *s, Error **errp)
                          SGI_IOC3_POPULATION_PARALLEL);
     qdev_prop_set_uint8(DEVICE(ioc3), "timekeeper-kind",
                         SGI_IOC3_TIMEKEEPER_NONE);
+    qdev_prop_set_uint64(DEVICE(ioc3), "onewire-serial", s->onewire_serial);
     qdev_prop_set_uint16(DEVICE(ioc3), "subsystem-id",
                          s->fuel_subsystem_id);
     if (!baseio_pass_chardev(DEVICE(ioc3), "chardev-a", s->chardev_a_id,

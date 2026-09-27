@@ -1744,9 +1744,7 @@ static bool sgi_machine_instantiate_bedrock_io(
     }
     object_property_set_link(OBJECT(baseio), "pci-bus", OBJECT(bus),
                              &error_abort);
-    if (record->preset != SGI_MODEL_IO_BOARD_PRESET_FUEL) {
-        qdev_prop_set_uint64(baseio, "onewire-serial", record->ioc3_serial);
-    }
+    qdev_prop_set_uint64(baseio, "onewire-serial", record->ioc3_serial);
     /*
      * The onboard IOC3's Timekeeper storage: an indexed `-drive if=mtd`
      * first, else a bare `-drive if=none,id=sgi-nvramN` by name, N the
