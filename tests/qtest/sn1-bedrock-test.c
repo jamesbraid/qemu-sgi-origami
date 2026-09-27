@@ -741,7 +741,8 @@ static void test_reset_requests(void)
  * (0x5), the Itanium port local plus port reset (0x6). The local block's
  * scratch 0 clears while scratch 1 and 2 survive, on the model's equation of
  * this reset with the header's; the interface's own registers return to zero,
- * model policy.
+ * model policy. Each reset pulses node-reset once, for the board to restart
+ * the node's processors, which resetting the Bedrock does not do.
  */
 static void test_composed_consumer_resets(void)
 {
@@ -755,11 +756,15 @@ static void test_composed_consumer_resets(void)
         QTestState *s = qtest_init(COMPOSED_MACHINE);
 
         qtest_sysbus_mmio_map(s, BEDROCK_PATH, 0, BASE);
+        qtest_irq_intercept_out_named(s, BEDROCK_PATH, "node-reset");
         qtest_writeq(s, COMPOSED_LB(0x8000), 0xbeef);
         qtest_writeq(s, COMPOSED_LB(0x8008), 0xfeed);
         qtest_writeq(s, COMPOSED_LB(0x8010), 0x0ead0040);
         qtest_writeq(s, COMPOSED_NI(0x10), 1);
+        g_assert_cmpuint(qtest_get_irq_raise_count(s, 0), ==, 0);
         qtest_writeq(s, COMPOSED_NI(0x08), commands[i]);
+        g_assert_cmpuint(qtest_get_irq_raise_count(s, 0), ==, 1);
+        g_assert_false(qtest_get_irq(s, 0));
         g_assert_cmphex(qtest_readq(s, COMPOSED_LB(0x8000)), ==, 0);
         g_assert_cmphex(qtest_readq(s, COMPOSED_LB(0x8008)), ==, 0xfeed);
         g_assert_cmphex(qtest_readq(s, COMPOSED_LB(0x8010)), ==, 0x0ead0040);
