@@ -6,8 +6,8 @@
  * from the existing Bridge and ISP1040 models.
  *
  * Two placements run the same checks. A `-device sgi-xio-baseio,
- * preset=mscsi` board attaches through an Origin 2000's crossbow0 spare
- * fabric widget 11, as the MENET's own test does. The
+ * preset=mscsi` board attaches at an Origin 2000's empty XIO slot IO4,
+ * crossbow0 widget 11, as the MENET's own test does. The
  * origin200-gigachannel-xio topology fits two boards in the GIGAchannel
  * cabinet, at io2 (Crossbow widget 11) and io4 (widget 13), with a MENET
  * at io3 (widget 12) between them: the XIO population of a captured
@@ -43,7 +43,7 @@
 #define ISP1040_REVISION    5
 #define PCI_REVISION        0x08
 
-/* crossbow0's spare fabric widget for a `-device` XIO board. */
+/* IO4, the empty XIO slot a `-device` board takes: crossbow0 widget 11. */
 #define DEVICE_WIDGET       11
 
 typedef struct {
@@ -54,11 +54,10 @@ typedef struct {
 
 #define DEVICE_ARGS \
     "-M origin2000 -display none -device sgi-xio-baseio,preset=mscsi," \
-    "module=99,slot=" G_STRINGIFY(DEVICE_WIDGET) \
-    ",fabric=/machine/crossbow0-spare-fabric[0],fabric-widget-shift=48"
+    "slot=io4"
 
 static const MscsiCase device_case = {
-    DEVICE_ARGS, DEVICE_WIDGET, "/machine/module99/slot11/baseio",
+    DEVICE_ARGS, DEVICE_WIDGET, "/machine/module0/slot11/baseio",
 };
 
 #define PLACED_ARGS \
@@ -207,9 +206,8 @@ static void test_mscsi_refuses_backends_it_cannot_take(const void *data)
 
     for (i = 0; i < ARRAY_SIZE(props); i++) {
         g_autofree char *device = g_strdup_printf(
-            "sgi-xio-baseio,preset=mscsi,module=99,slot=11,"
-            "fabric=/machine/crossbow0-spare-fabric[0],"
-            "fabric-widget-shift=48,%s=spare", props[i]);
+            "sgi-xio-baseio,preset=mscsi,slot=io4,"
+            "%s=spare", props[i]);
         g_autofree char *message = g_strdup_printf(
             "preset 'mscsi' fits nothing to take %s 'spare'", props[i]);
         const char *args[] = {
@@ -225,9 +223,8 @@ static void test_mscsi_refuses_backends_it_cannot_take(const void *data)
             qtest_qemu_binary(NULL), "-M", "origin2000", "-accel", "qtest",
             "-display", "none",
             "-drive", "if=none,id=spare,driver=null-co",
-            "-device", "sgi-xio-baseio,preset=mscsi,module=99,slot=11,"
-            "fabric=/machine/crossbow0-spare-fabric[0],"
-            "fabric-widget-shift=48,nvram-drive=spare", NULL
+            "-device", "sgi-xio-baseio,preset=mscsi,slot=io4,"
+            "nvram-drive=spare", NULL
         };
 
         assert_qemu_rejects(args,

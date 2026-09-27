@@ -7,8 +7,8 @@
  * IOC3 models.
  *
  * Two placements run the same checks. A `-device sgi-xio-baseio,
- * preset=menet` board attaches through crossbow0's spare fabric widget 11,
- * as the PCI shoehorn's own test does. The origin2000-menet topology fits
+ * preset=menet` board attaches at the empty XIO slot IO4, crossbow0 widget
+ * 11, as the PCI shoehorn's own test does. The origin2000-menet topology fits
  * the board in XIO slot IO5, crossbow0 widget 14, as a startup-attached
  * board, and the origin200-gigachannel-xio topology fits one in the
  * GIGAchannel cabinet's io3 position, Crossbow widget 12.
@@ -33,7 +33,7 @@
 #include "qobject/qlist.h"
 #include "sgi-test.h"
 
-/* crossbow0's spare fabric widget for a `-device` XIO board. */
+/* IO4, the empty XIO slot a `-device` board takes: crossbow0 widget 11. */
 #define DEVICE_WIDGET       11
 /* Origin 2000 IO5 (origin2000-module.yaml): crossbow0 widget 14. */
 #define PLACED_WIDGET       14
@@ -83,14 +83,13 @@ typedef struct {
 
 #define DEVICE_ARGS \
     "-M origin2000 -display none -device sgi-xio-baseio,preset=menet," \
-    "module=99,slot=" G_STRINGIFY(DEVICE_WIDGET) \
-    ",fabric=/machine/crossbow0-spare-fabric[0],fabric-widget-shift=48"
+    "slot=io4"
 
 #define PLACED_ARGS \
     "-M origin2000,topology=origin2000-menet -display none"
 
 static const MenetCase device_case = {
-    DEVICE_ARGS, DEVICE_WIDGET, "/machine/module99/slot11/baseio",
+    DEVICE_ARGS, DEVICE_WIDGET, "/machine/module0/slot11/baseio",
 };
 static const MenetCase placed_case = {
     PLACED_ARGS, PLACED_WIDGET, "/machine/module0/slot14/baseio",
@@ -283,9 +282,8 @@ static void test_menet_refuses_backends_it_cannot_take(const void *data)
 
     for (i = 0; i < ARRAY_SIZE(props); i++) {
         g_autofree char *device = g_strdup_printf(
-            "sgi-xio-baseio,preset=menet,module=99,slot=11,"
-            "fabric=/machine/crossbow0-spare-fabric[0],"
-            "fabric-widget-shift=48,%s=spare", props[i]);
+            "sgi-xio-baseio,preset=menet,slot=io4,"
+            "%s=spare", props[i]);
         g_autofree char *message = g_strdup_printf(
             "preset 'menet' fits nothing to take %s 'spare'", props[i]);
         const char *args[] = {
@@ -301,9 +299,8 @@ static void test_menet_refuses_backends_it_cannot_take(const void *data)
             qtest_qemu_binary(NULL), "-M", "origin2000", "-accel", "qtest",
             "-display", "none",
             "-drive", "if=none,id=spare,driver=null-co",
-            "-device", "sgi-xio-baseio,preset=menet,module=99,slot=11,"
-            "fabric=/machine/crossbow0-spare-fabric[0],"
-            "fabric-widget-shift=48,nvram-drive=spare", NULL
+            "-device", "sgi-xio-baseio,preset=menet,slot=io4,"
+            "nvram-drive=spare", NULL
         };
 
         assert_qemu_rejects(args,

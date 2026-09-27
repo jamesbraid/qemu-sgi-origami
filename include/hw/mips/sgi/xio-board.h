@@ -68,11 +68,17 @@ struct SGIXioBoardState {
     SysBusDevice parent_obj;
 
     /*
-     * Properties: which module the board plugs into, and which of the
-     * module's Crossbow widgets (8 to 15) it occupies. Both are required; a
-     * board realized without one refuses.
+     * Properties: which module the board plugs into, and "slot", which
+     * XIO position it occupies. "slot" is either an IRIX slot name (io5),
+     * which the machine resolves to a module, a Crossbow widget and the
+     * fabric the board sends through, or a Crossbow widget number (8 to
+     * 15), which needs "module" and the board's own "fabric" set too, as
+     * the machine builder and qtest fixtures do.
      */
     uint32_t module;
+    char *slot_name;
+
+    /* The Crossbow widget the board occupies, resolved from "slot". */
     uint32_t slot;
 
     /*
@@ -127,6 +133,37 @@ struct SGIXioBoardClass {
      * the board, so it never needed this hook.
      */
     bool (*finish_realize)(SGIXioBoardState *board, Error **errp);
+};
+
+/*
+ * The machine side of a board placed by slot name: a machine whose
+ * topology names XIO slots implements this interface, and a board's
+ * realize asks it, before build_widget(), where the named slot is and
+ * what the board sends through. claim() reserves an empty slot by name,
+ * returning its module index, its Crossbow widget and the fabric proxy
+ * the machine holds for it; it refuses a slot the topology does not have,
+ * one the topology already fills and one another board has claimed.
+ * claim_fabric() covers a board given its fabric outright: when that
+ * fabric is one of the machine's slot proxies it must match the module
+ * and widget the board names and must not already be claimed; any other
+ * fabric (a qtest fixture's sink) passes.
+ */
+#define TYPE_SGI_XIO_SLOTS "sgi-xio-slots"
+
+/* claim()'s module when the board named none: any module's slot will do. */
+#define SGI_XIO_BOARD_MODULE_UNSET UINT32_MAX
+typedef struct SGIXioSlotsClass SGIXioSlotsClass;
+DECLARE_CLASS_CHECKERS(SGIXioSlotsClass, SGI_XIO_SLOTS, TYPE_SGI_XIO_SLOTS)
+
+struct SGIXioSlotsClass {
+    /*< private >*/
+    InterfaceClass parent_class;
+
+    /*< public >*/
+    MemoryRegion *(*claim)(Object *slots, const char *name,
+                           uint32_t *module, uint32_t *widget, Error **errp);
+    bool (*claim_fabric)(Object *slots, MemoryRegion *fabric,
+                         uint32_t module, uint32_t widget, Error **errp);
 };
 
 /*

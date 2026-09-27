@@ -85,7 +85,7 @@ static char *qom_child_type(QTestState *qts, const char *parent,
 /*
  * A Crossbow's own uint property, the same way sn0-origin2000-xtalk-
  * owner-test.c's assert_crossbow() reads one: used here to confirm a late
- * `-device` board attaching through the spare fabric proxy leaves the
+ * `-device` board attaching through an empty slot's fabric proxy leaves the
  * Crossbow's own count of populated widgets untouched.
  */
 static uint64_t xtalk_uint(QTestState *qts, const char *crossbow,
@@ -144,17 +144,17 @@ static void test_numa_refused(const void *data)
 
 /*
  * sgi-pci-expansion (board-pci-expansion.c) is user-creatable: a `-device`
- * board's "fabric" link can resolve against the spare fabric proxy
- * sgi_machine_build_crossbars()/sgi_machine_done() hold back and finish for
- * exactly this purpose (see that class's own header comment). Nothing wires
- * "fabric" for it automatically, though. An explicit `-device` still has
- * to name one itself. A bare `-device sgi-pci-expansion` now reaches
- * past qdev's pluggable-device check and refuses for a later, different
- * reason: the same missing-fabric error build_widget() reports from the
- * machine builder or the board-test fixture. -device is processed after
- * sgi_machine_init, so this still needs a -bios that clears the stock-PROM
- * requirement, the same blank flash write_config_block_fixture's sibling in
- * sn0-address-map-test.c uses for the same reason.
+ * board placed by widget number, as here, names its own "fabric" (a
+ * board placed by slot name gets its slot's from the machine, see
+ * test_pci_expansion_attaches_at_a_named_slot) -- so a bare
+ * `-device sgi-pci-expansion,module=1,slot=9`
+ * reaches past qdev's pluggable-device check and refuses for a later,
+ * different reason: the same missing-fabric error build_widget() reports
+ * from the machine builder or the board-test fixture. -device is
+ * processed after sgi_machine_init, so this still needs a -bios that
+ * clears the stock-PROM requirement, the same blank flash
+ * write_config_block_fixture's sibling in sn0-address-map-test.c uses for
+ * the same reason.
  */
 static void test_pci_expansion_requires_fabric(const void *data)
 {
@@ -211,39 +211,28 @@ static void test_expansion_boards_share_the_attach_contract(const void *data)
 }
 
 /*
- * The spare fabric proxy sgi_machine_build_crossbars()/sgi_machine_done()
- * hold back and finish for exactly this purpose (see both classes' own
- * header comments) resolves "fabric" for a `-device` board at runtime, the
- * same way for either -device-creatable XIO board class: this board realizes
- * and sgi_xio_board_reparent() (xio-board.c) lands it at
- * /machine/module<N>/slot<S>, "module"/"slot" here chosen well clear of any
- * onboard module the default origin2000 topology already populates.
- * fabric-widget-shift=48 matches SGI_BRIDGE_PACKET_ADDRESS_BITS, the same
- * shift the machine builder gives every onboard board's own Bridge. The
- * "[0]" is not a typo or an artifact of one particular listing: every named
- * MemoryRegion's own QOM child registers under "<name>[*]", an open-array
- * property (system/memory.c, memory_region_do_init()), and QOM assigns it
- * the first free index (always 0 here, since "crossbow0-spare-fabric" is
- * unique under its owner). Confirmed live: qom-get on the path without the
- * suffix reports DeviceNotFound.
+ * A `-device` board names the empty XIO slot it plugs into, and the
+ * machine hands it that slot's fabric proxy (TYPE_SGI_XIO_SLOTS,
+ * xio-board.h): the board takes the slot's module and widget, and
+ * sgi_xio_board_reparent() (xio-board.c) lands it under that module. On
+ * the default origin2000 topology IO4 is crossbow0's widget 11.
  *
  * crossbow0's own startup-links-alive (sn0-origin2000-xtalk-owner-test.c:
- * 0x8700, its onboard BaseIO, two host nodes and SI Viz) stays exactly that
- * after this board attaches. sgi_machine_done() does bring the spare widget
- * alive and register it as an inbound destination once a board claims it
- * (sgi_xbow_attach_endpoint_live() then sgi_xbow_mark_widget_alive(), see
- * board-pci-expansion.c's header comment), but through the Crossbow's
- * runtime link state, not by rewriting its configured "startup-links-alive"
- * (the declared boot health a reset restores). A `-device` board reaching
- * the fabric must not silently rewrite that configured population.
+ * 0x8700, its onboard BaseIO, two host nodes and SI Viz) stays exactly
+ * that after this board attaches. sgi_machine_done() does bring the
+ * slot's widget alive and register it as an inbound destination once a
+ * board claims it (sgi_xbow_attach_endpoint_live() then
+ * sgi_xbow_mark_widget_alive(), see board-pci-expansion.c's header
+ * comment), but through the Crossbow's runtime link state, not by
+ * rewriting its configured "startup-links-alive" -- the declared boot
+ * health a reset restores.
  */
-static void test_pci_expansion_attaches_via_spare_fabric(const void *data)
+static void test_pci_expansion_attaches_at_a_named_slot(const void *data)
 {
     QTestState *qts = qtest_init(
-        "-M origin2000 -display none -device sgi-pci-expansion,"
-        "module=99,slot=8,fabric=/machine/crossbow0-spare-fabric[0],"
-        "fabric-widget-shift=48");
-    g_autofree char *type = qom_child_type(qts, "/machine/module99", "slot8");
+        "-M origin2000 -display none -device sgi-pci-expansion,slot=io4");
+    g_autofree char *type = qom_child_type(qts, "/machine/module0",
+                                           "slot11");
 
     g_assert_cmpstr(type, ==, "sgi-pci-expansion");
     g_assert_cmphex(xtalk_uint(qts, "crossbow0", "startup-links-alive"), ==,
@@ -252,48 +241,25 @@ static void test_pci_expansion_attaches_via_spare_fabric(const void *data)
 }
 
 /*
- * sgi-xio-baseio additionally refuses any slot but 8 for its default io6
- * preset: BaseIO is fixed at IO1, crosstalk widget 8 (the preset's own
- * xio_widgets in baseio.c), a real hardware fact rather than the free
- * QOM-path choice "slot" is for sgi-pci-expansion above. slot=8 here
- * satisfies that check, not a coincidence with the sibling test's own
- * unrelated choice. The same configured-startup-links reasoning applies: see
- * the sibling test above.
- */
-static void test_xio_baseio_attaches_via_spare_fabric(const void *data)
-{
-    QTestState *qts = qtest_init(
-        "-M origin2000 -display none -device sgi-xio-baseio,"
-        "module=99,slot=8,fabric=/machine/crossbow0-spare-fabric[0],"
-        "fabric-widget-shift=48");
-    g_autofree char *type = qom_child_type(qts, "/machine/module99", "slot8");
-
-    g_assert_cmpstr(type, ==, "sgi-xio-baseio");
-    g_assert_cmphex(xtalk_uint(qts, "crossbow0", "startup-links-alive"), ==,
-                    UINT64_C(0x8700));
-    qtest_quit(qts);
-}
-
-/*
  * The BaseIO-G preset also fits the Onyx2 deskside's IO1, which that
- * midplane's Crossbow puts at widget 15 rather than 8. The plain BaseIO
- * never sits in a deskside, so widget 15 stays refused for it: IO3 on the
- * eight-processor module.
+ * midplane's Crossbow puts at widget 15 rather than 8. On the Origin 2000
+ * module the free widget 15 is IO9, Crossbow 1's. The plain BaseIO never
+ * sits in a deskside, so widget 15 stays refused for it.
  */
 static void test_xio_baseio_g_fits_the_deskside_io1(const void *data)
 {
     QTestState *qts = qtest_init(
         "-M origin2000 -display none -device sgi-xio-baseio,preset=io6g,"
-        "module=99,slot=15,fabric=/machine/crossbow0-spare-fabric[0],"
-        "fabric-widget-shift=48");
-    g_autofree char *type = qom_child_type(qts, "/machine/module99",
+        "slot=io9");
+    g_autofree char *type = qom_child_type(qts, "/machine/module0",
                                            "slot15");
 
     g_assert_cmpstr(type, ==, "sgi-xio-baseio");
     qtest_quit(qts);
 }
 
-static void test_xio_baseio_refuses_widget_15(const void *data)
+/* Runs QEMU with one -device and checks it refuses with @message. */
+static void assert_device_refused(const char *device, const char *message)
 {
     g_autoptr(GError) error = NULL;
     g_autofree uint8_t *blank = g_malloc0(0x100000);
@@ -301,8 +267,56 @@ static void test_xio_baseio_refuses_widget_15(const void *data)
     int fd;
     const char *args[] = {
         qtest_qemu_binary(NULL), "-M", "origin2000", "-bios", NULL,
-        "-device", "sgi-xio-baseio,preset=io6,module=99,slot=15,"
-        "fabric=/machine/crossbow0-spare-fabric[0],fabric-widget-shift=48",
+        "-device", device, "-display", "none", NULL
+    };
+
+    fd = g_file_open_tmp("sn-builder-blank-bios-XXXXXX.bin", &path, &error);
+    g_assert_no_error(error);
+    close(fd);
+    g_assert_true(g_file_set_contents(path, (const char *)blank, 0x100000,
+                                      &error));
+    g_assert_no_error(error);
+    args[4] = path;
+
+    assert_qemu_rejects(args, message);
+    g_assert_cmpint(unlink(path), ==, 0);
+}
+
+static void test_xio_baseio_refuses_widget_15(const void *data)
+{
+    assert_device_refused("sgi-xio-baseio,preset=io6,slot=io9",
+                          "sgi-xio-baseio preset 'io6' cannot sit at "
+                          "crosstalk widget 15");
+}
+
+/*
+ * A slot name the topology does not have, one its own board fills, a
+ * module the slot is not in, and a second board in a claimed slot are
+ * each refused by name, rather than landing the board somewhere else.
+ */
+static void test_named_slot_refusals(const void *data)
+{
+    assert_device_refused("sgi-pci-expansion,slot=io13",
+                          "topology 'origin2000-module' has no empty XIO "
+                          "slot io13");
+    assert_device_refused("sgi-pci-expansion,slot=io1",
+                          "XIO slot io1 of topology 'origin2000-module' "
+                          "already holds the topology's own board");
+    assert_device_refused("sgi-pci-expansion,slot=io4,module=1",
+                          "XIO slot io4 of topology 'origin2000-module' is "
+                          "in module 0, not module 1");
+}
+
+static void test_named_slot_takes_one_board(const void *data)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree uint8_t *blank = g_malloc0(0x100000);
+    g_autofree char *path = NULL;
+    int fd;
+    const char *args[] = {
+        qtest_qemu_binary(NULL), "-M", "origin2000", "-bios", NULL,
+        "-device", "sgi-pci-expansion,slot=io4",
+        "-device", "sgi-pci-expansion,slot=io4,pci-bus-name=second",
         "-display", "none", NULL
     };
 
@@ -314,9 +328,29 @@ static void test_xio_baseio_refuses_widget_15(const void *data)
     g_assert_no_error(error);
     args[4] = path;
 
-    assert_qemu_rejects(args, "sgi-xio-baseio preset 'io6' cannot sit at "
-                        "crosstalk widget 15");
+    assert_qemu_rejects(args, "XIO slot io4 already holds a board");
     g_assert_cmpint(unlink(path), ==, 0);
+}
+
+/*
+ * A board given a slot's fabric outright, as a fixture does, must name
+ * that slot's own module and widget: the board no longer lands on the
+ * fabric's widget while claiming another.
+ */
+static void test_explicit_fabric_must_match_its_slot(const void *data)
+{
+    QTestState *qts;
+
+    assert_device_refused("sgi-pci-expansion,module=0,slot=12,"
+                          "fabric=/machine/io4-fabric[0]",
+                          "fabric of XIO slot io4 is module 0 widget 11, "
+                          "not the module 0 widget 12 the board names");
+    qts = qtest_init("-M origin2000 -display none -device "
+                     "sgi-pci-expansion,module=0,slot=11,"
+                     "fabric=/machine/io4-fabric[0],fabric-widget-shift=48");
+    g_assert_cmpstr(qom_child_type(qts, "/machine/module0", "slot11"), ==,
+                    "sgi-pci-expansion");
+    qtest_quit(qts);
 }
 
 /*
@@ -326,7 +360,7 @@ static void test_xio_baseio_refuses_widget_15(const void *data)
  * offset reaches that widget's real chip registers through the real
  * Crossbow. Reused here read-only, on the machine's own onboard BaseIO
  * (crosstalk widget 8, the io6 preset's own xio_widgets), to observe whatever
- * the spare-fabric board below actually delivers to it.
+ * the board fitted at IO4 below actually delivers to it.
  */
 #define SMALL_WINDOW_SIZE       UINT64_C(0x1000000)
 #define SMALL_WINDOW(widget)    (SPACE_XTALK + \
@@ -346,7 +380,7 @@ static void test_xio_baseio_refuses_widget_15(const void *data)
  */
 #define SPARE_BASE              UINT64_C(0xf0000000000)
 #define SPARE_REG(offset)       (SPARE_BASE + (offset) + REG_DATA)
-#define SPARE_BRIDGE            "/machine/module99/slot8/bridge"
+#define SPARE_BRIDGE            "/machine/module0/slot11/bridge"
 #define SENTINEL                0xa5
 
 /*
@@ -451,19 +485,18 @@ static void assert_spare_landed(QTestState *qts, uint64_t at, uint32_t seed)
  * in either board's own realize ever touches it.
  *
  * sgi_xbow_sync_routes() disables a port's entire ingress/packet_ingress
- * region whenever that port's own sgi_xbow_alive() is false, always true for
- * the not-alive widget the spare fabric proxy is built against (crossbow0's
- * startup-links-alive, 0x8700, leaves widget 11 the first free one). This
- * board's own outbound transfers have nowhere live to originate from until
- * something marks that widget alive without also counting it as one of the
- * Crossbow's own onboard links.
+ * region whenever that port's own sgi_xbow_alive() is false, always true
+ * for the empty slot's widget this board claims (IO4, crossbow0's widget
+ * 11, outside its startup-links-alive of 0x8700) -- this board's own
+ * outbound transfers have nowhere live to
+ * originate from until something marks that widget alive without also
+ * counting it as one of the Crossbow's own onboard links.
  */
 static void test_pci_expansion_delivers_through_spare_fabric(const void *data)
 {
     QTestState *qts = qtest_init(
         "-M origin2000 -display none -device sgi-pci-expansion,"
-        "module=99,slot=8,fabric=/machine/crossbow0-spare-fabric[0],"
-        "fabric-widget-shift=48 "
+        "slot=io4 "
         "-device sgi-bridge-dma-test,bus=pci,addr=0");
     uint64_t dest = SMALL_WINDOW(BASEIO_WIDGET) + BASEIO_RRB_EVEN;
 
@@ -487,14 +520,13 @@ static void test_pci_expansion_delivers_through_spare_fabric(const void *data)
 /*
  * ---- Inbound addressability and interrupt delivery ----
  *
- * The spare fabric widget crossbow0 holds back for a `-device` board is
- * widget 11: the lowest position its startup-links-alive (0x8700; BaseIO
- * at widget 8, the two host nodes at 9 and 10, SI Viz at 15) leaves free
- * (sgi_machine_build_crossbars(), hw/mips/sgi/sn-machine.c). A board that
- * takes the proxy is addressable at that widget, so its own Bridge answers a
- * processor through crossbow0's real small window for widget 11. The same
- * crosstalk decode SMALL_WINDOW(BASEIO_WIDGET) reaches the onboard BaseIO.
- * Neither path needs a scratch sysbus map.
+ * These tests fit a `-device` board at IO4, an empty slot whose widget is
+ * crossbow0's 11, outside its startup-links-alive (0x8700; BaseIO at
+ * widget 8, the two host nodes at 9 and 10, SI Viz at 15). A board that
+ * takes the slot's proxy is addressable at that widget, so its own Bridge
+ * answers a processor through crossbow0's real small window for widget
+ * 11. The same crosstalk decode SMALL_WINDOW(BASEIO_WIDGET) reaches the
+ * onboard BaseIO. Neither path needs a scratch sysbus map.
  */
 #define SPARE_WIDGET            11
 #define SPARE_IN                SMALL_WINDOW(SPARE_WIDGET)
@@ -544,8 +576,7 @@ static void test_pci_expansion_is_inbound_addressable(const void *data)
 {
     QTestState *qts = qtest_init(
         "-M origin2000 -display none -device sgi-pci-expansion,"
-        "module=99,slot=11,fabric=/machine/crossbow0-spare-fabric[0],"
-        "fabric-widget-shift=48");
+        "slot=io4");
 
     qtest_writel(qts, SPARE_IN_REG(BASEIO_RRB_EVEN), INBOUND_SENTINEL);
     g_assert_cmphex(qtest_readl(qts, SPARE_IN_REG(BASEIO_RRB_EVEN)), ==,
@@ -567,8 +598,7 @@ static void test_pci_expansion_delivers_card_interrupt_to_hub(const void *data)
 {
     QTestState *qts = qtest_init(
         "-M origin2000 -display none -device sgi-pci-expansion,"
-        "module=99,slot=11,fabric=/machine/crossbow0-spare-fabric[0],"
-        "fabric-widget-shift=48,pci-bus-name=xpci "
+        "slot=io4,pci-bus-name=xpci "
         "-device sgi-bridge-dma-test,bus=xpci,addr=0");
 
     /* Nothing has fired yet. */
@@ -614,8 +644,7 @@ static void test_expansion_card_enumerates_inbound(const void *data)
 {
     QTestState *qts = qtest_init(
         "-M origin2000 -display none -device sgi-pci-expansion,"
-        "module=99,slot=11,fabric=/machine/crossbow0-spare-fabric[0],"
-        "fabric-widget-shift=48,pci-bus-name=xpci "
+        "slot=io4,pci-bus-name=xpci "
         "-device qlogic-isp12160,bus=xpci,addr=3");
 
     g_assert_cmphex(qtest_readl(qts, SPARE_IN_CFG0(3)), ==, ISP12160_ID_PAIR);
@@ -623,7 +652,7 @@ static void test_expansion_card_enumerates_inbound(const void *data)
 }
 
 /*
- * The spare widget is an empty XIO slot until a board claims it: its
+ * IO4's widget is an empty XIO slot until a board claims it: its
  * Crossbow port reports no widget and the failed-initialization state, so
  * firmware passes over it. A board taking the proxy is a widget physically
  * attached to that port, which then reads present and alive (link auxiliary
@@ -649,8 +678,7 @@ static void test_spare_widget_present_only_when_claimed(const void *data)
 
     qts = qtest_init(
         "-M origin2000 -display none -device sgi-pci-expansion,"
-        "module=99,slot=11,fabric=/machine/crossbow0-spare-fabric[0],"
-        "fabric-widget-shift=48");
+        "slot=io4");
     g_assert_cmphex(qtest_readl(qts, SPARE_LINK_AUX), ==, AUX_PRESENT);
     g_assert_cmphex(qtest_readl(qts, SPARE_LINK_STATUS), ==, LINK_ALIVE);
     qtest_quit(qts);
@@ -659,7 +687,7 @@ static void test_spare_widget_present_only_when_claimed(const void *data)
 /*
  * The stock PROM resets every link it finds attached and expects one that
  * was alive before the reset to come back after the pulse; the machine gives
- * every topology link that restore. A board claimed on the spare widget is
+ * every topology link that restore. A board claimed at an empty slot is
  * attached the same way, so a link reset of its port must bring it back
  * present and alive rather than leave it initializing.
  */
@@ -671,8 +699,7 @@ static void test_claimed_spare_widget_survives_link_reset(const void *data)
 {
     QTestState *qts = qtest_init(
         "-M origin2000 -display none -device sgi-pci-expansion,"
-        "module=99,slot=11,fabric=/machine/crossbow0-spare-fabric[0],"
-        "fabric-widget-shift=48");
+        "slot=io4");
 
     qtest_writel(qts, SPARE_LINK_RESET, 0);
     g_assert_cmphex(qtest_readl(qts, SPARE_LINK_STATUS), ==, 0);
@@ -1268,14 +1295,18 @@ int main(int argc, char **argv)
     qtest_add_data_func("sn/builder/expansion-boards-share-the-attach-"
                         "contract", NULL,
                         test_expansion_boards_share_the_attach_contract);
-    qtest_add_data_func("sn/builder/pci-expansion-attaches-via-spare-fabric",
-                        NULL, test_pci_expansion_attaches_via_spare_fabric);
+    qtest_add_data_func("sn/builder/named-slot-refusals", NULL,
+                        test_named_slot_refusals);
+    qtest_add_data_func("sn/builder/named-slot-takes-one-board", NULL,
+                        test_named_slot_takes_one_board);
+    qtest_add_data_func("sn/builder/explicit-fabric-must-match-its-slot",
+                        NULL, test_explicit_fabric_must_match_its_slot);
+    qtest_add_data_func("sn/builder/pci-expansion-attaches-at-a-named-slot",
+                        NULL, test_pci_expansion_attaches_at_a_named_slot);
     qtest_add_data_func("sn/builder/xio-baseio-g-fits-the-deskside-io1",
                         NULL, test_xio_baseio_g_fits_the_deskside_io1);
     qtest_add_data_func("sn/builder/xio-baseio-refuses-widget-15", NULL,
                         test_xio_baseio_refuses_widget_15);
-    qtest_add_data_func("sn/builder/xio-baseio-attaches-via-spare-fabric",
-                        NULL, test_xio_baseio_attaches_via_spare_fabric);
     qtest_add_data_func("sn/builder/pci-expansion-delivers-through-spare-"
                         "fabric", NULL,
                         test_pci_expansion_delivers_through_spare_fabric);

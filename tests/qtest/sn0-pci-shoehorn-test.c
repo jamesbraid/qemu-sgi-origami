@@ -1,17 +1,38 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /* Test the SGI PCI-XTALK adapter with a Cad Duo IOC3 input card. */
 /*
- * The adapter (hw/mips/sgi/board-pci-shoehorn.c) uses crossbow0's spare proxy
- * as sgi-pci-expansion does (sn-builder-test.c): startup-links-alive 0x8700
- * leaves widget 11 free. Its small window reaches Bridge and Cad Duo; PCI
- * identity answers through the guest's config path. Cad Duo SuperIO must
- * reach Bridge through INTB (pin slot ^ 4) for PS/2 keyboard IRQs. Plain
- * sgi-pci-expansion lacks that wiring, so the same key press has no IRQ
- * there. A DS2505-class part beside the station-address part holds PCI_ENET
- * 030-1155-002 rev D; plain expansion has only the station-address part. The
- * compiled origin2000-pci-shoehorn catalogue also places the board in IO2 at
- * crossbow0 widget 12 with Cad Duo at PCI device 0. That link is live at
- * reset so stock PROM can discover the board instead of reporting a bad link.
+ * Register-contract tests for the SGI PCI-XTALK ADAPTER (the "PCI shoehorn",
+ * hw/mips/sgi/board-pci-shoehorn.c) fitted with an SGI Cad Duo input card
+ * (an sgi-ioc3, docs/datasheets/sgi-cad-duo-pci-card.md).
+ *
+ * The board attaches at the empty XIO slot IO4 exactly as
+ * sgi-pci-expansion does (tests/qtest/sn-builder-test.c): crossbow0's
+ * widget 11, outside its startup-links-alive (0x8700). A processor
+ * reaches the internal Bridge and the fitted Cad Duo through crossbow0's
+ * real small window for widget 11.
+ *
+ * Two things are checked. First, the Cad Duo enumerates: its PCI identity
+ * answers through the widget window, the same config accesses a driver's own
+ * probe issues. Second, its PS/2 keyboard interrupt reaches the guest: the
+ * chip's SuperIO interrupt output must be wired to a Bridge pin for a
+ * keystroke to be delivered, and the shoehorn wires it (to the card's INTB,
+ * which the Bridge routes to pin slot ^ 4). A Cad Duo behind a plain
+ * sgi-pci-expansion, which does no such wiring, leaves that interrupt dead
+ * -- the RED baseline the shoehorn's wiring turns GREEN.
+ *
+ * Third, the card carries its own board record: a DS2505-class part on the
+ * IOC3's one-wire bus, beside the station-address part, holding the
+ * PCI_ENET 030-1155-002 rev D record a real card reports
+ * (docs/datasheets/sgi-cad-duo-pci-card.md, "Board-identity record on the
+ * IOC3 one-wire bus"). The same card behind a plain sgi-pci-expansion
+ * carries only the station-address part.
+ *
+ * The same checks then run on the board the origin2000-pci-shoehorn
+ * topology places itself: the compiled catalogue fits the shoehorn into
+ * Origin 2000's IO2 position, crossbow0 widget 12, as a startup-attached
+ * board, with its Cad Duo at PCI device 0. That widget must be alive from
+ * reset like the BaseIO's, which is what the stock PROM needs to discover
+ * it rather than report the link bad.
  */
 
 #include "qemu/osdep.h"
@@ -21,9 +42,9 @@
 #include "sgi-test.h"
 
 /*
- * crossbow0's spare fabric widget for a `-device` XIO board on Origin 2000
- * (sn-builder-test.c: startup-links-alive 0x8700 leaves widget 11 first
- * free). Its own small window reaches the board's Bridge and the Cad Duo.
+ * IO4, the empty XIO slot a `-device` board takes on Origin 2000:
+ * crossbow0's widget 11. Its own small window reaches the board's Bridge
+ * and the Cad Duo.
  */
 #define SHOEHORN_WIDGET     11
 
@@ -146,15 +167,13 @@ static const uint8_t cad_duo_record[RECORD_SIZE] = {
 /* A card behind the expansion Bridge is at the same slot either way. */
 #define EXPANSION_ARGS \
     "-M origin2000 -display none -device sgi-pci-expansion," \
-    "module=99,slot=11,fabric=/machine/crossbow0-spare-fabric[0]," \
-    "fabric-widget-shift=48,pci-bus-name=xpci " \
+    "slot=io4,pci-bus-name=xpci " \
     "-device sgi-ioc3,bus=xpci,addr=" G_STRINGIFY(CAD_DUO_DEVICE) \
     ",subsystem-id=0xffff"
 
 #define SHOEHORN_ARGS \
     "-M origin2000 -display none -device sgi-pci-shoehorn," \
-    "module=99,slot=11,fabric=/machine/crossbow0-spare-fabric[0]," \
-    "fabric-widget-shift=48,cad-duo-slot=" G_STRINGIFY(CAD_DUO_DEVICE)
+    "slot=io4,cad-duo-slot=" G_STRINGIFY(CAD_DUO_DEVICE)
 
 #define PLACED_ARGS \
     "-M origin2000,topology=origin2000-pci-shoehorn -display none"
@@ -162,8 +181,7 @@ static const uint8_t cad_duo_record[RECORD_SIZE] = {
 /* The same adapter carrying the dual-serial card instead of the Cad Duo. */
 #define SIO_ARGS \
     "-M origin2000 -display none -device sgi-pci-shoehorn," \
-    "module=99,slot=11,fabric=/machine/crossbow0-spare-fabric[0]," \
-    "fabric-widget-shift=48,sio-slot=" G_STRINGIFY(CAD_DUO_DEVICE)
+    "slot=io4,sio-slot=" G_STRINGIFY(CAD_DUO_DEVICE)
 
 /*
  * The dual-serial card's record: placeholder barcode OSIOUFC001, the
@@ -529,7 +547,7 @@ static void test_sio_enumerates(const void *data)
                     CAD_DUO_SUBSYSTEM);
     for (i = 0; i < ARRAY_SIZE(absent); i++) {
         g_autofree char *path = g_strdup_printf(
-            "/machine/module99/slot11/sio-ufc/%s", absent[i]);
+            "/machine/module0/slot11/sio-ufc/%s", absent[i]);
         g_autoptr(QDict) response = qtest_qmp(qts,
             "{'execute': 'qom-list', 'arguments': {'path': %s}}", path);
 
@@ -538,7 +556,7 @@ static void test_sio_enumerates(const void *data)
     {
         g_autoptr(QDict) response = qtest_qmp(qts,
             "{'execute': 'qom-list', 'arguments': {'path': "
-            "'/machine/module99/slot11/sio-ufc/serial[1]'}}");
+            "'/machine/module0/slot11/sio-ufc/serial[1]'}}");
 
         g_assert_false(qdict_haskey(response, "error"));
     }
@@ -604,8 +622,7 @@ static void test_one_card_only(const void *data)
     const char *args[] = {
         qtest_qemu_binary(NULL), "-M", "origin2000", "-accel", "qtest",
         "-display", "none", "-device",
-        "sgi-pci-shoehorn,module=99,slot=11,"
-        "fabric=/machine/crossbow0-spare-fabric[0],fabric-widget-shift=48,"
+        "sgi-pci-shoehorn,slot=io4,"
         "cad-duo-slot=1,sio-slot=2", NULL
     };
     g_autofree char *error_output = NULL;
@@ -623,7 +640,7 @@ static void test_one_card_only(const void *data)
  * The catalogue-placed board's widget is alive from reset, like the BaseIO at
  * widget 8, the two host nodes at 9 and 10 and SI Viz at 15: it is part of
  * crossbow0's configured startup population, not a link brought up after
- * machine init the way a `-device` board's spare widget is. That is the
+ * machine init the way a `-device` board's slot widget is. That is the
  * difference the stock PROM sees between a board it enumerates and "IO link
  * bad".
  */

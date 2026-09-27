@@ -20,12 +20,12 @@
  * like every other card class the base-io-device step's design table
  * names. sgi-pci-expansion (board-pci-expansion.c) is never built here:
  * it only exists as a `-device` board, plugged in after this builder has
- * returned. Each Crossbow this builder realizes gets one spare widget
- * held back from startup-links-alive (sgi_machine_build_crossbars())
- * with its own fabric proxy prepared against it, finished from a
- * machine-init-done notifier once every Crossbow has realized -- see
- * that notifier's own comment below for exactly what a late board's
- * proxy can and cannot reach through it.
+ * returned. Every empty XIO slot the topology names gets its own fabric
+ * proxy, prepared against that slot's widget before its Crossbow
+ * realizes and finished from a machine-init-done notifier once every
+ * Crossbow has; a `-device` board names the slot (slot=io5) and the
+ * machine hands it that proxy (TYPE_SGI_XIO_SLOTS). See that notifier's
+ * own comment below for what a board fitted this way reaches.
  */
 
 #include "qemu/osdep.h"
@@ -109,6 +109,7 @@ SGI_MODEL_DEFINE_LIST_ARRAY(SGIModelRouter, router)
 SGI_MODEL_DEFINE_LIST_ARRAY(SGIModelCable, cable)
 SGI_MODEL_DEFINE_LIST_ARRAY(SGIModelCrossbar, crossbar)
 SGI_MODEL_DEFINE_LIST_ARRAY(SGIModelXtalkAttachment, xtalk_attachment)
+SGI_MODEL_DEFINE_LIST_ARRAY(SGIModelXtalkSlot, xtalk_slot)
 SGI_MODEL_DEFINE_LIST_ARRAY(SGIModelIoBoard, io_board)
 SGI_MODEL_DEFINE_LIST_ARRAY(SGIModelController, controller)
 
@@ -207,16 +208,15 @@ struct SGIMachineState {
     unsigned int mgras_count;
 
     /*
-     * One spare fabric proxy per crossbars[] entry, for a `-device` board
-     * plugged in after this builder has returned: prepared here (against
-     * a widget sgi_machine_build_crossbars() held out of
-     * startup-links-alive) and finished from machine_done below, once
-     * every Crossbow has realized. spare_fabric_widget holds the chosen
-     * widget number, or 0 (never a valid widget: see
-     * SGI_XBOW_FIRST_WIDGET) where a topology leaves no widget free.
+     * One fabric proxy per empty XIO slot the topology names
+     * (t->xtalk_slots, in order), for a board fitted there at launch by
+     * slot name: prepared against the slot's widget before its Crossbow
+     * realizes, and finished from machine_done below once every Crossbow
+     * has. slot_claimed marks each slot a board has taken, so a second
+     * board naming it is refused.
      */
-    SGIXtalkCrossbowLink *spare_fabric_links;
-    unsigned int *spare_fabric_widget;
+    SGIXtalkCrossbowLink *slot_links;
+    bool *slot_claimed;
     Notifier machine_done;
 
     bool debug_leds;
@@ -528,6 +528,18 @@ static size_t sgi_machine_topology_io_board_count(const SGIModelTopology *t)
     size_t count = 0;
 
     for (entry = t->io_boards; entry; entry = entry->next) {
+        count++;
+    }
+    return count;
+}
+
+/* Likewise for xtalk_slots. */
+static size_t sgi_machine_topology_xtalk_slot_count(const SGIModelTopology *t)
+{
+    const SGIModelXtalkSlotList *entry;
+    size_t count = 0;
+
+    for (entry = t->xtalk_slots; entry; entry = entry->next) {
         count++;
     }
     return count;
@@ -902,13 +914,60 @@ static uint32_t sgi_machine_crossbar_part(SGIModelCrossbarKind kind)
     }
 }
 
+/* The module an XIO slot's Crossbow sits in. */
+static uint32_t sgi_machine_xtalk_slot_module(const SGIModelTopology *t,
+                                              const SGIModelXtalkSlot *slot)
+{
+    g_autofree const SGIModelCrossbar **crossbars = NULL;
+    size_t crossbar_count;
+
+    crossbars = sgi_model_crossbar_array(t->crossbars, &crossbar_count);
+    g_assert(slot->crossbar_index < crossbar_count);
+    return crossbars[slot->crossbar_index]->module_index;
+}
+
+/*
+ * An XIO slot's name, unique within the machine: its IRIX label (io5),
+ * or m<module>-io5 where another module has a slot of the same label.
+ */
+static char *sgi_machine_xtalk_slot_name(const SGIModelTopology *t,
+                                         const SGIModelXtalkSlot *slot)
+{
+    const SGIModelXtalkSlotList *entry;
+    uint32_t module = sgi_machine_xtalk_slot_module(t, slot);
+
+    for (entry = t->xtalk_slots; entry; entry = entry->next) {
+        if (entry->value != slot &&
+            g_str_equal(entry->value->label, slot->label) &&
+            sgi_machine_xtalk_slot_module(t, entry->value) != module) {
+            return g_strdup_printf("m%u-%s", module, slot->label);
+        }
+    }
+    return g_strdup(slot->label);
+}
+
+/* Prepares every empty XIO slot's fabric proxy; see slot_links. */
+static void sgi_machine_prepare_slot_links(SGIMachineState *s,
+                                           const SGIModelTopology *t)
+{
+    g_autofree const SGIModelXtalkSlot **slots = NULL;
+    size_t slot_count, i;
+
+    slots = sgi_model_xtalk_slot_array(t->xtalk_slots, &slot_count);
+    for (i = 0; i < slot_count; i++) {
+        g_autofree char *slot_name = sgi_machine_xtalk_slot_name(t, slots[i]);
+        g_autofree char *name = g_strdup_printf("%s-fabric", slot_name);
+
+        sgi_xtalk_crossbow_link_prepare(&s->slot_links[i], OBJECT(s), name);
+    }
+}
+
 static void sgi_machine_build_crossbars(SGIMachineState *s,
                                         const SGIModelTopology *t)
 {
     g_autofree const SGIModelCrossbar **crossbars = NULL;
     g_autofree const SGIModelXtalkAttachment **attachments = NULL;
     size_t crossbar_count, attachment_count, i;
-    unsigned int widget;
 
     crossbars = sgi_model_crossbar_array(t->crossbars, &crossbar_count);
     attachments = sgi_model_xtalk_attachment_array(t->xtalk_attachments,
@@ -926,9 +985,9 @@ static void sgi_machine_build_crossbars(SGIMachineState *s,
          * An empty XIO slot has no widget, so its port reads presence
          * clear (docs/datasheets/xbow.md, link auxiliary status bit 5);
          * reporting it present would make the PROM find a widget whose
-         * link never came up and diagnose it as a bad IO link. The spare
-         * widget held back below becomes present only when a board
-         * claims it (sgi_machine_done()).
+         * link never came up and diagnose it as a bad IO link. An empty
+         * slot becomes present only when a board fitted at launch claims
+         * it (sgi_machine_done()).
          */
         for (attachment_index = 0; attachment_index < attachment_count;
              attachment_index++) {
@@ -961,30 +1020,19 @@ static void sgi_machine_build_crossbars(SGIMachineState *s,
         qdev_prop_set_uint16(crossbow, "link-reset-restore-alive",
                              startup_alive);
 
-        /*
-         * Hold one populated-at-startup widget back as a spare fabric
-         * proxy for a `-device` board plugged in once this builder has
-         * returned (see the file header comment and the machine-done
-         * notifier below): the lowest widget this topology's own
-         * attachments leave unpopulated, or none if the topology fills
-         * every widget. spare_fabric_widget[i] stays 0 -- never a valid
-         * widget number -- when none is free.
-         */
-        for (widget = SGI_XBOW_FIRST_WIDGET; widget < SGI_XBOW_WIDGETS;
-             widget++) {
-            if (!(startup_alive & (1u << widget))) {
-                break;
-            }
-        }
-        if (widget < SGI_XBOW_WIDGETS) {
-            g_autofree char *spare_name =
-                g_strdup_printf("crossbow%zu-spare-fabric", i);
-
-            sgi_xtalk_crossbow_link_prepare(&s->spare_fabric_links[i],
-                                            OBJECT(s), spare_name);
-            s->spare_fabric_widget[i] = widget;
-        }
     }
+    sgi_machine_prepare_slot_links(s, t);
+}
+
+/*
+ * A catalogue-built XIO board's own placement: the widget its attachment
+ * names, which the builder wires through that board's own crossbow link.
+ */
+static void sgi_machine_set_board_widget(DeviceState *dev, uint32_t widget)
+{
+    g_autofree char *slot = g_strdup_printf("%u", widget);
+
+    qdev_prop_set_string(dev, "slot", slot);
 }
 
 /*
@@ -1191,7 +1239,7 @@ static bool sgi_machine_instantiate_baseio_card(
     object_unref(OBJECT(dev));
 
     qdev_prop_set_uint32(dev, "module", record->module_index);
-    qdev_prop_set_uint32(dev, "slot", attachment->widget);
+    sgi_machine_set_board_widget(dev, attachment->widget);
     qdev_prop_set_uint64(dev, "onewire-serial", record->serial);
     if (record->has_ioc3_serial) {
         qdev_prop_set_uint64(dev, "ioc3-onewire-serial", record->ioc3_serial);
@@ -1274,7 +1322,7 @@ static bool sgi_machine_instantiate_pci_carrier(
     object_unref(OBJECT(dev));
 
     qdev_prop_set_uint32(dev, "module", record->module_index);
-    qdev_prop_set_uint32(dev, "slot", attachment->widget);
+    sgi_machine_set_board_widget(dev, attachment->widget);
     qdev_prop_set_uint64(dev, "onewire-serial", record->serial);
     qdev_prop_set_string(dev, "pci-bus-name", bus_name);
     qdev_prop_set_uint32(dev, "slots", SGI_MACHINE_PCI_CARRIER_SLOTS);
@@ -1328,7 +1376,7 @@ static bool sgi_machine_instantiate_gigachannel(
     object_unref(OBJECT(dev));
 
     qdev_prop_set_uint32(dev, "module", record->module_index);
-    qdev_prop_set_uint32(dev, "slot", attachment->widget);
+    sgi_machine_set_board_widget(dev, attachment->widget);
     qdev_prop_set_uint64(dev, "onewire-serial", record->serial);
     qdev_prop_set_string(dev, "pci-bus-name", bus_name);
     if (flash_blk) {
@@ -1350,7 +1398,7 @@ static bool sgi_machine_instantiate_pci_shoehorn(
     object_unref(OBJECT(dev));
 
     qdev_prop_set_uint32(dev, "module", record->module_index);
-    qdev_prop_set_uint32(dev, "slot", attachment->widget);
+    sgi_machine_set_board_widget(dev, attachment->widget);
     qdev_prop_set_uint64(dev, "onewire-serial", record->serial);
     qdev_prop_set_string(dev, "pci-bus-name", bus_name);
     qdev_prop_set_uint32(dev, "cad-duo-slot",
@@ -1384,7 +1432,7 @@ static bool sgi_machine_instantiate_xio_card(
     object_unref(OBJECT(dev));
 
     qdev_prop_set_uint32(dev, "module", record->module_index);
-    qdev_prop_set_uint32(dev, "slot", attachment->widget);
+    sgi_machine_set_board_widget(dev, attachment->widget);
     qdev_prop_set_uint64(dev, "onewire-serial", record->serial);
     if (record->has_ioc3_serial) {
         qdev_prop_set_uint64(dev, "ioc3-onewire-serial", record->ioc3_serial);
@@ -1441,7 +1489,7 @@ static bool sgi_machine_instantiate_kona(
     dev->id = g_strdup(name);
 
     qdev_prop_set_uint32(dev, "module", record->module_index);
-    qdev_prop_set_uint32(dev, "slot", attachment->widget);
+    sgi_machine_set_board_widget(dev, attachment->widget);
     object_property_set_link(
         OBJECT(dev), "fabric",
         OBJECT(sgi_xtalk_crossbow_link_prepare(crossbow_link, OBJECT(s),
@@ -1672,9 +1720,8 @@ static bool sgi_machine_instantiate_io_board(
  * machine-init-done hook this replaces: a crosstalk board realized after
  * the machine returns cannot become an inbound destination on any of
  * these Crossbows (see the crosstalk port experiment's own report for
- * why), though sgi_machine_done() below still gives such a board an
- * outbound path, through the spare widget this function's own caller
- * held back for it.
+ * why), though sgi_machine_done() below still connects such a board,
+ * through the proxy of the empty slot it names.
  */
 static bool sgi_machine_realize_crossbars(
     SGIMachineState *s, const SGIModelTopology *t,
@@ -2602,9 +2649,10 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
     /* One crossbow link per node, then one per io_boards position. */
     s->crossbow_links =
         g_new0(SGIXtalkCrossbowLink, node_count + io_board_count);
-    /* One spare fabric proxy per crossbars[] entry; see the header comment. */
-    s->spare_fabric_links = g_new0(SGIXtalkCrossbowLink, crossbar_count);
-    s->spare_fabric_widget = g_new0(unsigned int, crossbar_count);
+    /* One fabric proxy per empty XIO slot; see slot_links. */
+    s->slot_links = g_new0(SGIXtalkCrossbowLink,
+                           sgi_machine_topology_xtalk_slot_count(t));
+    s->slot_claimed = g_new0(bool, sgi_machine_topology_xtalk_slot_count(t));
 
     node_attachment = g_new0(unsigned int, node_count);
     board_attachment = g_new0(unsigned int, io_board_count);
@@ -2843,10 +2891,9 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
      * rather than waiting for a machine-init-done notifier: this
      * experiment does not support a crosstalk board attaching later
      * (see docs/plans/sn-machine-model.md, step 1's own report). A
-     * `-device` board realized later still reaches its Crossbow, but only
-     * outbound, through the spare widget sgi_machine_build_crossbars()
-     * held back for it; sgi_machine_done() below finishes that proxy once
-     * every Crossbow realized here is real.
+     * `-device` board realized later reaches its Crossbow through the
+     * proxy of the empty slot it names; sgi_machine_done() below finishes
+     * that proxy once every Crossbow realized here is real.
      */
     if (!sgi_machine_realize_crossbars(s, t, node_attachment, board_attachment,
                                        errp)) {
@@ -2856,7 +2903,7 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
 }
 
 /*
- * Finishes every Crossbow's own spare fabric proxy, once every Crossbow
+ * Finishes every empty XIO slot's fabric proxy, once every Crossbow
  * this machine builds has realized (sgi_machine_realize_crossbars() above,
  * called from sgi_machine_realize(), always returns well before this
  * notifier can fire: a cold `-device` board realizes only after
@@ -2868,16 +2915,16 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
  * until sgi_machine_realize_crossbars() has run.
  *
  * This wires a `-device` board taking the proxy as its own "fabric"
- * property into the Crossbow both ways. finish() above aliases the spare
- * widget's real packet ingress onto the proxy, but a widget
- * sgi_machine_build_crossbars() held out of startup-links-alive answers
- * as not alive, and the Crossbow disables a not-alive port's whole
- * ingress region (hw/misc/sgi-xbow.c, sgi_xbow_sync_routes()) -- so the
- * alias would still resolve empty without the board also claiming it:
+ * property into the Crossbow both ways. finish() above aliases the
+ * slot's real packet ingress onto the proxy, but an empty slot's widget
+ * is out of startup-links-alive and answers as not alive, and the
+ * Crossbow disables a not-alive port's whole ingress region
+ * (hw/misc/sgi-xbow.c, sgi_xbow_sync_routes()) -- so the alias would
+ * still resolve empty without the board also claiming it:
  * build_widget() calls sgi_xtalk_crossbow_link_claim_fabric() once the
  * board's own Bridge has built, and fabric_claimed here is what tells
  * this loop to finish the attachment. For a claimed proxy this loop first
- * registers the board's own faces as the spare widget's inbound
+ * registers the board's own faces as the slot widget's inbound
  * destination (sgi_xbow_attach_endpoint_live(), which also turns the
  * port from an empty slot into one reporting a widget present) -- the
  * post-realize counterpart of the sgi_xbow_attach_endpoint() every
@@ -2894,38 +2941,143 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
  * whichever populated widget it addresses, the same as any onboard
  * board's traffic in either direction. Onboard and
  * topology-built boards still attach and route before the synchronous
- * Crossbow realize; only the spare widget, which no board may exist to
- * claim until after machine init, takes this later path.
+ * Crossbow realize; only an empty slot, which no board may claim until
+ * after machine init, takes this later path.
  */
 static void sgi_machine_done(Notifier *notifier, void *data)
 {
     SGIMachineState *s = container_of(notifier, SGIMachineState,
                                       machine_done);
     const SGIModelTopology *t = sgi_machine_topology(MACHINE(s));
-    size_t crossbar_count = sgi_machine_topology_crossbar_count(t);
-    size_t i;
+    g_autofree const SGIModelXtalkSlot **slots = NULL;
+    size_t slot_count, i;
 
-    for (i = 0; i < crossbar_count; i++) {
-        g_autofree char *name = NULL;
+    slots = sgi_model_xtalk_slot_array(t->xtalk_slots, &slot_count);
+    for (i = 0; i < slot_count; i++) {
+        SGIXtalkCrossbowLink *link = &s->slot_links[i];
+        SGIXbowState *crossbow = s->crossbars[slots[i]->crossbar_index];
+        g_autofree char *slot_name = sgi_machine_xtalk_slot_name(t, slots[i]);
+        g_autofree char *name = g_strdup_printf("%s-fabric", slot_name);
 
-        if (!s->spare_fabric_widget[i]) {
-            continue;
-        }
-        name = g_strdup_printf("crossbow%zu-spare-fabric", i);
-        sgi_xtalk_crossbow_link_finish(&s->spare_fabric_links[i], OBJECT(s),
-                                       name, s->crossbars[i],
-                                       s->spare_fabric_widget[i],
-                                       &error_fatal);
-        if (s->spare_fabric_links[i].fabric_claimed) {
-            sgi_xbow_attach_endpoint_live(
-                s->crossbars[i], s->spare_fabric_widget[i],
-                s->spare_fabric_links[i].claimant_cpu_face,
-                s->spare_fabric_links[i].claimant_packet_face, &error_fatal);
-            sgi_xbow_mark_widget_alive(s->crossbars[i],
-                                       s->spare_fabric_widget[i], true,
+        sgi_xtalk_crossbow_link_finish(link, OBJECT(s), name, crossbow,
+                                       slots[i]->widget, &error_fatal);
+        if (link->fabric_claimed) {
+            sgi_xbow_attach_endpoint_live(crossbow, slots[i]->widget,
+                                          link->claimant_cpu_face,
+                                          link->claimant_packet_face,
+                                          &error_fatal);
+            sgi_xbow_mark_widget_alive(crossbow, slots[i]->widget, true,
                                        &error_fatal);
         }
     }
+}
+
+/*
+ * The machine's side of a board fitted by slot name (TYPE_SGI_XIO_SLOTS,
+ * xio-board.h): the named empty slot's module, widget and fabric proxy.
+ */
+static MemoryRegion *sgi_machine_claim_xio_slot(Object *obj,
+                                                const char *name,
+                                                uint32_t *module,
+                                                uint32_t *widget,
+                                                Error **errp)
+{
+    SGIMachineState *s = SGI_MACHINE(obj);
+    const SGIModelTopology *t = sgi_machine_topology(MACHINE(s));
+    g_autofree const SGIModelXtalkSlot **slots = NULL;
+    const SGIModelIoBoardList *board;
+    size_t slot_count, i;
+    ssize_t found = -1;
+
+    slots = sgi_model_xtalk_slot_array(t->xtalk_slots, &slot_count);
+    for (i = 0; i < slot_count; i++) {
+        g_autofree char *slot_name = sgi_machine_xtalk_slot_name(t, slots[i]);
+        uint32_t slot_module = sgi_machine_xtalk_slot_module(t, slots[i]);
+
+        if (!g_str_equal(slot_name, name) &&
+            !g_str_equal(slots[i]->label, name)) {
+            continue;
+        }
+        if (*module != SGI_XIO_BOARD_MODULE_UNSET && *module != slot_module) {
+            continue;
+        }
+        if (found >= 0) {
+            error_setg(errp, "XIO slot %s is in more than one module of "
+                       "topology '%s'; name the module with module=",
+                       name, t->name);
+            return NULL;
+        }
+        found = i;
+    }
+    if (found < 0) {
+        for (i = 0; i < slot_count; i++) {
+            if (g_str_equal(slots[i]->label, name)) {
+                error_setg(errp, "XIO slot %s of topology '%s' is in module "
+                           "%u, not module %u", name, t->name,
+                           sgi_machine_xtalk_slot_module(t, slots[i]),
+                           *module);
+                return NULL;
+            }
+        }
+        for (board = t->io_boards; board; board = board->next) {
+            if (board->value->label &&
+                g_str_equal(board->value->label, name)) {
+                error_setg(errp, "XIO slot %s of topology '%s' already holds "
+                           "the topology's own board", name, t->name);
+                return NULL;
+            }
+        }
+        error_setg(errp, "topology '%s' has no empty XIO slot %s", t->name,
+                   name);
+        return NULL;
+    }
+    if (s->slot_claimed[found]) {
+        error_setg(errp, "XIO slot %s already holds a board", name);
+        return NULL;
+    }
+    s->slot_claimed[found] = true;
+    *module = sgi_machine_xtalk_slot_module(t, slots[found]);
+    *widget = slots[found]->widget;
+    return &s->slot_links[found].proxy;
+}
+
+/*
+ * A board given its fabric outright: when that fabric is one of this
+ * machine's slot proxies, the board must name that slot's own module and
+ * widget, and be the first to take it.
+ */
+static bool sgi_machine_claim_xio_fabric(Object *obj, MemoryRegion *fabric,
+                                         uint32_t module, uint32_t widget,
+                                         Error **errp)
+{
+    SGIMachineState *s = SGI_MACHINE(obj);
+    const SGIModelTopology *t = sgi_machine_topology(MACHINE(s));
+    g_autofree const SGIModelXtalkSlot **slots = NULL;
+    size_t slot_count, i;
+
+    slots = sgi_model_xtalk_slot_array(t->xtalk_slots, &slot_count);
+    for (i = 0; i < slot_count; i++) {
+        uint32_t slot_module = sgi_machine_xtalk_slot_module(t, slots[i]);
+
+        if (fabric != &s->slot_links[i].proxy) {
+            continue;
+        }
+        if (module != slot_module || widget != slots[i]->widget) {
+            error_setg(errp, "fabric of XIO slot %s is module %u widget %u, "
+                       "not the module %u widget %u the board names",
+                       slots[i]->label, slot_module, slots[i]->widget,
+                       module, widget);
+            return false;
+        }
+        if (s->slot_claimed[i]) {
+            error_setg(errp, "XIO slot %s already holds a board",
+                       slots[i]->label);
+            return false;
+        }
+        s->slot_claimed[i] = true;
+        return true;
+    }
+    return true;
 }
 
 void sgi_machine_init(MachineState *machine)
@@ -3156,8 +3308,8 @@ static void sgi_machine_instance_finalize(Object *obj)
     g_free(s->io_boards);
     g_free(s->direct_links);
     g_free(s->crossbow_links);
-    g_free(s->spare_fabric_links);
-    g_free(s->spare_fabric_widget);
+    g_free(s->slot_links);
+    g_free(s->slot_claimed);
     g_free(s->topology_name);
     g_free(s->population);
     g_free(s->baseio_preset);
@@ -3170,6 +3322,10 @@ static void sgi_machine_instance_finalize(Object *obj)
 static void sgi_machine_class_init(ObjectClass *oc, const void *data)
 {
     MachineClass *mc = MACHINE_CLASS(oc);
+    SGIXioSlotsClass *xc = SGI_XIO_SLOTS_CLASS(oc);
+
+    xc->claim = sgi_machine_claim_xio_slot;
+    xc->claim_fabric = sgi_machine_claim_xio_fabric;
 
     mc->init = sgi_machine_init;
     mc->reset = sgi_machine_reset;
@@ -3351,6 +3507,10 @@ static const TypeInfo sgi_machine_types[] = {
         .instance_finalize = sgi_machine_instance_finalize,
         .class_size        = sizeof(SGIMachineClass),
         .class_init        = sgi_machine_class_init,
+        .interfaces        = (const InterfaceInfo[]) {
+            { TYPE_SGI_XIO_SLOTS },
+            { }
+        },
     },
     {
         .name       = MACHINE_TYPE_NAME("origin200"),

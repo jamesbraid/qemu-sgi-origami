@@ -29,8 +29,8 @@
 #define BASEIO_NASID 0x11
 
 /*
- * crossbow0's first spare fabric widget, where a `-device` XIO board
- * lands on an Origin 2000 (sn0-pci-shoehorn-test.c).
+ * IO4, crossbow0's widget 11, the empty XIO slot where a `-device` XIO
+ * board lands on an Origin 2000 (sn0-pci-shoehorn-test.c).
  */
 #define SPARE_WIDGET 11
 
@@ -177,7 +177,7 @@ static const IdentityCase identity_cases[] = {
 
 /*
  * A board whose Bridge has a part number and no board name, fitted at
- * the spare widget, and the part number its text layout carries.
+ * IO4, and the part number its text layout carries.
  */
 typedef struct TextLayoutCase {
     const char *name;
@@ -186,8 +186,7 @@ typedef struct TextLayoutCase {
 } TextLayoutCase;
 
 #define SPARE_BOARD(type) \
-    "-M origin2000 -display none -device " type ",module=99,slot=11," \
-    "fabric=/machine/crossbow0-spare-fabric[0],fabric-widget-shift=48"
+    "-M origin2000 -display none -device " type ",slot=io4"
 
 static const TextLayoutCase text_layout_cases[] = {
     { "pci-expansion", SPARE_BOARD("sgi-pci-expansion"), "NOT-OBSERVED" },

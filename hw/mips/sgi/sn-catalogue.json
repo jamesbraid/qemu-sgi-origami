@@ -3332,6 +3332,7 @@
           "carrier": "xio-slot",
           "id": "baseio",
           "ioc3-serial": 17592186044424,
+          "label": "io1",
           "module-index": 0,
           "other-identity-parts": [],
           "part": "030-0734-002",
@@ -3343,6 +3344,7 @@
           "attachment": 4,
           "carrier": "xio-slot",
           "id": "io4-pipe",
+          "label": "io4",
           "module-index": 0,
           "other-identity-parts": [],
           "part": "030-1129-002",
@@ -3528,24 +3530,28 @@
           "controlling-node": 0,
           "crossbar-index": 0,
           "id": "xio-slot-2",
+          "label": "io2",
           "widget": 11
         },
         {
           "controlling-node": 0,
           "crossbar-index": 0,
           "id": "xio-slot-3",
+          "label": "io3",
           "widget": 14
         },
         {
           "controlling-node": 0,
           "crossbar-index": 0,
           "id": "xio-slot-5",
+          "label": "io5",
           "widget": 13
         },
         {
           "controlling-node": 0,
           "crossbar-index": 0,
           "id": "xio-slot-6",
+          "label": "io6",
           "widget": 12
         }
       ]
@@ -3663,6 +3669,7 @@
           "carrier": "xio-slot",
           "id": "baseio",
           "ioc3-serial": 17592186044424,
+          "label": "io1",
           "module-index": 0,
           "other-identity-parts": [],
           "part": "030-0734-002",
@@ -3674,6 +3681,7 @@
           "attachment": 3,
           "carrier": "xio-slot",
           "id": "io3-pipe",
+          "label": "io3",
           "module-index": 0,
           "other-identity-parts": [
             "030-1067-001"
@@ -4014,60 +4022,70 @@
           "controlling-node": 2,
           "crossbar-index": 0,
           "id": "pci-expansion",
+          "label": "io2",
           "widget": 12
         },
         {
           "controlling-node": 2,
           "crossbar-index": 0,
           "id": "xio-slot-4",
+          "label": "io4",
           "widget": 11
         },
         {
           "controlling-node": 0,
           "crossbar-index": 0,
           "id": "xio-slot-5",
+          "label": "io5",
           "widget": 14
         },
         {
           "controlling-node": 2,
           "crossbar-index": 0,
           "id": "xio-slot-6",
+          "label": "io6",
           "widget": 13
         },
         {
           "controlling-node": 1,
           "crossbar-index": 1,
           "id": "xio-slot-7",
+          "label": "io7",
           "widget": 14
         },
         {
           "controlling-node": 3,
           "crossbar-index": 1,
           "id": "xio-slot-8",
+          "label": "io8",
           "widget": 11
         },
         {
           "controlling-node": 1,
           "crossbar-index": 1,
           "id": "xio-slot-9",
+          "label": "io9",
           "widget": 15
         },
         {
           "controlling-node": 3,
           "crossbar-index": 1,
           "id": "xio-slot-10",
+          "label": "io10",
           "widget": 12
         },
         {
           "controlling-node": 1,
           "crossbar-index": 1,
           "id": "xio-slot-11",
+          "label": "io11",
           "widget": 8
         },
         {
           "controlling-node": 3,
           "crossbar-index": 1,
           "id": "xio-slot-12",
+          "label": "io12",
           "widget": 13
         }
       ]
@@ -4463,6 +4481,7 @@
           "attachment": 1,
           "carrier": "xio-slot",
           "id": "io6-mgras",
+          "label": "io6",
           "module-index": 1,
           "other-identity-parts": [],
           "part": "",
@@ -4598,24 +4617,28 @@
           "controlling-node": 0,
           "crossbar-index": 0,
           "id": "xio-position-io2",
+          "label": "io2",
           "widget": 11
         },
         {
           "controlling-node": 0,
           "crossbar-index": 0,
           "id": "xio-position-io3",
+          "label": "io3",
           "widget": 12
         },
         {
           "controlling-node": 0,
           "crossbar-index": 0,
           "id": "xio-position-io4",
+          "label": "io4",
           "widget": 13
         },
         {
           "controlling-node": 0,
           "crossbar-index": 0,
           "id": "xio-position-io5",
+          "label": "io5",
           "widget": 14
         }
       ]
@@ -4662,6 +4685,7 @@
           "attachment": 1,
           "carrier": "xio-slot",
           "id": "io2-mscsi",
+          "label": "io2",
           "module-index": 1,
           "other-identity-parts": [],
           "part": "030-1243-001",
@@ -4674,6 +4698,7 @@
           "carrier": "xio-slot",
           "id": "io3-menet",
           "ioc3-serial": 103835129397248,
+          "label": "io3",
           "module-index": 1,
           "other-identity-parts": [],
           "part": "030-0873-003",
@@ -4685,6 +4710,7 @@
           "attachment": 3,
           "carrier": "xio-slot",
           "id": "io4-mscsi",
+          "label": "io4",
           "module-index": 1,
           "other-identity-parts": [],
           "part": "030-1243-001",
@@ -4830,12 +4856,14 @@
           "controlling-node": 0,
           "crossbar-index": 0,
           "id": "xio-position-io5",
+          "label": "io5",
           "widget": 14
         },
         {
           "controlling-node": 0,
           "crossbar-index": 0,
           "id": "xio-position-io6",
+          "label": "io6",
           "widget": 15
         }
       ]
@@ -5001,30 +5029,35 @@
           "controlling-node": 0,
           "crossbar-index": 0,
           "id": "xio-position-io2",
+          "label": "io2",
           "widget": 11
         },
         {
           "controlling-node": 0,
           "crossbar-index": 0,
           "id": "xio-position-io3",
+          "label": "io3",
           "widget": 12
         },
         {
           "controlling-node": 0,
           "crossbar-index": 0,
           "id": "xio-position-io4",
+          "label": "io4",
           "widget": 13
         },
         {
           "controlling-node": 0,
           "crossbar-index": 0,
           "id": "xio-position-io5",
+          "label": "io5",
           "widget": 14
         },
         {
           "controlling-node": 0,
           "crossbar-index": 0,
           "id": "xio-position-io6",
+          "label": "io6",
           "widget": 15
         }
       ]
@@ -5265,6 +5298,7 @@
           "carrier": "xio-slot",
           "id": "baseio",
           "ioc3-serial": 17592186044424,
+          "label": "io1",
           "module-index": 0,
           "other-identity-parts": [],
           "part": "030-1124-002",
@@ -5276,6 +5310,7 @@
           "attachment": 3,
           "carrier": "xio-slot",
           "id": "io3-mgras",
+          "label": "io3",
           "module-index": 0,
           "other-identity-parts": [],
           "part": "",
@@ -5288,6 +5323,7 @@
           "carrier": "xio-slot",
           "id": "io5-menet",
           "ioc3-serial": 17592186044430,
+          "label": "io5",
           "module-index": 0,
           "other-identity-parts": [],
           "part": "030-0873-003",
@@ -5631,54 +5667,63 @@
           "controlling-node": 2,
           "crossbar-index": 0,
           "id": "pci-expansion",
+          "label": "io2",
           "widget": 12
         },
         {
           "controlling-node": 2,
           "crossbar-index": 0,
           "id": "xio-slot-4",
+          "label": "io4",
           "widget": 11
         },
         {
           "controlling-node": 2,
           "crossbar-index": 0,
           "id": "xio-slot-6",
+          "label": "io6",
           "widget": 13
         },
         {
           "controlling-node": 1,
           "crossbar-index": 1,
           "id": "xio-slot-7",
+          "label": "io7",
           "widget": 14
         },
         {
           "controlling-node": 3,
           "crossbar-index": 1,
           "id": "xio-slot-8",
+          "label": "io8",
           "widget": 11
         },
         {
           "controlling-node": 1,
           "crossbar-index": 1,
           "id": "xio-slot-9",
+          "label": "io9",
           "widget": 15
         },
         {
           "controlling-node": 3,
           "crossbar-index": 1,
           "id": "xio-slot-10",
+          "label": "io10",
           "widget": 12
         },
         {
           "controlling-node": 1,
           "crossbar-index": 1,
           "id": "xio-slot-11",
+          "label": "io11",
           "widget": 8
         },
         {
           "controlling-node": 3,
           "crossbar-index": 1,
           "id": "xio-slot-12",
+          "label": "io12",
           "widget": 13
         }
       ]
@@ -5796,6 +5841,7 @@
           "carrier": "xio-slot",
           "id": "baseio",
           "ioc3-serial": 17592186044424,
+          "label": "io1",
           "module-index": 0,
           "other-identity-parts": [],
           "part": "030-1124-002",
@@ -5807,6 +5853,7 @@
           "attachment": 3,
           "carrier": "xio-slot",
           "id": "io3-mgras",
+          "label": "io3",
           "module-index": 0,
           "other-identity-parts": [],
           "part": "",
@@ -6145,60 +6192,70 @@
           "controlling-node": 2,
           "crossbar-index": 0,
           "id": "pci-expansion",
+          "label": "io2",
           "widget": 12
         },
         {
           "controlling-node": 2,
           "crossbar-index": 0,
           "id": "xio-slot-4",
+          "label": "io4",
           "widget": 11
         },
         {
           "controlling-node": 0,
           "crossbar-index": 0,
           "id": "xio-slot-5",
+          "label": "io5",
           "widget": 14
         },
         {
           "controlling-node": 2,
           "crossbar-index": 0,
           "id": "xio-slot-6",
+          "label": "io6",
           "widget": 13
         },
         {
           "controlling-node": 1,
           "crossbar-index": 1,
           "id": "xio-slot-7",
+          "label": "io7",
           "widget": 14
         },
         {
           "controlling-node": 3,
           "crossbar-index": 1,
           "id": "xio-slot-8",
+          "label": "io8",
           "widget": 11
         },
         {
           "controlling-node": 1,
           "crossbar-index": 1,
           "id": "xio-slot-9",
+          "label": "io9",
           "widget": 15
         },
         {
           "controlling-node": 3,
           "crossbar-index": 1,
           "id": "xio-slot-10",
+          "label": "io10",
           "widget": 12
         },
         {
           "controlling-node": 1,
           "crossbar-index": 1,
           "id": "xio-slot-11",
+          "label": "io11",
           "widget": 8
         },
         {
           "controlling-node": 3,
           "crossbar-index": 1,
           "id": "xio-slot-12",
+          "label": "io12",
           "widget": 13
         }
       ]
@@ -6229,6 +6286,7 @@
           "carrier": "xio-slot",
           "id": "baseio",
           "ioc3-serial": 17592186044424,
+          "label": "io1",
           "module-index": 0,
           "other-identity-parts": [],
           "part": "030-0734-002",
@@ -6240,6 +6298,7 @@
           "attachment": 3,
           "carrier": "xio-slot",
           "id": "io3-mgras",
+          "label": "io3",
           "module-index": 0,
           "other-identity-parts": [],
           "part": "",
@@ -6356,6 +6415,7 @@
           "controlling-node": 0,
           "crossbar-index": 0,
           "id": "xio-slot-5",
+          "label": "io5",
           "widget": 14
         }
       ]
@@ -6473,6 +6533,7 @@
           "carrier": "xio-slot",
           "id": "baseio",
           "ioc3-serial": 17592186044424,
+          "label": "io1",
           "module-index": 0,
           "other-identity-parts": [],
           "part": "030-1124-002",
@@ -6484,6 +6545,7 @@
           "attachment": 2,
           "carrier": "xio-slot",
           "id": "io2-pci-carrier",
+          "label": "io2",
           "module-index": 0,
           "other-identity-parts": [],
           "part": "030-1062-002",
@@ -6495,6 +6557,7 @@
           "attachment": 3,
           "carrier": "xio-slot",
           "id": "io3-mgras",
+          "label": "io3",
           "module-index": 0,
           "other-identity-parts": [],
           "part": "",
@@ -6838,54 +6901,63 @@
           "controlling-node": 2,
           "crossbar-index": 0,
           "id": "xio-slot-4",
+          "label": "io4",
           "widget": 11
         },
         {
           "controlling-node": 0,
           "crossbar-index": 0,
           "id": "xio-slot-5",
+          "label": "io5",
           "widget": 14
         },
         {
           "controlling-node": 2,
           "crossbar-index": 0,
           "id": "xio-slot-6",
+          "label": "io6",
           "widget": 13
         },
         {
           "controlling-node": 1,
           "crossbar-index": 1,
           "id": "xio-slot-7",
+          "label": "io7",
           "widget": 14
         },
         {
           "controlling-node": 3,
           "crossbar-index": 1,
           "id": "xio-slot-8",
+          "label": "io8",
           "widget": 11
         },
         {
           "controlling-node": 1,
           "crossbar-index": 1,
           "id": "xio-slot-9",
+          "label": "io9",
           "widget": 15
         },
         {
           "controlling-node": 3,
           "crossbar-index": 1,
           "id": "xio-slot-10",
+          "label": "io10",
           "widget": 12
         },
         {
           "controlling-node": 1,
           "crossbar-index": 1,
           "id": "xio-slot-11",
+          "label": "io11",
           "widget": 8
         },
         {
           "controlling-node": 3,
           "crossbar-index": 1,
           "id": "xio-slot-12",
+          "label": "io12",
           "widget": 13
         }
       ]
@@ -7003,6 +7075,7 @@
           "carrier": "xio-slot",
           "id": "baseio",
           "ioc3-serial": 17592186044424,
+          "label": "io1",
           "module-index": 0,
           "other-identity-parts": [],
           "part": "030-1124-002",
@@ -7015,6 +7088,7 @@
           "carrier": "xio-slot",
           "id": "io2-pci-shoehorn",
           "ioc3-serial": 17592186044430,
+          "label": "io2",
           "module-index": 0,
           "other-identity-parts": [],
           "part": "030-1275-002",
@@ -7026,6 +7100,7 @@
           "attachment": 3,
           "carrier": "xio-slot",
           "id": "io3-mgras",
+          "label": "io3",
           "module-index": 0,
           "other-identity-parts": [],
           "part": "",
@@ -7369,54 +7444,63 @@
           "controlling-node": 2,
           "crossbar-index": 0,
           "id": "xio-slot-4",
+          "label": "io4",
           "widget": 11
         },
         {
           "controlling-node": 0,
           "crossbar-index": 0,
           "id": "xio-slot-5",
+          "label": "io5",
           "widget": 14
         },
         {
           "controlling-node": 2,
           "crossbar-index": 0,
           "id": "xio-slot-6",
+          "label": "io6",
           "widget": 13
         },
         {
           "controlling-node": 1,
           "crossbar-index": 1,
           "id": "xio-slot-7",
+          "label": "io7",
           "widget": 14
         },
         {
           "controlling-node": 3,
           "crossbar-index": 1,
           "id": "xio-slot-8",
+          "label": "io8",
           "widget": 11
         },
         {
           "controlling-node": 1,
           "crossbar-index": 1,
           "id": "xio-slot-9",
+          "label": "io9",
           "widget": 15
         },
         {
           "controlling-node": 3,
           "crossbar-index": 1,
           "id": "xio-slot-10",
+          "label": "io10",
           "widget": 12
         },
         {
           "controlling-node": 1,
           "crossbar-index": 1,
           "id": "xio-slot-11",
+          "label": "io11",
           "widget": 8
         },
         {
           "controlling-node": 3,
           "crossbar-index": 1,
           "id": "xio-slot-12",
+          "label": "io12",
           "widget": 13
         }
       ]
