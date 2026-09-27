@@ -334,25 +334,61 @@ class LocalAssetTests(unittest.TestCase):
 
     def test_configured_missing_file_fails(self):
         asset = LocalAsset('firmware/test.bin', '0' * 64)
+
+        class AssetTest:
+            ASSET_TEST_FILE = asset
+
         with tempfile.TemporaryDirectory() as root:
             with mock.patch.dict(os.environ,
-                                 {'QEMU_TEST_SGI_ASSET_DIR': root}):
-                with self.assertRaises(AssetError) as caught:
-                    asset.fetch()
-        self.assertIn('Local file is missing', str(caught.exception))
+                                 {'QEMU_TEST_SGI_ASSET_DIR': root},
+                                 clear=True):
+                with mock.patch('qemu_test.asset.logging.getLogger'):
+                    with self.assertRaisesRegex(
+                            AssetError, 'Local file is missing'):
+                        Asset.precache_test(AssetTest())
 
-    def test_configured_file_requires_matching_checksum(self):
+    def test_configured_file_with_wrong_checksum_fails_during_precache(self):
         asset = LocalAsset('firmware/test.bin', '0' * 64)
+
+        class AssetTest:
+            ASSET_TEST_FILE = asset
+
         with tempfile.TemporaryDirectory() as root:
             path = os.path.join(root, 'firmware', 'test.bin')
             os.makedirs(os.path.dirname(path))
             with open(path, 'wb') as local_file:
                 local_file.write(b'local firmware')
             with mock.patch.dict(os.environ,
-                                 {'QEMU_TEST_SGI_ASSET_DIR': root}):
-                with self.assertRaises(AssetError) as caught:
-                    asset.fetch()
-        self.assertIn('does not match', str(caught.exception))
+                                 {'QEMU_TEST_SGI_ASSET_DIR': root},
+                                 clear=True):
+                with mock.patch('qemu_test.asset.logging.getLogger'):
+                    with self.assertRaisesRegex(AssetError,
+                                                'does not match'):
+                        Asset.precache_test(AssetTest())
+
+    def test_configured_valid_asset_precaches_from_its_local_path(self):
+        content = b'local firmware'
+        hashsum = hashlib.sha256(content).hexdigest()
+        with tempfile.TemporaryDirectory() as root, \
+                tempfile.TemporaryDirectory() as cache:
+            path = os.path.join(root, 'firmware', 'test.bin')
+            os.makedirs(os.path.dirname(path))
+            with open(path, 'wb') as local_file:
+                local_file.write(content)
+            with mock.patch.dict(os.environ,
+                                 {'QEMU_TEST_SGI_ASSET_DIR': root,
+                                  'QEMU_TEST_CACHE_DIR': cache},
+                                 clear=True):
+                asset = LocalAsset('firmware/test.bin', hashsum)
+
+                class AssetTest:
+                    ASSET_TEST_FILE = asset
+
+                with mock.patch('qemu_test.asset.logging.getLogger'):
+                    Asset.precache_test(AssetTest())
+
+                self.assertEqual(asset.fetch(), path)
+                self.assertFalse(asset.cache_file.exists())
 
     def test_matching_local_asset_ignores_cache_refresh(self):
         content = b'local firmware'
