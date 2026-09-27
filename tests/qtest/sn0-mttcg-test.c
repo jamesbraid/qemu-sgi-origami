@@ -1735,7 +1735,10 @@ static void test_gdb_peer_hold(const void *data)
 
     gh_intervening_insn = options & 1;
     gh_interrupt_after_count = interrupt_vm;
-    gh_wide_timer_moves = false;
+    gh_wide_timer_moves = options & 2;
+    gh_delay_slot_count = false;
+    gh_peer_timer_writes = false;
+    gh_reset_between_writes = false;
 
     if (!qtest_has_accel("tcg")) {
         g_test_skip("TCG is unavailable");
@@ -2283,6 +2286,10 @@ int main(int argc, char **argv)
     qtest_add_data_func("mttcg/timer/gdb-peer-hold-intervening",
                         GINT_TO_POINTER(1),
                         test_gdb_peer_hold);
+    qtest_add_data_func("mttcg/timer/gdb-peer-hold-dmtc0-adjacent",
+                        GINT_TO_POINTER(2), test_gdb_peer_hold);
+    qtest_add_data_func("mttcg/timer/gdb-peer-hold-dmtc0-intervening",
+                        GINT_TO_POINTER(3), test_gdb_peer_hold);
     qtest_add_data_func("mttcg/timer/gdb-peer-hold-migrate",
                         GINT_TO_POINTER(4), test_gdb_peer_hold);
     qtest_add_data_func("mttcg/timer/gdb-peer-hold-interrupt",
