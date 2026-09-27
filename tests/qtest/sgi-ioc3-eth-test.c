@@ -69,7 +69,7 @@
  */
 #define RX_ARRIVAL_LATENCY_NS  200000
 
-/* Management requests; the transceiver is at 31 on real hardware. */
+/* This stand-alone IOC3 fixture leaves the transceiver at address 31. */
 #define MII_CTL_READ      (1u << 10)
 #define MII_PHY_SHIFT     5
 #define PHY_ADDRESS       31
@@ -77,6 +77,8 @@
 /* Transceiver registers, numbered by the 802.3 management set. */
 #define PHY_BMCR          0
 #define PHY_BMSR          1
+#define PHY_ANER          6
+#define MII_10BTSCR       0x18
 #define BMCR_LOOPBACK     0x4000
 #define BMCR_SPEED100     0x2000
 #define BMCR_DUPLEX       0x0100
@@ -2159,6 +2161,11 @@ static void test_dp83843_reset_clears_lbr_and_reopens_the_backend(
     net_socket_set_recv_timeout(sv[0], 10);
     qts = ioc3_attach_socket_dp83843(sv[1], 2);
 
+    g_assert_cmphex(mii_read(qts, PHY_BMSR) & 0x7849, ==, 0x7849);
+    g_assert_cmphex(mii_read(qts, PHY_ANER) & 0x0004, ==, 0x0004);
+    g_assert_cmphex(mii_read(qts, MII_LBR), ==, 0);
+    g_assert_cmphex(mii_read(qts, MII_10BTSCR) & 0xc77f, ==, 0);
+
     mii_write(qts, PHY_BMCR, BMCR_SPEED100 | BMCR_DUPLEX);
     mii_write(qts, MII_LBR, mii_read(qts, MII_LBR) | LBR_TW_LBEN);
 
@@ -2170,6 +2177,10 @@ static void test_dp83843_reset_clears_lbr_and_reopens_the_backend(
 
     /* Only the flush a reset's loopback exit triggers delivers it. */
     mii_write(qts, PHY_BMCR, 0x8000);
+    g_assert_cmphex(mii_read(qts, PHY_BMSR) & 0x7849, ==, 0x7849);
+    g_assert_cmphex(mii_read(qts, PHY_ANER) & 0x0004, ==, 0x0004);
+    g_assert_cmphex(mii_read(qts, MII_LBR), ==, 0);
+    g_assert_cmphex(mii_read(qts, MII_10BTSCR) & 0xc77f, ==, 0);
     wait_for_rx_consume(qts, RX_RING_STRIDE);
     g_assert_cmphex(dma_ldl_be(qts, rxbuf) & RXH_VALID, ==, RXH_VALID);
 

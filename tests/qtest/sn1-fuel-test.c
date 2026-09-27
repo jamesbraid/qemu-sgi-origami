@@ -87,6 +87,7 @@
 #define IOC3_ENET_RX_HEADER_VALID (1U << 31)
 #define IOC3_ENET_MII_CONTROL 0x148
 #define IOC3_ENET_MII_DATA 0x14c
+#define IOC3_ENET_MII_WRITE_DATA 0x150
 #define IOC3_ENET_MII_READ (1U << 10)
 #define IOC3_RX_RING_PHYS 0x200000
 #define IOC3_RX_BUFFER_PHYS 0x201000
@@ -421,6 +422,14 @@ static uint16_t fuel_phy_read(QTestState *qts, unsigned int address,
     return qtest_readl(qts, IOC3_WINDOW + IOC3_ENET_MII_DATA) & 0xffff;
 }
 
+static void fuel_phy_write(QTestState *qts, unsigned int address,
+                           unsigned int reg, uint16_t value)
+{
+    qtest_writel(qts, IOC3_WINDOW + IOC3_ENET_MII_WRITE_DATA, value);
+    qtest_writel(qts, IOC3_WINDOW + IOC3_ENET_MII_CONTROL,
+                 (address << 5) | reg);
+}
+
 static void test_fuel_ioc3_phy(const void *data)
 {
     QTestState *qts = fuel_start(data);
@@ -429,10 +438,31 @@ static void test_fuel_ioc3_phy(const void *data)
     g_assert_cmphex(fuel_phy_read(qts, 1, 0), !=, 0xffff);
     g_assert_cmphex(fuel_phy_read(qts, 1, 2), ==, 0x2000);
     g_assert_cmphex(fuel_phy_read(qts, 1, 3), ==, 0x5c10);
+    g_assert_cmphex(fuel_phy_read(qts, 1, 1), ==, 0x7849);
+    g_assert_cmphex(fuel_phy_read(qts, 1, 6), ==, 0x0004);
+    g_assert_cmphex(fuel_phy_read(qts, 1, 0x17), ==, 0);
+    g_assert_cmphex(fuel_phy_read(qts, 1, 0x18) & 0xc77f, ==, 0);
     g_assert_cmphex(fuel_phy_read(qts, 31, 0), ==, 0xffff);
+
+    fuel_phy_write(qts, 1, 0x17, 0x20);
+    fuel_phy_write(qts, 1, 0x18, 0x400);
+    g_assert_cmphex(fuel_phy_read(qts, 1, 0x17), ==, 0x20);
+    g_assert_cmphex(fuel_phy_read(qts, 1, 0x18) & 0xc77f, ==, 0x400);
+    fuel_phy_write(qts, 1, 0, 0x8000);
+    g_assert_cmphex(fuel_phy_read(qts, 1, 1), ==, 0x7849);
+    g_assert_cmphex(fuel_phy_read(qts, 1, 6), ==, 0x0004);
+    g_assert_cmphex(fuel_phy_read(qts, 1, 0x17), ==, 0);
+    g_assert_cmphex(fuel_phy_read(qts, 1, 0x18) & 0xc77f, ==, 0);
+
+    fuel_phy_write(qts, 1, 0x17, 0x20);
+    fuel_phy_write(qts, 1, 0x18, 0x400);
     qtest_system_reset(qts);
     fuel_map_ioc3(qts);
     g_assert_cmphex(fuel_phy_read(qts, 1, 3), ==, 0x5c10);
+    g_assert_cmphex(fuel_phy_read(qts, 1, 1), ==, 0x7849);
+    g_assert_cmphex(fuel_phy_read(qts, 1, 6), ==, 0x0004);
+    g_assert_cmphex(fuel_phy_read(qts, 1, 0x17), ==, 0);
+    g_assert_cmphex(fuel_phy_read(qts, 1, 0x18) & 0xc77f, ==, 0);
     qtest_quit(qts);
 }
 

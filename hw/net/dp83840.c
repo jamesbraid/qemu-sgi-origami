@@ -4,8 +4,8 @@
  * registers (the lan9118-phy shape). Out of reset the link is down; it
  * comes up a settle after the first status read, or at once on a
  * control-register write. The "dp83843" property switches the model to
- * the Origin 300 IO-8 board's DP83843 part instead, which differs only in
- * its identity register and its second loopback switch. See
+ * the Origin 300 IO-8 board's DP83843 part, with its own identity,
+ * loopback selection and reset register values. See
  * docs/specs/sgi-ioc3.rst.
  */
 
@@ -30,6 +30,9 @@ static uint16_t dp83840_status(DP83840State *s)
                       MII_BMSR_100TX_FD | MII_BMSR_100TX_HD |
                       MII_BMSR_10T_FD | MII_BMSR_10T_HD;
 
+    if (s->dp83843) {
+        status |= MII_BMSR_MFPS;
+    }
     if (s->autoneg_done && !s->link_down) {
         status |= MII_BMSR_LINK_ST | MII_BMSR_AN_COMP;
     }
@@ -91,7 +94,8 @@ static uint16_t dp83840_read_impl(DP83840State *s, int reg)
         return s->autoneg_done ? DP83840_ADVERTISE_RESET : 0;
 
     case MII_ANER:
-        return s->autoneg_done ? MII_ANER_NWAY : 0;
+        return (s->dp83843 ? MII_ANER_NP : 0) |
+               (s->autoneg_done ? MII_ANER_NWAY : 0);
 
     case DP83840_PCS_CONFIG:
         return s->pcs_config;
@@ -210,14 +214,9 @@ void dp83840_reset(DP83840State *s)
     /* Link down: SGI's diagnostic probes the not-yet-settled state. */
     s->control = DP83840_CONTROL_RESET_VALUE;
     s->advertise = DP83840_ADVERTISE_RESET;
-    /*
-     * Reused for the DP83843's LBR at the same address: both loopback-select
-     * bits (4 and 5) are clear in this value, which is what a reset must
-     * leave them regardless of part, and the public DP83843 datasheet does
-     * not give a separate reset value for this shared address.
-     */
-    s->pcs_config = DP83840_PCS_RESET_VALUE;
-    s->loopback_bypass = DP83840_LBREMR_RESET_VALUE;
+    /* The DP83843 selects the normal copper strap configuration here. */
+    s->pcs_config = s->dp83843 ? 0 : DP83840_PCS_RESET_VALUE;
+    s->loopback_bypass = s->dp83843 ? 0 : DP83840_LBREMR_RESET_VALUE;
     s->tenbt_config = DP83840_10BT_RESET_VALUE;
     s->autoneg_done = false;
     s->settle_armed = false;
