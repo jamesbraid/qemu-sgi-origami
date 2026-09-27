@@ -188,6 +188,17 @@ struct SGIKonaState {
     uint32_t onewire_reg;
     OneWireBus *onewire_bus;
 
+    /*
+     * Which identity parts answer on onewire_bus beyond the geometry
+     * board's own record, which sgi_kona_finish_realize() always
+     * attaches: mirrors the machine-model catalogue's own
+     * "other-identity-parts" board-record field (tools/origami_lib/
+     * model_emit.py) so a deskside pipe with no Ktown can be built with
+     * an empty list. Construction-time only, like manufacturer/part/
+     * revision above: not migrated.
+     */
+    strList *other_identity_parts;
+
     /* Increment 2: register-window plain storage and the mailbox queue. */
     uint32_t reset_arg;
     uint32_t int_cause;

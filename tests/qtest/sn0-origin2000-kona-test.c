@@ -195,42 +195,42 @@ static void kona_reset(void)
 #define KONA_ONEWIRE_PULSE(n)  ((uint32_t)(n) << 10)
 #define KONA_ONEWIRE_SAMPLE(n) ((uint32_t)(n) << 2)
 
-static bool kona_slot(unsigned int pulse, unsigned int sample)
+static bool kona_slot(QTestState *s, unsigned int pulse, unsigned int sample)
 {
     uint32_t reg;
 
-    qtest_writel(qts, REG_ONEWIRE,
+    qtest_writel(s, REG_ONEWIRE,
                  KONA_ONEWIRE_PULSE(pulse) | KONA_ONEWIRE_SAMPLE(sample));
-    reg = qtest_readl(qts, REG_ONEWIRE);
+    reg = qtest_readl(s, REG_ONEWIRE);
     g_assert_cmphex(reg & KONA_ONEWIRE_DONE, ==, KONA_ONEWIRE_DONE);
     return reg & KONA_ONEWIRE_LEVEL;
 }
 
-#define KONA_ONEWIRE_RESET() kona_slot(520, 65)
-#define KONA_READ()          kona_slot(6, 13)
-#define KONA_WRITE_ONE()     kona_slot(6, 13)
-#define KONA_WRITE_ZERO()    kona_slot(80, 30)
+#define KONA_ONEWIRE_RESET(s) kona_slot(s, 520, 65)
+#define KONA_READ(s)          kona_slot(s, 6, 13)
+#define KONA_WRITE_ONE(s)     kona_slot(s, 6, 13)
+#define KONA_WRITE_ZERO(s)    kona_slot(s, 80, 30)
 
-static void kona_write_byte(uint8_t byte)
+static void kona_write_byte(QTestState *s, uint8_t byte)
 {
     unsigned int i;
 
     for (i = 0; i < 8; i++) {
         if ((byte >> i) & 1) {
-            KONA_WRITE_ONE();
+            KONA_WRITE_ONE(s);
         } else {
-            KONA_WRITE_ZERO();
+            KONA_WRITE_ZERO(s);
         }
     }
 }
 
-static uint8_t kona_read_byte(void)
+static uint8_t kona_read_byte(QTestState *s)
 {
     unsigned int i;
     uint8_t byte = 0;
 
     for (i = 0; i < 8; i++) {
-        if (KONA_READ()) {
+        if (KONA_READ(s)) {
             byte |= 1u << i;
         }
     }
@@ -310,14 +310,14 @@ static void kona_build_identity(uint8_t identity[8], uint8_t family,
  * contending the bus, so this needs no Search ROM discrepancy walk to
  * address either part individually.
  */
-static void kona_match_rom(const uint8_t identity[8])
+static void kona_match_rom(QTestState *s, const uint8_t identity[8])
 {
     unsigned int i;
 
-    g_assert_false(KONA_ONEWIRE_RESET());  /* pulled low: a part answers */
-    kona_write_byte(0x55);                 /* Match ROM */
+    g_assert_false(KONA_ONEWIRE_RESET(s)); /* pulled low: a part answers */
+    kona_write_byte(s, 0x55);              /* Match ROM */
     for (i = 0; i < 8; i++) {
-        kona_write_byte(identity[i]);
+        kona_write_byte(s, identity[i]);
     }
 }
 
@@ -332,20 +332,20 @@ static void kona_match_rom(const uint8_t identity[8])
  * different, unidentified one-wire part its own fixture instantiates and
  * does not apply to a DS2502.
  */
-static void kona_read_memory(uint8_t out[DS2502_DATA_SIZE])
+static void kona_read_memory(QTestState *s, uint8_t out[DS2502_DATA_SIZE])
 {
     uint8_t hdr[3] = { DS2502_CMD_READ_MEMORY, 0x00, 0x00 };
     unsigned int i;
 
     for (i = 0; i < sizeof(hdr); i++) {
-        kona_write_byte(hdr[i]);
+        kona_write_byte(s, hdr[i]);
     }
-    g_assert_cmphex(kona_read_byte(), ==, kona_crc8(0, hdr, sizeof(hdr)));
+    g_assert_cmphex(kona_read_byte(s), ==, kona_crc8(0, hdr, sizeof(hdr)));
 
     for (i = 0; i < DS2502_DATA_SIZE; i++) {
-        out[i] = kona_read_byte();
+        out[i] = kona_read_byte(s);
     }
-    g_assert_cmphex(kona_read_byte(), ==, kona_crc8(0, out, DS2502_DATA_SIZE));
+    g_assert_cmphex(kona_read_byte(s), ==, kona_crc8(0, out, DS2502_DATA_SIZE));
 }
 
 #define KONA_RECORD_PAGE 32
@@ -722,7 +722,7 @@ static void test_unknown_offset_reads_zero_and_accepts_writes(void)
  * (ds2502_set_image() leaves whatever a 64-byte image does not cover at
  * ds2502_instance_init()'s own 0xff default).
  */
-static void kona_assert_onewire_identity(const char *barcode,
+static void kona_assert_onewire_identity(QTestState *s, const char *barcode,
                                          const char *part,
                                          const char *revision,
                                          const char *name)
@@ -731,7 +731,7 @@ static void kona_assert_onewire_identity(const char *barcode,
     uint8_t expected[KONA_RECORD_SIZE];
     unsigned int i;
 
-    kona_read_memory(wire);
+    kona_read_memory(s, wire);
 
     kona_build_expected_record(expected, barcode, part, revision, name);
     g_assert_cmpmem(wire, KONA_RECORD_SIZE, expected, KONA_RECORD_SIZE);
@@ -741,14 +741,21 @@ static void kona_assert_onewire_identity(const char *barcode,
     }
 }
 
+/*
+ * "other-identity-parts" defaults to the single Ktown part
+ * (030-1067-001, sgi_kona_instance_init(), hw/misc/sgi-kona.c), so both
+ * cases below, run against the default qts instance, also cover that
+ * default: the geometry board's own record always answers regardless of
+ * the property, and Ktown answers only because the default list names it.
+ */
 static void test_onewire_geometry_identity(void)
 {
     uint8_t identity[8];
 
     kona_reset();
     kona_build_identity(identity, KONA_ONEWIRE_FAMILY, KONA_GEOMETRY_SERIAL);
-    kona_match_rom(identity);
-    kona_assert_onewire_identity("00000001", "030-1398-001", "01",
+    kona_match_rom(qts, identity);
+    kona_assert_onewire_identity(qts, "00000001", "030-1398-001", "01",
                                  "GEOM-BD");
 }
 
@@ -758,9 +765,132 @@ static void test_onewire_ktown_identity(void)
 
     kona_reset();
     kona_build_identity(identity, KONA_ONEWIRE_FAMILY, KONA_KTOWN_SERIAL);
-    kona_match_rom(identity);
-    kona_assert_onewire_identity("00000002", "030-1067-001", "01",
+    kona_match_rom(qts, identity);
+    kona_assert_onewire_identity(qts, "00000002", "030-1067-001", "01",
                                  "KTOWN-BD");
+}
+
+/*
+ * An empty "other-identity-parts" list models a deskside pipe with no
+ * Ktown board: the geometry record still answers (finish_realize attaches
+ * it unconditionally), but Match ROM against Ktown's own identity finds no
+ * part to select. A fresh instance is needed because the default qts
+ * already carries Ktown and the property is construction-time only.
+ *
+ * The command-line keyval grammar (util/keyval.c) has no syntax for an
+ * explicitly empty list -- omitting every "other-identity-parts.N=" key
+ * leaves the instance_init default in place, it does not override it to
+ * empty. QMP device_add cannot substitute either: every sgi-kona
+ * instance realizes onto the plain system bus (sgi_xio_board_reparent(),
+ * hw/mips/sgi/xio-board.c), which has no hotplug handler, and
+ * qdev_device_add_from_qdict()'s hotplug check (system/qdev-monitor.c)
+ * is only skipped before PHASE_MACHINE_READY -- true while cold-boot
+ * "-device" arguments are still being processed, false for any device_add
+ * issued once qtest has connected. A bare '{...}' "-device" argument is
+ * parsed by qobject_from_json() (system/vl.c) and reaches that same
+ * qmp_device_add() during qemu_create_cli_devices(), while still
+ * cold-booting, through its real QObject visitor -- which, unlike keyval,
+ * can express a genuine empty array. tests/qtest/sn1-l1-test.c's own
+ * JSON "-device" fixtures set sgi-l1's chassis-eeprom/board-eeprom list
+ * properties the same way. Same module/slot/fabric as MACHINE_ARGS's own
+ * kona0, so KONA_REG's fixed widget still lands on this board.
+ */
+static void test_onewire_other_identity_parts_empty(void)
+{
+    QTestState *s;
+    uint8_t identity[8];
+
+    s = qtest_init(
+        "-M origin2000 -device '{\"driver\":\"sgi-kona\",\"id\":\"kona1\","
+        "\"module\":99,\"slot\":8,"
+        "\"fabric\":\"/machine/crossbow0-spare-fabric[0]\","
+        "\"other-identity-parts\":[]}'");
+    g_assert_cmphex(qtest_readl(s, REG_PROBE), ==, 0);
+
+    kona_build_identity(identity, KONA_ONEWIRE_FAMILY, KONA_GEOMETRY_SERIAL);
+    kona_match_rom(s, identity);
+    kona_assert_onewire_identity(s, "00000001", "030-1398-001", "01",
+                                 "GEOM-BD");
+
+    /*
+     * Match ROM against Ktown's own identity still sees the reset pulse
+     * pulled low (geometry answers every reset regardless of which
+     * identity gets selected next), but no part on this chain matches it,
+     * so the bus idles for whatever slot follows: a read slot returns 1,
+     * the same "no part present" level sgi_onewire_slot() produces
+     * against a childless bus.
+     */
+    kona_build_identity(identity, KONA_ONEWIRE_FAMILY, KONA_KTOWN_SERIAL);
+    kona_match_rom(s, identity);
+    g_assert_true(KONA_READ(s));
+    g_assert_true(KONA_READ(s));
+
+    qtest_quit(s);
+}
+
+/*
+ * A rejection reports through error_report and exits; it must not reach
+ * the guest as a signal (SIGABRT from a failed assertion, SIGSEGV from a
+ * wild pointer). WIFSIGNALED tells the two apart where a bare nonzero
+ * exit status cannot. Reimplemented locally from
+ * tests/qtest/sn-builder-test.c's own assert_qemu_rejects(): a qtest
+ * binary cannot link another qtest file's static helper.
+ */
+static void assert_qemu_rejects(const char *const args[], const char *message)
+{
+    g_autofree char *error_output = NULL;
+    int wait_status = 0;
+
+    g_assert_true(g_spawn_sync(NULL, (char **)args, NULL, 0, NULL, NULL,
+                              NULL, &error_output, &wait_status, NULL));
+    g_assert_false(g_spawn_check_exit_status(wait_status, NULL));
+    g_assert_false(WIFSIGNALED(wait_status));
+    g_assert_nonnull(strstr(error_output, message));
+}
+
+/*
+ * An unrecognized part number is a realize-time configuration error, not a
+ * silently-ignored entry: sgi_kona_finish_realize()'s own lookup against
+ * sgi_kona_identity_parts[] (hw/misc/sgi-kona.c) rejects it before the
+ * machine starts. The command-line keyval grammar's dotted-index syntax
+ * ("other-identity-parts.0=", util/keyval.c) has a confirmed precedent
+ * for -machine properties (hw/mips/sgi/sn-machine.c's own
+ * chassis-eeprom.0=, exercised by tests/qtest/sn-builder-test.c and
+ * tests/qtest/sn1-address-map-test.c), but no working precedent for a
+ * -device property anywhere in this tree: -device arguments parse
+ * through qemu_opts_parse_noisily() (system/vl.c), an older option-list
+ * reader that takes "other-identity-parts.0" as one literal property
+ * name rather than an index into a list, and rejects it as not found.
+ * Confirmed by trying it (qemu-system-mips64: -device
+ * sgi-kona,other-identity-parts.0=999-9999-999: Property
+ * 'sgi-kona.other-identity-parts.0' not found). A one-element list here
+ * therefore uses the same bare JSON "-device" form the empty-list case
+ * above does, which does understand a real JSON array regardless of
+ * qemu_opts_parse_noisily()'s own limits.
+ */
+static void test_onewire_other_identity_parts_unknown_rejected(void)
+{
+    /*
+     * "-qtest stdio -accel qtest" makes qtest_enabled() true without a
+     * live qtest peer, the same way tests/qtest/sn0-ioc3-test.c's own
+     * assert_qemu_rejects() callers do for this machine family: without
+     * it, sgi_machine_topology_apply()'s "supports stock-PROM boot only"
+     * check (hw/mips/sgi/sn-machine.c) rejects the missing -bios/pflash
+     * before realize ever reaches this device's own check. module/slot/
+     * fabric match MACHINE_ARGS's own kona0 (a crosstalk board requires
+     * a module index before finish_realize gets far enough to look at
+     * other-identity-parts at all).
+     */
+    const char *args[] = {
+        qtest_qemu_binary(NULL), "-M", "origin2000",
+        "-device",
+        "{\"driver\":\"sgi-kona\",\"module\":99,\"slot\":8,"
+        "\"fabric\":\"/machine/crossbow0-spare-fabric[0]\","
+        "\"other-identity-parts\":[\"999-9999-999\"]}",
+        "-display", "none", "-qtest", "stdio", "-accel", "qtest", NULL
+    };
+
+    assert_qemu_rejects(args, "unknown other-identity-parts entry");
 }
 
 /*
@@ -775,7 +905,7 @@ static void test_reset_clears_plain_storage(void)
 {
     kona_reset();
     qtest_writel(qts, REG_WIDGET_CONTROL, 0xdeadbeef);
-    KONA_ONEWIRE_RESET();
+    KONA_ONEWIRE_RESET(qts);
     g_assert_cmphex(qtest_readl(qts, REG_WIDGET_CONTROL), !=, 0);
     g_assert_cmphex(qtest_readl(qts, REG_ONEWIRE), !=, 0);
 
@@ -963,6 +1093,11 @@ int main(int argc, char **argv)
                    test_onewire_geometry_identity);
     qtest_add_func("sn0/origin2000/kona/onewire-ktown-identity",
                    test_onewire_ktown_identity);
+    qtest_add_func("sn0/origin2000/kona/onewire-other-identity-parts-empty",
+                   test_onewire_other_identity_parts_empty);
+    qtest_add_func("sn0/origin2000/kona/"
+                   "onewire-other-identity-parts-unknown-rejected",
+                   test_onewire_other_identity_parts_unknown_rejected);
     qtest_add_func("sn0/origin2000/kona/reset-clears-plain-storage",
                    test_reset_clears_plain_storage);
     qtest_add_func("sn0/origin2000/kona/reset-clears-increment-2-state",
