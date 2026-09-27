@@ -956,6 +956,10 @@ static void test_a_pin_register_reaches_the_shared_data_word(const void *data)
  * to say stops instead of overrunning the controller's three-character
  * holding.
  */
+#define KBC_K_TO_EN       0x00040000
+#define KBC_M_TO_EN       0x00080000
+#define KBC_K_TO          0x00010000
+#define KBC_M_TO          0x00020000
 #define KBC_K_CLAMP_1     0x00100000
 #define KBC_M_CLAMP_1     0x00200000
 #define KBC_K_CLAMP_3     0x00400000
@@ -1410,11 +1414,9 @@ static void test_the_ps2_backlog_survives_a_migration(const void *data)
 }
 
 /*
- * The control/status register resets to zero and stores the software control
- * bits behind a mask: the low half, and the four clamp bits above the
- * hardware-status region. The rest of the upper half (write-pending, the
- * timeout reports and the live line states) is hardware-owned, read-only,
- * and reads clear in this synchronous model.
+ * Timeout enables occupy separate writable positions between the status bits
+ * and clamps. The model retains them across writes but clears them on reset;
+ * timed-line interrupt delivery is outside this register test.
  */
 static void test_the_ps2_control_masks_writes(const void *data)
 {
@@ -1424,10 +1426,25 @@ static void test_the_ps2_control_masks_writes(const void *data)
 
     g_assert_cmphex(qtest_readl(qts, KBC_CONTROL), ==, 0);
 
+    qtest_writel(qts, KBC_CONTROL, KBC_K_TO_EN);
+    g_assert_cmphex(qtest_readl(qts, KBC_CONTROL), ==, KBC_K_TO_EN);
+    qtest_writel(qts, KBC_CONTROL, KBC_M_TO_EN);
+    g_assert_cmphex(qtest_readl(qts, KBC_CONTROL), ==, KBC_M_TO_EN);
+    qtest_writel(qts, KBC_CONTROL, KBC_K_TO_EN | KBC_M_TO_EN);
+    g_assert_cmphex(qtest_readl(qts, KBC_CONTROL), ==,
+                    KBC_K_TO_EN | KBC_M_TO_EN);
+    qtest_writel(qts, KBC_CONTROL, KBC_K_TO | KBC_M_TO);
+    g_assert_cmphex(qtest_readl(qts, KBC_CONTROL), ==, 0);
+
     qtest_writel(qts, KBC_CONTROL, 0xffffffff);
     g_assert_cmphex(qtest_readl(qts, KBC_CONTROL), ==,
-                    0x0000ffff | KBC_K_CLAMP_1 | KBC_M_CLAMP_1 |
+                    0x0000ffff | KBC_K_TO_EN | KBC_M_TO_EN |
+                    KBC_K_CLAMP_1 | KBC_M_CLAMP_1 |
                     KBC_K_CLAMP_3 | KBC_M_CLAMP_3);
+
+    ioc3_reset();
+    sn0_ioc3_attach(qts);
+    g_assert_cmphex(qtest_readl(qts, KBC_CONTROL), ==, 0);
 }
 
 /* The serial DMA block: the shared ring base, then each port's registers. */
@@ -5068,7 +5085,8 @@ static bool ps2_is_fitted(QTestState *qts, uint64_t base)
 {
     qtest_writel(qts, base + 0x09c, 0xffffffff);
     return qtest_readl(qts, base + 0x09c) ==
-           (0x0000ffff | KBC_K_CLAMP_1 | KBC_M_CLAMP_1 |
+           (0x0000ffff | KBC_K_TO_EN | KBC_M_TO_EN |
+            KBC_K_CLAMP_1 | KBC_M_CLAMP_1 |
             KBC_K_CLAMP_3 | KBC_M_CLAMP_3);
 }
 

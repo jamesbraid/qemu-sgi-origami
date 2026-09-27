@@ -71,6 +71,10 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIIOC3KBCState, SGI_IOC3_KBC)
  * initialisation write to this register; the bit positions are its own
  * header's (arch/mips/include/asm/sn/ioc3.h).
  */
+#define SGI_IOC3_KBC_CTRL_K_TO_EN   (1u << 18)
+#define SGI_IOC3_KBC_CTRL_M_TO_EN   (1u << 19)
+#define SGI_IOC3_KBC_CTRL_TO_EN_MASK (SGI_IOC3_KBC_CTRL_K_TO_EN | \
+                                      SGI_IOC3_KBC_CTRL_M_TO_EN)
 #define SGI_IOC3_KBC_CTRL_K_CLAMP_1 (1u << 20)
 #define SGI_IOC3_KBC_CTRL_M_CLAMP_1 (1u << 21)
 #define SGI_IOC3_KBC_CTRL_K_CLAMP_3 (1u << 22)
@@ -82,13 +86,14 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIIOC3KBCState, SGI_IOC3_KBC)
  * fields -- the clamp-after-one and clamp-after-three pairs, the two
  * timeout-enable bits, emulation mode, the fast-clock bit and the manual
  * line-pull bits -- but does not pin their bit positions; Linux's header
- * does, and the clamps are the only ones this model acts on. So the low
- * half is stored as software control, the four clamp bits are stored and
- * obeyed, and the rest of the upper half -- the hardware-owned write-pending,
- * idle, timeout and live line states -- is read-only and reads clear in the
- * synchronous model.
+ * does. The low half and timeout enables are stored as control, while the
+ * four clamp bits are stored and obeyed. The remaining upper bits report
+ * hardware state and read clear in this synchronous model. Enable readback
+ * and reset are model policy pending a revision-matched register trace.
  */
-#define SGI_IOC3_KBC_CONTROL_MASK   (0x0000ffffu | SGI_IOC3_KBC_CTRL_CLAMP_MASK)
+#define SGI_IOC3_KBC_CONTROL_MASK   (0x0000ffffu | \
+                                     SGI_IOC3_KBC_CTRL_TO_EN_MASK | \
+                                     SGI_IOC3_KBC_CTRL_CLAMP_MASK)
 
 /* The two ports, in the order their GPIO inputs and registers are wired. */
 #define SGI_IOC3_KBC_PORT_KBD       0
