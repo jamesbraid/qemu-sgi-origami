@@ -21,8 +21,8 @@
  * The "kona" preset's catalogue records belong to the onyx2 topologies,
  * which fit no MGRAS, so no shipped topology carries both heads. This file
  * attaches KONA to an origin2000 the same way tests/qtest/sn0-origin2000-
- * kona-test.c does: a `-device sgi-kona,id=kona0,...` proxied through
- * crossbow0's spare-fabric link. That id comes from the CLI's own
+ * kona-test.c does: a `-device sgi-kona,id=kona0,slot=io4` at an empty XIO
+ * slot. That id comes from the CLI's own
  * qdev_set_id() (system/qdev-monitor.c), unaffected by this fix -- it is
  * included here only so the composition is genuinely two-head and the
  * screendump-by-device contract is proven across both heads together. Of
@@ -39,12 +39,11 @@
 #include "sgi-test.h"
 
 #define MACHINE_ARGS \
-    "-M origin2000 -device sgi-kona,id=kona0,module=99,slot=8," \
-    "fabric=/machine/crossbow0-spare-fabric[0]"
+    "-M origin2000 -device sgi-kona,id=kona0,slot=io4"
 
 #define MACHINE_PATH      "/machine"
 #define MGRAS_LEAF        "mgras"
-#define KONA_MODULE_PATH  "/machine/module99"
+#define KONA_MODULE_PATH  "/machine/module0"
 #define KONA_LEAF         "kona0"
 
 #define MGRAS_DEVICE_ID   "mgras"

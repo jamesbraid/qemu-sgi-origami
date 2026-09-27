@@ -455,7 +455,8 @@ static void test_bad_module(void)
         g_test_trap_subprocess(NULL, 0, 0);
         g_test_trap_assert_failed();
         g_test_trap_assert_stderr(
-            "*a crosstalk board requires a module index*");
+            "*a crosstalk board placed by widget number requires a module "
+            "index*");
         return;
     }
     /* No module= at all: the property keeps its unset sentinel. */

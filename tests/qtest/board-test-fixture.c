@@ -181,6 +181,7 @@ static void board_test_fixture_realize(DeviceState *dev, Error **errp)
 {
     SGIBoardTestFixtureState *s = SGI_BOARD_TEST_FIXTURE(dev);
     DeviceState *board;
+    g_autofree char *slot = NULL;
 
     if (!s->board_type) {
         error_setg(errp, "sgi-board-test-fixture requires board-type");
@@ -198,7 +199,8 @@ static void board_test_fixture_realize(DeviceState *dev, Error **errp)
     board = qdev_new(s->board_type);
     object_property_add_child(OBJECT(s), "board", OBJECT(board));
     qdev_prop_set_uint32(board, "module", s->module);
-    qdev_prop_set_uint32(board, "slot", s->slot);
+    slot = g_strdup_printf("%u", s->slot);
+    qdev_prop_set_string(board, "slot", slot);
     object_property_set_link(OBJECT(board), "fabric", OBJECT(&s->sink),
                              &error_abort);
     if (s->chardev_a_id) {

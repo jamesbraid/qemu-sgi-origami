@@ -145,8 +145,10 @@ static bool xio_baseio_build_widget(SGIXioBoardState *board, Error **errp)
     qdev_prop_set_uint32(bridge, "fabric-widget-shift",
                          s->fabric_widget_shift);
     if (identity->bridge_flash) {
-        g_autofree char *name =
-            g_strdup_printf("sgi-xio-baseio.module%u.flash", board->module);
+        /* Per slot: a module can hold a second BaseIO-preset card. */
+        g_autofree char *name = g_strdup_printf(
+            "sgi-xio-baseio.module%u.widget%u.flash", board->module,
+            board->slot);
 
         s->flash = sgi_baseio_flash_new(OBJECT(s), name, s->flash_drive_id,
                                         errp);
@@ -203,8 +205,8 @@ static bool xio_baseio_build_widget(SGIXioBoardState *board, Error **errp)
     board->packet_face = sgi_bridge_packet_face(s->bridge);
 
     /*
-     * Claim the spare fabric proxy now the Bridge's own faces exist, so
-     * sgi_machine_done() both brings the spare widget's link alive for this
+     * Claim the slot's fabric proxy now the Bridge's own faces exist, so
+     * sgi_machine_done() both brings the slot widget's link alive for this
      * board's outbound packets and registers those faces as the widget's
      * inbound destination. A fixture wiring "fabric" to a plain sink is a
      * no-op here.
@@ -268,13 +270,11 @@ static void xio_baseio_class_init(ObjectClass *oc, const void *data)
     dc->vmsd = &vmstate_xio_baseio;
     /*
      * Ordinarily fitted per module by the machine, at most one per
-     * deskside enclosure, but also `-device`-creatable: a late board's
-     * own "fabric" can resolve against the spare fabric proxy a Crossbow
-     * machine builder now holds back for it (sgi_machine_build_crossbars()
-     * in sn-machine.c), claiming it (build_widget()'s own
-     * sgi_xtalk_crossbow_link_claim_fabric() call) so sgi_machine_done()
-     * brings the underlying widget alive once it finishes the proxy --
-     * the same outbound-only path onto a real Crossbow that
+     * deskside enclosure, but also `-device`-creatable at an empty XIO
+     * slot it names (slot=io5): the machine hands it that slot's fabric
+     * proxy, and claiming it (build_widget()'s own
+     * sgi_xtalk_crossbow_link_claim_fabric() call) makes
+     * sgi_machine_done() bring the slot's widget alive both ways, as
      * sgi-pci-expansion's own header comment describes.
      */
     dc->user_creatable = true;

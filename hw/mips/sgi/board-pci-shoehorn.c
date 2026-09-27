@@ -26,11 +26,11 @@
  * 030-1275-00x boards pulled from Origin 200 chassis. Reseller attribution is
  * not hardware-graph evidence, so this models an Origin 2000 XIO adapter.
  *
- * Like sgi-pci-expansion this board attaches through crossbow's spare fabric
- * proxy when created with `-device`, or through the ordinary startup path
- * when a topology declares it at a real XIO slot's widget (Origin 2000 IO2 is
- * crosstalk widget 12). Either way #720's spare-widget change and
- * sgi_machine_done() make its widget a full two-way crosstalk endpoint.
+ * Like sgi-pci-expansion this board attaches through the fabric proxy of
+ * the empty XIO slot it names when created with `-device` (slot=io2; Origin
+ * 2000 IO2 is crosstalk widget 12), or through the ordinary startup path
+ * when a topology declares it. Either way its widget is a full two-way
+ * crosstalk endpoint.
  *
  * ---- The fitted Cad Duo card and its keyboard/mouse interrupt ----
  *
@@ -281,7 +281,7 @@ static bool pci_shoehorn_build_widget(SGIXioBoardState *board, Error **errp)
     board->cpu_face = sysbus_mmio_get_region(SYS_BUS_DEVICE(bridge), 0);
     board->packet_face = sgi_bridge_packet_face(s->bridge);
 
-    /* Same spare-fabric claim as sgi-pci-expansion; see its header. */
+    /* Same slot fabric claim as sgi-pci-expansion; see its header. */
     sgi_xtalk_crossbow_link_claim_fabric(s->fabric, board->cpu_face,
                                          board->packet_face);
     return true;

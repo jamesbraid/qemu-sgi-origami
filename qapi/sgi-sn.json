@@ -387,13 +387,17 @@
 # @controlling-node: position in the topology's own @nodes list of the
 #     node that controls this position
 #
+# @label: the position's IRIX slot name (io5), which a board fitted
+#     there at launch names in its own slot property
+#
 # Since: 11.2
 ##
 { 'struct': 'SGIModelXtalkSlot',
   'data': { 'id': 'str',
             'crossbar-index': 'uint32',
             'widget': 'uint32',
-            'controlling-node': 'uint32' } }
+            'controlling-node': 'uint32',
+            'label': 'str' } }
 
 ##
 # @SGIModelIoBoardPreset:
@@ -487,6 +491,10 @@
 #
 # @attachment: physical slot or head label
 #
+# @label: the IRIX slot name of the XIO position this board occupies
+#     (io1, io5); absent for I/O that sits in no XIO slot, such as a
+#     node board's own onboard I/O
+#
 # @part: fitted-part design number
 #
 # @other-identity-parts: additional one-wire board part numbers on the
@@ -510,6 +518,7 @@
             'preset': 'SGIModelIoBoardPreset',
             'carrier': 'SGIModelIoBoardCarrier',
             'attachment': 'uint32',
+            '*label': 'str',
             'part': 'str',
             '*other-identity-parts': ['str'],
             'revision': 'uint8',

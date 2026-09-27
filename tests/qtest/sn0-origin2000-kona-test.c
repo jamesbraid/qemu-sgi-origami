@@ -8,20 +8,17 @@
  * `+0x800xxx` register window, the `+0xc10000` textport command port and a
  * native display surface; see docs/designs/
  * infinitereality-host-command-approximation.md for what each case below
- * approximates and why. KONA has no onboard preset of its own yet, so this
- * fixture attaches it the same way sn-builder-test.c's boards reach an
- * origin2000 machine's spare crosstalk fabric: as a `-device` proxied
- * through crossbow0's spare-fabric link at widget 11, the lowest widget the
- * default topology's startup-links-alive (BaseIO at 8, the two host-node
- * Hubs at 9 and 10, SI Viz at 15) leaves free. It takes a fixed `id=kona0`
+ * approximates and why. This fixture fits KONA to an origin2000 the same
+ * way sn-builder-test.c's boards reach it: as a `-device` at the empty
+ * XIO slot IO4, crossbow0's widget 11, outside the default topology's
+ * startup-links-alive (BaseIO at 8, the two host-node Hubs at 9 and 10,
+ * SI Viz at 15). It takes a fixed `id=kona0`
  * so the increment-2 cases can reach its `x-test-pixel` QOM properties --
  * but unlike a plain `-device` that stays where device_add put it,
  * hw/mips/sgi/xio-board.c's own sgi_xio_board_reparent() moves every
  * sgi-xtalk-board subclass out from under /machine/peripheral and into a
- * container named after its `module=` property once build_widget()
- * returns, keeping the `id=` name (confirmed against a live qom-list: a
- * board given `module=99` lands at /machine/module99/kona0, not
- * /machine/peripheral/kona0).
+ * container named after its module once build_widget() returns, keeping
+ * the `id=` name: /machine/module0/kona0, not /machine/peripheral/kona0.
  */
 
 #include "qemu/osdep.h"
@@ -80,8 +77,7 @@
 #define KONA_EEPROM_CHECKED_VALUE 2
 
 #define MACHINE_ARGS \
-    "-M origin2000 -device sgi-kona,id=kona0,module=99,slot=8," \
-    "fabric=/machine/crossbow0-spare-fabric[0]"
+    "-M origin2000 -device sgi-kona,id=kona0,slot=io4"
 
 /*
  * origin2000's default topology is the full four-node/multi-CPU module
@@ -94,7 +90,7 @@
  */
 #define MIGRATION_ARGS MACHINE_ARGS " -smp 8 -m 256M"
 
-#define KONA_QOM_PATH "/machine/module99/kona0"
+#define KONA_QOM_PATH "/machine/module0/kona0"
 
 /*
  * hw/misc/sgi-mgras.c's own qtest fixture hand-rolls this same helper
@@ -884,7 +880,7 @@ static void test_onewire_ktown_identity(void)
  * cold-booting, through its real QObject visitor -- which, unlike keyval,
  * can express a genuine empty array. tests/qtest/sn1-l1-test.c's own
  * JSON "-device" fixtures set sgi-l1's chassis-eeprom/board-eeprom list
- * properties the same way. Same module/slot/fabric as MACHINE_ARGS's own
+ * properties the same way. Same slot as MACHINE_ARGS's own
  * kona0, so KONA_REG's fixed widget still lands on this board.
  */
 static void test_onewire_other_identity_parts_empty(void)
@@ -894,8 +890,7 @@ static void test_onewire_other_identity_parts_empty(void)
 
     s = qtest_init(
         "-M origin2000 -device '{\"driver\":\"sgi-kona\",\"id\":\"kona1\","
-        "\"module\":99,\"slot\":8,"
-        "\"fabric\":\"/machine/crossbow0-spare-fabric[0]\","
+        "\"slot\":\"io4\","
         "\"other-identity-parts\":[]}'");
     g_assert_cmphex(qtest_readl(s, REG_PROBE), ==, 0);
 
@@ -982,16 +977,14 @@ static void test_onewire_other_identity_parts_unknown_rejected(void)
      * assert_qemu_rejects() callers do for this machine family: without
      * it, sgi_machine_topology_apply()'s "supports stock-PROM boot only"
      * check (hw/mips/sgi/sn-machine.c) rejects the missing -bios/pflash
-     * before realize ever reaches this device's own check. module/slot/
-     * fabric match MACHINE_ARGS's own kona0 (a crosstalk board requires
-     * a module index before finish_realize gets far enough to look at
-     * other-identity-parts at all).
+     * before realize ever reaches this device's own check. The slot
+     * matches MACHINE_ARGS's own kona0, so realize gets far enough to
+     * look at other-identity-parts at all.
      */
     const char *args[] = {
         qtest_qemu_binary(NULL), "-M", "origin2000",
         "-device",
-        "{\"driver\":\"sgi-kona\",\"module\":99,\"slot\":8,"
-        "\"fabric\":\"/machine/crossbow0-spare-fabric[0]\","
+        "{\"driver\":\"sgi-kona\",\"slot\":\"io4\","
         "\"other-identity-parts\":[\"999-9999-999\"]}",
         "-display", "none", "-qtest", "stdio", "-accel", "qtest", NULL
     };
@@ -1015,8 +1008,7 @@ static void test_onewire_other_identity_parts_duplicate_rejected(void)
     const char *args[] = {
         qtest_qemu_binary(NULL), "-M", "origin2000",
         "-device",
-        "{\"driver\":\"sgi-kona\",\"module\":99,\"slot\":8,"
-        "\"fabric\":\"/machine/crossbow0-spare-fabric[0]\","
+        "{\"driver\":\"sgi-kona\",\"slot\":\"io4\","
         "\"other-identity-parts\":[\"030-1067-001\",\"030-1067-001\"]}",
         "-display", "none", "-qtest", "stdio", "-accel", "qtest", NULL
     };
@@ -1039,8 +1031,7 @@ static void test_onewire_board_part_configures_geometry_record(void)
     uint8_t identity[8];
 
     s = qtest_init(
-        "-M origin2000 -device sgi-kona,id=kona2,module=99,slot=8,"
-        "fabric=/machine/crossbow0-spare-fabric[0],"
+        "-M origin2000 -device sgi-kona,id=kona2,slot=io4,"
         "board-part=030-1129-002");
     g_assert_cmphex(qtest_readl(s, REG_PROBE), ==, 0);
 
@@ -1065,8 +1056,7 @@ static void test_board_part_invalid_is_rejected(void)
     const char *args[] = {
         qtest_qemu_binary(NULL), "-M", "origin2000",
         "-device",
-        "sgi-kona,id=kona2,module=99,slot=8,"
-        "fabric=/machine/crossbow0-spare-fabric[0],"
+        "sgi-kona,id=kona2,slot=io4,"
         "board-part=030-1129",
         "-display", "none", "-qtest", "stdio", "-accel", "qtest", NULL
     };
@@ -1198,8 +1188,7 @@ static void test_nic_search_rom_walks_rack_and_deskside(void)
 
     s = qtest_init(
         "-M origin2000 -device '{\"driver\":\"sgi-kona\",\"id\":\"kona3\","
-        "\"module\":99,\"slot\":8,"
-        "\"fabric\":\"/machine/crossbow0-spare-fabric[0]\","
+        "\"slot\":\"io4\","
         "\"other-identity-parts\":[]}'");
     g_assert_cmphex(qtest_readl(s, REG_PROBE), ==, 0);
 
