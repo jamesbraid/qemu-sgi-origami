@@ -4157,7 +4157,7 @@ bool sgi_hub_attach_module_identity(SGIHubState *s,
 #define SGI_HUB_ORIGIN2000_BUS_ERROR_WIDGET  2
 #define SGI_HUB_ORIGIN2000_SMALL_WINDOW_SIZE (16 * MiB)
 
-static hwaddr sgi_hub_origin2000_bus_error_xtalk_offset(SGIHubState *s)
+static hwaddr sgi_hub_origin2000_bus_error_xio_offset(SGIHubState *s)
 {
     return ((hwaddr)SGI_HUB_ORIGIN2000_BUS_ERROR_WIDGET <<
             s->xio_widget_shift) +
@@ -4183,7 +4183,7 @@ static MemTxResult sgi_hub_origin2000_bus_error_read(void *opaque,
     }
     result = address_space_read(
         &s->origin2000_xio_as,
-        sgi_hub_origin2000_bus_error_xtalk_offset(s) + addr, attrs, bytes,
+        sgi_hub_origin2000_bus_error_xio_offset(s) + addr, attrs, bytes,
         size);
     *data = ldn_be_p(bytes, size);
     return result;
@@ -4201,7 +4201,7 @@ static MemTxResult sgi_hub_origin2000_bus_error_write(void *opaque,
     stn_be_p(bytes, size, data);
     return address_space_write(
         &s->origin2000_xio_as,
-        sgi_hub_origin2000_bus_error_xtalk_offset(s) + addr, attrs, bytes,
+        sgi_hub_origin2000_bus_error_xio_offset(s) + addr, attrs, bytes,
         size);
 }
 

@@ -559,9 +559,9 @@ static void test_explicit_fabric_must_match_its_slot(const void *data)
  * The 64-bit-direct route's own destination: bits 63:60 of a bus-mastered
  * PCI address name a widget (sgi_bridge_translate_common(),
  * hw/pci-host/sgi-bridge.c) and the low 48 bits pass straight through to
- * sgi_bridge_compose_xtalk(), which sgi_bridge_send_interrupt() also
- * uses. A widget's own decode of the result cannot tell the
- * two delivery mechanisms apart. Bit 47 of that low half is what
+ * sgi_bridge_compose_xio() -- the same composer sgi_bridge_send_
+ * interrupt() uses, so a widget's own decode of the result cannot tell
+ * the two delivery mechanisms apart. Bit 47 of that low half is what
  * sgi_bridge_realize() maps a widget's own registers onto (the packet_io
  * alias sits at 1 << (SGI_BRIDGE_PACKET_ADDRESS_BITS - 1)), and REG_DATA is
  * the same +4 skew every read in this file adds at the point of access; here
