@@ -87,9 +87,22 @@ rule: a caller waiting for a set of checks to pass across several
 screendumps -- the graphical-greeter boot tests' own race between a
 console-text match and the guest's independently-timed X redraw --
 needs a shared implementation of that wait, not a new one per test file.
+
+DominantColorCheck is the one check here that does pin colours. It suits
+a region whose correct colours are known from an independent reference
+rather than read off the capture under test: it takes the region's few
+most frequent colours and requires each expected colour to sit within a
+tolerance of one of them. Matching the dominant colours rather than the
+average keeps a dithered fill or a label's sparse ink from dragging the
+answer towards a colour no pixel actually has, and it ignores a cursor
+or a stray glyph that covers only a few pixels. Its optional gamma
+transforms model a display whose DAC applies a gamma ramp at scanout, so
+a reference measured on the far side of that ramp can still be compared.
 """
 
+import collections
 import dataclasses
+import math
 import time
 
 
@@ -320,6 +333,86 @@ class LitPixelFractionCheck:
             f'{self.name} is only {rounded} lit, short of the required '
             f'{self.min_fraction} (channel > {self.min_channel}) -- '
             'looks unpainted')
+
+
+def gamma_encode(value, gamma):
+    """Push one 0-255 channel value up through a DAC gamma-encode ramp,
+    round(255 * (value / 255) ** (1 / gamma)). At gamma 1.7, 85 becomes
+    134 and 170 becomes 201."""
+    return round(255.0 * (value / 255.0) ** (1.0 / gamma))
+
+
+def gamma_decode(value, gamma):
+    """Invert gamma_encode(): round(255 * (value / 255) ** gamma), which
+    maps a displayed channel value back to the framebuffer value that
+    produced it, give or take one count of rounding."""
+    return round(255.0 * (value / 255.0) ** gamma)
+
+
+def dominant_colors(width, data, rect, top_n):
+    """rect's `top_n` most frequent (r, g, b) colours, most frequent
+    first, as ((r, g, b), fraction) pairs. Equal counts keep the order in
+    which a row-major walk first meets them."""
+    _validate_region(width, data, rect)
+    counts = collections.Counter(_region_pixels(width, data, rect))
+    total = rect[2] * rect[3]
+    return [(color, count / total)
+            for color, count in counts.most_common(top_n)]
+
+
+@dataclasses.dataclass(frozen=True)
+class DominantColorCheck:
+    """Fails unless every colour in `expected` lies within `tolerance`
+    (Euclidean RGB distance) of one of rect's `top_n` most frequent
+    colours. `expected` is a tuple of (label, (r, g, b)) pairs, so one
+    region can require both a background and the ink drawn over it.
+
+    At most one of the two gamma fields may be set:
+
+      - `encode_gamma` pushes each expected colour up through
+        gamma_encode() before comparing, for a reference measured before
+        the DAC ramp and a capture taken after it.
+      - `decode_gamma` pushes each found colour down through
+        gamma_decode() before comparing, for a reference that is itself
+        a raw framebuffer value (a colour scheme entry, a real-hardware
+        framebuffer dump) and a capture taken after the ramp.
+    """
+    name: str
+    rect: tuple
+    expected: tuple
+    tolerance: float
+    encode_gamma: float = None
+    decode_gamma: float = None
+    top_n: int = 6
+
+    def __post_init__(self):
+        if self.encode_gamma is not None and self.decode_gamma is not None:
+            raise ValueError(
+                f'{self.name}: encode_gamma and decode_gamma transform in '
+                'opposite directions; set at most one')
+
+    def evaluate(self, width, height, data):
+        del height
+        found = [color for color, _fraction in
+                 dominant_colors(width, data, self.rect, self.top_n)]
+        if self.decode_gamma is not None:
+            found = [tuple(gamma_decode(channel, self.decode_gamma)
+                           for channel in color) for color in found]
+        passed = True
+        parts = []
+        for label, want in self.expected:
+            if self.encode_gamma is not None:
+                want = tuple(gamma_encode(channel, self.encode_gamma)
+                             for channel in want)
+            best = min(found, key=lambda color: math.dist(color, want))
+            delta = math.dist(best, want)
+            ok = delta <= self.tolerance
+            passed = passed and ok
+            parts.append(f'{label} want {tuple(want)} found {best} '
+                         f'delta {delta:.1f}{"" if ok else " FAIL"}')
+        summary = (f'{self.name} (tolerance {self.tolerance}): '
+                   + ', '.join(parts))
+        return passed, summary
 
 
 def poll_screendump_until_checks_pass(test, vm, screendump_path, checks,

@@ -17,10 +17,10 @@ from pathlib import Path
 from unittest.mock import patch
 
 from lib_screen import (ColorVarietyCheck, DarkPixelFractionCheck,
-                        LitPixelFractionCheck, NotAllBlackCheck,
-                        RegionColorCheck, ScreenCheckError,
-                        evaluate_screendump, poll_screendump_until_checks_pass,
-                        read_ppm)
+                        DominantColorCheck, LitPixelFractionCheck,
+                        NotAllBlackCheck, RegionColorCheck, ScreenCheckError,
+                        evaluate_screendump, gamma_decode, gamma_encode,
+                        poll_screendump_until_checks_pass, read_ppm)
 
 
 def solid_frame(width, height, rgb):
@@ -275,6 +275,124 @@ class LitPixelFractionCheckTest(unittest.TestCase):
         data = solid_frame(width, height, (0, 0, 0))
         check = LitPixelFractionCheck('off-screen', rect=(2, 2, 4, 4),
                                       min_channel=10, min_fraction=0.1)
+
+        with self.assertRaisesRegex(ScreenCheckError, 'does not fit'):
+            check.evaluate(width, height, data)
+
+
+class GammaTest(unittest.TestCase):
+
+    def test_encode_matches_the_si_dac_ramp(self):
+        # The two values the region set's own notes quote at gamma 1.7.
+        self.assertEqual(gamma_encode(85, 1.7), 134)
+        self.assertEqual(gamma_encode(170, 1.7), 201)
+
+    def test_decode_inverts_encode_within_one_count(self):
+        for value in range(256):
+            with self.subTest(value=value):
+                self.assertLessEqual(
+                    abs(gamma_decode(gamma_encode(value, 1.7), 1.7) - value),
+                    1)
+
+    def test_ends_of_the_range_are_fixed(self):
+        for convert in (gamma_encode, gamma_decode):
+            self.assertEqual(convert(0, 1.7), 0)
+            self.assertEqual(convert(255, 1.7), 255)
+
+
+def striped_frame(width, height, colors):
+    """Each row filled with colors[row % len(colors)]."""
+    data = bytearray()
+    for row in range(height):
+        data += bytes(colors[row % len(colors)]) * width
+    return bytes(data)
+
+
+class DominantColorCheckTest(unittest.TestCase):
+
+    def test_passes_when_every_expected_color_is_present(self):
+        width, height = 4, 4
+        data = striped_frame(width, height, ((200, 200, 200), (0, 0, 0)))
+        check = DominantColorCheck(
+            'button', (0, 0, 4, 4),
+            (('body', (195, 195, 195)), ('ink', (0, 0, 0))), tolerance=10)
+
+        ok, message = check.evaluate(width, height, data)
+
+        self.assertTrue(ok, message)
+        self.assertIn('button', message)
+
+    def test_fails_when_one_expected_color_is_missing(self):
+        # The body matches but no ink was drawn.
+        width = height = 4
+        data = solid_frame(width, height, (200, 200, 200))
+        check = DominantColorCheck(
+            'button', (0, 0, 4, 4),
+            (('body', (200, 200, 200)), ('ink', (0, 0, 0))), tolerance=10)
+
+        ok, message = check.evaluate(width, height, data)
+
+        self.assertFalse(ok)
+        self.assertIn('ink want (0, 0, 0)', message)
+        self.assertIn('FAIL', message)
+
+    def test_tolerance_is_inclusive(self):
+        width = height = 2
+        data = solid_frame(width, height, (0, 0, 10))
+        at = DominantColorCheck('fill', (0, 0, 2, 2),
+                                (('fill', (0, 0, 0)),), tolerance=10)
+        under = DominantColorCheck('fill', (0, 0, 2, 2),
+                                   (('fill', (0, 0, 0)),), tolerance=9.9)
+
+        self.assertTrue(at.evaluate(width, height, data)[0])
+        self.assertFalse(under.evaluate(width, height, data)[0])
+
+    def test_ignores_colors_outside_the_most_frequent(self):
+        # Seven colours; the rarest (one pixel) matches but is not among
+        # the top six, so the check must not find it.
+        width, height = 13, 1
+        colors = [(10 * i, 0, 0) for i in range(6) for _ in range(2)]
+        colors.append((0, 255, 0))
+        data = b''.join(bytes(color) for color in colors)
+        check = DominantColorCheck('strip', (0, 0, 13, 1),
+                                   (('green', (0, 255, 0)),), tolerance=1)
+
+        self.assertFalse(check.evaluate(width, height, data)[0])
+
+    def test_encode_gamma_raises_the_expected_color(self):
+        # A pre-ramp reference of 85 grey compared against a post-ramp
+        # capture showing 134 grey.
+        width = height = 2
+        data = solid_frame(width, height, (134, 134, 134))
+        plain = DominantColorCheck('mat', (0, 0, 2, 2),
+                                   (('dark', (85, 85, 85)),), tolerance=2)
+        encoded = DominantColorCheck('mat', (0, 0, 2, 2),
+                                     (('dark', (85, 85, 85)),), tolerance=2,
+                                     encode_gamma=1.7)
+
+        self.assertFalse(plain.evaluate(width, height, data)[0])
+        self.assertTrue(encoded.evaluate(width, height, data)[0])
+
+    def test_decode_gamma_lowers_the_found_color(self):
+        width = height = 2
+        data = solid_frame(width, height, (134, 134, 134))
+        decoded = DominantColorCheck('backdrop', (0, 0, 2, 2),
+                                     (('tone', (85, 85, 85)),), tolerance=2,
+                                     decode_gamma=1.7)
+
+        self.assertTrue(decoded.evaluate(width, height, data)[0])
+
+    def test_rejects_both_gamma_directions_at_once(self):
+        with self.assertRaisesRegex(ValueError, 'at most one'):
+            DominantColorCheck('both', (0, 0, 1, 1), (('x', (0, 0, 0)),),
+                               tolerance=1, encode_gamma=1.7,
+                               decode_gamma=1.7)
+
+    def test_rejects_a_region_outside_the_image(self):
+        width = height = 4
+        data = solid_frame(width, height, (0, 0, 0))
+        check = DominantColorCheck('off-screen', (2, 2, 4, 4),
+                                   (('x', (0, 0, 0)),), tolerance=1)
 
         with self.assertRaisesRegex(ScreenCheckError, 'does not fit'):
             check.evaluate(width, height, data)
