@@ -1227,6 +1227,27 @@ static bool sn1_node_system_request(void *opaque, CPUState *cs,
     return found;
 }
 
+/*
+ * Whether the processor a directory pointer names is fitted: the node that
+ * number reaches from this one carries a processor in that slot. Device
+ * bit 1 names an I/O owner (MD_PTR_OWNER_IO in the public SN1 header).
+ */
+static bool sn1_node_pointer_present(void *opaque, uint16_t pointer)
+{
+    SN1NodeState *owner = sn1_node_claimant(opaque, pointer >> 3);
+    unsigned int slot = (pointer & 1) | ((pointer >> 2) & 1) << 1;
+
+    if (!owner || (pointer & 2)) {
+        return false;
+    }
+    for (unsigned int i = 0; i < owner->nr_cpus; i++) {
+        if (sn1_cpu_slot(owner->model_node, i) == slot) {
+            return true;
+        }
+    }
+    return false;
+}
+
 static void sn1_node_create_cpus(SN1NodeState *node, MachineState *machine)
 {
     MemoryRegion *system = get_system_memory();
@@ -1587,6 +1608,7 @@ static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
     object_unref(OBJECT(node->bedrock));
     bedrock = SYS_BUS_DEVICE(node->bedrock);
     SGI_BEDROCK(node->bedrock)->md.requester = sn1_node_requester_pointer;
+    SGI_BEDROCK(node->bedrock)->md.pointer_present = sn1_node_pointer_present;
     SGI_BEDROCK(node->bedrock)->md.requester_opaque = node;
 
     memory_region_add_subregion(

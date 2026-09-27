@@ -2577,6 +2577,32 @@ static SGIBedrockMDHolder *md_line_holder(SGIBedrockMDWatchedLine *line,
 }
 
 /*
+ * Whether every processor and interface @entry names is fitted. A word
+ * naming one that is not came from software or a stale state, not from
+ * the protocol, and the model does not guess what the unit would do.
+ */
+static bool md_directory_entry_present(SGIBedrockMDState *s,
+                                       const MDDirectoryEntry *entry)
+{
+    if (!s->pointer_present) {
+        return true;
+    }
+    if (entry->format == MD_FORMAT_POINTER) {
+        return s->pointer_present(s->requester_opaque, entry->owner);
+    }
+    for (unsigned bit = 0; bit < 64; bit++) {
+        uint16_t interface = (bit >> 1) << 3 | (bit & 1) << 2;
+
+        if ((entry->sharers & (UINT64_C(1) << bit)) &&
+            !s->pointer_present(s->requester_opaque, interface) &&
+            !s->pointer_present(s->requester_opaque, interface | 1)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/*
  * Serve one request from @pointer against the line's directory word and
  * the other processors' copies, and return the state the requester's copy
  * is granted. A word the protocol does not produce keeps its value.
@@ -2594,7 +2620,8 @@ static uint8_t md_directory_request(SGIBedrockMDState *s,
     uint64_t word;
 
     if (!md_directory_decode(old, premium, &entry) ||
-        md_pointer_interface(pointer) >= 64) {
+        md_pointer_interface(pointer) >= 64 ||
+        !md_directory_entry_present(s, &entry)) {
         qemu_log_mask(LOG_UNIMP, "sgi-bedrock-md: directory word 0x%016"
                       PRIx64 " of line %u is in a state the model does not "
                       "follow; left unchanged\n", old, line->index);

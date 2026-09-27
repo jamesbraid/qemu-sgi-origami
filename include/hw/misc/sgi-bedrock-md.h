@@ -92,6 +92,8 @@ typedef struct SGIBedrockMDDirectoryInjection {
 /* The requesting processor's directory pointer, if the board knows it. */
 typedef bool (*SGIBedrockMDRequesterFn)(void *opaque, CPUState *cpu,
                                         uint16_t *pointer);
+/* Whether a processor with directory pointer @pointer is fitted. */
+typedef bool (*SGIBedrockMDPointerPresentFn)(void *opaque, uint16_t pointer);
 
 /* A processor's copy of a watched line, as its secondary cache would hold. */
 typedef struct SGIBedrockMDHolder {
@@ -155,6 +157,7 @@ struct SGIBedrockMDState {
     uint32_t named_next;
     /* Set by the board: who issued a processor access. */
     SGIBedrockMDRequesterFn requester;
+    SGIBedrockMDPointerPresentFn pointer_present;
     void *requester_opaque;
     uint64_t memory_error;
     uint64_t directory_error;
