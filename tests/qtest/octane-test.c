@@ -94,7 +94,8 @@ static void test_widgets_and_memory(void)
                      MEMTX_OK);
     g_assert_cmphex(value & 0x0fffffff, ==, 0x0c00106c);
     g_assert_cmpuint(qtest_readq_tx(qts, HEART_WIDGET, &missing), ==,
-                     MEMTX_ERROR);
+                     MEMTX_OK);
+    g_assert_cmphex(missing, ==, (uint64_t)value);
     g_assert_cmpuint(qtest_readl_tx(qts, BRIDGE + 4, &value), ==, MEMTX_OK);
     g_assert_cmpuint(qtest_readl_tx(qts, 0x92000004, &value), !=, MEMTX_OK);
 

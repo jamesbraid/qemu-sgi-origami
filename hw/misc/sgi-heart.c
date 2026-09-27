@@ -42,7 +42,8 @@ static MemTxResult heart_widget_read(void *opaque, hwaddr offset,
 {
     SGIHeartState *s = opaque;
 
-    if (offset == 0x04 && size == 4) {
+    if ((offset == 0x00 && size == 8) ||
+        (offset == 0x04 && size == 4)) {
         *value = ((uint32_t)s->widget_revision << 28) |
                  (0xc001U << 12) | (0x0036U << 1);
         return MEMTX_OK;

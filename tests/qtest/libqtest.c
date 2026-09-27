@@ -1398,6 +1398,45 @@ uint64_t qtest_readq(QTestState *s, uint64_t addr)
     return qtest_read(s, "readq", addr);
 }
 
+static MemTxResult qtest_read_small_tx(QTestState *s, const char *cmd,
+                                      uint64_t addr, uint64_t *value)
+{
+    gchar **args;
+    uint64_t result;
+    int ret;
+
+    qtest_sendf(s, "%s 0x%" PRIx64 "\n", cmd, addr);
+    args = qtest_rsp_args(s, 3);
+    ret = qemu_strtou64(args[1], NULL, 0, value);
+    g_assert(!ret);
+    ret = qemu_strtou64(args[2], NULL, 0, &result);
+    g_assert(!ret);
+    g_strfreev(args);
+    return result;
+}
+
+MemTxResult qtest_readb_tx(QTestState *s, uint64_t addr, uint8_t *value)
+{
+    uint64_t read_value;
+    MemTxResult result = qtest_read_small_tx(s, "readb_tx", addr,
+                                            &read_value);
+
+    g_assert(read_value <= UINT8_MAX);
+    *value = read_value;
+    return result;
+}
+
+MemTxResult qtest_readw_tx(QTestState *s, uint64_t addr, uint16_t *value)
+{
+    uint64_t read_value;
+    MemTxResult result = qtest_read_small_tx(s, "readw_tx", addr,
+                                            &read_value);
+
+    g_assert(read_value <= UINT16_MAX);
+    *value = read_value;
+    return result;
+}
+
 MemTxResult qtest_writeq_tx(QTestState *s, uint64_t addr, uint64_t value)
 {
     gchar **args;

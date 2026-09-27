@@ -131,20 +131,39 @@ static void test_wide_descriptor_clear(void)
     qtest_quit(s);
 }
 
-static void test_widget_packets(void)
+static void test_widget_id(void)
 {
     QTestState *s = heart_start(128, "");
     uint32_t id;
-    uint64_t ignored;
+    uint16_t half;
+    uint8_t byte;
+    uint64_t wide;
+
+    qtest_writel(s, HEART_REGS + 0x20, PROBE_DESC);
+    qtest_writeq(s, PROBE_RAM, 0x0123456789abcdefULL);
+    g_assert_cmpuint(qtest_readb_tx(s, PROBE_RAM, &byte), ==, MEMTX_OK);
+    g_assert_cmphex(byte, ==, 0x01);
+    g_assert_cmpuint(qtest_readw_tx(s, PROBE_RAM, &half), ==, MEMTX_OK);
+    g_assert_cmphex(half, ==, 0x0123);
+    g_assert_cmpuint(qtest_readl_tx(s, HEART_WIDGET + 4, &id), ==, MEMTX_OK);
+    g_assert_cmphex(id, ==, HEART_WIDGET_ID);
+    g_assert_cmpuint(qtest_readq_tx(s, HEART_WIDGET, &wide), ==, MEMTX_OK);
+    g_assert_cmphex(wide, ==, (uint64_t)id);
+    g_assert_cmpuint(qtest_readb_tx(s, HEART_WIDGET, &byte), ==, MEMTX_ERROR);
+    g_assert_cmpuint(qtest_readw_tx(s, HEART_WIDGET, &half), ==, MEMTX_ERROR);
+    g_assert_cmpuint(qtest_readl_tx(s, HEART_WIDGET, &id), ==, MEMTX_ERROR);
+    g_assert_cmpuint(qtest_readq_tx(s, HEART_WIDGET + 8, &wide),
+                     ==, MEMTX_ERROR);
+    qtest_quit(s);
+}
+
+static void test_widget_packets(void)
+{
+    QTestState *s = heart_start(128, "");
     uint64_t level0 = 1ULL << 3;
     uint64_t level2 = 1ULL << 42;
 
     qtest_irq_intercept_out_named(s, HEART_PATH, "processor");
-    g_assert_cmpuint(qtest_readl_tx(s, HEART_WIDGET + 4, &id), ==, MEMTX_OK);
-    g_assert_cmphex(id, ==, HEART_WIDGET_ID);
-    g_assert_cmpuint(qtest_readl_tx(s, HEART_WIDGET, &id), ==, MEMTX_ERROR);
-    g_assert_cmpuint(qtest_readq_tx(s, HEART_WIDGET, &ignored),
-                     ==, MEMTX_ERROR);
     g_assert_cmpuint(qtest_writel_tx(s, HEART_PACKET + 0x80, 0x103), ==,
                      MEMTX_ERROR);
     g_assert_cmpuint(qtest_writeq_tx(s, HEART_PACKET + 0x80, 0x140), ==,
@@ -206,6 +225,7 @@ static void test_reset(void)
 {
     QTestState *s = heart_start(128, "");
     uint64_t value;
+    uint32_t id;
 
     qtest_writeq(s, HEART_REGS, 0x200810ULL);
     qtest_writeq(s, HEART_REGS + 0x08, 0x21);
@@ -224,6 +244,10 @@ static void test_reset(void)
     qtest_clock_step(s, 800);
     g_assert_cmphex(qtest_readq(s, HEART_REGS + 0x20000), ==, 10);
     qtest_qmp_assert_success(s, "{'execute':'system_reset'}");
+    g_assert_cmpuint(qtest_readl_tx(s, HEART_WIDGET + 4, &id), ==, MEMTX_OK);
+    g_assert_cmphex(id, ==, HEART_WIDGET_ID);
+    g_assert_cmpuint(qtest_readq_tx(s, HEART_WIDGET, &value), ==, MEMTX_OK);
+    g_assert_cmphex(value, ==, (uint64_t)id);
     g_assert_cmphex(qtest_readq(s, HEART_REGS), ==, 0);
     g_assert_cmphex(qtest_readq(s, HEART_REGS + 0x08), ==, 0);
     g_assert_cmphex(qtest_readq(s, HEART_REGS + 0x10), ==, 0);
@@ -542,6 +566,7 @@ int main(int argc, char **argv)
                          test_descriptors);
     g_test_add_func("/heart/wide-descriptor-clear",
                     test_wide_descriptor_clear);
+    g_test_add_func("/heart/widget-id", test_widget_id);
     g_test_add_func("/heart/widget-packets", test_widget_packets);
     g_test_add_func("/heart/interrupts", test_interrupts);
     g_test_add_func("/heart/reset", test_reset);
