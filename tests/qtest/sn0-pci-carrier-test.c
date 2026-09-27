@@ -1,9 +1,15 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /* Test Origin 2000 PCI Carrier Assembly placement and access. */
 /*
- * The owner's guide specifies three slots but no PCI device numbers; the
- * catalogue chooses devices 0-2 in IO2 at crossbow0 widget 12. Each answers;
- * device 3 is refused.
+ * Register-contract tests for the Origin 2000 PCI Carrier Assembly fitted in
+ * IO2, crossbow0 widget 12: sgi-pci-carrier, an sgi-pci-expansion with
+ * three PCI slots and the carrier's own board record
+ * (docs/datasheets/sgi-pci-shoebox.md in the Origami repository).
+ *
+ * The owner's guide gives the carrier three slots; which PCI device number
+ * each slot is wired to is not captured, so the catalogue selects devices 0,
+ * 1 and 2. These tests hold the model to that: a card at each of the three
+ * answers through the carrier's widget, and a card at device 3 is refused.
  */
 
 #include "qemu/osdep.h"
@@ -21,7 +27,7 @@
 #define CARRIER_BUS         "io2.0"
 
 #define CARRIER_MACHINE \
-    "-M origin2000,topology=origin2000-pci-carrier -display none"
+    "-M origin2000 -display none -device sgi-pci-carrier,slot=io2"
 
 static char *card_args(unsigned int device)
 {
@@ -30,20 +36,20 @@ static char *card_args(unsigned int device)
 }
 
 /*
- * The carrier's widget is alive from reset like the BaseIO's: part of
- * crossbow0's configured startup population (0x8700: BaseIO 8, host nodes 9
- * and 10, SI Viz 15), which is what lets the stock PROM discover it.
+ * The carrier's widget reads present and alive once the machine is up,
+ * which is what lets the stock PROM discover it (docs/datasheets/xbow.md,
+ * link auxiliary status bit 5 and link status bit 31).
  */
-static void test_widget_alive_at_startup(void)
+static void test_widget_alive(void)
 {
     QTestState *qts = qtest_init(CARRIER_MACHINE);
-    g_autoptr(QDict) response = qtest_qmp(qts,
-        "{'execute': 'qom-get', 'arguments': {'path': '/machine/crossbow0',"
-        "'property': 'startup-links-alive'}}");
 
-    g_assert_false(qdict_haskey(response, "error"));
-    g_assert_cmphex(qdict_get_int(response, "return"), ==,
-                    0x8700 | (1u << CARRIER_WIDGET));
+    g_assert_cmphex(qtest_readl(qts, SPACE_XTALK + 0x138 +
+                                (CARRIER_WIDGET - 8) * 0x40 + 4) & (1u << 5),
+                    ==, 1u << 5);
+    g_assert_cmphex(qtest_readl(qts, SPACE_XTALK + 0x110 +
+                                (CARRIER_WIDGET - 8) * 0x40 + 4) & (1u << 31),
+                    ==, 1u << 31);
     qtest_quit(qts);
 }
 
@@ -65,9 +71,9 @@ static void test_card_enumerates_in_each_slot(void)
 static void test_fourth_slot_refused(void)
 {
     const char *const args[] = {
-        qtest_qemu_binary(NULL), "-M",
-        "origin2000,topology=origin2000-pci-carrier",
+        qtest_qemu_binary(NULL), "-M", "origin2000",
         "-display", "none", "-accel", "qtest", "-qmp", "stdio",
+        "-device", "sgi-pci-carrier,slot=io2",
         "-device", "sgi-ioc3,bus=" CARRIER_BUS ",addr=3", NULL,
     };
 
@@ -78,8 +84,8 @@ int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
 
-    qtest_add_func("sn0/pci-carrier/widget-alive-at-startup",
-                   test_widget_alive_at_startup);
+    qtest_add_func("sn0/pci-carrier/widget-alive",
+                   test_widget_alive);
     qtest_add_func("sn0/pci-carrier/card-enumerates-in-each-slot",
                    test_card_enumerates_in_each_slot);
     qtest_add_func("sn0/pci-carrier/fourth-slot-refused",

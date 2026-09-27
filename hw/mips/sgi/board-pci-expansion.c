@@ -214,16 +214,61 @@ static void pci_expansion_class_init(ObjectClass *oc, const void *data)
     bc->build_widget = pci_expansion_build_widget;
 }
 
-static const TypeInfo pci_expansion_type = {
-    .name = TYPE_SGI_PCI_EXPANSION,
-    .parent = TYPE_SGI_XIO_BOARD,
-    .instance_size = sizeof(SGIPciExpansionState),
-    .class_init = pci_expansion_class_init,
+/*
+ * The Origin 2000 PCI Carrier Assembly: three PCI slots for third-party
+ * cards (007-3456-003 printed page 34), fitted in XIO slot IO2. The slots
+ * take PCI devices 0 to 2, an approximation: no source gives the
+ * carrier's device wiring.
+ *
+ * Its board-identity record and Bridge revision
+ * (docs/datasheets/sgi-pci-shoebox.md in the Origami repository,
+ * "Board-identity record"): a real Origin 2000's PCI XIO board in slot 2
+ * prints part 030-1062-002, revision C and name PCI-XIO, and SGI's part
+ * table names 030-1062-002 the Origin 2000 PCI cardcage. That this
+ * carrier is that cardcage is inferred: the owner's guide names no part.
+ * Both real PCI_XIO boards observed report Bridge revision 3. The
+ * barcode is a placeholder.
+ */
+#define TYPE_SGI_PCI_CARRIER "sgi-pci-carrier"
+
+static void pci_carrier_instance_init(Object *obj)
+{
+    SGIPciExpansionState *s = SGI_PCI_EXPANSION(obj);
+
+    s->slots = 3;
+    s->board_part = g_strdup("030-1062-002");
+    s->board_barcode = g_strdup("OPCIXIO001");
+    s->board_revision = g_strdup("C");
+    s->board_name = g_strdup("PCI-XIO");
+    s->bridge_revision = 3;
+}
+
+static void pci_carrier_class_init(ObjectClass *oc, const void *data)
+{
+    DeviceClass *dc = DEVICE_CLASS(oc);
+
+    dc->desc = "Origin 2000 PCI Carrier Assembly (three PCI slots)";
+}
+
+static const TypeInfo pci_expansion_types[] = {
+    {
+        .name = TYPE_SGI_PCI_EXPANSION,
+        .parent = TYPE_SGI_XIO_BOARD,
+        .instance_size = sizeof(SGIPciExpansionState),
+        .class_init = pci_expansion_class_init,
+    },
+    {
+        .name = TYPE_SGI_PCI_CARRIER,
+        .parent = TYPE_SGI_PCI_EXPANSION,
+        .instance_init = pci_carrier_instance_init,
+        .class_init = pci_carrier_class_init,
+    },
 };
 
 static void pci_expansion_register_types(void)
 {
-    type_register_static(&pci_expansion_type);
+    type_register_static_array(pci_expansion_types,
+                               ARRAY_SIZE(pci_expansion_types));
 }
 
 type_init(pci_expansion_register_types)

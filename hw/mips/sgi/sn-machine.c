@@ -149,6 +149,7 @@ static uint64_t *sgi_model_array_uint64(const uint64List *list, size_t *count)
 
 #define TYPE_SGI_XIO_BASEIO "sgi-xio-baseio"
 #define TYPE_SGI_PCI_EXPANSION "sgi-pci-expansion"
+#define TYPE_SGI_PCI_CARRIER "sgi-pci-carrier"
 #define TYPE_SGI_PCI_SHOEHORN "sgi-pci-shoehorn"
 #define TYPE_SGI_GIGACHANNEL "sgi-gigachannel"
 
@@ -1333,44 +1334,18 @@ static bool sgi_machine_instantiate_baseio_card(
 /*
  * The Origin 2000 PCI Carrier Assembly: three PCI slots for third-party
  * cards (007-3456-003 printed page 34), empty until a -device fills one on
- * the carrier's bus, io2.0 in IO2. The slots take PCI devices 0 to 2, an
- * approximation: no source gives the carrier's device wiring.
+ * the carrier's bus, io2.0 in IO2. sgi-pci-carrier (board-pci-expansion.c)
+ * carries the carrier's slots and board identity itself.
  */
-#define SGI_MACHINE_PCI_CARRIER_SLOTS 3
-
-/*
- * The carrier's board-identity record and Bridge revision
- * (docs/datasheets/sgi-pci-shoebox.md, "Board-identity record"). A real
- * Origin 2000's PCI XIO board in slot 2 prints part 030-1062-002,
- * revision C and name PCI-XIO, and SGI's part table names 030-1062-002
- * the Origin 2000 PCI cardcage. That this carrier is that cardcage is
- * inferred: the owner's guide names no part. Both real PCI_XIO boards
- * observed report Bridge revision 3. The barcode is a placeholder.
- */
-#define SGI_MACHINE_PCI_CARRIER_PART     "030-1062-002"
-#define SGI_MACHINE_PCI_CARRIER_REVISION "C"
-#define SGI_MACHINE_PCI_CARRIER_NAME     "PCI-XIO"
-#define SGI_MACHINE_PCI_CARRIER_BARCODE  "OPCIXIO001"
-#define SGI_MACHINE_PCI_CARRIER_BRIDGE_REVISION 3
-
 static bool sgi_machine_instantiate_pci_carrier(
     SGIMachineState *s, const SGIModelIoBoard *record,
     unsigned int board_index, const SGIModelXtalkAttachment *attachment,
     Error **errp)
 {
-    DeviceState *dev = qdev_new(TYPE_SGI_PCI_EXPANSION);
+    DeviceState *dev = qdev_new(TYPE_SGI_PCI_CARRIER);
 
     sgi_machine_add_xio_board(s, dev, record, board_index, attachment);
     qdev_prop_set_uint64(dev, "onewire-serial", record->serial);
-    qdev_prop_set_uint32(dev, "slots", SGI_MACHINE_PCI_CARRIER_SLOTS);
-    qdev_prop_set_string(dev, "board-part", SGI_MACHINE_PCI_CARRIER_PART);
-    qdev_prop_set_string(dev, "board-barcode",
-                         SGI_MACHINE_PCI_CARRIER_BARCODE);
-    qdev_prop_set_string(dev, "board-revision",
-                         SGI_MACHINE_PCI_CARRIER_REVISION);
-    qdev_prop_set_string(dev, "board-name", SGI_MACHINE_PCI_CARRIER_NAME);
-    qdev_prop_set_uint32(dev, "bridge-revision",
-                         SGI_MACHINE_PCI_CARRIER_BRIDGE_REVISION);
     return sgi_machine_attach_xio_card(s, dev, board_index, attachment, errp);
 }
 
@@ -3327,6 +3302,7 @@ static void sgi_machine_class_init(ObjectClass *oc, const void *data)
      * is what a late board plugs into.
      */
     machine_class_allow_dynamic_sysbus_dev(mc, TYPE_SGI_PCI_EXPANSION);
+    machine_class_allow_dynamic_sysbus_dev(mc, TYPE_SGI_PCI_CARRIER);
     machine_class_allow_dynamic_sysbus_dev(mc, TYPE_SGI_PCI_SHOEHORN);
     machine_class_allow_dynamic_sysbus_dev(mc, TYPE_SGI_XIO_BASEIO);
     machine_class_allow_dynamic_sysbus_dev(mc, TYPE_SGI_KONA);
