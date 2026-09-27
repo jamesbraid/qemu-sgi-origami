@@ -281,12 +281,13 @@ void sgi_bedrock_scratch3_released(SGIBedrockState *s);
 void sgi_bedrock_presence_published(SGIBedrockState *s);
 
 /*
- * The presence join's partner park (H4), docs/known-issues.md: called from
- * pi_write() after a real-time compare write of processor @slot of
- * @interface has landed, and from pi_read() after a real-time counter read
- * has been sampled. They record the pair's liveness posts and park an
- * interface's second processor at its timed wait until its publisher has
- * published; no value the guest reads changes.
+ * The presence join's liveness and partner parks (H4), docs/known-issues.md:
+ * called from pi_write() after a real-time compare write of processor @slot
+ * of @interface has landed, and from pi_read() after a real-time counter
+ * read has been sampled. They record the pair's liveness posts, park the
+ * first of a pair to post until its partner posts, and park an interface's
+ * second processor at its timed wait until its publisher has published; no
+ * value the guest reads changes.
  */
 void sgi_bedrock_rt_compare_written(SGIBedrockState *s,
                                     unsigned int interface,
