@@ -1519,7 +1519,11 @@ F: include/hw/pci-host/sgi-xbridge.h
 F: include/hw/rtc/m48t35.h
 F: include/hw/scsi/qlogic-isp.h
 F: qapi/misc-mips.json
+F: docs/devel/testing/sgi.rst
+F: scripts/check-sgi-test-results.py
 F: scripts/sgi-replay-convert.py
+F: scripts/tests/test_check_sgi_test_results.py
+F: tests/docker/dockerfiles/debian-sgi.docker
 F: tests/functional/mips64/
 F: tests/qtest/mips64-*.c
 F: tests/qtest/qlogic-isp-test.c
