@@ -639,7 +639,7 @@ static bool sgi_kona_finish_realize(SGIXioBoardState *board, Error **errp)
 
     board_part_error = sgi_bridge_board_part_error(s->board_part);
     if (board_part_error) {
-        error_setg(errp, "%s", board_part_error);
+        error_setg(errp, "sgi-kona %s", board_part_error);
         return false;
     }
     geometry_record.part = s->board_part;

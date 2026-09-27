@@ -876,7 +876,7 @@ static void xbridge_realize(DeviceState *dev, Error **errp)
         DeviceState *part;
 
         if (board_part_error) {
-            error_setg(errp, "%s", board_part_error);
+            error_setg(errp, "the XBridge head %s", board_part_error);
             return;
         }
         if (s->onewire_serial & ~XBRIDGE_NIC_SERIAL_MASK) {

@@ -1001,7 +1001,7 @@ static bool sgi_bridge_board_record_check(const SGIBridgeBoardRecord *record,
     unsigned int i;
 
     if (error) {
-        error_setg(errp, "%s", error);
+        error_setg(errp, "the I/O bridge %s", error);
         return false;
     }
     /*
@@ -1096,7 +1096,7 @@ static bool sgi_bridge_onewire_attach_part(SGIBridgeState *s,
         const char *error = sgi_bridge_board_part_error(record->part);
 
         if (error) {
-            error_setg(errp, "%s", error);
+            error_setg(errp, "the I/O bridge %s", error);
             return false;
         }
     }
@@ -2235,7 +2235,7 @@ static void sgi_bridge_realize(DeviceState *dev, Error **errp)
     /* Refuse property errors before the first region exists. */
     board_part_error = sgi_bridge_board_part_error(record.part);
     if (board_part_error) {
-        error_setg(errp, "%s", board_part_error);
+        error_setg(errp, "the I/O bridge %s", board_part_error);
         return;
     }
     if (record.name) {
