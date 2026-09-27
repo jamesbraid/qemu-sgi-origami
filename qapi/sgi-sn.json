@@ -167,6 +167,11 @@
 #
 # @slot: physical slot number within that module
 #
+# @hub-slot-bits: what the module's midplane drives on this node
+#     slot's Hub slot-identity pins, where it differs from the
+#     eight-processor module's 8 minus @slot (the Onyx2 deskside's
+#     midplane drives 3 and 2 for slots 1 and 2)
+#
 # @asic-kind: which node ASIC this board is built around
 #
 # @identity: the ASIC's own fitted-part identity
@@ -194,6 +199,7 @@
   'data': { 'id': 'str',
             'module-index': 'uint32',
             'slot': 'uint32',
+            '*hub-slot-bits': 'uint8',
             'asic-kind': 'SGIModelAsicKind',
             'identity': 'SGIModelAsicIdentity',
             'cpu-slots': ['SGIModelCpuSlot'],
