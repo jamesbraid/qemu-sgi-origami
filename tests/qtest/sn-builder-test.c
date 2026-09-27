@@ -1151,6 +1151,25 @@ static void test_origin2000_onboard_board_is_xio_baseio(const void *data)
  * machine's baseio-preset=io6g asks for the BaseIO-G instead, whose
  * MediaIO daughtercard fits the second IOC3 with the keyboard and mouse.
  */
+/*
+ * The two-node deskside's second node board sits on Crossbow 1, as node 2
+ * does in the four-node module, and brings that Crossbow's IO7, IO9 and
+ * IO11 with it; a board fits there. The positions the absent nodes 3 and
+ * 4 would control are not part of the topology.
+ */
+static void test_origin2000_two_node_deskside_slots(const void *data)
+{
+    QTestState *qts = qtest_init(
+        "-M origin2000,topology=origin2000-deskside-two-node -smp 4 -m 128M "
+        "-display none -device sgi-xio-baseio,preset=menet,slot=io7");
+    g_autofree char *type = qom_child_type(qts, "/machine/module0", "io7");
+    g_autofree char *crossbow = qom_child_type(qts, "/machine", "crossbow1");
+
+    g_assert_cmpstr(type, ==, "sgi-xio-baseio");
+    g_assert_nonnull(crossbow);
+    qtest_quit(qts);
+}
+
 static void test_origin2000_deskside_baseio_follows_the_preset(
     const void *data)
 {
@@ -1569,6 +1588,8 @@ int main(int argc, char **argv)
         test_origin2000_deskside_baseio_follows_the_preset);
     qtest_add_data_func("sn/builder/fitted-boards-have-distinct-serials",
                         NULL, test_fitted_boards_have_distinct_serials);
+    qtest_add_data_func("sn/builder/origin2000-two-node-deskside-slots", NULL,
+                        test_origin2000_two_node_deskside_slots);
     qtest_add_data_func("sn/builder/boards-on-two-crossbows", NULL,
                         test_boards_on_two_crossbows);
     qtest_add_data_func("sn/builder/board-ids-are-unique", NULL,
