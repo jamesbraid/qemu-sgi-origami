@@ -1492,11 +1492,13 @@ static void test_unmask_by_eret_delivers(const void *data)
 
 static unsigned int gh_break_pos;
 static unsigned int gh_count_pos;
+static unsigned int gh_reset_compare_pos;
 static bool gh_intervening_insn;
 static bool gh_interrupt_after_count;
 static bool gh_wide_timer_moves;
 static bool gh_delay_slot_count;
 static bool gh_peer_timer_writes;
+static bool gh_reset_between_writes;
 
 static void emit_gh_timer_move(GuestImage *img, int rt, int rd)
 {
@@ -1643,6 +1645,16 @@ static void build_gdb_peer_hold(GuestImage *img)
     emit_publish(img, R_T3, GH_PEER_COUNT_OFF);
     emit_b(img, loop);
     emit_nop(img);
+    if (gh_reset_between_writes) {
+        gh_reset_compare_pos = img->pos;
+        emit_mtc0(img, R_T4, CP0_COMPARE, 0);
+        emit_ehb(img);
+        emit_mfc0(img, R_T3, CP0_COUNT, 0);
+        emit_publish(img, R_T3, GH_COUNT_OFF);
+        emit_mfc0(img, R_T3, CP0_CAUSE, 0);
+        emit_publish(img, R_T3, GH_CAUSE_OFF);
+        emit_done_and_halt(img);
+    }
 }
 
 static int gdb_peer_socket(const char *path)
@@ -1949,6 +1961,7 @@ static void test_gdb_sn1_hold(const void *data)
     bool migrate_vm = options & 32;
     bool interrupt_vm = options & 64;
     bool long_hold = options & 128;
+    bool reset_vm = options & 256;
     bool gdb_closed = false;
     uint32_t peer_count_before, peer_count_after;
     uint64_t elapsed_ticks = 0;
@@ -1962,6 +1975,7 @@ static void test_gdb_sn1_hold(const void *data)
     gh_interrupt_after_count = interrupt_vm;
     gh_delay_slot_count = options & 4;
     gh_peer_timer_writes = options & 16;
+    gh_reset_between_writes = reset_vm;
     dir = g_dir_make_tmp("sn1-gdb-hold-XXXXXX", NULL);
     g_assert_nonnull(dir);
     socket_path = g_build_filename(dir, "gdb.sock", NULL);
@@ -2063,6 +2077,53 @@ static void test_gdb_sn1_hold(const void *data)
     gdb_peer_command(gdb, "p24", reply, sizeof(reply));
     g_assert_cmphex(g_ascii_strtoull(reply, NULL, 16) & CAUSE_IP7,
                     ==, CAUSE_IP7);
+    if (reset_vm) {
+        uint64_t status;
+
+        qtest_system_reset(qts);
+        qtest_writeq(qts, SN1_MD_MEMORY_CONFIG, SN1_MD_INSTALLED_SELECT2);
+        gdb_peer_command(gdb, "Hg1", reply, sizeof(reply));
+        g_assert_cmpstr(reply, ==, "OK");
+        /* Compare must be CPU A's first instruction after reset. */
+        snprintf(command, sizeof(command), "P25=%016" PRIx64,
+                 (uint64_t)(0xffffffff00000000ULL | IMAGE_KSEG1_BASE |
+                            gh_reset_compare_pos));
+        gdb_peer_command(gdb, command, reply, sizeof(reply));
+        g_assert_cmpstr(reply, ==, "OK");
+        snprintf(command, sizeof(command), "P0a=%016" PRIx64,
+                 (uint64_t)SN1_STATE_GUEST);
+        gdb_peer_command(gdb, command, reply, sizeof(reply));
+        g_assert_cmpstr(reply, ==, "OK");
+        gdb_peer_command(gdb, "P0c=00000000000003e8", reply,
+                         sizeof(reply));
+        g_assert_cmpstr(reply, ==, "OK");
+        gdb_peer_command(gdb, "p20", reply, sizeof(reply));
+        status = g_ascii_strtoull(reply, NULL, 16);
+        snprintf(command, sizeof(command), "P20=%016" PRIx64,
+                 (uint64_t)((status & ~(uint64_t)4) | STATUS_KX));
+        gdb_peer_command(gdb, command, reply, sizeof(reply));
+        g_assert_cmpstr(reply, ==, "OK");
+        gdb_peer_command(gdb, "p25", reply, sizeof(reply));
+        g_assert_cmphex(g_ascii_strtoull(reply, NULL, 16), ==,
+                        0xffffffff00000000ULL | IMAGE_KSEG1_BASE |
+                        gh_reset_compare_pos);
+        gdb_peer_command(gdb, "vCont;c:2", NULL, 0);
+        g_usleep(50000);
+        g_assert_cmpint(write(gdb, "\003", 1), ==, 1);
+        gdb_peer_reply(gdb, reply, sizeof(reply));
+        g_test_message("peer Count after reset: %" PRIu64,
+                       sn1_timer_state_word(qts, GH_PEER_COUNT_OFF + 8));
+        g_assert_cmpuint((uint32_t)sn1_timer_state_word(qts,
+                         GH_PEER_COUNT_OFF + 8), >, 1000);
+        gdb_peer_command(gdb, "Hg1", reply, sizeof(reply));
+        g_assert_cmpstr(reply, ==, "OK");
+        gdb_peer_command(gdb, "p25", reply, sizeof(reply));
+        g_assert_cmphex(g_ascii_strtoull(reply, NULL, 16), ==,
+                        0xffffffff00000000ULL | IMAGE_KSEG1_BASE |
+                        gh_reset_compare_pos);
+        gdb_peer_command(gdb, "vCont;c:1", NULL, 0);
+        goto wait_gdb_sn1_done;
+    }
     if (migrate_vm) {
         source_hub_at_save = qtest_readq(qts, SN1_BEDROCK_LOCAL + 0x30100);
         migration_path = g_build_filename(dir, "migration.sock", NULL);
@@ -2088,11 +2149,20 @@ static void test_gdb_sn1_hold(const void *data)
     } else {
         gdb_peer_command(gdb, "vCont;c:1", NULL, 0);
     }
+wait_gdb_sn1_done:
     for (unsigned int i = 0; i < POLL_TRIES; i++) {
         if (sn1_timer_state_word(qts, DONE_OFF) == DONE_MAGIC) {
             break;
         }
         g_usleep(POLL_INTERVAL_US);
+    }
+    if (reset_vm) {
+        g_assert_cmphex(sn1_timer_state_word(qts, EXC_MARK_OFF), ==, 0);
+        g_assert_cmphex(sn1_timer_state_word(qts, DONE_OFF), ==, DONE_MAGIC);
+        g_assert_cmpuint(sn1_timer_state_word(qts, GH_COUNT_OFF), >, 1000);
+        g_assert_cmphex(sn1_timer_state_word(qts, GH_CAUSE_OFF) & CAUSE_IP7,
+                        ==, 0);
+        goto finish_gdb_sn1_hold;
     }
     if (interrupt_vm) {
         g_assert_cmphex(sn1_timer_state_word(qts, EXC_MARK_OFF), ==, 0);
@@ -2221,6 +2291,8 @@ int main(int argc, char **argv)
                             GINT_TO_POINTER(64), test_gdb_sn1_hold);
         qtest_add_data_func("mttcg/timer/gdb-sn1-half-range-hold",
                             GINT_TO_POINTER(128), test_gdb_sn1_hold);
+        qtest_add_data_func("mttcg/timer/gdb-sn1-reset-between-writes",
+                            GINT_TO_POINTER(256), test_gdb_sn1_hold);
     }
     return g_test_run();
 }
