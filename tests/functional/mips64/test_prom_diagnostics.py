@@ -103,7 +103,8 @@ from lib_prom_sash import NETBOOT_PATH, artifact_identity_problems
 RELEASE = "6.5.30"
 
 # Resolve the firmware and boot tree beneath QEMU_TEST_SGI_ASSET_DIR,
-# matching test_prom_boot.py's FIRMWARE_REL and tools/sash-gate's RELEASES["6.5.30"]
+# matching test_prom_boot.py's FIRMWARE_REL and tools/sash-gate's
+# RELEASES["6.5.30"]
 # in the project checkout: QEMU_TEST_SGI_ASSET_DIR points directly at the
 # asset directory.
 FIRMWARE_REL = os.path.join('firmware', RELEASE,

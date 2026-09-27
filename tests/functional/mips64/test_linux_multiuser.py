@@ -84,7 +84,8 @@ def missing_multiuser_markers(log):
     return verdict(log, MARKERS)
 
 
-# Where QEMU_TEST_SGI_ASSET_DIR resolves the networked kernel and the Gentoo rootfs,
+# Where QEMU_TEST_SGI_ASSET_DIR resolves the networked kernel and the Gentoo
+# rootfs,
 # QEMU_TEST_SGI_ASSET_DIR points directly at the asset directory.
 KERNEL_REL = os.path.join('linux-ip27-net', 'vmlinux')
 DISK_REL = os.path.join('gentoo', 'gentoo-rootfs.img')

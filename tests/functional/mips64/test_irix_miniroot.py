@@ -166,7 +166,8 @@ def reached_kernel_entry(transcript):
 RELEASE = "6.5.30"
 
 # Resolve the firmware and boot tree beneath QEMU_TEST_SGI_ASSET_DIR,
-# matching test_prom_sash.py's FIRMWARE_REL/TFTP_REL: QEMU_TEST_SGI_ASSET_DIR points
+# matching test_prom_sash.py's FIRMWARE_REL/TFTP_REL: QEMU_TEST_SGI_ASSET_DIR
+# points
 # directly at the directory containing those files.
 FIRMWARE_REL = os.path.join('firmware', RELEASE,
                             'ip27prom.payload.bin')

@@ -70,7 +70,8 @@ Guarded the same way test_openbsd_net_transfer.py is: @skipBigDataTest() (the
 disk is 2 GiB), @skipSlowTest() (booting to firmware-plus-early-kernel is
 not instant even though this test stops well short of a full boot), and
 @skipIfMissingEnv('QEMU_TEST_SGI_ASSET_DIR') for a developer with no assets at
-all. QEMU_TEST_SGI_ASSET_DIR being set with either asset missing underneath it is
+all. QEMU_TEST_SGI_ASSET_DIR being set with either asset missing underneath it
+is
 a provisioning failure, not an absent-assets run, and fails the test
 loudly rather than skipping it, the same as test_openbsd_net_transfer.py.
 """

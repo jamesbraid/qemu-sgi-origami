@@ -102,7 +102,8 @@ RELEASE = '6.5.30'
 def disk_rel(variant):
     """Return the asset-relative path of an installed-IRIX disk variant.
 
-    QEMU_TEST_SGI_ASSET_DIR is the asset root. For example, disk_rel('root-rad4') -> 'irix/6.5.30/
+    QEMU_TEST_SGI_ASSET_DIR is the asset root. For example,
+    disk_rel('root-rad4') -> 'irix/6.5.30/
     root-rad4.qcow2'. Resolve it with lib_prom.resolve_asset the same way
     every other disk-booting test in this directory resolves its own
     DISK_REL."""

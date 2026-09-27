@@ -60,7 +60,8 @@ why each clause is scored the way it is.
 Guarded by @skipBigDataTest() (the disk is multi-gigabyte) and
 @skipSlowTest() (a real multiuser IRIX boot plus the transfer is minutes),
 on top of @skipIfMissingEnv('QEMU_TEST_SGI_ASSET_DIR') (skips only
-when the env var itself is unset) and a self.fail() at method entry if it is set but the
+when the env var itself is unset) and a self.fail() at method entry if it is
+set but the
 PROM or installed disk is missing -- a missing asset with the env var set
 means CI provisioning failed, not a reason to skip quietly. The installed
 IRIX disk is not committed (the fork ships no IRIX bits); a runner
