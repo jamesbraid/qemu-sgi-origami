@@ -2427,6 +2427,9 @@ static const MemoryRegionOps md_memory_ops = {
  * is a line whose directory word is marked with a check error.
  */
 #define MD_WATCH_IDLE_NS NANOSECONDS_PER_SECOND
+/* The unit watches whole 4 KiB pages: one overlay covers 32 lines. */
+#define MD_WATCH_PAGE 4096
+#define MD_WATCH_PAGE_LINES (MD_WATCH_PAGE / MD_DIRECTORY_LINE)
 
 enum {
     MD_CACHE_INVALID,
@@ -2613,10 +2616,10 @@ static SGIBedrockMDLineState *md_line_state(SGIBedrockMDState *s,
 }
 
 static SGIBedrockMDHolder *md_line_holder(SGIBedrockMDState *s,
-                                          SGIBedrockMDWatchedLine *line,
-                                          uint16_t pointer, bool add)
+                                          uint32_t index, uint16_t pointer,
+                                          bool add)
 {
-    SGIBedrockMDLineState *state = md_line_state(s, line->index, add);
+    SGIBedrockMDLineState *state = md_line_state(s, index, add);
 
     if (!state) {
         return NULL;
@@ -2660,8 +2663,24 @@ static bool md_directory_entry_present(SGIBedrockMDState *s,
     return true;
 }
 
+/* One line of a watched page: its raw index and software-bank address. */
+typedef struct MDLine {
+    uint32_t index;
+    uint64_t address;
+} MDLine;
+
+static MDLine md_page_line(const SGIBedrockMDWatchedLine *page,
+                           uint64_t offset)
+{
+    return (MDLine) {
+        .index = page->index + offset / MD_DIRECTORY_LINE,
+        .address = page->address +
+                   (offset & ~(uint64_t)(MD_DIRECTORY_LINE - 1)),
+    };
+}
+
 /* The directory backdoor offset of a watched line's word. */
-static hwaddr md_line_directory_offset(const SGIBedrockMDWatchedLine *line)
+static hwaddr md_line_directory_offset(const MDLine *line)
 {
     return (line->address / MD_MEMORY_BANK_SIZE) * MD_DIRECTORY_BANK_SIZE +
            ((line->address % MD_MEMORY_BANK_SIZE) >> 3);
@@ -2673,7 +2692,7 @@ static hwaddr md_line_directory_offset(const SGIBedrockMDWatchedLine *line)
  * is granted. A word the protocol does not produce keeps its value.
  */
 static uint8_t md_directory_request(SGIBedrockMDState *s,
-                                    SGIBedrockMDWatchedLine *line,
+                                    const MDLine *line,
                                     uint16_t pointer, int request,
                                     bool prefetch)
 {
@@ -2701,7 +2720,8 @@ static uint8_t md_directory_request(SGIBedrockMDState *s,
             granted = MD_CACHE_SHARED;
         } else if (entry.format == MD_FORMAT_POINTER &&
                    entry.owner != pointer) {
-            SGIBedrockMDHolder *owner = md_line_holder(s, line, entry.owner,
+            SGIBedrockMDHolder *owner = md_line_holder(s, line->index,
+                                                       entry.owner,
                                                        false);
 
             if (owner && owner->state != MD_CACHE_INVALID) {
@@ -2773,9 +2793,11 @@ static uint8_t md_directory_request(SGIBedrockMDState *s,
  * for a device's access made from inside one.
  */
 static void md_watched_access(SGIBedrockMDState *s,
-                              SGIBedrockMDWatchedLine *line, bool is_write,
-                              MemTxAttrs attrs)
+                              SGIBedrockMDWatchedLine *page, hwaddr offset,
+                              bool is_write, MemTxAttrs attrs)
 {
+    MDLine one = md_page_line(page, offset);
+    const MDLine *line = &one;
     SGIBedrockMDHolder *holder;
     uint16_t pointer;
 
@@ -2793,8 +2815,8 @@ static void md_watched_access(SGIBedrockMDState *s,
         md_directory_injection_find(s, line->index)) {
         return;
     }
-    line->used_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
-    holder = md_line_holder(s, line, pointer, true);
+    page->used_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    holder = md_line_holder(s, line->index, pointer, true);
     if (!holder) {
         qemu_log_mask(LOG_UNIMP, "sgi-bedrock-md: line %u has more holders "
                       "than the model follows\n", line->index);
@@ -2834,12 +2856,12 @@ static MemTxResult md_watched_read(void *opaque, hwaddr offset,
                                    uint64_t *value, unsigned size,
                                    MemTxAttrs attrs)
 {
-    SGIBedrockMDWatchedLine *line = opaque;
-    MemTxResult result = md_memory_read(line->md, line->address + offset,
+    SGIBedrockMDWatchedLine *page = opaque;
+    MemTxResult result = md_memory_read(page->md, page->address + offset,
                                         value, size, attrs);
 
-    if (result == MEMTX_OK && line->active) {
-        md_watched_access(line->md, line, false, attrs);
+    if (result == MEMTX_OK && page->active) {
+        md_watched_access(page->md, page, offset, false, attrs);
     }
     return result;
 }
@@ -2848,12 +2870,12 @@ static MemTxResult md_watched_write(void *opaque, hwaddr offset,
                                     uint64_t value, unsigned size,
                                     MemTxAttrs attrs)
 {
-    SGIBedrockMDWatchedLine *line = opaque;
-    MemTxResult result = md_memory_write(line->md, line->address + offset,
+    SGIBedrockMDWatchedLine *page = opaque;
+    MemTxResult result = md_memory_write(page->md, page->address + offset,
                                          value, size, attrs);
 
-    if (result == MEMTX_OK && line->active) {
-        md_watched_access(line->md, line, true, attrs);
+    if (result == MEMTX_OK && page->active) {
+        md_watched_access(page->md, page, offset, true, attrs);
     }
     return result;
 }
@@ -2977,7 +2999,6 @@ static void md_watched_lines_clear(SGIBedrockMDState *s)
  */
 static void md_line_state_from_word(SGIBedrockMDState *s, uint32_t index)
 {
-    SGIBedrockMDWatchedLine probe = { .index = index };
     MDDirectoryEntry entry;
     SGIBedrockMDHolder *holder;
 
@@ -2988,7 +3009,7 @@ static void md_line_state_from_word(SGIBedrockMDState *s, uint32_t index)
         return;
     }
     if (entry.format == MD_FORMAT_POINTER) {
-        holder = md_line_holder(s, &probe, entry.owner, true);
+        holder = md_line_holder(s, index, entry.owner, true);
         if (holder) {
             holder->state = MD_CACHE_CLEAN;
         }
@@ -3002,7 +3023,7 @@ static void md_line_state_from_word(SGIBedrockMDState *s, uint32_t index)
         }
         for (uint16_t slot = 0; slot < 2; slot++) {
             if (s->pointer_present(s->requester_opaque, interface | slot)) {
-                holder = md_line_holder(s, &probe, interface | slot, true);
+                holder = md_line_holder(s, index, interface | slot, true);
                 if (holder) {
                     holder->state = MD_CACHE_SHARED;
                 }
@@ -3059,22 +3080,29 @@ bool sgi_bedrock_md_processor_request(SGIBedrockMDState *s, uint16_t pointer,
     bool found = false;
 
     for (unsigned i = 0; i < SGI_BEDROCK_MD_WATCHED_LINES; i++) {
-        SGIBedrockMDWatchedLine *line = &s->watched[i];
+        SGIBedrockMDWatchedLine *page = &s->watched[i];
+        uint64_t in_page = address & (MD_WATCH_PAGE - 1);
+        MDLine one = md_page_line(page, in_page);
+        const MDLine *line = &one;
         SGIBedrockMDHolder *holder;
 
-        if (!line->active || md_directory_injection_find(s, line->index)) {
+        /*
+         * An index request names the one line of the page whose set bits
+         * match; a hit request names the line at @address.
+         */
+        if (!page->active ||
+            (request == SGI_BEDROCK_MD_INDEX_WRITEBACK_INVALIDATE ?
+             (page->address ^ address) & index_mask &
+             ~(uint64_t)(MD_WATCH_PAGE - 1) :
+             page->address != address - in_page) ||
+            md_directory_injection_find(s, line->index)) {
             continue;
         }
-        if (request == SGI_BEDROCK_MD_INDEX_WRITEBACK_INVALIDATE ?
-            (line->address ^ address) & index_mask :
-            line->address != (address & ~(uint64_t)(MD_DIRECTORY_LINE - 1))) {
-            continue;
-        }
-        holder = md_line_holder(s, line, pointer, prefetch);
+        holder = md_line_holder(s, line->index, pointer, prefetch);
         if (!holder) {
             continue;
         }
-        line->touched = true;
+        page->touched = true;
         switch (request) {
         case SGI_BEDROCK_MD_INDEX_WRITEBACK_INVALIDATE:
         case SGI_BEDROCK_MD_HIT_WRITEBACK_INVALIDATE:
@@ -3132,9 +3160,10 @@ static bool md_line_address(SGIBedrockMDState *s, uint32_t index,
  * line a processor has just flushed takes the least recently used slot
  * whatever its age. With none, the line is not followed.
  */
-static void md_watch_line(SGIBedrockMDState *s, uint32_t index)
+static void md_watch_line(SGIBedrockMDState *s, uint32_t line_index)
 {
     int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    uint32_t index = line_index & ~(uint32_t)(MD_WATCH_PAGE_LINES - 1);
     SGIBedrockMDWatchedLine *slot = NULL;
     SGIBedrockMDWatchedLine *oldest = NULL;
     uint64_t address;
@@ -3165,7 +3194,7 @@ static void md_watch_line(SGIBedrockMDState *s, uint32_t index)
             }
         }
     }
-    if (!slot && md_line_address(s, index, &address) &&
+    if (!slot && md_line_address(s, line_index, &address) &&
         md_line_named(s, address)) {
         slot = oldest;
     }
@@ -3182,8 +3211,12 @@ static void md_watch_line(SGIBedrockMDState *s, uint32_t index)
                                     (uint64_t)index * MD_DIRECTORY_LINE,
                                     &slot->address, &slot->placed, 2);
     memory_region_transaction_commit();
-    if (slot->active && !md_directory_injection_find(s, index)) {
-        md_line_state_from_word(s, index);
+    for (uint32_t line = index;
+         slot->active && line < index + MD_WATCH_PAGE_LINES &&
+         line < s->directory_entries; line++) {
+        if (!md_directory_injection_find(s, line)) {
+            md_line_state_from_word(s, line);
+        }
     }
     md_watched_count_update(s);
     if (!timer_pending(s->watch_timer)) {
@@ -3772,11 +3805,11 @@ static void md_init(Object *obj)
     }
     for (unsigned i = 0; i < SGI_BEDROCK_MD_WATCHED_LINES; i++) {
         g_autofree char *name =
-            g_strdup_printf(TYPE_SGI_BEDROCK_MD "-watched-line%u", i);
+            g_strdup_printf(TYPE_SGI_BEDROCK_MD "-watched-page%u", i);
 
         s->watched[i].md = s;
         memory_region_init_io(&s->watched[i].mr, obj, &md_watched_ops,
-                              &s->watched[i], name, MD_DIRECTORY_LINE);
+                              &s->watched[i], name, MD_WATCH_PAGE);
     }
     sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->memory_mr);
     memory_region_init_io(&s->fetchop_mmio, obj, &md_fetchop_ops, s,
