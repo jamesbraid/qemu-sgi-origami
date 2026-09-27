@@ -4,6 +4,96 @@
       "console": "ioc3-serial-a",
       "consoles": [
         {
+          "argument": "-serial chardev:l1",
+          "kind": "system-controller",
+          "node": 0
+        },
+        {
+          "argument": "-serial chardev:ioc3_b",
+          "kind": "second-port",
+          "node": 0
+        },
+        {
+          "argument": "-serial chardev:ioc3_a",
+          "kind": "console",
+          "node": 0
+        }
+      ],
+      "cpus-per-node": [
+        1
+      ],
+      "default-cpu-model": "R14000",
+      "default-topology": "fuel",
+      "dimms-per-node": [
+        2
+      ],
+      "disk-bus": "scsi.0",
+      "display-name": "Fuel",
+      "firmware": {
+        "argument": "-bios",
+        "asset": "assets/firmware/6.5.30/ip35prom.payload.bin",
+        "kind": "ip35-prom",
+        "per-node-flash": false,
+        "sha256": "554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b",
+        "size": 1476264
+      },
+      "identity-inputs": [],
+      "install-media": [],
+      "memory-per-node-mib": {
+        "accepted": [
+          512
+        ],
+        "default": 512
+      },
+      "needs-debug-leds-off": false,
+      "netboot-adapter": "ioc3-ethernet",
+      "networks": [
+        {
+          "argument": "-netdev ...,id=net0",
+          "kind": "ioc3-ethernet"
+        }
+      ],
+      "nodes": 1,
+      "processor": {
+        "cache-mib": 2,
+        "clock-hz": 500000000,
+        "part": "R14000"
+      },
+      "product": "fuel",
+      "prom-dialogue": "ip35-l1-prompt",
+      "resources": [],
+      "smp": 1,
+      "storage": [
+        {
+          "bus": "scsi.0",
+          "targets": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15
+          ],
+          "type": "scsi"
+        }
+      ],
+      "supported-guests": [],
+      "synthesized-firmware-toggle": false,
+      "topology": "fuel"
+    },
+    {
+      "console": "ioc3-serial-a",
+      "consoles": [
+        {
           "argument": "-serial chardev:ioc3_a",
           "kind": "console",
           "node": 0
@@ -8282,6 +8372,141 @@
         }
       ],
       "xio-slots": []
+    },
+    {
+      "cables": [],
+      "console": 0,
+      "controllers": [
+        {
+          "id": "l1",
+          "kind": "l1",
+          "module-index": 0
+        }
+      ],
+      "crossbars": [],
+      "description": "SGI Fuel (IP34)",
+      "generation": "sn1",
+      "io-boards": [
+        {
+          "attachment": 0,
+          "carrier": "machine-placed",
+          "id": "xbridge-bridge-e",
+          "module-index": 0,
+          "other-identity-parts": [],
+          "part": "",
+          "preset": "fuel",
+          "revision": 2,
+          "serial": 47413004296
+        },
+        {
+          "attachment": 1,
+          "carrier": "machine-placed",
+          "id": "xbridge-bridge-f",
+          "ioc3-serial": 103835129348099,
+          "module-index": 0,
+          "other-identity-parts": [],
+          "part": "",
+          "preset": "fuel",
+          "revision": 2,
+          "serial": 47413004296
+        }
+      ],
+      "junk-uart": -1,
+      "modules": [
+        {
+          "controller-index": 0,
+          "id": "implicit-module",
+          "initial-module-number": 0,
+          "nodes": [
+            0
+          ],
+          "serial": ""
+        }
+      ],
+      "name": "fuel",
+      "nodes": [
+        {
+          "accepted-memory-mib": [
+            512
+          ],
+          "asic-kind": "bedrock",
+          "bank-mib": [
+            256,
+            256,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "cpu-slots": [
+            {
+              "assembly": {
+                "cache-clock-hz": 250000000,
+                "cache-mib": 2,
+                "clock-hz": 500000000,
+                "fpu-prid": 0,
+                "id": "r14000-500mhz",
+                "kind": "R14000",
+                "mode-bits": 10135941,
+                "prid": 3876
+              },
+              "interface": 0,
+              "slot": 0
+            },
+            {
+              "interface": 0,
+              "slot": 1
+            },
+            {
+              "interface": 1,
+              "slot": 0
+            },
+            {
+              "interface": 1,
+              "slot": 1
+            }
+          ],
+          "flash": {
+            "kind": "am29f080",
+            "size": 1476264
+          },
+          "id": "bedrock",
+          "identity": {
+            "i2c-controller": false,
+            "ni-revision": 2,
+            "serial": 14345375975689,
+            "system-controller": false,
+            "widget-revision": 2
+          },
+          "module-index": 0,
+          "slave-role": false,
+          "slot": 0
+        }
+      ],
+      "product": "fuel",
+      "routers": [],
+      "supported-cpu-populations": [
+        {
+          "cpus-per-node": [
+            1
+          ]
+        }
+      ],
+      "xtalk-attachments": [
+        {
+          "crossbar-index": -1,
+          "node-index": 0,
+          "widget": 14
+        },
+        {
+          "crossbar-index": -1,
+          "node-index": 0,
+          "widget": 15
+        }
+      ],
+      "xtalk-slots": []
     },
     {
       "cables": [
