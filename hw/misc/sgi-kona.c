@@ -9,9 +9,11 @@
  * three-bit subsystem-classification probe at `+0x64`
  * (docs/datasheets/infinitereality-host-interface.md, docs/designs/
  * infinitereality-host-command-approximation.md), and the one-wire
- * identity chain at `+0x98`, reusing hw/1wire's own DS2502 model and the
- * shared MicroLAN slot decode exactly as hw/pci-host/sgi-bridge.c's own
- * NIC register does.
+ * identity chain at `+0x98` -- the geometry board's own record and,
+ * unless the "other-identity-parts" property says otherwise, the Ktown
+ * board's -- reusing hw/1wire's own DS2502 model and the shared MicroLAN
+ * slot decode exactly as hw/pci-host/sgi-bridge.c's own NIC register
+ * does.
  *
  * Increment 2 adds the register window at `+0x800xxx` (credit, mailbox,
  * cause, reset and EEPROM-fallback registers) and the PROM textport's own
@@ -53,6 +55,8 @@
 #include "hw/core/qdev-properties.h"
 #include "hw/core/resettable.h"
 #include "migration/vmstate.h"
+#include "qapi/qapi-visit-common.h"
+#include "qapi/util.h"
 #include "qapi/visitor.h"
 #include "qom/object.h"
 #include "ui/console.h"
@@ -104,9 +108,9 @@ static const SGIBridgeBoardRecord sgi_kona_ktown_record = {
     .name = "KTOWN-BD",
 };
 
-/* Realize one DS2502 identity part onto the board's own one-wire bus. */
+/* Realize one DS2502 identity part onto the given one-wire bus. */
 static bool sgi_kona_onewire_attach_part(
-    SGIKonaState *s, const char *child_name,
+    SGIKonaState *s, OneWireBus *bus, const char *child_name,
     const SGIBridgeBoardRecord *record, uint64_t serial, Error **errp)
 {
     uint8_t rom[SGI_BRIDGE_ONEWIRE_RECORD_SIZE];
@@ -118,8 +122,33 @@ static bool sgi_kona_onewire_attach_part(
     qdev_prop_set_uint8(part, "family", SGI_KONA_ONEWIRE_FAMILY);
     qdev_prop_set_uint64(part, "serial", serial);
     ds2502_set_image(part, rom, sizeof(rom));
-    return qdev_realize_and_unref(part, BUS(s->onewire_bus), errp);
+    return qdev_realize_and_unref(part, BUS(bus), errp);
 }
+
+/*
+ * The known identity parts "other-identity-parts" may name, beyond the
+ * geometry board's own record that sgi_kona_finish_realize() always
+ * attaches to onewire_bus. Currently only Ktown: a rack pipe carries it,
+ * a deskside pipe (no Ktown board) is built with an empty list. Mirrors
+ * the machine-model catalogue's own board-record part numbers (see the
+ * struct field comment on other_identity_parts); an unknown part string
+ * is a realize error, not a silent skip.
+ */
+typedef struct SGIKonaIdentityPart {
+    const char *part;
+    const char *child_name;
+    const SGIBridgeBoardRecord *record;
+    uint64_t serial;
+} SGIKonaIdentityPart;
+
+static const SGIKonaIdentityPart sgi_kona_identity_parts[] = {
+    {
+        .part = "030-1067-001",
+        .child_name = "onewire-ktown",
+        .record = &sgi_kona_ktown_record,
+        .serial = SGI_KONA_KTOWN_SERIAL,
+    },
+};
 
 /*
  * A guest-controlled width*height could otherwise demand an arbitrarily
@@ -588,17 +617,34 @@ static bool sgi_kona_build_widget(SGIXioBoardState *board,
 static bool sgi_kona_finish_realize(SGIXioBoardState *board, Error **errp)
 {
     SGIKonaState *s = SGI_KONA(board);
+    strList *entry;
 
     s->onewire_bus = onewire_create_bus(DEVICE(s), "onewire");
     if (!sgi_kona_onewire_attach_part(
-            s, "onewire-geometry", &sgi_kona_geometry_record,
+            s, s->onewire_bus, "onewire-geometry", &sgi_kona_geometry_record,
             SGI_KONA_GEOMETRY_SERIAL, errp)) {
         return false;
     }
-    if (!sgi_kona_onewire_attach_part(
-            s, "onewire-ktown", &sgi_kona_ktown_record,
-            SGI_KONA_KTOWN_SERIAL, errp)) {
-        return false;
+    for (entry = s->other_identity_parts; entry; entry = entry->next) {
+        const SGIKonaIdentityPart *known = NULL;
+
+        for (size_t i = 0; i < ARRAY_SIZE(sgi_kona_identity_parts); i++) {
+            if (g_str_equal(entry->value, sgi_kona_identity_parts[i].part)) {
+                known = &sgi_kona_identity_parts[i];
+                break;
+            }
+        }
+        if (!known) {
+            error_setg(errp,
+                      "sgi-kona: unknown other-identity-parts entry '%s'",
+                      entry->value);
+            return false;
+        }
+        if (!sgi_kona_onewire_attach_part(
+                s, s->onewire_bus, known->child_name, known->record,
+                known->serial, errp)) {
+            return false;
+        }
     }
 
     sgi_command_port_init(&s->textport, &sgi_kona_textport_ops, s,
@@ -639,6 +685,10 @@ static void sgi_kona_instance_init(Object *obj)
 {
     SGIKonaState *s = SGI_KONA(obj);
 
+    /* Default: today's rack behaviour, geometry board plus Ktown. */
+    QAPI_LIST_PREPEND(s->other_identity_parts,
+                      g_strdup(sgi_kona_ktown_record.part));
+
     object_property_add_uint32_ptr(obj, "x-test-pixel-x", &s->test_pixel_x,
                                    OBJ_PROP_FLAG_READWRITE);
     object_property_add_uint32_ptr(obj, "x-test-pixel-y", &s->test_pixel_y,
@@ -669,6 +719,7 @@ static void sgi_kona_instance_finalize(Object *obj)
     }
     g_free(s->framebuffer);
     g_free(s->bitmap_payload);
+    qapi_free_strList(s->other_identity_parts);
 }
 
 /*
@@ -853,6 +904,35 @@ static const VMStateDescription vmstate_sgi_kona = {
     },
 };
 
+/*
+ * A list-of-strings property cannot use the static Property[]/
+ * DEFINE_PROP_* table above (sgi_kona_properties), so it is registered
+ * separately here, matching hw/mips/sgi/sn-machine.c's own
+ * chassis-eeprom/board-eeprom/spd-eeprom precedent.
+ */
+static void sgi_kona_get_other_identity_parts(Object *obj, Visitor *v,
+                                              const char *name, void *opaque,
+                                              Error **errp)
+{
+    SGIKonaState *s = SGI_KONA(obj);
+
+    visit_type_strList(v, name, &s->other_identity_parts, errp);
+}
+
+static void sgi_kona_set_other_identity_parts(Object *obj, Visitor *v,
+                                              const char *name, void *opaque,
+                                              Error **errp)
+{
+    SGIKonaState *s = SGI_KONA(obj);
+    strList *replacement = NULL;
+
+    if (!visit_type_strList(v, name, &replacement, errp)) {
+        return;
+    }
+    qapi_free_strList(s->other_identity_parts);
+    s->other_identity_parts = replacement;
+}
+
 static void sgi_kona_class_init(ObjectClass *oc, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
@@ -873,6 +953,15 @@ static void sgi_kona_class_init(ObjectClass *oc, const void *data)
     bc->build_widget = sgi_kona_build_widget;
     bc->finish_realize = sgi_kona_finish_realize;
     rc->phases.hold = sgi_kona_reset_hold;
+
+    object_class_property_add(oc, "other-identity-parts", "strList",
+                              sgi_kona_get_other_identity_parts,
+                              sgi_kona_set_other_identity_parts, NULL, NULL);
+    object_class_property_set_description(oc, "other-identity-parts",
+        "Identity parts to attach to the +0x98 one-wire chain beyond the "
+        "geometry board's own record, by part number. Defaults to the "
+        "Ktown board (030-1067-001); an empty list models a deskside "
+        "pipe with no Ktown. An unknown part number is a realize error.");
 }
 
 static const TypeInfo sgi_kona_type = {
