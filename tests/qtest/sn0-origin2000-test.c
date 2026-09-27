@@ -2082,7 +2082,7 @@ static void test_write_every_advertised_width(const void *data)
  * From sn0-origin2000-xtalk-owner-test.c: the family builder realizes each
  * crossbar the topology names only at the deferred machine-init-done hook,
  * once BaseIO and any -device sgi-pci-expansion have had their chance to
- * attach; this checks that wiring is there once origin2000-module has
+ * attach; this checks that wiring is there once origin2000-rack has
  * actually been built.
  */
 static uint64_t xtalk_uint(QTestState *qts, const char *crossbow,

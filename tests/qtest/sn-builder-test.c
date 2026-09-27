@@ -982,7 +982,7 @@ static void test_origin300_two_chassis_population(const void *data)
     g_unlink(path);
 }
 
-static void test_origin2000_module_accepts_its_populations(const void *data)
+static void test_origin2000_rack_accepts_its_populations(const void *data)
 {
     QTestState *qts = qtest_init("-M origin2000 -smp 8 -display none");
 
@@ -1515,6 +1515,34 @@ static void test_origin300_two_chassis_l1s_are_peers(const void *data)
     g_unlink(path);
 }
 
+/*
+ * A node-population row the builder cannot make is refused before any
+ * node is built: one leaving out the node that controls an I/O board,
+ * and one graded unknown, whose evidence does not settle its wiring.
+ */
+static void test_unbuildable_rows_rejected(const void *data)
+{
+    const char *console[] = {
+        qtest_qemu_binary(NULL), "-M",
+        "sn-builder-console-test,activate=on,nodes=1",
+        "-m", "128M", "-smp", "1", "-cpu", "R10000",
+        "-bios", "/dev/null", "-display", "none", NULL
+    };
+    const char *unknown[] = {
+        qtest_qemu_binary(NULL), "-M",
+        "sn-builder-bedrock-test,activate=on,nodes=1",
+        "-m", "128M", "-smp", "1", "-bios", "/dev/null",
+        "-display", "none", NULL
+    };
+
+    assert_qemu_rejects(console, "topology 'sn-builder-console-test': an "
+                        "I/O board needs node 1, which a node-population "
+                        "row leaves out");
+    assert_qemu_rejects(unknown, "topology 'sn-builder-bedrock-test' with 1 "
+                        "node board rests on evidence that does not settle "
+                        "its wiring; it is not built");
+}
+
 static void test_unsupported_memory_population_rejected(const void *data)
 {
     /*
@@ -1576,6 +1604,8 @@ int main(int argc, char **argv)
                         NULL, test_node_without_xtalk_attachment_rejected);
     qtest_add_data_func("sn/builder/unsupported-memory-population-rejected",
                         NULL, test_unsupported_memory_population_rejected);
+    qtest_add_data_func("sn/builder/unbuildable-rows-rejected", NULL,
+                        test_unbuildable_rows_rejected);
     qtest_add_data_func("sn/builder/bedrock-topology-accepts-two-nodes",
                         NULL, test_bedrock_topology_accepts_two_nodes);
     qtest_add_data_func(
@@ -1595,8 +1625,8 @@ int main(int argc, char **argv)
     qtest_add_data_func("sn/builder/origin300-two-chassis-population",
                         NULL, test_origin300_two_chassis_population);
     qtest_add_data_func(
-        "sn/builder/origin2000-module-accepts-its-populations", NULL,
-        test_origin2000_module_accepts_its_populations);
+        "sn/builder/origin2000-rack-accepts-its-populations", NULL,
+        test_origin2000_rack_accepts_its_populations);
     qtest_add_data_func(
         "sn/builder/origin2000-deskside-accepts-its-populations", NULL,
         test_origin2000_one_node_accepts_its_populations);
