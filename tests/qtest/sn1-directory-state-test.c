@@ -773,6 +773,57 @@ static void test_absent_owner(void)
     finish(s, prom);
 }
 
+/* A hit flush by slot C, publishing Status.CH at 0x08 and the word at 0x10. */
+static void hit_flush_c(Program *p)
+{
+    emit_hit_flush(p, 0x08);
+    emit_publish(p, 0x10);
+}
+
+/*
+ * A line followed for the first time takes its copies from the directory
+ * word: the owner a pointer names holds the line, clean, so a hit flush
+ * finds it and drops it without writing back.
+ */
+static void test_owner_from_the_word(void)
+{
+    const Scenario sc = {
+        .cpus = "2", .word = POINTER(4),
+        STEPS({ 0, emit_first }, { 2, hit_flush_c }),
+    };
+    char *prom;
+    QTestState *s;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+    s = run_scenario(&sc, &prom);
+    g_assert_cmphex(result(s, 0x08) & STATUS_CH, ==, STATUS_CH);
+    g_assert_cmphex(result(s, 0x10) & DIRECTORY_FIELDS, ==, POINTER(4));
+    finish(s, prom);
+}
+
+/* A sharer bit gives the processors on that interface shared copies. */
+static void test_sharers_from_the_word(void)
+{
+    const Scenario sc = {
+        .cpus = "2", .word = SHARED(0x2),
+        STEPS({ 0, emit_first }, { 2, hit_flush_c }),
+    };
+    char *prom;
+    QTestState *s;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+    s = run_scenario(&sc, &prom);
+    g_assert_cmphex(result(s, 0x08) & STATUS_CH, ==, STATUS_CH);
+    g_assert_cmphex(result(s, 0x10) & DIRECTORY_FIELDS, ==, SHARED(0x2));
+    finish(s, prom);
+}
+
 static void migrate_wait(QTestState *qts)
 {
     int64_t deadline = g_get_monotonic_time() + 30 * G_TIME_SPAN_SECOND;
@@ -873,6 +924,10 @@ int main(int argc, char **argv)
                    test_uncached_accesses);
     qtest_add_func("sn1/directory-state/debugger-read", test_debugger_read);
     qtest_add_func("sn1/directory-state/absent-owner", test_absent_owner);
+    qtest_add_func("sn1/directory-state/owner-from-the-word",
+                   test_owner_from_the_word);
+    qtest_add_func("sn1/directory-state/sharers-from-the-word",
+                   test_sharers_from_the_word);
     qtest_add_func("sn1/directory-state/idle-line-keeps-its-state",
                    test_idle_line_keeps_its_state);
     qtest_add_func("sn1/directory-state/released-line-state-migrates",

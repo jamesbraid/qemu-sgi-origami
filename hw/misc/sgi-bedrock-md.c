@@ -2928,6 +2928,54 @@ static void md_watched_lines_clear(SGIBedrockMDState *s)
     md_watched_count_update(s);
 }
 
+/*
+ * The copies a line followed for the first time must already have, read
+ * from its directory word: the owner a pointer names holds the line
+ * exclusive, and each processor on an interface a sharer bit names holds
+ * it shared -- the vector cannot say which of an interface's two
+ * processors has it, so both are taken to. Whether the owner's copy is
+ * dirty the word does not say. It is taken to be clean, the one choice
+ * that never changes the word by itself: a clean copy is dropped silently
+ * where a dirty one would be written back, and a write-back the model
+ * cannot know happened is a change hardware might not have made. A word
+ * the protocol does not produce gives no copies.
+ */
+static void md_line_state_from_word(SGIBedrockMDState *s, uint32_t index)
+{
+    SGIBedrockMDWatchedLine probe = { .index = index };
+    MDDirectoryEntry entry;
+    SGIBedrockMDHolder *holder;
+
+    if (md_line_state(s, index, false) || !s->pointer_present ||
+        !md_directory_decode(s->directory[index], md_directory_premium(s),
+                             &entry) ||
+        !md_directory_entry_present(s, &entry)) {
+        return;
+    }
+    if (entry.format == MD_FORMAT_POINTER) {
+        holder = md_line_holder(s, &probe, entry.owner, true);
+        if (holder) {
+            holder->state = MD_CACHE_CLEAN;
+        }
+        return;
+    }
+    for (unsigned bit = 0; bit < 64; bit++) {
+        uint16_t interface = (bit >> 1) << 3 | (bit & 1) << 2;
+
+        if (!(entry.sharers & (UINT64_C(1) << bit))) {
+            continue;
+        }
+        for (uint16_t slot = 0; slot < 2; slot++) {
+            if (s->pointer_present(s->requester_opaque, interface | slot)) {
+                holder = md_line_holder(s, &probe, interface | slot, true);
+                if (holder) {
+                    holder->state = MD_CACHE_SHARED;
+                }
+            }
+        }
+    }
+}
+
 /* A reset, or a stream being loaded, discards every line's copies. */
 static void md_line_states_clear(SGIBedrockMDState *s)
 {
@@ -3099,6 +3147,9 @@ static void md_watch_line(SGIBedrockMDState *s, uint32_t index)
                                     (uint64_t)index * MD_DIRECTORY_LINE,
                                     &slot->address, &slot->placed, 2);
     memory_region_transaction_commit();
+    if (slot->active && !md_directory_injection_find(s, index)) {
+        md_line_state_from_word(s, index);
+    }
     md_watched_count_update(s);
     if (!timer_pending(s->watch_timer)) {
         md_watch_timer_arm(s);
