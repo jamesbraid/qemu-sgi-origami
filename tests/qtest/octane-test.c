@@ -5,6 +5,8 @@
 #include "qobject/qdict.h"
 #include "qobject/qlist.h"
 
+#include <sys/socket.h>
+
 #define HEART 0x0ff00000ULL
 #define XBOW 0x10000000ULL
 #define HEART_WIDGET 0x18000000ULL
@@ -17,6 +19,9 @@
 #define WIDE 0x80070000U
 #define CFG(slot) (BRIDGE + 0x020000 + (slot) * 0x1000)
 #define BRIDGE_NIC (BRIDGE + 0x0b4)
+#define IOC3 (BRIDGE + 0x600000)
+#define UART_A (IOC3 + 0x20178)
+#define IOC3_SERIAL_IRQ (1u << 6)
 
 static char *flash_path;
 
@@ -26,6 +31,15 @@ static QTestState *octane_start(void)
 
     return qtest_initf("-M octane -m 128M -cpu R10000 -bios %s -S",
                        quoted);
+}
+
+static QTestState *octane_start_serial(int *sock)
+{
+    g_autofree char *quoted = g_shell_quote(flash_path);
+    g_autofree char *args = g_strdup_printf(
+        "-M octane -m 128M -cpu R10000 -bios %s -S", quoted);
+
+    return qtest_init_with_serial(args, sock);
 }
 
 static void test_widgets_and_memory(void)
@@ -177,6 +191,44 @@ static void test_serial_a_loopback(void)
     qtest_quit(qts);
 }
 
+static void test_serial_a_chardev(void)
+{
+    int sock;
+    QTestState *qts = octane_start_serial(&sock);
+    const uint8_t sent = 'I';
+    uint8_t received;
+    struct timeval deadline = { .tv_sec = 5 };
+
+    g_assert_cmpint(setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO,
+                               &deadline, sizeof(deadline)), ==, 0);
+    qtest_writel(qts, CFG(2) + 0x10, 0x10000000);
+    qtest_writel(qts, CFG(2) + 0x04, 0x00000002);
+    qtest_writel(qts, BRIDGE + 0x200 + 8 * 2 + 4, 0x1100);
+    qtest_writeb(qts, UART_A + 3, 0x03);
+    qtest_writeb(qts, UART_A + 1, 0x01);
+    g_assert_cmpint(write(sock, &sent, 1), ==, 1);
+
+    g_test_timer_start();
+    while (!(qtest_readb(qts, UART_A + 5) & 1)) {
+        g_assert_cmpfloat(g_test_timer_elapsed(), <, 5.0);
+        g_usleep(1000);
+    }
+    g_assert_cmphex(qtest_readl(qts, IOC3 + 0x1c) & IOC3_SERIAL_IRQ, ==,
+                    IOC3_SERIAL_IRQ);
+    qtest_writel(qts, IOC3 + 0x20, IOC3_SERIAL_IRQ);
+    g_assert_cmphex(qtest_readl(qts, IOC3 + 0x20) & IOC3_SERIAL_IRQ, ==,
+                    IOC3_SERIAL_IRQ);
+
+    g_assert_cmphex(qtest_readb(qts, UART_A), ==, sent);
+    g_assert_cmphex(qtest_readl(qts, IOC3 + 0x1c) & IOC3_SERIAL_IRQ, ==, 0);
+
+    qtest_writeb(qts, UART_A, 'O');
+    g_assert_cmpint(read(sock, &received, 1), ==, 1);
+    g_assert_cmphex(received, ==, 'O');
+    close(sock);
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     int fd;
@@ -191,6 +243,7 @@ int main(int argc, char **argv)
     qtest_add_func("/octane/flash-and-pci", test_flash_and_pci);
     qtest_add_func("/octane/firmware-rejections", test_firmware_rejections);
     qtest_add_func("/octane/serial-a-loopback", test_serial_a_loopback);
+    qtest_add_func("/octane/serial-a-chardev", test_serial_a_chardev);
     qtest_add_func("/octane/heart-interrupt-levels",
                    test_heart_interrupt_levels);
     int result = g_test_run();
