@@ -62,6 +62,7 @@
 #define ENET_PIN (1u << 2)
 #define ENET_VECTOR (1u << 17)
 #define ENET_INT_RX_TIMER (1u << 0)
+#define ENET_INT_RX_THRESHOLD (1u << 1)
 #define ENET_INT_TX_COMPLETE (1u << 22)
 #define SCSI0_WINDOW (BRIDGE + 0x200000)
 /* Bridge reverses the two halfword lanes within each 32-bit PCI word. */
@@ -346,6 +347,97 @@ static void test_octane_ioc3_ethernet(bool octane2)
 static void test_octane_ethernet(void)
 {
     test_octane_ioc3_ethernet(false);
+}
+
+static void test_octane_ioc3_ethernet_polled(bool octane2)
+{
+    const uint32_t pci_base = 0xa0000000u;
+    const uint32_t tx_desc = 0x4000;
+    const uint32_t rx_ring = 0x8000;
+    const uint32_t rx_buf = 0xc000;
+    uint8_t frame[60], landed[sizeof(frame)], sent[sizeof(frame)];
+    uint32_t length;
+    struct timeval timeout = { .tv_sec = 5 };
+    g_autofree char *args = NULL;
+    QTestState *qts;
+    int sv[2];
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    g_assert_cmpint(setsockopt(sv[0], SOL_SOCKET, SO_RCVTIMEO, &timeout,
+                               sizeof(timeout)), ==, 0);
+    args = g_strdup_printf("-nic socket,fd=%d", sv[1]);
+    qts = octane2 ? octane2_start_args(args) : octane_start_args(args);
+    /* The machine helpers launch paused; socket receive needs a running VM. */
+    qtest_qmp_assert_success(qts, "{ 'execute': 'cont' }");
+
+    qtest_writel(qts, CFG(2) + 0x10, 0x10000000);
+    qtest_writel(qts, CFG(2) + 0x04, 0x00000006);
+    qtest_writel(qts, BRIDGE + 0x200 + 8 * 2 + 4, 0x1100);
+    qtest_writel(qts, BRIDGE_REG(0x080), 8u << 20);
+
+    memset(frame, 0, sizeof(frame));
+    memset(frame, 0xff, 6);
+    for (unsigned int i = 6; i < sizeof(frame); i++) {
+        frame[i] = i;
+    }
+
+    qtest_writeq(qts, RAM + rx_ring, pci_base + rx_buf);
+    qtest_writeq(qts, RAM + rx_ring + 8, pci_base + rx_buf + 0x1000);
+    qtest_writel(qts, IOC3_ENET_RX_RING_LO, pci_base + rx_ring);
+    qtest_writel(qts, IOC3_ENET_RX_PRODUCE, 16);
+    g_assert_cmphex(qtest_readl(qts, IOC3_ENET_INT_ENABLE), ==, 0);
+    qtest_writel(qts, IOC3_ENET_MAC_CONTROL,
+                 (1u << 1) | (17u << 3) | (1u << 2) |
+                 (1u << 13) | (1u << 14) | (1u << 15) | (1u << 16));
+
+    length = htonl(sizeof(frame));
+    g_assert_cmpint(send(sv[0], &length, sizeof(length), 0), ==,
+                    sizeof(length));
+    g_assert_cmpint(send(sv[0], frame, sizeof(frame), 0), ==, sizeof(frame));
+
+    /* The buffer valid bit is the poll result; no index or IRQ is needed. */
+    for (unsigned int i = 0; i < 200; i++) {
+        if (qtest_readl(qts, RAM + rx_buf) & (1u << 31)) {
+            break;
+        }
+        g_usleep(5000);
+        qtest_clock_step(qts, 50000);
+    }
+    g_assert_cmphex(qtest_readl(qts, RAM + rx_buf) & (1u << 31), ==,
+                    1u << 31);
+    qtest_memread(qts, RAM + rx_buf + 34, landed, sizeof(landed));
+    g_assert_cmpmem(landed, sizeof(landed), frame, sizeof(frame));
+    g_assert_cmphex(qtest_readl(qts, IOC3_ENET_INT_STATUS) &
+                    (ENET_INT_RX_TIMER | ENET_INT_RX_THRESHOLD), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, BRIDGE_REG(0x100)) & ENET_PIN, ==, 0);
+
+    qtest_writel(qts, RAM + tx_desc, sizeof(frame) | (1u << 16));
+    qtest_writel(qts, RAM + tx_desc + 4, sizeof(frame));
+    qtest_memwrite(qts, RAM + tx_desc + 24, frame, sizeof(frame));
+    qtest_writel(qts, IOC3_ENET_TX_RING_LO, pci_base + tx_desc);
+    qtest_writel(qts, IOC3_ENET_TX_PRODUCE, 128);
+    g_assert_cmpint(recv(sv[0], &length, sizeof(length), MSG_WAITALL), ==,
+                    sizeof(length));
+    g_assert_cmpuint(ntohl(length), ==, sizeof(frame));
+    g_assert_cmpint(recv(sv[0], sent, sizeof(sent), MSG_WAITALL), ==,
+                    sizeof(sent));
+    g_assert_cmpmem(sent, sizeof(sent), frame, sizeof(frame));
+    g_assert_cmphex(qtest_readl(qts, IOC3_ENET_TX_CONSUME), ==,
+                    128 | (1u << 31));
+    g_assert_cmphex(qtest_readl(qts, BRIDGE_REG(0x100)) & ENET_PIN, ==, 0);
+
+    qtest_quit(qts);
+    close(sv[0]);
+}
+
+static void test_octane_ethernet_polled(void)
+{
+    test_octane_ioc3_ethernet_polled(false);
+}
+
+static void test_octane2_ethernet_polled(void)
+{
+    test_octane_ioc3_ethernet_polled(true);
 }
 
 static uint32_t octane_cpu_cause(QTestState *qts);
@@ -1412,6 +1504,10 @@ int main(int argc, char **argv)
                    test_memory_population_rejections);
     qtest_add_func("/octane2/ioc3-ethernet", test_octane2_ethernet);
     qtest_add_func("/octane/ioc3-ethernet", test_octane_ethernet);
+    qtest_add_func("/octane/ioc3-ethernet-polled",
+                   test_octane_ethernet_polled);
+    qtest_add_func("/octane2/ioc3-ethernet-polled",
+                   test_octane2_ethernet_polled);
     qtest_add_func("/octane/ioc3-ethernet-dma-and-interrupt",
                    test_octane_ethernet_dma_and_interrupt);
     qtest_add_func("/octane2/ioc3-ethernet-dma-and-interrupt",
