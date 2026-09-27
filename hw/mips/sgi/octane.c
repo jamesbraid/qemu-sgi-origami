@@ -36,6 +36,8 @@
 #define OCTANE_FLASH_SIZE (2 * MiB)
 #define OCTANE_HEART_REGS 0x0ff00000ULL
 #define OCTANE_HEART_BANK0_DESC 0x80030000U
+#define OCTANE_PHYSICAL_SPAN (1ULL << 40)
+#define OCTANE_ATTR0_BASE (1ULL << 40)
 
 static uint64_t octane_flash_read(void *opaque, hwaddr addr, unsigned size)
 {
@@ -118,6 +120,8 @@ static void octane_init(MachineState *machine)
     DeviceState *bridge = qdev_new(TYPE_SGI_BRIDGE);
     SGIXbowState *crossbow = SGI_XBOW(xbow);
     MemoryRegion *system = get_system_memory();
+    MemoryRegion *physical = g_new0(MemoryRegion, 1);
+    MemoryRegion *attr0 = g_new0(MemoryRegion, 1);
     MemoryRegion *firmware = g_new0(MemoryRegion, 1);
     MemoryRegion *proxy = g_new0(MemoryRegion, 1);
     MemoryRegion *proxy_route = g_new0(MemoryRegion, 1);
@@ -166,11 +170,20 @@ static void octane_init(MachineState *machine)
     cpu_mips_irq_init_cpu(cpu);
     cpu_mips_clock_init(cpu);
 
+    memory_region_init(physical, OBJECT(machine), "octane.physical",
+                       OCTANE_PHYSICAL_SPAN);
+    memory_region_add_subregion(system, 0, physical);
+    memory_region_init_alias(attr0, OBJECT(machine), "octane.attr0",
+                             physical, 0, OCTANE_PHYSICAL_SPAN);
+    memory_region_add_subregion(system, OCTANE_ATTR0_BASE, attr0);
+
     object_property_add_child(OBJECT(machine), "heart", OBJECT(heart));
     qdev_prop_set_uint64(heart, "bank0-size", 128 * MiB);
+    object_property_set_link(OBJECT(heart), "cpu-memory", OBJECT(physical),
+                             &error_fatal);
     sysbus_realize(SYS_BUS_DEVICE(heart), &error_fatal);
     memory_region_add_subregion(
-        system, OCTANE_HEART_REGS,
+        physical, OCTANE_HEART_REGS,
         sysbus_mmio_get_region(SYS_BUS_DEVICE(heart), 0));
     /* OpenBSD IP30 xheart.c registers levels 0 and 2 on CR_INT_0/2. */
     qdev_connect_gpio_out_named(heart, "processor", 0, cpu->env.irq[2]);
@@ -209,12 +222,12 @@ static void octane_init(MachineState *machine)
     memory_region_init_alias(short_view, OBJECT(machine), "octane.short",
                              sgi_xbow_ingress(crossbow, 8), 0,
                              SGI_XBOW_WIDGETS * OCTANE_SHORT_SPAN);
-    memory_region_add_subregion(system, OCTANE_SHORT_BASE, short_view);
+    memory_region_add_subregion(physical, OCTANE_SHORT_BASE, short_view);
     memory_region_init_alias(long_view, OBJECT(machine), "octane.bridge-long",
                              sgi_xbow_packet_ingress(crossbow, 8),
                              (15ULL << 48) | (1ULL << 47),
                              SGI_BRIDGE_WIDGET_SIZE);
-    memory_region_add_subregion(system, OCTANE_LONG_BRIDGE, long_view);
+    memory_region_add_subregion(physical, OCTANE_LONG_BRIDGE, long_view);
 
     octane_fit_pci(machine, SGI_BRIDGE(bridge));
 }
