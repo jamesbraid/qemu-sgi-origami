@@ -90,9 +90,11 @@ static void test_widgets_and_memory(void)
 
     g_assert_cmphex(qtest_readl(qts, HEART + 0x20), ==, BANK0);
     g_assert_cmpuint(qtest_readl_tx(qts, XBOW + 4, &value), ==, MEMTX_OK);
-    /* Crossbow does not route a packet back to its source widget. */
-    g_assert_cmpuint(qtest_readl_tx(qts, HEART_WIDGET + 4, &value), !=,
+    g_assert_cmpuint(qtest_readl_tx(qts, HEART_WIDGET + 4, &value), ==,
                      MEMTX_OK);
+    g_assert_cmphex(value & 0x0fffffff, ==, 0x0c00106c);
+    g_assert_cmpuint(qtest_readq_tx(qts, HEART_WIDGET, &missing), ==,
+                     MEMTX_ERROR);
     g_assert_cmpuint(qtest_readl_tx(qts, BRIDGE + 4, &value), ==, MEMTX_OK);
     g_assert_cmpuint(qtest_readl_tx(qts, 0x92000004, &value), !=, MEMTX_OK);
 
@@ -320,11 +322,15 @@ static void test_uncached_attribute_zero(void)
         0x3c0c9600, 0x000c603c,             /* attr 3, ordinary RAM */
         0x3c0d2000, 0x35ad4000, 0x018d6025,
         0xad8b0000,                         /* RAM[0x4000] = t3 */
+        0x3c089000, 0x0008403c,
+        0x3c091800, 0x35290004, 0x01094025,
+        0x8d0b0000,                         /* lw t3, HEART widget ID */
+        0xad8b0004,                         /* RAM[0x4004] = t3 */
         0x1000ffff, 0,
     };
     static const uint32_t handler[] = {
         0x3c0c9600, 0x000c603c, 0x3c0d2000, 0x35ad4000,
-        0x018d6025, 0x340bdead, 0xad8b0000,
+        0x018d6025, 0x340bdead, 0xad8b0000, 0xad8b0004,
         0x1000ffff, 0,
     };
     uint8_t image[0x400];
@@ -358,6 +364,7 @@ static void test_uncached_attribute_zero(void)
     qtest_writel(qts, BRIDGE + 0x200 + 8 * 2 + 4, 0x1100);
     g_assert_cmphex(qtest_readl(qts, IOC3 + 0x28), ==, 0x00400000);
     qtest_writel(qts, RAM + 0x4000, 0xdeadbeef);
+    qtest_writel(qts, RAM + 0x4004, 0xdeadbeef);
     qtest_qmp_assert_success(qts, "{'execute':'cont'}");
     for (unsigned i = 0; i < 10000; i++) {
         result = qtest_readl(qts, RAM + 0x4000);
@@ -367,6 +374,14 @@ static void test_uncached_attribute_zero(void)
         g_usleep(1000);
     }
     g_assert_cmphex(result, ==, 0x00400000);
+    for (unsigned i = 0; i < 10000; i++) {
+        result = qtest_readl(qts, RAM + 0x4004);
+        if (result != 0xdeadbeef) {
+            break;
+        }
+        g_usleep(1000);
+    }
+    g_assert_cmphex(result & 0x0fffffff, ==, 0x0c00106c);
     g_assert_cmphex(qtest_readl(qts, ATTR0 + IOC3 + 0x28), ==,
                     qtest_readl(qts, IOC3 + 0x28));
     g_assert_cmphex(qtest_readl(qts, ATTR0 + FLASH), ==,

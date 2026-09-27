@@ -35,6 +35,7 @@
 #define OCTANE_LONG_BRIDGE (15ULL << 36)
 #define OCTANE_FLASH_SIZE (2 * MiB)
 #define OCTANE_HEART_REGS 0x0ff00000ULL
+#define OCTANE_HEART_WIDGET 0x18000000ULL
 #define OCTANE_HEART_BANK0_DESC 0x80030000U
 #define OCTANE_PHYSICAL_SPAN (1ULL << 40)
 #define OCTANE_ATTR0_BASE (1ULL << 40)
@@ -128,6 +129,7 @@ static void octane_init(MachineState *machine)
     MemoryRegion *proxy = g_new0(MemoryRegion, 1);
     MemoryRegion *proxy_route = g_new0(MemoryRegion, 1);
     MemoryRegion *short_view = g_new0(MemoryRegion, 1);
+    MemoryRegion *heart_local = g_new0(MemoryRegion, 1);
     MemoryRegion *long_view = g_new0(MemoryRegion, 1);
     MIPSCPU *cpu;
     Clock *cpuclk;
@@ -225,6 +227,13 @@ static void octane_init(MachineState *machine)
                              sgi_xbow_ingress(crossbow, 8), 0,
                              SGI_XBOW_WIDGETS * OCTANE_SHORT_SPAN);
     memory_region_add_subregion(physical, OCTANE_SHORT_BASE, short_view);
+    /* The CPU addresses local HEART without a Crossbow loopback. */
+    memory_region_init_alias(heart_local, OBJECT(machine),
+                             "octane.heart-local",
+                             sgi_xtalk_port_cpu_face(OBJECT(heart), 0), 0,
+                             0x1000);
+    memory_region_add_subregion_overlap(physical, OCTANE_HEART_WIDGET,
+                                        heart_local, 1);
     memory_region_init_alias(long_view, OBJECT(machine), "octane.bridge-long",
                              sgi_xbow_packet_ingress(crossbow, 8),
                              (15ULL << 48) | (1ULL << 47),
