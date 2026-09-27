@@ -104,6 +104,8 @@ static void octane_fit_pci(MachineState *machine, SGIBridgeState *bridge)
                          SGI_IOC3_SUBSYS_IP30_SYSBOARD);
     qdev_prop_set_uint32(DEVICE(pci), "population",
                          SGI_IOC3_POPULATION_SERIAL_A);
+    qdev_prop_set_uint8(DEVICE(pci), "timekeeper-kind",
+                       SGI_IOC3_TIMEKEEPER_DS1685);
     if (serial_hd(0)) {
         qdev_prop_set_chr(DEVICE(pci), "chardev-a", serial_hd(0));
     }
