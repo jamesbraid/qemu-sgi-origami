@@ -605,6 +605,34 @@ static void test_uncached_accesses(void)
     finish(s, prom);
 }
 
+/*
+ * A line left idle for a second is dropped from the ones followed. A
+ * processor's dirty copy of it is taken as replaced, so it is written back
+ * and the line unowned, as a secondary-cache replacement of a dirty block
+ * does (R10000 User's Manual version 2.0, the processor block write
+ * protocol).
+ */
+static void test_idle_dirty_line_written_back(void)
+{
+    const Scenario sc = {
+        .cpus = "2",
+        STEPS({ 0, emit_first }, { 0, store_08 }),
+    };
+    char *prom;
+    QTestState *s;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+    s = run_scenario(&sc, &prom);
+    g_assert_cmphex(result(s, 0x08) & DIRECTORY_FIELDS, ==, POINTER(0));
+    g_usleep(1500 * 1000);
+    g_assert_cmphex(qtest_readq(s, LINE_DIRECTORY) & DIRECTORY_FIELDS, ==,
+                    UNOWNED);
+    finish(s, prom);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -619,5 +647,7 @@ int main(int argc, char **argv)
                    test_premium_format);
     qtest_add_func("sn1/directory-state/uncached-accesses",
                    test_uncached_accesses);
+    qtest_add_func("sn1/directory-state/idle-dirty-line-written-back",
+                   test_idle_dirty_line_written_back);
     return g_test_run();
 }
