@@ -440,14 +440,17 @@ static const SGIModelTopology *sgi_machine_resolve(MachineState *machine,
     if (!row) {
         g_autofree char *counts = sgi_machine_accepted_node_counts(chassis);
 
-        error_setg(errp, "topology '%s' fits %s node boards, not %u",
-                   chassis->name, counts, s->nodes_requested);
+        error_setg(errp, "topology '%s' fits %s node board%s, not %u",
+                   chassis->name, counts,
+                   g_str_equal(counts, "1") ? "" : "s", s->nodes_requested);
         return NULL;
     }
     if (row->grade == SGI_MODEL_EVIDENCE_GRADE_UNKNOWN) {
-        error_setg(errp, "topology '%s' with %zu node boards rests on "
+        size_t count = QAPI_LIST_LENGTH(row->nodes);
+
+        error_setg(errp, "topology '%s' with %zu node board%s rests on "
                    "evidence that does not settle its wiring; it is not "
-                   "built", chassis->name, QAPI_LIST_LENGTH(row->nodes));
+                   "built", chassis->name, count, count == 1 ? "" : "s");
         return NULL;
     }
     s->view = sgi_model_population_view(chassis, row, errp);
@@ -457,6 +460,26 @@ static const SGIModelTopology *sgi_machine_resolve(MachineState *machine,
 static const SGIModelTopology *sgi_machine_topology(MachineState *machine)
 {
     return sgi_machine_resolve(machine, NULL);
+}
+
+/*
+ * -smp and -m default to the product's default topology and its most
+ * node boards, whatever nodes= says: the machine cannot tell a default
+ * from an explicit value. A refusal says so when nodes= asked for fewer.
+ */
+static const char *sgi_machine_nodes_hint(MachineState *machine)
+{
+    SGIMachineState *s = SGI_MACHINE(machine);
+    const SGIModelTopology *chassis = sgi_machine_chassis(machine);
+    const SGIModelNodePopulation *largest =
+        chassis ? sgi_model_default_population(chassis) : NULL;
+
+    if (!s->nodes_requested || !largest ||
+        s->nodes_requested == QAPI_LIST_LENGTH(largest->nodes)) {
+        return "";
+    }
+    return "; -smp and -m default to the most node boards, so give both "
+           "with nodes=";
 }
 
 /* The one row a machine's own built topology holds. */
@@ -2490,8 +2513,9 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
         if (!population) {
             g_autofree char *totals = sgi_machine_accepted_totals(t);
 
-            error_setg(errp, "%s: topology '%s' accepts %s CPUs, not %u",
-                      mc->name, t->name, totals, machine->smp.cpus);
+            error_setg(errp, "%s: topology '%s' accepts %s CPUs, not %u%s",
+                      mc->name, t->name, totals, machine->smp.cpus,
+                      sgi_machine_nodes_hint(machine));
             return false;
         }
         cpus_per_node = sgi_model_array_uint32(population->cpus_per_node,
@@ -2511,8 +2535,9 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
     if (!sgi_machine_validate_memory_population(
             t, machine->ram_size / node_count / MiB)) {
         error_setg(errp, "%s: topology '%s' does not accept %" PRIu64
-                  " MiB per node", mc->name, t->name,
-                  machine->ram_size / node_count / MiB);
+                  " MiB per node%s", mc->name, t->name,
+                  machine->ram_size / node_count / MiB,
+                  sgi_machine_nodes_hint(machine));
         return false;
     }
 
