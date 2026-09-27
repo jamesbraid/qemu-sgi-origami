@@ -157,6 +157,56 @@ static void test_widget_id(void)
     qtest_quit(s);
 }
 
+static void test_widget_control(void)
+{
+    QTestState *s = heart_start(128, "");
+    uint32_t word;
+    uint16_t half;
+    uint8_t byte;
+    uint64_t wide;
+
+    g_assert_cmpuint(qtest_readl_tx(s, HEART_WIDGET + 0x24, &word), ==,
+                     MEMTX_OK);
+    g_assert_cmphex(word, ==, 0);
+    g_assert_cmpuint(qtest_writel_tx(s, HEART_WIDGET + 0x24, 0xa5c3f00f),
+                     ==, MEMTX_OK);
+    g_assert_cmphex(qtest_readl(s, HEART_WIDGET + 0x24), ==, 0xa5c3f00f);
+    g_assert_cmpuint(qtest_writel_tx(s, HEART_WIDGET + 0x24, 0x5a3c0ff0),
+                     ==, MEMTX_OK);
+    g_assert_cmphex(qtest_readl(s, HEART_WIDGET + 0x24), ==, 0x5a3c0ff0);
+    word = qtest_readl(s, HEART_WIDGET + 0x24);
+    word = (word & ~0x00ff0000U) | 0x00420000U;
+    g_assert_cmpuint(qtest_writel_tx(s, HEART_WIDGET + 0x24, word), ==,
+                     MEMTX_OK);
+    g_assert_cmphex(qtest_readl(s, HEART_WIDGET + 0x24), ==, word);
+
+    g_assert_cmpuint(qtest_readb_tx(s, HEART_WIDGET + 0x24, &byte), ==,
+                     MEMTX_ERROR);
+    g_assert_cmpuint(qtest_writeb_tx(s, HEART_WIDGET + 0x24, 0xff), ==,
+                     MEMTX_ERROR);
+    g_assert_cmpuint(qtest_readw_tx(s, HEART_WIDGET + 0x24, &half), ==,
+                     MEMTX_ERROR);
+    g_assert_cmpuint(qtest_writew_tx(s, HEART_WIDGET + 0x24, 0xffff), ==,
+                     MEMTX_ERROR);
+    g_assert_cmpuint(qtest_readq_tx(s, HEART_WIDGET + 0x20, &wide), ==,
+                     MEMTX_ERROR);
+    g_assert_cmpuint(qtest_writeq_tx(s, HEART_WIDGET + 0x20, UINT64_MAX),
+                     ==, MEMTX_ERROR);
+    g_assert_cmpuint(qtest_readl_tx(s, HEART_WIDGET + 0x20, &word), ==,
+                     MEMTX_ERROR);
+    g_assert_cmpuint(qtest_writel_tx(s, HEART_WIDGET + 0x20, UINT32_MAX),
+                     ==, MEMTX_ERROR);
+    g_assert_cmpuint(qtest_readl_tx(s, HEART_WIDGET + 0x28, &word), ==,
+                     MEMTX_ERROR);
+    g_assert_cmpuint(qtest_writel_tx(s, HEART_WIDGET + 0x28, UINT32_MAX),
+                     ==, MEMTX_ERROR);
+    g_assert_cmphex(qtest_readl(s, HEART_WIDGET + 0x24), ==, 0x5a420ff0);
+
+    qtest_system_reset(s);
+    g_assert_cmphex(qtest_readl(s, HEART_WIDGET + 0x24), ==, 0);
+    qtest_quit(s);
+}
+
 static void test_widget_packets(void)
 {
     QTestState *s = heart_start(128, "");
@@ -284,6 +334,7 @@ static void test_migration(void)
     uri = g_strdup_printf("unix:%s", socket);
     from = heart_start(128, "");
     to = heart_start(128, "-incoming defer");
+    qtest_writel(from, HEART_WIDGET + 0x24, 0x5a420ff0);
     qtest_writeq(from, HEART_REGS, 0x800);
     qtest_writeq(from, HEART_REGS + 0x08, 0x21);
     qtest_writeq(from, HEART_REGS + 0x10, 0x84000);
@@ -302,6 +353,7 @@ static void test_migration(void)
         "{'execute':'migrate-incoming', 'arguments':{'uri':%s}}", uri);
     sgi_migrate_stopped(from, uri);
     sgi_wait_migration_status(to, "completed", 30);
+    g_assert_cmphex(qtest_readl(to, HEART_WIDGET + 0x24), ==, 0x5a420ff0);
     g_assert_cmphex(qtest_readq(to, HEART_REGS), ==, 0x800);
     g_assert_cmphex(qtest_readq(to, HEART_REGS + 0x08), ==, 0x21);
     g_assert_cmphex(qtest_readq(to, HEART_REGS + 0x10), ==, 0x84000);
@@ -567,6 +619,7 @@ int main(int argc, char **argv)
     g_test_add_func("/heart/wide-descriptor-clear",
                     test_wide_descriptor_clear);
     g_test_add_func("/heart/widget-id", test_widget_id);
+    g_test_add_func("/heart/widget-control", test_widget_control);
     g_test_add_func("/heart/widget-packets", test_widget_packets);
     g_test_add_func("/heart/interrupts", test_interrupts);
     g_test_add_func("/heart/reset", test_reset);

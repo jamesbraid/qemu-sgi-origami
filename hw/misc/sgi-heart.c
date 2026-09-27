@@ -48,6 +48,10 @@ static MemTxResult heart_widget_read(void *opaque, hwaddr offset,
                  (0xc001U << 12) | (0x0036U << 1);
         return MEMTX_OK;
     }
+    if (offset == 0x24 && size == 4) {
+        *value = s->widget_control;
+        return MEMTX_OK;
+    }
     qemu_log_mask(LOG_UNIMP, "sgi-heart: unsupported widget %u-byte read "
                   "at 0x%" HWADDR_PRIx "\n", size, offset);
     *value = 0;
@@ -58,6 +62,12 @@ static MemTxResult heart_widget_write(void *opaque, hwaddr offset,
                                       uint64_t value, unsigned size,
                                       MemTxAttrs attrs)
 {
+    SGIHeartState *s = opaque;
+
+    if (offset == 0x24 && size == 4) {
+        s->widget_control = value;
+        return MEMTX_OK;
+    }
     qemu_log_mask(LOG_UNIMP, "sgi-heart: unsupported widget %u-byte write "
                   "at 0x%" HWADDR_PRIx "\n", size, offset);
     return MEMTX_ERROR;
@@ -370,6 +380,7 @@ static void heart_reset_enter(Object *obj, ResetType type)
     memset(s->mask, 0, sizeof(s->mask));
     s->pending = 0;
     s->saved_count = 0;
+    s->widget_control = 0;
     s->counter_epoch_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
 }
 
@@ -416,6 +427,7 @@ static const VMStateDescription vmstate_heart = {
         VMSTATE_UINT64_ARRAY(mask, SGIHeartState, 4),
         VMSTATE_UINT64(pending, SGIHeartState),
         VMSTATE_UINT64(saved_count, SGIHeartState),
+        VMSTATE_UINT32(widget_control, SGIHeartState),
         VMSTATE_END_OF_LIST()
     },
 };

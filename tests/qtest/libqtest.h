@@ -696,6 +696,16 @@ MemTxResult qtest_readb_tx(QTestState *s, uint64_t addr, uint8_t *value);
 MemTxResult qtest_readw_tx(QTestState *s, uint64_t addr, uint16_t *value);
 
 /**
+ * qtest_writeb_tx:
+ * @s: #QTestState instance to operate on.
+ * @addr: Guest address to write to.
+ * @value: Value being written.
+ *
+ * Writes an 8-bit value and returns its memory transaction result.
+ */
+MemTxResult qtest_writeb_tx(QTestState *s, uint64_t addr, uint8_t value);
+
+/**
  * qtest_writeq_tx:
  * @s: #QTestState instance to operate on.
  * @addr: Guest address to write to.
