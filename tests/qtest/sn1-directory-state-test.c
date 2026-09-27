@@ -824,6 +824,126 @@ static void test_sharers_from_the_word(void)
     finish(s, prom);
 }
 
+/* Load the line through xkphys with cache algorithm @cca, then publish. */
+static void emit_load_cca(Program *p, unsigned int cca, unsigned int slot)
+{
+    emit_address(p, R_T4, 0x8000 | cca << 11, 0, LINE_PHYS);
+    emit(p, LD(R_T3, 0, R_T4));
+    emit_publish(p, slot);
+}
+
+static void load_cca4_10(Program *p)
+{
+    emit_load_cca(p, 4, 0x10);
+}
+
+static void load_cca3_08(Program *p)
+{
+    emit_load_cca(p, 3, 0x08);
+}
+
+/*
+ * Under cache algorithm 4, coherent exclusive, a load miss reads the line
+ * exclusive (R10000 User's Manual version 2.0, Table 4-2), so it takes the
+ * line from the processor that owns it rather than sharing it.
+ */
+static void test_exclusive_algorithm_load(void)
+{
+    const Scenario sc = {
+        .cpus = "2",
+        STEPS({ 0, emit_first }, { 2, load_08 }, { 0, load_cca4_10 }),
+    };
+    char *prom;
+    QTestState *s;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+    s = run_scenario(&sc, &prom);
+    g_assert_cmphex(result(s, 0x08) & DIRECTORY_FIELDS, ==, POINTER(4));
+    g_assert_cmphex(result(s, 0x10) & DIRECTORY_FIELDS, ==, POINTER(0));
+    finish(s, prom);
+}
+
+/*
+ * Under cache algorithm 3, cacheable noncoherent, a miss is a noncoherent
+ * block read that no agent checks for coherency (the same manual, section
+ * 4.6), so the directory is not consulted.
+ */
+static void test_noncoherent_algorithm_load(void)
+{
+    const Scenario sc = {
+        .cpus = "2",
+        STEPS({ 0, emit_first }, { 0, load_cca3_08 }, { 0, load_10 }),
+    };
+    char *prom;
+    QTestState *s;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+    s = run_scenario(&sc, &prom);
+    g_assert_cmphex(result(s, 0x08) & DIRECTORY_FIELDS, ==, UNOWNED);
+    /* The coherent load after it is seen. */
+    g_assert_cmphex(result(s, 0x10) & DIRECTORY_FIELDS, ==, POINTER(0));
+    finish(s, prom);
+}
+
+/*
+ * The block transfer engine copies a line into the line under test. It is
+ * an I/O requester, not the processor whose store started it (the public
+ * SN1 header's MD_PTR_OWNER_IO), and makes no processor's copy.
+ */
+#define BTE_SOURCE 0x640000
+#define BTE_NOTIFY (RESULT_PHYS + 0x1e0)
+#define BTE_MARKER 0x5a5a1234
+
+static void emit_store_imm(Program *p, int base, uint16_t off, uint32_t imm)
+{
+    emit(p, LUI(R_T3, imm >> 16));
+    emit(p, ORI(R_T3, R_T3, imm & 0xffff));
+    emit(p, SD(R_T3, off, base));
+}
+
+static void bte_copy(Program *p)
+{
+    /* A marker in the source line, through the uncached memory form. */
+    emit_address(p, R_T4, 0x9600, 0, BTE_SOURCE);
+    emit_store_imm(p, R_T4, 0, BTE_MARKER);
+    /* Node zero's engine 0, through the local register window. */
+    emit_address(p, R_T4, 0x9200, 0, 0x01410000);
+    emit_store_imm(p, R_T4, 0x00, 1 | 1 << 20);  /* one line, busy */
+    emit_store_imm(p, R_T4, 0x08, BTE_SOURCE);
+    emit_store_imm(p, R_T4, 0x10, LINE_PHYS);
+    emit_store_imm(p, R_T4, 0x20, BTE_NOTIFY);
+    emit_store_imm(p, R_T4, 0x18, 1 << 4);       /* start, notify */
+    emit_publish(p, 0x08);
+}
+
+static void test_block_transfer_is_not_a_processor(void)
+{
+    const Scenario sc = {
+        .cpus = "2",
+        STEPS({ 0, emit_first }, { 0, bte_copy }),
+    };
+    char *prom;
+    QTestState *s;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+    s = run_scenario(&sc, &prom);
+    /* The copy happened... */
+    g_assert_cmphex(qtest_readq(s, LINE_PHYS), ==, BTE_MARKER);
+    g_assert_cmphex(qtest_readq(s, BTE_NOTIFY), ==, 0);
+    /* ...and no processor holds the line for it. */
+    g_assert_cmphex(result(s, 0x08) & DIRECTORY_FIELDS, ==, UNOWNED);
+    finish(s, prom);
+}
+
 static void migrate_wait(QTestState *qts)
 {
     int64_t deadline = g_get_monotonic_time() + 30 * G_TIME_SPAN_SECOND;
@@ -924,6 +1044,12 @@ int main(int argc, char **argv)
                    test_uncached_accesses);
     qtest_add_func("sn1/directory-state/debugger-read", test_debugger_read);
     qtest_add_func("sn1/directory-state/absent-owner", test_absent_owner);
+    qtest_add_func("sn1/directory-state/exclusive-algorithm-load",
+                   test_exclusive_algorithm_load);
+    qtest_add_func("sn1/directory-state/noncoherent-algorithm-load",
+                   test_noncoherent_algorithm_load);
+    qtest_add_func("sn1/directory-state/block-transfer-is-not-a-processor",
+                   test_block_transfer_is_not_a_processor);
     qtest_add_func("sn1/directory-state/owner-from-the-word",
                    test_owner_from_the_word);
     qtest_add_func("sn1/directory-state/sharers-from-the-word",

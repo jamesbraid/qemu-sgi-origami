@@ -203,11 +203,18 @@ void helper_r10k_prefetch(CPUMIPSState *env, target_ulong addr, uint32_t hint)
     }
     if (get_physical_address(env, &paddr, &prot, addr, access,
                              mips_env_mmu_index(env), &attrs) !=
-        TLBRET_MATCH || attrs.mips_uncached) {
+        TLBRET_MATCH || (attrs.mips_cca != 4 && attrs.mips_cca != 5)) {
+        /* Uncached and noncoherent algorithms make no coherent request. */
         return;
     }
-    r10k_system_request(env, hint & 1 ? R10K_REQUEST_PREFETCH_STORE :
-                                        R10K_REQUEST_PREFETCH_LOAD,
+    /*
+     * Under coherent exclusive (4) a load miss reads exclusive, and so does
+     * a load-hint prefetch; under exclusive on write (5) it reads shared
+     * with the prefetch cause (Table 4-2).
+     */
+    r10k_system_request(env, (hint & 1) || attrs.mips_cca == 4 ?
+                             R10K_REQUEST_PREFETCH_STORE :
+                             R10K_REQUEST_PREFETCH_LOAD,
                         paddr, 0);
 }
 

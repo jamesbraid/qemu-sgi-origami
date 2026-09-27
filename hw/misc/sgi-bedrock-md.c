@@ -2760,8 +2760,16 @@ static void md_watched_access(SGIBedrockMDState *s,
     SGIBedrockMDHolder *holder;
     uint16_t pointer;
 
-    if (attrs.mips_uncached || attrs.debug || !current_cpu ||
-        !s->requester ||
+    /*
+     * Only a processor's coherent cached reference, algorithm 4 or 5, is a
+     * coherent request. Uncached references (2, 7) bypass the caches, a
+     * noncoherent one (3) needs no coherency check (R10000 User's Manual
+     * version 2.0, section 4.6 and Table 4-2), and an access with no
+     * algorithm is a device's -- the block transfer engine's, say -- which
+     * the unit serves as an I/O requester, not as a processor.
+     */
+    if ((attrs.mips_cca != 4 && attrs.mips_cca != 5) || attrs.debug ||
+        !current_cpu || !s->requester ||
         !s->requester(s->requester_opaque, current_cpu, &pointer) ||
         md_directory_injection_find(s, line->index)) {
         return;
@@ -2774,10 +2782,18 @@ static void md_watched_access(SGIBedrockMDState *s,
         return;
     }
     if (!is_write) {
-        if (holder->state == MD_CACHE_INVALID) {
-            holder->state = md_directory_request(s, line, pointer,
-                                                 MD_REQUEST_READ, false);
+        if (holder->state != MD_CACHE_INVALID) {
+            return;
         }
+        if (attrs.mips_cca == 4) {
+            /* Under coherent exclusive a load miss reads exclusive. */
+            md_directory_request(s, line, pointer, MD_REQUEST_READ_EXCLUSIVE,
+                                 false);
+            holder->state = MD_CACHE_CLEAN;
+            return;
+        }
+        holder->state = md_directory_request(s, line, pointer,
+                                             MD_REQUEST_READ, false);
         return;
     }
     switch (holder->state) {
