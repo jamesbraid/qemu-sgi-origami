@@ -28,15 +28,15 @@ sub_file="${sub_tdir}/submodule.tar"
 # different to the host OS.
 subprojects=(
   anyhow-1-rs
-  arbitrary-int-1-rs
   attrs-0.2-rs
   berkeley-softfloat-3
   berkeley-testfloat-3
-  bitfield-0.9-rs
-  foreign-0.3-rs
+  bitfield-struct-0.13-rs
+  foreign-0.4-rs
   glib-sys-0.21-rs
   keycodemapdb
   libc-0.2-rs
+  libslirp
   libvfio-user
   probe-0.5-rs
   proc-macro2-1-rs
@@ -93,7 +93,10 @@ meson subprojects download ${subprojects[@]} >/dev/null
 test $? -ne 0 && error "failed to download subprojects $subprojects"
 
 for sp in "${subprojects[@]}"; do
-    tar --append --file "$tar_file" --exclude=.git subprojects/"$(subproject_dir $sp)"
+    if ! dir=$(subproject_dir "$sp"); then
+        error "failed to resolve subproject directory for $sp"
+    fi
+    tar --append --file "$tar_file" --exclude=.git "subprojects/$dir"
     test $? -ne 0 && error "failed to append subproject $sp to $tar_file"
 done
 exit 0
