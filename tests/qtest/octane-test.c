@@ -23,6 +23,8 @@
 #define CFG(slot) (BRIDGE + 0x020000 + (slot) * 0x1000)
 #define BRIDGE_NIC (BRIDGE + 0x0b4)
 #define IOC3 (BRIDGE + 0x600000)
+#define RTC_INDEX (IOC3 + 0xa0000)
+#define RTC_DATA (IOC3 + 0xc0000)
 #define UART_A (IOC3 + 0x20178)
 #define IOC3_SERIAL_IRQ (1u << 6)
 #define BRIDGE_REG(offset) (BRIDGE + (offset) + 4)
@@ -376,6 +378,34 @@ static void test_uncached_attribute_zero(void)
     qtest_quit(qts);
 }
 
+static void test_rtc_bytebus(void)
+{
+    QTestState *qts = octane_start();
+
+    qtest_writel(qts, CFG(2) + 0x10, 0x10000000);
+    qtest_writel(qts, CFG(2) + 0x04, 0x00000002);
+    qtest_writel(qts, BRIDGE + 0x200 + 8 * 2 + 4, 0x1100);
+
+    qtest_writeb(qts, RTC_INDEX, 0x0d);
+    g_assert_cmphex(qtest_readb(qts, RTC_DATA) & 0x80, ==, 0x80);
+    qtest_writeb(qts, RTC_INDEX, 0x0e);
+    qtest_writeb(qts, RTC_DATA, 0x5a);
+    g_assert_cmphex(qtest_readb(qts, RTC_DATA), ==, 0x5a);
+    qtest_writeb(qts, RTC_INDEX, 0x0f);
+    qtest_writeb(qts, RTC_DATA, 0xa5);
+    qtest_writeb(qts, RTC_INDEX, 0x0e);
+    g_assert_cmphex(qtest_readb(qts, RTC_DATA), ==, 0x5a);
+    qtest_writeb(qts, ATTR0 + RTC_INDEX, 0x0e);
+    g_assert_cmphex(qtest_readb(qts, ATTR0 + RTC_DATA), ==, 0x5a);
+    qtest_system_reset(qts);
+    qtest_writel(qts, CFG(2) + 0x10, 0x10000000);
+    qtest_writel(qts, CFG(2) + 0x04, 0x00000002);
+    qtest_writel(qts, BRIDGE + 0x200 + 8 * 2 + 4, 0x1100);
+    qtest_writeb(qts, RTC_INDEX, 0x0e);
+    g_assert_cmphex(qtest_readb(qts, RTC_DATA), ==, 0x5a);
+    qtest_quit(qts);
+}
+
 static void test_heart_interrupt_levels(void)
 {
     QTestState *qts = octane_start();
@@ -625,6 +655,7 @@ int main(int argc, char **argv)
                    test_scsi_dma_to_heart_ram);
     qtest_add_func("/octane/uncached-attribute-zero",
                    test_uncached_attribute_zero);
+    qtest_add_func("/octane/rtc-bytebus", test_rtc_bytebus);
     qtest_add_func("/octane/serial-a-loopback", test_serial_a_loopback);
     qtest_add_func("/octane/serial-a-chardev", test_serial_a_chardev);
     qtest_add_func("/octane/serial-a-interrupt-route",
