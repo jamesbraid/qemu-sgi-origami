@@ -59,6 +59,10 @@
  *     MAC part alone. Each serial-carrying chip's SuperIO output reaches
  *     Bridge pin device + 4; Ethernet uses the ordinary per-slot rule.
  *     (docs/datasheets/sgi-ioc3-boards.md in the Origami tree.)
+ *   - mscsi: the MSCSI XIO board, Bridge revision 3, board part
+ *     "030-1243-001", board revision F, name MSCSI. ISP1040 at devices
+ *     0-3, revision 5, each on the ordinary per-slot INTA rule; no IOC3.
+ *     (docs/datasheets/sgi-mscsi.md in the Origami tree.)
  *
  * "onewire-serial" is the onboard IOC3's own one-wire identity part, a
  * fact about this specific fitted unit distinct from the carrier's own
@@ -714,6 +718,34 @@ static bool baseio_build_menet(SGIBaseioState *s, Error **errp)
     return true;
 }
 
+#define MSCSI_ISPS          4
+#define MSCSI_ISP_REVISION  5
+
+/*
+ * mscsi: four ISP1040s at devices 0-3, revision 5, the four adapters a
+ * real PROM inventory prints behind an MSCSI board's Bridge. Each uses the
+ * Bridge's ordinary per-slot interrupt rule, as the BaseIO's do; no source
+ * describes other wiring. The board has no IOC3, so it takes no one-wire,
+ * clock, serial or parallel backend.
+ */
+static bool baseio_build_mscsi(SGIBaseioState *s, Error **errp)
+{
+    unsigned int d;
+
+    for (d = 0; d < MSCSI_ISPS; d++) {
+        g_autofree char *name = g_strdup_printf("scsi%u", d);
+        PCIDevice *isp = pci_new(PCI_DEVFN(d, 0), "qlogic-isp1040");
+
+        object_property_add_child(OBJECT(s), name, OBJECT(isp));
+        if (!pci_realize_and_unref(isp, s->pci_bus, errp)) {
+            return false;
+        }
+        pci_set_byte(isp->config + PCI_REVISION_ID, MSCSI_ISP_REVISION);
+        qlogic_isp_handle_legacy_cmdline(DEVICE(isp));
+    }
+    return true;
+}
+
 /*
  * Each Bridge-based board's own record carries the real board's part,
  * revision and name, and a placeholder barcode: the IP29's in
@@ -723,7 +755,8 @@ static bool baseio_build_menet(SGIBaseioState *s, Error **errp)
  * keeps the older text layout (docs/datasheets/xbridge.md, "What an IO8
  * record would hold"). The MENET's part, revision and name are a real
  * board's, paired with the Bridge revision that board reports
- * (docs/datasheets/sgi-ioc3-boards.md in the Origami tree).
+ * (docs/datasheets/sgi-ioc3-boards.md in the Origami tree). So are the
+ * MSCSI's (docs/datasheets/sgi-mscsi.md in the Origami tree).
  */
 static const SGIBaseioPreset sgi_baseio_presets[] = {
     { "ip29", { "030-1244-001", 4, "OIP2900001", "H", "IP29" },
@@ -736,6 +769,9 @@ static const SGIBaseioPreset sgi_baseio_presets[] = {
     { "menet", { "030-0873-003", 4, "OMENET0001", "J", "MENET",
                  SGI_BASEIO_XIO_ANY_WIDGET, false },
       baseio_build_menet },
+    { "mscsi", { "030-1243-001", 3, "OMSCSI0001", "F", "MSCSI",
+                 SGI_BASEIO_XIO_ANY_WIDGET, false },
+      baseio_build_mscsi },
 };
 
 static const SGIBaseioPreset *baseio_preset_find(const char *name)
@@ -832,7 +868,7 @@ static void baseio_realize(DeviceState *dev, Error **errp)
 
     if (!preset) {
         error_setg(errp, "sgi-baseio: '%s' names no known preset; expected "
-                  "ip29, io6, io6g, io8 or menet",
+                  "ip29, io6, io6g, io8, menet or mscsi",
                   s->preset ? s->preset : "(unset)");
         return;
     }
