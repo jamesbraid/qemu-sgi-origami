@@ -54,8 +54,8 @@ static QTestState *xbow_start(const char *extra)
 {
     QTestState *qts = qtest_initf("-M none -cpu R10000 -S "
         "-d unimp,guest_errors "
-        "-device sgi-xtalk-test-target,id=targeta "
-        "-device sgi-xtalk-test-target,id=targete "
+        "-device sgi-xio-test-target,id=targeta "
+        "-device sgi-xio-test-target,id=targete "
         "-device sgi-xbridge-xbow,id=xbow,links-present=0xc4,"
         "target-a=/machine/peripheral/targeta/targeta.ram[0],"
         "target-e=/machine/peripheral/targete/targete.ram[0] %s", extra);

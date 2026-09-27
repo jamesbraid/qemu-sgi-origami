@@ -161,9 +161,9 @@ static QTestState *xbow_start_with(unsigned int present, unsigned int startup,
 {
     QTestState *qts = qtest_initf("-M none -cpu R10000 -S "
         "-d unimp,guest_errors "
-        "-device sgi-xtalk-test-target,id=io "
-        "-device sgi-xtalk-test-target,id=huba "
-        "-device sgi-xtalk-test-target,id=hubb "
+        "-device sgi-xio-test-target,id=io "
+        "-device sgi-xio-test-target,id=huba "
+        "-device sgi-xio-test-target,id=hubb "
         "-device sgi-xbow,id=xbow,span=%" PRIu64 ","
         "links-present=%u,startup-links-alive=%u,"
         "target-8=/machine/peripheral/io/io.ram[0],"
@@ -1150,8 +1150,8 @@ static void test_interrupt_destination_address(void)
 {
     QTestState *qts = qtest_initf("-M none -cpu R10000 -S "
         "-d unimp,guest_errors "
-        "-device sgi-xtalk-test-target,id=huba "
-        "-device sgi-xtalk-test-target,id=high "
+        "-device sgi-xio-test-target,id=huba "
+        "-device sgi-xio-test-target,id=high "
         "-device sgi-xbow,id=xbow,span=%" PRIu64 ","
         "links-present=%u,startup-links-alive=%u,"
         "target-9=/machine/peripheral/huba/huba.ram[0],"

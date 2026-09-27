@@ -8,7 +8,7 @@
  * A preset is not itself user_creatable-reachable the way a real carrier
  * builds it (a bare Bridge or XBridge, then sgi-baseio on its bus) --
  * sgi-board-test-fixture builds exactly that pair for the "ip29", "io6" and
- * "io8" presets, the same way sgi-xtalk-board-fixture stands in for a
+ * "io8" presets, the same way sgi-xio-board-fixture stands in for a
  * module's Crossbow in the XIO board base class's own qtest; see
  * tests/qtest/board-test-fixture.c. sgi-pci-expansion is also
  * `-device`-creatable now (see its own header comment for the spare fabric
@@ -49,7 +49,7 @@
  * property validation, re-parenting under its module, and the deferred attach
  * hook that lets a `-device` board reach a Crossbow that must realize only
  * once every board is in; the attach-pending case uses
- * sgi-xtalk-board-fixture, a test-only stand-in for a machine builder that
+ * sgi-xio-board-fixture, a test-only stand-in for a machine builder that
  * owns one Crossbow and drives the same machine-init-done attach path a real
  * builder would.
  */
@@ -408,7 +408,7 @@ static void test_io8_unresolved_drive(const void *data)
  * test_parent_l1_invalid_region() in sn1-bedrock-test.c checks a different
  * device's realize-time refusal.
  *
- * The attach-pending case uses sgi-xtalk-board-fixture, a test-only stand-in
+ * The attach-pending case uses sgi-xio-board-fixture, a test-only stand-in
  * for a machine builder: it owns one Crossbow, created unrealized, and (with
  * auto-attach left at its default) calls sgi_xio_board_attach_pending()
  * from the real machine-init-done notifier the way a builder would, then
@@ -419,8 +419,8 @@ static void test_io8_unresolved_drive(const void *data)
  */
 
 /*
- * Fixture Crossbow address span per widget: SGI_XTALK_BOARD_FIXTURE_SPAN
- * in tests/qtest/xtalk-test-board.c.
+ * Matches SGI_XIO_BOARD_FIXTURE_SPAN in tests/qtest/xio-test-board.c:
+ * how much address space the fixture's Crossbow gives each widget.
  */
 #define WIDGET_SPAN (32ULL * 1024 * 1024)
 
@@ -460,7 +460,7 @@ static void test_bad_module(void)
         return;
     }
     /* No module= at all: the property keeps its unset sentinel. */
-    s = qtest_init("-M none -device sgi-xtalk-test-board,id=b,slot=8 -S");
+    s = qtest_init("-M none -device sgi-xio-test-board,id=b,slot=8 -S");
     qtest_quit(s);
 }
 
@@ -477,7 +477,7 @@ static void test_bad_slot_low(void)
     }
     /* Below the Crossbow's first widget. */
     s = qtest_init(
-        "-M none -device sgi-xtalk-test-board,id=b,module=0,slot=7 -S");
+        "-M none -device sgi-xio-test-board,id=b,module=0,slot=7 -S");
     qtest_quit(s);
 }
 
@@ -494,7 +494,7 @@ static void test_bad_slot_high(void)
     }
     /* At and beyond the last one. */
     s = qtest_init(
-        "-M none -device sgi-xtalk-test-board,id=b,module=0,slot=16 -S");
+        "-M none -device sgi-xio-test-board,id=b,module=0,slot=16 -S");
     qtest_quit(s);
 }
 
@@ -510,8 +510,8 @@ static void test_slot_taken_twice(void)
         return;
     }
     s = qtest_init(
-        "-M none -device sgi-xtalk-test-board,id=a,module=0,slot=8 "
-        "-device sgi-xtalk-test-board,id=b,module=0,slot=8 -S");
+        "-M none -device sgi-xio-test-board,id=a,module=0,slot=8 "
+        "-device sgi-xio-test-board,id=b,module=0,slot=8 -S");
     qtest_quit(s);
 }
 
@@ -522,8 +522,8 @@ static void test_slot_reused_in_another_module(void)
      * directly.
      */
     QTestState *qts = qtest_init(
-        "-M none -device sgi-xtalk-test-board,id=a,module=0,slot=8 "
-        "-device sgi-xtalk-test-board,id=b,module=1,slot=8 -S");
+        "-M none -device sgi-xio-test-board,id=a,module=0,slot=8 "
+        "-device sgi-xio-test-board,id=b,module=1,slot=8 -S");
 
     g_assert_true(qtest_qom_get_bool(qts, "/machine/module0/a", "realized"));
     g_assert_true(qtest_qom_get_bool(qts, "/machine/module1/b", "realized"));
@@ -533,7 +533,7 @@ static void test_slot_reused_in_another_module(void)
 static void test_reparent(void)
 {
     QTestState *qts = qtest_init(
-        "-M none -device sgi-xtalk-test-board,id=solo,module=3,slot=10 -S");
+        "-M none -device sgi-xio-test-board,id=solo,module=3,slot=10 -S");
 
     g_assert_true(
         qtest_qom_get_bool(qts, "/machine/module3/solo", "realized"));
@@ -551,11 +551,11 @@ static void test_attach_pending(void)
 {
     QTestState *qts = qtest_initf(
         "-M none -cpu R10000 -S "
-        "-device sgi-xtalk-board-fixture,id=fixture0,module=0 "
-        "-device sgi-xtalk-test-board,id=board0,module=0,slot=%d "
-        "-device sgi-xtalk-board-fixture,id=fixture1,module=1,"
+        "-device sgi-xio-board-fixture,id=fixture0,module=0 "
+        "-device sgi-xio-test-board,id=board0,module=0,slot=%d "
+        "-device sgi-xio-board-fixture,id=fixture1,module=1,"
         "auto-attach=false "
-        "-device sgi-xtalk-test-board,id=board1,module=1,slot=8",
+        "-device sgi-xio-test-board,id=board1,module=1,slot=8",
         BOARD_WIDGET);
     g_autofree char *error = NULL;
 

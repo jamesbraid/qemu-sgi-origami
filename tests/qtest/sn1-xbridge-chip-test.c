@@ -31,7 +31,7 @@ static QTestState *chip_start(const char *extra)
 {
     QTestState *qts = qtest_initf("-M none -cpu R10000 -S "
         "-d unimp,guest_errors "
-        "-device sgi-xtalk-test-target,id=fabric "
+        "-device sgi-xio-test-target,id=fabric "
         "-device sgi-xbridge,id=xbridge,host-port=0x%x,"
         "fabric=/machine/peripheral/fabric/fabric.ram[0] %s",
         HOST_PORT, extra);
@@ -346,7 +346,7 @@ static void test_realize_checks(void)
 {
     if (g_test_subprocess()) {
         QTestState *qts = qtest_init("-M none -cpu R10000 -S "
-            "-device sgi-xtalk-test-target,id=fabric "
+            "-device sgi-xio-test-target,id=fabric "
             "-device sgi-xbridge,id=xbridge,host-port=0xe,"
             "fabric=/machine/peripheral/fabric/fabric.ram[0]");
 

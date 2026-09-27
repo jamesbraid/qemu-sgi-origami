@@ -52,7 +52,7 @@ system_ss.add(when: 'CONFIG_SGI_MGRAS',
                              'sgi-mgras-display.c', 'sgi-mgras-gl.c'))
 system_ss.add(when: 'CONFIG_SGI_KONA', if_true: files('sgi-kona.c'))
 system_ss.add(when: 'CONFIG_SGI_KONA', if_true: files('sgi-kona-gl-decode.c'))
-system_ss.add(when: 'CONFIG_SGI_XTALK_TEST_TARGET', if_true: files('sgi-xtalk-test-target.c'))
+system_ss.add(when: 'CONFIG_SGI_XIO_TEST_TARGET', if_true: files('sgi-xio-test-target.c'))
 system_ss.add(when: 'CONFIG_SIFIVE_TEST', if_true: files('sifive_test.c'))
 system_ss.add(when: 'CONFIG_SIFIVE_E_PRCI', if_true: files('sifive_e_prci.c'))
 system_ss.add(when: 'CONFIG_SIFIVE_E_AON', if_true: files('sifive_e_aon.c'))

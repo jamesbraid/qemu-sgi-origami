@@ -3278,14 +3278,14 @@ static QTestState *head_start_with(unsigned int widget_shift, const char *extra)
 
     fabric_shift = widget_shift ? widget_shift : WIDGET_SHIFT;
     qts = qtest_initf("-M none -cpu R10000 -S "
-        "-device sgi-xtalk-test-target,id=plain,size=1M "
-        "-device sgi-xtalk-test-target,id=hub,size=1M "
-        "-device sgi-xtalk-test-target,id=node1,size=1M "
-        "-device sgi-xtalk-test-target,id=w3,size=1M "
-        "-device sgi-xtalk-test-target,id=w5,size=1M "
-        "-device sgi-xtalk-test-target,id=wb,size=1M "
-        "-device sgi-xtalk-test-target,id=pin,size=1M "
-        "-device sgi-xtalk-test-target,id=replaced,size=1M "
+        "-device sgi-xio-test-target,id=plain,size=1M "
+        "-device sgi-xio-test-target,id=hub,size=1M "
+        "-device sgi-xio-test-target,id=node1,size=1M "
+        "-device sgi-xio-test-target,id=w3,size=1M "
+        "-device sgi-xio-test-target,id=w5,size=1M "
+        "-device sgi-xio-test-target,id=wb,size=1M "
+        "-device sgi-xio-test-target,id=pin,size=1M "
+        "-device sgi-xio-test-target,id=replaced,size=1M "
         "-device sgi-bridge,id=bridge,board-part=" BOARD_PART ","
         "fabric=/machine/unattached/system[0],"
         "fabric-node-shift=" stringify(NODE_SHIFT) "%s "
@@ -3736,7 +3736,7 @@ static void test_full_packet_dma(void)
         for (big = 0; big < 2; big++) {
             for (lane = 0; lane < 2; lane++) {
                 g_autofree char *extra = g_strdup_printf(
-                    "-device sgi-xtalk-test-target,id=full,size=1M "
+                    "-device sgi-xio-test-target,id=full,size=1M "
                     "-global sgi-bridge-dma-test.plain-dma=%s",
                     plain ? "on" : "off");
                 QTestState *qts = head_start_with(48, extra);

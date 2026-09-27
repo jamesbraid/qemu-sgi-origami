@@ -19,7 +19,7 @@
  */
 #define QPCI_SGI_BRIDGE_HEAD \
     "-cpu R10000 " \
-    "-device sgi-xtalk-test-target,id=transfer-ram,size=16M " \
+    "-device sgi-xio-test-target,id=transfer-ram,size=16M " \
     "-device sgi-bridge,id=bridge,board-part=030-1244-001," \
     "fabric=/machine/unattached/system[0] "
 

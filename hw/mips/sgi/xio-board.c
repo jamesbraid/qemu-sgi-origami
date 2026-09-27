@@ -387,7 +387,7 @@ static const Property sgi_xio_board_properties[] = {
  * boot (attached, queued, the pending-list linkage); none of it is
  * guest-visible state a migration stream needs to carry. An empty, named
  * description says so explicitly rather than leaving dc->vmsd unset, matching
- * hw/misc/sgi-xtalk-test-target.c.
+ * hw/misc/sgi-xio-test-target.c.
  */
 static const VMStateDescription vmstate_sgi_xio_board = {
     .name = TYPE_SGI_XIO_BOARD,

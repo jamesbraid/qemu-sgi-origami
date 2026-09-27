@@ -8,10 +8,10 @@
 #include "qemu/module.h"
 #include "qemu/units.h"
 
-#define TYPE_SGI_XTALK_TEST_TARGET "sgi-xtalk-test-target"
-OBJECT_DECLARE_SIMPLE_TYPE(SGIXtalkTestTargetState, SGI_XTALK_TEST_TARGET)
+#define TYPE_SGI_XIO_TEST_TARGET "sgi-xio-test-target"
+OBJECT_DECLARE_SIMPLE_TYPE(SGIXioTestTargetState, SGI_XIO_TEST_TARGET)
 
-struct SGIXtalkTestTargetState {
+struct SGIXioTestTargetState {
     SysBusDevice parent_obj;
     MemoryRegion ram;
     MemoryRegion alias;
@@ -20,7 +20,7 @@ struct SGIXtalkTestTargetState {
 
 static void target_realize(DeviceState *dev, Error **errp)
 {
-    SGIXtalkTestTargetState *s = SGI_XTALK_TEST_TARGET(dev);
+    SGIXioTestTargetState *s = SGI_XIO_TEST_TARGET(dev);
     g_autofree char *name = g_strdup_printf("%s.ram",
         object_get_canonical_path_component(OBJECT(dev)));
 
@@ -37,11 +37,11 @@ static void target_realize(DeviceState *dev, Error **errp)
 }
 
 static const Property target_properties[] = {
-    DEFINE_PROP_SIZE("size", SGIXtalkTestTargetState, size, 64 * KiB),
+    DEFINE_PROP_SIZE("size", SGIXioTestTargetState, size, 64 * KiB),
 };
 
 static const VMStateDescription vmstate_target = {
-    .name = TYPE_SGI_XTALK_TEST_TARGET,
+    .name = TYPE_SGI_XIO_TEST_TARGET,
     .version_id = 1,
     .minimum_version_id = 1,
     .fields = (const VMStateField[]) {
@@ -60,9 +60,9 @@ static void target_class_init(ObjectClass *oc, const void *data)
 }
 
 static const TypeInfo target_type = {
-    .name = TYPE_SGI_XTALK_TEST_TARGET,
+    .name = TYPE_SGI_XIO_TEST_TARGET,
     .parent = TYPE_SYS_BUS_DEVICE,
-    .instance_size = sizeof(SGIXtalkTestTargetState),
+    .instance_size = sizeof(SGIXioTestTargetState),
     .class_init = target_class_init,
 };
 

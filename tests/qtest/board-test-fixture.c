@@ -6,14 +6,14 @@
  *
  * sgi-xio-baseio and sgi-pci-expansion are onboard-only (user_creatable
  * off: a real system never lets a user plug one in), so `-device` cannot
- * create them directly, the way sgi-xtalk-board-fixture stands in for a
- * module's Crossbow so sgi-xtalk-test-board can be tested without one. For
+ * create them directly, the way sgi-xio-board-fixture stands in for a
+ * module's Crossbow so sgi-xio-test-board can be tested without one. For
  * these, board-type names the class and this fixture links its "module",
  * "slot" and "fabric" properties to a plain sink region this fixture owns
  * (no interrupt packet in this fixture ever needs to land anywhere; only
  * whether one is attempted matters to a test) and realizes it in its own
  * realize() -- ahead of any machine-init-done notifier, the same ordering
- * sgi-xtalk-test-board relies on. The board is exposed as this fixture's
+ * sgi-xio-test-board relies on. The board is exposed as this fixture's
  * own "board" QOM child so a qtest can reach its internal Bridge by path.
  *
  * sgi-baseio itself is not a board: it takes a PCI bus by link property,

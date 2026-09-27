@@ -202,9 +202,9 @@ static QTestState *transport_start(const char *extra)
 {
     QTestState *qts = qtest_initf("-M none -cpu R10000 -S "
         "-d unimp,guest_errors "
-        "-device sgi-xtalk-test-target,id=targeta "
-        "-device sgi-xtalk-test-target,id=targetb "
-        "-device sgi-xtalk-test-target,id=targetc "
+        "-device sgi-xio-test-target,id=targeta "
+        "-device sgi-xio-test-target,id=targetb "
+        "-device sgi-xio-test-target,id=targetc "
         "-device sgi-xbridge-head,id=head,"
         "target-0=/machine/peripheral/targeta/targeta.ram[0],"
         "target-a=/machine/peripheral/targeta/targeta.ram[0],"
