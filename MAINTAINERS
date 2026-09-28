@@ -1518,6 +1518,7 @@ F: include/hw/pci-host/sgi-xbridge.h
 F: include/hw/rtc/m48t35.h
 F: include/hw/scsi/qlogic-isp.h
 F: qapi/misc-mips.json
+F: scripts/sgi-replay-convert.py
 F: tests/functional/mips64/
 F: tests/qtest/mips64-*.c
 F: tests/qtest/qlogic-isp-test.c

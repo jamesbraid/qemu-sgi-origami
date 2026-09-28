@@ -1,2 +1,4 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
+sgi-replay 2
+head sgi-mgras
 read 1 0x073c08 0x0 0x100

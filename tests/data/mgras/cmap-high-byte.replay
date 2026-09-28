@@ -1,4 +1,6 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
+sgi-replay 2
+head sgi-mgras
 # CMAP entries pack the 24-bit colour left-justified (0xRRGGBB00); the low
 # byte's meaning is unknown. Every one of 24,708 live CMAP writes has a
 # zero low byte; 0xffffff00 is the white the census recovered at bank 17
