@@ -190,6 +190,10 @@ to ``QEMU_TEST_SGI_ASSET_DIR``:
    * - ``test_mgras_desktop.py``
      - The IP27 PROM and ``irix/6.5.30/root-si.qcow2``
 
+The thorough graphics-matrix rows also declare checksum-pinned local assets:
+the IP27 PROM and ``irix/6.5.30/root-rad4.qcow2`` (SHA-256
+``f47c806f6a1234044668bbd67fd820a3f9e7dff80ff97edc4b84be8ba84887bc``).
+
 Asset requirements are marked by each functional test. An unset asset-root
 variable can skip an asset-dependent case for a developer who has not supplied
 the files; once configured, a missing or mismatched file fails that case. Full
