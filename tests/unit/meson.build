@@ -1,8 +1,8 @@
 
 testblock = declare_dependency(dependencies: [block], sources: 'iothread.c')
 
-# Every fork unit test, by name. tools/run-fork-unit-tests reads this list;
-# discovery by source path missed test-sn-model, whose source list is empty.
+# Unit tests selected by the SGI Meson suite. Keep this list by test name:
+# test-sn-model has an empty source list but still belongs to that suite.
 fork_unit_tests = [
   'test-onewire', 'test-i2c-masters', 'test-i2c-wire',
   'test-sgi-o2000-module-mgmt', 'test-sgi-o2000-module-mgmt-real',
@@ -58,11 +58,6 @@ tests = {
   'check-qom-proplist': [qom],
   'test-qemu-opts': [],
   'test-keyval': [testqapi],
-  # Fork unit tests spell their sources ../../hw/, and the SPELLING is what
-  # the pipeline discovers by (tools/run-fork-unit-tests in the project
-  # repository): one written as meson.project_source_root() / 'hw/...' --
-  # upstream's own idiom two entries down -- is valid meson that runs in NO
-  # required check. Keep the relative spelling.
   'test-onewire': ['../../hw/1wire/crc.c', '../../hw/1wire/core.c',
                    '../../hw/1wire/ds2502.c', '../../hw/1wire/ds2505.c',
                    qom, hwcore, migration],
