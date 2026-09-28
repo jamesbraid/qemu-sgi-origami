@@ -143,6 +143,7 @@ enum {
 #define SGI_GL_CURRENT_RASTER_DISTANCE 0x0b09
 #define SGI_GL_EDGE_FLAG        0x0b43
 #define SGI_GL_SHADE_MODEL      0x0b54
+#define SGI_GL_DEPTH_RANGE      0x0b70
 #define SGI_GL_DEPTH_TEST       0x0b71
 #define SGI_GL_MATRIX_MODE      0x0ba0
 #define SGI_GL_VIEWPORT         0x0ba2
@@ -187,6 +188,11 @@ typedef struct SGIGLDrawState {
     uint32_t depth_test;        /* 0 or 1 */
     uint32_t depth_func;        /* the comparison minus GL_NEVER, 0 to 7 */
     uint32_t depth_mask;        /* 0 or 1 */
+    /*
+     * glDepthRange's near and far, each clamped to [0, 1] (2.10.1). Kept
+     * and answered; no rasterizer maps window depth through them yet.
+     */
+    float depth_range[2];
     /* SGI_GL_DRAW_FRONT and SGI_GL_DRAW_BACK; other bits are ignored. */
     uint32_t draw_buffers;
     /*
@@ -281,6 +287,7 @@ typedef enum SGIGLOp {
     SGI_GL_OP_INDEXF,           /* the colour index */
     SGI_GL_OP_INDEX_MASK,       /* the write mask */
     SGI_GL_OP_CLEAR_INDEX,      /* the clear index */
+    SGI_GL_OP_DEPTH_RANGE,      /* near, far */
 } SGIGLOp;
 
 /*
