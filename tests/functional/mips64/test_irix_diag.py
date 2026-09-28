@@ -94,12 +94,14 @@ from lib_irix_diag import (FLAVOURS, MANIFEST, CheckFailed, ClockReading,
 from lib_matrix import MatrixError, matrix_rows
 from lib_net import HarnessError, IrixConsole
 import lib_origin300
-from lib_prom import FORK_ROOT, require_assets, run_record
+from lib_prom import FORK_ROOT, run_record
+from lib_prom_sash import RELEASES
 
 try:
     from qemu.machine.machine import QEMUMachineError
     from qemu_test import QemuSystemTest, get_qemu_img
     from qemu_test import skipSlowTest, skipBigDataTest, skipIfMissingEnv
+    from qemu_test.asset import LocalAsset
 except (ImportError, RuntimeError):
     QemuSystemTest = None
 
@@ -204,6 +206,20 @@ MEDIUM_REL = os.path.join('irix', '6.5.30', 'olcdrom-medium.raw')
 MEDIUM_SHA256 = \
     'ba0a1466d7125cd350ee4f047677d7a3d9f8a8ed8b13469c92042cfa0bd07829'
 
+IP27_FIRMWARE_SPEC = (
+    FLAVOURS['origin200'].firmware, RELEASES['6.5.30']['prom_sha256'])
+IP27_DIAG_DISK_SPEC = (
+    FLAVOURS['origin200'].disk,
+    '82e394e28cbe1bf92aa08f01216636bdff7a0b224d15166f321e1f075b253e66')
+IP35_FIRMWARE_SPEC = (lib_origin300.FIRMWARE_REL,
+                      lib_origin300.FIRMWARE_SHA256)
+IP35_DIAG_DISK_SPEC = (
+    FLAVOURS['origin300'].disk,
+    '150cf2c125cb3bd55764acfeec00804899ff3140cc536cf63a254765faa29390')
+DIAG_MEDIUM_SPEC = (MEDIUM_REL, MEDIUM_SHA256)
+IP35_SPD_3_SPEC = lib_origin300.SPD_INPUTS[0][1:]
+IP35_SPD_5_SPEC = lib_origin300.SPD_INPUTS[1][1:]
+
 
 class _Console(IrixConsole):
     STEP_TIMEOUT = STEP_TIMEOUT_SECONDS
@@ -244,20 +260,15 @@ if QemuSystemTest is not None:
         # -- launching ---------------------------------------------------
 
         def _prepare(self, flavour):
-            assets = require_assets(self, flavour.firmware, flavour.disk,
-                                    (MEDIUM_REL, MEDIUM_SHA256))
             self.assets = {
                 'root': os.environ['QEMU_TEST_SGI_ASSET_DIR'],
-                'firmware': assets[flavour.firmware],
-                'disk': assets[flavour.disk],
-                'medium': assets[MEDIUM_REL],
+                'firmware': self.ASSET_FIRMWARE.fetch(),
+                'disk': self.ASSET_DISK.fetch(),
+                'medium': self.ASSET_MEDIUM.fetch(),
             }
             if flavour.origin300:
-                origin300_assets = require_assets(
-                    self, *lib_origin300.ASSET_SPECS)
-                self.assets['origin300_spd'] = tuple(
-                    origin300_assets[rel]
-                    for _prop, rel, _sha256 in lib_origin300.SPD_INPUTS)
+                self.assets['origin300_spd'] = (
+                    self.ASSET_SPD_3.fetch(), self.ASSET_SPD_5.fetch())
             scratch = self.scratch_file()
             os.makedirs(scratch, exist_ok=True)
             self.paths = {name: os.path.join(scratch, leaf)
@@ -829,6 +840,10 @@ if QemuSystemTest is not None:
 
     class IrixDiag(IrixDiagMatrix):
         """The two-chassis Origin 200."""
+
+        ASSET_FIRMWARE = LocalAsset(*IP27_FIRMWARE_SPEC)
+        ASSET_DISK = LocalAsset(*IP27_DIAG_DISK_SPEC)
+        ASSET_MEDIUM = LocalAsset(*DIAG_MEDIUM_SPEC)
 
     register_irix_diag_row(IrixDiag, 'origin200_dual')
 

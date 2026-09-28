@@ -79,39 +79,6 @@ def resolve_asset(assets_root, rel_path, sha256=None):
         raise AssetMismatch(str(exc)) from exc
 
 
-def require_assets(test, *rels):
-    """Every named asset's absolute path, keyed by the relative path it
-    was asked for, in the order it was asked for.
-
-    Each rel is either a relative path or a (relative path, recorded
-    SHA-256) pair; a pair's digest is checked the way resolve_asset()
-    checks it, raising AssetMismatch on a present-but-wrong file.
-
-    QEMU_TEST_SGI_ASSET_DIR unset or empty SKIPS the test: a developer with no
-    assets provisioned has nothing to run against at all. When the variable
-    is set, a missing file FAILS and names every missing path at once --
-    a provisioning failure has to show up as a red check, not as a
-    quietly skipped one that lets a real regression pass unnoticed.
-    """
-    assets_root = os.environ.get('QEMU_TEST_SGI_ASSET_DIR')
-    if not assets_root:
-        test.skipTest(
-            'QEMU_TEST_SGI_ASSET_DIR is not set: no assets to run against')
-    resolved = {}
-    failures = []
-    for rel in rels:
-        rel, sha256 = rel if isinstance(rel, tuple) else (rel, None)
-        try:
-            path = resolve_asset(assets_root, rel, sha256)
-            resolved[rel] = path
-        except AssetMismatch as exc:
-            failures.append(f'{rel}: {exc}')
-    if failures:
-        raise AssetMismatch(
-            'QEMU_TEST_SGI_ASSET_DIR contains unusable files: ' +
-            '; '.join(failures))
-    return resolved
-
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
