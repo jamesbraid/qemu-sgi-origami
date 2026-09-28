@@ -10,8 +10,9 @@
  * engine's function, not of its program.
  *
  * What it preserves: the pixels that colour and depth clears and
- * untextured triangles, flat or smooth shaded, transformed by the
- * modelview and projection matrices and depth tested, leave in the
+ * untextured triangles, strips, fans, quads and polygons, flat or smooth
+ * shaded, transformed by the modelview and projection matrices and their
+ * stacks and depth tested, leave in the
  * window's front or back buffer, and the main-port framing, so the words
  * after a packet still parse as headers. What it does not: the
  * raster-engine register writes the GE would make, the timing of the
@@ -26,8 +27,21 @@
 
 /* Class-0 opcodes, bits 15:8 of the header, with their byte lengths. */
 #define MGRAS_GL_CONTEXT_OPENER  0x00000600
+/*
+ * glBegin and glEnd: 0x1600 to 0x1f00 begin GL_POINTS (0) to GL_POLYGON
+ * (9) in the order of their enumerants, and each mode's end token is
+ * 0x0a00 above its begin token (mgras-gl-commands.md, "Primitives").
+ */
+#define MGRAS_GL_BEGIN_POINTS    0x00001600
+#define MGRAS_GL_BEGIN_POLYGON   0x00001f00
+#define MGRAS_GL_END_OFFSET      0x00000a00
 #define MGRAS_GL_BEGIN_TRIANGLES 0x00001a00
-#define MGRAS_GL_END_TRIANGLES   0x00002400
+#define MGRAS_GL_BEGIN_TRI_STRIP 0x00001b00
+#define MGRAS_GL_BEGIN_TRI_FAN   0x00001c00
+#define MGRAS_GL_BEGIN_QUADS     0x00001d00
+#define MGRAS_GL_BEGIN_QUAD_STRIP 0x00001e00
+/* The first begin token the model draws; the line and point modes follow. */
+#define MGRAS_GL_BEGIN_DRAWN     MGRAS_GL_BEGIN_TRIANGLES
 #define MGRAS_GL_CLEAR_COLOR_BUF 0x00001500
 #define MGRAS_GL_CLEAR_DEPTH_BUF 0x00004a00
 #define MGRAS_GL_VIEWPORT        0x00003310
@@ -162,15 +176,29 @@ typedef struct MgrasGLVertex {
     double rgb[3];
 } MgrasGLVertex;
 
+/* The begin token of the mode a glBegin or glEnd token names, or 0. */
+static uint32_t mgras_gl_begin_token(uint32_t header, bool end)
+{
+    uint32_t begin = end ? header - MGRAS_GL_END_OFFSET : header;
+
+    if (begin < MGRAS_GL_BEGIN_DRAWN || begin > MGRAS_GL_BEGIN_POLYGON ||
+        (begin & 0xff)) {
+        return 0;
+    }
+    return begin;
+}
+
 bool sgi_mgras_gl_header(uint32_t header)
 {
     header = (header & ~0xffu) |
              (DIV_ROUND_UP(header & 0xff, sizeof(uint32_t)) *
               sizeof(uint32_t));
+    if (mgras_gl_begin_token(header, false) ||
+        mgras_gl_begin_token(header, true)) {
+        return true;
+    }
     switch (header) {
     case MGRAS_GL_CONTEXT_OPENER:
-    case MGRAS_GL_BEGIN_TRIANGLES:
-    case MGRAS_GL_END_TRIANGLES:
     case MGRAS_GL_CLEAR_COLOR_BUF:
     case MGRAS_GL_CLEAR_DEPTH_BUF:
     case MGRAS_GL_VIEWPORT:
@@ -503,8 +531,10 @@ bool sgi_mgras_gl_post_load(SGIMgrasState *s)
     for (int i = 0; i < SGI_MGRAS_GL_CONTEXTS; i++) {
         const SGIMgrasCmdParser *p = &s->gl_context[i].parser;
 
-        if (s->gl_context[i].vertex_count >=
+        if (s->gl_context[i].vertex_count >
             ARRAY_SIZE(s->gl_context[i].vertex) ||
+            (s->gl_context[i].begin &&
+             !mgras_gl_begin_token(s->gl_context[i].begin, false)) ||
             s->gl_context[i].modelview_depth >= SGI_MGRAS_GL_STACK_DEPTH ||
             s->gl_context[i].projection_depth >= SGI_MGRAS_GL_STACK_DEPTH ||
             !sgi_mgras_cmd_parser_valid(p->cls, p->reg, p->words_remaining,
@@ -910,7 +940,8 @@ static bool mgras_gl_depth_passes(uint32_t func, uint32_t z, uint32_t stored)
  * within the probe's margins. A vertex with w <= 0 needs clipping the
  * model does not do, and returns false.
  */
-static bool mgras_gl_transform(SGIMgrasState *s, int i, MgrasGLVertex *out)
+static bool mgras_gl_transform(SGIMgrasState *s, const uint32_t *pos,
+                               const uint32_t *rgba, MgrasGLVertex *out)
 {
     SGIMgrasGLContext *gl = mgras_gl(s);
     double obj[4], eye[4], clip[4];
@@ -919,7 +950,7 @@ static bool mgras_gl_transform(SGIMgrasState *s, int i, MgrasGLVertex *out)
     double xw, yw;
 
     for (int k = 0; k < 4; k++) {
-        obj[k] = mgras_gl_float(gl->vertex[i][k]);
+        obj[k] = mgras_gl_float(pos[k]);
     }
     for (int row = 0; row < 4; row++) {
         eye[row] = 0;
@@ -953,14 +984,15 @@ static bool mgras_gl_transform(SGIMgrasState *s, int i, MgrasGLVertex *out)
     out->z = (clip[2] / clip[3] + 1.0) / 2.0;
     out->inv_w = 1.0 / clip[3];
     for (int k = 0; k < 3; k++) {
-        out->rgb[k] = MIN(MAX(mgras_gl_float(gl->vertex_color[i][k]),
-                              0.0f), 1.0f);
+        out->rgb[k] = MIN(MAX(mgras_gl_float(rgba[k]), 0.0f), 1.0f);
     }
     return true;
 }
 
 /*
- * Transform, map and rasterize the collected triangle.
+ * Transform, map and rasterize one triangle, given each vertex's object
+ * position and colour and, for flat shading, the provoking vertex's
+ * colour (OpenGL 1.2.1, 2.13.7 and table 2.9).
  *
  * Clipping to the view volume is approximated. In x and y the fragments
  * are bounded by the viewport rectangle, which matches clipping for a
@@ -975,10 +1007,11 @@ static bool mgras_gl_transform(SGIMgrasState *s, int i, MgrasGLVertex *out)
  * Depth is interpolated linearly in window coordinates and colour with
  * the perspective correction of equation 3.4 (OpenGL 1.2.1, 3.5.1).
  */
-static void mgras_gl_triangle(SGIMgrasState *s)
+static void mgras_gl_triangle(SGIMgrasState *s, const uint32_t *pos[3],
+                              const uint32_t *rgba[3],
+                              const uint32_t *provoking)
 {
     SGIMgrasGLContext *gl = mgras_gl(s);
-    const uint32_t *provoking = gl->vertex_color[2];
     unsigned int banks = mgras_gl_draw_banks(s);
     MgrasGLWindow win;
     MgrasGLVertex v[3];
@@ -989,7 +1022,6 @@ static void mgras_gl_triangle(SGIMgrasState *s)
     bool smooth = gl->shade_model != MGRAS_GL_FLAT;
     uint32_t flat_rgb;
 
-    /* Table 2.9: an independent triangle's third vertex provokes. */
     flat_rgb = (mgras_gl_channel(mgras_gl_float(provoking[0])) << 16) |
                (mgras_gl_channel(mgras_gl_float(provoking[1])) << 8) |
                mgras_gl_channel(mgras_gl_float(provoking[2]));
@@ -998,7 +1030,7 @@ static void mgras_gl_triangle(SGIMgrasState *s)
         return;
     }
     for (int i = 0; i < 3; i++) {
-        if (!mgras_gl_transform(s, i, &v[i])) {
+        if (!mgras_gl_transform(s, pos[i], rgba[i], &v[i])) {
             return;
         }
     }
@@ -1081,32 +1113,119 @@ static void mgras_gl_triangle(SGIMgrasState *s)
     s->dirty = true;
 }
 
+/* A triangle of three held or arriving vertices, flat colour from p. */
+static void mgras_gl_draw_triangle(SGIMgrasState *s, uint32_t *const pos[4],
+                                   uint32_t *const rgba[4], int a, int b,
+                                   int c, int p)
+{
+    const uint32_t *tp[3] = { pos[a], pos[b], pos[c] };
+    const uint32_t *tc[3] = { rgba[a], rgba[b], rgba[c] };
+
+    mgras_gl_triangle(s, tp, tc, rgba[p]);
+}
+
+/*
+ * A quadrilateral a, b, c, d in order around its edge, drawn as the
+ * triangles a b c and a c d. OpenGL 1.2.1 (3.5.1) allows any split of a
+ * polygon with more than three vertices that gives a convex combination
+ * of the vertices' values, and says nothing of non-convex or non-planar
+ * ones; which diagonal the board takes is not known. Approximated: the
+ * model splits every polygon into a fan from its first vertex. The
+ * discriminating test is gl-quad-splits-from-its-first-vertex.
+ */
+static void mgras_gl_draw_quad(SGIMgrasState *s, uint32_t *const pos[4],
+                               uint32_t *const rgba[4], int a, int b, int c,
+                               int d, int p)
+{
+    mgras_gl_draw_triangle(s, pos, rgba, a, b, c, p);
+    mgras_gl_draw_triangle(s, pos, rgba, a, c, d, p);
+}
+
+/* Hold the arriving vertex in slot n of the three a context keeps. */
+static void mgras_gl_hold(SGIMgrasGLContext *gl, unsigned int n,
+                          const uint32_t pos[4], const uint32_t rgba[4])
+{
+    memcpy(gl->vertex[n], pos, sizeof(gl->vertex[n]));
+    memcpy(gl->vertex_color[n], rgba, sizeof(gl->vertex_color[n]));
+}
+
+/*
+ * One vertex of the primitive open since glBegin (OpenGL 1.2.1, 2.6.1).
+ * The context holds at most three earlier vertices, in vertex[] with
+ * vertex_count of them in use, and every piece is drawn as soon as its
+ * last vertex arrives, so a context switch between two vertices loses
+ * nothing. The flat colour follows table 2.9: the last vertex of a
+ * triangle, strip or fan triangle, quad or quad-strip quad, and the first
+ * vertex of a polygon. Vertices that complete no piece before glEnd draw
+ * nothing.
+ */
 static void mgras_gl_vertex(SGIMgrasState *s, const uint32_t *payload,
                             uint32_t components)
 {
-    static const float one = 1.0f;
     SGIMgrasGLContext *gl = mgras_gl(s);
-    uint32_t *vertex;
+    uint32_t cur[4] = { 0, 0, 0, mgras_gl_bits(1.0f) };
+    uint32_t cur_rgba[4];
+    uint32_t *const pos[4] = { gl->vertex[0], gl->vertex[1], gl->vertex[2],
+                               cur };
+    uint32_t *const rgba[4] = { gl->vertex_color[0], gl->vertex_color[1],
+                                gl->vertex_color[2], cur_rgba };
+    unsigned int n = gl->vertex_count;
 
-    if (gl->begin != MGRAS_GL_BEGIN_TRIANGLES) {
-        /*
-         * The other primitive modes are not tracked, so this may be a
-         * legal vertex of a strip, fan or line the model cannot draw.
-         */
-        qemu_log_mask(LOG_UNIMP, "sgi-mgras: GL vertex outside "
-                      "glBegin(GL_TRIANGLES) ignored\n");
+    if (!gl->begin) {
+        qemu_log_mask(LOG_UNIMP, "sgi-mgras: GL vertex outside glBegin "
+                      "ignored\n");
         return;
     }
-    vertex = gl->vertex[gl->vertex_count];
-    memset(vertex, 0, sizeof(gl->vertex[0]));
-    memcpy(&vertex[3], &one, sizeof(vertex[3]));
-    memcpy(vertex, payload, components * sizeof(uint32_t));
-    memcpy(gl->vertex_color[gl->vertex_count], gl->color,
-           sizeof(gl->color));
-    if (++gl->vertex_count == 3) {
-        mgras_gl_triangle(s);
+    memcpy(cur, payload, components * sizeof(uint32_t));
+    memcpy(cur_rgba, gl->color, sizeof(cur_rgba));
+
+    switch (gl->begin) {
+    case MGRAS_GL_BEGIN_TRIANGLES:
+        if (n < 2) {
+            break;
+        }
+        mgras_gl_draw_triangle(s, pos, rgba, 0, 1, 3, 3);
         gl->vertex_count = 0;
+        return;
+    case MGRAS_GL_BEGIN_TRI_STRIP:
+        if (n < 2) {
+            break;
+        }
+        mgras_gl_draw_triangle(s, pos, rgba, 0, 1, 3, 3);
+        mgras_gl_hold(gl, 0, gl->vertex[1], gl->vertex_color[1]);
+        mgras_gl_hold(gl, 1, cur, cur_rgba);
+        return;
+    case MGRAS_GL_BEGIN_TRI_FAN:
+    case MGRAS_GL_BEGIN_POLYGON:
+        if (n < 2) {
+            break;
+        }
+        mgras_gl_draw_triangle(s, pos, rgba, 0, 1, 3,
+                               gl->begin == MGRAS_GL_BEGIN_POLYGON ? 0 : 3);
+        mgras_gl_hold(gl, 1, cur, cur_rgba);
+        return;
+    case MGRAS_GL_BEGIN_QUADS:
+        if (n < 3) {
+            break;
+        }
+        mgras_gl_draw_quad(s, pos, rgba, 0, 1, 2, 3, 3);
+        gl->vertex_count = 0;
+        return;
+    case MGRAS_GL_BEGIN_QUAD_STRIP:
+        if (n < 3) {
+            break;
+        }
+        /* Vertices 2i - 1, 2i, 2i + 2 and 2i + 1 in order (2.6.1). */
+        mgras_gl_draw_quad(s, pos, rgba, 0, 1, 3, 2, 3);
+        mgras_gl_hold(gl, 0, gl->vertex[2], gl->vertex_color[2]);
+        mgras_gl_hold(gl, 1, cur, cur_rgba);
+        gl->vertex_count = 2;
+        return;
+    default:
+        g_assert_not_reached();
     }
+    mgras_gl_hold(gl, n, cur, cur_rgba);
+    gl->vertex_count = n + 1;
 }
 
 /*
@@ -1130,6 +1249,17 @@ void sgi_mgras_gl_execute(SGIMgrasState *s, uint32_t header,
     SGIMgrasGLContext *gl = mgras_gl(s);
 
     if (words != (header & 0xff) / sizeof(uint32_t)) {
+        return;
+    }
+    if (mgras_gl_begin_token(header, false)) {
+        gl->begin = header;
+        gl->vertex_count = 0;
+        return;
+    }
+    if (mgras_gl_begin_token(header, true)) {
+        /* Vertices that complete no piece draw nothing (2.6.1). */
+        gl->begin = 0;
+        gl->vertex_count = 0;
         return;
     }
     switch (header) {
@@ -1210,15 +1340,6 @@ void sgi_mgras_gl_execute(SGIMgrasState *s, uint32_t header,
         return;
     case MGRAS_GL_COLOR4UB:
         mgras_gl_color_bytes(gl->color, payload[0], true);
-        return;
-    case MGRAS_GL_BEGIN_TRIANGLES:
-        gl->begin = header;
-        gl->vertex_count = 0;
-        return;
-    case MGRAS_GL_END_TRIANGLES:
-        /* A trailing partial triangle draws nothing (2.6.1). */
-        gl->begin = 0;
-        gl->vertex_count = 0;
         return;
     case MGRAS_GL_VERTEX2F:
         mgras_gl_vertex(s, payload, 2);

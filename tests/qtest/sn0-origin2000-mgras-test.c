@@ -7605,6 +7605,52 @@ typedef struct GlPrimCase {
 #define GL_END_OF(begin)      ((begin) + 0x0a00)
 
 static const GlPrimCase gl_prim_cases[] = {
+    { "triangle-strip",
+      "ba7ee78db90a8f00ea0a6df54de7578922e0021e3b05c78afe84388320e27cae",
+      GL_BEGIN_TRI_STRIP, GL_PRIM_FLOAT, { { GL_PRIM_DRAW } }, 6,
+      { { 10.09375f, 20.34375f, { 0, 0, 0 } },
+        { 20.09375f, 90.34375f, { 0, 0, 0 } },
+        { 45.09375f, 15.34375f, { 255, 0, 0 } },
+        { 55.09375f, 100.34375f, { 255, 255, 0 } },
+        { 80.09375f, 25.34375f, { 0, 255, 0 } },
+        { 100.09375f, 95.34375f, { 255, 255, 255 } } } },
+    { "triangle-fan",
+      "ae2e1ba0f39fa9efb41d2b459b71a96e55e46beb218834471d3fa0011f97cc20",
+      GL_BEGIN_TRI_FAN, GL_PRIM_FLOAT, { { GL_PRIM_DRAW } }, 5,
+      { { 64.09375f, 60.53125f, { 0, 0, 0 } },
+        { 109.09375f, 45.53125f, { 0, 0, 0 } },
+        { 100.09375f, 108.53125f, { 255, 0, 0 } },
+        { 40.09375f, 116.53125f, { 255, 255, 0 } },
+        { 16.09375f, 72.53125f, { 0, 255, 0 } } } },
+    { "quads",
+      "6d371b52adc58049677e317f13f4e40e2522998eec59a45f073ef914e304e11d",
+      GL_BEGIN_QUADS, GL_PRIM_FLOAT, { { GL_PRIM_DRAW } }, 8,
+      { { 10.03125f, 10.53125f, { 255, 0, 0 } },
+        { 60.03125f, 15.53125f, { 255, 0, 0 } },
+        { 55.03125f, 60.53125f, { 255, 0, 0 } },
+        { 15.03125f, 55.53125f, { 255, 255, 0 } },
+        { 70.03125f, 70.53125f, { 255, 0, 0 } },
+        { 120.03125f, 75.53125f, { 255, 0, 0 } },
+        { 115.03125f, 120.53125f, { 255, 0, 0 } },
+        { 65.03125f, 110.53125f, { 0, 255, 0 } } } },
+    { "quad-strip",
+      "6a48120877e2d60a694003b7c6ff9a9f96e4c65bd12e098a8ee9200edb7fb64b",
+      GL_BEGIN_QUAD_STRIP, GL_PRIM_FLOAT, { { GL_PRIM_DRAW } }, 6,
+      { { 10.09375f, 20.15625f, { 255, 0, 0 } },
+        { 10.09375f, 100.15625f, { 255, 0, 0 } },
+        { 60.09375f, 10.15625f, { 255, 0, 0 } },
+        { 55.09375f, 110.15625f, { 255, 255, 0 } },
+        { 120.09375f, 30.15625f, { 255, 0, 0 } },
+        { 110.09375f, 90.15625f, { 0, 255, 0 } } } },
+    { "polygon",
+      "fee3202432cb5881ba63abdd142b7007e54df5b5de6480b9953177da61a69731",
+      GL_BEGIN_POLYGON, GL_PRIM_FLOAT, { { GL_PRIM_DRAW } }, 6,
+      { { 64.125f, 8.40625f, { 255, 255, 0 } },
+        { 112.125f, 36.40625f, { 255, 0, 0 } },
+        { 108.125f, 92.40625f, { 0, 255, 0 } },
+        { 60.125f, 120.40625f, { 255, 255, 255 } },
+        { 16.125f, 92.40625f, { 255, 0, 255 } },
+        { 20.125f, 36.40625f, { 0, 255, 255 } } } },
     { "push-pop",
       "e5b12c008b2c481baf89277d4c29f7ac858fa1c4baee90be25f6ad8b78dc63e2",
       GL_BEGIN_TRIANGLES, GL_PRIM_FLOAT,
@@ -7723,6 +7769,71 @@ static void test_gl_prim_matches_the_reference(const void *data)
     rgb = mgras_screendump(qts);
     gl_check_window_sha256(rgb, c->sha256);
     g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+}
+
+/*
+ * Approximated: a quad, quad-strip quad or polygon is drawn as a fan of
+ * triangles from its first vertex; OpenGL 1.2.1 (3.5.1) leaves the split
+ * open, and the board's is not known. Smooth shading shows the split: in
+ * the square below, with red, green, black and green corners, the fan
+ * from the red corner gives centre (40.5, 20.5) 23.5/64 red and 20/64
+ * green, 0x5e5000, where the other diagonal would give 3/64 red and 61/64
+ * green; the same holds for (20.5, 40.5) by symmetry.
+ */
+static void test_gl_quad_splits_from_its_first_vertex(void)
+{
+    gl_transform_start(qts);
+    gl_one(qts, GL_SHADE_MODEL_HDR, GL_SMOOTH);
+    gl_word(qts, GL_BEGIN_QUADS);
+    gl_color3f(qts, 1, 0, 0);
+    gl_vertex2f(qts, 0, 0);
+    gl_color3f(qts, 0, 1, 0);
+    gl_vertex2f(qts, 64, 0);
+    gl_color3f(qts, 0, 0, 0);
+    gl_vertex2f(qts, 64, 64);
+    gl_color3f(qts, 0, 1, 0);
+    gl_vertex2f(qts, 0, 64);
+    gl_word(qts, GL_END_OF(GL_BEGIN_QUADS));
+    g_assert_cmphex(gl_window_pixel(qts, 40, 20), ==, 0x5e5000);
+    g_assert_cmphex(gl_window_pixel(qts, 20, 40), ==, 0x5e5000);
+}
+
+/*
+ * A strip, fan or polygon is drawn piece by piece as its vertices arrive,
+ * and the vertices the next piece needs wait in the context: a switch to
+ * another context between two strip vertices loses nothing.
+ */
+static void test_gl_strip_spans_a_context_switch(void)
+{
+    mgras_reset();
+
+    gl_enter_slot(qts, GL_SLOT_A);
+    gl_word(qts, GL_CONTEXT_OPENER);
+    gl_viewport(qts, 0, 0, 128, 128);
+    gl_window_projection(qts);
+    gl_one(qts, GL_MATRIX_MODE_HDR, GL_MODELVIEW);
+    gl_one(qts, GL_SHADE_MODEL_HDR, GL_FLAT);
+    gl_word(qts, GL_BEGIN_TRI_STRIP);
+    gl_color3f(qts, 1, 1, 0);
+    gl_vertex2f(qts, 8, 8);
+    gl_vertex2f(qts, 8, 100);
+    gl_vertex2f(qts, 60, 8);
+
+    gl_enter_slot(qts, GL_SLOT_B);
+    gl_word(qts, GL_CONTEXT_OPENER);
+    gl_viewport(qts, 0, 0, 128, 128);
+    gl_word(qts, GL_BEGIN_TRIANGLES);
+    gl_vertex2f(qts, 0.5f, 0.5f);
+    gl_vertex2f(qts, 0.9f, 0.5f);
+    gl_vertex2f(qts, 0.5f, 0.9f);
+    gl_word(qts, GL_END_TRIANGLES);
+
+    gl_enter_slot(qts, GL_SLOT_A);
+    gl_color3f(qts, 1, 0, 1);
+    gl_vertex2f(qts, 60, 100);
+    gl_word(qts, GL_END_OF(GL_BEGIN_TRI_STRIP));
+    g_assert_cmphex(gl_window_pixel(qts, 20, 20), ==, 0xffff00);
+    g_assert_cmphex(gl_window_pixel(qts, 50, 90), ==, 0xff00ff);
 }
 
 static void test_hq_flags_fence_token_sets_bit(void)
@@ -9770,6 +9881,11 @@ int main(int argc, char **argv)
                    test_gl_push_and_pop_restore_the_matrix);
     qtest_add_func("sn0/origin2000/mgras/gl-matrix-stack-holds-32",
                    test_gl_matrix_stack_holds_32);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "gl-quad-splits-from-its-first-vertex",
+                   test_gl_quad_splits_from_its_first_vertex);
+    qtest_add_func("sn0/origin2000/mgras/gl-strip-spans-a-context-switch",
+                   test_gl_strip_spans_a_context_switch);
     for (size_t i = 0; i < ARRAY_SIZE(gl_prim_cases); i++) {
         g_autofree char *path = g_strdup_printf(
             "sn0/origin2000/mgras/gl-reference/%s", gl_prim_cases[i].name);
