@@ -182,12 +182,13 @@ void sgi_fetch_run(SGICommandFetch *f, void *opaque)
 void sgi_fetch_finish(SGICommandFetch *f, int status, const SGIHeadOps *ops,
                       void *opaque)
 {
-    /* The finish of a refused map: the running fetch keeps its segments. */
+    /*
+     * The finish of a refused map only closes it. seq and cookie are the
+     * running invocation's, so a record here would say that one failed;
+     * the refused invocation's identity is the caller's to publish.
+     */
     if (f->open > 1) {
         f->open--;
-        trace_sgi_fetch(f->seq, f->context, 0, 0, status);
-        sgi_head_publish(ops, opaque, f->seq, SGI_DONE_FAILED, f->cookie,
-                         status ? status : SGI_FAIL_BUSY);
         return;
     }
     f->open = 0;

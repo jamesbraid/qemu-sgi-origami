@@ -61,8 +61,11 @@ struct SGICommandFetch {
      * one invocation at a time, from its map to its finish, so a list
      * invoked from inside decode() needs a fetch of its own. A map of a
      * fetch not yet finished fails with SGI_FAIL_BUSY and changes nothing
-     * in it; the finish that goes with that map publishes the failure and
-     * leaves the running invocation alone. A fetch starts zeroed.
+     * in it, seq and cookie included, which stay the running invocation's.
+     * The finish that goes with that map publishes nothing and leaves the
+     * running invocation alone: the refused invocation's seq and cookie
+     * never reached the fetch, so its caller publishes its FAILED record.
+     * A fetch starts zeroed.
      */
     SGIFetchSegment *segments;
     unsigned nsegments;
@@ -93,11 +96,16 @@ void sgi_fetch_run(SGICommandFetch *f, void *opaque);
 /*
  * Under the lock, once after every map whatever it returned: release the
  * segments and publish CONSUMED with the words fed to the grammar, or
- * FAILED with status when status is non-zero.
+ * FAILED with status when status is non-zero. After a map refused with
+ * SGI_FAIL_BUSY it only closes that map and publishes nothing.
  */
 void sgi_fetch_finish(SGICommandFetch *f, int status, const SGIHeadOps *ops,
                       void *opaque);
-/* All three from a page-listed pool, for a synchronous head. */
+/*
+ * All three from a page-listed pool, for a synchronous head. On
+ * SGI_FAIL_BUSY nothing is published: the caller publishes FAILED for
+ * the refused invocation under that invocation's own seq and cookie.
+ */
 int sgi_fetch(SGICommandFetch *f, const SGIDMABus *bus,
               const SGIDMAPageList *pl, uint64_t offset, uint64_t nwords);
 
