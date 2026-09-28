@@ -169,6 +169,27 @@ Both IRIX installed-guest cases use QEMU's ``skipSlowTest`` and
 ``QEMU_TEST_ALLOW_LARGE_STORAGE=1`` as well as the asset root. These checks
 boot existing installations; they do not install IRIX.
 
+The additional IRIX diagnostic and installed-guest network and graphics tests
+also declare their local inputs with ``LocalAsset``. Their paths are relative
+to ``QEMU_TEST_SGI_ASSET_DIR``:
+
+.. list-table:: Additional declared IRIX test inputs
+   :header-rows: 1
+
+   * - Test module
+     - Declared inputs below the asset root
+   * - ``test_irix_diag.py`` and its Origin 200, Origin 2000 and Origin 300 variants
+     - The IP27 PROM, or the IP35 PROM and its two SPD files for the Origin
+       300; ``irix/6.5.30/root-diags.qcow2`` for IP27 or
+       ``irix/6.5.30/root-diags-origin300.qcow2`` for IP35; and
+       ``irix/6.5.30/olcdrom-medium.raw``
+   * - ``test_irix_tg.py`` and ``test_irix_tg_perf.py``
+     - The IP27 PROM and ``irix/6.5.30/root.qcow2``
+   * - ``test_irix_eg.py``
+     - The IP27 PROM and ``irix/6.5.30/root.qcow2``
+   * - ``test_mgras_desktop.py``
+     - The IP27 PROM and ``irix/6.5.30/root-si.qcow2``
+
 Asset requirements are marked by each functional test. An unset asset-root
 variable can skip an asset-dependent case for a developer who has not supplied
 the files; once configured, a missing or mismatched file fails that case. Full
