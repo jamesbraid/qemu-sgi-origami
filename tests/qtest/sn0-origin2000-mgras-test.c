@@ -9884,6 +9884,39 @@ static void test_gl_colour_index_draws_through_the_colour_map(void)
 }
 
 /*
+ * glIndexMask(0) leaves the colour buffer unchanged (OpenGL 1.2.1, 4.2.2):
+ * a colour-index rectangle under it keeps the direct-colour pixel an RGBA
+ * context drew there, its value and its format.
+ */
+static void test_gl_colour_index_zero_mask_keeps_the_pixel(void)
+{
+    mgras_reset();
+    gl_enter_slot(qts, GL_SLOT_A);
+    gl_word(qts, GL_CONTEXT_OPENER);
+    gl_viewport(qts, 0, 0, 128, 128);
+    gl_window_projection(qts);
+    gl_color3f(qts, 1, 0.5f, 0);
+    gl_window_rect(qts, 10, 10, 20, 30);
+    g_assert_cmphex(gl_window_pixel(qts, 15, 20), ==, 0xff8000);
+
+    gl_enter_slot(qts, GL_SLOT_B);
+    gl_word(qts, GL_CONTEXT_OPENER);
+    gl_one(qts, GL_INIT_CI_HDR, 8);
+    gl_viewport(qts, 0, 0, 128, 128);
+    gl_window_projection(qts);
+    gl_one(qts, GL_INDEX_MASK_HDR, 0);
+    gl_indexs(qts, 7);
+    gl_window_rect(qts, 10, 10, 20, 30);
+    g_assert_cmphex(gl_window_pixel(qts, 15, 20), ==, 0xff8000);
+    g_assert_cmphex(mgras_test_format(qts, 256 + 15, 383 - 20), ==,
+                    MGRAS_PIXEL_FORMAT_RGB);
+
+    gl_one(qts, GL_INDEX_MASK_HDR, 0xff);
+    gl_window_rect(qts, 10, 10, 20, 30);
+    g_assert_cmphex(gl_window_pixel(qts, 15, 20), ==, 7);
+}
+
+/*
  * The client reads GL_CURRENT_INDEX through the 0xa104 query at index 4,
  * GL_CURRENT_COLOR's red, and GL_CURRENT_RASTER_INDEX through 0xa20c at
  * 0x351, the raster colour's red (notes-return-mode-queries.md). In a
@@ -12178,6 +12211,9 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/origin2000/mgras/"
                    "gl-colour-index-draws-through-the-colour-map",
                    test_gl_colour_index_draws_through_the_colour_map);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "gl-colour-index-zero-mask-keeps-the-pixel",
+                   test_gl_colour_index_zero_mask_keeps_the_pixel);
     qtest_add_func("sn0/origin2000/mgras/gl-bitmap-split-by-a-context-switch",
                    test_gl_bitmap_split_by_a_context_switch);
     qtest_add_func("sn0/origin2000/mgras/hq-query-flag-only-from-query",
