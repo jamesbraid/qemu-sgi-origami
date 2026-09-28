@@ -50,6 +50,7 @@ void sgi_gl_init(SGIGLContext *c, uint32_t hw_id)
     sgi_gl_identity(c->cur.projection);
     c->cur.depth_func = SGI_GL_LESS;
     c->cur.depth_mask = 1;
+    c->cur.depth_range[1] = 1.0f;
     c->clear_depth = UINT32_MAX;
     c->cur.draw_buffers = SGI_GL_DRAW_FRONT;
     c->cur.index_mask = UINT32_MAX;
@@ -356,6 +357,7 @@ static const uint8_t sgi_gl_nargs[] = {
     [SGI_GL_OP_INDEXF] = 1,
     [SGI_GL_OP_INDEX_MASK] = 1,
     [SGI_GL_OP_CLEAR_INDEX] = 1,
+    [SGI_GL_OP_DEPTH_RANGE] = 2,
 };
 
 uint32_t sgi_gl_draw_targets(const SGIGLDrawState *st,
@@ -582,10 +584,10 @@ static void sgi_gl_vertex(SGIGLContext *c, const SGIGLSink *sink,
  * (2.13.6) and the current colour index; lighting is not modelled.
  * Outside, only the valid bit is reset: the specification leaves the
  * rest undefined, and keeping it is the model's choice. Client clip
- * planes are not modelled, and the depth range is [0, 1], as for a
- * draw. The eye distance is the exact Euclidean one of the eye x, y and
- * z, which 2.12 allows a head to approximate; how a head does is not
- * published.
+ * planes are not modelled, and window depth is formed over [0, 1]
+ * whatever glDepthRange kept, as for a draw. The eye distance is the
+ * exact Euclidean one of the eye x, y and z, which 2.12 allows a head to
+ * approximate; how a head does is not published.
  */
 static void sgi_gl_raster_pos(SGIGLContext *c, const float obj[4])
 {
@@ -628,6 +630,28 @@ static void sgi_gl_raster_pos(SGIGLContext *c, const float obj[4])
         c->raster_color[i] = MIN(MAX(c->cur_color[i], 0.0f), 1.0f);
     }
     c->raster_index = c->cur_index;
+}
+
+/*
+ * glDepthRange (OpenGL 1.2.1, 2.10.1): near and far are each clamped to
+ * [0, 1] and kept, far may be below near, and a value that is not a number
+ * clamps to 0, the model's choice. Window depth is still formed over
+ * [0, 1] by every rasterizer and by glRasterPos, so another range is
+ * logged: what it would draw is not modelled yet.
+ */
+static void sgi_gl_depth_range(SGIGLContext *c, float n, float f)
+{
+    float range[2] = { n, f };
+
+    for (int i = 0; i < 2; i++) {
+        range[i] = range[i] >= 1.0f ? 1.0f : range[i] > 0.0f ? range[i] : 0.0f;
+        c->cur.depth_range[i] = range[i];
+    }
+    if (range[0] != 0.0f || range[1] != 1.0f) {
+        qemu_log_mask(LOG_UNIMP, "sgi-gl: depth range [%g, %g] kept; window "
+                      "depth is still drawn over [0, 1]\n", range[0],
+                      range[1]);
+    }
 }
 
 static void sgi_gl_capability(SGIGLContext *c, uint32_t cap, bool on)
@@ -833,6 +857,9 @@ void sgi_gl_command(SGIGLContext *c, const SGIGLSink *sink,
     case SGI_GL_OP_CLEAR_INDEX:
         memcpy(&c->clear_index, &a[0], sizeof(c->clear_index));
         return;
+    case SGI_GL_OP_DEPTH_RANGE:
+        sgi_gl_depth_range(c, sgi_gl_float(a[0]), sgi_gl_float(a[1]));
+        return;
     case SGI_GL_OP_FLUSH:
         /* Every piece has already been sent. */
         return;
@@ -937,6 +964,12 @@ bool sgi_gl_get(const SGIGLContext *c, uint32_t pname, uint32_t *out,
             out[i] = sgi_gl_bits(c->clear_color[i]);
         }
         *n = 4;
+        return true;
+    case SGI_GL_DEPTH_RANGE:
+        for (int i = 0; i < 2; i++) {
+            out[i] = sgi_gl_bits(c->cur.depth_range[i]);
+        }
+        *n = 2;
         return true;
     default:
         return false;

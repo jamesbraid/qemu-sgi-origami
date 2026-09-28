@@ -1075,6 +1075,33 @@ static void test_bitmap_bounds_and_depth(void)
     g_assert_cmphex(p.depth[planes_index(56, 1)], ==, 0x800000);
 }
 
+/*
+ * glDepthRange (OpenGL 1.2.1, 2.10.1): initially [0, 1]; each value is
+ * clamped to [0, 1] and kept, and far may be below near.
+ */
+static void test_depth_range(void)
+{
+    uint32_t word[2], out[SGI_GL_GET_WORDS];
+    SGIGLContext c;
+
+    context_init(&c);
+    g_assert_cmpuint(get(&c, SGI_GL_DEPTH_RANGE, out), ==, 2);
+    g_assert_cmphex(out[0], ==, bits(0));
+    g_assert_cmphex(out[1], ==, bits(1));
+
+    word[0] = bits(0.75f), word[1] = bits(0.25f);
+    command(&c, NULL, SGI_GL_OP_DEPTH_RANGE, word, 2);
+    g_assert_cmpuint(get(&c, SGI_GL_DEPTH_RANGE, out), ==, 2);
+    g_assert_cmphex(out[0], ==, bits(0.75f));
+    g_assert_cmphex(out[1], ==, bits(0.25f));
+
+    word[0] = bits(-2), word[1] = bits(3);
+    command(&c, NULL, SGI_GL_OP_DEPTH_RANGE, word, 2);
+    g_assert_cmpuint(get(&c, SGI_GL_DEPTH_RANGE, out), ==, 2);
+    g_assert_cmphex(out[0], ==, bits(0));
+    g_assert_cmphex(out[1], ==, bits(1));
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -1096,5 +1123,6 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-gl/bitmap", test_bitmap);
     g_test_add_func("/sgi-gl/bitmap-bounds-and-depth",
                     test_bitmap_bounds_and_depth);
+    g_test_add_func("/sgi-gl/depth-range", test_depth_range);
     return g_test_run();
 }
