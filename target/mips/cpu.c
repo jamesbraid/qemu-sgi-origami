@@ -152,7 +152,7 @@ static bool mips_cpu_has_work(CPUState *cs)
     CPUMIPSState *env = cpu_env(cs);
     bool has_work = false;
 
-    if (cpu_test_interrupt(cs, CPU_INTERRUPT_NMI)) {
+    if (cpu_test_interrupt(cs, CPU_INTERRUPT_NMI | CPU_INTERRUPT_SRESET)) {
         return true;
     }
 
@@ -267,6 +267,8 @@ static void mips_cpu_reset_hold(Object *obj, ResetType type)
     cpu->nmi_level = false;
 
     /*
+     * This reset framework path is a cold initialization (or snapshot load).
+     * An R10000 soft reset enters EXCP_SRESET instead and preserves caches.
      * The R10000-family state sits behind a pointer the top-level memset does
      * not reach, so clear it here, all but the board's hook, then copy the
      * writable-bit masks the family defines from the CPU model. Every other
@@ -815,6 +817,19 @@ static void mips_cpu_unrealizefn(DeviceState *dev)
 }
 
 #ifndef CONFIG_USER_ONLY
+/*
+ * A pulse reports completion of the CPU's soft-reset sequence. This is not
+ * the timed SysReset* pin: a board must establish its signal mapping before
+ * driving it. The exception preserves caches and enters the uncached reset
+ * vector (R10000 User's Manual v2.0, printed page 163).
+ */
+static void mips_cpu_soft_reset(void *opaque, int irq, int level)
+{
+    if (level) {
+        cpu_interrupt(CPU(opaque), CPU_INTERRUPT_SRESET);
+    }
+}
+
 static void mips_cpu_set_nmi(void *opaque, int irq, int level)
 {
     MIPSCPU *cpu = opaque;
@@ -852,6 +867,10 @@ static void mips_cpu_initfn(Object *obj)
     }
 #ifndef CONFIG_USER_ONLY
     qdev_init_gpio_in_named(DEVICE(obj), mips_cpu_set_nmi, "nmi", 1);
+    if (!strcmp(mcc->cpu_def->name, "R10000")) {
+        qdev_init_gpio_in_named(DEVICE(obj), mips_cpu_soft_reset,
+                               "soft-reset", 1);
+    }
 #endif
 }
 

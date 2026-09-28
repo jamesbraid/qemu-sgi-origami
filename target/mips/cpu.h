@@ -1661,6 +1661,9 @@ enum {
 /* An NMI input edge waits here until the execution loop takes the exception. */
 #define CPU_INTERRUPT_NMI CPU_INTERRUPT_TGT_EXT_0
 
+/* Completion of an R10000 soft-reset sequence, delivered as an exception. */
+#define CPU_INTERRUPT_SRESET CPU_INTERRUPT_TGT_EXT_1
+
 #define CPU_RESOLVING_TYPE TYPE_MIPS_CPU
 
 bool cpu_type_supports_cps_smp(const char *cpu_type);
