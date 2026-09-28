@@ -96,7 +96,16 @@ Transmit
     consume index on the entry. In loopback the receiver is drained
     per transmitted character, because the receive FIFO is sixteen
     bytes against rings the diagnostic fills five hundred characters
-    at a time.
+    at a time. Each looped-back character also spends the 16550's
+    character time for the programmed line on the wire before the
+    receiver sees it, and the engine sends the next one only then:
+    the 16550 core hands it over at once, and without the delay the
+    receive timer starts a character time early. An access to the
+    block delivers an arrival already due, at its own time, the way it
+    applies a due receive-timer expiry. The walk sends characters one
+    line time apart and fills no transmit FIFO ahead of the line, so
+    in loopback its consume index can trail silicon's, if the part
+    runs ahead that way; nothing observed settles which.
 
 Receive
     Characters pack four to an entry; the produce index reports the
