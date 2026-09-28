@@ -23,12 +23,12 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIBedrockState, SGI_BEDROCK)
 /* processor-slot-order: fill the fitted slots in ascending slot order. */
 #define SGI_BEDROCK_SLOT_ORDER_BY_SLOT UINT32_MAX
 
-/* What a held processor waits for. Mirrors sgi-hub.c's SGIHubRTHoldKind. */
+/* What a parked processor waits for; zero is no park. */
 typedef enum SGIBedrockHoldKind {
-    SGI_BEDROCK_HOLD_SCRATCH1 = 1,       /* H1: LB scratch 1's withheld write */
-    SGI_BEDROCK_HOLD_PRESENCE = 4,       /* H4: a publisher awaits its peer's */
-    SGI_BEDROCK_HOLD_PARTNER = 5,        /* H4: partner awaits its publisher */
-    SGI_BEDROCK_HOLD_LIVENESS = 6,       /* H4: a poster awaits its partner's */
+    SGI_BEDROCK_HOLD_SCRATCH1 = 1,  /* reset barrier: others' first writes */
+    SGI_BEDROCK_HOLD_PRESENCE = 2,  /* a publisher awaits the other's */
+    SGI_BEDROCK_HOLD_PARTNER = 3,   /* a partner awaits its publisher */
+    SGI_BEDROCK_HOLD_LIVENESS = 4,  /* a poster awaits its partner's post */
 } SGIBedrockHoldKind;
 
 struct SGIBedrockState {
@@ -124,24 +124,15 @@ struct SGIBedrockState {
     CPUState *hold_cpu[SGI_BEDROCK_PROCESSORS];
 
     /*
-     * The multi-threaded rendezvous hold at LB scratch 1 (H1), host-only
-     * and discarded across reset and migration -- see sgi_bedrock_hold_reset()
-     * and docs/known-issues.md. It mirrors sgi-hub.c's RT-mailbox hold
-     * (sgi_hub_rt_hold and neighbors): queued work on the held vCPU,
-     * waiting on its own halt condition, one hold per processor at a time.
-     * Unlike the Hub's fixed pairwise partner, this hold joins across
-     * every populated processor of the node, so a hold's wait condition is
-     * recomputed fresh on every wake rather than answered by a single
-     * tagged release.
+     * The reset-barrier park at LB scratch 1, host-only and discarded
+     * across reset and migration -- see sgi_bedrock_hold_reset() and the
+     * overview in sgi-bedrock.c. It joins across every populated processor
+     * of the node, so its condition is recomputed on every relevant write.
      *
      * hold_scratch1_seen: whether this processor has made its first write
      * to LB scratch 1 since reset. hold_scratch1_withheld(_valid): the
      * value a second-or-later write is holding back until every other
      * present, running processor has made its own first write.
-     *
-     * hold_id/hold_kind: the active hold on each slot, zero for none, and
-     * which register it is waiting on. hold_seq hands out ascending ids
-     * the way sgi-hub.c's pi_rt_hold_seq does.
      */
     bool hold_scratch1_seen[SGI_BEDROCK_PROCESSORS];
     bool hold_scratch1_withheld_valid[SGI_BEDROCK_PROCESSORS];
@@ -153,18 +144,15 @@ struct SGIBedrockState {
      */
     uint64_t hold_scratch1_withheld_seq[SGI_BEDROCK_PROCESSORS];
     uint64_t hold_scratch1_seq;
-    uint64_t hold_id[SGI_BEDROCK_PROCESSORS];
-    uint8_t hold_kind[SGI_BEDROCK_PROCESSORS];
-    uint64_t hold_seq;
 
     /*
-     * The presence-publication join (H4), host-only like the holds above
+     * The presence-publication join, host-only like the barrier above
      * and reset with them. presence_seen: whether a processor of that
      * interface has written II scratch 0 since reset -- the stock PROM's
      * publication of the interface's fitted processors. presence_abandoned:
-     * a hold on the join timed out, so the join is over for this reset
-     * whether or not a publication ever arrives. See the H4 comment in
-     * sgi-bedrock.c and docs/known-issues.md.
+     * a park on the join timed out, so the join is over for this reset
+     * whether or not a publication ever arrives. See the presence comment
+     * in sgi-bedrock.c and docs/known-issues.md.
      *
      * The partner park's state, the same lifetime. hold_scratch1_released:
      * the reset-edge barrier is over, its release (the master's second
@@ -183,7 +171,7 @@ struct SGIBedrockState {
     bool presence_released[SGI_BEDROCK_PROCESSORS / SGI_BEDROCK_PI_PROCESSORS];
 
     /*
-     * The join's parks halt the parked processor rather than block a host
+     * Every park halts the parked processor rather than block a host
      * thread (bedrock_park_start in sgi-bedrock.c), so they work the same
      * under every TCG scheduling mode. park_kind is the park each slot is
      * in, zero for none; park_deadline its bound on the virtual clock, and
@@ -222,9 +210,10 @@ SGINetPacketResult sgi_bedrock_vector_send(SGIBedrockState *s,
                                            SGINetPacket *packet);
 
 /*
- * The rendezvous hold's entry point, called from lb_write() for LB scratch 1
- * (docs/known-issues.md and docs/datasheets/bedrock-local-block.md). It
- * applies or withholds the write itself; the caller does not also store it.
+ * The reset-barrier park's entry point, called from lb_write() for LB
+ * scratch 1 (docs/known-issues.md and
+ * docs/datasheets/bedrock-local-block.md). It applies or withholds the
+ * write itself; the caller does not also store it.
  */
 void sgi_bedrock_hold_reset(SGIBedrockState *s);
 void sgi_bedrock_hold_scratch1_write(SGIBedrockState *s, uint64_t value);
@@ -258,7 +247,7 @@ void sgi_bedrock_memory_uncorrectable_error(SGIBedrockState *s);
 void sgi_bedrock_scratch3_released(SGIBedrockState *s);
 
 /*
- * The presence-publication join (H4), docs/known-issues.md: called from
+ * The presence-publication join, docs/known-issues.md: called from
  * ii_write() after a processor's write to II scratch 0 has landed. It only
  * records which interface has published and wakes processors parked on the
  * join; no value the guest reads changes.
@@ -266,7 +255,7 @@ void sgi_bedrock_scratch3_released(SGIBedrockState *s);
 void sgi_bedrock_presence_published(SGIBedrockState *s);
 
 /*
- * The presence join's liveness and partner parks (H4), docs/known-issues.md:
+ * The presence join's liveness and partner parks, docs/known-issues.md:
  * called from pi_write() after a real-time compare write of processor @slot
  * of @interface has landed, and from pi_read() after a real-time counter
  * read has been sampled. They record the pair's liveness posts, park the

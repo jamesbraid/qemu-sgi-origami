@@ -309,9 +309,9 @@ static void release_scratch1(QTestState *s, const char *bedrock,
 /*
  * The master tells a peer its NASID by a vector write of the peer's scratch
  * 1, while the peer's own processors may still be parked with a withheld post
- * there (the rendezvous hold, sgi-bedrock.c). Those posts reached the
+ * there (the reset-barrier park, sgi-bedrock.c). Those posts reached the
  * register first on hardware, so they land before the write, oldest first,
- * and the hold ending later changes nothing: the NASID stays. A vector read
+ * and the park ending later changes nothing: the NASID stays. A vector read
  * sees the posts the same way. The withheld state is placed through the
  * test-only properties, since no processor of B runs here.
  */

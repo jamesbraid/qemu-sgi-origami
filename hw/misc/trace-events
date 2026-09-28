@@ -504,12 +504,9 @@ sgi_hub_bte_launch(unsigned int engine, uint64_t control, uint64_t src, uint64_t
 sgi_hub_ni_scratch_write(uint32_t cpu_base, uint32_t nasid, unsigned int index, uint64_t value) "cpu_base %u nasid %u scratch %u value 0x%016" PRIx64
 
 # sgi-bedrock.c
-sgi_bedrock_hold_begin(int cpu, const char *kind, int slot, int64_t realtime_ns, uint64_t id) "cpu %d %s hold: slot %d realtime_ns %" PRId64 " id %" PRIu64
+sgi_bedrock_hold_begin(int cpu, const char *kind, int slot, int64_t virtual_ns) "cpu %d %s hold: slot %d virtual_ns %" PRId64
 sgi_bedrock_hold_external_flush(unsigned slot, uint64_t value) "slot %u withheld scratch 1 0x%" PRIx64 " lands before an access from outside the node"
-sgi_bedrock_hold_wake(int cpu, int held_cpu, uint64_t id) "cpu %d held_cpu %d id %" PRIu64
-sgi_bedrock_hold_yield(int cpu, uint64_t id, int64_t held_us) "cpu %d id %" PRIu64 " yields to queued work after %" PRId64 " us"
-sgi_bedrock_hold_end(int cpu, const char *outcome, int64_t held_us, uint64_t id) "cpu %d hold %s after %" PRId64 " us id %" PRIu64
-sgi_bedrock_hold_kick(int cpu, int target, const char *kind) "cpu %d target %d kind %s"
+sgi_bedrock_hold_end(int cpu, const char *outcome, int64_t held_us) "cpu %d hold %s after %" PRId64 " us"
 sgi_bedrock_presence_published(int cpu, unsigned interface, int pending) "cpu %d published interface %u presence; join pending %d"
 
 sgi_bedrock_local_reset(int cpu) "local reset pulse by cpu %d"

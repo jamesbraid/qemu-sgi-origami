@@ -38,6 +38,14 @@
  * publishers are late after the handshake, by half a second, so the
  * partners' 3 ms run out first unless the model parks them until their own
  * publisher has published. Without that park B reads 0 and D reads 0.
+ *
+ * The reset barrier comes before all of this: every processor's first LB
+ * scratch 1 write clears it, and the master's second posts the release
+ * the others poll for. A late processor's clear would erase that release,
+ * so the model withholds the release and parks the master until every
+ * processor has made its first write. The late-join test has B half a
+ * second late to its first write and checks that A's release store took at
+ * least that long, under each scheduler.
  */
 #include "qemu/osdep.h"
 #include "qemu/bswap.h"
@@ -268,9 +276,11 @@ static void patch_branch(Image *p, unsigned int at, unsigned int dest)
  * processor's number from the PI: bit 0 its slot within the interface, bit
  * 1 the interface.
  */
-static void emit_prologue(Image *p)
+static void emit_rt_wait(Image *p, uint32_t ticks);
+
+static void emit_prologue_late(Image *p, bool late_b)
 {
-    unsigned int to_master, spin, to_released;
+    unsigned int to_master, spin, to_released, to_first, to_on;
 
     stl_be_p(p->bytes + 0x000, 0x100000ff); /* beq zero, zero, 0x400 */
     for (unsigned int offset = 0x200; offset <= 0x380; offset += 0x80) {
@@ -302,7 +312,17 @@ static void emit_prologue(Image *p)
     emit(p, (R_T2 << 16) | (R_T0 << 11) | (8 << 6) | 0x38); /* dsll t0,t2,8 */
     emit_daddu(p, R_S1, R_S1, R_T0);
 
-    /* Every processor's first LB scratch 1 write: the reset-edge join. */
+    /*
+     * Every processor's first LB scratch 1 write: the reset-edge join. With
+     * @late_b, B makes it half a second late, as a host thread left
+     * unscheduled would.
+     */
+    if (late_b) {
+        emit_i(p, OPC_XORI, R_T2, R_T4, 1);         /* zero only for B */
+        to_first = emit_branch(p, OPC_BNE, R_T4, R_ZERO);
+        emit_rt_wait(p, LATE_POST_TICKS);
+        patch_branch(p, to_first, p->pos);
+    }
     emit_i(p, OPC_SD, R_S2, R_ZERO, 0);
 
     /*
@@ -320,8 +340,24 @@ static void emit_prologue(Image *p)
     emit_nop(p);
     to_released = emit_branch(p, OPC_BEQ, R_ZERO, R_ZERO);
     patch_branch(p, to_master, p->pos);
+    /*
+     * The master records how long its release store took, in ticks. A
+     * branch follows the store, as the PROM's return does, so the store
+     * ends a translation block before the second counter read.
+     */
+    emit_i(p, OPC_LD, R_S6, R_A0, 0);
     emit_i(p, OPC_SD, R_S2, R_A2, 0);
+    to_on = emit_branch(p, OPC_BEQ, R_ZERO, R_ZERO);
+    patch_branch(p, to_on, p->pos);
+    emit_i(p, OPC_LD, R_S6, R_A1, 0);
+    emit_dsubu(p, R_A1, R_A1, R_A0);
+    emit_i(p, OPC_SD, R_S1, R_A1, STATE_WAITED);
     patch_branch(p, to_released, p->pos);
+}
+
+static void emit_prologue(Image *p)
+{
+    emit_prologue_late(p, false);
 }
 
 /* Wait out @ticks of the real-time counter. */
@@ -368,11 +404,9 @@ static void emit_record(Image *p)
     emit_nop(p);
 }
 
-static void build_program(Image *p)
+static void emit_program_after_join(Image *p)
 {
     unsigned int branch, to_peer, to_read;
-
-    emit_prologue(p);
 
     /* Its slot within the interface: the second one only reads. */
     emit_i(p, OPC_ANDI, R_T2, R_T3, 1);             /* t3 = t2 & 1 */
@@ -398,6 +432,22 @@ static void build_program(Image *p)
 
     patch_branch(p, to_read, p->pos);
     emit_record(p);
+}
+
+static void build_program(Image *p)
+{
+    emit_prologue(p);
+    emit_program_after_join(p);
+}
+
+/*
+ * The same with B half a second late to its first scratch 1 write, so
+ * the reset-barrier park withholds A's release until B has written.
+ */
+static void build_late_join_program(Image *p)
+{
+    emit_prologue_late(p, true);
+    emit_program_after_join(p);
 }
 
 /*
@@ -737,6 +787,38 @@ static void check_silent_partner_releases_at_bound(const char *accel)
     g_assert_cmphex(seen[3] & PRESENCE_PI1, ==, PRESENCE_PI1);
 }
 
+static void check_release_waits_for_late_first_write(const char *accel)
+{
+    uint64_t seen[4], waited[4];
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+    run_program(build_late_join_program, accel, seen, NULL, waited);
+    /* A's release did not land until B's late first write had. */
+    g_assert_cmpuint(waited[0], >=, LATE_POST_TICKS / 2);
+    g_assert_cmpuint(waited[0], <, WOKEN_BY_POST_TICKS);
+    /* And the publication join after it still held. */
+    g_assert_cmphex(seen[0], ==, PRESENCE_ALL);
+    g_assert_cmphex(seen[2], ==, PRESENCE_ALL);
+}
+
+static void test_release_waits(void)
+{
+    check_release_waits_for_late_first_write(accel_mttcg);
+}
+
+static void test_release_waits_round_robin(void)
+{
+    check_release_waits_for_late_first_write(accel_rr);
+}
+
+static void test_release_waits_icount(void)
+{
+    check_release_waits_for_late_first_write(accel_icount);
+}
+
 static void test_first_presence_read_sees_every_interface(void)
 {
     check_first_presence_read_sees_every_interface(accel_mttcg);
@@ -827,5 +909,12 @@ int main(int argc, char **argv)
                    test_silent_partner_round_robin);
     qtest_add_func("sn1/presence/icount/silent-partner-releases-at-bound",
                    test_silent_partner_icount);
+    qtest_add_func("sn1/presence/release-waits-for-late-first-write",
+                   test_release_waits);
+    qtest_add_func("sn1/presence/round-robin/"
+                   "release-waits-for-late-first-write",
+                   test_release_waits_round_robin);
+    qtest_add_func("sn1/presence/icount/release-waits-for-late-first-write",
+                   test_release_waits_icount);
     return g_test_run();
 }
