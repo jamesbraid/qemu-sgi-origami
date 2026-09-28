@@ -315,10 +315,15 @@ static void sgi_xio_board_realize(DeviceState *dev, Error **errp)
         return;
     }
     g_assert(bc->build_widget);
+    /*
+     * The far side of the link is the last step, after everything that
+     * can fail: a Crossbow attaches the board's widget live and all at
+     * once, so a failed realize leaves the Crossbow as it was.
+     */
     if (!bc->build_widget(board, errp) ||
-        (board->link && !sgi_xio_link_connect(board->link, errp)) ||
         !sgi_xio_board_reparent(board, errp) ||
-        (bc->finish_realize && !bc->finish_realize(board, errp))) {
+        (bc->finish_realize && !bc->finish_realize(board, errp)) ||
+        (board->link && !sgi_xio_link_connect(board->link, errp))) {
         QTAILQ_REMOVE(&sgi_xio_board_all, board, node);
         board->queued = false;
         return;
