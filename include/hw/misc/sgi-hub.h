@@ -188,15 +188,21 @@ struct SGIHubState {
     bool ii_connected;
 
     /*
-     * The PROM's widget-2 PI-error probe, installed on each processor's
-     * own physical view (the machine's to define, one per populated
-     * slice) at the processor-physical base of the I/O space within it.
+     * The processor interface's I/O-space path: each processor's own
+     * physical view (the machine's to define, one per populated slice),
+     * reached through a Hub region the machine places over that
+     * processor's uncached I/O space, so every I/O-space request a
+     * processor makes passes the Hub, which records one that fails.
      */
     MemoryRegion *cpu_sysmem[SGI_HUB_PROCESSORS];
     uint64_t io_space_base;
-    AddressSpace pi_probe_as;
-    MemoryRegion pi_probe[SGI_HUB_PROCESSORS];
-    bool pi_probe_installed;
+    struct SGIHubProcessorPath {
+        struct SGIHubState *hub;
+        unsigned int slice;
+    } pi_path[SGI_HUB_PROCESSORS];
+    AddressSpace pi_view_as[SGI_HUB_PROCESSORS];
+    MemoryRegion pi_io[SGI_HUB_PROCESSORS];
+    bool pi_io_installed;
 
     /* The engines' view of the fabric: the device claim view, as a space. */
     AddressSpace bte_as;
@@ -505,7 +511,7 @@ bool sgi_hub_first_turn(const SGIHubState *s, uint32_t destination,
  * vector. Only the machine's "routes" diagnostic property uses it.
  */
 bool sgi_hub_route(SGIHubState *s, uint32_t destination, uint64_t *vector);
-void sgi_hub_latch_prom_pi_error(SGIHubState *s);
+MemoryRegion *sgi_hub_processor_io(SGIHubState *s, unsigned int slice);
 void sgi_hub_set_cpu_enable(SGIHubState *s, unsigned int cpu, bool enabled,
                             bool synchronous);
 bool sgi_hub_attach_module_identity(SGIHubState *s,

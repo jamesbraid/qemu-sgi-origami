@@ -283,7 +283,11 @@
 #define PI_ERR_SPOOL_MASK       0xfffffff8ULL
 #define PI_ERR_SPOOL_SIZE_MASK  0xf
 #define PI_ERR_STATUS0_VALID    (1ULL << 63)
-#define PI_ERR_STATUS0_ADDRESS  (0x480041ULL << 25)
+#define PI_ERR_STATUS0_OVERRUN  (1ULL << 62)
+#define PI_ERR_STATUS0_ADDR_SHIFT 25
+#define PI_ERR_STATUS0_ADDR_MASK  0x3ffffffffe000000ULL
+/* The processor's physical address is 40 bits; the record keeps 39:3. */
+#define PI_ERR_PHYSICAL_BITS    40
 
 /* Timed-out request buffers: nothing times out here, so both read zero. */
 #define HUB_PI_TIMEDOUT_BUF_A   0x000480
@@ -4053,17 +4057,31 @@ static void sgi_hub_assert_hot_reads_match_the_table(void)
     }
 }
 
-void sgi_hub_latch_prom_pi_error(SGIHubState *s)
+/*
+ * A read this Hub's processor interface answered with an error: the
+ * processor takes a bus error and its slice's status 0 records the
+ * refused physical address in bits 61:25. One the processor makes while
+ * its record still stands only sets the overrun bit, and the first
+ * record stays, the way this family's other error captures keep the
+ * first error until software clears it (an inference: the Linux header
+ * says only that an overrun means the error stack may hold more). The
+ * error type, request number, supplemental and command fields stay
+ * zero: which values the chip records in them for such a read is not
+ * established (hub-processor-interface datasheet, "Error status").
+ */
+static void sgi_hub_processor_read_error(SGIHubState *s, unsigned int slice,
+                                         hwaddr physaddr)
 {
-    unsigned int slice;
+    uint64_t address = physaddr & MAKE_64BIT_MASK(0, PI_ERR_PHYSICAL_BITS);
 
-    if (!current_cpu || current_cpu->cpu_index < s->cpu_base ||
-        current_cpu->cpu_index >= s->cpu_base + s->cpus) {
+    assert(slice < s->cpus);
+    if (s->pi_err_status0[slice] & PI_ERR_STATUS0_VALID) {
+        s->pi_err_status0[slice] |= PI_ERR_STATUS0_OVERRUN;
         return;
     }
-    slice = current_cpu->cpu_index - s->cpu_base;
     s->pi_err_status0[slice] = PI_ERR_STATUS0_VALID |
-                               PI_ERR_STATUS0_ADDRESS;
+        (((address >> 3) << PI_ERR_STATUS0_ADDR_SHIFT) &
+         PI_ERR_STATUS0_ADDR_MASK);
 }
 
 static const MemoryRegionOps sgi_hub_ops = {
@@ -4225,89 +4243,101 @@ bool sgi_hub_attach_module_identity(SGIHubState *s,
 }
 
 /*
- * ---- The PROM's widget-2 PI-error probe ----
+ * ---- The processor interface's I/O-space path ----
  *
- * The PROM's error-status workaround reads eight bytes at this node's
- * own I/O space, widget 2's small window, offset 0x400208, expecting the
- * access to fail and latch the issuing processor's PI error status with
- * that address. Every node master runs it, on Origin 200 and Origin
- * 2000 alike, with no test for a Crossbow first. A zero-offset
- * doubleword read latches the error here; every other access passes
- * through to whatever the XIO space holds there.
- *
- * This is an interim approximation. On hardware the error has a cause
- * elsewhere: an Origin 2000 Crossbow refusing an unpopulated port, an
- * Origin 200 Bridge's PCI master abort on an unconfigured device window.
- * Its limitation is that it also faults IRIX's later doubleword reads
- * there, which the Bridge datasheet says complete once the device is
- * set up. A Hub built with no processor view at all, as a device test
- * may, has no I/O space to overlay and installs nothing; one with views
- * for only some of its processors is a wiring mistake and is refused.
+ * Every I/O-space request a processor makes enters this Hub's processor
+ * interface, which issues it and answers the processor. A read that fails
+ * -- here, or downstream at a Crossbow refusing its destination or a
+ * Bridge whose PCI cycle nobody claims -- comes back to the processor as
+ * a bus error and leaves a record in that slice's error status. The
+ * machine places one region per slice over the processor's uncached view
+ * of the I/O space;
+ * each forwards to the processor's own physical view, so the region sees
+ * the processor physical address the record keeps. A processor reaches
+ * the I/O space only uncached, and only a processor's uncached requests
+ * take this view, so neither a debugger's access nor a device's DMA
+ * leaves a record. An instruction fetch is a read and records the same
+ * way (inferred: the processor's bus error covers both).
  */
-#define SGI_HUB_PI_PROBE_ADDR       0x02400208
-#define SGI_HUB_PI_PROBE_WIDGET     2
-#define SGI_HUB_SMALL_WINDOW_SIZE   (16 * MiB)
+#define SGI_HUB_IO_SPACE_SIZE   (1ULL << PI_ERR_PHYSICAL_BITS)
 
-static hwaddr sgi_hub_pi_probe_xio_offset(SGIHubState *s)
-{
-    return ((hwaddr)SGI_HUB_PI_PROBE_WIDGET << s->xio_widget_shift) +
-           SGI_HUB_PI_PROBE_ADDR -
-           (hwaddr)SGI_HUB_PI_PROBE_WIDGET * SGI_HUB_SMALL_WINDOW_SIZE;
-}
+/*
+ * One I/O-interface address exists only to fail: "Reads here cause a bus
+ * error" (Linux sn0/hubio.h, IIO_IIBUSERR, 0x1400208 from the Hub's
+ * register alias at widget 1's small window, so node offset 0x2400208).
+ * It is the address the stock PROM's error-status workaround reads and
+ * IRIX matches in the error record (sn0/addrs.h, ERR_STS_WAR_ADDR and
+ * ERR_STS_WAR_PHYSADDR). The Hub answers the read itself, so nothing
+ * leaves on the XIO link. The workaround's read is a doubleword, and that
+ * is the one width modelled: whether a narrower read there fails too is
+ * not stated, so it goes on down the link as before, as does a write.
+ * The match ignores the node number above the node offset, so a
+ * doubleword read of any node's 0x2400208 fails at the issuing Hub
+ * (inferred: the header gives only the local form, LOCAL_HUB_ADDR).
+ */
+#define SGI_HUB_IIBUSERR        (0x01000000 + 0x1400208)
 
-static MemTxResult sgi_hub_pi_probe_read(void *opaque, hwaddr addr,
-                                         uint64_t *data, unsigned size,
-                                         MemTxAttrs attrs)
+static MemTxResult sgi_hub_pi_io_read(void *opaque, hwaddr addr,
+                                      uint64_t *data, unsigned size,
+                                      MemTxAttrs attrs)
 {
-    SGIHubState *s = opaque;
-    uint8_t bytes[8] = {};
+    struct SGIHubProcessorPath *path = opaque;
+    SGIHubState *s = path->hub;
+    uint8_t bytes[8] = { 0 };
     MemTxResult result;
 
-    if (addr == 0 && size == 8) {
+    if (size == 8 &&
+        (addr & MAKE_64BIT_MASK(0, s->claim_node_shift)) ==
+        SGI_HUB_IIBUSERR) {
         *data = 0;
-        sgi_hub_latch_prom_pi_error(s);
+        sgi_hub_processor_read_error(s, path->slice, addr);
         return MEMTX_ERROR;
     }
-    result = address_space_read(&s->pi_probe_as,
-                                sgi_hub_pi_probe_xio_offset(s) + addr, attrs,
-                                bytes, size);
-    *data = ldn_be_p(bytes, size);
+    result = address_space_read(&s->pi_view_as[path->slice],
+                                s->io_space_base + addr, attrs,
+                                bytes + 8 - size, size);
+    *data = ldq_be_p(bytes);
+    if (result != MEMTX_OK) {
+        sgi_hub_processor_read_error(s, path->slice, addr);
+    }
     return result;
 }
 
-static MemTxResult sgi_hub_pi_probe_write(void *opaque, hwaddr addr,
-                                          uint64_t data, unsigned size,
-                                          MemTxAttrs attrs)
+static MemTxResult sgi_hub_pi_io_write(void *opaque, hwaddr addr,
+                                       uint64_t data, unsigned size,
+                                       MemTxAttrs attrs)
 {
-    SGIHubState *s = opaque;
+    struct SGIHubProcessorPath *path = opaque;
+    SGIHubState *s = path->hub;
     uint8_t bytes[8];
 
-    stn_be_p(bytes, size, data);
-    return address_space_write(&s->pi_probe_as,
-                               sgi_hub_pi_probe_xio_offset(s) + addr, attrs,
-                               bytes, size);
+    stq_be_p(bytes, data);
+    return address_space_write(&s->pi_view_as[path->slice],
+                               s->io_space_base + addr, attrs,
+                               bytes + 8 - size, size);
 }
 
-static const MemoryRegionOps sgi_hub_pi_probe_ops = {
-    .read_with_attrs = sgi_hub_pi_probe_read,
-    .write_with_attrs = sgi_hub_pi_probe_write,
+static const MemoryRegionOps sgi_hub_pi_io_ops = {
+    .read_with_attrs = sgi_hub_pi_io_read,
+    .write_with_attrs = sgi_hub_pi_io_write,
     .endianness = DEVICE_BIG_ENDIAN,
-    .valid.min_access_size = 1,
-    .valid.max_access_size = 8,
-    .valid.unaligned = true,
-    .impl.min_access_size = 1,
-    .impl.max_access_size = 8,
-    .impl.unaligned = true,
+    .valid = { .min_access_size = 1, .max_access_size = 8, .unaligned = true },
+    .impl = { .min_access_size = 1, .max_access_size = 8, .unaligned = true },
 };
 
-static bool sgi_hub_install_pi_probe(SGIHubState *s, Error **errp)
+/*
+ * A Hub built with no processor view at all, as a device test may, has
+ * no processor path to offer. One with views for only some of its
+ * processors is a wiring mistake and is refused.
+ */
+static bool sgi_hub_init_processor_paths(SGIHubState *s, Error **errp)
 {
     unsigned int slice, views = 0;
 
     for (slice = 0; slice < s->cpus; slice++) {
         views += !!s->cpu_sysmem[slice];
     }
-    if (!s->xio || !views) {
+    if (!views) {
         return true;
     }
     if (views != s->cpus) {
@@ -4315,19 +4345,30 @@ static bool sgi_hub_install_pi_probe(SGIHubState *s, Error **errp)
                    "processors", views, s->cpus);
         return false;
     }
-    address_space_init(&s->pi_probe_as, s->xio, "sgi-hub.pi-probe-xio");
     for (slice = 0; slice < s->cpus; slice++) {
-        g_autofree char *region_name = g_strdup_printf(
-            "sgi-hub.cpu%u.pi-probe", slice);
+        g_autofree char *view_name =
+            g_strdup_printf("sgi-hub.cpu%u.view", slice);
+        g_autofree char *io_name = g_strdup_printf("sgi-hub.cpu%u.io", slice);
 
-        memory_region_init_io(&s->pi_probe[slice], OBJECT(s),
-                              &sgi_hub_pi_probe_ops, s, region_name, 8);
-        memory_region_add_subregion_overlap(
-            s->cpu_sysmem[slice], s->io_space_base + SGI_HUB_PI_PROBE_ADDR,
-            &s->pi_probe[slice], 1);
+        s->pi_path[slice].hub = s;
+        s->pi_path[slice].slice = slice;
+        address_space_init(&s->pi_view_as[slice], s->cpu_sysmem[slice],
+                           view_name);
+        memory_region_init_io(&s->pi_io[slice], OBJECT(s),
+                              &sgi_hub_pi_io_ops, &s->pi_path[slice],
+                              io_name, SGI_HUB_IO_SPACE_SIZE);
+        /* What it forwards to can be this Hub's own registers. */
+        s->pi_io[slice].disable_reentrancy_guard = true;
     }
-    s->pi_probe_installed = true;
+    s->pi_io_installed = true;
     return true;
+}
+
+/* The slice's I/O-space region for the machine to place, if it has one. */
+MemoryRegion *sgi_hub_processor_io(SGIHubState *s, unsigned int slice)
+{
+    assert(slice < s->cpus);
+    return s->pi_io_installed ? &s->pi_io[slice] : NULL;
 }
 
 /*
@@ -4745,7 +4786,7 @@ static void sgi_hub_realize(DeviceState *dev, Error **errp)
     address_space_init(&s->ii_local_registers_as, &s->ii_local_register_view,
                        "sgi-hub.ii.local-registers");
 
-    if (!sgi_hub_install_pi_probe(s, errp)) {
+    if (!sgi_hub_init_processor_paths(s, errp)) {
         return;
     }
 
@@ -4990,12 +5031,16 @@ static void sgi_hub_unrealize(DeviceState *dev)
     sgi_hub_rt_hold_reset(s);
     s->claim_ready = false;
     address_space_destroy(&s->bte_as);
-    if (s->pi_probe_installed) {
+    if (s->pi_io_installed) {
         for (i = 0; i < s->cpus; i++) {
-            memory_region_del_subregion(s->cpu_sysmem[i], &s->pi_probe[i]);
+            /* The machine placed it; take it back out of that view. */
+            if (s->pi_io[i].container) {
+                memory_region_del_subregion(s->pi_io[i].container,
+                                            &s->pi_io[i]);
+            }
+            address_space_destroy(&s->pi_view_as[i]);
         }
-        address_space_destroy(&s->pi_probe_as);
-        s->pi_probe_installed = false;
+        s->pi_io_installed = false;
     }
     address_space_destroy(&s->ii_inbound_as);
     address_space_destroy(&s->ii_local_registers_as);

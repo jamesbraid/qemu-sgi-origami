@@ -105,8 +105,10 @@ QEMU_BUILD_BUG_ON(NIC_ROM_SIZE != SGI_BRIDGE_ONEWIRE_RECORD_SIZE);
  * undefined address inside the register window.
  */
 #define INT_INVALID_ADDR        (1u << 24)
-/* Bit 11: a configuration cycle no PCI device claimed (a master time-out). */
+/* Bit 11: a cycle no PCI device claimed (a master time-out). */
 #define INT_PCI_MASTER_TIMEOUT  (1u << 11)
+/* Bit 15: the target claimed the cycle and then aborted it. */
+#define INT_PCI_TARGET_ABORT    (1u << 15)
 /* The PCI group: abort, the three parity errors, master time-out, retries. */
 #define INT_PCI_GROUP           (0x3fu << 10)
 /* A second error in a group before the first was cleared. */
@@ -606,6 +608,86 @@ static hwaddr sgi_bridge_window_correct(hwaddr offset, unsigned int size)
 }
 
 
+static void sgi_bridge_pci_error(SGIBridgeState *s, uint32_t bit,
+                                 unsigned int device, uint64_t pci_address);
+
+/*
+ * The device on this Bridge's bus whose enabled base address register of
+ * the given kind covers a PCI address, or NULL when none does. A PCI
+ * target drives device select for every address its enabled base address
+ * registers decode, so only an address no register covers ends in the
+ * master time-out the Bridge records when nothing drives it (table 57,
+ * below). A device model
+ * that leaves part of its register window without a region is missing
+ * behaviour, not declining the cycle. A device behind a PCI-to-PCI bridge
+ * is not searched: no board this Bridge carries has one.
+ */
+static PCIDevice *sgi_bridge_pci_claimant(SGIBridgeState *s, bool io,
+                                          hwaddr pci_address)
+{
+    PCIBus *bus = PCI_HOST_BRIDGE(s)->bus;
+    unsigned int devfn;
+    int i;
+
+    for (devfn = 0; devfn < ARRAY_SIZE(bus->devices); devfn++) {
+        PCIDevice *dev = bus->devices[devfn];
+
+        if (!dev) {
+            continue;
+        }
+        for (i = 0; i < PCI_NUM_REGIONS; i++) {
+            PCIIORegion *r = &dev->io_regions[i];
+
+            if (!r->size || r->addr == PCI_BAR_UNMAPPED ||
+                !(r->type & PCI_BASE_ADDRESS_SPACE_IO) != !io) {
+                continue;
+            }
+            if (pci_address >= r->addr && pci_address - r->addr < r->size) {
+                return dev;
+            }
+        }
+    }
+    return NULL;
+}
+
+/*
+ * A cycle that fails on PCI is one of the Bridge-as-master errors
+ * (Bridge ASIC specification rev 4.0, table 57): no device drove device
+ * select, the master time-out, or the target claimed it and aborted. Each
+ * records the PCI address and device in the PCI error group. A read that
+ * failed has no data to return, so it fails back to the requester; a
+ * write posts and its failure stays in the Bridge's own record.
+ */
+static MemTxResult sgi_bridge_window_failed(SGIBridgeState *s,
+                                            unsigned int device,
+                                            AddressSpace *space,
+                                            hwaddr pci_address,
+                                            MemTxResult result)
+{
+    PCIDevice *claimant;
+
+    if (result == MEMTX_OK) {
+        return MEMTX_OK;
+    }
+    if (result == MEMTX_DECODE_ERROR) {
+        claimant = sgi_bridge_pci_claimant(s, space == &s->pci_io_as,
+                                           pci_address);
+        if (claimant) {
+            qemu_log_mask(LOG_UNIMP,
+                          "sgi-bridge: PCI address 0x%" HWADDR_PRIx
+                          " is in a base address register of %s, whose "
+                          "model decodes nothing there; the cycle "
+                          "completes with no data\n", pci_address,
+                          object_get_typename(OBJECT(claimant)));
+            return MEMTX_OK;
+        }
+    }
+    sgi_bridge_pci_error(s, result == MEMTX_DECODE_ERROR ?
+                         INT_PCI_MASTER_TIMEOUT : INT_PCI_TARGET_ABORT,
+                         device, pci_address);
+    return MEMTX_ERROR;
+}
+
 /*
  * address_space_read/write move raw bytes, so the only byte order in play is
  * this window's LE declaration against the BE packing below: one swap at the
@@ -620,32 +702,65 @@ static hwaddr sgi_bridge_window_correct(hwaddr offset, unsigned int size)
  * rather than a slot: the per-device windows pass their slot's own base and
  * its self-ordered exemption, the inbound PIO translated window (no slot, no
  * exemption a card can declare into) always corrects from PCI address zero.
+ * device is the number a failure records.
  */
-static uint64_t sgi_bridge_window_read_word(hwaddr base, bool correct,
-                                            AddressSpace *space, hwaddr addr,
-                                            unsigned int size)
+static MemTxResult sgi_bridge_window_read_word(SGIBridgeState *s,
+                                               unsigned int device,
+                                               hwaddr base, bool correct,
+                                               AddressSpace *space,
+                                               hwaddr addr, unsigned int size,
+                                               uint64_t *value)
 {
     hwaddr offset = correct ? sgi_bridge_window_correct(addr, size) : addr;
     hwaddr target = base + offset;
     uint8_t bytes[4] = { 0 };
+    MemTxResult result;
 
     assert(size <= sizeof(bytes));
-    address_space_read(space, target, MEMTXATTRS_UNSPECIFIED, bytes, size);
-    return ldn_be_p(bytes, size);
+    result = address_space_read(space, target, MEMTXATTRS_UNSPECIFIED, bytes,
+                                size);
+    *value = ldn_be_p(bytes, size);
+    return sgi_bridge_window_failed(s, device, space, target, result);
+}
+
+/*
+ * Two word cycles for a doubleword, big-endian high word at the lower
+ * offset. A first cycle that fails ends the read there: the specification
+ * does not say whether the Bridge still issues the second, and the
+ * requester gets the failure either way.
+ */
+static MemTxResult sgi_bridge_window_read_split(SGIBridgeState *s,
+                                                unsigned int device,
+                                                hwaddr base, bool correct,
+                                                AddressSpace *space,
+                                                hwaddr addr, uint64_t *value)
+{
+    uint64_t word0, word1;
+    MemTxResult result;
+
+    result = sgi_bridge_window_read_word(s, device, base, correct, space,
+                                         addr, 4, &word0);
+    if (result == MEMTX_OK) {
+        result = sgi_bridge_window_read_word(s, device, base, correct, space,
+                                             addr + 4, 4, &word1);
+    }
+    *value = result == MEMTX_OK ? (word0 << 32) | word1 : 0;
+    return result;
 }
 
 /*
  * A device-window read. The slot's device-size bit picks how a doubleword is
- * served: a 32-bit device gets two word cycles (big-endian high word at the
- * lower offset, each corrected), a 64-bit device one eight-byte cycle with no
- * narrow correction, mirrored end to end on the programmed-access swap bit.
- * The window is DEVICE_LITTLE_ENDIAN, so reading the buffer big-endian nets
- * to the doubleword unchanged and little-endian to the mirror. A byte,
- * halfword or word is one corrected cycle.
+ * served: a 32-bit device gets two word cycles (each corrected), a 64-bit
+ * device one eight-byte cycle with no narrow correction, mirrored end to end
+ * on the programmed-access swap bit. The window is DEVICE_LITTLE_ENDIAN, so
+ * reading the buffer big-endian nets to the doubleword unchanged and
+ * little-endian to the mirror. A byte, halfword or word is one corrected
+ * cycle.
  */
-static uint64_t sgi_bridge_window_read(SGIBridgeState *s, unsigned int slot,
-                                       AddressSpace *space, hwaddr addr,
-                                       unsigned int size)
+static MemTxResult sgi_bridge_window_read(SGIBridgeState *s,
+                                          unsigned int slot,
+                                          AddressSpace *space, hwaddr addr,
+                                          unsigned int size, uint64_t *value)
 {
     uint32_t dev = s->reg[SGI_BRIDGE_SLOT(BRIDGE_DEVICE(slot))];
     bool correct = sgi_bridge_slot_needs_correction(s, slot);
@@ -653,31 +768,33 @@ static uint64_t sgi_bridge_window_read(SGIBridgeState *s, unsigned int slot,
 
     if (size == 8 && (dev & DEV_64BIT_DEVICE)) {
         uint8_t bytes[8] = { 0 };
+        MemTxResult result;
 
-        address_space_read(space, s->device_window_base[slot] + addr,
-                           MEMTXATTRS_UNSPECIFIED, bytes, 8);
-        return (dev & DEV_SWAP_PROGRAMMED) ? ldq_le_p(bytes) : ldq_be_p(bytes);
+        result = address_space_read(space, base + addr,
+                                    MEMTXATTRS_UNSPECIFIED, bytes, 8);
+        *value = (dev & DEV_SWAP_PROGRAMMED) ? ldq_le_p(bytes)
+                                             : ldq_be_p(bytes);
+        return sgi_bridge_window_failed(s, slot, space, base + addr, result);
     }
 
     if (size == 8) {
-        uint64_t word0 = sgi_bridge_window_read_word(base, correct, space,
-                                                     addr, 4);
-        uint64_t word1 = sgi_bridge_window_read_word(base, correct, space,
-                                                     addr + 4, 4);
-
-        return (word0 << 32) | word1;
+        return sgi_bridge_window_read_split(s, slot, base, correct, space,
+                                            addr, value);
     }
 
-    return sgi_bridge_window_read_word(base, correct, space, addr, size);
+    return sgi_bridge_window_read_word(s, slot, base, correct, space, addr,
+                                       size, value);
 }
 
 /*
  * One window write cycle of up to four bytes, the counterpart of
  * sgi_bridge_window_read_word.
  */
-static void sgi_bridge_window_write_word(hwaddr base, bool correct,
-                                         AddressSpace *space, hwaddr addr,
-                                         uint64_t val, unsigned int size)
+static void sgi_bridge_window_write_word(SGIBridgeState *s,
+                                         unsigned int device, hwaddr base,
+                                         bool correct, AddressSpace *space,
+                                         hwaddr addr, uint64_t val,
+                                         unsigned int size)
 {
     hwaddr offset = correct ? sgi_bridge_window_correct(addr, size) : addr;
     hwaddr target = base + offset;
@@ -685,7 +802,10 @@ static void sgi_bridge_window_write_word(hwaddr base, bool correct,
 
     assert(size <= sizeof(bytes));
     stn_be_p(bytes, size, val);
-    address_space_write(space, target, MEMTXATTRS_UNSPECIFIED, bytes, size);
+    sgi_bridge_window_failed(s, device, space, target,
+                             address_space_write(space, target,
+                                                 MEMTXATTRS_UNSPECIFIED,
+                                                 bytes, size));
 }
 
 /*
@@ -710,54 +830,65 @@ static void sgi_bridge_window_write(SGIBridgeState *s, unsigned int slot,
         } else {
             stq_be_p(bytes, val);
         }
-        address_space_write(space, s->device_window_base[slot] + addr,
-                            MEMTXATTRS_UNSPECIFIED, bytes, 8);
+        sgi_bridge_window_failed(s, slot, space, base + addr,
+                                 address_space_write(space, base + addr,
+                                                     MEMTXATTRS_UNSPECIFIED,
+                                                     bytes, 8));
         return;
     }
 
     if (size == 8) {
-        sgi_bridge_window_write_word(base, correct, space, addr, val >> 32, 4);
-        sgi_bridge_window_write_word(base, correct, space, addr + 4, val, 4);
+        sgi_bridge_window_write_word(s, slot, base, correct, space, addr,
+                                     val >> 32, 4);
+        sgi_bridge_window_write_word(s, slot, base, correct, space, addr + 4,
+                                     val, 4);
         return;
     }
 
-    sgi_bridge_window_write_word(base, correct, space, addr, val, size);
+    sgi_bridge_window_write_word(s, slot, base, correct, space, addr, val,
+                                 size);
 }
 
-static uint64_t sgi_bridge_window_mem_read(void *opaque, hwaddr addr,
-                                           unsigned size)
+static MemTxResult sgi_bridge_window_mem_read(void *opaque, hwaddr addr,
+                                              uint64_t *data, unsigned size,
+                                              MemTxAttrs attrs)
 {
     struct SGIBridgeDeviceWindow *win = opaque;
 
     return sgi_bridge_window_read(win->s, win->slot, &win->s->pci_mmio_as,
-                                  addr, size);
+                                  addr, size, data);
 }
 
-static void sgi_bridge_window_mem_write(void *opaque, hwaddr addr,
-                                        uint64_t val, unsigned size)
+static MemTxResult sgi_bridge_window_mem_write(void *opaque, hwaddr addr,
+                                               uint64_t val, unsigned size,
+                                               MemTxAttrs attrs)
 {
     struct SGIBridgeDeviceWindow *win = opaque;
 
     sgi_bridge_window_write(win->s, win->slot, &win->s->pci_mmio_as, addr,
                             val, size);
+    return MEMTX_OK;
 }
 
-static uint64_t sgi_bridge_window_io_read(void *opaque, hwaddr addr,
-                                          unsigned size)
+static MemTxResult sgi_bridge_window_io_read(void *opaque, hwaddr addr,
+                                             uint64_t *data, unsigned size,
+                                             MemTxAttrs attrs)
 {
     struct SGIBridgeDeviceWindow *win = opaque;
 
     return sgi_bridge_window_read(win->s, win->slot, &win->s->pci_io_as, addr,
-                                  size);
+                                  size, data);
 }
 
-static void sgi_bridge_window_io_write(void *opaque, hwaddr addr,
-                                       uint64_t val, unsigned size)
+static MemTxResult sgi_bridge_window_io_write(void *opaque, hwaddr addr,
+                                              uint64_t val, unsigned size,
+                                              MemTxAttrs attrs)
 {
     struct SGIBridgeDeviceWindow *win = opaque;
 
     sgi_bridge_window_write(win->s, win->slot, &win->s->pci_io_as, addr, val,
                             size);
+    return MEMTX_OK;
 }
 
 /*
@@ -769,8 +900,8 @@ static void sgi_bridge_window_io_write(void *opaque, hwaddr addr,
  * in its own right.
  */
 static const MemoryRegionOps sgi_bridge_window_mem_ops = {
-    .read = sgi_bridge_window_mem_read,
-    .write = sgi_bridge_window_mem_write,
+    .read_with_attrs = sgi_bridge_window_mem_read,
+    .write_with_attrs = sgi_bridge_window_mem_write,
     .endianness = DEVICE_LITTLE_ENDIAN,
     .valid.min_access_size = 1,
     .valid.max_access_size = 8,
@@ -779,8 +910,8 @@ static const MemoryRegionOps sgi_bridge_window_mem_ops = {
 };
 
 static const MemoryRegionOps sgi_bridge_window_io_ops = {
-    .read = sgi_bridge_window_io_read,
-    .write = sgi_bridge_window_io_write,
+    .read_with_attrs = sgi_bridge_window_io_read,
+    .write_with_attrs = sgi_bridge_window_io_write,
     .endianness = DEVICE_LITTLE_ENDIAN,
     .valid.min_access_size = 1,
     .valid.max_access_size = 8,
@@ -789,13 +920,15 @@ static const MemoryRegionOps sgi_bridge_window_io_ops = {
 };
 
 /*
- * The inbound PIO translated window's cycle: the same byte-lane correction as
- * a per-device window's, but based at PCI address zero rather than a slot's
- * programmed base, and always corrected. There is no per-device register
- * behind this window to carry a self-ordered exemption or a 64-bit-device
- * declaration, so a doubleword access always gets the two corrected four-byte
- * cycles a 32-bit device's window would use, the common case, and the only
- * one this window can express.
+ * The inbound PIO translated window's cycle: the same byte-lane correction
+ * as a per-device window's, but based at PCI address zero rather than a
+ * slot's programmed base, and always corrected. There is no per-device
+ * register behind this window to carry a self-ordered exemption or a
+ * 64-bit-device declaration, so a doubleword access always gets the two
+ * corrected four-byte cycles a 32-bit device's window would use, the common
+ * case, and the only one this window can express. No slot selects
+ * the cycle either, so a failure records device number zero: which number
+ * the chip records for a cycle this window issues is not stated.
  *
  * This correction is a no-op for the only traffic confirmed to use this
  * window today: PsiTech RAD4's BAR2 is 4-byte-access-only end to end
@@ -806,42 +939,43 @@ static const MemoryRegionOps sgi_bridge_window_io_ops = {
  * unexplained. RAD4's wrong login-screen colors are confirmed independent
  * of this flag.
  */
-static uint64_t sgi_bridge_pio_xlate_read(void *opaque, hwaddr addr,
-                                          unsigned size)
+static MemTxResult sgi_bridge_pio_xlate_read(void *opaque, hwaddr addr,
+                                             uint64_t *data, unsigned size,
+                                             MemTxAttrs attrs)
 {
     SGIBridgeState *s = opaque;
 
     if (size == 8) {
-        uint64_t word0 = sgi_bridge_window_read_word(0, true, &s->pci_mmio_as,
-                                                      addr, 4);
-        uint64_t word1 = sgi_bridge_window_read_word(0, true, &s->pci_mmio_as,
-                                                      addr + 4, 4);
-
-        return (word0 << 32) | word1;
+        return sgi_bridge_window_read_split(s, 0, 0, true, &s->pci_mmio_as,
+                                            addr, data);
     }
 
-    return sgi_bridge_window_read_word(0, true, &s->pci_mmio_as, addr, size);
+    return sgi_bridge_window_read_word(s, 0, 0, true, &s->pci_mmio_as, addr,
+                                       size, data);
 }
 
-static void sgi_bridge_pio_xlate_write(void *opaque, hwaddr addr,
-                                       uint64_t val, unsigned size)
+static MemTxResult sgi_bridge_pio_xlate_write(void *opaque, hwaddr addr,
+                                              uint64_t val, unsigned size,
+                                              MemTxAttrs attrs)
 {
     SGIBridgeState *s = opaque;
 
     if (size == 8) {
-        sgi_bridge_window_write_word(0, true, &s->pci_mmio_as, addr,
+        sgi_bridge_window_write_word(s, 0, 0, true, &s->pci_mmio_as, addr,
                                      val >> 32, 4);
-        sgi_bridge_window_write_word(0, true, &s->pci_mmio_as, addr + 4, val,
-                                     4);
-        return;
+        sgi_bridge_window_write_word(s, 0, 0, true, &s->pci_mmio_as, addr + 4,
+                                     val, 4);
+        return MEMTX_OK;
     }
 
-    sgi_bridge_window_write_word(0, true, &s->pci_mmio_as, addr, val, size);
+    sgi_bridge_window_write_word(s, 0, 0, true, &s->pci_mmio_as, addr, val,
+                                 size);
+    return MEMTX_OK;
 }
 
 static const MemoryRegionOps sgi_bridge_pio_xlate_ops = {
-    .read = sgi_bridge_pio_xlate_read,
-    .write = sgi_bridge_pio_xlate_write,
+    .read_with_attrs = sgi_bridge_pio_xlate_read,
+    .write_with_attrs = sgi_bridge_pio_xlate_write,
     .endianness = DEVICE_LITTLE_ENDIAN,
     .valid.min_access_size = 1,
     .valid.max_access_size = 8,
@@ -1533,7 +1667,7 @@ static bool sgi_bridge_config_claimed(SGIBridgeState *s, uint32_t address)
  * multiple-error flag. A disabled error leaves no trace at all.
  */
 static void sgi_bridge_pci_error(SGIBridgeState *s, uint32_t bit,
-                                 unsigned int device, uint32_t pci_address)
+                                 unsigned int device, uint64_t pci_address)
 {
     if (!(s->reg[SGI_BRIDGE_SLOT(BRIDGE_INT_ENABLE)] & bit)) {
         return;
@@ -1543,8 +1677,9 @@ static void sgi_bridge_pci_error(SGIBridgeState *s, uint32_t bit,
         s->int_error |= INT_MULTI_ERR;
     } else {
         s->reg[SGI_BRIDGE_SLOT(BRIDGE_PCI_ERR_UPPER)] =
-            device << PCI_ERR_DEVICE_SHIFT;
-        s->reg[SGI_BRIDGE_SLOT(BRIDGE_PCI_ERR_LOWER)] = pci_address;
+            (device << PCI_ERR_DEVICE_SHIFT) |
+            extract64(pci_address, 32, 16);
+        s->reg[SGI_BRIDGE_SLOT(BRIDGE_PCI_ERR_LOWER)] = (uint32_t)pci_address;
     }
     s->int_error |= bit;
     sgi_bridge_raise_host_error(s);

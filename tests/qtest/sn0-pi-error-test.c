@@ -41,9 +41,16 @@
 #define BRIDGE_CFG0_STRIDE     0x1000
 #define BRIDGE_DEVICE(n)       (BRIDGE_BASE + 0x200 + 8 * (n) + \
                                 BRIDGE_REG_DATA)
+#define BRIDGE_REG(off)        (BRIDGE_BASE + (off) + BRIDGE_REG_DATA)
+#define BRIDGE_PCI_ERR_UPPER   BRIDGE_REG(0x0d0)
+#define BRIDGE_PCI_ERR_LOWER   BRIDGE_REG(0x0d8)
+#define BRIDGE_INT_STATUS      BRIDGE_REG(0x100)
+#define BRIDGE_INT_ENABLE      BRIDGE_REG(0x108)
+#define BRIDGE_INT_MASTER_TOUT (1u << 11)
 #define TESTDEV_SLOT           3
 #define TESTDEV_CFG            (BRIDGE_BASE + BRIDGE_CFG0 + \
                                 TESTDEV_SLOT * BRIDGE_CFG0_STRIDE)
+#define PCI_BAR0               0x10
 #define PCI_BAR2               0x18
 #define TESTDEV_MMIO           0x14000000u
 #define PI_ERR_STATUS0_A       0x430
@@ -55,6 +62,7 @@
 #define PI_ERR_STATUS1_B       0x460
 #define PI_ERR_STATUS1_CLR_B   0x468
 #define PI_STATUS_VALID        (1ULL << 63)
+#define PI_STATUS_OVERRUN      (1ULL << 62)
 #define PI_STATUS_ADDRESS      (0x480041ULL << 25)
 #define PI_STATUS_EXPECTED     (PI_STATUS_VALID | PI_STATUS_ADDRESS)
 #define CAUSE_EXCCODE_MASK     0x7c
@@ -148,7 +156,13 @@ static void build_probe_image(SN0Image *p)
     sn0_patch_branch(p, at, IMG_SECONDARY);
     g_assert_cmpuint(p->pos, ==, IMG_PRIMARY);
 
-    /* Slice A: both 32-bit halves must still complete through the Bridge. */
+    /*
+     * Slice A: two 32-bit reads there first. The Hub fails only the
+     * doubleword read at its bus-error address, so each goes on to the
+     * Bridge's device-1 window, where no PCI device claims it: each faults
+     * on the master time-out, and the second finds the first's record
+     * still standing.
+     */
     put_insn(p, IMG_PRIMARY + 0x00, 0x3c108005);
     put_insn(p, IMG_PRIMARY + 0x04, 0x36100000);
     put_insn(p, IMG_PRIMARY + 0x08, 0x3c089200);
@@ -208,20 +222,6 @@ static void wait_for_marker(QTestState *qts, uint64_t addr)
             " (cause B 0x%" PRIx64 ", status B 0x%" PRIx64 ")",
             addr, qtest_readq(qts, CAUSE_B),
             qtest_readq(qts, HUB_LOCAL + PI_ERR_STATUS0_B));
-}
-
-static void wait_for_pi_status_reset(QTestState *qts)
-{
-    int64_t deadline = g_get_monotonic_time() + 5 * G_TIME_SPAN_SECOND;
-
-    while (g_get_monotonic_time() < deadline) {
-        if (qtest_readq(qts, HUB_LOCAL + PI_ERR_STATUS0_A) == 0 &&
-            qtest_readq(qts, HUB_LOCAL + PI_ERR_STATUS0_B) == 0) {
-            return;
-        }
-        g_usleep(1000);
-    }
-    g_error("timed out waiting for PI error status reset");
 }
 
 static uint64_t cpu_readq(QTestState *qts, unsigned int cpu, uint64_t addr)
@@ -433,6 +433,7 @@ static void test_origin2000_probe_is_local_to_issuing_hub(const void *data)
                               ORIGIN2000_HUB_LOCAL + PI_ERR_STATUS0_B), ==, 0);
     g_assert_cmphex(cpu_readq(qts, 0,
                               ORIGIN2000_HUB_LOCAL + PI_ERR_STATUS0_A), ==, 0);
+    /* The Hub failed the probe itself: nothing reached the Crossbow. */
     for (unsigned int widget = 8; widget <= 15; widget++) {
         uint32_t status = cpu_xbow_link_status(qts, ORIGIN2000_CPU, widget);
 
@@ -470,9 +471,13 @@ static void test_prom_probe_latches_the_issuing_slice(const void *data)
     qtest_qmp_assert_success(qts, "{'execute': 'cont'}");
 
     wait_for_marker(qts, NARROW_MARKER);
-    g_assert_cmphex(qtest_readq(qts, CAUSE_A), ==, 0);
-    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_ERR_STATUS0_A), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, CAUSE_A) & CAUSE_EXCCODE_MASK, ==,
+                    CAUSE_EXCCODE_DBE);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_ERR_STATUS0_A), ==,
+                    PI_STATUS_EXPECTED | PI_STATUS_OVERRUN);
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_ERR_STATUS0_B), ==, 0);
+    qtest_writeq(qts, HUB_LOCAL + PI_ERR_STATUS0_CLR_A, 0);
+    qtest_writeq(qts, CAUSE_A, 0);
 
     qtest_writeq(qts, START_A, 1);
     wait_for_marker(qts, MARKER_A);
@@ -557,6 +562,76 @@ static void test_narrow_probe_access_matches_bridge_alias(const void *data)
     qtest_quit(qts);
 }
 
+/*
+ * Beside the Hub's own bus-error address the device-1 window is ordinary
+ * PCI space: a cycle 0x210 past its base, beyond the second SCSI
+ * controller's 256-byte registers, is one no device claims. The Bridge
+ * records that master time-out in its PCI error group (Bridge ASIC
+ * specification rev 4.0, table 57) with the device the window belongs to,
+ * and a read gets no data back.
+ */
+#define DEVICE1_UNCLAIMED       (BRIDGE_BASE + 0x400210)
+
+static void test_unclaimed_window_is_a_master_timeout(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200 -m 64M -S");
+    uint32_t window = (qtest_readl(qts, BRIDGE_DEVICE(1)) & 0xfff) << 20;
+    uint8_t bytes[8];
+
+    qtest_writel(qts, BRIDGE_INT_ENABLE, BRIDGE_INT_MASTER_TOUT);
+    g_assert_cmphex(qtest_readl(qts, BRIDGE_INT_STATUS) &
+                    BRIDGE_INT_MASTER_TOUT, ==, 0);
+
+    qtest_memread(qts, DEVICE1_UNCLAIMED, bytes, sizeof(bytes));
+    g_assert_cmphex(qtest_readl(qts, BRIDGE_INT_STATUS) &
+                    BRIDGE_INT_MASTER_TOUT, ==, BRIDGE_INT_MASTER_TOUT);
+    g_assert_cmphex(qtest_readl(qts, BRIDGE_PCI_ERR_UPPER), ==, 1u << 16);
+    g_assert_cmphex(qtest_readl(qts, BRIDGE_PCI_ERR_LOWER), ==,
+                    window + 0x210);
+
+    /* No processor made that read, so no Hub recorded it. */
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_ERR_STATUS0_A), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_ERR_STATUS0_B), ==, 0);
+    qtest_quit(qts);
+}
+
+/*
+ * A cycle to an address a device's base address register covers is that
+ * device's, even where its model decodes nothing: the IOC3 claims its
+ * whole register window, and the Origin 200's IOC3 has nothing on
+ * byte-bus device 1. That read completes rather than ending in a master
+ * time-out, a target abort or a bus error.
+ */
+#define IOC3_SLOT               2
+#define IOC3_CFG                (BRIDGE_BASE + BRIDGE_CFG0 + \
+                                 IOC3_SLOT * BRIDGE_CFG0_STRIDE)
+#define IOC3_MMIO               0x16000000u
+#define IOC3_WINDOW             (BRIDGE_BASE + 0x600000)
+#define IOC3_BYTEBUS_DEV1       0xa0000
+#define BRIDGE_INT_TARGET_ABORT (1u << 15)
+
+static void test_claimed_hole_is_not_a_master_timeout(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200 -m 64M -S");
+    uint32_t errors = BRIDGE_INT_MASTER_TOUT | BRIDGE_INT_TARGET_ABORT;
+
+    qtest_writel(qts, IOC3_CFG + PCI_BAR0, IOC3_MMIO);
+    qtest_writel(qts, IOC3_CFG + PCI_COMMAND, PCI_COMMAND_MEMORY);
+    qtest_writel(qts, BRIDGE_DEVICE(IOC3_SLOT),
+                 DEV_MEMORY_SPACE | (IOC3_MMIO >> 20));
+    qtest_writel(qts, BRIDGE_INT_ENABLE, errors);
+
+    g_assert_cmphex(qtest_readl(qts, IOC3_WINDOW + IOC3_BYTEBUS_DEV1), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, BRIDGE_INT_STATUS) & errors, ==, 0);
+
+    /* Past the window the IOC3 decodes, the same read is unclaimed. */
+    qtest_writel(qts, IOC3_CFG + PCI_COMMAND, 0);
+    qtest_readl(qts, IOC3_WINDOW + IOC3_BYTEBUS_DEV1);
+    g_assert_cmphex(qtest_readl(qts, BRIDGE_INT_STATUS) & errors, ==,
+                    BRIDGE_INT_MASTER_TOUT);
+    qtest_quit(qts);
+}
+
 static void test_pi_status_survives_migration(const void *data)
 {
     g_autofree SN0Image *image = g_new0(SN0Image, 1);
@@ -588,6 +663,7 @@ static void test_pi_status_survives_migration(const void *data)
     qtest_writeq(from, REPROBE_B, 0);
     qtest_qmp_assert_success(from, "{'execute': 'cont'}");
     wait_for_marker(from, NARROW_MARKER);
+    qtest_writeq(from, HUB_LOCAL + PI_ERR_STATUS0_CLR_A, 0);
     qtest_writeq(from, START_A, 1);
     wait_for_marker(from, MARKER_A);
     qtest_writeq(from, LAUNCH_B, 1);
@@ -637,6 +713,7 @@ static void test_pi_status_reset_clears_both_slices(const void *data)
     qtest_writeq(qts, REPROBE_B, 0);
     qtest_qmp_assert_success(qts, "{'execute': 'cont'}");
     wait_for_marker(qts, NARROW_MARKER);
+    qtest_writeq(qts, HUB_LOCAL + PI_ERR_STATUS0_CLR_A, 0);
     qtest_writeq(qts, START_A, 1);
     wait_for_marker(qts, MARKER_A);
     qtest_writeq(qts, LAUNCH_B, 1);
@@ -646,10 +723,14 @@ static void test_pi_status_reset_clears_both_slices(const void *data)
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_ERR_STATUS0_B), ==,
                     PI_STATUS_EXPECTED);
 
-    qtest_writeq(qts, START_A, 0);
-    qtest_writeq(qts, LAUNCH_B, 0);
-    qtest_system_reset_nowait(qts);
-    wait_for_pi_status_reset(qts);
+    /*
+     * Reset with the processors stopped: once running, slice A's narrow
+     * reads fault again at once and latch a fresh record.
+     */
+    qtest_qmp_assert_success(qts, "{'execute': 'stop'}");
+    qtest_system_reset(qts);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_ERR_STATUS0_A), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_ERR_STATUS0_B), ==, 0);
 
     qtest_quit(qts);
 }
@@ -686,6 +767,7 @@ static void test_status1_clear_alias_retires_the_record(const void *data)
     qtest_writeq(qts, REPROBE_B, 0);
     qtest_qmp_assert_success(qts, "{'execute': 'cont'}");
     wait_for_marker(qts, NARROW_MARKER);
+    qtest_writeq(qts, HUB_LOCAL + PI_ERR_STATUS0_CLR_A, 0);
     qtest_writeq(qts, START_A, 1);
     wait_for_marker(qts, MARKER_A);
     qtest_writeq(qts, LAUNCH_B, 1);
@@ -732,6 +814,10 @@ int main(int argc, char **argv)
                         test_pi_status_survives_migration);
     qtest_add_data_func("sn0/pi-error/narrow-access-matches-bridge-alias", NULL,
                         test_narrow_probe_access_matches_bridge_alias);
+    qtest_add_data_func("sn0/pi-error/claimed-hole-is-not-master-timeout",
+                        NULL, test_claimed_hole_is_not_a_master_timeout);
+    qtest_add_data_func("sn0/pi-error/unclaimed-window-is-master-timeout",
+                        NULL, test_unclaimed_window_is_a_master_timeout);
     qtest_add_data_func("sn0/pi-error/reset-clears-both-slices", NULL,
                         test_pi_status_reset_clears_both_slices);
     qtest_add_data_func("sn0/pi-error/origin2000-local-issuing-hub", NULL,
