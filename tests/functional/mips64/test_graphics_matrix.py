@@ -80,10 +80,8 @@ def _boot_one_attempt(test, cell, attempt_index):
     # synthesized-firmware was a real origin200-machine property once, but
     # QEMU commit bd935b711b ("hw/mips/sgi/sn0: delete the node's
     # synthesized-firmware hooks") -- an ancestor of every commit on this
-    # branch -- deleted it from the class entirely; tools/origami's own
-    # irix.py harness already treats it as gone
-    # (machines.py's has_synthesized_firmware_toggle is false for
-    # origin200), so naming it here just fails machine creation outright.
+    # branch -- deleted it from the class entirely, so naming it here just
+    # fails machine creation outright.
     vm.set_machine('origin200,debug-leds=off')
     vm.set_console()
     vm.add_args(*qemu_args(cell),

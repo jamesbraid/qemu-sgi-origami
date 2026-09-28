@@ -12,14 +12,13 @@ run --with pytest pytest tests/functional/mips64/test_lib_translation_health
 
 EvaluateTests and LaunchSkipReasonTests pin evaluate()/render() and
 launch_skip_reason() against two captured HMP ``info jit`` responses from
-QEMU using Origami's development harness. SICK_SAMPLE is from an Origin 300
+QEMU using a development harness. SICK_SAMPLE is from an Origin 300
 PROM run about ten seconds after launch, with its reset window modeled as
 I/O; HEALTHY_SAMPLE is from an Origin 200 PROM run at about the same point.
 The captures preserve the observed counter values. Their acquisition
 environment and exact QEMU revision are not recorded in this QEMU tree, so
 the fixtures establish parser behavior and illustrate the thresholds; they
-do not establish a reproducible machine-level regression. The QEMU tests do
-not depend on Origami at runtime.
+do not establish a reproducible machine-level regression.
 
 AssertTranslationHealthyTests covers assert_translation_healthy() against
 a _FakeVM standing in for QEMUMachine: it records every QMP call it
@@ -39,7 +38,7 @@ from lib_translation_health import (
 )
 
 
-# Captured from QEMU HMP `info jit` using Origami's development harness,
+# Captured from QEMU HMP `info jit` using a development harness,
 # about ten seconds into an Origin 300 PROM run. Its reset window was modeled
 # as an I/O region. Exact QEMU revision and capture environment are not
 # recorded in this QEMU tree.
@@ -65,7 +64,7 @@ TLB partial flushes 4
 TLB elided flushes  1500
 """
 
-# Captured from QEMU HMP `info jit` using Origami's development harness,
+# Captured from QEMU HMP `info jit` using a development harness,
 # about ten seconds into an Origin 200 PROM run using the stock IP27 PROM.
 # Exact QEMU revision and capture environment are not recorded in this QEMU
 # tree.

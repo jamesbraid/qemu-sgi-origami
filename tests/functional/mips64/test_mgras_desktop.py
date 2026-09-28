@@ -26,8 +26,7 @@ The sequence:
   3. Wait for the greeter's colour and structural checks to
      pass, so the keystrokes land on a greeter that is up and drawn,
      rather than racing X's startup.
-  4. Type the name and password through HMP sendkey, the same key-only
-     sequence Origami's `guest login --graphical` uses: name, Return,
+  4. Type the name and password through HMP sendkey: name, Return,
      password, Return. The name field has focus from boot and the
      password field takes it after Return, so no pointer is needed.
   5. Poll screendumps until DESKTOP_COLOR_CHECKS all pass: the granite
@@ -41,9 +40,9 @@ golden image: the pointer, window placement from a previous session and
 the moment a window finishes drawing all vary between runs, while these
 patches do not.
 
-The live run this test was modelled on (Origami run
-irix-20260927T091258-f37115, QEMU 5d3590c2db) reached the greeter about
-three minutes after boot and passed every region in both tables.
+The live run this test was modelled on (QEMU 5d3590c2db) reached the
+greeter about three minutes after boot and passed every region in both
+tables.
 """
 
 import json
@@ -134,9 +133,8 @@ def passwd_outcome(transcript):
 # The greeter reached about three minutes after boot on the live run,
 # and the serial login prompt comes before the greeter is drawn.
 GREETER_SETTLE_SECONDS = 300.0
-# A fresh desktop session's first paint. Origami's graphical-login
-# command allows 60s for 4Dwm to start and 30s more for it to draw; this
-# polls the checks themselves, so the bound only matters on failure.
+# A fresh desktop session's first paint. This polls the checks themselves,
+# so the bound only matters on failure.
 DESKTOP_SETTLE_SECONDS = 600.0
 POLL_INTERVAL_SECONDS = 5.0
 # Between Return on the name and typing the password, so the password

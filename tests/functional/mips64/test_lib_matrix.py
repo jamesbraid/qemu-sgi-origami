@@ -311,8 +311,7 @@ class QemuArgsTest(unittest.TestCase):
         # A stock PROM with multiple CPUs needs each round-robin TCG
         # thread to reach its rendezvous before the real-time deadline.
         # Use a 100 us kick period here, as in test_sn0_smp.py. The
-        # historical Origami firmware launcher used the same value
-        # (tools/origami_lib/sash.py: DEFAULT_RR_KICK_PERIOD_NS).
+        # Other stock-PROM launches use the same value.
         args = qemu_args(make_cell(accel='wallclock', cpus=4, nodes=1))
         joined = ' '.join(args)
 
@@ -321,8 +320,7 @@ class QemuArgsTest(unittest.TestCase):
 
     def test_wallclock_regime_single_cpu_skips_the_kick_period(self):
         # One CPU has no round-robin peer, so the kick period cannot
-        # affect guest progress. The historical Origami launcher also
-        # applied this setting only above one CPU (tools/origami_lib/launch.py).
+        # affect guest progress, so it is set only above one CPU.
         args = qemu_args(make_cell(accel='wallclock', cpus=1, nodes=1))
         joined = ' '.join(args)
 

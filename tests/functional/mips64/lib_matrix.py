@@ -185,8 +185,7 @@ _ROUND_ROBIN_ACCELS = {'wallclock', 'roundrobin'}
 # negative control for a cross-CPU rendezvous with a real-time deadline --
 # exactly the shape of the stock PROM's discovery and rendezvous protocol.
 # Every launcher that boots the real PROM at more than one CPU under this
-# regime already pins this same value (tools/origami_lib/sash.py's
-# DEFAULT_RR_KICK_PERIOD_NS); a matrix cell that boots the real PROM at
+# regime already pins this same value; a matrix cell that boots the real PROM at
 # more than one CPU needs it too, or it inherits the negative control.
 ROUND_ROBIN_KICK_PERIOD_NS = 100000
 
