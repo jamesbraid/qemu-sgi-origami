@@ -263,7 +263,7 @@ static void mips_cpu_reset_hold(Object *obj, ResetType type)
     cpu->nmi_level = false;
 
     /* Reset registers to their default values */
-    env->CP0_PRid = env->cpu_model->CP0_PRid;
+    env->CP0_PRid = cpu->reset_prid;
     mips_r10k_cpu_reset(cpu);
     env->CP0_Config0 = deposit32(env->cpu_model->CP0_Config0,
                                  CP0C0_BE, 1, cpu->is_big_endian);
@@ -703,6 +703,7 @@ static void mips_cpu_initfn(Object *obj)
     cpu->count_div = clock_new(OBJECT(obj), "clk-div-count");
     cpu->count_clock = clock_new(OBJECT(obj), "clk-count");
     env->cpu_model = MIPS_CPU_GET_CLASS(cpu)->cpu_def;
+    cpu->reset_prid = env->cpu_model->CP0_PRid;
     mips_r10k_cpu_init(cpu);
 #ifndef CONFIG_USER_ONLY
     qdev_init_gpio_in_named(DEVICE(obj), mips_cpu_set_nmi, "nmi", 1);
@@ -745,6 +746,8 @@ static const struct SysemuCPUOps mips_sysemu_ops = {
 
 static const Property mips_cpu_properties[] = {
     DEFINE_PROP_BOOL("big-endian", MIPSCPU, is_big_endian, TARGET_BIG_ENDIAN),
+    DEFINE_PROP_UNSIGNED_NODEFAULT("prid", MIPSCPU, reset_prid,
+                                   qdev_prop_uint32, uint32_t),
 #ifndef CONFIG_USER_ONLY
     DEFINE_PROP_LINK("uncached-memory", MIPSCPU, uncached_memory,
                      TYPE_MEMORY_REGION, MemoryRegion *),

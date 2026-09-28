@@ -77,6 +77,25 @@ unsigned sn1_cpu_slot(const SGIModelNode *node, unsigned logical)
     return physical[logical];
 }
 
+const SGIModelProcessor *sn1_cpu_processor(const SGIModelNode *node,
+                                            unsigned logical)
+{
+    const SGIModelCpuSlotList *entry;
+    unsigned physical = sn1_cpu_slot(node, logical);
+
+    for (entry = node->cpu_slots; entry; entry = entry->next) {
+        const SGIModelCpuSlot *slot = entry->value;
+        unsigned position = slot->interface *
+                            SN1_BEDROCK_PROCESSORS_PER_INTERFACE + slot->slot;
+
+        if (position == physical) {
+            g_assert(slot->assembly);
+            return slot->assembly;
+        }
+    }
+    g_assert_not_reached();
+}
+
 uint32_t sn1_cpu_population_mask(const SGIModelNode *node, unsigned nr_cpus)
 {
     unsigned physical[SN1_BEDROCK_PROCESSORS];

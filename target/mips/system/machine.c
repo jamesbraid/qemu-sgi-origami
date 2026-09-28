@@ -46,6 +46,13 @@ static int cpu_post_load(void *opaque, int version_id)
     if (mips_r10k_profile_post_load(cpu)) {
         return -EINVAL;
     }
+    if ((uint32_t)env->CP0_PRid != cpu->reset_prid) {
+        error_report("MIPS CPU PRId 0x%08x does not match destination "
+                     "configuration 0x%08x", (uint32_t)env->CP0_PRid,
+                     cpu->reset_prid);
+        return -EINVAL;
+    }
+
     if (env->timer_adjacent_pending) {
         uint64_t now_ticks = clock_ns_to_ticks(cpu->count_clock,
             qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
