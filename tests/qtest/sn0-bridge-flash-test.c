@@ -32,6 +32,7 @@
 #define XIO_WIDGET_SIZE UINT64_C(0x1000000)
 #define BASEIO_WIDGET 8
 #define BRIDGE_BASE (IO_SPACE + BASEIO_WIDGET * XIO_WIDGET_SIZE)
+#define OCTANE_FLASH_BASE UINT64_C(0x1fc00000)
 
 /* Registers are 32 bits in the low half of an eight-byte slot. */
 #define REG_DATA 4
@@ -52,6 +53,8 @@
 #define CMD_UNLOCK1 0x55
 #define CMD_AUTOSELECT 0x90
 #define CMD_PROGRAM 0xa0
+#define CMD_ERASE_SETUP 0x80
+#define CMD_SECTOR_ERASE 0x30
 #define CMD_RESET 0xf0
 
 /* What the BaseIO card fits: AMD 0x01 / 0x22da, the PROM's "type 2". */
@@ -308,6 +311,23 @@ static void test_program_word(void)
     qtest_quit(qts);
 }
 
+/* One 16-bit port read must advance the part's erase status only once. */
+static void test_erase_status_word_cycle(void)
+{
+    QTestState *qts = start_origin2000(true);
+    uint16_t first, second;
+
+    set_write_enable(qts, true);
+    unlock(qts, CMD_ERASE_SETUP);
+    flash_write(qts, UNLOCK0_OFFSET, CMD_UNLOCK0, 2);
+    flash_write(qts, UNLOCK1_OFFSET, CMD_UNLOCK1, 2);
+    flash_write(qts, ERASED_OFFSET, CMD_SECTOR_ERASE, 2);
+    first = flash_read(qts, ERASED_OFFSET, 2);
+    second = flash_read(qts, ERASED_OFFSET, 2);
+    g_assert_cmphex((first ^ second) & 0x40, ==, 0x40);
+    qtest_quit(qts);
+}
+
 /*
  * A card built without an image still fits the part: the loader's probe
  * identifies it and then reads a blank image. Zeros are the model's own
@@ -439,6 +459,24 @@ static void test_flash_select_strap(void)
     qtest_quit(qts);
 }
 
+/* Octane's read view must follow the strapped select at the lower aperture. */
+static void test_flash_read_view_select_strap(void)
+{
+    QTestState *qts = qtest_initf("-M octane -m 128M -cpu R10000 "
+                                  "-bios %s -S -global sgi-bridge.flash-select=on",
+                                  image);
+    g_autofree char *mtree = qtest_hmp(qts, "info mtree -f");
+
+    g_assert_nonnull(strstr(mtree, "sgi-bridge.flash-read"));
+    g_assert_cmphex(qtest_readl(qts, OCTANE_FLASH_BASE), ==, 0xffffffff);
+    g_assert_cmphex(qtest_readl(qts, OCTANE_FLASH_BASE + FLASH_SELECT_SIZE),
+                    ==, pattern_word(0, 4));
+    g_assert_cmphex(qtest_readq(qts, OCTANE_FLASH_BASE +
+                                FLASH_SELECT_SIZE - 4), ==,
+                    (UINT64_C(0xffffffff) << 32) | pattern_word(0, 4));
+    qtest_quit(qts);
+}
+
 /* Two fitted parts identify both physical selects under either strap. */
 static void test_both_chip_selects(void)
 {
@@ -512,6 +550,8 @@ int main(int argc, char **argv)
                    test_write_enable_gates_autoselect);
     qtest_add_func("sn0/bridge/flash/write-width", test_write_width);
     qtest_add_func("sn0/bridge/flash/program-word", test_program_word);
+    qtest_add_func("sn0/bridge/flash/erase-status-word-cycle",
+                   test_erase_status_word_cycle);
     qtest_add_func("sn0/bridge/flash/unbacked-part", test_unbacked_part);
     qtest_add_func("sn0/bridge/flash/second-chip-select",
                    test_second_chip_select);
@@ -519,6 +559,8 @@ int main(int argc, char **argv)
                    test_second_chip_select_write_enable);
     qtest_add_func("sn0/bridge/flash/select-strap",
                    test_flash_select_strap);
+    qtest_add_func("sn0/bridge/flash/read-view-select-strap",
+                   test_flash_read_view_select_strap);
     qtest_add_func("sn0/bridge/flash/both-chip-selects",
                    test_both_chip_selects);
     qtest_add_func("sn0/bridge/flash/origin200-unpopulated",

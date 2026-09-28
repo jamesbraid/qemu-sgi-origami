@@ -1478,25 +1478,38 @@ static MemTxResult sgi_bridge_flash_read(void *opaque, hwaddr addr,
 {
     SGIBridgeState *s = opaque;
     MemoryRegion *part;
+    MemoryRegion *last_part = NULL;
     uint64_t part_size;
     uint64_t result = 0;
+    uint64_t word = 0;
     hwaddr offset;
+    hwaddr last_word_offset = 0;
+    bool last_upper_select = false;
     unsigned i;
 
-    part = sgi_bridge_flash_part(s, addr, false, &offset);
-    if (!part) {
-        return MEMTX_DECODE_ERROR;
-    }
-    part_size = memory_region_size(part);
     for (i = 0; i < size; i++) {
-        hwaddr byte = (offset + i) % part_size;
-        uint64_t word;
+        hwaddr byte;
+        hwaddr word_offset;
+        bool upper_select = addr + i >= BRIDGE_FLASH_SELECT_SIZE;
         MemTxResult r;
 
-        r = memory_region_dispatch_read(part, byte & ~(hwaddr)1, &word,
-                                        MO_BEUW, attrs);
-        if (r != MEMTX_OK) {
-            return r;
+        part = sgi_bridge_flash_part(s, addr + i, false, &offset);
+        if (!part) {
+            return MEMTX_DECODE_ERROR;
+        }
+        part_size = memory_region_size(part);
+        byte = offset % part_size;
+        word_offset = byte & ~(hwaddr)1;
+        if (part != last_part || word_offset != last_word_offset ||
+            upper_select != last_upper_select) {
+            r = memory_region_dispatch_read(part, word_offset, &word,
+                                            MO_BEUW, attrs);
+            if (r != MEMTX_OK) {
+                return r;
+            }
+            last_part = part;
+            last_word_offset = word_offset;
+            last_upper_select = upper_select;
         }
         result = (result << 8) | (((byte & 1) ? word : word >> 8) & 0xff);
     }
@@ -1602,6 +1615,7 @@ bool sgi_bridge_install_flash_read_view(SGIBridgeState *s,
                                         Error **errp)
 {
     size_t view_size = BRIDGE_FLASH_SELECT_SIZE - 8;
+    hwaddr view_offset = s->flash_select ? BRIDGE_FLASH_SELECT_SIZE : 0;
 
     if (size != BRIDGE_FLASH_SELECT_SIZE || !s->flash) {
         error_setg(errp, "flash read view requires a 2 MB first-select part");
@@ -1614,13 +1628,14 @@ bool sgi_bridge_install_flash_read_view(SGIBridgeState *s,
         return false;
     }
     memcpy(memory_region_get_ram_ptr(&s->flash_read_view), image, view_size);
-    /* Bridge must handle reads whose starting offset can cross select 0. */
-    memory_region_add_subregion(&s->flash_window, 0, &s->flash_read_view);
+    memory_region_add_subregion(&s->flash_window, view_offset,
+                                &s->flash_read_view);
+    /* Keep wide reads crossing the selects out of the fast array view. */
     memory_region_init_io(&s->flash_boundary, OBJECT(s),
                           &sgi_bridge_flash_boundary_ops, s,
                           "sgi-bridge.flash-boundary", 16);
-    memory_region_add_subregion(&s->flash_window, view_size,
-                                &s->flash_boundary);
+    memory_region_add_subregion_overlap(&s->flash_window, view_size,
+                                        &s->flash_boundary, 1);
     return true;
 }
 
