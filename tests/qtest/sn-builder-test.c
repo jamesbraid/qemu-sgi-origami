@@ -247,16 +247,15 @@ static void test_pci_expansion_requires_fabric(const void *data)
  * sgi-pci-expansion and sgi-xio-baseio are the two -device-creatable XIO
  * board classes (board-pci-expansion.c, xio-baseio.c); sgi-xio-board
  * (xio-board.c) is their shared, non-instantiable base, which owns
- * "module" and "slot". Each subclass repeats "fabric", "fabric-base"
- * and "fabric-widget-shift" by name and type itself
- * -- its own internal Bridge needs the link typed on its own class, not
- * the base -- rather than one board's -device surface differing from
- * the other's for what is otherwise the same attach step.
+ * "module" and "slot". Each subclass repeats "fabric" by name and type
+ * itself -- its own internal Bridge needs the link typed on its own
+ * class, not the base -- rather than one board's -device surface
+ * differing from the other's for what is otherwise the same attach step.
  */
 static void test_expansion_boards_share_the_attach_contract(const void *data)
 {
     static const char * const shared_properties[] = {
-        "module", "slot", "fabric", "fabric-base", "fabric-widget-shift",
+        "module", "slot", "fabric",
     };
     static const char * const board_classes[] = {
         "sgi-pci-expansion", "sgi-xio-baseio",
@@ -443,9 +442,9 @@ static void test_widget_boards_on_two_crossbows(const void *data)
     QTestState *qts = qtest_init(
         "-M origin2000 -display none "
         "-device sgi-pci-expansion,module=0,slot=14,"
-        "fabric=" SLOT_PORT(0, 14) ",fabric-widget-shift=48 "
+        "fabric=" SLOT_PORT(0, 14) " "
         "-device sgi-pci-expansion,module=0,slot=14,"
-        "fabric=" SLOT_PORT(1, 14) ",fabric-widget-shift=48");
+        "fabric=" SLOT_PORT(1, 14));
     g_autofree char *io5 = qom_child_type(qts, "/machine/module0", "io5");
     g_autofree char *io7 = qom_child_type(qts, "/machine/module0", "io7");
 
@@ -456,8 +455,7 @@ static void test_widget_boards_on_two_crossbows(const void *data)
     /* A board that already took the slot's name as its id keeps it. */
     assert_device_pair_refused(
         "sgi-xio-baseio,preset=menet,slot=io5,id=io7",
-        "sgi-pci-expansion,module=0,slot=14,fabric=" SLOT_PORT(1, 14)
-        ",fabric-widget-shift=48",
+        "sgi-pci-expansion,module=0,slot=14,fabric=" SLOT_PORT(1, 14),
         "module 0 already holds a device named 'io7'");
 }
 
@@ -502,7 +500,7 @@ static void test_explicit_fabric_must_match_its_slot(const void *data)
                           "not the module 0 widget 12 the board names");
     qts = qtest_init("-M origin2000 -display none -device "
                      "sgi-pci-expansion,module=0,slot=11,"
-                     "fabric=" SLOT_PORT(0, 11) ",fabric-widget-shift=48");
+                     "fabric=" SLOT_PORT(0, 11));
     g_assert_cmpstr(qom_child_type(qts, "/machine/module0", "io4"), ==,
                     "sgi-pci-expansion");
     qtest_quit(qts);
@@ -705,8 +703,8 @@ static void test_pci_expansion_delivers_through_spare_fabric(const void *data)
 #define BRIDGE_DEVICE_REG(n)    (0x200 + 8 * (n))
 
 /*
- * A host node's Hub sits at widget 9 on crossbow0. With fabric-widget-shift
- * =48 the Bridge composes a packet address carrying the destination widget
+ * A host node's Hub sits at widget 9 on crossbow0. The Bridge
+ * composes a packet address carrying the destination widget
  * in bits 51:48, bit 47 marking packet I/O, the nasid in bits 45:38, and the
  * Hub's own interrupt-modify offset (0x01800000 + 0x90) below. An INT_HOST
  * address field of 0x200 sets bit 47 with nasid 0, so node 0's own Hub,

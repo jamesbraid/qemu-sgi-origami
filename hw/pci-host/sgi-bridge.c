@@ -1650,17 +1650,13 @@ static void sgi_bridge_deliver_interrupt(SGIBridgeState *s, hwaddr where,
 
 /*
  * A (widget, XIO address) pair as the fabric address it travels at: the
- * widget in the header bits a link makes room for, or with none, flat
- * at the fabric's base.
+ * widget in bits 51:48, where a link makes room for the packet header's
+ * destination field.
  */
 static bool sgi_bridge_compose_xio(SGIBridgeState *s,
                                    unsigned int widget, hwaddr address,
                                    hwaddr *fabric)
 {
-    if (!s->fabric_widget_shift) {
-        *fabric = s->fabric_base + address;
-        return true;
-    }
     if (widget >= (1U << SGI_BRIDGE_WIDGET_BITS) ||
         address >> SGI_BRIDGE_PACKET_ADDRESS_BITS) {
         qemu_log_mask(LOG_GUEST_ERROR,
@@ -2249,13 +2245,6 @@ static void sgi_bridge_realize(DeviceState *dev, Error **errp)
                          "packets travel");
         return;
     }
-    if (s->fabric_widget_shift &&
-        (s->fabric_widget_shift != SGI_BRIDGE_PACKET_ADDRESS_BITS ||
-         s->fabric_base)) {
-        error_setg(errp, "packet fabric widget shift %u requires shift 48 "
-                   "and base zero", s->fabric_widget_shift);
-        return;
-    }
 
     /*
      * The MicroLAN bus and the one board-identity part every Bridge realizes
@@ -2521,15 +2510,6 @@ static const VMStateDescription vmstate_sgi_bridge = {
 static const Property sgi_bridge_properties[] = {
     DEFINE_PROP_LINK("fabric", SGIBridgeState, fabric, TYPE_MEMORY_REGION,
                      MemoryRegion *),
-    DEFINE_PROP_UINT64("fabric-base", SGIBridgeState, fabric_base, 0),
-    /*
-     * Which four bits of a fabric address keep the destination widget. Zero
-     * means the fabric keeps none, so this belongs with fabric-base rather
-     * than taking the Hub's xio-widget-shift name,
-     * where zero is refused because it has no such meaning.
-     */
-    DEFINE_PROP_UINT32("fabric-widget-shift", SGIBridgeState,
-                       fabric_widget_shift, 0),
     DEFINE_PROP_UINT32("revision", SGIBridgeState, revision, 1),
     DEFINE_PROP_UINT32("part", SGIBridgeState, part, 0xc002),
     DEFINE_PROP_UINT32("manufacturer", SGIBridgeState, manufacturer, 0x036),
@@ -2607,8 +2587,6 @@ static bool sgi_bridge_xio_port_connect(Object *port, unsigned int index,
         return false;
     }
     s->fabric = peer->packet_fabric;
-    s->fabric_base = 0;
-    s->fabric_widget_shift = SGI_BRIDGE_PACKET_ADDRESS_BITS;
     return true;
 }
 

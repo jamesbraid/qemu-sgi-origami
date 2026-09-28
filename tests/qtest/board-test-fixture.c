@@ -188,8 +188,9 @@ static void board_test_fixture_realize(DeviceState *dev, Error **errp)
         return;
     }
 
+    /* Widget-addressed like a link's fabric: bits 51:48 name the widget. */
     memory_region_init(&s->sink, OBJECT(s), "sgi-board-test-fixture.sink",
-                       64 * KiB);
+                       1ULL << 52);
 
     if (g_str_equal(s->board_type, TYPE_SGI_BASEIO)) {
         board_test_fixture_realize_baseio(s, errp);

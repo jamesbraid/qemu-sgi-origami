@@ -3257,15 +3257,10 @@ static void test_an_inbound_link_reset_stops_at_the_pci_side(const void *data)
 #define ATE_SEED        0x50
 #define WIDE_SEED       0x70
 
-/*
- * Where the head under test keeps a widget number. head_start_with is its
- * only writer, so every address below is composed the way that head does.
- */
-static unsigned int fabric_shift;
-
+/* Where a head keeps the destination widget in the fabric address. */
 static uint64_t target(unsigned int widget)
 {
-    return (uint64_t)widget << fabric_shift;
+    return (uint64_t)widget << WIDGET_SHIFT;
 }
 
 /*
@@ -3284,17 +3279,14 @@ static uint64_t replaced_base(void)
 }
 
 /*
- * The head, and whatever else the caller wants on the command line. A zero
- * shift asks for no widget field at all; the targets are laid out as though
- * one were there regardless, so a test can say a transfer did not reach them.
+ * The head, and whatever else the caller wants on the command line. Widget
+ * zero's addresses are the fabric's own, so the Hub window and node 1 sit
+ * where a destination at widget 0 lands.
  */
-static QTestState *head_start_with(unsigned int widget_shift, const char *extra)
+static QTestState *head_start_with(const char *extra)
 {
-    g_autofree char *option = widget_shift ?
-        g_strdup_printf(",fabric-widget-shift=%u", widget_shift) : g_strdup("");
     QTestState *qts;
 
-    fabric_shift = widget_shift ? widget_shift : WIDGET_SHIFT;
     qts = qtest_initf("-M none -cpu R10000 -S "
         "-device sgi-xio-test-target,id=plain,size=1M "
         "-device sgi-xio-test-target,id=hub,size=1M "
@@ -3305,9 +3297,9 @@ static QTestState *head_start_with(unsigned int widget_shift, const char *extra)
         "-device sgi-xio-test-target,id=pin,size=1M "
         "-device sgi-xio-test-target,id=replaced,size=1M "
         "-device sgi-bridge,id=bridge,board-part=" BOARD_PART ","
-        "fabric=/machine/unattached/system[0]%s "
+        "fabric=/machine/unattached/system[0] "
         "-device sgi-bridge-dma-test,bus=pci,addr=%d %s",
-        option, CARD_SLOT, extra);
+        CARD_SLOT, extra);
 
     qtest_sysbus_mmio_map(qts, BRIDGE, 0, WIDGET_BRIDGE_BASE);
     qtest_sysbus_mmio_map(qts, "/machine/peripheral/plain", 0, PLAIN_BASE);
@@ -3325,9 +3317,9 @@ static QTestState *head_start_with(unsigned int widget_shift, const char *extra)
     return qts;
 }
 
-static QTestState *head_start(unsigned int widget_shift)
+static QTestState *head_start(void)
 {
-    return head_start_with(widget_shift, "");
+    return head_start_with("");
 }
 
 /*
@@ -3398,36 +3390,12 @@ static void assert_untouched(QTestState *qts, uint64_t at)
 }
 
 /*
- * The three windows a device transfer can take, on a head that keeps no
- * widget field: each lands at its bare offset and the widget each of them
- * names changes nothing about where it went.
+ * Three transfers with the widget in the fabric address: each reaches the
+ * widget its own route named, and only that one.
  */
-static void test_transfers_land_at_their_offset(void)
+static void test_transfers_carry_their_target_widget(void)
 {
-    QTestState *qts = head_start(0);
-
-    widget_card_start(qts);
-    aim_the_routes(qts);
-    run_the_routes(qts);
-
-    assert_landed(qts, DIRECT_OFF, DIRECT_SEED);
-    assert_landed(qts, ATE_OFF, ATE_SEED);
-    assert_landed(qts, WIDE_OFF, WIDE_SEED);
-
-    assert_untouched(qts, target(DIRECT_WIDGET) + DIRECT_OFF);
-    assert_untouched(qts, target(ATE_WIDGET) + ATE_OFF);
-    assert_untouched(qts, target(WIDE_WIDGET) + WIDE_OFF);
-
-    qtest_quit(qts);
-}
-
-/*
- * The same three transfers with a widget field in the address: each reaches
- * the widget its own route named, and only that one.
- */
-static void assert_transfers_carry_their_widget(unsigned int shift)
-{
-    QTestState *qts = head_start(shift);
+    QTestState *qts = head_start();
 
     widget_card_start(qts);
     aim_the_routes(qts);
@@ -3448,12 +3416,6 @@ static void assert_transfers_carry_their_widget(unsigned int shift)
     qtest_quit(qts);
 }
 
-static void test_transfers_carry_their_target_widget(void)
-{
-    assert_transfers_carry_their_widget(WIDGET_SHIFT);
-}
-
-/* And at the shift the machine's own address map uses. */
 /*
  * One pin's own host address: the bit it is to set, under a field that
  * selects a node on a head with no widget field and replaces the
@@ -3478,13 +3440,12 @@ static void drive_the_pin(QTestState *qts, int level)
 }
 
 /*
- * With no widget field a pin's packet still goes where the widget-level
- * destination pair points, flat at the fabric's base, and carries the pin's
- * own bit number with data bit 8 set.
+ * A pin's packet goes where the widget-level destination pair points, here
+ * widget 0, and carries the pin's own bit number with data bit 8 set.
  */
-static void test_a_flat_pin_packet_lands_at_its_destination(void)
+static void test_a_pin_packet_lands_at_its_destination(void)
 {
-    QTestState *qts = head_start(0);
+    QTestState *qts = head_start();
 
     aim_the_destination(qts, 0, 0, HUB_WINDOW + HUB_INT_MODIFY);
     route_the_pin(qts, 0);
@@ -3505,12 +3466,12 @@ static void test_a_flat_pin_packet_lands_at_its_destination(void)
 }
 
 /*
- * A pin's host-address field replaces address bits 47:38 on a flat head
- * too, rather than naming a node the head multiplies out itself.
+ * A pin's host-address field replaces address bits 47:38 rather than
+ * naming a node the head multiplies out itself.
  */
-static void test_a_flat_pin_host_address_replaces_the_top_bits(void)
+static void test_a_pin_host_address_replaces_the_top_bits(void)
 {
-    QTestState *qts = head_start(0);
+    QTestState *qts = head_start();
 
     aim_the_destination(qts, 0, 0, HUB_WINDOW + HUB_INT_MODIFY);
     route_the_pin(qts, 1);
@@ -3547,7 +3508,7 @@ static void provoke_the_error(QTestState *qts, unsigned int widget,
 
 static void test_a_chip_error_uses_the_widget_destination(void)
 {
-    QTestState *qts = head_start(0);
+    QTestState *qts = head_start();
 
     provoke_the_error(qts, 0, 0);
     g_assert_cmphex(qtest_readq(qts, ERR_OFF), ==, INT_SET | ERR_NUMBER);
@@ -3565,7 +3526,7 @@ static void test_a_chip_error_uses_the_widget_destination(void)
  */
 static void test_a_pin_packet_carries_its_target_widget(void)
 {
-    QTestState *qts = head_start(WIDGET_SHIFT);
+    QTestState *qts = head_start();
 
     aim_the_destination(qts, WIDE_WIDGET, DEST_UPPER, PIN_OFF);
     route_the_pin(qts, 0);
@@ -3591,7 +3552,7 @@ static void test_a_pin_packet_carries_its_target_widget(void)
 /* The pin's host-address bits replace the destination's, they do not join. */
 static void test_a_pin_host_address_replaces_the_destination_bits(void)
 {
-    QTestState *qts = head_start(WIDGET_SHIFT);
+    QTestState *qts = head_start();
 
     aim_the_destination(qts, WIDE_WIDGET, DEST_UPPER, PIN_OFF);
     route_the_pin(qts, 1);
@@ -3608,7 +3569,7 @@ static void test_a_pin_host_address_replaces_the_destination_bits(void)
 /* A pin whose enable bit is clear sends nothing, however it is routed. */
 static void test_a_masked_pin_sends_no_packet(void)
 {
-    QTestState *qts = head_start(WIDGET_SHIFT);
+    QTestState *qts = head_start();
 
     aim_the_destination(qts, WIDE_WIDGET, DEST_UPPER, PIN_OFF);
     route_the_pin(qts, 0);
@@ -3631,7 +3592,7 @@ static void test_a_masked_pin_sends_no_packet(void)
  */
 static void test_a_falling_pin_clears_through_the_same_address(void)
 {
-    QTestState *qts = head_start(WIDGET_SHIFT);
+    QTestState *qts = head_start();
 
     aim_the_destination(qts, WIDE_WIDGET, DEST_UPPER, PIN_OFF);
     route_the_pin(qts, 0);
@@ -3656,7 +3617,7 @@ static void test_a_falling_pin_clears_through_the_same_address(void)
  */
 static void test_a_falling_pin_sends_nothing_without_the_mode_bit(void)
 {
-    QTestState *qts = head_start(WIDGET_SHIFT);
+    QTestState *qts = head_start();
 
     aim_the_destination(qts, WIDE_WIDGET, DEST_UPPER, PIN_OFF);
     route_the_pin(qts, 0);
@@ -3677,7 +3638,7 @@ static void test_a_falling_pin_sends_nothing_without_the_mode_bit(void)
 /* The chip's own error keeps taking the widget-level pair, not a pin's. */
 static void test_a_chip_error_carries_the_widget_destination(void)
 {
-    QTestState *qts = head_start(WIDGET_SHIFT);
+    QTestState *qts = head_start();
 
     qtest_writeq(qts, replaced_base() + ERR_OFF, SENTINEL);
     provoke_the_error(qts, WIDE_WIDGET, DEST_CARRIED);
@@ -3689,63 +3650,6 @@ static void test_a_chip_error_carries_the_widget_destination(void)
     g_assert_cmphex(qtest_readq(qts, replaced_base() + ERR_OFF), ==, SENTINEL);
 
     qtest_quit(qts);
-}
-
-/*
- * A widget number is four bits wide, so 60 is the furthest one can be shifted
- * and still be inside a 64-bit address. Past that the machine has to be
- * refused where it is built, rather than have the number fall off the top.
- * The refusal lands before there is a qtest socket to ask, and a sysbus
- * device cannot be added to a machine already running, so this one runs the
- * emulator itself and reads what it said on the way out.
- */
-static void test_a_shift_past_the_address_is_refused(void)
-{
-    const char *args[] = {
-        qtest_qemu_binary(NULL), "-M", "none,accel=qtest", "-display", "none",
-        "-device", "sgi-bridge,board-part=" BOARD_PART
-        ",fabric=/machine/unattached/system[0],fabric-widget-shift=61", NULL
-    };
-    g_autofree char *error_output = NULL;
-    int wait_status = 0;
-
-    g_assert_true(g_spawn_sync(NULL, (char **)args, NULL, 0, NULL, NULL,
-                               NULL, &error_output, &wait_status, NULL));
-    g_assert_false(g_spawn_check_exit_status(wait_status, NULL));
-    g_assert_nonnull(strstr(error_output, "fabric widget shift 61"));
-}
-
-/* A valid head quits through QMP; invalid geometry must fail realization. */
-static void assert_geometry_refused(const char *properties)
-{
-    g_autofree char *device = g_strdup_printf(
-        "sgi-bridge,board-part=" BOARD_PART
-        ",fabric=/machine/unattached/system[0],%s", properties);
-    const char *args[] = {
-        "/bin/sh", "-c",
-        "printf '%s\n' '{\"execute\":\"qmp_capabilities\"}' "
-        "'{\"execute\":\"quit\"}' | \"$@\"", "bridge-geometry",
-        qtest_qemu_binary(NULL), "-M", "none,accel=qtest", "-display", "none",
-        "-qmp", "stdio", "-device", device, NULL,
-    };
-    g_autofree char *error_output = NULL;
-    g_autofree char *output = NULL;
-    int status;
-
-    g_assert_true(g_spawn_sync(NULL, (char **)args, NULL, 0, NULL, NULL,
-                              &output, &error_output, &status, NULL));
-    g_assert_false(g_spawn_check_exit_status(status, NULL));
-    g_assert_nonnull(strstr(error_output, "packet fabric"));
-}
-
-static void test_packet_geometry(void)
-{
-    assert_geometry_refused("fabric-widget-shift=34");
-    assert_geometry_refused("fabric-widget-shift=1");
-    assert_geometry_refused("fabric-widget-shift=60");
-    assert_geometry_refused("fabric-widget-shift=48,fabric-base=1");
-    assert_geometry_refused("fabric-widget-shift=48,"
-                            "fabric-base=0xffffffffffffffff");
 }
 
 /* All DMA decoders retain bit 47 and the last bytes of the 48-bit slot. */
@@ -3760,7 +3664,7 @@ static void test_full_packet_dma(void)
                     "-device sgi-xio-test-target,id=full,size=1M "
                     "-global sgi-bridge-dma-test.plain-dma=%s",
                     plain ? "on" : "off");
-                QTestState *qts = head_start_with(48, extra);
+                QTestState *qts = head_start_with(extra);
                 uint64_t end = 1ULL << 48;
                 uint64_t last = end - DMA_LEN;
                 uint64_t page = big ? 16384 : 4096;
@@ -3819,7 +3723,7 @@ static void test_full_packet_dma(void)
 
 static void test_full_packet_interrupts(void)
 {
-    QTestState *qts = head_start(48);
+    QTestState *qts = head_start();
     uint64_t pin = target(WIDE_WIDGET) | (0x3ffULL << 38) | CARRIED_BIT;
     uint64_t error = target(WIDE_WIDGET) | (0xffffULL << 32);
 
@@ -4106,15 +4010,12 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/bridge/widget/full-packet-dma", test_full_packet_dma);
     qtest_add_func("sn0/bridge/widget/full-packet-interrupts",
                     test_full_packet_interrupts);
-    qtest_add_func("sn0/bridge/widget/packet-geometry", test_packet_geometry);
-    qtest_add_func("sn0/bridge/widget/transfer-offsets",
-                    test_transfers_land_at_their_offset);
     qtest_add_func("sn0/bridge/widget/transfer-widgets",
                     test_transfers_carry_their_target_widget);
-    qtest_add_func("sn0/bridge/widget/pin-flat-destination",
-                    test_a_flat_pin_packet_lands_at_its_destination);
-    qtest_add_func("sn0/bridge/widget/pin-flat-host-bits",
-                    test_a_flat_pin_host_address_replaces_the_top_bits);
+    qtest_add_func("sn0/bridge/widget/pin-destination",
+                    test_a_pin_packet_lands_at_its_destination);
+    qtest_add_func("sn0/bridge/widget/pin-host-bits",
+                    test_a_pin_host_address_replaces_the_top_bits);
     qtest_add_func("sn0/bridge/widget/error-destination",
                     test_a_chip_error_uses_the_widget_destination);
     qtest_add_func("sn0/bridge/widget/pin-widget",
@@ -4129,8 +4030,6 @@ int main(int argc, char **argv)
                     test_a_falling_pin_sends_nothing_without_the_mode_bit);
     qtest_add_func("sn0/bridge/widget/error-widget",
                     test_a_chip_error_carries_the_widget_destination);
-    qtest_add_func("sn0/bridge/widget/shift-limit",
-                    test_a_shift_past_the_address_is_refused);
     qtest_add_func("sn0/bridge/pio-xlate/reaches-pci-memory",
                     test_pio_xlate_reaches_pci_memory);
     qtest_add_func("sn0/bridge/pio-xlate/stops-at-its-declared-size",

@@ -41,9 +41,8 @@
  * established, so the first three are an approximation. 0, the default,
  * leaves every Bridge device position open.
  *
- * "fabric", "fabric-base" and "fabric-widget-shift" pass
- * straight through to the internal Bridge; the link to the board's
- * slot sets them.
+ * "fabric" passes straight through to the internal Bridge; the link to the
+ * board's slot sets it.
  */
 
 #include "qemu/osdep.h"
@@ -70,8 +69,6 @@ struct SGIPciExpansionState {
     SGIXioBoardState parent_obj;
 
     MemoryRegion *fabric;
-    uint64_t fabric_base;
-    uint32_t fabric_widget_shift;
     uint64_t onewire_serial;
     char *pci_bus_name;
     uint32_t slots;
@@ -123,9 +120,6 @@ static bool pci_expansion_build_widget(SGIXioBoardState *board,
     sgi_xio_board_name_pci_bus(SGI_XIO_BOARD(s), bridge, s->pci_bus_name);
     object_property_set_link(OBJECT(bridge), "fabric", OBJECT(s->fabric),
                              &error_abort);
-    qdev_prop_set_uint64(bridge, "fabric-base", s->fabric_base);
-    qdev_prop_set_uint32(bridge, "fabric-widget-shift",
-                         s->fabric_widget_shift);
     if (!sysbus_realize(SYS_BUS_DEVICE(bridge), errp)) {
         return false;
     }
@@ -143,9 +137,6 @@ static bool pci_expansion_build_widget(SGIXioBoardState *board,
 static const Property pci_expansion_properties[] = {
     DEFINE_PROP_LINK("fabric", SGIPciExpansionState, fabric,
                      TYPE_MEMORY_REGION, MemoryRegion *),
-    DEFINE_PROP_UINT64("fabric-base", SGIPciExpansionState, fabric_base, 0),
-    DEFINE_PROP_UINT32("fabric-widget-shift", SGIPciExpansionState,
-                       fabric_widget_shift, 0),
     DEFINE_PROP_UINT64("onewire-serial", SGIPciExpansionState,
                        onewire_serial, PCI_EXPANSION_SERIAL_PLACEHOLDER),
     DEFINE_PROP_STRING("pci-bus-name", SGIPciExpansionState, pci_bus_name),
