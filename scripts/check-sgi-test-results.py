@@ -3,6 +3,7 @@
 """Require successful SGI test results in a Meson JUnit report."""
 
 import argparse
+import importlib.util
 import json
 import re
 import subprocess
@@ -11,6 +12,15 @@ import xml.etree.ElementTree as ET
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
+
+
+_ROM_PARSER_PATH = (Path(__file__).parents[1] /
+                    'tests/functional/mips64/lib_sgi_roms.py')
+_ROM_PARSER_SPEC = importlib.util.spec_from_file_location(
+    'qemu_sgi_rom_suite', _ROM_PARSER_PATH)
+_ROM_PARSER = importlib.util.module_from_spec(_ROM_PARSER_SPEC)
+sys.modules[_ROM_PARSER_SPEC.name] = _ROM_PARSER
+_ROM_PARSER_SPEC.loader.exec_module(_ROM_PARSER)
 
 
 class ResultError(Exception):
@@ -152,35 +162,9 @@ def validate(report, expected):
 
 def rom_identities(path):
     try:
-        lines = path.read_text(encoding='utf-8').splitlines()
-    except OSError as exc:
-        raise ResultError(f"cannot read ROM suite {path}: {exc}") from exc
-
-    identities = []
-    for line_number, line in enumerate(lines, 1):
-        fields = line.split('#', 1)[0].split()
-        if not fields:
-            continue
-        rom, *options = fields
-        cpus = [item for item in options
-                if item in ('R4000', 'R10000', 'R14000')]
-        configs = [item.split(':', 1)[1] for item in options
-                   if item.startswith('config:')]
-        timed = 'timed' in options
-        if not cpus or len(configs) > 1 or (timed and not configs):
-            raise ResultError(f"invalid ROM suite row {line_number}: {line}")
-        config = configs[0] if configs else 'default'
-        for cpu in cpus:
-            identities.append(
-                f"SGIRoms.test_{rom}_{cpu}_{config.replace('-', '_')}")
-            if timed:
-                identities.append(f'SGIRoms.test_{rom}_{cpu}_default')
-    if not identities:
-        raise ResultError(f"ROM suite {path} contains no cases")
-    if len(set(identities)) != len(identities):
-        raise ResultError(
-            f"ROM suite {path} generates duplicate testcase identities")
-    return identities
+        return [case.identity for case in _ROM_PARSER.read_suite(path)]
+    except ValueError as exc:
+        raise ResultError(str(exc)) from exc
 
 
 def meson_test_identities(build_dir, prefix=None, suites=None,
@@ -250,6 +234,10 @@ def main(argv=None):
                         help='exclude a Meson suite (repeatable)')
     parser.add_argument('--names-from', type=Path,
                         help='select exact Meson test names from a file')
+    parser.add_argument('--require-rom-target', type=Path,
+                        metavar='BUILD_DIR',
+                        help='require func-mips64-sgi_roms registration when '
+                             'listing ROM identities')
     parser.add_argument('--expect', type=Path,
                         help='UTF-8 file with one required identity per line')
     args = parser.parse_args(argv)
@@ -260,11 +248,16 @@ def main(argv=None):
                     args.exclude_suite or args.names_from):
                 parser.error('Meson selection options do not apply to '
                              '--list-rom-identities')
+            if args.require_rom_target is not None:
+                meson_test_identities(
+                    args.require_rom_target,
+                    names=['func-mips64-sgi_roms'])
             print('\n'.join(rom_identities(args.list_rom_identities)))
             return 0
         if args.list_meson_tests is not None:
-            if args.expect:
-                parser.error('--expect does not apply to --list-meson-tests')
+            if args.expect or args.require_rom_target:
+                parser.error('--expect and --require-rom-target do not apply '
+                             'to --list-meson-tests')
             names = read_expected(args.names_from) if args.names_from else None
             if not (args.prefix or args.suite or args.exclude_suite or names):
                 parser.error('--list-meson-tests requires a prefix, '
@@ -274,7 +267,8 @@ def main(argv=None):
                 args.exclude_suite, names)))
             return 0
         if (args.expect is None or args.prefix or args.suite or
-                args.exclude_suite or args.names_from):
+                args.exclude_suite or args.names_from or
+                args.require_rom_target):
             parser.error('Meson selection options do not apply to --junit')
         expected = read_expected(args.expect)
         report = read_report(args.junit)

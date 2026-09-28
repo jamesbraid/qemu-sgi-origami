@@ -5,6 +5,8 @@ import unittest
 import importlib.util
 import json
 import sys
+from contextlib import redirect_stderr, redirect_stdout
+from io import StringIO
 from unittest import mock
 from pathlib import Path
 
@@ -139,7 +141,21 @@ class CheckSgiTestResults(unittest.TestCase):
         identities = rom_identities(manifest)
         self.assertIn('SGIRoms.test_llscscale_R10000_default', identities)
         self.assertIn('SGIRoms.test_llscscale_R10000_4cpu_2node', identities)
+        self.assertEqual(len(identities), 85)
         self.assertEqual(len(identities), len(set(identities)))
+
+    def test_rejects_invalid_and_duplicate_rom_rows(self):
+        for body, message in (
+                ('bad R10000 unknown\n', 'invalid ROM option'),
+                ('sext R10000\nsext R10000\n', 'duplicate ROM row'),
+                ('sext R10000 R10000\n', 'invalid ROM suite row'),
+                ('timed R10000 timed\n', 'invalid ROM suite row'),
+                ('sext R10000 config:unknown\n', 'invalid ROM suite row')):
+            with self.subTest(body=body):
+                suite = self.root / 'suite'
+                suite.write_text(body, encoding='utf-8')
+                with self.assertRaisesRegex(ResultError, message):
+                    rom_identities(suite)
 
     def test_lists_registered_tests_by_native_suite(self):
         tests = [
@@ -176,6 +192,27 @@ class CheckSgiTestResults(unittest.TestCase):
             with self.assertRaisesRegex(ResultError, 'not registered'):
                 meson_test_identities(
                     Path('build'), names=['func-mips64-missing'])
+
+    def test_rom_qualification_requires_registered_native_target(self):
+        suite = (Path(__file__).parents[2] /
+                 'tests/functional/mips64/roms/suite')
+        tests = [{"name": "func-mips64-sgi_roms",
+                  "suite": ["qemu:thorough"]}]
+        with mock.patch.object(checker.subprocess, 'check_output',
+                               return_value=json.dumps(tests)), \
+                redirect_stdout(StringIO()) as output:
+            status = checker.main([
+                '--list-rom-identities', str(suite),
+                '--require-rom-target', 'build'])
+        self.assertEqual(status, 0)
+        self.assertEqual(len(output.getvalue().splitlines()), 85)
+        with mock.patch.object(checker.subprocess, 'check_output',
+                               return_value='[]'), \
+                redirect_stdout(StringIO()), redirect_stderr(StringIO()):
+            status = checker.main([
+                '--list-rom-identities', str(suite),
+                '--require-rom-target', 'build'])
+        self.assertEqual(status, 1)
 
 
 if __name__ == '__main__':

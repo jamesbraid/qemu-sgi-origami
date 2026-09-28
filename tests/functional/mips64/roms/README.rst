@@ -30,6 +30,18 @@ source hash stamp or source-tree build directory is used. To select one case::
 
   meson test --setup qemu:thorough func-mips64-sgi_roms --test-args SGIRoms.test_tlb_R10000_default
 
+For a required run, check registration before executing the suite and require
+every manifest case in the fresh JUnit result. From the source root::
+
+  python3 scripts/check-sgi-test-results.py \
+      --list-rom-identities tests/functional/mips64/roms/suite \
+      --require-rom-target build > build/sgi-rom-expected.txt
+  build/pyvenv/bin/meson test -C build --setup qemu:thorough \
+      --logbase sgi-rom-required --print-errorlogs func-mips64-sgi_roms
+  python3 scripts/check-sgi-test-results.py \
+      --junit build/meson-logs/sgi-rom-required-qemu_thorough.junit.xml \
+      --expect build/sgi-rom-expected.txt
+
 Each case requires both process exit status zero and an exact ``PASS <rom>``
 line from the MIPS semihosting output. A timed manifest row runs on both one
 and four CPUs; durations are recorded by the native framework, with no host

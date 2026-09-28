@@ -6,9 +6,10 @@ from pathlib import Path
 
 from qemu_test import QemuSystemTest
 from qemu_test.config import BUILD_DIR
+from lib_sgi_roms import CONFIGS, read_suite
 
 
-CONFIGS = {
+CONFIG_ARGS = {
     'default': [],
     '4cpu-2node': ['-M', 'topology=origin200-dual', '-m', '128',
                   '-smp', '4', '-accel', 'tcg,thread=multi'],
@@ -28,7 +29,7 @@ class SGIRoms(QemuSystemTest):
         self.vm.set_qmp_monitor(False)
         self.vm.add_args('-cpu', cpu, '-nodefaults', '-display', 'none',
                          '-no-reboot', '-semihosting', '-bios', str(image),
-                         *CONFIGS[config])
+                         *CONFIG_ARGS[config])
         self.vm.launch()
         self.vm.wait(timeout=self.timeout)
         output = self.vm.get_log() or ''
@@ -45,29 +46,8 @@ def add_case(rom, cpu, config):
     setattr(SGIRoms, name, test)
 
 
-for line in (Path(__file__).parent / 'roms/suite').read_text().splitlines():
-    fields = line.split('#', 1)[0].split()
-    if not fields:
-        continue
-    rom, *options = fields
-    configs = [item.split(':', 1)[1] for item in options
-               if item.startswith('config:')]
-    if len(configs) > 1 or any(c not in CONFIGS for c in configs):
-        raise ValueError(f'Invalid ROM configuration: {line}')
-    config = configs[0] if configs else 'default'
-    cpus = [item for item in options
-            if not item.startswith('config:') and item != 'timed']
-    if not cpus or any(cpu not in ('R4000', 'R10000', 'R14000')
-                       for cpu in cpus):
-        raise ValueError(f'Invalid ROM CPU list: {line}')
-    for cpu in cpus:
-        add_case(rom, cpu, config)
-        # The throughput ROM must succeed on both one and four CPUs.
-        # Wall-clock ratios never determined the old runner's verdict.
-        if 'timed' in options:
-            if config == 'default':
-                raise ValueError(f'Timed ROM needs a configuration: {line}')
-            add_case(rom, cpu, 'default')
+for case in read_suite(Path(__file__).parent / 'roms/suite'):
+    add_case(case.rom, case.cpu, case.config)
 
 
 if __name__ == '__main__':
