@@ -54,6 +54,8 @@
 #include "hw/pci/pci_host.h"
 #include "hw/pci-host/sgi-bridge.h"
 #include "hw/pci-host/sgi-xbridge.h"
+#include "hw/misc/sgi-ioc3.h"
+#include "system/system.h"
 #include "migration/vmstate.h"
 #include "qapi/error.h"
 #include "qemu/module.h"
@@ -79,7 +81,38 @@ struct SGIPciExpansionState {
     uint32_t bridge_revision;
 
     SGIBridgeState *bridge;
+    Notifier machine_done;
 };
+
+/*
+ * A card fitted with -device at one of the board's slots: an IOC3 there
+ * sends its SuperIO interrupt out on the card's INTB, which the Bridge
+ * takes on pin (device ^ 4), as the shoehorn wires its own fitted card.
+ * The cards exist only once the command line's devices are made, so this
+ * runs when machine creation is done, and leaves any output already wired.
+ */
+static void pci_expansion_wire_card(PCIBus *bus, PCIDevice *dev, void *opaque)
+{
+    SGIPciExpansionState *s = opaque;
+    unsigned int pin = PCI_SLOT(dev->devfn) ^ 4;
+
+    if (!object_dynamic_cast(OBJECT(dev), TYPE_SGI_IOC3) ||
+        qdev_get_gpio_out_connector(DEVICE(dev), NULL, 0) ||
+        pin >= SGI_BRIDGE_PINS) {
+        return;
+    }
+    qdev_connect_gpio_out(DEVICE(dev), 0,
+                          qdev_get_gpio_in(DEVICE(s->bridge), pin));
+}
+
+static void pci_expansion_machine_done(Notifier *notifier, void *data)
+{
+    SGIPciExpansionState *s = container_of(notifier, SGIPciExpansionState,
+                                           machine_done);
+
+    pci_for_each_device(PCI_HOST_BRIDGE(s->bridge)->bus, 0,
+                        pci_expansion_wire_card, s);
+}
 
 static bool pci_expansion_build_widget(SGIXioBoardState *board,
                                        Error **errp)
@@ -130,6 +163,8 @@ static bool pci_expansion_build_widget(SGIXioBoardState *board,
 
     board->cpu_face = sysbus_mmio_get_region(SYS_BUS_DEVICE(bridge), 0);
     board->packet_face = sgi_bridge_packet_face(s->bridge);
+    s->machine_done.notify = pci_expansion_machine_done;
+    qemu_add_machine_init_done_notifier(&s->machine_done);
     board->link_reset = qdev_get_gpio_in_named(DEVICE(s->bridge),
                                                 "link-reset", 0);
 
@@ -161,6 +196,16 @@ static const VMStateDescription vmstate_pci_expansion = {
         VMSTATE_END_OF_LIST()
     },
 };
+
+/* A board that realized took a machine-done notifier; it goes with it. */
+static void pci_expansion_instance_finalize(Object *obj)
+{
+    SGIPciExpansionState *s = SGI_PCI_EXPANSION(obj);
+
+    if (s->machine_done.notify) {
+        qemu_remove_machine_init_done_notifier(&s->machine_done);
+    }
+}
 
 static void pci_expansion_class_init(ObjectClass *oc, const void *data)
 {
@@ -216,6 +261,7 @@ static const TypeInfo pci_expansion_types[] = {
         .name = TYPE_SGI_PCI_EXPANSION,
         .parent = TYPE_SGI_XIO_BOARD,
         .instance_size = sizeof(SGIPciExpansionState),
+        .instance_finalize = pci_expansion_instance_finalize,
         .class_init = pci_expansion_class_init,
     },
     {

@@ -170,6 +170,14 @@ static const uint8_t cad_duo_record[RECORD_SIZE] = {
     "-device sgi-ioc3,bus=xpci,addr=" G_STRINGIFY(CAD_DUO_DEVICE) \
     ",subsystem-id=0xffff"
 
+/* The PCI carrier at IO2, crossbow0 widget 12, with a Cad Duo in slot 1. */
+#define CARRIER_WIDGET      12
+#define CARRIER_CAD_DUO     1
+#define CARRIER_ARGS \
+    "-M origin2000 -display none -device sgi-pci-carrier,slot=io2 " \
+    "-device sgi-ioc3,bus=io2.0,addr=" G_STRINGIFY(CARRIER_CAD_DUO) \
+    ",subsystem-id=0xffff"
+
 #define SHOEHORN_ARGS \
     "-M origin2000 -display none -device sgi-pci-shoehorn," \
     "slot=io4,cad-duo-slot=" G_STRINGIFY(CAD_DUO_DEVICE)
@@ -205,6 +213,9 @@ static const ShoehornCase sio_case = {
 
 static const ShoehornCase expansion_case = {
     EXPANSION_ARGS, SHOEHORN_WIDGET, CAD_DUO_DEVICE,
+};
+static const ShoehornCase carrier_case = {
+    CARRIER_ARGS, CARRIER_WIDGET, CARRIER_CAD_DUO,
 };
 static const ShoehornCase device_case = {
     SHOEHORN_ARGS, SHOEHORN_WIDGET, CAD_DUO_DEVICE,
@@ -266,22 +277,21 @@ static void test_cad_duo_enumerates(const void *data)
 }
 
 /*
- * The RED baseline: a Cad Duo plugged into a plain sgi-pci-expansion, whose
- * board does not wire the chip's SuperIO interrupt to any Bridge pin. The
- * keyboard reply raises the chip's own SuperIO output, but with nothing
- * carrying it to a Bridge pin the packet never leaves and the Hub never
- * latches. (The card's ethernet INTA is idle because there is no network
- * traffic, so its
- * pin stays low.)
+ * A Cad Duo plugged into a plain sgi-pci-expansion, or the carrier built on
+ * it, with -device: the board wires the chip's SuperIO output to the
+ * card's INTB, Bridge pin (slot ^ 4), as the shoehorn wires its own fitted
+ * card, so a keyboard reply reaches node 0's Hub (jamesb/qemu#874). Before
+ * that, nothing carried the output to a Bridge pin and the packet never
+ * left.
  */
-static void test_cad_duo_ps2_interrupt_dead_bare(const void *data)
+static void test_cad_duo_ps2_interrupt_on_expansion(const void *data)
 {
     const ShoehornCase *c = data;
     QTestState *qts = qtest_init(c->args);
 
     cad_duo_map(qts, c);
     arm_interrupt(qts, c);
-    g_assert_false(keystroke_reaches_hub(qts, c));
+    g_assert_true(keystroke_reaches_hub(qts, c));
     qtest_quit(qts);
 }
 
@@ -664,9 +674,12 @@ int main(int argc, char **argv)
 
     qtest_add_data_func("sn0/pci-shoehorn/cad-duo-enumerates", &device_case,
                         test_cad_duo_enumerates);
-    qtest_add_data_func("sn0/pci-shoehorn/cad-duo-ps2-interrupt-dead-bare",
+    qtest_add_data_func("sn0/pci-shoehorn/cad-duo-ps2-interrupt-on-expansion",
                         &expansion_case,
-                        test_cad_duo_ps2_interrupt_dead_bare);
+                        test_cad_duo_ps2_interrupt_on_expansion);
+    qtest_add_data_func("sn0/pci-shoehorn/cad-duo-ps2-interrupt-on-carrier",
+                        &carrier_case,
+                        test_cad_duo_ps2_interrupt_on_expansion);
     qtest_add_data_func("sn0/pci-shoehorn/cad-duo-ps2-interrupt-reaches-hub",
                         &device_case,
                         test_cad_duo_ps2_interrupt_reaches_hub);
