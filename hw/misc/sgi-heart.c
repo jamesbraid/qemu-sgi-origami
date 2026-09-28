@@ -97,7 +97,8 @@ static MemTxResult heart_widget_read(void *opaque, hwaddr offset,
         *value = s->widget_control;
         return MEMTX_OK;
     }
-    if (offset == 0x2c && size == 4) {
+    if ((offset == 0x28 && size == 8) ||
+        (offset == 0x2c && size == 4)) {
         *value = s->widget_request_timeout;
         return MEMTX_OK;
     }
