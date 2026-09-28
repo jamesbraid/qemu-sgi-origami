@@ -1704,6 +1704,13 @@ static void sgi_bridge_pci_error(SGIBridgeState *s, uint32_t bit,
  * and 48 address bits, so the model takes them (inferred). It holds no
  * response buffers, so the buffer field is zero. The timer expires at
  * once: the read has already failed back to the device.
+ *
+ * The device and address come from the last DMA translation
+ * (dma_device and dma_pci_address, which sgi_bridge_translate_common()
+ * sets), not from the dropped request itself, so the drop must be
+ * reported within the same access that translated it. It is: the
+ * crossbar calls request_dropped() synchronously from inside the
+ * Bridge's own fabric access, before any other translation can run.
  */
 static void sgi_bridge_read_timeout(SGIBridgeState *s)
 {
@@ -2734,7 +2741,6 @@ static bool sgi_bridge_xio_port_connect(Object *port, unsigned int index,
     return true;
 }
 
-/* A reset from the far end of the link clears the chip's core. */
 /* Only a read owns a response buffer; a dropped write is never heard of. */
 static void sgi_bridge_xio_port_request_dropped(Object *port,
                                                 unsigned int index,
