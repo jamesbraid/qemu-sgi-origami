@@ -53,6 +53,14 @@
 #define MGRAS_GL_VERTEX4F        0x00000010
 #define MGRAS_GL_COLOR3F         0x2000020c
 #define MGRAS_GL_COLOR4F         0x00000210
+#define MGRAS_GL_VERTEX2I        0x58000008
+#define MGRAS_GL_COLOR4UB        0x14800204
+/*
+ * glColor3ub is sent as 0x34800203 and one word. The model matches every
+ * header with its byte length rounded up to the whole words the payload
+ * takes (mgras-gl-commands.md, "Word framing").
+ */
+#define MGRAS_GL_COLOR3UB        0x34800204
 
 #define MGRAS_GL_FLAT            0x1d00
 #define MGRAS_GL_SMOOTH          0x1d01
@@ -146,6 +154,9 @@ typedef struct MgrasGLVertex {
 
 bool sgi_mgras_gl_header(uint32_t header)
 {
+    header = (header & ~0xffu) |
+             (DIV_ROUND_UP(header & 0xff, sizeof(uint32_t)) *
+              sizeof(uint32_t));
     switch (header) {
     case MGRAS_GL_CONTEXT_OPENER:
     case MGRAS_GL_BEGIN_TRIANGLES:
@@ -173,6 +184,9 @@ bool sgi_mgras_gl_header(uint32_t header)
     case MGRAS_GL_VERTEX4F:
     case MGRAS_GL_COLOR3F:
     case MGRAS_GL_COLOR4F:
+    case MGRAS_GL_VERTEX2I:
+    case MGRAS_GL_COLOR3UB:
+    case MGRAS_GL_COLOR4UB:
         return true;
     default:
         return false;
@@ -193,6 +207,26 @@ static uint32_t mgras_gl_bits(float value)
 
     memcpy(&bits, &value, sizeof(bits));
     return bits;
+}
+
+/*
+ * glColor3ub's and glColor4ub's bytes in one word, the first component in
+ * bits 31:24: colorbars' bars (run irix-20260928T004550-1040f3, from seq
+ * 26371573) are 0x87878700, 0x87870000, 0x00878700, 0x00870000,
+ * 0x87008700 and 0x87000000, white, yellow, cyan, green, magenta and red.
+ * Alpha in bits 7:0 follows from that component order; noof's constant
+ * glColor4ub word 0x00000060 is consistent with it but cannot fix it
+ * alone. A byte c is c / 255 (OpenGL 1.2.1, table 2.6). glColor3ub's
+ * alpha is 1.
+ */
+static void mgras_gl_color_bytes(uint32_t color[4], uint32_t word,
+                                 bool alpha)
+{
+    for (int i = 0; i < 4; i++) {
+        uint32_t c = (word >> (24 - 8 * i)) & 0xff;
+
+        color[i] = mgras_gl_bits(i == 3 && !alpha ? 1.0f : c / 255.0f);
+    }
 }
 
 static void mgras_gl_identity(uint32_t m[16])
@@ -1029,6 +1063,12 @@ void sgi_mgras_gl_execute(SGIMgrasState *s, uint32_t header,
     case MGRAS_GL_COLOR4F:
         memcpy(gl->color, payload, sizeof(gl->color));
         return;
+    case MGRAS_GL_COLOR3UB:
+        mgras_gl_color_bytes(gl->color, payload[0], false);
+        return;
+    case MGRAS_GL_COLOR4UB:
+        mgras_gl_color_bytes(gl->color, payload[0], true);
+        return;
     case MGRAS_GL_BEGIN_TRIANGLES:
         gl->begin = header;
         gl->vertex_count = 0;
@@ -1047,6 +1087,16 @@ void sgi_mgras_gl_execute(SGIMgrasState *s, uint32_t header,
     case MGRAS_GL_VERTEX4F:
         mgras_gl_vertex(s, payload, 4);
         return;
+    case MGRAS_GL_VERTEX2I: {
+        /* Integer components convert to float unscaled (2.7). */
+        uint32_t xy[2] = {
+            mgras_gl_bits((int32_t)payload[0]),
+            mgras_gl_bits((int32_t)payload[1]),
+        };
+
+        mgras_gl_vertex(s, xy, 2);
+        return;
+    }
     case MGRAS_GL_FLUSH:
         /* Approximated: every command has already run to completion. */
         return;

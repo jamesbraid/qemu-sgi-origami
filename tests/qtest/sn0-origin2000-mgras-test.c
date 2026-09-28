@@ -7305,6 +7305,90 @@ static void test_gl_packet_split_by_a_context_switch(void)
     g_assert_cmphex(gl_window_pixel(qts, 1, 1), ==, 0xff00ff);
 }
 
+/*
+ * glColor3ub, glColor4ub and glVertex2i (mgras-gl-commands.md, vertex
+ * attributes): 0x34800203 and one word, 0x14800204 and one word,
+ * 0x58000008 and two ints.
+ */
+#define GL_COLOR3UB_HDR       0x34800203
+#define GL_COLOR4UB_HDR       0x14800204
+#define GL_VERTEX2I_HDR       0x58000008
+
+/* A flat triangle over window pixel (10, 10) in the current colour. */
+static void gl_corner_triangle(QTestState *qts)
+{
+    gl_word(qts, GL_BEGIN_TRIANGLES);
+    gl_vertex2f(qts, -1, -1);
+    gl_vertex2f(qts, 1, -1);
+    gl_vertex2f(qts, -1, 1);
+    gl_word(qts, GL_END_TRIANGLES);
+}
+
+/*
+ * colorbars (run irix-20260928T004550-1040f3, from seq 26371573) sends its
+ * bars' colours as glColor3ub words 0x87878700, 0x87870000, 0x00878700,
+ * 0x00870000, 0x87008700 and 0x87000000: white, yellow, cyan, green,
+ * magenta and red at 0x87, so the three bytes arrive red first from bit
+ * 31. A byte converts to byte / 255 (OpenGL 1.2.1, table 2.6), so 0x80
+ * stays 0x80 in an eight-bit channel. The fourth byte of glColor4ub is
+ * alpha, which follows from that order; noof's constant 0x00000060 is
+ * consistent with it.
+ */
+static void test_gl_color_bytes_unpack_red_first(void)
+{
+    mgras_reset();
+
+    mgras_enter_gl_window(qts, 256, 640, 128, 128, 0x11);
+    gl_viewport(qts, 0, 0, 128, 128);
+    gl_one(qts, GL_SHADE_MODEL_HDR, GL_FLAT);
+    gl_one(qts, GL_COLOR3UB_HDR, 0xff800100);
+    gl_corner_triangle(qts);
+    g_assert_cmphex(gl_window_pixel(qts, 10, 10), ==, 0xff8001);
+
+    gl_one(qts, GL_COLOR4UB_HDR, 0x2040c0ff);
+    gl_corner_triangle(qts);
+    g_assert_cmphex(gl_window_pixel(qts, 10, 10), ==, 0x2040c0);
+
+    /* The one payload word was consumed: the next word is a header. */
+    gl_one(qts, GL_COLOR3UB_HDR, 0x00ff0000);
+    gl_word(qts, MGRAS_FENCE_TOKEN);
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_FLAGS) & MGRAS_HQ_FLAG_FENCE, ==,
+                    MGRAS_HQ_FLAG_FENCE);
+    gl_corner_triangle(qts);
+    g_assert_cmphex(gl_window_pixel(qts, 10, 10), ==, 0x00ff00);
+}
+
+/*
+ * The probe's triangle, sent as glVertex2i window units through
+ * glOrtho(0, 128, 0, 128, -1, 1), draws the triangle case's pixels.
+ */
+static void test_gl_vertex2i_matches_the_reference(void)
+{
+    static const int32_t v[3][2] = { { 16, 16 }, { 112, 24 }, { 56, 111 } };
+    g_autofree uint32_t *rgb = NULL;
+
+    mgras_reset();
+    mgras_enter_gl_window(qts, 256, 640, 128, 128, 0x11);
+    qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x1e, 0x4));
+    gl_viewport(qts, 0, 0, 128, 128);
+    gl_window_projection(qts);
+    gl_one(qts, GL_MATRIX_MODE_HDR, GL_MODELVIEW);
+    gl_clear_color(qts, 0, 0, 1, 1);
+    gl_word(qts, GL_CLEAR_COLOR_BUFFER);
+    gl_one(qts, GL_SHADE_MODEL_HDR, GL_FLAT);
+    gl_color3f(qts, 1, 1, 0);
+    gl_word(qts, GL_BEGIN_TRIANGLES);
+    for (int i = 0; i < 3; i++) {
+        gl_word(qts, GL_VERTEX2I_HDR);
+        gl_word(qts, v[i][0]);
+        gl_word(qts, v[i][1]);
+    }
+    gl_word(qts, GL_END_TRIANGLES);
+    rgb = mgras_screendump(qts);
+    gl_check_spans(rgb, gl_triangle_spans, ARRAY_SIZE(gl_triangle_spans),
+                   0xffff00, 0x0000ff);
+}
+
 static void test_hq_flags_fence_token_sets_bit(void)
 {
     mgras_reset();
@@ -9327,6 +9411,10 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/origin2000/mgras/"
                    "gl-packet-split-by-a-context-switch",
                    test_gl_packet_split_by_a_context_switch);
+    qtest_add_func("sn0/origin2000/mgras/gl-color-bytes-unpack-red-first",
+                   test_gl_color_bytes_unpack_red_first);
+    qtest_add_func("sn0/origin2000/mgras/gl-vertex2i-matches-the-reference",
+                   test_gl_vertex2i_matches_the_reference);
     qtest_add_func("sn0/origin2000/mgras/gl-triangle-spans-a-context-switch",
                    test_gl_triangle_spans_a_context_switch);
     qtest_add_func("sn0/origin2000/mgras/hq-flags-set-and-clear",
