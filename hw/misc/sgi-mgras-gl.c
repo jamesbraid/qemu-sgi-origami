@@ -154,7 +154,9 @@
  * the image is not word aligned the client sets bits 23:22 of the block
  * header to the image's byte offset in its first word and sends one word
  * more, from the word holding the first byte. A zero word follows when
- * the length is odd. gr_osview's 94 bitmaps in the survey run
+ * the number of words sent is odd: when the length is odd for an aligned
+ * image, and when it is even for one with an offset (0xd9c1e3c-0xd9c1e50
+ * and 0xd9c1d00-0xd9c1d14). gr_osview's 94 bitmaps in the survey run
  * (irix-20260928T004550-1040f3) are all this form: flags 0x1800f, width
  * 16, height 1 or 2, one data word and the zero word. The other paths,
  * for a larger image or other unpack state (0x9114, 0x9008 with raster
@@ -171,7 +173,8 @@
  * that the board moves the raster position by xmove and ymove, which the
  * client does not do itself on this path but sends 0x9208 for on the
  * other. The flags word's bits 16:14, (8 - ceil(width / 8) % 8) % 8, and
- * bits 3:0, 0xf, are unknown; the model does not use them.
+ * bits 3:0, 0xf, are established as values; their meaning is unknown, and
+ * the model does not use them.
  */
 #define MGRAS_GL_BITMAP          0x00009420
 #define MGRAS_GL_BITMAP_OP       0x94
