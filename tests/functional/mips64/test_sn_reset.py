@@ -93,12 +93,13 @@ from pathlib import Path
 from lib_mips import (R_S0, R_S1, R_S2, R_S3, R_S4, R_T0, R_T1, R_T2, R_T3,
                       R_T4, R_T5, R_ZERO, RESET_RE, TRACE_RE, WRITE_RE,
                       MipsProgram, mips_i, mips_r, reset_windows)
-from lib_prom import MACHINES, require_assets
+from lib_prom import MACHINES
 
 from qemu_test import QemuSystemTest
 from qemu_test import exec_command_and_wait_for_pattern
 from qemu_test import skipIfMissingEnv
 from qemu_test import wait_for_console_pattern
+from qemu_test.asset import LocalAsset
 
 # Shared uncached RAM at physical 0x30000, reached through xkphys. Memory
 # survives the reset, which is how each boot knows which cycle it is in.
@@ -796,6 +797,10 @@ def shutdown_windows(log):
 
 class SN1L1Reset(_ResetCycleMixin, QemuSystemTest):
 
+    ASSET_FIRMWARE = LocalAsset(
+        IP35_FIRMWARE_REL,
+        '554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b')
+
     def wait_for_spinners(self, previous):
         deadline = time.monotonic() + 60
         while time.monotonic() < deadline:
@@ -807,7 +812,7 @@ class SN1L1Reset(_ResetCycleMixin, QemuSystemTest):
         self.fail(f'console spinners did not advance from {previous}: {state}')
 
     def run_resets(self, *accelerator):
-        prom = require_assets(self, IP35_FIRMWARE_REL)[IP35_FIRMWARE_REL]
+        prom = self.ASSET_FIRMWARE.fetch()
 
         self.set_machine(MACHINES['origin300'])
         slice_a = self.scratch_file('sn1-l1-reset-a.bin')
@@ -845,7 +850,7 @@ class SN1L1Reset(_ResetCycleMixin, QemuSystemTest):
         return Path(log).read_text(errors='replace')
 
     def run_console_power_cycles(self):
-        prom = require_assets(self, IP35_FIRMWARE_REL)[IP35_FIRMWARE_REL]
+        prom = self.ASSET_FIRMWARE.fetch()
 
         self.set_machine(MACHINES['origin300'])
         slice_a = self.scratch_file('sn1-l1-console-a.bin')
