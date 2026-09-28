@@ -105,6 +105,18 @@ void sgi_scanout_reset(SGIScanout *s);
 /* Virtual time of retrace n of the current mode, or -1 with no retrace. */
 int64_t sgi_scanout_retrace_time(const SGIScanout *s, uint64_t n);
 
+/*
+ * Put the next retrace at virtual time when, with the ones after it a
+ * period apart. The retrace count carries on from where it is. For a
+ * family whose own migration stream holds the retrace phase: it calls this
+ * from its post_load, after the scanout's, so the destination neither
+ * replays every retrace since its own reset nor drifts off the source's
+ * phase. A when already past fires at once, and so does every retrace
+ * between it and now. With no retrace in the current mode this does
+ * nothing.
+ */
+void sgi_scanout_set_next_retrace(SGIScanout *s, int64_t when);
+
 void sgi_scanout_invalidate(SGIScanout *s, int first, int count);
 void sgi_scanout_invalidate_all(SGIScanout *s);
 /*

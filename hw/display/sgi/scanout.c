@@ -77,6 +77,21 @@ static void sgi_scanout_restart(SGIScanout *s)
     sgi_scanout_arm(s);
 }
 
+void sgi_scanout_set_next_retrace(SGIScanout *s, int64_t when)
+{
+    int64_t next = sgi_scanout_retrace_time(s, s->frames + 1);
+
+    if (next < 0) {
+        return;
+    }
+    /*
+     * Move the epoch rather than restart the count, so retrace n stays
+     * epoch plus n periods and the next one, frames + 1, lands on when.
+     */
+    s->epoch = when - (next - s->epoch);
+    sgi_scanout_arm(s);
+}
+
 static void sgi_scanout_retrace(void *opaque)
 {
     SGIScanout *s = opaque;
