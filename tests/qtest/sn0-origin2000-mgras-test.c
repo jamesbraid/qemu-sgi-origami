@@ -7605,6 +7605,39 @@ typedef struct GlPrimCase {
 #define GL_END_OF(begin)      ((begin) + 0x0a00)
 
 static const GlPrimCase gl_prim_cases[] = {
+    { "points",
+      "482d539f231a1f18291197f2e286d821c3f1a50de839fd6ca2d06492bed83d1c",
+      GL_BEGIN_POINTS, GL_PRIM_FLOAT, { { GL_PRIM_DRAW } }, 6,
+      { { 10.25f, 10.75f, { 255, 0, 0 } }, { 20.5f, 100.5f, { 0, 255, 0 } },
+        { 64.75f, 64.25f, { 255, 255, 0 } },
+        { 100.125f, 30.875f, { 255, 255, 255 } },
+        { 120.5f, 120.5f, { 255, 0, 255 } },
+        { 5.5f, 60.25f, { 0, 255, 255 } } } },
+    { "lines",
+      "0d557e4410ce6f4690519f5133090dde422327cc709289730388558035cf0ef0",
+      GL_BEGIN_LINES, GL_PRIM_FLOAT, { { GL_PRIM_DRAW } }, 8,
+      { { 10.5f, 20.5f, { 255, 0, 0 } }, { 60.5f, 20.5f, { 255, 255, 0 } },
+        { 30.25f, 40.875f, { 255, 0, 0 } },
+        { 30.25f, 110.125f, { 0, 255, 0 } },
+        { 15.25f, 30.125f, { 255, 0, 0 } },
+        { 110.625f, 70.28125f, { 255, 255, 255 } },
+        { 70.375f, 120.25f, { 255, 0, 0 } },
+        { 90.53125f, 35.59375f, { 0, 255, 255 } } } },
+    { "line-strip",
+      "000abf8ff15b541f2dc2cefc10606cadad946b5ae9d47d15f8334271a602d7e7",
+      GL_BEGIN_LINE_STRIP, GL_PRIM_FLOAT, { { GL_PRIM_DRAW } }, 5,
+      { { 8.15625f, 9.40625f, { 255, 0, 0 } },
+        { 62.15625f, 36.40625f, { 255, 255, 0 } },
+        { 102.15625f, 6.40625f, { 0, 255, 0 } },
+        { 117.15625f, 81.40625f, { 255, 255, 255 } },
+        { 37.15625f, 111.40625f, { 255, 0, 255 } } } },
+    { "line-loop",
+      "c5aa30dcc66e8c98bdbf708e77ca5767ff3fc302f670db1d1034fd2d315c1cf6",
+      GL_BEGIN_LINE_LOOP, GL_PRIM_FLOAT, { { GL_PRIM_DRAW } }, 4,
+      { { 20.15625f, 20.75f, { 255, 0, 0 } },
+        { 100.15625f, 30.75f, { 255, 255, 0 } },
+        { 90.15625f, 100.75f, { 0, 255, 0 } },
+        { 30.15625f, 90.75f, { 255, 255, 255 } } } },
     { "triangle-strip",
       "ba7ee78db90a8f00ea0a6df54de7578922e0021e3b05c78afe84388320e27cae",
       GL_BEGIN_TRI_STRIP, GL_PRIM_FLOAT, { { GL_PRIM_DRAW } }, 6,
@@ -7834,6 +7867,92 @@ static void test_gl_strip_spans_a_context_switch(void)
     gl_word(qts, GL_END_OF(GL_BEGIN_TRI_STRIP));
     g_assert_cmphex(gl_window_pixel(qts, 20, 20), ==, 0xffff00);
     g_assert_cmphex(gl_window_pixel(qts, 50, 90), ==, 0xff00ff);
+}
+
+/*
+ * The diamond-exit rule (OpenGL 1.2.1, 3.4.1) keeps a segment's starting
+ * pixel and leaves out the one it ends in, so a strip's shared vertex is
+ * drawn once, by the segment leaving it. A segment from centre (10.5,
+ * 20.5) to centre (14.5, 20.5) covers columns 10 to 13, and one back
+ * covers 11 to 14.
+ */
+static void test_gl_line_leaves_out_its_last_pixel(void)
+{
+    gl_transform_start(qts);
+    gl_clear_color(qts, 0, 0, 0, 1);
+    gl_word(qts, GL_CLEAR_COLOR_BUFFER);
+    gl_color3f(qts, 1, 1, 1);
+    gl_word(qts, GL_BEGIN_LINES);
+    gl_vertex2f(qts, 10.5f, 20.5f);
+    gl_vertex2f(qts, 14.5f, 20.5f);
+    gl_vertex2f(qts, 14.5f, 30.5f);
+    gl_vertex2f(qts, 10.5f, 30.5f);
+    gl_word(qts, GL_END_OF(GL_BEGIN_LINES));
+    for (int x = 9; x <= 15; x++) {
+        g_assert_cmphex(gl_window_pixel(qts, x, 20), ==,
+                        x >= 10 && x <= 13 ? 0xffffff : 0);
+        g_assert_cmphex(gl_window_pixel(qts, x, 30), ==,
+                        x >= 11 && x <= 14 ? 0xffffff : 0);
+    }
+}
+
+/*
+ * Approximated: like a triangle's, a segment's fragments are bounded by
+ * the viewport instead of the segment being clipped to the view volume.
+ * A segment across a 32-pixel viewport's right edge stops at column 31.
+ */
+static void test_gl_line_bounded_by_the_viewport(void)
+{
+    gl_transform_start(qts);
+    gl_clear_color(qts, 0, 0, 0, 1);
+    gl_word(qts, GL_CLEAR_COLOR_BUFFER);
+    gl_viewport(qts, 0, 0, 32, 32);
+    gl_color3f(qts, 1, 1, 1);
+    gl_word(qts, GL_BEGIN_LINES);
+    gl_vertex2f(qts, 8.5f, 8.5f);
+    gl_vertex2f(qts, 180.5f, 8.5f);
+    gl_word(qts, GL_END_OF(GL_BEGIN_LINES));
+    /* Window units under glOrtho(0, 128) in a 32-pixel viewport: / 4. */
+    g_assert_cmphex(gl_window_pixel(qts, 2, 2), ==, 0xffffff);
+    g_assert_cmphex(gl_window_pixel(qts, 31, 2), ==, 0xffffff);
+    g_assert_cmphex(gl_window_pixel(qts, 32, 2), ==, 0);
+    g_assert_cmphex(gl_window_pixel(qts, 40, 2), ==, 0);
+}
+
+/*
+ * A segment's fragments take depth and smooth colour at t, the centre's
+ * projection onto the segment (3.4.1). A red-to-green segment from depth
+ * -1 to 1 across a depth-tested white triangle at depth 0 shows in front
+ * of it only on its first half, with the colour a quarter of the way at
+ * a quarter of its length.
+ */
+static void test_gl_line_depth_and_colour_follow_t(void)
+{
+    gl_transform_start(qts);
+    gl_clear_color(qts, 0, 0, 0, 1);
+    gl_word(qts, GL_CLEAR_COLOR_BUFFER);
+    gl_one(qts, GL_CLEAR_DEPTH_HDR, GL_DEPTH_ONE);
+    gl_word(qts, GL_CLEAR_DEPTH_BUFFER);
+    gl_one(qts, GL_DEPTH_TEST_HDR, 1);
+    gl_one(qts, GL_DEPTH_FUNC_HDR, GL_DEPTH_LESS);
+    gl_color3f(qts, 1, 1, 1);
+    gl_word(qts, GL_BEGIN_TRIANGLES);
+    gl_vertex3f(qts, 0, 0, 0);
+    gl_vertex3f(qts, 127, 0, 0);
+    gl_vertex3f(qts, 0, 127, 0);
+    gl_word(qts, GL_END_TRIANGLES);
+    gl_one(qts, GL_SHADE_MODEL_HDR, GL_SMOOTH);
+    gl_word(qts, GL_BEGIN_LINES);
+    gl_color3f(qts, 1, 0, 0);
+    /* glOrtho's near plane is at z = -1 in object units, window z 0. */
+    gl_vertex3f(qts, 8.5f, 40.5f, 0.9375f);
+    gl_color3f(qts, 0, 1, 0);
+    gl_vertex3f(qts, 72.5f, 40.5f, -0.9375f);
+    gl_word(qts, GL_END_OF(GL_BEGIN_LINES));
+    /* Column 24 is t 0.25: 191.25 red and 63.75 green round to bf40. */
+    g_assert_cmphex(gl_window_pixel(qts, 24, 40), ==, 0xbf4000);
+    /* Past the middle the segment lies behind the triangle. */
+    g_assert_cmphex(gl_window_pixel(qts, 56, 40), ==, 0xffffff);
 }
 
 static void test_hq_flags_fence_token_sets_bit(void)
@@ -9886,6 +10005,12 @@ int main(int argc, char **argv)
                    test_gl_quad_splits_from_its_first_vertex);
     qtest_add_func("sn0/origin2000/mgras/gl-strip-spans-a-context-switch",
                    test_gl_strip_spans_a_context_switch);
+    qtest_add_func("sn0/origin2000/mgras/gl-line-leaves-out-its-last-pixel",
+                   test_gl_line_leaves_out_its_last_pixel);
+    qtest_add_func("sn0/origin2000/mgras/gl-line-bounded-by-the-viewport",
+                   test_gl_line_bounded_by_the_viewport);
+    qtest_add_func("sn0/origin2000/mgras/gl-line-depth-and-colour-follow-t",
+                   test_gl_line_depth_and_colour_follow_t);
     for (size_t i = 0; i < ARRAY_SIZE(gl_prim_cases); i++) {
         g_autofree char *path = g_strdup_printf(
             "sn0/origin2000/mgras/gl-reference/%s", gl_prim_cases[i].name);
