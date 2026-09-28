@@ -99,7 +99,7 @@ print "{done}\\n";
 
 
 def run_bidirectional_fragmented_udp(test, adapter, device_model,
-                                    configured_mac):
+                                    configured_mac, guest_ifname=None):
     """Run the native fragmented UDP exchange against one SGI adapter."""
     guest_tx_path = GUEST_TX_PATH.replace("eg", adapter)
     guest_rx_path = GUEST_RX_PATH.replace("eg", adapter)
@@ -129,11 +129,16 @@ def run_bidirectional_fragmented_udp(test, adapter, device_model,
             "-serial", "none", "-serial", "chardev:elsc",
             "-drive", f"if=none,id=disk0,file={disk},format=qcow2",
             "-device", "scsi-hd,bus=scsi.0,scsi-id=1,lun=0,drive=disk0",
-            "-snapshot", "-nic", "none",
-            "-netdev", f"socket,id=netdev,fd={qemu_socket.fileno()}",
-            "-device", (f"{device_model},netdev=netdev,addr=4,mac="
+            "-snapshot")
+        if device_model is None:
+            vm.add_args("-nic", f"socket,fd={qemu_socket.fileno()},mac="
                         f"{configured_mac.hex(':')}")
-        )
+        else:
+            vm.add_args(
+                "-nic", "none",
+                "-netdev", f"socket,id=netdev,fd={qemu_socket.fileno()}",
+                "-device", (f"{device_model},netdev=netdev,addr=4,mac="
+                            f"{configured_mac.hex(':')}"))
         vm.launch()
         qemu_socket.close()
         con = IrixConsole(vm.console_socket,
@@ -143,9 +148,7 @@ def run_bidirectional_fragmented_udp(test, adapter, device_model,
         if adapter == "eg":
             test.assertEqual(con.run("egconfig -f 1 eg0", "egconfig",
                                      STEP_TIMEOUT_SECONDS), 0)
-            guest_ifname = "eg0"
-        else:
-            guest_ifname = "tg1"
+        guest_ifname = guest_ifname or ("eg0" if adapter == "eg" else "tg1")
         test.assertEqual(con.run(
             f"ifconfig {guest_ifname} inet {GUEST_IP} "
             "netmask 0xffffff00 up", "ifup", STEP_TIMEOUT_SECONDS), 0)
@@ -182,9 +185,10 @@ def run_bidirectional_fragmented_udp(test, adapter, device_model,
                             "guest fragment source MAC is zero")
         test.assertEqual(guest_mac[0] & 1, 0,
                          "guest fragment source MAC is multicast")
-        if adapter == "eg":
+        if adapter == "eg" or guest_ifname == "ef0":
             test.assertEqual(guest_mac, configured_mac,
-                             "eg fragment source differs from configured MAC")
+                             f"{guest_ifname} fragment source differs from "
+                             "configured MAC")
 
         test.assertEqual(con.run(f"rm -f {guest_rx_data}", "rxrm",
                                  STEP_TIMEOUT_SECONDS), 0)
@@ -201,6 +205,11 @@ def run_bidirectional_fragmented_udp(test, adapter, device_model,
             PEER_TX_PORT, GUEST_RX_PORT, PEER_PAYLOAD, mtu=1500,
             ident=0x4f52)
         test.assertGreaterEqual(len(peer_frames), 2)
+        peer_fragment_count = reassemble_udp_fragments(
+            peer_frames, PEER_IP, GUEST_IP, PEER_TX_PORT, GUEST_RX_PORT,
+            PEER_PAYLOAD)
+        test.assertEqual(peer_fragment_count, len(peer_frames),
+                         "peer UDP fragments have invalid ranges or payload")
         for frame in peer_frames:
             peer.send(frame)
         con.expect(re.escape(source_marker + "=10.0.2.2:51102").encode(),
