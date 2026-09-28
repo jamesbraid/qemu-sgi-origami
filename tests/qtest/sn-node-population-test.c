@@ -134,31 +134,99 @@ static int64_t qom_get_int(QTestState *qts, const char *path,
     return qdict_get_int(response, "return");
 }
 
-/*
- * The Router port at each end of a cable, from 108-0170-001 Table 6-1:
- * Router 1 port 5 to n1, 4 to n2 and 6 to Router 2's port 6; Router 2
- * port 5 to n3 and 4 to n4. A Hub's end is its one port, 0, and so are
- * both ends of a Null Router.
- */
-static void assert_cable_ports(QTestState *qts, const char *path,
-                               const char *name)
+static char *qom_get_link(QTestState *qts, const char *path,
+                          const char *property)
 {
-    static const struct {
-        const char *name;
-        unsigned int end0, end1;
-    } ports[] = {
-        { "r1-node1", 5, 0 }, { "r1-node2", 4, 0 }, { "r1-r2", 6, 6 },
-        { "r2-node3", 5, 0 }, { "r2-node4", 4, 0 }, { "null-router", 0, 0 },
-    };
+    g_autoptr(QDict) response = qtest_qmp(qts,
+        "{ 'execute': 'qom-get', 'arguments': {"
+        "  'path': %s, 'property': %s } }", path, property);
 
-    for (size_t i = 0; i < G_N_ELEMENTS(ports); i++) {
-        if (g_str_equal(ports[i].name, name)) {
-            g_assert_cmpint(qom_get_int(qts, path, "end0-index"), ==,
-                            ports[i].end0);
-            g_assert_cmpint(qom_get_int(qts, path, "end1-index"), ==,
-                            ports[i].end1);
+    return g_strdup(qdict_get_str(response, "return"));
+}
+
+/*
+ * One end of a cable: the Hub or Router it plugs into, the port there,
+ * and the property through which that device refers back to the cable.
+ */
+typedef struct CableEnd {
+    const char *device;
+    unsigned int port;
+    const char *back;
+} CableEnd;
+
+/*
+ * Each cable's two ends, from 108-0170-001 Table 6-1: Router 1 port 5
+ * to node board n1, 4 to n2 and 6 to Router 2's port 6; Router 2 port 5
+ * to n3 and 4 to n4. Node board nK is /machine/node<K-1>, whose Hub has
+ * one port, 0, and Router 1 and 2 are /machine/router0 and router1. A
+ * Null Router joins n1's Hub to n2's, port 0 at each end; the manual
+ * gives the cable no direction, so either order passes.
+ */
+static const struct {
+    const char *name;
+    CableEnd end[2];
+} cable_ends[] = {
+    { "r1-node1", { { "/machine/router0", 5, "port5-cable" },
+                    { "/machine/node0/hub", 0, "net-cable" } } },
+    { "r1-node2", { { "/machine/router0", 4, "port4-cable" },
+                    { "/machine/node1/hub", 0, "net-cable" } } },
+    { "r1-r2", { { "/machine/router0", 6, "port6-cable" },
+                 { "/machine/router1", 6, "port6-cable" } } },
+    { "r2-node3", { { "/machine/router1", 5, "port5-cable" },
+                    { "/machine/node2/hub", 0, "net-cable" } } },
+    { "r2-node4", { { "/machine/router1", 4, "port4-cable" },
+                    { "/machine/node3/hub", 0, "net-cable" } } },
+    { "null-router", { { "/machine/node0/hub", 0, "net-cable" },
+                       { "/machine/node1/hub", 0, "net-cable" } } },
+};
+
+/*
+ * Whether @path's end @side is @end: the device the cable's own link
+ * names, the port index, and the device's own reference back to it.
+ */
+static bool cable_end_is(QTestState *qts, const char *path,
+                         unsigned int side, const CableEnd *end)
+{
+    g_autofree char *link_prop = g_strdup_printf("end%u", side);
+    g_autofree char *index_prop = g_strdup_printf("end%u-index", side);
+    g_autofree char *device = qom_get_link(qts, path, link_prop);
+    g_autofree char *back = NULL;
+
+    if (!g_str_equal(device, end->device) ||
+        qom_get_int(qts, path, index_prop) != end->port) {
+        return false;
+    }
+    back = qom_get_link(qts, end->device, end->back);
+    return g_str_equal(back, path);
+}
+
+static void assert_cable_ends(QTestState *qts, const char *path,
+                              const char *name)
+{
+    for (size_t i = 0; i < G_N_ELEMENTS(cable_ends); i++) {
+        const CableEnd *end = cable_ends[i].end;
+        bool unordered = g_str_equal(name, "null-router");
+        g_autofree char *end0 = NULL;
+        g_autofree char *end1 = NULL;
+
+        if (!g_str_equal(cable_ends[i].name, name)) {
+            continue;
+        }
+        if (cable_end_is(qts, path, 0, &end[0]) &&
+            cable_end_is(qts, path, 1, &end[1])) {
             return;
         }
+        if (unordered && cable_end_is(qts, path, 0, &end[1]) &&
+            cable_end_is(qts, path, 1, &end[0])) {
+            return;
+        }
+        end0 = qom_get_link(qts, path, "end0");
+        end1 = qom_get_link(qts, path, "end1");
+        g_test_message("cable %s joins %s port %" PRId64 " to %s port %"
+                       PRId64, name, end0,
+                       qom_get_int(qts, path, "end0-index"), end1,
+                       qom_get_int(qts, path, "end1-index"));
+        g_assert_not_reached();
     }
     g_assert_not_reached();
 }
@@ -218,7 +286,7 @@ static void test_population(const void *data)
         g_autofree char *path = g_strdup_printf("/machine/%s", c->cables[i]);
 
         g_assert_true(machine_has_child(qts, "/machine", c->cables[i]));
-        assert_cable_ports(qts, path, c->cables[i]);
+        assert_cable_ends(qts, path, c->cables[i]);
         cables++;
     }
     /* No cable beyond the row's: every cable name any row uses. */
