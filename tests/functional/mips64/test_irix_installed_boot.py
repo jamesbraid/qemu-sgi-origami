@@ -44,14 +44,10 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from lib_prom import (FORK_ROOT, MACHINES, drive_console, require_assets,
-                      run_record, utc_now)
-
-try:
-    from qemu_test import QemuSystemTest
-    from qemu_test import skipSlowTest, skipBigDataTest, skipIfMissingEnv
-except (ImportError, RuntimeError):
-    QemuSystemTest = None
+from lib_prom import FORK_ROOT, MACHINES, drive_console, run_record, utc_now
+from qemu_test import (QemuSystemTest, skipBigDataTest, skipIfMissingEnv,
+                       skipSlowTest)
+from qemu_test.asset import LocalAsset
 
 
 RELEASE = "6.5.30"
@@ -104,84 +100,90 @@ SHUTDOWN_STARTED_RE = re.compile(rb"Shutdown started")
 #   uname -aR: "IRIX64 irix4p-prom 6.5 6.5.30m 07202013 IP27"
 RUN_LEVEL_TEXT = "run-level 2"
 UNAME_RE = re.compile(r"IRIX64.*6\.5\.30m.*IP27")
+PROM_SHA256 = (
+    'c2c69bf33c375b43ec7ac511fab41ddf595be1b6838ae717e58a9a1273437fdd')
+DISK_SHA256 = (
+    '15b4bc1992845b6242948a9e944ce39682b7decdaee1e5474579418fb3a19c12')
 
 
-if QemuSystemTest is not None:
+class IrixInstalledBoot(QemuSystemTest):
+    """Boots the plain installed IRIX disk, logs in, and requires the
+    system to have reached run level 2 under its own release and
+    platform identity, then shuts down cleanly."""
 
-    class IrixInstalledBoot(QemuSystemTest):
-        """Boots the plain installed IRIX disk, logs in, and requires the
-        system to have reached run level 2 under its own release and
-        platform identity, then shuts down cleanly."""
+    # Pin the stock installed disk and matching release PROM documented by
+    # the captured test inputs; guest assertions describe its expected state.
+    ASSET_PROM = LocalAsset(FIRMWARE_REL, PROM_SHA256)
+    ASSET_DISK = LocalAsset(DISK_REL, DISK_SHA256)
 
-        @skipBigDataTest()
-        @skipSlowTest()
-        @skipIfMissingEnv('QEMU_TEST_SGI_ASSET_DIR')
-        def test_irix_installed_boot(self):
-            assets = require_assets(self, FIRMWARE_REL, DISK_REL)
-            prom, disk = assets[FIRMWARE_REL], assets[DISK_REL]
+    @skipBigDataTest()
+    @skipSlowTest()
+    @skipIfMissingEnv('QEMU_TEST_SGI_ASSET_DIR')
+    def test_irix_installed_boot(self):
+        prom = self.ASSET_PROM.fetch()
+        disk = self.ASSET_DISK.fetch()
 
-            vm = self.get_vm(name='irix_installed_boot')
-            vm.set_machine(MACHINES['origin200'])
-            vm.set_console()
-            vm.add_args(
-                '-accel', 'tcg,thread=single',
-                '-cpu', 'R10000', '-smp', '1', '-m', str(MEMORY_MIB),
-                '-bios', str(prom),
-                '-audio', 'none',
-                '-drive',
-                f'if=none,id=disk0,file={disk},format=qcow2,snapshot=on',
-                '-device', 'scsi-hd,bus=scsi.0,scsi-id=1,lun=0,drive=disk0',
-                '-nic', 'user,id=net0')
+        vm = self.get_vm(name='irix_installed_boot')
+        vm.set_machine(MACHINES['origin200'])
+        vm.set_console()
+        vm.add_args(
+            '-accel', 'tcg,thread=single',
+            '-cpu', 'R10000', '-smp', '1', '-m', str(MEMORY_MIB),
+            '-bios', str(prom),
+            '-audio', 'none',
+            '-drive',
+            f'if=none,id=disk0,file={disk},format=qcow2,snapshot=on',
+            '-device', 'scsi-hd,bus=scsi.0,scsi-id=1,lun=0,drive=disk0',
+            '-nic', 'user,id=net0')
 
-            started = utc_now()
-            vm.launch()
-            log_path = self.log_file('irix-installed-boot.log')
-            try:
-                transcript, reached = drive_console(
-                    vm.console_socket, log_path, BOOT_TIMEOUT_SECONDS,
-                    DRIVER_STEPS, reached_when=(
-                        lambda t: bool(SHUTDOWN_STARTED_RE.search(t))),
-                    vm=vm)
-            finally:
-                vm.shutdown(hard=vm.exitcode() is not None)
-            ended = utc_now()
+        started = utc_now()
+        vm.launch()
+        log_path = self.log_file('irix-installed-boot.log')
+        try:
+            transcript, reached = drive_console(
+                vm.console_socket, log_path, BOOT_TIMEOUT_SECONDS,
+                DRIVER_STEPS, reached_when=(
+                    lambda t: bool(SHUTDOWN_STARTED_RE.search(t))),
+                vm=vm)
+        finally:
+            vm.shutdown(hard=vm.exitcode() is not None)
+        ended = utc_now()
 
-            if not transcript:
-                self.fail(
-                    'the guest printed nothing at all -- a run that did '
-                    'not start, not a boot that failed early')
+        if not transcript:
+            self.fail(
+                'the guest printed nothing at all -- a run that did '
+                'not start, not a boot that failed early')
 
-            run_level_seen = RUN_LEVEL_TEXT in transcript
-            uname_match = UNAME_RE.search(transcript)
+        run_level_seen = RUN_LEVEL_TEXT in transcript
+        uname_match = UNAME_RE.search(transcript)
 
-            run_path = self.log_file('run.json')
-            with open(run_path, 'w', encoding='utf-8') as run_file:
-                json.dump({
-                    'schema': 1, 'started_utc': started, 'ended_utc': ended,
-                    'console_driver_reached_shutdown': reached,
-                    'timeout_seconds': BOOT_TIMEOUT_SECONDS,
-                    'run_level_seen': run_level_seen,
-                    'uname_line': (uname_match.group(0)
-                                  if uname_match else None),
-                    'identity': run_record(FORK_ROOT, self.qemu_bin,
-                                          prom=prom, disk=disk),
-                }, run_file, indent=2, sort_keys=True)
-                run_file.write('\n')
+        run_path = self.log_file('run.json')
+        with open(run_path, 'w', encoding='utf-8') as run_file:
+            json.dump({
+                'schema': 1, 'started_utc': started, 'ended_utc': ended,
+                'console_driver_reached_shutdown': reached,
+                'timeout_seconds': BOOT_TIMEOUT_SECONDS,
+                'run_level_seen': run_level_seen,
+                'uname_line': (uname_match.group(0)
+                              if uname_match else None),
+                'identity': run_record(FORK_ROOT, self.qemu_bin,
+                                      prom=prom, disk=disk),
+            }, run_file, indent=2, sort_keys=True)
+            run_file.write('\n')
 
-            self.assertIn(
-                RUN_LEVEL_TEXT, transcript,
-                "who -r never reported run-level 2 -- console log: "
-                f"{log_path}, run record: {run_path}")
-            self.assertRegex(
-                transcript, UNAME_RE,
-                "uname -aR never reported IRIX64 ... 6.5.30m ... IP27 -- "
-                f"console log: {log_path}, run record: {run_path}")
-            self.assertTrue(
-                reached,
-                "the guest never confirmed a clean shutdown after login "
-                f"-- console log: {log_path}, run record: {run_path}")
+        self.assertIn(
+            RUN_LEVEL_TEXT, transcript,
+            "who -r never reported run-level 2 -- console log: "
+            f"{log_path}, run record: {run_path}")
+        self.assertRegex(
+            transcript, UNAME_RE,
+            "uname -aR never reported IRIX64 ... 6.5.30m ... IP27 -- "
+            f"console log: {log_path}, run record: {run_path}")
+        self.assertTrue(
+            reached,
+            "the guest never confirmed a clean shutdown after login "
+            f"-- console log: {log_path}, run record: {run_path}")
 
 
 if __name__ == '__main__':
-    if QemuSystemTest is not None:
-        QemuSystemTest.main()
+    QemuSystemTest.main()
