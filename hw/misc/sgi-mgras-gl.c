@@ -12,9 +12,9 @@
  * What it preserves: the pixels that colour and depth clears, untextured
  * points, lines, triangles, strips, fans, quads and polygons, at size and
  * width 1, flat or smooth shaded, transformed by the modelview and
- * projection matrices and their stacks and depth tested, leave in the
- * window's front or back buffer, in RGBA or colour-index mode, and the
- * main-port framing,
+ * projection matrices and their stacks and depth tested, and bitmaps,
+ * leave in the window's front or back buffer, in RGBA or colour-index
+ * mode, and the main-port framing,
  * so the words after a packet still parse as headers. What it does not: the
  * raster-engine register writes the GE would make, the timing of the
  * work, any GE state visible to a later readback, and every command
@@ -141,6 +141,48 @@
 #define MGRAS_GL_INDEX_MASK      0x00003d04
 #define MGRAS_GL_CLEAR_INDEX     0x0000bd04
 
+/*
+ * glBitmap (__glMgrim_Bitmap 0xd9c1b70, and __glMgrRenderBitmap 0xd9c1e70
+ * for a display list). In render mode, with glPixelStore's unpack state at
+ * its defaults but an alignment of one, and an image of at most 512
+ * words, the client writes 0x9420 and eight words: a flags word, the width
+ * and height as integers, xorig, yorig, xmove and ymove as floats, and the
+ * image's length in words, ceil(ceil(width / 8) * height / 4). An inline
+ * data block follows, 0x80000000 | length * 4, whose words
+ * __glMgr_PushPixels (0xdac61a0) copies from the application's image in
+ * memory order; a 64-bit store is two stream words, high first. When
+ * the image is not word aligned the client sets bits 23:22 of the block
+ * header to the image's byte offset in its first word and sends one word
+ * more, from the word holding the first byte. A zero word follows when
+ * the length is odd. gr_osview's 94 bitmaps in the survey run
+ * (irix-20260928T004550-1040f3) are all this form: flags 0x1800f, width
+ * 16, height 1 or 2, one data word and the zero word. The other paths,
+ * for a larger image or other unpack state (0x9114, 0x9008 with raster
+ * register records, then 0x9208 with xmove and ymove), are not modelled.
+ *
+ * Established from the listing: the packet's words and their order,
+ * the block's length and offset, and the bytes' order in the stream.
+ * Inferred: that the image is rows of ceil(width / 8) bytes from the
+ * bottom row up with the most significant bit leftmost (OpenGL 1.2.1,
+ * 3.6.4 and 3.7, glPixelStore's defaults; the client requires them before
+ * taking this path, and its other path sends the least-significant-first
+ * flag as bit 17 of the flags word, which this path leaves clear), that
+ * the set bits take the raster position's colour or index and depth, and
+ * that the board moves the raster position by xmove and ymove, which the
+ * client does not do itself on this path but sends 0x9208 for on the
+ * other. The flags word's bits 16:14, (8 - ceil(width / 8) % 8) % 8, and
+ * bits 3:0, 0xf, are unknown; the model does not use them.
+ */
+#define MGRAS_GL_BITMAP          0x00009420
+#define MGRAS_GL_BITMAP_OP       0x94
+#define MGRAS_GL_BITMAP_WORDS    8
+#define MGRAS_GL_BITMAP_LSB_FIRST 0x00020000
+/*
+ * __glMgrUpdateRasterPos (0xd9c9040) writes 0xd608 and two floats; the
+ * client's glBitmap calls it with xmove and ymove for an empty image, so
+ * it moves a valid raster position by them (inferred, 3.7).
+ */
+#define MGRAS_GL_MOVE_RASTER     0x0000d608
 
 /*
  * glShadeModel's and glMatrixMode's words are the OpenGL enumerants, and
@@ -305,6 +347,8 @@ bool sgi_mgras_gl_header(uint32_t header)
     case MGRAS_GL_INDEXF:
     case MGRAS_GL_INDEX_MASK:
     case MGRAS_GL_CLEAR_INDEX:
+    case MGRAS_GL_BITMAP:
+    case MGRAS_GL_MOVE_RASTER:
         return true;
     default:
         return false;
@@ -1023,6 +1067,34 @@ const VMStateDescription vmstate_sgi_mgras_gl_index = {
     }
 };
 
+/*
+ * The parser inside a glBitmap image, live or set aside with a context,
+ * keeps its place in the payload fields the stream already carries. A
+ * binary without the image's class would read its words as another
+ * packet's, so this empty section is sent while one is under way, for
+ * such a binary to refuse.
+ */
+static bool mgras_gl_block_needed(void *opaque)
+{
+    SGIMgrasState *s = opaque;
+    bool block = s->cmd_token_class == SGI_MGRAS_CMD_TOKEN_GL_BLOCK;
+
+    for (int i = 0; i < SGI_MGRAS_GL_CONTEXTS; i++) {
+        block |= s->gl_context[i].parser.cls == SGI_MGRAS_CMD_TOKEN_GL_BLOCK;
+    }
+    return block;
+}
+
+const VMStateDescription vmstate_sgi_mgras_gl_block = {
+    .name = TYPE_SGI_MGRAS "/gl-block",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = mgras_gl_block_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_END_OF_LIST()
+    }
+};
+
 bool sgi_mgras_cmd_parser_valid(uint32_t cls, uint32_t reg,
                                 uint32_t words_remaining,
                                 uint32_t payload_count)
@@ -1033,6 +1105,12 @@ bool sgi_mgras_cmd_parser_valid(uint32_t cls, uint32_t reg,
     }
     if (cls == SGI_MGRAS_CMD_TOKEN_DISCARD) {
         return words_remaining <= SGI_MGRAS_CMD_TOKEN_MAX_BLOCK_WORDS;
+    }
+    /* A block with an offset takes one word more than its length. */
+    if (cls == SGI_MGRAS_CMD_TOKEN_GL_BLOCK) {
+        return reg == MGRAS_GL_BITMAP_OP &&
+               payload_count == MGRAS_GL_BITMAP_WORDS &&
+               words_remaining <= SGI_MGRAS_CMD_TOKEN_MAX_BLOCK_WORDS + 1;
     }
     return words_remaining <= SGI_MGRAS_CMD_TOKEN_PAYLOAD_WORDS;
 }
@@ -1273,6 +1351,103 @@ static void mgras_gl_index(SGIMgrasState *s, float index)
     mgras_gl_command(s, SGI_GL_OP_INDEXF, &word, 1);
 }
 
+/*
+ * Where glBitmap's image is while its words arrive: the parser keeps the
+ * 0x9420 packet's eight words in its payload, and these slots after them,
+ * so a context switch inside the image carries them with the context's
+ * parser position.
+ */
+#define MGRAS_GL_BITMAP_PLACED   8
+#define MGRAS_GL_BITMAP_X        9
+#define MGRAS_GL_BITMAP_Y        10
+#define MGRAS_GL_BITMAP_SKIP     11
+#define MGRAS_GL_BITMAP_NEXT     12
+QEMU_BUILD_BUG_ON(MGRAS_GL_BITMAP_NEXT >= SGI_MGRAS_CMD_TOKEN_PAYLOAD_WORDS);
+
+static void mgras_gl_bitmap(SGIMgrasState *s, const uint32_t *payload)
+{
+    uint32_t *slot = s->cmd_token_payload;
+    int32_t width = payload[1], height = payload[2];
+    float f[4];
+    SGIGLBitmap b;
+    bool placed;
+
+    if ((payload[0] & MGRAS_GL_BITMAP_LSB_FIRST) ||
+        (payload[0] & 0xf) != 0xf) {
+        qemu_log_mask(LOG_UNIMP, "sgi-mgras: glBitmap flags 0x%x are not "
+                      "the form the client sends; drawn as that form\n",
+                      payload[0]);
+    }
+    if (width < 0 || height < 0) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: glBitmap of %d by %d "
+                      "ignored\n", width, height);
+        width = height = 0;
+    }
+    memcpy(f, &payload[3], sizeof(f));
+    placed = sgi_gl_bitmap_place(mgras_gl(s), width, height, f[0], f[1],
+                                 f[2], f[3], &b);
+    slot[MGRAS_GL_BITMAP_PLACED] = placed && width && height;
+    slot[MGRAS_GL_BITMAP_X] = placed ? b.x : 0;
+    slot[MGRAS_GL_BITMAP_Y] = placed ? b.y : 0;
+    slot[MGRAS_GL_BITMAP_SKIP] = 0;
+    slot[MGRAS_GL_BITMAP_NEXT] = 0;
+}
+
+bool sgi_mgras_gl_block(SGIMgrasState *s, uint32_t header)
+{
+    const uint32_t *slot = s->cmd_token_payload;
+    uint32_t offset = (header & SGI_MGRAS_CMD_BLOCK_OFFSET) >> 22;
+    uint32_t bytes = header & SGI_MGRAS_CMD_BLOCK_BYTES;
+
+    if (s->cmd_token_class != 0 || s->cmd_token_reg != MGRAS_GL_BITMAP_OP ||
+        s->cmd_token_payload_count != MGRAS_GL_BITMAP_WORDS) {
+        return false;
+    }
+    if (bytes != slot[7] * sizeof(uint32_t)) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: glBitmap image of %u "
+                      "bytes after a packet giving %u words\n", bytes,
+                      slot[7]);
+    }
+    s->cmd_token_class = SGI_MGRAS_CMD_TOKEN_GL_BLOCK;
+    s->cmd_token_words_remaining = DIV_ROUND_UP(offset + bytes,
+                                                sizeof(uint32_t));
+    s->cmd_token_payload[MGRAS_GL_BITMAP_SKIP] = offset;
+    if (!s->cmd_token_words_remaining) {
+        s->cmd_token_class = SGI_MGRAS_CMD_TOKEN_DISCARD;
+    }
+    return true;
+}
+
+void sgi_mgras_gl_block_word(SGIMgrasState *s, uint32_t word)
+{
+    uint32_t *slot = s->cmd_token_payload;
+    uint32_t first = slot[MGRAS_GL_BITMAP_NEXT], n = 0;
+    uint8_t bytes[4];
+
+    for (int i = 0; i < 4; i++) {
+        if (slot[MGRAS_GL_BITMAP_SKIP]) {
+            slot[MGRAS_GL_BITMAP_SKIP]--;
+            continue;
+        }
+        bytes[n++] = word >> (24 - 8 * i);
+    }
+    slot[MGRAS_GL_BITMAP_NEXT] += n;
+    if (slot[MGRAS_GL_BITMAP_PLACED] && n) {
+        SGIGLSink sink = mgras_gl_sink(s);
+        SGIGLBitmap b = {
+            .x = slot[MGRAS_GL_BITMAP_X],
+            .y = slot[MGRAS_GL_BITMAP_Y],
+            .width = slot[1],
+            .height = slot[2],
+        };
+
+        sgi_gl_bitmap_bytes(mgras_gl(s), &sink, &b, first, bytes, n);
+    }
+    if (!s->cmd_token_words_remaining) {
+        s->cmd_token_class = SGI_MGRAS_CMD_TOKEN_DISCARD;
+    }
+}
+
 void sgi_mgras_gl_execute(SGIMgrasState *s, uint32_t header,
                           const uint32_t *payload, uint32_t words)
 {
@@ -1460,6 +1635,17 @@ void sgi_mgras_gl_execute(SGIMgrasState *s, uint32_t header,
     case MGRAS_GL_CLEAR_INDEX:
         mgras_gl_command(s, SGI_GL_OP_CLEAR_INDEX, payload, 1);
         return;
+    case MGRAS_GL_BITMAP:
+        mgras_gl_bitmap(s, payload);
+        return;
+    case MGRAS_GL_MOVE_RASTER: {
+        SGIGLBitmap b;
+        float f[2];
+
+        memcpy(f, payload, sizeof(f));
+        sgi_gl_bitmap_place(mgras_gl(s), 0, 0, 0, 0, f[0], f[1], &b);
+        return;
+    }
     default:
         g_assert_not_reached();
     }

@@ -311,6 +311,11 @@ static void mgras_command_fifo_token(SGIMgrasState *s, uint32_t token)
     uint32_t cmd_class, reg, payload_bytes, true_class;
 
     if (s->cmd_token_words_remaining > 0) {
+        if (s->cmd_token_class == SGI_MGRAS_CMD_TOKEN_GL_BLOCK) {
+            s->cmd_token_words_remaining--;
+            sgi_mgras_gl_block_word(s, token);
+            return;
+        }
         if (s->cmd_token_class != MGRAS_CMD_HDR_CLASS_DISCARD &&
             s->cmd_token_payload_count < SGI_MGRAS_CMD_TOKEN_PAYLOAD_WORDS) {
             s->cmd_token_payload[s->cmd_token_payload_count++] = token;
@@ -341,11 +346,18 @@ static void mgras_command_fifo_token(SGIMgrasState *s, uint32_t token)
      * OpenGL client forms these blocks for its GE table loads and batched
      * raster register writes, for example 0x80000214 for five descriptor
      * words and 128 data words. The class-0 opcode before the block gives
-     * it its meaning; the model does not interpret it and consumes it by
-     * length, so the words after it parse as headers again.
+     * it its meaning; the model interprets glBitmap's image
+     * (sgi_mgras_gl_block()) and consumes any other by length, so the
+     * words after it parse as headers again. A block whose first byte is
+     * not word aligned carries the byte's offset in bits 23:22 and one
+     * word more.
      */
     if (token & MGRAS_CMD_HDR_INLINE_BLOCK) {
-        mgras_command_fifo_discard(s, token & MGRAS_CMD_HDR_INLINE_BYTES);
+        if (!sgi_mgras_gl_block(s, token)) {
+            mgras_command_fifo_discard(s,
+                ((token & SGI_MGRAS_CMD_BLOCK_OFFSET) >> 22) +
+                (token & MGRAS_CMD_HDR_INLINE_BYTES));
+        }
         return;
     }
 

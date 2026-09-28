@@ -1905,6 +1905,7 @@ static const VMStateDescription vmstate_sgi_mgras = {
         &vmstate_sgi_mgras_timing,
         &vmstate_sgi_mgras_gl_raster,
         &vmstate_sgi_mgras_gl_index,
+        &vmstate_sgi_mgras_gl_block,
         NULL
     }
 };
