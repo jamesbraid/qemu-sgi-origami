@@ -321,6 +321,56 @@ static void test_swaps(void)
     head_free(h);
 }
 
+/*
+ * A destination restarted its phase at its own reset, long before the
+ * source's next retrace. Setting the next retrace puts that retrace at the
+ * time given and the rest a period apart, counting on from where the count
+ * was, with none of the retraces the stale phase says were missed.
+ */
+static void test_set_next_retrace(void)
+{
+    Head *h = head_new(false);
+    SGIScanout *s = &h->scanout;
+    int64_t period, when;
+
+    virtual_ns = 1000;
+    sgi_scanout_set_mode(s, &mgras_1280x1024_60);
+    run_to(sgi_scanout_retrace_time(s, 1));
+    run_to(sgi_scanout_retrace_time(s, 2));
+    g_assert_cmpstr(h->events->str, ==, "retrace:1 retrace:2 ");
+    g_string_truncate(h->events, 0);
+    period = sgi_scanout_retrace_time(s, 3) - sgi_scanout_retrace_time(s, 2);
+
+    /* A hundred periods on, without the timer having run, off phase. */
+    virtual_ns = sgi_scanout_retrace_time(s, 102) + 12345;
+    when = virtual_ns + 777;
+    sgi_scanout_set_next_retrace(s, when);
+    g_assert_cmpint(timer_expire_time_ns(s->retrace_timer), ==, when);
+    g_assert_cmpint(sgi_scanout_retrace_time(s, 3), ==, when);
+
+    run_to(when - 1);
+    g_assert_cmpstr(h->events->str, ==, "");
+    run_to(when);
+    g_assert_cmpstr(h->events->str, ==, "retrace:3 ");
+    g_assert_cmpint(timer_expire_time_ns(s->retrace_timer), ==,
+                    sgi_scanout_retrace_time(s, 4));
+    run_to(sgi_scanout_retrace_time(s, 4) - 1);
+    g_assert_cmpstr(h->events->str, ==, "retrace:3 ");
+    run_to(sgi_scanout_retrace_time(s, 4));
+    run_to(sgi_scanout_retrace_time(s, 5));
+    g_assert_cmpstr(h->events->str, ==, "retrace:3 retrace:4 retrace:5 ");
+    g_assert_cmpuint(s->frames, ==, 5);
+    /* The period is the mode's, to within the rounding of one frame. */
+    g_assert_cmpint(ABS(sgi_scanout_retrace_time(s, 5) - when - 2 * period),
+                    <=, 1);
+
+    /* No retrace in the mode: nothing to put anywhere. */
+    sgi_scanout_set_mode(s, &(SGIScanoutMode) { .width = 8, .height = 8 });
+    sgi_scanout_set_next_retrace(s, virtual_ns + 1000);
+    g_assert_false(timer_pending(s->retrace_timer));
+    head_free(h);
+}
+
 static const SGIScanoutMode small = { .width = 8, .height = 6 };
 
 static void assert_resolved(Head *h, const unsigned *want)
@@ -614,6 +664,7 @@ int main(int argc, char **argv)
     qemu_clock_enable(QEMU_CLOCK_VIRTUAL, true);
     g_test_add_func("/sgi-scanout/retrace-period", test_retrace_period);
     g_test_add_func("/sgi-scanout/swaps", test_swaps);
+    g_test_add_func("/sgi-scanout/set-next-retrace", test_set_next_retrace);
     g_test_add_func("/sgi-scanout/dirty-lines", test_dirty_lines);
     g_test_add_func("/sgi-scanout/cursor-composite", test_cursor_composite);
     g_test_add_func("/sgi-scanout/cursor-host", test_cursor_host);
