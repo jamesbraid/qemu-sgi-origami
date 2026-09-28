@@ -85,9 +85,8 @@ def verdict(transcript, assertions, tripwires=()):
 
 
 # The firmware-boot golden mark: the progress codes a known-good boot
-# reaches. This QEMU test pins the 47 data codes from Origami's
-# tests/golden/firmware-boot-progress-mark and does not read that repository
-# at runtime. Its 0x80 and 0xff entries are comments, not data codes.
+# reaches. This QEMU test pins the 47 data codes below. Its 0x80 and
+# 0xff entries are comments, not data codes.
 MARK = frozenset({
     '0x00', '0x01', '0x02', '0x03', '0x04', '0x05', '0x06', '0x0a',
     '0x0b', '0x0c', '0x0d', '0x0e', '0x0f', '0x1d', '0x1e', '0x24',
@@ -129,12 +128,9 @@ def first_progress_code(text):
 def codes_seen(trace_text):
     """Every progress code sgi_hub_led's trace line reports, as a set.
 
-    Matches tools/boot-gate's own CODE regex in the project checkout: every
-    0xNN this trace event reports counts, regardless of KIND (progress,
-    FAILURE, or undecoded) -- boot-gate's set-subset comparison was never
-    kind-filtered, so this port keeps that contract rather than narrowing
-    it. (Contrast first_progress_code above, which deliberately keeps
-    only kind == 'progress' lines for its own, different, single-shot "did
+    Every 0xNN this trace event reports counts, regardless of KIND
+    (progress, FAILURE, or undecoded). first_progress_code deliberately
+    keeps only kind == 'progress' lines for its own single-shot "did
     the boot get anywhere at all" pass condition -- a different question
     this function does not answer.)
     """

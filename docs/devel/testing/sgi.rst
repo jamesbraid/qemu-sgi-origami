@@ -354,6 +354,5 @@ The check skips runs launched with ``-d exec``, ``-d in_asm``, ``-d nochain``,
 ``-singlestep``, ``-gdb`` or ``-s``, and samples reporting ``one-insn-per-tb``
 or icount. These modes change translation behavior or the counters, so rerun
 without them before using this diagnostic. The included Origin 300 and Origin
-200 counter samples were captured from QEMU using Origami's development
-harness. Their exact QEMU revision and capture environment are not recorded
-in this QEMU tree. The QEMU tests do not depend on Origami at runtime.
+200 counter samples were captured from QEMU using a development harness.
+Their exact QEMU revision and capture environment were not recorded.

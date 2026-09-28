@@ -10,14 +10,10 @@ of each screen (a panel fill, a button body, the granite backdrop, an
 icon's label plate) a colour reference that does not depend on the cursor
 or on where a session leaves its windows.
 
-The boxes, expected colours and tolerances below are copied from the
-region set the Origami project scores SI screendumps with
-(tools/origami_lib/frame_regions.json in the Origami checkout, as of
-Origami commit a86b885495), where each region records the capture or
-colour scheme it was measured from. They are copied rather than read
-from that file at run time so this tree's pass condition only changes
-with a commit to this tree. Boxes there are [x0, y0, x1, y1] with x1 and
-y1 exclusive; _box() turns each into lib_screen's (x, y, w, h).
+The boxes, expected colours and tolerances below are fixed in this test
+tree, so its pass condition changes only with a QEMU commit. The boxes
+use [x0, y0, x1, y1] with x1 and y1 exclusive; _box() turns each into
+lib_screen's (x, y, w, h).
 
 Solid Impact's DAC runs every displayed pixel through a gamma-1.7 encode
 ramp, so a QEMU screendump of the SI head is a post-DAC image. The
@@ -37,8 +33,8 @@ references are not all on that side of the ramp:
   - The Toolchest title bar's grey is RAD4's own unfocused-window reading
     and compares with no transform.
 
-Left out: regions the Origami set keeps only for comparing two RAD4
-captures; regions meaningful only while a particular window is open or
+Left out: regions useful only for comparing two RAD4 captures; regions
+meaningful only while a particular window is open or
 focused at a fixed position; icon artwork, which has no single expected
 colour; and the Console icon label, whose own record says a mismatch
 there is inconclusive. This tree asserts only what a fresh boot and a

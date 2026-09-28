@@ -8,10 +8,10 @@
 If guest instruction fetches land in a region mapped as I/O, TCG can emit
 uncached one-instruction translation blocks. A boot may continue very slowly
 without an obvious error. The Origin 300 and Origin 200 samples below were
-captured from QEMU with Origami's development harness. The Origin 300 sample
+captured from QEMU with a development harness. The Origin 300 sample
 shows the pattern while the reset window was modeled as I/O; the Origin 200
-sample is a healthy comparison. This QEMU test has no runtime dependency on
-that harness.
+sample is a healthy comparison. The samples are fixtures; this module does
+not invoke the capture harness.
 
 ``evaluate()`` parses one HMP ``info jit`` response. The thresholds are
 deliberately explicit here: average and maximum target block sizes of at most
