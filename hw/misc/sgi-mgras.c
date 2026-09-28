@@ -36,6 +36,16 @@
 #define MGRAS_VC3_CONTROL_VINTR 0x1
 #define MGRAS_VC3_CONTROL_DISPLAY 0x4
 
+/*
+ * The retrace period is the model's 60 Hz approximation, one sixtieth of a
+ * second truncated to whole nanoseconds. It is expressed as frames of a
+ * 1 GHz clock so that each retrace falls exactly one such period after the
+ * last, as it did while the model re-armed its own timer. The stock mode's
+ * true rate would follow from the VC3 timing tables and the pixel clock,
+ * whose layouts no reviewed datasheet records yet.
+ */
+#define MGRAS_RETRACE_CLOCK_HZ NANOSECONDS_PER_SECOND
+#define MGRAS_RETRACE_FRAME_CLOCKS (NANOSECONDS_PER_SECOND / 60)
 
 /* The HQ vector destination uses bits 27:24 for the target widget. */
 #define MGRAS_HQ_VECTOR_WIDGET_SHIFT 24
@@ -311,6 +321,7 @@ static void mgras_error(SGIMgrasState *s, hwaddr addr, unsigned size,
 static void mgras_retrace(void *opaque)
 {
     SGIMgrasState *s = opaque;
+
     if (s->display_enabled) {
         bool vintr = s->vc3_reg[MGRAS_VC3_CONTROL] & MGRAS_VC3_CONTROL_VINTR;
         bool dest = s->hq_vector_dest_upper || s->hq_vector_dest_lower;
@@ -328,8 +339,32 @@ static void mgras_retrace(void *opaque)
                           "no packets sent\n");
         }
     }
-    timer_mod(s->retrace_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
-              NANOSECONDS_PER_SECOND / 60);
+}
+
+static const SGIHeadOps mgras_scanout_ops = {
+    .resolve_row = sgi_mgras_display_resolve_row,
+    .retrace = mgras_retrace,
+};
+
+/*
+ * The stream carries the retrace phase as the timer's expiry alone, as it
+ * did before the scanout owned the timer. The scanout counts retraces from
+ * an epoch, so restart its count one period before the loaded retrace; the
+ * ones after it then keep the source's phase. A stream with no retrace
+ * pending, which this model never sends, restarts the phase at load.
+ */
+static void mgras_retrace_rephase(SGIMgrasState *s)
+{
+    SGIScanout *so = &s->scanout;
+    int64_t next = timer_expire_time_ns(so->retrace_timer);
+
+    if (next < 0) {
+        next = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+               MGRAS_RETRACE_FRAME_CLOCKS;
+    }
+    so->frames = 0;
+    so->epoch = next - MGRAS_RETRACE_FRAME_CLOCKS;
+    timer_mod(so->retrace_timer, next);
 }
 
 static void mgras_complete_context(SGIMgrasState *s)
@@ -1147,8 +1182,29 @@ static void mgras_write(void *opaque, hwaddr addr, uint64_t value,
     mgras_error(s, addr, size, "unsupported write");
 }
 
+/*
+ * Every path that changes what the frame resolves from runs inside an
+ * access, so folding the change into the scanout's dirty lines here means
+ * the next console update, a screendump included, sees it.
+ */
+static uint64_t mgras_mmio_read(void *opaque, hwaddr addr, unsigned size)
+{
+    uint64_t value = mgras_read(opaque, addr, size);
+
+    sgi_mgras_display_flush(opaque);
+    return value;
+}
+
+static void mgras_mmio_write(void *opaque, hwaddr addr, uint64_t value,
+                             unsigned size)
+{
+    mgras_write(opaque, addr, value, size);
+    sgi_mgras_display_flush(opaque);
+}
+
 static const MemoryRegionOps mgras_ops = {
-    .read = mgras_read, .write = mgras_write, .endianness = DEVICE_BIG_ENDIAN,
+    .read = mgras_mmio_read, .write = mgras_mmio_write,
+    .endianness = DEVICE_BIG_ENDIAN,
     .valid = { .min_access_size = 1, .max_access_size = 8 },
     /* Preserve 64-bit FIFO words instead of splitting them into callbacks. */
     .impl = { .min_access_size = 1, .max_access_size = 8 },
@@ -1260,9 +1316,9 @@ static void mgras_reset_exit(Object *obj, ResetType type)
     if (mc->parent_phases.exit) {
         mc->parent_phases.exit(obj, type);
     }
-    /* Retrace timing is a fixed-period approximation. */
-    timer_mod(s->retrace_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
-              NANOSECONDS_PER_SECOND / 60);
+    sgi_mgras_display_flush(s);
+    /* The first retrace falls one period after reset. */
+    sgi_scanout_reset(&s->scanout);
 }
 
 /*
@@ -1382,12 +1438,10 @@ static bool mgras_build_widget(SGIXioBoardState *board, Error **errp)
     s->overlay = g_new0(uint8_t, s->width * s->height);
     s->ge[SGI_MGRAS_GE_SLOT_A] = g_new0(uint32_t, SGI_MGRAS_GE_WORDS);
     s->ge[SGI_MGRAS_GE_SLOT_B] = g_new0(uint32_t, SGI_MGRAS_GE_WORDS);
-    s->display_buffer = g_new0(uint32_t, s->width * s->height);
     memory_region_init_io(&s->regs, OBJECT(s), &mgras_ops, s,
                            "sgi-mgras.regs", SGI_MGRAS_MMIO_SIZE);
     sysbus_init_mmio(SYS_BUS_DEVICE(s), &s->regs);
     address_space_init(&s->fabric_as, s->fabric, "sgi-mgras.fabric");
-    s->retrace_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, mgras_retrace, s);
     board->cpu_face = &s->regs;
     board->packet_face = &s->regs;
     return true;
@@ -1399,9 +1453,14 @@ static bool mgras_finish_realize(SGIXioBoardState *board, Error **errp)
     SGIMgrasState *s = SGI_MGRAS(board);
     DeviceState *dev = DEVICE(board);
 
-    s->con = qemu_graphic_console_create(dev, 0, &sgi_mgras_display_ops, s);
+    sgi_scanout_init(&s->scanout, dev, &mgras_scanout_ops, s);
+    sgi_scanout_set_mode(&s->scanout, &(SGIScanoutMode) {
+        .width = s->width,
+        .height = s->height,
+        .frame_clocks = MGRAS_RETRACE_FRAME_CLOCKS,
+        .clock_hz = MGRAS_RETRACE_CLOCK_HZ,
+    });
     device_cold_reset(dev);
-    sgi_mgras_display_ensure_surface(s);
     return true;
 }
 
@@ -1411,14 +1470,12 @@ static void mgras_unrealize(DeviceState *dev)
     SGIMgrasClass *mc = SGI_MGRAS_GET_CLASS(dev);
 
     mc->parent_unrealize(dev);
-    timer_del(s->retrace_timer); timer_free(s->retrace_timer);
+    sgi_scanout_cleanup(&s->scanout);
     address_space_destroy(&s->fabric_as);
-    qemu_graphic_console_close(s->con);
     sgi_board_memory_cleanup(&s->mem);
     g_free(s->depth); g_free(s->format);
     g_free(s->overlay);
     g_free(s->ge[SGI_MGRAS_GE_SLOT_A]); g_free(s->ge[SGI_MGRAS_GE_SLOT_B]);
-    g_free(s->display_buffer);
 }
 
 static bool mgras_xmap_indices_valid(SGIMgrasState *s)
@@ -1460,11 +1517,12 @@ static int mgras_post_load(void *opaque, int version_id)
             s->xmap[pp] = s->xmap[0];
         }
     }
-    sgi_mgras_display_ensure_surface(s);
     s->display_enabled =
         (s->vc3_reg[MGRAS_VC3_CONTROL] & MGRAS_VC3_CONTROL_DISPLAY) != 0;
     s->cursor_enabled = (s->vc3_reg[0x1d] & 0x2) != 0;
+    mgras_retrace_rephase(s);
     s->dirty = true;
+    sgi_mgras_display_flush(s);
     return 0;
 }
 
@@ -1662,7 +1720,7 @@ static const VMStateDescription vmstate_sgi_mgras = {
                              SGI_MGRAS_XMAP_ENTRIES),
         VMSTATE_UINT32_ARRAY_V(xmap[0].buf_select, SGIMgrasState,
                                SGI_MGRAS_XMAP_ENTRIES, 11),
-        VMSTATE_TIMER_PTR_V(retrace_timer, SGIMgrasState, 2),
+        VMSTATE_TIMER_PTR_V(scanout.retrace_timer, SGIMgrasState, 2),
         VMSTATE_INT32_ARRAY_V(gl[0].cur.viewport, SGIMgrasState, 4, 15),
         VMSTATE_SGI_GL_FLOATS(gl[0].clear_color, SGIMgrasState, 4, 14),
         VMSTATE_SGI_GL_FLOATS(gl[0].cur_color, SGIMgrasState, 4, 15),
@@ -1778,12 +1836,12 @@ static void mgras_test_get_display_pixel(Object *obj, Visitor *v,
     uint32_t value = 0;
 
     if (DEVICE(obj)->realized) {
-        qemu_console_hw_update(s->con);
+        qemu_console_hw_update(s->scanout.con);
     }
     if (DEVICE(obj)->realized && s->test_pixel_x < s->width &&
         s->test_pixel_y < s->height) {
-        value = s->display_buffer[s->test_pixel_y * s->width +
-                                  s->test_pixel_x];
+        value = s->scanout.frame[s->test_pixel_y * s->width +
+                                 s->test_pixel_x];
     }
     visit_type_uint32(v, name, &value, errp);
 }

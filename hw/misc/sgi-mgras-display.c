@@ -172,106 +172,86 @@ static uint32_t mgras_resolve_pixel_bgr(SGIMgrasState *s, int i,
     return mgras_cmap_rgb(s, main_did, s->front[i] & 0xff);
 }
 
-/* The cursor uses mask and select planes from VC3 SRAM. */
-static void mgras_composite_cursor(SGIMgrasState *s)
+/* mgras_cmap_rgb()'s native 0x00BBGGRR as the scanout's 0x00RRGGBB. */
+static uint32_t mgras_bgr_to_rgb(uint32_t bgr)
 {
+    return ((bgr & 0xff) << 16) | (bgr & 0x00ff00) | ((bgr >> 16) & 0xff);
+}
+
+/*
+ * The cursor's row on display line y, from the mask and select planes in
+ * VC3 SRAM. It overwrites the pixels under it rather than blending, so it
+ * is drawn here, from family state, not by the scanout's cursor.
+ */
+static void mgras_cursor_row(SGIMgrasState *s, unsigned y, uint32_t *dst)
+{
+    const uint16_t mask = SGI_MGRAS_VC3_SRAM_WORDS - 1;
     uint32_t base = s->vc3_reg[1];
-    uint32_t ink =
-        mgras_gamma_apply(s, mgras_cmap_rgb(s, 0, MGRAS_CURSOR_CMAP_INDEX));
-    uint32_t bg = 0x00ffffff;
+    int row = (int)y - ((int)s->cursor_y - MGRAS_CURSOR_ORIGIN);
+    uint32_t ink, mask_bits, sel_bits;
 
-    for (unsigned row = 0; row < 32; row++) {
-        int y = (int)s->cursor_y - MGRAS_CURSOR_ORIGIN + row;
-        uint32_t mask_bits, sel_bits;
-
-        if (y < 0 || y >= s->height) {
-            continue;
-        }
-        mask_bits = ((uint32_t)s->vc3_sram[(base + row * 2) &
-                     (SGI_MGRAS_VC3_SRAM_WORDS - 1)] << 16) |
-                    s->vc3_sram[(base + row * 2 + 1) &
-                                (SGI_MGRAS_VC3_SRAM_WORDS - 1)];
-        sel_bits = ((uint32_t)s->vc3_sram[(base + 64 + row * 2) &
-                    (SGI_MGRAS_VC3_SRAM_WORDS - 1)] << 16) |
-                   s->vc3_sram[(base + 64 + row * 2 + 1) &
-                               (SGI_MGRAS_VC3_SRAM_WORDS - 1)];
-
-        for (unsigned col = 0; col < 32; col++) {
-            int x = (int)s->cursor_x - MGRAS_CURSOR_ORIGIN + col;
-            bool mask_bit = (mask_bits >> (31 - col)) & 1;
-            bool sel_bit = (sel_bits >> (31 - col)) & 1;
-            uint32_t rgb;
-
-            if (x < 0 || x >= s->width || (!mask_bit && !sel_bit)) {
-                continue;
-            }
-            rgb = mask_bit ? ink : bg;
-            s->display_buffer[y * s->width + x] =
-                ((rgb & 0xff) << 16) | (rgb & 0x00ff00) | ((rgb >> 16) & 0xff);
-        }
-    }
-}
-
-
-/* Convert native pixels to the host surface and blank when disabled. */
-static bool mgras_gfx_update(void *opaque)
-{
-    SGIMgrasState *s = opaque;
-
-    if (!s->dirty) {
-        return true;
-    }
-    if (!s->display_enabled) {
-        memset(s->display_buffer, 0,
-              s->width * s->height * sizeof(*s->display_buffer));
-        qemu_console_update_full(s->con);
-        s->dirty = false;
-        return true;
-    }
-
-    /*
-     * A CI8 pixel resolves through the map its WID selects; an RGB pixel
-     * bypasses the map. Either way the gamma table applies uniformly, so
-     * every pixel reaches the display through the same final stage.
-     */
-    for (int y = 0; y < s->height; y++) {
-        uint8_t main_did[SGI_MGRAS_MAX_WIDTH], overlay_did[SGI_MGRAS_MAX_WIDTH];
-
-        mgras_did_line(s, MGRAS_VC3_MAIN_DID_ENTRY, y, main_did);
-        mgras_did_line(s, MGRAS_VC3_OVERLAY_DID_ENTRY, y, overlay_did);
-        for (int x = 0; x < s->width; x++) {
-            int i = y * s->width + x;
-            uint32_t rgb = mgras_gamma_apply(s,
-                mgras_resolve_pixel_bgr(s, i, main_did[x], overlay_did[x]));
-
-            s->display_buffer[i] = ((rgb & 0xff) << 16) | (rgb & 0x00ff00) |
-                                   ((rgb >> 16) & 0xff);
-        }
-    }
-    if (s->cursor_enabled) {
-        mgras_composite_cursor(s);
-    }
-    qemu_console_update_full(s->con);
-    s->dirty = false;
-    return true;
-}
-
-const GraphicHwOps sgi_mgras_display_ops = {
-    .gfx_update = mgras_gfx_update,
-};
-
-
-/* The host surface wraps display_buffer without changing guest state. */
-void sgi_mgras_display_ensure_surface(SGIMgrasState *s)
-{
-    DisplaySurface *ds = qemu_console_surface(s->con);
-
-    if (ds && surface_data(ds) == (uint8_t *)s->display_buffer) {
+    if (row < 0 || row >= 32) {
         return;
     }
-    ds = qemu_create_displaysurface_from(s->width, s->height,
-                                         PIXMAN_x8r8g8b8,
-                                         s->width * 4,
-                                         (uint8_t *)s->display_buffer);
-    qemu_console_set_surface(s->con, ds);
+    ink = mgras_bgr_to_rgb(
+        mgras_gamma_apply(s, mgras_cmap_rgb(s, 0, MGRAS_CURSOR_CMAP_INDEX)));
+    mask_bits = ((uint32_t)s->vc3_sram[(base + row * 2) & mask] << 16) |
+                s->vc3_sram[(base + row * 2 + 1) & mask];
+    sel_bits = ((uint32_t)s->vc3_sram[(base + 64 + row * 2) & mask] << 16) |
+               s->vc3_sram[(base + 64 + row * 2 + 1) & mask];
+
+    for (unsigned col = 0; col < 32; col++) {
+        int x = (int)s->cursor_x - MGRAS_CURSOR_ORIGIN + col;
+        bool mask_bit = (mask_bits >> (31 - col)) & 1;
+        bool sel_bit = (sel_bits >> (31 - col)) & 1;
+
+        if (x < 0 || x >= s->width || (!mask_bit && !sel_bit)) {
+            continue;
+        }
+        dst[x] = mask_bit ? ink : 0x00ffffff;
+    }
+}
+
+/*
+ * Display line y as the scanout presents it; blank while the VC3 has the
+ * display disabled.
+ *
+ * A CI8 pixel resolves through the map its WID selects; an RGB pixel
+ * bypasses the map. Either way the gamma table applies uniformly, so
+ * every pixel reaches the display through the same final stage.
+ */
+void sgi_mgras_display_resolve_row(void *opaque, unsigned y, uint32_t *dst)
+{
+    SGIMgrasState *s = opaque;
+    uint8_t main_did[SGI_MGRAS_MAX_WIDTH], overlay_did[SGI_MGRAS_MAX_WIDTH];
+
+    if (!s->display_enabled) {
+        memset(dst, 0, s->width * sizeof(*dst));
+        return;
+    }
+    mgras_did_line(s, MGRAS_VC3_MAIN_DID_ENTRY, y, main_did);
+    mgras_did_line(s, MGRAS_VC3_OVERLAY_DID_ENTRY, y, overlay_did);
+    for (int x = 0; x < s->width; x++) {
+        int i = y * s->width + x;
+
+        dst[x] = mgras_bgr_to_rgb(mgras_gamma_apply(s,
+            mgras_resolve_pixel_bgr(s, i, main_did[x], overlay_did[x])));
+    }
+    if (s->cursor_enabled) {
+        mgras_cursor_row(s, y, dst);
+    }
+}
+
+/*
+ * Every change to state a frame resolves from sets s->dirty: VC3 tables
+ * and registers, colour maps, gamma, XMAP state and each drawing path.
+ * The model has no finer damage than that, so the whole frame is marked
+ * for the scanout to resolve again at its next update.
+ */
+void sgi_mgras_display_flush(SGIMgrasState *s)
+{
+    if (s->dirty) {
+        s->dirty = false;
+        sgi_scanout_invalidate_all(&s->scanout);
+    }
 }

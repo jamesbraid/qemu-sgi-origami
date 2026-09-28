@@ -10,6 +10,7 @@
 #include "qemu/units.h"
 #include "hw/display/sgi/board-memory.h"
 #include "hw/display/sgi/command-fetch.h"
+#include "hw/display/sgi/scanout.h"
 #include "hw/display/sgi/gl-context.h"
 
 #define TYPE_SGI_MGRAS "sgi-mgras"
@@ -420,7 +421,6 @@ struct SGIMgrasState {
      * write that invoked it. Not guest state and not migrated.
      */
     SGICommandFetch list_fetch;
-    QEMUTimer *retrace_timer;
     /*
      * Pixel-memory banks 0 and 1. The X server draws in bank 0; GL front
      * and back buffers map to either (hw/misc/sgi-mgras-gl.c), and bank 1
@@ -551,9 +551,18 @@ struct SGIMgrasState {
      * answer.
      */
     uint32_t ge_report;
-    /* Host scanout is derived from guest state and is not migrated. */
-    QemuConsole *con;
-    uint32_t *display_buffer;
+    /*
+     * The console, presented frame and retrace timer
+     * (hw/display/sgi/scanout.h). Each frame is resolved from guest state
+     * by sgi-mgras-display.c, so only the retrace phase is migrated: as
+     * the timer's expiry, the field the version-2 stream always carried.
+     */
+    SGIScanout scanout;
+    /*
+     * Something the whole frame resolves from changed. Folded into the
+     * scanout's dirty lines by sgi_mgras_display_flush() before control
+     * leaves the device; not migrated, since loading repaints everything.
+     */
     bool dirty;
 };
 
