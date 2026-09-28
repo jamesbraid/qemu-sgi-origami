@@ -7389,6 +7389,169 @@ static void test_gl_vertex2i_matches_the_reference(void)
                    0xffff00, 0x0000ff);
 }
 
+/*
+ * The matrix stack and transform commands, named by the client's own
+ * display-list decoder (notes-lists-arrays-lighting.md, "The CPU decoder
+ * as a second opcode table"): glPushMatrix 0x2f00, glPopMatrix 0x2e00,
+ * glRotatef 0x3010 (angle in degrees, x, y, z), glScalef 0x310c and
+ * glTranslatef 0x320c.
+ */
+#define GL_PUSH_MATRIX        0x00002f00
+#define GL_POP_MATRIX         0x00002e00
+#define GL_ROTATE_HDR         0x00003010
+#define GL_SCALE_HDR          0x0000310c
+#define GL_TRANSLATE_HDR      0x0000320c
+
+static void gl_three(QTestState *qts, uint32_t header, float x, float y,
+                     float z)
+{
+    gl_word(qts, header);
+    gl_float(qts, x);
+    gl_float(qts, y);
+    gl_float(qts, z);
+}
+
+static void gl_rotate(QTestState *qts, float angle, float x, float y,
+                      float z)
+{
+    gl_word(qts, GL_ROTATE_HDR);
+    gl_float(qts, angle);
+    gl_float(qts, x);
+    gl_float(qts, y);
+    gl_float(qts, z);
+}
+
+/* A window-unit viewport, glOrtho(0, 128, 0, 128, -1, 1), modelview mode. */
+static void gl_transform_start(QTestState *qts)
+{
+    mgras_reset();
+    mgras_enter_gl_window(qts, 256, 640, 128, 128, 0x11);
+    gl_viewport(qts, 0, 0, 128, 128);
+    gl_window_projection(qts);
+    gl_one(qts, GL_MATRIX_MODE_HDR, GL_MODELVIEW);
+    gl_one(qts, GL_SHADE_MODEL_HDR, GL_FLAT);
+}
+
+/*
+ * A small white triangle covering only the pixel whose lower-left corner
+ * the modelview maps object (x, y) to, after clearing the window black.
+ */
+static void gl_mark(QTestState *qts, float x, float y)
+{
+    gl_clear_color(qts, 0, 0, 0, 1);
+    gl_word(qts, GL_CLEAR_COLOR_BUFFER);
+    gl_color3f(qts, 1, 1, 1);
+    gl_word(qts, GL_BEGIN_TRIANGLES);
+    gl_vertex2f(qts, x + 0.25f, y + 0.25f);
+    gl_vertex2f(qts, x + 0.875f, y + 0.25f);
+    gl_vertex2f(qts, x + 0.25f, y + 0.875f);
+    gl_word(qts, GL_END_TRIANGLES);
+}
+
+/*
+ * glTranslatef, glRotatef and glScalef multiply the current matrix on the
+ * right (OpenGL 1.2.1, 2.10.2), so the last one sent applies to the
+ * vertex first. The rotation is counter-clockwise looking down the axis
+ * toward the origin, by an angle in degrees, about the axis made unit
+ * length. Here object (x, y) goes to window (64 - y / 2, 32 + 2x): the
+ * triangle below lands around pixel centre (64.5, 52.5) and on no other.
+ */
+static void test_gl_transforms_multiply_on_the_right(void)
+{
+    gl_transform_start(qts);
+    gl_three(qts, GL_TRANSLATE_HDR, 64, 32, 0);
+    gl_rotate(qts, 90, 0, 0, 2);
+    gl_three(qts, GL_SCALE_HDR, 2, 0.5f, 1);
+    gl_clear_color(qts, 0, 0, 0, 1);
+    gl_word(qts, GL_CLEAR_COLOR_BUFFER);
+    gl_color3f(qts, 1, 1, 1);
+    gl_word(qts, GL_BEGIN_TRIANGLES);
+    gl_vertex2f(qts, 10.125f, -0.5f);
+    gl_vertex2f(qts, 10.125f, -1.75f);
+    gl_vertex2f(qts, 10.4375f, -0.5f);
+    gl_word(qts, GL_END_TRIANGLES);
+    g_assert_cmphex(gl_window_pixel(qts, 64, 52), ==, 0xffffff);
+    g_assert_cmphex(gl_window_pixel(qts, 65, 52), ==, 0);
+    g_assert_cmphex(gl_window_pixel(qts, 63, 52), ==, 0);
+}
+
+/*
+ * A half turn about (2, 2, 0), made unit length, swaps x and y and
+ * negates z: a mark at (40, 10) lands on (10, 40).
+ */
+static void test_gl_rotate_about_a_general_axis(void)
+{
+    gl_transform_start(qts);
+    gl_rotate(qts, 180, 2, 2, 0);
+    gl_mark(qts, 40, 10);
+    g_assert_cmphex(gl_window_pixel(qts, 10, 40), ==, 0xffffff);
+    g_assert_cmphex(gl_window_pixel(qts, 40, 10), ==, 0);
+}
+
+/*
+ * glPushMatrix saves the current matrix of the current mode and
+ * glPopMatrix restores it (2.10.2). The stacks are separate: a pop in
+ * projection mode with nothing pushed there changes nothing, and the
+ * modelview's saved matrix waits for a modelview pop.
+ */
+static void test_gl_push_and_pop_restore_the_matrix(void)
+{
+    gl_transform_start(qts);
+    gl_three(qts, GL_TRANSLATE_HDR, 8, 0, 0);
+    gl_word(qts, GL_PUSH_MATRIX);
+    gl_three(qts, GL_TRANSLATE_HDR, 0, 16, 0);
+    gl_one(qts, GL_MATRIX_MODE_HDR, GL_PROJECTION);
+    gl_word(qts, GL_POP_MATRIX);
+    gl_one(qts, GL_MATRIX_MODE_HDR, GL_MODELVIEW);
+    gl_mark(qts, 1, 1);
+    g_assert_cmphex(gl_window_pixel(qts, 9, 17), ==, 0xffffff);
+    gl_word(qts, GL_POP_MATRIX);
+    gl_mark(qts, 1, 1);
+    g_assert_cmphex(gl_window_pixel(qts, 9, 1), ==, 0xffffff);
+
+    /* A projection push and pop leave the projection as it was. */
+    gl_one(qts, GL_MATRIX_MODE_HDR, GL_PROJECTION);
+    gl_word(qts, GL_PUSH_MATRIX);
+    gl_three(qts, GL_TRANSLATE_HDR, 64, 0, 0);
+    gl_word(qts, GL_POP_MATRIX);
+    gl_one(qts, GL_MATRIX_MODE_HDR, GL_MODELVIEW);
+    gl_mark(qts, 1, 1);
+    g_assert_cmphex(gl_window_pixel(qts, 9, 1), ==, 0xffffff);
+}
+
+/*
+ * Approximated: the board's stack depths are not known. The model holds
+ * 32 matrices in each stack, current one included, the least OpenGL
+ * 1.2.1 allows for the modelview stack (table 6.25). A push onto a full
+ * stack and a pop of the last matrix change nothing, as the specification
+ * has the stack-overflow and stack-underflow errors do. Load a
+ * translation of 3k + 1 before the k-th push: after 31 pushes the stack
+ * is full, the 32nd push is ignored, so a pop returns translation 91, not
+ * 94; after the pops return to translation 1 a further pop leaves it.
+ */
+static void test_gl_matrix_stack_holds_32(void)
+{
+    gl_transform_start(qts);
+    for (int k = 0; k < 32; k++) {
+        gl_word(qts, GL_LOAD_IDENTITY);
+        gl_three(qts, GL_TRANSLATE_HDR, 3 * k + 1, 0, 0);
+        gl_word(qts, GL_PUSH_MATRIX);
+    }
+    gl_word(qts, GL_LOAD_IDENTITY);
+    gl_three(qts, GL_TRANSLATE_HDR, 120, 0, 0);
+    gl_word(qts, GL_POP_MATRIX);
+    gl_mark(qts, 0, 10);
+    g_assert_cmphex(gl_window_pixel(qts, 91, 10), ==, 0xffffff);
+    for (int k = 0; k < 30; k++) {
+        gl_word(qts, GL_POP_MATRIX);
+    }
+    gl_mark(qts, 0, 10);
+    g_assert_cmphex(gl_window_pixel(qts, 1, 10), ==, 0xffffff);
+    gl_word(qts, GL_POP_MATRIX);
+    gl_mark(qts, 0, 10);
+    g_assert_cmphex(gl_window_pixel(qts, 1, 10), ==, 0xffffff);
+}
+
 static void test_hq_flags_fence_token_sets_bit(void)
 {
     mgras_reset();
@@ -8698,7 +8861,7 @@ static void test_gl_state_migration(void)
  * Every context's GL state crosses a migration, and so does which one is
  * current: b's clear colour applies before any switch on the destination,
  * and a's after one. So does a's half-sent glClearColor, which a finishes
- * on the destination.
+ * on the destination, and b's matrix stack.
  */
 static void test_gl_context_table_migration(void)
 {
@@ -8725,11 +8888,20 @@ static void test_gl_context_table_migration(void)
     gl_enter_slot(from, GL_SLOT_B);
     gl_word(from, GL_CONTEXT_OPENER);
     gl_clear_color(from, 0, 1, 0, 1);
+    gl_viewport(from, 0, 0, 128, 128);
+    gl_window_projection(from);
+    gl_one(from, GL_MATRIX_MODE_HDR, GL_MODELVIEW);
+    gl_three(from, GL_TRANSLATE_HDR, 8, 0, 0);
+    gl_word(from, GL_PUSH_MATRIX);
+    gl_three(from, GL_TRANSLATE_HDR, 0, 16, 0);
 
     sgi_migrate_stopped(from, uri);
 
     gl_word(to, GL_CLEAR_COLOR_BUFFER);
     g_assert_cmphex(mgras_test_pixel(to, 300, 300), ==, 0x00ff00);
+    gl_word(to, GL_POP_MATRIX);
+    gl_mark(to, 1, 1);
+    g_assert_cmphex(gl_window_pixel(to, 9, 1), ==, 0xffffff);
     gl_enter_slot(to, GL_SLOT_A);
     gl_float(to, 1);
     gl_float(to, 1);
@@ -9415,6 +9587,16 @@ int main(int argc, char **argv)
                    test_gl_color_bytes_unpack_red_first);
     qtest_add_func("sn0/origin2000/mgras/gl-vertex2i-matches-the-reference",
                    test_gl_vertex2i_matches_the_reference);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "gl-transforms-multiply-on-the-right",
+                   test_gl_transforms_multiply_on_the_right);
+    qtest_add_func("sn0/origin2000/mgras/gl-rotate-about-a-general-axis",
+                   test_gl_rotate_about_a_general_axis);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "gl-push-and-pop-restore-the-matrix",
+                   test_gl_push_and_pop_restore_the_matrix);
+    qtest_add_func("sn0/origin2000/mgras/gl-matrix-stack-holds-32",
+                   test_gl_matrix_stack_holds_32);
     qtest_add_func("sn0/origin2000/mgras/gl-triangle-spans-a-context-switch",
                    test_gl_triangle_spans_a_context_switch);
     qtest_add_func("sn0/origin2000/mgras/hq-flags-set-and-clear",
