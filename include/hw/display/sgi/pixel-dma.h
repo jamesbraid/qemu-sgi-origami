@@ -29,10 +29,12 @@
  * one SGIPixelDMA, and one completion, per source line. Every size may come
  * from the guest: a transfer that does not fit its page list, or whose rows
  * do not fit its plane, fails with SGI_FAIL_BOUNDS before anything is mapped
- * or allocated for it. It runs in three steps so a queue can split them
- * across threads -- sgi_dma_pixels_map() under the lock,
- * sgi_dma_pixels_run() on host memory only, sgi_dma_pixels_finish() under
- * the lock -- and sgi_dma_pixels() does all three for a synchronous head.
+ * or allocated for it. The plane's size is what bounds the chunks and bounce
+ * buffers a transfer can take, so the map step checks it. A transfer runs
+ * in three steps so a queue can split them across threads --
+ * sgi_dma_pixels_map() under the lock, sgi_dma_pixels_run() on host memory
+ * only, sgi_dma_pixels_finish() under the lock -- and sgi_dma_pixels() does
+ * all three for a synchronous head.
  */
 #ifndef HW_DISPLAY_SGI_PIXEL_DMA_H
 #define HW_DISPLAY_SGI_PIXEL_DMA_H
@@ -44,6 +46,13 @@
 #define SGI_DMA_CHUNK_MAX 4096
 /* No SGI head has a plane taller than this; it bounds a transfer's chunks. */
 #define SGI_DMA_MAX_ROWS 16384
+/*
+ * The smallest page a page list may name. The heads' drivers hand over
+ * pages of 4 KiB (MGRAS) and 16 KiB (Odyssey). No smaller page than a
+ * chunk means every chunk but a range's ends is a whole SGI_DMA_CHUNK_MAX,
+ * where a 1-byte page would make one chunk per byte.
+ */
+#define SGI_DMA_MIN_PAGE_SIZE SGI_DMA_CHUNK_MAX
 
 /* A head's view of guest memory. */
 typedef struct SGIDMABus {
@@ -55,7 +64,8 @@ typedef struct SGIDMABus {
 /*
  * A guest buffer as the driver described it: page i at addr[i]. A page
  * that is not aligned to page_size, or a page_size that is not a power of
- * two, fails the transfer with SGI_FAIL_BOUNDS.
+ * two or is below SGI_DMA_MIN_PAGE_SIZE, fails the transfer with
+ * SGI_FAIL_BOUNDS.
  */
 typedef struct SGIDMAPageList {
     const uint64_t *addr;       /* device addresses */
@@ -90,7 +100,10 @@ typedef struct SGIDMAMap {
     DMADirection dir;
 } SGIDMAMap;
 
-/* The bytes a page list maps, or 0 (logged) when its page size is bad. */
+/*
+ * The bytes a page list maps, or 0 (logged) when its page size is not a
+ * power of two of at least SGI_DMA_MIN_PAGE_SIZE.
+ */
 uint64_t sgi_dma_page_list_bytes(const SGIDMAPageList *pl);
 
 /*
@@ -156,9 +169,12 @@ typedef struct SGIPixelDMA {
     SGIDMAMap map;              /* resolved by sgi_dma_pixels_map() */
 } SGIPixelDMA;
 
-/* Under the lock. Returns 0 or an SGIFailure. */
+/*
+ * Under the lock. m is the board memory whose plane the transfer targets,
+ * read for the plane's size only. Returns 0 or an SGIFailure.
+ */
 int sgi_dma_pixels_map(SGIPixelDMA *d, const SGIDMABus *bus,
-                       const SGIDMAPageList *pl);
+                       const SGIDMAPageList *pl, const SGIBoardMemory *m);
 /* Host memory only. Returns 0 or an SGIFailure. */
 int sgi_dma_pixels_run(SGIPixelDMA *d, SGIBoardMemory *m,
                        const SGIHeadOps *ops, void *opaque);

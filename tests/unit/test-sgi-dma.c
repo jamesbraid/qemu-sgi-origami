@@ -4,9 +4,9 @@
  * the chunk trace contract, pixel transfers both ways, completions, and a
  * display-list fetch over the page format measured on MGRAS.
  *
- * Guest memory here is a sparse set of 4 KiB pages behind the three
+ * Guest memory here is a sparse set of 64 KiB blocks behind the three
  * address-space entry points the DMA helpers reach (map, unmap, rw). A map
- * runs to the end of the fake's own 4 KiB page, so a page list with smaller
+ * runs to the end of the fake's own block, so a page list with smaller
  * pages shows whether a chunk stops at the list's page. The head composes a
  * device address into a bus address by adding BUS_OFFSET, the way a head
  * adds a widget number, so a test can tell the address a trace names from
@@ -19,6 +19,7 @@
 #include "hw/display/sgi/pixel-dma.h"
 
 #define PAGE 4096
+#define BLOCK 0x10000ull
 #define BUS_OFFSET 0x80000000000ull
 /* Device addresses in [HOLE, HOLE + PAGE) read and write but do not map. */
 #define HOLE 0x700000ull
@@ -32,19 +33,20 @@ static uint64_t unmapped_written;
 static int hole_reads;
 static AddressSpace fake_as;
 
+/* The 4 KiB page holding addr, inside its block. */
 static uint8_t *ram_page(uint64_t addr)
 {
-    uint64_t key = addr / PAGE;
-    uint8_t *page = g_hash_table_lookup(ram, &key);
+    uint64_t key = addr / BLOCK;
+    uint8_t *block = g_hash_table_lookup(ram, &key);
 
-    if (!page) {
+    if (!block) {
         uint64_t *k = g_new(uint64_t, 1);
 
         *k = key;
-        page = g_malloc0(PAGE);
-        g_hash_table_insert(ram, k, page);
+        block = g_malloc0(BLOCK);
+        g_hash_table_insert(ram, k, block);
     }
-    return page;
+    return block + addr % BLOCK / PAGE * PAGE;
 }
 
 static void ram_write(uint64_t addr, const void *buf, size_t len)
@@ -69,7 +71,7 @@ void *address_space_map(AddressSpace *as, hwaddr addr, hwaddr *plen,
         *plen = 0;
         return NULL;
     }
-    *plen = MIN(*plen, PAGE - dev % PAGE);
+    *plen = MIN(*plen, BLOCK - dev % BLOCK);
     maps_outstanding++;
     maps_made++;
     return ram_page(dev) + dev % PAGE;
@@ -722,14 +724,57 @@ static void test_bounds(void)
 }
 
 /*
- * The fake bus maps up to its own 4 KiB page, so with 1 KiB list pages a
- * chunk that ran on past its list page would read the physically next
- * kilobyte instead of the page the list names next.
+ * The plane bounds what a transfer can make the map take, so a transfer
+ * wider or taller than its plane fails before a page is mapped, even when
+ * its page list could hold it. A plane the transfer names but the board
+ * lacks fails the same way.
+ */
+static void test_plane_bounds(void)
+{
+    static const uint64_t pages[4] = { 0xd0000, 0xd1000, 0xd2000, 0xd3000 };
+    SGIDMAPageList pl = { .addr = pages, .npages = 4, .page_size = PAGE };
+    Head *h = head_new();
+    SGIDMABus bus = bus_for(h, &head_ops);
+    SGIBoardMemory m;
+    SGIPixelDMA base = {
+        .dir = SGI_DMA_TO_PLANE, .plane = 0,
+        .x = 0, .y = 0, .w = 64, .h = 16, .pitch = 256, .guest_bpp = 4,
+        .logic_op = SGI_LOGIC_COPY, .mask = ~0u,
+        .tag_plane = SGI_PLANE_NONE,
+    };
+    SGIPixelDMA d;
+
+    setup();
+    plane_setup(&m, SGI_PLANE_RAW);
+    d = base;
+    d.w = 65;
+    d.pitch = 65 * 4;
+    g_assert_cmpint(sgi_dma_pixels(&d, &bus, &pl, &m), ==, SGI_FAIL_BOUNDS);
+    d = base;
+    d.h = 17;
+    g_assert_cmpint(sgi_dma_pixels(&d, &bus, &pl, &m), ==, SGI_FAIL_BOUNDS);
+    d = base;
+    d.plane = 5;
+    g_assert_cmpint(sgi_dma_pixels(&d, &bus, &pl, &m), ==, SGI_FAIL_BOUNDS);
+    g_assert_cmpint(maps_made, ==, 0);
+
+    d = base;
+    g_assert_cmpint(sgi_dma_pixels(&d, &bus, &pl, &m), ==, 0);
+    g_assert_cmpint(maps_made, ==, 1);
+    g_assert_cmpint(maps_outstanding, ==, 0);
+    sgi_board_memory_cleanup(&m);
+    head_free(h);
+}
+
+/*
+ * The fake bus maps up to its own 64 KiB block, so with Odyssey's 16 KiB
+ * list pages a chunk that ran on past its list page would read the
+ * physically next kilobyte instead of the page the list names next.
  */
 static void test_page_cut(void)
 {
-    static const uint64_t pages[2] = { 0xb0800, 0xb0000 };
-    SGIDMAPageList pl = { .addr = pages, .npages = 2, .page_size = 1024 };
+    static const uint64_t pages[2] = { 0xb4000, 0xb0000 };
+    SGIDMAPageList pl = { .addr = pages, .npages = 2, .page_size = 0x4000 };
     Head *h = head_new();
     SGIDMABus bus = bus_for(h, &head_ops);
     SGIBoardMemory m;
@@ -739,21 +784,22 @@ static void test_page_cut(void)
         .x = 0, .y = 0, .w = 64, .h = 8, .pitch = 256, .guest_bpp = 4,
         .logic_op = SGI_LOGIC_COPY, .mask = ~0u,
         .tag_plane = SGI_PLANE_NONE, .trace_chunks = true,
+        .offset = 0x4000 - 1024,
     };
 
     setup();
     plane_setup(&m, SGI_PLANE_RAW);
     p = sgi_board_memory_plane(&m, 0);
-    for (uint64_t a = 0xb0000; a < 0xb1000; a += 4) {
+    for (uint64_t a = 0xb0000; a < 0xb9000; a += 4) {
         uint8_t w[4];
 
         stl_be_p(w, (uint32_t)a);
         ram_write(a, w, 4);
     }
     g_assert_cmpint(sgi_dma_pixels(&d, &bus, &pl, &m), ==, 0);
-    /* Rows 0-3 are list page 0, rows 4-7 list page 1. */
-    g_assert_cmphex(sgi_plane_load(&m, p, 0, 0), ==, 0xb0800);
-    g_assert_cmphex(sgi_plane_load(&m, p, 63, 3), ==, 0xb0bfc);
+    /* Rows 0-3 end list page 0, rows 4-7 begin list page 1. */
+    g_assert_cmphex(sgi_plane_load(&m, p, 0, 0), ==, 0xb7c00);
+    g_assert_cmphex(sgi_plane_load(&m, p, 63, 3), ==, 0xb7ffc);
     g_assert_cmphex(sgi_plane_load(&m, p, 0, 4), ==, 0xb0000);
     g_assert_cmphex(sgi_plane_load(&m, p, 63, 7), ==, 0xb03fc);
     g_assert_cmpuint(h->chunks->len, ==, 2);
@@ -1358,6 +1404,46 @@ static void test_fetch_segment_cap(void)
     head_free(h);
 }
 
+/*
+ * A page list of pages smaller than a chunk would cost a chunk for every
+ * page, one per byte at a 1-byte page. Pages below SGI_DMA_MIN_PAGE_SIZE
+ * fail a transfer and a fetch before anything is mapped.
+ */
+static void test_min_page_size(void)
+{
+    static const uint64_t pages[8] = {
+        0xe0000, 0xe0800, 0xe1000, 0xe1800,
+        0xe2000, 0xe2800, 0xe3000, 0xe3800,
+    };
+    SGIDMAPageList pl = { .addr = pages, .npages = 8,
+                          .page_size = SGI_DMA_MIN_PAGE_SIZE / 2 };
+    Head *h = head_new();
+    SGIDMABus bus = bus_for(h, &head_ops);
+    SGIBoardMemory m;
+    SGIPixelDMA d = {
+        .dir = SGI_DMA_TO_PLANE, .plane = 0,
+        .x = 0, .y = 0, .w = 64, .h = 4, .pitch = 256, .guest_bpp = 4,
+        .logic_op = SGI_LOGIC_COPY, .mask = ~0u,
+        .tag_plane = SGI_PLANE_NONE,
+    };
+    SGICommandFetch f = { .context = 3, .decode = head_decode };
+
+    setup();
+    plane_setup(&m, SGI_PLANE_RAW);
+    g_assert_cmpint(sgi_dma_pixels(&d, &bus, &pl, &m), ==, SGI_FAIL_BOUNDS);
+    g_assert_cmpint(sgi_fetch(&f, &bus, &pl, 0, 4), ==, SGI_FAIL_BOUNDS);
+    g_assert_cmpint(maps_made, ==, 0);
+    g_assert_cmpuint(h->decode_calls, ==, 0);
+
+    pl.page_size = SGI_DMA_MIN_PAGE_SIZE;
+    pl.npages = 1;
+    g_assert_cmpint(sgi_dma_pixels(&d, &bus, &pl, &m), ==, 0);
+    g_assert_cmpint(sgi_fetch(&f, &bus, &pl, 0, 4), ==, 0);
+    g_assert_cmpint(maps_outstanding, ==, 0);
+    sgi_board_memory_cleanup(&m);
+    head_free(h);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -1372,6 +1458,8 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-dma/conversion", test_conversion);
     g_test_add_func("/sgi-dma/bounds", test_bounds);
     g_test_add_func("/sgi-dma/page-cut", test_page_cut);
+    g_test_add_func("/sgi-dma/plane-bounds", test_plane_bounds);
+    g_test_add_func("/sgi-dma/min-page-size", test_min_page_size);
     g_test_add_func("/sgi-dma/partial-write", test_partial_write);
     g_test_add_func("/sgi-dma/page-backed-plane", test_page_backed_plane);
     g_test_add_func("/sgi-fetch/measured-pool", test_fetch_measured_pool);
