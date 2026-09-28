@@ -9621,6 +9621,164 @@ static void test_hq_query_answers_the_raster_position(void)
 }
 
 /*
+ * glBitmap, as the IRIX 6.5.30 IP27GR532 client's __glMgrim_Bitmap forms
+ * it for a small image: 0x9420, a flags word, the width and height, xorig,
+ * yorig, xmove and ymove as floats and the image's length in words; then
+ * an inline data block of the image's bytes in memory order, its offset
+ * in the first word in bits 23:22 when the image is not word aligned, and
+ * a zero word when the length is odd. The flags word is
+ * ((8 - ceil(width / 8) % 8) % 8) << 14 | 0xf, 0x1800f for gr_osview's
+ * 16-pixel images. __glMgrUpdateRasterPos sends 0xd608 with xmove and
+ * ymove for an empty image.
+ */
+#define GL_BITMAP_HDR         0x00009420
+#define GL_MOVE_RASTER_HDR    0x0000d608
+#define GL_INLINE_BLOCK       0x80000000
+
+static void gl_bitmap_packet(QTestState *qts, uint32_t width, uint32_t height,
+                             float xorig, float yorig, float xmove,
+                             float ymove)
+{
+    uint32_t row = (width + 7) / 8;
+
+    gl_word(qts, GL_BITMAP_HDR);
+    gl_word(qts, ((8 - row % 8) % 8) << 14 | 0xf);
+    gl_word(qts, width);
+    gl_word(qts, height);
+    gl_float(qts, xorig);
+    gl_float(qts, yorig);
+    gl_float(qts, xmove);
+    gl_float(qts, ymove);
+    gl_word(qts, (row * height + 3) / 4);
+}
+
+/* The image's block, word aligned, and the zero word an odd length adds. */
+static void gl_bitmap_image(QTestState *qts, const uint32_t *words,
+                            unsigned n)
+{
+    gl_word(qts, GL_INLINE_BLOCK | n * 4);
+    for (unsigned i = 0; i < n; i++) {
+        gl_word(qts, words[i]);
+    }
+    if (n & 1) {
+        gl_word(qts, 0);
+    }
+}
+
+/*
+ * A 10x2 image with its corner at the raster position (10.5, 20.5) less
+ * the origin (2, 3): pixel (8, 17) (OpenGL 1.2.1, 3.7). Its word 0x804001ff
+ * is the rows 0x80 0x40 and 0x01 0xff, the bottom row first and the most
+ * significant bit leftmost, so it sets (8, 17) and (17, 17) and (15, 18),
+ * (16, 18) and (17, 18), the rest of the last byte lying beyond the
+ * width, in the raster colour. The raster position then moves by (12,
+ * -1.5), and 0xd608 moves it again. The zero word after the block parses
+ * as a header: the fence after it sets its flag.
+ */
+static void test_gl_bitmap_draws_its_image(void)
+{
+    static const struct {
+        int x, y;
+    } set[] = { { 8, 17 }, { 17, 17 }, { 15, 18 }, { 16, 18 }, { 17, 18 } };
+    static const uint32_t image[1] = { 0x804001ff };
+    unsigned drawn = 0;
+
+    mgras_reset();
+    mgras_enter_gl_window(qts, 256, 640, 128, 128, 0x11);
+    gl_viewport(qts, 0, 0, 128, 128);
+    gl_color3f(qts, 1, 0.5f, 0);
+    gl_raster_pos2f(qts, 10.5f / 64 - 1, 20.5f / 64 - 1);
+    gl_bitmap_packet(qts, 10, 2, 2, 3, 12, -1.5f);
+    gl_bitmap_image(qts, image, 1);
+    gl_word(qts, MGRAS_FENCE_TOKEN);
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_FLAGS) & MGRAS_HQ_FLAG_FENCE, ==,
+                    MGRAS_HQ_FLAG_FENCE);
+
+    for (int y = 14; y < 22; y++) {
+        for (int x = 4; x < 22; x++) {
+            bool on = false;
+
+            for (int i = 0; i < ARRAY_SIZE(set); i++) {
+                on |= set[i].x == x && set[i].y == y;
+            }
+            g_assert_cmphex(gl_window_pixel(qts, x, y), ==,
+                            on ? 0xff8000 : 0);
+            drawn += on;
+        }
+    }
+    g_assert_cmpuint(drawn, ==, ARRAY_SIZE(set));
+    g_assert_cmphex(gl_query(qts, GL_Q_RASTER_X, 1), ==,
+                    gl_bits(22.5f + GL_RASTER_BIAS));
+    g_assert_cmphex(gl_query(qts, GL_Q_RASTER_Y, 1), ==,
+                    gl_bits(19 + GL_RASTER_BIAS));
+
+    gl_word(qts, GL_MOVE_RASTER_HDR);
+    gl_float(qts, -2);
+    gl_float(qts, 4);
+    g_assert_cmphex(gl_query(qts, GL_Q_RASTER_X, 1), ==,
+                    gl_bits(20.5f + GL_RASTER_BIAS));
+    g_assert_cmphex(gl_query(qts, GL_Q_RASTER_Y, 1), ==,
+                    gl_bits(23 + GL_RASTER_BIAS));
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+}
+
+/*
+ * An image not word aligned: its two bytes 0xc0 0x03 start at byte 2 of
+ * the first word, which the block header's bits 23:22 give, and the
+ * block is one word longer than its length. The 16x1 image sets columns
+ * 0, 1, 14 and 15. The fence after the block and its zero word shows the
+ * extra word did not parse as a header, and a block after no bitmap is
+ * framed the same way. With the raster position invalid
+ * the same image draws nothing and the position does not move.
+ */
+static void test_gl_bitmap_unaligned_image(void)
+{
+    mgras_reset();
+    mgras_enter_gl_window(qts, 256, 640, 128, 128, 0x11);
+    gl_viewport(qts, 0, 0, 128, 128);
+    gl_color3f(qts, 1, 1, 1);
+    gl_raster_pos2f(qts, 4.5f / 64 - 1, 6.5f / 64 - 1);
+    gl_bitmap_packet(qts, 16, 1, 0, 0, 0, 0);
+    gl_word(qts, GL_INLINE_BLOCK | 2 << 22 | 4);
+    gl_word(qts, 0x1234c003);
+    gl_word(qts, MGRAS_FENCE_TOKEN);
+    gl_word(qts, 0);
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_FLAGS) & MGRAS_HQ_FLAG_FENCE, ==,
+                    0);
+    gl_word(qts, MGRAS_FENCE_TOKEN);
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_FLAGS) & MGRAS_HQ_FLAG_FENCE, ==,
+                    MGRAS_HQ_FLAG_FENCE);
+    for (int x = 0; x < 20; x++) {
+        bool on = x == 4 || x == 5 || x == 18 || x == 19;
+
+        g_assert_cmphex(gl_window_pixel(qts, x, 6), ==, on ? 0xffffff : 0);
+        g_assert_cmphex(gl_window_pixel(qts, x, 7), ==, 0);
+    }
+
+    /* A block no packet owns is framed the same way. */
+    qtest_writel(qts, REG_HQ_FLAGS_CLEAR, MGRAS_HQ_FLAG_FENCE);
+    gl_word(qts, GL_INLINE_BLOCK | 3 << 22 | 4);
+    gl_word(qts, MGRAS_FENCE_TOKEN);
+    gl_word(qts, MGRAS_FENCE_TOKEN);
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_FLAGS) & MGRAS_HQ_FLAG_FENCE, ==,
+                    0);
+    gl_word(qts, MGRAS_FENCE_TOKEN);
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_FLAGS) & MGRAS_HQ_FLAG_FENCE, ==,
+                    MGRAS_HQ_FLAG_FENCE);
+
+    /* Outside the view volume: the image is consumed and not drawn. */
+    gl_raster_pos2f(qts, 2, 0);
+    gl_bitmap_packet(qts, 16, 1, 0, 0, 3, 3);
+    gl_word(qts, GL_INLINE_BLOCK | 4);
+    gl_word(qts, 0xffff0000);
+    gl_word(qts, 0);
+    g_assert_cmphex(gl_window_pixel(qts, 6, 6), ==, 0);
+    g_assert_cmphex(gl_query(qts, GL_Q_RASTER_X, 1), ==,
+                    gl_bits(4.5f + GL_RASTER_BIAS));
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+}
+
+/*
  * The colour-index client's words (the IRIX 6.5.30 IP27GR532
  * libGLcore.so): __glMgrInitCI sends 0x0a04 with the visual's index bits,
  * 8 in gr_osview's context setup, and __glMgrInitRGB 0x0900. glIndexs is
@@ -9662,7 +9820,8 @@ static void gl_window_rect(QTestState *qts, float x0, float y0, float x1,
  * pixel, which scans out through the colour map of the window's display
  * ID: map 29 for display ID 0's reset mode. Its clear stores the clear
  * index, glIndexMask keeps the bits its mask leaves clear (OpenGL 1.2.1,
- * 4.2.2), and 0x0900 returns the context to RGBA.
+ * 4.2.2), a bitmap takes the raster index, and 0x0900 returns the context
+ * to RGBA.
  */
 static void test_gl_colour_index_draws_through_the_colour_map(void)
 {
@@ -9706,6 +9865,15 @@ static void test_gl_colour_index_draws_through_the_colour_map(void)
                     0x0000ff);
     gl_one(qts, GL_INDEX_MASK_HDR, 0xff);
 
+    /* A bitmap in the raster index: glIndexs(-1) is index 255. */
+    gl_indexs(qts, -1);
+    gl_raster_pos2f(qts, 80, 80);
+    gl_bitmap_packet(qts, 8, 1, 0, 0, 0, 0);
+    gl_bitmap_image(qts, (const uint32_t[]){ 0x81000000 }, 1);
+    g_assert_cmphex(gl_window_pixel(qts, 80, 80), ==, 0xff);
+    g_assert_cmphex(gl_window_pixel(qts, 81, 80), ==, 0x17);
+    g_assert_cmphex(gl_window_pixel(qts, 87, 80), ==, 0xff);
+
     gl_word(qts, GL_INIT_RGB);
     gl_color3f(qts, 1, 1, 1);
     gl_window_rect(qts, 90, 10, 100, 30);
@@ -9739,6 +9907,42 @@ static void test_hq_query_answers_the_colour_index(void)
     gl_word(qts, GL_INIT_RGB);
     g_assert_cmphex(gl_attribute_query(qts, 4), ==, gl_bits(0.25f));
     g_assert_cmphex(gl_query(qts, GL_Q_RASTER_INDEX, 1), ==, gl_bits(0.25f));
+}
+
+/*
+ * A context switch inside a bitmap's image: the second context's words
+ * parse as its own, and the first context's image continues where it
+ * stopped when it is loaded again, drawing its second word's rows.
+ */
+static void test_gl_bitmap_split_by_a_context_switch(void)
+{
+    mgras_reset();
+    gl_enter_slot(qts, GL_SLOT_A);
+    gl_word(qts, GL_CONTEXT_OPENER);
+    gl_one(qts, GL_INIT_CI_HDR, 8);
+    gl_viewport(qts, 0, 0, 128, 128);
+    gl_window_projection(qts);
+    gl_indexs(qts, 5);
+    gl_raster_pos2f(qts, 20, 30);
+    gl_bitmap_packet(qts, 16, 4, 0, 0, 0, 0);
+    gl_word(qts, GL_INLINE_BLOCK | 8);
+    gl_word(qts, 0xffff0000);
+
+    gl_enter_slot(qts, GL_SLOT_B);
+    gl_word(qts, GL_CONTEXT_OPENER);
+    gl_word(qts, MGRAS_FENCE_TOKEN);
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_FLAGS) & MGRAS_HQ_FLAG_FENCE, ==,
+                    MGRAS_HQ_FLAG_FENCE);
+
+    gl_enter_slot(qts, GL_SLOT_A);
+    gl_word(qts, 0x0000ffff);
+    for (int x = 20; x < 36; x++) {
+        g_assert_cmphex(gl_window_pixel(qts, x, 30), ==, 5);
+        g_assert_cmphex(gl_window_pixel(qts, x, 31), ==, 0);
+        g_assert_cmphex(gl_window_pixel(qts, x, 32), ==, 0);
+        g_assert_cmphex(gl_window_pixel(qts, x, 33), ==, 5);
+    }
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
 }
 
 static void test_hq_flags_fence_token_sets_bit(void)
@@ -11212,6 +11416,69 @@ static void test_gl_colour_index_migration(void)
 }
 
 /*
+ * Colour-index state and a bitmap's image under way cross a migration:
+ * b's index mode, write mask and clear index, and a's image stopped after
+ * its first word, which finishes on the destination in a's raster index.
+ */
+static void test_gl_colour_index_and_bitmap_migration(void)
+{
+    g_autofree char *tmpfs = NULL;
+    g_autofree char *uri = NULL;
+    g_autofree char *dest_cmdline = NULL;
+    GError *err = NULL;
+    QTestState *from, *to;
+
+    tmpfs = g_dir_make_tmp("sn0-mgras-gl-index-XXXXXX", &err);
+    g_assert_no_error(err);
+    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+
+    from = qtest_init(MIGRATION_ARGS);
+    dest_cmdline = g_strdup_printf(MIGRATION_ARGS " -incoming %s", uri);
+    to = qtest_init(dest_cmdline);
+
+    gl_enter_slot(from, GL_SLOT_B);
+    gl_word(from, GL_CONTEXT_OPENER);
+    gl_one(from, GL_INIT_CI_HDR, 8);
+    gl_one(from, GL_INDEX_MASK_HDR, 0x0f);
+    gl_word(from, GL_CLEAR_INDEX_HDR);
+    gl_float(from, 3);
+    gl_enter_slot(from, GL_SLOT_A);
+    gl_word(from, GL_CONTEXT_OPENER);
+    gl_one(from, GL_INIT_CI_HDR, 8);
+    gl_viewport(from, 0, 0, 128, 128);
+    gl_window_projection(from);
+    gl_indexs(from, 0x17);
+    gl_raster_pos2f(from, 20, 30);
+    gl_bitmap_packet(from, 16, 4, 0, 0, 0, 0);
+    gl_word(from, GL_INLINE_BLOCK | 8);
+    gl_word(from, 0xffff0000);
+
+    sgi_migrate_stopped(from, uri);
+
+    gl_word(to, 0x0000ffff);
+    for (int x = 20; x < 36; x++) {
+        g_assert_cmphex(gl_window_pixel(to, x, 30), ==, 0x17);
+        g_assert_cmphex(gl_window_pixel(to, x, 31), ==, 0);
+        g_assert_cmphex(gl_window_pixel(to, x, 33), ==, 0x17);
+    }
+    gl_word(to, MGRAS_FENCE_TOKEN);
+    g_assert_cmphex(qtest_readl(to, REG_HQ_FLAGS) & MGRAS_HQ_FLAG_FENCE, ==,
+                    MGRAS_HQ_FLAG_FENCE);
+    g_assert_cmphex(gl_query(to, GL_Q_RASTER_INDEX, 1), ==, gl_bits(0x17));
+
+    /* b clears to index 3 under its mask 0x0f: 0x17 becomes 0x13. */
+    gl_enter_slot(to, GL_SLOT_B);
+    gl_word(to, GL_CLEAR_COLOR_BUFFER);
+    g_assert_cmphex(gl_window_pixel(to, 20, 30), ==, 0x13);
+    g_assert_cmphex(gl_window_pixel(to, 20, 31), ==, 0x03);
+    g_assert_cmphex(mgras_qom_get_uint(to, "x-test-error"), ==, 0);
+
+    qtest_quit(to);
+    qtest_quit(from);
+    g_rmdir(tmpfs);
+}
+
+/*
  * A primitive left open by a migration finishes on the destination: the
  * vertices each context held before it cross, in the loaded context (the
  * default slot's, the no-context entry) and in one switched out.
@@ -11867,9 +12134,15 @@ int main(int argc, char **argv)
                    test_hq_query_answers_the_raster_position);
     qtest_add_func("sn0/origin2000/mgras/hq-query-answers-the-colour-index",
                    test_hq_query_answers_the_colour_index);
+    qtest_add_func("sn0/origin2000/mgras/gl-bitmap-draws-its-image",
+                   test_gl_bitmap_draws_its_image);
+    qtest_add_func("sn0/origin2000/mgras/gl-bitmap-unaligned-image",
+                   test_gl_bitmap_unaligned_image);
     qtest_add_func("sn0/origin2000/mgras/"
                    "gl-colour-index-draws-through-the-colour-map",
                    test_gl_colour_index_draws_through_the_colour_map);
+    qtest_add_func("sn0/origin2000/mgras/gl-bitmap-split-by-a-context-switch",
+                   test_gl_bitmap_split_by_a_context_switch);
     qtest_add_func("sn0/origin2000/mgras/hq-query-flag-only-from-query",
                    test_hq_query_flag_only_from_query);
     qtest_add_func("sn0/origin2000/mgras/inline-block-uses-20-bit-length",
@@ -12128,6 +12401,9 @@ int main(int argc, char **argv)
                    test_gl_raster_position_migration);
     qtest_add_func("sn0/origin2000/mgras/gl-colour-index-migration",
                    test_gl_colour_index_migration);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "gl-colour-index-and-bitmap-migration",
+                   test_gl_colour_index_and_bitmap_migration);
     qtest_add_func("sn0/origin2000/mgras/gl-context-table-migration",
                    test_gl_context_table_migration);
     qtest_add_func("sn0/origin2000/mgras/gl-open-primitive-migration",
