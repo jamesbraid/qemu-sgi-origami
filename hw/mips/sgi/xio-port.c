@@ -61,6 +61,20 @@ bool sgi_xio_port_reset_output(Object *port, unsigned int index,
     return true;
 }
 
+void sgi_xio_port_request_dropped(Object *port, unsigned int index,
+                                  hwaddr addr, bool write)
+{
+    SGIXioPortClass *pc;
+
+    if (!port) {
+        return;
+    }
+    pc = SGI_XIO_PORT_GET_CLASS(port);
+    if (pc->request_dropped) {
+        pc->request_dropped(port, index, addr, write);
+    }
+}
+
 static const TypeInfo sgi_xio_port_types[] = {
     {
         .name = TYPE_SGI_XIO_PORT,

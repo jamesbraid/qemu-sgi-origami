@@ -207,6 +207,7 @@ static bool xio_baseio_build_widget(SGIXioBoardState *board, Error **errp)
     board->packet_face = sgi_bridge_packet_face(s->bridge);
     board->link_reset = qdev_get_gpio_in_named(DEVICE(s->bridge),
                                                 "link-reset", 0);
+    board->link_chip = OBJECT(s->bridge);
 
     return true;
 }

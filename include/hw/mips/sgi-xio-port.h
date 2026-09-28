@@ -97,6 +97,15 @@ struct SGIXioPortClass {
      */
     qemu_irq (*reset_input)(Object *port, unsigned int index);
     void (*reset_output)(Object *port, unsigned int index, qemu_irq target);
+
+    /*
+     * A crossbar dropped a request this port sent, at XIO address addr
+     * (widget in bits 51:48 on the packet path), so no response will
+     * come: the sender's own request timer is what reports it. A port
+     * with nothing to report leaves it NULL.
+     */
+    void (*request_dropped)(Object *port, unsigned int index, hwaddr addr,
+                            bool write);
 };
 
 /*
@@ -128,5 +137,7 @@ bool sgi_xio_port_connect(Object *port, unsigned int index,
 qemu_irq sgi_xio_port_reset_input(Object *port, unsigned int index);
 bool sgi_xio_port_reset_output(Object *port, unsigned int index,
                                qemu_irq target);
+void sgi_xio_port_request_dropped(Object *port, unsigned int index,
+                                  hwaddr addr, bool write);
 
 #endif /* HW_MIPS_SGI_XIO_PORT_H */

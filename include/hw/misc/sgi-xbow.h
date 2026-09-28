@@ -70,6 +70,18 @@ struct SGIXbowState {
      * carrying one is reported on the port that received it.
      */
     MemoryRegion illegal[SGI_XBOW_LINKS];
+    MemoryRegion packet_illegal[SGI_XBOW_LINKS];
+
+    /*
+     * Beneath the routes to links 8 to F: a destination whose link is
+     * down or empty, or the port's own, drops the request.
+     */
+    MemoryRegion unreachable[SGI_XBOW_LINKS];
+    MemoryRegion packet_unreachable[SGI_XBOW_LINKS];
+
+    /* Who sent what arrives on each port: its request timer hears a drop. */
+    Object *peer_port[SGI_XBOW_LINKS];
+    unsigned int peer_index[SGI_XBOW_LINKS];
 
     /* The register block, and the view of it each link port is given. */
     MemoryRegion regs;

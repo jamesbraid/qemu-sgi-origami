@@ -444,6 +444,14 @@ static qemu_irq sgi_xio_board_xio_port_reset_input(Object *port,
     return SGI_XIO_BOARD(port)->link_reset;
 }
 
+static void sgi_xio_board_xio_port_request_dropped(Object *port,
+                                                   unsigned int index,
+                                                   hwaddr addr, bool write)
+{
+    sgi_xio_port_request_dropped(SGI_XIO_BOARD(port)->link_chip, index,
+                                 addr, write);
+}
+
 static void sgi_xio_board_class_init(ObjectClass *oc, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
@@ -461,6 +469,7 @@ static void sgi_xio_board_class_init(ObjectClass *oc, const void *data)
     pc->packet_face = sgi_xio_board_xio_port_packet_face;
     pc->connect = sgi_xio_board_xio_port_connect;
     pc->reset_input = sgi_xio_board_xio_port_reset_input;
+    pc->request_dropped = sgi_xio_board_xio_port_request_dropped;
 }
 
 static void sgi_xio_board_finalize(Object *obj)
