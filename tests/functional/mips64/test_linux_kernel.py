@@ -93,9 +93,11 @@ behaviour without booting anything.
 import os
 
 from qemu_test import QemuSystemTest, skipIfMissingEnv
+from qemu_test.asset import LocalAsset
 
 from lib_prom import (FIRMWARE_REL, MACHINES, drive_console,
-                      prom_netboot_steps, require_assets, verdict)
+                      prom_netboot_steps, verdict)
+from lib_prom_sash import RELEASES
 
 
 # What the kernel's own embedded userspace self-check prints, per CPU
@@ -243,9 +245,15 @@ class LinuxKernel(QemuSystemTest):
     test_prom_boot.py keeps between its pure logic and PromBoot.
     """
 
+    ASSET_FIRMWARE = LocalAsset(
+        FIRMWARE_REL, RELEASES['6.5.30']['prom_sha256'])
+    ASSET_KERNEL = LocalAsset(
+        KERNEL_REL,
+        'd095c9033e2f8aeca0a75adbbdc1d0acdf764230999b63eb6261574d65c77bd4')
+
     def _boot_and_capture(self, cpus, mem_mib, name):
-        assets = require_assets(self, FIRMWARE_REL, KERNEL_REL)
-        firmware, kernel = assets[FIRMWARE_REL], assets[KERNEL_REL]
+        firmware = self.ASSET_FIRMWARE.fetch()
+        kernel = self.ASSET_KERNEL.fetch()
 
         vm = self.get_vm(name=name)
         vm.set_machine(machine_props(cpus))
