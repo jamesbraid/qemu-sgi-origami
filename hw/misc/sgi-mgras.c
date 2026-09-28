@@ -1318,6 +1318,43 @@ static bool mgras_realize_board(SGIMgrasState *s, Error **errp)
 }
 
 /*
+ * Pixel banks 0 and 1, back to back in one board memory, each a plane of
+ * the screen's size. A bank word is whatever the per-pixel format tag says
+ * it is, so the planes are raw words in host order; MGRAS reads and writes
+ * them through front and back, and the planes give the shared code their
+ * bounds. This is the model's layout, not the board's pixel memory map.
+ */
+static bool mgras_realize_banks(SGIMgrasState *s, Error **errp)
+{
+    uint32_t bytes = s->width * s->height * sizeof(uint32_t);
+
+    sgi_board_memory_init(&s->mem, 2 * (uint64_t)bytes);
+    for (int bank = 0; bank < 2; bank++) {
+        SGIPlane plane = {
+            .base = (uint64_t)bank * bytes,
+            .len = bytes,
+            .width = s->width,
+            .height = s->height,
+            .stride = s->width * sizeof(uint32_t),
+            .format = SGI_PLANE_RAW,
+            .packing = HOST_BIG_ENDIAN ? SGI_PACK_BE_RED_HIGH :
+                                         SGI_PACK_LE_RED_HIGH,
+            .evidence = "model layout: MGRAS's own bank arrays",
+        };
+
+        s->bank_plane[bank] = sgi_board_memory_add_plane(&s->mem, &plane,
+                                                         errp);
+        if (s->bank_plane[bank] == SGI_PLANE_NONE) {
+            sgi_board_memory_cleanup(&s->mem);
+            return false;
+        }
+    }
+    s->front = (uint32_t *)s->mem.bytes;
+    s->back = (uint32_t *)(s->mem.bytes + bytes);
+    return true;
+}
+
+/*
  * The board's widget: one MMIO region answers both a processor's access
  * and a packet routed to this widget. Built before the base class moves
  * the board under its module, so nothing here may depend on the board's
@@ -1335,8 +1372,9 @@ static bool mgras_build_widget(SGIXioBoardState *board, Error **errp)
     if (!mgras_realize_board(s, errp)) {
         return false;
     }
-    s->front = g_new0(uint32_t, s->width * s->height);
-    s->back = g_new0(uint32_t, s->width * s->height);
+    if (!mgras_realize_banks(s, errp)) {
+        return false;
+    }
     s->depth = g_new0(uint32_t, s->width * s->height);
     s->front_count = s->back_count = s->width * s->height;
     s->depth_count = s->width * s->height;
@@ -1376,7 +1414,8 @@ static void mgras_unrealize(DeviceState *dev)
     timer_del(s->retrace_timer); timer_free(s->retrace_timer);
     address_space_destroy(&s->fabric_as);
     qemu_graphic_console_close(s->con);
-    g_free(s->front); g_free(s->back); g_free(s->depth); g_free(s->format);
+    sgi_board_memory_cleanup(&s->mem);
+    g_free(s->depth); g_free(s->format);
     g_free(s->overlay);
     g_free(s->ge[SGI_MGRAS_GE_SLOT_A]); g_free(s->ge[SGI_MGRAS_GE_SLOT_B]);
     g_free(s->display_buffer);

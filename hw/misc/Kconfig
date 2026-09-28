@@ -341,6 +341,7 @@ config SGI_XBRIDGE_XBOW
 config SGI_MGRAS
     bool
     select SGI_XIO_BOARD
+    select SGI_DISPLAY
 
 config SGI_KONA
     bool
