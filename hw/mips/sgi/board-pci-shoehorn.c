@@ -129,8 +129,6 @@ struct SGIPciShoehornState {
     SGIXioBoardState parent_obj;
 
     MemoryRegion *fabric;
-    uint64_t fabric_base;
-    uint32_t fabric_widget_shift;
     uint64_t onewire_serial;
     char *pci_bus_name;
     uint32_t cad_duo_slot;
@@ -255,9 +253,6 @@ static bool pci_shoehorn_build_widget(SGIXioBoardState *board, Error **errp)
     sgi_xio_board_name_pci_bus(SGI_XIO_BOARD(s), bridge, s->pci_bus_name);
     object_property_set_link(OBJECT(bridge), "fabric", OBJECT(s->fabric),
                              &error_abort);
-    qdev_prop_set_uint64(bridge, "fabric-base", s->fabric_base);
-    qdev_prop_set_uint32(bridge, "fabric-widget-shift",
-                         s->fabric_widget_shift);
     if (!sysbus_realize(SYS_BUS_DEVICE(bridge), errp)) {
         return false;
     }
@@ -283,9 +278,6 @@ static bool pci_shoehorn_build_widget(SGIXioBoardState *board, Error **errp)
 static const Property pci_shoehorn_properties[] = {
     DEFINE_PROP_LINK("fabric", SGIPciShoehornState, fabric,
                      TYPE_MEMORY_REGION, MemoryRegion *),
-    DEFINE_PROP_UINT64("fabric-base", SGIPciShoehornState, fabric_base, 0),
-    DEFINE_PROP_UINT32("fabric-widget-shift", SGIPciShoehornState,
-                       fabric_widget_shift, 0),
     DEFINE_PROP_UINT64("onewire-serial", SGIPciShoehornState,
                        onewire_serial, PCI_SHOEHORN_SERIAL_PLACEHOLDER),
     DEFINE_PROP_STRING("pci-bus-name", SGIPciShoehornState, pci_bus_name),

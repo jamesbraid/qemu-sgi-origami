@@ -10,18 +10,17 @@
  * is specific to the card: its own Bridge and the card's fitted-part
  * identity.
  *
- * "fabric", "fabric-base" and "fabric-widget-shift" pass straight
- * through to the internal Bridge: which Crossbow port receives this
- * board's packets is a fact about the machine this board is built into,
- * not about the board itself, so the link to its slot sets them. "fabric"
- * is required: Bridge refuses to realize without it. "pci-bus-name" also
- * passes through, unset by default: the machine building more than one
- * instance of this board -- a multi-enclosure Origin 2000's own case --
- * has to give each its own name, since two PCI buses answering to the
- * same name is a migration-identity collision on every device behind
- * them. "onewire-serial" is Bridge's own NIC ROM identity (widget
- * discovery); "ioc3-onewire-serial" is the onboard IOC3's separate
- * one-wire identity, forwarded to the internal sgi-baseio's own
+ * "fabric" passes straight through to the internal Bridge: which Crossbow
+ * port receives this board's packets is a fact about the machine this
+ * board is built into, not about the board itself, so the link to its
+ * slot sets it. It is required: Bridge refuses to realize without it.
+ * "pci-bus-name" also passes through, unset by default: the machine
+ * building more than one instance of this board -- a multi-enclosure
+ * Origin 2000's own case -- has to give each its own name, since two
+ * PCI buses answering to the same name is a migration-identity collision
+ * on every device behind them. "onewire-serial" is Bridge's own NIC ROM
+ * identity (widget discovery); "ioc3-onewire-serial" is the onboard IOC3's
+ * separate one-wire identity, forwarded to the internal sgi-baseio's own
  * "onewire-serial" property. "nvram-drive", "chardev-a", "chardev-b",
  * "record-a" and "record-b" forward the same way, unset by default.
  * "parallel-chardev" forwards the same way too, to the MediaIO
@@ -76,8 +75,6 @@ struct SGIXioBaseioState {
     SGIXioBoardState parent_obj;
 
     MemoryRegion *fabric;
-    uint64_t fabric_base;
-    uint32_t fabric_widget_shift;
     uint64_t onewire_serial;
     uint64_t ioc3_onewire_serial;
     char *pci_bus_name;
@@ -149,9 +146,6 @@ static bool xio_baseio_build_widget(SGIXioBoardState *board, Error **errp)
     sgi_xio_board_name_pci_bus(SGI_XIO_BOARD(s), bridge, s->pci_bus_name);
     object_property_set_link(OBJECT(bridge), "fabric", OBJECT(s->fabric),
                              &error_abort);
-    qdev_prop_set_uint64(bridge, "fabric-base", s->fabric_base);
-    qdev_prop_set_uint32(bridge, "fabric-widget-shift",
-                         s->fabric_widget_shift);
     if (identity->bridge_flash) {
         /* Per slot: a module can hold a second BaseIO-preset card. */
         g_autofree char *name = g_strdup_printf(
@@ -226,9 +220,6 @@ static void xio_baseio_instance_init(Object *obj)
 static const Property xio_baseio_properties[] = {
     DEFINE_PROP_LINK("fabric", SGIXioBaseioState, fabric, TYPE_MEMORY_REGION,
                      MemoryRegion *),
-    DEFINE_PROP_UINT64("fabric-base", SGIXioBaseioState, fabric_base, 0),
-    DEFINE_PROP_UINT32("fabric-widget-shift", SGIXioBaseioState,
-                       fabric_widget_shift, 0),
     DEFINE_PROP_UINT64("onewire-serial", SGIXioBaseioState, onewire_serial,
                        XIO_BASEIO_SERIAL_PLACEHOLDER),
     DEFINE_PROP_UINT64("ioc3-onewire-serial", SGIXioBaseioState,
