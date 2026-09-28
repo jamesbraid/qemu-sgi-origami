@@ -155,30 +155,55 @@ static void check_node_shapes(const SGIModelTopology *t)
     }
 }
 
+/* Whether two cable ends are the same port of the same vertex. */
+static bool same_end(const SGIModelLinkEnd *a, const SGIModelLinkEnd *b)
+{
+    return a->kind == b->kind && a->index == b->index && a->port == b->port;
+}
+
+/* The @index'th cable of @t. */
+static const SGIModelCable *nth_cable(const SGIModelTopology *t,
+                                      uint32_t index)
+{
+    const SGIModelCableList *entry = t->cables;
+
+    while (index--) {
+        g_assert(entry);
+        entry = entry->next;
+    }
+    g_assert(entry);
+    return entry->value;
+}
+
 /*
- * Each cable ends at a real vertex on port 1 or higher; crossbar port 0 is
- * its local view. No endpoint appears twice. The catalogue lacks router port
- * counts, so the device qtest checks router port upper bounds.
+ * Every cable's two ends name a real vertex, at a port at least one (port
+ * zero is a crossbar's own local view, never a numbered cable end); no end
+ * is shared by two cables one node-population row fits. The chassis lists
+ * every row's cables, and two rows may wire one Hub differently (a
+ * deskside's Null Router with two node boards, a Router port with three),
+ * so the rule holds per row, not across the whole list. A router's own
+ * port count is a device fact (decision D-0026) this catalogue does not
+ * carry, so the upper bound on a router end's port is the device's own
+ * qtest to check, not this one.
  */
 static void check_cables(const SGIModelTopology *t)
 {
     size_t total_nodes = node_count(t);
     size_t total_routers = router_count(t);
+    size_t total_cables = 0;
     const SGIModelCableList *cable_entry;
+    const SGIModelNodePopulationList *row;
 
     for (cable_entry = t->cables; cable_entry;
          cable_entry = cable_entry->next) {
         const SGIModelCable *cable = cable_entry->value;
-        const SGIModelLinkEnd *end0 = cable->ends->value;
-        const SGIModelLinkEnd *end1 = cable->ends->next->value;
-        const SGIModelLinkEnd *ends[2] = { end0, end1 };
-        const SGIModelCableList *other_entry;
         unsigned int side;
 
         g_assert(cable->ends->next);
         g_assert(!cable->ends->next->next);
         for (side = 0; side < 2; side++) {
-            const SGIModelLinkEnd *end = ends[side];
+            const SGIModelLinkEnd *end = side ? cable->ends->next->value :
+                                                cable->ends->value;
             size_t count = end->kind == SGI_MODEL_LINK_END_KIND_ROUTER ?
                 total_routers : total_nodes;
 
@@ -187,20 +212,28 @@ static void check_cables(const SGIModelTopology *t)
                 g_assert_cmpuint(end->port, >=, 1);
             }
         }
-        for (other_entry = t->cables; other_entry != cable_entry;
-             other_entry = other_entry->next) {
-            const SGIModelCable *other = other_entry->value;
-            const SGIModelLinkEnd *other_ends[2] = {
-                other->ends->value, other->ends->next->value,
-            };
-            unsigned int a, b;
+        total_cables++;
+    }
 
-            for (a = 0; a < 2; a++) {
-                for (b = 0; b < 2; b++) {
-                    g_assert_false(
-                        ends[a]->kind == other_ends[b]->kind &&
-                        ends[a]->index == other_ends[b]->index &&
-                        ends[a]->port == other_ends[b]->port);
+    g_assert(t->node_populations);
+    for (row = t->node_populations; row; row = row->next) {
+        const uint32List *fitted, *other;
+
+        for (fitted = row->value->cables; fitted; fitted = fitted->next) {
+            const SGIModelCable *cable;
+
+            g_assert_cmpuint(fitted->value, <, total_cables);
+            cable = nth_cable(t, fitted->value);
+            for (other = row->value->cables; other != fitted;
+                 other = other->next) {
+                const SGIModelCable *peer = nth_cable(t, other->value);
+                const SGIModelLinkEndList *a, *b;
+
+                g_assert_cmpuint(other->value, !=, fitted->value);
+                for (a = cable->ends; a; a = a->next) {
+                    for (b = peer->ends; b; b = b->next) {
+                        g_assert_false(same_end(a->value, b->value));
+                    }
                 }
             }
         }
