@@ -183,7 +183,7 @@ static bool r10k_system_request(CPUMIPSState *env, R10KSystemRequest request,
                                 R10K_SYSTEM_REQUEST_KIND_SHIFT |
                                 (uint64_t)set_bits <<
                                 R10K_SYSTEM_REQUEST_SET_BITS_SHIFT,
-                                &found, MO_64, attrs);
+                                &found, MO_BEUQ, attrs);
     return found;
 }
 
