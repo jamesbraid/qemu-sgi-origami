@@ -1190,6 +1190,13 @@ static void mgras_gl_store_colour(void *opaque, SGIColourTarget target,
  * model, so an index for it is dropped; mgras_gl_check_index() logs that.
  * A context deeper than eight bits keeps its low eight, logged at its
  * setup.
+ *
+ * A mask with none of the eight bits set leaves the pixel as it was
+ * (OpenGL 1.2.1, 4.2.2), whatever its format. Approximated: the model
+ * tags each pixel with one format rather than keeping planes, so a
+ * partial mask over a direct-colour pixel keeps that pixel's low byte
+ * as the index's other bits and makes it CI8. The discriminating test is
+ * gl-colour-index-zero-mask-keeps-the-pixel.
  */
 static void mgras_gl_store_index(void *opaque, SGIColourTarget target,
                                  int x, int y, uint32_t index, uint32_t mask)
@@ -1197,7 +1204,7 @@ static void mgras_gl_store_index(void *opaque, SGIColourTarget target,
     SGIMgrasState *s = opaque;
     unsigned int idx = (s->height - 1 - y) * s->width + x;
 
-    if (target & 1) {
+    if ((target & 1) && (mask & 0xff)) {
         s->front[idx] = ((s->front[idx] & ~mask) | (index & mask)) & 0xff;
         s->format[idx] = SGI_MGRAS_PIXEL_FORMAT_CI8;
     }
