@@ -6,9 +6,9 @@
  * through its viewport into window coordinates, snapped to a subpixel
  * grid and rasterized with edge functions at pixel centres, then depth
  * tested and stored through the family's target. What it draws follows
- * OpenGL 1.2.1 for untextured, unlit points, lines and polygons at size
- * and width 1, flat or smooth shaded, in RGBA or colour-index mode.
- * Where OpenGL leaves a choice, the head's SGIRasterRules make it.
+ * OpenGL 1.2.1 for untextured, unlit points, lines, polygons and bitmaps
+ * at size and width 1, flat or smooth shaded, in RGBA or colour-index
+ * mode. Where OpenGL leaves a choice, the head's SGIRasterRules make it.
  */
 #include "qemu/osdep.h"
 #include <math.h>
@@ -688,10 +688,52 @@ void sgi_soft_draw(const SGIRasterRules *rules, const SGIRasterTarget *t,
 }
 
 /*
+ * A run of a bitmap's image (OpenGL 1.2.1, 3.7): a fragment for each set
+ * bit, at the image's corner plus the bit's column and row, bounded by
+ * the window the draw state's drawable owns and not by the viewport.
+ */
+static void sgi_soft_bitmap(const SGIRasterRules *rules,
+                            const SGIRasterTarget *t, const SGIRasterOp *op)
+{
+    const SGIRasterBitmap *b = &op->bitmap;
+    SGISoftDraw r = { .rules = rules, .t = t, .st = b->state };
+    uint32_t row_bytes = DIV_ROUND_UP(b->width, 8);
+    double rgba[3] = { b->rgba[0], b->rgba[1], b->rgba[2] };
+    uint32_t colour;
+
+    if (!sgi_soft_window(b->state, &r.win) ||
+        !sgi_soft_check_index(t, b->state->index_bits)) {
+        return;
+    }
+    colour = b->state->index_bits ? sgi_soft_index(&r, b->index) :
+                                    sgi_soft_rgb(rules, rgba);
+    r.ntargets = MIN(op->ntargets, 2);
+    memcpy(r.targets, op->targets, sizeof(r.targets));
+    for (uint32_t i = 0; i < b->count && row_bytes; i++) {
+        uint32_t byte = b->first + i;
+        int64_t row = byte / row_bytes, col0 = (byte % row_bytes) * 8;
+
+        if (row >= b->height) {
+            break;
+        }
+        for (int bit = 0; bit < 8 && col0 + bit < b->width; bit++) {
+            int64_t px = b->x + col0 + bit, py = b->y + row;
+
+            if (!(b->bytes[i] & (0x80 >> bit)) ||
+                px < r.win.x0 - r.win.ox || px > r.win.x1 - r.win.ox ||
+                py < r.win.y0 - r.win.oy || py > r.win.y1 - r.win.oy) {
+                continue;
+            }
+            sgi_soft_fragment(&r, px, py, b->z, colour);
+        }
+    }
+}
+
+/*
  * CLEAR writes the clear colour, or in colour-index mode the clear index,
  * to the op's targets and the clear depth to the depth plane at every
- * pixel of its rectangle its clip list keeps. The other kinds are not
- * executed here yet.
+ * pixel of its rectangle its clip list keeps. BITMAP draws its run of a
+ * bitmap. The other kinds are not executed here yet.
  */
 void sgi_soft_raster(const SGIRasterRules *rules, const SGIRasterTarget *t,
                      const SGIRasterOp *op)
@@ -701,6 +743,10 @@ void sgi_soft_raster(const SGIRasterRules *rules, const SGIRasterTarget *t,
     uint32_t rgb = 0;
 
     if (!sgi_soft_check_rules(rules)) {
+        return;
+    }
+    if (op->kind == SGI_RASTER_BITMAP) {
+        sgi_soft_bitmap(rules, t, op);
         return;
     }
     if (op->kind != SGI_RASTER_CLEAR) {

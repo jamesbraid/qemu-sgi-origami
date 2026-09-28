@@ -637,6 +637,63 @@ static void sgi_gl_capability(SGIGLContext *c, uint32_t cap, bool on)
     }
 }
 
+bool sgi_gl_bitmap_place(SGIGLContext *c, uint32_t width, uint32_t height,
+                         float xorig, float yorig, float xmove, float ymove,
+                         SGIGLBitmap *b)
+{
+    if (!c->raster_valid) {
+        return false;
+    }
+    /* Beyond 2^30 a corner lies off any plane; keep it there. */
+    b->x = MIN(MAX(floor((double)c->raster_pos[0] - xorig), -0x40000000),
+               0x40000000);
+    b->y = MIN(MAX(floor((double)c->raster_pos[1] - yorig), -0x40000000),
+               0x40000000);
+    b->width = width;
+    b->height = height;
+    c->raster_pos[0] += xmove;
+    c->raster_pos[1] += ymove;
+    return true;
+}
+
+/*
+ * The fragments of glBitmap's set bits take the raster position's depth
+ * and its colour or colour index (3.7) and pass the per-fragment
+ * operations like a primitive's: pixel ownership against the drawable,
+ * the depth test and the draw buffers. The viewport does not bound them.
+ */
+void sgi_gl_bitmap_bytes(SGIGLContext *c, const SGIGLSink *sink,
+                         const SGIGLBitmap *b, uint32_t first,
+                         const uint8_t *bytes, uint32_t count)
+{
+    const SGIGLDrawable *d = &c->cur.drawable;
+    SGIRasterOp op = {
+        .kind = SGI_RASTER_BITMAP,
+        .bitmap = {
+            .state = &c->cur,
+            .x = b->x,
+            .y = b->y,
+            .width = b->width,
+            .height = b->height,
+            .first = first,
+            .count = count,
+            .bytes = bytes,
+            .z = c->raster_pos[2],
+            .index = c->raster_index,
+        },
+    };
+
+    if (!d->bound || !d->clip.n) {
+        qemu_log_mask(LOG_UNIMP, "sgi-gl: glBitmap with no window bound "
+                      "dropped\n");
+        return;
+    }
+    memcpy(op.bitmap.rgba, c->raster_color, sizeof(op.bitmap.rgba));
+    op.ntargets = sgi_gl_draw_targets(&c->cur, op.targets);
+    op.clip = d->clip;
+    sink->raster(sink->opaque, &op);
+}
+
 void sgi_gl_command(SGIGLContext *c, const SGIGLSink *sink,
                     const SGIGLCmd *cmd)
 {
