@@ -415,33 +415,39 @@ static void read_board_id_narrow(Program *p)
     emit(p, LW(R_T3, 0, R_T1));
 }
 
+/*
+ * An eight-byte read 0x0500_0000 above the board ID register, which the
+ * IP35 address map leaves unmapped.
+ */
+static void read_past_board_id(Program *p)
+{
+    emit_board_id_address(p);
+    emit(p, LUI(R_T3, 0x0500));
+    emit(p, DADDU(R_T1, R_T1, R_T3));
+    emit(p, LD(R_T3, 0, R_T1));
+}
+
 static void do_nothing(Program *p)
 {
 }
 
 /*
- * The bus error a device's refusal raises names the refusal. The log said
- * the access "reached no device" for every failure, which sent the
- * investigation of the refused board ID reads above looking for a hole in
- * the address map.
+ * Run @body0 on slice A with the unimplemented-access log on, check it took
+ * one data bus error, and return the log's text.
  */
-static void test_refused_read_is_named(void)
+static char *run_logged_bus_error(EmitBody body0)
 {
     const EmitBody body[4] = {
-        [0] = read_board_id_narrow,
+        [0] = body0,
         [2] = do_nothing,
     };
     g_autofree char *log = NULL;
     g_autofree char *extra = NULL;
-    g_autofree char *text = NULL;
+    char *text = NULL;
     char *prom;
     QTestState *s;
     int fd;
 
-    if (!qtest_has_accel("tcg")) {
-        g_test_skip("TCG is unavailable");
-        return;
-    }
     fd = g_file_open_tmp("sn1-system-request-log-XXXXXX", &log, NULL);
     g_assert_cmpint(fd, >=, 0);
     g_assert_cmpint(close(fd), ==, 0);
@@ -450,14 +456,48 @@ static void test_refused_read_is_named(void)
     g_assert_cmphex(result(s, RESULT_CAUSE) & 0x7c, ==, 7 << 2);
     g_assert_cmpuint(result(s, RESULT_ERRORS), ==, 1);
     finish(s, prom);
-
     g_assert_true(g_file_get_contents(log, &text, NULL, NULL));
+    g_assert_cmpint(unlink(log), ==, 0);
+    return text;
+}
+
+/*
+ * The bus error a device's refusal raises names the result, a device
+ * error. The log said the access "reached no device" for every failure,
+ * which sent the investigation of the refused board ID reads above looking
+ * for a hole in the address map.
+ */
+static void test_refused_read_is_named(void)
+{
+    g_autofree char *text = NULL;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+    text = run_logged_bus_error(read_board_id_narrow);
     g_assert_nonnull(strstr(text, "mips: load of 4 bytes at "
                                   "0x9000000014000000 (physical "
-                                  "0x10014000000) was refused by its "
-                                  "device; raising a bus error"));
-    g_assert_null(strstr(text, "reached no device"));
-    g_assert_cmpint(unlink(log), ==, 0);
+                                  "0x10014000000) failed with a device "
+                                  "error; raising a bus error"));
+    g_assert_null(strstr(text, "decode error"));
+}
+
+/* A read of an unmapped address names its result, a decode error. */
+static void test_unmapped_read_is_named(void)
+{
+    g_autofree char *text = NULL;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+    text = run_logged_bus_error(read_past_board_id);
+    g_assert_nonnull(strstr(text, "mips: load of 8 bytes at "
+                                  "0x9000000019000000 (physical "
+                                  "0x10019000000) failed with a decode "
+                                  "error; raising a bus error"));
+    g_assert_null(strstr(text, "device error"));
 }
 
 int main(int argc, char **argv)
@@ -469,5 +509,7 @@ int main(int argc, char **argv)
                    test_concurrent_requests_all_served);
     qtest_add_func("sn1/system-request/refused-read-is-named",
                    test_refused_read_is_named);
+    qtest_add_func("sn1/system-request/unmapped-read-is-named",
+                   test_unmapped_read_is_named);
     return g_test_run();
 }
