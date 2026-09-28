@@ -157,6 +157,11 @@ struct SGIXbowState {
     uint32_t link_event[SGI_XBOW_LINKS];
 
     qemu_irq link_reset[SGI_XBOW_LINKS];
+    /*
+     * The virtual time before which a warm reset arriving on any link is
+     * ignored: the link layer's 1024-cycle guard against reset loops.
+     */
+    int64_t warm_reset_quiet_until;
     QEMUTimer *link_reset_timer[SGI_XBOW_LINKS];
     int64_t link_reset_remaining[SGI_XBOW_LINKS];
     SGIXbowLink link_context[SGI_XBOW_LINKS];
