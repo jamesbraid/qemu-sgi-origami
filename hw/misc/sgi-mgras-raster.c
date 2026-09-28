@@ -34,6 +34,16 @@
 
 #define MGRAS_CMD_FIFO_FENCE_CLASS 0x000e
 #define MGRAS_CMD_FIFO_FENCE_REG 0x04
+/*
+ * 0x000e0100 is the client's DMA-read fence marker, which
+ * __glMgrWaitForDMARead sends before it polls 0x020200 & 0x1eff for zero
+ * (mgras-gl-commands.md in the Origami repository, "DMA-read fence";
+ * established as software expectation). The client also pads pooled
+ * display lists with it. What the board does with it is unknown. It has
+ * no payload, the model's DMA is always idle by the time the client
+ * polls, and the word would otherwise be logged once per padding word.
+ */
+#define MGRAS_CMD_FIFO_DMA_READ_FENCE_REG 0x01
 #define MGRAS_HQ_FLAG_FENCE 0x00010000
 
 /*
@@ -319,6 +329,10 @@ static void mgras_command_fifo_token(SGIMgrasState *s, uint32_t token)
     if (cmd_class == MGRAS_CMD_FIFO_FENCE_CLASS &&
         reg == MGRAS_CMD_FIFO_FENCE_REG && payload_bytes == 0) {
         s->hq_flags |= MGRAS_HQ_FLAG_FENCE;
+        return;
+    }
+    if (cmd_class == MGRAS_CMD_FIFO_FENCE_CLASS &&
+        reg == MGRAS_CMD_FIFO_DMA_READ_FENCE_REG && payload_bytes == 0) {
         return;
     }
 
