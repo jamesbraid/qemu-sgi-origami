@@ -249,7 +249,7 @@ static void replay_mmio(QTestState *qts, const ReplayHead *head,
  * s->fabric_as and preloading there leaves the plain address, and so the
  * model's read, untouched. HEX is the same lowercase, unseparated hex-pair
  * encoding qemu_hexdump_to_buffer() writes into the trace;
- * MGRAS_DMA_CHUNK_MAX_BYTES in hw/misc/sgi-mgras-raster.c bounds a single
+ * SGI_DMA_CHUNK_MAX in include/hw/display/sgi/pixel-dma.h bounds a single
  * captured chunk the same way.
  */
 #define REPLAY_DMA_MAX_BYTES 4096

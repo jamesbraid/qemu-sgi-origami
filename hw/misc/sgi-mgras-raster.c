@@ -12,6 +12,7 @@
 #include "hw/misc/sgi-mgras-raster.h"
 #include "hw/misc/sgi-mgras-gl.h"
 #include "system/dma.h"
+#include "hw/display/sgi/pixel-dma.h"
 #include "trace.h"
 
 
@@ -1492,9 +1493,10 @@ static bool mgras_raster_dma_select_slot(SGIMgrasState *s, uint32_t kick_byte,
  * address is (list_node << 32) | (pagelist[page_ix] << 12) | (va & 0xfff).
  * The page list itself is `count` big-endian 64-bit page-frame-number
  * entries at (list_node << 32) | list_pa, both taken from the selected
- * mapping slot. Reading byte-by-byte (rather than the whole row at once)
- * is deliberate: consecutive page-list entries need not be adjacent, so a
- * row's bytes can span a page boundary at an arbitrary offset.
+ * mapping slot. Consecutive page-list entries need not be adjacent, so a
+ * row's bytes can span a page boundary at an arbitrary offset: the shared
+ * DMA code cuts every transfer at each guest page and resolves each page
+ * through the list.
  *
  * A page-frame number wider than 20 bits would collide with the node
  * identifier this formula ORs in at bit 32 (PFN << 12 would reach bit 32
@@ -1508,125 +1510,137 @@ static bool mgras_raster_dma_select_slot(SGIMgrasState *s, uint32_t kick_byte,
  * one. Mask to the formula's 20-bit ceiling rather than guess narrower.
  */
 #define MGRAS_DMA_PAGE_LIST_PFN_MASK 0xfffffu
+#define MGRAS_DMA_PAGE_SIZE 4096
+
+/*
+ * One transfer's view of the bus for the shared DMA hooks. The widget
+ * comes from the kicked slot's control word, so it travels with the
+ * transfer rather than living in device state.
+ */
+typedef struct MgrasDmaBus {
+    SGIMgrasState *s;
+    unsigned int widget;
+} MgrasDmaBus;
+
+/*
+ * The shared code hands over plain node addresses; the XIO packet fabric
+ * reaches them with the slot's widget composed in.
+ */
+static bool mgras_raster_dma_address(void *opaque, uint64_t addr, hwaddr *bus)
+{
+    MgrasDmaBus *b = opaque;
+
+    return sgi_mgras_xio_compose(b->s, b->widget, addr, bus);
+}
 
 /*
  * A replayed session has no guest RAM behind it, so a traced capture must
  * carry the bytes a host-to-screen DMA image transfer reads: the page-list
- * fetch below and the per-byte pixel source in mgras_raster_dma_draw_image().
- * Bytes are accumulated per contiguous run of plain node addresses (the
- * address dma_memory_read() resolves before sgi_mgras_xio_compose() shifts
- * a widget number into it, not the composed fabric address that call
- * produces) and flushed as one sgi_mgras_dma_chunk event, capped at one
- * page so a wide row still yields several bounded events rather than one
- * unbounded one. The node address, not the fabric address, is what a
- * replay's own qtest_memwrite can actually preload: qtest's guest RAM has
- * no widget-shifted region behind it. mgras_write() has already incremented
- * and traced s->trace_sequence for the write that triggered this draw, so
- * the chunk shares that same write's sequence number (trace_sequence - 1):
- * Origami's reduction places chunk records immediately before the write
- * they belong to.
+ * fetch and the pixel source. The shared code calls this once per chunk it
+ * resolves -- at most SGI_DMA_CHUNK_MAX bytes, never crossing a guest page
+ * -- at the plain node address before mgras_raster_dma_address() composed
+ * it. The node address, not the fabric address, is what a replay's own
+ * qtest_memwrite can actually preload: qtest's guest RAM has no
+ * widget-shifted region behind it. mgras_write() has already incremented
+ * and traced s->trace_sequence for the write that triggered this transfer,
+ * so the transfer is submitted with that write's sequence number
+ * (trace_sequence - 1): Origami's reduction places chunk records
+ * immediately before the write they belong to.
  */
-#define MGRAS_DMA_CHUNK_MAX_BYTES 4096
-
-typedef struct MgrasDmaChunk {
-    uint64_t addr;
-    uint32_t len;
-    bool active;
-    uint8_t bytes[MGRAS_DMA_CHUNK_MAX_BYTES];
-} MgrasDmaChunk;
-
-static void mgras_raster_dma_chunk_flush(SGIMgrasState *s,
-                                         MgrasDmaChunk *chunk)
+static void mgras_raster_dma_chunk(void *opaque, uint64_t seq, uint64_t addr,
+                                   const uint8_t *bytes, uint32_t len)
 {
-    g_autofree char *hex = NULL;
+    g_autofree char *hex = g_malloc(len * 2 + 1);
 
-    if (!chunk->active) {
-        return;
-    }
-    hex = g_malloc(chunk->len * 2 + 1);
-    qemu_hexdump_to_buffer(hex, chunk->len * 2 + 1, chunk->bytes, chunk->len);
-    trace_sgi_mgras_dma_chunk(s->trace_sequence - 1, chunk->addr, chunk->len,
-                              hex);
-    chunk->active = false;
-    chunk->len = 0;
-}
-
-static void mgras_raster_dma_chunk_add(SGIMgrasState *s, MgrasDmaChunk *chunk,
-                                       uint64_t addr, const uint8_t *data,
-                                       size_t len)
-{
-    /*
-     * Both current call sites pass a fixed, far-smaller length (one
-     * page-list entry or one pixel byte), so this never fires today; it
-     * guards a single add too large for chunk->bytes on its own, which the
-     * chunk->active branch below does not check.
-     */
-    g_assert(len <= MGRAS_DMA_CHUNK_MAX_BYTES);
-    if (!trace_event_get_state_backends(TRACE_SGI_MGRAS_DMA_CHUNK)) {
-        return;
-    }
-    if (chunk->active && (chunk->addr + chunk->len != addr ||
-                          chunk->len + len > MGRAS_DMA_CHUNK_MAX_BYTES)) {
-        mgras_raster_dma_chunk_flush(s, chunk);
-    }
-    if (!chunk->active) {
-        chunk->addr = addr;
-        chunk->len = 0;
-        chunk->active = true;
-    }
-    memcpy(chunk->bytes + chunk->len, data, len);
-    chunk->len += len;
+    qemu_hexdump_to_buffer(hex, len * 2 + 1, bytes, len);
+    trace_sgi_mgras_dma_chunk(seq, addr, len, hex);
 }
 
 /*
- * Fetch and byte-swap a slot's whole big-endian page-frame-number list,
- * shared by the draw and read paths. On success, *page_list is a freshly
- * allocated `count`-entry array the caller owns. On any composed fabric
- * address or DMA failure, this has already logged the guest error and
- * freed the partial list; the caller must stop the transfer rather than
- * paint or write anything from it.
+ * A transfer runs to completion inside the kick that started it, and
+ * mgras_raster_dma_kick() raises the fence flag the driver polls, whether
+ * or not the transfer moved anything. The completion adds nothing to that.
  */
-static bool mgras_raster_dma_load_page_list(SGIMgrasState *s,
-                                            unsigned int widget,
-                                            uint32_t list_node,
-                                            uint32_t list_pa, uint32_t count,
-                                            uint64_t **page_list)
+static void mgras_raster_dma_publish(void *opaque, const SGICompletion *c)
 {
-    uint64_t *list = g_new0(uint64_t, count);
-    MgrasDmaChunk chunk = { };
+}
 
-    for (uint32_t i = 0; i < count; i++) {
-        hwaddr fabric;
-        uint64_t node_addr = ((uint64_t)list_node << 32) | (list_pa + i * 8);
-        uint8_t entry[sizeof(uint64_t)];
-        MemTxResult result;
+static const SGIHeadOps mgras_raster_dma_ops = {
+    .publish = mgras_raster_dma_publish,
+    .dma_address = mgras_raster_dma_address,
+    .dma_chunk = mgras_raster_dma_chunk,
+};
 
-        if (!sgi_mgras_xio_compose(s, widget, node_addr, &fabric)) {
-            mgras_raster_dma_chunk_flush(s, &chunk);
-            g_free(list);
-            return false;
-        }
-        result = dma_memory_read(&s->fabric_as, fabric, entry, sizeof(entry),
-                                 MEMTXATTRS_UNSPECIFIED);
-        if (result != MEMTX_OK) {
-            qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: DMA image transfer "
-                          "page-list entry %u read at 0x%" PRIx64 " failed "
-                          "(result %d)\n", i, (uint64_t)fabric, result);
-            mgras_raster_dma_chunk_flush(s, &chunk);
-            g_free(list);
-            return false;
-        }
-        /*
-         * Recorded at node_addr, not fabric: a replayed session has no
-         * fabric-side device behind it, only qtest's own guest RAM, which
-         * qtest_memwrite reaches at the plain node address, never at the
-         * widget-shifted fabric address sgi_mgras_xio_compose() produces.
-         */
-        mgras_raster_dma_chunk_add(s, &chunk, node_addr, entry, sizeof(entry));
-        list[i] = ldq_be_p(entry) & MGRAS_DMA_PAGE_LIST_PFN_MASK;
+/*
+ * Resolve the kicked slot's mapping: its bus, and its page list read from
+ * guest memory as device page addresses. On success, *page_addr is a
+ * freshly allocated `count`-entry array the caller owns. On an unusable
+ * mapping or a failed read, this has already logged why and the caller
+ * must stop the transfer rather than paint or write anything.
+ */
+static bool mgras_raster_dma_setup(SGIMgrasState *s, unsigned int slot,
+                                   MgrasDmaBus *ctx, SGIDMABus *bus,
+                                   SGIDMAPageList *pl, uint64_t **page_addr)
+{
+    uint64_t base = sgi_mgras_dma_map_slot_base(s, slot);
+    uint32_t list_node = (uint32_t)(base >> 32) & 0xff;
+    uint32_t count = sgi_mgras_dma_map_slot_count(s, slot);
+    uint64_t list_addr;
+    g_autofree uint64_t *addr = NULL;
+
+    /*
+     * The base pair's low word is entry 0's byte address, not a
+     * page-aligned address plus flag bits: every observed mapping's low
+     * word ends in 0x18 or 0x19 (three zero header words before the
+     * page-frame-number entries begin), so only bits 2:0 are flag-like.
+     * Masking to the page (as this used to) reads the header's first
+     * zero word as page-frame number 0 and drops every transfer 24 bytes
+     * short.
+     */
+    list_addr = ((uint64_t)list_node << 32) | ((uint32_t)base & ~0x7u);
+    ctx->s = s;
+    ctx->widget = (sgi_mgras_dma_map_slot_control(s, slot) >> 16) & 0xf;
+    *bus = (SGIDMABus) {
+        .as = &s->fabric_as,
+        .ops = &mgras_raster_dma_ops,
+        .opaque = ctx,
+    };
+
+    if (count == 0 || count > (1u << 20)) {
+        qemu_log_mask(LOG_UNIMP, "sgi-mgras: DMA source mapping has "
+                      "unusable page count %u\n", count);
+        return false;
     }
-    mgras_raster_dma_chunk_flush(s, &chunk);
-    *page_list = list;
+
+    /*
+     * The list lives in one node's memory: node in bits 39:32, offset in
+     * 31:0. A list that ran past the node's last byte would carry into the
+     * node number and read another node's memory.
+     */
+    if ((uint32_t)list_addr + (uint64_t)count * 8 > (1ull << 32)) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: DMA page list of %u "
+                      "entries at 0x%" PRIx64 " runs past its node\n",
+                      count, list_addr);
+        return false;
+    }
+
+    /* Read the big-endian entries and turn them into page addresses. */
+    addr = g_new(uint64_t, count);
+    if (!sgi_dma_read(bus, list_addr, addr, count * 8,
+                      trace_event_get_state_backends(TRACE_SGI_MGRAS_DMA_CHUNK),
+                      s->trace_sequence - 1)) {
+        return false;
+    }
+    for (uint32_t i = 0; i < count; i++) {
+        addr[i] = ((uint64_t)list_node << 32) |
+                  ((ldq_be_p(&addr[i]) & MGRAS_DMA_PAGE_LIST_PFN_MASK) << 12);
+    }
+    *pl = (SGIDMAPageList) {
+        .addr = addr,
+        .npages = count,
+        .page_size = MGRAS_DMA_PAGE_SIZE,
+    };
+    *page_addr = g_steal_pointer(&addr);
     return true;
 }
 
@@ -1636,7 +1650,7 @@ static bool mgras_raster_dma_load_page_list(SGIMgrasState *s,
  * would need SRC_OFF_ALIGNED shifted into bits 63:32, and would send any
  * nonzero value there to a different node's memory entirely. Per the DMA
  * source-mapping decode the source-address formula in the comment above
- * mgras_raster_dma_load_page_list() already cites, they are non-overlapping
+ * mgras_raster_dma_setup() already cites, they are non-overlapping
  * parts of one byte offset into the page list: SRC_OFF_LOW3 carries the
  * offset's low 3 bits (src & 7), SRC_OFF_ALIGNED carries the same
  * offset's 8-aligned remainder (src & ~7). Addition reconstructs the
@@ -1648,24 +1662,135 @@ static uint64_t mgras_raster_dma_src_offset(SGIMgrasState *s)
            s->dma_desc_20000[MGRAS_DESC_20000_REG_SRC_OFF_ALIGNED];
 }
 
+/*
+ * The transfer between the resolved guest rows and the pixel banks, on
+ * host memory only. The rows land through mgras_put_pixel(), so the logic
+ * op, colour mask, clip and format tag apply as for any other paint.
+ */
+static int mgras_raster_dma_run_draw(SGIMgrasState *s, SGIPixelDMA *d,
+                                     uint8_t op, uint32_t mask)
+{
+    uint32_t bpr = (uint32_t)d->w * d->guest_bpp;
+    g_autofree uint8_t *bytes = g_malloc(bpr);
+
+    for (int32_t row = 0; row < d->h; row++) {
+        uint64_t pos = d->offset + (uint64_t)row * d->pitch;
+        int y = d->y + row;
+
+        if (!sgi_dma_map_copy(&d->map, pos, bytes, bpr, false)) {
+            return SGI_FAIL_BOUNDS;
+        }
+        for (int32_t col = 0; col < d->w; col++) {
+            const uint8_t *p = bytes + col * d->guest_bpp;
+            /*
+             * bpp 1 is a bare CI8 CMAP index. bpp 4 is a big-endian
+             * 32-bit pixel with red in bits 7:0: bytes 3, 2 and 1 are
+             * red, green and blue, and byte 0 is not stored. The public
+             * drivers transfer this layout under the same pixel format
+             * (0x600) and PP1FILLMODE format bits (0x62xx) the IRIX
+             * server uses: X.Org's impact driver (impact_shadow.c,
+             * visual masks 0xff/0xff00/0xff0000) and the Linux Impact
+             * framebuffer patch (red at offset 0). The IRIX 6.5.30
+             * greeter's EZsetup icon agrees: read red-first it is cyan
+             * and blue-grey where the RAD4 reference shows yellow and
+             * orange. PACKEDCOLOR and pair-packed pixels carry the same
+             * word; see mgras_rgb_from_pixel_word().
+             */
+            uint32_t color = d->guest_bpp == 1 ? p[0] :
+                ((uint32_t)p[3] << 16) | ((uint32_t)p[2] << 8) | p[1];
+            uint8_t format = d->guest_bpp == 1 ? SGI_MGRAS_PIXEL_FORMAT_CI8 :
+                                                 SGI_MGRAS_PIXEL_FORMAT_RGB;
+
+            mgras_put_pixel(s, y * s->width + d->x + col, color, op, mask,
+                            format);
+        }
+    }
+    s->dirty = true;
+    return 0;
+}
+
+/*
+ * The inverse of mgras_raster_dma_run_draw()'s pixel assembly: bytes 1, 2
+ * and 3 of a 4-byte pixel carry blue, green and red of the stored
+ * 0x00RRGGBB value, and byte 0 always reads back zero because the draw
+ * path never stores it.
+ */
+static int mgras_raster_dma_run_read(SGIMgrasState *s, SGIPixelDMA *d)
+{
+    uint32_t bpr = (uint32_t)d->w * d->guest_bpp;
+    g_autofree uint8_t *bytes = g_malloc(bpr);
+
+    for (int32_t row = 0; row < d->h; row++) {
+        uint64_t pos = d->offset + (uint64_t)row * d->pitch;
+        const uint32_t *stored = &s->front[(d->y + row) * s->width + d->x];
+
+        for (int32_t col = 0; col < d->w; col++) {
+            uint8_t *p = bytes + col * d->guest_bpp;
+
+            if (d->guest_bpp == 1) {
+                p[0] = stored[col];
+            } else {
+                p[0] = 0;
+                p[1] = stored[col];
+                p[2] = stored[col] >> 8;
+                p[3] = stored[col] >> 16;
+            }
+        }
+        if (!sgi_dma_map_copy(&d->map, pos, bytes, bpr, true)) {
+            return SGI_FAIL_BOUNDS;
+        }
+    }
+    return 0;
+}
+
+/*
+ * One pixel transfer through the shared DMA code: its guest rows resolved
+ * under the lock, the pixels moved on host memory, then the map released,
+ * which writes back a read's rows. Both directions work on bank 0, the
+ * bank the X server draws in, so that is the plane the transfer names. A
+ * transfer that does not fit its page list or that plane fails whole
+ * before anything is mapped, so it paints or writes nothing.
+ */
+static void mgras_raster_dma_transfer(SGIMgrasState *s, unsigned int slot,
+                                      SGIPixelDMA *d, uint8_t op,
+                                      uint32_t mask)
+{
+    MgrasDmaBus ctx;
+    SGIDMABus bus;
+    SGIDMAPageList pl;
+    g_autofree uint64_t *page_addr = NULL;
+    int ret;
+
+    if (!mgras_raster_dma_setup(s, slot, &ctx, &bus, &pl, &page_addr)) {
+        return;
+    }
+    d->plane = s->bank_plane[0];
+    d->tag_plane = SGI_PLANE_NONE;
+    d->trace_chunks =
+        trace_event_get_state_backends(TRACE_SGI_MGRAS_DMA_CHUNK);
+    d->trace_seq = s->trace_sequence - 1;
+    d->seq = d->trace_seq;
+    ret = sgi_dma_pixels_map(d, &bus, &pl, &s->mem);
+    if (!ret) {
+        ret = d->dir == SGI_DMA_TO_PLANE ?
+              mgras_raster_dma_run_draw(s, d, op, mask) :
+              mgras_raster_dma_run_read(s, d);
+    }
+    sgi_dma_pixels_finish(d, ret, &mgras_raster_dma_ops, &ctx);
+}
+
 static void mgras_raster_dma_draw_image(SGIMgrasState *s, uint32_t kick_byte)
 {
-    unsigned int slot, widget;
-    uint64_t base;
-    uint32_t list_node, list_pa, count;
+    unsigned int slot;
     uint32_t pitch = s->dma_desc_20000[MGRAS_DESC_20000_REG_PITCH];
-    uint64_t addr = mgras_raster_dma_src_offset(s);
     uint32_t rows = s->dma_desc_20000[MGRAS_DESC_20000_REG_ROWS];
     uint32_t bpr = s->dma_desc_20000[MGRAS_DESC_20000_REG_BPR];
     uint32_t xy0 = s->rss[MGRAS_RSS_BLOCKXYSTARTI];
     uint32_t xy1 = s->rss[MGRAS_RSS_BLOCKXYENDI];
     int x0 = (xy0 >> 16) & 0xffff, y0 = xy0 & 0xffff;
     int x1 = (xy1 >> 16) & 0xffff, y1 = xy1 & 0xffff;
-    uint8_t op = s->rss[MGRAS_RSS_PP1FILLMODE] >> 26;
-    uint32_t mask = s->rss[MGRAS_RSS_COLORMASKLSBSA];
     unsigned int width, bpp;
-    uint64_t *page_list;
-    MgrasDmaChunk chunk = { };
+    SGIPixelDMA d;
 
     if (!mgras_raster_dma_select_slot(s, kick_byte, &slot)) {
         return;
@@ -1690,107 +1815,18 @@ static void mgras_raster_dma_draw_image(SGIMgrasState *s, uint32_t kick_byte)
         return;
     }
 
-    /*
-     * The base pair's low word is entry 0's byte address, not a
-     * page-aligned address plus flag bits: every observed mapping's low
-     * word ends in 0x18 or 0x19 (three zero header words before the
-     * page-frame-number entries begin), so only bits 2:0 are flag-like.
-     * Masking to the page (as this used to) reads the header's first
-     * zero word as page-frame number 0 and drops every transfer 24 bytes
-     * short.
-     */
-    base = sgi_mgras_dma_map_slot_base(s, slot);
-    list_node = (uint32_t)(base >> 32) & 0xff;
-    list_pa = (uint32_t)base & ~0x7u;
-    count = sgi_mgras_dma_map_slot_count(s, slot);
-    widget = (sgi_mgras_dma_map_slot_control(s, slot) >> 16) & 0xf;
-
-    if (count == 0 || count > (1u << 20)) {
-        qemu_log_mask(LOG_UNIMP, "sgi-mgras: DMA source mapping has "
-                      "unusable page count %u\n", count);
-        return;
-    }
-
-    if (!mgras_raster_dma_load_page_list(s, widget, list_node, list_pa, count,
-                                      &page_list)) {
-        return;
-    }
-
-    rows = MIN(rows, (uint32_t)(y1 - y0 + 1));
-    for (uint32_t row = 0; row < rows; row++) {
-        int y = y0 + (int)row;
-        uint8_t pixel_bytes[4];
-
-        for (uint32_t b = 0; b < bpr; b++) {
-            uint64_t va = addr + (uint64_t)row * pitch + b;
-            uint64_t page_ix = va >> 12;
-            uint64_t src_pa;
-            hwaddr fabric;
-            uint8_t byte;
-            MemTxResult result;
-
-            if (page_ix >= count) {
-                qemu_log_mask(LOG_UNIMP, "sgi-mgras: DMA image transfer "
-                              "source page %" PRIu64 " exceeds mapped "
-                              "count %u\n", page_ix, count);
-                mgras_raster_dma_chunk_flush(s, &chunk);
-                continue;
-            }
-            src_pa = ((uint64_t)list_node << 32) |
-                     (page_list[page_ix] << 12) | (va & 0xfff);
-            if (!sgi_mgras_xio_compose(s, widget, src_pa, &fabric)) {
-                mgras_raster_dma_chunk_flush(s, &chunk);
-                continue;
-            }
-            result = dma_memory_read(&s->fabric_as, fabric, &byte,
-                                     sizeof(byte), MEMTXATTRS_UNSPECIFIED);
-            if (result != MEMTX_OK) {
-                qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: DMA image "
-                              "transfer source read at 0x%" PRIx64 " failed "
-                              "(result %d)\n", (uint64_t)fabric, result);
-                mgras_raster_dma_chunk_flush(s, &chunk);
-                g_free(page_list);
-                return;
-            }
-            /*
-             * Recorded at src_pa, not fabric: see the matching comment in
-             * mgras_raster_dma_load_page_list().
-             */
-            mgras_raster_dma_chunk_add(s, &chunk, src_pa, &byte, sizeof(byte));
-            pixel_bytes[b % bpp] = byte;
-            if (b % bpp == bpp - 1) {
-                uint32_t col = b / bpp;
-                /*
-                 * bpp 1 is a bare CI8 CMAP index. bpp 4 is a big-endian
-                 * 32-bit pixel with red in bits 7:0: bytes 3, 2 and 1 are
-                 * red, green and blue, and byte 0 is not stored. The
-                 * public drivers transfer this layout under the same
-                 * pixel format (0x600) and PP1FILLMODE format bits
-                 * (0x62xx) the IRIX server uses: X.Org's impact driver
-                 * (impact_shadow.c, visual masks 0xff/0xff00/0xff0000)
-                 * and the Linux Impact framebuffer patch (red at offset
-                 * 0). The IRIX 6.5.30 greeter's EZsetup icon agrees: read
-                 * red-first it is cyan and blue-grey where the RAD4
-                 * reference shows yellow and orange. PACKEDCOLOR and
-                 * pair-packed pixels carry the same word; see
-                 * mgras_rgb_from_pixel_word().
-                 */
-                uint32_t color = bpp == 1 ? pixel_bytes[0] :
-                    ((uint32_t)pixel_bytes[3] << 16) |
-                    ((uint32_t)pixel_bytes[2] << 8) | pixel_bytes[1];
-                uint8_t format = bpp == 1 ? SGI_MGRAS_PIXEL_FORMAT_CI8 :
-                                            SGI_MGRAS_PIXEL_FORMAT_RGB;
-
-                if (x0 + (int)col <= x1) {
-                    mgras_put_pixel(s, y * s->width + x0 + (int)col,
-                                 color, op, mask, format);
-                }
-            }
-        }
-    }
-    mgras_raster_dma_chunk_flush(s, &chunk);
-    g_free(page_list);
-    s->dirty = true;
+    d = (SGIPixelDMA) {
+        .dir = SGI_DMA_TO_PLANE,
+        .x = x0,
+        .y = y0,
+        .w = width,
+        .h = MIN(rows, (uint32_t)(y1 - y0 + 1)),
+        .pitch = pitch,
+        .guest_bpp = bpp,
+        .offset = mgras_raster_dma_src_offset(s),
+    };
+    mgras_raster_dma_transfer(s, slot, &d, s->rss[MGRAS_RSS_PP1FILLMODE] >> 26,
+                              s->rss[MGRAS_RSS_COLORMASKLSBSA]);
 }
 
 /*
@@ -1803,21 +1839,16 @@ static void mgras_raster_dma_draw_image(SGIMgrasState *s, uint32_t kick_byte)
  * that box height instead of guessing which end to trust.
  *
  * A stored pixel is mgras_put_pixel()'s COLORMASKLSBSA-masked 0x00RRGGBB
- * value; the byte extraction below is the exact inverse of the draw
- * path's assembly, bytes 1, 2 and 3 of a 4-byte pixel carrying blue,
- * green and red. Byte 0 always reads back zero: the draw path never
- * stores it. The Linux Impact framebuffer patch's impact_smallcopy()
- * relies on the same round trip: it reads with PP1FILLMODE 0x2200 and
- * pixel format 0x200, the values of the IRIX server's save-under reads,
- * and writes the words back with 0x6200 and 0x600.
+ * value, read back by mgras_raster_dma_run_read(). The Linux Impact
+ * framebuffer patch's impact_smallcopy() relies on the same round trip:
+ * it reads with PP1FILLMODE 0x2200 and pixel format 0x200, the values of
+ * the IRIX server's save-under reads, and writes the words back with
+ * 0x6200 and 0x600.
  */
 static void mgras_raster_dma_read_image(SGIMgrasState *s, uint32_t kick_byte)
 {
-    unsigned int slot, widget;
-    uint64_t base;
-    uint32_t list_node, list_pa, count;
+    unsigned int slot;
     uint32_t pitch = s->dma_desc_20000[MGRAS_DESC_20000_REG_PITCH];
-    uint64_t addr = mgras_raster_dma_src_offset(s);
     uint32_t rows = s->dma_desc_20000[MGRAS_DESC_20000_REG_ROWS];
     uint32_t bpr = s->dma_desc_20000[MGRAS_DESC_20000_REG_BPR];
     uint32_t xy0 = s->rss[MGRAS_RSS_BLOCKXYSTARTI];
@@ -1826,7 +1857,7 @@ static void mgras_raster_dma_read_image(SGIMgrasState *s, uint32_t kick_byte)
     int x1 = (xy1 >> 16) & 0xffff, y1 = xy1 & 0xffff;
     int y_top, y_bottom;
     unsigned int width, bpp;
-    uint64_t *page_list;
+    SGIPixelDMA d;
 
     if (!mgras_raster_dma_select_slot(s, kick_byte, &slot)) {
         return;
@@ -1858,69 +1889,17 @@ static void mgras_raster_dma_read_image(SGIMgrasState *s, uint32_t kick_byte)
         return;
     }
 
-    base = sgi_mgras_dma_map_slot_base(s, slot);
-    list_node = (uint32_t)(base >> 32) & 0xff;
-    list_pa = (uint32_t)base & ~0x7u;
-    count = sgi_mgras_dma_map_slot_count(s, slot);
-    widget = (sgi_mgras_dma_map_slot_control(s, slot) >> 16) & 0xf;
-
-    if (count == 0 || count > (1u << 20)) {
-        qemu_log_mask(LOG_UNIMP, "sgi-mgras: DMA source mapping has "
-                      "unusable page count %u\n", count);
-        return;
-    }
-
-    if (!mgras_raster_dma_load_page_list(s, widget, list_node, list_pa, count,
-                                      &page_list)) {
-        return;
-    }
-
-    for (uint32_t row = 0; row < rows; row++) {
-        int y = y_top + (int)row;
-
-        for (uint32_t b = 0; b < bpr; b++) {
-            uint32_t col = b / bpp;
-            int x = x0 + (int)col;
-            uint64_t va, src_pa;
-            uint64_t page_ix;
-            hwaddr fabric;
-            uint32_t stored;
-            uint8_t byte;
-            MemTxResult result;
-
-            if (x > x1) {
-                continue;
-            }
-            stored = s->front[y * s->width + x];
-            byte = bpp == 1 ? (uint8_t)stored :
-                b % bpp == 0 ? 0 : (uint8_t)(stored >> (8 * (b % bpp - 1)));
-
-            va = addr + (uint64_t)row * pitch + b;
-            page_ix = va >> 12;
-            if (page_ix >= count) {
-                qemu_log_mask(LOG_UNIMP, "sgi-mgras: DMA image transfer "
-                              "destination page %" PRIu64 " exceeds mapped "
-                              "count %u\n", page_ix, count);
-                continue;
-            }
-            src_pa = ((uint64_t)list_node << 32) |
-                     (page_list[page_ix] << 12) | (va & 0xfff);
-            if (!sgi_mgras_xio_compose(s, widget, src_pa, &fabric)) {
-                continue;
-            }
-            result = dma_memory_write(&s->fabric_as, fabric, &byte,
-                                      sizeof(byte), MEMTXATTRS_UNSPECIFIED);
-            if (result != MEMTX_OK) {
-                qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: DMA image "
-                              "transfer destination write at 0x%" PRIx64
-                              " failed (result %d)\n", (uint64_t)fabric,
-                              result);
-                g_free(page_list);
-                return;
-            }
-        }
-    }
-    g_free(page_list);
+    d = (SGIPixelDMA) {
+        .dir = SGI_DMA_FROM_PLANE,
+        .x = x0,
+        .y = y_top,
+        .w = width,
+        .h = rows,
+        .pitch = pitch,
+        .guest_bpp = bpp,
+        .offset = mgras_raster_dma_src_offset(s),
+    };
+    mgras_raster_dma_transfer(s, slot, &d, 0, 0);
 }
 
 static void mgras_raster_dma_kick(SGIMgrasState *s, uint32_t kick_word)
