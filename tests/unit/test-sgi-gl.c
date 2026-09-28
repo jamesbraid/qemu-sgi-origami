@@ -1102,6 +1102,58 @@ static void test_depth_range(void)
     g_assert_cmphex(out[1], ==, bits(1));
 }
 
+/*
+ * glIsEnabled of dither and the depth test, the depth function and write
+ * mask, and the stack depths (OpenGL 1.2.1, 6.1.1, 6.1.2): initially
+ * dither on, depth test off, GL_LESS, writes on, and one matrix a stack.
+ */
+static void test_get_enables_and_depths(void)
+{
+    uint32_t word[1], out[SGI_GL_GET_WORDS];
+    SGIGLContext c;
+
+    context_init(&c);
+    g_assert_cmpuint(get(&c, SGI_GL_DITHER, out), ==, 1);
+    g_assert_cmphex(out[0], ==, 1);
+    g_assert_cmpuint(get(&c, SGI_GL_DEPTH_TEST, out), ==, 1);
+    g_assert_cmphex(out[0], ==, 0);
+    g_assert_cmpuint(get(&c, SGI_GL_DEPTH_FUNC, out), ==, 1);
+    g_assert_cmphex(out[0], ==, 0x201);
+    g_assert_cmpuint(get(&c, SGI_GL_DEPTH_WRITEMASK, out), ==, 1);
+    g_assert_cmphex(out[0], ==, 1);
+    g_assert_cmpuint(get(&c, SGI_GL_MODELVIEW_STACK_DEPTH, out), ==, 1);
+    g_assert_cmphex(out[0], ==, 1);
+    g_assert_cmpuint(get(&c, SGI_GL_PROJECTION_STACK_DEPTH, out), ==, 1);
+    g_assert_cmphex(out[0], ==, 1);
+
+    word[0] = SGI_GL_DITHER;
+    command(&c, NULL, SGI_GL_OP_DISABLE, word, 1);
+    word[0] = SGI_GL_DEPTH_TEST;
+    command(&c, NULL, SGI_GL_OP_ENABLE, word, 1);
+    word[0] = 0x206;
+    command(&c, NULL, SGI_GL_OP_DEPTH_FUNC, word, 1);
+    word[0] = 0;
+    command(&c, NULL, SGI_GL_OP_DEPTH_MASK, word, 1);
+    command(&c, NULL, SGI_GL_OP_PUSH_MATRIX, word, 0);
+    command(&c, NULL, SGI_GL_OP_PUSH_MATRIX, word, 0);
+    word[0] = SGI_GL_PROJECTION;
+    command(&c, NULL, SGI_GL_OP_MATRIX_MODE, word, 1);
+    command(&c, NULL, SGI_GL_OP_PUSH_MATRIX, word, 0);
+
+    g_assert_cmpuint(get(&c, SGI_GL_DITHER, out), ==, 1);
+    g_assert_cmphex(out[0], ==, 0);
+    g_assert_cmpuint(get(&c, SGI_GL_DEPTH_TEST, out), ==, 1);
+    g_assert_cmphex(out[0], ==, 1);
+    g_assert_cmpuint(get(&c, SGI_GL_DEPTH_FUNC, out), ==, 1);
+    g_assert_cmphex(out[0], ==, 0x206);
+    g_assert_cmpuint(get(&c, SGI_GL_DEPTH_WRITEMASK, out), ==, 1);
+    g_assert_cmphex(out[0], ==, 0);
+    g_assert_cmpuint(get(&c, SGI_GL_MODELVIEW_STACK_DEPTH, out), ==, 1);
+    g_assert_cmphex(out[0], ==, 3);
+    g_assert_cmpuint(get(&c, SGI_GL_PROJECTION_STACK_DEPTH, out), ==, 1);
+    g_assert_cmphex(out[0], ==, 2);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -1124,5 +1176,7 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-gl/bitmap-bounds-and-depth",
                     test_bitmap_bounds_and_depth);
     g_test_add_func("/sgi-gl/depth-range", test_depth_range);
+    g_test_add_func("/sgi-gl/get-enables-and-depths",
+                    test_get_enables_and_depths);
     return g_test_run();
 }

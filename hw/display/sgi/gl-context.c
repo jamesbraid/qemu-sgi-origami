@@ -46,6 +46,7 @@ void sgi_gl_init(SGIGLContext *c, uint32_t hw_id)
     }
     c->cur.shade_model = SGI_GL_SMOOTH;
     c->matrix_mode = SGI_GL_MODELVIEW;
+    c->dither = 1;
     sgi_gl_identity(c->cur.modelview);
     sgi_gl_identity(c->cur.projection);
     c->cur.depth_func = SGI_GL_LESS;
@@ -660,6 +661,9 @@ static void sgi_gl_capability(SGIGLContext *c, uint32_t cap, bool on)
     case SGI_GL_DEPTH_TEST:
         c->cur.depth_test = on;
         return;
+    case SGI_GL_DITHER:
+        c->dither = on;
+        return;
     default:
         qemu_log_mask(LOG_UNIMP, "sgi-gl: capability 0x%x is not modelled; "
                       "%s ignored\n", cap, on ? "glEnable" : "glDisable");
@@ -964,6 +968,32 @@ bool sgi_gl_get(const SGIGLContext *c, uint32_t pname, uint32_t *out,
             out[i] = sgi_gl_bits(c->clear_color[i]);
         }
         *n = 4;
+        return true;
+    /* glGetBooleanv of a capability is glIsEnabled (6.1.1). */
+    case SGI_GL_DEPTH_TEST:
+        out[0] = c->cur.depth_test;
+        *n = 1;
+        return true;
+    case SGI_GL_DITHER:
+        out[0] = c->dither;
+        *n = 1;
+        return true;
+    case SGI_GL_DEPTH_FUNC:
+        out[0] = SGI_GL_NEVER_ENUM + c->cur.depth_func;
+        *n = 1;
+        return true;
+    case SGI_GL_DEPTH_WRITEMASK:
+        out[0] = c->cur.depth_mask;
+        *n = 1;
+        return true;
+    /* The matrices a stack holds, the current one included (6.1.2). */
+    case SGI_GL_MODELVIEW_STACK_DEPTH:
+        out[0] = c->mv_depth + 1;
+        *n = 1;
+        return true;
+    case SGI_GL_PROJECTION_STACK_DEPTH:
+        out[0] = c->pr_depth + 1;
+        *n = 1;
         return true;
     case SGI_GL_DEPTH_RANGE:
         for (int i = 0; i < 2; i++) {
