@@ -142,7 +142,13 @@ enum {
 #define SGI_GL_CURRENT_RASTER_POSITION_VALID 0x0b08
 #define SGI_GL_CURRENT_RASTER_DISTANCE 0x0b09
 #define SGI_GL_EDGE_FLAG        0x0b43
+#define SGI_GL_LIGHT_MODEL_LOCAL_VIEWER 0x0b51
+#define SGI_GL_LIGHT_MODEL_TWO_SIDE 0x0b52
+#define SGI_GL_LIGHT_MODEL_AMBIENT 0x0b53
 #define SGI_GL_SHADE_MODEL      0x0b54
+#define SGI_GL_COLOR_MATERIAL_FACE 0x0b55
+#define SGI_GL_COLOR_MATERIAL_PARAMETER 0x0b56
+#define SGI_GL_COLOR_MATERIAL   0x0b57
 #define SGI_GL_DEPTH_RANGE      0x0b70
 #define SGI_GL_DEPTH_TEST       0x0b71
 #define SGI_GL_DEPTH_WRITEMASK  0x0b72
@@ -157,6 +163,54 @@ enum {
 #define SGI_GL_INDEX_CLEAR_VALUE 0x0c20
 #define SGI_GL_INDEX_WRITEMASK  0x0c21
 #define SGI_GL_COLOR_CLEAR_VALUE 0x0c22
+
+/* Faces, and the light and material parameters (OpenGL 1.2.1, 2.13.2). */
+#define SGI_GL_FRONT            0x0404
+#define SGI_GL_BACK             0x0405
+#define SGI_GL_FRONT_AND_BACK   0x0408
+#define SGI_GL_AMBIENT          0x1200
+#define SGI_GL_DIFFUSE          0x1201
+#define SGI_GL_SPECULAR         0x1202
+#define SGI_GL_POSITION         0x1203
+#define SGI_GL_SPOT_DIRECTION   0x1204
+#define SGI_GL_SPOT_EXPONENT    0x1205
+#define SGI_GL_SPOT_CUTOFF      0x1206
+#define SGI_GL_CONSTANT_ATTENUATION 0x1207
+#define SGI_GL_LINEAR_ATTENUATION 0x1208
+#define SGI_GL_QUADRATIC_ATTENUATION 0x1209
+#define SGI_GL_EMISSION         0x1600
+#define SGI_GL_SHININESS        0x1601
+#define SGI_GL_AMBIENT_AND_DIFFUSE 0x1602
+#define SGI_GL_COLOR_INDEXES    0x1603
+
+/* The lights a context keeps, GL_LIGHT0 to GL_LIGHT7. */
+#define SGI_GL_LIGHTS           8
+
+/*
+ * One light's parameters (2.13.1, table 2.10): position and spot
+ * direction in eye coordinates, as the modelview current when they were
+ * set left them; attenuation constant, linear and quadratic.
+ */
+typedef struct SGIGLLight {
+    float ambient[4];
+    float diffuse[4];
+    float specular[4];
+    float position[4];
+    float spot_direction[3];
+    float spot_exponent;
+    float spot_cutoff;
+    float attenuation[3];
+} SGIGLLight;
+
+/* One face's material (2.13.1, table 2.10). */
+typedef struct SGIGLMaterial {
+    float ambient[4];
+    float diffuse[4];
+    float specular[4];
+    float emission[4];
+    float shininess;
+    float color_indexes[3];     /* ambient, diffuse, specular */
+} SGIGLMaterial;
 
 /* Matrices a GL matrix stack holds, the current one included. */
 #define SGI_GL_STACK_DEPTH      32
@@ -225,6 +279,19 @@ typedef struct SGIGLContext {
      * rasterizer dithers.
      */
     uint32_t dither;            /* 0 or 1 */
+    /*
+     * The lighting state glLight, glLightModel, glMaterial and
+     * glColorMaterial set, kept and answered; no rasterizer lights a
+     * vertex yet. material[0] is the front face's, [1] the back's.
+     */
+    SGIGLLight light[SGI_GL_LIGHTS];
+    SGIGLMaterial material[2];
+    float light_model_ambient[4];
+    uint32_t light_model_local_viewer;  /* 0 or 1 */
+    uint32_t light_model_two_side;      /* 0 or 1 */
+    uint32_t color_material;            /* GL_COLOR_MATERIAL's enable */
+    uint32_t color_material_face;       /* GL_FRONT, GL_BACK or both */
+    uint32_t color_material_mode;       /* a material parameter */
     float cur_color[4];
     float cur_index;
     float cur_normal[3];
@@ -298,6 +365,19 @@ typedef enum SGIGLOp {
     SGI_GL_OP_INDEX_MASK,       /* the write mask */
     SGI_GL_OP_CLEAR_INDEX,      /* the clear index */
     SGI_GL_OP_DEPTH_RANGE,      /* near, far */
+    /*
+     * glLightfv: the light's number, 0 for GL_LIGHT0, the parameter and
+     * four floats, of which the parameter uses as many as it takes.
+     */
+    SGI_GL_OP_LIGHT,
+    /* glMaterialfv: the face, the parameter and four floats, likewise. */
+    SGI_GL_OP_MATERIAL,
+    /*
+     * glLightModelfv: the parameter and four floats; a boolean parameter
+     * is true for a nonzero first float.
+     */
+    SGI_GL_OP_LIGHT_MODEL,
+    SGI_GL_OP_COLOR_MATERIAL,   /* face, parameter */
 } SGIGLOp;
 
 /*
@@ -402,6 +482,16 @@ void sgi_gl_bitmap_bytes(SGIGLContext *c, const SGIGLSink *sink,
 /* Execute one command against the context, sending any work to sink. */
 void sgi_gl_command(SGIGLContext *c, const SGIGLSink *sink,
                     const SGIGLCmd *cmd);
+/*
+ * glGetLightfv of light number light (0 for GL_LIGHT0) and
+ * glGetMaterialfv of GL_FRONT or GL_BACK: the answer as *n float words
+ * into out. False, with nothing written, for a light, face or parameter
+ * the context does not keep.
+ */
+bool sgi_gl_get_light(const SGIGLContext *c, uint32_t light, uint32_t pname,
+                      uint32_t *out, unsigned *n);
+bool sgi_gl_get_material(const SGIGLContext *c, uint32_t face,
+                         uint32_t pname, uint32_t *out, unsigned *n);
 /* The most words one sgi_gl_get() answer takes: a matrix's. */
 #define SGI_GL_GET_WORDS        16
 

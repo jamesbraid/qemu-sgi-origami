@@ -1154,6 +1154,238 @@ static void test_get_enables_and_depths(void)
     g_assert_cmphex(out[0], ==, 2);
 }
 
+static float light_float(const SGIGLContext *c, uint32_t light,
+                         uint32_t pname, unsigned i)
+{
+    uint32_t out[SGI_GL_GET_WORDS];
+    unsigned n = 0;
+    float f;
+
+    g_assert_true(sgi_gl_get_light(c, light, pname, out, &n));
+    g_assert_cmpuint(i, <, n);
+    memcpy(&f, &out[i], sizeof(f));
+    return f;
+}
+
+static float material_float(const SGIGLContext *c, uint32_t face,
+                            uint32_t pname, unsigned i)
+{
+    uint32_t out[SGI_GL_GET_WORDS];
+    unsigned n = 0;
+    float f;
+
+    g_assert_true(sgi_gl_get_material(c, face, pname, out, &n));
+    g_assert_cmpuint(i, <, n);
+    memcpy(&f, &out[i], sizeof(f));
+    return f;
+}
+
+static void light_command(SGIGLContext *c, SGIGLOp op, uint32_t a0,
+                          uint32_t a1, float v0, float v1, float v2, float v3)
+{
+    uint32_t word[6] = { a0, a1, bits(v0), bits(v1), bits(v2), bits(v3) };
+
+    command(c, NULL, op, word, 6);
+}
+
+/*
+ * The lighting state's initial values (OpenGL 1.2.1, table 2.10): light 0
+ * diffuse and specular white and the others black, positions (0, 0, 1, 0),
+ * spot directions (0, 0, -1), cutoff 180, attenuation (1, 0, 0); both
+ * faces' ambient 0.2, diffuse 0.8, colour indexes (0, 1, 1); light model
+ * ambient 0.2, local viewer and two-sided off; colour material off, on
+ * both faces' ambient and diffuse.
+ */
+static void test_lighting_initial_state(void)
+{
+    uint32_t out[SGI_GL_GET_WORDS];
+    unsigned n;
+    SGIGLContext c;
+
+    context_init(&c);
+    for (uint32_t l = 0; l < SGI_GL_LIGHTS; l++) {
+        for (unsigned i = 0; i < 3; i++) {
+            g_assert_cmpfloat(light_float(&c, l, SGI_GL_AMBIENT, i), ==, 0);
+            g_assert_cmpfloat(light_float(&c, l, SGI_GL_DIFFUSE, i), ==,
+                              l == 0);
+            g_assert_cmpfloat(light_float(&c, l, SGI_GL_SPECULAR, i), ==,
+                              l == 0);
+            g_assert_cmpfloat(light_float(&c, l, SGI_GL_POSITION, i), ==,
+                              i == 2);
+            g_assert_cmpfloat(light_float(&c, l, SGI_GL_SPOT_DIRECTION, i),
+                              ==, i == 2 ? -1 : 0);
+        }
+        g_assert_cmpfloat(light_float(&c, l, SGI_GL_DIFFUSE, 3), ==, 1);
+        g_assert_cmpfloat(light_float(&c, l, SGI_GL_POSITION, 3), ==, 0);
+        g_assert_cmpfloat(light_float(&c, l, SGI_GL_SPOT_EXPONENT, 0), ==, 0);
+        g_assert_cmpfloat(light_float(&c, l, SGI_GL_SPOT_CUTOFF, 0), ==, 180);
+        g_assert_cmpfloat(light_float(&c, l, SGI_GL_CONSTANT_ATTENUATION, 0),
+                          ==, 1);
+        g_assert_cmpfloat(light_float(&c, l, SGI_GL_LINEAR_ATTENUATION, 0),
+                          ==, 0);
+    }
+    g_assert_false(sgi_gl_get_light(&c, SGI_GL_LIGHTS, SGI_GL_AMBIENT, out,
+                                    &n));
+    for (uint32_t face = SGI_GL_FRONT; face <= SGI_GL_BACK; face++) {
+        g_assert_cmpfloat(material_float(&c, face, SGI_GL_AMBIENT, 0), ==,
+                          0.2f);
+        g_assert_cmpfloat(material_float(&c, face, SGI_GL_DIFFUSE, 1), ==,
+                          0.8f);
+        g_assert_cmpfloat(material_float(&c, face, SGI_GL_DIFFUSE, 3), ==, 1);
+        g_assert_cmpfloat(material_float(&c, face, SGI_GL_SPECULAR, 0), ==, 0);
+        g_assert_cmpfloat(material_float(&c, face, SGI_GL_EMISSION, 3), ==, 1);
+        g_assert_cmpfloat(material_float(&c, face, SGI_GL_SHININESS, 0), ==,
+                          0);
+        g_assert_cmpfloat(material_float(&c, face, SGI_GL_COLOR_INDEXES, 0),
+                          ==, 0);
+        g_assert_cmpfloat(material_float(&c, face, SGI_GL_COLOR_INDEXES, 2),
+                          ==, 1);
+    }
+    g_assert_false(sgi_gl_get_material(&c, SGI_GL_FRONT_AND_BACK,
+                                       SGI_GL_AMBIENT, out, &n));
+    g_assert_cmpfloat(get_float(&c, SGI_GL_LIGHT_MODEL_AMBIENT, 2), ==, 0.2f);
+    g_assert_cmpfloat(get_float(&c, SGI_GL_LIGHT_MODEL_AMBIENT, 3), ==, 1);
+    g_assert_cmpuint(get(&c, SGI_GL_LIGHT_MODEL_TWO_SIDE, out), ==, 1);
+    g_assert_cmphex(out[0], ==, 0);
+    g_assert_cmpuint(get(&c, SGI_GL_COLOR_MATERIAL, out), ==, 1);
+    g_assert_cmphex(out[0], ==, 0);
+    g_assert_cmpuint(get(&c, SGI_GL_COLOR_MATERIAL_FACE, out), ==, 1);
+    g_assert_cmphex(out[0], ==, SGI_GL_FRONT_AND_BACK);
+    g_assert_cmpuint(get(&c, SGI_GL_COLOR_MATERIAL_PARAMETER, out), ==, 1);
+    g_assert_cmphex(out[0], ==, SGI_GL_AMBIENT_AND_DIFFUSE);
+}
+
+/*
+ * glLightfv keeps the position in eye coordinates, through the modelview
+ * current at the call, and the spot direction through its upper left
+ * 3x3 (OpenGL 1.2.1, 2.13.2); out-of-range spot and attenuation values
+ * change nothing. glMaterialfv sets the faces it names, both for
+ * GL_FRONT_AND_BACK and ambient and diffuse for GL_AMBIENT_AND_DIFFUSE.
+ * glLightModel sets the ambient and the two booleans.
+ */
+static void test_lighting_commands(void)
+{
+    uint32_t word[5], out[SGI_GL_GET_WORDS];
+    SGIGLContext c;
+
+    context_init(&c);
+    word[0] = bits(3), word[1] = bits(4), word[2] = bits(5);
+    command(&c, NULL, SGI_GL_OP_TRANSLATE, word, 3);
+    light_command(&c, SGI_GL_OP_LIGHT, 2, SGI_GL_POSITION, 1, 2, 3, 1);
+    light_command(&c, SGI_GL_OP_LIGHT, 2, SGI_GL_SPOT_DIRECTION, 0, 1, 0, 1);
+    light_command(&c, SGI_GL_OP_LIGHT, 2, SGI_GL_SPOT_CUTOFF, 45, 0, 0, 0);
+    light_command(&c, SGI_GL_OP_LIGHT, 2, SGI_GL_SPOT_CUTOFF, 95, 0, 0, 0);
+    light_command(&c, SGI_GL_OP_LIGHT, 2, SGI_GL_SPOT_EXPONENT, 129, 0, 0, 0);
+    light_command(&c, SGI_GL_OP_LIGHT, 2, SGI_GL_QUADRATIC_ATTENUATION, 0.5f,
+                  0, 0, 0);
+    light_command(&c, SGI_GL_OP_LIGHT, 2, SGI_GL_LINEAR_ATTENUATION, -1, 0,
+                  0, 0);
+    light_command(&c, SGI_GL_OP_LIGHT, 2, SGI_GL_DIFFUSE, 0.5f, 0.25f,
+                  0.125f, 0.75f);
+
+    g_assert_cmpfloat(light_float(&c, 2, SGI_GL_POSITION, 0), ==, 4);
+    g_assert_cmpfloat(light_float(&c, 2, SGI_GL_POSITION, 1), ==, 6);
+    g_assert_cmpfloat(light_float(&c, 2, SGI_GL_POSITION, 2), ==, 8);
+    g_assert_cmpfloat(light_float(&c, 2, SGI_GL_POSITION, 3), ==, 1);
+    g_assert_cmpfloat(light_float(&c, 2, SGI_GL_SPOT_DIRECTION, 0), ==, 0);
+    g_assert_cmpfloat(light_float(&c, 2, SGI_GL_SPOT_DIRECTION, 1), ==, 1);
+    g_assert_cmpfloat(light_float(&c, 2, SGI_GL_SPOT_DIRECTION, 2), ==, 0);
+    g_assert_cmpfloat(light_float(&c, 2, SGI_GL_SPOT_CUTOFF, 0), ==, 45);
+    g_assert_cmpfloat(light_float(&c, 2, SGI_GL_SPOT_EXPONENT, 0), ==, 0);
+    g_assert_cmpfloat(light_float(&c, 2, SGI_GL_QUADRATIC_ATTENUATION, 0), ==,
+                      0.5f);
+    g_assert_cmpfloat(light_float(&c, 2, SGI_GL_LINEAR_ATTENUATION, 0), ==, 0);
+    g_assert_cmpfloat(light_float(&c, 2, SGI_GL_DIFFUSE, 1), ==, 0.25f);
+    g_assert_cmpfloat(light_float(&c, 2, SGI_GL_DIFFUSE, 3), ==, 0.75f);
+    g_assert_cmpfloat(light_float(&c, 0, SGI_GL_POSITION, 0), ==, 0);
+
+    light_command(&c, SGI_GL_OP_MATERIAL, SGI_GL_BACK, SGI_GL_SPECULAR,
+                  0.5f, 0.5f, 0.5f, 1);
+    light_command(&c, SGI_GL_OP_MATERIAL, SGI_GL_FRONT_AND_BACK,
+                  SGI_GL_AMBIENT_AND_DIFFUSE, 0.1f, 0.2f, 0.3f, 0.4f);
+    light_command(&c, SGI_GL_OP_MATERIAL, SGI_GL_FRONT, SGI_GL_SHININESS,
+                  64, 99, 99, 99);
+    light_command(&c, SGI_GL_OP_MATERIAL, SGI_GL_FRONT, SGI_GL_SHININESS,
+                  200, 0, 0, 0);
+    g_assert_cmpfloat(material_float(&c, SGI_GL_FRONT, SGI_GL_SPECULAR, 0),
+                      ==, 0);
+    g_assert_cmpfloat(material_float(&c, SGI_GL_BACK, SGI_GL_SPECULAR, 0),
+                      ==, 0.5f);
+    for (uint32_t face = SGI_GL_FRONT; face <= SGI_GL_BACK; face++) {
+        g_assert_cmpfloat(material_float(&c, face, SGI_GL_AMBIENT, 2), ==,
+                          0.3f);
+        g_assert_cmpfloat(material_float(&c, face, SGI_GL_DIFFUSE, 3), ==,
+                          0.4f);
+    }
+    g_assert_cmpfloat(material_float(&c, SGI_GL_FRONT, SGI_GL_SHININESS, 0),
+                      ==, 64);
+    g_assert_cmpfloat(material_float(&c, SGI_GL_BACK, SGI_GL_SHININESS, 0),
+                      ==, 0);
+
+    word[0] = SGI_GL_LIGHT_MODEL_AMBIENT;
+    word[1] = bits(0.5f), word[2] = bits(0.25f);
+    word[3] = bits(0.125f), word[4] = bits(1);
+    command(&c, NULL, SGI_GL_OP_LIGHT_MODEL, word, 5);
+    word[0] = SGI_GL_LIGHT_MODEL_TWO_SIDE, word[1] = bits(1);
+    command(&c, NULL, SGI_GL_OP_LIGHT_MODEL, word, 5);
+    g_assert_cmpfloat(get_float(&c, SGI_GL_LIGHT_MODEL_AMBIENT, 1), ==, 0.25f);
+    g_assert_cmpuint(get(&c, SGI_GL_LIGHT_MODEL_TWO_SIDE, out), ==, 1);
+    g_assert_cmphex(out[0], ==, 1);
+    g_assert_cmpuint(get(&c, SGI_GL_LIGHT_MODEL_LOCAL_VIEWER, out), ==, 1);
+    g_assert_cmphex(out[0], ==, 0);
+}
+
+/*
+ * With GL_COLOR_MATERIAL enabled the parameter glColorMaterial names
+ * tracks the current colour (OpenGL 1.2.1, 2.13.3): from the enable on,
+ * and at each colour command, on the faces it names only. Disabled, a
+ * colour command leaves the material alone.
+ */
+static void test_color_material_tracks_the_colour(void)
+{
+    uint32_t word[4];
+    SGIGLContext c;
+
+    context_init(&c);
+    word[0] = bits(0.5f), word[1] = bits(0.25f), word[2] = bits(0.75f);
+    command(&c, NULL, SGI_GL_OP_COLOR3F, word, 3);
+    g_assert_cmpfloat(material_float(&c, SGI_GL_FRONT, SGI_GL_DIFFUSE, 0),
+                      ==, 0.8f);
+
+    word[0] = SGI_GL_FRONT, word[1] = SGI_GL_DIFFUSE;
+    command(&c, NULL, SGI_GL_OP_COLOR_MATERIAL, word, 2);
+    word[0] = SGI_GL_COLOR_MATERIAL;
+    command(&c, NULL, SGI_GL_OP_ENABLE, word, 1);
+    g_assert_cmpfloat(material_float(&c, SGI_GL_FRONT, SGI_GL_DIFFUSE, 2),
+                      ==, 0.75f);
+    g_assert_cmpfloat(material_float(&c, SGI_GL_FRONT, SGI_GL_AMBIENT, 0),
+                      ==, 0.2f);
+    g_assert_cmpfloat(material_float(&c, SGI_GL_BACK, SGI_GL_DIFFUSE, 0),
+                      ==, 0.8f);
+
+    word[0] = 255, word[1] = 0, word[2] = 51, word[3] = 102;
+    command(&c, NULL, SGI_GL_OP_COLOR4UB, word, 4);
+    g_assert_cmpfloat(material_float(&c, SGI_GL_FRONT, SGI_GL_DIFFUSE, 0),
+                      ==, 1);
+    g_assert_cmpfloat(material_float(&c, SGI_GL_FRONT, SGI_GL_DIFFUSE, 3),
+                      ==, 0.4f);
+    word[0] = bits(0.125f), word[1] = bits(0.25f);
+    word[2] = bits(0.5f), word[3] = bits(0.625f);
+    command(&c, NULL, SGI_GL_OP_COLOR4F, word, 4);
+    g_assert_cmpfloat(material_float(&c, SGI_GL_FRONT, SGI_GL_DIFFUSE, 3),
+                      ==, 0.625f);
+    command(&c, NULL, SGI_GL_OP_COLOR3F, word, 3);
+    g_assert_cmpfloat(material_float(&c, SGI_GL_FRONT, SGI_GL_DIFFUSE, 3),
+                      ==, 1);
+
+    word[0] = SGI_GL_COLOR_MATERIAL;
+    command(&c, NULL, SGI_GL_OP_DISABLE, word, 1);
+    word[0] = bits(0), word[1] = bits(0), word[2] = bits(0);
+    command(&c, NULL, SGI_GL_OP_COLOR3F, word, 3);
+    g_assert_cmpfloat(material_float(&c, SGI_GL_FRONT, SGI_GL_DIFFUSE, 0),
+                      ==, 0.125f);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -1178,5 +1410,10 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-gl/depth-range", test_depth_range);
     g_test_add_func("/sgi-gl/get-enables-and-depths",
                     test_get_enables_and_depths);
+    g_test_add_func("/sgi-gl/lighting-initial-state",
+                    test_lighting_initial_state);
+    g_test_add_func("/sgi-gl/lighting-commands", test_lighting_commands);
+    g_test_add_func("/sgi-gl/color-material-tracks-the-colour",
+                    test_color_material_tracks_the_colour);
     return g_test_run();
 }
