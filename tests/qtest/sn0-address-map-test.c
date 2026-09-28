@@ -1,9 +1,7 @@
 /*
- * SGI Origin 200 (IP27) physical address map: memory and boot flash appear
- * where the map says, the flash's three views are one region rather than
- * copies that can drift, and pre-firmware contents read as specified.
- * Addresses are what the memory system sees; plain physical addresses
- * reach memory, and the Hub's special space starts one window up.
+ * Test Origin 200 (IP27) memory, boot flash placement and specified
+ * pre-firmware contents. Three flash views alias one region; physical
+ * addresses reach memory and the Hub special space starts one window up.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
@@ -16,16 +14,19 @@
 #include "qobject/qlist.h"
 #include "sgi-test.h"
 
-/* Node zero's window, and the space the Hub answers uncached references in. */
+/* Node zero's window, and the space the Hub answers uncached references
+ * in. */
 #define NODE0           0x0000000000ULL
 #define LBOOT_OFFSET    0x10000000ULL
 #define RBOOT_OFFSET    0x30000000ULL
 
-/* The flash at reset, through local LBOOT, and through node-explicit RBOOT. */
+/* The flash at reset, through local LBOOT, and through node-explicit
+ * RBOOT. */
 #define FLASH_RESET     (NODE0 + 0x1fc00000)
 #define FLASH_HUB       (SPACE_HUB + NODE0 + 0x10000000)
 #define FLASH_REMOTE    (SPACE_HUB + NODE0 + 0x30000000)
-/* The flash base in Hub space -- where the real PROM fetches relocated code. */
+/* The flash base in Hub space, where the real PROM fetches relocated
+ * code. */
 #define FLASH_HUB_LOCAL (SPACE_HUB + NODE0 + 0x1fc00000)
 
 /* AMD 29F080 command addresses and the first sector, erased at reset. */
@@ -41,11 +42,11 @@
 static QTestState *qts;
 
 /*
- * Open such a case. Flash contents deliberately survive a machine reset --
- * that is what test_flash_program_and_erase asserts -- so the reset alone
- * would not prove a case starts clean. Reading the log sector erased does:
- * a chip left in autoselect or a sector left programmed both answer
- * something other than an erased byte here.
+ * Open such a case. Flash contents deliberately survive a machine reset;
+ * that is what test_flash_program_and_erase asserts, so the reset alone
+ * would not prove a case starts clean. Reading the log sector erased does: a
+ * chip left in autoselect or a sector left programmed both answer something
+ * other than an erased byte here.
  */
 static void address_map_reset(void)
 {
@@ -61,8 +62,8 @@ static void flash_command(QTestState *qts, uint32_t offset, uint8_t value)
 }
 
 /*
- * The directory/ECC back doors: nothing about coherence is modelled, so
- * the property is the diagnostic's own round trip.
+ * The directory/ECC back doors: nothing about coherence is modelled, so the
+ * property is the diagnostic's own round trip.
  */
 #define BACKDOOR_ECC    (SPACE_HUB + NODE0 + 0x80000000ULL)
 #define BACKDOOR_DIR    (SPACE_HUB + NODE0 + 0xc0000000ULL)
@@ -93,8 +94,8 @@ static void flash_command(QTestState *qts, uint32_t offset, uint8_t value)
 /*
  * Nothing fills a node's boot flash but -bios or a pflash drive now, so a
  * test that reads the configuration block back needs one of its own: a
- * config block with the real "ip27conf" magic at the real IP27 offset,
- * the pattern every stock PROM image carries there.
+ * config block with the real "ip27conf" magic at the real IP27 offset, the
+ * pattern every stock PROM image carries there.
  */
 static char *write_config_block_fixture(void)
 {
@@ -122,10 +123,10 @@ static void test_flash_three_views(const void *data)
     int i;
 
     /*
-     * The same bytes have to appear at all three addresses. Comparing the whole
-     * configuration block rather than one field is what would catch two regions
-     * built separately from the same values.
-     */
+ * The same bytes have to appear at all three addresses. Comparing the whole
+ * configuration block rather than one field is what would catch two regions
+ * built separately from the same values.
+ */
     for (i = 0; i < 0x50; i += 4) {
         uint32_t reset_view = qtest_readl(qts, FLASH_RESET + CONFIG_OFFSET + i);
         uint32_t hub_view = qtest_readl(qts, FLASH_HUB + CONFIG_OFFSET + i);
@@ -145,14 +146,14 @@ static void test_flash_three_views(const void *data)
 }
 
 /*
- * A supplied -bios image that carries the real config block -- the pattern
- * every stock PROM image carries at flash offset 0x60 -- gets three fields
+ * A supplied -bios image carrying the real config block (the pattern
+ * every stock PROM image carries at flash offset 0x60) gets three fields
  * patched to this product's own values (sn0-origin200-model.c: 15 read
  * cycles, machine type 1, 4 write cycles) while the block's total byte sum
  * stays exactly where the supplied image left it. That is the flasher's
- * whole contract, and it runs whether the image is a synthesized template
- * or a real one; sn0_load_flash must keep applying it after -bios loads a
- * real PROM image, not only when building the synthesized default.
+ * whole contract, and it runs whether the image is a synthesized template or
+ * a real one; sn0_load_flash must keep applying it after -bios loads a real
+ * PROM image, not only when building the synthesized default.
  */
 static void test_flash_configure_patches_model_fields(const void *data)
 {
@@ -182,10 +183,10 @@ static void test_flash_configure_patches_model_fields(const void *data)
 /*
  * Node zero's own boot windows in a two-node machine, the same shape
  * test_flash_three_views checks for the single-node default. Node one's
- * NASID-qualified boot windows are not checked here: reading them this
- * way returns zero rather than node one's own flash content even though
- * "info mtree -f" shows the window placed correctly, and nothing has
- * chased that down yet -- see the firmware-deletion packet's rulings.
+ * NASID-qualified boot windows are not checked here: reading them this way
+ * returns zero rather than node one's own flash content even though "info
+ * mtree -f" shows the window placed correctly, and nothing has chased that
+ * down yet. See the firmware-deletion packet's rulings.
  */
 static void test_dual_node_boot_windows(const void *data)
 {
@@ -203,8 +204,8 @@ static void test_dual_node_boot_windows(const void *data)
 }
 
 /*
- * 256 MB views of a 1 MB chip repeat: firmware fetches past the real
- * size, and offset zero alone cannot show the repeat.
+ * 256 MB views of a 1 MB chip repeat: firmware fetches past the real size,
+ * and offset zero alone cannot show the repeat.
  */
 static void test_boot_windows_mirror_the_flash(const void *data)
 {
@@ -235,9 +236,9 @@ static void test_boot_windows_mirror_the_flash(const void *data)
 }
 
 /*
- * The region-type token ("ram", "rom", "romd", "i/o", ...) that "info
- * mtree -f"'s flat view of the CPU's address space reports for the entry
- * covering address, or NULL if the flat view has nothing mapped there.
+ * The region-type token ("ram", "rom", "romd", "i/o", ...) that "info mtree
+ * -f"'s flat view of the CPU's address space reports for the entry covering
+ * address, or NULL if the flat view has nothing mapped there.
  */
 static char *flat_view_region_type_at(QTestState *qts, uint64_t address)
 {
@@ -275,11 +276,10 @@ static char *flat_view_region_type_at(QTestState *qts, uint64_t address)
 }
 
 /*
- * Every window the processor fetches firmware from must resolve to ram,
- * rom or romd in the flat view. An i/o entry there caches no TCG
- * translation: each instruction recompiles as its own one-instruction
- * block, and the guest runs 100-300x slower while giving no outward sign
- * anything is wrong.
+ * Every window the processor fetches firmware from must resolve to ram, rom
+ * or romd in the flat view. An i/o entry there caches no TCG translation:
+ * each instruction recompiles as its own one-instruction block, and the
+ * guest runs 100-300x slower while giving no outward sign anything is wrong.
  */
 static void assert_flat_view_is_execution_storage(QTestState *qts,
                                                    uint64_t address)
@@ -295,9 +295,9 @@ static void assert_flat_view_is_execution_storage(QTestState *qts,
 }
 
 /*
- * The PROM runs its own code through this base, and an I/O region
- * executes one instruction per block: the base must be a direct (romd)
- * view, read off the machine's own flat view rather than assumed.
+ * The PROM runs its own code through this base, and an I/O region executes
+ * one instruction per block: the base must be a direct (romd) view, read off
+ * the machine's own flat view rather than assumed.
  */
 static void test_flash_hub_local_is_fast(const void *data)
 {
@@ -318,9 +318,9 @@ static void test_flash_hub_local_is_fast(const void *data)
 
 /*
  * The reset vector and the Hub-local fast alias are the two windows the
- * default machine's processor fetches firmware from. Neither may resolve
- * to an i/o region: a real Hub always decodes them as direct storage, and
- * an i/o entry there would run TCG uncached, 100-300x slower, with nothing
+ * default machine's processor fetches firmware from. Neither may resolve to
+ * an i/o region: a real Hub always decodes them as direct storage, and an
+ * i/o entry there would run TCG uncached, 100-300x slower, with nothing
  * outwardly wrong to see.
  */
 static void test_execution_windows_are_not_io(const void *data)
@@ -353,10 +353,10 @@ static char *create_origin2000_flash_image(void)
 }
 
 /*
- * Origin 2000 boots from four node-owned pflash images rather than the
- * -bios image Origin 200 takes in the rest of this file. The reset
- * vector and the Hub-local fast alias must resolve to direct storage
- * with a real part behind them there too.
+ * Origin 2000 boots from four node-owned pflash images rather than the -bios
+ * image Origin 200 takes in the rest of this file. The reset vector and the
+ * Hub-local fast alias must resolve to direct storage with a real part
+ * behind them there too.
  */
 static void test_origin2000_execution_windows_are_not_io(const void *data)
 {
@@ -494,23 +494,23 @@ static void test_flash_autoselect(const void *data)
     flash_command(qts, FLASH_UNLOCK1, 0x90);
 
     /*
-     * Manufacturer 0x01 and device 0xd5 occupy logical bytes zero and one.
-     * Only those two identity bytes are asserted: what an Am29F080 answers
-     * for higher autoselect addresses (sector protection, then unspecified)
-     * is not something any source we hold pins, so the bytes beyond the ID
-     * follow the flash device model rather than an invented filler.
-     */
+ * Manufacturer 0x01 and device 0xd5 occupy logical bytes zero and one. Only
+ * those two identity bytes are asserted: what an Am29F080 answers for higher
+ * autoselect addresses (sector protection, then unspecified) is not
+ * something any source we hold pins, so the bytes beyond the ID follow the
+ * flash device model rather than an invented filler.
+ */
     g_assert_cmphex(qtest_readb(qts, FLASH_HUB), ==, 0x01);
     g_assert_cmphex(qtest_readb(qts, FLASH_HUB + 1), ==, 0xd5);
     g_assert_cmphex(qtest_readb(qts, FLASH_REMOTE), ==, 0x01);
     g_assert_cmphex(qtest_readb(qts, FLASH_REMOTE + 1), ==, 0xd5);
 
     /*
-     * Every view of the chip must answer command-mode reads alike, at any
-     * width: the reset view is the same byte-wide chip behind the same
-     * controller, so a word read must gather the same bytes the Hub
-     * windows gather rather than widening one chip lookup across the bus.
-     */
+ * Every view of the chip must answer command-mode reads alike, at any width:
+ * the reset view is the same byte-wide chip behind the same controller, so a
+ * word read must gather the same bytes the Hub windows gather rather than
+ * widening one chip lookup across the bus.
+ */
     g_assert_cmphex(qtest_readl(qts, FLASH_RESET), ==,
                     qtest_readl(qts, FLASH_HUB));
     g_assert_cmphex(qtest_readl(qts, FLASH_REMOTE), ==,
@@ -531,10 +531,10 @@ static void test_flash_program_and_erase(const void *data)
     g_assert_cmphex(qtest_readb(qts, FLASH_RESET + target), ==, 0xff);
 
     /*
-     * A real Am29F080 takes program and erase time, and the device model
-     * keeps that: step the clock over each operation's completion timer
-     * before reading data back, the way the chip's own test does.
-     */
+ * A real Am29F080 takes program and erase time, and the device model keeps
+ * that: step the clock over each operation's completion timer before reading
+ * data back, the way the chip's own test does.
+ */
     flash_command(qts, FLASH_UNLOCK1, 0xaa);
     flash_command(qts, FLASH_UNLOCK2, 0x55);
     flash_command(qts, FLASH_UNLOCK1, 0xa0);
@@ -564,10 +564,10 @@ static void test_flash_program_and_erase(const void *data)
     flash_command(qts, FLASH_UNLOCK2, 0x55);
     flash_command(qts, FLASH_LOG_SECTOR, 0x30);
     /*
-     * Step over the 50 us additional-sector window and then the erase time
-     * by explicit amounts: this machine keeps other timers armed, so
-     * stepping to the next deadline would advance those instead.
-     */
+ * Step over the 50 us additional-sector window and then the erase time by
+ * explicit amounts: this machine keeps other timers armed, so stepping to
+ * the next deadline would advance those instead.
+ */
     qtest_clock_step(qts, 100 * 1000 * 1000);
     qtest_clock_step(qts, 100 * 1000 * 1000);
 
@@ -630,11 +630,11 @@ static void test_256m_memory(const void *data)
 }
 
 /*
- * An IP27 node board has no 256 MB bank: its DIMMs give 64 or 128 MB
- * banks, or 512 MB ones, and the stock PROM disables a 256 MB bank on
- * this board. So 256 MiB on the one-node Origin 2000 is two 128 MiB
- * banks, each wholly in its bank's first slot, where the Origin 200 rule
- * above would build one bank split over four 64 MiB runs.
+ * An IP27 node board has no 256 MB bank: its DIMMs give 64 or 128 MB banks,
+ * or 512 MB ones, and the stock PROM disables a 256 MB bank on this board.
+ * So 256 MiB on the one-node Origin 2000 is two 128 MiB banks, each wholly
+ * in its bank's first slot, where the Origin 200 rule above would build one
+ * bank split over four 64 MiB runs.
  */
 static void test_origin2000_256m_memory(const void *data)
 {
@@ -705,11 +705,10 @@ static void test_hub_local_memory_alias(const void *data)
 }
 
 /*
- * 96 MiB is not one of origin200's accepted per-node populations (512,
- * 256, 128, 64): sgi_machine_validate_memory_population() now catches
- * it before node construction ever reaches the IP29 bank-fitting check
- * this test used to name, so the accepted-population message is what
- * a real user sees.
+ * 96 MiB is not one of origin200's accepted per-node populations (512, 256,
+ * 128, 64): sgi_machine_validate_memory_population() now catches it before
+ * node construction ever reaches the IP29 bank-fitting check this test used
+ * to name, so the accepted-population message is what a real user sees.
  */
 static void test_invalid_memory_size(const void *data)
 {
@@ -737,17 +736,17 @@ static void test_invalid_memory_size(const void *data)
 #define BACKDOOR_BANK_STRIDE   0x8000000ULL  /* 128 MiB */
 
 /*
- * Firmware's presence probe: write the 0x55 pattern, write zero eight
- * bytes on (only to disturb the shared data lines), read back -- premium
- * if the low 48 bits survived, standard if only the low 16, else absent.
+ * Firmware's presence probe: write the 0x55 pattern, write zero eight bytes
+ * on (only to disturb the shared data lines), then read back. Premium if the
+ * low 48 bits survived, standard if only the low 16, else absent.
  */
 #define BACKDOOR_PATTERN       0x5555555555555555ULL
 #define BACKDOOR_PATTERN_LOW16 0x5555ULL
 #define BACKDOOR_PATTERN_LOW48 0x0000555555555555ULL
 
 /*
- * Only the format's sixteen bits survive; checked at base, middle and
- * top, folded with the bank index so banks cannot alias.
+ * Only the format's sixteen bits survive; checked at base, middle and top,
+ * folded with the bank index so banks cannot alias.
  */
 static void check_backdoor_entry(QTestState *qts, uint64_t base,
                                  unsigned int bank)
@@ -796,9 +795,9 @@ static void check_backdoor_absent(QTestState *qts, uint64_t addr)
 }
 
 /*
- * Narrower accesses see the same two bytes. The window takes only
- * naturally aligned accesses, so one lies inside a single entry and
- * either overlaps its live tail or reads zero.
+ * Narrower accesses see the same two bytes. The window takes only naturally
+ * aligned accesses, so one lies inside a single entry and either overlaps
+ * its live tail or reads zero.
  */
 static void check_backdoor_entry_widths(QTestState *qts, uint64_t addr)
 {
@@ -830,9 +829,9 @@ static void check_backdoor_entry_widths(QTestState *qts, uint64_t addr)
 }
 
 /*
- * A read that spans entries -- the monitor, the debugger, a device copy
- * -- sees each entry's two live bytes and zero between them, whether the
- * memory core splits it into aligned accesses or copies the storage.
+ * A read that spans entries (the monitor, debugger, or a device copy)
+ * sees each entry's two live bytes and zero between them, whether the memory
+ * core splits it into aligned accesses or copies the storage.
  */
 static void check_backdoor_straddling_reads(QTestState *qts, uint64_t addr)
 {
@@ -881,11 +880,11 @@ static void test_backdoor_entry_widths(const void *data)
 }
 
 /*
- * A processor's back-door read is served from the window's storage by
- * the translation fast path, so it never reaches the memory core's
- * access dispatch; a write still does, because that is where the format
- * mask is applied. Watch the core's own region trace: a window that
- * merely answered correctly would pass every other test here.
+ * A processor's back-door read is served from the window's storage by the
+ * translation fast path, so it never reaches the memory core's access
+ * dispatch; a write still does, because that is where the format mask is
+ * applied. Watch the core's own region trace: a window that merely answered
+ * correctly would pass every other test here.
  */
 static void test_backdoor_reads_bypass_dispatch(const void *data)
 {
@@ -924,8 +923,8 @@ static void test_backdoor_reads_bypass_dispatch(const void *data)
 }
 
 /*
- * The back door is the memory address shifted right by two; firmware
- * relies on the quarter-size aliasing to size the bank.
+ * The back door is the memory address shifted right by two; firmware relies
+ * on the quarter-size aliasing to size the bank.
  */
 static void check_backdoor_bank_span(QTestState *qts, uint64_t base,
                                      unsigned int bank, uint64_t span)
@@ -944,12 +943,11 @@ static void check_backdoor_bank_span(QTestState *qts, uint64_t base,
 }
 
 /*
- * A bank whose size exactly fills its architectural slot (512 MiB: its
- * span, size/4, equals BACKDOOR_BANK_STRIDE's 128 MiB) gets exactly one
- * fold from sn0_backdoor_configure() and no smaller repeat within it,
- * so there is no alias boundary inside the slot for check_backdoor_
- * bank_span to find. This instead proves the two entries stay distinct
- * storage within that one fold.
+ * A bank whose size exactly fills its architectural slot (512 MiB: its span,
+ * size/4, equals BACKDOOR_BANK_STRIDE's 128 MiB) gets exactly one fold from
+ * sn0_backdoor_configure() and no smaller repeat within it, so there is no
+ * alias boundary inside the slot for check_backdoor_ bank_span to find. This
+ * instead proves the two entries stay distinct storage within that one fold.
  */
 static void check_backdoor_bank_distinct(QTestState *qts, uint64_t base,
                                          unsigned int bank, uint64_t offset)
@@ -982,24 +980,24 @@ static void test_backdoor_tracks_bank_size(const void *data)
     qtest_quit(qts);
 
     /*
-     * 512 MiB is origin200's largest accepted population, and IP29's
-     * first-bank cap (256 MiB) forces it into two banks (256 + 256):
-     * bank 0's span is unaffected by a populated bank 1 alongside it.
-     */
+ * 512 MiB is origin200's largest accepted population, and IP29's first-bank
+ * cap (256 MiB) forces it into two banks (256 + 256): bank 0's span is
+ * unaffected by a populated bank 1 alongside it.
+ */
     qts = qtest_init("-M origin200 -m 512M");
     check_backdoor_bank_span(qts, BACKDOOR_DIR, 0, 64 * MiB);
     check_backdoor_bank_span(qts, BACKDOOR_ECC, 0, 64 * MiB);
     qtest_quit(qts);
 
     /*
-     * No product's accepted list reaches a bank 1 larger than bank 0
-     * (origin200's 512 MiB maximum splits into two equal 256 MiB banks,
-     * as above): sn-builder-bank-test ships 256 MiB in bank 0 and 512
-     * MiB in bank 1, the largest single bank IP29 supports, whose span
-     * (128 MiB) exactly fills its architectural slot with one fold and
-     * no smaller repeat -- check_backdoor_bank_distinct is what proves
-     * that fold is real, distinct storage rather than aliased.
-     */
+ * No product's accepted list reaches a bank 1 larger than bank 0
+ * (origin200's 512 MiB maximum splits into two equal 256 MiB banks, as
+ * above): sn-builder-bank-test ships 256 MiB in bank 0 and 512 MiB in bank
+ * 1, the largest single bank IP29 supports, whose span (128 MiB) exactly
+ * fills its architectural slot with one fold and no smaller repeat,
+ * check_backdoor_bank_distinct is what proves that fold is real, distinct
+ * storage rather than aliased.
+ */
     qts = qtest_init(
         "-M sn-builder-bank-test,activate=on -cpu R10000 -m 768M");
     check_backdoor_bank_span(qts, BACKDOOR_DIR, 0, 64 * MiB);
@@ -1035,8 +1033,8 @@ static void test_ecc_backdoor(const void *data)
 }
 
 /*
- * Bank 1 must round-trip and bank 0 must survive it: a model aliasing
- * the banks together shows neither.
+ * Bank 1 must round-trip and bank 0 must survive it: a model aliasing the
+ * banks together shows neither.
  */
 static void check_backdoor_multi_bank(QTestState *qts, uint64_t base)
 {
@@ -1047,9 +1045,9 @@ static void check_backdoor_multi_bank(QTestState *qts, uint64_t base)
     check_backdoor_entry(qts, base, 1);
     check_backdoor_standard_format(qts, base + BACKDOOR_BANK_STRIDE);
 
-    /* Bank 0's own entry, written last so nothing after this touches it,
-     * must survive bank 1 being written -- which a model aliasing every
-     * populated bank onto the same bytes would not show. */
+    /*
+ * must survive bank 1 being written, which a model aliasing every
+ */
     qtest_writeq(qts, base, isolation_pattern);
     check_backdoor_entry(qts, base, 1);
     g_assert_cmphex(qtest_readq(qts, base) & 0xffffULL, ==,
@@ -1061,9 +1059,9 @@ static void check_backdoor_multi_bank(QTestState *qts, uint64_t base)
 static void test_backdoor_tracks_populated_banks(const void *data)
 {
     /*
-     * 512 MiB is the accepted population that reaches two banks; see
-     * test_backdoor_tracks_bank_size.
-     */
+ * 512 MiB is the accepted population that reaches two banks; see
+ * test_backdoor_tracks_bank_size.
+ */
     QTestState *qts = qtest_init("-M origin200 -m 512M");
 
     check_backdoor_multi_bank(qts, BACKDOOR_DIR);
@@ -1073,13 +1071,13 @@ static void test_backdoor_tracks_populated_banks(const void *data)
 }
 
 /*
- * A populated write traces the storage index it reached, which is also
- * the offset the handler was given: the window's fold is memory-region
- * aliases now, so the window offset the guest used is gone before the
- * handler runs. The write below goes one 16 MiB span up from the entry
- * it lands on, and the read of that entry proves the fold, while tracing
- * nothing because it comes out of the storage directly. The absent floor
- * still traces both ways, its read value left unpinned.
+ * A populated write traces the storage index it reached, which is also the
+ * offset the handler was given: the window's fold is memory-region aliases
+ * now, so the window offset the guest used is gone before the handler runs.
+ * The write below goes one 16 MiB span up from the entry it lands on, and
+ * the read of that entry proves the fold, while tracing nothing because it
+ * comes out of the storage directly. The absent floor still traces both
+ * ways, its read value left unpinned.
  */
 static void test_backdoor_accesses_trace(const void *data)
 {
@@ -1123,9 +1121,9 @@ static void test_backdoor_accesses_trace(const void *data)
  * deleted in the same commit as this addition: the facts below are not
  * duplicated by any other qtest, so they move here rather than disappear
  * with the file. Every case that read the synthesized KLCONFIG graph or
- * booted a -kernel image went with the file instead -- that machinery no
- * longer exists to have a fact left to port. See that commit's body for
- * the full disposition, including what is already covered elsewhere.
+ * booted a -kernel image went with the file instead. That machinery no
+ * longer exists to have a fact left to port. See that commit's body for the
+ * full disposition, including what is already covered elsewhere.
  */
 
 static void assert_qemu_rejects(const char *const args[], const char *message)
@@ -1229,10 +1227,10 @@ static const MachineRejectionCase machine_rejection_cases[] = {
                    "wiring, -smp and -m select the population within it",
     },
     /*
-     * 18 MiB per node is not one of origin200-dual's accepted populations
-     * either; see test_invalid_memory_size for why the message names the
-     * accepted-population check rather than the IP29 bank-fitting one.
-     */
+ * 18 MiB per node is not one of origin200-dual's accepted populations
+ * either; see test_invalid_memory_size for why the message names the
+ * accepted-population check rather than the IP29 bank-fitting one.
+ */
     {
         .subtest = "reject-invalid-node-memory",
         .args = reject_invalid_node_memory_args,
@@ -1241,11 +1239,11 @@ static const MachineRejectionCase machine_rejection_cases[] = {
         .needs_config_fixture = true,
     },
     /*
-     * topology= selects the wiring explicitly now; naming the dual
-     * topology's four-processor population alone does not switch the
-     * default one-node topology to the two-node one that accepts it --
-     * the two-chassis topology must be named.
-     */
+ * topology= selects the wiring explicitly now; naming the dual topology's
+ * four-processor population alone does not switch the default one-node
+ * topology to the two-node one that accepts it. The two-chassis topology
+ * must be named.
+ */
     {
         .subtest = "reject-dual-population-on-one-node-topology",
         .args = reject_dual_population_on_one_node_topology_args,
@@ -1259,11 +1257,10 @@ static const MachineRejectionCase machine_rejection_cases[] = {
                    "socket; pass -smp N alone, not cores= or threads=",
     },
     /*
-     * Three single-core sockets is the shape the new rule asks for, but
-     * three is still not one of origin200's accepted totals: naming the
-     * shape explicitly and correctly does not excuse an unsupported
-     * population.
-     */
+ * Three single-core sockets is the shape the new rule asks for, but three is
+ * still not one of origin200's accepted totals: naming the shape explicitly
+ * and correctly does not excuse an unsupported population.
+ */
     {
         .subtest = "reject-three-single-core-sockets",
         .args = reject_three_single_core_sockets_args,
@@ -1277,12 +1274,11 @@ static const MachineRejectionCase machine_rejection_cases[] = {
                    "evenly across 2 nodes",
     },
     /*
-     * The Bridge wires eight slots to eight interrupt pins; nothing past
-     * slot 7 exists on the chip. A device placed there must be refused
-     * when it is added -- accepted, it would sit unreachable until its
-     * first interrupt asserted a pin the bus never wired and aborted the
-     * emulator.
-     */
+ * The Bridge wires eight slots to eight interrupt pins; nothing past slot 7
+ * exists on the chip. A device placed there must be refused when it is added
+ * If accepted, it would sit unreachable until its first interrupt asserted a
+ * pin the bus never wired and aborted the emulator.
+ */
     {
         .subtest = "reject-device-beyond-bridge-slots",
         .args = reject_device_beyond_bridge_slots_args,
@@ -1291,11 +1287,10 @@ static const MachineRejectionCase machine_rejection_cases[] = {
         .skip_if_missing_device = "sgi-bridge-dma-test",
     },
     /*
-     * -numa is refused outright now, even the one-node form that used to
-     * pick a memory backend explicitly: topology= names the wiring and
-     * -smp/-m name the population, so a NUMA description is never
-     * needed.
-     */
+ * -numa is refused outright now, even the one-node form that used to pick a
+ * memory backend explicitly: topology= names the wiring and -smp/-m name the
+ * population, so a NUMA description is never needed.
+ */
     {
         .subtest = "reject-one-node-numa",
         .args = reject_one_node_numa_args,
@@ -1385,10 +1380,10 @@ static void test_origin200_has_no_ioc3_compat_global(const void *data)
 }
 
 /*
- * QEMU's standard CPU-topology interface must describe the IP29 sockets,
- * not merely accept a scalar -smp value: every R10000 is its own
- * single-core socket, so a two-processor Origin 200 chassis is two
- * sockets on the same node, never one socket of two cores.
+ * QEMU's standard CPU-topology interface must describe the IP29 sockets, not
+ * merely accept a scalar -smp value: every R10000 is its own single-core
+ * socket, so a two-processor Origin 200 chassis is two sockets on the same
+ * node, never one socket of two cores.
  */
 static void test_one_node_cpu_topology(const void *data)
 {
@@ -1486,11 +1481,11 @@ static void assert_pci_root_bus_name(QTestState *qts, const char *bridge,
 }
 
 /*
- * Each physical chassis's node owns a Bridge directly -- a fitted part
- * of its own System Board, not a removable board (sn0.c,
- * sn0_node_build_baseio()) -- and therefore a separate PCI root bus.
- * Node 0 keeps its original bus name, part of existing device migration
- * paths; node 1 gets a stable identity of its own.
+ * Each physical chassis's node owns a Bridge directly, as a fitted part of
+ * its own System Board, not a removable board (sn0.c,
+ * sn0_node_build_baseio()), and therefore a separate PCI root bus. Node 0
+ * keeps its original bus name, part of existing device migration paths; node
+ * 1 gets a stable identity of its own.
  */
 static void test_bridge_root_bus_names(const void *data)
 {
@@ -1509,9 +1504,9 @@ static void test_bridge_root_bus_names(const void *data)
 /*
  * A drive named onto the second adapter. Both adapters on a base I/O board
  * are ordinary SCSI buses, numbered in the order the machine creates them,
- * so -drive if=scsi,bus=1 names the second one -- a machine that offers
- * its command-line drives to the first adapter alone leaves that drive
- * attached to nothing.
+ * so -drive if=scsi,bus=1 names the second one. A machine that offers its
+ * command-line drives to the first adapter alone leaves that drive attached
+ * to nothing.
  */
 static void test_a_drive_on_the_second_adapter(const void *data)
 {
@@ -1547,9 +1542,9 @@ static void test_a_drive_on_the_second_adapter(const void *data)
 }
 
 /*
- * A default drive belongs on the first SCSI adapter. It used to be
- * accepted and attached to nothing: the drive existed, no device claimed
- * it, and a guest booting from "the first disk" found an empty bus.
+ * A default drive belongs on the first SCSI adapter. It used to be accepted
+ * and attached to nothing: the drive existed, no device claimed it, and a
+ * guest booting from "the first disk" found an empty bus.
  */
 static void test_default_drive_reaches_the_first_scsi_adapter(
     const void *data)
@@ -1651,9 +1646,9 @@ int main(int argc, char **argv)
         const MachineRejectionCase *tc = &machine_rejection_cases[i];
 
         /*
-         * Not freed: qtest_add_data_func() keeps the path for the life
-         * of the suite, which is the life of this process.
-         */
+ * Not freed: qtest_add_data_func() keeps the path for the life of the suite,
+ * which is the life of this process.
+ */
         qtest_add_data_func(
             g_strdup_printf("sn0/address-map/%s", tc->subtest),
             tc, test_machine_configuration_is_rejected);

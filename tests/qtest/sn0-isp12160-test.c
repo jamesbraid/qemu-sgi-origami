@@ -1,10 +1,7 @@
 /*
- * SGI QLogic ISP12160 dual-channel SCSI adapter: the part's register
- * contract through the real crosstalk-to-PCI path.
- *
- * The adapter is plugged into bridge slot 3, beside the board's own two
- * ISP1040s and its IOC3, so every access here crosses the same byte-lane
- * correction and crosstalk decode a guest driver would.
+ * Test ISP12160 dual-channel SCSI registers through Crosstalk and PCI.
+ * Bridge slot 3 sits beside two ISP1040s and IOC3; accesses use the guest's
+ * byte correction and Crosstalk decode.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
@@ -19,10 +16,8 @@
 #define BRIDGE_WIDGET   8
 #define BRIDGE_BASE     (SPACE_XTALK + ((uint64_t)BRIDGE_WIDGET << 24))
 
-/*
- * The bridge's registers are 32 bits in the low half of an eight-byte slot,
- * so every register address carries this offset.
- */
+/* The bridge's registers are 32 bits in the low half of an eight-byte slot,
+ * so every register address carries this offset. */
 #define REG_DATA                4
 
 /* PCI type 0 configuration space, one 4 KB block per device. */
@@ -44,10 +39,8 @@
 /* Class 0x01 mass storage, subclass 0x00 SCSI, programming interface 0. */
 #define PCI_CLASS_SCSI          0x010000
 
-/*
- * The board fits its two ISP1040s at devices 0 and 1 and the IOC3 at 2, so
- * the plugged adapter takes slot 3 and the 1 MB window that goes with it.
- */
+/* The board fits its two ISP1040s at devices 0 and 1 and the IOC3 at 2, so
+ * the plugged adapter takes slot 3 and the 1 MB window that goes with it. */
 #define MACHINE  "-M origin200 -m 64 -device qlogic-isp12160,bus=pci,addr=3"
 #define SLOT     3
 
@@ -56,7 +49,8 @@
                            SLOT * CFG0_DEVICE_STRIDE)
 #define REG_BRIDGE_DEVICE (BRIDGE_BASE + 0x200 + 8 * SLOT + REG_DATA)
 
-/* A window carries PCI address bits 31:20, so both BARs land 20-bit aligned. */
+/* A window carries PCI address bits 31:20, so both BARs land 20-bit
+ * aligned. */
 #define ADAPTER_MMIO      0x10700000u
 #define ADAPTER_IO        0x00700000u
 
@@ -74,7 +68,8 @@
 #define ISP_REG_MAILBOX_BASE    0x70
 #define ISP_MAILBOX(n)          (ISP_REG_MAILBOX_BASE + (n) * 2)
 
-/* Two offsets inside the banked window at 0x80, far enough apart to differ. */
+/* Two offsets inside the banked window at 0x80, far enough apart to
+ * differ. */
 #define ISP_REG_BANK_BASE       0x80
 #define ISP_REG_BANK_MIDDLE     0xa0
 
@@ -88,10 +83,8 @@
 #define ISP_BANK_SEL_SXP1       0x0200
 #define ISP_BANK_SEL_DMA        0x0300
 
-/*
- * The zero selection comes last, so a model that ignores the field ends up
- * with the RISC bank's value everywhere and fails the read-back loop.
- */
+/* The zero selection comes last, so a model that ignores the field ends up
+ * with the RISC bank's value everywhere and fails the read-back loop. */
 static const uint16_t bank_selections[] = {
     ISP_BANK_SEL_SXP0, ISP_BANK_SEL_SXP1, ISP_BANK_SEL_DMA, ISP_BANK_SEL_RISC
 };
@@ -156,9 +149,9 @@ static const uint16_t bank_selections[] = {
 #define NOT_THE_ANSWER          0x5a5a
 
 /*
- * What the adapter's DMA needs: the page-mapped window's first translation
- * entry, and the 64-bit direct form, which names its target widget in the
- * top nibble and passes the low 48 bits through.
+ * Adapter DMA requires: the page-mapped window's first translation entry,
+ * and the 64-bit direct form, which names its target widget in the top
+ * nibble and passes the low 48 bits through.
  */
 #define ATE_BASE                0x010000
 #define ATE(n)                  (BRIDGE_BASE + ATE_BASE + (n) * 8)
@@ -173,16 +166,16 @@ static const uint16_t bank_selections[] = {
 #define RAM_TOP_64M             0x04000000u
 
 /*
- * One machine with one adapter and no disks serves every case that needs
- * no disk, started in main(). Cases wanting disks, throttled disks, two
- * units behind one target or a migration destination start their own.
+ * One machine with one adapter and no disks serves every case that needs no
+ * disk, started in main(). Cases wanting disks, throttled disks, two units
+ * behind one target or a migration destination start their own.
  */
 static QTestState *qts;
 
 /*
- * Open such a case. Reset puts the adapter's configuration space back,
- * and checking the command register reads zero here is what proves the
- * previous case's window programming is gone.
+ * Open such a case. Reset puts the adapter's configuration space back, and
+ * checking the command register reads zero here is what proves the previous
+ * case's window programming is gone.
  */
 static void isp_reset(void)
 {
@@ -202,7 +195,8 @@ static uint16_t isp_readw(QTestState *qts, unsigned natural)
     return qtest_readw(qts, WINDOW + GUEST_HALFWORD(natural));
 }
 
-/* The order Linux uses; the other order is exercised where it is the point. */
+/* The order Linux uses; the other order is exercised where it is the
+ * point. */
 static void isp_mbox_ack(QTestState *qts)
 {
     isp_writew(qts, ISP_REG_SEMAPHORE, 0);
@@ -211,9 +205,9 @@ static void isp_mbox_ack(QTestState *qts)
 }
 
 /*
- * A whole submission: inputs into mailboxes 1 upwards, the opcode last,
- * then the host interrupt the protocol triggers on. The answer is read
- * without acknowledging, which is the caller's decision to make.
+ * A whole submission: inputs into mailboxes 1 upwards, the opcode last, then
+ * the host interrupt the protocol triggers on. The answer is read without
+ * acknowledging, which is the caller's decision to make.
  */
 static uint16_t isp_mbox(QTestState *qts, uint16_t cmd, const uint16_t *in,
                          int nin)
@@ -252,10 +246,10 @@ static uint16_t isp_read_ram_word(QTestState *qts, uint16_t addr)
 }
 
 /*
- * The four address words the reviewed loader supplies, 6 and 7 written even
- * at zero because mailboxes persist and a stale upper half would be
- * reassembled into the address. Mailbox 5 is not an input here; it is
- * written so the array reads as mailboxes 1 through 7 in order.
+ * The four address words the loader supplies, 6 and 7 written even at zero
+ * because mailboxes persist and a stale upper half would be reassembled into
+ * the address. Mailbox 5 is not an input here; it is written so the array
+ * reads as mailboxes 1 through 7 in order.
  */
 static uint16_t isp_ram_block(QTestState *qts, uint16_t cmd, uint16_t base,
                               uint64_t addr, uint16_t count)
@@ -307,7 +301,8 @@ static void normalise_words(uint8_t *buf, size_t len)
 {
     size_t i;
 
-    /* A tail short of a word would keep the fabric's order and say nothing. */
+    /* A tail short of a word would keep the fabric's order and say
+     * nothing. */
     g_assert_cmpuint(len % 4, ==, 0);
 
     for (i = 0; i + 4 <= len; i += 4) {
@@ -392,10 +387,10 @@ static void test_identity(const void *data)
 }
 
 /*
- * The register file is cycled sixteen bits at a time whatever the guest
- * asks for. The two widths either side of that are handled differently and
- * both are pinned, because the declared access size is the only thing
- * standing between a register's side effects and being run twice.
+ * The register file is cycled sixteen bits at a time whatever the guest asks
+ * for. The two widths either side of that are handled differently and both
+ * are pinned, because the declared access size is the only thing standing
+ * between a register's side effects and being run twice.
  */
 static void test_window_accepts_only_16_bit(const void *data)
 {
@@ -411,17 +406,17 @@ static void test_window_accepts_only_16_bit(const void *data)
     /*
      * A doubleword is split into two halfword cycles rather than reaching
      * the register file as one, so it answers with both identity registers.
-     * The discriminating half is what a single wide cycle would answer:
-     * the low register alone, which is what an undeclared implementation
-     * width produces.
+     * The discriminating half is what a single wide cycle would answer: the
+     * low register alone, which is what an undeclared implementation width
+     * produces.
      */
     g_assert_cmphex(qtest_readl(qts, WINDOW + ISP_REG_ID_LOW), ==,
                     ISP_ID_PAIR);
 
     /*
      * A byte is narrower than the register file decodes, so it is refused
-     * outright rather than split: every byte of the identity pair reads
-     * zero instead of the byte that lives at that offset.
+     * outright rather than split: every byte of the identity pair reads zero
+     * instead of the byte that lives at that offset.
      */
     for (b = 0; b < 4; b++) {
         g_assert_cmphex(qtest_readb(qts, WINDOW + b), ==, 0);
@@ -581,10 +576,8 @@ static void test_interface_control_reset_self_clears(const void *data)
                     ISP_BUS_CTRL_INT_ENABLE | ISP_BUS_CTRL_RISC_INT_ENABLE);
 }
 
-/*
- * The product signature both drivers compare against before they will
- * attach, and mailbox 0 out of the busy state that gates every command.
- */
+/* The product signature both drivers compare against before they will
+ * attach, and mailbox 0 out of the busy state that gates every command. */
 static void test_reset_signature(const void *data)
 {
     isp_reset();
@@ -668,11 +661,11 @@ static const uint16_t a64_image[] = {
 };
 
 /*
- * The loader the reviewed driver uses, through the page-mapped window: the
- * transfer is a little-endian word stream at the adapter's DMA interface,
- * so bytes 34 12 cd ab are words 0x1234 and 0xabcd. Sentinels sit either
- * side of the span, and the translation entry is what makes an untranslated
- * transfer land somewhere with nothing in it.
+ * The loader the driver uses, through the page-mapped window: the transfer
+ * is a little-endian word stream at the adapter's DMA interface, so bytes 34
+ * 12 cd ab are words 0x1234 and 0xabcd. Sentinels sit either side of the
+ * span, and the translation entry is what makes an untranslated transfer
+ * land somewhere with nothing in it.
  */
 static void test_a64_ram_load_through_translated_dma(const void *data)
 {
@@ -736,8 +729,8 @@ static void test_a64_ram_load_rejects_end_crossing(const void *data)
 
 /*
  * The other side of the same edge: a span whose last word is the array's
- * last word is a legitimate load, and the comparison that refuses the
- * span above must not refuse this one. Reading the final word back is what
+ * last word is a legitimate load, and the comparison that refuses the span
+ * above must not refuse this one. Reading the final word back is what
  * separates an accepted request from a copy that stopped a word short.
  */
 static void test_a64_ram_load_reaches_the_last_word(const void *data)
@@ -769,8 +762,8 @@ static void test_a64_ram_load_reaches_the_last_word(const void *data)
 
 /*
  * A transfer the fabric refuses leaves the array as it was: no prefix, no
- * zero fill. Reporting the words loaded when none were would hand a guest
- * a corrupt image that its own checksum then blames on the download.
+ * zero fill. Reporting the words loaded when none were would hand a guest a
+ * corrupt image that its own checksum then blames on the download.
  */
 static void test_a64_ram_load_failed_dma_commits_nothing(const void *data)
 {
@@ -796,10 +789,10 @@ static void test_a64_ram_load_failed_dma_commits_nothing(const void *data)
 }
 
 /*
- * The flat opcode moves the same block cycle the A64 opcode does, under
- * a distinct mailbox number the ISP12160 also answers: a guest that
- * issues 0x0001 instead of 0x0009 must see the same word stream land in
- * the same RAM, with the same sentinels either side of it left alone.
+ * The flat opcode moves the same block cycle the A64 opcode does, under a
+ * distinct mailbox number the ISP12160 also answers: a guest that issues
+ * 0x0001 instead of 0x0009 must see the same word stream land in the same
+ * RAM, with the same sentinels either side of it left alone.
  */
 static void test_flat_ram_load_through_translated_dma(const void *data)
 {
@@ -841,8 +834,8 @@ static void test_flat_ram_load_through_translated_dma(const void *data)
 
 /*
  * A second translated page for the dump direction, and where inside it the
- * image lands: a whole word in, so a transfer that started short or ran
- * long writes over a fence byte instead of falling off the page.
+ * image lands: a whole word in, so a transfer that started short or ran long
+ * writes over a fence byte instead of falling off the page.
  */
 #define DUMP_PAGE           (TARGET_PAGE + PAGE_SIZE_4K)
 #define DUMP_TRANSLATED     (PCI_TRANSLATED + PAGE_SIZE_4K)
@@ -850,12 +843,12 @@ static void test_flat_ram_load_through_translated_dma(const void *data)
 #define DUMP_FENCE          0x5a
 
 /*
- * Load and dump are one transfer in two directions, so an image put into
- * the adapter through a corrected slot has to come back out of it byte for
- * byte. Comparing against the source bytes rather than against a
- * recomputed expectation is the point: a load and a dump that agreed on
- * some other order would still round-trip, and the source page is the one
- * the load side already pins against the word stream the adapter sees.
+ * Load and dump are one transfer in two directions, so an image put into the
+ * adapter through a corrected slot must come back out of it byte for byte.
+ * Comparing against the source bytes rather than against a recomputed
+ * expectation is the point: a load and a dump that agreed on some other
+ * order would still round-trip, and the source page is the one the load side
+ * already pins against the word stream the adapter sees.
  */
 static void test_a64_load_then_dump_round_trips(const void *data)
 {
@@ -972,9 +965,9 @@ static void test_checksum_passes_then_one_corrupt_word_fails(const void *data)
 }
 
 /*
- * A wrapping implementation reads the header from word 0x0002 and sums
- * words 0xfffe, 0xffff, 0x0000, 0x0001: the fixture makes that wrapped
- * sum zero, so only a model that refuses the span answers an error.
+ * A wrapping implementation reads the header from word 0x0002 and sums words
+ * 0xfffe, 0xffff, 0x0000, 0x0001: the fixture makes that wrapped sum zero,
+ * so only a model that refuses the span answers an error.
  */
 static void test_checksum_refuses_a_span_past_the_ram_end(const void *data)
 {
@@ -985,7 +978,8 @@ static void test_checksum_refuses_a_span_past_the_ram_end(const void *data)
 
     aim_window_at_memory_bar(qts);
 
-    /* Header at 0xfffe + 3 = 0x10001: only reachable by wrapping to 0x0001. */
+    /* Header at 0xfffe + 3 = 0x10001: only reachable by wrapping to
+     * 0x0001. */
     isp_write_ram_word(qts, 0x0001, 0x0004);
     isp_write_ram_word(qts, 0xfffe, 0x1000);
     isp_write_ram_word(qts, 0xffff, 0x2000);
@@ -1013,10 +1007,8 @@ static void test_checksum_refuses_a_span_past_the_ram_end(const void *data)
     g_assert_cmphex(isp_readw(qts, ISP_MAILBOX(2)), ==, NOT_THE_ANSWER);
     isp_mbox_ack(qts);
 
-    /*
-     * The last word itself is still reachable: a four-word image based at
-     * 0xfffc, whose length word at 0xffff is the array's last, passes.
-     */
+    /* The last word itself is still reachable: a four-word image based at
+     * 0xfffc, whose length word at 0xffff is the array's last, passes. */
     isp_write_ram_word(qts, 0xfffc, 0x0000);
     isp_write_ram_word(qts, 0xfffd, 0x0000);
     isp_write_ram_word(qts, 0xfffe, 0x0000);
@@ -1096,8 +1088,8 @@ static void test_about_firmware_and_status(const void *data)
 /*
  * The two-channel settings a guest programs during attach. The reset delay
  * carries a value per channel, and the target-parameter reply is asked for
- * on both channels: answering invalid command for either one is what left
- * a driver logging a mailbox failure per target.
+ * on both channels: answering invalid command for either one is what left a
+ * driver logging a mailbox failure per target.
  */
 static void test_reset_delay_accepted_for_both_channels(const void *data)
 {
@@ -1128,10 +1120,10 @@ static void test_reset_delay_accepted_for_both_channels(const void *data)
 }
 
 /*
- * Delivery is disabled around the whole command, the way the reviewed
- * driver runs it, and the event still has to be there afterwards: masking
- * is not acknowledgement, reading is not acknowledgement, and the two
- * drivers acknowledge in opposite orders. One pass per order.
+ * Delivery is disabled around the whole command, the way the driver runs it,
+ * and the event still must be there afterwards: masking is not
+ * acknowledgement, reading is not acknowledgement, and the two drivers
+ * acknowledge in opposite orders. One pass per order.
  */
 static void test_masked_completion_survives_and_both_ack_orders_clear(
     const void *data)
@@ -1187,8 +1179,8 @@ static void test_masked_completion_survives_and_both_ack_orders_clear(
 
 /*
  * A second command submitted before the first is acknowledged is refused
- * whole: overwriting the standing result would lose the answer the guest
- * has not collected yet, and the opcode is left in mailbox 0 to show that
+ * whole: overwriting the standing result would lose the answer the guest has
+ * not collected yet, and the opcode is left in mailbox 0 to show that
  * nothing ran.
  */
 static void test_submission_while_locked_is_ignored(const void *data)
@@ -1225,9 +1217,9 @@ static void test_submission_while_locked_is_ignored(const void *data)
 }
 
 /*
- * Rings and two-channel transfers. The adapter owns one request ring and
- * one response ring; the channel bit in each entry's device word is what
- * sends a command to one SCSI bus or the other.
+ * Rings and two-channel transfers. The adapter owns one request ring and one
+ * response ring; the channel bit in each entry's device word is what sends a
+ * command to one SCSI bus or the other.
  */
 
 #define ISP_MBOX_CMD_INIT_RSP_QUEUE_A64     0x0053
@@ -1337,10 +1329,10 @@ static uint32_t get32le(const uint8_t *b)
 }
 
 /*
- * Two raw files, one per channel, in a directory of their own. The
- * channel-0 disk's second sector carries a pattern with no repeated
- * neighbours, so a transfer split across descriptors cannot come back
- * looking right by accident.
+ * Two raw files, one per channel, in a directory of their own. The channel-0
+ * disk's second sector carries a pattern with no repeated neighbours, so a
+ * transfer split across descriptors cannot come back looking right by
+ * accident.
  */
 typedef struct DiskPair {
     char *dir;
@@ -1391,10 +1383,10 @@ static void disks_remove(DiskPair *disks)
 }
 
 /*
- * The adapter's channel 0 is bus scsi.2 and channel 1 is scsi.3: the
- * board's own two ISP1040s took scsi.0 and scsi.1 before this one was
- * plugged. A wrong bus name is refused at start-up rather than silently
- * putting both disks on one channel.
+ * The adapter's channel 0 is bus scsi.2 and channel 1 is scsi.3: the board's
+ * own two ISP1040s took scsi.0 and scsi.1 before this one was plugged. A
+ * wrong bus name is refused at start-up rather than silently putting both
+ * disks on one channel.
  */
 static char *isp12160_disk_args(const DiskPair *disks)
 {
@@ -1421,9 +1413,9 @@ static QTestState *isp12160_start_with_disks(DiskPair *disks)
 }
 
 /*
- * The ring geometry the helpers below work against. One test runs at a
- * time in this binary and every one of them calls init_queues() first, so
- * this belongs to the file rather than being threaded through each call.
+ * The ring geometry the helpers below work against. One test runs at a time
+ * in this binary and every one of them calls init_queues() first, so this
+ * belongs to the file rather than being threaded through each call.
  */
 static struct {
     uint64_t rqst_iova;
@@ -1453,9 +1445,9 @@ static void write_ring_entry(QTestState *qts, unsigned slot,
 }
 
 /*
- * One queue initialisation. Mailbox 6 carries address bits 63:48 and
- * mailbox 7 bits 47:32, so a model that drops either upper word aims the
- * ring somewhere else. Mailboxes 4 and 5 carry the initial indices.
+ * One queue initialisation. Mailbox 6 carries address bits 63:48 and mailbox
+ * 7 bits 47:32, so a model that drops either upper word aims the ring
+ * somewhere else. Mailboxes 4 and 5 carry the initial indices.
  */
 static void init_one_queue(QTestState *qts, uint16_t cmd, uint16_t count,
                            uint64_t iova)
@@ -1585,19 +1577,17 @@ static void submit_a64(QTestState *qts, uint16_t slot, uint32_t handle,
 
 /*
  * The next completion in the ring, whichever handle it carries. Reading
- * mailbox 5 answers the adapter's response producer index, so the entry
- * the test has not read yet is ready once that index moves; writing
- * mailbox 5 back releases the slot.
- *
- * The wait is bounded in wall time, and has to be. A read held by a block
- * filter waits on that filter's own timer, and although a throttle group
- * picks the virtual clock when qtest is enabled, one built from -object
- * never sees that: object_create_early() runs it before
+ * mailbox 5 answers the adapter's response producer index, so the entry the
+ * test has not read yet is ready once that index moves; writing mailbox 5
+ * back releases the slot. The wait is bounded in wall time, and must be. A
+ * read held by a block filter waits on that filter's own timer, and although
+ * a throttle group picks the virtual clock when qtest is enabled, one built
+ * from -object never sees that: object_create_early() runs it before
  * configure_accelerators() has set the accelerator allowed, so
  * qtest_enabled() is still false and the group meters on the host clock.
- * Stepping the virtual clock here moves nothing, which is measurable --
- * with the sleep taken out and only the step left, the recovery cases
- * fail waiting for a completion that never arrives.
+ * Stepping the virtual clock here moves nothing, which can be measured with
+ * the sleep taken out and only the step left, the recovery cases fail
+ * waiting for a completion that never arrives.
  */
 static uint32_t wait_next_status(QTestState *qts, uint8_t *status)
 {
@@ -1645,9 +1635,9 @@ static void run_simple(QTestState *qts, uint32_t handle, unsigned channel,
 }
 
 /*
- * A reset leaves the disk reporting a unit attention, which the next
- * command collects. Drivers absorb it the same way. Tests that care what
- * a reset did read the completion themselves instead of calling here.
+ * A reset leaves the disk reporting a unit attention, which the next command
+ * collects. Drivers absorb it the same way. Tests that care what a reset did
+ * read the completion themselves instead of calling here.
  */
 static void absorb_unit_attention(QTestState *qts, unsigned channel,
                                   unsigned target, unsigned lun,
@@ -1669,7 +1659,8 @@ static void put_lba10(uint8_t *cdb, uint32_t lba, uint16_t blocks)
     cdb[8] = blocks;
 }
 
-/* READ(10) of one sector into one descriptor, GOOD, into the caller's copy. */
+/* READ(10) of one sector into one descriptor, GOOD, into the caller's
+ * copy. */
 static void read_sector(QTestState *qts, unsigned channel, unsigned target,
                         unsigned lun, uint32_t handle, uint32_t lba,
                         uint32_t buf_phys, uint8_t *out)
@@ -1691,10 +1682,8 @@ static void read_sector(QTestState *qts, unsigned channel, unsigned target,
     normalise_words(out, SECTOR_BYTES);
 }
 
-/*
- * WRITE(10) of one sector of a single repeated byte, which the lane
- * correction leaves alone in either direction.
- */
+/* WRITE(10) of one sector of a single repeated byte, which the lane
+ * correction leaves alone in either direction. */
 static void write_sector(QTestState *qts, unsigned channel, unsigned target,
                          unsigned lun, uint32_t handle, uint32_t lba,
                          uint32_t buf_phys, uint8_t fill)
@@ -1723,10 +1712,10 @@ static void expect_sector(const uint8_t *got, uint8_t fill)
 
 /*
  * The two initialisation commands carry no ordering between them and no
- * shared field, so either order has to leave both rings where it was
- * told. The bases sit in different pages with different low words, and
- * the two passes swap which ring gets which, so a model holding one base
- * or one length for both aims a transfer at the other ring.
+ * shared field, so either order must leave both rings where it was told. The
+ * bases sit in different pages with different low words, and the two passes
+ * swap which ring gets which, so a model holding one base or one length for
+ * both aims a transfer at the other ring.
  */
 static void test_queue_init_in_both_orders_with_distinct_bases(const void *data)
 {
@@ -1761,11 +1750,11 @@ static void test_queue_init_in_both_orders_with_distinct_bases(const void *data)
 }
 
 /*
- * Address bits 47:32 of the response ring reach the fabric. With them
- * naming an address four gigabytes past this machine's memory, the
- * completion has nowhere to land: a model that truncated the base to the
- * low words would write it over the sentinel slot instead and raise the
- * line for a completion the guest can never find at that address.
+ * Address bits 47:32 of the response ring reach the fabric. With them naming
+ * an address four gigabytes past this machine's memory, the completion has
+ * nowhere to land: a model that truncated the base to the low words would
+ * write it over the sentinel slot instead and raise the line for a
+ * completion the guest can never find at that address.
  */
 static void test_response_queue_high_word_participates(const void *data)
 {
@@ -1806,13 +1795,13 @@ static void test_response_queue_high_word_participates(const void *data)
 static const uint32_t wrap_seg_len[WRAP_SEGS] = { 256, 256, 256, 128, 128 };
 
 /*
- * A command at the last slot whose continuation is at slot zero: the
- * adapter has to walk the chain around the end of the ring, and the two
- * sectors it reads have to land in five descriptors of three different
- * lengths. Every descriptor is fenced, and the second sector's bytes all
- * differ from their neighbours, so a dropped continuation, a descriptor
- * taken in the wrong order and a transfer running past its length each
- * show up in the compare rather than cancelling out.
+ * A command at the last slot whose continuation is at slot zero: the adapter
+ * must walk the chain around the end of the ring, and the two sectors it
+ * reads must land in five descriptors of three different lengths. Every
+ * descriptor is fenced, and the second sector's bytes all differ from their
+ * neighbours, so a dropped continuation, a descriptor taken in the wrong
+ * order and a transfer running past its length each show up in the compare
+ * rather than cancelling out.
  */
 static void test_a64_request_with_continuation_across_ring_wrap(
     const void *data)
@@ -1835,9 +1824,9 @@ static void test_a64_request_with_continuation_across_ring_wrap(
 
     /*
      * Slot 0 collects the disk's power-on unit attention and slots 1 and 2
-     * are markers, which the adapter steps past. That leaves the consumer
-     * at the last slot, which is where the command has to go for its
-     * continuation to wrap.
+     * are markers, which the adapter steps past. That leaves the consumer at
+     * the last slot, which is where the command must go for its continuation
+     * to wrap.
      */
     absorb_unit_attention(qts, 0, DISK_TARGET, 0, 0x000000a0);
     memset(marker, 0, sizeof(marker));
@@ -1891,9 +1880,9 @@ static void test_a64_request_with_continuation_across_ring_wrap(
 }
 
 /*
- * The same target number and LUN on each channel, holding different
- * disks. A model with one SCSI bus, or one that ignores the channel bit,
- * answers both reads from the same medium.
+ * The same target number and LUN on each channel, holding different disks. A
+ * model with one SCSI bus, or one that ignores the channel bit, answers both
+ * reads from the same medium.
  */
 static void test_same_target_both_channels_read_different_disks(
     const void *data)
@@ -1926,7 +1915,7 @@ static void test_same_target_both_channels_read_different_disks(
  * device at a target when nothing sits at the LUN asked for, so a
  * duplicate-address check that does not compare the LUN refuses the second
  * disk and the machine will not start. Both are read, because starting is
- * only half of it: a request has to reach the LUN it names.
+ * only half of it: a request must reach the LUN it names.
  */
 static void test_two_luns_behind_one_target(const void *data)
 {
@@ -1965,10 +1954,10 @@ static void test_two_luns_behind_one_target(const void *data)
 }
 
 /*
- * A write on channel 1 has to reach channel 1's medium and stay there
- * across the guest's soft reset, and channel 0's disk has to be untouched
- * at the same block. The first command after the reset is where the disk
- * reports it: the reset reaches every realised bus, not only the first.
+ * A write on channel 1 must reach channel 1's medium and stay there across
+ * the guest's soft reset, and channel 0's disk must be untouched at the same
+ * block. The first command after the reset is where the disk reports it: the
+ * reset reaches every realised bus, not only the first.
  */
 static void test_write_persists_on_channel_1(const void *data)
 {
@@ -1982,10 +1971,8 @@ static void test_write_persists_on_channel_1(const void *data)
     init_queues(qts, DIRECT64(RQST_PHYS), RQST_SLOTS, DIRECT64(RESP_PHYS),
                 RESP_SLOTS, true);
 
-    /*
-     * Both power-on unit attentions collected, so the ones the tests read
-     * after the reset can only have come from the reset.
-     */
+    /* Both power-on unit attentions collected, so the ones the tests read
+     * after the reset can only have come from the reset. */
     absorb_unit_attention(qts, 0, DISK_TARGET, 0, 0x000000a0);
     absorb_unit_attention(qts, 1, DISK_TARGET, 0, 0x000000a1);
     write_sector(qts, 1, DISK_TARGET, 0, 0x00000031, 5, BUF_PHYS, 0x5a);
@@ -2019,10 +2006,8 @@ static void test_write_persists_on_channel_1(const void *data)
     disks_remove(&disks);
 }
 
-/*
- * A real INQUIRY payload from each channel's own disk, not a zero-filled
- * transfer that a status entry alone would not distinguish from one.
- */
+/* A real INQUIRY payload from each channel's own disk, not a zero-filled
+ * transfer that a status entry alone would not distinguish from one. */
 #define INQUIRY_BYTES   36
 
 static void test_inquiry_real_payload_on_both_channels(const void *data)
@@ -2064,10 +2049,10 @@ static void test_inquiry_real_payload_on_both_channels(const void *data)
 
 /*
  * Each cursor mailbox does one thing on a read and a different thing on a
- * write. Mailbox 4 read is the adapter's request consumer and written is
- * the host's producer; mailbox 5 read is the adapter's response producer
- * and written is the host's consumer. A model backing either one with a
- * single word hands the last write back and fails here.
+ * write. Mailbox 4 read is the adapter's request consumer and written is the
+ * host's producer; mailbox 5 read is the adapter's response producer and
+ * written is the host's consumer. A model backing either one with a single
+ * word hands the last write back and fails here.
  */
 static void test_cursor_roles_are_distinct(const void *data)
 {
@@ -2098,10 +2083,10 @@ static void test_cursor_roles_are_distinct(const void *data)
     g_assert_cmphex(isp_readw(qts, ISP_REG_RESPONSE_QUEUE), ==, 3);
 
     /*
-     * Seven is three in a four-entry ring: a producer index the adapter
-     * has already reached, published again. Nothing runs, the consumer
-     * stays where it is, and the read answers the consumer rather than
-     * the seven that was written.
+     * Seven is three in a four-entry ring: a producer index the adapter has
+     * already reached, published again. Nothing runs, the consumer stays
+     * where it is, and the read answers the consumer rather than the seven
+     * that was written.
      */
     isp_writew(qts, ISP_REG_REQUEST_QUEUE, 7);
     g_assert_cmphex(isp_readw(qts, ISP_REG_REQUEST_QUEUE), ==, 3);
@@ -2109,11 +2094,11 @@ static void test_cursor_roles_are_distinct(const void *data)
 }
 
 /*
- * A one-sector read into descriptors describing twice that much. The
- * command asks for 512 bytes, so the rest of the described memory has to
- * come back as the test left it and the entry has to say how many of the
- * described bytes went unused. Padding the transfer instead would leave
- * a driver believing a full buffer it never received.
+ * A one-sector read into descriptors describing twice that much. The command
+ * asks for 512 bytes, so the rest of the described memory must come back as
+ * the test left it and the entry must say how many of the described bytes
+ * went unused. Padding the transfer instead would leave a driver believing a
+ * full buffer it never received.
  */
 #define UNDERRUN_DESCRIBED  (2 * SECTOR_BYTES)
 
@@ -2137,9 +2122,9 @@ static void test_underrun_reports_residual_and_leaves_sentinels(
     absorb_unit_attention(qts, 0, DISK_TARGET, 0, 0x000000a0);
 
     /*
-     * The disk's second sector holds a pattern rather than more of the
-     * first sector's fill, so a transfer that ran on past the command's
-     * length is a mismatch here and not an accidental match.
+     * The disk's second sector holds a pattern rather than more of the first
+     * sector's fill, so a transfer that ran on past the command's length is
+     * a mismatch here and not an accidental match.
      */
     memset(want, WRAP_SENTINEL, sizeof(want));
     memset(want, DISK0_SECTOR0_FILL, SECTOR_BYTES);
@@ -2155,9 +2140,9 @@ static void test_underrun_reports_residual_and_leaves_sentinels(
     g_assert_cmphex(get16le(status + ISP_STATUS_OFF_SCSI_STATUS), ==, 0);
     g_assert_cmpuint(get32le(status + ISP_STATUS_OFF_RESID), ==, SECTOR_BYTES);
     /*
-     * The target delivered the one sector it was asked for, but the
-     * request described a second one it never touched: data moved, but
-     * not a transfer that ran to the end of what was described.
+     * The target delivered the one sector it was asked for, but the request
+     * described a second one it never touched: data moved, but not a
+     * transfer that ran to the end of what was described.
      */
     g_assert_cmphex(get16le(status + ISP_STATUS_OFF_STATE_FLAGS), ==,
                     ISP_STATE_FLAG_GOT_BUS | ISP_STATE_FLAG_GOT_TARGET |
@@ -2173,10 +2158,8 @@ static void test_underrun_reports_residual_and_leaves_sentinels(
     disks_remove(&disks);
 }
 
-/*
- * TEST UNIT READY moves no data: a status entry claiming a data phase for
- * it reports work the target never did.
- */
+/* TEST UNIT READY moves no data: a status entry claiming a data phase for it
+ * reports work the target never did. */
 static void test_zero_data_command_reports_no_data_phase(const void *data)
 {
     DiskPair disks;
@@ -2246,12 +2229,12 @@ static void test_zero_data_command_reports_no_data_phase(const void *data)
 #define RESP_SENTINEL               0xee
 
 /*
- * A read the target refuses. The transport did its work, so the entry
- * has to carry the target's own status and its sense bytes rather than
- * an empty failure: a driver that cannot see ILLEGAL REQUEST here has no
- * way to tell a bad command from a broken disk. The sense area is 32
- * bytes at 0x20 and the entry ends at 0x40, so a shorter count must not
- * leave the adapter writing past the slot it was given.
+ * A read the target refuses. The transport did its work, so the entry must
+ * carry the target's own status and its sense bytes rather than an empty
+ * failure: a driver that cannot see ILLEGAL REQUEST here has no way to tell
+ * a bad command from a broken disk. The sense area is 32 bytes at 0x20 and
+ * the entry ends at 0x40, so a shorter count must not leave the adapter
+ * writing past the slot it was given.
  */
 static void test_check_condition_carries_real_sense(const void *data)
 {
@@ -2307,11 +2290,11 @@ static void test_check_condition_carries_real_sense(const void *data)
 
 /*
  * Nothing sits at this target on either channel. Both answers say the
- * command never got past the bus, so a driver retries elsewhere instead
- * of waiting on a device that is not there, and the handle comes back so
- * it knows which command it is retiring. The selection-timeout bit in
- * the status-flags word is what IRIX reads the empty slot by: without
- * it, its scan reports every absent target as a hard error.
+ * command never got past the bus, so a driver retries elsewhere instead of
+ * waiting on a device that is not there, and the handle comes back so it
+ * knows which command it is retiring. The selection-timeout bit in the
+ * status-flags word is what IRIX reads the empty slot by: without it, its
+ * scan reports every absent target as a hard error.
  */
 static void test_missing_target_on_each_channel(const void *data)
 {
@@ -2346,9 +2329,9 @@ static void test_missing_target_on_each_channel(const void *data)
 
 /*
  * A refused command on one channel beside a good one on the other, both
- * published together. The failure has to stay on its own channel: the
- * other command's payload arrives whole, and the refused command's own
- * medium is left as it was.
+ * published together. The failure must stay on its own channel: the other
+ * command's payload arrives whole, and the refused command's own medium is
+ * left as it was.
  */
 static void test_a_failure_on_one_channel_leaves_the_other_alone(
     const void *data)
@@ -2405,19 +2388,18 @@ static void test_a_failure_on_one_channel_leaves_the_other_alone(
 }
 
 /*
- * Recovery. A command has to still be outstanding when the abort or the
- * reset arrives, so these tests put both disks behind one throttle
- * filter. The group's bucket lets a first sector read through and holds
- * the ones after it, and a held read cannot finish inside the write that
- * published it. Cancelling such a read waits for it, which is why every
- * wait below is bounded in wall time rather than in polls.
- *
- * The rate is what the held read then costs: the bucket drains in
- * (bytes accounted - rate/10) / rate seconds of real time, and that same
- * figure is the margin between filling the bucket and submitting the
- * read under test. A kilobyte a second puts both at four tenths of a
- * second -- long enough that the handful of commands in between cannot
- * close it, short enough that seven tests fit in the suite's time.
+ * Recovery. A command must still be outstanding when the abort or the reset
+ * arrives, so these tests put both disks behind one throttle filter. The
+ * group's bucket lets a first sector read through and holds the ones after
+ * it, and a held read cannot finish inside the write that published it.
+ * Cancelling such a read waits for it, which is why every wait below is
+ * bounded in wall time rather than in polls. The rate is what the held read
+ * then costs: the bucket drains in (bytes accounted - rate/10) / rate
+ * seconds of real time, and that same figure is the margin between filling
+ * the bucket and submitting the read under test. A kilobyte a second puts
+ * both at four tenths of a second, long enough that the handful of
+ * commands in between cannot close it, short enough that seven tests fit in
+ * the suite's time.
  */
 #define THROTTLE_BPS_READ   1024
 
@@ -2468,10 +2450,9 @@ static QTestState *isp12160_start_with_throttled_disks(DiskPair *disks)
 #define ISP_IOCB_ABORTED            0x0005
 
 /*
- * Queues, disks, and the read that fills the throttle group's bucket.
- * That read has to happen before the ones under test are submitted, or
- * they finish inside the write that published them and there is nothing
- * left to recover.
+ * Queues, disks, and the read that fills the throttle group's bucket. That
+ * read must happen before the ones under test are submitted, or they finish
+ * inside the write that published them and there is nothing left to recover.
  */
 static QTestState *recovery_start(DiskPair *disks)
 {
@@ -2519,9 +2500,9 @@ static void expect_no_further_status(QTestState *qts)
 
 /*
  * The whole entry a retirement writes: a completion code, and every other
- * field left at zero. A retired command reached no phase, carries no
- * target status, transferred nothing and has no sense to report, so a
- * model filling any of those in would be describing work it did not do.
+ * field left at zero. A retired command reached no phase, carries no target
+ * status, transferred nothing and has no sense to report, so a model filling
+ * any of those in would be describing work it did not do.
  */
 static void expect_retired(const uint8_t *status, uint16_t completion)
 {
@@ -2535,11 +2516,11 @@ static void expect_retired(const uint8_t *status, uint16_t completion)
 }
 
 /*
- * A reset raises a unit attention on every device it reached, and the
- * next command to that device collects it. Reading it back is the only
- * thing that separates a model that reset the target from one that
- * retired the target's requests and reset nothing, and the probe drains
- * the attention so the commands after it see a settled device.
+ * A reset raises a unit attention on every device it reached, and the next
+ * command to that device collects it. Reading it back is the only thing that
+ * separates a model that reset the target from one that retired the target's
+ * requests and reset nothing, and the probe drains the attention so the
+ * commands after it see a settled device.
  */
 static void expect_reset_reported(QTestState *qts, unsigned channel,
                                   uint32_t handle)
@@ -2566,12 +2547,12 @@ static void expect_no_reset_reported(QTestState *qts, unsigned channel,
 }
 
 /*
- * The two entries a scoped recovery command leaves behind: the retired
- * one and the survivor, which finishes normally. They arrive in
- * whichever order the backend releases them -- the cancellation waits
- * for the read it is retiring, and the other channel's read can finish
- * inside that wait -- and nothing in the contract orders them, so they
- * are sorted by handle rather than by arrival.
+ * The two entries a scoped recovery command leaves behind: the retired one
+ * and the survivor, which finishes normally. They arrive in whichever order
+ * the backend releases them. The cancellation waits for the read it is
+ * retiring, and the other channel's read can finish inside that wait. Then
+ * nothing in the contract orders them, so they are sorted by handle rather
+ * than by arrival.
  */
 static void expect_one_retired_one_survivor(QTestState *qts,
                                             uint32_t retired_handle,
@@ -2618,9 +2599,9 @@ static void place_one_read_per_channel(QTestState *qts, uint32_t handle0,
 }
 
 /*
- * Abort device names a channel, a target and a LUN and carries no
- * handle. The same target and LUN number is busy on the other channel,
- * so a model that drops the channel out of the selector retires both.
+ * Abort device names a channel, a target and a LUN and carries no handle.
+ * The same target and LUN number is busy on the other channel, so a model
+ * that drops the channel out of the selector retires both.
  */
 static void test_abort_device_is_channel_scoped(const void *data)
 {
@@ -2644,8 +2625,8 @@ static void test_abort_device_is_channel_scoped(const void *data)
 
 /*
  * Abort command names one handle. Its neighbour is on the same channel,
- * target and LUN, so only the handle tells them apart and a model
- * decoding the selector alone retires both.
+ * target and LUN, so only the handle tells them apart and a model decoding
+ * the selector alone retires both.
  */
 static void test_abort_command_by_handle(const void *data)
 {
@@ -2671,10 +2652,10 @@ static void test_abort_command_by_handle(const void *data)
 }
 
 /*
- * A handle the adapter really is holding, named with the wrong channel.
- * The selector has to be matched whole: retiring on the handle alone
- * would cancel a command on a bus the host did not name, and answering
- * complete would tell it a command it is still waiting on is gone.
+ * A handle the adapter really is holding, named with the wrong channel. The
+ * selector must be matched whole: retiring on the handle alone would cancel
+ * a command on a bus the host did not name, and answering complete would
+ * tell it a command it is still waiting on is gone.
  */
 static void test_abort_command_checks_the_whole_selector(const void *data)
 {
@@ -2706,10 +2687,10 @@ static void test_abort_command_checks_the_whole_selector(const void *data)
 }
 
 /*
- * Abort device with nothing outstanding at the address. The command
- * names no handle, so there is nothing for it to miss and nothing to
- * report a miss about: a driver clearing a device it has already drained
- * would read a command error as a failure.
+ * Abort device with nothing outstanding at the address. The command names no
+ * handle, so there is nothing for it to miss and nothing to report a miss
+ * about: a driver clearing a device it has already drained would read a
+ * command error as a failure.
  */
 static void test_abort_device_with_nothing_outstanding(const void *data)
 {
@@ -2733,8 +2714,8 @@ static void test_abort_device_with_nothing_outstanding(const void *data)
 
 /*
  * A handle nothing is using. Reporting the abort complete would tell the
- * host that a command it is still waiting on has been retired, and
- * posting an entry for a handle the host never issued is worse.
+ * host that a command it is still waiting on has been retired, and posting
+ * an entry for a handle the host never issued is worse.
  */
 static void test_abort_unknown_handle_is_refused(const void *data)
 {
@@ -2759,9 +2740,9 @@ static void test_abort_unknown_handle_is_refused(const void *data)
 }
 
 /*
- * Target reset reaches one target on one channel. The same target number
- * is busy on the other channel and has to survive, and the reset target
- * has to serve the next command rather than be left cancelled.
+ * Target reset reaches one target on one channel. The same target number is
+ * busy on the other channel and must survive, and the reset target must
+ * serve the next command rather than be left cancelled.
  */
 static void test_target_reset_is_channel_scoped(const void *data)
 {
@@ -2780,10 +2761,10 @@ static void test_target_reset_is_channel_scoped(const void *data)
     expect_survivor_payload(qts, BUF_PHYS, DISK0_SECTOR0_FILL);
 
     /*
-     * The reset target reports the reset and the other channel's target
-     * does not, so the devices really were reset and only the named one
-     * was. Retiring the requests and resetting nothing would leave both
-     * quiet here.
+     * The reset target reports the reset and the other channel's target does
+     * not, so the devices really were reset and only the named one was.
+     * Retiring the requests and resetting nothing would leave both quiet
+     * here.
      */
     expect_reset_reported(qts, 1, 0x43);
     expect_no_reset_reported(qts, 0, 0x44);
@@ -2817,10 +2798,8 @@ static void test_bus_reset_is_channel_scoped(const void *data)
 
     expect_one_retired_one_survivor(qts, 0x42, ISP_IOCB_RESET, 0x41);
 
-    /*
-     * The bus that was named reports the reset and the other one does
-     * not, so a bus really was reset and it was the right one.
-     */
+    /* The bus that was named reports the reset and the other one does not,
+     * so a bus really was reset and it was the right one. */
     expect_reset_reported(qts, 1, 0x43);
     expect_no_reset_reported(qts, 0, 0x44);
 
@@ -2835,11 +2814,10 @@ static void test_bus_reset_is_channel_scoped(const void *data)
 }
 
 /*
- * The host cannot see a command finish before its abort reaches the
- * adapter. The abort has to report that there was nothing to retire and
- * leave the completion that already went out alone: a second entry for
- * the same handle would retire a command the host has already accounted
- * for.
+ * The host cannot see a command finish before its abort reaches the adapter.
+ * The abort must report that there was nothing to retire and leave the
+ * completion that already went out alone: a second entry for the same handle
+ * would retire a command the host has already accounted for.
  */
 static void test_natural_completion_racing_an_abort(const void *data)
 {
@@ -2870,9 +2848,9 @@ static void test_natural_completion_racing_an_abort(const void *data)
 }
 
 /*
- * A handle belongs to the host, and retiring a command hands it back.
- * The next command carrying it is a different command: the adapter must
- * not match it against the retired one or answer it twice.
+ * A handle belongs to the host, and retiring a command hands it back. The
+ * next command carrying it is a different command: the adapter must not
+ * match it against the retired one or answer it twice.
  */
 static void test_retired_handle_is_reusable(const void *data)
 {
@@ -2905,9 +2883,9 @@ static void test_retired_handle_is_reusable(const void *data)
 #define OLD_READ_DEADLINE_US    (1500 * 1000)
 
 /*
- * The old read on this handle would have completed about half a second
- * after it was placed. Its handle is reused before that moment; after it
- * has passed, only the replacement's entry may exist.
+ * The old read on this handle would have completed about half a second after
+ * it was placed. Its handle is reused before that moment; after it has
+ * passed, only the replacement's entry may exist.
  */
 static void test_reused_handle_outlives_the_old_read_deadline(const void *data)
 {
@@ -2929,15 +2907,16 @@ static void test_reused_handle_outlives_the_old_read_deadline(const void *data)
     expect_retired(status, ISP_IOCB_ABORTED);
 
     /*
-     * The read already issued to the block layer completes into this
-     * buffer before scsi_req_cancel() returns -- before the abort
-     * mailbox call above even completes -- so that transfer is already
-     * done by here. Snapshot it now: the guard's real property is that
-     * nothing lands here after this point, not that nothing ever did.
+     * The read already issued to the block layer completes into this buffer
+     * before scsi_req_cancel() returns (before the abort mailbox call
+     * above even completes), so that transfer is already done by here.
+     * Snapshot it now: the guard's real property is that nothing lands here
+     * after this point, not that nothing ever did.
      */
     qtest_memread(qts, BUF_PHYS, before, sizeof(before));
 
-    /* The replacement, on the other channel so its payload tells them apart. */
+    /* The replacement, on the other channel so its payload tells them
+     * apart. */
     place_read(qts, 0x65, 0, BUF_PHYS + SECTOR_BYTES);
     publish_requests(qts);
 
@@ -2963,11 +2942,11 @@ static void test_reused_handle_outlives_the_old_read_deadline(const void *data)
 }
 
 /*
- * Migration. Everything the guest can still see after the stream is
- * replayed has to come back, and the two banks and the per-channel reset
- * delays this part adds are exactly the state an ISP1040 stream never
- * carried. Both instances open the same raw files: the destination holds
- * them inactive until the source hands over.
+ * Migration. Everything the guest can still see after the stream is replayed
+ * must come back, and the two banks and the per-channel reset delays this
+ * part adds are exactly the state an ISP1040 stream never carried. Both
+ * instances open the same raw files: the destination holds them inactive
+ * until the source hands over.
  */
 
 /* The command the source runs, and the one the destination runs after it. */
@@ -2981,8 +2960,8 @@ static void test_reused_handle_outlives_the_old_read_deadline(const void *data)
 
 /*
  * One value per bank, in the order the selection table lists them, so a
- * stream that carries the RISC and SCSI processor 0 banks alone leaves
- * two of these four reading zero on the far side.
+ * stream that carries the RISC and SCSI processor 0 banks alone leaves two
+ * of these four reading zero on the far side.
  */
 static const uint16_t migrate_bank_word[] = {
     0x1919, 0x2a2a, 0x3b3b, 0x0808
@@ -3028,10 +3007,8 @@ static void test_migration_preserves_distinct_state(const void *data)
         isp_writew(from, ISP_REG_BANK_BASE, migrate_bank_word[i]);
     }
 
-    /*
-     * The source arm, so a miss on the far side is the stream's fault and
-     * not a setup that never took.
-     */
+    /* The source arm, so a miss on the far side is the stream's fault and
+     * not a setup that never took. */
     for (i = 0; i < ARRAY_SIZE(bank_selections); i++) {
         isp_writew(from, ISP_REG_BUS_CFG1, bank_selections[i]);
         g_assert_cmphex(isp_readw(from, ISP_REG_BANK_BASE), ==,
@@ -3111,30 +3088,31 @@ static void test_migration_preserves_distinct_state(const void *data)
 
     qtest_quit(to);
     disks_remove(&disks);
-    /* The listening side unlinks its own socket, so the directory is empty. */
+    /* The listening side unlinks its own socket, so the directory is
+     * empty. */
     g_assert_cmpint(rmdir(dir), ==, 0);
 }
 
 /*
  * The backlog. A response ring of four slots holds three entries, so five
  * completions leave two waiting for room. The request ring stops being
- * consumed while any completion is held, and both the held entries and
- * the unconsumed request survive migration.
+ * consumed while any completion is held, and both the held entries and the
+ * unconsumed request survive migration.
  */
 #define BACKLOG_RESP_SLOTS      4
 
 /*
- * A throttled read costs about four tenths of a second, so a second
- * apiece is generous for the ones still behind the full ring. The stall
- * observation only has to outlast a consume, which is synchronous.
+ * A throttled read costs about four tenths of a second, so a second apiece
+ * is generous for the ones still behind the full ring. The stall observation
+ * only must outlast a consume, which is synchronous.
  */
 #define READ_THROTTLE_SLACK_US  (1000 * 1000)
 #define STALL_OBSERVATION_US    (300 * 1000)
 
 /*
- * Mailbox 5 answers the adapter's response producer index, the same
- * register wait_next_status() polls. Real time, not the guest clock, for
- * the reason given there: the throttle group meters on the host clock.
+ * Mailbox 5 answers the adapter's response producer index, the same register
+ * wait_next_status() polls. Real time, not the guest clock, for the reason
+ * given there: the throttle group meters on the host clock.
  */
 static void wait_for_response_producer(QTestState *qts, uint16_t prod)
 {
@@ -3153,33 +3131,27 @@ static void wait_for_response_producer(QTestState *qts, uint16_t prod)
 }
 
 /*
- * A recovery command arriving on a ring that has an entry it has not
- * taken in. Retiring requests is no time to start a command: the entry
- * is still the guest's, so no retirement answer may be written for it,
- * and it has to run normally once the command is over.
- *
- * Reaching that state takes some doing. The adapter refuses new entries
- * while any completion is held, so a full response ring stalls the ring
- * but also stops a retirement from taking anything in -- the same
- * observation either way, which proves nothing. What is needed is a
- * stalled entry with the backlog already gone, and re-initialising the
- * response queue is the one thing a guest can do that discards held
- * completions without also letting consumption resume. The reads whose
- * answers it discards are only scaffolding; the two the test reads back
- * are the aborted command and the entry the abort must not have touched.
- *
- * The throttle group passes THROTTLE_BPS_READ bytes a second, and a read
- * queued behind it waits (bytes already accounted - THROTTLE_BPS_READ/10)
- * / THROTTLE_BPS_READ seconds. The three reads are sized to open a window
- * wide enough to act inside:
- *
- *   fill    one sector, admitted at once, fills the response ring
- *   widen   four sectors, admitted 0.4 s later and then held, and its
- *           size is what pushes the one after it out
- *   victim  one sector, not admitted until 2.4 s, so still in flight
- *
- * STALL_SETTLE_US lands between the last two, 0.8 s after the backlog
- * forms and 1.2 s before the victim would finish.
+ * A recovery command arriving on a ring that has an entry it has not taken
+ * in. Retiring requests is no time to start a command: the entry is still
+ * the guest's, so no retirement answer may be written for it, and it must
+ * run normally once the command is over. Reaching that state takes some
+ * doing. The adapter refuses new entries while any completion is held, so a
+ * full response ring stalls the ring but also stops a retirement from taking
+ * anything in. Both cases look the same, which proves nothing. What
+ * is needed is a stalled entry with the backlog already gone, and
+ * re-initialising the response queue is the one thing a guest can do that
+ * discards held completions without also letting consumption resume. The
+ * reads whose answers it discards are only scaffolding; the two the test
+ * reads back are the aborted command and the entry the abort must not have
+ * touched. The throttle group passes THROTTLE_BPS_READ bytes a second, and a
+ * read queued behind it waits (bytes already accounted -
+ * THROTTLE_BPS_READ/10) / THROTTLE_BPS_READ seconds. The three reads are
+ * sized to open a window wide enough to act inside: fill one sector,
+ * admitted at once, fills the response ring widen four sectors, admitted 0.4
+ * s later and then held, and its size is what pushes the one after it out
+ * victim one sector, not admitted until 2.4 s, so still in flight
+ * STALL_SETTLE_US lands between the last two, 0.8 s after the backlog forms
+ * and 1.2 s before the victim would finish.
  */
 #define STALL_RESP_SLOTS        2
 #define STALL_RESP_SLOTS_AFTER  4
@@ -3195,11 +3167,11 @@ static void wait_for_response_producer(QTestState *qts, uint16_t prod)
 
 /*
  * The response queue re-initialised while the rings are live. Not
- * init_one_queue(): that writes every input mailbox from 1 upwards, and
- * with a live ring mailboxes 4 and 5 are the request producer and the
- * response consumer rather than parking places, so writing zeros there
- * unpublishes the ring and acknowledges responses. The command itself
- * reads only the count and the four address words.
+ * init_one_queue(): that writes every input mailbox from 1 upwards, and with
+ * a live ring mailboxes 4 and 5 are the request producer and the response
+ * consumer rather than parking places, so writing zeros there unpublishes
+ * the ring and acknowledges responses. The command itself reads only the
+ * count and the four address words.
  */
 static void reinit_response_queue(QTestState *qts, uint16_t count,
                                   uint64_t iova)
@@ -3217,11 +3189,11 @@ static void reinit_response_queue(QTestState *qts, uint16_t count,
 }
 
 /*
- * The read still in flight has to stay in flight until the command under
- * test arrives. The re-initialisation above put the response producer back
- * to zero, so anything posted since means the throttle window closed
- * early: the fixture has stopped building the state under test, rather
- * than the adapter having taken the stranded entry in.
+ * The read still in flight must stay in flight until the command under test
+ * arrives. The re-initialisation above put the response producer back to
+ * zero, so anything posted since means the throttle window closed early: the
+ * fixture has stopped building the state under test, rather than the adapter
+ * having taken the stranded entry in.
  */
 static void assert_stall_fixture_holds(QTestState *qts, const char *before)
 {
@@ -3277,10 +3249,10 @@ static void test_recovery_with_a_stalled_ring_consumes_nothing(const void *data)
     g_usleep(STALL_SETTLE_US);
 
     /*
-     * Published while a completion is held, so it is not taken in. Read
-     * back at once rather than after a pause: the mailbox write consumes
-     * what it is going to consume before it returns, and waiting only
-     * gives the victim less time to still be in flight.
+     * Published while a completion is held, so it is not taken in. Read back
+     * at once rather than after a pause: the mailbox write consumes what it
+     * is going to consume before it returns, and waiting only gives the
+     * victim less time to still be in flight.
      */
     stalled_cursor = isp_readw(qts, ISP_REG_REQUEST_QUEUE);
     place_read(qts, STALL_STRANDED_HANDLE, 0, stranded_buf);
@@ -3290,8 +3262,8 @@ static void test_recovery_with_a_stalled_ring_consumes_nothing(const void *data)
 
     /*
      * Discards the backlog, and the two answers in it with it, without
-     * freeing the stranded entry: the response queue starts empty again
-     * and the request ring is still sitting on that entry.
+     * freeing the stranded entry: the response queue starts empty again and
+     * the request ring is still sitting on that entry.
      */
     reinit_response_queue(qts, STALL_RESP_SLOTS_AFTER, DIRECT64(RESP_PHYS));
     ring.resp_len = STALL_RESP_SLOTS_AFTER;
@@ -3307,9 +3279,9 @@ static void test_recovery_with_a_stalled_ring_consumes_nothing(const void *data)
     isp_mbox_ack(qts);
 
     /*
-     * The victim's retirement, and nothing else from the abort. An
-     * adapter that took the stranded entry in while it was retiring
-     * answers this one too, with the abort's own completion code.
+     * The victim's retirement, and nothing else from the abort. An adapter
+     * that took the stranded entry in while it was retiring answers this one
+     * too, with the abort's own completion code.
      */
     g_assert_cmphex(wait_next_status(qts, status), ==, STALL_VICTIM_HANDLE);
     expect_retired(status, ISP_IOCB_ABORTED);
@@ -3327,30 +3299,25 @@ static void test_recovery_with_a_stalled_ring_consumes_nothing(const void *data)
 }
 
 /*
- * A device removed while the request ring has an entry it has not taken
- * in. Purging the leaving device's requests drains its block backend, and
- * a command finishing on another target inside that drain reaches the
- * deferred resume, so the removal has to hold that resume off rather than
- * let it hand work to a device on its way out.
- *
- * The state is built the way the abort test above builds it, and for the
- * same reasons: a full response ring with a completion held behind it to
- * stall the entry, the response queue then re-initialised in place so the
- * backlog is gone while the entry stays untaken. The read still in flight
- * is on the disk being removed this time, so the purge has something to
- * wait for instead of returning at once.
- *
- * What this does not do is make the collision happen. The resume runs
- * from a bottom half that a command finishing on its own schedules, and
- * such a bottom half runs at the next turn of the main loop, so it is
- * never still pending when a later qtest command arrives; landing one
- * inside the removal's drain would need a completion timed to a window
- * milliseconds wide, which nothing here can arrange.
- *
- * What it does pin is the rest of the contract, and that is not free:
- * with the removal left as the plain unplug callback nothing resumes
- * consumption afterwards at all, the entry below is never taken in, and
- * the wait for its answer runs out.
+ * A device removed while the request ring has an entry it has not taken in.
+ * Purging the leaving device's requests drains its block backend, and a
+ * command finishing on another target inside that drain reaches the deferred
+ * resume, so the removal must hold that resume off rather than let it hand
+ * work to a device on its way out. The state is built the way the abort test
+ * above builds it, and for the same reasons: a full response ring with a
+ * completion held behind it to stall the entry, the response queue then
+ * re-initialised in place so the backlog is gone while the entry stays
+ * untaken. The read still in flight is on the disk being removed this time,
+ * so the purge has something to wait for instead of returning at once. What
+ * this does not do is make the collision happen. The resume runs from a
+ * bottom half that a command finishing on its own schedules, and such a
+ * bottom half runs at the next turn of the main loop, so it is never still
+ * pending when a later qtest command arrives; landing one inside the
+ * removal's drain would need a completion timed to a window milliseconds
+ * wide, which nothing here can arrange. What it does pin is the rest of the
+ * contract, and that is not free: with the removal left as the plain unplug
+ * callback nothing resumes consumption afterwards at all, the entry below is
+ * never taken in, and the wait for its answer runs out.
  */
 #define UNPLUG_UA_CHANNEL0      0x000000c0
 #define UNPLUG_UA_CHANNEL1      0x000000c1
@@ -3376,10 +3343,8 @@ static void test_unplug_with_a_stalled_ring_takes_nothing_in(const void *data)
     absorb_unit_attention(qts, 0, DISK_TARGET, 0, UNPLUG_UA_CHANNEL0);
     absorb_unit_attention(qts, 1, DISK_TARGET, 0, UNPLUG_UA_CHANNEL1);
 
-    /*
-     * The third read is on channel 1, the disk that leaves, and the second
-     * one's four sectors are what keep it queued that long.
-     */
+    /* The third read is on channel 1, the disk that leaves, and the second
+     * one's four sectors are what keep it queued that long. */
     qtest_memset(qts, BUF_PHYS, WRAP_SENTINEL, 7 * SECTOR_BYTES);
     place_read(qts, UNPLUG_FILL_HANDLE, 0, BUF_PHYS);
     place_wide_read(qts, UNPLUG_WIDEN_HANDLE, 0, BUF_PHYS + SECTOR_BYTES,
@@ -3413,12 +3378,12 @@ static void test_unplug_with_a_stalled_ring_takes_nothing_in(const void *data)
 
     /*
      * The read that went with the disk may or may not have an answer:
-     * draining a throttle filter restarts its queue, so the purge races
-     * the read it is cancelling, and either the cancellation wins and the
-     * host is told nothing -- a purge is not a completion it asked for --
-     * or the read finishes first and reports normally. Both are the SCSI
-     * core's call rather than this adapter's, so one entry for that handle
-     * is allowed here and nothing else is.
+     * draining a throttle filter restarts its queue, so the purge races the
+     * read it is cancelling, and either the cancellation wins and the host
+     * is told nothing (a purge is not a completion it asked for), or the
+     * read finishes first and reports normally. Both are the SCSI core's
+     * call rather than this adapter's, so one entry for that handle is
+     * allowed here and nothing else is.
      */
     if (wait_next_status(qts, status) == UNPLUG_PURGED_HANDLE) {
         g_assert_cmphex(wait_next_status(qts, status), ==,
@@ -3467,10 +3432,8 @@ static void test_full_ring_holds_completions_and_migrates_them(const void *data)
                 BACKLOG_RESP_SLOTS, true);
     absorb_unit_attention(from, 0, DISK_TARGET, 0, 0x90);
 
-    /*
-     * One slot is reserved, so this is the producer index of a full ring,
-     * and nothing moves it again until the guest acknowledges something.
-     */
+    /* One slot is reserved, so this is the producer index of a full ring,
+     * and nothing moves it again until the guest acknowledges something. */
     full = (ring.resp_next + BACKLOG_RESP_SLOTS - 1) % BACKLOG_RESP_SLOTS;
 
     /* Five reads into a ring with three usable slots. */
@@ -3502,7 +3465,8 @@ static void test_full_ring_holds_completions_and_migrates_them(const void *data)
     qtest_quit(from);
     qtest_qmp_assert_success(to, "{ 'execute': 'cont' }");
 
-    /* The three ring entries, then the two held ones, then the stalled TUR. */
+    /* The three ring entries, then the two held ones, then the stalled
+     * TUR. */
     for (i = 0; i < ARRAY_SIZE(reads); i++) {
         g_assert_cmphex(wait_next_status(to, status), ==, reads[i]);
         g_assert_cmphex(get16le(status + ISP_STATUS_OFF_COMPLETION), ==,

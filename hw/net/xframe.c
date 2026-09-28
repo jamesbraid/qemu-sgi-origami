@@ -1,23 +1,22 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
+/* Neterion/S2io Xframe PCI 10-Gigabit Ethernet controller. */
 /*
- * Neterion/S2io Xframe 10-Gigabit Ethernet controller.
- *
  * See include/hw/net/xframe.h for what this device is. This models the
  * generic PCI card's own contract: PCI identity, the two BAR windows, the
  * netdev frontend, and the PIF (BAR0) register file the probe/attach path
- * binds on -- the byte-swapper diagnostic, SW_RESET, the RMAC_CFG_KEY
+ * binds on, the byte-swapper diagnostic, SW_RESET, the RMAC_CFG_KEY
  * MAC-config lock, ADAPTER_STATUS/ADAPTER_CONTROL and the MAC-address table.
  * The registers are 64-bit and native little-endian; a host bridge that
- * corrects register byte order or access width (the Origin 200 Bridge) is that
- * bridge's concern, not this device's. The transmit descriptor/doorbell path
- * behind the TxP window (BAR2) is modelled: a doorbell walks the FIFO's
+ * corrects register byte order or access width (the Origin 200 Bridge) is
+ * that bridge's concern, not this device's. The transmit descriptor/doorbell
+ * path behind the TxP window (BAR2) is modelled: a doorbell walks the FIFO's
  * descriptor list, gathers the buffers, and emits the frame. The receive path
  * behind the RxDMA registers (also BAR0) is modelled too: the card walks its
  * posted RxD ring, deposits an accepted frame into the guest's buffer, and
  * raises the receive interrupt.
  *
  * QOM/PCI-realize/BAR shape and the ResettablePhases reset wiring follow
- * hw/scsi/qlogic-isp.c, the fork's PCI-endpoint reference -- not
+ * hw/scsi/qlogic-isp.c, the fork's PCI-endpoint reference, not
  * hw/pci-host/astro.c, which is a PCI host bridge with a different
  * TypeInfo/realize/BAR shape and which calls the forbidden
  * device_class_set_legacy_reset(). The netdev frontend follows
@@ -48,9 +47,7 @@
 /*
  * PIF register offsets within BAR0, and the bit fields the probe/attach path
  * touches. Public OpenBSD if_xgereg.h / Linux s2io-regs.h names, taken from
- * the register map of the xframe datasheet (docs/datasheets/xframe.md in
- * the origami project tree, not this repository -- every later citation of
- * it here means that file). All registers are 64-bit.
+ * the card's public register map. All registers are 64-bit.
  */
 #define XFRAME_GENERAL_INT_STATUS   0x0000
 #define XFRAME_GENERAL_INT_MASK     0x0008
@@ -93,14 +90,15 @@
 /*
  * The statistics block has its own byte-swap enables, SWAPPER_CTRL_STATS_FE
  * and _SE (public s2io s2BIT(48)/s2BIT(49); s2BIT(n) is 1<<(63-n), so bits 15
- * and 14 of the low word). The two combinations that occur on real drivers are
- * modelled, and only those. Linux sets FE and SE together on both host
- * endiannesses and declares every field __le in place: FE+SE means each 64-bit
- * word of the block little-endian. IRIX leaves both clear, and the block was
- * measured big-endian (a little-endian write is read back byte-reversed here, a
- * count of 50 arriving as 0x32000000). FE alone or SE alone -- which nobody
- * sets -- is not modelled, and the STAT_CFG enable path logs it. See
- * xframe_stat_dma() for why the unit of byte order is the 64-bit word.
+ * and 14 of the low word). The two combinations that occur on real drivers
+ * are modelled, and only those. Linux sets FE and SE together on both host
+ * endiannesses and declares every field __le in place: FE+SE means each
+ * 64-bit word of the block little-endian. IRIX leaves both clear, and the
+ * block was measured big-endian (a little-endian write is read back
+ * byte-reversed here, a count of 50 arriving as 0x32000000). FE alone or SE
+ * alone, which nobody sets, is not modelled, and the STAT_CFG enable path
+ * logs it. See xframe_stat_dma() for why the unit of byte order is the 64-bit
+ * word.
  */
 #define XFRAME_SWAPPER_CTRL_STATS_FE  (1ULL << 15)
 #define XFRAME_SWAPPER_CTRL_STATS_SE  (1ULL << 14)
@@ -149,12 +147,12 @@ static void xframe_stat_stq(XframeState *s, uint8_t *p, uint64_t val)
 /*
  * GENERAL_INT_STATUS's receive-traffic aggregate bit (Linux s2io-regs.h
  * GEN_INTR_RXTRAFFIC = s2BIT(40); s2io.h's s2BIT(loc) is
- * 0x8000000000000000ULL >> loc, i.e. bit 63-loc -- the same MSB-first
+ * 0x8000000000000000ULL >> loc, i.e. bit 63-loc, the same MSB-first
  * numbering already cross-checked against OpenBSD's ADAPTER_EN for
  * ADAPTER_CONTROL). GENERAL_INT_STATUS itself is not modelled as stored
  * state: it is derived from the same per-block status this device already
- * keeps (currently just RX_TRAFFIC_INT), so it cannot drift out of sync
- * with the register that actually clears on acknowledgement.
+ * keeps (currently just RX_TRAFFIC_INT), so it cannot drift out of sync with
+ * the register that actually clears on acknowledgement.
  */
 #define XFRAME_GEN_INTR_RXTRAFFIC   (1ULL << 23)
 
@@ -162,9 +160,9 @@ static void xframe_stat_stq(XframeState *s, uint8_t *p, uint64_t val)
  * GENERAL_INT_STATUS's transmit-traffic aggregate bit (Linux s2io-regs.h
  * GEN_INTR_TXTRAFFIC = s2BIT(8), i.e. bit 63-8 = 55), and the per-FIFO
  * transmit-completion bit within TX_TRAFFIC_INT (TX_TRAFFIC_INT_n(n) =
- * s2BIT(n), FIFO 0 = bit 63) -- the same MSB-first numbering and the
- * transmit mirror of RX_TRAFFIC_INT. Both drivers unmask transmit traffic at
- * bring-up (writing TX_TRAFFIC_MASK = 0) and ack TX_TRAFFIC_INT in their ISR.
+ * s2BIT(n), FIFO 0 = bit 63), the same MSB-first numbering and the transmit
+ * mirror of RX_TRAFFIC_INT. Both drivers unmask transmit traffic at bring-up
+ * (writing TX_TRAFFIC_MASK = 0) and ack TX_TRAFFIC_INT in their ISR.
  */
 #define XFRAME_GEN_INTR_TXTRAFFIC   (1ULL << 55)
 
@@ -173,7 +171,7 @@ static void xframe_stat_stq(XframeState *s, uint8_t *p, uint64_t val)
  * GEN_INTR_RXMAC = s2BIT(34), i.e. bit 63-34 = 29 in the same MSB-first
  * numbering as GEN_INTR_RXTRAFFIC above). The RMAC link-state-change
  * interrupt (below) is a receive-MAC-block source, so it rolls up into this
- * top-level bit -- the aggregate both drivers read before descending to the
+ * top-level bit, the aggregate both drivers read before descending to the
  * per-block MAC_RMAC_ERR_REG (OpenBSD xge_intr, Linux s2io_isr).
  */
 #define XFRAME_GEN_INTR_RXMAC       (1ULL << 29)
@@ -181,10 +179,10 @@ static void xframe_stat_stq(XframeState *s, uint8_t *p, uint64_t val)
 /*
  * MAC_RMAC_ERR_REG's link-state-change interrupt (OpenBSD if_xgereg.h
  * RMAC_LINK_STATE_CHANGE_INT = 1ULL<<32; Linux s2io-regs.h s2BIT(31), the
- * same bit 32). Both drivers unmask it at bring-up -- OpenBSD's xge_init
+ * same bit 32). Both drivers unmask it at bring-up. OpenBSD's xge_init
  * writes MAC_RMAC_ERR_MASK = ~RMAC_LINK_STATE_CHANGE_INT and MAC_INT_MASK to
  * leave only RMAC unmasked; Linux's en_dis_err_alarms adds it to the RX-MAC
- * unmask set -- and both service it in their ISR (OpenBSD reads
+ * unmask set, and both service it in their ISR (OpenBSD reads
  * MAC_RMAC_ERR_REG and, if link restored, re-enables the adapter). It is the
  * one interrupt that fires on an idle interface with no traffic: the link
  * coming up. Write-1-to-clear, like RX_TRAFFIC_INT.
@@ -193,77 +191,79 @@ static void xframe_stat_stq(XframeState *s, uint8_t *p, uint64_t val)
 
 /*
  * MAC_INT_STATUS/MAC_INT_MASK's receive-MAC roll-up bit (OpenBSD if_xgereg.h
- * MAC_RMAC_INT = 1ULL<<62; MAC_TMAC_INT = 1ULL<<63 is the transmit-MAC sibling
- * both drivers mask). The RMAC error/link block only rolls up into
- * GEN_INTR_RXMAC when this bit is unmasked in MAC_INT_MASK -- OpenBSD xge_init
- * writes MAC_INT_MASK = MAC_TMAC_INT (only RMAC unmasked); Linux
+ * MAC_RMAC_INT = 1ULL<<62; MAC_TMAC_INT = 1ULL<<63 is the transmit-MAC
+ * sibling both drivers mask). The RMAC error/link block only rolls up into
+ * GEN_INTR_RXMAC when this bit is unmasked in MAC_INT_MASK. OpenBSD
+ * xge_init writes MAC_INT_MASK = MAC_TMAC_INT (only RMAC unmasked); Linux
  * en_dis_err_alarms unmasks MAC_INT_STATUS_RMAC_INT. So the link source is
- * gated by two MAC masks: this block roll-up mask and MAC_RMAC_ERR_MASK's leaf
- * link bit.
+ * gated by two MAC masks: this block roll-up mask and MAC_RMAC_ERR_MASK's
+ * leaf link bit.
  */
 #define XFRAME_MAC_RMAC_INT         (1ULL << 62)
 
 /*
  * GENERAL_INT_STATUS's PCI-X-block aggregate bit (Linux s2io-regs.h
- * GEN_INTR_TXPIC = s2BIT(0), i.e. bit 63 in the same MSB-first numbering as the
- * other GEN_INTR bits above). The whole PIC block -- the GPIO link-state source
- * below included -- rolls up into this one top-level bit, the one s2io_isr
- * dispatches to s2io_txpic_intr_handle. (The chip's own name for the PIC
- * block's general-status bit; nothing transmit-specific about it.)
+ * GEN_INTR_TXPIC = s2BIT(0), i.e. bit 63 in the same MSB-first numbering as
+ * the other GEN_INTR bits above). The whole PIC block, the GPIO link-state
+ * source below included, rolls up into this one top-level bit, the one
+ * s2io_isr dispatches to s2io_txpic_intr_handle. (The chip's own name for the
+ * PIC block's general-status bit; nothing transmit-specific about it.)
  */
 #define XFRAME_GEN_INTR_TXPIC       (1ULL << 63)
 
 /*
- * PIC_INT_STATUS's GPIO sub-block aggregate bit (Linux s2io-regs.h PIC_INT_GPIO
- * = s2BIT(4), i.e. bit 59). The GPIO leaf below rolls up into PIC_INT_STATUS
- * here, and PIC_INT_MASK (0x808) gates this bit's contribution to
- * GEN_INTR_TXPIC. IRIX xg opens the whole PIC block (writes PIC_INT_MASK = 0),
- * so this bit is unmasked -- the block xg's bring-up actually enables.
+ * PIC_INT_STATUS's GPIO sub-block aggregate bit (Linux s2io-regs.h
+ * PIC_INT_GPIO = s2BIT(4), i.e. bit 59). The GPIO leaf below rolls up into
+ * PIC_INT_STATUS here, and PIC_INT_MASK (0x808) gates this bit's contribution
+ * to GEN_INTR_TXPIC. IRIX xg opens the whole PIC block (writes PIC_INT_MASK =
+ * 0), so this bit is unmasked by xg's bring-up.
  */
 #define XFRAME_PIC_INT_GPIO         (1ULL << 59)
 
 /*
  * PIC_INT_STATUS's TXPIC (PCI-X transmit) sub-block aggregate bit (Linux
- * s2io-regs.h PIC_INT_TX = s2BIT(0), i.e. bit 63). The TXPIC leaf (TXPIC_INT_REG
- * / TXPIC_INT_MASK) rolls up into PIC_INT_STATUS here, gated by PIC_INT_MASK
- * (0x808). The scheduled interrupt below is delivered on this sub-block, the
- * one xg unmasks (PIC_INT_MASK = 0, TXPIC_INT_MASK = 0) alongside the GPIO one.
+ * s2io-regs.h PIC_INT_TX = s2BIT(0), i.e. bit 63). The TXPIC leaf
+ * (TXPIC_INT_REG / TXPIC_INT_MASK) rolls up into PIC_INT_STATUS here, gated
+ * by PIC_INT_MASK (0x808). The scheduled interrupt below is delivered on this
+ * sub-block, the one xg unmasks (PIC_INT_MASK = 0, TXPIC_INT_MASK = 0)
+ * alongside the GPIO one.
  */
 #define XFRAME_PIC_INT_TX           (1ULL << 63)
 
 /*
  * The scheduled/periodic-interrupt timer control (Linux s2io-regs.h
- * scheduled_int_ctrl at 0x918; SCHED_INT_CTRL_TIMER_EN = s2BIT(0) = bit 63 arms
- * the timer, SCHED_INT_CTRL_ONE_SHOT = s2BIT(1) = bit 62 fires once rather than
- * repeating). IRIX xg programs this at bring-up to feed its "no interrupts"
- * watchdog with a traffic-independent periodic interrupt.
+ * scheduled_int_ctrl at 0x918; SCHED_INT_CTRL_TIMER_EN = s2BIT(0) = bit 63
+ * arms the timer, SCHED_INT_CTRL_ONE_SHOT = s2BIT(1) = bit 62 fires once
+ * rather than repeating). IRIX xg programs this at bring-up to feed its "no
+ * interrupts" watchdog with a traffic-independent periodic interrupt.
  */
 #define XFRAME_SCHED_INT_CTRL_TIMER_EN  (1ULL << 63)
 #define XFRAME_SCHED_INT_CTRL_ONE_SHOT  (1ULL << 62)
 
 /*
  * The scheduled interrupt's leaf latch in TXPIC_INT_REG (0x810), gated by
- * TXPIC_INT_MASK (0x818). The public header (s2io-regs.h) names the TXPIC leaf
- * bits for PCI-X transmit errors and marks the scheduled-interrupt routing and
- * period (SCHED_INT_PERIOD) TBD, so this is a model-chosen bit in the same leaf
- * register the source rolls up through -- placed in the high 32 bits so the
- * ISR's high-half read acks it, like the GPIO link bits. Distinct from every
- * PCIX_INT_REG_* error bit.
+ * TXPIC_INT_MASK (0x818). The public header (s2io-regs.h) names the TXPIC
+ * leaf bits for PCI-X transmit errors and marks the scheduled-interrupt
+ * routing and period (SCHED_INT_PERIOD) TBD, so this is a model-chosen bit in
+ * the same leaf register the source rolls up through, placed in the high 32
+ * bits so the ISR's high-half read acks it, like the GPIO link bits. Distinct
+ * from every PCIX_INT_REG_* error bit.
  */
 #define XFRAME_TXPIC_INT_SCHED      (1ULL << 59)
 
 /*
- * GPIO_INT_REG's link-state bits and GPIO_INT_MASK's matching mask bits (Linux
- * s2io-regs.h GPIO_INT_REG_LINK_UP = s2BIT(2) = bit 61, GPIO_INT_REG_LINK_DOWN
- * = s2BIT(1) = bit 62; GPIO_INT_MASK_LINK_UP/DOWN the same bit positions). The
- * link-state interrupt an idle interface sees on the PIC/GPIO path -- a
- * DIFFERENT source from the MAC RMAC_LINK_STATE_CHANGE path above. Linux's ISR
- * reads PIC_INT_STATUS for PIC_INT_GPIO, then GPIO_INT_REG for LINK_UP, then
- * enables the adapter and marks the link up (s2io_txpic_intr_handle); its
- * Hercules enable path unmasks PIC_INT_GPIO in PIC_INT_MASK and
- * GPIO_INT_MASK_LINK_UP in GPIO_INT_MASK (en_dis_able_nic_intrs). All the GPIO
- * bits sit in the high 32 bits. Raw status and acknowledgement semantics remain
- * model compatibility behavior rather than an established hardware contract.
+ * GPIO_INT_REG's link-state bits and GPIO_INT_MASK's matching mask bits
+ * (Linux s2io-regs.h GPIO_INT_REG_LINK_UP = s2BIT(2) = bit 61,
+ * GPIO_INT_REG_LINK_DOWN = s2BIT(1) = bit 62; GPIO_INT_MASK_LINK_UP/DOWN the
+ * same bit positions). The link-state interrupt an idle interface sees on the
+ * PIC/GPIO path, a DIFFERENT source from the MAC RMAC_LINK_STATE_CHANGE
+ * path above. Linux's ISR reads PIC_INT_STATUS for PIC_INT_GPIO, then
+ * GPIO_INT_REG for LINK_UP, then enables the adapter and marks the link up
+ * (s2io_txpic_intr_handle); its Hercules enable path unmasks PIC_INT_GPIO in
+ * PIC_INT_MASK and GPIO_INT_MASK_LINK_UP in GPIO_INT_MASK
+ * (en_dis_able_nic_intrs). All the GPIO bits sit in the high 32 bits. Raw
+ * status and acknowledgement semantics remain model compatibility behavior
+ * rather than an established hardware contract.
  */
 #define XFRAME_GPIO_INT_REG_LINK_UP    (1ULL << 61)
 #define XFRAME_GPIO_INT_REG_LINK_DOWN  (1ULL << 62)
@@ -279,8 +279,8 @@ static void xframe_stat_stq(XframeState *s, uint8_t *p, uint64_t val)
 
 /*
  * Model delay before a link-up event. Public sources establish neither the
- * hardware delay nor a mandatory event caused by ADAPTER_EN, so this remains a
- * model timing choice rather than a hardware register contract.
+ * hardware delay nor a mandatory event caused by ADAPTER_EN, so this remains
+ * a model timing choice rather than a hardware register contract.
  */
 #define XFRAME_LINK_UP_DELAY_MS     5
 
@@ -292,42 +292,42 @@ static void xframe_stat_stq(XframeState *s, uint8_t *p, uint64_t val)
 #define XFRAME_LINK_DOWN_TO_UP_MS   500
 
 /*
- * The scheduled interrupt's period. A live IRIX xg boot pinned the watchdog as
- * a pure liveness timer -- it does not care what interrupt arrives, only that
- * one arrives inside its interval (~15 s), and it resets the adapter
- * ("xframe_watchdog: ERROR: No interrupts occuring, reset device...") after the
- * single bring-up link event, each reset re-knocking the link down. xg feeds it
- * by arming a periodic hardware scheduled interrupt at bring-up (writing
- * SCHED_INT_CTRL, unmasking PIC_INT_MASK and TXPIC_INT_MASK), independent of
- * traffic. The hardware period is computed at runtime from PCI bus speed and is
- * not a public constant (s2io-regs.h marks SCHED_INT_PERIOD TBD); the model only
- * needs "more often than the ~15 s watchdog", so it uses a fixed virtual-time
- * period derived from that behaviour. Two seconds leaves comfortable margin.
- * Not a hardware timer's exact tick.
+ * The scheduled interrupt's period. A live IRIX xg boot pinned the watchdog
+ * as a pure liveness timer. It does not care what interrupt arrives, only
+ * that one arrives inside its interval (~15 s), and it resets the adapter
+ * ("xframe_watchdog: ERROR: No interrupts occuring, reset device...") after
+ * the single bring-up link event, each reset re-knocking the link down. xg
+ * feeds it by arming a periodic hardware scheduled interrupt at bring-up
+ * (writing SCHED_INT_CTRL, unmasking PIC_INT_MASK and TXPIC_INT_MASK),
+ * independent of traffic. The hardware period is computed at runtime from PCI
+ * bus speed and is not a public constant (s2io-regs.h marks SCHED_INT_PERIOD
+ * TBD); the model only needs "more often than the ~15 s watchdog", so it uses
+ * a fixed virtual-time period derived from that behaviour. Two seconds leaves
+ * comfortable margin. Not a hardware timer's exact tick.
  */
 #define XFRAME_SCHED_INT_PERIOD_MS  2000
 
 /*
- * Every interrupt mask resets to all-ones = fully masked. Reset values are
- * marked OPEN in the datasheet ("OPEN (masked)"); all-ones is the concrete
+ * Every interrupt mask resets to all-ones = fully masked. The hardware reset
+ * value is unspecified; all-ones is the concrete
  * bit pattern the public drivers use for "masked" (Linux s2io.h's
  * DISABLE_ALL_INTRS / S2IO_MINUS_ONE, OpenBSD's all-ones convention on the
  * sibling registers), and it is the spurious-safe default: no source can
  * assert INTx until a driver unmasks its block. Both the top-level
- * GENERAL_INT_MASK and the per-block masks share this reset -- see
+ * GENERAL_INT_MASK and the per-block masks share this reset, see
  * xframe_update_irq for which one actually gates the line.
  */
 #define XFRAME_INT_MASK_RESET       0xffffffffffffffffULL
 
 /*
- * ADAPTER_STATUS quiescent/ready value the driver's single non-retrying attach
- * read requires (if_xgereg.h QUIESCENT): TDMA/RDMA/PFC ready, TMAC buffer
- * empty, PIC quiescent, memory-controller DRAM+queues ready, both PLLs locked
- * -- and the fault bits clear. It also includes the subsystem-quiescence/
- * ready bits 8-15 of the high word: the driver's adapter-start (transmit-
- * enable) path requires every one of those bits set before it marks the
- * adapter ready and rings the transmit doorbell. The model is always ready,
- * so it presents this immediately.
+ * ADAPTER_STATUS quiescent/ready value the driver's single non-retrying
+ * attach read requires (if_xgereg.h QUIESCENT): TDMA/RDMA/PFC ready, TMAC
+ * buffer empty, PIC quiescent, memory-controller DRAM+queues ready, both PLLs
+ * locked, and the fault bits clear. It also includes the
+ * subsystem-quiescence/ ready bits 8-15 of the high word: the driver's
+ * adapter-start (transmit-enable) path requires every one of those bits set
+ * before it marks the adapter ready and rings the transmit doorbell. The
+ * model is always ready, so it presents this immediately.
  */
 #define XFRAME_ADAPTER_STATUS_QUIESCENT  0xf400ffc300000000ULL
 
@@ -402,11 +402,11 @@ static bool xframe_link_pending(XframeState *s)
 
 /*
  * Whether the GPIO link-state source is delivering an interrupt right now: a
- * link bit is latched in GPIO_INT_REG and the PIC block's PIC_INT_GPIO roll-up
- * is unmasked in PIC_INT_MASK. This is the PIC/GPIO-block link path IRIX xg
- * enables, distinct from the MAC-block xframe_link_pending above that OpenBSD
- * xge uses. Linux services it the same way (s2io_txpic_intr_handle reads
- * pic_int_status for PIC_INT_GPIO, then gpio_int_reg for LINK_UP).
+ * link bit is latched in GPIO_INT_REG and the PIC block's PIC_INT_GPIO
+ * roll-up is unmasked in PIC_INT_MASK. This is the PIC/GPIO-block link path
+ * IRIX xg enables, distinct from the MAC-block xframe_link_pending above that
+ * OpenBSD xge uses. Linux services it the same way (s2io_txpic_intr_handle
+ * reads pic_int_status for PIC_INT_GPIO, then gpio_int_reg for LINK_UP).
  *
  * IRIX xg opens PIC_INT_MASK but leaves GPIO_INT_MASK at its all-ones reset,
  * yet the link source reaches its ISR. Gate the source on PIC_INT_GPIO alone
@@ -426,11 +426,12 @@ static bool xframe_gpio_link_pending(XframeState *s)
 /*
  * Whether the scheduled interrupt is delivering right now: the periodic timer
  * has fired and latched sched_int_pending, and the source is unmasked at BOTH
- * levels xg opens -- PIC_INT_MASK's PIC_INT_TX roll-up bit and TXPIC_INT_MASK's
- * leaf bit. This is the traffic- and link-independent watchdog feed on the
- * PIC/TXPIC path, distinct from the GPIO link source above (gated by
- * PIC_INT_GPIO) and never touching the GPIO/link bits, so it never disturbs
- * carrier. Both masks gate it independently of the sibling GPIO leaf masks.
+ * levels xg opens, PIC_INT_MASK's PIC_INT_TX roll-up bit and
+ * TXPIC_INT_MASK's leaf bit. This is the traffic-and link-independent
+ * watchdog feed on the PIC/TXPIC path, distinct from the GPIO link source
+ * above (gated by PIC_INT_GPIO) and never touching the GPIO/link bits, so it
+ * never disturbs carrier. Both masks gate it independently of the sibling
+ * GPIO leaf masks.
  */
 static bool xframe_sched_int_pending(XframeState *s)
 {
@@ -448,12 +449,12 @@ static bool xframe_sched_int_pending(XframeState *s)
  *
  * Four sources so far: receive completion (RX_TRAFFIC_INT gated by
  * RX_TRAFFIC_MASK), transmit completion (TX_TRAFFIC_INT gated by
- * TX_TRAFFIC_MASK), and two independent link-state paths -- the MAC-block one
- * (MAC_RMAC_ERR_REG gated by the two MAC masks, what OpenBSD xge uses) and the
- * PIC/GPIO-block one (GPIO_INT_REG gated by PIC_INT_MASK's PIC_INT_GPIO bit).
- * Either fires on an idle interface -- no frame need arrive for the link to
- * come up -- so a driver watchdog that resets on "no interrupts" is satisfied
- * through whichever block that driver unmasked.
+ * TX_TRAFFIC_MASK), and two independent link-state paths, the MAC-block one
+ * (MAC_RMAC_ERR_REG gated by the two MAC masks, what OpenBSD xge uses) and
+ * the PIC/GPIO-block one (GPIO_INT_REG gated by PIC_INT_MASK's PIC_INT_GPIO
+ * bit). Either fires on an idle interface. No frame need arrive for the
+ * link to come up, so a driver watchdog that resets on "no interrupts" is
+ * satisfied through whichever block that driver unmasked.
  */
 static void xframe_update_irq(XframeState *s)
 {
@@ -665,19 +666,19 @@ static void xframe_sched_int_arm(XframeState *s)
 
 /*
  * The scheduled interrupt fires: latch it and recompute INTx. This is the
- * traffic- and link-independent watchdog feed the driver programs at bring-up
- * (SCHED_INT_CTRL) -- it rolls up through the TXPIC leaf and PIC_INT_TX into
+ * traffic-and link-independent watchdog feed the driver programs at bring-up
+ * (SCHED_INT_CTRL). It rolls up through the TXPIC leaf and PIC_INT_TX into
  * GEN_INTR_TXPIC and is serviced by the ISR's read of TXPIC_INT_REG, which
  * self-clears it (see xframe_pif_read), so it delivers one serviced interrupt
  * per period rather than storming. It NEVER touches GPIO_INT_REG or the MAC
- * link latch, so it never re-runs carrier -- the whole point of feeding the
+ * link latch, so it never re-runs carrier. Feeding the
  * watchdog through a separate source rather than re-raising the link. Re-arms
- * each period while TIMER_EN stays set, unless ONE_SHOT is set -- a fired
+ * each period while TIMER_EN stays set, unless ONE_SHOT is set. A fired
  * one-shot clears sched_int_armed rather than re-arming, so a migrated-in
  * target does not wrongly re-fire it (xframe_post_load). A disable
- * (SCHED_INT_CTRL TIMER_EN cleared), soft reset, or ADAPTER_EN 1->0 cancels the
- * timer outright; this TIMER_EN guard covers a tick already in flight when that
- * happens.
+ * (SCHED_INT_CTRL TIMER_EN cleared), soft reset, or ADAPTER_EN 1->0 cancels
+ * the timer outright; this TIMER_EN guard covers a tick already in flight
+ * when that happens.
  */
 static void xframe_sched_int_cb(void *opaque)
 {
@@ -704,8 +705,7 @@ static void xframe_rx_cache_invalidate(XframeState *s)
  * Return the register file to its reset values. Shared by cold reset and the
  * SW_RESET key path. It touches only device register state, never PCI config
  * or BAR state: real hardware's SW_RESET can perturb config space, but this
- * model must leave that to the PCI core (docs/datasheets/xframe.md's VMState
- * note).
+ * model leaves that to the PCI core instead.
  */
 static void xframe_soft_reset(XframeState *s)
 {
@@ -772,7 +772,7 @@ static void xframe_soft_reset(XframeState *s)
     s->mac_rmac_err_mask = XFRAME_INT_MASK_RESET;
     /*
      * Reset tears the ring down, so a recovery poll left running from before
-     * has nothing left to recover -- stop it rather than let it keep firing
+     * has nothing left to recover, stop it rather than let it keep firing
      * against a ring that no longer exists in any guest-meaningful sense.
      */
     timer_del(s->rx_recovery_timer);
@@ -799,7 +799,7 @@ static void xframe_soft_reset(XframeState *s)
  * The MAC-address table's indirect command: a strobe carries out a read or a
  * write of one entry and then self-clears, so a driver polling the strobe bit
  * sees the operation complete at once. A write also latches
- * RMAC_ADDR_DATA1_MEM into the entry's mask -- see xframe_rx_filter for what
+ * RMAC_ADDR_DATA1_MEM into the entry's mask. See xframe_rx_filter for what
  * the mask means. DATA1 is write-only in both drivers (never part of any
  * read-back), so a read strobe restores only DATA0.
  */
@@ -850,29 +850,31 @@ static void xframe_traffic_mem_cmd(XframeState *s, uint64_t val, bool rx)
 
 /*
  * The PIF register window (BAR0). The registers are 64-bit and
- * DEVICE_LITTLE_ENDIAN -- little-endian-native parts, delivered in native
+ * DEVICE_LITTLE_ENDIAN, little-endian-native parts, delivered in native
  * order, a host bridge composing whatever byte order the guest needs.
  *
- * Real drivers access these 64-bit registers with 32-bit cycles: IRIX xg reads
- * the byte-swapper diagnostic 32-bit during its endianness handshake, and Linux
- * s2io on the Xena part writes MAC_CFG as two 32-bit halves. Behind the Origin
- * 200 Bridge a slot left with DEV_64BIT_DEVICE clear -- as the live IRIX boot
- * leaves it -- has every 64-bit access split into two 32-bit device cycles. So
- * xframe_pif_ops declares valid/impl.min_access_size = 4: the window serves a
- * register's low 32 bits at off+0 and its high 32 bits at off+4.
+ * Real drivers access these 64-bit registers with 32-bit cycles: IRIX xg
+ * reads the byte-swapper diagnostic 32-bit during its endianness handshake,
+ * and Linux s2io on the Xena part writes MAC_CFG as two 32-bit halves. Behind
+ * the Origin 200 Bridge a slot left with DEV_64BIT_DEVICE clear, as the
+ * live IRIX boot leaves it, has every 64-bit access split into two 32-bit
+ * device cycles. So xframe_pif_ops declares valid/impl.min_access_size = 4:
+ * the window serves a register's low 32 bits at off+0 and its high 32 bits at
+ * off+4.
  *
- * impl.min = 4 (not 8) is deliberate. QEMU's memory core does not read-modify-
- * write a sub-impl access: access_with_adjusted_size() hands the handler the
- * unaligned guest address with the impl size and zero-extends a narrow write
- * (system/memory.c). With impl.min = 8 a 32-bit high-half read would reach the
- * handler at off+4 (undecoded) and a 32-bit low-half write would clobber the
- * upper 32 bits to zero. Dispatching per size in the handler is what serves a
- * 64-bit register through 32-bit halves correctly. A read at any width comes
- * through xframe_pif_read; a write through xframe_pif_write, which composes the
- * accessed half onto the current value and fires a register's side effect only
- * when the write covers the half its trigger sits in (all triggers here -- the
- * SW_RESET key in bits 63:40, RMAC_CFG_KEY in 63:48, the MAC-table strobe in
- * bit 48 -- live in the high half), so a two-halves write fires it once.
+ * impl.min = 4 (not 8) is deliberate. QEMU's memory core does not
+ * read-modify-write a sub-impl access: access_with_adjusted_size() hands the
+ * handler the unaligned guest address with the impl size and zero-extends a
+ * narrow write (system/memory.c). With impl.min = 8 a 32-bit high-half read
+ * would reach the handler at off+4 (undecoded) and a 32-bit low-half write
+ * would clobber the upper 32 bits to zero. Dispatching per size in the
+ * handler is what serves a 64-bit register through 32-bit halves correctly. A
+ * read at any width comes through xframe_pif_read; a write through
+ * xframe_pif_write, which composes the accessed half onto the current value
+ * and fires a register's side effect only when the write covers the half its
+ * trigger sits in (all triggers here: the SW_RESET key in bits 63:40,
+ * RMAC_CFG_KEY in 63:48, and the MAC-table strobe in bit 48 live in the high
+ * half), so a two-halves write fires it once.
  */
 static uint64_t xframe_pif_read_reg(XframeState *s, hwaddr addr)
 {
@@ -955,12 +957,13 @@ static uint64_t xframe_pif_read_reg(XframeState *s, hwaddr addr)
          * the ISR reads it to find which PIC sub-block is asserting before
          * descending to that sub-block's own register (Linux
          * s2io_txpic_intr_handle reads pic_int_status, then, on PIC_INT_GPIO,
-         * gpio_int_reg). Derived, never stored -- like GENERAL_INT_STATUS: it
+         * gpio_int_reg). Derived, never stored, like GENERAL_INT_STATUS: it
          * shows PIC_INT_GPIO exactly when the GPIO link source is pending and
-         * unmasked, and PIC_INT_TX when the scheduled interrupt is, so it cannot
-         * drift from the registers that clear them. The GPIO sub-block and the
-         * TXPIC sub-block (the scheduled interrupt) are the two modelled PIC
-         * sources; the others (rxpic/flash/mdio/iic) raise nothing here.
+         * unmasked, and PIC_INT_TX when the scheduled interrupt is, so it
+         * cannot drift from the registers that clear them. The GPIO sub-block
+         * and the TXPIC sub-block (the scheduled interrupt) are the two
+         * modelled PIC sources; the others (rxpic/flash/mdio/iic) raise
+         * nothing here.
          */
         uint64_t status = 0;
 
@@ -974,16 +977,16 @@ static uint64_t xframe_pif_read_reg(XframeState *s, hwaddr addr)
     }
     case XFRAME_TXPIC_INT_REG:
         /*
-         * The PCI-X transmit-error status register (ECC/FSM error bits,
-         * Linux s2io-regs.h PCIX_INT_REG_*), the first PIC sub-source. No PCI-X
+         * The PCI-X transmit-error status register (ECC/FSM error bits, Linux
+         * s2io-regs.h PCIX_INT_REG_*), the first PIC sub-source. No PCI-X
          * transmit error is raised, but this leaf is also where the scheduled
          * interrupt surfaces: when the periodic timer has fired, it reads the
          * scheduled-interrupt latch bit. IRIX xg reads this register while
          * walking the PIC block on GEN_INTR_TXPIC (the round-6 trace's 0x810
          * read), and that read acks the scheduled interrupt (see the clear on
-         * read in xframe_pif_read) -- the same self-clearing service the GPIO
-         * link source gets. It reads a clean 0 when nothing is pending, so xg's
-         * per-ISR probe on an idle link is not a log line.
+         * read in xframe_pif_read), the same self-clearing service the GPIO
+         * link source gets. It reads a clean 0 when nothing is pending, so
+         * xg's per-ISR probe on an idle link is not a log line.
          */
         return s->sched_int_pending ? XFRAME_TXPIC_INT_SCHED : 0;
     case XFRAME_SCHED_INT_CTRL:
@@ -1018,9 +1021,9 @@ static uint64_t xframe_pif_read_reg(XframeState *s, hwaddr addr)
 
 /*
  * Serve a register read at whatever width the memory core delivers. A 32-bit
- * read takes the register's low half at off+0 or -- off+4, the odd word of the
- * 8-aligned register -- its high half. A 64-bit read returns the whole value;
- * the core masks a 32-bit low-half read down to the low word for us.
+ * read takes the register's low half at off+0 or its high half at off+4,
+ * the odd word of the 8-aligned register. A 64-bit read returns the whole
+ * value; the core masks a 32-bit low-half read down to the low word for us.
  */
 static uint64_t xframe_pif_read(void *opaque, hwaddr addr, unsigned size)
 {
@@ -1033,10 +1036,11 @@ static uint64_t xframe_pif_read(void *opaque, hwaddr addr, unsigned size)
     }
 
     /*
-     * Preserve the model's existing read-clear behavior without making it part
-     * of the hardware contract. GPIO acknowledgement remains open. Only a read
-     * covering the high half consumes the high-half link bits, and write
-     * composition through xframe_pif_read_reg never reaches this side effect.
+     * Preserve the model's existing read-clear behavior without making it
+     * part of the hardware contract. GPIO acknowledgement remains open. Only
+     * a read covering the high half consumes the high-half link bits, and
+     * write composition through xframe_pif_read_reg never reaches this side
+     * effect.
      */
     if (reg == XFRAME_GPIO_INT_REG && (size == 8 || (addr & 4)) &&
         (s->gpio_int_reg & XFRAME_GPIO_INT_LINK_BITS)) {
@@ -1045,13 +1049,14 @@ static uint64_t xframe_pif_read(void *opaque, hwaddr addr, unsigned size)
     }
 
     /*
-     * The scheduled interrupt is the same kind of self-clearing edge: xg reads
-     * TXPIC_INT_REG (0x810) while walking the PIC block and issues no explicit
-     * clear, so the read consumes the latch and drops INTx -- one serviced
-     * interrupt per period, not a storm. Its latch bit (XFRAME_TXPIC_INT_SCHED)
-     * sits in the high 32 bits, so only a read covering the high half consumes
-     * it, exactly as the GPIO link-bit ack above; and like it, this runs only on
-     * a real MMIO read, never on the write-compose path.
+     * The scheduled interrupt is the same kind of self-clearing edge: xg
+     * reads TXPIC_INT_REG (0x810) while walking the PIC block and issues no
+     * explicit clear, so the read consumes the latch and drops INTx, one
+     * serviced interrupt per period, not a storm. Its latch bit
+     * (XFRAME_TXPIC_INT_SCHED) sits in the high 32 bits, so only a read
+     * covering the high half consumes it, exactly as the GPIO link-bit ack
+     * above; and like it, this runs only on a real MMIO read, never on the
+     * write-compose path.
      */
     if (reg == XFRAME_TXPIC_INT_REG && (size == 8 || (addr & 4)) &&
         s->sched_int_pending) {
@@ -1061,23 +1066,24 @@ static uint64_t xframe_pif_read(void *opaque, hwaddr addr, unsigned size)
 
     /*
      * The MAC-block link-state-change latch is a self-clearing edge too when
-     * the source is MASKED -- the case IRIX xg leaves it in. OpenBSD unmasks
-     * the MAC link path and acks the latch by write-1-to-clear, so while it is
-     * unmasked the read stays non-destructive and W1C is the ack (see the W1C
-     * path in xframe_pif_write_reg, and test_link_up_raises_interrupt). But xg
-     * takes its link interrupt through the PIC/GPIO block and leaves the MAC
-     * path masked, yet its alarm handler still READS MAC_RMAC_ERR_REG (0x2028)
-     * on every scheduled-interrupt pass to test bit 32. A W1C level xg never
-     * writes would read set on every pass, so xg would see the settled link
-     * "change" again and again and flap carrier between passes. The driver will
-     * not W1C a source it masked, so its status read is the only ack it gives:
-     * the read returns the bit (the alarm handler sees the one real change) and
-     * then consumes the latch, so the next pass finds nothing. Only a read
-     * covering the high 32 bits (where bit 32 sits) consumes it, like the GPIO
-     * and scheduled-interrupt acks above; and like them this runs only on a
-     * real MMIO read, never on the write-compose path (which uses
-     * xframe_pif_read_reg). The source being masked means clearing it never
-     * moves INTx, so xframe_update_irq only keeps the recompute uniform.
+     * the source is MASKED, the case IRIX xg leaves it in. OpenBSD unmasks
+     * the MAC link path and acks the latch by write-1-to-clear, so while it
+     * is unmasked the read stays non-destructive and W1C is the ack (see the
+     * W1C path in xframe_pif_write_reg, and test_link_up_raises_interrupt).
+     * But xg takes its link interrupt through the PIC/GPIO block and leaves
+     * the MAC path masked, yet its alarm handler still READS MAC_RMAC_ERR_REG
+     * (0x2028) on every scheduled-interrupt pass to test bit 32. A W1C level
+     * xg never writes would read set on every pass, so xg would see the
+     * settled link "change" again and again and flap carrier between passes.
+     * The driver will not W1C a source it masked, so its status read is the
+     * only ack it gives: the read returns the bit (the alarm handler sees the
+     * one real change) and then consumes the latch, so the next pass finds
+     * nothing. Only a read covering the high 32 bits (where bit 32 sits)
+     * consumes it, like the GPIO and scheduled-interrupt acks above; and like
+     * them this runs only on a real MMIO read, never on the write-compose
+     * path (which uses xframe_pif_read_reg). The source being masked means
+     * clearing it never moves INTx, so xframe_update_irq only keeps the
+     * recompute uniform.
      */
     if (reg == XFRAME_MAC_RMAC_ERR_REG && (size == 8 || (addr & 4)) &&
         (s->mac_rmac_err & XFRAME_RMAC_LINK_STATE_CHANGE_INT) &&
@@ -1090,7 +1096,7 @@ static uint64_t xframe_pif_read(void *opaque, hwaddr addr, unsigned size)
 
 /*
  * Apply a write to the register at addr (8-aligned). full is the whole 64-bit
- * value the register takes -- the accessed half composed onto its current
+ * value the register takes, with the accessed half composed onto its current
  * content by xframe_pif_write below; written is just the bits this access
  * carries, positioned (what a write-1-to-clear register must act on, rather
  * than on the untouched half's current bits); commit_high says the access
@@ -1118,20 +1124,21 @@ static void xframe_pif_write_reg(XframeState *s, hwaddr addr, uint64_t full,
     case XFRAME_ADAPTER_CONTROL:
         /*
          * A rising ADAPTER_EN edge schedules a single link-up event when the
-         * backend is up. It never synthesizes a preceding delivered LINK_DOWN.
-         * Rewriting an already-set enable bit does not re-arm the timer.
-         * The scheduled interrupt that keeps the watchdog fed is NOT armed here
-         * -- the driver arms it explicitly by writing SCHED_INT_CTRL during
-         * bring-up. The falling edge cancels both link timers and the
-         * scheduled interrupt -- the driver disabling the adapter without a full
-         * reset must not leave a stale link edge or a periodic interrupt firing
-         * for a device it just took down. It also clears any link source
-         * already latched but not yet acked (GPIO_INT_REG's LINK_UP/LINK_DOWN
-         * bits, mac_rmac_err's RMAC_LINK_STATE_CHANGE_INT), matching how the
-         * read-ack paths clear them (XFRAME_GPIO_INT_REG and
-         * XFRAME_MAC_RMAC_ERR_REG read handling above): delivery of these
-         * sources is not gated by ADAPTER_EN, so leaving one latched would
-         * keep INTx asserted for a disabled adapter.
+         * backend is up. It never synthesizes a preceding delivered
+         * LINK_DOWN. Rewriting an already-set enable bit does not re-arm the
+         * timer. The scheduled interrupt that keeps the watchdog fed is NOT
+         * armed here. The driver arms it explicitly by writing
+         * SCHED_INT_CTRL during bring-up. The falling edge cancels both link
+         * timers and the scheduled interrupt, the driver disabling the
+         * adapter without a full reset must not leave a stale link edge or a
+         * periodic interrupt firing for a device it just took down. It also
+         * clears any link source already latched but not yet acked
+         * (GPIO_INT_REG's LINK_UP/LINK_DOWN bits, mac_rmac_err's
+         * RMAC_LINK_STATE_CHANGE_INT), matching how the read-ack paths clear
+         * them (XFRAME_GPIO_INT_REG and XFRAME_MAC_RMAC_ERR_REG read handling
+         * above): delivery of these sources is not gated by ADAPTER_EN, so
+         * leaving one latched would keep INTx asserted for a disabled
+         * adapter.
          */
         if (adapter_enable_edge &&
             !qemu_get_queue(s->nic)->link_down) {
@@ -1198,13 +1205,14 @@ static void xframe_pif_write_reg(XframeState *s, hwaddr addr, uint64_t full,
         /*
          * The scheduled/periodic-interrupt timer control. The driver arms the
          * watchdog feed here at bring-up: writing TIMER_EN (with a period the
-         * model does not read, since the hardware tick is TBD publicly) starts
-         * the periodic timer; clearing TIMER_EN stops it and drops any pending
-         * scheduled interrupt. TIMER_EN sits in the high half, so act on it only
-         * when the write reaches that half (a low-half period-only write just
-         * updates the stored value). Not gated on ADAPTER_EN: the bring-up
-         * sequence enables the adapter before programming this, and a live tick
-         * on a disabled adapter is cancelled by the ADAPTER_EN 1->0 path above.
+         * model does not read, since the hardware tick is TBD publicly)
+         * starts the periodic timer; clearing TIMER_EN stops it and drops any
+         * pending scheduled interrupt. TIMER_EN sits in the high half, so act
+         * on it only when the write reaches that half (a low-half period-only
+         * write just updates the stored value). Not gated on ADAPTER_EN: the
+         * bring-up sequence enables the adapter before programming this, and
+         * a live tick on a disabled adapter is cancelled by the ADAPTER_EN
+         * 1->0 path above.
          */
         s->sched_int_ctrl = full;
         if (commit_high) {
@@ -1229,15 +1237,16 @@ static void xframe_pif_write_reg(XframeState *s, hwaddr addr, uint64_t full,
         if (s->rmac_cfg_unlocked) {
             s->mac_cfg = full;
             /*
-             * Release the unlock on the access covering the HIGH half -- the
-             * same half the key itself arrives through -- not on whichever
+             * Release the unlock on the access covering the HIGH half, the
+             * same half the key itself arrives through, not on whichever
              * access happens to come first. A driver reaching this 64-bit
              * register through 32-bit cycles writes it as two halves (Linux
              * s2io does on the Xena part, and the Origin 200 Bridge splits
              * every 64-bit access that way for a slot with DEV_64BIT_DEVICE
-             * clear), so releasing it on the first half refuses the second and
-             * leaves the register holding half of what the guest wrote. One key
-             * unlocks one register write, however many bus cycles it takes.
+             * clear), so releasing it on the first half refuses the second
+             * and leaves the register holding half of what the guest wrote.
+             * One key unlocks one register write, however many bus cycles it
+             * takes.
              */
             if (commit_high) {
                 s->rmac_cfg_unlocked = false;
@@ -1267,9 +1276,9 @@ static void xframe_pif_write_reg(XframeState *s, hwaddr addr, uint64_t full,
         return;
     case XFRAME_TX_TRAFFIC_INT:
         /*
-         * Write-1-to-clear, the transmit mirror of the receive ACK below:
-         * the ISR reads the pending completions and writes them back
-         * (OpenBSD xge_intr: "if ((val = PIF_RCSR(TX_TRAFFIC_INT)))
+         * Write-1-to-clear, the transmit mirror of the receive ACK below: the
+         * ISR reads the pending completions and writes them back (OpenBSD
+         * xge_intr: "if ((val = PIF_RCSR(TX_TRAFFIC_INT)))
          * PIF_WCSR(TX_TRAFFIC_INT, val);"; Linux s2io_isr writes
          * S2IO_MINUS_ONE to tx_traffic_int). Clear on the bits this access
          * carries, not the composed value, so a 32-bit half-write cannot
@@ -1283,20 +1292,21 @@ static void xframe_pif_write_reg(XframeState *s, hwaddr addr, uint64_t full,
          * same value back to clear exactly those (OpenBSD if_xge.c's
          * xge_intr: "if ((val = PIF_RCSR(RX_TRAFFIC_INT)))
          * PIF_WCSR(RX_TRAFFIC_INT, val);"; Linux s2io.c's s2io_isr writes
-         * S2IO_MINUS_ONE, its all-ones write-1-clear-everything sentinel:
-         * "if (reason & GEN_INTR_RXTRAFFIC) writeq(S2IO_MINUS_ONE,
+         * S2IO_MINUS_ONE, its all-ones write-1-clear-everything sentinel: "if
+         * (reason & GEN_INTR_RXTRAFFIC) writeq(S2IO_MINUS_ONE,
          * &bar0->rx_traffic_int);"). This is the real receive-interrupt ACK
          * and is modelled here for its own sake, but it does not recover a
          * ring refilled in place: both drivers perform this exact write
-         * BEFORE refilling anything -- OpenBSD's xge_intr acks here and only
+         * BEFORE refilling anything. OpenBSD's xge_intr acks here and only
          * then walks the ring, calling xge_add_rxbuf per descriptor as it
          * goes; Linux's s2io_isr is the same order. A flush fired from this
          * write would find the ring still empty. xframe_rx_recovery_timer_cb
          * is what actually recovers that case; see its comment.
          *
-         * Clear on the bits this access actually carries (written), not on the
-         * composed value: a 32-bit write to one half must not clear the other
-         * half's pending bits, which its untouched current content would name.
+         * Clear on the bits this access actually carries (written), not on
+         * the composed value: a 32-bit write to one half must not clear the
+         * other half's pending bits, which its untouched current content
+         * would name.
          */
         xframe_traffic_ack(s, true, written);
         return;
@@ -1315,8 +1325,8 @@ static void xframe_pif_write_reg(XframeState *s, hwaddr addr, uint64_t full,
     case XFRAME_GPIO_INT_REG:
         /*
          * Preserve the model's existing W1C path. Hardware acknowledgement
-         * semantics remain open. Clear only the bits carried by this access so
-         * a 32-bit half-write cannot clear bits in the untouched half.
+         * semantics remain open. Clear only the bits carried by this access
+         * so a 32-bit half-write cannot clear bits in the untouched half.
          */
         s->gpio_int_reg &= ~written;
         xframe_update_irq(s);
@@ -1326,8 +1336,8 @@ static void xframe_pif_write_reg(XframeState *s, hwaddr addr, uint64_t full,
          * The IRIX xg ISR acks the scheduled interrupt by WRITING this leaf
          * (it dispatches off GENERAL_INT_STATUS's GEN_INTR_TXPIC and never
          * reads the leaf), so a write covering the high half consumes the
-         * latch -- the write-path counterpart of the read-based self-clear
-         * in xframe_pif_read. One serviced interrupt per period, not a storm.
+         * latch, the write-path counterpart of the read-based self-clear in
+         * xframe_pif_read. One serviced interrupt per period, not a storm.
          */
         if (commit_high && s->sched_int_pending) {
             s->sched_int_pending = false;
@@ -1340,18 +1350,18 @@ static void xframe_pif_write_reg(XframeState *s, hwaddr addr, uint64_t full,
     case XFRAME_STAT_CFG:
         /*
          * Enable and one-shot are in the high half; act once the write covers
-         * it. Enabling DMAs a first snapshot immediately -- the driver's
-         * initial read must not see stale guest memory -- and arms the
+         * it. Enabling DMAs a first snapshot immediately. The driver's
+         * initial read must not see stale guest memory, and arms the
          * periodic refresh unless one-shot asked for exactly one.
          */
         s->stat_cfg = full;
         if (commit_high) {
             if (full & XFRAME_STAT_CFG_EN) {
                 /*
-                 * Only FE==SE is modelled (both set -> little-endian in place,
-                 * both clear -> big-endian). A guest that sets exactly one asks
-                 * for a half-transpose this model does not do; warn once here at
-                 * enable rather than on every periodic DMA.
+                 * Only FE==SE is modelled (both set -> little-endian in
+                 * place, both clear -> big-endian). A guest that sets exactly
+                 * one asks for a half-transpose this model does not do; warn
+                 * once here at enable rather than on every periodic DMA.
                  */
                 if (!(s->swapper_ctrl & XFRAME_SWAPPER_CTRL_STATS_FE) !=
                     !(s->swapper_ctrl & XFRAME_SWAPPER_CTRL_STATS_SE)) {
@@ -1365,20 +1375,22 @@ static void xframe_pif_write_reg(XframeState *s, hwaddr addr, uint64_t full,
                     /*
                      * The hardware clears enable when the single transfer
                      * completes; the driver's one-shot path (s2io_updt_stats)
-                     * polls STAT_CFG's enable bit for exactly that and gives up
-                     * as "Updt failed" if it never clears. The DMA above is
-                     * synchronous, so clear it now, and cancel any periodic
-                     * timer a prior enable armed so one-shot means exactly one.
+                     * polls STAT_CFG's enable bit for exactly that and gives
+                     * up as "Updt failed" if it never clears. The DMA above
+                     * is synchronous, so clear it now, and cancel any
+                     * periodic timer a prior enable armed so one-shot means
+                     * exactly one.
                      */
                     timer_del(s->stat_timer);
                     s->stat_cfg &= ~XFRAME_STAT_CFG_EN;
                 } else {
                     /*
-                     * The interval is taken from the period present now, at the
-                     * enable (high-half) write; a guest that rewrites the period
-                     * low half afterwards gets one stale interval before the
-                     * next re-arm picks the new value up. Log a clamped period
-                     * once here rather than on every timer fire.
+                     * The interval is taken from the period present now, at
+                     * the enable (high-half) write; a guest that rewrites the
+                     * period low half afterwards gets one stale interval
+                     * before the next re-arm picks the new value up. Log a
+                     * clamped period once here rather than on every timer
+                     * fire.
                      */
                     int64_t raw = (int64_t)((full & 0xffffffffULL) * 1000 /
                                             XFRAME_STAT_PER_SEC);
@@ -1413,7 +1425,7 @@ static void xframe_pif_write_reg(XframeState *s, hwaddr addr, uint64_t full,
         xframe_rx_cache_invalidate(s);
         if ((full & XFRAME_RC_IN_SVC) && !(s->prc_ctrl_0 & XFRAME_RC_IN_SVC)) {
             /*
-             * Arming the ring restarts the walk at its base -- the sequence
+             * Arming the ring restarts the walk at its base, the sequence
              * both drivers use writes PRC_RXD0_0 once, before this.
              */
             s->rx_page_addr = s->prc_rxd0_0;
@@ -1430,7 +1442,9 @@ static void xframe_pif_write_reg(XframeState *s, hwaddr addr, uint64_t full,
                           (unsigned)((full >> 48) & 3));
         }
         s->prc_ctrl_0 = full;
-        /* Same flush, same guest-re-arms-the-ring case as PRC_RXD0_0 above. */
+        /*
+         * Same flush, same guest-re-arms-the-ring case as PRC_RXD0_0 above.
+         */
         qemu_flush_queued_packets(qemu_get_queue(s->nic));
         return;
     case XFRAME_GENERAL_INT_STATUS:
@@ -1479,10 +1493,10 @@ static void xframe_pif_write_reg(XframeState *s, hwaddr addr, uint64_t full,
         return;
     case XFRAME_PIC_INT_MASK:
         /*
-         * The PIC block mask. Its PIC_INT_GPIO bit gates the GPIO link source's
-         * roll-up to the line, while PIC_INT_TX gates the scheduled source.
-         * Recompute for both; the remaining sub-block bits are held for
-         * read-back only.
+         * The PIC block mask. Its PIC_INT_GPIO bit gates the GPIO link
+         * source's roll-up to the line, while PIC_INT_TX gates the scheduled
+         * source. Recompute for both; the remaining sub-block bits are held
+         * for read-back only.
          */
         s->pic_int_mask = full;
         xframe_update_irq(s);
@@ -1494,11 +1508,12 @@ static void xframe_pif_write_reg(XframeState *s, hwaddr addr, uint64_t full,
         return;
     case XFRAME_TXPIC_INT_MASK:
         /*
-         * The TXPIC (PCI-X transmit) sub-block leaf mask. Its PCI-X-transmit-
-         * error bits gate no modelled error source, but its XFRAME_TXPIC_INT_SCHED
-         * bit gates the scheduled interrupt's leaf (see xframe_sched_int_pending)
-         * -- xg unmasks this leaf (writes 0) precisely to open that source -- so
-         * recompute. Its other bits are held for read-back.
+         * The TXPIC (PCI-X transmit) sub-block leaf mask. Its
+         * PCI-X-transmit-error bits gate no modelled error source, but its
+         * XFRAME_TXPIC_INT_SCHED bit gates the scheduled interrupt's leaf
+         * (see xframe_sched_int_pending), xg unmasks this leaf (writes 0)
+         * precisely to open that source, so recompute. Its other bits are
+         * held for read-back.
          */
         s->txpic_int_mask = full;
         xframe_update_irq(s);
@@ -1568,8 +1583,9 @@ static const MemoryRegionOps xframe_pif_ops = {
 
 /*
  * TxP transmit window (BAR2): per-FIFO TxDL doorbell slots. Each slot is 16
- * bytes -- the descriptor-list pointer (PAR) at +0 and the list control (LCR)
- * at +8; writing LCR launches the list. The window is eight FIFOs at a
+ * bytes, the descriptor-list pointer
+ * (PAR) at +0 and the list control (LCR) at +8; writing LCR launches the
+ * list. The window is eight FIFOs at a
  * 0x20000 stride, each an 8192-entry TxDL ring. Public OpenBSD if_xgereg.h
  * names.
  */
@@ -1591,21 +1607,22 @@ static const MemoryRegionOps xframe_pif_ops = {
 
 /*
  * The statistics block. The card DMAs a structure of hardware counters to the
- * guest address in STAT_ADDR, periodically while STAT_CFG's enable is set, and
- * the driver maintains its interface counters as DELTAS against successive
- * snapshots of that memory. So the block must exist and must advance: left
- * un-DMA'd, the driver differences against a block that never moves and its
- * transmit packet count runs backwards (observed as netstat -in reporting
- * Opkts of 4294967284 and falling, about one step per transmit handed over).
+ * guest address in STAT_ADDR, periodically while STAT_CFG's enable is set,
+ * and the driver maintains its interface counters as DELTAS against
+ * successive snapshots of that memory. So the block must exist and must
+ * advance: left un-DMA'd, the driver differences against a block that never
+ * moves and its transmit packet count runs backwards (observed as netstat -in
+ * reporting Opkts of 4294967284 and falling, about one step per transmit
+ * handed over).
  *
- * The hardware span comes from compiling the public s2io stat_block (offsetof,
- * both the mainline and history copies of the struct agree). The card writes
- * [0, 0x320); at 0x320 the driver's own software tail (u8 buffer[20], then
- * swStat) begins and the card never touches it.
+ * The hardware span comes from compiling the public s2io stat_block
+ * (offsetof, both the mainline and history copies of the struct agree). The
+ * card writes [0, 0x320); at 0x320 the driver's own software tail (u8
+ * buffer[20], then swStat) begins and the card never touches it.
  *
  * The block is a run of 64-bit words, and the swapper orders each word whole.
- * Where the struct declares two __le32 counters side by side, they are the two
- * halves of one word: all 24 such pairs named in the driver's
+ * Where the struct declares two __le32 counters side by side, they are the
+ * two halves of one word: all 24 such pairs named in the driver's
  * ethtool_xena_stats_keys table are declared in the reverse of the order that
  * table lists them (tmac_data_octets before tmac_frms, but "tmac_frms" before
  * "tmac_data_octets"), which is what a little-endian declaration of a word
@@ -1613,12 +1630,11 @@ static const MemoryRegionOps xframe_pif_ops = {
  * transmit word at 0x000 is frames << 32 | octets: octets first on the
  * little-endian Linux block, frames first on the big-endian IRIX block, and
  * the receive word at 0x060 and the overflow words at 0x218 and 0x260 follow.
- * QEMU #558 is the big-endian case -- with the halves written as separate
+ * QEMU #558 is the big-endian case, with the halves written as separate
  * 32-bit fields in declaration order, IRIX read the octet counts as frame
- * counts. See the datasheet for the guest-side dump that confirms both halves
- * and for the one table that lists three pairs the other way round.
+ * counts.
  *
- * The block is a VALUE structure -- counts, not a byte stream -- and only the
+ * The block is a VALUE structure, counts, not a byte stream, and only the
  * transmit and receive frame and byte counters are filled. The rest reads
  * zero, which for counters of events this model never generates (errors,
  * pauses, discards) is also the truth.
@@ -1659,12 +1675,12 @@ static void xframe_stat_dma(XframeState *s)
 
 /*
  * STAT_CFG's low 32 bits are the period in bus clicks (public s2io
- * SET_UPDT_PERIOD / SET_UPDT_CLICKS, s2io-regs.h:264-266); PER_SEC clicks make
- * a second. Clamp to a host floor and ceiling so a pathological guest value
- * cannot spin or freeze the periodic DMA. The floor only ever bites periodic
- * mode -- the driver's one-shot uses 10 clicks and never reaches the timer --
- * and the enable path logs when it engages, so the silent change of a
- * guest-visible period is visible once.
+ * SET_UPDT_PERIOD / SET_UPDT_CLICKS, s2io-regs.h:264-266); PER_SEC clicks
+ * make a second. Clamp to a host floor and ceiling so a pathological guest
+ * value cannot spin or freeze the periodic DMA. The floor only ever bites
+ * periodic mode. The driver's one-shot uses 10 clicks and never reaches the
+ * timer, and the enable path logs when it engages, so the silent change of
+ * a guest-visible period is visible once.
  */
 static int64_t xframe_stat_period_ms(XframeState *s)
 {
@@ -1678,7 +1694,9 @@ static void xframe_stat_timer_cb(void *opaque)
 {
     XframeState *s = opaque;
 
-    /* Only periodic mode arms this timer; a one-shot cleared enable already. */
+    /*
+     * Only periodic mode arms this timer; a one-shot cleared enable already.
+     */
     if (!(s->stat_cfg & XFRAME_STAT_CFG_EN)) {
         return;
     }
@@ -1690,9 +1708,9 @@ static void xframe_stat_timer_cb(void *opaque)
 
 /*
  * Transmit checksum offload, in the second control word. The driver hands the
- * card a frame whose IPv4, TCP or UDP checksum field is not yet valid and asks
- * for it to be inserted here (Linux s2io TXD_TX_CKO_IPV4_EN, _TCP_EN, _UDP_EN,
- * the driver's own MSB-first bit numbering: bits 5, 6 and 7).
+ * card a frame whose IPv4, TCP or UDP checksum field is not yet valid and
+ * asks for it to be inserted here (Linux s2io TXD_TX_CKO_IPV4_EN, _TCP_EN,
+ * _UDP_EN, the driver's own MSB-first bit numbering: bits 5, 6 and 7).
  */
 #define XFRAME_TXD_CKO_IPV4         (1ULL << 58)
 #define XFRAME_TXD_CKO_TCP          (1ULL << 57)
@@ -1721,42 +1739,45 @@ static void xframe_stat_timer_cb(void *opaque)
  * FIFO's pending list pointer, gather their buffers into one frame, hand the
  * first descriptor back to the host, and put the frame on the wire.
  *
- * Guest-driven hang safety: the walk count is the 8-bit NUMTXD field plus one,
- * so at most 256 descriptors -- it cannot spin. A descriptor or buffer read
- * that misses guest memory abandons the list with no progress rather than
- * faulting, and the assembled frame is capped at the jumbo limit rather than
- * copied unbounded. The frame is fully copied into s->tx_frame and the
- * descriptor released before qemu_send_packet, so a receive that a loopback or
- * hub backend re-enters synchronously finds consistent device state.
+ * Guest-driven hang safety: the walk count is the 8-bit NUMTXD field plus
+ * one, so at most 256 descriptors; it cannot spin. A descriptor or buffer
+ * read that misses guest memory abandons the list with no progress rather
+ * than faulting, and the assembled frame is capped at the jumbo limit rather
+ * than copied unbounded. The frame is fully copied into s->tx_frame and the
+ * descriptor released before qemu_send_packet, so a receive that a loopback
+ * or hub backend re-enters synchronously finds consistent device state.
  *
- * Descriptor control words are decoded through xframe_desc_ldq/xframe_desc_stq
- * below, which honour SWAPPER_CTRL's per-path _SE bit: big-endian while it is
- * clear (the reset default -- Linux's own comment: "the device by default set
- * to a big endian format, so a big endian driver need not set anything" --
- * s2io_set_swapper; OpenBSD's xge_attach likewise skips the SWAPPER_CTRL write
- * on a BE host), little-endian once a guest programs it. The Origin 200's
- * IRIX/OpenBSD-mips guest is always big-endian and never programs the swapper
- * away from that default, so decode stays effectively unconditional on this
- * machine; a little-endian guest (Linux s2io / OpenBSD xge on an LE host)
- * that does set the swap bit gets the order it asked for. Frame payload DMA
- * below stays a raw byte copy -- packet data carries no word order to get
- * wrong.
+ * Descriptor control words are decoded through
+ * xframe_desc_ldq/xframe_desc_stq below, which honour SWAPPER_CTRL's per-path
+ * _SE bit: big-endian while it is clear (the reset default, Linux's own
+ * comment: "the device by default set to a big endian format, so a big endian
+ * driver need not set anything", s2io_set_swapper; OpenBSD's xge_attach
+ * likewise skips the SWAPPER_CTRL write on a BE host), little-endian once a
+ * guest programs it. The Origin 200's IRIX/OpenBSD-mips guest is always
+ * big-endian and never programs the swapper away from that default, so decode
+ * stays effectively unconditional on this machine; a little-endian guest
+ * (Linux s2io / OpenBSD xge on an LE host) that does set the swap bit gets
+ * the order it asked for. Frame payload DMA below stays a raw byte copy --
+ * packet data carries no word order to get wrong.
  */
 
 /*
  * SWAPPER_CTRL's per-DMA-path swap-enable (SE) bits that pick descriptor byte
- * order (Linux s2io-regs.h SWAPPER_CTRL_TXD_R_SE = s2BIT(19) = bit 44,
- * SWAPPER_CTRL_RXD_R_SE = s2BIT(33) = bit 30; s2io.h's s2BIT(loc) is
+ * order (Linux s2io-regs.h
+ * SWAPPER_CTRL_TXD_R_SE = s2BIT(19) = bit 44, SWAPPER_CTRL_RXD_R_SE =
+ * s2BIT(33) = bit 30; s2io.h's s2BIT(loc) is
  * 0x8000000000000000ULL >> loc, the same MSB-first numbering as the interrupt
- * bits above). s2io_set_swapper's __BIG_ENDIAN branch sets the TxD/RxD _FE
- * bits with the _SE bits CLEAR; its little-endian (#else) branch sets both
- * _FE and _SE for the same paths -- so the _SE bit alone selects order, and
- * it agrees with SWAPPER_CTRL's all-zero reset value (big-endian), which a
- * big-endian driver never disturbs. Only the _R_SE bit is checked, not the
+ * bits above). s2io_set_swapper's
+ * __BIG_ENDIAN branch sets the TxD/RxD _FE bits with the _SE bits CLEAR; its
+ * little-endian (#else) branch sets both
+ * _FE and _SE for the same paths, so the _SE bit alone selects order, and
+ * it agrees with SWAPPER_CTRL's all-zero
+ * reset value (big-endian), which a big-endian driver never disturbs. Only
+ * the _R_SE bit is checked, not the
  * separate _W_SE bit the same driver also sets: both branches of
- * s2io_set_swapper OR a descriptor type's _R_SE and _W_SE into the same
- * writeq together, so one stored bit per type tracks reads and write-backs
- * alike.
+ * s2io_set_swapper OR a descriptor type's _R_SE and
+ * _W_SE into the same writeq together, so one stored bit per type tracks
+ * reads and write-backs alike.
  */
 #define XFRAME_SWAPPER_CTRL_TXD_R_SE  (1ULL << 44)
 #define XFRAME_SWAPPER_CTRL_RXD_R_SE  (1ULL << 30)
@@ -1788,9 +1809,9 @@ static void xframe_desc_stq(XframeState *s, uint8_t *p, uint64_t val, bool rxd)
 /*
  * net_checksum_calculate believes the lengths in the frame it is handed, and
  * the guest composed them: a header length under the twenty-byte minimum, or
- * lengths reaching past what was gathered, walks it off the end of the buffer.
- * A descriptor asking for insertion is not proof the frame is the IPv4 packet
- * the request claims, so check before offering it one.
+ * lengths reaching past what was gathered, walks it off the end of the
+ * buffer. A descriptor asking for insertion is not proof the frame is the
+ * IPv4 packet the request claims, so check before offering it one.
  */
 static bool xframe_tx_frame_is_ipv4(const uint8_t *frame, size_t len)
 {
@@ -1835,18 +1856,18 @@ static void xframe_send_packet(XframeState *s, const uint8_t *frame,
 
 /*
  * Segmentation offload: send one oversized TCP buffer as a run of MSS-sized
- * frames. IRIX enables this on the adapter -- xg1's interface flags carry
- * L2TCPSEG -- and then hands the card a single buffer holding several segments'
- * worth of payload with the segment size in the descriptor, expecting the card
- * to do the cutting. Each frame gets its own copy of the headers, its own
- * sequence number and its own checksums, and only the last one keeps the
- * sender's FIN and PSH: those mark the end of the data, which the earlier
- * segments are not.
+ * frames. IRIX enables this on the adapter. xg1's interface flags carry
+ * L2TCPSEG, and then hands the card a single buffer holding several
+ * segments' worth of payload with the segment size in the descriptor,
+ * expecting the card to do the cutting. Each frame gets its own copy of the
+ * headers, its own sequence number and its own checksums, and only the last
+ * one keeps the sender's FIN and PSH: those mark the end of the data, which
+ * the earlier segments are not.
  *
- * Returns false for anything this cannot legally split -- not IPv4/TCP, headers
- * that do not fit, or a payload no larger than one segment -- leaving the caller
- * to send the frame unchanged, which is the right answer in every one of those
- * cases.
+ * Returns false for anything this cannot legally split, not IPv4/TCP,
+ * headers that do not fit, or a payload no larger than one segment, leaving
+ * the caller to send the frame unchanged, which is the right answer in every
+ * one of those cases.
  */
 static bool xframe_tx_segment(XframeState *s, size_t frame_len, uint16_t mss)
 {
@@ -1894,7 +1915,9 @@ static bool xframe_tx_segment(XframeState *s, size_t frame_len, uint16_t mss)
         memcpy(seg, frame, hdr_len);
         memcpy(seg + hdr_len, frame + hdr_len + off, chunk);
 
-        /* Each segment's headers describe that segment, not the whole send. */
+        /*
+         * Each segment's headers describe that segment, not the whole send.
+         */
         stw_be_p(seg_ip + 2, (uint16_t)(ihl + thl + chunk));
         stw_be_p(seg_ip + 4, (uint16_t)(ip_id + index));
         stl_be_p(seg_tcp + 4, seq + (uint32_t)off);
@@ -1905,7 +1928,8 @@ static bool xframe_tx_segment(XframeState *s, size_t frame_len, uint16_t mss)
 
         /*
          * The guest cannot have checksummed segments it never built, so these
-         * are computed here whatever the descriptor's checksum bits asked for.
+         * are computed here whatever the descriptor's checksum bits asked
+         * for.
          */
         net_checksum_calculate(seg, hdr_len + chunk, CSUM_IP | CSUM_TCP);
         xframe_send_packet(s, seg, hdr_len + chunk);
@@ -1924,16 +1948,14 @@ static void xframe_tx_pkt_release(void *context, void *base, size_t len)
 /*
  * Frame payload is a byte stream, so the model copies it verbatim (see the
  * descriptor byte-order note above). The slot's own DMA route may byte-lane
- * correct, which is right for descriptors -- the card reads those as word
- * values -- and wrong for a verbatim copy: it would reverse each aligned
+ * correct, which is right for descriptors: the card reads those as word
+ * values, and wrong for a verbatim copy: it would reverse each aligned
  * 32-bit group, and cost one dispatch per word doing it. Payload therefore
  * takes the Bridge's plain route, the same decode and node-qualified fabric
  * routing with the byte lanes alone skipped, so its order no longer depends
  * on what a guest programs into the Bridge's Device register. Descriptors,
  * completions and the statistics block stay on ordered pci_dma_*, which is
  * the publication boundary. A machine with no Bridge is already plain.
- * docs/datasheets/xframe.md, "Frame payload takes the Bridge's plain route",
- * records what is established here and what is still open.
  */
 static MemTxResult xframe_dma_read_frame(XframeState *s, uint64_t addr,
                                          uint8_t *dst, size_t len)
@@ -2033,8 +2055,8 @@ static void xframe_tx_doorbell(XframeState *s, unsigned fifo, uint64_t lcr)
             /*
              * A segmentation-offload buffer is one IP datagram's worth of
              * payload waiting to be cut up, so it is bounded by the datagram
-             * the guest is describing rather than by what one frame may carry.
-             * IRIX hands this adapter buffers of about 32 KB.
+             * the guest is describing rather than by what one frame may
+             * carry. IRIX hands this adapter buffers of about 32 KB.
              */
             if (control1 & XFRAME_TXD_LSO_EN) {
                 cap = XFRAME_MAX_TSO_FRAME;
@@ -2110,7 +2132,7 @@ static void xframe_tx_doorbell(XframeState *s, unsigned fifo, uint64_t lcr)
 
         /*
          * Segmentation offload is asked for in the first control word, and it
-         * rebuilds and rechecksums every frame it sends -- so it runs instead
+         * rebuilds and rechecksums every frame it sends, so it runs instead
          * of the whole-buffer checksum insertion below, which would otherwise
          * compute over a frame that never reaches the wire.
          */
@@ -2149,7 +2171,7 @@ static void xframe_tx_doorbell(XframeState *s, unsigned fifo, uint64_t lcr)
      * Signal the transmit completion for this FIFO once the list is done and
      * the frame is on the wire: set the FIFO's TX_TRAFFIC_INT bit and
      * recompute the line. Raised only when a descriptor was actually
-     * processed -- the early returns above (unowned or unreadable descriptor)
+     * processed, the early returns above (unowned or unreadable descriptor)
      * complete nothing. Both drivers depend on this to reclaim transmit
      * descriptors: OpenBSD's xge_intr and Linux's s2io_isr walk the sent
      * descriptors on TX_TRAFFIC_INT. Setting device state after the send
@@ -2182,8 +2204,8 @@ static void xframe_txp_write(void *opaque, hwaddr addr, uint64_t val,
     XframeState *s = opaque;
     /*
      * Ring-index hygiene: the write carries a raw guest-supplied TxDL slot in
-     * its address. Reduce the FIFO index modulo the FIFO count before use so a
-     * doorbell can never index past the modelled ring (the sgi-ioc3-eth.c /
+     * its address. Reduce the FIFO index modulo the FIFO count before use so
+     * a doorbell can never index past the modelled ring (the sgi-ioc3-eth.c /
      * qlogic-isp.c pattern); the BAR decode already bounds both the FIFO and
      * the slot (the slot offset is confined to one FIFO stride). A write that
      * is not on a TxDL pointer or control boundary is a guest error, not a
@@ -2192,12 +2214,13 @@ static void xframe_txp_write(void *opaque, hwaddr addr, uint64_t val,
     unsigned fifo = (addr / XFRAME_TXP_FIFO_STRIDE) % XFRAME_TXP_FIFOS;
     unsigned slot_off = (addr % XFRAME_TXP_FIFO_STRIDE) % XFRAME_TXDL_STRIDE;
     /*
-     * The two doorbell fields are 64-bit, so like the PIF window this serves a
-     * 32-bit half at off+0/off+4 (both windows must, since the Bridge splits a
-     * doubleword into 32-bit device cycles for a DEV_64BIT_DEVICE-clear slot).
-     * The list pointer latches per half; ringing the list -- the control
-     * field's NUMTXD and gather flags all sit in its high half -- fires only on
-     * the committing write reaching that half, so two halves ring it once.
+     * The two doorbell fields are 64-bit, so like the PIF window this serves
+     * a 32-bit half at off+0/off+4 (both windows must, since the Bridge
+     * splits a doubleword into 32-bit device cycles for a
+     * DEV_64BIT_DEVICE-clear slot). The list pointer latches per half. The
+     * control field's NUMTXD and gather flags sit in its high half, so the
+     * list rings only when the committing write reaches that half. Two
+     * halves ring it once.
      */
     unsigned field = slot_off & ~7u;
     uint64_t written, wmask;
@@ -2233,8 +2256,9 @@ static void xframe_txp_write(void *opaque, hwaddr addr, uint64_t val,
 }
 
 /*
- * The TxP transmit doorbell registers are 64-bit like the PIF window's, and are
- * served the same 32-bit-half way (see xframe_pif_ops on why impl.min is 4).
+ * The TxP transmit doorbell registers are 64-bit like the PIF window's, and
+ * are served the same 32-bit-half way (see xframe_pif_ops on why impl.min is
+ * 4).
  */
 static const MemoryRegionOps xframe_txp_ops = {
     .read = xframe_txp_read,
@@ -2263,11 +2287,11 @@ static const MemoryRegionOps xframe_txp_ops = {
 #define XFRAME_MAC_CFG_RMAC_BCAST_EN     (1ULL << 54)
 
 /*
- * A 1-buffer-mode RxD is four 64-bit words: host control, control1,
- * control2, buffer pointer (if_xgereg.h's struct rxd1). control1 carries
- * ownership (bit 56, 1=card/0=host) and the status code (XCODE, bits
- * 51:48); control2 carries the buffer size in bits 63:48 -- the posted
- * capacity, overwritten below with the received length.
+ * A 1-buffer-mode RxD is four 64-bit words: host control, control1, control2,
+ * buffer pointer (if_xgereg.h's struct rxd1). control1 carries ownership (bit
+ * 56, 1=card/0=host) and the status code (XCODE, bits 51:48); control2
+ * carries the buffer size in bits 63:48, the posted capacity, overwritten
+ * below with the received length.
  */
 #define XFRAME_RXD_SIZE              32
 #define XFRAME_RXD_OWN               (1ULL << 56)
@@ -2278,13 +2302,13 @@ static const MemoryRegionOps xframe_txp_ops = {
 #define XFRAME_RXD_BUFSIZ_SHIFT      48
 
 /*
- * What the card reports about a received frame, in the same first control word
- * as the transfer code: how it classified the frame, and whether its checksums
- * verified (Linux s2io.h RXD_FRAME_PROTO_IPV4 s2BIT(27), _IP_FRAG s2BIT(29),
- * _PROTO_TCP s2BIT(30) and _PROTO_UDP s2BIT(31) -- bits 36, 34, 33 and 32
- * counting from the low end -- with RXD_GET_L3_CKSUM reading the half at bits
- * 31:16 and RXD_GET_L4_CKSUM the half at 15:0, each 0xFFFF when the checksum
- * verified.
+ * What the card reports about a received frame, in the same first control
+ * word as the transfer code: how it classified the frame, and whether its
+ * checksums verified (Linux s2io.h RXD_FRAME_PROTO_IPV4 s2BIT(27), _IP_FRAG
+ * s2BIT(29), _PROTO_TCP s2BIT(30) and _PROTO_UDP s2BIT(31), bits 36, 34, 33
+ * and 32 counting from the low end, with RXD_GET_L3_CKSUM reading the half
+ * at bits 31:16 and RXD_GET_L4_CKSUM the half at 15:0, each 0xFFFF when the
+ * checksum verified).
  *
  * Leaving these zero is not the same as leaving them unimplemented: zero is a
  * value, and it is the one that says "this frame's checksums did not verify".
@@ -2302,14 +2326,13 @@ static const MemoryRegionOps xframe_txp_ops = {
  * software, which is the point: on this machine the guest CPU is emulated and
  * the check here is not, so every byte checked here is a byte the guest does
  * not have to walk.
-
  *
  * Report a checksum verified ONLY when it actually verified against the bytes
- * that arrived. Anything this cannot vouch for -- a frame that is not IPv4, a
+ * that arrived. Anything this cannot vouch for, a frame that is not IPv4, a
  * truncated one, a fragment (whose transport segment is incomplete), a
- * transport this does not parse, or a UDP datagram whose checksum field is zero
- * and therefore means "not computed" -- leaves the corresponding half zero, and
- * a driver reading zero verifies for itself.
+ * transport this does not parse, or a UDP datagram whose checksum field is
+ * zero and therefore means "not computed", leaves the corresponding half
+ * zero, and a driver reading zero verifies for itself.
  */
 static uint64_t xframe_rx_offload_status(const uint8_t *frame, size_t len,
                                          size_t *l34_len)
@@ -2351,7 +2374,9 @@ static uint64_t xframe_rx_offload_status(const uint8_t *frame, size_t len,
         status |= XFRAME_RXD_CKSUM_OK << XFRAME_RXD_L3_CKSUM_SHIFT;
     }
 
-    /* More-fragments set or a non-zero offset: no complete transport header. */
+    /*
+     * More-fragments set or a non-zero offset: no complete transport header.
+     */
     if (lduw_be_p(ip + 6) & 0x3fff) {
         return status | XFRAME_RXD_PROTO_IP_FRAG;
     }
@@ -2387,7 +2412,7 @@ static uint64_t xframe_rx_offload_status(const uint8_t *frame, size_t len,
         return status;
     }
 
-    memcpy(pseudo, ip + 12, 8);          /* source and destination addresses */
+    memcpy(pseudo, ip + 12, 8);          /* source and destination addrs */
     pseudo[8] = 0;
     pseudo[9] = proto;
     stw_be_p(pseudo + 10, (uint16_t)l4_len);
@@ -2410,31 +2435,32 @@ static uint64_t xframe_rx_offload_status(const uint8_t *frame, size_t len,
 #define XFRAME_RXD1_PER_PAGE         127
 
 /*
- * Receive ring modes, PRC_CTRL_0 bits 49:48. IRIX arms mode 0 at a standard MTU
- * and mode 2 -- which the public s2io header (RING_MODE_5, vBIT(2,14,2)) names
- * the FIVE-buffer header-split layout -- the moment the MTU is raised to a jumbo
- * value, and stays in it. Its descriptor is 64 bytes: three control words and
- * five buffer pointers, where one-buffer mode's is 32 bytes with one pointer. A
- * model walking the ring at the one-buffer stride reads the wrong words, never
- * finds an owned descriptor again, and receive stops for good -- an interface
- * still reading UP while silently receiving nothing, not recovering when the
- * MTU is put back.
+ * Receive ring modes, PRC_CTRL_0 bits 49:48. IRIX arms mode 0 at a standard
+ * MTU and mode 2, which the public s2io header (RING_MODE_5, vBIT(2,14,2))
+ * names the FIVE-buffer header-split layout, the moment the MTU is raised
+ * to a jumbo value, and stays in it. Its descriptor is 64 bytes: three
+ * control words and five buffer pointers, where one-buffer mode's is 32 bytes
+ * with one pointer. A model walking the ring at the one-buffer stride reads
+ * the wrong words, never finds an owned descriptor again, and receive stops
+ * for good. The interface still reads UP while receiving nothing and does
+ * not recover when the MTU is put back.
  *
  * The card splits a received frame across the buffers by protocol layer: the
- * Ethernet header into buffer 0, the IP and transport headers into buffer 1, and
- * the payload from buffer 2 on. Observed on IRIX 6.5.30, the descriptors the
- * driver posts carry buffer sizes 14, 128 and 9738 -- exactly an Ethernet
- * header, room for the upper headers, and a jumbo payload -- in the field
+ * Ethernet header into buffer 0, the IP and transport headers into buffer 1,
+ * and the payload from buffer 2 on. Observed on IRIX 6.5.30, the descriptors
+ * the driver posts carry buffer sizes 14, 128 and 9738, exactly an Ethernet
+ * header, room for the upper headers, and a jumbo payload, in the field
  * positions the public RxD three-buffer size macros give (vBIT(val,8,8),
  * vBIT(val,16,16), vBIT(val,32,16)). A frame that fits buffer 2 never needs
  * buffers 3 and 4, so those pointers are read but not filled here.
  *
  * NOT the same as Linux's RXD_MODE_3B ("two buffer mode", ring-mode value 1),
- * which posts a one-byte dummy for its middle buffer and never reads it -- an
+ * which posts a one-byte dummy for its middle buffer and never reads it. An
  * earlier version of this code took that dummy for the rule and left buffer 1
- * empty, which corrupted every classified frame because the driver's checksum-
- * offload path reads the transport headers from buffer 1 where the card puts
- * them. Only modes 0 and 2 are implemented; 1 and 3 keep the LOG_UNIMP below.
+ * empty, which corrupted every classified frame because the driver's
+ * checksum-offload path reads the transport headers from buffer 1 where the
+ * card puts them. Only modes 0 and 2 are implemented; 1 and 3 keep the
+ * LOG_UNIMP below.
  */
 #define XFRAME_RXD_MODE(ctrl0)       (((ctrl0) >> 48) & 3)
 
@@ -2474,7 +2500,7 @@ static unsigned xframe_rxd_per_page(XframeState *s)
  */
 
 /*
- * Modest, arbitrary period for the recovery poll below -- not a modelled
+ * Modest, arbitrary period for the recovery poll below, not a modelled
  * hardware timer (the real card's own coalescing timers are out of scope
  * here), just short enough that a qtest or a guest driver never notices the
  * delay.
@@ -2483,10 +2509,9 @@ static unsigned xframe_rxd_per_page(XframeState *s)
 
 /*
  * Follow the ring's next-page pointer once its 127 descriptors are used up.
- * Left in place (index forced back to the page's own start) on a DMA
- * failure: xframe_rx_head's ring-index hygiene then finds that slot already
- * handed back to the host and reports no buffer, rather than walking off
- * the page.
+ * Left in place (index forced back to the page's own start) on a DMA failure:
+ * xframe_rx_head's ring-index hygiene then finds that slot already handed
+ * back to the host and reports no buffer, rather than walking off the page.
  */
 static void xframe_rx_advance_page(XframeState *s)
 {
@@ -2510,7 +2535,7 @@ static void xframe_rx_advance_page(XframeState *s)
 /*
  * Peek the head-of-ring RxD: whether the ring is armed and, if so, whether
  * the card currently owns the next descriptor. can_receive and receive both
- * call this and nothing else to decide "is there a buffer" -- the same
+ * call this and nothing else to decide "is there a buffer", the same
  * question asked the same way, so a filtered frame's drop can never be
  * mistaken for the no-buffer case the 0 return is reserved for.
  *
@@ -2518,12 +2543,12 @@ static void xframe_rx_advance_page(XframeState *s)
  * normal delivery path calls can_receive immediately before receive, and the
  * ownership contract means the guest cannot rewrite that descriptor between
  * those callbacks. A queued retry bypasses can_receive and fetches here once.
- * Every device-side input to the address, layout, or byte order is part of the
- * match key and its write path invalidates the cache as well.
+ * Every device-side input to the address, layout, or byte order is part of
+ * the match key and its write path invalidates the cache as well.
  *
  * Ring-index hygiene: the in-page position is reduced modulo the page's
- * descriptor count before any walk, the sgi-ioc3-eth/qlogic-isp pattern --
- * so a stuck or corrupted position can never read past the page.
+ * descriptor count before any walk, the sgi-ioc3-eth/qlogic-isp pattern, so
+ * a stuck or corrupted position can never read past the page.
  */
 static bool xframe_rx_head(XframeState *s, uint64_t *desc_addr,
                            uint8_t raw[XFRAME_RXD5_SIZE])
@@ -2580,51 +2605,63 @@ static bool xframe_rx_head(XframeState *s, uint64_t *desc_addr,
 }
 
 /*
- * Whether a frame off the wire should reach the ring at all -- real hardware
- * filters by destination address in the RMAC block before a frame is ever
- * written to a receive buffer. The 64-entry MAC-address table is both the
- * unicast filter (entry 0 is the factory/station address, but any of the 64
- * is a match) and the multicast filter: both public drivers program a joined
- * multicast group as a masked entry in the very same table
- * (RMAC_ADDR_CMD_MEM/DATA0_MEM/DATA1_MEM -- OpenBSD xge_setmulti, Linux
- * s2io_set_multicast), so one masked-match loop against the table covers
- * both, with no separate multicast path needed.
+ * Whether a frame off the wire should reach the ring at all. Real hardware
+ * filters by destination address in the
+ * RMAC block before a frame is ever written to a receive buffer. The 64-entry
+ * MAC-address table is both the unicast
+ * filter (entry 0 is the factory/station address, but any of the 64 is a
+ * match) and the multicast filter: both
+ * public drivers program a joined multicast group as a masked entry in the
+ * very same table
+ * (RMAC_ADDR_CMD_MEM/DATA0_MEM/DATA1_MEM, OpenBSD xge_setmulti, Linux
+ * s2io_set_multicast), so one masked-match
+ * loop against the table covers both, with no separate multicast path needed.
  *
  * The mask (DATA1_MEM, latched into mac_addr_mask[] by xframe_rmac_addr_cmd)
- * is a per-bit "compare" selector over the same 48 address bits DATA0/DATA0's
- * factory-MAC packing uses (bits 63:16, MSB-first): a mask bit CLEAR means
+ * is a per-bit "compare" selector over
+ * the same 48 address bits DATA0/DATA0's factory-MAC packing uses (bits
+ * 63:16, MSB-first): a mask bit CLEAR means
  * that address bit must match the incoming destination; a mask bit SET means
- * don't care. An all-clear mask (the reset default, and what entry 0's
- * factory MAC gets) is therefore an exact match -- unicast is just the
+ * don't care. An all-clear mask (the
+ * reset default, and what entry 0's factory MAC gets) is therefore an exact
+ * match. Unicast is just the
  * every-bit-compared case of the same rule multicast uses.
  *
  * This polarity is Linux s2io_set_multicast's own, verified two ways that
- * agree with each other: an individual joined group is programmed with
- * DATA1_MEM_MASK(0) -- an all-clear mask, i.e. every bit compared, i.e. an
- * exact match against that one group, which is the only sane reading given
- * per-group multicast join/leave is core, well-exercised functionality, not
- * an edge case. IFF_ALLMULTI is programmed with address 0x010203040506 and
- * mask 0xfeffffffffff: byte 0 of that mask is 0xfe (0b11111110) -- every bit
- * of byte 0 except bit 0 is "don't care", and bytes 1-5 (mask 0xff each) are
- * entirely "don't care" -- so under this polarity the entry compares exactly
- * one bit: byte 0's bit 0, the IEEE group/individual bit, against address
- * 0x01's bit 0, which is 1. That is precisely "any destination with the
- * multicast bit set", with no slop and no special-casing: the general rule
- * falls straight out of Linux's own values.
+ * agree with each other: an individual
+ * joined group is programmed with DATA1_MEM_MASK(0), an all-clear mask,
+ * i.e. every bit compared, i.e. an exact
+ * match against that one group, which is the only sane reading given
+ * per-group multicast join/leave is core,
+ * well-exercised functionality, not an edge case. IFF_ALLMULTI is programmed
+ * with address 0x010203040506 and mask
+ * 0xfeffffffffff: byte 0 of that mask is 0xfe (0b11111110), every bit of
+ * byte 0 except bit 0 is "don't care", and
+ * bytes 1-5 (mask 0xff each) are entirely "don't care", so under this
+ * polarity the entry compares exactly one
+ * bit: byte 0's bit 0, the IEEE group/individual bit, against address 0x01's
+ * bit 0, which is 1. That is precisely
+ * "any destination with the multicast bit set", with no slop and no
+ * special-casing: the general rule falls straight
+ * out of Linux's own values.
  *
  * OpenBSD's xge_setmulti does not corroborate this: it writes DATA1_MEM as
- * all-ones (0xFFFFFFFFFFFFFFFF, the opposite of Linux's all-clear) for an
- * individual join, and its own IFF_ALLMULTI sentinel (DATA0=0x8000...000,
+ * all-ones (0xFFFFFFFFFFFFFFFF, the
+ * opposite of Linux's all-clear) for an individual join, and its own
+ * IFF_ALLMULTI sentinel (DATA0=0x8000...000,
  * DATA1=0xF000...000) does not reduce to "match every multicast frame" under
- * either mask polarity with this packing -- worked through both ways, it
- * only ever matches a narrow, specific address pattern, not "every"
- * multicast destination, contradicting its own "receive everything with the
- * multicast bit set" comment. Both readings were checked against the exact
- * literal values in if_xge.c and s2io.c, not against each other's
- * paraphrase. This model follows Linux's convention, since it is the one
- * that is internally consistent on its own account for both the common case
- * (an individual join) and the wildcard case, and does not need a
- * separately-invented special case to explain the wildcard value.
+ * either mask polarity with this packing. Under both interpretations, it
+ * only ever matches a narrow, specific
+ * address pattern, not "every" multicast
+ * destination, contradicting its own "receive everything with the multicast
+ * bit set" comment. Both readings were
+ * checked against the exact literal values in if_xge.c and s2io.c, not
+ * against each other's paraphrase. This model
+ * follows Linux's convention, since it is the one that is internally
+ * consistent on its own account for both the
+ * common case (an individual join) and the wildcard case, and does not need a
+ * separately-invented special case to
+ * explain the wildcard value.
  */
 static bool xframe_rx_filter(XframeState *s, const uint8_t *buf, size_t size)
 {
@@ -2659,8 +2696,8 @@ static bool xframe_rx_filter(XframeState *s, const uint8_t *buf, size_t size)
 
 /*
  * Arm the recovery poll if it is not already running. Guarded rather than an
- * unconditional timer_mod: both call sites below can run repeatedly while
- * the ring stays genuinely exhausted (can_receive is polled on every packet
+ * unconditional timer_mod: both call sites below can run repeatedly while the
+ * ring stays genuinely exhausted (can_receive is polled on every packet
  * QEMU's netdev core considers sending), and resetting the deadline on every
  * one of those polls would keep pushing it out and never let the poll fire.
  */
@@ -2675,15 +2712,15 @@ static void xframe_rx_arm_recovery(XframeState *s)
 
 /*
  * Whether the receive engine has anywhere to put a frame right now: the ring
- * armed and its head descriptor owned by the card. Not gated on ADAPTER_EN
- * or MAC_CFG's RMAC_EN, the same simplification the transmit doorbell
- * already makes -- a driver arms the ring and enables the adapter together.
+ * armed and its head descriptor owned by the card. Not gated on ADAPTER_EN or
+ * MAC_CFG's RMAC_EN, the same simplification the transmit doorbell already
+ * makes; a driver arms the ring and enables the adapter together.
  *
- * QEMU's netdev core checks this BEFORE ever calling receive(): a packet
- * this refuses is queued directly and receive() is never invoked for it, so
- * this -- not receive()'s own 0 return -- is where the genuine no-buffer
- * condition is actually seen in practice, and where the recovery poll has to
- * be armed for a ring the guest will go on to refill in place.
+ * QEMU's netdev core checks this BEFORE ever calling receive(): a packet this
+ * refuses is queued directly and receive() is never invoked for it. This
+ * check, not receive()'s own 0 return, sees the genuine no-buffer condition
+ * is actually seen in practice, and where the recovery poll has to be armed
+ * for a ring the guest will go on to refill in place.
  */
 static bool xframe_can_receive(NetClientState *nc)
 {
@@ -2723,11 +2760,11 @@ static bool xframe_rx_completion_write(XframeState *s, uint64_t addr,
 
 /*
  * Publish a receive whose buffers and byte counts are already written:
- * release the descriptor's ownership -- the driver's own signal that the
- * frame is there -- and report the completion. Held behind the arrival floor
+ * release the descriptor's ownership, the driver's own signal that the
+ * frame is there, and report the completion. Held behind the arrival floor
  * by sgi_net_rx_latency_hold(). A failed release logs and arms the recovery
  * poll inside xframe_rx_completion_write, and the completion stays on the
- * line to be tried again -- the descriptor is still the card's, so nothing
+ * line to be tried again. The descriptor is still the card's, so nothing
  * the guest reads has moved.
  */
 static bool xframe_rx_publish(void *opaque, const void *record)
@@ -2758,16 +2795,16 @@ static bool xframe_rx_completion_write(XframeState *s, uint64_t addr,
 
 /*
  * Deposit one frame into the head-of-ring RxD: filter it, write it into the
- * posted buffer, and publish the completion -- length and status first, then
+ * posted buffer, and publish the completion, length and status first, then
  * ownership released last, the same order the transmit doorbell releases its
  * own descriptor. RxD control words decode big-endian for the same reason
- * TxD's do -- see xframe_tx_doorbell's comment.
+ * TxD's do. See xframe_tx_doorbell's comment.
  *
  * Guest-driven hang safety: a filtered frame and a genuine no-buffer
  * condition return different values on purpose. No buffer at all returns 0,
  * which is QEMU's netdev-queue signal to hold and redeliver this same frame
  * once can_receive reports true again. A filtered frame returns the frame's
- * full size instead, because nothing about it changes on a retry -- treating
+ * full size instead, because nothing about it changes on a retry, treating
  * it as consumed is what keeps the queue from wedging on a frame no future
  * attempt will ever pass.
  */
@@ -2811,7 +2848,7 @@ static ssize_t xframe_receive(NetClientState *nc, const uint8_t *buf,
 
     if (!xframe_rx_head(s, &desc_addr, raw)) {
         /*
-         * The genuine no-buffer condition -- reached here, rather than only
+         * The genuine no-buffer condition, reached here, rather than only
          * from can_receive's own gate, when a recovery-poll flush retries a
          * queued packet directly and still finds nothing owned.
          */
@@ -2846,7 +2883,7 @@ static ssize_t xframe_receive(NetClientState *nc, const uint8_t *buf,
     if (copy_len > XFRAME_MAX_FRAME) {
         /*
          * Past what the card can hold at all. Say so rather than quietly
-         * handing the guest a short frame -- a truncation nothing reports is
+         * handing the guest a short frame, a truncation nothing reports is
          * indistinguishable downstream from data that was never sent.
          */
         qemu_log_mask(LOG_GUEST_ERROR,
@@ -2857,8 +2894,8 @@ static ssize_t xframe_receive(NetClientState *nc, const uint8_t *buf,
 
     /*
      * Parse the frame once. l34 is the header run that five-buffer mode puts
-     * in buffer 1: the IP header of any IPv4 frame, with the TCP or UDP header
-     * when one is recognised.
+     * in buffer 1: the IP header of any IPv4 frame, with the TCP or UDP
+     * header when one is recognised.
      */
     offload = xframe_rx_offload_status(buf, copy_len, &l34);
     split_headers = l34 > 0;
@@ -2866,10 +2903,10 @@ static ssize_t xframe_receive(NetClientState *nc, const uint8_t *buf,
     if (xframe_rx_header_split(s)) {
         /*
          * Five-buffer header-split mode. The card splits a frame by protocol
-         * layer: the Ethernet header into buffer 0, the IP and transport headers
-         * into buffer 1, the payload from buffer 2 on. Buffers 3 and 4 exist
-         * (five pointers) but a frame that fits buffer 2 never needs them, so
-         * they are read for stride but not filled.
+         * layer: the Ethernet header into buffer 0, the IP and transport
+         * headers into buffer 1, the payload from buffer 2 on. Buffers 3 and
+         * 4 exist (five pointers) but a frame that fits buffer 2 never needs
+         * them, so they are read for stride but not filled.
          */
         nbuf = 3;
         bufcap[0] = XFRAME_RXD5_BUF0_SIZE(control2);
@@ -2885,8 +2922,9 @@ static ssize_t xframe_receive(NetClientState *nc, const uint8_t *buf,
             /*
              * Header split: L2 -> buf0, L3+L4 -> buf1, payload -> buf2. The
              * room this layout really offers is what its own three legs hold,
-             * not the sum of the posted sizes -- the unclassified layout below
-             * uses none of buffer 1, and this one uses exactly l34 of it.
+             * not the sum of the posted sizes, the unclassified layout
+             * below uses none of buffer 1, and this one uses exactly l34 of
+             * it.
              */
             capacity = eth + l34 + bufcap[2];
             xcode = XFRAME_RXD_XCODE_OK;
@@ -2909,13 +2947,13 @@ static ssize_t xframe_receive(NetClientState *nc, const uint8_t *buf,
             seg[2] = copy_len - eth - l34;
         } else {
             /*
-             * Not IPv4 (ARP, or a VLAN-tagged frame this model does not parse),
-             * or a parsed frame whose headers do not fit buffer 1. Deliver it
-             * unsplit -- L2 header to buffer 0, the remainder to buffer 2 -- and
-             * do NOT report offload, since reporting it would claim a placement
-             * in buffer 1 the card did not make. IRIX never posts a buffer 1
-             * too small for a real header, so the second case is a guest-error,
-             * not a normal path.
+             * Not IPv4 (ARP, or a VLAN-tagged frame this model does not
+             * parse), or a parsed frame whose headers do not fit buffer 1.
+             * Deliver it unsplit, L2 header to buffer 0, the remainder to
+             * buffer 2, and do NOT report offload, since reporting it would
+             * claim a placement in buffer 1 the card did not make. IRIX never
+             * posts a buffer 1 too small for a real header, so the second
+             * case is a guest-error, not a normal path.
              */
             if (split_headers) {
                 qemu_log_mask(LOG_GUEST_ERROR,
@@ -2962,9 +3000,9 @@ static ssize_t xframe_receive(NetClientState *nc, const uint8_t *buf,
             /*
              * The descriptor itself was fine; a buffer pointer it named was
              * not. Release the descriptor and advance past it below rather
-             * than leaving it parked here -- the same bad pointer would fail
-             * identically on every future frame, permanently stalling the ring
-             * behind one bad buffer.
+             * than leaving it parked here, the same bad pointer would fail
+             * identically on every future frame, permanently stalling the
+             * ring behind one bad buffer.
              */
             qemu_log_mask(LOG_GUEST_ERROR,
                           "xframe: receive buffer write at 0x%" PRIx64
@@ -2981,24 +3019,29 @@ static ssize_t xframe_receive(NetClientState *nc, const uint8_t *buf,
 
     if (xframe_rx_header_split(s)) {
         /*
-         * Five-buffer completion also reports the byte counts of buffers 3 and
-         * 4, in the low two 16-bit fields of the first descriptor word -- the
-         * same fields the guest posts their sizes in (observed: IRIX posts two
-         * real 4-byte buffers there, sizes 0x0004/0x0004, below an incrementing
-         * index in the upper half). A frame that fits buffer 2 puts nothing in
-         * them, and the count must SAY so: left unwritten, the driver reads the
+         * Five-buffer completion also reports the byte counts of buffers 3
+         * and 4, in the low two 16-bit fields of
+         * the first descriptor word, the same fields the guest posts their
+         * sizes in (observed: IRIX posts two
+         * real 4-byte buffers there, sizes 0x0004/0x0004, below an
+         * incrementing index in the upper half). A frame
+         * that fits buffer 2 puts nothing in them, and the count must SAY so:
+         * left unwritten, the driver reads the
          * posted sizes back as counts, sums a frame 8 bytes longer than the
-         * wire's, and rejects every frame as an input error -- receive dead at
-         * jumbo MTU with the bytes themselves delivered perfectly.
-         * The upper half is the guest's own bookkeeping and is preserved.
+         * wire's, and rejects every frame as an
+         * input error, receive dead at jumbo MTU with the bytes themselves
+         * delivered perfectly. The upper half is
+         * the guest's own bookkeeping and is preserved.
          *
          * RULE, not an optimisation: this word is written ONLY in five-buffer
-         * mode. In the other ring modes it is host-private -- the public Linux
-         * driver keeps its skb pointer there and the card never touches it --
-         * so generalising this writeback to another mode would corrupt a
-         * driver pointer. (Control_2's own low 16 bits are posted as zero by
-         * IRIX in this mode -- observed 0x000e008026120000 -- so the size
-         * writeback below zeroing them rewrites the posted value unchanged.)
+         * mode. In the other ring modes it is
+         * host-private, the public Linux driver keeps its skb pointer there
+         * and the card never touches it, so
+         * generalising this writeback to another mode would corrupt a driver
+         * pointer. (Control_2's own low 16 bits
+         * are posted as zero by IRIX in this mode, observed
+         * 0x000e008026120000, so the size writeback below
+         * zeroing them rewrites the posted value unchanged.)
          */
         uint64_t hc = xframe_desc_ldq(s, raw, true);
 
@@ -3026,8 +3069,8 @@ static ssize_t xframe_receive(NetClientState *nc, const uint8_t *buf,
     /*
      * Count only delivered frames. A frame the receive path drops earlier for
      * a bad buffer pointer is not counted here; on the hardware it would land
-     * in a discard counter this model leaves zero, so netstat's received total
-     * omits it rather than miscounting it.
+     * in a discard counter this model leaves zero, so netstat's received
+     * total omits it rather than miscounting it.
      */
     if (copy_len > 0) {
         s->stat_rx_frms++;
@@ -3054,23 +3097,23 @@ static ssize_t xframe_receive(NetClientState *nc, const uint8_t *buf,
 
 /*
  * Re-attempt delivery of whatever the netdev queue is holding. Armed by
- * xframe_rx_arm_recovery -- called from can_receive's own no-buffer case,
+ * xframe_rx_arm_recovery, called from can_receive's own no-buffer case,
  * where QEMU's netdev core actually turns a refused packet away before
  * receive() is ever invoked, and again from receive()'s genuine no-buffer
  * return for a flush-triggered retry that still finds nothing. Disarmed by
- * every other return from receive(), so this only ever runs during the
- * window between "a frame was refused for lack of an owned descriptor" and
- * "the ring has one again".
+ * every other return from receive(), so this only ever runs during the window
+ * between "a frame was refused for lack of an owned descriptor" and "the ring
+ * has one again".
  *
- * This -- not the RX_TRAFFIC_INT acknowledge modelled above -- is what
- * recovers a ring the guest refills in place (flips an RxD's OWN bit
- * directly in guest RAM, no register write at all): both public drivers
- * acknowledge the receive interrupt BEFORE refilling any descriptor
- * (OpenBSD's xge_intr acks RX_TRAFFIC_INT and only then walks the ring,
- * calling xge_add_rxbuf per descriptor as it goes; Linux's s2io_isr is the
- * same order), so nothing the guest writes to a register ever lands after
- * the refill for this device to hook a flush onto. Polling is the only
- * mechanism left that can still notice the refill once it happens.
+ * This, not the RX_TRAFFIC_INT acknowledge modelled above, is what
+ * recovers a ring the guest refills in place (flips an RxD's OWN bit directly
+ * in guest RAM, no register write at all): both public drivers acknowledge
+ * the receive interrupt BEFORE refilling any descriptor (OpenBSD's xge_intr
+ * acks RX_TRAFFIC_INT and only then walks the ring, calling xge_add_rxbuf per
+ * descriptor as it goes; Linux's s2io_isr is the same order), so nothing the
+ * guest writes to a register ever lands after the refill for this device to
+ * hook a flush onto. Polling is the only mechanism left that can still notice
+ * the refill once it happens.
  */
 static void xframe_rx_recovery_timer_cb(void *opaque)
 {
@@ -3080,23 +3123,22 @@ static void xframe_rx_recovery_timer_cb(void *opaque)
 }
 
 /*
- * QEMU's own netdev backend link:
- * this is the standard NetClientInfo hook a `set_link` QMP command (or any
- * other backend disconnect) invokes on NetClientState::link_down changing.
- * Without it the device never looked at that flag at all -- it announced
- * LINK_UP on the ADAPTER_EN bring-up edge regardless of whether the backend
- * was actually connected, so an operator-downed netdev still showed carrier
- * to the guest.
+ * QEMU's own netdev backend link: this is the standard NetClientInfo hook a
+ * `set_link` QMP command (or any other backend disconnect) invokes on
+ * NetClientState::link_down changing. Without it the device never looked at
+ * that flag at all. It announced LINK_UP on the ADAPTER_EN bring-up edge
+ * regardless of whether the backend was actually connected, so an
+ * operator-downed netdev still showed carrier to the guest.
  *
  * Backend down: present LINK_DOWN on the PIC/GPIO path and cancel any pending
- * link timer so it cannot announce UP after the backend disconnected.
- * This also raises the MAC-block link-state-change latch the way a genuine
- * link event does, for a driver (OpenBSD xge) that takes its link interrupt
+ * link timer so it cannot announce UP after the backend disconnected. This
+ * also raises the MAC-block link-state-change latch the way a genuine link
+ * event does, for a driver (OpenBSD xge) that takes its link interrupt
  * through that path instead of the PIC/GPIO one.
  *
  * Backend back up while the adapter is enabled: schedule the same delayed UP
- * event as a rising ADAPTER_EN edge. If the guest has not enabled the adapter,
- * its later enable schedules the event instead.
+ * event as a rising ADAPTER_EN edge. If the guest has not enabled the
+ * adapter, its later enable schedules the event instead.
  */
 static void xframe_set_link_status(NetClientState *nc)
 {
@@ -3184,11 +3226,11 @@ static void xframe_realize(PCIDevice *dev, Error **errp)
     }
 
     /*
-     * The class-level defaults set vendor/device id (and, absent a
-     * subsystem property, QEMU's own generic subsystem default) before
-     * this realize runs; every field here is a property, so restate all
-     * four explicitly rather than let the generic default leak into a
-     * field this device does expose.
+     * The class-level defaults set vendor/device id (and, absent a subsystem
+     * property, QEMU's own generic subsystem default) before this realize
+     * runs; every field here is a property, so restate all four explicitly
+     * rather than let the generic default leak into a field this device does
+     * expose.
      */
     pci_config_set_vendor_id(dev->config, s->vendor_id);
     pci_config_set_device_id(dev->config, s->device_id);
@@ -3196,9 +3238,8 @@ static void xframe_realize(PCIDevice *dev, Error **errp)
     pci_set_word(dev->config + PCI_SUBSYSTEM_ID, s->subsystem_id);
 
     /*
-     * One interrupt line, INTx -- see docs/datasheets/xframe.md's
-     * "Interrupts": legacy PCI INTx is the era-correct choice for the
-     * Origin 200; MSI/MSI-X is optional future work.
+     * One interrupt line, INTx: legacy PCI INTx is the era-correct choice for
+     * the Origin 200; MSI/MSI-X is optional future work.
      */
     dev->config[PCI_INTERRUPT_PIN] = 0x01;
 
@@ -3208,9 +3249,9 @@ static void xframe_realize(PCIDevice *dev, Error **errp)
                           "xframe.txp", XFRAME_TXP_WINDOW_SIZE);
 
     /*
-     * BAR0 is a 64-bit memory BAR (config 0x10/0x14), so the next BAR
-     * lands at 0x18 -- PCI BAR index 2, not 1, since index 1 is BAR0's own
-     * upper half. docs/datasheets/xframe.md's "PCI identity" table.
+     * BAR0 is a 64-bit memory BAR (config 0x10/0x14), so the next BAR lands
+     * at 0x18, PCI BAR index 2, not 1, since index 1 is BAR0's own upper
+     * half.
      */
     pci_register_bar(dev, 0,
                      PCI_BASE_ADDRESS_SPACE_MEMORY |
@@ -3270,21 +3311,22 @@ static void xframe_exit(PCIDevice *dev)
  * or a driver watchdog resumes resetting the device as if this migrated in
  * stale. VMSTATE_TIMER_PTR_V above restores the timer's own pending expiry
  * exactly when the source had it mid-period at save time; re-arm only covers
- * the gap that restore cannot -- a save taken with nothing pending on the
+ * the gap that restore cannot, a save taken with nothing pending on the
  * timer (between periods, or any other case where it was armed but not
- * outstanding) -- by starting it fresh whenever the driver had it armed and
+ * outstanding), by starting it fresh whenever the driver had it armed and
  * the restore left nothing running.
  *
- * Gated on sched_int_armed, not merely SCHED_INT_CTRL's TIMER_EN bit: TIMER_EN
- * stays set across a ONE_SHOT interrupt firing (xframe_sched_int_cb's ONE_SHOT
- * branch does not clear it), so a TIMER_EN-only check would wrongly re-arm an
- * already-completed one-shot on every future load. sched_int_armed instead
- * tracks whether an arm is actually outstanding: xframe_sched_int_arm sets it
- * on every arm (bring-up and periodic re-arm alike, so it stays true across
- * periods), the ONE_SHOT branch clears it exactly when it declines to re-arm,
- * and every path that cancels the timer (SCHED_INT_CTRL clearing TIMER_EN,
- * ADAPTER_EN 1->0, soft reset) clears it too -- so a migrated target re-arms
- * only when the source device actually still had one pending.
+ * Gated on sched_int_armed, not merely SCHED_INT_CTRL's TIMER_EN bit:
+ * TIMER_EN stays set across a ONE_SHOT interrupt firing
+ * (xframe_sched_int_cb's ONE_SHOT branch does not clear it), so a
+ * TIMER_EN-only check would wrongly re-arm an already-completed one-shot on
+ * every future load. sched_int_armed instead tracks whether an arm is
+ * actually outstanding: xframe_sched_int_arm sets it on every arm (bring-up
+ * and periodic re-arm alike, so it stays true across periods), the ONE_SHOT
+ * branch clears it exactly when it declines to re-arm, and every path that
+ * cancels the timer (SCHED_INT_CTRL clearing TIMER_EN, ADAPTER_EN 1->0, soft
+ * reset) clears it too, so a migrated target re-arms only when the source
+ * device actually still had one pending.
  *
  * Also gated on !timer_pending(s->sched_int_timer): VMSTATE_TIMER_PTR_V has
  * already restored that exact pending expiry by the time post_load runs, so
@@ -3298,7 +3340,9 @@ static int xframe_post_load(void *opaque, int version_id)
     XframeState *s = opaque;
     unsigned i;
 
-    /* The cache is local prefetch state, never part of the migration stream. */
+    /*
+     * The cache is local prefetch state, never part of the migration stream.
+     */
     xframe_rx_cache_invalidate(s);
 
     if (version_id < 8) {
@@ -3307,9 +3351,10 @@ static int xframe_post_load(void *opaque, int version_id)
 
     /*
      * A stream older than version 3 never carried RMAC_MAX_PYLD_LEN, so it
-     * arrives zero -- which would read back as "accept a payload of nothing".
+     * arrives zero, which would read back as "accept a payload of nothing".
      * Present the reset default instead: a source that predates the field was
-     * running the 1500-byte default anyway, since nothing could have raised it.
+     * running the 1500-byte default anyway, since nothing could have raised
+     * it.
      */
     if (version_id < 3) {
         s->rmac_max_pyld_len =
@@ -3319,20 +3364,21 @@ static int xframe_post_load(void *opaque, int version_id)
     /*
      * A version-1 stream predates this branch's per-block interrupt masks
      * (VMSTATE_UINT64_V at version 2 below): v1 gated every source through
-     * the single GENERAL_INT_MASK, so a v1 source never programmed -- and
-     * this VMState never carried -- any of the eight masks that
+     * the single GENERAL_INT_MASK, so a v1 source never programmed any of
+     * the eight masks below. This VMState never carried them. They are the
+     * masks that
      * xframe_update_irq (via xframe_link_pending, xframe_gpio_link_pending
      * and xframe_sched_int_pending) actually gates on: pic_int_mask,
      * txpic_int_mask, rxpic_int_mask, gpio_int_mask, tx_traffic_mask,
      * rx_traffic_mask, mac_int_mask and mac_rmac_err_mask. Left unset, a v1
      * load leaves them at this struct's reset value (XFRAME_INT_MASK_RESET,
      * all-ones/masked), and xframe_update_irq now gates every source through
-     * exactly these masks -- so a migrated v1 guest would stop seeing
+     * exactly these masks, so a migrated v1 guest would stop seeing
      * interrupts even though its general mask still had them open. The
-     * compatible v2 state for a v1 source is all eight open (0): the
-     * guest's driver is already past bring-up and does not revisit its
-     * masks afterward, so the model must present them open itself rather
-     * than wait for a rewrite that never comes.
+     * compatible v2 state for a v1 source is all eight open (0): the guest's
+     * driver is already past bring-up and does not revisit its masks
+     * afterward, so the model must present them open itself rather than wait
+     * for a rewrite that never comes.
      */
     if (version_id < 2) {
         s->pic_int_mask = 0;
@@ -3375,8 +3421,8 @@ static int xframe_post_load(void *opaque, int version_id)
     }
     /*
      * Periodic statistics DMA resumes on the target if the source had it
-     * enabled. Only periodic mode leaves enable set to migrate -- a one-shot
-     * clears it when its single transfer completes -- so the enable bit alone
+     * enabled. Only periodic mode leaves enable set to migrate. A one-shot
+     * clears it when its single transfer completes, so the enable bit alone
      * is the condition. A v3 or older source never programmed it, and the
      * zero-value fields load as disabled, so this arms nothing there.
      */
@@ -3392,43 +3438,41 @@ static int xframe_post_load(void *opaque, int version_id)
 }
 
 /*
- * The migratable register state, per docs/datasheets/xframe.md's "VMState /
- * migration fields". Version 1 (the base this branch started from) covers the
- * byte-swap and scratch registers, ADAPTER_CONTROL, GENERAL_INT_MASK, MAC_CFG
- * and its unlock latch, the whole MAC-address table and its parallel
- * per-entry mask (entry 0's factory address plus any programmed unicast or
- * multicast entry -- whatever the guest wrote must survive migration
- * exactly), the per-FIFO pending transmit list pointer, and the receive
- * ring's own bookkeeping (PRC_RXD0_0/PRC_CTRL_0, the pending RX_TRAFFIC_INT
- * status, and the card's current walk position through the ring).
+ * The migratable register state. Version 1 (the base this model started from)
+ * covers the byte-swap and scratch registers, ADAPTER_CONTROL,
+ * GENERAL_INT_MASK, MAC_CFG and its unlock latch, the whole MAC-address table
+ * and its parallel per-entry mask (entry 0's factory address plus any
+ * programmed unicast or multicast entry. Whatever the guest wrote must
+ * survive migration exactly), the per-FIFO pending transmit list pointer, and
+ * the receive ring's own bookkeeping (PRC_RXD0_0/PRC_CTRL_0, the pending
+ * RX_TRAFFIC_INT status, and the card's current walk position through the
+ * ring).
  *
- * Version 2 is this branch's interrupt-block model, added as one logical
- * bump over that base (VMSTATE_*_V at version 2 below): the per-block
- * interrupt masks (the PCI-X/PIC masks, the transmit- and receive-traffic
- * masks, and the two MAC masks) and the pending TX_TRAFFIC_INT completion
- * status -- these feed xframe_update_irq, so a migrated target that lost them
- * would recompute a wrong INTx line; the PIC/GPIO-block link path IRIX xg uses
- * (gpio_int_reg, the link-state status, and gpio_int_mask, retained for
- * readback; pic_int_mask's PIC_INT_GPIO bit gates delivery); the current
- * link-up timer and the
- * legacy link-down timer retained for existing migration streams; and the
- * scheduled interrupt that replaced the earlier
- * sustained-link heartbeat -- SCHED_INT_CTRL (the register the driver arms it
- * with), the sched_int_pending latch (which also feeds the INTx recompute),
- * sched_int_armed (whether an arm is actually outstanding -- see
+ * Version 2 is this branch's interrupt-block model, added as one logical bump
+ * over that base (VMSTATE_*_V at version 2 below): the per-block interrupt
+ * masks (the PCI-X/PIC masks, the transmit-and receive-traffic masks, and the
+ * two MAC masks) and the pending TX_TRAFFIC_INT completion status, these
+ * feed xframe_update_irq, so a migrated target that lost them would recompute
+ * a wrong INTx line; the PIC/GPIO-block link path IRIX xg uses (gpio_int_reg,
+ * the link-state status, and gpio_int_mask, retained for readback;
+ * pic_int_mask's PIC_INT_GPIO bit gates delivery); the current link-up timer
+ * and the legacy link-down timer retained for existing migration streams; and
+ * the scheduled interrupt that replaced the earlier sustained-link heartbeat:
+ * SCHED_INT_CTRL (the register the driver arms it with), the
+ * sched_int_pending latch (which also feeds the INTx recompute),
+ * sched_int_armed (whether an arm is actually outstanding, see
  * xframe_post_load), and the timer's own pending expiry (sched_int_timer),
  * migrated for the same reason link_up_timer is: a target that lost a pending
  * scheduled interrupt would starve the driver watchdog after migration.
  *
  * A version-1 stream loads every version-2 field at this struct's reset
- * value: zero for the latches, pending flags and timers -- nothing pending,
- * nothing armed, the correct state for a target that migrated in from a
- * build with no interrupt model at all -- but XFRAME_INT_MASK_RESET
- * (all-ones/masked) for the eight gating masks, since the struct resets
- * masks closed. xframe_post_load re-opens exactly those eight for a
- * version_id < 2 load (see its comment): the compatible v2 state for a v1
- * source, whose general_int_mask alone gated its interrupts, is these masks
- * open.
+ * value: zero for the latches, pending flags and timers, nothing pending,
+ * nothing armed, the correct state for a target that migrated in from a build
+ * with no interrupt model at all, but XFRAME_INT_MASK_RESET
+ * (all-ones/masked) for the eight gating masks, since the struct resets masks
+ * closed. xframe_post_load re-opens exactly those eight for a version_id < 2
+ * load (see its comment): the compatible v2 state for a v1 source, whose
+ * general_int_mask alone gated its interrupts, is these masks open.
  *
  * The two derived summaries (GENERAL_INT_STATUS and PIC_INT_STATUS) need no
  * field of their own: both are recomputed from the RX/TX traffic status, the
@@ -3564,11 +3608,11 @@ static const Property xframe_properties[] = {
     DEFINE_PROP_UINT16("device-id", XframeState, device_id,
                        XFRAME_PCI_DEVICE_ID_XENA),
     /*
-     * Generic default (0): the chip has no subsystem branding of its own.
-     * The SGI board sets subsystem-vendor-id to 0x10a9; its
-     * subsystem-device-id is not established from any source read for the
-     * datasheet, so subsystem-id has no SGI-specific default to give it --
-     * see include/hw/net/xframe.h.
+     * Generic default (0): the chip has no subsystem branding of its own. The
+     * SGI board sets subsystem-vendor-id to
+     * 0x10a9; its subsystem-device-id is not established from any public
+     * source, so subsystem-id has no SGI-specific default to give it, see
+     * include/hw/net/xframe.h.
      */
     DEFINE_PROP_UINT16("subsystem-vendor-id", XframeState,
                        subsystem_vendor_id, 0),

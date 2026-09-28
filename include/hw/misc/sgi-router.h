@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SGI Router network ports, register access and route controls. */
 #ifndef HW_MISC_SGI_ROUTER_H
 #define HW_MISC_SGI_ROUTER_H
 
@@ -12,9 +13,10 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIRouterState, SGI_ROUTER)
 
 #define SGI_ROUTER_PORTS 6
 
-/* The register target, reached directly (a host test fixture) or through
- * this Router's own SGI_NET_PORT ports. The arrival port is numbered 1
- * to 6. */
+/*
+ * The register target, reached directly (a host test fixture) or through this
+ * Router's own SGI_NET_PORT ports. The arrival port is numbered 1 to 6.
+ */
 bool sgi_router_access(SGIRouterState *s, unsigned int arrival_port,
                        SGINetPacket *packet);
 
@@ -36,9 +38,8 @@ void sgi_router_record_port_error(SGIRouterState *s, unsigned int port,
 /*
  * Replace the optional host cache observer without calling it. Notifications
  * follow table, protection and diagnostic writes, reset exit and valid
- * postload.
- * The observer and context are not migrated. It may publish link state using
- * sgi_router_set_port_link(), which does not notify the observer.
+ * postload. The observer and context are not migrated. It may publish link
+ * state using sgi_router_set_port_link(), which does not notify the observer.
  */
 void sgi_router_set_changed(SGIRouterState *s, void (*changed)(void *),
                             void *opaque);
@@ -58,8 +59,8 @@ void sgi_router_histogram_send(SGIRouterState *s, unsigned int port,
                                bool accepted);
 
 /*
- * Resolve carried turns 0 to 5 and look up the outgoing next-turn nibble.
- * The fabric checks physical links and endpoint identity. It consumes next_turn
+ * Resolve carried turns 0 to 5 and look up the outgoing next-turn nibble. The
+ * fabric checks physical links and endpoint identity. It consumes next_turn
  * only at a subsequent Router; a terminal Hub does not use that field.
  */
 bool sgi_router_resolve_turn(unsigned int entry_port, uint8_t turn,
@@ -69,9 +70,9 @@ bool sgi_router_route(SGIRouterState *s, unsigned int entry_port,
                       unsigned int *exit_port, uint8_t *next_turn);
 
 /*
- * The neighbor at one of this Router's ports if the link is genuinely
- * up (a cable, not down, both ends administratively enabled) -- the one
- * check both live vector forwarding and offline route derivation share.
+ * The neighbor at one of this Router's ports if the link is genuinely up (a
+ * cable, not down, both ends administratively enabled). Live vector
+ * forwarding and offline route derivation share this check.
  */
 bool sgi_router_port_neighbor(SGIRouterState *s, unsigned int port,
                               Object **peer_port, unsigned int *peer_index);

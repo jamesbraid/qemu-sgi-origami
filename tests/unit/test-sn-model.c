@@ -1,21 +1,11 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * The compiled catalogue's own structural invariants (hw/mips/sgi/
- * sn-catalogue.json's topologies), checked once here instead of at every
- * machine launch. hw/mips/sgi/sn-machine.c's builder trusts this
- * catalogue now: Origami's compiler and its goldens are what keep it
- * well-formed, and this test is what proves that for the file actually
- * shipped. See docs/plans/sn-machine-model.md, "The builder trusts the
- * descriptor", and docs/designs/sn-machine-model-architecture.md's
- * "Validation" section.
- *
- * Parses the tracked hw/mips/sgi/sn-catalogue.json directly, the same way
- * hw/mips/sgi/sn-catalogue.c parses the build's embedded copy of the same
- * file (qobject_from_json() and qobject_input_visitor_new(), also
- * hw/uefi/var-service-json.c's pattern) -- reading the file here rather
- * than linking the embedding machinery keeps this a host-native test with
- * no target/mips dependency, the same property it had linking sn-model.c
- * directly before the compiled-catalogue step.
+ * Check the shipped hw/mips/sgi/sn-catalogue.json topology once; sn-machine.c
+ * trusts the compiler and golden data at machine launch. Parse the tracked
+ * file with qobject_from_json() and qobject_input_visitor_new(), as
+ * sn-catalogue.c parses its embedded copy and hw/uefi/var-service-json.c
+ * does. Reading the file avoids target/mips linkage and keeps this test
+ * host-native, as direct sn-model.c linkage did before catalogue compilation.
  */
 
 #include "qemu/osdep.h"
@@ -27,15 +17,11 @@
 #include "qobject/qobject.h"
 
 /*
- * A node ASIC's CPU-slot and memory-bank shape: hardware facts, not
- * configuration (the deleted sgi_machine_asic_shape()'s own values).
- * The Hub's real numbers live in hw/mips/sgi/sn-machine.c's
- * sgi_sn0_hub_hardware, whose header (sn0.h) pulls in target/mips/cpu.h
- * and so cannot link into this host-native test; both kinds resolve to
- * the same architectural bank count today (sgi_sn0_hub_hardware.memory.
- * architectural_banks is 8, the same array bound every node's bank-mib
- * already carries), so restating that literal here duplicates no
- * information the catalogue does not already fix.
+ * CPU-slot and memory-bank limits are ASIC facts, formerly in
+ * sgi_machine_asic_shape(). The Hub values live in sgi_sn0_hub_hardware, but
+ * sn0.h includes target/mips/cpu.h and cannot link into this host test. Both
+ * kinds have eight architectural banks; every node bank-mib array already has
+ * that bound, so the literal adds no independent catalogue fact.
  */
 #define SN_ARCHITECTURAL_MEMORY_BANKS 8
 
@@ -170,11 +156,9 @@ static void check_node_shapes(const SGIModelTopology *t)
 }
 
 /*
- * Every cable's two ends name a real vertex, at a port at least one (port
- * zero is a crossbar's own local view, never a numbered cable end); no end
- * is shared by two cables. A router's own port count is a device fact
- * (decision D-0026) this catalogue does not carry, so the upper bound on
- * a router end's port is the device's own qtest to check, not this one.
+ * Each cable ends at a real vertex on port 1 or higher; crossbar port 0 is
+ * its local view. No endpoint appears twice. The catalogue lacks router port
+ * counts, so the device qtest checks router port upper bounds.
  */
 static void check_cables(const SGIModelTopology *t)
 {
@@ -245,15 +229,11 @@ static void check_io_board_presets(const SGIModelTopology *t)
 }
 
 /*
- * Every node claims exactly one crosstalk attachment as its own, and the
- * remaining attachments own the topology's io-boards entries one for
- * one: the same split sgi_machine_index_xtalk_attachments() computes at
- * realize time. Hub topologies only -- sgi_machine_realize() builds a
- * Bedrock node and returns before that function ever runs, because a
- * Bedrock node's XBridge is not a separate crosstalk-attached board the
- * way a Hub's onboard or Crossbow-attached board is; a Bedrock
- * topology's io-boards entries are checked by
- * check_bedrock_has_populated_io8() below instead.
+ * Each Hub node owns one Crosstalk attachment; remaining attachments match
+ * io-boards entries one for one, as sgi_machine_index_xtalk_attachments()
+ * computes at realize. Bedrock realize returns before that function: its
+ * XBridge is not a separate attached board. check_bedrock_has_populated_io8()
+ * checks Bedrock io-boards instead.
  */
 static void check_xtalk_attachments(const SGIModelTopology *t)
 {

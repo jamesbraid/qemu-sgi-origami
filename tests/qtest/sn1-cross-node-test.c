@@ -1,17 +1,12 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * Which node an access reaches on a two-chassis Origin 300: the claim
- * layer in hw/mips/sgi/sn1-node.c, against the rule in Origami's
- * docs/designs/2026-09-25-origin300-two-node-addressing.md. A node field
- * names the node whose local block carries that number, the reader-relative
- * forms always reach the reader's own node, and a number nobody reachable
- * carries is a decode error.
+ * Two-chassis Origin 300 node decoding in hw/mips/sgi/sn1-node.c. Numbered
+ * accesses reach the claiming node; local forms reach the reader.
  *
- * qtest's own accesses go to the global map, where each node sits at its
- * placement (node order << 33); a processor's view is read with the
- * monitor's xp and a cpu-index, which is how a test sees memory as one
- * processor does. Processors 0 and 1 are node 0's, 2 and 3 node 1's. The
- * PROM image is zeros, and under qtest no processor executes it.
+ * An unclaimed number is a decode error. qtest uses the global map, with
+ * nodes placed at node order << 33. Monitor xp with cpu-index reads a CPU's
+ * view: CPUs 0/1 belong to node 0, CPUs 2/3 to node 1. The zero-filled PROM
+ * does not execute under qtest.
  */
 #include "qemu/osdep.h"
 #include "libqtest.h"
@@ -63,10 +58,10 @@ static char *create_prom(void)
 }
 
 /*
- * qtest's own accesses go through processor 0's view, as a program on
- * node 0 would, so node 1 is reached the way the PROM reaches a peer before
- * it has a number: through node 0's vector engine on route 0. The launch
- * sequence is the firmware's (sn1-bedrock-link-test.c).
+ * qtest's own accesses go through processor 0's view, as a program on node 0
+ * would, so node 1 is reached the way the PROM reaches a peer before it has a
+ * number: through node 0's vector engine on route 0. The launch sequence is
+ * the firmware's (sn1-bedrock-link-test.c).
  */
 #define LB_VECTOR_PARAMS UINT64_C(0x60c000)
 #define LB_VECTOR_ROUTE UINT64_C(0x60c008)
@@ -115,8 +110,8 @@ static void set_node_number(QTestState *qts, unsigned int node,
 /*
  * Both nodes' memory answers once each node's memory unit has its banks
  * configured, and each node's RAM and scratch register carry a value that
- * says which node answered. Node 1 is numbered 1 to reach it, then set
- * back to 0: both local blocks leave reset carrying 0.
+ * says which node answered. Node 1 is numbered 1 to reach it, then set back
+ * to 0: both local blocks leave reset carrying 0.
  */
 static QTestState *machine_start(void)
 {
@@ -181,8 +176,8 @@ static void assert_unreachable(QTestState *qts, unsigned int cpu,
 
 /*
  * From reset both local blocks carry 0, as the PROM's first store leaves
- * them: each node reaches only itself at node field zero, and nothing
- * answers at node 1's placement.
+ * them: each node reaches only itself at node field zero, and nothing answers
+ * at node 1's placement.
  */
 static void test_equal_numbers_stay_local(void)
 {
@@ -229,9 +224,9 @@ static void test_renumbering_moves_the_claim(void)
 }
 
 /*
- * The Bedrock's own register alias and the Hub special local register
- * window (read here through a processor LED) reach the reader's node,
- * whatever number it carries.
+ * The Bedrock's own register alias and the Hub special local register window
+ * (read here through a processor LED) reach the reader's node, whatever
+ * number it carries.
  */
 static void test_local_forms_are_the_readers(void)
 {
@@ -294,9 +289,9 @@ static void test_prom_data_window_is_the_readers(void)
 }
 
 /*
- * The cached alias: below the size node 1's processor interface carries,
- * node field zero is node 1's own memory; at and above it, node 0's. The
- * window follows the register as soon as it is written.
+ * The cached alias: below the size node 1's processor interface carries, node
+ * field zero is node 1's own memory; at and above it, node 0's. The window
+ * follows the register as soon as it is written.
  */
 static void test_cached_alias_bounds_the_readers_memory(void)
 {
@@ -376,11 +371,11 @@ static void test_bte_completion_goes_by_number(void)
 
 
 /*
- * An interrupt packet the IO-8's XBridge sends goes to the node whose
- * local block carries the number its node field names: the XBridge head
- * at widget 0xf on node 0 is programmed, as IRIX programs it, to post to
- * the processor interface's pending-modify register in the register space
- * of a named node, then forced.
+ * An interrupt packet the IO-8's XBridge sends goes to the node whose local
+ * block carries the number its node field names: the XBridge head at widget
+ * 0xf on node 0 is programmed, as IRIX programs it, to post to the processor
+ * interface's pending-modify register in the register space of a named node,
+ * then forced.
  */
 #define XBRIDGE_F (SPACE_XTALK + UINT64_C(0xf) * UINT64_C(0x1000000))
 #define XBRIDGE_INT_ENABLE 0x108
@@ -444,12 +439,12 @@ static void peer_bte_zero_line(QTestState *qts, uint64_t destination)
 }
 
 /*
- * The engines' data moves by the number a node carries, not by where the
- * node is placed in QEMU's global map, and without the reader-relative
- * cached alias. Node 1 renumbered to 5 is written at node field 5, where
- * the global map has nothing; node 1's own engine writing node field zero
- * with node 1's cached alias covering the line writes node 0's memory, as
- * a processor's cached alias does not apply to the engine.
+ * The engines' data moves by the number a node carries, not by where the node
+ * is placed in QEMU's global map, and without the reader-relative cached
+ * alias. Node 1 renumbered to 5 is written at node field 5, where the global
+ * map has nothing; node 1's own engine writing node field zero with node 1's
+ * cached alias covering the line writes node 0's memory, as a processor's
+ * cached alias does not apply to the engine.
  */
 static void test_bte_data_goes_by_number(void)
 {
@@ -474,8 +469,8 @@ static void test_bte_data_goes_by_number(void)
 
 /*
  * The reset view and the local boot view are reader-relative forms of the
- * reader's own node's flash. Each node gets its own 16 MiB boot flash;
- * node 1's carries a marker at position zero, node 0's is blank.
+ * reader's own node's flash. Each node gets its own 16 MiB boot flash; node
+ * 1's carries a marker at position zero, node 0's is blank.
  */
 #define PROM_RESET UINT64_C(0x1fc00000)
 #define HUB_LOCAL_BOOT (SPACE_HUB + UINT64_C(0x18000000))
@@ -547,12 +542,12 @@ static void test_local_boot_view_is_the_readers(void)
 }
 
 /*
- * The L1 UART sits in the local register window at +0x80, a
- * reader-relative form: each node's processors reach their own chassis's
- * L1, processor interface 1's included, whose own register overlay leaves
- * that range to the form beneath it. The UART's scratch register tells
- * the two apart: node 0's is written through processor 0's local form,
- * node 1's through node field 1 once node 1 carries that number.
+ * The L1 UART sits in the local register window at +0x80, a reader-relative
+ * form: each node's processors reach their own chassis's L1, processor
+ * interface 1's included, whose own register overlay leaves that range to the
+ * form beneath it. The UART's scratch register tells the two apart: node 0's
+ * is written through processor 0's local form, node 1's through node field 1
+ * once node 1 carries that number.
  */
 #define L1_UART_SCRATCH (HUB_LOCAL_REGISTERS + UINT64_C(0x80) + UINT64_C(0x38))
 
@@ -571,21 +566,19 @@ static void test_l1_uart_local_form_is_the_readers(void)
 }
 
 /*
- * The PROM's cache-as-RAM phase keeps the PROM's RAM-copy range and the
- * data window reader-local; it has to end at the OS handoff even for a
- * processor that never touches the data window again. Otherwise, once the
- * nodes carry different numbers, a processor on node 1 storing to node
- * field zero in either range still lands in its own node's memory instead
- * of node 0's.
+ * The PROM's cache-as-RAM phase keeps the PROM's RAM-copy range and the data
+ * window reader-local; it has to end at the OS handoff even for a processor
+ * that never touches the data window again. Otherwise, once the nodes carry
+ * different numbers, a processor on node 1 storing to node field zero in
+ * either range still lands in its own node's memory instead of node 0's.
  *
- * Guest code does it: every processor reads a node tag from its own
- * memory; node 0's processors park, node 1's enter the phase exactly as
- * the PROM does (boot-status bit 1 in FPR 0 and a cached load in the data
- * window, running from the flash), withdraw both, and jump to a RAM loop
- * that touches the window only with its uncached marker store. There
- * they report ready and wait for the
- * host to renumber node 1 and say go, then store a marker with node field
- * zero at the RAM-copy address and, uncached, in the data window.
+ * Guest code does it: every processor reads a node tag from its own memory;
+ * node 0's processors park, node 1's enter the phase exactly as the PROM does
+ * (boot-status bit 1 in FPR 0 and a cached load in the data window, running
+ * from the flash), withdraw both, and jump to a RAM loop that touches the
+ * window only with its uncached marker store. There they report ready and
+ * wait for the host to renumber node 1 and say go, then store a marker with
+ * node field zero at the RAM-copy address and, uncached, in the data window.
  */
 #define HANDOFF_CODE UINT64_C(0x200000)
 #define HANDOFF_FLAGS UINT64_C(0x300000)

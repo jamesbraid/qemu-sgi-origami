@@ -1,5 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
-/* Exercise CPU-local physical access using the two independent Hub adapters. */
+/*
+ * Exercise CPU-local physical access using the two independent Hub adapters.
+ */
 
 #include "qemu/osdep.h"
 #include "qemu/bswap.h"
@@ -40,7 +42,9 @@ static void test_cpu_local_registers(void)
     uint8_t expected[8] = { 0 };
     uint8_t actual[8];
 
-    /* Disable serial operation before selecting each adapter's own address. */
+    /*
+     * Disable serial operation before selecting each adapter's own address.
+     */
     for (unsigned int node = 0; node < 2; node++) {
         write_register(qts, node * 2, DATA_BASE + 8, 0x80);
         write_register(qts, node * 2, DATA_BASE, 0x10 + node);
@@ -303,7 +307,8 @@ static void build_user_visibility(UserCode *p, bool remote)
     user_li(p, 8, 0xa0000000 | NODE_ID_PHYS);
     user_i(p, 35, 8, 8, 0);       /* host-seeded node identity */
     user_emit(p, (8u << 21) | (9u << 16) | (8u << 11) | 0x25);
-    user_i(p, 9, 8, 18, 0);       /* s2 survives the user/kernel transitions */
+    /* s2 survives the user/kernel transitions */
+    user_i(p, 9, 8, 18, 0);
     if (remote) {
         user_i(p, 12, 8, 8, 1);   /* keep CPU0 and CPU2, park CPU1 and CPU3 */
     }
@@ -311,7 +316,9 @@ static void build_user_visibility(UserCode *p, bool remote)
 
     if (remote) {
         primary = user_branch(p, 4, 18, 0);
-        /* CPU2 assigns node1 and removes its low local alias before mapping. */
+        /*
+         * CPU2 assigns node1 and removes its low local alias before mapping.
+         */
         user_li(p, 8, 0x92000000);
         user_emit(p, (8u << 16) | (8u << 11) | 0x3c);
         user_li(p, 9, 0x01600000);
@@ -322,9 +329,11 @@ static void build_user_visibility(UserCode *p, bool remote)
         user_emit(p, (8u << 16) | (8u << 11) | 0x3c);
         user_li(p, 9, 0x01000028);
         user_emit(p, (8u << 21) | (9u << 16) | (8u << 11) | 0x25);
-        user_i(p, 63, 8, 0, 0);   /* PI_CALIAS_SIZE: use physical node claims */
+        /* PI_CALIAS_SIZE: use physical node claims */
+        user_i(p, 63, 8, 0, 0);
         user_li(p, 19, 0xa0000000 | USER_MAILBOX);
-        user_wait(p, 19, 60, 1);  /* CPU0 has copied the shared user program */
+        /* CPU0 has copied the shared user program */
+        user_wait(p, 19, 60, 1);
         installed = user_branch(p, 4, 0, 0);
         user_patch(p, primary, p->pos);
     }
@@ -694,9 +703,9 @@ static void test_r14000_word_loads(void)
  * Compare = Count - 1 arms a value that is behind the live counter by
  * construction: Count only advances between the read and the write, so the
  * value written is never ahead of it. The manual's continuous comparator
- * (14.8) fires on equality, not on "at or past", so this write must leave
- * IP7 clear rather than raise it - the disarming pattern OpenBSD's mips64
- * clock code depends on (sys/arch/mips64/mips64/clock.c, cp0_startclock).
+ * (14.8) fires on equality, not on "at or past", so this write must leave IP7
+ * clear rather than raise it - the disarming pattern OpenBSD's mips64 clock
+ * code depends on (sys/arch/mips64/mips64/clock.c, cp0_startclock).
  */
 static void build_timer_register_test(UserCode *p)
 {

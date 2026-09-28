@@ -1,10 +1,11 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * The Origin 2000 module's shared management complex, reached the way a
- * node's firmware reaches it: through that node's own Hub adapter window.
- * One controller and one NVRAM space sit behind all four windows, and the
- * module declares no reset, NMI or power path, so a destructive command is
- * refused rather than acknowledged.
+ * Test the Origin 2000 module's shared management complex through each Hub
+ * adapter.
+ */
+/*
+ * Four node windows share one controller and NVRAM space; no reset, NMI or
+ * power path exists, so destructive commands are refused.
  */
 
 #include "qemu/osdep.h"
@@ -65,10 +66,10 @@
 #define POLL_STEP_NS    2000
 #define POLL_STEPS      400
 /*
- * Arbitration is decided in the first microseconds after an action, so
- * poll finely there and coarsely afterwards. A byte is about 100 us and
- * the grant rotation about 10 ms, so a uniform fine step spends fifty
- * round trips on every byte and still cannot outlast a grant.
+ * Arbitration is decided in the first microseconds after an action, so poll
+ * finely there and coarsely afterwards. A byte is about 100 us and the grant
+ * rotation about 10 ms, so a uniform fine step spends fifty round trips on
+ * every byte and still cannot outlast a grant.
  */
 #define POLL_FINE_STEPS 8
 #define POLL_COARSE_NS  50000
@@ -98,8 +99,8 @@ static void adapter_write(QTestState *qts, unsigned node, uint64_t offset,
 }
 
 /*
- * The shared wire carries a byte over eighteen clock edges rather than in
- * one register write, so every step ends in the firmware's own poll.
+ * The shared wire carries a byte over eighteen clock edges rather than in one
+ * register write, so every step ends in the firmware's own poll.
  */
 static bool wait_done(QTestState *qts, unsigned node)
 {
@@ -212,9 +213,9 @@ static void stop_transfer(QTestState *qts, unsigned node)
 }
 
 /*
- * A controller command and its answer. The grant scheduler owns the wire
- * once a millisecond, so a transaction that loses arbitration is retried
- * rather than failed: firmware does the same.
+ * A controller command and its answer. The grant scheduler owns the wire once
+ * a millisecond, so a transaction that loses arbitration is retried rather
+ * than failed: firmware does the same.
  */
 static bool msc_command_once(QTestState *qts, unsigned node, const char *text,
                              uint8_t *response, unsigned cap,
@@ -391,9 +392,9 @@ static void nvram_write(QTestState *qts, unsigned node, uint16_t offset,
 }
 
 /*
- * Four windows, four adapters. Each keeps the address its own node wrote,
- * so a node reaching the complex is not reaching its neighbour's chip, and
- * no node is left without one. Which adapter landed in which node is not
+ * Four windows, four adapters. Each keeps the address its own node wrote, so
+ * a node reaching the complex is not reaching its neighbour's chip, and no
+ * node is left without one. Which adapter landed in which node is not
  * asserted, because nothing a guest can reach tells them apart: they sit at
  * the same offset on one shared wire.
  */
@@ -414,9 +415,9 @@ static void test_windows_are_separate_adapters(void)
 /*
  * One controller, answering whichever node's window asks. Four controllers,
  * one per node, would answer "ver" just as happily, so the discriminator is
- * the supervisor latch: it is opened from one node and every other node
- * finds it already open. A per-node controller would answer the second node
- * "err perm" instead, because that one was never given the password.
+ * the supervisor latch: it is opened from one node and every other node finds
+ * it already open. A per-node controller would answer the second node "err
+ * perm" instead, because that one was never given the password.
  */
 static void test_controller_answers_every_node(void)
 {
@@ -434,9 +435,9 @@ static void test_controller_answers_every_node(void)
 }
 
 /*
- * The four adapters share one wire rather than owning four private buses:
- * an open transfer from one node leaves every other node's adapter seeing
- * a busy bus.
+ * The four adapters share one wire rather than owning four private buses: an
+ * open transfer from one node leaves every other node's adapter seeing a busy
+ * bus.
  */
 static void test_windows_share_one_wire(void)
 {
@@ -513,10 +514,10 @@ static uint8_t wait_for_next_global_grant(QTestState *qts, uint8_t previous)
  * Firmware polls for its grant, then writes START. A processor that loses
  * host time between the two writes START while the controller is already
  * publishing the next grant. The adapter must hold that START until the
- * grant's STOP and then run it. Answering it with a lost arbitration is
- * fatal here: the PROM reads the controller block one byte per transaction
- * and does not come back for a byte it was refused, and when that byte is
- * the module number the node boots on a stale one and the nodes disagree.
+ * grant's STOP and then run it. Answering it with a lost arbitration is fatal
+ * here: the PROM reads the controller block one byte per transaction and does
+ * not come back for a byte it was refused, and when that byte is the module
+ * number the node boots on a stale one and the nodes disagree.
  */
 static void test_late_start_still_reads_the_module_number(void)
 {
@@ -562,8 +563,8 @@ static void test_late_start_still_reads_the_module_number(void)
 /*
  * The grant ring covers all eight processors through four adapters. Keep the
  * two middle Hubs between the endpoint controls, issue a real controller
- * transaction in every slot, and require the next grant to be consecutive.
- * A retry here would conceal the skipped-slot failure this test is for.
+ * transaction in every slot, and require the next grant to be consecutive. A
+ * retry here would conceal the skipped-slot failure this test is for.
  */
 static void test_global_grant_rotation(void)
 {
@@ -598,11 +599,11 @@ static void test_global_grant_rotation(void)
 /*
  * An adapter that reads the grant it owns and starts nothing must not keep
  * that grant on the wire past the next service tick. Firmware polls the data
- * register on every processor, including for codes it has no transfer for,
- * so a controller that waits for the reader's START freezes the ring.
- * Waiting for code 0 reads it through adapter 0, its owner. A hold timed in
- * host time passes here only if the host stalls that long between the read
- * and the clock step.
+ * register on every processor, including for codes it has no transfer for, so
+ * a controller that waits for the reader's START freezes the ring. Waiting
+ * for code 0 reads it through adapter 0, its owner. A hold timed in host time
+ * passes here only if the host stalls that long between the read and the
+ * clock step.
  */
 static void test_read_grant_keeps_rotating(void)
 {
@@ -619,7 +620,9 @@ static void test_read_grant_keeps_rotating(void)
     qtest_quit(qts);
 }
 
-/* A refused closing address must still accept the following full-byte STOP. */
+/*
+ * A refused closing address must still accept the following full-byte STOP.
+ */
 static void test_invalid_address_stop_releases_wire(void)
 {
     QTestState *qts = start_module();
@@ -640,7 +643,9 @@ static void test_invalid_address_stop_releases_wire(void)
         g_assert_cmphex(adapter_read(qts, node, I2C_CTRL) & STS_BB, ==, 0);
     }
 
-    /* This is the exact fresh control byte, not bits merged with old state. */
+    /*
+     * This is the exact fresh control byte, not bits merged with old state.
+     */
     adapter_write(qts, 0, I2C_CTRL, 0xc2);
     for (unsigned step = 0; step < POLL_STEPS; step++) {
         bool free = true;
@@ -661,11 +666,11 @@ static void test_invalid_address_stop_releases_wire(void)
 }
 
 /*
- * Stock firmware measures a whole transaction against one deadline and,
- * when it passes with PIN still inactive, writes STOP straight away, with
- * its data byte still on the wire. The STOP must still end the transfer,
- * or the bus stays busy and the controller never publishes another grant,
- * so every node's next grant wait runs out.
+ * Stock firmware measures a whole transaction against one deadline and, when
+ * it passes with PIN still inactive, writes STOP straight away, with its data
+ * byte still on the wire. The STOP must still end the transfer, or the bus
+ * stays busy and the controller never publishes another grant, so every
+ * node's next grant wait runs out.
  */
 static void test_mid_byte_stop_releases_wire(void)
 {
@@ -710,12 +715,12 @@ static bool bus_free_everywhere(QTestState *qts)
 
 /*
  * The same deadline STOP, landing after an acknowledged byte of a read from
- * the controller. The acknowledgement tells the controller to send on, and
- * it drives the next byte's first bit, a zero for an ASCII answer, onto SDA.
- * No STOP can form under that until the controller lets go, which it does
- * when its recovery count runs out and it reinitializes. Until then every
- * grant wait on the module fails; after it the bus must be free again and
- * the grants must be moving.
+ * the controller. The acknowledgement tells the controller to send on, and it
+ * drives the next byte's first bit, a zero for an ASCII answer, onto SDA. No
+ * STOP can form under that until the controller lets go, which it does when
+ * its recovery count runs out and it reinitializes. Until then every grant
+ * wait on the module fails; after it the bus must be free again and the
+ * grants must be moving.
  */
 #define RECOVERY_NS         (INT64_C(5000) * SERVICE_PERIOD_NS)
 #define RECOVERY_STEP_NS    (10 * SERVICE_PERIOD_NS)
@@ -778,7 +783,9 @@ static void test_held_stop_follows_the_finished_byte(void)
 
         g_assert_cmphex(status & (STS_BER | STS_LAB), ==, 0);
         if (!(status & STS_PIN)) {
-            /* The byte is done and acknowledged; the STOP is still to come. */
+            /*
+             * The byte is done and acknowledged; the STOP is still to come.
+             */
             g_assert_cmphex(status & (STS_LRB | STS_BB), ==, 0);
             for (unsigned node = 1; node < ADAPTER_COUNT; node++) {
                 g_assert_cmphex(adapter_read(qts, node, I2C_CTRL) & STS_BB,
@@ -800,9 +807,9 @@ static void test_held_stop_follows_the_finished_byte(void)
 }
 
 /*
- * A fresh transfer from an adapter that once had a STOP held against it:
- * its address byte must leave the transfer open. A leftover held STOP would
- * close the bus right behind that byte.
+ * A fresh transfer from an adapter that once had a STOP held against it: its
+ * address byte must leave the transfer open. A leftover held STOP would close
+ * the bus right behind that byte.
  */
 static void assert_fresh_transfer_stays_open(QTestState *qts, unsigned node)
 {
@@ -819,8 +826,8 @@ static void assert_fresh_transfer_stays_open(QTestState *qts, unsigned node)
 }
 
 /*
- * A STOP written while the adapter's own address byte is being arbitrated,
- * by an adapter that then loses that byte, belongs to a transfer that never
+ * A STOP written while the adapter's own address byte is being arbitrated, by
+ * an adapter that then loses that byte, belongs to a transfer that never
  * became its own. The loss drops it with the rest of the attempt, so neither
  * the winner's transfer nor the loser's next one is closed by it.
  */
@@ -863,15 +870,14 @@ static void test_lost_arbitration_drops_a_held_stop(void)
 
 /*
  * A STOP from adapter 1 lands in the gap between the owner's STOP releasing
- * its queued START and that START reaching the line. Adapter 0's queued
- * START gets there first, which returns adapter 1's to the queue. The STOP
- * was written against a START that is now waiting, not a transfer adapter 1
- * owns, and a STOP from a waiting adapter withdraws its request.
- *
- * Adapter 2's STOP is on the line about 5.6 us after it is written, and the
- * released STARTs go out 4.7 us of bus-free time after that, so a STOP from
- * adapter 1 7 us after adapter 2's falls inside the gap. This returns with
- * adapter 0 holding the bus after its address byte.
+ * its queued START and that START reaching the line. Adapter 0's queued START
+ * gets there first, which returns adapter 1's to the queue. The STOP was
+ * written against a START that is now waiting, not a transfer adapter 1 owns,
+ * and a STOP from a waiting adapter withdraws its request. Adapter 2's STOP
+ * is on the line about 5.6 us after it is written, and the released STARTs go
+ * out 4.7 us of bus-free time after that, so a STOP from adapter 1 7 us after
+ * adapter 2's falls inside the gap. This returns with adapter 0 holding the
+ * bus after its address byte.
  */
 static void stop_against_a_released_start(QTestState *qts)
 {
@@ -941,8 +947,8 @@ static void test_nvram_is_shared(void)
  * same part. The part keeps a single address counter, as the hardware does,
  * so a second adapter reaching it would move the counter the first is about
  * to read from. Firmware reads the module number out of this block on four
- * nodes at once, and a moved counter returns whichever byte the other
- * adapter selected instead.
+ * nodes at once, and a moved counter returns whichever byte the other adapter
+ * selected instead.
  */
 static void test_nvram_read_survives_a_second_adapter(void)
 {
@@ -983,10 +989,10 @@ static void test_nvram_read_survives_a_second_adapter(void)
 }
 
 /*
- * The same question one level finer: a second adapter starting while the
- * first is part way through a byte, rather than between transfers. The wire
- * resolves arbitration edge by edge, so this is where a loser that does not
- * notice it lost would drive the part's address counter anyway.
+ * More precisely: a second adapter starting while the first is part way
+ * through a byte, rather than between transfers. The wire resolves
+ * arbitration edge by edge, so this is where a loser that does not notice it
+ * lost would drive the part's address counter anyway.
  */
 static void test_nvram_read_survives_a_mid_byte_start(void)
 {
@@ -1049,9 +1055,9 @@ static void test_identity_survives_reset(void)
 }
 
 /*
- * Nothing in this machine receives a module reset or a power sequence, so
- * the controller refuses those commands. Answering "ok" would tell firmware
- * the reset happened and stop it falling back to its own.
+ * Nothing in this machine receives a module reset or a power sequence, so the
+ * controller refuses those commands. Answering "ok" would tell firmware the
+ * reset happened and stop it falling back to its own.
  */
 static void test_destructive_commands_refused(void)
 {
@@ -1067,15 +1073,15 @@ static void test_destructive_commands_refused(void)
 }
 
 static const uint8_t module_rom[8] = {
-    0x09, 0x4f, 0x52, 0x49, 0x47, 0x41, 0x4d, 0x57,
+    0x09, 0x53, 0x47, 0x49, 0x53, 0x4e, 0x30, 0x16,
 };
 
 static const uint8_t module_pages[64] = {
-    0x01, 0x4b, 0x4f, 0x52, 0x49, 0x47, 0x41, 0x4d,
-    0x49, 0x30, 0x31, 0x4f, 0x52, 0x49, 0x47, 0x41,
-    0x4d, 0x49, 0x2d, 0x4d, 0x4f, 0x44, 0x55, 0x4c,
-    0x45, 0x2d, 0x53, 0x45, 0x52, 0x49, 0x80, 0x45,
-    0x41, 0x4c, 0xff, 0xff, 0xff, 0xff, 0x00, 0x00,
+    0x01, 0x53, 0x47, 0x49, 0x4d, 0x4f, 0x44, 0x55,
+    0x4c, 0x45, 0x31, 0x53, 0x47, 0x49, 0x2d, 0x4f,
+    0x32, 0x30, 0x30, 0x30, 0x2d, 0x4d, 0x4f, 0x44,
+    0x55, 0x4c, 0x45, 0x2d, 0x53, 0x4e, 0xde, 0xf5,
+    0x30, 0x31, 0xff, 0xff, 0xff, 0xff, 0x00, 0x00,
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     0x4d, 0x4f, 0x44, 0x55, 0x4c, 0x45, 0x49, 0x44,
     0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x0e, 0xcc,
@@ -1124,15 +1130,15 @@ static void test_module_serial_memory_pages(void)
 
 /*
  * A prior fixture (origin2000-model-test, MACHINE_TYPE_NAME
- * "origin2000-model-test") drove this same read pair against a module
- * whose serial its module-serial= property could override, confirming
- * the read follows the descriptor's serial rather than a hardcoded one.
- * That fixture deep-copied the deleted per-product descriptor
- * (SN0ModelComposition) to make the override; format 2 carries no
- * settable copy for a test to reach into. The mechanism it checked is
- * still generic -- sgi_sn0_module_management_identity_pages in
- * hw/misc/sgi-sn0-module-management.c derives both one-wire pages from
- * the module's own serial field, not a literal -- and
+ * "origin2000-model-test") drove this same read pair against a module whose
+ * serial its module-serial= property could override, confirming the read
+ * follows the descriptor's serial rather than a hardcoded one. That fixture
+ * deep-copied the deleted per-product descriptor (SN0ModelComposition) to
+ * make the override; format 2 carries no settable copy for a test to reach
+ * into. The mechanism it checked is still generic:
+ * sgi_sn0_module_management_identity_pages in
+ * hw/misc/sgi-sn0-module-management.c derives both one-wire pages from the
+ * module's own serial field, not a literal. The fixture also
  * test_module_serial_memory_pages above reads both pages through the Hub
  * relay for the shipped module; only the check that a second serial value
  * also round-trips is not ported.
@@ -1176,8 +1182,8 @@ static bool is_running(QTestState *qts)
 
 /*
  * A completed migration on the source does not mean the destination has
- * started. Its virtual clock stays stopped until it does, and a stopped
- * clock runs no timers, so the shared wire would never clock a bit.
+ * started. Its virtual clock stays stopped until it does, and a stopped clock
+ * runs no timers, so the shared wire would never clock a bit.
  */
 static void wait_until_running(QTestState *qts)
 {
@@ -1191,7 +1197,7 @@ static void wait_until_running(QTestState *qts)
 
 /*
  * The module's DIP switch bank belongs to the whole module, and the machine
- * setting has to reach the one controller behind the four windows. The
+ * setting must reach the one controller behind the four windows. The
  * controller reports it active-low, so 0x10 comes back as "ef".
  */
 static void test_dip_switches_reach_the_controller(void)
@@ -1226,14 +1232,13 @@ static void migrate_module(QTestState *from, QTestState *to)
 /*
  * The complex sits on no bus and carries its own migration state. What
  * survives is the shared store and a controller that still talks, on a
- * destination whose adapters were never programmed by a guest.
- *
- * The qtest accelerator's virtual clock is the test's own counter and does
- * not travel with the migration stream, so the destination starts at zero
- * holding the source's absolute deadlines: the scheduler's next tick, and
- * the bus-free time each adapter must see before a fresh START. Put the
- * destination clock where the source left it, and everything the stream
- * restored is due rather than far in the future.
+ * destination whose adapters were never programmed by a guest. The qtest
+ * accelerator's virtual clock is the test's own counter and does not travel
+ * with the migration stream, so the destination starts at zero holding the
+ * source's absolute deadlines: the scheduler's next tick, and the bus-free
+ * time each adapter must see before a fresh START. Put the destination clock
+ * where the source left it, and everything the stream restored is due rather
+ * than far in the future.
  */
 /*
  * A destination that loads a service deadline older than its own clock must
@@ -1314,9 +1319,9 @@ static void test_module_serial_migration_in_progress(void)
 }
 
 /*
- * The state a released START leaves behind when a STOP was written against
- * it must be one the destination accepts, and must carry on there as it
- * would have at home.
+ * The state a released START leaves behind when a STOP was written against it
+ * must be one the destination accepts, and must carry on there as it would
+ * have at home.
  */
 static void test_withdrawn_start_migration(void)
 {

@@ -1,13 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * SGI Origin 200 module system controller (MSC)
- *
- * Copyright (c) 2026 Origami contributors
- *
- * SPDX-License-Identifier: GPL-2.0-or-later
- *
- * Checksummed ASCII command/response channel, bus-arbitration grant publisher
- * and AUX serial endpoint. The protocol, vocabulary and arbitration rules
- * are specified in docs/specs/sgi-elsc.rst.
+ * Origin 200 MSC: checksummed ASCII command/reply, arbitration grants and AUX
+ * serial.
  */
 
 #include "qemu/osdep.h"
@@ -27,7 +21,7 @@
 #include "trace.h"
 
 /* Firmware ignores the token but its first eight bytes must fit a buffer. */
-#define SGI_ELSC_VERSION "origami"
+#define SGI_ELSC_VERSION "1.0"
 QEMU_BUILD_BUG_ON(sizeof(SGI_ELSC_VERSION) > 8);
 
 static uint8_t elsc_checksum(const uint8_t *buf, unsigned len)
@@ -42,8 +36,8 @@ static uint8_t elsc_checksum(const uint8_t *buf, unsigned len)
 }
 
 /*
- * A frame above SGI_ELSC_MAX_TEXT overruns the firmware's own buffer; a
- * model invariant, not guest-triggerable, so asserted.
+ * A frame above SGI_ELSC_MAX_TEXT overruns the firmware's own buffer; a model
+ * invariant, not guest-triggerable, so asserted.
  */
 static void elsc_frame_response(SGIElscState *s, const char *text,
                                 unsigned text_len)
@@ -182,7 +176,9 @@ static void elsc_handle_acp_command(SGIElscState *s, const char *text,
     }
 }
 
-/* "pas": supervisor gate; the factory default password is "none". */
+/*
+ * "pas": supervisor password check; the factory default password is "none".
+ */
 static void elsc_handle_pas(SGIElscState *s, const char *text, unsigned len)
 {
     if (len != 8 || text[3] != ' ') {
@@ -215,9 +211,9 @@ static void elsc_handle_dsp(SGIElscState *s, const char *text, unsigned len)
 }
 
 /*
- * "dsc N C": one display character. Parsed positionally -- the firmware
- * sends "dsc %x %c", and C may be any ASCII character but nul, a space
- * included, so splitting on whitespace would reject a legal command.
+ * "dsc N C": one display character. Parsed positionally; the firmware sends
+ * "dsc %x %c", and C may be any ASCII character but nul, a space included, so
+ * splitting on whitespace would reject a legal command.
  */
 static void elsc_handle_dsc(SGIElscState *s, const char *text, unsigned len)
 {
@@ -264,9 +260,9 @@ static bool elsc_parse_hex(const char *p, unsigned n, uint32_t *out)
 /*
  * "pwr <sub>": the power subcommands share the "pwr" mnemonic and select on
  * the letter after the space. Only the power-on query is boot-driven; the
- * datasheet lists the rest (delayed power-down, power-cycle, redundant
- * supply) as shutdown and reset-recovery paths. An unknown subcommand letter
- * is "err cmd"; a known letter with a bad argument is "err arg".
+ * rest (delayed power-down, power-cycle, redundant supply) are shutdown and
+ * reset-recovery paths. An unknown subcommand letter is "err cmd"; a known
+ * letter with a bad argument is "err arg".
  */
 static void elsc_handle_pwr(SGIElscState *s, const char *text, unsigned len)
 {
@@ -284,19 +280,18 @@ static void elsc_handle_pwr(SGIElscState *s, const char *text, unsigned len)
         }
         /*
          * Power-on query: the PROM issues it once at power-on to detect a
-         * cold start and seed a boot-status bit. Answered "ok 1" on the
-         * first read after a cold power-on and "ok 0" thereafter. The model
-         * clears the latch on read, so only the first caller in a power
-         * cycle sees the 1; the datasheet records this clear-on-read as
-         * 6.5.7-derived and unconfirmed for the 6.5.30 firmware we boot.
+         * cold start and seed a boot-status bit. Answered "ok 1" on the first
+         * read after a cold power-on and "ok 0" thereafter. The model clears
+         * the latch on read, so only the first caller in a power cycle sees
+         * the 1; this clear-on-read behavior is 6.5.7-derived and unconfirmed
+         * for the 6.5.30 firmware we boot.
          *
          * The latch is per-controller. On the single-module Origin 200 this
-         * model targets that is the whole machine. A multi-module machine
-         * has one controller per module, each genuinely cold-powered; the
-         * datasheet's design has the boot master read its own module's latch
-         * once and propagate the result, so the others are not read. Whether
-         * a multi-module cold-power latch is per-module or machine-wide is
-         * not settled by the datasheet.
+         * model targets that is the whole machine. A multi-module machine has
+         * one controller per module, each genuinely cold-powered; by design
+         * the boot master reads its own module's latch once and propagates
+         * the result, so the others are not read. Whether a multi-module
+         * cold-power latch is per-module or machine-wide is not settled.
          */
         {
             char resp[6];
@@ -308,16 +303,12 @@ static void elsc_handle_pwr(SGIElscState *s, const char *text, unsigned len)
         return;
     case 'd': {
         /*
-         * "pwr d <sec>": delayed power-down, a destructive command --
-         * supervisor-gated like "rst". The delay is hex seconds: 0 is
-         * immediate, otherwise the guide's range 0x5 to 0x258 (5 to 600
-         * seconds). A malformed form, a non-hex delay or an out-of-range
-         * delay is "err arg", and all three are checked before the supervisor
-         * gate: a bad argument is a bad argument whether or not the caller has
-         * authenticated, and must not be reported as "err perm". Answer "ok",
-         * then shut the machine down; like "rst" the action is deferred until
-         * the ack is read (the deferred-action state machine). The scheduled
-         * delay is not modelled -- the shutdown follows the ack.
+         * "pwr d <sec>" requires the supervisor password, as "rst" does. Hex
+         * delay: 0 is immediate; the Origin 200 diagnostics guide permits
+         * 0x5-0x258 (5-600 seconds). Malformed, non-hex or out-of-range input
+         * returns "err arg" before the password check, never "err perm".
+         * Reply "ok" before shutdown; the model ignores the requested delay
+         * and shuts down once the ack is read.
          */
         uint32_t sec;
 
@@ -340,12 +331,10 @@ static void elsc_handle_pwr(SGIElscState *s, const char *text, unsigned len)
         }
         elsc_frame_response_str(s, "ok");
         /*
-         * Arm only if nothing is committed yet. A committed action is past
-         * the point of no return; clearing deferred_committed here would
-         * demote it to ARMED and the fetch-seam commit would be lost. The
-         * committed action fires regardless; when it is weaker than this
-         * request the returned "ok" does not describe the action performed,
-         * and that mismatch is logged rather than passed over silently.
+         * Clearing deferred_committed would demote an acknowledged action to
+         * ARMED and lose the commit after the last text byte is fetched. The
+         * committed action still fires; log if it is weaker than this request
+         * and the returned "ok" therefore describes another action.
          */
         if (!s->deferred_committed) {
             s->deferred_action = ELSC_ACTION_SHUTDOWN;
@@ -360,13 +349,10 @@ static void elsc_handle_pwr(SGIElscState *s, const char *text, unsigned len)
     }
     case 'c':
         /*
-         * "pwr c": power-cycle, destructive -- supervisor-gated like "rst".
-         * Answer "ok", then reset the machine, deferred until the ack is read
-         * (the deferred-action state machine). A power-cycle is a cold
-         * restart, not a warm reset, so its bottom half also re-arms the
-         * cold-power latch -- distinguished from "rst" by the CYCLE action.
-         * Doing it when the action fires, not here, means a superseded
-         * "pwr c" leaves no trace: no reset and no false cold-power latch.
+         * "pwr c" requires the supervisor password and replies "ok" before
+         * the reset, as "rst" does. CYCLE is a cold restart: its bottom half
+         * re-arms the cold-power latch when the action fires after the ack. A
+         * superseded request causes neither reset nor false cold-power bit.
          */
         if (len != 5) {
             elsc_frame_response_str(s, "err arg");
@@ -382,12 +368,10 @@ static void elsc_handle_pwr(SGIElscState *s, const char *text, unsigned len)
         }
         elsc_frame_response_str(s, "ok");
         /*
-         * Arm only if nothing is committed yet. A committed action is past
-         * the point of no return; clearing deferred_committed here would
-         * demote it to ARMED and the fetch-seam commit would be lost. The
-         * committed action fires regardless; when it is weaker than this
-         * request the returned "ok" does not describe the action performed,
-         * and that mismatch is logged rather than passed over silently.
+         * Clearing deferred_committed would demote an acknowledged action to
+         * ARMED and lose the commit after the last text byte is fetched. The
+         * committed action still fires; log if it is weaker than this request
+         * and the returned "ok" therefore describes another action.
          */
         if (!s->deferred_committed) {
             s->deferred_action = ELSC_ACTION_CYCLE;
@@ -401,17 +385,18 @@ static void elsc_handle_pwr(SGIElscState *s, const char *text, unsigned len)
         return;
     case 'r':
         /*
-         * "pwr r": redundant-supply query, read-only and ungated. The wire
-         * response is a per-module record for each supply, tagged
-         * tag:present:health -- "m:y:ok"/"m:y:fl"/"m:n" for the master and
-         * "s:y:ok"/"s:y:fl"/"s:n" for the slave. The present flag (y/n)
-         * separates an absent supply ("m:n") from a failed one ("m:y:fl"),
-         * and health is "ok" or "fl". Both supplies are modelled present and
-         * healthy. The response payload is identical on the operator and wire
-         * interfaces -- only the command framing differs -- so this is what
-         * the Origin 200 diagnostics guide documents (datasheet PR #602). It
-         * supersedes an earlier one-colon "ok m:ok s:ok" that came from the
-         * driver's test-fixture mock rather than the firmware wire format.
+         * "pwr r": redundant-supply query, read-only and exempt from the
+         * supervisor password check. The wire response is a per-module record
+         * for each supply, tagged tag:present:health:
+         * "m:y:ok"/"m:y:fl"/"m:n" for the master and "s:y:ok"/"s:y:fl"/"s:n"
+         * for the slave. The present flag (y/n) separates an absent supply
+         * ("m:n") from a failed one ("m:y:fl"), and health is "ok" or "fl".
+         * Both supplies are modelled present and healthy. The response
+         * payload is identical on the operator and wire interfaces; only
+         * the command framing differs. This is what the Origin 200
+         * diagnostics guide documents. It supersedes an earlier one-colon
+         * "ok m:ok s:ok" that came from the driver's test-fixture mock rather
+         * than the firmware wire format.
          */
         if (len != 5) {
             elsc_frame_response_str(s, "err arg");
@@ -444,12 +429,13 @@ static bool elsc_all_digits(const char *p, unsigned n)
 
 /*
  * "hbt [<interval> <delay>]": heartbeat / NMI-watchdog control. "hbt" alone
- * sends one heartbeat, "hbt 0" disables monitoring, and "hbt <interval>
- * <delay>" enables it so a missed heartbeat raises a non-maskable interrupt
- * after the delay. The two arguments are decimal, unlike the hex arguments
- * elsewhere in this protocol. The kernel only enables the watchdog during
- * controller init, so validating the request and answering "ok" without
- * arming a timer carries a boot; no missed-heartbeat interrupt is modelled.
+ * sends one heartbeat, "hbt 0" disables monitoring, and
+ * "hbt <interval> <delay>" enables it so a missed heartbeat raises a
+ * non-maskable interrupt after the delay. The two arguments are decimal,
+ * unlike the hex arguments elsewhere in this protocol. The kernel only
+ * enables the watchdog during controller init, so validating the request and
+ * answering "ok" without arming a timer carries a boot; no missed-heartbeat
+ * interrupt is modelled.
  */
 static void elsc_handle_hbt(SGIElscState *s, const char *text, unsigned len)
 {
@@ -486,9 +472,9 @@ static void elsc_handle_hbt(SGIElscState *s, const char *text, unsigned len)
             return;
         }
         /*
-         * The enable form arms an NMI watchdog the model does not
-         * implement. Answering "ok" without arming a timer carries a boot
-         * (the datasheet's own note), but flag that it is unmodelled.
+         * The enable form arms an NMI watchdog the model does not implement.
+         * Answering "ok" without arming a timer carries a boot-time risk, but
+         * flag that it is unmodelled.
          */
         qemu_log_mask(LOG_UNIMP,
                       "sgi-elsc: heartbeat/NMI watchdog enable is not "
@@ -500,13 +486,13 @@ static void elsc_handle_hbt(SGIElscState *s, const char *text, unsigned len)
 
 /*
  * "tas <ch>" / "tas 0": the test-and-set lock cell. A distinct service
- * carried over the bus -- not the arbitration, which every command passes
+ * carried over the bus; not the arbitration, which every command passes
  * through, this one included. "tas <ch>" takes the lock if it is free;
  * "tas 0" releases it.
  *
  * <ch> is a LITERAL character, not a hex value: the client stores the owner
  * and compares it byte for byte, so "tas A" acquires with owner 'A' and a
- * retry reads back "ok A" -- not "ok a" -- and any non-'0' byte is a valid
+ * retry reads back "ok A", not "ok a". Any non-'0' byte is a valid
  * channel, with nothing to reject as a bad argument. Classic test-and-set:
  * "ok <held>" reports the byte the cell held BEFORE this request, so an
  * acquire of a free cell reads back "ok 0" and a caller polls until it reads
@@ -521,9 +507,8 @@ static void elsc_handle_hbt(SGIElscState *s, const char *text, unsigned len)
  * would truncate "ok \0" back to "ok ".
  *
  * The literal-byte round-trip is the test-and-set semantic the client's byte
- * comparison needs, regardless of the datasheet's "hex" wording, which is
- * flagged for the source owner. Read from the 6.5.7 driver's lock wrappers,
- * dead code there; confirm against 6.5.30.
+ * comparison needs. The 6.5.7 lock wrappers are dead code; this behavior is
+ * unconfirmed for 6.5.30.
  */
 static void elsc_handle_tas(SGIElscState *s, const char *text, unsigned len)
 {
@@ -545,7 +530,8 @@ static void elsc_handle_tas(SGIElscState *s, const char *text, unsigned len)
     ch = (uint8_t)text[4];
 
     was_held = s->tas_held;             /* occupancy before this request */
-    held = s->tas_lock;                 /* owner before this request, if held */
+    /* owner before this request, if held */
+    held = s->tas_lock;
     if (ch == '0') {
         s->tas_held = false;            /* release */
         s->tas_lock = 0;
@@ -553,11 +539,12 @@ static void elsc_handle_tas(SGIElscState *s, const char *text, unsigned len)
         s->tas_held = true;             /* free: this caller takes it */
         s->tas_lock = ch;
     }
-    /* else: already held (by this caller or another); the cell is unchanged. */
+    /*
+     * else: already held (by this caller or another); the cell is unchanged.
+     */
 
     /*
-     * "ok <held>": the owner byte before this request, or '0' if it was
-     * free.
+     * "ok <held>": the owner byte before this request, or '0' if it was free.
      */
     buf[0] = 'o';
     buf[1] = 'k';
@@ -581,7 +568,7 @@ static void elsc_handle_nic(SGIElscState *s, const char *text, unsigned len)
     char response[] = "ok 1";
 
     if (len < 4 || text[3] != ' ') {
-        /* "nic", "nicx": no space-delimited argument list -- not "nic". */
+        /* "nic" and "nicx" have no space-delimited argument list. */
         elsc_frame_response_str(s, "err cmd");
         return;
     }
@@ -596,7 +583,9 @@ static void elsc_handle_nic(SGIElscState *s, const char *text, unsigned len)
         elsc_frame_response_str(s, "err arg");
         return;
     }
-    /* Validate every timing argument before handing the slot to the module. */
+    /*
+     * Validate every timing argument before handing the slot to the module.
+     */
     if (!elsc_parse_hex(arg, sp1 - arg, &pulse) ||
         !elsc_parse_hex(sp1 + 1, sp2 - (sp1 + 1), &sample) ||
         !elsc_parse_hex(sp2 + 1, end - (sp2 + 1), &delay)) {
@@ -666,34 +655,34 @@ static void elsc_dispatch(SGIElscState *s, const char *text, unsigned len)
     }
     if (len == 3 && memcmp(text, "rst", 3) == 0) {
         /*
-         * Module reset -- panic reboot and fatal-error recovery only, never
-         * a normal boot. No delayed-reset form; the hex delay belongs to
+         * Module reset: panic reboot and fatal-error recovery only, never a
+         * normal boot. No delayed-reset form; the hex delay belongs to
          * "pwr d". Supervisor-gated. A caller treats "ok" as proof the reset
          * happened and does not fall back to its own hardware reset, so the
-         * reset must fire. It is deferred until the guest has read "ok" --
-         * committed at the fetch seam that completes the ack
-         * (elsc_response_fully_read) and then run from a bottom half.
+         * reset must fire. It is deferred until the guest has read "ok":
+         * committed at the fetch of the last frame byte that completes the
+         * ack (elsc_response_fully_read) and then run from a bottom half.
          *
-         * The datasheet's reset is module-scoped. On the single-module
-         * Origin 200 the module is the whole machine, so qemu_system_reset
-         * is exact. A multi-node machine (the two-node bring-up is active)
-         * has one controller per module, and this resets the whole VM --
-         * broader than the hardware's per-module reset. QEMU has no
-         * per-module reset, and the controller cannot even tell from its
-         * own properties whether the machine is multi-node, so the model
-         * keeps the whole-machine reset rather than refuse; a true
-         * module-scoped reset would need a machine-level signal.
+         * The hardware reset is module-scoped. On the single-module Origin
+         * 200 the module is the whole machine, so qemu_system_reset is exact.
+         * A multi-node machine (the two-node bring-up is active) has one
+         * controller per module, and this resets the whole VM. Hardware reset
+         * is scoped to one module. QEMU has no per-module reset, and
+         * the controller cannot even tell from its own properties whether the
+         * machine is multi-node, so the model keeps the whole-machine reset
+         * rather than refuse; a true module-scoped reset would need a
+         * machine-level signal.
          */
         if (!s->supervisor) {
             elsc_frame_response_str(s, "err perm");
             return;
         }
         /*
-         * A module owner decides what a reset reaches, and it is asked
-         * before the acknowledgement is framed rather than after. Answering
-         * "ok" for an action that will not happen is undetectable to the
-         * caller, which takes the "ok" as proof and will not fall back to
-         * its own hardware reset; "err cmd" leaves it that fallback.
+         * A module owner decides what a reset reaches, and it is asked before
+         * the acknowledgement is framed rather than after. Answering "ok" for
+         * an action that will not happen is undetectable to the caller, which
+         * takes the "ok" as proof and will not fall back to its own hardware
+         * reset; "err cmd" leaves it that fallback.
          */
         if (!elsc_module_can_execute(s, ELSC_ACTION_RESET)) {
             elsc_frame_response_str(s, "err cmd");
@@ -701,12 +690,10 @@ static void elsc_dispatch(SGIElscState *s, const char *text, unsigned len)
         }
         elsc_frame_response_str(s, "ok");
         /*
-         * Arm only if nothing is committed yet. A committed action is past
-         * the point of no return; clearing deferred_committed here would
-         * demote it to ARMED and the fetch-seam commit would be lost. The
-         * committed action fires regardless; when it is weaker than this
-         * request the returned "ok" does not describe the action performed,
-         * and that mismatch is logged rather than passed over silently.
+         * Clearing deferred_committed would demote an acknowledged action to
+         * ARMED and lose the commit after the last text byte is fetched. The
+         * committed action still fires; log if it is weaker than this request
+         * and the returned "ok" therefore describes another action.
          */
         if (!s->deferred_committed) {
             s->deferred_action = ELSC_ACTION_RESET;
@@ -732,23 +719,24 @@ static void elsc_request_complete(SGIElscState *s)
     }
 
     /*
-     * A new request supersedes any pending response. An ARMED action -- its
-     * ack not fully read -- is canceled: consuming this new, unrelated response
-     * must not fire it. A COMMITTED action is past the point of no return and
-     * survives; the new request's own I2C_START_SEND already scheduled it (a
-     * NACK-on-last-text-byte response reaches here that way, without a STOP or
-     * a last-byte NACK). If this request is itself "rst", the dispatch below
-     * sees the committed action and logs rather than re-arming.
+     * A new request supersedes any pending response. An ARMED action (its
+     * ack not fully read) is canceled: consuming this new, unrelated
+     * response must not fire it. A COMMITTED action is past the point of no
+     * return and survives; the new request's own I2C_START_SEND already
+     * scheduled it (a NACK-on-last-text-byte response reaches here that way,
+     * without a STOP or a last-byte NACK). If this request is itself "rst",
+     * the dispatch below sees the committed action and logs rather than
+     * re-arming.
      */
     if (!s->deferred_committed) {
         s->deferred_action = ELSC_ACTION_NONE;
     }
 
     /*
-     * The response belongs to whoever asked: the CPU driving the bus
-     * is current_cpu at the slave event, and its index is the global
-     * processor code. A monitor or qtest access carries no processor,
-     * so attribute it to slice A of this controller's module.
+     * The response belongs to whoever asked: the CPU driving the bus is
+     * current_cpu at the slave event, and its index is the global processor
+     * code. A monitor or qtest access carries no processor, so attribute it
+     * to slice A of this controller's module.
      */
     s->resp_owner = current_cpu ? current_cpu->cpu_index : s->cpu_base;
 
@@ -763,32 +751,21 @@ static void elsc_request_complete(SGIElscState *s)
 }
 
 /*
- * Carry out a COMMITTED deferred action once its "ok" has been read.
- * Scheduled at the transaction boundary that follows the fetch-seam commit
- * (elsc_fire_committed_action, from a NACK, a STOP or a following request) --
- * ordinarily as the requesting processor's own queued work
- * (elsc_deferred_action_cpu), or, with no processor to queue it on, from a
- * bottom half: the re-arm after a migration (elsc_post_load), or a qtest
- * access with no processor running guest code.
+ * elsc_fire_committed_action schedules this after the ack's last text byte is
+ * fetched, at NACK, STOP or the next request. It runs as requesting-CPU work
+ * through elsc_deferred_action_cpu, or a bottom half after elsc_post_load or
+ * qtest access without a running guest CPU.
  *
- * Every destructive action releases the I2C bus first. A response the master
- * ends by NACKing the last byte with no STOP -- it may fetch the byte in a
- * later transaction, or issue a same-address repeated START -- leaves this
- * controller matched on the bus: the STOP that would call i2c_end_transfer
- * never comes. The reset, cycle or shutdown resets the PCF8584 but not the
- * bus, so the stale match would misroute the next transaction -- an
- * identity-EEPROM read answered by this controller. A shutdown that
- * -no-shutdown or -action shutdown=pause turns into machine survival keeps
- * that wedged bus alive, so it needs the release just as a reset does.
- * i2c_end_transfer walks the bus's slave list and cannot run from inside an
- * I2C callback, and the reset must not run while the guest is still reading
- * the frame, which is why the whole action is deferred rather than run when
- * it is committed.
+ * NACK without STOP, including a later byte fetch or same-address repeated
+ * START, leaves this slave matched: PCF8584 reset does not reset the I2C bus.
+ * A later identity-EEPROM read could reach this controller. Even shutdown may
+ * leave the machine running under -no-shutdown or -action shutdown=pause, so
+ * reset, cycle and shutdown all release the bus first. i2c_end_transfer walks
+ * slaves and cannot run inside an I2C callback; reset also must wait until
+ * the guest finishes the frame.
  *
- * The gate makes a stale schedule a no-op: only a committed action fires, and
- * firing clears the state, so a second scheduling -- another boundary of the
- * same response, or a post-migration re-arm racing the original -- does
- * nothing.
+ * Only COMMITTED actions fire. Firing clears state, so another boundary or
+ * post-migration re-arm cannot execute the same action twice.
  */
 static void elsc_deferred_action_bh(void *opaque)
 {
@@ -810,9 +787,9 @@ static void elsc_deferred_action_bh(void *opaque)
      *
      * Only the anonymous bus is released here. i2c_end_transfer() asserts
      * that no participant ids are configured, and the named alternative
-     * cannot help: i2c_master_owns() is false for every wire-mode bus, and
-     * a wire bus has no resolved owner between a stop and the next start.
-     * Such a bus ends its transfer at the STOP its master drives.
+     * cannot help: i2c_master_owns() is false for every wire-mode bus, and a
+     * wire bus has no resolved owner between a stop and the next start. Such
+     * a bus ends its transfer at the STOP its master drives.
      */
     if (!i2c_bus_master_count(s->bus) && i2c_bus_busy(s->bus)) {
         i2c_end_transfer(s->bus);
@@ -821,9 +798,9 @@ static void elsc_deferred_action_bh(void *opaque)
     switch (action) {
     case ELSC_ACTION_CYCLE:
         /*
-         * A power-cycle is a cold restart, so re-arm the cold-power latch
-         * for the post-reset "pwr q". elsc_reset_hold leaves the latch alone
-         * (a warm "rst" must not re-arm it), so setting it here, before the
+         * A power-cycle is a cold restart, so re-arm the cold-power latch for
+         * the post-reset "pwr q". elsc_reset_hold leaves the latch alone (a
+         * warm "rst" must not re-arm it), so setting it here, before the
          * action fires, carries it through whoever carries it out.
          */
         s->cold_power_on = true;
@@ -840,9 +817,9 @@ static void elsc_deferred_action_bh(void *opaque)
     }
 
     /*
-     * A module owner decides what the action reaches -- the datasheet's
-     * reset is module-scoped, and only the single-module Origin 200 can
-     * read that as the whole machine.
+     * A module owner decides what the action reaches; the hardware reset is
+     * module-scoped, and only the single-module Origin 200 can read that as
+     * the whole machine.
      */
     if (s->module_ops && s->module_ops->execute) {
         s->module_ops->execute(s->module_opaque, action);
@@ -857,36 +834,21 @@ static void elsc_deferred_action_bh(void *opaque)
 }
 
 /*
- * The response has been fully handed to the guest: end the announcement and
- * mark any deferred action COMMITTED. Called from the fetch seam in
- * elsc_recv_internal -- the read that advances txpos to txlen.
+ * elsc_recv_internal calls this when txpos reaches txlen. PCF8584 returns the
+ * held byte before fetching the next, so the guest has the last text byte and
+ * full "ok"/"err" ack when it prefetches the trailing checksum. That checksum
+ * carries no ack information. End the announcement and commit here.
  *
- * That seam is the exact point at which the ack is provably delivered. The
- * PCF8584 prefetches one byte ahead (pcf8584_read_data returns the held byte
- * and then fetches the next), so txpos reaches txlen precisely as the chip
- * pulls the frame's last byte -- the trailing checksum -- by which time the
- * guest has already been handed everything through the last text byte, i.e.
- * the entire "ok"/"err" ack. The one byte still in the read-ahead is only that
- * checksum, which carries no ack information.
- *
- * Committing at the fetch, not at a terminal event, is what closes the
- * last-text-byte NACK race: a master that clears ACK on the last text byte
- * fires I2C_NACK one byte early (txpos < txlen) and, if it then issues a
- * same-address repeated START with no STOP, produces no I2C_FINISH either --
- * so a commit tied to those events would miss the action and
- * elsc_request_complete would cancel it as still-ARMED. The fetch that follows
- * the NACK still runs (pcf8584_read_data fetches regardless of ACK), so the
- * seam catches it. An action whose ack was never fully read stays ARMED and a
- * superseding request cancels it; past this seam it is COMMITTED and survives
+ * NACK on the last text byte arrives early (txpos < txlen). A same-address
+ * repeated START without STOP then raises no I2C_FINISH. PCF8584 still
+ * fetches after NACK, so this commit survives; committing only at NACK/FINISH
+ * would leave the action ARMED for elsc_request_complete to cancel. Unread
+ * acks stay ARMED and can be superseded; committed actions survive
  * supersession and migration.
  *
- * Committing is only a flag -- no bus walk, no schedule -- so it is safe from
- * inside the recv callback. Carrying the action out is separate
- * (elsc_fire_committed_action, from the transaction's terminal events), so the
- * bottom half's i2c_end_transfer and reset run only once the guest has taken
- * the whole frame -- the checksum still sits one byte behind in the read-ahead
- * at this instant -- rather than resetting the chip mid-read and corrupting
- * that last byte.
+ * This callback sets a flag only. elsc_fire_committed_action runs at a
+ * terminal event; its bottom half ends the I2C transfer and resets after the
+ * guest takes the checksum, avoiding a reset during the read.
  */
 static void elsc_response_fully_read(SGIElscState *s)
 {
@@ -901,21 +863,20 @@ static void elsc_response_fully_read(SGIElscState *s)
 
 /*
  * Run a COMMITTED action from the requesting processor's own queued work,
- * then stop every processor -- mirroring sgi_hub_request_machine_reset() in
+ * then stop every processor, mirroring sgi_hub_request_machine_reset() in
  * hw/misc/sgi-hub.c for the Hub's port-reset write (#606). Queued work runs
  * at the writer's next translation-block boundary, outside the execution
  * loop, which is where a processor may be stopped. Round-robin execution
  * reaches it before any peer is scheduled again, so nothing else executes
- * past the write that committed the action; multi-threaded execution
- * cannot promise that, since the peers run on their own host threads, and
- * this only bounds them to their own next block boundary rather than to
- * whenever the main loop would otherwise have performed the reset.
+ * past the write that committed the action; multi-threaded execution cannot
+ * promise that, since the peers run on their own host threads, and this only
+ * bounds them to their own next block boundary rather than to whenever the
+ * main loop would otherwise have performed the reset.
  *
- * Only the no-module-owner case pauses every processor here. Where a
- * module decides what the action reaches (module_ops->execute -- the
- * Origin 2000's module complex), stopping processors is that module's
- * call, not this controller's; see "Deferred destructive actions" in
- * docs/specs/sgi-elsc.rst.
+ * Only the no-module-owner case pauses every processor here. Where a module
+ * decides what the action reaches (module_ops->execute for the
+ * Origin 2000 module complex), stopping processors is that module's call, not
+ * this controller's.
  */
 static void elsc_deferred_action_cpu(CPUState *cpu, run_on_cpu_data data)
 {
@@ -933,8 +894,8 @@ static void elsc_deferred_action_cpu(CPUState *cpu, run_on_cpu_data data)
 }
 
 /*
- * Fire a COMMITTED deferred action. Called at a transaction boundary -- the
- * master's NACK, the STOP, or a following request -- so it runs after the
+ * Fire a COMMITTED deferred action. Called at a transaction boundary (the
+ * master's NACK, the STOP, or a following request) so it runs after the
  * guest has taken the whole frame, not from inside the read that completed
  * the ack. deferred_scheduled records that firing is queued, so a migration
  * re-arms exactly it (elsc_post_load); the action's own committed-flag guard
@@ -943,17 +904,16 @@ static void elsc_deferred_action_cpu(CPUState *cpu, run_on_cpu_data data)
  * A live transaction reaches this device through a guest access, so
  * current_cpu names the processor that drove it: queue the action on that
  * processor's own work (elsc_deferred_action_cpu) rather than a main-loop
- * bottom half, so every processor the action must stop is still running
- * when the work runs and none of them can get ahead of it. A bottom half
- * left the moment of the reset to whenever the main loop next ran, with
- * every other processor free to keep executing until then -- the defect
- * this fixes (#607).
+ * bottom half, so every processor the action must stop is still running when
+ * the work runs and none of them can get ahead of it. A bottom half left the
+ * moment of the reset to whenever the main loop next ran, with every other
+ * processor free to keep executing until then. This caused #607.
  *
- * Without a current processor there is no writer to queue the work on --
- * the bottom half re-armed after a migration (elsc_post_load), or a qtest
- * access with no processor running guest code -- so fall back to the
- * bottom half there, scheduled through the replay-aware helper so it lands
- * at a reproducible point under record/replay (docs/devel/replay.rst).
+ * Without a current processor there is no writer to queue the work on: the
+ * bottom half re-armed after a migration (elsc_post_load), or a qtest access
+ * with no processor running guest code. Fall back to the bottom half
+ * there, scheduled through the replay-aware helper so it lands at a
+ * reproducible point under record/replay.
  */
 static void elsc_fire_committed_action(SGIElscState *s)
 {
@@ -973,11 +933,11 @@ static int elsc_event_internal(SGIElscState *s, enum i2c_event event)
 {
     /*
      * A committed deferred action is carried out at the first bus event after
-     * the seam that is not part of the recv data path. Every such event
+     * that fetch that is not part of the recv data path. Every such event
      * schedules it (the bottom half's own committed-flag guard keeps that
-     * idempotent), so whichever boundary a given response reaches -- a NACK, a
-     * STOP, a repeated START back to this controller or away to another
-     * address -- fires it, and none fire it mid-read. Only the recv data path
+     * idempotent), so whichever boundary a given response reaches (a NACK,
+     * a STOP, a repeated START back to this controller or away to another
+     * address) fires it, and none fire it mid-read. Only the recv data path
      * itself does not schedule, because that is where the guest is still
      * taking the frame's bytes.
      */
@@ -992,7 +952,7 @@ static int elsc_event_internal(SGIElscState *s, enum i2c_event event)
         elsc_module_slave_active(s, true);
         /*
          * Direction switch: the request just written is complete. A committed
-         * action is not canceled here, so schedule it -- this covers a
+         * action is not canceled here, so schedule it; this covers a
          * same-address repeated START back into the receive direction after a
          * fully-fetched response, which reaches no other boundary.
          */
@@ -1014,11 +974,11 @@ static int elsc_event_internal(SGIElscState *s, enum i2c_event event)
     case I2C_NACK:
         /*
          * The master NACKed a byte to end the read; if an action committed at
-         * the seam, the guest has taken the whole frame, so carry it out.
+         * that fetch, the guest has taken the whole frame, so carry it out.
          * Scheduling at NACK is safe only because pcf8584_read_data captures
-         * the held byte before it raises I2C_NACK, so the checksum reaches the
-         * guest before anything schedules; were that read path reordered, this
-         * boundary would move back inside the frame.
+         * the held byte before it raises I2C_NACK, so the checksum reaches
+         * the guest before anything schedules; were that read path reordered,
+         * this boundary would move back inside the frame.
          */
         elsc_fire_committed_action(s);
         break;
@@ -1026,12 +986,12 @@ static int elsc_event_internal(SGIElscState *s, enum i2c_event event)
         elsc_module_slave_active(s, false);
         s->rxlen = 0;
         /*
-         * An unconsumed response stays pending for its requester --
-         * announced by its signal 2 -- until read to its end or
-         * superseded. The controller's own broadcasts deliver this
-         * event too; discarding here would lose the response before
-         * its owner could poll. A committed action fires here too, for a
-         * response the master ends with a STOP rather than a bare NACK.
+         * An unconsumed response stays pending for its requester (announced
+         * by its signal 2) until read to its end or superseded. The
+         * controller's own broadcasts deliver this event too; discarding here
+         * would lose the response before its owner could poll. A committed
+         * action fires here too, for a response the master ends with a STOP
+         * rather than a bare NACK.
          */
         elsc_fire_committed_action(s);
         if (s->txpos >= s->txlen) {
@@ -1083,9 +1043,10 @@ static uint8_t elsc_recv_internal(SGIElscState *s)
 
         if (s->txpos == s->txlen) {
             /*
-             * The fetch seam: the last byte has just been handed out, so the
-             * whole ack is delivered. End the announcement and commit any
-             * deferred action here (see elsc_response_fully_read).
+             * The fetch of the last frame byte: the last byte has just been
+             * handed out, so the whole ack is delivered. End the announcement
+             * and commit any deferred action here (see
+             * elsc_response_fully_read).
              */
             elsc_response_fully_read(s);
         }
@@ -1147,8 +1108,8 @@ static void elsc_publish_grant(SGIElscState *s, uint8_t value)
 /*
  * The held-slot length for a code on a given revolution. Varying it by both
  * the code and the revolution keeps the ring's period from repeating turn to
- * turn, so no fixed polling cadence stays commensurate with it -- the cause
- * of the processor a cold start intermittently loses on its first pass.
+ * turn. No fixed polling cadence stays commensurate with it. This caused
+ * a cold start to lose a processor intermittently on its first pass.
  */
 static int64_t elsc_arb_slot_us(uint32_t code, uint32_t rev)
 {
@@ -1158,9 +1119,8 @@ static int64_t elsc_arb_slot_us(uint32_t code, uint32_t rev)
 }
 
 /*
- * Whether something waits for the given code's processor: console
- * input for the console processor, or a response its requester has
- * not yet consumed.
+ * Whether something waits for the given code's processor: console input for
+ * the console processor, or a response its requester has not yet consumed.
  */
 static bool elsc_arb_signal2(SGIElscState *s, uint32_t ring_position)
 {
@@ -1188,7 +1148,7 @@ static bool elsc_shared_arb_signal2(SGIElscState *s,
  * read one code at the same phase on every revolution, so a processor whose
  * grant never landed under its poll was lost on a cold start's first pass; a
  * slot length that varies with the code and the revolution leaves no such
- * cadence (docs/specs/sgi-elsc.rst, arbitration).
+ * cadence.
  */
 static void elsc_arb_step(void *opaque)
 {
@@ -1265,19 +1225,19 @@ static int elsc_can_receive(void *opaque)
 
 /*
  * The controller's own reinitialisation, which its recovery timeout and its
- * reset and power paths reach. The datasheet gives it the protocol queues
+ * reset and power paths reach. Reinitialisation clears the protocol queues
  * and nothing else, so the framing state goes and the rest stays: the
- * supervisor gate, the display, the lock and any committed destructive
- * action are not queues, and no source says a reinitialisation disturbs
- * them. An in-flight request is abandoned. An action already acknowledged
- * to a guest still happens.
+ * supervisor password check, the display, the lock and any committed
+ * destructive action are not queues, and no source says a reinitialisation
+ * disturbs them. An in-flight request is abandoned. An action already
+ * acknowledged to a guest still happens.
  *
  * Two of the fields cleared here are a model choice rather than a contract.
  * Queued alternate-console input goes with the framing, and so does the
  * message indication that announces it, but nothing establishes that a
  * five-second I2C recovery drops characters a terminal already sent.
- * Retaining them would be as defensible. They are named here because a
- * test now asserts that they go.
+ * Retaining them would be as defensible. They are named here because a test
+ * now asserts that they go.
  */
 void sgi_elsc_reinitialize(SGIElscState *s)
 {
@@ -1352,15 +1312,15 @@ static void elsc_realize(DeviceState *dev, Error **errp)
     s->bus = I2C_BUS(qdev_get_parent_bus(dev));
     s->arb_positions = ELSC_RING_POSITION_COUNT;
     /*
-     * The cold power-on latch is set here rather than in reset because a
-     * warm reset -- a guest "rst", or any system reset -- does not cycle
-     * power and so must not re-arm it; only powering the controller up
-     * does, which realize models. A migrated stream overwrites it on load.
+     * The cold power-on latch is set here rather than in reset because a warm
+     * reset (a guest "rst", or any system reset) does not cycle power and
+     * so must not re-arm it; only powering the controller up does, which
+     * realize models. A migrated stream overwrites it on load.
      */
     s->cold_power_on = true;
     /*
-     * The timer exists either way so that unrealize and the migration
-     * stream keep one shape; only starting it makes the rotation run.
+     * The timer exists either way so that unrealize and the migration stream
+     * keep one shape; only starting it makes the rotation run.
      */
     s->arb_timer = timer_new_us(QEMU_CLOCK_VIRTUAL, elsc_arb_step, s);
     if (s->arbitration) {
@@ -1384,19 +1344,19 @@ static void elsc_unrealize(DeviceState *dev)
 
 /*
  * The bottom half that carries out a committed action is not migrated. On
- * load, re-arm exactly the one the source had scheduled and not yet run --
+ * load, re-arm exactly the one the source had scheduled and not yet run.
  * deferred_scheduled records precisely that, and post_load re-arms iff it is
- * set. No reasoning about the frame is needed: the bit is set where a boundary
- * schedules the bottom half and cleared when the bottom half runs, so a stream
- * taken with it set is a bottom half lost in flight and one taken with it clear
- * is not.
+ * set. No reasoning about the frame is needed: the bit is set where a
+ * boundary schedules the bottom half and cleared when the bottom half runs,
+ * so a stream taken with it set is a bottom half lost in flight and one taken
+ * with it clear is not.
  *
  * That leaves an ARMED action (ack unread, never scheduled) and a committed
- * action still waiting for its boundary (fully read but not yet closed, so not
- * scheduled) both alone, which is right: the ARMED one is committed and fired
- * when the guest reads its ack on the destination, and the waiting one is
- * scheduled by the destination's own closing boundary. Re-arming either here
- * would fire before its frame is finished.
+ * action still waiting for its boundary (fully read but not yet closed, so
+ * not scheduled) both alone, which is right: the ARMED one is committed and
+ * fired when the guest reads its ack on the destination, and the waiting one
+ * is scheduled by the destination's own closing boundary. Re-arming either
+ * here would fire before its frame is finished.
  */
 static int elsc_post_load(void *opaque, int version_id)
 {
@@ -1427,12 +1387,12 @@ static int elsc_post_load(void *opaque, int version_id)
 
     /*
      * Reject an inconsistent stream before it can drive the bottom half. A
-     * pairing the model never produces -- an action past ELSC_ACTION_SHUTDOWN,
-     * the committed flag set with no action, or the scheduled flag set without
-     * the committed flag (scheduled is only ever set while committed) -- means
-     * a corrupt or foreign stream, so fail the load rather than schedule a
-     * bottom half that would hit g_assert_not_reached() or fire a phantom
-     * action.
+     * pairing the model never produces (an action past
+     * ELSC_ACTION_SHUTDOWN, the committed flag set with no action, or the
+     * scheduled flag set without the committed flag (scheduled is only ever
+     * set while committed)) means a corrupt or foreign stream, so fail the
+     * load rather than schedule a bottom half that would hit
+     * g_assert_not_reached() or fire a phantom action.
      */
     if (s->deferred_action > ELSC_ACTION_SHUTDOWN ||
         (s->deferred_committed && s->deferred_action == ELSC_ACTION_NONE) ||
@@ -1471,38 +1431,41 @@ static const VMStateDescription vmstate_sgi_elsc = {
         VMSTATE_UINT8_V(arb_signal, SGIElscState, 4),
         VMSTATE_INT64_V(arb_hold_until, SGIElscState, 4),
         /*
-         * The revolution counter varies the held-slot schedule (elsc_arb_step).
+         * The revolution counter varies the held-slot schedule
+         * (elsc_arb_step).
          */
         VMSTATE_UINT32_V(arb_rev, SGIElscState, 5),
         /*
-         * An older stream loads with no owner: a response in flight
-         * stays passively served, unannounced, as the model that wrote
-         * the stream behaved.
+         * An older stream loads with no owner: a response in flight stays
+         * passively served, unannounced, as the model that wrote the stream
+         * behaved.
          */
         VMSTATE_INT32_V(resp_owner, SGIElscState, 6),
         /* An older stream loads the display zeroed, not blank. */
         VMSTATE_UINT8_ARRAY_V(display, SGIElscState,
                               SGI_ELSC_DISPLAY_CHARS, 7),
         /*
-         * A pre-version-8 stream carried no latch and never answered
-         * "pwr q"; it keeps realize's value (freshly powered), so a query
-         * after such a migration reads the cold-power-on once.
+         * A pre-version-8 stream carried no latch and never answered "pwr q";
+         * it keeps realize's value (freshly powered), so a query after such a
+         * migration reads the cold-power-on once.
          */
         VMSTATE_BOOL_V(cold_power_on, SGIElscState, 8),
         /*
          * A deferred destructive action, whether its ack has been read, and
-         * whether its bottom half has been scheduled -- migrated so an action
-         * accepted before a migration behaves correctly on the destination:
-         * ARMED waits for the ack read, COMMITTED waits for its boundary, and a
-         * SCHEDULED-but-unrun bottom half is re-armed on load (elsc_post_load).
-         * A pre-version-9 stream loads all three zeroed -- no action pending.
+         * whether its bottom half has been scheduled. Migrate these so an
+         * action accepted before a migration behaves correctly on the
+         * destination:
+         * ARMED waits for the ack read, COMMITTED waits for its boundary, and
+         * a SCHEDULED-but-unrun bottom half is re-armed on load
+         * (elsc_post_load). A pre-version-9 stream loads all three zeroed,
+         * with no action pending.
          */
         VMSTATE_UINT8_V(deferred_action, SGIElscState, 9),
         VMSTATE_BOOL_V(deferred_committed, SGIElscState, 9),
         VMSTATE_BOOL_V(deferred_scheduled, SGIElscState, 9),
         /*
          * The lock cell. tas_held is the occupancy and tas_lock the owner
-         * byte; both are needed because any byte -- NUL included -- is a
+         * byte; both are needed because any byte (NUL included) is a
          * legal owner, so the owner value alone cannot mean "free". A
          * pre-version-11 stream loads tas_held false (the cell free),
          * regardless of any tas_lock byte a version-10 stream carried.

@@ -1,9 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * Philips PCF8584 I2C-bus controller
- *
- * Copyright (c) 2026 Origami contributors
- *
- * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 #ifndef HW_I2C_PCF8584_H

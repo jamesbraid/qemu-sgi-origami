@@ -1,7 +1,5 @@
 /*
- * SGI Origin 200 -- the ELSC system controller's checksummed ASCII
- * command/response channel, driven through the real PCF8584 as firmware
- * would. docs/datasheets/pcf8584-elsc.md is the spec this was built from.
+ * Origin 200 ELSC checksummed ASCII commands and replies through PCF8584.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
@@ -38,8 +36,7 @@
 #define ELSC_NVRAM_PAGE7_ADDR 0x57
 
 /* A framed response's text is capped at 94 bytes plus its own length and
- * checksum bytes -- the datasheet's own bound on what this device may
- * emit. */
+ * checksum bytes. This is the response limit. */
 #define RESP_CAP 96
 
 /* Two placeholder serial lines put the AUX chardev at serial_hd(2). */
@@ -174,8 +171,8 @@ static void test_ver_command_succeeds(const void *data)
     assert_response_begins(resp, "ok ");
 
     /*
-     * Keep the synthetic identity, including its terminator, within the
-     * eight-byte compatibility boundary observed during black-box bring-up.
+     * Keep the synthetic identity and terminator within the eight-byte
+     * compatibility limit.
      */
     version_end = memchr(&resp[4], ' ', resp[0] - 3);
     version_len = version_end ? version_end - &resp[4] : resp[0] - 3;
@@ -422,10 +419,11 @@ static bool arb_is_signal_byte(uint64_t value)
 }
 
 /*
- * Step the clock finely until the ring publishes a code different from the one
- * currently latched, and return the new grant. Each code is now held for a slot
- * of at least ten milliseconds whose length varies with the code and the
- * revolution, so no fixed step lands on the boundary; scan for the change.
+ * Step the clock finely until the ring publishes a code different from the
+ * one currently latched, and return the new grant. Each code is now held for
+ * a slot of at least ten milliseconds whose length varies with the code and
+ * the revolution, so no fixed step lands on the boundary; scan for the
+ * change.
  */
 static uint8_t arb_next_code(QTestState *qts)
 {
@@ -444,7 +442,8 @@ static uint8_t arb_next_code(QTestState *qts)
     return 0;
 }
 
-/* As arb_next_code, reading one module window through a processor's mapping. */
+/* As arb_next_code, reading one module window through a processor's
+ * mapping. */
 static uint8_t arb_next_code_at(QTestState *qts, unsigned int cpu, uint64_t hub)
 {
     uint64_t start = cpu_readq(qts, cpu, hub + I2C_DATA);
@@ -463,9 +462,9 @@ static uint8_t arb_next_code_at(QTestState *qts, unsigned int cpu, uint64_t hub)
 }
 
 /*
- * Both module windows observe one master ring: they publish the same code, in
- * sequence, and the fifth position is neither of the first four codes. Advance
- * by held slots rather than by a fixed metronome tick.
+ * Both module windows observe one master ring: they publish the same code,
+ * in sequence, and the fifth position is neither of the first four codes.
+ * Advance by held slots rather than by a fixed metronome tick.
  */
 static void assert_shared_five_position_ring(QTestState *qts,
                                              unsigned int master_cpu,
@@ -511,10 +510,10 @@ static void assert_shared_five_position_ring(QTestState *qts,
 
 /*
  * Loop 1: wait for another processor's grant. Skipping straight to "wait for
- * the signal" passes a model that parks code 0 and never advances. A grant is
- * held for its whole slot, so a coarse scan still catches it; the budget must
- * span a warm reset's resumption gap plus a held slot before code advances off
- * zero, which the fine ten-microsecond step no longer reached.
+ * the signal" passes a model that parks code 0 and never advances. A grant
+ * is held for its whole slot, so a coarse scan still catches it; the budget
+ * must span a warm reset's resumption gap plus a held slot before code
+ * advances off zero, which the fine ten-microsecond step no longer reached.
  */
 static void arb_wait_for_absence(QTestState *qts)
 {
@@ -646,7 +645,8 @@ static void test_arbitration_busy_tick_does_not_advance(const void *data)
     g_assert_cmphex(read_status(qts) & I2C_PCF_BB, ==, 0);
 
     /*
-     * Well past the longest held slot: the frozen ring still does not advance.
+     * Well past the longest held slot: the frozen ring still does not
+     * advance.
      */
     qtest_clock_step(qts, 30 * ARB_TICK_NS);
     g_assert_cmphex(read_status(qts) & I2C_PCF_BB, ==, 0);
@@ -662,7 +662,7 @@ static void test_arbitration_busy_tick_does_not_advance(const void *data)
 
 /*
  * A request completed through the direction switch, then abandoned: the
- * transaction ends with the response entirely unread -- not even the
+ * transaction ends with the response entirely unread. Not even the
  * discard read runs. This is the window the firmware's slave bring-up
  * waits out: request issued, response pending, the processor parked on
  * its own signal 2 until the controller announces it.
@@ -721,7 +721,7 @@ static unsigned elsc_read_response(QTestState *qts, uint8_t *resp,
  * response is something waiting: on a one-bus controller a response must
  * be announced to its requester, or a processor that ends its request
  * transaction before reading polls for its own signal 2 forever. The
- * firmware's slave bring-up does exactly that -- observed live as a
+ * firmware's slave bring-up does exactly that, observed live as a
  * two-node launch parked on a signal 2 no build had ever emitted. A
  * qtest carries no processor context, so the requester attributes as
  * the console processor and the announcement lands in code 0's slot.
@@ -868,7 +868,7 @@ static void test_acp_command_writes_to_console(const void *data)
 }
 
 /*
- * What one AUX ringbuf captured, read back over QMP. Not
+ * Read one AUX ringbuf over QMP. Not
  * qtest_qmp_assert_success_ref(): it unwraps the result as a QDict and
  * silently returns NULL for ringbuf-read's bare string.
  */
@@ -1116,7 +1116,8 @@ static void test_two_towers_reset_keeps_cpu3_grant_live(const void *data)
     arb_enable_cpu_observer(qts, master_cpu, 0x1c);
     arb_enable_cpu_observer(qts, slave_cpu, 0x1d);
 
-    /* One revolution of the held slots exceeds fifty milliseconds; scan two. */
+    /* One revolution of the held slots exceeds fifty milliseconds; scan
+     * two. */
     for (i = 0; i < 128 * ARB_TICK_NS / ARB_SCAN_STEP_NS; i++) {
         uint64_t status = cpu_readq(qts, slave_cpu,
                                     explicit_zero + I2C_CTRL);
@@ -1142,13 +1143,13 @@ static void test_two_towers_reset_keeps_cpu3_grant_live(const void *data)
  * commensurate with the shared five-position ring; a metronome that publishes
  * one code per fixed tick then pins every sample to a single foreign code, so
  * the processor's own grant never lands under its poll even though the ring
- * keeps rotating. The datasheet requires each grant held for a varying slot
+ * keeps rotating. Each grant must be held for a varying slot
  * of at least ten milliseconds, re-broadcast throughout "so that a poll at
  * any cadence finds it".
  *
  * Model the loser: arm both module windows, start from a known foreign code,
- * then sample once per ring revolution. Code 3's grant must appear -- and
- * then be replaced -- on both windows within the discovery budget. A flat
+ * then sample once per ring revolution. Code 3's grant must appear and
+ * then be replaced on both windows within the discovery budget. A flat
  * per-tick metronome pins the sample and never presents code 3, so this is
  * red until the held, varying slot is restored.
  */
@@ -1161,10 +1162,10 @@ static void test_two_towers_commensurate_poll_finds_cpu3_grant(const void *data)
     const unsigned int slave_cpu = 2;
     const uint64_t explicit_zero = HUB_BY_NODE;
     /*
-     * A five-millisecond poll was commensurate with the old flat one-code-per-
-     * millisecond five-position ring, so it phase-locked and never sampled a
-     * lost processor's own code. Keep that cadence: under the varying held slot
-     * it must now sample every code instead.
+     * A five-millisecond poll was commensurate with the old flat
+     * one-code-per- millisecond five-position ring, so it phase-locked and
+     * never sampled a lost processor's own code. Keep that cadence: under
+     * the varying held slot it must now sample every code instead.
      */
     const int64_t ring_period_ns = 5 * ARB_TICK_NS;
     /* Several revolutions of held ten-millisecond slots, then some margin. */
@@ -1178,10 +1179,11 @@ static void test_two_towers_commensurate_poll_finds_cpu3_grant(const void *data)
     arb_enable_cpu_observer(qts, slave_cpu, 0x1d);
 
     /*
-     * Anchor the sampler on code 0, a foreign code for CPU 3. A freshly enabled
-     * observer does not latch the ring's very first publish, so code 0 is first
-     * seen only when the rotation brings it round again; scan for it across a
-     * revolution of held slots. Both module windows publish in lockstep.
+     * Anchor the sampler on code 0, a foreign code for CPU 3. A freshly
+     * enabled observer does not latch the ring's very first publish, so code
+     * 0 is first seen only when the rotation brings it round again; scan for
+     * it across a revolution of held slots. Both module windows publish in
+     * lockstep.
      */
     do {
         anchor = arb_next_code_at(qts, master_cpu, explicit_zero);
@@ -1235,8 +1237,8 @@ static void test_acp_with_no_backend_still_answers(const void *data)
 }
 
 /*
- * Console input needs a live connection -- bytes must reach the receive
- * callback -- so a loopback TCP socket stands in for the cable, the
+ * Console input needs a live connection so bytes reach the receive
+ * callback. A loopback TCP socket stands in for the cable, following the
  * ipmi-bt-test pattern: listen before qtest_init, accept after.
  */
 static int aux_listen(uint16_t *port)
@@ -1473,7 +1475,7 @@ static void test_dsc_bad_position_gets_err_arg(const void *data)
 }
 
 /*
- * The character may be any ASCII other than nul -- a space included --
+ * The character may be any ASCII other than nul, including a space,
  * so the parse must be positional, not split on whitespace.
  */
 static void test_dsc_space_character_is_legal(const void *data)
@@ -1578,8 +1580,8 @@ static uint8_t firmware_style_nvram_read(QTestState *qts, uint8_t offset)
 
 /*
  * One full command exactly as firmware drives it: arbitrate, the combined
- * transaction, then -- inside the same transfer -- the closing repeated
- * start to the invalid address, which must NAK, then the stop.
+ * transaction, then the closing repeated start inside the same transfer
+ * to the invalid address, which must NAK, then the stop.
  * elsc_transact() stops after the response; this exists because the
  * acceptance question depends on the whole chain in firmware's order, not
  * any piece in isolation.
@@ -1630,14 +1632,10 @@ static unsigned firmware_style_command(QTestState *qts, const uint8_t *req,
 }
 
 /*
- * Not "does the register contract work" but "would firmware accept this
- * device". Built from the datasheet's forced boot sequence, not this
- * file's own helpers -- a test written against the implementation can
- * only agree with it: sixteen identity-EEPROM reads (first byte the
- * required 0x37 marker), then rsw, then ver answering a checksum-valid
- * "ok". Every transaction arbitrated first and closed with the
- * invalid-address step, and "accept" checked as firmware's parser checks
- * it -- "ok" followed by a space or terminator, nothing weaker.
+ * Firmware acceptance requires sixteen identity-EEPROM reads, starting with
+ * marker 0x37, then rsw and a ver reply containing checksum-valid "ok".
+ * Arbitrate and close each transaction with the invalid-address step.
+ * The parser accepts "ok" only before a space or terminator.
  */
 static void test_boot_acceptance_sequence(const void *data)
 {
@@ -1675,8 +1673,8 @@ static void test_boot_acceptance_sequence(const void *data)
 }
 
 /*
- * With nothing typed, "info elsc" must name the empty-queue state --
- * signal1, the value that withholds "get" -- not claim input is waiting.
+ * With nothing typed, "info elsc" must name the empty-queue state
+ * (signal1, which withholds "get") rather than claim input is waiting.
  */
 static void test_info_elsc_dump_empty(const void *data)
 {
@@ -1728,7 +1726,7 @@ static void test_info_elsc_dump_shows_queued_input(const void *data)
 
 /*
  * "pwr q" is the power-on query the PROM issues once at power-on to detect
- * a cold start (datasheet: firmware-facing command contracts). The
+ * a cold start (firmware command contract). The
  * controller answers "ok 1" on the first read in a power cycle and "ok 0"
  * afterwards, clearing the latch on read. (The clear-on-read one-shot is
  * from the 6.5.7 driver and unverified on 6.5.30.)
@@ -1771,7 +1769,7 @@ static void test_pwr_query_reports_cold_power_on(const void *data)
 
 /*
  * "hbt" is the heartbeat / NMI-watchdog control the kernel enables during
- * system-controller init (datasheet: firmware-facing command contracts).
+ * system-controller init (firmware command contract).
  * "hbt <interval> <delay>" enables it, "hbt 0" disables it, and "hbt" alone
  * sends one heartbeat; all answer a plain "ok". The two arguments are
  * decimal, unlike the hex arguments elsewhere, so a malformed argument is
@@ -1801,7 +1799,7 @@ static void test_hbt_watchdog_control(const void *data)
     g_assert_cmpuint(resp[0], ==, 7);
     assert_response_begins(resp, "err arg");
 
-    /* A single non-zero argument is not a valid form -- only "hbt 0" is. */
+    /* A single non-zero argument is invalid; only "hbt 0" is valid. */
     req_len = build_request(req, "hbt 5");
     resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
     g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
@@ -1828,7 +1826,7 @@ static void test_hbt_watchdog_control(const void *data)
 
 /*
  * "rst" is the controller's module reset, supervisor-gated. Once
- * authenticated it performs a real machine reset -- not the no-op the model
+ * authenticated it performs a real machine reset, not the no-op the model
  * used to answer. A panic reboot treats "ok" as "the reset happened" and
  * does not fall back to its own hardware reset, so the reset must actually
  * fire; this asserts QEMU's RESET event, the way sn0-hub-test checks a
@@ -1912,7 +1910,7 @@ static void test_rst_reset_waits_for_ack_read(const void *data)
 /*
  * The deferred reset is tied to the specific "rst" ack. If the ack is left
  * unread and a new request supersedes the pending response, the reset is
- * dropped -- otherwise consuming the new, unrelated response would fire it.
+ * dropped. Otherwise consuming the new, unrelated response would fire it.
  * A mark left on the display survives, proving no reset ran.
  */
 static void test_rst_reset_dropped_on_supersession(const void *data)
@@ -1952,7 +1950,7 @@ static void test_rst_reset_dropped_on_supersession(const void *data)
  * A caller that reads the whole ack and then NACKs and issues a same-address
  * repeated START (rather than STOP) gets no I2C finish, yet the reset must
  * still fire. This reads the whole ack and issues no STOP at all, then
- * expects the RESET event -- proving the firing is tied to consumption.
+ * expects the RESET event, proving the firing is tied to consumption.
  */
 static void test_rst_reset_fires_without_stop(const void *data)
 {
@@ -1992,19 +1990,12 @@ static void test_rst_reset_fires_without_stop(const void *data)
 }
 
 /*
- * The last-text-byte NACK race. A master clears ACK on the last TEXT byte of
- * the ack -- the byte before the checksum -- and then, without a STOP, issues
- * a same-address repeated START carrying an unrelated request. The chip fires
- * I2C_NACK while txpos is still below txlen (the checksum has not been fetched
- * yet), so a commit tied to the NACK misses it; and because the master issues
- * a repeated START instead of a STOP, no I2C_FINISH follows either. A commit
- * tied to those terminal events would therefore never happen, and
- * elsc_request_complete would then cancel the still-ARMED reset when the
- * unrelated request arrives -- silently dropping a reset the guest was already
- * promised, since it has received the whole "ok". Committing at the fetch seam
- * (the read that advances txpos to txlen, which is exactly the read that hands
- * over the last text byte) keeps the reset. RED before the seam commit, GREEN
- * after.
+ * NACK on the last ack text byte, before checksum, then same-address repeated
+ * START to an unrelated request without STOP. I2C_NACK arrives while
+ * txpos < txlen, before checksum fetch; I2C_FINISH never arrives. A commit on
+ * either event loses the reset. The new request makes elsc_request_complete
+ * cancel the ARMED action although the guest already read "ok". Fetching
+ * the final text byte advances txpos to txlen and commits before that NACK.
  */
 static void test_rst_reset_survives_last_text_byte_nack(const void *data)
 {
@@ -2024,8 +2015,7 @@ static void test_rst_reset_survives_last_text_byte_nack(const void *data)
     /*
      * Read the ack up to and including the last text byte, NACKing it. The
      * frame is len,'o','k',checksum: 'k' is the last text byte, and the read
-     * that returns it is the one whose fetch advances txpos to txlen -- the
-     * fetch seam. The checksum is left unread.
+     * that returns it advances txpos to txlen. The checksum is left unread.
      */
     qtest_writeq(qts, HUB_LOCAL + I2C_DATA, (ELSC_ADDR << 1) | 1);
     qtest_writeq(qts, HUB_LOCAL + I2C_CTRL,
@@ -2035,7 +2025,7 @@ static void test_rst_reset_survives_last_text_byte_nack(const void *data)
     resp[0] = qtest_readq(qts, HUB_LOCAL + I2C_DATA);   /* length */
     g_assert_cmpuint(resp[0], ==, 2);
     resp[1] = qtest_readq(qts, HUB_LOCAL + I2C_DATA);   /* 'o' */
-    qtest_writeq(qts, HUB_LOCAL + I2C_CTRL, CTL_ESO);   /* NAK the next byte */
+    qtest_writeq(qts, HUB_LOCAL + I2C_CTRL, CTL_ESO);   /* NAK next byte */
     resp[2] = qtest_readq(qts, HUB_LOCAL + I2C_DATA);   /* 'k' */
     /* The whole ack was delivered, though the checksum stays unread. */
     assert_response_begins(resp, "ok");
@@ -2055,8 +2045,8 @@ static void test_rst_reset_survives_last_text_byte_nack(const void *data)
     qtest_writeq(qts, HUB_LOCAL + I2C_DATA, (ELSC_ADDR << 1) | 1);
 
     /*
-     * The reset committed at the fetch seam fires; the unrelated request did
-     * not cancel it.
+     * The reset committed on the last text-byte fetch fires; the unrelated
+     * request did not cancel it.
      */
     qtest_qmp_eventwait(qts, "RESET");
 }
@@ -2067,10 +2057,11 @@ static void test_rst_reset_survives_last_text_byte_nack(const void *data)
  * i2c_end_transfer never comes. The machine reset the "rst" triggers clears
  * the PCF8584's own transfer state but not the bus's slave match, so unless
  * the reset also releases the bus the first post-reset transaction is
- * misrouted to this controller -- an identity-EEPROM read at page 7 (address
+ * misrouted to this controller. An identity-EEPROM read at page 7 (address
  * 0x57) is answered by the ELSC instead, its first byte an ELSC response
  * length rather than the EEPROM's 0x37 marker. This drives that exact
- * sequence and reads page 7 directly (no arbitration -- the stale match also
+ * sequence and reads page 7 directly (without arbitration: the stale
+ * match also
  * wedges the bus permanently busy, which stalls the grant rotation)
  * and requires the EEPROM's own byte back.
  */
@@ -2121,7 +2112,7 @@ static void test_rst_reset_releases_i2c_bus(const void *data)
     qtest_writeq(qts, HUB_LOCAL + I2C_DATA, (ELSC_NVRAM_PAGE7_ADDR << 1) | 0);
     qtest_writeq(qts, HUB_LOCAL + I2C_CTRL,
                  CTL_PIN | CTL_ESO | CTL_STA | CTL_ACK);
-    qtest_writeq(qts, HUB_LOCAL + I2C_DATA, 0);   /* byte-address within page */
+    qtest_writeq(qts, HUB_LOCAL + I2C_DATA, 0);   /* byte address in page */
     qtest_writeq(qts, HUB_LOCAL + I2C_CTRL, CTL_ESO | CTL_STA | CTL_ACK);
     qtest_writeq(qts, HUB_LOCAL + I2C_DATA, (ELSC_NVRAM_PAGE7_ADDR << 1) | 1);
     (void)qtest_readq(qts, HUB_LOCAL + I2C_DATA);   /* discard stale */
@@ -2137,7 +2128,7 @@ static void test_rst_reset_releases_i2c_bus(const void *data)
 /*
  * A "rst" accepted but not yet acknowledged is ARMED: its migrated state
  * carries what to do and that the ack is still unread. Migrating in that
- * window must NOT fire the reset on the destination -- post_load re-arms the
+ * window must NOT fire the reset on the destination. post_load re-arms the
  * bottom half only for a COMMITTED action, so an ARMED one holds its "ok" for
  * the guest to read. The destination reads the ack back intact (a premature
  * reset would have discarded it and cleared the response), and reading it
@@ -2166,7 +2157,8 @@ static void test_rst_reset_survives_migration(const void *data)
     g_assert_cmpuint(resp[0], ==, 2);
     assert_response_begins(resp, "ok");
 
-    /* Accept "rst" but leave its ack unread: the reset is ARMED, not fired. */
+    /* Accept "rst" but leave its ack unread: the reset is ARMED, not
+     * fired. */
     elsc_request_without_read(from, "rst");
 
     dest_cmdline = g_strdup_printf("-M origin200 -incoming %s", uri);
@@ -2190,21 +2182,13 @@ static void test_rst_reset_survives_migration(const void *data)
 }
 
 /*
- * A committed action whose response frame is still OPEN at migration -- the
- * guest read through the last text byte (the reset committed at the seam) but
- * has not yet taken the trailing checksum -- must not fire on the destination
- * until that frame is finished. The bottom half was never scheduled on the
- * source (no boundary yet), so deferred_scheduled is clear and post_load leaves
- * it alone; the destination's own closing STOP schedules it.
- *
- * The hazard this pins is post_load firing the reset on load: that resets the
- * PCF8584 while the checksum the guest is about to read still sits in its
- * read-ahead, corrupting the frame. So the source reads up to and including
- * "k" (committing), migrates with the checksum unread, and the destination
- * reads that checksum back INTACT and then STOPs -- and only then does the
- * reset fire. With post_load keyed on committed rather than on
- * deferred_scheduled, it fired on load and the checksum came back as the reset
- * value, failing the frame checksum.
+ * Migrate after the last text byte commits the reset but before the guest
+ * reads the checksum or closes the response. The source has not scheduled
+ * the bottom half, so deferred_scheduled is clear; post_load must leave it
+ * unscheduled until the destination STOP closes the frame. A post_load keyed
+ * on committed instead resets PCF8584 while checksum sits in read-ahead;
+ * the reset value breaks the checksum. Read through "k" on the source, then
+ * verify the intact checksum on the destination before STOP and RESET.
  */
 static void test_rst_reset_open_frame_defers_across_migration(const void *data)
 {
@@ -2228,8 +2212,8 @@ static void test_rst_reset_open_frame_defers_across_migration(const void *data)
     assert_response_begins(resp, "ok");
 
     /*
-     * Accept "rst" (ARMED), then open a read and take len, 'o', 'k' -- the
-     * last text byte, whose fetch reaches the seam and commits the reset. The
+     * Accept "rst" (ARMED), then open a read and take len, 'o', 'k' (the
+     * last text byte, whose fetch commits the reset). The
      * checksum is prefetched into the chip but left unread; no STOP, so the
      * frame stays open (txlen != 0) and the bottom half is not yet scheduled.
      */
@@ -2242,7 +2226,8 @@ static void test_rst_reset_open_frame_defers_across_migration(const void *data)
     resp[0] = qtest_readq(from, HUB_LOCAL + I2C_DATA);   /* length */
     g_assert_cmpuint(resp[0], ==, 2);
     resp[1] = qtest_readq(from, HUB_LOCAL + I2C_DATA);   /* 'o' */
-    resp[2] = qtest_readq(from, HUB_LOCAL + I2C_DATA);   /* 'k', seam commits */
+    resp[2] = qtest_readq(from, HUB_LOCAL + I2C_DATA);   /* 'k' commits
+     * the seam */
     assert_response_begins(resp, "ok");
 
     dest_cmdline = g_strdup_printf("-M origin200 -incoming %s", uri);
@@ -2250,15 +2235,16 @@ static void test_rst_reset_open_frame_defers_across_migration(const void *data)
     sgi_migrate_stopped(from, uri);
 
     /*
-     * On the destination the open frame is intact: the checksum reads back its
-     * migrated value (post_load did not reset the chip out from under it), and
-     * the whole frame still sums to zero.
+     * On the destination the open frame is intact: the checksum reads back
+     * its migrated value (post_load did not reset the chip out from under
+     * it), and the whole frame still sums to zero.
      */
     resp[3] = qtest_readq(to, HUB_LOCAL + I2C_DATA);     /* checksum */
     qtest_writeq(to, HUB_LOCAL + I2C_CTRL, CTL_PIN | CTL_ESO | CTL_STO);
     g_assert_cmphex(frame_checksum(resp, 4), ==, 0);
 
-    /* The closing STOP is the boundary that carries out the committed reset. */
+    /* The closing STOP is the boundary that carries out the committed
+     * reset. */
     qtest_qmp_eventwait(to, "RESET");
 
     qtest_quit(to);
@@ -2266,16 +2252,15 @@ static void test_rst_reset_open_frame_defers_across_migration(const void *data)
 }
 
 /*
- * "tas <ch>" / "tas 0" is the test-and-set lock cell (datasheet:
- * firmware-facing command contracts), driven by the 6.5.30 firmware in its
- * arbitration path -- a distinct byte, not the bus arbitration. <ch> is a
- * LITERAL character: the client compares the owner byte for byte, so the
- * response echoes the exact byte held before the request, and any single
- * non-'0' character is a valid channel. Acquiring a free cell reads back
- * "ok 0"; a caller polls until it reads 0 (was free) or its own byte. ASCII
- * '0' releases. (Literal-byte round-trip; the datasheet's "hex" wording is
- * flagged for the source owner, and the pre-write value is 6.5.7-derived,
- * unverified on 6.5.30.)
+ * "tas <ch>" / "tas 0" is the test-and-set lock cell (firmware command
+ * contract), driven by the 6.5.30 firmware in its arbitration path. It is a
+ * distinct byte, not the bus arbitration. <ch> is a LITERAL character: the
+ * client compares the owner byte for byte, so the response echoes the exact
+ * byte held before the request, and any single non-'0' character is a valid
+ * channel. Acquiring a free cell reads back "ok 0"; a caller polls until it
+ * reads 0 (was free) or its own byte. ASCII '0' releases. (Literal-byte
+ * round-trip; the ambiguous "hex" description is flagged for the source
+ * owner, and the pre-write value is 6.5.7-derived, unverified on 6.5.30.)
  */
 static void test_tas_lock_cell(const void *data)
 {
@@ -2291,7 +2276,7 @@ static void test_tas_lock_cell(const void *data)
     g_assert_cmpuint(resp[0], ==, 4);
     assert_response_begins(resp, "ok 0");
 
-    /* Re-acquiring reads the owner back literally -- "ok A", not "ok a". */
+    /* Re-acquiring returns the literal owner: "ok A", not "ok a". */
     req_len = build_request(req, "tas A");
     resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
     g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
@@ -2312,7 +2297,8 @@ static void test_tas_lock_cell(const void *data)
     g_assert_cmpuint(resp[0], ==, 4);
     assert_response_begins(resp, "ok A");
 
-    /* 'z' is a valid non-hex channel: the free cell reads 0 and installs it. */
+    /* 'z' is a valid non-hex channel: the free cell reads 0 and installs
+     * it. */
     req_len = build_request(req, "tas z");
     resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
     g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
@@ -2345,9 +2331,9 @@ static void test_tas_lock_cell(const void *data)
  * A NUL (0x00) owner is a legal channel and must not be read as the free
  * cell. Acquiring the free cell with owner 0x00 leaves it HELD; a later
  * caller then reads the 0x00 owner back rather than acquiring, and that
- * owner byte round-trips through the response frame -- which a strlen-framed
- * "ok \0" reply would truncate to "ok ". (datasheet: firmware-facing command
- * contracts; any byte but the release channel '0' is a valid owner.)
+ * owner byte round-trips through the response frame. A strlen-framed
+ * "ok \0" reply would truncate to "ok ". (firmware command contract; any
+ * byte but the release channel '0' is a valid owner.)
  */
 static void test_tas_lock_nul_owner(const void *data)
 {
@@ -2369,14 +2355,15 @@ static void test_tas_lock_nul_owner(const void *data)
     req[6] = (uint8_t)(-(int)frame_checksum(req, 6));
     req_len = 7;
 
-    /* Acquire the free cell: the pre-acquisition value is the free sentinel. */
+    /* Acquire the free cell: the pre-acquisition value is the free
+     * sentinel. */
     resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
     g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
     g_assert_cmpuint(resp[0], ==, 4);
     assert_response_begins(resp, "ok 0");
 
     /*
-     * A different caller now finds the cell HELD -- the buggy free-sentinel
+     * A different caller now finds the cell HELD. The buggy free-sentinel
      * conflation would let it acquire and read "ok 0" instead. It reads the
      * 0x00 owner back, and that owner byte survives the response framing.
      */
@@ -2422,12 +2409,12 @@ static void test_tas_lock_nul_owner(const void *data)
 }
 
 /*
- * The remaining power subcommands (datasheet: firmware-facing command
- * contracts), none boot-driven. This covers the response contract with no
- * real action: the read-only "pwr r" (redundant-supply query) is ungated,
- * the destructive "pwr d <sec>"/"pwr c" are supervisor-gated like "rst", and
- * out-of-range or extra arguments are "err arg". The actions themselves are
- * checked in the shutdown and power-cycle tests below.
+ * The remaining power subcommands (firmware command contract), none
+ * boot-driven. This covers the response contract with no real action: the
+ * read-only "pwr r" (redundant-supply query) is ungated, the destructive "pwr
+ * d <sec>"/"pwr c" are supervisor-gated like "rst", and out-of-range or extra
+ * arguments are "err arg". The actions themselves are checked in the shutdown
+ * and power-cycle tests below.
  */
 static void test_pwr_control_subcommands(const void *data)
 {
@@ -2438,7 +2425,7 @@ static void test_pwr_control_subcommands(const void *data)
 
     /*
      * The read-only supply query needs no supervisor. The wire response is a
-     * per-module record per supply, tagged tag:present:health --
+     * per-module record per supply, tagged tag:present:health,
      * "ok m:y:ok s:y:ok" with both supplies modelled present and healthy.
      */
     req_len = build_request(req, "pwr r");
@@ -2487,7 +2474,7 @@ static void test_pwr_control_subcommands(const void *data)
 
 /*
  * A supervised "pwr d <sec>" answers "ok" and then, once the ack is read,
- * shuts the machine down -- verified by QEMU's SHUTDOWN event. "-no-shutdown"
+ * shuts the machine down, verified by QEMU's SHUTDOWN event. "-no-shutdown"
  * keeps QEMU alive in the shutdown state so the event can be observed.
  */
 static void test_pwr_down_shuts_down(const void *data)
@@ -2515,7 +2502,7 @@ static void test_pwr_down_shuts_down(const void *data)
 
 /*
  * A supervised "pwr c" answers "ok" and then, once the ack is read,
- * power-cycles the machine -- a machine reset, verified by the RESET event.
+ * power-cycles the machine: a machine reset, verified by the RESET event.
  */
 static void test_pwr_cycle_resets(const void *data)
 {
@@ -2539,20 +2526,20 @@ static void test_pwr_cycle_resets(const void *data)
 }
 
 /*
- * "pwr d" validates the delay range before the supervisor gate, consistent
- * with the non-hex delay check. So an out-of-range delay is "err arg" whether
- * or not the caller has authenticated -- a bad argument is not disguised as
- * "err perm". An in-range delay from an unauthenticated caller is still
- * "err perm". Boundaries: 5..0x258 inclusive is in range, and 0 (immediate)
- * skips the range check.
+ * "pwr d" checks the non-hex delay before the supervisor password. Nonzero
+ * values outside 5..0x258 return "err arg" even without authentication.
+ * Zero skips the range check and means immediate shutdown. Valid requests
+ * without authentication return "err perm".
  */
 static void test_pwr_down_range_checked_before_auth(const void *data)
 {
     uint8_t req[16], resp[RESP_CAP];
     unsigned req_len, resp_len, i;
-    /* Below 5 or above 0x258: err arg, before the gate is even consulted. */
+    /* Below 5 or above 0x258: err arg, before the password check is even
+     * consulted. */
     const char *out_of_range[] = { "pwr d 1", "pwr d 4", "pwr d 259" };
-    /* In range (and 0), so the gate applies: err perm without a password. */
+    /* In range (and 0), so the password check applies: err perm without a
+     * password. */
     const char *in_range[] = { "pwr d 0", "pwr d 5", "pwr d 258" };
 
     elsc_reset();
@@ -2613,11 +2600,11 @@ static void test_pwr_cycle_rearms_cold_power(const void *data)
 }
 
 /*
- * "nic <p> <s> <d>" is the one-wire identity passthrough (datasheet:
- * firmware-facing command contracts), an interactive-monitor command, not
- * boot-driven. Three hex arguments bit-bang the midplane one-wire line; it
- * answers "ok <hex>" with the sampled bit. No one-wire device is modelled,
- * so the open-drain line idles high and every sample reads 1.
+ * "nic <p> <s> <d>" is the one-wire identity passthrough (firmware command
+ * contract), an interactive-monitor command, not boot-driven. Three hex
+ * arguments bit-bang the midplane one-wire line; it answers "ok <hex>" with
+ * the sampled bit. No one-wire device is modelled, so the open-drain line
+ * idles high and every sample reads 1.
  */
 static void test_nic_onewire_identity(const void *data)
 {

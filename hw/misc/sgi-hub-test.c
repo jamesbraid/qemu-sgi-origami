@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
-/* Host-only error injection for Hub register-contract qtests. */
+/* Host-only error injection for Hub register tests. */
 
 #include "qemu/osdep.h"
 #include "hw/misc/sgi-hub.h"

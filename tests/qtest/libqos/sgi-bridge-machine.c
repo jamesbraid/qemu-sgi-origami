@@ -1,9 +1,6 @@
 /*
- * libqos driver framework: the SGI Bridge head
- *
- * The qos graph reaches PCI cards on mips64 through a Bridge built out of
- * plain devices on the "none" machine, so a card's register contract is
- * tested on the bus it ships on rather than on a PC.
+ * QOS graph for PCI cards on mips64 through a Bridge on -M none; card
+ * registers use their native bus.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */

@@ -1,29 +1,17 @@
 /*
  * SPDX-License-Identifier: GPL-2.0-or-later
  *
- * BCM570x on the Origin 200's Bridge: the DMA-route contract.
- *
- * Big-endian scalar accessors through the Bridge's plain DMA space preserve
- * the established descriptor and status layout without per-word swap-window
- * dispatch. A scalar byte comparison cannot distinguish the routes, so the
- * first test reads the Bridge's own trace of which route the transfer took.
- *
- * Raw payload has no such equivalence. The model copies frames verbatim on
- * the plain route for the measured BCM5701 configuration. This is bounded
- * model behavior, not evidence of the card's unknown hardware transformation
- * with its DMA-swap controls clear.
- *
- * The second assertion reads what a byte-exact round trip cannot: a received
- * TCP frame's completed descriptor, whose 32-bit words the guest reads
- * big-endian on this machine. The device-side checksum-offload fields sit in
- * those words, so a leg left on the little-endian accessor writes them
- * byte-swapped -- the failure a full IRIX boot showed as the driver rejecting
- * every offloaded frame ("incomplete ethernet frame") and stalling TCP.
- *
- * The x86 register suite (bcm570x-test.c) covers the other regime: on a
- * machine with no SGI Bridge the plain route does not exist and the model
- * keeps its little-endian view with the payload swap the endian control asks
- * for. This file asserts the Bridge-machine regime the x86 suite cannot see.
+ * Origin 200 BCM570x Bridge DMA tests. Big-endian scalar access through plain
+ * DMA preserves descriptor and status words without swap-window dispatch;
+ * scalar bytes alone cannot identify the route, so the Bridge trace does.
+ * Plain-route payloads are copied verbatim for the measured BCM5701 setup;
+ * transformation with DMA-swap controls clear remains unknown on hardware.
+ * The received TCP descriptor checks big-endian 32-bit checksum-offload
+ * words:
+ * little-endian access byte-swaps them, causing IRIX to reject offloaded
+ * frames as "incomplete ethernet frame" and stall TCP. bcm570x-test.c covers
+ * x86 without a Bridge: little-endian words and endian-controlled payload
+ * swap. These tests cover the Bridge route absent from that suite.
  */
 
 #include "qemu/osdep.h"
@@ -61,8 +49,9 @@
 /*
  * A 64-bit direct-map DMA address. The low bits reach system memory; the
  * prefix selects the direct-map path whose byte swap the Bridge applies for a
- * slot left at the value-preserving default -- the route the swap-window cost
- * lives on, and the one the plain space must replace. A low bare address
+ * slot left at the value-preserving default. This is where the
+ * swap-window cost lies, and the path plain space must replace. A low
+ * bare address
  * would not do: local space never crosses the swapper, so it could not
  * distinguish the routes.
  */
@@ -84,7 +73,7 @@
 #define BCM_MBX_RX_STD_PROD_LO  0x026c
 /*
  * The jumbo receive ring's control block (public bge/tg3 map; PG105 Table
- * 341, offset 0x2448, page 438). Max_Len there is unused for jumbo rings --
+ * 341, offset 0x2448, page 438). Max_Len there is unused for jumbo rings,
  * only Disable Ring (bit 1) and Extended RX Enable (bit 0) do anything.
  */
 #define BCM_RX_JUMBO_RCB_HI      0x2440
@@ -106,7 +95,7 @@
 #define BCM_RXBD_SIZE           32
 #define BCM_RXBD_IDX_LEN        0x08    /* index (31:16), length (15:0) */
 #define BCM_RXBD_TYPE_FLAGS     0x0c    /* type (31:16), flags (15:0) */
-#define BCM_RXBD_CSUM           0x10    /* ip sum (31:16), tcp/udp sum (15:0) */
+#define BCM_RXBD_CSUM           0x10    /* IP sum 31:16; TCP/UDP sum 15:0 */
 #define BCM_RXBDFLAG_TCP_UDP_CKSUM 0x0001u
 #define BCM_RXBDFLAG_IP_CKSUM   0x0002u
 #define BCM_RXBDFLAG_END        0x0004u
@@ -231,8 +220,8 @@ static uint32_t bd_word_be(QTestState *qts, uint64_t phys, unsigned int off)
 }
 
 /*
- * The socket backend frames each packet with a four-byte network-order length,
- * the same way the other NIC qtests drive a socketpair-backed netdev.
+ * The socket backend frames each packet with a four-byte network-order
+ * length, as in the other NIC qtests using a socketpair-backed netdev.
  */
 static void net_send_frame(int fd, const uint8_t *buf, size_t len)
 {
@@ -244,11 +233,11 @@ static void net_send_frame(int fd, const uint8_t *buf, size_t len)
 
 /*
  * The device writes a completed descriptor into the return ring before it
- * raises any interrupt. Poll for the descriptor appearing at all -- the length
- * word going non-zero, which is true in either byte order -- so this wait does
+ * raises any interrupt. Poll for the descriptor length word to become
+ * non-zero. That holds in either byte order, so this wait does
  * not itself depend on the layout the test is checking. The caller then reads
- * the descriptor and asserts the byte order, where a swapped word fails with a
- * legible value rather than a silent timeout here.
+ * the descriptor and asserts the byte order. A swapped word fails with
+ * a legible value instead of a silent timeout.
  */
 static void wait_for_completed_descriptor(QTestState *qts)
 {
@@ -265,10 +254,11 @@ static void wait_for_completed_descriptor(QTestState *qts)
 }
 
 /*
- * A minimal Ethernet/IPv4/TCP frame with valid header checksums, so the card's
- * receive checksum offload verifies them and reports the results in the
- * completed descriptor. Broadcom-source to the card's own MAC, arbitrary
- * destination; the addresses do not matter to the descriptor byte order.
+ * A minimal Ethernet/IPv4/TCP frame with valid header checksums lets
+ * the card's receive checksum offload verify them. It reports the
+ * results in the completed descriptor. Broadcom-source to the card's
+ * own MAC, arbitrary destination; the addresses do not matter to the
+ * descriptor byte order.
  */
 #define RX_FRAME_LEN 60
 static uint16_t inet_csum(const uint8_t *b, size_t len, uint32_t sum)
@@ -327,13 +317,13 @@ static void build_rx_frame(uint8_t *f)
 
 /*
  * A received frame's completed descriptor, read as the guest reads it on this
- * machine: big-endian. Every 32-bit word -- the length, the type/flags, and
- * the checksum-offload results -- must land in that layout. A descriptor field
+ * machine: big-endian. Every 32-bit word (length, type/flags, and
+ * checksum-offload results) must land in that layout. A descriptor field
  * left on the model's little-endian accessor writes it byte-swapped; the
  * offload fields in particular then reach the driver with the frame-complete
  * and checksum-valid bits in the wrong half, which a full IRIX boot showed as
  * the driver rejecting every offloaded frame and stalling TCP. A byte-exact
- * round trip cannot see this -- the payload is a byte stream either way -- so
+ * round trip cannot see this: the payload is a byte stream either way, so
  * only a descriptor whose fields carry meaning in their bit positions exposes
  * it.
  */
@@ -386,8 +376,8 @@ static void test_receive_descriptor_big_endian(const void *data)
     /* Length in the low half; the frame plus its four-byte check sequence. */
     g_assert_cmphex(idx_len & 0xffff, ==, RX_FRAME_LEN + BCM_ETH_FCS_LEN);
     /*
-     * Frame-end and both offload-valid marks, all in the flags (low) half; the
-     * type (high) half stays clear. A byte-swapped word fails both.
+     * Frame-end and both offload-valid marks are in the flags (low) half;
+     * the type (high) half stays clear. A byte-swapped word fails both.
      */
     g_assert_cmphex(type_flags & 0xffff, ==,
                     BCM_RXBDFLAG_END | BCM_RXBDFLAG_IP_CKSUM |
@@ -399,7 +389,7 @@ static void test_receive_descriptor_big_endian(const void *data)
      */
     g_assert_cmpuint(csum >> 16, !=, 0);
 
-    /* The payload itself is a byte stream, delivered verbatim to the buffer. */
+    /* The payload is a byte stream, delivered verbatim to the buffer. */
     qtest_memread(qts, RX_BUF_PHYS, got, sizeof(got));
     g_assert_cmpmem(got, sizeof(got), frame, sizeof(frame));
 
@@ -426,7 +416,7 @@ static uint16_t status_rx_prod_be(QTestState *qts)
 /*
  * Post one receive descriptor: the buffer's host address, then the ring
  * index and buffer length packed into the upper and lower halves of the
- * third word, then flags in the fourth -- the layout IRIX posts jumbo
+ * third word, then flags in the fourth, as IRIX posts jumbo
  * buffers with. The standard ring never reads the length or flags words
  * back, so posting them harmlessly there too keeps one helper for both
  * rings.
@@ -448,7 +438,7 @@ static void post_rx_descriptor(QTestState *qts, uint64_t ring_phys,
 
 /*
  * A frame long enough to force the jumbo ring, addressed to the card, with
- * an ethertype the checksum offload will not try to parse -- these tests
+ * an ethertype the checksum offload will not try to parse. These tests
  * check which ring a frame lands on, not the offload fields.
  */
 static void build_big_rx_frame(uint8_t *f, size_t len)
@@ -488,7 +478,7 @@ static void pump_settle(QTestState *qts)
  * ignored in the Receive Jumbo Producer Ring"). Ring selection compares the
  * frame only against the standard ring's Max_Len, and a frame too big for
  * that goes to the jumbo ring whenever it is not disabled and has a host
- * base -- exactly the state IRIX 6.5.30 leaves it in at MTU 9000: it posts
+ * base. IRIX 6.5.30 leaves it this way at MTU 9000: it posts
  * the jumbo RCB's host and NIC addresses but never touches 0x2448.
  *
  * Pins ring selection, not arrival timing, so the floor is zeroed: the
@@ -522,7 +512,8 @@ static void test_jumbo_ring_selected_by_standard_length(const void *data)
                IOVA(RET_RING_PHYS) & 0xffffffff);
     bar_writel(qts, BCM_SRAM_WINDOW_BASE + BCM_SRAM_RX_RETURN_RCB + 8,
                64 << 16);
-    /* One completed descriptor per update [57XX-PG105-R, printed page 454]. */
+    /* One completed descriptor per update
+     * [57XX-PG105-R, printed page 454]. */
     bar_writel(qts, BCM_HCC_RX_MAX_COAL_BDS, 1);
     bar_writel(qts, BCM_HCC_MODE, BCM_HCC_ENABLE);
     bar_writel(qts, BCM_RX_MODE, BCM_RXMODE_ENABLE);
@@ -532,7 +523,7 @@ static void test_jumbo_ring_selected_by_standard_length(const void *data)
     qtest_memset(qts, STATUS_PHYS, 0, 0x50);
     bar_writel(qts, BCM_MBX_RX_STD_PROD_LO, 1);
 
-    /* Never write 0x2448 -- it stays at its reset value of 0, like IRIX. */
+    /* Leave 0x2448 at its reset value of 0, like IRIX. */
     post_rx_descriptor(qts, JUMBO_RING_PHYS, 0, JUMBO_BUF_PHYS,
                        JUMBO_BUF_LEN, BCM_RXBDFLAG_JUMBO_RING);
     bar_writel(qts, BCM_MBX_RX_JUMBO_PROD_LO, 1);
@@ -604,7 +595,8 @@ static void test_jumbo_ring_disabled_drops_oversize(const void *data)
                IOVA(RET_RING_PHYS) & 0xffffffff);
     bar_writel(qts, BCM_SRAM_WINDOW_BASE + BCM_SRAM_RX_RETURN_RCB + 8,
                64 << 16);
-    /* One completed descriptor per update [57XX-PG105-R, printed page 454]. */
+    /* One completed descriptor per update
+     * [57XX-PG105-R, printed page 454]. */
     bar_writel(qts, BCM_HCC_RX_MAX_COAL_BDS, 1);
     bar_writel(qts, BCM_HCC_MODE, BCM_HCC_ENABLE);
     bar_writel(qts, BCM_RX_MODE, BCM_RXMODE_ENABLE);
@@ -673,9 +665,9 @@ static void wait_for_rx_producer(QTestState *qts, uint16_t want)
  * parks the frame instead: the back end stops reading and the standard
  * frame behind it never arrives.
  *
- * The manual says nothing about what becomes of the frame itself -- the
+ * The manual says nothing about what becomes of the frame itself. The
  * pages that look like they answer it are about the chip's own on-chip
- * buffer pool, not a host ring -- so the discard the last step pins is the
+ * buffer pool, not a host ring. The discard pinned by the last step is the
  * model's approximation. jumbo-shortage-discards-without-waiting is what
  * separates it from a bounded hold; this case steps the clock, so it cannot.
  *
@@ -721,12 +713,13 @@ static void test_jumbo_ring_unprovisioned_drops_oversize(const void *data)
                IOVA(RET_RING_PHYS) & 0xffffffff);
     bar_writel(qts, BCM_SRAM_WINDOW_BASE + BCM_SRAM_RX_RETURN_RCB + 8,
                64 << 16);
-    /* One completed descriptor per update [57XX-PG105-R, printed page 454]. */
+    /* One completed descriptor per update
+     * [57XX-PG105-R, printed page 454]. */
     bar_writel(qts, BCM_HCC_RX_MAX_COAL_BDS, 1);
     bar_writel(qts, BCM_HCC_MODE, BCM_HCC_ENABLE);
     bar_writel(qts, BCM_RX_MODE, BCM_RXMODE_ENABLE);
 
-    /* Two standard buffers, so the ring outlives the frame that is dropped. */
+    /* Two standard buffers let the ring outlive the dropped frame. */
     post_rx_descriptor(qts, STD_RING_PHYS, 0, RX_BUF_PHYS, 0, 0);
     post_rx_descriptor(qts, STD_RING_PHYS, 1, RX_BUF_PHYS + STD_BUF_SIZE, 0, 0);
     qtest_memset(qts, RX_BUF_PHYS, 0, 2 * STD_BUF_SIZE);
@@ -803,8 +796,8 @@ static void test_jumbo_ring_unprovisioned_drops_oversize(const void *data)
  * not be delivered: the descriptor's length field is the driver's statement
  * of what it set aside for that buffer, the same way the standard ring's
  * Max_Len is. The model drops the frame without writing a completion or
- * advancing the return-ring producer, and -- unlike the standard ring, which
- * has no comparable per-descriptor check -- it also leaves the jumbo ring's
+ * advancing the return-ring producer. The standard ring has no comparable
+ * per-descriptor check. The model also leaves the jumbo ring's
  * consumer where it was rather than stepping past the descriptor: the driver
  * never said the buffer was used, so a later frame that does fit must still
  * be able to land in it. That is asserted here indirectly, by sending one:
@@ -843,7 +836,8 @@ static void test_jumbo_frame_overruns_descriptor(const void *data)
                IOVA(RET_RING_PHYS) & 0xffffffff);
     bar_writel(qts, BCM_SRAM_WINDOW_BASE + BCM_SRAM_RX_RETURN_RCB + 8,
                64 << 16);
-    /* One completed descriptor per update [57XX-PG105-R, printed page 454]. */
+    /* One completed descriptor per update
+     * [57XX-PG105-R, printed page 454]. */
     bar_writel(qts, BCM_HCC_RX_MAX_COAL_BDS, 1);
     bar_writel(qts, BCM_HCC_MODE, BCM_HCC_ENABLE);
     bar_writel(qts, BCM_RX_MODE, BCM_RXMODE_ENABLE);
@@ -893,7 +887,8 @@ static void test_jumbo_frame_overruns_descriptor(const void *data)
 /*
  * Enabling host coalescing arms the periodic status tick, and stepping the
  * one received frame under a max-coalesced count of one makes the model post
- * one status block to the programmed host address. Its address is a direct-map
+ * one status block to the programmed host address. Its address is a
+ * direct-map
  * IOVA, so on the swap route it would appear in the Bridge's lane-swap trace.
  * On the plain route it appears in the plain-translate trace instead. The
  * status block's first word checks the byte order. The model writes the
@@ -993,8 +988,8 @@ static void test_dma_rides_plain_route(const void *data)
 }
 
 /*
- * Poll the status block's receive producer, stepping the virtual clock the way
- * wait_for_completed_descriptor does so a coalescing timer can expire.
+ * Poll the status block's receive producer, stepping the virtual clock
+ * as wait_for_completed_descriptor does so a coalescing timer can expire.
  */
 static void wait_for_status_rx_prod(QTestState *qts, uint16_t want)
 {
@@ -1016,10 +1011,10 @@ static void wait_for_status_rx_prod(QTestState *qts, uint16_t want)
  * printed page 63], each of them counted in buffer descriptors or measured by
  * a coalescing timer, and a register left at zero turns its criterion off. So
  * a frame received with neither receive criterion armed is completed into the
- * return ring and never announced, however long the guest waits -- there is no
- * clock of the chip's own behind the status block. Arming the count then makes
- * the next frame post one update, whose producer names a completion already in
- * the ring.
+ * return ring and never announced, however long the guest waits. There is no
+ * clock of the chip's own behind the status block. Arming the count
+ * makes the next frame post one update, whose producer names a
+ * completion already in the ring.
  */
 static void test_status_block_update_criteria(const void *data)
 {
@@ -1045,7 +1040,7 @@ static void test_status_block_update_criteria(const void *data)
     bar_writel(qts, BCM_SRAM_WINDOW_BASE + BCM_SRAM_RX_RETURN_RCB + 8,
                64 << 16);
 
-    /* Neither receive criterion armed: no descriptor count, no tick budget. */
+    /* Neither receive criterion armed: no descriptor count or tick budget. */
     bar_writel(qts, BCM_HCC_RX_MAX_COAL_BDS, 0);
     bar_writel(qts, BCM_HCC_RX_COAL_TICKS, 0);
     bar_writel(qts, BCM_HCC_MODE, BCM_HCC_ENABLE);
@@ -1107,23 +1102,13 @@ static uint16_t rx_producer_without_clock(QTestState *qts, uint16_t want)
 }
 
 /*
- * The discard happens at once, and this is the test that says so. Whether
- * the frame is thrown away immediately or held for a while first is invisible
- * to every other assertion here: a test that steps the clock far enough to
- * see a completion has also stepped it past any plausible hold, so both
- * dispositions end in the same state.
- *
- * Freezing the clock separates them. A model that holds the frame has
- * refused it, which stops the back end reading, and nothing releases it while
- * virtual time stands still -- so the standard frame queued behind it never
- * arrives. A model that discards at once keeps reading and delivers that
- * frame on the next pass of the main loop.
- *
- * This matters because the discard is an approximation with no manual behind
- * it, and the obvious alternative is a bounded hold. That alternative was
- * built and measured and delivered fewer bytes; see the jumbo receive
- * contract in the BCM570x datasheet. Without this assertion nothing in the
- * suite would notice it coming back.
+ * Jumbo shortage discards immediately. Advancing the virtual clock past a
+ * possible hold gives the same final state, so keep it frozen. Holding the
+ * frame refuses it and stops backend reads; the following standard frame
+ * cannot arrive. Immediate discard keeps reads active and delivers that
+ * frame on the next main-loop pass. This is an approximation: the BCM570x
+ * datasheet's jumbo receive contract does not prescribe discard timing.
+ * A bounded hold delivered fewer bytes and would fail this test.
  */
 static void test_jumbo_shortage_discards_without_waiting(const void *data)
 {
@@ -1170,7 +1155,7 @@ static void test_jumbo_shortage_discards_without_waiting(const void *data)
     build_big_rx_frame(small, sizeof(small));
     net_send_frame(sv[0], small, sizeof(small));
 
-    /* No qtest_clock_step anywhere: only a discard gets the second frame in. */
+    /* No qtest_clock_step: only a discard gets the second frame in. */
     g_assert_cmphex(rx_producer_without_clock(qts, 1), ==, 1);
     qtest_memread(qts, RX_BUF_PHYS, got, sizeof(got));
     g_assert_cmpmem(got, sizeof(got), small, sizeof(small));
@@ -1183,27 +1168,15 @@ static void test_jumbo_shortage_discards_without_waiting(const void *data)
 }
 
 /*
- * The mirror: the standard ring addressed but carrying no posted buffer,
- * with the jumbo ring provisioned. A standard-size frame cannot take a jumbo
- * buffer -- the ring is chosen by length against the standard ring's Max_Len
- * -- so it has nowhere to go, and the card discards it at once rather than
- * refusing it.
- *
- * Frozen clock, for the reason the jumbo case gives: a test that steps far
- * enough to see a completion has stepped past any plausible hold, and both
- * dispositions end in the same state. With virtual time standing still, only
- * a discard lets the jumbo frame queued behind this one through.
- *
- * This is the assertion that would notice a bounded hold coming back on the
- * ring that carries the MTU 1500 qualification. That alternative was built
- * and measured on this path; the receive shortage contract in the BCM570x
- * datasheet carries what it cost.
- *
- * The manual's counter for this condition, `nicNoMoreRXBDs`, names no ring
- * (PG105 page 110, Table 49; page 114, Table 54 gives it one offset with no
- * per-ring companion), so this discard counts there too, the same offset the
- * jumbo case bumps. The test reads it before the dropped frame, immediately
- * after, and confirms the jumbo frame delivered right behind it adds nothing.
+ * The standard ring is addressed but has no posted buffer; the jumbo ring is
+ * provisioned. Length and standard Max_Len select the standard ring, so a
+ * standard frame cannot use a jumbo buffer and is discarded immediately.
+ * Freeze virtual time: advancing past a possible hold hides the difference,
+ * while only immediate discard lets the queued jumbo frame arrive. A bounded
+ * hold delivered fewer bytes on the MTU 1500 path (BCM570x datasheet).
+ * nicNoMoreRXBDs has one counter with no per-ring companion (PG105 page 110,
+ * Table 49; page 114, Table 54). Check the same offset used by jumbo shortage
+ * before and after the drop; the following jumbo delivery adds no count.
  */
 static void test_standard_shortage_discards_without_waiting(const void *data)
 {
@@ -1256,7 +1229,7 @@ static void test_standard_shortage_discards_without_waiting(const void *data)
     build_big_rx_frame(big, sizeof(big));
     net_send_frame(sv[0], big, sizeof(big));
 
-    /* No qtest_clock_step anywhere: only a discard gets the second frame in. */
+    /* No qtest_clock_step: only a discard gets the second frame in. */
     g_assert_cmphex(rx_producer_without_clock(qts, 1), ==, 1);
     qtest_memread(qts, JUMBO_BUF_PHYS, got, sizeof(big));
     g_assert_cmpmem(got, sizeof(big), big, sizeof(big));
@@ -1273,7 +1246,7 @@ static void test_standard_shortage_discards_without_waiting(const void *data)
      * The chip counts this rather than latching it (PG105 page 110), the
      * same as the jumbo case: one frame dropped for want of a posted
      * standard descriptor, one count. The jumbo frame that lands right
-     * after adds nothing to it -- delivery is not the condition this
+     * after adds nothing to it. Delivery is not the condition this
      * counter names.
      */
     g_assert_cmphex(bar_readl(qts, BCM_SRAM_WINDOW_BASE +

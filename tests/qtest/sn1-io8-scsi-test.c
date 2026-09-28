@@ -1,15 +1,15 @@
 /*
- * The Origin 300 IO-8 board's QLogic ISP12160, reached the way a guest
- * reaches it. Register cycles cross crosstalk into XBridge head F and out
- * of head F's programmed I/O window for slot 1; the adapter's own
- * transfers cross back through head F into Bedrock's memory.
- *
- * The part's own register contract belongs to sn0-isp12160-test.c and is
- * not repeated here. What this file pins is that the board carries the
- * adapter at the position the board puts it, and that both directions of
- * the fabric path between it and the processor's memory work.
+ * Origin 300 IO-8 ISP12160 integration through XBridge head F.
+ * Tests slot-1 placement and bidirectional transfers to Bedrock memory.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
+ */
+
+/*
+ * Guest register cycles cross crosstalk and head F's slot-1 I/O window;
+ * adapter transfers return through head F. sn0-isp12160-test.c covers the
+ * adapter register contract. This test checks board placement and both
+ * directions of the path between the adapter and processor memory.
  */
 
 #include "qemu/osdep.h"
@@ -26,9 +26,9 @@
 #define BEDROCK_IO (BEDROCK_NODE0 + 0x400000)
 #define MD_MEMORY_CONFIG UINT64_C(0x780008)
 /*
- * Origin 300's installed memory occupies locational banks 2 and 3, not
- * bank 0: map software bank 0 onto them so the request and response
- * rings, both under 4 MiB, land in backed RAM instead of an I/O hole.
+ * Origin 300's installed memory occupies locational banks 2 and 3, not bank
+ * 0: map software bank 0 onto them so the request and response rings, both
+ * under 4 MiB, land in backed RAM instead of an I/O hole.
  */
 #define MD_INSTALLED_SELECT2 ((UINT64_C(2) << 32) | UINT64_C(0x3300))
 
@@ -40,21 +40,18 @@
                       IO8_SCSI_SLOT * 0x1000)
 
 /*
- * A head's programmed I/O region runs from 0x200000 to 0xc00000 and is
- * not uniform: the XBridge datasheet's device-window table gives slots 0
- * and 1 two megabytes each from 0x200000, slots 2 to 7 one megabyte each
- * from 0x600000, and a four-megabyte section at 0xc00000. Slot 1 is
- * therefore the second two-megabyte block. The same table is what puts
- * the IOC3 at slot 4 on 0x800000 and the OHCI at slot 5 on 0x900000,
- * where sn1-address-map-test reaches them.
+ * The head's I/O region spans 0x200000..0xc00000: slots 0/1 get 2 MiB each
+ * from 0x200000, slots 2..7 get 1 MiB each from 0x600000, and 0xc00000 holds
+ * a 4 MiB section. Slot 1 is the second 2 MiB block. The same map puts IOC3
+ * slot 4 at 0x800000 and OHCI slot 5 at 0x900000; sn1-address-map-test checks
+ * those devices.
  */
 #define IO8_SCSI_WINDOW (XTALK_WIDGET(IO8_WIDGET) + 0x400000)
 
 /*
- * The window's target comes from the head's device register in units of a
- * megabyte, and a two-megabyte window ignores the low bit of that field,
- * so a slot 0 or 1 aperture has to be aligned to two megabytes. Nothing
- * else on this bus is enabled while the test runs, so the address is free.
+ * The device register gives the window target in MiB. A 2 MiB slot-0/1 window
+ * ignores the low target bit and needs 2 MiB alignment. No other bus device
+ * is enabled here, so this address is free.
  */
 #define ADAPTER_MMIO 0x10000000
 
@@ -188,18 +185,15 @@
 #define RESP_SLOTS 8
 
 /*
- * A constant fill, so a buffer left unwritten can never match either
- * disk's first sector: those walk their byte values and are constant
- * nowhere.
+ * A constant fill, so a buffer left unwritten can never match either disk's
+ * first sector: those walk their byte values and are constant nowhere.
  */
 #define BUFFER_SENTINEL 0xcc
 
 /*
- * A 64-bit transfer address names its target widget in the top nibble and
- * passes the low 48 bits through to it. Bit 55 asks the head to leave the
- * byte lanes alone, so guest memory holds the stream the adapter produced
- * rather than its word-reversed image, and the fields below are read
- * straight back as the little-endian words the adapter wrote.
+ * A 64-bit transfer uses its top nibble for target widget and passes the low
+ * 48 bits through. Bit 55 disables head byte-lane reversal, preserving the
+ * adapter's stream; the fields read back as its little-endian words.
  */
 #define DIRECT64(phys) (((uint64_t)XBRIDGE_HOST_PORT << 60) | \
                         (UINT64_C(1) << 55) | (uint64_t)(phys))
@@ -272,11 +266,9 @@ static char *create_prom(void)
 }
 
 /*
- * Each disk's first sector walks the byte values with its own stride, so
- * no two neighbours repeat and the two disks differ at every offset. A
- * payload that came back byte-reversed within a word, one sector late, or
- * off the other channel's medium is then a different sequence rather than
- * a plausible one. A constant fill would survive all three.
+ * Each disk's first sector uses a distinct byte stride: adjacent bytes never
+ * repeat and the disks differ at every offset. Word reversal, a one-sector
+ * offset, or the wrong channel cannot match; constant fill could.
  */
 static uint8_t disk_byte(unsigned disk, unsigned offset)
 {
@@ -331,11 +323,9 @@ static void xtalk_reg_write(QTestState *qts, unsigned int widget,
 }
 
 /*
- * Every 16-bit access to the adapter goes through the window's byte-lane
- * swizzle: the device register's swap bit is left at its reset-clear
- * value, so a host offset lands at the PCI offset with its low two bits
- * flipped, and the value itself is not touched. A 32-bit access is not
- * lane-swapped and needs no correction.
+ * With the device swap bit reset clear, 16-bit window accesses flip PCI
+ * offset bits 1:0 but preserve the value. Full 32-bit accesses need no
+ * byte-lane correction.
  */
 static void isp_writew(QTestState *qts, unsigned offset, uint16_t value)
 {
@@ -356,9 +346,9 @@ static void isp_mbox_ack(QTestState *qts)
 }
 
 /*
- * A whole submission: inputs into mailboxes 1 upwards, the opcode last,
- * then the host interrupt the protocol triggers on. The answer is read
- * without acknowledging, which is the caller's decision to make.
+ * A whole submission: inputs into mailboxes 1 upwards, the opcode last, then
+ * the host interrupt the protocol triggers on. The answer is read without
+ * acknowledging, which is the caller's decision to make.
  */
 static uint16_t isp_mbox(QTestState *qts, uint16_t cmd, const uint16_t *in,
                          int nin)
@@ -375,11 +365,9 @@ static uint16_t isp_mbox(QTestState *qts, uint16_t cmd, const uint16_t *in,
 }
 
 /*
- * The aperture the adapter decodes, and the head window aimed at it. The
- * memory bar is used rather than the I/O one because the head's memory
- * space is where a slot's window can reach a 32-bit PCI address directly.
- * The device register's swap bit is left at its reset-clear value, which
- * is the word-invariant placement every driver on this bus assumes.
+ * Use the adapter memory BAR: the head's memory window directly reaches a
+ * 32-bit PCI address. The device swap bit stays reset clear, preserving word
+ * placement as bus drivers expect.
  */
 static void io8_scsi_attach(QTestState *qts)
 {
@@ -416,10 +404,8 @@ static QTestState *machine_start(void)
 }
 
 /*
- * Channel 0 is bus scsi.0 and channel 1 is scsi.1: the adapter is the
- * board's only SCSI device, so its two channels take the first two names.
- * A wrong bus name is refused at start-up rather than quietly putting both
- * disks on one channel.
+ * The only SCSI adapter names channel 0 scsi.0 and channel 1 scsi.1. A wrong
+ * bus name fails startup instead of placing both disks on one bus.
  */
 static QTestState *machine_start_with_disks(DiskPair *disks)
 {
@@ -450,9 +436,9 @@ static uint64_t ring_phys(uint64_t iova)
 }
 
 /*
- * One queue initialisation. Mailbox 6 carries address bits 63:48 and
- * mailbox 7 bits 47:32, so a model that drops either upper word aims the
- * ring somewhere else. Mailboxes 4 and 5 carry the initial indices.
+ * One queue initialisation. Mailbox 6 carries address bits 63:48 and mailbox
+ * 7 bits 47:32, so a model that drops either upper word aims the ring
+ * somewhere else. Mailboxes 4 and 5 carry the initial indices.
  */
 static void init_one_queue(QTestState *qts, uint16_t cmd, uint16_t count,
                            uint64_t iova)
@@ -490,11 +476,9 @@ static void init_queues(QTestState *qts)
 }
 
 /*
- * One command written into the next request slot and published. Every
- * field the adapter reads comes out of guest memory, so a broken outbound
- * path leaves the command unseen. At most one data descriptor is placed,
- * which is as much as a single-sector transfer describes; nothing here
- * needs the continuation entries a longer transfer would spill into.
+ * Publish one command in the next guest-memory request slot. Broken outbound
+ * DMA leaves it unseen. One descriptor covers a sector; longer transfers
+ * would need continuation entries.
  */
 static void submit_command(QTestState *qts, uint32_t handle,
                            unsigned channel, unsigned target, unsigned lun,
@@ -528,10 +512,9 @@ static void submit_command(QTestState *qts, uint32_t handle,
 }
 
 /*
- * Reading mailbox 5 answers the adapter's response producer index, so a
- * completion the test has not read yet is ready once that index moves.
- * The wait is bounded in wall time because a request held by the block
- * layer is waiting on its timer rather than on the guest clock.
+ * Mailbox 5 reports the response producer index; a new completion moves it.
+ * Use a wall-time bound because a block-layer request waits on its timer, not
+ * the guest clock.
  */
 static void wait_for_completion(QTestState *qts)
 {
@@ -544,9 +527,9 @@ static void wait_for_completion(QTestState *qts)
 }
 
 /*
- * The completion read out of guest memory and then released. Writing
- * mailbox 5 back frees the slot, and clearing the interrupt is what a
- * driver does once it has taken the entry.
+ * The completion read out of guest memory and then released. Writing mailbox
+ * 5 back frees the slot, and clearing the interrupt is what a driver does
+ * once it has taken the entry.
  */
 static void take_status(QTestState *qts, uint32_t handle, uint8_t *status)
 {
@@ -599,10 +582,8 @@ static void put_lba10(uint8_t *cdb, uint32_t lba, uint16_t blocks)
 }
 
 /*
- * READ(10) of one sector into one descriptor. The buffer is filled with a
- * sentinel first, so a transfer that never reaches memory leaves the
- * caller comparing the sentinel against the medium rather than against
- * whatever happened to be in the page.
+ * READ(10) uses one sector and descriptor. Prefill its buffer with a sentinel
+ * so absent DMA cannot resemble medium data.
  */
 static void read_sector(QTestState *qts, uint32_t handle, unsigned channel,
                         uint32_t lba, uint8_t *out, uint8_t *status)
@@ -620,11 +601,9 @@ static void read_sector(QTestState *qts, uint32_t handle, unsigned channel,
 }
 
 /*
- * WRITE(10) of one sector composed in guest memory out to the medium. The
- * adapter pulls the payload back across the head as a 64-bit direct
- * transfer, which is the DMA-read direction the READ path never drives:
- * READ has the head place the medium's bytes into memory, WRITE has it
- * fetch the caller's bytes out of memory.
+ * WRITE(10) fetches a guest-memory sector through head DMA read, opposite to
+ * READ(10)'s DMA write of medium bytes into memory. It uses one 64-bit direct
+ * transfer.
  */
 static void write_sector(QTestState *qts, uint32_t handle, unsigned channel,
                          uint32_t lba, const uint8_t *in, uint8_t *status)
@@ -653,10 +632,9 @@ static void expect_first_sector(const uint8_t *got, unsigned disk)
 }
 
 /*
- * The board's own record of what is in slot 1. A machine that creates the
- * adapter somewhere else, or not at all, answers all ones here, and a
- * machine that creates a different part of the family answers a different
- * device number and revision.
+ * The board records the adapter in slot 1. Missing or misplaced hardware
+ * reads as all ones; another family member has a different device ID and
+ * revision.
  */
 static void test_identity(const void *data)
 {
@@ -678,11 +656,9 @@ static void test_identity(const void *data)
 }
 
 /*
- * What io8bt's first section writes into this slot's Command register
- * (its sec0_0.c line 262, docs/datasheets/isp12160.md): SERR enable,
- * parity-error response, memory write and invalidate, bus master and
- * memory space, all five reading back. The two the PCI core leaves
- * read-only for every device are the point of the case.
+ * io8bt sets Command SERR, parity response, memory-write-invalidate, bus
+ * master, and memory-space bits; all five must read back. The PCI core
+ * normally leaves two of them read-only.
  */
 static void test_io8bt_command_register(const void *data)
 {
@@ -696,12 +672,10 @@ static void test_io8bt_command_register(const void *data)
 }
 
 /*
- * The same section's next register. The word at configuration offset 0x0c
- * is cache line size, Latency Timer, header type and built-in self test;
- * the test writes 0xf8ff and reads it back, so the Latency Timer byte has
- * to take a write the PCI core leaves read-only. The exact value is the
- * diagnostic's, not a round number: nothing observed says whether the
- * timer's low three bits are writable, so nothing here asks.
+ * At config 0x0c, io8bt writes 0xf8ff across cache-line size, Latency Timer,
+ * header type, and self-test. The Latency Timer must accept a write despite
+ * the PCI core default. Its low three writable bits are unknown; the exact
+ * diagnostic value avoids claiming them.
  */
 static void test_io8bt_latency_timer(const void *data)
 {
@@ -715,12 +689,10 @@ static void test_io8bt_latency_timer(const void *data)
 }
 
 /*
- * And its last configuration register: the power-management control word
- * at 0x48, inside the capability at 0x44. The test zeroes it, writes the
- * event enable and requires 0x100 back, so that one bit is writable where
- * the PCI core makes a whole capability read-only. Nothing observed says
- * the power state or data-select fields take a write, so nothing here
- * writes them.
+ * Power-management control is at 0x48 in the 0x44 capability. After zeroing
+ * it, io8bt enables events and requires 0x100 readback. The PCI core makes
+ * the capability read-only; power-state and data-select writability remain
+ * unknown and are not tested.
  */
 static void test_io8bt_power_management(const void *data)
 {
@@ -735,12 +707,9 @@ static void test_io8bt_power_management(const void *data)
 }
 
 /*
- * The register file through the head's slot-1 window. The identity pair
- * and the reset signature say the window reaches the adapter at all; the
- * mailbox register test writes a different pattern into each of seven
- * registers and reads them back, so a window landing a megabyte away, an
- * offset correction the head should not be applying, or aliased mailbox
- * storage all show up as a wrong word rather than as silence.
+ * The slot-1 window must expose identity and reset signature. Seven distinct
+ * mailbox patterns then detect a 1 MiB misroute, unwanted offset correction,
+ * or aliased registers as wrong words.
  */
 static void test_registers_through_the_fabric(const void *data)
 {
@@ -777,13 +746,10 @@ static void test_registers_through_the_fabric(const void *data)
 }
 
 /*
- * One command from end to end. Both rings live in the processor's memory
- * and the adapter reaches them over crosstalk, so an inbound path that
- * does not work leaves the response producer where it was and the wait
- * runs out. The handle and the completion code are asserted rather than
- * the entry merely having changed: a status entry written into the wrong
- * slot, or carrying another command's handle, is not this command
- * completing.
+ * Both rings reside in processor memory across crosstalk. Broken inbound DMA
+ * leaves the response producer unchanged until timeout. Check completion code
+ * and handle as well as a moved entry, to catch wrong-slot or wrong-command
+ * status.
  */
 static void test_command_reaches_memory(const void *data)
 {
@@ -808,14 +774,10 @@ static void test_command_reaches_memory(const void *data)
 }
 
 /*
- * A data phase across the head. TEST UNIT READY moves nothing, so the
- * case above shows only that ring entries cross; this one puts a sector
- * of medium into a page of guest memory through the same descriptor a
- * driver would write, and compares every byte against what the fixture
- * put in the image. The residual has to be zero and the state flags have
- * to claim both the data phase and its completion: a status entry
- * reporting a transfer the adapter did not make is worse than one
- * reporting a failure.
+ * TEST UNIT READY only checks rings. Here READ moves a fixture sector into
+ * guest memory through a driver-format descriptor. Compare every byte and
+ * require zero residual plus data-phase and completion flags; status alone
+ * cannot prove transfer.
  */
 static void test_data_transfer_reaches_memory(const void *data)
 {
@@ -892,19 +854,11 @@ static void test_scsi_dma_with_inbound_mask(const void *data)
 }
 
 /*
- * The other direction of the same 64-bit path: a sector composed in the
- * processor's memory and sent out to the medium, then read back. The head
- * fetches the payload out of memory (a DMA read) where the case above had
- * it deposit the payload into memory (a DMA write), so this is the outbound
- * lane the READ path leaves untried. The bytes walk with a stride that
- * shares nothing with either disk fixture and is not its own reverse within
- * a word: because the inbound path is already shown to land the medium's
- * bytes unreversed, a round trip that returns byte-for-byte can only mean
- * the head pulled the stream out of memory in the same orientation. A head
- * that word-reversed the outbound lanes, or aimed the fetch at the wrong
- * address, would put a different sequence on the medium and read it back
- * different. The transfer runs with bit 55 set, the same request IRIX
- * composes, so the head leaves the byte lanes alone in both directions.
+ * WRITE fetches a guest-memory sector by head DMA read, then READ returns it
+ * by DMA write. The source stride differs from both fixture disks and from
+ * its own word reverse. Since inbound DMA is known unreversed, byte-exact
+ * round-trip detects outbound reversal or wrong fetch address. Bit 55 matches
+ * IRIX's request and disables byte-lane reversal in both directions.
  */
 static void test_write_transfer_from_memory(const void *data)
 {
@@ -945,12 +899,9 @@ static void test_write_transfer_from_memory(const void *data)
 }
 
 /*
- * Both channels, each carrying its own disk at the same target number.
- * The shared target number is the point: what picks the medium is the
- * channel bit of the request entry and nothing else. A machine that built
- * one bus and published two names for it, or an adapter whose second
- * channel reaches the first channel's disk, answers one disk's sector to
- * both reads, and the two sectors differ at every offset.
+ * Each channel has a disk at the same target number; only the request's
+ * channel bit selects it. Aliased buses or channel routing return one disk's
+ * sector twice, while the sectors differ at every offset.
  */
 static void test_channels_are_independent(const void *data)
 {
@@ -978,11 +929,9 @@ static void test_channels_are_independent(const void *data)
 }
 
 /*
- * The interrupt the completion raises, on the pin the board wires it to.
- * The adapter's interrupt enables are left clear while the rings are set
- * up so the mailbox commands do not raise the line first, and the pin is
- * read before the command as well as after: a head that reports every pin
- * high would otherwise pass the raised half.
+ * Check the board-wired completion pin before and after the command. Adapter
+ * interrupts stay disabled during ring setup to avoid earlier mailbox IRQs;
+ * the pre-check catches a pin stuck high.
  */
 static void test_completion_raises_head_f_pin(const void *data)
 {

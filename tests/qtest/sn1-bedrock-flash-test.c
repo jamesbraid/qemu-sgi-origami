@@ -1,11 +1,8 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * Origin 300 boot-flash adapter, on its own. The empty machine supplies an
- * address space and nothing else, so the two windows below are test
- * addresses rather than the boot-window addresses an Origin 300 uses.
- *
- * Every image here is synthetic. No test needs, or asserts anything about,
- * the contents of a real boot image.
+ * Isolated Origin 300 boot-flash adapter with synthetic images.
+ * The empty machine supplies only an address space; test window addresses
+ * differ from Origin 300 boot windows. Real boot-image contents are untested.
  */
 #include "qemu/osdep.h"
 #include "libqtest.h"
@@ -26,8 +23,8 @@
 
 /*
  * One PROM stride into a boot space: the second position's base. Reads and
- * stores there reach the upper half of the backing, not a repeat of the
- * lower half.
+ * stores there reach the upper half of the backing, not a repeat of the lower
+ * half.
  */
 #define SECOND_READ 0x02000000ULL
 #define PRIMARY LOCAL
@@ -252,10 +249,9 @@ static void test_backing_file(void)
 }
 
 /*
- * A read reaches the byte at the same offset, at every width the bus
- * carries, out to the last byte of the part -- including an image whose
- * contents are already the result of an earlier update rather than a fresh
- * one.
+ * A read reaches the byte at the same offset, at every width the bus carries,
+ * out to the last byte of the part, including an image whose contents are
+ * already the result of an earlier update rather than a fresh one.
  */
 static void test_one_to_one_reads(void)
 {
@@ -283,7 +279,9 @@ static void test_one_to_one_reads(void)
                     0xfeedfacecafef00dULL);
     g_assert_cmphex(qtest_readq(s, PRIMARY + 0x1f0000), ==,
                     0x0badc0debaadf00dULL);
-    /* The backing's last word belongs to position one, not to position zero. */
+    /*
+     * The backing's last word belongs to position one, not to position zero.
+     */
     g_assert_cmphex(qtest_readq(s, ALTERNATE + PART_SIZE - 8), ==,
                     0x0123456789abcdefULL);
     g_assert_cmphex(qtest_readb(s, ALTERNATE + PART_SIZE - 1), ==, 0xef);
@@ -293,8 +291,8 @@ static void test_one_to_one_reads(void)
 
 /*
  * The two positions are different parts. Each holds its own half of the
- * backing and is reachable only at its own base, through either boot space.
- * A read past a position's own 8 MiB is outside every mapped address.
+ * backing and is reachable only at its own base, through either boot space. A
+ * read past a position's own 8 MiB is outside every mapped address.
  */
 static void test_positions_are_distinct(void)
 {
@@ -327,8 +325,8 @@ static void test_positions_are_distinct(void)
                     0x99aabbccddeeff00ULL);
 
     /*
-     * A position stops at its own part. The old mirrored policy answered
-     * here from the other half; nothing does now.
+     * A position stops at its own part. The old mirrored policy answered here
+     * from the other half; nothing does now.
      */
     g_assert_cmphex(qtest_readq(s, PRIMARY + PART_SIZE), ==, 0);
     g_assert_cmphex(qtest_readq(s, REMOTE + PART_SIZE), ==, 0);
@@ -469,7 +467,6 @@ static void test_program(void)
 /*
  * An erase clears one 64 KiB sector and leaves the sectors either side of it
  * alone, whether it is the first sector or one further up.
- *
  * The higher erase covers the penultimate sector in each 8 MiB position and
  * is issued through the remote boot space. This checks both position-relative
  * store decoding and the shared command state across the two boot spaces.
@@ -566,12 +563,11 @@ static unsigned count_lines(const char *text, const char *needle)
 
 /*
  * Both parts are commandable through either boot space, so the whole 16 MiB
- * is still covered -- as two positions rather than one flat range. For each
+ * is covered as two positions rather than one flat range. For each
  * position, program its first word, its midpoint word and its last word with
  * the sequence issued at that position's own base, and check each landed at
  * the part offset a quarter of its offset above that base. The last word
  * carries two distinct bytes so a swapped final lane shows up.
- *
  * The first store with no backing word behind it must be refused before any
  * flash cycle, and that bound is now per position: four times a part's size
  * above the position's own base, not above the boot space.
@@ -609,7 +605,9 @@ static void check_aperture(const char *tag, uint64_t base)
         g_assert_cmphex(qtest_readw(s, reads + 0), ==, first);
         g_assert_cmphex(qtest_readw(s, reads + PART_SIZE / 2), ==, middle);
         g_assert_cmphex(qtest_readw(s, reads + LAST_WORD), ==, last);
-        /* Both lanes of the last word, the second being the part's highest. */
+        /*
+         * Both lanes of the last word, the second being the part's highest.
+         */
         g_assert_cmphex(qtest_readb(s, reads + LAST_WORD), ==, last >> 8);
         g_assert_cmphex(qtest_readb(s, reads + PART_SIZE - 1), ==, last & 0xff);
         /* And through this boot space's own read address for the position. */
@@ -623,13 +621,12 @@ static void check_aperture(const char *tag, uint64_t base)
      * store window is four times its own size, and that is exactly the
      * stride, so position zero's window ends where position one's begins and
      * the two abut with no gap between them.
-     *
      * Sent as programming payload rather than as a bare command. A bare
      * command there could not damage anything: at the start of a sequence the
-     * flash takes it as a failed unlock and resets. A payload can. Dispatched,
-     * the CFI device masks the offset back into its own range and this would
-     * land on position one's first word, clearing bits out of it. Refused,
-     * that word still reads as it was programmed.
+     * flash takes it as a failed unlock and resets. A payload can.
+     * Dispatched, the CFI device masks the offset back into its own range and
+     * this would land on position one's first word, clearing bits out of it.
+     * Refused, that word still reads as it was programmed.
      */
     qtest_writeq(s, base + SECOND_READ + UNLOCK0, 0xaa);
     qtest_writeq(s, base + SECOND_READ + UNLOCK1, 0x55);
@@ -783,7 +780,6 @@ static void test_erase_polling(void)
  * has to reach the flash as a single two-byte cycle; split into two one-byte
  * cycles it would be two commands, and the firmware's programming sequence
  * would fall apart. The CFI device's own trace says which happened.
- *
  * A store with anything set above the flash word is not something the
  * firmware ever sends, and the board's answer to it is unknown. Refuse it
  * outright: say so, start no cycle, and leave the data alone.
@@ -875,7 +871,7 @@ static void test_narrow_writes(void)
      * proper stores, then its payload sent narrow. Forwarded, that clears the
      * word; refused, the word keeps what it had. Refusing issues no cycle, so
      * the flash is left waiting for that payload and reads status rather than
-     * the array -- the image below is where the damage would show.
+     * the array. The image below would show the damage.
      */
     qtest_writeq(s, LOCAL + UNLOCK0, 0xaa);
     qtest_writeq(s, LOCAL + UNLOCK1, 0x55);
@@ -896,8 +892,8 @@ static void test_narrow_writes(void)
 }
 
 /*
- * A reset returns the flash to plain array reads from wherever it was, and
- * an unfinished command sequence does not survive it: a data or erase cycle
+ * A reset returns the flash to plain array reads from wherever it was, and an
+ * unfinished command sequence does not survive it: a data or erase cycle
  * arriving after the reset is a stray write, not the completion of what was
  * started before.
  */
@@ -1109,7 +1105,9 @@ static void test_migration_query_mode(void)
     migration_finish(&m);
 }
 
-/* A command sequence half issued on the source finishes on the destination. */
+/*
+ * A command sequence half issued on the source finishes on the destination.
+ */
 static void test_migration_partial_command(void)
 {
     FlashMigration m;
@@ -1145,15 +1143,13 @@ static void assert_writes_stay_in_first_sector(const char *log)
 }
 
 /*
- * The access pattern the firmware uses to update its own configuration:
- * read the first sector, change one 80-byte block inside it, erase the
- * sector, program the whole 64 KiB back, and read it to check. The sector
- * data here is generated, and the block is an arbitrary distinct run of
- * bytes.
- *
- * What matters is the reach of the operation. One erase, at the first
- * sector; one program cycle per word, all inside it; and the rest of the
- * part, including the two offsets the firmware keeps its logs at, untouched.
+ * The access pattern the firmware uses to update its own configuration: read
+ * the first sector, change one 80-byte block inside it, erase the sector,
+ * program the whole 64 KiB back, and read it to check. The sector data here
+ * is generated, and the block is an arbitrary distinct run of bytes.
+ * What matters is the reach of the operation. One erase, at the first sector;
+ * one program cycle per word, all inside it; and the rest of the part,
+ * including the two offsets the firmware keeps its logs at, untouched.
  */
 static void test_first_sector_rewrite(void)
 {

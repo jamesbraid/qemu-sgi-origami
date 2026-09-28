@@ -1,12 +1,9 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * Philips PCF8584 I2C-bus controller
  *
- * Copyright (c) 2026 Origami contributors
- *
- * SPDX-License-Identifier: GPL-2.0-or-later
- *
- * Modelled from the register contract in the Origami project tree's
- * controller datasheet; see also docs/specs/sgi-elsc.rst.
+ * The register contract this model follows is written up in
+ * docs/specs/sgi-elsc.rst.
  */
 
 #include "qemu/osdep.h"

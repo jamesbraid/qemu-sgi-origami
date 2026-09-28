@@ -1,8 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * The composed XBridge: crossbar at widget 0, heads at 0xe and 0xf, one host
- * port. The host sits on a non-default port so the property is exercised,
- * not fixed routing hidden behind it. The fixture is not an Origin 300.
+ * XBridge crossbar at widget 0 and heads at 0xe/0xf on one host port. A
+ * non-default host port tests routing; this is not an Origin 300.
  */
 #include "qemu/osdep.h"
 #include "libqtest.h"
@@ -93,9 +92,9 @@ static void test_space_above_face(void)
                     ==, 0x10);
     g_assert_cmphex(reg_read(qts, 0xe, 0x100) & (1U << 24), ==, 0);
     /*
-     * The same address at head F is its own PCI memory, decoded but empty:
-     * no undefined-address error there, and E's register is not what it
-     * reaches. What an unclaimed PCI cycle returns is not asserted.
+     * The same address at head F is its own PCI memory, decoded but empty: no
+     * undefined-address error there, and E's register is not what it reaches.
+     * What an unclaimed PCI cycle returns is not asserted.
      */
     qtest_writel(qts, WIDGET(0xf) + 0x40000000 + 0x01000004, 0x20);
     g_assert_cmphex(reg_read(qts, 0xf, 0x100) & (1U << 24), ==, 0);
@@ -114,7 +113,9 @@ static void test_fixed_destinations(void)
     g_assert_cmphex(reg_read(qts, 0xe, 0), ==, HEAD_ID);
     g_assert_cmphex(reg_read(qts, 0xf, 0x20), ==, 0x0f00320f);
     g_assert_cmphex(qtest_readl(qts, WIDGET(9) + 4), ==, 0);
-    /* Each head keeps its own state; a write to one is unseen at the other. */
+    /*
+     * Each head keeps its own state; a write to one is unseen at the other.
+     */
     reg_write(qts, 0xf, 0x28, 0x12345);
     g_assert_cmphex(reg_read(qts, 0xf, 0x28), ==, 0x12345);
     g_assert_cmphex(reg_read(qts, 0xe, 0x28), ==, 0xfffff);
@@ -145,9 +146,9 @@ static void test_head_interrupts_reach_the_host(void)
 
 /*
  * The card's own scalar fields (address, count, seed, trigger) need
- * value-preserving placement through the slot's PIO window regardless of
- * what a test has bit 13 set to for its own byte-stream checks elsewhere,
- * so clear it here for the one write and restore whatever the caller had
+ * value-preserving placement through the slot's PIO window regardless of what
+ * a test has bit 13 set to for its own byte-stream checks elsewhere, so clear
+ * it here for the one write and restore whatever the caller had
  * (sn1-xbridge-test.c's card_write() carries the same reasoning).
  */
 static void card_write(QTestState *qts, unsigned widget, unsigned reg,

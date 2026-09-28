@@ -1,19 +1,9 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later AND MIT */
 /*
- * The running machine that the module-management tests do not have.
- *
- * Both tests link the real coordinator, the real adapters, the real
- * management endpoints and the real system bus into a host binary, so the
- * device behaviour under test is the shipping behaviour.  What is missing
- * around them is the rest of a machine: an address space, a monitor, a
- * network and block layer, an audio backend, and a processor.  Each of those
- * gets a definition below that stands in for it, and none of them sits on a
- * path either test takes.
- *
- * The timer vmstate at the end of this file is the exception, and is a real
- * implementation rather than a stand-in.  Its own comment says why.  It is
- * taken from QEMU's migration/savevm.c, which is MIT rather than GPL, so
- * that file's notice travels with it:
+ * Host tests link the real coordinator, adapters, endpoints and bus. Stubs
+ * supply the unused address space, monitor, network, block, audio and
+ * processor services. Timer vmstate below is real: it copies the MIT
+ * implementation from migration/savevm.c; its notice follows.
  *
  *   QEMU System Emulator
  *
@@ -55,11 +45,11 @@
 #include "system/runstate.h"
 
 /*
- * An adapter's register window.  Nothing dispatches through it: the tests
- * reach registers with pcf8584_read_register()/pcf8584_write_register(),
- * and the coordinator's outputs are named qdev GPIOs rather than sysbus
- * IRQ lines.  The region stays the zeroed field it already is inside the
- * device state, which sysbus_init_mmio() then records unread.
+ * An adapter's register window. Nothing dispatches through it: the tests
+ * reach registers with pcf8584_read_register()/pcf8584_write_register(), and
+ * the coordinator's outputs are named qdev GPIOs rather than sysbus IRQ
+ * lines. The region stays the zeroed field it already is inside the device
+ * state, which sysbus_init_mmio() then records unread.
  */
 void memory_region_init_io(MemoryRegion *mr, Object *owner,
                            const MemoryRegionOps *ops, void *opaque,
@@ -73,9 +63,9 @@ uint64_t memory_region_size(const MemoryRegion *mr)
 }
 
 /*
- * Mapping a region is the one thing that would quietly do nothing here, so
- * it fails loudly instead.  A test that starts driving an adapter through
- * its window needs a real address space, not this file.
+ * Mapping a region is the one thing that would quietly do nothing here, so it
+ * fails loudly instead. A test that starts driving an adapter through its
+ * window needs a real address space, not this file.
  */
 MemoryRegion *get_system_memory(void)
 {
@@ -108,8 +98,7 @@ int monitor_hmp_printf(MonitorHMP *mon, const char *fmt, ...)
 
 /*
  * The endpoint registers "info elsc" from its type initialiser, so this one
- * really is called -- once, before any test runs, with nothing to record it
- * in.
+ * is called once before any test runs, with nothing to record it in.
  */
 void monitor_register_hmp_info_hrt(const char *name,
                                    HumanReadableText *(*handler)(Error **errp))
@@ -117,15 +106,15 @@ void monitor_register_hmp_info_hrt(const char *name,
 }
 
 /*
- * The processor an endpoint attributes a response to.  NULL is the
- * documented "no processor" case and is the case both tests exercise, so
- * this is the real definition rather than a stand-in.
+ * The processor an endpoint attributes a response to. NULL is the documented
+ * "no processor" case and is the case both tests exercise, so this is the
+ * real definition rather than a stand-in.
  */
 __thread CPUState *current_cpu;
 
 /*
  * An endpoint asks the machine to reset or power down only when no module
- * owner is installed to take the request instead.  The coordinator installs
+ * owner is installed to take the request instead. The coordinator installs
  * itself as that owner over every endpoint it creates, and both tests build
  * their endpoints through the coordinator, so neither of these is reached.
  */
@@ -150,7 +139,7 @@ void cpu_pause(CPUState *cpu)
 
 /*
  * Backends for qdev property kinds no device in this link declares: no
- * audiodev, no netdev, no drive.  They exist because
+ * audiodev, no netdev, no drive. They exist because
  * hw/core/qdev-properties-system.c defines all of its property kinds in one
  * object file, not because anything here can call them.
  */
@@ -176,18 +165,12 @@ void blockdev_auto_del(BlockBackend *blk)
 }
 
 /*
- * Not a stub. The migration test moves each endpoint's own device vmstate,
- * and that names vmstate_info_timer for the arbitration timer, so this has
- * to carry a real expiry across the stream rather than refuse.
- *
- * QEMU keeps the timer's stream format in migration/savevm.c, which a host
- * unit test cannot link, and timer_put()/timer_get() are declared in
- * qemu/timer.h but defined only there. Everything the format needs is
- * already linked here: timer_expire_time_ns(), timer_mod_ns() and
- * timer_del() from util/qemu-timer.c, qemu_put_be64() and qemu_get_be64()
- * from migration/qemu-file.c. So the two are defined below exactly as
- * savevm.c defines them, and the bytes written here are the bytes QEMU
- * writes: one big-endian expiry, with all-ones meaning no timer armed.
+ * Endpoint migration needs the real arbitration timer vmstate. Host tests
+ * cannot link migration/savevm.c, where timer_put()/timer_get() implement
+ * the qemu/timer.h declarations. Replicate its stream format with linked
+ * timer_expire_time_ns(), timer_mod_ns(), timer_del() (util/qemu-timer.c),
+ * qemu_put_be64() and qemu_get_be64() (migration/qemu-file.c): one big-endian
+ * expiry, all-ones when disarmed.
  */
 void timer_put(QEMUFile *f, QEMUTimer *ts)
 {

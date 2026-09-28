@@ -1,9 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * SGI Origin 2000 shared module management
- *
- * Copyright (c) 2026 Origami contributors
- *
- * SPDX-License-Identifier: GPL-2.0-or-later
+ * Origin 2000 module management: PCF8584 arbitration, one-wire identity and
+ * shared NVRAM behind one module's node boards.
  */
 
 #ifndef HW_MISC_SGI_SN0_MODULE_MANAGEMENT_H
@@ -29,9 +27,9 @@ OBJECT_DECLARE_SIMPLE_TYPE(SN0ModuleManagementState, SGI_SN0_MODULE_MANAGEMENT)
 
 /*
  * 2048 addressable bytes of management NVRAM reached across eight consecutive
- * slave addresses from 0x50, the top three bits of the eleven-bit byte address
- * choosing among them. Whether that is one part or several is unestablished.
- * The guest-visible logical space is the contract.
+ * slave addresses from 0x50, the top three bits of the eleven-bit byte
+ * address choosing among them. Whether that is one part or several is
+ * unestablished. The guest-visible logical space is the contract.
  *
  * The model builds it from eight 256-byte parts, which decides one thing the
  * contract does not: a sequential read running off the end of a page wraps to
@@ -116,10 +114,9 @@ DeviceState *sgi_sn0_module_management_get_adapter(SN0ModuleManagementState *s,
 
 /*
  * The module's one-wire identity, attached directly to each node's Hub: the
- * byte layout below is the same on every module of this kind, so the
- * machine passes only the fitted-part values (a module's own serial and
- * initial number, a node's physical slot) rather than building the bytes
- * itself.
+ * byte layout below is the same on every module of this kind, so the machine
+ * passes only the fitted-part values (a module's own serial and initial
+ * number, a node's physical slot) rather than building the bytes itself.
  */
 bool sgi_sn0_module_management_identity_pages(
     const char *serial, uint8_t page[2][DS2502_PAGE_SIZE]);
@@ -160,8 +157,8 @@ bool sgi_sn0_module_management_can_execute(SN0ModuleManagementState *s,
                                        SGIElscAction action);
 /*
  * Drive the reviewed hundred-millisecond pulse. Both refuse, and answer
- * false, on a module that declares no path for that action, and while a
- * pulse is already running: nothing settles that overlap.
+ * false, on a module that declares no path for that action, and while a pulse
+ * is already running: nothing settles that overlap.
  */
 bool sgi_sn0_module_management_pulse_reset(SN0ModuleManagementState *s);
 bool sgi_sn0_module_management_pulse_nmi(SN0ModuleManagementState *s);

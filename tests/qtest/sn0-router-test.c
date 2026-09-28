@@ -620,7 +620,9 @@ static QTestState *nic_start(const char *extra)
                        "-device sgi-router-test,id=router1,nic-serial=2 %s",
                        extra);
 
-    /* This test only addresses the NIC; polls need not reselect its address. */
+    /*
+     * This test only addresses the NIC; polls need not reselect its address.
+     */
     for (unsigned int node = 0; node <= 2; node += 2) {
         NIC nic = { qts, node };
 
@@ -832,7 +834,9 @@ static QTestState *nic_migrate(NIC *nic, int64_t now)
     g_autofree char *uri = g_strdup_printf("unix:%s", socket);
     QTestState *to = nic_start("-incoming defer");
 
-    /* Qtest's explicit clock is a harness input, not guest migration state. */
+    /*
+     * Qtest's explicit clock is a harness input, not guest migration state.
+     */
     qtest_clock_set(to, now);
     qtest_qmp_assert_success(to,
         "{'execute':'migrate-incoming', 'arguments':{'uri':%s}}", uri);
@@ -901,7 +905,9 @@ static void test_nic_migration_crc(void)
     }
     expected = ~crc;
     g_assert_cmphex(nic_read_byte(&source), ==, (uint8_t)expected);
-    /* Preserve a partial CRC byte, including a latched awaiting-sample bit. */
+    /*
+     * Preserve a partial CRC byte, including a latched awaiting-sample bit.
+     */
     for (unsigned int bit = 0; bit < 3; bit++) {
         actual |= nic_read_bit(&source) << bit;
     }

@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
+/* Bedrock network-interface register state. */
 #ifndef HW_MISC_SGI_BEDROCK_NI_REGS_H
 #define HW_MISC_SGI_BEDROCK_NI_REGS_H
 

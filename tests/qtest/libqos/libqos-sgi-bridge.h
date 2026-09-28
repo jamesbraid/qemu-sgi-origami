@@ -1,5 +1,5 @@
 /*
- * libqos bring-up on the SGI Bridge head
+ * libqos boot and shutdown interface for the SGI Bridge.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */

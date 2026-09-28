@@ -1,7 +1,6 @@
 /*
- * savevm/quit/cold -loadvm round trip: a different code path from
- * `migrate`, so a defect in it never shows in the migration test.
- *
+ * savevm/quit/cold -loadvm round trip: a different code path from `migrate`,
+ * so a defect in it never shows in the migration test.
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
@@ -116,14 +115,18 @@ static void test_a_device_window_survives_savevm_loadvm(const void *data)
     hmp_ret = qtest_hmp(qts, "savevm snaptest");
     g_free(hmp_ret);
 
-    /* A real quit: nothing can leak but the qcow2 file, which is the point. */
+    /*
+     * A real quit: nothing can leak but the qcow2 file, which is the point.
+     */
     qtest_quit(qts);
 
     cmdline_restored = g_strdup_printf(MACHINE_WITH_BRIDGE PROBE_CARD
                                        "%s -loadvm snaptest", drive_arg);
     qts = qtest_init(cmdline_restored);
 
-    /* Holds only if the window's derived state came back, not just the bits. */
+    /*
+     * Holds only if the window's derived state came back, not just the bits.
+     */
     g_assert_cmphex(qtest_readl(qts, WINDOW(PROBE_WINDOW_OFFSET) +
                                 CARD_SCRATCH), ==, 0xc0ffee00);
 

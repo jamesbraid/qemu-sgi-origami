@@ -1,14 +1,8 @@
 /*
- * Alteon Tigon 2 (the SGI "eg" gigabit board) behind the Origin 200 Bridge.
- *
- * The Tigon is an add-in PCI card, so unlike the base I/O board's soldered
- * adapters it is instantiated with -device at a free slot and reached through
- * that slot's own Bridge decode -- the same way tests/qtest/sn0-bridge-test.c
- * hosts its probe card. Everything here runs on the machine's real
- * crosstalk-to-PCI topology so the register contract, the firmware-mediated
- * ring engine, and the descriptor byte order are all proven on the fabric the
- * card actually sits on rather than a generic PCI bus that has no Bridge.
- *
+ * Alteon Tigon 2 (SGI "eg") PCI card on the Origin 200 Bridge.
+ * A free -device slot, as in sn0-bridge-test.c, exercises Bridge decode,
+ * register access, firmware ring processing and descriptor byte order over
+ * the machine's crosstalk-to-PCI path; base I/O adapters are soldered down.
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
@@ -76,7 +70,7 @@ static const uint8_t tigon_mac[6] = { 0x52, 0x54, 0x00, 0x12, 0x34, 0x56 };
 /* Where the card's BAR is parked in PCI memory space (1 MB aligned). */
 #define ADAPTER_MMIO        0x10000000u
 
-/* The card's identity, from docs/datasheets/tigon.md. */
+/* The card's identity. */
 #define TIGON_VENDOR_ID     0x10a9
 #define TIGON_DEVICE_ID     0x0009
 #define TIGON_CLASS_CODE    0x020000
@@ -133,9 +127,9 @@ static const uint8_t tigon_mac[6] = { 0x52, 0x54, 0x00, 0x12, 0x34, 0x56 };
 
 /*
  * A general information block and its rings, laid out in low guest RAM. The
- * Bridge carries a DMA address below its translated window straight through to
- * system memory, so the card reaches these at the same address the test wrote
- * them, with no address-translation setup.
+ * Bridge carries a DMA address below its translated window straight through
+ * to system memory, so the card reaches these at the same address the test
+ * wrote them, with no address-translation setup.
  */
 #define GIB_PHYS            0x00200000u
 #define GIB_EV_RCB          0x400
@@ -156,7 +150,7 @@ static const uint8_t tigon_mac[6] = { 0x52, 0x54, 0x00, 0x12, 0x34, 0x56 };
 #define TX_RING_PHYS        0x00270000u
 #define RX_BUF_PHYS         0x00280000u
 #define TX_BUF_PHYS         0x00290000u
-/* Misaligned on purpose -- forces the payload copy's buf & 3 != 0 path. */
+/* Misaligned to exercise the payload copy's buf & 3 != 0 path. */
 #define TX_BUF_DIRECT_PHYS  (TX_BUF_PHYS + 2)
 #define RX_BUF_DIRECT_PHYS  (RX_BUF_PHYS + 2)
 /* Deliberately outside the 128 MiB machine used by the DMA-error tests. */
@@ -175,8 +169,8 @@ static const uint8_t tigon_mac[6] = { 0x52, 0x54, 0x00, 0x12, 0x34, 0x56 };
 
 /*
  * The statistics contract. The block's own head holds a 1 KB struct ti_stats,
- * and its last field names a second host address the firmware refreshes a copy
- * into. Both public drivers make those one address; this test gives them
+ * and its last field names a second host address the firmware refreshes a
+ * copy into. Both public drivers make those one address; this test gives them
  * separate buffers, the way the IRIX guest does, so a card that filled only
  * one of them fails here.
  */
@@ -218,7 +212,9 @@ static const uint8_t tigon_mac[6] = { 0x52, 0x54, 0x00, 0x12, 0x34, 0x56 };
 /* How often the model rewrites the block at the information block's head. */
 #define STATS_LIVE_NS           100000000
 
-/* Write a ring control block's 64-bit host address (two words, hi then lo). */
+/*
+ * Write a ring control block's 64-bit host address (two words, hi then lo).
+ */
 static void write_rcb_dma_addr(QTestState *qts, uint32_t rcb, uint64_t addr)
 {
     qtest_writel(qts, rcb + 0, addr >> 32);
@@ -231,9 +227,10 @@ static void write_rcb_addr(QTestState *qts, uint32_t rcb, uint32_t phys)
 }
 
 /*
- * A 4-byte access needs no byte-lane correction -- sgi_bridge_window_correct()
- * moves only the low two bits and leaves a full-word access at its natural
- * offset -- so a 32-bit register is reached at WINDOW + offset directly.
+ * A 4-byte access needs no byte-lane correction.
+ * sgi_bridge_window_correct() moves only the low two bits and leaves a
+ * full-word access at its natural offset, so a 32-bit register is reached
+ * at WINDOW + offset directly.
  */
 static void aim_window_at_bar(QTestState *qts)
 {
@@ -269,7 +266,9 @@ static void test_misc_host_ctl_chip_rev(const void *data)
     g_assert_cmphex(qtest_readl(qts, WINDOW_TIGON + TI_MISC_HOST_CTL) &
                     TI_MHC_CHIP_REV_MASK, ==, (uint32_t)TIGON_CHIP_REV << 28);
 
-    /* The RESET bit is accepted and leaves the read-only rev nibble intact. */
+    /*
+     * The RESET bit is accepted and leaves the read-only rev nibble intact.
+     */
     qtest_writel(qts, WINDOW_TIGON + TI_MISC_HOST_CTL, TI_MHC_RESET);
     g_assert_cmphex(qtest_readl(qts, WINDOW_TIGON + TI_MISC_HOST_CTL) &
                     TI_MHC_CHIP_REV_MASK, ==, (uint32_t)TIGON_CHIP_REV << 28);
@@ -324,8 +323,8 @@ static void build_gib(QTestState *qts)
 
 /*
  * Hand the card a general-information-block address. The register window is
- * little-endian, so the half at the lower offset -- the one the public header
- * calls GENINFO_HI -- is the least significant one, which is where a guest
+ * little-endian, so the half at the lower offset, the one the public header
+ * calls GENINFO_HI, is the least significant one, which is where a guest
  * writing the pair puts the low half, as IRIX does.
  */
 static void publish_gib_at(QTestState *qts, uint64_t gib)
@@ -354,8 +353,8 @@ static void go_operational(QTestState *qts)
 }
 
 /*
- * The socket backend frames each packet with a four-byte network-order length,
- * the same way the other NIC qtests drive a socketpair-backed netdev.
+ * The socket backend frames each packet with a four-byte network-order
+ * length, the same way the other NIC qtests drive a socketpair-backed netdev.
  */
 static void net_recv_timeout(int fd, int seconds)
 {
@@ -589,14 +588,11 @@ static bool irq_asserted(QTestState *qts)
 }
 
 /*
- * A general-information-block address whose upper half is not zero -- the
- * shape IRIX uses, where the top bits name the target widget and the low bits
- * are the offset. Assembling the two halves the wrong way round produces an
- * address naming the wrong widget and pointing past the end of memory, so
- * every ring the card reads through it comes back zero and the interface
- * carries nothing while looking configured. Every other test here publishes a
- * block below 4 GiB, where the two orderings differ only in bits that are
- * zero, so this is the one that can tell them apart.
+ * An IRIX-style GIB address has nonzero upper bits: widget in the high half,
+ * offset in the low half. Reversed halves name the wrong widget and miss
+ * memory, so rings read zero while the interface appears configured.
+ * Addresses below 4 GiB cannot distinguish the order because their high
+ * halves are zero.
  */
 static void test_geninfo_upper_half(const void *data)
 {
@@ -605,8 +601,8 @@ static void test_geninfo_upper_half(const void *data)
 
     enable_dma_big_endian(qts);
     /*
-     * Unlike the block addresses the other tests publish, this one is above
-     * 4 GiB, so it leaves local space and crosses the bridge's byte swapper.
+     * Unlike the block addresses the other tests publish, this one is above 4
+     * GiB, so it leaves local space and crosses the bridge's byte swapper.
      * Let it through untouched, so what the test measures is the assembly of
      * the address rather than a swap the card has already been told to do.
      */
@@ -792,8 +788,9 @@ static void test_descriptor_dma_batches_producer_last(const void *data)
     /*
      * The guest repairs the mapping and posts a buffer. Posting is what
      * restarts placement, so the completion held since its producer write was
-     * refused lands on the next tick rather than when its retry backoff -- at
-     * least one arrival floor from the refusal -- runs out. One nanosecond of
+     * refused lands on the next tick rather than when its retry backoff
+     * runs out. That backoff is at least one arrival floor from the refusal.
+     * One nanosecond of
      * virtual time is far short of that backoff, and only enough for a timer
      * already due to fire.
      */
@@ -956,10 +953,10 @@ static void test_transmit_fragment_dma_error_retry(const void *data)
 }
 
 /*
- * A 60-byte IPv4 TCP SYN with its TCP checksum field left zero, the way IRIX's
- * eg hands a checksum-offloaded segment to the card. Offsets: ethernet 0..13,
- * IP header 14..33 (protocol 6, total length 40), TCP header 34..53 (checksum
- * at 50..51), then ethernet padding to the 60-byte minimum.
+ * A 60-byte IPv4 TCP SYN with its TCP checksum field left zero, the way
+ * IRIX's eg hands a checksum-offloaded segment to the card. Offsets: ethernet
+ * 0..13, IP header 14..33 (protocol 6, total length 40), TCP header 34..53
+ * (checksum at 50..51), then ethernet padding to the 60-byte minimum.
  */
 static const uint8_t tcp_csum_frame[60] = {
     0x52, 0x54, 0x00, 0x12, 0x34, 0x99,      /* dest = a peer unicast */
@@ -967,7 +964,7 @@ static const uint8_t tcp_csum_frame[60] = {
     0x08, 0x00,                              /* ethertype IP */
     0x45, 0x00, 0x00, 0x28,                  /* v4, IHL 5, total length 40 */
     0x00, 0x00, 0x40, 0x00,                  /* id 0, flags DF */
-    0x40, 0x06, 0x00, 0x00,                  /* ttl 64, proto TCP, ip cksum 0 */
+    0x40, 0x06, 0x00, 0x00,                  /* ttl 64, TCP, IP cksum 0 */
     0x0a, 0x00, 0x02, 0x0f,                  /* src 10.0.2.15 */
     0x0a, 0x00, 0x02, 0x02,                  /* dst 10.0.2.2 */
     0x13, 0x89, 0x13, 0x8a,                  /* src port 5001, dst 5002 */
@@ -980,8 +977,8 @@ static const uint8_t tcp_csum_frame[60] = {
 
 /*
  * Fold the ones-complement sum over the TCP pseudo-header and the 20-byte TCP
- * header as the frame stands. A correct TCP checksum makes this 0xffff; a zero
- * checksum field makes it the complement of the real checksum instead.
+ * header as the frame stands. A correct TCP checksum makes this 0xffff; a
+ * zero checksum field makes it the complement of the real checksum instead.
  */
 static uint16_t tcp_csum_fold(const uint8_t *f)
 {
@@ -992,7 +989,7 @@ static uint16_t tcp_csum_fold(const uint8_t *f)
     sum += (f[28] << 8) | f[29];   /* src ip low */
     sum += (f[30] << 8) | f[31];   /* dst ip high */
     sum += (f[32] << 8) | f[33];   /* dst ip low */
-    sum += f[23];                  /* protocol (pseudo-header zero byte + it) */
+    sum += f[23];                  /* pseudo-header zero + protocol */
     sum += 20;                     /* TCP length */
     for (i = 34; i < 54; i += 2) {
         sum += (f[i] << 8) | f[i + 1];
@@ -1004,10 +1001,11 @@ static uint16_t tcp_csum_fold(const uint8_t *f)
 }
 
 /*
- * Transmit checksum offload: a descriptor flagged TI_BDFLAG_TCP_UDP_CKSUM asks
- * the card to fill the L4 checksum the driver left zero. Without it every TCP
- * segment leaves with a zero checksum and no peer accepts it -- the reason an
- * eg TCP handshake never completes though UDP (optional checksum) survives.
+ * Transmit checksum offload: a descriptor flagged TI_BDFLAG_TCP_UDP_CKSUM
+ * asks the card to fill the L4 checksum the driver left zero. Without it
+ * every TCP segment leaves with a zero checksum and no peer accepts it.
+ * An eg TCP handshake then never completes, though UDP (optional checksum)
+ * survives.
  */
 static void test_transmit_checksum_offload(const void *data)
 {
@@ -1045,7 +1043,7 @@ static void test_transmit_checksum_offload(const void *data)
 }
 
 /*
- * A real dst/src/ethertype frame, 61 bytes -- not a multiple of 4 -- so the
+ * A real 61-byte dst/src/ethertype frame is not a multiple of 4, so the
  * transmit-payload golden test below exercises the trailing partial word as
  * well as the plain aligned words.
  */
@@ -1062,14 +1060,11 @@ static const uint8_t test_frame_direct[61] = {
 };
 
 /*
- * The transmit payload on the real (non-bypassed) direct-map DMA path -- a
- * driver's actual DMA-mapped sk_buff, unlike TX_BUF_PHYS above which sits
- * below the Bridge's translated window and so never crosses the Bridge's
- * DMA machinery at all. Same two pairings as byte_order_check(): the
- * descriptors are read as word values on the pairing the guest programs,
- * while the payload must arrive byte-exact whichever pairing is in force.
- * The frame is posted from a misaligned start (buf & 3 == 2) on top of a
- * length that is not a multiple of 4, so partial-word edges are covered too.
+ * Transmit a driver-style DMA-mapped sk_buff through Bridge direct-map DMA.
+ * TX_BUF_PHYS is below the translated window and bypasses Bridge DMA. As in
+ * byte_order_check(), descriptors read as words under either programmed
+ * pairing; payload bytes must match exactly. A start with buf & 3 == 2 and a
+ * non-multiple-of-four length exercise both partial-word edges.
  */
 static void transmit_direct_map_check(bool bridge_transparent,
                                       const char *tracefile)
@@ -1151,22 +1146,14 @@ static unsigned count_lines_with(const char *text, const char *needle)
 }
 
 /*
- * The frame payload must not ride the byte-lane swap window. Both routes
- * deliver identical wire bytes -- the window's per-word reversal cancels
- * against the card's word-value consumption of the payload -- so no
- * byte-exact check can see the difference; it shows up only as cost, one
- * dispatch per payload word, measured as this device's dominant throughput
- * ceiling. The trace log tells the routes apart where the wire cannot.
- *
- * A negative over a log needs two controls or it can pass vacuously.
- * Descriptors still traverse the window on this pairing (they read as word
- * values, so their swap is load-bearing): their nonzero count proves the
- * instrument was live. The payload's presence on the plain route proves the
- * needles still name what the test lays out: both needles derive from the
- * buffer constant, so a moved buffer moves them too, and a changed trace
- * format fails the positive before the negative can go quiet. The two
- * needles differ by address domain -- the swap window logs its window
- * offset, the plain route logs the raw PCI address the device issued.
+ * Payload must use plain DMA, not the byte-lane swap window. Both routes
+ * produce identical wire bytes: per-word reversal cancels the card's word
+ * consumption, but the swap path dispatches once per word and limits
+ * throughput. The trace distinguishes them. Nonzero descriptor swap counts
+ * prove tracing is active; payload counts on the plain route prove the
+ * address matches. Both addresses derive from the buffer constant, so moving
+ * it updates both. A trace format change fails the positive check first. Swap
+ * logs a window offset; plain DMA logs the device's raw PCI address.
  */
 static void test_payload_skips_lane_swap(const void *data)
 {
@@ -1249,8 +1236,8 @@ static void test_user_backend_reply_waits_for_transmit(const void *data)
     /*
      * User networking answers the ARP request from qemu_send_packet(), which
      * queues the receive on a bottom half. The doorbell write returns to the
-     * main loop, which runs that bottom half, so the receive-return descriptor
-     * then shows published ownership.
+     * main loop, which runs that bottom half, so the receive-return
+     * descriptor then shows published ownership.
      */
     qtest_writel(qts, WINDOW_TIGON + TI_MB_SENDPROD_IDX, 1);
     after_poll = qtest_readl(qts, RETURN_RING_PHYS + 12);
@@ -1369,8 +1356,9 @@ static void test_receive_payload_dma_error(const void *data)
  * A frame larger than the standard ring's buffers has to come back through
  * the jumbo ring and say that it did. A card that only ever serves the
  * standard ring cannot carry such a frame at all, and a driver will not offer
- * a frame size the card cannot take -- so the guest stays at the standard size
- * however it is configured, which then looks like a limitation of the guest.
+ * a frame size the card cannot take, so the guest stays at the standard
+ * size however it is configured, which then looks like a limitation of the
+ * guest.
  */
 static void test_receive_jumbo_frame(const void *data)
 {
@@ -1466,9 +1454,9 @@ static void test_receive_jumbo_posted_by_command(const void *data)
 
     /*
      * One jumbo buffer, pushed by the firmware command, never the mailbox.
-     * The capacity is the one the IRIX driver actually posts -- a 16 KB
-     * allocation, far larger than any frame the card assembles. A buffer
-     * with room to spare is a normal posting, not a corrupt descriptor.
+     * The capacity is the one the IRIX driver actually posts, a 16 KB
+     * allocation, far larger than any frame the card assembles. A buffer with
+     * room to spare is a normal posting, not a corrupt descriptor.
      */
     qtest_memset(qts, JUMBO_BUF_PHYS, 0, 16384);
     write_rcb_addr(qts, JUMBO_RX_RING_PHYS + 0, JUMBO_BUF_PHYS);
@@ -1485,8 +1473,8 @@ static void test_receive_jumbo_posted_by_command(const void *data)
     g_assert_cmphex(wait_return_prod(qts), ==, 1);
 
     /*
-     * The completion names the jumbo buffer by its own host address -- the
-     * driver's only way to tell the rings apart -- with the posted index and
+     * The completion names the jumbo buffer by its own host address, the
+     * driver's only way to tell the rings apart, with the posted index and
      * the whole frame's length.
      */
     g_assert_cmphex(qtest_readl(qts, RETURN_RING_PHYS + 0), ==, 0);
@@ -1527,26 +1515,13 @@ static uint32_t return_prod_without_clock(QTestState *qts, uint32_t want)
 }
 
 /*
- * The discard happens at once, and this is the test that says so. Whether the
- * frame is thrown away immediately or held for a while first is invisible to
- * every other assertion in this file: they all step the virtual clock far
- * enough to see a completion, which is also far enough past any plausible
- * hold, so both dispositions end in the same state.
- *
- * Freezing the clock separates them. A model that holds the frame has refused
- * it, which stops the back end reading, and nothing releases it while virtual
- * time stands still -- so the standard frame queued behind it never arrives.
- * A model that discards at once keeps reading and delivers that frame on the
- * next pass of the main loop.
- *
- * This matters because discarding at once is an approximation with nothing
- * behind it, and the obvious alternative is a bounded hold. One was built for
- * this device and measured on the BCM570x, where it delivered fewer bytes;
- * see the jumbo receive contract in the Tigon datasheet. Without this
- * assertion nothing here would notice it coming back.
- *
- * The arrival floor is zeroed, because with it the success path would itself
- * be waiting on a virtual-clock deadline and the test could not work.
+ * Freeze virtual time to distinguish immediate discard from bounded hold.
+ * Other checks step past either outcome. A held frame stops backend reads, so
+ * the following standard frame cannot arrive; immediate discard delivers it
+ * on the next main-loop pass. The immediate-discard policy is an
+ * approximation; a bounded hold reduced BCM570x throughput when measured and
+ * would evade the other checks. Set the arrival floor to zero so success
+ * needs no virtual-time advance.
  */
 static void test_jumbo_shortage_discards_without_waiting(const void *data)
 {
@@ -1577,7 +1552,9 @@ static void test_jumbo_shortage_discards_without_waiting(const void *data)
     net_send_frame(sv[0], frame, sizeof(frame));
     net_send_frame(sv[0], rx_frame_ours, sizeof(rx_frame_ours));
 
-    /* No qtest_clock_step anywhere: only a discard gets the second frame in. */
+    /*
+     * No qtest_clock_step anywhere: only a discard gets the second frame in.
+     */
     g_assert_cmphex(return_prod_without_clock(qts, 1), ==, 1);
     word2 = qtest_readl(qts, RETURN_RING_PHYS + 8);
     g_assert_cmphex(word2 & 0xffff, ==, sizeof(rx_frame_ours));
@@ -1590,14 +1567,10 @@ static void test_jumbo_shortage_discards_without_waiting(const void *data)
 }
 
 /*
- * The same command, arriving after the frame rather than before it. With no
- * buffer posted on either ring the card refuses the frame and the back end
- * holds it, so something has to say the card can take one again. The jumbo
- * producer mailbox does; so must the firmware command, which is the path the
- * IRIX eg driver uses and the one whose handler differs from the mailbox's.
- * Without this the command's flush has no cover at all: the case that had it
- * now posts the buffer first, so a card that never retried would still pass.
- * What is covered is the flush.
+ * Send the firmware command after a frame is held with neither ring posted.
+ * The jumbo producer mailbox retries it; the IRIX eg command handler must
+ * too. The earlier case posts a buffer before the command and cannot detect a
+ * missing command flush. This case tests that flush.
  */
 static void test_jumbo_command_releases_a_refused_frame(const void *data)
 {
@@ -1623,7 +1596,8 @@ static void test_jumbo_command_releases_a_refused_frame(const void *data)
     /*
      * The jumbo descriptor is written into the ring but not posted, and no
      * standard buffer is posted either. Both rings empty is what makes the
-     * card refuse rather than discard, so the frame is still there to release.
+     * card refuse rather than discard, so the frame is still there to
+     * release.
      */
     qtest_memset(qts, JUMBO_BUF_PHYS, 0, 16384);
     qtest_memset(qts, RX_BUF_PHYS, 0, 2048);
@@ -1706,16 +1680,11 @@ static void test_firmware_up_releases_a_held_frame(const void *data)
 
 
 /*
- * Interrupt coalescing. The driver asks the card to hold off interrupting
- * until a number of completions have accumulated or a time has passed,
- * whichever comes first, and IRIX asks for 130 descriptors or 900
- * microseconds. A card that interrupts per frame regardless makes the guest
- * take up to two orders of magnitude more interrupts than it asked for, and
- * every one of them is a handler entry the guest did not want.
- *
- * Completions are still posted to the ring as they happen; only the interrupt
- * is held. A model that also held the completions would stall a driver that
- * polls the ring.
+ * Interrupt coalescing delays the IRQ until a completion count or time limit,
+ * whichever comes first; IRIX requests 130 descriptors or 900 microseconds.
+ * Per-frame IRQs can cost up to two orders of magnitude more handler entries.
+ * Completions remain visible in the ring immediately, so polling does not
+ * stall.
  */
 static void test_interrupt_coalesce_by_count(const void *data)
 {
@@ -1793,10 +1762,10 @@ static void test_interrupt_coalesce_by_time(const void *data)
 
 /*
  * TX_MAX_COAL_BD counts completed buffer descriptors, not producer-doorbell
- * writes.  A driver normally publishes several ready descriptors with one
+ * writes. A driver normally publishes several ready descriptors with one
  * mailbox write, so counting the whole ring walk as one completion leaves a
- * sustained transfer waiting for the timer even after it reaches its requested
- * interrupt threshold.
+ * sustained transfer waiting for the timer even after it reaches its
+ * requested interrupt threshold.
  */
 static void test_transmit_coalesce_counts_batched_descriptors(const void *data)
 {
@@ -2079,10 +2048,10 @@ static void test_interrupt_coalesce_directions_are_independent(const void *data)
 
 
 /*
- * The SRAM timing configuration register. The driver sets its synchronous-SRAM
- * bit with a read-modify-write, so a register that answered zero would make it
- * read back something it had not written. Nothing acts on the value: this
- * model's SRAM is an array and has no timing to configure.
+ * The SRAM timing configuration register. The driver sets its
+ * synchronous-SRAM bit with a read-modify-write, so a register that answered
+ * zero would make it read back something it had not written. Nothing acts on
+ * the value: this model's SRAM is an array and has no timing to configure.
  */
 static void test_misc_conf_reads_back(const void *data)
 {
@@ -2128,8 +2097,8 @@ static uint16_t ones_sum(const uint8_t *p, size_t len)
  * The card reports what it summed over a received frame, and the driver uses
  * it instead of summing the bytes again on the processor. The public driver
  * reads both fields for any IP frame with no flag to gate them and inverts
- * them itself -- "the Tigon firmware does not invert the checksum for us" --
- * so a well-formed header must arrive here as 0xffff, and a card reporting
+ * them itself: "the Tigon firmware does not invert the checksum for us".
+ * A well-formed header must arrive here as 0xffff, and a card reporting
  * zero is telling every driver of that shape that every packet is corrupt.
  */
 static void test_receive_reports_checksums(const void *data)
@@ -2176,7 +2145,9 @@ static void test_receive_reports_checksums(const void *data)
     net_send_frame(sv[0], frame, sizeof(frame));
     g_assert_cmphex(wait_return_prod(qts), ==, 1);
 
-    /* Big-endian word: header sum in the high half, payload sum in the low. */
+    /*
+     * Big-endian word: header sum in the high half, payload sum in the low.
+     */
     word4 = qtest_readl(qts, RETURN_RING_PHYS + 16);
     g_assert_cmphex(word4 >> 16, ==, 0xffff);
     g_assert_cmphex(word4 >> 16, ==, want_ip);
@@ -2510,8 +2481,8 @@ static void test_interrupt_coalesce_count_does_not_wrap(const void *data)
 
 /*
  * Version 3 counted completed ring walks rather than descriptors. Its partial
- * TX count cannot be translated, so loading it must publish the completed work
- * instead of silently changing its distance from the threshold.
+ * TX count cannot be translated, so loading it must publish the completed
+ * work instead of silently changing its distance from the threshold.
  */
 static void test_transmit_coalesce_migration_from_v3(const void *data)
 {
@@ -2715,13 +2686,10 @@ static size_t build_ipv4_frame(uint8_t *f, uint8_t proto, size_t l4_len,
 }
 
 /*
- * IP carriage in both directions, for each transport the guest actually uses.
- * The other tests drive ARP-shaped or hand-written frames; this one puts real
- * IPv4 datagrams -- TCP, UDP, and a bare non-transport protocol -- through the
- * transmit ring and back in through the receive ring, and compares them byte
- * for byte at both ends. A model that mangles the IP header, or that treats
- * one protocol differently from another on a path that should not care, fails
- * here rather than in a guest weeks later.
+ * Send and receive byte-exact IPv4 TCP, UDP and bare-protocol datagrams
+ * through the rings. Other cases use ARP-like or hand-written frames. This
+ * catches IP header damage or protocol-dependent handling on paths that
+ * should ignore it.
  */
 static void test_ip_carriage_both_directions(const void *data)
 {
@@ -2731,7 +2699,7 @@ static void test_ip_carriage_both_directions(const void *data)
         { 17,  8,   "UDP" },       /* a bare UDP header */
         { 17,  512, "UDP bulk" },  /* a datagram past one word-copy chunk */
         { 6,   1400, "TCP bulk" }, /* close to a full-size frame */
-        { 89,  40,  "OSPF" },      /* neither TCP nor UDP: still just carried */
+        { 89,  40,  "OSPF" },      /* not TCP/UDP; carried */
     };
     unsigned c;
 
@@ -2753,7 +2721,9 @@ static void test_ip_carriage_both_directions(const void *data)
         net_recv_timeout(sv[0], 5);
         go_operational(qts);
 
-        /* Transmit: the frame leaves the card exactly as the guest wrote it. */
+        /*
+         * Transmit: the frame leaves the card exactly as the guest wrote it.
+         */
         qtest_memwrite(qts, TX_BUF_PHYS, frame, flen);
         write_rcb_addr(qts, TX_RING_PHYS + 0, TX_BUF_PHYS);
         qtest_writel(qts, TX_RING_PHYS + 8,
@@ -2912,8 +2882,8 @@ static void test_transmit_checksum_ignores_non_ip(const void *data)
 
 
 /*
- * A multicast frame: an IPv6 neighbour-discovery solicited-node address, which
- * is the case that matters. Group bit set in the first octet.
+ * A multicast frame: an IPv6 neighbour-discovery solicited-node address,
+ * which is the case that matters. Group bit set in the first octet.
  */
 static const uint8_t rx_frame_mcast[64] = {
     0x33, 0x33, 0xff, 0x12, 0x34, 0x56,      /* dest = IPv6 solicited-node */
@@ -2923,7 +2893,7 @@ static const uint8_t rx_frame_mcast[64] = {
 };
 
 /*
- * A real dst/src/ethertype frame, 63 bytes -- not a multiple of 4 -- so the
+ * A real 63-byte dst/src/ethertype frame is not a multiple of 4, so the
  * receive-payload golden test below exercises the trailing partial word as
  * well as the plain aligned words.
  */
@@ -2941,7 +2911,7 @@ static const uint8_t rx_frame_direct[63] = {
 
 /*
  * The receive payload written through the real (non-bypassed) direct-map DMA
- * path -- the mirror of transmit_direct_map_check() for
+ * path, the mirror of transmit_direct_map_check() for
  * tigon_dma_write_frame(). Same two pairings, same misaligned start (buf & 3
  * == 2) and non-multiple-of-4 length, forcing the leading- and
  * trailing-partial-word paths on the write side too.
@@ -2967,7 +2937,9 @@ static void receive_direct_map_check(bool bridge_transparent, uint32_t opmode)
                  (bridge_transparent ? DEV_SWAP_DIRECT : 0));
     qtest_writel(qts, WINDOW_TIGON + TI_GCR_OPMODE, opmode);
 
-    /* GIB and the standard-receive/return rings reached through the window. */
+    /*
+     * GIB and the standard-receive/return rings reached through the window.
+     */
     qtest_memset(qts, GIB_PHYS, 0, GIB_SIZE);
     qtest_memset(qts, STD_RX_RING_PHYS, 0, 0x800);
     qtest_memset(qts, RETURN_RING_PHYS, 0, 0x4000);
@@ -3013,10 +2985,11 @@ static void receive_direct_map_check(bool bridge_transparent, uint32_t opmode)
 /*
  * A multicast frame is delivered, not dropped. The exact group filter is not
  * modelled, so the card keeps every multicast frame and lets the stack sort
- * them out -- which is the safe direction to be wrong in. Dropping them all
- * unless the interface is promiscuous is not: a driver that has joined a group
- * gets nothing and nothing anywhere says why. IPv6 neighbour discovery is
- * carried entirely on solicited-node multicast, so it fails silently.
+ * them out. This preserves multicast traffic when the filter is absent.
+ * Dropping them all
+ * unless the interface is promiscuous is not: a driver that has joined a
+ * group gets nothing and nothing anywhere says why. IPv6 neighbour discovery
+ * is carried entirely on solicited-node multicast, so it fails silently.
  */
 static void test_receive_accepts_multicast(const void *data)
 {
@@ -3035,7 +3008,9 @@ static void test_receive_accepts_multicast(const void *data)
     post_std_rx_buffer(qts, 0, RX_BUF_PHYS, 0, 2048);
     qtest_writel(qts, WINDOW_TIGON + TI_MB_STDRXPROD_IDX, 1);
 
-    /* Not promiscuous: go_operational leaves the filter in its normal state. */
+    /*
+     * Not promiscuous: go_operational leaves the filter in its normal state.
+     */
     net_send_frame(sv[0], rx_frame_mcast, sizeof(rx_frame_mcast));
 
     g_assert_cmphex(wait_return_prod(qts), ==, 1);
@@ -3063,14 +3038,11 @@ static void test_receive_direct_map_corrects(const void *data)
  * direct-map window whose swap the per-slot DEV_SWAP_DIRECT bit gates. Two
  * mutually exclusive pairings both have to land descriptors big-endian in
  * guest memory, each swapping exactly once:
- *
- *   transparent: the chip delivers big-endian (OPMODE byte-swap bits set) and
- *   the Bridge swap bit is set so the Bridge is a no-op;
- *
- *   corrected: the chip stays little-endian (OPMODE native) and the Bridge
- *   swap bit is clear so the Bridge performs the single correction -- the
- *   ISP1040's own working precedent behind this Bridge.
- *
+ * transparent: the chip delivers big-endian (OPMODE byte-swap bits set) and
+ * the Bridge swap bit is set so the Bridge is a no-op;
+ * corrected: the chip stays little-endian (OPMODE native) and the Bridge
+ * swap bit is clear so the Bridge performs the single correction, as
+ * the ISP1040 does behind this Bridge.
  * Which pairing the real SGI board and IRIX use is set by platform code the
  * public driver never touches; this proves the emulator implements each
  * correctly, not which one the hardware wired.
@@ -3136,11 +3108,11 @@ static void test_byte_order_bridge_corrects(const void *data)
 
 /*
  * A guest that writes an out-of-range producer index must not hang the
- * emulator. The mailbox values are ring indices, so the walk reduces them into
- * range rather than looping over an index it can never reach; if the guard were
- * missing, an index of four billion would spin. The test writes such values and
- * then proves the machine still answers, which it could not do from inside a
- * runaway walk.
+ * emulator. The mailbox values are ring indices, so the walk reduces them
+ * into range rather than looping over an index it can never reach; if the
+ * guard were missing, an index of four billion would spin. The test writes
+ * such values and then proves the machine still answers, which it could not
+ * do from inside a runaway walk.
  */
 static void test_hang_guard(const void *data)
 {
@@ -3162,9 +3134,9 @@ static void test_hang_guard(const void *data)
 /*
  * The interrupt mask. The public driver writes 0 here under the comment "Turn
  * interrupts on", so zero permits and a non-zero value holds the line down.
- * Modelled because a register that is stored and never consulted answers reads
- * faithfully while ignoring what it was written for -- the card would deliver
- * an interrupt into a driver that had just asked for silence.
+ * Modelled because a register that is stored and never consulted answers
+ * reads faithfully while ignoring what it was written for. The card would
+ * deliver an interrupt into a driver that had just asked for silence.
  */
 static void test_interrupt_mask_holds_the_line(const void *data)
 {
@@ -3187,14 +3159,11 @@ static void test_interrupt_mask_holds_the_line(const void *data)
 }
 
 /*
- * The IRIX "eg" driver's actual acknowledge protocol, observed live across a
- * 33 million line trace: it never writes TI_GCR_EVENTCONS_IDX or
- * TI_GCR_RXRETURNCONS_IDX, and it writes TI_MB_HOSTINTR only with 0, never
- * the public NetBSD "ti" driver's mask-at-ISR-entry value 1 (if_ti.c
- * ti_intr()). Against the old consumer-index-catch-up model that left the
- * line stuck asserted forever: `eg` spins on the write, INTA never drops,
- * and `ifconfig` never returns. The mailbox write alone must ack, and a
- * later genuine completion must still raise the line again.
+ * IRIX eg acknowledges with TI_MB_HOSTINTR=0; it never writes
+ * TI_GCR_EVENTCONS_IDX or TI_GCR_RXRETURNCONS_IDX. NetBSD ti instead writes
+ * mask value 1 at ISR entry (if_ti.c ti_intr()). Consumer-index catch-up left
+ * INTA asserted, eg spinning on the write and ifconfig hung. The mailbox
+ * write must drop INTA; a later completion must raise it again.
  */
 static void test_interrupt_irix_ack_protocol(const void *data)
 {
@@ -3217,7 +3186,9 @@ static void test_interrupt_irix_ack_protocol(const void *data)
     g_assert_cmphex(wait_return_prod(qts), ==, 1);
     g_assert_true(irq_asserted(qts));
 
-    /* The driver's ISR: eg never touches the GCR consumers, only the mailbox. */
+    /*
+     * The driver's ISR: eg never touches the GCR consumers, only the mailbox.
+     */
     qtest_writel(qts, WINDOW_TIGON + TI_MB_HOSTINTR, 0);
 
     /* The line must drop from that write alone. */
@@ -3239,14 +3210,10 @@ static void test_interrupt_irix_ack_protocol(const void *data)
 }
 
 /*
- * Promiscuous mode is a command, not a register: the driver writes a
- * SET_PROMISC_MODE command into the command ring and rings the doorbell.
- * Once enabled, a frame for a different station -- filtered by
- * receive-filters-other above -- is accepted onto the ring.
- *
- * The enable code sits in bits 23:12, where every public driver packs a
- * command code. Reading it from any other field leaves the filter untouched
- * and this test sees the frame dropped, which is what it is for.
+ * SET_PROMISC_MODE goes through the command ring and doorbell, not a
+ * register. Once enabled, receive-filters-other accepts a frame for another
+ * station. Public drivers pack the enable code in bits 23:12; another field
+ * leaves the filter unchanged and the frame dropped.
  */
 static void test_receive_promisc_accepts_other(const void *data)
 {
@@ -3451,7 +3418,8 @@ static void test_statistics_traffic_counters(const void *data)
  * The interface section: the index and MTU the host published through the
  * register pair, the speed and operational state of the link, and the station
  * address. Read once before the link is negotiated and once after, so a model
- * that reported a gigabit link before there was one would fail the first read.
+ * that reported a gigabit link before there was one would fail the first
+ * read.
  */
 static void test_statistics_interface_identity(const void *data)
 {
@@ -3526,7 +3494,9 @@ static void test_statistics_head_stays_current(const void *data)
 
     go_operational(qts);
 
-    /* Let the publish the device owes from reset happen before either half. */
+    /*
+     * Let the publish the device owes from reset happen before either half.
+     */
     qtest_clock_step(qts, STATS_LIVE_NS * 2);
     g_assert_cmpuint(read_stat64_at(qts, GIB_PHYS, STAT_HC_OUT_UCAST), ==, 0);
     g_assert_cmpuint(read_stat64_at(qts, GIB_PHYS, STAT_HC_IN_UCAST), ==, 0);
@@ -3536,7 +3506,9 @@ static void test_statistics_head_stays_current(const void *data)
     qtest_writel(qts, WINDOW_TIGON + TI_MB_SENDPROD_IDX, 1);
     net_recv_frame(sv[0], got, sizeof(got));
 
-    /* No command, no refresh request, no statistics-tick period programmed. */
+    /*
+     * No command, no refresh request, no statistics-tick period programmed.
+     */
     qtest_clock_step(qts, STATS_LIVE_NS * 2);
 
     g_assert_cmpuint(read_stat64_at(qts, GIB_PHYS, STAT_HC_OUT_UCAST), ==, 1);
@@ -3561,15 +3533,10 @@ static void test_statistics_head_stays_current(const void *data)
 }
 
 /*
- * The head's interface section stays current too, not only its counters. The
- * IRIX driver never sends a refresh command, so a card that republished the
- * head on a counter change alone would answer the board utility with the link
- * still down for a whole five-second period after it came up.
- *
- * Each field gets its own quiet period, and nothing else changes inside it, so
- * a missing mark shows up as one stale field rather than being carried to the
- * head by the next change. No refresh command is posted at any point: a refresh
- * republishes everything and hides exactly what this pins.
+ * Update the head's interface fields on change, not only its counters. IRIX
+ * sends no refresh command; counter-only publication can leave link state
+ * down for five seconds. Separate quiet periods expose stale fields. A
+ * refresh would republish all fields and hide a missed change.
  */
 static void test_statistics_head_tracks_interface_state(const void *data)
 {
@@ -3633,8 +3600,8 @@ static void test_statistics_head_tracks_interface_state(const void *data)
      * The block reads its speed and operational state out of the gigabit
      * link-status register, whichever side last wrote it. The contract calls
      * that register firmware-owned, so this is the model staying consistent
-     * with itself rather than a claim that a card accepts the write -- but it
-     * is the only thing that pins the register's own mark.
+     * with itself. It does not claim a card accepts the write, but it is the
+     * only check of the register's own mark.
      */
     qtest_writel(qts, WINDOW_TIGON + TI_GCR_GLINK_STAT, 0);
     qtest_clock_step(qts, STATS_LIVE_NS * 2);
@@ -3677,11 +3644,11 @@ static uint32_t wait_head_discards_reaches(QTestState *qts, uint32_t want)
 }
 
 /*
- * A frame dropped after the address filter accepted it is a published field of
- * its own, and reaches the head on the same terms as the counters. The model
- * has two such drops and they are marked separately, so both run here: a
- * descriptor offering less room than a minimum-length frame, and one pointing
- * at an address the payload write cannot reach. Neither consumes the
+ * A frame dropped after the address filter accepted it is a published field
+ * of its own, and reaches the head on the same terms as the counters. The
+ * model has two such drops and they are marked separately, so both run here:
+ * a descriptor offering less room than a minimum-length frame, and one
+ * pointing at an address the payload write cannot reach. Neither consumes the
  * descriptor, so the second reuses the first's slot without a new doorbell.
  */
 static void test_statistics_head_tracks_discards(const void *data)
@@ -3788,11 +3755,11 @@ static void test_reset_clears_statistics(const void *data)
 /*
  * Byte order of the published block, on the pairing the IRIX guest actually
  * programs: the chip's descriptor byte swap off and the Bridge slot doing the
- * single correction. Every field has to read big-endian in guest memory, and a
- * 64-bit counter's two words have to arrive most significant first. Written as
- * one quantity in the chip's own order instead, each count arrives multiplied
- * by 2^32 -- which the transparent pairing above cannot see, because there the
- * two spellings are the same bytes.
+ * single correction. Every field has to read big-endian in guest memory, and
+ * a 64-bit counter's two words have to arrive most significant first. Written
+ * as one quantity in the chip's own order instead, each count arrives
+ * multiplied by 2^32, which the transparent pairing above cannot see,
+ * because there the two spellings are the same bytes.
  */
 static void test_statistics_byte_order(const void *data)
 {
@@ -3845,7 +3812,9 @@ static void test_statistics_byte_order(const void *data)
     qtest_clock_step(qts, LINK_DELAY_NS);
     post_command(qts, 1, (uint32_t)TI_CMD_RFRSH_STATS << 24);
 
-    /* One transmitted unicast frame: the count's 1 belongs in the last byte. */
+    /*
+     * One transmitted unicast frame: the count's 1 belongs in the last byte.
+     */
     qtest_memread(qts, STATS_PHYS + STAT_HC_OUT_UCAST, seen, sizeof(seen));
     g_assert_cmphex(seen[0], ==, 0x00);
     g_assert_cmphex(seen[1], ==, 0x00);
@@ -3908,8 +3877,8 @@ static void test_statistics_clear(const void *data)
  * A completion that arrives while the host interrupt is masked must still
  * raise the line when the driver re-enables it. The Tigon 2 driver masks by
  * writing 1 to the interrupt mailbox and re-enables by writing 0; a frame
- * delivered in between sets the pending latch, and the re-enable -- distinct
- * from IRIX's zero-only acknowledge -- must not drop it.
+ * delivered in between sets the pending latch, and the re-enable, distinct
+ * from IRIX's zero-only acknowledge, must not drop it.
  */
 static void test_interrupt_reenable_preserves_completion(const void *data)
 {
@@ -3943,21 +3912,14 @@ static void test_interrupt_reenable_preserves_completion(const void *data)
 }
 
 /*
- * The jumbo ring configured but carrying no posted buffer, with standard
- * buffers to spare. A frame between the standard and jumbo sizes has no
- * descriptor to go to, and the card discards it and counts an input discard
- * -- RFC 1213's ifInDiscards, the field the firmware publishes for a frame
- * dropped with nothing wrong with it, and the counter block's own answer to
- * a receive shortage (nicNoMoreRxBDs, ti_stats word 100). It must not be cut
- * down into a standard buffer, and it must not stop the standard ring being
- * served: the two rings carry independent control blocks and index pairs, so
- * a card that parked the frame would strand every standard frame behind it.
- *
- * Whether real firmware could have retained the frame for a bounded refill
- * is not settled by any public source; see the jumbo receive contract in the
- * Tigon datasheet. What is asserted here is that the frame does not reappear
- * once a jumbo buffer is posted, because a model cannot retain it without
- * withholding the standard ring.
+ * With the jumbo ring configured but empty, a frame between standard and
+ * jumbo sizes has no descriptor. Discard it, increment RFC 1213 ifInDiscards
+ * and nicNoMoreRxBDs (ti_stats word 100), and keep serving standard frames.
+ * The independent ring control blocks and index pairs preclude truncating
+ * into a standard buffer or blocking its queue. Public sources do not
+ * establish whether real firmware holds a frame for bounded refill. The model
+ * cannot retain it without blocking the standard ring; posting a jumbo buffer
+ * must not revive it.
  */
 static void test_receive_jumbo_ring_unprovisioned(const void *data)
 {
@@ -3981,7 +3943,9 @@ static void test_receive_jumbo_ring_unprovisioned(const void *data)
 
     go_operational(qts);
 
-    /* Two standard buffers, so the ring outlives the frame that is dropped. */
+    /*
+     * Two standard buffers, so the ring outlives the frame that is dropped.
+     */
     qtest_memset(qts, RX_BUF_PHYS, 0, 4096);
     post_std_rx_buffer(qts, 0, RX_BUF_PHYS, 0, 2048);
     post_std_rx_buffer(qts, 1, RX_BUF_PHYS + 2048, 1, 2048);
@@ -4032,22 +3996,14 @@ static void test_receive_jumbo_ring_unprovisioned(const void *data)
 }
 
 /*
- * The guard on the standard branch's discard, which is the only thing between
- * that discard and silent loss: a standard-size frame is thrown away only
- * while the jumbo ring could really have taken a frame. In every other state
- * the caller is owed the refusal, because nothing could have received the
- * frame and nothing would ever say it went.
- *
- * Two states reach it. The jumbo ring published but empty, which is ordinary
- * flow control with neither ring posted; and the jumbo doorbell rung with the
- * ring's control block still zero, which names buffers the card cannot reach
- * -- tigon_can_receive tests neither base address, and tigon_parse_gib reads
- * the jumbo base once at firmware-up, so a driver that posts before it
- * publishes lands here. Both must hold the frame and deliver it once the
- * standard ring is posted.
- *
- * Without this, every test in this file sets up a posted jumbo ring and the
- * guard could be deleted with the suite still green.
+ * Discard a standard frame only if the jumbo ring could receive it;
+ * otherwise refuse it so the caller can retry instead of losing it silently.
+ * Cover a published but empty jumbo ring with neither ring posted, and a
+ * doorbell rung while its control block is zero. In the latter case, posted
+ * buffers remain unreachable: tigon_can_receive checks neither base, and
+ * tigon_parse_gib reads the jumbo base only at firmware start. Both states
+ * must hold the frame until a standard buffer arrives. Other tests post
+ * jumbo buffers and cannot detect removal of this guard.
  */
 static void test_standard_shortage_guard_holds(const void *data)
 {
@@ -4110,23 +4066,16 @@ static void test_standard_shortage_guard_holds(const void *data)
     close(sv[0]);
 
     /*
-     * The third state, and the only one that reaches the index half of the
-     * guard. The back end delivers a queued frame straight to receive()
-     * without asking can_receive() again, so a jumbo buffer posted for the
-     * frame in front is already consumed when the standard frame behind it
-     * arrives: both rings empty, and the jumbo control block published. Case
-     * one never enters receive() at all, because nothing is posted and
-     * can_receive() is false; case two enters it but stops at the base
-     * disjunct, because the jumbo ring has no base to check indices against.
-     *
-     * Both frames go out in one write. The socket back end finalizes every
-     * complete packet in a single read, so one write puts both on the queue
-     * while can_receive() is false and the doorbell's flush then hands them
-     * to receive() back to back. Two writes would let the read handler run
-     * between them, and the second frame would be offered through
-     * qemu_net_queue_send, which re-checks can_receive and queues it without
-     * entering receive() -- every assertion below still true and the guard
-     * never exercised.
+     * The third state reaches the index check: a queued jumbo frame consumes
+     * its buffer, then the backend calls receive() for the standard frame
+     * without rechecking can_receive(). Both rings are empty but the jumbo
+     * base remains published. The first case never enters receive(); the
+     * second stops at the missing-base check.
+     * Send both frames in one socket write. The backend finalizes both in
+     * one read while can_receive() is false, then doorbell flush delivers
+     * them back to back. Separate writes can let qemu_net_queue_send recheck
+     * can_receive() and queue the second frame, bypassing the index check
+     * while all assertions still pass.
      */
     g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
     qts = tigon_init_netdev(sv[1]);
@@ -4182,16 +4131,11 @@ static void test_standard_shortage_guard_holds(const void *data)
 }
 
 /*
- * The standard ring's own shortage, the mirror of
- * receive-jumbo-ring-unprovisioned: a jumbo buffer posted and no standard
- * buffer at all. A 64-byte frame cannot take the jumbo one, so it is
- * discarded and counted, both rings' buffers are left alone, the jumbo frame
- * behind it still completes, and posting a standard buffer afterwards brings
- * nothing back.
- *
- * The middle step is the one a model that parked the frame fails. The last
- * says the frame did not come back later. Neither pins when it went;
- * standard-shortage-discards-without-waiting does that.
+ * With a jumbo buffer but no standard buffer, discard and count a 64-byte
+ * frame without consuming either buffer. The next jumbo frame completes;
+ * posting a standard buffer cannot revive the discarded frame. Completion
+ * rejects a hold; the later post rejects deferred delivery. The frozen-clock
+ * case checks discard timing.
  */
 static void test_receive_standard_ring_unprovisioned(const void *data)
 {
@@ -4251,7 +4195,9 @@ static void test_receive_standard_ring_unprovisioned(const void *data)
     qtest_memread(qts, JUMBO_BUF_PHYS, landed, sizeof(frame));
     g_assert_cmpmem(landed, sizeof(frame), frame, sizeof(frame));
 
-    /* Posting a standard buffer now brings nothing back: that frame is gone. */
+    /*
+     * Posting a standard buffer now brings nothing back: that frame is gone.
+     */
     post_std_rx_buffer(qts, 0, RX_BUF_PHYS, 0, 2048);
     qtest_writel(qts, WINDOW_TIGON + TI_MB_STDRXPROD_IDX, 1);
     assert_return_prod_stays(qts, 1);
@@ -4264,18 +4210,11 @@ static void test_receive_standard_ring_unprovisioned(const void *data)
 }
 
 /*
- * The mirror: a jumbo buffer posted and no standard buffer at all. A
- * standard-size frame cannot take the jumbo one -- the ring is chosen by
- * size, and the standard ring's max_len is the threshold for sending a large
- * frame the other way, not a licence for a small one to come back -- so the
- * card discards it at once and counts an input discard.
- *
- * Frozen clock, for the reason the jumbo case gives: with virtual time
- * standing still, only a discard lets the jumbo frame queued behind this one
- * through. This is the assertion that would notice a bounded hold coming
- * back on the ring that carries the MTU 1500 qualification; that alternative
- * was built and measured on this path, and the receive shortage contract in
- * the Tigon datasheet carries what it cost.
+ * With only a jumbo buffer, discard a standard-size frame immediately and
+ * count an input discard. Size selects the ring; standard max_len only routes
+ * large frames to jumbo. With virtual time frozen, the queued jumbo frame
+ * passes only after immediate discard. A bounded hold previously measured on
+ * this MTU 1500 path cost throughput; this assertion would catch its return.
  */
 static void test_standard_shortage_discards_without_waiting(const void *data)
 {
@@ -4311,7 +4250,9 @@ static void test_standard_shortage_discards_without_waiting(const void *data)
     net_send_frame(sv[0], rx_frame_ours, sizeof(rx_frame_ours));
     net_send_frame(sv[0], frame, sizeof(frame));
 
-    /* No qtest_clock_step anywhere: only a discard gets the second frame in. */
+    /*
+     * No qtest_clock_step anywhere: only a discard gets the second frame in.
+     */
     g_assert_cmphex(return_prod_without_clock(qts, 1), ==, 1);
     word2 = qtest_readl(qts, RETURN_RING_PHYS + 8);
     g_assert_cmphex(word2 >> 16, ==, 3);

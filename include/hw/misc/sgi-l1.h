@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
+/* Origin 300 L1 controller and node-side UART state. */
 #ifndef HW_MISC_SGI_L1_H
 #define HW_MISC_SGI_L1_H
 
@@ -46,10 +47,9 @@ struct SGIL1State {
     DeviceState parent_obj;
     SGIL1UARTState *uart;
     /*
-     * The other chassis's controller across the RS-422 pair in a
-     * two-chassis Origin 300's NUMAlink cable (the datasheet's
-     * "Two-chassis pair"), or NULL. The link carries no wire format: a
-     * forwarded request is an in-process call. It works only while both
+     * The other chassis's controller across the RS-422 pair in a two-chassis
+     * Origin 300's NUMAlink cable, or NULL. The link carries no wire format:
+     * a forwarded request is an in-process call. It works only while both
      * controllers' network mode is 422.
      */
     struct SGIL1State *peer;

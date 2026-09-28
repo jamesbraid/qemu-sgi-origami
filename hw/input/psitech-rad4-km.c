@@ -1,10 +1,10 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
+/* PsiTech RAD4-KM keyboard and mouse controller. */
 /*
- * PsiTech RAD4-KM keyboard/mouse controller.
- *
- * See include/hw/input/psitech-rad4-km.h for the register contract this
- * file implements and the disclosed approximations (chip identity, and
- * the undriven board-level interrupt gate at driver offset 0x78).
+ * See include/hw/input/psitech-rad4-km.h for the register contract this file
+ * implements and the disclosed
+ * approximations (chip identity, and the undriven board-level interrupt gate
+ * at driver offset 0x78).
  */
 
 #include "qemu/osdep.h"
@@ -74,22 +74,24 @@ static void rad4_km_write_cr(Rad4KMChannel *chan, uint8_t val)
     case RAD4_KM_CR_MISC_RESET_BRK:
         /*
          * Established as issued at driver init, but this model has no
-         * separate receive FIFO, error-status or break-change state for
-         * these commands to act on beyond what the ps2 core devices
-         * already own, so no register bit changes here.
+         * separate receive FIFO, error-status or
+         * break-change state for these commands to act on beyond what the ps2
+         * core devices already own, so no
+         * register bit changes here.
          *
-         * Real SCN2681-family silicon additionally disables the receiver
-         * on Reset Receiver and the transmitter on Reset Transmitter,
-         * independent of the same command byte's own Rx/Tx enable field
-         * above -- this model does not clear rx_enabled/tx_enabled here,
-         * so it is untested and possibly divergent for a future guest
-         * access that issues one of these MISC commands with Rx/Tx left
-         * enabled in the same byte. Every documented driver use
-         * (docs/datasheets/psitech-rad4-km.md, "Established": the
-         * 0x1a/0x20/0x30/0x40/0x50 init sequence) issues them only after
-         * 0x1a has already disabled both, so the byte's own Rx/Tx field
-         * already reads disabled here -- not a divergence from any
-         * exercised guest behavior today.
+         * Real SCN2681-family silicon additionally disables the receiver on
+         * Reset Receiver and the transmitter on
+         * Reset Transmitter, independent of the same command byte's own Rx/Tx
+         * enable field above. This model does not clear rx_enabled/tx_enabled
+         * here, so it is untested and
+         * possibly divergent for a future guest access
+         * that issues one of these MISC commands with Rx/Tx left enabled in
+         * the same byte. The driver's own init
+         * sequence (0x1a, then 0x20, 0x30, 0x40, 0x50) issues these commands
+         * only after 0x1a has already disabled
+         * both, so the byte's own Rx/Tx field already reads disabled here,
+         * not a divergence from any exercised
+         * guest behavior today.
          */
         break;
     default:
@@ -108,7 +110,8 @@ static uint8_t rad4_km_read_sr(Rad4KMChannel *chan, PS2State *ps2)
         val |= RAD4_KM_SR_RXRDY;
     }
     if (chan->tx_enabled) {
-        /* Transmit is synchronous in this model: always ready once enabled. */
+        /* Transmit is synchronous in this model: always ready once
+         * enabled. */
         val |= RAD4_KM_SR_TXRDY;
     }
     return val;
@@ -135,10 +138,11 @@ static uint8_t rad4_km_read_isr(PsitechRad4KMState *s)
 
 /*
  * IMR gating which ISR bits reach the chip's own interrupt output is the
- * ordinary SCN2681/SCC68681 DUART family contract (see the file header):
- * a public, chip-family fact, unlike the board-level gate at driver
- * offset 0x78 this model does not invent. ISR's own read behavior above
- * stays the raw, unmasked value -- only this aggregate output is masked.
+ * ordinary SCN2681/SCC68681 DUART family
+ * contract (see the file header): a public, chip-family fact, unlike the
+ * board-level gate at driver offset 0x78
+ * this model does not invent. ISR's own read behavior above stays the raw,
+ * unmasked value. Only this aggregate output is masked.
  */
 static void rad4_km_update_irq(PsitechRad4KMState *s)
 {
@@ -146,11 +150,13 @@ static void rad4_km_update_irq(PsitechRad4KMState *s)
 }
 
 /*
- * Either ps2 core device's own IRQ output changes only its queue-empty
- * state (ps2_read_data()/ps2_write_*() already call ps2_raise_irq()/
- * ps2_lower_irq()); this model recomputes the chip-wide masked condition
- * from scratch on every edge rather than tracking each source bit
- * incrementally, matching rad4_km_read_isr()'s own always-recompute style.
+ * Either ps2 core device's own IRQ output changes only its queue-empty state
+ * (ps2_read_data()/ps2_write_*() already
+ * call ps2_raise_irq()/ ps2_lower_irq()); this model recomputes the chip-wide
+ * masked condition from scratch on
+ * every edge rather than tracking each source bit incrementally, matching
+ * rad4_km_read_isr()'s own always-recompute
+ * style.
  */
 static void rad4_km_ps2_irq(void *opaque, int n, int level)
 {
@@ -240,7 +246,8 @@ static void rad4_km_write(void *opaque, hwaddr addr, uint64_t val,
         return;
 
     case RAD4_KM_REG_SRA_CSRA:
-        /* CSRA: clock select, functionally inert -- no baud timing modeled. */
+        /* CSRA: clock select, functionally inert; no baud timing is
+         * modeled. */
         s->chan_a.csr = byte;
         return;
 
@@ -342,10 +349,11 @@ static void rad4_km_realize(DeviceState *dev, Error **errp)
 
     /*
      * Each ps2 core device's own IRQ output feeds this chip's aggregate ISR/
-     * IMR condition (rad4_km_ps2_irq()); see the file header and
-     * include/hw/input/psitech-rad4-km.h for why this model wires that much
-     * and no further, leaving the board-level interrupt gate at driver
-     * offset 0x78 unwired rather than guessing its destination.
+     * IMR condition (rad4_km_ps2_irq()); see
+     * the file header and include/hw/input/psitech-rad4-km.h for why this
+     * model wires that much and no further,
+     * leaving the board-level interrupt gate at driver offset 0x78 unwired
+     * rather than guessing its destination.
      */
     qdev_connect_gpio_out(DEVICE(&s->kbd), PS2_DEVICE_IRQ,
                           qdev_get_gpio_in(dev, 0));

@@ -1,50 +1,40 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
+/* PsiTech RAD4 (12d1:0104) and RAD4-KM primary PCI heads on an Origin 200
+ * Bridge slot. */
 /*
- * psitech-rad4: bounded functional approximation of a PsiTech RAD4 PCI
- * graphics head (vendor/device 12d1:0104), one primary head on an Origin
- * 200 Bridge PCI slot.
- *
  * This models a compatibility profile for one exact stock software path
- * (PsiTech release 1.3k kernel driver and standalone X server, the driver's
- * mode zero at 1280x1024), not recovered RAD4 hardware fidelity. The
+ * (PsiTech release 1.3k kernel driver and
+ * standalone X server, the driver's mode zero at 1280x1024), not recovered
+ * RAD4 hardware fidelity. The
  * expansion-ROM-route DMA registers (RAD4_ROM_MODE/RAD4_ROM_DESC/
- * RAD4_ROM_COMMAND) model the PLX PCI9060/9054-family scatter/gather
- * engine the driver's buffered/type-3 path drives; every other pixel path
- * still moves data through ordinary CPU-issued BAR2 stores. Every
- * approximated behavior below is named, evidenced and independently
- * reviewed in the owning Origami repository:
- * docs/datasheets/psitech-rad4.md and
- * docs/designs/rad4-one-mode-functional-approximation.md. Read those
- * documents before changing register policy here; a policy change needs
- * renewed independent review there before it lands here.
+ * RAD4_ROM_COMMAND) model the PLX
+ * PCI9060/9054-family scatter/gather engine the driver's buffered/type-3 path
+ * drives; every other pixel path still
+ * moves data through ordinary CPU-issued BAR2 stores.
  *
- * The one-mode fixed timing sequence gating scanout comes from a reviewed,
- * generated fixture (psitech-rad4-mode0-fixture.h), not from vendor source
- * or a copied instruction listing.
+ * The one-mode fixed timing sequence gating scanout comes from a generated
+ * fixture (psitech-rad4-mode0-fixture.h),
+ * not from vendor source or a copied instruction listing.
  *
  * This file also answers the PCI identity 12d1:0105 (RAD4-KM), selected by
- * the device-id property. docs/datasheets/psitech-rad4-km.md and its
- * independent review (docs/reviews/
- * psitech-rad4-km-datasheet-review-20260917.md) clear exactly two facts
- * for that identity: the PCI vendor/device pair itself, and the
- * guest-visible outcome that IRIX's rad4pci driver -- the
- * same driver package as plain RAD4's -- attaches to it as a RAD4-KM
- * board. Everything else this file implements under that identity (the
- * BAR0/BAR2/expansion-ROM layout, the RGB561 path, the DMA engine) is
- * plain RAD4's own approximation, reused as an explicitly disclosed
- * approximation rather than an established RAD4-KM register fact; the
- * datasheet's own review names this choice as needing its own future
- * review.
+ * the device-id property. Two facts are
+ * established for that identity: the PCI vendor/device pair itself, and the
+ * guest-visible outcome that IRIX's
+ * rad4pci driver, the same driver package as plain RAD4's, attaches to it
+ * as a RAD4-KM board. Everything else
+ * this file implements under that identity (the BAR0/BAR2/expansion-ROM
+ * layout, the RGB561 path, the DMA engine) is
+ * plain RAD4's own approximation, reused here rather than an established
+ * RAD4-KM register fact.
  *
  * RAD4-KM's keyboard/mouse controller is modeled separately, as the child
- * device hw/input/psitech-rad4-km.c, realized onto PCI BAR 3 only under
- * the RAD4-KM identity. That file implements the register contract
- * docs/datasheets/psitech-rad4-km.md's "Keyboard and mouse register
- * contract" section establishes, cleared for a bounded, disclosed-
- * approximation implementation by independent review (docs/reviews/
- * psitech-rad4-km-register-contract-review-20260922.md). Its own header
- * names, separately, the chip identity and interrupt-routing facts it
- * deliberately leaves unmodeled rather than guessing.
+ * device hw/input/psitech-rad4-km.c,
+ * realized onto PCI BAR 3 only under the RAD4-KM identity. That file
+ * implements a bounded, disclosed approximation
+ * of the keyboard and mouse register contract; its own header names,
+ * separately, the chip identity and
+ * interrupt-routing facts it deliberately leaves unmodeled rather than
+ * guessing.
  */
 
 #include "qemu/osdep.h"
@@ -73,13 +63,13 @@ OBJECT_DECLARE_SIMPLE_TYPE(PsitechRad4State, PSITECH_RAD4)
 
 /*
  * RAD4-KM, PCI identity 12d1:0105: a distinct PsiTech product that shares
- * RAD4's own rad4pci driver and hwgraph subtree (docs/datasheets/
- * psitech-rad4-km.md, "Cleared for a bounded implementation"). Only the
- * PCI identity and the guest-visible attach outcome are cleared for
- * implementation; this device answers that identity with plain RAD4's own
- * register layout below -- an explicitly disclosed approximation, not an
- * independently established RAD4-KM register contract. See the file
- * header for the full disclosure.
+ * RAD4's own rad4pci driver and hwgraph
+ * subtree. Only the PCI identity and the guest-visible attach outcome are
+ * established for it; this device answers
+ * that identity with plain RAD4's own register layout below, an explicitly
+ * disclosed approximation, not an
+ * independently established RAD4-KM register contract. See the file header
+ * for the full disclosure.
  */
 #define RAD4_KM_DEVICE_ID       0x0105
 
@@ -111,14 +101,16 @@ OBJECT_DECLARE_SIMPLE_TYPE(PsitechRad4State, PSITECH_RAD4)
 
 /*
  * Expansion-ROM route, revision-3-compatible DMA register aliases. Offsets
- * match the PLX PCI9054 Data Book (PLX Technology, 1998; the PCI9060's own
- * documented family), Tables 11-76, 11-80 and 11-86: DMAMODE0 at local
- * offset 0x100, DMADPR0 (the Channel 0 Descriptor Pointer Register) at
- * 0x110, DMACSR0 (Channel 0 Command/Status) at 0x128. The driver's own
- * disassembly writes a descriptor pointer to +0x110 and a mode value of
- * 0x7c3 to +0x100 before starting the transfer at +0x128 -- the reverse of
- * this file's earlier RAD4_ROM_DESC/RAD4_ROM_MODE values, which had the two
- * registers swapped.
+ * match the PLX PCI9054 Data Book (PLX
+ * Technology, 1998; the PCI9060's own documented family), Tables 11-76, 11-80
+ * and 11-86: DMAMODE0 at local offset
+ * 0x100, DMADPR0 (the Channel 0 Descriptor Pointer Register) at 0x110,
+ * DMACSR0 (Channel 0 Command/Status) at 0x128.
+ * The driver writes a descriptor pointer to +0x110 and a mode value of 0x7c3
+ * to +0x100 before starting the transfer
+ * at +0x128. This reverses this file's earlier RAD4_ROM_DESC/RAD4_ROM_MODE
+ * values, which had the two registers
+ * swapped.
  */
 #define RAD4_ROM_MODE           0x100
 #define RAD4_ROM_DESC           0x110
@@ -126,16 +118,18 @@ OBJECT_DECLARE_SIMPLE_TYPE(PsitechRad4State, PSITECH_RAD4)
 
 /*
  * DMAMODE0 bits this model acts on (PLX PCI9054 Data Book, Table 11-76).
- * Every other bit (bus width, wait states, burst/TA# enables, and so on)
- * only matters to real bus timing this model does not simulate.
+ * Every other bit (bus width, wait states,
+ * burst/TA# enables, and so on) only matters to real bus timing this model
+ * does not simulate.
  */
 #define RAD4_DMA_MODE_SCATTER_GATHER   (1u << 9)
 #define RAD4_DMA_MODE_DONE_IRQ_ENABLE  (1u << 10)
 
 /*
  * DMACSR0 bits (PLX PCI9054 Data Book, Table 11-86). The driver writes
- * ENABLE|START (0x3) to begin a transfer and ABORT (0x4) once its
- * `ddi_sv_wait` timeout expires; it polls DONE (0x10) for completion.
+ * ENABLE|START (0x3) to begin a transfer and
+ * ABORT (0x4) once its `ddi_sv_wait` timeout expires; it polls DONE (0x10)
+ * for completion.
  */
 #define RAD4_DMA_CMD_ENABLE     (1u << 0)
 #define RAD4_DMA_CMD_START      (1u << 1)
@@ -144,11 +138,13 @@ OBJECT_DECLARE_SIMPLE_TYPE(PsitechRad4State, PSITECH_RAD4)
 
 /*
  * DMADPR0 bits (PLX PCI9054 Data Book, Table 11-80): the low 4 bits of both
- * the Descriptor Pointer Register and each in-memory descriptor's own
- * "next descriptor" word. RAD4_DMA_DESC_ADDR_MASK isolates the quad-word-
- * aligned address the rest of the word carries.
+ * the Descriptor Pointer Register and
+ * each in-memory descriptor's own "next descriptor" word.
+ * RAD4_DMA_DESC_ADDR_MASK isolates the quad-word-aligned
+ * address the rest of the word carries.
  */
-#define RAD4_DMA_DESC_LOC_PCI       (1u << 0) /* 1: descriptor in host memory */
+/* 1: descriptor in host memory */
+#define RAD4_DMA_DESC_LOC_PCI       (1u << 0)
 #define RAD4_DMA_DESC_END_OF_CHAIN  (1u << 1)
 #define RAD4_DMA_DESC_INTR_ON_TC    (1u << 2)
 #define RAD4_DMA_DESC_LOCAL_TO_PCI  (1u << 3) /* 1: framebuffer -> host */
@@ -182,16 +178,13 @@ OBJECT_DECLARE_SIMPLE_TYPE(PsitechRad4State, PSITECH_RAD4)
 
 /*
  * RGB561 indexed cursor registers. IBM Microelectronics, "RGB561
- * Architecture", Preliminary Rev. 1.1, 23 January 1995 (retained at
- * docs/library/cache/graphics/ibm-rgb561-architecture.pdf in the owning
- * Origami repository), page 27's register address table and pages 37-39.
- * Index 0x0030's value 0x60 disabling the cursor and cross-hair at
- * initialization is the same fact docs/datasheets/psitech-rad4.md already
- * cites from the shipped driver's init_RGB561 (offsets 0xb158-0xb180);
- * disassembling that same routine (0xb1f0 onward, .text-relative) further
- * shows the nine RGB561 data-port writes immediately following it are all
- * zero, confirming every other cursor register here also resets to zero
- * on that path.
+ * Architecture", Preliminary Rev. 1.1, 23 January
+ * 1995, page 27's register address table and pages 37-39. Index 0x0030's
+ * value 0x60 disables the cursor and
+ * cross-hair at initialization; the driver's own init_RGB561 routine writes
+ * that value and then nine more RGB561
+ * data-port writes that are all zero, confirming every other cursor register
+ * here also resets to zero on that path.
  */
 #define RAD4_RGB_CURSOR_CONTROL     0x0030
 #define RAD4_RGB_CURSOR_HOTSPOT_X   0x0034
@@ -205,39 +198,42 @@ OBJECT_DECLARE_SIMPLE_TYPE(PsitechRad4State, PSITECH_RAD4)
 
 /*
  * Cursor/cross-hair look-up table, indices 0x0a10-0x0a1f (IBM page 27's
- * "CURSOR LUT (3 RW/ADDR)" and "CROSS-HAIR CURSOR LUT (3 RW/ADDR)", page 45's
- * Table 22). Two things make this range unlike every other indexed range
- * this file already implements:
+ * "CURSOR LUT (3 RW/ADDR)" and "CROSS-HAIR
+ * CURSOR LUT (3 RW/ADDR)", page 45's Table 22). Two things make this range
+ * unlike every other indexed range this
+ * file already implements:
  *
  * - Reads and writes go through the fourth RGB561 port, BAR2 +0x930000
- *   (RAD4_BAR2_RGB_RESERVED below), not the ordinary data port at
- *   +0x920000. Disassembling the shipped driver's init_RGB561 shows the
- *   index-setting writes (0xb540-0xb55c, .text-relative) target the same
- *   two struct fields used for every other index-then-data sequence in
- *   the same function, but the three RGB data writes that follow
- *   (0xb560-0xb5b0) dereference a different struct field from the one
- *   used for every ordinary single-cycle register nearby, including the
- *   cursor control block a few instructions earlier (0xb158-0xb1e4). The
- *   struct holds four consecutive pointer-sized fields (0x10, 0x18, 0x20,
- *   0x28), matching the chip's four apertures in order (index-low,
- *   index-high, data, reserved); the cursor data writes use the fourth.
- * - Real hardware does not advance the visible index after each byte
- *   here: the driver points the index at 0x0a11 once, issues six raw
- *   writes to that fourth port with no index write between them, then
- *   explicitly re-points the index to 0x0a15 rather than continuing to
- *   rely on it having advanced there. That is only consistent with the
+ * (RAD4_BAR2_RGB_RESERVED below), not the
+ *   ordinary data port at +0x920000. The shipped driver's init_RGB561 routine
+ * sets the index through the same two
+ *   struct fields it uses for every other index-then-data sequence, but the
+ * three RGB data writes that follow
+ *   dereference a different struct field from the one used for every ordinary
+ * single-cycle register nearby,
+ *   including the cursor control block set a few writes earlier. The struct
+ * holds four consecutive pointer-sized
+ *   fields, matching the chip's four apertures in order (index-low,
+ * index-high, data, reserved); the cursor data
+ *   writes use the fourth.
+ * - Real hardware does not advance the visible index after each byte here:
+ * the driver points the index at 0x0a11
+ *   once, issues six raw writes to that fourth port with no index write
+ * between them, then explicitly re-points the
+ *   index to 0x0a15 rather than continuing to rely on it having advanced
+ * there. That is only consistent with the
  *   index auto-incrementing once per three bytes (one RGB triple per
- *   addressed entry), not once per byte.
+ * addressed entry), not once per byte.
  *
  * The six bytes observed are (0, 0, 0, 0xff, 0xff, 0xff): primary color 1
- * (0x0a11) is black, primary color 2 (0x0a12) is white, matching an
- * ordinary white-on-black pointer; primary color 3 (0x0a13) is left
- * unwritten (zero). Component order within each triple (red, green,
- * blue) matches this same driver's separate palette upload helper, which
- * extracts red/green/blue from software word bits 16-23/8-15/0-7 in that
- * order (docs/research/graphics/rad4-contract-closure-20260916.md,
- * "RAMDAC setup"); it is not independently confirmed for this specific
- * register block.
+ * (0x0a11) is black, primary color 2
+ * (0x0a12) is white, matching an ordinary white-on-black pointer; primary
+ * color 3 (0x0a13) is left unwritten
+ * (zero). Component order within each triple (red, green, blue) matches this
+ * same driver's separate palette upload
+ * helper, which extracts red/green/blue from software word bits
+ * 16-23/8-15/0-7 in that order; it is not
+ * independently confirmed for this specific register block.
  */
 #define RAD4_RGB_CURSOR_LUT_BASE    0x0a10
 #define RAD4_RGB_CURSOR_LUT_COUNT   16
@@ -245,13 +241,15 @@ OBJECT_DECLARE_SIMPLE_TYPE(PsitechRad4State, PSITECH_RAD4)
                                      RAD4_RGB_CURSOR_LUT_COUNT - 1)
 
 /*
- * Cursor pixel map, index 0x2000-0x23ff: a plain 1Kx8 SRAM (IBM page 27),
- * two bits per pixel packed four to a byte, least-significant pair first,
- * sixteen bytes per 64-pixel row (IBM page 3, "Cursor Pixel Map", and
- * Tables 3-4). Each two-bit value selects a transparent pixel (0) or one of
- * the three primary-color LUT entries above (1-3); this model does not
- * implement cursor or cross-hair blinking, so the blink LUT is stored
- * (through the ordinary indexed path) but never consulted.
+ * Cursor pixel map, index 0x2000-0x23ff: a plain 1Kx8 SRAM (IBM page 27), two
+ * bits per pixel packed four to a byte,
+ * least-significant pair first, sixteen bytes per 64-pixel row (IBM page 3,
+ * "Cursor Pixel Map", and Tables 3-4).
+ * Each two-bit value selects a transparent pixel (0) or one of the three
+ * primary-color LUT entries above (1-3);
+ * this model does not implement cursor or cross-hair blinking, so the blink
+ * LUT is stored (through the ordinary
+ * indexed path) but never consulted.
  */
 #define RAD4_RGB_CURSOR_PIXMAP_BASE 0x2000
 #define RAD4_CURSOR_WIDTH           64
@@ -262,30 +260,33 @@ OBJECT_DECLARE_SIMPLE_TYPE(PsitechRad4State, PSITECH_RAD4)
 
 /*
  * RGB561 index ranges this profile stores and treats as supported. The
- * cursor/cross-hair look-up table (0x0a10-0x0a1f) is handled entirely
- * separately, before this table is consulted, because it needs the
+ * cursor/cross-hair look-up table
+ * (0x0a10-0x0a1f) is handled entirely separately, before this table is
+ * consulted, because it needs the
  * three-writes-per-address behavior described above rather than plain
  * per-byte storage.
  */
 
 /*
- * RGB561 multi-cycle registers reached through RAD4_BAR2_RGB_RESERVED
- * (BAR2 +0x930000). IBM Microelectronics, "RGB561 Architecture",
- * Preliminary Rev. 1.1, 23 January 1995 (docs/library/cache/graphics/
- * ibm-rgb561-architecture.pdf in the owning Origami repository), page 1's
- * "Programming" section and Table 20's register address table (page 27)
- * establish that every "N RW/ADDR" index range in that table -- both
- * window attribute tables, their auxiliary tables, the gamma tables, the
- * color look-up table and the cursor/cross-hair look-up table -- goes
- * through this one physical port, driven by the same RAD4_BAR2_RGB_LO/
- * RAD4_BAR2_RGB_HI index registers already used to select an entry for
- * the ordinary single-cycle RAD4_BAR2_RGB_DATA port. This model
- * implements the two ranges the qualified guest workload
- * (docs/datasheets/psitech-rad4.md) actually exercises: the frame-buffer
- * window attribute table (FB_WAT) and the runtime color look-up table it
- * points into. Any other multi-cycle index -- the overlay WAT, the gamma
- * tables, the cursor/cross-hair look-up table -- is unimplemented and
- * trace-visible rather than silently accepted.
+ * RGB561 multi-cycle registers reached through RAD4_BAR2_RGB_RESERVED (BAR2
+ * +0x930000). IBM Microelectronics,
+ * "RGB561 Architecture", Preliminary Rev. 1.1, 23 January 1995, page 1's
+ * "Programming" section and Table 20's
+ * register address table (page 27) establish that every "N RW/ADDR" index
+ * range in that table, both window
+ * attribute tables, their auxiliary tables, the gamma tables, the color
+ * look-up table and the cursor/cross-hair
+ * look-up table, goes through this one physical port, driven by the same
+ * RAD4_BAR2_RGB_LO/RAD4_BAR2_RGB_HI index
+ * registers already used to select an entry for the ordinary single-cycle
+ * RAD4_BAR2_RGB_DATA port. This model
+ * implements the two ranges the qualified guest workload actually exercises:
+ * the frame-buffer window attribute
+ * table (FB_WAT) and the runtime color look-up table it points into. Any
+ * other multi-cycle index, the overlay
+ * WAT, the gamma tables, the cursor/cross-hair look-up table, is
+ * unimplemented and trace-visible rather than
+ * silently accepted.
  */
 #define RAD4_WAT_BASE           0x1000
 #define RAD4_WAT_COUNT          256
@@ -299,11 +300,12 @@ OBJECT_DECLARE_SIMPLE_TYPE(PsitechRad4State, PSITECH_RAD4)
 
 /*
  * FB_WAT entry bit layout, same document page 47's "X'1000-10FF FB_WAT"
- * table: a 10-bit value with START_ADDR in bits 9-6, PIX_FORM in bits
- * 5-4, BS in bit 3, MODE in bits 2-1 and TR in bit 0. Table 1 on page 2
- * adds START_ADDR to the pixel's index data to form the color LUT
- * address; this model only evidences PIX_FORM 8bpp (00) in Index mode,
- * so RAD4_WAT_PIXFORM_8BPP gates that formula and anything else is
+ * table: a 10-bit value with START_ADDR in
+ * bits 9-6, PIX_FORM in bits 5-4, BS in bit 3, MODE in bits 2-1 and TR in bit
+ * 0. Table 1 on page 2 adds START_ADDR
+ * to the pixel's index data to form the color LUT address; this model only
+ * evidences PIX_FORM 8bpp (00) in Index
+ * mode, so RAD4_WAT_PIXFORM_8BPP gates that formula and anything else is
  * traced rather than guessed at.
  */
 #define RAD4_WAT_START_ADDR_SHIFT 6
@@ -317,9 +319,10 @@ OBJECT_DECLARE_SIMPLE_TYPE(PsitechRad4State, PSITECH_RAD4)
 #define RAD4_WAT_MODE_TRUE        0x3
 
 /*
- * Two cycle transfer of a 10-bit WAT entry, same document page 4's
- * Table 5: the first cycle carries bits 9-2 in bit positions 7-0 of the
- * byte, the second carries bits 1-0 in bit positions 7-6.
+ * Two cycle transfer of a 10-bit WAT entry, same document page 4's Table 5:
+ * the first cycle carries bits 9-2 in bit
+ * positions 7-0 of the byte, the second carries bits 1-0 in bit positions
+ * 7-6.
  */
 #define RAD4_WAT_CYCLE0_SHIFT   2
 #define RAD4_WAT_CYCLE1_SHIFT   6
@@ -327,21 +330,24 @@ OBJECT_DECLARE_SIMPLE_TYPE(PsitechRad4State, PSITECH_RAD4)
 
 /*
  * The WID byte's position within RAD4's 32-bit software pixel word. The
- * RGB561 datasheet defines the WID *input pins* and how many bits CONF/4
- * allocates to them, but not which VRAM byte a given board wires to
- * those pins -- that is board-specific. This model's best-evidenced
- * choice is the top byte: every captured login-screen pixel already has
- * this byte at zero (docs/datasheets/psitech-rad4.md's "0x00RRGGBB"
- * True-color layout, established from the driver's disassembled channel
- * order and the shipped X server's compiled visual masks), consistent
- * with those pixels all belonging to window ID 0. Confirmed live: with
- * this shift, the whole qualified guest workload (IRIX 6.5.30, RAD4 at
- * PCI slot 5) renders a correctly colored xdm login screen end to end --
- * light gray/white window chrome, a pink login field and a real yellow/
- * red/black EZsetup icon, not the near-black symptom this change fixes.
- * This confirms the shift for window ID 0, the only value the qualified
- * workload's login screen exercises; it has not been independently
- * confirmed against a captured pixel with a nonzero window ID.
+ * RGB561 datasheet defines the WID *input
+ * pins* and how many bits CONF/4 allocates to them, but not which VRAM byte a
+ * given board wires to those pins. That is board-specific. This model's
+ * best-supported choice is the top byte:
+ * every login-screen pixel already has
+ * this byte at zero, matching the "0x00RRGGBB" True-color layout established
+ * from the driver's channel order and
+ * the shipped X server's compiled visual masks, consistent with those pixels
+ * all belonging to window ID 0. With
+ * this shift, the whole qualified guest workload (IRIX 6.5.30, RAD4 at PCI
+ * slot 5) renders a correctly colored xdm
+ * login screen end to end, light gray/white window chrome, a pink login
+ * field and a real yellow/ red/black
+ * EZsetup icon, not the near-black symptom this change fixes. This confirms
+ * the shift for window ID 0, the only
+ * value the qualified workload's login screen exercises; it has not been
+ * independently confirmed against a pixel
+ * with a nonzero window ID.
  */
 #define RAD4_PIXEL_WID_SHIFT    24
 
@@ -373,8 +379,8 @@ static const Rad4RgbRange rad4_rgb_supported_ranges[] = {
 
 /*
  * Indices that gate mode recognition: writing data here after recognition
- * invalidates the active mode instead of taking effect as an ordinary
- * runtime register update.
+ * invalidates the active mode instead of
+ * taking effect as an ordinary runtime register update.
  */
 static bool rad4_rgb_index_is_mode_mutating(uint16_t index)
 {
@@ -418,11 +424,12 @@ struct PsitechRad4State {
 
     /*
      * Selects the PCI identity this instance answers as: RAD4_DEVICE_ID
-     * (0x0104, plain RAD4) or RAD4_KM_DEVICE_ID (0x0105, RAD4-KM), a
-     * settable property mirroring how hw/misc/sgi-ioc3.c's subsystem-id
-     * property selects a board identity on one shared implementation.
-     * Every register below behaves identically regardless of this value;
-     * see the file header for what that reuse does and does not claim
+     * (0x0104, plain RAD4) or RAD4_KM_DEVICE_ID
+     * (0x0105, RAD4-KM), a settable property mirroring how
+     * hw/misc/sgi-ioc3.c's subsystem-id property selects a
+     * board identity on one shared implementation. Every register below
+     * behaves identically regardless of this
+     * value; see the file header for what that reuse does and does not claim
      * for RAD4-KM.
      */
     uint16_t device_id;
@@ -432,18 +439,20 @@ struct PsitechRad4State {
     MemoryRegion romroute;
 
     /*
-     * The keyboard/mouse controller child, realized onto BAR 3 only under
-     * the RAD4-KM identity (device_id == RAD4_KM_DEVICE_ID); unparented
-     * otherwise. See hw/input/psitech-rad4-km.c.
+     * The keyboard/mouse controller child, realized onto BAR 3 only under the
+     * RAD4-KM identity (device_id ==
+     * RAD4_KM_DEVICE_ID); unparented otherwise. See
+     * hw/input/psitech-rad4-km.c.
      */
     PsitechRad4KMState km;
 
     /*
-     * The km child's own aggregate IRQ output (rad4_km_irq_handler()),
-     * cached so rad4_update_irq() can OR it into the shared PCI line and
-     * so a post-load recompute doesn't depend on child/parent VMState
-     * load order. Always false under the plain RAD4 identity, since the
-     * child is unparented and never realized there.
+     * The km child's own aggregate IRQ output (rad4_km_irq_handler()), cached
+     * so rad4_update_irq() can OR it into
+     * the shared PCI line and so a post-load recompute doesn't depend on
+     * child/parent VMState load order. Always
+     * false under the plain RAD4 identity, since the child is unparented and
+     * never realized there.
      */
     bool km_irq_level;
 
@@ -475,33 +484,38 @@ struct PsitechRad4State {
 
     /*
      * Scanlines of the framebuffer written since the last rad4_gfx_update(),
-     * inclusive and empty when dirty_y_start > dirty_y_end. framebuffer is a
-     * plain buffer behind a masked-write MMIO trap, not a RAM MemoryRegion,
-     * so it cannot use the region dirty-bitmap helpers in
-     * hw/display/framebuffer.c; rad4_bar2_write() and rad4_dma_run()'s
-     * upload branch mark rows by hand as they write, and rad4_gfx_update()
-     * converts and pushes only this range instead of the whole frame every
-     * refresh. Not migrated: rad4_post_load() marks the whole frame dirty
-     * instead, since display_buffer below is not itself part of VMState.
+     * inclusive and empty when dirty_y_start
+     * > dirty_y_end. framebuffer is a plain buffer behind a masked-write MMIO
+     * trap, not a RAM MemoryRegion, so it
+     * cannot use the region dirty-bitmap helpers in hw/display/framebuffer.c;
+     * rad4_bar2_write() and
+     * rad4_dma_run()'s upload branch mark rows by hand as they write, and
+     * rad4_gfx_update() converts and pushes
+     * only this range instead of the whole frame every refresh. Not migrated:
+     * rad4_post_load() marks the whole
+     * frame dirty instead, since display_buffer below is not itself part of
+     * VMState.
      */
     int dirty_y_start;
     int dirty_y_end;
 
     /*
      * Displayed color, converted from the raw framebuffer through each
-     * pixel's window ID and FB_WAT entry (rad4_convert_scanout()). A
-     * plain, host-owned buffer -- not qemu_create_displaysurface()'s
-     * default shareable pixman allocation -- since nothing here needs
-     * zero-copy sharing with an external consumer.
+     * pixel's window ID and FB_WAT entry
+     * (rad4_convert_scanout()). A plain, host-owned buffer, not
+     * qemu_create_displaysurface()'s default shareable
+     * pixman allocation, since nothing here needs zero-copy sharing with an
+     * external consumer.
      */
     uint32_t *display_buffer;
 
     /*
-     * Rows of display_buffer the hardware cursor sprite is composited
-     * over, inclusive and empty when cursor_shown_y_start >
-     * cursor_shown_y_end. Recomputed from the RGB561 cursor registers at
-     * each refresh, so not migrated: rad4_post_load() repaints the whole
-     * frame and that refresh sets it again.
+     * Rows of display_buffer the hardware cursor sprite is composited over,
+     * inclusive and empty when
+     * cursor_shown_y_start > cursor_shown_y_end. Recomputed from the RGB561
+     * cursor registers at each refresh, so
+     * not migrated: rad4_post_load() repaints the whole frame and that
+     * refresh sets it again.
      */
     int cursor_shown_y_start;
     int cursor_shown_y_end;
@@ -512,15 +526,17 @@ struct PsitechRad4State {
     uint8_t *rgb_store;
 
     /*
-     * RGB561 multi-cycle port state (BAR2 +0x930000): the frame-buffer
-     * window attribute table, the color look-up table it addresses, and
-     * the cursor/cross-hair look-up table. One phase counter serves the
-     * whole port, matching the datasheet's description of a single
+     * RGB561 multi-cycle port state (BAR2 +0x930000): the frame-buffer window
+     * attribute table, the color look-up
+     * table it addresses, and the cursor/cross-hair look-up table. One phase
+     * counter serves the whole port,
+     * matching the datasheet's description of a single
      * address-index-register-driven state machine (IBM RGB561
-     * Architecture p.1, "Address Index Register"), not a separate
-     * counter per table -- the cursor LUT's three-bytes-per-entry cycle
-     * and the WAT's two-bytes-per-entry cycle share this same counter,
-     * distinguished by which index range is currently selected.
+     * Architecture p.1, "Address Index Register"), not a separate counter per
+     * table. The cursor LUT's three-bytes-per-entry cycle and the WAT's
+     * two-bytes-per-entry cycle
+     * share this same counter, distinguished by
+     * which index range is currently selected.
      */
     uint16_t fb_wat[RAD4_WAT_COUNT];
     uint8_t color_lut[RAD4_COLOR_LUT_COUNT][3];
@@ -529,8 +545,8 @@ struct PsitechRad4State {
 
     /*
      * Timing memories, stored for readback only; recognition is gated by
-     * exact sequence matching against the reviewed fixture, not by
-     * interpreting these values.
+     * exact sequence matching against the
+     * generated fixture, not by interpreting these values.
      */
     uint32_t vert_timing[RAD4_VERT_WORDS];
     uint32_t horiz_timing[3][RAD4_HORIZ_WORDS];
@@ -560,14 +576,16 @@ static bool rad4_index_in_color_lut(uint16_t index)
 }
 
 /*
- * Advance the RGB561 multi-cycle port's shared phase counter, completing
- * the auto-increment of the address index register once an entry's last
- * cycle has been transferred. This generalizes the auto-increment
- * RAD4_BAR2_RGB_DATA already applies per cycle to instead apply once per
- * whole multi-cycle entry, per IBM RGB561 Architecture p.1,
- * "Programming": "The address index register will auto increment to the
- * next address after each read or write cycle to a configuration
- * register or after the end of a multi-cycle LUT or WAT access."
+ * Advance the RGB561 multi-cycle port's shared phase counter, completing the
+ * auto-increment of the address index
+ * register once an entry's last cycle has been transferred. This generalizes
+ * the auto-increment RAD4_BAR2_RGB_DATA
+ * already applies per cycle to instead apply once per whole multi-cycle
+ * entry, per IBM RGB561 Architecture p.1,
+ * "Programming": "The address index register will auto increment to the next
+ * address after each read or write cycle
+ * to a configuration register or after the end of a multi-cycle LUT or WAT
+ * access."
  */
 static void rad4_rgb_reserved_advance(PsitechRad4State *s, uint16_t index,
                                       unsigned cycles)
@@ -582,17 +600,17 @@ static void rad4_rgb_reserved_advance(PsitechRad4State *s, uint16_t index,
 }
 
 /*
- * Interpret one raw 32-bit framebuffer word for display, per its window
- * ID's FB_WAT entry (IBM RGB561 Architecture p.47). True color mode
- * bypasses the color LUT and presents the pixel data directly (same
- * document p.20, Figure 5): this model's raw word is already
- * 0x00RRGGBB in that mode (docs/datasheets/psitech-rad4.md,
- * "Framebuffer and masks"), so pass it through unmodified. Index mode
- * looks the low byte up in the color LUT through the start-address
- * formula in Table 1 (p.2): LUT[START_ADDR * 64 + index]. Grey Scale and
- * Direct RGB modes, and Index mode with a PIX_FORM other than 8bpp, are
- * not evidenced by the qualified guest workload and are traced rather
- * than guessed at.
+ * Interpret one raw 32-bit framebuffer word for display, per its window ID's
+ * FB_WAT entry (IBM RGB561 Architecture
+ * p.47). True color mode bypasses the color LUT and presents the pixel data
+ * directly (same document p.20, Figure
+ * 5): this model's raw word is already 0x00RRGGBB in that mode, so pass it
+ * through unmodified. Index mode looks the
+ * low byte up in the color LUT through the start-address formula in Table 1
+ * (p.2): LUT[START_ADDR * 64 + index].
+ * Grey Scale and Direct RGB modes, and Index mode with a PIX_FORM other than
+ * 8bpp, are not exercised by the
+ * qualified guest workload and are traced rather than guessed at.
  */
 static uint32_t rad4_pixel_to_rgb(PsitechRad4State *s, uint32_t word)
 {
@@ -638,11 +656,12 @@ static void rad4_update_irq(PsitechRad4State *s)
 }
 
 /*
- * The km child is a single-function PCI device's own sub-block, not a
- * second INTx# source: its aggregate ISR/IMR condition shares this
- * device's one PCI interrupt line alongside INTCSR's own frame
- * interrupt (see include/hw/input/psitech-rad4-km.h for what that
- * aggregate does and does not claim about the board-level gate at
+ * The km child is a single-function PCI device's own sub-block, not a second
+ * INTx# source: its aggregate ISR/IMR
+ * condition shares this device's one PCI interrupt line alongside INTCSR's
+ * own frame interrupt (see
+ * include/hw/input/psitech-rad4-km.h for what that aggregate does and does
+ * not claim about the board-level gate at
  * driver offset 0x78).
  */
 static void rad4_km_irq_handler(void *opaque, int n, int level)
@@ -682,8 +701,8 @@ static void rad4_mark_dirty_rows(PsitechRad4State *s, int y_start, int y_end)
 
 /*
  * Mark every scanline dirty: the first paint after mode recognition,
- * post-migration repaint and reset all need a full frame, not an
- * incremental one.
+ * post-migration repaint and reset all need a
+ * full frame, not an incremental one.
  */
 static void rad4_mark_all_dirty(PsitechRad4State *s)
 {
@@ -692,10 +711,12 @@ static void rad4_mark_all_dirty(PsitechRad4State *s)
 
 /*
  * Mark the scanlines touched by a raw-framebuffer byte range dirty. offset
- * and len are relative to s->framebuffer; a range outside the visible
- * mode-zero image (the RAD4_FB_SIZE allocation is larger than
- * RAD4_MODE0_STRIDE * RAD4_MODE0_HEIGHT) contributes nothing, matching how
- * rad4_convert_scanout() never reads past the visible image either.
+ * and len are relative to s->framebuffer;
+ * a range outside the visible mode-zero image (the RAD4_FB_SIZE allocation is
+ * larger than RAD4_MODE0_STRIDE *
+ * RAD4_MODE0_HEIGHT) contributes nothing, matching how rad4_convert_scanout()
+ * never reads past the visible image
+ * either.
  */
 static void rad4_mark_dirty_range(PsitechRad4State *s, uint32_t offset,
                                   uint32_t len)
@@ -735,10 +756,12 @@ static void rad4_frame_timer_cb(void *opaque)
 
 /*
  * Feed one recognition-relevant (address, value) event through the exact
- * mode-zero grammar. Addresses are BAR2-relative. Returns true if the
- * event was consumed as part of that grammar (whether or not it advanced
+ * mode-zero grammar. Addresses are
+ * BAR2-relative. Returns true if the event was consumed as part of that
+ * grammar (whether or not it advanced
  * recognition); the caller still applies the event's own register effect
- * separately, since recognition state and register storage are distinct.
+ * separately, since recognition state and
+ * register storage are distinct.
  */
 static void rad4_recognizer_feed(PsitechRad4State *s, uint32_t offset,
                                  uint32_t value)
@@ -747,8 +770,8 @@ static void rad4_recognizer_feed(PsitechRad4State *s, uint32_t offset,
         if (value == 0) {
             /*
              * Arms/re-arms the sequence from any state, including an
-             * already-recognized mode: a fresh mode-set invalidates the
-             * active mode until the new sequence completes.
+             * already-recognized mode: a fresh mode-set
+             * invalidates the active mode until the new sequence completes.
              */
             rad4_disable_scanout(s);
             s->rec_state = RAD4_REC_PREFIX_SEEN;
@@ -779,9 +802,9 @@ static void rad4_recognizer_feed(PsitechRad4State *s, uint32_t offset,
             return;
         }
         /*
-         * An unrecognized control write in another state has no bearing
-         * on recognition; the register-level effect is handled by the
-         * caller.
+         * An unrecognized control write in another state has no bearing on
+         * recognition; the register-level effect
+         * is handled by the caller.
          */
         return;
     }
@@ -799,10 +822,8 @@ static void rad4_recognizer_feed(PsitechRad4State *s, uint32_t offset,
                 rad4_mark_all_dirty(s);
             }
         } else {
-            /*
-             * Not the expected next event: quietly returns to unarmed,
-             * no failure logged.
-             */
+            /* Not the expected next event: quietly returns to unarmed, no
+             * failure logged. */
             s->rec_state = RAD4_REC_UNARMED;
         }
         break;
@@ -854,16 +875,18 @@ static void rad4_recognizer_feed(PsitechRad4State *s, uint32_t offset,
 }
 
 /*
- * The cursor location as the guest wrote it. IBM page 38's location
- * registers are a 16-bit two's complement pair with a documented valid
- * range of -256 to +2047; bits 14-11 of the high byte are specified to
- * read back the sign value regardless of what was written there. This
- * model stores and reports the full 16 bits as an ordinary signed value
- * without independently forcing that readback behavior -- the qualified
- * guest workload here never reads this register back, so the difference
- * is not guest-visible in that workload, but a guest that did read it
- * back could observe a difference from real hardware. That is this
- * approximation's one disclosed limitation.
+ * The cursor location as the guest wrote it. IBM page 38's location registers
+ * are a 16-bit two's complement pair
+ * with a documented valid range of -256 to +2047; bits 14-11 of the high byte
+ * are specified to read back the sign
+ * value regardless of what was written there. This model stores and reports
+ * the full 16 bits as an ordinary signed
+ * value without independently forcing that readback behavior. The qualified
+ * guest workload here never reads this
+ * register back, so the difference is not guest-visible in that workload, but
+ * a guest that did read it back could
+ * observe a difference from real hardware. That is this approximation's one
+ * disclosed limitation.
  */
 static void rad4_cursor_location(PsitechRad4State *s, int *x, int *y)
 {
@@ -874,10 +897,11 @@ static void rad4_cursor_location(PsitechRad4State *s, int *x, int *y)
 }
 
 /*
- * Where the 64x64 pixel map's top-left corner lands on screen: the
- * location registers position the hot spot (page 38), so the map starts
- * hot_x cells left and hot_y cells above it. Returns whether the cursor
- * is enabled at all (page 37's CE bit).
+ * Where the 64x64 pixel map's top-left corner lands on screen: the location
+ * registers position the hot spot (page
+ * 38), so the map starts hot_x cells left and hot_y cells above it. Returns
+ * whether the cursor is enabled at all
+ * (page 37's CE bit).
  */
 static bool rad4_cursor_origin(PsitechRad4State *s, int *x0, int *y0)
 {
@@ -893,11 +917,12 @@ static bool rad4_cursor_origin(PsitechRad4State *s, int *x0, int *y0)
 }
 
 /*
- * Something about the cursor changed: position, hot spot, enable, pixel
- * map or look-up table. The rows the sprite was last painted over need
- * their framebuffer content back and the rows it now covers need the
- * sprite; both ride the same dirty tracking as guest framebuffer writes,
- * so the next refresh repaints exactly that span.
+ * Something about the cursor changed: position, hot spot, enable, pixel map
+ * or look-up table. The rows the sprite
+ * was last painted over need their framebuffer content back and the rows it
+ * now covers need the sprite; both ride
+ * the same dirty tracking as guest framebuffer writes, so the next refresh
+ * repaints exactly that span.
  */
 static void rad4_cursor_invalidate(PsitechRad4State *s)
 {
@@ -910,30 +935,31 @@ static void rad4_cursor_invalidate(PsitechRad4State *s)
 }
 
 /*
- * Overlay the cursor sprite onto the freshly converted rows [y_start,
- * y_end] of display_buffer. The RGB561 overlays its cursor onto the pixel
- * stream it sends to the monitor, so the cursor is part of what the
- * display shows and belongs in the scanout, not in a UI-layer cursor
- * handed to the console: QEMU's VNC server has no protocol message to
- * place one (ui/vnc.c's vnc_mouse_set() is a stub), so a VNC client
- * draws that kind at its own pointer rather than where the guest put it,
- * and a screendump never shows it at all.
+ * Overlay the cursor sprite onto the freshly converted rows [y_start, y_end]
+ * of display_buffer. The RGB561 overlays
+ * its cursor onto the pixel stream it sends to the monitor, so the cursor is
+ * part of what the display shows and
+ * belongs in the scanout, not in a UI-layer cursor handed to the console:
+ * QEMU's VNC server has no protocol message
+ * to place one (ui/vnc.c's vnc_mouse_set() is a stub), so a VNC client draws
+ * that kind at its own pointer rather
+ * than where the guest put it, and a screendump never shows it at all.
  *
  * The IBM RGB561 Architecture spec (Preliminary Rev 1.1, page 3, "Cursor
- * Pixel Map" / Table 4) packs the first (leftmost) of each four-pixel
- * group into bits[7:6] and the last (rightmost) into bits[1:0] --
- * most-significant pair first, not least-significant pair first. Value 0
- * is transparent; the other three select cursor look-up table entries
- * whose three bytes are (red, green, blue), matching the framebuffer's
- * own palette upload helper in rad4_pixel_to_rgb() above
- * (docs/datasheets/psitech-rad4.md, "Cursor: bound to the public
- * specification and implemented"). Cursor and cross-hair blinking (page
- * 37's CB/XB/BT bits, and the blink-rate/duty-cycle registers at
- * 0x0032-0x0033) are not modeled: the sprite always shows the
- * primary-color entries, never the blink entries or a transparent blink
- * phase. Cross-hair display is not modeled at all, matching the driver's
- * own cursor-only observed usage
- * (docs/research/graphics/rad4-xserver-nodma-audit-20260915.md).
+ * Pixel Map" / Table 4) packs the first
+ * (leftmost) of each four-pixel group into bits[7:6] and the last (rightmost)
+ * into bits[1:0], with the most-significant pair first, not least-significant
+ * pair first. Value 0 is transparent; the
+ * other three select cursor look-up table
+ * entries whose three bytes are (red, green, blue), matching the
+ * framebuffer's own palette upload helper in
+ * rad4_pixel_to_rgb() above. Cursor and cross-hair blinking (page 37's
+ * CB/XB/BT bits, and the blink-rate/
+ * duty-cycle registers at 0x0032-0x0033) are not modeled: the sprite always
+ * shows the primary-color entries, never
+ * the blink entries or a transparent blink phase. Cross-hair display is not
+ * modeled at all, matching the driver's
+ * own cursor-only observed usage.
  */
 static void rad4_cursor_compose(PsitechRad4State *s, int y_start, int y_end)
 {
@@ -969,14 +995,17 @@ static void rad4_cursor_compose(PsitechRad4State *s, int y_start, int y_end)
     }
     /*
      * Record the sprite's full displayed span from the cursor registers, not
-     * from the rows this pass happened to repaint. A refresh whose dirty
-     * interval misses the cursor -- an unrelated framebuffer write elsewhere --
+     * from the rows this pass happened to
+     * repaint. A refresh whose dirty interval misses the cursor, an
+     * unrelated framebuffer write elsewhere,
      * repaints none of these rows but leaves the sprite standing in
-     * display_buffer, so the span it occupies must be re-recorded every
-     * refresh regardless. Narrowing it to the intersected rows would drop the
-     * record on such a refresh, and the next cursor change with no new rows of
-     * its own (a disable, or a hot-spot or look-up-table edit) would then fail
-     * to dirty the old rows in rad4_cursor_invalidate() and strand a ghost.
+     * display_buffer, so the span it occupies must be
+     * re-recorded every refresh regardless. Narrowing it to the intersected
+     * rows would drop the record on such a
+     * refresh, and the next cursor change with no new rows of its own (a
+     * disable, or a hot-spot or look-up-table
+     * edit) would then fail to dirty the old rows in rad4_cursor_invalidate()
+     * and strand a ghost.
      */
     s->cursor_shown_y_start = MAX(y0, 0);
     s->cursor_shown_y_end = MIN(y0 + RAD4_CURSOR_HEIGHT - 1,
@@ -984,13 +1013,14 @@ static void rad4_cursor_compose(PsitechRad4State *s, int y_start, int y_end)
 }
 
 /*
- * Convert rows [y_start, y_end] (inclusive) of the raw guest framebuffer
- * into displayed color, one pixel at a time through rad4_pixel_to_rgb().
- * This can no longer alias guest memory directly
- * (qemu_create_displaysurface_from()'s previous role): a pixel's displayed
- * color depends on its window ID's FB_WAT entry and, in Index mode, the
- * color LUT, both of which the guest can reprogram after the pixel data
- * underneath is already written.
+ * Convert rows [y_start, y_end] (inclusive) of the raw guest framebuffer into
+ * displayed color, one pixel at a time
+ * through rad4_pixel_to_rgb(). This can no longer alias guest memory directly
+ * (qemu_create_displaysurface_from()'s
+ * previous role): a pixel's displayed color depends on its window ID's FB_WAT
+ * entry and, in Index mode, the color
+ * LUT, both of which the guest can reprogram after the pixel data underneath
+ * is already written.
  */
 static void rad4_convert_scanout(PsitechRad4State *s, int y_start, int y_end)
 {
@@ -1010,12 +1040,13 @@ static void rad4_convert_scanout(PsitechRad4State *s, int y_start, int y_end)
 
 /*
  * Convert and push only the scanlines the guest actually touched since the
- * last refresh, instead of the whole 1280x1024 frame every ~30 Hz tick
- * regardless of change. The old unconditional full-frame path made VNC
- * re-encode and send a full frame continuously even for a static screen,
- * which saturates the VNC path into flicker, blackout and laggy input; an
- * idle screen with no writes since the last tick now does no conversion
- * work and sends nothing.
+ * last refresh, instead of the whole
+ * 1280x1024 frame every ~30 Hz tick regardless of change. The old
+ * unconditional full-frame path made VNC re-encode
+ * and send a full frame continuously even for a static screen, which
+ * saturates the VNC path into flicker, blackout
+ * and laggy input; an idle screen with no writes since the last tick now does
+ * no conversion work and sends nothing.
  */
 static bool rad4_gfx_update(void *opaque)
 {
@@ -1047,13 +1078,14 @@ static void rad4_ensure_surface(PsitechRad4State *s)
     DisplaySurface *ds = qemu_console_surface(s->con);
 
     /*
-     * qemu_graphic_console_create() starts the console on a small
-     * placeholder surface of its own; checking for any non-NULL surface
-     * here (rather than specifically this device's own one) would leave
-     * that placeholder in place forever, since it is never NULL once
-     * set. Recognize our own surface by its backing buffer, exactly as
-     * this device recognized its old direct-alias surface before this
-     * conversion pass existed.
+     * qemu_graphic_console_create() starts the console on a small placeholder
+     * surface of its own; checking for any
+     * non-NULL surface here (rather than specifically this device's own one)
+     * would leave that placeholder in place
+     * forever, since it is never NULL once set. Recognize our own surface by
+     * its backing buffer, exactly as this
+     * device recognized its old direct-alias surface before this conversion
+     * pass existed.
      */
     if (ds && surface_data(ds) == (uint8_t *)s->display_buffer) {
         return;
@@ -1104,9 +1136,9 @@ static void rad4_serial_reset(PsitechRad4State *s)
 
 /*
  * Bit-banged synthetic EEPROM: a start bit followed by command 0xac reads
- * back 40 zero bytes, matching the reviewed synthetic configuration. Any
- * other command, or chip select deasserted before the transaction
- * completes, latches an all-ones readback until cold reset.
+ * back 40 zero bytes. Any other command, or
+ * chip select deasserted before the transaction completes, latches an
+ * all-ones readback until cold reset.
  */
 static void rad4_serial_edge(PsitechRad4State *s, bool cs, bool clk,
                              bool mosi)
@@ -1225,50 +1257,59 @@ static const MemoryRegionOps rad4_bar0_ops = {
 };
 
 /*
- * Run one PLX9054-family scatter/gather DMA transfer to completion,
- * starting from the descriptor chain DMADPR0 (RAD4_ROM_DESC) names. Real
- * PCI9060/9054 hardware overlaps this with the rest of the system; this
- * model runs it synchronously inside the register write that starts it,
- * matching how every other multi-step register sequence in this file
- * (the RGB561 serial EEPROM shift, the mode recognizer) already resolves
- * within the write that drives it.
+ * Run one PLX9054-family scatter/gather DMA transfer to completion, starting
+ * from the descriptor chain DMADPR0
+ * (RAD4_ROM_DESC) names. Real PCI9060/9054 hardware overlaps this with the
+ * rest of the system; this model runs it
+ * synchronously inside the register write that starts it, matching how every
+ * other multi-step register sequence in
+ * this file (the RGB561 serial EEPROM shift, the mode recognizer) already
+ * resolves within the write that drives it.
  *
- * Descriptor format: 16 bytes per entry (PLX PCI9054 Data Book, Table
- * 11-80 and Figure 3-16) -- PCI address, Local address, transfer size,
- * next-descriptor pointer, each a big-endian 32-bit word matching every
- * other guest-visible multi-byte value this file already handles
+ * Descriptor format: 16 bytes per entry (PLX PCI9054 Data Book, Table 11-80
+ * and Figure 3-16): PCI address, Local address, transfer size, and
+ * next-descriptor pointer, each a big-endian 32-bit
+ * word matching every other guest-visible
+ * multi-byte value this file already handles
  * (rad4_bar2_read()/rad4_bar2_write()'s ldl_be_p()/stl_be_p() on the
- * framebuffer). The low 4 bits of a pointer -- the initial DMADPR0 value
- * for the first descriptor, or a descriptor's own next-pointer word for
- * every one after it -- are flags for the descriptor that pointer names:
- * bit0 selects which address space the descriptor itself lives in, bit1
- * marks the last descriptor in the chain, bit2 asks for an interrupt once
- * that descriptor's own transfer completes, and bit3 picks direction.
+ * framebuffer). The low 4 bits of a pointer, the initial DMADPR0 value for
+ * the first descriptor, or a
+ * descriptor's own next-pointer word for every one after it, are flags for
+ * the descriptor that pointer names:
+ * bit0 selects which address space the descriptor itself lives in, bit1 marks
+ * the last descriptor in the chain,
+ * bit2 asks for an interrupt once that descriptor's own transfer completes,
+ * and bit3 picks direction.
  *
  * A descriptor claiming Local Address space is read straight out of
- * s->framebuffer at the masked pointer: BAR2's framebuffer memory is this
- * model's only locally addressable storage, the same array
+ * s->framebuffer at the masked pointer: BAR2's
+ * framebuffer memory is this model's only locally addressable storage, the
+ * same array
  * rad4_bar2_read()/rad4_bar2_write() already serve BAR2 accesses from, so a
- * Local-space descriptor pointer is simply a BAR2 offset. A live capture
- * confirmed this against a real IRIX 6.5.30 buffered-mode transfer: the
- * shipped 1.101 driver's own first descriptor names Local Address space,
- * and its 16 bytes decode into a self-consistent chain only under that
- * interpretation -- local address 0, size 0x1400 (one 1280-pixel, 4-byte
+ * Local-space descriptor pointer is
+ * simply a BAR2 offset. A live capture confirmed this against a real IRIX
+ * 6.5.30 buffered-mode transfer: the
+ * shipped 1.101 driver's own first descriptor names Local Address space, and
+ * its 16 bytes decode into a
+ * self-consistent chain only under that interpretation: local address 0,
+ * size 0x1400 (one 1280-pixel, 4-byte
  * scanline), a PCI-Direct source address, and a next-pointer chaining
- * backward through a 40-entry descriptor array built at the top of the 8
- * MiB local extent -- while the same 16 bytes read as an ordinary guest-
- * physical address were all zero. See "Live capture" under "DMA" in
- * docs/datasheets/psitech-rad4.md for the full account.
+ * backward through a 40-entry descriptor array
+ * built at the top of the 8 MiB local extent, while the same 16 bytes read
+ * as an ordinary guest-physical address
+ * were all zero.
  *
- * Returns true once an end-of-chain descriptor has been transferred, false
- * on any failure (a chain that never ends within RAD4_DMA_MAX_DESCRIPTORS,
- * a Local-space descriptor pointer outside the framebuffer, a failed
- * guest-memory read for a PCI-space descriptor, or a descriptor whose
- * Local address/size run outside the framebuffer). The caller leaves
- * RAD4_DMA_STATUS_DONE clear on failure, so the guest's existing
- * timeout/abort recovery (already exercised before this transfer was
- * modeled at all, since the guest's wait-and-retry logic runs regardless
- * of whether the model completes it) runs unchanged.
+ * Returns true once an end-of-chain descriptor has been transferred, false on
+ * any failure (a chain that never ends
+ * within RAD4_DMA_MAX_DESCRIPTORS, a Local-space descriptor pointer outside
+ * the framebuffer, a failed guest-memory
+ * read for a PCI-space descriptor, or a descriptor whose Local address/size
+ * run outside the framebuffer). The
+ * caller leaves RAD4_DMA_STATUS_DONE clear on failure, so the guest's
+ * existing timeout/abort recovery (already
+ * exercised before this transfer was modeled at all, since the guest's
+ * wait-and-retry logic runs regardless of
+ * whether the model completes it) runs unchanged.
  */
 static bool rad4_dma_run(PsitechRad4State *s)
 {
@@ -1328,12 +1369,13 @@ static bool rad4_dma_run(PsitechRad4State *s)
         } else {
             /*
              * Upload into the framebuffer, honoring the same plane mask
-             * (RAD4_BAR2_MASK) a CPU pixel write does: the mask register
-             * is documented as programmed "before CPU transfer/fill and
-             * restored afterward" and both driver DMA render paths
-             * (bigx_update and rad4_rect_dma_move/fill/copy) share the
-             * same threshold logic deciding between them, so it is the
-             * memory controller's masked write, not a CPU-only feature.
+             * (RAD4_BAR2_MASK) a CPU pixel write does:
+             * the mask register is documented as programmed "before CPU
+             * transfer/fill and restored afterward" and
+             * both driver DMA render paths (bigx_update and
+             * rad4_rect_dma_move/fill/copy) share the same threshold
+             * logic deciding between them, so it is the memory controller's
+             * masked write, not a CPU-only feature.
              */
             uint32_t off;
 
@@ -1383,9 +1425,10 @@ static bool rad4_dma_run(PsitechRad4State *s)
 }
 
 /*
- * DMACSR0 (RAD4_ROM_COMMAND) write side. The driver writes ENABLE|START
- * (0x3) to begin a transfer, then either observes DONE (0x10) or, after
- * its own `ddi_sv_wait` timeout, writes ABORT (0x4).
+ * DMACSR0 (RAD4_ROM_COMMAND) write side. The driver writes ENABLE|START (0x3)
+ * to begin a transfer, then either
+ * observes DONE (0x10) or, after its own `ddi_sv_wait` timeout, writes ABORT
+ * (0x4).
  */
 static void rad4_dma_command_write(PsitechRad4State *s, uint32_t val)
 {
@@ -1405,13 +1448,14 @@ static void rad4_dma_command_write(PsitechRad4State *s, uint32_t val)
     } else if (val & RAD4_DMA_CMD_ABORT) {
         /*
          * PLX PCI9054 Data Book, Table 11-86: "Channel 0 Abort ... Sets
-         * Channel 0 Done bit when abort is complete." This model's
-         * transfers already ran to completion (or to a logged failure)
-         * synchronously inside the write above that started them, so by
-         * the time an abort arrives the only thing left for it to do is
-         * unblock a guest still waiting because that outcome was
-         * failure -- exactly the recovery path already exercised before
-         * DMA execution was modeled at all.
+         * Channel 0 Done bit when abort is complete."
+         * This model's transfers already ran to completion (or to a logged
+         * failure) synchronously inside the write
+         * above that started them, so by the time an abort arrives the only
+         * thing left for it to do is unblock a
+         * guest still waiting because that outcome was failure. That is the
+         * recovery path already exercised
+         * before DMA execution was modeled at all.
          */
         s->rom_command |= RAD4_DMA_STATUS_DONE;
     }
@@ -1509,15 +1553,16 @@ static uint64_t rad4_bar2_read(void *opaque, hwaddr addr, unsigned size)
         uint8_t val = s->rgb_store[index];
 
         /*
-         * Real fidelity fix, not a functional necessity for any
-         * currently observed guest behavior: IBM RGB561 Architecture
-         * p.1 documents the address index register auto-incrementing
-         * "after each read or write cycle," but this model previously
-         * only advanced it after a write. Nothing in the qualified
-         * guest workload reads this port back, so the omission was
-         * harmless in practice; it is still wrong to leave uncorrected
-         * while this file's other index-then-data ports are being made
-         * to match the same documented convention.
+         * Real fidelity fix, not a functional necessity for any currently
+         * observed guest behavior: IBM RGB561
+         * Architecture p.1 documents the address index register
+         * auto-incrementing "after each read or write cycle,"
+         * but this model previously only advanced it after a write. Nothing
+         * in the qualified guest workload reads
+         * this port back, so the omission was harmless in practice; it is
+         * still wrong to leave uncorrected while
+         * this file's other index-then-data ports are being made to match the
+         * same documented convention.
          */
         index++;
         s->rgb_index_low = index & 0xff;
@@ -1526,16 +1571,18 @@ static uint64_t rad4_bar2_read(void *opaque, hwaddr addr, unsigned size)
     }
     case RAD4_BAR2_RGB_RESERVED: {
         /*
-         * The fourth RGB561 indexed port, used for every multi-cycle
-         * ("N RW/ADDR") register: window-attribute tables, gamma tables,
-         * the runtime palette and the cursor/cross-hair look-up table.
-         * One phase counter serves the whole port (rgb_reserved_phase),
-         * matching the datasheet's description of a single address-
-         * index-register-driven state machine (IBM RGB561 Architecture
-         * p.1, "Address Index Register"). Only the frame-buffer window
-         * attribute table, the runtime color look-up table and the
-         * cursor/cross-hair look-up table are modeled; the overlay WAT
-         * and gamma tables reaching this port through other indices are
+         * The fourth RGB561 indexed port, used for every multi-cycle ("N
+         * RW/ADDR") register: window-attribute
+         * tables, gamma tables, the runtime palette and the cursor/cross-hair
+         * look-up table. One phase counter
+         * serves the whole port (rgb_reserved_phase), matching the
+         * datasheet's description of a single
+         * address-index-register-driven state machine (IBM RGB561
+         * Architecture p.1, "Address Index Register"). Only
+         * the frame-buffer window attribute table, the runtime color look-up
+         * table and the cursor/cross-hair
+         * look-up table are modeled; the overlay WAT and gamma tables
+         * reaching this port through other indices are
          * not handled by this model.
          */
         uint16_t index = rad4_rgb_index(s);
@@ -1627,10 +1674,11 @@ static void rad4_bar2_write(void *opaque, hwaddr addr, uint64_t val,
         s->rgb_index_low = v;
         /*
          * Pointing the index register anywhere restarts any in-progress
-         * multi-cycle transfer at its first cycle: IBM RGB561
-         * Architecture p.1, "If the address index register is accessed
-         * before completion of a multi-cycle access, the counter is
-         * reset and the operation is terminated."
+         * multi-cycle transfer at its first cycle:
+         * IBM RGB561 Architecture p.1, "If the address index register is
+         * accessed before completion of a
+         * multi-cycle access, the counter is reset and the operation is
+         * terminated."
          */
         s->rgb_reserved_phase = 0;
         rad4_recognizer_feed(s, offset, v);
@@ -1682,14 +1730,15 @@ static void rad4_bar2_write(void *opaque, hwaddr addr, uint64_t val,
             rad4_recognizer_feed(s, offset, v);
             rad4_rgb_reserved_advance(s, index, 3);
             /*
-             * Each cursor LUT entry is three bus cycles (R, G, B).
-             * Repainting the sprite after the first or second cycle
-             * would show a torn colour -- two channels from the new
-             * write and one still holding the previous entry's byte --
-             * for a whole refresh interval rather than the fraction of a
-             * frame real hardware would. Wait for
-             * rad4_rgb_reserved_advance() to wrap the phase counter back
-             * to 0, marking the entry complete.
+             * Each cursor LUT entry is three bus cycles (R, G, B). Repainting
+             * the sprite after the first or second
+             * cycle would show a torn colour: two channels from the new write
+             * and one
+             * still holding the previous entry's byte, for a whole refresh
+             * interval rather than the
+             * fraction of a frame real hardware would.
+             * Wait for rad4_rgb_reserved_advance() to wrap the phase counter
+             * back to 0, marking the entry complete.
              */
             if (s->rgb_reserved_phase == 0) {
                 rad4_cursor_invalidate(s);
@@ -1708,11 +1757,12 @@ static void rad4_bar2_write(void *opaque, hwaddr addr, uint64_t val,
             rad4_rgb_reserved_advance(s, index, RAD4_WAT_CYCLES);
             /*
              * A window's FB_WAT entry selects how rad4_pixel_to_rgb()
-             * interprets every pixel tagged with that window ID. That
-             * changes what the existing scanout data means without
-             * touching s->framebuffer, so the raw-write dirty tracking
-             * above never sees it. Repaint the whole frame once this
-             * entry is fully written.
+             * interprets every pixel tagged with that
+             * window ID. That changes what the existing scanout data means
+             * without touching s->framebuffer, so the
+             * raw-write dirty tracking above never sees it. Repaint the whole
+             * frame once this entry is fully
+             * written.
              */
             if (s->rgb_reserved_phase == 0) {
                 rad4_mark_all_dirty(s);
@@ -1723,8 +1773,8 @@ static void rad4_bar2_write(void *opaque, hwaddr addr, uint64_t val,
             rad4_rgb_reserved_advance(s, index, RAD4_COLOR_LUT_CYCLES);
             /*
              * Indexed-mode pixels resolve through this LUT in
-             * rad4_pixel_to_rgb(); same reasoning as the FB_WAT case
-             * above.
+             * rad4_pixel_to_rgb(); same reasoning as the FB_WAT
+             * case above.
              */
             if (s->rgb_reserved_phase == 0) {
                 rad4_mark_all_dirty(s);
@@ -1790,10 +1840,10 @@ static void rad4_reset_hold(Object *obj, ResetType type)
     memset(s->framebuffer, 0, RAD4_FB_SIZE);
     s->mask = 0xffffffffu;
     /*
-     * The framebuffer just went to zero; an already-recognized display
-     * needs the next refresh to repaint the whole frame from that, not
-     * take the idle fast path and keep showing the pre-reset
-     * display_buffer indefinitely.
+     * The framebuffer just went to zero; an already-recognized display needs
+     * the next refresh to repaint the whole
+     * frame from that, not take the idle fast path and keep showing the
+     * pre-reset display_buffer indefinitely.
      */
     rad4_mark_all_dirty(s);
 
@@ -1802,11 +1852,12 @@ static void rad4_reset_hold(Object *obj, ResetType type)
     memset(s->rgb_store, 0, 0x10000);
 
     /*
-     * IBM RGB561 Architecture p.1 excludes the Color, Cursor and Gamma
-     * LUTs and the Window Attribute Tables from the reset-to-zero rule,
-     * since real hardware does not clear this SRAM on reset and expects
-     * software to reload it. This model zeroes them anyway, matching
-     * rgb_store's own unconditional reset just above, for a
+     * IBM RGB561 Architecture p.1 excludes the Color, Cursor and Gamma LUTs
+     * and the Window Attribute Tables from
+     * the reset-to-zero rule, since real hardware does not clear this SRAM on
+     * reset and expects software to reload
+     * it. This model zeroes them anyway, matching rgb_store's own
+     * unconditional reset just above, for a
      * deterministic post-reset state.
      */
     memset(s->fb_wat, 0, sizeof(s->fb_wat));
@@ -1823,17 +1874,17 @@ static void rad4_reset_hold(Object *obj, ResetType type)
     rad4_recognizer_reset(s);
 
     /*
-     * The km child sits on the default sysbus, not a dedicated internal
-     * qbus, so a reset of this device does not reach it on its own
-     * (docs/comment-style.md, "Devices outside the bus reset tree need
-     * explicit reset registration or propagation").
+     * The km child sits on the default sysbus, not a dedicated internal qbus,
+     * so a reset of this device does not
+     * reach it on its own and needs explicit propagation here.
      */
     if (s->device_id == RAD4_KM_DEVICE_ID) {
         device_cold_reset(DEVICE(&s->km));
     }
 
     rad4_update_irq(s);
-    /* The full repaint above recomputes where the (now disabled) cursor is. */
+    /* The full repaint above recomputes where the (now disabled) cursor
+     * is. */
     s->cursor_shown_y_start = RAD4_MODE0_HEIGHT;
     s->cursor_shown_y_end = -1;
 }
@@ -1864,9 +1915,9 @@ static void rad4_realize(PCIDevice *dev, Error **errp)
 
     /*
      * The identity a guest's hinv/PCI probe actually reads, over the
-     * class-wide RAD4_DEVICE_ID default the PCI core already wrote.
-     * Mirrors hw/misc/sgi-ioc3.c's own board-identity override of
-     * PCI_SUBSYSTEM_ID in its realize().
+     * class-wide RAD4_DEVICE_ID default the PCI core
+     * already wrote. Mirrors hw/misc/sgi-ioc3.c's own board-identity override
+     * of PCI_SUBSYSTEM_ID in its realize().
      */
     pci_set_word(&s->pci.config[PCI_DEVICE_ID], s->device_id);
 
@@ -1876,9 +1927,10 @@ static void rad4_realize(PCIDevice *dev, Error **errp)
                      &s->romroute);
 
     /*
-     * The keyboard/mouse controller only exists under the RAD4-KM
-     * identity (hw/input/psitech-rad4-km.c's own header names what is and
-     * is not cleared for it); plain RAD4 never had this hardware.
+     * The keyboard/mouse controller only exists under the RAD4-KM identity
+     * (hw/input/psitech-rad4-km.c's own header
+     * names what is and is not modeled for it); plain RAD4 never had this
+     * hardware.
      */
     if (s->device_id == RAD4_KM_DEVICE_ID) {
         if (!sysbus_realize(SYS_BUS_DEVICE(&s->km), errp)) {
@@ -1913,12 +1965,13 @@ static int rad4_post_load(void *opaque, int version_id)
     PsitechRad4State *s = opaque;
 
     /*
-     * display_buffer is not itself part of VMState (only the raw
-     * framebuffer it is converted from is); dirty_y_start/dirty_y_end
-     * are not migrated either, and on the destination are whatever a
-     * fresh realize() left them. Without an explicit full repaint here,
-     * a migrated-in guest whose refresh finds nothing newly dirty would
-     * show a stale or blank display_buffer until the guest next writes.
+     * display_buffer is not itself part of VMState (only the raw framebuffer
+     * it is converted from is);
+     * dirty_y_start/dirty_y_end are not migrated either, and on the
+     * destination are whatever a fresh realize() left
+     * them. Without an explicit full repaint here, a migrated-in guest whose
+     * refresh finds nothing newly dirty
+     * would show a stale or blank display_buffer until the guest next writes.
      */
     rad4_mark_all_dirty(s);
     s->cursor_shown_y_start = RAD4_MODE0_HEIGHT;
@@ -1982,9 +2035,10 @@ static const VMStateDescription vmstate_psitech_rad4 = {
 
 /*
  * device-id defaults to plain RAD4; "-device psitech-rad4,device-id=0x105"
- * (RAD4_KM_DEVICE_ID) selects the RAD4-KM identity instead, over this same
- * shared implementation, the way hw/misc/sgi-ioc3.c's own "subsystem-id"
- * property selects a board identity.
+ * (RAD4_KM_DEVICE_ID) selects the RAD4-KM
+ * identity instead, over this same shared implementation, the way
+ * hw/misc/sgi-ioc3.c's own "subsystem-id" property
+ * selects a board identity.
  */
 static const Property psitech_rad4_properties[] = {
     DEFINE_PROP_UINT16("device-id", PsitechRad4State, device_id,
@@ -1996,9 +2050,9 @@ static void rad4_instance_init(Object *obj)
     PsitechRad4State *s = PSITECH_RAD4(obj);
 
     /*
-     * Created unconditionally; rad4_realize() only realizes it (and
-     * only registers BAR 3) under the RAD4-KM identity, and unparents
-     * it otherwise. See hw/input/psitech-rad4-km.c.
+     * Created unconditionally; rad4_realize() only realizes it (and only
+     * registers BAR 3) under the RAD4-KM
+     * identity, and unparents it otherwise. See hw/input/psitech-rad4-km.c.
      */
     object_initialize_child(obj, "km", &s->km, TYPE_PSITECH_RAD4_KM);
     qdev_init_gpio_in_named(DEVICE(obj), rad4_km_irq_handler, "km-irq", 1);

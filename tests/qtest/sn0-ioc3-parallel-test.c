@@ -1,17 +1,9 @@
 /*
- * SGI IOC3 base I/O controller: the parallel port.
- *
- * The port has two faces and they are far apart in the chip's window: a
- * four-byte DMA register block in the main block at 0x80, and a byte-wide
- * IEEE-1284/ECP register file inside the SuperIO window at 0x20150. Both
- * are asserted here, because a board that maps one and not the other is a
- * board whose driver attaches and then cannot move a byte.
- *
- * The reset value of the extended control register is the assertion that
- * matters most: IRIX's parallel driver probes for the port by reading it,
- * and a model answering anything but "transmit FIFO empty, not full" is a
- * machine on which the driver never attaches. A working boot proves none
- * of this -- nothing in a console boot touches the port.
+ * IOC3 parallel-port tests: four DMA bytes at main-block 0x80 and the
+ * byte-wide IEEE-1284/ECP file at SuperIO 0x20150. Both must be mapped for
+ * an attached driver to transfer data. IRIX probes the extended-control
+ * reset value; it must report transmit FIFO empty and not full or the driver
+ * never attaches. Console boot does not exercise the port.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
@@ -127,16 +119,16 @@ static void test_ioc3_attach(QTestState *qts)
 #define ECR_MODE_SHIFT   5
 #define ECR_MODE(m)      ((uint8_t)((m) << ECR_MODE_SHIFT))
 
-#define MODE_COMPAT       0    /* compatibility, no FIFO -- the reset mode */
+#define MODE_COMPAT       0    /* compatibility, no FIFO (reset mode) */
 #define MODE_BYTE         1
 #define MODE_COMPAT_FIFO  2    /* what the driver selects for itself */
 #define MODE_ECP          3
 #define MODE_CONFIG       7
 
 /*
- * The status register's peripheral lines. Only nFault's polarity is pinned
- * by the datasheet -- a clear level means a fault -- so an idle port with no
- * peripheral on the cable reports no fault and nothing else.
+ * The status register's peripheral lines. Only nFault's polarity is
+ * specified: a clear level means a fault, so an idle port with no peripheral
+ * on the cable reports no fault and nothing else.
  */
 #define STATUS_NFAULT    (1u << 3)
 #define STATUS_IDLE      STATUS_NFAULT
@@ -280,11 +272,11 @@ static void test_the_data_register_holds_a_byte(const void *data)
 
 /*
  * The status register reflects the cable rather than storing a value, and
- * this machine has nothing on the cable. The one level the datasheet pins
- * is nFault, where clear means a fault -- so an empty cable reports no
- * fault, and nothing else: no peripheral selected, no paper error, and
- * never busy, which is the level a driver polling for the printer to
- * finish would otherwise wait on forever.
+ * this machine has nothing on the cable. Only nFault's level is specified,
+ * where clear means a fault. Thus an empty cable reports no fault, and
+ * nothing else: no peripheral selected, no paper error, and never busy, which
+ * is the level a driver polling for the printer to finish would otherwise
+ * wait on forever.
  */
 static void test_the_status_register_reports_an_empty_cable(const void *data)
 {
@@ -324,7 +316,7 @@ static void test_the_control_register_holds_its_lines(const void *data)
     qtest_quit(qts);
 }
 
-/* The configuration-B register, which the datasheet gives no mode. */
+/* The configuration-B register, with no specified mode. */
 static void test_the_configuration_b_register_holds_a_byte(const void *data)
 {
     QTestState *qts = qtest_init("-M origin200");
@@ -340,7 +332,7 @@ static void test_the_configuration_b_register_holds_a_byte(const void *data)
 /*
  * One address, two registers: 0x158 is the configuration-A register in
  * configuration mode and the data FIFO in every other mode. A model with
- * one storage word behind the address fails on the second half of this --
+ * one storage word behind the address fails on the second half of this:
  * the FIFO write would be readable back as configuration.
  */
 static void test_configuration_a_needs_its_own_mode(const void *data)
@@ -388,9 +380,9 @@ static void test_the_ecp_registers_are_a_byte_apart(const void *data)
 
 /*
  * The file is byte-wide, and a four-byte access to it is four registers
- * rather than one. Nothing rejects the wide access -- the address space
+ * rather than one. Nothing rejects the wide access. The address space
  * splits it into byte reads on the way in, because the region says a byte
- * is the widest it takes -- so what this asserts is that every lane comes
+ * is the widest it takes. Thus what this asserts is that every lane comes
  * from its own register. A model declaring a four-byte implementation
  * width answers the whole access out of the first register instead, which
  * on the write side would run the FIFO's side effect once for four bytes.
@@ -509,7 +501,7 @@ static void test_the_shared_control_reports_the_context_flags(const void *data)
 
 /*
  * Direction, the state-machine reset the driver pulses high then low, and
- * the engine enable. The reset is a level the datasheet describes as held,
+ * the engine enable. The reset level remains held,
  * so it reads back while it is held rather than clearing itself.
  */
 static void test_the_shared_control_holds_its_own_bits(const void *data)
@@ -615,7 +607,7 @@ static void plp_assert_the_file_holds(const char *path, const char *expected)
  * A model that stores these registers and moves nothing is the machine on
  * which that write never returns; a model that moves the bytes and raises
  * nothing prints them and never returns either, which is measured rather
- * than argued -- IRIX stayed blocked with this buffer already on the host.
+ * than argued: IRIX stayed blocked with this buffer already on the host.
  */
 static void test_the_engine_retires_an_armed_transfer(const void *data)
 {
@@ -774,7 +766,7 @@ static void test_the_engine_takes_a_chain_in_order(const void *data)
 /*
  * A descriptor pointing where no memory answers. The engine refuses the
  * fetch rather than printing whatever it read, raises the port's DMA fault,
- * and leaves the context armed with its count intact -- which is the
+ * and leaves the context armed with its count intact. This is the
  * residual the driver recovers a failed transfer from.
  */
 static void test_an_unreadable_buffer_faults_and_keeps_its_count(
@@ -804,8 +796,8 @@ static void test_an_unreadable_buffer_faults_and_keeps_its_count(
 }
 
 /*
- * The DMA registers are four bytes apart in a block whose neighbours --
- * the pin registers below it and the PS/2 controller above -- are live
+ * The DMA registers are four bytes apart in a block whose neighbours,
+ * the pin registers below it and the PS/2 controller above, are live
  * registers of their own. Distinct values at three consecutive offsets
  * prove the stride, and the read back through the PS/2 controller's first
  * register proves the block stops where it should.
@@ -977,8 +969,8 @@ static void test_io6g_mio_fifo_reaches_the_host(const void *data)
 }
 
 /*
- * The plain BaseIO's only IOC3 fits no parallel port (docs/datasheets/
- * baseio.md), so its register file swallows a write and reads zero. Its
+ * The plain BaseIO's only IOC3 fits no parallel port, so its register
+ * file swallows a write and reads zero. Its
  * serial A scratch register holding a byte first shows the window is
  * attached, so the zero is the missing port and not a missing chip.
  */

@@ -1,14 +1,9 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
+/* Test Origin 2000 PCI Carrier Assembly placement and access. */
 /*
- * Register-contract tests for the Origin 2000 PCI Carrier Assembly as the
- * origin2000-pci-carrier topology places it: an sgi-pci-expansion board with
- * three PCI slots in IO2, crossbow0 widget 12
- * (docs/datasheets/sgi-pci-shoebox.md in the Origami repository).
- *
- * The owner's guide gives the carrier three slots; which PCI device number
- * each slot is wired to is not captured, so the catalogue selects devices 0,
- * 1 and 2. These tests hold the model to that: a card at each of the three
- * answers through the carrier's widget, and a card at device 3 is refused.
+ * The owner's guide specifies three slots but no PCI device numbers; the
+ * catalogue chooses devices 0-2 in IO2 at crossbow0 widget 12. Each answers;
+ * device 3 is refused.
  */
 
 #include "qemu/osdep.h"
@@ -36,8 +31,8 @@ static char *card_args(unsigned int device)
 
 /*
  * The carrier's widget is alive from reset like the BaseIO's: part of
- * crossbow0's configured startup population (0x8700: BaseIO 8, host nodes
- * 9 and 10, SI Viz 15), which is what lets the stock PROM discover it.
+ * crossbow0's configured startup population (0x8700: BaseIO 8, host nodes 9
+ * and 10, SI Viz 15), which is what lets the stock PROM discover it.
  */
 static void test_widget_alive_at_startup(void)
 {

@@ -1,21 +1,12 @@
 /*
- * The Bridge's external-flash window (hw/pci-host/sgi-bridge.c,
- * sgi_bridge_flash_ops) with the Origin 2000 BaseIO card's own part
- * behind it (hw/mips/sgi/xio-baseio.c): the contract the IP27 PROM's
- * BASEIO PROM loader depends on. The loader sets the control register's
- * flash write enable, writes the AMD autoselect sequence as 16-bit
- * stores at word addresses 0x5555 and 0x2aaa, reads a manufacturer and
- * device identity as 16-bit loads at offsets 0 and 2, resets the part
- * with 0xf0, and then copies the image out a byte at a time.
- *
- * Reads go through BaseIO's own 16 MB widget window at crosstalk widget
- * 8, the same address the firmware uses (node 0, widget 8, offset
- * 0xc0_0000). The Origin 200's onboard Bridge fits no part, so the same
- * offset there fails the way it always has.
- *
- * A board may also fit a part on the port's second chip select, 2 MB into
- * the window. That decode is checked on a bare Bridge the board test
- * fixture builds, with a stand-in part in place of whatever a board fits.
+ * Origin 2000 BaseIO flash behind the Bridge external-flash window
+ * (hw/pci-host/sgi-bridge.c, sgi_bridge_flash_ops; hw/mips/sgi/xio-baseio.c).
+ * The IP27 PROM loader enables flash writes, sends AMD autoselect with 16-bit
+ * stores at word addresses 0x5555/0x2aaa, reads 16-bit IDs at offsets 0/2,
+ * resets with 0xf0, then copies bytes. BaseIO uses node 0, widget 8, offset
+ * 0xc0_0000 in its 16 MB window; Origin 200 has no fitted flash and fails
+ * there. A bare Bridge fixture checks the optional second chip select 2 MB
+ * into the window with a stand-in part.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
@@ -56,7 +47,7 @@
 #define ID_MANUFACTURER 0x0001
 #define ID_DEVICE 0x22da
 
-/* A stretch of the image left erased, so a program cycle has bits to clear. */
+/* An erased image span gives a program cycle bits to clear. */
 #define ERASED_OFFSET 0x80000
 #define ERASED_LENGTH 0x100
 
@@ -232,7 +223,7 @@ static void test_chip_select_decode(void)
 }
 
 /*
- * With the write enable clear -- its reset state -- the command sequence
+ * With write enable clear (its reset state), the command sequence
  * never reaches the part: reads keep returning the image. With it set,
  * autoselect answers the two identities at word addresses 0 and 1, and
  * the reset command returns the part to the image.
@@ -401,7 +392,7 @@ static void test_second_chip_select_write_enable(void)
     qtest_quit(qts);
 }
 
-/* The Origin 200's onboard Bridge fits no part: the window fails as before. */
+/* The Origin 200 onboard Bridge fits no part: the window still fails. */
 static void test_origin200_unpopulated(void)
 {
     QTestState *qts;

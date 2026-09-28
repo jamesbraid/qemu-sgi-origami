@@ -56,10 +56,8 @@ bool sgi_bedrock_ni_regs_read(SGIBedrockNIRegs *s, uint64_t offset,
     }
     switch (offset) {
     case 0:
-        /*
-         * No remote power, and the reserved M-mode bit is clear. Link-up is
-         * the owning node's to add from its cable.
-         */
+        /* No remote power, and the reserved M-mode bit is clear. Link-up
+         * is the owning node's to add from its cable. */
         *value = 0;
         break;
     case 0x100:
@@ -114,9 +112,9 @@ SGIBedrockNIWriteResult sgi_bedrock_ni_regs_write(SGIBedrockNIRegs *s,
     case 0x100:
         /*
          * The stock PROM zeroes port errors and sideband at power-on. What a
-         * write does on hardware is unknown; storing it is the model's
-         * choice, so those zero writes clear.
-         */
+         * write does on hardware is unknown; storing it
+         * is the model's choice, so those zero writes clear.
+        */
         s->errors = value & NI_PORT_ERRORS_MASK;
         return SGI_BEDROCK_NI_WRITTEN;
     case 0x118:

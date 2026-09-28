@@ -1,83 +1,73 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
+/* PsiTech RAD1 PCI graphics head on an Origin 200 Bridge slot. */
 /*
- * psitech-rad1: bounded functional approximation of a PsiTech RAD1 PCI
- * graphics head, one primary head on an Origin 200 Bridge PCI slot.
- *
- * Primary PCI Vendor/Device ID is 3d3d:0009 -- the 3Dlabs-badged TI/3Dlabs
- * TVP4020 (Permedia 2) die's own identity, not PsiTech's 12d1:0101 board
- * identity. The IRIX kernel driver's boot-time registration function
- * (`rad1pciinit`, disassembled and live-traced; see
- * docs/datasheets/psitech-rad1.md, "Kernel-driver attach: the real cause is
- * a PCI identity mismatch") calls `pciio_driver_register` against 3d3d:0009
- * and, separately, 104c:3d07 (the same chip under TI's own vendor ID) --
- * never against 12d1:0101. IRIX's PCI bus-probe path matches a live card's
- * primary Vendor/Device ID against exactly that registered table, so a card
- * presenting 12d1:0101 as its primary identity is never claimed by any
- * driver. Disassembly of the IO6 PROM (io6prom.img, "SGI Version 6.156
- * built ... Nov 18, 2003") independently shows its RAD1 graphics-console
- * installer dispatch matches on the raw 16-bit PCI Device ID alone, with no
- * Vendor ID check anywhere in that dispatch: it recognizes both device 0009
- * and device 3d07 (see the RAD1_VENDOR_ID/RAD1_DEVICE_ID comment below for
- * the exact addresses), so either identity reaches that installer equally.
- * 3d3d:0009 is presented as a disclosed APPROXIMATION -- 3d3d is 3Dlabs'
- * own PCI-SIG-registered vendor ID and 0009 a device ID both the PROM and
- * the IRIX kernel driver accept, but no evidence yet establishes which
- * physical chip revision this project's modeled RAD1 should present; see
- * the datasheet section above for the open item. 12d1:0101 remains real and
- * is exposed separately as the PCI Subsystem Vendor/Device ID (a different,
- * standard PCI config-space field from the primary Vendor/Device ID)
- * because it is PsiTech's own disclosed board identity, matching the
- * datasheet's "PCI and address spaces" section -- not because any driver
- * path is known to check it. The datasheet's "PROM/standalone textport"
- * section disassembled only RAD1_baseindex's four-entry base-address lookup
- * and explicitly did not disassemble the RAD1Tp-family, RAD1Reset or
- * RAD1InitBoard routine bodies themselves, so no subsystem-ID check is
- * established anywhere in that driver.
+ * Primary PCI Vendor/Device ID is 3d3d:0009, the 3Dlabs-badged TI/3Dlabs
+ * TVP4020 (Permedia 2) die's own identity,
+ * not PsiTech's 12d1:0101 board identity. IRIX's kernel driver registers
+ * against 3d3d:0009 and, separately,
+ * 104c:3d07 (the same chip under TI's own vendor ID), never against
+ * 12d1:0101. IRIX's PCI bus-probe path matches
+ * a live card's primary Vendor/Device ID against exactly that registered
+ * table, so a card presenting 12d1:0101 as
+ * its primary identity is never claimed by any driver. The IO6 PROM's RAD1
+ * graphics-console installer dispatch
+ * matches on the raw 16-bit PCI Device ID alone, with no Vendor ID check
+ * anywhere in that dispatch: it recognizes
+ * both device 0009 and device 3d07 (see the RAD1_VENDOR_ID/RAD1_DEVICE_ID
+ * comment below), so either identity
+ * reaches that installer equally. 3d3d:0009 is an approximation. 3d3d is
+ * 3Dlabs' own PCI-SIG-registered vendor ID
+ * and 0009 a device ID both the PROM and the IRIX kernel driver accept, but
+ * which physical chip revision this
+ * project's modeled RAD1 should present is not established. 12d1:0101 remains
+ * real and is exposed separately as the
+ * PCI Subsystem Vendor/Device ID (a different, standard PCI config-space
+ * field from the primary Vendor/Device ID)
+ * because it is PsiTech's own disclosed board identity, not because any
+ * driver path is known to check it. The
+ * standalone PROM textport library's base-address lookup has four entries; no
+ * subsystem-ID check is established
+ * anywhere in that driver.
  *
  * Unlike psitech-rad4.c, RAD1 is built directly on the TI/3Dlabs TVP4020
- * (Permedia2/Permedia2V) with 8 MB of onboard SGRAM, an integrated RAMDAC,
- * and no PLX bridge or external RGB561-style RAMDAC. It has no PLX-style
+ * (Permedia2/Permedia2V) with 8 MB of
+ * onboard SGRAM, an integrated RAMDAC, and no PLX bridge or external
+ * RGB561-style RAMDAC. It has no PLX-style
  * scatter/gather DMA engine: every rectangle-move path the shipped driver
- * uses (`rect_pio_move`, `rect_dma_move`, `rad1_dma_patch_move`,
- * `bigx_update`) drives the same Permedia2 rasterizer/texture-read GP
- * register set through the FIFO-tagged block at Region Zero
- * 0x8000-0xFFFF; what the driver calls "DMA" is Permedia2's own
- * texture-mapped rectangle copy, using an ordinary kernel DMA mapping only
- * to get a device-visible host physical address for TextureBaseAddress,
- * not a separate descriptor-chain format.
+ * uses (`rect_pio_move`, `rect_dma_move`,
+ * `rad1_dma_patch_move`, `bigx_update`) drives the same Permedia2
+ * rasterizer/texture-read GP register set through
+ * the FIFO-tagged block at Region Zero 0x8000-0xFFFF; what the driver calls
+ * "DMA" is Permedia2's own texture-mapped
+ * rectangle copy, using an ordinary kernel DMA mapping only to get a
+ * device-visible host physical address for
+ * TextureBaseAddress, not a separate descriptor-chain format.
  *
  * This models a bounded compatibility profile: the flat, non-interpolated
- * texture-read rectangle copy the shipped `rad1pci` kernel driver
- * performs; the constant-colour point and rectangle fills both textports
- * draw with (the IO6 PROM's console=g textport and the kernel's
- * rad1_tport.o plot every glyph pixel as a point primitive and every box
+ * texture-read rectangle copy the shipped
+ * `rad1pci` kernel driver performs; the constant-colour point and rectangle
+ * fills both textports draw with (the IO6
+ * PROM's console=g textport and the kernel's rad1_tport.o plot every glyph
+ * pixel as a point primitive and every box
  * as a rectangle primitive, colour from FBWriteData under LogicalOpMode's
- * UseConstantFBWriteData, or from FBBlockColor under FastFill -- see
- * rad1_do_point_render() and rad1_do_rectangle_fill()); a solid
- * trapezoid/span rasterizer; a real RAMDAC palette write/read protocol;
- * and acceptance of the video-timing block. This is still not full
- * Permedia2 hardware fidelity: no 3D rendering, blending, logical ops,
- * texture filtering, bitmask/stipple rendering, Color DDA fragment
- * colours, line primitives, decreasing-direction rectangle fills or mode
- * switching is implemented. Every approximated behavior below is named,
- * evidenced and requires independent review before it lands, per the
- * owning Origami repository's datasheet-before-device rule:
- * docs/datasheets/psitech-rad1.md. That document's own clearance checklist
- * was not fully closed when this file was written -- several items below
- * are explicitly marked APPROXIMATED rather than established, and this
- * file must not be treated as hardware-qualified until that document's
- * review items are closed. Read that document before changing register
- * policy here; a policy change needs renewed independent review there
- * before it lands here.
+ * UseConstantFBWriteData, or from
+ * FBBlockColor under FastFill; see rad1_do_point_render() and
+ * rad1_do_rectangle_fill()); a solid trapezoid/span
+ * rasterizer; a real RAMDAC palette write/read protocol; and acceptance of
+ * the video-timing block. This is still
+ * not full Permedia2 hardware fidelity: no 3D rendering, blending, logical
+ * ops, texture filtering, bitmask/stipple
+ * rendering, Color DDA fragment colours, line primitives,
+ * decreasing-direction rectangle fills or mode switching is
+ * implemented.
  *
- * Register offsets, bit layouts and semantics not directly evidenced by
- * the disassembled driver are cross-checked against the public TI/3Dlabs
- * TVP4020 (Permedia 2) Programmer's Reference Manual (bitsavers.org,
- * cached at docs/library/cache/graphics/rad-psitech/ in the owning
- * repository); manual page numbers cited in comments below are the PDF's
- * own page count, matching docs/datasheets/psitech-rad1.md's own citation
- * convention -- not the document's printed page numbers, which run about
- * nine lower throughout the register reference chapter.
+ * Register offsets, bit layouts and semantics the driver does not directly
+ * establish are cross-checked against the
+ * public TI/3Dlabs TVP4020 (Permedia 2) Programmer's Reference Manual
+ * (bitsavers.org); manual page numbers cited in
+ * comments below are the PDF's own page count, not the document's printed
+ * page numbers, which run about nine lower
+ * throughout the register reference chapter.
  */
 
 #include "qemu/osdep.h"
@@ -97,71 +87,71 @@
 OBJECT_DECLARE_SIMPLE_TYPE(PsitechRad1State, PSITECH_RAD1)
 
 /*
- * Primary identity: the 3Dlabs-badged Permedia 2 die, 3d3d:0009, one of
- * two identities `rad1pciinit`'s pciio_driver_register() calls accept.
- * Disassembly of the IO6 PROM (io6prom.img, "SGI Version 6.156 built
- * ... Nov 18, 2003") shows its RAD1 graphics-console installer dispatch
- * matches on the raw 16-bit PCI Device ID alone, with no Vendor ID check
- * anywhere in that dispatch: device 0009 is recognized (compared at
- * 0x11c157c4) and device 3d07 is recognized too, at four sites
- * (0x11c157dc, 0x11c15c8c, 0x11c15e5c, 0x11c16234), each running the
- * same substantive RAMDAC/video-timing register setup as the 0009 path
- * before reaching the "Installing RAD1 Graphics Console..." routine.
- * Neither 3d3d nor 104c appears anywhere in the PROM's disassembled text
- * as a compared immediate -- contrast the PROM's QLogic ISP probe, which
- * does check a Vendor+Device pair (1077:1020, at 0x11c370ac), so a
- * missing check here is this dispatch's own design, not a blind spot in
- * this reading. Presenting either 3d3d:0009 or 104c:3d07 therefore
- * reaches the PROM's RAD1 console installer equally; picking 3d3d:0009
- * is a disclosed APPROXIMATION -- 3d3d is 3Dlabs' own PCI-SIG-registered
- * vendor ID and 0009 a device ID both the PROM and the IRIX kernel
- * driver accept, but no evidence yet establishes which physical chip
- * revision this project's modeled RAD1 should present; see the public
- * TI/3Dlabs TVP4020 (Permedia 2) Programmer's Reference Manual and the
- * datasheet section referenced in the file comment above for the open
- * item. The kernel driver's own attach is unaffected either way, since
- * rad1pciinit registers against both identities.
+ * Primary identity: the 3Dlabs-badged Permedia 2 die, 3d3d:0009, one of two
+ * identities the IRIX kernel driver's
+ * boot-time registration accepts. The IO6 PROM's RAD1 graphics-console
+ * installer dispatch matches on the raw 16-bit
+ * PCI Device ID alone, with no Vendor ID check anywhere in that dispatch:
+ * device 0009 is recognized, and device
+ * 3d07 is recognized too, at several sites, each running the same substantive
+ * RAMDAC/video-timing register setup as
+ * the 0009 path before reaching the graphics-console installer routine.
+ * Neither 3d3d nor 104c is checked as a PCI
+ * Vendor ID anywhere in that dispatch. Contrast the same PROM's QLogic ISP
+ * probe, which does check a
+ * Vendor+Device pair, so the missing vendor check here is this dispatch's own
+ * design. Presenting either 3d3d:0009
+ * or 104c:3d07 therefore reaches the PROM's RAD1 console installer equally;
+ * picking 3d3d:0009 is an approximation.
+ * 3d3d is 3Dlabs' own PCI-SIG-registered vendor ID and 0009 a device ID
+ * both the PROM and the IRIX kernel driver
+ * accept, but which physical chip revision this project's modeled RAD1 should
+ * present is not established; see the
+ * public TI/3Dlabs TVP4020 (Permedia 2) Programmer's Reference Manual cited
+ * in the file comment above. The kernel
+ * driver's own attach is unaffected either way, since it registers against
+ * both identities.
  */
 #define RAD1_VENDOR_ID          0x3d3d
 #define RAD1_DEVICE_ID          0x0009
 
 /*
- * PsiTech's own board/subsystem identity (public 1999 product sheet),
- * exposed as the PCI Subsystem Vendor/Device ID rather than the primary
- * Vendor/Device ID because it is PsiTech's real, disclosed board identity
- * -- not because any driver path, including the standalone PROM textport
- * library, is established to check it. See the file comment above.
+ * PsiTech's own board/subsystem identity (public 1999 product sheet), exposed
+ * as the PCI Subsystem Vendor/Device ID
+ * rather than the primary Vendor/Device ID because it is PsiTech's real,
+ * disclosed board identity, not because
+ * any driver path, including the standalone PROM textport library, is
+ * established to check it. See the file comment
+ * above.
  */
 #define RAD1_SUBSYSTEM_VENDOR_ID 0x12d1
 #define RAD1_SUBSYSTEM_DEVICE_ID 0x0101
 
 /*
  * BAR sizing. Region Zero's 128 KiB size and its role (control/RAMDAC/
- * GP-register aperture) are established (docs/datasheets/psitech-rad1.md,
- * "PCI and address spaces": PCI selector 8, softc +0x38). Which PCI base-
- * address register the driver's own selector numbering actually names for
- * the framebuffer (selector 9, most likely) and for the flash/EEPROM
- * pointer (softc +0x48, not reached through any of the four traced
- * selectors at all) were not established. BAR1 for the framebuffer and
- * BAR2 for flash are this file's own minimum-reasonable choice of PCI
- * resource numbering to make a guest attach possible, APPROXIMATED and
- * disclosed here and in the datasheet's clearance checklist -- not a
- * confirmed hardware fact.
+ * GP-register aperture) are established as the
+ * driver's PCI selector 8. Which PCI base-address register the driver's own
+ * selector numbering actually names for
+ * the framebuffer (selector 9, most likely) and for the flash/EEPROM pointer
+ * is not established. BAR1 for the
+ * framebuffer and BAR2 for flash are this file's own minimum-reasonable
+ * choice of PCI resource numbering to make a
+ * guest attach possible, not a confirmed hardware fact.
  */
 #define RAD1_REGZERO_SIZE       (128 * KiB)
 #define RAD1_FB_SIZE            (8 * MiB)
-#define RAD1_FLASH_SIZE         (64 * KiB)     /* APPROXIMATED, see below. */
+#define RAD1_FLASH_SIZE         (64 * KiB)     /* Not a confirmed size. */
 
 /*
- * Region Zero range table (docs/datasheets/psitech-rad1.md, "PCI and
- * address spaces", matching the manual's own Region Zero address map,
- * Table 3.1 page 15). Control & Status, RAMDAC and GP Registers are
- * established as driver-reached. Memory Control and Video Control now
- * each have one narrow, trace-evidenced slice modeled (RAD1_REG_
- * BYPASS_WRITE_MASK at 0x1100, and the video-timing block at
- * 0x3000-0x3078 -- see their own comments below); GP FIFO, Video Streams,
- * SVGA Control and Reserved remain modeled as unimplemented and
- * trace-visible rather than guessed at.
+ * Region Zero range table, matching the TI/3Dlabs Permedia 2 manual's own
+ * Region Zero address map (Table 3.1, PDF
+ * page 15). Control & Status, RAMDAC and GP Registers are established as
+ * driver-reached. Memory Control and Video
+ * Control each have one narrow slice modeled (RAD1_REG_BYPASS_WRITE_MASK at
+ * 0x1100, and the video-timing block at
+ * 0x3000-0x3078; see their own comments below); GP FIFO, Video Streams,
+ * SVGA Control and Reserved remain
+ * unimplemented and visible to guest error logging rather than guessed at.
  */
 #define RAD1_RANGE_CTRL_STATUS_LAST    0x0fff
 #define RAD1_RANGE_MEMCTRL_LAST        0x1fff
@@ -176,30 +166,32 @@ OBJECT_DECLARE_SIMPLE_TYPE(PsitechRad1State, PSITECH_RAD1)
 #define RAD1_RANGE_GPREGS_LAST         0xffff
 
 /*
- * Control & Status block. offset 0x10 is the interrupt status word
- * rad1_inthandler() reads and write-clears; offset 0x08 is a second
- * register the same handler unconditionally clears afterward. A later
- * session reading the public TI/3Dlabs TVP4020 Hardware Reference Manual,
- * Issue 6 (see the Bypass DMA block comment below for its full citation)
- * found these two offsets named IntEnable (0x08, "3.2.2 Interrupt Enable
- * Register", PDF page 34) and IntFlags (0x10, "3.2.3 Interrupt Flags",
- * PDF page 35), each with a documented Bypass DMA Interrupt Enable/Flag
- * pair at bit 7 -- see RAD1_INT_BIT7 below. This model still treats
- * offset 0x08 as a plain
- * read/write register with no independent side effect on IRQ delivery
- * (rad1_update_irq() does not gate on it): APPROXIMATED, and now a known
- * simplification rather than an unresolved one -- gating delivery on an
- * enable bit this session did not trace the driver actually setting risks
- * turning a working (if imprecise) interrupt path into a silent one, so
- * this is left as a disclosed gap rather than "fixed" without live
- * evidence the driver arms it first. Offset 0x18 is this session's inferred
- * "InFIFOSpace" location (the driver polls some counter here against
- * thresholds before GP-register writes; the exact offset was not found as
- * a named manual entry, only inferred from the driver's own polling
- * pattern) -- APPROXIMATED: since this model executes every GP-register
- * batch synchronously with no real FIFO depth limit, this register always
- * reports far more space than any threshold the driver checks, so the
- * driver's polling loop never stalls.
+ * Control & Status block. Offset 0x10 is the interrupt status word
+ * rad1_inthandler() reads and write-clears; offset
+ * 0x08 is a second register the same handler unconditionally clears
+ * afterward. The public TI/3Dlabs TVP4020
+ * Hardware Reference Manual, Issue 6 (see the Bypass DMA block comment below
+ * for its full citation) names these two
+ * offsets IntEnable (0x08, "3.2.2 Interrupt Enable Register", PDF page 34)
+ * and IntFlags (0x10, "3.2.3 Interrupt
+ * Flags", PDF page 35), each with a documented Bypass DMA Interrupt
+ * Enable/Flag pair at bit 7; see RAD1_INT_BIT7
+ * below. This model still treats offset 0x08 as a plain read/write register
+ * with no independent side effect on IRQ
+ * delivery (rad1_update_irq() does not gate on it). This is a known
+ * simplification: gating delivery on an enable bit the
+ * driver is not confirmed to set risks turning a working (if imprecise)
+ * interrupt path into a silent one, so this
+ * is left as a disclosed gap rather than "fixed" without evidence the driver
+ * arms it first. Offset 0x18 is an
+ * inferred "InFIFOSpace" location (the driver polls some counter here against
+ * thresholds before GP-register writes;
+ * the exact offset is not a named manual entry, only inferred from the
+ * driver's own polling pattern): since this
+ * model executes every GP-register batch synchronously with no real FIFO
+ * depth limit, this register always reports
+ * far more space than any threshold the driver checks, so the driver's
+ * polling loop never stalls.
  */
 #define RAD1_REG_CTRL_ACK       0x08
 #define RAD1_REG_INT_STATUS     0x10
@@ -207,51 +199,50 @@ OBJECT_DECLARE_SIMPLE_TYPE(PsitechRad1State, PSITECH_RAD1)
 #define RAD1_FIFO_SPACE_READY   0x00010000u
 
 /*
- * Offset 0x40: live-gdb tracing against the shipped kernel (breakpoints at
- * the addresses docs/datasheets/psitech-rad1.md's "Kernel-driver attach"
- * section records) found `rad1pciattach` reads this word through the
- * mapped Region Zero aperture itself -- not, as an earlier session's
- * static reading guessed, a validity check on the softc pointer for PCI
- * selector 9 (the framebuffer BAR). `rad1pciattach` converts the raw word
- * to a boolean (`sltu`) and both (a) passes it as `rad1_pinit`'s second
- * argument and (b) branches on it directly to decide whether attach
- * continues toward `pciio_intr_alloc`/`hwgraph_char_device_add` at all.
- * Tracing 36 live invocations of this check across one boot, the raw word
- * was 0 every time: this model had no case for offset 0x40, so it fell
- * through to the Control & Status block's default handler and returned 0.
- * That is the confirmed, direct cause of the missing `/hw` vertex.
+ * Offset 0x40: `rad1pciattach` reads this word through the mapped Region Zero
+ * aperture itself, not a validity
+ * check on the softc pointer for PCI selector 9 (the framebuffer BAR).
+ * `rad1pciattach` converts the raw word to a
+ * boolean and both (a) passes it as `rad1_pinit`'s second argument and (b)
+ * branches on it directly to decide
+ * whether attach continues toward
+ * `pciio_intr_alloc`/`hwgraph_char_device_add` at all. Before this offset was
+ * modeled, an unhandled read here fell through to the Control & Status
+ * block's default handler and returned 0,
+ * which `rad1pciattach` reads as false and aborts attach on. This directly
+ * caused the missing `/hw` graphics vertex.
  *
- * Which Permedia2 Control & Status register (if any named one) actually
- * lives at this offset was not established this session -- the cached
- * TI/3Dlabs manual could not be read from this environment, and
- * rad1_pinit's own use of the flag (skipping one extra block of
- * GP-register zeroing when false) does not by itself name the bit.
- * APPROXIMATED and disclosed: this model returns a fixed nonzero word
- * here, which is sufficient for every use this session traced (a plain
- * zero/nonzero gate, not a specific bit pattern) -- not a confirmed
- * hardware value, and not yet independently reviewed.
+ * Which Permedia2 Control & Status register (if any named one) actually lives
+ * at this offset is not established,
+ * and `rad1_pinit`'s own use of the flag (skipping one extra block of
+ * GP-register zeroing when false) does not by
+ * itself name the bit. This model returns a fixed nonzero word here,
+ * sufficient for every known use (a plain
+ * zero/nonzero gate, not a specific bit pattern) but not a confirmed hardware
+ * value.
  */
 #define RAD1_REG_ATTACH_GATE    0x40
 #define RAD1_ATTACH_GATE_VALUE  0x00000001u
 
 /*
- * Interrupt status bits rad1_inthandler() decodes (docs/datasheets/
- * psitech-rad1.md, "Interrupts and errors"): bit 0, bit 1 and bit 7 each
- * signal a distinct softc wait-queue slot up to 200 times. This session
- * did not establish which bit corresponds to which of
- * rad1_dma_patch_move()'s four completion paths for bit 0 and bit 1.
- * Bit 7 is now established: the public TI/3Dlabs TVP4020 Hardware
- * Reference Manual, Issue 6 (see the Bypass DMA block comment below for
- * its full citation) names IntFlags bit 7 the "Bypass DMA Interrupt Flag"
- * (IntEnable bit 7, offset 0x08, its enable counterpart) -- matching this
- * bit's existing name and rad1_do_bypass_dma()'s own use of it below.
- * APPROXIMATED: every completed Render still sets all three known bits
+ * Interrupt status bits rad1_inthandler() decodes: bit 0, bit 1 and bit 7
+ * each signal a distinct softc wait-queue
+ * slot. Which bit corresponds to which of rad1_dma_patch_move()'s four
+ * completion paths for bit 0 and bit 1 is not
+ * established. Bit 7 is established: the public TI/3Dlabs TVP4020 Hardware
+ * Reference Manual, Issue 6 (see the
+ * Bypass DMA block comment below for its full citation) names IntFlags bit 7
+ * the "Bypass DMA Interrupt Flag"
+ * (IntEnable bit 7, offset 0x08, its enable counterpart), matching this
+ * bit's existing name and
+ * rad1_do_bypass_dma()'s own use of it below. This model still has every
+ * completed Render set all three known bits
  * together rather than discriminating between them (bit 7 is therefore
- * overloaded between Render and Bypass DMA completion in this model,
- * where real hardware would raise it only for the latter), and interrupt
- * delivery is unconditional (no enable gate) since this session did not
- * trace the driver actually arming IntEnable -- see the note at
- * RAD1_REG_CTRL_ACK above. Any other status bit is unimplemented and left
+ * overloaded between Render and Bypass DMA
+ * completion here, where real hardware would raise it only for the latter),
+ * and interrupt delivery is unconditional
+ * (no enable gate); see the note at RAD1_REG_CTRL_ACK above. Any other
+ * status bit is unimplemented and left
  * visible in the status word rather than silently swallowed.
  */
 #define RAD1_INT_BIT0           (1u << 0)
@@ -260,70 +251,71 @@ OBJECT_DECLARE_SIMPLE_TYPE(PsitechRad1State, PSITECH_RAD1)
 #define RAD1_INT_KNOWN_MASK     (RAD1_INT_BIT0 | RAD1_INT_BIT1 | RAD1_INT_BIT7)
 
 /*
- * Bypass DMA block, Region Zero 0x00a0-0x00d8: a separate host<->local-
- * memory transfer engine from the FIFO-tagged GP registers below. This is
- * the completion path "write dma int timed out" traced directly to: the
- * driver posts a transfer through these six registers, in offset order,
- * then sleeps on the completion interrupt this offset range never
- * delivered before this file modeled it (RAD1_INT_BIT7 above).
+ * Bypass DMA block, Region Zero 0x00a0-0x00d8: a separate host<->local-memory
+ * transfer engine from the FIFO-tagged
+ * GP registers below. This is the register range behind a "write dma int
+ * timed out" driver failure when its
+ * completion interrupt (RAD1_INT_BIT7 above) is not delivered: the driver
+ * posts a transfer through these six
+ * registers, in offset order, then sleeps on that interrupt.
  *
- * Register names, offsets and bit layouts below come from two independent
- * sources that agree on every field: first-hand reading of the public
- * TI/3Dlabs TVP4020 Hardware Reference Manual, Issue 6 (public web-archive
- * mirror, Library root `irix-artifacts`, classification `public` -- a
- * distinct copy from the bitsavers Programmer's Reference Manual this
- * file's top comment already cites; see docs/provenance.md for the source
- * record), pages 48-52 of that PDF's own count; and, separately, ELF+
- * capstone disassembly of the shipped kernel driver's write-DMA posting
- * sequence (no vendor source, no DWARF). All six registers' section
- * numbers and pages were individually read and are cited per-register
- * below, alongside the disassembly's own corroboration of each field.
- * A seventh, adjacent register in the same manual family, ByDMAComplete
- * (offset E8h, "3.2.25 Bypass DMA Complete", page 52 -- a manual-trigger
+ * Register names, offsets and bit layouts below come from the public
+ * TI/3Dlabs TVP4020 Hardware Reference Manual,
+ * Issue 6 (a distinct copy from the bitsavers Programmer's Reference Manual
+ * this file's top comment already cites),
+ * pages 48-52 of that PDF's own count, cross-checked against the shipped
+ * kernel driver's own write-DMA posting
+ * sequence. All six registers' section numbers and pages are cited
+ * per-register below. A seventh, adjacent register
+ * in the same manual family, ByDMAComplete (offset E8h, "3.2.25 Bypass DMA
+ * Complete", page 52, a manual-trigger
  * "restart graphics processor" register distinct from ByDMAControl's own
- * RestartGP bit, plus a read-only texture-invalid status bit) is not
- * modeled: no traced driver access reaches it, so this offset range stops
- * at ByDMAControl (D8h) and E8h is unimplemented, a disclosed gap rather
- * than a resolved "not needed."
+ * RestartGP bit, plus a read-only
+ * texture-invalid status bit) is not modeled: no driver access is known to
+ * reach it, so this offset range stops at
+ * ByDMAControl (D8h) and E8h is unimplemented, a disclosed gap rather than a
+ * resolved "not needed."
  *
- * ByDMAAddress (A0h, "3.2.19 Bypass DMA Start Address", page 48): PCI
- * source address -- disassembly: the driver's own $a1 argument, a host
- * physical address.
- * ByDMAStride (B8h, "3.2.20 Bypass DMA Stride", page 48): source scanline
- * stride in bytes -- disassembly: a per-mode constant loaded from the
- * driver's own stack frame, distinct from the destination framebuffer's
- * own mode stride.
- * ByDMAMemAddr (C0h, "3.2.21 Bypass Memory Base Address", page 49):
- * destination base address in Permedia2 local memory, texel units in bits
- * 0-23 -- disassembly: an address computed as base + row * stride + col
- * (mult/mflo/addu), consistent with the manual's account once "texel
- * units" is read as a pixel count. This model's pixel is always
- * RAD1_BYTES_PER_PIXEL bytes, so a texel offset converts to a byte offset
- * by that fixed factor -- APPROXIMATED in the same sense as
- * TextureBaseAddress above.
- * ByDMASize (C8h, "3.2.22 Bypass DMA Transfer Size", page 49): Width bits
- * 0-11, Height bits 16-27 -- disassembly: a packed value built the same
- * RectangleSize-style way as RAD1_REG_RECT_SIZE above, with narrower
- * (12-bit) fields.
- * ByDMAByteMask (D0h, "3.2.23 Bypass DMA Byte Mask", page 50): left edge
- * mask bits 0-3, right edge mask bits 16-19, one bit per byte lane of the
- * edge pixel word. The driver's only traced value is 0x000f000f (both
- * edges fully open). This model honors a closed lane bit as "leave that
- * destination byte unchanged", applied only to the first and last column
- * of a transfer (RAD1_REG_FB_HW_WRITE_MASK's own masked-write style
- * above, but at edges rather than everywhere) -- the fully-open case is
- * the only one this session's evidence confirms; any other value's
- * precise behavior is APPROXIMATED.
- * ByDMAControl (D8h, "3.2.24 Bypass DMA Control", pages 51-52): Mode bits
- * 0-1, RestartGP bit 2, Data format bits 3-5, Patch Type bits 6-7, PP0-2
- * bits 8-16 -- disassembly: the last MMIO write in the driver's own
- * posting sequence, read from a fixed softc field. This model stores the
- * value and triggers the transfer on every write, the same "last write
- * starts it" contract RAD1_REG_RENDER already uses for the GP path; the
- * individual Mode/RestartGP/format/Patch Type/PP fields are stored but
- * not separately applied, matching this file's own established treatment
- * of dSdx/dSdyDom/dTdx above, since the qualified guest workload (a flat
- * write-DMA completion) does not exercise them independently.
+ * ByDMAAddress (A0h, "3.2.19 Bypass DMA Start Address", page 48): PCI source
+ * address, the driver's own host
+ * physical address. ByDMAStride (B8h, "3.2.20 Bypass DMA Stride", page 48):
+ * source scanline stride in bytes, a
+ * per-mode constant, distinct from the destination framebuffer's own mode
+ * stride. ByDMAMemAddr (C0h, "3.2.21 Bypass
+ * Memory Base Address", page 49): destination base address in Permedia2 local
+ * memory, in texel units in bits 0-23. The driver computes this as base + row
+ * * stride + col, matching the
+ * manual's account once "texel units" is read
+ * as a pixel count. This model's pixel is always RAD1_BYTES_PER_PIXEL bytes,
+ * so a texel offset converts to a byte
+ * offset by that fixed factor, the same approximation as TextureBaseAddress
+ * above. ByDMASize (C8h, "3.2.22 Bypass
+ * DMA Transfer Size", page 49): Width bits 0-11, Height bits 16-27, packed
+ * the same RectangleSize-style way as
+ * RAD1_REG_RECT_SIZE above, with narrower (12-bit) fields. ByDMAByteMask
+ * (D0h, "3.2.23 Bypass DMA Byte Mask", page
+ * 50): left edge mask bits 0-3, right edge mask bits 16-19, one bit per byte
+ * lane of the edge pixel word. The
+ * driver's only confirmed value is 0x000f000f (both edges fully open). This
+ * model honors a closed lane bit as
+ * "leave that destination byte unchanged", applied only to the first and last
+ * column of a transfer
+ * (RAD1_REG_FB_HW_WRITE_MASK's own masked-write style above, but at edges
+ * rather than everywhere). Only the fully-open case is confirmed; any other
+ * value's precise behavior is not
+ * established. ByDMAControl (D8h, "3.2.24
+ * Bypass DMA Control", pages 51-52): Mode bits 0-1, RestartGP bit 2, Data
+ * format bits 3-5, Patch Type bits 6-7,
+ * PP0-2 bits 8-16, the last MMIO write in the driver's own posting
+ * sequence, read from a fixed softc field. This
+ * model stores the value and triggers the transfer on every write, the same
+ * "last write starts it" contract
+ * RAD1_REG_RENDER already uses for the GP path; the individual
+ * Mode/RestartGP/format/Patch Type/PP fields are
+ * stored but not separately applied, matching this file's own established
+ * treatment of dSdx/dSdyDom/dTdx above,
+ * since the qualified guest workload (a flat write-DMA completion) does not
+ * exercise them independently.
  */
 #define RAD1_REG_BYDMA_ADDRESS      0x00a0
 #define RAD1_REG_BYDMA_STRIDE       0x00b8
@@ -340,70 +332,78 @@ OBJECT_DECLARE_SIMPLE_TYPE(PsitechRad1State, PSITECH_RAD1)
 
 /*
  * Memory Control block, Region Zero 0x1000-0x1FFF: only offset 0x1100
- * (PM2R_BYPASS_WRITE_MASK, public Linux include/video/permedia2.h) is
- * evidenced by this session's guest_errors,unimp trace of the PROM/
- * standalone textport console path (console=g) -- a single write, the
- * same shape as Linux drivers/video/fbdev/pm2fb.c's reset_config(), which
- * writes nearly every GP register to a power-on default exactly once at
- * mode set. This offset previously fell through this file's whole
- * dispatch to the final "unsupported Region Zero write" case (no Memory
- * Control range existed at all). Stored only, no modeled side effect:
- * this session found no traced access that reads it back or depends on a
- * specific bit pattern.
+ * (PM2R_BYPASS_WRITE_MASK, public Linux
+ * include/video/permedia2.h) is written by the PROM/standalone textport
+ * console path (console=g), a single write,
+ * the same shape as Linux drivers/video/fbdev/pm2fb.c's reset_config(), which
+ * writes nearly every GP register to a
+ * power-on default exactly once at mode set. This offset previously fell
+ * through this file's whole dispatch to the
+ * final "unsupported Region Zero write" case (no Memory Control range existed
+ * at all). Stored only, no modeled side
+ * effect: no known access reads it back or depends on a specific bit pattern.
  */
 #define RAD1_REG_BYPASS_WRITE_MASK  0x1100
 
 /*
  * Video Timing block, Region Zero 0x3000-0x3FFF. Offsets are the public
- * Permedia2 register set (Linux include/video/permedia2.h:
- * PM2R_SCREEN_BASE 0x3000, PM2R_SCREEN_STRIDE 0x3008, PM2R_H_TOTAL 0x3010,
- * PM2R_HG_END 0x3018, PM2R_HB_END 0x3020, PM2R_HS_START 0x3028,
- * PM2R_HS_END 0x3030, PM2R_V_TOTAL 0x3038, PM2R_VB_END 0x3040,
+ * Permedia2 register set (Linux
+ * include/video/permedia2.h: PM2R_SCREEN_BASE 0x3000, PM2R_SCREEN_STRIDE
+ * 0x3008, PM2R_H_TOTAL 0x3010, PM2R_HG_END
+ * 0x3018, PM2R_HB_END 0x3020, PM2R_HS_START 0x3028, PM2R_HS_END 0x3030,
+ * PM2R_V_TOTAL 0x3038, PM2R_VB_END 0x3040,
  * PM2R_VS_START 0x3048, PM2R_VS_END 0x3050, PM2R_VIDEO_CONTROL 0x3058,
- * PM2R_LINE_COUNT 0x3070, PM2R_FIFO_CONTROL 0x3078). This session's trace
- * shows the whole block written once per mode set, previously falling
- * through to this file's default "unsupported Region Zero write" case.
- * Linux drivers/video/fbdev/pm2fb.c's pm2fb_set_par() writes the H/V
- * timing and SCREEN_* registers as one block during a mode set, then
- * set_video() writes VIDEO_CONTROL separately for sync polarity/blank/
- * enable -- the same two-phase pattern the trace shows (a run of
- * 0x3000-0x3078 writes, 0x3058 among them but also independently called
- * out).
+ * PM2R_LINE_COUNT 0x3070, PM2R_FIFO_CONTROL
+ * 0x3078). The whole block is written once per mode set, previously falling
+ * through to this file's default
+ * "unsupported Region Zero write" case. Linux drivers/video/fbdev/pm2fb.c's
+ * pm2fb_set_par() writes the H/V timing
+ * and SCREEN_* registers as one block during a mode set, then set_video()
+ * writes VIDEO_CONTROL separately for sync
+ * polarity/blank/enable, the same two-phase pattern this device's own write
+ * pattern shows.
  *
- * This model stores every one of these registers (so the writes are no
- * longer silently dropped) but does not resize the emulated console or
- * otherwise change the active mode/timing in response to them: the fixed
- * single active mode (RAD1_ACTIVE_MODE, see rad1_mode_records above)
- * remains APPROXIMATED and unchanged, matching the file's existing,
- * already-disclosed startup-mode-selection gap.
+ * This model stores every one of these registers (so the writes are no longer
+ * silently dropped) but does not resize
+ * the emulated console or otherwise change the active mode/timing in response
+ * to them: the fixed single active mode
+ * (RAD1_ACTIVE_MODE, see rad1_mode_records above) remains unchanged, matching
+ * this file's existing
+ * startup-mode-selection limitation.
  *
- * SCREEN_BASE and SCREEN_STRIDE are stored but deliberately NOT wired into
- * rad1_do_trapezoid_render()'s destination addressing, unlike an earlier
- * plan in this session. Linux drivers/video/fbdev/pm2fb.c's pm2fb_set_par()
- * computes the values it writes here via a local helper, to3264():
- * `stride = to3264(width, depth, 1); base = to3264(yoffset*xres+xoffset,
- * depth, 1);` -- to3264() right-shifts its pixel-count input by an amount
- * that depends on bpp (0/1/2 bits depending on 8/16/24/32) and unconditionally
- * shifts once more for 64-bit-word units (its third argument is the literal
- * 1, not the driver's data64 flag). So SCREEN_STRIDE/SCREEN_BASE are pixel
- * quantities re-expressed in 8-byte words under a depth-dependent formula,
- * not a raw byte pitch/offset. Reconstructing the byte pitch this model
- * would need requires knowing which of that formula's bpp branches RAD1's
- * guest-visible framebuffer format actually takes, which this session's
- * trace evidence (0x8830 colour writes packed as e.g. 0xf0f0f0) does not
- * settle against a specific PM2R_FB_READ_PIXEL/depth setting on this board.
- * Treating the raw register value as a byte pitch without that confirmation
- * risks silently misaddressing every scanline the trapezoid renderer draws,
- * which is worse than not consulting the register at all. RAD1_REG_RENDER's
- * trapezoid path therefore uses the same fixed mode's own stride and a zero
- * base that the existing flat rectangle/texture-copy path (rad1_do_render(),
- * unchanged) already uses as established working behavior.
+ * SCREEN_BASE and SCREEN_STRIDE are stored but deliberately not wired into
+ * rad1_do_trapezoid_render()'s destination
+ * addressing. Linux drivers/video/fbdev/pm2fb.c's pm2fb_set_par() computes
+ * the values it writes here via a local
+ * helper, to3264(): `stride = to3264(width, depth, 1); base =
+ * to3264(yoffset*xres+xoffset, depth, 1);`. to3264()
+ * right-shifts its pixel-count input by an amount that depends on bpp (0/1/2
+ * bits depending on 8/16/24/32) and
+ * unconditionally shifts once more for 64-bit-word units (its third argument
+ * is the literal 1, not the driver's
+ * data64 flag). So SCREEN_STRIDE/SCREEN_BASE are pixel quantities
+ * re-expressed in 8-byte words under a
+ * depth-dependent formula, not a raw byte pitch/offset. Reconstructing the
+ * byte pitch this model would need
+ * requires knowing which of that formula's bpp branches RAD1's guest-visible
+ * framebuffer format actually takes,
+ * which is not established against a specific PM2R_FB_READ_PIXEL/depth
+ * setting on this board. Treating the raw
+ * register value as a byte pitch without that confirmation risks silently
+ * misaddressing every scanline the
+ * trapezoid renderer draws, which is worse than not consulting the register
+ * at all. RAD1_REG_RENDER's trapezoid
+ * path therefore uses the same fixed mode's own stride and a zero base that
+ * the existing flat
+ * rectangle/texture-copy path (rad1_do_render(), unchanged) already uses as
+ * established working behavior.
  *
  * VIDEO_CONTROL's PM2F_VIDEO_ENABLE bit is stored but not honored as a
- * scanout gate, for the same reason: this session found no evidence the
- * PROM/kernel path here ever needs the emulated display blanked, and
- * gating an already-working scanout on an unverified enable bit risks
- * turning a working display black instead of fixing anything.
+ * scanout gate, for the same reason: there is
+ * no evidence the PROM/kernel path here ever needs the emulated display
+ * blanked, and gating an already-working
+ * scanout on an unverified enable bit risks turning a working display black
+ * instead of fixing anything.
  */
 #define RAD1_REG_SCREEN_BASE        0x3000
 #define RAD1_REG_SCREEN_STRIDE      0x3008
@@ -421,20 +421,15 @@ OBJECT_DECLARE_SIMPLE_TYPE(PsitechRad1State, PSITECH_RAD1)
 #define RAD1_REG_FIFO_CONTROL       0x3078
 
 /*
- * RAMDAC block, Region Zero 0x4000-0x4FFF (docs/datasheets/psitech-rad1.md
- * table row for that range): rad1_init_RAMDAC()/rad1_load_lut() are
- * established to write exactly these seven offsets. Two of those seven --
- * 0x4008 and 0x4018 -- are named registers this file previously treated
- * as plain storage under the generic RAD1_RAMDAC_R0..R6 array; they are
- * now broken out below with real palette-protocol behavior, since this
- * session's trace showed 1536 writes to 0x4008 (a heavy-traffic register
- * this file's generic RAMDAC array never actually reached: RAD1_RAMDAC_R0
- * was 0x4000 and RAD1_RAMDAC_R1 was 0x4010, skipping 0x4008 and 0x4018
- * entirely, so both fell through to the RAMDAC block's own "unsupported
- * RAMDAC write" default). The remaining five offsets (cursor color
- * address/data, two further unnamed slots, and the indexed-register data
- * port) are unchanged: plain storage, no side effect, out of this
- * session's trace-evidenced scope.
+ * RAMDAC block, Region Zero 0x4000-0x4FFF: rad1_init_RAMDAC()/
+ * rad1_load_lut() write exactly these seven offsets.
+ * Two of those seven, 0x4008 and 0x4018, carry real palette-protocol
+ * behavior, broken out below rather than
+ * left in the generic RAD1_RAMDAC_R0..R6 array (whose R0/R1 members, 0x4000
+ * and 0x4010, skip 0x4008 and 0x4018
+ * entirely). The remaining five offsets (cursor color address/data, two
+ * further unnamed slots, and the
+ * indexed-register data port) are plain storage with no modeled side effect.
  */
 #define RAD1_RAMDAC_R0          0x4000
 #define RAD1_RAMDAC_R1          0x4010
@@ -446,60 +441,60 @@ OBJECT_DECLARE_SIMPLE_TYPE(PsitechRad1State, PSITECH_RAD1)
 
 /*
  * Palette write/read registers (Linux include/video/permedia2.h:
- * PM2R_RD_PALETTE_WRITE_ADDRESS 0x4000 == RAD1_RAMDAC_R0 above,
- * PM2R_RD_PALETTE_DATA 0x4008, PM2R_RD_PALETTE_READ_ADDRESS 0x4018).
- * Programming sequence and the auto-increment-after-each-triple behavior
- * are both directly evidenced by Linux drivers/video/fbdev/pm2fb.c's
- * clear_palette(): it writes PM2R_RD_PALETTE_WRITE_ADDRESS exactly once
- * (to 0), then writes PM2R_RD_PALETTE_DATA three times (R, G, B) per
- * palette index, for all 256 indices, with no further write-address
- * write in between -- the only way that sequence can reach all 256
- * entries is if the hardware auto-increments the write index internally
- * after each complete (R,G,B) triple. This model implements exactly that
- * state machine. A symmetric read-address/read-index pair is modeled for
- * PM2R_RD_PALETTE_READ_ADDRESS on the same evidence (the header defines
- * a separate read-address register, implying the same triple-byte
- * protocol in the read direction), though no traced access in this
- * session's evidence reads the palette back.
+ * PM2R_RD_PALETTE_WRITE_ADDRESS 0x4000 ==
+ * RAD1_RAMDAC_R0 above, PM2R_RD_PALETTE_DATA 0x4008,
+ * PM2R_RD_PALETTE_READ_ADDRESS 0x4018). Programming sequence and
+ * the auto-increment-after-each-triple behavior are both shown directly by
+ * Linux drivers/video/fbdev/pm2fb.c's
+ * clear_palette(): it writes PM2R_RD_PALETTE_WRITE_ADDRESS exactly once (to
+ * 0), then writes PM2R_RD_PALETTE_DATA
+ * three times (R, G, B) per palette index, for all 256 indices, with no
+ * further write-address write in between. The only way that sequence can
+ * reach all 256 entries is if the hardware
+ * auto-increments the write index
+ * internally after each complete (R,G,B) triple. This model implements
+ * exactly that state machine. A symmetric
+ * read-address/read-index pair is modeled for PM2R_RD_PALETTE_READ_ADDRESS on
+ * the same evidence (the header defines
+ * a separate read-address register, implying the same triple-byte protocol in
+ * the read direction), though nothing
+ * observed reads the palette back.
  */
 #define RAD1_RAMDAC_PALETTE_DATA        0x4008
 #define RAD1_RAMDAC_PALETTE_READ_ADDR   0x4018
 
 /*
- * FIFO-tagged GP (rasterizer/texture) registers, Region Zero 0x8000-0xFFFF
- * (docs/datasheets/psitech-rad1.md, "Rectangle transfer and the FIFO-
- * tagged GP registers"). Offsets independently cross-checked against the
- * TVP4020 Programmer's Reference Manual's own per-register table entries
- * (page numbers in comments below are the PDF's own page count, matching
- * this file's own top-of-file citation convention and
- * docs/datasheets/psitech-rad1.md's, e.g. RectangleOrigin/RectangleSize
- * page 241 -- not the manual's printed page numbers, which run about nine
- * lower).
+ * FIFO-tagged GP (rasterizer/texture) registers, Region Zero 0x8000-0xFFFF.
+ * Offsets match the TVP4020 Programmer's
+ * Reference Manual's own per-register table entries; page numbers cited in
+ * comments below are the PDF's own page
+ * count (e.g. RectangleOrigin/RectangleSize page 241), about nine higher than
+ * the manual's printed page numbers.
  */
 /*
  * Trapezoid/span rasterizer registers, Region Zero 0x8000-0x8038 (public
- * Linux include/video/permedia2.h: PM2R_START_X_DOM 0x8000, PM2R_D_X_DOM
- * 0x8008, PM2R_START_X_SUB 0x8010, PM2R_D_X_SUB 0x8018, PM2R_START_Y
- * 0x8020, PM2R_D_Y 0x8028, PM2R_COUNT 0x8030; RAD1_REG_RENDER below is
- * PM2R_RENDER 0x8038, already established here for the flat rectangle/
- * texture-copy path). This session's guest_errors,unimp trace of the
- * PROM/standalone textport console path (console=g) showed heavy traffic
- * here against one boot -- 41k writes to START_X_DOM, 12.5k to START_Y --
- * that this file previously dropped entirely: both offsets fell through
- * the whole read/write dispatch to the GP block's own "unsupported GP
- * register" default.
+ * Linux include/video/permedia2.h:
+ * PM2R_START_X_DOM 0x8000, PM2R_D_X_DOM 0x8008, PM2R_START_X_SUB 0x8010,
+ * PM2R_D_X_SUB 0x8018, PM2R_START_Y 0x8020,
+ * PM2R_D_Y 0x8028, PM2R_COUNT 0x8030; RAD1_REG_RENDER below is PM2R_RENDER
+ * 0x8038, already established here for the
+ * flat rectangle/ texture-copy path). The PROM/standalone textport console
+ * path (console=g) writes here heavily,
+ * one Render per glyph pixel and per box fill.
  *
- * Public source grounds these seven offsets and the primitive-selector
- * bits in RENDER (RAD1_RENDER_PRIMITIVE_MASK/_TRAPEZOID/_RECTANGLE/_LINE/
- * _POINT below, from the same header's PM2F_RENDER_* bits); the manual
- * grounds their formats: every rasterizer coordinate and delta is 2's
- * complement 16.16 fixed point (manual page 70, "5.3.14 Registers") and
- * Count is a 12-bit scanline count (manual page 73, Table 5.5). The PROM
- * textport initialiser agrees, writing dY = 0x10000 (1.0) and zero
- * dXDom/dXSub once at mode set (io6prom 6.156 standalone image
- * 0x11c16108-0x11c16110), and the point renders put Y<<16 in StartY.
- * Neither textport renders a trapezoid; only the kernel driver's
- * fill_fb() (rad1drv.o) does.
+ * Public source grounds these seven offsets and the primitive-selector bits
+ * in RENDER
+ * (RAD1_RENDER_PRIMITIVE_MASK/_TRAPEZOID/_RECTANGLE/_LINE/ _POINT below, from
+ * the same header's PM2F_RENDER_*
+ * bits); the manual grounds their formats: every rasterizer coordinate and
+ * delta is 2's complement 16.16 fixed
+ * point (manual page 70, "5.3.14 Registers") and Count is a 12-bit scanline
+ * count (manual page 73, Table 5.5). The
+ * PROM textport initialiser agrees, writing dY = 0x10000 (1.0) and zero
+ * dXDom/dXSub once at mode set, and the point
+ * renders put Y<<16 in StartY. Neither textport renders a trapezoid; only the
+ * kernel driver's fill_fb() (rad1drv.o)
+ * does.
  */
 #define RAD1_REG_START_X_DOM        0x8000
 #define RAD1_REG_D_X_DOM            0x8008
@@ -517,15 +512,18 @@ OBJECT_DECLARE_SIMPLE_TYPE(PsitechRad1State, PSITECH_RAD1)
 #define RAD1_RENDER_RECTANGLE       (3u << 6)
 
 /*
- * Render's other short-term mode bits this model dispatches on (manual
- * pages 242-243; permedia2.h PM2F_RENDER_FASTFILL and
- * PM2F_RENDER_TEXTURE_ENABLE). FastFillEnable selects the block-fill path
- * whose colour is FBBlockColor (manual page 41); TextureEnable is what
- * turns a rectangle into the texture-read copy rad1_do_render() models --
- * the kernel driver's rect_pio_move()/rect_dma_move() write 0x6020c0, the
- * textports' box fills 0x6000c0 and their initialisers' clears 0x6000c8.
- * IncreaseX/IncreaseY (bits 21-22) choose the fill direction; only the
- * increasing direction every evidenced writer uses is modeled.
+ * Render's other short-term mode bits this model dispatches on (manual pages
+ * 242-243; permedia2.h
+ * PM2F_RENDER_FASTFILL and PM2F_RENDER_TEXTURE_ENABLE). FastFillEnable
+ * selects the block-fill path whose colour is
+ * FBBlockColor (manual page 41); TextureEnable is what turns a rectangle into
+ * the texture-read copy
+ * rad1_do_render() models. The kernel driver's
+ * rect_pio_move()/rect_dma_move() write 0x6020c0, the textports' box
+ * fills 0x6000c0 and their initialisers' clears 0x6000c8. IncreaseX/IncreaseY
+ * (bits 21-22) choose the fill
+ * direction; only the increasing direction every known writer uses is
+ * modeled.
  */
 #define RAD1_RENDER_FASTFILL        (1u << 3)
 #define RAD1_RENDER_TEXTURE_ENABLE  (1u << 13)
@@ -539,13 +537,16 @@ OBJECT_DECLARE_SIMPLE_TYPE(PsitechRad1State, PSITECH_RAD1)
 
 /*
  * RasterizerMode, Region Zero 0x80a0 (public Linux include/video/
- * permedia2.h: PM2R_RASTERIZER_MODE). Stored only; this model's trapezoid
- * path does not implement RasterizerMode's bitmask-invert/antialiasing
- * controls. Linux drivers/video/fbdev/pm2fb.c's own use of this register
- * is confined to pm2fb_imageblit()'s monochrome-glyph BIT_MASK_PATTERN
- * path, which neither IRIX textport uses: the IO6 PROM textport and the
- * kernel's rad1_tport.o RAD1TpDrawbitmap plot one point primitive per set
- * glyph bit (StartXDom, StartY, Render), see rad1_do_point_render().
+ * permedia2.h: PM2R_RASTERIZER_MODE). Stored only;
+ * this model's trapezoid path does not implement RasterizerMode's
+ * bitmask-invert/antialiasing controls. Linux
+ * drivers/video/fbdev/pm2fb.c's own use of this register is confined to
+ * pm2fb_imageblit()'s monochrome-glyph
+ * BIT_MASK_PATTERN path, which neither IRIX textport uses: the IO6 PROM
+ * textport and the kernel's rad1_tport.o
+ * RAD1TpDrawbitmap plot one point primitive per set glyph bit (StartXDom,
+ * StartY, Render), see
+ * rad1_do_point_render().
  */
 #define RAD1_REG_RASTERIZER_MODE    0x80a0
 
@@ -569,127 +570,127 @@ OBJECT_DECLARE_SIMPLE_TYPE(PsitechRad1State, PSITECH_RAD1)
 #define RAD1_REG_SYNC               0x8c40
 
 /*
- * FBWriteData, Region Zero 0x8830 (manual page 217): the colour written
- * to the framebuffer in place of the fragment colour while LogicalOpMode's
- * UseConstantFBWriteData bit (bit 5, manual page 231) is set. It is not in
- * the public Linux include/video/permedia2.h list, which is why an earlier
- * revision of this file carried it unnamed. Both textports draw every
- * text pixel and box this way: the IO6 PROM 6.156 standalone image sets
- * bit 5 in 0x8828, writes the colour here, renders, then clears bit 5
- * (glyph bitmap 0x11c2a2cc-0x11c2a4fc, point 0x11c2a500-0x11c2a5b8, box
- * fill 0x11c2a5c0-0x11c2a6d4), as do the kernel's rad1_tport.o
- * RAD1TpDrawbitmap, RAD1TpPnt2i and
- * RAD1TpSboxfi. The traced values (0xf0f0f0 background, 0x606070
- * text) are the textport's own colours in the framebuffer's raw format.
+ * FBWriteData, Region Zero 0x8830 (manual page 217): the colour written to
+ * the framebuffer in place of the fragment
+ * colour while LogicalOpMode's UseConstantFBWriteData bit (bit 5, manual page
+ * 231) is set. It is not in the public
+ * Linux include/video/permedia2.h list. Both textports draw every text pixel
+ * and box this way: the PROM textport
+ * and the kernel's rad1_tport.o RAD1TpDrawbitmap, RAD1TpPnt2i and
+ * RAD1TpSboxfi each set bit 5 in 0x8828, write the
+ * colour here, render, then clear bit 5. The values used (0xf0f0f0
+ * background, 0x606070 text) are the textport's
+ * own colours in the framebuffer's raw format.
  */
 #define RAD1_REG_FB_WRITE_DATA      0x8830
 #define RAD1_LOGICOP_USE_CONSTANT_FB_WRITE_DATA (1u << 5)
 
 /*
- * FBBlockColor, Region Zero 0x8ac8 (permedia2.h PM2R_FB_BLOCK_COLOR;
- * manual page 41, "Block Writes"): the value a FastFillEnable Render
- * writes to every pixel. Both textport initialisers zero it together with
- * FBWriteData before their full-screen FastFill clear (io6prom 6.156
- * standalone image 0x11c29fc4-0x11c29ff8; rad1_tpinit.o RAD1InitBoard).
+ * FBBlockColor, Region Zero 0x8ac8 (permedia2.h PM2R_FB_BLOCK_COLOR; manual
+ * page 41, "Block Writes"): the value a
+ * FastFillEnable Render writes to every pixel. Both textport initialisers
+ * zero it together with FBWriteData before
+ * their full-screen FastFill clear (the PROM textport and rad1_tpinit.o's
+ * RAD1InitBoard).
  */
 #define RAD1_REG_FB_BLOCK_COLOR     0x8ac8
 
 /*
- * Unnamed GP register, Region Zero 0x8d80: one single write in this
- * session's trace, in the same low-frequency cluster as STATISTICS_MODE
- * (0x8c08)/YUV_MODE (0x8f00)/DELTA_MODE (0x9300) below -- all four read as
- * part of one broad reset/init sequence, the same shape as Linux
- * drivers/video/fbdev/pm2fb.c's reset_config(), which writes nearly every
- * GP register to a power-on default exactly once. This offset sits eight
+ * Unnamed GP register, Region Zero 0x8d80: written once as part of the same
+ * reset/init sequence as STATISTICS_MODE
+ * (0x8c08), YUV_MODE (0x8f00) and DELTA_MODE (0x9300) below, the same shape
+ * as Linux drivers/video/fbdev/pm2fb.c's
+ * reset_config(), which writes nearly every GP register to a power-on default
+ * exactly once. This offset sits eight
  * bytes before PM2R_FB_SOURCE_DELTA (0x8d88) and is not itself a named
- * register in permedia2.h. Stored only, no invented semantics, no
- * modeled side effect -- this session found no evidence of a second
- * access that would name its role.
+ * register in permedia2.h. Stored only, no
+ * modeled side effect.
  */
 #define RAD1_REG_GP_UNNAMED_8D80     0x8d80
 
 /*
  * Three further single-write registers from the same reset/init cluster
- * (public Linux include/video/permedia2.h: PM2R_STATISTICS_MODE 0x8c08,
- * PM2R_YUV_MODE 0x8f00, PM2R_DELTA_MODE 0x9300), each written exactly once
- * in this session's trace, matching reset_config()'s own one-shot
- * power-on-default write to each of these registers in pm2fb.c. Stored
- * only, no modeled side effect: none of the qualified drawing paths this
- * session traced or implemented reads them back or depends on a specific
- * bit pattern.
+ * (public Linux include/video/permedia2.h:
+ * PM2R_STATISTICS_MODE 0x8c08, PM2R_YUV_MODE 0x8f00, PM2R_DELTA_MODE 0x9300),
+ * each written exactly once, matching
+ * reset_config()'s own one-shot power-on-default write to each of these
+ * registers in pm2fb.c. Stored only, no
+ * modeled side effect: none of the drawing paths implemented here reads them
+ * back or depends on a specific bit
+ * pattern.
  */
 #define RAD1_REG_STATISTICS_MODE    0x8c08
 #define RAD1_REG_YUV_MODE           0x8f00
 #define RAD1_REG_DELTA_MODE         0x9300
 
 /*
- * RectangleOrigin/RectangleSize bit packing, confirmed directly against
- * the manual's own register diagram (page 241): X/Width in bits 0-15, Y/
- * Height in bits 16-31.
+ * RectangleOrigin/RectangleSize bit packing, confirmed directly against the
+ * manual's own register diagram (page
+ * 241): X/Width in bits 0-15, Y/ Height in bits 16-31.
  */
 #define RAD1_RECT_LOW_MASK      0xffffu
 #define RAD1_RECT_HIGH_SHIFT    16
 
 /*
- * TextureBaseAddress bit 30 (manual page 260): "If bit 30 is set the
- * texture resides in system memory rather than local buffer and should be
- * fetched across the PCI bus." This resolves, from the public manual
- * itself, the local-vs-host addressing ambiguity
- * docs/datasheets/psitech-rad1.md left open for `TextureBaseAddress` --
- * the datasheet's own text notes the driver writes either a host DMA
- * address or a same-surface framebuffer address into this register
- * without independently tying that choice to a bit. This model honors
- * bit 30 as the manual documents it. The low bits are nominally a texel
- * count "from the base of the memory" per the manual; the shipped
- * driver's own DMA path writes a raw kernel-computed physical address
- * directly into this register (docs/datasheets/psitech-rad1.md, "What
- * 'DMA' means for this driver"), so this model treats bits 0-23 as a
- * plain byte offset/address rather than re-deriving a texel-to-byte
- * scale -- APPROXIMATED, disclosed here and in the datasheet.
+ * TextureBaseAddress bit 30 (manual page 260): "If bit 30 is set the texture
+ * resides in system memory rather than
+ * local buffer and should be fetched across the PCI bus." This resolves, from
+ * the public manual itself, whether
+ * TextureBaseAddress names a host or local address: the driver writes either
+ * a host DMA address or a same-surface
+ * framebuffer address into this register. This model honors bit 30 as the
+ * manual documents it. The low bits are
+ * nominally a texel count "from the base of the memory" per the manual; the
+ * driver's own DMA path writes a raw
+ * kernel-computed physical address directly into this register, so this model
+ * treats bits 0-23 as a plain byte
+ * offset/address rather than re-deriving a texel-to-byte scale; this is the
+ * model's own choice, not an
+ * independently confirmed scale.
  *
  * Bit 31 is deliberately left in place by RAD1_TEXBASE_ADDR_MASK (it only
- * clears bit 30): a system-memory address the driver computes through
- * IRIX's pciio_dmatrans_addr() carries the Bridge's own PCI_DMA_DIRECT
+ * clears bit 30): a system-memory address
+ * the driver computes through IRIX's pciio_dmatrans_addr() carries the
+ * Bridge's own PCI_DMA_DIRECT
  * address-space-selector bit as part of the same 32-bit value, and
- * pci_dma_read()/pci_dma_write() need that bit intact to resolve the
- * address at all -- matching psitech-rad4.c's own DMA descriptor handling,
- * which never strips it either.
+ * pci_dma_read()/pci_dma_write() need that bit
+ * intact to resolve the address at all, matching psitech-rad4.c's own DMA
+ * descriptor handling, which never strips
+ * it either.
  */
 #define RAD1_TEXBASE_SYSTEM_MEMORY  (1u << 30)
 #define RAD1_TEXBASE_ADDR_MASK      0xbfffffffu
 
 /*
  * FBReadMode bits 9/10 (manual page 211): Read Source Enable and Read
- * Destination Enable. docs/datasheets/psitech-rad1.md's own reading of
- * this register is narrower -- "used for the read direction (framebuffer
- * -> host) of rad1_dma_patch_move" -- than the manual's general-purpose
- * framebuffer-read-unit description, and does not tie that behavior to a
- * specific bit. APPROXIMATED: this model treats Read Destination Enable
- * (bit 10) as the signal that a Render targets a host-directed
- * framebuffer read-back (the "Host Out" path FilterMode/Sync also
- * describe) rather than an ordinary forward copy into the framebuffer;
- * this conflates the manual's general read-enable bit with the specific
- * host-readback use this driver makes of it, and needs independent review
- * once a live capture of an actual read-back transfer exists.
+ * Destination Enable. This model treats Read
+ * Destination Enable (bit 10) as the signal that a Render targets a
+ * host-directed framebuffer read-back (the "Host
+ * Out" path FilterMode/Sync also describe) rather than an ordinary forward
+ * copy into the framebuffer; this
+ * conflates the manual's general read-enable bit with the specific
+ * host-readback use the driver makes of it, and is
+ * the model's own simplification rather than an independently confirmed
+ * bit-to-behavior mapping.
  */
 #define RAD1_FBREADMODE_READBACK_BIT   (1u << 10)
 
 /*
  * Flat-copy pixel size: 32-bit words, matching the RAD4 sibling product's
- * established True-color framebuffer layout. RAD1's own pixel format is
- * not independently confirmed -- APPROXIMATED.
+ * True-color framebuffer layout. RAD1's own
+ * pixel format is not independently confirmed; this model assumes the same
+ * layout.
  */
 #define RAD1_BYTES_PER_PIXEL    4
 
 /*
- * The three fixed mode records (docs/datasheets/psitech-rad1.md,
- * "Startup and flash programming": NumPER2Modes == 3, matching the
- * product sheet's three listed resolutions exactly). How the driver picks
- * among them at startup is an open question in that document.
- * APPROXIMATED: this model always runs mode 0 (the product sheet's first-
- * listed resolution) and does not implement mode switching; this is the
- * minimum-reasonable choice to get a boot attempt working, not a modeled
- * selection mechanism.
+ * The three fixed mode records: NumPER2Modes == 3, matching the product
+ * sheet's three listed resolutions exactly.
+ * How the driver picks among them at startup is not modeled: this model
+ * always runs mode 0 (the product sheet's
+ * first-listed resolution) and does not implement mode switching; this is the
+ * minimum choice to get a boot attempt
+ * working, not a modeled selection mechanism.
  */
 typedef struct Rad1ModeRecord {
     uint32_t width;
@@ -705,32 +706,32 @@ static const Rad1ModeRecord rad1_mode_records[RAD1_NUM_MODES] = {
 #define RAD1_ACTIVE_MODE 0
 
 /*
- * Flash/EEPROM programming (docs/datasheets/psitech-rad1.md, "Startup and
- * flash programming"): a generic JEDEC/AMD two-cycle parallel NOR flash
- * unlock-and-program sequence, industry-standard and independent of any
- * RAD1- or IRIX-specific source. Which PCI resource carries the softc
- * +0x48 flash pointer, and the flash part's actual size, were not traced
- * -- RAD1_FLASH_SIZE and its BAR number are this file's own minimum-
- * reasonable choice, APPROXIMATED. Byte-wide access (unlike Region Zero's
- * confirmed 32-bit-only accesses) is inferred from the classic parallel
- * NOR unlock algorithm itself, which only makes sense as byte offsets
- * into an 8-bit-wide parallel flash part; this is a generic inference
- * from the algorithm, not a disassembled access-width fact.
+ * Flash/EEPROM programming: a generic JEDEC/AMD two-cycle parallel NOR flash
+ * unlock-and-program sequence,
+ * industry-standard and independent of any RAD1-specific source. Which PCI
+ * resource carries the flash pointer, and
+ * the flash part's actual size, are not confirmed. RAD1_FLASH_SIZE and its
+ * BAR number are this file's own minimum
+ * choice. Byte-wide access (unlike Region Zero's 32-bit-only accesses)
+ * follows from the classic parallel NOR unlock
+ * algorithm itself, which only makes sense as byte offsets into an 8-bit-wide
+ * parallel flash part.
  *
- * Unlock addresses: the datasheet's disassembly reports the driver's own
- * CPU-side literal offsets as 0x5556 and 0x2AA9, one off from the
- * universal JEDEC/AMD standard unlock addresses 0x5555 and 0x2AAA (used
- * industry-wide, e.g. the Am29F0x0 family). A qtest against this device
- * confirmed why directly: the Bridge applies a real byte-lane swap
- * (addr ^ 3) to sub-word PCI accesses from this big-endian host to a
- * little-endian target -- the same class of hardware behavior this
- * project's Bridge model already documents for DMA (docs/comment-style.md
- * and the Bridge qtest coverage). The driver's own literal byte offset is
- * therefore the pre-swap, CPU-side address; what the flash chip itself
- * sees, and what this model's state machine below matches against, is the
- * standard post-swap JEDEC address. This model uses the standard
- * addresses directly rather than re-deriving the swap itself, since the
- * swap is the Bridge's behavior, not this device's.
+ * Unlock addresses: the driver's own CPU-side literal offsets are 0x5556 and
+ * 0x2AA9, one off from the universal
+ * JEDEC/AMD standard unlock addresses 0x5555 and 0x2AAA (used industry-wide,
+ * e.g. the Am29F0x0 family). The Bridge
+ * applies a real byte-lane swap (addr ^ 3) to sub-word PCI accesses from this
+ * big-endian host to a little-endian
+ * target, the same class of hardware behavior this project's Bridge model
+ * already documents for DMA. The driver's
+ * own literal byte offset is therefore the pre-swap, CPU-side address; what
+ * the flash chip itself sees, and what
+ * this model's state machine below matches against, is the standard post-swap
+ * JEDEC address. This model uses the
+ * standard addresses directly rather than re-deriving the swap itself, since
+ * the swap is the Bridge's behavior, not
+ * this device's.
  */
 #define RAD1_FLASH_UNLOCK1_ADDR     0x5555
 #define RAD1_FLASH_UNLOCK1_DATA     0xaa
@@ -757,18 +758,18 @@ struct PsitechRad1State {
 
     /*
      * Framebuffer storage. Unlike RAD4's own BAR2, this is not a genuine
-     * RAM-backed MemoryRegion: the Bridge's PIO window applies the same
-     * byte-lane behavior to every device on it, and this codebase's own
-     * working convention (hw/display/psitech-rad4.c's BAR0 and BAR2 both)
-     * is to declare DEVICE_LITTLE_ENDIAN MemoryRegionOps and store
-     * multi-byte values explicitly big-endian (ldl_be_p()/stl_be_p())
-     * inside a plain byte array -- not to rely on a RAM region's own
-     * default handling, which does not carry that same correction. A
-     * qtest regression (an earlier revision of this file used
-     * memory_region_init_ram() here) demonstrated the resulting byte swap
-     * directly. `display_buffer` is a separate, host-native-order copy
-     * rad1_gfx_update() maintains for scanout, exactly matching
-     * rad4_convert_scanout()'s role in the sibling device.
+     * RAM-backed MemoryRegion: the Bridge's PIO
+     * window applies the same byte-lane behavior to every device on it, and
+     * this codebase's own working convention
+     * (hw/display/psitech-rad4.c's BAR0 and BAR2 both) is to declare
+     * DEVICE_LITTLE_ENDIAN MemoryRegionOps and store
+     * multi-byte values explicitly big-endian (ldl_be_p()/stl_be_p()) inside
+     * a plain byte array, not to rely on a
+     * RAM region's own default handling, which does not carry that same
+     * correction. `display_buffer` is a separate,
+     * host-native-order copy rad1_gfx_update() maintains for scanout, exactly
+     * matching rad4_convert_scanout()'s
+     * role in the sibling device.
      */
     uint8_t *framebuffer;
     uint32_t *display_buffer;
@@ -783,8 +784,9 @@ struct PsitechRad1State {
 
     /*
      * RAMDAC palette storage and the write/read index + component-counter
-     * state that implements clear_palette()'s evidenced three-writes-per-
-     * index protocol; see the palette register comment above.
+     * state that implements clear_palette()'s
+     * three-writes-per-index protocol; see the palette register comment
+     * above.
      */
     uint8_t palette[256][3];
     uint8_t palette_write_index;
@@ -793,8 +795,9 @@ struct PsitechRad1State {
     uint8_t palette_read_comp;
 
     /*
-     * Video Timing block, Region Zero 0x3000-0x3078: stored only except
-     * for screen_base/screen_stride, see the block comment above.
+     * Video Timing block, Region Zero 0x3000-0x3078: stored only except for
+     * screen_base/screen_stride, see the
+     * block comment above.
      */
     uint32_t screen_base;
     uint32_t screen_stride;
@@ -811,7 +814,7 @@ struct PsitechRad1State {
     uint32_t line_count;
     uint32_t fifo_control;
 
-    /* Memory Control block: only offset 0x1100 evidenced, stored only. */
+    /* Memory Control block: only offset 0x1100 is modeled, stored only. */
     uint32_t bypass_write_mask;
 
     /* GP register block. */
@@ -838,8 +841,9 @@ struct PsitechRad1State {
 
     /*
      * Trapezoid/span rasterizer state (RAD1_REG_START_X_DOM etc., see the
-     * block comment above): raw register storage, interpreted as 16.16
-     * fixed point only inside rad1_do_trapezoid_render() itself.
+     * block comment above): raw register
+     * storage, interpreted as 16.16 fixed point only inside
+     * rad1_do_trapezoid_render() itself.
      */
     uint32_t start_x_dom;
     uint32_t d_x_dom;
@@ -886,24 +890,22 @@ static int rad1_ramdac_index(hwaddr addr)
 static void rad1_update_irq(PsitechRad1State *s)
 {
     /*
-     * No mask/enable register is evidenced (docs/datasheets/
-     * psitech-rad1.md, "Interrupts and errors"), so this model asserts
-     * INTA# whenever any status bit is pending and deasserts once the
-     * guest write-clears them all.
+     * No mask/enable register is known, so this model asserts INTA# whenever
+     * any status bit is pending and
+     * deasserts once the guest write-clears them all.
      */
     pci_set_irq(&s->pci, s->int_status != 0);
 }
 
 /*
  * Perform one flat, non-interpolated rectangle copy per the Render
- * command, per docs/datasheets/psitech-rad1.md's explicit scope ("What
- * 'DMA' means for this driver"). This model runs the whole operation
- * synchronously inside the register write that triggers it -- there is no
- * real FIFO depth or rasterizer latency to model for the one operation
- * kind this driver is established to use.
+ * command. This model runs the whole operation synchronously inside the
+ * register write that triggers it. There is no real FIFO depth or
+ * rasterizer latency to model for the one operation kind this driver
+ * uses.
  *
  * Two directions are modeled, selected by RAD1_FBREADMODE_READBACK_BIT
- * (APPROXIMATED, see its definition above):
+ * (see its definition above, itself a simplification):
  *   - forward (default): copy from the texture-read source named by
  *     TextureBaseAddress into the framebuffer rectangle named by
  *     RectangleOrigin/RectangleSize, honoring FBHardwareWriteMask.
@@ -913,8 +915,8 @@ static void rad1_update_irq(PsitechRad1State *s)
  *     host-memory destination.
  *
  * Source and destination are both treated as one contiguous run of
- * RAD1_BYTES_PER_PIXEL-sized words per scanline, width RectangleSize.width
- * -- i.e. this model assumes the source rectangle's own stride equals its
+ * RAD1_BYTES_PER_PIXEL-sized words per scanline, width RectangleSize.width.
+ * This model assumes the source rectangle's own stride equals its
  * width, matching a flat copy with no scaling (dSdx/dSdyDom/dTdx are
  * stored but not applied, since Permedia2's fixed-point texture-stepping
  * format is out of scope for a copy the driver itself never uses for
@@ -929,12 +931,14 @@ static void rad1_do_render(PsitechRad1State *s)
                       RAD1_RECT_LOW_MASK;
     /*
      * RectangleOrigin's X and Y are each a 12-bit two's complement value
-     * (manual page 73, Table 5.5; bits 12-15/28-31 of each 16-bit half are
-     * "Ignored" per the register diagram, page 241), matching
-     * rad1_do_rectangle_fill()'s decode below. This path draws one
-     * contiguous block starting at the corner rather than clipping pixel
-     * by pixel, so a negative origin -- unlike in the per-pixel fill --
-     * always puts the whole rectangle outside the framebuffer.
+     * (manual page 73, Table 5.5; bits
+     * 12-15/28-31 of each 16-bit half are "Ignored" per the register diagram,
+     * page 241), matching
+     * rad1_do_rectangle_fill()'s decode below. This path draws one contiguous
+     * block starting at the corner rather
+     * than clipping pixel by pixel, so a negative origin, unlike in the
+     * per-pixel fill, always puts the whole
+     * rectangle outside the framebuffer.
      */
     int32_t dst_x = sextract32(s->rect_origin, 0, 12);
     int32_t dst_y = sextract32(s->rect_origin, RAD1_RECT_HIGH_SHIFT, 12);
@@ -948,19 +952,22 @@ static void rad1_do_render(PsitechRad1State *s)
     if (width != 0 && height != 0) {
         /*
          * The rasterizer's FBWriteMode target is the framebuffer's actual
-         * VRAM (RAD1_FB_SIZE), not the RAMDAC/CRTC's currently active
-         * scanout mode -- those are independent hardware concerns on a
-         * real Permedia2: a Render write below the visible mode height is
-         * routine (off-screen scratch, cursor storage, a driver clearing
-         * VRAM rows the CRTC never scans out) and public Permedia2 sources
-         * describe no rasterizer-side clip against the active mode. Only
-         * the X axis is bounded by mode->width, since fb_stride is fixed
-         * at mode->width * RAD1_BYTES_PER_PIXEL and a wider write would
-         * spill into the next scanline's memory. dst_x/dst_y are checked
-         * for negative first -- that alone already puts the rectangle
-         * outside the framebuffer -- and the '||' chain's left-to-right
-         * short-circuit keeps that check ahead of udst_x/udst_y, which are
-         * only meaningful once both are known non-negative.
+         * VRAM (RAD1_FB_SIZE), not the
+         * RAMDAC/CRTC's currently active scanout mode. Those are
+         * independent hardware concerns on a real
+         * Permedia2: a Render write below the visible mode height is routine
+         * (off-screen scratch, cursor storage, a
+         * driver clearing VRAM rows the CRTC never scans out) and public
+         * Permedia2 sources describe no
+         * rasterizer-side clip against the active mode. Only the X axis is
+         * bounded by mode->width, since fb_stride
+         * is fixed at mode->width * RAD1_BYTES_PER_PIXEL and a wider write
+         * would spill into the next scanline's
+         * memory. dst_x/dst_y are checked for negative first. That alone
+         * puts the rectangle outside the framebuffer, and the '||' chain's
+         * left-to-right short-circuit
+         * keeps that check ahead of udst_x/udst_y,
+         * which are only meaningful once both are known non-negative.
          */
         int64_t dst_end = (int64_t)(dst_y + (int64_t)height) * fb_stride;
 
@@ -1052,14 +1059,13 @@ static void rad1_do_render(PsitechRad1State *s)
     }
 
     /*
-     * APPROXIMATED completion signaling; see RAD1_INT_KNOWN_MASK above.
-     * This fires even when the rectangle above was empty or fell outside
-     * the active mode: rad1_inthandler()'s wait queue has no separate
-     * "command rejected" path, and unconditionally skipping this signal
-     * on that path left the model with no way to ever wake a caller that
-     * issues an out-of-bounds Render and then waits on completion: the
-     * early return on the reject path left that caller with no wake at
-     * all.
+     * Completion signaling, simplified; see RAD1_INT_KNOWN_MASK above. This
+     * fires even when the rectangle above was
+     * empty or fell outside the active mode: rad1_inthandler()'s wait queue
+     * has no separate "command rejected"
+     * path, so a caller that issues an out-of-bounds Render and then waits on
+     * completion needs this wake
+     * regardless.
      */
     s->int_status |= RAD1_INT_KNOWN_MASK;
     rad1_update_irq(s);
@@ -1067,11 +1073,13 @@ static void rad1_do_render(PsitechRad1State *s)
 
 /*
  * Resolve the constant colour a Render without texturing writes: FastFill
- * takes FBBlockColor (manual page 41), otherwise LogicalOpMode's
- * UseConstantFBWriteData selects FBWriteData (manual pages 217 and 231).
- * Every evidenced textport and initialiser fill sets one of the two. The
- * remaining case, the Color DDA unit's own fragment colour, is not modeled
- * and stays trace-visible: nothing is drawn rather than a guessed colour.
+ * takes FBBlockColor (manual page 41),
+ * otherwise LogicalOpMode's UseConstantFBWriteData selects FBWriteData
+ * (manual pages 217 and 231). Every textport
+ * and initialiser fill sets one of the two. The remaining case, the Color DDA
+ * unit's own fragment colour, is not
+ * modeled: nothing is drawn rather than a guessed colour, and the omission is
+ * logged.
  */
 static bool rad1_constant_fill_color(PsitechRad1State *s, uint32_t *color)
 {
@@ -1092,8 +1100,9 @@ static bool rad1_constant_fill_color(PsitechRad1State *s, uint32_t *color)
 
 /*
  * Write one pixel through FBHardwareWriteMask. Rows are addressed with the
- * fixed active mode's stride, as rad1_do_render() does, and the row bound
- * is the framebuffer itself rather than the visible mode height for the
+ * fixed active mode's stride, as
+ * rad1_do_render() does, and the row bound is the framebuffer itself rather
+ * than the visible mode height for the
  * same reason that function gives: a write below the scanned-out rows is
  * ordinary VRAM traffic, not an error.
  */
@@ -1122,13 +1131,15 @@ static void rad1_put_pixel(PsitechRad1State *s, int32_t x, int32_t y,
 
 /*
  * Render one point primitive (manual page 62, "5.3.3 Points"): a single
- * aliased pixel at StartXDom/StartY, both 16.16 fixed point ("StartXDom
- * (X<<16), StartY (Y<<16)" in the manual's own pseudocode; page 70 makes
- * 16.16 the format of every rasterizer coordinate). This is how
- * both textports draw text: one point per set glyph bit, colour from
- * FBWriteData (io6prom 6.156 standalone image 0x11c2a428-0x11c2a42c;
- * rad1_tport.o RAD1TpDrawbitmap). Completion signaling is APPROXIMATED
- * exactly as rad1_do_render()'s, see RAD1_INT_KNOWN_MASK.
+ * aliased pixel at StartXDom/StartY, both
+ * 16.16 fixed point ("StartXDom (X<<16), StartY (Y<<16)" in the manual's own
+ * pseudocode; page 70 makes 16.16 the
+ * format of every rasterizer coordinate). This is how both textports draw
+ * text: one point per set glyph bit, colour
+ * from FBWriteData, as both the PROM textport and the kernel driver's
+ * rad1_tport.o RAD1TpDrawbitmap do. Completion
+ * signaling is simplified exactly as rad1_do_render()'s, see
+ * RAD1_INT_KNOWN_MASK.
  */
 static void rad1_do_point_render(PsitechRad1State *s)
 {
@@ -1144,16 +1155,18 @@ static void rad1_do_point_render(PsitechRad1State *s)
 }
 
 /*
- * Render one rectangle primitive as a constant fill (manual page 62,
- * "5.3.4 Rectangles"): RectangleOrigin's corner, RectangleSize's width
- * and height (manual page 241; the origin's X and Y are 12-bit two's
- * complement, manual page 73, Table 5.5 -- matching rad1_do_render()'s
- * decode above), filled toward increasing X and Y, which is
- * the only direction any evidenced writer uses (the PROM textport's box
- * fill at 0x11c2a6bc and the kernel's RAD1TpSboxfi both write 0x6000c0;
- * the initialisers' clears 0x6000c8). A decreasing direction would move
- * the covered range to the other side of the origin; unmodeled and
- * logged rather than guessed. Completion signaling is APPROXIMATED as in
+ * Render one rectangle primitive as a constant fill (manual page 62, "5.3.4
+ * Rectangles"): RectangleOrigin's corner,
+ * RectangleSize's width and height (manual page 241; the origin's X and Y are
+ * 12-bit two's complement, manual page
+ * 73, Table 5.5; matching rad1_do_render()'s decode above), filled toward
+ * increasing X and Y, which is the only
+ * direction any known writer uses (the PROM textport's box fill and the
+ * kernel's RAD1TpSboxfi both write increasing
+ * X/Y; the initialisers' clears do the same). A decreasing direction would
+ * move the covered range to the other side
+ * of the origin; unmodeled and logged rather than guessed. Completion
+ * signaling is simplified as in
  * rad1_do_render().
  */
 static void rad1_do_rectangle_fill(PsitechRad1State *s)
@@ -1186,23 +1199,24 @@ static void rad1_do_rectangle_fill(PsitechRad1State *s)
 
 /*
  * Render one trapezoid/span primitive, selected by RAD1_RENDER_TRAPEZOID
- * (register formats: see the trapezoid/span rasterizer register block
- * comment above). StartXDom/StartXSub and StartY are 16.16 start values,
- * advanced once per scanline by dXDom/dXSub and dY; each of Count
- * scanlines fills the half-open span [min(xdom, xsub), max(xdom, xsub))
- * with the constant colour rad1_constant_fill_color() resolves --
- * FBBlockColor under FastFill, the case the manual's block-write
- * description (page 41) names for trapezoids, FBWriteData otherwise.
- * Which pixels a real Permedia2 includes at a fractional edge is
- * APPROXIMATED by that truncating half-open rule; no evidenced writer
- * draws a non-integer edge. An earlier revision read StartY and dY as
- * plain integers, so every scanline after a 16.16 start row fell outside
- * the framebuffer. Completion signaling is APPROXIMATED as in
+ * (register formats: see the trapezoid/span
+ * rasterizer register block comment above). StartXDom/StartXSub and StartY
+ * are 16.16 start values, advanced once
+ * per scanline by dXDom/dXSub and dY; each of Count scanlines fills the
+ * half-open span [min(xdom, xsub), max(xdom,
+ * xsub)) with the constant colour rad1_constant_fill_color() resolves,
+ * FBBlockColor under FastFill, the case the
+ * manual's block-write description (page 41) names for trapezoids,
+ * FBWriteData otherwise. Which pixels a real
+ * Permedia2 includes at a fractional edge is approximated by that truncating
+ * half-open rule; no known writer draws
+ * a non-integer edge. Completion signaling is simplified as in
  * rad1_do_render().
  *
  * Destination stride/base: the fixed active mode's own stride and a zero
- * base, the same as rad1_do_render() -- see the Video Timing block comment
- * above for why SCREEN_STRIDE/SCREEN_BASE are not wired in here.
+ * base, the same as rad1_do_render(); see
+ * the Video Timing block comment above for why SCREEN_STRIDE/SCREEN_BASE are
+ * not wired in here.
  */
 static void rad1_do_trapezoid_render(PsitechRad1State *s)
 {
@@ -1233,20 +1247,22 @@ static void rad1_do_trapezoid_render(PsitechRad1State *s)
         }
     }
 
-    /* APPROXIMATED completion signaling; see RAD1_INT_KNOWN_MASK above. */
+    /* Completion signaling, simplified; see RAD1_INT_KNOWN_MASK above. */
     s->int_status |= RAD1_INT_KNOWN_MASK;
     rad1_update_irq(s);
 }
 
 /*
- * Expand one 4-bit ByDMAByteMask edge nibble into a 32-bit lane mask, one
- * bit per byte lane of the pixel word (lane 0 = bits 7:0 of the value
- * ldl_be_p()/stl_be_p() normalize to, matching the little-endian PCI byte-
- * lane numbering this codebase's own Bridge byte-lane-swap handling already
- * assumes elsewhere). No live evidence ties a specific lane bit to a
- * specific memory byte beyond the driver's own fully-open 0xf value, which
- * this mapping's choice of lane order cannot affect either way --
- * APPROXIMATED, see the Bypass DMA block comment above.
+ * Expand one 4-bit ByDMAByteMask edge nibble into a 32-bit lane mask, one bit
+ * per byte lane of the pixel word (lane
+ * 0 = bits 7:0 of the value ldl_be_p()/stl_be_p() normalize to, matching the
+ * little-endian PCI byte-lane numbering
+ * this codebase's own Bridge byte-lane-swap handling already assumes
+ * elsewhere). Nothing ties a specific lane bit
+ * to a specific memory byte beyond the driver's own fully-open 0xf value,
+ * which this mapping's choice of lane order
+ * cannot affect either way; this mapping is the model's own choice, see the
+ * Bypass DMA block comment above.
  */
 static uint32_t rad1_bydma_edge_mask(uint32_t nibble)
 {
@@ -1263,14 +1279,16 @@ static uint32_t rad1_bydma_edge_mask(uint32_t nibble)
 
 /*
  * Perform one Bypass DMA write transfer: read RectangleSize-style width/
- * height scanlines from the PCI source address named by ByDMAAddress, at
- * ByDMAStride bytes per source scanline, into the local-memory destination
- * named by ByDMAMemAddr (texel units, converted to a byte offset by
- * RAD1_BYTES_PER_PIXEL -- see the Bypass DMA block comment above), at the
- * active mode's own scanline stride, honoring ByDMAByteMask at the first
- * and last column of each row. This is the write-DMA completion path
- * `rad1pci`'s posted write times out waiting for; see RAD1_REG_BYDMA_*
- * above and RAD1_INT_BIT7.
+ * height scanlines from the PCI source
+ * address named by ByDMAAddress, at ByDMAStride bytes per source scanline,
+ * into the local-memory destination named
+ * by ByDMAMemAddr (texel units, converted to a byte offset by
+ * RAD1_BYTES_PER_PIXEL; see the Bypass DMA block
+ * comment above), at the active mode's own scanline stride, honoring
+ * ByDMAByteMask at the first and last column of
+ * each row. This is the write-DMA completion path `rad1pci`'s posted write
+ * times out waiting for; see
+ * RAD1_REG_BYDMA_* above and RAD1_INT_BIT7.
  */
 static void rad1_do_bypass_dma(PsitechRad1State *s)
 {
@@ -1416,10 +1434,10 @@ static uint64_t rad1_regzero_read(void *opaque, hwaddr addr, unsigned size)
     }
 
     /*
-     * Palette write/read-index and data registers get real protocol
-     * behavior (see their own comment above); every other RAMDAC offset
-     * keeps falling through to the generic ramdac_idx dispatch below
-     * unchanged.
+     * Palette write/read-index and data registers get real protocol behavior
+     * (see their own comment above); every
+     * other RAMDAC offset keeps falling through to the generic ramdac_idx
+     * dispatch below unchanged.
      */
     switch (addr) {
     case RAD1_RAMDAC_R0:
@@ -1454,10 +1472,11 @@ static uint64_t rad1_regzero_read(void *opaque, hwaddr addr, unsigned size)
         case RAD1_REG_WAIT_FOR_COMPLETE:
             /*
              * Manual page 275: write-only command register, no readable
-             * status bits. This model completes every Render synchronously,
-             * so there is nothing to wait for by the time a read could
-             * observe it; return 0 rather than asserting a specific
-             * "busy" bit semantics the manual does not document.
+             * status bits. This model completes every
+             * Render synchronously, so there is nothing to wait for by the
+             * time a read could observe it; return 0
+             * rather than asserting a specific "busy" bit semantics the
+             * manual does not document.
              */
             return 0;
         case RAD1_REG_RECT_ORIGIN: return s->rect_origin;
@@ -1629,9 +1648,9 @@ static void rad1_regzero_write(void *opaque, hwaddr addr, uint64_t val,
 
     /*
      * Palette write-index/data and read-index registers get real protocol
-     * behavior (see their own comment above); every other RAMDAC offset
-     * keeps falling through to the generic ramdac_idx dispatch below
-     * unchanged.
+     * behavior (see their own comment above);
+     * every other RAMDAC offset keeps falling through to the generic
+     * ramdac_idx dispatch below unchanged.
      */
     switch (addr) {
     case RAD1_RAMDAC_R0:
@@ -1672,17 +1691,14 @@ static void rad1_regzero_write(void *opaque, hwaddr addr, uint64_t val,
         switch (addr) {
         case RAD1_REG_RENDER:
             /*
-             * Dispatch on the primitive-selector bits (manual page 242,
-             * bits 6-7). A rectangle is the kernel driver's texture-read
-             * copy only when it carries TextureEnable (rect_pio_move()/
-             * rect_dma_move() write 0x6020c0) or when FBReadMode selects
-             * this model's read-back (see rad1_do_render()); the
-             * textports' 0x6000c0 boxes and the initialisers' 0x6000c8
-             * FastFill clears are constant fills. An earlier revision sent
-             * every non-trapezoid Render down the copy path, so those
-             * fills copied framebuffer offset zero onto themselves and the
-             * glyph points copied a stale rectangle: console=g stayed
-             * black with the PROM textport happily drawing.
+             * Dispatch on the primitive-selector bits (manual page 242, bits
+             * 6-7). A rectangle is the kernel
+             * driver's texture-read copy only when it carries TextureEnable
+             * (rect_pio_move()/ rect_dma_move() write
+             * 0x6020c0) or when FBReadMode selects this model's read-back
+             * (see rad1_do_render()); the textports'
+             * 0x6000c0 boxes and the initialisers' 0x6000c8 FastFill clears
+             * are constant fills.
              */
             s->render_cmd = val;
             switch (val & RAD1_RENDER_PRIMITIVE_MASK) {
@@ -1839,27 +1855,26 @@ static const MemoryRegionOps rad1_regzero_ops = {
 
 /*
  * Flash/EEPROM aperture: a plain JEDEC/AMD-sequenced parallel NOR flash
- * model. Real NOR flash can only clear bits on a program cycle (an erase
- * sets them), so a program applies a bitwise AND -- this both matches real
- * hardware and gives the qtest register-contract coverage a discriminating
- * check: skipping the unlock sequence leaves the erased (all-ones) content
- * unchanged, reproducing the byte-mismatch condition
- * program_eeprom_sector()'s own caller detects, without this model needing
- * to know that caller's error-code convention.
+ * model. Real NOR flash can only clear bits
+ * on a program cycle (an erase sets them), so a program applies a bitwise
+ * AND.
+ * This matches real hardware
+ * and gives the qtest register-contract coverage a discriminating check:
+ * skipping the unlock sequence leaves the
+ * erased (all-ones) content unchanged, reproducing the byte-mismatch
+ * condition program_eeprom_sector()'s own caller
+ * detects, without this model needing to know that caller's error-code
+ * convention.
  *
- * Access width: byte-wide (impl/valid min=max=1), unlike every other
- * region on this device. This is forced by the unlock addresses
- * themselves: 0x5556 and 0x2aa9 are not 4-byte aligned, so a 32-bit-only
- * region would never see a 4-byte access land exactly on them (confirmed
- * directly: an earlier revision of this file declared the flash aperture
- * 32-bit-only, and a qtest driving the documented unlock sequence at
- * those exact offsets silently failed to arm). This session did not
- * disassemble program_eeprom_sector()'s own access width, but a
- * byte-wide parallel NOR part addressed at odd byte offsets is the
- * ordinary, industry-standard shape for this JEDEC/AMD sequence --
- * APPROXIMATED in the sense that the disassembly itself was not the
- * source of this choice, not in the sense that another width is equally
- * plausible.
+ * Access width: byte-wide (impl/valid min=max=1), unlike every other region
+ * on this device. This is forced by the
+ * unlock addresses themselves: 0x5556 and 0x2aa9 are not 4-byte aligned, so a
+ * 32-bit-only region would never see a
+ * 4-byte access land exactly on them. The driver's own access width for
+ * program_eeprom_sector() is not
+ * independently confirmed, but a byte-wide parallel NOR part addressed at odd
+ * byte offsets is the ordinary,
+ * industry-standard shape for this JEDEC/AMD sequence.
  */
 static uint64_t rad1_flash_read(void *opaque, hwaddr addr, unsigned size)
 {
@@ -1913,10 +1928,11 @@ static const MemoryRegionOps rad1_flash_ops = {
 };
 
 /*
- * Framebuffer BAR MemoryRegionOps. Region Zero's confirmed 32-bit-only
- * access width is extended here too: nothing in the datasheet's evidence
- * distinguishes the framebuffer aperture's own access width, and 32-bit
- * only is this device's established convention everywhere else.
+ * Framebuffer BAR MemoryRegionOps. Region Zero's 32-bit-only access width is
+ * extended here too: nothing
+ * distinguishes the framebuffer aperture's own access width, and 32-bit only
+ * is this device's established
+ * convention everywhere else.
  */
 static uint64_t rad1_vram_read(void *opaque, hwaddr addr, unsigned size)
 {
@@ -1945,17 +1961,19 @@ static const MemoryRegionOps rad1_vram_ops = {
 
 /*
  * Scanout. RAD1's framebuffer is presented directly as True-color 32-bit
- * pixels (PIXMAN_x8r8g8b8) with no palette/gamma indirection -- unlike
- * RAD4's RGB561 window-ID/WAT/LUT path, nothing in the scoped guest
- * workload (a flat rectangle copy and the PROM/standalone textport) is
- * evidenced to need indexed color. This is APPROXIMATED: RAD1's actual
- * pixel format was not independently captured.
+ * pixels (PIXMAN_x8r8g8b8) with no
+ * palette/gamma indirection, unlike RAD4's RGB561 window-ID/WAT/LUT path,
+ * nothing in the guest workload (a flat
+ * rectangle copy and the PROM/standalone textport) needs indexed color.
+ * RAD1's actual pixel format is not
+ * independently confirmed; this model assumes True-color.
  *
- * `framebuffer` stores big-endian words (see the struct field's own
- * comment); `display_buffer` is a host-native-order copy this function
- * maintains for qemu_create_displaysurface_from(), the same two-buffer
- * split psitech-rad4.c's rad4_convert_scanout()/display_buffer use for
- * the same reason.
+ * `framebuffer` stores big-endian words (see the struct field's own comment);
+ * `display_buffer` is a
+ * host-native-order copy this function maintains for
+ * qemu_create_displaysurface_from(), the same two-buffer split
+ * psitech-rad4.c's rad4_convert_scanout()/display_buffer use for the same
+ * reason.
  */
 static void rad1_convert_scanout(PsitechRad1State *s)
 {
@@ -2079,10 +2097,9 @@ static void rad1_reset_hold(Object *obj, ResetType type)
     rad1_update_irq(s);
 
     /*
-     * APPROXIMATED: startup mode-record selection is an open question
-     * (docs/datasheets/psitech-rad1.md, "Startup and flash programming");
-     * this model always runs RAD1_ACTIVE_MODE and says so, rather than
-     * silently picking a resolution with no trace of having done so.
+     * Startup mode-record selection is not modeled; this model always runs
+     * RAD1_ACTIVE_MODE and logs that it does,
+     * rather than silently picking a resolution.
      */
     qemu_log_mask(LOG_UNIMP,
                  "psitech-rad1: startup mode-record selection is not "
@@ -2146,13 +2163,12 @@ static int rad1_post_load(void *opaque, int version_id)
 static const VMStateDescription vmstate_psitech_rad1 = {
     .name = TYPE_PSITECH_RAD1,
     /*
-     * Bumped from 1 to 2 for the Video Timing and Memory Control state,
-     * from 2 to 3 for the RAMDAC palette state, and from 3 to 4 for the
-     * trapezoid/span rasterizer state below: images are never committed
-     * per this project's rules (docs/README.md, "Images stay in ignored
-     * assets/"), so there is no real snapshot-compatibility concern being
-     * broken here, only the ordinary rule that a changed field list needs
-     * a new version.
+     * Bumped from 1 to 2 for the Video Timing and Memory Control state, from
+     * 2 to 3 for the RAMDAC palette state,
+     * and from 3 to 4 for the trapezoid/span rasterizer state below. This
+     * device does not maintain snapshot
+     * compatibility across versions; each bump only tracks the changed field
+     * list.
      */
     .version_id = 4,
     .minimum_version_id = 4,

@@ -1,12 +1,9 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * Hand-assembled bare-metal images for CPU-side Origin 200 qtests.
- *
- * Independent instructions, not code copied from a guest image.  An image
- * is loaded with -bios at 0xbfc00000, so offset 0 is the reset vector and
- * the boot-time exception vectors sit at 0x200 (TLB refill), 0x280 (XTLB
- * refill) and 0x380 (general).  Every CP0 write is followed by four nops
- * because the R10000 has no EHB.
+ * Bare-metal CPU images for Origin 200 qtests, assembled independently.
+ * -bios loads at 0xbfc00000: reset is offset 0; TLB, XTLB and general
+ * exception vectors are at 0x200, 0x280 and 0x380. The R10000 has no EHB,
+ * so four nops follow every CP0 write.
  */
 
 #ifndef SN0_USER_IMAGE_H
@@ -40,21 +37,13 @@
     "-smp 4"
 
 /*
- * The Hub network-interface status register's node-number field, bits
- * 16:8 at offset 0x60_0000, resets to zero on every Hub
- * (docs/datasheets/hub-network-interface.md, "Status, revision and
- * identity", in the Origami project tree): "Writable, because firmware
- * assigns it." After a reset no Hub has a number, so none can be named
- * by an ordinary, node-qualified address -- the same datasheet's
- * "Vector routing" section covers exactly this: a vector operation
- * reaches a small subset of a directly-connected peer's registers by
- * describing the route rather than the destination, route 0x0 being
- * that peer, and "it is how the firmware discovers the fabric, elects
- * a master, assigns node numbers and programs the routing tables."
- * This shared helper does the same thing: a vector-routed write of the
- * target field into the direct peer's status register, issued from the
- * local Hub, the way the PROM's elected master assigns every other
- * node's number before ordinary addressing works at all.
+ * Hub NI status offset 0x60_0000 has a writable node number in bits 16:8;
+ * every Hub resets it to zero for firmware assignment. Before assignment,
+ * node-qualified addresses cannot name a peer. Vector routing reaches a
+ * direct peer's limited registers by route (0x0 for that peer), allowing
+ * firmware to discover the fabric, elect a master, assign node numbers and
+ * program routes. This helper sends a vector write from the local Hub to
+ * set the peer's status field before ordinary addressing works.
  */
 #define SN0_HUB_LOCAL             UINT64_C(0x20001000000)
 #define SN0_NI_STATUS             0x600000
@@ -115,7 +104,9 @@ static inline void sn0_program_nasid(QTestState *qts, unsigned int nasid)
 #define SN0_OPC_LD          55
 #define SN0_OPC_SD          63
 
-/* Status: BEV and KX with ERL clear, for kernel code before the first ERET. */
+/*
+ * Status: BEV and KX with ERL clear, for kernel code before the first ERET.
+ */
 #define SN0_STATUS_KERNEL   0x00400080u
 /* Status: BEV, KX, user KSU and EXL, for the ERET into user code. */
 #define SN0_STATUS_TO_USER  0x00400092u
@@ -268,8 +259,8 @@ static inline void sn0_emit_tlbwr(SN0Image *p)
 
 /*
  * Map one 4 KiB page pair at @vaddr onto @paddr, cached, dirty, valid and
- * global, with @asid left in EntryHi afterwards.  Clobbers t0.  Returns
- * the image offset of the tlbwi itself.
+ * global, with @asid left in EntryHi afterwards. Clobbers t0. Returns the
+ * image offset of the tlbwi itself.
  */
 static inline unsigned int sn0_emit_map_page(SN0Image *p, unsigned int index,
                                              uint32_t vaddr, uint32_t paddr,

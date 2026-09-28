@@ -1,27 +1,27 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
+/* Broadcom BCM570x integrated copper PHY. */
 /*
- * The Broadcom NetXtreme BCM570x integrated copper PHY.
- *
- * The PHY has no address of its own on the bus: software reaches it by writing
- * a register number into the MAC's MI_COMM register and reading a word back, so
- * this device offers a plain read/write pair rather than a MemoryRegion and the
- * MAC calls them when it services a guest's management access. That is the
- * split the in-tree DP83840 model takes, and for the same reason. The MAC is a
- * different Broadcom part but the copper PHY's contract is the ordinary
- * MII/GMII one that OpenBSD's brgphy drives.
+ * The PHY has no address of its own on the bus: software reaches it by
+ * writing a register number into the MAC's MI_COMM register and reading a
+ * word back, so this device offers a plain read/write pair rather than a
+ * MemoryRegion and the MAC calls them when it services a guest's management
+ * access. That is the split the in-tree DP83840 model takes, and for the same
+ * reason. The MAC is a different Broadcom part but the copper PHY's contract
+ * is the ordinary MII/GMII one that OpenBSD's brgphy drives.
  *
  * Link, like the DP83840's, is modelled without a cable: out of reset the
- * board is negotiating -- link down, autonegotiation incomplete -- and the link
- * comes up on its own a short settle after the interface first reads status
- * (the path a poll-only driver takes), or at once when a guest configures the
- * interface with a control-register write (brgphy restarts autonegotiation, so
- * it takes this path). The reported link is also gated on the MAC's netdev
- * link, so a backend that goes down takes the carrier with it.
+ * board is negotiating, link down, autonegotiation incomplete, and the
+ * link comes up on its own a short settle after the interface first reads
+ * status (the path a poll-only driver takes), or at once when a guest
+ * configures the interface with a control-register write (brgphy restarts
+ * autonegotiation, so it takes this path). The reported link is also gated on
+ * the MAC's netdev link, so a backend that goes down takes the carrier with
+ * it.
  *
  * The identity is a decision, not a detail: it decodes to Broadcom's
  * organisational identifier and the BCM5701 model, which is the pair brgphy
- * matches to bind. Written from docs/datasheets/bcm570x.md and the public
- * OpenBSD brgphy/mii sources; no IRIX vendor source was read.
+ * matches to bind. Modelled from the public OpenBSD brgphy/mii sources and
+ * the ordinary MII/GMII register contract they drive.
  */
 
 #include "qemu/osdep.h"
@@ -65,16 +65,16 @@ static void bcm570x_phy_settle_done(void *opaque)
 }
 
 /*
- * Start the autonegotiation settle. A real PHY negotiates on its own as soon as
- * autonegotiation is enabled -- which it is out of reset -- so the settle runs
- * from reset and from the control-register write that restarts it, not from the
- * driver's first look at link.
+ * Start the autonegotiation settle. A real PHY negotiates on its own as soon
+ * as autonegotiation is enabled, which it is out of reset, so the settle
+ * runs from reset and from the control-register write that restarts it, not
+ * from the driver's first look at link.
  *
- * Waiting for that first look is what broke bring-up: the IRIX tg driver reads
- * link status only a handful of times while configuring the interface and then
- * stops for good, so arming on its first read guaranteed every one of those
- * reads saw a link that had not begun negotiating, and the carrier arrived after
- * the driver had given up watching for it.
+ * Waiting for that first look is what broke bring-up: the IRIX tg driver
+ * reads link status only a handful of times while configuring the interface
+ * and then stops for good, so arming on its first read guaranteed every one
+ * of those reads saw a link that had not begun negotiating, and the carrier
+ * arrived after the driver had given up watching for it.
  */
 static void bcm570x_phy_arm_settle(Bcm570xPhyState *s)
 {
@@ -116,8 +116,8 @@ uint16_t bcm570x_phy_read(Bcm570xPhyState *s, int reg)
     case BCM570X_PHY_ANLPAR:
         /*
          * The far end advertises exactly what this end does, which puts the
-         * driver on the route it trusts: it intersects the two words and reads
-         * the media out. Not valid before autonegotiation completes.
+         * driver on the route it trusts: it intersects the two words and
+         * reads the media out. Not valid before autonegotiation completes.
          */
         return up ? (s->anar | BCM570X_PHY_ANLPAR_ACK) : 0;
 
@@ -140,13 +140,13 @@ uint16_t bcm570x_phy_read(Bcm570xPhyState *s, int reg)
     case BCM570X_PHY_AUXSTS:
         /*
          * The auxiliary status summary a brgphy copper link-up reads for the
-         * settled result: autonegotiation complete (ACOMP), and the resolution
-         * 1000baseT full duplex in the highest-common-denominator field
-         * (matching the GTSR/EXTSR gigabit answer above). This is the register
-         * the driver gates the up-path on, so arm the settle here too -- a poll
-         * that reads only this register still brings the link up. Never the
-         * all-ones an absent PHY reads, even while negotiating, so the driver
-         * does not take it for a bad read.
+         * settled result: autonegotiation complete (ACOMP), and the
+         * resolution 1000baseT full duplex in the highest-common-denominator
+         * field (matching the GTSR/EXTSR gigabit answer above). This is the
+         * register the driver gates the up-path on, so arm the settle here
+         * too. A poll that reads only this register still brings the link
+         * up. Never the all-ones an absent PHY reads, even while negotiating,
+         * so the driver does not take it for a bad read.
          */
         bcm570x_phy_arm_settle(s);
         return up ? (BCM570X_PHY_AUXSTS_ACOMP | BCM570X_PHY_AUXSTS_1000TFDX) : 0;
@@ -168,9 +168,9 @@ void bcm570x_phy_write(Bcm570xPhyState *s, int reg, uint16_t val)
     switch (reg) {
     case BCM570X_PHY_BMCR:
         /*
-         * Reset and restart are self-clearing: a driver writes one, then polls
-         * for it to go away. Reset returns the PHY to its cable-less bench
-         * state, link down.
+         * Reset and restart are self-clearing: a driver writes one, then
+         * polls for it to go away. Reset returns the PHY to its cable-less
+         * bench state, link down.
          */
         if (val & BCM570X_PHY_BMCR_RESET) {
             bcm570x_phy_reset(s);
@@ -184,7 +184,7 @@ void bcm570x_phy_write(Bcm570xPhyState *s, int reg, uint16_t val)
          * transition waits on one that already happened.
          *
          * Only a restart restarts it. A driver rewrites this register for
-         * other reasons -- checking the link, setting a mode -- and treating
+         * other reasons, checking the link, setting a mode, and treating
          * every write as a restart drops a working link each time, which the
          * driver sees as the carrier coming back and announces again and
          * again.

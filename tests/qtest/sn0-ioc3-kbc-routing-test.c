@@ -1,11 +1,8 @@
 /*
- * SGI IOC3 keyboard controller: routing host key events between two
- * controllers. The BaseIO-G carries two IOC3s with a keyboard each, the
- * board's at Bridge device 2 and the MediaIO daughtercard's at device 6,
- * and host input without a console binding reaches only one keyboard at a
- * time. The controller's "activate-keyboard" property chooses which. This
- * checks the choice lands in the chosen chip's keyboard receive register and
- * nowhere else.
+ * IOC3 keyboard routing on BaseIO-G: Bridge device 2 and MediaIO device 6
+ * each have a keyboard; host input without a console binding reaches only
+ * the IOC3 selected by activate-keyboard. Check its receive register and
+ * absence of delivery to the other chip.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */

@@ -1,43 +1,24 @@
 /*
  * SPDX-License-Identifier: GPL-2.0-or-later
  *
- * Exercise the cross-node RUNTIME contract of the four-CPU, two-node Origin 200
- * under TCG: the second node's CPUs actually EXECUTE, and a running CPU can
- * NAME each node's memory. These assert deterministic contracts only -- the
- * low-probability init race tracked separately is the soak's job and is NOT
- * reachable here.
- *
- * Every CPU boots from its own node's flash straight to the reset vector --
- * the firmware deletion removed the synthesized secondary-halt and the
- * node-zero fetch redirect a directly loaded kernel needed, so there is no
- * launch step and no CPU fetches another node's copy of the image. Each CPU
- * learns its own identity from hardware: SN0_NODE_ID_PHYS is a position-
- * independent low window the host seeds once per node before releasing any
- * CPU (docs/component-taxonomy.md's node-strided address map; the sn0-user-
- * image.h header this file builds on), and the Hub-local processor number
- * (bit 0 of the PI's own register) gives the slice within that node. Their
- * OR is the global CPU index this file calls identity.
- *
- * Cross-node addressing fact (current model, recorded in the addressing-
- * fact comment by DUAL_NODE_TEST_STATE in
- * tests/functional/mips64/test_sn0_smp.py): an uncached reference with no
- * NASID bits set always resolves to the reading CPU's own node, true for
- * every CPU on every node including node zero. Node one's memory
- * additionally has a NASID-explicit address -- physical bit 32, since the
- * memory space's node_stride is 0x1_0000_0000 -- that reaches it from any
- * CPU as the uncached xkphys 0x9600_0001_0000_0000 | P, once Status.KX is
- * set. Node zero's memory has no such reader-independent address: a node-
- * one CPU has no way to name node zero's RAM explicitly, only its own.
- * That is a fact about this model as built, not a hardware claim, and it
- * decides which node the second test's reader has to be on.
- *
- * The second test rests on that fact. A node-zero CPU, with KX set, reads
- * its own node unqualified and node one through NASID-1 xkphys; the host
- * plants a distinct word in each node at the same offset first, so a pass
- * proves the running CPU distinguished the two -- the NASID selects the
- * node, it is not an alias. This is stronger than sn0-address-map-test's
- * promdata check, which reads each node passively through the monitor
- * rather than from a CPU running a load.
+ * Two-node, four-CPU Origin 200 TCG tests: node-one CPUs execute and a
+ * running CPU addresses both nodes. The low-probability initialization race
+ * is covered by a separate soak. Each CPU fetches its reset vector from
+ * local flash; the removed secondary halt and node-zero fetch redirect
+ * leave no launch step or remote image fetch. The host seeds each node's
+ * position-independent SN0_NODE_ID_PHYS window before CPU release; Hub PI
+ * bit 0 gives the local slice. Their OR is the global CPU index (see
+ * docs/component-taxonomy.md and sn0-user-image.h).
+ * Unqualified uncached reads resolve to the caller's node. With Status.KX,
+ * NASID 1 has physical bit 32 (node_stride 0x1_0000_0000) and xkphys address
+ * 0x9600_0001_0000_0000 | P from any CPU; node zero has no independent
+ * address from node one. This is current model behavior, not a hardware
+ * claim (see DUAL_NODE_TEST_STATE in
+ * tests/functional/mips64/test_sn0_smp.py).
+ * A node-zero CPU reads
+ * distinct host-planted words locally and through NASID 1, proving live CPU
+ * selection rather than the passive monitor promdata read in
+ * sn0-address-map-test.
  */
 
 #include "qemu/osdep.h"
@@ -185,7 +166,7 @@ static uint32_t wait_word(QTestState *qts, uint64_t addr, unsigned int seconds)
 /*
  * A node-qualified physical stride, from the qtest backdoor exactly as from
  * a running CPU, is a fabric-routed request the target Hub must claim by
- * its own programmed number -- there is no PROM here to have done that
+ * its own programmed number. There is no PROM here to have done that
  * silently, so both Hubs are programmed before anything crosses nodes.
  */
 static void seed_nodes(QTestState *qts)

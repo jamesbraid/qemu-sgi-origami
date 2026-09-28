@@ -1,12 +1,7 @@
 /*
- * SGI IOC3 base I/O controller: the two serial ports' DMA engines.
- *
- * The engines are off the console's path, so a working console proves
- * none of this. Four rings share one base register with no read-back --
- * a model resolving a ring to the wrong address answers every register
- * correctly -- so ring addresses are asserted by reading the memory the
- * engine wrote. Every test asks for the I/O bridge explicitly; without
- * it nothing answers at the controller's address.
+ * IOC3 serial DMA tests for two ports outside the console path. Four rings
+ * share a write-only base; inspect DMA memory to catch wrong ring addresses.
+ * Each test requests the I/O Bridge needed to decode IOC3's address.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
@@ -157,7 +152,7 @@ static uint64_t sdma_alias(unsigned int port, unsigned int reg)
     return (port ? SDMA_ALIAS_B : SDMA_ALIAS_A) + reg;
 }
 
-/* The ring base register's low word: a size select and a 4 KB-aligned base. */
+/* The ring base register's low word: size select and a 4 KB-aligned base. */
 #define RING_4K         (1u << 0)
 
 /* The port control register's fields. */
@@ -233,8 +228,7 @@ static uint64_t serial_port(unsigned int port)
 }
 
 /*
- * Turns a would-be hang into a failure; 120s is the load-triage deadline
- * (docs/notebooks/ioc3-serial-dma.md in the project tree).
+ * Turns a would-be hang into a failure; 120s is the load-triage deadline.
  */
 #define IOC3_SERIAL_SOCKET_TIMEOUT_SECS 120
 
@@ -649,8 +643,8 @@ static void test_the_alias_refuses_the_registers_hardware_owns(const void *data)
 /*
  * Modem status takes a write into its four change indicators, and the live
  * line levels above them are untouched by it. Unlike line status, the
- * PC16550D datasheet does not describe a write to this register at all --
- * the Origin 300 board test is the whole of the evidence, and it writes 0x0f
+ * PC16550D datasheet does not describe a write to this register at all.
+ * The Origin 300 board test is the whole of the evidence, and it writes 0x0f
  * and requires those four bits back. A read clears them, which is the
  * datasheet's own rule for the indicators.
  */
@@ -690,7 +684,7 @@ static void test_modem_status_takes_a_factory_test_write(const void *data)
  * chip embeds drops the write entirely. Bit 7 is not one of them.
  *
  * Reading line status is what clears the error bits it reports, so the
- * written bits last exactly one read -- see the datasheet for what that
+ * written bits last exactly one read. See the datasheet for what that
  * models and what it does not.
  */
 static void test_line_status_takes_a_factory_test_write(const void *data)
@@ -730,7 +724,7 @@ static void test_line_status_takes_a_factory_test_write(const void *data)
  * shared 16550 core this chip embeds masks that bit away. Bits 6 and 7 stay
  * zero: the test never writes them, so neither does this.
  *
- * Only the bit is modelled, not automatic flow control itself -- see the
+ * Only the bit is modelled, not automatic flow control itself. See the
  * datasheet for what that leaves out.
  */
 static void test_modem_control_holds_the_autoflow_bit(const void *data)
@@ -766,7 +760,7 @@ static void test_modem_control_holds_the_autoflow_bit(const void *data)
  * test is what says so: it writes the transmit consume index and reads it
  * back, with the produce index cleared and nothing transmitting, so no
  * engine advance could have put the value there. Only the pointer field
- * stores -- the bits above it report engine state and a write cannot forge
+ * stores, the bits above it report engine state and a write cannot forge
  * them. Both sizes, because the pointer is as wide as the ring.
  */
 static void test_the_main_block_places_the_engine_indexes(const void *data)
@@ -805,7 +799,7 @@ static void test_the_main_block_places_the_engine_indexes(const void *data)
 /*
  * The DMA console driver reads carrier from the shadow; a shadow of zero
  * cached a carrier-down at console open and hung the console, and the
- * firmware's loopback diagnostic never reads carrier -- only this does.
+ * firmware's loopback diagnostic never reads carrier. Only this does.
  */
 static void test_the_shadow_mirrors_the_port(const void *data)
 {
@@ -835,8 +829,8 @@ static void test_the_shadow_mirrors_the_port(const void *data)
 /*
  * Looped back with hardware flow control on, a port reports clear-to-send
  * although software left request-to-send clear. The Origin 300 IO-8 board
- * test sets exactly that -- modem control 0x11, data-terminal-ready and
- * loopback, then control 0x10120020 -- sends "abcd" and requires each
+ * test sets exactly that: modem control 0x11, data-terminal-ready and
+ * loopback, then control 0x10120020, sends "abcd" and requires each
  * status byte to read 0xd0 once carrier-detect is masked away. Without the
  * flow-control bit the port is an ordinary 16550 in loopback, where
  * clear-to-send follows request-to-send, and that half pins the condition
@@ -891,7 +885,7 @@ static void test_loopback_flow_control_reports_clear_to_send(const void *data)
  * Chip control tells each serial DMA engine where its 16550 sits in the
  * SuperIO window; an engine aimed anywhere else does not reach the port.
  * The Origin 300 IO-8 board test leaves port B's ring DMA enabled from its
- * DMA checks, writes chip control 0x38000 -- both port fields zero -- and
+ * DMA checks, writes chip control 0x38000 (both port fields zero) and
  * then runs a byte-wide loopback test on port B, requiring the character
  * it sent to wait in the 16550 for it.
  */
@@ -1043,11 +1037,10 @@ static void test_a_blocked_backend_keeps_every_transmit_character(
 }
 
 /*
- * A backend that is connected but never reads -- the qualification harness
- * attaches its console reader after resuming the guest (docs/notebooks or
- * tools/origami_lib/guest.py's shell_session, opened after the "cont" in
- * irix_network_test.py), so bytes can land before anyone is listening --
- * gives the byte-wide UART's transmit path no fd event to wake it up: the
+ * A backend that is connected but never reads gives the byte-wide UART's
+ * transmit path no fd event to wake it up. The qualification harness
+ * attaches its console reader after resuming the guest, so bytes can land
+ * before anyone is listening. The
  * write returns EAGAIN, a watch is armed, and nothing ever signals it.
  * Real hardware never waits on a listener either: a 16550 clocks each byte
  * out at the programmed baud rate whatever is on the other end of the wire.
@@ -1188,7 +1181,7 @@ static void test_a_recovered_backend_resumes_delivery(const void *data)
 }
 
 /*
- * The same backend, reached through the DMA ring PR #529 taught to wait for
+ * The same backend, reached through the DMA ring that waits for
  * the UART's transmit-ready level: a hold that never expires there is the
  * PROM base I/O diagnostic's stall, since its loopback exercise sends
  * through this path before a console reader has ever read anything.
@@ -1199,15 +1192,14 @@ static void test_a_never_drained_backend_still_advances_the_ring(
     static const uint8_t out[4] = { 'w', 'x', 'y', 'z' };
     static const uint8_t control[4] = {
         /*
-         * The engine's tx-ready signal follows LSR.THRE, which the UART
-         * sets again the moment a byte leaves the holding register for the
-         * shift register -- before that byte is actually delivered. The
-         * first character always slips through on that transient high, and
-         * a second character sits in the holding register behind it
-         * without its own retry ever starting; only a third character
-         * finds tx-ready genuinely low, so this needs all four slots
-         * filled.
-         */
+ * The engine's tx-ready signal follows LSR.THRE, which the UART sets again
+ * the moment a byte leaves the holding register for the shift register,
+ * before that byte is actually delivered. The first character always slips
+ * through on that transient high, and a second character sits in the holding
+ * register behind it without its own retry ever starting; only a third
+ * character finds tx-ready genuinely low, so this needs all four slots
+ * filled.
+ */
         TX_CHARACTER, TX_CHARACTER, TX_CHARACTER, TX_CHARACTER | TX_INTERRUPT,
     };
     QTestState *qts;
@@ -1530,8 +1522,8 @@ static void test_a_reset_returns_the_channels_to_the_start(const void *data)
 }
 
 /*
- * A modem-typed byte reaches the modem control register, not the wire --
- * mistyped, it is a stray console character and a line that never moves.
+ * A modem-typed byte reaches the modem control register, not the wire.
+ * Mistyped, it is a stray console character and a line that never moves.
  */
 static void test_a_modem_entry_reaches_the_modem_register(const void *data)
 {
@@ -1720,8 +1712,8 @@ static void test_a_serial_dma_source_follows_the_enable_mask(const void *data)
 /*
  * IRIX's ring-only console: DMA on, timer armed, only ring sources enabled,
  * the 16550's interrupt enables never written. An arriving character must
- * still reach the ring -- the register state read off a stalled machine,
- * replayed.
+ * still reach the ring. This replays the register state read off a stalled
+ * machine.
  */
 static void test_a_ring_only_guest_receives_arriving_characters(
     const void *data)
@@ -1927,7 +1919,7 @@ static void test_crossing_the_high_water_mark_raises_its_source(
 
 /*
  * A level, not a latch: IRIX never acknowledges it, its service loop reads
- * until the level drops -- a latched raise leaves that loop spinning.
+ * until the level drops. A latched raise leaves that loop spinning.
  * Consuming below the mark must clear it unaided.
  */
 static void test_consuming_below_the_high_water_mark_drops_it(const void *data)
@@ -2254,7 +2246,7 @@ static void test_a_system_reset_clears_the_held_packer_and_the_timer(
 
 /*
  * A failed entry fetch raises the port's PCI error source and leaves the
- * consume index put -- not a walk over stack garbage.
+ * consume index put, avoiding a walk over stack garbage.
  */
 static void test_an_unbacked_transmit_ring_raises_the_pci_error(
     const void *data)
@@ -2524,35 +2516,35 @@ static void test_a_loopback_character_stays_out_of_the_record(
 }
 
 /*
- * docs/datasheets/ioc3.md, "IOC3 overloads the scratch register": while a
- * port's divisor latch is selected, a write to its scratch register (offset
- * 7) programs the 16550's clock pre-divider instead of storing a scratch
- * byte. The PROM and IRIX write 6, for a divide of 3. A model that treats
- * offset 7 as plain storage still boots -- the guest only ever reads back
- * what it wrote -- so the only thing that can hold this contract is a real
- * baud rate landing on the far side of a backend that cares what it is.
+ * The IOC3 overloads the scratch register: while a port's divisor latch is
+ * selected, a write to its scratch register (offset 7) programs the 16550's
+ * clock pre-divider instead of storing a scratch byte. The PROM and IRIX
+ * write 6, for a divide of 3. A model that treats offset 7 as plain storage
+ * still boots because the guest only ever reads back what it wrote. Thus the
+ * only thing that can hold this contract is a real baud rate landing on the
+ * far side of a backend that cares what it is.
  *
  * -chardev wctablet is that backend: chardev/wctablet.c answers nothing at
- * all unless the frontend's computed line speed is exactly 9600, gating
- * every reply on the very number this overload feeds. A predivider of 6
- * with a divisor of 48 lands on 9600 only if the reference clock behind the
- * divisor is the datasheet's inferred 22.1184 MHz crystal, divided by three;
- * left unprogrammed, the 115200 Hz default gives 2400 instead and the
- * chardev stays silent. Everything below runs synchronously inside a single
- * qtest_writeb(): the wctablet backend answers a THR write by calling back
- * into the port's receive path before that write returns, so no clock step
- * is needed to observe a reply.
+ * all unless the frontend's computed line speed is exactly 9600, gating every
+ * reply on the very number this overload feeds. A predivider of 6 with a
+ * divisor of 48 lands on 9600 only if the reference clock behind the divisor
+ * is an inferred 22.1184 MHz crystal, divided by three; left unprogrammed,
+ * the 115200 Hz default gives 2400 instead and the chardev stays silent.
+ * Everything below runs synchronously inside a single qtest_writeb(): the
+ * wctablet backend answers a THR write by calling back into the port's
+ * receive path before that write returns, so no clock step is needed to
+ * observe a reply.
  */
 #define WCTABLET_PREDIVIDE_BY_3 6
 #define WCTABLET_DIVISOR_9600   48
 #define WCTABLET_IDENTITY       "~#CT-0045R,V1.3-5,"
 
 /*
- * Selects the divisor latch, writes the pre-divider unless it is 0 (the
- * "left unprogrammed" case), then the divisor, then returns the port to
- * 8N1 with the divisor latch cleared. Asserts the scratch register reads
- * back what it was given while the latch is still selected, the only time
- * the datasheet's overload leaves the guest anything to read back against.
+ * Selects the divisor latch, writes the pre-divider unless it is 0 (the "left
+ * unprogrammed" case), then the divisor, then returns the port to 8N1 with
+ * the divisor latch cleared. Asserts the scratch register reads back what it
+ * was given while the latch is still selected, the only time the
+ * scratch-register overload leaves the guest anything to read back against.
  */
 static void configure_line_at_divisor(QTestState *qts, unsigned int port,
                                       uint8_t predivider, uint16_t divisor)
@@ -2642,14 +2634,14 @@ static void test_a_left_unprogrammed_predivider_leaves_the_backend_silent(
  * The pre-divider is a migrated field, but the baudbase it derives is a
  * realize-time property of the embedded SerialState, not itself a vmstate
  * field: vmstate_serial's own post_load runs first, nested inside the
- * struct-array field load above sgi_ioc3_post_load, and computes the
- * port's parameters from the 16550 core's stock default before
- * sgi_ioc3_post_load gets a chance to rederive anything. A snapshot taken
- * after the guest programmed a pre-divider otherwise comes back at the
- * wrong baud rate until the guest touches the scratch register again --
- * invisible to a register readback, so this drives it through the same
- * -chardev wctablet destination as the two tests above, but checks the
- * destination of a migration instead of the machine that was configured.
+ * struct-array field load above sgi_ioc3_post_load, and computes the port's
+ * parameters from the 16550 core's stock default before sgi_ioc3_post_load
+ * gets a chance to rederive anything. A snapshot taken after the guest
+ * programmed a pre-divider otherwise comes back at the wrong baud rate until
+ * the guest touches the scratch register again. This is invisible to a
+ * register readback, so this drives it through the same -chardev wctablet
+ * destination as the two tests above, but checks the destination of a
+ * migration instead of the machine that was configured.
  */
 static void test_the_scratch_predivider_survives_migration(const void *data)
 {
@@ -2691,14 +2683,14 @@ static void test_the_scratch_predivider_survives_migration(const void *data)
 
 /*
  * sgi_ioc3_reset_hold() does not touch serial_predivider[], and the 16550
- * core's own reset does not touch baudbase either, so a system reset --
- * unlike migration's nested vmstate_serial post_load -- has nothing that
- * would recompute the port's baud rate from the wrong default in the first
- * place. This is the datasheet's stated approximation from the other
- * direction: reprogram only the divisor and line control across a reset,
- * the way a guest that assumes its earlier pre-divider write survived
- * would, and the backend should still answer at the pre-divider's baud
- * rate rather than at whatever a cleared pre-divider would fall back to.
+ * core's own reset does not touch baudbase either, so a system reset (unlike
+ * migration's nested vmstate_serial post_load) has nothing that would
+ * recompute the port's baud rate from the wrong default in the first place.
+ * Test the stated model approximation across reset: reprogram only the
+ * divisor and line control across a reset, the way a guest that assumes its
+ * earlier pre-divider write survived would, and the backend should still
+ * answer at the pre-divider's baud rate rather than at whatever a cleared
+ * pre-divider would fall back to.
  */
 static void test_the_scratch_predivider_survives_a_system_reset(
     const void *data)
@@ -2734,7 +2726,7 @@ static void test_the_scratch_predivider_survives_a_system_reset(
  * client's pixel coordinate through ui/input.c's qemu_input_scale_axis()
  * before wctablet's own input handler ever sees it, and only once
  * SetEncodings has run after "ST" activated that handler does the
- * server latch itself into absolute mode at all --
+ * server latch itself into absolute mode at all.
  * check_pointer_type_change(), called unconditionally at the tail of
  * set_encodings(), sets vs->absolute from qemu_input_is_absolute()
  * whether or not the client asked for the pointer-type-change encoding.
@@ -2743,8 +2735,8 @@ static void test_the_scratch_predivider_survives_a_system_reset(
  * is not part of this build (tests/qtest/meson.build only adds that
  * test when gvnc is found), and a register-contract test has no
  * business depending on it anyway. Each expected coordinate is computed
- * here by replicating production's two independent rescales -- the VNC
- * layer's and wctablet's own -- rather than by calling into either, so
+ * here by replicating production's two independent rescales (the VNC
+ * layer's and wctablet's own) rather than by calling into either, so
  * a real divergence in either rescale shows up as a mismatch instead of
  * validating itself.
  */
@@ -2802,7 +2794,7 @@ static uint32_t rfb_read_u32(int fd)
 
 /*
  * The RFB 3.8 handshake through ServerInit, ending with the server's
- * negotiated framebuffer size -- the range pointer_event() scales every
+ * negotiated framebuffer size, which pointer_event() scales every
  * PointerEvent's coordinates against. These tests attach no graphics
  * device, so that size comes from QEMU's placeholder display surface,
  * not a modeled framebuffer; reading it back rather than assuming a

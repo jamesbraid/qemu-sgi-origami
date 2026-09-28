@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SGI XBridge register and PCI head definitions. */
 #ifndef HW_PCI_HOST_SGI_XBRIDGE_H
 #define HW_PCI_HOST_SGI_XBRIDGE_H
 
@@ -17,9 +18,8 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIXBridgeState, SGI_XBRIDGE)
 #define SGI_XBRIDGE_HEAD_RAW_PCI_IRQS 32
 #define SGI_XBRIDGE_HEAD_REG_COUNT (0x300 / 8)
 /*
- * Revision B's table: 1024 entries of storage, of which the page mapper
- * uses the first 512 (docs/datasheets/xbridge.md, "Translation RAM by chip
- * revision").
+ * Revision B's table: 1024 entries of storage, of which the page mapper uses
+ * the first 512.
  */
 #define SGI_XBRIDGE_HEAD_ATE_COUNT 1024
 #define SGI_XBRIDGE_HEAD_ATE_MAPPED 512
@@ -27,18 +27,18 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIXBridgeState, SGI_XBRIDGE)
 /*
  * A head's "board-part"/"onewire-serial" properties (and the machine's
  * "board-part-e"/"board-part-f" etc. on the chip) place a MicroLAN
- * board-identity record on that head's BRIDGE_NIC register (offset 0xb0).
- * No IP45 IO-8 identity capture exists (docs/datasheets/xbridge.md, "Origin
- * 300 IO-8 population supplement"), so a machine that needs the stock PROM's
- * bus-walk to attach the IO-8's bridge object -- without asserting real
- * hardware bytes it doesn't have -- uses this explicit placeholder pair
- * rather than an Origin 200/2000 part number, which would read as an
- * observed IP45 fact.
+ * board-identity record on that head's BRIDGE_NIC register (offset 0xb0). No
+ * real IP45 IO-8 identity bytes are known, so a machine that needs the stock
+ * PROM's bus-walk to attach the IO-8's bridge object uses this explicit
+ * placeholder pair. An Origin 200/2000 part number would read as an
+ * observed IP45 fact; the placeholder claims no real hardware bytes.
  */
 #define SGI_XBRIDGE_NIC_PLACEHOLDER_PART   "NOT-OBSERVED"
 #define SGI_XBRIDGE_NIC_PLACEHOLDER_SERIAL 0x060504030201ULL
 
-/* The crossbar ports a machine can attach to: 8 to 0xd, the heads excluded. */
+/*
+ * The crossbar ports a machine can attach to: 8 to 0xd, the heads excluded.
+ */
 #define SGI_XBRIDGE_EXTERNAL_PORTS 6
 
 /*
@@ -86,9 +86,9 @@ struct SGIXBridgeHeadState {
     uint8_t pins;
     /*
      * The head's own MicroLAN board-identity part, present only for a head
-     * whose widget carries a board -- board_part unset (NULL) leaves the
-     * bus unbuilt and the register at BRIDGE_NIC inert, matching a head
-     * with no board behind it.
+     * whose widget carries a board. With board_part unset (NULL), the bus
+     * unbuilt and the register at BRIDGE_NIC inert, matching a head with no
+     * board behind it.
      */
     OneWireBus *onewire_bus;
     char *board_part;

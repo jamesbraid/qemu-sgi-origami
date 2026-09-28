@@ -22,11 +22,10 @@ would wrap is refused instead. The ISP12160 also carries the same load
 under a distinct A64 opcode.
 
 The register contract is driver-sourced for both parts -- no vendor
-programming manual for either exists. The Origami project tree carries
-a datasheet per part recording the cross-check: Linux qla1280 against
-NetBSD isp for the map, with OpenBSD 7.9 qlw for ISP1040 behavior and
-a clean-room review of the selected IRIX guest for the ISP12160. No
-vendor or driver code is reproduced.
+programming manual for either exists. It is cross-checked across
+public drivers: Linux qla1280 against NetBSD isp for the register map,
+and OpenBSD 7.9 qlw for ISP1040 behaviour. No vendor or driver code is
+reproduced.
 
 Identity and revisions
 ======================
@@ -270,9 +269,8 @@ They are not claims about unobserved silicon:
   this case. Unlike the selections above it is backed by a consumer
   observation rather than only by the absence of one: IRIX 6.5.30 logs a
   hard error for every absent target when the bit is clear and scans
-  silently when it is set, on both channels. The datasheet extension
-  recording that case has landed on the Origami side, and the per-part
-  field stays so the choice is visible per part.
+  silently when it is set, on both channels. The per-part field stays
+  so the choice is visible per part.
 
 Mailboxes and queue pointers
 ============================

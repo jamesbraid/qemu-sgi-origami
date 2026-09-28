@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * Isolated Bedrock composition and processor interrupt contract. The empty
- * machine's R10000 supplies an address space only; no CPU executes.
+ * Isolated Bedrock composition and processor interrupts; empty-machine
+ * R10000 supplies an address space only and executes no code.
  */
 #include "qemu/osdep.h"
 #include <gio/gio.h>
@@ -126,8 +126,8 @@ static void test_identity_storage_and_width(void)
     uint8_t actual[8];
 
     /*
-     * A qtest access has no issuing processor; the model takes it as slot
-     * A, so bit 0 reads 0 and bit 1 carries the interface.
+     * A qtest access has no issuing processor; the model takes it as slot A,
+     * so bit 0 reads 0 and bit 1 carries the interface.
      */
     g_assert_cmphex(qtest_readq(s, PI(0, CPU_NUMBER)), ==, 0);
     g_assert_cmphex(qtest_readq(s, PI(1, CPU_NUMBER)), ==, 2);
@@ -169,10 +169,9 @@ static void test_identity_storage_and_width(void)
 }
 
 /*
- * Presence follows the configured count, filling interface 0 before
- * interface 1. Which interface a second pair sits on is a board fact the
- * datasheet leaves to the configuration graph; this order is the model's
- * until the machine states it.
+ * Presence follows the configured count, filling interface 0 before interface
+ * 1. A second pair's interface depends on board wiring; this population
+ * order is model policy until the machine defines it.
  */
 static void test_processor_presence(void)
 {
@@ -323,9 +322,9 @@ static void test_pending_modify_and_reflection(void)
 
     /*
      * Bit 62 reflects the network interface's error line. The interface
-     * raises it from port errors nothing can produce without a link, so
-     * drive the parent's input directly: that proves the processor
-     * interface's half of the path and invents no network register.
+     * raises it from port errors nothing can produce without a link, so drive
+     * the parent's input directly: that proves the processor interface's half
+     * of the path and invents no network register.
      */
     qtest_irq_intercept_out_named(s, BEDROCK_PATH, "hardware-irq");
     qtest_set_irq_in(s, BEDROCK_PATH, "ni-error", 0, 1);
@@ -373,7 +372,7 @@ static void test_pending_modify_and_reflection(void)
 /*
  * The coherency-pending registers. The public SN1 header settles the set
  * path: a store to a set register raises the bit for the storing processor's
- * region, not the data written -- the model stands in this interface's
+ * region, regardless of the data written. The model uses this interface's
  * request region (region 0 by default) for that source, as the protection
  * override does. The clear register is data-bit write-one-to-clear, and both
  * the set and clear aliases read the backing word. Each region word's
@@ -461,9 +460,9 @@ static void test_coherency_pending(void)
 }
 
 /*
- * The set path raises the storing processor's region bit, and the model
- * takes the source region from this interface's request region. Forcing that
- * region away from its default discriminates the region-source reading from a
+ * The set path raises the storing processor's region bit, and the model takes
+ * the source region from this interface's request region. Forcing that region
+ * away from its default discriminates the region-source reading from a
  * data-bit one: data 0x1 would select bit 0 under a data reading, but the set
  * bit follows the forced region instead.
  */
@@ -536,7 +535,7 @@ static void test_masks_remap_and_isolation(void)
     /*
      * The remap field retains its bits. Which of bank 1 bits 31:0 a field
      * value redirects to hardware interrupt 0 is not stated, so no line is
-     * asserted here until the datasheet records the decode.
+     * asserted here until the decode is known.
      */
     qtest_writeq(s, PI(0, REMAP), UINT64_MAX);
     g_assert_cmphex(qtest_readq(s, PI(0, REMAP)), ==, 0x1f);
@@ -582,12 +581,10 @@ static void test_masks_remap_and_isolation(void)
 }
 
 /*
- * The datasheet gives no reset value for any register of this unit. These
- * are the model's stated hypothesis (protection and region present all
- * ones, cached alias, masks, pending banks and timers zero, the counter
- * running), read before any write so a change to them is visible. Whether
- * a system reset restores the soft-reset survivors is a model choice the
- * datasheet has not stated; this test asserts nothing about that.
+ * Hardware reset values are unknown. Model power-on policy sets protection
+ * and region-present words to all ones. It clears cached alias, masks,
+ * pending banks and timers, and runs the counter. Read before any write.
+ * Whether system reset restores soft-reset survivors remains unspecified.
  */
 static void test_power_on_values(void)
 {
@@ -629,9 +626,9 @@ static void test_power_on_values(void)
 }
 
 /*
- * Registers the datasheet says survive a soft reset (the model equates that
- * reset with the network interface's local reset), and registers whose
- * reset value the datasheet leaves unknown, which the model clears.
+ * Registers that survive a soft reset (the model equates that
+ * reset with the network interface's local reset), and registers whose reset
+ * value is unknown, which the model clears.
  */
 static void write_reset_probe(QTestState *s)
 {
@@ -673,10 +670,8 @@ static void check_reset_probe(QTestState *s)
                     0x123456780ULL);
     g_assert_cmphex(qtest_readq(s, PI(0, ERROR_STACK_SIZE)), ==, 0xf);
     /*
-     * Datasheet reset values: none of these are stated. Zero is the model's
-     * choice for every unknown reset value, and the timer zero is the
-     * datasheet's stated emulator reset. A reset that left any of them
-     * would not be a reset of this unit at all.
+     * Hardware reset values are unknown. The model clears them, including
+     * the timer. A reset that retained any would not reset this unit.
      */
     g_assert_cmphex(qtest_readq(s, PI(0, PENDING_0)), ==, 0);
     g_assert_cmphex(qtest_readq(s, PI(0, MASK_0_A)), ==, 0);
@@ -718,11 +713,11 @@ static void test_local_reset(void)
 }
 
 /*
- * The model captures no error, counts no negative acknowledgement and
- * spools nothing, so these registers can only be shown to read zero, to
- * retain the fields the datasheet names, to accept the Itanium port's
- * initialisation writes, and to keep or lose their values across a reset.
- * None of that establishes what the hardware captures.
+ * The model captures no error, counts no negative acknowledgement and spools
+ * nothing, so these registers can only be shown to read zero, to retain the
+ * named fields, to accept the Itanium port's initialisation
+ * writes, and to keep or lose their values across a reset. None of that
+ * establishes what the hardware captures.
  */
 static void test_error_capture_registers(void)
 {
@@ -737,7 +732,9 @@ static void test_error_capture_registers(void)
     for (unsigned i = 0; i < ARRAY_SIZE(status); i++) {
         g_assert_cmphex(qtest_readq(s, PI(0, status[i])), ==, 0);
     }
-    /* Status registers are capture, not storage: a direct write is dropped. */
+    /*
+     * Status registers are capture, not storage: a direct write is dropped.
+     */
     qtest_writeq(s, PI(0, ERROR_STATUS_0_A), UINT64_MAX);
     qtest_writeq(s, PI(0, ERROR_STATUS_1_B), UINT64_MAX);
     /* The Itanium port writes all ones to both clear aliases at init. */
@@ -754,7 +751,9 @@ static void test_error_capture_registers(void)
     qtest_writeq(s, PI(0, NACK_COUNT_B), 0x12345);
     qtest_writeq(s, PI(0, NACK_COMPARE), UINT64_MAX);
     qtest_writeq(s, PI(0, SPOOL_MASK), UINT64_MAX);
-    /* The error-check enable keeps its six control bits over reserved ones. */
+    /*
+     * The error-check enable keeps its six control bits over reserved ones.
+     */
     qtest_writeq(s, PI(0, ERR_CHECK_ENABLE), UINT64_MAX);
     qtest_writeq(s, PI(0, SPURIOUS_HEADER_0), 0x8123456789abcdefULL);
     qtest_writeq(s, PI(0, SPURIOUS_HEADER_1), 0x0fedcba987654321ULL);
@@ -781,9 +780,9 @@ static void test_error_capture_registers(void)
                     ((1ULL << 56) | (1ULL << 57)), ==, 0);
 
     /*
-     * The spurious headers are "not cleared at reset" in the header's
-     * words. The nack and spool-mask reset values are unknown; the model
-     * reads them as zero, its choice for every unknown reset value.
+     * The spurious headers are "not cleared at reset" in the header's words.
+     * The nack and spool-mask reset values are unknown; the model reads them
+     * as zero, its choice for every unknown reset value.
      */
     qtest_writeq(s, NI(0x08), 4);
     g_assert_cmphex(qtest_readq(s, PI(0, SPURIOUS_HEADER_0)), ==,
@@ -803,7 +802,7 @@ static void test_error_capture_registers(void)
  * runs no request-buffer timeout, so it keeps the low eight bits of the
  * maximum and the low 24 of the scale, reads the reserved bits back as zero,
  * and clears both on the local reset like every register whose reset value
- * the datasheet leaves unknown.
+ * is unknown.
  */
 static void test_request_buffer_timeout(void)
 {
@@ -829,12 +828,12 @@ static void test_request_buffer_timeout(void)
 }
 
 /*
- * A store to NMI A or B delivers no NMI: the trigger predicate is in no public
- * source, and the stock PROM's 0x100 init store to both offsets demonstrably
- * does not fire one (a MIPS NMI vectors to the reset vector, so a self-NMI
- * would reset-loop the single-node PROM, which boots). The store is inert at
- * this register and the processor's NMI line stays low; a modelled NMI arrives
- * over that line from the L1 controller instead.
+ * A store to NMI A or B delivers no NMI: the trigger predicate is in no
+ * public source, and the stock PROM's 0x100 init store to both offsets
+ * demonstrably does not fire one (a MIPS NMI vectors to the reset vector, so
+ * a self-NMI would reset-loop the single-node PROM, which boots). The store
+ * is inert at this register and the processor's NMI line stays low; a
+ * modelled NMI arrives over that line from the L1 controller instead.
  */
 static void test_nmi(void)
 {
@@ -1113,11 +1112,11 @@ static void test_migration_preserves_counter_phase(void)
 }
 
 /*
- * The CPU-enable registers drive the interface's cpu-enable outputs, line
- * 0 for processor A and 1 for B, at bit 0 of each write. The registers
- * survive the local reset and the level is driven again after it; that
- * half installs the intercept after the write, so only the re-drive can
- * raise the line the test observes.
+ * The CPU-enable registers drive the interface's cpu-enable outputs, line 0
+ * for processor A and 1 for B, at bit 0 of each write. The registers survive
+ * the local reset and the level is driven again after it; that half installs
+ * the intercept after the write, so only the re-drive can raise the line the
+ * test observes.
  */
 static void test_cpu_enable_lines(void)
 {
@@ -1190,12 +1189,11 @@ static void test_cpu_enable_migration(void)
  * The processor number's slot bit comes from whichever processor issued the
  * read, so a qtest cannot exercise it: every qtest access goes through
  * first_cpu's address space with no issuing processor set, and the model
- * answers slot A whatever the base is. The A-versus-B discrimination lives
- * in a ROM test, executed by the second processor.
- *
- * What is checkable here is that the fallback is stable and that nothing
- * else leaks into the register: moving the node's processor base must not
- * change a qtest's answer, and only the interface bit may be set.
+ * answers slot A whatever the base is. The A-versus-B discrimination lives in
+ * a ROM test, executed by the second processor.
+ * What is checkable here is that the fallback is stable and that nothing else
+ * leaks into the register: moving the node's processor base must not change a
+ * qtest's answer, and only the interface bit may be set.
  */
 static void test_cpu_number_fallback(void)
 {

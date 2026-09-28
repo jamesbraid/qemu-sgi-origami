@@ -90,7 +90,7 @@ static void test_error_clear(void)
 
 static void test_reset_retention(void)
 {
-    /* Seed retained state as a migration load could; no link event is faked. */
+    /* Seed retained migration state without faking a link event. */
     SGIBedrockNIRegs s = { .sideband = 0xabcde };
 
     sgi_bedrock_ni_regs_write(&s, 0x38, 0xa55a);

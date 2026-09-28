@@ -10,8 +10,7 @@ one half resolves to whichever node the reading processor sits on,
 the other names a node explicitly. QEMU models it in
 ``hw/misc/sgi-hub.c``, implementing the registers guests touch on the
 way to a console and reporting anything else rather than answering
-it. The Origami project tree's Hub datasheets carry the field-level
-sources.
+it.
 
 Two registers decide things a guest cannot recover from: the
 processor-number register (which of a node's two processors it is,
@@ -287,8 +286,7 @@ slot not complete inside the write. A slot armed before a reset must
 not complete after it.
 
 The bus carries one responder: a DS2505-compatible part holding the
-installed PIMM's manufacturing record, which is the settled contract
-of the Origami project tree's hub one-wire datasheet -- the firmware
+installed PIMM's manufacturing record. The firmware
 reads its ROM identity as a remote node's NIC -- its name for this
 Number-In-a-Can identity chip, not a network device -- during
 headless bring-up, and without it that read reported nothing present
@@ -472,9 +470,8 @@ whenever its map changes, which the fabric recomputes when any Hub's
 field is stored, at reset exit, and after a migration load. At reset
 every Hub answers node zero, so each node's
 early self-addressed initialisation stays on its own Hub until the
-global master assigns real numbers. The contract is the "node number
-a Hub answers to is programmed, not fixed" section of
-docs/datasheets/address-map.md in the origami project tree.
+global master assigns real numbers. The rule is that the node number
+a Hub answers to is programmed, not fixed.
 
 The cached-alias size register bounds each processor view's nameless
 low window in the memory space, and only there: the register's

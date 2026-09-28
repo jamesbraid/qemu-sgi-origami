@@ -1,27 +1,13 @@
 /*
  * SPDX-License-Identifier: GPL-2.0-or-later
  *
- * The fabric interface on the dual-module Origin 200: every class of node-qualified
- * traffic resolves by the programmed node number of a reachable Hub, through
- * the machine-owned fabric, and nothing resolves by board position.
- *
- * The two-node Origin 200 is two Hubs joined by one CrayLink cable, so its
- * fabric is the routed fabric with no Router on the graph: each Hub reaches
- * itself by its own number and the other Hub by that Hub's programmed
- * number, and nothing else. The tests renumber node 1 to a number that is no
- * board position (7) to tell a map keyed by programmed number from the
- * board-keyed aliases the fork had before this change, which could reach a
- * peer only at its board stride.
- *
- * The qtest backdoor is processor 0's view of the machine, so it too reaches
- * a node by that node's programmed number: once node 1 is renumbered to 7,
- * its memory, its Hub, and its Bridge sit at stride 7 for every access here.
- *
- * Contract: the routed-fabric design and its test contract in the Origami
- * project tree (docs/designs/2026-09-03-origin2000-routed-fabric-design.md and
- * docs/plans/origin2000-fabric-test-contract.md); the address-map datasheet's
- * programmed-node-number rule; the BTE datasheet's rule that its addresses
- * are physical, node field included.
+ * Dual-module Origin 200 fabric tests: reachable Hubs resolve by their
+ * programmed node numbers, never board position. The two CrayLink-connected
+ * Hubs use the machine-owned routed fabric without a Router; each reaches
+ * itself and its peer by programmed number only. Renumber node 1 to 7 to
+ * expose the old board-stride alias. Qtest uses CPU 0's view; node-7 memory,
+ * Hub and Bridge answer at stride 7. Block-transfer addresses are physical,
+ * including the node field.
  */
 
 #include "qemu/osdep.h"

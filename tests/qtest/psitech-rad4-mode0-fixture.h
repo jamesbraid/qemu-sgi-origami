@@ -1,15 +1,12 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * Generated from the reviewed RAD4 mode-zero fixture, not hand-authored.
+ * Generated fixture for the RAD4 mode-zero write sequence, not hand-authored;
+ * regenerate rather than hand-edit.
  *
- * Source: docs/research/graphics/rad4-mode-zero.events.tsv in the Origami
- * repository (fixture SHA-256
- * fc3c9e2542589b5790e3b0af256b25f3dbb5d78db1723abec1eb75e158c0a5d4,
- * reviewed in docs/reviews/rad4-mode-zero-fixture-review-20260916.md).
- * Regenerate from that fixture; do not hand-edit. This header carries a
- * derived software-expectation fixture for the RAD4 one-mode functional
- * approximation (docs/designs/rad4-one-mode-functional-approximation.md
- * in Origami), not a recovered hardware timing specification.
+ * This header carries a derived software-expectation fixture for the RAD4
+ * one-mode functional approximation. These timings are illustrative values
+ * tied to the model's own emission, not a measured hardware timing
+ * specification.
  */
 
 #ifndef TESTS_QTEST_PSITECH_RAD4_MODE0_FIXTURE_H

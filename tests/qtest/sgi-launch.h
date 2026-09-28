@@ -1,9 +1,5 @@
 /*
- * Shared launch-refusal check for SGI qtests.
- *
- * Moved from sn0-origin2000-test.c so a second test can assert a refused
- * launch without a copy of it.
- *
+ * Check refused SGI qtest launches from multiple tests.
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
@@ -13,11 +9,8 @@
 #include "qemu/osdep.h"
 #include "libqtest.h"
 
-/*
- * Launch QEMU with @args, which must include "-qmp stdio", and assert that
- * it exits with a failure status after printing @message. A launch that is
- * wrongly accepted is told to quit over QMP rather than left running.
- */
+/* @args must include "-qmp stdio"; require failure and @message on stderr.
+ * Send quit over QMP if QEMU accepts the launch. */
 static inline void assert_launch_rejected(const char *const args[],
                                           const char *message)
 {
@@ -37,15 +30,15 @@ static inline void assert_launch_rejected(const char *const args[],
     g_assert_cmpint(sigaction(SIGPIPE, &ignore, &previous), ==, 0);
     length = qemu_write_full(input_fd, commands, sizeof(commands) - 1);
     /*
-     * qemu_write_full() returns the count actually written, not -1, even
-     * when one of its write() calls fails -- so a rejected launch that
-     * exits and closes its end of the pipe after accepting only part of
-     * the buffer (or none of it) shows up here as a short count with
-     * errno left at EPIPE, not as a -1 return. Any such count is fine:
-     * this write only delivers the QMP commands, it does not prove the
-     * rejection. That proof is the exit status and expected stderr text
-     * checked below, which still catch a launch QEMU wrongly accepted.
-     */
+ * qemu_write_full() returns the count actually written, not -1, even when
+ * one of its write() calls fails. A rejected launch that exits and
+ * closes its end of the pipe after accepting only part of the buffer (or
+ * none of it) shows up here as a short count with errno left at EPIPE, not
+ * as a -1 return. Any such count is fine: this write only delivers the QMP
+ * commands, it does not prove the rejection. That proof is the exit status
+ * and expected stderr text checked below, which still catch a launch QEMU
+ * wrongly accepted.
+ */
     g_assert_true(length == sizeof(commands) - 1 ||
                   (length >= 0 && length < sizeof(commands) - 1 &&
                    errno == EPIPE));

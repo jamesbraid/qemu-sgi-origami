@@ -1,10 +1,6 @@
 /*
- * libqos bring-up on the SGI Bridge head
- *
- * The same QOSState a test gets from a PC, over one Bridge on the "none"
- * machine. A caller passes only its own devices: the head's chip, the memory
- * a card transfers into and the machine they sit on are prepended here, so a
- * card test names one command line whichever host it runs on.
+ * libqos QOSState for one SGI Bridge on -M none. Caller devices follow the
+ * Bridge and transfer memory, so card tests use one command line on any host.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */

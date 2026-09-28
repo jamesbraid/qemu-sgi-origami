@@ -1,4 +1,8 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
+/*
+ * Bedrock processor interface: CPU registers, interrupts and real-time
+ * counter.
+ */
 #include "qemu/osdep.h"
 #include "hw/misc/sgi-bedrock-pi.h"
 #include "hw/misc/sgi-bedrock.h"
@@ -111,9 +115,9 @@ static void pi_arm_rt(SGIBedrockPIState *s, unsigned cpu)
     uint64_t chunk;
 
     /*
-     * A full 55-bit revolution exceeds an int64 nanosecond deadline.
-     * Wake at the largest safe intermediate point and recompute.
-     */
+     * A full 55-bit revolution exceeds an int64 nanosecond deadline. Wake at
+     * the largest safe intermediate point and recompute.
+    */
     if (max_ticks == 0) {
         s->rt_timer_match[cpu] = false;
         timer_del(s->rt_timer[cpu]);
@@ -156,14 +160,13 @@ static uint64_t pi_pending1(SGIBedrockPIState *s)
 }
 
 /*
- * Bank-0 bits 5 and 6 are each the coherency-pending result for A or B --
- * set while any masked bit of that region word is -- OR'd with the pending
- * bit itself, so a directly-set source is not overwritten. An XBridge head
- * routes its own error interrupt onto bit 5 or 6 through the modify register,
- * and only bank-1's reflect bits are immune to a modify write, not these.
- * Bit 4 is the L1 controller's UART line (docs/datasheets/l1-controller.md,
- * docs/datasheets/bedrock-processor-interface.md), OR'd in the same way.
- */
+ * Bank-0 bits 5 and 6 are each the coherency-pending result for A or B (set
+ * while any masked bit of that region word is) OR'd with the pending bit
+ * itself, so a directly-set source is not overwritten. An XBridge head routes
+ * its own error interrupt onto bit 5 or 6 through the modify register, and
+ * only bank-1's reflect bits are immune to a modify write, not these. Bit 4
+ * is the L1 controller's UART line, OR'd in the same way.
+*/
 static uint64_t pi_pending0(SGIBedrockPIState *s)
 {
     uint64_t coherency =
@@ -301,22 +304,19 @@ bool sgi_bedrock_pi_io_modify(SGIBedrockPIState *s, uint64_t value,
  * Bit 0 is the reading processor's slot within this interface and bit 1 is
  * the interface itself, so a processor learns both from one read. The slot
  * has to come from whoever issued the access: a shared value cannot tell A
- * from B, and the firmware's rendezvous depends on the difference.
- *
- * With no issuing processor -- a qtest, whose accesses carry none, or an
- * access from outside this node's processors -- the model answers slot A.
- * That is model behaviour rather than a hardware claim: real silicon always
- * has a requester.
- *
- * Which processor is in which slot comes from the board through
- * slot-a-cpu-index and slot-b-cpu-index. It used to be derived here from
- * the population mask by walking the fitted slots in ascending order and
- * handing them consecutive vCPU indices. That agrees with the board only
- * while at most one slot per interface is fitted; with all four fitted the
- * board puts its second processor on interface 1, the derivation put it in
- * interface 0's second slot, and the processor actually sitting there read
- * its own number as interface 0 slot A.
- */
+ * from B, and the firmware's rendezvous depends on the difference. With no
+ * issuing processor (a qtest, whose accesses carry none, or an access from
+ * outside this node's processors), the model answers slot A. That is model
+ * behaviour rather than a hardware claim: real silicon always has a
+ * requester. Which processor is in which slot comes from the board through
+ * slot-a-cpu-index and slot-b-cpu-index. It used to be derived here from the
+ * population mask by walking the fitted slots in ascending order and handing
+ * them consecutive vCPU indices. That agrees with the board only while at
+ * most one slot per interface is fitted; with all four fitted the board puts
+ * its second processor on interface 1, the derivation put it in interface 0's
+ * second slot, and the processor actually sitting there read its own number
+ * as interface 0 slot A.
+*/
 static unsigned pi_population_mask(SGIBedrockPIState *s)
 {
     return s->processor_mask ? s->processor_mask :
@@ -470,11 +470,11 @@ static void pi_write(void *opaque, hwaddr offset, uint64_t value,
         }
         return;
     /*
-     * The coherency request-buffer timeout: the maximum count a valid
-     * buffer may reach, and the scale that sets how often that count
-     * advances. The model runs no request-buffer timeout, so both are
-     * stored control words read back with their reserved bits zero.
-     */
+     * The coherency request-buffer timeout: the maximum count a valid buffer
+     * may reach, and the scale that sets how often that count advances. The
+     * model runs no request-buffer timeout, so both are stored control words
+     * read back with their reserved bits zero.
+    */
     case PI_RQ_TIMEOUT_MAX:
         s->rq_timeout_max = value & PI_RQ_TIMEOUT_MAX_MASK;
         return;
@@ -491,15 +491,14 @@ static void pi_write(void *opaque, hwaddr offset, uint64_t value,
         return;
     /*
      * The header ties a store here to a per-processor NMI, but no public
-     * source gives the trigger predicate. The stock PROM's stores of 0x100
-     * at these offsets, once read as NMI stores, go to the Hub-special
-     * remote register window, whose low block does not reach this register
-     * file (docs/datasheets/ip35-address-map.md); no known guest writes
-     * here. The model therefore delivers no CPU NMI from an ordinary MMIO
-     * store; a modelled NMI reaches the processor over the s->nmi line from
-     * the external L1 controller (its nmi command). The store is kept
-     * observable and otherwise inert.
-     */
+     * source gives the trigger predicate. The stock PROM's stores of 0x100 at
+     * these offsets, once read as NMI stores, go to the Hub-special remote
+     * register window, whose low block does not reach this register file; no
+     * known guest writes here. The model therefore delivers no CPU NMI from
+     * an ordinary MMIO store; a modelled NMI reaches the processor over the
+     * s->nmi line from the external L1 controller (its nmi command). The
+     * store is kept observable and otherwise inert.
+    */
     case PI_NMI_A:
     case PI_NMI_B:
         qemu_log_mask(LOG_UNIMP, "sgi-bedrock-pi: NMI register 0x%" HWADDR_PRIx
@@ -548,7 +547,7 @@ static void pi_write(void *opaque, hwaddr offset, uint64_t value,
      * written; the model stands in this interface's request region for that
      * source, as the protection override does. The clear is data-bit
      * write-one-to-clear.
-     */
+    */
     case PI_CC_PEND_SET_A:
         s->cc_pend[0] |= 1ULL << s->request_region;
         break;
@@ -666,19 +665,19 @@ static void pi_write(void *opaque, hwaddr offset, uint64_t value,
      * checks) over reserved high bits. The model has no bus fabric to apply
      * them to, so it stores the control word and reads the reserved bits back
      * as zero; nothing selects checking off a modelled transaction.
-     */
+    */
     case PI_ERR_CHECK_ENABLE:
         s->err_check_enable = value & PI_ERR_CHECK_MASK;
         return;
     /*
      * The negative-acknowledge counter holds a count in bits 19:0 and an
      * enable in bit 20; its compare holds a threshold in 19:0. The model's
-     * system bus never negatively acknowledges a processor transaction, so
-     * an enabled counter has nothing to count: it holds its programmed value,
+     * system bus never negatively acknowledges a processor transaction, so an
+     * enabled counter has nothing to count: it holds its programmed value,
      * never reaches the compare, and never raises the processor-nack pending
      * bit. That is the correct result for a bus that never retries, not a
      * missing feature, so the write is stored rather than logged unsupported.
-     */
+    */
     case PI_NACK_COUNT_A:
     case PI_NACK_COUNT_B:
         s->nack_count[offset == PI_NACK_COUNT_B] = value & PI_NACK_COUNT_MASK;

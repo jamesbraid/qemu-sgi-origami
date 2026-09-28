@@ -1,8 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
-/*
- * Family-neutral SGI host command-port framer. See the header for the
- * shape this models and what it deliberately leaves to the owner.
- */
+/* SGI host command-port framing; device behavior belongs to the owner. */
 #include "qemu/osdep.h"
 #include "hw/misc/sgi-command-port.h"
 #include "trace.h"

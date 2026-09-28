@@ -1,10 +1,9 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SGI IOC3 Ethernet MAC register and device definitions. */
 /*
- * SGI IOC3 base I/O controller: the ethernet MAC engine.
- *
- * A child of the multifunction chip (hw/misc/sgi-ioc3.c). The MAC is
- * SGI's own design with no vendor document; the project tree's IOC3
- * datasheet is the specification. See docs/specs/sgi-ioc3.rst.
+ * A child of the multifunction chip (hw/misc/sgi-ioc3.c). The MAC is SGI's
+ * own design with no vendor document; the IOC3 register behavior is
+ * documented in docs/specs/sgi-ioc3.rst.
  */
 
 #ifndef HW_NET_SGI_IOC3_ETH_H
@@ -178,7 +177,9 @@ struct SGIIOC3EthState {
     QEMUBH *rx_flush_bh;
     uint8_t frame[SGI_IOC3_ENET_FRAME_MAX];
 
-    /* Backend replies wait until the transmit walk has published its state. */
+    /*
+     * Backend replies wait until the transmit walk has published its state.
+     */
     bool defer_backend_rx;
     /* can_receive() refused ingress while backend replies were deferred. */
     bool backend_rx_deferred;

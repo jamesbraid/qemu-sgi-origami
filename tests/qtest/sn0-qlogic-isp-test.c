@@ -1,11 +1,7 @@
 /*
- * SGI QLogic ISP1040 SCSI adapter: the register window's access contract
- * through the real crosstalk-to-PCI path.
- *
- * The x86 libqos suite proves the device's own logic; this file crosses
- * the Bridge's byte-lane correction and crosstalk decode on the real
- * topology. The reset signature is the instrument: mailbox words whose
- * two bytes differ, so a hidden swap anywhere on the path is visible.
+ * Test ISP1040 SCSI access through Crosstalk, Bridge byte correction and PCI.
+ * Distinct mailbox bytes expose swaps on this path; x86 libqos covers the
+ * device logic.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
@@ -19,8 +15,8 @@
 #define BRIDGE_BASE     (SPACE_XTALK + ((uint64_t)BRIDGE_WIDGET << 24))
 
 /*
- * The bridge's device(0) register: 32 bits in the low half of an
- * eight-byte slot.
+ * The bridge's device(0) register: 32 bits in the low half of an eight-byte
+ * slot.
  */
 #define REG_DATA                4
 #define BRIDGE_DEVICE0          0x200
@@ -78,8 +74,8 @@
 #define GUEST_HALFWORD(natural)  (((natural) & ~3u) | (((natural) & 3u) ^ 2u))
 
 /*
- * What the adapter's memory DMA needs beyond register access: the bus
- * master bit, a translation entry, and the mailbox protocol.
+ * Adapter DMA also requires: the bus master bit, a translation entry, and the
+ * mailbox protocol.
  */
 #define ATE_BASE                0x010000
 #define ATE(n)                  (BRIDGE_BASE + ATE_BASE + (n) * 8)
@@ -147,8 +143,8 @@
 #define ISP_REG_RESPONSE_QUEUE      (ISP_REG_MAILBOX_BASE + 0x0a)
 
 /*
- * A ring addressed with a 64-bit base: the direct map keeps the low 31
- * bits, and the 64-bit base is what selects descriptor byte order.
+ * A ring addressed with a 64-bit base: the direct map keeps the low 31 bits,
+ * and the 64-bit base is what selects descriptor byte order.
  */
 #define RING_PHYS                   0x00100000u
 #define RING_IOVA                   (0xa500000000000000ULL | RING_PHYS)
@@ -204,8 +200,8 @@ static uint16_t isp_read_ram_word(QTestState *qts, uint16_t addr)
 }
 
 /*
- * Mailboxes loaded the way a driver loads them; 6 and 7 written even at
- * zero, because mailboxes persist and stale halves would be reassembled.
+ * Mailboxes loaded the way a driver loads them; 6 and 7 written even at zero,
+ * because mailboxes persist and stale halves would be reassembled.
  */
 static void isp_ram_block(QTestState *qts, uint16_t cmd, uint16_t base,
                           uint32_t pci_addr, uint16_t count)
@@ -250,8 +246,8 @@ static void test_swap_bit_is_unset(const void *data)
     QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE);
 
     /*
-     * Pinned before and after aiming: the tripwire for a guest ever
-     * setting the swap bit both guests leave disabled.
+     * Pinned before and after aiming: the tripwire for a guest ever setting
+     * the swap bit both guests leave disabled.
      */
     g_assert_cmphex(qtest_readl(qts, REG_BRIDGE_DEVICE0) & DEV_SWAP_PROGRAMMED,
                     ==, 0);
@@ -283,8 +279,8 @@ static void test_reset_signature_through_the_fabric(const void *data)
     g_assert_cmphex(qtest_readw(qts, guest_mailbox3), ==, ISP_MAILBOX3_SIGNATURE);
 
     /*
-     * Write-then-read round-trips even through a wrong transform; the
-     * check is that mailbox 1 is not the word just written to mailbox 0.
+     * Write-then-read round-trips even through a wrong transform; the check
+     * is that mailbox 1 is not the word just written to mailbox 0.
      */
     qtest_writew(qts, guest_mailbox0, 0x1234);
     g_assert_cmphex(qtest_readw(qts, guest_mailbox0), ==, 0x1234);
@@ -298,8 +294,8 @@ static void test_ioc3_slot_is_exempt_at_the_same_stride(const void *data)
     QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE);
 
     /*
-     * The exemption half: the IOC3 stays at natural offsets, at exactly
-     * the byte granularity a wrongly-applied ^3 would scatter.
+     * The exemption half: the IOC3 stays at natural offsets, at exactly the
+     * byte granularity a wrongly-applied ^3 would scatter.
      */
     qtest_writel(qts, CFG0(PCI_IOC3_DEVICE) + PCI_BAR0, IOC3_MMIO);
     qtest_writel(qts, CFG0(PCI_IOC3_DEVICE) + PCI_COMMAND, PCI_COMMAND_MEMORY);
@@ -343,10 +339,10 @@ static void test_ram_dma_translates_through_the_bridge(const void *data)
     isp_mbox_ack(qts);
 
     /*
-     * Raw bytes, because a word accessor would apply its own correction
-     * and hide the effect under test: with the window's swap bit clear a
-     * two-byte transfer at offset zero lands at offset zero ^ two with its
-     * halves reversed.
+     * Raw bytes, because a word accessor would apply its own correction and
+     * hide the effect under test: with the window's swap bit clear a two-byte
+     * transfer at offset zero lands at offset zero ^ two with its halves
+     * reversed.
      */
     qtest_memread(qts, TARGET_PAGE + 2, seen, 2);
     g_assert_cmphex(seen[0], ==, first >> 8);
@@ -380,11 +376,11 @@ static void test_ram_dma_translates_through_the_bridge(const void *data)
 
 /*
  * This part moves controller RAM one 16-bit cycle per word. Two words,
- * because a single word cannot tell one reassembly order from another.
- * The order is written down here rather than left to whichever
- * decomposition the fabric is handed: at these alignments the per-word
- * and block splits were measured to deliver the same bytes, so what this
- * pins is the order, not the width.
+ * because a single word cannot tell one reassembly order from another. The
+ * order is written down here rather than left to whichever decomposition the
+ * fabric is handed: at these alignments the per-word and block splits were
+ * measured to deliver the same bytes, so what this pins is the order, not the
+ * width.
  */
 static void test_ram_load_reassembles_two_words_per_word(const void *data)
 {
@@ -404,9 +400,9 @@ static void test_ram_load_reassembles_two_words_per_word(const void *data)
     isp_write_ram_word(qts, base + 1, 0x5a5a);
 
     /*
-     * Raw bytes, laid out as the per-word correction reads them back:
-     * offset zero's halfword comes from offset two with its halves
-     * reversed, and offset two's from offset zero, the same swap
+     * Raw bytes, laid out as the per-word correction reads them back: offset
+     * zero's halfword comes from offset two with its halves reversed, and
+     * offset two's from offset zero, the same swap
      * test_ram_dma_translates_through_the_bridge pins one word at a time.
      */
     page[0] = second >> 8;
@@ -426,9 +422,9 @@ static void test_ram_load_reassembles_two_words_per_word(const void *data)
 }
 
 /*
- * A dump the fabric refuses is a failed command, not a completed one: a
- * guest told the transfer completed would read back host memory the
- * adapter never wrote and take whatever was already there for an image.
+ * A dump the fabric refuses is a failed command, not a completed one: a guest
+ * told the transfer completed would read back host memory the adapter never
+ * wrote and take whatever was already there for an image.
  */
 static void test_ram_dump_failed_dma_answers_an_error(const void *data)
 {
@@ -451,8 +447,8 @@ static void test_ram_dump_failed_dma_answers_an_error(const void *data)
 }
 
 /*
- * Two addresses written before either is read; answering with the most
- * recent write returns the second value and fails.
+ * Two addresses written before either is read; answering with the most recent
+ * write returns the second value and fails.
  */
 static void test_read_ram_word_through_the_fabric(const void *data)
 {
@@ -466,8 +462,8 @@ static void test_read_ram_word_through_the_fabric(const void *data)
     isp_write_ram_word(qts, addr_b, val_b);
 
     /*
-     * Both output mailboxes are poisoned with values that are not the
-     * answer, or a model that never wrote them could pass by accident.
+     * Both output mailboxes are poisoned with values that are not the answer,
+     * or a model that never wrote them could pass by accident.
      */
     isp_writew(qts, ISP_MAILBOX(0), ISP_MBOX_CMD_READ_RAM_WORD);
     isp_writew(qts, ISP_MAILBOX(1), addr_a);
@@ -505,7 +501,9 @@ static uint16_t get16le(const uint8_t *b)
     return b[0] | (b[1] << 8);
 }
 
-/* Reverse each aligned 32-bit word, the correction a word-value ring needs. */
+/*
+ * Reverse each aligned 32-bit word, the correction a word-value ring needs.
+ */
 static void normalise_words(uint8_t *buf, size_t len)
 {
     size_t i;
@@ -537,8 +535,8 @@ static void isp_init_queue_a64(QTestState *qts, uint16_t cmd, uint16_t count,
 }
 
 /*
- * A 64-bit ring base selects word-reversed descriptors both directions;
- * an absent target still completes with the handle, so no disk is needed.
+ * A 64-bit ring base selects word-reversed descriptors both directions; an
+ * absent target still completes with the handle, so no disk is needed.
  */
 static void test_a64_ring_is_word_value(const void *data)
 {
@@ -563,10 +561,10 @@ static void test_a64_ring_is_word_value(const void *data)
                        RING_IOVA);
 
     /*
-     * Built canonically, then reversed per word: one transform covers the
-     * bytes, the 32-bit handle and the 16-bit fields together -- the
-     * property a per-field correction would break.
-     */
+ * Built canonically, then reversed per word: one transform covers the bytes,
+ * the 32-bit handle and the 16-bit fields together. This is the property a
+ * per-field correction would break.
+ */
     memset(entry, 0, sizeof(entry));
     entry[ISP_ENTRY_OFF_TYPE] = ISP_A64_ENTRY_TYPE_COMMAND;
     entry[ISP_ENTRY_OFF_COUNT] = 1;
@@ -596,9 +594,9 @@ static void test_a64_ring_is_word_value(const void *data)
 }
 
 /*
- * Pinned: completion, the segment cursor, and the guest buffer untouched.
- * Not pinned: bytes reaching the medium -- a round trip cancels the
- * correction, and only a reader outside the ring's byte order settles it.
+ * Pinned: completion, the segment cursor, and the guest buffer untouched. Not
+ * pinned: bytes reaching the medium. A round trip cancels the correction,
+ * and only a reader outside the ring's byte order settles it.
  */
 static void test_a64_ring_data_out(const void *data)
 {
@@ -671,9 +669,9 @@ static void test_a64_ring_data_out(const void *data)
 }
 
 /*
- * A drive self-test completes GOOD through the command ring: IRIX fx
- * issues SEND DIAGNOSTIC when it opens a disk and reports the disk broken
- * on CHECK CONDITION.
+ * A drive self-test completes GOOD through the command ring: IRIX fx issues
+ * SEND DIAGNOSTIC when it opens a disk and reports the disk broken on CHECK
+ * CONDITION.
  */
 static void build_a64_command(uint8_t *entry, uint32_t handle, uint16_t device,
                               uint8_t op, uint8_t op_byte1)
@@ -734,8 +732,8 @@ static void test_a64_ring_send_diagnostic(const void *data)
                        RING_IOVA);
 
     /*
-     * A TEST UNIT READY first, to absorb the drive's power-on UNIT
-     * ATTENTION; then the SEND DIAGNOSTIC whose status is checked.
+     * A TEST UNIT READY first, to absorb the drive's power-on UNIT ATTENTION;
+     * then the SEND DIAGNOSTIC whose status is checked.
      */
     build_a64_command(entry, 0x5d1a0000, 0x0100, 0x00, 0x00);
     qtest_memwrite(qts, RING_PHYS, entry, sizeof(entry));
@@ -759,7 +757,7 @@ static void test_a64_ring_send_diagnostic(const void *data)
 
 /*
  * Empty target: GOT_BUS, no GOT_TARGET, and the selection-timeout bit only
- * IRIX reads -- without it IRIX faults every empty target it probes.
+ * IRIX reads. Without it IRIX faults every empty target it probes.
  */
 static void test_a64_ring_missing_target(const void *data)
 {
@@ -786,7 +784,9 @@ static void test_a64_ring_missing_target(const void *data)
     isp_init_queue_a64(qts, ISP_MBOX_CMD_INIT_REQ_QUEUE_A64, RING_ENTRIES,
                        RING_IOVA);
 
-    /* device 0x0500 = target 5, lun 0, an empty slot; op is TEST UNIT READY. */
+    /*
+     * device 0x0500 = target 5, lun 0, an empty slot; op is TEST UNIT READY.
+     */
     build_a64_command(entry, probe_handle, 0x0500, 0x00, 0x00);
     qtest_memwrite(qts, RING_PHYS, entry, sizeof(entry));
 
@@ -816,8 +816,8 @@ static void test_a64_ring_missing_target(const void *data)
 
 
 /*
- * The same completion through the 32-bit entry: the entry type, not the
- * ring, selects the handler.
+ * The same completion through the 32-bit entry: the entry type, not the ring,
+ * selects the handler.
  */
 static void test_ring_missing_target(const void *data)
 {
@@ -844,7 +844,9 @@ static void test_ring_missing_target(const void *data)
     isp_init_queue_a64(qts, ISP_MBOX_CMD_INIT_REQ_QUEUE_A64, RING_ENTRIES,
                        RING_IOVA);
 
-    /* device 0x0500 = target 5, lun 0, an empty slot; op is TEST UNIT READY. */
+    /*
+     * device 0x0500 = target 5, lun 0, an empty slot; op is TEST UNIT READY.
+     */
     build_command(entry, probe_handle, 0x0500, 0x00, 0x00);
     qtest_memwrite(qts, RING_PHYS, entry, sizeof(entry));
 
@@ -903,8 +905,8 @@ static void test_verify_checksum_answers_both_mailboxes(const void *data)
     isp_mbox_ack(qts);
 
     /*
-     * And a zero-sum image completes: both halves together rule out a
-     * model that always fails or always reports the length.
+     * And a zero-sum image completes: both halves together rule out a model
+     * that always fails or always reports the length.
      */
     isp_write_ram_word(qts, base, 0xfffc);
 
@@ -940,8 +942,8 @@ static void test_ram_dma_through_the_direct_window(const void *data)
 
     /*
      * The add-512-megabytes field resets set; left alone it moves the
-     * transfer half a gigabyte away, which reads as a byte-order failure
-     * and is not one.
+     * transfer half a gigabyte away, which reads as a byte-order failure and
+     * is not one.
      */
     qtest_writel(qts, BRIDGE_DIRECT_MAP_REG, 0);
 
@@ -954,8 +956,8 @@ static void test_ram_dma_through_the_direct_window(const void *data)
     isp_mbox_ack(qts);
 
     /*
-     * With the window's bit clear, offset zero lands at zero ^ two,
-     * halves reversed.
+     * With the window's bit clear, offset zero lands at zero ^ two, halves
+     * reversed.
      */
     qtest_memread(qts, TARGET_PAGE + 2, seen, 2);
     g_assert_cmphex(seen[0], ==, word >> 8);
@@ -975,11 +977,11 @@ static void test_pci_status_reset_value(const void *data)
 
     /*
      * IRIX's io_config_space diagnostic compares the whole Command/Status
-     * dword against 0x02000000 -- Status 0x0200, medium DEVSEL -- and
-     * fails the I/O slot on a zero Status half (see the project-tree
-     * ISP1040 datasheet). Only the Status half is asserted here: the board
-     * pre-enables Command for no-firmware bring-up, and the miniroot's own
-     * reset clears the writable half while the read-only Status survives.
+     * dword against 0x02000000 (Status 0x0200, medium DEVSEL) and fails
+     * the I/O slot on a zero Status half. Only the Status half is asserted
+     * here: the board pre-enables Command for no-firmware bring-up, and the
+     * miniroot's own reset clears the writable half while the read-only
+     * Status survives.
      */
     g_assert_cmphex(qtest_readl(qts, CFG0(SCSI_DEVICE0) + PCI_COMMAND) >> 16,
                     ==, 0x0200u);
@@ -1020,8 +1022,8 @@ static void test_mbox_get_target_parameters(const void *data)
 }
 
 /*
- * SET_RESET_DELAY_PARAMS completes rather than answering invalid, which
- * left IRIX logging a mailbox error during adapter init.
+ * SET_RESET_DELAY_PARAMS completes rather than answering invalid, which left
+ * IRIX logging a mailbox error during adapter init.
  */
 static void test_mbox_set_reset_delay_params(const void *data)
 {
@@ -1042,9 +1044,9 @@ static void test_mbox_set_reset_delay_params(const void *data)
 /*
  * Bit 15 of the target-parameter selector picks a bus on the family's
  * dual-channel part. This part has one bus and never read the bit, so a
- * request carrying it gets the same answer as one without: turning it into
- * a parameter error would be a new refusal of a request drivers have
- * always been able to make.
+ * request carrying it gets the same answer as one without: turning it into a
+ * parameter error would be a new refusal of a request drivers have always
+ * been able to make.
  */
 static void test_mbox_get_target_parameters_ignores_bit_15(const void *data)
 {
@@ -1066,9 +1068,9 @@ static void test_mbox_get_target_parameters_ignores_bit_15(const void *data)
 }
 
 /*
- * The A64 RAM load is the dual-channel part's opcode. Nothing in this
- * part's contract carries it, so answering it would invent a command, and
- * a guest that probed for it would conclude this adapter has one.
+ * The A64 RAM load is the dual-channel part's opcode. Nothing in this part's
+ * contract carries it, so answering it would invent a command, and a guest
+ * that probed for it would conclude this adapter has one.
  */
 static void test_mbox_a64_ram_load_is_not_this_part(const void *data)
 {
@@ -1087,11 +1089,11 @@ static void test_mbox_a64_ram_load_is_not_this_part(const void *data)
 }
 
 /*
- * Abort command, abort device and target reset are the dual-channel
- * part's opcodes. This part's contract lists no abort or target-reset
- * mailbox at all, so answering one would tell a guest that probes for it
- * that this adapter can retire a command, and the guest would then wait
- * for a retirement that never arrives.
+ * Abort command, abort device and target reset are the dual-channel part's
+ * opcodes. This part's contract lists no abort or target-reset mailbox at
+ * all, so answering one would tell a guest that probes for it that this
+ * adapter can retire a command, and the guest would then wait for a
+ * retirement that never arrives.
  */
 static void test_mbox_recovery_commands_are_not_this_part(const void *data)
 {
@@ -1121,10 +1123,10 @@ static void test_mbox_recovery_commands_are_not_this_part(const void *data)
 }
 
 /*
- * Two LUNs behind one target, an address this adapter has always taken.
- * The INQUIRY each one answers is what says the second disk is really
- * there: a LUN with nothing behind it is answered by the target itself,
- * with the peripheral qualifier that means no device.
+ * Two LUNs behind one target, an address this adapter has always taken. The
+ * INQUIRY each one answers is what says the second disk is really there: a
+ * LUN with nothing behind it is answered by the target itself, with the
+ * peripheral qualifier that means no device.
  */
 #define INQUIRY_BYTES               36
 #define INQUIRY_NO_DEVICE           0x7f
@@ -1204,9 +1206,9 @@ static void test_two_luns_behind_one_target(const void *data)
 }
 
 /*
- * The fabric-refused-transfer pair: with 64 MB of memory the first
- * unbacked address is right after it, and a transfer there is refused the
- * way one through an invalid translation entry would be.
+ * The fabric-refused-transfer pair: with 64 MB of memory the first unbacked
+ * address is right after it, and a transfer there is refused the way one
+ * through an invalid translation entry would be.
  */
 #define ISP_REG_BUS_STATUS          0x0a
 #define ISP_BUS_STATUS_INT_REQ      0x0002
@@ -1219,13 +1221,12 @@ static void test_two_luns_behind_one_target(const void *data)
 #define UNBACKED_RESP_IOVA          (0xa500000000000000ULL | RAM_TOP_64M)
 
 /*
- * A request entry the fabric only half answers: headers in the last bytes
- * of memory, the CDB starting exactly at the boundary, so the header reads
- * succeed and the CDB read is refused. The pinned outcome is a drop --
- * consume index on the entry, nothing posted or raised -- and the
- * discriminating shape matters: an entirely unreadable entry takes the
- * fail-visibly default and posts a completion, which would pass for the
- * wrong reason.
+ * A request entry the fabric only half answers: headers in the last bytes of
+ * memory, the CDB starting exactly at the boundary, so the header reads
+ * succeed and the CDB read is refused. The pinned outcome is a drop: consume
+ * index on the entry, nothing posted or raised. The discriminating shape
+ * matters: an entirely unreadable entry takes the fail-visibly default and
+ * posts a completion, which would pass for the wrong reason.
  */
 static void test_a_refused_cdb_read_drops_the_request(const void *data)
 {
@@ -1247,8 +1248,8 @@ static void test_a_refused_cdb_read_drops_the_request(const void *data)
     quiescent = isp_readw(qts, ISP_REG_BUS_STATUS) & ISP_BUS_STATUS_INT_BITS;
 
     /*
-     * Only the header bytes are written -- the rest has no memory behind
-     * it. The device word names an empty target, which would complete
+     * Only the header bytes are written. The rest has no memory behind it.
+     * The device word names an empty target, which would complete
      * incomplete-with-timeout if the entry were acted on at all.
      */
     build_command(entry, 0x51add1e5, 0x0500, 0x00, 0x00);
@@ -1265,10 +1266,10 @@ static void test_a_refused_cdb_read_drops_the_request(const void *data)
 }
 
 /*
- * The write half: a completion bound for a refused response ring is lost,
- * but the produce index must not step over a slot never written and the
- * interrupt must not be raised -- together they point the guest at a stale
- * entry as this command's answer.
+ * The write half: a completion bound for a refused response ring is lost, but
+ * the produce index must not step over a slot never written and the interrupt
+ * must not be raised. Together they point the guest at a stale entry as
+ * this command's answer.
  */
 static void test_a_refused_status_write_raises_no_interrupt(const void *data)
 {
@@ -1296,8 +1297,8 @@ static void test_a_refused_status_write_raises_no_interrupt(const void *data)
     isp_writew(qts, ISP_REG_REQUEST_QUEUE, 1);
 
     /*
-     * The request itself was readable and is consumed; only its
-     * completion is dropped, not faked.
+     * The request itself was readable and is consumed; only its completion is
+     * dropped, not faked.
      */
     g_assert_cmphex(isp_readw(qts, ISP_REG_REQUEST_QUEUE), ==, 1);
     g_assert_cmphex(isp_readw(qts, ISP_REG_RESPONSE_QUEUE), ==, 0);
@@ -1308,14 +1309,14 @@ static void test_a_refused_status_write_raises_no_interrupt(const void *data)
 }
 
 /*
- * The status entry pairs two 16-bit values into each 32-bit word -- scsi_status
- * with completion, state_flags with status_flags. The firmware reads the A64
- * response ring whole-word (the word-value reversal normalise_words undoes
- * here), and the four missing-target values are pairwise distinct, so a change
- * that transposed either shared pair -- reordering the entry's DMA or reading a
- * field at the wrong lane -- fails here, where the missing-target tests, which
- * assert the completion's meaning rather than its byte placement, might not.
- * This pins the placement.
+ * The status entry pairs two 16-bit values into each 32-bit word:
+ * scsi_status with completion, state_flags with status_flags. The firmware
+ * reads the A64 response ring whole-word (the word-value reversal
+ * normalise_words undoes here), and the four missing-target values are
+ * pairwise distinct, so a change that transposed either shared pair
+ * (reordering the entry's DMA or reading a field at the wrong lane) fails
+ * here, where the missing-target tests, which assert the completion's meaning
+ * rather than its byte placement, might not. This pins the placement.
  */
 static void test_status_pairs_survive_word_reversal(const void *data)
 {

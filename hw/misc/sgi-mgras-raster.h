@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
+/* MGRAS raster command and DMA mapping hooks. */
 #ifndef HW_MISC_SGI_MGRAS_RASTER_H
 #define HW_MISC_SGI_MGRAS_RASTER_H
 

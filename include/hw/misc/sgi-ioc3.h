@@ -22,9 +22,9 @@
 OBJECT_DECLARE_SIMPLE_TYPE(SGIIOC3State, SGI_IOC3)
 
 /*
- * The chip's own bus: its sub-devices (ethernet, timekeeper, PS/2) realize onto
- * it rather than the system bus, so a reset of the IOC3 reaches them and their
- * migration path names the chip that owns them. Same shape as the macio
+ * The chip's own bus: its sub-devices (ethernet, timekeeper, PS/2) realize
+ * onto it rather than the system bus, so a reset of the IOC3 reaches them and
+ * their migration path names the chip that owns them. Same shape as the macio
  * controller.
  */
 #define TYPE_SGI_IOC3_BUS "sgi-ioc3-bus"
@@ -41,11 +41,11 @@ struct SGIIOC3BusState {
 #define SGI_IOC3_REVISION       0x01    /* the fitted Origin 200 part */
 
 /*
- * The board the chip is fitted to, named by the subsystem identity in its
- * PCI configuration space. A guest reads the subsystem dword and decides
- * from it which sub-devices the board wires up, so this identity is not
- * decoration: it selects a population. The vendor half is SGI's on every
- * board and never varies.
+ * The board the chip is fitted to, named by the subsystem identity in its PCI
+ * configuration space. A guest reads the subsystem dword and decides from it
+ * which sub-devices the board wires up, so this identity is not decoration:
+ * it selects a population. The vendor half is SGI's on every board and never
+ * varies.
  */
 #define SGI_IOC3_SUBSYS_IP27_BASEIO6G   0xC300
 #define SGI_IOC3_SUBSYS_IP27_MIO        0xC301
@@ -58,26 +58,25 @@ struct SGIIOC3BusState {
 /*
  * The SGI Cad Duo PCI Card, SGI option board 030-1155-002: a standalone
  * add-in PCI card carrying its own IOC3, wired for Ethernet, one-wire
- * identity and PS/2 keyboard/mouse only -- no serial ports, no clock
- * (docs/datasheets/sgi-cad-duo-pci-card.md). Its own PCI subsystem device
- * id has not been captured from any available source, so this is the same
- * kind of explicit "not observed" placeholder hw/mips/sgi/board-baseio.c
- * and hw/mips/sgi/board-io8.c already use for an unobserved IOC3
- * population: leaving the class's own default (SGI_IOC3_SUBSYSTEM_ID)
- * would misrepresent an add-in card as another IP29 System Board, and any
- * value already claimed above would misrepresent it as that other named
- * board. Left at the class's default population (auto), this value
- * already resolves through sgi_ioc3_board()'s fall-through to the CAD DUO
- * population the fall-through is itself named for.
+ * identity and PS/2 keyboard/mouse only. It has no serial ports or clock. Its
+ * own PCI subsystem device id has not been observed in any available source,
+ * so this is the same kind of explicit "not observed" placeholder
+ * hw/mips/sgi/board-baseio.c and hw/mips/sgi/board-io8.c already use for an
+ * unobserved IOC3 population: leaving the class's own default
+ * (SGI_IOC3_SUBSYSTEM_ID) would misrepresent an add-in card as another IP29
+ * System Board, and any value already claimed above would misrepresent it as
+ * that other named board. Left at the class's default population (auto), this
+ * value already resolves through sgi_ioc3_board()'s fall-through to the CAD
+ * DUO population the fall-through is itself named for.
  */
 #define SGI_IOC3_SUBSYS_CAD_DUO_PCI_CARD_UNCAPTURED 0xFFFF
 
 /*
  * The Cad Duo's own board record, on a DS2505-class part beside the
- * station-address part (docs/datasheets/sgi-cad-duo-pci-card.md,
- * "Board-identity record on the IOC3 one-wire bus"). Part, revision and
- * name are what a real card's inventory line prints; the barcode is a
- * placeholder, since a real one names one physical unit.
+ * station-address part, in the same board-identity record layout the IOC3
+ * one-wire bus uses elsewhere. Part, revision and name are what a real card's
+ * inventory line prints; the barcode is a placeholder, since a real one names
+ * one physical unit.
  */
 #define SGI_IOC3_CAD_DUO_BOARD_PART     "030-1155-002"
 #define SGI_IOC3_CAD_DUO_BOARD_REVISION "D"
@@ -85,16 +84,14 @@ struct SGIIOC3BusState {
 #define SGI_IOC3_CAD_DUO_BOARD_BARCODE  "OCADDUO001"
 
 /*
- * SGI's dual-serial PCI card: an IOC3 wired for serial ports A and B only
- * (docs/datasheets/sgi-ioc3-boards.md in the Origami tree). IRIX 6.5.30
- * and the IP27 PROM recognise it by the 030-1657- or 030-1664- prefix of
- * the record on the chip's own one-wire bus. A reseller list names
- * 030-1657-003 "SERIAL I/O CARD (UFC), PCI", and OpenBSD's IOC3 driver
- * calls the board PCI_SIO_UFC. No held capture prints the record, so its
- * revision is a declared placeholder and its name the OpenBSD candidate.
- * The barcode is a placeholder too, since a real one names one unit.
- * Its subsystem id is uncaptured too, the same placeholder as the Cad
- * Duo's.
+ * SGI's dual-serial PCI card: an IOC3 wired for serial ports A and B only.
+ * IRIX 6.5.30 and the IP27 PROM recognise it by the 030-1657- or 030-1664-
+ * prefix of the record on the chip's own one-wire bus. A reseller list names
+ * 030-1657-003 "SERIAL I/O CARD (UFC), PCI", and OpenBSD's IOC3 driver calls
+ * the board PCI_SIO_UFC. No available source prints the record itself, so its
+ * revision is a declared placeholder and its name the OpenBSD candidate. The
+ * barcode is a placeholder too, since a real one names one unit. Its
+ * subsystem id is unobserved too, the same placeholder as the Cad Duo's.
  */
 #define SGI_IOC3_SIO_UFC_BOARD_PART     "030-1657-003"
 #define SGI_IOC3_SIO_UFC_BOARD_REVISION "A"
@@ -112,8 +109,8 @@ struct SGIIOC3BusState {
 #define SGI_IOC3_SERIAL_B       0x020170
 
 /*
- * The SuperIO interrupt pair: no ethernet bit here -- that block drives
- * the PCI pin. The enable mask has set and clear write aliases.
+ * The SuperIO interrupt pair has no ethernet bit; that block drives the
+ * PCI pin. The enable mask has set and clear write aliases.
  */
 #define SGI_IOC3_INT_STATUS     0x1c
 #define SGI_IOC3_INT_ENABLE_SET 0x20
@@ -152,7 +149,7 @@ struct SGIIOC3BusState {
 #define SGI_IOC3_INT_OUT_MIN_COUNT 2
 #define SGI_IOC3_INT_OUT_MAX_COUNT 0xfffe
 
-/* MicroLAN (one-wire) control; protocol in docs/specs/sgi-ioc3.rst. */
+/* MicroLAN (one-wire) control. */
 #define SGI_IOC3_MICROLAN_CONTROL 0x30
 #define SGI_IOC3_MICROLAN_LEVEL (1u << 0)   /* sampled from the bus */
 #define SGI_IOC3_MICROLAN_DONE  (1u << 1)   /* hardware sets this when done */
@@ -160,9 +157,9 @@ struct SGIIOC3BusState {
                                     SGI_IOC3_MICROLAN_DONE))
 
 /*
- * A slot write carries two times in microseconds: how long to hold the
- * bus low from bit 10 up, and the rest of the slot from bit 2 up. The
- * shared slot decode reads the kind of slot out of the low-drive time.
+ * A slot write carries two times in microseconds: how long to hold the bus
+ * low from bit 10 up, and the rest of the slot from bit 2 up. The shared slot
+ * decode reads the kind of slot out of the low-drive time.
  */
 #define SGI_IOC3_ONEWIRE_PULSE_SHIFT  10
 #define SGI_IOC3_ONEWIRE_SAMPLE_SHIFT 2
@@ -177,7 +174,7 @@ struct SGIIOC3BusState {
 /*
  * The board-record part's ROM serial when nothing sets
  * "board-onewire-serial": a placeholder in the descending-byte idiom the
- * other modelled board parts use. No real value is captured.
+ * other modelled board parts use. No real value is used here.
  */
 #define SGI_IOC3_BOARD_ONEWIRE_SERIAL 0x0f0e0d0c0b0aULL
 
@@ -197,8 +194,8 @@ struct SGIIOC3BusState {
 #define SGI_IOC3_MAIN_SIZE      (SGI_IOC3_PIN_REG_LAST + 4)
 
 /*
- * The PS/2 controller: a bit-level engine, not an 8042 clone. Its window
- * sits here; the registers and behaviour live in hw/input/sgi-ioc3-kbc.c.
+ * The PS/2 controller: a bit-level engine, not an 8042 clone. Its window sits
+ * here; the registers and behaviour live in hw/input/sgi-ioc3-kbc.c.
  */
 #define SGI_IOC3_KBC_BASE           0x09c
 
@@ -304,8 +301,8 @@ struct SGIIOC3BusState {
 #define SGI_IOC3_SDMA_REGS          (SGI_IOC3_SDMA_SIZE / 4)
 
 /*
- * The buffer RAM: 16 data bits plus a stored parity bit per 32-bit slot;
- * a window aliasing at its midpoint fails the driver's size probe.
+ * The buffer RAM: 16 data bits plus a stored parity bit per 32-bit slot; a
+ * window aliasing at its midpoint fails the driver's size probe.
  */
 #define SGI_IOC3_SSRAM_BASE     0x40000
 #define SGI_IOC3_SSRAM_SIZE     0x40000
@@ -322,8 +319,8 @@ struct SGIIOC3BusState {
  * The byte-bus selects, and which of them answer is a board's business. A
  * Timekeeper is one directly-addressed window on the first; a DS1685 is
  * reached indirectly, through an address port on the second and a data port
- * on the third. No board fits both clocks, and the fourth select is always
- * a hole.
+ * on the third. No board fits both clocks, and the fourth select is always a
+ * hole.
  */
 #define SGI_IOC3_BYTEBUS_DEV0   0x80000
 #define SGI_IOC3_BYTEBUS_DEV1   0xa0000
@@ -357,11 +354,11 @@ struct SGIIOC3BusState {
      SGI_IOC3_SERIAL_SOURCE(1, SGI_IOC3_INT_RX_HIGH_WATER))
 
 /*
- * The parallel port's four consecutive sources: its service interrupt,
- * one per DMA context, then a DMA fault. The service bit is a level like
- * the two serial pass-throughs, quieted by a write to the port's own
- * extended control register rather than to the status register here; the
- * other three latch and a write-one-to-clear acknowledges them.
+ * The parallel port's four consecutive sources: its service interrupt, one
+ * per DMA context, then a DMA fault. The service bit is a level like the two
+ * serial pass-throughs, quieted by a write to the port's own extended control
+ * register rather than to the status register here; the other three latch and
+ * a write-one-to-clear acknowledges them.
  */
 #define SGI_IOC3_INT_PARALLEL_SHIFT 18
 #define SGI_IOC3_INT_PARALLEL_SERVICE (1u << SGI_IOC3_INT_PARALLEL_SHIFT)
@@ -378,8 +375,8 @@ struct SGIIOC3BusState {
  */
 /*
  * Which clock, rather than whether one: the two parts are not alternatives
- * behind one name. A Timekeeper is a flat window and a DS1685 is an index
- * and a data port, so a board that names the wrong one hands its guest a
+ * behind one name. A Timekeeper is a flat window and a DS1685 is an index and
+ * a data port, so a board that names the wrong one hands its guest a
  * different register layout at the address it looked for.
  */
 typedef enum SGIIOC3TimekeeperKind {
@@ -434,36 +431,35 @@ struct SGIIOC3State {
     SGIIOC3SerialAlias serial_io_port[SGI_IOC3_SERIAL_PORTS];
 
     /*
-     * The clock pre-divider a scratch-register write last programmed
-     * (offset 7, while the port's divisor latch was selected). Kept at
-     * the chip level, alongside but distinct from the child SerialState's
-     * own scratch byte, because it is this chip's overload of that
-     * register, not generic 16550 storage. The datasheet gives no reset
-     * value, so a reset leaves both this and the derived baud rate alone:
-     * a stated approximation, not a captured reset state.
+     * The clock pre-divider a scratch-register write last programmed (offset
+     * 7, while the port's divisor latch was selected). Kept at the chip
+     * level, alongside but distinct from the child SerialState's own scratch
+     * byte, because it is this chip's overload of that register, not generic
+     * 16550 storage. No reset value is specified for it, so a reset leaves
+     * both this and the derived baud rate alone: a stated approximation, not
+     * a confirmed reset state.
      */
     uint8_t serial_predivider[SGI_IOC3_SERIAL_PORTS];
 
     /*
-     * Modem control bit 5, the automatic-flow-control enable a TI-style
-     * 16550 has where National's PC16550D reads a hardwired zero. Kept at
-     * the chip level because the shared 16550 core drops it, and only the
-     * bit is modelled: see the datasheet for what that does not cover.
+     * Modem control bit 5, the automatic-flow-control enable a TI-style 16550
+     * has where National's PC16550D reads a hardwired zero. Kept at the chip
+     * level because the shared 16550 core drops it, and only the bit is
+     * modelled; the automatic-flow-control logic itself is not.
      */
     uint8_t serial_mcr_autoflow[SGI_IOC3_SERIAL_PORTS];
 
     /*
      * Line status bits a factory-test write has set and no read has taken
-     * away yet. The shared 16550 core drops writes to that register, and
-     * this holds them for the one read that follows: see the datasheet for
-     * how far the modelling goes.
+     * away yet. The shared 16550 core drops writes to that register, and this
+     * holds them for the one read that follows.
      */
     uint8_t serial_lsr_test[SGI_IOC3_SERIAL_PORTS];
 
     /*
      * The same for modem status, whose four change indicators a write can
      * also set. Only the diagnostic establishes that one, not the 16550
-     * datasheet: see the datasheet for the difference.
+     * datasheet.
      */
     uint8_t serial_msr_test[SGI_IOC3_SERIAL_PORTS];
 
@@ -483,15 +479,15 @@ struct SGIIOC3State {
     uint64_t onewire_serial;
 
     /*
-     * The MicroLAN bus. It carries the station-address part on a board
-     * that fits an identity part and nothing at all on one that does not.
+     * The MicroLAN bus. It carries the station-address part on a board that
+     * fits an identity part and nothing at all on one that does not.
      */
     OneWireBus *onewire_bus;
 
     /*
-     * Properties: the board's own identity record, for a board that keeps
-     * it on this bus rather than on its Bridge's (an add-in card such as
-     * the Cad Duo). Unset, the bus carries no record part.
+     * Properties: the board's own identity record, for a board that keeps it
+     * on this bus rather than on its Bridge's (an add-in card such as the Cad
+     * Duo). Unset, the bus carries no record part.
      */
     char *board_part;
     char *board_barcode;
@@ -510,7 +506,7 @@ struct SGIIOC3State {
     /* Re-entry guard for loopback walks; only true inside a call. */
     bool sdma_busy[SGI_IOC3_SERIAL_PORTS];
 
-    /* The serial child's holding-register level and the retained entry slot. */
+    /* Serial child's holding-register level and retained entry slot. */
     bool sdma_tx_ready[SGI_IOC3_SERIAL_PORTS];
     uint8_t sdma_tx_slot[SGI_IOC3_SERIAL_PORTS];
 

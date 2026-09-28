@@ -1,13 +1,8 @@
 /*
- * SGI Origin 2000 BaseIO register-contract tests: the daughtercard IOC3s
- * reached through BaseIO's own Bridge window, apart from the origin2000
- * module's hub/router/topology contract in sn0-origin2000-test.c.
- *
- * Split out of sn0-origin2000-test.c so the shared 4-node module fabric
- * and routing tests are not crowded by IOC3/Timekeeper device detail, and
- * vice versa. start_module()/program_module() are duplicated here rather
- * than shared, matching this project's other qtest files that each carry
- * their own minimal machine-bring-up helpers.
+ * Origin 2000 BaseIO Bridge tests: daughtercard IOC3 and Timekeeper
+ * registers.
+ * Four-node Hub, router and topology tests are in sn0-origin2000-test.c.
+ * Local start_module()/program_module() helpers follow other qtests.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
@@ -68,8 +63,8 @@
 
 /*
  * The MediaIO daughtercard's RAD1 audio ASIC, io6g only, at Bridge PCI
- * device 7, where a real BaseIO-G owner's hinv -v lists it
- * (docs/datasheets/baseio.md). Device 7's own 1 MB window (this file's own
+ * device 7, where a real BaseIO-G owner's hinv -v lists it.
+ * Device 7's own 1 MB window (this file's own
  * BRIDGE_DEVICE(7) window) with BAR0, the 0x2000-byte register file, at the
  * window's base. IRIX's rad_attach maps exactly that much through BAR0 and
  * stores the result as the register base every later access uses; a
@@ -95,8 +90,7 @@
 #define MIO_RAD1_REVISION 0x70
 
 /*
- * BAR0's documented register offsets, from
- * docs/datasheets/mediaio-rad1-audio.md's register map and restated
+ * BAR0's documented register offsets, restated
  * independently from hw/audio/sgi-rad1-audio.h's own names, matching
  * this file's convention of not sharing offset macros with the model.
  */
@@ -148,12 +142,11 @@
 
 /*
  * Status-DMA control values written to 0x5c: the ring-engine start, the
- * one-shot start, and the stop. From rad_start_status_dma,
- * rad_one_shot_status and rad_stop_status_dma in
- * docs/datasheets/mediaio-rad1-audio.md.
+ * one-shot start, and the stop, from the RAD1 driver's
+ * rad_start_status_dma, rad_one_shot_status and rad_stop_status_dma.
  *
- * What a completion leaves in its 0x80-byte slot, from the datasheet's
- * streaming-engine contract and status-slot flag bits: registers 0x04..0x34
+ * What a completion leaves in its 0x80-byte slot, from the streaming-engine
+ * contract and status-slot flag bits: registers 0x04..0x34
  * mirrored at register + 0x40, type 1's DMA pointer at +0x38, the flag word
  * at +0x78 and the completion word at +0x7c. With no ADAT, AES3 or video
  * reference present, +0x78 has ADAT-present (0x40) and the two video-field
@@ -174,11 +167,10 @@
 #define RAD1_LIMIT_BASE           0x78
 
 /*
- * The continuous start word IRIX 6.5.30 writes: the start bits plus an
- * interval field in bits [16:2] of 250 * 33 + 1 = 8251. The datasheet's
- * timing contract infers the field counts 33 MHz PCI clocks, a completion
- * about every 250 us, on an absolute schedule; the model follows that, so
- * these tests assert a flagged approximation, not a hardware fact.
+ * IRIX 6.5.30 writes continuous-start bits plus interval bits [16:2],
+ * 250 * 33 + 1 = 8251. The model counts 33 MHz PCI clocks for roughly 250 us
+ * between completions on an absolute schedule; this is an approximation,
+ * not verified hardware behavior.
  */
 #define RAD1_STATUS_INTERVAL      8251u
 #define RAD1_STATUS_START_IRIX    (RAD1_STATUS_START | \
@@ -189,17 +181,17 @@
 #define RAD1_UST_TICKS(ns)        ((ns) / RAD1_UST_NS_PER_TICK)
 
 /*
- * The analog output, channel type 1, from the datasheet's per-type table:
+ * Analog output, channel type 1:
  * set A address-low/high/control at 0x4f8/0x524/0x4fc, set B at
  * 0x40c/0x410/0x414, enable bit 0 of 0x58 (bring-up value 0x20000000),
  * position registers A = 0x2c and B = 0x18. A holds the frame count in
  * bits [31:18] and a 0x30 latch in [17:0]; type 1 reads B's bits [17:4],
  * type 0 its bits [31:18]. The control word is (tag << 3) | (-count << 7),
- * count in 128-byte units; the captured sfplay start wrote 0xfffff008, tag
+ * count in 128-byte units; sfplay's start writes 0xfffff008, tag
  * 1 and a 4 KiB ring. The analog input's (type 0) enable is 0x4c bit 0 and
  * its A register is 0x14. A frame is two 32-bit ring words, one channel
  * each. The rate (44.1 kHz) and the position registers counting frames are
- * the datasheet's flagged approximations. The refill lead is 0xcc words:
+ * flagged model approximations. The refill lead is 0xcc words:
  * the pointer must move well under that between completions.
  */
 #define RAD1_OUT_A_ADDR_LO        0x4f8
@@ -227,7 +219,7 @@
  * and B = 0x18 bits [31:18], status-slot pointer word +0x10. Its control
  * word for a 4 KiB ring carries tag 0. The model writes each 16-bit host
  * sample into bits [23:8] of a ring word, sign-extended, low byte zero:
- * the output's layout, which the datasheet records for output only.
+ * the output's layout, specified for output only.
  */
 #define RAD1_IN_A_ADDR_LO         0x4d0
 #define RAD1_IN_A_ADDR_HI         0x510
@@ -255,8 +247,8 @@
  * (9 on crossbar 0), bits 47:0 pass through as the crosstalk offset, which
  * carries node 0's programmed nasid in bits 39:32 and the RAM offset below.
  * The RAD1 is a little-endian PCI device that is not byte-lane self-ordered,
- * so with its Device register left in the reset (swap-enabled) state the Bridge
- * byte-reverses each DMA word -- exactly as IRIX runs it -- turning the model's
+ * With its Device register in the reset (swap-enabled) state, the
+ * Bridge byte-reverses each DMA word as IRIX runs it, turning the model's
  * little-endian descriptor writes into the big-endian words the driver reads.
  * These tests therefore leave the swap bit clear (the guest reads each ring
  * word big-endian) and only enable bus mastering. Node-0 RAM offset P is
@@ -330,7 +322,7 @@
 #define BRIDGE_PIN_BOARD_IOC3 (1u << 4)
 #define BRIDGE_PIN_MIO_IOC3   (1u << 6)
 
-/* docs/datasheets/baseio.md's board-variant table. */
+/* The BaseIO board-variant part numbers. */
 #define IO6G_BOARD_PART "030-0734-002"
 #define IO6G_MIO_BOARD_PART "030-0880-003"
 
@@ -387,7 +379,7 @@ static void vector_write(QTestState *qts, uint64_t route, uint64_t address,
 /*
  * machine_options extends the "-M origin2000" argument itself (e.g.
  * ",baseio-preset=io6g"), while extra adds further, ordinary command-line
- * arguments after it -- the two cannot share one string, since the machine
+ * arguments after it. The two cannot share one string, since the machine
  * type takes only one "-M" and a preset override has to ride inside it.
  */
 /*
@@ -790,12 +782,12 @@ static void test_io6g_rad1_identity(void)
 }
 
 /*
- * Every offset docs/datasheets/mediaio-rad1-audio.md's register map
- * documents stores whatever the guest last wrote and answers it back on
+ * Every offset the RAD1 register map documents stores whatever the guest
+ * last wrote and answers it back on
  * a later read (hw/audio/sgi-rad1-audio.c's own register-store
- * approximation, not a captured reset/read contract). An undocumented
+ * approximation, not an observed reset/read contract). An undocumented
  * BAR0 offset accepts no store at all, so a write there never surfaces on
- * a later read -- confirming the model keeps unestablished offsets
+ * a later read, confirming the model keeps unestablished offsets
  * observable rather than silently absorbing them.
  */
 static void test_io6g_rad1_registers(void)
@@ -883,7 +875,7 @@ static void test_io6g_rad1_status_dma_registers(void)
                     ==, RAD1_STATUS_STOP);
 }
 
-/* The device reads its descriptors big-endian; ring words move as raw bytes. */
+/* The device reads descriptors big-endian; ring words move as raw bytes. */
 static void rad1_ring_write(QTestState *qts, uint64_t ram, uint32_t value)
 {
     uint8_t bytes[sizeof(uint32_t)];
@@ -925,7 +917,7 @@ static void test_io6g_rad1_status_dma_handshake(void)
     /*
      * Enable bus mastering, and leave the Device register's swap bit clear so
      * the Bridge byte-reverses the device's little-endian DMA into the
-     * big-endian words the guest reads -- the configuration IRIX runs, and the
+     * big-endian words the guest reads, the configuration IRIX runs, and the
      * one the model's little-endian descriptor writes target.
      */
     baseio_window_write(qts, BRIDGE_CFG0(MIO_RAD1_DEVICE) + PCI_COMMAND,
@@ -1045,7 +1037,7 @@ static void test_io6g_rad1_status_dma_continuous(void)
     program_module(qts);
     program_rad1(qts);
 
-    /* Bus mastering with the Bridge swap left on, as in the handshake test. */
+    /* Bus mastering with Bridge swap on, as in the handshake test. */
     baseio_window_write(qts, BRIDGE_CFG0(MIO_RAD1_DEVICE) + PCI_COMMAND,
                         PCI_COMMAND_MEMORY | RAD1_PCI_COMMAND_MASTER);
     baseio_window_write(qts, BRIDGE_DEVICE(MIO_RAD1_DEVICE) + XTALK_REG_DATA,
@@ -1093,8 +1085,8 @@ static void test_io6g_rad1_status_dma_continuous(void)
         uint32_t flags = rad1_ring_read(qts, slot + RAD1_SLOT_FLAGS_OFFSET);
 
         /*
-         * AES3 absent (bit 19 set) and no ADAT or video-field bits: the
-         * datasheet's "genlock absent" model. Setting 0x80/0x100 on every
+         * AES3 absent (bit 19 set), with no ADAT or video-field bits:
+         * the model's "genlock absent" state. Setting 0x80/0x100 on every
          * completion would present a synthetic 60 Hz video reference.
          */
         g_assert_cmphex(done, ==, RAD1_SLOT_DONE_WORD);
@@ -1216,11 +1208,11 @@ static void rad1_prepare_output(QTestState *qts, uint32_t left,
 }
 
 /*
- * The analog output's continuous streaming engine, channel type 1. This
- * mirrors a traced IRIX sfplay start: program set A and set B with the
- * same ring and control word 0xfffff008 (tag 1, 4 KiB), then set bit 0 of
- * 0x58 on top of its bring-up value. From that edge the engine walks the
- * ring at the sample rate with no re-arm, and the status slots report its
+ * Analog output streams continuously on type 1. IRIX sfplay programs A/B with
+ * the same ring and control word 0xfffff008 (tag 1, 4 KiB), then sets
+ * bit 0 of 0x58 on top of its bring-up value. From that edge, the
+ * engine walks the ring at the sample rate with no re-arm. The status
+ * slots report its
  * progress. The checks:
  *
  * - Neither a central-control 0x80 write nor the analog input's enable
@@ -1482,14 +1474,14 @@ static unsigned int rad1_wav_seeded_frames(const char *path)
 /*
  * The samples themselves, read back from the host voice through a wav
  * audiodev. Every ring frame is the pair (0x00123456, 0xffabcd12), so a
- * correct engine plays (0x1234, -0x5433) in left, right order, the
- * datasheet's flagged left-first default, taking bits [23:8] of each
- * word. 50 ms at 44.1 kHz is 2205 frames; the wav backend drains the
- * voice on its own virtual-clock timer, so allow for the frames still
- * buffered when the machine quits.
+ * correct engine plays (0x1234, -0x5433) in left, right order, the model's
+ * flagged left-first default, taking bits [23:8] of each word. 50 ms at 44.1
+ * kHz is 2205 frames; the wav backend drains the voice on its own
+ * virtual-clock timer, so allow for frames still buffered when the
+ * machine quits.
  *
- * This needs its own machine for the audiodev, and quits it to flush the
- * file, unlike the shared io6g machine the other cases reset.
+ * This needs its own machine for the audiodev and quits it to flush
+ * the file, unlike the shared io6g machine the other cases reset.
  */
 static void test_io6g_rad1_output_samples(void)
 {
@@ -1980,15 +1972,14 @@ static void test_io6g_rad1_input_without_host_input(void)
 }
 
 /*
- * The digital channels, types 2 to 5, from the datasheet's per-type table
- * and its AES3 and ADAT sections. Each enable is bit 0 of a register
- * whose bring-up value has it clear; each reads A and B at shift 18. The
- * frame widths (two words for AES3, eight for ADAT) and the rates are the
- * model's flagged defaults: the outputs at the analog output's 44.1 kHz,
- * the ADAT input at its clock's fixed 48 kHz, the AES3 input at the
- * connected source's rate or 48 kHz with none. The control word carries
- * the type as its tag and the ring as a negated count of 128-byte units:
- * 4 KiB for AES3, 16 KiB for ADAT.
+ * Digital channels, types 2 to 5, AES3 and ADAT. Each
+ * enable is bit 0 of a register whose bring-up value has it clear; each reads
+ * A and B at shift 18. The frame widths (two words for AES3, eight for ADAT)
+ * and the rates are the model's flagged defaults: the outputs at the analog
+ * output's 44.1 kHz, the ADAT input at its clock's fixed 48 kHz, the AES3
+ * input at the connected source's rate or 48 kHz with none. The control word
+ * carries the type as its tag and the ring as a negated count of 128-byte
+ * units: 4 KiB for AES3, 16 KiB for ADAT.
  */
 typedef struct Rad1DigitalChannel {
     const char *name;
@@ -2246,7 +2237,7 @@ static void rad1_check_digital_stream(const Rad1DigitalChannel *d,
 }
 
 /*
- * Checklist item 18: AES3 output subcode traffic while type 3 streams.
+ * AES3 output subcode traffic while type 3 streams.
  * 64-bit stores across 0x1100..0x121f and toggles of 0x54 bits 2 and 3
  * are accepted and shadowed, and the stream stays on its sample clock.
  */
@@ -2269,7 +2260,7 @@ static void rad1_disturb_aes_subcode(QTestState *qts)
 }
 
 /*
- * Checklist item 17's controls: the ADAT receiver's 0x80 sequence (bits
+ * ADAT receiver controls: the 0x80 sequence (bits
  * 0xc0 set, 0x40 left set, a 0x80 pulse) and ADAT subcode stores, made
  * while type 5 streams, move nothing. Type 5 itself was started with no
  * ADAT input and no 0x80 write.
@@ -2308,9 +2299,9 @@ static void test_io6g_rad1_adat_out_stream(void)
 }
 
 /*
- * Checklist items 16 and 17: the receivers as the host describes them.
+ * Host-configured receivers.
  * A machine told "aes-input-rate" and "adat-input" presents, on every
- * completion and without change, the datasheet's AES3 lock word for that
+ * completion and without change, the configured AES3 lock word for that
  * rate and the ADAT-present bit; the AES3 input then runs at the source's
  * rate. The default machine's absent receivers are covered by
  * io6g-rad1-status-dma-continuous.
@@ -3011,12 +3002,12 @@ static void test_io6g_rad1_ust_counter(void)
     qtest_clock_step(qts, step_ns);
     after = baseio_window_read(qts, MIO_RAD1_WINDOW + RAD1_REG_UST_COUNTER);
 
-    /* Advanced with the clock, by about step_ns/tick (allow flooring slop). */
+    /* Advances with the clock by about step_ns/tick (allow flooring slop). */
     g_assert_cmpuint(after, >, before);
     g_assert_cmpuint(after - before, >=, expect - 2);
     g_assert_cmpuint(after - before, <=, expect + 2);
 
-    /* Read-only: a write neither sticks nor rewinds the clock-derived count. */
+    /* Read-only: a write neither sticks nor rewinds the clock count. */
     baseio_window_write(qts, MIO_RAD1_WINDOW + RAD1_REG_UST_COUNTER,
                         0xdeadbeef);
     again = baseio_window_read(qts, MIO_RAD1_WINDOW + RAD1_REG_UST_COUNTER);
@@ -3030,7 +3021,7 @@ static void test_io6g_rad1_ust_counter(void)
  * device 6's MediaIO IOC3. Both carry the same generic
  * TYPE_SGI_IOC3_KBC child (hw/input/sgi-ioc3-kbc.c) wired up purely from
  * the SGI_IOC3_POPULATION_KEYBOARD_MOUSE bit, so a keyboard reset (0xff)
- * on either chip answers with the same ack/self-test-pass pattern --
+ * on either chip answers with the same ack/self-test-pass pattern,
  * checking both confirms each chip actually enumerates a keyboard/mouse
  * pair rather than only carrying the population bit.
  */
@@ -3099,7 +3090,7 @@ static void test_io6g_board_keyboard_reaches_bridge_pin_4(void)
 /*
  * The MediaIO IOC3's own combined interrupt reaches the Bridge on input 6
  * (BASEIO_G_MIO_IOC3_IRQ_PIN), separate from device 2's board IOC3 on
- * input 4 -- the same latched keyboard/mouse source
+ * input 4. This is the same latched keyboard/mouse source
  * test_the_ps2_interrupt_latches_until_acknowledged exercises against
  * IP29's single chip in sn0-ioc3-test.c, applied here to confirm device 6
  * carries a working interrupt path of its own rather than only
@@ -3122,8 +3113,8 @@ static void test_io6g_mio_keyboard_reaches_bridge_pin_6(void)
                     BRIDGE_PIN_MIO_IOC3, ==, 0);
 
     /*
-     * A queued keyboard reply drives the whole chain -- source, combined
-     * status, SuperIO GPIO-out, board wire -- to Bridge input 6 alone;
+     * A queued keyboard reply drives the source, combined status, SuperIO
+     * GPIO-out, and board wire to Bridge input 6 alone;
      * device 2's own pin stays clear throughout, confirming the two
      * chips' interrupts are independent, not aliased.
      */
@@ -3147,8 +3138,8 @@ static void test_io6g_mio_keyboard_reaches_bridge_pin_6(void)
  * The same route, carrying a receive backlog. The controller holds three
  * characters at most, and the clamp bits hold a port's clock line low once
  * it has taken its quota, so a device with more to say is stopped rather
- * than overrunning it. Armed after one character -- the tighter of the two
- * clamps the control register offers -- a two-character reply arrives in two
+ * than overrunning it. Armed after one character (the tighter clamp
+ * the control register offers), a two-character reply arrives in two
  * instalments, and the second instalment has to reach Bridge input 6 on its
  * own, with nothing but the guest's own read of the first to prompt it.
  * sn0-ioc3-test.c's ps2-clamp-after-one-splits-a-reply covers the same
@@ -3185,7 +3176,8 @@ static void test_io6g_mio_keyboard_backlog_reaches_bridge_pin_6(void)
     /*
      * That read emptied the holding and released the clamp, so the stopped
      * keyboard sent its second character. Its arrival drives the whole chain
-     * again -- source, combined status, SuperIO GPIO-out, board wire -- with
+     * again through the source, combined status, SuperIO GPIO-out, and board
+     * wire, with
      * no other event to help it, and device 2's pin stays clear.
      */
     g_assert_cmphex(baseio_window_read(qts, MIO_IOC3_WINDOW + INT_STATUS) &
@@ -3330,7 +3322,7 @@ static uint8_t nic_crc8(uint8_t crc, uint64_t rom)
  * below `*last_discrepancy`, the not-yet-explored branch at
  * `*last_discrepancy` itself, and the zero branch first beyond it. Passed
  * `rom` and `*last_discrepancy` both 0 for the first pass, then chained
- * from each pass's return and updated `*last_discrepancy` -- a guest's
+ * from each pass's return and updated `*last_discrepancy`. A guest's
  * one-wire dispatch depends on exactly this walk to discover every part a
  * multi-drop bus carries without knowing any of their identities
  * beforehand, which is what lets it tell this board's own board-part
@@ -3376,8 +3368,7 @@ static uint64_t nic_search_pass(QTestState *qts, uint64_t rom,
 
 /*
  * The part number as Linux's Bridge probe assembles it: bytes 11-29 and
- * 32-37 of the record, spaces dropped (docs/datasheets/bridge.md, "The
- * record layout, and every constraint on building it").
+ * 32-37 of the record, spaces dropped.
  */
 static void page_part(const uint8_t *page, char *out)
 {
@@ -3444,7 +3435,7 @@ static void nic_read_part(QTestState *qts, uint64_t rom, char *part)
  * multi-drop one-wire bus: the io6g board's own, and the MediaIO
  * daughtercard's, added by sgi_bridge_add_onewire_board_part(). A search
  * from scratch, knowing neither identity beforehand, must discover
- * exactly the two and read each one's own part number back -- the same
+ * exactly the two and read each one's own part number back, the same
  * mechanism and order-independence a guest's one-wire dispatch depends
  * on to tell the two apart.
  */

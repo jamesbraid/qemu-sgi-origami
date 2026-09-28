@@ -1,17 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
-/*
- * SGI Crossbow crosstalk crossbar.
- *
- * Copyright (c) 2026 Origami contributors
- *
- * Nine ports around one crossbar: eight external links carrying decoded
- * widget identities 8 through 15, and the ninth terminating at logical
- * widget zero, where these registers answer. The switch translates no
- * address and reorders no byte. A packet's destination widget selects the
- * output port and its offset travels unchanged. Widget zero and the eight
- * links are the only destinations a packet may name; any other number is
- * an error reported on the port that received it.
- */
+/* SGI Crossbow crosstalk crossbar and widget-zero registers. */
 
 #include "qemu/osdep.h"
 #include "qapi/error.h"
@@ -27,6 +15,12 @@
 #include "hw/core/sysbus.h"
 #include "hw/core/irq.h"
 #include "migration/vmstate.h"
+
+/*
+ * Eight external ports decode widgets 8-15; port nine terminates at widget 0.
+ * Destination widget selects the output port, with offset and byte order
+ * unchanged. Other destinations signal an error on the ingress port.
+ */
 
 /* Registers are 32 bits in the low half of an eight-byte slot: offset + 4. */
 #define XBOW_REG_DATA               4
@@ -84,11 +78,11 @@
                                      XBOW_STATUS_REQUEST)
 
 /*
- * Control carries the register-access and Crosstalk error enables at the
- * bits their conditions occupy, and the connection-timeout enable at bit 1.
- * This revision gives that third enable no status location -- its own
- * status register calls bit 1 reserved -- so the bit stores and enables
- * nothing until evidence settles where the condition would be reported.
+ * Control carries the register-access and Crosstalk error enables at the bits
+ * their conditions occupy, and the connection-timeout enable at bit 1. This
+ * revision gives that third enable no status location. Its own status
+ * register calls bit 1 reserved, so the bit stores and enables nothing
+ * until evidence settles where the condition would be reported.
  */
 #define XBOW_CONTROL_MASK           0x00000026
 #define XBOW_CONTROL_CONDITIONS     (XBOW_STATUS_ACCESS_ERROR | \
@@ -123,12 +117,12 @@
 /*
  * Every other enable sits at the bit its condition occupies: illegal
  * destination at 17, input overallocation at 16, the two counter overflows
- * and the three link-level errors at 7 down to 3, maximum request timeout
- * at 1 and source timeout at 0.
+ * and the three link-level errors at 7 down to 3, maximum request timeout at
+ * 1 and source timeout at 0.
  */
 #define XBOW_LINK_DIRECT_ENABLES    0x000300fbu
 
-/* Link control: the force-bad-packet one-shot at 23 always reads back zero. */
+/* Link control: the force-bad-packet one-shot at 23 reads back zero. */
 #define XBOW_LINK_FORCE_BAD         BIT(23)
 #define XBOW_LINK_EIGHT_BIT_FORCE   BIT(24)
 #define XBOW_LINK_CONTROL_MASK      (BIT(31) | (3u << 28) | (7u << 25) | \
@@ -153,8 +147,8 @@
 
 /*
  * Two Crossbow core cycles of link reset, at the nominal 100 MHz core the
- * specification derives from the transmit clock. This is the pulse width,
- * not a bound on how long link initialization takes.
+ * specification derives from the transmit clock. This is the pulse width, not
+ * a bound on how long link initialization takes.
  */
 #define XBOW_LINK_RESET_NS          20
 
@@ -186,13 +180,13 @@ static bool sgi_xbow_alive(const SGIXbowState *s, unsigned int link)
 
 /*
  * A link carries traffic while alive, and also through a reset pulse the
- * machine's restore policy will end alive: its routes in both directions
- * and the Crossbow's own interrupt packets to it. The pulse is two core
- * cycles on hardware but ends on a QEMU timer, which the main loop can run
- * milliseconds of guest time late under multi-threaded TCG. IRIX resets
- * the SI graphics link, waits a fixed millisecond without reading link
- * status and programs the board; withdrawing the route for longer than
- * that turned the wait into a bus error. Only the status shows the pulse.
+ * machine's restore policy will end alive: its routes in both directions and
+ * the Crossbow's own interrupt packets to it. The pulse is two core cycles on
+ * hardware but ends on a QEMU timer, which the main loop can run milliseconds
+ * of guest time late under multi-threaded TCG. IRIX resets the SI graphics
+ * link, waits a fixed millisecond without reading link status and programs
+ * the board; withdrawing the route for longer than that turned the wait into
+ * a bus error. Only the status shows the pulse.
  */
 static bool sgi_xbow_carries(const SGIXbowState *s, unsigned int link)
 {
@@ -256,11 +250,11 @@ static uint32_t sgi_xbow_link_aux(const SGIXbowState *s, unsigned int link)
 
 /*
  * A link asks for an interrupt while one of the conditions it has seen is
- * still enabled. Every enable but one sits at the bit its condition
- * occupies; the bandwidth enable answers for the whole source field. The
- * conditions this model never produces are link-level micropacket errors,
- * because it moves whole packets; their enables are wired the same way, so
- * masking behaves alike for all of them.
+ * still enabled. Every enable but one sits at the bit its condition occupies;
+ * the bandwidth enable answers for the whole source field. The conditions
+ * this model never produces are link-level micropacket errors, because it
+ * moves whole packets; their enables are wired the same way, so masking
+ * behaves alike for all of them.
  */
 static bool sgi_xbow_link_requesting(const SGIXbowState *s, unsigned int link)
 {
@@ -284,9 +278,9 @@ static bool sgi_xbow_widget0_requesting(const SGIXbowState *s)
 /*
  * One doubleword write from widget zero to the programmed target, carrying
  * the vector in bits 7:0 and assertion in bit 8. The destination register
- * holds a 48-bit address of the target's own rather than a crosstalk
- * offset, so the packet goes into that widget's space and not through the
- * routes a crosstalk address selects.
+ * holds a 48-bit address of the target's own rather than a crosstalk offset,
+ * so the packet goes into that widget's space and not through the routes a
+ * crosstalk address selects.
  */
 static bool sgi_xbow_deliver_at(SGIXbowState *s, uint32_t upper,
                                 uint32_t lower, bool raise)
@@ -336,9 +330,9 @@ static bool sgi_xbow_deliver(SGIXbowState *s, bool raise)
 }
 
 /*
- * One assertion is outstanding at a time. Later conditions accumulate
- * without a further packet, and the deassertion follows only once every
- * pending request has been acknowledged.
+ * One assertion is outstanding at a time. Later conditions accumulate without
+ * a further packet, and the deassertion follows only once every pending
+ * request has been acknowledged.
  */
 static void sgi_xbow_update_interrupt(SGIXbowState *s)
 {
@@ -368,7 +362,7 @@ static void sgi_xbow_update_interrupt(SGIXbowState *s)
     }
 }
 
-/* A route exists only where a widget is attached, and never back to itself. */
+/* A route needs an attached widget and cannot loop back to itself. */
 static bool sgi_xbow_routed(const SGIXbowState *s, unsigned int port,
                             unsigned int link)
 {
@@ -402,16 +396,15 @@ static void sgi_xbow_sync_routes(SGIXbowState *s)
 }
 
 /*
- * The first-error latch holds the crosstalk command word of the packet
- * that failed and suppresses later logging until software writes it back.
- * An illegal-destination packet carries that command word, built from the
- * receiving port and the destination it named, so those errors fill the
- * latch below. A widget zero access error arrives instead as a processor
- * access through a memory region, which carries no command word to put
- * there, and filling the register with anything else would report a
- * packet that never existed, so that one condition alone still leaves the
- * register and both error address halves at zero and prints here on its
- * first occurrence.
+ * The first-error latch holds the crosstalk command word of the packet that
+ * failed and suppresses later logging until software writes it back. An
+ * illegal-destination packet carries that command word, built from the
+ * receiving port and the destination it named, so those errors fill the latch
+ * below. A widget zero access error arrives instead as a processor access
+ * through a memory region, which carries no command word to put there, and
+ * filling the register with anything else would report a packet that never
+ * existed, so that one condition alone still leaves the register and both
+ * error address halves at zero and prints here on its first occurrence.
  */
 static void sgi_xbow_log_uncaptured_packet(void)
 {
@@ -432,28 +425,26 @@ static void sgi_xbow_record_access_error(SGIXbowState *s)
 }
 
 /*
- * A destination number that is neither widget zero nor a link decodes to
- * no port at all, so the error belongs to the port the packet arrived at
- * rather than to anything it was addressed to. A repeat on the same port
- * while its own status bit still stands reports the second there, and the
- * packet goes nowhere either way. A link that is merely down or
- * unpopulated is a different case: its number is legal and nothing here
- * latches for it.
+ * A destination number that is neither widget zero nor a link decodes to no
+ * port at all, so the error belongs to the port the packet arrived at rather
+ * than to anything it was addressed to. A repeat on the same port while its
+ * own status bit still stands reports the second there, and the packet goes
+ * nowhere either way. A link that is merely down or unpopulated is a
+ * different case: its number is legal and nothing here latches for it.
  *
  * The global capture registers are a single instance shared by the whole
- * switch, not one per port, so what gates a capture is whether any port's
- * error still stands there, not this one's own status bit: two ports can
- * each take their first illegal-destination error before either is
- * acknowledged, and only the one that arrived first may fill the
- * registers. The command word's DIDN is the illegal widget the packet
- * named and its SIDN is the widget attached to the port that sent it; the
- * address registers hold the offset the packet carried within that
- * widget's own space. Splitting that offset across the two halves the way
- * the interrupt destination address's own registers are documented to,
- * bits 47:32 in the upper half and bits 31:0 in the lower, is an inference
- * by analogy: this pair's own layout is not itself directly stated. Every
- * offset this switch can ever see stays within 48 bits, so the inference
- * holds exactly throughout that range regardless.
+ * switch, not one per port, so capture depends on whether any port's error
+ * still stands there, not this one's own status bit: two ports can each take
+ * their first illegal-destination error before either is acknowledged, and
+ * only the one that arrived first may fill the registers. The command word's
+ * DIDN is the illegal widget the packet named and its SIDN is the widget
+ * attached to the port that sent it; the address registers hold the offset
+ * the packet carried within that widget's own space. Splitting that offset
+ * across the two halves the way the interrupt destination address's own
+ * registers are documented to, bits 47:32 in the upper half and bits 31:0 in
+ * the lower, is an inference by analogy: this pair's own layout is not itself
+ * directly stated. Every offset this switch can ever see stays within 48
+ * bits, so the inference holds exactly throughout that range regardless.
  */
 static void sgi_xbow_record_illegal_destination(SGIXbowState *s,
                                                 unsigned int port,
@@ -535,11 +526,11 @@ static bool sgi_xbow_accessible(hwaddr slot, bool is_write)
     case XBOW_LINK_RESET:
         /*
          * The specification's error list names a reserved address, a wrong
-         * packet type and a write to a read-only or read-and-clear
-         * register. It does not settle what a read of this write-only
-         * register does, and the data such a read would answer is not
-         * specified either, so this follows the sibling crossbar and
-         * reports the access rather than inventing a value.
+         * packet type and a write to a read-only or read-and-clear register.
+         * It does not settle what a read of this write-only register does,
+         * and the data such a read would answer is not specified either, so
+         * this follows the sibling crossbar and reports the access rather
+         * than inventing a value.
          */
         return is_write;
     default:
@@ -561,11 +552,11 @@ static bool sgi_xbow_decode(hwaddr addr, unsigned int size, hwaddr *slot)
  * packet, and the established host form of that is the 32-bit access to the
  * data half. Whether this machine's adapter turns an eight-byte processor
  * access into the same packet is not established, so the model refuses that
- * form rather than answering it. Refusing is an emulator bound, not a
- * report that the chip rejected a packet, so it raises no status flag. The
- * forms the specification does call errors -- a reserved address, a write
- * to a read-only or read-and-clear register, an access by any other packet
- * type -- set the register-access error the way it says they do.
+ * form rather than answering it. Refusing is an emulator bound, not a report
+ * that the chip rejected a packet, so it raises no status flag. The forms the
+ * specification does call errors, a reserved address, a write to a
+ * read-only or read-and-clear register, an access by any other packet type --
+ * set the register-access error the way it says they do.
  */
 static MemTxResult sgi_xbow_refuse(SGIXbowState *s, hwaddr addr,
                                    unsigned int size, bool is_write)
@@ -615,20 +606,19 @@ static void sgi_xbow_link_reset_expire(void *opaque)
 
 /*
  * End every link reset whose pulse is already over. The timer that ends a
- * pulse runs from the main loop, and a processor polling link status
- * straight after a reset can outpace it: the IP27 PROM gives a link 100
- * polls ten microseconds apart to come back, and in stock-PROM boots of
- * the Origin 200 GIGAchannel it ran out of them with the pulse's 20 ns
- * long past and its timer still waiting, then faulted on the widget. Any
- * access to this chip's own registers first ends the pulses the virtual
- * clock says are over, so what the guest sees there follows that clock,
- * not host scheduling.
+ * pulse runs from the main loop, and a processor polling link status straight
+ * after a reset can outpace it: the IP27 PROM gives a link 100 polls ten
+ * microseconds apart to come back, and in stock-PROM boots of the Origin 200
+ * GIGAchannel it ran out of them with the pulse's 20 ns long past and its
+ * timer still waiting, then faulted on the widget. Any access to this chip's
+ * own registers first ends the pulses the virtual clock says are over, so
+ * what the guest sees there follows that clock, not host scheduling.
  *
  * Only register accesses catch up. An access routed straight through the
  * switch to a widget does not come here, so if nothing has read or written
- * the registers since the pulse ended and the timer is still late, it
- * still finds that widget's route disabled. The PROM polls link status
- * before it touches the widget, which is what makes this enough for it.
+ * the registers since the pulse ended and the timer is still late, it still
+ * finds that widget's route disabled. The PROM polls link status before it
+ * touches the widget, which is what makes this enough for it.
  */
 static void sgi_xbow_link_reset_catch_up(SGIXbowState *s)
 {
@@ -648,11 +638,10 @@ static void sgi_xbow_link_reset_catch_up(SGIXbowState *s)
 /*
  * The write is a one-shot: link reset is asserted locally and driven at the
  * remote end for two core cycles, and mode arbitration is forced. The
- * force-eight-bit control deliberately survives it. What ends initialization
- * is the part no reviewed source settles -- neither the end of the pulse nor
- * a peer's reset is evidence that a link trained -- so the generic port stays
- * in initialization. A machine may select an attached link whose reviewed
- * compatibility policy restores only its pre-command health at pulse end.
+ * force-eight-bit control survives it. Link training completion is unknown:
+ * neither pulse end nor peer reset proves it, so the generic port remains in
+ * initialization. A machine may restore an attached link's pre-command health
+ * at pulse end under its compatibility policy.
  */
 static void sgi_xbow_start_link_reset(SGIXbowState *s, unsigned int link)
 {
@@ -672,8 +661,8 @@ static void sgi_xbow_start_link_reset(SGIXbowState *s, unsigned int link)
      * there, which the specification states outright, so its reset needs no
      * completion predicate. Only an attached port waits for the one this
      * model does not have. Nothing here acknowledges a sticky error or a
-     * pending request: the clearing aliases are the only acknowledgment
-     * this chip has.
+     * pending request: the clearing aliases are the only acknowledgment this
+     * chip has.
      */
     if (sgi_xbow_present(s, link)) {
         s->link_initializing |= bit;
@@ -792,14 +781,14 @@ static MemTxResult sgi_xbow_read(void *opaque, hwaddr addr, uint64_t *data,
             /*
              * Reading here returns what the plain register returned and
              * negates the error bits, the auxiliary error fields and this
-             * link's request. Attachment and the state the port is in are
-             * not errors, and reappear on the next read.
+             * link's request. Attachment and the state the port is in are not
+             * errors, and reappear on the next read.
              */
             value = sgi_xbow_link_status(s, link);
             /*
              * The sticky error and retry-counter fields are the link-level
-             * micropacket errors this model never produces, so they are
-             * zero already and the clearing is only the contract's shape.
+             * micropacket errors this model never produces, so they are zero
+             * already and the clearing is only the contract's shape.
              */
             s->link_status[link] &= ~XBOW_LINK_STATUS_ERRORS;
             s->link_aux_status[link] &= ~XBOW_AUX_ERRORS;
@@ -928,8 +917,8 @@ static MemTxResult sgi_xbow_write(void *opaque, hwaddr addr, uint64_t value,
          * A MemoryRegion write carries no posted-versus-response-requested
          * attribute, so this is the ordinary write the specification's
          * workaround names. The erratum where a response-requesting write
-         * produces no response needs an adapter that keeps that bit;
-         * nothing here fabricates a successful response.
+         * produces no response needs an adapter that keeps that bit; nothing
+         * here fabricates a successful response.
          */
         if (s->stop_on_link_reset) {
             g_autofree char *path = object_get_canonical_path(OBJECT(s));
@@ -974,8 +963,8 @@ static uint64_t sgi_xbow_illegal_offset(const SGIXbowState *s, hwaddr addr)
 
 /*
  * One region per port covers the whole illegal range, so the port a packet
- * entered by is what selects the status register that records it. Nothing
- * is delivered and no value is invented for a read.
+ * entered by is what selects the status register that records it. Nothing is
+ * delivered and no value is invented for a read.
  */
 static MemTxResult sgi_xbow_illegal_read(void *opaque, hwaddr addr,
                                          uint64_t *data, unsigned int size,
@@ -1005,16 +994,15 @@ static MemTxResult sgi_xbow_illegal_write(void *opaque, hwaddr addr,
 }
 
 /*
- * One report per host access, at every width and alignment. Two fields
- * below decide it: the implementation width, which covers anything a host
- * can issue in one go, and the implementation's unaligned flag, without
- * which an access crossing a natural boundary is broken into pieces.
- * Narrowing either splits one packet into two reports. Where an access
- * ends does not matter, because QEMU hands a region an access that starts
- * inside it whole rather than clipping it at the region's end: one
- * running off the top of the range is reported once, against the widget
- * it began in, and the part beyond is swallowed as the hole here
- * swallowed it before.
+ * One report per host access, at every width and alignment. Two fields below
+ * decide it: the implementation width, which covers anything a host can issue
+ * in one go, and the implementation's unaligned flag, without which an access
+ * crossing a natural boundary is broken into pieces. Narrowing either splits
+ * one packet into two reports. Where an access ends does not matter, because
+ * QEMU hands a region an access that starts inside it whole rather than
+ * clipping it at the region's end: one running off the top of the range is
+ * reported once, against the widget it began in, and the part beyond is
+ * swallowed as the hole here swallowed it before.
  */
 static const MemoryRegionOps sgi_xbow_illegal_ops = {
     .read_with_attrs = sgi_xbow_illegal_read,
@@ -1029,8 +1017,8 @@ static const MemoryRegionOps sgi_xbow_illegal_ops = {
 };
 
 /*
- * Build one directed route: what a packet entering on `port` and addressed
- * to `link` reaches, in both the processor and packet crosstalk views. The
+ * Build one directed route: what a packet entering on `port` and addressed to
+ * `link` reaches, in both the processor and packet crosstalk views. The
  * destination `link`'s own face must already be set. sgi_xbow_realize()
  * builds every route this way as the Crossbow comes up, and
  * sgi_xbow_attach_endpoint_live() builds the routes into a widget attached
@@ -1159,21 +1147,21 @@ bool sgi_xbow_mark_widget_alive(SGIXbowState *s, unsigned int widget,
     /*
      * qdev_machine_creation_done() (hw/core/machine.c) fires the
      * machine_init_done notifiers this call runs from and then
-     * unconditionally runs the machine's own cold reset in the same
-     * breath, before the guest's first instruction. That reset's
+     * unconditionally runs the machine's own cold reset in the same breath,
+     * before the guest's first instruction. That reset's
      * sgi_xbow_reset_enter() reseeds link_alive from link_startup, so a
      * widget only marked alive in link_alive would go back to not-alive
-     * before anything ever observes it alive. Marking it in link_startup
-     * as well makes every future reset -- this first one and any later
-     * guest-initiated one -- reproduce the same alive state, the same as
-     * a widget that came up before startup-links-alive was ever read.
+     * before anything ever observes it alive. Marking it in link_startup as
+     * well makes every future reset, this first one and any later
+     * guest-initiated one, reproduce the same alive state, the same as a
+     * widget that came up before startup-links-alive was ever read.
      */
     s->link_startup |= BIT(link);
     /*
      * The same holds for a guest-initiated link reset: a link configured
      * alive at startup comes back from one only under the machine's
-     * "link-reset-restore-alive" policy, so a widget brought up here
-     * follows whichever policy the caller gives it.
+     * "link-reset-restore-alive" policy, so a widget brought up here follows
+     * whichever policy the caller gives it.
      */
     if (restore_after_reset) {
         s->link_reset_restore_alive_mask |= BIT(link);
@@ -1227,18 +1215,17 @@ bool sgi_xbow_attach_endpoint_live(SGIXbowState *s, unsigned int widget,
     }
 
     /*
-     * Register the widget as a destination and build the routes into it
-     * every other port needs to reach it, exactly as sgi_xbow_realize()
-     * does for a widget attached before realize. The packet address space
-     * matches the one realize builds too, so widget zero's own interrupt
-     * can target this widget the same way. The caller brings the widget's
-     * own link alive next (sgi_xbow_mark_widget_alive()), whose
-     * sgi_xbow_sync_routes() settles these routes to the enabled state a
-     * live destination has.
+     * Register the widget as a destination and build the routes into it every
+     * other port needs to reach it, exactly as sgi_xbow_realize() does for a
+     * widget attached before realize. The packet address space matches the
+     * one realize builds too, so widget zero's own interrupt can target this
+     * widget the same way. The caller brings the widget's own link alive next
+     * (sgi_xbow_mark_widget_alive()), whose sgi_xbow_sync_routes() settles
+     * these routes to the enabled state a live destination has.
      *
-     * Attaching a widget is what makes its port report one present
-     * (auxiliary status bit 5), independently of whether the link has
-     * trained yet, so the port stops reading as an empty slot here.
+     * Attaching a widget is what makes its port report one present (auxiliary
+     * status bit 5), independently of whether the link has trained yet, so
+     * the port stops reading as an empty slot here.
      */
     s->link_present |= BIT(link);
     s->face[link] = cpu_face;
@@ -1267,10 +1254,10 @@ static void sgi_xbow_get_links_alive(Object *obj, Visitor *v, const char *name,
 }
 
 /*
- * The operational mask is what changes while the machine runs. A widget
- * that is not attached cannot be operational, and a link that comes up or
- * goes down here takes the same route and interrupt consequences it takes
- * when the registers move it.
+ * The operational mask is what changes while the machine runs. A widget that
+ * is not attached cannot be operational, and a link that comes up or goes
+ * down here takes the same route and interrupt consequences it takes when the
+ * registers move it.
  */
 static void sgi_xbow_set_links_alive(Object *obj, Visitor *v, const char *name,
                                      void *opaque, Error **errp)
@@ -1332,15 +1319,15 @@ static void sgi_xbow_set_links_alive(Object *obj, Visitor *v, const char *name,
  * is not a claim about how long a real link takes to train or whether it
  * succeeds.
  *
- * An outstanding assertion is dropped here and no deassertion packet
- * follows. Both deassertions the contract describes follow a software
- * action that takes away the last standing request -- acknowledging it, or
- * masking the source that raised it -- and a reset is neither. Deferring
- * one would not help either. Nothing may leave this device during the enter
- * phase, so the packet would have to go out in the hold phase, and by then
- * every object in the reset group has run its enter phase: it would land in
- * a target that has cleared its interrupt state, leaving a widget coming
- * out of reset holding a vector no hardware could have put there.
+ * An outstanding assertion is dropped here and no deassertion packet follows.
+ * Both deassertions the contract describes follow a software action that
+ * takes away the last standing request, acknowledging it, or masking the
+ * source that raised it, and a reset is neither. Deferring one would not
+ * help either. Nothing may leave this device during the enter phase, so the
+ * packet would have to go out in the hold phase, and by then every object in
+ * the reset group has run its enter phase: it would land in a target that has
+ * cleared its interrupt state, leaving a widget coming out of reset holding a
+ * vector no hardware could have put there.
  *
  * That argument holds because the target resets alongside this device. A
  * reset of the crossbar alone would leave a peer with a latched interrupt
@@ -1621,11 +1608,11 @@ static int sgi_xbow_post_load(void *opaque, int version_id)
     }
     /*
      * Replaying the level re-drives the edge at the far end, and the
-     * endpoints act on the rising edge. Nothing is connected to these
-     * lines yet, but once a machine wires them, a migration taken inside
-     * the two-cycle pulse will reset that endpoint a second time. Whoever
-     * connects them owns the choice: replay the level as here, or restore
-     * it without re-driving an edge the destination already had.
+     * endpoints act on the rising edge. Nothing is connected to these lines
+     * yet, but once a machine wires them, a migration taken inside the
+     * two-cycle pulse will reset that endpoint a second time. Whoever
+     * connects them owns the choice: replay the level as here, or restore it
+     * without re-driving an edge the destination already had.
      */
     for (link = 0; link < SGI_XBOW_LINKS; link++) {
         if (s->link_reset_remaining[link] < XBOW_TIMER_INACTIVE) {
@@ -1756,11 +1743,11 @@ static void sgi_xbow_instance_finalize(Object *obj)
 /*
  * ---- The crosstalk port interface ----
  *
- * Each of the eight external links is one port, addressed by index the
- * way every other public accessor here addresses it: a widget number,
- * 8 through 15, not a link index. Neither face exists before this
- * Crossbow realizes (sgi_xbow_realize builds ingress[]/packet_ingress[]
- * there), so a link that needs them calls in after, never before.
+ * Each of the eight external links is one port, addressed by index the way
+ * every other public accessor here addresses it: a widget number, 8 through
+ * 15, not a link index. Neither face exists before this Crossbow realizes
+ * (sgi_xbow_realize builds ingress[]/packet_ingress[] there), so a link that
+ * needs them calls in after, never before.
  */
 
 static const char *sgi_xbow_xtalk_port_describe(Object *port,
@@ -1800,7 +1787,7 @@ static void sgi_xbow_class_init(ObjectClass *oc, const void *data)
     dc->unrealize = sgi_xbow_unrealize;
     dc->vmsd = &vmstate_sgi_xbow;
     device_class_set_props(dc, sgi_xbow_properties);
-    /* The qtest builds a switch of its own, as the sibling crossbar's does. */
+    /* The qtest builds its own switch, like the sibling crossbar test. */
     dc->user_creatable = true;
     rc->phases.enter = sgi_xbow_reset_enter;
     rc->phases.hold = sgi_xbow_reset_hold;

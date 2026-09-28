@@ -2,24 +2,21 @@
 /*
  * SGI Origin 300 ("SN1", IP35/Bedrock) node device. See sn1-node.h.
  *
- * The family builder (sn-machine.c) creates one of these from the
- * format-2 descriptor's Bedrock node record, links its RAM and CPU
- * clock, sets its populated I/O board (if any) and realizes it; this
- * file owns everything the node needs to become a running Origin 300:
- * the PROM/flash policy, the node's own address-space views, the CPUs,
- * Bedrock, L1 and the XBridge, a fitted part of the IP45 node board
- * itself (docs/designs/sn-machine-model-architecture.md, "Node
- * devices"). The Bedrock's crosstalk port and the XBridge's port 0xa
- * connect through the XBridge link (hw/mips/sgi/xtalk-link.c) before
- * either realizes. The IO-8's fixed devices are a separate sgi-baseio
- * (the "io8" preset, hw/mips/sgi/baseio.c) the machine places on the
- * chip's own head F, through sn1_node_xbridge_pci_bus() below.
+ * The family builder (sn-machine.c) creates one of these from the format-2
+ * descriptor's Bedrock node record, links its RAM and CPU clock, sets its
+ * populated I/O board (if any) and realizes it; this file owns everything the
+ * node needs to become a running Origin 300: the PROM/flash policy, the
+ * node's own address-space views, the CPUs, Bedrock, L1 and the XBridge, a
+ * fitted part of the IP45 node board itself. The Bedrock's crosstalk port and
+ * the XBridge's port 0xa connect through the XBridge link
+ * (hw/mips/sgi/xtalk-link.c) before either realizes. The IO-8's fixed devices
+ * are a separate sgi-baseio (the "io8" preset, hw/mips/sgi/baseio.c) the
+ * machine places on the chip's head F, through sn1_node_xbridge_pci_bus()
+ * below.
  *
- * Node strides, window splits and unit offsets are Bedrock hardware
- * facts, not configuration, so the addresses below are constants here
- * rather than descriptor fields; see decision D-0026 (docs/decisions/
- * D-0026-machine-description-ownership.md in the Origami repository)
- * for the rule this follows.
+ * Node strides, window splits and unit offsets are Bedrock hardware facts,
+ * not configuration, so the addresses below are constants here rather than
+ * descriptor fields.
  */
 
 #include "qemu/osdep.h"
@@ -58,9 +55,9 @@
 #include "sn1-topology.h"
 
 /*
- * The node's own crosstalk/Hub-register address decode: identical on
- * every Origin 300 measured, so constants here rather than descriptor
- * data repeated for a node kind with exactly one shipped configuration.
+ * The node's crosstalk/Hub-register address decode: identical on every Origin
+ * 300 measured, so constants here rather than descriptor data repeated for a
+ * node kind with exactly one shipped configuration.
  */
 #define SN1_SPACE_HUB UINT64_C(0x10000000000)
 #define SN1_HUB_LOCAL_BOOT (SN1_SPACE_HUB + UINT64_C(0x18000000))
@@ -73,9 +70,9 @@
 #define SN1_PROM_RAM_COPY UINT64_C(0x01a00000)
 #define SN1_PROM_RAM_COPY_SIZE UINT64_C(0x00200000)
 /*
- * The register window's own blocks, the same in both forms: an
- * unidentified block below the L1 UART's 0x80 offset, the UART itself,
- * then the per-processor LEDs. See sn1_node_create_bedrock below.
+ * The register window's blocks, the same in both forms: an unidentified block
+ * below the L1 UART's 0x80 offset, the UART itself, then the per-processor
+ * LEDs. See sn1_node_create_bedrock below.
  */
 #define SN1_HUB_REGISTER_HEAD_SIZE UINT64_C(0x80)
 #define SN1_HUB_REGISTER_UART_END (SN1_HUB_REGISTER_HEAD_SIZE + SGI_L1_SIZE)
@@ -109,17 +106,18 @@
 #define SN1_MIPS_HARDWARE_IRQ_OFFSET 2
 
 #define SN1_INSTALLED_BANK_MASK 0xc
-/* Bedrock's own architectural bank count; matches sn0.h's SN0_MAX_MEMORY_BANKS. */
+/*
+ * Bedrock's architectural bank count; matches sn0.h's SN0_MAX_MEMORY_BANKS.
+ */
 #define SN1_ARCHITECTURAL_MEMORY_BANKS 8
 
 /*
- * Bedrock's node field sits at physical address bit 33 in M mode
- * (docs/datasheets/ip35-address-map.md); every constant above is this
- * node's own view, node 0's. A node at a nonzero nasid answers the same
- * views (docs/datasheets/bedrock-network-interface.md) offset by that
- * many multiples of 1 << 33, the same way sn0.c's node_stride shifts the
- * Hub's own windows by nasid multiples of its M-mode 1 << 32. Node 0's
- * addresses are therefore unchanged: (0 << 33) is zero.
+ * Bedrock's node field sits at physical address bit 33 in M mode; every
+ * constant above is this node's view, node 0's. A node at a nonzero nasid
+ * answers the same views offset by that many multiples of 1 << 33, the same
+ * way sn0.c's node_stride shifts the Hub's windows by nasid multiples of its
+ * M-mode 1 << 32. Node 0's addresses are therefore unchanged: (0 << 33) is
+ * zero.
  */
 #define SN1_NODE_ADDRESS_SHIFT 33
 
@@ -143,24 +141,22 @@ uint64_t sn1_node_canonical_address(const SN1NodeState *node,
 /*
  * The claim layer: which node an access reaches.
  *
- * Every node's regions sit in the global map at its own placement,
- * nasid << 33 in each space, where qtests and the machine address them.
- * A processor does not see that map directly. Its view (and the fabric
- * view the Bedrock's DMA and BTE use) hides each space behind a floor that
- * answers a decode error, and over it places one alias of each reachable
- * node's window at the number that node's local block carries: the node
- * itself, and its cabled peer while the link is up and the two numbers
- * differ. A number nobody reachable carries is the decode error. On top,
- * a processor's view maps the reader-relative forms, which always reach
- * its own node whatever its number: the reset view, the Hub special local
- * space (uncached alias, local registers and L1 UART, local boot window),
- * the Bedrock's own register alias in crosstalk small window 1, and the
- * cached alias, sized from the processor interface's cached-alias
- * register. docs/designs/2026-09-25-origin300-two-node-addressing.md
- * states the rule and marks what is established and what is inferred.
+ * Every node's regions sit in the global map at its placement, nasid << 33 in
+ * each space, where qtests and the machine address them. A processor does not
+ * see that map directly. Its view (and the fabric view the Bedrock's DMA and
+ * BTE use) hides each space behind a floor that answers a decode error, and
+ * over it places one alias of each reachable node's window at the number that
+ * node's local block carries: the node itself, and its cabled peer while the
+ * link is up and the two numbers differ. A number nobody reachable carries is
+ * the decode error. On top, a processor's view maps the reader-relative
+ * forms, which always reach its node whatever its number: the reset view, the
+ * Hub special local space (uncached alias, local registers and L1 UART, local
+ * boot window), the Bedrock's register alias in crosstalk small window 1, and
+ * the cached alias, sized from the processor interface's cached-alias
+ * register.
  *
- * On one node with number 0 every alias lands where the global map
- * already is, so the one-chassis machine decodes as before.
+ * On one node with number 0 every alias lands where the global map already
+ * is, so the one-chassis machine decodes as before.
  */
 #define SN1_NODE_WINDOW_SIZE (UINT64_C(1) << SN1_NODE_ADDRESS_SHIFT)
 #define SN1_NODE_SPACE_SIZE UINT64_C(0x10000000000)
@@ -457,12 +453,12 @@ static BlockDriverState *sn1_node_open_flash_slice(BlockDriverState *backing,
 
 /*
  * Creates the node's boot-flash part from -drive if=pflash and returns the
- * processor's read view of its first selection, or NULL with no error when
- * no such drive was given (the caller then falls back to an immutable
- * -bios image). node_index selects the pflash unit the way sgi_machine_
- * load_flash's own per-node override does for the Hub path: unit N for
- * node N, so a second node (once one ships) takes its own drive rather
- * than colliding with the first's.
+ * processor's read view of its first selection, or NULL with no error when no
+ * such drive was given (the caller then falls back to an immutable -bios
+ * image). node_index selects the pflash unit the way sgi_machine_
+ * load_flash's own per-node override does for the Hub path: unit N for node
+ * N, so a second node (once one ships) takes its drive rather than colliding
+ * with the first's.
  */
 static MemoryRegion *sn1_node_create_boot_flash(SN1NodeState *node,
                                                 unsigned int node_index,
@@ -587,13 +583,13 @@ static const MemoryRegionOps sn1_flash_erased_ops = {
 /*
  * A run that supplies a flash image gets a writable part: both software
  * selections reach it, and every bounded view reads its stored bytes, so the
- * monitor's own rewrite of the first sector is what the next reset fetches.
+ * monitor's rewrite of the first sector is what the next reset fetches.
  * Without an image the machine keeps the immutable payload it had before.
  */
 /*
  * The processor fetches from cacheable ROM devices, not MMIO handlers. The
- * flash's write callback refreshes their copies and invalidates old code.
- * An alias would pass writes through to the part's command interface.
+ * flash's write callback refreshes their copies and invalidates old code. An
+ * alias would pass writes through to the part's command interface.
  */
 static MemTxResult sn1_prom_view_read(void *opaque, hwaddr offset,
                                       uint64_t *value, unsigned size,
@@ -693,11 +689,10 @@ static void sn1_prom_flash_programmed(void *opaque, unsigned position)
 }
 
 /*
- * The 25-bit reset-latched processor mode field (bits 24:0 of
- * CP0_Config0), the R10000 family's own architectural width -- the
- * same mask sn-machine.c's shared prefix applies for the Hub, kept as
- * its own constant here because this node's reset cannot share that
- * prefix's ordering (see sn1_node_full_reset).
+ * The reset-latched processor mode field is 25 bits wide (bits 24:0 of
+ * CP0_Config0), as on the R10000 family. sn-machine.c uses the same mask for
+ * the Hub. Keep it here because this node's reset cannot share the Hub reset
+ * order (see sn1_node_full_reset).
  */
 #define SN1_PROCESSOR_MODE_MASK 0x01ffffff
 
@@ -743,14 +738,14 @@ void sn1_node_full_reset(SN1NodeState *node, ResetType type)
 {
     /*
      * cpu_reset() must run before qemu_devices_reset(): each CPU's
-     * "start-powered-off" property re-halts it on every cpu_reset(),
-     * not only at creation, so releasing them has to follow both, and
-     * qemu_devices_reset() resetting Bedrock/L1/XBridge first would let a
-     * CPU race a device that assumes it is not running yet. The Hub takes
-     * the opposite order and releases through sgi_hub_set_cpu_enable
-     * instead, which carries no such constraint. The release re-derives
-     * the claims, which the local block's reset already did through its
-     * node-number notifier; doing it again is harmless.
+     * "start-powered-off" property re-halts it on every cpu_reset(), not only
+     * at creation, so releasing them has to follow both, and
+     * qemu_devices_reset() resetting Bedrock/L1/XBridge first would let a CPU
+     * race a device that assumes it is not running yet. The Hub takes the
+     * opposite order and releases through sgi_hub_set_cpu_enable instead,
+     * which carries no such constraint. The release re-derives the claims,
+     * which the local block's reset already did through its node-number
+     * notifier; doing it again is harmless.
      */
     sn1_node_reset_cpus(node);
     qemu_devices_reset(type);
@@ -758,18 +753,18 @@ void sn1_node_full_reset(SN1NodeState *node, ResetType type)
 }
 
 /*
- * Where each named flash view executes from: a Bedrock hardware fact
- * (the boot space it is wired to), not configuration. "local" and
- * "remote" are answered by the flash part's own command decode
- * (sn1_node_create_boot_flash) once one is attached, so only "reset"
- * and "local-high" are mapped as separate SN1PromView aliases in that
- * case; the immutable -bios path below maps every named view here.
+ * Where each named flash view executes from: a Bedrock hardware fact (the
+ * boot space it is wired to), not configuration. "local" and "remote" are
+ * answered by the flash part's command decode (sn1_node_create_boot_flash)
+ * once one is attached, so only "reset" and "local-high" are mapped as
+ * separate SN1PromView aliases in that case; the immutable -bios path below
+ * maps every named view here.
  */
 /*
- * Every named view a Bedrock node's flash controller answers, in the
- * order the immutable -bios path maps them: fixed by the chip, not
- * carried by the compiled catalogue (see the header comment on
- * sn1_node_attach_prom's own use of this table).
+ * Every named view a Bedrock node's flash controller answers, in the order
+ * the immutable -bios path maps them: fixed by the chip, not carried by the
+ * compiled catalogue (see the header on sn1_node_attach_prom's use of this
+ * table).
  */
 static const char * const sn1_prom_view_names[] = {
     "sn1.prom.reset", "sn1.prom.local", "sn1.prom.local-high",
@@ -874,11 +869,10 @@ bool sn1_node_attach_prom(SN1NodeState *node, unsigned int node_index,
 
     /*
      * Which named views this node's flash controller answers, and their
-     * addresses, are Bedrock hardware facts (decision D-0026), not
-     * configuration: every view the compiler ever emitted for a Bedrock
-     * node was already sized to the flash chip's own total size, so
-     * SN1_PROM_VIEW_NAMES names them directly instead of reading a list
-     * the compiled catalogue no longer carries.
+     * addresses, are Bedrock hardware facts, not configuration: every view
+     * the compiler ever emitted for a Bedrock node was already sized to the
+     * flash chip's total size, so SN1_PROM_VIEW_NAMES names them directly
+     * instead of reading a list the compiled catalogue no longer carries.
      */
     node->prom_views = g_new0(MemoryRegion, ARRAY_SIZE(sn1_prom_view_names));
     for (i = 0; i < ARRAY_SIZE(sn1_prom_view_names); i++) {
@@ -919,7 +913,8 @@ bool sn1_node_attach_prom(SN1NodeState *node, unsigned int node_index,
  * remote form and the stock firmware through the local one, each taking the
  * product code from bits 15 through 12. One stateless response serves both.
  * Only the aligned 64-bit read is answered; everything else is refused and
- * said out loud, because nothing establishes what the other bits or widths do.
+ * said out loud, because nothing establishes what the other bits or widths
+ * do.
  */
 static MemTxResult sn1_board_id_read(void *opaque, hwaddr offset,
                                      uint64_t *value, unsigned size,
@@ -976,13 +971,12 @@ static const MemoryRegionOps sn1_board_id_ops = {
 };
 
 /*
- * The Hub-special register windows hold no processor-interface registers
- * (docs/datasheets/ip35-address-map.md, "Hub special space"). Below the L1
- * UART sits a block no public source names: the stock PROM stores sixteen
- * doublewords there through the remote form while it initializes memory,
- * and what the device does with them is not modelled. Accept and ignore
- * the stores, read zero, and log every access so a consumer that depends
- * on the block shows up.
+ * The Hub-special register windows hold no processor-interface registers.
+ * Below the L1 UART sits a block no public source names: the stock PROM
+ * stores sixteen doublewords there through the remote form while it
+ * initializes memory, and what the device does with them is not modelled.
+ * Accept and ignore the stores, read zero, and log every access so a consumer
+ * that depends on the block shows up.
  */
 static MemTxResult sn1_hub_unidentified_read(void *opaque, hwaddr offset,
                                              uint64_t *value, unsigned size,
@@ -1035,12 +1029,12 @@ static const MemoryRegionOps sn1_hub_unidentified_ops = {
 };
 
 /*
- * One LED register per processor slice at 0xc0 + 8 * slice of either
- * register window: the public SN1 kernel's heartbeat LED, the stock PROM's
- * progress code, and IRIX's heartbeat. The LED bank is eight bits wide, so
- * a store keeps bits 7:0. What a load returns on hardware is unknown; the
- * model returns the kept byte. Only the aligned eight-byte access every
- * observed consumer makes is answered.
+ * One LED register per processor slice at 0xc0 + 8 * slice of either register
+ * window: the public SN1 kernel's heartbeat LED, the stock PROM's progress
+ * code, and IRIX's heartbeat. The LED bank is eight bits wide, so a store
+ * keeps bits 7:0. What a load returns on hardware is unknown; the model
+ * returns the kept byte. Only the aligned eight-byte access every observed
+ * consumer makes is answered.
  */
 static MemTxResult sn1_hub_led_check(SN1NodeState *node, hwaddr offset,
                                      unsigned size, const char *access)
@@ -1165,9 +1159,9 @@ static void sn1_node_create_cpus(SN1NodeState *node, MachineState *machine)
         MIPSCPU *cpu = MIPS_CPU(cpu_dev);
 
         /*
-         * Every existing address still resolves through this alias exactly
-         * as it did through the shared system region directly; only the
-         * private window below adds anything on top, at higher priority.
+         * Every existing address still resolves through this alias exactly as
+         * it did through the shared system region directly; only the private
+         * window below adds anything on top, at higher priority.
          */
         memory_region_init(&node->cpu_sysmem[i], OBJECT(node), sysmem_name,
                            UINT64_MAX);
@@ -1199,10 +1193,10 @@ static void sn1_node_create_cpus(SN1NodeState *node, MachineState *machine)
 
             /*
              * The IP35 PROM's RAM copy executes within one 2 MiB TLB span.
-             * The phase forwards to and aliases the node's own memory, at
-             * its placement in the global map: a second node's is not at
-             * zero. The window runs before any node number is assigned, so
-             * a processor names its memory with node field zero then.
+             * The phase forwards to and aliases the node's memory, at its
+             * placement in the global map: a second node's is not at zero.
+             * The window runs before any node number is assigned, so a
+             * processor names its memory with node field zero then.
              */
             sn_promdata_init(&node->promdata[i], OBJECT(node), cpu,
                              &node->promdata_poll, node->promdata_fast,
@@ -1242,13 +1236,13 @@ static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
     }
     /*
      * The chassis's brick slot, the operator's setting the L1 keeps in its
-     * non-volatile memory (a two-chassis slave carries 02); zero leaves
-     * the controller's own default.
+     * non-volatile memory (a two-chassis slave carries 02); zero leaves the
+     * controller's default.
      */
     if (node->l1_bay) {
         qdev_prop_set_uint32(node->l1, "bay", node->l1_bay);
     }
-    /* The revision every retained Origin 300 capture pairs with PROM 6.210. */
+    /* The L1 revision Origin 300 systems report alongside PROM 6.210. */
     qdev_prop_set_int32(node->l1, "revision-major", 1);
     qdev_prop_set_int32(node->l1, "revision-minor", 18);
     qdev_prop_set_int32(node->l1, "revision-patch", 5);
@@ -1278,13 +1272,13 @@ static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
                         sn1_cpu_population_mask(node->model_node,
                                                node->nr_cpus));
     /*
-     * Which slot each processor is in, two bits apiece. The mask above
-     * says which slots are fitted; with all four fitted it no longer says
-     * which processor went where, and the board's population order (one
-     * processor per interface before a second on either) is not ascending
-     * slot order. Without this the processor in interface 0's second slot
-     * read its own CPU number as interface 0's first slot and ran the
-     * stock PROM's boot-master path beside the real first processor.
+     * Which slot each processor is in, two bits apiece. The mask above says
+     * which slots are fitted; with all four fitted it no longer says which
+     * processor went where, and the board's population order (one processor
+     * per interface before a second on either) is not ascending slot order.
+     * Without this the processor in interface 0's second slot read its CPU
+     * number as interface 0's first slot and ran the stock PROM's boot-master
+     * path beside the real first processor.
      */
     slot_order = 0;
     for (cpu = 0; cpu < node->nr_cpus; cpu++) {
@@ -1294,16 +1288,13 @@ static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
     /*
      * Every fitted slot comes out of reset with its bus grant. This is a
      * model approximation; the silicon's reset value is unknown. What the
-     * stock PROM does with these registers is measured: on its boot path
-     * it only ever clears one, for a partner that fails its early liveness
+     * stock PROM does with these registers is measured: on its boot path it
+     * only ever clears one, for a partner that fails its early liveness
      * check, and never sets one (only an operator's enable command in its
-     * monitor does), so a fitted processor it counts must already be
-     * granted. The store loop once read as the boot master granting
-     * interface 0 writes the Hub-special register window, not these
-     * registers (docs/datasheets/ip35-address-map.md), so without this
+     * monitor does), so a fitted processor it counts must already be granted.
+     * The store loop once read as the boot master granting interface 0 writes
+     * the Hub-special register window, not these registers, so without this
      * the BaseIO PROM finds only the processors on interface 1.
-     * docs/datasheets/bedrock-processor-interface.md, "Selected Origin
-     * 300 PI1/A boot grant", records the runs.
      */
     if (node->nr_cpus > 1) {
         uint32_t grant = 0;
@@ -1320,13 +1311,13 @@ static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
                         SN1_BEDROCK_INITIATOR_REGION);
     /*
      * The shipped Origin 300 inventory installs two 256 MiB banks at
-     * locational banks two and three; the compiled origin300 topology's
-     * node bank-mib now carries that placement (decision D-0026: bank
-     * placement is fitted-part data, so it lives in the descriptor, not
-     * a literal here). installed-bank-mask stays a literal: which banks
-     * are wired for the one shipped configuration is not a fact the
-     * catalogue carries on its own, only recoverable from bank-mib's
-     * zero entries, so restating it directly is clearer than deriving it.
+     * locational banks two and three; the compiled origin300 topology's node
+     * bank-mib now carries that placement, since bank placement is
+     * fitted-part data and belongs in the descriptor, not a literal here.
+     * installed-bank-mask stays a literal: which banks are wired for the one
+     * shipped configuration is not a fact the catalogue carries on its, only
+     * recoverable from bank-mib's zero entries, so restating it directly is
+     * clearer than deriving it.
      */
     qdev_prop_set_uint8(node->bedrock, "installed-bank-mask",
                         SN1_INSTALLED_BANK_MASK);
@@ -1342,8 +1333,8 @@ static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
         }
     }
     /*
-     * The Bedrock's DMA and BTE reach nodes by number, as a processor
-     * does, but without the reader-relative forms: the fabric view.
+     * The Bedrock's DMA and BTE reach nodes by number, as a processor does,
+     * but without the reader-relative forms: the fabric view.
      */
     memory_region_init(&node->fabric, OBJECT(node), "sn1.node.fabric",
                        UINT64_MAX);
@@ -1359,31 +1350,28 @@ static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
                              OBJECT(l1_uart), &error_abort);
     /*
      * The register window above only carries the L1 UART's content; its
-     * own receive/THRE interrupt output (hw/misc/sgi-l1.c) still needs its
-     * own path to a consumer. Bedrock pending bank 0 bit 4 is that consumer
-     * (docs/datasheets/bedrock-processor-interface.md), reached through the
-     * composite's own "uart-irq" input, which broadcasts to both PI0 and
-     * PI1 (hw/misc/sgi-bedrock.c).
+     * receive/THRE interrupt output (hw/misc/sgi-l1.c) still needs its path
+     * to a consumer. Bedrock pending bank 0 bit 4 is that consumer, reached
+     * through the composite's "uart-irq" input, which broadcasts to both PI0
+     * and PI1 (hw/misc/sgi-bedrock.c).
      */
     qdev_connect_gpio_out_named(l1_uart_dev, "uart", 0,
                                 qdev_get_gpio_in_named(node->bedrock,
                                                        "uart-irq", 0));
 
     /*
-     * The XBridge is a fitted part of the IP45 node board itself, as the
-     * L1 and the boot flash are (docs/designs/sn-machine-model-architecture.md,
-     * "Node devices"): this file creates it directly, the family builder's
-     * own device like every other product's onboard base I/O. The
+     * The XBridge is a fitted part of the IP45 node board itself, as the L1
+     * and the boot flash are: this file creates it directly, the family
+     * builder's device like every other product's onboard base I/O. The
      * crosstalk port experiment's link pattern joins it to the Bedrock's
-     * own crosstalk port before either realizes: the XBridge link
-     * (hw/mips/sgi/xtalk-link.c) installs the Bedrock's packet face as
-     * the chip's "fabric" -- what its own widget-0 conditions and both
-     * heads' interrupts reach the host through. The IO-8's fixed devices
-     * are a separate sgi-baseio (the "io8" preset) the machine places on
-     * the chip's own head F, through the same board path every other
-     * product's base I/O goes through (sgi_machine_instantiate_io_board()
-     * in sn-machine.c, via sn1_node_xbridge_pci_bus() below) once the
-     * chip itself has realized.
+     * crosstalk port before either realizes: the XBridge link
+     * (hw/mips/sgi/xtalk-link.c) installs the Bedrock's packet face as the
+     * chip's "fabric": what its widget-0 conditions and both heads'
+     * interrupts reach the host through. The IO-8's fixed devices are a
+     * separate sgi-baseio (the "io8" preset) the machine places on the chip's
+     * own head F, through the same board path every other product's base I/O
+     * goes through (sgi_machine_instantiate_io_board() in sn-machine.c, via
+     * sn1_node_xbridge_pci_bus() below) once the chip itself has realized.
      */
     node->xbridge = qdev_new(TYPE_SGI_XBRIDGE);
     object_property_add_child(OBJECT(node), "xbridge", OBJECT(node->xbridge));
@@ -1411,13 +1399,12 @@ static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
     }
 
     /*
-     * Every widget the crossbar decodes: the host's own local view (widget
-     * zero) plus one per xtalk attachment, including a board slot with
-     * nothing plugged in -- its head still answers "no PCI device here"
-     * through the chip itself, which a widget left undecoded could not.
-     * Read through the crosstalk port interface, as any other widget
-     * attachment in this tree does, rather than the chip's own view
-     * accessor directly.
+     * Every widget the crossbar decodes: the host's local view (widget zero)
+     * plus one per xtalk attachment, including a board slot with nothing
+     * plugged in; its head still answers "no PCI device here" through the
+     * chip itself, which a widget left undecoded could not. Read through the
+     * crosstalk port interface, as any other widget attachment in this tree
+     * does, rather than the chip's view accessor directly.
      */
     for (i = 0; i < node->xbridge_widget_count; i++) {
         g_autofree char *property =
@@ -1436,12 +1423,12 @@ static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
     /*
      * A widget scan addresses the board by the physical crosstalk port
      * Bedrock actually attached it to (SN1_XBRIDGE_HOST_PORT), not only by
-     * the widget-zero local-CPU shortcut wired above -- both name the same
-     * chip, seen through its single upstream link either way. Without this,
-     * a probe of Bedrock's own port SN1_XBRIDGE_HOST_PORT decodes to
-     * nothing (sgi-bedrock-io.c's widget_as_initialized stays false there),
-     * so firmware and diagnostics that walk Bedrock's ports rather than
-     * using the shortcut never learn the IO-8 is present.
+     * the widget-zero local-CPU shortcut wired above; both name the same
+     * chip, seen through its single upstream link either way. Without this, a
+     * probe of Bedrock's port SN1_XBRIDGE_HOST_PORT decodes to nothing
+     * (sgi-bedrock-io.c's widget_as_initialized stays false there), so
+     * firmware and diagnostics that walk Bedrock's ports rather than using
+     * the shortcut never learn the IO-8 is present.
      */
     {
         g_autofree char *host_port_property =
@@ -1472,16 +1459,14 @@ static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
         &node->bedrock_node, 1);
     /*
      * Both register-window forms hold the same three blocks around the
-     * board-identification register: the unidentified block below 0x80,
-     * the L1 UART's own region at 0x80 (docs/datasheets/l1-controller.md),
-     * and the per-processor LEDs at 0xc0. The UART is the one sMDK, the
-     * Origin 300 field-diagnostic kernel, polls through the local form
-     * under the stock PROM's console=d. Nothing in either window reaches
-     * the processor-interface registers: that is the crosstalk form's job
-     * alone, and the LED offsets used to land on PI interrupt mask 1 B
-     * and the cross-call-pending registers when it did
-     * (docs/datasheets/ip35-address-map.md). Every other offset is left
-     * undecoded.
+     * board-identification register: the unidentified block below 0x80, the
+     * L1 UART's region at 0x80, and the per-processor LEDs at 0xc0. The UART
+     * is the one sMDK, the Origin 300 field-diagnostic kernel, polls through
+     * the local form under the stock PROM's console=d. Nothing in either
+     * window reaches the processor-interface registers: that is the crosstalk
+     * form's job alone, and the LED offsets used to land on PI interrupt mask
+     * 1 B and the cross-call- pending registers when it did. Every other
+     * offset is left undecoded.
      */
     memory_region_init_io(&node->hub_unidentified, OBJECT(node),
                           &sn1_hub_unidentified_ops, node,
@@ -1496,13 +1481,12 @@ static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
     memory_region_add_subregion(&node->hub_local_registers,
                                 SN1_HUB_LED_OFFSET, &node->hub_leds);
     /*
-     * OpenBSD expects local PI accesses to select the requester's
-     * interface. Every realized processor whose physical slot sits on
-     * processor interface 1 needs its own PI1 overlay, not only a
-     * logical CPU 1 sitting there: the two-processor population fits
-     * one (C, at logical index 1 in population order -- sn1_cpu_slot's
-     * own comment), the four-processor population fits two (C and D,
-     * logical indices 1 and 3).
+     * OpenBSD expects local PI accesses to select the requester's interface.
+     * Every realized processor whose physical slot sits on processor
+     * interface 1 needs its PI1 overlay, not only a logical CPU 1 sitting
+     * there: the two-processor population fits one (C, at logical index 1 in
+     * population order; see sn1_cpu_slot's comment), the four-processor
+     * population fits two (C and D, logical indices 1 and 3).
      */
     for (cpu = 0; cpu < node->nr_cpus; cpu++) {
         unsigned physical = sn1_cpu_slot(node->model_node, cpu);
@@ -1512,9 +1496,9 @@ static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
         /*
          * Bedrock's two processor interfaces split the physical slot
          * numbering into two halves of SGI_BEDROCK_PROCESSORS / 2 each
-         * (sgi-bedrock.c's own (mask >> (2 * i)) & 3 unpacking uses the
-         * same split); interface 0's slots need no overlay; the
-         * machine-wide PI0 window below already serves them.
+         * (sgi-bedrock.c's own (mask >> (2 * i)) & 3 unpacking uses the same
+         * split); interface 0's slots need no overlay; the machine-wide PI0
+         * window below already serves them.
          */
         if (physical < SGI_BEDROCK_PROCESSORS / 2) {
             continue;
@@ -1533,7 +1517,7 @@ static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
     memory_region_add_subregion(
         system, sn1_node_address(node, SN1_HUB_REMOTE_REGISTERS_ADDRESS),
         sysbus_mmio_get_region(bedrock, 3));
-    /* The remote form keeps its own L1 UART decoder between the two. */
+    /* The remote form keeps its L1 UART decoder between the two. */
     memory_region_init_alias(&node->hub_unidentified_remote, OBJECT(node),
                              "sn1.hub.unidentified-remote",
                              &node->hub_unidentified, 0,
@@ -1574,9 +1558,9 @@ static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
         system, sn1_node_address(node, SN1_RAM_ADDRESS),
         sysbus_mmio_get_region(bedrock, 7), 0);
     /*
-     * The memory-special space (uncached attribute 2, the processor's
-     * third window) reaches the same node memory through the Bedrock's
-     * fetch-and-op operations instead of plain loads and stores.
+     * The memory-special space (uncached attribute 2, the processor's third
+     * window) reaches the same node memory through the Bedrock's fetch-and-op
+     * operations instead of plain loads and stores.
      */
     memory_region_add_subregion(
         system, sn1_node_address(node, SN1_MEMORY_SPECIAL_ADDRESS),
@@ -1627,10 +1611,10 @@ static void sn1_node_unrealize(DeviceState *dev)
 /*
  * The per-CPU cache-as-RAM private window (sn-promdata.c, shared with
  * sgi-sn0-node) is per-slot state the node owns; the array-level wrapper
- * below is per node type because it names SN1NodeState's own promdata[]
- * field, the same way sn0.c's vmstate_sn0_flash names SN0NodeState's.
- * There is no prior wire format to preserve here: this is the node's
- * first VMStateDescription.
+ * below is per node type because it names SN1NodeState's promdata[] field,
+ * the same way sn0.c's vmstate_sn0_flash names SN0NodeState's. There is no
+ * prior wire format to preserve here: this is the node's first
+ * VMStateDescription.
  */
 static bool sn1_promdata_needed(void *opaque)
 {
@@ -1724,9 +1708,9 @@ static const Property sn1_node_properties[] = {
     DEFINE_PROP_BOOL("promdata-filter", SN1NodeState, promdata_filter, true),
     /*
      * Off by default: the fast path (sn-promdata.c) is proven on sgi-sn0-
-     * node's own boot and migration coverage, but nothing here yet
-     * exercises it under Bedrock. Sharing the implementation lets it be
-     * turned on once that evidence exists, without a second copy.
+     * node's boot and migration coverage, but nothing here yet exercises it
+     * under Bedrock. Sharing the implementation lets it be turned on once
+     * that evidence exists, without a second copy.
      */
     DEFINE_PROP_BOOL("promdata-fast", SN1NodeState, promdata_fast, false),
 };

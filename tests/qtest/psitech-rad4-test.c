@@ -1,12 +1,11 @@
 /*
- * PsiTech RAD4 (psitech-rad4): register contract for the reviewed one-mode
- * functional approximation, through the real Origin 200 Bridge PCI path.
+ * PsiTech RAD4 (psitech-rad4): register contract for the one-mode functional
+ * approximation, through the real Origin 200 Bridge PCI path.
  *
  * The card is an add-in PCI card, so like tests/qtest/sn0-tigon-test.c it is
  * instantiated with -device at a free slot and reached through that slot's
- * own Bridge decode. Expected values come from
- * docs/designs/rad4-one-mode-functional-approximation.md in the owning
- * Origami repository, not from this device's own implementation.
+ * own Bridge decode. Expected values come from the device's register
+ * documentation, not from this device's own implementation.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
@@ -33,14 +32,14 @@
 
 /*
  * PCI_STATUS_INTERRUPT (config+0x06 bit 3, Linux pci_regs.h), read through
- * the same dword as PCI_COMMAND_OFF since STATUS occupies its high 16
- * bits: core QEMU's pci_update_irq_status() (hw/pci/pci.c) mirrors this
- * bit to a device's own irq_state on every edge, regardless of the
- * Interrupt Disable bit -- a standards-based, chip-agnostic observation
- * point for "did this device's IRQ line assert" that needs no GPIO
- * interception into the origin200 machine's TYPE_SGI_BRIDGE chip (which,
- * unlike TYPE_SGI_XBRIDGE, exposes no named PCI-INTx GPIO-out group for
- * tests/qtest/sgi-board-test.c's own interception pattern to reach).
+ * the same dword as PCI_COMMAND_OFF since STATUS occupies its high 16 bits:
+ * core QEMU's pci_update_irq_status() (hw/pci/pci.c) mirrors this bit to a
+ * device's own irq_state on every edge, regardless of the Interrupt Disable
+ * bit. This standard, chip-independent PCI bit shows whether the device
+ * asserted its IRQ line. It needs no GPIO interception into the origin200
+ * machine's TYPE_SGI_BRIDGE chip (which, unlike TYPE_SGI_XBRIDGE,
+ * exposes no named PCI-INTx GPIO-out group for tests/qtest/sgi-board-test.c's
+ * own interception pattern to reach).
  */
 #define PCI_STATUS_INTERRUPT (1u << 19)
 
@@ -51,7 +50,7 @@
 /*
  * Devices 0 and 1 are BaseIO's SCSI adapters and 2 is IOC3; 3 is the first
  * free slot, with the first of the six 1 MiB windows beyond the two 2 MiB
- * ones -- the same slot tests/qtest/sn0-tigon-test.c uses.
+ * ones. The test in tests/qtest/sn0-tigon-test.c uses the same slot.
  */
 #define RAD4_SLOT       3
 #define WINDOW_RAD4     (BRIDGE_BASE + 0x700000)
@@ -70,11 +69,11 @@
     "-M origin200 -device psitech-rad4,addr=" G_STRINGIFY(RAD4_SLOT)
 
 /*
- * PCI addresses this test assigns the card's apertures; 1 MiB aligned so
- * BAR0 and the ROM route never need the window to slide, and BAR2's base is
- * 1 MiB aligned so the offsets below compose with it directly. RAD4_KM_BAR3_PCI
- * is the RAD4-KM identity's own keyboard/mouse register file (BAR 3), unused
- * by plain RAD4.
+ * PCI addresses this test assigns the card's apertures; 1 MiB aligned so BAR0
+ * and the ROM route never need the window to slide, and BAR2's base is 1 MiB
+ * aligned so the offsets below compose with it directly. RAD4_KM_BAR3_PCI is
+ * the RAD4-KM identity's own keyboard/mouse register file (BAR 3), unused by
+ * plain RAD4.
  */
 #define RAD4_BAR0_PCI   0x20000000u
 #define RAD4_BAR2_PCI   0x30000000u
@@ -86,11 +85,11 @@
 
 /*
  * RAD4-KM (12d1:0105), the same shared psitech-rad4 implementation at
- * device-id=0x105 (docs/datasheets/psitech-rad4-km.md). A second synthetic
- * slot, one window further along than RAD4_SLOT's, so both identities can
- * be brought up independently in the same process; like RAD4_SLOT, this
- * is a convenient free device number for register-contract testing, not a
- * claim about which real Origin 200 backplane slot either board occupies.
+ * device-id=0x105. A second synthetic slot, one window further along than
+ * RAD4_SLOT's, so both identities can be brought up independently in the same
+ * process; like RAD4_SLOT, this is a convenient free device number for
+ * register-contract testing, not a claim about which real Origin 200
+ * backplane slot either board occupies.
  */
 #define RAD4_KM_SLOT     4
 #define WINDOW_RAD4_KM   (BRIDGE_BASE + 0x800000)
@@ -126,12 +125,10 @@
 #define B_CTRL          0xf00000
 
 /*
- * RGB561 multi-cycle index ranges reached through B_RGB_RESERVED, from
- * IBM Microelectronics "RGB561 Architecture" Preliminary Rev. 1.1
- * (docs/library/cache/graphics/ibm-rgb561-architecture.pdf in the owning
- * Origami repository): Table 20's register address table (page 27) for
- * the base addresses, page 47's FB_WAT bit layout and page 2's Table 1
- * color LUT addressing formula.
+ * RGB561 multi-cycle index ranges reached through B_RGB_RESERVED, from IBM
+ * Microelectronics "RGB561 Architecture" Preliminary Rev. 1.1: Table 20's
+ * register address table (page 27) for the base addresses, page 47's FB_WAT
+ * bit layout and page 2's Table 1 color LUT addressing formula.
  */
 #define WAT_BASE        0x1000
 #define COLOR_LUT_BASE  0x4000
@@ -141,9 +138,8 @@
 #define STATUS_FRAME    0x20u
 
 /*
- * RGB561 indexed cursor registers (docs/datasheets/psitech-rad4.md,
- * "Cursor"; IBM Microelectronics "RGB561 Architecture", Preliminary
- * Rev. 1.1, pages 27 and 37-39, 45).
+ * RGB561 indexed cursor registers (IBM Microelectronics "RGB561
+ * Architecture", Preliminary Rev. 1.1, pages 27 and 37-39, 45).
  */
 #define RGB_CURSOR_CONTROL      0x0030
 #define RGB_CURSOR_HOTSPOT_X    0x0034
@@ -158,9 +154,9 @@
 #define RGB_CURSOR_PIXMAP_BASE  0x2000
 
 /*
- * Expansion-ROM route DMA registers (docs/datasheets/psitech-rad4.md,
- * "DMA"; PLX PCI9054 Data Book Tables 11-76, 11-80 and 11-86): DMAMODE0,
- * DMADPR0 and DMACSR0 at local offsets 0x100, 0x110 and 0x128.
+ * Expansion-ROM route DMA registers (PLX PCI9054 Data Book Tables 11-76,
+ * 11-80 and 11-86): DMAMODE0, DMADPR0 and DMACSR0 at local offsets 0x100,
+ * 0x110 and 0x128.
  */
 #define ROM_MODE        0x100
 #define ROM_DESC        0x110
@@ -180,8 +176,8 @@
 #define DMA_DESC_LOCAL_TO_PCI   (1u << 3)
 
 /*
- * Bridge's byte-lane correction for a device-initiated DMA transfer
- * (crosses crosstalk, unlike this file's own PIO-only apertures above):
+ * Bridge's byte-lane correction for a device-initiated DMA transfer (crosses
+ * crosstalk, unlike this file's own PIO-only apertures above):
  * tests/qtest/sn0-qlogic-isp-test.c exercises the mechanism itself. The
  * Direct window's own swap enable, and the register holding the bit that
  * clears its "add 512 megabytes" quirk, which resets set.
@@ -191,9 +187,9 @@
 #define BRIDGE_DIRECT_MAP_REG   (BRIDGE_BASE + 0x080 + REG_DATA)
 
 /*
- * Two low, otherwise-unused guest physical pages: one for descriptor
- * blocks a DMA start names, one for the pixel payload a descriptor
- * points at as its source.
+ * Two low, otherwise-unused guest physical pages: one for descriptor blocks a
+ * DMA start names, one for the pixel payload a descriptor points at as its
+ * source.
  */
 #define DMA_DESC_PHYS           0x00100000u
 #define DMA_SRC_PHYS            0x00200000u
@@ -272,10 +268,10 @@ static uint8_t rgb_read_byte(QTestState *qts, uint16_t index)
 /*
  * Programs the card's BARs and expansion-ROM route into PCI space and opens
  * the Bridge slot's memory decode, the way tests/qtest/sn0-tigon-test.c sets
- * up its own single BAR. A PCI reset (cold boot or an explicit system
- * reset) clears these config-space registers back to unprogrammed, exactly
- * as real firmware would find them, so this must run again after any
- * reset before the card answers PIO again.
+ * up its own single BAR. A PCI reset (cold boot or an explicit system reset)
+ * clears these config-space registers back to unprogrammed, exactly as real
+ * firmware would find them, so this must run again after any reset before the
+ * card answers PIO again.
  */
 static void rad4_configure_bars(QTestState *qts)
 {
@@ -299,13 +295,12 @@ static QTestState *rad4_init(void)
 /*
  * RAD4-KM (12d1:0105) helpers, mirroring rad4_window_to()/rad4_readl()/
  * rad4_writel()/rad4_configure_bars() above at RAD4_KM_SLOT's own window.
- * BAR0/BAR2 stay plain RAD4's own graphics/DMA register layout, reused as
- * a disclosed approximation (hw/display/psitech-rad4.c's file header) --
- * these two helpers exist to prove that reuse round-trips as stated, not
- * to assert any independently confirmed RAD4-KM graphics register fact.
- * BAR3 is different: it only exists under this identity, and is the
- * keyboard/mouse controller's own cleared register contract
- * (docs/datasheets/psitech-rad4-km.md, hw/input/psitech-rad4-km.c).
+ * BAR0/BAR2 stay plain RAD4's own graphics/DMA register layout, reused as a
+ * disclosed approximation (hw/display/psitech-rad4.c's file header). These
+ * two helpers exist to prove that reuse round-trips as stated, not to assert
+ * any independently confirmed RAD4-KM graphics register fact. BAR3 is
+ * different: it only exists under this identity, and is the keyboard/mouse
+ * controller's own cleared register contract (hw/input/psitech-rad4-km.c).
  */
 static void rad4km_window_to(QTestState *qts, uint32_t pci_addr)
 {
@@ -349,10 +344,9 @@ static void bar2_km_write(QTestState *qts, uint32_t off, uint32_t val)
 
 /*
  * RAD4-KM keyboard/mouse register file (BAR 3): sixteen registers, each on
- * its own 64 KiB stride, restated from include/hw/input/psitech-rad4-km.h
- * and docs/datasheets/psitech-rad4-km.md the way this file restates every
- * other register layout it tests rather than including the production
- * header.
+ * its own 64 KiB stride, restated from include/hw/input/psitech-rad4-km.h the
+ * way this file restates every other register layout it tests rather than
+ * including the production header.
  */
 #define KM_REG_STRIDE     0x10000u
 #define KM_REG(index)     ((index) * KM_REG_STRIDE)
@@ -436,8 +430,8 @@ static void test_km_pci_identity(void)
     qtest_writel(qts, CFG0(RAD4_KM_SLOT) + PCI_BAR0_OFF, RAD4_BAR0_PCI);
 
     /*
-     * BAR3 exists only under this identity and sizes to the km device's
-     * own 1 MiB register file (sixteen registers x 64 KiB stride,
+     * BAR3 exists only under this identity and sizes to the km device's own 1
+     * MiB register file (sixteen registers x 64 KiB stride,
      * include/hw/input/psitech-rad4-km.h). WINDOW_SIZE is the same 1 MiB.
      */
     qtest_writel(qts, CFG0(RAD4_KM_SLOT) + PCI_BAR3_CFG_OFF, 0xffffffffu);
@@ -473,9 +467,9 @@ static void test_km_bar2_framebuffer_round_trip(void)
 }
 
 /*
- * CR's Rx/Tx enable bits (index 0x2/0xa, write) gate SR's RXRDY/TXRDY bits
- * (index 0x1/0x9, read) per channel. TXRDY is synchronous -- ready as soon
- * as Tx is enabled -- and RXRDY tracks the channel's own ps2 core queue,
+ * CR's Rx/Tx enable bits (index 0x2/0xa, write) control SR's RXRDY/TXRDY bits
+ * (index 0x1/0x9, read) per channel. TXRDY is ready as soon
+ * as Tx is enabled. RXRDY tracks the channel's own ps2 core queue,
  * which starts empty after reset.
  */
 static void test_km_channel_enable_reflects_in_status(void)
@@ -499,15 +493,14 @@ static void test_km_channel_enable_reflects_in_status(void)
 }
 
 /*
- * ISR (index 0x5, read) aggregates both channels' Rx/Tx ready state into
- * one chip-wide register, matching docs/datasheets/psitech-rad4-km.md's
- * cited driver IMR-shadow test. This model recomputes ISR purely from the
- * channels' own enable/queue state on every read -- the same index's write
- * side (IMR) is stored but never consulted for this read
- * (rad4_km_read_isr() ignores s->imr), matching the datasheet's
- * Established facts. IMR does gate a separate thing this file tests next,
- * test_km_interrupt_reaches_pci_status(): the aggregate qemu_irq output
- * this chip now drives from the same ISR condition, masked.
+ * ISR (index 0x5, read) aggregates both channels' Rx/Tx ready state into one
+ * chip-wide register, matching the cited driver's IMR-shadow test. This model
+ * recomputes ISR purely from the channels' own enable/queue state on every
+ * read. The same index's write side (IMR) is stored but never consulted for
+ * this read (rad4_km_read_isr() ignores s->imr), matching the established
+ * behavior. IMR does gate a separate thing this file tests next,
+ * test_km_interrupt_reaches_pci_status(): the aggregate qemu_irq output this
+ * chip now drives from the same ISR condition, masked.
  */
 static void test_km_isr_aggregates_both_channels(void)
 {
@@ -534,11 +527,11 @@ static void test_km_isr_aggregates_both_channels(void)
  * The km child's aggregate ISR/IMR condition (hw/input/psitech-rad4-km.c's
  * rad4_km_update_irq()) drives its own qemu_irq output, which
  * hw/display/psitech-rad4.c's rad4_km_irq_handler() ORs into this device's
- * single shared PCI interrupt line (rad4_update_irq()) -- see
- * include/hw/input/psitech-rad4-km.h for what that wiring does and does
- * not claim about the board-level gate at driver offset 0x78. This test
- * observes that line through config space's own PCI_STATUS_INTERRUPT bit
- * (defined above), independent of the ISR read path test_km_isr_
+ * single shared PCI interrupt line (rad4_update_irq()); see
+ * include/hw/input/psitech-rad4-km.h for what that wiring does and does not
+ * claim about the board-level gate at driver offset 0x78. This test observes
+ * that line through config space's own PCI_STATUS_INTERRUPT bit (defined
+ * above), independent of the ISR read path test_km_isr_
  * aggregates_both_channels() already covers.
  */
 static void test_km_interrupt_reaches_pci_status(void)
@@ -568,9 +561,9 @@ static void test_km_interrupt_reaches_pci_status(void)
 
 /*
  * MRA/MRB, ACR, OPCR, CTUR/CTLR, IVR and the OPR set/reset pair have no
- * Established read behavior or driver-visible effect beyond being written
- * (docs/datasheets/psitech-rad4-km.md); this is a smoke test that writing
- * each of them neither crashes nor perturbs the channels' own status.
+ * established read behavior or driver-visible effect beyond being written;
+ * this is a smoke test that writing each of them neither crashes nor perturbs
+ * the channels' own status.
  */
 static void test_km_register_file_write_smoke(void)
 {
@@ -596,10 +589,9 @@ static void test_km_register_file_write_smoke(void)
 
 /*
  * Channel A is fixed to the keyboard (include/hw/input/psitech-rad4-km.h).
- * Writing the PS/2 reset command to its data register must return the
- * same two-byte ACK/POR sequence hw/input/ps2.c's ps2_write_keyboard()
- * queues for KBD_CMD_RESET (0xfa, 0xaa), and RXRDY must track the queue
- * draining.
+ * Writing the PS/2 reset command to its data register must return the same
+ * two-byte ACK/POR sequence hw/input/ps2.c's ps2_write_keyboard() queues for
+ * KBD_CMD_RESET (0xfa, 0xaa), and RXRDY must track the queue draining.
  */
 static void test_km_kbd_ps2_reset_round_trip(void)
 {
@@ -620,9 +612,9 @@ static void test_km_kbd_ps2_reset_round_trip(void)
 }
 
 /*
- * Channel B is fixed to the mouse. AUX_RESET (also 0xff) queues three
- * bytes (hw/input/ps2.c: AUX_ACK, 0xaa, then mouse_type, which resets to
- * 0), one more than the keyboard's reply.
+ * Channel B is fixed to the mouse. AUX_RESET (also 0xff) queues three bytes
+ * (hw/input/ps2.c: AUX_ACK, 0xaa, then mouse_type, which resets to 0), one
+ * more than the keyboard's reply.
  */
 static void test_km_mouse_ps2_reset_round_trip(void)
 {
@@ -672,15 +664,14 @@ static void dma_write_payload(QTestState *qts, uint32_t phys,
 }
 
 /*
- * Enables bus mastering and this slot's Direct-window byte-lane
- * correction, then writes DMACSR0 (ROM_COMMAND) to start (or abort) a
- * transfer. Real firmware programs a working device's DMA for the
- * corrected case -- the disabled case leaves the crossed wiring this
- * chip's DMA path otherwise faithfully emulates, which
- * tests/qtest/sn0-qlogic-isp-test.c exercises directly -- and
- * rad4_window_to()'s own writes to the slot's device register never set
- * this bit, so it is set again immediately before every start or abort
- * this file issues rather than once in rad4_init().
+ * Enables bus mastering and this slot's Direct-window byte-lane correction,
+ * then writes DMACSR0 (ROM_COMMAND) to start (or abort) a transfer. Real
+ * firmware programs a working device's DMA for the corrected case. The
+ * disabled case leaves the crossed wiring this chip's DMA path otherwise
+ * faithfully emulates, which tests/qtest/sn0-qlogic-isp-test.c exercises
+ * directly. rad4_window_to()'s own writes to the slot's device register
+ * never set this bit, so it is set again immediately before every start or
+ * abort this file issues rather than once in rad4_init().
  */
 static void dma_start(QTestState *qts, uint32_t val)
 {
@@ -711,7 +702,7 @@ static void test_pci_identity(void)
     /*
      * Read revision/prog-if/subclass/base-class as one 32-bit word: the
      * Bridge's config-space window only answers aligned 32-bit accesses
-     * cleanly (docs/comment-style.md, "Access width").
+     * cleanly.
      */
     uint32_t rev_class = qtest_readl(qts,
                                      CFG0(RAD4_SLOT) + PCI_REVISION_ID_OFF);
@@ -740,10 +731,9 @@ static void test_pci_identity(void)
 
 /*
  * Plain RAD4 never realizes the km child (hw/display/psitech-rad4.c's
- * rad4_realize() only registers BAR 3 under the RAD4-KM identity), so its
- * BAR 3 config-space register was never given a decode: an unregistered
- * BAR's bytes stay hardwired at 0, not a size mask, and a write to them is
- * dropped.
+ * rad4_realize() only registers BAR 3 under the RAD4-KM identity), so its BAR
+ * 3 config-space register was never given a decode: an unregistered BAR's
+ * bytes stay hardwired at 0, not a size mask, and a write to them is dropped.
  */
 static void test_plain_rad4_has_no_km_bar3(void)
 {
@@ -779,8 +769,8 @@ static void test_bar0_registers(void)
 
 /*
  * Clocks one bit MSB-first on SERIAL_CLOCK's rising edge, matching the
- * driver's own bit-bang convention: outgoing data is stable before the
- * rising edge, incoming data is read after the falling edge.
+ * driver's own bit-bang convention: outgoing data is stable before the rising
+ * edge, incoming data is read after the falling edge.
  */
 static bool serial_clock_bit(QTestState *qts, uint32_t *ctrl, bool mosi)
 {
@@ -789,7 +779,7 @@ static bool serial_clock_bit(QTestState *qts, uint32_t *ctrl, bool mosi)
 
     bar0_write(qts, R_SERIAL, base);                /* clock low, set MOSI */
     bar0_write(qts, R_SERIAL, base | SERIAL_CLOCK);  /* rising: sample MOSI */
-    bar0_write(qts, R_SERIAL, base);                 /* falling: update MISO */
+    bar0_write(qts, R_SERIAL, base);                 /* falling edge: MISO */
     uint32_t val = bar0_read(qts, R_SERIAL);
     *ctrl = base;
     return (val & SERIAL_MISO) != 0;
@@ -853,8 +843,8 @@ static void test_framebuffer_mask(void)
     g_assert_cmphex(bar2_read(qts, 0x000000), ==, 0x00ff0080u);
 
     /*
-     * A partial mask is a plane mask: only the masked bits of the
-     * write take effect, the rest of the existing pixel is preserved.
+     * A partial mask is a plane mask: only the masked bits of the write take
+     * effect, the rest of the existing pixel is preserved.
      */
     bar2_write(qts, B_MASK, 0x0000ffffu);
     bar2_write(qts, 0x000004, 0x00112233u);
@@ -875,12 +865,11 @@ static void rad4_set_rgb_index(QTestState *qts, uint16_t index)
 }
 
 /*
- * The address index register auto increments "after each read or write
- * cycle" (IBM RGB561 Architecture p.1), a convention this model applies
- * to the ordinary single-cycle B_RGB_DATA port on write already. This
- * checks the read side, previously missing: a real fidelity gap, though
- * harmless for the qualified guest workload, since nothing there reads
- * this port back.
+ * The address index register auto increments "after each read or write cycle"
+ * (IBM RGB561 Architecture p.1), a convention this model applies to the
+ * ordinary single-cycle B_RGB_DATA port on write already. This checks the
+ * read side, previously missing: a real fidelity gap, though harmless for the
+ * qualified guest workload, since nothing there reads this port back.
  */
 static void test_rgb_data_read_autoincrement(void)
 {
@@ -900,10 +889,10 @@ static void test_rgb_data_read_autoincrement(void)
 /*
  * FB_WAT entries are a 10-bit value transferred in two cycles through
  * B_RGB_RESERVED (IBM RGB561 Architecture p.4, Table 5): the first cycle
- * carries bits 9-2 in bit positions 7-0, the second carries bits 1-0 in
- * bit positions 7-6. Writing and reading one entry back must round-trip,
- * and the address index register must auto increment only after the
- * second (last) cycle, to the next window ID's entry.
+ * carries bits 9-2 in bit positions 7-0, the second carries bits 1-0 in bit
+ * positions 7-6. Writing and reading one entry back must round-trip, and the
+ * address index register must auto increment only after the second (last)
+ * cycle, to the next window ID's entry.
  */
 static void test_fb_wat_round_trip(void)
 {
@@ -926,10 +915,9 @@ static void test_fb_wat_round_trip(void)
 
 /*
  * Re-pointing the address index register mid-entry restarts the next
- * multi-cycle transfer at its first cycle (IBM RGB561 Architecture p.1:
- * "If the address index register is accessed before completion of a
- * multi-cycle access, the counter is reset and the operation is
- * terminated.").
+ * multi-cycle transfer at its first cycle (IBM RGB561 Architecture p.1: "If
+ * the address index register is accessed before completion of a multi-cycle
+ * access, the counter is reset and the operation is terminated.").
  */
 static void test_reserved_port_index_write_resets_phase(void)
 {
@@ -951,9 +939,9 @@ static void test_reserved_port_index_write_resets_phase(void)
 }
 
 /*
- * The color look-up table is a 3 cycle (red, green, blue) transfer
- * through the same port (same document, p.2, "Color Look-Up Table
- * (LUT)"). Entry 0 corresponds to color LUT address 0.
+ * The color look-up table is a 3 cycle (red, green, blue) transfer through
+ * the same port (same document, p.2, "Color Look-Up Table (LUT)"). Entry 0
+ * corresponds to color LUT address 0.
  */
 static void test_color_lut_round_trip(void)
 {
@@ -1006,10 +994,9 @@ static void test_mode_recognition_rejects_mutation(void)
 }
 
 /*
- * Mode-zero geometry restated for the dirty-tracking test below, the way
- * this file restates every other register layout rather than including
- * hw/display/psitech-rad4.c's own RAD4_MODE0_* constants
- * (docs/designs/rad4-one-mode-functional-approximation.md).
+ * Mode-zero geometry restated for the dirty-tracking test below, the way this
+ * file restates every other register layout rather than including
+ * hw/display/psitech-rad4.c's own RAD4_MODE0_* constants.
  */
 #define TEST_FB_WIDTH   1280
 #define TEST_FB_HEIGHT  1024
@@ -1037,16 +1024,15 @@ static void rad4_force_refresh(QTestState *qts)
 /*
  * rad4_gfx_update() used to reconvert and push the whole 1280x1024 frame on
  * every refresh regardless of whether the guest had written anything since
- * the last one, which saturated the VNC path into flicker, blackout and
- * laggy input on an otherwise-static screen. It now tracks which scanlines
- * were actually written and pushes only those, doing nothing at all when
- * idle; the rad4_gfx_update_push/rad4_gfx_update_idle trace events (only
- * built for this test's own use, not otherwise consumed) are the
- * qtest-reachable window into that, since the refresh callback has no other
- * externally visible effect besides the pixels it composes into the
- * surface -- and a static framebuffer reconverts to identical pixels
- * whether or not this fix is present, so a screendump alone cannot tell
- * the two apart.
+ * the last one, which saturated the VNC path into flicker, blackout and laggy
+ * input on an otherwise-static screen. It now tracks which scanlines were
+ * actually written and pushes only those, doing nothing at all when idle; the
+ * rad4_gfx_update_push/rad4_gfx_update_idle trace events (only built for this
+ * test's own use, not otherwise consumed) are the qtest-reachable window into
+ * that, since the refresh callback has no other externally visible effect
+ * besides the pixels it composes into the surface. A static framebuffer
+ * reconverts to identical pixels whether or not this fix is present, so a
+ * screendump alone cannot tell the two apart.
  */
 static void test_gfx_update_dirty_tracking(void)
 {
@@ -1067,7 +1053,9 @@ static void test_gfx_update_dirty_tracking(void)
                       " -D %s", trace_path);
     rad4_configure_bars(qts);
 
-    /* Recognizing the mode marks the whole frame dirty for its first paint. */
+    /*
+     * Recognizing the mode marks the whole frame dirty for its first paint.
+     */
     rad4_play_mode0(qts);
     rad4_force_refresh(qts);
 
@@ -1112,15 +1100,14 @@ static void test_gfx_update_dirty_tracking(void)
 
 /*
  * A pixel's displayed color depends on more than its own raw framebuffer
- * word: rad4_pixel_to_rgb() also consults the written window's FB_WAT
- * entry and, in Index mode, the color LUT. Neither table lives in
- * s->framebuffer, so a write to either one never touched the dirty
- * tracking above -- a guest that reprograms colors or a window's
- * interpretation without also touching the framebuffer got no visible
- * update at all until some unrelated pixel write came along. This drives
- * one FB_WAT entry through its full two-cycle write with no framebuffer
- * write anywhere nearby, and expects the completed write alone to push a
- * frame rather than leave the next refresh idle.
+ * word: rad4_pixel_to_rgb() also consults the written window's FB_WAT entry
+ * and, in Index mode, the color LUT. Neither table lives in s->framebuffer,
+ * so a write to either one never touched the dirty tracking above. A guest
+ * that reprograms colors or a window's interpretation without also touching
+ * the framebuffer got no visible update at all until some unrelated pixel
+ * write came along. This drives one FB_WAT entry through its full two-cycle
+ * write with no framebuffer write anywhere nearby, and expects the completed
+ * write alone to push a frame rather than leave the next refresh idle.
  */
 static void test_gfx_update_palette_change_without_fb_write(void)
 {
@@ -1173,10 +1160,9 @@ static void test_gfx_update_palette_change_without_fb_write(void)
         }
 
         /*
-         * Three refreshes, three pushes: the full first paint, row 100
-         * alone, then the FB_WAT write alone -- never an idle refresh,
-         * which is what the old code, with no dirty-marking on this write
-         * path, would have produced for the third one.
+         * Three refreshes, three pushes: the full first paint, row 100 alone,
+         * then the FB_WAT write alone. Without dirty marking on that
+         * write path, the old code made the third refresh idle.
          */
         g_assert_cmpint(push_count, ==, 3);
         g_assert_cmpint(idle_count, ==, 0);
@@ -1204,8 +1190,8 @@ static void test_interrupt_acknowledge(void)
                     PCI_STATUS_INTERRUPT, ==, PCI_STATUS_INTERRUPT);
 
     /*
-     * Acknowledge: a control write with bit 1 clear while a frame is
-     * pending clears both status bits.
+     * Acknowledge: a control write with bit 1 clear while a frame is pending
+     * clears both status bits.
      */
     bar2_write(qts, B_CTRL, 0);
     g_assert_cmphex(bar0_read(qts, R_INTCSR) & INTCSR_PENDING, ==, 0);
@@ -1217,10 +1203,10 @@ static void test_interrupt_acknowledge(void)
 }
 
 /*
- * Writing the mode and descriptor-pointer registers alone -- without also
- * writing DMACSR0's start bits -- only latches the value back for
- * readback, matching every other configuration-only register this file
- * already round-trips (R_REG14, R_REG18, R_MAILBOX).
+ * Writing the mode and descriptor-pointer registers without
+ * writing DMACSR0's start bits only latches the value back for readback,
+ * matching every other configuration-only register this file already
+ * round-trips (R_REG14, R_REG18, R_MAILBOX).
  */
 static void test_dma_registers_before_start(void)
 {
@@ -1242,9 +1228,9 @@ static void test_dma_registers_before_start(void)
 }
 
 /*
- * A single, end-of-chain descriptor uploads its named span of guest
- * memory into the framebuffer at its named local address, and DMACSR0's
- * Done bit follows.
+ * A single, end-of-chain descriptor uploads its named span of guest memory
+ * into the framebuffer at its named local address, and DMACSR0's Done bit
+ * follows.
  */
 static void test_dma_single_descriptor_upload(void)
 {
@@ -1273,11 +1259,11 @@ static void test_dma_single_descriptor_upload(void)
 }
 
 /*
- * The plane mask (RAD4_BAR2_MASK) applies to a DMA upload exactly as it
- * does to a CPU pixel write (test_framebuffer_mask): the mask register is
- * documented as programmed before a transfer and restored afterward,
- * naming both driver render paths that share this device's DMA engine,
- * not a CPU-only feature of the memory controller it sits in front of.
+ * The plane mask (RAD4_BAR2_MASK) applies to a DMA upload exactly as it does
+ * to a CPU pixel write (test_framebuffer_mask): the mask register is
+ * documented as programmed before a transfer and restored afterward, naming
+ * both driver render paths that share this device's DMA engine, not a
+ * CPU-only feature of the memory controller it sits in front of.
  */
 static void test_dma_upload_honors_mask(void)
 {
@@ -1331,11 +1317,10 @@ static void test_dma_done_interrupt_when_enabled(void)
 
 /*
  * Two chained descriptors: the first names the second through its own
- * next-descriptor-pointer word (PLX PCI9054 Data Book Table 11-80), and
- * both land in the framebuffer at their own, independent local addresses
- * -- the mechanism the driver's own disassembly shows building one
- * descriptor per page-sized run of a transfer, not one flat descriptor
- * for the whole span (docs/research/graphics/rad4-chipset-20260915.md).
+ * next-descriptor-pointer word (PLX PCI9054 Data Book Table 11-80), and both
+ * land at independent local framebuffer addresses. This is the
+ * mechanism the driver uses, building one descriptor per page-sized run of a
+ * transfer, not one flat descriptor for the whole span.
  */
 static void test_dma_descriptor_chain(void)
 {
@@ -1370,12 +1355,11 @@ static void test_dma_descriptor_chain(void)
 /*
  * A Local-space descriptor (DMA_DESC_LOC_PCI clear) is read straight out of
  * the framebuffer at its own masked address instead of guest/PCI memory,
- * honoring the same convention a live IRIX 6.5.30 boot's buffered driver
- * path was captured actually using: a descriptor stored at the very top of
- * the 8 MiB local extent (docs/datasheets/psitech-rad4.md, "DMA", "Live
- * capture"). The descriptor's own storage location is Local; the payload
- * source it names is still an ordinary PCI address, exactly as the live
- * capture's own descriptor decoded.
+ * honoring the same convention the IRIX 6.5.30 buffered driver path uses: a
+ * descriptor stored at the very top of the 8 MiB local extent. The
+ * descriptor's own storage location is Local; the payload source it names is
+ * still an ordinary PCI address, exactly as that driver's own descriptor is
+ * laid out.
  */
 static void test_dma_local_descriptor_upload(void)
 {
@@ -1406,9 +1390,9 @@ static void test_dma_local_descriptor_upload(void)
 
 /*
  * Two chained descriptors both stored in Local space, the first's own
- * next-descriptor-pointer word naming the second exactly as the live
- * capture's descriptor array did (each entry 16 bytes below the one
- * DMADPR0 or the previous entry's next-pointer named).
+ * next-descriptor-pointer word naming the second exactly as the driver's
+ * descriptor array does (each entry 16 bytes below the one DMADPR0 or the
+ * previous entry's next-pointer named).
  */
 static void test_dma_local_descriptor_chain(void)
 {
@@ -1466,13 +1450,13 @@ static void test_dma_local_descriptor_out_of_bounds(void)
 
 /*
  * A descriptor this model cannot honor (its local span runs past the
- * framebuffer) leaves DMACSR0's Done bit clear, exactly as the
- * unmodeled-DMA build already left it before this transfer existed at
- * all -- the guest's own timeout/abort recovery, exercised then by every
- * buffered-mode draw, is exercised here by hand. Writing ABORT (0x4)
- * still sets Done, matching PLX PCI9054 Data Book Table 11-86 ("Sets
- * Channel 0 Done bit when abort is complete"), so that recovery path
- * keeps working for a transfer this model genuinely cannot complete.
+ * framebuffer) leaves DMACSR0's Done bit clear, exactly as the unmodeled-DMA
+ * build already left it before this transfer existed at all. The guest's
+ * own timeout/abort recovery, exercised then by every buffered-mode draw, is
+ * exercised here by hand. Writing ABORT (0x4) still sets Done, matching PLX
+ * PCI9054 Data Book Table 11-86 ("Sets Channel 0 Done bit when abort is
+ * complete"), so that recovery path keeps working for a transfer this model
+ * genuinely cannot complete.
  */
 static void test_dma_abort_recovers_a_failed_transfer(void)
 {
@@ -1533,10 +1517,10 @@ static void test_cursor_pixmap_round_trip(void)
     QTestState *qts = rad4_init();
 
     /*
-     * The cursor pixel map is a plain 1Kx8 SRAM (IBM page 27 lists it
-     * without the "N RW/ADDR" annotation the look-up tables carry), so
-     * writing it goes through the ordinary auto-incrementing data port
-     * and advances the index by exactly one per byte.
+     * The cursor pixel map is a plain 1Kx8 SRAM (IBM page 27 lists it without
+     * the "N RW/ADDR" annotation the look-up tables carry), so writing it
+     * goes through the ordinary auto-incrementing data port and advances the
+     * index by exactly one per byte.
      */
     rgb_set_index(qts, RGB_CURSOR_PIXMAP_BASE);
     bar2_write(qts, B_RGB_DATA, 0x1b);
@@ -1559,12 +1543,11 @@ static void test_cursor_lut_tri_write(void)
     QTestState *qts = rad4_init();
 
     /*
-     * The cursor/cross-hair look-up table is a three-writes-per-address
-     * ("3 RW/ADDR") port reached through BAR2 +0x930000, not the ordinary
-     * data port: point the index at Cursor Primary Color 1 (IBM page 45,
-     * Table 22) and issue three writes there without touching the index
-     * registers in between, matching the shipped driver's own
-     * init_RGB561 sequence.
+     * The cursor/cross-hair look-up table is a three-writes-per-address ("3
+     * RW/ADDR") port reached through BAR2 +0x930000, not the ordinary data
+     * port: point the index at Cursor Primary Color 1 (IBM page 45, Table 22)
+     * and issue three writes there without touching the index registers in
+     * between, matching the shipped driver's own init_RGB561 sequence.
      */
     rgb_set_index(qts, RGB_CURSOR_LUT_BASE + 1);
     bar2_write(qts, B_RGB_RESERVED, 0x11);
@@ -1572,17 +1555,17 @@ static void test_cursor_lut_tri_write(void)
     bar2_write(qts, B_RGB_RESERVED, 0x33);
 
     /*
-     * The visible index must have advanced by exactly one, to the next
-     * LUT entry -- not by three, the way an ordinary auto-incrementing
-     * range would. This is what discriminates this port's
-     * three-writes-per-address protocol from plain per-byte storage.
+     * The visible index must have advanced by exactly one, to the next LUT
+     * entry, not by three as an ordinary auto-incrementing range
+     * would. This is what discriminates this port's three-writes-per-address
+     * protocol from plain per-byte storage.
      */
     g_assert_cmphex(rgb_current_index(qts), ==, RGB_CURSOR_LUT_BASE + 2);
 
     /*
-     * Reading the three components back in order, at the original
-     * address, confirms they landed in three separate planes of one
-     * entry rather than at three separate addresses.
+     * Reading the three components back in order, at the original address,
+     * confirms they landed in three separate planes of one entry rather than
+     * at three separate addresses.
      */
     rgb_set_index(qts, RGB_CURSOR_LUT_BASE + 1);
     g_assert_cmphex(bar2_read(qts, B_RGB_RESERVED), ==, 0x11);
@@ -1631,16 +1614,16 @@ static uint32_t rad4_screendump_pixel(QTestState *qts, unsigned x, unsigned y)
 }
 
 /*
- * The RGB561 overlays its hardware cursor onto the pixel stream it sends
- * to the monitor, so the sprite is part of what the display shows and the
- * model composites it into the scanout the same way. That is also the
- * only way a VNC client or a screendump can show where the guest's
- * cursor actually is: QEMU's VNC server has no protocol message to place
- * a UI-layer cursor, so a client draws that kind at its own pointer
- * instead. Program a one-pixel sprite and expect the screendump to carry
- * it at the hot spot; moving it must both paint the new spot and give the
- * old one its framebuffer content back, which is the dirty tracking of
- * both spans; the hot spot offsets the pixel map; disabling removes it.
+ * The RGB561 overlays its hardware cursor onto the pixel stream it sends to
+ * the monitor, so the sprite is part of what the display shows and the model
+ * composites it into the scanout the same way. That is also the only way a
+ * VNC client or a screendump can show where the guest's cursor actually is:
+ * QEMU's VNC server has no protocol message to place a UI-layer cursor, so a
+ * client draws that kind at its own pointer instead. Program a one-pixel
+ * sprite and expect the screendump to carry it at the hot spot; moving it
+ * must both paint the new spot and give the old one its framebuffer content
+ * back, which is the dirty tracking of both spans; the hot spot offsets the
+ * pixel map; disabling removes it.
  */
 static void test_cursor_composited_into_scanout(void)
 {
@@ -1656,8 +1639,8 @@ static void test_cursor_composited_into_scanout(void)
     bar2_write(qts, B_RGB_RESERVED, 0xff);
     /*
      * Pixel map row 0, first byte: the leftmost pixel of the four is the
-     * most-significant pair (IBM page 3, Table 4), so 0x40 makes pixel
-     * (0, 0) color 1 and leaves the rest of the sprite transparent.
+     * most-significant pair (IBM page 3, Table 4), so 0x40 makes pixel (0, 0)
+     * color 1 and leaves the rest of the sprite transparent.
      */
     rgb_write_byte(qts, RGB_CURSOR_PIXMAP_BASE, 0x40);
     rgb_write_byte(qts, RGB_CURSOR_HOTSPOT_X, 0);
@@ -1702,17 +1685,17 @@ static void test_cursor_composited_into_scanout(void)
  * the record of where the sprite is currently painted. The compose pass runs
  * on every refresh, including ones driven by a framebuffer write far from the
  * cursor; if such a pass forgot the sprite's displayed span, a later cursor
- * change that has no new rows of its own to repaint -- a disable, or a hot
- * spot or look-up-table change that leaves the location alone -- would fail to
- * dirty the old rows and leave a ghost sprite behind in the scanout.
+ * change with no new rows of its own to repaint (a disable, or a hot
+ * spot or look-up-table change that leaves the location alone) would fail
+ * to dirty the old rows and leave a ghost sprite behind in the scanout.
  *
  * Disabling is the sharpest case: it dirties the recorded displayed span and
  * nothing else, so it clears the sprite only if that span survived the
  * unrelated refresh. (A plain position move would mask the bug: moving takes
  * four separate byte writes, and the intermediate locations re-dirty the old
- * rows by coincidence.) Compose the sprite, write a framebuffer row the 64-row
- * sprite does not cover and refresh, then disable the cursor and confirm the
- * old spot gets its framebuffer content back.
+ * rows by coincidence.) Compose the sprite, write a framebuffer row the
+ * 64-row sprite does not cover and refresh, then disable the cursor and
+ * confirm the old spot gets its framebuffer content back.
  */
 static void test_cursor_no_ghost_after_far_fb_update(void)
 {
@@ -1742,8 +1725,8 @@ static void test_cursor_no_ghost_after_far_fb_update(void)
     g_assert_cmphex(rad4_screendump_pixel(qts, 100, 200), ==, 0xffffff);
 
     /*
-     * An unrelated framebuffer write on row 900 -- far below the sprite's
-     * rows 200..263 -- then a refresh. This refresh's dirty interval never
+     * An unrelated framebuffer write on row 900, far below the sprite's
+     * rows 200..263, followed by a refresh. Its dirty interval never
      * touches the cursor, which is exactly the case that must not forget it.
      */
     bar2_write(qts, 900 * TEST_FB_STRIDE, 0x00112233u);
@@ -1768,8 +1751,8 @@ static void test_reset(void)
     rad4_configure_bars(qts);
 
     /*
-     * The card's cold BAR0 mailbox and framebuffer must read the reset
-     * state once its BARs are reprogrammed.
+     * The card's cold BAR0 mailbox and framebuffer must read the reset state
+     * once its BARs are reprogrammed.
      */
     g_assert_cmphex(bar0_read(qts, R_MAILBOX), ==, 0);
     g_assert_cmphex(bar2_read(qts, 0x000000), ==, 0);
@@ -1782,23 +1765,22 @@ static void test_reset(void)
 }
 
 /*
- * Reset zeroes the framebuffer but, before the fix in rad4_reset_hold(),
- * left the dirty range exactly as reset found it. A display that was
- * already recognized and idle at reset time -- the ordinary case, since
- * recognition survives no reset path -- would then see rad4_gfx_update()
- * take the empty-range idle fast path forever, keeping the pre-reset
- * frame on screen instead of showing the cleared card the guest actually
- * has.
+ * Reset zeroes the framebuffer but, before the fix in rad4_reset_hold(), left
+ * the dirty range exactly as reset found it. A display that was already
+ * recognized and idle at reset time (the ordinary case, since recognition
+ * survives no reset path) would then see rad4_gfx_update() take the
+ * empty-range idle fast path forever, keeping the pre-reset frame on screen
+ * instead of showing the cleared card the guest actually has.
  *
- * Note this test drives the only qtest-reachable route back to a
- * recognized, refreshable state: replaying the mode-0 grammar. That
- * replay's own completion unconditionally calls rad4_mark_all_dirty()
- * (so does vmstate load on migration), independently of what reset left
- * behind, so this test cannot by itself isolate reset's own dirty-marking
- * line from its absence -- it pins the guest-visible behavior ("the
- * display always repaints in full after a reset"), not that specific
- * line. The FB_WAT/color-LUT test above has no such masking and is the
- * one that actually falls over without its fix.
+ * Note this test drives the only qtest-reachable route back to a recognized,
+ * refreshable state: replaying the mode-0 grammar. That replay's own
+ * completion unconditionally calls rad4_mark_all_dirty() (so does vmstate
+ * load on migration), independently of what reset left behind, so this test
+ * cannot by itself isolate reset's own dirty-marking line from its absence --
+ * it pins the guest-visible behavior ("the display always repaints in full
+ * after a reset"), not that specific line. The FB_WAT/color-LUT test above
+ * has no such masking and is the one that actually falls over without its
+ * fix.
  */
 static void test_gfx_update_reset_forces_full_repaint(void)
 {

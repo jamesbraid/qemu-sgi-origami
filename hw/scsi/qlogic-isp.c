@@ -2322,13 +2322,13 @@ static void qlogic_isp_realize(PCIDevice *dev, Error **errp)
 
     /*
      * Command bits the part implements beyond the handful the PCI core
-     * makes writable for every device (docs/datasheets/isp12160.md).
+     * makes writable for every device.
      */
     pci_word_test_and_set_mask(dev->wmask + PCI_COMMAND,
                                info->command_wmask);
     /*
      * The PCI core leaves the Latency Timer read-only; this part takes a
-     * write (docs/datasheets/isp12160.md).
+     * write.
      */
     dev->wmask[PCI_LATENCY_TIMER] = info->latency_wmask;
 
@@ -2343,10 +2343,9 @@ static void qlogic_isp_realize(PCIDevice *dev, Error **errp)
                      QLOGIC_ISP12160_PM_VERSION);
         /*
          * The board test writes the power-management event enable and
-         * reads it back, so the part holds it; the PCI core makes a
-         * capability read-only in full (docs/datasheets/isp12160.md).
-         * Nothing observed covers the rest of this register, so the rest
-         * stays read-only.
+         * reads it back, so the part holds it, though the PCI core makes
+         * a capability read-only in full. Nothing observed covers the
+         * rest of this register, so the rest stays read-only.
          */
         pci_word_test_and_set_mask(dev->wmask + pm_cap + PCI_PM_CTRL,
                                    PCI_PM_CTRL_PME_ENABLE);

@@ -1,37 +1,17 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
+/* Test the SGI PCI-XTALK adapter with a Cad Duo IOC3 input card. */
 /*
- * Register-contract tests for the SGI PCI-XTALK ADAPTER (the "PCI shoehorn",
- * hw/mips/sgi/board-pci-shoehorn.c) fitted with an SGI Cad Duo input card
- * (an sgi-ioc3, docs/datasheets/sgi-cad-duo-pci-card.md).
- *
- * The board attaches through crossbow0's spare fabric proxy exactly as
- * sgi-pci-expansion does (tests/qtest/sn-builder-test.c), so the spare widget
- * is 11: the lowest position crossbow0's startup-links-alive (0x8700) leaves
- * free. A processor reaches the internal Bridge and the fitted Cad Duo
- * through crossbow0's real small window for widget 11.
- *
- * Two things are checked. First, the Cad Duo enumerates: its PCI identity
- * answers through the widget window, the same config accesses a driver's own
- * probe issues. Second, its PS/2 keyboard interrupt reaches the guest: the
- * chip's SuperIO interrupt output must be wired to a Bridge pin for a
- * keystroke to be delivered, and the shoehorn wires it (to the card's INTB,
- * which the Bridge routes to pin slot ^ 4). A Cad Duo behind a plain
- * sgi-pci-expansion, which does no such wiring, leaves that interrupt dead
- * -- the RED baseline the shoehorn's wiring turns GREEN.
- *
- * Third, the card carries its own board record: a DS2505-class part on the
- * IOC3's one-wire bus, beside the station-address part, holding the
- * PCI_ENET 030-1155-002 rev D record a real card reports
- * (docs/datasheets/sgi-cad-duo-pci-card.md, "Board-identity record on the
- * IOC3 one-wire bus"). The same card behind a plain sgi-pci-expansion
- * carries only the station-address part.
- *
- * The same checks then run on the board the origin2000-pci-shoehorn
- * topology places itself: the compiled catalogue fits the shoehorn into
- * Origin 2000's IO2 position, crossbow0 widget 12, as a startup-attached
- * board, with its Cad Duo at PCI device 0. That widget must be alive from
- * reset like the BaseIO's, which is what the stock PROM needs to discover
- * it rather than report the link bad.
+ * The adapter (hw/mips/sgi/board-pci-shoehorn.c) uses crossbow0's spare proxy
+ * as sgi-pci-expansion does (sn-builder-test.c): startup-links-alive 0x8700
+ * leaves widget 11 free. Its small window reaches Bridge and Cad Duo; PCI
+ * identity answers through the guest's config path. Cad Duo SuperIO must
+ * reach Bridge through INTB (pin slot ^ 4) for PS/2 keyboard IRQs. Plain
+ * sgi-pci-expansion lacks that wiring, so the same key press has no IRQ
+ * there. A DS2505-class part beside the station-address part holds PCI_ENET
+ * 030-1155-002 rev D; plain expansion has only the station-address part. The
+ * compiled origin2000-pci-shoehorn catalogue also places the board in IO2 at
+ * crossbow0 widget 12 with Cad Duo at PCI device 0. That link is live at
+ * reset so stock PROM can discover the board instead of reporting a bad link.
  */
 
 #include "qemu/osdep.h"
@@ -48,18 +28,17 @@
 #define SHOEHORN_WIDGET     11
 
 /*
- * The catalogue's own placement: Origin 2000 IO2, crossbow0 widget 12
- * (docs/machines/layers/modules/origin2000-module.yaml, the pci-expansion
- * connector), with the Cad Duo at PCI device 1, where real Origin 2000
- * hardware graphs show a card behind this adapter
+ * The catalogue's own placement: Origin 2000 IO2, crossbow0 widget 12 (the
+ * pci-expansion connector), with the Cad Duo at PCI device 1, where real
+ * Origin 2000 hardware graphs show a card behind this adapter
  * (.../slot/io5/xtalk_pci/pci/1/pckb in nekonomicon thread 5749).
  */
 #define PLACED_WIDGET       12
 #define PLACED_CAD_DUO      1
 
 /*
- * One fixture: which widget the board answers at and which PCI device its
- * Cad Duo occupies.
+ * One fixture: which widget the board answers at and which PCI device its Cad
+ * Duo occupies.
  */
 typedef struct {
     const char *args;
@@ -88,19 +67,23 @@ typedef struct {
 /* The Cad Duo (sgi-ioc3) PCI identity: SGI 0x10a9, IOC3 0x0003. */
 #define PCI_SUBSYSTEM       0x2c
 #define CAD_DUO_ID_PAIR     0x000310a9u
-#define CAD_DUO_SUBSYSTEM   0xffff10a9u   /* subsystem id 0xffff (uncaptured) */
+/* subsystem id 0xffff (uncaptured) */
+#define CAD_DUO_SUBSYSTEM   0xffff10a9u
 
 /* IOC3 registers in the chip's own MMIO window (no +REG_DATA skew). */
 #define CD_INT_STATUS(c)     (CAD_DUO_WINDOW(c) + 0x1c)
 #define CD_INT_ENABLE_SET(c) (CAD_DUO_WINDOW(c) + 0x20)
 #define CD_KBD_TRANSMIT(c)   (CAD_DUO_WINDOW(c) + 0x0a8)
-#define INT_KEYBOARD        (1u << 22)   /* SuperIO keyboard/mouse status bit */
+/* SuperIO keyboard/mouse status bit */
+#define INT_KEYBOARD        (1u << 22)
 /* Serial port A's 16550 and its pass-through SuperIO source. */
 #define CD_SERIAL_A_IER(c)    (CAD_DUO_WINDOW(c) + 0x020178 + 1)
 #define IER_THRI              0x02
 #define SIO_SRC_A_PASSTHROUGH (1u << 6)
 
-/* The IOC3's MicroLAN engine and the pin-control bit routing it to its pin. */
+/*
+ * The IOC3's MicroLAN engine and the pin-control bit routing it to its pin.
+ */
 #define CD_MICROLAN(c)       (CAD_DUO_WINDOW(c) + 0x30)
 #define CD_PIN_CONTROL_SET(c) (CAD_DUO_WINDOW(c) + 0x34)
 #define PIN_MICROLAN_ENABLE  (1u << 21)
@@ -109,7 +92,8 @@ typedef struct {
 
 #define OW_SEARCH_ROM        0xf0
 #define OW_MATCH_ROM         0x55
-#define OW_READ_MEMORY       0xf0    /* the same byte, once a part is matched */
+/* the same byte, once a part is matched */
+#define OW_READ_MEMORY       0xf0
 #define OW_FAMILY_DS2501_UNW 0x91    /* the station-address part */
 #define OW_FAMILY_DS2505     0x0b    /* the board record */
 
@@ -118,9 +102,9 @@ typedef struct {
 #define RECORD_CRC_RESIDUE   0xb001
 
 /*
- * The record the card's part stores (the Cad Duo datasheet's page image):
- * placeholder barcode OCADDUO001, part 030-1155-002, revision D, name
- * PCI_ENET, each page closed by its inverted CRC-16.
+ * The record the card's part stores: placeholder barcode OCADDUO001, part
+ * 030-1155-002, revision D, name PCI_ENET, each page closed by its inverted
+ * CRC-16.
  */
 static const uint8_t cad_duo_record[RECORD_SIZE] = {
     0x01, 0x4f, 0x43, 0x41, 0x44, 0x44, 0x55, 0x4f,
@@ -144,8 +128,8 @@ static const uint8_t cad_duo_record[RECORD_SIZE] = {
 /*
  * A plug-in card's second interrupt leaves on its INTB, which the Bridge
  * routes to pin (slot ^ 4); INTA goes to pin slot. Public Linux SN Bridge
- * driver (Linux 2.5.0 arch/ia64/sn/io/pcibr.c, the INTB/INTD case); an
- * add-in IOC3 raises SuperIO on INTB (OpenBSD sys/arch/sgi/pci/ioc.c).
+ * driver (Linux 2.5.0 arch/ia64/sn/io/pcibr.c, the INTB/INTD case); an add-in
+ * IOC3 raises SuperIO on INTB (OpenBSD sys/arch/sgi/pci/ioc.c).
  */
 #define SUPERIO_PIN(c)           ((c)->device ^ 4)
 
@@ -182,10 +166,9 @@ static const uint8_t cad_duo_record[RECORD_SIZE] = {
     "fabric-widget-shift=48,sio-slot=" G_STRINGIFY(CAD_DUO_DEVICE)
 
 /*
- * The dual-serial card's record (docs/datasheets/sgi-ioc3-boards.md in the
- * Origami tree): placeholder barcode OSIOUFC001, the reseller-cited part
- * 030-1657-003, a declared placeholder revision A and the OpenBSD-sourced
- * name PCI_SIO_UFC.
+ * The dual-serial card's record: placeholder barcode OSIOUFC001, the
+ * reseller-cited part 030-1657-003, a declared placeholder revision A and the
+ * OpenBSD-sourced name PCI_SIO_UFC.
  */
 static const uint8_t sio_record[RECORD_SIZE] = {
     0x01, 0x4f, 0x53, 0x49, 0x4f, 0x55, 0x46, 0x43,
@@ -224,9 +207,9 @@ static void cad_duo_map(QTestState *qts, const ShoehornCase *c)
 }
 
 /*
- * Arm the adapter Bridge so the card's SuperIO pin sends an interrupt
- * packet to node 0's Hub latching CAD_DUO_INT_NUMBER, and enable the Cad
- * Duo's keyboard interrupt so a PS/2 reply raises its SuperIO output.
+ * Arm the adapter Bridge so the card's SuperIO pin sends an interrupt packet
+ * to node 0's Hub latching CAD_DUO_INT_NUMBER, and enable the Cad Duo's
+ * keyboard interrupt so a PS/2 reply raises its SuperIO output.
  */
 static void arm_interrupt(QTestState *qts, const ShoehornCase *c)
 {
@@ -269,7 +252,8 @@ static void test_cad_duo_enumerates(const void *data)
  * board does not wire the chip's SuperIO interrupt to any Bridge pin. The
  * keyboard reply raises the chip's own SuperIO output, but with nothing
  * carrying it to a Bridge pin the packet never leaves and the Hub never
- * latches. (The card's ethernet INTA is idle -- no network traffic -- so its
+ * latches. (The card's ethernet INTA is idle because there is no network
+ * traffic, so its
  * pin stays low.)
  */
 static void test_cad_duo_ps2_interrupt_dead_bare(const void *data)
@@ -285,10 +269,9 @@ static void test_cad_duo_ps2_interrupt_dead_bare(const void *data)
 
 /*
  * The GREEN result: the same Cad Duo fitted in the shoehorn, which wires the
- * chip's SuperIO output to the card's INTB, Bridge pin (slot ^ 4). A
- * keyboard reply now raises that pin, the Bridge forwards an interrupt
- * packet up through crossbow0 to node 0's Hub, and PI_INT_PEND0 latches
- * the number.
+ * chip's SuperIO output to the card's INTB, Bridge pin (slot ^ 4). A keyboard
+ * reply now raises that pin, the Bridge forwards an interrupt packet up
+ * through crossbow0 to node 0's Hub, and PI_INT_PEND0 latches the number.
  */
 static void test_cad_duo_ps2_interrupt_reaches_hub(const void *data)
 {
@@ -312,7 +295,7 @@ static void test_cad_duo_ps2_interrupt_reaches_hub(const void *data)
 
 /*
  * One bit slot on the Cad Duo's MicroLAN, with the widths OpenBSD's and
- * Linux's masters use (docs/datasheets/ioc3.md, "GPIO and MicroLAN").
+ * Linux's masters use.
  */
 static bool ow_slot(QTestState *qts, const ShoehornCase *c,
                     unsigned int pulse, unsigned int sample)
@@ -387,8 +370,8 @@ static uint16_t ow_crc16(const uint8_t *data, unsigned int len)
 }
 
 /*
- * One pass of the standard Search ROM walk (Maxim AN187), zero branch
- * first; chain each result and `*last_discrepancy` into the next pass.
+ * One pass of the standard Search ROM walk (Maxim AN187), zero branch first;
+ * chain each result and `*last_discrepancy` into the next pass.
  */
 static uint64_t ow_search_pass(QTestState *qts, const ShoehornCase *c,
                                uint64_t rom, unsigned int *last_discrepancy)
@@ -469,10 +452,10 @@ static void ow_read_memory(QTestState *qts, const ShoehornCase *c,
 }
 
 /*
- * The fitted card's IOC3 bus carries two parts: the station-address part
- * and a DS2505-class part holding the card's own record, which reads back
- * as the datasheet's page image, each page leaving the CRC-16 residue, with
- * unprogrammed memory past it.
+ * The fitted card's IOC3 bus carries two parts: the station-address part and
+ * a DS2505-class part holding the card's own record, which reads back as the
+ * part's page image, each page leaving the CRC-16 residue, with unprogrammed
+ * memory past it.
  */
 static void test_cad_duo_carries_its_board_record(const void *data)
 {
@@ -513,8 +496,8 @@ static void test_cad_duo_carries_its_board_record(const void *data)
 }
 
 /*
- * A bare sgi-ioc3 given no record, behind a plain expansion board, keeps
- * the station-address part alone.
+ * A bare sgi-ioc3 given no record, behind a plain expansion board, keeps the
+ * station-address part alone.
  */
 static void test_bare_card_has_no_board_record(const void *data)
 {
@@ -563,8 +546,8 @@ static void test_sio_enumerates(const void *data)
 }
 
 /*
- * The card's one-wire bus carries its record part alone: no Ethernet, so
- * no station-address part.
+ * The card's one-wire bus carries its record part alone: no Ethernet, so no
+ * station-address part.
  */
 static void test_sio_carries_its_board_record(const void *data)
 {
@@ -589,9 +572,9 @@ static void test_sio_carries_its_board_record(const void *data)
 }
 
 /*
- * A serial interrupt on the card raises its SuperIO output, which the
- * adapter wires to the card's INTB, Bridge pin slot ^ 4, and reaches node
- * 0's Hub; the card's own INTA pin stays low.
+ * A serial interrupt on the card raises its SuperIO output, which the adapter
+ * wires to the card's INTB, Bridge pin slot ^ 4, and reaches node 0's Hub;
+ * the card's own INTA pin stays low.
  */
 static void test_sio_serial_interrupt_reaches_hub(const void *data)
 {
@@ -637,9 +620,9 @@ static void test_one_card_only(const void *data)
 }
 
 /*
- * The catalogue-placed board's widget is alive from reset, like the BaseIO
- * at widget 8, the two host nodes at 9 and 10 and SI Viz at 15: it is part
- * of crossbow0's configured startup population, not a link brought up after
+ * The catalogue-placed board's widget is alive from reset, like the BaseIO at
+ * widget 8, the two host nodes at 9 and 10 and SI Viz at 15: it is part of
+ * crossbow0's configured startup population, not a link brought up after
  * machine init the way a `-device` board's spare widget is. That is the
  * difference the stock PROM sees between a board it enumerates and "IO link
  * bad".

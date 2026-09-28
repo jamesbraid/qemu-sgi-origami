@@ -1,15 +1,9 @@
 /*
- * SGI Router ASIC register target, programmed-route lookup, and the six
- * numbered network ports that forward a live vector packet by those same
- * tables. A Router has no processor-visible register window; it is
- * reached through sgi_router_access() -- directly (a host test fixture)
- * or, ordinarily, through one of its own SGI_NET_PORT ports, when a
- * forwarded packet's vector reaches zero. Routed reply construction
- * stays out of this device's own arrival-port bookkeeping because the
- * Router's reply-source encoding is not established.
- *
- * SPDX-License-Identifier: GPL-2.0-or-later
- */
+ * SGI Router: register target, route lookup and six vector-forwarding ports;
+ * no CPU register window. Host tests call it directly; ports reach it at
+ * vector zero. Reply-source encoding is unknown, so arrival ports do not
+ * construct replies. SPDX-License-Identifier: GPL-2.0-or-later
+*/
 
 #include "qemu/osdep.h"
 #include "qapi/error.h"
@@ -185,7 +179,7 @@ struct SGIRouterState {
     bool local_valid[RR_LOCAL_TABLE_COUNT];
 };
 
-/* These are reviewed compatibility cases, not a divider transfer formula. */
+/* These are known compatibility cases, not a divider transfer formula. */
 static bool sgi_router_nic_calibrated(SGIRouterState *s, uint64_t value)
 {
     unsigned int first = extract64(value, 20, 7);
@@ -221,7 +215,7 @@ static void sgi_router_nic_idle(SGIRouterState *s)
  * holds, so on a busy machine it lands milliseconds after both deadlines. An
  * access applies what the deadlines already decided rather than waiting.
  * Nothing moves ahead of a deadline, so polling consumes no bits.
- */
+*/
 static void sgi_router_nic_advance(SGIRouterState *s)
 {
     int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
@@ -233,10 +227,10 @@ static void sgi_router_nic_advance(SGIRouterState *s)
             bool result = onewire_touch_bit(s->nic_bus, s->nic_pulse == 6);
 
             /*
-             * Retaining a short-read bit through 19us is a reviewed
-             * compatibility approximation beyond DS2505's 15us window.
-             * The two late write samples see the released line instead.
-             */
+             * Retaining a short-read bit through 19us is a compatibility
+             * approximation beyond DS2505's 15us window. The two late write
+             * samples see the released line instead.
+            */
             s->nic_candidate = s->nic_sample == 13 ? result : 1;
         }
         s->nic_phase = ROUTER_NIC_SAMPLING;
@@ -309,11 +303,10 @@ static void sgi_router_changed(SGIRouterState *s)
 
 /*
  * ---- The network port interface ----
- *
- * A Router's six numbered ports (1 to 6, matching the arrival-port
- * numbering sgi_router_access() already used) each answer this
- * interface directly on the Router object, distinguished by index.
- */
+ * A Router's six numbered ports (1 to 6, matching the arrival-port numbering
+ * sgi_router_access() already used) each answer this interface directly on
+ * the Router object, distinguished by index.
+*/
 
 static const char *sgi_router_net_port_describe(Object *port,
                                                  unsigned int index)
@@ -337,9 +330,11 @@ static SGINetPortLinkState sgi_router_net_port_link_state(Object *port,
     };
 }
 
-/* Recompute one port's cached working/eight-bit status bits from its
- * cable and both ends' own link_state() -- the same check a live vector
- * forward and an offline route walk both use to find a neighbor. */
+/*
+ * Recompute one port's cached working/eight-bit status bits from its cable
+ * and both ends' own link_state(), the same check a live vector forward and
+ * an offline route walk both use to find a neighbor.
+*/
 static void sgi_router_recompute_port(SGIRouterState *s, unsigned int port)
 {
     SGINetCableState *cable = s->port_cable[port - 1];
@@ -352,10 +347,10 @@ static void sgi_router_recompute_port(SGIRouterState *s, unsigned int port)
         /*
          * No cable names this port at all (an unpopulated port in this
          * topology, or a host test fixture's standalone Router): leave
-         * whatever reset or sgi_router_set_port_link() already put
-         * there, the same way an unconnected port's own hardware has
-         * nothing for this Router to derive.
-         */
+         * whatever reset or sgi_router_set_port_link() already put there, the
+         * same way an unconnected port's own hardware has nothing for this
+         * Router to derive.
+        */
         return;
     }
     working = sgi_net_cable_neighbor(cable, OBJECT(s), port, &peer_port,
@@ -366,12 +361,12 @@ static void sgi_router_recompute_port(SGIRouterState *s, unsigned int port)
 }
 
 /*
- * Recompute every port's status, unless this generation was already
- * processed (a cyclic topology's flood converges here), then tell every
- * other connected port's peer in turn -- except_port is 0 for a purely
- * local change, or the port that told us, so we do not immediately
- * bounce a notification back to whoever just sent it.
- */
+ * Recompute every port's status, unless this generation was already processed
+ * (a cyclic topology's flood converges here), then tell every other connected
+ * port's peer in turn. except_port is 0 for a purely local change, or the
+ * port that told us, so we do not immediately bounce a notification back to
+ * whoever just sent it.
+*/
 static void sgi_router_net_changed_at(SGIRouterState *s, uint64_t generation,
                                       unsigned int except_port)
 {
@@ -413,12 +408,11 @@ static void sgi_router_net_port_record_check_error(Object *port,
 }
 
 /*
- * Charge this Router's own sends_data_error diagnostic on a successful
- * read against whoever sent the packet on the port it arrived on --
- * the Router directly connected to a Hub charges the Hub; one further
- * along the path charges the Router before it. Matches the reviewed
- * reply-error-charging contract in docs/datasheets/router.md.
- */
+ * Charge this Router's own sends_data_error diagnostic on a successful read
+ * against whoever sent the packet on the port it arrived on, the Router
+ * directly connected to a Hub charges the Hub; one further along the path
+ * charges the Router before it.
+*/
 static void sgi_router_charge_reply_error(SGIRouterState *s,
                                           unsigned int arrival_port,
                                           SGINetPacketOp op)
@@ -447,9 +441,11 @@ static SGINetPacketResult sgi_router_net_port_receive(Object *port,
     unsigned int arrival_port = index;
 
     if (packet->vector == 0) {
-        /* A terminal Router that declines its own register decode is an
+        /*
+         * A terminal Router that declines its own register decode is an
          * unmodeled gap (LOG_UNIMP), reported as no answer at all, not a
-         * fabricated address-error -- unlike a terminal Hub's refusal. */
+         * fabricated address-error, unlike a terminal Hub's refusal.
+        */
         if (!sgi_net_packet_append_reply(packet, arrival_port) ||
             !sgi_router_access(s, arrival_port, packet)) {
             qemu_log_mask(LOG_UNIMP,
@@ -457,7 +453,7 @@ static SGINetPacketResult sgi_router_net_port_receive(Object *port,
                           "operation\n");
             return SGI_NET_PACKET_NONE;
         }
-        /* Reviewed PROM 6.156 policy; not a physical Router identity. */
+        /* The stock PROM's own convention; not a physical Router identity. */
         packet->source = 0;
         sgi_router_charge_reply_error(s, arrival_port, packet->op);
         return SGI_NET_PACKET_OK;
@@ -792,11 +788,11 @@ static bool sgi_router_bist_shift_unload(SGIRouterState *s)
         return true;
     }
     /*
-     * The deterministic opaque result is zero.  Raw result bit 62 presents
-     * the completed status as value 2 after firmware reverses and assembles
-     * the shifted chunks.  Keep the bit at its chunk-relative position when
-     * the result is unloaded in pieces smaller than a full word.
-     */
+     * The deterministic opaque result is zero. Raw result bit 62 presents the
+     * completed status as value 2 after firmware reverses and assembles the
+     * shifted chunks. Keep the bit at its chunk-relative position when the
+     * result is unloaded in pieces smaller than a full word.
+    */
     s->bist_data = 0;
     if (s->bist_unload_position <= 62 &&
         s->bist_unload_position + s->bist_count > 62) {
@@ -971,7 +967,7 @@ static bool sgi_router_write(SGIRouterState *s, hwaddr addr, uint64_t value)
              * due: the responder is not reset with this register, so an
              * elapsed release must have happened whether or not the timer
              * callback has run yet.
-             */
+            */
             sgi_router_nic_advance(s);
         }
         if (value & RR_RESET_WARM) {
@@ -1469,7 +1465,7 @@ static void sgi_router_nic_page_crc(uint8_t page[32])
  * The NIC manufacturing pages a stock PROM reads after ROM discovery: the
  * same layout on every Router, with only the fitted board's slot number
  * printed into the ASCII serial text.
- */
+*/
 static void sgi_router_default_nic_image(uint32_t slot, uint8_t image[64])
 {
     static const uint8_t page_a[30] = {

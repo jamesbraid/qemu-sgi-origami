@@ -1,8 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
-/*
- * The SGI Scalable Node catalogue query on a MIPS target built without
- * the SN0/SN1 machines.
- */
+/* Catalogue query for MIPS builds without SN0/SN1 machines. */
 
 #include "qemu/osdep.h"
 #include "qapi/error.h"

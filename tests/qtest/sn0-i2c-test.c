@@ -1,8 +1,6 @@
 /*
- * SGI Origin 200 -- the PCF8584 I2C-bus controller's own register contract.
- *
- * The register-selection matrix, the own-address liveness check and the
- * master-transfer machinery, all testable with no responder traffic.
+ * Origin 200 PCF8584 I2C register, selection-matrix, own-address liveness
+ * and master-transfer tests; no responder traffic is required.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
@@ -44,19 +42,20 @@ static void test_register_selection_matrix(const void *data)
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + I2C_DATA), ==, 0x1c);
 
     /* ESO=0 ES1=0 ES2=1: interrupt vector. Never touched by our firmware,
-     * but the datasheet's own matrix requires it decode distinctly. */
+     * but the register-selection matrix requires distinct decoding. */
     qtest_writeq(qts, HUB_LOCAL + I2C_CTRL, CTL_PIN | CTL_ES2);
     qtest_writeq(qts, HUB_LOCAL + I2C_DATA, 0x33);
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + I2C_DATA), ==, 0x33);
 
-    /* ESO=1 ES1=0 ES2=0: the working data register -- outside any transfer,
+    /* ESO=1 ES1=0 ES2=0: the working data register. Outside any transfer,
      * a plain byte store. */
     qtest_writeq(qts, HUB_LOCAL + I2C_CTRL, CTL_PIN | CTL_ESO);
     qtest_writeq(qts, HUB_LOCAL + I2C_DATA, 0x55);
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + I2C_DATA), ==, 0x55);
 
     /*
-     * ESO=1 ES2=1: still the vector -- the row a model treating "ESO set"
+     * ESO=1 ES2=1: still the vector. This is the row a model treating "ESO
+     * set"
      * as "always data" gets wrong.
      */
     qtest_writeq(qts, HUB_LOCAL + I2C_CTRL, CTL_PIN | CTL_ESO | CTL_ES2);
@@ -135,7 +134,7 @@ static void test_programmed_own_address_answers_as_slave(const void *data)
  * addressed-as-slave: only a directed hit on the programmed address is an AAS
  * event. When a broadcast raised AAS too, every arbitration signal left the
  * controller looking addressed as a slave, and the firmware's arbitration
- * poll wedged before it ever issued the DIP-switch read -- the boot never
+ * poll wedged before it ever issued the DIP-switch read. The boot never
  * reached the local-POD stop.
  */
 static void test_general_call_does_not_address_as_slave(const void *data)
@@ -153,7 +152,7 @@ static void test_general_call_does_not_address_as_slave(const void *data)
     qtest_writeq(qts, HUB_LOCAL + I2C_CTRL,
                  CTL_PIN | CTL_ESO | CTL_STA | CTL_ACK);
 
-    /* The general call is acknowledged -- a receiver exists... */
+    /* The general call is acknowledged: a receiver exists... */
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + I2C_CTRL) & I2C_PCF_LRB,
                     ==, 0);
     /* ...but it must not report the controller addressed as a slave. */
@@ -203,12 +202,12 @@ static void test_clock_control_independent_fields(const void *data)
 
     qtest_writeq(qts, HUB_LOCAL + I2C_CTRL, CTL_PIN | CTL_ES1);
 
-    /* 12 MHz / 90 kHz -- the only combination our firmware ever writes. */
+    /* 12 MHz / 90 kHz is the only combination our firmware ever writes. */
     qtest_writeq(qts, HUB_LOCAL + I2C_DATA, 0x1c);
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + I2C_DATA), ==, 0x1c);
 
     /*
-     * 6 MHz / 11 kHz -- a combination nothing we boot ever uses, so a model
+     * 6 MHz / 11 kHz is a combination nothing we boot ever uses, so a model
      * that hard-coded 0x1c rather than storing what was written would still
      * pass the line above and only fail here.
      */
@@ -222,8 +221,8 @@ static void test_init_sequence_leaves_eso_and_address(const void *data)
 {
     QTestState *qts = qtest_init("-M origin200");
 
-    /* The nine-write, one-read sequence docs/datasheets/pcf8584-elsc.md
-     * transcribes from the PROM driver, replayed write for write. */
+    /* The nine-write, one-read initialization sequence the PROM driver
+     * issues, replayed write for write. */
     qtest_writeq(qts, HUB_LOCAL + I2C_CTRL, CTL_PIN);                 /* 1 */
     qtest_writeq(qts, HUB_LOCAL + I2C_DATA, 0x7f);                    /* 2 */
     qtest_writeq(qts, HUB_LOCAL + I2C_CTRL, CTL_PIN | CTL_ES1);       /* 3 */

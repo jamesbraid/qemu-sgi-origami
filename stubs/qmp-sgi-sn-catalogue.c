@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
+/* Stub for the SGI SN QMP machine catalogue. */
 
 #include "qemu/osdep.h"
 #include "qapi/error.h"

@@ -1,11 +1,8 @@
 /*
- * A PCI configuration cycle that no device claims is a master time-out:
- * the Bridge specification (revision 4.0, section 6.4.1, table 57) sets
- * the PCI_MASTER_TOUT status bit and latches the PCI address and device
- * number in the PCI error address registers. Every guest reading an empty
- * slot -- the IP27 PROM, IRIX, Linux and OpenBSD -- does so inside a
- * bus-error guard, so the read also fails at the processor, which only an
- * executing processor can see.
+ * Unclaimed Bridge PCI configuration cycles set PCI_MASTER_TOUT and latch
+ * the PCI address and device number (Bridge specification rev 4.0, section
+ * 6.4.1, table 57). Empty-slot reads by IP27 PROM, IRIX, Linux and OpenBSD
+ * also fail at the CPU inside a bus-error guard; an executing CPU tests it.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */

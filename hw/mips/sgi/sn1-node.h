@@ -1,15 +1,14 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * SGI Origin 300 (IP35/Bedrock, "SN1") node device: the CPUs, Bedrock,
- * L1 and its UART, boot flash and PROM views one Origin 300 chassis
- * carries. The family builder (sn-machine.c) creates it from the
- * format-2 descriptor's Bedrock node record and its populated I/O
- * board, then realizes it; sn1.c holds only the product class. Each
- * node's own address-space views are strided by its nasid property
- * (sn1-node.c), so a second node's windows land clear of the first's;
- * the machine still refuses more than one Bedrock node (sn-machine.c)
- * because nothing sources or models the cross-node NUMAlink fabric a
- * real multi-chassis Origin 300 pair would need.
+ * SGI Origin 300 (IP35/Bedrock, "SN1") node device: the CPUs, Bedrock, L1 and
+ * its UART, boot flash and PROM views one Origin 300 chassis carries. The
+ * family builder (sn-machine.c) creates it from the format-2 descriptor's
+ * Bedrock node record and its populated I/O board, then realizes it; sn1.c
+ * holds only the product class. Each node's address-space views are strided
+ * by its nasid property (sn1-node.c), so a second node's windows land clear
+ * of the first's; the machine still refuses more than one Bedrock node
+ * (sn-machine.c) because nothing sources or models the cross-node NUMAlink
+ * fabric a real multi-chassis Origin 300 pair would need.
  */
 
 #ifndef HW_MIPS_SGI_SN1_NODE_H
@@ -23,20 +22,20 @@
 #include "sn-promdata.h"
 
 /*
- * Bedrock is fixed at four CPUs on two processor interfaces; see the
- * component taxonomy and the Bedrock processor-interface datasheet.
+ * Bedrock is fixed at four CPUs on two processor interfaces, two processors
+ * per interface.
  */
 #define SGI_SN1_NODE_MAX_CPUS 4
 
 /*
- * The four processor-selected spaces a node's window appears in (memory,
- * Hub special, crosstalk, memory special), each a 1 TiB carrier of 128
- * node windows; see sn1-node.c's claim layer.
+ * The four processor-selected spaces a node's window appears in (memory, Hub
+ * special, crosstalk, memory special), each a 1 TiB carrier of 128 node
+ * windows; see sn1-node.c's claim layer.
  */
 #define SN1_NODE_SPACES 4
-/* A node's own window and its one cabled peer's. */
+/* A node's window and its one cabled peer's. */
 #define SN1_NODE_CLAIMS 2
-/* The claim views: one per processor, then the node's own fabric view. */
+/* The claim views: one per processor, then the node's fabric view. */
 #define SN1_NODE_VIEWS (SGI_SN1_NODE_MAX_CPUS + 1)
 #define SN1_NODE_FABRIC_VIEW SGI_SN1_NODE_MAX_CPUS
 /* The reader-relative forms a processor view overlays; see sn1-node.c. */
@@ -65,13 +64,12 @@ typedef struct SN1NodeState {
     bool promdata_fast;
 
     /*
-     * The topology's Bedrock node record, set by the machine before
-     * realize -- the compiled catalogue this node builds from
-     * (qapi/sgi-sn.json). The IO-8's own populated-board record is the
-     * machine's own concern now (sgi_machine_instantiate_io_board() in
-     * sn-machine.c): this node exposes the chip's PCI bus through
-     * sn1_node_xbridge_pci_bus() instead of taking the record as a
-     * property of its own.
+     * The topology's Bedrock node record, set by the machine before realize,
+     * the compiled catalogue this node builds from (qapi/sgi-sn.json). The
+     * IO-8's populated-board record is the machine's concern now
+     * (sgi_machine_instantiate_io_board() in sn-machine.c): this node exposes
+     * the chip's PCI bus through sn1_node_xbridge_pci_bus() instead of taking
+     * the record as a property of its own.
      */
     const SGIModelNode *model_node;
     /*
@@ -87,8 +85,8 @@ typedef struct SN1NodeState {
     MemoryRegion cpu_sysmem[SGI_SN1_NODE_MAX_CPUS];
     MemoryRegion sysmem_alias[SGI_SN1_NODE_MAX_CPUS];
     /*
-     * The uncached view: the cached one, less the private window. Only
-     * wired when promdata_fast is set; see sn-promdata.c.
+     * The uncached view: the cached one, less the private window. Only wired
+     * when promdata_fast is set; see sn-promdata.c.
      */
     MemoryRegion cpu_uncached[SGI_SN1_NODE_MAX_CPUS];
     MemoryRegion cpu_uncached_alias[SGI_SN1_NODE_MAX_CPUS];
@@ -102,8 +100,8 @@ typedef struct SN1NodeState {
     DeviceState *boot_flash;
     MemoryRegion bedrock_node;
     /*
-     * The Hub-special register windows' own blocks, shared by the local
-     * and remote forms: the unidentified block below the L1 UART and the
+     * The Hub-special register windows' own blocks, shared by the local and
+     * remote forms: the unidentified block below the L1 UART and the
      * per-processor LEDs above it (sn1_node_create_bedrock()).
      */
     MemoryRegion hub_unidentified;
@@ -112,16 +110,15 @@ typedef struct SN1NodeState {
     MemoryRegion hub_leds_remote;
     uint8_t led[SGI_SN1_NODE_MAX_CPUS];
     /*
-     * OpenBSD expects a local PI access to select the requester's own
-     * interface (sn1_node_create_bedrock()); indexed by logical CPU, one
-     * entry per processor this node realizes whose physical slot sits on
-     * processor interface 1 -- at most two of the four (both are used only
-     * in the four-processor population; the two-processor population
-     * fits one).
+     * OpenBSD expects a local PI access to select the requester's interface
+     * (sn1_node_create_bedrock()); indexed by logical CPU, one entry per
+     * processor this node realizes whose physical slot sits on processor
+     * interface 1; at most two of the four (both are used only in the
+     * four-processor population; the two-processor population fits one).
      */
     MemoryRegion cpu_local_pi_xtalk[SGI_SN1_NODE_MAX_CPUS];
 
-    /* The node's own address-space views; see sn1-node.c. */
+    /* The node's address-space views; see sn1-node.c. */
     MemoryRegion hub_memory;
     MemoryRegion hub_local_registers;
     MemoryRegion board_id;
@@ -138,8 +135,8 @@ typedef struct SN1NodeState {
     /*
      * The claim layer (sn1-node.c): which node each processor's and the
      * Bedrock's DMA accesses reach, keyed by the node numbers the local
-     * blocks carry. Views 0..3 are the processors', view 4 the fabric
-     * view the Bedrock's DMA and BTE use.
+     * blocks carry. Views 0..3 are the processors', view 4 the fabric view
+     * the Bedrock's DMA and BTE use.
      */
     MemoryRegion fabric;
     MemoryRegion fabric_sysmem;
@@ -158,52 +155,50 @@ typedef struct SN1NodeState {
 DECLARE_INSTANCE_CHECKER(SN1NodeState, SN1_NODE, TYPE_SGI_SN1_NODE)
 
 /*
- * The Bedrock node's own machine-reset sequence: reset every CPU and
- * apply the reset-latched processor mode bits, reset every other
- * device, refresh the PROM views from whatever the flash part holds
- * now (once one is attached) and release the CPUs -- they start
- * powered off, so the generic device-reset path alone leaves them
- * halted. Self-contained (not sharing sgi_machine_reset's Hub-ordered
- * prefix) because "start-powered-off" needs cpu_reset to run before
- * qemu_devices_reset, the reverse of the Hub's own order, which
- * releases through sgi_hub_set_cpu_enable instead and has no such
+ * The Bedrock node's machine-reset sequence: reset every CPU and apply the
+ * reset-latched processor mode bits, reset every other device, refresh the
+ * PROM views from whatever the flash part holds now (once one is attached)
+ * and release the CPUs; they start powered off, so the generic device-reset
+ * path alone leaves them halted. Self-contained (not sharing
+ * sgi_machine_reset's Hub-ordered prefix) because "start-powered-off" needs
+ * cpu_reset to run before qemu_devices_reset, the reverse of the Hub's order,
+ * which releases through sgi_hub_set_cpu_enable instead and has no such
  * constraint.
  */
 void sn1_node_full_reset(SN1NodeState *node, ResetType type);
 
 /*
  * The two halves of sn1_node_full_reset() for a machine of several nodes,
- * which resets every node's processors, then every device once, then
- * releases every node's processors: the same order, with the device reset
- * shared rather than repeated per node.
+ * which resets every node's processors, then every device once, then releases
+ * every node's processors: the same order, with the device reset shared
+ * rather than repeated per node.
  */
 void sn1_node_reset_cpus(SN1NodeState *node);
 void sn1_node_release_cpus(SN1NodeState *node);
 
 /*
- * Attaches the node's boot flash: a pflash part from -drive if=pflash at
- * unit node_index if one was given, else an immutable ROM holding
- * contents (exactly length bytes, checked against the node's own
- * descriptor flash size), and maps every PROM view either backs. The
- * machine calls this once every node this run builds has realized
- * (sgi_machine_load_flash() in sn-machine.c), after resolving -bios and
- * the per-node pflash override the same way the Hub path does; realize
- * itself no longer loads PROM content, only sn1_node_create_boot_flash's
- * own device-level mechanics run here, the node's own concern under
- * decision D-0026.
+ * Attaches the node's boot flash: a pflash part from -drive if=pflash at unit
+ * node_index if one was given, else an immutable ROM holding contents
+ * (exactly length bytes, checked against the node's descriptor flash size),
+ * and maps every PROM view either backs. The machine calls this once every
+ * node this run builds has realized (sgi_machine_load_flash() in
+ * sn-machine.c), after resolving -bios and the per-node pflash override the
+ * same way the Hub path does; realize itself no longer loads PROM content,
+ * only sn1_node_create_boot_flash's device-level mechanics run here, the
+ * node's own concern.
  */
 bool sn1_node_attach_prom(SN1NodeState *node, unsigned int node_index,
                           const uint8_t *contents, uint64_t length,
                           Error **errp);
 
 /*
- * The PCI bus behind one of the node's own XBridge heads (0xe or 0xf),
- * for the machine to place a populated head's fixed devices on
- * (sgi_machine_instantiate_io8() in sn-machine.c) -- the same attachment
- * path Origin 200's direct board and Origin 2000's Crossbow board both
- * read their own crosstalk widget from, since node->xbridge is a fitted
- * part of this node's own board (decision D-0026) rather than something
- * a board-owning attachment builds. The node must already be realized.
+ * The PCI bus behind one of the node's XBridge heads (0xe or 0xf), for the
+ * machine to place a populated head's fixed devices on
+ * (sgi_machine_instantiate_io8() in sn-machine.c); the same attachment path
+ * Origin 200's direct board and Origin 2000's Crossbow board both read their
+ * crosstalk widget from, since node->xbridge is a fitted part of this node's
+ * own board rather than something a board-owning attachment builds. The node
+ * must already be realized.
  */
 PCIBus *sn1_node_xbridge_pci_bus(SN1NodeState *node, unsigned int widget);
 
@@ -215,8 +210,8 @@ PCIBus *sn1_node_xbridge_pci_bus(SN1NodeState *node, unsigned int widget);
 void sn1_node_update_claims(SN1NodeState *node);
 
 /*
- * The node whose local block currently carries this number and that this
- * node can reach (itself, or its peer over an up cable), or NULL.
+ * The node whose local block currently carries this number and that this node
+ * can reach (itself, or its peer over an up cable), or NULL.
  */
 SN1NodeState *sn1_node_claimant(SN1NodeState *node, unsigned int number);
 

@@ -1,11 +1,12 @@
+/* Alteon Tigon 2 register and device definitions. */
 /*
  * Alteon Tigon 2 Gigabit Ethernet controller (the SGI IRIS "eg" board).
  *
  * The chip is a generic Alteon part (also sold as the AceNIC, Netgear GA620,
  * 3Com 3c985 and DEC PN9000SX); its PCI identity is a set of QOM properties
  * rather than a baked-in type, so the SGI board is one property instantiation
- * of the same model. See docs/datasheets/tigon.md and docs/plans/tigon-model.md
- * in the origami project tree for the hardware contract this models.
+ * of the same model. Modelled from the published Tigon host interface the
+ * public NetBSD and OpenBSD "ti" drivers implement.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
@@ -40,12 +41,12 @@ OBJECT_DECLARE_SIMPLE_TYPE(TigonState, TIGON)
 
 /* The bit-banged serial-EEPROM (24Cxx I2C slave) that holds the MAC. */
 typedef struct TigonEeprom {
-    bool last_clk;      /* EE_CLK level at the previous MISC_LOCAL_CTL write */
+    bool last_clk;      /* EE_CLK level at prior MISC_LOCAL_CTL write */
     bool last_sda;      /* master data line (EE_DOUT while EE_TXEN) before */
     uint8_t state;      /* TIGON_EE_* phase */
     uint8_t bitcnt;     /* bit index within the byte in flight (0..8) */
     uint8_t shift;      /* byte shifting in (receive) or out (read) */
-    uint8_t bytenum;    /* transaction byte: 0 control, 1 addr-hi, 2 addr-lo */
+    uint8_t bytenum;    /* byte: 0 control, 1 addr-hi, 2 addr-lo */
     bool read_mode;     /* the control byte selected a read (0xA1) */
     uint16_t addr;      /* latched EEPROM byte address */
     bool din;           /* level the slave drives back on EE_DIN */
@@ -85,9 +86,9 @@ struct TigonState {
     uint32_t misc_local_ctl;
     uint32_t pci_state;
     /*
-     * Card SRAM timing configuration. Stored and returned, and nothing
-     * acts on it: the bit the driver sets selects synchronous SRAM, and
-     * this model's SRAM is an array with no timing to select. Kept so a
+     * Card SRAM timing configuration. Stored and returned, and nothing acts
+     * on it: the bit the driver sets selects synchronous SRAM, and this
+     * model's SRAM is an array with no timing to select. Kept so a
      * read-modify-write sees what it wrote rather than zero.
      */
     uint32_t misc_conf;
@@ -132,9 +133,9 @@ struct TigonState {
 
     /*
      * The firmware statistics block. The host names the address it wants the
-     * refreshed copy written to in the general information block's last field;
-     * these counters advance as frames pass and are published there on the
-     * host's request and on the period the statistics-tick register sets.
+     * refreshed copy written to in the general information block's last
+     * field; these counters advance as frames pass and are published there on
+     * the host's request and on the period the statistics-tick register sets.
      */
     uint64_t refresh_stats_ptr;
     bool stack_up;              /* the host said its protocol stack was up */
@@ -147,7 +148,7 @@ struct TigonState {
     uint64_t stat_tx_mcast;
     uint64_t stat_tx_bcast;
     uint32_t stat_rx_discards;
-    bool stats_dirty;           /* a published field moved since last publish */
+    bool stats_dirty;           /* field changed since last publish */
     QEMUTimer *stats_timer;
     QEMUTimer *stats_live_timer;
 
@@ -189,10 +190,10 @@ struct TigonState {
     QEMUTimer *coal_tx_timer;
 
     /*
-     * Link negotiation is asynchronous on real hardware: the firmware answers a
-     * link-negotiation command with a link-state event a short time later. A
-     * timer reproduces that delay so the event lands after the driver has begun
-     * waiting for it, rather than racing ahead of the wait.
+     * Link negotiation is asynchronous on real hardware: the firmware answers
+     * a link-negotiation command with a link-state event a short time later.
+     * A timer reproduces that delay so the event lands after the driver has
+     * begun waiting for it, rather than racing ahead of the wait.
      */
     QEMUTimer *link_timer;
 
@@ -204,7 +205,7 @@ struct TigonState {
 
 /*
  * One receive whose buffer and return descriptor are written and whose
- * producer index -- the only part of it the driver can see -- is still held.
+ * producer index (the only part the driver can see) is still held.
  */
 typedef struct TigonRxDone {
     uint32_t return_prodidx;

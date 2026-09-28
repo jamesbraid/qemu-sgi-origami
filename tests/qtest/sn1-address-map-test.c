@@ -1,11 +1,6 @@
 /*
- * SGI Origin 300 (IP45) address-space routing.
- *
- * These are machine-bus addresses after the R10000-family uncached
- * attribute has been carried above the 40-bit physical address.  The
- * values are repeated here rather than shared with the machine so a bad
- * decoder constant cannot make both sides agree.
- *
+ * SGI Origin 300 (IP45) machine-bus address routing, including the R10000
+ * uncached attribute above bit 39. Independent constants catch bad decodes.
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
@@ -128,8 +123,8 @@
 #define FLASH_ERASED_TARGET UINT64_C(0x200000)
 #define FLASH_PAYLOAD_TARGET UINT64_C(0x1000)
 /*
- * The directory words for memory line 0x1a00000 and for the last line of
- * one installed 256 MiB bank, and the aperture the node ends with.
+ * The directory words for memory line 0x1a00000 and for the last line of one
+ * installed 256 MiB bank, and the aperture the node ends with.
  */
 #define DIRECTORY_LINE_1A00000 UINT64_C(0x340000)
 #define DIRECTORY_LAST_FITTED UINT64_C(0x1fffff0)
@@ -145,7 +140,9 @@
 #define CONFIG0_MUTATED_READBACK UINT64_C(0x6c9aa982)
 #define POLL_TRIES 10000
 #define POLL_INTERVAL_US 1000
-/* Guest run-time to allow a mistaken NMI to vector before asserting none did. */
+/*
+ * Guest run-time to allow a mistaken NMI to vector before asserting none did.
+ */
 #define NMI_SETTLE_TRIES 20
 #define NMI_SETTLE_INTERVAL_US 10000
 
@@ -223,7 +220,9 @@
 #define IOC3_RX_RING_IOVA 0x40000000
 #define IOC3_RX_BUFFER_IOVA 0x40001000
 
-/* The ENET block's MII management registers (include/hw/net/sgi-ioc3-eth.h). */
+/*
+ * The ENET block's MII management registers (include/hw/net/sgi-ioc3-eth.h).
+ */
 #define MII_CONTROL (IO8_IOC3_WINDOW + 0x148)
 #define MII_DATA_R  (IO8_IOC3_WINDOW + 0x14c)
 #define MII_DATA_W  (IO8_IOC3_WINDOW + 0x150)
@@ -235,9 +234,9 @@
 
 /*
  * The IO-8's fixed devices are an sgi-baseio (the "io8" preset) on the
- * XBridge's own head F; the XBridge itself is a fitted part of the IP45
- * node board (sn1-node.c creates it directly, as a QOM child of the node
- * object) rather than a removable board.
+ * XBridge's own head F; the XBridge itself is a fitted part of the IP45 node
+ * board (sn1-node.c creates it directly, as a QOM child of the node object)
+ * rather than a removable board.
  */
 #define IOC3_PATH "/machine/node0/baseio/ioc3"
 #define MAC "02:00:5d:aa:bb:cc"
@@ -246,14 +245,12 @@
 #define XBRIDGE_DEVICE(n) (0x200 + (n) * 8)
 #define XBRIDGE_DEVICE_MEMORY (1U << 12)
 /*
- * docs/datasheets/xbridge.md, "device 0 to 7": bit 13 is PIO swap, reset
- * clear. Clear places a narrow access by offset exclusive-or with the
- * value preserved (Tables 109 to 111); set makes it a plain byte stream,
- * mirrored. An ordinary register (IOC3, the OHCI's own BAR-mapped
- * registers) wants the former, so these devices are left at the reset
- * default rather than setting the bit -- the flag this file used to set
- * here for that purpose was named backwards from the datasheet's own bit
- * and set the mirror instead.
+ * XBridge device registers 0 to 7: bit 13 is PIO swap, reset clear. Clear
+ * places a narrow access by offset exclusive-or with the value preserved; set
+ * makes it a plain byte stream, mirrored. An ordinary register (IOC3, the
+ * OHCI's own BAR-mapped registers) wants the former, so these devices are
+ * left at the reset default rather than setting the bit. The flag this
+ * file used to set here was named backwards and set the mirror.
  */
 #define XBRIDGE_HOST_PORT 0xa
 #define XBRIDGE_ATE_VALID 1
@@ -578,9 +575,9 @@ static void xtalk_reg_write(QTestState *qts, unsigned int widget,
 }
 
 /*
- * The region-type token ("ram", "rom", "romd", "i/o", ...) that "info
- * mtree -f"'s flat view of the CPU's address space reports for the entry
- * covering address, or NULL if the flat view has nothing mapped there.
+ * The region-type token ("ram", "rom", "romd", "i/o", ...) that "info mtree
+ * -f"'s flat view of the CPU's address space reports for the entry covering
+ * address, or NULL if the flat view has nothing mapped there.
  */
 static char *flat_view_region_type_at(QTestState *qts, uint64_t address)
 {
@@ -628,11 +625,10 @@ static void assert_flat_view_unmapped(QTestState *qts, uint64_t address)
 }
 
 /*
- * Every window the processor fetches firmware from must resolve to ram,
- * rom or romd in the flat view. An i/o entry there caches no TCG
- * translation: each instruction recompiles as its own one-instruction
- * block, and the guest runs 100-300x slower while giving no outward sign
- * anything is wrong.
+ * Every window the processor fetches firmware from must resolve to ram, rom
+ * or romd in the flat view. An i/o entry there caches no TCG translation:
+ * each instruction recompiles as its own one-instruction block, and the guest
+ * runs 100-300x slower while giving no outward sign anything is wrong.
  */
 static void assert_flat_view_is_execution_storage(QTestState *qts,
                                                    uint64_t address)
@@ -755,9 +751,9 @@ static void test_origin300_cpu_c_initial_enable(const void *data)
 
 /*
  * The four-processor population fits every slot, and every one comes out of
- * reset granted. The stock PROM's boot path never sets a CPU-enable
- * register (hw/mips/sgi/sn1-node.c says what it does), so a slot the model
- * leaves clear is a slot the firmware does not count.
+ * reset granted. The stock PROM's boot path never sets a CPU-enable register
+ * (hw/mips/sgi/sn1-node.c says what it does), so a slot the model leaves
+ * clear is a slot the firmware does not count.
  */
 static void test_origin300_four_cpu_initial_enable(const void *data)
 {
@@ -775,10 +771,9 @@ static void test_origin300_four_cpu_initial_enable(const void *data)
 
 /*
  * Neither Hub-special register window is a view of Bedrock's own register
- * block: that is the crosstalk form's job alone
- * (docs/datasheets/ip35-address-map.md, "Hub special space"). A store at
- * the local-block scratch register's offset through either window must not
- * reach the local block.
+ * block: that is the crosstalk form's job alone. A store at the local-block
+ * scratch register's offset through either window must not reach the local
+ * block.
  */
 static void test_hub_windows_omit_bedrock_registers(const void *data)
 {
@@ -831,8 +826,8 @@ static void test_hub_unidentified_block_keeps_nothing(const void *data)
 /*
  * What the Hub-special windows refuse, and that each refusal is said out
  * loud: offsets past the LEDs decode to nothing in either form, an LED
- * answers only an aligned eight-byte access, the unidentified block logs
- * what it ignores, and both blocks honour the current-cell access rule.
+ * answers only an aligned eight-byte access, the unidentified block logs what
+ * it ignores, and both blocks honour the current-cell access rule.
  */
 static void test_hub_window_refusals(const void *data)
 {
@@ -897,7 +892,9 @@ static void test_hub_window_refusals(const void *data)
     g_assert_cmpint(g_unlink(log_path), ==, 0);
 }
 
-/* PI state a Hub-special window store could disturb: masks and cross-calls. */
+/*
+ * PI state a Hub-special window store could disturb: masks and cross-calls.
+ */
 static void read_pi_interrupt_state(QTestState *qts, uint64_t base,
                                     uint64_t state[9])
 {
@@ -907,11 +904,11 @@ static void read_pi_interrupt_state(QTestState *qts, uint64_t base,
 }
 
 /*
- * One LED register per processor slice at 0xc0 + 8 * slice of both
- * windows. Before this decode existed those offsets were PI interrupt mask
- * 1 B and the cross-call-pending set A, set B and clear A registers, so
- * every PROM progress code and IRIX heartbeat rewrote a mask or raised or
- * cleared a cross-call; this test fails on that decode.
+ * One LED register per processor slice at 0xc0 + 8 * slice of both windows.
+ * Before this decode existed those offsets were PI interrupt mask 1 B and the
+ * cross-call-pending set A, set B and clear A registers, so every PROM
+ * progress code and IRIX heartbeat rewrote a mask or raised or cleared a
+ * cross-call; this test fails on that decode.
  */
 static void test_hub_special_leds(const void *data)
 {
@@ -1083,16 +1080,15 @@ static void test_xbridge_topology(const void *data)
     g_assert_cmphex(identity & 1, ==, 1);
 
     /*
-     * A widget scan addresses the same chip by the physical crosstalk
-     * port Bedrock actually attached it to, not only by the widget-zero
-     * local-CPU shortcut above -- both name the same upstream link, so
-     * this must read identically to widget 0. A field diagnostic that
-     * walks Bedrock's own ports (rather than using the shortcut) reads
-     * exactly this address to decide the IO-8 board is present; before
-     * this widget was wired, the read reached nothing at all (bus error,
-     * not the empty-slot 0xffffffff), and that diagnostic reported no
-     * board present without ever exercising the board's own PCI
-     * functions.
+     * A widget scan addresses the same chip by the physical crosstalk port
+     * Bedrock actually attached it to, not only by the widget-zero local-CPU
+     * shortcut above. Both name the same upstream link, so this must read
+     * identically to widget 0. A field diagnostic that walks Bedrock's own
+     * ports (rather than using the shortcut) reads exactly this address to
+     * decide the IO-8 board is present; before this widget was wired, the
+     * read reached nothing at all (bus error, not the empty-slot 0xffffffff),
+     * and that diagnostic reported no board present without ever exercising
+     * the board's own PCI functions.
      */
     identity = xtalk_reg_read(qts, XBRIDGE_HOST_PORT, 0);
     g_assert_cmphex(WIDGET_REV(identity), ==, 2);
@@ -1101,12 +1097,11 @@ static void test_xbridge_topology(const void *data)
     g_assert_cmphex(identity & 1, ==, 1);
 
     /*
-     * The XBridge is a fitted part of the IP45 node board itself
-     * (docs/designs/sn-machine-model-architecture.md, "Node devices"):
-     * sn1-node.c creates it directly, as a QOM child of the node object,
-     * the same "xbridge" this test otherwise reads through xtalk_reg_*.
-     * "board-part-f" defaults to the origin300-base.yaml catalogue's own
-     * captured part for this board, not the chip's own placeholder.
+     * The XBridge is a fitted part of the IP45 node board itself: sn1-node.c
+     * creates it directly, as a QOM child of the node object, the same
+     * "xbridge" this test otherwise reads through xtalk_reg_*. "board-part-f"
+     * defaults to the origin300-base.yaml catalogue's own recorded part for
+     * this board, not the chip's own placeholder.
      */
     response = qtest_qmp(qts,
         "{'execute':'qom-get', 'arguments':{"
@@ -1696,26 +1691,15 @@ static void test_io8_ioc3_migration(const void *data)
 }
 
 /*
- * The DP83843 at MII address 1, the BASEIO PROM's diagnostic hard-code,
- * not the Origin 200's 31. hw/net/dp83840.c keeps 31 as its default;
- * hw/mips/sgi/sn1.c threads this board's address through sn1-model.h's
- * per-device descriptor into the eth child's "phy-addr" property, a
- * "sgi-ioc3" -> "sgi-ioc3-eth" -> "dp83840" alias chain whose last hop
- * already backs Origin 200's own default (tests/qtest/sn0-ioc3-test.c).
- *
- * A real Origin 300's OpenBSD capture confirms the address: "nsphyter0
- * at iec0 phy 1: DP83843 10/100 PHY" (docs/datasheets/dp83840.md). The
- * board's transceiver is also a different part, a DP83843 rather than
- * the Origin 200's DP83840A, selected the same way through a
- * "phy-dp83843" alias chain; this file pins its identity register and
- * that register 0x17 (its Loopback Register there) reads back what is
- * written. The behaviour that register selects -- turning a frame back
- * without reaching the backend -- is tests/qtest/sgi-ioc3-eth-test.c's,
- * reached through a plain sgi-ioc3 device rather than this board's full
- * crosstalk wiring. The rest of the transceiver's own register contract
- * -- reset, autonegotiation -- belongs to sn0-ioc3-test.c and is not
- * repeated here; this file pins only where and as what the IO-8 board's
- * copy answers.
+ * IO-8 uses DP83843 at MII address 1, as BASEIO PROM diagnostics require;
+ * Origin 200 defaults to DP83840A at 31 (hw/net/dp83840.c, sn0-ioc3-test.c).
+ * Origin 300 OpenBSD reports "nsphyter0 at iec0 phy 1: DP83843 10/100 PHY".
+ * sn1.c passes the per-device sn1-model.h address through sgi-ioc3 ->
+ * sgi-ioc3-eth -> dp83840's phy-addr; phy-dp83843 selects the different part.
+ * This test checks identity and register 0x17 (Loopback Register) readback.
+ * sgi-ioc3-eth-test.c checks actual loopback via a plain sgi-ioc3 rather than
+ * full crosstalk; sn0-ioc3-test.c covers reset and autonegotiation. Here only
+ * IO-8 placement and identity are asserted.
  */
 static void test_transceiver_identity(const void *data)
 {
@@ -1726,10 +1710,9 @@ static void test_transceiver_identity(const void *data)
     /*
      * PHYIDR1 is the OUI's upper bits, the same on every National
      * Semiconductor PHY this project models, so it stays 0x2000 on both
-     * parts. PHYIDR2 is this board's own: 0x5c10 is the DP83843's, not
-     * the Origin 200 DP83840A's 0x5c01 (docs/datasheets/dp83840.md). The
-     * transceiver's own register contract otherwise belongs to
-     * sn0-ioc3-test.c.
+     * parts. PHYIDR2 is this board's own: 0x5c10 is the DP83843's, not the
+     * Origin 200 DP83840A's 0x5c01. The transceiver's own register contract
+     * otherwise belongs to sn0-ioc3-test.c.
      */
     g_assert_cmphex(phy_read(qts, PHY_ADDRESS, 2), ==, 0x2000);
     g_assert_cmphex(phy_read(qts, PHY_ADDRESS, 3), ==, 0x5c10);
@@ -1738,10 +1721,10 @@ static void test_transceiver_identity(const void *data)
 }
 
 /*
- * Read-after-write only: the loopback behaviour this register selects on
- * the DP83843 belongs to tests/qtest/sgi-ioc3-eth-test.c, which reaches
- * the register through a plain sgi-ioc3 device rather than this board's
- * full crosstalk wiring.
+ * Read-after-write only: the loopback behaviour this register selects on the
+ * DP83843 belongs to tests/qtest/sgi-ioc3-eth-test.c, which reaches the
+ * register through a plain sgi-ioc3 device rather than this board's full
+ * crosstalk wiring.
  */
 static void test_register_0x17_reads_back_a_written_value(const void *data)
 {
@@ -1773,9 +1756,9 @@ static void test_transceiver_answers_at_one_address(const void *data)
     io8_ioc3_attach(qts);
 
     /*
-     * Every address: both IRIX and the BASEIO PROM stop at the first
-     * that answers, so a model answering everywhere would be found at
-     * address zero and no boot notices. The count is the assertion.
+     * Every address: both IRIX and the BASEIO PROM stop at the first that
+     * answers, so a model answering everywhere would be found at address zero
+     * and no boot notices. The count is the assertion.
      */
     for (phy = 0; phy < 32; phy++) {
         if (phy_read(qts, phy, 2) != 0xffff) {
@@ -1799,9 +1782,9 @@ static void test_hub_special_register_windows(const void *data)
                                 L1_SCRATCH), ==, scratch);
 
     /*
-     * sMDK's headless console (PROM console=d) polls line status through
-     * this local form; the local window now reaches the same L1 UART the
-     * remote window does (docs/datasheets/l1-controller.md).
+     * sMDK's headless console (PROM console=d) polls line status through this
+     * local form; the local window now reaches the same L1 UART the remote
+     * window does.
      */
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL_REGISTERS + L1_UART +
                                 L1_SCRATCH), ==, scratch);
@@ -1824,10 +1807,10 @@ static void test_hub_special_register_windows(const void *data)
 }
 
 /*
- * The local window holds its own blocks (see sn1_node_create_bedrock),
- * not the PI register file, so a PI register written through the crosstalk
- * form must not leak through when read back at the same relative offset in
- * the local window, and a store there must not reach the PI.
+ * The local window holds its own blocks (see sn1_node_create_bedrock), not
+ * the PI register file, so a PI register written through the crosstalk form
+ * must not leak through when read back at the same relative offset in the
+ * local window, and a store there must not reach the PI.
  */
 static void test_hub_local_register_window_omits_pi_registers(
     const void *data)
@@ -1885,12 +1868,11 @@ static void test_l1_operator_console_uses_serial0(const void *data)
 }
 
 /*
- * A byte typed at the operator console reaches the node UART's receive
- * queue (confirmed live: LSR Data Ready and IIR 0x04 latch correctly) but,
- * before this fix, the UART's own IRQ output was never connected to any
- * interrupt consumer, so sMDK's smdk> prompt never accepted typed input.
- * Bedrock pending bank 0 bit 4 is the documented UART consumer
- * (docs/datasheets/bedrock-processor-interface.md); this exercises the
+ * A byte typed at the operator console reaches the node UART's receive queue
+ * (confirmed live: LSR Data Ready and IIR 0x04 latch correctly) but, before
+ * this fix, the UART's own IRQ output was never connected to any interrupt
+ * consumer, so sMDK's smdk> prompt never accepted typed input. Bedrock
+ * pending bank 0 bit 4 is the documented UART consumer; this exercises the
  * whole path a keystroke takes, chardev to CPU Cause, the way
  * test_io8_ioc3_superio_interrupt exercises the IOC3 serial path.
  */
@@ -2022,9 +2004,9 @@ static void assert_erased_second_position(QTestState *qts)
 }
 
 /*
- * The controller speaks the same framed protocol through the machine's
- * mapped window as it does on its own bus, so these helpers mirror the
- * device test's, addressed at the window instead.
+ * The controller speaks the same framed protocol through the machine's mapped
+ * window as it does on its own bus, so these helpers mirror the device
+ * test's, addressed at the window instead.
  */
 static uint16_t l1_fcs(uint16_t value, uint8_t byte)
 {
@@ -2110,9 +2092,9 @@ static size_t l1_eeprom_read(QTestState *qts, unsigned component,
 }
 
 /*
- * base-parameterized mirrors of l1_put/l1_send/l1_receive/l1_eeprom_read,
- * so a caller can drive the same framed protocol through either
- * register-window form's L1 UART slot and compare the results.
+ * base-parameterized mirrors of l1_put/l1_send/l1_receive/l1_eeprom_read, so
+ * a caller can drive the same framed protocol through either register-window
+ * form's L1 UART slot and compare the results.
  */
 static void l1_put_at(QTestState *qts, uint64_t base, uint8_t byte)
 {
@@ -2191,13 +2173,12 @@ static size_t l1_eeprom_read_at(QTestState *qts, uint64_t base,
 }
 
 /*
- * The qtest protocol itself has no per-CPU physical access: every
- * qtest_read call and every human-monitor-command "xp" dispatch goes
- * through the first CPU's own address space regardless of a requested
- * cpu-index in this build. A per-CPU register-window defect (like CPU
- * C's own overlay shadowing the machine-wide UART alias) is therefore
- * invisible to any such check; only a ROM a CPU actually executes proves
- * what that CPU's own view resolves to. See docs/known-issues.md.
+ * The qtest protocol itself has no per-CPU physical access: every qtest_read
+ * call and every human-monitor-command "xp" dispatch goes through the first
+ * CPU's own address space regardless of a requested cpu-index in this build.
+ * A per-CPU register-window defect (like CPU C's own overlay shadowing the
+ * machine-wide UART alias) is therefore invisible to any such check; only a
+ * ROM a CPU actually executes proves what that CPU's own view resolves to.
  */
 #define L1_LOCAL_FORM_READY_MARKER UINT64_C(0x1a57)
 
@@ -2217,11 +2198,11 @@ static char *create_l1_local_form_prom(void)
     stl_be_p(image + 0x408, 0x408a6000); /* mtc0 t2, Status */
     stl_be_p(image + 0x40c, 0x000000c0); /* ehb */
     /*
-     * Every processor computes the same uncached local register-window
-     * L1 UART line-status address (0x9000_0000_1000_0080 + L1_UART_STATUS)
-     * and loads it independently; cpu_gpr() then reads each one's own
-     * copy, the way a real console driver running on any populated slot
-     * would see its own load's result.
+     * Every processor computes the same uncached local register-window L1
+     * UART line-status address (0x9000_0000_1000_0080 + L1_UART_STATUS) and
+     * loads it independently; cpu_gpr() then reads each one's own copy, the
+     * way a real console driver running on any populated slot would see its
+     * own load's result.
      */
     stl_be_p(image + 0x410, 0x3c029000); /* lui v0, 0x9000 */
     stl_be_p(image + 0x414, 0x3c031000); /* lui v1, local window */
@@ -2258,10 +2239,10 @@ static void test_hub_local_l1_uart_reaches_cpu_c(const void *data)
     stop_vm(qts);
 
     /*
-     * CPU C (logical index 1, physical slot C) sits on the second
-     * processor interface and has its own crosstalk-form PI1 overlay; the
-     * Hub-special window has no per-slot view, so C reaches the same
-     * machine-wide UART as CPU A.
+     * CPU C (logical index 1, physical slot C) sits on the second processor
+     * interface and has its own crosstalk-form PI1 overlay; the Hub-special
+     * window has no per-slot view, so C reaches the same machine-wide UART as
+     * CPU A.
      */
     g_assert_cmphex(cpu_gpr(qts, 0, "s3") & 0xff, ==, 0x60);
     g_assert_cmphex(cpu_gpr(qts, 1, "s3") & 0xff, ==, 0x60);
@@ -2292,15 +2273,17 @@ static void test_hub_local_reaches_l1_uart(const void *data)
     g_assert_cmpuint(length_local, ==, length_remote);
     g_assert_cmpmem(reply_local, length_local, reply_remote, length_remote);
 
-    /* Scratch written through the local form reads back through the remote. */
+    /*
+     * Scratch written through the local form reads back through the remote.
+     */
     qtest_writeq(qts, HUB_LOCAL_REGISTERS + L1_UART + L1_SCRATCH, scratch);
     g_assert_cmphex(qtest_readq(qts, HUB_REMOTE_REGISTERS + L1_UART +
                                 L1_SCRATCH), ==, scratch);
 
     /*
-     * The blocks on either side of the UART do not disturb the scratch
-     * just proven above: a store at its 0x78 edge lands in the
-     * unidentified block, and one at its 0xc0 edge in slice 0's LED.
+     * The blocks on either side of the UART do not disturb the scratch just
+     * proven above: a store at its 0x78 edge lands in the unidentified block,
+     * and one at its 0xc0 edge in slice 0's LED.
      */
     cached_alias = qtest_readq(qts, BEDROCK_LOCAL + PI_CACHED_ALIAS);
     qtest_writeq(qts, HUB_LOCAL_REGISTERS + PI_NMI_B, 0x100);
@@ -2484,7 +2467,9 @@ static void test_configured_mac_in_board_record(const void *data)
         chassis_path, board_path, blank_prom_path);
     qts = qtest_init(extra);
 
-    /* This property reports -nic's configured MAC, not a BIA-derived value. */
+    /*
+     * This property reports -nic's configured MAC, not a BIA-derived value.
+     */
     result = qtest_qmp(qts, "{'execute':'qom-get','arguments':"
                            "{'path':'" IOC3_PATH "','property':'mac'}}");
     g_assert_true(qdict_haskey(result, "return"));
@@ -2646,7 +2631,9 @@ static void test_board_identification(const void *data)
     extra = g_strdup_printf("-d unimp,guest_errors -D %s", quoted);
     qts = machine_start_with(prom_path, extra);
 
-    /* Both consumers reach one response: the firmware's form and OpenBSD's. */
+    /*
+     * Both consumers reach one response: the firmware's form and OpenBSD's.
+     */
     g_assert_cmphex(qtest_readq(qts, BOARD_ID_LOCAL), ==, BOARD_ID_VALUE);
     g_assert_cmphex(qtest_readq(qts, BOARD_ID_REMOTE), ==, BOARD_ID_VALUE);
 
@@ -2667,7 +2654,9 @@ static void test_board_identification(const void *data)
     assert_flat_view_unmapped(qts, BOARD_ID_LOCAL + 8);
     assert_flat_view_unmapped(qts, BOARD_ID_UNUSED);
 
-    /* The response is fixed rather than stored, so reset cannot disturb it. */
+    /*
+     * The response is fixed rather than stored, so reset cannot disturb it.
+     */
     qtest_system_reset(qts);
     g_assert_cmphex(qtest_readq(qts, BOARD_ID_LOCAL), ==, BOARD_ID_VALUE);
     g_assert_cmphex(qtest_readq(qts, BOARD_ID_REMOTE), ==, BOARD_ID_VALUE);
@@ -2684,8 +2673,8 @@ static void test_board_identification(const void *data)
 
 /*
  * The ECC back door answers where the contract puts it, over an extent taken
- * from installed memory rather than from the aperture, and nothing answers
- * on either side. A machine that mapped the region but left the controller's
+ * from installed memory rather than from the aperture, and nothing answers on
+ * either side. A machine that mapped the region but left the controller's
  * memory link unset would give a zero extent and refuse its own first byte,
  * so the accepted access at offset zero is what proves the link.
  */
@@ -2707,7 +2696,9 @@ static void test_ecc_backdoor_window(const void *data)
     qts = machine_start_with(prom_path, extra);
     machine_configure_memory(qts);
 
-    /* The first byte and the last byte of the installed extent both answer. */
+    /*
+     * The first byte and the last byte of the installed extent both answer.
+     */
     g_assert_cmphex(qtest_readb(qts, HUB_ECC), ==, 0);
     g_assert_cmphex(qtest_readb(qts, HUB_ECC + ECC_EXTENT - 1), ==, 0);
     /* An aligned halfword is the other width the carrier takes. */
@@ -2720,9 +2711,9 @@ static void test_ecc_backdoor_window(const void *data)
     qtest_readb(qts, HUB_ECC + ECC_EXTENT);
 
     /*
-     * The far side of the aperture is not mapped, so the region has not
-     * been stretched to fill the space. The word below the base belongs to
-     * the scrub carrier at four eighths of the node, not to this region.
+     * The far side of the aperture is not mapped, so the region has not been
+     * stretched to fill the space. The word below the base belongs to the
+     * scrub carrier at four eighths of the node, not to this region.
      */
     assert_flat_view_is_io(qts, HUB_ECC - 8);
     assert_flat_view_unmapped(qts, HUB_ECC + ECC_APERTURE);
@@ -2740,9 +2731,9 @@ static void test_directory_backdoor_window(const void *data)
 {
     QTestState *qts = machine_start();
     /*
-     * A format-masked word beside an opaque one, both distinctive. The
-     * entry is a standard-format codeword (check field 0x0f at bits 21:16),
-     * so the check field the unit regenerates on a write leaves it as is.
+     * A format-masked word beside an opaque one, both distinctive. The entry
+     * is a standard-format codeword (check field 0x0f at bits 21:16), so the
+     * check field the unit regenerates on a write leaves it as is.
      */
     const uint64_t entry = UINT64_C(0xc00fd00d);
     const uint64_t counter = UINT64_C(0x0123456789abcdef);
@@ -2908,8 +2899,8 @@ static void test_boot_flash_backs_every_prom_view(const void *data)
  * executes from is refused, says so, and leaves the stored bytes and the
  * part's own mode alone. This is the case a writable alias of the part's
  * region passes by accident: an alias forwards a write to its target even
- * when it is marked read-only, so the part would accept the sequence and
- * stop answering with array data underneath the running firmware.
+ * when it is marked read-only, so the part would accept the sequence and stop
+ * answering with array data underneath the running firmware.
  */
 static void test_execution_views_refuse_commands(const void *data)
 {
@@ -3380,8 +3371,9 @@ static void test_nmi_register_write_is_inert(const void *data)
      * not deliver an NMI. A MIPS NMI vectors through the reset vector, which
      * this control PROM records as the taken marker, so a delivered NMI would
      * move the addressed processor off its ready marker. Neither processor
-     * moves: the store is inert. This is the same wiring that formerly carried
-     * the NMI to the processor, so it still exercises that path, now silent.
+     * moves: the store is inert. This is the same wiring that formerly
+     * carried the NMI to the processor, so it still exercises that path, now
+     * silent.
      */
     wait_for_cpu_gpr(qts, 0, "s0", NMI_READY_MARKER);
     wait_for_cpu_gpr(qts, 1, "s0", NMI_READY_MARKER);
@@ -3543,15 +3535,14 @@ static void test_cpu_c_enable_migration(const void *data)
 /*
  * The per-CPU cache-as-RAM private window (sn-promdata.c) is new for the
  * Origin 300 node as of the node-types step: before it, both Bedrock
- * processors shared one system container with no window at all. It
- * forwards instead of serving from its own buffer whenever no processor
- * is in the PROM's cache-only phase -- true throughout a qtest run,
- * which never executes guest code here, so the phase is never entered.
- * A forwarded access still traces, and that trace is what tells a
- * broken post-load apart from a working one for each processor's own
- * window: if migration left either filter disabled or removed, that
- * processor's access would fall straight through to the flash it
- * overlays instead of tracing a forward, silently.
+ * processors shared one system container with no window at all. It forwards
+ * instead of serving from its own buffer whenever no processor is in the
+ * PROM's cache-only phase. This holds throughout a qtest run: no guest
+ * code executes here, so the phase is never entered. A forwarded access
+ * still traces, and that trace is what tells a broken post-load apart from a
+ * working one for each processor's own window: if migration left either
+ * filter disabled or removed, that processor's access would fall straight
+ * through to the flash it overlays instead of tracing a forward, silently.
  */
 #define PROMDATA_WINDOW_PHYS UINT64_C(0x100000)
 #define PROMDATA_RAM_HOME UINT64_C(0x01a00000)
@@ -3691,12 +3682,11 @@ static void test_promdata_filter_survives_migration(const void *data)
 }
 
 /*
- * The Bedrock node's object graph hangs off sgi-sn1-node (sn1-node.c)
- * rather than a standalone machine state, so this proves migration still
- * completes and the moved devices still answer afterward, the same
- * concern sn0-migration-test.c's own docstring names, applied here to the
- * node-types and Origin 300 steps' re-parenting instead of a derived
- * register value.
+ * The Bedrock node's object graph hangs off sgi-sn1-node (sn1-node.c) rather
+ * than a standalone machine state, so this proves migration still completes
+ * and the moved devices still answer afterward, the same concern
+ * sn0-migration-test.c's own docstring names, applied here to the node-types
+ * and Origin 300 steps' re-parenting instead of a derived register value.
  */
 static char *write_prom_image(const char *directory)
 {
@@ -3769,7 +3759,7 @@ static void test_system_reset_clears_bedrock_state(const void *data)
 /*
  * IO-8's IOC3 slot returns its PCI identity through a doubleword read and
  * accepts parity-error response and latency-timer writes through the
- * configuration window (docs/datasheets/xbridge.md and ioc3.md).
+ * configuration window.
  */
 static void test_io8bt_configuration_reads_and_writes(const void *data)
 {
@@ -3786,9 +3776,9 @@ static void test_io8bt_configuration_reads_and_writes(const void *data)
     g_assert_cmphex(qtest_readl(qts, IO8_IOC3_CFG + PCI_COMMAND) & 0xffff,
                     ==, 0x146);
     /*
-     * The latency timer, the high byte of the word at 0x0c. Cache line
-     * size below it takes the zero written with it, and header type and
-     * built-in self test above it stay zero.
+     * The latency timer, the high byte of the word at 0x0c. Cache line size
+     * below it takes the zero written with it, and header type and built-in
+     * self test above it stay zero.
      */
     qtest_writel(qts, IO8_IOC3_CFG + 0x0c, 0xff00);
     g_assert_cmphex(qtest_readl(qts, IO8_IOC3_CFG + 0x0c), ==, 0xff00);

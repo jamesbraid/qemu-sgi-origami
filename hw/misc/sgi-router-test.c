@@ -1,8 +1,8 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * Host-only qtest fixture for a Router without a machine fabric. QOM controls
- * call the real vector target. They are not guest registers or fabric replies.
- */
+ * Host-only Router qtest fixture without a machine fabric; QOM controls call
+ * the vector target, not guest registers or fabric replies.
+*/
 #include "qemu/osdep.h"
 #include "hw/misc/sgi-router.h"
 #include "migration/vmstate.h"

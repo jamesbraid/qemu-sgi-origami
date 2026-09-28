@@ -13,10 +13,9 @@
  * floor costs latency and not throughput.
  *
  * The floor is an approximation, not a measured property of any of these
- * parts. Each of docs/datasheets/ioc3.md, bcm570x.md, tigon.md and xframe.md
- * carries it under "Receive arrival latency (an approximation)", with that
- * adapter's evidence, what the floor does not reproduce, and the hardware
- * measurement that would replace the derivation below with a real number.
+ * parts. It is not adapter-specific: every adapter model that uses it shares
+ * this same derivation, and the same open question of what hardware
+ * measurement would replace it with a real number.
  */
 
 #ifndef HW_NET_SGI_NET_RX_LATENCY_H
@@ -53,8 +52,9 @@
  * twenty microseconds times the low end of that is about 140 us.
  *
  * The floor is not free: a saturated UDP transfer into the guest arrives short
- * at it where it arrives complete with no floor. See the datasheets named
- * above for that measurement and what is known about it.
+ * at it where it arrives complete with no floor. That is the inherent
+ * trade-off of holding completions at all: a taller floor trades less loss
+ * for more added latency.
  *
  * A floor of zero turns the line off and publishes every completion where it
  * was staged, which is the model's behaviour before this existed.
@@ -129,8 +129,7 @@ struct SGINetRxLatency {
     /*
      * Not migrated. The floor is a device property and the rest is wired at
      * realize, so both ends of a migration set them identically -- which
-     * identical builds already guarantee (see
-     * docs/decisions/D-0019-migration-between-identical-builds-only.md).
+     * migration between identical machine builds already guarantees.
      */
     uint32_t floor_ns;
     uint32_t record_size;

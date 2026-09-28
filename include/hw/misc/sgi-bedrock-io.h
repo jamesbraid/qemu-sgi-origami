@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
+/* Bedrock I/O interface and block transfer engine state. */
 #ifndef HW_MISC_SGI_BEDROCK_IO_H
 #define HW_MISC_SGI_BEDROCK_IO_H
 
@@ -43,22 +44,22 @@ struct SGIBedrockIOState {
     uint8_t node_number;
     uint8_t revision;
     /*
-     * The I/O interface of the node that carries a given number, when that
-     * is another node this one reaches; see sgi_bedrock_io_set_claimant().
-     */
+     * The I/O interface of the node that carries a given number, when that is
+     * another node this one reaches; see sgi_bedrock_io_set_claimant().
+    */
     SGIBedrockIOState *(*claimant)(void *opaque, unsigned int number);
     void *claimant_opaque;
     /*
-     * Which crosstalk widget numbers a request arriving at the shared
-     * inbound window may credibly have come from, one bit per widget.  The
-     * window itself carries no source-widget field to read back, so all
-     * candidates must be permitted before an unknown-source access proceeds.
-     * This is not a substitute for per-packet source identity.  Defaults to
-     * the two heads an XBridge presents to its host
-     * port (0xe and 0xf; see hw/pci-host/sgi-xbridge.c CHIP_HEAD_E/F and
-     * the Origin 300 model's xbridge_widgets), not widget 8, which nothing
-     * in a Bedrock+XBridge machine is ever wired to.
-     */
+     * Which crosstalk widget numbers a request arriving at the shared inbound
+     * window may credibly have come from, one bit per widget. The window
+     * itself carries no source-widget field to read back, so all candidates
+     * must be permitted before an unknown-source access proceeds. This is not
+     * a substitute for per-packet source identity. Defaults to the two heads
+     * an XBridge presents to its host port (0xe and 0xf; see
+     * hw/pci-host/sgi-xbridge.c CHIP_HEAD_E/F and the Origin 300 model's
+     * xbridge_widgets), not widget 8, which nothing in a Bedrock+XBridge
+     * machine is ever wired to.
+    */
     uint16_t inbound_widget_mask;
     uint8_t inbound_device;
     uint64_t device_mask_reset;
@@ -81,12 +82,12 @@ struct SGIBedrockIOState {
     uint64_t scratch[2];
     uint64_t itte[7];
     /*
-     * The owning node, when this device is one of sgi-bedrock's children:
-     * a plain pointer, as the local block's is, because this child's
-     * lifetime is enclosed by its parent's. Scratch 0 writes are reported
-     * to sgi_bedrock_presence_published(), which owns the processor
-     * bookkeeping; see sgi-bedrock.h. NULL for a standalone device.
-     */
+     * The owning node, when this device is one of sgi-bedrock's children: a
+     * plain pointer, as the local block's is, because this child's lifetime
+     * is enclosed by its parent's. Scratch 0 writes are reported to
+     * sgi_bedrock_presence_published(), which owns the processor bookkeeping;
+     * see sgi-bedrock.h. NULL for a standalone device.
+    */
     struct SGIBedrockState *bedrock;
     uint64_t request_buffer[9];
     uint64_t retained[96];
@@ -97,11 +98,11 @@ void sgi_bedrock_io_set_dma_as(SGIBedrockIOState *s, AddressSpace *as);
 
 /*
  * How this interface finds another node's: a crosstalk register packet or a
- * BTE completion interrupt naming a number other than this node's own goes
- * to the interface claimant() returns for it, which serves it as its own;
- * with none, or NULL back, it arrives nowhere. The machine that joins nodes
+ * BTE completion interrupt naming a number other than this node's own goes to
+ * the interface claimant() returns for it, which serves it as its own; with
+ * none, or NULL back, it arrives nowhere. The machine that joins nodes
  * supplies it (sn1-node.c's claim layer); a standalone unit has none.
- */
+*/
 void sgi_bedrock_io_set_claimant(SGIBedrockIOState *s,
                                  SGIBedrockIOState *(*claimant)(void *opaque,
                                                                 unsigned int),

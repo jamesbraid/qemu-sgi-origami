@@ -1,8 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * XBridge crossbar half: what widget 0 presents in XBridge mode, from the
- * cleared XBridge datasheet's crossbar-half table and the Crossbow datasheet.
- * One MMIO view per port, so a reader's own port number can be reported.
+ * XBridge widget 0: crossbar-style per-port status and control, with one
+ * reader-specific MMIO view per port.
  */
 #include "qemu/osdep.h"
 #include "qemu/log.h"
@@ -295,11 +294,11 @@ static void xbow_reset_core(SGIXBridgeXbowState *s)
 }
 
 /*
- * A warm reset arriving on a port resets the core and goes out on every
- * other port whose fence admits the source, using the fences as they were
- * programmed before the core reset. Returning the fences to all ones on
- * that reset is the model's choice: whether the chip keeps their programmed
- * values is unknown (docs/datasheets/xbridge.md).
+ * A warm reset arriving on a port resets the core and goes out on every other
+ * port whose fence admits the source, using the fences as they were
+ * programmed before the core reset. Returning the fences to all ones on that
+ * reset is the model's choice: whether the chip keeps their programmed values
+ * is unknown.
  */
 static void xbow_warm_reset(void *opaque, int line, int level)
 {

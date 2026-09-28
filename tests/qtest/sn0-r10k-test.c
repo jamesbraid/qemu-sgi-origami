@@ -1,12 +1,9 @@
 /*
  * SPDX-License-Identifier: GPL-2.0-or-later
  *
- * R10000 processor behavior that does not depend on the Hub or XIO
- * topology around it: the external NMI input, the Status.RE unimplemented-
- * feature log, and the deterministic LL/SC link breakers.  Each fragment
- * runs on the Origin 200, the only machine this fork builds that carries
- * the R10000, with the synthesized firmware off so the fragment owns the
- * reset vector and low memory outright.
+ * Test R10000 NMI, Status.RE logging and deterministic LL/SC link breaks
+ * independent of Hub and XIO. Origin 200 is this fork's only R10000 machine;
+ * firmware is off so each fragment owns the reset vector and low RAM.
  */
 
 #include "qemu/osdep.h"
@@ -131,11 +128,11 @@ static void emit_report_and_spin(GuestImage *img, uint16_t magic,
 }
 
 /*
- * NMI: exercise the external MIPS NMI input.  A tiny guest records the
+ * NMI: exercise the external MIPS NMI input. A tiny guest records the
  * architectural state seen at the boot exception vector, returns through
- * ErrorEPC, and acknowledges each completed entry from its main loop.  The
- * NMI line is driven straight on the CPU, so the test stays about
- * target/mips rather than the Hub's interrupt routing.
+ * ErrorEPC, and acknowledges each completed entry from its main loop. The NMI
+ * line is driven straight on the CPU, so the test stays about target/mips
+ * rather than the Hub's interrupt routing.
  */
 
 #define NMI_HANDLER         0x480
@@ -209,9 +206,9 @@ static void wait_for_state(QTestState *qts, uint64_t off, uint64_t expected)
 {
     /*
      * A generous host-schedule margin, not a guest timing bound: under a
-     * loaded runner the guest still needs real wall-clock time to reach
-     * the next state. A guest state machine that never advances still
-     * fails, just not on host contention alone.
+     * loaded runner the guest still needs real wall-clock time to reach the
+     * next state. A guest state machine that never advances still fails, just
+     * not on host contention alone.
      */
     int64_t deadline = g_get_monotonic_time() + 60 * G_TIME_SPAN_SECOND;
 
@@ -300,10 +297,10 @@ static void test_nmi_reset_rearms(void)
      * main-loop turn, after this command's reply. Stop the vCPU first so it
      * cannot keep spinning through the old MAIN_LOOP and rewriting READY_OFF
      * back to READY_MAGIC in that gap: a poll landing in that window would
-     * pass on the pre-reset guest's own write and go on to fire the next
-     * NMI before the real reset has run, catching the CPU still at the
-     * reset vector instead of parked in the post-reset MAIN_LOOP. cont
-     * resumes only once the reset above is known to have been applied.
+     * pass on the pre-reset guest's own write and go on to fire the next NMI
+     * before the real reset has run, catching the CPU still at the reset
+     * vector instead of parked in the post-reset MAIN_LOOP. cont resumes only
+     * once the reset above is known to have been applied.
      */
     qtest_qmp_assert_success(qts, "{'execute':'stop'}");
     qtest_writeq(qts, STATE_PHYS + READY_OFF, 0);
@@ -378,12 +375,11 @@ static void test_nmi_latch_migration(void)
 
 /*
  * status-re: Status.RE promises reverse-endian user-mode loads and stores
- * (user's manual version 2.0, section 14.10).  The model stores the bit
- * and implements none of the semantics, so raising it has to be loud
- * rather than silent: helper_mtc0_status() logs a LOG_UNIMP line when a
- * guest sets RE on an R10000-family processor.  The case boots a fragment
- * that sets RE from kernel mode and reads the -d unimp log back; the line
- * must appear.
+ * (user's manual version 2.0, section 14.10). The model stores the bit and
+ * implements none of the semantics, so raising it must be loud rather than
+ * silent: helper_mtc0_status() logs a LOG_UNIMP line when a guest sets RE on
+ * an R10000-family processor. The case boots a fragment that sets RE from
+ * kernel mode and reads the -d unimp log back; the line must appear.
  */
 
 #define SRE_DONE_OFF        0x00
@@ -401,9 +397,9 @@ static void emit_or(GuestImage *img, int rd, int rs, int rt)
 }
 
 /*
- * Any exception says so instead of wandering off and looking like a hang.
- * The fragment runs entirely in kernel mode from flash, so nothing should
- * fault; the stub exists to make it diagnosable if something does.
+ * Any exception says so instead of wandering off and looking like a hang. The
+ * fragment runs entirely in kernel mode from flash, so nothing should fault;
+ * the stub exists to make it diagnosable if something does.
  */
 static void sre_emit_fault_stub(GuestImage *img)
 {
@@ -429,10 +425,10 @@ static void sre_write_guest_image(int fd)
     sre_emit_fault_stub(&img);
 
     /*
-     * Read Status, raise RE (bit 25), write it back.  Reset state - ERL
-     * and BEV set - is preserved, so the fragment stays in kernel mode
-     * and the write is an ordinary read-modify-write of a live register,
-     * the shape a real guest's write would have.
+     * Read Status, raise RE (bit 25), write it back. Reset state - ERL and
+     * BEV set - is preserved, so the fragment stays in kernel mode and the
+     * write is an ordinary read-modify-write of a live register, the shape a
+     * real guest's write would have.
      */
     img.pos = CODE_START;
     emit_mfc0(&img, R_T0, CP0_STATUS);
@@ -447,8 +443,8 @@ static void sre_write_guest_image(int fd)
 }
 
 /*
- * Boot the fragment on the R10000 with the unimp log captured to a file,
- * wait for the guest's report, and return the log contents.
+ * Boot the fragment on the R10000 with the unimp log written to a file, wait
+ * for the guest's report, and return the log contents.
  */
 static char *run_fragment(void)
 {
@@ -501,9 +497,9 @@ static void test_r10000_logs_unimp(void)
 }
 
 /*
- * llsc: the R10000's deterministic load-linked link breakers.  The
- * processor requires SC to fail if an LL/SC sequence contains another
- * load or store, SYNC, CACHE, PREF, an exception, or ERET.
+ * llsc: the R10000's deterministic load-linked link breakers. The processor
+ * requires SC to fail if an LL/SC sequence contains another load or store,
+ * SYNC, CACHE, PREF, an exception, or ERET.
  */
 
 #define RESULT_BASE         0x00

@@ -1,19 +1,15 @@
 /*
- * Alteon Tigon 2 Gigabit Ethernet controller (the SGI IRIS "eg" board).
- *
- * The card does almost nothing at power-on: the host driver downloads firmware
- * into on-card SRAM, releases the embedded CPU, and thereafter talks to the
- * running firmware through a shared-memory producer/consumer ring interface in
- * host DRAM poked by a few mailbox doorbells. We do not execute the downloaded
- * firmware; we model what the operational firmware does as the driver observes
- * it (docs/datasheets/tigon.md, docs/plans/tigon-model.md).
- *
- * Register offsets, ring/descriptor layouts and the init sequence come from the
- * public NetBSD "ti" driver (refs/netbsd-src/sys/dev/pci/if_ti.c, if_tireg.h),
- * which implements the same published Tigon host interface the SGI eg driver is
- * built to. This is a clean-room implementation: no SGI/IRIX source was read.
- *
+ * Alteon Tigon 2 Gigabit Ethernet controller (SGI IRIS "eg" board).
  * SPDX-License-Identifier: GPL-2.0-or-later
+ */
+/*
+ * At power-on the host loads firmware into on-card SRAM and releases the
+ * embedded CPU. Firmware uses shared-memory producer/consumer rings in host
+ * DRAM and mailbox doorbells; this model implements that interface without
+ * executing the downloaded firmware. Register offsets, ring and descriptor
+ * layouts, and initialization follow the public NetBSD ti driver
+ * (sys/dev/pci/if_ti.c, if_tireg.h), which implements the published Tigon
+ * interface used by SGI eg.
  */
 
 #include "qemu/osdep.h"
@@ -114,8 +110,7 @@
  * Command word fields: opcode in bits 31:24, code in 23:12, index in 11:0.
  * OpenBSD sys/dev/ic/tireg.h:856-858 spells the three out as accessors and
  * its TI_DO_CMD packs them the same way (tireg.h:906-910); Linux's struct cmd
- * is the same three bitfields in that order (acenic.h:362-372, at the revision
- * docs/datasheets/tigon.md declares).
+ * is the same three bitfields in that order (acenic.h:362-372).
  */
 #define TI_CMD_OP(word)         (((word) >> 24) & 0xff)
 #define TI_CMD_CODE(word)       (((word) >> 12) & 0xfff)
@@ -149,17 +144,18 @@
 #define TI_CMD_RFRSH_STATS      0x11
 
 /*
- * Link status reported up as a modelled fact: gigabit, full duplex. The chip's
- * own link-enable bit rides in LINK_STAT (if_tireg.h TI_LNK and TI_GLNK).
+ * Link status reported up as a modelled fact: gigabit, full duplex. The
+ * chip's own link-enable bit rides in LINK_STAT (if_tireg.h TI_LNK and
+ * TI_GLNK).
  */
 #define TI_GLNK_STAT_UP         0x000c0000  /* 1000MB | full-duplex */
-#define TI_LNK_STAT_UP          0x400c0000  /* 1000MB | full-duplex | link-enb */
+#define TI_LNK_STAT_UP          0x400c0000  /* 1000MB|full-duplex|link-enb */
 
 /* Ring control block host-ring residency flag (if_tireg.h). */
 #define TI_RCB_FLAG_HOST_RING   0x0040
 
 /* Buffer-descriptor flags and type (if_tireg.h). */
-#define TI_BDFLAG_TCP_UDP_CKSUM 0x0001  /* insert the L4 checksum on transmit */
+#define TI_BDFLAG_TCP_UDP_CKSUM 0x0001  /* insert L4 checksum on transmit */
 #define TI_BDFLAG_IP_CKSUM      0x0002  /* insert the IP header checksum */
 #define TI_BDFLAG_END           0x0004
 #define TI_BDFLAG_UCAST_PKT     0x0020
@@ -171,7 +167,9 @@
 
 /* Largest frame the model assembles (jumbo, with slack). */
 #define TIGON_MAX_FRAME_SIZE    9600
-/* Smallest buffer that can hold one: below this the descriptor is not real. */
+/*
+ * Smallest buffer that can hold one: below this the descriptor is not real.
+ */
 #define TIGON_MIN_FRAME_SIZE    60
 /* Largest frame the standard ring's buffers are sized for. */
 #define TIGON_STD_FRAME_SIZE    1518
@@ -221,7 +219,9 @@
 #define TI_IF_STATUS_UP         1
 #define TI_IF_STATUS_DOWN       2
 
-/* The modelled link, in the bits a second RFC 1213's ifSpeed is counted in. */
+/*
+ * The modelled link, in the bits a second RFC 1213's ifSpeed is counted in.
+ */
 #define TIGON_LINK_BITS_PER_SECOND 1000000000u
 
 /* The statistics-tick register counts the chip's microseconds. */
@@ -248,10 +248,10 @@ enum {
 };
 
 /*
- * The EEPROM byte source. The driver reads only the station address, which the
- * public source pins at TI_EE_MAC_OFFSET + 2 (0x8e): the two bytes at 0x8c/0x8d
- * are zero padding before the six MAC bytes (if_ti.c comment at the read call).
- * Everything else reads zero.
+ * The EEPROM byte source. The driver reads only the station address, which
+ * the public source pins at TI_EE_MAC_OFFSET + 2 (0x8e): the two bytes at
+ * 0x8c/0x8d are zero padding before the six MAC bytes (if_ti.c comment at the
+ * read call). Everything else reads zero.
  */
 static uint8_t tigon_eeprom_byte(TigonState *s, uint16_t addr)
 {
@@ -262,12 +262,12 @@ static uint8_t tigon_eeprom_byte(TigonState *s, uint16_t addr)
 }
 
 /*
- * A 24Cxx serial EEPROM as an I2C slave, clocked by MISC_LOCAL_CTL writes. The
- * driver reads the MAC through this path before firmware download, so a model
- * that only served PAR0/PAR1 would return garbage for the driver's actual read.
- * Start/stop are data-line transitions while the clock is high; bits are
- * sampled on the rising edge and the slave presents read data and acknowledges
- * on the falling edge.
+ * A 24Cxx serial EEPROM as an I2C slave, clocked by MISC_LOCAL_CTL writes.
+ * The driver reads the MAC through this path before firmware download, so a
+ * model that only served PAR0/PAR1 would return garbage for the driver's
+ * actual read. Start/stop are data-line transitions while the clock is high;
+ * bits are sampled on the rising edge and the slave presents read data and
+ * acknowledges on the falling edge.
  */
 static void tigon_eeprom_step(TigonState *s, uint32_t val)
 {
@@ -374,9 +374,7 @@ static void tigon_update_irq(TigonState *s)
     pci_set_irq(PCI_DEVICE(s), level);
 }
 
-/*
- * Deliver whatever has accumulated, and start counting again.
- */
+/* Deliver whatever has accumulated, and start counting again. */
 static void tigon_coal_flush(TigonState *s, bool rx)
 {
     uint32_t *count = rx ? &s->coal_rx_bds : &s->coal_tx_bds;
@@ -447,10 +445,10 @@ static void tigon_completion_irq(TigonState *s, bool rx,
  * guest-programmed feature: on a big-endian host the driver sets the
  * byte-swap-descriptor bit so the chip delivers host (big-endian) order, and
  * the register header's descriptor structs change field order under the same
- * condition. We honour it rather than assume a fixed order -- the swap bit
- * selects big-endian PCI-DMA accessors, matching the "chip delivers
- * big-endian, Bridge transparent" path. See docs/library/nic-on-bridge-
- * conventions.md and docs/plans/tigon-model.md, "Byte-swap".
+ * condition. This model honours it rather than assuming a fixed order. The
+ * swap bit selects big-endian PCI-DMA accessors, matching the "chip delivers
+ * big-endian, Bridge transparent" path that this fork's other NIC models
+ * behind the SGI Bridge also take.
  */
 static bool tigon_bd_bigendian(TigonState *s)
 {
@@ -536,9 +534,9 @@ static MemTxResult tigon_dma_write32(TigonState *s, uint64_t addr,
 }
 
 /*
- * A host DMA address in a descriptor or RCB is two 32-bit words, high then low
- * (struct ti_hostaddr), so read and write it as two words rather than one
- * 64-bit quantity -- the word order is fixed regardless of the swap setting.
+ * A host DMA address in a descriptor or RCB is two 32-bit words, high then
+ * low (struct ti_hostaddr), so read and write it as two words rather than one
+ * 64-bit quantity; the word order is fixed regardless of the swap setting.
  */
 static MemTxResult tigon_dma_read_addr(TigonState *s, uint64_t addr,
                                        uint64_t *v)
@@ -571,12 +569,11 @@ static MemTxResult tigon_dma_read_bd(TigonState *s, uint64_t addr,
 /*
  * Frame payload DMA. Payload is a byte stream, and on every correctly
  * programmed pairing its net transform is identity: the card applies no
- * byte-lane swap of its own to frame data (docs/datasheets/tigon.md, "The
- * IRIX byte-order path"), so the model moves it verbatim. Behind the SGI
- * Bridge that must not ride the byte-lane swap window -- the slot's swap is
- * load-bearing for descriptors, which read as word values, and per-word
- * dispatch through the window was measured as this device's dominant
- * throughput cost -- so payload takes the Bridge's plain DMA route: full
+ * byte-lane swap of its own to frame data, so the model moves it verbatim.
+ * Behind the SGI Bridge that must not ride the byte-lane swap window. The
+ * slot's swap is required for descriptors, which read as word values, and
+ * per-word dispatch through the window was measured as this device's dominant
+ * throughput cost, so payload takes the Bridge's plain DMA route: full
  * decode and node-qualified fabric routing, byte lanes alone skipped. On a
  * machine without the Bridge the device's own bus space is already plain.
  */
@@ -584,7 +581,8 @@ static MemTxResult tigon_dma_read_frame(TigonState *s, uint64_t addr,
                                         uint8_t *dst, uint32_t len)
 {
     /*
-     * Ordered descriptor reads precede this; ordered status writes publish it.
+     * Ordered descriptor reads precede this; ordered status writes publish
+     * it.
      */
     return dma_memory_read_relaxed(s->payload_as, addr, dst, len);
 }
@@ -623,8 +621,9 @@ static MemTxResult tigon_dma_write_frame_iov(TigonState *s, uint64_t addr,
 /*
  * Parse the general information block once it is complete. The RCBs and
  * producer-pointer fields are filled by the driver in host DRAM before it
- * releases the CPU, so this runs at firmware-up, when both preconditions hold,
- * rather than at GENINFO_LO write time when the RCBs are not yet populated.
+ * releases the CPU, so this runs at firmware-up, when both preconditions
+ * hold, rather than at GENINFO_LO write time when the RCBs are not yet
+ * populated.
  */
 static MemTxResult tigon_parse_gib(TigonState *s)
 {
@@ -769,11 +768,11 @@ static void tigon_stats_put64(uint8_t *image, unsigned word, uint64_t v,
  * block is a struct in host DRAM, so it carries the byte order the host
  * selected for everything else the card writes there.
  *
- * Only the counters this model can observe are filled. The collision, framing,
- * carrier and internal-attention counters describe events the model never
- * generates, so leaving them zero reports what happened rather than filling in
- * a plausible number; the same goes for the firmware's own command, event and
- * ring bookkeeping further down the block.
+ * Only the counters this model can observe are filled. The collision,
+ * framing, carrier and internal-attention counters describe events the model
+ * never generates, so leaving them zero reports what happened rather than
+ * filling in a plausible number; the same goes for the firmware's own
+ * command, event and ring bookkeeping further down the block.
  */
 static MemTxResult tigon_publish_stats(TigonState *s, uint64_t addr)
 {
@@ -820,13 +819,13 @@ static MemTxResult tigon_publish_stats(TigonState *s, uint64_t addr)
                       bigendian);
     /*
      * The station address sits in the last six bytes of an eight-byte field,
-     * behind two zero bytes -- the same padding the serial EEPROM puts in
-     * front of it -- and is published as the two words the host's own address
+     * behind two zero bytes, the same padding the serial EEPROM puts in
+     * front of it, and is published as the two words the host's own address
      * registers already hold. The IRIX board utility prints bytes two through
      * seven of the field, so placing the address at the field's start instead
-     * makes it print the address short by its first two octets followed by two
-     * zeroes: 0:12:34:56:0:0 for a card at 52:54:00:12:34:56, observed on run
-     * irix-20260913T170938-bf92af.
+     * makes it print the address short by its first two octets followed by
+     * two zeroes: 0:12:34:56:0:0 for a card at 52:54:00:12:34:56, observed on
+     * run irix-20260913T170938-bf92af.
      */
     tigon_stats_put32(image, TI_STAT_IF_PHYS_ADDRESS,
                       ((uint32_t)s->station_addr.a[0] << 8) |
@@ -881,10 +880,10 @@ static void tigon_stats_refresh(TigonState *s)
 }
 
 /*
- * The clear command zeroes the counters. The head still holds the old ones, so
- * this leaves the block dirty: a host that clears and then reads the head
- * without asking for a refresh -- which is how the IRIX board utility reads it
- * -- has to see the zeroes.
+ * The clear command zeroes the counters. The head still holds the old ones,
+ * so this leaves the block dirty: a host that clears and then reads the head
+ * without asking for a refresh, which is how the IRIX board utility reads
+ * it, has to see the zeroes.
  */
 static void tigon_stats_clear(TigonState *s)
 {
@@ -929,7 +928,7 @@ static void tigon_stats_timer(void *opaque)
  * moves a field this block publishes marks it dirty, and the set is closed:
  * the frame and octet counters, the discard count, the station address, the
  * host-state command's stack-up code, the link, and the three registers the
- * block reads -- interface index, size and the gigabit link-status word. A
+ * block reads, interface index, size and the gigabit link-status word. A
  * field added to the block has to be added here too, or the head carries
  * current counters over a stale interface section.
  */
@@ -967,7 +966,9 @@ static void tigon_count_tx(TigonState *s, const uint8_t *frame, uint32_t len)
     }
 }
 
-/* The same split on receive, from the cast the address filter already found. */
+/*
+ * The same split on receive, from the cast the address filter already found.
+ */
 static void tigon_count_rx(TigonState *s, uint16_t flags, uint32_t len)
 {
     s->stat_rx_octets += len;
@@ -985,7 +986,7 @@ static void tigon_count_rx(TigonState *s, uint16_t flags, uint32_t len)
  * Firmware-up fires only when both the CPU has been released and the GIB
  * address has been published: the firmware-up event lands on the event ring,
  * whose control block lives inside the GIB, so the model cannot post it until
- * the GIB is reachable (docs/plans/tigon-model.md, review item 2).
+ * the GIB is reachable.
  */
 static void tigon_try_firmware_up(TigonState *s)
 {
@@ -1015,11 +1016,11 @@ static void tigon_try_firmware_up(TigonState *s)
 }
 
 /*
- * Report the port up as a modelled fact -- there is no SerDes and no
- * negotiation. Post the link-state event and set the link-status registers the
- * driver reads, in response to its link-negotiation request, so the event lands
- * after the driver is waiting for it rather than before (datasheet, "Model vs
- * hardware": link comes up when the interface is put into use).
+ * Report the port up as a modelled fact. There is no SerDes and no
+ * negotiation. Post the link-state event and set the link-status registers
+ * the driver reads, in response to its link-negotiation request, so the event
+ * lands after the driver is waiting for it rather than before (datasheet,
+ * "Model vs hardware": link comes up when the interface is put into use).
  */
 static void tigon_link_up(TigonState *s)
 {
@@ -1152,11 +1153,12 @@ static void tigon_run_commands(TigonState *s, uint32_t prod)
     }
 
     /*
-     * Command completion is signalled only by advancing the consumer index the
-     * driver reads, never by an interrupt: commands have no host-memory ring the
-     * ISR could acknowledge, so raising the level-triggered line here would leave
-     * it asserted forever and storm the ISR. A command that must notify the host
-     * (a link-state change) posts its own event, which carries the interrupt.
+     * Command completion is signalled only by advancing the consumer index
+     * the driver reads, never by an interrupt: commands have no host-memory
+     * ring the ISR could acknowledge, so raising the level-triggered line
+     * here would leave it asserted forever and storm the ISR. A command that
+     * must notify the host (a link-state change) posts its own event, which
+     * carries the interrupt.
      */
     s->gcr[TIGON_GCR_IDX(TI_GCR_CMDCONS_IDX)] = s->cmd_considx;
 }
@@ -1164,8 +1166,8 @@ static void tigon_run_commands(TigonState *s, uint32_t prod)
 /*
  * Transmit doorbell. Walk the transmit ring from the saved consumer index to
  * the guest's producer index, assembling each frame from its descriptors'
- * fragments up to the end-of-frame flag, and hand it to the netdev. On Tigon 2
- * the ring is host-resident (the host-ring flag); the Tigon-1 windowed-SRAM
+ * fragments up to the end-of-frame flag, and hand it to the netdev. On Tigon
+ * 2 the ring is host-resident (the host-ring flag); the Tigon-1 windowed-SRAM
  * path is not modelled. The producer index is reduced into range so an
  * out-of-range mailbox write cannot make the walk loop forever.
  */
@@ -1286,7 +1288,7 @@ static void tigon_tx(TigonState *s, uint32_t prod)
              * Checksum offload: IRIX's eg hands transmit frames with the L4
              * (and optionally IP) checksum field left zero and asks the card
              * to fill it via these descriptor flags. Compute it here, as the
-             * firmware would -- without it every TCP segment leaves with a
+             * firmware would, without it every TCP segment leaves with a
              * zero checksum and the peer drops it (UDP's optional checksum
              * happens to survive, which is why a UDP transfer worked but TCP
              * never completed a handshake). Same offload the on-board IOC3
@@ -1344,9 +1346,9 @@ static void tigon_reset_state(TigonState *s)
      * Modeled defaults, not confirmed silicon power-on-reset values: the
      * mailboxes and GCR indices are producer/consumer positions the driver
      * always re-initialises, and the embedded CPUs come up halted (datasheet
-     * "On the concrete reset entries"). The SRAM backing store is deliberately
-     * not cleared: a guest resetting mid-download should not have to re-fetch
-     * firmware it already wrote.
+     * "On the concrete reset entries"). The SRAM backing store is
+     * deliberately not cleared: a guest resetting mid-download should not
+     * have to re-fetch firmware it already wrote.
      */
     if (s->link_timer) {
         timer_del(s->link_timer);
@@ -1422,8 +1424,8 @@ static void tigon_reset_state(TigonState *s)
 
     /*
      * Seed the MAC/station-address registers the firmware would present once
-     * running, in the driver's big-endian pair format (if_ti.c ti_init2): PAR0
-     * carries bytes 0-1, PAR1 carries bytes 2-5.
+     * running, in the driver's big-endian pair format (if_ti.c ti_init2):
+     * PAR0 carries bytes 0-1, PAR1 carries bytes 2-5.
      */
     {
         const uint8_t *m = s->station_addr.a;
@@ -1627,11 +1629,12 @@ static void tigon_reg_write(void *opaque, hwaddr addr, uint64_t val,
             if (addr == TI_GCR_MASK_INTRS) {
                 /*
                  * Zero permits, anything else holds the line down: the public
-                 * driver writes zero here under "Turn interrupts on", and that
-                 * write is the only direct evidence of the polarity. A pending
-                 * cause is held rather than dropped, so unmasking delivers it.
-                 * Note a non-zero write: if a guest ever makes one and then
-                 * waits for an interrupt, this reading is where to look.
+                 * driver writes zero here under "Turn interrupts on", and
+                 * that write is the only direct evidence of the polarity. A
+                 * pending cause is held rather than dropped, so unmasking
+                 * delivers it. Note a non-zero write: if a guest ever makes
+                 * one and then waits for an interrupt, this reading is where
+                 * to look.
                  */
                 if (val != 0) {
                     qemu_log_mask(LOG_UNIMP,
@@ -1644,22 +1647,23 @@ static void tigon_reg_write(void *opaque, hwaddr addr, uint64_t val,
             }
             /*
              * The two general-information registers hold one 64-bit address.
-             * This window is little-endian, so the half at the lower offset is
-             * the least significant one -- whether the guest writes the pair as
-             * two words or as a single 64-bit store that is split on the way
-             * in. The public header's names read from the other convention, so
-             * TI_GCR_GENINFO_HI is the offset of the *low* half here; taking
-             * the names literally builds the address backwards.
+             * This window is little-endian, so the half at the lower offset
+             * is the least significant one, whether the guest writes the
+             * pair as two words or as a single 64-bit store that is split on
+             * the way in. The public header's names read from the other
+             * convention, so TI_GCR_GENINFO_HI is the offset of the *low*
+             * half here; taking the names literally builds the address
+             * backwards.
              *
-             * IRIX's eg gives it as 0x00f80000 then 0xa3000000, which assembled
-             * this way is 0xa300000000f80000: a target widget of 0xa and an
-             * offset inside memory, matching what every working device on this
-             * machine puts on the bus. Assembled the other way it names widget
-             * 0 and an offset past the end of memory, and every ring the card
-             * reads through it comes back zero.
+             * IRIX's eg gives it as 0x00f80000 then 0xa3000000, which
+             * assembled this way is 0xa300000000f80000: a target widget of
+             * 0xa and an offset inside memory, matching what every working
+             * device on this machine puts on the bus. Assembled the other way
+             * it names widget 0 and an offset past the end of memory, and
+             * every ring the card reads through it comes back zero.
              *
-             * The address is completed by the write to the upper half, which is
-             * where the card is handed a usable block.
+             * The address is completed by the write to the upper half, which
+             * is where the card is handed a usable block.
              */
             if (addr == TI_GCR_GENINFO_HI || addr == TI_GCR_GENINFO_LO) {
                 uint32_t low = s->gcr[TIGON_GCR_IDX(TI_GCR_GENINFO_HI)];
@@ -1685,12 +1689,12 @@ static void tigon_reg_write(void *opaque, hwaddr addr, uint64_t val,
 }
 
 /*
- * The register file is little-endian on the PCI bus (the ISP1040 precedent for
- * a merchant LE-native controller behind this same Bridge); the memory core
- * and the Bridge's own register-space correction carry the byte order. Each
- * register is 32 bits: impl is pinned alongside valid because an undeclared
- * min of 1 would let a byte access reach a side-effecting doorbell or the
- * MISC_HOST_CTL reset/swap bits through a partial-word path.
+ * The register file is little-endian on the PCI bus (the ISP1040 precedent
+ * for a merchant LE-native controller behind this same Bridge); the memory
+ * core and the Bridge's own register-space correction carry the byte order.
+ * Each register is 32 bits: impl is pinned alongside valid because an
+ * undeclared min of 1 would let a byte access reach a side-effecting doorbell
+ * or the MISC_HOST_CTL reset/swap bits through a partial-word path.
  */
 static const MemoryRegionOps tigon_reg_ops = {
     .read = tigon_reg_read,
@@ -1702,9 +1706,9 @@ static const MemoryRegionOps tigon_reg_ops = {
 
 /*
  * The 2 KB SRAM window at 0x800, positioned over card SRAM by WINBASE. The
- * downloaded firmware lands here and is read back but never executed. Byte and
- * halfword accesses are allowed since a download or diagnostic read may be
- * narrower than the register block's strict 32-bit rule.
+ * downloaded firmware lands here and is read back but never executed. Byte
+ * and halfword accesses are allowed since a download or diagnostic read may
+ * be narrower than the register block's strict 32-bit rule.
  */
 static uint64_t tigon_sram_read(void *opaque, hwaddr addr, unsigned size)
 {
@@ -1757,11 +1761,11 @@ static uint16_t tigon_ones_sum(const uint8_t *p, size_t len)
 }
 
 /*
- * What the card summed over a received frame, for the driver to use instead of
- * summing the bytes again on the processor. Two 16-bit fields: the sum over the
- * IP header and the sum over what follows it.
+ * What the card summed over a received frame, for the driver to use instead
+ * of summing the bytes again on the processor. Two 16-bit fields: the sum
+ * over the IP header and the sum over what follows it.
  *
- * The sums are NOT inverted -- the driver does that itself, and reads both
+ * The sums are NOT inverted. The driver does that itself, and reads both
  * fields for any IP frame with nothing to gate them, so a well-formed header
  * must come back as 0xffff here. Reporting zero tells a driver of that shape
  * that every packet it receives is corrupt.
@@ -1883,12 +1887,12 @@ static bool tigon_can_receive(NetClientState *nc)
  * or anything at all in promiscuous mode. The return value says whether to
  * keep the frame and sets the cast flag for its return descriptor.
  *
- * The exact group filter is not modelled, so every multicast frame is kept and
- * the stack sorts them out. That is the safe direction to be wrong in: keeping
- * a frame the driver did not ask for costs it one discard, while dropping one
- * it did ask for breaks the protocol carried on it and says nothing anywhere.
- * IPv6 neighbour discovery rides entirely on solicited-node multicast, so
- * dropping unsubscribed groups fails it silently.
+ * The exact group filter is not modelled, so every multicast frame is kept
+ * and the stack sorts them out. That is the safe direction to be wrong in:
+ * keeping a frame the driver did not ask for costs it one discard, while
+ * dropping one it did ask for breaks the protocol carried on it and says
+ * nothing anywhere. IPv6 neighbour discovery rides entirely on solicited-node
+ * multicast, so dropping unsubscribed groups fails it silently.
  */
 static bool tigon_rx_filter(TigonState *s, const uint8_t *dest, size_t size,
                             uint16_t *flags)
@@ -2001,8 +2005,8 @@ static ssize_t tigon_receive_packet(NetClientState *nc,
      * RFC 1213's count of inbound packets discarded with no error found, one
      * reason for which is freeing buffer space, and is where this model
      * already counts its other receive drops. One bounded hold was built for
-     * this device too, and the one that was measured -- on the BCM570x, not
-     * here -- delivered fewer bytes than discarding at once; the Tigon
+     * this device too, and the one that was measured, on the BCM570x, not
+     * here, delivered fewer bytes than discarding at once; the Tigon
      * datasheet carries that as the stated limitation.
      */
     /*
@@ -2090,13 +2094,13 @@ static ssize_t tigon_receive_packet(NetClientState *nc,
     buf_len = rx_word & 0xffff;
     /*
      * A descriptor claiming a buffer too small to hold an ethernet frame is
-     * not a buffer the guest posted -- the ring is not where the card
+     * not a buffer the guest posted. The ring is not where the card
      * believes it is. Writing the frame to whatever address sits beside that
      * length lands it in arbitrary guest memory, which faults the kernel a
      * long way from here and with nothing pointing back. Say so and drop the
      * frame instead. A buffer LARGER than any frame is not suspect: the
      * length is the buffer's capacity, and the IRIX driver posts 16 KB
-     * allocations on its jumbo ring -- an upper bound here silently dropped
+     * allocations on its jumbo ring. An upper bound here silently dropped
      * every jumbo frame that guest ever received.
      */
     if (buf_len < TIGON_MIN_FRAME_SIZE) {
@@ -2231,8 +2235,9 @@ static void tigon_realize(PCIDevice *dev, Error **errp)
 
     /*
      * PCI identity comes from instance properties rather than class-level
-     * constants, so the SGI board is one property instantiation of the generic
-     * Alteon part (hw/misc/sgi-bridge-dma-test.c uses the same pattern).
+     * constants, so the SGI board is one property instantiation of the
+     * generic Alteon part (hw/misc/sgi-bridge-dma-test.c uses the same
+     * pattern).
      */
     pci_config_set_vendor_id(dev->config, s->vendor_id);
     pci_config_set_device_id(dev->config, s->device_id);
@@ -2254,8 +2259,8 @@ static void tigon_realize(PCIDevice *dev, Error **errp)
 
     /*
      * One 16 KB non-prefetchable memory BAR (WINDATA, SRAM_DATA and the
-     * mailboxes have read side effects). The register block is the first 2 KB;
-     * the 2 KB SRAM window sits at 0x800 as its own sub-region.
+     * mailboxes have read side effects). The register block is the first 2
+     * KB; the 2 KB SRAM window sits at 0x800 as its own sub-region.
      */
     memory_region_init(&s->bar, OBJECT(s), "tigon", TIGON_BAR_SIZE);
     memory_region_init_io(&s->reg, OBJECT(s), &tigon_reg_ops, s,
@@ -2457,8 +2462,8 @@ static void tigon_instance_init(Object *obj)
     TigonState *s = TIGON(obj);
 
     /*
-     * A board-identity default the property may override; the model serves one
-     * media variant and does not negotiate, so this only labels the card.
+     * A board-identity default the property may override; the model serves
+     * one media variant and does not negotiate, so this only labels the card.
      */
     s->media = g_strdup("copper");
 }

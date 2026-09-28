@@ -1,35 +1,13 @@
 /*
- * SGI Bridge board-identity records: the DS2505 parts on the Origin 2000
- * BaseIO's and BaseIO-G's Bridge one-wire bus and on the Origin 200
- * IP29's, read back through the Bridge's one-wire master register and
- * compared byte for byte with the page images docs/datasheets/baseio.md
- * gives in "Board-identity records on the Bridge one-wire bus" and
- * docs/datasheets/bridge.md gives in "The Origin 200's IP29 record".
- * An Origin 200 with a GIGAchannel cabinet adds the Crosstown board's
- * record beside the IP29's, on the IP29 Bridge now at Crossbow widget 9,
- * and the cabinet interface board's record on the cabinet Bridge at
- * widget 8; in loopback the Crosstown record sits beside the IP29's at
- * widget 8.
- *
- * The PCI shoehorn's and PCI carrier's Bridges carry records too,
- * compared with the page images docs/datasheets/sgi-pci-shoehorn.md and
- * docs/datasheets/sgi-pci-shoebox.md give in "Board-identity record",
- * along with the part and name the firmware formats from each and the
- * Bridge chip revision each board is fitted with.
- *
- * A Bridge given no board name still stores the older text layout, the
- * part number alone; the bare PCI expansion board is read back for that
- * layout's fields.
- *
- * The machine bring-up and one-wire helpers are duplicated from
- * sn0-baseio-test.c rather than shared, matching this project's other
- * qtest files that each carry their own.
- *
- * The refusal cases check that realize turns away a record the Bridge
- * datasheet's rules forbid ("The record layout, and every constraint on
- * building it"): a ':' or ';' in a text field, a field too long for its
- * bytes, a part that is not digits and dashes, and a barcode or revision
- * with no board name.
+ * Bridge one-wire DS2505 identity tests: Origin 2000 BaseIO/BaseIO-G, Origin
+ * 200 IP29, PCI shoehorn and PCI carrier records, firmware-formatted part
+ * and name, and fitted Bridge revision. The GIGAchannel cabinet adds the
+ * Crosstown record beside IP29 at widget 9 and the cabinet-interface record
+ * at widget 8; loopback puts Crosstown beside IP29 at widget 8. Read records
+ * byte for byte through the Bridge master. An unnamed Bridge uses the older
+ * part-only layout, checked on a bare PCI expansion board. Local bring-up
+ * and one-wire helpers follow other qtests. Realize rejects ':', ';', long
+ * text, nondigit/nondash parts, and a barcode or revision without a name.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
@@ -76,10 +54,9 @@
 #define NIC_CRC_RESIDUE 0xb001
 
 /*
- * docs/datasheets/baseio.md, "What each record holds": page 0 then
- * page 1 of each record, check values included, restated here as bytes
- * rather than rebuilt from fields so the comparison does not share the
- * model's construction.
+ * Page 0 then page 1 of each record, check values included, restated here
+ * as bytes rather than rebuilt from fields so the comparison does not share
+ * the model's construction.
  */
 static const uint8_t baseio_record[RECORD_SIZE] = {
     0x01, 0x4f, 0x42, 0x41, 0x53, 0x45, 0x49, 0x4f,
@@ -103,7 +80,7 @@ static const uint8_t mio_record[RECORD_SIZE] = {
     0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0xc9, 0x3b,
 };
 
-/* docs/datasheets/baseio.md, "The plain BaseIO's record". */
+/* The plain BaseIO's board-identity record. */
 static const uint8_t plain_baseio_record[RECORD_SIZE] = {
     0x01, 0x4f, 0x42, 0x41, 0x53, 0x45, 0x49, 0x4f,
     0x30, 0x30, 0x32, 0x20, 0x20, 0x20, 0x20, 0x20,
@@ -115,7 +92,7 @@ static const uint8_t plain_baseio_record[RECORD_SIZE] = {
     0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x41, 0x6e,
 };
 
-/* docs/datasheets/bridge.md, "The Origin 200's IP29 record". */
+/* The Origin 200 IP29's board-identity record. */
 static const uint8_t ip29_record[RECORD_SIZE] = {
     0x01, 0x4f, 0x49, 0x50, 0x32, 0x39, 0x30, 0x30,
     0x30, 0x30, 0x31, 0x20, 0x20, 0x20, 0x20, 0x20,
@@ -128,8 +105,7 @@ static const uint8_t ip29_record[RECORD_SIZE] = {
 };
 
 /*
- * The GIGAchannel's two records (docs/datasheets/sgi-gigachannel.md,
- * "Product identity"), laid out by docs/datasheets/bridge.md's record
+ * The GIGAchannel's two records, laid out by the Bridge's record
  * rules: the Crosstown board's XBOX_EXT, part 030-1264-001 rev C, and the
  * cabinet interface board's XBOX_DUALXTOWN, part 030-1252-001 rev F. The
  * barcodes are placeholders.
@@ -218,12 +194,11 @@ static const TextLayoutCase text_layout_cases[] = {
 };
 
 /*
- * One board whose Bridge carries a single identity part, fitted by an
- * Origin 2000 topology on node 0 without numbering it: the machine, the
- * crosstalk widget its Bridge answers at, the record the board's
- * datasheet gives, the part number and name the firmware's formatter
- * must print from it, and the Bridge chip revision the board is fitted
- * with.
+ * One board whose Bridge carries a single identity part, fitted by an Origin
+ * 2000 topology on node 0 without numbering it: the machine, the crosstalk
+ * widget its Bridge answers at, the board's identity record, the part number
+ * and name the firmware's formatter must print from it, and the Bridge chip
+ * revision the board is fitted with.
  */
 typedef struct BoardCase {
     const char *name;
@@ -236,10 +211,9 @@ typedef struct BoardCase {
 } BoardCase;
 
 /*
- * The PCI shoehorn (docs/datasheets/sgi-pci-shoehorn.md, "Board-identity
- * record"): assembly 030-1275-002, the REV B its photographed label reads,
+ * The PCI shoehorn: assembly 030-1275-002, the REV B its label reads,
  * the XTALK_PCI name real Origin 2000 inventories print, a placeholder
- * barcode, and the Bridge D the photographed board carries. The
+ * barcode, and the Bridge D the board carries. The
  * origin2000-pci-shoehorn topology fits it in IO2, crossbow0 widget 12.
  */
 static const uint8_t shoehorn_record[RECORD_SIZE] = {
@@ -255,8 +229,7 @@ static const uint8_t shoehorn_record[RECORD_SIZE] = {
 
 /*
  * The PCI Carrier Assembly the origin2000-pci-carrier topology fits in
- * IO2, crossbow0 widget 12 (docs/datasheets/sgi-pci-shoebox.md,
- * "Board-identity record"): the Origin 2000 PCI cardcage's part
+ * IO2, crossbow0 widget 12: the Origin 2000 PCI cardcage's part
  * 030-1062-002, revision C and name PCI-XIO, as a real Origin 2000's
  * inventory prints them, with a placeholder barcode, on the Bridge
  * revision 3 both real PCI_XIO boards report.
@@ -274,8 +247,7 @@ static const uint8_t carrier_record[RECORD_SIZE] = {
 
 /*
  * The MENET XIO board the origin2000-menet topology fits in IO5,
- * crossbow0 widget 14 (docs/datasheets/sgi-ioc3-boards.md in the Origami
- * tree, "Board-identity record"): a real board's part 030-0873-003,
+ * crossbow0 widget 14: a real board's part 030-0873-003,
  * revision J and name MENET, a placeholder barcode, and the Bridge
  * revision 4 the same real board reports.
  */
@@ -563,10 +535,10 @@ static void check_record_pages_leave_the_residue(const uint8_t *memory)
 }
 
 /*
- * Every record on the line reads back exactly as the datasheet gives it,
+ * Every record on the line reads back byte for byte against the known image,
  * and the memory past it reads unprogrammed. Which part the search finds
  * first is not asserted: on the BaseIO-G that order is an open question
- * the datasheet settles by a live boot, not a register contract.
+ * requires live-boot evidence, not a register assertion.
  */
 static void test_records_match_the_datasheet(const void *data)
 {
@@ -812,7 +784,7 @@ static void record_field(const uint8_t *bytes, unsigned int len, GString *out)
 }
 
 /*
- * The board's one part holds its datasheet record exactly, unprogrammed
+ * The board's one part holds its known identity record exactly, unprogrammed
  * memory after it, and a record every reader accepts: format 1, text
  * fields with no ':', ';' or NUL, 0xff flag bytes, both pages leaving the
  * CRC residue, and a part number and name that format without a stray

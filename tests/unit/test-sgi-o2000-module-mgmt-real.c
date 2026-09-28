@@ -69,7 +69,7 @@ static DeviceState *module_new(void)
 {
     DeviceState *dev = qdev_new(TYPE_SGI_SN0_MODULE_MANAGEMENT);
 
-    qdev_prop_set_string(dev, "model-serial", "KORIGAMI01");
+    qdev_prop_set_string(dev, "model-serial", "TESTSERIAL");
     return dev;
 }
 
@@ -549,7 +549,7 @@ static void test_population(Fixture *f, gconstpointer unused)
     stop_transfer(f, 0);
 }
 
-/* The reviewed validity marker and the model-derived module number. */
+/* The specified validity marker and model-derived module number. */
 static void test_nvram_defaults(Fixture *f, gconstpointer unused)
 {
     uint16_t reserved = SGI_O2000_NVRAM_RESERVED_PAGE *
@@ -600,7 +600,7 @@ static void test_nvram_shared_and_persistent(Fixture *f, gconstpointer unused)
     init_adapter(f, 1);
     g_assert_cmphex(nvram_read(f, 1, SGI_O2000_NVRAM_BYTES - 1), ==, 0xa5);
     g_assert_cmphex(nvram_read(f, 1, 0x23), ==, 0x40);
-    /* The reviewed defaults are still there too. */
+    /* The default bytes persist across reset. */
     g_assert_cmphex(nvram_read(f, 1, SGI_O2000_NVRAM_RESERVED_PAGE *
                                SGI_O2000_NVRAM_PAGE_BYTES), ==,
                     SGI_O2000_NVRAM_VALIDITY_VALUE);
@@ -938,8 +938,8 @@ static void test_msc_version_exchange(Fixture *f, gconstpointer unused)
 
 /*
  * For a one-byte read, firmware clears ACK before the discarded read starts
- * the receive pipeline.  The following read consumes that NACKed byte; it
- * must leave the adapter paused so the closing repeated START can follow.
+ * the receive pipeline. The following read consumes that NACKed byte; it must
+ * leave the adapter paused so the closing repeated START can follow.
  */
 static void test_nacked_receive_allows_repeated_start(
     Fixture *f, gconstpointer unused)
@@ -1072,7 +1072,7 @@ static void test_closing_resync_is_terminal(Fixture *f, gconstpointer unused)
     }
     g_assert_cmpuint(f->raises[LINE_RESET], ==, 1);
 
-    /* And the scheduler is not left waiting on a controller that went away. */
+    /* The scheduler cannot wait on the removed controller. */
     g_assert_false(f->module->slave_active);
     advance_to(f->module->pulse_deadline);
     /*
@@ -1086,9 +1086,8 @@ static void test_closing_resync_is_terminal(Fixture *f, gconstpointer unused)
 }
 
 /*
- * The whole point of the refusal: a guest that asks for a reset the
- * controller cannot carry out is told so, rather than handed an "ok" it
- * would take as proof and stop trying.
+ * a guest that asks for a reset the controller cannot carry out is told so,
+ * rather than handed an "ok" it would take as proof and stop trying.
  */
 static void test_destructive_command_refused(Fixture *f, gconstpointer unused)
 {
@@ -1117,10 +1116,8 @@ static void test_destructive_command_refused(Fixture *f, gconstpointer unused)
     g_assert_cmpint(f->level[LINE_POWER], ==, 1);
 
     /*
-     * Once the pulse ends the same command is accepted again, without the
-     * guest re-opening the supervisor gate: reinitialisation takes the
-     * protocol queues and leaves what is not a queue, and the gate is not
-     * one.
+     * Accept the command again after the pulse. Reinitialisation clears
+     * protocol queues but retains the supervisor password check.
      */
     advance_to(f->module->pulse_deadline);
     total = msc_command(f, 0, "rst", response, sizeof(response));
@@ -1131,7 +1128,7 @@ static void test_destructive_command_refused(Fixture *f, gconstpointer unused)
     g_assert_cmpuint(f->raises[LINE_RESET], ==, 2);
 }
 
-/* Drain only when the test explicitly crosses the deferred-action boundary. */
+/* Drain only when the test reaches the deferred action. */
 static void drain_actions(void)
 {
     while (aio_poll(qemu_get_aio_context(), false)) {
@@ -1161,13 +1158,13 @@ static void test_reinitialize_committed(Fixture *f, gconstpointer unused)
 
     sgi_elsc_reinitialize(s);
     /* More terminal events before polling must not duplicate the action. */
-    expect_response(f, "ver", "ok origami");
+    expect_response(f, "ver", "ok 1.0");
     g_assert_cmpuint(f->raises[LINE_RESET], ==, 0);
     drain_actions();
     g_assert_cmpuint(f->raises[LINE_RESET], ==, 1);
     g_assert_true(f->module->pulse_active);
     advance_to(f->module->pulse_deadline);
-    expect_response(f, "ver", "ok origami");
+    expect_response(f, "ver", "ok 1.0");
     drain_actions();
     g_assert_cmpuint(f->raises[LINE_RESET], ==, 1);
     g_assert_false(f->module->pulse_active);
@@ -1188,17 +1185,17 @@ static void test_reinitialize_uncommitted(Fixture *f, gconstpointer partial)
     g_assert_cmpuint(s->txpos, <, s->txlen);
 
     sgi_elsc_reinitialize(s);
-    /* Clock the discarded response and its terminal event before a request. */
+    /* Clock the discarded response and terminal event before a request. */
     take_byte(f, 0, false);
     take_byte(f, 0, true);
     stop_transfer(f, 0);
     drain_actions();
     g_assert_cmpuint(f->raises[LINE_RESET], ==, 0);
-    expect_response(f, "ver", "ok origami");
+    expect_response(f, "ver", "ok 1.0");
     drain_actions();
     g_assert_cmpuint(f->raises[LINE_RESET], ==, 0);
     g_assert_cmpuint(s->deferred_action, ==, SGI_ELSC_ACTION_NONE);
-    /* The retained supervisor gate still permits a subsequent real action. */
+    /* The retained supervisor password check permits another action. */
     expect_response(f, "rst", "ok");
     drain_actions();
     g_assert_cmpuint(f->raises[LINE_RESET], ==, 1);
@@ -1239,7 +1236,7 @@ static void test_reinitialize_queues(Fixture *f, gconstpointer unused)
     g_assert_false(f->module->console_input_pending);
     stop_transfer(f, 0);
 
-    /* Input after recovery escapes neither into the old line nor old queue. */
+    /* Post-recovery input enters neither the old line nor the old queue. */
     qemu_chr_be_write(f->chr, fresh, sizeof(fresh));
     expect_response(f, "get", "acp 0 N");
     expect_response(f, "tas B", "ok A");

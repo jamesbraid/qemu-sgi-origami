@@ -2,29 +2,28 @@
 /*
  * Two machine types that run the real builder (sgi_machine_init) over a
  * topology no shipped product carries, each turned on only by its own
- * "activate" property the way any qtest-only fixture here is: qom-test
- * and test-hmp instantiate every registered machine type with no
- * properties at all to probe generic QOM/HMP behavior, so leaving
- * "activate" off makes mc->init a no-op there, the same as the "none"
- * machine. SGIMachineClass.test_topology hands each fixture's topology
- * straight to sgi_machine_init, bypassing the topology= name lookup,
- * since the compiled catalogue never carries a fixture's own descriptor.
+ * "activate" property the way any qtest-only fixture here is: qom-test and
+ * test-hmp instantiate every registered machine type with no properties at
+ * all to probe generic QOM/HMP behavior, so leaving "activate" off makes
+ * mc->init a no-op there, the same as the "none" machine.
+ * SGIMachineClass.test_topology hands each fixture's topology straight to
+ * sgi_machine_init, bypassing the topology= name lookup, since the compiled
+ * catalogue never carries a fixture's own descriptor.
  *
- * This file used to also carry sn-builder-fault-test, a fixture that
- * called sgi_machine_validate_topology() directly over a minimal
- * two-node topology to exercise its named faults. That validator (and
- * the four it dispatched to) is gone: hw/mips/sgi/sn-machine.c now
- * trusts the compiled descriptor, and tests/unit/test-sn-model.c checks
- * its structural invariants once instead of at every launch. See
- * docs/plans/sn-machine-model.md, "The builder trusts the descriptor".
+ * This file used to also carry sn-builder-fault-test, a fixture that called
+ * sgi_machine_validate_topology() directly over a minimal two-node topology
+ * to exercise its named faults. That validator (and the four it dispatched
+ * to) is gone: hw/mips/sgi/sn-machine.c now trusts the compiled descriptor,
+ * and tests/unit/test-sn-model.c checks its structural invariants once
+ * instead of at every launch.
  *
  * Every fixture topology below is built once, at type-registration time,
  * from plain arrays into the QAPI-generated list types qapi/sgi-sn.json
- * declares (hand-building a SGIModelTopology in C has no JSON to visit,
- * so nothing here goes through qobject_input_visitor -- the list nodes
- * just point at the arrays' own elements, the same sharing the old
- * array-and-count descriptor gave this fixture's node-1-attachment
- * mutation below).
+ * declares (hand-building a SGIModelTopology in C has no JSON to visit, so
+ * nothing here goes through qobject_input_visitor. The list nodes just
+ * point at the arrays' own elements, the same sharing the old
+ * array-and-count descriptor gave this fixture's node-1-attachment mutation
+ * below).
  */
 
 #include "qemu/osdep.h"
@@ -205,16 +204,15 @@ static uint64List *uint64_list(const uint64_t *items, size_t count)
 }
 
 /*
- * Console field test fixture: a two-node topology with console=1, each
- * node carrying its own base I/O controller the way Origin 200's two-tower
- * wiring does (node/module/xtalk/board values copied from the
- * origin200-dual configuration's own compiled catalogue entry, minus a
- * SCSI-carrying board, which the serial line contract never touches). All
- * shipping topologies have console=0, so the reordering
- * sgi_machine_compute_serial_line() does for a non-default console is
- * otherwise never built or realized, only validated.
- * SGIMachineClass.test_topology hands this straight to sgi_machine_init,
- * so the qtest in tests/qtest/sn-builder-test.c that boots
+ * Console field test fixture: a two-node topology with console=1, each node
+ * carrying its own base I/O controller the way Origin 200's two-tower wiring
+ * does (node/module/xtalk/board values copied from the origin200-dual
+ * configuration's own compiled catalogue entry, minus a SCSI-carrying board,
+ * which the serial line contract never touches). All shipping topologies
+ * have console=0, so the reordering sgi_machine_compute_serial_line() does
+ * for a non-default console is otherwise never built or realized, only
+ * validated. SGIMachineClass.test_topology hands this straight to
+ * sgi_machine_init, so the qtest in tests/qtest/sn-builder-test.c that boots
  * "sn-builder-console-test" exercises the real builder, not a stand-in.
  */
 static SGIModelProcessor console_test_r10000_180mhz = {
@@ -306,10 +304,8 @@ static SGIModelCable console_test_cables[] = {
 };
 
 /*
- * decoded_widget_mask and discovery_widget went with the ownership-rule
- * trim: they were IP29's own fixed Bridge decode behavior, a device
- * fact hw/mips/sgi/sn0.c now hardcodes (SN0_IP29_IO_DECODED_WIDGET_MASK,
- * SN0_IP29_IO_DISCOVERY_WIDGET), not per-topology data.
+ * IP29 Bridge decode mask and discovery widget are fixed device facts
+ * in sn0.c, not topology fields.
  */
 static SGIModelXtalkAttachment console_test_xtalk[] = {
     { .crossbar_index = -1, .widget = 8, .node_index = 0 },
@@ -317,11 +313,11 @@ static SGIModelXtalkAttachment console_test_xtalk[] = {
 };
 
 /*
- * Node0's and node1's boards each their own fitted-part and IOC3
- * serial so the two devices are distinguishable; no ISP1040 function --
- * a PCI function's own position is a device fact sgi-baseio's preset
- * table now carries, not this fixture's concern, and the serial line
- * contract is all this fixture exists to exercise.
+ * Node0's and node1's boards each their own fitted-part and IOC3 serial so
+ * the two devices are distinguishable; no ISP1040 function. A PCI
+ * function's own position is a device fact sgi-baseio's preset table now
+ * carries, not this fixture's concern, and the serial line contract is all
+ * this fixture exists to exercise.
  */
 static SGIModelIoBoard console_test_io_boards[] = {
     {
@@ -366,9 +362,9 @@ static SGIModelTopology console_test_topology = {
 
 /*
  * Console field test machine: a real sgi-sn-machine product whose test_
- * topology is console_test_topology, so an activated instance goes
- * through the real node, bridge and IOC3 construction sgi_machine_
- * compute_serial_line() feeds -- not a validator-only stand-in.
+ * topology is console_test_topology, so an activated instance goes through
+ * the real node, bridge and IOC3 construction sgi_machine_
+ * compute_serial_line() feeds, instead of a validator-only stand-in.
  * test_topology bypasses the topology= name lookup, since the compiled
  * catalogue never carries a fixture's own descriptor.
  *
@@ -376,9 +372,9 @@ static SGIModelTopology console_test_topology = {
  * fixture's own switch does: qom-test and test-hmp instantiate every
  * registered machine type with no properties at all, and this fixture's
  * topology has two nodes as two sockets, which the default one-socket
- * instantiation those two use does not satisfy. Off by default, mc->init
- * is a no-op, the same as the "none" machine there; the qtest that wants
- * the real two-node machine turns it on itself.
+ * instantiation those two use does not satisfy. Off by default, mc->init is
+ * a no-op, the same as the "none" machine there; the qtest that wants the
+ * real two-node machine turns it on itself.
  */
 #define TYPE_SN_BUILDER_CONSOLE_TEST \
     MACHINE_TYPE_NAME("sn-builder-console-test")
@@ -392,15 +388,15 @@ static void console_test_set_activate(Object *obj, bool value, Error **errp)
 
 /*
  * A descriptor fault sgi_machine_index_xtalk_attachments catches (the
- * function that splits the topology's xtalk-attachments into each node's
- * own entry and each io-boards entry's placement, still run at every
- * realize -- unlike sgi_machine_validate_topology, it is not just a
- * validator: it computes the indices the builder needs to place each
- * board): a node with no matching crosstalk attachment reaches it only
- * once construction is already under way. Unlike sn-builder-test.c's
- * user-option rejection tests, this runs the real builder
- * (sgi_machine_init), the only place this gap is reachable, so it forces
- * activation the way console-test's own "activate" does.
+ * function that splits the topology's xtalk-attachments into each node's own
+ * entry and each io-boards entry's placement, still run at every realize,
+ * unlike sgi_machine_validate_topology, it is not just a validator: it
+ * computes the indices the builder needs to place each board): a node with
+ * no matching crosstalk attachment reaches it only once construction is
+ * already under way. Unlike sn-builder-test.c's user-option rejection tests,
+ * this runs the real builder (sgi_machine_init), the only place this gap is
+ * reachable, so it forces activation the way console-test's own "activate"
+ * does.
  */
 static void console_test_set_construction_fault(Object *obj,
                                                  const char *value,
@@ -457,24 +453,23 @@ static const TypeInfo console_test_type = {
 };
 
 /*
- * Bank test fixture: one HUB node shipping 256 MiB in bank 0 and 512 MiB
- * in bank 1 (768 MiB total), a population no product's accepted memory
- * list carries -- origin200's largest accepted total is 512 MiB, so
- * a real product can never populate a bank past IP29's 256 MiB first-
- * bank cap. The IP29 backdoor window's quarter-size aliasing scales with
- * each bank's own size (tests/qtest/sn0-address-map-test.c's
- * check_backdoor_bank_span), so proving bank 1 aliases at ITS size's own
- * quarter (128 MiB), not bank 0's (64 MiB), needs a bank 1 this large.
- * That is generic sgi_sn0_hub_hardware decode behavior, identical for
- * every SN0 node regardless of product, so exercising it here over a
- * fixture-only population is as hardware-accurate as exercising it over
- * a real product would be -- it is the product catalogue, not the Hub,
- * that happens not to sell this combination today.
+ * Bank test fixture: one HUB node shipping 256 MiB in bank 0 and 512 MiB in
+ * bank 1 (768 MiB total), a population no product's accepted memory list
+ * carries. origin200's largest accepted total is 512 MiB, so a real
+ * product can never populate a bank past IP29's 256 MiB first- bank cap. The
+ * IP29 backdoor window's quarter-size aliasing scales with each bank's own
+ * size (tests/qtest/sn0-address-map-test.c's check_backdoor_bank_span), so
+ * proving bank 1 aliases at ITS size's own quarter (128 MiB), not bank 0's
+ * (64 MiB), needs a bank 1 this large. That is generic sgi_sn0_hub_hardware
+ * decode behavior, identical for every SN0 node regardless of product, so
+ * exercising it here over a fixture-only population is as hardware-accurate
+ * as exercising it over a real product would be. It is the product
+ * catalogue, not the Hub, that happens not to sell this combination today.
  *
  * accepted_memory_mib is left absent (empty): sgi_machine_validate_
- * memory_population() then requires the requested per-node size to
- * match this node's shipped bank-mib total exactly, so only 768 MiB
- * is ever accepted here, the same "shipped population only" contract
+ * memory_population() then requires the requested per-node size to match
+ * this node's shipped bank-mib total exactly, so only 768 MiB is ever
+ * accepted here, the same "shipped population only" contract
  * origin2000-module's own nodes are documented to want.
  */
 static SGIModelCpuSlot bank_test_cpu_slots[] = {
@@ -513,10 +508,8 @@ static SGIModelCpuPopulation bank_test_populations[] = {
 };
 
 /*
- * Every node needs its own board and crosstalk attachment --
- * sgi_machine_populate_node() asserts both -- so this fixture reuses
- * the console fixture's node 0 board and attachment verbatim: a
- * plain onboard IP29 preset with one IOC3, nothing this test touches.
+ * sgi_machine_populate_node() requires a board and crosstalk attachment
+ * per node. Reuse the console fixture's node 0 IP29 BaseIO and IOC3.
  */
 static SGIModelTopology bank_test_topology = {
     .name = (char *)"sn-builder-bank-test",
@@ -570,18 +563,18 @@ static const TypeInfo bank_test_type = {
 };
 
 /*
- * Two-node Bedrock fixture: a Bedrock topology may carry more than one
- * node in the descriptor (the two-chassis Origin 300 is the shipped one,
- * with a cable this fixture leaves out). This fixture proves the builder's
- * validation and its node loop accept a two-node Bedrock topology and
- * build both nodes through it: each node carries its own populated IO-8
- * board, at its own attachment, so the node loop's per-node widget and
- * board-selection filtering is exercised for both. No controllers (no
- * L1 is expected) and no crossbars (Bedrock's own XBridge crossbar is
- * not a real Crossbow chip the builder instantiates). Each node still
- * needs a real boot flash and a stock-PROM image the same size, since
- * sn1_node_realize's own PROM policy is unconditional; the qtest below
- * supplies a blank one sized to bedrock_test_flash.
+ * Two-node Bedrock fixture: a Bedrock topology may carry more than one node
+ * in the descriptor (the two-chassis Origin 300 is the shipped one, with a
+ * cable this fixture leaves out). This fixture proves the builder's
+ * validation and its node loop accept a two-node Bedrock topology and build
+ * both nodes through it: each node carries its own populated IO-8 board, at
+ * its own attachment, so the node loop's per-node widget and board-selection
+ * filtering is exercised for both. No controllers (no L1 is expected) and no
+ * crossbars (Bedrock's own XBridge crossbar is not a real Crossbow chip the
+ * builder instantiates). Each node still needs a real boot flash and a
+ * stock-PROM image the same size, since sn1_node_realize's own PROM policy
+ * is unconditional; the qtest below supplies a blank one sized to
+ * bedrock_test_flash.
  */
 static SGIModelCpuSlot bedrock_test_cpu_slots[] = {
     { .interface = 0, .slot = 0, .assembly = &console_test_r10000_180mhz },
@@ -710,22 +703,21 @@ static const TypeInfo bedrock_test_type = {
 /*
  * A second Bedrock fixture, bypassing sgi_machine_init entirely: the
  * machine-level refusal above is unconditional (no topology, however
- * addressed, may realize two Bedrock nodes together yet), so nothing
- * fed through the real builder can ever reach two realized nodes to
- * prove their address-space windows actually land clear of each other.
- * This fixture repeats the family builder's own per-node property set
- * for a Bedrock node (hw/mips/sgi/sn-machine.c's SN1 node loop) directly
- * for nasid 0 and nasid 1, reusing bedrock_test_nodes' two descriptor
- * records, then realizes both with the same sysbus_realize call the
- * builder makes -- only reached here without its node-count check.
- * Each node gets its own RAM region: sn1-node.c maps a node's RAM as a
- * subregion of the global address space at its own nasid-strided
- * address, and one MemoryRegion object cannot be a subregion of two
- * different (offset, container) placements, so sharing machine->ram the
- * way today's single realized node does would abort the second
- * add_subregion call. Neither node's I/O board is built: this fixture
- * checks addressing only, so each carries just its own local crosstalk
- * view (widget zero), the one widget every Bedrock always decodes.
+ * addressed, may realize two Bedrock nodes together yet), so nothing fed
+ * through the real builder can ever reach two realized nodes to prove their
+ * address-space windows actually land clear of each other. This fixture
+ * repeats the family builder's own per-node property set for a Bedrock node
+ * (hw/mips/sgi/sn-machine.c's SN1 node loop) directly for nasid 0 and nasid
+ * 1, reusing bedrock_test_nodes' two descriptor records, then realizes both
+ * with the builder's sysbus_realize call. This path is reached here
+ * without its node-count check. Each node gets its own RAM region:
+ * sn1-node.c maps a node's RAM as a subregion of the global address space at
+ * its own nasid-strided address, and one MemoryRegion object cannot be a
+ * subregion of two different (offset, container) placements, so sharing
+ * machine->ram the way today's single realized node does would abort the
+ * second add_subregion call. Neither node's I/O board is built: this fixture
+ * checks addressing only, so each carries just its own local crosstalk view
+ * (widget zero), the one widget every Bedrock always decodes.
  */
 #define TYPE_SN_BUILDER_BEDROCK_NASID_TEST \
     MACHINE_TYPE_NAME("sn-builder-bedrock-nasid-test")
@@ -760,9 +752,8 @@ static void bedrock_nasid_test_machine_init(MachineState *machine)
         MemoryRegion *ram = g_new0(MemoryRegion, 1);
 
         /*
-         * memory_region_init_ram's owner must itself be a device (it
-         * registers the region's migration state through one); the
-         * machine object is not, so the region belongs to the node.
+         * memory_region_init_ram needs a device owner for migration state;
+         * the machine is not a device, so use the node.
          */
         memory_region_init_ram(ram, OBJECT(node), ram_name, 64 * MiB,
                                &error_fatal);
@@ -791,14 +782,13 @@ static void bedrock_nasid_test_machine_reset(MachineState *machine,
     unsigned int i;
 
     /*
-     * This fixture never populates a topology, so the inherited
-     * sgi_machine_reset would fall back to its Hub-shaped path and
-     * reset devices before CPUs -- the reverse of what a Bedrock node's
-     * "start-powered-off" CPUs need (sn1-node.h's sn1_node_full_reset
-     * comment). Reset each node itself instead, exactly as
-     * sgi_machine_reset's own multi-node branch does for a real
-     * Bedrock topology.
-     */
+ * This fixture never populates a topology, so the inherited
+ * sgi_machine_reset would fall back to its Hub-shaped path and reset devices
+ * before CPUs, reversing what a Bedrock node's "start-powered-off"
+ * CPUs need (sn1-node.h's sn1_node_full_reset comment). Reset each node
+ * itself instead, exactly as sgi_machine_reset's own multi-node branch does
+ * for a real Bedrock topology.
+ */
     for (i = 0; i < ARRAY_SIZE(bedrock_nasid_test_node); i++) {
         if (bedrock_nasid_test_node[i]) {
             sn1_node_full_reset(bedrock_nasid_test_node[i], type);
@@ -834,12 +824,11 @@ static const TypeInfo bedrock_nasid_test_type = {
 static void sn_builder_fault_test_register_types(void)
 {
     /*
-     * Wire the QAPI list fields both fixture topologies need before
-     * either type registers: class_init (which reads test_topology)
-     * only ever runs later, on first use, but building the lists here
-     * keeps every array-to-list conversion in one place instead of
-     * split across two type_init functions.
-     */
+ * Wire the QAPI list fields both fixture topologies need before either type
+ * registers: class_init (which reads test_topology) only ever runs later, on
+ * first use, but building the lists here keeps every array-to-list
+ * conversion in one place instead of split across two type_init functions.
+ */
     console_test_nodes[0].cpu_slots =
         cpu_slot_list(console_test_cpu_slots, ARRAY_SIZE(console_test_cpu_slots));
     console_test_nodes[1].cpu_slots = console_test_nodes[0].cpu_slots;

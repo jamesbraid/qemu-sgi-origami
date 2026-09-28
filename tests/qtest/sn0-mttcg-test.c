@@ -1,50 +1,27 @@
 /*
  * SPDX-License-Identifier: GPL-2.0-or-later
  *
- * MIPS CPUs exercise the accelerator core on a machine that contains none of
- * this fork's devices.
- *
- * These exercise target/mips and accel/tcg on the R10000, the only CPU this
- * fork builds a machine for.  Each case runs on the Origin 200 with the
- * synthesized firmware off, so the -smp CPUs come out of reset free-running
- * at the boot vector with the guest program in sole possession of the reset
- * vector and low memory.  A failure here is evidence about the CPU and the
- * accelerator, not about the rest of the SN0 machine model.
- *
- * Each case generates its own MIPS64 program and hands it to QEMU as a raw
- * -bios image loaded at the reset vector.  Multi-CPU cases get each CPU's
- * identity from the Hub-local processor number the PI register reports, not
- * from a primitive under test, or a broken primitive makes the failure
- * unattributable.
- *
- * The guest spins are unbounded.  Each CPU publishes a progress word as it
- * enters each phase or iteration, so a stall can be read off the state dump,
- * and the only timeout is the host's polling deadline.  Every image also
- * carries an exception handler on the boot-exception vectors, so a guest that
- * faults reports Cause, BadVAddr and EPC instead of wandering off and looking
- * like a hang.
- *
- * The cases:
- *
- *   tlb/shootdown     A vCPU's own tlbwi remap must be coherent with data a
- *                     peer just wrote.  Underneath: r4k_invalidate_tlb's
- *                     tlb_flush_page on the remapping vCPU.
- *   tlb/asid          ASID-tagged translation must follow EntryHi.ASID swaps.
- *                     Underneath: the flush on ASID change in the EntryHi
- *                     write path.
- *   tlb/random-global A global random write must discard an older non-global
- *                     shadow for the same virtual page.
- *   interrupt/masked-line-stays-off-the-lock
- *                     A pending line the guest has masked must leave the
- *                     execution loop lock-free.  Underneath: the flag drop in
- *                     mips_cpu_exec_interrupt() and the re-assert every
- *                     own-CPU unmask makes.
- *
- * LL/SC atomicity and cross-thread visibility used to be checked here too,
- * with two CPUs rendezvousing then contending for one word with lld/scd.
- * tests/functional/mips64/test_sn0_smp.py's
- * test_four_cpu_two_node_rendezvous_thread_multi asserts the same claim on
- * a real machine, so the duplicate qtest was dropped.
+ * Test MIPS R10000 and multi-threaded TCG CPU behavior on Origin 200.
+ */
+/*
+ * R10000 is the only CPU with a machine here. With synthesized firmware off,
+ * -smp CPUs run from reset with each generated MIPS64 raw -bios image owning
+ * the boot vector and low RAM. Failures concern target/mips or accel/tcg, not
+ * other SN0 devices. PI reports Hub-local CPU identity, avoiding the
+ * primitives under test. Guest spins are unbounded; per-phase progress words
+ * identify stalls under the host polling deadline. Boot-exception handlers
+ * report Cause, BadVAddr and EPC on faults. tlb/shootdown checks a vCPU's
+ * tlbwi remap against peer writes: r4k_invalidate_tlb calls tlb_flush_page on
+ * that vCPU. tlb/asid checks EntryHi.ASID changes and the EntryHi write-path
+ * flush. tlb/random-global checks a global random write discards an older
+ * non-global translation for the same page.
+ * interrupt/masked-line-stays-off-the-lock checks that a masked pending line
+ * leaves the execution-loop lock free: mips_cpu_exec_interrupt() drops the
+ * flag and each local unmask reasserts it. The removed two-CPU lld/scd
+ * rendezvous test checked LL/SC atomicity and cross-thread visibility;
+ * test_four_cpu_two_node_rendezvous_thread_multi in
+ * tests/functional/mips64/test_sn0_smp.py checks the same behavior on a real
+ * machine.
  */
 
 #include "qemu/osdep.h"
@@ -62,18 +39,19 @@
 /*
  * State words live in low RAM, well clear of the flash the image is loaded
  * into, and are reached through KSEG1 so the guest never depends on cache
- * behaviour.  QEMU hands out zeroed RAM, which is what makes "still zero"
- * mean "not yet published" for the spins and starts counters at zero.
- *
- * Clear of physical 1 MiB as well, where this machine overlays a 32 KiB
- * per-processor filter on RAM for the firmware's private data.  A state
- * word there is an I/O dispatch rather than a RAM access, so every read
- * and write of it takes the big lock -- which the cases below count.
+ * behaviour. QEMU hands out zeroed RAM, which is what makes "still zero" mean
+ * "not yet published" for the spins and starts counters at zero. Clear of
+ * physical 1 MiB as well, where this machine overlays a 32 KiB per-processor
+ * filter on RAM for the firmware's private data. A state word there is an I/O
+ * dispatch rather than a RAM access, so every read and write of it takes the
+ * big lock. The cases below count.
  */
 #define STATE_PHYS          0x00180000
 #define STATE_KSEG1_HI      0xa018
 
-/* Words every case publishes, so the handler and the dump are case-agnostic. */
+/*
+ * Words every case publishes, so the handler and the dump are case-agnostic.
+ */
 #define ALIVE_OFF           0x000
 #define PROGRESS_OFF        0x020
 #define DONE_OFF            0x040
@@ -161,26 +139,29 @@
 #define CP0_EPC             14
 
 /*
- * Status.ERL is bit 2.  Clearing it puts the low mapped segment under the TLB
+ * Status.ERL is bit 2. Clearing it puts the low mapped segment under the TLB
  * instead of leaving it unmapped, which is what reset hands us.
  */
 #define STATUS_ERL_CLEAR    (-5)
 
-/* Status.KX (bit 7) enables the 64-bit kernel segments the Hub read below uses. */
+/*
+ * Status.KX (bit 7) enables the 64-bit kernel segments the Hub read below
+ * uses.
+ */
 #define STATUS_KX           0x80u
 
 /*
- * The Hub-local processor number, read uncached through XKPHYS.  Bit 0 is 0
+ * The Hub-local processor number, read uncached through XKPHYS. Bit 0 is 0
  * for the node's CPU A and 1 for CPU B; with two CPUs on one node that is the
  * per-CPU identity the multi-CPU cases hold.
  */
 #define SN0_PI_CPU_NUM      0x9200000001000020ULL
 
 /*
- * EntryLo: PFN in bits 29:6, C (cache attribute) in 5:3, D bit 2, V bit 1,
- * G bit 0.  C = 2 is uncached, which is what shared data wants and which
- * costs nothing here because QEMU models no cache.  The entry is global only
- * when bit 0 is set in both halves.
+ * EntryLo: PFN in bits 29:6, C (cache attribute) in 5:3, D bit 2, V bit 1, G
+ * bit 0. C = 2 is uncached, which is what shared data wants and which costs
+ * nothing here because QEMU models no cache. The entry is global only when
+ * bit 0 is set in both halves.
  */
 #define ENTRYLO_FLAGS_GLOBAL    0x17u
 #define ENTRYLO_FLAGS_ASIDED    0x16u
@@ -334,7 +315,7 @@ static void emit_b(GuestImage *img, unsigned int target)
 
 /*
  * Forward branches are emitted with a placeholder offset and patched once the
- * target is known.  Hand-counting a forward offset is the thing most likely to
+ * target is known. Hand-counting a forward offset is the thing most likely to
  * go wrong in a program written this way, and a wrong one is a jump into the
  * middle of an unrelated sequence rather than an error anybody sees.
  */
@@ -373,14 +354,16 @@ static void patch_fwd(GuestImage *img, unsigned int at)
 
 static void emit_li(GuestImage *img, int rt, uint64_t value)
 {
-    /* lui sign-extends, so only constants with bit 31 clear come out whole. */
+    /*
+     * lui sign-extends, so only constants with bit 31 clear come out whole.
+     */
     g_assert_cmpuint(value, <, 0x80000000ULL);
     emit_lui(img, rt, value >> 16);
     emit_ori(img, rt, rt, value & 0xffff);
 }
 
 /*
- * Load an address in one of the 32-bit compatibility segments.  Here the sign
+ * Load an address in one of the 32-bit compatibility segments. Here the sign
  * extension lui performs is the point rather than a hazard: KSEG1 0xa0300000
  * becomes 0xffffffffa0300000, which is the address the guest actually uses.
  */
@@ -392,7 +375,9 @@ static void emit_li_addr(GuestImage *img, int rt, uint32_t value)
     }
 }
 
-/* Publish a word for this CPU and make it visible before anything after it. */
+/*
+ * Publish a word for this CPU and make it visible before anything after it.
+ */
 static void emit_publish(GuestImage *img, int rt, uint16_t off)
 {
     emit_sd(img, rt, R_T2, off);
@@ -459,10 +444,10 @@ static void emit_done_and_halt(GuestImage *img)
 }
 
 /*
- * Every image carries this on the boot-exception vectors.  Without it a guest
+ * Every image carries this on the boot-exception vectors. Without it a guest
  * that takes an unexpected TLB fault runs off into whatever follows and the
  * only symptom is the host's poll deadline expiring, which says nothing about
- * why.  k0 and k1 are the registers the architecture reserves for this, and
+ * why. k0 and k1 are the registers the architecture reserves for this, and
  * nothing here returns, so clobbering them is free.
  */
 static void emit_exception_handler(GuestImage *img)
@@ -487,13 +472,14 @@ static void emit_exception_handler(GuestImage *img)
 /*
  * Common entry: identify this CPU, park the state pointers, put the low
  * mapped segment under the TLB by clearing Status.ERL, fix the page size, and
- * say the CPU is running.
- *
- * Held across every case: k0 = CPUNum, t0 = state base, t2 = this CPU's words.
+ * say the CPU is running. Held across every case: k0 = CPUNum, t0 = state
+ * base, t2 = this CPU's words.
  */
 static void emit_preamble(GuestImage *img)
 {
-    /* Clear ERL so the low segment is mapped; set KX so the Hub read works. */
+    /*
+     * Clear ERL so the low segment is mapped; set KX so the Hub read works.
+     */
     emit_mfc0(img, R_T3, CP0_STATUS, 0);
     emit_addiu(img, R_T4, R_ZERO, STATUS_ERL_CLEAR);
     emit_and(img, R_T3, R_T3, R_T4);
@@ -550,7 +536,7 @@ static void emit_r10k_preamble(GuestImage *img)
 
 /*
  * Write one TLB entry: virtual page (and ASID) in vreg, even-half EntryLo in
- * loreg, odd half as given, at a fixed index.  Scratches t8 and t9, so vreg
+ * loreg, odd half as given, at a fixed index. Scratches t8 and t9, so vreg
  * and loreg must not be either.
  */
 static void emit_tlb_write(GuestImage *img, int vreg, int loreg,
@@ -655,9 +641,9 @@ static void write_r10k_guest_image(int fd, void (*build)(GuestImage *img))
 #define SD_PAGE0_KSEG1_HI   0xa020
 #define SD_TLB_INDEX        1
 /*
- * Generations.  Modest on purpose so the whole binary stays far inside the
- * 60 s qtest ceiling; a soak harness scales repetition externally rather than
- * by raising this.
+ * Generations. Modest on purpose so the whole binary stays far inside the 60
+ * s qtest ceiling; a soak harness scales repetition externally rather than by
+ * raising this.
  */
 #define SD_GENERATIONS      256
 
@@ -684,7 +670,7 @@ static void build_tlb_shootdown(GuestImage *img)
     /*
      * CPU 0 publishes generation g: it writes g's pattern into the page the
      * mapping is about to move to, which is the page nobody is reading, then
-     * announces g.  It only gets here once every CPU has acknowledged g-1, so
+     * announces g. It only gets here once every CPU has acknowledged g-1, so
      * the page it writes is not one a peer still has mapped.
      */
     leader_skip = emit_bne_fwd(img, R_K0, R_ZERO);
@@ -784,8 +770,8 @@ static void build_tlb_shootdown(GuestImage *img)
 
 /*
  * One half of the loop: select an ASID, read this CPU's V, and require the
- * pattern belonging to that ASID's page.  Records the first mismatch with
- * what was read, what was wanted, and which iteration.
+ * pattern belonging to that ASID's page. Records the first mismatch with what
+ * was read, what was wanted, and which iteration.
  */
 static void emit_asid_check(GuestImage *img, unsigned int asid, int wantreg)
 {
@@ -933,7 +919,7 @@ static void build_tlb_random_global(GuestImage *img)
                           RG_ENTRYLO_GLOBAL(RG_NEW_PFN + 1));
 
     /*
-     * Displace the global entry before reading through ASID 1.  A surviving
+     * Displace the global entry before reading through ASID 1. A surviving
      * older shadow then precedes it in QEMU's lookup order and reappears as
      * the stale translation this test catches.
      */
@@ -1153,34 +1139,31 @@ static void test_tlb_asid(const void *data)
 
 /*
  * A pending interrupt the guest has masked, and the cost of carrying it.
- *
  * Status bits 15:8 are the interrupt mask, bit 0 is IE, and bits 4:1 are KSU,
  * ERL and EXL; the guest below clears all of those and sets IE alone, which
- * is a kernel running with every line masked.  The count/compare timer is the
+ * is a kernel running with every line masked. The count/compare timer is the
  * line it leaves standing: Compare is zero out of reset and the counter
  * reaches it every wrap, so an IRIX whose clock comes from the Hub carries
  * IP7 from its first wrap to shutdown without ever taking or lowering it.
- *
  * What is pinned: carrying that line must not put the execution loop on the
- * big lock.  The loop is lock-free while cpu->interrupt_request is zero and
+ * big lock. The loop is lock-free while cpu->interrupt_request is zero and
  * acquires on every pass while it is not, so a model that leaves the flag up
- * under a masked line pays an acquire for each pass -- and eight processors
- * doing that do not boot.  Each pass here is an mtc0 to Status, which ends
- * its translation block, so the loop is re-entered once per iteration and the
- * acquisitions are countable.
- *
- * False pass to watch for: a phase that never re-enters the loop counts
- * nothing whatever the model does.  The first phase runs the identical loop
- * with the line parked ahead, so the two counts differ only by the standing
- * line, and the case fails if the second phase does not see IP7 in Cause.
+ * under a masked line pays an acquire for each pass. Eight processors
+ * doing that do not boot. Each pass here is an mtc0 to Status, which ends its
+ * translation block, so the loop is re-entered once per iteration and the
+ * acquisitions are countable. False pass to watch for: a phase that never
+ * re-enters the loop counts nothing whatever the model does. The first phase
+ * runs the identical loop with the line parked ahead, so the two counts
+ * differ only by the standing line, and the case fails if the second phase
+ * does not see IP7 in Cause.
  */
 #define MI_GO_OFF           0x100
 #define MI_CAUSE_OFF        0x120
 #define MI_STATUS_OFF       0x140
 
 /*
- * Passes each phase makes. Large enough that the harness's own polling of
- * the state words, which also takes the lock, stays in the noise.
+ * Passes each phase makes. Large enough that the harness's own polling of the
+ * state words, which also takes the lock, stays in the noise.
  */
 #define MI_PASSES           100000u
 
@@ -1241,13 +1224,12 @@ static void build_masked_interrupt(GuestImage *img)
     emit_wait_ge(img, R_T3, MI_GO_OFF);
 
     /*
-     * Count written equal to the standing Compare matches at once and
-     * nothing lowers IP7. Writing Compare equal to a just-read Count would
-     * race the counter instead -- Count keeps advancing between the read
-     * and the write, so by the time the write lands it is normally already
-     * behind, and the comparator is equality only -- so this arms the
-     * match from the deterministic side, the same direction the CP0 timer
-     * ROM pins.
+     * Count written equal to the standing Compare matches at once and nothing
+     * lowers IP7. Writing Compare equal to a just-read Count would race the
+     * counter instead. Count keeps advancing between the read and the
+     * write, so by the time the write lands it is normally already behind,
+     * and the comparator is equality only. This arms the match from the
+     * deterministic side, the same direction the CP0 timer ROM pins.
      */
     emit_mfc0(img, R_T5, CP0_COMPARE, 0);
     emit_mtc0(img, R_T5, CP0_COUNT, 0);
@@ -1367,11 +1349,11 @@ static void test_masked_interrupt_stays_off_the_lock(const void *data)
 }
 
 /*
- * The re-assert at ERET.  A line held off by EXL alone has had its flag
- * dropped by the passes above; clearing EXL with ERET must deliver it at
- * the instruction ERET returns to, not at the next edge on the line.
- * Nothing here lowers or re-raises IP7, so a missed re-assert leaves the
- * guest running the continuation with the interrupt never taken.
+ * The re-assert at ERET. A line held off by EXL alone has had its flag
+ * dropped by the passes above; clearing EXL with ERET must deliver it at the
+ * instruction ERET returns to, not at the next edge on the line. Nothing here
+ * lowers or re-raises IP7, so a missed re-assert leaves the guest running the
+ * continuation with the interrupt never taken.
  */
 #define UE_CAUSE_OFF        0x120
 #define UE_STATUS_OFF       0x140
@@ -1390,7 +1372,7 @@ static void build_unmask_by_eret(GuestImage *img)
 {
     unsigned int spin;
 
-    /* s0: IM7 open, IE set, EXL set -- EXL alone holds the line off. */
+    /* s0: IM7 open, IE set, EXL set. EXL alone holds the line off. */
     emit_mfc0(img, R_T3, CP0_STATUS, 0);
     emit_lui(img, R_T4, STATUS_KEEP_HI);
     emit_ori(img, R_T4, R_T4, STATUS_KEEP_LO);
@@ -1401,9 +1383,9 @@ static void build_unmask_by_eret(GuestImage *img)
     emit_publish(img, R_S0, UE_STATUS_OFF);
 
     /*
-     * Count written equal to the standing Compare matches at once; IP7
-     * stands and EXL holds it. See build_masked_interrupt() for why this
-     * arms from Compare into Count rather than the other way round.
+     * Count written equal to the standing Compare matches at once; IP7 stands
+     * and EXL holds it. See build_masked_interrupt() for why this arms from
+     * Compare into Count rather than the other way round.
      */
     emit_mfc0(img, R_T5, CP0_COMPARE, 0);
     emit_mtc0(img, R_T5, CP0_COUNT, 0);
@@ -1456,7 +1438,9 @@ static void test_unmask_by_eret_delivers(const void *data)
                     (STATUS_IM7 | STATUS_EXL | 1), ==,
                     STATUS_IM7 | STATUS_EXL | 1);
     g_assert_cmphex(state_word(qts, UE_CAUSE_OFF) & CAUSE_IP7, ==, CAUSE_IP7);
-    /* Taken at the instruction ERET returns to: the continuation never runs. */
+    /*
+     * Taken at the instruction ERET returns to: the continuation never runs.
+     */
     g_assert_cmphex(state_word(qts, UE_CONT_OFF), ==, 0);
     g_assert_cmphex(state_word(qts, EXC_MARK_OFF), ==, EXC_MAGIC);
     g_assert_cmphex(state_word(qts, EXC_CAUSE_OFF) & CAUSE_IP7, ==, CAUSE_IP7);

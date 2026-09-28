@@ -79,7 +79,7 @@ Where the facts live
 
 Per-chip byte behaviour is specified on the device's page under
 ``docs/specs/`` -- the Bridge page's byte-lane and device-window
-sections carry the swap-bit and width rules -- and in the datasheets
-in the origami project tree. A byte-order claim that appears only in a
+sections carry the swap-bit and width rules. A byte-order claim that
+appears only in a
 commit message or a review thread is not yet a fact anyone can build
 on; put it on the spec page.

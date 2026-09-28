@@ -1,47 +1,39 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
+/* PsiTech RAD4-KM keyboard and mouse register definitions. */
 /*
- * PsiTech RAD4-KM keyboard/mouse controller.
- *
  * A child of hw/display/psitech-rad4.c, instantiated only when that device
  * answers the RAD4-KM PCI identity (12d1:0105). Two identical hardware
- * channels carry a software role byte the driver assigns at its own
- * runtime by probing each channel with the PS/2 reset command and reading
- * the BAT-pass/ID bytes back (docs/datasheets/psitech-rad4-km.md,
- * "Established"). QEMU's own ps2-kbd/ps2-mouse core devices already answer
- * that probe correctly regardless of which channel asks, so this model
+ * channels carry a software role byte the driver assigns at its own runtime
+ * by probing each channel with the PS/2 reset command and reading the
+ * BAT-pass/ID bytes back. QEMU's own ps2-kbd/ps2-mouse core devices already
+ * answer that probe correctly regardless of which channel asks, so this model
  * fixes channel A to the keyboard and channel B to the mouse instead of
  * reproducing the driver's own runtime detection; the guest-visible
  * auto-detect outcome is unchanged.
  *
- * The register map below -- sixteen registers, each on its own 64 KiB
+ * The register map below has sixteen registers, each on its own 64 KiB
  * stride, index-for-index against the public Signetics/Philips
- * SCN2681/SCC68681 DUART family -- implements the keyboard/mouse register
- * contract docs/datasheets/psitech-rad4-km.md establishes in its
- * "Keyboard and mouse register contract" section, cleared for a bounded,
- * disclosed-approximation implementation by the independent review at
- * docs/reviews/psitech-rad4-km-register-contract-review-20260922.md. The
- * chip vendor and part number stay an Inferred approximation: that review
- * confirmed a register-map match against the public DUART family, not a
- * vendor string or part number read from the driver object. Every
- * register this file does not implement stays LOG_UNIMP; see the
- * datasheet's Established/Inferred/Unknown split before changing this
- * file's register policy.
+ * SCN2681/SCC68681 DUART family. It implements the keyboard/mouse register
+ * contract the driver exercises. The chip vendor and part number are an
+ * inferred approximation: the register map matches the public DUART family,
+ * but nothing in the driver object names a specific vendor or part number, so
+ * the exact silicon behind it is not established. Every register this file
+ * does not implement stays LOG_UNIMP rather than guessing a behavior for it.
  *
- * Register offset 0x78 in the driver's own object is established only as
- * a pointer to a distinct, board-level interrupt gate above this chip's
- * own ISR/IMR; no evidence names which physical chip or address it
- * reaches, and this model does not invent that register or claim to
- * model it. What is a plain PCI-structural fact, not a guess: this is a
- * single-function PCI device (docs/datasheets/psitech-rad4-km.md), so it
- * has exactly one INTx# pin, and IMR gating which ISR bits reach that pin
- * is the ordinary Signetics/Philips SCN2681/SCC68681 DUART family
- * contract the register map's own header comment already cites -- a
- * public chip-family fact, not a board-specific one. This model wires
- * that much: the channels' ISR condition, masked by IMR, drives this
- * device's own aggregate qemu_irq output, which hw/display/psitech-rad4.c
- * ORs into its single shared PCI interrupt line alongside INTCSR's own
- * frame interrupt. It does not assert where a real board's offset-0x78
- * gate would additionally report this condition upstream of that pin.
+ * Register offset 0x78 in the driver's own object is established only as a
+ * pointer to a distinct, board-level interrupt gate above this chip's own
+ * ISR/IMR; no evidence names which physical chip or address it reaches, and
+ * this model does not invent that register or claim to model it. What is a
+ * plain PCI-structural fact, not a guess: this is a single-function PCI
+ * device, so it has exactly one INTx# pin, and IMR gating which ISR bits
+ * reach that pin is the ordinary Signetics/Philips SCN2681/SCC68681 DUART
+ * family contract the register map's own header comment already cites. This
+ * is a public chip-family fact, not a board-specific one. This model wires
+ * that much: the channels' ISR condition, masked by IMR, drives this device's
+ * own aggregate qemu_irq output, which hw/display/psitech-rad4.c ORs into its
+ * single shared PCI interrupt line alongside INTCSR's own frame interrupt. It
+ * does not assert where a real board's offset-0x78 gate would additionally
+ * report this condition upstream of that pin.
  */
 
 #ifndef HW_INPUT_PSITECH_RAD4_KM_H
@@ -56,9 +48,10 @@
 OBJECT_DECLARE_SIMPLE_TYPE(PsitechRad4KMState, PSITECH_RAD4_KM)
 
 /*
- * The 64 KiB per-register stride is the board's own PCI-to-local-bus
- * address decode, not the chip family's native register-select spacing
- * (datasheet, "Inferred"). Every access is 32-bit.
+ * The 64 KiB per-register stride is the board's own PCI-to-local-bus address
+ * decode, not the chip family's native register-select spacing, which is an
+ * inferred approximation rather than a documented fact for this board. Every
+ * access is 32-bit.
  */
 #define RAD4_KM_REG_STRIDE      0x10000
 #define RAD4_KM_REG_COUNT       16
@@ -68,7 +61,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(PsitechRad4KMState, PSITECH_RAD4_KM)
 #define RAD4_KM_REG_MRA          0x0     /* MR1A/MR2A, pointer-selected */
 #define RAD4_KM_REG_SRA_CSRA     0x1     /* SRA (read) / CSRA (write) */
 #define RAD4_KM_REG_CRA          0x2     /* command register A */
-#define RAD4_KM_REG_RHRA_THRA    0x3     /* data register A, both directions */
+#define RAD4_KM_REG_RHRA_THRA    0x3     /* data register A, read and write */
 #define RAD4_KM_REG_ACR          0x4     /* auxiliary control, chip-wide */
 #define RAD4_KM_REG_ISR_IMR      0x5     /* ISR (read) / IMR (write) */
 #define RAD4_KM_REG_CTUR         0x6     /* counter/timer upper, never used */
@@ -76,8 +69,8 @@ OBJECT_DECLARE_SIMPLE_TYPE(PsitechRad4KMState, PSITECH_RAD4_KM)
 #define RAD4_KM_REG_MRB          0x8     /* MR1B/MR2B, pointer-selected */
 #define RAD4_KM_REG_SRB_CSRB     0x9     /* SRB (read) / CSRB (write) */
 #define RAD4_KM_REG_CRB          0xa     /* command register B */
-#define RAD4_KM_REG_RHRB_THRB    0xb     /* data register B, both directions */
-#define RAD4_KM_REG_IVR          0xc     /* interrupt vector, never accessed */
+#define RAD4_KM_REG_RHRB_THRB    0xb     /* data register B, read and write */
+#define RAD4_KM_REG_IVR          0xc     /* interrupt vector; not accessed */
 #define RAD4_KM_REG_OPCR         0xd     /* output port configuration */
 #define RAD4_KM_REG_OPR_SET      0xe     /* set output port bits */
 #define RAD4_KM_REG_OPR_RESET    0xf     /* reset output port bits */
@@ -89,8 +82,8 @@ OBJECT_DECLARE_SIMPLE_TYPE(PsitechRad4KMState, PSITECH_RAD4_KM)
 /*
  * Command register (index 0x2/0xa, write): bits 1:0 select the Rx enable
  * state, bits 3:2 the Tx enable state, and bits 7:4 (MISC) name a command.
- * Values match the cited hex writes in docs/datasheets/psitech-rad4-km.md
- * exactly (0x1a = MISC 1 + Rx/Tx disable, 0x05 = Rx/Tx enable, and so on).
+ * Values match the driver's own hex writes exactly (0x1a = MISC 1 + Rx/Tx
+ * disable, 0x05 = Rx/Tx enable, and so on).
  */
 #define RAD4_KM_CR_RX_MASK           0x03
 #define RAD4_KM_CR_RX_ENABLE         0x01
@@ -107,9 +100,9 @@ OBJECT_DECLARE_SIMPLE_TYPE(PsitechRad4KMState, PSITECH_RAD4_KM)
 #define RAD4_KM_CR_MISC_RESET_BRK    5
 
 /*
- * ISR bits (index 0x5, read): per-channel RxRDY/TxRDY positions match the
- * bit positions docs/datasheets/psitech-rad4-km.md cites for the driver's
- * own IMR shadow test (0x02 for channel A, 0x20 for channel B).
+ * ISR bits (index 0x5, read): per-channel RxRDY/TxRDY positions match the bit
+ * positions the driver's own IMR shadow test uses (0x02 for channel A, 0x20
+ * for channel B).
  */
 #define RAD4_KM_ISR_TXRDY_A       (1u << 0)
 #define RAD4_KM_ISR_RXRDY_A       (1u << 1)

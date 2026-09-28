@@ -1,19 +1,13 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
-/*
- * InfiniteReality (KONA) command-port selector tables. See the header
- * for what these bind to, their evidence source, and every excluded
- * selector's reason.
- */
+/* InfiniteReality command-port selector tables. */
 #include "qemu/osdep.h"
 #include "hw/misc/sgi-kona-ports.h"
 
 const SGICommandPortSelector sgi_kona_fifo_selectors[] = {
     /*
-     * KONAsetdisplaymode: selector, then 0, then the mode/timing
-     * argument, then the fault-byte argument -- the one entry in this
-     * table whose selector-first word order was hand-confirmed by a
-     * full, deliberate instruction-by-instruction read, not inferred
-     * from the raw capture.
+     * KONAsetdisplaymode: selector, then 0, then the mode/timing argument,
+     * then the fault-byte argument, the one entry in this table whose
+     * selector-first word order is confirmed, not inferred.
      */
     { 0x1e6, 3 },
     { 0x1f4, 0 }, /* KONAvalidateclip / KONAschedswapbuf: bare */

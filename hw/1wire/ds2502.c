@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
+/* DS2501 and DS2502 add-only EPROM memory commands. */
 #include "qemu/osdep.h"
 #include "qemu/module.h"
 #include "qom/object.h"
@@ -9,26 +10,26 @@
 #include "trace/trace-hw_1wire.h"
 
 /*
- * DS2502-family add-only EPROM (docs/library/dallas-1wire-part-specs.md
- * section C.1). Every memory command shares one 3-byte header -- command,
- * TA1 (address low), TA2 (address high) -- answered by an echoed CRC-8 of
- * those three bytes, then diverges only in how the data phase is framed:
+ * DS2502-family add-only EPROM (the DS2502 datasheet, section C.1).
+ * Every memory command starts with a 3-byte header: command, TA1 (address
+ * low), and TA2 (address high). An echoed CRC-8 covers those bytes. The
+ * commands differ in how they frame the data phase:
  *
  *   Read Memory (F0h)          a flat stream, no per-page CRC; if the read
  *                               runs through the last byte of memory
  *                               (007Fh) one CRC-8 over the data read
  *                               follows, and only then.
  *   Read Data+CRC (C3h)        a CRC-8 after every 32-byte page, with no
- *                               defined end -- the datasheet never caps it
+ *                               defined end. The datasheet never caps it
  *                               at end of memory, so the model does not
  *                               either.
  *   Read Status (AAh)          the 8-byte status field 0000h-0007h, closed
  *                               by one CRC-8 the same way Read Memory's is.
  *
  * F0h and C3h answering identically at a page boundary is exactly the bug
- * this device exists to avoid (see the extraction's "Contradictions"
- * section); the two are kept as visibly separate code paths below rather
- * than unified, so that difference cannot regress silently.
+ * this device exists to avoid; the two are kept as visibly separate code
+ * paths below rather than unified, so that difference cannot regress
+ * silently.
  *
  * Write Memory (0Fh) and Write Status (55h) are refused: these parts are
  * modelled add-only, and the base 1-Wire layer logs LOG_UNIMP for any byte
@@ -45,8 +46,9 @@
 
 /*
  * What the *previous* function_byte call placed on the wire, so this call
- * knows how to account for it before deciding what comes next -- see the
- * one-window lag documented on OneWireSlaveClass::function_byte.
+ * knows how to account for it before
+ * deciding what comes next; see the one-window lag documented on
+ * OneWireSlaveClass::function_byte.
  */
 typedef enum {
     DS2502_UNIT_DATA,       /* a plain data or status byte */
@@ -69,10 +71,11 @@ struct DS2502State {
 
     /*
      * Header capture: the command byte, then TA1, then TA2, exactly as
-     * received on the wire. The echoed CRC-8 is computed over the address
-     * as MASKED rather than over these; they are kept because the mask
-     * width is a property of the command, so the raw bytes are what a
-     * later window has to re-derive the address from.
+     * received on the wire. The echoed CRC-8 is
+     * computed over the address as MASKED rather than over these; they are
+     * kept because the mask width is a
+     * property of the command, so the raw bytes are what a later window has
+     * to re-derive the address from.
      */
     uint8_t cmd;
     uint8_t hdr[3];
@@ -83,7 +86,8 @@ struct DS2502State {
     uint16_t page_end;      /* C3h only: last address of the current page */
     uint8_t crc_acc;        /* running CRC-8 of the segment now in progress */
     uint8_t sent_byte;      /* the data/status byte value last placed */
-    uint8_t unit;           /* a DS2502Unit value; fixed width so it migrates */
+    /* a DS2502Unit value; fixed width so it migrates */
+    uint8_t unit;
     bool finished;          /* nothing further is defined; answer 0xff */
 };
 
@@ -96,16 +100,14 @@ static uint8_t ds2502_status_byte(uint16_t addr)
 {
     /*
      * 0007h is factory-programmed 00h; every other status byte
-     * (write-protect, the four redirection bytes, and the two reserved
-     * bytes) is unprogrammed EPROM, which reads as 0xff.
+     * (write-protect, the four redirection bytes, and the
+     * two reserved bytes) is unprogrammed EPROM, which reads as 0xff.
      */
     return (addr == DS2502_STATUS_FACTORY_ADDR) ? 0x00 : 0xff;
 }
 
-/*
- * Read Memory (F0h): flat stream, one CRC-8 only at the true end of
- * memory (007Fh).
- */
+/* Read Memory (F0h): flat stream, one CRC-8 only at the true end of memory
+ * (007Fh). */
 static uint8_t ds2502_advance_read_memory(DS2502State *d)
 {
     if (d->unit == DS2502_UNIT_FINAL_CRC) {
@@ -128,7 +130,7 @@ static uint8_t ds2502_advance_read_memory(DS2502State *d)
 
 /*
  * Read Data / Generate 8-bit CRC (C3h): a CRC-8 after every 32-byte page,
- * indefinitely -- the datasheet never caps this command at end of memory.
+ * indefinitely. The datasheet does not cap this command at end of memory.
  */
 static uint8_t ds2502_advance_read_data_crc(DS2502State *d)
 {
@@ -155,11 +157,12 @@ static uint8_t ds2502_advance_read_data_crc(DS2502State *d)
 }
 
 /*
- * Read Status (AAh): the 8-byte field 0000h-0007h, one CRC-8 at the end.
- * A start address already past 0007h leaves the closing CRC unreachable
- * within any bounded transaction: addr is a 16-bit counter that only
- * ever increments, so it would have to wrap all the way through the full
- * 0000h-FFFFh range before landing on 0007h again.
+ * Read Status (AAh): the 8-byte field 0000h-0007h, one CRC-8 at the end. A
+ * start address already past 0007h leaves
+ * the closing CRC unreachable within any bounded transaction: addr is a
+ * 16-bit counter that only ever increments,
+ * so it would have to wrap all the way through the full 0000h-FFFFh range
+ * before landing on 0007h again.
  */
 static uint8_t ds2502_advance_read_status(DS2502State *d)
 {
@@ -208,10 +211,11 @@ static uint8_t ds2502_advance_stream(DS2502State *d)
 }
 
 /*
- * The address the stream reads from, and the one the echoed CRC-8 covers.
- * A memory start address above 007Fh has its 9 MSBs forced to zero
- * (datasheet C.1); no masking is documented for the status field, so AAh
- * keeps the address as sent.
+ * The address the stream reads from, and the one the echoed CRC-8 covers. A
+ * memory start address above 007Fh has
+ * its 9 MSBs forced to zero (datasheet C.1); no masking is documented for the
+ * status field, so AAh keeps the
+ * address as sent.
  */
 static uint16_t ds2502_start_address(const DS2502State *d)
 {
@@ -222,13 +226,14 @@ static uint16_t ds2502_start_address(const DS2502State *d)
 }
 
 /*
- * Over the address AS MASKED, which is what makes the datasheet's
- * "deliberate CRC mismatch" true: a master that asked above 007Fh checks
- * its own echo against the bytes it sent, the part echoed the check over
- * the address it will actually read, and the disagreement is how the
- * master finds out. Echoing the check over the raw bytes instead would
- * agree with the master and hand it aliased data as if it were the data
- * it asked for.
+ * Over the address AS MASKED, which is what makes the datasheet's "deliberate
+ * CRC mismatch" true: a master that
+ * asked above 007Fh checks its own echo against the bytes it sent, the part
+ * echoed the check over the address it
+ * will actually read, and the disagreement is how the master finds out.
+ * Echoing the check over the raw bytes
+ * instead would agree with the master and hand it aliased data as if it were
+ * the data it asked for.
  */
 static uint8_t ds2502_header_crc(const DS2502State *d)
 {
@@ -259,9 +264,9 @@ static bool ds2502_function_byte(OneWireSlave *s, uint8_t in, uint8_t *out)
         default:
             trace_ds2502_command(in, false);
             /*
-             * Add-only: writes are refused, not misread as a Read Memory
-             * or Read Status. An unrecognised byte is refused the same
-             * way. The base layer logs LOG_UNIMP for both.
+             * Add-only: writes are refused, not misread as a Read Memory or
+             * Read Status. An unrecognised byte is
+             * refused the same way. The base layer logs LOG_UNIMP for both.
              */
             return false;
         }
@@ -273,8 +278,9 @@ static bool ds2502_function_byte(OneWireSlave *s, uint8_t in, uint8_t *out)
             *out = 0xff;                /* TA2 still to come, master write */
         } else {
             /*
-             * Both address bytes are in hand: the header CRC-8 lands on
-             * the wire in the very next window, right after TA2.
+             * Both address bytes are in hand: the header CRC-8 lands on the
+             * wire in the very next window, right
+             * after TA2.
              */
             *out = ds2502_header_crc(d);
             trace_ds2502_header(d->cmd, ds2502_start_address(d), *out);
@@ -284,9 +290,9 @@ static bool ds2502_function_byte(OneWireSlave *s, uint8_t in, uint8_t *out)
 
     if (!d->streaming) {
         /*
-         * The header CRC window has just been read (in is filler). Start
-         * the content stream: the byte right after it is the first data
-         * or status byte.
+         * The header CRC window has just been read (in is filler). Start the
+         * content stream: the byte right after
+         * it is the first data or status byte.
          */
         d->streaming = true;
         d->crc_acc = 0;
@@ -296,10 +302,11 @@ static bool ds2502_function_byte(OneWireSlave *s, uint8_t in, uint8_t *out)
         d->addr = ds2502_start_address(d);
         if (d->cmd == DS2502_CMD_READ_STATUS) {
             /*
-             * Unmasked, per ds2502_start_address(): an out-of-range
-             * status start leaves the closing CRC unreachable within any
-             * bounded transaction, since addr would have to wrap the full
-             * 16-bit range to reach 0007h again.
+             * Unmasked, per ds2502_start_address(): an out-of-range status
+             * start leaves the closing CRC unreachable
+             * within any bounded transaction, since addr would have to wrap
+             * the full 16-bit range to reach 0007h
+             * again.
              */
             d->sent_byte = ds2502_status_byte(d->addr);
         } else {
@@ -342,9 +349,9 @@ void ds2502_set_image(DeviceState *dev, const uint8_t *buf, size_t len)
 
     for (size_t i = 0; i < n; i++) {
         /*
-         * A page beyond this part's programmable count always reads 0xff
-         * and cannot be programmed, even if the caller's image has real
-         * data there.
+         * A page beyond this part's programmable count always reads 0xff and
+         * cannot be programmed, even if the
+         * caller's image has real data there.
          */
         d->data[i] = (i < limit) ? buf[i] : 0xff;
     }
@@ -359,12 +366,14 @@ static void ds2502_instance_init(Object *obj)
 
 /*
  * `cmd` is loaded unvalidated: a migration stream is not trusted input.
- * ds2502_advance_stream()'s switch on `cmd` only ever reaches its
- * g_assert_not_reached() default when `cmd` holds something other than
- * 0 (no command chosen yet) or one of the three read commands -- a state
- * this device itself never produces, but an incoming stream could claim.
- * Reject it here instead of aborting QEMU, the same way the base class's
- * own post_load rejects an out-of-range `bit` (hw/1wire/core.c).
+ * ds2502_advance_stream()'s switch on `cmd`
+ * only ever reaches its g_assert_not_reached() default when `cmd` holds
+ * something other than 0 (no command chosen
+ * yet) or one of the three read commands. This device never
+ * produces such a state, but an incoming stream could claim it. Reject it
+ * here instead of aborting QEMU, the same way the base
+ * class's own post_load rejects an
+ * out-of-range `bit` (hw/1wire/core.c).
  */
 static int ds2502_post_load(void *opaque, int version_id)
 {

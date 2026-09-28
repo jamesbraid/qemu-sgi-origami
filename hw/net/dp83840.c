@@ -213,8 +213,8 @@ void dp83840_reset(DP83840State *s)
     /*
      * Reused for the DP83843's LBR at the same address: both loopback-select
      * bits (4 and 5) are clear in this value, which is what a reset must
-     * leave them regardless of part, and the DP83843 datasheet is not in the
-     * Library to give its own reset value (docs/datasheets/dp83840.md).
+     * leave them regardless of part, and the public DP83843 datasheet does
+     * not give a separate reset value for this shared address.
      */
     s->pcs_config = DP83840_PCS_RESET_VALUE;
     s->loopback_bypass = DP83840_LBREMR_RESET_VALUE;

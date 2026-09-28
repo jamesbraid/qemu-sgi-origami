@@ -1,73 +1,68 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * sgi-pci-expansion: an Origin 2000 module's optional XIO PCI expansion
- * board, as an XIO board on the sgi-xio-board base class.
+ * board on the sgi-xio-board base class.
  *
  * The Origin 2000 module descriptor reserves crosstalk position IO2 for an
  * optional PCI expansion, but does not establish whether a given system has
  * one fitted, nor its numeric Crossbow widget identity or any onboard
- * population beyond a bare Bridge and PCI bus
- * (docs/machines/layers/modules/ip27-origin2000.yaml, the "pci-expansion"
- * connector entry: "Occupancy and numeric Crossbow widget identity are
- * unresolved"). Unlike sgi-ip29-io and sgi-baseio, no reviewed source gives
- * this board a fixed onboard device population or a real board part
- * number, so the plan names this class its one `-device` demonstrator
- * (docs/plans/sn-machine-model.md, "SGI boards (new)"): a plain Bridge, its
- * PCI bus named so a following `-device ...,bus=<name>` can populate it.
+ * population beyond a bare Bridge and PCI bus. Unlike sgi-ip29-io and
+ * sgi-baseio, no reviewed source gives this board a fixed onboard device
+ * population or a real board part number, so this class is the family's one
+ * `-device` demonstrator: a plain Bridge, its PCI bus named so a following
+ * `-device ...,bus=<name>` can populate it.
  *
  * `-device`-creatable: build_widget() below requires "fabric" before this
- * board's own realize, and every candidate fabric (a Crossbow's own
- * packet-ingress region) lives under a Crossbow the family builder
- * (sn-machine.c) realizes during machine init, before a command-line
- * device exists to reach it. sgi_machine_build_crossbars() there holds
- * one populated-at-startup widget back per Crossbow and prepares a spare
- * fabric proxy against it; a machine-init-done notifier
- * (sgi_machine_done()) finishes that proxy, aliasing it onto the
- * Crossbow's own real packet ingress, once every Crossbow the machine
- * builds has realized. "fabric" on a `-device` board resolves against
- * that proxy.
+ * board's realize, and every candidate fabric (a Crossbow's packet-ingress
+ * region) lives under a Crossbow the family builder (sn-machine.c) realizes
+ * during machine init, before a command-line device exists to reach it.
+ * sgi_machine_build_crossbars() there holds one populated-at-startup widget
+ * back per Crossbow and prepares a spare fabric proxy against it; a
+ * machine-init-done notifier (sgi_machine_done()) finishes that proxy,
+ * aliasing it onto the Crossbow's real packet ingress, once every Crossbow
+ * the machine builds has realized. "fabric" on a `-device` board resolves
+ * against that proxy.
  *
- * This gives a `-device` board a two-way widget. build_widget() below
- * records its Bridge's own faces and hands them to
- * sgi_xtalk_crossbow_link_claim_fabric(), which tells sgi_machine_done()
- * to finish the attachment once it finishes the proxy -- without that
- * call the spare widget stays not-alive and the Crossbow disables the
- * proxy's whole target region, same as any other not-alive port
- * (hw/misc/sgi-xbow.c, sgi_xbow_sync_routes()). sgi_machine_done()
- * registers the board's faces as the widget's inbound destination
- * (sgi_xbow_attach_endpoint_live(), the post-realize counterpart of the
- * sgi_xbow_attach_endpoint() an onboard board uses before its Crossbow
- * realizes) and brings its link alive (sgi_xbow_mark_widget_alive()). A
- * processor or peer widget then reaches this board's Bridge through its
- * own Crossbow, and the board's Bridge sends packets and interrupts out to
- * any populated widget -- the same both-way path an onboard widget has. A
- * topology with no widget to spare (every one already populated at
- * startup) leaves no proxy to resolve "fabric" against, and this board's
- * own realize refuses.
+ * This gives a `-device` board a two-way widget. build_widget() below records
+ * its Bridge's faces and hands them to
+ * sgi_xtalk_crossbow_link_claim_fabric(), which tells sgi_machine_done() to
+ * finish the attachment once it finishes the proxy. Without that call, the
+ * spare widget stays not-alive and the Crossbow disables the proxy's whole
+ * target region, same as any other not-alive port (hw/misc/sgi-xbow.c,
+ * sgi_xbow_sync_routes()). sgi_machine_done() registers the board's faces as
+ * the widget's inbound destination (sgi_xbow_attach_endpoint_live(), the
+ * post-realize counterpart of the sgi_xbow_attach_endpoint() an onboard board
+ * uses before its Crossbow realizes) and brings its link alive
+ * (sgi_xbow_mark_widget_alive()). A processor or peer widget then reaches
+ * this board's Bridge through its Crossbow, and the board's Bridge sends
+ * packets and interrupts out to any populated widget, the same both-way path
+ * an onboard widget has. A topology with no widget to spare (every one
+ * already populated at startup) leaves no proxy to resolve "fabric" against,
+ * and this board's realize refuses.
  *
- * Bridge's own "board-part" is a required, exactly-12-character identity
- * register value (hw/pci-host/sgi-bridge.h,
- * sgi_bridge_board_part_error()); with no observed part number for the
- * bare board, the class defaults to the same explicit "not observed"
- * placeholder already established for an XBridge head with no board
- * behind it (hw/pci-host/sgi-xbridge.h, SGI_XBRIDGE_NIC_PLACEHOLDER_PART).
- * A product built on this class sets "board-part", "board-barcode",
- * "board-revision" and "board-name" to its own board-identity record and
- * "bridge-revision" to its Bridge chip's revision; they pass straight
- * through to the internal Bridge. With "board-name" unset the Bridge
- * keeps its older text page, and with "bridge-revision" 0 its own
+ * Bridge's "board-part" is a required, exactly-12-character identity register
+ * value (hw/pci-host/sgi-bridge.h, sgi_bridge_board_part_error()); with no
+ * observed part number for the bare board, the class defaults to the same
+ * explicit "not observed" placeholder already established for an XBridge head
+ * with no board behind it (hw/pci-host/sgi-xbridge.h,
+ * SGI_XBRIDGE_NIC_PLACEHOLDER_PART). A product built on this class sets
+ * "board-part", "board-barcode", "board-revision" and "board-name" to its
+ * board-identity record and "bridge-revision" to its Bridge chip's revision;
+ * they pass straight through to the internal Bridge. With "board-name" unset
+ * the Bridge keeps its older text page, and with "bridge-revision" 0 its
  * default revision.
  *
  * "slots" limits the PCI device positions a card may take to 0 .. slots-1,
  * for a carrier with fewer physical slots than the Bridge has device
- * positions: the Origin 2000 PCI Carrier Assembly has three (its owner's
- * guide, 007-3456-003 printed page 34). Which device number each physical
- * slot is wired to is not captured, so the first three are an
- * approximation. 0, the default, leaves every Bridge device position open.
+ * positions:
+ * the Origin 2000 PCI Carrier Assembly has three (itser's guide, 007-3456-003
+ * printed page 34). Which device number each physical slot is wired to is not
+ * established, so the first three are an approximation. 0, the default,
+ * leaves every Bridge device position open.
  *
- * "fabric", "fabric-base", "fabric-node-shift" and "fabric-widget-shift"
- * pass straight through to the internal Bridge; see sgi-ip29-io's header
- * for why this board does not fix them itself.
+ * "fabric", "fabric-base", "fabric-node-shift" and "fabric-widget-shift" pass
+ * straight through to the internal Bridge; see sgi-ip29-io's header for why
+ * this board does not fix them itself.
  */
 
 #include "qemu/osdep.h"
@@ -87,7 +82,7 @@
 #define TYPE_SGI_PCI_EXPANSION "sgi-pci-expansion"
 OBJECT_DECLARE_SIMPLE_TYPE(SGIPciExpansionState, SGI_PCI_EXPANSION)
 
-/* Placeholder; see sgi-ip29-io's own identical constant. */
+/* Placeholder; see sgi-ip29-io's identical constant. */
 #define PCI_EXPANSION_SERIAL_PLACEHOLDER 0x060504030201ULL
 
 struct SGIPciExpansionState {
@@ -166,12 +161,12 @@ static bool pci_expansion_build_widget(SGIXioBoardState *board,
     board->packet_face = sgi_bridge_packet_face(s->bridge);
 
     /*
-     * Claim the spare fabric proxy now the Bridge's own faces exist, so
+     * Claim the spare fabric proxy now the Bridge's faces exist, so
      * sgi_machine_done() both brings the spare widget's link alive for this
      * board's outbound packets and registers those faces as the widget's
-     * inbound destination -- a processor or peer widget reaches this board's
-     * Bridge through its own Crossbow the same way it reaches any onboard
-     * widget. A fixture wiring "fabric" to a plain sink is a no-op here.
+     * inbound destination. A processor or peer widget reaches this board's
+     * Bridge through its Crossbow the same way it reaches any onboard widget.
+     * A fixture wiring "fabric" to a plain sink is a no-op here.
      */
     sgi_xtalk_crossbow_link_claim_fabric(s->fabric, board->cpu_face,
                                          board->packet_face);
@@ -216,7 +211,7 @@ static void pci_expansion_class_init(ObjectClass *oc, const void *data)
 
     dc->desc = "Origin 2000 XIO PCI expansion board";
     dc->vmsd = &vmstate_pci_expansion;
-    /* See the header comment above for what "fabric" resolves against. */
+    /* See the header above for what "fabric" resolves against. */
     dc->user_creatable = true;
     device_class_set_props(dc, pci_expansion_properties);
     bc->build_widget = pci_expansion_build_widget;
