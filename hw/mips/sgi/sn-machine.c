@@ -3119,6 +3119,21 @@ static void sgi_machine_reset(MachineState *machine, ResetType type)
 
 /* ---- Machine properties (once, on the family base) ---- */
 
+/*
+ * The topology, its node count and its processor population choose what
+ * the machine builds, and the machine keeps reading them afterwards (a
+ * system reset walks the built topology). Once it is built, a change
+ * would describe a machine that does not exist, so it is refused.
+ */
+static bool sgi_machine_built(const char *name, Error **errp)
+{
+    if (phase_check(PHASE_MACHINE_INITIALIZED)) {
+        error_setg(errp, "%s cannot change once the machine is built", name);
+        return true;
+    }
+    return false;
+}
+
 static char *sgi_machine_get_population(Object *obj, Error **errp)
 {
     return g_strdup(SGI_MACHINE(obj)->population ?
@@ -3130,6 +3145,9 @@ static void sgi_machine_set_population(Object *obj, const char *value,
 {
     SGIMachineState *s = SGI_MACHINE(obj);
 
+    if (sgi_machine_built("population", errp)) {
+        return;
+    }
     g_free(s->population);
     s->population = *value ? g_strdup(value) : NULL;
 }
@@ -3146,6 +3164,9 @@ static void sgi_machine_set_topology(Object *obj, const char *value,
 {
     SGIMachineState *s = SGI_MACHINE(obj);
 
+    if (sgi_machine_built("topology", errp)) {
+        return;
+    }
     g_free(s->topology_name);
     s->topology_name = g_strdup(value);
     s->view = NULL;
@@ -3173,7 +3194,8 @@ static void sgi_machine_set_nodes(Object *obj, Visitor *v, const char *name,
     SGIMachineState *s = SGI_MACHINE(obj);
     uint32_t value;
 
-    if (!visit_type_uint32(v, name, &value, errp)) {
+    if (sgi_machine_built(name, errp) ||
+        !visit_type_uint32(v, name, &value, errp)) {
         return;
     }
     if (!value) {
