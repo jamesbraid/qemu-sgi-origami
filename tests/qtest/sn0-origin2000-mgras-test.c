@@ -8280,10 +8280,12 @@ static void gl_list_triangle(unsigned int k, uint32_t *w)
  * Pool words from offset: the header words, glBegin when first, triangles
  * first to first + count - 1, glEnd when last. Returns the words written.
  */
+typedef void GlListTriangle(unsigned int k, uint32_t *w);
+
 static unsigned int gl_list_page(QTestState *qts, uint32_t offset,
                                  const uint32_t *header, unsigned int hwords,
-                                 unsigned int first, unsigned int count,
-                                 bool begin, bool end)
+                                 GlListTriangle *triangle, unsigned int first,
+                                 unsigned int count, bool begin, bool end)
 {
     g_autofree uint32_t *w = g_new(uint32_t, hwords + 2 +
                                    count * GL_LIST_TRIANGLE_WORDS);
@@ -8295,7 +8297,7 @@ static unsigned int gl_list_page(QTestState *qts, uint32_t offset,
         w[n++] = GL_BEGIN_TRIANGLES;
     }
     for (unsigned int k = first; k < first + count; k++) {
-        gl_list_triangle(k, w + n);
+        triangle(k, w + n);
         n += GL_LIST_TRIANGLE_WORDS;
     }
     if (end) {
@@ -8325,30 +8327,152 @@ static void gl_call_list(QTestState *qts, uint32_t offset, uint32_t size)
 }
 
 /*
- * The first page of the probe's list, as the run's pool dump holds it:
- * header 0x4000 0x1000 0x3f9, glBegin and the first 78 triangles, and the
- * size 0x3fa the client sent, which covers exactly those words. The
- * window must be those 78 triangles on the clear: the SHA-256 is of the
- * 128x128 RGB bytes gl_min_expected.py's coverage rule gives for them
- * (never of this model's output).
+ * The probe's list as the run's pool dump holds it: four pages, each
+ * beginning with its header words (previous offset, next offset and the
+ * next range's size, or previous offset and 0 on the last), then whole
+ * packets: glBegin and triangles 0-77, 78-155, 156-233, then 234-255 and
+ * glEnd. The client sent one execute, offset 0 and size 0x3fa, which
+ * covers page 0 alone. The window must be all 256 triangles on the
+ * clear: the SHA-256 is of the 128x128 RGB bytes gl_min_expected.py
+ * writes for the list case (list.ppm), never of this model's output.
  */
-#define GL_LIST_FIRST_PAGE_SHA256 \
-    "298b75c489ebf7db7794b3f32ab95670f0a0813f302911510c3a10344e4dbaeb"
+#define GL_LIST_SHA256 \
+    "1b59646c9996fa22c44a39337023d4611ff83766279777269ad28b69d94f92f7"
+
+static void gl_list_probe_pool(QTestState *qts)
+{
+    static const uint32_t header[4][3] = {
+        { 0x4000, 0x1000, 0x3f9 }, { 0, 0x2000, 0x3f9 },
+        { 0x1000, 0x3000, 0x121 }, { 0x2000, 0 },
+    };
+    static const unsigned int first[] = { 0, 78, 156, 234, 256 };
+    static const uint32_t size[] = { 0x3fa, 0x3f9, 0x3f9, 0x121 };
+
+    gl_list_install(qts, 4);
+    for (int i = 0; i < 4; i++) {
+        g_assert_cmpuint(gl_list_page(qts, 0x1000 * i, header[i], i < 3 ? 3 : 2,
+                                      gl_list_triangle, first[i],
+                                      first[i + 1] - first[i], i == 0, i == 3),
+                         ==, size[i]);
+    }
+}
 
 static void test_gl_list_draws_the_probe_list(void)
 {
-    static const uint32_t header[] = { 0x4000, 0x1000, 0x3f9 };
     g_autofree uint32_t *rgb = NULL;
 
     mgras_reset();
     gl_list_frame(qts);
-    gl_list_install(qts, 4);
-    g_assert_cmpuint(gl_list_page(qts, 0, header, 3, 0, 78, true, false), ==,
-                     0x3fa);
+    gl_list_probe_pool(qts);
     gl_call_list(qts, 0, 0x3fa);
     gl_word(qts, GL_FLUSH);
     rgb = mgras_screendump(qts);
-    gl_check_window_sha256(rgb, GL_LIST_FIRST_PAGE_SHA256);
+    gl_check_window_sha256(rgb, GL_LIST_SHA256);
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+}
+
+/*
+ * The chain decides the order, not the pool: the same list with its
+ * ranges at pool offsets 0x3800, 0x0100, 0x1400 and 0x2800, each header
+ * naming the next, draws the same window. The first range runs from pool
+ * page 3 into page 4, and none starts on a page. Calling the list a
+ * second time, as list-twice does, draws the same pixels.
+ */
+static void test_gl_list_follows_the_chain(void)
+{
+    static const uint32_t header[4][3] = {
+        { 0, 0x100, 0x3f9 }, { 0x3800, 0x1400, 0x3f9 },
+        { 0x100, 0x2800, 0x121 }, { 0x1400, 0 },
+    };
+    static const uint32_t offset[] = { 0x3800, 0x100, 0x1400, 0x2800 };
+    static const unsigned int first[] = { 0, 78, 156, 234, 256 };
+    g_autofree uint32_t *rgb = NULL;
+
+    mgras_reset();
+    gl_list_frame(qts);
+    gl_list_install(qts, 5);
+    for (int i = 0; i < 4; i++) {
+        gl_list_page(qts, offset[i], header[i], i < 3 ? 3 : 2,
+                     gl_list_triangle, first[i], first[i + 1] - first[i],
+                     i == 0, i == 3);
+    }
+    gl_call_list(qts, 0x3800, 0x3fa);
+    gl_call_list(qts, 0x3800, 0x3fa);
+    gl_word(qts, GL_FLUSH);
+    rgb = mgras_screendump(qts);
+    gl_check_window_sha256(rgb, GL_LIST_SHA256);
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+}
+
+/*
+ * The probe's list-big case as run irix-20260928T111944-b1644a sent it
+ * and its pool dump holds it. A small list with cell (0, 0)'s triangle
+ * alone sits at offset 0: two header words, its 15 words and 15
+ * 0x000e0100 words, size 32. The big list, 1,024 triangles in 4-pixel
+ * cells in three colours, starts at offset 0x1000 and runs through 14
+ * pages: 78 triangles on each of the first 13, whose headers name the
+ * next page and size 0x3f9 or, before the last, 0x85, and the last 10
+ * triangles and glEnd on page 14. The client called the small list
+ * (0, 0x20), then the big one (0x1000, 0x3fa). The SHA-256 is of the
+ * window gl_min_expected.py writes for list-big, which Mesa llvmpipe
+ * matches, never of this model's output.
+ */
+#define GL_LIST_BIG_SHA256 \
+    "604350581efa049c789a5c920a7a499fb52b1c39ddbe6bfcb4f628a281a7980a"
+
+static void gl_list_big_triangle(unsigned int k, uint32_t *w)
+{
+    static const int corner[] = { 0, 0, 4, 0, 3, 4 };
+    static const float rgb[3][3] = { { 1, 1, 0 }, { 1, 1, 1 }, { 0, 1, 1 } };
+    int row = k / 32, column = k % 32;
+    const float *c = rgb[(row + column) % 3];
+
+    *w++ = GL_COLOR3F_HDR;
+    for (int i = 0; i < 3; i++) {
+        *w++ = gl_bits(c[i]);
+    }
+    for (int i = 0; i < 3; i++) {
+        *w++ = GL_VERTEX2F_HDR;
+        *w++ = gl_bits(gl_ndc(column * 4 + corner[2 * i]));
+        *w++ = gl_bits(gl_ndc(row * 4 + corner[2 * i + 1]));
+    }
+}
+
+static void test_gl_list_big_matches_the_reference(void)
+{
+    uint32_t small[32] = { 0xf000, 0, GL_BEGIN_TRIANGLES };
+    g_autofree uint32_t *rgb = NULL;
+
+    gl_list_big_triangle(0, small + 3);
+    small[16] = GL_END_TRIANGLES;
+    for (int i = 17; i < 32; i++) {
+        small[i] = 0x000e0100;
+    }
+
+    mgras_reset();
+    gl_list_frame(qts);
+    gl_list_install(qts, 16);
+    gl_list_put(qts, 0, small, ARRAY_SIZE(small));
+    for (unsigned int page = 1; page <= 14; page++) {
+        uint32_t header[3] = { (page - 1) << 12, (page + 1) << 12,
+                               page == 13 ? 0x85 : 0x3f9 };
+        unsigned int first = (page - 1) * 78;
+        unsigned int n;
+
+        if (page == 14) {
+            header[1] = 0;
+        }
+        n = gl_list_page(qts, page << 12, header, page == 14 ? 2 : 3,
+                         gl_list_big_triangle, first, MIN(78, 1024 - first),
+                         page == 1, page == 14);
+        g_assert_cmpuint(n, ==, page == 1 ? 0x3fa : page == 14 ? 0x85 :
+                         0x3f9);
+    }
+    gl_call_list(qts, 0, ARRAY_SIZE(small));
+    gl_call_list(qts, 0x1000, 0x3fa);
+    gl_word(qts, GL_FLUSH);
+    rgb = mgras_screendump(qts);
+    gl_check_window_sha256(rgb, GL_LIST_BIG_SHA256);
     g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
 }
 
@@ -8363,9 +8487,9 @@ static void test_gl_list_crosses_a_page(void)
     static const float v[3][2] = {
         { -0.75f, -0.75f }, { 0.75f, -0.625f }, { -0.125f, 0.734375f },
     };
-    uint32_t w[18] = { 0, 0, 0, GL_BEGIN_TRIANGLES, GL_COLOR3F_HDR,
+    uint32_t w[17] = { 0, 0, GL_BEGIN_TRIANGLES, GL_COLOR3F_HDR,
                        gl_bits(1), gl_bits(1), gl_bits(0) };
-    unsigned int n = 8;
+    unsigned int n = 7;
     g_autofree uint32_t *rgb = NULL;
 
     for (int i = 0; i < 3; i++) {
@@ -8379,7 +8503,7 @@ static void test_gl_list_crosses_a_page(void)
     mgras_reset();
     gl_list_frame(qts);
     gl_list_install(qts, 2);
-    /* Twelve words on page 0: the split falls after the second header. */
+    /* Twelve words on page 0: the second vertex's y is on page 1. */
     gl_list_put(qts, 0xfd0, w, n);
     gl_call_list(qts, 0xfd0, n);
     gl_word(qts, GL_FLUSH);
@@ -8397,7 +8521,7 @@ static void test_gl_list_crosses_a_page(void)
  */
 static void test_gl_list_ends_inside_a_packet(void)
 {
-    uint32_t w[] = { 0, 0, 0, GL_BEGIN_TRIANGLES, GL_COLOR3F_HDR, gl_bits(1),
+    uint32_t w[] = { 0, 0, GL_BEGIN_TRIANGLES, GL_COLOR3F_HDR, gl_bits(1),
                      gl_bits(1), gl_bits(0),
                      GL_VERTEX2F_HDR, gl_bits(-0.75f), gl_bits(-0.75f),
                      GL_VERTEX2F_HDR, gl_bits(0.75f), gl_bits(-0.625f),
@@ -8471,17 +8595,141 @@ static void test_gl_list_over_the_word_limit(void)
 }
 
 /*
+ * One execute may follow at most 2,048 ranges, so a guest cannot make it
+ * append ranges without end: a looping chain of 3-word ranges would
+ * otherwise run on until the pool's words ran out. Here each of 2,049
+ * pool pages, each its own frame, holds a range of its header alone
+ * naming the next page, and the last holds a yellow triangle over the
+ * whole window. Called from page 0 the chain is 2,049 ranges and is
+ * refused whole, so nothing is drawn; called from page 1 it is 2,048
+ * and draws.
+ */
+#define GL_LIST_RANGES 2049
+#define GL_LIST_RANGE_FRAME(i) (0x1000u + (i))
+
+static void test_gl_list_over_the_range_limit(void)
+{
+    uint32_t last[] = { 0, 0, GL_BEGIN_TRIANGLES, GL_COLOR3F_HDR, gl_bits(1),
+                        gl_bits(1), gl_bits(0),
+                        GL_VERTEX2F_HDR, gl_bits(-1), gl_bits(-1),
+                        GL_VERTEX2F_HDR, gl_bits(3), gl_bits(-1),
+                        GL_VERTEX2F_HDR, gl_bits(-1), gl_bits(3),
+                        GL_END_TRIANGLES };
+    g_autofree uint8_t *entries = g_new0(uint8_t, 8 * GL_LIST_RANGES);
+    uint8_t bytes[sizeof(last)];
+
+    for (int i = 0; i < GL_LIST_RANGES; i++) {
+        uint64_t frame = (uint64_t)GL_LIST_RANGE_FRAME(i) << 12;
+        uint8_t header[12];
+
+        stl_be_p(entries + 8 * i + 4, GL_LIST_RANGE_FRAME(i));
+        if (i < GL_LIST_RANGES - 1) {
+            stl_be_p(header, 0);
+            stl_be_p(header + 4, (i + 1) << 12);
+            stl_be_p(header + 8, i < GL_LIST_RANGES - 2 ? 3 :
+                     ARRAY_SIZE(last));
+            qtest_memwrite(qts, frame, header, sizeof(header));
+        }
+    }
+    for (int i = 0; i < ARRAY_SIZE(last); i++) {
+        stl_be_p(bytes + 4 * i, last[i]);
+    }
+
+    mgras_reset();
+    gl_list_frame(qts);
+    qtest_memwrite(qts, GL_LIST_PAGE_LIST + 0x18, entries,
+                   8 * GL_LIST_RANGES);
+    qtest_memwrite(qts, (uint64_t)GL_LIST_RANGE_FRAME(GL_LIST_RANGES - 1)
+                   << 12, bytes, sizeof(bytes));
+    qtest_writel(qts, MGRAS_REG(0x130400), 0x00482808);
+    qtest_writeq(qts, MGRAS_REG(0x130400), GL_LIST_PAGE_LIST | 0x19);
+    qtest_writeq(qts, MGRAS_REG(0x130400),
+                 ((uint64_t)0x00483404 << 32) | GL_LIST_RANGES);
+    qtest_writeq(qts, MGRAS_REG(0x130400),
+                 ((uint64_t)0x00484f04 << 32) | (GL_LIST_WIDGET << 16));
+
+    gl_call_list(qts, 0, 3);
+    g_assert_cmphex(mgras_test_pixel(qts, 320, 320), ==, 0x0000ff);
+    gl_call_list(qts, 0x1000, 3);
+    g_assert_cmphex(mgras_test_pixel(qts, 320, 320), ==, 0xffff00);
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+}
+
+/*
+ * The word limit covers the whole chain, not only the range the execute
+ * names. Pool page 0 holds a 3-word range naming a second range at
+ * 0x1000 of n words; pages 1 to 1,024 all name one frame holding two
+ * header words that end the chain and a yellow triangle over the whole
+ * window. With n = 2^20 - 2 the chain asks for 2^20 + 1 words and is
+ * refused, drawing nothing; with n = 2^20 - 3 it asks for exactly 2^20
+ * and draws.
+ */
+static void gl_list_chain_of(uint32_t n)
+{
+    uint8_t header[12];
+
+    stl_be_p(header, 0);
+    stl_be_p(header + 4, 0x1000);
+    stl_be_p(header + 8, n);
+    qtest_memwrite(qts, (uint64_t)GL_LIST_RANGE_FRAME(0) << 12, header,
+                   sizeof(header));
+    gl_call_list(qts, 0, 3);
+}
+
+static void test_gl_list_chain_over_the_word_limit(void)
+{
+    uint32_t w[] = { 0, 0, GL_BEGIN_TRIANGLES, GL_COLOR3F_HDR, gl_bits(1),
+                     gl_bits(1), gl_bits(0),
+                     GL_VERTEX2F_HDR, gl_bits(-1), gl_bits(-1),
+                     GL_VERTEX2F_HDR, gl_bits(3), gl_bits(-1),
+                     GL_VERTEX2F_HDR, gl_bits(-1), gl_bits(3),
+                     GL_END_TRIANGLES };
+    g_autofree uint8_t *entries = g_new0(uint8_t,
+                                         8 * GL_LIST_MAX_POOL_PAGES);
+    uint8_t bytes[sizeof(w)];
+
+    stl_be_p(entries + 4, GL_LIST_RANGE_FRAME(0));
+    for (int i = 1; i < GL_LIST_MAX_POOL_PAGES; i++) {
+        stl_be_p(entries + 8 * i + 4, GL_LIST_MAX_FRAME);
+    }
+    for (int i = 0; i < ARRAY_SIZE(w); i++) {
+        stl_be_p(bytes + 4 * i, w[i]);
+    }
+
+    mgras_reset();
+    gl_list_frame(qts);
+    qtest_memwrite(qts, GL_LIST_PAGE_LIST + 0x18, entries,
+                   8 * GL_LIST_MAX_POOL_PAGES);
+    qtest_memset(qts, (uint64_t)GL_LIST_MAX_FRAME << 12, 0, 4096);
+    qtest_memwrite(qts, (uint64_t)GL_LIST_MAX_FRAME << 12, bytes,
+                   sizeof(bytes));
+    qtest_writel(qts, MGRAS_REG(0x130400), 0x00482808);
+    qtest_writeq(qts, MGRAS_REG(0x130400), GL_LIST_PAGE_LIST | 0x19);
+    qtest_writeq(qts, MGRAS_REG(0x130400),
+                 ((uint64_t)0x00483404 << 32) | GL_LIST_MAX_POOL_PAGES);
+    qtest_writeq(qts, MGRAS_REG(0x130400),
+                 ((uint64_t)0x00484f04 << 32) | (GL_LIST_WIDGET << 16));
+
+    gl_list_chain_of(GL_LIST_MAX_WORDS - 2);
+    g_assert_cmphex(mgras_test_pixel(qts, 320, 320), ==, 0x0000ff);
+    gl_list_chain_of(GL_LIST_MAX_WORDS - 3);
+    g_assert_cmphex(mgras_test_pixel(qts, 320, 320), ==, 0xffff00);
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+}
+
+/*
  * An execute whose words do not all lie in the pool fails whole: nothing
- * is read or drawn, the fetch reports SGI_FAIL_BOUNDS (2), and the port
- * goes on. A size near 2^32 words draws nothing either; the word limit
- * refuses it before any fetch, so it leaves no fetch record.
+ * is drawn, the fetch reports SGI_FAIL_BOUNDS (2), and the port goes on.
+ * So does a chain that names itself, once it has asked for more words
+ * than the pool holds. A size near 2^32 words draws nothing either; the
+ * word limit refuses it before any fetch, so it leaves no fetch record.
  */
 static void test_gl_list_past_the_pool_is_bounded(void)
 {
     static const float v[3][2] = {
         { -0.75f, -0.75f }, { 0.75f, -0.625f }, { -0.125f, 0.734375f },
     };
-    uint32_t w[] = { 0, 0, 0, GL_BEGIN_TRIANGLES, GL_COLOR3F_HDR, gl_bits(1),
+    uint32_t w[] = { 0, 0, GL_BEGIN_TRIANGLES, GL_COLOR3F_HDR, gl_bits(1),
                      gl_bits(0), gl_bits(0),
                      GL_VERTEX2F_HDR, gl_bits(-1), gl_bits(-1),
                      GL_VERTEX2F_HDR, gl_bits(1), gl_bits(-1),
@@ -8491,6 +8739,7 @@ static void test_gl_list_past_the_pool_is_bounded(void)
     g_autofree char *args = NULL;
     g_autofree char *trace = NULL;
     g_autofree uint32_t *rgb = NULL;
+    static const uint32_t loop[] = { 0x800, 0x800, 3 };
     g_auto(GStrv) failed = NULL;
     g_autoptr(GError) error = NULL;
     QTestState *t;
@@ -8506,10 +8755,13 @@ static void test_gl_list_past_the_pool_is_bounded(void)
     gl_list_frame(t);
     gl_list_install(t, 1);
     /* A red triangle over the whole window, if anything drew it. */
-    gl_list_put(t, 0xfb8, w, ARRAY_SIZE(w));
-    gl_call_list(t, 0xfb8, ARRAY_SIZE(w) + 1);
+    gl_list_put(t, 0xfbc, w, ARRAY_SIZE(w));
+    gl_call_list(t, 0xfbc, ARRAY_SIZE(w) + 1);
     gl_call_list(t, 0x1000, 1);
     gl_call_list(t, 0, 0xffffffffu);
+    /* A range whose header names itself as the next. */
+    gl_list_put(t, 0x800, loop, ARRAY_SIZE(loop));
+    gl_call_list(t, 0x800, ARRAY_SIZE(loop));
     g_assert_cmphex(mgras_test_pixel(t, 320, 320), ==, 0x0000ff);
 
     gl_word(t, GL_SHADE_MODEL_HDR);
@@ -8531,7 +8783,7 @@ static void test_gl_list_past_the_pool_is_bounded(void)
     g_assert_no_error(error);
     unlink(trace_path);
     failed = g_strsplit(trace, "status 2\n", -1);
-    g_assert_cmpuint(g_strv_length(failed), ==, 3);
+    g_assert_cmpuint(g_strv_length(failed), ==, 4);
     g_assert_null(strstr(trace, "status 0\n"));
 }
 
@@ -10723,12 +10975,20 @@ int main(int argc, char **argv)
                    test_gl_triangle_spans_a_context_switch);
     qtest_add_func("sn0/origin2000/mgras/gl-list-draws-the-probe-list",
                    test_gl_list_draws_the_probe_list);
+    qtest_add_func("sn0/origin2000/mgras/gl-list-follows-the-chain",
+                   test_gl_list_follows_the_chain);
+    qtest_add_func("sn0/origin2000/mgras/gl-list-big-matches-the-reference",
+                   test_gl_list_big_matches_the_reference);
     qtest_add_func("sn0/origin2000/mgras/gl-list-crosses-a-page",
                    test_gl_list_crosses_a_page);
     qtest_add_func("sn0/origin2000/mgras/gl-list-ends-inside-a-packet",
                    test_gl_list_ends_inside_a_packet);
     qtest_add_func("sn0/origin2000/mgras/gl-list-over-the-word-limit",
                    test_gl_list_over_the_word_limit);
+    qtest_add_func("sn0/origin2000/mgras/gl-list-over-the-range-limit",
+                   test_gl_list_over_the_range_limit);
+    qtest_add_func("sn0/origin2000/mgras/gl-list-chain-over-the-word-limit",
+                   test_gl_list_chain_over_the_word_limit);
     qtest_add_func("sn0/origin2000/mgras/gl-list-past-the-pool-is-bounded",
                    test_gl_list_past_the_pool_is_bounded);
     qtest_add_func("sn0/origin2000/mgras/hq-flags-set-and-clear",
