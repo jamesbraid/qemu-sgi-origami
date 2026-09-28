@@ -1204,6 +1204,54 @@ static void test_loadvm_forgets_watching(void)
     g_assert_cmpint(rmdir(dir), ==, 0);
 }
 
+/* A hit flush of the line, then its word, on a page no longer watched. */
+static void hit_flush_released(Program *p)
+{
+    emit_hit_flush(p, 0x10);
+    emit_publish(p, 0x18);
+}
+
+static void index_flush_released(Program *p)
+{
+    emit_flush(p);
+    emit_publish(p, 0x18);
+}
+
+/*
+ * A cache instruction acts on the processor's copy whether or not the
+ * unit is watching the line's page: the dirty copy of a line whose page
+ * lost its overlay is still found by a hit flush and written back, and so
+ * is it by an index flush, and the word shows it at once.
+ */
+static void test_flush_of_a_released_line(void)
+{
+    const Scenario hit = {
+        .cpus = "2",
+        STEPS({ 0, emit_first }, { 0, store_08 }, { 0, evict },
+              { 0, hit_flush_released }),
+    };
+    const Scenario index = {
+        .cpus = "2",
+        STEPS({ 0, emit_first }, { 0, store_08 }, { 0, evict },
+              { 0, index_flush_released }),
+    };
+    char *prom;
+    QTestState *s;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+    s = run_scenario(&hit, &prom);
+    g_assert_cmphex(result(s, 0x08) & DIRECTORY_FIELDS, ==, POINTER(0));
+    g_assert_cmphex(result(s, 0x10) & STATUS_CH, ==, STATUS_CH);
+    g_assert_cmphex(result(s, 0x18) & DIRECTORY_FIELDS, ==, UNOWNED);
+    finish(s, prom);
+    s = run_scenario(&index, &prom);
+    g_assert_cmphex(result(s, 0x18) & DIRECTORY_FIELDS, ==, UNOWNED);
+    finish(s, prom);
+}
+
 static void migrate_wait(QTestState *qts)
 {
     int64_t deadline = g_get_monotonic_time() + 30 * G_TIME_SPAN_SECOND;
@@ -1315,6 +1363,8 @@ int main(int argc, char **argv)
                    test_reset_forgets_watching);
     qtest_add_func("sn1/directory-state/loadvm-forgets-watching",
                    test_loadvm_forgets_watching);
+    qtest_add_func("sn1/directory-state/flush-of-a-released-line",
+                   test_flush_of_a_released_line);
     qtest_add_func("sn1/directory-state/page-is-watched",
                    test_page_is_watched);
     qtest_add_func("sn1/directory-state/owner-from-the-word",

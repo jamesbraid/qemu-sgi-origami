@@ -1229,7 +1229,7 @@ static MemTxResult sn1_node_system_request(void *opaque, hwaddr offset,
             continue;
         }
         md = &SGI_BEDROCK(target[i]->bedrock)->md;
-        if (!sgi_bedrock_md_watching(md)) {
+        if (!sgi_bedrock_md_following(md)) {
             continue;
         }
         BQL_LOCK_GUARD();

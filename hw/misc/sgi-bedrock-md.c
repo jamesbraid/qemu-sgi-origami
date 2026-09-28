@@ -2586,6 +2586,7 @@ static SGIBedrockMDLineState *md_line_state(SGIBedrockMDState *s,
         state = g_new0(SGIBedrockMDLineState, 1);
         state->index = index;
         g_hash_table_insert(s->line_states, &state->index, state);
+        qatomic_set(&s->line_state_total, g_hash_table_size(s->line_states));
     }
     return state;
 }
@@ -2975,22 +2976,31 @@ static void md_line_state_from_word(SGIBedrockMDState *s, uint32_t index)
 static void md_line_states_clear(SGIBedrockMDState *s)
 {
     g_hash_table_remove_all(s->line_states);
+    qatomic_set(&s->line_state_total, 0);
     if (s->named_lines) {
         bitmap_zero(s->named_lines, s->directory_entries);
     }
 }
 
-void sgi_bedrock_md_name_line(SGIBedrockMDState *s, uint64_t address)
+/* The raw line the software-bank address @address falls in, if backed. */
+static bool md_address_line(SGIBedrockMDState *s, uint64_t address,
+                            uint32_t *index)
 {
     unsigned bank = address / MD_MEMORY_BANK_SIZE;
     uint64_t within = address % MD_MEMORY_BANK_SIZE;
-    uint32_t index;
 
     if (bank >= 8 || within >= s->bank_alias_size[bank]) {
-        return;
+        return false;
     }
-    index = (s->bank_alias_base[bank] + within) / MD_DIRECTORY_LINE;
-    if (!s->named_lines || index >= s->directory_entries) {
+    *index = (s->bank_alias_base[bank] + within) / MD_DIRECTORY_LINE;
+    return *index < s->directory_entries;
+}
+
+void sgi_bedrock_md_name_line(SGIBedrockMDState *s, uint64_t address)
+{
+    uint32_t index;
+
+    if (!s->named_lines || !md_address_line(s, address, &index)) {
         return;
     }
     /*
@@ -3008,83 +3018,162 @@ void sgi_bedrock_md_name_line(SGIBedrockMDState *s, uint64_t address)
     }
 }
 
-bool sgi_bedrock_md_watching(SGIBedrockMDState *s)
+bool sgi_bedrock_md_following(SGIBedrockMDState *s)
 {
-    return qatomic_read(&s->watched_count) != 0;
+    return qatomic_read(&s->watched_count) != 0 ||
+           qatomic_read(&s->line_state_total) != 0;
+}
+
+/* The software-bank address the bank aliases give raw line @index. */
+static bool md_line_address(SGIBedrockMDState *s, uint32_t index,
+                            uint64_t *address)
+{
+    uint64_t raw = (uint64_t)index * MD_DIRECTORY_LINE;
+
+    for (unsigned bank = 0; bank < 8; bank++) {
+        if (s->bank_alias_size[bank] &&
+            raw >= s->bank_alias_base[bank] &&
+            raw - s->bank_alias_base[bank] < s->bank_alias_size[bank]) {
+            *address = bank * MD_MEMORY_BANK_SIZE +
+                       (raw - s->bank_alias_base[bank]);
+            return true;
+        }
+    }
+    return false;
+}
+
+/* The watched page holding the line at software-bank address @address. */
+static SGIBedrockMDWatchedPage *md_watched_page_at(SGIBedrockMDState *s,
+                                                   uint64_t address)
+{
+    for (unsigned i = 0; i < SGI_BEDROCK_MD_WATCHED_PAGES; i++) {
+        SGIBedrockMDWatchedPage *page = &s->watched[i];
+
+        if (page->active &&
+            page->address == (address & ~(uint64_t)(MD_WATCH_PAGE - 1))) {
+            return page;
+        }
+    }
+    return NULL;
 }
 
 /*
- * A secondary-cache instruction writes a dirty copy back and drops a clean
- * or shared one without a word to the directory; Hit Invalidate drops even
- * a dirty one silently (R10000 User's Manual, the processor block write and
- * eliminate protocols). That this system sends no eliminate requests is
- * inferred from the Origin 300's directory diagnostic. A prefetch with a
- * load hint asks to read, with a store hint to read exclusive, and a copy
- * already held needs neither.
+ * A secondary-cache instruction acting on @pointer's copy of @line: a
+ * dirty copy is written back and a clean or shared one dropped without a
+ * word to the directory; Hit Invalidate drops even a dirty one silently
+ * (R10000 User's Manual, the processor block write and eliminate
+ * protocols). That this system sends no eliminate requests is inferred
+ * from the Origin 300's directory diagnostic. Returns whether the
+ * processor held the line.
+ */
+static bool md_cache_instruction(SGIBedrockMDState *s, const MDLine *line,
+                                 uint16_t pointer,
+                                 SGIBedrockMDProcessorRequest request)
+{
+    SGIBedrockMDHolder *holder = md_line_holder(s, line->index, pointer,
+                                                false);
+    bool held;
+
+    if (!holder || holder->state == MD_CACHE_INVALID) {
+        return false;
+    }
+    held = true;
+    if (request != SGI_BEDROCK_MD_HIT_INVALIDATE &&
+        holder->state == MD_CACHE_DIRTY) {
+        md_directory_request(s, line, pointer, MD_REQUEST_WRITEBACK, false);
+    }
+    holder->state = MD_CACHE_INVALID;
+    return held;
+}
+
+/*
+ * A processor's secondary-cache instruction acts on its copies whether or
+ * not the unit is watching their pages, as the processor's cache would:
+ * the copies are kept apart from the pages, and following them only on a
+ * watched page would leave a dirty copy to be written back later than the
+ * processor wrote it. A hit instruction names the line at @address; an
+ * index instruction names a set, and acts on every line the processor
+ * holds whose address agrees with @address in the set bits @index_mask
+ * selects. A prefetch is a request for the line like a load or store, so
+ * it is served only on a watched page. A prefetch with a load hint asks to
+ * read, with a store hint to read exclusive, and a copy already held needs
+ * neither.
  */
 bool sgi_bedrock_md_processor_request(SGIBedrockMDState *s, uint16_t pointer,
                                       SGIBedrockMDProcessorRequest request,
                                       uint64_t address, uint64_t index_mask)
 {
-    bool prefetch = request == SGI_BEDROCK_MD_PREFETCH_LOAD ||
-                    request == SGI_BEDROCK_MD_PREFETCH_STORE;
+    SGIBedrockMDWatchedPage *page;
+    SGIBedrockMDHolder *holder;
+    MDLine line;
     bool found = false;
 
-    for (unsigned i = 0; i < SGI_BEDROCK_MD_WATCHED_PAGES; i++) {
-        SGIBedrockMDWatchedPage *page = &s->watched[i];
-        uint64_t in_page = address & (MD_WATCH_PAGE - 1);
-        MDLine one = md_page_line(page, in_page);
-        const MDLine *line = &one;
-        SGIBedrockMDHolder *holder;
+    if (request == SGI_BEDROCK_MD_INDEX_WRITEBACK_INVALIDATE) {
+        g_autoptr(GArray) lines = g_array_new(false, false, sizeof(MDLine));
+        GHashTableIter iter;
+        gpointer value;
 
-        /*
-         * An index request names the one line of the page whose set bits
-         * match; a hit request names the line at @address.
-         */
-        if (!page->active ||
-            (request == SGI_BEDROCK_MD_INDEX_WRITEBACK_INVALIDATE ?
-             (page->address ^ address) & index_mask &
-             ~(uint64_t)(MD_WATCH_PAGE - 1) :
-             page->address != address - in_page) ||
-            md_directory_injection_find(s, line->index)) {
-            continue;
-        }
-        holder = md_line_holder(s, line->index, pointer, prefetch);
-        if (!holder) {
-            continue;
-        }
-        page->last_use = ++s->use_clock;
-        switch (request) {
-        case SGI_BEDROCK_MD_INDEX_WRITEBACK_INVALIDATE:
-        case SGI_BEDROCK_MD_HIT_WRITEBACK_INVALIDATE:
-            if (holder->state == MD_CACHE_DIRTY) {
-                md_directory_request(s, line, pointer, MD_REQUEST_WRITEBACK,
-                                     false);
+        g_hash_table_iter_init(&iter, s->line_states);
+        while (g_hash_table_iter_next(&iter, NULL, &value)) {
+            SGIBedrockMDLineState *state = value;
+
+            line.index = state->index;
+            if (md_line_address(s, line.index, &line.address) &&
+                !((line.address ^ address) & index_mask) &&
+                !md_directory_injection_find(s, line.index)) {
+                g_array_append_val(lines, line);
             }
-            /* fall through */
-        case SGI_BEDROCK_MD_HIT_INVALIDATE:
-            found |= holder->state != MD_CACHE_INVALID;
-            holder->state = MD_CACHE_INVALID;
-            break;
-        case SGI_BEDROCK_MD_PREFETCH_LOAD:
+        }
+        for (guint i = 0; i < lines->len; i++) {
+            MDLine *one = &g_array_index(lines, MDLine, i);
+
+            found |= md_cache_instruction(s, one, pointer, request);
+            page = md_watched_page_at(s, one->address);
+            if (page) {
+                page->last_use = ++s->use_clock;
+            }
+        }
+        return found;
+    }
+    if (!md_address_line(s, address, &line.index)) {
+        return false;
+    }
+    line.address = address & ~(uint64_t)(MD_DIRECTORY_LINE - 1);
+    if (md_directory_injection_find(s, line.index)) {
+        return false;
+    }
+    page = md_watched_page_at(s, line.address);
+    if (page) {
+        page->last_use = ++s->use_clock;
+    }
+    switch (request) {
+    case SGI_BEDROCK_MD_HIT_WRITEBACK_INVALIDATE:
+    case SGI_BEDROCK_MD_HIT_INVALIDATE:
+        return md_cache_instruction(s, &line, pointer, request);
+    case SGI_BEDROCK_MD_PREFETCH_LOAD:
+    case SGI_BEDROCK_MD_PREFETCH_STORE:
+        if (!page) {
+            return false;
+        }
+        holder = md_line_holder(s, line.index, pointer, true);
+        if (!holder) {
+            return false;
+        }
+        if (request == SGI_BEDROCK_MD_PREFETCH_LOAD) {
             if (holder->state == MD_CACHE_INVALID) {
-                holder->state = md_directory_request(s, line, pointer,
+                holder->state = md_directory_request(s, &line, pointer,
                                                      MD_REQUEST_READ, true);
             }
-            break;
-        case SGI_BEDROCK_MD_PREFETCH_STORE:
-            if (holder->state != MD_CACHE_CLEAN &&
-                holder->state != MD_CACHE_DIRTY) {
-                md_directory_request(s, line, pointer,
-                                     MD_REQUEST_READ_EXCLUSIVE, false);
-                holder->state = MD_CACHE_CLEAN;
-            }
-            break;
-        default:
-            g_assert_not_reached();
+        } else if (holder->state != MD_CACHE_CLEAN &&
+                   holder->state != MD_CACHE_DIRTY) {
+            md_directory_request(s, &line, pointer,
+                                 MD_REQUEST_READ_EXCLUSIVE, false);
+            holder->state = MD_CACHE_CLEAN;
         }
+        return false;
+    default:
+        g_assert_not_reached();
     }
-    return found;
 }
 
 /*
@@ -3415,6 +3504,8 @@ static int md_post_load(void *opaque, int version_id)
         }
         state = g_memdup2(state, sizeof(*state));
         g_hash_table_insert(s->line_states, &state->index, state);
+        qatomic_set(&s->line_state_total,
+                    g_hash_table_size(s->line_states));
     }
     g_clear_pointer(&s->line_state_array, g_free);
     s->line_state_count = 0;

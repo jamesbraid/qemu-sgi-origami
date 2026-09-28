@@ -161,6 +161,8 @@ struct SGIBedrockMDState {
     uint64_t use_clock;
     /* Active watched pages; read without the lock by the board's filter. */
     uint32_t watched_count;
+    /* line_states' size, for the same filter. */
+    uint32_t line_state_total;
     /* Set by the board: whether a directory pointer names a processor. */
     SGIBedrockMDPointerPresentFn pointer_present;
     void *requester_opaque;
@@ -228,8 +230,11 @@ typedef enum SGIBedrockMDProcessorRequest {
  * its page. Safe to call without the lock.
  */
 void sgi_bedrock_md_name_line(SGIBedrockMDState *s, uint64_t address);
-/* Whether any line is watched; safe to call without the lock. */
-bool sgi_bedrock_md_watching(SGIBedrockMDState *s);
+/*
+ * Whether the unit follows any line, watched or with processor copies kept;
+ * safe to call without the lock.
+ */
+bool sgi_bedrock_md_following(SGIBedrockMDState *s);
 /*
  * Serve @request from the processor whose directory pointer is @pointer, at
  * node memory address @address. An index request names every line whose
