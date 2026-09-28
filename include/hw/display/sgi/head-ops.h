@@ -89,7 +89,8 @@ typedef struct SGIHeadOps {
      * at the start of every sgi_scanout_update(), before any line is
      * resolved, so a family that records drawing as a flag of its own can
      * turn it into invalidations here and have those lines resolved in
-     * this same update. NULL means the family invalidates as it draws.
+     * this same update. It must not call sgi_scanout_update(), which
+     * would recurse. NULL means the family invalidates as it draws.
      */
     void (*pre_update)(void *opaque);
 
