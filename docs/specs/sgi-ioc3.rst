@@ -374,8 +374,10 @@ from the specified hardware:
   arms nothing rather than picking a polarity a guest would then be
   measured against.
 
-Two boards fit the port: the Origin 200's own IP29 system board and
-the IP27 MediaIO daughtercard. No other identity in the table gets
+Three boards fit the port: the Origin 200's IP29 system board, the IP27
+MediaIO daughtercard, and the Octane IP30 system board. SGI's Octane
+owner's guide identifies its IEEE 1284-C connector, and OpenBSD attaches
+LPT to the onboard IP30 IOC3. No other identity in the table gets
 one, and on a board without it both register regions are holes like
 any other. Mainline Linux's multifunction driver registers no
 parallel sub-device for any identity, so a Linux that drives nothing

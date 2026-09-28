@@ -822,9 +822,9 @@ static void test_the_dma_registers_are_four_bytes_apart(const void *data)
 /*
  * Which boards fit the port. The Origin 200's system board carries one,
  * and so does the MediaIO daughtercard, whose own manual lists a parallel
- * port among what it adds to the BaseIO it mounts on. No other board here
- * has a source saying it has one, and mainline Linux is no evidence
- * either way: its multifunction driver registers no parallel sub-driver
+ * port among what it adds to the BaseIO it mounts on. The Octane's port
+ * is documented in its owner's guide and attached by OpenBSD. Mainline
+ * Linux is no evidence either way: its driver has no parallel sub-driver
  * on any board at all, so the port is missing from every row of its table
  * whether or not the board carries the hardware.
  */
@@ -839,7 +839,7 @@ static const BoardParallel ioc3_boards[] = {
     { "ip27-mio",      0xc301, true  },
     { "ip27-baseio",   0xc302, false },
     { "ip29-sysboard", 0xc303, true  },
-    { "ip30-sysboard", 0xc304, false },
+    { "ip30-sysboard", 0xc304, true  },
     { "menet",         0xc305, false },
     { "menet4",        0xc306, false },
     /*
