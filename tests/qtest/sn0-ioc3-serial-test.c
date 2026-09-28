@@ -2254,10 +2254,12 @@ static void test_a_system_reset_clears_the_held_packer_and_the_timer(
 
     /*
      * The posted entry wound the armed timer, so it is counting: from the
-     * last arrival, which the line time can leave a tick behind the read.
+     * last arrival, which the line time leaves one tick behind the read.
+     * qtest time is exact, so a held timer, still at the 0x140 reload,
+     * fails this.
      */
     g_assert_cmphex((qtest_readl(qts, sdma(0, SDMA_RX_TIMER)) >> 16) & 0xfff,
-                    >=, 0x13f);
+                    ==, 0x13f);
 
     qtest_system_reset(qts);
     sn0_ioc3_attach(qts);
@@ -2635,7 +2637,11 @@ static uint32_t ticks_left(int64_t start, int64_t now)
     return (start + 0xfff * RX_TIMER_TICK_NS - now) / RX_TIMER_TICK_NS;
 }
 
-/* The board test's setup, up to the transmit doorbell. */
+/*
+ * The board test's setup, up to the transmit doorbell, with one character
+ * on the ring where the board test queues four ("abcd"): one is enough to
+ * time a single arrival against the receive timer.
+ */
 static void loopback_like_the_board_test(QTestState *qts, unsigned int port)
 {
     const uint8_t one[4] = { 'x', 0, 0, 0 };
