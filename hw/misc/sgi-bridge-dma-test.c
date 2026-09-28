@@ -141,6 +141,7 @@ static void sgi_bridge_dma_test_go(SGIBridgeDMATestState *s)
 static void sgi_bridge_dma_test_copy(SGIBridgeDMATestState *s)
 {
     uint8_t buf[SGI_BRIDGE_DMA_TEST_MAX];
+    MemTxResult result;
 
     if (s->length > sizeof(buf)) {
         qemu_log_mask(LOG_GUEST_ERROR,
@@ -150,10 +151,18 @@ static void sgi_bridge_dma_test_copy(SGIBridgeDMATestState *s)
     }
 
     if (s->plain_dma) {
-        address_space_read(sgi_bridge_plain_dma_as(PCI_DEVICE(s)), s->source,
-                           MEMTXATTRS_UNSPECIFIED, buf, s->length);
+        result = address_space_read(sgi_bridge_plain_dma_as(PCI_DEVICE(s)),
+                                    s->source, MEMTXATTRS_UNSPECIFIED, buf,
+                                    s->length);
     } else {
-        pci_dma_read(PCI_DEVICE(s), s->source, buf, s->length);
+        result = pci_dma_read(PCI_DEVICE(s), s->source, buf, s->length);
+    }
+    /* A read that failed has no data to copy, so nothing is written. */
+    if (result != MEMTX_OK) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sgi-bridge-dma-test: the copy's read of 0x%" PRIx64
+                      " failed, so it writes nothing\n", s->source);
+        return;
     }
     if (s->plain_dma) {
         address_space_write(sgi_bridge_plain_dma_as(PCI_DEVICE(s)), s->address,
