@@ -1663,17 +1663,12 @@ static const VMStateDescription vmstate_sgi_mgras = {
         VMSTATE_UINT32_ARRAY_V(xmap[0].buf_select, SGIMgrasState,
                                SGI_MGRAS_XMAP_ENTRIES, 11),
         VMSTATE_TIMER_PTR_V(retrace_timer, SGIMgrasState, 2),
-        VMSTATE_INT32_ARRAY_V(gl_context[0].viewport, SGIMgrasState, 4, 15),
-        VMSTATE_UINT32_ARRAY_V(gl_context[0].clear_color, SGIMgrasState, 4,
-                               14),
-        VMSTATE_UINT32_ARRAY_V(gl_context[0].color, SGIMgrasState, 4, 15),
-        VMSTATE_UINT32_V(gl_context[0].shade_model, SGIMgrasState, 15),
-        VMSTATE_UINT32_V(gl_context[0].begin, SGIMgrasState, 15),
-        VMSTATE_UINT32_V(gl_context[0].vertex_count, SGIMgrasState, 15),
-        VMSTATE_UINT32_2DARRAY_V(gl_context[0].vertex, SGIMgrasState, 3, 4,
-                                 15),
-        VMSTATE_UINT32_2DARRAY_V(gl_context[0].vertex_color, SGIMgrasState,
-                                 3, 4, 15),
+        VMSTATE_INT32_ARRAY_V(gl[0].cur.viewport, SGIMgrasState, 4, 15),
+        VMSTATE_SGI_GL_FLOATS(gl[0].clear_color, SGIMgrasState, 4, 14),
+        VMSTATE_SGI_GL_FLOATS(gl[0].cur_color, SGIMgrasState, 4, 15),
+        VMSTATE_UINT32_V(gl[0].cur.shade_model, SGIMgrasState, 15),
+        VMSTATE_STRUCT(gl[0], SGIMgrasState, 15,
+                       vmstate_sgi_mgras_gl_primitive, SGIGLContext),
         VMSTATE_UINT32_V(ge_report, SGIMgrasState, 16),
         /*
          * Version 17 grows the command payload to 16 words for
@@ -1682,16 +1677,14 @@ static const VMStateDescription vmstate_sgi_mgras = {
          */
         VMSTATE_SUB_ARRAY(cmd_token_payload, SGIMgrasState, 8, 8, 17,
                           vmstate_info_uint32, uint32_t),
-        VMSTATE_UINT32_V(gl_context[0].matrix_mode, SGIMgrasState, 17),
-        VMSTATE_UINT32_ARRAY_V(gl_context[0].modelview, SGIMgrasState, 16,
-                               17),
-        VMSTATE_UINT32_ARRAY_V(gl_context[0].projection, SGIMgrasState, 16,
-                               17),
-        VMSTATE_UINT32_V(gl_context[0].depth_test, SGIMgrasState, 17),
-        VMSTATE_UINT32_V(gl_context[0].depth_func, SGIMgrasState, 17),
-        VMSTATE_UINT32_V(gl_context[0].depth_mask, SGIMgrasState, 17),
-        VMSTATE_UINT32_V(gl_context[0].clear_depth, SGIMgrasState, 17),
-        VMSTATE_UINT32_V(gl_context[0].draw_buffers, SGIMgrasState, 17),
+        VMSTATE_UINT32_V(gl[0].matrix_mode, SGIMgrasState, 17),
+        VMSTATE_SGI_GL_FLOATS(gl[0].cur.modelview, SGIMgrasState, 16, 17),
+        VMSTATE_SGI_GL_FLOATS(gl[0].cur.projection, SGIMgrasState, 16, 17),
+        VMSTATE_UINT32_V(gl[0].cur.depth_test, SGIMgrasState, 17),
+        VMSTATE_UINT32_V(gl[0].cur.depth_func, SGIMgrasState, 17),
+        VMSTATE_UINT32_V(gl[0].cur.depth_mask, SGIMgrasState, 17),
+        VMSTATE_UINT32_V(gl[0].clear_depth, SGIMgrasState, 17),
+        VMSTATE_UINT32_V(gl[0].cur.draw_buffers, SGIMgrasState, 17),
         VMSTATE_UINT32_ARRAY_V(gl_banks, SGIMgrasState, 2, 17),
         VMSTATE_VARRAY_UINT32(depth, SGIMgrasState, depth_count, 17,
                               vmstate_info_uint32, uint32_t),
@@ -1703,10 +1696,9 @@ static const VMStateDescription vmstate_sgi_mgras = {
          * client was using becomes the no-context entry; that client
          * starts from initial state at its next switch-in.
          */
-        VMSTATE_STRUCT_SUB_ARRAY(gl_context, SGIMgrasState, 1,
+        VMSTATE_STRUCT_SUB_ARRAY(gl, SGIMgrasState, 1,
                                  SGI_MGRAS_GL_CONTEXTS - 1, 18,
-                                 vmstate_sgi_mgras_gl_context,
-                                 SGIMgrasGLContext),
+                                 vmstate_sgi_mgras_gl_context, SGIGLContext),
         VMSTATE_UINT32_ARRAY_V(gl_slot, SGIMgrasState, SGI_MGRAS_GL_CONTEXTS,
                                18),
         VMSTATE_UINT64_ARRAY_V(gl_selected, SGIMgrasState,
@@ -1729,18 +1721,14 @@ static const VMStateDescription vmstate_sgi_mgras = {
          * Version 21 adds each context's matrix stacks. An older stream
          * leaves them empty, as the client had pushed nothing.
          */
-        VMSTATE_STRUCT_ARRAY(gl_context, SGIMgrasState,
-                             SGI_MGRAS_GL_CONTEXTS, 21,
-                             vmstate_sgi_mgras_gl_context_v21,
-                             SGIMgrasGLContext),
+        VMSTATE_STRUCT_ARRAY(gl, SGIMgrasState, SGI_MGRAS_GL_CONTEXTS, 21,
+                             vmstate_sgi_mgras_gl_context_v21, SGIGLContext),
         /*
          * Version 22 adds each context's current normal and edge flag. An
          * older stream leaves the destination's, OpenGL's initial values.
          */
-        VMSTATE_STRUCT_ARRAY(gl_context, SGIMgrasState,
-                             SGI_MGRAS_GL_CONTEXTS, 22,
-                             vmstate_sgi_mgras_gl_context_v22,
-                             SGIMgrasGLContext),
+        VMSTATE_STRUCT_ARRAY(gl, SGIMgrasState, SGI_MGRAS_GL_CONTEXTS, 22,
+                             vmstate_sgi_mgras_gl_context_v22, SGIGLContext),
         VMSTATE_END_OF_LIST()
     }
 };

@@ -24,13 +24,17 @@
 #include <math.h>
 #include "qemu/log.h"
 #include "hw/misc/sgi-mgras-gl.h"
+#include "hw/display/sgi/rasterizer.h"
 
 /* Class-0 opcodes, bits 15:8 of the header, with their byte lengths. */
 #define MGRAS_GL_CONTEXT_OPENER  0x00000600
 /*
- * glBegin and glEnd: 0x1600 to 0x1f00 begin GL_POINTS (0) to GL_POLYGON
- * (9) in the order of their enumerants, and each mode's end token is
- * 0x0a00 above its begin token (mgras-gl-commands.md, "Primitives").
+ * glBegin and glEnd: 0x1600 to 0x1f00 begin the ten primitive modes, and
+ * each mode's end token is 0x0a00 above its begin token
+ * (mgras-gl-commands.md, "Primitives"). The tokens do not follow the
+ * modes' enumerant order: 0x1800 begins GL_LINE_STRIP (3) and 0x1900
+ * GL_LINE_LOOP (2). The defines below and mgras_gl_begin_tokens[] are the
+ * mapping; no arithmetic on the mode stands in for them.
  */
 #define MGRAS_GL_BEGIN_POINTS    0x00001600
 #define MGRAS_GL_BEGIN_LINES     0x00001700
@@ -94,27 +98,18 @@
 #define MGRAS_GL_EDGE_FLAG_TRUE  0x00000f00
 #define MGRAS_GL_EDGE_FLAG_FALSE 0x00001000
 
-#define MGRAS_GL_FLAT            0x1d00
-#define MGRAS_GL_SMOOTH          0x1d01
-#define MGRAS_GL_MODELVIEW       0x1700
-#define MGRAS_GL_PROJECTION      0x1701
-
-/* glDepthFunc's word is the function minus GL_NEVER (OpenGL 4.1.5). */
-enum {
-    MGRAS_GL_NEVER, MGRAS_GL_LESS, MGRAS_GL_EQUAL, MGRAS_GL_LEQUAL,
-    MGRAS_GL_GREATER, MGRAS_GL_NOTEQUAL, MGRAS_GL_GEQUAL, MGRAS_GL_ALWAYS,
-};
-
 /*
+ * glShadeModel's and glMatrixMode's words are the OpenGL enumerants, and
+ * glDepthFunc's is the function minus GL_NEVER (OpenGL 4.1.5), the form
+ * SGIGLDrawState keeps.
+ *
  * The draw-buffer triple's first word: 1 in the context setup of the
  * probe's single-buffered visual, 2 in that of its double-buffered one
  * (run irix-20260927T172059-fdbada), where OpenGL's default draw buffer is
  * the front and the back buffer respectively. Reading it as a bit mask of
- * the front and back buffers is inferred from those two values; the other
- * bits are not modelled.
+ * the front and back buffers, SGI_GL_DRAW_FRONT and SGI_GL_DRAW_BACK, is
+ * inferred from those two values; the other bits are not modelled.
  */
-#define MGRAS_GL_DRAW_FRONT      0x1
-#define MGRAS_GL_DRAW_BACK       0x2
 
 /*
  * The window the current context draws into, from the 63-word image the
@@ -152,38 +147,6 @@ enum {
  */
 #define MGRAS_GL_IMAGE_BANKS     16
 
-/*
- * Window coordinates are snapped to 1/256 pixel before rasterization. The
- * Octane Technical Report (section 4.2.3) gives the RE4 eight bits of
- * subpixel precision; how the GE rounds to them is not published, so
- * rounding to nearest is the model's choice. The discriminating test is
- * gl-triangle-snaps-to-the-nearest-subpixel.
- */
-#define MGRAS_GL_SUBPIXEL_BITS   8
-
-/*
- * The depth plane holds 24 bits, the Z width the Octane Technical Report
- * (section 4.2.3) gives the RE4, and glClearDepth's word is already
- * scaled to it (mgras-gl-commands.md). A fragment's window depth is
- * rounded to the nearest step, the model's choice; the discriminating
- * test is gl-depth-rounds-to-24-bits.
- */
-#define MGRAS_GL_DEPTH_MAX       0xffffff
-
-/* Screen columns, and rows counted up from the bottom of the screen. */
-typedef struct MgrasGLWindow {
-    int ox, oy;           /* the window's lower-left pixel */
-    int x0, y0, x1, y1;   /* the pixels it owns, inclusive */
-} MgrasGLWindow;
-
-/* A vertex after transformation, ready to rasterize. */
-typedef struct MgrasGLVertex {
-    int64_t x, y;         /* window position in 1/256 pixel */
-    double z;             /* window depth; [0, 1] inside the view volume */
-    double inv_w;         /* 1 / clip w, for perspective-correct colour */
-    double rgb[3];
-} MgrasGLVertex;
-
 /* The begin token of the mode a glBegin or glEnd token names, or 0. */
 static uint32_t mgras_gl_begin_token(uint32_t header, bool end)
 {
@@ -194,6 +157,53 @@ static uint32_t mgras_gl_begin_token(uint32_t header, bool end)
         return 0;
     }
     return begin;
+}
+
+/* The GL primitive a begin token opens, and the token that opens one. */
+static const uint32_t mgras_gl_begin_tokens[] = {
+    [SGI_GL_POINTS] = MGRAS_GL_BEGIN_POINTS,
+    [SGI_GL_LINES] = MGRAS_GL_BEGIN_LINES,
+    [SGI_GL_LINE_LOOP] = MGRAS_GL_BEGIN_LINE_LOOP,
+    [SGI_GL_LINE_STRIP] = MGRAS_GL_BEGIN_LINE_STRIP,
+    [SGI_GL_TRIANGLES] = MGRAS_GL_BEGIN_TRIANGLES,
+    [SGI_GL_TRIANGLE_STRIP] = MGRAS_GL_BEGIN_TRI_STRIP,
+    [SGI_GL_TRIANGLE_FAN] = MGRAS_GL_BEGIN_TRI_FAN,
+    [SGI_GL_QUADS] = MGRAS_GL_BEGIN_QUADS,
+    [SGI_GL_QUAD_STRIP] = MGRAS_GL_BEGIN_QUAD_STRIP,
+    [SGI_GL_POLYGON] = MGRAS_GL_BEGIN_POLYGON,
+};
+
+static uint32_t mgras_gl_mode_of_begin(uint32_t begin)
+{
+    for (uint32_t mode = 0; mode < ARRAY_SIZE(mgras_gl_begin_tokens);
+         mode++) {
+        if (mgras_gl_begin_tokens[mode] == begin) {
+            return mode;
+        }
+    }
+    g_assert_not_reached();
+}
+
+static uint32_t mgras_gl_begin_of_mode(uint32_t mode)
+{
+    assert(mode < ARRAY_SIZE(mgras_gl_begin_tokens));
+    return mgras_gl_begin_tokens[mode];
+}
+
+/*
+ * A vertex holding OpenGL's initial attributes (2.7): position and
+ * texture coordinate (0, 0, 0, 1), normal (0, 0, 1), edge flag true,
+ * material 0.
+ */
+static void mgras_gl_vertex_init(float v[SGI_GL_VERTEX_FLOATS])
+{
+    static const uint32_t edge = 1;
+
+    memset(v, 0, SGI_GL_VERTEX_FLOATS * sizeof(float));
+    v[SGI_GL_V_POSITION + 3] = 1.0f;
+    v[SGI_GL_V_NORMAL + 2] = 1.0f;
+    v[SGI_GL_V_TEXCOORD + 3] = 1.0f;
+    memcpy(&v[SGI_GL_V_EDGE], &edge, sizeof(edge));
 }
 
 bool sgi_mgras_gl_header(uint32_t header)
@@ -247,22 +257,6 @@ bool sgi_mgras_gl_header(uint32_t header)
     }
 }
 
-static float mgras_gl_float(uint32_t bits)
-{
-    float value;
-
-    memcpy(&value, &bits, sizeof(value));
-    return value;
-}
-
-static uint32_t mgras_gl_bits(float value)
-{
-    uint32_t bits;
-
-    memcpy(&bits, &value, sizeof(bits));
-    return bits;
-}
-
 /*
  * glColor3ub's and glColor4ub's bytes in one word, the first component in
  * bits 31:24: colorbars' bars (run irix-20260928T004550-1040f3, from seq
@@ -270,23 +264,12 @@ static uint32_t mgras_gl_bits(float value)
  * 0x87008700 and 0x87000000, white, yellow, cyan, green, magenta and red.
  * Alpha in bits 7:0 follows from that component order; noof's constant
  * glColor4ub word 0x00000060 is consistent with it but cannot fix it
- * alone. A byte c is c / 255 (OpenGL 1.2.1, table 2.6). glColor3ub's
- * alpha is 1.
+ * alone.
  */
-static void mgras_gl_color_bytes(uint32_t color[4], uint32_t word,
-                                 bool alpha)
+static void mgras_gl_color_bytes(uint32_t bytes[4], uint32_t word)
 {
     for (int i = 0; i < 4; i++) {
-        uint32_t c = (word >> (24 - 8 * i)) & 0xff;
-
-        color[i] = mgras_gl_bits(i == 3 && !alpha ? 1.0f : c / 255.0f);
-    }
-}
-
-static void mgras_gl_identity(uint32_t m[16])
-{
-    for (int i = 0; i < 16; i++) {
-        m[i] = mgras_gl_bits(i % 5 == 0);
+        bytes[i] = (word >> (24 - 8 * i)) & 0xff;
     }
 }
 
@@ -319,38 +302,64 @@ static void mgras_gl_identity(uint32_t m[16])
 #define MGRAS_GL_NO_SLOT         0x80000000u
 #define MGRAS_GL_DEFAULT_SLOT    0xb27
 
-static SGIMgrasGLContext *mgras_gl(SGIMgrasState *s)
+static SGIGLContext *mgras_gl(SGIMgrasState *s)
 {
-    return &s->gl_context[s->gl_current];
+    return s->gl_context[s->gl_current].gl;
 }
 
-/* OpenGL 1.2.1 initial state (2.7, 2.10, 2.13.7, 4.1.5, 4.2.1-4.2.3). */
-static void mgras_gl_context_init(SGIMgrasGLContext *gl)
+/*
+ * The loaded context image's window and the banks the image or the bank
+ * token last named, as the drawable the loaded GL context draws into.
+ * MGRAS's colour targets are masks of pixel-memory banks: bank 0, the
+ * model's front[] plane and the one the X server draws in, and bank 1,
+ * back[]. Only mgras_gl_store_colour() reads them. A context image
+ * without the clip words' 0x11 in word 3, or with an empty rectangle,
+ * leaves the context without a window.
+ *
+ * The drawable is bound when a context image completes, and at the other
+ * points that change it, not read from the image at each draw. The two
+ * differ only after a guest protocol error: mgras_error() can end a
+ * context transaction partway through the image, with the port still
+ * ready, and GL words that follow draw into the window bound at the last
+ * completed switch, where a per-draw read would take the partly written
+ * image's. A migration inside such a transaction rebinds from the partly
+ * written image, since that is what the stream carries, so the two sides
+ * can then draw into different windows. The board's behaviour after such
+ * an error is unknown either way.
+ */
+static void mgras_gl_bind(SGIMgrasState *s)
 {
-    static const float one = 1.0f;
-    uint32_t one_bits;
+    uint32_t origin = s->context[MGRAS_GL_IMAGE_ORIGIN];
+    uint32_t clip_x = s->context[MGRAS_GL_IMAGE_CLIP_X];
+    uint32_t clip_y = s->context[MGRAS_GL_IMAGE_CLIP_Y];
+    unsigned int back = s->gl_banks[0] & 1;
+    SGIGLDrawable d = {
+        .origin = { origin & 0xffff, origin >> 16 },
+        .clip = {
+            .n = 1,
+            .r[0] = {
+                .x0 = clip_x >> 16,
+                .y0 = clip_y >> 16,
+                .x1 = MIN(clip_x & 0xffff, s->width - 1),
+                .y1 = MIN(clip_y & 0xffff, s->height - 1),
+            },
+        },
+        .front = 1u << (back ^ 1),
+        .back = 1u << back,
+    };
 
-    memcpy(&one_bits, &one, sizeof(one_bits));
-    memset(gl, 0, sizeof(*gl));
-    for (int i = 0; i < 4; i++) {
-        gl->color[i] = one_bits;
-    }
-    gl->shade_model = MGRAS_GL_SMOOTH;
-    gl->matrix_mode = MGRAS_GL_MODELVIEW;
-    mgras_gl_identity(gl->modelview);
-    mgras_gl_identity(gl->projection);
-    gl->depth_func = MGRAS_GL_LESS;
-    gl->depth_mask = 1;
-    gl->clear_depth = MGRAS_GL_DEPTH_MAX;
-    gl->draw_buffers = MGRAS_GL_DRAW_FRONT;
-    gl->normal[2] = one_bits;
-    gl->edge_flag = 1;
+    d.bound = s->context[MGRAS_GL_IMAGE_CLIP_MODE] == MGRAS_GL_CLIP_ON &&
+              d.clip.r[0].x0 <= d.clip.r[0].x1 &&
+              d.clip.r[0].y0 <= d.clip.r[0].y1;
+    sgi_gl_set_drawable(mgras_gl(s), &d);
 }
 
 void sgi_mgras_gl_reset(SGIMgrasState *s)
 {
     for (int i = 0; i < SGI_MGRAS_GL_CONTEXTS; i++) {
-        mgras_gl_context_init(&s->gl_context[i]);
+        s->gl_context[i].gl = &s->gl[i];
+        memset(&s->gl_context[i].parser, 0, sizeof(s->gl_context[i].parser));
+        sgi_gl_init(&s->gl[i], 0);
     }
     memset(s->gl_slot, 0, sizeof(s->gl_slot));
     memset(s->gl_selected, 0, sizeof(s->gl_selected));
@@ -359,6 +368,7 @@ void sgi_mgras_gl_reset(SGIMgrasState *s)
     s->gl_ge_port_logged = false;
     /* The value every captured GL context image restores. */
     s->gl_banks[0] = s->gl_banks[1] = 1;
+    mgras_gl_bind(s);
 }
 
 /* The entry holding slot's state, taking a new one if it has none. */
@@ -381,7 +391,9 @@ static unsigned int mgras_gl_lookup(SGIMgrasState *s, uint32_t slot)
                       "state is lost\n", slot, s->gl_slot[oldest]);
         free = oldest;
     }
-    mgras_gl_context_init(&s->gl_context[free]);
+    sgi_gl_init(&s->gl[free], slot);
+    memset(&s->gl_context[free].parser, 0,
+           sizeof(s->gl_context[free].parser));
     s->gl_slot[free] = slot;
     return free;
 }
@@ -423,7 +435,7 @@ void sgi_mgras_gl_context_loaded(SGIMgrasState *s)
 {
     uint32_t slot = s->context[MGRAS_GL_IMAGE_SLOT];
 
-    sgi_mgras_cmd_parser_save(s, &mgras_gl(s)->parser);
+    sgi_mgras_cmd_parser_save(s, &s->gl_context[s->gl_current].parser);
     s->gl_banks[0] = s->context[MGRAS_GL_IMAGE_BANKS];
     s->gl_banks[1] = s->context[MGRAS_GL_IMAGE_BANKS + 1];
     s->gl_ge_port_logged = false;
@@ -433,7 +445,8 @@ void sgi_mgras_gl_context_loaded(SGIMgrasState *s)
         s->gl_current = mgras_gl_lookup(s, slot);
         s->gl_selected[s->gl_current] = ++s->gl_selections;
     }
-    sgi_mgras_cmd_parser_load(s, &mgras_gl(s)->parser);
+    sgi_mgras_cmd_parser_load(s, &s->gl_context[s->gl_current].parser);
+    mgras_gl_bind(s);
 }
 
 /*
@@ -453,19 +466,28 @@ void sgi_mgras_gl_context_loaded(SGIMgrasState *s)
  */
 uint32_t sgi_mgras_gl_attribute_answer(SGIMgrasState *s, uint32_t index)
 {
-    SGIMgrasGLContext *gl = mgras_gl(s);
+    static const struct {
+        uint32_t pname;
+        uint32_t first;
+    } attrs[] = {
+        { SGI_GL_CURRENT_COLOR, 4 },
+        { SGI_GL_CURRENT_NORMAL, 8 },
+        { SGI_GL_CURRENT_TEXTURE_COORDS, 11 },
+        { SGI_GL_EDGE_FLAG, 15 },
+    };
+    uint32_t out[4];
+    unsigned n;
 
-    if (index >= 4 && index <= 7) {
-        return gl->color[index - 4];
-    }
-    if (index >= 8 && index <= 10) {
-        return gl->normal[index - 8];
-    }
-    if (index >= 11 && index <= 14) {
-        return index == 14 ? mgras_gl_bits(1.0f) : 0;
-    }
-    if (index == 15) {
-        return gl->edge_flag ? 0x01c00000 : 0;
+    for (int i = 0; i < ARRAY_SIZE(attrs); i++) {
+        if (index < attrs[i].first ||
+            !sgi_gl_get(mgras_gl(s), attrs[i].pname, out, &n) ||
+            index - attrs[i].first >= n) {
+            continue;
+        }
+        if (attrs[i].pname == SGI_GL_EDGE_FLAG) {
+            return out[0] ? 0x01c00000 : 0;
+        }
+        return out[index - attrs[i].first];
     }
     qemu_log_mask(LOG_UNIMP, "sgi-mgras: GL current-attribute query index "
                   "%u answered with zero\n", index);
@@ -489,27 +511,120 @@ void sgi_mgras_gl_ge_port_access(SGIMgrasState *s, hwaddr addr, bool write)
                   write ? "write" : "read");
 }
 
+/*
+ * The sizes MGRAS's stream carries: three held vertices since version 15
+ * and 31 saved matrices a stack since version 21. They are the stream's,
+ * not the shared context's, so a change to the shared sizes stops the
+ * build here instead of changing the stream's length.
+ */
+#define MGRAS_GL_WIRE_HELD       3
+#define MGRAS_GL_WIRE_STACK      31
+QEMU_BUILD_BUG_ON(SGI_GL_HELD_VERTICES != MGRAS_GL_WIRE_HELD);
+QEMU_BUILD_BUG_ON(SGI_GL_STACK_DEPTH - 1 != MGRAS_GL_WIRE_STACK);
+
+/*
+ * The per-context GL state the stream has carried since version 15, in
+ * that version's layout, which the shared context's fields no longer
+ * follow for the open primitive: there the stream has the begin token,
+ * the vertex count and each held vertex's position and colour, as two
+ * arrays.
+ *
+ * The stream carries no other attribute of a held vertex, so one loaded
+ * from it takes OpenGL's initial normal, texture coordinate and edge
+ * flag, not the ones current when it was sent. Nothing reads those yet;
+ * lighting and edge flags will need them carried.
+ */
+typedef struct MgrasGLPrimitiveWire {
+    SGIGLContext *parent;
+    uint32_t begin;
+    uint32_t vertex_count;
+    uint32_t vertex[MGRAS_GL_WIRE_HELD][4];
+    uint32_t vertex_color[MGRAS_GL_WIRE_HELD][4];
+} MgrasGLPrimitiveWire;
+
+static int mgras_gl_primitive_pre_save(void *opaque)
+{
+    MgrasGLPrimitiveWire *w = opaque;
+    SGIGLContext *gl = w->parent;
+
+    w->begin = gl->in_begin ? mgras_gl_begin_of_mode(gl->begin_mode) : 0;
+    w->vertex_count = gl->nheld;
+    for (int i = 0; i < MGRAS_GL_WIRE_HELD; i++) {
+        memcpy(w->vertex[i], &gl->held[i][SGI_GL_V_POSITION],
+               sizeof(w->vertex[i]));
+        memcpy(w->vertex_color[i], &gl->held[i][SGI_GL_V_COLOR],
+               sizeof(w->vertex_color[i]));
+    }
+    return 0;
+}
+
+static int mgras_gl_primitive_post_load(void *opaque, int version_id)
+{
+    MgrasGLPrimitiveWire *w = opaque;
+    SGIGLContext *gl = w->parent;
+
+    if (w->vertex_count > MGRAS_GL_WIRE_HELD ||
+        (w->begin && !mgras_gl_begin_token(w->begin, false))) {
+        return -EINVAL;
+    }
+    gl->in_begin = w->begin != 0;
+    gl->begin_mode = w->begin ? mgras_gl_mode_of_begin(w->begin) : 0;
+    gl->nheld = w->vertex_count;
+    for (int i = 0; i < MGRAS_GL_WIRE_HELD; i++) {
+        mgras_gl_vertex_init(gl->held[i]);
+        memcpy(&gl->held[i][SGI_GL_V_POSITION], w->vertex[i],
+               sizeof(w->vertex[i]));
+        memcpy(&gl->held[i][SGI_GL_V_COLOR], w->vertex_color[i],
+               sizeof(w->vertex_color[i]));
+    }
+    return 0;
+}
+
+static const VMStateDescription vmstate_mgras_gl_primitive_wire = {
+    .name = "tmp",
+    .pre_save = mgras_gl_primitive_pre_save,
+    .post_load = mgras_gl_primitive_post_load,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32(begin, MgrasGLPrimitiveWire),
+        VMSTATE_UINT32(vertex_count, MgrasGLPrimitiveWire),
+        VMSTATE_UINT32_2DARRAY(vertex, MgrasGLPrimitiveWire,
+                               MGRAS_GL_WIRE_HELD, 4),
+        VMSTATE_UINT32_2DARRAY(vertex_color, MgrasGLPrimitiveWire,
+                               MGRAS_GL_WIRE_HELD, 4),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
+const VMStateDescription vmstate_sgi_mgras_gl_primitive = {
+    .name = TYPE_SGI_MGRAS "/gl-primitive",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_WITH_TMP(SGIGLContext, MgrasGLPrimitiveWire,
+                         vmstate_mgras_gl_primitive_wire),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
 const VMStateDescription vmstate_sgi_mgras_gl_context = {
     .name = TYPE_SGI_MGRAS "/gl-context",
     .version_id = 1,
     .minimum_version_id = 1,
     .fields = (const VMStateField[]) {
-        VMSTATE_INT32_ARRAY(viewport, SGIMgrasGLContext, 4),
-        VMSTATE_UINT32_ARRAY(clear_color, SGIMgrasGLContext, 4),
-        VMSTATE_UINT32_ARRAY(color, SGIMgrasGLContext, 4),
-        VMSTATE_UINT32(shade_model, SGIMgrasGLContext),
-        VMSTATE_UINT32(begin, SGIMgrasGLContext),
-        VMSTATE_UINT32(vertex_count, SGIMgrasGLContext),
-        VMSTATE_UINT32_2DARRAY(vertex, SGIMgrasGLContext, 3, 4),
-        VMSTATE_UINT32_2DARRAY(vertex_color, SGIMgrasGLContext, 3, 4),
-        VMSTATE_UINT32(matrix_mode, SGIMgrasGLContext),
-        VMSTATE_UINT32_ARRAY(modelview, SGIMgrasGLContext, 16),
-        VMSTATE_UINT32_ARRAY(projection, SGIMgrasGLContext, 16),
-        VMSTATE_UINT32(depth_test, SGIMgrasGLContext),
-        VMSTATE_UINT32(depth_func, SGIMgrasGLContext),
-        VMSTATE_UINT32(depth_mask, SGIMgrasGLContext),
-        VMSTATE_UINT32(clear_depth, SGIMgrasGLContext),
-        VMSTATE_UINT32(draw_buffers, SGIMgrasGLContext),
+        VMSTATE_INT32_ARRAY(cur.viewport, SGIGLContext, 4),
+        VMSTATE_SGI_GL_FLOATS(clear_color, SGIGLContext, 4, 0),
+        VMSTATE_SGI_GL_FLOATS(cur_color, SGIGLContext, 4, 0),
+        VMSTATE_UINT32(cur.shade_model, SGIGLContext),
+        VMSTATE_WITH_TMP(SGIGLContext, MgrasGLPrimitiveWire,
+                         vmstate_mgras_gl_primitive_wire),
+        VMSTATE_UINT32(matrix_mode, SGIGLContext),
+        VMSTATE_SGI_GL_FLOATS(cur.modelview, SGIGLContext, 16, 0),
+        VMSTATE_SGI_GL_FLOATS(cur.projection, SGIGLContext, 16, 0),
+        VMSTATE_UINT32(cur.depth_test, SGIGLContext),
+        VMSTATE_UINT32(cur.depth_func, SGIGLContext),
+        VMSTATE_UINT32(cur.depth_mask, SGIGLContext),
+        VMSTATE_UINT32(clear_depth, SGIGLContext),
+        VMSTATE_UINT32(cur.draw_buffers, SGIGLContext),
         VMSTATE_END_OF_LIST()
     }
 };
@@ -547,12 +662,12 @@ const VMStateDescription vmstate_sgi_mgras_gl_context_v21 = {
     .version_id = 1,
     .minimum_version_id = 1,
     .fields = (const VMStateField[]) {
-        VMSTATE_UINT32_2DARRAY(modelview_stack, SGIMgrasGLContext,
-                               SGI_MGRAS_GL_STACK_DEPTH - 1, 16),
-        VMSTATE_UINT32_2DARRAY(projection_stack, SGIMgrasGLContext,
-                               SGI_MGRAS_GL_STACK_DEPTH - 1, 16),
-        VMSTATE_UINT32(modelview_depth, SGIMgrasGLContext),
-        VMSTATE_UINT32(projection_depth, SGIMgrasGLContext),
+        VMSTATE_2DARRAY(mv_stack, SGIGLContext, MGRAS_GL_WIRE_STACK, 16,
+                        0, vmstate_info_uint32, float),
+        VMSTATE_2DARRAY(pr_stack, SGIGLContext, MGRAS_GL_WIRE_STACK, 16,
+                        0, vmstate_info_uint32, float),
+        VMSTATE_UINT32(mv_depth, SGIGLContext),
+        VMSTATE_UINT32(pr_depth, SGIGLContext),
         VMSTATE_END_OF_LIST()
     }
 };
@@ -563,8 +678,8 @@ const VMStateDescription vmstate_sgi_mgras_gl_context_v22 = {
     .version_id = 1,
     .minimum_version_id = 1,
     .fields = (const VMStateField[]) {
-        VMSTATE_UINT32_ARRAY(normal, SGIMgrasGLContext, 3),
-        VMSTATE_UINT32(edge_flag, SGIMgrasGLContext),
+        VMSTATE_SGI_GL_FLOATS(cur_normal, SGIGLContext, 3, 0),
+        VMSTATE_UINT32(cur_edge, SGIGLContext),
         VMSTATE_END_OF_LIST()
     }
 };
@@ -591,85 +706,28 @@ bool sgi_mgras_gl_post_load(SGIMgrasState *s)
     }
     for (int i = 0; i < SGI_MGRAS_GL_CONTEXTS; i++) {
         const SGIMgrasCmdParser *p = &s->gl_context[i].parser;
+        const SGIGLContext *gl = &s->gl[i];
 
-        if (s->gl_context[i].vertex_count >
-            ARRAY_SIZE(s->gl_context[i].vertex) ||
-            (s->gl_context[i].begin &&
-             !mgras_gl_begin_token(s->gl_context[i].begin, false)) ||
-            s->gl_context[i].modelview_depth >= SGI_MGRAS_GL_STACK_DEPTH ||
-            s->gl_context[i].projection_depth >= SGI_MGRAS_GL_STACK_DEPTH ||
+        if (gl->nheld > SGI_GL_HELD_VERTICES ||
+            gl->begin_mode > SGI_GL_POLYGON ||
+            gl->mv_depth >= SGI_GL_STACK_DEPTH ||
+            gl->pr_depth >= SGI_GL_STACK_DEPTH ||
             !sgi_mgras_cmd_parser_valid(p->cls, p->reg, p->words_remaining,
                                         p->payload_count)) {
             return false;
         }
     }
+    /* An entry's identity is its slot, which the stream carries. */
+    for (int i = 1; i < SGI_MGRAS_GL_CONTEXTS; i++) {
+        s->gl[i].hw_id = s->gl_selected[i] ? s->gl_slot[i] : 0;
+    }
+    /*
+     * Nor does it carry drawables: the loaded context's comes from the
+     * image and banks it does carry, and every other is set again when
+     * that context is next loaded.
+     */
+    mgras_gl_bind(s);
     return true;
-}
-
-/*
- * A component clamped to [0, 1] and rounded to the nearest of eight bits
- * (OpenGL 1.2.1, 2.13.9). The 12-bit-per-channel visual the probe uses
- * (visual 0x30, 12 red bits) is stored at the eight bits a direct-colour
- * pixel holds in this model; 0.0 and 1.0 are exact either way, and how
- * the board reduces an interpolated 12-bit value is not published. The
- * discriminating test is gl-smooth-rounds-to-the-nearest-step.
- */
-static uint32_t mgras_gl_channel(double c)
-{
-    if (!(c > 0.0)) {
-        return 0;
-    }
-    if (c >= 1.0) {
-        return 0xff;
-    }
-    return (uint32_t)(c * 255.0 + 0.5);
-}
-
-static bool mgras_gl_window(SGIMgrasState *s, MgrasGLWindow *win)
-{
-    uint32_t origin = s->context[MGRAS_GL_IMAGE_ORIGIN];
-    uint32_t clip_x = s->context[MGRAS_GL_IMAGE_CLIP_X];
-    uint32_t clip_y = s->context[MGRAS_GL_IMAGE_CLIP_Y];
-
-    if (s->context[MGRAS_GL_IMAGE_CLIP_MODE] != MGRAS_GL_CLIP_ON) {
-        qemu_log_mask(LOG_UNIMP, "sgi-mgras: GL drawing with context image "
-                      "word 3 0x%x; the window rectangle is not modelled "
-                      "without 0x11\n",
-                      s->context[MGRAS_GL_IMAGE_CLIP_MODE]);
-        return false;
-    }
-    win->ox = origin & 0xffff;
-    win->oy = origin >> 16;
-    win->x0 = clip_x >> 16;
-    win->y0 = clip_y >> 16;
-    win->x1 = MIN(clip_x & 0xffff, s->width - 1);
-    win->y1 = MIN(clip_y & 0xffff, s->height - 1);
-    return win->x0 <= win->x1 && win->y0 <= win->y1;
-}
-
-/*
- * The pixel-memory banks the draw buffers select, as a mask of bank 0 and
- * bank 1. Bank 0 is the model's front[] plane, the one the X server draws
- * in; bank 1 is back[].
- */
-static unsigned int mgras_gl_draw_banks(SGIMgrasState *s)
-{
-    SGIMgrasGLContext *gl = mgras_gl(s);
-    unsigned int back = s->gl_banks[0] & 1;
-    unsigned int banks = 0;
-
-    if (gl->draw_buffers & ~(MGRAS_GL_DRAW_FRONT | MGRAS_GL_DRAW_BACK)) {
-        qemu_log_mask(LOG_UNIMP, "sgi-mgras: GL draw buffers 0x%x beyond "
-                      "the front and back buffers ignored\n",
-                      gl->draw_buffers);
-    }
-    if (gl->draw_buffers & MGRAS_GL_DRAW_FRONT) {
-        banks |= 1u << (back ^ 1);
-    }
-    if (gl->draw_buffers & MGRAS_GL_DRAW_BACK) {
-        banks |= 1u << back;
-    }
-    return banks;
 }
 
 /*
@@ -699,821 +757,93 @@ static uint32_t *mgras_gl_depth(SGIMgrasState *s, int x, int y)
     return &s->depth[(s->height - 1 - y) * s->width + x];
 }
 
-/*
- * OpenGL 1.2.1, 4.2.3: a clear passes only the pixel ownership, scissor
- * and dither steps, and the viewport does not bound it. The model takes
- * ownership as the image's window rectangle, which is the whole window
- * when nothing covers it; the scissor test and dithering are not
- * modelled. A depth clear writes only when the depth mask allows.
- */
-static void mgras_gl_clear(SGIMgrasState *s, bool depth)
+/* target is the bank mask mgras_gl_bind() gave the drawable. */
+static void mgras_gl_store_colour(void *opaque, SGIColourTarget target,
+                                  int x, int y, uint32_t colour)
 {
-    SGIMgrasGLContext *gl = mgras_gl(s);
-    MgrasGLWindow win;
-    unsigned int banks = mgras_gl_draw_banks(s);
-    uint32_t rgb = 0;
+    mgras_gl_put(opaque, target, x, y, colour);
+}
 
-    if (!mgras_gl_window(s, &win)) {
-        return;
-    }
-    if (depth && !gl->depth_mask) {
-        return;
-    }
-    if (!depth) {
-        rgb = (mgras_gl_channel(mgras_gl_float(gl->clear_color[0])) << 16) |
-              (mgras_gl_channel(mgras_gl_float(gl->clear_color[1])) << 8) |
-              mgras_gl_channel(mgras_gl_float(gl->clear_color[2]));
-    }
-    for (int y = win.y0; y <= win.y1; y++) {
-        for (int x = win.x0; x <= win.x1; x++) {
-            if (depth) {
-                *mgras_gl_depth(s, x, y) =
-                    gl->clear_depth & MGRAS_GL_DEPTH_MAX;
-            } else {
-                mgras_gl_put(s, banks, x, y, rgb);
-            }
-        }
-    }
+static uint32_t mgras_gl_load_depth(void *opaque, int x, int y)
+{
+    return *mgras_gl_depth(opaque, x, y);
+}
+
+static void mgras_gl_store_depth(void *opaque, int x, int y, uint32_t depth)
+{
+    *mgras_gl_depth(opaque, x, y) = depth;
+}
+
+/*
+ * The rules MGRAS's GL drawing follows, each implemented and tested:
+ *
+ * - Window coordinates snap to 1/256 pixel. The Octane Technical Report
+ *   (section 4.2.3) gives the RE4 eight bits of subpixel precision; how
+ *   the GE rounds to them is not published, so rounding to nearest, half
+ *   away from zero, is the model's choice. The discriminating test is
+ *   gl-triangle-snaps-to-the-nearest-subpixel.
+ * - The depth plane holds 24 bits, the Z width the same report gives the
+ *   RE4. A fragment's window depth rounds the same way, the model's
+ *   choice; the discriminating test is gl-depth-rounds-to-24-bits.
+ * - A colour channel is stored at eight bits. The 12-bit-per-channel
+ *   visual the probe uses (visual 0x30, 12 red bits) is stored at the
+ *   eight bits a direct-colour pixel holds in this model; 0.0 and 1.0 are
+ *   exact either way, and how the board reduces an interpolated 12-bit
+ *   value is not published. The discriminating test is
+ *   gl-smooth-rounds-to-the-nearest-step.
+ * - A shared edge's centres belong to the left and top edges, rows
+ *   counted up from the bottom, the model's choice; the discriminating
+ *   test is gl-triangle-shared-edge-centres-drawn-once.
+ * - Attributes interpolate in double arithmetic, not the GE's, which is
+ *   not published; a result that differs only in rounding is within the
+ *   probe's margins.
+ * - Lines cover the pixels the diamond-exit rule gives on the subpixel
+ *   grid, with no endpoint perturbation (gl-reference/lines and
+ *   gl-line-leaves-out-its-last-pixel).
+ * - A primitive with a vertex at w <= 0 is dropped, not clipped
+ *   (gl-triangle-with-negative-w-is-dropped).
+ */
+static const SGIRasterRules mgras_gl_raster_rules = {
+    .subpixel_bits = 8,
+    .color_bits = 8,
+    .depth_bits = 24,
+    .rounding = SGI_ROUND_HALF_AWAY,
+    .tie_rule = SGI_TIE_TOP_LEFT_BOTTOM_ORIGIN,
+    .arith = SGI_ARITH_DOUBLE,
+    .line_rule = SGI_LINE_COVERAGE_DOUBLE,
+    .evidence = "MGRAS: 8 subpixel and 24 depth bits from the Octane "
+                "Technical Report 4.2.3; the rest the model's choices, "
+                "tested",
+};
+
+/* A GL context's draw, rasterized into the banks and the depth plane. */
+static void mgras_gl_draw(void *opaque, const SGIGLDraw *d)
+{
+    SGIMgrasState *s = opaque;
+    SGIRasterTarget t = {
+        .store_colour = mgras_gl_store_colour,
+        .load_depth = mgras_gl_load_depth,
+        .store_depth = mgras_gl_store_depth,
+        .opaque = s,
+    };
+
+    sgi_soft_draw(&mgras_gl_raster_rules, &t, d);
     s->dirty = true;
 }
 
-/*
- * m = m * b, both column-major as glLoadMatrixf lays them out (2.10.2).
- * The product is formed in double precision and stored at single, the
- * precision the client sends; the GE's own arithmetic is not published.
- */
-static void mgras_gl_multiply(uint32_t m[16], const double b[16])
+/* A GL context's clear. */
+static void mgras_gl_raster(void *opaque, const SGIRasterOp *op)
 {
-    uint32_t r[16];
+    SGIMgrasState *s = opaque;
+    SGIRasterTarget t = {
+        .store_colour = mgras_gl_store_colour,
+        .load_depth = mgras_gl_load_depth,
+        .store_depth = mgras_gl_store_depth,
+        .opaque = s,
+    };
 
-    for (int col = 0; col < 4; col++) {
-        for (int row = 0; row < 4; row++) {
-            double sum = 0;
-
-            for (int k = 0; k < 4; k++) {
-                sum += (double)mgras_gl_float(m[k * 4 + row]) *
-                       b[col * 4 + k];
-            }
-            r[col * 4 + row] = mgras_gl_bits(sum);
-        }
-    }
-    memcpy(m, r, sizeof(r));
-}
-
-static uint32_t *mgras_gl_current_matrix(SGIMgrasState *s)
-{
-    SGIMgrasGLContext *gl = mgras_gl(s);
-    switch (gl->matrix_mode) {
-    case MGRAS_GL_MODELVIEW:
-        return gl->modelview;
-    case MGRAS_GL_PROJECTION:
-        return gl->projection;
-    default:
-        qemu_log_mask(LOG_UNIMP, "sgi-mgras: GL matrix mode 0x%x is not "
-                      "modelled; matrix command ignored\n",
-                      gl->matrix_mode);
-        return NULL;
-    }
-}
-
-/*
- * glOrtho's and glFrustum's matrices (OpenGL 1.2.1, 2.10.2), from the six
- * arguments the client sends as floats. Arguments the client itself would
- * have rejected with GL_INVALID_VALUE leave the matrix unchanged.
- */
-static bool mgras_gl_projection_matrix(uint32_t header, const uint32_t *p,
-                                       double m[16])
-{
-    double l = mgras_gl_float(p[0]), r = mgras_gl_float(p[1]);
-    double b = mgras_gl_float(p[2]), t = mgras_gl_float(p[3]);
-    double n = mgras_gl_float(p[4]), f = mgras_gl_float(p[5]);
-
-    if (l == r || b == t || n == f ||
-        (header == MGRAS_GL_FRUSTUM && (n <= 0 || f <= 0))) {
-        qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: GL projection with "
-                      "invalid bounds ignored\n");
-        return false;
-    }
-    memset(m, 0, 16 * sizeof(double));
-    if (header == MGRAS_GL_ORTHO) {
-        m[0] = 2 / (r - l);
-        m[5] = 2 / (t - b);
-        m[10] = -2 / (f - n);
-        m[12] = -(r + l) / (r - l);
-        m[13] = -(t + b) / (t - b);
-        m[14] = -(f + n) / (f - n);
-        m[15] = 1;
-    } else {
-        m[0] = 2 * n / (r - l);
-        m[5] = 2 * n / (t - b);
-        m[8] = (r + l) / (r - l);
-        m[9] = (t + b) / (t - b);
-        m[10] = -(f + n) / (f - n);
-        m[11] = -1;
-        m[14] = -2 * f * n / (f - n);
-    }
-    return true;
-}
-
-/*
- * glTranslatef's, glScalef's and glRotatef's matrices (OpenGL 1.2.1,
- * 2.10.2). The rotation is by the angle in degrees, counter-clockwise
- * looking from the axis toward the origin, about the axis scaled to unit
- * length; the model forms it in double precision. A zero axis leaves the
- * matrix unchanged.
- */
-static bool mgras_gl_transform_matrix(uint32_t header, const uint32_t *p,
-                                      double m[16])
-{
-    double x, y, z, len, a, c, sn;
-
-    memset(m, 0, 16 * sizeof(double));
-    m[0] = m[5] = m[10] = m[15] = 1;
-    switch (header) {
-    case MGRAS_GL_TRANSLATE:
-        m[12] = mgras_gl_float(p[0]);
-        m[13] = mgras_gl_float(p[1]);
-        m[14] = mgras_gl_float(p[2]);
-        return true;
-    case MGRAS_GL_SCALE:
-        m[0] = mgras_gl_float(p[0]);
-        m[5] = mgras_gl_float(p[1]);
-        m[10] = mgras_gl_float(p[2]);
-        return true;
-    default:
-        a = mgras_gl_float(p[0]) * M_PI / 180.0;
-        x = mgras_gl_float(p[1]);
-        y = mgras_gl_float(p[2]);
-        z = mgras_gl_float(p[3]);
-        len = sqrt(x * x + y * y + z * z);
-        if (!(len > 0)) {
-            qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: glRotatef about a "
-                          "zero axis ignored\n");
-            return false;
-        }
-        x /= len;
-        y /= len;
-        z /= len;
-        c = cos(a);
-        sn = sin(a);
-        /* Column-major: m[col * 4 + row]. */
-        m[0] = x * x * (1 - c) + c;
-        m[1] = y * x * (1 - c) + z * sn;
-        m[2] = x * z * (1 - c) - y * sn;
-        m[4] = x * y * (1 - c) - z * sn;
-        m[5] = y * y * (1 - c) + c;
-        m[6] = y * z * (1 - c) + x * sn;
-        m[8] = x * z * (1 - c) + y * sn;
-        m[9] = y * z * (1 - c) - x * sn;
-        m[10] = z * z * (1 - c) + c;
-        return true;
-    }
-}
-
-/*
- * glPushMatrix and glPopMatrix on the current mode's stack (2.10.2).
- * Approximated: the board's stack depths are not known. Each stack holds
- * SGI_MGRAS_GL_STACK_DEPTH matrices, the current one included, the least
- * OpenGL 1.2.1 allows for the modelview stack (table 6.25) and more than
- * it requires for the projection stack. A push onto a full stack and a
- * pop of the last matrix change nothing, which is what the specification
- * has the stack-overflow and stack-underflow errors do; the client
- * reports the errors itself, if at all. The discriminating test is
- * gl-matrix-stack-holds-32.
- */
-static void mgras_gl_stack_command(SGIMgrasState *s, uint32_t header,
-                                   uint32_t *m)
-{
-    SGIMgrasGLContext *gl = mgras_gl(s);
-    bool modelview = m == gl->modelview;
-    uint32_t (*stack)[16] = modelview ? gl->modelview_stack :
-                                        gl->projection_stack;
-    uint32_t *depth = modelview ? &gl->modelview_depth :
-                                  &gl->projection_depth;
-
-    if (header == MGRAS_GL_PUSH_MATRIX) {
-        if (*depth >= SGI_MGRAS_GL_STACK_DEPTH - 1) {
-            qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: glPushMatrix on a "
-                          "full stack ignored\n");
-            return;
-        }
-        memcpy(stack[(*depth)++], m, 16 * sizeof(uint32_t));
-        return;
-    }
-    if (*depth == 0) {
-        qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: glPopMatrix of the last "
-                      "matrix ignored\n");
-        return;
-    }
-    memcpy(m, stack[--(*depth)], 16 * sizeof(uint32_t));
-}
-
-static void mgras_gl_matrix_command(SGIMgrasState *s, uint32_t header,
-                                    const uint32_t *payload)
-{
-    uint32_t *m = mgras_gl_current_matrix(s);
-    double arg[16];
-
-    if (!m) {
-        return;
-    }
-    switch (header) {
-    case MGRAS_GL_PUSH_MATRIX:
-    case MGRAS_GL_POP_MATRIX:
-        mgras_gl_stack_command(s, header, m);
-        return;
-    case MGRAS_GL_TRANSLATE:
-    case MGRAS_GL_SCALE:
-    case MGRAS_GL_ROTATE:
-        if (mgras_gl_transform_matrix(header, payload, arg)) {
-            mgras_gl_multiply(m, arg);
-        }
-        return;
-    case MGRAS_GL_LOAD_IDENTITY:
-        mgras_gl_identity(m);
-        return;
-    case MGRAS_GL_LOAD_MATRIX:
-        memcpy(m, payload, 16 * sizeof(uint32_t));
-        return;
-    case MGRAS_GL_MULT_MATRIX:
-        for (int i = 0; i < 16; i++) {
-            arg[i] = mgras_gl_float(payload[i]);
-        }
-        mgras_gl_multiply(m, arg);
-        return;
-    default:
-        if (mgras_gl_projection_matrix(header, payload, arg)) {
-            mgras_gl_multiply(m, arg);
-        }
-        return;
-    }
-}
-
-static int64_t mgras_gl_edge(const MgrasGLVertex *a, const MgrasGLVertex *b,
-                             int64_t px, int64_t py)
-{
-    return (b->x - a->x) * (py - a->y) - (b->y - a->y) * (px - a->x);
-}
-
-/*
- * A counter-clockwise edge owns the pixel centres on it when it is a left
- * edge (running down) or a top edge (horizontal, running left), so two
- * triangles sharing an edge never both draw its centres, as OpenGL 1.2.1,
- * 3.5.1 requires. Which edges own them is the model's choice. The
- * discriminating test is gl-triangle-shared-edge-centres-drawn-once.
- */
-static bool mgras_gl_owns(const MgrasGLVertex *a, const MgrasGLVertex *b,
-                          int64_t e)
-{
-    if (e != 0) {
-        return e > 0;
-    }
-    return b->y < a->y || (b->y == a->y && b->x < a->x);
-}
-
-static bool mgras_gl_depth_passes(uint32_t func, uint32_t z, uint32_t stored)
-{
-    switch (func) {
-    case MGRAS_GL_NEVER:
-        return false;
-    case MGRAS_GL_LESS:
-        return z < stored;
-    case MGRAS_GL_EQUAL:
-        return z == stored;
-    case MGRAS_GL_LEQUAL:
-        return z <= stored;
-    case MGRAS_GL_GREATER:
-        return z > stored;
-    case MGRAS_GL_NOTEQUAL:
-        return z != stored;
-    case MGRAS_GL_GEQUAL:
-        return z >= stored;
-    default:
-        return true;
-    }
-}
-
-/*
- * One fragment at window pixel (px, py) with window depth z: dropped
- * outside [0, 1] (the view volume's near and far planes), depth tested
- * when the test is enabled, then written to the draw buffers' banks.
- */
-static void mgras_gl_fragment(SGIMgrasState *s, const MgrasGLWindow *win,
-                              unsigned int banks, int px, int py, double z,
-                              uint32_t rgb)
-{
-    SGIMgrasGLContext *gl = mgras_gl(s);
-    uint32_t zq, *stored;
-
-    if (!(z >= 0.0 && z <= 1.0)) {
-        return;
-    }
-    zq = (uint32_t)llround(z * MGRAS_GL_DEPTH_MAX);
-    stored = mgras_gl_depth(s, win->ox + px, win->oy + py);
-    if (gl->depth_test) {
-        if (!mgras_gl_depth_passes(gl->depth_func, zq, *stored)) {
-            return;
-        }
-        if (gl->depth_mask) {
-            *stored = zq;
-        }
-    }
-    mgras_gl_put(s, banks, win->ox + px, win->oy + py, rgb);
-}
-
-/* A colour, each component clamped and rounded to eight bits. */
-static uint32_t mgras_gl_rgb(const double c[3])
-{
-    return (mgras_gl_channel(c[0]) << 16) | (mgras_gl_channel(c[1]) << 8) |
-           mgras_gl_channel(c[2]);
-}
-
-/*
- * Transform one vertex (OpenGL 1.2.1, 2.10): object to eye by the
- * modelview, eye to clip by the projection, the divide by w and the
- * viewport map with the default depth range [0, 1]. Arithmetic is double
- * precision, not the GE's; a result that differs only in rounding is
- * within the probe's margins. A vertex with w <= 0 needs clipping the
- * model does not do, and returns false.
- */
-static bool mgras_gl_transform(SGIMgrasState *s, const uint32_t *pos,
-                               const uint32_t *rgba, MgrasGLVertex *out)
-{
-    SGIMgrasGLContext *gl = mgras_gl(s);
-    double obj[4], eye[4], clip[4];
-    int vx = gl->viewport[0], vy = gl->viewport[1];
-    int vw = gl->viewport[2], vh = gl->viewport[3];
-    double xw, yw;
-
-    for (int k = 0; k < 4; k++) {
-        obj[k] = mgras_gl_float(pos[k]);
-    }
-    for (int row = 0; row < 4; row++) {
-        eye[row] = 0;
-        for (int k = 0; k < 4; k++) {
-            eye[row] += mgras_gl_float(gl->modelview[k * 4 + row]) *
-                        obj[k];
-        }
-    }
-    for (int row = 0; row < 4; row++) {
-        clip[row] = 0;
-        for (int k = 0; k < 4; k++) {
-            clip[row] += mgras_gl_float(gl->projection[k * 4 + row]) *
-                         eye[k];
-        }
-    }
-    if (!(clip[3] > 0)) {
-        qemu_log_mask(LOG_UNIMP, "sgi-mgras: GL vertex with w %g "
-                      "needs clipping, triangle dropped\n", clip[3]);
-        return false;
-    }
-    /* 2.10.1: xw = (px / 2) xd + ox, ox = x + w / 2. */
-    xw = (clip[0] / clip[3] + 1.0) * vw / 2.0 + vx;
-    yw = (clip[1] / clip[3] + 1.0) * vh / 2.0 + vy;
-    if (!(fabs(xw) < 65536.0 && fabs(yw) < 65536.0)) {
-        qemu_log_mask(LOG_UNIMP, "sgi-mgras: GL vertex outside the "
-                      "rasterizer's range, triangle dropped\n");
-        return false;
-    }
-    out->x = llround(xw * (1 << MGRAS_GL_SUBPIXEL_BITS));
-    out->y = llround(yw * (1 << MGRAS_GL_SUBPIXEL_BITS));
-    out->z = (clip[2] / clip[3] + 1.0) / 2.0;
-    out->inv_w = 1.0 / clip[3];
-    for (int k = 0; k < 3; k++) {
-        out->rgb[k] = MIN(MAX(mgras_gl_float(rgba[k]), 0.0f), 1.0f);
-    }
-    return true;
-}
-
-/*
- * Transform, map and rasterize one triangle, given each vertex's object
- * position and colour and, for flat shading, the provoking vertex's
- * colour (OpenGL 1.2.1, 2.13.7 and table 2.9).
- *
- * Clipping to the view volume is approximated. In x and y the fragments
- * are bounded by the viewport rectangle, which matches clipping for a
- * positive w; the discriminating test is
- * gl-triangle-bounded-by-the-viewport. In z a fragment whose interpolated
- * window depth lies outside [0, 1] is dropped: window depth is affine in
- * window x and y over the triangle, so that removes exactly the part
- * beyond the near or far plane (gl-triangle-clipped-at-the-far-plane). A
- * vertex with w <= 0 drops the whole triangle
- * (gl-triangle-with-negative-w-is-dropped).
- *
- * Depth is interpolated linearly in window coordinates and colour with
- * the perspective correction of equation 3.4 (OpenGL 1.2.1, 3.5.1).
- */
-static void mgras_gl_triangle(SGIMgrasState *s, const uint32_t *pos[3],
-                              const uint32_t *rgba[3],
-                              const uint32_t *provoking)
-{
-    SGIMgrasGLContext *gl = mgras_gl(s);
-    unsigned int banks = mgras_gl_draw_banks(s);
-    MgrasGLWindow win;
-    MgrasGLVertex v[3];
-    int64_t min_x, max_x, min_y, max_y, area;
-    int vx = gl->viewport[0], vy = gl->viewport[1];
-    int vw = gl->viewport[2], vh = gl->viewport[3];
-    int px0, px1, py0, py1;
-    bool smooth = gl->shade_model != MGRAS_GL_FLAT;
-    uint32_t flat_rgb;
-
-    flat_rgb = (mgras_gl_channel(mgras_gl_float(provoking[0])) << 16) |
-               (mgras_gl_channel(mgras_gl_float(provoking[1])) << 8) |
-               mgras_gl_channel(mgras_gl_float(provoking[2]));
-
-    if (!mgras_gl_window(s, &win) || vw <= 0 || vh <= 0) {
-        return;
-    }
-    for (int i = 0; i < 3; i++) {
-        if (!mgras_gl_transform(s, pos[i], rgba[i], &v[i])) {
-            return;
-        }
-    }
-
-    area = mgras_gl_edge(&v[0], &v[1], v[2].x, v[2].y);
-    if (area == 0) {
-        return;
-    }
-    if (area < 0) {
-        /* Culling is off (3.5.1): draw either winding the same way. */
-        MgrasGLVertex t = v[1];
-
-        v[1] = v[2];
-        v[2] = t;
-        area = -area;
-    }
-
-    min_x = MIN(v[0].x, MIN(v[1].x, v[2].x)) >> MGRAS_GL_SUBPIXEL_BITS;
-    max_x = MAX(v[0].x, MAX(v[1].x, v[2].x)) >> MGRAS_GL_SUBPIXEL_BITS;
-    min_y = MIN(v[0].y, MIN(v[1].y, v[2].y)) >> MGRAS_GL_SUBPIXEL_BITS;
-    max_y = MAX(v[0].y, MAX(v[1].y, v[2].y)) >> MGRAS_GL_SUBPIXEL_BITS;
-
-    /* Window pixels, bounded by the viewport and the owned rectangle. */
-    px0 = MAX(MAX((int)min_x, vx), win.x0 - win.ox);
-    px1 = MIN(MIN((int)max_x, vx + vw - 1), win.x1 - win.ox);
-    py0 = MAX(MAX((int)min_y, vy), win.y0 - win.oy);
-    py1 = MIN(MIN((int)max_y, vy + vh - 1), win.y1 - win.oy);
-
-    for (int py = py0; py <= py1; py++) {
-        int64_t cy = ((int64_t)py << MGRAS_GL_SUBPIXEL_BITS) +
-                     (1 << (MGRAS_GL_SUBPIXEL_BITS - 1));
-
-        for (int px = px0; px <= px1; px++) {
-            int64_t cx = ((int64_t)px << MGRAS_GL_SUBPIXEL_BITS) +
-                         (1 << (MGRAS_GL_SUBPIXEL_BITS - 1));
-            int64_t e0 = mgras_gl_edge(&v[1], &v[2], cx, cy);
-            int64_t e1 = mgras_gl_edge(&v[2], &v[0], cx, cy);
-            int64_t e2 = mgras_gl_edge(&v[0], &v[1], cx, cy);
-            double b1, b2, z;
-            uint32_t rgb = flat_rgb;
-
-            if (!mgras_gl_owns(&v[1], &v[2], e0) ||
-                !mgras_gl_owns(&v[2], &v[0], e1) ||
-                !mgras_gl_owns(&v[0], &v[1], e2)) {
-                continue;
-            }
-            b1 = (double)e1 / area;
-            b2 = (double)e2 / area;
-            z = v[0].z + b1 * (v[1].z - v[0].z) + b2 * (v[2].z - v[0].z);
-            if (smooth) {
-                double w0 = (1.0 - b1 - b2) * v[0].inv_w;
-                double w1 = b1 * v[1].inv_w, w2 = b2 * v[2].inv_w;
-                double sum = w0 + w1 + w2;
-                double c[3];
-
-                for (int k = 0; k < 3; k++) {
-                    c[k] = (w0 * v[0].rgb[k] + w1 * v[1].rgb[k] +
-                            w2 * v[2].rgb[k]) / sum;
-                }
-                rgb = mgras_gl_rgb(c);
-            }
-            mgras_gl_fragment(s, &win, banks, px, py, z, rgb);
-        }
-    }
+    sgi_soft_raster(&mgras_gl_raster_rules, &t, op);
     s->dirty = true;
-}
-
-/*
- * Whether a width-1 segment from a to b produces the fragment at pixel
- * (px, py): the diamond-exit rule of OpenGL 1.2.1, 3.4.1. The diamond is
- * the open square |x - xc| + |y - yc| < 1/2 about the pixel's centre, and
- * the segment produces the fragment when it meets the diamond, unless b
- * lies in it. The distance from the centre along the segment is convex
- * and piecewise linear, so its least value lies at an end or where the
- * segment crosses the centre's row or column; the test is exact in the
- * 1/256-pixel grid the vertices were snapped to.
- *
- * Approximated: the specification lets an implementation depart from
- * this rule within stated bounds, and it perturbs endpoints on a
- * diamond's edge in an unstated direction; the board's rule is not
- * published. The model applies the rule as written with no perturbation.
- * The discriminating tests are gl-reference/lines and
- * gl-line-leaves-out-its-last-pixel.
- */
-static bool mgras_gl_line_covers(const MgrasGLVertex *a,
-                                 const MgrasGLVertex *b, int px, int py)
-{
-    const int64_t half = 1 << (MGRAS_GL_SUBPIXEL_BITS - 1);
-    int64_t cx = ((int64_t)px << MGRAS_GL_SUBPIXEL_BITS) + half;
-    int64_t cy = ((int64_t)py << MGRAS_GL_SUBPIXEL_BITS) + half;
-    int64_t dx = b->x - a->x, dy = b->y - a->y;
-    int64_t ex = cx - a->x, ey = cy - a->y;
-
-    if (llabs(b->x - cx) + llabs(b->y - cy) < half) {
-        return false;
-    }
-    if (llabs(ex) + llabs(ey) < half) {
-        return true;
-    }
-    /* Crossing the centre's column at t = ex / dx, scaled by |dx|. */
-    if (dx && (dx > 0 ? ex >= 0 && ex <= dx : ex <= 0 && ex >= dx) &&
-        llabs(dy * ex - ey * dx) < half * llabs(dx)) {
-        return true;
-    }
-    /* Crossing the centre's row at t = ey / dy, scaled by |dy|. */
-    return dy && (dy > 0 ? ey >= 0 && ey <= dy : ey <= 0 && ey >= dy) &&
-           llabs(dx * ey - ex * dy) < half * llabs(dy);
-}
-
-/*
- * Transform, map and rasterize one width-1 segment (OpenGL 1.2.1, 3.4.1)
- * with the provoking vertex's colour when flat shaded. A fragment's
- * depth and smooth colour come from t, the centre's projection onto the
- * segment (equations 3.5 to 3.7), the colour corrected for perspective.
- *
- * Approximated like a triangle: the fragments are bounded by the viewport
- * rather than the segment clipped to the view volume, which differs only
- * in the pixels next to where a segment leaves the viewport, and a vertex
- * with w <= 0 drops the segment. The discriminating test is
- * gl-line-bounded-by-the-viewport. glLineWidth, glLineStipple and line
- * antialiasing are not modelled.
- */
-static void mgras_gl_line(SGIMgrasState *s, const uint32_t *pa,
-                          const uint32_t *ca, const uint32_t *pb,
-                          const uint32_t *cb, const uint32_t *provoking)
-{
-    SGIMgrasGLContext *gl = mgras_gl(s);
-    unsigned int banks = mgras_gl_draw_banks(s);
-    int vx = gl->viewport[0], vy = gl->viewport[1];
-    int vw = gl->viewport[2], vh = gl->viewport[3];
-    bool smooth = gl->shade_model != MGRAS_GL_FLAT;
-    bool x_major;
-    MgrasGLWindow win;
-    MgrasGLVertex a, b;
-    double flat[3], len2;
-    int major0, major1;
-
-    if (!mgras_gl_window(s, &win) || vw <= 0 || vh <= 0 ||
-        !mgras_gl_transform(s, pa, ca, &a) ||
-        !mgras_gl_transform(s, pb, cb, &b) || (a.x == b.x && a.y == b.y)) {
-        return;
-    }
-    for (int k = 0; k < 3; k++) {
-        flat[k] = mgras_gl_float(provoking[k]);
-    }
-    len2 = (double)(b.x - a.x) * (b.x - a.x) +
-           (double)(b.y - a.y) * (b.y - a.y);
-    x_major = llabs(b.x - a.x) >= llabs(b.y - a.y);
-
-    /*
-     * Walk the major axis a pixel at a time, and in each step try the
-     * minor-axis pixels within one of those the segment spans there.
-     */
-    major0 = (x_major ? MIN(a.x, b.x) : MIN(a.y, b.y)) >>
-             MGRAS_GL_SUBPIXEL_BITS;
-    major1 = (x_major ? MAX(a.x, b.x) : MAX(a.y, b.y)) >>
-             MGRAS_GL_SUBPIXEL_BITS;
-    for (int m = major0 - 1; m <= major1 + 1; m++) {
-        const MgrasGLVertex *lo = x_major ? (a.x <= b.x ? &a : &b) :
-                                            (a.y <= b.y ? &a : &b);
-        const MgrasGLVertex *hi = lo == &a ? &b : &a;
-        double l0 = x_major ? lo->x : lo->y, l1 = x_major ? hi->x : hi->y;
-        double n0 = x_major ? lo->y : lo->x, n1 = x_major ? hi->y : hi->x;
-        double e0 = MAX((double)m * (1 << MGRAS_GL_SUBPIXEL_BITS), l0);
-        double e1 = MIN((double)(m + 1) * (1 << MGRAS_GL_SUBPIXEL_BITS), l1);
-        double f0, f1;
-        int minor0, minor1;
-
-        if (l1 > l0) {
-            e0 = MIN(e0, l1);
-            e1 = MAX(e1, l0);
-            f0 = n0 + (n1 - n0) * (e0 - l0) / (l1 - l0);
-            f1 = n0 + (n1 - n0) * (e1 - l0) / (l1 - l0);
-        } else {
-            f0 = n0;
-            f1 = n1;
-        }
-        minor0 = (int)floor(MIN(f0, f1) / (1 << MGRAS_GL_SUBPIXEL_BITS)) - 1;
-        minor1 = (int)floor(MAX(f0, f1) / (1 << MGRAS_GL_SUBPIXEL_BITS)) + 1;
-        for (int n = minor0; n <= minor1; n++) {
-            int px = x_major ? m : n, py = x_major ? n : m;
-            double cx = (px + 0.5) * (1 << MGRAS_GL_SUBPIXEL_BITS);
-            double cy = (py + 0.5) * (1 << MGRAS_GL_SUBPIXEL_BITS);
-            double t, c[3];
-
-            if (px < MAX(vx, win.x0 - win.ox) ||
-                px > MIN(vx + vw - 1, win.x1 - win.ox) ||
-                py < MAX(vy, win.y0 - win.oy) ||
-                py > MIN(vy + vh - 1, win.y1 - win.oy) ||
-                !mgras_gl_line_covers(&a, &b, px, py)) {
-                continue;
-            }
-            t = ((cx - a.x) * (b.x - a.x) + (cy - a.y) * (b.y - a.y)) / len2;
-            t = MIN(MAX(t, 0.0), 1.0);
-            for (int k = 0; k < 3; k++) {
-                double wa = (1 - t) * a.inv_w, wb = t * b.inv_w;
-
-                c[k] = smooth ? (wa * a.rgb[k] + wb * b.rgb[k]) / (wa + wb) :
-                                flat[k];
-            }
-            mgras_gl_fragment(s, &win, banks, px, py,
-                              a.z + t * (b.z - a.z), mgras_gl_rgb(c));
-        }
-    }
-    s->dirty = true;
-}
-
-/*
- * A size-1 point covers the pixel holding its window position (OpenGL
- * 1.2.1, 3.3), at the 1/256-pixel grid the vertex was snapped to. A point
- * outside the viewport or beyond the near or far plane is dropped, which
- * is what clipping a point does while w is positive. glPointSize and
- * point antialiasing are not modelled.
- */
-static void mgras_gl_point(SGIMgrasState *s, const uint32_t *pos,
-                           const uint32_t *rgba)
-{
-    SGIMgrasGLContext *gl = mgras_gl(s);
-    int vx = gl->viewport[0], vy = gl->viewport[1];
-    int vw = gl->viewport[2], vh = gl->viewport[3];
-    MgrasGLWindow win;
-    MgrasGLVertex v;
-    int px, py;
-
-    if (!mgras_gl_window(s, &win) || !mgras_gl_transform(s, pos, rgba, &v)) {
-        return;
-    }
-    px = v.x >> MGRAS_GL_SUBPIXEL_BITS;
-    py = v.y >> MGRAS_GL_SUBPIXEL_BITS;
-    if (px < MAX(vx, win.x0 - win.ox) ||
-        px > MIN(vx + vw - 1, win.x1 - win.ox) ||
-        py < MAX(vy, win.y0 - win.oy) ||
-        py > MIN(vy + vh - 1, win.y1 - win.oy)) {
-        return;
-    }
-    mgras_gl_fragment(s, &win, mgras_gl_draw_banks(s), px, py, v.z,
-                      mgras_gl_rgb(v.rgb));
-    s->dirty = true;
-}
-
-/* A segment between held or arriving vertices, flat colour from p. */
-static void mgras_gl_draw_line(SGIMgrasState *s, uint32_t *const pos[4],
-                               uint32_t *const rgba[4], int a, int b, int p)
-{
-    mgras_gl_line(s, pos[a], rgba[a], pos[b], rgba[b], rgba[p]);
-}
-
-/* A triangle of three held or arriving vertices, flat colour from p. */
-static void mgras_gl_draw_triangle(SGIMgrasState *s, uint32_t *const pos[4],
-                                   uint32_t *const rgba[4], int a, int b,
-                                   int c, int p)
-{
-    const uint32_t *tp[3] = { pos[a], pos[b], pos[c] };
-    const uint32_t *tc[3] = { rgba[a], rgba[b], rgba[c] };
-
-    mgras_gl_triangle(s, tp, tc, rgba[p]);
-}
-
-/*
- * A quadrilateral a, b, c, d in order around its edge, drawn as the
- * triangles a b c and a c d. OpenGL 1.2.1 (3.5.1) allows any split of a
- * polygon with more than three vertices that gives a convex combination
- * of the vertices' values, and says nothing of non-convex or non-planar
- * ones; which diagonal the board takes is not known. Approximated: the
- * model splits every polygon into a fan from its first vertex. The
- * discriminating test is gl-quad-splits-from-its-first-vertex.
- */
-static void mgras_gl_draw_quad(SGIMgrasState *s, uint32_t *const pos[4],
-                               uint32_t *const rgba[4], int a, int b, int c,
-                               int d, int p)
-{
-    mgras_gl_draw_triangle(s, pos, rgba, a, b, c, p);
-    mgras_gl_draw_triangle(s, pos, rgba, a, c, d, p);
-}
-
-/* Hold the arriving vertex in slot n of the three a context keeps. */
-static void mgras_gl_hold(SGIMgrasGLContext *gl, unsigned int n,
-                          const uint32_t pos[4], const uint32_t rgba[4])
-{
-    memcpy(gl->vertex[n], pos, sizeof(gl->vertex[n]));
-    memcpy(gl->vertex_color[n], rgba, sizeof(gl->vertex_color[n]));
-}
-
-/*
- * One vertex of the primitive open since glBegin (OpenGL 1.2.1, 2.6.1).
- * The context holds at most three earlier vertices, in vertex[] with
- * vertex_count of them in use, and every piece is drawn as soon as its
- * last vertex arrives, so a context switch between two vertices loses
- * nothing. The flat colour follows table 2.9 and 2.13.7: a point's own,
- * the second vertex of a segment, the last vertex of a triangle, strip
- * or fan triangle, quad or quad-strip quad, and the first vertex of a
- * polygon. A line loop's closing segment is drawn at glEnd. Vertices
- * that complete no piece before glEnd draw nothing.
- */
-static void mgras_gl_vertex(SGIMgrasState *s, const uint32_t *payload,
-                            uint32_t components)
-{
-    SGIMgrasGLContext *gl = mgras_gl(s);
-    uint32_t cur[4] = { 0, 0, 0, mgras_gl_bits(1.0f) };
-    uint32_t cur_rgba[4];
-    uint32_t *const pos[4] = { gl->vertex[0], gl->vertex[1], gl->vertex[2],
-                               cur };
-    uint32_t *const rgba[4] = { gl->vertex_color[0], gl->vertex_color[1],
-                                gl->vertex_color[2], cur_rgba };
-    unsigned int n = gl->vertex_count;
-
-    if (!gl->begin) {
-        qemu_log_mask(LOG_UNIMP, "sgi-mgras: GL vertex outside glBegin "
-                      "ignored\n");
-        return;
-    }
-    memcpy(cur, payload, components * sizeof(uint32_t));
-    memcpy(cur_rgba, gl->color, sizeof(cur_rgba));
-
-    switch (gl->begin) {
-    case MGRAS_GL_BEGIN_POINTS:
-        mgras_gl_point(s, cur, cur_rgba);
-        return;
-    case MGRAS_GL_BEGIN_LINES:
-        if (n < 1) {
-            break;
-        }
-        mgras_gl_draw_line(s, pos, rgba, 0, 3, 3);
-        gl->vertex_count = 0;
-        return;
-    case MGRAS_GL_BEGIN_LINE_STRIP:
-        if (n < 1) {
-            break;
-        }
-        mgras_gl_draw_line(s, pos, rgba, 0, 3, 3);
-        mgras_gl_hold(gl, 0, cur, cur_rgba);
-        return;
-    case MGRAS_GL_BEGIN_LINE_LOOP:
-        /* Slot 0 keeps the first vertex for the closing segment. */
-        if (n < 1) {
-            break;
-        }
-        mgras_gl_draw_line(s, pos, rgba, n - 1, 3, 3);
-        mgras_gl_hold(gl, 1, cur, cur_rgba);
-        gl->vertex_count = 2;
-        return;
-    case MGRAS_GL_BEGIN_TRIANGLES:
-        if (n < 2) {
-            break;
-        }
-        mgras_gl_draw_triangle(s, pos, rgba, 0, 1, 3, 3);
-        gl->vertex_count = 0;
-        return;
-    case MGRAS_GL_BEGIN_TRI_STRIP:
-        if (n < 2) {
-            break;
-        }
-        mgras_gl_draw_triangle(s, pos, rgba, 0, 1, 3, 3);
-        mgras_gl_hold(gl, 0, gl->vertex[1], gl->vertex_color[1]);
-        mgras_gl_hold(gl, 1, cur, cur_rgba);
-        return;
-    case MGRAS_GL_BEGIN_TRI_FAN:
-    case MGRAS_GL_BEGIN_POLYGON:
-        if (n < 2) {
-            break;
-        }
-        mgras_gl_draw_triangle(s, pos, rgba, 0, 1, 3,
-                               gl->begin == MGRAS_GL_BEGIN_POLYGON ? 0 : 3);
-        mgras_gl_hold(gl, 1, cur, cur_rgba);
-        return;
-    case MGRAS_GL_BEGIN_QUADS:
-        if (n < 3) {
-            break;
-        }
-        mgras_gl_draw_quad(s, pos, rgba, 0, 1, 2, 3, 3);
-        gl->vertex_count = 0;
-        return;
-    case MGRAS_GL_BEGIN_QUAD_STRIP:
-        if (n < 3) {
-            break;
-        }
-        /* Vertices 2i - 1, 2i, 2i + 2 and 2i + 1 in order (2.6.1). */
-        mgras_gl_draw_quad(s, pos, rgba, 0, 1, 3, 2, 3);
-        mgras_gl_hold(gl, 0, gl->vertex[2], gl->vertex_color[2]);
-        mgras_gl_hold(gl, 1, cur, cur_rgba);
-        gl->vertex_count = 2;
-        return;
-    default:
-        g_assert_not_reached();
-    }
-    mgras_gl_hold(gl, n, cur, cur_rgba);
-    gl->vertex_count = n + 1;
 }
 
 /*
@@ -1527,36 +857,45 @@ static void mgras_gl_vertex(SGIMgrasState *s, const uint32_t *payload,
  */
 static void mgras_gl_context_start(SGIMgrasState *s)
 {
-    mgras_gl_context_init(mgras_gl(s));
+    SGIGLContext *gl = mgras_gl(s);
+
+    sgi_gl_init(gl, gl->hw_id);
+    mgras_gl_bind(s);
+}
+
+static void mgras_gl_command(SGIMgrasState *s, SGIGLOp op,
+                             const uint32_t *args, unsigned nargs)
+{
+    /*
+     * No MGRAS command is a glFinish: the client's glFinish is a query and
+     * a status poll (mgras-gl-commands.md), which the HQ answers itself.
+     */
+    SGIGLSink sink = {
+        .draw = mgras_gl_draw,
+        .raster = mgras_gl_raster,
+        .opaque = s,
+    };
+    SGIGLCmd cmd = { .op = op, .nargs = nargs, .args = args };
+
+    sgi_gl_command(mgras_gl(s), &sink, &cmd);
 }
 
 void sgi_mgras_gl_execute(SGIMgrasState *s, uint32_t header,
                           const uint32_t *payload, uint32_t words)
 {
-    static const float one = 1.0f;
-    SGIMgrasGLContext *gl = mgras_gl(s);
+    uint32_t word[4];
 
     if (words != (header & 0xff) / sizeof(uint32_t)) {
         return;
     }
     if (mgras_gl_begin_token(header, false)) {
-        gl->begin = header;
-        gl->vertex_count = 0;
+        word[0] = mgras_gl_mode_of_begin(header);
+        mgras_gl_command(s, SGI_GL_OP_BEGIN, word, 1);
         return;
     }
     if (mgras_gl_begin_token(header, true)) {
-        /*
-         * A line loop closes from its last vertex to its first, in the
-         * first vertex's colour when flat (2.13.7). Vertices that
-         * complete no piece draw nothing (2.6.1).
-         */
-        if (gl->begin == MGRAS_GL_BEGIN_LINE_LOOP && gl->vertex_count == 2) {
-            mgras_gl_line(s, gl->vertex[1], gl->vertex_color[1],
-                          gl->vertex[0], gl->vertex_color[0],
-                          gl->vertex_color[0]);
-        }
-        gl->begin = 0;
-        gl->vertex_count = 0;
+        /* Any end token ends whichever primitive is open. */
+        mgras_gl_command(s, SGI_GL_OP_END, payload, 0);
         return;
     }
     switch (header) {
@@ -1565,39 +904,61 @@ void sgi_mgras_gl_execute(SGIMgrasState *s, uint32_t header,
         return;
     case MGRAS_GL_VIEWPORT:
         /* The client has already clamped the size (__glMgrim_Viewport). */
-        for (int i = 0; i < 4; i++) {
-            gl->viewport[i] = (int32_t)payload[i];
-        }
+        mgras_gl_command(s, SGI_GL_OP_VIEWPORT, payload, 4);
         return;
     case MGRAS_GL_CLEAR_COLOR:
-        memcpy(gl->clear_color, payload, sizeof(gl->clear_color));
+        mgras_gl_command(s, SGI_GL_OP_CLEAR_COLOR, payload, 4);
         return;
     case MGRAS_GL_CLEAR_COLOR_BUF:
-        mgras_gl_clear(s, false);
+        word[0] = SGI_GL_COLOR_BUFFER_BIT;
+        mgras_gl_command(s, SGI_GL_OP_CLEAR, word, 1);
         return;
     case MGRAS_GL_CLEAR_DEPTH:
-        gl->clear_depth = payload[0];
+        /*
+         * The word is already scaled to the depth plane's 24 bits
+         * (mgras-gl-commands.md), the form the shared context keeps.
+         */
+        mgras_gl_command(s, SGI_GL_OP_CLEAR_DEPTH, payload, 1);
         return;
     case MGRAS_GL_CLEAR_DEPTH_BUF:
-        mgras_gl_clear(s, true);
+        word[0] = SGI_GL_DEPTH_BUFFER_BIT;
+        mgras_gl_command(s, SGI_GL_OP_CLEAR, word, 1);
         return;
     case MGRAS_GL_SHADE_MODEL:
-        gl->shade_model = payload[0];
+        mgras_gl_command(s, SGI_GL_OP_SHADE_MODEL, payload, 1);
         return;
     case MGRAS_GL_MATRIX_MODE:
-        gl->matrix_mode = payload[0];
+        mgras_gl_command(s, SGI_GL_OP_MATRIX_MODE, payload, 1);
         return;
     case MGRAS_GL_LOAD_MATRIX:
+        mgras_gl_command(s, SGI_GL_OP_LOAD_MATRIX, payload, 16);
+        return;
     case MGRAS_GL_LOAD_IDENTITY:
+        mgras_gl_command(s, SGI_GL_OP_LOAD_IDENTITY, payload, 0);
+        return;
     case MGRAS_GL_MULT_MATRIX:
+        mgras_gl_command(s, SGI_GL_OP_MULT_MATRIX, payload, 16);
+        return;
     case MGRAS_GL_FRUSTUM:
+        mgras_gl_command(s, SGI_GL_OP_FRUSTUM, payload, 6);
+        return;
     case MGRAS_GL_ORTHO:
+        mgras_gl_command(s, SGI_GL_OP_ORTHO, payload, 6);
+        return;
     case MGRAS_GL_PUSH_MATRIX:
+        mgras_gl_command(s, SGI_GL_OP_PUSH_MATRIX, payload, 0);
+        return;
     case MGRAS_GL_POP_MATRIX:
+        mgras_gl_command(s, SGI_GL_OP_POP_MATRIX, payload, 0);
+        return;
     case MGRAS_GL_TRANSLATE:
+        mgras_gl_command(s, SGI_GL_OP_TRANSLATE, payload, 3);
+        return;
     case MGRAS_GL_SCALE:
+        mgras_gl_command(s, SGI_GL_OP_SCALE, payload, 3);
+        return;
     case MGRAS_GL_ROTATE:
-        mgras_gl_matrix_command(s, header, payload);
+        mgras_gl_command(s, SGI_GL_OP_ROTATE, payload, 4);
         return;
     case MGRAS_GL_DEPTH_TEST:
         /*
@@ -1605,16 +966,19 @@ void sgi_mgras_gl_execute(SGIMgrasState *s, uint32_t header,
          * the probe's depth case, and every context setup sends it with 0
          * (run irix-20260927T172059-fdbada).
          */
-        gl->depth_test = payload[0] != 0;
+        word[0] = SGI_GL_DEPTH_TEST;
+        mgras_gl_command(s, payload[0] ? SGI_GL_OP_ENABLE :
+                         SGI_GL_OP_DISABLE, word, 1);
         return;
     case MGRAS_GL_DEPTH_FUNC:
-        gl->depth_func = payload[0] & 7;
+        word[0] = SGI_GL_NEVER_ENUM + (payload[0] & 7);
+        mgras_gl_command(s, SGI_GL_OP_DEPTH_FUNC, word, 1);
         return;
     case MGRAS_GL_DEPTH_MASK:
-        gl->depth_mask = payload[0] != 0;
+        mgras_gl_command(s, SGI_GL_OP_DEPTH_MASK, payload, 1);
         return;
     case MGRAS_GL_DRAW_BUFFER:
-        gl->draw_buffers = payload[0];
+        mgras_gl_command(s, SGI_GL_OP_DRAW_BUFFERS, payload, 1);
         return;
     case MGRAS_GL_BANKS:
         if (payload[0] != payload[1]) {
@@ -1624,50 +988,47 @@ void sgi_mgras_gl_execute(SGIMgrasState *s, uint32_t header,
         }
         s->gl_banks[0] = payload[0];
         s->gl_banks[1] = payload[1];
+        mgras_gl_bind(s);
         return;
     case MGRAS_GL_COLOR3F:
-        memcpy(gl->color, payload, 3 * sizeof(uint32_t));
-        memcpy(&gl->color[3], &one, sizeof(gl->color[3]));
+        mgras_gl_command(s, SGI_GL_OP_COLOR3F, payload, 3);
         return;
     case MGRAS_GL_COLOR4F:
-        memcpy(gl->color, payload, sizeof(gl->color));
+        mgras_gl_command(s, SGI_GL_OP_COLOR4F, payload, 4);
         return;
     case MGRAS_GL_COLOR3UB:
-        mgras_gl_color_bytes(gl->color, payload[0], false);
+        mgras_gl_color_bytes(word, payload[0]);
+        mgras_gl_command(s, SGI_GL_OP_COLOR3UB, word, 3);
+        return;
+    case MGRAS_GL_COLOR4UB:
+        mgras_gl_color_bytes(word, payload[0]);
+        mgras_gl_command(s, SGI_GL_OP_COLOR4UB, word, 4);
         return;
     case MGRAS_GL_NORMAL3F:
         /* Kept for the 0xa104 query only; lighting is not modelled. */
-        memcpy(gl->normal, payload, sizeof(gl->normal));
+        mgras_gl_command(s, SGI_GL_OP_NORMAL3F, payload, 3);
         return;
     case MGRAS_GL_EDGE_FLAG_TRUE:
     case MGRAS_GL_EDGE_FLAG_FALSE:
         /* Kept for the 0xa104 query; polygon edge modes are not modelled. */
-        gl->edge_flag = header == MGRAS_GL_EDGE_FLAG_TRUE;
-        return;
-    case MGRAS_GL_COLOR4UB:
-        mgras_gl_color_bytes(gl->color, payload[0], true);
+        word[0] = header == MGRAS_GL_EDGE_FLAG_TRUE;
+        mgras_gl_command(s, SGI_GL_OP_EDGE_FLAG, word, 1);
         return;
     case MGRAS_GL_VERTEX2F:
-        mgras_gl_vertex(s, payload, 2);
+        mgras_gl_command(s, SGI_GL_OP_VERTEX2F, payload, 2);
         return;
     case MGRAS_GL_VERTEX3F:
-        mgras_gl_vertex(s, payload, 3);
+        mgras_gl_command(s, SGI_GL_OP_VERTEX3F, payload, 3);
         return;
     case MGRAS_GL_VERTEX4F:
-        mgras_gl_vertex(s, payload, 4);
+        mgras_gl_command(s, SGI_GL_OP_VERTEX4F, payload, 4);
         return;
-    case MGRAS_GL_VERTEX2I: {
-        /* Integer components convert to float unscaled (2.7). */
-        uint32_t xy[2] = {
-            mgras_gl_bits((int32_t)payload[0]),
-            mgras_gl_bits((int32_t)payload[1]),
-        };
-
-        mgras_gl_vertex(s, xy, 2);
+    case MGRAS_GL_VERTEX2I:
+        mgras_gl_command(s, SGI_GL_OP_VERTEX2I, payload, 2);
         return;
-    }
     case MGRAS_GL_FLUSH:
         /* Approximated: every command has already run to completion. */
+        mgras_gl_command(s, SGI_GL_OP_FLUSH, payload, 0);
         return;
     default:
         g_assert_not_reached();

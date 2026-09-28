@@ -7363,6 +7363,38 @@ static void gl_window_projection(QTestState *qts)
 }
 
 /*
+ * Draw-buffer word 3 selects the front and the back buffer together, so a
+ * clear and a triangle each reach both banks: bank 0 directly, and bank 1
+ * where the XMAP buffer-select mask shows it for the window's display ID.
+ */
+static void test_gl_front_and_back_draw_into_both_banks(void)
+{
+    gl_scene_start(qts, GL_FLAT);
+    mgras_tag_wid(qts, 256, 256, 383, 383, 14);
+    gl_window_projection(qts);
+    gl_one(qts, GL_MATRIX_MODE_HDR, GL_MODELVIEW);
+    gl_word(qts, GL_LOAD_IDENTITY);
+    gl_draw_buffer(qts, 3);
+    gl_clear_color(qts, 1, 0, 1, 1);
+    gl_word(qts, GL_CLEAR_COLOR_BUFFER);
+    gl_color3f(qts, 1, 1, 1);
+    gl_word(qts, GL_BEGIN_TRIANGLES);
+    gl_vertex2f(qts, 10.25f, 10.25f);
+    gl_vertex2f(qts, 10.875f, 10.25f);
+    gl_vertex2f(qts, 10.25f, 10.875f);
+    gl_word(qts, GL_END_TRIANGLES);
+
+    g_assert_cmphex(mgras_test_pixel(qts, 300, 300), ==, 0xff00ff);
+    g_assert_cmphex(gl_window_pixel(qts, 10, 10), ==, 0xffffff);
+    qtest_writeb(qts, REG_XMAP_INDEX, 0);
+    qtest_writel(qts, REG_XMAP_BUF_SELECT, 1u << 14);
+    g_assert_cmphex(mgras_test_display_pixel(qts, 300, 300), ==, 0xff00ff);
+    g_assert_cmphex(mgras_test_display_pixel(qts, 256 + 10, 383 - 10), ==,
+                    0xffffff);
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+}
+
+/*
  * Client a's setup in the alternate case, then client b's, which sets a
  * smaller viewport, another clear and current colour, the identity
  * projection, a depth test that passes nothing and the back buffer. Back
@@ -10351,6 +10383,61 @@ static void test_gl_context_table_migration(void)
     g_rmdir(tmpfs);
 }
 
+/*
+ * A primitive left open by a migration finishes on the destination: the
+ * vertices each context held before it cross, in the loaded context (the
+ * default slot's, the no-context entry) and in one switched out.
+ */
+static void test_gl_open_primitive_migration(void)
+{
+    g_autofree char *tmpfs = NULL;
+    g_autofree char *uri = NULL;
+    g_autofree char *dest_cmdline = NULL;
+    GError *err = NULL;
+    QTestState *from, *to;
+
+    tmpfs = g_dir_make_tmp("sn0-mgras-gl-primitive-XXXXXX", &err);
+    g_assert_no_error(err);
+    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+
+    from = qtest_init(MIGRATION_ARGS);
+    dest_cmdline = g_strdup_printf(MIGRATION_ARGS " -incoming %s", uri);
+    to = qtest_init(dest_cmdline);
+
+    gl_enter_slot(from, GL_SLOT_A);
+    gl_word(from, GL_CONTEXT_OPENER);
+    gl_viewport(from, 0, 0, 128, 128);
+    gl_window_projection(from);
+    gl_color3f(from, 1, 0, 0);
+    gl_word(from, GL_BEGIN_TRIANGLES);
+    gl_vertex2f(from, 10.25f, 10.25f);
+    gl_vertex2f(from, 10.875f, 10.25f);
+    gl_enter_slot(from, GL_SLOT_DEFAULT);
+    gl_word(from, GL_CONTEXT_OPENER);
+    gl_viewport(from, 0, 0, 128, 128);
+    gl_window_projection(from);
+    gl_color3f(from, 0, 1, 0);
+    gl_word(from, GL_BEGIN_TRIANGLES);
+    gl_vertex2f(from, 20.25f, 20.25f);
+    gl_vertex2f(from, 20.875f, 20.25f);
+
+    sgi_migrate_stopped(from, uri);
+
+    gl_vertex2f(to, 20.25f, 20.875f);
+    gl_word(to, GL_END_TRIANGLES);
+    g_assert_cmphex(gl_window_pixel(to, 20, 20), ==, 0x00ff00);
+    g_assert_cmphex(gl_window_pixel(to, 10, 10), ==, 0);
+    gl_enter_slot(to, GL_SLOT_A);
+    gl_vertex2f(to, 10.25f, 10.875f);
+    gl_word(to, GL_END_TRIANGLES);
+    g_assert_cmphex(gl_window_pixel(to, 10, 10), ==, 0xff0000);
+    g_assert_cmphex(mgras_qom_get_uint(to, "x-test-error"), ==, 0);
+
+    qtest_quit(to);
+    qtest_quit(from);
+    g_rmdir(tmpfs);
+}
+
 static void test_discarded_fifo_migration(void)
 {
     g_autofree char *tmpfs = NULL;
@@ -11011,6 +11098,9 @@ int main(int argc, char **argv)
                    "gl-back-buffer-draws-into-bank-one",
                    test_gl_back_buffer_draws_into_bank_one);
     qtest_add_func("sn0/origin2000/mgras/"
+                   "gl-front-and-back-draw-into-both-banks",
+                   test_gl_front_and_back_draw_into_both_banks);
+    qtest_add_func("sn0/origin2000/mgras/"
                    "gl-front-buffer-is-the-other-bank",
                    test_gl_front_buffer_is_the_other_bank);
     qtest_add_func("sn0/origin2000/mgras/"
@@ -11178,6 +11268,8 @@ int main(int argc, char **argv)
                    test_gl_state_migration);
     qtest_add_func("sn0/origin2000/mgras/gl-context-table-migration",
                    test_gl_context_table_migration);
+    qtest_add_func("sn0/origin2000/mgras/gl-open-primitive-migration",
+                   test_gl_open_primitive_migration);
     qtest_add_func("sn0/origin2000/mgras/context-payload-migration",
                    test_context_payload_migration);
     qtest_add_func("sn0/origin2000/mgras/discarded-fifo-migration",
