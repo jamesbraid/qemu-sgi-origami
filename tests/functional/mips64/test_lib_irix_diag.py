@@ -440,8 +440,9 @@ class ClockErrorTests(unittest.TestCase):
 
 class LaunchArgsTests(unittest.TestCase):
 
-    ASSETS = {'root': '/a', 'firmware': '/a/prom', 'disk': '/a/disk',
-              'medium': '/a/cd'}
+    ASSETS = {'root': '/a', 'firmware': '/a/prom',
+              'origin300_spd': ('/a/dimm2-spd', '/a/dimm3-spd'),
+              'disk': '/a/disk', 'medium': '/a/cd'}
     PATHS = {'scratch': '/s', 'tape': '/s/tape', 'nvram': '/s/nv',
              'clock': '/s/clk', 'overlay': '/s/root.qcow2', 'wav': '/s/w',
              'ports': {n: f'/s/{n}' for n in (
@@ -516,13 +517,13 @@ class LaunchArgsTests(unittest.TestCase):
                              'chassis2-b')})
             calls = []
 
-            def one(assets, cpus, where):
-                calls.append(('one', cpus))
+            def one(firmware, spd_paths, cpus, where):
+                calls.append(('one', firmware, spd_paths, cpus))
                 return 'origin300,x=1', ['-accel', 'a', '-cpu', 'c',
                                          '-smp', str(cpus), '-m', '512M']
 
-            def pair(assets, populations, where):
-                calls.append(('pair', populations))
+            def pair(firmware, spd_paths, populations, where):
+                calls.append(('pair', firmware, spd_paths, populations))
                 return 'origin300,topology=origin300-two-chassis', [
                     '-accel', 'a', '-cpu', 'c', '-smp', '8', '-m', '1024M',
                     '-drive', 'if=pflash,index=1']
@@ -537,7 +538,10 @@ class LaunchArgsTests(unittest.TestCase):
                 machine, argv = launch_args(FLAVOURS['origin300_pair'],
                                             rows['origin300_pair'],
                                             self.ASSETS, paths)
-        self.assertEqual(calls, [('one', 4), ('one', 2), ('pair', (4, 4))])
+        self.assertEqual(calls, [
+            ('one', '/a/prom', self.ASSETS['origin300_spd'], 4),
+            ('one', '/a/prom', self.ASSETS['origin300_spd'], 2),
+            ('pair', '/a/prom', self.ASSETS['origin300_spd'], (4, 4))])
         self.assertIn('topology=origin300-two-chassis', machine)
         self.assertEqual(argv[argv.index('-smp') + 1], '8')
         self.assertEqual(argv[argv.index('-m') + 1], '1024')
