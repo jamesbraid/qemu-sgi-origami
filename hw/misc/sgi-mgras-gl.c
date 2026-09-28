@@ -26,6 +26,7 @@
 #include "qemu/log.h"
 #include "hw/misc/sgi-mgras-gl.h"
 #include "hw/display/sgi/rasterizer.h"
+#include "trace.h"
 
 /* Class-0 opcodes, bits 15:8 of the header, with their byte lengths. */
 #define MGRAS_GL_CONTEXT_OPENER  0x00000600
@@ -210,18 +211,48 @@
  * 1024 - 256 - 128), the packing OpenBSD's impact(4) gives XYWIN. Words 11
  * and 12 are 0x0100017f and 0x028002ff, the window's columns 256-383 and
  * rows 640-767 from the bottom as first << 16 | last, the layout the X
- * server writes to the clip registers 0x147 and 0x148, and word 3 is 0x11,
- * the value it writes to 0x14f with a clip box. The X server's own
- * image carries 0x03ff0000 in word 2, XYWIN's reset value. That the board
- * restores these words into those registers is inferred from the matching
- * values; the model reads them from the image and keeps them out of the
- * 2D register file. Only one window position has been captured.
+ * server writes to the clip registers 0x147 and 0x148, and word 3 is 0x11.
+ * The X server's own image carries 0x03ff0000 in word 2, XYWIN's reset
+ * value. That the board restores these words into those registers is
+ * inferred from the matching values; the model reads them from the image
+ * and keeps them out of the 2D register file.
+ *
+ * The kernel's MgrasValidateClip (IRIX 6.5.30 mgras.a member mgras.o,
+ * SHA-256 6a65e70d3cdc..., listing 0x61d8-0x67b4) writes words 2 to 15
+ * from the window and its visible rectangles, bottom-up and inclusive,
+ * each as first << 16 | last. Established from that listing:
+ *
+ * - Word 3 is (mode << 4) | enables. Enable bit i is set for each of the
+ *   first four visible rectangles, rectangle 0 in words 11 and 12, 1 in
+ *   9 and 10, 2 in 7 and 8 and 3 in 5 and 6; the words of a clear bit
+ *   are not written and hold whatever the image held.
+ * - A window with one to four visible rectangles gets mode 1 and those
+ *   rectangles. One with none, but a nonzero width, gets mode 1 and its
+ *   own rectangle clamped to the screen.
+ * - One with five or more gets mode 1 and no enable bits: 0x10.
+ * - The kernel's null clip (MgrasSetNullClip, a window of no size and no
+ *   rectangles) gets mode 2 with rectangles 0 and 1 both the whole
+ *   screen, 0x23, and word 2 then puts the origin at row 1024. Every
+ *   image of perfly's context 0x84c6 in run irix-20260928T000530-78d0c5
+ *   is this form.
+ *
+ * Inferred: that the board draws only inside the enabled rectangles in
+ * mode 1, and that mode 2 excludes them, so a null clip draws nothing.
+ * The model binds the union of the enabled rectangles in mode 1 and
+ * nothing otherwise. What bounds a window of five or more rectangles
+ * (0x10) is unknown; the model draws nothing for it and logs that, as it
+ * does for any other mode. Only one window position has been captured.
  */
 #define MGRAS_GL_IMAGE_ORIGIN    2
 #define MGRAS_GL_IMAGE_CLIP_MODE 3
-#define MGRAS_GL_IMAGE_CLIP_X    11
-#define MGRAS_GL_IMAGE_CLIP_Y    12
-#define MGRAS_GL_CLIP_ON         0x11
+#define MGRAS_GL_CLIP_RECTS      4
+#define MGRAS_GL_CLIP_INSIDE     1
+#define MGRAS_GL_CLIP_NULL       2
+
+/* Each rectangle's column and row words, rectangle 0 first. */
+static const uint8_t mgras_gl_clip_words[MGRAS_GL_CLIP_RECTS][2] = {
+    { 11, 12 }, { 9, 10 }, { 7, 8 }, { 5, 6 },
+};
 
 /*
  * Words 16 and 17 of every captured GL context image are 1, those of the
@@ -413,9 +444,9 @@ static SGIGLContext *mgras_gl(SGIMgrasState *s)
  * token last named, as the drawable the loaded GL context draws into.
  * MGRAS's colour targets are masks of pixel-memory banks: bank 0, the
  * model's front[] plane and the one the X server draws in, and bank 1,
- * back[]. Only mgras_gl_store_colour() reads them. A context image
- * without the clip words' 0x11 in word 3, or with an empty rectangle,
- * leaves the context without a window.
+ * back[]. Only mgras_gl_store_colour() reads them. The window's pixels
+ * are the enabled rectangles of a mode-1 clip word that are not empty on
+ * the screen; with none, the context has no window.
  *
  * The drawable is bound when a context image completes, and at the other
  * points that change it, not read from the image at each draw. The two
@@ -431,27 +462,41 @@ static SGIGLContext *mgras_gl(SGIMgrasState *s)
 static void mgras_gl_bind(SGIMgrasState *s)
 {
     uint32_t origin = s->context[MGRAS_GL_IMAGE_ORIGIN];
-    uint32_t clip_x = s->context[MGRAS_GL_IMAGE_CLIP_X];
-    uint32_t clip_y = s->context[MGRAS_GL_IMAGE_CLIP_Y];
+    uint32_t clip = s->context[MGRAS_GL_IMAGE_CLIP_MODE];
+    uint32_t mode = clip >> 4;
     unsigned int back = s->gl_banks[0] & 1;
     SGIGLDrawable d = {
         .origin = { origin & 0xffff, origin >> 16 },
-        .clip = {
-            .n = 1,
-            .r[0] = {
-                .x0 = clip_x >> 16,
-                .y0 = clip_y >> 16,
-                .x1 = MIN(clip_x & 0xffff, s->width - 1),
-                .y1 = MIN(clip_y & 0xffff, s->height - 1),
-            },
-        },
         .front = 1u << (back ^ 1),
         .back = 1u << back,
     };
 
-    d.bound = s->context[MGRAS_GL_IMAGE_CLIP_MODE] == MGRAS_GL_CLIP_ON &&
-              d.clip.r[0].x0 <= d.clip.r[0].x1 &&
-              d.clip.r[0].y0 <= d.clip.r[0].y1;
+    for (int i = 0; mode == MGRAS_GL_CLIP_INSIDE && i < MGRAS_GL_CLIP_RECTS;
+         i++) {
+        uint32_t x = s->context[mgras_gl_clip_words[i][0]];
+        uint32_t y = s->context[mgras_gl_clip_words[i][1]];
+        SGIClipRect r = {
+            .x0 = x >> 16,
+            .y0 = y >> 16,
+            .x1 = MIN(x & 0xffff, s->width - 1),
+            .y1 = MIN(y & 0xffff, s->height - 1),
+        };
+
+        if ((clip & (1u << i)) && r.x0 <= r.x1 && r.y0 <= r.y1) {
+            d.clip.r[d.clip.n++] = r;
+        }
+    }
+    d.bound = d.clip.n != 0;
+    if ((mode == MGRAS_GL_CLIP_INSIDE && !(clip & 0xf)) ||
+        (mode != MGRAS_GL_CLIP_INSIDE && clip != 0 &&
+         mode != MGRAS_GL_CLIP_NULL)) {
+        qemu_log_mask(LOG_UNIMP, "sgi-mgras: context image clip word 0x%x "
+                      "gives no rectangle the model can bind; nothing "
+                      "draws\n", clip);
+    }
+    trace_sgi_mgras_gl_bind(s->context[MGRAS_GL_IMAGE_SLOT], origin, clip,
+                            s->context[11], s->context[12], s->context[9],
+                            s->context[10], d.bound);
     sgi_gl_set_drawable(mgras_gl(s), &d);
 }
 
