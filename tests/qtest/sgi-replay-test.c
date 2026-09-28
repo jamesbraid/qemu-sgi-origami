@@ -83,30 +83,36 @@ static const ReplayHead *find_head(const char *codename)
     return NULL;
 }
 
-#define DEFAULT_REPLAY    "../tests/data/mgras/fill.replay"
-#define MINIMAL_REPLAY    "../tests/data/mgras/minimal.replay"
-#define MASKED_READ       "../tests/data/mgras/masked-read.replay"
-#define CMAP_HIGH_BYTE    "../tests/data/mgras/cmap-high-byte.replay"
-#define CHAR_MODES        "../tests/data/mgras/char-modes.replay"
-#define CMAP_XMAP_WID     "../tests/data/mgras/cmap-xmap-wid.replay"
-#define ROOT_ICON         "../tests/data/mgras/root-icon.replay"
-#define OVERLAY           "../tests/data/mgras/overlay.replay"
-#define DMA_IMAGE_TRANSFER "../tests/data/mgras/dma-image-transfer.replay"
-#define INVALID_REPLAY    "../tests/data/mgras/invalid.replay"
-#define INVALID_BOUNDS    "../tests/data/mgras/invalid-bounds.replay"
-#define INVALID_EXTRA     "../tests/data/mgras/invalid-extra.replay"
-#define INVALID_READ_EXTRA "../tests/data/mgras/invalid-read-extra.replay"
-#define INVALID_READ_MASK "../tests/data/mgras/invalid-read-mask.replay"
+#define DEFAULT_REPLAY    "fill.replay"
+#define MINIMAL_REPLAY    "minimal.replay"
+#define MASKED_READ       "masked-read.replay"
+#define CMAP_HIGH_BYTE    "cmap-high-byte.replay"
+#define CHAR_MODES        "char-modes.replay"
+#define CMAP_XMAP_WID     "cmap-xmap-wid.replay"
+#define ROOT_ICON         "root-icon.replay"
+#define OVERLAY           "overlay.replay"
+#define DMA_IMAGE_TRANSFER "dma-image-transfer.replay"
+#define INVALID_REPLAY    "invalid.replay"
+#define INVALID_BOUNDS    "invalid-bounds.replay"
+#define INVALID_EXTRA     "invalid-extra.replay"
+#define INVALID_READ_EXTRA "invalid-read-extra.replay"
+#define INVALID_READ_MASK "invalid-read-mask.replay"
 #define INVALID_READ_MISMATCH \
-    "../tests/data/mgras/invalid-read-mismatch.replay"
+    "invalid-read-mismatch.replay"
 #define INVALID_MASKED_MISMATCH \
-    "../tests/data/mgras/invalid-masked-mismatch.replay"
-#define INVALID_OVERFLOW  "../tests/data/mgras/invalid-overflow.replay"
-#define INVALID_WID_BOUNDS "../tests/data/mgras/invalid-wid-bounds.replay"
-#define INVALID_MISMATCH  "../tests/data/mgras/invalid-mismatch.replay"
-#define INVALID_DMA_EXTRA "../tests/data/mgras/invalid-dma-extra.replay"
+    "invalid-masked-mismatch.replay"
+#define INVALID_OVERFLOW  "invalid-overflow.replay"
+#define INVALID_WID_BOUNDS "invalid-wid-bounds.replay"
+#define INVALID_MISMATCH  "invalid-mismatch.replay"
+#define INVALID_DMA_EXTRA "invalid-dma-extra.replay"
 #define INVALID_DMA_HEX_MISMATCH \
-    "../tests/data/mgras/invalid-dma-hex-mismatch.replay"
+    "invalid-dma-hex-mismatch.replay"
+
+static char *replay_fixture_path(const char *name)
+{
+    return g_test_build_filename(G_TEST_DIST, "..", "data", "mgras", name,
+                                 NULL);
+}
 
 static uint64_t parse_number(const char *path, unsigned int line,
                              const char *word)
@@ -680,13 +686,24 @@ static void check_fill_trace(const char *trace_contents)
     g_assert_true(saw_control_write);
 }
 
+static void run_fixture(const char *name,
+                        void (*check_trace)(const char *))
+{
+    g_autofree char *path = replay_fixture_path(name);
+
+    run_replay(path, check_trace);
+}
+
 static void test_replay(void)
 {
     const char *path = g_getenv("SGI_REPLAY_FILE");
     bool custom = path && *path;
 
-    run_replay(custom ? path : DEFAULT_REPLAY,
-               custom ? NULL : check_fill_trace);
+    if (custom) {
+        run_replay(path, NULL);
+    } else {
+        run_fixture(DEFAULT_REPLAY, check_fill_trace);
+    }
 }
 
 static void test_replay_screendump(void)
@@ -701,7 +718,7 @@ static void test_replay_screendump(void)
     close(fd);
     unlink(path);
     g_setenv("SGI_REPLAY_SCREENDUMP", path, true);
-    run_replay(MINIMAL_REPLAY, NULL);
+    run_fixture(MINIMAL_REPLAY, NULL);
     g_unsetenv("SGI_REPLAY_SCREENDUMP");
     g_assert_true(g_file_get_contents(path, &contents, NULL, &error));
     g_assert_no_error(error);
@@ -711,12 +728,12 @@ static void test_replay_screendump(void)
 
 static void test_minimal_replay(void)
 {
-    run_replay(MINIMAL_REPLAY, NULL);
+    run_fixture(MINIMAL_REPLAY, NULL);
 }
 
 static void test_masked_read(void)
 {
-    run_replay(MASKED_READ, NULL);
+    run_fixture(MASKED_READ, NULL);
 }
 
 /*
@@ -849,7 +866,8 @@ static unsigned int first_line_with_prefix(const char *path,
  */
 static void test_checkpoint_screendump_matches_uninterrupted_replay(void)
 {
-    unsigned int split = first_line_with_prefix(DEFAULT_REPLAY,
+    g_autofree char *fill_path = replay_fixture_path(DEFAULT_REPLAY);
+    unsigned int split = first_line_with_prefix(fill_path,
                                                 "display-pixel ");
     g_autofree char *end_line = g_strdup_printf("%u", split);
     g_autofree char *start_line = g_strdup_printf("%u", split + 1);
@@ -877,19 +895,19 @@ static void test_checkpoint_screendump_matches_uninterrupted_replay(void)
     unlink(checkpoint_path);
 
     g_setenv("SGI_REPLAY_SCREENDUMP", full_path, true);
-    run_replay(DEFAULT_REPLAY, NULL);
+    run_fixture(DEFAULT_REPLAY, NULL);
     g_unsetenv("SGI_REPLAY_SCREENDUMP");
 
     g_setenv("SGI_REPLAY_END_LINE", end_line, true);
     g_setenv("SGI_REPLAY_CHECKPOINT_SAVE", checkpoint_path, true);
-    run_replay(DEFAULT_REPLAY, NULL);
+    run_fixture(DEFAULT_REPLAY, NULL);
     g_unsetenv("SGI_REPLAY_CHECKPOINT_SAVE");
     g_unsetenv("SGI_REPLAY_END_LINE");
 
     g_setenv("SGI_REPLAY_CHECKPOINT_LOAD", checkpoint_path, true);
     g_setenv("SGI_REPLAY_START_LINE", start_line, true);
     g_setenv("SGI_REPLAY_SCREENDUMP", split_path, true);
-    run_replay(DEFAULT_REPLAY, NULL);
+    run_fixture(DEFAULT_REPLAY, NULL);
     g_unsetenv("SGI_REPLAY_CHECKPOINT_LOAD");
     g_unsetenv("SGI_REPLAY_START_LINE");
     g_unsetenv("SGI_REPLAY_SCREENDUMP");
@@ -913,27 +931,27 @@ static void test_checkpoint_screendump_matches_uninterrupted_replay(void)
 
 static void test_cmap_high_byte(void)
 {
-    run_replay(CMAP_HIGH_BYTE, NULL);
+    run_fixture(CMAP_HIGH_BYTE, NULL);
 }
 
 static void test_char_modes(void)
 {
-    run_replay(CHAR_MODES, NULL);
+    run_fixture(CHAR_MODES, NULL);
 }
 
 static void test_cmap_xmap_wid(void)
 {
-    run_replay(CMAP_XMAP_WID, NULL);
+    run_fixture(CMAP_XMAP_WID, NULL);
 }
 
 static void test_root_icon(void)
 {
-    run_replay(ROOT_ICON, NULL);
+    run_fixture(ROOT_ICON, NULL);
 }
 
 static void test_overlay(void)
 {
-    run_replay(OVERLAY, NULL);
+    run_fixture(OVERLAY, NULL);
 }
 
 /*
@@ -952,7 +970,9 @@ static void test_overlay_migration(void)
     unsigned int marker = 0;
     int fd;
 
-    g_assert_true(g_file_get_contents(OVERLAY, &contents, NULL, &error));
+    g_autofree char *overlay_path = replay_fixture_path(OVERLAY);
+
+    g_assert_true(g_file_get_contents(overlay_path, &contents, NULL, &error));
     g_assert_no_error(error);
     lines = g_strsplit(contents, "\n", -1);
     for (unsigned int i = 0; lines[i]; i++) {
@@ -973,13 +993,13 @@ static void test_overlay_migration(void)
 
     g_setenv("SGI_REPLAY_END_LINE", end_line, true);
     g_setenv("SGI_REPLAY_CHECKPOINT_SAVE", checkpoint_path, true);
-    run_replay(OVERLAY, NULL);
+    run_fixture(OVERLAY, NULL);
     g_unsetenv("SGI_REPLAY_CHECKPOINT_SAVE");
     g_unsetenv("SGI_REPLAY_END_LINE");
 
     g_setenv("SGI_REPLAY_CHECKPOINT_LOAD", checkpoint_path, true);
     g_setenv("SGI_REPLAY_START_LINE", start_line, true);
-    run_replay(OVERLAY, NULL);
+    run_fixture(OVERLAY, NULL);
     g_unsetenv("SGI_REPLAY_CHECKPOINT_LOAD");
     g_unsetenv("SGI_REPLAY_START_LINE");
     unlink(checkpoint_path);
@@ -1001,7 +1021,7 @@ static void test_overlay_migration(void)
  */
 static void test_dma_image_transfer(void)
 {
-    run_replay(DMA_IMAGE_TRANSFER, NULL);
+    run_fixture(DMA_IMAGE_TRANSFER, NULL);
 }
 
 static void test_invalid_replay(const char *path, const char *message)
@@ -1025,72 +1045,79 @@ static void test_invalid_replay(const char *path, const char *message)
     g_test_trap_assert_stderr(message);
 }
 
+static void test_invalid_fixture(const char *name, const char *message)
+{
+    g_autofree char *path = replay_fixture_path(name);
+
+    test_invalid_replay(path, message);
+}
+
 static void test_invalid_number(void)
 {
-    test_invalid_replay(INVALID_REPLAY, "*invalid number*");
+    test_invalid_fixture(INVALID_REPLAY, "*invalid number*");
 }
 
 static void test_invalid_bounds(void)
 {
-    test_invalid_replay(INVALID_BOUNDS, "*outside the native surface*");
+    test_invalid_fixture(INVALID_BOUNDS, "*outside the native surface*");
 }
 
 static void test_invalid_extra(void)
 {
-    test_invalid_replay(INVALID_EXTRA, "*requires X Y WIDTH HEIGHT VALUE*");
+    test_invalid_fixture(INVALID_EXTRA, "*requires X Y WIDTH HEIGHT VALUE*");
 }
 
 static void test_invalid_read_extra(void)
 {
-    test_invalid_replay(INVALID_READ_EXTRA,
+    test_invalid_fixture(INVALID_READ_EXTRA,
                         "*read requires WIDTH OFFSET VALUE [MASK]*");
 }
 
 static void test_invalid_read_mask(void)
 {
-    test_invalid_replay(INVALID_READ_MASK,
+    test_invalid_fixture(INVALID_READ_MASK,
                         "*MMIO mask is wider than width 1*");
 }
 
 static void test_invalid_read_mismatch(void)
 {
-    test_invalid_replay(INVALID_READ_MISMATCH,
+    test_invalid_fixture(INVALID_READ_MISMATCH,
                         "*invalid-read-mismatch.replay:5: read 0x73c08*"
                         "*expected 0x54*");
 }
 
 static void test_invalid_masked_mismatch(void)
 {
-    test_invalid_replay(INVALID_MASKED_MISMATCH,
+    test_invalid_fixture(INVALID_MASKED_MISMATCH,
                         "*invalid-masked-mismatch.replay:4: read 0x8000*"
                         "*expected 0x2 with mask 0x2*");
 }
 
 static void test_invalid_overflow(void)
 {
-    test_invalid_replay(INVALID_OVERFLOW, "*invalid number*");
+    test_invalid_fixture(INVALID_OVERFLOW, "*invalid number*");
 }
 
 static void test_invalid_wid_bounds(void)
 {
-    test_invalid_replay(INVALID_WID_BOUNDS,
+    test_invalid_fixture(INVALID_WID_BOUNDS,
                         "*outside the current model range*");
 }
 
 static void test_invalid_mismatch(void)
 {
-    test_invalid_replay(INVALID_MISMATCH,
+    test_invalid_fixture(INVALID_MISMATCH,
                         "*invalid-mismatch.replay:4: pixel (0, 0)*");
 }
 
 static void test_invalid_dma_extra(void)
 {
-    test_invalid_replay(INVALID_DMA_EXTRA, "*dma requires ADDR LEN HEX*");
+    test_invalid_fixture(INVALID_DMA_EXTRA, "*dma requires ADDR LEN HEX*");
 }
 
 static void test_invalid_dma_hex_mismatch(void)
 {
-    test_invalid_replay(INVALID_DMA_HEX_MISMATCH,
+    test_invalid_fixture(INVALID_DMA_HEX_MISMATCH,
                         "*dma hex length does not match LEN*");
 }
 
@@ -1121,10 +1148,12 @@ static void run_screendump_record(bool corrupt)
     fixture = g_build_filename(dir, "fill.replay", NULL);
 
     g_setenv("SGI_REPLAY_SCREENDUMP", reference, true);
-    run_replay(DEFAULT_REPLAY, NULL);
+    run_fixture(DEFAULT_REPLAY, NULL);
     g_unsetenv("SGI_REPLAY_SCREENDUMP");
 
-    g_assert_true(g_file_get_contents(DEFAULT_REPLAY, &fill, NULL, &error));
+    g_autofree char *fill_path = replay_fixture_path(DEFAULT_REPLAY);
+
+    g_assert_true(g_file_get_contents(fill_path, &fill, NULL, &error));
     g_assert_no_error(error);
     text = g_strconcat(fill, "screendump fill.ppm\n", NULL);
     g_assert_true(g_file_set_contents(fixture, text, -1, &error));
