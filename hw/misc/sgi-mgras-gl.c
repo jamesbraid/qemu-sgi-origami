@@ -280,6 +280,65 @@ static const uint8_t mgras_gl_clip_words[MGRAS_GL_CLIP_RECTS][2] = {
  */
 #define MGRAS_GL_IMAGE_BANKS     16
 
+/*
+ * Lighting, from the IRIX 6.5.30 IP27GR532 libGLcore.so's emitters
+ * (notes-lists-arrays-lighting.md in the Origami repository, established
+ * there): glLightfv writes a header per parameter, the light's number
+ * (light - GL_LIGHT0) and the parameter's floats, the application's
+ * values untransformed; glLightModelfv writes the ambient's red, green and
+ * blue and not its alpha, and the two booleans as integers; glMaterialfv
+ * writes the face and parameter enumerants and always four floats;
+ * glColorMaterial writes one header per face with the parameter, and
+ * glEnable and glDisable of GL_COLOR_MATERIAL one word each. glGetLightfv
+ * and glGetMaterialfv write 0xef08 with the light's number and parameter
+ * or 0xee08 with the face and parameter, then query 0x3ba to 0x3bd and
+ * read four floats, keeping as many as the parameter has; the index does
+ * not depend on the light or face, so the board puts the parameter in
+ * one place for the queries (inferred). The model keeps the state in the
+ * shared context, which transforms positions and spot directions by the
+ * modelview when they arrive, and answers from it. Lighting a vertex is
+ * not modelled: every draw still takes its vertex colours.
+ */
+#define MGRAS_GL_LIGHT_AMBIENT   0x00001214
+#define MGRAS_GL_LIGHT_DIFFUSE   0x00001314
+#define MGRAS_GL_LIGHT_SPECULAR  0x00001414
+#define MGRAS_GL_LIGHT_POSITION  0x00004f14
+#define MGRAS_GL_LIGHT_SPOT_DIR  0x00005010
+#define MGRAS_GL_LIGHT_SPOT_EXP  0x00005108
+#define MGRAS_GL_LIGHT_SPOT_CUT  0x00005208
+#define MGRAS_GL_LIGHT_CONST_ATT 0x00005308
+#define MGRAS_GL_LIGHT_LIN_ATT   0x00005408
+#define MGRAS_GL_LIGHT_QUAD_ATT  0x00005508
+#define MGRAS_GL_LIGHT_MODEL_AMBIENT 0x0000570c
+#define MGRAS_GL_LIGHT_MODEL_LOCAL 0x00005804
+#define MGRAS_GL_LIGHT_MODEL_TWO_SIDE 0x00005904
+#define MGRAS_GL_MATERIAL        0x00001118
+#define MGRAS_GL_COLOR_MATERIAL_FRONT 0x0000bf04
+#define MGRAS_GL_COLOR_MATERIAL_BACK 0x0000c004
+#define MGRAS_GL_COLOR_MATERIAL_BOTH 0x0000c104
+#define MGRAS_GL_COLOR_MATERIAL_ON 0x0000c200
+#define MGRAS_GL_COLOR_MATERIAL_OFF 0x0000c300
+#define MGRAS_GL_GET_LIGHT       0x0000ef08
+#define MGRAS_GL_GET_MATERIAL    0x0000ee08
+#define MGRAS_GL_QUERY_READBACK  0x3ba
+
+/* The light parameter each glLightfv header carries. */
+static const struct {
+    uint32_t header;
+    uint16_t pname;
+} mgras_gl_light_headers[] = {
+    { MGRAS_GL_LIGHT_AMBIENT, SGI_GL_AMBIENT },
+    { MGRAS_GL_LIGHT_DIFFUSE, SGI_GL_DIFFUSE },
+    { MGRAS_GL_LIGHT_SPECULAR, SGI_GL_SPECULAR },
+    { MGRAS_GL_LIGHT_POSITION, SGI_GL_POSITION },
+    { MGRAS_GL_LIGHT_SPOT_DIR, SGI_GL_SPOT_DIRECTION },
+    { MGRAS_GL_LIGHT_SPOT_EXP, SGI_GL_SPOT_EXPONENT },
+    { MGRAS_GL_LIGHT_SPOT_CUT, SGI_GL_SPOT_CUTOFF },
+    { MGRAS_GL_LIGHT_CONST_ATT, SGI_GL_CONSTANT_ATTENUATION },
+    { MGRAS_GL_LIGHT_LIN_ATT, SGI_GL_LINEAR_ATTENUATION },
+    { MGRAS_GL_LIGHT_QUAD_ATT, SGI_GL_QUADRATIC_ATTENUATION },
+};
+
 /* The begin token of the mode a glBegin or glEnd token names, or 0. */
 static uint32_t mgras_gl_begin_token(uint32_t header, bool end)
 {
@@ -349,6 +408,11 @@ bool sgi_mgras_gl_header(uint32_t header)
         mgras_gl_begin_token(header, true)) {
         return true;
     }
+    for (int i = 0; i < ARRAY_SIZE(mgras_gl_light_headers); i++) {
+        if (header == mgras_gl_light_headers[i].header) {
+            return true;
+        }
+    }
     switch (header) {
     case MGRAS_GL_CONTEXT_OPENER:
     case MGRAS_GL_CLEAR_COLOR_BUF:
@@ -375,6 +439,17 @@ bool sgi_mgras_gl_header(uint32_t header)
     case MGRAS_GL_DEPTH_TEST:
     case MGRAS_GL_DEPTH_RANGE:
     case MGRAS_GL_DITHER:
+    case MGRAS_GL_LIGHT_MODEL_AMBIENT:
+    case MGRAS_GL_LIGHT_MODEL_LOCAL:
+    case MGRAS_GL_LIGHT_MODEL_TWO_SIDE:
+    case MGRAS_GL_MATERIAL:
+    case MGRAS_GL_COLOR_MATERIAL_FRONT:
+    case MGRAS_GL_COLOR_MATERIAL_BACK:
+    case MGRAS_GL_COLOR_MATERIAL_BOTH:
+    case MGRAS_GL_COLOR_MATERIAL_ON:
+    case MGRAS_GL_COLOR_MATERIAL_OFF:
+    case MGRAS_GL_GET_LIGHT:
+    case MGRAS_GL_GET_MATERIAL:
     case MGRAS_GL_BANKS:
     case MGRAS_GL_VERTEX2F:
     case MGRAS_GL_VERTEX3F:
@@ -520,6 +595,8 @@ void sgi_mgras_gl_reset(SGIMgrasState *s)
     for (int i = 0; i < SGI_MGRAS_GL_CONTEXTS; i++) {
         s->gl_context[i].gl = &s->gl[i];
         memset(&s->gl_context[i].parser, 0, sizeof(s->gl_context[i].parser));
+        memset(s->gl_context[i].readback, 0,
+               sizeof(s->gl_context[i].readback));
         sgi_gl_init(&s->gl[i], 0);
     }
     memset(s->gl_slot, 0, sizeof(s->gl_slot));
@@ -555,6 +632,8 @@ static unsigned int mgras_gl_lookup(SGIMgrasState *s, uint32_t slot)
     sgi_gl_init(&s->gl[free], slot);
     memset(&s->gl_context[free].parser, 0,
            sizeof(s->gl_context[free].parser));
+    memset(s->gl_context[free].readback, 0,
+           sizeof(s->gl_context[free].readback));
     s->gl_slot[free] = slot;
     return free;
 }
@@ -725,6 +804,10 @@ typedef enum MgrasGLQueryPacking {
  *   0x355 to 0x358 and GL_CURRENT_RASTER_DISTANCE 0x34b, as floats.
  * - GL_DEPTH_RANGE: near at 0xc21 and far at 0xc22, as floats. perfly
  *   reads both after each context setup.
+ * - GL_LIGHT_MODEL_AMBIENT's red, green and blue at 0x55e to 0x560, as
+ *   floats; GL_LIGHT_MODEL_LOCAL_VIEWER 0xc1a and GL_LIGHT_MODEL_TWO_SIDE
+ *   0xc1b, stored as a byte; GL_COLOR_MATERIAL_PARAMETER 0x56b and
+ *   GL_COLOR_MATERIAL_FACE 0x56c, as the enumerant.
  *
  * What a1 and a2 select is unknown; the model answers by index alone.
  * Every other index answers zero, logged, which is right for the
@@ -756,6 +839,11 @@ static const struct {
     { 0x355, 4, MGRAS_GL_QUERY_WORD, SGI_GL_CURRENT_RASTER_TEXTURE_COORDS, 0 },
     { 0x34b, 1, MGRAS_GL_QUERY_WORD, SGI_GL_CURRENT_RASTER_DISTANCE, 0 },
     { 0xc21, 2, MGRAS_GL_QUERY_WORD, SGI_GL_DEPTH_RANGE, 0 },
+    { 0x55e, 3, MGRAS_GL_QUERY_WORD, SGI_GL_LIGHT_MODEL_AMBIENT, 0 },
+    { 0xc1a, 1, MGRAS_GL_QUERY_WORD, SGI_GL_LIGHT_MODEL_LOCAL_VIEWER, 0 },
+    { 0xc1b, 1, MGRAS_GL_QUERY_WORD, SGI_GL_LIGHT_MODEL_TWO_SIDE, 0 },
+    { 0x56b, 1, MGRAS_GL_QUERY_WORD, SGI_GL_COLOR_MATERIAL_PARAMETER, 0 },
+    { 0x56c, 1, MGRAS_GL_QUERY_WORD, SGI_GL_COLOR_MATERIAL_FACE, 0 },
 };
 
 /*
@@ -885,6 +973,11 @@ uint32_t sgi_mgras_gl_query_answer(SGIMgrasState *s, const uint32_t *args,
     }
     if (mgras_gl_raster_query(s, index, &out[0])) {
         return out[0];
+    }
+    if (index >= MGRAS_GL_QUERY_READBACK &&
+        index < MGRAS_GL_QUERY_READBACK + 4) {
+        return s->gl_context[s->gl_current].readback[index -
+                                                     MGRAS_GL_QUERY_READBACK];
     }
     if (index == MGRAS_GL_QUERY_RASTER_INDEX && mgras_gl(s)->cur.index_bits &&
         sgi_gl_get(mgras_gl(s), SGI_GL_CURRENT_RASTER_INDEX, out, &n)) {
@@ -1328,6 +1421,122 @@ const VMStateDescription vmstate_sgi_mgras_gl_dither = {
     }
 };
 
+static const VMStateDescription vmstate_sgi_mgras_gl_light = {
+    .name = TYPE_SGI_MGRAS "/gl-light",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_SGI_GL_FLOATS(ambient, SGIGLLight, 4, 0),
+        VMSTATE_SGI_GL_FLOATS(diffuse, SGIGLLight, 4, 0),
+        VMSTATE_SGI_GL_FLOATS(specular, SGIGLLight, 4, 0),
+        VMSTATE_SGI_GL_FLOATS(position, SGIGLLight, 4, 0),
+        VMSTATE_SGI_GL_FLOATS(spot_direction, SGIGLLight, 3, 0),
+        VMSTATE_SINGLE(spot_exponent, SGIGLLight, 0, vmstate_info_uint32,
+                       float),
+        VMSTATE_SINGLE(spot_cutoff, SGIGLLight, 0, vmstate_info_uint32,
+                       float),
+        VMSTATE_SGI_GL_FLOATS(attenuation, SGIGLLight, 3, 0),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
+static const VMStateDescription vmstate_sgi_mgras_gl_material = {
+    .name = TYPE_SGI_MGRAS "/gl-material",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_SGI_GL_FLOATS(ambient, SGIGLMaterial, 4, 0),
+        VMSTATE_SGI_GL_FLOATS(diffuse, SGIGLMaterial, 4, 0),
+        VMSTATE_SGI_GL_FLOATS(specular, SGIGLMaterial, 4, 0),
+        VMSTATE_SGI_GL_FLOATS(emission, SGIGLMaterial, 4, 0),
+        VMSTATE_SINGLE(shininess, SGIGLMaterial, 0, vmstate_info_uint32,
+                       float),
+        VMSTATE_SGI_GL_FLOATS(color_indexes, SGIGLMaterial, 3, 0),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
+static const VMStateDescription vmstate_sgi_mgras_gl_context_lighting = {
+    .name = TYPE_SGI_MGRAS "/gl-context-lighting",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_STRUCT_ARRAY(light, SGIGLContext, SGI_GL_LIGHTS, 1,
+                             vmstate_sgi_mgras_gl_light, SGIGLLight),
+        VMSTATE_STRUCT_ARRAY(material, SGIGLContext, 2, 1,
+                             vmstate_sgi_mgras_gl_material, SGIGLMaterial),
+        VMSTATE_SGI_GL_FLOATS(light_model_ambient, SGIGLContext, 4, 0),
+        VMSTATE_UINT32(light_model_local_viewer, SGIGLContext),
+        VMSTATE_UINT32(light_model_two_side, SGIGLContext),
+        VMSTATE_UINT32(color_material, SGIGLContext),
+        VMSTATE_UINT32(color_material_face, SGIGLContext),
+        VMSTATE_UINT32(color_material_mode, SGIGLContext),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
+static const VMStateDescription vmstate_sgi_mgras_gl_context_readback = {
+    .name = TYPE_SGI_MGRAS "/gl-context-readback",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32_ARRAY(readback, SGIMgrasGLContext, 4),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
+/*
+ * Every context's lighting state and light or material readback, sent
+ * only once some context has left OpenGL's initial lighting state or
+ * asked for a readback. A stream without it comes from a model that
+ * consumed the lighting packets without acting on them and answered the
+ * readback queries with zero: the destination's initial state gives the
+ * same zeros and, for the lighting, what the client set up at context
+ * creation.
+ */
+static bool mgras_gl_lighting_needed(void *opaque)
+{
+    SGIMgrasState *s = opaque;
+    g_autofree SGIGLContext *init = g_new(SGIGLContext, 1);
+
+    sgi_gl_init(init, 0);
+    for (int i = 0; i < SGI_MGRAS_GL_CONTEXTS; i++) {
+        const SGIGLContext *gl = &s->gl[i];
+        static const uint32_t zero[4];
+
+        if (memcmp(gl->light, init->light, sizeof(gl->light)) ||
+            memcmp(gl->material, init->material, sizeof(gl->material)) ||
+            memcmp(gl->light_model_ambient, init->light_model_ambient,
+                   sizeof(gl->light_model_ambient)) ||
+            gl->light_model_local_viewer != init->light_model_local_viewer ||
+            gl->light_model_two_side != init->light_model_two_side ||
+            gl->color_material != init->color_material ||
+            gl->color_material_face != init->color_material_face ||
+            gl->color_material_mode != init->color_material_mode ||
+            memcmp(s->gl_context[i].readback, zero, sizeof(zero))) {
+            return true;
+        }
+    }
+    return false;
+}
+
+const VMStateDescription vmstate_sgi_mgras_gl_lighting = {
+    .name = TYPE_SGI_MGRAS "/gl-lighting",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = mgras_gl_lighting_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_STRUCT_ARRAY(gl, SGIMgrasState, SGI_MGRAS_GL_CONTEXTS, 1,
+                             vmstate_sgi_mgras_gl_context_lighting,
+                             SGIGLContext),
+        VMSTATE_STRUCT_ARRAY(gl_context, SGIMgrasState,
+                             SGI_MGRAS_GL_CONTEXTS, 1,
+                             vmstate_sgi_mgras_gl_context_readback,
+                             SGIMgrasGLContext),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
 /*
  * The parser inside a glBitmap image, live or set aside with a context,
  * keeps its place in the payload fields the stream already carries. A
@@ -1391,7 +1600,8 @@ bool sgi_mgras_gl_post_load(SGIMgrasState *s)
             gl->mv_depth >= SGI_GL_STACK_DEPTH ||
             gl->pr_depth >= SGI_GL_STACK_DEPTH ||
             gl->raster_valid > 1 || gl->cur.index_bits > 32 ||
-            gl->cur.dither > 1 ||
+            gl->cur.dither > 1 || gl->light_model_local_viewer > 1 ||
+            gl->light_model_two_side > 1 || gl->color_material > 1 ||
             !(gl->cur.depth_range[0] >= 0.0f &&
               gl->cur.depth_range[0] <= 1.0f) ||
             !(gl->cur.depth_range[1] >= 0.0f &&
@@ -1411,6 +1621,17 @@ bool sgi_mgras_gl_post_load(SGIMgrasState *s)
      * that context is next loaded.
      */
     mgras_gl_bind(s);
+    /*
+     * It carries each spot cutoff in degrees, as glLightfv set it; the
+     * lighting compares against the cosine glLightfv derived from it.
+     */
+    for (int i = 0; i < SGI_MGRAS_GL_CONTEXTS; i++) {
+        for (int l = 0; l < SGI_GL_LIGHTS; l++) {
+            SGIGLLight *light = &s->gl[i].light[l];
+
+            light->spot_cos_cutoff = sgi_gl_spot_cos(light->spot_cutoff);
+        }
+    }
     return true;
 }
 
@@ -1727,6 +1948,99 @@ void sgi_mgras_gl_block_word(SGIMgrasState *s, uint32_t word)
     }
 }
 
+/*
+ * The four words 0x3ba to 0x3bd answer after 0xef08 or 0xee08: the
+ * parameter's floats, zero past its count. A light, face or parameter the
+ * context does not keep answers zeros, logged.
+ */
+static void mgras_gl_readback(SGIMgrasState *s, uint32_t header,
+                              const uint32_t *payload)
+{
+    uint32_t *rb = s->gl_context[s->gl_current].readback;
+    uint32_t out[SGI_GL_GET_WORDS];
+    unsigned n = 0;
+    bool known = header == MGRAS_GL_GET_LIGHT ?
+                 sgi_gl_get_light(mgras_gl(s), payload[0], payload[1], out,
+                                  &n) :
+                 sgi_gl_get_material(mgras_gl(s), payload[0], payload[1],
+                                     out, &n);
+
+    memset(rb, 0, 4 * sizeof(*rb));
+    if (!known) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: %s 0x%x parameter 0x%x "
+                      "is not kept; its queries answer zero\n",
+                      header == MGRAS_GL_GET_LIGHT ? "light" : "face",
+                      payload[0], payload[1]);
+        return;
+    }
+    memcpy(rb, out, MIN(n, 4) * sizeof(*rb));
+}
+
+/* Execute a lighting packet; false for any other header. */
+static bool mgras_gl_lighting(SGIMgrasState *s, uint32_t header,
+                              const uint32_t *payload, uint32_t words)
+{
+    uint32_t word[6] = { 0 };
+    float f;
+
+    for (int i = 0; i < ARRAY_SIZE(mgras_gl_light_headers); i++) {
+        if (header == mgras_gl_light_headers[i].header) {
+            word[0] = payload[0];
+            word[1] = mgras_gl_light_headers[i].pname;
+            memcpy(&word[2], &payload[1], (words - 1) * sizeof(uint32_t));
+            mgras_gl_command(s, SGI_GL_OP_LIGHT, word, 6);
+            return true;
+        }
+    }
+    switch (header) {
+    case MGRAS_GL_LIGHT_MODEL_AMBIENT: {
+        uint32_t out[SGI_GL_GET_WORDS];
+        unsigned n;
+
+        /* Alpha is not sent: keep the context's. */
+        sgi_gl_get(mgras_gl(s), SGI_GL_LIGHT_MODEL_AMBIENT, out, &n);
+        word[0] = SGI_GL_LIGHT_MODEL_AMBIENT;
+        memcpy(&word[1], payload, 3 * sizeof(uint32_t));
+        word[4] = out[3];
+        mgras_gl_command(s, SGI_GL_OP_LIGHT_MODEL, word, 5);
+        return true;
+    }
+    case MGRAS_GL_LIGHT_MODEL_LOCAL:
+    case MGRAS_GL_LIGHT_MODEL_TWO_SIDE:
+        word[0] = header == MGRAS_GL_LIGHT_MODEL_LOCAL ?
+                  SGI_GL_LIGHT_MODEL_LOCAL_VIEWER :
+                  SGI_GL_LIGHT_MODEL_TWO_SIDE;
+        f = payload[0] != 0;
+        memcpy(&word[1], &f, sizeof(f));
+        mgras_gl_command(s, SGI_GL_OP_LIGHT_MODEL, word, 5);
+        return true;
+    case MGRAS_GL_MATERIAL:
+        mgras_gl_command(s, SGI_GL_OP_MATERIAL, payload, 6);
+        return true;
+    case MGRAS_GL_COLOR_MATERIAL_FRONT:
+    case MGRAS_GL_COLOR_MATERIAL_BACK:
+    case MGRAS_GL_COLOR_MATERIAL_BOTH:
+        word[0] = header == MGRAS_GL_COLOR_MATERIAL_FRONT ? SGI_GL_FRONT :
+                  header == MGRAS_GL_COLOR_MATERIAL_BACK ? SGI_GL_BACK :
+                  SGI_GL_FRONT_AND_BACK;
+        word[1] = payload[0];
+        mgras_gl_command(s, SGI_GL_OP_COLOR_MATERIAL, word, 2);
+        return true;
+    case MGRAS_GL_COLOR_MATERIAL_ON:
+    case MGRAS_GL_COLOR_MATERIAL_OFF:
+        word[0] = SGI_GL_COLOR_MATERIAL;
+        mgras_gl_command(s, header == MGRAS_GL_COLOR_MATERIAL_ON ?
+                         SGI_GL_OP_ENABLE : SGI_GL_OP_DISABLE, word, 1);
+        return true;
+    case MGRAS_GL_GET_LIGHT:
+    case MGRAS_GL_GET_MATERIAL:
+        mgras_gl_readback(s, header, payload);
+        return true;
+    default:
+        return false;
+    }
+}
+
 void sgi_mgras_gl_execute(SGIMgrasState *s, uint32_t header,
                           const uint32_t *payload, uint32_t words)
 {
@@ -1743,6 +2057,9 @@ void sgi_mgras_gl_execute(SGIMgrasState *s, uint32_t header,
     if (mgras_gl_begin_token(header, true)) {
         /* Any end token ends whichever primitive is open. */
         mgras_gl_command(s, SGI_GL_OP_END, payload, 0);
+        return;
+    }
+    if (mgras_gl_lighting(s, header, payload, words)) {
         return;
     }
     switch (header) {

@@ -12327,6 +12327,160 @@ static void test_gl_dither_migration(void)
     gl_migrate(gl_dither_setup, gl_dither_check);
 }
 
+/*
+ * Lighting as the client sends it (notes-lists-arrays-lighting.md):
+ * glLightfv one header per parameter with the light's number and floats,
+ * glMaterialfv 0x1118 with face, parameter and four floats,
+ * glLightModelfv(GL_LIGHT_MODEL_AMBIENT) 0x570c with three floats,
+ * GL_LIGHT_MODEL_TWO_SIDE 0x5904 with an integer, glColorMaterial on the
+ * front face 0xbf04 with the parameter, glEnable(GL_COLOR_MATERIAL)
+ * 0xc200. glGetLightfv sends 0xef08 with the light's number and the
+ * parameter, glGetMaterialfv 0xee08 with the face and the parameter, and
+ * both then query 0x3ba to 0x3bd, reading four floats.
+ */
+#define GL_LIGHT_DIFFUSE_HDR  0x00001314
+#define GL_LIGHT_POSITION_HDR 0x00004f14
+#define GL_LIGHT_SPOT_DIR_HDR 0x00005010
+#define GL_MATERIAL_HDR       0x00001118
+#define GL_LIGHT_MODEL_AMBIENT_HDR 0x0000570c
+#define GL_LIGHT_MODEL_TWO_SIDE_HDR 0x00005904
+#define GL_COLOR_MATERIAL_FRONT_HDR 0x0000bf04
+#define GL_COLOR_MATERIAL_ON  0x0000c200
+#define GL_GET_LIGHT_HDR      0x0000ef08
+#define GL_GET_MATERIAL_HDR   0x0000ee08
+#define GL_Q_READBACK         0x3ba
+#define GL_Q_LIGHT_MODEL_AMBIENT 0x55e
+#define GL_Q_TWO_SIDE         0xc1b
+#define GL_Q_COLOR_MATERIAL_PARAMETER 0x56b
+#define GL_Q_COLOR_MATERIAL_FACE 0x56c
+#define GL_FRONT_FACE         0x404
+#define GL_BACK_FACE          0x405
+#define GL_DIFFUSE            0x1201
+#define GL_POSITION           0x1203
+#define GL_SPOT_DIRECTION     0x1204
+
+static void gl_light4(QTestState *qts, uint32_t header, uint32_t light,
+                      float x, float y, float z, float w)
+{
+    gl_word(qts, header);
+    gl_word(qts, light);
+    gl_float(qts, x);
+    gl_float(qts, y);
+    gl_float(qts, z);
+    gl_float(qts, w);
+}
+
+static void gl_material(QTestState *qts, uint32_t face, uint32_t pname,
+                        float r, float g, float b, float a)
+{
+    gl_word(qts, GL_MATERIAL_HDR);
+    gl_word(qts, face);
+    gl_word(qts, pname);
+    gl_float(qts, r);
+    gl_float(qts, g);
+    gl_float(qts, b);
+    gl_float(qts, a);
+}
+
+/* The four readback words after glGetLightfv or glGetMaterialfv. */
+static void gl_readback(QTestState *qts, uint32_t header, uint32_t a,
+                        uint32_t pname, const float expect[4])
+{
+    gl_word(qts, header);
+    gl_word(qts, a);
+    gl_word(qts, pname);
+    for (int k = 0; k < 4; k++) {
+        g_assert_cmphex(gl_query(qts, GL_Q_READBACK + k, 1), ==,
+                        gl_bits(expect[k]));
+    }
+}
+
+static void test_hq_query_answers_lights_and_materials(void)
+{
+    static const float white[4] = { 1, 1, 1, 1 };
+    static const float black[4] = { 0, 0, 0, 1 };
+    static const float grey[4] = { 0.8f, 0.8f, 0.8f, 1 };
+    static const float none[4] = { 0, 0, 0, 0 };
+
+    mgras_reset();
+
+    gl_enter_slot(qts, GL_SLOT_A);
+    gl_word(qts, GL_CONTEXT_OPENER);
+    gl_readback(qts, GL_GET_LIGHT_HDR, 0, GL_DIFFUSE, white);
+    gl_readback(qts, GL_GET_LIGHT_HDR, 1, GL_DIFFUSE, black);
+    gl_readback(qts, GL_GET_MATERIAL_HDR, GL_BACK_FACE, GL_DIFFUSE, grey);
+
+    /* A position goes to eye coordinates, a spot direction without w. */
+    gl_three(qts, GL_TRANSLATE_HDR, 3, 4, 5);
+    gl_light4(qts, GL_LIGHT_POSITION_HDR, 2, 1, 2, 3, 1);
+    gl_word(qts, GL_LIGHT_SPOT_DIR_HDR);
+    gl_word(qts, 2);
+    gl_float(qts, 0);
+    gl_float(qts, 1);
+    gl_float(qts, 0);
+    gl_readback(qts, GL_GET_LIGHT_HDR, 2, GL_POSITION,
+                (const float[4]) { 4, 6, 8, 1 });
+    gl_readback(qts, GL_GET_LIGHT_HDR, 2, GL_SPOT_DIRECTION,
+                (const float[4]) { 0, 1, 0, 0 });
+    gl_light4(qts, GL_LIGHT_DIFFUSE_HDR, 3, 0.5f, 0.25f, 0.125f, 1);
+    gl_readback(qts, GL_GET_LIGHT_HDR, 3, GL_DIFFUSE,
+                (const float[4]) { 0.5f, 0.25f, 0.125f, 1 });
+
+    gl_material(qts, GL_FRONT_FACE, GL_DIFFUSE, 0.5f, 0.5f, 0.5f, 1);
+    gl_readback(qts, GL_GET_MATERIAL_HDR, GL_FRONT_FACE, GL_DIFFUSE,
+                (const float[4]) { 0.5f, 0.5f, 0.5f, 1 });
+    gl_readback(qts, GL_GET_MATERIAL_HDR, GL_BACK_FACE, GL_DIFFUSE, grey);
+
+    /* Colour material on the front diffuse tracks glColor. */
+    gl_one(qts, GL_COLOR_MATERIAL_FRONT_HDR, GL_DIFFUSE);
+    gl_word(qts, GL_COLOR_MATERIAL_ON);
+    gl_three(qts, GL_COLOR3F_HDR, 0.25f, 0.5f, 0.75f);
+    gl_readback(qts, GL_GET_MATERIAL_HDR, GL_FRONT_FACE, GL_DIFFUSE,
+                (const float[4]) { 0.25f, 0.5f, 0.75f, 1 });
+    g_assert_cmphex(gl_query(qts, GL_Q_COLOR_MATERIAL_FACE, 1), ==,
+                    GL_FRONT_FACE);
+    g_assert_cmphex(gl_query(qts, GL_Q_COLOR_MATERIAL_PARAMETER, 1), ==,
+                    GL_DIFFUSE);
+
+    /* The light model; alpha is not sent and stays 1. */
+    g_assert_cmphex(gl_query(qts, GL_Q_LIGHT_MODEL_AMBIENT, 1), ==,
+                    gl_bits(0.2f));
+    gl_three(qts, GL_LIGHT_MODEL_AMBIENT_HDR, 0.5f, 0.25f, 0.125f);
+    gl_one(qts, GL_LIGHT_MODEL_TWO_SIDE_HDR, 1);
+    g_assert_cmphex(gl_query(qts, GL_Q_LIGHT_MODEL_AMBIENT + 2, 1), ==,
+                    gl_bits(0.125f));
+    g_assert_cmphex(gl_query(qts, GL_Q_TWO_SIDE, 1), ==, 1);
+
+    /* A parameter the context does not keep reads back zeros. */
+    gl_readback(qts, GL_GET_LIGHT_HDR, 9, GL_DIFFUSE, none);
+}
+
+static void gl_lighting_setup(QTestState *from)
+{
+    gl_enter_slot(from, GL_SLOT_A);
+    gl_word(from, GL_CONTEXT_OPENER);
+    gl_light4(from, GL_LIGHT_DIFFUSE_HDR, 5, 0.5f, 0.25f, 0.125f, 1);
+    gl_word(from, GL_GET_LIGHT_HDR);
+    gl_word(from, 5);
+    gl_word(from, GL_DIFFUSE);
+    gl_enter_slot(from, GL_SLOT_B);
+    gl_word(from, GL_CONTEXT_OPENER);
+}
+
+static void gl_lighting_check(QTestState *to)
+{
+    gl_enter_slot(to, GL_SLOT_A);
+    g_assert_cmphex(gl_query(to, GL_Q_READBACK + 1, 1), ==, gl_bits(0.25f));
+    gl_readback(to, GL_GET_LIGHT_HDR, 5, GL_DIFFUSE,
+                (const float[4]) { 0.5f, 0.25f, 0.125f, 1 });
+}
+
+/* Each context's lighting state and readback cross a migration. */
+static void test_gl_lighting_migration(void)
+{
+    gl_migrate(gl_lighting_setup, gl_lighting_check);
+}
+
 int main(int argc, char **argv)
 {
     int ret;
@@ -12655,6 +12809,9 @@ int main(int argc, char **argv)
                    test_hq_query_answers_the_stack_depths);
     qtest_add_func("sn0/origin2000/mgras/hq-query-answers-the-raster-state",
                    test_hq_query_answers_the_raster_state);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "hq-query-answers-lights-and-materials",
+                   test_hq_query_answers_lights_and_materials);
     qtest_add_func("sn0/origin2000/mgras/gl-bitmap-draws-its-image",
                    test_gl_bitmap_draws_its_image);
     qtest_add_func("sn0/origin2000/mgras/gl-bitmap-unaligned-image",
@@ -12935,6 +13092,8 @@ int main(int argc, char **argv)
                    test_gl_depth_range_migration);
     qtest_add_func("sn0/origin2000/mgras/gl-dither-migration",
                    test_gl_dither_migration);
+    qtest_add_func("sn0/origin2000/mgras/gl-lighting-migration",
+                   test_gl_lighting_migration);
     qtest_add_func("sn0/origin2000/mgras/gl-subsections-follow-their-state",
                    test_gl_subsections_follow_their_state);
     qtest_add_func("sn0/origin2000/mgras/gl-longest-block-migration",

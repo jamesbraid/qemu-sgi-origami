@@ -313,6 +313,11 @@ typedef struct SGIMgrasGLContext {
     /* The parser's position while this context is not loaded. */
     SGIMgrasCmdParser parser;
     SGIGLContext *gl;
+    /*
+     * The four words the last 0xef08 or 0xee08 put where the 0x3ba to
+     * 0x3bd queries read them (hw/misc/sgi-mgras-gl.c).
+     */
+    uint32_t readback[4];
 } SGIMgrasGLContext;
 
 /*
