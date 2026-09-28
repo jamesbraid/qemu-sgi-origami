@@ -16,6 +16,8 @@ performance:
 - TCP throughput: ttcp(1) receiving a bulk stream, reporting the rate.
 - UDP throughput: ttcp -u receiving a bulk datagram stream, reporting the
   rate and the loss.
+- UDP transmit correctness: eight exact guest-to-host datagrams received by
+  a host socket, including ttcp's end marker.
 - IP/TCP/UDP proof: netstat -s protocol counters before and after, so the
   segments/datagrams the guest's stacks actually processed are recorded,
   not merely that a program exited 0.
@@ -33,9 +35,11 @@ performance:
   and ring contract, including the receive end-of-frame flag itself, is
   exercised separately by tests/qtest/sn0-tigon-test.c.
 
-All legs run host->guest (the guest receives), which is the receive ring the
-fork's end-of-frame fix repairs; the guest is the ttcp -r server and
-the host drives the load through a SLIRP hostfwd. ttcp (/usr/etc/ttcp) and
+The bulk legs run host->guest (the guest receives), which exercises the
+receive ring the fork's end-of-frame fix repairs; the guest is the ttcp -r
+server and the host drives the load through a SLIRP hostfwd. A bounded UDP
+correctness leg also sends from the guest to a host socket through the SLIRP
+gateway. ttcp (/usr/etc/ttcp) and
 nc (/usr/sbin/nc) are both in the installed 6.5.30 base image (confirmed by
 probe).
 
@@ -73,6 +77,7 @@ import re
 import socket
 import subprocess
 import sys
+import threading
 import time
 
 # This file's own directory, so a plain `pytest` run of this file finds the
@@ -136,6 +141,9 @@ def eg_perf_verdict(login_reached, eg_up, results, rx=None):
          "udp_mbps": float or None,
          "udp_loss": float or None,
          "udp_bytes": int or None,
+         "udp_tx": {"payload_count": int, "payload_matches": bool,
+                    "control_count": int, "errors": list[str],
+                    "timed_out": bool} or None,
          "tcp_segments_delta": int or None}
 
         Parallel mode instead carries mode="parallel" and a parallel dict
@@ -255,8 +263,26 @@ def eg_perf_verdict(login_reached, eg_up, results, rx=None):
             "the guest received no UDP payload at all: the datagram path "
             "carried nothing")
 
-    # Transmit, which every other clause here leaves untested because they all
-    # have the guest receiving. A transmit ring that stops releasing
+    udp_tx = results.get("udp_tx")
+    if not udp_tx:
+        problems.append("guest-to-host UDP did not run")
+    else:
+        if udp_tx.get("timed_out"):
+            problems.append("the host UDP receiver timed out")
+        if udp_tx.get("errors"):
+            problems.append("the host UDP receiver reported: " +
+                            "; ".join(udp_tx["errors"]))
+        if udp_tx.get("payload_count") != UDP_TX_COUNT:
+            problems.append(
+                f"the host did not receive {UDP_TX_COUNT} guest UDP payloads "
+                f"(received {udp_tx.get('payload_count')})")
+        if udp_tx.get("control_count", 0) <= 0:
+            problems.append("ttcp's guest-to-host UDP end marker was missing")
+        if not udp_tx.get("payload_matches"):
+            problems.append("guest-to-host UDP payloads did not match")
+
+    # Bulk transmit, which the bounded UDP correctness leg does not exercise.
+    # A transmit ring that stops releasing
     # descriptors drains after a handful of frames and then stalls with the
     # connection still established and no error anywhere -- so the check that
     # matters is not whether the guest thinks it sent, but whether the bytes
@@ -354,6 +380,8 @@ def _host_cksum(path):
 
 TCP_GUEST_PORT = 5001
 UDP_GUEST_PORT = 5002
+UDP_TX_COUNT = 8
+UDP_TX_BUFLEN = 1024
 TCP_THROUGHPUT_BYTES = 4 * 1024 * 1024    # bulk TCP stream
 SEND_TIMEOUT_SECONDS = 900                # a bulk send drains at guest speed
 LEG_TIMEOUT_SECONDS = 900                 # and the guest reports after that
@@ -446,6 +474,42 @@ def _usernet_hostport(vm, proto, guest_port):
         if m:
             return int(m.group(1))
     return None
+
+
+def _udp_tx_sink(ready, port_holder, packets, controls, errors, stop):
+    """Receive a bounded ttcp UDP correctness transfer from the guest."""
+    server = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        server.bind(('0.0.0.0', 0))
+        server.settimeout(0.25)
+        port_holder.append(server.getsockname()[1])
+        ready.set()
+        drain_until = None
+        while not stop.is_set():
+            if drain_until is not None and time.monotonic() >= drain_until:
+                break
+            try:
+                data, _ = server.recvfrom(65536)
+            except socket.timeout:
+                if len(packets) >= UDP_TX_COUNT and drain_until is None:
+                    drain_until = time.monotonic() + 0.5
+                continue
+            if data == bytes(4):
+                controls.append(data)
+            elif len(data) == UDP_TX_BUFLEN:
+                packets.append(data)
+                if len(packets) >= UDP_TX_COUNT and drain_until is None:
+                    drain_until = time.monotonic() + 0.5
+            else:
+                errors.append(
+                    f'unexpected UDP datagram length {len(data)} bytes')
+                break
+    except OSError as error:
+        if not stop.is_set():
+            errors.append(str(error))
+    finally:
+        ready.set()
+        server.close()
 
 
 def _tcp_stream(host_port, data):
@@ -714,7 +778,13 @@ if QemuSystemTest is not None:
             results = {"mode": "parallel" if PARALLEL else "standard",
                        "topology": {"smp": SMP, "accel": ACCEL},
                        "tcp_verify": None, "tcp_mbps": None,
-                       "udp_mbps": None, "udp_loss": None}
+                       "udp_mbps": None, "udp_loss": None,
+                       "udp_tx": None}
+            udp_tx_stop = threading.Event()
+            udp_tx_thread = None
+            udp_tx_ready = threading.Event()
+            udp_tx_port = []
+            udp_tx_packets, udp_tx_controls, udp_tx_errors = [], [], []
             login = eg_up = False
             ipkts_before = None
             ipkts_after = None
@@ -1027,16 +1097,42 @@ if QemuSystemTest is not None:
                     results["udp_loss"] = 1.0 - (ubytes /
                                                  float(UDP_BUFLEN * UDP_BUFS))
 
+                # --- Guest-to-host UDP correctness ---
+                udp_tx_thread = threading.Thread(
+                    target=_udp_tx_sink,
+                    args=(udp_tx_ready, udp_tx_port, udp_tx_packets,
+                          udp_tx_controls, udp_tx_errors, udp_tx_stop),
+                    daemon=True)
+                udp_tx_thread.start()
+                self.assertTrue(udp_tx_ready.wait(30),
+                                "host UDP sink did not start")
+                self.assertTrue(udp_tx_port, "host UDP sink has no port")
+                udp_tx_rc = con.run(
+                    f"dd if=/dev/zero bs={UDP_TX_BUFLEN} "
+                    f"count={UDP_TX_COUNT} 2>/dev/null "
+                    f"| ttcp -u -t -l {UDP_TX_BUFLEN} -n {UDP_TX_COUNT} "
+                    f"-p {udp_tx_port[0]} {GATEWAY}", "udp_tx", 180)
+                self.assertEqual(udp_tx_rc, 0, "guest UDP transmit failed")
+                udp_tx_thread.join(30)
+                results["udp_tx"] = {
+                    "payload_count": len(udp_tx_packets),
+                    "payload_matches": (
+                        udp_tx_packets ==
+                        [bytes(UDP_TX_BUFLEN)] * UDP_TX_COUNT),
+                    "control_count": len(udp_tx_controls),
+                    "errors": udp_tx_errors,
+                    "timed_out": udp_tx_thread.is_alive(),
+                }
+
                 # --- transmit: the guest as sender ---
                 #
-                # Every other leg here has the guest receiving, which leaves
-                # the whole transmit direction untested -- and a transmit ring
+                # The UDP leg above checks only a small datagram set; this
+                # bulk stream exercises sustained transmit. A transmit ring
                 # that stops releasing descriptors drains after a dozen frames
                 # and then stalls with the connection still established, which
                 # nothing on the receive side would ever notice. The guest
                 # reaches the host at the SLIRP gateway, so a listener here is
                 # somewhere it can send to.
-                import threading
                 ready = threading.Event()
                 got = []
                 srv = threading.Thread(target=_drain_server,
@@ -1150,19 +1246,23 @@ if QemuSystemTest is not None:
                         break
                     time.sleep(1)
             finally:
+                udp_tx_stop.set()
+                if udp_tx_thread is not None:
+                    udp_tx_thread.join(1)
                 transcript = con.buf.decode("utf-8", errors="replace")
                 con.close()
                 vm.shutdown(hard=vm.exitcode() is not None)
 
             summary = self.log_file('irix-eg-perf-summary.json')
             import json
-            with open(summary, 'w', encoding='utf-8') as f:
-                json.dump({"login": login, "eg_up": eg_up,
-                           "results": results}, f, indent=2, default=str)
-                f.write("\n")
-
             rx = {"ipkts_before": ipkts_before, "ipkts_after": ipkts_after}
             report = eg_perf_verdict(login, eg_up, results, rx)
+            with open(summary, 'w', encoding='utf-8') as f:
+                json.dump({"login": login, "eg_up": eg_up,
+                           "results": results, "report": report},
+                          f, indent=2, default=str)
+                f.write("\n")
+
             self.assertEqual(
                 report["verdict"], "PASS",
                 "IRIX eg transport problems: " + "; ".join(report["problems"])
