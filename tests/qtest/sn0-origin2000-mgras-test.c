@@ -9620,6 +9620,127 @@ static void test_hq_query_answers_the_raster_position(void)
     g_assert_cmphex(gl_query(qts, GL_Q_RASTER_Z, 1), ==, gl_bits(0.5f));
 }
 
+/*
+ * The colour-index client's words (the IRIX 6.5.30 IP27GR532
+ * libGLcore.so): __glMgrInitCI sends 0x0a04 with the visual's index bits,
+ * 8 in gr_osview's context setup, and __glMgrInitRGB 0x0900. glIndexs is
+ * 0x19000202 with the short in bits 31:16, glIndexi 0x18000204, glIndexf
+ * 0x00000204, glIndexMask 0x3d04 and glClearIndex 0xbd04 with the index
+ * as a float.
+ */
+#define GL_INIT_CI_HDR        0x00000a04
+#define GL_INIT_RGB           0x00000900
+#define GL_INDEXS_HDR         0x19000202
+#define GL_INDEXI_HDR         0x18000204
+#define GL_INDEXF_HDR         0x00000204
+#define GL_INDEX_MASK_HDR     0x00003d04
+#define GL_CLEAR_INDEX_HDR    0x0000bd04
+#define GL_BEGIN_POLYGON      0x00001f00
+#define GL_END_POLYGON        0x00002900
+#define GL_Q_RASTER_INDEX     0x351
+
+static void gl_indexs(QTestState *qts, int16_t index)
+{
+    gl_word(qts, GL_INDEXS_HDR);
+    gl_word(qts, (uint32_t)(uint16_t)index << 16);
+}
+
+/* The rectangle from window (x0, y0) to (x1, y1) under glOrtho. */
+static void gl_window_rect(QTestState *qts, float x0, float y0, float x1,
+                           float y1)
+{
+    gl_word(qts, GL_BEGIN_POLYGON);
+    gl_vertex2f(qts, x0, y0);
+    gl_vertex2f(qts, x1, y0);
+    gl_vertex2f(qts, x1, y1);
+    gl_vertex2f(qts, x0, y1);
+    gl_word(qts, GL_END_POLYGON);
+}
+
+/*
+ * In a colour-index context gr_osview's bars store their index as a CI8
+ * pixel, which scans out through the colour map of the window's display
+ * ID: map 29 for display ID 0's reset mode. Its clear stores the clear
+ * index, glIndexMask keeps the bits its mask leaves clear (OpenGL 1.2.1,
+ * 4.2.2), and 0x0900 returns the context to RGBA.
+ */
+static void test_gl_colour_index_draws_through_the_colour_map(void)
+{
+    mgras_reset();
+    gl_enter_slot(qts, GL_SLOT_A);
+    gl_word(qts, GL_CONTEXT_OPENER);
+    gl_one(qts, GL_INIT_CI_HDR, 8);
+    gl_viewport(qts, 0, 0, 128, 128);
+    gl_window_projection(qts);
+    qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x1e, 0x4));
+    mgras_write_cmap_entry(qts, 29, 2, 0x00ff0000);
+    mgras_write_cmap_entry(qts, 29, 0x13, 0x0000ff00);
+
+    gl_word(qts, GL_CLEAR_INDEX_HDR);
+    gl_float(qts, 0x17);
+    gl_word(qts, GL_CLEAR_COLOR_BUFFER);
+    g_assert_cmphex(gl_window_pixel(qts, 100, 100), ==, 0x17);
+    g_assert_cmphex(mgras_test_format(qts, 256 + 100, 383 - 100), ==,
+                    MGRAS_PIXEL_FORMAT_CI8);
+
+    gl_indexs(qts, 2);
+    gl_window_rect(qts, 10, 10, 20, 30);
+    g_assert_cmphex(gl_window_pixel(qts, 15, 20), ==, 2);
+    g_assert_cmphex(mgras_test_format(qts, 256 + 15, 383 - 20), ==,
+                    MGRAS_PIXEL_FORMAT_CI8);
+    g_assert_cmphex(mgras_test_display_pixel(qts, 256 + 15, 383 - 20), ==,
+                    0x00ff00);
+    g_assert_cmphex(gl_window_pixel(qts, 25, 20), ==, 0x17);
+
+    /* 300 keeps its low 8 bits; the mask 0x0f keeps 0x17's high ones. */
+    gl_word(qts, GL_INDEXI_HDR);
+    gl_word(qts, 300);
+    gl_window_rect(qts, 40, 10, 50, 30);
+    g_assert_cmphex(gl_window_pixel(qts, 45, 20), ==, 44);
+    gl_one(qts, GL_INDEX_MASK_HDR, 0x0f);
+    gl_word(qts, GL_INDEXF_HDR);
+    gl_float(qts, 3);
+    gl_window_rect(qts, 60, 10, 70, 30);
+    g_assert_cmphex(gl_window_pixel(qts, 65, 20), ==, 0x13);
+    g_assert_cmphex(mgras_test_display_pixel(qts, 256 + 65, 383 - 20), ==,
+                    0x0000ff);
+    gl_one(qts, GL_INDEX_MASK_HDR, 0xff);
+
+    gl_word(qts, GL_INIT_RGB);
+    gl_color3f(qts, 1, 1, 1);
+    gl_window_rect(qts, 90, 10, 100, 30);
+    g_assert_cmphex(gl_window_pixel(qts, 95, 20), ==, 0xffffff);
+    g_assert_cmphex(mgras_test_format(qts, 256 + 95, 383 - 20), ==,
+                    MGRAS_PIXEL_FORMAT_RGB);
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+}
+
+/*
+ * The client reads GL_CURRENT_INDEX through the 0xa104 query at index 4,
+ * GL_CURRENT_COLOR's red, and GL_CURRENT_RASTER_INDEX through 0xa20c at
+ * 0x351, the raster colour's red (notes-return-mode-queries.md). In a
+ * colour-index context both answer the index as a float; in an RGBA one,
+ * red.
+ */
+static void test_hq_query_answers_the_colour_index(void)
+{
+    mgras_reset();
+    gl_enter_slot(qts, GL_SLOT_A);
+    gl_word(qts, GL_CONTEXT_OPENER);
+    gl_one(qts, GL_INIT_CI_HDR, 8);
+    gl_viewport(qts, 0, 0, 128, 128);
+    gl_color3f(qts, 0.25f, 0.5f, 0.75f);
+    gl_indexs(qts, 9);
+    g_assert_cmphex(gl_attribute_query(qts, 4), ==, gl_bits(9));
+    g_assert_cmphex(gl_query(qts, GL_Q_RASTER_INDEX, 1), ==, gl_bits(1));
+    gl_raster_pos2f(qts, 0, 0);
+    g_assert_cmphex(gl_query(qts, GL_Q_RASTER_INDEX, 1), ==, gl_bits(9));
+
+    gl_word(qts, GL_INIT_RGB);
+    g_assert_cmphex(gl_attribute_query(qts, 4), ==, gl_bits(0.25f));
+    g_assert_cmphex(gl_query(qts, GL_Q_RASTER_INDEX, 1), ==, gl_bits(0.25f));
+}
+
 static void test_hq_flags_fence_token_sets_bit(void)
 {
     mgras_reset();
@@ -11041,6 +11162,56 @@ static void test_gl_raster_position_migration(void)
 }
 
 /*
+ * Each context's colour-index state crosses a migration: a's mode and
+ * current index, b's mode, write mask and clear index.
+ */
+static void test_gl_colour_index_migration(void)
+{
+    g_autofree char *tmpfs = NULL;
+    g_autofree char *uri = NULL;
+    g_autofree char *dest_cmdline = NULL;
+    GError *err = NULL;
+    QTestState *from, *to;
+
+    tmpfs = g_dir_make_tmp("sn0-mgras-gl-ci-XXXXXX", &err);
+    g_assert_no_error(err);
+    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+
+    from = qtest_init(MIGRATION_ARGS);
+    dest_cmdline = g_strdup_printf(MIGRATION_ARGS " -incoming %s", uri);
+    to = qtest_init(dest_cmdline);
+
+    gl_enter_slot(from, GL_SLOT_B);
+    gl_word(from, GL_CONTEXT_OPENER);
+    gl_one(from, GL_INIT_CI_HDR, 8);
+    gl_one(from, GL_INDEX_MASK_HDR, 0x0f);
+    gl_word(from, GL_CLEAR_INDEX_HDR);
+    gl_float(from, 3);
+    gl_enter_slot(from, GL_SLOT_A);
+    gl_word(from, GL_CONTEXT_OPENER);
+    gl_one(from, GL_INIT_CI_HDR, 8);
+    gl_viewport(from, 0, 0, 128, 128);
+    gl_window_projection(from);
+    gl_indexs(from, 0x17);
+
+    sgi_migrate_stopped(from, uri);
+
+    g_assert_cmphex(gl_attribute_query(to, 4), ==, gl_bits(0x17));
+    gl_window_rect(to, 10, 10, 20, 20);
+    g_assert_cmphex(gl_window_pixel(to, 15, 15), ==, 0x17);
+    /* b clears to index 3 under its mask 0x0f: 0x17 becomes 0x13. */
+    gl_enter_slot(to, GL_SLOT_B);
+    gl_word(to, GL_CLEAR_COLOR_BUFFER);
+    g_assert_cmphex(gl_window_pixel(to, 15, 15), ==, 0x13);
+    g_assert_cmphex(gl_window_pixel(to, 30, 30), ==, 0x03);
+    g_assert_cmphex(mgras_qom_get_uint(to, "x-test-error"), ==, 0);
+
+    qtest_quit(to);
+    qtest_quit(from);
+    g_rmdir(tmpfs);
+}
+
+/*
  * A primitive left open by a migration finishes on the destination: the
  * vertices each context held before it cross, in the loaded context (the
  * default slot's, the no-context entry) and in one switched out.
@@ -11694,6 +11865,11 @@ int main(int argc, char **argv)
                    test_hq_query_answers_viewport_shade_and_clear_colour);
     qtest_add_func("sn0/origin2000/mgras/hq-query-answers-the-raster-position",
                    test_hq_query_answers_the_raster_position);
+    qtest_add_func("sn0/origin2000/mgras/hq-query-answers-the-colour-index",
+                   test_hq_query_answers_the_colour_index);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "gl-colour-index-draws-through-the-colour-map",
+                   test_gl_colour_index_draws_through_the_colour_map);
     qtest_add_func("sn0/origin2000/mgras/hq-query-flag-only-from-query",
                    test_hq_query_flag_only_from_query);
     qtest_add_func("sn0/origin2000/mgras/inline-block-uses-20-bit-length",
@@ -11950,6 +12126,8 @@ int main(int argc, char **argv)
                    test_gl_state_migration);
     qtest_add_func("sn0/origin2000/mgras/gl-raster-position-migration",
                    test_gl_raster_position_migration);
+    qtest_add_func("sn0/origin2000/mgras/gl-colour-index-migration",
+                   test_gl_colour_index_migration);
     qtest_add_func("sn0/origin2000/mgras/gl-context-table-migration",
                    test_gl_context_table_migration);
     qtest_add_func("sn0/origin2000/mgras/gl-open-primitive-migration",

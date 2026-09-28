@@ -9,11 +9,12 @@
  * says those commands produce. This is an approximation of the geometry
  * engine's function, not of its program.
  *
- * What it preserves: the pixels that colour and depth clears and
- * untextured points, lines, triangles, strips, fans, quads and polygons,
- * at size and width 1, flat or smooth shaded, transformed by the
- * modelview and projection matrices and their stacks and depth tested,
- * leave in the window's front or back buffer, and the main-port framing,
+ * What it preserves: the pixels that colour and depth clears, untextured
+ * points, lines, triangles, strips, fans, quads and polygons, at size and
+ * width 1, flat or smooth shaded, transformed by the modelview and
+ * projection matrices and their stacks and depth tested, leave in the
+ * window's front or back buffer, in RGBA or colour-index mode, and the
+ * main-port framing,
  * so the words after a packet still parse as headers. What it does not: the
  * raster-engine register writes the GE would make, the timing of the
  * work, any GE state visible to a later readback, and every command
@@ -100,6 +101,46 @@
 #define MGRAS_GL_RASTER_POS3F    0x2000380c
 #define MGRAS_GL_EDGE_FLAG_TRUE  0x00000f00
 #define MGRAS_GL_EDGE_FLAG_FALSE 0x00001000
+
+/*
+ * Colour-index mode, from the IRIX 6.5.30 IP27GR532 libGLcore.so's own
+ * disassembly (SHA-256 626d6d94...). The context setup calls
+ * __glMgrInitCI (0xd94e830) for each colour buffer when the visual is a
+ * colour-index one and another initializer otherwise; __glMgrInitCI
+ * writes 0x0a04 and a word of the visual's configuration, from which it
+ * also forms the index mask (1 << n) - 1, and __glMgrInitRGB (0xd973620)
+ * writes 0x0900 and nothing more. So 0x0a04's word is the number of
+ * bits a colour index holds, 8 in gr_osview's context setup and in
+ * glxinfo's (the application survey's run irix-20260928T004550-1040f3,
+ * and mgras-gl-commands.md), and 0x0900 marks an RGBA context. That the
+ * board switches its colour handling on them is inferred.
+ */
+#define MGRAS_GL_INIT_CI         0x00000a04
+#define MGRAS_GL_INIT_RGB        0x00000900
+/*
+ * glIndexs, glIndexi and glIndexf: headers 0x19000202, 0x18000204 and
+ * 0x00000204, the colour register 0x02 under the attribute classes for a
+ * short, an integer and a float (__glMgrim_Indexs 0xdac7f90,
+ * __glMgrim_Indexi 0xdac7f5c, __glMgrim_Indexf 0xdac7f30). glIndexs
+ * sends the short's 16 bits in bits 31:16 of its one word and zeros in
+ * 15:0 (andi 0xffff, dsll 16); gr_osview's words 0x20000 and 0x30000 are
+ * indices 2 and 3. The short is read signed, as the class's short type
+ * reads for a vertex (inferred from the attribute table); glIndexs's
+ * header is matched with its length rounded up to the word it takes.
+ */
+#define MGRAS_GL_INDEXS          0x19000204
+#define MGRAS_GL_INDEXI          0x18000204
+#define MGRAS_GL_INDEXF          0x00000204
+/*
+ * glIndexMask (__glMgrim_IndexMask 0xd95e9d0): 0x3d04 and the mask ANDed
+ * with the context's index mask. glClearIndex (__glMgrim_ClearIndex
+ * 0xd980ba0): 0xbd04 and a float, trunc(c * 16.0) ANDed with (index mask
+ * << 4) | 0xf and scaled by 0.0625, the constants the lit4 words at file
+ * offsets 0x1d940c and 0x1d9410 hold: the index with four fraction bits.
+ */
+#define MGRAS_GL_INDEX_MASK      0x00003d04
+#define MGRAS_GL_CLEAR_INDEX     0x0000bd04
+
 
 /*
  * glShadeModel's and glMatrixMode's words are the OpenGL enumerants, and
@@ -196,7 +237,7 @@ static uint32_t mgras_gl_begin_of_mode(uint32_t mode)
 /*
  * A vertex holding OpenGL's initial attributes (2.7): position and
  * texture coordinate (0, 0, 0, 1), normal (0, 0, 1), edge flag true,
- * material 0.
+ * colour index 1, material 0.
  */
 static void mgras_gl_vertex_init(float v[SGI_GL_VERTEX_FLOATS])
 {
@@ -207,6 +248,7 @@ static void mgras_gl_vertex_init(float v[SGI_GL_VERTEX_FLOATS])
     v[SGI_GL_V_NORMAL + 2] = 1.0f;
     v[SGI_GL_V_TEXCOORD + 3] = 1.0f;
     memcpy(&v[SGI_GL_V_EDGE], &edge, sizeof(edge));
+    v[SGI_GL_V_INDEX] = 1.0f;
 }
 
 bool sgi_mgras_gl_header(uint32_t header)
@@ -256,6 +298,13 @@ bool sgi_mgras_gl_header(uint32_t header)
     case MGRAS_GL_EDGE_FLAG_FALSE:
     case MGRAS_GL_RASTER_POS2F:
     case MGRAS_GL_RASTER_POS3F:
+    case MGRAS_GL_INIT_CI:
+    case MGRAS_GL_INIT_RGB:
+    case MGRAS_GL_INDEXS:
+    case MGRAS_GL_INDEXI:
+    case MGRAS_GL_INDEXF:
+    case MGRAS_GL_INDEX_MASK:
+    case MGRAS_GL_CLEAR_INDEX:
         return true;
     default:
         return false;
@@ -468,7 +517,16 @@ void sgi_mgras_gl_context_loaded(SGIMgrasState *s)
  * once a client has sent glTexCoord. Other indices answer zero, logged.
  * The discriminating tests are hq-attribute-queries-set-flag-after-arguments
  * and hq-attribute-query-answers-normal-and-edge-flag.
+ *
+ * The same routine reads GL_CURRENT_INDEX at index 4, and the raster
+ * index shares 0x351 with the raster colour's red in the 0xa20c table,
+ * so the board keeps an index where it keeps red (inferred). In
+ * colour-index mode the model answers both with the index, as a float
+ * the client truncates.
  */
+#define MGRAS_GL_ATTR_INDEX      4
+#define MGRAS_GL_QUERY_RASTER_INDEX 0x351
+
 uint32_t sgi_mgras_gl_attribute_answer(SGIMgrasState *s, uint32_t index)
 {
     static const struct {
@@ -483,6 +541,10 @@ uint32_t sgi_mgras_gl_attribute_answer(SGIMgrasState *s, uint32_t index)
     uint32_t out[SGI_GL_GET_WORDS];
     unsigned n;
 
+    if (index == MGRAS_GL_ATTR_INDEX && mgras_gl(s)->cur.index_bits &&
+        sgi_gl_get(mgras_gl(s), SGI_GL_CURRENT_INDEX, out, &n)) {
+        return out[0];
+    }
     for (int i = 0; i < ARRAY_SIZE(attrs); i++) {
         if (index < attrs[i].first ||
             !sgi_gl_get(mgras_gl(s), attrs[i].pname, out, &n) ||
@@ -612,6 +674,10 @@ uint32_t sgi_mgras_gl_query_answer(SGIMgrasState *s, const uint32_t *args,
         qemu_log_mask(LOG_UNIMP, "sgi-mgras: GL state query with %u "
                       "arguments on this board answered with zero\n", nargs);
         return 0;
+    }
+    if (index == MGRAS_GL_QUERY_RASTER_INDEX && mgras_gl(s)->cur.index_bits &&
+        sgi_gl_get(mgras_gl(s), SGI_GL_CURRENT_RASTER_INDEX, out, &n)) {
+        return out[0];
     }
     for (int i = 0; i < ARRAY_SIZE(mgras_gl_queries); i++) {
         uint32_t element = index - mgras_gl_queries[i].first;
@@ -889,6 +955,74 @@ const VMStateDescription vmstate_sgi_mgras_gl_raster = {
     }
 };
 
+static const VMStateDescription vmstate_sgi_mgras_gl_context_index = {
+    .name = TYPE_SGI_MGRAS "/gl-context-index",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32(cur.index_bits, SGIGLContext),
+        VMSTATE_UINT32(cur.index_mask, SGIGLContext),
+        VMSTATE_SINGLE(cur_index, SGIGLContext, 0, vmstate_info_uint32,
+                       float),
+        VMSTATE_SINGLE(raster_index, SGIGLContext, 0, vmstate_info_uint32,
+                       float),
+        VMSTATE_SINGLE(clear_index, SGIGLContext, 0, vmstate_info_uint32,
+                       float),
+        VMSTATE_SINGLE(held[0][SGI_GL_V_INDEX], SGIGLContext, 0,
+                       vmstate_info_uint32, float),
+        VMSTATE_SINGLE(held[1][SGI_GL_V_INDEX], SGIGLContext, 0,
+                       vmstate_info_uint32, float),
+        VMSTATE_SINGLE(held[2][SGI_GL_V_INDEX], SGIGLContext, 0,
+                       vmstate_info_uint32, float),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
+/*
+ * Every context's colour-index state, sent only once some context has
+ * left what a model without colour-index mode keeps, OpenGL's initial
+ * state and a held vertex's index of 1, so a guest that never used it
+ * migrates to and from such a binary, and one that did is refused by it.
+ * A stream without the section comes from a model that drew every
+ * context in RGBA mode, which is what the destination's initial state
+ * does.
+ */
+static bool mgras_gl_index_needed(void *opaque)
+{
+    SGIMgrasState *s = opaque;
+    static const float one = 1.0f;
+
+    for (int i = 0; i < SGI_MGRAS_GL_CONTEXTS; i++) {
+        const SGIGLContext *gl = &s->gl[i];
+
+        if (gl->cur.index_bits || gl->cur.index_mask != UINT32_MAX ||
+            memcmp(&gl->cur_index, &one, sizeof(one)) ||
+            memcmp(&gl->raster_index, &one, sizeof(one)) ||
+            gl->clear_index != 0 || signbit(gl->clear_index)) {
+            return true;
+        }
+        for (uint32_t v = 0; v < MIN(gl->nheld, SGI_GL_HELD_VERTICES); v++) {
+            if (memcmp(&gl->held[v][SGI_GL_V_INDEX], &one, sizeof(one))) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+const VMStateDescription vmstate_sgi_mgras_gl_index = {
+    .name = TYPE_SGI_MGRAS "/gl-index",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = mgras_gl_index_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_STRUCT_ARRAY(gl, SGIMgrasState, SGI_MGRAS_GL_CONTEXTS, 1,
+                             vmstate_sgi_mgras_gl_context_index,
+                             SGIGLContext),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
 bool sgi_mgras_cmd_parser_valid(uint32_t cls, uint32_t reg,
                                 uint32_t words_remaining,
                                 uint32_t payload_count)
@@ -917,7 +1051,7 @@ bool sgi_mgras_gl_post_load(SGIMgrasState *s)
             gl->begin_mode > SGI_GL_POLYGON ||
             gl->mv_depth >= SGI_GL_STACK_DEPTH ||
             gl->pr_depth >= SGI_GL_STACK_DEPTH ||
-            gl->raster_valid > 1 ||
+            gl->raster_valid > 1 || gl->cur.index_bits > 32 ||
             !sgi_mgras_cmd_parser_valid(p->cls, p->reg, p->words_remaining,
                                         p->payload_count)) {
             return false;
@@ -968,6 +1102,40 @@ static void mgras_gl_store_colour(void *opaque, SGIColourTarget target,
                                   int x, int y, uint32_t colour)
 {
     mgras_gl_put(opaque, target, x, y, colour);
+}
+
+/*
+ * A colour index into bank 0 as a CI8 pixel, which scans out through the
+ * colour map the window's display ID selects, the X server's own CI8 form
+ * (mgras-raster-display.md, "Scanout"). The write mask keeps the stored
+ * index's bits where it is clear. Bank 1 holds only direct colour in this
+ * model, so an index for it is dropped; mgras_gl_check_index() logs that.
+ * A context deeper than eight bits keeps its low eight, logged at its
+ * setup.
+ */
+static void mgras_gl_store_index(void *opaque, SGIColourTarget target,
+                                 int x, int y, uint32_t index, uint32_t mask)
+{
+    SGIMgrasState *s = opaque;
+    unsigned int idx = (s->height - 1 - y) * s->width + x;
+
+    if (target & 1) {
+        s->front[idx] = ((s->front[idx] & ~mask) | (index & mask)) & 0xff;
+        s->format[idx] = SGI_MGRAS_PIXEL_FORMAT_CI8;
+    }
+}
+
+/* Log colour-index work bound for bank 1, which the model cannot hold. */
+static void mgras_gl_check_index(uint32_t index_bits,
+                                 const SGIColourTarget *targets, uint32_t n)
+{
+    for (uint32_t i = 0; index_bits && i < n; i++) {
+        if (targets[i] & 2) {
+            qemu_log_mask(LOG_UNIMP, "sgi-mgras: colour-index drawing into "
+                          "pixel-memory bank 1 is not modelled; dropped\n");
+            return;
+        }
+    }
 }
 
 static uint32_t mgras_gl_load_depth(void *opaque, int x, int y)
@@ -1022,32 +1190,37 @@ static const SGIRasterRules mgras_gl_raster_rules = {
                 "tested",
 };
 
+static const SGIRasterTarget mgras_gl_target = {
+    .store_colour = mgras_gl_store_colour,
+    .store_index = mgras_gl_store_index,
+    .load_depth = mgras_gl_load_depth,
+    .store_depth = mgras_gl_store_depth,
+};
+
 /* A GL context's draw, rasterized into the banks and the depth plane. */
 static void mgras_gl_draw(void *opaque, const SGIGLDraw *d)
 {
     SGIMgrasState *s = opaque;
-    SGIRasterTarget t = {
-        .store_colour = mgras_gl_store_colour,
-        .load_depth = mgras_gl_load_depth,
-        .store_depth = mgras_gl_store_depth,
-        .opaque = s,
-    };
+    SGIRasterTarget t = mgras_gl_target;
+    SGIColourTarget targets[SGI_GL_MAX_TARGETS];
 
+    t.opaque = s;
+    mgras_gl_check_index(d->state->index_bits, targets,
+                         sgi_gl_draw_targets(d->state, targets));
     sgi_soft_draw(&mgras_gl_raster_rules, &t, d);
     s->dirty = true;
 }
 
-/* A GL context's clear. */
+/* A GL context's clear or bitmap. */
 static void mgras_gl_raster(void *opaque, const SGIRasterOp *op)
 {
     SGIMgrasState *s = opaque;
-    SGIRasterTarget t = {
-        .store_colour = mgras_gl_store_colour,
-        .load_depth = mgras_gl_load_depth,
-        .store_depth = mgras_gl_store_depth,
-        .opaque = s,
-    };
+    SGIRasterTarget t = mgras_gl_target;
 
+    t.opaque = s;
+    mgras_gl_check_index(op->kind == SGI_RASTER_BITMAP ?
+                         op->bitmap.state->index_bits : op->index_bits,
+                         op->targets, op->ntargets);
     sgi_soft_raster(&mgras_gl_raster_rules, &t, op);
     s->dirty = true;
 }
@@ -1069,21 +1242,35 @@ static void mgras_gl_context_start(SGIMgrasState *s)
     mgras_gl_bind(s);
 }
 
-static void mgras_gl_command(SGIMgrasState *s, SGIGLOp op,
-                             const uint32_t *args, unsigned nargs)
+/*
+ * No MGRAS command is a glFinish: the client's glFinish is a query and a
+ * status poll (mgras-gl-commands.md), which the HQ answers itself.
+ */
+static SGIGLSink mgras_gl_sink(SGIMgrasState *s)
 {
-    /*
-     * No MGRAS command is a glFinish: the client's glFinish is a query and
-     * a status poll (mgras-gl-commands.md), which the HQ answers itself.
-     */
-    SGIGLSink sink = {
+    return (SGIGLSink) {
         .draw = mgras_gl_draw,
         .raster = mgras_gl_raster,
         .opaque = s,
     };
+}
+
+static void mgras_gl_command(SGIMgrasState *s, SGIGLOp op,
+                             const uint32_t *args, unsigned nargs)
+{
+    SGIGLSink sink = mgras_gl_sink(s);
     SGIGLCmd cmd = { .op = op, .nargs = nargs, .args = args };
 
     sgi_gl_command(mgras_gl(s), &sink, &cmd);
+}
+
+/* A colour index, as the float the shared context keeps. */
+static void mgras_gl_index(SGIMgrasState *s, float index)
+{
+    uint32_t word;
+
+    memcpy(&word, &index, sizeof(word));
+    mgras_gl_command(s, SGI_GL_OP_INDEXF, &word, 1);
 }
 
 void sgi_mgras_gl_execute(SGIMgrasState *s, uint32_t header,
@@ -1241,6 +1428,37 @@ void sgi_mgras_gl_execute(SGIMgrasState *s, uint32_t header,
     case MGRAS_GL_FLUSH:
         /* Approximated: every command has already run to completion. */
         mgras_gl_command(s, SGI_GL_OP_FLUSH, payload, 0);
+        return;
+    case MGRAS_GL_INIT_CI:
+        if (!payload[0]) {
+            qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: colour-index context "
+                          "of 0 bits ignored\n");
+            return;
+        }
+        if (payload[0] > 8) {
+            qemu_log_mask(LOG_UNIMP, "sgi-mgras: colour-index context of "
+                          "%u bits is stored as its low 8 bits\n",
+                          payload[0]);
+        }
+        sgi_gl_set_index_mode(mgras_gl(s), payload[0]);
+        return;
+    case MGRAS_GL_INIT_RGB:
+        sgi_gl_set_index_mode(mgras_gl(s), 0);
+        return;
+    case MGRAS_GL_INDEXS:
+        mgras_gl_index(s, (int16_t)(payload[0] >> 16));
+        return;
+    case MGRAS_GL_INDEXI:
+        mgras_gl_index(s, (int32_t)payload[0]);
+        return;
+    case MGRAS_GL_INDEXF:
+        mgras_gl_command(s, SGI_GL_OP_INDEXF, payload, 1);
+        return;
+    case MGRAS_GL_INDEX_MASK:
+        mgras_gl_command(s, SGI_GL_OP_INDEX_MASK, payload, 1);
+        return;
+    case MGRAS_GL_CLEAR_INDEX:
+        mgras_gl_command(s, SGI_GL_OP_CLEAR_INDEX, payload, 1);
         return;
     default:
         g_assert_not_reached();
