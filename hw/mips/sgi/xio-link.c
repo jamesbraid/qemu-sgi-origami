@@ -43,6 +43,26 @@ static MemoryRegion *sgi_xio_link_leaf_fabric(SGIXioLink *link,
     return &link->fabric[side];
 }
 
+/*
+ * Wire one end's link reset to the other end's reset input, once both
+ * exist. A board's input exists only once it has realized, so this runs
+ * again each time the link connects.
+ */
+static void sgi_xio_link_wire_reset(SGIXioLink *link, unsigned int side)
+{
+    SGIXioLinkEnd *end = &link->end[side];
+    SGIXioLinkEnd *far = &link->end[!side];
+    qemu_irq target;
+
+    if (end->reset_wired) {
+        return;
+    }
+    target = sgi_xio_port_reset_input(far->port, far->index);
+    if (target && sgi_xio_port_reset_output(end->port, end->index, target)) {
+        end->reset_wired = true;
+    }
+}
+
 bool sgi_xio_link_connect(SGIXioLink *link, Error **errp)
 {
     unsigned int side;
@@ -73,6 +93,9 @@ bool sgi_xio_link_connect(SGIXioLink *link, Error **errp)
             return false;
         }
         end->connected = true;
+    }
+    for (side = 0; side < 2; side++) {
+        sgi_xio_link_wire_reset(link, side);
     }
     return true;
 }

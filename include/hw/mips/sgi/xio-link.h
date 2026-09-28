@@ -10,7 +10,9 @@
  * ports (hw/mips/sgi-xio-port.h), so the link carries no chip behaviour:
  * it hands each end the other's faces, and for a leaf peer it presents
  * that peer's packet face at every widget number, the one piece of
- * address shaping every sender would otherwise repeat.
+ * address shaping every sender would otherwise repeat. It also carries
+ * the link reset: an end that drives one (a Crossbow port) is wired to
+ * the other end's reset input.
  *
  * Storage is caller-owned, the way the machine's other glue is: the
  * machine keeps an array of these and hands each element in. Every
@@ -29,6 +31,8 @@ typedef struct SGIXioLinkEnd {
     unsigned int index;
     /* Whether this end has taken the other end's faces. */
     bool connected;
+    /* Whether this end's link reset, if it drives one, reaches the other. */
+    bool reset_wired;
 } SGIXioLinkEnd;
 
 typedef struct SGIXioLink {

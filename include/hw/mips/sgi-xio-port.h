@@ -34,6 +34,7 @@
 
 #include "qom/object.h"
 #include "system/memory.h"
+#include "hw/core/irq.h"
 
 #define TYPE_SGI_XIO_PORT "sgi-xio-port"
 typedef struct SGIXioPortClass SGIXioPortClass;
@@ -85,6 +86,16 @@ struct SGIXioPortClass {
      */
     bool (*connect)(Object *port, unsigned int index, const SGIXioPeer *peer,
                     Error **errp);
+
+    /*
+     * A link also carries a reset. reset_input() is the line that resets
+     * this port's chip when the far end resets the link (a Bridge's core,
+     * a Hub's link state); reset_output() wires this port's own link
+     * reset, a Crossbow's per-link reset, to the far end's input. A port
+     * without one leaves it NULL.
+     */
+    qemu_irq (*reset_input)(Object *port, unsigned int index);
+    void (*reset_output)(Object *port, unsigned int index, qemu_irq target);
 };
 
 const char *sgi_xio_port_describe(Object *port, unsigned int index);
@@ -93,5 +104,8 @@ MemoryRegion *sgi_xio_port_packet_face(Object *port, unsigned int index);
 bool sgi_xio_port_switched(Object *port, unsigned int index);
 bool sgi_xio_port_connect(Object *port, unsigned int index,
                           const SGIXioPeer *peer, Error **errp);
+qemu_irq sgi_xio_port_reset_input(Object *port, unsigned int index);
+bool sgi_xio_port_reset_output(Object *port, unsigned int index,
+                               qemu_irq target);
 
 #endif /* HW_MIPS_SGI_XIO_PORT_H */

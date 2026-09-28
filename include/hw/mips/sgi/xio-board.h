@@ -89,6 +89,13 @@ struct SGIXioBoardState {
     MemoryRegion *packet_face;
 
     /*
+     * The line a link reset from the board's Crossbow port drives, set by
+     * build_widget(): a Bridge-based board's Bridge core. NULL for a board
+     * with no modelled response to it.
+     */
+    qemu_irq link_reset;
+
+    /*
      * The link to a slot's Crossbow port a board fitted at launch claimed
      * from the machine, or NULL for a board the machine links itself or
      * one linked to nothing.

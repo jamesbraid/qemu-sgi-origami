@@ -4846,9 +4846,6 @@ static void sgi_hub_realize(DeviceState *dev, Error **errp)
                              SGI_HUB_PROCESSORS);
     qdev_init_gpio_out_named(dev, s->rt_irq, "rt", SGI_HUB_PROCESSORS);
 
-    /* One XIO link, so one line: what the crossbar drives at us. */
-    qdev_init_gpio_in_named(dev, sgi_hub_link_reset, "link-reset", 1);
-
     /*
      * The MicroLAN wire and the PIMM record part hanging off it, hung here
      * and never again. An EPROM keeps its contents across a reset. Rebuilding
@@ -5274,6 +5271,12 @@ static void sgi_hub_init(Object *obj)
 {
     SGIHubState *s = SGI_HUB(obj);
 
+    /*
+     * One XIO link, so one line: what the crossbar drives at us. It
+     * exists from instance init so a link can wire it before realize.
+     */
+    qdev_init_gpio_in_named(DEVICE(obj), sgi_hub_link_reset, "link-reset", 1);
+
     object_initialize_child(obj, "i2c", &s->i2c, TYPE_PCF8584);
     s->rt_clk = qdev_init_clock_in(DEVICE(obj), "rt-clk", NULL, NULL, 0);
     clock_set_hz(s->rt_clk, PI_RT_DEFAULT_HZ);
@@ -5346,6 +5349,12 @@ static void sgi_hub_finalize(Object *obj)
     g_free(SGI_HUB(obj)->net_peers);
 }
 
+/* The far end's link reset reaches the Hub's link state. */
+static qemu_irq sgi_hub_xio_port_reset_input(Object *port, unsigned int index)
+{
+    return qdev_get_gpio_in_named(DEVICE(port), "link-reset", 0);
+}
+
 static void sgi_hub_class_init(ObjectClass *oc, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
@@ -5370,6 +5379,7 @@ static void sgi_hub_class_init(ObjectClass *oc, const void *data)
     xpc->cpu_face = sgi_hub_xio_port_cpu_face;
     xpc->packet_face = sgi_hub_xio_port_packet_face;
     xpc->connect = sgi_hub_xio_port_connect;
+    xpc->reset_input = sgi_hub_xio_port_reset_input;
     npc->describe = sgi_hub_net_port_describe;
     npc->forwards = sgi_hub_net_port_forwards;
     npc->link_state = sgi_hub_net_port_link_state;
