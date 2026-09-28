@@ -352,11 +352,18 @@ void mips_cpu_do_transaction_failed(CPUState *cs, hwaddr physaddr,
     MIPSCPUClass *mcc = MIPS_CPU_GET_CLASS(cs);
     CPUMIPSState *env = cpu_env(cs);
     /*
-     * Only a decode error means nothing answered; any other failure came
-     * from a device that did, which is a different bug to go looking for.
+     * Name the memory system's result rather than guess at its cause. A
+     * decode error is what an unmapped address gives, but devices also
+     * return it for offsets they do not decode; an access error can come
+     * from a device or from the memory core itself, as its re-entrancy
+     * guard's refusal does; a device error is a device refusing what it
+     * was given. They point at different bugs.
      */
-    const char *outcome = response == MEMTX_DECODE_ERROR ?
-                          "reached no device" : "was refused by its device";
+    const char *outcome = response & MEMTX_DECODE_ERROR ?
+                          "failed with a decode error" :
+                          response & MEMTX_ACCESS_ERROR ?
+                          "failed with an access error" :
+                          "failed with a device error";
 
     trace_mips_transaction_failed(cs->cpu_index, addr, physaddr, size,
                                   access_type, response);
