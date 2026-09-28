@@ -1074,13 +1074,7 @@ static void test_gfx_update_dirty_tracking(void)
     /* Nothing has changed since: the next refresh finds nothing dirty. */
     rad4_force_refresh(qts);
 
-    /*
-     * A write into row 5 pushes an incremental span around row 5, not the
-     * whole frame. The framebuffer is a RAM region whose DIRTY_MEMORY_VGA
-     * log is page-granular, and the 5120-byte stride is not a page multiple,
-     * so a single-word store can round out to the couple of rows its 4 KiB
-     * page touches -- but nothing near the full 1024.
-     */
+    /* A write into row 5 alone should only dirty row 5. */
     bar2_write(qts, 5 * TEST_FB_STRIDE, 0x00ff0080u);
     rad4_force_refresh(qts);
 
@@ -1112,19 +1106,7 @@ static void test_gfx_update_dirty_tracking(void)
         g_assert_cmpint(full_push_at, >=, 0);
         g_assert_cmpint(idle_at, >, full_push_at);
         g_assert_cmpint(row_push_at, >, idle_at);
-
-        {
-            const char *rows = strstr(lines[row_push_at], "rows ");
-            int first = -1, last = -1;
-
-            g_assert_nonnull(rows);
-            g_assert_cmpint(sscanf(rows + 5, "%d-%d", &first, &last), ==, 2);
-            /* The written row is inside the pushed span... */
-            g_assert_cmpint(first, <=, 5);
-            g_assert_cmpint(last, >=, 5);
-            /* ...and the span is incremental, not the whole 1024-row frame. */
-            g_assert_cmpint(last - first, <, 16);
-        }
+        g_assert_nonnull(strstr(lines[row_push_at], "rows 5-5"));
     }
 }
 
@@ -1774,59 +1756,6 @@ static void test_cursor_no_ghost_after_far_fb_update(void)
     qtest_quit(qts);
 }
 
-/*
- * The framebuffer is a RAM MemoryRegion overlaid on BAR2's low 8 MiB, so an
- * all-ones-mask pixel store lands straight in that RAM with no MMIO exit
- * (the change this pins). A partial plane mask raises a higher-priority
- * trapping overlay that read-modify-writes the same backing, and restoring
- * the all-ones mask drops it. Exercise the swap in both directions and,
- * because the whole point is that these stores still reach the display,
- * confirm each one both reads back through the qtest memory API and shows
- * in the converted scanout. FB_WAT window 0 is put in True-color mode so a
- * raw pixel word passes through to the screendump as 0x00RRGGBB unchanged.
- */
-static void test_fb_ram_fast_path_and_overlay(void)
-{
-    QTestState *qts = rad4_init();
-    uint32_t off = 20 * TEST_FB_STRIDE + 10 * 4;
-
-    rad4_play_mode0(qts);
-
-    /*
-     * FB_WAT[0] = True-color (10-bit entry 0x006, MODE=3), transferred as
-     * two cycles (IBM RGB561 Architecture p.4, Table 5): bits 9-2 then
-     * bits 1-0 in bit positions 7-6.
-     */
-    rad4_set_rgb_index(qts, WAT_BASE + 0);
-    bar2_write(qts, B_RGB_RESERVED, 0x01);
-    bar2_write(qts, B_RGB_RESERVED, 0x80);
-
-    /* Fast path (all-ones mask): a full-word store lands whole. */
-    bar2_write(qts, off, 0x00123456u);
-    g_assert_cmphex(bar2_read(qts, off), ==, 0x00123456u);
-    g_assert_cmphex(rad4_screendump_pixel(qts, 10, 20), ==, 0x123456u);
-
-    /*
-     * Partial mask: the overlay read-modify-writes the framebuffer, only
-     * the masked (low 16) bits of the store taking effect over the
-     * 0x00123456 already there -- the same plane-mask contract
-     * test_framebuffer_mask pins for the trapped path:
-     * (0x00123456 & ~0xffff) | (0x00aabbcc & 0xffff) == 0x0012bbcc.
-     */
-    bar2_write(qts, B_MASK, 0x0000ffffu);
-    bar2_write(qts, off, 0x00aabbccu);
-    g_assert_cmphex(bar2_read(qts, off), ==, 0x0012bbccu);
-    g_assert_cmphex(rad4_screendump_pixel(qts, 10, 20), ==, 0x12bbccu);
-
-    /* Restore the all-ones mask: stores replace the whole pixel again. */
-    bar2_write(qts, B_MASK, 0xffffffffu);
-    bar2_write(qts, off, 0x00778899u);
-    g_assert_cmphex(bar2_read(qts, off), ==, 0x00778899u);
-    g_assert_cmphex(rad4_screendump_pixel(qts, 10, 20), ==, 0x778899u);
-
-    qtest_quit(qts);
-}
-
 static void test_reset(void)
 {
     QTestState *qts = rad4_init();
@@ -1978,8 +1907,6 @@ int main(int argc, char **argv)
                    test_cursor_composited_into_scanout);
     qtest_add_func("/psitech-rad4/cursor-no-ghost-after-far-fb-update",
                    test_cursor_no_ghost_after_far_fb_update);
-    qtest_add_func("/psitech-rad4/fb-ram-fast-path-and-overlay",
-                   test_fb_ram_fast_path_and_overlay);
     qtest_add_func("/psitech-rad4/reset", test_reset);
     qtest_add_func("/psitech-rad4/gfx-update-reset-forces-full-repaint",
                    test_gfx_update_reset_forces_full_repaint);
