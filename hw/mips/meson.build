@@ -36,6 +36,10 @@ mips_ss.add(when: 'CONFIG_SGI_XIO_LINK', if_true: files('sgi/xio-link.c'))
 # by the Hub and the Router, so each selects on its own Kconfig symbol
 # rather than either device's.
 mips_ss.add(when: 'CONFIG_SGI_NET_PORT', if_true: files('sgi/net-port.c'))
+# Graphics flow control in the processor interface: shared by the Hub and
+# the Bedrock, so each selects it.
+mips_ss.add(when: 'CONFIG_SGI_PI_GFX',
+            if_true: files('sgi/pi-gfx.c', 'sgi/pi-gfx-state.c'))
 mips_ss.add(when: 'CONFIG_SGI_NET_CABLE', if_true: files('sgi/net-cable.c'))
 # The XIO board base class: the removable card that plugs into an XIO slot.
 # Shared by every XIO card, so it selects on its own Kconfig symbol rather

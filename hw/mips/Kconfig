@@ -101,6 +101,11 @@ config SGI_XIO_LINK
 config SGI_NET_PORT
     bool
 
+# Graphics flow control in the processor interface: shared by the Hub and
+# the Bedrock, so each selects it.
+config SGI_PI_GFX
+    bool
+
 config SGI_NET_CABLE
     bool
     select SGI_NET_PORT

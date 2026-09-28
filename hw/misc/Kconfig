@@ -267,6 +267,7 @@ source macio/Kconfig
 
 config SGI_HUB
     bool
+    select SGI_PI_GFX
     select AT24C
     select ONEWIRE
     select PCF8584
@@ -387,6 +388,7 @@ config SGI_BEDROCK_FLASH
 
 config SGI_BEDROCK
     bool
+    select SGI_PI_GFX
     select SGI_BEDROCK_IO
     select SGI_BEDROCK_MD
     default y if SGI_DEVICES
