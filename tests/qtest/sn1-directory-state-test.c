@@ -1253,6 +1253,66 @@ static void test_flush_of_a_released_line(void)
 }
 
 /*
+ * Follow every line of @count pages after the one under test: name each
+ * page's first line, read its word, which watches the page, and load each
+ * of its 32 lines, which gives every line a copy the unit keeps.
+ */
+static void emit_fill_pages(Program *p, unsigned int count)
+{
+    const int pages = 14, lines = 15, line = 24;
+    unsigned int page_loop, line_loop;
+
+    emit(p, DADDU(R_T4, R_T1, R_ZERO));
+    emit(p, DADDU(R_T5, R_T0, R_ZERO));
+    emit(p, ORI(pages, R_ZERO, count));
+    page_loop = p->pc;
+    emit(p, DADDIU(R_T4, R_T4, 0x200));
+    emit(p, DADDIU(R_T5, R_T5, 0x1000));
+    emit(p, CACHE(0x17, 0, R_T5));
+    emit(p, LD(R_T3, 0, R_T4));
+    emit(p, ORI(lines, R_ZERO, 32));
+    emit(p, DADDU(line, R_T5, R_ZERO));
+    line_loop = p->pc;
+    emit(p, LD(R_T3, 0, line));
+    emit(p, DADDIU(line, line, 128));
+    emit(p, DADDIU(lines, lines, 0xffff));
+    emit_branch(p, 0x05, lines, R_ZERO, line_loop); /* bne */
+    emit(p, DADDIU(pages, pages, 0xffff));
+    emit_branch(p, 0x05, pages, R_ZERO, page_loop); /* bne */
+}
+
+/*
+ * More lines followed than an index instruction's set has lines in all of
+ * memory: 24 pages of 32 lines against 512 MiB over the R14000's 1 MiB set
+ * span. The unit then finds the set's lines by address rather than by
+ * walking every followed line, and must still find the dirty copy.
+ */
+static void fill_pages(Program *p)
+{
+    emit_fill_pages(p, 24);
+}
+
+static void test_index_flush_among_many_followed_lines(void)
+{
+    const Scenario sc = {
+        .cpus = "2",
+        STEPS({ 0, emit_first }, { 0, store_08 }, { 0, fill_pages },
+              { 0, index_flush_released }),
+    };
+    char *prom;
+    QTestState *s;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+    s = run_scenario(&sc, &prom);
+    g_assert_cmphex(result(s, 0x08) & DIRECTORY_FIELDS, ==, POINTER(0));
+    g_assert_cmphex(result(s, 0x18) & DIRECTORY_FIELDS, ==, UNOWNED);
+    finish(s, prom);
+}
+
+/*
  * With directory ECC ignored a rewritten word keeps its old check field,
  * which may leave it not a codeword; the unit is not checking, so that
  * does not stop the next transition.
@@ -1435,5 +1495,7 @@ int main(int argc, char **argv)
                    test_evicted_line_keeps_its_state);
     qtest_add_func("sn1/directory-state/released-line-state-migrates",
                    test_released_line_state_migrates);
+    qtest_add_func("sn1/directory-state/index-flush-among-many-followed-lines",
+                   test_index_flush_among_many_followed_lines);
     return g_test_run();
 }

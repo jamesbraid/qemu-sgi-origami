@@ -3122,6 +3122,86 @@ static bool md_cache_instruction(SGIBedrockMDState *s, const MDLine *line,
     return held;
 }
 
+/* Ascending software-bank address, the order an index instruction takes. */
+static gint md_line_address_compare(gconstpointer a, gconstpointer b)
+{
+    const MDLine *x = a, *y = b;
+
+    return x->address < y->address ? -1 : x->address > y->address;
+}
+
+/*
+ * The followed lines an index instruction for @address reaches: every line
+ * with copies whose address, by the first bank alias that maps it, agrees
+ * with @address in the set bits @index_mask selects, unless its checks are
+ * frozen. In ascending address order.
+ *
+ * The set bits are contiguous from the line size up, so the lines of one set
+ * sit one set span apart in each bank, and there are far fewer of them than
+ * lines followed once a boot has run a while: firmware flush loops issue
+ * index instructions by the thousand, and each one walking every followed
+ * line under the lock would cost time next to the firmware's timing-bound
+ * barriers. So the lines of the set are looked up by address when that is
+ * the shorter list, and the followed lines are walked otherwise.
+ */
+static GArray *md_index_lines(SGIBedrockMDState *s, uint64_t address,
+                              uint64_t index_mask)
+{
+    GArray *lines = g_array_new(false, false, sizeof(MDLine));
+    uint64_t span = index_mask + MD_DIRECTORY_LINE;
+    uint64_t set = address & index_mask;
+    uint64_t candidates = 0;
+    MDLine line;
+
+    if (is_power_of_2(span) && !(index_mask & (MD_DIRECTORY_LINE - 1))) {
+        for (unsigned bank = 0; bank < 8; bank++) {
+            candidates += DIV_ROUND_UP(s->bank_alias_size[bank], span);
+        }
+    } else {
+        candidates = UINT64_MAX;
+    }
+
+    if (candidates < g_hash_table_size(s->line_states)) {
+        for (unsigned bank = 0; bank < 8; bank++) {
+            uint64_t start = bank * MD_MEMORY_BANK_SIZE;
+
+            for (uint64_t within = (set - start) & (span - 1);
+                 within < s->bank_alias_size[bank]; within += span) {
+                uint64_t raw = s->bank_alias_base[bank] + within;
+                uint64_t canonical;
+
+                line.index = raw / MD_DIRECTORY_LINE;
+                line.address = start + within;
+                if (raw / MD_DIRECTORY_LINE >= s->directory_entries ||
+                    !md_line_state(s, line.index, false) ||
+                    !md_line_address(s, line.index, &canonical) ||
+                    canonical != line.address ||
+                    md_line_frozen(s, line.index)) {
+                    continue;
+                }
+                g_array_append_val(lines, line);
+            }
+        }
+    } else {
+        GHashTableIter iter;
+        gpointer value;
+
+        g_hash_table_iter_init(&iter, s->line_states);
+        while (g_hash_table_iter_next(&iter, NULL, &value)) {
+            SGIBedrockMDLineState *state = value;
+
+            line.index = state->index;
+            if (md_line_address(s, line.index, &line.address) &&
+                !((line.address ^ address) & index_mask) &&
+                !md_line_frozen(s, line.index)) {
+                g_array_append_val(lines, line);
+            }
+        }
+        g_array_sort(lines, md_line_address_compare);
+    }
+    return lines;
+}
+
 /*
  * A processor's secondary-cache instruction acts on its copies whether or
  * not the unit is watching their pages, as the processor's cache would:
@@ -3145,21 +3225,8 @@ bool sgi_bedrock_md_processor_request(SGIBedrockMDState *s, uint16_t pointer,
     bool found = false;
 
     if (request == SGI_BEDROCK_MD_INDEX_WRITEBACK_INVALIDATE) {
-        g_autoptr(GArray) lines = g_array_new(false, false, sizeof(MDLine));
-        GHashTableIter iter;
-        gpointer value;
+        g_autoptr(GArray) lines = md_index_lines(s, address, index_mask);
 
-        g_hash_table_iter_init(&iter, s->line_states);
-        while (g_hash_table_iter_next(&iter, NULL, &value)) {
-            SGIBedrockMDLineState *state = value;
-
-            line.index = state->index;
-            if (md_line_address(s, line.index, &line.address) &&
-                !((line.address ^ address) & index_mask) &&
-                !md_line_frozen(s, line.index)) {
-                g_array_append_val(lines, line);
-            }
-        }
         for (guint i = 0; i < lines->len; i++) {
             MDLine *one = &g_array_index(lines, MDLine, i);
 
