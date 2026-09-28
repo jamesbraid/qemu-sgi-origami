@@ -13,11 +13,16 @@
 #
 # The Origin 300 has five rows: two and four processors in one chassis,
 # the two-chassis pair with four in each, and a row each for torpedo alone
-# at two and four processors, whose hour-plus default would leave the rest
-# of a row no room in one nightly job. Their disk carries the Origin 300
-# package's fourteen commands, so they run the olpci, olperi, olsio, olusb,
-# olvst and pandora columns the root-diags.qcow2 rows cannot, or have not
-# been measured on.
+# at two and four processors, whose hour-plus default there would leave the
+# rest of a row no room in one nightly job; the pair's own torpedo measured
+# only 1634s, short enough to run inside its own row alongside pandora and
+# everything else instead of a row of its own. Their disk carries the
+# Origin 300 package's fourteen commands, so they run the olpci, olperi,
+# olsio, olusb, olvst, pandora and (on the pair) torpedo columns the
+# root-diags.qcow2 rows cannot, or have not been measured on. pandora used
+# to fail its memory tests on the pair; the promdata alias fix
+# (a4c6ca9d8a) cleared that, and the pair now runs pandora too, alongside
+# torpedo.
 #
 # Red on sgi-origami as of 2026-09-26, each a model problem with its own
 # issue on jamesb/qemu: timer on every row (#866); the origin300 ethernet
@@ -40,6 +45,6 @@ origin2000_pci_shoehorn | 8 | 256 | 2880 | run | run | run | run | no-mediaio | 
 origin2000_pci_carrier | 8 | 256 | 2880 | run | run | run | run | no-mediaio | no-mediaio | run | run | run | no-olenet | run | run | run | run | ip35-only | unmeasured-here | ip35-only | ip35-only | unmeasured-here | unmeasured-here | unmeasured-here | four-node-relaunch | four-node-relaunch | four-node-relaunch | no-parallel | run
 origin300 | 2 | 512 | 5700 | run | run | run | run | no-mediaio | no-mediaio | no-keyboard | no-scsi-card | run | run | run | run | run | run | run | run | run | run | run | run | torpedo-row | run | run | run | no-parallel-connector | run
 origin300_4cpu | 4 | 512 | 5700 | run | run | run | run | no-mediaio | no-mediaio | no-keyboard | no-scsi-card | run | run | run | run | run | run | run | run | run | run | run | run | torpedo-row | run | run | run | no-parallel-connector | run
-origin300_pair | 8 | 1024 | 2880 | run | run | run | run | no-mediaio | no-mediaio | no-keyboard | no-scsi-card | run | run | run | run | run | run | run | run | run | run | run | pair-pandora-memory | pair-torpedo-unmeasured | run | run | run | no-parallel-connector | run
+origin300_pair | 8 | 1024 | 7334 | run | run | run | run | no-mediaio | no-mediaio | no-keyboard | no-scsi-card | run | run | run | run | run | run | run | run | run | run | run | run | run | run | run | run | no-parallel-connector | run
 origin300_torpedo | 2 | 512 | 8700 | run | run | torpedo-only | torpedo-only | no-mediaio | no-mediaio | no-keyboard | no-scsi-card | torpedo-only | torpedo-only | torpedo-only | torpedo-only | torpedo-only | torpedo-only | torpedo-only | torpedo-only | torpedo-only | torpedo-only | torpedo-only | torpedo-only | run | torpedo-only | torpedo-only | torpedo-only | no-parallel-connector | run
 origin300_4cpu_torpedo | 4 | 512 | 8700 | run | run | torpedo-only | torpedo-only | no-mediaio | no-mediaio | no-keyboard | no-scsi-card | torpedo-only | torpedo-only | torpedo-only | torpedo-only | torpedo-only | torpedo-only | torpedo-only | torpedo-only | torpedo-only | torpedo-only | torpedo-only | torpedo-only | run | torpedo-only | torpedo-only | torpedo-only | no-parallel-connector | run

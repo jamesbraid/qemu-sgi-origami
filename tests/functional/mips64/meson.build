@@ -105,10 +105,16 @@ test_mips64_timeouts = {
   # the project checkout's online-diagnostics runs (2026-09-23 to 27), 1792s
   # of it pandora's own thirty-minute default. With them the two- and
   # four-processor rows took 2657s and 2562s (2026-09-27, build-fast) and
-  # have 5700s. The two-chassis row, which leaves pandora out, took 1289s
-  # after a boot of 318s, where another boot took 616s, and has 2880s.
-  # torpedo took 5115s at four processors and 5974s at two, so it has rows
-  # of its own at 8700s: a boot and torpedo alone.
+  # have 5700s. torpedo took 5115s at four processors and 5974s at two, so
+  # it has rows of its own at 8700s: a boot and torpedo alone. The
+  # two-chassis row, which used to leave pandora out, took 1289s without it
+  # after a boot of 318s, where another boot took 616s; on the pair torpedo
+  # measured only 1634s, short enough to run inside the row instead of a
+  # row of its own. With the promdata alias fix (a4c6ca9d8a) pandora also
+  # passes on the pair, so the row now carries both: the single-chassis
+  # rows' 5700s, which already covers pandora and everything else the pair
+  # shares with them, plus torpedo's own measured 1634s, giving 7334s
+  # rather than a fresh whole-row measurement of the three together.
   'irix_diag' : 3000,
   'irix_diag_origin200' : 1620,
   'irix_diag_origin2000_one_node' : 3000,
@@ -116,7 +122,7 @@ test_mips64_timeouts = {
   'irix_diag_origin2000_pci_carrier' : 3000,
   'irix_diag_origin300' : 5820,
   'irix_diag_origin300_4cpu' : 5820,
-  'irix_diag_origin300_pair' : 3000,
+  'irix_diag_origin300_pair' : 7454,
   'irix_diag_origin300_torpedo' : 8820,
   'irix_diag_origin300_4cpu_torpedo' : 8820,
   # Boot the plain installed IRIX disk (265s to root login when last
