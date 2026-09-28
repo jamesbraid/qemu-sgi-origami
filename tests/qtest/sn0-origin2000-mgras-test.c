@@ -9478,7 +9478,7 @@ static uint32_t gl_query(QTestState *qts, uint32_t index, uint32_t a1)
  * whatever the matrix mode, from the loaded context: a translation's x is
  * element 12 of the modelview matrix, and glOrtho's x scale element 0 of
  * the projection matrix. perfly's draw process died reading zeros here
- * (mgras-gl-commands.md, "Known limitations").
+ * (mgras-gl-commands.md, "Execution in the QEMU model").
  */
 static void test_hq_query_answers_the_matrices(void)
 {
@@ -9626,7 +9626,7 @@ static void test_hq_query_answers_the_raster_position(void)
  * yorig, xmove and ymove as floats and the image's length in words; then
  * an inline data block of the image's bytes in memory order, its offset
  * in the first word in bits 23:22 when the image is not word aligned, and
- * a zero word when the length is odd. The flags word is
+ * a zero word when the number of words sent is odd. The flags word is
  * ((8 - ceil(width / 8) % 8) % 8) << 14 | 0xf, 0x1800f for gr_osview's
  * 16-pixel images. __glMgrUpdateRasterPos sends 0xd608 with xmove and
  * ymove for an empty image.
@@ -9652,7 +9652,7 @@ static void gl_bitmap_packet(QTestState *qts, uint32_t width, uint32_t height,
     gl_word(qts, (row * height + 3) / 4);
 }
 
-/* The image's block, word aligned, and the zero word an odd length adds. */
+/* The image's block, word aligned, and the zero word an odd count adds. */
 static void gl_bitmap_image(QTestState *qts, const uint32_t *words,
                             unsigned n)
 {
@@ -9725,8 +9725,9 @@ static void test_gl_bitmap_draws_its_image(void)
 /*
  * An image not word aligned: its two bytes 0xc0 0x03 start at byte 2 of
  * the first word, which the block header's bits 23:22 give, and the
- * block is one word longer than its length. The 16x1 image sets columns
- * 0, 1, 14 and 15. The fence after the block and its zero word shows the
+ * block is one word longer than its length. The client sends no zero
+ * word after it, since two words is an even count. The 16x1 image sets
+ * columns 0, 1, 14 and 15. The fence as the block's second word shows the
  * extra word did not parse as a header, and a block after no bitmap is
  * framed the same way. With a negative width, or with the raster
  * position invalid, the same image draws nothing and the position does
@@ -9743,7 +9744,6 @@ static void test_gl_bitmap_unaligned_image(void)
     gl_word(qts, GL_INLINE_BLOCK | 2 << 22 | 4);
     gl_word(qts, 0x1234c003);
     gl_word(qts, MGRAS_FENCE_TOKEN);
-    gl_word(qts, 0);
     g_assert_cmphex(qtest_readl(qts, REG_HQ_FLAGS) & MGRAS_HQ_FLAG_FENCE, ==,
                     0);
     gl_word(qts, MGRAS_FENCE_TOKEN);
