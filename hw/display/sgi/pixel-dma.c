@@ -145,13 +145,13 @@ int sgi_dma_map(const SGIDMABus *bus, SGIDMAMap *map,
             c->bounce = true;
             trace_sgi_dma_bounce(addr, n);
             /*
-             * Read the bytes in both directions: a chunk the head writes
-             * only in part is written back whole, and must carry the
-             * guest's own bytes where the head wrote none.
+             * Only a source is read. A buffer the head writes starts empty
+             * and only the bytes it wrote go back, so a target that is not
+             * RAM sees the writes the head made and no read of its own.
              */
-            if (dma_memory_read(bus->as, bus_addr, c->host, n,
-                                MEMTXATTRS_UNSPECIFIED) != MEMTX_OK &&
-                dir == DMA_DIRECTION_TO_DEVICE) {
+            if (dir == DMA_DIRECTION_TO_DEVICE &&
+                dma_memory_read(bus->as, bus_addr, c->host, n,
+                                MEMTXATTRS_UNSPECIFIED) != MEMTX_OK) {
                 qemu_log_mask(LOG_GUEST_ERROR, "sgi-dma: read of %u bytes "
                               "at 0x%" HWADDR_PRIx " failed\n",
                               (unsigned)n, bus_addr);
@@ -183,8 +183,16 @@ static uint64_t sgi_dma_map_copy_from(SGIDMAMap *map, unsigned start,
         }
         n = MIN(len - done, c->pos + c->len - at);
         if (to_guest) {
-            memcpy((uint8_t *)c->host + (at - c->pos), p + done, n);
-            c->written = true;
+            uint32_t from = at - c->pos;
+            uint32_t to = from + n;
+
+            memcpy((uint8_t *)c->host + from, p + done, n);
+            if (c->written_end) {
+                from = MIN(from, c->written_start);
+                to = MAX(to, c->written_end);
+            }
+            c->written_start = from;
+            c->written_end = to;
         } else {
             memcpy(p + done, (uint8_t *)c->host + (at - c->pos), n);
         }
@@ -218,25 +226,30 @@ void sgi_dma_unmap(SGIDMAMap *map)
     for (unsigned i = 0; i < map->nchunks; i++) {
         SGIDMAChunk *c = &map->chunks[i];
 
+        uint32_t start = c->written_start;
+        uint32_t len = c->written_end - start;
+
         /*
          * Whatever the head wrote reaches the guest and its dirty log, even
-         * when the transfer failed later on: the guest's memory then says
-         * how far the transfer got.
+         * when the transfer failed later on: the guest's memory then shows
+         * how far the transfer got. A map's written length counts from its
+         * start, so a direct chunk is released with everything up to the
+         * last byte written.
          */
         if (!c->bounce) {
             dma_memory_unmap(map->as, c->host, c->len, map->dir,
-                             c->written ? c->len : 0);
+                             c->written_end);
             continue;
         }
-        if (c->written) {
-            MemTxResult res = dma_memory_write(map->as, c->bus_addr, c->host,
-                                               c->len,
-                                               MEMTXATTRS_UNSPECIFIED);
+        if (len) {
+            MemTxResult res = dma_memory_write(map->as, c->bus_addr + start,
+                                               (uint8_t *)c->host + start,
+                                               len, MEMTXATTRS_UNSPECIFIED);
 
             if (res != MEMTX_OK) {
                 qemu_log_mask(LOG_GUEST_ERROR, "sgi-dma: write of %u bytes "
                               "at 0x%" HWADDR_PRIx " failed (result %d)\n",
-                              c->len, c->bus_addr, res);
+                              len, c->bus_addr + start, res);
             }
         }
         g_free(c->host);

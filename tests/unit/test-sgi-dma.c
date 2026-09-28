@@ -29,6 +29,7 @@ static GHashTable *ram;
 static int maps_outstanding;
 static int maps_made;
 static uint64_t unmapped_written;
+static int hole_reads;
 static AddressSpace fake_as;
 
 static uint8_t *ram_page(uint64_t addr)
@@ -91,6 +92,9 @@ MemTxResult address_space_rw(const AddressSpace *as, hwaddr addr,
 
     if (addr < BUS_OFFSET || (dev >= BAD && dev < BAD + PAGE)) {
         return MEMTX_DECODE_ERROR;
+    }
+    if (!is_write && dev < HOLE + PAGE && dev + len > HOLE) {
+        hole_reads++;
     }
     for (hwaddr i = 0; i < len; i++) {
         uint8_t *b = &ram_page(dev + i)[(dev + i) % PAGE];
@@ -202,6 +206,7 @@ static void setup(void)
     maps_outstanding = 0;
     maps_made = 0;
     unmapped_written = 0;
+    hole_reads = 0;
 }
 
 static SGIDMABus bus_for(Head *h, const SGIHeadOps *ops)
@@ -535,6 +540,7 @@ static void test_from_plane(void)
     g_assert_cmpuint(ram_byte(HOLE), ==, 0xa0);
     g_assert_cmpuint(ram_byte(HOLE + 7), ==, 0xd3);
     g_assert_cmpuint(unmapped_written, ==, 8);
+    g_assert_cmpint(hole_reads, ==, 0);
     /* The head wrote guest memory; nothing it read, nothing traced. */
     g_assert_cmpuint(h->chunks->len, ==, 0);
     g_assert_cmpuint(g_array_index(h->done, SGICompletion, 0).payload, ==,
@@ -759,10 +765,11 @@ static void test_page_cut(void)
 
 /*
  * What the head wrote reaches the guest even when the transfer stops part
- * way: a written direct chunk is released with its length, so dirty
- * logging sees it, and a written bounce chunk is written back whole with
- * the guest's own bytes where the head wrote none. Unwritten chunks are
- * neither.
+ * way, and nothing else does: a written direct chunk is released with the
+ * length up to its last written byte, so dirty logging sees it, and a
+ * written bounce chunk writes back only the bytes the head wrote. A bounce
+ * chunk for guest memory the head writes is never read first: behind it
+ * may be a register, not RAM. Unwritten chunks are neither.
  */
 static void test_partial_write(void)
 {
@@ -775,17 +782,22 @@ static void test_partial_write(void)
 
     setup();
     memset(ones, 0x11, sizeof(ones));
-    ram_write(HOLE + 8, (uint8_t []) { 0x77 }, 1);
+    ram_write(HOLE + 15, (uint8_t []) { 0x77 }, 1);
+    ram_write(HOLE + 24, (uint8_t []) { 0x77 }, 1);
     g_assert_cmpint(sgi_dma_map(&bus, &map, &pl, 0, 3 * PAGE,
                                 DMA_DIRECTION_FROM_DEVICE, false, 0), ==, 0);
     g_assert_cmpuint(map.nchunks, ==, 3);
+    g_assert_true(map.chunks[1].bounce);
     g_assert_true(sgi_dma_map_copy(&map, 0, ones, 8, true));
-    g_assert_true(sgi_dma_map_copy(&map, PAGE, ones, 8, true));
+    g_assert_true(sgi_dma_map_copy(&map, PAGE + 16, ones, 8, true));
     sgi_dma_unmap(&map);
-    g_assert_cmpuint(unmapped_written, ==, PAGE);
+    g_assert_cmpint(hole_reads, ==, 0);
+    g_assert_cmpuint(unmapped_written, ==, 8);
     g_assert_cmpuint(ram_byte(0xc0000), ==, 0x11);
-    g_assert_cmpuint(ram_byte(HOLE + 7), ==, 0x11);
-    g_assert_cmpuint(ram_byte(HOLE + 8), ==, 0x77);
+    g_assert_cmpuint(ram_byte(HOLE + 15), ==, 0x77);
+    g_assert_cmpuint(ram_byte(HOLE + 16), ==, 0x11);
+    g_assert_cmpuint(ram_byte(HOLE + 23), ==, 0x11);
+    g_assert_cmpuint(ram_byte(HOLE + 24), ==, 0x77);
     g_assert_cmpint(maps_outstanding, ==, 0);
     head_free(h);
 }
