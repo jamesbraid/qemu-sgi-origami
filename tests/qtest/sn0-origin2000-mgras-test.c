@@ -9728,8 +9728,9 @@ static void test_gl_bitmap_draws_its_image(void)
  * block is one word longer than its length. The 16x1 image sets columns
  * 0, 1, 14 and 15. The fence after the block and its zero word shows the
  * extra word did not parse as a header, and a block after no bitmap is
- * framed the same way. With the raster position invalid
- * the same image draws nothing and the position does not move.
+ * framed the same way. With a negative width, or with the raster
+ * position invalid, the same image draws nothing and the position does
+ * not move (OpenGL 1.2.1, 3.7).
  */
 static void test_gl_bitmap_unaligned_image(void)
 {
@@ -9766,6 +9767,28 @@ static void test_gl_bitmap_unaligned_image(void)
     g_assert_cmphex(qtest_readl(qts, REG_HQ_FLAGS) & MGRAS_HQ_FLAG_FENCE, ==,
                     MGRAS_HQ_FLAG_FENCE);
 
+    /*
+     * A negative width is ignored: its image is consumed and not drawn,
+     * and the raster position does not move.
+     */
+    gl_raster_pos2f(qts, 30.5f / 64 - 1, 6.5f / 64 - 1);
+    gl_word(qts, GL_BITMAP_HDR);
+    gl_word(qts, 0x1800f);
+    gl_word(qts, -16);
+    gl_word(qts, 1);
+    gl_float(qts, 0);
+    gl_float(qts, 0);
+    gl_float(qts, 5);
+    gl_float(qts, 5);
+    gl_word(qts, 1);
+    gl_word(qts, GL_INLINE_BLOCK | 4);
+    gl_word(qts, 0xffff0000);
+    gl_word(qts, 0);
+    g_assert_cmphex(gl_window_pixel(qts, 30, 6), ==, 0);
+    g_assert_cmphex(gl_query(qts, GL_Q_RASTER_X, 1), ==,
+                    gl_bits(30.5f + GL_RASTER_BIAS));
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+
     /* Outside the view volume: the image is consumed and not drawn. */
     gl_raster_pos2f(qts, 2, 0);
     gl_bitmap_packet(qts, 16, 1, 0, 0, 3, 3);
@@ -9774,7 +9797,7 @@ static void test_gl_bitmap_unaligned_image(void)
     gl_word(qts, 0);
     g_assert_cmphex(gl_window_pixel(qts, 6, 6), ==, 0);
     g_assert_cmphex(gl_query(qts, GL_Q_RASTER_X, 1), ==,
-                    gl_bits(4.5f + GL_RASTER_BIAS));
+                    gl_bits(30.5f + GL_RASTER_BIAS));
     g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
 }
 

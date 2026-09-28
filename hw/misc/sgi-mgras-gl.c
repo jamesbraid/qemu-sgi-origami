@@ -1385,14 +1385,20 @@ static void mgras_gl_bitmap(SGIMgrasState *s, const uint32_t *payload)
                       "the form the client sends; drawn as that form\n",
                       payload[0]);
     }
+    /*
+     * A negative size is GL_INVALID_VALUE and the command is ignored
+     * (OpenGL 1.2.1, 3.7): the image after it is consumed, not drawn, and
+     * the raster position stays.
+     */
     if (width < 0 || height < 0) {
         qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: glBitmap of %d by %d "
                       "ignored\n", width, height);
-        width = height = 0;
+        placed = false;
+    } else {
+        memcpy(f, &payload[3], sizeof(f));
+        placed = sgi_gl_bitmap_place(mgras_gl(s), width, height, f[0], f[1],
+                                     f[2], f[3], &b);
     }
-    memcpy(f, &payload[3], sizeof(f));
-    placed = sgi_gl_bitmap_place(mgras_gl(s), width, height, f[0], f[1],
-                                 f[2], f[3], &b);
     slot[MGRAS_GL_BITMAP_PLACED] = placed && width && height;
     slot[MGRAS_GL_BITMAP_X] = placed ? b.x : 0;
     slot[MGRAS_GL_BITMAP_Y] = placed ? b.y : 0;
