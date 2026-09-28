@@ -175,8 +175,13 @@ SPD files. The installed-guest tests pin their disk inputs:
        ``irix/6.5.30/root.qcow2`` (SHA-256
        ``15b4bc1992845b6242948a9e944ce39682b7decdaee1e5474579418fb3a19c12``)
    * - ``func-mips64-irix_origin300_installed_boot``
-     - The IP35 PROM, both SPD files, and
-       ``irix/6.5.30/root-diags-origin300.qcow2`` (SHA-256
+     - The IP35 PROM (SHA-256
+       ``554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b``),
+       both SPD files (DIMM 2 SHA-256
+       ``a8bb5857941fefae8e11037fe98b01d199199bd34eb059b269a8c4b6875ca0d3``,
+       DIMM 3 SHA-256
+       ``9e60c3400772d227b91c5d61cea8de7f89777d41377516de072944c26cef4aa7``),
+       and ``irix/6.5.30/root-diags-origin300.qcow2`` (SHA-256
        ``150cf2c125cb3bd55764acfeec00804899ff3140cc536cf63a254765faa29390``)
    * - ``func-mips64-sn_reset`` — SN0 reset cases
      - No supplied assets
@@ -251,7 +256,12 @@ to ``QEMU_TEST_SGI_ASSET_DIR``:
      - The IP27 PROM, or the IP35 PROM and its two SPD files for the Origin
        300; ``irix/6.5.30/root-diags.qcow2`` for IP27 or
        ``irix/6.5.30/root-diags-origin300.qcow2`` for IP35; and
-       ``irix/6.5.30/olcdrom-medium.raw``
+       ``irix/6.5.30/olcdrom-medium.raw`` (SHA-256
+       ``ba0a1466d7125cd350ee4f047677d7a3d9f8a8ed8b13469c92042cfa0bd07829``).
+       The IP27 diagnostic disk SHA-256 is
+       ``82e394e28cbe1bf92aa08f01216636bdff7a0b224d15166f321e1f075b253e66``.
+       The IP35 diagnostic disk uses the checksum listed for the installed
+       Origin 300 image above.
    * - ``test_irix_tg.py`` and ``test_irix_tg_perf.py``
      - The IP27 PROM and ``irix/6.5.30/root.qcow2``
    * - ``test_irix_eg.py``
@@ -262,6 +272,10 @@ to ``QEMU_TEST_SGI_ASSET_DIR``:
 The thorough graphics-matrix rows also declare checksum-pinned local assets:
 the IP27 PROM and ``irix/6.5.30/root-rad4.qcow2`` (SHA-256
 ``f47c806f6a1234044668bbd67fd820a3f9e7dff80ff97edc4b84be8ba84887bc``).
+
+The Origin 300 PROM tests build their writable boot-flash images and identity
+EEPROM records in each test's scratch directory. Supply only the IP35 PROM and
+SPD files listed above. The generated images do not belong in the asset root.
 
 Asset requirements are marked by each functional test. An unset asset-root
 variable can skip an asset-dependent case for a developer who has not supplied
