@@ -558,8 +558,18 @@ struct SGIMgrasState {
      * (hw/display/sgi/scanout.h). Each frame is resolved from guest state
      * by sgi-mgras-display.c, so only the retrace phase is migrated: as
      * the timer's expiry, the field the version-2 stream always carried.
+     * The period follows from migrated VC3 and DAC state, or from the
+     * timing subsection when that state no longer gives it.
      */
     SGIScanout scanout;
+    /*
+     * The running retrace period as the migration subsection carries it
+     * (frame_clocks of a clock_hz clock), and whether a load delivered
+     * one. Staging for migration only.
+     */
+    uint64_t timing_frame_clocks;
+    uint32_t timing_clock_hz;
+    bool timing_loaded;
     /*
      * Something the whole frame resolves from changed. Folded into the
      * scanout's dirty lines by sgi_mgras_display_flush() before control

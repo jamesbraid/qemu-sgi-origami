@@ -3595,11 +3595,17 @@ static void test_retrace_short_frame_runs_stock_period(void)
                             retrace_vector);
 }
 
-static void mgras_retrace_migration(bool programmed)
+/*
+ * One retrace migration: the source, started by src_env's binary if set,
+ * runs src until half-way through its third frame; the destination must
+ * fire that retrace where the source would have, then run dst.
+ */
+static void mgras_retrace_migration(const char *src_env, bool programmed,
+                                    bool stale_table,
+                                    const MgrasFrameTime *src,
+                                    const MgrasFrameTime *dst)
 {
     const unsigned int retrace_vector = 54;
-    const MgrasFrameTime *t = programmed ? &mgras_vga_frame :
-                              &mgras_stock_frame;
     g_autofree char *tmpfs = NULL;
     g_autofree char *uri = NULL;
     g_autofree char *dest_cmdline = NULL;
@@ -3611,7 +3617,7 @@ static void mgras_retrace_migration(bool programmed)
     g_assert_no_error(err);
     uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
 
-    from = qtest_init(MIGRATION_ARGS);
+    from = qtest_init_ext(src_env, MIGRATION_ARGS, NULL, true);
     dest_cmdline = g_strdup_printf(MIGRATION_ARGS " -incoming %s", uri);
     to = qtest_init(dest_cmdline);
 
@@ -3622,8 +3628,15 @@ static void mgras_retrace_migration(bool programmed)
         mgras_load_vga_timing(from);
     }
     mgras_retrace_to_hub_on(from, retrace_vector);
-    mgras_expect_retraces(from, t, 1, 2, retrace_vector);
-    qtest_clock_step(from, mgras_retrace_gap(t, 3) / 2);
+    if (stale_table) {
+        /*
+         * Word 0x1000 is empty; without an enable write the model keeps
+         * running the period it took from the table at 0x380.
+         */
+        qtest_writel(from, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x00, 0x1000));
+    }
+    mgras_expect_retraces(from, src, 1, 2, retrace_vector);
+    qtest_clock_step(from, mgras_retrace_gap(src, 3) / 2);
 
     sgi_migrate_stopped(from, uri);
 
@@ -3633,10 +3646,61 @@ static void mgras_retrace_migration(bool programmed)
      * retrace, so the gaps after it are those after the first.
      */
     dest_now = qtest_clock_step(to, 1);
-    mgras_expect_retrace_in(to, reset_at + mgras_retrace_at(t, 3) - dest_now,
+    mgras_expect_retrace_in(to,
+                            reset_at + mgras_retrace_at(src, 3) - dest_now,
                             retrace_vector);
     g_assert_cmpuint(mgras_qom_get_uint(to, "x-test-retraces"), ==, 3);
-    mgras_expect_retraces(to, t, 2, 3, retrace_vector);
+    mgras_expect_retraces(to, dst, 2, 3, retrace_vector);
+
+    qtest_quit(to);
+    qtest_quit(from);
+    g_rmdir(tmpfs);
+}
+
+/*
+ * Across two binaries, QTEST_QEMU_BINARY_SRC to QTEST_QEMU_BINARY_DST,
+ * either of which may run the older exact 60 Hz period, check what does
+ * not depend on the period: the stream loads, the retrace count travels,
+ * and the pending retrace lands between the two models' third retrace.
+ */
+static void mgras_retrace_cross_binary_migration(void)
+{
+    const unsigned int retrace_vector = 54;
+    const int64_t sixtieth = NANOSECONDS_PER_SECOND / 60;
+    const MgrasFrameTime *t = &mgras_stock_frame;
+    const uint64_t bit = UINT64_C(1) << retrace_vector;
+    g_autofree char *tmpfs = NULL;
+    g_autofree char *uri = NULL;
+    g_autofree char *dest_cmdline = NULL;
+    GError *err = NULL;
+    QTestState *from, *to;
+    int64_t reset_at, dest_now;
+
+    tmpfs = g_dir_make_tmp("sn0-mgras-retrace-migration-XXXXXX", &err);
+    g_assert_no_error(err);
+    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+
+    from = qtest_init_ext("QTEST_QEMU_BINARY_SRC", MIGRATION_ARGS, NULL,
+                          true);
+    dest_cmdline = g_strdup_printf(MIGRATION_ARGS " -incoming %s", uri);
+    to = qtest_init_ext("QTEST_QEMU_BINARY_DST", dest_cmdline, NULL, true);
+
+    reset_at = qtest_clock_step(from, 12345);
+    qtest_system_reset(from);
+    mgras_retrace_to_hub_on(from, retrace_vector);
+    qtest_clock_step(from, 5 * sixtieth / 2);
+    g_assert_cmpuint(mgras_qom_get_uint(from, "x-test-retraces"), ==, 2);
+
+    sgi_migrate_stopped(from, uri);
+
+    dest_now = qtest_clock_step(to, 1);
+    mgras_hub_clear(to, retrace_vector);
+    qtest_clock_step(to, reset_at + 3 * sixtieth - 1 - dest_now);
+    g_assert_cmpuint(mgras_qom_get_uint(to, "x-test-retraces"), ==, 2);
+    g_assert_cmphex(mgras_hub_pending(to) & bit, ==, 0);
+    qtest_clock_step(to, mgras_retrace_at(t, 3) - 3 * sixtieth + 1);
+    g_assert_cmpuint(mgras_qom_get_uint(to, "x-test-retraces"), ==, 3);
+    g_assert_cmphex(mgras_hub_pending(to) & bit, ==, bit);
 
     qtest_quit(to);
     qtest_quit(from);
@@ -3645,13 +3709,48 @@ static void mgras_retrace_migration(bool programmed)
 
 static void test_retrace_phase_migration(void)
 {
-    mgras_retrace_migration(false);
+    if (g_getenv("QTEST_QEMU_BINARY_SRC") ||
+        g_getenv("QTEST_QEMU_BINARY_DST")) {
+        mgras_retrace_cross_binary_migration();
+        return;
+    }
+    mgras_retrace_migration(NULL, false, false, &mgras_stock_frame,
+                            &mgras_stock_frame);
 }
 
 /* The destination takes the period from the loaded VC3 and DAC state. */
 static void test_retrace_programmed_period_migration(void)
 {
-    mgras_retrace_migration(true);
+    mgras_retrace_migration(NULL, true, false, &mgras_vga_frame,
+                            &mgras_vga_frame);
+}
+
+/*
+ * The guest moved VID_EP to another table after its last enable write, so
+ * the migrated state no longer gives the period the source runs. The
+ * stream carries that period, and the destination keeps it.
+ */
+static void test_retrace_running_period_migration(void)
+{
+    mgras_retrace_migration(NULL, true, true, &mgras_vga_frame,
+                            &mgras_vga_frame);
+}
+
+/*
+ * A stream before version 13 has no DAC registers, so the destination
+ * cannot take a pixel clock from it and runs the stock period, not one
+ * from DAC registers left at zero. Needs a binary that sends such a
+ * stream, for example this tree built with the MGRAS description at
+ * version 12; skipped otherwise, like the v9 format test below.
+ */
+static void test_retrace_pre_dac_stream_runs_stock_period(void)
+{
+    if (!g_getenv("QTEST_QEMU_BINARY_MGRAS_V12")) {
+        g_test_skip("QTEST_QEMU_BINARY_MGRAS_V12 is not set");
+        return;
+    }
+    mgras_retrace_migration("QTEST_QEMU_BINARY_MGRAS_V12", true, false,
+                            &mgras_vga_frame, &mgras_stock_frame);
 }
 
 
@@ -11211,6 +11310,12 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/origin2000/mgras/"
                    "retrace-short-frame-runs-stock-period",
                    test_retrace_short_frame_runs_stock_period);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "retrace-running-period-migration",
+                   test_retrace_running_period_migration);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "retrace-pre-dac-stream-runs-stock-period",
+                   test_retrace_pre_dac_stream_runs_stock_period);
     qtest_add_func("sn0/origin2000/mgras/irq-enable-set-and-clear-ports",
                    test_irq_enable_set_and_clear_ports);
     qtest_add_func("sn0/origin2000/mgras/swap-command-raises-interrupt-10",
