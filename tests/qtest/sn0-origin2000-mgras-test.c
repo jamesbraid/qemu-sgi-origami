@@ -8,6 +8,7 @@
  */
 
 #include "qemu/osdep.h"
+#include <math.h>
 #include <sys/wait.h>
 #include "qemu/bswap.h"
 #include "qemu/timer.h"
@@ -9537,6 +9538,88 @@ static void test_hq_query_answers_viewport_shade_and_clear_colour(void)
     g_assert_cmphex(gl_query(qts, GL_Q_SHADE_MODEL, 1), ==, GL_FLAT);
 }
 
+/*
+ * glRasterPos2f and 3f are 0x40003808 and 0x2000380c with their floats
+ * (mgras-gl-commands.md, attribute table). The raster-position queries in
+ * the hq3_revB_HQ4.u column (notes-return-mode-queries.md): x, y, z and w
+ * at 0x359, 0x35a, 0x35b and 0x350, the valid bit at 0x35c, the colour at
+ * 0x351 to 0x354, the texture coordinates at 0x355 to 0x358 and the
+ * distance at 0x34b. The client adds the double -49151.5 to the x and y
+ * words before returning them, and ANDs the valid word with a mask from
+ * the microcode's symbol table whose value is not recorded.
+ */
+#define GL_RASTER_POS2F_HDR   0x40003808
+#define GL_RASTER_POS3F_HDR   0x2000380c
+#define GL_Q_RASTER_X         0x359
+#define GL_Q_RASTER_Y         0x35a
+#define GL_Q_RASTER_Z         0x35b
+#define GL_Q_RASTER_W         0x350
+#define GL_Q_RASTER_VALID     0x35c
+#define GL_Q_RASTER_COLOR     0x351
+#define GL_Q_RASTER_TEXCOORD  0x355
+#define GL_Q_RASTER_DISTANCE  0x34b
+#define GL_RASTER_BIAS        49151.5
+
+static void gl_raster_pos2f(QTestState *qts, float x, float y)
+{
+    gl_word(qts, GL_RASTER_POS2F_HDR);
+    gl_float(qts, x);
+    gl_float(qts, y);
+}
+
+/*
+ * Initially (0, 0, 0, 1), valid, white; glRasterPos carries its point
+ * through the modelview and projection matrices and the viewport and
+ * takes the current colour clamped (OpenGL 1.2.1, 2.12); a point outside
+ * the view volume resets only the valid bit.
+ */
+static void test_hq_query_answers_the_raster_position(void)
+{
+    mgras_reset();
+
+    gl_enter_slot(qts, GL_SLOT_A);
+    gl_word(qts, GL_CONTEXT_OPENER);
+    g_assert_cmphex(gl_query(qts, GL_Q_RASTER_X, 1), ==,
+                    gl_bits(GL_RASTER_BIAS));
+    g_assert_cmphex(gl_query(qts, GL_Q_RASTER_W, 1), ==, gl_bits(1));
+    g_assert_cmphex(gl_query(qts, GL_Q_RASTER_VALID, 1), ==, UINT32_MAX);
+
+    gl_viewport(qts, 10, 20, 100, 50);
+    gl_three(qts, GL_TRANSLATE_HDR, 3, 4, 0);
+    gl_one(qts, GL_MATRIX_MODE_HDR, GL_PROJECTION);
+    gl_six(qts, GL_ORTHO_HDR, 0, 10, 0, 10, -4, 4);
+    gl_three(qts, GL_COLOR3F_HDR, 2, -0.5f, 0.25f);
+    /* Eye (5, 5, 2), clip (0, 0, -0.5, 1), window (60, 45, 0.25). */
+    gl_three(qts, GL_RASTER_POS3F_HDR, 2, 1, 2);
+    g_assert_cmphex(gl_query(qts, GL_Q_RASTER_X, 1), ==,
+                    gl_bits(60 + GL_RASTER_BIAS));
+    g_assert_cmphex(gl_query(qts, GL_Q_RASTER_Y, 1), ==,
+                    gl_bits(45 + GL_RASTER_BIAS));
+    g_assert_cmphex(gl_query(qts, GL_Q_RASTER_Z, 1), ==, gl_bits(0.25f));
+    g_assert_cmphex(gl_query(qts, GL_Q_RASTER_W, 1), ==, gl_bits(1));
+    g_assert_cmphex(gl_query(qts, GL_Q_RASTER_VALID, 1), ==, UINT32_MAX);
+    g_assert_cmphex(gl_query(qts, GL_Q_RASTER_DISTANCE, 1), ==,
+                    gl_bits(sqrtf(54)));
+    for (int i = 0; i < 4; i++) {
+        static const float colour[4] = { 1, 0, 0.25f, 1 };
+
+        g_assert_cmphex(gl_query(qts, GL_Q_RASTER_COLOR + i, 1), ==,
+                        gl_bits(colour[i]));
+        g_assert_cmphex(gl_query(qts, GL_Q_RASTER_TEXCOORD + i, 1), ==,
+                        gl_bits(i == 3));
+    }
+
+    /* Clip x 1.2: culled, and the position stays. */
+    gl_raster_pos2f(qts, 8, 1);
+    g_assert_cmphex(gl_query(qts, GL_Q_RASTER_VALID, 1), ==, 0);
+    g_assert_cmphex(gl_query(qts, GL_Q_RASTER_X, 1), ==,
+                    gl_bits(60 + GL_RASTER_BIAS));
+    /* Back inside with z 0: window z 0.5. */
+    gl_raster_pos2f(qts, 2, 1);
+    g_assert_cmphex(gl_query(qts, GL_Q_RASTER_VALID, 1), ==, UINT32_MAX);
+    g_assert_cmphex(gl_query(qts, GL_Q_RASTER_Z, 1), ==, gl_bits(0.5f));
+}
+
 static void test_hq_flags_fence_token_sets_bit(void)
 {
     mgras_reset();
@@ -10904,6 +10987,60 @@ static void test_gl_context_table_migration(void)
 }
 
 /*
+ * Each context's raster position crosses a migration: a's valid one and
+ * b's culled one, whose position stays from before the cull.
+ */
+static void test_gl_raster_position_migration(void)
+{
+    g_autofree char *tmpfs = NULL;
+    g_autofree char *uri = NULL;
+    g_autofree char *dest_cmdline = NULL;
+    GError *err = NULL;
+    QTestState *from, *to;
+
+    tmpfs = g_dir_make_tmp("sn0-mgras-gl-raster-XXXXXX", &err);
+    g_assert_no_error(err);
+    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+
+    from = qtest_init(MIGRATION_ARGS);
+    dest_cmdline = g_strdup_printf(MIGRATION_ARGS " -incoming %s", uri);
+    to = qtest_init(dest_cmdline);
+
+    gl_enter_slot(from, GL_SLOT_A);
+    gl_word(from, GL_CONTEXT_OPENER);
+    gl_viewport(from, 0, 0, 128, 128);
+    gl_three(from, GL_COLOR3F_HDR, 0, 0.5f, 1);
+    gl_three(from, GL_RASTER_POS3F_HDR, 0.5f, -0.5f, 0.25f);
+    gl_enter_slot(from, GL_SLOT_B);
+    gl_word(from, GL_CONTEXT_OPENER);
+    gl_viewport(from, 0, 0, 64, 64);
+    gl_raster_pos2f(from, 0.5f, 0);
+    gl_raster_pos2f(from, 2, 0);
+
+    sgi_migrate_stopped(from, uri);
+
+    g_assert_cmphex(gl_query(to, GL_Q_RASTER_VALID, 1), ==, 0);
+    g_assert_cmphex(gl_query(to, GL_Q_RASTER_X, 1), ==,
+                    gl_bits(48 + GL_RASTER_BIAS));
+    gl_enter_slot(to, GL_SLOT_A);
+    g_assert_cmphex(gl_query(to, GL_Q_RASTER_VALID, 1), ==, UINT32_MAX);
+    g_assert_cmphex(gl_query(to, GL_Q_RASTER_X, 1), ==,
+                    gl_bits(96 + GL_RASTER_BIAS));
+    g_assert_cmphex(gl_query(to, GL_Q_RASTER_Y, 1), ==,
+                    gl_bits(32 + GL_RASTER_BIAS));
+    g_assert_cmphex(gl_query(to, GL_Q_RASTER_Z, 1), ==, gl_bits(0.625f));
+    g_assert_cmphex(gl_query(to, GL_Q_RASTER_DISTANCE, 1), ==,
+                    gl_bits(0.75f));
+    g_assert_cmphex(gl_query(to, GL_Q_RASTER_COLOR + 1, 1), ==,
+                    gl_bits(0.5f));
+    g_assert_cmphex(mgras_qom_get_uint(to, "x-test-error"), ==, 0);
+
+    qtest_quit(to);
+    qtest_quit(from);
+    g_rmdir(tmpfs);
+}
+
+/*
  * A primitive left open by a migration finishes on the destination: the
  * vertices each context held before it cross, in the loaded context (the
  * default slot's, the no-context entry) and in one switched out.
@@ -11555,6 +11692,8 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/origin2000/mgras/"
                    "hq-query-answers-viewport-shade-and-clear-colour",
                    test_hq_query_answers_viewport_shade_and_clear_colour);
+    qtest_add_func("sn0/origin2000/mgras/hq-query-answers-the-raster-position",
+                   test_hq_query_answers_the_raster_position);
     qtest_add_func("sn0/origin2000/mgras/hq-query-flag-only-from-query",
                    test_hq_query_flag_only_from_query);
     qtest_add_func("sn0/origin2000/mgras/inline-block-uses-20-bit-length",
@@ -11809,6 +11948,8 @@ int main(int argc, char **argv)
                    test_context_ack_migration);
     qtest_add_func("sn0/origin2000/mgras/gl-state-migration",
                    test_gl_state_migration);
+    qtest_add_func("sn0/origin2000/mgras/gl-raster-position-migration",
+                   test_gl_raster_position_migration);
     qtest_add_func("sn0/origin2000/mgras/gl-context-table-migration",
                    test_gl_context_table_migration);
     qtest_add_func("sn0/origin2000/mgras/gl-open-primitive-migration",
