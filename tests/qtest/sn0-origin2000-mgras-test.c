@@ -11416,6 +11416,43 @@ static void test_gl_colour_index_migration(void)
 }
 
 /*
+ * The longest block a header can frame: a 20-bit length of 0xfffff bytes
+ * starting at byte 2 of its first word takes 0x40001 words. A migration
+ * just after the header carries the discard, and the destination goes on
+ * consuming the block's words: a fence token is data there.
+ */
+static void test_gl_longest_block_migration(void)
+{
+    g_autofree char *tmpfs = NULL;
+    g_autofree char *uri = NULL;
+    g_autofree char *dest_cmdline = NULL;
+    GError *err = NULL;
+    QTestState *from, *to;
+
+    tmpfs = g_dir_make_tmp("sn0-mgras-gl-block-XXXXXX", &err);
+    g_assert_no_error(err);
+    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+
+    from = qtest_init(MIGRATION_ARGS);
+    dest_cmdline = g_strdup_printf(MIGRATION_ARGS " -incoming %s", uri);
+    to = qtest_init(dest_cmdline);
+
+    gl_enter_slot(from, GL_SLOT_A);
+    gl_word(from, GL_INLINE_BLOCK | 2 << 22 | 0xfffff);
+
+    sgi_migrate_stopped(from, uri);
+
+    gl_word(to, MGRAS_FENCE_TOKEN);
+    g_assert_cmphex(qtest_readl(to, REG_HQ_FLAGS) & MGRAS_HQ_FLAG_FENCE, ==,
+                    0);
+    g_assert_cmphex(mgras_qom_get_uint(to, "x-test-error"), ==, 0);
+
+    qtest_quit(to);
+    qtest_quit(from);
+    g_rmdir(tmpfs);
+}
+
+/*
  * Colour-index state and a bitmap's image under way cross a migration:
  * b's index mode, write mask and clear index, and a's image stopped after
  * its first word, which finishes on the destination in a's raster index.
@@ -12401,6 +12438,8 @@ int main(int argc, char **argv)
                    test_gl_raster_position_migration);
     qtest_add_func("sn0/origin2000/mgras/gl-colour-index-migration",
                    test_gl_colour_index_migration);
+    qtest_add_func("sn0/origin2000/mgras/gl-longest-block-migration",
+                   test_gl_longest_block_migration);
     qtest_add_func("sn0/origin2000/mgras/"
                    "gl-colour-index-and-bitmap-migration",
                    test_gl_colour_index_and_bitmap_migration);
