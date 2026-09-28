@@ -184,15 +184,19 @@ test_mips64_timeouts = {
   'prom_mdk_router' : 1800,
   # One target per smdk-matrix row (test_prom_smdk_origin300.py and the
   # test_prom_smdk_origin300_<row>.py beside it), each the row's budget
-  # plus 120s, the same shape as the irix-diag-matrix rows above. The
-  # rows took 604s, 967s and 1111s (two and four processors and the pair,
-  # 2026-09-27, build-fast). The project checkout's harness runs of
-  # 2026-09-26 and 27 took 100 to 370s for a one-chassis boot and
-  # diagnostic and 740 to 2040s for a pair's, so the pair has 4200s for
-  # its four.
+  # plus 120s, the same shape as the irix-diag-matrix rows above. With
+  # sct and CPU_Test dropped and ndir added, the two- and four-processor
+  # rows took 604s and 967s of their 2880s (2026-09-27, build-fast,
+  # measured before ndir replaced sct; the two diagnostics' own times are
+  # close enough that 2880s still holds). The pair row used to measure
+  # 1111s running sct, scct, System_Level_Test and xbg without nmem or
+  # ndir; with nmem needing about 3600s there to sync the two chassis and
+  # ndir about 1500s, replacing sct and adding both to the row, 7200s
+  # gives the row headroom over that addition rather than a fresh
+  # whole-row measurement of the five diagnostics together.
   'prom_smdk_origin300' : 3000,
   'prom_smdk_origin300_4cpu' : 3000,
-  'prom_smdk_origin300_pair' : 4320,
+  'prom_smdk_origin300_pair' : 7320,
   # Three test methods (one, two, and four CPUs) run one after another in
   # this one script, each now netbooting the kernel through the real PROM
   # rather than a direct -kernel load. The one- and two-CPU boots are each

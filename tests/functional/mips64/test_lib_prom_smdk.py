@@ -90,11 +90,11 @@ class ManifestTests(unittest.TestCase):
         self.assertEqual(registered, {r.id for r in parse_manifest()})
 
     def test_a_row_parses_into_cells(self):
-        row = parse_row('m', 1, self._line(ndir='ndir-directory-state'))
+        row = parse_row('m', 1, self._line(io8bt='pair-io8bt-timer'))
         self.assertEqual((row.id, row.cpus, row.budget),
                          ('origin300', 2, 2880))
-        self.assertTrue(row.runs('sct'))
-        self.assertEqual(row.reason('ndir'), REASONS['ndir-directory-state'])
+        self.assertTrue(row.runs('scct'))
+        self.assertEqual(row.reason('io8bt'), REASONS['pair-io8bt-timer'])
 
     def test_bad_rows_are_refused(self):
         for line, message in (
@@ -109,9 +109,8 @@ class ManifestTests(unittest.TestCase):
 
     def test_a_row_needs_the_files_its_diagnostics_fetch(self):
         row = parse_row('m', 1, self._line(
-            sct='cpu-test-compare', nmem='cpu-test-compare',
-            ndir='cpu-test-compare', scct='cpu-test-compare',
-            CPU_Test='cpu-test-compare', io8bt='cpu-test-compare'))
+            nmem='pair-io8bt-timer', ndir='pair-io8bt-timer',
+            scct='pair-io8bt-timer', io8bt='pair-io8bt-timer'))
         self.assertEqual(package_files(row),
                          ['smdk', 'iocfg', 'System_Level_Test',
                           'SLT_Cmd_Option_File', 'xbg'])

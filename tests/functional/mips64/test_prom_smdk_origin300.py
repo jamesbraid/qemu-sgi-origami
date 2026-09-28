@@ -62,8 +62,9 @@ except (ImportError, RuntimeError):
 BOOT_TIMEOUT_SECONDS = {1: 600, 2: 1200}
 
 # A diagnostic's own limit, from `run` to its verdict: System_Level_Test's
-# one pass took 130s, and a pair's scct ran for most of its 2040s.
-DIAG_TIMEOUT_SECONDS = {1: 900, 2: 2400}
+# one pass took 130s, a pair's scct ran for most of its 2040s, and nmem
+# needs about 3600s on the pair to sync the two chassis.
+DIAG_TIMEOUT_SECONDS = {1: 900, 2: 3900}
 
 # The address the IO8 board record carries, and the user-mode network
 # the monitor netboots from: the PROM asks for its address over BOOTP,
