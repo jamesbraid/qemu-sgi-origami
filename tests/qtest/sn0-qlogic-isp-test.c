@@ -156,6 +156,8 @@
 #define RESP_PHYS                   0x00110000u
 #define RESP_IOVA                   (0xa500000000000000ULL | RESP_PHYS)
 #define BRIDGE_DIRECT_MAP_REG       (BRIDGE_BASE + 0x080 + REG_DATA)
+#define BRIDGE_CONTROL_REG          (BRIDGE_BASE + 0x020 + REG_DATA)
+#define BRIDGE_CONTROL_PAGE_16K     (1u << 21)
 
 /* Every access to the adapter goes through the window's byte-lane swizzle. */
 static void isp_writew(QTestState *qts, unsigned natural, uint16_t val)
@@ -709,6 +711,113 @@ static void build_command(uint8_t *entry, uint32_t handle, uint16_t device,
     entry[ISP_REQ_OFF_CDB + 0] = op;
     entry[ISP_REQ_OFF_CDB + 1] = op_byte1;
     normalise_words(entry, ISP_QUEUE_ENTRY_SIZE);
+}
+
+/* One 16 KiB ATE must preserve all four 4 KiB scatter-gather segments. */
+static void test_write_four_quarters_through_16k_ate(const void *data)
+{
+    g_autofree char *path = NULL;
+    int fd = g_file_open_tmp("qtest-isp-ate-write.XXXXXX", &path, NULL);
+    QTestState *qts;
+    const uint32_t buffer = 0x00120000;
+    const uint32_t handle = 0x16384a7e;
+    uint8_t entry[ISP_QUEUE_ENTRY_SIZE];
+    uint8_t status[ISP_QUEUE_ENTRY_SIZE];
+    uint8_t expected[4 * PAGE_SIZE_4K], source[sizeof(expected)];
+    uint8_t seen[sizeof(expected)];
+    unsigned int i, j;
+    int64_t deadline;
+
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(ftruncate(fd, 1024 * 1024), ==, 0);
+    qts = qtest_initf(MACHINE_WITH_BRIDGE
+                      " -drive id=d0,if=none,file=%s,format=raw"
+                      " -device scsi-hd,bus=scsi.0,scsi-id=1,lun=0,drive=d0",
+                      path);
+    aim_device0_window_at_its_bar(qts);
+    qtest_writel(qts, CFG0(SCSI_DEVICE0) + PCI_COMMAND,
+                 PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER);
+    qtest_writel(qts, BRIDGE_DIRECT_MAP_REG, 0);
+    qtest_writel(qts, BRIDGE_CONTROL_REG,
+                 qtest_readl(qts, BRIDGE_CONTROL_REG) |
+                 BRIDGE_CONTROL_PAGE_16K);
+    g_assert_cmphex(qtest_readl(qts, BRIDGE_CONTROL_REG) &
+                    BRIDGE_CONTROL_PAGE_16K, ==, BRIDGE_CONTROL_PAGE_16K);
+    qtest_writeq(qts, ATE(0), ATE_ENTRY(buffer, 0));
+    for (i = 1; i < 4; i++) {
+        qtest_writeq(qts, ATE(i), 0);
+    }
+
+    for (i = 0; i < 4; i++) {
+        for (j = 0; j < PAGE_SIZE_4K; j++) {
+            expected[i * PAGE_SIZE_4K + j] =
+                1 + i * 53 + j * 7 + (j >> 8);
+        }
+    }
+    memcpy(source, expected, sizeof(source));
+    normalise_words(source, sizeof(source));
+    qtest_memwrite(qts, buffer, source, sizeof(source));
+    qtest_memread(qts, buffer, seen, sizeof(seen));
+    g_assert_cmpmem(seen, sizeof(seen), source, sizeof(source));
+
+    qtest_memset(qts, RING_PHYS, 0, ISP_QUEUE_ENTRY_SIZE * RING_ENTRIES);
+    qtest_memset(qts, RESP_PHYS, 0, ISP_QUEUE_ENTRY_SIZE * RING_ENTRIES);
+    isp_init_queue_a64(qts, ISP_MBOX_CMD_INIT_RSP_QUEUE_A64, RING_ENTRIES,
+                       RESP_IOVA);
+    isp_init_queue_a64(qts, ISP_MBOX_CMD_INIT_REQ_QUEUE_A64, RING_ENTRIES,
+                       RING_IOVA);
+
+    /* Consume power-on unit attention before the data-bearing command. */
+    build_command(entry, 1, 0x0100, 0, 0);
+    qtest_memwrite(qts, RING_PHYS, entry, sizeof(entry));
+    isp_writew(qts, ISP_REG_REQUEST_QUEUE, 1);
+    g_assert_cmphex(isp_readw(qts, ISP_REG_RESPONSE_QUEUE), ==, 1);
+    isp_mbox_ack(qts);
+
+    memset(entry, 0, sizeof(entry));
+    entry[ISP_ENTRY_OFF_TYPE] = ISP_ENTRY_TYPE_REQUEST;
+    entry[ISP_ENTRY_OFF_COUNT] = 1;
+    put32le(entry + ISP_REQ_OFF_HANDLE, handle);
+    put16le(entry + ISP_REQ_OFF_DEVICE, 0x0100);
+    put16le(entry + ISP_REQ_OFF_CDBLEN, 10);
+    put16le(entry + ISP_REQ_OFF_SEGCOUNT, 4);
+    entry[ISP_REQ_OFF_CDB] = 0x2a; /* WRITE(10) */
+    entry[ISP_REQ_OFF_CDB + 1] = 8; /* FUA */
+    entry[ISP_REQ_OFF_CDB + 5] = 8; /* LBA 8 */
+    entry[ISP_REQ_OFF_CDB + 8] = sizeof(expected) / 512;
+    for (i = 0; i < 4; i++) {
+        put32le(entry + 32 + i * 8, PCI_TRANSLATED + i * PAGE_SIZE_4K);
+        put32le(entry + 36 + i * 8, PAGE_SIZE_4K);
+    }
+    normalise_words(entry, sizeof(entry));
+    qtest_memwrite(qts, RING_PHYS + ISP_QUEUE_ENTRY_SIZE, entry, sizeof(entry));
+    isp_writew(qts, ISP_REG_REQUEST_QUEUE, 2);
+    deadline = g_get_monotonic_time() + 5 * G_TIME_SPAN_SECOND;
+    while (isp_readw(qts, ISP_REG_RESPONSE_QUEUE) != 2) {
+        g_assert_cmpint(g_get_monotonic_time(), <, deadline);
+        g_usleep(1000);
+    }
+    qtest_memread(qts, RESP_PHYS + ISP_QUEUE_ENTRY_SIZE, status,
+                  sizeof(status));
+    normalise_words(status, sizeof(status));
+    g_assert_cmphex(status[ISP_ENTRY_OFF_TYPE], ==, ISP_ENTRY_TYPE_STATUS);
+    g_assert_cmphex(get32le(status + ISP_STATUS_OFF_HANDLE), ==, handle);
+    g_assert_cmphex(get16le(status + ISP_STATUS_OFF_SCSI_STATUS), ==, 0);
+    g_assert_cmphex(get16le(status + ISP_STATUS_OFF_COMPLETION), ==, 0);
+    g_assert_cmphex(get32le(status + 20), ==, 0); /* residual byte count */
+    isp_mbox_ack(qts);
+
+    g_assert_cmpint(pread(fd, seen, sizeof(seen), 8 * 512), ==, sizeof(seen));
+    for (i = 0; i < 4; i++) {
+        g_test_message("checking backend quarter %u", i);
+        g_assert_cmpmem(seen + i * PAGE_SIZE_4K, PAGE_SIZE_4K,
+                        expected + i * PAGE_SIZE_4K, PAGE_SIZE_4K);
+    }
+    qtest_memread(qts, buffer, seen, sizeof(seen));
+    g_assert_cmpmem(seen, sizeof(seen), source, sizeof(source));
+    qtest_quit(qts);
+    close(fd);
+    unlink(path);
 }
 
 static void test_a64_ring_send_diagnostic(const void *data)
@@ -1399,6 +1508,8 @@ int main(int argc, char **argv)
                         test_a64_ring_is_word_value);
     qtest_add_data_func("sn0/qlogic-isp/a64-ring-data-out", NULL,
                         test_a64_ring_data_out);
+    qtest_add_data_func("sn0/qlogic-isp/write-four-quarters-through-16k-ate",
+                        NULL, test_write_four_quarters_through_16k_ate);
     qtest_add_data_func("sn0/qlogic-isp/a64-ring-send-diagnostic", NULL,
                         test_a64_ring_send_diagnostic);
     qtest_add_data_func("sn0/qlogic-isp/a64-ring-missing-target", NULL,
