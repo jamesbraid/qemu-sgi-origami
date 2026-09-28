@@ -35,7 +35,9 @@ from lib_net import (DHCP_NAMES, OPENBSD_LOGIN_STAGES, OPENBSD_TRIPWIRES,
                      tftp_transfer, tftp_transfer_problems,
                      tftp_session_report,
                      transfer_result_pattern,
-                     arp_request_frame, parse_arp_frame)
+                     arp_request_frame, parse_arp_frame,
+                     build_udp_fragments, parse_ipv4_udp_fragment,
+                     reassemble_udp_fragments)
 from test_irix_tg import tg_acceptance_verdict
 
 
@@ -302,6 +304,113 @@ class ArpFrameTests(unittest.TestCase):
     def test_parser_rejects_non_arp_and_truncated_frames(self):
         self.assertIsNone(parse_arp_frame(b"\x00" * 42))
         self.assertIsNone(parse_arp_frame(b"\xff" * 41))
+
+
+class UdpFragmentTests(unittest.TestCase):
+
+    def setUp(self):
+        self.src_mac = bytes.fromhex("525400abcdef")
+        self.dst_mac = bytes.fromhex("525400123456")
+        self.src_ip = "10.0.2.15"
+        self.dst_ip = "10.0.2.2"
+        self.payload = bytes(range(256)) * 9 + bytes(range(244))
+        self.frames = build_udp_fragments(
+            self.src_mac, self.dst_mac, self.src_ip, self.dst_ip,
+            49152, 9000, self.payload)
+
+    def test_builds_and_reassembles_a_2548_byte_udp_payload(self):
+        self.assertEqual(len(self.payload), 2548)  # 9*256 + 244
+        parsed = [parse_ipv4_udp_fragment(frame) for frame in self.frames]
+        self.assertEqual(len(self.frames), 2)
+        self.assertEqual([fragment["offset"] for fragment in parsed], [0, 185])
+        self.assertEqual([fragment["more"] for fragment in parsed],
+                         [True, False])
+        self.assertEqual(reassemble_udp_fragments(
+            self.frames, self.src_ip, self.dst_ip, 49152, 9000,
+            self.payload), 2)
+
+    def test_rejects_an_ipv4_mtu_below_68(self):
+        with self.assertRaisesRegex(ValueError, "MTU"):
+            build_udp_fragments(
+                self.src_mac, self.dst_mac, self.src_ip, self.dst_ip,
+                49152, 9000, self.payload, mtu=67)
+
+    def test_rejects_a_gap(self):
+        second = bytearray(self.frames[1])
+        second[20:22] = (186).to_bytes(2, "big")
+        second[24:26] = b"\x00\x00"
+        second[24:26] = _internet_checksum_for_test(
+            second[14:34]).to_bytes(2, "big")
+        with self.assertRaisesRegex(ValueError, "gap"):
+            reassemble_udp_fragments(
+                [self.frames[0], bytes(second)], self.src_ip, self.dst_ip,
+                49152, 9000, self.payload)
+
+    def test_rejects_overlap(self):
+        second = bytearray(self.frames[1])
+        second[20:22] = (184).to_bytes(2, "big")
+        second[24:26] = b"\x00\x00"
+        second[24:26] = _internet_checksum_for_test(
+            second[14:34]).to_bytes(2, "big")
+        with self.assertRaisesRegex(ValueError, "overlap"):
+            reassemble_udp_fragments(
+                [self.frames[0], bytes(second)], self.src_ip, self.dst_ip,
+                49152, 9000, self.payload)
+
+    def test_rejects_duplicate_after_complete_set(self):
+        with self.assertRaisesRegex(ValueError, "overlap"):
+            reassemble_udp_fragments(
+                self.frames + [self.frames[1]], self.src_ip, self.dst_ip,
+                49152, 9000, self.payload)
+
+    def test_rejects_corrupt_ipv4_checksum(self):
+        corrupt = bytearray(self.frames[0])
+        corrupt[24] ^= 1
+        with self.assertRaisesRegex(ValueError, "checksum"):
+            parse_ipv4_udp_fragment(bytes(corrupt))
+
+    def test_rejects_wrong_payload_and_udp_port(self):
+        with self.assertRaisesRegex(ValueError, "payload"):
+            reassemble_udp_fragments(
+                self.frames, self.src_ip, self.dst_ip, 49152, 9000,
+                self.payload + b"x")
+        wrong_port = bytearray(self.frames[0])
+        wrong_port[34:36] = (49153).to_bytes(2, "big")
+        with self.assertRaisesRegex(ValueError, "UDP ports"):
+            reassemble_udp_fragments(
+                [bytes(wrong_port), self.frames[1]], self.src_ip, self.dst_ip,
+                49152, 9000, self.payload)
+
+    def test_rejects_a_mismatched_udp_length(self):
+        first = bytearray(self.frames[0])
+        first[38:40] = (2555).to_bytes(2, "big")
+        with self.assertRaisesRegex(ValueError, "UDP length"):
+            reassemble_udp_fragments(
+                [bytes(first), self.frames[1]], self.src_ip, self.dst_ip,
+                49152, 9000, self.payload)
+
+    def test_ignores_unrelated_frames(self):
+        self.assertIsNone(parse_ipv4_udp_fragment(b"\x00" * 40))
+        arp = b"\x00" * 12 + b"\x08\x06" + b"\x00" * 28
+        self.assertIsNone(parse_ipv4_udp_fragment(arp))
+        tcp = bytearray(self.frames[0])
+        tcp[23] = 6
+        tcp[24:26] = b"\x00\x00"
+        tcp[24:26] = _internet_checksum_for_test(tcp[14:34]).to_bytes(2, "big")
+        self.assertIsNone(parse_ipv4_udp_fragment(bytes(tcp)))
+        with self.assertRaisesRegex(ValueError, "fewer than two"):
+            reassemble_udp_fragments(
+                [arp], self.src_ip, self.dst_ip, 49152, 9000, self.payload)
+
+
+def _internet_checksum_for_test(header):
+    if len(header) % 2:
+        header += b"\x00"
+    total = sum(int.from_bytes(header[i:i + 2], "big")
+                for i in range(0, len(header), 2))
+    while total >> 16:
+        total = (total & 0xffff) + (total >> 16)
+    return (~total) & 0xffff
 
 
 class IrixTgVerdictTests(unittest.TestCase):
