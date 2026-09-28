@@ -554,6 +554,77 @@ static void test_unsupported_rules(void)
     g_assert_cmphex(p.colour[0][0], ==, 0);
 }
 
+/* The words sgi_gl_get() gives for pname, which it must keep. */
+static unsigned get(const SGIGLContext *c, uint32_t pname,
+                    uint32_t out[SGI_GL_GET_WORDS])
+{
+    unsigned n = 0;
+
+    memset(out, 0xa5, SGI_GL_GET_WORDS * sizeof(uint32_t));
+    g_assert_true(sgi_gl_get(c, pname, out, &n));
+    g_assert_cmpuint(n, >=, 1);
+    g_assert_cmpuint(n, <=, SGI_GL_GET_WORDS);
+    return n;
+}
+
+/*
+ * glGet of the matrices, the matrix mode, the viewport, the shade model
+ * and the clear colour (OpenGL 1.2.1, 6.1.2 and tables 6.4 to 6.9): each
+ * matrix column-major and from its own stack whatever the mode, the
+ * enumerants as sent.
+ */
+static void test_get_state(void)
+{
+    static const uint32_t viewport[4] = { 3, 5, 120, 90 };
+    uint32_t word[6], out[SGI_GL_GET_WORDS];
+    SGIGLContext c;
+
+    context_init(&c);
+    /* A translation's x lands in column 3, element 12. */
+    word[0] = bits(7), word[1] = bits(-2), word[2] = bits(0.5f);
+    command(&c, NULL, SGI_GL_OP_TRANSLATE, word, 3);
+    word[0] = SGI_GL_PROJECTION;
+    command(&c, NULL, SGI_GL_OP_MATRIX_MODE, word, 1);
+    /* glOrtho(0, 4, 0, 2, -1, 1): x scale 0.5, x offset -1. */
+    word[0] = bits(0), word[1] = bits(4), word[2] = bits(0);
+    word[3] = bits(2), word[4] = bits(-1), word[5] = bits(1);
+    command(&c, NULL, SGI_GL_OP_ORTHO, word, 6);
+    command(&c, NULL, SGI_GL_OP_VIEWPORT, viewport, 4);
+    word[0] = SGI_GL_FLAT;
+    command(&c, NULL, SGI_GL_OP_SHADE_MODEL, word, 1);
+    word[0] = bits(0.25f), word[1] = bits(0.5f);
+    word[2] = bits(0.75f), word[3] = bits(1);
+    command(&c, NULL, SGI_GL_OP_CLEAR_COLOR, word, 4);
+
+    g_assert_cmpuint(get(&c, SGI_GL_MODELVIEW_MATRIX, out), ==, 16);
+    for (int i = 0; i < 16; i++) {
+        static const float mv[16] = {
+            1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 7, -2, 0.5f, 1,
+        };
+
+        g_assert_cmphex(out[i], ==, bits(mv[i]));
+    }
+    g_assert_cmpuint(get(&c, SGI_GL_PROJECTION_MATRIX, out), ==, 16);
+    for (int i = 0; i < 16; i++) {
+        static const float pr[16] = {
+            0.5f, 0, 0, 0, 0, 1, 0, 0, 0, 0, -1, 0, -1, -1, 0, 1,
+        };
+
+        g_assert_cmphex(out[i], ==, bits(pr[i]));
+    }
+    g_assert_cmpuint(get(&c, SGI_GL_MATRIX_MODE, out), ==, 1);
+    g_assert_cmphex(out[0], ==, SGI_GL_PROJECTION);
+    g_assert_cmpuint(get(&c, SGI_GL_VIEWPORT, out), ==, 4);
+    g_assert(memcmp(out, viewport, sizeof(viewport)) == 0);
+    g_assert_cmpuint(get(&c, SGI_GL_SHADE_MODEL, out), ==, 1);
+    g_assert_cmphex(out[0], ==, SGI_GL_FLAT);
+    g_assert_cmpuint(get(&c, SGI_GL_COLOR_CLEAR_VALUE, out), ==, 4);
+    g_assert_cmphex(out[0], ==, bits(0.25f));
+    g_assert_cmphex(out[1], ==, bits(0.5f));
+    g_assert_cmphex(out[2], ==, bits(0.75f));
+    g_assert_cmphex(out[3], ==, bits(1));
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -567,5 +638,6 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-gl/same-front-and-back",
                     test_same_front_and_back);
     g_test_add_func("/sgi-gl/unsupported-rules", test_unsupported_rules);
+    g_test_add_func("/sgi-gl/get-state", test_get_state);
     return g_test_run();
 }
