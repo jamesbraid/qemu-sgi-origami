@@ -32,9 +32,9 @@ When registering an SGI test, include ``sgi`` and
 the matching category tag, while keeping its existing architecture and speed
 tags. The existing architecture and speed selections still work.
 Suite selection does not supply test assets or enable slow and large-data
-cases. Asset-dependent cases can skip when inputs are absent, and slow or
-large-data cases still require their usual opt-in variables. See the asset
-requirements below. These tags provide local Meson selection; they do not
+cases. Asset-dependent cases can skip when ``QEMU_TEST_SGI_ASSET_DIR`` is
+unset. Slow and large-data cases require their opt-in variables. See the
+asset requirements below. These tags provide local Meson selection; they do not
 configure CI or establish that a suite has passed.
 
 To build without network access, prepare a source archive from a clean QEMU
