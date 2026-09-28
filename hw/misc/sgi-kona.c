@@ -110,46 +110,31 @@ static const SGIBridgeBoardRecord sgi_kona_ktown_record = {
     .name = "KTOWN-BD",
 };
 
-/* Realize one DS2502 identity part onto the given one-wire bus. */
-static bool sgi_kona_onewire_attach_part(
-    SGIKonaState *s, OneWireBus *bus, const char *child_name,
-    const SGIBridgeBoardRecord *record, uint64_t serial, Error **errp)
-{
-    uint8_t rom[SGI_BRIDGE_ONEWIRE_RECORD_SIZE];
-    DeviceState *part;
-
-    sgi_bridge_onewire_build_record(rom, record);
-    part = qdev_new(TYPE_ONEWIRE_DS2502);
-    object_property_add_child(OBJECT(s), child_name, OBJECT(part));
-    qdev_prop_set_uint8(part, "family", SGI_KONA_ONEWIRE_FAMILY);
-    qdev_prop_set_uint64(part, "serial", serial);
-    ds2502_set_image(part, rom, sizeof(rom));
-    return qdev_realize_and_unref(part, BUS(bus), errp);
-}
-
 /*
- * The known identity parts "other-identity-parts" may name, beyond the
- * geometry board's own record that sgi_kona_finish_realize() always
- * attaches to onewire_bus. Currently only Ktown: a rack pipe carries it,
- * a deskside pipe (no Ktown board) is built with an empty list. Mirrors
- * the machine-model catalogue's own board-record part numbers (see the
- * struct field comment on other_identity_parts); an unknown part string
- * is a realize error, not a silent skip.
+ * The identity chain the XIO board base builds at realize: the geometry
+ * board's own record, whose part "board-part" replaces for a deskside
+ * pipe's GE14-4 (030-1129-002), and Ktown, which "other-identity-parts"
+ * names by default because a rack pipe carries it; a deskside pipe has no
+ * Ktown and is built with an empty list. The part numbers mirror the
+ * machine-model catalogue's own board records (tools/origami_lib/
+ * model_emit.py).
  */
-typedef struct SGIKonaIdentityPart {
-    const char *part;
-    const char *child_name;
-    const SGIBridgeBoardRecord *record;
-    uint64_t serial;
-} SGIKonaIdentityPart;
+static const SGIXioBoardIdentityPart sgi_kona_ktown_part = {
+    .child_name = "onewire-ktown",
+    .record = &sgi_kona_ktown_record,
+    .serial = SGI_KONA_KTOWN_SERIAL,
+    .fitted = true,
+};
 
-static const SGIKonaIdentityPart sgi_kona_identity_parts[] = {
-    {
-        .part = "030-1067-001",
-        .child_name = "onewire-ktown",
-        .record = &sgi_kona_ktown_record,
-        .serial = SGI_KONA_KTOWN_SERIAL,
+static const SGIXioBoardIdentity sgi_kona_identity = {
+    .family = SGI_KONA_ONEWIRE_FAMILY,
+    .own = {
+        .child_name = "onewire-geometry",
+        .record = &sgi_kona_geometry_record,
+        .serial = SGI_KONA_GEOMETRY_SERIAL,
     },
+    .others = &sgi_kona_ktown_part,
+    .num_others = 1,
 };
 
 /*
@@ -498,7 +483,8 @@ static void sgi_kona_write(void *opaque, hwaddr addr,
                          SGI_KONA_ONEWIRE_PULSE_SHIFT;
         uint32_t sample = (value & SGI_KONA_ONEWIRE_SAMPLE_MASK) >>
                           SGI_KONA_ONEWIRE_SAMPLE_SHIFT;
-        bool level = sgi_onewire_slot(s->onewire_bus, pulse, sample);
+        bool level = sgi_onewire_slot(s->parent_obj.onewire_bus, pulse,
+                                      sample);
 
         /*
          * Matches the Bridge NIC register's own two-step behaviour: the
@@ -603,71 +589,19 @@ static bool sgi_kona_build_widget(SGIXioBoardState *board,
 }
 
 /*
- * The one-wire bus is a qdev child bus of this board (DEVICE(s) doubles as
- * DEVICE(board): SGIKonaState has no separate widget device the way
- * xio-baseio.c's Bridge does), so it must not exist yet when build_widget()
- * returns -- the base class's own realize still has to re-parent this
- * board under its module, and that tears down every child bus a device
- * owns as a side effect. finish_realize() runs after that move, so the bus
- * this creates is never subject to it.
- *
- * Increment 2's own console and textport command port join it here too:
- * qemu_graphic_console_create() registers this device's QOM path with the
- * UI layer, and that path is exactly what the re-parent above changes, so
- * creating it any earlier risks registering the console under a path the
- * board no longer has once realize finishes. The textport command port
- * itself has no such constraint (it is a plain struct, not tied to QOM
- * identity), but is initialized alongside for one increment-2 setup site.
+ * The console and the textport command port start here rather than in
+ * build_widget(): qemu_graphic_console_create() registers this device's
+ * QOM path with the UI layer, and that path is exactly what the base
+ * class's re-parent under the module changes, so creating it any earlier
+ * risks registering the console under a path the board no longer has once
+ * realize finishes. The textport command port itself has no such
+ * constraint (it is a plain struct, not tied to QOM identity), but is
+ * initialized alongside for one increment-2 setup site. The one-wire
+ * identity chain is the base class's, built before this runs.
  */
 static bool sgi_kona_finish_realize(SGIXioBoardState *board, Error **errp)
 {
     SGIKonaState *s = SGI_KONA(board);
-    bool attached[ARRAY_SIZE(sgi_kona_identity_parts)] = { false };
-    SGIBridgeBoardRecord geometry_record = sgi_kona_geometry_record;
-    const char *board_part_error;
-    strList *entry;
-
-    board_part_error = sgi_bridge_board_part_error(s->board_part);
-    if (board_part_error) {
-        error_setg(errp, "sgi-kona %s", board_part_error);
-        return false;
-    }
-    geometry_record.part = s->board_part;
-
-    s->onewire_bus = onewire_create_bus(DEVICE(s), "onewire");
-    if (!sgi_kona_onewire_attach_part(
-            s, s->onewire_bus, "onewire-geometry", &geometry_record,
-            SGI_KONA_GEOMETRY_SERIAL, errp)) {
-        return false;
-    }
-    for (entry = s->other_identity_parts; entry; entry = entry->next) {
-        const SGIKonaIdentityPart *known = NULL;
-        size_t index;
-
-        for (index = 0; index < ARRAY_SIZE(sgi_kona_identity_parts); index++) {
-            if (g_str_equal(entry->value,
-                            sgi_kona_identity_parts[index].part)) {
-                known = &sgi_kona_identity_parts[index];
-                break;
-            }
-        }
-        if (!known) {
-            error_setg(errp, "unknown other-identity-parts entry '%s'",
-                       entry->value);
-            return false;
-        }
-        if (attached[index]) {
-            error_setg(errp, "duplicate other-identity-parts entry '%s'",
-                       entry->value);
-            return false;
-        }
-        if (!sgi_kona_onewire_attach_part(
-                s, s->onewire_bus, known->child_name, known->record,
-                known->serial, errp)) {
-            return false;
-        }
-        attached[index] = true;
-    }
 
     sgi_command_port_init(&s->textport, &sgi_kona_textport_ops, s,
                           SGI_KONA_PORT_TEXTPORT, sgi_kona_textport_selectors,
@@ -707,11 +641,6 @@ static void sgi_kona_instance_init(Object *obj)
 {
     SGIKonaState *s = SGI_KONA(obj);
 
-    /* Default: today's rack behaviour, GE16-4 geometry board plus Ktown. */
-    s->board_part = g_strdup(sgi_kona_geometry_record.part);
-    QAPI_LIST_PREPEND(s->other_identity_parts,
-                      g_strdup(sgi_kona_ktown_record.part));
-
     object_property_add_uint32_ptr(obj, "x-test-pixel-x", &s->test_pixel_x,
                                    OBJ_PROP_FLAG_READWRITE);
     object_property_add_uint32_ptr(obj, "x-test-pixel-y", &s->test_pixel_y,
@@ -742,7 +671,6 @@ static void sgi_kona_instance_finalize(Object *obj)
     }
     g_free(s->framebuffer);
     g_free(s->bitmap_payload);
-    qapi_free_strList(s->other_identity_parts);
 }
 
 /*
@@ -817,12 +745,6 @@ static const Property sgi_kona_properties[] = {
      * see the header comment on SGI_KONA_PROBE.
      */
     DEFINE_PROP_UINT32("probe-value", SGIKonaState, probe_value, 0),
-    /*
-     * The geometry board's own record part number; see the struct field
-     * comment on board_part. Defaults to the rack's GE16-4
-     * (030-1398-001); a deskside pipe's GE14-4 sets 030-1129-002.
-     */
-    DEFINE_PROP_STRING("board-part", SGIKonaState, board_part),
 };
 
 static bool sgi_kona_framebuffer_count_valid(void *opaque, int version_id)
@@ -933,39 +855,6 @@ static const VMStateDescription vmstate_sgi_kona = {
     },
 };
 
-/*
- * A list-of-strings property cannot use the static Property[]/
- * DEFINE_PROP_* table above (sgi_kona_properties), so it is registered
- * separately here, matching hw/mips/sgi/sn-machine.c's own
- * chassis-eeprom/board-eeprom/spd-eeprom precedent.
- */
-static void sgi_kona_get_other_identity_parts(Object *obj, Visitor *v,
-                                              const char *name, void *opaque,
-                                              Error **errp)
-{
-    SGIKonaState *s = SGI_KONA(obj);
-
-    visit_type_strList(v, name, &s->other_identity_parts, errp);
-}
-
-static void sgi_kona_set_other_identity_parts(Object *obj, Visitor *v,
-                                              const char *name, void *opaque,
-                                              Error **errp)
-{
-    SGIKonaState *s = SGI_KONA(obj);
-    strList *replacement = NULL;
-
-    if (qdev_is_realized(DEVICE(obj))) {
-        qdev_prop_set_after_realize(DEVICE(obj), name, errp);
-        return;
-    }
-    if (!visit_type_strList(v, name, &replacement, errp)) {
-        return;
-    }
-    qapi_free_strList(s->other_identity_parts);
-    s->other_identity_parts = replacement;
-}
-
 static void sgi_kona_class_init(ObjectClass *oc, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
@@ -987,15 +876,7 @@ static void sgi_kona_class_init(ObjectClass *oc, const void *data)
     bc->finish_realize = sgi_kona_finish_realize;
     rc->phases.hold = sgi_kona_reset_hold;
 
-    object_class_property_add(oc, "other-identity-parts", "strList",
-                              sgi_kona_get_other_identity_parts,
-                              sgi_kona_set_other_identity_parts, NULL, NULL);
-    object_class_property_set_description(oc, "other-identity-parts",
-        "Identity parts to attach to the +0x98 one-wire chain beyond the "
-        "geometry board's own record, by part number. Defaults to the "
-        "Ktown board (030-1067-001); an empty list models a deskside "
-        "pipe with no Ktown. An unknown or duplicate part number is a "
-        "realize error, and the property is fixed once realized.");
+    sgi_xio_board_class_set_identity(oc, &sgi_kona_identity);
 }
 
 static const TypeInfo sgi_kona_type = {
