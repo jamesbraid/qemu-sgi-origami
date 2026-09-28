@@ -33,16 +33,12 @@ functional tests. ``--disable-download`` prevents configure from fetching
 missing dependencies; it does not install those Python packages. Test assets
 are provisioned separately and are not included in the source archive.
 
-Debian Trixie build dependencies used by the Forgejo workflows are declared in
-``tests/docker/dockerfiles/debian-sgi.docker``. That image includes the MIPS64
-cross compilers used to build the source ROMs. QEMU builds and tests run inside
-that public image; the Forgejo runner supplies the Docker client, reachable
-container service, and a named volume for its checkout. Those runner facilities
-must be configured before these workflows can run. A missing facility fails
-with a diagnostic; the workflow does not install tools on the runner.
-GitHub Actions workflows are planned to run these same native QEMU commands;
-this guide documents the Forgejo workflows and does not claim that the
-provider-specific workflows have been qualified on both services.
+The optional Debian Trixie build image is defined in
+``tests/docker/dockerfiles/debian-sgi.docker``. It supplies the MIPS64 cross
+compilers used to build the source ROMs, QEMU's build dependencies, and the
+functional-test Python dependencies. Run the commands above in that image or
+in another environment with those dependencies installed. The source archive
+and asset root remain separate inputs.
 
 The source-built ROM functional test is registered as
 ``func-mips64-sgi_roms`` in the ``qemu:thorough`` Meson setup. Its required
@@ -54,7 +50,7 @@ case list comes from ``tests/functional/mips64/roms/suite``. Build and run it wi
        --print-errorlogs func-mips64-sgi_roms
 
 The offline source-archive build was checked with the ROM matrix's 85 expected
-identities and one selected Origin 200 PROM case. Both emitted fresh JUnit
+identities and one selected IP27 PROM case on Origin 200. Both emitted fresh JUnit
 reports that passed ``scripts/check-sgi-test-results.py``; this does not
 qualify the complete functional matrix.
 
@@ -82,11 +78,11 @@ that do not declare a digest still validate the path and file before launch.
 
 Keep supplied files unchanged. Tests that boot QCOW2 disks use QEMU snapshot
 mode or disposable overlays for guest writes. The installed-disk checks expect
-an already installed IRIX image; they do not install IRIX. The full build job's
-IRIX check boots the PROM and downloads the supplied miniroot kernel over QEMU
-user-mode networking before direct-booting it. It does not use an external
+an already installed IRIX image; they do not install IRIX. The IP27 PROM
+miniroot check downloads the supplied kernel over QEMU
+user-mode networking, then executes it through the PROM boot path. It does not use an external
 netinst server. External installation services and package qualification remain
-downstream checks.
+separate checks.
 
 Asset requirements are marked by each functional test. An unset asset-root
 variable can skip an asset-dependent case for a developer who has not supplied
@@ -128,11 +124,9 @@ The log base isolates JUnit reports, not test scratch files. Concurrent runs of
 the same functional test need separate build directories because Meson shares
 that test's scratch directory within a build.
 
-The required pull-request workflow runs all MIPS64 qtests and QEMU unit tests
-without proprietary files. The full workflow-dispatch check runs on the
-trusted ``sgi-origami`` branch, requires the supplied asset root, and runs the
-register and unit suites, the ROM matrix, and selected PROM, Linux, and IRIX
-boots. The prior pull-request Linux boot is therefore covered by the full
-asset-qualified check. Scheduled nightly runs rotate through the supplied-asset
-MIPS64 matrix, diagnostic, install, and OpenBSD workloads. A manual
-``workload=asset-free`` run exercises the ROM matrix without private files.
+The commands above describe individual native checks and their evidence.
+Choose the Meson targets needed for the change, and set
+``QEMU_TEST_SGI_ASSET_DIR`` for tests that use supplied files. Full asset-based
+qualification requires all declared files and rejects skips. The JUnit checker
+can require named results, as shown above; a successful process exit alone does
+not establish that the expected cases ran.
