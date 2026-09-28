@@ -62,12 +62,20 @@ typedef struct SGIRasterOp {
     uint32_t clear_colour_mask;
     /* In the depth plane's units; the plane keeps its low bits. */
     uint32_t clear_depth24;
+    /*
+     * CLEAR in colour-index mode: nonzero index_bits, and the clear index
+     * already masked to them, written under index_mask.
+     */
+    uint32_t index_bits;
+    uint32_t clear_index;
+    uint32_t index_mask;
 } SGIRasterOp;
 
 /*
  * A vertex is 20 floats: position xyzw, colour rgba, normal xyz, the
  * material index as a uint32 bit pattern, texture coordinate strq, fog
- * coordinate, the edge flag as a uint32 bit pattern and two pads.
+ * coordinate, the edge flag as a uint32 bit pattern, the colour index and
+ * a pad.
  */
 #define SGI_GL_VERTEX_FLOATS    20
 #define SGI_GL_V_POSITION       0
@@ -77,6 +85,7 @@ typedef struct SGIRasterOp {
 #define SGI_GL_V_TEXCOORD       12
 #define SGI_GL_V_FOG            16
 #define SGI_GL_V_EDGE           17
+#define SGI_GL_V_INDEX          18
 
 /* OpenGL 1.2 enumerants the state holds. */
 enum {
@@ -97,9 +106,11 @@ enum {
 #define SGI_GL_DRAW_BACK        0x2
 #define SGI_GL_NEVER_ENUM       0x0200
 #define SGI_GL_CURRENT_COLOR    0x0b00
+#define SGI_GL_CURRENT_INDEX    0x0b01
 #define SGI_GL_CURRENT_NORMAL   0x0b02
 #define SGI_GL_CURRENT_TEXTURE_COORDS 0x0b03
 #define SGI_GL_CURRENT_RASTER_COLOR 0x0b04
+#define SGI_GL_CURRENT_RASTER_INDEX 0x0b05
 #define SGI_GL_CURRENT_RASTER_TEXTURE_COORDS 0x0b06
 #define SGI_GL_CURRENT_RASTER_POSITION 0x0b07
 #define SGI_GL_CURRENT_RASTER_POSITION_VALID 0x0b08
@@ -111,6 +122,8 @@ enum {
 #define SGI_GL_VIEWPORT         0x0ba2
 #define SGI_GL_MODELVIEW_MATRIX 0x0ba6
 #define SGI_GL_PROJECTION_MATRIX 0x0ba7
+#define SGI_GL_INDEX_CLEAR_VALUE 0x0c20
+#define SGI_GL_INDEX_WRITEMASK  0x0c21
 #define SGI_GL_COLOR_CLEAR_VALUE 0x0c22
 
 /* Matrices a GL matrix stack holds, the current one included. */
@@ -150,6 +163,13 @@ typedef struct SGIGLDrawState {
     uint32_t depth_mask;        /* 0 or 1 */
     /* SGI_GL_DRAW_FRONT and SGI_GL_DRAW_BACK; other bits are ignored. */
     uint32_t draw_buffers;
+    /*
+     * 0 in RGBA mode; in colour-index mode the bits a colour index holds,
+     * which the context's visual fixes (sgi_gl_set_index_mode()).
+     */
+    uint32_t index_bits;
+    /* glIndexMask's write mask (4.2.2). */
+    uint32_t index_mask;
     SGIGLDrawable drawable;
 } SGIGLDrawState;
 
@@ -164,6 +184,7 @@ typedef struct SGIGLContext {
     uint32_t pr_depth;
     uint32_t matrix_mode;       /* GL_MODELVIEW, GL_PROJECTION or other */
     float cur_color[4];
+    float cur_index;
     float cur_normal[3];
     uint32_t cur_edge;          /* 0 or 1 */
     /*
@@ -174,7 +195,9 @@ typedef struct SGIGLContext {
     uint32_t raster_valid;      /* 0 or 1 */
     float raster_distance;
     float raster_color[4];
+    float raster_index;
     float clear_color[4];
+    float clear_index;
     /*
      * In the depth plane's units, as the family delivered it; a clear
      * keeps the low bits the plane holds, so all ones is 1.0 at any
@@ -229,6 +252,9 @@ typedef enum SGIGLOp {
     SGI_GL_OP_RASTER_POS2F,     /* x, y */
     SGI_GL_OP_RASTER_POS3F,     /* x, y, z */
     SGI_GL_OP_RASTER_POS4F,     /* x, y, z, w */
+    SGI_GL_OP_INDEXF,           /* the colour index */
+    SGI_GL_OP_INDEX_MASK,       /* the write mask */
+    SGI_GL_OP_CLEAR_INDEX,      /* the clear index */
 } SGIGLOp;
 
 /*
@@ -294,6 +320,18 @@ bool sgi_gl_set_matrix(SGIGLContext *c, uint32_t slot, const float m[16]);
  */
 uint32_t sgi_gl_draw_targets(const SGIGLDrawState *st,
                              SGIColourTarget out[2]);
+/*
+ * Put the context in colour-index mode with index_bits bits a colour
+ * index, or in RGBA mode for 0: a property of the context's visual, which
+ * the family learns its own way, not a GL command.
+ */
+void sgi_gl_set_index_mode(SGIGLContext *c, uint32_t index_bits);
+/*
+ * A colour index as a colour-index buffer of index_bits bits stores it
+ * (OpenGL 1.2.1, 2.13.9): the integer part, masked to the buffer's bits.
+ */
+uint32_t sgi_gl_index_value(uint32_t index_bits, double index);
+
 /* Execute one command against the context, sending any work to sink. */
 void sgi_gl_command(SGIGLContext *c, const SGIGLSink *sink,
                     const SGIGLCmd *cmd);

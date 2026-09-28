@@ -77,11 +77,17 @@ bool sgi_raster_rules_supported(const SGIRasterRules *r);
  * The family's planes as the rasterizer reaches them, in plane pixels.
  * target is one of the drawable's colour targets, which only the family
  * interprets; a colour is the rules' color_bits a channel, red highest
- * and blue lowest.
+ * and blue lowest. In colour-index mode store_index takes the index,
+ * already masked to the draw state's index bits, and the write mask, whose
+ * clear bits keep the stored index's (OpenGL 1.2.1, 4.2.2); a family
+ * without colour-index planes leaves it NULL, and colour-index work then
+ * draws nothing.
  */
 typedef struct SGIRasterTarget {
     void (*store_colour)(void *opaque, SGIColourTarget target, int x, int y,
                          uint32_t colour);
+    void (*store_index)(void *opaque, SGIColourTarget target, int x, int y,
+                        uint32_t index, uint32_t mask);
     uint32_t (*load_depth)(void *opaque, int x, int y);
     void (*store_depth)(void *opaque, int x, int y, uint32_t depth);
     void *opaque;

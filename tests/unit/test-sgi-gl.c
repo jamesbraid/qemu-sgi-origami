@@ -2,7 +2,8 @@
 /*
  * The shared GL context and software rasterizer, on paths a family's
  * replay fixtures need not reach: whole batches of every primitive mode,
- * glFinish, the clear op a context builds, and unsupported rule sets.
+ * glFinish, the clear op a context builds, unsupported rule sets and
+ * colour-index mode.
  */
 #include "qemu/osdep.h"
 #include <math.h>
@@ -33,6 +34,18 @@ static void planes_store_colour(void *opaque, SGIColourTarget target, int x,
     p->colour[target][planes_index(x, y)] = colour;
 }
 
+/* An index plane keeps the bits the write mask leaves (4.2.2). */
+static void planes_store_index(void *opaque, SGIColourTarget target, int x,
+                               int y, uint32_t index, uint32_t mask)
+{
+    Planes *p = opaque;
+    uint32_t *pixel;
+
+    g_assert_cmpuint(target, <, 2);
+    pixel = &p->colour[target][planes_index(x, y)];
+    *pixel = (*pixel & ~mask) | (index & mask);
+}
+
 static uint32_t planes_load_depth(void *opaque, int x, int y)
 {
     return ((Planes *)opaque)->depth[planes_index(x, y)];
@@ -47,6 +60,7 @@ static SGIRasterTarget planes_target(Planes *p)
 {
     return (SGIRasterTarget) {
         .store_colour = planes_store_colour,
+        .store_index = planes_store_index,
         .load_depth = planes_load_depth,
         .store_depth = planes_store_depth,
         .opaque = p,
@@ -729,6 +743,186 @@ static void test_raster_position(void)
                       0.5f);
 }
 
+
+/*
+ * Colour-index state (OpenGL 1.2.1, 2.7, 2.12, 4.2.2, 4.2.3 and table
+ * 6.5): the current index starts at 1, the clear index at 0 and the write
+ * mask at all ones; glRasterPos takes the current index as the raster
+ * index, and the context stays in RGBA mode until its visual says
+ * otherwise.
+ */
+static void test_index_state(void)
+{
+    uint32_t word[2], out[SGI_GL_GET_WORDS];
+    SGIGLContext c;
+
+    context_init(&c);
+    g_assert_cmpuint(c.cur.index_bits, ==, 0);
+    g_assert_cmpfloat(get_float(&c, SGI_GL_CURRENT_INDEX, 0), ==, 1);
+    g_assert_cmpfloat(get_float(&c, SGI_GL_CURRENT_RASTER_INDEX, 0), ==, 1);
+    g_assert_cmpfloat(get_float(&c, SGI_GL_INDEX_CLEAR_VALUE, 0), ==, 0);
+    get(&c, SGI_GL_INDEX_WRITEMASK, out);
+    g_assert_cmphex(out[0], ==, UINT32_MAX);
+
+    word[0] = bits(37.5f);
+    command(&c, NULL, SGI_GL_OP_INDEXF, word, 1);
+    word[0] = 0x0f;
+    command(&c, NULL, SGI_GL_OP_INDEX_MASK, word, 1);
+    word[0] = bits(3.25f);
+    command(&c, NULL, SGI_GL_OP_CLEAR_INDEX, word, 1);
+    g_assert_cmpfloat(get_float(&c, SGI_GL_CURRENT_INDEX, 0), ==, 37.5f);
+    g_assert_cmpfloat(get_float(&c, SGI_GL_CURRENT_RASTER_INDEX, 0), ==, 1);
+    g_assert_cmpfloat(get_float(&c, SGI_GL_INDEX_CLEAR_VALUE, 0), ==, 3.25f);
+    get(&c, SGI_GL_INDEX_WRITEMASK, out);
+    g_assert_cmphex(out[0], ==, 0x0f);
+
+    word[0] = bits(0), word[1] = bits(0);
+    command(&c, NULL, SGI_GL_OP_RASTER_POS2F, word, 2);
+    g_assert_cmpfloat(get_float(&c, SGI_GL_CURRENT_RASTER_INDEX, 0), ==,
+                      37.5f);
+
+    sgi_gl_set_index_mode(&c, 8);
+    g_assert_cmpuint(c.cur.index_bits, ==, 8);
+    sgi_gl_set_index_mode(&c, 0);
+    g_assert_cmpuint(c.cur.index_bits, ==, 0);
+}
+
+/*
+ * An index as a buffer of n bits stores it (2.13.9): the integer part,
+ * masked to n bits.
+ */
+static void test_index_value(void)
+{
+    g_assert_cmphex(sgi_gl_index_value(8, 2.0), ==, 2);
+    g_assert_cmphex(sgi_gl_index_value(8, 2.99), ==, 2);
+    g_assert_cmphex(sgi_gl_index_value(8, 300), ==, 44);
+    g_assert_cmphex(sgi_gl_index_value(8, -1), ==, 0xff);
+    g_assert_cmphex(sgi_gl_index_value(12, 4095.5), ==, 0xfff);
+    g_assert_cmphex(sgi_gl_index_value(32, 4294967295.0), ==, UINT32_MAX);
+    g_assert_cmphex(sgi_gl_index_value(8, NAN), ==, 0);
+}
+
+/*
+ * In colour-index mode a draw stores the vertex's index, not its colour:
+ * flat from the provoking vertex, smooth interpolated like a colour
+ * component, and a clear stores the clear index; each under the write
+ * mask. Planes without an index store draw nothing.
+ */
+static void test_index_draw(void)
+{
+    static Planes p;
+    Recorder rec = { .rules = &rules_supported };
+    SGIGLSink sink = recorder_sink(&rec);
+    SGIGLContext c;
+    uint32_t word[4];
+
+    rec.target = planes_target(&p);
+    memset(&p, 0, sizeof(p));
+    context_init(&c);
+    sgi_gl_set_index_mode(&c, 8);
+    c.cur.shade_model = SGI_GL_FLAT;
+
+    /* Window (8, 8), (40, 8), (8, 40): the last vertex's index, 300. */
+    word[0] = SGI_GL_TRIANGLES;
+    command(&c, &sink, SGI_GL_OP_BEGIN, word, 1);
+    word[0] = bits(5);
+    command(&c, &sink, SGI_GL_OP_INDEXF, word, 1);
+    word[0] = bits(-0.75f), word[1] = bits(-0.75f);
+    command(&c, &sink, SGI_GL_OP_VERTEX2F, word, 2);
+    word[0] = bits(0.25f);
+    command(&c, &sink, SGI_GL_OP_VERTEX2F, word, 2);
+    word[0] = bits(300);
+    command(&c, &sink, SGI_GL_OP_INDEXF, word, 1);
+    word[0] = bits(-0.75f), word[1] = bits(0.25f);
+    command(&c, &sink, SGI_GL_OP_VERTEX2F, word, 2);
+    command(&c, &sink, SGI_GL_OP_END, word, 0);
+    g_assert_cmphex(p.colour[0][planes_index(12, 12)], ==, 44);
+    g_assert_cmphex(p.colour[0][planes_index(50, 50)], ==, 0);
+    g_assert_cmphex(p.colour[1][planes_index(12, 12)], ==, 0);
+
+    /* The write mask keeps the stored index's high bits. */
+    word[0] = 0x0f;
+    command(&c, &sink, SGI_GL_OP_INDEX_MASK, word, 1);
+    word[0] = bits(0xa3);
+    command(&c, &sink, SGI_GL_OP_INDEXF, word, 1);
+    word[0] = SGI_GL_POINTS;
+    command(&c, &sink, SGI_GL_OP_BEGIN, word, 1);
+    word[0] = bits(-0.75f + 4.0f / 32), word[1] = bits(-0.75f + 4.0f / 32);
+    command(&c, &sink, SGI_GL_OP_VERTEX2F, word, 2);
+    command(&c, &sink, SGI_GL_OP_END, word, 0);
+    g_assert_cmphex(p.colour[0][planes_index(12, 12)], ==, 0x23);
+
+    /*
+     * Smooth: a segment along row 2 from x 0.5 with index 0 to x 16.5
+     * with index 16 gives pixel k the index k.
+     */
+    word[0] = UINT32_MAX;
+    command(&c, &sink, SGI_GL_OP_INDEX_MASK, word, 1);
+    c.cur.shade_model = SGI_GL_SMOOTH;
+    word[0] = SGI_GL_LINES;
+    command(&c, &sink, SGI_GL_OP_BEGIN, word, 1);
+    word[0] = bits(0);
+    command(&c, &sink, SGI_GL_OP_INDEXF, word, 1);
+    word[0] = bits(0.5f / 32 - 1), word[1] = bits(2.5f / 32 - 1);
+    command(&c, &sink, SGI_GL_OP_VERTEX2F, word, 2);
+    word[0] = bits(16);
+    command(&c, &sink, SGI_GL_OP_INDEXF, word, 1);
+    word[0] = bits(16.5f / 32 - 1);
+    command(&c, &sink, SGI_GL_OP_VERTEX2F, word, 2);
+    command(&c, &sink, SGI_GL_OP_END, word, 0);
+    for (int k = 0; k < 16; k++) {
+        g_assert_cmphex(p.colour[0][planes_index(k, 2)], ==, k);
+    }
+
+    /*
+     * Smooth, in perspective, with one index at every vertex: every
+     * fragment has exactly that index, never one step below it.
+     */
+    memset(&p, 0, sizeof(p));
+    word[0] = bits(300);
+    command(&c, &sink, SGI_GL_OP_INDEXF, word, 1);
+    word[0] = SGI_GL_TRIANGLES;
+    command(&c, &sink, SGI_GL_OP_BEGIN, word, 1);
+    for (int i = 0; i < 3; i++) {
+        static const float v[3][3] = {
+            { -0.9f, -0.8f, 1 }, { 0.93f, -0.7f, 2.7f }, { -0.1f, 0.95f, 5.3f },
+        };
+
+        word[0] = bits(v[i][0] * v[i][2]), word[1] = bits(v[i][1] * v[i][2]);
+        word[2] = bits(0), word[3] = bits(v[i][2]);
+        command(&c, &sink, SGI_GL_OP_VERTEX4F, word, 4);
+    }
+    command(&c, &sink, SGI_GL_OP_END, word, 0);
+    for (int i = 0, drawn = 0; i < W * H; i++) {
+        if (p.colour[0][i]) {
+            g_assert_cmphex(p.colour[0][i], ==, 44);
+            drawn++;
+        }
+        if (i == W * H - 1) {
+            g_assert_cmpint(drawn, >, 1000);
+        }
+    }
+
+    /* A clear stores the clear index, masked to the index bits. */
+    word[0] = bits(257.75f);
+    command(&c, &sink, SGI_GL_OP_CLEAR_INDEX, word, 1);
+    word[0] = SGI_GL_COLOR_BUFFER_BIT;
+    command(&c, &sink, SGI_GL_OP_CLEAR, word, 1);
+    g_assert_cmpuint(rec.op.index_bits, ==, 8);
+    g_assert_cmphex(rec.op.clear_index, ==, 1);
+    g_assert_cmphex(rec.op.index_mask, ==, UINT32_MAX);
+    sgi_soft_raster(&rules_supported, &rec.target, &rec.op);
+    g_assert_cmphex(p.colour[0][planes_index(40, 40)], ==, 1);
+    g_assert_cmphex(p.colour[0][planes_index(12, 12)], ==, 1);
+
+    /* No index store: nothing drawn. */
+    rec.target.store_index = NULL;
+    rec.op.clear_index = 9;
+    sgi_soft_raster(&rules_supported, &rec.target, &rec.op);
+    g_assert_cmphex(p.colour[0][planes_index(40, 40)], ==, 1);
+}
+
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -744,5 +938,8 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-gl/unsupported-rules", test_unsupported_rules);
     g_test_add_func("/sgi-gl/get-state", test_get_state);
     g_test_add_func("/sgi-gl/raster-position", test_raster_position);
+    g_test_add_func("/sgi-gl/index-state", test_index_state);
+    g_test_add_func("/sgi-gl/index-value", test_index_value);
+    g_test_add_func("/sgi-gl/index-draw", test_index_draw);
     return g_test_run();
 }

@@ -52,6 +52,8 @@ void sgi_gl_init(SGIGLContext *c, uint32_t hw_id)
     c->cur.depth_mask = 1;
     c->clear_depth = UINT32_MAX;
     c->cur.draw_buffers = SGI_GL_DRAW_FRONT;
+    c->cur.index_mask = UINT32_MAX;
+    c->cur_index = 1.0f;
     c->cur_normal[2] = 1.0f;
     c->cur_edge = 1;
     c->raster_pos[3] = 1.0f;
@@ -59,11 +61,34 @@ void sgi_gl_init(SGIGLContext *c, uint32_t hw_id)
     for (int i = 0; i < 4; i++) {
         c->raster_color[i] = 1.0f;
     }
+    c->raster_index = 1.0f;
 }
 
 void sgi_gl_set_drawable(SGIGLContext *c, const SGIGLDrawable *d)
 {
     c->cur.drawable = *d;
+}
+
+void sgi_gl_set_index_mode(SGIGLContext *c, uint32_t index_bits)
+{
+    c->cur.index_bits = MIN(index_bits, 32);
+}
+
+/*
+ * 2.13.9 converts an index to fixed point with an unspecified number of
+ * fraction bits and keeps the integer part, which for a value already in
+ * fixed point is its floor; a value beyond 32 bits, or not a number,
+ * keeps nothing a buffer could hold and stores 0.
+ */
+uint32_t sgi_gl_index_value(uint32_t index_bits, double index)
+{
+    uint32_t mask = index_bits >= 32 ? UINT32_MAX : (1u << index_bits) - 1;
+    double f = floor(index);
+
+    if (!(f >= -2147483648.0 && f < 4294967296.0)) {
+        return 0;
+    }
+    return (f < 0 ? (uint32_t)(int32_t)f : (uint32_t)f) & mask;
 }
 
 /*
@@ -328,6 +353,9 @@ static const uint8_t sgi_gl_nargs[] = {
     [SGI_GL_OP_RASTER_POS2F] = 2,
     [SGI_GL_OP_RASTER_POS3F] = 3,
     [SGI_GL_OP_RASTER_POS4F] = 4,
+    [SGI_GL_OP_INDEXF] = 1,
+    [SGI_GL_OP_INDEX_MASK] = 1,
+    [SGI_GL_OP_CLEAR_INDEX] = 1,
 };
 
 uint32_t sgi_gl_draw_targets(const SGIGLDrawState *st,
@@ -395,6 +423,11 @@ static void sgi_gl_clear(SGIGLContext *c, const SGIGLSink *sink,
         op.clear_buffers |= SGI_GL_COLOR_BUFFER_BIT;
         memcpy(op.clear_rgba, c->clear_color, sizeof(op.clear_rgba));
         op.clear_colour_mask = UINT32_MAX;
+        /* In colour-index mode the clear index, under glIndexMask (4.2.3). */
+        op.index_bits = c->cur.index_bits;
+        op.clear_index = sgi_gl_index_value(c->cur.index_bits,
+                                            c->clear_index);
+        op.index_mask = c->cur.index_mask;
     }
     if ((mask & SGI_GL_DEPTH_BUFFER_BIT) && c->cur.depth_mask) {
         op.clear_buffers |= SGI_GL_DEPTH_BUFFER_BIT;
@@ -459,6 +492,7 @@ static void sgi_gl_vertex(SGIGLContext *c, const SGIGLSink *sink,
     memcpy(&cur[SGI_GL_V_NORMAL], c->cur_normal, sizeof(c->cur_normal));
     cur[SGI_GL_V_TEXCOORD + 3] = 1.0f;
     memcpy(&cur[SGI_GL_V_EDGE], &c->cur_edge, sizeof(c->cur_edge));
+    cur[SGI_GL_V_INDEX] = c->cur_index;
 
     switch (c->begin_mode) {
     case SGI_GL_POINTS:
@@ -544,13 +578,14 @@ static void sgi_gl_vertex(SGIGLContext *c, const SGIGLSink *sink,
  * glRasterPos (OpenGL 1.2.1, 2.12): the point goes through the modelview
  * and projection matrices like a vertex. Inside the view volume it
  * becomes the current raster position in window coordinates, keeping
- * clip w, with the eye distance and the current colour clamped to
- * [0, 1] (2.13.6); lighting is not modelled. Outside, only the valid bit
- * is reset: the specification leaves the rest undefined, and keeping it
- * is the model's choice. Client clip planes are not modelled, and the
- * depth range is [0, 1], as for a draw. The eye distance is the exact
- * Euclidean one of the eye x, y and z, which 2.12 allows a head to
- * approximate; how a head does is not published.
+ * clip w, with the eye distance, the current colour clamped to [0, 1]
+ * (2.13.6) and the current colour index; lighting is not modelled.
+ * Outside, only the valid bit is reset: the specification leaves the
+ * rest undefined, and keeping it is the model's choice. Client clip
+ * planes are not modelled, and the depth range is [0, 1], as for a
+ * draw. The eye distance is the exact Euclidean one of the eye x, y and
+ * z, which 2.12 allows a head to approximate; how a head does is not
+ * published.
  */
 static void sgi_gl_raster_pos(SGIGLContext *c, const float obj[4])
 {
@@ -586,6 +621,7 @@ static void sgi_gl_raster_pos(SGIGLContext *c, const float obj[4])
     for (int i = 0; i < 4; i++) {
         c->raster_color[i] = MIN(MAX(c->cur_color[i], 0.0f), 1.0f);
     }
+    c->raster_index = c->cur_index;
 }
 
 static void sgi_gl_capability(SGIGLContext *c, uint32_t cap, bool on)
@@ -725,6 +761,15 @@ void sgi_gl_command(SGIGLContext *c, const SGIGLSink *sink,
         memcpy(pos, a, cmd->nargs * sizeof(float));
         sgi_gl_raster_pos(c, pos);
         return;
+    case SGI_GL_OP_INDEXF:
+        memcpy(&c->cur_index, &a[0], sizeof(c->cur_index));
+        return;
+    case SGI_GL_OP_INDEX_MASK:
+        c->cur.index_mask = a[0];
+        return;
+    case SGI_GL_OP_CLEAR_INDEX:
+        memcpy(&c->clear_index, &a[0], sizeof(c->clear_index));
+        return;
     case SGI_GL_OP_FLUSH:
         /* Every piece has already been sent. */
         return;
@@ -809,6 +854,19 @@ bool sgi_gl_get(const SGIGLContext *c, uint32_t pname, uint32_t *out,
         return true;
     case SGI_GL_CURRENT_RASTER_DISTANCE:
         out[0] = sgi_gl_bits(c->raster_distance);
+        *n = 1;
+        return true;
+    /* The indices as floats, the form the context keeps them in. */
+    case SGI_GL_CURRENT_INDEX:
+    case SGI_GL_CURRENT_RASTER_INDEX:
+    case SGI_GL_INDEX_CLEAR_VALUE:
+        out[0] = sgi_gl_bits(pname == SGI_GL_CURRENT_INDEX ? c->cur_index :
+                             pname == SGI_GL_CURRENT_RASTER_INDEX ?
+                             c->raster_index : c->clear_index);
+        *n = 1;
+        return true;
+    case SGI_GL_INDEX_WRITEMASK:
+        out[0] = c->cur.index_mask;
         *n = 1;
         return true;
     case SGI_GL_COLOR_CLEAR_VALUE:

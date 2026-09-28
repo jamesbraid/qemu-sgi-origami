@@ -7,8 +7,8 @@
  * grid and rasterized with edge functions at pixel centres, then depth
  * tested and stored through the family's target. What it draws follows
  * OpenGL 1.2.1 for untextured, unlit points, lines and polygons at size
- * and width 1, flat or smooth shaded. Where OpenGL leaves a choice, the
- * head's SGIRasterRules make it.
+ * and width 1, flat or smooth shaded, in RGBA or colour-index mode.
+ * Where OpenGL leaves a choice, the head's SGIRasterRules make it.
  */
 #include "qemu/osdep.h"
 #include <math.h>
@@ -41,6 +41,7 @@ typedef struct SGISoftVertex {
     double z;             /* window depth; [0, 1] inside the view volume */
     double inv_w;         /* 1 / clip w, for perspective-correct colour */
     double rgb[3];
+    double index;         /* the colour index, in colour-index mode */
 } SGISoftVertex;
 
 static bool sgi_soft_window(const SGIGLDrawState *st, SGISoftWindow *win)
@@ -86,6 +87,18 @@ static bool sgi_soft_check_rules(const SGIRasterRules *r)
         qemu_log_mask(LOG_UNIMP, "sgi-gl: raster rules (%s) are not "
                       "implemented; nothing drawn\n",
                       r->evidence ? r->evidence : "unlabelled");
+        return false;
+    }
+    return true;
+}
+
+/* Whether the target can take the colour-index work a draw state asks. */
+static bool sgi_soft_check_index(const SGIRasterTarget *t,
+                                 uint32_t index_bits)
+{
+    if (index_bits && !t->store_index) {
+        qemu_log_mask(LOG_UNIMP, "sgi-gl: colour-index drawing is not "
+                      "implemented for these planes; nothing drawn\n");
         return false;
     }
     return true;
@@ -191,10 +204,12 @@ static bool sgi_soft_depth_passes(uint32_t func, uint32_t z, uint32_t stored)
  * One fragment at window pixel (px, py) with window depth z: dropped
  * outside [0, 1] (the view volume's near and far planes) and outside the
  * window's rectangles, depth tested when the test is enabled, then
- * written to each colour target the draw buffers select.
+ * written to each colour target the draw buffers select. colour is the
+ * rules' packed colour in RGBA mode and the stored index in colour-index
+ * mode, which glIndexMask masks (4.2.2).
  */
 static void sgi_soft_fragment(const SGISoftDraw *r, int px, int py, double z,
-                              uint32_t rgb)
+                              uint32_t colour)
 {
     const SGIRasterTarget *t = r->t;
     int x = r->win.ox + px, y = r->win.oy + py;
@@ -218,8 +233,19 @@ static void sgi_soft_fragment(const SGISoftDraw *r, int px, int py, double z,
         }
     }
     for (uint32_t i = 0; i < r->ntargets; i++) {
-        t->store_colour(t->opaque, r->targets[i], x, y, rgb);
+        if (r->st->index_bits) {
+            t->store_index(t->opaque, r->targets[i], x, y, colour,
+                           r->st->index_mask);
+        } else {
+            t->store_colour(t->opaque, r->targets[i], x, y, colour);
+        }
     }
+}
+
+/* A fragment's colour value from an interpolated or flat index. */
+static uint32_t sgi_soft_index(const SGISoftDraw *r, double index)
+{
+    return sgi_gl_index_value(r->st->index_bits, index);
 }
 
 /*
@@ -274,6 +300,7 @@ static bool sgi_soft_transform(const SGISoftDraw *r, const float *v,
     for (int k = 0; k < 3; k++) {
         out->rgb[k] = MIN(MAX(rgba[k], 0.0f), 1.0f);
     }
+    out->index = v[SGI_GL_V_INDEX];
     return true;
 }
 
@@ -311,7 +338,9 @@ static void sgi_soft_triangle(const SGISoftDraw *r, const float *va,
     bool smooth = st->shade_model != SGI_GL_FLAT;
     const int sub = r->rules->subpixel_bits;
     double flat_c[3] = { flat[0], flat[1], flat[2] };
-    uint32_t flat_rgb = sgi_soft_rgb(r->rules, flat_c);
+    uint32_t flat_rgb = st->index_bits ?
+                        sgi_soft_index(r, provoking[SGI_GL_V_INDEX]) :
+                        sgi_soft_rgb(r->rules, flat_c);
 
     if (vw <= 0 || vh <= 0) {
         return;
@@ -377,7 +406,16 @@ static void sgi_soft_triangle(const SGISoftDraw *r, const float *va,
                     c[k] = (w0 * v[0].rgb[k] + w1 * v[1].rgb[k] +
                             w2 * v[2].rgb[k]) / sum;
                 }
-                rgb = sgi_soft_rgb(r->rules, c);
+                /*
+                 * An index is taken as a difference from the first
+                 * vertex's, so a constant one stays exact before its
+                 * integer part is taken.
+                 */
+                rgb = st->index_bits ?
+                      sgi_soft_index(r, v[0].index +
+                                     (w1 * (v[1].index - v[0].index) +
+                                      w2 * (v[2].index - v[0].index)) / sum) :
+                      sgi_soft_rgb(r->rules, c);
             }
             sgi_soft_fragment(r, px, py, z, rgb);
         }
@@ -498,7 +536,8 @@ static void sgi_soft_line(const SGISoftDraw *r, const float *va,
             int px = x_major ? m : n, py = x_major ? n : m;
             double cx = (px + 0.5) * (1 << sub);
             double cy = (py + 0.5) * (1 << sub);
-            double t, c[3];
+            double t, wa, wb, c[3];
+            uint32_t colour;
 
             if (px < MAX(vx, win->x0 - win->ox) ||
                 px > MIN(vx + vw - 1, win->x1 - win->ox) ||
@@ -509,14 +548,22 @@ static void sgi_soft_line(const SGISoftDraw *r, const float *va,
             }
             t = ((cx - a.x) * (b.x - a.x) + (cy - a.y) * (b.y - a.y)) / len2;
             t = MIN(MAX(t, 0.0), 1.0);
-            for (int k = 0; k < 3; k++) {
-                double wa = (1 - t) * a.inv_w, wb = t * b.inv_w;
-
-                c[k] = smooth ? (wa * a.rgb[k] + wb * b.rgb[k]) / (wa + wb) :
-                                flat[k];
+            wa = (1 - t) * a.inv_w;
+            wb = t * b.inv_w;
+            if (st->index_bits) {
+                colour = sgi_soft_index(r, smooth ?
+                                        a.index + wb * (b.index - a.index) /
+                                        (wa + wb) :
+                                        provoking[SGI_GL_V_INDEX]);
+            } else {
+                for (int k = 0; k < 3; k++) {
+                    c[k] = smooth ?
+                           (wa * a.rgb[k] + wb * b.rgb[k]) / (wa + wb) :
+                           flat[k];
+                }
+                colour = sgi_soft_rgb(r->rules, c);
             }
-            sgi_soft_fragment(r, px, py, a.z + t * (b.z - a.z),
-                              sgi_soft_rgb(r->rules, c));
+            sgi_soft_fragment(r, px, py, a.z + t * (b.z - a.z), colour);
         }
     }
 }
@@ -549,7 +596,9 @@ static void sgi_soft_point(const SGISoftDraw *r, const float *vp)
         py > MIN(vy + vh - 1, win->y1 - win->oy)) {
         return;
     }
-    sgi_soft_fragment(r, px, py, v.z, sgi_soft_rgb(r->rules, v.rgb));
+    sgi_soft_fragment(r, px, py, v.z,
+                      st->index_bits ? sgi_soft_index(r, v.index) :
+                                       sgi_soft_rgb(r->rules, v.rgb));
 }
 
 /*
@@ -576,7 +625,8 @@ void sgi_soft_draw(const SGIRasterRules *rules, const SGIRasterTarget *t,
 
 #define V(i) (&d->vertices[(i) * SGI_GL_VERTEX_FLOATS])
     r.ntargets = sgi_gl_draw_targets(d->state, r.targets);
-    if (!sgi_soft_check_rules(rules) || !sgi_soft_window(d->state, &r.win)) {
+    if (!sgi_soft_check_rules(rules) || !sgi_soft_window(d->state, &r.win) ||
+        !sgi_soft_check_index(t, d->state->index_bits)) {
         return;
     }
     switch (d->mode) {
@@ -638,9 +688,10 @@ void sgi_soft_draw(const SGIRasterRules *rules, const SGIRasterTarget *t,
 }
 
 /*
- * CLEAR writes the clear colour to the op's targets and the clear depth to
- * the depth plane at every pixel of its rectangle its clip list keeps.
- * The other kinds are not executed here yet.
+ * CLEAR writes the clear colour, or in colour-index mode the clear index,
+ * to the op's targets and the clear depth to the depth plane at every
+ * pixel of its rectangle its clip list keeps. The other kinds are not
+ * executed here yet.
  */
 void sgi_soft_raster(const SGIRasterRules *rules, const SGIRasterTarget *t,
                      const SGIRasterOp *op)
@@ -657,7 +708,10 @@ void sgi_soft_raster(const SGIRasterRules *rules, const SGIRasterTarget *t,
                       "executed\n", op->kind);
         return;
     }
-    if (colour) {
+    if (colour && op->index_bits && !sgi_soft_check_index(t, op->index_bits)) {
+        colour = false;
+    }
+    if (colour && !op->index_bits) {
         double c[3] = { op->clear_rgba[0], op->clear_rgba[1],
                         op->clear_rgba[2] };
 
@@ -678,7 +732,12 @@ void sgi_soft_raster(const SGIRasterRules *rules, const SGIRasterTarget *t,
                                sgi_soft_depth_max(rules));
             }
             for (uint32_t i = 0; colour && i < MIN(op->ntargets, 2); i++) {
-                t->store_colour(t->opaque, op->targets[i], x, y, rgb);
+                if (op->index_bits) {
+                    t->store_index(t->opaque, op->targets[i], x, y,
+                                   op->clear_index, op->index_mask);
+                } else {
+                    t->store_colour(t->opaque, op->targets[i], x, y, rgb);
+                }
             }
         }
     }
