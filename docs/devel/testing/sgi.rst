@@ -264,7 +264,7 @@ to ``QEMU_TEST_SGI_ASSET_DIR``:
        Origin 300 image above.
    * - ``test_irix_tg.py`` and ``test_irix_tg_perf.py``
      - The IP27 PROM and ``irix/6.5.30/root.qcow2``
-   * - ``test_irix_eg.py``
+   * - ``test_irix_eg.py`` and ``test_irix_ef.py``
      - The IP27 PROM and ``irix/6.5.30/root.qcow2``
    * - ``test_mgras_desktop.py``
      - The IP27 PROM and ``irix/6.5.30/root-si.qcow2``

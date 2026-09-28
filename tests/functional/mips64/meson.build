@@ -167,6 +167,11 @@ test_mips64_timeouts = {
   # in test_irix_tg.py keeps a margin under this, with the bring-up steps on
   # their own fixed timeouts on top.
   'irix_tg' : 1800,
+  # Boot installed IRIX on the Origin 200 and check deterministic TCP data
+  # in both directions plus UDP receive and transmit on the onboard IOC3.
+  # The real PROM boot dominates the run; the transfer checks have fixed
+  # per-operation timeouts.
+  'irix_ef' : 2700,
   # Same boot, then bulk transfers on top of it: throughput needs the traffic
   # to run long enough to be worth timing.
   'irix_tg_perf' : 2700,
@@ -288,6 +293,7 @@ tests_mips64_system_thorough = [
   'irix_origin300_installed_boot',
   'mgras_desktop',
   'irix_eg',
+  'irix_ef',
   'irix_tg',
   'irix_tg_perf',
   'linux_kernel',
