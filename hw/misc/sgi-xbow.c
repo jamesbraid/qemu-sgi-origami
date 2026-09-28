@@ -157,7 +157,8 @@
 /*
  * "The majority of the Crossbow operates off single 100 Mhz clock known as
  * the core_clock" (specification rev 12.0, printed page 99; the block
- * diagram on page 23 shows the same CoreClk).
+ * diagram on page 23 shows the same CoreClk, and the link layer's signal
+ * list on page 126 gives "CoreClk (i) 100 Mhz clock used by core logic.").
  */
 #define XBOW_CORE_CYCLE_NS          10
 /*
