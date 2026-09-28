@@ -346,10 +346,20 @@ static const SGIHeadOps mgras_scanout_ops = {
  * presumably walks its tables live, and what a new table does to the
  * phase is unknown.
  */
+static void mgras_set_timing(SGIMgrasState *s, const SGIScanoutMode *mode)
+{
+    const SGIScanoutMode *cur = &s->scanout.mode;
+
+    if (mode->width != cur->width || mode->height != cur->height ||
+        mode->frame_clocks != cur->frame_clocks ||
+        mode->clock_hz != cur->clock_hz) {
+        sgi_scanout_set_mode(&s->scanout, mode);
+    }
+}
+
 static void mgras_update_timing(SGIMgrasState *s, bool log)
 {
     SGIScanoutMode mode;
-    const SGIScanoutMode *cur = &s->scanout.mode;
     const char *problem = sgi_mgras_display_timing(s, &mode);
 
     /* Once per reset: the kernel writes 0x1e often. */
@@ -359,28 +369,51 @@ static void mgras_update_timing(SGIMgrasState *s, bool log)
                       "0x%04x %s; running the default timing\n",
                       s->vc3_reg[0] /* VID_EP */, problem);
     }
-    if (mode.width != cur->width || mode.height != cur->height ||
-        mode.frame_clocks != cur->frame_clocks ||
-        mode.clock_hz != cur->clock_hz) {
-        sgi_scanout_set_mode(&s->scanout, &mode);
+    mgras_set_timing(s, &mode);
+}
+
+/*
+ * The period the destination runs: the one the source was running, which
+ * the stream carries only when it differs from what the loaded VC3 and DAC
+ * state gives, because the guest changed the tables or PLL after its last
+ * enable write. A stream before version 13 carries no DAC registers, so
+ * the loaded state cannot give a pixel clock; run the stock period.
+ */
+static void mgras_load_timing(SGIMgrasState *s, int version_id)
+{
+    SGIScanoutMode mode;
+
+    if (s->timing_loaded) {
+        s->timing_loaded = false;
+        mode = (SGIScanoutMode) {
+            .width = s->width,
+            .height = s->height,
+            .frame_clocks = s->timing_frame_clocks,
+            .clock_hz = s->timing_clock_hz,
+        };
+        mgras_set_timing(s, &mode);
+    } else if (version_id < 13) {
+        sgi_mgras_display_default_timing(s, &mode);
+        mgras_set_timing(s, &mode);
+    } else {
+        mgras_update_timing(s, false);
     }
 }
 
 /*
  * The stream carries the retrace phase as the timer's expiry alone, as it
- * did before the scanout owned the timer. The period is taken again from
- * the loaded VC3 and DAC state. The scanout counts retraces from an epoch,
- * so restart its count one period before the loaded retrace; the ones
- * after it then keep the source's phase. A stream with no retrace pending,
- * which this model never sends, restarts the phase at load.
+ * did before the scanout owned the timer. The scanout counts retraces from
+ * an epoch, so restart its count one period before the loaded retrace; the
+ * ones after it then keep the source's phase. A stream with no retrace
+ * pending, which this model never sends, restarts the phase at load.
  */
-static void mgras_retrace_rephase(SGIMgrasState *s)
+static void mgras_retrace_rephase(SGIMgrasState *s, int version_id)
 {
     SGIScanout *so = &s->scanout;
     int64_t next = timer_expire_time_ns(so->retrace_timer);
     int64_t period;
 
-    mgras_update_timing(s, false);
+    mgras_load_timing(s, version_id);
     period = sgi_scanout_retrace_time(so, 1) - so->epoch;
     if (period < 0) {
         timer_del(so->retrace_timer);
@@ -1548,7 +1581,7 @@ static int mgras_post_load(void *opaque, int version_id)
     s->display_enabled =
         (s->vc3_reg[MGRAS_VC3_CONTROL] & MGRAS_VC3_CONTROL_DISPLAY) != 0;
     s->cursor_enabled = (s->vc3_reg[0x1d] & 0x2) != 0;
-    mgras_retrace_rephase(s);
+    mgras_retrace_rephase(s, version_id);
     s->dirty = true;
     sgi_mgras_display_flush(s);
     return 0;
@@ -1608,6 +1641,57 @@ static const VMStateDescription vmstate_sgi_mgras_xmap = {
  * only. Change both version_id and minimum_version_id when represented state
  * changes.
  */
+/*
+ * The period the source runs, sent only when re-deriving it from the
+ * migrated tables and PLL bytes would give another, so an ordinary stream
+ * stays loadable by a binary that predates this subsection.
+ */
+static bool mgras_timing_needed(void *opaque)
+{
+    SGIMgrasState *s = opaque;
+    SGIScanoutMode derived;
+
+    sgi_mgras_display_timing(s, &derived);
+    return derived.frame_clocks != s->scanout.mode.frame_clocks ||
+           derived.clock_hz != s->scanout.mode.clock_hz;
+}
+
+static int mgras_timing_pre_save(void *opaque)
+{
+    SGIMgrasState *s = opaque;
+
+    s->timing_frame_clocks = s->scanout.mode.frame_clocks;
+    s->timing_clock_hz = s->scanout.mode.clock_hz;
+    return 0;
+}
+
+static int mgras_timing_post_load(void *opaque, int version_id)
+{
+    SGIMgrasState *s = opaque;
+
+    if (!s->timing_clock_hz || s->timing_frame_clocks > UINT32_MAX ||
+        muldiv64(s->timing_frame_clocks, NANOSECONDS_PER_SECOND,
+                 s->timing_clock_hz) < SGI_SCANOUT_MIN_PERIOD_NS) {
+        return -EINVAL;
+    }
+    s->timing_loaded = true;
+    return 0;
+}
+
+static const VMStateDescription vmstate_sgi_mgras_timing = {
+    .name = TYPE_SGI_MGRAS "/timing",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = mgras_timing_needed,
+    .pre_save = mgras_timing_pre_save,
+    .post_load = mgras_timing_post_load,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT64(timing_frame_clocks, SGIMgrasState),
+        VMSTATE_UINT32(timing_clock_hz, SGIMgrasState),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
 static const VMStateDescription vmstate_sgi_mgras = {
     .name = TYPE_SGI_MGRAS, .version_id = 22, .minimum_version_id = 9,
     .post_load = mgras_post_load,
@@ -1816,6 +1900,10 @@ static const VMStateDescription vmstate_sgi_mgras = {
         VMSTATE_STRUCT_ARRAY(gl, SGIMgrasState, SGI_MGRAS_GL_CONTEXTS, 22,
                              vmstate_sgi_mgras_gl_context_v22, SGIGLContext),
         VMSTATE_END_OF_LIST()
+    },
+    .subsections = (const VMStateDescription * const []) {
+        &vmstate_sgi_mgras_timing,
+        NULL
     }
 };
 
