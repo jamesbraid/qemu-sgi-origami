@@ -58,13 +58,16 @@ struct SGICommandFetch {
 
     /*
      * Resolved at submit, released by sgi_fetch_finish(). A fetch holds
-     * one invocation at a time: map a fetch only when it holds no
-     * segments, and give a list invoked from inside decode() a fetch of
-     * its own. Mapping one that still holds segments asserts.
+     * one invocation at a time, from its map to its finish, so a list
+     * invoked from inside decode() needs a fetch of its own. A map of a
+     * fetch not yet finished fails with SGI_FAIL_BUSY and changes nothing
+     * in it; the finish that goes with that map publishes the failure and
+     * leaves the running invocation alone. A fetch starts zeroed.
      */
     SGIFetchSegment *segments;
     unsigned nsegments;
     uint64_t nwords;            /* total over the segments */
+    unsigned open;              /* maps not yet finished */
 };
 
 /*
@@ -88,8 +91,9 @@ int sgi_fetch_map_plane(SGICommandFetch *f, const SGIBoardMemory *m,
 /* Host memory only: feed every segment to decode(). */
 void sgi_fetch_run(SGICommandFetch *f, void *opaque);
 /*
- * Under the lock: release the segments and publish CONSUMED with the words
- * fed to the grammar, or FAILED with status when status is non-zero.
+ * Under the lock, once after every map whatever it returned: release the
+ * segments and publish CONSUMED with the words fed to the grammar, or
+ * FAILED with status when status is non-zero.
  */
 void sgi_fetch_finish(SGICommandFetch *f, int status, const SGIHeadOps *ops,
                       void *opaque);

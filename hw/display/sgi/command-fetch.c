@@ -76,24 +76,33 @@ static int sgi_fetch_add(SGICommandFetch *f, const SGIDMABus *bus,
     return ret;
 }
 
-static void sgi_fetch_begin(SGICommandFetch *f)
+static int sgi_fetch_begin(SGICommandFetch *f)
 {
     /*
-     * A fetch still holding segments is one being run, perhaps by the
-     * decode() below us on the stack: mapping into it again would drop
-     * the outer segments and cut the outer run short.
+     * A fetch not yet finished is one being run, perhaps by the decode()
+     * below us on the stack when a list invokes a list. The guest's words
+     * choose that, so it fails the inner invocation and leaves the outer
+     * one's segments, count and run alone.
      */
-    assert(!f->segments && !f->nsegments);
+    if (f->open++) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-fetch: context %u's fetch is "
+                      "still running a list\n", f->context);
+        return SGI_FAIL_BUSY;
+    }
     f->nwords = 0;
+    return 0;
 }
 
 int sgi_fetch_map(SGICommandFetch *f, const SGIDMABus *bus,
                   const SGIDMAPageList *pl, uint64_t offset, uint64_t nwords)
 {
-    uint64_t budget = sgi_dma_page_list_bytes(pl) / 4;
-    int ret;
+    uint64_t budget;
+    int ret = sgi_fetch_begin(f);
 
-    sgi_fetch_begin(f);
+    if (ret) {
+        return ret;
+    }
+    budget = sgi_dma_page_list_bytes(pl) / 4;
     ret = sgi_fetch_add(f, bus, pl, offset, nwords, &budget);
     /*
      * The budget bounds a next() that keeps asking; a range of no words
@@ -140,9 +149,11 @@ int sgi_fetch_map_plane(SGICommandFetch *f, const SGIBoardMemory *m,
 {
     const SGIPlane *p = sgi_board_memory_plane(m, plane);
     uint64_t budget;
-    int ret;
+    int ret = sgi_fetch_begin(f);
 
-    sgi_fetch_begin(f);
+    if (ret) {
+        return ret;
+    }
     if (!p) {
         qemu_log_mask(LOG_GUEST_ERROR, "sgi-fetch: no plane %u\n", plane);
         return SGI_FAIL_BOUNDS;
@@ -171,6 +182,15 @@ void sgi_fetch_run(SGICommandFetch *f, void *opaque)
 void sgi_fetch_finish(SGICommandFetch *f, int status, const SGIHeadOps *ops,
                       void *opaque)
 {
+    /* The finish of a refused map: the running fetch keeps its segments. */
+    if (f->open > 1) {
+        f->open--;
+        trace_sgi_fetch(f->seq, f->context, 0, 0, status);
+        sgi_head_publish(ops, opaque, f->seq, SGI_DONE_FAILED, f->cookie,
+                         status ? status : SGI_FAIL_BUSY);
+        return;
+    }
+    f->open = 0;
     trace_sgi_fetch(f->seq, f->context, f->nsegments, f->nwords, status);
     for (unsigned i = 0; i < f->nsegments; i++) {
         g_free(f->segments[i].words);
