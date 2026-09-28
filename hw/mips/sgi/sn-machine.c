@@ -2995,6 +2995,17 @@ static SGIXioLink *sgi_machine_claim_xio_slot(Object *obj, Object *board,
                 return NULL;
             }
         }
+        /*
+         * An Origin 300 has no XIO slots at all. Its board's XIO connector
+         * is an external cable port for an expansion brick, which the model
+         * does not provide, and no XIO board attaches to it directly.
+         */
+        if (s->bedrock_nodes && !t->xio_slots) {
+            error_setg(errp, "topology '%s' has no XIO slots: the XIO "
+                       "connector is an external cable port for an expansion "
+                       "brick, and no XIO board attaches to it", t->name);
+            return NULL;
+        }
         error_setg(errp, "topology '%s' has no empty XIO slot %s", t->name,
                    name);
         return NULL;

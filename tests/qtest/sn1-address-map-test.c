@@ -253,6 +253,17 @@
  * file used to set here was named backwards and set the mirror.
  */
 #define XBRIDGE_HOST_PORT 0xa
+/*
+ * The board's rear XIO connector, an external cable port, at the chip's
+ * selected default. No source binds the connector to a crossbar port;
+ * see SGI_XBRIDGE_XIO_PORT_DEFAULT for what the number is and is not.
+ */
+#define XBRIDGE_XIO_PORT 0xb
+#define XBRIDGE_LINK_REG(port, off) (0x100 + ((port) - 8) * 0x40 + (off))
+#define XBRIDGE_LINK_STATUS 0x10
+#define XBRIDGE_LINK_AUX_STATUS 0x38
+#define XBRIDGE_LINK_ALIVE (1U << 31)
+#define XBRIDGE_LINK_WIDGET_PRESENT (1U << 5)
 #define XBRIDGE_ATE_VALID 1
 #define XBRIDGE_ATE_NO_SWAP (1U << 5)
 #define XBRIDGE_INT_STATUS 0x100
@@ -1123,6 +1134,41 @@ static void test_xbridge_topology(const void *data)
                     0xffffffff);
     g_assert_cmphex(qtest_readl(qts, IO_WIDGET(0xe) + 0x22000), ==,
                     0xffffffff);
+
+    /*
+     * The board's XIO connector: an external cable port the chip decodes
+     * at its selected external port, with no brick behind it. A discovery
+     * walk reads the crossbar's link registers before it addresses a
+     * port, and they say no widget is present and the link is not alive,
+     * which is what an unused cable port answers.
+     */
+    qobject_unref(response);
+    response = qtest_qmp(qts,
+        "{'execute':'qom-get', 'arguments':{"
+        "'path':'/machine/node0/xbridge', 'property':'xio-port'}}");
+    g_assert_cmpint(qdict_get_int(response, "return"), ==, XBRIDGE_XIO_PORT);
+    g_assert_cmphex(widget_reg_read(qts, 0,
+                        XBRIDGE_LINK_REG(XBRIDGE_XIO_PORT,
+                                         XBRIDGE_LINK_AUX_STATUS)) &
+                    XBRIDGE_LINK_WIDGET_PRESENT, ==, 0);
+    g_assert_cmphex(widget_reg_read(qts, 0,
+                        XBRIDGE_LINK_REG(XBRIDGE_XIO_PORT,
+                                         XBRIDGE_LINK_STATUS)) &
+                    XBRIDGE_LINK_ALIVE, ==, 0);
+    /* And the position itself decodes to nothing rather than faulting. */
+    g_assert_cmphex(widget_reg_read(qts, XBRIDGE_XIO_PORT, 0), ==, 0);
+    /*
+     * The Bedrock's I/O interface decodes that widget: without its link,
+     * a processor's access there would fail in the Bedrock, where qtest's
+     * reads cannot see it, so check the address space the link builds.
+     */
+    {
+        g_autofree char *mtree = qtest_hmp(qts, "info mtree");
+        g_autofree char *name = g_strdup_printf(
+            "address-space: sgi-bedrock-io.widget%u", XBRIDGE_XIO_PORT);
+
+        g_assert_nonnull(strstr(mtree, name));
+    }
 
     qtest_quit(qts);
 }
@@ -3042,6 +3088,24 @@ static void assert_qemu_rejects(const char *const args[], const char *message)
 }
 
 /*
+ * The Origin 300 has no XIO slots: its board's XIO connector is an
+ * external cable port for an expansion brick, which the model does not
+ * provide, and no XIO board attaches to it. A board asking for the
+ * connector is refused with that reason.
+ */
+static void test_xio_connector_takes_no_board(const void *data)
+{
+    const char *args[] = {
+        qtest_qemu_binary(NULL), "-M", "origin300", "-cpu", "R14000",
+        "-smp", "2", "-bios", prom_path,
+        "-device", "sgi-mgras,slot=xio-connector",
+        "-display", "none", "-qtest", "stdio", "-accel", "qtest", NULL
+    };
+
+    assert_qemu_rejects(args, "the XIO connector is an external cable port");
+}
+
+/*
  * nodes chooses what the machine builds, and a system reset walks what
  * was built. Changing it once the machine exists is refused, and the
  * machine still resets afterwards.
@@ -3859,6 +3923,8 @@ int main(int argc, char **argv)
                         test_pi1_a_irq_reaches_cpu1);
     qtest_add_data_func("sn1/address-map/xbridge-topology", NULL,
                         test_xbridge_topology);
+    qtest_add_data_func("sn1/address-map/xio-connector-takes-no-board",
+                        NULL, test_xio_connector_takes_no_board);
     qtest_add_data_func("sn1/address-map/nodes-fixed-once-built",
                         NULL, test_nodes_fixed_once_built);
     qtest_add_data_func("sn1/address-map/io8-usb-attachment", NULL,
