@@ -208,18 +208,12 @@ static uint64_t md_read(void *opaque, hwaddr offset, unsigned size)
     if (md_storage(offset, &index, &mask)) {
         /*
          * Performance counter 0 is plain storage, but the stock PROM uses it
-         * as a software lock word at the second SMP
-         * rendezvous. The owning node arbitrates a busy spin on it under
-         * multi-threaded TCG
-         * (sgi_bedrock_perf_counter_access); the value is unchanged. A
-         * standalone sgi-bedrock-md has no owning node.
-        */
+         * as a software lock word at the second SMP rendezvous; traced so
+         * that rendezvous can be followed by processor.
+         */
         if (index == MD_PERF_COUNTER0) {
             trace_sgi_bedrock_md_perf0_read(
                 current_cpu ? current_cpu->cpu_index : -1, s->storage[index]);
-            if (s->bedrock) {
-                sgi_bedrock_perf_counter_access(s->bedrock);
-            }
         }
         return s->storage[index];
     }
@@ -272,13 +266,9 @@ static void md_write(void *opaque, hwaddr offset, uint64_t value,
     }
     if (md_storage(offset, &index, &mask)) {
         s->storage[index] = value & mask;
-        /* A write is an access to the software lock word, like a read. */
         if (index == MD_PERF_COUNTER0) {
             trace_sgi_bedrock_md_perf0_write(
                 current_cpu ? current_cpu->cpu_index : -1, s->storage[index]);
-            if (s->bedrock) {
-                sgi_bedrock_perf_counter_access(s->bedrock);
-            }
         }
         return;
     }

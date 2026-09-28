@@ -325,20 +325,8 @@ static uint64_t lb_read(void *opaque, hwaddr offset, unsigned size)
         uint64_t old = s->scratch[index];
 
         s->scratch[index] = 1;
-        /*
-         * Scratch 3's twin is the node's hub lock; the owning node arbitrates
-         * the second multi-threaded-TCG rendezvous
-         * there (sgi_bedrock_scratch3_acquire). The value is already
-         * produced; the hold only decides when the reader runs
-         * next. A standalone device under a register-contract qtest has no
-         * owning node (s->bedrock is only set by
-         * bedrock_realize()) and never holds.
-        */
         trace_sgi_bedrock_lb_scratch_twin_read(
             current_cpu ? current_cpu->cpu_index : -1, index, old);
-        if (index == 3 && s->bedrock) {
-            sgi_bedrock_scratch3_acquire(s->bedrock, old);
-        }
         return old;
     }
 
@@ -434,11 +422,10 @@ static void lb_write(void *opaque, hwaddr offset, uint64_t value,
         }
         s->scratch[index] = index < 3 ? value : value & 1;
         /*
-         * Clearing scratch 3 releases the node's hub lock; wake any peer this
-         * node's own processor parked on it
-         * (sgi_bedrock_scratch3_released). A standalone device has no owning
-         * node.
-        */
+         * Clearing scratch 3 releases the node's hub lock, which the stock
+         * PROM publishes presence under (sgi_bedrock_scratch3_released,
+         * docs/known-issues.md). A standalone device has no owning node.
+         */
         if (index == 3 && s->scratch[3] == 0 && s->bedrock) {
             sgi_bedrock_scratch3_released(s->bedrock);
         }

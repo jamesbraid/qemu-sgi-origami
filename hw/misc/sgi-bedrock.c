@@ -78,65 +78,6 @@ bool sgi_bedrock_hub_registers_permitted(SGIBedrockState *s)
 #define SGI_BEDROCK_HOLD_MS 2000 /* mirrors sgi-hub.c's SGI_HUB_RT_HOLD_MS */
 
 /*
- * The second rendezvous (H3). The stock PROM meets a node's processors
- * again well after reset, during "Copying PROM code to memory", over a
- * software lock word it keeps in a memory/directory register (MD
- * performance counter 0) and an in-RAM per-processor table that no device
- * sees. A processor claims a bit of the lock word -- an atomic
- * read-modify-write it brackets with the node's hub lock, LB scratch 3's
- * read-set-if-zero twin -- checks the table for a peer's publication, and
- * clears the bit and retries when it is not yet there; the peer publishes
- * only once its own separate bring-up reaches that point. While one
- * processor holds the bit, the other spins reading the lock word, waiting
- * for the bit to clear. On real hardware both processors run continuously
- * off one clock, so the holder's check and the poller's wait overlap and
- * resolve in bounded time. Under multi-threaded TCG each processor is its
- * own host thread, and a contended host can leave one thread unscheduled
- * while the other's tight spin keeps its host core busy -- which is exactly
- * what denies the first a turn, so the boot stalls at the copy phase with
- * the lock word's bit set and neither processor advancing
- * (docs/known-issues.md, "The second-rendezvous hub-lock hold";
- * docs/notebooks/origin300-irix-disk-boot-copy-stall-rootcause-20260917.md).
- *
- * H3 restores the shared-clock overlap for a bounded time, in the same
- * queued-work shape as H1 and the SN0 Hub's RT-mailbox hold, and never
- * fabricates a value the guest reads. A write's effect and a scratch-3
- * read-set-if-zero's result are fixed before any park. A perf-counter-0
- * read is the other way around: it is sampled after its park completes,
- * so the pause lets a peer's write land first and the read observes the
- * fresh value instead of a stale one. It acts at the two registers the
- * spin touches:
- *
- *   - The lock word is MD performance counter 0. A processor spinning on it
- *     -- reading it to test a bit, or claiming and releasing a bit in a
- *     retry loop, both of which are seen in the stall -- touches it over and
- *     over while its peer, starved elsewhere, does not touch it at all. So a
- *     processor that has accessed the word SGI_BEDROCK_PERF_SPIN times in a
- *     row with no access from its peer cedes a bounded quantum
- *     (SGI_BEDROCK_HOLD_PERF_YIELD), freeing its host core for that starved
- *     peer to run. The run counts this processor's own reads and writes
- *     alike, so a monopolising claim/release retry loop -- which writes the
- *     word every pass -- still trips it; only the peer's own access resets
- *     it, so genuine hand-off, where the two alternate, never does.
- *     sgi_bedrock_perf_counter_access() is the hook, from read and write.
- *
- *   - A processor whose hub-lock twin read finds LB scratch 3 already held
- *     by a peer is parked until the peer clears it
- *     (SGI_BEDROCK_HOLD_SCRATCH3_HELD), rather than left polling a lock a
- *     descheduled holder cannot release -- the same shape H1 uses at the
- *     reset-edge rendezvous. This covers the brief window the two
- *     processors contend the hub lock itself.
- */
-/*
- * Both picked heuristically, not from a measurement: high enough that an
- * ordinary brief critical section never trips a yield, low enough that the
- * first yield still lands promptly in guest-instruction time. Contrast
- * SGI_BEDROCK_HOLD_MS above, which mirrors an existing hold's bound.
- */
-#define SGI_BEDROCK_YIELD_MS 2       /* a fairness quantum, not a join bound */
-#define SGI_BEDROCK_PERF_SPIN 8192   /* one-sided accesses before a yield */
-
-/*
  * The presence publication (H4). Right after H1's join the stock PROM's
  * processors set off for their first barrier, and the lowest fitted
  * processor of each interface first publishes its interface's fitted
@@ -370,12 +311,6 @@ static bool bedrock_hold_ready(SGIBedrockState *s, unsigned int slot,
                                SGIBedrockHoldKind kind)
 {
     switch (kind) {
-    case SGI_BEDROCK_HOLD_SCRATCH3_HELD:
-        /* Parked until the peer clears the hub lock it held. */
-        return s->lb.scratch[3] == 0;
-    case SGI_BEDROCK_HOLD_PERF_YIELD:
-        /* A fairness quantum: nothing to wait for but the bound below. */
-        return false;
     case SGI_BEDROCK_HOLD_PRESENCE:
         /* A publisher, parked until the other interface publishes too. */
         return !bedrock_presence_other_pending(s, slot);
@@ -452,10 +387,6 @@ void sgi_bedrock_scratch1_read(SGIBedrockState *s)
 static const char *bedrock_hold_kind_name(SGIBedrockHoldKind kind)
 {
     switch (kind) {
-    case SGI_BEDROCK_HOLD_SCRATCH3_HELD:
-        return "scratch3-held";
-    case SGI_BEDROCK_HOLD_PERF_YIELD:
-        return "perf-yield";
     case SGI_BEDROCK_HOLD_PRESENCE:
         return "presence";
     case SGI_BEDROCK_HOLD_PARTNER:
@@ -524,9 +455,7 @@ static void bedrock_hold_run(CPUState *cs, run_on_cpu_data data)
     if (!hold->start) {
         hold->start = now;
     }
-    deadline = hold->start +
-               (kind == SGI_BEDROCK_HOLD_PERF_YIELD ?
-                SGI_BEDROCK_YIELD_MS : SGI_BEDROCK_HOLD_MS) * SCALE_MS;
+    deadline = hold->start + SGI_BEDROCK_HOLD_MS * SCALE_MS;
 
     for (;;) {
         now = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
@@ -659,23 +588,6 @@ void sgi_bedrock_hold_scratch1_write(SGIBedrockState *s, uint64_t value)
     } else {
         bedrock_hold_kick_pending(s, SGI_BEDROCK_HOLD_SCRATCH1, slot);
     }
-}
-
-/*
- * Only an access this node's own processor issued can take a hold: a qtest
- * backdoor read or a DMA engine carries no vCPU to park, and a standalone
- * child device has no owning node at all. The holds are a multi-threaded-TCG
- * fairness aid; round-robin hands slices around itself, so H3 does not apply
- * there (docs/known-issues.md). Returns the executing slot, or -1.
- */
-static int bedrock_h3_slot(SGIBedrockState *s)
-{
-    int cslot = bedrock_hold_current_slot(s);
-
-    if (cslot < 0 || !qemu_tcg_mttcg_enabled() || !bedrock_hold_applicable(s)) {
-        return -1;
-    }
-    return s->hold_id[cslot] ? -1 : cslot;
 }
 
 /*
@@ -818,56 +730,9 @@ static void bedrock_park_expire(void *opaque)
     bedrock_park_recheck(s);
 }
 
-void sgi_bedrock_perf_counter_access(SGIBedrockState *s)
-{
-    int cslot = bedrock_h3_slot(s);
-
-    if (cslot < 0) {
-        return;
-    }
-
-    /*
-     * The other processor touching the word is a hand-off: reset the run to
-     * this processor. Otherwise this processor is accessing the word again
-     * with the other still absent. A short run is ordinary; a full spin's
-     * worth with the other never touching it is one processor monopolising
-     * the lock while the other is starved, so cede a bounded quantum for the
-     * other to run. The run counts this processor's own reads and writes
-     * alike, so a claim/release retry loop trips it; only the other's own
-     * access resets it, so genuine alternation never does. No wall clock.
-     */
-    if (s->perf_last_slot != cslot) {
-        s->perf_last_slot = cslot;
-        s->perf_run = 0;
-    }
-    if (++s->perf_run < SGI_BEDROCK_PERF_SPIN) {
-        return;
-    }
-    s->perf_run = 0;
-    bedrock_hold_start(s, (unsigned int)cslot, SGI_BEDROCK_HOLD_PERF_YIELD);
-}
-
-void sgi_bedrock_scratch3_acquire(SGIBedrockState *s, uint64_t observed)
-{
-    int cslot;
-
-    /* Only a peer already holding the hub lock is worth waiting on. */
-    if (observed == 0) {
-        return;
-    }
-    cslot = bedrock_h3_slot(s);
-    if (cslot < 0) {
-        return;
-    }
-    bedrock_hold_start(s, (unsigned int)cslot, SGI_BEDROCK_HOLD_SCRATCH3_HELD);
-}
-
 void sgi_bedrock_scratch3_released(SGIBedrockState *s)
 {
     int cslot;
-
-    /* Wake every peer parked on the hub lock so each re-checks its release. */
-    bedrock_hold_wake_kind(s, SGI_BEDROCK_HOLD_SCRATCH3_HELD);
 
     /*
      * A publisher releasing the lock after its interface's publication has
@@ -1023,8 +888,6 @@ void sgi_bedrock_hold_reset(SGIBedrockState *s)
     if (s->park_timer) {
         timer_del(s->park_timer);
     }
-    s->perf_last_slot = -1;
-    s->perf_run = 0;
     for (unsigned int i = 0; i < SGI_BEDROCK_PROCESSORS /
          SGI_BEDROCK_PI_PROCESSORS; i++) {
         s->presence_seen[i] = false;
@@ -1600,7 +1463,7 @@ static int bedrock_post_load(void *opaque, int version_id)
  * hold_scratch1_seen in sgi-bedrock.h: bounded, re-accumulated from the
  * guest's own polling, and never itself a value the guest reads. That state
  * -- hold_cpu, hold_scratch1_seen, hold_scratch1_withheld_valid,
- * hold_scratch1_withheld, perf_last_slot, perf_run, hold_id, hold_kind,
+ * hold_scratch1_withheld, hold_id, hold_kind,
  * hold_seq, presence_seen, presence_abandoned, hold_scratch1_joined,
  * presence_posted, presence_released -- stays out of this description on
  * purpose, the way

@@ -118,11 +118,9 @@ struct SGIBedrockMDState {
     MemoryRegion mmio;
     /*
      * The owning node, set directly by bedrock_realize() the way the local
-     * block's own back-reference is (sgi-bedrock-lb.h). Reads of performance
-     * counter 0, which the stock PROM uses as a software lock word, are
-     * handed to sgi_bedrock_perf_counter_access() for the second rendezvous's
-     * fairness yield; see sgi-bedrock.h.
-    */
+     * block's own back-reference is (sgi-bedrock-lb.h), so a memory error
+     * can raise its interrupt on the node's processor interfaces.
+     */
     SGIBedrockState *bedrock;
     MemoryRegion directory_mmio;
     MemoryRegion ecc_mmio;

@@ -26,8 +26,6 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIBedrockState, SGI_BEDROCK)
 /* What a held processor waits for. Mirrors sgi-hub.c's SGIHubRTHoldKind. */
 typedef enum SGIBedrockHoldKind {
     SGI_BEDROCK_HOLD_SCRATCH1 = 1,       /* H1: LB scratch 1's withheld write */
-    SGI_BEDROCK_HOLD_SCRATCH3_HELD = 2,  /* H3: the hub lock a peer holds */
-    SGI_BEDROCK_HOLD_PERF_YIELD = 3,     /* H3: a monopoliser cedes a quantum */
     SGI_BEDROCK_HOLD_PRESENCE = 4,       /* H4: a publisher awaits its peer's */
     SGI_BEDROCK_HOLD_PARTNER = 5,        /* H4: partner awaits its publisher */
     SGI_BEDROCK_HOLD_LIVENESS = 6,       /* H4: a poster awaits its partner's */
@@ -144,13 +142,6 @@ struct SGIBedrockState {
      * hold_id/hold_kind: the active hold on each slot, zero for none, and
      * which register it is waiting on. hold_seq hands out ascending ids
      * the way sgi-hub.c's pi_rt_hold_seq does.
-     *
-     * perf_last_slot is the processor that last accessed the software lock
-     * word (MD performance counter 0), or -1, and perf_run is its unbroken
-     * run of accesses since the other processor last touched the word -- a
-     * long run being one processor monopolising the lock while the other is
-     * starved elsewhere, the way the copy-phase stall was traced. See the H3
-     * hold's own comment in sgi-bedrock.c and docs/known-issues.md.
      */
     bool hold_scratch1_seen[SGI_BEDROCK_PROCESSORS];
     bool hold_scratch1_withheld_valid[SGI_BEDROCK_PROCESSORS];
@@ -162,8 +153,6 @@ struct SGIBedrockState {
      */
     uint64_t hold_scratch1_withheld_seq[SGI_BEDROCK_PROCESSORS];
     uint64_t hold_scratch1_seq;
-    int perf_last_slot;
-    uint64_t perf_run;
     uint64_t hold_id[SGI_BEDROCK_PROCESSORS];
     uint8_t hold_kind[SGI_BEDROCK_PROCESSORS];
     uint64_t hold_seq;
@@ -248,24 +237,6 @@ void sgi_bedrock_hold_scratch1_write(SGIBedrockState *s, uint64_t value);
 void sgi_bedrock_scratch1_read(SGIBedrockState *s);
 
 /*
- * The second rendezvous's holds (H3), docs/known-issues.md and
- * docs/datasheets/bedrock-local-block.md. Each is called after the register
- * value has already been produced and only decides whether to park the
- * reader; no value the guest reads changes.
- *
- * sgi_bedrock_perf_counter_access(): called from md_read() and md_write() for
- * the software lock word (MD performance counter 0). A processor that has
- * accessed the word many times over while the other has not touched it is
- * monopolising the lock with the other starved, so it cedes a bounded
- * quantum, freeing its host core for the starved processor to run.
- *
- * sgi_bedrock_scratch3_acquire(): called from lb_read() with the value LB
- * scratch 3's hub-lock twin returned; nonzero means a peer holds it, so the
- * reader is parked rather than left polling. sgi_bedrock_scratch3_released()
- * is called from lb_write() when a processor clears the lock, to wake it.
- */
-void sgi_bedrock_perf_counter_access(SGIBedrockState *s);
-/*
  * The memory-directory unit latched a correctable read error: raise the
  * memory-correctable bit, pending bank 1 bit 61, on both processor
  * interfaces (docs/datasheets/bedrock-processor-interface.md).
@@ -278,7 +249,12 @@ void sgi_bedrock_memory_correctable_error(SGIBedrockState *s);
  * processor's error mask (docs/datasheets/bedrock-processor-interface.md).
  */
 void sgi_bedrock_memory_uncorrectable_error(SGIBedrockState *s);
-void sgi_bedrock_scratch3_acquire(SGIBedrockState *s, uint64_t observed);
+
+/*
+ * Called from lb_write() when a processor clears LB scratch 3, the hub lock
+ * the PROM publishes presence under: records a publisher's release and parks
+ * it for the presence join. No value the guest reads changes.
+ */
 void sgi_bedrock_scratch3_released(SGIBedrockState *s);
 
 /*
