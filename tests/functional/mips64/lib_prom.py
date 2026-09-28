@@ -140,18 +140,13 @@ def codes_seen(trace_text):
 def mark_reached(seen, mark):
     """Whether seen is a superset of mark, and which mark codes are missing.
 
-    Returns (True, []) when every code in mark also appears in seen --
-    extra codes in seen beyond mark do not affect the verdict, matching
-    tools/boot-gate's own subset comparison (order-independent; a boot
-    that goes further than the recorded mark still passes). Otherwise
-    returns (False, sorted(mark - seen)), naming exactly what is missing.
+    Returns (True, []) when every code in mark also appears in seen.
+    Extra codes do not affect the verdict. Otherwise returns
+    (False, sorted(mark - seen)), naming exactly what is missing.
 
     An empty seen is the degenerate case where every mark code is
-    "missing" -- boot-gate's own "a run that did not start" case. This
-    function does not give that case separate wording; the caller
-    (test_prom_boot's PromBoot, and boot-gate's own main()) does, the same
-    way boot-gate's codes_reached() and its "not seen" check are two
-    separate pieces of that tool.
+    "missing". The caller handles that case separately when it needs to
+    distinguish a run that did not start.
     """
     missing = sorted(mark - seen)
     return not missing, missing
@@ -196,15 +191,10 @@ def drive_console(sock, log_path, timeout, steps, until=None,
     """Answer a guest's prompts from a rule table and drive it to an end
     condition, over the framework's console socket.
 
-    Ported from tools/serial-console's own expect loop (see that file's
-    docstring for why: commands sent before the firmware is listening are
-    lost, and a rule that could refire on a prompt reappearing after being
-    answered would send the wrong thing next time): each (pattern,
-    response) in steps fires once, the first time PATTERN matches the tail
-    of what has been received since the last match. Every byte received
-    is both accumulated into the returned transcript and appended to
-    log_path, so a run this drove is inspectable exactly like a captured
-    -serial file.
+    Each (pattern, response) in steps fires once, the first time PATTERN
+    matches the tail of what has been received since the last match.
+    Every byte received is accumulated into the returned transcript and
+    appended to log_path, so the run remains inspectable after the test.
 
     The end condition is either `until`, a byte regex matched against the
     tail, or `reached_when`, a predicate over the whole accumulated

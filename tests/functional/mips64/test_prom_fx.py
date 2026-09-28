@@ -27,10 +27,9 @@ answers yes, on a disk this test created seconds earlier.
 Every fx prompt is answered by a fixed step; a stray "?" at any of
 them makes fx print help and re-prompt, which shifts every later answer
 one prompt short and leaves fx waiting for input at the last one. That
-is exactly what happened in the first by-hand butterfly session, and it
-read as a wedge in the SCSI path until the polled address was decoded
-(the console UART's line-status register, a getchar loop); the project
-checkout's firmware-diags notebook records it.
+is exactly what happened in the first manual QEMU butterfly session.
+It looked like a SCSI-path wedge until the polled address was decoded as
+the console UART's line-status register in a getchar loop.
 
 Everything structural -- PROM digest refusal, path-structured netboot
 staging, the one-shot-per-step console driver, provenance records --

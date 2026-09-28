@@ -12,11 +12,10 @@ pytest run.
 import re
 
 
-# The local-POD debug-switch value, the same one tools/podlib.py names.
+# ELSC switch value that selects local POD mode.
 LOCAL_POD_SWITCHES = 0x10
 
-# One command per prompt, in order. LF terminates a POD line (unlike
-# MDK's reader); the project harness's POD driver sends the same.
+# One newline-terminated command per POD prompt, in order.
 COMMANDS = (
     "version",
     "why",
@@ -36,9 +35,8 @@ COMMANDS = (
     "pf 0",
 )
 
-# Fixed lines of the firmware's own output, one per aspect the roadmap's
-# check names: the prompt itself, configuration, memory, error state and
-# registers. Regexes because the config block aligns with tabs.
+# Fixed firmware output lines for the prompt, configuration, memory,
+# error state and registers. Regexes account for tabs in the config block.
 ASSERTIONS = (
     ("POD prompt", re.compile(r"POD [A-Za-z]* ?(?:Cac|Dex|Unc)>")),
     ("PROM version banner", re.compile(r"SGI Version 6\.11")),

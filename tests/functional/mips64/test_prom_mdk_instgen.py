@@ -13,12 +13,10 @@ R10000 audit chased by hand). This test drives the manual's own
 thousand-pass example -- `instgen -s 1 -e 1000` -- and requires the
 kernel's completion line with no error output.
 
-TWO CPUS, deliberately: on one CPU instgen exits before its first pass
--- its master polls a per-CPU worker state that never appears -- and the
-project checkout's docs/notebooks/firmware-diags.md traces that exit.
-This is the one MDK leg that needs -smp 2, so it is also the nightly's
-standing check that a two-CPU boot of the real PROM still reaches a
-working multiprocessing kernel.
+TWO CPUS, deliberately: an earlier one-CPU QEMU run exited before the
+first pass because instgen's master waited for a per-CPU worker state
+that never appeared. This is the only MDK leg that needs -smp 2, so it
+also checks that the stock PROM reaches a working two-CPU kernel.
 
 Everything structural is shared with test_prom_mdk.py, including the
 CR-terminated MDK command. The passes are the kernel's own pseudo-random
@@ -90,11 +88,10 @@ class PromMdkInstgen(QemuSystemTest):
 
         vm = self.get_vm(name='prom_mdk_instgen')
         # No debug-leds=off here, alone in this directory: with two
-        # CPUs that option wedged the PROM boot twice (once before
+        # CPUs that option wedged QEMU's PROM boot twice (once before
         # CrayLink discovery, once at a headless-HUB wreck with a
         # General Exception loop on the ELSC), while the same binary
         # boots two CPUs cleanly with the flight recorder left on.
-        # Recorded in the project checkout's firmware-diags notebook.
         vm.set_machine('origin200')
         vm.set_console()
         elsc_log = self.log_file('elsc-aux.log')

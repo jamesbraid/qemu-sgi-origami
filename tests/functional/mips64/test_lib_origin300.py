@@ -25,9 +25,7 @@ def _sha256(data):
 
 class IdentityRecordTests(unittest.TestCase):
 
-    # The digests tools/origami_lib/node_eeprom.py in the project checkout
-    # produces for the same records; a run of `tools/origami run prom
-    # --machine origin300` records the chassis one in its run.json.
+    # Stable SHA-256 fixtures for the generated chassis and board records.
     def test_the_node_records_match_the_project_builders(self):
         self.assertEqual(
             _sha256(lib._build_node_chassis_eeprom_record()),

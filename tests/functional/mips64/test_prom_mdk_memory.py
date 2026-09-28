@@ -8,9 +8,8 @@
 memory.mdk is the second MDK 1.6 package: the secondary-cache test and
 seven memory tests (mapped and unmapped), each started by name at the
 MDK> prompt and each ending with the kernel's own "... has completed"
-line. All eight pass on this machine (the project checkout's
-docs/notebooks/firmware-diags.md carries the results and the capture),
-so this test drives the complete battery in one boot -- MDK reruns tests
+line. A previous QEMU run passed all eight tests, so this test drives the
+complete battery in one boot -- MDK reruns tests
 from the same package without rebooting -- and holds the machine to it.
 
 Everything structural is shared with test_prom_mdk.py: the PROM digest

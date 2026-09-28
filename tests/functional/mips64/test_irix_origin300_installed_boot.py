@@ -3,13 +3,10 @@
 # Boot installed IRIX 6.5.30 on the two-processor Origin 300
 #
 # SPDX-License-Identifier: GPL-2.0-or-later
-"""Check the installed IP35 guest beyond the stock PROM menu.
+"""Boot the installed IP35 disk beyond the stock PROM menu.
 
-The captured installed-disk run in the Origami checkout
-(docs/boot-logs/irix.origin300-2cpu-no-scache-sbe.
-2026-09-24T23:08:06-07:00) reaches the IRIX console login. This test
-uses that disk with the same boot-flash and identity inputs as the PROM
-test, then requires a root shell, run level 2 and the IP35 release.
+The test uses the same boot-flash and identity inputs as the PROM test,
+then requires a root shell, run level 2 and the IP35 release.
 """
 
 import os
