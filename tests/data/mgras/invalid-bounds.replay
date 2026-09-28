@@ -1,2 +1,4 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
+sgi-replay 2
+head sgi-mgras
 pixels 1279 1023 2 1 0

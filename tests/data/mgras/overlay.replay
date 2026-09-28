@@ -1,4 +1,6 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
+sgi-replay 2
+head sgi-mgras
 # Overlay planes the way the stock IRIX 6.5.30 X server drives them for a
 # window on its overlay visual (popup and Toolchest menus, XOR outlines),
 # reduced from desktop traces irix-20260926T035440-7d2dc3 and

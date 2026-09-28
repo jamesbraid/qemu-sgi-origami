@@ -325,22 +325,115 @@ static unsigned int parse_env_line(const char *name, const char *value)
     return (unsigned int)parsed;
 }
 
-static void replay_line(QTestState *qts, const char *path, unsigned int line,
-                        char *text)
+/* Split one fixture line into its words, dropping empty ones. */
+static char **split_words(const char *text)
 {
     g_auto(GStrv) raw = g_strsplit_set(text, " \t\r", -1);
-    g_autoptr(GPtrArray) compact = g_ptr_array_new();
-    char **words;
+    GPtrArray *words = g_ptr_array_new();
 
     for (size_t i = 0; raw[i]; i++) {
         if (*raw[i]) {
-            g_ptr_array_add(compact, raw[i]);
+            g_ptr_array_add(words, g_strdup(raw[i]));
         }
     }
-    g_ptr_array_add(compact, NULL);
-    words = (char **)compact->pdata;
+    g_ptr_array_add(words, NULL);
+    return (char **)g_ptr_array_free(words, false);
+}
+
+/*
+ * The fixture format.  Blank lines and lines whose first word starts with
+ * '#' are ignored wherever they appear.  The first record is the version
+ * line, "sgi-replay 2", and the second names the graphics head the fixture
+ * drives, "head CODENAME".  Every later record is a verb.
+ *
+ * Version 1 is the MGRAS replay format from before fixtures carried a
+ * header: the same verbs, no version line and no head.  The harness refuses
+ * it rather than guess the head, and scripts/sgi-replay-convert.py rewrites
+ * it; a version 1 file can only be an MGRAS one.
+ */
+#define REPLAY_FORMAT_VERSION 2
+
+typedef struct ReplayHead {
+    const char *codename;
+} ReplayHead;
+
+static const ReplayHead replay_heads[] = {
+    {
+        .codename = "sgi-mgras",
+    },
+};
+
+static const ReplayHead *find_head(const char *codename)
+{
+    for (size_t i = 0; i < ARRAY_SIZE(replay_heads); i++) {
+        if (!strcmp(replay_heads[i].codename, codename)) {
+            return &replay_heads[i];
+        }
+    }
+    return NULL;
+}
+
+/*
+ * Read the version line and the head record from @lines.  Returns the head
+ * and sets *@header_end to the head record's line number, so the replay
+ * proper starts after it.
+ */
+static const ReplayHead *parse_header(const char *path, char **lines,
+                                      unsigned int *header_end)
+{
+    unsigned int records = 0;
+
+    for (unsigned int i = 0; lines[i]; i++) {
+        unsigned int line = i + 1;
+        g_auto(GStrv) words = split_words(lines[i]);
+        const ReplayHead *head;
+        uint64_t version;
+
+        if (!words[0] || words[0][0] == '#') {
+            continue;
+        }
+        if (records++ == 0) {
+            if (strcmp(words[0], "sgi-replay")) {
+                g_error("%s:%u: a replay starts with the version line "
+                        "'sgi-replay %d'; a version 1 MGRAS fixture converts "
+                        "with scripts/sgi-replay-convert.py", path, line,
+                        REPLAY_FORMAT_VERSION);
+            }
+            if (!words[1] || words[2]) {
+                g_error("%s:%u: sgi-replay requires VERSION", path, line);
+            }
+            version = parse_number(path, line, words[1]);
+            if (version != REPLAY_FORMAT_VERSION) {
+                g_error("%s:%u: replay format version %" PRIu64 " is not "
+                        "supported; this harness reads version %d", path,
+                        line, version, REPLAY_FORMAT_VERSION);
+            }
+            continue;
+        }
+        if (strcmp(words[0], "head") || !words[1] || words[2]) {
+            g_error("%s:%u: the version line must be followed by "
+                    "'head CODENAME'", path, line);
+        }
+        head = find_head(words[1]);
+        if (!head) {
+            g_error("%s:%u: unknown head '%s'", path, line, words[1]);
+        }
+        *header_end = line;
+        return head;
+    }
+    g_error("%s: no %s", path, records ? "head record" : "version line");
+}
+
+static void replay_line(QTestState *qts, const char *path, unsigned int line,
+                        char *text)
+{
+    g_auto(GStrv) words = split_words(text);
+
     if (!words[0] || words[0][0] == '#') {
         return;
+    }
+    if (!strcmp(words[0], "sgi-replay") || !strcmp(words[0], "head")) {
+        g_error("%s:%u: %s must lead the fixture", path, line, words[0]);
     }
     if (!strcmp(words[0], "reset") && !words[1]) {
         qtest_system_reset(qts);
@@ -398,13 +491,15 @@ static void run_replay(const char *path, bool check_default_trace)
     g_auto(GStrv) lines = NULL;
     g_autoptr(GError) error = NULL;
     bool remove_trace = false;
-    unsigned int line_count, start_line, end_line;
+    unsigned int line_count, start_line, end_line, header_end;
     QTestState *qts;
     int fd;
 
     if (!g_file_get_contents(path, &contents, NULL, &error)) {
         g_error("cannot read replay %s: %s", path, error->message);
     }
+    lines = g_strsplit(contents, "\n", -1);
+    parse_header(path, lines, &header_end);
     if (!trace || !*trace) {
         fd = g_file_open_tmp("sgi-replay-XXXXXX.trace",
                              &temporary_trace, &error);
@@ -430,7 +525,6 @@ static void run_replay(const char *path, bool check_default_trace)
         sgi_wait_migration_status(qts, "completed", 30);
     }
 
-    lines = g_strsplit(contents, "\n", -1);
     line_count = g_strv_length(lines);
     start_line = start_line_env && *start_line_env ?
                  parse_env_line("SGI_REPLAY_START_LINE", start_line_env) : 1;
@@ -440,7 +534,9 @@ static void run_replay(const char *path, bool check_default_trace)
         g_error("%s: line range %u..%u is outside 1..%u", path,
                 start_line, end_line, line_count);
     }
-    for (unsigned int i = start_line; i <= end_line; i++) {
+    /* The header was read before the machine started. */
+    for (unsigned int i = MAX(start_line, header_end + 1); i <= end_line;
+         i++) {
         replay_line(qts, path, i, lines[i - 1]);
     }
     if (checkpoint_save && *checkpoint_save) {
@@ -533,13 +629,15 @@ static void test_masked_read(void)
  * cross-check against an unrelated checkpoint file's own boundary --
  * resuming at the line a checkpoint was saved from, instead of the line
  * after it, would silently replay that line's write a second time. Prove
- * the documented N/N+1 contract instead: save after line two of a tiny
- * fixture, resume at line three, and confirm line two's write appears
+ * the documented N/N+1 contract instead: save after the second write of a
+ * tiny fixture, resume at the read after it, and confirm that write appears
  * exactly once across the combined trace of both runs.
  */
 static void test_checkpoint_boundary_runs_once(void)
 {
     static const char fixture[] =
+        "sgi-replay 2\n"
+        "head sgi-mgras\n"
         "write 1 0x073c08 0xaa\n"
         "write 1 0x073c08 0xbb\n"
         "read 1 0x073c08 0xbb\n";
@@ -578,15 +676,15 @@ static void test_checkpoint_boundary_runs_once(void)
     g_assert_no_error(error);
     close(fd);
 
-    g_setenv("SGI_REPLAY_END_LINE", "2", true);
+    g_setenv("SGI_REPLAY_END_LINE", "4", true);
     g_setenv("SGI_REPLAY_CHECKPOINT_SAVE", checkpoint_path, true);
     g_setenv("SGI_REPLAY_TRACE", trace_save_path, true);
     run_replay(fixture_path, false);
     g_unsetenv("SGI_REPLAY_CHECKPOINT_SAVE");
 
     g_setenv("SGI_REPLAY_CHECKPOINT_LOAD", checkpoint_path, true);
-    g_setenv("SGI_REPLAY_START_LINE", "3", true);
-    g_setenv("SGI_REPLAY_END_LINE", "3", true);
+    g_setenv("SGI_REPLAY_START_LINE", "5", true);
+    g_setenv("SGI_REPLAY_END_LINE", "5", true);
     g_setenv("SGI_REPLAY_TRACE", trace_load_path, true);
     run_replay(fixture_path, false);
     g_unsetenv("SGI_REPLAY_CHECKPOINT_LOAD");
@@ -623,19 +721,43 @@ static void test_checkpoint_boundary_runs_once(void)
     unlink(trace_load_path);
 }
 
+/* The 1-based number of the first line of @path that starts with @prefix. */
+static unsigned int first_line_with_prefix(const char *path,
+                                           const char *prefix)
+{
+    g_autofree char *contents = NULL;
+    g_auto(GStrv) lines = NULL;
+    g_autoptr(GError) error = NULL;
+
+    g_assert_true(g_file_get_contents(path, &contents, NULL, &error));
+    g_assert_no_error(error);
+    lines = g_strsplit(contents, "\n", -1);
+    for (unsigned int i = 0; lines[i]; i++) {
+        if (g_str_has_prefix(lines[i], prefix)) {
+            return i + 1;
+        }
+    }
+    g_error("%s: no line starts with '%s'", path, prefix);
+}
+
 /*
  * checkpoint-boundary-once proves the MMIO-count contract at a line
  * boundary; neither it nor replay-screendump ever look at what a
  * screendump taken after SGI_REPLAY_CHECKPOINT_LOAD actually contains. Split
- * fill.replay before its display-enable write (line 129: the two
- * display-pixel assertions straddling it show display_enabled flips
- * there) so the loaded process both restores painted-but-not-yet-shown
- * state through post_load and then enables the display itself, and
- * compare its screendump byte for byte against one from an uninterrupted
- * run of the same fixture.
+ * fill.replay before its display-enable write (the two display-pixel
+ * assertions straddling it show display_enabled flips there) so the loaded
+ * process both restores painted-but-not-yet-shown state through post_load
+ * and then enables the display itself, and compare its screendump byte for
+ * byte against one from an uninterrupted run of the same fixture.  The
+ * split is found by content, the first display-pixel check, because a
+ * pinned line number went stale as the fixture grew.
  */
 static void test_checkpoint_screendump_matches_uninterrupted_replay(void)
 {
+    unsigned int split = first_line_with_prefix(DEFAULT_REPLAY,
+                                                "display-pixel ");
+    g_autofree char *end_line = g_strdup_printf("%u", split);
+    g_autofree char *start_line = g_strdup_printf("%u", split + 1);
     g_autofree char *full_path = NULL;
     g_autofree char *split_path = NULL;
     g_autofree char *checkpoint_path = NULL;
@@ -663,14 +785,14 @@ static void test_checkpoint_screendump_matches_uninterrupted_replay(void)
     run_replay(DEFAULT_REPLAY, false);
     g_unsetenv("SGI_REPLAY_SCREENDUMP");
 
-    g_setenv("SGI_REPLAY_END_LINE", "116", true);
+    g_setenv("SGI_REPLAY_END_LINE", end_line, true);
     g_setenv("SGI_REPLAY_CHECKPOINT_SAVE", checkpoint_path, true);
     run_replay(DEFAULT_REPLAY, false);
     g_unsetenv("SGI_REPLAY_CHECKPOINT_SAVE");
     g_unsetenv("SGI_REPLAY_END_LINE");
 
     g_setenv("SGI_REPLAY_CHECKPOINT_LOAD", checkpoint_path, true);
-    g_setenv("SGI_REPLAY_START_LINE", "117", true);
+    g_setenv("SGI_REPLAY_START_LINE", start_line, true);
     g_setenv("SGI_REPLAY_SCREENDUMP", split_path, true);
     run_replay(DEFAULT_REPLAY, false);
     g_unsetenv("SGI_REPLAY_CHECKPOINT_LOAD");
@@ -838,14 +960,14 @@ static void test_invalid_read_mask(void)
 static void test_invalid_read_mismatch(void)
 {
     test_invalid_replay(INVALID_READ_MISMATCH,
-                        "*invalid-read-mismatch.replay:3: read 0x73c08*"
+                        "*invalid-read-mismatch.replay:5: read 0x73c08*"
                         "*expected 0x54*");
 }
 
 static void test_invalid_masked_mismatch(void)
 {
     test_invalid_replay(INVALID_MASKED_MISMATCH,
-                        "*invalid-masked-mismatch.replay:2: read 0x8000*"
+                        "*invalid-masked-mismatch.replay:4: read 0x8000*"
                         "*expected 0x2 with mask 0x2*");
 }
 
@@ -863,7 +985,7 @@ static void test_invalid_wid_bounds(void)
 static void test_invalid_mismatch(void)
 {
     test_invalid_replay(INVALID_MISMATCH,
-                        "*invalid-mismatch.replay:2: pixel (0, 0)*");
+                        "*invalid-mismatch.replay:4: pixel (0, 0)*");
 }
 
 static void test_invalid_dma_extra(void)
@@ -875,6 +997,63 @@ static void test_invalid_dma_hex_mismatch(void)
 {
     test_invalid_replay(INVALID_DMA_HEX_MISMATCH,
                         "*dma hex length does not match LEN*");
+}
+
+/*
+ * A header fault is refused before any machine starts, so these write their
+ * fixture to a temporary file instead of carrying one per case.
+ */
+static void test_invalid_header(const char *fixture, const char *message)
+{
+    g_autofree char *path = NULL;
+    g_autoptr(GError) error = NULL;
+    int fd;
+
+    if (g_test_subprocess()) {
+        run_replay(g_getenv("SGI_REPLAY_INVALID_FILE"), false);
+        return;
+    }
+    fd = g_file_open_tmp("sgi-replay-header-XXXXXX.replay", &path, &error);
+    g_assert_no_error(error);
+    close(fd);
+    g_assert_true(g_file_set_contents(path, fixture, -1, &error));
+    g_assert_no_error(error);
+    test_invalid_replay(path, message);
+    unlink(path);
+}
+
+static void test_invalid_no_version(void)
+{
+    test_invalid_header("# a version 1 fixture\n"
+                        "read 4 0x008000 0x0\n",
+                        "*:2: a replay starts with the version line "
+                        "'sgi-replay 2'*");
+}
+
+static void test_invalid_version(void)
+{
+    test_invalid_header("sgi-replay 3\nhead sgi-mgras\n",
+                        "*:1: replay format version 3 is not supported*");
+}
+
+static void test_invalid_no_head(void)
+{
+    test_invalid_header("sgi-replay 2\nread 4 0x008000 0x0\n",
+                        "*:2: the version line must be followed by "
+                        "'head CODENAME'*");
+}
+
+static void test_invalid_unknown_head(void)
+{
+    test_invalid_header("sgi-replay 2\nhead sgi-nonesuch\n",
+                        "*:2: unknown head 'sgi-nonesuch'*");
+}
+
+static void test_invalid_late_head(void)
+{
+    test_invalid_header("sgi-replay 2\nhead sgi-mgras\n"
+                        "read 4 0x008000 0x0\nhead sgi-mgras\n",
+                        "*:4: head must lead the fixture*");
 }
 
 int main(int argc, char **argv)
@@ -917,5 +1096,11 @@ int main(int argc, char **argv)
                    test_invalid_dma_extra);
     qtest_add_func("sgi-replay/mgras/invalid-dma-hex-mismatch",
                    test_invalid_dma_hex_mismatch);
+    qtest_add_func("sgi-replay/header/no-version", test_invalid_no_version);
+    qtest_add_func("sgi-replay/header/version", test_invalid_version);
+    qtest_add_func("sgi-replay/header/no-head", test_invalid_no_head);
+    qtest_add_func("sgi-replay/header/unknown-head",
+                   test_invalid_unknown_head);
+    qtest_add_func("sgi-replay/header/late-head", test_invalid_late_head);
     return g_test_run();
 }
