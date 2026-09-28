@@ -405,7 +405,7 @@ static void test_scratch_aliases_and_reset(void)
 }
 
 /*
- * hw/misc/sgi-bedrock.c's rendezvous hold at LB scratch 1
+ * hw/misc/sgi-bedrock.c's reset-barrier park at LB scratch 1
  * (sgi_bedrock_hold_scratch1_write) only arbitrates an access this node's own
  * processor issues. A standalone sgi-bedrock-lb, as every test in this file
  * runs, has no owning node (SGIBedrockLBState.bedrock is only set by
