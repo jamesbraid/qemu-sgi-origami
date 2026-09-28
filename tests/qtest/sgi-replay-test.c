@@ -1,6 +1,8 @@
 /*
- * Replay a reduced, device-relative MGRAS MMIO stream.  Origin 2000 is only
- * the host fixture; replay files contain no machine addresses or topology.
+ * Replay a reduced, device-relative MMIO stream against an SGI graphics
+ * head.  A fixture names its head and nothing else about the machine: the
+ * head's entry in replay_heads[] chooses the host machine, where the head's
+ * registers sit and how to reach its test properties.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
@@ -13,11 +15,72 @@
 #include "sgi-migrate.h"
 #include "sgi-test.h"
 
-#define MGRAS_BASE           (SPACE_XTALK + (0xfULL << 24))
-#define MGRAS_REG(offset)    (MGRAS_BASE + (offset))
-#define MACHINE_ARGS \
-    "-M origin2000,topology=origin2000-one-node -smp 2 -m 256M"
-#define MGRAS_QOM_PATH   "/machine/mgras"
+/*
+ * The fixture format.  Blank lines and lines whose first word starts with
+ * '#' are ignored wherever they appear.  The first record is the version
+ * line, "sgi-replay 2", and the second names the graphics head the fixture
+ * drives, "head CODENAME".  Every later record is a verb.
+ *
+ * Version 1 is the MGRAS replay format from before fixtures carried a
+ * header: the same verbs, no version line and no head.  The harness refuses
+ * it rather than guess the head, and scripts/sgi-replay-convert.py rewrites
+ * it; a version 1 file can only be an MGRAS one.
+ */
+#define REPLAY_FORMAT_VERSION 2
+
+/*
+ * What a head's codename selects.  A family joins the harness by adding one
+ * entry here; nothing else in this file names a family.
+ *
+ * @machine is the whole -M/-smp/-m (and any -device) argument string.
+ * @mmio_base is where the machine maps offset 0 of the head's register
+ * window, @mmio_size that window's size; write and read offsets are checked
+ * against it.  @qom_path is the head's device, which must provide the
+ * x-test-pixel-x/-y selectors and the x-test-pixel, x-test-display-pixel,
+ * x-test-wid and x-test-overlay values the pixel verbs read.  @width and
+ * @height bound those verbs' coordinates.  @trace is the -trace arguments
+ * that record the head's register accesses into SGI_REPLAY_TRACE.
+ */
+typedef struct ReplayHead {
+    const char *codename;
+    const char *machine;
+    uint64_t mmio_base;
+    uint64_t mmio_size;
+    const char *qom_path;
+    uint32_t width;
+    uint32_t height;
+    const char *trace;
+} ReplayHead;
+
+static const ReplayHead replay_heads[] = {
+    {
+        /*
+         * The SI captures come from a one-node Origin 2000 with 256 MiB;
+         * the board answers as widget 0xf.
+         */
+        .codename = "sgi-mgras",
+        .machine = "-M origin2000,topology=origin2000-one-node "
+                   "-smp 2 -m 256M",
+        .mmio_base = SPACE_XTALK + (0xfULL << 24),
+        .mmio_size = 2 * MiB,
+        .qom_path = "/machine/mgras",
+        .width = 1280,
+        .height = 1024,
+        .trace = "-trace enable=sgi_mgras_mmio "
+                 "-trace enable=sgi_mgras_control_mmio",
+    },
+};
+
+static const ReplayHead *find_head(const char *codename)
+{
+    for (size_t i = 0; i < ARRAY_SIZE(replay_heads); i++) {
+        if (!strcmp(replay_heads[i].codename, codename)) {
+            return &replay_heads[i];
+        }
+    }
+    return NULL;
+}
+
 #define DEFAULT_REPLAY    "../tests/data/mgras/fill.replay"
 #define MINIMAL_REPLAY    "../tests/data/mgras/minimal.replay"
 #define MASKED_READ       "../tests/data/mgras/masked-read.replay"
@@ -42,9 +105,6 @@
 #define INVALID_DMA_EXTRA "../tests/data/mgras/invalid-dma-extra.replay"
 #define INVALID_DMA_HEX_MISMATCH \
     "../tests/data/mgras/invalid-dma-hex-mismatch.replay"
-#define MGRAS_MMIO_SIZE      (2 * MiB)
-#define SI_NATIVE_WIDTH   1280
-#define SI_NATIVE_HEIGHT  1024
 
 static uint64_t parse_number(const char *path, unsigned int line,
                              const char *word)
@@ -64,11 +124,12 @@ static uint64_t parse_number(const char *path, unsigned int line,
     return value;
 }
 
-static uint64_t qom_get_uint(QTestState *qts, const char *property)
+static uint64_t qom_get_uint(QTestState *qts, const ReplayHead *head,
+                             const char *property)
 {
     QDict *response = qtest_qmp(qts,
         "{'execute': 'qom-get', 'arguments': {'path': %s, "
-        "'property': %s}}", MGRAS_QOM_PATH, property);
+        "'property': %s}}", head->qom_path, property);
     uint64_t value;
 
     if (!qdict_haskey(response, "return")) {
@@ -80,39 +141,33 @@ static uint64_t qom_get_uint(QTestState *qts, const char *property)
     return value;
 }
 
-static uint32_t pixel(QTestState *qts, uint32_t x, uint32_t y,
-                      bool display)
+/* Select pixel (@x, @y) on the head and read one of its values there. */
+static uint32_t plane_value(QTestState *qts, const ReplayHead *head,
+                            uint32_t x, uint32_t y, const char *property)
 {
     qtest_qmp_assert_success(qts,
         "{'execute': 'qom-set', 'arguments': {'path': %s, "
         "'property': 'x-test-pixel-x', 'value': %u}}",
-        MGRAS_QOM_PATH, x);
+        head->qom_path, x);
     qtest_qmp_assert_success(qts,
         "{'execute': 'qom-set', 'arguments': {'path': %s, "
         "'property': 'x-test-pixel-y', 'value': %u}}",
-        MGRAS_QOM_PATH, y);
-    return qom_get_uint(qts, display ? "x-test-display-pixel" :
-                                      "x-test-pixel");
+        head->qom_path, y);
+    return qom_get_uint(qts, head, property);
 }
 
-static uint32_t plane_value(QTestState *qts, uint32_t x, uint32_t y,
-                            const char *property)
+static uint32_t pixel(QTestState *qts, const ReplayHead *head, uint32_t x,
+                      uint32_t y, bool display)
 {
-    qtest_qmp_assert_success(qts,
-        "{'execute': 'qom-set', 'arguments': {'path': %s, "
-        "'property': 'x-test-pixel-x', 'value': %u}}",
-        MGRAS_QOM_PATH, x);
-    qtest_qmp_assert_success(qts,
-        "{'execute': 'qom-set', 'arguments': {'path': %s, "
-        "'property': 'x-test-pixel-y', 'value': %u}}",
-        MGRAS_QOM_PATH, y);
-    return qom_get_uint(qts, property);
+    return plane_value(qts, head, x, y,
+                       display ? "x-test-display-pixel" : "x-test-pixel");
 }
 
-static void replay_mmio(QTestState *qts, const char *path, unsigned int line,
-                        char **words, bool write)
+static void replay_mmio(QTestState *qts, const ReplayHead *head,
+                        const char *path, unsigned int line, char **words,
+                        bool write)
 {
-    uint64_t width, offset, value, actual, mask;
+    uint64_t width, offset, value, actual, mask, addr;
     bool masked;
     size_t nwords = g_strv_length(words);
 
@@ -128,10 +183,11 @@ static void replay_mmio(QTestState *qts, const char *path, unsigned int line,
     if (width != 1 && width != 2 && width != 4 && width != 8) {
         g_error("%s:%u: unsupported MMIO width %" PRIu64, path, line, width);
     }
-    if (offset >= MGRAS_MMIO_SIZE || offset + width > MGRAS_MMIO_SIZE) {
-        g_error("%s:%u: MMIO access is outside the MGRAS aperture", path,
-                line);
+    if (offset >= head->mmio_size || width > head->mmio_size - offset) {
+        g_error("%s:%u: MMIO access is outside the %s aperture", path,
+                line, head->codename);
     }
+    addr = head->mmio_base + offset;
     if (width < 8 && value >= (1ULL << (width * 8))) {
         g_error("%s:%u: MMIO value is wider than width %" PRIu64, path,
                 line, width);
@@ -142,25 +198,25 @@ static void replay_mmio(QTestState *qts, const char *path, unsigned int line,
     }
     if (write) {
         if (width == 1) {
-            qtest_writeb(qts, MGRAS_REG(offset), value);
+            qtest_writeb(qts, addr, value);
         } else if (width == 2) {
-            qtest_writew(qts, MGRAS_REG(offset), value);
+            qtest_writew(qts, addr, value);
         } else if (width == 4) {
-            qtest_writel(qts, MGRAS_REG(offset), value);
+            qtest_writel(qts, addr, value);
         } else {
-            qtest_writeq(qts, MGRAS_REG(offset), value);
+            qtest_writeq(qts, addr, value);
         }
         return;
     }
 
     if (width == 1) {
-        actual = qtest_readb(qts, MGRAS_REG(offset));
+        actual = qtest_readb(qts, addr);
     } else if (width == 2) {
-        actual = qtest_readw(qts, MGRAS_REG(offset));
+        actual = qtest_readw(qts, addr);
     } else if (width == 4) {
-        actual = qtest_readl(qts, MGRAS_REG(offset));
+        actual = qtest_readl(qts, addr);
     } else {
-        actual = qtest_readq(qts, MGRAS_REG(offset));
+        actual = qtest_readq(qts, addr);
     }
     if ((actual ^ value) & mask) {
         if (masked) {
@@ -224,8 +280,9 @@ static void replay_dma(QTestState *qts, const char *path, unsigned int line,
     qtest_memwrite(qts, addr, bytes, len);
 }
 
-static void replay_pixel(QTestState *qts, const char *path, unsigned int line,
-                         char **words, bool display)
+static void replay_pixel(QTestState *qts, const ReplayHead *head,
+                         const char *path, unsigned int line, char **words,
+                         bool display)
 {
     uint64_t x, y, expected, actual;
 
@@ -235,11 +292,10 @@ static void replay_pixel(QTestState *qts, const char *path, unsigned int line,
     x = parse_number(path, line, words[1]);
     y = parse_number(path, line, words[2]);
     expected = parse_number(path, line, words[3]);
-    if (x >= SI_NATIVE_WIDTH || y >= SI_NATIVE_HEIGHT ||
-        expected > UINT32_MAX) {
+    if (x >= head->width || y >= head->height || expected > UINT32_MAX) {
         g_error("%s:%u: pixel is outside the native surface", path, line);
     }
-    actual = pixel(qts, x, y, display);
+    actual = pixel(qts, head, x, y, display);
     if (actual != expected) {
         g_error("%s:%u: pixel (%" PRIu64 ", %" PRIu64 ") returned 0x%"
                 PRIx64 ", expected 0x%" PRIx64,
@@ -247,8 +303,8 @@ static void replay_pixel(QTestState *qts, const char *path, unsigned int line,
     }
 }
 
-static void replay_pixels(QTestState *qts, const char *path, unsigned int line,
-                          char **words)
+static void replay_pixels(QTestState *qts, const ReplayHead *head,
+                          const char *path, unsigned int line, char **words)
 {
     uint64_t x, y, width, height, expected;
 
@@ -264,14 +320,14 @@ static void replay_pixels(QTestState *qts, const char *path, unsigned int line,
     if (x > UINT32_MAX || y > UINT32_MAX || width > UINT32_MAX ||
         height > UINT32_MAX || expected > UINT32_MAX ||
         width > UINT32_MAX - x || height > UINT32_MAX - y || !width ||
-        !height || x >= SI_NATIVE_WIDTH || y >= SI_NATIVE_HEIGHT ||
-        width > SI_NATIVE_WIDTH - x || height > SI_NATIVE_HEIGHT - y) {
+        !height || x >= head->width || y >= head->height ||
+        width > head->width - x || height > head->height - y) {
         g_error("%s:%u: pixels rectangle is outside the native surface",
                 path, line);
     }
     for (uint32_t row = 0; row < height; row++) {
         for (uint32_t column = 0; column < width; column++) {
-            uint32_t actual = pixel(qts, x + column, y + row, false);
+            uint32_t actual = pixel(qts, head, x + column, y + row, false);
             if (actual != expected) {
                 g_error("%s:%u: pixels (%u,%u) returned 0x%08x, expected "
                         "0x%08x", path, line, (uint32_t)(x + column),
@@ -283,8 +339,9 @@ static void replay_pixels(QTestState *qts, const char *path, unsigned int line,
 }
 
 /* Check one byte-wide plane: the WID tag or the overlay index. */
-static void replay_plane(QTestState *qts, const char *path, unsigned int line,
-                         char **words, const char *property)
+static void replay_plane(QTestState *qts, const ReplayHead *head,
+                         const char *path, unsigned int line, char **words,
+                         const char *property)
 {
     uint64_t x, y, expected, actual;
 
@@ -294,12 +351,11 @@ static void replay_plane(QTestState *qts, const char *path, unsigned int line,
     x = parse_number(path, line, words[1]);
     y = parse_number(path, line, words[2]);
     expected = parse_number(path, line, words[3]);
-    if (x >= SI_NATIVE_WIDTH || y >= SI_NATIVE_HEIGHT ||
-        expected > UINT8_MAX) {
+    if (x >= head->width || y >= head->height || expected > UINT8_MAX) {
         g_error("%s:%u: %s value is outside the current model range", path,
                 line, words[0]);
     }
-    actual = plane_value(qts, x, y, property);
+    actual = plane_value(qts, head, x, y, property);
     if (actual != expected) {
         g_error("%s:%u: %s (%" PRIu64 ",%" PRIu64 ") returned 0x%02" PRIx64
                 ", expected 0x%02" PRIx64, path, line, words[0], x, y, actual,
@@ -338,39 +394,6 @@ static char **split_words(const char *text)
     }
     g_ptr_array_add(words, NULL);
     return (char **)g_ptr_array_free(words, false);
-}
-
-/*
- * The fixture format.  Blank lines and lines whose first word starts with
- * '#' are ignored wherever they appear.  The first record is the version
- * line, "sgi-replay 2", and the second names the graphics head the fixture
- * drives, "head CODENAME".  Every later record is a verb.
- *
- * Version 1 is the MGRAS replay format from before fixtures carried a
- * header: the same verbs, no version line and no head.  The harness refuses
- * it rather than guess the head, and scripts/sgi-replay-convert.py rewrites
- * it; a version 1 file can only be an MGRAS one.
- */
-#define REPLAY_FORMAT_VERSION 2
-
-typedef struct ReplayHead {
-    const char *codename;
-} ReplayHead;
-
-static const ReplayHead replay_heads[] = {
-    {
-        .codename = "sgi-mgras",
-    },
-};
-
-static const ReplayHead *find_head(const char *codename)
-{
-    for (size_t i = 0; i < ARRAY_SIZE(replay_heads); i++) {
-        if (!strcmp(replay_heads[i].codename, codename)) {
-            return &replay_heads[i];
-        }
-    }
-    return NULL;
 }
 
 /*
@@ -424,8 +447,8 @@ static const ReplayHead *parse_header(const char *path, char **lines,
     g_error("%s: no %s", path, records ? "head record" : "version line");
 }
 
-static void replay_line(QTestState *qts, const char *path, unsigned int line,
-                        char *text)
+static void replay_line(QTestState *qts, const ReplayHead *head,
+                        const char *path, unsigned int line, char *text)
 {
     g_auto(GStrv) words = split_words(text);
 
@@ -438,21 +461,21 @@ static void replay_line(QTestState *qts, const char *path, unsigned int line,
     if (!strcmp(words[0], "reset") && !words[1]) {
         qtest_system_reset(qts);
     } else if (!strcmp(words[0], "write")) {
-        replay_mmio(qts, path, line, words, true);
+        replay_mmio(qts, head, path, line, words, true);
     } else if (!strcmp(words[0], "read")) {
-        replay_mmio(qts, path, line, words, false);
+        replay_mmio(qts, head, path, line, words, false);
     } else if (!strcmp(words[0], "dma")) {
         replay_dma(qts, path, line, words);
     } else if (!strcmp(words[0], "pixel")) {
-        replay_pixel(qts, path, line, words, false);
+        replay_pixel(qts, head, path, line, words, false);
     } else if (!strcmp(words[0], "display-pixel")) {
-        replay_pixel(qts, path, line, words, true);
+        replay_pixel(qts, head, path, line, words, true);
     } else if (!strcmp(words[0], "pixels")) {
-        replay_pixels(qts, path, line, words);
+        replay_pixels(qts, head, path, line, words);
     } else if (!strcmp(words[0], "wid")) {
-        replay_plane(qts, path, line, words, "x-test-wid");
+        replay_plane(qts, head, path, line, words, "x-test-wid");
     } else if (!strcmp(words[0], "overlay")) {
-        replay_plane(qts, path, line, words, "x-test-overlay");
+        replay_plane(qts, head, path, line, words, "x-test-overlay");
     } else {
         g_error("%s:%u: unknown or malformed operation '%s'", path, line,
                 words[0]);
@@ -474,7 +497,8 @@ static void replay_line(QTestState *qts, const char *path, unsigned int line,
  * the save side, both through sgi-migrate.h. qtest's dummy CPUs and frozen
  * QEMU_CLOCK_VIRTUAL mean the two sides never need an explicit stop.
  */
-static void run_replay(const char *path, bool check_default_trace)
+static void run_replay(const char *path,
+                       void (*check_trace)(const char *trace_contents))
 {
     const char *trace = g_getenv("SGI_REPLAY_TRACE");
     const char *screendump = g_getenv("SGI_REPLAY_SCREENDUMP");
@@ -492,6 +516,7 @@ static void run_replay(const char *path, bool check_default_trace)
     g_autoptr(GError) error = NULL;
     bool remove_trace = false;
     unsigned int line_count, start_line, end_line, header_end;
+    const ReplayHead *head;
     QTestState *qts;
     int fd;
 
@@ -499,7 +524,7 @@ static void run_replay(const char *path, bool check_default_trace)
         g_error("cannot read replay %s: %s", path, error->message);
     }
     lines = g_strsplit(contents, "\n", -1);
-    parse_header(path, lines, &header_end);
+    head = parse_header(path, lines, &header_end);
     if (!trace || !*trace) {
         fd = g_file_open_tmp("sgi-replay-XXXXXX.trace",
                              &temporary_trace, &error);
@@ -510,11 +535,8 @@ static void run_replay(const char *path, bool check_default_trace)
         trace = temporary_trace;
         remove_trace = true;
     }
-    args = g_strdup_printf(MACHINE_ARGS
-                           " -trace enable=sgi_mgras_mmio"
-                           " -trace enable=sgi_mgras_control_mmio"
-                           " -D %s%s", trace,
-                           checkpoint_load && *checkpoint_load ?
+    args = g_strdup_printf("%s %s -D %s%s", head->machine, head->trace,
+                           trace, checkpoint_load && *checkpoint_load ?
                            " -incoming defer" : "");
     qts = qtest_init(args);
     if (checkpoint_load && *checkpoint_load) {
@@ -537,7 +559,7 @@ static void run_replay(const char *path, bool check_default_trace)
     /* The header was read before the machine started. */
     for (unsigned int i = MAX(start_line, header_end + 1); i <= end_line;
          i++) {
-        replay_line(qts, path, i, lines[i - 1]);
+        replay_line(qts, head, path, i, lines[i - 1]);
     }
     if (checkpoint_save && *checkpoint_save) {
         save_uri = g_strdup_printf("file:%s", checkpoint_save);
@@ -552,38 +574,48 @@ static void run_replay(const char *path, bool check_default_trace)
     if (!g_file_get_contents(trace, &trace_contents, NULL, &error)) {
         g_error("cannot read trace %s: %s", trace, error->message);
     }
-    if (check_default_trace) {
-        g_auto(GStrv) trace_lines = g_strsplit(trace_contents, "\n", -1);
-        bool saw_control_read = false;
-        bool saw_control_write = false;
-
-        g_assert_nonnull(strstr(trace_contents,
-            "offset 0x73c08 value 0x55 size 1 write=1"));
-        g_assert_nonnull(strstr(trace_contents,
-            "offset 0x73c08 value 0x55 size 1 write=0"));
-        g_assert_nonnull(strstr(trace_contents,
-            "offset 0x720b0 value 0x2468 size 2 write=0"));
-        g_assert_nonnull(strstr(trace_contents, "offset 0x120400"));
-        g_assert_nonnull(strstr(trace_contents, "offset 0x130400"));
-        for (unsigned int i = 0; trace_lines[i]; i++) {
-            if (!strstr(trace_lines[i], "sgi_mgras_control_mmio")) {
-                continue;
-            }
-            g_assert_null(strstr(trace_lines[i], "offset 0x120400"));
-            g_assert_null(strstr(trace_lines[i], "offset 0x130400"));
-            saw_control_read |= strstr(trace_lines[i],
-                                       "offset 0x73c08 value 0x55 size 1 "
-                                       "write=0") != NULL;
-            saw_control_write |= strstr(trace_lines[i],
-                                        "offset 0x73c08 value 0x55 size 1 "
-                                        "write=1") != NULL;
-        }
-        g_assert_true(saw_control_read);
-        g_assert_true(saw_control_write);
+    if (check_trace) {
+        check_trace(trace_contents);
     }
     if (remove_trace) {
         unlink(trace);
     }
+}
+
+/*
+ * fill.replay's register accesses as its head's trace records them: the
+ * command-channel handshake reaches the control window, and the FIFO words
+ * at 0x120400 and 0x130400 do not.
+ */
+static void check_fill_trace(const char *trace_contents)
+{
+    g_auto(GStrv) trace_lines = g_strsplit(trace_contents, "\n", -1);
+    bool saw_control_read = false;
+    bool saw_control_write = false;
+
+    g_assert_nonnull(strstr(trace_contents,
+        "offset 0x73c08 value 0x55 size 1 write=1"));
+    g_assert_nonnull(strstr(trace_contents,
+        "offset 0x73c08 value 0x55 size 1 write=0"));
+    g_assert_nonnull(strstr(trace_contents,
+        "offset 0x720b0 value 0x2468 size 2 write=0"));
+    g_assert_nonnull(strstr(trace_contents, "offset 0x120400"));
+    g_assert_nonnull(strstr(trace_contents, "offset 0x130400"));
+    for (unsigned int i = 0; trace_lines[i]; i++) {
+        if (!strstr(trace_lines[i], "sgi_mgras_control_mmio")) {
+            continue;
+        }
+        g_assert_null(strstr(trace_lines[i], "offset 0x120400"));
+        g_assert_null(strstr(trace_lines[i], "offset 0x130400"));
+        saw_control_read |= strstr(trace_lines[i],
+                                   "offset 0x73c08 value 0x55 size 1 "
+                                   "write=0") != NULL;
+        saw_control_write |= strstr(trace_lines[i],
+                                    "offset 0x73c08 value 0x55 size 1 "
+                                    "write=1") != NULL;
+    }
+    g_assert_true(saw_control_read);
+    g_assert_true(saw_control_write);
 }
 
 static void test_replay(void)
@@ -591,7 +623,8 @@ static void test_replay(void)
     const char *path = g_getenv("SGI_REPLAY_FILE");
     bool custom = path && *path;
 
-    run_replay(custom ? path : DEFAULT_REPLAY, !custom);
+    run_replay(custom ? path : DEFAULT_REPLAY,
+               custom ? NULL : check_fill_trace);
 }
 
 static void test_replay_screendump(void)
@@ -606,7 +639,7 @@ static void test_replay_screendump(void)
     close(fd);
     unlink(path);
     g_setenv("SGI_REPLAY_SCREENDUMP", path, true);
-    run_replay(MINIMAL_REPLAY, false);
+    run_replay(MINIMAL_REPLAY, NULL);
     g_unsetenv("SGI_REPLAY_SCREENDUMP");
     g_assert_true(g_file_get_contents(path, &contents, NULL, &error));
     g_assert_no_error(error);
@@ -616,12 +649,12 @@ static void test_replay_screendump(void)
 
 static void test_minimal_replay(void)
 {
-    run_replay(MINIMAL_REPLAY, false);
+    run_replay(MINIMAL_REPLAY, NULL);
 }
 
 static void test_masked_read(void)
 {
-    run_replay(MASKED_READ, false);
+    run_replay(MASKED_READ, NULL);
 }
 
 /*
@@ -679,14 +712,14 @@ static void test_checkpoint_boundary_runs_once(void)
     g_setenv("SGI_REPLAY_END_LINE", "4", true);
     g_setenv("SGI_REPLAY_CHECKPOINT_SAVE", checkpoint_path, true);
     g_setenv("SGI_REPLAY_TRACE", trace_save_path, true);
-    run_replay(fixture_path, false);
+    run_replay(fixture_path, NULL);
     g_unsetenv("SGI_REPLAY_CHECKPOINT_SAVE");
 
     g_setenv("SGI_REPLAY_CHECKPOINT_LOAD", checkpoint_path, true);
     g_setenv("SGI_REPLAY_START_LINE", "5", true);
     g_setenv("SGI_REPLAY_END_LINE", "5", true);
     g_setenv("SGI_REPLAY_TRACE", trace_load_path, true);
-    run_replay(fixture_path, false);
+    run_replay(fixture_path, NULL);
     g_unsetenv("SGI_REPLAY_CHECKPOINT_LOAD");
     g_unsetenv("SGI_REPLAY_START_LINE");
     g_unsetenv("SGI_REPLAY_END_LINE");
@@ -704,7 +737,7 @@ static void test_checkpoint_boundary_runs_once(void)
      * Every MMIO access fires both sgi_mgras_mmio and, for the control
      * window this offset falls in, sgi_mgras_control_mmio -- one real
      * access, two trace lines. Count only the plain event, the same way
-     * check_default_trace's own scan above filters to one event name.
+     * check_fill_trace()'s own scan above filters to one event name.
      */
     combined_lines = g_strsplit(combined, "\n", -1);
     for (unsigned int i = 0; combined_lines[i]; i++) {
@@ -782,19 +815,19 @@ static void test_checkpoint_screendump_matches_uninterrupted_replay(void)
     unlink(checkpoint_path);
 
     g_setenv("SGI_REPLAY_SCREENDUMP", full_path, true);
-    run_replay(DEFAULT_REPLAY, false);
+    run_replay(DEFAULT_REPLAY, NULL);
     g_unsetenv("SGI_REPLAY_SCREENDUMP");
 
     g_setenv("SGI_REPLAY_END_LINE", end_line, true);
     g_setenv("SGI_REPLAY_CHECKPOINT_SAVE", checkpoint_path, true);
-    run_replay(DEFAULT_REPLAY, false);
+    run_replay(DEFAULT_REPLAY, NULL);
     g_unsetenv("SGI_REPLAY_CHECKPOINT_SAVE");
     g_unsetenv("SGI_REPLAY_END_LINE");
 
     g_setenv("SGI_REPLAY_CHECKPOINT_LOAD", checkpoint_path, true);
     g_setenv("SGI_REPLAY_START_LINE", start_line, true);
     g_setenv("SGI_REPLAY_SCREENDUMP", split_path, true);
-    run_replay(DEFAULT_REPLAY, false);
+    run_replay(DEFAULT_REPLAY, NULL);
     g_unsetenv("SGI_REPLAY_CHECKPOINT_LOAD");
     g_unsetenv("SGI_REPLAY_START_LINE");
     g_unsetenv("SGI_REPLAY_SCREENDUMP");
@@ -818,27 +851,27 @@ static void test_checkpoint_screendump_matches_uninterrupted_replay(void)
 
 static void test_cmap_high_byte(void)
 {
-    run_replay(CMAP_HIGH_BYTE, false);
+    run_replay(CMAP_HIGH_BYTE, NULL);
 }
 
 static void test_char_modes(void)
 {
-    run_replay(CHAR_MODES, false);
+    run_replay(CHAR_MODES, NULL);
 }
 
 static void test_cmap_xmap_wid(void)
 {
-    run_replay(CMAP_XMAP_WID, false);
+    run_replay(CMAP_XMAP_WID, NULL);
 }
 
 static void test_root_icon(void)
 {
-    run_replay(ROOT_ICON, false);
+    run_replay(ROOT_ICON, NULL);
 }
 
 static void test_overlay(void)
 {
-    run_replay(OVERLAY, false);
+    run_replay(OVERLAY, NULL);
 }
 
 /*
@@ -878,13 +911,13 @@ static void test_overlay_migration(void)
 
     g_setenv("SGI_REPLAY_END_LINE", end_line, true);
     g_setenv("SGI_REPLAY_CHECKPOINT_SAVE", checkpoint_path, true);
-    run_replay(OVERLAY, false);
+    run_replay(OVERLAY, NULL);
     g_unsetenv("SGI_REPLAY_CHECKPOINT_SAVE");
     g_unsetenv("SGI_REPLAY_END_LINE");
 
     g_setenv("SGI_REPLAY_CHECKPOINT_LOAD", checkpoint_path, true);
     g_setenv("SGI_REPLAY_START_LINE", start_line, true);
-    run_replay(OVERLAY, false);
+    run_replay(OVERLAY, NULL);
     g_unsetenv("SGI_REPLAY_CHECKPOINT_LOAD");
     g_unsetenv("SGI_REPLAY_START_LINE");
     unlink(checkpoint_path);
@@ -906,13 +939,13 @@ static void test_overlay_migration(void)
  */
 static void test_dma_image_transfer(void)
 {
-    run_replay(DMA_IMAGE_TRANSFER, false);
+    run_replay(DMA_IMAGE_TRANSFER, NULL);
 }
 
 static void test_invalid_replay(const char *path, const char *message)
 {
     if (g_test_subprocess()) {
-        run_replay(g_getenv("SGI_REPLAY_INVALID_FILE"), false);
+        run_replay(g_getenv("SGI_REPLAY_INVALID_FILE"), NULL);
         return;
     }
     g_setenv("SGI_REPLAY_INVALID_FILE", path, true);
@@ -1010,7 +1043,7 @@ static void test_invalid_header(const char *fixture, const char *message)
     int fd;
 
     if (g_test_subprocess()) {
-        run_replay(g_getenv("SGI_REPLAY_INVALID_FILE"), false);
+        run_replay(g_getenv("SGI_REPLAY_INVALID_FILE"), NULL);
         return;
     }
     fd = g_file_open_tmp("sgi-replay-header-XXXXXX.replay", &path, &error);
