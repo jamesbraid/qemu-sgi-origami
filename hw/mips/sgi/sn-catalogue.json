@@ -37,7 +37,10 @@
         "sha256": "554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b",
         "size": 1476264
       },
-      "identity-inputs": [],
+      "identity-inputs": [
+        "chassis-eeprom",
+        "board-eeprom"
+      ],
       "install-media": [],
       "memory-per-node-mib": {
         "accepted": [
@@ -61,7 +64,20 @@
       },
       "product": "fuel",
       "prom-dialogue": "ip35-l1-prompt",
-      "resources": [],
+      "resources": [
+        {
+          "argument": "chassis-eeprom.N=",
+          "count": 1,
+          "kind": "identity-eeprom",
+          "scope": "board"
+        },
+        {
+          "argument": "board-eeprom.N=",
+          "count": 1,
+          "kind": "identity-eeprom",
+          "scope": "board"
+        }
+      ],
       "smp": 1,
       "storage": [
         {
