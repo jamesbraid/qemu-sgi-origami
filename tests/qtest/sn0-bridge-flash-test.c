@@ -35,6 +35,8 @@
 
 /* Registers are 32 bits in the low half of an eight-byte slot. */
 #define REG_DATA 4
+#define BRIDGE_STATUS 0x008
+#define STATUS_FLASH_SELECT (1u << 6)
 #define BRIDGE_CONTROL 0x020
 #define CONTROL_FLASH_WRITE_EN (1u << 31)
 
@@ -333,15 +335,18 @@ static void test_unbacked_part(void)
 #define FIXTURE_BRIDGE_BASE UINT64_C(0x10000000)
 #define SELECT1_PART_SIZE 0x10000
 
-static QTestState *start_fixture_select1(void)
+static QTestState *start_fixture_select1(bool flash_select, bool fit_select0)
 {
     QTestState *qts;
 
     truncate_log();
-    qts = qtest_initf("-M none -cpu R10000 -S -d guest_errors -D %s "
+    qts = qtest_initf("-M none -cpu R10000 -S -d guest_errors -D %s %s "
                       "-device sgi-board-test-fixture,id=wrap,"
                       "board-type=sgi-baseio,preset=ip29,"
-                      "flash-select1-size=%u", logfile, SELECT1_PART_SIZE);
+                      "flash-select0-size=%u,flash-select1-size=%u", logfile,
+                      flash_select ? "-global sgi-bridge.flash-select=on" : "",
+                      fit_select0 ? SELECT1_PART_SIZE : 0,
+                      SELECT1_PART_SIZE);
     qtest_sysbus_mmio_map(qts, "/machine/peripheral/wrap/chip", 0,
                           FIXTURE_BRIDGE_BASE);
     return qts;
@@ -364,8 +369,10 @@ static uint64_t fixture_flash_read(QTestState *qts, uint32_t offset,
  */
 static void test_second_chip_select(void)
 {
-    QTestState *qts = start_fixture_select1();
+    QTestState *qts = start_fixture_select1(false, false);
+    uint64_t status = FIXTURE_BRIDGE_BASE + BRIDGE_STATUS + REG_DATA;
 
+    g_assert_cmphex(qtest_readl(qts, status) & STATUS_FLASH_SELECT, ==, 0);
     g_assert_cmphex(fixture_flash_read(qts, FLASH_SELECT_SIZE + 0x40, 2), ==,
                     0x4041);
     g_assert_cmphex(fixture_flash_read(qts, FLASH_SELECT_SIZE + 0x41, 1), ==,
@@ -384,7 +391,7 @@ static void test_second_chip_select(void)
 /* Writes reach the second chip select's part only with the enable set. */
 static void test_second_chip_select_write_enable(void)
 {
-    QTestState *qts = start_fixture_select1();
+    QTestState *qts = start_fixture_select1(false, false);
     uint64_t control = FIXTURE_BRIDGE_BASE + BRIDGE_CONTROL + REG_DATA;
     uint8_t word[2] = { 0xbe, 0xef };
 
@@ -401,7 +408,79 @@ static void test_second_chip_select_write_enable(void)
     qtest_quit(qts);
 }
 
-/* The Origin 200 onboard Bridge fits no part: the window still fails. */
+/* The hardwired strap exchanges the apertures and survives a core reset. */
+static void test_flash_select_strap(void)
+{
+    QTestState *qts = start_fixture_select1(true, false);
+    uint64_t status = FIXTURE_BRIDGE_BASE + BRIDGE_STATUS + REG_DATA;
+    uint64_t control = FIXTURE_BRIDGE_BASE + BRIDGE_CONTROL + REG_DATA;
+    uint8_t word[2] = { 0xbe, 0xef };
+
+    g_assert_cmphex(qtest_readl(qts, status) & STATUS_FLASH_SELECT, ==,
+                    STATUS_FLASH_SELECT);
+    g_assert_cmphex(fixture_flash_read(qts, 0x40, 2), ==, 0x4041);
+    g_assert_cmphex(fixture_flash_read(qts, 0x10, 8), ==,
+                    UINT64_C(0x1011121314151617));
+    fixture_flash_read(qts, FLASH_SELECT_SIZE + 0x40, 2);
+    wait_for_log_marker("sgi-bridge: flash read at window offset 0x200040 "
+                        "with no part there");
+
+    qtest_writel(qts, control,
+                 qtest_readl(qts, control) | CONTROL_FLASH_WRITE_EN);
+    qtest_memwrite(qts, FIXTURE_BRIDGE_BASE + FLASH_WINDOW + 0x80,
+                   word, sizeof(word));
+    g_assert_cmphex(fixture_flash_read(qts, 0x80, 2), ==, 0xbeef);
+
+    qtest_qmp_assert_success(qts, "{'execute':'system_reset'}");
+    g_assert_cmphex(qtest_readl(qts, status) & STATUS_FLASH_SELECT, ==,
+                    STATUS_FLASH_SELECT);
+    g_assert_cmphex(qtest_readl(qts, control) & CONTROL_FLASH_WRITE_EN, ==, 0);
+    g_assert_cmphex(fixture_flash_read(qts, 0x80, 2), ==, 0xbeef);
+    qtest_quit(qts);
+}
+
+/* Two fitted parts identify both physical selects under either strap. */
+static void test_both_chip_selects(void)
+{
+    for (unsigned int strap = 0; strap < 2; strap++) {
+        QTestState *qts = start_fixture_select1(strap, true);
+        uint64_t status = FIXTURE_BRIDGE_BASE + BRIDGE_STATUS + REG_DATA;
+        uint64_t control = FIXTURE_BRIDGE_BASE + BRIDGE_CONTROL + REG_DATA;
+        uint64_t base = FIXTURE_BRIDGE_BASE + FLASH_WINDOW;
+        uint8_t first[2] = { 0x12, 0x34 };
+        uint8_t second[2] = { 0xab, 0xcd };
+
+        g_assert_cmphex(qtest_readl(qts, status) & STATUS_FLASH_SELECT, ==,
+                        strap ? STATUS_FLASH_SELECT : 0);
+        g_assert_cmphex(fixture_flash_read(qts, 0x40, 2), ==,
+                        strap ? 0x4041 : 0xc0c1);
+        g_assert_cmphex(fixture_flash_read(qts, FLASH_SELECT_SIZE + 0x40, 2),
+                        ==, strap ? 0xc0c1 : 0x4041);
+
+        qtest_writel(qts, control,
+                     qtest_readl(qts, control) | CONTROL_FLASH_WRITE_EN);
+        qtest_memwrite(qts, base + 0x80, first, sizeof(first));
+        qtest_memwrite(qts, base + FLASH_SELECT_SIZE + 0x80,
+                       second, sizeof(second));
+        g_assert_cmphex(fixture_flash_read(qts, 0x80, 2), ==, 0x1234);
+        g_assert_cmphex(fixture_flash_read(qts,
+                                           FLASH_SELECT_SIZE + 0x80, 2),
+                        ==, 0xabcd);
+
+        qtest_qmp_assert_success(qts, "{'execute':'system_reset'}");
+        g_assert_cmphex(qtest_readl(qts, status) & STATUS_FLASH_SELECT, ==,
+                        strap ? STATUS_FLASH_SELECT : 0);
+        g_assert_cmphex(qtest_readl(qts, control) & CONTROL_FLASH_WRITE_EN,
+                        ==, 0);
+        g_assert_cmphex(fixture_flash_read(qts, 0x80, 2), ==, 0x1234);
+        g_assert_cmphex(fixture_flash_read(qts,
+                                           FLASH_SELECT_SIZE + 0x80, 2),
+                        ==, 0xabcd);
+        qtest_quit(qts);
+    }
+}
+
+/* The Origin 200's onboard Bridge fits no part: the window fails as before. */
 static void test_origin200_unpopulated(void)
 {
     QTestState *qts;
@@ -438,6 +517,10 @@ int main(int argc, char **argv)
                    test_second_chip_select);
     qtest_add_func("sn0/bridge/flash/second-chip-select-write-enable",
                    test_second_chip_select_write_enable);
+    qtest_add_func("sn0/bridge/flash/select-strap",
+                   test_flash_select_strap);
+    qtest_add_func("sn0/bridge/flash/both-chip-selects",
+                   test_both_chip_selects);
     qtest_add_func("sn0/bridge/flash/origin200-unpopulated",
                    test_origin200_unpopulated);
     ret = g_test_run();
