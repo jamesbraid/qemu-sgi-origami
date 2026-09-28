@@ -84,6 +84,37 @@ user-mode networking, then executes it through the PROM boot path. It does not u
 netinst server. External installation services and package qualification remain
 separate checks.
 
+The Origin 300's two first-line PROM cases require only
+``firmware/6.5.30/ip35prom.payload.bin``. Its menu cases also require both
+SPD files. The installed-guest tests pin their disk inputs:
+
+.. list-table:: Supplied inputs declared by these functional tests
+   :header-rows: 1
+
+   * - Native target and case
+     - Inputs below the asset root
+   * - ``func-mips64-origin300_prom`` — ``Origin300Prom`` first-line cases
+     - ``firmware/6.5.30/ip35prom.payload.bin``
+   * - ``func-mips64-origin300_prom`` — ``Origin300PromMenu`` menu case
+     - The IP35 PROM and
+       ``eeprom/origin300-dimm2-spd.bin`` plus
+       ``eeprom/origin300-dimm3-spd.bin``
+   * - ``func-mips64-origin300_two_chassis_prom``
+     - The IP35 PROM and both SPD files
+   * - ``func-mips64-irix_installed_boot``
+     - ``firmware/6.5.30/ip27prom.payload.bin`` and
+       ``irix/6.5.30/root.qcow2`` (SHA-256
+       ``15b4bc1992845b6242948a9e944ce39682b7decdaee1e5474579418fb3a19c12``)
+   * - ``func-mips64-irix_origin300_installed_boot``
+     - The IP35 PROM, both SPD files, and
+       ``irix/6.5.30/root-diags-origin300.qcow2`` (SHA-256
+       ``150cf2c125cb3bd55764acfeec00804899ff3140cc536cf63a254765faa29390``)
+
+Both installed-guest cases use QEMU's ``skipSlowTest`` and
+``skipBigDataTest`` decorators. Run them with ``QEMU_TEST_ALLOW_SLOW=1`` and
+``QEMU_TEST_ALLOW_LARGE_STORAGE=1`` as well as the asset root. These checks
+boot existing installations; they do not install IRIX.
+
 Asset requirements are marked by each functional test. An unset asset-root
 variable can skip an asset-dependent case for a developer who has not supplied
 the files; once configured, a missing or mismatched file fails that case. Full
