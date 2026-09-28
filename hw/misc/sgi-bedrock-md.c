@@ -2831,6 +2831,13 @@ static void md_watched_access(SGIBedrockMDState *s,
         if (holder->state != MD_CACHE_INVALID) {
             return;
         }
+        /*
+         * An instruction fetch arrives here as a read too and is served
+         * as its algorithm's load miss. That is inferred: the manual
+         * gives the request for load and store misses only (R10000 User's
+         * Manual version 2.0, section 4.4, "Descriptions of the Cache
+         * Algorithms"), never for an instruction miss.
+         */
         if (attrs.mips_cca == 4) {
             /* Under coherent exclusive a load miss reads exclusive. */
             md_directory_request(s, line, pointer, MD_REQUEST_READ_EXCLUSIVE,
