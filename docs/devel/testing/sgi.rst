@@ -190,9 +190,9 @@ SPD files. The installed-guest tests pin their disk inputs:
        ``9e60c3400772d227b91c5d61cea8de7f89777d41377516de072944c26cef4aa7``),
        and ``irix/6.5.30/root-diags-origin300.qcow2`` (SHA-256
        ``150cf2c125cb3bd55764acfeec00804899ff3140cc536cf63a254765faa29390``)
-   * - ``func-mips64-sn_reset`` — SN0 reset cases
+   * - ``func-mips64-sn0_reset`` — SN0 reset cases
      - No supplied assets
-   * - ``func-mips64-sn_reset`` — SN1 L1 reset and power-down cases
+   * - ``func-mips64-sn1_l1_reset`` — SN1 L1 reset and power-down cases
      - ``firmware/6.5.30/ip35prom.payload.bin``
    * - ``func-mips64-origin200_gigachannel_prom`` — flash case
        (``Origin200GigachannelPromFlash``)

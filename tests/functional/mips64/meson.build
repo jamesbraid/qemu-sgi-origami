@@ -9,22 +9,14 @@ test_mips64_timeouts = {
   # that for a heavily contended CI host; the previous unlisted default
   # of 90 left under half.
   'sn0_smp' : 240,
-  # Ten short VM launches (three test classes -- three, three and four
-  # cases respectively), most exercising twenty machine resets and the
-  # last exercising twenty console power-down cycles, in one script
-  # (test_sn_reset.py) merged from what were three separate scripts
-  # (test_sn0_port_reset.py, test_sn0_elsc_reset.py, test_sn1_l1_reset.py):
-  # a Hub port-reset register write, two full ELSC transactions
-  # (authenticate, then "rst"), and one L1 UART frame (header,
-  # destination, command, two check bytes, all escaped and flagged),
-  # respectively, per reset. Each of the three kept its own measured total
-  # on its own host load (18s at load 174, 10s at load 130, and the L1
-  # section's own share of that order of magnitude), summing under 60s
-  # together; each case still gives the guest 60s of its own before
-  # declaring failure, so 900 (the three former budgets summed) covers all
-  # ten running out that budget in sequence and still reporting which one
-  # did, rather than the whole script being killed with nothing to read.
-  'sn_reset' : 900,
+  # Six Origin 200 reset checks, each completing twenty resets across
+  # two reset mechanisms. The 900-second budget preserves the combined
+  # budget for the three former scripts under a contended CI host.
+  'sn0_reset' : 900,
+  # Four Origin 300 checks use the supplied IP35 PROM and complete twenty
+  # L1 reset or console power cycles. Keep the former combined budget until
+  # separate CI timings establish a smaller one.
+  'sn1_l1_reset' : 900,
   # Three methods in this script: the original two first-line-only
   # smoke boots (about a second each) plus a four-CPU boot through a
   # writable boot flash and the chassis/board/SPD identity records
@@ -256,7 +248,8 @@ test_mips64_timeouts = {
 
 tests_mips64_system_quick = [
   'sn0_smp',
-  'sn_reset',
+  'sn0_reset',
+  'sn1_l1_reset',
   'origin2000_cache_reset',
 ]
 
