@@ -1148,7 +1148,10 @@ static void test_fetch_empty(void)
  * A list invoked from inside a list gets a fetch of its own, and both
  * complete with their own counts. Mapping the outer fetch again from inside
  * its own decode() fails that inner invocation with BUSY and leaves the
- * outer one to finish its own words.
+ * outer one to finish its own words. The fetch publishes nothing for the
+ * refused invocation, whose identity it never held: the family publishes
+ * FAILED under the inner seq and cookie, and the outer's identity appears
+ * only on the outer's own completion.
  */
 static SGICommandFetch *nested_outer;
 static const SGIDMABus *nested_bus;
@@ -1169,6 +1172,9 @@ static void nested_decode(void *opaque, uint32_t context,
     if (nested_reuse) {
         g_assert_cmpint(sgi_fetch(nested_outer, nested_bus, nested_pl, PAGE,
                                   5), ==, SGI_FAIL_BUSY);
+        g_assert_cmpuint(h->done->len, ==, 0);
+        sgi_head_publish(&head_ops, h, 0x31, SGI_DONE_FAILED, 0x2,
+                         SGI_FAIL_BUSY);
         return;
     }
     g_assert_cmpint(sgi_fetch(&inner, nested_bus, nested_pl, PAGE, 5), ==, 0);
@@ -1181,7 +1187,8 @@ static Head *run_nested(bool reuse)
     uint64_t addrs[4];
     SGIDMAPageList pl = { .addr = addrs, .npages = 4, .page_size = PAGE };
     SGICommandFetch outer = { .context = 3, .decode = nested_decode,
-                              .next = head_next, .cookie = 0x1 };
+                              .next = head_next, .seq = 0x30,
+                              .cookie = 0x1 };
 
     setup();
     pool_setup();
@@ -1197,6 +1204,7 @@ static Head *run_nested(bool reuse)
     g_assert_cmpint(sgi_fetch(&outer, &bus, &pl, 0, 4), ==, 0);
     g_assert_cmpuint(h->done->len, ==, 2);
     g_assert_cmphex(g_array_index(h->done, SGICompletion, 1).cookie, ==, 0x1);
+    g_assert_cmphex(g_array_index(h->done, SGICompletion, 1).seq, ==, 0x30);
     g_assert_cmpuint(g_array_index(h->done, SGICompletion, 1).kind, ==,
                      SGI_DONE_CONSUMED);
     g_assert_cmpuint(g_array_index(h->done, SGICompletion, 1).payload, ==, 7);
@@ -1230,10 +1238,17 @@ static void test_fetch_reused(void)
     g_assert_cmpuint(h->decoded->len, ==, 12);
     g_assert_cmphex(g_array_index(h->decoded, uint32_t, 4), ==, 0x5a020000);
     g_assert_cmphex(g_array_index(h->decoded, uint32_t, 7), ==, 0);
+    /* One failure, the inner's; the outer never reads as failed. */
     g_assert_cmpuint(g_array_index(h->done, SGICompletion, 0).kind, ==,
                      SGI_DONE_FAILED);
     g_assert_cmpuint(g_array_index(h->done, SGICompletion, 0).payload, ==,
                      SGI_FAIL_BUSY);
+    g_assert_cmphex(g_array_index(h->done, SGICompletion, 0).seq, ==, 0x31);
+    g_assert_cmphex(g_array_index(h->done, SGICompletion, 0).cookie, ==, 0x2);
+    for (unsigned i = 1; i < h->done->len; i++) {
+        g_assert_cmpuint(g_array_index(h->done, SGICompletion, i).kind, !=,
+                         SGI_DONE_FAILED);
+    }
     head_free(h);
 }
 
