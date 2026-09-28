@@ -39,7 +39,8 @@ from qemu_test.utils import get_usernet_hostfwd_port
 from lib_net import (LEASE_HANDSHAKE, OPENBSD_LOGIN_STAGES,
                      OPENBSD_TRIPWIRES, Console,
                      HarnessError, lease_established, login_steps,
-                     ordered_stages, summarise_pcap)
+                     ordered_stages, summarise_pcap,
+                     transfer_result_pattern)
 from lib_prom import (FIRMWARE_REL, MACHINES, prom_netboot_steps,
                       require_assets)
 
@@ -269,7 +270,7 @@ class OpenbsdNetTransfer(QemuSystemTest):
         tool reported an inbound-transfer failure for a guest that
         simply had no nc to listen with."""
         tools = {}
-        for t in ("ftp", "nc", "sha256", "dd", "dhclient"):
+        for t in ("ftp", "nc", "netstat", "sha256", "dd", "dhclient"):
             rc = con.run(f"command -v {t} >/dev/null 2>&1", f"have{t}")
             tools[t] = (rc == 0)
         return tools
@@ -329,7 +330,7 @@ class OpenbsdNetTransfer(QemuSystemTest):
             got, size = con.two_values(
                 f"echo D $(sha256 -q {HOME}/down.bin) "
                 f"$(wc -c <{HOME}/down.bin)",
-                "readsum", rb"D ([0-9a-f]{64})\s+(\d+)", timeout=120)
+                "readsum", transfer_result_pattern(b"D"), timeout=120)
         except HarnessError as e:
             return {"attempted": False, "reason": str(e)}
         # The host originates this payload (down_hash/PAYLOAD_BYTES,
@@ -368,7 +369,7 @@ class OpenbsdNetTransfer(QemuSystemTest):
                                  "payload from"}
             up_hash, up_size = con.two_values(
                 f"echo U $(sha256 -q {src}) $(wc -c <{src})",
-                "upsum", rb"U ([0-9a-f]{64})\s+(\d+)", timeout=120)
+                "upsum", transfer_result_pattern(b"U"), timeout=120)
             if up_size != PAYLOAD_BYTES:
                 return {"attempted": False,
                        "reason": f"the guest built a {up_size}-byte "
@@ -403,7 +404,7 @@ class OpenbsdNetTransfer(QemuSystemTest):
                "guest_bytes": up_size, "exit_code": rc}
 
     def _inbound_leg(self, con, tools, fwd_port, in_payload, in_hash):
-        needed = ("nc", "sha256")
+        needed = ("nc", "netstat", "sha256")
         if not all(tools.get(t) for t in needed):
             missing = [t for t in needed if not tools.get(t)]
             return {"attempted": False,
@@ -411,7 +412,29 @@ class OpenbsdNetTransfer(QemuSystemTest):
         con.send(f'(nc -l {GUEST_LISTEN_PORT} > {HOME}/in.bin; '
                  f'echo "I""N $(sha256 -q {HOME}/in.bin) '
                  f'$(wc -c <{HOME}/in.bin)") &')
-        time.sleep(3)
+        # The host-forward socket can accept before the guest listener is
+        # ready, so confirm the guest's TCP socket before sending the payload.
+        try:
+            ready = con.run(
+                f'i=0; ready=0; while [ "$i" -lt 30 ]; do '
+                f'if netstat -an -f inet | awk '
+                f"'$1 == \"tcp\" && $4 ~ /[.]{GUEST_LISTEN_PORT}$/ "
+                f"&& $6 == \"LISTEN\" {{ found=1 }} "
+                f"END {{ exit !found }}'; then ready=1; break; fi; "
+                f'i=$((i + 1)); sleep 1; done; '
+                f'if [ "$ready" -eq 1 ]; then true; else '
+                f'echo "inbound listener on port {GUEST_LISTEN_PORT} '
+                f'did not become ready"; jobs -l; ps -axl; '
+                f'netstat -an -f inet; false; fi',
+                "inlisten", timeout=40)
+        except HarnessError as e:
+            return {"attempted": False,
+                    "reason": f"could not confirm the guest listener "
+                              f"on port {GUEST_LISTEN_PORT} is ready: {e}"}
+        if ready != 0:
+            return {"attempted": False,
+                    "reason": f"the guest listener on port "
+                              f"{GUEST_LISTEN_PORT} did not become ready"}
         pushed = False
         last_err = None
         for _ in range(10):
@@ -430,7 +453,7 @@ class OpenbsdNetTransfer(QemuSystemTest):
                    "reason": f"never got a connection through the "
                              f"forwarded port ({last_err})"}
         try:
-            m = con.expect(rb"IN ([0-9a-f]{64})\s+(\d+)", 180,
+            m = con.expect(transfer_result_pattern(b"IN"), 180,
                            what="the inbound digest")
         except HarnessError as e:
             return {"attempted": False, "reason": str(e)}

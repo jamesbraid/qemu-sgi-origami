@@ -28,7 +28,8 @@ from lib_net import (DHCP_NAMES, OPENBSD_LOGIN_STAGES, OPENBSD_TRIPWIRES,
                      Console, GuestFault,
                      HarnessError, IrixConsole, dhcp_kind,
                      drive_irix_to_shell, lease_established, login_steps,
-                     ordered_stages, summarise_pcap)
+                     ordered_stages, summarise_pcap,
+                     transfer_result_pattern)
 
 
 # ---------------------------------------------------------------------------
@@ -382,6 +383,20 @@ class ConsoleTests(unittest.TestCase):
             rb"(\w+)\s+(\d+)\s+/tmp/down\.bin")
 
         self.assertEqual((digest, size), ("abc123", 65536))
+
+    def test_transfer_result_waits_for_the_full_fragmented_byte_count(self):
+        console = _TestConsole(self.driver_end, self.log_path)
+        self.addCleanup(console.close)
+        digest = b"a" * 64
+        pattern = transfer_result_pattern(b"IN")
+
+        self.guest_end.sendall(b"IN " + digest + b" 6")
+        console._pump()
+        self.assertIsNone(re.search(pattern, console.buf))
+
+        self.guest_end.sendall(b"5536\r\n")
+        match = console.expect(pattern, 1, what="the inbound digest")
+        self.assertEqual(match.groups(), (digest, b"65536"))
 
     def test_output_that_does_not_match_is_a_harness_error(self):
         console, _guest = self._console([b"nothing useful\r\nMARK-x-0\r\n"])

@@ -50,6 +50,12 @@ OPENBSD_LOGIN_STAGES = (
     ("never reached a root shell prompt", re.compile(r"# ")),
 )
 
+
+def transfer_result_pattern(prefix):
+    """Match a transfer result only after its complete byte count arrives."""
+    return (re.escape(prefix) + rb" ([0-9a-f]{64})[ \t]+(\d+)\r?\n")
+
+
 # How much of the received buffer a pattern is matched against on each
 # pass, so a chatty guest cannot make every search rescan the whole run.
 _MATCH_WINDOW = 4096
