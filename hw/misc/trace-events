@@ -33,6 +33,11 @@ sgi_mgras_dma_chunk(uint64_t sequence, uint64_t addr, unsigned len, const char *
 # sgi-odyssey.c
 sgi_odyssey_mmio(uint64_t offset, unsigned size, uint64_t value, bool write) "offset 0x%" PRIx64 " size %u value 0x%" PRIx64 " write=%d"
 
+# sgi-mgras-gl.c
+# The window a completed context image binds: image words 0, 2 and 3,
+# rectangles 0 and 1 (words 11-12 and 9-10), and whether anything draws.
+sgi_mgras_gl_bind(uint32_t slot, uint32_t origin, uint32_t clip_mode, uint32_t r0x, uint32_t r0y, uint32_t r1x, uint32_t r1y, bool bound) "slot 0x%x origin 0x%08x clip 0x%x rect0 0x%08x 0x%08x rect1 0x%08x 0x%08x bound %d"
+
 # allwinner-cpucfg.c
 allwinner_cpucfg_cpu_reset(uint8_t cpu_id, uint32_t reset_addr) "id %u, reset_addr 0x%" PRIx32
 allwinner_cpucfg_read(uint64_t offset, uint64_t data, unsigned size) "offset 0x%" PRIx64 " data 0x%" PRIx64 " size %" PRIu32

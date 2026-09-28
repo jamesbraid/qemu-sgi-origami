@@ -11997,6 +11997,134 @@ static void test_cursor_migration(void)
     qtest_quit(from);
 }
 
+/*
+ * The context image's clip words, as the IRIX 6.5.30 kernel's
+ * MgrasValidateClip writes them (mgras.o listing 0x61d8-0x67b4): word 3 is
+ * (mode << 4) | enables, and enable bit i selects rectangle i, whose
+ * columns and rows are words 11 and 12, 9 and 10, 7 and 8 or 5 and 6,
+ * each first << 16 | last counted from the bottom-left of the screen. A
+ * window with one to four visible rectangles gets mode 1; five or more,
+ * mode 1 and no enables; the kernel's null clip, mode 2 with rectangles 0
+ * and 1 the whole screen and the origin at row 1024.
+ */
+static void mgras_enter_gl_clip(QTestState *qts, uint32_t origin,
+                                uint32_t clip, const uint32_t rects[4][2])
+{
+    static const uint8_t words[4][2] = {
+        { 11, 12 }, { 9, 10 }, { 7, 8 }, { 5, 6 },
+    };
+    uint32_t image[MGRAS_CONTEXT_WORDS];
+
+    memcpy(image, gl_context_image, sizeof(image));
+    image[2] = image[14] = origin;
+    image[3] = clip;
+    for (int i = 0; i < 4; i++) {
+        image[words[i][0]] = rects[i][0];
+        image[words[i][1]] = rects[i][1];
+    }
+    qtest_writel(qts, REG_PREFIX, 0);
+    qtest_writel(qts, REG_ENTRY, MGRAS_ENTRY_WORD);
+    qtest_writel(qts, REG_PENDING_ACK, MGRAS_PENDING_FLAGS);
+    for (int i = 0; i < MGRAS_CONTEXT_WORDS; i++) {
+        qtest_writel(qts, REG_CONTEXT_COMMAND, image[i]);
+    }
+    qtest_writel(qts, REG_PENDING_ACK, MGRAS_PENDING_CONTEXT);
+}
+
+/* Clear the bound window to white, and read screen pixels top-down. */
+static void gl_clip_clear(QTestState *qts)
+{
+    gl_viewport(qts, 0, 0, 1280, 1024);
+    gl_clear_color(qts, 1, 1, 1, 1);
+    gl_word(qts, GL_CLEAR_COLOR_BUFFER);
+}
+
+#define GL_CLIP_SPAN(first, last) (((first) << 16) | (last))
+
+/*
+ * A window partly covered has two visible rectangles, both enabled in
+ * word 3 (0x13): a clear fills both and nothing between them. A window
+ * with four fills all four, rectangle 3 from words 5 and 6.
+ */
+static void test_gl_clip_takes_every_enabled_rectangle(void)
+{
+    const uint32_t rects[4][2] = {
+        { GL_CLIP_SPAN(100, 149), GL_CLIP_SPAN(200, 219) },
+        { GL_CLIP_SPAN(200, 219), GL_CLIP_SPAN(200, 249) },
+        { GL_CLIP_SPAN(300, 309), GL_CLIP_SPAN(100, 109) },
+        { GL_CLIP_SPAN(400, 409), GL_CLIP_SPAN(100, 109) },
+    };
+
+    mgras_reset();
+    mgras_enter_gl_clip(qts, (200 << 16) | 100, 0x13, rects);
+    gl_clip_clear(qts);
+    /* Rows 200-219 from the bottom are screen rows 804-823. */
+    g_assert_cmphex(mgras_test_pixel(qts, 100, 823), ==, 0xffffff);
+    g_assert_cmphex(mgras_test_pixel(qts, 149, 804), ==, 0xffffff);
+    g_assert_cmphex(mgras_test_pixel(qts, 219, 774), ==, 0xffffff);
+    g_assert_cmphex(mgras_test_pixel(qts, 175, 810), ==, 0);
+    g_assert_cmphex(mgras_test_pixel(qts, 150, 810), ==, 0);
+    g_assert_cmphex(mgras_test_pixel(qts, 305, 918), ==, 0);
+
+    mgras_reset();
+    mgras_enter_gl_clip(qts, (200 << 16) | 100, 0x1f, rects);
+    gl_clip_clear(qts);
+    g_assert_cmphex(mgras_test_pixel(qts, 100, 823), ==, 0xffffff);
+    g_assert_cmphex(mgras_test_pixel(qts, 219, 774), ==, 0xffffff);
+    g_assert_cmphex(mgras_test_pixel(qts, 305, 918), ==, 0xffffff);
+    g_assert_cmphex(mgras_test_pixel(qts, 409, 914), ==, 0xffffff);
+    g_assert_cmphex(mgras_test_pixel(qts, 410, 914), ==, 0);
+}
+
+/*
+ * A rectangle whose enable bit is clear is not the window's, whatever its
+ * words hold: the kernel leaves them as the image last had them.
+ */
+static void test_gl_clip_ignores_disabled_rectangles(void)
+{
+    const uint32_t rects[4][2] = {
+        { GL_CLIP_SPAN(100, 149), GL_CLIP_SPAN(200, 219) },
+        { GL_CLIP_SPAN(200, 219), GL_CLIP_SPAN(200, 249) },
+        { GL_CLIP_SPAN(300, 309), GL_CLIP_SPAN(100, 109) },
+        { GL_CLIP_SPAN(400, 409), GL_CLIP_SPAN(100, 109) },
+    };
+
+    mgras_reset();
+    mgras_enter_gl_clip(qts, (200 << 16) | 100, 0x15, rects);
+    gl_clip_clear(qts);
+    g_assert_cmphex(mgras_test_pixel(qts, 100, 823), ==, 0xffffff);
+    g_assert_cmphex(mgras_test_pixel(qts, 305, 918), ==, 0xffffff);
+    g_assert_cmphex(mgras_test_pixel(qts, 219, 774), ==, 0);
+    g_assert_cmphex(mgras_test_pixel(qts, 405, 918), ==, 0);
+}
+
+/*
+ * The kernel's null clip, 0x23 with both rectangles the whole screen and
+ * the origin at row 1024 (perfly's context 0x84c6 in run
+ * irix-20260928T000530-78d0c5), draws nothing; nor does 0x10, a window of
+ * five or more rectangles, whose bounds the image does not give.
+ */
+static void test_gl_clip_null_and_many_draw_nothing(void)
+{
+    const uint32_t full[4][2] = {
+        { GL_CLIP_SPAN(0, 1279), GL_CLIP_SPAN(0, 1023) },
+        { GL_CLIP_SPAN(0, 1279), GL_CLIP_SPAN(0, 1023) },
+        { GL_CLIP_SPAN(0, 1279), GL_CLIP_SPAN(0, 1023) },
+        { GL_CLIP_SPAN(0, 1279), GL_CLIP_SPAN(0, 1023) },
+    };
+
+    mgras_reset();
+    mgras_enter_gl_clip(qts, 0x04000000, 0x23, full);
+    gl_clip_clear(qts);
+    g_assert_cmphex(mgras_test_pixel(qts, 640, 512), ==, 0);
+    g_assert_cmphex(mgras_test_pixel(qts, 0, 1023), ==, 0);
+
+    mgras_reset();
+    mgras_enter_gl_clip(qts, 0, 0x10, full);
+    gl_clip_clear(qts);
+    g_assert_cmphex(mgras_test_pixel(qts, 640, 512), ==, 0);
+}
+
 int main(int argc, char **argv)
 {
     int ret;
@@ -12341,6 +12469,12 @@ int main(int argc, char **argv)
                    test_gl_clear_ignores_the_viewport);
     qtest_add_func("sn0/origin2000/mgras/gl-clear-needs-the-window-rectangle",
                    test_gl_clear_needs_the_window_rectangle);
+    qtest_add_func("sn0/origin2000/mgras/gl-clip-takes-every-enabled-rectangle",
+                   test_gl_clip_takes_every_enabled_rectangle);
+    qtest_add_func("sn0/origin2000/mgras/gl-clip-ignores-disabled-rectangles",
+                   test_gl_clip_ignores_disabled_rectangles);
+    qtest_add_func("sn0/origin2000/mgras/gl-clip-null-and-many-draw-nothing",
+                   test_gl_clip_null_and_many_draw_nothing);
     qtest_add_func("sn0/origin2000/mgras/"
                    "gl-clear-shows-through-a-direct-colour-display-id",
                    test_gl_clear_shows_through_a_direct_colour_display_id);
