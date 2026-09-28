@@ -307,6 +307,9 @@ subdir('roms')
 if sgi_roms_available
   tests_mips64_system_thorough += ['sgi_roms']
   test_mips64_timeouts += {'sgi_roms': 18000}
+  tests_mips64_system_thorough += ['timer_stall']
+  test_mips64_timeouts += {'timer_stall': 360}
+  test_mips64_system_extra_deps += {'timer_stall': sgi_timerstall_rom}
 endif
 
 # The unit tests of the lib_*.py helper modules the boot tests import,

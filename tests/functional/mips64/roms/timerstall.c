@@ -1,32 +1,12 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * One timer arm, watched for its pending bit — the ROM half of the
- * stalled-store reproducer.
+ * The timer-stall functional test runs this ROM under host GDB. It stops QEMU
+ * between classifying a Compare write and arming its timer, long enough for
+ * Count to pass the written value. The R10000 comparator must still pend IP7.
  *
- * On its own this ROM is unremarkable: arm Compare a short distance
- * ahead
- * of Count and poll the Cause register until IP[7] pends, interrupts
- * held
- * off throughout so the bit is observed rather than taken. What it
- * exists
- * for is the harness around it, tools/timer-stall-repro, which runs the
- * emulator under a debugger that halts the process inside every Compare
- * store long enough for virtual time to pass the value being written.
- * The
- * R10000's comparator is continuous, so a write the counter has already
- * passed must still pend — a model that reads the clock once to
- * classify
- * the write and again to arm the deadline instead defers it a full
- * counter
- * wrap, and the poll below runs dry. The stall is the debugger's,
- * applied
- * to the emulator process, which is why no unstalled run — and no
- * icount
- * run, where helpers take no virtual time — can exercise this seam.
- *
- * Deliberately not in the suite manifest: without the harness the stall
- * never happens and the ROM passes without testing anything beyond what
- * the timer ROM already pins.
+ * An ordinary ROM run cannot force the host stall. Keep this payload outside
+ * the 85-case ROM matrix and require the GDB breakpoint-hit marker alongside
+ * its PASS result in test_timer_stall.py.
  */
 
 #include "rom.h"

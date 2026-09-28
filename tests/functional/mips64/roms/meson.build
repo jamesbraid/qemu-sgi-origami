@@ -21,10 +21,14 @@ if sgi_roms_available
                 sgi_rom_lib, '@INPUT@', '-o', '@OUTPUT@'],
       depend_files: [sgi_rom_lib, sgi_rom_headers],
       build_by_default: false)
-    sgi_rom_targets += custom_target('sgi-rom-' + name,
+    rom_target = custom_target('sgi-rom-' + name,
       input: elf, output: name + '.bin',
       command: [sgi_rom_objcopy, '-O', 'binary', '@INPUT@', '@OUTPUT@'],
       build_by_default: false)
+    sgi_rom_targets += rom_target
+    if name == 'timerstall'
+      sgi_timerstall_rom = rom_target
+    endif
   endforeach
   alias_target('sgi-roms', sgi_rom_targets)
   test_mips64_system_extra_deps = {'sgi_roms': sgi_rom_targets}

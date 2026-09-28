@@ -75,6 +75,13 @@ case list comes from ``tests/functional/mips64/roms/suite``. Build and run it wi
    build/pyvenv/bin/meson test -C build --setup qemu:thorough \
        --print-errorlogs func-mips64-sgi_roms
 
+The timer-stall regression uses a separate ``func-mips64-timer_stall``
+functional test. Configure a host GDB path with ``--gdb=/path/to/gdb`` or
+``meson configure build -Dgdb=/path/to/gdb`` before selecting it. The test
+builds only its ``timerstall`` ROM, launches QEMU under host GDB, and requires
+both a breakpoint hit and ``PASS timerstall``. An unset GDB path skips the
+case; required selections must reject that skip in the JUnit report.
+
 The offline source-archive build was checked with the ROM matrix's 85 expected
 identities and one selected IP27 PROM case on Origin 200. Both emitted fresh JUnit
 reports that passed ``scripts/check-sgi-test-results.py``; this does not

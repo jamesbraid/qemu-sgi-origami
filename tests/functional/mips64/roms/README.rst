@@ -40,6 +40,6 @@ shared startup and exception code lives in ``lib/``. Assertion comments cite
 the specifications and reviewed contracts used when the tests were written.
 References to Origami identify historical review evidence, not runtime inputs.
 
-Some source files are intentionally outside the suite. ``timerstall`` needs
-a debugger to stall the emulator during a timer update; an ordinary run would
-not exercise that regression. Building that payload does not qualify it.
+Some source files are intentionally outside the suite. ``timerstall`` runs
+through ``func-mips64-timer_stall``, which launches QEMU under host GDB and
+requires a breakpoint hit before accepting the ROM's PASS result.
