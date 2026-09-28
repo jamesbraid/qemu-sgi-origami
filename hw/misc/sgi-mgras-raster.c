@@ -2202,7 +2202,8 @@ static void mgras_raster_command_fifo_dispatch(SGIMgrasState *s)
      */
     if (s->cmd_token_class == MGRAS_CMD_HDR_CLASS_HQ &&
         reg == MGRAS_HQ_OP_QUERY) {
-        s->ge_report = 0;
+        s->ge_report = sgi_mgras_gl_query_answer(s, s->cmd_token_payload,
+                                                 s->cmd_token_payload_count);
         s->hq_flags |= MGRAS_HQ_FLAG_QUERY;
         return;
     }

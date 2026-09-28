@@ -13,6 +13,9 @@ void sgi_mgras_gl_execute(SGIMgrasState *s, uint32_t header,
 void sgi_mgras_gl_reset(SGIMgrasState *s);
 /* The answer to the 0xa104 current-attribute query for index. */
 uint32_t sgi_mgras_gl_attribute_answer(SGIMgrasState *s, uint32_t index);
+/* The answer to an 0xa20c state query, from its argument words. */
+uint32_t sgi_mgras_gl_query_answer(SGIMgrasState *s, const uint32_t *args,
+                                   uint32_t nargs);
 /* Select the GL state a completed context image names. */
 void sgi_mgras_gl_context_loaded(SGIMgrasState *s);
 /* The GE ports, through which the kernel copies GE external RAM. */
