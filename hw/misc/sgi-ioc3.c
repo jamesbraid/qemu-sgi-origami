@@ -1957,6 +1957,10 @@ static void sgi_ioc3_exit(PCIDevice *dev)
         qdev_unrealize(DEVICE(&s->ds1685));
     }
     if (s->board->timekeeper == SGI_IOC3_TIMEKEEPER_DS1742) {
+        for (i = 0; i < ARRAY_SIZE(s->ds1742_alias); i++) {
+            memory_region_del_subregion(&s->bar, &s->ds1742_alias[i]);
+            object_unparent(OBJECT(&s->ds1742_alias[i]));
+        }
         qdev_unrealize(DEVICE(&s->ds1742));
     }
 }
