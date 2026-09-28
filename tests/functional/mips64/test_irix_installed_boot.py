@@ -5,36 +5,14 @@
 # reached run level 2
 #
 # SPDX-License-Identifier: GPL-2.0-or-later
-"""
-The current-state record (docs/NOW.md, project checkout) claims a blank
-disk can be partitioned, IRIX 6.5.30 installed over the network, and the
-machine rebooted from its own disk into run level 2 with a root console
-login, on a single-CPU Origin 200 -- one such boot is captured at
-docs/boot-logs/irix.boot.2026-08-31T10:41:29-07:00 (project checkout).
-Nothing in this fork's functional-test suite guarded that claim:
-test_irix_diag.py boots the installed disk too, but only to run SGI's
-own oldisk exerciser on top of it, and would keep passing even on a disk
-that no longer reached run level 2, as long as oldisk still ran once
-logged in. This test asserts the boot itself, nothing more: root login,
-`who -r` reporting run-level 2, and `uname -aR` reporting the expected
-release and platform, then a clean shutdown.
+"""Boot the installed IRIX 6.5.30 disk on a single-CPU Origin 200.
 
-Ports test_irix_diag.py's own real-PROM boot and login scaffolding
-(single CPU, 64 MiB, user-mode networking, the release's own PROM) onto
-the plain installed disk (`irix/6.5.30/root.qcow2`) instead of the
-golden-with-diagnostics one -- root.qcow2 is the base image
-root-diags.qcow2 is built from by adding the field_diags_irix product
-(see that file's own docstring), so the same boot profile applies up to
-and past login.
+The test starts from `irix/6.5.30/root.qcow2`; it does not run the
+installer. It requires a root login, run level 2, the expected release
+and platform, and a clean shutdown.
 
-Where this file differs from test_irix_diag.py on purpose: a developer
-with QEMU_TEST_SGI_ASSET_DIR unset gets the usual skip (there is nothing to run
-against at all), but a run where QEMU_TEST_SGI_ASSET_DIR IS set and the PROM or
-disk is simply missing FAILS rather than silently skipping.
-test_irix_diag.py's skipTest() on a missing asset is exactly the bug
-this test does not repeat: a provisioning failure has to show up as a
-red check, not a quietly-skipped one that lets a real regression pass
-CI unnoticed.
+An unset QEMU_TEST_SGI_ASSET_DIR skips the test. If the directory is set
+but the PROM or disk is missing, asset fetching fails the test.
 """
 
 import json
@@ -93,9 +71,7 @@ DRIVER_STEPS = (
 # that follows a completed shutdown.
 SHUTDOWN_STARTED_RE = re.compile(rb"Shutdown started")
 
-# who -r's run-level field and uname -aR's release/version/platform
-# fields, exactly as a real capture printed them (docs/boot-logs/
-# irix.boot.2026-08-31T10:41:29-07:00, project checkout):
+# Expected guest output fields checked by this test:
 #   who -r:    "   .       run-level 2  Aug 31 10:27    2            0  S"
 #   uname -aR: "IRIX64 irix4p-prom 6.5 6.5.30m 07202013 IP27"
 RUN_LEVEL_TEXT = "run-level 2"
