@@ -1907,6 +1907,7 @@ static const VMStateDescription vmstate_sgi_mgras = {
         &vmstate_sgi_mgras_gl_index,
         &vmstate_sgi_mgras_gl_block,
         &vmstate_sgi_mgras_gl_depth_range,
+        &vmstate_sgi_mgras_gl_dither,
         NULL
     }
 };

@@ -57,6 +57,8 @@ extern const VMStateDescription vmstate_sgi_mgras_gl_index;
 extern const VMStateDescription vmstate_sgi_mgras_gl_block;
 /* Each context's depth range, sent once one has left [0, 1]. */
 extern const VMStateDescription vmstate_sgi_mgras_gl_depth_range;
+/* Each context's dither enable, sent once one has turned it off. */
+extern const VMStateDescription vmstate_sgi_mgras_gl_dither;
 
 /* Note GE-port traffic the per-context state cannot follow. */
 void sgi_mgras_gl_ge_port_access(SGIMgrasState *s, hwaddr addr, bool write);

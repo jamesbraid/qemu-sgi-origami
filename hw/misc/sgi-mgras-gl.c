@@ -82,6 +82,13 @@
  * far converted to single floats, unclamped, outside glBegin/glEnd.
  */
 #define MGRAS_GL_DEPTH_RANGE     0x00004808
+/*
+ * glEnable and glDisable of GL_DITHER: __glMgrim_Enable writes 0x6704 and
+ * 3 (0xd97d534, 0xd97e51c) and __glMgrim_Disable 0x6704 and 0 (0xd97f160
+ * for pname 0xbd0, 0xd98028c), so a nonzero word enables (established).
+ * Every context setup sends it with 3.
+ */
+#define MGRAS_GL_DITHER          0x00006704
 #define MGRAS_GL_BANKS           0x00009808
 
 /* Vertex-attribute headers: the class names the source format. */
@@ -367,6 +374,7 @@ bool sgi_mgras_gl_header(uint32_t header)
     case MGRAS_GL_DRAW_BUFFER:
     case MGRAS_GL_DEPTH_TEST:
     case MGRAS_GL_DEPTH_RANGE:
+    case MGRAS_GL_DITHER:
     case MGRAS_GL_BANKS:
     case MGRAS_GL_VERTEX2F:
     case MGRAS_GL_VERTEX3F:
@@ -794,6 +802,75 @@ static bool mgras_gl_query_table_known(const SGIMgrasBoard *b)
     return b->ge_revision >= 2 && !(b->ge_count == 2 && b->re_count == 1);
 }
 
+/*
+ * Six queries read raster-register state packed as the raster engine
+ * holds it (notes-return-mode-queries.md): 0x286 the polygon stipple,
+ * line stipple and fog enables in bits 0, 5 and 17; 0x288 dither, stencil
+ * and alpha test in bits 0, 4 and 6 and the logic op in bits 29:26;
+ * 0x2c6 the stencil function, operations and reference; 0x2c8 the
+ * stencil masks; 0x2ca the depth function in bits 2:0 and the depth
+ * write mask, true when bits 27:4 are all set (0xd9949bc-0xd9949d4); and
+ * 0x2cc the alpha function and reference. Every context setup's 0x7c08
+ * block pairs a raster register and value with one of these indices as
+ * a third word, and each value decodes, as the client decodes that
+ * query, to OpenGL's initial state; those values are the initial answers
+ * below (notes-unimplemented-tokens.md, "The triple's third word is a
+ * query address").
+ *
+ * The model does not answer from a table of those 0x7c08 values. The
+ * same state reaches the raster engine through other GL opcodes, such as
+ * glDepthFunc (0x4304), glDepthMask (0x3c04) and glDisable(GL_DITHER)
+ * (0x6704), which the GE turns into register writes the model never sees
+ * as triples, so a stored triple goes stale at the first of them. Instead
+ * the fields the shared context tracks, the depth function and write
+ * mask and dither, come from it; the others keep their initial values,
+ * right until the client sends the setter, which the model does not
+ * decode and logs. Such an answer is logged as well. The bits no query
+ * reads keep the setup value's.
+ */
+#define MGRAS_GL_QUERY_FILL_ENABLES 0x286
+#define MGRAS_GL_QUERY_PIXEL_ENABLES 0x288
+#define MGRAS_GL_QUERY_DEPTH     0x2ca
+#define MGRAS_GL_DEPTH_WRITES    0x0ffffff0u
+
+static const struct {
+    uint16_t index;
+    uint32_t initial;
+} mgras_gl_raster_queries[] = {
+    { MGRAS_GL_QUERY_FILL_ENABLES, 0x10009000 },
+    { MGRAS_GL_QUERY_PIXEL_ENABLES, 0x0c000503 },
+    { 0x2c6, 0x00000007 },
+    { 0x2c8, 0x0000ffff },
+    { MGRAS_GL_QUERY_DEPTH, 0x0ffffff1 },
+    { 0x2cc, 0x00000007 },
+};
+
+static bool mgras_gl_raster_query(SGIMgrasState *s, uint32_t index,
+                                  uint32_t *answer)
+{
+    const SGIGLContext *gl = mgras_gl(s);
+
+    for (int i = 0; i < ARRAY_SIZE(mgras_gl_raster_queries); i++) {
+        if (index != mgras_gl_raster_queries[i].index) {
+            continue;
+        }
+        *answer = mgras_gl_raster_queries[i].initial;
+        if (index == MGRAS_GL_QUERY_DEPTH) {
+            *answer = (gl->cur.depth_mask ? MGRAS_GL_DEPTH_WRITES : 0) |
+                      gl->cur.depth_func;
+            return true;
+        }
+        if (index == MGRAS_GL_QUERY_PIXEL_ENABLES) {
+            *answer = (*answer & ~1u) | gl->cur.dither;
+        }
+        qemu_log_mask(LOG_UNIMP, "sgi-mgras: GL state query index 0x%x "
+                      "answers OpenGL's initial value for state the model "
+                      "does not track\n", index);
+        return true;
+    }
+    return false;
+}
+
 uint32_t sgi_mgras_gl_query_answer(SGIMgrasState *s, const uint32_t *args,
                                    uint32_t nargs)
 {
@@ -805,6 +882,9 @@ uint32_t sgi_mgras_gl_query_answer(SGIMgrasState *s, const uint32_t *args,
         qemu_log_mask(LOG_UNIMP, "sgi-mgras: GL state query with %u "
                       "arguments on this board answered with zero\n", nargs);
         return 0;
+    }
+    if (mgras_gl_raster_query(s, index, &out[0])) {
+        return out[0];
     }
     if (index == MGRAS_GL_QUERY_RASTER_INDEX && mgras_gl(s)->cur.index_bits &&
         sgi_gl_get(mgras_gl(s), SGI_GL_CURRENT_RASTER_INDEX, out, &n)) {
@@ -1207,6 +1287,47 @@ const VMStateDescription vmstate_sgi_mgras_gl_depth_range = {
     }
 };
 
+static const VMStateDescription vmstate_sgi_mgras_gl_context_dither = {
+    .name = TYPE_SGI_MGRAS "/gl-context-dither",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32(cur.dither, SGIGLContext),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
+/*
+ * Every context's dither enable, sent only once some context has turned
+ * dithering off. A stream without it comes from a model that consumed
+ * 0x6704 without acting on it, for which every context kept OpenGL's
+ * initial enable: the destination's.
+ */
+static bool mgras_gl_dither_needed(void *opaque)
+{
+    SGIMgrasState *s = opaque;
+
+    for (int i = 0; i < SGI_MGRAS_GL_CONTEXTS; i++) {
+        if (!s->gl[i].cur.dither) {
+            return true;
+        }
+    }
+    return false;
+}
+
+const VMStateDescription vmstate_sgi_mgras_gl_dither = {
+    .name = TYPE_SGI_MGRAS "/gl-dither",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = mgras_gl_dither_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_STRUCT_ARRAY(gl, SGIMgrasState, SGI_MGRAS_GL_CONTEXTS, 1,
+                             vmstate_sgi_mgras_gl_context_dither,
+                             SGIGLContext),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
 /*
  * The parser inside a glBitmap image, live or set aside with a context,
  * keeps its place in the payload fields the stream already carries. A
@@ -1270,6 +1391,7 @@ bool sgi_mgras_gl_post_load(SGIMgrasState *s)
             gl->mv_depth >= SGI_GL_STACK_DEPTH ||
             gl->pr_depth >= SGI_GL_STACK_DEPTH ||
             gl->raster_valid > 1 || gl->cur.index_bits > 32 ||
+            gl->cur.dither > 1 ||
             !(gl->cur.depth_range[0] >= 0.0f &&
               gl->cur.depth_range[0] <= 1.0f) ||
             !(gl->cur.depth_range[1] >= 0.0f &&
@@ -1701,6 +1823,11 @@ void sgi_mgras_gl_execute(SGIMgrasState *s, uint32_t header,
         return;
     case MGRAS_GL_DEPTH_MASK:
         mgras_gl_command(s, SGI_GL_OP_DEPTH_MASK, payload, 1);
+        return;
+    case MGRAS_GL_DITHER:
+        word[0] = SGI_GL_DITHER;
+        mgras_gl_command(s, payload[0] ? SGI_GL_OP_ENABLE :
+                         SGI_GL_OP_DISABLE, word, 1);
         return;
     case MGRAS_GL_DEPTH_RANGE:
         /* The client does not clamp, so the board does (2.10.1). */
