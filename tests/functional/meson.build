@@ -92,8 +92,7 @@ foreach speed : ['quick', 'thorough']
       testname = '@0@-@1@'.format(target_base, test)
       test_suites = suites
       if target_base == 'mips64' and sysmode == 'system' and \
-         test in (get_variable('tests_mips64_system_quick', []) + \
-                  get_variable('tests_mips64_system_thorough', []))
+         test in get_variable('tests_mips64_system_sgi', [])
         test_suites = suites + ['sgi', 'sgi-functional']
       endif
       if testname == 'mips64-openbsd_install'
