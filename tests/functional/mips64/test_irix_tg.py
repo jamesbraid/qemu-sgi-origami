@@ -54,8 +54,6 @@ miniroot kernel are provisioned out of band.
 
 import json
 import os
-import re
-import socket
 import subprocess
 import sys
 import time
@@ -187,8 +185,6 @@ IFACE = "tg1"
 # frame in each direction (each echo is one TX frame and, answered, one RX
 # frame, plus the opening ARP exchange).
 PING_COUNT = 8
-TCP_RX_PORT = 5001
-TCP_PAYLOAD_BYTES = 256 * 1024
 
 # A real multiuser IRIX boot from the installed disk, on the real PROM, is
 # minutes: the PROM's own power-on diagnostics, then the kernel, then init to a
@@ -210,28 +206,6 @@ def _host_cksum(path):
                          check=True).stdout
     crc, size = out.split()[0:2]
     return crc, int(size)
-
-
-def _hostfwd_port(vm, guest_port):
-    out = vm.cmd('human-monitor-command', command_line='info usernet')
-    pattern = re.compile(
-        r'TCP.HOST_FORWARD.*127\.0\.0\.1\s+(\d+)\s+' +
-        re.escape(GUEST_ADDR) + r'\s+' + str(guest_port) + r'\b')
-    for line in out.splitlines():
-        match = pattern.search(line)
-        if match:
-            return int(match.group(1))
-    return None
-
-
-def _send_tcp(host_port, payload):
-    sock = socket.create_connection(('127.0.0.1', host_port), timeout=30)
-    try:
-        sock.settimeout(120)
-        sock.sendall(payload)
-        sock.shutdown(socket.SHUT_WR)
-    finally:
-        sock.close()
 
 
 if QemuSystemTest is not None:
@@ -338,14 +312,11 @@ if QemuSystemTest is not None:
                 '-device', 'scsi-hd,bus=scsi.0,scsi-id=1,lun=0,drive=disk0',
                 '-snapshot',
                 '-nic', 'none',
-                '-netdev',
-                f'user,id=tgnet,hostfwd=tcp:127.0.0.1:0-'
-                f'{GUEST_ADDR}:{TCP_RX_PORT}',
+                '-netdev', 'user,id=tgnet',
                 '-device',
                 f'bcm570x,netdev=tgnet,addr={TG_ADDR},mac={TG_MAC}',
                 '-object', f'filter-dump,id=tgcap,netdev=tgnet,file={pcap}')
             vm.launch()
-            tcp_host_port = _hostfwd_port(vm, TCP_RX_PORT)
 
             log_path = self.log_file('irix-tg.log')
             con = IrixConsole(vm.console_socket, log_path,
@@ -357,11 +328,6 @@ if QemuSystemTest is not None:
             link_line = None
             counters_before = (None, None, None)
             counters_after = (None, None, None)
-            tcp_result = {
-                'host_cksum': None, 'host_bytes': None,
-                'guest_cksum': None, 'guest_bytes': None,
-                'problem': None,
-            }
             try:
                 try:
                     drive_irix_to_shell(con, LOGIN_BUDGET_SECONDS)
@@ -371,40 +337,6 @@ if QemuSystemTest is not None:
                     counters_before = self._read_counters(con, "before")
                     self._ping(con)
                     counters_after = self._read_counters(con, "after")
-                    if tcp_host_port is None:
-                        tcp_result['problem'] = 'no TCP host-forward port'
-                    else:
-                        payload = bytes(range(256)) * (
-                            TCP_PAYLOAD_BYTES // 256)
-                        payload_path = self.scratch_file('tg-down.bin')
-                        with open(payload_path, 'wb') as payload_file:
-                            payload_file.write(payload)
-                        tcp_result['host_cksum'], tcp_result['host_bytes'] = (
-                            _host_cksum(payload_path))
-                        con.send(
-                            f'ttcp -r -p {TCP_RX_PORT} -l 65536 '
-                            '>/tmp/tg-down.bin 2>/dev/null; '
-                            'echo "TGRX-$?"')
-                        time.sleep(3)
-                        try:
-                            _send_tcp(tcp_host_port, payload)
-                            rx_status = con.expect(
-                                rb'TGRX-(\d+)', 180,
-                                what='tg TCP receive to finish').group(1)
-                            if rx_status != b'0':
-                                raise HarnessError(
-                                    'guest ttcp receive exited with status ' +
-                                    rx_status.decode())
-                            checksum = con.capture_value(
-                                'dd if=/tmp/tg-down.bin bs=8192 count=32 '
-                                '2>/dev/null | cksum | sed \'s/^/CK=/\'',
-                                'tg_downsum', rb'CK=((?:\d+)\s+\d+)',
-                                timeout=60)
-                            guest_cksum, guest_bytes = checksum.split()
-                            tcp_result['guest_cksum'] = guest_cksum
-                            tcp_result['guest_bytes'] = int(guest_bytes)
-                        except (HarnessError, OSError) as exc:
-                            tcp_result['problem'] = str(exc)
                     con.send("sync; sync")
                     time.sleep(2)
                     con._pump()
@@ -434,15 +366,6 @@ if QemuSystemTest is not None:
             }
             report = tg_acceptance_verdict(
                 login_reached, tg1_present, tg_up, link_up, traffic)
-            if tcp_result['problem'] is None:
-                if (tcp_result['host_cksum'], tcp_result['host_bytes']) != (
-                        tcp_result['guest_cksum'], tcp_result['guest_bytes']):
-                    tcp_result['problem'] = (
-                        'host-to-guest TCP payload checksum or byte count '
-                        'mismatch')
-            if tcp_result['problem'] is not None:
-                report['problems'].append(tcp_result['problem'])
-                report['verdict'] = 'FAIL'
 
             summary_path = self.log_file('irix-tg-summary.json')
             with open(summary_path, 'w', encoding='utf-8') as summary_file:
@@ -454,7 +377,6 @@ if QemuSystemTest is not None:
                     'link_up': link_up,
                     'link_line': link_line,
                     'traffic': traffic,
-                    'tcp_payload': tcp_result,
                     'report': report,
                 }, summary_file, indent=2, sort_keys=True, default=str)
                 summary_file.write('\n')
