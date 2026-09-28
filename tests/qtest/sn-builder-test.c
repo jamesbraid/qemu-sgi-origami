@@ -1340,32 +1340,25 @@ static void test_fitted_boards_have_distinct_serials(const void *data)
     qtest_quit(qts);
 }
 
-/* Whether any child of @parent is a board of QOM type @type. */
-static bool qom_has_child_of_type(QTestState *qts, const char *parent,
-                                  const char *type)
+/*
+ * Whether any object anywhere in the machine's QOM tree is of type
+ * @type: info qom-tree lists every object under /machine, one per line
+ * as "/name (type)", at any depth, the root's own children included. The
+ * closing parenthesis keeps a longer type name from matching.
+ */
+static bool machine_has_object_of_type(QTestState *qts, const char *type)
 {
-    g_autofree char *wanted = g_strdup_printf("child<%s>", type);
-    QDict *response = qtest_qmp(qts, "{ 'execute': 'qom-list',"
-                                     " 'arguments': { 'path': %s } }",
-                                     parent);
-    const QListEntry *entry;
-    bool found = false;
+    g_autofree char *tree = qtest_hmp(qts, "info qom-tree");
+    g_autofree char *wanted = g_strdup_printf(" (%s)", type);
 
-    if (!qdict_haskey(response, "return")) {
-        qobject_unref(response);
-        return false;
-    }
-    for (entry = qlist_first(qdict_get_qlist(response, "return")); entry;
-         entry = qlist_next(entry)) {
-        QDict *item = qobject_to(QDict, qlist_entry_obj(entry));
-        const char *item_type = qdict_get_try_str(item, "type");
-
-        found |= item_type && g_str_equal(item_type, wanted);
-    }
-    qobject_unref(response);
-    return found;
+    g_assert_nonnull(strstr(tree, "/machine ("));
+    return strstr(tree, wanted) != NULL;
 }
 
+/*
+ * A stock configuration fits no MGRAS anywhere: not in a module's slot,
+ * and not at /machine/mgras, where the builder used to put one.
+ */
 static void test_no_mgras_without_a_catalogue_record(const void *data)
 {
     static const char *const machines[] = {
@@ -1381,10 +1374,7 @@ static void test_no_mgras_without_a_catalogue_record(const void *data)
     for (i = 0; i < G_N_ELEMENTS(machines); i++) {
         QTestState *qts = qtest_init(machines[i]);
 
-        g_assert_false(qom_has_child_of_type(qts, "/machine/module0",
-                                             "sgi-mgras"));
-        g_assert_false(qom_has_child_of_type(qts, "/machine/module1",
-                                             "sgi-mgras"));
+        g_assert_false(machine_has_object_of_type(qts, "sgi-mgras"));
         qtest_quit(qts);
     }
 }
@@ -1397,6 +1387,8 @@ static void test_mgras_in_a_gigachannel_cabinet(const void *data)
 
     assert_mgras_at_widget(qts, "/machine/module1", "io6",
                            MGRAS_WIDGET);
+    /* The search the stock configurations pass finds a fitted one. */
+    g_assert_true(machine_has_object_of_type(qts, "sgi-mgras"));
     qtest_quit(qts);
 }
 
