@@ -350,8 +350,15 @@ static void mgras_update_timing(SGIMgrasState *s, bool log)
 {
     SGIScanoutMode mode;
     const SGIScanoutMode *cur = &s->scanout.mode;
+    const char *problem = sgi_mgras_display_timing(s, &mode);
 
-    sgi_mgras_display_timing(s, &mode, log);
+    /* Once per reset: the kernel writes 0x1e often. */
+    if (problem && log && !s->timing_problem_logged) {
+        s->timing_problem_logged = true;
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: the VC3 frame table at "
+                      "0x%04x %s; running the default timing\n",
+                      s->vc3_reg[0] /* VID_EP */, problem);
+    }
     if (mode.width != cur->width || mode.height != cur->height ||
         mode.frame_clocks != cur->frame_clocks ||
         mode.clock_hz != cur->clock_hz) {
@@ -1318,6 +1325,7 @@ static void mgras_reset_enter(Object *obj, ResetType type)
     s->ge_report = s->board->ge_revision;
     s->lowater_asserted = s->general_asserted = s->error_asserted = false;
     s->retrace_no_dest_logged = false;
+    s->timing_problem_logged = false;
 }
 
 static void mgras_reset_hold(Object *obj, ResetType type)
