@@ -286,6 +286,20 @@ typedef struct SGIMgrasBoard {
 } SGIMgrasBoard;
 
 /*
+ * The main-port parser's position in a packet: the header being collected
+ * and how many of its payload words are still to come. SGIMgrasState's
+ * cmd_token_* fields hold the loaded context's; each GL context keeps its
+ * own while another is loaded (hw/misc/sgi-mgras-gl.c).
+ */
+typedef struct SGIMgrasCmdParser {
+    uint32_t cls;
+    uint32_t reg;
+    uint32_t words_remaining;
+    uint32_t payload[SGI_MGRAS_CMD_TOKEN_PAYLOAD_WORDS];
+    uint32_t payload_count;
+} SGIMgrasCmdParser;
+
+/*
  * One OpenGL context's command state (hw/misc/sgi-mgras-gl.c). Colours and
  * vertex components keep the IEEE single bits the client wrote.
  */
@@ -308,6 +322,8 @@ typedef struct SGIMgrasGLContext {
     uint32_t clear_depth;
     /* The draw-buffer triple's first word: bit 0 front, bit 1 back. */
     uint32_t draw_buffers;
+    /* The parser's position while this context is not loaded. */
+    SGIMgrasCmdParser parser;
 } SGIMgrasGLContext;
 
 /*
