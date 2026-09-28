@@ -95,6 +95,9 @@
  * notes-lists-arrays-lighting.md in the Origami repository).
  */
 #define MGRAS_GL_NORMAL3F        0x0000070c
+/* glRasterPos2f and 3f (mgras-gl-commands.md, attribute table). */
+#define MGRAS_GL_RASTER_POS2F    0x40003808
+#define MGRAS_GL_RASTER_POS3F    0x2000380c
 #define MGRAS_GL_EDGE_FLAG_TRUE  0x00000f00
 #define MGRAS_GL_EDGE_FLAG_FALSE 0x00001000
 
@@ -251,6 +254,8 @@ bool sgi_mgras_gl_header(uint32_t header)
     case MGRAS_GL_NORMAL3F:
     case MGRAS_GL_EDGE_FLAG_TRUE:
     case MGRAS_GL_EDGE_FLAG_FALSE:
+    case MGRAS_GL_RASTER_POS2F:
+    case MGRAS_GL_RASTER_POS3F:
         return true;
     default:
         return false;
@@ -500,7 +505,18 @@ typedef enum MgrasGLQueryPacking {
     MGRAS_GL_QUERY_WORD,
     /* The matrix mode's enumerant less GL_PROJECTION. */
     MGRAS_GL_QUERY_MATRIX_MODE,
+    /* A raster window coordinate plus MGRAS_GL_RASTER_BIAS. */
+    MGRAS_GL_QUERY_RASTER_XY,
+    /* All ones for true, zero for false. */
+    MGRAS_GL_QUERY_BOOLEAN_MASK,
 } MgrasGLQueryPacking;
+
+/*
+ * The client adds this double, read at $gp - 0x39e8 in
+ * __glMgrDoGet, to the x and y words of GL_CURRENT_RASTER_POSITION
+ * before returning them (notes-return-mode-queries.md).
+ */
+#define MGRAS_GL_RASTER_BIAS     49151.5
 
 /*
  * The 0xa20c state queries the model answers. __Mgr_ReturnMode sends an
@@ -524,13 +540,28 @@ typedef enum MgrasGLQueryPacking {
  * - GL_VIEWPORT: 0xc1d to 0xc20, stored as integers x, y, width, height.
  * - GL_SHADE_MODEL: 0xc19, returned as the integer it is.
  * - GL_COLOR_CLEAR_VALUE: 0xc0a to 0xc0d, four floats.
+ * - GL_CURRENT_RASTER_POSITION: x, y, z and w at 0x359, 0x35a, 0x35b and
+ *   0x350, as floats. The client adds -49151.5 in double to x and y and
+ *   returns z and w as they are, so the words are the window x and y plus
+ *   49151.5, and z and clip w. In single precision the biased x and y
+ *   hold the 1/256 pixel the model snaps vertices to; how the board rounds
+ *   them is not published, and the model rounds to nearest.
+ * - GL_CURRENT_RASTER_POSITION_VALID: 0x35c. The client ANDs the word
+ *   with the microcode symbol table's word at offset 0x240 and returns
+ *   whether the result is nonzero. That mask's value is not recorded, so
+ *   the model answers all ones for a valid position and zero otherwise,
+ *   which reads correctly for any mask but zero; which bits the board
+ *   sets is unknown.
+ * - GL_CURRENT_RASTER_COLOR 0x351 to 0x354, GL_CURRENT_RASTER_TEXTURE_COORDS
+ *   0x355 to 0x358 and GL_CURRENT_RASTER_DISTANCE 0x34b, as floats.
  *
  * What a1 and a2 select is unknown; the model answers by index alone.
  * Every other index answers zero, logged, which is right for the
  * glFinish and MgrasFinish fences and glGetError, which discard or fall
  * back from a zero, and wrong for the other state a client reads back.
- * The discriminating tests are hq-query-answers-the-matrices and
- * hq-query-answers-viewport-shade-and-clear-colour.
+ * The discriminating tests are hq-query-answers-the-matrices,
+ * hq-query-answers-viewport-shade-and-clear-colour and
+ * hq-query-answers-the-raster-position.
  */
 static const struct {
     uint16_t first;
@@ -545,6 +576,14 @@ static const struct {
     { 0xc1d, 4, MGRAS_GL_QUERY_WORD, SGI_GL_VIEWPORT, 0 },
     { 0xc19, 1, MGRAS_GL_QUERY_WORD, SGI_GL_SHADE_MODEL, 0 },
     { 0xc0a, 4, MGRAS_GL_QUERY_WORD, SGI_GL_COLOR_CLEAR_VALUE, 0 },
+    { 0x359, 2, MGRAS_GL_QUERY_RASTER_XY, SGI_GL_CURRENT_RASTER_POSITION, 0 },
+    { 0x35b, 1, MGRAS_GL_QUERY_WORD, SGI_GL_CURRENT_RASTER_POSITION, 2 },
+    { 0x350, 1, MGRAS_GL_QUERY_WORD, SGI_GL_CURRENT_RASTER_POSITION, 3 },
+    { 0x35c, 1, MGRAS_GL_QUERY_BOOLEAN_MASK,
+      SGI_GL_CURRENT_RASTER_POSITION_VALID, 0 },
+    { 0x351, 4, MGRAS_GL_QUERY_WORD, SGI_GL_CURRENT_RASTER_COLOR, 0 },
+    { 0x355, 4, MGRAS_GL_QUERY_WORD, SGI_GL_CURRENT_RASTER_TEXTURE_COORDS, 0 },
+    { 0x34b, 1, MGRAS_GL_QUERY_WORD, SGI_GL_CURRENT_RASTER_DISTANCE, 0 },
 };
 
 /*
@@ -567,6 +606,7 @@ uint32_t sgi_mgras_gl_query_answer(SGIMgrasState *s, const uint32_t *args,
 {
     uint32_t index = nargs ? args[0] : 0, out[SGI_GL_GET_WORDS];
     unsigned n;
+    float f;
 
     if (nargs != 3 || !mgras_gl_query_table_known(s->board)) {
         qemu_log_mask(LOG_UNIMP, "sgi-mgras: GL state query with %u "
@@ -586,6 +626,13 @@ uint32_t sgi_mgras_gl_query_answer(SGIMgrasState *s, const uint32_t *args,
         switch (mgras_gl_queries[i].packing) {
         case MGRAS_GL_QUERY_MATRIX_MODE:
             return out[element] - SGI_GL_PROJECTION;
+        case MGRAS_GL_QUERY_RASTER_XY:
+            memcpy(&f, &out[element], sizeof(f));
+            f = f + MGRAS_GL_RASTER_BIAS;
+            memcpy(&out[element], &f, sizeof(f));
+            return out[element];
+        case MGRAS_GL_QUERY_BOOLEAN_MASK:
+            return out[element] ? UINT32_MAX : 0;
         default:
             return out[element];
         }
@@ -785,6 +832,63 @@ const VMStateDescription vmstate_sgi_mgras_gl_context_v22 = {
     }
 };
 
+static const VMStateDescription vmstate_sgi_mgras_gl_context_raster = {
+    .name = TYPE_SGI_MGRAS "/gl-context-raster",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_SGI_GL_FLOATS(raster_pos, SGIGLContext, 4, 0),
+        VMSTATE_UINT32(raster_valid, SGIGLContext),
+        VMSTATE_SINGLE(raster_distance, SGIGLContext, 0, vmstate_info_uint32,
+                       float),
+        VMSTATE_SGI_GL_FLOATS(raster_color, SGIGLContext, 4, 0),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
+/*
+ * Every context's raster position, sent only once one has left OpenGL's
+ * initial one, so a stream from a guest that never sent glRasterPos stays
+ * loadable by a binary that predates it. A destination that lacks this
+ * section refuses a stream that carries it rather than lose the position.
+ * A stream without it leaves the destination's initial positions, which
+ * are what a source that predates it had: it never decoded glRasterPos.
+ */
+static bool mgras_gl_raster_needed(void *opaque)
+{
+    SGIMgrasState *s = opaque;
+    g_autofree SGIGLContext *init = g_new(SGIGLContext, 1);
+
+    sgi_gl_init(init, 0);
+    for (int i = 0; i < SGI_MGRAS_GL_CONTEXTS; i++) {
+        const SGIGLContext *gl = &s->gl[i];
+
+        if (memcmp(gl->raster_pos, init->raster_pos,
+                   sizeof(gl->raster_pos)) ||
+            gl->raster_valid != init->raster_valid ||
+            memcmp(&gl->raster_distance, &init->raster_distance,
+                   sizeof(gl->raster_distance)) ||
+            memcmp(gl->raster_color, init->raster_color,
+                   sizeof(gl->raster_color))) {
+            return true;
+        }
+    }
+    return false;
+}
+
+const VMStateDescription vmstate_sgi_mgras_gl_raster = {
+    .name = TYPE_SGI_MGRAS "/gl-raster",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = mgras_gl_raster_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_STRUCT_ARRAY(gl, SGIMgrasState, SGI_MGRAS_GL_CONTEXTS, 1,
+                             vmstate_sgi_mgras_gl_context_raster,
+                             SGIGLContext),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
 bool sgi_mgras_cmd_parser_valid(uint32_t cls, uint32_t reg,
                                 uint32_t words_remaining,
                                 uint32_t payload_count)
@@ -813,6 +917,7 @@ bool sgi_mgras_gl_post_load(SGIMgrasState *s)
             gl->begin_mode > SGI_GL_POLYGON ||
             gl->mv_depth >= SGI_GL_STACK_DEPTH ||
             gl->pr_depth >= SGI_GL_STACK_DEPTH ||
+            gl->raster_valid > 1 ||
             !sgi_mgras_cmd_parser_valid(p->cls, p->reg, p->words_remaining,
                                         p->payload_count)) {
             return false;
@@ -1126,6 +1231,12 @@ void sgi_mgras_gl_execute(SGIMgrasState *s, uint32_t header,
         return;
     case MGRAS_GL_VERTEX2I:
         mgras_gl_command(s, SGI_GL_OP_VERTEX2I, payload, 2);
+        return;
+    case MGRAS_GL_RASTER_POS2F:
+        mgras_gl_command(s, SGI_GL_OP_RASTER_POS2F, payload, 2);
+        return;
+    case MGRAS_GL_RASTER_POS3F:
+        mgras_gl_command(s, SGI_GL_OP_RASTER_POS3F, payload, 3);
         return;
     case MGRAS_GL_FLUSH:
         /* Approximated: every command has already run to completion. */
