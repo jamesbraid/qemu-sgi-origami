@@ -3110,6 +3110,50 @@ static void test_xio_connector_takes_no_board(const void *data)
  * was built. Changing it once the machine exists is refused, and the
  * machine still resets afterwards.
  */
+/*
+ * A Bedrock local reset, the pair of network-interface writes every IP35
+ * consumer makes to reboot, resets the whole machine. That reset also ends
+ * the XBridge crossbar's warm-reset quiet window: a warm reset that the
+ * window would ignore before is accepted after, and resets the crossbar's
+ * widget-0 control register to its reset value.
+ */
+#define NI_PORT_RESET UINT64_C(0x8)
+#define NI_RESET_ENABLE UINT64_C(0x10)
+#define XBOW_CONTROL 0x20
+#define XBOW_CONTROL_RESET 0x80
+
+static void xbridge_warm_reset(QTestState *qts)
+{
+    qtest_set_irq_in(qts, "/machine/node0/xbridge", "warm-reset",
+                     XBRIDGE_HOST_PORT - 8, 1);
+    qtest_set_irq_in(qts, "/machine/node0/xbridge", "warm-reset",
+                     XBRIDGE_HOST_PORT - 8, 0);
+}
+
+static void test_local_reset_ends_warm_reset_window(const void *data)
+{
+    QTestState *qts = machine_start();
+
+    widget_reg_write(qts, 0, XBOW_CONTROL, 0xfe);
+    xbridge_warm_reset(qts);
+    g_assert_cmphex(widget_reg_read(qts, 0, XBOW_CONTROL), ==,
+                    XBOW_CONTROL_RESET);
+    /* Inside the 1024-cycle window a second warm reset is ignored. */
+    widget_reg_write(qts, 0, XBOW_CONTROL, 0xfe);
+    xbridge_warm_reset(qts);
+    g_assert_cmphex(widget_reg_read(qts, 0, XBOW_CONTROL), ==, 0xfe);
+
+    qtest_writeq(qts, BEDROCK_LOCAL + BEDROCK_NI + NI_RESET_ENABLE, 1);
+    qtest_writeq(qts, BEDROCK_LOCAL + BEDROCK_NI + NI_PORT_RESET, 0x6);
+    qtest_qmp_eventwait(qts, "RESET");
+
+    widget_reg_write(qts, 0, XBOW_CONTROL, 0xfe);
+    xbridge_warm_reset(qts);
+    g_assert_cmphex(widget_reg_read(qts, 0, XBOW_CONTROL), ==,
+                    XBOW_CONTROL_RESET);
+    qtest_quit(qts);
+}
+
 static void test_nodes_fixed_once_built(const void *data)
 {
     QTestState *qts = machine_start();
@@ -3925,6 +3969,8 @@ int main(int argc, char **argv)
                         test_xbridge_topology);
     qtest_add_data_func("sn1/address-map/xio-connector-takes-no-board",
                         NULL, test_xio_connector_takes_no_board);
+    qtest_add_data_func("sn1/address-map/local-reset-ends-warm-window",
+                        NULL, test_local_reset_ends_warm_reset_window);
     qtest_add_data_func("sn1/address-map/nodes-fixed-once-built",
                         NULL, test_nodes_fixed_once_built);
     qtest_add_data_func("sn1/address-map/io8-usb-attachment", NULL,
