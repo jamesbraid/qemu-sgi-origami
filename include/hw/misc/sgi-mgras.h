@@ -10,6 +10,7 @@
 #include "qemu/units.h"
 #include "hw/display/sgi/board-memory.h"
 #include "hw/display/sgi/command-fetch.h"
+#include "hw/display/sgi/gl-context.h"
 
 #define TYPE_SGI_MGRAS "sgi-mgras"
 OBJECT_DECLARE_TYPE(SGIMgrasState, SGIMgrasClass, SGI_MGRAS)
@@ -301,42 +302,16 @@ typedef struct SGIMgrasCmdParser {
     uint32_t payload_count;
 } SGIMgrasCmdParser;
 
-/* Matrices a GL matrix stack holds, the current one included. */
-#define SGI_MGRAS_GL_STACK_DEPTH 32
-
 /*
- * One OpenGL context's command state (hw/misc/sgi-mgras-gl.c). Colours and
- * vertex components keep the IEEE single bits the client wrote.
+ * The family's side of one GL context-table entry: where the main-port
+ * parser stood when the context was last switched out, beside the entry's
+ * GL state. SGIGLContext is the GL state machine's; the parser position is
+ * MGRAS framing and stays out of it.
  */
 typedef struct SGIMgrasGLContext {
-    int32_t viewport[4];
-    uint32_t clear_color[4];
-    uint32_t color[4];
-    uint32_t shade_model;
-    uint32_t begin;
-    uint32_t vertex_count;
-    uint32_t vertex[3][4];
-    uint32_t vertex_color[3][4];
-    uint32_t matrix_mode;
-    /* IEEE single bits, column-major as glLoadMatrixf lays a matrix out. */
-    uint32_t modelview[16];
-    uint32_t projection[16];
-    uint32_t depth_test;
-    uint32_t depth_func;
-    uint32_t depth_mask;
-    uint32_t clear_depth;
-    /* The draw-buffer triple's first word: bit 0 front, bit 1 back. */
-    uint32_t draw_buffers;
     /* The parser's position while this context is not loaded. */
     SGIMgrasCmdParser parser;
-    /* Matrices glPushMatrix saved under the current ones, oldest first. */
-    uint32_t modelview_stack[SGI_MGRAS_GL_STACK_DEPTH - 1][16];
-    uint32_t projection_stack[SGI_MGRAS_GL_STACK_DEPTH - 1][16];
-    uint32_t modelview_depth;
-    uint32_t projection_depth;
-    /* The current normal's IEEE single bits, and the edge flag. */
-    uint32_t normal[3];
-    uint32_t edge_flag;
+    SGIGLContext *gl;
 } SGIMgrasGLContext;
 
 /*
@@ -530,11 +505,12 @@ struct SGIMgrasState {
     uint32_t cmd_token_payload[SGI_MGRAS_CMD_TOKEN_PAYLOAD_WORDS];
     uint32_t cmd_token_payload_count;
     /*
-     * OpenGL command state (hw/misc/sgi-mgras-gl.c): gl_context[gl_current]
-     * is the loaded context's. gl_slot[] holds each entry's image word 0
-     * and gl_selected[] the gl_selections count when it was last loaded,
-     * zero for a free entry.
+     * OpenGL command state (hw/misc/sgi-mgras-gl.c): gl[gl_current] is the
+     * loaded context's, and gl_context[i].gl points at gl[i]. gl_slot[]
+     * holds each entry's image word 0 and gl_selected[] the gl_selections
+     * count when it was last loaded, zero for a free entry.
      */
+    SGIGLContext gl[SGI_MGRAS_GL_CONTEXTS];
     SGIMgrasGLContext gl_context[SGI_MGRAS_GL_CONTEXTS];
     uint32_t gl_slot[SGI_MGRAS_GL_CONTEXTS];
     uint64_t gl_selected[SGI_MGRAS_GL_CONTEXTS];
