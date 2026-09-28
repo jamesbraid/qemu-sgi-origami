@@ -92,9 +92,11 @@ typedef enum R10KSystemRequest {
 } R10KSystemRequest;
 
 /*
- * The processor dispatches each such request as a 64-bit read of the
- * board's system-request region, as the generic CACHE model dispatches
- * tag operations to its ITC region. The offset carries the physical
+ * The processor dispatches each such request as a read of the board's
+ * system-request region, as the generic CACHE model dispatches tag
+ * operations to its ITC region. The read is 8 bytes and big-endian, so
+ * the region is DEVICE_BIG_ENDIAN with 8-byte valid and impl sizes and
+ * its value arrives unswapped. The offset carries the physical
  * address, the request and, for an index request, which names a set rather
  * than a block, the number of secondary-cache set-index bits. The value
  * read back is nonzero when the request found a block the board follows
