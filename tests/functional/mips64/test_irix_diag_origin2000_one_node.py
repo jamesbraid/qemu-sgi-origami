@@ -16,11 +16,18 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from test_irix_diag import (QemuSystemTest, IrixDiagMatrix,  # noqa: E402
+                            DIAG_MEDIUM_SPEC, IP27_DIAG_DISK_SPEC,
+                            IP27_FIRMWARE_SPEC,
                             register_irix_diag_row)
+from qemu_test.asset import LocalAsset
 
 
 class IrixDiagOrigin2000OneNode(IrixDiagMatrix):
     """the Origin 2000 one-node module's BaseIO-G"""
+
+    ASSET_FIRMWARE = LocalAsset(*IP27_FIRMWARE_SPEC)
+    ASSET_DISK = LocalAsset(*IP27_DIAG_DISK_SPEC)
+    ASSET_MEDIUM = LocalAsset(*DIAG_MEDIUM_SPEC)
 
 
 register_irix_diag_row(IrixDiagOrigin2000OneNode, 'origin2000_one_node')

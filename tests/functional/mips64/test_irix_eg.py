@@ -81,8 +81,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from lib_net import (HarnessError, IrixConsole,  # noqa: E402
                      drive_irix_to_shell)
-from lib_prom import (MACHINES, file_sha256,  # noqa: E402
-                      require_assets)
+from lib_prom import MACHINES, file_sha256  # noqa: E402
 
 def mtu_probe_result(rc, output):
     """Classify one IRIX ifconfig MTU request from status and diagnostics."""
@@ -298,6 +297,7 @@ def eg_perf_verdict(login_reached, eg_up, results, rx=None):
 try:
     from qemu_test import QemuSystemTest
     from qemu_test import skipSlowTest, skipBigDataTest, skipIfMissingEnv
+    from qemu_test.asset import LocalAsset
 except (ImportError, RuntimeError):
     QemuSystemTest = None
 
@@ -619,6 +619,11 @@ if QemuSystemTest is not None:
         across it with throughput measurement, byte verification, and a
         device-level receive-counter proof."""
 
+        ASSET_FIRMWARE = LocalAsset(FIRMWARE_REL, PROM_SHA256)
+        ASSET_DISK = LocalAsset(
+            DISK_REL,
+            '15b4bc1992845b6242948a9e944ce39682b7decdaee1e5474579418fb3a19c12')
+
         def _netstat_counter(self, con, proto, pattern, tag):
             try:
                 return int(con.capture_value(
@@ -644,10 +649,8 @@ if QemuSystemTest is not None:
         @skipSlowTest()
         @skipIfMissingEnv('QEMU_TEST_SGI_ASSET_DIR')
         def test_irix_eg(self):
-            assets = require_assets(
-                self, FIRMWARE_REL, DISK_REL)
-            prom = assets[FIRMWARE_REL]
-            disk = assets[DISK_REL]
+            prom = self.ASSET_FIRMWARE.fetch()
+            disk = self.ASSET_DISK.fetch()
             if file_sha256(prom) != PROM_SHA256:
                 self.fail('6.5.30 PROM SHA-256 mismatch')
             self.require_netdev('user')

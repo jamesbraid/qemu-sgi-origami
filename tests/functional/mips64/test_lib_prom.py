@@ -13,8 +13,7 @@ end of a socketpair stands in for QEMUMachine.console_socket: a helper
 thread plays a scripted guest, sending its prompts and reading back what
 the driver answers, while drive_console() runs on the other end exactly
 as a netboot test calls it. ResolveAssetTest covers the shared asset
-resolver against a temporary assets tree, RequireAssetsTests the skip
-and fail a boot test gets from it, and VerdictTests the shared
+resolver against a temporary assets tree, and VerdictTests the shared
 assertion/trip-wire scorer. lib_prom's progress-code helpers are covered
 by test_lib_matrix.py.
 """
@@ -246,76 +245,6 @@ class ResolveAssetTest(unittest.TestCase):
             resolve_asset(self.root, FIRMWARE_REL, sha256=recorded)
         self.assertIn(recorded, str(caught.exception))
         self.assertIn(file_sha256(path), str(caught.exception))
-
-
-class _Subject(unittest.TestCase):
-    """A stand-in for the boot test require_assets() is called against:
-    skipTest() and fail() are the only two things it uses."""
-
-    def runTest(self):  # pylint: disable=invalid-name
-        # unittest.TestCase requires this name for its default test method.
-        pass
-
-
-class RequireAssetsTests(unittest.TestCase):
-    """A developer with no assets at all gets a skip; a runner whose
-    assets are set but incomplete gets a failure naming what is missing.
-    A provisioning failure must be a red check, not a quiet skip that
-    lets a real regression through."""
-
-    def test_unset_environment_skips(self):
-        with mock.patch.dict(os.environ, {}, clear=True):
-            with self.assertRaises(unittest.SkipTest):
-                lib_prom.require_assets(
-                    _Subject(), FIRMWARE_REL)
-
-    def test_empty_environment_skips(self):
-        with mock.patch.dict(os.environ, {'QEMU_TEST_SGI_ASSET_DIR': ''}):
-            with self.assertRaises(unittest.SkipTest):
-                lib_prom.require_assets(_Subject(), FIRMWARE_REL)
-
-    def test_missing_file_fails_naming_the_path(self):
-        with tempfile.TemporaryDirectory() as root:
-            with mock.patch.dict(os.environ, {'QEMU_TEST_SGI_ASSET_DIR': root}):
-                with self.assertRaises(AssertionError) as caught:
-                    lib_prom.require_assets(_Subject(), 'boot/6.5.30/sash64')
-        self.assertIn('boot/6.5.30/sash64', str(caught.exception))
-
-    def test_every_missing_file_is_named_at_once(self):
-        with tempfile.TemporaryDirectory() as root:
-            with mock.patch.dict(os.environ, {'QEMU_TEST_SGI_ASSET_DIR': root}):
-                with self.assertRaises(AssertionError) as caught:
-                    lib_prom.require_assets(_Subject(), FIRMWARE_REL,
-                                            'irix/6.5.30/root.qcow2')
-        self.assertIn(FIRMWARE_REL, str(caught.exception))
-        self.assertIn('irix/6.5.30/root.qcow2', str(caught.exception))
-
-    def test_provisioned_files_resolve_in_order(self):
-        with tempfile.TemporaryDirectory() as root:
-            paths = []
-            for rel in (FIRMWARE_REL, 'irix/6.5.30/root.qcow2'):
-                path = os.path.join(root, rel)
-                os.makedirs(os.path.dirname(path), exist_ok=True)
-                with open(path, 'wb') as provisioned:
-                    provisioned.write(b'provisioned')
-                paths.append(path)
-            with mock.patch.dict(os.environ, {'QEMU_TEST_SGI_ASSET_DIR': root}):
-                resolved = lib_prom.require_assets(
-                    _Subject(), FIRMWARE_REL, 'irix/6.5.30/root.qcow2')
-        self.assertEqual(list(resolved),
-                         [FIRMWARE_REL, 'irix/6.5.30/root.qcow2'])
-        self.assertEqual(list(resolved.values()), paths)
-
-    def test_a_recorded_digest_is_checked(self):
-        with tempfile.TemporaryDirectory() as root:
-            path = os.path.join(root, FIRMWARE_REL)
-            os.makedirs(os.path.dirname(path), exist_ok=True)
-            with open(path, 'wb') as provisioned:
-                provisioned.write(b'the wrong bytes')
-            with mock.patch.dict(os.environ, {'QEMU_TEST_SGI_ASSET_DIR': root}):
-                with self.assertRaises(AssetMismatch):
-                    lib_prom.require_assets(_Subject(),
-                                            (FIRMWARE_REL, '0' * 64))
 
 
 class LocalAssetTests(unittest.TestCase):

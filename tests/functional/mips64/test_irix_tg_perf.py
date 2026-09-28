@@ -213,10 +213,16 @@ class HelpersTest(unittest.TestCase):
 
 
 if base.QemuSystemTest is not None:
+    from qemu_test.asset import LocalAsset
 
     class IrixTgPerf(base.QemuSystemTest):
         """Boots installed IRIX, brings up tg, and moves TCP + UDP traffic
         across it with throughput measurement and byte verification."""
+
+        ASSET_FIRMWARE = LocalAsset(base.FIRMWARE_REL, base.PROM_SHA256)
+        ASSET_DISK = LocalAsset(
+            base.DISK_REL,
+            '15b4bc1992845b6242948a9e944ce39682b7decdaee1e5474579418fb3a19c12')
 
         def _netstat_counter(self, con, proto, pattern, tag):
             try:
@@ -231,10 +237,8 @@ if base.QemuSystemTest is not None:
         @base.skipSlowTest()
         @base.skipIfMissingEnv('QEMU_TEST_SGI_ASSET_DIR')
         def test_irix_tg_perf(self):
-            assets = base.require_assets(
-                self, base.FIRMWARE_REL, base.DISK_REL)
-            prom = assets[base.FIRMWARE_REL]
-            disk = assets[base.DISK_REL]
+            prom = self.ASSET_FIRMWARE.fetch()
+            disk = self.ASSET_DISK.fetch()
             if base.file_sha256(prom) != base.PROM_SHA256:
                 self.fail('6.5.30 PROM SHA-256 mismatch')
             self.require_netdev('user')

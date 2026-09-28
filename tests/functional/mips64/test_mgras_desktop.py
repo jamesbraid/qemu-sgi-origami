@@ -57,13 +57,14 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import lib_input
 from lib_mgras_greeter import GREETER_SCREEN_CHECKS
 from lib_mgras_regions import DESKTOP_COLOR_CHECKS
-from lib_prom import (FORK_ROOT, MACHINES, drive_console, require_assets,
-                      run_record, utc_now)
+from lib_prom import (FORK_ROOT, MACHINES, drive_console, run_record,
+                      utc_now)
 from lib_screen import ScreenCheckError, poll_screendump_until_checks_pass
 
 try:
     from qemu_test import QemuSystemTest
     from qemu_test import skipSlowTest, skipBigDataTest, skipIfMissingEnv
+    from qemu_test.asset import LocalAsset
 except (ImportError, RuntimeError):
     QemuSystemTest = None
 
@@ -148,12 +149,19 @@ if QemuSystemTest is not None:
     class MgrasDesktop(QemuSystemTest):
         """Check the painted SI greeter, then log in and check the desktop."""
 
+        ASSET_FIRMWARE = LocalAsset(
+            FIRMWARE_REL,
+            'c2c69bf33c375b43ec7ac511fab41ddf595be1b6838ae717e58a9a1273437fdd')
+        ASSET_DISK = LocalAsset(
+            DISK_REL,
+            '1bd8867a5d34461a21998f07971e0ba4cb6f1e824fc236b1ad0405e39f05a13c')
+
         @skipBigDataTest()
         @skipSlowTest()
         @skipIfMissingEnv('QEMU_TEST_SGI_ASSET_DIR')
         def test_mgras_desktop(self):
-            assets = require_assets(self, FIRMWARE_REL, DISK_REL)
-            prom, disk = assets[FIRMWARE_REL], assets[DISK_REL]
+            prom = self.ASSET_FIRMWARE.fetch()
+            disk = self.ASSET_DISK.fetch()
 
             vm = self.get_vm(name='mgras_desktop')
             vm.set_machine(MACHINE)
