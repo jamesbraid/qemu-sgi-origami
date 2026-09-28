@@ -3202,6 +3202,43 @@ static void test_an_inbound_link_reset_clears_the_core(const void *data)
 }
 
 /*
+ * On an Origin 200 the Hub's link goes straight to the Bridge, so the warm
+ * reset a Hub sends from its link control register, bit 8, arrives at the
+ * Bridge's link layer, whose reset output drives the core-logic reset
+ * (Bridge ASIC specification rev 4.0, section 7.5). Each write with the bit
+ * set sends one: the stock PROM writes it set twice.
+ */
+#define HUB_IO_LINK_CONTROL     (HUB_LOCAL + 0x400128)
+#define HUB_IO_LINK_WARM_RESET  0x100
+#define HUB_IO_LINK_ENABLE      0x400
+
+static void test_a_hub_warm_reset_clears_the_core(const void *data)
+{
+    uint64_t link;
+
+    bridge_reset();
+    link = qtest_readq(qts, HUB_IO_LINK_CONTROL);
+    qtest_writel(qts, REG(BRIDGE_CONTROL), 0);
+    qtest_writeq(qts, HUB_IO_LINK_CONTROL, link | HUB_IO_LINK_WARM_RESET);
+    g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_CONTROL)), ==, CONTROL_RESET);
+
+    qtest_writel(qts, REG(BRIDGE_CONTROL), 0);
+    qtest_writeq(qts, HUB_IO_LINK_CONTROL, link | HUB_IO_LINK_WARM_RESET);
+    g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_CONTROL)), ==, CONTROL_RESET);
+
+    /*
+     * The bit is a one-shot and reads zero, so the PROM's later
+     * read-modify-write that sets link-enable, bit 10, sends nothing.
+     */
+    g_assert_cmphex(qtest_readq(qts, HUB_IO_LINK_CONTROL) &
+                    HUB_IO_LINK_WARM_RESET, ==, 0);
+    qtest_writel(qts, REG(BRIDGE_CONTROL), 0);
+    qtest_writeq(qts, HUB_IO_LINK_CONTROL,
+                 qtest_readq(qts, HUB_IO_LINK_CONTROL) | HUB_IO_LINK_ENABLE);
+    g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_CONTROL)), ==, 0);
+}
+
+/*
  * And it stops at the chip. No source documents Bridge pulsing its four
  * external bus-reset outputs or a downstream device resetting, so a card
  * keeps its own programming; and the pin it is holding stays up, because a
@@ -3958,6 +3995,8 @@ int main(int argc, char **argv)
     qtest_add_data_func("sn0/bridge/reserved-data-half-store", NULL,
                         test_reserved_data_half_store_completes);
     qtest_add_data_func("sn0/bridge/reset-state", NULL, test_reset_state);
+    qtest_add_data_func("sn0/bridge/a-hub-warm-reset-clears-the-core", NULL,
+                        test_a_hub_warm_reset_clears_the_core);
     qtest_add_data_func("sn0/bridge/each-slot-resets-to-its-own-window", NULL,
                         test_each_slot_resets_to_its_own_window);
     qtest_add_data_func("sn0/bridge/field-widths", NULL,
