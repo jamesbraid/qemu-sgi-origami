@@ -11,29 +11,19 @@ MDK 1.6 is SGI's own PROM-bootable field diagnostic for the Origin
 from the maintenance menu's command monitor exactly as an operating
 system is. It never shipped on IRIX media -- the binaries come off the
 Internal Support Tools 2.7 disc; the asset provisioning process places
-them under <QEMU_TEST_SGI_ASSET_DIR>/boot/mdk, and the find,
-the extraction, and the full per-test results on this machine are in the
-project checkout's docs/notebooks/firmware-diags.md.
+them under <QEMU_TEST_SGI_ASSET_DIR>/boot/mdk.
 
 This test netboots cpu.mdk the way test_prom_sash.py netboots sash64 --
 same PROM, same SLIRP usermode TFTP, same path-structured `bootfile=`
 departure (mdk/cpu.mdk, staged under this test's own scratch root, so
 the fetch line proves the PROM fetched the file by the path it was
 asked for) -- then drives the kernel's own `pcache` test at the MDK>
-prompt and requires the kernel's own pass and completion lines. pcache
-is the one cpu.mdk test a one-CPU machine can run: instgen exits before
-its first pass without a second CPU for its worker (the notebook traces
-that exit), so this test does not drive it.
+prompt and requires the kernel's own pass and completion lines.
 
-One departure from every other console driver in this directory, and it
-is load-bearing: THE MDK COMMAND IS SENT CR-TERMINATED ("pcache\\r").
-MDK's line reader finishes a line on CR and ignores LF; an LF-terminated
-command echoes and then waits forever -- observed live before this test
-existed (a lone CR sent minutes later started the echoed test
-instantly), and the project harness's own MDK driver
-(tools/origami_lib/drivers/mdk.py) carries the same terminator for the
-same reason. The PROM menu and command monitor accept either, so the
-three PROM-phase steps keep this directory's usual "\\n".
+The MDK line reader completes a command on CR and ignores LF. An
+LF-terminated `pcache` echoed and waited. Sending CR afterward started
+the test. The driver therefore sends `pcache\\r`. The three PROM-phase steps
+use the newline terminator used by the other drivers in this directory.
 
 test_prom_mdk_verdict.py proves missing_assertions(), verdict() and
 artifact_identity_problems() (lib_prom_mdk.py, beside this file) against

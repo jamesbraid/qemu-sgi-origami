@@ -1,4 +1,4 @@
-# Real Origin 300 boot-flash and identity-EEPROM seeding for the stock
+# Origin 300 boot-flash and synthetic identity-EEPROM seeding for the stock
 # IP35 PROM boot tests in this directory
 #
 # SPDX-License-Identifier: GPL-2.0-or-later
@@ -11,15 +11,9 @@ and the chassis/board/SPD identity records the PROM's own memory and
 inventory code reads, not just the -bios image the first-line smoke test
 uses.
 
-This ports the same seeding tools/origami_lib/prom.py and
-tools/origami_lib/io8_eeprom.py build for a real `tools/origami run
-prom --machine origin300`: those are this project's own tools, and the
-task that added this module was told copying their logic is permitted.
-The boot-flash layout, the environment records, the two population
-seed digests and the synthetic IO8 record encoding are the same
-reviewed values and byte layout; nothing here is independently
-rederived. Plain Python with no qemu_test dependency, the same rule
-lib_prom.py follows.
+This helper builds the boot flash and synthetic identity records used by
+the tests below. It uses plain Python and has no qemu_test dependency,
+as in lib_prom.py.
 
 Every image this module builds (the boot flash and the synthesized node
 and IO8 identity records) is written fresh into the caller's own scratch
@@ -35,13 +29,10 @@ FIRMWARE_REL = os.path.join('firmware', '6.5.30',
 FIRMWARE_SHA256 = (
     '554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b')
 
-# tools/origami_lib/prom.py's own boot-flash layout: a 16 MiB writable
-# part, the stock payload followed by 0xff fill, an outer "PLOI" label
-# spliced in at a fixed offset, and -- keyed by fitted processor count --
-# a Disable<slot> environment record for each processor-interface slot
-# that population leaves empty (slices A and C are always fitted; a
-# two-processor launch leaves B and D empty, a four-processor launch
-# leaves none).
+# The test boot flash is 16 MiB: it contains the stock payload followed
+# by 0xff fill, an outer "PLOI" label at a fixed offset, and a
+# Disable<slot> environment record for each empty processor-interface
+# slot in the selected population.
 BOOT_FLASH_BYTES = 16777216
 BOOT_FLASH_FILL = 0xff
 BOOT_FLASH_LABEL_OFFSET = 0x009e0000
@@ -58,12 +49,9 @@ BOOT_FLASH_ENVIRONMENT = {
     ),
     4: (),
 }
-# The reviewed digest of the seeded image for each population, built from
-# the identified IRIX 6.5.30 IP35 payload named above -- the same hard
-# check tools/origami_lib/prom.py's publish_origin300_boot_flash makes,
-# so a change to the layout above or a wrong firmware image fails loudly
-# here rather than producing a boot flash that quietly does not match
-# what was reviewed.
+# Expected SHA-256 digests for the generated boot-flash image, keyed by
+# processor population. Each value pins the fixture built from the
+# firmware asset named above.
 BOOT_FLASH_SEED_SHA256 = {
     2: '6df02e413cc71206badcd375dfc53499e9fc6a193b76e3e37baca515e92b2f0f',
     4: '277bbe789c0657f048a41820e684f6ddece6af86301bf014293423cc4ab74c5b',
@@ -71,8 +59,8 @@ BOOT_FLASH_SEED_SHA256 = {
 
 NETWORK_MAC = '08:00:69:12:34:56'
 
-# The public matched kit occupies DIMMs 2/3, exposed as L1 components 3/5
-# (tools/origami_lib/prom.py's own ORIGIN300_SPD_INPUTS comment).
+# The tests attach these SPD inputs to properties spd-eeprom.3 and
+# spd-eeprom.5.
 SPD_INPUTS = (
     ('spd-eeprom.3',
      os.path.join('eeprom', 'origin300-dimm2-spd.bin'),
@@ -88,10 +76,9 @@ ASSET_SPECS = ((FIRMWARE_REL, FIRMWARE_SHA256),) + tuple(
     (rel, sha256) for _prop, rel, sha256 in SPD_INPUTS)
 
 # OpenBSD's Information-Area type/length tag: top two bits the type, low
-# six bits the length in bytes. Ported from tools/origami_lib/
-# io8_eeprom.py, which cites SGI 007-4498-002 (printed pages 181-182) and
-# 007-4365-001 (printed page 75) for the field boundaries; the values
-# built below use those boundaries but are not factory contents -- no
+# six bits the length in bytes. SGI 007-4498-002 (printed pages 181-182) and
+# 007-4365-001 (printed page 75) for the field boundaries. The values
+# below use those boundaries but are not factory contents -- no
 # EEPROM part, serial number, manufacturing date or encryption key is
 # inferred from the printed examples.
 _IA_TYPE_BINARY = 0
@@ -154,15 +141,9 @@ def _build_io8_board_eeprom_record(mac):
     return bytes(record)
 
 
-# The node board's own identity, L1 component 0: tools/origami_lib/
-# node_eeprom.py in the project checkout, ported the same way. IRIX builds
-# the node vertex's _nic attribute from these two areas, and the online
-# diagnostics' harness reads its machine name from that attribute: with no
-# node-board record the name stays unset and olsio dies with SIGSEGV
-# (the project checkout's olsio root-cause notebook). Every captured real
-# Origin 300 inventory shows a node board. The board names, part numbers
-# and revision are those real inventories print; everything else is a
-# placeholder, as in the IO8 records.
+# Fixture identity tuples used by the menu test for each processor
+# population. Their board names and part numbers match captured inventory
+# labels. All other fields in these records are placeholders.
 NODE_BOARD_IDENTITY = {
     2: (b'IP45_2CPU', b'030-1780-001', b'-C'),
     4: (b'IP45_4CPU', b'030-1779-001', b'-C'),
@@ -345,7 +326,7 @@ def launch_args_two_chassis(firmware_path, spd_paths, populations, scratch):
     records take indices 2 and 3 and its SPD records 6 to 11; its
     generated node board record names the board its own processor count
     fits, and its generated IO8 board record carries the MAC one past
-    node 0's, the same steps tools/origami_lib/prom.py takes. Node 1's L1 console is
+    node 0's. Node 1's L1 console is
     serial line 5, left unconnected here; the master's is line 0.
     """
     machine, argv = launch_args(firmware_path, spd_paths,

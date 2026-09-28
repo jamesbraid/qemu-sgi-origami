@@ -3,10 +3,9 @@
 
 """Check the SN0 machines' secondary-cache geometry with test ROMs.
 
-Expectations come from Origami's reviewed origin2000-cache-configuration.md.
-Both SN0 machines now select a 1 MiB secondary cache, so the reset test
-checks that Config field and the tag tests check that way-zero tags one MiB
-apart share a set.
+The QEMU SN0 machine configurations exercised here select a 1 MiB
+secondary cache. The reset test checks that Config field, and the tag
+tests check that way-zero tags one MiB apart share a set.
 
 No machine selects the 4 MiB geometry any more, so nothing here covers it.
 Restoring that coverage needs a machine whose composition selects 4 MiB,
