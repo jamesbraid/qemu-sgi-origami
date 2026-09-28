@@ -5991,9 +5991,10 @@ static void test_board_identity(gconstpointer data)
 
 /*
  * 0x028004 carries the GE revision from reset until the first 0xa2 query,
- * the kernel's or a client's, which replaces it with the answer (zero); a
- * reset brings the revision back. Uses the E-series board so the revision
- * cannot be mistaken for the answer.
+ * the kernel's or a client's, which replaces it with the answer; a reset
+ * brings the revision back. The query is the kernel's MgrasFinish fence,
+ * index 0x1fa, which the model answers with zero. Uses the E-series board
+ * so the revision cannot be mistaken for the answer.
  */
 static void test_board_ge_revision_until_query(void)
 {
@@ -6005,8 +6006,8 @@ static void test_board_ge_revision_until_query(void)
     mgras_enter_context(s);
     qtest_writel(s, REG_HQ_FLAGS_CLEAR, MGRAS_HQ_FLAG_QUERY);
     qtest_writel(s, REG_CONTEXT_COMMAND, MGRAS_QUERY_TOKEN);
-    qtest_writel(s, REG_CONTEXT_COMMAND, 0x3a);
-    qtest_writel(s, REG_CONTEXT_COMMAND, 0);
+    qtest_writel(s, REG_CONTEXT_COMMAND, 0x1fa);
+    qtest_writel(s, REG_CONTEXT_COMMAND, 1);
     g_assert_cmphex(qtest_readl(s, REG_GE_REVISION), ==, 3);
     qtest_writel(s, REG_CONTEXT_COMMAND, 1);
     g_assert_cmphex(qtest_readl(s, REG_HQ_FLAGS) & MGRAS_HQ_FLAG_QUERY, ==,
@@ -6333,7 +6334,8 @@ static void test_hq_flags_set_and_clear(void)
 /*
  * __Mgr_ReturnMode clears flag 17, writes 0xa20c and three arguments, polls
  * 0x020010 until bit 17 is set, then reads the answer at 0x028004 once.
- * The answer's value is unknown; the model answers zero.
+ * Index 0x3a is element 0 of the modelview matrix, 1 in the initial
+ * identity (test_hq_query_answers_the_matrices).
  */
 static void test_hq_query_sets_flag_after_arguments(void)
 {
@@ -6349,7 +6351,7 @@ static void test_hq_query_sets_flag_after_arguments(void)
     qtest_writel(qts, REG_CONTEXT_COMMAND, 1);
     g_assert_cmphex(qtest_readl(qts, REG_HQ_FLAGS) & MGRAS_HQ_FLAG_QUERY, ==,
                     MGRAS_HQ_FLAG_QUERY);
-    g_assert_cmphex(qtest_readl(qts, REG_QUERY_ANSWER), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, REG_QUERY_ANSWER), ==, 0x3f800000);
 
     /* The arguments were consumed: the next word is a header again. */
     g_assert_cmphex(qtest_readl(qts, REG_HQ_FLAGS) & MGRAS_HQ_FLAG_FENCE, ==,
@@ -9440,6 +9442,101 @@ static void test_hq_attribute_query_answers_normal_and_edge_flag(void)
     g_assert_cmphex(gl_attribute_query(qts, 15) & 0x01c00000, ==, 0);
 }
 
+/*
+ * __Mgr_ReturnMode's 0xa20c query: an index, then a1 and a2, answered at
+ * 0x028004 once flag bit 17 is set (notes-return-mode-queries.md in the
+ * Origami repository). The indices are the ones the hq3_revB_HQ4.u
+ * symbol table gives, which the library loads for a board reporting GE
+ * revision 2 with one GE: GL_MODELVIEW_MATRIX 0x3a + i and
+ * GL_PROJECTION_MATRIX 0x4a + i with a1 0, read as floats into the
+ * result's element i; GL_MATRIX_MODE 0x29, read as answer + 0x1701;
+ * GL_VIEWPORT 0xc1d to 0xc20 and GL_SHADE_MODEL 0xc19 as integers;
+ * GL_COLOR_CLEAR_VALUE 0xc0a to 0xc0d as floats.
+ */
+#define GL_Q_MODELVIEW        0x3a
+#define GL_Q_PROJECTION       0x4a
+#define GL_Q_MATRIX_MODE      0x29
+#define GL_Q_VIEWPORT         0xc1d
+#define GL_Q_SHADE_MODEL      0xc19
+#define GL_Q_CLEAR_COLOR      0xc0a
+
+static uint32_t gl_query(QTestState *qts, uint32_t index, uint32_t a1)
+{
+    qtest_writel(qts, REG_HQ_FLAGS_CLEAR, MGRAS_HQ_FLAG_QUERY);
+    gl_word(qts, MGRAS_QUERY_TOKEN);
+    gl_word(qts, index);
+    gl_word(qts, a1);
+    gl_word(qts, 1);
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_FLAGS) & MGRAS_HQ_FLAG_QUERY, ==,
+                    MGRAS_HQ_FLAG_QUERY);
+    return qtest_readl(qts, REG_QUERY_ANSWER);
+}
+
+/*
+ * Each matrix query answers its own stack's current matrix, column-major,
+ * whatever the matrix mode, from the loaded context: a translation's x is
+ * element 12 of the modelview matrix, and glOrtho's x scale element 0 of
+ * the projection matrix. perfly's draw process died reading zeros here
+ * (mgras-gl-commands.md, "Known limitations").
+ */
+static void test_hq_query_answers_the_matrices(void)
+{
+    mgras_reset();
+
+    gl_enter_slot(qts, GL_SLOT_A);
+    gl_word(qts, GL_CONTEXT_OPENER);
+    g_assert_cmphex(gl_query(qts, GL_Q_MATRIX_MODE, 0), ==,
+                    (uint32_t)(GL_MODELVIEW - 0x1701));
+    gl_three(qts, GL_TRANSLATE_HDR, 7, -2, 0.5f);
+    gl_one(qts, GL_MATRIX_MODE_HDR, GL_PROJECTION);
+    gl_six(qts, GL_ORTHO_HDR, 0, 4, 0, 2, -1, 1);
+    g_assert_cmphex(gl_query(qts, GL_Q_MATRIX_MODE, 0), ==, 0);
+
+    for (int i = 0; i < 16; i++) {
+        static const float mv[16] = {
+            1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 7, -2, 0.5f, 1,
+        };
+        static const float pr[16] = {
+            0.5f, 0, 0, 0, 0, 1, 0, 0, 0, 0, -1, 0, -1, -1, 0, 1,
+        };
+
+        g_assert_cmphex(gl_query(qts, GL_Q_MODELVIEW + i, 0), ==,
+                        gl_bits(mv[i]));
+        g_assert_cmphex(gl_query(qts, GL_Q_PROJECTION + i, 0), ==,
+                        gl_bits(pr[i]));
+    }
+
+    /* Another context answers its own, here the initial identity. */
+    gl_enter_slot(qts, GL_SLOT_B);
+    gl_word(qts, GL_CONTEXT_OPENER);
+    g_assert_cmphex(gl_query(qts, GL_Q_MODELVIEW + 12, 0), ==, 0);
+    g_assert_cmphex(gl_query(qts, GL_Q_MODELVIEW + 15, 0), ==, gl_bits(1));
+    gl_enter_slot(qts, GL_SLOT_A);
+    g_assert_cmphex(gl_query(qts, GL_Q_MODELVIEW + 12, 0), ==, gl_bits(7));
+}
+
+/* The viewport, shade model and clear colour, as the client sent them. */
+static void test_hq_query_answers_viewport_shade_and_clear_colour(void)
+{
+    static const uint32_t viewport[4] = { 3, 5, 120, 90 };
+    static const float clear[4] = { 0.25f, 0.5f, 0.75f, 1 };
+
+    mgras_reset();
+
+    gl_enter_slot(qts, GL_SLOT_A);
+    gl_word(qts, GL_CONTEXT_OPENER);
+    g_assert_cmphex(gl_query(qts, GL_Q_SHADE_MODEL, 1), ==, GL_SMOOTH);
+    gl_viewport(qts, viewport[0], viewport[1], viewport[2], viewport[3]);
+    gl_one(qts, GL_SHADE_MODEL_HDR, GL_FLAT);
+    gl_clear_color(qts, clear[0], clear[1], clear[2], clear[3]);
+    for (int i = 0; i < 4; i++) {
+        g_assert_cmphex(gl_query(qts, GL_Q_VIEWPORT + i, 1), ==, viewport[i]);
+        g_assert_cmphex(gl_query(qts, GL_Q_CLEAR_COLOR + i, 1), ==,
+                        gl_bits(clear[i]));
+    }
+    g_assert_cmphex(gl_query(qts, GL_Q_SHADE_MODEL, 1), ==, GL_FLAT);
+}
+
 static void test_hq_flags_fence_token_sets_bit(void)
 {
     mgras_reset();
@@ -10437,8 +10534,9 @@ static void test_migration(void)
 
     /*
      * A query replaces the GE revision (2 on the default SI board) at
-     * 0x028004 with its zero answer. The destination starts from reset, so
-     * it reads 2 unless that word travels with the stream.
+     * 0x028004 with its answer, here element 0 of the default context's
+     * identity modelview matrix. The destination starts from reset, so it
+     * reads 2 unless that word travels with the stream.
      */
     g_assert_cmphex(qtest_readl(to, REG_GE_REVISION), ==, 2);
     qtest_writel(from, REG_HQ_FLAGS_CLEAR, MGRAS_HQ_FLAG_QUERY);
@@ -10446,7 +10544,7 @@ static void test_migration(void)
     qtest_writel(from, REG_CONTEXT_COMMAND, 0x3a);
     qtest_writel(from, REG_CONTEXT_COMMAND, 0);
     qtest_writel(from, REG_CONTEXT_COMMAND, 1);
-    g_assert_cmphex(qtest_readl(from, REG_GE_REVISION), ==, 0);
+    g_assert_cmphex(qtest_readl(from, REG_GE_REVISION), ==, 0x3f800000);
 
     qtest_writel(from, REG_GE_CTRL_A, 0x200000);
     qtest_writel(from, REG_GE_DATA_A, 0x11223344);
@@ -10472,7 +10570,7 @@ static void test_migration(void)
     sgi_migrate_stopped(from, uri);
 
     g_assert_cmphex(qtest_readb(to, REG_DAC_LUT_DATA_2), ==, 0xe4);
-    g_assert_cmphex(qtest_readl(to, REG_GE_REVISION), ==, 0);
+    g_assert_cmphex(qtest_readl(to, REG_GE_REVISION), ==, 0x3f800000);
     g_assert_cmphex(qtest_readl(to, REG_GE_READ_2), ==, 0);
     g_assert_cmphex(qtest_readl(to, REG_GE_READ_1), ==, 0);
     g_assert_cmphex(qtest_readl(to, REG_CONTEXT_COMMAND), ==,
@@ -11452,6 +11550,11 @@ int main(int argc, char **argv)
                    test_hq_attribute_query_answers_normal_and_edge_flag);
     qtest_add_func("sn0/origin2000/mgras/hq-query-sets-flag-after-arguments",
                    test_hq_query_sets_flag_after_arguments);
+    qtest_add_func("sn0/origin2000/mgras/hq-query-answers-the-matrices",
+                   test_hq_query_answers_the_matrices);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "hq-query-answers-viewport-shade-and-clear-colour",
+                   test_hq_query_answers_viewport_shade_and_clear_colour);
     qtest_add_func("sn0/origin2000/mgras/hq-query-flag-only-from-query",
                    test_hq_query_flag_only_from_query);
     qtest_add_func("sn0/origin2000/mgras/inline-block-uses-20-bit-length",

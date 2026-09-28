@@ -475,7 +475,7 @@ uint32_t sgi_mgras_gl_attribute_answer(SGIMgrasState *s, uint32_t index)
         { SGI_GL_CURRENT_TEXTURE_COORDS, 11 },
         { SGI_GL_EDGE_FLAG, 15 },
     };
-    uint32_t out[4];
+    uint32_t out[SGI_GL_GET_WORDS];
     unsigned n;
 
     for (int i = 0; i < ARRAY_SIZE(attrs); i++) {
@@ -491,6 +491,107 @@ uint32_t sgi_mgras_gl_attribute_answer(SGIMgrasState *s, uint32_t index)
     }
     qemu_log_mask(LOG_UNIMP, "sgi-mgras: GL current-attribute query index "
                   "%u answered with zero\n", index);
+    return 0;
+}
+
+/* How a query's answer word holds its piece of glGet's answer. */
+typedef enum MgrasGLQueryPacking {
+    /* The word glGet gives, float or integer. */
+    MGRAS_GL_QUERY_WORD,
+    /* The matrix mode's enumerant less GL_PROJECTION. */
+    MGRAS_GL_QUERY_MATRIX_MODE,
+} MgrasGLQueryPacking;
+
+/*
+ * The 0xa20c state queries the model answers. __Mgr_ReturnMode sends an
+ * index, a1 and a2 and reads one word back at 0x028004
+ * (notes-return-mode-queries.md in the Origami repository). No index is a
+ * literal: __glMgrDoGet takes each from a table the library loads from
+ * the HQ microcode file's symbol table, so the index is an address the
+ * board's program gives for that piece of GL state. The notes list each
+ * glGet caller's index and what it does with the word, established from
+ * the IRIX 6.5.30 IP27GR532 libGLcore.so; the values below are the
+ * hq3_revB_HQ4.u column. That the board answers with its copy of the
+ * state OpenGL 1.2.1 has glGet return is inferred from how the client
+ * uses each word, and the model answers the loaded context's.
+ *
+ * - GL_MODELVIEW_MATRIX and GL_PROJECTION_MATRIX: 16 queries with a1 0,
+ *   index 0x3a + i and 0x4a + i, each word stored as a float into
+ *   element i of the result (the loop at 0xd992d28 advances its output
+ *   one float per query), which glGet returns column-major.
+ * - GL_MATRIX_MODE: index 0x29, a1 0; the client returns the word plus
+ *   0x1701, so the word is the mode's enumerant less GL_PROJECTION.
+ * - GL_VIEWPORT: 0xc1d to 0xc20, stored as integers x, y, width, height.
+ * - GL_SHADE_MODEL: 0xc19, returned as the integer it is.
+ * - GL_COLOR_CLEAR_VALUE: 0xc0a to 0xc0d, four floats.
+ *
+ * What a1 and a2 select is unknown; the model answers by index alone.
+ * Every other index answers zero, logged, which is right for the
+ * glFinish and MgrasFinish fences and glGetError, which discard or fall
+ * back from a zero, and wrong for the other state a client reads back.
+ * The discriminating tests are hq-query-answers-the-matrices and
+ * hq-query-answers-viewport-shade-and-clear-colour.
+ */
+static const struct {
+    uint16_t first;
+    uint8_t count;
+    uint8_t packing;            /* MgrasGLQueryPacking */
+    uint16_t pname;
+    uint8_t element;            /* the first query's element of glGet's */
+} mgras_gl_queries[] = {
+    { 0x03a, 16, MGRAS_GL_QUERY_WORD, SGI_GL_MODELVIEW_MATRIX, 0 },
+    { 0x04a, 16, MGRAS_GL_QUERY_WORD, SGI_GL_PROJECTION_MATRIX, 0 },
+    { 0x029, 1, MGRAS_GL_QUERY_MATRIX_MODE, SGI_GL_MATRIX_MODE, 0 },
+    { 0xc1d, 4, MGRAS_GL_QUERY_WORD, SGI_GL_VIEWPORT, 0 },
+    { 0xc19, 1, MGRAS_GL_QUERY_WORD, SGI_GL_SHADE_MODEL, 0 },
+    { 0xc0a, 4, MGRAS_GL_QUERY_WORD, SGI_GL_COLOR_CLEAR_VALUE, 0 },
+};
+
+/*
+ * The library loads hq3.u's table instead of hq3_revB_HQ4.u's when the
+ * GE revision the kernel recorded is below 2, or the board has two GEs
+ * and one RE (notes-return-mode-queries.md, "Where the index comes
+ * from"). The kernel records the low byte of 0x028004 after the GE
+ * program download, which the model holds at the board's GE revision
+ * until the first query. Every board the model presents reports 2 or 3
+ * and none has two GEs with one RE, so only the hq3_revB_HQ4.u indices
+ * are decoded; a board that would select hq3.u answers nothing.
+ */
+static bool mgras_gl_query_table_known(const SGIMgrasBoard *b)
+{
+    return b->ge_revision >= 2 && !(b->ge_count == 2 && b->re_count == 1);
+}
+
+uint32_t sgi_mgras_gl_query_answer(SGIMgrasState *s, const uint32_t *args,
+                                   uint32_t nargs)
+{
+    uint32_t index = nargs ? args[0] : 0, out[SGI_GL_GET_WORDS];
+    unsigned n;
+
+    if (nargs != 3 || !mgras_gl_query_table_known(s->board)) {
+        qemu_log_mask(LOG_UNIMP, "sgi-mgras: GL state query with %u "
+                      "arguments on this board answered with zero\n", nargs);
+        return 0;
+    }
+    for (int i = 0; i < ARRAY_SIZE(mgras_gl_queries); i++) {
+        uint32_t element = index - mgras_gl_queries[i].first;
+
+        if (index < mgras_gl_queries[i].first ||
+            element >= mgras_gl_queries[i].count ||
+            !sgi_gl_get(mgras_gl(s), mgras_gl_queries[i].pname, out, &n)) {
+            continue;
+        }
+        element += mgras_gl_queries[i].element;
+        assert(element < n);
+        switch (mgras_gl_queries[i].packing) {
+        case MGRAS_GL_QUERY_MATRIX_MODE:
+            return out[element] - SGI_GL_PROJECTION;
+        default:
+            return out[element];
+        }
+    }
+    qemu_log_mask(LOG_UNIMP, "sgi-mgras: GL state query index 0x%x "
+                  "answered with zero\n", index);
     return 0;
 }
 
