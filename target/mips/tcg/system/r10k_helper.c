@@ -18,6 +18,7 @@
 
 #include "qemu/osdep.h"
 #include "qemu/main-loop.h"
+#include "qemu/log.h"
 #include "cpu.h"
 #include "internal.h"
 #include "exec/cputlb.h"
@@ -349,6 +350,30 @@ static void r10k_scache_collect(CPUMIPSState *env, unsigned int tag)
     }
 }
 
+/* This experiment supports RAM and immutable ROM, not device transactions. */
+static bool r10k_cache_backing(CPUMIPSState *env, hwaddr block,
+                               unsigned int size, bool is_write)
+{
+    MemoryRegionSection section = memory_region_find(env_cpu(env)->memory,
+                                                     block, size);
+    bool supported = section.mr && memory_region_is_ram(section.mr) &&
+                     !memory_region_is_ram_device(section.mr) &&
+                     !section.mr->rom_device &&
+                     int128_get64(section.size) == size &&
+                     (!is_write || !section.readonly);
+
+    if (section.mr) {
+        memory_region_unref(section.mr);
+    }
+    if (!supported) {
+        qemu_log_mask(LOG_UNIMP,
+                      "R10000 experimental data cache: unsupported %s "
+                      "at 0x%" HWADDR_PRIx "\n",
+                      is_write ? "write" : "read", block);
+    }
+    return supported;
+}
+
 static MemTxResult r10k_scache_writeback(CPUMIPSState *env, unsigned int tag)
 {
     uint8_t data[128];
@@ -358,6 +383,9 @@ static MemTxResult r10k_scache_writeback(CPUMIPSState *env, unsigned int tag)
 
     if (extract32(env->r10k->scache_taglo[tag], 10, 2) != 3) {
         return MEMTX_OK;
+    }
+    if (!r10k_cache_backing(env, block, size, true)) {
+        return MEMTX_ACCESS_ERROR;
     }
     r10k_scache_collect(env, tag);
     for (i = 0; i < size; i++) {
@@ -377,7 +405,8 @@ static void r10k_data_cache_error(CPUMIPSState *env, MemTxResult result,
 }
 
 static MemTxResult r10k_data_cache_line(CPUMIPSState *env, hwaddr pa,
-                                       unsigned int pidx, unsigned int *out)
+                                       unsigned int pidx, bool is_write,
+                                       unsigned int *out)
 {
     R10KState *r = env->r10k;
     unsigned int dset = (pidx << 7) | extract64(pa, 5, 7);
@@ -388,6 +417,9 @@ static MemTxResult r10k_data_cache_line(CPUMIPSState *env, hwaddr pa,
     MemTxResult result;
     uint8_t fill[128];
 
+    if (!r10k_cache_backing(env, block, size, is_write)) {
+        return MEMTX_ACCESS_ERROR;
+    }
     for (way = 0; way < 2; way++) {
         dtag = dset * 2 + way;
         if ((r->dcache_taglo[dtag] & (3 << 6)) &&
@@ -405,20 +437,6 @@ static MemTxResult r10k_data_cache_line(CPUMIPSState *env, hwaddr pa,
         }
     }
     if (way == 2) {
-        MemoryRegionSection section = memory_region_find(env_cpu(env)->memory,
-                                                         block, size);
-        bool memory = section.mr &&
-                      (memory_region_is_ram(section.mr) ||
-                       memory_region_is_romd(section.mr)) &&
-                      int128_get64(section.size) == size;
-
-        if (section.mr) {
-            memory_region_unref(section.mr);
-        }
-        if (!memory) {
-            /* MMIO has no reviewed cacheable transaction contract. */
-            return MEMTX_ACCESS_ERROR;
-        }
         result = address_space_read(cpu_get_address_space(env_cpu(env),
                                     MIPSASIdx_CACHED), block,
                                     MEMTXATTRS_UNSPECIFIED, fill, size);
@@ -480,7 +498,8 @@ static MemTxResult r10k_data_read(void *opaque, hwaddr address, uint64_t *value,
     CPUMIPSState *env = opaque;
     hwaddr pa = extract64(address, 0, 40);
     unsigned int tag, i;
-    MemTxResult result = r10k_data_cache_line(env, pa, address >> 40, &tag);
+    MemTxResult result = r10k_data_cache_line(env, pa, address >> 40,
+                                              false, &tag);
 
     if (result != MEMTX_OK) {
         return result;
@@ -499,7 +518,8 @@ static MemTxResult r10k_data_write(void *opaque, hwaddr address, uint64_t value,
     R10KState *r = env->r10k;
     hwaddr pa = extract64(address, 0, 40);
     unsigned int tag, stag, i;
-    MemTxResult result = r10k_data_cache_line(env, pa, address >> 40, &tag);
+    MemTxResult result = r10k_data_cache_line(env, pa, address >> 40,
+                                              true, &tag);
 
     if (result != MEMTX_OK) {
         return result;

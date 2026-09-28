@@ -218,13 +218,61 @@ def rom_data_rom():
     return image
 
 
+def refused_rom_store_rom(romd):
+    address = 0x1e000200 if romd else 0x1fc00200
+    code = constant(8, 0x00410080) + mtc0(8, 12)
+    code += constant(12, 0xffffffffa0000000 | MAILBOX)
+    code += constant(10, 0x9800000000000000 | address)
+    if romd:
+        code += [insn_i(0x23, 10, 8, 0)]
+    code += constant(8, SECOND) + [insn_i(0x2b, 10, 8, 0)]
+    # A refused store must not allocate either primary way.
+    for way in (0, 1):
+        code += [insn_i(0x2f, 10, 0x05, way), 0, 0, 0, 0]
+        code += mfc0(8, 28) + [insn_i(0x2b, 12, 8, way * 4)]
+    if not romd:
+        # Refuse the same store when the immutable ROM line is already cached.
+        code += [insn_i(0x23, 10, 8, 0), insn_i(0x2b, 12, 8, 8)]
+        code += [insn_i(0x2f, 10, 0x05, 0), 0, 0, 0, 0]
+        code += mfc0(8, 28) + [insn_i(0x2b, 12, 8, 12)]
+        code += constant(8, SECOND) + [insn_i(0x2b, 10, 8, 0)]
+        code += [insn_i(0x2f, 10, 0x05, 0), 0, 0, 0, 0]
+        code += mfc0(8, 28) + [insn_i(0x2b, 12, 8, 16)]
+        code += [insn_i(0x23, 10, 8, 0), insn_i(0x2b, 12, 8, 20)]
+    # Neither refusal nor subsequent writeback may issue a device command.
+    for operation in (0x15, 0x17):
+        code += [insn_i(0x2f, 10, operation, 0), 0, 0, 0, 0]
+    for way in (0, 1):
+        code += [insn_i(0x2f, 10, 0x07, way), 0, 0, 0, 0]
+        code += mfc0(8, 28) + [insn_i(0x2b, 12, 8, 24 + way * 4)]
+    if romd:
+        # Positive control: an uncached Read Array command invokes the callback.
+        code += constant(9, 0xffffffffa0000000 | address)
+        code += constant(8, 0xff) + [insn_i(0x28, 9, 8, 0)]
+    code += constant(8, DONE)
+    code += [insn_i(0x2b, 12, 8, 32), insn_i(0x04, 0, 0, -1), 0]
+    image = bytearray(0x400 + len(code) * 4)
+    struct.pack_into('>I', image, 0, insn_i(0x04, 0, 0, 0xff))
+    struct.pack_into('>I', image, 0x200, FIRST)
+    if romd:
+        # Record the refused load's exception, then resume after that load.
+        handler = mfc0(26, 13) + [insn_i(0x2b, 12, 26, 36)]
+        handler += mfc0(26, 14) + [insn_i(0x09, 26, 26, 4)]
+        handler += mtc0(26, 14) + [0x42000018, 0]
+        assert len(handler) * 4 <= 0x80
+        struct.pack_into(f'>{len(handler)}I', image, 0x380, *handler)
+    struct.pack_into(f'>{len(code)}I', image, 0x400, *code)
+    return image
+
+
 class R10000TLBCache(QemuSystemTest):
-    def run_rom(self, mode):
+    def run_rom(self, mode, cache=True):
         image = self.scratch_file(f'{mode}.bin')
         Path(image).write_bytes(diagnostic_rom(mode))
         self.set_machine('octane')
+        cpu = 'R10000,r10k-data-cache=on' if cache else 'R10000'
         self.vm.add_args('-accel', 'tcg,thread=single',
-                         '-cpu', 'R10000,r10k-data-cache=on',
+                         '-cpu', cpu,
                          '-m', '128M', '-bios', image, '-nodefaults')
         self.vm.launch()
         deadline = time.monotonic() + 10
@@ -354,10 +402,10 @@ class R10000TLBCache(QemuSystemTest):
         deadline = time.monotonic() + 10
         while True:
             output = self.vm.cmd('human-monitor-command',
-                                 command_line=f'xp /10wx {MAILBOX:#x}')
+                                 command_line=f'xp /11wx {MAILBOX:#x}')
             words = [int(word, 16) for word in
                      re.findall(r'0x([0-9a-fA-F]{8})\b', output)]
-            if len(words) == 10 and words[8] == DONE:
+            if len(words) == 11 and words[8] == DONE:
                 break
             self.assertLess(time.monotonic(), deadline, output)
             time.sleep(0.05)
@@ -403,7 +451,7 @@ class R10000TLBCache(QemuSystemTest):
     def test_cached_rom_data_read(self):
         image = self.scratch_file('rom-data.bin')
         Path(image).write_bytes(rom_data_rom())
-        self.set_machine('octane')
+        self.set_machine('malta')
         self.vm.add_args('-accel', 'tcg,thread=single',
                          '-cpu', 'R10000,r10k-data-cache=on',
                          '-m', '128M', '-bios', image, '-nodefaults')
@@ -413,6 +461,51 @@ class R10000TLBCache(QemuSystemTest):
         self.assertEqual((words[2] >> 6) & 3, 2)
         self.assertEqual(words[2] >> 8, 0x1fc00)
         self.assertEqual(words[3], FIRST)
+
+    def check_refused_rom_store(self, romd):
+        image = self.scratch_file('refused-rom-store.bin')
+        Path(image).write_bytes(refused_rom_store_rom(romd))
+        trace = self.log_file('flash.trace')
+        self.set_machine('malta')
+        self.vm.add_args('-accel', 'tcg,thread=single',
+                         '-cpu', 'R10000,r10k-data-cache=on',
+                         '-m', '128M', '-bios', image, '-nodefaults',
+                         '-d', 'unimp',
+                         '-trace', f'enable=pflash_io_write,file={trace}')
+        self.vm.launch()
+        words = self.read_reset_result()
+        self.vm.shutdown()
+        self.assertEqual(words[:2], [0, 0])
+        self.assertIn('experimental data cache: unsupported write',
+                      Path(trace).read_text())
+        callbacks = [line for line in Path(trace).read_text().splitlines()
+                     if 'pflash_io_write' in line]
+        if romd:
+            self.assertEqual(words[9] & 0x7c, 7 << 2)
+            self.assertIn('experimental data cache: unsupported read',
+                          Path(trace).read_text())
+            self.assertEqual(words[6:8], [0, 0])
+            self.assertEqual(len(callbacks), 1, callbacks)
+            self.assertIn('value:0x00ff', callbacks[0])
+        else:
+            self.assertEqual(words[2], FIRST)
+            self.assertEqual(words[3], words[4])
+            self.assertEqual((words[4] >> 6) & 3, 2)
+            self.assertEqual(words[5], FIRST)
+            self.assertEqual((words[6] >> 10) & 3, 0)
+            self.assertEqual(callbacks, [])
+
+    def test_cached_plain_rom_store_refused(self):
+        self.check_refused_rom_store(romd=False)
+
+    def test_cached_romd_store_has_no_device_callback(self):
+        self.check_refused_rom_store(romd=True)
+
+    def test_default_cpu_bypasses_data_cache(self):
+        words, output = self.run_rom('mapped', cache=False)
+        self.assertEqual(words[2:8], [0] * 6, output)
+        self.assertEqual(words[9:11], [SECOND, SECOND], output)
+        self.assertEqual(words[14:16], [SECOND, SECOND], output)
 
     def test_uncached_tlb_remap(self):
         self.run_rom('remap')
