@@ -14,3 +14,9 @@ sgi_dma_pixels(uint64_t seq, int dir, uint32_t plane, int x, int y, int w, int h
 
 # command-fetch.c
 sgi_fetch(uint64_t seq, uint32_t context, unsigned segments, uint64_t words, int status) "seq %" PRIu64 " context %u segments %u words %" PRIu64 " status %d"
+
+# scanout.c
+sgi_scanout_mode(uint32_t width, uint32_t height, uint64_t frame_clocks, uint32_t clock_hz) "%ux%u frame %" PRIu64 " clocks at %u Hz"
+sgi_scanout_retrace(uint64_t frame, uint32_t swaps) "frame %" PRIu64 " swaps waiting %u"
+sgi_scanout_swap(uint64_t seq, uint64_t cookie, uint64_t frame) "seq %" PRIu64 " cookie 0x%" PRIx64 " frame %" PRIu64
+sgi_scanout_update(unsigned first, unsigned last) "lines %u-%u"

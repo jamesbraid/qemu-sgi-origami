@@ -1543,6 +1543,7 @@ F: tests/unit/test-sgi-memory.c
 F: tests/unit/test-sgi-o2000-module-mgmt*.c
 F: tests/unit/test-sgi-rad1-audio-pcm.c
 F: tests/unit/test-sgi-router.c
+F: tests/unit/test-sgi-scanout.c
 F: tests/unit/test-sn0-fabric-routed.c
 
 Jazz
