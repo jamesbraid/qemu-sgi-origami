@@ -2,7 +2,6 @@
 /* Host scanout is derived from guest-visible state and is never its source. */
 /* The display subset follows the SI visual-emulator architecture contract. */
 #include "qemu/osdep.h"
-#include "qemu/log.h"
 #include "hw/misc/sgi-mgras-display.h"
 
 
@@ -370,8 +369,7 @@ static void mgras_timing_ratio(SGIScanoutMode *mode, uint64_t clocks,
     mode->clock_hz = hz;
 }
 
-void sgi_mgras_display_timing(SGIMgrasState *s, SGIScanoutMode *mode,
-                              bool log)
+const char *sgi_mgras_display_timing(SGIMgrasState *s, SGIScanoutMode *mode)
 {
     uint64_t frame = mgras_vt_frame_clocks(s);
     uint64_t r = s->dac_reg[MGRAS_DAC_PLL_R];
@@ -381,22 +379,32 @@ void sgi_mgras_display_timing(SGIMgrasState *s, SGIScanoutMode *mode,
                    MGRAS_PLL_REF_ALT_HZ : MGRAS_PLL_REF_HZ;
     uint64_t pix_num = ref * (4 * (v + 2) + (cntl >> 6));
     uint64_t pix_den = (r + 2) << ((cntl >> 4) & 3) << ((cntl >> 2) & 1);
+    const char *problem = NULL;
 
     mode->width = s->width;
     mode->height = s->height;
     if (!frame) {
-        if (log) {
-            qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: the VC3 frame table "
-                          "at 0x%04x gives no frame length; keeping the "
-                          "default timing\n",
-                          s->vc3_reg[MGRAS_VC3_VID_EP]);
+        problem = "gives no frame length";
+    } else {
+        /* frame VC3 clocks at half the pixel clock: 2 * frame / f_pix. */
+        mgras_timing_ratio(mode, 2 * frame * pix_den, pix_num);
+        if (muldiv64(mode->frame_clocks, NANOSECONDS_PER_SECOND,
+                     mode->clock_hz) < SGI_SCANOUT_MIN_PERIOD_NS) {
+            problem = "gives a frame shorter than the scanout retraces";
         }
-        mgras_timing_ratio(mode, MGRAS_DEFAULT_FRAME_CLOCKS,
-                           MGRAS_DEFAULT_VC3_CLOCK_HZ);
-        return;
     }
-    /* frame VC3 clocks at half the pixel clock: 2 * frame / f_pix. */
-    mgras_timing_ratio(mode, 2 * frame * pix_den, pix_num);
+    if (problem) {
+        sgi_mgras_display_default_timing(s, mode);
+    }
+    return problem;
+}
+
+void sgi_mgras_display_default_timing(SGIMgrasState *s, SGIScanoutMode *mode)
+{
+    mode->width = s->width;
+    mode->height = s->height;
+    mgras_timing_ratio(mode, MGRAS_DEFAULT_FRAME_CLOCKS,
+                       MGRAS_DEFAULT_VC3_CLOCK_HZ);
 }
 
 /*

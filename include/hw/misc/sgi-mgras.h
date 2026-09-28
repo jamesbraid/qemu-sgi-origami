@@ -408,6 +408,8 @@ struct SGIMgrasState {
     bool error_asserted;
     /* Diagnostic rate limit, not guest state and not migrated. */
     bool retrace_no_dest_logged;
+    /* A timing table was refused since reset; not migrated. */
+    bool timing_problem_logged;
     /* Host-only qtest introspection. Not guest state and not migrated. */
     uint32_t test_pixel_x;
     uint32_t test_pixel_y;
