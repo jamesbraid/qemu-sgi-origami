@@ -11,6 +11,32 @@ Build the MIPS64 system emulator with tests, HMP, and user-mode networking enabl
        --enable-hmp --enable-slirp
    ninja -C build
 
+Meson suite tags select the SGI tests by scope. Run all tagged tests or one
+category from the configured MIPS64 build:
+
+.. code-block:: sh
+
+   build/pyvenv/bin/meson test -C build --setup qemu:thorough \
+       --suite qemu:sgi --print-errorlogs
+   build/pyvenv/bin/meson test -C build --suite qemu:sgi-unit \
+       --print-errorlogs
+   build/pyvenv/bin/meson test -C build --suite qemu:sgi-qtest \
+       --print-errorlogs
+   build/pyvenv/bin/meson test -C build --setup qemu:thorough \
+       --suite qemu:sgi-functional --print-errorlogs
+
+The category tags select unit/helper, qtest, or functional tests; ``sgi``
+selects the combined set. The unit group includes fork-maintained one-wire
+and I2C checks used by SGI devices, even though those buses are general.
+When registering an SGI test, include ``sgi`` and
+the matching category tag, while keeping its existing architecture and speed
+tags. The existing architecture and speed selections still work.
+Suite selection does not supply test assets or enable slow and large-data
+cases. Asset-dependent cases can skip when inputs are absent, and slow or
+large-data cases still require their usual opt-in variables. See the asset
+requirements below. These tags provide local Meson selection; they do not
+configure CI or establish that a suite has passed.
+
 To build without network access, prepare a source archive from a clean QEMU
 checkout while connected. The archive script may download the declared Meson
 subprojects before adding them to the tarball; the extracted archive contains

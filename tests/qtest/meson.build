@@ -435,12 +435,7 @@ endif
 
 # The Origin 200 is a 64-bit machine, so its tests cannot be shared with the
 # 32-bit mips targets, where the machine does not exist.
-qtests_mips64 = \
-  qtests_mips + \
-  ['ds1742-test'] + \
-  sn0_router_qtests + \
-  sn0_ohci_qtests + \
-  sgi_bridge_card_qtests + \
+sn1_board_qtests = \
   (config_all_devices.has_key('CONFIG_SGI_L1') ?
     ['sn1-l1-test'] : []) + \
   (config_all_devices.has_key('CONFIG_SGI_BEDROCK_MD') ?
@@ -463,7 +458,9 @@ qtests_mips64 = \
      'sn1-cpu-identity-test', 'sn1-directory-state-test',
      'sn1-presence-test', 'sn1-system-request-test',
      'sn1-io8-scsi-test', 'sn1-warm-reset-test',
-     'sn1-pi-gfx-test'] : []) + \
+     'sn1-pi-gfx-test'] : [])
+
+sn0_machine_qtests = \
   (config_all_devices.has_key('CONFIG_SGI_SN0') ? ['sn0-mttcg-test',
                                                    'sn0-forward-progress-test',
                                                    'sn0-r10k-test',
@@ -515,7 +512,15 @@ qtests_mips64 = \
                                                    'sn0-gigachannel-test',
                                                    'sn0-origin2000-kona-test',
                                                    'sn0-onyx2-test',
-                                                   'sn0-display-heads-test'] : []) + \
+                                                   'sn0-display-heads-test'] : [])
+
+sgi_qtests = \
+  ['ds1742-test'] + \
+  sn0_router_qtests + \
+  sn0_ohci_qtests + \
+  sgi_bridge_card_qtests + \
+  sn1_board_qtests + \
+  sn0_machine_qtests + \
   (config_all_devices.has_key('CONFIG_SGI_SN0') and
    config_all_devices.has_key('CONFIG_SGI_SN1') ?
     ['sn-promdata-window-test'] : []) + \
@@ -527,6 +532,8 @@ qtests_mips64 = \
   sn1_xbridge_qtests + \
   sn0_mgras_qtests + \
   sgi_board_qtests
+
+qtests_mips64 = qtests_mips + sgi_qtests
 
 qtests_mips64el = qtests_mips
 
@@ -873,6 +880,8 @@ foreach dir : target_dirs
          timeout: slow_qtests.get(test, 60),
          priority: qtest_priorities.get(test, slow_qtests.get(test, 60)),
          suite: ['qtest', 'qtest-' + target_base] +
-                (slow_qtests.has_key(test) ? ['slow'] : []))
+                (slow_qtests.has_key(test) ? ['slow'] : []) +
+                (target_base == 'mips64' and test in sgi_qtests ?
+                  ['sgi', 'sgi-qtest'] : []))
   endforeach
 endforeach

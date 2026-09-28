@@ -338,5 +338,5 @@ foreach test : tests_mips64_unit
        python,
        env: test_env,
        args: [meson.current_source_dir() / 'test_' + test + '.py'],
-       suite: ['func-quick', 'func-mips64'])
+       suite: ['func-quick', 'func-mips64', 'sgi', 'sgi-unit'])
 endforeach

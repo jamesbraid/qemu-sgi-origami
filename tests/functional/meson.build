@@ -91,13 +91,18 @@ foreach speed : ['quick', 'thorough']
     foreach test : target_tests
       testname = '@0@-@1@'.format(target_base, test)
       test_suites = suites
+      if target_base == 'mips64' and sysmode == 'system' and \
+         test in (get_variable('tests_mips64_system_quick', []) + \
+                  get_variable('tests_mips64_system_thorough', []))
+        test_suites = suites + ['sgi', 'sgi-functional']
+      endif
       if testname == 'mips64-openbsd_install'
-        test_suites = suites + ['func-install']
+        test_suites += ['func-install']
       elif testname.startswith('mips64-irix_diag')
-        test_suites = suites + ['func-diag']
+        test_suites += ['func-diag']
       elif testname in ['mips64-openbsd_net_transfer',
                        'mips64-xframe_pci']
-        test_suites = suites + ['func-openbsd']
+        test_suites += ['func-openbsd']
       endif
       if fs.exists('generic' / 'test_' + test + '.py')
         testfile = 'generic' / 'test_' + test + '.py'

@@ -307,5 +307,6 @@ foreach test_name, extra: tests
        timeout: slow_tests.get(test_name, 30),
        priority: slow_tests.get(test_name, 30),
        suite: ['unit'] +
+              (test_name in fork_unit_tests ? ['sgi', 'sgi-unit'] : []) +
               (slow_tests.has_key(test_name) ? ['slow'] : []))
 endforeach
