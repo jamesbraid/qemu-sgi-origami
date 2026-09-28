@@ -44,30 +44,23 @@ from lib_net import HarnessError
 
 MANIFEST = Path(__file__).parent / 'smdk-matrix'
 
-# Every sMDK diagnostic the project checkout's field-guide review marks for
-# a one-node Origin 300 with pass/fail output, in the order a row runs
-# them: the eight of the Origin 300 set (the router, IO7 and GSN programs
+# Every sMDK diagnostic a row runs, in the order a row runs them: the
+# field guide's own Origin 300 set (108-0264-004 Table 2-1). The package's
+# diaglist adds two more, sct and CPU_Test, that the guide does not call
+# for and this checkout leaves out: sct for that reason alone, and
+# CPU_Test because its master compares processor 1's result before
+# processor 1 has finished, and why the two processors run at different
+# rates on the model is not established. The router, IO7 and GSN programs
 # decline for want of hardware the machine has no model of, and iocfg and
-# topology are utilities with no verdict).
-DIAG_ORDER = ('sct', 'nmem', 'ndir', 'scct', 'CPU_Test', 'System_Level_Test',
-              'io8bt', 'xbg')
+# topology are utilities with no verdict, so none of those has a column
+# either.
+DIAG_ORDER = ('nmem', 'ndir', 'scct', 'System_Level_Test', 'io8bt', 'xbg')
 
 RUN = 'run'
 
 # Why a population does not run a diagnostic yet. The manifest cites these
 # by key.
 REASONS = {
-    'cpu-test-compare':
-        'CPU_Test\'s master compares processor 1\'s result before processor '
-        '1 has finished; why the two processors run at different rates on '
-        'the model is not established',
-    'ndir-directory-state':
-        'ndir section 4 checks the directory word after processor reads, '
-        'writes, prefetches and cache flushes, which the model, having no '
-        'caches, never presents',
-    'pair-nmem-sync':
-        'nmem passed on the pair in two of eight runs of the project '
-        'harness (2026-09-26); four failed and two never finished',
     'pair-io8bt-timer':
         'io8bt passed on the pair in one of eight runs of the project '
         'harness (2026-09-26): its serial receive-timer check fails there '
@@ -84,16 +77,12 @@ PACKAGE_SHA256 = {
         '4dc74ee3f5cb17dba2d086dd866632c9b1a9a2a99278ab1b8dc5e9aada67c272',
     'iocfg':
         '874d6608a974aef1505715ad358f7252cbd19b928373d134063acd0fc6aac430',
-    'sct':
-        '7f328cc2317dad96245171f83ab7bbf461fca312784d7a993c92a9aa3a152457',
     'nmem':
         '09a10ceaa9f373a0b9bd3bb2c2267f9f166ac6dae45ac3aebd99fec017d43865',
     'ndir':
         '1211e6e5e6c0adc35fdfeb75a7013fa3f0252cc5f2e66597cf744ad8c6161fee',
     'scct':
         '9500bcd0ea8bd54d794f0d99f1261dc048ea70611e5f72bfc45782c21b1c9e0c',
-    'CPU_Test':
-        '62a956de970bd6ba008fca4b4df33aef09f9ba9041e811caee1813fefe0e2100',
     'System_Level_Test':
         '19c5a938a38b6f1eba8bef89bbece47ba730069a092a2ed19e8bd8a4fd4ad2fa',
     'SLT_Cmd_Option_File':
@@ -122,11 +111,9 @@ class SmdkDiag:
 
 
 DIAGS = {
-    'sct': SmdkDiag(),
     'nmem': SmdkDiag(),
     'ndir': SmdkDiag(),
     'scct': SmdkDiag(),
-    'CPU_Test': SmdkDiag(),
     # The package's option file asks for passes 1 to 50000000 and never
     # finishes; one pass reaches Passed in about two minutes.
     'System_Level_Test': SmdkDiag(fetch='SLT_Cmd_Option_File', passes=1),
