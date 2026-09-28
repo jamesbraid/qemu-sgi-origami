@@ -744,8 +744,8 @@ static uint64_t mgras_read_internal(SGIMgrasState *s, hwaddr addr,
      * the OpenGL client's, is answered here once HQ flag bit 17 is set
      * (see mgras_raster_command_fifo_dispatch()). Approximated: the model
      * holds the GE revision from reset until the first query of either
-     * kind, then answers zero. When real hardware replaces the revision,
-     * and what each query returns, are unknown.
+     * kind, then gives that query's answer, sgi_mgras_gl_query_answer()'s.
+     * When real hardware replaces the revision is unknown.
      */
     case 0x028004:
         return s->ge_report;
