@@ -4068,14 +4068,16 @@ static void test_an_inbound_link_reset_leaves_the_link_alone(const void *data)
 
     hub_reset();
 
-    /* Every writable field away from its reset, all before any is read. */
-    qtest_writeq(qts, HUB_LOCAL + IO_LINK_STATUS,
-                 (1ULL << 10) | (1ULL << 8) | 0x15);
+    /*
+     * Every writable field away from its reset, all before any is read.
+     * The warm-reset bit, 8, is a one-shot that reads zero.
+     */
+    qtest_writeq(qts, HUB_LOCAL + IO_LINK_STATUS, (1ULL << 10) | 0x15);
     before = qtest_readq(qts, HUB_LOCAL + IO_LINK_STATUS);
     g_assert_cmphex(before & 0x3fc00000000ULL, ==, 0);
     g_assert_cmphex(before & 0x3ff0000ULL, ==, 0);
     g_assert_cmphex(before & (1ULL << 10), ==, 1ULL << 10);
-    g_assert_cmphex(before & (1ULL << 8), ==, 1ULL << 8);
+    g_assert_cmphex(before & (1ULL << 8), ==, 0);
     g_assert_cmphex(before & 0x3fULL, ==, 0x15);
 
     /* Nothing moves while the line is up. */

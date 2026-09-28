@@ -375,7 +375,7 @@
 /* The link state and mode stay read-only: nothing may claim the link down. */
 #define IO_LINK_WARM_RESET      (1ULL << 8)
 #define IO_LINK_WRITABLE        (IO_LINK_MAX_BURST | IO_LINK_MAX_RETRY | \
-                                 IO_LINK_WARM_RESET | IO_LINK_ENABLED | \
+                                 IO_LINK_ENABLED | \
                                  0x3fULL)
 
 /* Big-window translation table, entry n at 8n. */
@@ -2955,32 +2955,69 @@ static void sgi_hub_store_link_status(SGIHubState *s, unsigned arg,
 }
 
 /*
- * The crossbar's per-link reset, arriving on the XIO link. The
- * published Crossbow specification establishes three effects at this end and
- * no others: the link-layer transmit buffer is cleared, link-layer protocol
- * state is reset, and width negotiation restarts. This model represents none
- * of the three, so the pulse changes nothing and says so rather than
- * substituting an effect on state the evidence does not reach. There is no
- * transmit buffer to empty, because every XIO access this model makes
- * completes before it returns and nothing is ever queued on the link. There
- * is no link-layer protocol state either (no running sequence numbers,
- * retry counters or credits) and the link log's two counts are served as
- * zero from a link that commits none. The one field that would show
- * renegotiation is the link state, and it cannot move: no public source gives
- * the value it reads while negotiation runs, and none gives the predicate
- * that ends negotiation, so both the transient code and the return from it
- * would be invented. Nothing else in the link register moves. The maximum
- * burst and retry counts, the null-packet timeout, the link-enable bit
- * firmware operates for itself and the warm-reset trigger are programmed
- * configuration, which is neither the transmit buffer nor protocol state. The
- * contract's one datum about a link-layer control across this reset says
- * retained: Crossbow's own force-eight-bit control survives the pulse so
- * software can pick a mode before negotiation restarts. Unsetting the
- * link-enable bit would be the most expensive guess available, because a Hub
- * that reports its XIO link down loses the machine quietly. The wider
- * I/O interface is not in this at all. Every non-link-layer Hub reset effect
- * is open.
-*/
+ * A write with the warm-reset bit set sends a warm reset down the XIO
+ * link, each time, and the bit reads zero: a one-shot. The stock PROM
+ * 6.156 writes the bit set from its reset vector, and later, bringing
+ * each node's link up, sets the link-enable bit, 10, with a
+ * read-modify-write of this register (its routine at 0x1fc453a8); a bit
+ * that read back set would send a second warm reset there, resetting the
+ * Crossbow and the BaseIO Bridge under whichever node was already using
+ * them, and a four-node Origin 2000 run that stored the bit hung loading
+ * the BaseIO PROM. On its direct-Bridge path the PROM writes the bit set
+ * twice, 10 ms apart, from a saved value, and never clear. That the bit
+ * sends the warm-reset pattern is inferred from its name (Linux hubio.h,
+ * ILCSR_WARM_RESET) and from the Crossbow specification's account of what
+ * arrives; that it reads zero is inferred from the PROM's read-modify-
+ * write, the same one-shot the Crossbow's own link reset bit is.
+ */
+static void sgi_hub_write_link_status(SGIHubState *s, hwaddr addr,
+                                      unsigned arg, uint64_t val,
+                                      unsigned size)
+{
+    sgi_hub_store_link_status(s, arg, val);
+    if (!(val & IO_LINK_WARM_RESET)) {
+        return;
+    }
+    if (!s->ii_reset_out) {
+        qemu_log_mask(LOG_UNIMP, "sgi-hub: warm reset with nothing at the "
+                      "far end of the XIO link to receive it\n");
+        return;
+    }
+    qemu_irq_pulse(s->ii_reset_out);
+}
+
+/*
+ * The crossbar's per-link reset, arriving on the XIO link.
+ *
+ * The published Crossbow specification establishes three effects at this
+ * end and no others: the link-layer transmit buffer is cleared, link-layer
+ * protocol state is reset, and width negotiation restarts. This model
+ * represents none of the three, so the pulse changes nothing and says so
+ * rather than substituting an effect on state the evidence does not reach.
+ *
+ * There is no transmit buffer to empty, because every XIO access
+ * this model makes completes before it returns and nothing is ever queued
+ * on the link. There is no link-layer protocol state either -- no running
+ * sequence numbers, retry counters or credits -- and the link log's two counts
+ * are served as zero from a link that commits none. The one field that
+ * would show renegotiation is the link state, and it cannot move: no
+ * reviewed source gives the value it reads while negotiation runs, and
+ * none gives the predicate that ends negotiation, so both the transient
+ * code and the return from it would be invented.
+ *
+ * Nothing else in the link register moves. The maximum burst and retry
+ * counts, the null-packet timeout, the link-enable bit firmware operates
+ * for itself and the warm-reset trigger are programmed configuration,
+ * which is neither the transmit buffer nor protocol state. The contract's
+ * one datum about a link-layer control across this reset says retained:
+ * Crossbow's own force-eight-bit control survives the pulse so software
+ * can pick a mode before negotiation restarts. Unsetting the link-enable
+ * bit would be the most expensive guess available, because a Hub that
+ * reports its XIO link down loses the machine quietly.
+ *
+ * The wider I/O interface is not in this at all. Every non-link-layer Hub
+ * reset effect is open.
+ */
 static void sgi_hub_link_reset(void *opaque, int line, int level)
 {
     if (!level) {
@@ -3481,7 +3518,8 @@ static const SGIHubRegDef sgi_hub_registers[] = {
       .flags = HUB_REG_STORE | HUB_REG_DIAG, .wmask = ~0ULL },
     { .offset = HUB_IO_LINK_STATUS,
       .field = offsetof(SGIHubState, io_link_status), .width = 8,
-      .flags = HUB_REG_DIAG, .store = sgi_hub_store_link_status },
+      .flags = HUB_REG_DIAG, .store = sgi_hub_store_link_status,
+      .write = sgi_hub_write_link_status },
     { .offset = HUB_IO_LLP_LOG,
       .read = sgi_hub_read_llp_log, .write = sgi_hub_write_llp_log },
     { .offset = HUB_IO_INT_DEST,
@@ -5394,6 +5432,13 @@ static void sgi_hub_finalize(Object *obj)
     g_free(SGI_HUB(obj)->net_peers);
 }
 
+/* The link's far end takes the warm reset this Hub sends. */
+static void sgi_hub_xio_port_reset_output(Object *port, unsigned int index,
+                                          qemu_irq target)
+{
+    SGI_HUB(port)->ii_reset_out = target;
+}
+
 /* The far end's link reset reaches the Hub's link state. */
 static qemu_irq sgi_hub_xio_port_reset_input(Object *port, unsigned int index)
 {
@@ -5425,6 +5470,7 @@ static void sgi_hub_class_init(ObjectClass *oc, const void *data)
     xpc->packet_face = sgi_hub_xio_port_packet_face;
     xpc->connect = sgi_hub_xio_port_connect;
     xpc->reset_input = sgi_hub_xio_port_reset_input;
+    xpc->reset_output = sgi_hub_xio_port_reset_output;
     npc->describe = sgi_hub_net_port_describe;
     npc->forwards = sgi_hub_net_port_forwards;
     npc->link_state = sgi_hub_net_port_link_state;

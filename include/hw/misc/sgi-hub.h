@@ -186,6 +186,8 @@ struct SGIHubState {
     AddressSpace ii_local_registers_as;
     AddressSpace ii_peer_packets_as;
     bool ii_connected;
+    /* The far end's reset input, where a warm reset from ILCSR goes. */
+    qemu_irq ii_reset_out;
 
     /*
      * The processor interface's I/O-space path: each processor's own
