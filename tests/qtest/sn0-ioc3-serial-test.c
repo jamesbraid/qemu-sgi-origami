@@ -2897,6 +2897,7 @@ static void test_the_scratch_predivider_survives_a_system_reset(
     qtest_quit(qts);
 }
 
+#ifdef CONFIG_VNC
 /*
  * A guest's pointer never reaches wctablet directly: a VNC client's
  * PointerEvent lands in ui/vnc.c's pointer_event(), which rescales the
@@ -3165,6 +3166,7 @@ static void test_a_vnc_pointer_tracks_through_the_ud1212r_model(
     close(rfb.fd);
     qtest_quit(qts);
 }
+#endif
 
 int main(int argc, char **argv)
 {
@@ -3327,12 +3329,14 @@ int main(int argc, char **argv)
     qtest_add_data_func(
         "sn0/ioc3-serial/scratch-predivider-survives-a-system-reset", NULL,
         test_the_scratch_predivider_survives_a_system_reset);
+#ifdef CONFIG_VNC
     qtest_add_data_func(
         "sn0/ioc3-serial/vnc-pointer-tracks-default-model", NULL,
         test_a_vnc_pointer_tracks_through_the_default_model);
     qtest_add_data_func(
         "sn0/ioc3-serial/vnc-pointer-tracks-ud1212r-model", NULL,
         test_a_vnc_pointer_tracks_through_the_ud1212r_model);
+#endif
 
     ret = g_test_run();
     qtest_quit(qts);
