@@ -40,39 +40,21 @@ Menu. test_irix_origin300_installed_boot.py checks that same outcome
 for two CPUs while continuing through an installed IRIX boot.
 """
 
-import os
-
-from lib_prom import require_assets
-from lib_prom import resolve_asset
-
 import lib_origin300
 
 from qemu_test import QemuSystemTest
+from qemu_test.asset import LocalAsset
 from qemu_test import skipIfMissingEnv
 from qemu_test import wait_for_console_pattern
 
 
 class Origin300Prom(QemuSystemTest):
 
+    ASSET_FIRMWARE = LocalAsset(
+        lib_origin300.FIRMWARE_REL, lib_origin300.FIRMWARE_SHA256)
+
     def boot_to_first_line(self, smp):
-        assets_root = os.environ.get('QEMU_TEST_SGI_ASSET_DIR')
-        prom = resolve_asset(
-            assets_root,
-            os.path.join('firmware', '6.5.30',
-                         'ip35prom.payload.bin'))
-        if prom is None:
-            # skipIfMissingEnv above already skipped the case where
-            # QEMU_TEST_SGI_ASSET_DIR is unset entirely -- getting here means it
-            # IS set, so a missing PROM image is a provisioning
-            # failure, not an absent-assets developer run, and must
-            # fail loudly rather than silently skip a claimed
-            # capability.
-            self.fail(
-                'QEMU_TEST_SGI_ASSET_DIR is set but the Origin 300 '
-                'stock PROM is '
-                'missing at <QEMU_TEST_SGI_ASSET_DIR>/firmware/6.5.30/'
-                'ip35prom.payload.bin -- provision it rather than '
-                'silently skipping a real check')
+        prom = self.ASSET_FIRMWARE.fetch()
 
         self.set_machine('origin300')
         self.vm.set_console()
@@ -89,11 +71,19 @@ class Origin300Prom(QemuSystemTest):
     def test_origin300_prom_four_cpus(self):
         self.boot_to_first_line(4)
 
+
+class Origin300PromMenu(QemuSystemTest):
+
+    ASSET_FIRMWARE = LocalAsset(
+        lib_origin300.FIRMWARE_REL, lib_origin300.FIRMWARE_SHA256)
+    ASSET_SPD_3 = LocalAsset(*lib_origin300.SPD_INPUTS[0][1:])
+    ASSET_SPD_5 = LocalAsset(*lib_origin300.SPD_INPUTS[1][1:])
+
     def boot_to_menu(self, cpus):
-        assets_root = os.environ.get('QEMU_TEST_SGI_ASSET_DIR')
-        require_assets(self, *lib_origin300.ASSET_SPECS)
+        firmware = self.ASSET_FIRMWARE.fetch()
+        spd_paths = (self.ASSET_SPD_3.fetch(), self.ASSET_SPD_5.fetch())
         machine, argv = lib_origin300.launch_args(
-            assets_root, cpus, self.workdir)
+            firmware, spd_paths, cpus, self.workdir)
 
         self.set_machine('origin300')
         self.vm.set_console()

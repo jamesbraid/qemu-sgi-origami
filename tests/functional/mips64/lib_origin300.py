@@ -30,8 +30,6 @@ SPD records are read from QEMU_TEST_SGI_ASSET_DIR.
 import hashlib
 import os
 
-from lib_prom import resolve_asset
-
 FIRMWARE_REL = os.path.join('firmware', '6.5.30',
                             'ip35prom.payload.bin')
 FIRMWARE_SHA256 = (
@@ -84,9 +82,8 @@ SPD_INPUTS = (
      '9e60c3400772d227b91c5d61cea8de7f89777d41377516de072944c26cef4aa7'),
 )
 
-# The relative-path/SHA-256 pairs a caller passes to require_assets(self,
-# *ASSET_SPECS) to resolve, and skip or fail on, every real file
-# launch_args() below reads.
+# The relative-path/SHA-256 pairs used by callers to declare the exact
+# firmware and SPD inputs each test needs.
 ASSET_SPECS = ((FIRMWARE_REL, FIRMWARE_SHA256),) + tuple(
     (rel, sha256) for _prop, rel, sha256 in SPD_INPUTS)
 
@@ -255,14 +252,26 @@ def _build_boot_flash(firmware_path, population, destination):
     _write(destination, image)
 
 
-def launch_args(assets, cpus, scratch):
+def _spd_paths(paths):
+    try:
+        paths = tuple(paths)
+    except TypeError:
+        paths = ()
+    if len(paths) != len(SPD_INPUTS):
+        raise ValueError(
+            f'expected {len(SPD_INPUTS)} SPD asset paths, got {len(paths)}')
+    if any(not path for path in paths):
+        raise ValueError('SPD asset paths must all be present')
+    return dict(zip((prop for prop, _rel, _sha256 in SPD_INPUTS), paths))
+
+
+def launch_args(firmware_path, spd_paths, cpus, scratch):
     """The -M property string and the remaining argv fragment for a real
     Origin 300 stock-PROM boot with cpus processors fitted.
 
-    assets is QEMU_TEST_SGI_ASSET_DIR; the caller's own require_assets(self,
-    *ASSET_SPECS) call should already have resolved and skip/failed on
-    every asset this needs. scratch is a fresh, writable, per-test
-    directory (self.workdir): the boot flash and the synthesized node and
+    firmware_path and spd_paths are the already fetched and hash-checked
+    firmware and SPD files. scratch is a fresh, writable, per-test
+    directory (self.workdir): the boot flash and the generated node and
     IO8 identity records are built there, never into the asset tree.
 
     Returns (machine, argv). origin300's machine name accepts an
@@ -274,9 +283,7 @@ def launch_args(assets, cpus, scratch):
     idiom test_sn0_port_reset.py and test_sn0_elsc_reset.py use for
     origin200,debug-leds=off.
     """
-    firmware_path = resolve_asset(assets, FIRMWARE_REL, FIRMWARE_SHA256)
-    if firmware_path is None:
-        raise ValueError(f'missing or mismatched asset: {FIRMWARE_REL}')
+    spd_by_property = _spd_paths(spd_paths)
 
     boot_flash = os.path.join(scratch, 'ip35-boot-flash.raw')
     _build_boot_flash(firmware_path, cpus, boot_flash)
@@ -304,11 +311,8 @@ def launch_args(assets, cpus, scratch):
         'spd-eeprom.2=',
         'spd-eeprom.4=',
     ]
-    for prop, rel, sha256 in SPD_INPUTS:
-        path = resolve_asset(assets, rel, sha256)
-        if path is None:
-            raise ValueError(f'missing or mismatched asset: {rel}')
-        properties.append(f'{prop}={path}')
+    for prop, _rel, _sha256 in SPD_INPUTS:
+        properties.append(f'{prop}={spd_by_property[prop]}')
 
     machine = 'origin300,' + ','.join(properties)
     argv = [
@@ -329,7 +333,7 @@ def _next_mac(mac, step):
                     for shift in range(40, -8, -8))
 
 
-def launch_args_two_chassis(assets, populations, scratch):
+def launch_args_two_chassis(firmware_path, spd_paths, populations, scratch):
     """The -M property string and argv fragment for the two-chassis
     Origin 300 (topology=origin300-two-chassis), each chassis with its
     own boot flash seeded for its own processor count and its own
@@ -344,10 +348,10 @@ def launch_args_two_chassis(assets, populations, scratch):
     node 0's, the same steps tools/origami_lib/prom.py takes. Node 1's L1 console is
     serial line 5, left unconnected here; the master's is line 0.
     """
-    machine, argv = launch_args(assets, populations[0], scratch)
+    machine, argv = launch_args(firmware_path, spd_paths,
+                                populations[0], scratch)
     node_dir = os.path.join(scratch, 'node1')
     os.makedirs(node_dir, exist_ok=True)
-    firmware_path = resolve_asset(assets, FIRMWARE_REL, FIRMWARE_SHA256)
     boot_flash = os.path.join(node_dir, 'ip35-boot-flash.raw')
     _build_boot_flash(firmware_path, populations[1], boot_flash)
     node_board_path = os.path.join(node_dir,

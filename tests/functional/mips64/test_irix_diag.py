@@ -93,6 +93,7 @@ from lib_irix_diag import (FLAVOURS, MANIFEST, CheckFailed, ClockReading,
                            wav_nonzero_samples)
 from lib_matrix import MatrixError, matrix_rows
 from lib_net import HarnessError, IrixConsole
+import lib_origin300
 from lib_prom import FORK_ROOT, require_assets, run_record
 
 try:
@@ -251,6 +252,12 @@ if QemuSystemTest is not None:
                 'disk': assets[flavour.disk],
                 'medium': assets[MEDIUM_REL],
             }
+            if flavour.origin300:
+                origin300_assets = require_assets(
+                    self, *lib_origin300.ASSET_SPECS)
+                self.assets['origin300_spd'] = tuple(
+                    origin300_assets[rel]
+                    for _prop, rel, _sha256 in lib_origin300.SPD_INPUTS)
             scratch = self.scratch_file()
             os.makedirs(scratch, exist_ok=True)
             self.paths = {name: os.path.join(scratch, leaf)

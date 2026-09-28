@@ -17,12 +17,10 @@ about 60): 364 s for the one boot, container start included. 1200 s
 keeps better than three times that.
 """
 
-import os
-
 import lib_origin300
-from lib_prom import require_assets
 
 from qemu_test import QemuSystemTest
+from qemu_test.asset import LocalAsset
 from qemu_test import skipIfMissingEnv
 from qemu_test import wait_for_console_pattern
 
@@ -30,14 +28,18 @@ from qemu_test import wait_for_console_pattern
 class Origin300TwoChassisProm(QemuSystemTest):
 
     timeout = 1200
+    ASSET_FIRMWARE = LocalAsset(
+        lib_origin300.FIRMWARE_REL, lib_origin300.FIRMWARE_SHA256)
+    ASSET_SPD_3 = LocalAsset(*lib_origin300.SPD_INPUTS[0][1:])
+    ASSET_SPD_5 = LocalAsset(*lib_origin300.SPD_INPUTS[1][1:])
 
     @skipIfMissingEnv('QEMU_TEST_SGI_ASSET_DIR')
     def test_eight_cpus_on_two_nodes_reach_the_menu(self):
         populations = (4, 4)
-        assets_root = os.environ.get('QEMU_TEST_SGI_ASSET_DIR')
-        require_assets(self, *lib_origin300.ASSET_SPECS)
+        firmware = self.ASSET_FIRMWARE.fetch()
+        spd_paths = (self.ASSET_SPD_3.fetch(), self.ASSET_SPD_5.fetch())
         machine, argv = lib_origin300.launch_args_two_chassis(
-            assets_root, populations, self.workdir)
+            firmware, spd_paths, populations, self.workdir)
 
         self.set_machine('origin300')
         self.vm.set_console()

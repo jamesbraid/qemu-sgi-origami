@@ -990,10 +990,12 @@ def launch_args(flavour, row, assets, paths, quick_prom=False):
             '-smp', str(row.cpus), '-m', str(row.mem)]
     if flavour.populations:
         machine, o300 = lib_origin300.launch_args_two_chassis(
-            assets['root'], flavour.populations, paths['scratch'])
+            assets['firmware'], assets['origin300_spd'],
+            flavour.populations, paths['scratch'])
     elif flavour.origin300:
-        machine, o300 = lib_origin300.launch_args(assets['root'], row.cpus,
-                                                  paths['scratch'])
+        machine, o300 = lib_origin300.launch_args(
+            assets['firmware'], assets['origin300_spd'], row.cpus,
+            paths['scratch'])
     if flavour.origin300:
         # Keep the boot flash and identity records; this module picks the
         # processor, memory and accelerator itself.

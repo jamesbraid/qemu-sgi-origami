@@ -16,8 +16,9 @@ import os
 import re
 
 import lib_origin300
-from lib_prom import drive_console, require_assets
+from lib_prom import drive_console
 from qemu_test import QemuSystemTest, skipBigDataTest, skipIfMissingEnv, skipSlowTest
+from qemu_test.asset import LocalAsset
 
 
 DISK_REL = os.path.join('irix', '6.5.30',
@@ -40,16 +41,21 @@ SHUTDOWN_STARTED_RE = re.compile(rb'Shutdown started')
 
 class IrixOrigin300InstalledBoot(QemuSystemTest):
 
+    ASSET_FIRMWARE = LocalAsset(
+        lib_origin300.FIRMWARE_REL, lib_origin300.FIRMWARE_SHA256)
+    ASSET_SPD_3 = LocalAsset(*lib_origin300.SPD_INPUTS[0][1:])
+    ASSET_SPD_5 = LocalAsset(*lib_origin300.SPD_INPUTS[1][1:])
+    ASSET_DISK = LocalAsset(DISK_REL, DISK_SHA256)
+
     @skipBigDataTest()
     @skipSlowTest()
     @skipIfMissingEnv('QEMU_TEST_SGI_ASSET_DIR')
     def test_irix_origin300_installed_boot(self):
-        assets_root = os.environ['QEMU_TEST_SGI_ASSET_DIR']
-        assets = require_assets(
-            self, *lib_origin300.ASSET_SPECS, (DISK_REL, DISK_SHA256))
-        disk = assets[DISK_REL]
+        firmware = self.ASSET_FIRMWARE.fetch()
+        spd_paths = (self.ASSET_SPD_3.fetch(), self.ASSET_SPD_5.fetch())
+        disk = self.ASSET_DISK.fetch()
         machine, args = lib_origin300.launch_args(
-            assets_root, 2, self.workdir)
+            firmware, spd_paths, 2, self.workdir)
 
         self.set_machine('origin300')
         self.vm.set_console()
