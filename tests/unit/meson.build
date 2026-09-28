@@ -9,7 +9,7 @@ fork_unit_tests = [
   'test-sgi-router', 'test-sn0-fabric-routed', 'test-sn1-topology',
   'test-sn-model', 'test-sgi-bedrock-ni', 'test-sgi-rad1-audio-pcm',
   'test-sgi-kona-ports', 'test-sgi-kona-gl-decode',
-  'test-sgi-memory',
+  'test-sgi-memory', 'test-sgi-dma',
 ]
 
 tests = {
@@ -207,6 +207,9 @@ if have_system
     'test-sgi-kona-gl-decode': ['../../hw/misc/sgi-kona-gl-decode.c'],
     'test-sgi-memory': ['../../hw/display/sgi/board-memory.c',
                         migration, io],
+    'test-sgi-dma': ['../../hw/display/sgi/board-memory.c',
+                     '../../hw/display/sgi/pixel-dma.c',
+                     migration, io],
     'test-iov': [],
     'test-opts-visitor': [testqapi],
     'test-xs-node': [qom],
