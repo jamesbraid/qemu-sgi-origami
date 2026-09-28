@@ -287,9 +287,12 @@ void sgi_mgras_display_resolve_row(void *opaque, unsigned y, uint32_t *dst)
 #define MGRAS_PLL_REF_SELECT (1u << 24)
 
 /*
- * Before the guest loads a table, the model runs the one IRIX loads at
- * board initialisation: an approximation, since what an unprogrammed VC3
- * does is unknown.
+ * Before the guest loads a table, the model runs the stock 1280x1024
+ * 60 Hz timing: the X server's default timing file, and the IRIX 6.5.30
+ * kernel's built-in records 0 and 3, which its board initialisation loads
+ * for every monitor type but 0x01, 0x09, 0x0b (72 Hz) and 0x82 (1024x768).
+ * That is an approximation, since what an unprogrammed VC3 does is
+ * unknown.
  */
 #define MGRAS_DEFAULT_FRAME_CLOCKS 894600
 #define MGRAS_DEFAULT_VC3_CLOCK_HZ 53625000
