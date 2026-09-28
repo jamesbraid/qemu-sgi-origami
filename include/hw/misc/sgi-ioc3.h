@@ -498,6 +498,7 @@ struct SGIIOC3State {
     char *board_barcode;
     char *board_revision;
     char *board_name;
+    char *board_mac;
     uint64_t board_onewire_serial;
 
     SGIIOC3EthState eth;

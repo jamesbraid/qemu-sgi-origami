@@ -167,8 +167,9 @@ static void test_fuel_mac_eeprom_machine(const void *data)
                     "fuel-ioc3-subsystem-id=0xc30a,"
                     "fuel-l1-type-code=0x61,fuel-bedrock-revision=0x2,"
                     "fuel-mac-eeprom=%s,fuel-rtc-decode=low11-mirror "
-                    "-bios %s -S",
-                    g_getenv("FUEL_MAC_PATH"), (const char *)data);
+                    "-bios %s -S -nic %s",
+                    g_getenv("FUEL_MAC_PATH"), (const char *)data,
+                    g_getenv("FUEL_MAC_NIC"));
         return;
     }
     fd = g_file_open_tmp("fuel-mac-XXXXXX.bin", &path, &error);
@@ -205,19 +206,48 @@ static void test_fuel_mac_eeprom_machine(const void *data)
                       "fuel-ioc3-subsystem-id=0xc30a,"
                       "fuel-l1-type-code=0x61,fuel-bedrock-revision=0x2,"
                       "fuel-mac-eeprom=%s,fuel-rtc-decode=low11-mirror "
-                      "-bios %s -S", path,
+                      "-bios %s -S -nic user", path,
                       (const char *)data);
+    g_autoptr(QDict) response = qtest_qmp(qts,
+        "{'execute':'qom-get','arguments':{"
+        "'path':'/machine/node0/baseio/ioc3','property':'mac'}}");
+
+    g_assert_false(qdict_haskey(response, "error"));
+    g_assert_cmpstr(qdict_get_str(response, "return"), ==,
+                    "02:a1:b2:c3:d4:e5");
     qtest_quit(qts);
+    g_setenv("FUEL_MAC_PATH", path, true);
+    g_setenv("FUEL_MAC_NIC", "user,mac=02:a1:b2:c3:d4:e5", true);
+    g_test_trap_subprocess(NULL, 0, 0);
+    g_test_trap_assert_passed();
+    g_setenv("FUEL_MAC_NIC", "user,mac=02:a1:b2:c3:d4:e6", true);
+    g_test_trap_subprocess(NULL, 0, 0);
+    g_test_trap_assert_failed();
+    g_test_trap_assert_stderr("*IOC3 NIC MAC conflicts with board identity*");
     image[71] = 'G';
     image[32] -= 'G' - '0';
     g_assert_true(g_file_set_contents(path, (char *)image, sizeof(image),
                                       &error));
     g_assert_no_error(error);
-    g_setenv("FUEL_MAC_PATH", path, true);
+    g_setenv("FUEL_MAC_NIC", "user", true);
+    g_test_trap_subprocess(NULL, 0, 0);
+    g_test_trap_assert_failed();
+    g_test_trap_assert_stderr("*Fuel MAC EEPROM record is malformed*");
+    memcpy(image + 71, "000000000000", 12);
+    image[32] = 0;
+    sum = 0;
+    for (unsigned i = 32; i < 160; i++) {
+        sum += image[i];
+    }
+    image[32] = -sum;
+    g_assert_true(g_file_set_contents(path, (char *)image, sizeof(image),
+                                      &error));
+    g_assert_no_error(error);
     g_test_trap_subprocess(NULL, 0, 0);
     g_test_trap_assert_failed();
     g_test_trap_assert_stderr("*Fuel MAC EEPROM record is malformed*");
     g_unsetenv("FUEL_MAC_PATH");
+    g_unsetenv("FUEL_MAC_NIC");
     unlink(path);
 }
 

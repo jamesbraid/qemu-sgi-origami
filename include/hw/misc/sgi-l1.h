@@ -79,6 +79,8 @@ struct SGIL1State {
     uint8_t last_reason[2];
     char *system_serial;
     char *fuel_mac_eeprom;
+    uint8_t fuel_mac[6];
+    bool fuel_mac_valid;
     char *brick_serial;
     char *brick_type;
     uint32_t brick_type_code;
@@ -123,6 +125,8 @@ struct SGIL1State {
     char usb_test_result[16];
     char usb_test_descriptor_result[74];
 };
+
+bool sgi_l1_fuel_mac(DeviceState *dev, uint8_t mac[6]);
 
 /* The node-side junk-bus UART window through which the Bedrock reaches it. */
 struct SGIL1UARTState {
