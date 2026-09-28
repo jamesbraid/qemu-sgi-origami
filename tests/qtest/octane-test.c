@@ -633,6 +633,7 @@ static void test_widgets_and_memory(void)
 
     g_assert_cmphex(qtest_readl(qts, HEART + 0x20), ==, BANK0);
     g_assert_cmpuint(qtest_readl_tx(qts, XBOW + 4, &value), ==, MEMTX_OK);
+    g_assert_cmphex(value, ==, 0x40000001);
     g_assert_cmpuint(qtest_readl_tx(qts, HEART_WIDGET + 4, &value), ==,
                      MEMTX_OK);
     g_assert_cmphex(value, ==, 0x4c00106c);
@@ -663,6 +664,7 @@ static void test_widgets_and_memory(void)
     g_assert_cmpuint(qtest_readq_tx(qts, ATTR0 + HIGH_RAM, &missing), !=,
                      MEMTX_OK);
     qtest_system_reset(qts);
+    g_assert_cmphex(qtest_readl(qts, XBOW + 4), ==, 0x40000001);
     g_assert_cmphex(qtest_readl(qts, HEART + 0x20), ==, BANK0);
     g_assert_cmphex(qtest_readl(qts, ATTR0 + HEART + 0x20), ==, BANK0);
     g_assert_cmphex(qtest_readq(qts, HIGH_RAM), ==, 0x0123456789abcdefULL);
