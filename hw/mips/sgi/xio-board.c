@@ -63,11 +63,18 @@ static bool sgi_xio_board_reparent(SGIXioBoardState *board, Error **errp)
     DeviceState *dev = DEVICE(board);
     Object *child = OBJECT(board);
     Object *parent = sgi_xio_board_module_container(board->module);
-    g_autofree char *default_name = g_strdup_printf("slot%u", board->slot);
+    g_autofree char *default_name = board->widget_slot_name ?
+        g_strdup(board->widget_slot_name) :
+        g_strdup_printf("slot%u", board->slot);
     const char *name = dev->id ? dev->id : default_name;
 
     if (child->parent == parent) {
         return true;
+    }
+    if (object_resolve_path_component(parent, name)) {
+        error_setg(errp, "module %u already holds a device named '%s'",
+                   board->module, name);
+        return false;
     }
     object_ref(child);
     object_unparent(child);
@@ -288,7 +295,8 @@ static bool sgi_xio_board_place_by_widget(SGIXioBoardState *board,
         object_property_get_link(obj, "fabric", &error_abort) : NULL;
     if (slots && fabric && object_dynamic_cast(fabric, TYPE_MEMORY_REGION)) {
         return SGI_XIO_SLOTS_GET_CLASS(slots)->claim_fabric(
-            slots, MEMORY_REGION(fabric), board->module, widget, errp);
+            slots, MEMORY_REGION(fabric), board->module, widget,
+            &board->widget_slot_name, errp);
     }
     return true;
 }
@@ -437,7 +445,10 @@ static void sgi_xio_board_class_init(ObjectClass *oc, const void *data)
 
 static void sgi_xio_board_finalize(Object *obj)
 {
-    g_free(SGI_XIO_BOARD(obj)->slot_label);
+    SGIXioBoardState *board = SGI_XIO_BOARD(obj);
+
+    g_free(board->slot_label);
+    g_free(board->widget_slot_name);
 }
 
 static const TypeInfo sgi_xio_board_types[] = {

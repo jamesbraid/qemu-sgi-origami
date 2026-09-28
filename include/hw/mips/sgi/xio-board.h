@@ -78,6 +78,15 @@ struct SGIXioBoardState {
     char *slot_label;
 
     /*
+     * For a board placed by widget number, the name it takes under its
+     * module when it has no id: its slot's machine-wide name (io5) when
+     * its fabric is one of the machine's slots, else NULL for slot<N>.
+     * The widget alone would not do: a module's two Crossbows number
+     * their widgets alike.
+     */
+    char *widget_slot_name;
+
+    /*
      * Set by the concrete class's build_widget(), before this device
      * re-parents: the two faces sgi_xbow_attach_endpoint() takes. A board
      * whose widget answers a processor and a packet at the same address may
@@ -141,8 +150,10 @@ struct SGIXioBoardClass {
  * one the topology already fills and one another board has claimed.
  * claim_fabric() covers a board given its fabric outright: when that
  * fabric is one of the machine's slot proxies it must match the module
- * and widget the board names and must not already be claimed; any other
- * fabric (a qtest fixture's sink) passes.
+ * and widget the board names and must not already be claimed, and it
+ * returns the slot's machine-wide name in `*name` for the caller to free;
+ * any other fabric (a qtest fixture's sink) passes and leaves `*name`
+ * NULL.
  */
 #define TYPE_SGI_XIO_SLOTS "sgi-xio-slots"
 
@@ -176,7 +187,8 @@ struct SGIXioSlotsClass {
     MemoryRegion *(*claim)(Object *slots, const char *name,
                            SGIXioSlotPlace *place, Error **errp);
     bool (*claim_fabric)(Object *slots, MemoryRegion *fabric,
-                         uint32_t module, uint32_t widget, Error **errp);
+                         uint32_t module, uint32_t widget, char **name,
+                         Error **errp);
 };
 
 /*
