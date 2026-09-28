@@ -5270,11 +5270,11 @@ static void test_population_rejects_an_unknown_timekeeper(const void *data)
 {
     const char *args[] = {
         qtest_qemu_binary(NULL), "-M", "origin200", "-display", "none",
-        "-device", "sgi-ioc3,addr=3,population=0,timekeeper-kind=3",
+        "-device", "sgi-ioc3,addr=3,population=0,timekeeper-kind=4",
         "-qtest", "stdio", "-accel", "qtest", NULL
     };
 
-    assert_qemu_rejects(args, "IOC3 timekeeper kind 3 is unsupported");
+    assert_qemu_rejects(args, "IOC3 timekeeper kind 4 is unsupported");
 }
 
 /* A board record the layout rules forbid is refused at realize (the IOC3
@@ -5330,11 +5330,11 @@ static void test_auto_population_validates_the_timekeeper_kind(
 {
     const char *args[] = {
         qtest_qemu_binary(NULL), "-M", "origin200", "-display", "none",
-        "-device", "sgi-ioc3,addr=3,timekeeper-kind=3",
+        "-device", "sgi-ioc3,addr=3,timekeeper-kind=4",
         "-qtest", "stdio", "-accel", "qtest", NULL
     };
 
-    assert_qemu_rejects(args, "IOC3 timekeeper kind 3 is unsupported");
+    assert_qemu_rejects(args, "IOC3 timekeeper kind 4 is unsupported");
 }
 
 typedef struct BoardPopulation {
