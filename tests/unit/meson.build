@@ -7,7 +7,8 @@ fork_unit_tests = [
   'test-onewire', 'test-i2c-masters', 'test-i2c-wire',
   'test-sgi-o2000-module-mgmt', 'test-sgi-o2000-module-mgmt-real',
   'test-sgi-router', 'test-sn0-fabric-routed', 'test-sn1-topology',
-  'test-sn-model', 'test-sgi-bedrock-ni', 'test-sgi-rad1-audio-pcm',
+  'test-sn-model', 'test-sgi-bedrock-ni', 'test-sgi-pi-gfx',
+  'test-sgi-rad1-audio-pcm',
   'test-sgi-kona-ports', 'test-sgi-kona-gl-decode',
   'test-sgi-memory', 'test-sgi-dma', 'test-sgi-scanout', 'test-sgi-gl',
 ]
@@ -202,6 +203,7 @@ if have_system
   tests += {
     'ptimer-test': ['ptimer-test-stubs.c', meson.project_source_root() / 'hw/core/ptimer.c'],
     'test-sgi-bedrock-ni': ['../../hw/misc/sgi-bedrock-ni-regs.c'],
+    'test-sgi-pi-gfx': ['../../hw/mips/sgi/pi-gfx.c'],
     'test-sgi-kona-ports': ['../../hw/misc/sgi-command-port.c',
                             '../../hw/misc/sgi-kona-ports.c'],
     'test-sgi-kona-gl-decode': ['../../hw/misc/sgi-kona-gl-decode.c'],
