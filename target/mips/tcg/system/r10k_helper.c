@@ -407,14 +407,15 @@ static MemTxResult r10k_data_cache_line(CPUMIPSState *env, hwaddr pa,
     if (way == 2) {
         MemoryRegionSection section = memory_region_find(env_cpu(env)->memory,
                                                          block, size);
-        bool ram = section.mr && memory_region_is_ram(section.mr) &&
-                   !memory_region_is_rom(section.mr) &&
-                   int128_get64(section.size) == size;
+        bool memory = section.mr &&
+                      (memory_region_is_ram(section.mr) ||
+                       memory_region_is_romd(section.mr)) &&
+                      int128_get64(section.size) == size;
 
         if (section.mr) {
             memory_region_unref(section.mr);
         }
-        if (!ram) {
+        if (!memory) {
             /* MMIO has no reviewed cacheable transaction contract. */
             return MEMTX_ACCESS_ERROR;
         }

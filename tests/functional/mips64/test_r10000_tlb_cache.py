@@ -198,6 +198,26 @@ def reset_rom():
     return image
 
 
+def rom_data_rom():
+    code = constant(8, 0x00410080) + mtc0(8, 12)
+    code += constant(12, 0xffffffffa0000000 | MAILBOX)
+    code += constant(10, 0x980000001fc00200)
+    code += [insn_i(0x23, 10, 8, 0), insn_i(0x2b, 12, 8, 0),
+             insn_i(0x23, 10, 8, 4), insn_i(0x2b, 12, 8, 4)]
+    # The tag/data observation proves the ROM read allocated a cache line.
+    code += [insn_i(0x2f, 10, 0x05, 0), 0, 0, 0, 0]
+    code += mfc0(8, 28) + [insn_i(0x2b, 12, 8, 8)]
+    code += [insn_i(0x2f, 10, 0x19, 0), 0, 0, 0, 0]
+    code += mfc0(8, 28) + [insn_i(0x2b, 12, 8, 12)]
+    code += constant(8, DONE)
+    code += [insn_i(0x2b, 12, 8, 32), insn_i(0x04, 0, 0, -1), 0]
+    image = bytearray(0x400 + len(code) * 4)
+    struct.pack_into('>I', image, 0, insn_i(0x04, 0, 0, 0xff))
+    struct.pack_into('>II', image, 0x200, FIRST, SECOND)
+    struct.pack_into(f'>{len(code)}I', image, 0x400, *code)
+    return image
+
+
 class R10000TLBCache(QemuSystemTest):
     def run_rom(self, mode):
         image = self.scratch_file(f'{mode}.bin')
@@ -379,6 +399,20 @@ class R10000TLBCache(QemuSystemTest):
 
     def test_cold_reset_clears_dirty_caches(self):
         self.check_reset(soft=False)
+
+    def test_cached_rom_data_read(self):
+        image = self.scratch_file('rom-data.bin')
+        Path(image).write_bytes(rom_data_rom())
+        self.set_machine('octane')
+        self.vm.add_args('-accel', 'tcg,thread=single',
+                         '-cpu', 'R10000,r10k-data-cache=on',
+                         '-m', '128M', '-bios', image, '-nodefaults')
+        self.vm.launch()
+        words = self.read_reset_result()
+        self.assertEqual(words[:2], [FIRST, SECOND])
+        self.assertEqual((words[2] >> 6) & 3, 2)
+        self.assertEqual(words[2] >> 8, 0x1fc00)
+        self.assertEqual(words[3], FIRST)
 
     def test_uncached_tlb_remap(self):
         self.run_rom('remap')
