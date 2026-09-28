@@ -54,6 +54,8 @@ def tg_perf_verdict(login_reached, tg_up, results):
          "udp_bytes": int or None,
          "udp_tx": {"payload_count": int, "payload_matches": bool,
                     "errors": list[str], "timed_out": bool} or None,
+         "tcp_tx": {"payload_bytes": int, "payload_matches": bool,
+                    "errors": list[str], "timed_out": bool} or None,
          "tcp_segments_delta": int or None}
 
     Returns {"verdict": "PASS"|"FAIL", "problems": [str, ...]}. PASS iff every
@@ -123,6 +125,22 @@ def tg_perf_verdict(login_reached, tg_up, results):
         if not udp_tx.get("payload_matches"):
             problems.append("guest-to-host UDP payloads did not match")
 
+    tcp_tx = results.get("tcp_tx")
+    if not tcp_tx:
+        problems.append("guest-to-host TCP did not run")
+    else:
+        if tcp_tx.get("timed_out"):
+            problems.append("the host TCP receiver timed out")
+        if tcp_tx.get("errors"):
+            problems.append("the host TCP receiver reported: " +
+                            "; ".join(tcp_tx["errors"]))
+        if tcp_tx.get("payload_bytes") != 65536:
+            problems.append(
+                "the host did not receive the complete guest TCP payload "
+                f"(received {tcp_tx.get('payload_bytes')} bytes)")
+        if not tcp_tx.get("payload_matches"):
+            problems.append("guest-to-host TCP payload did not match")
+
     return {
         "verdict": "PASS" if not problems else "FAIL",
         "problems": problems,
@@ -137,6 +155,7 @@ UDP_BUFS = 512                            # 4 MiB of datagrams
 UDP_PACE_EVERY = 16                       # datagrams between pauses
 UDP_PACE_SECONDS = 0.02
 VERIFY_BYTES = 1024 * 1024                # byte-checked TCP payload
+TCP_TX_BYTES = 65536
 
 
 def _usernet_hostport(vm, proto, guest_port):
@@ -207,6 +226,41 @@ def _udp_sink(ready, port_holder, packets, controls, errors, stop):
                 errors.append(
                     f'unexpected UDP datagram length {len(data)} bytes')
                 break
+    except OSError as error:
+        if not stop.is_set():
+            errors.append(str(error))
+    finally:
+        ready.set()
+        server.close()
+
+
+def _tcp_sink(ready, port_holder, chunks, errors, stop):
+    """Receive one guest TCP stream on an ephemeral host port."""
+    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        server.bind(('0.0.0.0', 0))
+        server.listen(1)
+        server.settimeout(0.25)
+        port_holder.append(server.getsockname()[1])
+        ready.set()
+        conn = None
+        while not stop.is_set() and conn is None:
+            try:
+                conn, _ = server.accept()
+            except socket.timeout:
+                continue
+        if conn is not None:
+            with conn:
+                conn.settimeout(0.25)
+                while not stop.is_set():
+                    try:
+                        block = conn.recv(65536)
+                    except socket.timeout:
+                        continue
+                    if not block:
+                        break
+                    chunks.append(block)
     except OSError as error:
         if not stop.is_set():
             errors.append(str(error))
@@ -336,13 +390,19 @@ if base.QemuSystemTest is not None:
             con = base.IrixConsole(vm.console_socket, log_path,
                                    exited=lambda: vm.exitcode() is not None)
             results = {"tcp_verify": None, "tcp_mbps": None,
-                       "udp_mbps": None, "udp_loss": None, "udp_tx": None}
+                       "udp_mbps": None, "udp_loss": None, "udp_tx": None,
+                       "tcp_tx": None}
             login = tg_up = False
             udp_tx_stop = threading.Event()
             udp_tx_thread = None
             udp_tx_ready = threading.Event()
             udp_tx_port = []
             udp_tx_packets, udp_tx_controls, udp_tx_errors = [], [], []
+            tcp_tx_stop = threading.Event()
+            tcp_tx_thread = None
+            tcp_tx_ready = threading.Event()
+            tcp_tx_port = []
+            tcp_tx_chunks, tcp_tx_errors = [], []
             try:
                 base.drive_irix_to_shell(con, base.LOGIN_BUDGET_SECONDS)
                 login = True
@@ -441,6 +501,37 @@ if base.QemuSystemTest is not None:
                     "timed_out": udp_tx_timed_out,
                 }
 
+                # --- Guest-to-host TCP correctness ---
+                # The guest writes a bounded nonuniform pattern using awk;
+                # the host listener compares every received byte.
+                tcp_tx_thread = threading.Thread(
+                    target=_tcp_sink,
+                    args=(tcp_tx_ready, tcp_tx_port, tcp_tx_chunks,
+                          tcp_tx_errors, tcp_tx_stop), daemon=True)
+                tcp_tx_thread.start()
+                self.assertTrue(tcp_tx_ready.wait(30),
+                                "host TCP sink did not start")
+                self.assertTrue(tcp_tx_port, "host TCP sink has no port")
+                tx_rc = con.run(
+                    "awk 'BEGIN { for (i = 0; i < 65536; i++) "
+                    "printf \"%c\", (i * 37 + 11) % 256 }' "
+                    "> /tmp/tg-tx.bin; "
+                    "dd if=/tmp/tg-tx.bin bs=8192 count=8 2>/dev/null "
+                    f"| ttcp -t -l 8192 -n 8 -p {tcp_tx_port[0]} "
+                    f"{base.GATEWAY}", "tcp_tx", 180)
+                self.assertEqual(tx_rc, 0, "guest TCP transmit failed")
+                tcp_tx_thread.join(30)
+                tcp_tx_timed_out = tcp_tx_thread.is_alive()
+                tx_data = b"".join(tcp_tx_chunks)
+                expected_tx = bytes((i * 37 + 11) & 0xff
+                                    for i in range(TCP_TX_BYTES))
+                results["tcp_tx"] = {
+                    "payload_bytes": len(tx_data),
+                    "payload_matches": tx_data == expected_tx,
+                    "errors": tcp_tx_errors,
+                    "timed_out": tcp_tx_timed_out,
+                }
+
                 seg_after = self._netstat_counter(
                     con, "tcp", "packets received", "sega")
                 results["tcp_segments_delta"] = (
@@ -462,8 +553,11 @@ if base.QemuSystemTest is not None:
                     time.sleep(1)
             finally:
                 udp_tx_stop.set()
+                tcp_tx_stop.set()
                 if udp_tx_thread is not None:
                     udp_tx_thread.join(1)
+                if tcp_tx_thread is not None:
+                    tcp_tx_thread.join(1)
                 transcript = con.buf.decode("utf-8", errors="replace")
                 con.close()
                 vm.shutdown(hard=vm.exitcode() is not None)
