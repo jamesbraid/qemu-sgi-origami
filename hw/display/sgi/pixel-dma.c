@@ -87,9 +87,11 @@ static SGIDMAChunk *sgi_dma_map_append(SGIDMAMap *map)
 
 uint64_t sgi_dma_page_list_bytes(const SGIDMAPageList *pl)
 {
-    if (!pl->page_size || !is_power_of_2(pl->page_size)) {
+    if (pl->page_size < SGI_DMA_MIN_PAGE_SIZE ||
+        !is_power_of_2(pl->page_size)) {
         qemu_log_mask(LOG_GUEST_ERROR, "sgi-dma: page size %u is not a "
-                      "power of two\n", pl->page_size);
+                      "power of two of at least %u\n", pl->page_size,
+                      SGI_DMA_MIN_PAGE_SIZE);
         return 0;
     }
     return (uint64_t)pl->npages * pl->page_size;
@@ -292,18 +294,33 @@ static uint64_t sgi_dma_pixels_row_bytes(const SGIPixelDMA *d)
 
 /*
  * Every size here can come from a guest's descriptor, so the transfer must
- * fit its page list before anything is mapped or allocated: at most
- * SGI_DMA_MAX_ROWS rows, no more bytes moved than the list holds, and the
- * last row's end inside the list. Rows map one by one, so those bounds
- * also bound the chunk count, to the list's own chunks plus two per row.
+ * fit its plane and its page list before anything is mapped or allocated:
+ * no wider or taller than the plane, at most SGI_DMA_MAX_ROWS rows, no
+ * more bytes moved than the list holds, and the last row's end inside the
+ * list. The plane then bounds the bytes moved, and with pages no smaller
+ * than a chunk it bounds the chunks too, to each row's bytes over
+ * SGI_DMA_CHUNK_MAX plus two. run() checks the plane again, since that is
+ * the plane it writes.
  */
 static int sgi_dma_pixels_check(const SGIPixelDMA *d,
-                                const SGIDMAPageList *pl)
+                                const SGIDMAPageList *pl,
+                                const SGIBoardMemory *m)
 {
+    const SGIPlane *p = sgi_board_memory_plane(m, d->plane);
     uint64_t total = sgi_dma_page_list_bytes(pl);
     uint64_t row = sgi_dma_pixels_row_bytes(d);
     uint64_t moved, end;
 
+    if (!p) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-dma: no plane %u\n", d->plane);
+        return SGI_FAIL_BOUNDS;
+    }
+    if ((uint32_t)d->w > p->width || (uint32_t)d->h > p->height) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-dma: %dx%d pixels exceed plane "
+                      "%u's %ux%u\n", d->w, d->h, d->plane, p->width,
+                      p->height);
+        return SGI_FAIL_BOUNDS;
+    }
     if (d->h > SGI_DMA_MAX_ROWS ||
         umul64_overflow(row, d->h, &moved) || moved > total ||
         umul64_overflow(d->pitch, d->h - 1, &end) ||
@@ -328,7 +345,7 @@ static int sgi_dma_pixels_check(const SGIPixelDMA *d,
 }
 
 int sgi_dma_pixels_map(SGIPixelDMA *d, const SGIDMABus *bus,
-                       const SGIDMAPageList *pl)
+                       const SGIDMAPageList *pl, const SGIBoardMemory *m)
 {
     DMADirection dir = d->dir == SGI_DMA_TO_PLANE ? DMA_DIRECTION_TO_DEVICE :
                                                     DMA_DIRECTION_FROM_DEVICE;
@@ -339,7 +356,7 @@ int sgi_dma_pixels_map(SGIPixelDMA *d, const SGIDMABus *bus,
     if (d->w <= 0 || d->h <= 0 || !d->guest_bpp) {
         return 0;
     }
-    ret = sgi_dma_pixels_check(d, pl);
+    ret = sgi_dma_pixels_check(d, pl, m);
     if (ret) {
         return ret;
     }
@@ -474,7 +491,7 @@ void sgi_dma_pixels_finish(SGIPixelDMA *d, int status, const SGIHeadOps *ops,
 int sgi_dma_pixels(SGIPixelDMA *d, const SGIDMABus *bus,
                    const SGIDMAPageList *pl, SGIBoardMemory *m)
 {
-    int ret = sgi_dma_pixels_map(d, bus, pl);
+    int ret = sgi_dma_pixels_map(d, bus, pl, m);
 
     if (!ret) {
         ret = sgi_dma_pixels_run(d, m, bus->ops, bus->opaque);
