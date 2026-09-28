@@ -835,6 +835,7 @@ foreach dir : target_dirs
     test_deps += [qemu_img]
   endif
   qtest_env.set('G_TEST_DBUS_DAEMON', meson.project_source_root() / 'tests/dbus-daemon.sh')
+  qtest_env.set('G_TEST_SRCDIR', meson.current_source_dir())
   qtest_env.set('QTEST_QEMU_BINARY', './qemu-system-' + target_base)
   if have_tools and have_vhost_user_blk_server
     qtest_env.set('QTEST_QEMU_STORAGE_DAEMON_BINARY', './storage-daemon/qemu-storage-daemon')
