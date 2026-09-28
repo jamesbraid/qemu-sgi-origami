@@ -3420,18 +3420,30 @@ static void mgras_expect_retraces(QTestState *q, const MgrasFrameTime *t,
  * Before the guest loads a timing table the model runs the stock one, the
  * first retrace one period after reset. A hundred frames on, the phase is
  * still where the exact period puts it, so it does not drift by a rounded
- * period per frame.
+ * period per frame. Enabling the display again part-way through a frame,
+ * with nothing that changes the period, keeps the phase: the kernel
+ * rewrites VC3 register 0x1e to stop and restart timing and to enable the
+ * retrace interrupt.
  */
 static void test_retrace_period_and_phase(void)
 {
     const unsigned int retrace_vector = 54;
     const MgrasFrameTime *t = &mgras_stock_frame;
+    int64_t half = mgras_retrace_gap(t, 106) / 2;
 
     mgras_reset();
     mgras_retrace_to_hub_on(qts, retrace_vector);
     mgras_expect_retraces(qts, t, 1, 4, retrace_vector);
     qtest_clock_step(qts, mgras_retrace_at(t, 104) - mgras_retrace_at(t, 4));
     mgras_expect_retraces(qts, t, 105, 105, retrace_vector);
+
+    qtest_clock_step(qts, half);
+    qtest_writel(qts, REG_VC3_INDEXDATA,
+                 VC3_INDEXDATA(VC3_CONTROL,
+                               VC3_CONTROL_DISPLAY | VC3_CONTROL_VINTR));
+    mgras_expect_retrace_in(qts, mgras_retrace_gap(t, 106) - half,
+                            retrace_vector);
+    mgras_expect_retraces(qts, t, 107, 107, retrace_vector);
 }
 
 static void mgras_vc3_sram_load(QTestState *q, uint16_t addr,
