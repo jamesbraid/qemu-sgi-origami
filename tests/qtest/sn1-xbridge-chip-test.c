@@ -12,7 +12,7 @@
 #define HOST_PORT 0xb
 
 /*
- * The external crosstalk port these tests attach to. Not the chip's own
+ * The external XIO port these tests attach to. Not the chip's own
  * default, which HOST_PORT has already taken here, and deliberately not
  * the port the Origin 300 model names either: what the tests check is the
  * property, not a fixed port hidden behind it.
@@ -434,7 +434,7 @@ static void test_xio_port_unpopulated(void)
  * With a widget attached the same link reports present and alive -- what
  * a discovery walk needs to see before it addresses the port -- and a
  * processor reaches the widget at its own widget number inside the chip's
- * crosstalk space and through the chip's view of that widget.
+ * XIO space and through the chip's view of that widget.
  */
 static void test_xio_widget_is_reachable(void)
 {
