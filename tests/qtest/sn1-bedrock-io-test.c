@@ -379,7 +379,7 @@ static void test_probe_and_retained_registers(void)
         uint64_t expected;
     } registers[] = {
         { 0x1e0, UINT64_MAX, 0x3ffffff },
-        { 0x1e8, 0x10, 0x10 },
+        { 0x1e8, 0x1000, 0x1111 },
         { 0x1f0, UINT64_MAX, UINT64_C(0x0fffffff03ffffff) },
         { 0x200, UINT64_MAX, 0x10f },
         { 0x3a8, UINT64_MAX, UINT64_C(0x13ffffffff30f3) },
@@ -1012,13 +1012,13 @@ static void test_write_one_to_set_masks(void)
     g_assert_cmphex(qtest_readq(s, REG_BASE + DEVICE_MASK), ==, 0x110);
     qtest_writeq(s, REG_BASE + DEVICE_MASK, 0);
     g_assert_cmphex(qtest_readq(s, REG_BASE + DEVICE_MASK), ==, 0x110);
+    /* The enable bits start set, so writing zero cannot clear them. */
     qtest_writeq(s, REG_BASE + MISC_ERROR_MASK, 0);
-    qtest_writeq(s, REG_BASE + MISC_ERROR_MASK, 0x10);
-    g_assert_cmphex(qtest_readq(s, REG_BASE + MISC_ERROR_MASK), ==, 0x10);
-    qtest_writeq(s, REG_BASE + MISC_ERROR_MASK, 0x100);
-    g_assert_cmphex(qtest_readq(s, REG_BASE + MISC_ERROR_MASK), ==, 0x110);
+    g_assert_cmphex(qtest_readq(s, REG_BASE + MISC_ERROR_MASK), ==, 0x111);
+    qtest_writeq(s, REG_BASE + MISC_ERROR_MASK, 0x1000);
+    g_assert_cmphex(qtest_readq(s, REG_BASE + MISC_ERROR_MASK), ==, 0x1111);
     qtest_writeq(s, REG_BASE + MISC_ERROR_MASK, 0);
-    g_assert_cmphex(qtest_readq(s, REG_BASE + MISC_ERROR_MASK), ==, 0x110);
+    g_assert_cmphex(qtest_readq(s, REG_BASE + MISC_ERROR_MASK), ==, 0x1111);
     qtest_quit(s);
 }
 
@@ -1048,16 +1048,21 @@ static void test_reset(void)
     qtest_writeq(s, REG_BASE + SCRATCH0, UINT64_MAX);
     qtest_writeq(s, REG_BASE + ITTE0, 0x1802);
     qtest_writeq(s, REG_BASE + BTE0, 3 | (1 << 20));
+    qtest_writeq(s, REG_BASE + MISC_ERROR_MASK, 0x1000);
     qtest_system_reset(s);
     /*
-     * Local access protection resets to all ones. The
-     * zeros are the model's choices for registers whose hardware reset value
-     * is unknown.
+     * Local access protection resets to all ones. The miscellaneous error
+     * mask comes out of reset with widget 0 and both block transfer engines
+     * enabled: the hub clears those bits only to shut a source down after an
+     * error, and the vendor's system-level diagnostic fails a freshly booted
+     * node whose engine bits are clear. The zeros are the model's choices for
+     * registers whose hardware reset value is unknown.
      */
     g_assert_cmphex(qtest_readq(s, REG_BASE + SCRATCH0), ==, 0);
     g_assert_cmphex(qtest_readq(s, REG_BASE + ITTE0), ==, 0);
     g_assert_cmphex(qtest_readq(s, REG_BASE + BTE0), ==, 0);
     g_assert_cmphex(qtest_readq(s, REG_BASE + LOCAL_PROTECT), ==, UINT64_MAX);
+    g_assert_cmphex(qtest_readq(s, REG_BASE + MISC_ERROR_MASK), ==, 0x111);
     qtest_quit(s);
 }
 

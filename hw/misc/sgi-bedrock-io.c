@@ -51,6 +51,16 @@
 #define II_PASSWORD UINT64_C(0x53474972756c6573)
 
 /*
+ * Widget 0 and both block transfer engines start enabled.  No source
+ * states the reset value; it is inferred.  The hub clears one of these
+ * bits to shut its source down after an error and software sets it again,
+ * and the vendor's system-level diagnostic fails a freshly booted node
+ * whose engine bits are clear without having written them.  The model
+ * never shuts a source down, so the bits stay set until reset.
+ */
+#define II_MISC_ERROR_MASK_RESET UINT64_C(0x111)
+
+/*
  * Crosstalk bit 47 selects register space over memory. The address map puts
  * the target node in bits 46:39 and the
  * Bedrock's own registers in small window 1 of the node's I/O space in the
@@ -836,7 +846,7 @@ static void ii_reset_enter(Object *obj, ResetType type)
     s->request_control = 0;
     s->request_timeout = 0;
     s->request_prescaler = 0;
-    s->misc_error_mask = 0;
+    s->misc_error_mask = II_MISC_ERROR_MASK_RESET;
     memset(s->scratch, 0, sizeof(s->scratch));
     memset(s->itte, 0, sizeof(s->itte));
     memset(s->request_buffer, 0, sizeof(s->request_buffer));
