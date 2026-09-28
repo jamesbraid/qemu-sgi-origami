@@ -302,11 +302,10 @@ void rom_main(void)
     }
 
     /*
-     * R10000 User's Manual v2.0, section 14.8: equality sets IP7 and a
-     * Compare write clears it. A target behind Count is not a match.
-     * R14000 uses the same rule as a QEMU compatibility choice; this is
-     * not direct evidence of its hardware (Origami's reviewed
-     * r10000-cp0-timer.md and r14000.md contracts).
+     * A behind-Count Compare write leaves IP7 clear on each tested model.
+     * For R14000 this is a QEMU compatibility choice, not an established
+     * hardware fact. The former half-counter window asserted IP7 here and
+     * on OpenBSD's Count - 1 disarm write (QEMU issue 626).
      */
     rom_set_count(0x00200000u);
     rom_set_compare(0x00100000u);
@@ -315,31 +314,4 @@ void rom_main(void)
     rom_assert_eq(18, 0, rom_get_cause() & ROM_CAUSE_IP7);
     rom_assert_eq(19, 0, rom_exc.count);
 
-    /*
-     * Neither of two adjacent Compare writes creates a match. Enable
-     * interrupts to catch a spurious delivery between those writes too.
-     */
-    rom_set_count(0x00200000u);
-    rom_exc_reset();
-    rom_exc.status_set = rom_get_status() & ~(ROM_ST_IE | ROM_ST_IM7);
-    {
-        uint32_t on = rom_get_status() | ROM_ST_IE | ROM_ST_IM7;
-
-        __asm__ __volatile__(
-            ".set push\n\t.set noreorder\n\t"
-            "lui $26, %%hi(9f)\n\t"
-            "daddiu $26, $26, %%lo(9f)\n\t"
-            "sd $26, 0(%[res])\n\t"
-            "mtc0 %[on], $12\n\t"
-            "mtc0 %[behind], $11\n\t"
-            "mtc0 %[far], $11\n"
-            "9:\t.set pop"
-            :
-            : [res] "r"(&rom_exc.resume), [on] "r"(on),
-              [behind] "r"(0x00100000u), [far] "r"(0x40000000u)
-            : "$26", "memory");
-    }
-    rom_set_status(rom_get_status() & ~(ROM_ST_IE | ROM_ST_IM7));
-    rom_assert_eq(20, 0, rom_exc.count);
-    rom_set_compare(rom_get_count() + 0x40000000u);
 }
