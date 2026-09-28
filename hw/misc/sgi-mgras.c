@@ -338,9 +338,13 @@ static const SGIHeadOps mgras_scanout_ops = {
 
 /*
  * Take the retrace period from the current VC3 tables and DAC PLL. The
- * guest reprograms both with timing stopped and then enables the display,
- * so the model reads them at that write rather than on every SRAM store.
- * A new period restarts the retrace phase; an unchanged one keeps it.
+ * IRIX 6.5.30 kernel's MgrasSetTiming writes the DAC PLL bytes, then
+ * 0x072408, then the VC3 SRAM tables and VID_EP, and only then enables
+ * the display through VC3 register 0x1e, so the model reads them at that
+ * write rather than on every SRAM store. A new period restarts the retrace
+ * phase; an unchanged one keeps it. Both are the model's choices: the VC3
+ * presumably walks its tables live, and what a new table does to the
+ * phase is unknown.
  */
 static void mgras_update_timing(SGIMgrasState *s, bool log)
 {
