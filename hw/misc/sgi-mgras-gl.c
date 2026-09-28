@@ -76,6 +76,12 @@
 #define MGRAS_GL_DEPTH_FUNC      0x00004304
 #define MGRAS_GL_DRAW_BUFFER     0x0000490c
 #define MGRAS_GL_DEPTH_TEST      0x00006604
+/*
+ * glDepthRange: __glMgrim_DepthRange (0xd960590 in the IRIX 6.5.30
+ * IP27GR532 libGLcore.so, SHA-256 626d6d94...) writes 0x4808 and near and
+ * far converted to single floats, unclamped, outside glBegin/glEnd.
+ */
+#define MGRAS_GL_DEPTH_RANGE     0x00004808
 #define MGRAS_GL_BANKS           0x00009808
 
 /* Vertex-attribute headers: the class names the source format. */
@@ -360,6 +366,7 @@ bool sgi_mgras_gl_header(uint32_t header)
     case MGRAS_GL_DEPTH_FUNC:
     case MGRAS_GL_DRAW_BUFFER:
     case MGRAS_GL_DEPTH_TEST:
+    case MGRAS_GL_DEPTH_RANGE:
     case MGRAS_GL_BANKS:
     case MGRAS_GL_VERTEX2F:
     case MGRAS_GL_VERTEX3F:
@@ -708,6 +715,8 @@ typedef enum MgrasGLQueryPacking {
  *   sets is unknown.
  * - GL_CURRENT_RASTER_COLOR 0x351 to 0x354, GL_CURRENT_RASTER_TEXTURE_COORDS
  *   0x355 to 0x358 and GL_CURRENT_RASTER_DISTANCE 0x34b, as floats.
+ * - GL_DEPTH_RANGE: near at 0xc21 and far at 0xc22, as floats. perfly
+ *   reads both after each context setup.
  *
  * What a1 and a2 select is unknown; the model answers by index alone.
  * Every other index answers zero, logged, which is right for the
@@ -738,6 +747,7 @@ static const struct {
     { 0x351, 4, MGRAS_GL_QUERY_WORD, SGI_GL_CURRENT_RASTER_COLOR, 0 },
     { 0x355, 4, MGRAS_GL_QUERY_WORD, SGI_GL_CURRENT_RASTER_TEXTURE_COORDS, 0 },
     { 0x34b, 1, MGRAS_GL_QUERY_WORD, SGI_GL_CURRENT_RASTER_DISTANCE, 0 },
+    { 0xc21, 2, MGRAS_GL_QUERY_WORD, SGI_GL_DEPTH_RANGE, 0 },
 };
 
 /*
@@ -1115,6 +1125,51 @@ const VMStateDescription vmstate_sgi_mgras_gl_index = {
     }
 };
 
+static const VMStateDescription vmstate_sgi_mgras_gl_context_depth_range = {
+    .name = TYPE_SGI_MGRAS "/gl-context-depth-range",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_SGI_GL_FLOATS(cur.depth_range, SGIGLContext, 2, 0),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
+/*
+ * Every context's depth range, sent only once some context has left
+ * OpenGL's initial [0, 1], so a guest that never sent glDepthRange
+ * migrates to and from a binary without it, and one that did is refused
+ * by such a binary rather than lose the range. A stream without it comes
+ * from a model that ignored glDepthRange, whose every context answered
+ * and drew as [0, 1]: the destination's initial ranges.
+ */
+static bool mgras_gl_depth_range_needed(void *opaque)
+{
+    SGIMgrasState *s = opaque;
+
+    for (int i = 0; i < SGI_MGRAS_GL_CONTEXTS; i++) {
+        const float *r = s->gl[i].cur.depth_range;
+
+        if (r[0] != 0.0f || r[1] != 1.0f) {
+            return true;
+        }
+    }
+    return false;
+}
+
+const VMStateDescription vmstate_sgi_mgras_gl_depth_range = {
+    .name = TYPE_SGI_MGRAS "/gl-depth-range",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = mgras_gl_depth_range_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_STRUCT_ARRAY(gl, SGIMgrasState, SGI_MGRAS_GL_CONTEXTS, 1,
+                             vmstate_sgi_mgras_gl_context_depth_range,
+                             SGIGLContext),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
 /*
  * The parser inside a glBitmap image, live or set aside with a context,
  * keeps its place in the payload fields the stream already carries. A
@@ -1178,6 +1233,10 @@ bool sgi_mgras_gl_post_load(SGIMgrasState *s)
             gl->mv_depth >= SGI_GL_STACK_DEPTH ||
             gl->pr_depth >= SGI_GL_STACK_DEPTH ||
             gl->raster_valid > 1 || gl->cur.index_bits > 32 ||
+            !(gl->cur.depth_range[0] >= 0.0f &&
+              gl->cur.depth_range[0] <= 1.0f) ||
+            !(gl->cur.depth_range[1] >= 0.0f &&
+              gl->cur.depth_range[1] <= 1.0f) ||
             !sgi_mgras_cmd_parser_valid(p->cls, p->reg, p->words_remaining,
                                         p->payload_count)) {
             return false;
@@ -1605,6 +1664,10 @@ void sgi_mgras_gl_execute(SGIMgrasState *s, uint32_t header,
         return;
     case MGRAS_GL_DEPTH_MASK:
         mgras_gl_command(s, SGI_GL_OP_DEPTH_MASK, payload, 1);
+        return;
+    case MGRAS_GL_DEPTH_RANGE:
+        /* The client does not clamp, so the board does (2.10.1). */
+        mgras_gl_command(s, SGI_GL_OP_DEPTH_RANGE, payload, 2);
         return;
     case MGRAS_GL_DRAW_BUFFER:
         mgras_gl_command(s, SGI_GL_OP_DRAW_BUFFERS, payload, 1);

@@ -55,6 +55,8 @@ void sgi_mgras_gl_block_word(SGIMgrasState *s, uint32_t word);
 /* Each context's colour-index state, and a marker for a block under way. */
 extern const VMStateDescription vmstate_sgi_mgras_gl_index;
 extern const VMStateDescription vmstate_sgi_mgras_gl_block;
+/* Each context's depth range, sent once one has left [0, 1]. */
+extern const VMStateDescription vmstate_sgi_mgras_gl_depth_range;
 
 /* Note GE-port traffic the per-context state cannot follow. */
 void sgi_mgras_gl_ge_port_access(SGIMgrasState *s, hwaddr addr, bool write);
