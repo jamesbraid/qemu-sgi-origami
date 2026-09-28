@@ -24,19 +24,16 @@ long as the machine keeps running. This test only requires reaching
 that first line -- proof the real image executed through the stock
 boot path -- not the full menu a battery-backed board would reach.
 
-test_origin300_prom_four_cpus repeats the same check at -smp 4, the
-population the origin300 catalogue's supported_cpu_populations gained
-beside [2] (docs/machines/layers/products/origin300.yaml). Measured
+test_origin300_prom_four_cpus repeats the same check at -smp 4. Measured
 directly (2026-09-18, this branch): the same first line appears within
 about a second with or without writable pflash. The menu case below
 uses writable pflash and checks diagnostics separately.
 
 test_four_cpus_reach_the_menu_with_all_diags_passed goes past that
-first line, through a writable boot flash and real
-chassis/board/SPD identity records (lib_origin300.py, ported from
-tools/origami_lib/prom.py and tools/origami_lib/io8_eeprom.py's own
-seeding), to the stock PROM's "ALL DIAGS PASSED" and System Maintenance
-Menu. test_irix_origin300_installed_boot.py checks that same outcome
+first line, through a writable boot flash and synthetic
+chassis/board/SPD identity records, to the stock PROM's "ALL DIAGS
+PASSED" and System Maintenance Menu.
+test_irix_origin300_installed_boot.py checks that same outcome
 for two CPUs while continuing through an installed IRIX boot.
 """
 

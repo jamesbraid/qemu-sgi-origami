@@ -10,11 +10,10 @@ and then loads its BASEIO PROM from the cabinet Bridge's external flash
 (docs/datasheets/sgi-gigachannel.md in the Origami repository). With the
 shipped BASEIO PROM image as the cabinet's flash, the PROM prints the XBOX
 load line and DONE, as a real cabinet does, and the BASEIO PROM banner is
-the flash build. With no flash drive nothing is fitted, and the PROM's own
-fallback is the expected path: the XBOX load line, a bus error in the
-flash window, a retry from its internal copy, and then its diagnostics
-passing. The loopback form has no Crossbow at widget 0, so the PROM takes
-the plain load line instead.
+the flash build. With no flash image attached, the test requires the XBOX
+load line, a bus error in the flash window, a retry from the internal
+copy, and passing diagnostics. The loopback form has no Crossbow at widget
+0, so the test requires the plain load line instead.
 
 The harness's own launches of these topologies reached the menu in under
 four minutes on a heavily loaded host (2026-09-25, load average
