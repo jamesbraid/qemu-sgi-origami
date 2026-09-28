@@ -379,6 +379,19 @@ static void test_set_next_retrace(void)
     run_to(sgi_scanout_retrace_time(s, 7));
     g_assert_cmpstr(h->events->str, ==, "retrace:6 retrace:7 ");
 
+    /*
+     * A when already past fires at once, with every retrace between it
+     * and now: here the one at when and the two a period and two after.
+     */
+    g_string_truncate(h->events, 0);
+    virtual_ns = sgi_scanout_retrace_time(s, 8) + 1000;
+    when = virtual_ns - 2 * period - 10;
+    sgi_scanout_set_next_retrace(s, when);
+    run_to(virtual_ns);
+    g_assert_cmpstr(h->events->str, ==, "retrace:8 retrace:9 retrace:10 ");
+    g_assert_cmpint(sgi_scanout_retrace_time(s, 8), ==, when);
+    g_assert_cmpint(timer_expire_time_ns(s->retrace_timer), >, virtual_ns);
+
     /* No retrace in the mode: nothing to put anywhere. */
     sgi_scanout_set_mode(s, &(SGIScanoutMode) { .width = 8, .height = 8 });
     sgi_scanout_set_next_retrace(s, virtual_ns + 1000);
@@ -715,7 +728,9 @@ static void test_migration(void)
     sgi_scanout_queue_swap(s, 7, 0x77);
     sgi_scanout_cursor_define(s, 1, 1, 0, 0, image);
     sgi_scanout_cursor_move(s, 10, 20, true);
-    next = sgi_scanout_retrace_time(s, 4);
+    /* A phase set by the family travels as the scanout's own. */
+    next = sgi_scanout_retrace_time(s, 4) + 5000;
+    sgi_scanout_set_next_retrace(s, next);
 
     g_assert_cmpint(vmstate_save_state(f, &vmstate_test_head, &src, NULL,
                                        &error_abort), ==, 0);
