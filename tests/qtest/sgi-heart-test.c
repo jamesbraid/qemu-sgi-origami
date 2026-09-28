@@ -452,19 +452,25 @@ static void test_widget_timeout(void)
     g_assert_cmpuint(qtest_readl_tx(s, HEART_WIDGET + 0x2c, &word), ==,
                      MEMTX_OK);
     g_assert_cmphex(word, ==, 0);
+    g_assert_cmpuint(qtest_readq_tx(s, HEART_WIDGET + 0x28, &wide), ==,
+                     MEMTX_OK);
+    g_assert_cmphex(wide, ==, 0);
     g_assert_cmpuint(qtest_readl_tx(s, HEART_WIDGET + 0x44, &word), ==,
                      MEMTX_OK);
     g_assert_cmphex(word, ==, 0);
     g_assert_cmpuint(qtest_writel_tx(s, HEART_WIDGET + 0x2c, 0x80), ==,
                      MEMTX_OK);
     g_assert_cmphex(qtest_readl(s, HEART_WIDGET + 0x2c), ==, 0x80);
+    g_assert_cmphex(qtest_readq(s, HEART_WIDGET + 0x28), ==, 0x80);
     qtest_writel(s, HEART_WIDGET + 0x2c, 0x12345678);
     g_assert_cmphex(qtest_readl(s, HEART_WIDGET + 0x2c), ==, 0x12345678);
+    g_assert_cmphex(qtest_readq(s, HEART_WIDGET + 0x28), ==, 0x12345678);
     g_assert_cmphex(qtest_readl(s, HEART_REGS + 0x2c), ==, 0);
-    g_assert_cmpuint(qtest_readq_tx(s, HEART_WIDGET + 0x28, &wide), ==,
-                     MEMTX_ERROR);
     g_assert_cmpuint(qtest_writeq_tx(s, HEART_WIDGET + 0x28, 0), ==,
                      MEMTX_ERROR);
+    g_assert_cmpuint(qtest_writeq_tx(s, HEART_WIDGET + 0x28,
+                                    0x1234567887654321ULL), ==, MEMTX_ERROR);
+    g_assert_cmphex(qtest_readq(s, HEART_WIDGET + 0x28), ==, 0x12345678);
     g_assert_cmpuint(qtest_readl_tx(s, HEART_WIDGET + 0x28, &word), ==,
                      MEMTX_ERROR);
     g_assert_cmpuint(qtest_writel_tx(s, HEART_WIDGET + 0x30, 0), ==,
@@ -493,6 +499,7 @@ static void test_widget_timeout(void)
     g_assert_cmphex(qtest_readl(s, HEART_WIDGET + 0x44), ==, 0);
     qtest_system_reset(s);
     g_assert_cmphex(qtest_readl(s, HEART_WIDGET + 0x2c), ==, 0);
+    g_assert_cmphex(qtest_readq(s, HEART_WIDGET + 0x28), ==, 0);
     g_assert_cmphex(qtest_readl(s, HEART_WIDGET + 0x44), ==, 0);
     qtest_quit(s);
 }
@@ -824,6 +831,7 @@ static void test_migration(void)
     g_assert_cmphex(qtest_readl(to, HEART_ONEWIRE_LO) & 3, ==, 3);
     g_assert_cmphex(qtest_readl(to, HEART_WIDGET + 0x24), ==, 0x5a420ff0);
     g_assert_cmphex(qtest_readl(to, HEART_WIDGET + 0x2c), ==, 0x12345678);
+    g_assert_cmphex(qtest_readq(to, HEART_WIDGET + 0x28), ==, 0x12345678);
     g_assert_cmphex(qtest_readl(to, HEART_WIDGET + 0x44), ==, 0);
     g_assert_cmphex(qtest_readq(to, HEART_WIDGET + 0x68), ==, 0x3ff62c07);
     g_assert_cmphex(qtest_readl(to, HEART_WIDGET + 0x14), ==, 0);
