@@ -68,8 +68,9 @@ typedef struct SGIBedrockMDDirectoryInjection {
 /*
  * Pages whose lines' directory words the unit rewrites as it serves
  * processor requests. The hardware does this for every line; the model
- * does it for the pages whose words software most recently read or wrote
- * through the directory backdoor, the one place the state shows. Each is
+ * does it for the pages whose words software most recently read through
+ * the directory backdoor, the one place the state shows, for a
+ * line a processor has named in a secondary-cache instruction. Each is
  * overlaid on the memory window so the unit sees the processors' cached
  * loads and stores to it. A page takes one overlay, a memory map change,
  * when it is admitted, into a free slot or the least recently used one.
@@ -78,9 +79,8 @@ typedef struct SGIBedrockMDDirectoryInjection {
  * its page is watched again (docs/datasheets/bedrock-memory-directory.md).
  *
  * Sixteen slots: the one reader of transitions, the Origin 300's directory
- * diagnostic, checks one line at a time per node, and a directory walk
- * never revisits a page soon enough for more slots to spare it a map
- * change; every slot adds to each flat-view rebuild.
+ * diagnostic, checks one line at a time per node, and every slot adds to
+ * each flat-view rebuild.
  */
 #define SGI_BEDROCK_MD_WATCHED_PAGES 16
 /* Every processor of a four-node machine. */
@@ -152,6 +152,13 @@ struct SGIBedrockMDState {
     /* The table flattened for migration; only valid around a save or load. */
     SGIBedrockMDLineState *line_state_array;
     int32_t line_state_count;
+    /*
+     * One bit per line a processor has named in a cache instruction, set
+     * without the lock: cache-flush loops name lines by the thousand.
+     */
+    unsigned long *named_lines;
+    /* directory_entries, as the migration bitmap's length wants it. */
+    int32_t named_line_bits;
     /* Counts backdoor accesses and processor requests to watched pages. */
     uint64_t use_clock;
     /* Active watched pages; read without the lock by the board's filter. */
@@ -217,6 +224,12 @@ typedef enum SGIBedrockMDProcessorRequest {
     SGI_BEDROCK_MD_PREFETCH_STORE,
 } SGIBedrockMDProcessorRequest;
 
+/*
+ * A processor named node memory address @address in a secondary-cache
+ * instruction, which lets a later read of the line's directory word watch
+ * its page. Safe to call without the lock.
+ */
+void sgi_bedrock_md_name_line(SGIBedrockMDState *s, uint64_t address);
 /* Whether any line is watched; safe to call without the lock. */
 bool sgi_bedrock_md_watching(SGIBedrockMDState *s);
 /*

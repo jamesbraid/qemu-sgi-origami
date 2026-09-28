@@ -729,8 +729,9 @@ static void test_prom_copy_range_leaves_at_handoff(void)
  * The directory records a processor on another node by that node's number:
  * a pointer is the node number above three device bits (MD_PTR_NODE_SHFT in
  * the public SN1 header), so node 1's slice A reads as 8. Node 1's first
- * processor reads node 0's directory word for a line, which has node 0's
- * memory unit follow it, loads the line cached and reads the word again.
+ * processor names a line in a cache instruction and reads node 0's
+ * directory word for it, which has node 0's memory unit follow it, loads
+ * the line cached and reads the word again.
  * Both local blocks leave reset carrying number 0, and the compatibility
  * space names memory by number, so node 1 first reads its tag and reports
  * ready in its own memory, then waits for the host to number it 1 and say
@@ -765,7 +766,7 @@ static char *create_remote_directory_prom(void)
         0x00000000,                     /* nop */
         mips_i(0x0f, 0, 8, 0xa030),     /* lui t0, 0xa030 -- own flags */
         mips_i(0x23, 8, 9, 0),          /* lw t1, 0(t0) -- node tag */
-        mips_i(0x04, 9, 0, 33),         /* beq t1, zero, spin */
+        mips_i(0x04, 9, 0, 34),         /* beq t1, zero, spin */
         0x00000000,
         mips_i(0x0f, 0, 12, 0x9200),    /* lui t4, 0x9200 */
         mips_r(0, 12, 12, 0x3c),        /* dsll32 t4, t4, 0 */
@@ -773,7 +774,7 @@ static char *create_remote_directory_prom(void)
         mips_r(12, 11, 12, 0x2d),       /* daddu t4, t4, t3 */
         mips_i(0x37, 12, 12, 0x20),     /* ld t4, 0x20(t4) -- CPU number */
         mips_i(0x0c, 12, 12, 3),        /* andi t4, t4, 3 */
-        mips_i(0x05, 12, 0, 25),        /* bne t4, zero, spin */
+        mips_i(0x05, 12, 0, 26),        /* bne t4, zero, spin */
         0x00000000,
         mips_i(0x0d, 0, 11, 1),         /* ori t3, zero, 1 */
         mips_i(0x3f, 8, 11, 0x40),      /* sd t3, 0x40(t0) -- ready */
@@ -791,6 +792,7 @@ static char *create_remote_directory_prom(void)
         mips_r(0, 11, 11, 0x3c),        /* dsll32 t3, t3, 0 */
         mips_r(0, 11, 11, 0x3e),        /* dsrl32 t3, t3, 0 */
         mips_r(13, 11, 13, 0x2d),       /* daddu t5, t5, t3 */
+        mips_i(0x2f, 10, 0x17, 0),      /* cache HitWBInv(S), 0(t2) */
         mips_i(0x37, 13, 11, 0),        /* ld t3, 0(t5) */
         mips_i(0x3f, 8, 11, 0x20),      /* sd t3, 0x20(t0) */
         mips_i(0x37, 10, 11, 0),        /* ld t3, 0(t2) -- cached load */

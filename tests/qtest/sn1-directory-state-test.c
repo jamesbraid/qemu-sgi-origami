@@ -61,6 +61,7 @@
 #define R_T2 10 /* the result area, cached */
 #define R_T3 11
 #define R_T4 12
+#define R_T5 13 /* another line, cached */
 
 typedef struct Program {
     uint8_t *image;
@@ -306,9 +307,34 @@ static void finish(QTestState *s, char *prom)
     .steps = (const Step[]) { __VA_ARGS__ }, \
     .nr_steps = sizeof((const Step[]) { __VA_ARGS__ }) / sizeof(Step)
 
+/*
+ * Name the line in a Hit WriteBack Invalidate (S), which the unit needs
+ * before a read of its word will watch its page, then publish the word.
+ */
 static void emit_first(Program *p)
 {
+    emit(p, CACHE(0x17, 0, R_T0));
     emit_publish(p, 0x00);
+}
+
+/*
+ * Name, then read the word of, the first line of each of the @count pages
+ * after the one under test, as a check of those lines would; each page
+ * takes a slot.
+ */
+static void emit_name_pages(Program *p, unsigned int count, bool rewarm)
+{
+    emit(p, DADDU(R_T4, R_T1, R_ZERO));
+    emit(p, DADDU(R_T5, R_T0, R_ZERO));
+    for (unsigned int i = 0; i < count; i++) {
+        emit(p, DADDIU(R_T4, R_T4, 0x200));
+        emit(p, DADDIU(R_T5, R_T5, 0x1000));
+        emit(p, CACHE(0x17, 0, R_T5));
+        emit(p, LD(R_T3, 0, R_T4));
+        if (rewarm) {
+            emit(p, LD(R_T3, 0, R_T1));  /* the line under test's word */
+        }
+    }
 }
 
 /* Named after what they do and where they publish the word afterwards. */
@@ -465,11 +491,7 @@ static void test_flushes(void)
  */
 static void emit_busy(Program *p)
 {
-    emit(p, DADDU(R_T4, R_T1, R_ZERO));
-    for (unsigned int i = 0; i < 16; i++) {
-        emit(p, DADDIU(R_T4, R_T4, 0x200));
-        emit(p, LD(R_T3, 0, R_T4));
-    }
+    emit_name_pages(p, 16, false);
     emit(p, LUI(R_T3, 0x0002));
     emit(p, DADDU(R_T0, R_T0, R_T3));
     emit(p, DADDIU(R_T1, R_T1, 0x4000));
@@ -615,8 +637,10 @@ static void test_uncached_accesses(void)
 /* Wait for the host's go-ahead, then load the line. */
 static void wait_then_load(Program *p)
 {
-    unsigned int wait = p->pc;
+    unsigned int wait;
 
+    emit(p, CACHE(0x17, 0, R_T0)); /* named, but its word not yet read */
+    wait = p->pc;
     emit(p, LD(R_T3, RESULT_GO, R_T2));
     emit_branch(p, 0x04, R_T3, R_ZERO, wait); /* beq t3, zero, wait */
     emit(p, LD(R_T3, 0, R_T0));
@@ -692,11 +716,7 @@ static bool flat_view_type_is(QTestState *s, uint64_t address,
  */
 static void evict(Program *p)
 {
-    emit(p, DADDU(R_T4, R_T1, R_ZERO));
-    for (unsigned int i = 0; i < 16; i++) {
-        emit(p, DADDIU(R_T4, R_T4, 0x200));
-        emit(p, LD(R_T3, 0, R_T4));
-    }
+    emit_name_pages(p, 16, false);
 }
 
 /*
@@ -1013,12 +1033,7 @@ static void test_page_is_watched(void)
  */
 static void keep_warm(Program *p)
 {
-    emit(p, DADDU(R_T4, R_T1, R_ZERO));
-    for (unsigned int i = 0; i < 20; i++) {
-        emit(p, DADDIU(R_T4, R_T4, 0x200));
-        emit(p, LD(R_T3, 0, R_T4));
-        emit(p, LD(R_T3, 0, R_T1));  /* the line under test's word */
-    }
+    emit_name_pages(p, 20, true);
     emit(p, LD(R_T3, 0, R_T0));
     emit_publish(p, 0x08);
 }
@@ -1038,6 +1053,70 @@ static void test_recently_read_page_stays_watched(void)
     }
     s = run_scenario(&sc, &prom);
     g_assert_cmphex(result(s, 0x08) & DIRECTORY_FIELDS, ==, POINTER(0));
+    finish(s, prom);
+}
+
+/*
+ * A directory walk names no line, so reading a word watches nothing: a
+ * load of a line on another page, whose word was read first, is not seen.
+ */
+static void walk_then_load(Program *p)
+{
+    emit(p, DADDIU(R_T4, R_T1, 0x400));   /* the word two pages on */
+    emit(p, DADDIU(R_T5, R_T0, 0x2000));  /* that line */
+    emit(p, LD(R_T3, 0, R_T4));
+    emit(p, LD(R_T3, 0, R_T5));
+    emit(p, SYNC);
+    emit(p, LD(R_T3, 0, R_T4));
+    emit(p, SD(R_T3, 0x08, R_T2));
+}
+
+static void test_unnamed_line_is_not_watched(void)
+{
+    const Scenario sc = {
+        .cpus = "2",
+        STEPS({ 0, emit_first }, { 0, walk_then_load }),
+    };
+    char *prom;
+    QTestState *s;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+    s = run_scenario(&sc, &prom);
+    g_assert_cmphex(result(s, 0x08) & DIRECTORY_FIELDS, ==, UNOWNED);
+    finish(s, prom);
+}
+
+/*
+ * Writing a named line's word through the backdoor sets it but does not
+ * watch the page: software checks a word by reading it.
+ */
+static void name_write_then_load(Program *p)
+{
+    emit(p, CACHE(0x17, 0, R_T0));
+    emit(p, SD(R_ZERO, 0, R_T1));
+    emit(p, LD(R_T3, 0, R_T0));
+    emit_publish(p, 0x08);
+}
+
+static void test_backdoor_write_does_not_watch(void)
+{
+    const Scenario sc = {
+        .cpus = "2",
+        STEPS({ 0, name_write_then_load }),
+    };
+    char *prom;
+    QTestState *s;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+    s = start_scenario(&sc, &prom);
+    wait_steps(s, sc.nr_steps);
+    g_assert_cmphex(result(s, 0x08) & DIRECTORY_FIELDS, ==, UNOWNED);
     finish(s, prom);
 }
 
@@ -1144,6 +1223,10 @@ int main(int argc, char **argv)
                    test_ignore_ecc_keeps_the_check_field);
     qtest_add_func("sn1/directory-state/recently-read-page-stays-watched",
                    test_recently_read_page_stays_watched);
+    qtest_add_func("sn1/directory-state/unnamed-line-is-not-watched",
+                   test_unnamed_line_is_not_watched);
+    qtest_add_func("sn1/directory-state/backdoor-write-does-not-watch",
+                   test_backdoor_write_does_not_watch);
     qtest_add_func("sn1/directory-state/page-is-watched",
                    test_page_is_watched);
     qtest_add_func("sn1/directory-state/owner-from-the-word",

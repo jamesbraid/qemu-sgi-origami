@@ -1202,6 +1202,20 @@ static MemTxResult sn1_node_system_request(void *opaque, hwaddr offset,
     if (request >= ARRAY_SIZE(md_request)) {
         return MEMTX_OK;
     }
+    /*
+     * A cache instruction names the line at its address, on that line's
+     * home node, so a later read of the line's word watches its page. A
+     * prefetch names nothing: copy loops issue them by the thousand.
+     */
+    if (request != R10K_REQUEST_PREFETCH_LOAD &&
+        request != R10K_REQUEST_PREFETCH_STORE) {
+        SN1NodeState *home = sn1_node_claimant(node, paddr >> 33);
+
+        if (home) {
+            sgi_bedrock_md_name_line(&SGI_BEDROCK(home->bedrock)->md,
+                                     address);
+        }
+    }
     if (request == R10K_REQUEST_INDEX_WRITEBACK_INVALIDATE) {
         target[0] = node;
         target[1] = sn1_node_peer(node);
