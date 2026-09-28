@@ -31,7 +31,7 @@ REPLY_TIMEOUT_SECONDS = 30
 
 
 def run_peer_arp_request_gets_guest_reply(test, adapter, device_model,
-                                         configured_mac):
+                                         configured_mac, guest_ifname=None):
     """Check one adapter's reply to a raw peer ARP request."""
     prom = test.ASSET_FIRMWARE.fetch()
     disk = test.ASSET_DISK.fetch()
@@ -55,11 +55,16 @@ def run_peer_arp_request_gets_guest_reply(test, adapter, device_model,
             "-serial", "none", "-serial", "chardev:elsc",
             "-drive", f"if=none,id=disk0,file={disk},format=qcow2",
             "-device", "scsi-hd,bus=scsi.0,scsi-id=1,lun=0,drive=disk0",
-            "-snapshot", "-nic", "none",
-            "-netdev", f"socket,id=netdev,fd={qemu_socket.fileno()}",
-            "-device", (f"{device_model},netdev=netdev,addr=4,mac="
-                       f"{configured_mac.hex(':')}")
-        )
+            "-snapshot")
+        if device_model is None:
+            vm.add_args("-nic", f"socket,fd={qemu_socket.fileno()},mac="
+                        f"{configured_mac.hex(':')}")
+        else:
+            vm.add_args(
+                "-nic", "none",
+                "-netdev", f"socket,id=netdev,fd={qemu_socket.fileno()}",
+                "-device", (f"{device_model},netdev=netdev,addr=4,mac="
+                            f"{configured_mac.hex(':')}"))
         vm.launch()
         qemu_socket.close()
         con = IrixConsole(vm.console_socket,
@@ -68,7 +73,7 @@ def run_peer_arp_request_gets_guest_reply(test, adapter, device_model,
         drive_irix_to_shell(con, 1200)
         if adapter == "eg":
             test.assertEqual(con.run("egconfig -f 1 eg0", "egconfig", 180), 0)
-        ifname = "eg0" if adapter == "eg" else "tg1"
+        ifname = guest_ifname or ("eg0" if adapter == "eg" else "tg1")
         test.assertEqual(con.run(
             f"ifconfig {ifname} inet {GUEST_IP} "
             "netmask 0xffffff00 up", "ifup", 60), 0)
@@ -107,7 +112,7 @@ def run_peer_arp_request_gets_guest_reply(test, adapter, device_model,
         test.assertEqual(reply["ethernet_src"], reply["sender_mac"])
         test.assertNotEqual(reply["sender_mac"], bytes(6))
         test.assertEqual(reply["sender_mac"][0] & 1, 0)
-        if adapter == "eg":
+        if adapter == "eg" or guest_ifname:
             test.assertEqual(reply["ethernet_src"], configured_mac)
             test.assertEqual(reply["sender_mac"], configured_mac)
     finally:
