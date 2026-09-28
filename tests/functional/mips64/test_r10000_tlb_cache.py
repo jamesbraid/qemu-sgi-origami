@@ -168,6 +168,7 @@ def reset_rom():
     code += [insn_i(0x23, 12, 8, 72)]
     branch = len(code)
     code += [0, 0]
+    code += constant(8, 0x12345000) + mtc0(8, 18)
     code += constant(8, FIRST)
     code += [insn_i(0x2b, 9, 8, 0), insn_i(0x2b, 9, 8, 128)]
     code += constant(8, SECOND) + [insn_i(0x2b, 10, 8, 0)]
@@ -190,6 +191,7 @@ def reset_rom():
         code += [insn_i(0x2f, 10, 0x17, offset), 0, 0, 0, 0,
                  insn_i(0x23, 9, 8, offset), insn_i(0x2b, 12, 8, output)]
     code += [insn_i(0x2b, 12, 16, 36)]
+    code += mfc0(8, 18) + [insn_i(0x2b, 12, 8, 40)]
     code += constant(8, DONE)
     code += [insn_i(0x2b, 12, 8, 32), insn_i(0x04, 0, 0, -1), 0]
     image = bytearray(0x400 + len(code) * 4)
@@ -433,6 +435,7 @@ class R10000TLBCache(QemuSystemTest):
         words = self.read_reset_result()
         self.assertEqual(words[4:6], [FIRST, FIRST])
         self.assertEqual(bool(words[9] & (1 << 20)), soft)
+        self.assertEqual(words[10], 0x12345000 if soft else 0)
         if soft:
             self.assertEqual((words[0] >> 6) & 3, 3)
             self.assertEqual((words[2] >> 10) & 3, 3)

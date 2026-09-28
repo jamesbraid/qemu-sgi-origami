@@ -1416,7 +1416,10 @@ void mips_cpu_do_interrupt(CPUState *cs)
              */
             env->CP0_Status &= ~((1 << CP0St_NMI) | (1 << CP0St_TS));
         }
-        memset(env->CP0_WatchLo, 0, sizeof(env->CP0_WatchLo));
+        /* R10000 soft reset preserves CP0, including disabled watchpoints. */
+        if (strcmp(env->cpu_model->name, "R10000")) {
+            memset(env->CP0_WatchLo, 0, sizeof(env->CP0_WatchLo));
+        }
         goto set_error_EPC;
     case EXCP_NMI:
         env->CP0_Status |= (1 << CP0St_NMI);
