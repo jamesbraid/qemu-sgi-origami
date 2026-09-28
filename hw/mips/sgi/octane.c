@@ -302,8 +302,16 @@ static void octane_init_common(MachineState *machine, bool octane2)
         qdev_realize(dev, NULL, &error_fatal);
         cpu = MIPS_CPU(dev);
     } else {
-        cpu = mips_cpu_create_with_clock(machine->cpu_type, cpuclk,
-                                         TARGET_BIG_ENDIAN);
+        DeviceState *dev = qdev_new(machine->cpu_type);
+
+        qdev_connect_clock_in(dev, "clk-in", cpuclk);
+        object_property_set_bool(OBJECT(dev), "big-endian", TARGET_BIG_ENDIAN,
+                                 &error_fatal);
+        /* Infer revision 2.7 identity from the reviewed public inventory. */
+        object_property_set_uint(OBJECT(dev), "r10000-prid", 0x927,
+                                 &error_fatal);
+        qdev_realize(dev, NULL, &error_fatal);
+        cpu = MIPS_CPU(dev);
     }
     cpu_mips_irq_init_cpu(cpu);
     cpu_mips_clock_init(cpu);

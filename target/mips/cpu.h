@@ -1513,6 +1513,7 @@ struct ArchCPU {
 
     /* Properties */
     bool is_big_endian;
+    uint32_t r10000_prid;
     uint32_t r12000_values[5];
     bool r12000_set[5];
     uint32_t r12000_migration_profile[5];
