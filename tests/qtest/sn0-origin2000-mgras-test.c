@@ -12252,6 +12252,81 @@ static void test_hq_query_answers_the_stack_depths(void)
     g_assert_cmphex(gl_query(qts, GL_Q_MODELVIEW_DEPTH, 0), ==, 0x945);
 }
 
+/*
+ * The raster-state queries (notes-return-mode-queries.md): 0x2ca holds
+ * the depth function in bits 2:0, read as GL_NEVER + (answer & 7), and
+ * the write mask, true when bits 27:4 are all set; 0x288 holds dither in
+ * bit 0, stencil and alpha test in bits 4 and 6 and the logic op in bits
+ * 29:26, read as GL_CLEAR + op. glEnable and glDisable of GL_DITHER send
+ * 0x6704 with 3 and 0; glDepthFunc 0x4304 the function less GL_NEVER;
+ * glDepthMask 0x3c04 the flag. Stencil, alpha and logic op are not
+ * tracked and answer OpenGL's initial state; so do 0x286, 0x2c6, 0x2c8
+ * and 0x2cc, packed as the context setup's 0x7c08 block gives them.
+ */
+#define GL_DITHER_HDR         0x00006704
+#define GL_Q_FILL_ENABLES     0x286
+#define GL_Q_PIXEL_ENABLES    0x288
+#define GL_Q_STENCIL          0x2c6
+#define GL_Q_STENCIL_MASKS    0x2c8
+#define GL_Q_DEPTH            0x2ca
+#define GL_Q_ALPHA            0x2cc
+
+static void test_hq_query_answers_the_raster_state(void)
+{
+    uint32_t a;
+
+    mgras_reset();
+
+    gl_enter_slot(qts, GL_SLOT_A);
+    gl_word(qts, GL_CONTEXT_OPENER);
+    a = gl_query(qts, GL_Q_DEPTH, 1);
+    g_assert_cmphex((a & 7) + 0x200, ==, 0x201);
+    g_assert_cmphex(a & 0x0ffffff0, ==, 0x0ffffff0);
+    a = gl_query(qts, GL_Q_PIXEL_ENABLES, 1);
+    g_assert_cmphex(a & 1, ==, 1);
+    g_assert_cmphex(a & 0x50, ==, 0);
+    g_assert_cmphex(((a >> 26) & 0xf) + 0x1500, ==, 0x1503);
+    g_assert_cmphex(gl_query(qts, GL_Q_FILL_ENABLES, 1) & 0x20021, ==, 0);
+    g_assert_cmphex((gl_query(qts, GL_Q_STENCIL, 1) & 7) + 0x200, ==, 0x207);
+    g_assert_cmphex(gl_query(qts, GL_Q_STENCIL_MASKS, 1) & 0xffff, ==,
+                    0xffff);
+    g_assert_cmphex((gl_query(qts, GL_Q_ALPHA, 1) & 7) + 0x200, ==, 0x207);
+
+    gl_one(qts, GL_DITHER_HDR, 0);
+    gl_one(qts, GL_DEPTH_FUNC_HDR, 3);
+    gl_one(qts, GL_DEPTH_MASK_HDR, 0);
+    a = gl_query(qts, GL_Q_DEPTH, 1);
+    g_assert_cmphex((a & 7) + 0x200, ==, 0x203);
+    g_assert_cmphex(a & 0x0ffffff0, ==, 0);
+    a = gl_query(qts, GL_Q_PIXEL_ENABLES, 1);
+    g_assert_cmphex(a & 1, ==, 0);
+    g_assert_cmphex(((a >> 26) & 0xf) + 0x1500, ==, 0x1503);
+    gl_one(qts, GL_DITHER_HDR, 3);
+    g_assert_cmphex(gl_query(qts, GL_Q_PIXEL_ENABLES, 1) & 1, ==, 1);
+}
+
+static void gl_dither_setup(QTestState *from)
+{
+    gl_enter_slot(from, GL_SLOT_A);
+    gl_word(from, GL_CONTEXT_OPENER);
+    gl_one(from, GL_DITHER_HDR, 0);
+    gl_enter_slot(from, GL_SLOT_B);
+    gl_word(from, GL_CONTEXT_OPENER);
+}
+
+static void gl_dither_check(QTestState *to)
+{
+    g_assert_cmphex(gl_query(to, GL_Q_PIXEL_ENABLES, 1) & 1, ==, 1);
+    gl_enter_slot(to, GL_SLOT_A);
+    g_assert_cmphex(gl_query(to, GL_Q_PIXEL_ENABLES, 1) & 1, ==, 0);
+}
+
+/* Each context's dither enable crosses a migration. */
+static void test_gl_dither_migration(void)
+{
+    gl_migrate(gl_dither_setup, gl_dither_check);
+}
+
 int main(int argc, char **argv)
 {
     int ret;
@@ -12578,6 +12653,8 @@ int main(int argc, char **argv)
                    test_hq_query_answers_the_depth_range);
     qtest_add_func("sn0/origin2000/mgras/hq-query-answers-the-stack-depths",
                    test_hq_query_answers_the_stack_depths);
+    qtest_add_func("sn0/origin2000/mgras/hq-query-answers-the-raster-state",
+                   test_hq_query_answers_the_raster_state);
     qtest_add_func("sn0/origin2000/mgras/gl-bitmap-draws-its-image",
                    test_gl_bitmap_draws_its_image);
     qtest_add_func("sn0/origin2000/mgras/gl-bitmap-unaligned-image",
@@ -12856,6 +12933,8 @@ int main(int argc, char **argv)
                    test_gl_colour_index_migration);
     qtest_add_func("sn0/origin2000/mgras/gl-depth-range-migration",
                    test_gl_depth_range_migration);
+    qtest_add_func("sn0/origin2000/mgras/gl-dither-migration",
+                   test_gl_dither_migration);
     qtest_add_func("sn0/origin2000/mgras/gl-subsections-follow-their-state",
                    test_gl_subsections_follow_their_state);
     qtest_add_func("sn0/origin2000/mgras/gl-longest-block-migration",
