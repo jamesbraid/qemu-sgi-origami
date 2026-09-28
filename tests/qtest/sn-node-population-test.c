@@ -276,7 +276,8 @@ static void test_default_is_the_most(const void *data)
  * Launch @args and require QEMU to refuse them with @message on stderr,
  * exiting rather than dying on a signal.
  */
-static void assert_refused(const char *args, const char *message)
+static void assert_refused_with(const char *args, bool with_bios,
+                                const char *message)
 {
     g_autoptr(GError) error = NULL;
     g_autofree uint8_t *blank = g_malloc0(0x100000);
@@ -289,16 +290,22 @@ static void assert_refused(const char *args, const char *message)
     int err_fd, fd;
     GPid pid;
 
-    /* A blank PROM: the machine refuses a launch with no firmware first. */
-    fd = g_file_open_tmp("sn-node-population-bios-XXXXXX.bin", &bios,
-                         &error);
-    g_assert_no_error(error);
-    close(fd);
-    g_assert_true(g_file_set_contents(bios, (const char *)blank, 0x100000,
-                                      &error));
-    g_assert_no_error(error);
-    line = g_strdup_printf("%s %s -bios %s -display none -S",
-                           qtest_qemu_binary(NULL), args, bios);
+    /*
+     * A blank PROM: the machine refuses a launch with no firmware first.
+     * A launch naming pflash drives takes no -bios, which they replace.
+     */
+    if (with_bios) {
+        fd = g_file_open_tmp("sn-node-population-bios-XXXXXX.bin", &bios,
+                             &error);
+        g_assert_no_error(error);
+        close(fd);
+        g_assert_true(g_file_set_contents(bios, (const char *)blank,
+                                          0x100000, &error));
+        g_assert_no_error(error);
+    }
+    line = g_strdup_printf("%s %s%s%s -display none -S",
+                           qtest_qemu_binary(NULL), args,
+                           with_bios ? " -bios " : "", with_bios ? bios : "");
     g_assert_true(g_shell_parse_argv(line, NULL, &argv, &error));
     g_assert_true(g_spawn_async_with_pipes(NULL, argv, NULL,
                                            G_SPAWN_DO_NOT_REAP_CHILD |
@@ -332,7 +339,9 @@ static void assert_refused(const char *args, const char *message)
     g_assert_cmpint(waitpid(pid, &wait_status, 0), ==, pid);
     g_assert_false(WIFSIGNALED(wait_status));
     g_assert_false(g_spawn_check_exit_status(wait_status, NULL));
-    g_assert_cmpint(unlink(bios), ==, 0);
+    if (with_bios) {
+        g_assert_cmpint(unlink(bios), ==, 0);
+    }
     if (!strstr(output->str, message)) {
         g_test_message("expected \"%s\", got: %s", message, output->str);
         g_assert_not_reached();
@@ -341,16 +350,23 @@ static void assert_refused(const char *args, const char *message)
 
 /*
  * An absent node board has no boot flash: a two-node machine takes a
- * pflash drive for each of its two node boards and asks for no more.
+ * pflash drive for each of its two node boards, and a third drive, which
+ * node board 3 would take, is one nothing claims.
  */
+static void assert_refused(const char *args, const char *message)
+{
+    assert_refused_with(args, true, message);
+}
+
 static void test_absent_nodes_take_no_flash(const void *data)
 {
     g_autoptr(GError) error = NULL;
     g_autofree uint8_t *blank = g_malloc0(0x100000);
-    g_autofree char *paths[2] = { NULL, NULL };
+    g_autofree char *paths[3] = { NULL, NULL, NULL };
+    g_autofree char *three = NULL;
     QTestState *qts;
 
-    for (int i = 0; i < 2; i++) {
+    for (int i = 0; i < 3; i++) {
         int fd = g_file_open_tmp("sn-node-population-flash-XXXXXX.bin",
                                  &paths[i], &error);
 
@@ -367,7 +383,15 @@ static void test_absent_nodes_take_no_flash(const void *data)
     g_assert_true(machine_has_child(qts, "/machine", "node1"));
     g_assert_false(machine_has_child(qts, "/machine", "node2"));
     qtest_quit(qts);
-    for (int i = 0; i < 2; i++) {
+
+    three = g_strdup_printf("-M origin2000,nodes=2 -smp 4 -m 128M "
+                            "-drive if=pflash,index=0,file=%s,format=raw "
+                            "-drive if=pflash,index=1,file=%s,format=raw "
+                            "-drive if=pflash,index=2,file=%s,format=raw",
+                            paths[0], paths[1], paths[2]);
+    assert_refused_with(three, false, "machine type does not support "
+                        "if=pflash,bus=0,unit=2");
+    for (int i = 0; i < 3; i++) {
         g_assert_cmpint(unlink(paths[i]), ==, 0);
     }
 }
