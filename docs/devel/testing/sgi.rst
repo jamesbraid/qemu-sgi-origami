@@ -132,8 +132,39 @@ SPD files. The installed-guest tests pin their disk inputs:
      - The IP27 PROM and ``boot/mdk/memory.mdk``
    * - ``func-mips64-prom_mdk_router``
      - The IP27 PROM and ``boot/mdk/MDK_router_sso``
+   * - ``func-mips64-linux_kernel``
+     - The IP27 PROM and ``linux-ip27/vmlinux`` (SHA-256
+       ``d095c9033e2f8aeca0a75adbbdc1d0acdf764230999b63eb6261574d65c77bd4``)
+   * - ``func-mips64-linux_multiuser``
+     - The IP27 PROM, ``linux-ip27-net/vmlinux`` (SHA-256
+       ``5309e8e14c48bfb52267588b632470d3a89ad6e34e2f18999cf540799d96f265``),
+       and ``gentoo/gentoo-rootfs.img`` (SHA-256
+       ``0eb821e70cd698b83d833a5d937e31aef070eb5e5604294c4e3c693a133fc5ac``)
+   * - ``func-mips64-xframe_pci`` and ``func-mips64-openbsd_net_transfer``
+     - The IP27 PROM, ``openbsd/6.9/bsd.IP27`` (SHA-256
+       ``5c132640eb510cbc0e63bbcca1169f587a168610837687b0d1d02950a349a7a1``),
+       and ``openbsd/spike/root.img`` (SHA-256
+       ``55c53b0268e55682d38485d902e47e9fbeb9e9ef77caf1625d5522dac33c70fd``)
+   * - ``func-mips64-openbsd_install``
+     - The IP27 PROM and ``openbsd/6.9/bsd.rd.IP27`` (SHA-256
+       ``4d02fc15e5c02c2f351a6e825f617c2dfae1a8dbfb51d283090e1bebc2b31d15``).
+       The generated sets disk contains ``bsd.IP27`` (SHA-256
+       ``5c132640eb510cbc0e63bbcca1169f587a168610837687b0d1d02950a349a7a1``),
+       ``base69.tgz`` (SHA-256
+       ``b71e368f9f820a3c6ca5df53fc2ba617e9f535b23504f01448fb0e2100aa9530``),
+       ``comp69.tgz`` (SHA-256
+       ``f65af2b2351873f9966f75a3f36b9dd3446489be0b05af060a6d5e9f97535d0b``),
+       ``SHA256`` (SHA-256
+       ``7ad56623376fff7f869b0b1f08920562e477efb71ada3e7a2da54e96064d5106``),
+       and ``SHA256.sig`` (SHA-256
+       ``9b67eac0663a17e73714b896b5d504f26bc022b43607591ee5c7014a680b7494``)
 
-Both installed-guest cases use QEMU's ``skipSlowTest`` and
+The OpenBSD tests use checksummed supplied fixtures. Public download locations
+and preparation provenance have not been established for these exact inputs.
+The full installer remains an optional slow/large test and prepares scratch
+disks with the host tools ``makefs`` and ``qemu-img``.
+
+Both IRIX installed-guest cases use QEMU's ``skipSlowTest`` and
 ``skipBigDataTest`` decorators. Run them with ``QEMU_TEST_ALLOW_SLOW=1`` and
 ``QEMU_TEST_ALLOW_LARGE_STORAGE=1`` as well as the asset root. These checks
 boot existing installations; they do not install IRIX.
