@@ -20,6 +20,7 @@
 #include "qemu/bitops.h"
 #include "qemu/main-loop.h"
 #include "qemu/plugin.h"
+#include "qemu/timer.h"
 
 #include "cpu.h"
 #include "internal.h"
@@ -1313,6 +1314,11 @@ void mips_cpu_do_interrupt(CPUState *cs)
     if (cs->exception_index == EXCP_EXT_INTERRUPT &&
         (env->hflags & MIPS_HFLAG_DM)) {
         cs->exception_index = EXCP_DINT;
+    }
+    if (cs->exception_index == EXCP_EXT_INTERRUPT) {
+        trace_mips_ext_interrupt_entry(
+            qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL), cs->cpu_index, last_pc,
+            env->CP0_Status, env->CP0_Cause);
     }
     /*
      * Entering an exception raises EXL or ERL, which can stop a live

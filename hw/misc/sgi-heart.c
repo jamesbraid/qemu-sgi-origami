@@ -18,6 +18,7 @@
 #include "qemu/module.h"
 #include "qemu/timer.h"
 #include "system/address-spaces.h"
+#include "trace.h"
 
 #define HEART_REG_SIZE 0x60008
 #define HEART_RAM_BASE 0x20000000ULL
@@ -76,6 +77,11 @@ static void heart_update_irq(SGIHeartState *s)
 {
     uint64_t enabled = s->pending & s->mask[0];
 
+    trace_sgi_heart_irq(qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL), s->pending,
+                        s->mask[0], enabled,
+                        !!(enabled & HEART_LEVEL0_MASK),
+                        !!(enabled & HEART_LEVEL1_MASK),
+                        !!(enabled & HEART_LEVEL2_MASK));
     qemu_set_irq(s->processor[0], !!(enabled & HEART_LEVEL0_MASK));
     qemu_set_irq(s->processor[1], !!(enabled & HEART_LEVEL1_MASK));
     qemu_set_irq(s->processor[2], !!(enabled & HEART_LEVEL2_MASK));
@@ -222,6 +228,7 @@ static MemTxResult heart_packet_write(void *opaque, hwaddr offset,
     SGIHeartState *s = opaque;
     unsigned vector = value & 0xff;
     uint8_t bytes[8];
+    uint64_t old_pending;
 
     if (offset >= HEART_RAM_BASE && heart_dma_mapped(s, offset, size)) {
         stn_be_p(bytes, size, value);
@@ -234,11 +241,14 @@ static MemTxResult heart_packet_write(void *opaque, hwaddr offset,
                       size, offset, value);
         return MEMTX_ERROR;
     }
+    old_pending = s->pending;
     if (value & 0x100) {
         s->pending |= 1ULL << vector;
     } else {
         s->pending &= ~(1ULL << vector);
     }
+    trace_sgi_heart_packet(qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL), value,
+                           old_pending, s->pending, s->mask[0]);
     heart_update_irq(s);
     return MEMTX_OK;
 }
@@ -460,16 +470,27 @@ static void heart_write(void *opaque, hwaddr offset, uint64_t value,
             return;
         case 0x10000 ... 0x10018:
             if (!(offset & 7)) {
+                uint64_t old = s->mask[(offset - 0x10000) / 8];
+
                 s->mask[(offset - 0x10000) / 8] = value;
+                trace_sgi_heart_mask_write(
+                    qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL),
+                    (offset - 0x10000) / 8, old, value, s->pending);
                 heart_update_irq(s);
                 return;
             }
             break;
         case 0x10020:
+            trace_sgi_heart_pending_write(qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL),
+                                          offset, value, s->pending,
+                                          s->pending | value, s->mask[0]);
             s->pending |= value;
             heart_update_irq(s);
             return;
         case 0x10028:
+            trace_sgi_heart_pending_write(qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL),
+                                          offset, value, s->pending,
+                                          s->pending & ~value, s->mask[0]);
             s->pending &= ~value;
             heart_update_irq(s);
             return;

@@ -14,6 +14,7 @@
 #include "qapi/error.h"
 #include "qemu/bitops.h"
 #include "qemu/log.h"
+#include "qemu/timer.h"
 #include "qemu/units.h"
 #include "hw/1wire/crc.h"
 #include "hw/1wire/ds2505.h"
@@ -1910,6 +1911,7 @@ static void sgi_bridge_send_interrupt(SGIBridgeState *s, int pin, bool set)
     unsigned int address = (host & INT_HOST_ADDRESS) >> INT_HOST_ADDR_SHIFT;
     SGIXioIntDest dest;
     hwaddr where;
+    MemTxResult result;
 
     if (!host) {
         /* An unprogrammed destination is an interrupt nobody routed. */
@@ -1926,7 +1928,17 @@ static void sgi_bridge_send_interrupt(SGIBridgeState *s, int pin, bool set)
     if (!sgi_xio_compose("sgi-bridge", dest.widget, dest.address, &where)) {
         return;
     }
-    sgi_xio_send_interrupt(&s->fabric_as, where, host & INT_HOST_FIELD, set);
+
+    trace_sgi_bridge_irq_route(qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL),
+                               pin, set, host, address,
+                               s->reg[SGI_BRIDGE_SLOT(BRIDGE_INT_DEST_UPPER)],
+                               s->reg[SGI_BRIDGE_SLOT(BRIDGE_INT_DEST_LOWER)],
+                               where);
+    result = sgi_xio_send_interrupt(&s->fabric_as, where,
+                                     host & INT_HOST_FIELD, set);
+    trace_sgi_bridge_irq_packet(qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL),
+                                where, (host & INT_HOST_FIELD) |
+                                (set ? SGI_XIO_INTERRUPT_SET : 0), result);
 }
 
 /* Chip errors go to the host-error bit at the widget destination pair. */
@@ -1962,6 +1974,12 @@ static void sgi_bridge_update_pin(SGIBridgeState *s, int pin)
     bool enabled = s->reg[SGI_BRIDGE_SLOT(BRIDGE_INT_ENABLE)] & (1u << pin);
 
     s->pin_level = deposit32(s->pin_level, pin, 1, level);
+    if (level != was) {
+        trace_sgi_bridge_irq_pin(qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL),
+                                 pin, was, level, enabled,
+                                 !!(s->reg[SGI_BRIDGE_SLOT(BRIDGE_INT_MODE)] &
+                                    (1u << pin)));
+    }
 
     /* The chip sends on a transition, not while a level is held. */
     if (level && !was && enabled) {

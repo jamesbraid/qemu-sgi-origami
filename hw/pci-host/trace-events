@@ -82,6 +82,9 @@ iosapic_reg_write(uint64_t reg_select, int size, uint64_t val) "reg_select 0x%"P
 iosapic_reg_read(uint64_t reg_select, int size, uint64_t val) "reg_select 0x%"PRIx64" size %d val 0x%"PRIx64
 
 # sgi-bridge.c
+sgi_bridge_irq_pin(int64_t vtime, int pin, bool was, bool level, bool enabled, bool mode) "vtime %" PRId64 " pin %d %d->%d enabled %d mode %d"
+sgi_bridge_irq_route(int64_t vtime, int pin, bool set, uint32_t host, unsigned address, uint32_t dest_hi, uint32_t dest_lo, uint64_t where) "vtime %" PRId64 " pin %d set %d host 0x%08x host_address %u dest_hi 0x%08x dest_lo 0x%08x fabric 0x%" PRIx64
+sgi_bridge_irq_packet(int64_t vtime, uint64_t where, uint64_t value, int result) "vtime %" PRId64 " fabric 0x%" PRIx64 " value 0x%" PRIx64 " result %d"
 sgi_bridge_config_read(uint64_t addr, unsigned size) "type-0 config read at 0x%04" PRIx64 " size %u"
 sgi_bridge_config_write(uint64_t addr, unsigned size, uint64_t val) "type-0 config write at 0x%04" PRIx64 " size %u value 0x%" PRIx64
 sgi_bridge_dma_xlate(uint64_t addr, unsigned slot, int flag) "DMA translate addr 0x%" PRIx64 " slot %u flag %d"
