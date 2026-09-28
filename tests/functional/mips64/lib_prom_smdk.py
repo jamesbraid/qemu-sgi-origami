@@ -117,10 +117,11 @@ DIAGS = {
     # The package's option file asks for passes 1 to 50000000 and never
     # finishes; one pass reaches Passed in about two minutes.
     'System_Level_Test': SmdkDiag(fetch='SLT_Cmd_Option_File', passes=1),
-    # The default sections without the USB (-d 5), whose HcFmNumber check
-    # contradicts OpenHCI 1.0a, and one pass (-e 1): without it io8bt
-    # loops pass after pass.
-    'io8bt': SmdkDiag(args=('-d', '5', '-e', '1'), prime_iocfg=True),
+    # The default sections, USB included, and one pass (-e 1): without it
+    # io8bt loops pass after pass. The default mask used to exclude USB
+    # (-d 5) for a HcFmNumber check that contradicted OpenHCI 1.0a; that is
+    # fixed on trunk (jamesb/qemu#915).
+    'io8bt': SmdkDiag(args=('-e', '1'), prime_iocfg=True),
     # The register and array-RAM sections, as the package's diaglist runs
     # it; the others need an Alteon Gigabit Ethernet card.
     'xbg': SmdkDiag(args=('-S', '0x3'), prime_iocfg=True),
