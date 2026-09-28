@@ -1103,10 +1103,10 @@ bool sgi_mgras_cmd_parser_valid(uint32_t cls, uint32_t reg,
         payload_count > SGI_MGRAS_CMD_TOKEN_PAYLOAD_WORDS) {
         return false;
     }
-    if (cls == SGI_MGRAS_CMD_TOKEN_DISCARD) {
-        return words_remaining <= SGI_MGRAS_CMD_TOKEN_MAX_BLOCK_WORDS;
-    }
     /* A block with an offset takes one word more than its length. */
+    if (cls == SGI_MGRAS_CMD_TOKEN_DISCARD) {
+        return words_remaining <= SGI_MGRAS_CMD_TOKEN_MAX_BLOCK_WORDS + 1;
+    }
     if (cls == SGI_MGRAS_CMD_TOKEN_GL_BLOCK) {
         return reg == MGRAS_GL_BITMAP_OP &&
                payload_count == MGRAS_GL_BITMAP_WORDS &&
