@@ -95,9 +95,28 @@
 #define HUB_IO_GFX_INIT_1       0x400148
 #define IO_GFX_INIT_MASK        0x1fffffU    /* bits 20:0 */
 
+/* Scratch: a 36-bit word of four sub-fields, firmware's private boot state. */
 /*
- * Scratch: a 36-bit word of four sub-fields, firmware's private boot state.
+ * Access protection, widget access, the inbound device error mask, the
+ * interrupt destination and the error-shutdown enables (the Hub I/O
+ * interface datasheet's register map). The model stores them and
+ * enforces none, as it does the processor interface's protection.
  */
+#define HUB_IO_LOCAL_ACCESS     0x400100
+#define HUB_IO_ACCESS_OVERRIDE  0x400108
+#define HUB_IO_OUTBOUND_ACCESS  0x400110
+#define HUB_IO_INBOUND_ACCESS   0x400118
+#define HUB_IO_DEVICE_ERR_MASK  0x400120
+#define HUB_IO_INT_DEST         0x400138
+#define HUB_IO_MISC_ENABLE      0x4001e8
+/* Widget 0 and widgets 8-15; bits 7:1 are reserved. */
+#define IO_WIDGET_ACCESS_MASK   0xff01ULL
+/* Bit 28 sent, bit 24 enable, 16:8 node, 6:0 interrupt number. */
+#define IO_INT_DEST_MASK        0x1101ff7fULL
+/* Bit 12 clears the precise-error latch; 8, 4 and 0 report a shutdown. */
+#define IO_MISC_PRECISE_CLEAR   BIT_ULL(12)
+#define IO_MISC_SHUTDOWN_MASK   0x111
+
 #define HUB_IO_SCRATCH_0        0x400150
 #define HUB_IO_SCRATCH_1        0x400158
 #define IO_SCRATCH_MASK         0x0000000f00f11fffULL
@@ -2788,6 +2807,43 @@ static uint64_t sgi_hub_read_zero(SGIHubState *s, hwaddr addr, unsigned arg)
     return 0;
 }
 
+/*
+ * The protection override takes the "SGIrules" password to unlock the
+ * protection registers. Nothing here enforces protection, so there is
+ * nothing to unlock and the write is accepted as is.
+ */
+static void sgi_hub_write_access_override(SGIHubState *s, hwaddr addr,
+                                          unsigned arg, uint64_t val,
+                                          unsigned size)
+{
+}
+
+/*
+ * The miscellaneous enable register reads zero here. Bit 12 is a
+ * write-only action that clears the precise-error latch, which this
+ * model does not have (hub-io-interface datasheet). Bits 0, 4 and 8 say
+ * that widget 0, BTE 0 or BTE 1 shut down after an error (Linux
+ * hubio.h); IRIX reads and tests them in its I/O error handlers and
+ * writes ones back after handling a BTE error. Nothing here ever shuts
+ * down, so they read clear and a write has nothing to clear.
+ */
+static void sgi_hub_write_misc_enable(SGIHubState *s, hwaddr addr,
+                                      unsigned arg, uint64_t val,
+                                      unsigned size)
+{
+    if (val & IO_MISC_PRECISE_CLEAR) {
+        qemu_log_mask(LOG_UNIMP, "sgi-hub: precise-error latch clear at "
+                      "0x%" HWADDR_PRIx " (no such latch is modelled)\n",
+                      addr);
+    }
+    if (val & IO_MISC_SHUTDOWN_MASK) {
+        qemu_log_mask(LOG_UNIMP, "sgi-hub: shutdown-on-error bits 0x%"
+                      PRIx64 " written at 0x%" HWADDR_PRIx " (no unit "
+                      "here shuts down)\n",
+                      val & IO_MISC_SHUTDOWN_MASK, addr);
+    }
+}
+
 static void sgi_hub_write_err_pending(SGIHubState *s, hwaddr addr,
                                       unsigned arg, uint64_t val,
                                       unsigned size)
@@ -3404,11 +3460,29 @@ static const SGIHubRegDef sgi_hub_registers[] = {
     { .offset = HUB_IO_WIDGET_CONTROL,
       .field = offsetof(SGIHubState, io_widget_control), .width = 8,
       .flags = HUB_REG_DIAG, .store = sgi_hub_store_widget_control },
+    { .offset = HUB_IO_LOCAL_ACCESS,
+      .field = offsetof(SGIHubState, io_local_access), .width = 8,
+      .flags = HUB_REG_STORE | HUB_REG_DIAG, .wmask = ~0ULL },
+    /* The protection password is a write with no stored value. */
+    { .offset = HUB_IO_ACCESS_OVERRIDE, .read = sgi_hub_read_zero,
+      .write = sgi_hub_write_access_override },
+    { .offset = HUB_IO_OUTBOUND_ACCESS,
+      .field = offsetof(SGIHubState, io_outbound_access), .width = 8,
+      .flags = HUB_REG_STORE | HUB_REG_DIAG, .wmask = IO_WIDGET_ACCESS_MASK },
+    { .offset = HUB_IO_INBOUND_ACCESS,
+      .field = offsetof(SGIHubState, io_inbound_access), .width = 8,
+      .flags = HUB_REG_STORE | HUB_REG_DIAG, .wmask = IO_WIDGET_ACCESS_MASK },
+    { .offset = HUB_IO_DEVICE_ERR_MASK,
+      .field = offsetof(SGIHubState, io_device_error_mask), .width = 8,
+      .flags = HUB_REG_STORE | HUB_REG_DIAG, .wmask = ~0ULL },
     { .offset = HUB_IO_LINK_STATUS,
       .field = offsetof(SGIHubState, io_link_status), .width = 8,
       .flags = HUB_REG_DIAG, .store = sgi_hub_store_link_status },
     { .offset = HUB_IO_LLP_LOG,
       .read = sgi_hub_read_llp_log, .write = sgi_hub_write_llp_log },
+    { .offset = HUB_IO_INT_DEST,
+      .field = offsetof(SGIHubState, io_int_dest), .width = 8,
+      .flags = HUB_REG_STORE | HUB_REG_DIAG, .wmask = IO_INT_DEST_MASK },
     { .offset = HUB_IO_GFX_INIT_0, .arg = 0,
       .field = offsetof(SGIHubState, io_gfx_init[0]), .width = 4,
       .flags = HUB_REG_STORE | HUB_REG_DIAG, .wmask = IO_GFX_INIT_MASK },
@@ -3423,6 +3497,8 @@ static const SGIHubRegDef sgi_hub_registers[] = {
       .field = offsetof(SGIHubState, io_scratch[1]), .width = 8,
       .flags = HUB_REG_STORE | HUB_REG_DIAG | HUB_REG_TRACE_COORD,
       .wmask = IO_SCRATCH_MASK },
+    { .offset = HUB_IO_MISC_ENABLE, .read = sgi_hub_read_zero,
+      .write = sgi_hub_write_misc_enable },
     { .offset = HUB_IO_ERROR_CLEAR, .write = sgi_hub_write_error_clear },
     { .offset = HUB_IO_PIO_DEALLOC,
       .read = sgi_hub_read_ioq, .write = sgi_hub_write_ioq },
@@ -4063,6 +4139,12 @@ static void sgi_hub_reset_enter(Object *obj, ResetType type)
     s->io_scratch[0] = 0;
     s->io_scratch[1] = 0;
     memset(s->io_gfx_init, 0, sizeof(s->io_gfx_init));
+    /* Protection and the error mask open everything; widget access none. */
+    s->io_local_access = ~0ULL;
+    s->io_outbound_access = 0;
+    s->io_inbound_access = 0;
+    s->io_device_error_mask = ~0ULL;
+    s->io_int_dest = 0;
     s->pi_rt_alive_seen = false;
 
     /*
@@ -4964,7 +5046,7 @@ static int sgi_hub_pre_save(void *opaque)
 
 static const VMStateDescription vmstate_sgi_hub = {
     .name = "sgi-hub",
-    .version_id = 30,
+    .version_id = 31,
     .minimum_version_id = 1,
     .pre_save = sgi_hub_pre_save,
     .post_load = sgi_hub_post_load,
@@ -5059,6 +5141,11 @@ static const VMStateDescription vmstate_sgi_hub = {
         VMSTATE_UNUSED_V(23, 11),
         VMSTATE_BOOL_V(onewire_level, SGIHubState, 23),
         VMSTATE_UNUSED_V(23, 51),
+        VMSTATE_UINT64_V(io_local_access, SGIHubState, 31),
+        VMSTATE_UINT64_V(io_outbound_access, SGIHubState, 31),
+        VMSTATE_UINT64_V(io_inbound_access, SGIHubState, 31),
+        VMSTATE_UINT64_V(io_device_error_mask, SGIHubState, 31),
+        VMSTATE_UINT64_V(io_int_dest, SGIHubState, 31),
         VMSTATE_END_OF_LIST()
     }
 };
