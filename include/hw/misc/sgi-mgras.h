@@ -8,6 +8,7 @@
 #include "system/memory.h"
 #include "qom/object.h"
 #include "qemu/units.h"
+#include "hw/display/sgi/board-memory.h"
 
 #define TYPE_SGI_MGRAS "sgi-mgras"
 OBJECT_DECLARE_TYPE(SGIMgrasState, SGIMgrasClass, SGI_MGRAS)
@@ -448,6 +449,15 @@ struct SGIMgrasState {
     uint32_t *back;
     uint32_t front_count;
     uint32_t back_count;
+    /*
+     * The same two banks as board memory: front and back point into its
+     * bytes, and bank_plane[] names each bank's plane, so the shared DMA
+     * code can bound a transfer by the bank it targets. Realize-time
+     * configuration, not migrated: the pixels migrate through front and
+     * back.
+     */
+    SGIBoardMemory mem;
+    uint32_t bank_plane[2];
     /* 24-bit depth plane, one value per pixel of the screen. */
     uint32_t *depth;
     uint32_t depth_count;
