@@ -2371,6 +2371,50 @@ static void test_dma_image_transfer_draws_ci8_indices(void)
                     MGRAS_PIXEL_FORMAT_CI8);
 }
 
+/*
+ * A DMA draw names bank 0's plane, and the shared code bounds it by that
+ * plane: the plane is the whole 1280x1024 screen, so a CI8 row the
+ * screen's full width and an RGB pair ending at the bottom-right pixel
+ * both land. They land in bank 0 only: with the XMAP main buffer-select
+ * mask showing bank 1 for display ID 0, the RGB pair's pixels show the
+ * empty bank.
+ */
+static void test_dma_image_transfer_lands_in_bank_zero(void)
+{
+    static const uint8_t rgb[8] = {
+        0x00, 0x11, 0x22, 0x33, 0x00, 0x44, 0x55, 0x66,
+    };
+    uint8_t row[1280];
+    uint32_t shown;
+
+    for (uint32_t x = 0; x < sizeof(row); x++) {
+        row[x] = x * 7 + 1;
+    }
+
+    mgras_reset();
+    mgras_enter_context(qts);
+    /* Display on, so the display pixel resolves a bank. */
+    qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x1e, 0x4));
+    dma_rules_draw(0, 1022, sizeof(row), row, sizeof(row),
+                   MGRAS_LOGIC_OP_COPY, 0x00ffffff);
+    g_assert_cmphex(mgras_test_pixel(qts, 0, 1022), ==, row[0]);
+    g_assert_cmphex(mgras_test_pixel(qts, 640, 1022), ==, row[640]);
+    g_assert_cmphex(mgras_test_pixel(qts, 1279, 1022), ==, row[1279]);
+
+    dma_rules_draw(1278, 1023, 2, rgb, sizeof(rgb), MGRAS_LOGIC_OP_COPY,
+                   0x00ffffff);
+    g_assert_cmphex(mgras_test_pixel(qts, 1278, 1023), ==, 0x00332211);
+    g_assert_cmphex(mgras_test_pixel(qts, 1279, 1023), ==, 0x00665544);
+
+    shown = mgras_test_display_pixel(qts, 1279, 1023);
+    g_assert_cmphex(shown, !=, 0);
+    qtest_writeb(qts, REG_XMAP_INDEX, 0);
+    qtest_writel(qts, REG_XMAP_BUF_SELECT, 1u << 0);
+    g_assert_cmphex(mgras_test_display_pixel(qts, 1279, 1023), ==, 0);
+    qtest_writel(qts, REG_XMAP_BUF_SELECT, 0);
+    g_assert_cmphex(mgras_test_display_pixel(qts, 1279, 1023), ==, shown);
+}
+
 #undef DMA_RULES_WIDGET
 #undef DMA_RULES_LIST_PAGE
 #undef DMA_RULES_LIST_BASE
@@ -10694,6 +10738,9 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/origin2000/mgras/"
                    "dma-image-transfer-draws-ci8-indices",
                    test_dma_image_transfer_draws_ci8_indices);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "dma-image-transfer-lands-in-bank-zero",
+                   test_dma_image_transfer_lands_in_bank_zero);
     qtest_add_func("sn0/origin2000/mgras/"
                    "dma-image-transfer-reads-screen-to-host",
                    test_dma_image_transfer_reads_screen_to_host);
