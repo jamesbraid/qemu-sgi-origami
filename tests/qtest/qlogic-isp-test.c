@@ -162,6 +162,7 @@
 #define ISP_STATUS_OFF_COMPLETION   10
 #define ISP_STATUS_OFF_STATE_FLAGS  12
 #define ISP_STATUS_OFF_SENSE_LEN    18
+#define ISP_STATUS_OFF_RESIDUAL     20
 #define ISP_STATUS_OFF_SENSE_DATA   32
 
 #define ISP_IOCB_COMPLETE    0x0000
@@ -2231,6 +2232,148 @@ static void test_inquiry_data_transfer(void *obj, void *data,
     qpci_iounmap(dev, io);
 }
 
+typedef struct IspWriteTest {
+    char *path;
+    bool a64;
+} IspWriteTest;
+
+static void isp_write_test_destroy(void *opaque)
+{
+    IspWriteTest *test = opaque;
+
+    unlink(test->path);
+    g_free(test->path);
+    g_free(test);
+}
+
+static void *isp_write_test_setup(GString *cmd_line, void *arg)
+{
+    IspWriteTest *test = g_new0(IspWriteTest, 1);
+    int fd = g_file_open_tmp("qtest-isp-write.XXXXXX", &test->path, NULL);
+
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(ftruncate(fd, 1024 * 1024), ==, 0);
+    close(fd);
+    test->a64 = GPOINTER_TO_INT(arg);
+    g_string_append_printf(cmd_line,
+                           " -drive id=write0,if=none,file=%s,format=raw"
+                           " -device scsi-hd,bus=scsi0.0,scsi-id=1,drive=write0",
+                           test->path);
+    g_test_queue_destroy(isp_write_test_destroy, test);
+    return test;
+}
+
+/* Read the backend directly so a symmetric DMA error cannot hide lost pages. */
+static void test_write_four_pages(void *obj, void *data, QGuestAllocator *alloc)
+{
+    QQlogicIsp *isp = obj;
+    IspWriteTest *test = data;
+    QPCIDevice *dev = &isp->dev;
+    QTestState *qts = dev->bus->qts;
+    QPCIBar io;
+    uint64_t rqst_addr, resp_addr, piece[4];
+    uint8_t entry[ISP_QUEUE_ENTRY_SIZE] = { 0 };
+    uint8_t cont[ISP_QUEUE_ENTRY_SIZE] = { 0 };
+    uint8_t status[ISP_QUEUE_ENTRY_SIZE];
+    uint8_t expected[4 * 4096], seen[sizeof(expected)];
+    const uint32_t handle = 0x16384004;
+    int fd;
+    unsigned int i, j;
+    int64_t deadline;
+
+    qpci_device_enable(dev);
+    io = qpci_iomap(dev, 0, NULL);
+    rqst_addr = guest_alloc(alloc, 4 * ISP_QUEUE_ENTRY_SIZE);
+    resp_addr = guest_alloc(alloc, 4 * ISP_QUEUE_ENTRY_SIZE);
+    for (i = 0; i < G_N_ELEMENTS(piece); i++) {
+        piece[i] = guest_alloc(alloc, 8192);
+        for (j = 0; j < 4096; j++) {
+            expected[i * 4096 + j] = 1 + i * 53 + j * 7 + (j >> 8);
+        }
+        qtest_memwrite(qts, piece[i], expected + i * 4096, 4096);
+    }
+    g_assert_cmphex(isp_init_queue(dev, io, ISP_MBOX_CMD_INIT_REQ_QUEUE,
+                                   4, rqst_addr), ==, ISP_MBOX_COMPLETE);
+    qlogic_isp_ack(dev, io);
+    g_assert_cmphex(isp_init_queue(dev, io, ISP_MBOX_CMD_INIT_RSP_QUEUE,
+                                   4, resp_addr), ==, ISP_MBOX_COMPLETE);
+    qlogic_isp_ack(dev, io);
+
+    /* Consume the new disk's power-on unit attention before WRITE(10). */
+    entry[0] = ISP_ENTRY_TYPE_REQUEST;
+    entry[1] = 1;
+    isp_put32(entry, ISP_REQ_OFF_HANDLE, 1);
+    isp_put16(entry, ISP_REQ_OFF_DEVICE, 1 << 8);
+    isp_put16(entry, ISP_REQ_OFF_CDBLEN, 6);
+    qtest_memwrite(qts, rqst_addr, entry, sizeof(entry));
+    qpci_io_writew(dev, io, ISP_REG_REQUEST_QUEUE, 1);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_RESPONSE_QUEUE), ==, 1);
+    qlogic_isp_ack(dev, io);
+
+    memset(entry, 0, sizeof(entry));
+    entry[0] = test->a64 ? ISP_ENTRY_TYPE_COMMAND_A64 : ISP_ENTRY_TYPE_REQUEST;
+    entry[1] = test->a64 ? 2 : 1;
+    isp_put32(entry, ISP_REQ_OFF_HANDLE, handle);
+    isp_put16(entry, ISP_REQ_OFF_DEVICE, 1 << 8);
+    isp_put16(entry, ISP_REQ_OFF_CDBLEN, 10);
+    isp_put16(entry, ISP_REQ_OFF_SEGCOUNT, G_N_ELEMENTS(piece));
+    entry[ISP_REQ_OFF_CDB] = WRITE_10;
+    /* FUA makes completion include the backend flush. */
+    entry[ISP_REQ_OFF_CDB + 1] = 8;
+    entry[ISP_REQ_OFF_CDB + 5] = 8; /* LBA 8, away from the image boundary. */
+    entry[ISP_REQ_OFF_CDB + 8] = sizeof(expected) / 512;
+    cont[0] = ISP_ENTRY_TYPE_CONTINUE_A64;
+    cont[1] = 1;
+    for (i = 0; i < G_N_ELEMENTS(piece); i++) {
+        if (test->a64) {
+            uint8_t *dst = i < 2 ? entry : cont;
+            unsigned int off = i < 2 ? ISP_A64_REQ_OFF_SEGS :
+                                       ISP_A64_CONT_OFF_SEGS;
+
+            off += (i % 2) * ISP_A64_SEG_SIZE;
+            isp_put32(dst, off, piece[i]);
+            isp_put32(dst, off + 4, piece[i] >> 32);
+            isp_put32(dst, off + 8, 4096);
+        } else {
+            isp_put32(entry, ISP_REQ_OFF_SEGS + i * ISP_SEG_SIZE, piece[i]);
+            isp_put32(entry, ISP_REQ_OFF_SEGS + i * ISP_SEG_SIZE + 4, 4096);
+        }
+    }
+    qtest_memwrite(qts, rqst_addr + ISP_QUEUE_ENTRY_SIZE, entry, sizeof(entry));
+    if (test->a64) {
+        qtest_memwrite(qts, rqst_addr + 2 * ISP_QUEUE_ENTRY_SIZE,
+                       cont, sizeof(cont));
+    }
+    qpci_io_writew(dev, io, ISP_REG_REQUEST_QUEUE, test->a64 ? 3 : 2);
+    deadline = g_get_monotonic_time() + 5 * G_TIME_SPAN_SECOND;
+    while (qpci_io_readw(dev, io, ISP_REG_RESPONSE_QUEUE) != 2) {
+        g_assert_cmpint(g_get_monotonic_time(), <, deadline);
+        g_usleep(1000);
+    }
+    qtest_memread(qts, resp_addr + ISP_QUEUE_ENTRY_SIZE, status,
+                  sizeof(status));
+    g_assert_cmphex(status[0], ==, ISP_ENTRY_TYPE_STATUS);
+    g_assert_cmphex(isp_get32(status, ISP_STATUS_OFF_HANDLE), ==, handle);
+    g_assert_cmphex(isp_get16(status, ISP_STATUS_OFF_SCSI_STATUS), ==, GOOD);
+    g_assert_cmphex(isp_get16(status, ISP_STATUS_OFF_COMPLETION), ==,
+                    ISP_IOCB_COMPLETE);
+    g_assert_cmphex(isp_get32(status, ISP_STATUS_OFF_RESIDUAL), ==, 0);
+    qlogic_isp_ack(dev, io);
+
+    fd = open(test->path, O_RDONLY);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(pread(fd, seen, sizeof(seen), 8 * 512), ==, sizeof(seen));
+    close(fd);
+    for (i = 0; i < G_N_ELEMENTS(piece); i++) {
+        g_test_message("checking backend page %u", i);
+        g_assert_cmpmem(seen + i * 4096, 4096, expected + i * 4096, 4096);
+        guest_free(alloc, piece[i]);
+    }
+    guest_free(alloc, rqst_addr);
+    guest_free(alloc, resp_addr);
+    qpci_iounmap(dev, io);
+}
+
 /*
  * Five segments for a 36-byte inquiry: four exactly filling the inline
  * area, one in a continuation, so the boundary itself is exercised. The
@@ -2891,6 +3034,12 @@ static void qlogic_isp_register_nodes(void)
         .after_cmd_line = "-device scsi-hd,bus=scsi0.0,drive=drv0",
     };
 
+    QOSGraphTestOptions write_opts = { .before = isp_write_test_setup };
+    QOSGraphTestOptions write_a64_opts = {
+        .before = isp_write_test_setup,
+        .arg = GINT_TO_POINTER(1),
+    };
+
     add_qpci_address(&opts, &(QPCIAddress) { .devfn = QPCI_DEVFN(4, 0) });
 
     qos_node_create_driver("qlogic-isp1040", qlogic_isp_create);
@@ -2966,6 +3115,10 @@ static void qlogic_isp_register_nodes(void)
                  test_second_bus_request_rejected, NULL);
     qos_add_test("inquiry-data-transfer", "qlogic-isp1040",
                  test_inquiry_data_transfer, NULL);
+    qos_add_test("write-four-pages", "qlogic-isp1040",
+                 test_write_four_pages, &write_opts);
+    qos_add_test("a64-write-four-pages", "qlogic-isp1040",
+                 test_write_four_pages, &write_a64_opts);
     qos_add_test("continuation-entry-segments", "qlogic-isp1040",
                  test_continuation_entry_segments, NULL);
     qos_add_test("a64-inquiry-data-transfer", "qlogic-isp1040",
