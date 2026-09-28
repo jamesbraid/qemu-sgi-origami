@@ -3258,6 +3258,32 @@ static void test_general_interrupt_vector(void)
 #define VC3_CONTROL_VINTR       0x1
 #define VC3_CONTROL_DISPLAY     0x4
 
+/*
+ * A retrace period as frame clocks of a clock, and when retrace k falls
+ * after the phase starts: exactly k frames, truncated to the nanosecond.
+ * The default is the IRIX 6.5.30 1280x1024 60 Hz table (1065 lines of 840
+ * VC3 clocks) at half its 107.25 MHz PLL output, about 59.943 Hz: the
+ * timing section of docs/datasheets/mgras-raster-display.md in the Origami
+ * repository.
+ */
+typedef struct MgrasFrameTime {
+    uint64_t clocks;
+    uint64_t hz;
+} MgrasFrameTime;
+
+static const MgrasFrameTime mgras_stock_frame = { 1065 * 840, 53625000 };
+
+static int64_t mgras_retrace_at(const MgrasFrameTime *t, uint64_t k)
+{
+    return k * t->clocks * NANOSECONDS_PER_SECOND / t->hz;
+}
+
+/* From retrace k - 1 to retrace k. */
+static int64_t mgras_retrace_gap(const MgrasFrameTime *t, uint64_t k)
+{
+    return mgras_retrace_at(t, k) - mgras_retrace_at(t, k - 1);
+}
+
 static uint64_t mgras_hub_read(uint64_t offset)
 {
     uint8_t bytes[8];
@@ -3296,7 +3322,7 @@ static void test_retrace_interrupt_vector(void)
                                VC3_CONTROL_DISPLAY | VC3_CONTROL_VINTR));
     g_assert_cmphex(mgras_hub_read(HUB_PI_INT_PEND0) & bit, ==, 0);
 
-    qtest_clock_step(qts, NANOSECONDS_PER_SECOND / 60);
+    qtest_clock_step(qts, mgras_retrace_gap(&mgras_stock_frame, 1));
     g_assert_cmphex(mgras_hub_read(HUB_PI_INT_PEND0) & bit, ==, bit);
     g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-last-interrupt-value"),
                      ==, retrace_vector | 0x100);
@@ -3304,7 +3330,7 @@ static void test_retrace_interrupt_vector(void)
     /* The kernel clears the Hub bit; the next retrace must set it again. */
     mgras_hub_write(HUB_PI_INT_MODIFY, retrace_vector);
     g_assert_cmphex(mgras_hub_read(HUB_PI_INT_PEND0) & bit, ==, 0);
-    qtest_clock_step(qts, NANOSECONDS_PER_SECOND / 60);
+    qtest_clock_step(qts, mgras_retrace_gap(&mgras_stock_frame, 2));
     g_assert_cmphex(mgras_hub_read(HUB_PI_INT_PEND0) & bit, ==, bit);
 
     /* Clearing the VC3 enable stops further retrace interrupts. */
@@ -3330,14 +3356,6 @@ static void test_retrace_interrupt_needs_vc3_enable(void)
     qtest_clock_step(qts, NANOSECONDS_PER_SECOND / 30);
     g_assert_cmphex(mgras_hub_read(HUB_PI_INT_PEND0) & bit, ==, 0);
 }
-
-/*
- * The model's retrace period: one sixtieth of a second truncated to whole
- * nanoseconds, the first retrace one period after reset. The rate is the
- * model's approximation, not the stock mode's; this pins it, and that the
- * phase does not drift, so a scanout change cannot move it unnoticed.
- */
-#define MGRAS_RETRACE_NS (NANOSECONDS_PER_SECOND / 60)
 
 static uint64_t mgras_hub_pending(QTestState *q)
 {
@@ -3388,18 +3406,136 @@ static void mgras_retrace_to_hub_on(QTestState *q, unsigned int vector)
                                VC3_CONTROL_DISPLAY | VC3_CONTROL_VINTR));
 }
 
+/* Retraces first .. last of t fall where t puts them, one at a time. */
+static void mgras_expect_retraces(QTestState *q, const MgrasFrameTime *t,
+                                  uint64_t first, uint64_t last,
+                                  unsigned int vector)
+{
+    for (uint64_t k = first; k <= last; k++) {
+        mgras_expect_retrace_in(q, mgras_retrace_gap(t, k), vector);
+    }
+}
+
+/*
+ * Before the guest loads a timing table the model runs the stock one, the
+ * first retrace one period after reset. A hundred frames on, the phase is
+ * still where the exact period puts it, so it does not drift by a rounded
+ * period per frame.
+ */
 static void test_retrace_period_and_phase(void)
+{
+    const unsigned int retrace_vector = 54;
+    const MgrasFrameTime *t = &mgras_stock_frame;
+
+    mgras_reset();
+    mgras_retrace_to_hub_on(qts, retrace_vector);
+    mgras_expect_retraces(qts, t, 1, 4, retrace_vector);
+    qtest_clock_step(qts, mgras_retrace_at(t, 104) - mgras_retrace_at(t, 4));
+    mgras_expect_retraces(qts, t, 105, 105, retrace_vector);
+}
+
+static void mgras_vc3_sram_load(QTestState *q, uint16_t addr,
+                                const uint16_t *words, size_t n)
+{
+    qtest_writel(q, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x07, addr));
+    for (size_t i = 0; i < n; i++) {
+        qtest_writew(q, REG_VC3_RAM, words[i]);
+    }
+}
+
+/* One DAC register, as the kernel writes the PLL: number byte, data byte. */
+static void mgras_dac_reg_write(QTestState *q, uint8_t reg, uint8_t value)
+{
+    qtest_writeb(q, REG_DAC_LUT_INDEX_LOW, reg);
+    qtest_writeb(q, REG_DAC_LUT_DATA_2, value);
+}
+
+/*
+ * A 640x480-shaped mode, 525 lines of 400 VC3 clocks, in a frame table at
+ * 0x380 and two line sequences. The first mixes one- and two-halfword
+ * entries and has an entry whose first halfword alone has bit 15 set,
+ * which does not end the line; the second ends on a one-halfword entry.
+ * Each sequence closes with its own address.
+ */
+static const uint16_t mgras_vt_line_a[] = {
+    (100 << 8) | 0x05, 0x0003,          /* two halfwords, 100 clocks */
+    0x0080 | (100 << 8),                /* one halfword, 100 clocks */
+    0x8000 | (100 << 8) | 0x01, 0x0000, /* bit 15 on the first only */
+    0x8080 | (100 << 8),                /* ends the line: 400 clocks */
+    0x0000,
+};
+static const uint16_t mgras_vt_line_b[] = {
+    0x0080 | (127 << 8), 0x0080 | (127 << 8), 0x0080 | (127 << 8),
+    0x8080 | (19 << 8),                 /* 3 x 127 + 19 = 400 clocks */
+    0x0010,
+};
+static const uint16_t mgras_vt_frame[] = {
+    0x0000, 25, 0x0010, 500, 0x0000, 0,
+};
+
+/*
+ * DAC r = 3, v = 13, cntl = 0x75, the IRIX 6.5.30 640x480 60 Hz setting:
+ * 33 MHz x 61 / (5 x 8 x 2) = 25.1625 MHz, so the VC3 runs at 12.58125
+ * MHz and the frame takes 210,000 of its clocks, about 59.911 Hz.
+ */
+static const MgrasFrameTime mgras_vga_frame = { 525 * 400, 12581250 };
+/* The same PLL on the 64 MHz reference, 0x072408 bit 24. */
+static const MgrasFrameTime mgras_vga_alt_ref_frame = { 525 * 400, 24400000 };
+
+static void mgras_load_vga_timing(QTestState *q)
+{
+    mgras_vc3_sram_load(q, 0x0000, mgras_vt_line_a,
+                        ARRAY_SIZE(mgras_vt_line_a));
+    mgras_vc3_sram_load(q, 0x0010, mgras_vt_line_b,
+                        ARRAY_SIZE(mgras_vt_line_b));
+    mgras_vc3_sram_load(q, 0x0380, mgras_vt_frame,
+                        ARRAY_SIZE(mgras_vt_frame));
+    qtest_writel(q, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x00, 0x0380));
+    mgras_dac_reg_write(q, 0x0c, 3);
+    mgras_dac_reg_write(q, 0x0f, 13);
+    mgras_dac_reg_write(q, 0x09, 0x75);
+    qtest_writel(q, REG_RESET_CONTROL, 0xe8000000);
+}
+
+/*
+ * The period follows the timing the guest programs: the VC3 frame and
+ * line tables give the frame length in VC3 clocks, the DAC PLL the pixel
+ * clock, and enabling the display takes both. A new period restarts the
+ * phase at that write. A table that gives no frame, and reset, return to
+ * the stock period.
+ */
+static void test_retrace_period_follows_vc3_tables(void)
 {
     const unsigned int retrace_vector = 54;
 
     mgras_reset();
+    mgras_load_vga_timing(qts);
     mgras_retrace_to_hub_on(qts, retrace_vector);
-    for (int i = 0; i < 4; i++) {
-        mgras_expect_retrace_in(qts, MGRAS_RETRACE_NS, retrace_vector);
-    }
-    /* A hundred frames later the phase is where the period puts it. */
-    qtest_clock_step(qts, 100 * MGRAS_RETRACE_NS);
-    mgras_expect_retrace_in(qts, MGRAS_RETRACE_NS, retrace_vector);
+    mgras_expect_retraces(qts, &mgras_vga_frame, 1, 3, retrace_vector);
+
+    qtest_writel(qts, REG_RESET_CONTROL, 0xe9000000);
+    qtest_writel(qts, REG_VC3_INDEXDATA,
+                 VC3_INDEXDATA(VC3_CONTROL,
+                               VC3_CONTROL_DISPLAY | VC3_CONTROL_VINTR));
+    mgras_expect_retraces(qts, &mgras_vga_alt_ref_frame, 1, 3,
+                          retrace_vector);
+
+    /* Word 0x1000 is still zero: an empty frame table. */
+    qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x00, 0x1000));
+    qtest_writel(qts, REG_VC3_INDEXDATA,
+                 VC3_INDEXDATA(VC3_CONTROL,
+                               VC3_CONTROL_DISPLAY | VC3_CONTROL_VINTR));
+    mgras_expect_retraces(qts, &mgras_stock_frame, 1, 2, retrace_vector);
+
+    qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x00, 0x0380));
+    qtest_writel(qts, REG_VC3_INDEXDATA,
+                 VC3_INDEXDATA(VC3_CONTROL,
+                               VC3_CONTROL_DISPLAY | VC3_CONTROL_VINTR));
+    mgras_expect_retraces(qts, &mgras_vga_alt_ref_frame, 1, 1,
+                          retrace_vector);
+    mgras_reset();
+    mgras_retrace_to_hub_on(qts, retrace_vector);
+    mgras_expect_retraces(qts, &mgras_stock_frame, 1, 2, retrace_vector);
 }
 
 /*
@@ -3409,9 +3545,11 @@ static void test_retrace_period_and_phase(void)
  * destination's own clock never ran. Whether qtest's virtual clock travels
  * with the stream does not matter: the wait is taken from both clocks.
  */
-static void test_retrace_phase_migration(void)
+static void mgras_retrace_migration(bool programmed)
 {
     const unsigned int retrace_vector = 54;
+    const MgrasFrameTime *t = programmed ? &mgras_vga_frame :
+                              &mgras_stock_frame;
     g_autofree char *tmpfs = NULL;
     g_autofree char *uri = NULL;
     g_autofree char *dest_cmdline = NULL;
@@ -3430,24 +3568,40 @@ static void test_retrace_phase_migration(void)
     /* An offset phase, so a destination that restarts it is caught. */
     reset_at = qtest_clock_step(from, 12345);
     qtest_system_reset(from);
+    if (programmed) {
+        mgras_load_vga_timing(from);
+    }
     mgras_retrace_to_hub_on(from, retrace_vector);
-    mgras_expect_retrace_in(from, MGRAS_RETRACE_NS, retrace_vector);
-    mgras_expect_retrace_in(from, MGRAS_RETRACE_NS, retrace_vector);
-    qtest_clock_step(from, MGRAS_RETRACE_NS / 2);
+    mgras_expect_retraces(from, t, 1, 2, retrace_vector);
+    qtest_clock_step(from, mgras_retrace_gap(t, 3) / 2);
 
     sgi_migrate_stopped(from, uri);
 
-    /* qtest cannot step by zero; one nanosecond reads the clock. */
+    /*
+     * qtest cannot step by zero; one nanosecond reads the clock. The
+     * destination counts its frames from one period before the loaded
+     * retrace, so the gaps after it are those after the first.
+     */
     dest_now = qtest_clock_step(to, 1);
-    mgras_expect_retrace_in(to, reset_at + 3 * MGRAS_RETRACE_NS - dest_now,
+    mgras_expect_retrace_in(to, reset_at + mgras_retrace_at(t, 3) - dest_now,
                             retrace_vector);
     g_assert_cmpuint(mgras_qom_get_uint(to, "x-test-retraces"), ==, 3);
-    mgras_expect_retrace_in(to, MGRAS_RETRACE_NS, retrace_vector);
-    mgras_expect_retrace_in(to, MGRAS_RETRACE_NS, retrace_vector);
+    mgras_expect_retraces(to, t, 2, 3, retrace_vector);
 
     qtest_quit(to);
     qtest_quit(from);
     g_rmdir(tmpfs);
+}
+
+static void test_retrace_phase_migration(void)
+{
+    mgras_retrace_migration(false);
+}
+
+/* The destination takes the period from the loaded VC3 and DAC state. */
+static void test_retrace_programmed_period_migration(void)
+{
+    mgras_retrace_migration(true);
 }
 
 
@@ -10999,6 +11153,11 @@ int main(int argc, char **argv)
                    test_retrace_period_and_phase);
     qtest_add_func("sn0/origin2000/mgras/retrace-phase-migration",
                    test_retrace_phase_migration);
+    qtest_add_func("sn0/origin2000/mgras/retrace-period-follows-vc3-tables",
+                   test_retrace_period_follows_vc3_tables);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "retrace-programmed-period-migration",
+                   test_retrace_programmed_period_migration);
     qtest_add_func("sn0/origin2000/mgras/irq-enable-set-and-clear-ports",
                    test_irq_enable_set_and_clear_ports);
     qtest_add_func("sn0/origin2000/mgras/swap-command-raises-interrupt-10",

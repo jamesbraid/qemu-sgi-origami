@@ -2,6 +2,7 @@
 /* Host scanout is derived from guest-visible state and is never its source. */
 /* The display subset follows the SI visual-emulator architecture contract. */
 #include "qemu/osdep.h"
+#include "qemu/log.h"
 #include "hw/misc/sgi-mgras-display.h"
 
 
@@ -240,6 +241,155 @@ void sgi_mgras_display_resolve_row(void *opaque, unsigned y, uint32_t *dst)
     if (s->cursor_enabled) {
         mgras_cursor_row(s, y, dst);
     }
+}
+
+/*
+ * The retrace period is the time the VC3 takes to walk its frame table
+ * once. VID_EP (VC3 register 0) points at the frame table: pairs of
+ * (line-sequence address, repeat count) ending at a count of 0. A line
+ * sequence is a run of entries of one halfword (bit 7 set) or two, each
+ * first halfword carrying a duration in VC3 clocks in bits 14:8; the line
+ * ends at an entry whose halfwords all have bit 15 set. So one frame is
+ * the sum of count x line length, and the IRIX 6.5.30 timing tables for
+ * 1280x1024 at 60 Hz give 1065 lines of 840 clocks.
+ *
+ * The VC3 clock is half the pixel clock, which the RAMDAC's PLL makes from
+ * a 33 MHz reference, or 64 MHz with 0x072408 bit 24 set, as
+ *     f_ref * (4 * (v + 2) + cntl[7:6]) /
+ *     ((r + 2) * 2^cntl[5:4] * 2^cntl[2])
+ * from DAC registers 0x0c (r), 0x0f (v) and 0x09 (cntl). IRIX programs
+ * r = 2, v = 4, cntl = 0x91: 107.25 MHz, so 894,600 clocks at 53.625 MHz,
+ * 59.943 Hz rather than the nominal 60.
+ *
+ * All of this is inferred, not established hardware behaviour: the table
+ * walk from every timing table IRIX ships and MAME's VC2 model, the PLL
+ * relation and the clock ratio from the rates SGI's timing compiler
+ * records for those tables, the reference select from the kernel pairing
+ * it with the tables' reference-clock field. See the timing section of
+ * docs/datasheets/mgras-raster-display.md in the Origami repository.
+ */
+#define MGRAS_VC3_VID_EP 0x00
+#define MGRAS_VT_DURATION(h) (((h) >> 8) & 0x7f)
+#define MGRAS_VT_SINGLE 0x0080
+#define MGRAS_VT_END 0x8000
+/* Bounds the line walks; a stock table reads a few hundred halfwords. */
+#define MGRAS_VT_WALK_BUDGET (SGI_MGRAS_VC3_SRAM_WORDS * 4)
+
+#define MGRAS_DAC_PLL_R 0x0c00
+#define MGRAS_DAC_PLL_V 0x0f00
+#define MGRAS_DAC_PLL_CNTL 0x0900
+#define MGRAS_PLL_REF_HZ 33000000u
+#define MGRAS_PLL_REF_ALT_HZ 64000000u
+#define MGRAS_PLL_REF_SELECT (1u << 24)
+
+/*
+ * Before the guest loads a table, the model runs the one IRIX loads at
+ * board initialisation: an approximation, since what an unprogrammed VC3
+ * does is unknown.
+ */
+#define MGRAS_DEFAULT_FRAME_CLOCKS 894600
+#define MGRAS_DEFAULT_VC3_CLOCK_HZ 53625000
+
+/* The line sequence's length in VC3 clocks, or -1 if it does not end. */
+static int64_t mgras_vt_line_clocks(SGIMgrasState *s, uint16_t addr,
+                                    unsigned int *budget)
+{
+    const uint16_t mask = SGI_MGRAS_VC3_SRAM_WORDS - 1;
+    int64_t clocks = 0;
+
+    while (*budget) {
+        uint16_t first = s->vc3_sram[addr++ & mask];
+        bool end = first & MGRAS_VT_END;
+
+        (*budget)--;
+        clocks += MGRAS_VT_DURATION(first);
+        if (!(first & MGRAS_VT_SINGLE)) {
+            end = end && (s->vc3_sram[addr++ & mask] & MGRAS_VT_END);
+        }
+        if (end) {
+            return clocks;
+        }
+    }
+    return -1;
+}
+
+/* VC3 clocks per pass of the frame table, or 0 if it gives no frame. */
+static uint64_t mgras_vt_frame_clocks(SGIMgrasState *s)
+{
+    const uint16_t mask = SGI_MGRAS_VC3_SRAM_WORDS - 1;
+    uint16_t ep = s->vc3_reg[MGRAS_VC3_VID_EP];
+    unsigned int budget = MGRAS_VT_WALK_BUDGET;
+    uint64_t frame = 0;
+
+    for (unsigned int i = 0; i < SGI_MGRAS_VC3_SRAM_WORDS / 2; i++) {
+        uint16_t line = s->vc3_sram[(ep + 2 * i) & mask];
+        uint16_t count = s->vc3_sram[(ep + 2 * i + 1) & mask];
+        int64_t clocks;
+
+        if (!count) {
+            return frame;
+        }
+        clocks = mgras_vt_line_clocks(s, line, &budget);
+        if (clocks < 0) {
+            return 0;
+        }
+        frame += count * (uint64_t)clocks;
+    }
+    return 0;
+}
+
+/*
+ * frame_clocks / clock_hz seconds in lowest terms; the scanout takes each
+ * as 32 bits, so a ratio that still does not fit loses its low bits.
+ */
+static void mgras_timing_ratio(SGIScanoutMode *mode, uint64_t clocks,
+                               uint64_t hz)
+{
+    uint64_t a = clocks, b = hz;
+
+    while (b) {
+        uint64_t t = a % b;
+
+        a = b;
+        b = t;
+    }
+    clocks /= a;
+    hz /= a;
+    while (clocks > UINT32_MAX || hz > UINT32_MAX) {
+        clocks = (clocks + 1) >> 1;
+        hz = (hz + 1) >> 1;
+    }
+    mode->frame_clocks = clocks;
+    mode->clock_hz = hz;
+}
+
+void sgi_mgras_display_timing(SGIMgrasState *s, SGIScanoutMode *mode,
+                              bool log)
+{
+    uint64_t frame = mgras_vt_frame_clocks(s);
+    uint64_t r = s->dac_reg[MGRAS_DAC_PLL_R];
+    uint64_t v = s->dac_reg[MGRAS_DAC_PLL_V];
+    uint8_t cntl = s->dac_reg[MGRAS_DAC_PLL_CNTL];
+    uint64_t ref = s->reset_control & MGRAS_PLL_REF_SELECT ?
+                   MGRAS_PLL_REF_ALT_HZ : MGRAS_PLL_REF_HZ;
+    uint64_t pix_num = ref * (4 * (v + 2) + (cntl >> 6));
+    uint64_t pix_den = (r + 2) << ((cntl >> 4) & 3) << ((cntl >> 2) & 1);
+
+    mode->width = s->width;
+    mode->height = s->height;
+    if (!frame) {
+        if (log) {
+            qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: the VC3 frame table "
+                          "at 0x%04x gives no frame length; keeping the "
+                          "default timing\n",
+                          s->vc3_reg[MGRAS_VC3_VID_EP]);
+        }
+        mgras_timing_ratio(mode, MGRAS_DEFAULT_FRAME_CLOCKS,
+                           MGRAS_DEFAULT_VC3_CLOCK_HZ);
+        return;
+    }
+    /* frame VC3 clocks at half the pixel clock: 2 * frame / f_pix. */
+    mgras_timing_ratio(mode, 2 * frame * pix_den, pix_num);
 }
 
 /*

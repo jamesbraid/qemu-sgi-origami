@@ -36,16 +36,6 @@
 #define MGRAS_VC3_CONTROL_VINTR 0x1
 #define MGRAS_VC3_CONTROL_DISPLAY 0x4
 
-/*
- * The retrace period is the model's 60 Hz approximation, one sixtieth of a
- * second truncated to whole nanoseconds. It is expressed as frames of a
- * 1 GHz clock so that each retrace falls exactly one such period after the
- * last, as it did while the model re-armed its own timer. The stock mode's
- * true rate would follow from the VC3 timing tables and the pixel clock,
- * whose layouts no reviewed datasheet records yet.
- */
-#define MGRAS_RETRACE_CLOCK_HZ NANOSECONDS_PER_SECOND
-#define MGRAS_RETRACE_FRAME_CLOCKS (NANOSECONDS_PER_SECOND / 60)
 
 /* The HQ vector destination uses bits 27:24 for the target widget. */
 #define MGRAS_HQ_VECTOR_WIDGET_SHIFT 24
@@ -332,7 +322,7 @@ static void mgras_retrace(void *opaque)
             mgras_deliver_hq_role(s, true, s->hq_vectors >>
                                   MGRAS_HQ_VECTOR_RETRACE_SHIFT, "retrace");
         } else if (vintr && !s->retrace_no_dest_logged) {
-            /* Once per reset: a retrace comes 60 times a second. */
+            /* Once per reset: a retrace comes about 60 times a second. */
             s->retrace_no_dest_logged = true;
             qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: retrace interrupt "
                           "enabled with no HQ vector destination programmed; "
@@ -347,23 +337,49 @@ static const SGIHeadOps mgras_scanout_ops = {
 };
 
 /*
+ * Take the retrace period from the current VC3 tables and DAC PLL. The
+ * guest reprograms both with timing stopped and then enables the display,
+ * so the model reads them at that write rather than on every SRAM store.
+ * A new period restarts the retrace phase; an unchanged one keeps it.
+ */
+static void mgras_update_timing(SGIMgrasState *s, bool log)
+{
+    SGIScanoutMode mode;
+    const SGIScanoutMode *cur = &s->scanout.mode;
+
+    sgi_mgras_display_timing(s, &mode, log);
+    if (mode.width != cur->width || mode.height != cur->height ||
+        mode.frame_clocks != cur->frame_clocks ||
+        mode.clock_hz != cur->clock_hz) {
+        sgi_scanout_set_mode(&s->scanout, &mode);
+    }
+}
+
+/*
  * The stream carries the retrace phase as the timer's expiry alone, as it
- * did before the scanout owned the timer. The scanout counts retraces from
- * an epoch, so restart its count one period before the loaded retrace; the
- * ones after it then keep the source's phase. A stream with no retrace
- * pending, which this model never sends, restarts the phase at load.
+ * did before the scanout owned the timer. The period is taken again from
+ * the loaded VC3 and DAC state. The scanout counts retraces from an epoch,
+ * so restart its count one period before the loaded retrace; the ones
+ * after it then keep the source's phase. A stream with no retrace pending,
+ * which this model never sends, restarts the phase at load.
  */
 static void mgras_retrace_rephase(SGIMgrasState *s)
 {
     SGIScanout *so = &s->scanout;
     int64_t next = timer_expire_time_ns(so->retrace_timer);
+    int64_t period;
 
+    mgras_update_timing(s, false);
+    period = sgi_scanout_retrace_time(so, 1) - so->epoch;
+    if (period < 0) {
+        timer_del(so->retrace_timer);
+        return;
+    }
     if (next < 0) {
-        next = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
-               MGRAS_RETRACE_FRAME_CLOCKS;
+        next = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + period;
     }
     so->frames = 0;
-    so->epoch = next - MGRAS_RETRACE_FRAME_CLOCKS;
+    so->epoch = next - period;
     timer_mod(so->retrace_timer, next);
 }
 
@@ -1126,6 +1142,9 @@ static void mgras_write(void *opaque, hwaddr addr, uint64_t value,
                 s->dirty = true;
             }
             s->display_enabled = enabled;
+            if (enabled) {
+                mgras_update_timing(s, true);
+            }
             break;
         }
         default: break;
@@ -1317,6 +1336,8 @@ static void mgras_reset_exit(Object *obj, ResetType type)
         mc->parent_phases.exit(obj, type);
     }
     sgi_mgras_display_flush(s);
+    /* Reset cleared the tables: back to the default period. */
+    mgras_update_timing(s, false);
     /* The first retrace falls one period after reset. */
     sgi_scanout_reset(&s->scanout);
 }
@@ -1454,12 +1475,7 @@ static bool mgras_finish_realize(SGIXioBoardState *board, Error **errp)
     DeviceState *dev = DEVICE(board);
 
     sgi_scanout_init(&s->scanout, dev, &mgras_scanout_ops, s);
-    sgi_scanout_set_mode(&s->scanout, &(SGIScanoutMode) {
-        .width = s->width,
-        .height = s->height,
-        .frame_clocks = MGRAS_RETRACE_FRAME_CLOCKS,
-        .clock_hz = MGRAS_RETRACE_CLOCK_HZ,
-    });
+    mgras_update_timing(s, false);
     device_cold_reset(dev);
     return true;
 }
