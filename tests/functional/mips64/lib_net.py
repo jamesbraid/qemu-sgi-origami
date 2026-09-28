@@ -61,6 +61,138 @@ def parse_arp_frame(frame):
     }
 
 
+def _internet_checksum(data):
+    """Return the one's-complement checksum for an IPv4 header."""
+    if len(data) % 2:
+        data += b"\x00"
+    total = sum((data[i] << 8) | data[i + 1]
+                for i in range(0, len(data), 2))
+    while total >> 16:
+        total = (total & 0xffff) + (total >> 16)
+    return (~total) & 0xffff
+
+
+def build_udp_fragments(src_mac, dst_mac, src_ip, dst_ip, src_port,
+                        dst_port, payload, mtu=1500, ident=0x4f52):
+    """Build Ethernet frames carrying one UDP datagram split for an IPv4 MTU."""
+    if len(src_mac) != 6 or len(dst_mac) != 6:
+        raise ValueError("an Ethernet address must contain six bytes")
+    if mtu < 68 or mtu > 65535:
+        raise ValueError("MTU must be between 68 and 65535 bytes")
+    if not 0 <= src_port <= 65535 or not 0 <= dst_port <= 65535:
+        raise ValueError("UDP ports must fit in 16 bits")
+    if not 0 <= ident <= 65535:
+        raise ValueError("IPv4 identification must fit in 16 bits")
+    payload = bytes(payload)
+    udp = (struct.pack("!HHHH", src_port, dst_port, len(payload) + 8, 0)
+           + payload)
+    if len(udp) > 65515:
+        raise ValueError("UDP datagram exceeds the IPv4 payload limit")
+    chunk_size = ((mtu - 20) // 8) * 8
+    src = socket.inet_aton(src_ip)
+    dst = socket.inet_aton(dst_ip)
+    frames = []
+    for start in range(0, len(udp), chunk_size):
+        chunk = udp[start:start + chunk_size]
+        more = start + len(chunk) < len(udp)
+        flags_offset = (0x2000 if more else 0) | (start // 8)
+        header = (struct.pack("!BBHHHBBH4s4s", 0x45, 0,
+                              20 + len(chunk), ident, flags_offset,
+                              64, 17, 0, src, dst))
+        checksum = _internet_checksum(header)
+        header = header[:10] + struct.pack("!H", checksum) + header[12:]
+        frames.append(dst_mac + src_mac + b"\x08\x00" + header + chunk)
+    return frames
+
+
+def parse_ipv4_udp_fragment(frame):
+    """Decode an IPv4 UDP fragment; ignore unrelated Ethernet/IP frames."""
+    if len(frame) < 14 or frame[12:14] != b"\x08\x00":
+        return None
+    if len(frame) < 15 or frame[14] >> 4 != 4:
+        return None
+    if len(frame) < 34:
+        raise ValueError("truncated IPv4 header")
+    ihl = (frame[14] & 0x0f) * 4
+    if ihl < 20 or len(frame) < 14 + ihl:
+        raise ValueError("invalid or truncated IPv4 header length")
+    total_length = int.from_bytes(frame[16:18], "big")
+    if total_length < ihl or len(frame) < 14 + total_length:
+        raise ValueError("truncated IPv4 packet")
+    header = frame[14:14 + ihl]
+    if _internet_checksum(header) != 0:
+        raise ValueError("invalid IPv4 header checksum")
+    if frame[23] != 17:
+        return None
+    frag = int.from_bytes(frame[20:22], "big")
+    offset = frag & 0x1fff
+    more = bool(frag & 0x2000)
+    data = frame[14 + ihl:14 + total_length]
+    byte_offset = offset * 8
+    if byte_offset + len(data) > 65535 - 20:
+        raise ValueError("IPv4 fragment range exceeds maximum datagram size")
+    if more and (not data or len(data) % 8):
+        raise ValueError("non-final IPv4 fragment has invalid payload length")
+    return {
+        "src_ip": socket.inet_ntoa(frame[26:30]),
+        "dst_ip": socket.inet_ntoa(frame[30:34]),
+        "ident": int.from_bytes(frame[18:20], "big"),
+        "offset": offset,
+        "more": more,
+        "payload": data,
+    }
+
+
+def reassemble_udp_fragments(frames, src_ip, dst_ip, src_port, dst_port,
+                             expected_payload):
+    """Validate and reassemble the requested fragmented UDP datagram."""
+    wanted_src = socket.inet_aton(src_ip)
+    wanted_dst = socket.inet_aton(dst_ip)
+    pieces = []
+    for frame in frames:
+        fragment = parse_ipv4_udp_fragment(frame)
+        if fragment is None:
+            continue
+        if (socket.inet_aton(fragment["src_ip"]) != wanted_src
+                or socket.inet_aton(fragment["dst_ip"]) != wanted_dst):
+            continue
+        pieces.append(fragment)
+    if len(pieces) < 2:
+        raise ValueError("fewer than two matching IPv4 fragments")
+    ids = {piece["ident"] for piece in pieces}
+    if len(ids) != 1:
+        raise ValueError("matching fragments have different identifications")
+    pieces.sort(key=lambda piece: piece["offset"])
+    cursor = 0
+    assembled = bytearray()
+    final_end = None
+    for piece in pieces:
+        start = piece["offset"] * 8
+        end = start + len(piece["payload"])
+        if start < cursor:
+            raise ValueError("overlapping IPv4 fragments")
+        if start > cursor:
+            raise ValueError("gap in IPv4 fragments")
+        if final_end is not None:
+            raise ValueError("fragment follows the final IPv4 fragment")
+        assembled.extend(piece["payload"])
+        cursor = end
+        if not piece["more"]:
+            final_end = end
+    if final_end is None or cursor != final_end:
+        raise ValueError("incomplete IPv4 fragment set")
+    if len(assembled) < 8:
+        raise ValueError("reassembled datagram has no complete UDP header")
+    got_src, got_dst, udp_length = struct.unpack("!HHH", assembled[:6])
+    if got_src != src_port or got_dst != dst_port:
+        raise ValueError("reassembled UDP ports do not match")
+    if udp_length != len(assembled) or udp_length < 8:
+        raise ValueError("reassembled UDP length does not match")
+    if bytes(assembled[8:]) != bytes(expected_payload):
+        raise ValueError("reassembled UDP payload does not match")
+    return len(pieces)
+
+
 # The three faults an OpenBSD/IP27 guest shows when it wedges rather than
 # answers. Shared by the install and transfer runs, which drive the same
 # kernel.
