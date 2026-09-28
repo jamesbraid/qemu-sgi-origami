@@ -1709,6 +1709,99 @@ static void test_dma_direct_window_reads_the_second_node(const void *data)
 }
 
 /*
+ * A widget's write to XIO address 0 is a memory-class packet, so the Hub
+ * puts it in memory: bytes 0-15, which cover the common widget block's
+ * identification slot at 4, land in RAM and never reach the Hub's own
+ * widget registers (the Hub I/O interface datasheet's check on raw
+ * memory address four).
+ */
+static void test_dma_to_address_four_is_memory(const void *data)
+{
+    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE DMA_CARD);
+    uint64_t id = qtest_readq(qts, HUB_LOCAL + 0x400000);
+    uint8_t seen[DMA64_LEN];
+    unsigned int i;
+
+    qtest_memset(qts, 0, 0xcc, DMA64_LEN);
+    bridge_start_the_transfer_source(qts);
+    bridge_source_with_swap(qts, DEV_SWAP_DIRECT);
+    qtest_writel(qts, WINDOW(DMA_SLOT) + DMA_REG_ADDRESS, 0);
+    qtest_writel(qts, WINDOW(DMA_SLOT) + DMA_REG_ADDRESS_HI, 0xa0000000u);
+    qtest_writel(qts, WINDOW(DMA_SLOT) + DMA_REG_LENGTH, DMA64_LEN);
+    qtest_writel(qts, WINDOW(DMA_SLOT) + DMA_REG_SEED, DMA64_SEED);
+    qtest_writel(qts, WINDOW(DMA_SLOT) + DMA_REG_GO, 1);
+
+    qtest_memread(qts, 0, seen, sizeof(seen));
+    for (i = 0; i < DMA64_LEN; i++) {
+        g_assert_cmpuint(seen[i], !=, 0xcc);
+    }
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + 0x400000), ==, id);
+    qtest_quit(qts);
+}
+
+/*
+ * The Hub I/O interface datasheet's bounded 64-bit identity probe, driven
+ * by a widget: an eight-byte read at XIO address bit 47 | 0x01600000
+ * returns the receiving Hub's network-interface status. Varying one field
+ * at a time -- the node field, the remote bit, the big-window field, an
+ * unused bit, the register offset or the width -- must be refused:
+ * nothing reaches the copy's destination, which keeps its sentinel, and
+ * the Hub's status is unchanged.
+ */
+#define ID_PROBE_PCI(xio)       (0xa000000000000000ULL | (xio))
+#define ID_PROBE_IO_CLASS       (1ULL << 47)
+#define ID_PROBE                (ID_PROBE_IO_CLASS | 0x01600000ULL)
+#define ID_PROBE_DEST           0x00310000u
+#define ID_PROBE_NI_STATUS      (HUB_LOCAL + 0x600000)
+#define ID_PROBE_SENTINEL       0xccccccccccccccccULL
+
+static uint64_t probe_copy(QTestState *qts, uint64_t xio, uint32_t len)
+{
+    uint8_t seen[8];
+
+    qtest_memset(qts, ID_PROBE_DEST, 0xcc, sizeof(seen));
+    qtest_writel(qts, WINDOW(DMA_SLOT) + DMA_REG_SOURCE,
+                 (uint32_t)ID_PROBE_PCI(xio));
+    qtest_writel(qts, WINDOW(DMA_SLOT) + DMA_REG_SOURCE_HI,
+                 ID_PROBE_PCI(xio) >> 32);
+    qtest_writel(qts, WINDOW(DMA_SLOT) + DMA_REG_ADDRESS, ID_PROBE_DEST);
+    qtest_writel(qts, WINDOW(DMA_SLOT) + DMA_REG_ADDRESS_HI, 0);
+    qtest_writel(qts, WINDOW(DMA_SLOT) + DMA_REG_LENGTH, len);
+    qtest_writel(qts, WINDOW(DMA_SLOT) + DMA_REG_GO, 2);   /* GO_COPY */
+    qtest_memread(qts, ID_PROBE_DEST, seen, sizeof(seen));
+    return ldq_be_p(seen);
+}
+
+static void test_identity_probe_variants(const void *data)
+{
+    static const uint64_t refused[] = {
+        ID_PROBE | (1ULL << 38),          /* node field */
+        ID_PROBE | 0x00800000ULL,         /* remote bit */
+        ID_PROBE | 0x10000000ULL,         /* big-window field */
+        ID_PROBE | (1ULL << 32),          /* unused bit */
+        ID_PROBE + 8,                     /* register offset */
+    };
+    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE DMA_CARD);
+    uint64_t status;
+    unsigned int i;
+
+    bridge_start_the_transfer_source(qts);
+    bridge_source_with_swap(qts, DEV_SWAP_DIRECT);
+    status = qtest_readq(qts, ID_PROBE_NI_STATUS);
+
+    g_assert_cmphex(probe_copy(qts, ID_PROBE, 8), ==, status);
+    for (i = 0; i < ARRAY_SIZE(refused); i++) {
+        g_assert_cmphex(probe_copy(qts, refused[i], 8), ==,
+                        ID_PROBE_SENTINEL);
+        g_assert_cmphex(qtest_readq(qts, ID_PROBE_NI_STATUS), ==, status);
+    }
+    /* The width: four bytes of the same address are refused too. */
+    g_assert_cmphex(probe_copy(qts, ID_PROBE, 4), ==, ID_PROBE_SENTINEL);
+    g_assert_cmphex(qtest_readq(qts, ID_PROBE_NI_STATUS), ==, status);
+    qtest_quit(qts);
+}
+
+/*
  * A 64-bit cycle ignores the offset registers: DIRECT_MAP stays at reset
  * and the transfer must land at the bare XIO offset, not stepped
  * half a gigabyte into unbacked memory.
@@ -3995,6 +4088,10 @@ int main(int argc, char **argv)
                         NULL, test_dma_direct_window_reaches_the_second_node);
     qtest_add_data_func("sn0/bridge/dma-direct-window-reads-the-second-node",
                         NULL, test_dma_direct_window_reads_the_second_node);
+    qtest_add_data_func("sn0/bridge/identity-probe-variants", NULL,
+                        test_identity_probe_variants);
+    qtest_add_data_func("sn0/bridge/dma-to-address-four-is-memory", NULL,
+                        test_dma_to_address_four_is_memory);
     qtest_add_data_func("sn0/bridge/dma-direct-window-64bit-ignores-the-offset-step",
                         NULL, test_dma_direct_window_64bit_ignores_the_offset_step);
     qtest_add_data_func("sn0/bridge/device-window-64bit-doubleword", NULL,
