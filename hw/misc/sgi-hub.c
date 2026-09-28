@@ -329,25 +329,17 @@
 #define PI_RT_LOCAL_CTRL_RESET  0x10000ULL
 
 /*
- * Graphics flow control, per processor: the attached pipe's page address, a
- * credit counter the pipe's driver seeds and polls against a bias it also
- * writes, and an interrupt counter/compare pair. Plain storage: the model
- * does not confirm hardware behavior beyond what the driver reads back.
-*/
-#define HUB_PI_GFX_PAGE_A          0x000300
-#define HUB_PI_GFX_CREDIT_A        0x000308
-#define HUB_PI_GFX_BIAS_A          0x000310
-#define HUB_PI_GFX_INT_COUNT_A     0x000318
-#define HUB_PI_GFX_INT_COMPARE_A   0x000320
-#define HUB_PI_GFX_PAGE_B          0x000328
-#define HUB_PI_GFX_CREDIT_B        0x000330
-#define HUB_PI_GFX_BIAS_B          0x000338
-#define HUB_PI_GFX_INT_COUNT_B     0x000340
-#define HUB_PI_GFX_INT_COMPARE_B   0x000348
-#define PI_GFX_CREDIT_MASK         0xfffU        /* 12 bits */
-#define PI_GFX_BIAS_MASK           0xfffU        /* 12 bits */
-#define PI_GFX_INT_COUNT_MASK      0x3ffffffU    /* 26 bits */
-#define PI_GFX_INT_COMPARE_MASK    0x3ffffffU    /* 26 bits */
+ * Graphics flow control, per processor slot: ten registers from 0x300, five
+ * per slot, whose rules live in the shared block (hw/mips/sgi/pi-gfx.c).
+ */
+#define HUB_PI_GFX_REG(n)       (SGI_PI_GFX_BASE + 8 * (n))
+/*
+ * 0x2_0068: the graphics credit mode on the succeeding chip (SN1 hubpi.h),
+ * and a reset-survivor or hard-reset bit in the SN0 sources. IRIX's flow
+ * initialisation stores zero to it on Hubs of revision 4 and later, when
+ * transaction credits are off.
+ */
+#define HUB_PI_GFX_CREDIT_MODE  0x020068
 
 /* I/O interface: the crossbar link. */
 #define HUB_IO_LINK_STATUS      0x400128
@@ -2813,6 +2805,33 @@ static uint64_t sgi_hub_peek_zero(SGIHubState *s, unsigned arg)
     return 0;
 }
 
+/*
+ * IRIX's zero store there selects doubleword credits, the one mode the
+ * model counts, so it is taken. What any other value does, and what the
+ * register reads, is not established.
+ */
+static void sgi_hub_write_gfx_credit_mode(SGIHubState *s, hwaddr addr,
+                                          unsigned arg, uint64_t val,
+                                          unsigned size)
+{
+    if (val) {
+        qemu_log_mask(LOG_UNIMP, "sgi-hub: write of 0x%" PRIx64 " to the "
+                      "graphics credit mode at 0x%" HWADDR_PRIx
+                      " (only doubleword mode is modelled)\n", val, addr);
+    }
+}
+
+/* The graphics block's registers, numbered from 0x300 in doublewords. */
+static uint64_t sgi_hub_peek_gfx(SGIHubState *s, unsigned arg)
+{
+    return sgi_pi_gfx_read(&s->pi_gfx, arg);
+}
+
+static void sgi_hub_store_gfx(SGIHubState *s, unsigned arg, uint64_t val)
+{
+    sgi_pi_gfx_write(&s->pi_gfx, arg, val);
+}
+
 static uint64_t sgi_hub_read_zero(SGIHubState *s, hwaddr addr, unsigned arg)
 {
     return 0;
@@ -3385,40 +3404,36 @@ static const SGIHubRegDef sgi_hub_registers[] = {
       .field = offsetof(SGIHubState, pi_rt_local_ctrl), .width = 8,
       .flags = HUB_REG_STORE | HUB_REG_DIAG,
       .wmask = PI_RT_LOCAL_CTRL_MASK },
-    { .offset = HUB_PI_GFX_PAGE_A, .arg = 0,
-      .field = offsetof(SGIHubState, pi_gfx_page[0]), .width = 8,
-      .flags = HUB_REG_STORE | HUB_REG_DIAG, .wmask = ~0ULL },
-    { .offset = HUB_PI_GFX_CREDIT_A, .arg = 0,
-      .field = offsetof(SGIHubState, pi_gfx_credit[0]), .width = 4,
-      .flags = HUB_REG_STORE | HUB_REG_DIAG, .wmask = PI_GFX_CREDIT_MASK },
-    { .offset = HUB_PI_GFX_BIAS_A, .arg = 0,
-      .field = offsetof(SGIHubState, pi_gfx_bias[0]), .width = 4,
-      .flags = HUB_REG_STORE | HUB_REG_DIAG, .wmask = PI_GFX_BIAS_MASK },
-    { .offset = HUB_PI_GFX_INT_COUNT_A, .arg = 0,
-      .field = offsetof(SGIHubState, pi_gfx_int_count[0]), .width = 4,
-      .flags = HUB_REG_STORE | HUB_REG_DIAG,
-      .wmask = PI_GFX_INT_COUNT_MASK },
-    { .offset = HUB_PI_GFX_INT_COMPARE_A, .arg = 0,
-      .field = offsetof(SGIHubState, pi_gfx_int_compare[0]), .width = 4,
-      .flags = HUB_REG_STORE | HUB_REG_DIAG,
-      .wmask = PI_GFX_INT_COMPARE_MASK },
-    { .offset = HUB_PI_GFX_PAGE_B, .arg = 1,
-      .field = offsetof(SGIHubState, pi_gfx_page[1]), .width = 8,
-      .flags = HUB_REG_STORE | HUB_REG_DIAG, .wmask = ~0ULL },
-    { .offset = HUB_PI_GFX_CREDIT_B, .arg = 1,
-      .field = offsetof(SGIHubState, pi_gfx_credit[1]), .width = 4,
-      .flags = HUB_REG_STORE | HUB_REG_DIAG, .wmask = PI_GFX_CREDIT_MASK },
-    { .offset = HUB_PI_GFX_BIAS_B, .arg = 1,
-      .field = offsetof(SGIHubState, pi_gfx_bias[1]), .width = 4,
-      .flags = HUB_REG_STORE | HUB_REG_DIAG, .wmask = PI_GFX_BIAS_MASK },
-    { .offset = HUB_PI_GFX_INT_COUNT_B, .arg = 1,
-      .field = offsetof(SGIHubState, pi_gfx_int_count[1]), .width = 4,
-      .flags = HUB_REG_STORE | HUB_REG_DIAG,
-      .wmask = PI_GFX_INT_COUNT_MASK },
-    { .offset = HUB_PI_GFX_INT_COMPARE_B, .arg = 1,
-      .field = offsetof(SGIHubState, pi_gfx_int_compare[1]), .width = 4,
-      .flags = HUB_REG_STORE | HUB_REG_DIAG,
-      .wmask = PI_GFX_INT_COMPARE_MASK },
+    { .offset = HUB_PI_GFX_REG(0), .arg = 0,
+      .flags = HUB_REG_DIAG,
+      .peek = sgi_hub_peek_gfx, .store = sgi_hub_store_gfx },
+    { .offset = HUB_PI_GFX_REG(1), .arg = 1,
+      .flags = HUB_REG_DIAG,
+      .peek = sgi_hub_peek_gfx, .store = sgi_hub_store_gfx },
+    { .offset = HUB_PI_GFX_REG(2), .arg = 2,
+      .flags = HUB_REG_DIAG,
+      .peek = sgi_hub_peek_gfx, .store = sgi_hub_store_gfx },
+    { .offset = HUB_PI_GFX_REG(3), .arg = 3,
+      .flags = HUB_REG_DIAG,
+      .peek = sgi_hub_peek_gfx, .store = sgi_hub_store_gfx },
+    { .offset = HUB_PI_GFX_REG(4), .arg = 4,
+      .flags = HUB_REG_DIAG,
+      .peek = sgi_hub_peek_gfx, .store = sgi_hub_store_gfx },
+    { .offset = HUB_PI_GFX_REG(5), .arg = 5,
+      .flags = HUB_REG_DIAG,
+      .peek = sgi_hub_peek_gfx, .store = sgi_hub_store_gfx },
+    { .offset = HUB_PI_GFX_REG(6), .arg = 6,
+      .flags = HUB_REG_DIAG,
+      .peek = sgi_hub_peek_gfx, .store = sgi_hub_store_gfx },
+    { .offset = HUB_PI_GFX_REG(7), .arg = 7,
+      .flags = HUB_REG_DIAG,
+      .peek = sgi_hub_peek_gfx, .store = sgi_hub_store_gfx },
+    { .offset = HUB_PI_GFX_REG(8), .arg = 8,
+      .flags = HUB_REG_DIAG,
+      .peek = sgi_hub_peek_gfx, .store = sgi_hub_store_gfx },
+    { .offset = HUB_PI_GFX_REG(9), .arg = 9,
+      .flags = HUB_REG_DIAG,
+      .peek = sgi_hub_peek_gfx, .store = sgi_hub_store_gfx },
     { .offset = HUB_PI_ERR_PENDING,
       .flags = HUB_REG_DIAG,
       .peek = sgi_hub_peek_zero, .write = sgi_hub_write_err_pending },
@@ -3472,6 +3487,8 @@ static const SGIHubRegDef sgi_hub_registers[] = {
       .read = sgi_hub_read_zero, .write = sgi_hub_write_timedout },
     { .offset = HUB_PI_TIMEDOUT_BUF_B,
       .read = sgi_hub_read_zero, .write = sgi_hub_write_timedout },
+    { .offset = HUB_PI_GFX_CREDIT_MODE,
+      .write = sgi_hub_write_gfx_credit_mode },
     { .offset = HUB_PI_RT_COUNT,
       .flags = HUB_REG_DIAG | HUB_REG_TRACE_WRITE,
       .read = sgi_hub_read_rt_count_reg, .peek = sgi_hub_peek_rt_count,
@@ -4154,11 +4171,7 @@ static void sgi_hub_reset_enter(Object *obj, ResetType type)
     memset(s->pi_rt_pending, 0, sizeof(s->pi_rt_pending));
     memset(s->pi_rt_enable, 0, sizeof(s->pi_rt_enable));
     s->pi_rt_local_ctrl = PI_RT_LOCAL_CTRL_RESET;
-    memset(s->pi_gfx_page, 0, sizeof(s->pi_gfx_page));
-    memset(s->pi_gfx_credit, 0, sizeof(s->pi_gfx_credit));
-    memset(s->pi_gfx_bias, 0, sizeof(s->pi_gfx_bias));
-    memset(s->pi_gfx_int_count, 0, sizeof(s->pi_gfx_int_count));
-    memset(s->pi_gfx_int_compare, 0, sizeof(s->pi_gfx_int_compare));
+    sgi_pi_gfx_reset(&s->pi_gfx);
     for (n = 0; n < SGI_HUB_PROCESSORS; n++) {
         timer_del(s->rt_timer[n]);
     }
@@ -4330,6 +4343,7 @@ static MemTxResult sgi_hub_pi_io_read(void *opaque, hwaddr addr,
     SGIHubState *s = path->hub;
     uint8_t bytes[8] = { 0 };
     MemTxResult result;
+    bool previous;
 
     if (size == 8 &&
         (addr & MAKE_64BIT_MASK(0, s->claim_node_shift)) ==
@@ -4338,9 +4352,11 @@ static MemTxResult sgi_hub_pi_io_read(void *opaque, hwaddr addr,
         sgi_hub_processor_read_error(s, path->slice, addr);
         return MEMTX_ERROR;
     }
+    previous = sgi_pi_gfx_mark_store(false);
     result = address_space_read(&s->pi_view_as[path->slice],
                                 s->io_space_base + addr, attrs,
                                 bytes + 8 - size, size);
+    sgi_pi_gfx_unmark_store(previous);
     *data = ldq_be_p(bytes);
     if (result != MEMTX_OK) {
         sgi_hub_processor_read_error(s, path->slice, addr);
@@ -4355,11 +4371,23 @@ static MemTxResult sgi_hub_pi_io_write(void *opaque, hwaddr addr,
     struct SGIHubProcessorPath *path = opaque;
     SGIHubState *s = path->hub;
     uint8_t bytes[8];
+    MemTxResult result;
+    bool counted, previous;
 
+    /*
+     * A graphics write: the slice pays a credit when its graphics page is
+     * enabled and covers the store. The store goes on either way, marked
+     * so a head returns credit only for a store that was counted.
+     */
+    counted = sgi_pi_gfx_count_store(&s->pi_gfx, path->slice, addr,
+                                     "sgi-hub");
     stq_be_p(bytes, data);
-    return address_space_write(&s->pi_view_as[path->slice],
-                               s->io_space_base + addr, attrs,
-                               bytes + 8 - size, size);
+    previous = sgi_pi_gfx_mark_store(counted);
+    result = address_space_write(&s->pi_view_as[path->slice],
+                                 s->io_space_base + addr, attrs,
+                                 bytes + 8 - size, size);
+    sgi_pi_gfx_unmark_store(previous);
+    return result;
 }
 
 static const MemoryRegionOps sgi_hub_pi_io_ops = {
@@ -5188,16 +5216,9 @@ static const VMStateDescription vmstate_sgi_hub = {
                               SGI_HUB_PROCESSORS, 19),
         VMSTATE_UINT64_V(pi_rt_local_ctrl, SGIHubState, 10),
         VMSTATE_BOOL_V(pi_rt_alive_seen, SGIHubState, 28),
-        VMSTATE_UINT64_ARRAY_V(pi_gfx_page, SGIHubState, SGI_HUB_PROCESSORS,
-                               29),
-        VMSTATE_UINT32_ARRAY_V(pi_gfx_credit, SGIHubState,
-                               SGI_HUB_PROCESSORS, 29),
-        VMSTATE_UINT32_ARRAY_V(pi_gfx_bias, SGIHubState, SGI_HUB_PROCESSORS,
-                               29),
-        VMSTATE_UINT32_ARRAY_V(pi_gfx_int_count, SGIHubState,
-                               SGI_HUB_PROCESSORS, 29),
-        VMSTATE_UINT32_ARRAY_V(pi_gfx_int_compare, SGIHubState,
-                               SGI_HUB_PROCESSORS, 29),
+        /* The block's fields in the order the five arrays had here. */
+        VMSTATE_STRUCT(pi_gfx, SGIHubState, 29, vmstate_sgi_pi_gfx,
+                         SGIPIGfx),
         VMSTATE_UINT32_ARRAY_V(io_gfx_init, SGIHubState, 2, 29),
         /* The registers are the whole of an engine's state. */
         VMSTATE_UINT64_ARRAY_V(bte_length, SGIHubState, SGI_HUB_BTES, 17),
@@ -5452,12 +5473,62 @@ static qemu_irq sgi_hub_xio_port_reset_input(Object *port, unsigned int index)
     return qdev_get_gpio_in_named(DEVICE(port), "link-reset", 0);
 }
 
+/*
+ * The Hub a node number names: this one first, then the machine's other
+ * Hubs by the number each was programmed with. The same number on two Hubs
+ * (before firmware numbers them) finds the first.
+ */
+static SGIHubState *sgi_hub_by_number(SGIHubState *s, uint32_t number)
+{
+    unsigned int i;
+
+    if (number == sgi_hub_programmed_nasid(s)) {
+        return s;
+    }
+    for (i = 0; i < s->net_peer_count; i++) {
+        if (s->net_peers[i] &&
+            sgi_hub_programmed_nasid(s->net_peers[i]) == number) {
+            return s->net_peers[i];
+        }
+    }
+    return NULL;
+}
+
+/*
+ * A graphics head behind this Hub returned credits: the node-widget map
+ * says which node and slot the widget's credits belong to.
+ */
+static void sgi_hub_return_gfx_credits(Object *obj, unsigned int widget,
+                                       uint32_t credits)
+{
+    SGIHubState *s = SGI_HUB(obj);
+    uint64_t map[2] = { s->io_gfx_init[0], s->io_gfx_init[1] };
+    SGIPIGfxRoute route;
+    SGIHubState *target;
+
+    if (!sgi_pi_gfx_route_hub(map, widget, &route)) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-hub: %u graphics credits from "
+                      "widget 0x%x match no valid node-widget map entry\n",
+                      credits, widget);
+        return;
+    }
+    target = sgi_hub_by_number(s, route.node);
+    if (!target) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-hub: %u graphics credits from "
+                      "widget 0x%x name node %u, which no Hub carries\n",
+                      credits, widget, route.node);
+        return;
+    }
+    sgi_pi_gfx_add_credits(&target->pi_gfx, route.slot, credits, "sgi-hub");
+}
+
 static void sgi_hub_class_init(ObjectClass *oc, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
     ResettableClass *rc = RESETTABLE_CLASS(oc);
     SGIXioPortClass *xpc = SGI_XIO_PORT_CLASS(oc);
     SGINetPortClass *npc = SGI_NET_PORT_CLASS(oc);
+    SGIPIGfxClass *gpc = SGI_PI_GFX_CLASS(oc);
 
     dc->desc = "SGI SN0 Hub ASIC";
     dc->realize = sgi_hub_realize;
@@ -5484,6 +5555,7 @@ static void sgi_hub_class_init(ObjectClass *oc, const void *data)
     npc->peer_changed = sgi_hub_net_port_peer_changed;
     npc->receive = sgi_hub_net_port_receive;
     npc->record_check_error = sgi_hub_net_port_record_check_error;
+    gpc->return_credits = sgi_hub_return_gfx_credits;
 }
 
 static const TypeInfo sgi_hub_types[] = {
@@ -5497,6 +5569,7 @@ static const TypeInfo sgi_hub_types[] = {
         .interfaces = (const InterfaceInfo[]) {
             { TYPE_SGI_XIO_PORT },
             { TYPE_SGI_NET_PORT },
+            { TYPE_SGI_PI_GFX },
             { }
         },
     },
