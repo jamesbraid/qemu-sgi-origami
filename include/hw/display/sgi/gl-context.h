@@ -29,6 +29,7 @@ typedef enum SGIRasterKind {
     SGI_RASTER_LINE,
     SGI_RASTER_POINT,
     SGI_RASTER_BLIT,
+    SGI_RASTER_BITMAP,
 } SGIRasterKind;
 
 /*
@@ -41,6 +42,30 @@ typedef uint32_t SGIColourTarget;
 /* The buffers a clear names, glClear's mask bits. */
 #define SGI_GL_DEPTH_BUFFER_BIT 0x0100
 #define SGI_GL_COLOR_BUFFER_BIT 0x4000
+
+struct SGIGLDrawState;
+
+/*
+ * BITMAP: a run of glBitmap's image (OpenGL 1.2.1, 3.7), drawn as
+ * fragments under a context's draw state. The image is height rows of
+ * (width + 7) / 8 bytes, the bottom row first, and within a byte the most
+ * significant bit is the leftmost pixel, glPixelStore's defaults with an
+ * alignment of one. bytes[0] is byte first of the image, so a family can
+ * draw an image as its words arrive. Coordinates are window pixels.
+ */
+typedef struct SGIRasterBitmap {
+    const struct SGIGLDrawState *state;
+    /* The window pixel of the image's lower-left corner. */
+    int32_t x, y;
+    uint32_t width, height;
+    uint32_t first;
+    uint32_t count;
+    const uint8_t *bytes;
+    /* The raster position's window depth, colour and colour index. */
+    float z;
+    float rgba[4];
+    float index;
+} SGIRasterBitmap;
 
 /*
  * Only the fields a kind the rasterizer executes needs are here; the
@@ -69,6 +94,7 @@ typedef struct SGIRasterOp {
     uint32_t index_bits;
     uint32_t clear_index;
     uint32_t index_mask;
+    SGIRasterBitmap bitmap;
 } SGIRasterOp;
 
 /*
@@ -332,6 +358,30 @@ void sgi_gl_set_index_mode(SGIGLContext *c, uint32_t index_bits);
  */
 uint32_t sgi_gl_index_value(uint32_t index_bits, double index);
 
+/* Where glBitmap's image falls, from sgi_gl_bitmap_place(). */
+typedef struct SGIGLBitmap {
+    int32_t x, y;               /* window pixel of the lower-left corner */
+    uint32_t width, height;
+} SGIGLBitmap;
+
+/*
+ * glBitmap's placement and move (OpenGL 1.2.1, 3.7). With the current
+ * raster position valid, the image's lower-left corner falls at window
+ * pixel (floor(xr - xorig), floor(yr - yorig)), which goes into *b, and
+ * the raster position then moves by (xmove, ymove); returns true. With it
+ * invalid nothing is drawn or moved; returns false. The image itself
+ * follows through sgi_gl_bitmap_bytes(), whole or in runs.
+ */
+bool sgi_gl_bitmap_place(SGIGLContext *c, uint32_t width, uint32_t height,
+                         float xorig, float yorig, float xmove, float ymove,
+                         SGIGLBitmap *b);
+/*
+ * Draw count bytes of the image b placed, from its byte first on, in the
+ * raster position's colour or colour index and depth.
+ */
+void sgi_gl_bitmap_bytes(SGIGLContext *c, const SGIGLSink *sink,
+                         const SGIGLBitmap *b, uint32_t first,
+                         const uint8_t *bytes, uint32_t count);
 /* Execute one command against the context, sending any work to sink. */
 void sgi_gl_command(SGIGLContext *c, const SGIGLSink *sink,
                     const SGIGLCmd *cmd);

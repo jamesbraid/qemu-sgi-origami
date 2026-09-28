@@ -2,8 +2,8 @@
 /*
  * The shared GL context and software rasterizer, on paths a family's
  * replay fixtures need not reach: whole batches of every primitive mode,
- * glFinish, the clear op a context builds, unsupported rule sets and
- * colour-index mode.
+ * glFinish, the clear op a context builds, unsupported rule sets,
+ * colour-index mode and glBitmap.
  */
 #include "qemu/osdep.h"
 #include <math.h>
@@ -922,6 +922,143 @@ static void test_index_draw(void)
     g_assert_cmphex(p.colour[0][planes_index(40, 40)], ==, 1);
 }
 
+/* A recorder that rasterizes each raster op as well as keeping it. */
+static void drawing_raster(void *opaque, const SGIRasterOp *op)
+{
+    Recorder *r = opaque;
+
+    recorder_raster(opaque, op);
+    sgi_soft_raster(r->rules, &r->target, op);
+}
+
+/*
+ * glBitmap (OpenGL 1.2.1, 3.7). With the raster position at window
+ * (10.5, 20.5) and the origin at (2, 3), the image's lower-left corner is
+ * at pixel (8, 17), and the position then moves by (xmove, ymove). The
+ * 10x2 image is rows of two bytes, the bottom row first, the most
+ * significant bit leftmost: 0x80 0x40 sets columns 0 and 9 of row 0, 0x01
+ * 0xff sets column 7 and columns 8 and 9 of row 1, the rest of the last
+ * byte lying beyond the width. A set bit takes the raster colour in RGBA
+ * mode and the raster index in colour-index mode, and the image arrives
+ * whole or in runs alike.
+ */
+static void test_bitmap(void)
+{
+    static const uint8_t image[4] = { 0x80, 0x40, 0x01, 0xff };
+    static const struct {
+        int x, y;
+    } set[] = { { 8, 17 }, { 17, 17 }, { 15, 18 }, { 16, 18 }, { 17, 18 } };
+    static Planes p;
+    Recorder rec = { .rules = &rules_supported };
+    SGIGLSink sink = recorder_sink(&rec);
+    SGIGLContext c;
+    SGIGLBitmap b;
+    uint32_t word[4];
+    unsigned drawn = 0;
+
+    sink.raster = drawing_raster;
+    rec.target = planes_target(&p);
+    memset(&p, 0, sizeof(p));
+    context_init(&c);
+    word[0] = bits(1), word[1] = bits(0.5f), word[2] = bits(0);
+    command(&c, &sink, SGI_GL_OP_COLOR3F, word, 3);
+    /* Window (10.5, 20.5): NDC x 10.5 / 32 - 1, y 20.5 / 32 - 1. */
+    word[0] = bits(10.5f / 32 - 1), word[1] = bits(20.5f / 32 - 1);
+    command(&c, &sink, SGI_GL_OP_RASTER_POS2F, word, 2);
+    g_assert_true(sgi_gl_bitmap_place(&c, 10, 2, 2, 3, 12, -1.5f, &b));
+    g_assert_cmpint(b.x, ==, 8);
+    g_assert_cmpint(b.y, ==, 17);
+    g_assert_cmpfloat(get_float(&c, SGI_GL_CURRENT_RASTER_POSITION, 0), ==,
+                      22.5f);
+    g_assert_cmpfloat(get_float(&c, SGI_GL_CURRENT_RASTER_POSITION, 1), ==,
+                      19);
+    sgi_gl_bitmap_bytes(&c, &sink, &b, 0, image, 4);
+    g_assert_cmpuint(rec.op.kind, ==, SGI_RASTER_BITMAP);
+    for (int y = 0; y < H; y++) {
+        for (int x = 0; x < W; x++) {
+            bool on = false;
+
+            for (int i = 0; i < ARRAY_SIZE(set); i++) {
+                on |= set[i].x == x && set[i].y == y;
+            }
+            g_assert_cmphex(p.colour[0][planes_index(x, y)], ==,
+                            on ? 0xff8000 : 0);
+            drawn += on;
+        }
+    }
+    g_assert_cmpuint(drawn, ==, ARRAY_SIZE(set));
+
+    /* In colour-index mode, in two runs: the raster index. */
+    memset(&p, 0, sizeof(p));
+    sgi_gl_set_index_mode(&c, 8);
+    word[0] = bits(0x42);
+    command(&c, &sink, SGI_GL_OP_INDEXF, word, 1);
+    word[0] = bits(10.5f / 32 - 1), word[1] = bits(20.5f / 32 - 1);
+    command(&c, &sink, SGI_GL_OP_RASTER_POS2F, word, 2);
+    g_assert_true(sgi_gl_bitmap_place(&c, 10, 2, 2, 3, 0, 0, &b));
+    sgi_gl_bitmap_bytes(&c, &sink, &b, 0, image, 1);
+    sgi_gl_bitmap_bytes(&c, &sink, &b, 1, image + 1, 3);
+    for (int i = 0; i < ARRAY_SIZE(set); i++) {
+        g_assert_cmphex(p.colour[0][planes_index(set[i].x, set[i].y)], ==,
+                        0x42);
+    }
+    g_assert_cmphex(p.colour[0][planes_index(9, 17)], ==, 0);
+
+    /* An invalid raster position neither draws nor moves. */
+    word[0] = bits(2), word[1] = bits(0);
+    command(&c, &sink, SGI_GL_OP_RASTER_POS2F, word, 2);
+    g_assert_false(sgi_gl_bitmap_place(&c, 10, 2, 0, 0, 5, 5, &b));
+    g_assert_cmpfloat(get_float(&c, SGI_GL_CURRENT_RASTER_POSITION, 0), ==,
+                      10.5f);
+}
+
+/*
+ * A bitmap's fragments are bounded by the window, not the viewport, and
+ * pass the depth test at the raster position's depth.
+ */
+static void test_bitmap_bounds_and_depth(void)
+{
+    static const uint8_t ones[8] = {
+        0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+    };
+    static Planes p;
+    Recorder rec = { .rules = &rules_supported };
+    SGIGLSink sink = recorder_sink(&rec);
+    SGIGLContext c;
+    SGIGLBitmap b;
+    uint32_t word[2];
+
+    sink.raster = drawing_raster;
+    rec.target = planes_target(&p);
+    memset(&p, 0, sizeof(p));
+    context_init(&c);
+    /* A 16x4 image from (56, 1) runs off the 64-pixel window's edge. */
+    word[0] = bits(56.5f / 32 - 1), word[1] = bits(1.5f / 32 - 1);
+    command(&c, &sink, SGI_GL_OP_RASTER_POS2F, word, 2);
+    c.cur.viewport[2] = 8;
+    c.cur.viewport[3] = 8;
+    g_assert_true(sgi_gl_bitmap_place(&c, 16, 4, 0, 0, 0, 0, &b));
+    sgi_gl_bitmap_bytes(&c, &sink, &b, 0, ones, 8);
+    g_assert_cmphex(p.colour[0][planes_index(56, 1)], ==, 0xffffff);
+    g_assert_cmphex(p.colour[0][planes_index(63, 4)], ==, 0xffffff);
+    g_assert_cmphex(p.colour[0][planes_index(55, 1)], ==, 0);
+    g_assert_cmphex(p.colour[0][planes_index(56, 5)], ==, 0);
+
+    /* Raster depth 0.5 against a stored 0.25 under LESS: nothing drawn. */
+    memset(&p, 0, sizeof(p));
+    for (int i = 0; i < W * H; i++) {
+        p.depth[i] = 0x400000;
+    }
+    c.cur.depth_test = 1;
+    sgi_gl_bitmap_bytes(&c, &sink, &b, 0, ones, 8);
+    g_assert_cmphex(p.colour[0][planes_index(56, 1)], ==, 0);
+    for (int i = 0; i < W * H; i++) {
+        p.depth[i] = 0xc00000;
+    }
+    sgi_gl_bitmap_bytes(&c, &sink, &b, 0, ones, 8);
+    g_assert_cmphex(p.colour[0][planes_index(56, 1)], ==, 0xffffff);
+    g_assert_cmphex(p.depth[planes_index(56, 1)], ==, 0x800000);
+}
 
 int main(int argc, char **argv)
 {
@@ -941,5 +1078,8 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-gl/index-state", test_index_state);
     g_test_add_func("/sgi-gl/index-value", test_index_value);
     g_test_add_func("/sgi-gl/index-draw", test_index_draw);
+    g_test_add_func("/sgi-gl/bitmap", test_bitmap);
+    g_test_add_func("/sgi-gl/bitmap-bounds-and-depth",
+                    test_bitmap_bounds_and_depth);
     return g_test_run();
 }
