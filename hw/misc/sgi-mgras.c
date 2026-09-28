@@ -10,6 +10,7 @@
 #include "hw/misc/sgi-mgras-gl.h"
 #include "hw/misc/sgi-mgras-raster.h"
 #include "hw/mips/sgi/xio-link.h"
+#include "hw/mips/sgi/xio-widget.h"
 #include "migration/vmstate.h"
 #include "qapi/error.h"
 #include "qapi/visitor.h"
@@ -35,11 +36,6 @@
 #define MGRAS_VC3_CONTROL_VINTR 0x1
 #define MGRAS_VC3_CONTROL_DISPLAY 0x4
 
-/* Data bit 8 selects assertion in the interrupt-modify write. */
-#define MGRAS_HUB_INT_MODIFY_SET 0x100
-#define MGRAS_INT_DEST_WIDGET_SHIFT 16
-#define MGRAS_INT_DEST_WIDGET_BITS 4
-#define MGRAS_INT_DEST_VECTOR_SHIFT 24
 
 /* The HQ vector destination uses bits 27:24 for the target widget. */
 #define MGRAS_HQ_VECTOR_WIDGET_SHIFT 24
@@ -173,46 +169,34 @@ static uint8_t mgras_cmap_ra_byte(const SGIMgrasBoard *b)
            (b->cmap_revision & 7);
 }
 
-/* Send an interrupt-modify write to the selected fabric address. */
+/*
+ * An interrupt packet into the widget-addressed fabric, through the XIO
+ * widget layer (hw/mips/sgi/xio-widget.h).
+ */
 static void mgras_send_packet(SGIMgrasState *s, hwaddr where, uint8_t vector,
                            bool set)
 {
-    uint64_t value = vector | (set ? MGRAS_HUB_INT_MODIFY_SET : 0);
-
     /* Retain the packet for host-only qtest inspection. */
     s->test_last_interrupt_addr = where;
-    s->test_last_interrupt_value = value;
-    address_space_stq(&s->fabric_as, where, value, MEMTXATTRS_UNSPECIFIED,
-                      NULL);
+    s->test_last_interrupt_value = vector | (set ? SGI_XIO_INTERRUPT_SET : 0);
+    sgi_xio_send_interrupt(&s->fabric_as, where, vector, set);
 }
 
-/* Compose the fabric address without folding the widget into its payload. */
+/* The fabric address of a widget/address pair: the widget in bits 51:48. */
 bool sgi_mgras_xio_compose(SGIMgrasState *s, unsigned int widget,
                       uint64_t address, hwaddr *fabric)
 {
-    if (s->fabric_widget_shift) {
-        if (widget >= (1u << MGRAS_INT_DEST_WIDGET_BITS) ||
-            address >> s->fabric_widget_shift) {
-            qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: packet fabric cannot "
-                          "encode widget %u address 0x%" PRIx64 "\n", widget,
-                          address);
-            return false;
-        }
-        *fabric = ((uint64_t)widget << s->fabric_widget_shift) | address;
-    } else {
-        *fabric = s->fabric_base + address;
-    }
-    return true;
+    return sgi_xio_compose("sgi-mgras", widget, address, fabric);
 }
 
-/* Widget errors use the generic destination and its embedded vector. */
+/*
+ * Widget errors use the generic destination pair (0x30/0x38, with the
+ * aliases at 0x34/0x3c) and its embedded vector.
+ */
 static void mgras_deliver_widget_error(SGIMgrasState *s, bool set)
 {
-    unsigned int widget = (s->int_dest_upper >> MGRAS_INT_DEST_WIDGET_SHIFT) &
-                          ((1u << MGRAS_INT_DEST_WIDGET_BITS) - 1);
-    uint64_t addr = ((uint64_t)(s->int_dest_upper & 0xffff) << 32) |
-                    s->int_dest_lower;
-    uint8_t vector = s->int_dest_upper >> MGRAS_INT_DEST_VECTOR_SHIFT;
+    SGIXioIntDest dest = sgi_xio_int_dest(s->int_dest_upper,
+                                          s->int_dest_lower);
     hwaddr where;
 
     if (!s->int_dest_upper && !s->int_dest_lower) {
@@ -221,10 +205,10 @@ static void mgras_deliver_widget_error(SGIMgrasState *s, bool set)
                       set ? "raised" : "lowered");
         return;
     }
-    if (!sgi_mgras_xio_compose(s, widget, addr, &where)) {
+    if (!sgi_mgras_xio_compose(s, dest.widget, dest.address, &where)) {
         return;
     }
-    mgras_send_packet(s, where, vector, set);
+    mgras_send_packet(s, where, dest.vector, set);
 }
 
 /* HQ roles share one destination and select separate stored vectors. */
@@ -1503,9 +1487,6 @@ static const Property mgras_properties[] = {
                      unimplemented_board, false),
     DEFINE_PROP_LINK("fabric", SGIMgrasState, fabric, TYPE_MEMORY_REGION,
                      MemoryRegion *),
-    DEFINE_PROP_UINT64("fabric-base", SGIMgrasState, fabric_base, 0),
-    DEFINE_PROP_UINT32("fabric-widget-shift", SGIMgrasState,
-                       fabric_widget_shift, 0),
 };
 
 static bool mgras_test_get_first_ack(Object *obj, Error **errp)
