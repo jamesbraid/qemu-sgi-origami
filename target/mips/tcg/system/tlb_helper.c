@@ -1760,9 +1760,18 @@ bool mips_cpu_exec_interrupt(CPUState *cs, int interrupt_request)
     }
     if (interrupt_request & CPU_INTERRUPT_HARD) {
         CPUMIPSState *env = cpu_env(cs);
+        bool enabled = cpu_mips_hw_interrupts_enabled(env);
+        bool deliverable = enabled && cpu_mips_hw_interrupts_pending(env);
 
-        if (cpu_mips_hw_interrupts_enabled(env) &&
-            cpu_mips_hw_interrupts_pending(env)) {
+        if (trace_event_get_state(TRACE_MIPS_EXT_INTERRUPT_CHECK)) {
+            trace_mips_ext_interrupt_check(
+                qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL),
+                qemu_clock_get_ns(QEMU_CLOCK_REALTIME), cs->cpu_index,
+                env->active_tc.PC, env->CP0_Status,
+                qatomic_read(&env->CP0_Cause), enabled, deliverable);
+        }
+
+        if (deliverable) {
             /* Raise it */
             cs->exception_index = EXCP_EXT_INTERRUPT;
             env->error_code = 0;

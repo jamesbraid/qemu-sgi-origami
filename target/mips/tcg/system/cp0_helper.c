@@ -23,12 +23,14 @@
 #include "qemu/osdep.h"
 #include "qemu/log.h"
 #include "qemu/main-loop.h"
+#include "qemu/timer.h"
 #include "cpu.h"
 #include "internal.h"
 #include "qemu/host-utils.h"
 #include "exec/helper-proto.h"
 #include "exec/cputlb.h"
 #include "exec/target_page.h"
+#include "../trace.h"
 
 
 /* SMP helpers.  */
@@ -396,7 +398,14 @@ target_ulong helper_mftc0_tcschefback(CPUMIPSState *env)
 
 target_ulong helper_mfc0_count(CPUMIPSState *env)
 {
-    return (int32_t)cpu_mips_get_count(env);
+    uint32_t count = cpu_mips_get_count(env);
+
+    if (trace_event_get_state(TRACE_MIPS_CP0_COUNT_READ)) {
+        trace_mips_cp0_count_read(qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL),
+                                  env_cpu(env)->cpu_index,
+                                  env->active_tc.PC, count);
+    }
+    return (int32_t)count;
 }
 
 target_ulong helper_mftc0_entryhi(CPUMIPSState *env)

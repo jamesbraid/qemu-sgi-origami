@@ -14,6 +14,7 @@
 #include "hw/core/irq.h"
 #include "qemu/timer.h"
 #include "internal.h"
+#include "../tcg/trace.h"
 
 /*
  * The R10000 family's performance counters, the other half of register
@@ -149,6 +150,23 @@ bool cpu_mips_r10k_perf_ip7(CPUMIPSState *env)
  * interrupt enable on: bit 31 rising as the count crosses the top half,
  * falling as it wraps back to zero.
  */
+static void mips_r10k_perf_set_irq(CPUMIPSState *env, unsigned irq,
+                                   bool level, bool perf, int64_t now_ns)
+{
+    bool tracing = trace_event_get_state(TRACE_MIPS_CP0_IP7);
+
+    qemu_set_irq(env->irq[irq], level);
+    if (tracing) {
+        uint32_t cause = qatomic_read(&env->CP0_Cause);
+
+        trace_mips_cp0_ip7(now_ns,
+                           qemu_clock_get_ns(QEMU_CLOCK_REALTIME),
+                           env_cpu(env)->cpu_index, env->active_tc.PC,
+                           "perf", env->cp0_timer_ip7, perf, irq,
+                           env->CP0_Status, cause);
+    }
+}
+
 static void mips_r10k_perf_update(CPUMIPSState *env)
 {
     MIPSCPU *cpu = env_archcpu(env);
@@ -157,12 +175,13 @@ static void mips_r10k_perf_update(CPUMIPSState *env)
     uint32_t cycles = (uint32_t)clock_ns_to_ticks(cpu->clock, now_ns);
     uint64_t next_ns = UINT64_MAX;
     bool level = env->cp0_timer_ip7;
+    bool perf = false;
     unsigned ctr;
 
     /* R14000 counter interrupt behavior remains outside the cleared model. */
     if (!env->cfg.performance_counter_interrupts) {
         timer_del(env->r10k_perf_timer);
-        qemu_set_irq(env->irq[irq], level);
+        mips_r10k_perf_set_irq(env, irq, level, false, now_ns);
         return;
     }
 
@@ -179,6 +198,7 @@ static void mips_r10k_perf_update(CPUMIPSState *env)
         }
         if (v & 0x80000000u) {
             level = true;
+            perf = true;
             wait = (1ULL << 32) - v;
         } else {
             wait = 0x80000000u - v;
@@ -195,7 +215,7 @@ static void mips_r10k_perf_update(CPUMIPSState *env)
             timer_mod(env->r10k_perf_timer, next_ns);
         }
     }
-    qemu_set_irq(env->irq[irq], level);
+    mips_r10k_perf_set_irq(env, irq, level, perf, now_ns);
 }
 
 void cpu_mips_store_r10k_perf(CPUMIPSState *env, uint32_t val, unsigned sel)

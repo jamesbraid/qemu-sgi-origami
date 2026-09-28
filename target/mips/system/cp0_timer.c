@@ -25,6 +25,7 @@
 #include "hw/core/irq.h"
 #include "qemu/timer.h"
 #include "internal.h"
+#include "../tcg/trace.h"
 
 /* MIPS R4K timer */
 static uint32_t cpu_mips_count_at(CPUMIPSState *env, int64_t now_ns)
@@ -53,11 +54,25 @@ static void cpu_mips_update_ip7(CPUMIPSState *env)
 {
     unsigned irq = extract32(env->CP0_IntCtl, CP0IntCtl_IPTI, 3);
     bool level = env->cp0_timer_ip7;
+    int perf = -1;
+    bool tracing = trace_event_get_state(TRACE_MIPS_CP0_IP7);
 
     if (env->r10k_perf_timer) {
-        level = level || cpu_mips_r10k_perf_ip7(env);
+        if (!level) {
+            perf = cpu_mips_r10k_perf_ip7(env);
+        }
+        level = level || perf == 1;
     }
     qemu_set_irq(env->irq[irq], level);
+    if (tracing) {
+        uint32_t cause = qatomic_read(&env->CP0_Cause);
+
+        trace_mips_cp0_ip7(qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL),
+                           qemu_clock_get_ns(QEMU_CLOCK_REALTIME),
+                           env_cpu(env)->cpu_index, env->active_tc.PC,
+                           "timer", env->cp0_timer_ip7, perf, irq,
+                           env->CP0_Status, cause);
+    }
 }
 
 /*
@@ -70,19 +85,32 @@ static void cpu_mips_timer_update(CPUMIPSState *env, int64_t now_ns)
     MIPSCPU *cpu = env_archcpu(env);
     uint64_t next_ns;
     uint32_t wait;
+    uint32_t count = cpu_mips_count_at(env, now_ns);
 
-    wait = env->CP0_Compare - cpu_mips_count_at(env, now_ns);
+    wait = env->CP0_Compare - count;
     /* Clamp interval to overflow if virtual time had not progressed */
     if (!wait) {
         wait = UINT32_MAX;
     }
     next_ns = now_ns + clock_ticks_to_ns(cpu->count_clock, wait);
     timer_mod(env->timer, next_ns);
+    if (trace_event_get_state(TRACE_MIPS_CP0_TIMER_ARM)) {
+        trace_mips_cp0_timer_arm(now_ns,
+                                 qemu_clock_get_ns(QEMU_CLOCK_REALTIME),
+                                 env_cpu(env)->cpu_index, env->active_tc.PC,
+                                 count, env->CP0_Compare, wait, next_ns);
+    }
 }
 
 /* Expire the timer.  */
 static void cpu_mips_timer_expire(CPUMIPSState *env, int64_t now_ns)
 {
+    if (trace_event_get_state(TRACE_MIPS_CP0_TIMER_EXPIRE)) {
+        trace_mips_cp0_timer_expire(
+            now_ns, qemu_clock_get_ns(QEMU_CLOCK_REALTIME),
+            env_cpu(env)->cpu_index, env->active_tc.PC,
+            cpu_mips_count_at(env, now_ns), env->CP0_Compare);
+    }
     cpu_mips_timer_update(env, now_ns);
     if (env->insn_flags & ISA_MIPS_R2) {
         cp0_cause_update(env, 0, 1 << CP0Ca_TI);
@@ -152,6 +180,7 @@ static void cpu_mips_store_count_internal(CPUMIPSState *env, uint32_t count,
      * So env->timer may be NULL, so treat timer as disabled in that case.
      */
     MIPSCPU *cpu = env_archcpu(env);
+    int64_t write_ns = -1;
 
     BQL_LOCK_GUARD();
 
@@ -160,6 +189,8 @@ static void cpu_mips_store_count_internal(CPUMIPSState *env, uint32_t count,
         env->CP0_Count = count;
     } else {
         int64_t now_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+
+        write_ns = now_ns;
 
         /* Store new count register */
         env->CP0_Count = count - (uint32_t)clock_ns_to_ticks(cpu->count_clock,
@@ -175,6 +206,17 @@ static void cpu_mips_store_count_internal(CPUMIPSState *env, uint32_t count,
         if (cpu_mips_write_matches(env, count, env->CP0_Compare)) {
             cpu_mips_update_ip7(env);
         }
+    }
+    if (guest_write && trace_event_get_state(TRACE_MIPS_CP0_COUNT_WRITE)) {
+        if (write_ns < 0) {
+            write_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+        }
+        trace_mips_cp0_count_write(
+            write_ns,
+            qemu_clock_get_ns(QEMU_CLOCK_REALTIME),
+            env_cpu(env)->cpu_index, env->active_tc.PC, count,
+            env->CP0_Compare, env->timer_adjacent_pending,
+            env->CP0_Status, qatomic_read(&env->CP0_Cause));
     }
 }
 
@@ -192,6 +234,10 @@ void cpu_mips_store_compare(CPUMIPSState *env, uint32_t value)
 {
     bool matched = false;
     bool adjacent = env->timer_adjacent_pending;
+    uint32_t count = env->CP0_Count;
+    uint32_t forward = 0;
+    uint64_t elapsed = 0;
+    int64_t write_ns = -1;
 
     BQL_LOCK_GUARD();
 
@@ -200,15 +246,17 @@ void cpu_mips_store_compare(CPUMIPSState *env, uint32_t value)
     if (!(env->CP0_Cause & (1 << CP0Ca_DC))) {
         MIPSCPU *cpu = env_archcpu(env);
         int64_t now_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+
+        write_ns = now_ns;
         uint64_t now_ticks = clock_ns_to_ticks(cpu->count_clock, now_ns);
-        uint64_t elapsed = now_ticks - env->timer_adjacent_start_ticks;
-        uint32_t forward = value - env->timer_adjacent_count;
+        elapsed = now_ticks - env->timer_adjacent_start_ticks;
+        forward = value - env->timer_adjacent_count;
+        count = cpu_mips_count_at(env, now_ns);
 
         /* Classify and arm against one instant, or a stall between the
          * two reads turns an imminent match into a full-wrap deferral. */
         env->cp0_timer_ip7 = 0;
-        matched = cpu_mips_write_matches(env, cpu_mips_count_at(env, now_ns),
-                                         value);
+        matched = cpu_mips_write_matches(env, count, value);
         if (adjacent && env->cfg.count_compare_adjacent_recovery &&
             forward > 0 && forward < 0x80000000u &&
             elapsed < 0x80000000ULL && elapsed >= forward) {
@@ -216,6 +264,16 @@ void cpu_mips_store_compare(CPUMIPSState *env, uint32_t value)
             matched = true;
         }
         cpu_mips_timer_update(env, now_ns);
+    }
+    if (trace_event_get_state(TRACE_MIPS_CP0_COMPARE_WRITE)) {
+        if (write_ns < 0) {
+            write_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+        }
+        trace_mips_cp0_compare_write(
+            write_ns,
+            qemu_clock_get_ns(QEMU_CLOCK_REALTIME),
+            env_cpu(env)->cpu_index, env->active_tc.PC, count, value,
+            adjacent, elapsed, forward, matched);
     }
     if (matched) {
         /* The write's own reset of IP[7] loses to the standing match. */

@@ -20,9 +20,11 @@
 
 #include "qemu/osdep.h"
 #include "qemu/main-loop.h"
+#include "qemu/timer.h"
 #include "cpu.h"
 #include "internal.h"
 #include "exec/cputlb.h"
+#include "../tcg/trace.h"
 
 /* Called for updates to CP0_Status.  */
 void sync_c0_status(CPUMIPSState *env, CPUMIPSState *cpu, int tc)
@@ -141,6 +143,9 @@ void cpu_mips_reassert_interrupt(CPUMIPSState *env)
 
 void cpu_mips_store_status(CPUMIPSState *env, target_ulong val)
 {
+    bool tracing = trace_event_get_state(TRACE_MIPS_CP0_STATUS_WRITE);
+    uint32_t old_status = tracing ? env->CP0_Status : 0;
+
     /*
      * The only writer of a CPU's CP0_Status from another thread is
      * helper_mttc0_status() (cp0_helper.c). It reaches the field through
@@ -173,6 +178,14 @@ void cpu_mips_store_status(CPUMIPSState *env, target_ulong val)
     }
 
     cpu_mips_reassert_interrupt(env);
+    if (tracing) {
+        trace_mips_cp0_status_write(
+            qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL),
+            qemu_clock_get_ns(QEMU_CLOCK_REALTIME),
+            env_cpu(env)->cpu_index, env->active_tc.PC, old_status,
+            env->CP0_Status, qatomic_read(&env->CP0_Cause),
+            cpu_test_interrupt(env_cpu(env), CPU_INTERRUPT_HARD));
+    }
 }
 
 static void mips_store_cause(CPUMIPSState *env, target_ulong val)
