@@ -209,6 +209,7 @@ if have_system
                         migration, io],
     'test-sgi-dma': ['../../hw/display/sgi/board-memory.c',
                      '../../hw/display/sgi/pixel-dma.c',
+                     '../../hw/display/sgi/command-fetch.c',
                      migration, io],
     'test-iov': [],
     'test-opts-visitor': [testqapi],
