@@ -10,11 +10,11 @@
  * engine's function, not of its program.
  *
  * What it preserves: the pixels that colour and depth clears and
- * untextured triangles, strips, fans, quads and polygons, flat or smooth
- * shaded, transformed by the modelview and projection matrices and their
- * stacks and depth tested, leave in the
- * window's front or back buffer, and the main-port framing, so the words
- * after a packet still parse as headers. What it does not: the
+ * untextured points, lines, triangles, strips, fans, quads and polygons,
+ * at size and width 1, flat or smooth shaded, transformed by the
+ * modelview and projection matrices and their stacks and depth tested,
+ * leave in the window's front or back buffer, and the main-port framing,
+ * so the words after a packet still parse as headers. What it does not: the
  * raster-engine register writes the GE would make, the timing of the
  * work, any GE state visible to a later readback, and every command
  * outside the subset below, which the parser logs through LOG_UNIMP and
@@ -33,6 +33,9 @@
  * 0x0a00 above its begin token (mgras-gl-commands.md, "Primitives").
  */
 #define MGRAS_GL_BEGIN_POINTS    0x00001600
+#define MGRAS_GL_BEGIN_LINES     0x00001700
+#define MGRAS_GL_BEGIN_LINE_STRIP 0x00001800
+#define MGRAS_GL_BEGIN_LINE_LOOP 0x00001900
 #define MGRAS_GL_BEGIN_POLYGON   0x00001f00
 #define MGRAS_GL_END_OFFSET      0x00000a00
 #define MGRAS_GL_BEGIN_TRIANGLES 0x00001a00
@@ -40,8 +43,6 @@
 #define MGRAS_GL_BEGIN_TRI_FAN   0x00001c00
 #define MGRAS_GL_BEGIN_QUADS     0x00001d00
 #define MGRAS_GL_BEGIN_QUAD_STRIP 0x00001e00
-/* The first begin token the model draws; the line and point modes follow. */
-#define MGRAS_GL_BEGIN_DRAWN     MGRAS_GL_BEGIN_TRIANGLES
 #define MGRAS_GL_CLEAR_COLOR_BUF 0x00001500
 #define MGRAS_GL_CLEAR_DEPTH_BUF 0x00004a00
 #define MGRAS_GL_VIEWPORT        0x00003310
@@ -181,7 +182,7 @@ static uint32_t mgras_gl_begin_token(uint32_t header, bool end)
 {
     uint32_t begin = end ? header - MGRAS_GL_END_OFFSET : header;
 
-    if (begin < MGRAS_GL_BEGIN_DRAWN || begin > MGRAS_GL_BEGIN_POLYGON ||
+    if (begin < MGRAS_GL_BEGIN_POINTS || begin > MGRAS_GL_BEGIN_POLYGON ||
         (begin & 0xff)) {
         return 0;
     }
@@ -933,6 +934,41 @@ static bool mgras_gl_depth_passes(uint32_t func, uint32_t z, uint32_t stored)
 }
 
 /*
+ * One fragment at window pixel (px, py) with window depth z: dropped
+ * outside [0, 1] (the view volume's near and far planes), depth tested
+ * when the test is enabled, then written to the draw buffers' banks.
+ */
+static void mgras_gl_fragment(SGIMgrasState *s, const MgrasGLWindow *win,
+                              unsigned int banks, int px, int py, double z,
+                              uint32_t rgb)
+{
+    SGIMgrasGLContext *gl = mgras_gl(s);
+    uint32_t zq, *stored;
+
+    if (!(z >= 0.0 && z <= 1.0)) {
+        return;
+    }
+    zq = (uint32_t)llround(z * MGRAS_GL_DEPTH_MAX);
+    stored = mgras_gl_depth(s, win->ox + px, win->oy + py);
+    if (gl->depth_test) {
+        if (!mgras_gl_depth_passes(gl->depth_func, zq, *stored)) {
+            return;
+        }
+        if (gl->depth_mask) {
+            *stored = zq;
+        }
+    }
+    mgras_gl_put(s, banks, win->ox + px, win->oy + py, rgb);
+}
+
+/* A colour, each component clamped and rounded to eight bits. */
+static uint32_t mgras_gl_rgb(const double c[3])
+{
+    return (mgras_gl_channel(c[0]) << 16) | (mgras_gl_channel(c[1]) << 8) |
+           mgras_gl_channel(c[2]);
+}
+
+/*
  * Transform one vertex (OpenGL 1.2.1, 2.10): object to eye by the
  * modelview, eye to clip by the projection, the divide by w and the
  * viewport map with the default depth range [0, 1]. Arithmetic is double
@@ -1071,7 +1107,6 @@ static void mgras_gl_triangle(SGIMgrasState *s, const uint32_t *pos[3],
             int64_t e2 = mgras_gl_edge(&v[0], &v[1], cx, cy);
             double b1, b2, z;
             uint32_t rgb = flat_rgb;
-            uint32_t zq, *stored;
 
             if (!mgras_gl_owns(&v[1], &v[2], e0) ||
                 !mgras_gl_owns(&v[2], &v[0], e1) ||
@@ -1081,36 +1116,202 @@ static void mgras_gl_triangle(SGIMgrasState *s, const uint32_t *pos[3],
             b1 = (double)e1 / area;
             b2 = (double)e2 / area;
             z = v[0].z + b1 * (v[1].z - v[0].z) + b2 * (v[2].z - v[0].z);
-            if (!(z >= 0.0 && z <= 1.0)) {
-                continue;
-            }
-            zq = (uint32_t)llround(z * MGRAS_GL_DEPTH_MAX);
-            stored = mgras_gl_depth(s, win.ox + px, win.oy + py);
-            if (gl->depth_test) {
-                if (!mgras_gl_depth_passes(gl->depth_func, zq, *stored)) {
-                    continue;
-                }
-                if (gl->depth_mask) {
-                    *stored = zq;
-                }
-            }
             if (smooth) {
                 double w0 = (1.0 - b1 - b2) * v[0].inv_w;
                 double w1 = b1 * v[1].inv_w, w2 = b2 * v[2].inv_w;
                 double sum = w0 + w1 + w2;
+                double c[3];
 
-                rgb = 0;
                 for (int k = 0; k < 3; k++) {
-                    double c = (w0 * v[0].rgb[k] + w1 * v[1].rgb[k] +
-                                w2 * v[2].rgb[k]) / sum;
-
-                    rgb = (rgb << 8) | mgras_gl_channel(c);
+                    c[k] = (w0 * v[0].rgb[k] + w1 * v[1].rgb[k] +
+                            w2 * v[2].rgb[k]) / sum;
                 }
+                rgb = mgras_gl_rgb(c);
             }
-            mgras_gl_put(s, banks, win.ox + px, win.oy + py, rgb);
+            mgras_gl_fragment(s, &win, banks, px, py, z, rgb);
         }
     }
     s->dirty = true;
+}
+
+/*
+ * Whether a width-1 segment from a to b produces the fragment at pixel
+ * (px, py): the diamond-exit rule of OpenGL 1.2.1, 3.4.1. The diamond is
+ * the open square |x - xc| + |y - yc| < 1/2 about the pixel's centre, and
+ * the segment produces the fragment when it meets the diamond, unless b
+ * lies in it. The distance from the centre along the segment is convex
+ * and piecewise linear, so its least value lies at an end or where the
+ * segment crosses the centre's row or column; the test is exact in the
+ * 1/256-pixel grid the vertices were snapped to.
+ *
+ * Approximated: the specification lets an implementation depart from
+ * this rule within stated bounds, and it perturbs endpoints on a
+ * diamond's edge in an unstated direction; the board's rule is not
+ * published. The model applies the rule as written with no perturbation.
+ * The discriminating tests are gl-reference/lines and
+ * gl-line-leaves-out-its-last-pixel.
+ */
+static bool mgras_gl_line_covers(const MgrasGLVertex *a,
+                                 const MgrasGLVertex *b, int px, int py)
+{
+    const int64_t half = 1 << (MGRAS_GL_SUBPIXEL_BITS - 1);
+    int64_t cx = ((int64_t)px << MGRAS_GL_SUBPIXEL_BITS) + half;
+    int64_t cy = ((int64_t)py << MGRAS_GL_SUBPIXEL_BITS) + half;
+    int64_t dx = b->x - a->x, dy = b->y - a->y;
+    int64_t ex = cx - a->x, ey = cy - a->y;
+
+    if (llabs(b->x - cx) + llabs(b->y - cy) < half) {
+        return false;
+    }
+    if (llabs(ex) + llabs(ey) < half) {
+        return true;
+    }
+    /* Crossing the centre's column at t = ex / dx, scaled by |dx|. */
+    if (dx && (dx > 0 ? ex >= 0 && ex <= dx : ex <= 0 && ex >= dx) &&
+        llabs(dy * ex - ey * dx) < half * llabs(dx)) {
+        return true;
+    }
+    /* Crossing the centre's row at t = ey / dy, scaled by |dy|. */
+    return dy && (dy > 0 ? ey >= 0 && ey <= dy : ey <= 0 && ey >= dy) &&
+           llabs(dx * ey - ex * dy) < half * llabs(dy);
+}
+
+/*
+ * Transform, map and rasterize one width-1 segment (OpenGL 1.2.1, 3.4.1)
+ * with the provoking vertex's colour when flat shaded. A fragment's
+ * depth and smooth colour come from t, the centre's projection onto the
+ * segment (equations 3.5 to 3.7), the colour corrected for perspective.
+ *
+ * Approximated like a triangle: the fragments are bounded by the viewport
+ * rather than the segment clipped to the view volume, which differs only
+ * in the pixels next to where a segment leaves the viewport, and a vertex
+ * with w <= 0 drops the segment. The discriminating test is
+ * gl-line-bounded-by-the-viewport. glLineWidth, glLineStipple and line
+ * antialiasing are not modelled.
+ */
+static void mgras_gl_line(SGIMgrasState *s, const uint32_t *pa,
+                          const uint32_t *ca, const uint32_t *pb,
+                          const uint32_t *cb, const uint32_t *provoking)
+{
+    SGIMgrasGLContext *gl = mgras_gl(s);
+    unsigned int banks = mgras_gl_draw_banks(s);
+    int vx = gl->viewport[0], vy = gl->viewport[1];
+    int vw = gl->viewport[2], vh = gl->viewport[3];
+    bool smooth = gl->shade_model != MGRAS_GL_FLAT;
+    bool x_major;
+    MgrasGLWindow win;
+    MgrasGLVertex a, b;
+    double flat[3], len2;
+    int major0, major1;
+
+    if (!mgras_gl_window(s, &win) || vw <= 0 || vh <= 0 ||
+        !mgras_gl_transform(s, pa, ca, &a) ||
+        !mgras_gl_transform(s, pb, cb, &b) || (a.x == b.x && a.y == b.y)) {
+        return;
+    }
+    for (int k = 0; k < 3; k++) {
+        flat[k] = mgras_gl_float(provoking[k]);
+    }
+    len2 = (double)(b.x - a.x) * (b.x - a.x) +
+           (double)(b.y - a.y) * (b.y - a.y);
+    x_major = llabs(b.x - a.x) >= llabs(b.y - a.y);
+
+    /*
+     * Walk the major axis a pixel at a time, and in each step try the
+     * minor-axis pixels within one of those the segment spans there.
+     */
+    major0 = (x_major ? MIN(a.x, b.x) : MIN(a.y, b.y)) >>
+             MGRAS_GL_SUBPIXEL_BITS;
+    major1 = (x_major ? MAX(a.x, b.x) : MAX(a.y, b.y)) >>
+             MGRAS_GL_SUBPIXEL_BITS;
+    for (int m = major0 - 1; m <= major1 + 1; m++) {
+        const MgrasGLVertex *lo = x_major ? (a.x <= b.x ? &a : &b) :
+                                            (a.y <= b.y ? &a : &b);
+        const MgrasGLVertex *hi = lo == &a ? &b : &a;
+        double l0 = x_major ? lo->x : lo->y, l1 = x_major ? hi->x : hi->y;
+        double n0 = x_major ? lo->y : lo->x, n1 = x_major ? hi->y : hi->x;
+        double e0 = MAX((double)m * (1 << MGRAS_GL_SUBPIXEL_BITS), l0);
+        double e1 = MIN((double)(m + 1) * (1 << MGRAS_GL_SUBPIXEL_BITS), l1);
+        double f0, f1;
+        int minor0, minor1;
+
+        if (l1 > l0) {
+            e0 = MIN(e0, l1);
+            e1 = MAX(e1, l0);
+            f0 = n0 + (n1 - n0) * (e0 - l0) / (l1 - l0);
+            f1 = n0 + (n1 - n0) * (e1 - l0) / (l1 - l0);
+        } else {
+            f0 = n0;
+            f1 = n1;
+        }
+        minor0 = (int)floor(MIN(f0, f1) / (1 << MGRAS_GL_SUBPIXEL_BITS)) - 1;
+        minor1 = (int)floor(MAX(f0, f1) / (1 << MGRAS_GL_SUBPIXEL_BITS)) + 1;
+        for (int n = minor0; n <= minor1; n++) {
+            int px = x_major ? m : n, py = x_major ? n : m;
+            double cx = (px + 0.5) * (1 << MGRAS_GL_SUBPIXEL_BITS);
+            double cy = (py + 0.5) * (1 << MGRAS_GL_SUBPIXEL_BITS);
+            double t, c[3];
+
+            if (px < MAX(vx, win.x0 - win.ox) ||
+                px > MIN(vx + vw - 1, win.x1 - win.ox) ||
+                py < MAX(vy, win.y0 - win.oy) ||
+                py > MIN(vy + vh - 1, win.y1 - win.oy) ||
+                !mgras_gl_line_covers(&a, &b, px, py)) {
+                continue;
+            }
+            t = ((cx - a.x) * (b.x - a.x) + (cy - a.y) * (b.y - a.y)) / len2;
+            t = MIN(MAX(t, 0.0), 1.0);
+            for (int k = 0; k < 3; k++) {
+                double wa = (1 - t) * a.inv_w, wb = t * b.inv_w;
+
+                c[k] = smooth ? (wa * a.rgb[k] + wb * b.rgb[k]) / (wa + wb) :
+                                flat[k];
+            }
+            mgras_gl_fragment(s, &win, banks, px, py,
+                              a.z + t * (b.z - a.z), mgras_gl_rgb(c));
+        }
+    }
+    s->dirty = true;
+}
+
+/*
+ * A size-1 point covers the pixel holding its window position (OpenGL
+ * 1.2.1, 3.3), at the 1/256-pixel grid the vertex was snapped to. A point
+ * outside the viewport or beyond the near or far plane is dropped, which
+ * is what clipping a point does while w is positive. glPointSize and
+ * point antialiasing are not modelled.
+ */
+static void mgras_gl_point(SGIMgrasState *s, const uint32_t *pos,
+                           const uint32_t *rgba)
+{
+    SGIMgrasGLContext *gl = mgras_gl(s);
+    int vx = gl->viewport[0], vy = gl->viewport[1];
+    int vw = gl->viewport[2], vh = gl->viewport[3];
+    MgrasGLWindow win;
+    MgrasGLVertex v;
+    int px, py;
+
+    if (!mgras_gl_window(s, &win) || !mgras_gl_transform(s, pos, rgba, &v)) {
+        return;
+    }
+    px = v.x >> MGRAS_GL_SUBPIXEL_BITS;
+    py = v.y >> MGRAS_GL_SUBPIXEL_BITS;
+    if (px < MAX(vx, win.x0 - win.ox) ||
+        px > MIN(vx + vw - 1, win.x1 - win.ox) ||
+        py < MAX(vy, win.y0 - win.oy) ||
+        py > MIN(vy + vh - 1, win.y1 - win.oy)) {
+        return;
+    }
+    mgras_gl_fragment(s, &win, mgras_gl_draw_banks(s), px, py, v.z,
+                      mgras_gl_rgb(v.rgb));
+    s->dirty = true;
+}
+
+/* A segment between held or arriving vertices, flat colour from p. */
+static void mgras_gl_draw_line(SGIMgrasState *s, uint32_t *const pos[4],
+                               uint32_t *const rgba[4], int a, int b, int p)
+{
+    mgras_gl_line(s, pos[a], rgba[a], pos[b], rgba[b], rgba[p]);
 }
 
 /* A triangle of three held or arriving vertices, flat colour from p. */
@@ -1154,10 +1355,11 @@ static void mgras_gl_hold(SGIMgrasGLContext *gl, unsigned int n,
  * The context holds at most three earlier vertices, in vertex[] with
  * vertex_count of them in use, and every piece is drawn as soon as its
  * last vertex arrives, so a context switch between two vertices loses
- * nothing. The flat colour follows table 2.9: the last vertex of a
- * triangle, strip or fan triangle, quad or quad-strip quad, and the first
- * vertex of a polygon. Vertices that complete no piece before glEnd draw
- * nothing.
+ * nothing. The flat colour follows table 2.9 and 2.13.7: a point's own,
+ * the second vertex of a segment, the last vertex of a triangle, strip
+ * or fan triangle, quad or quad-strip quad, and the first vertex of a
+ * polygon. A line loop's closing segment is drawn at glEnd. Vertices
+ * that complete no piece before glEnd draw nothing.
  */
 static void mgras_gl_vertex(SGIMgrasState *s, const uint32_t *payload,
                             uint32_t components)
@@ -1180,6 +1382,32 @@ static void mgras_gl_vertex(SGIMgrasState *s, const uint32_t *payload,
     memcpy(cur_rgba, gl->color, sizeof(cur_rgba));
 
     switch (gl->begin) {
+    case MGRAS_GL_BEGIN_POINTS:
+        mgras_gl_point(s, cur, cur_rgba);
+        return;
+    case MGRAS_GL_BEGIN_LINES:
+        if (n < 1) {
+            break;
+        }
+        mgras_gl_draw_line(s, pos, rgba, 0, 3, 3);
+        gl->vertex_count = 0;
+        return;
+    case MGRAS_GL_BEGIN_LINE_STRIP:
+        if (n < 1) {
+            break;
+        }
+        mgras_gl_draw_line(s, pos, rgba, 0, 3, 3);
+        mgras_gl_hold(gl, 0, cur, cur_rgba);
+        return;
+    case MGRAS_GL_BEGIN_LINE_LOOP:
+        /* Slot 0 keeps the first vertex for the closing segment. */
+        if (n < 1) {
+            break;
+        }
+        mgras_gl_draw_line(s, pos, rgba, n - 1, 3, 3);
+        mgras_gl_hold(gl, 1, cur, cur_rgba);
+        gl->vertex_count = 2;
+        return;
     case MGRAS_GL_BEGIN_TRIANGLES:
         if (n < 2) {
             break;
@@ -1257,7 +1485,16 @@ void sgi_mgras_gl_execute(SGIMgrasState *s, uint32_t header,
         return;
     }
     if (mgras_gl_begin_token(header, true)) {
-        /* Vertices that complete no piece draw nothing (2.6.1). */
+        /*
+         * A line loop closes from its last vertex to its first, in the
+         * first vertex's colour when flat (2.13.7). Vertices that
+         * complete no piece draw nothing (2.6.1).
+         */
+        if (gl->begin == MGRAS_GL_BEGIN_LINE_LOOP && gl->vertex_count == 2) {
+            mgras_gl_line(s, gl->vertex[1], gl->vertex_color[1],
+                          gl->vertex[0], gl->vertex_color[0],
+                          gl->vertex_color[0]);
+        }
         gl->begin = 0;
         gl->vertex_count = 0;
         return;
