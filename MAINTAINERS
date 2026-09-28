@@ -1528,6 +1528,7 @@ F: tests/qtest/libqos/pci-sgi-bridge.h
 F: tests/qtest/libqos/sgi-bridge-machine.c
 F: tests/qtest/sgi-bridge-bus-test.c
 F: tests/qtest/sgi-ioc3-eth-test.c
+F: tests/qtest/sgi-replay-test.c
 F: tests/qtest/sgi-*.h
 F: tests/qtest/sn0-*
 F: tests/qtest/sn-builder-test.c

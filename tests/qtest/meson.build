@@ -140,7 +140,7 @@ slow_qtests = {
   # nothing else running, and 153.68s for sn-builder-test with four other
   # tests in flight. Budget three times the loaded figure, the way the rest of
   # this table does.
-  'sgi-mgras-replay-test': 330,
+  'sgi-replay-test': 330,
   'sn-builder-test': 460,
   # The shoehorn's card-behind-a-plain-expansion-board and card-behind-the
   # catalogue-placed-board cases each start their own machine. 5 runs
@@ -369,7 +369,7 @@ endif
 
 sn0_mgras_qtests = \
   (config_all_devices.has_key('CONFIG_SGI_SN0') ?
-    ['sn0-origin2000-mgras-test', 'sgi-mgras-replay-test'] : [])
+    ['sn0-origin2000-mgras-test', 'sgi-replay-test'] : [])
 if not config_all_devices.has_key('CONFIG_SGI_MGRAS')
   sn0_mgras_qtests = []
 endif

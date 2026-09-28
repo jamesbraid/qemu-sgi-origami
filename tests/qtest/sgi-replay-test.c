@@ -308,9 +308,9 @@ static void replay_plane(QTestState *qts, const char *path, unsigned int line,
 }
 
 /*
- * A line number given through MGRAS_START_LINE/MGRAS_END_LINE, not one
- * read out of a replay file -- parse_number()'s own messages assume the
- * latter, so this reports the offending environment variable instead.
+ * A line number given through SGI_REPLAY_START_LINE/SGI_REPLAY_END_LINE,
+ * not one read out of a replay file -- parse_number()'s own messages assume
+ * the latter, so this reports the offending environment variable instead.
  */
 static unsigned int parse_env_line(const char *name, const char *value)
 {
@@ -367,10 +367,10 @@ static void replay_line(QTestState *qts, const char *path, unsigned int line,
 }
 
 /*
- * Replay @path against a fresh machine, or, with MGRAS_CHECKPOINT_LOAD set,
- * against one restored from an earlier run's MGRAS_CHECKPOINT_SAVE. Either
- * way MGRAS_START_LINE/MGRAS_END_LINE (1-based, inclusive, default the
- * whole file) select which lines of @path this process actually replays --
+ * Replay @path against a fresh machine, or, with SGI_REPLAY_CHECKPOINT_LOAD
+ * set, against one restored from an earlier run's SGI_REPLAY_CHECKPOINT_SAVE.
+ * Either way SGI_REPLAY_START_LINE/SGI_REPLAY_END_LINE (1-based, inclusive,
+ * default the whole file) select which lines of @path this process replays --
  * a checkpoint stands in for the lines before it, so a save at line N and a
  * load replaying N+1..M skip re-executing 1..N through the model.
  *
@@ -383,12 +383,12 @@ static void replay_line(QTestState *qts, const char *path, unsigned int line,
  */
 static void run_replay(const char *path, bool check_default_trace)
 {
-    const char *trace = g_getenv("MGRAS_TRACE");
-    const char *screendump = g_getenv("MGRAS_SCREENDUMP");
-    const char *checkpoint_load = g_getenv("MGRAS_CHECKPOINT_LOAD");
-    const char *checkpoint_save = g_getenv("MGRAS_CHECKPOINT_SAVE");
-    const char *start_line_env = g_getenv("MGRAS_START_LINE");
-    const char *end_line_env = g_getenv("MGRAS_END_LINE");
+    const char *trace = g_getenv("SGI_REPLAY_TRACE");
+    const char *screendump = g_getenv("SGI_REPLAY_SCREENDUMP");
+    const char *checkpoint_load = g_getenv("SGI_REPLAY_CHECKPOINT_LOAD");
+    const char *checkpoint_save = g_getenv("SGI_REPLAY_CHECKPOINT_SAVE");
+    const char *start_line_env = g_getenv("SGI_REPLAY_START_LINE");
+    const char *end_line_env = g_getenv("SGI_REPLAY_END_LINE");
     g_autofree char *contents = NULL;
     g_autofree char *trace_contents = NULL;
     g_autofree char *temporary_trace = NULL;
@@ -406,7 +406,7 @@ static void run_replay(const char *path, bool check_default_trace)
         g_error("cannot read replay %s: %s", path, error->message);
     }
     if (!trace || !*trace) {
-        fd = g_file_open_tmp("sgi-mgras-replay-XXXXXX.trace",
+        fd = g_file_open_tmp("sgi-replay-XXXXXX.trace",
                              &temporary_trace, &error);
         if (fd < 0) {
             g_error("cannot create trace file: %s", error->message);
@@ -433,9 +433,9 @@ static void run_replay(const char *path, bool check_default_trace)
     lines = g_strsplit(contents, "\n", -1);
     line_count = g_strv_length(lines);
     start_line = start_line_env && *start_line_env ?
-                 parse_env_line("MGRAS_START_LINE", start_line_env) : 1;
+                 parse_env_line("SGI_REPLAY_START_LINE", start_line_env) : 1;
     end_line = end_line_env && *end_line_env ?
-               parse_env_line("MGRAS_END_LINE", end_line_env) : line_count;
+               parse_env_line("SGI_REPLAY_END_LINE", end_line_env) : line_count;
     if (start_line < 1 || end_line < start_line || end_line > line_count) {
         g_error("%s: line range %u..%u is outside 1..%u", path,
                 start_line, end_line, line_count);
@@ -492,7 +492,7 @@ static void run_replay(const char *path, bool check_default_trace)
 
 static void test_replay(void)
 {
-    const char *path = g_getenv("MGRAS_REPLAY");
+    const char *path = g_getenv("SGI_REPLAY_FILE");
     bool custom = path && *path;
 
     run_replay(custom ? path : DEFAULT_REPLAY, !custom);
@@ -505,13 +505,13 @@ static void test_replay_screendump(void)
     g_autoptr(GError) error = NULL;
     int fd;
 
-    fd = g_file_open_tmp("sgi-mgras-replay-XXXXXX.ppm", &path, &error);
+    fd = g_file_open_tmp("sgi-replay-XXXXXX.ppm", &path, &error);
     g_assert_no_error(error);
     close(fd);
     unlink(path);
-    g_setenv("MGRAS_SCREENDUMP", path, true);
+    g_setenv("SGI_REPLAY_SCREENDUMP", path, true);
     run_replay(MINIMAL_REPLAY, false);
-    g_unsetenv("MGRAS_SCREENDUMP");
+    g_unsetenv("SGI_REPLAY_SCREENDUMP");
     g_assert_true(g_file_get_contents(path, &contents, NULL, &error));
     g_assert_no_error(error);
     g_assert_true(g_str_has_prefix(contents, "P6\n1280 1024\n255\n"));
@@ -529,7 +529,7 @@ static void test_masked_read(void)
 }
 
 /*
- * MGRAS_START_LINE/MGRAS_END_LINE are plain line numbers with no
+ * SGI_REPLAY_START_LINE/SGI_REPLAY_END_LINE are plain line numbers with no
  * cross-check against an unrelated checkpoint file's own boundary --
  * resuming at the line a checkpoint was saved from, instead of the line
  * after it, would silently replay that line's write a second time. Prove
@@ -578,21 +578,21 @@ static void test_checkpoint_boundary_runs_once(void)
     g_assert_no_error(error);
     close(fd);
 
-    g_setenv("MGRAS_END_LINE", "2", true);
-    g_setenv("MGRAS_CHECKPOINT_SAVE", checkpoint_path, true);
-    g_setenv("MGRAS_TRACE", trace_save_path, true);
+    g_setenv("SGI_REPLAY_END_LINE", "2", true);
+    g_setenv("SGI_REPLAY_CHECKPOINT_SAVE", checkpoint_path, true);
+    g_setenv("SGI_REPLAY_TRACE", trace_save_path, true);
     run_replay(fixture_path, false);
-    g_unsetenv("MGRAS_CHECKPOINT_SAVE");
+    g_unsetenv("SGI_REPLAY_CHECKPOINT_SAVE");
 
-    g_setenv("MGRAS_CHECKPOINT_LOAD", checkpoint_path, true);
-    g_setenv("MGRAS_START_LINE", "3", true);
-    g_setenv("MGRAS_END_LINE", "3", true);
-    g_setenv("MGRAS_TRACE", trace_load_path, true);
+    g_setenv("SGI_REPLAY_CHECKPOINT_LOAD", checkpoint_path, true);
+    g_setenv("SGI_REPLAY_START_LINE", "3", true);
+    g_setenv("SGI_REPLAY_END_LINE", "3", true);
+    g_setenv("SGI_REPLAY_TRACE", trace_load_path, true);
     run_replay(fixture_path, false);
-    g_unsetenv("MGRAS_CHECKPOINT_LOAD");
-    g_unsetenv("MGRAS_START_LINE");
-    g_unsetenv("MGRAS_END_LINE");
-    g_unsetenv("MGRAS_TRACE");
+    g_unsetenv("SGI_REPLAY_CHECKPOINT_LOAD");
+    g_unsetenv("SGI_REPLAY_START_LINE");
+    g_unsetenv("SGI_REPLAY_END_LINE");
+    g_unsetenv("SGI_REPLAY_TRACE");
 
     g_assert_true(g_file_get_contents(trace_save_path, &trace_save, NULL,
                                       &error));
@@ -626,7 +626,7 @@ static void test_checkpoint_boundary_runs_once(void)
 /*
  * checkpoint-boundary-once proves the MMIO-count contract at a line
  * boundary; neither it nor replay-screendump ever look at what a
- * screendump taken after MGRAS_CHECKPOINT_LOAD actually contains. Split
+ * screendump taken after SGI_REPLAY_CHECKPOINT_LOAD actually contains. Split
  * fill.replay before its display-enable write (line 129: the two
  * display-pixel assertions straddling it show display_enabled flips
  * there) so the loaded process both restores painted-but-not-yet-shown
@@ -659,23 +659,23 @@ static void test_checkpoint_screendump_matches_uninterrupted_replay(void)
     close(fd);
     unlink(checkpoint_path);
 
-    g_setenv("MGRAS_SCREENDUMP", full_path, true);
+    g_setenv("SGI_REPLAY_SCREENDUMP", full_path, true);
     run_replay(DEFAULT_REPLAY, false);
-    g_unsetenv("MGRAS_SCREENDUMP");
+    g_unsetenv("SGI_REPLAY_SCREENDUMP");
 
-    g_setenv("MGRAS_END_LINE", "116", true);
-    g_setenv("MGRAS_CHECKPOINT_SAVE", checkpoint_path, true);
+    g_setenv("SGI_REPLAY_END_LINE", "116", true);
+    g_setenv("SGI_REPLAY_CHECKPOINT_SAVE", checkpoint_path, true);
     run_replay(DEFAULT_REPLAY, false);
-    g_unsetenv("MGRAS_CHECKPOINT_SAVE");
-    g_unsetenv("MGRAS_END_LINE");
+    g_unsetenv("SGI_REPLAY_CHECKPOINT_SAVE");
+    g_unsetenv("SGI_REPLAY_END_LINE");
 
-    g_setenv("MGRAS_CHECKPOINT_LOAD", checkpoint_path, true);
-    g_setenv("MGRAS_START_LINE", "117", true);
-    g_setenv("MGRAS_SCREENDUMP", split_path, true);
+    g_setenv("SGI_REPLAY_CHECKPOINT_LOAD", checkpoint_path, true);
+    g_setenv("SGI_REPLAY_START_LINE", "117", true);
+    g_setenv("SGI_REPLAY_SCREENDUMP", split_path, true);
     run_replay(DEFAULT_REPLAY, false);
-    g_unsetenv("MGRAS_CHECKPOINT_LOAD");
-    g_unsetenv("MGRAS_START_LINE");
-    g_unsetenv("MGRAS_SCREENDUMP");
+    g_unsetenv("SGI_REPLAY_CHECKPOINT_LOAD");
+    g_unsetenv("SGI_REPLAY_START_LINE");
+    g_unsetenv("SGI_REPLAY_SCREENDUMP");
 
     g_assert_true(g_file_get_contents(full_path, &full_contents, &full_len,
                                       &error));
@@ -754,17 +754,17 @@ static void test_overlay_migration(void)
     end_line = g_strdup_printf("%u", marker);
     start_line = g_strdup_printf("%u", marker + 1);
 
-    g_setenv("MGRAS_END_LINE", end_line, true);
-    g_setenv("MGRAS_CHECKPOINT_SAVE", checkpoint_path, true);
+    g_setenv("SGI_REPLAY_END_LINE", end_line, true);
+    g_setenv("SGI_REPLAY_CHECKPOINT_SAVE", checkpoint_path, true);
     run_replay(OVERLAY, false);
-    g_unsetenv("MGRAS_CHECKPOINT_SAVE");
-    g_unsetenv("MGRAS_END_LINE");
+    g_unsetenv("SGI_REPLAY_CHECKPOINT_SAVE");
+    g_unsetenv("SGI_REPLAY_END_LINE");
 
-    g_setenv("MGRAS_CHECKPOINT_LOAD", checkpoint_path, true);
-    g_setenv("MGRAS_START_LINE", start_line, true);
+    g_setenv("SGI_REPLAY_CHECKPOINT_LOAD", checkpoint_path, true);
+    g_setenv("SGI_REPLAY_START_LINE", start_line, true);
     run_replay(OVERLAY, false);
-    g_unsetenv("MGRAS_CHECKPOINT_LOAD");
-    g_unsetenv("MGRAS_START_LINE");
+    g_unsetenv("SGI_REPLAY_CHECKPOINT_LOAD");
+    g_unsetenv("SGI_REPLAY_START_LINE");
     unlink(checkpoint_path);
 }
 
@@ -790,10 +790,10 @@ static void test_dma_image_transfer(void)
 static void test_invalid_replay(const char *path, const char *message)
 {
     if (g_test_subprocess()) {
-        run_replay(g_getenv("MGRAS_INVALID_REPLAY"), false);
+        run_replay(g_getenv("SGI_REPLAY_INVALID_FILE"), false);
         return;
     }
-    g_setenv("MGRAS_INVALID_REPLAY", path, true);
+    g_setenv("SGI_REPLAY_INVALID_FILE", path, true);
     /*
      * The child boots a real origin2000 fixture before it ever reaches
      * the invalid line. On the eight-CPU machine this harness used before
@@ -803,7 +803,7 @@ static void test_invalid_replay(const char *path, const char *message)
      * the rest of this suite's budget uses.
      */
     g_test_trap_subprocess(NULL, 60 * G_TIME_SPAN_SECOND, 0);
-    g_unsetenv("MGRAS_INVALID_REPLAY");
+    g_unsetenv("SGI_REPLAY_INVALID_FILE");
     g_test_trap_assert_failed();
     g_test_trap_assert_stderr(message);
 }
@@ -880,35 +880,42 @@ static void test_invalid_dma_hex_mismatch(void)
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
-    qtest_add_func("sgi-mgras/replay", test_replay);
-    qtest_add_func("sgi-mgras/replay-screendump", test_replay_screendump);
-    qtest_add_func("sgi-mgras/minimal-replay", test_minimal_replay);
-    qtest_add_func("sgi-mgras/masked-read", test_masked_read);
-    qtest_add_func("sgi-mgras/checkpoint-boundary-once",
+    qtest_add_func("sgi-replay/mgras/replay", test_replay);
+    qtest_add_func("sgi-replay/mgras/replay-screendump",
+                   test_replay_screendump);
+    qtest_add_func("sgi-replay/mgras/minimal-replay", test_minimal_replay);
+    qtest_add_func("sgi-replay/mgras/masked-read", test_masked_read);
+    qtest_add_func("sgi-replay/mgras/checkpoint-boundary-once",
                    test_checkpoint_boundary_runs_once);
-    qtest_add_func("sgi-mgras/checkpoint-screendump-matches-replay",
+    qtest_add_func("sgi-replay/mgras/checkpoint-screendump-matches-replay",
                    test_checkpoint_screendump_matches_uninterrupted_replay);
-    qtest_add_func("sgi-mgras/cmap-high-byte", test_cmap_high_byte);
-    qtest_add_func("sgi-mgras/char-modes", test_char_modes);
-    qtest_add_func("sgi-mgras/cmap-xmap-wid", test_cmap_xmap_wid);
-    qtest_add_func("sgi-mgras/root-icon", test_root_icon);
-    qtest_add_func("sgi-mgras/overlay", test_overlay);
-    qtest_add_func("sgi-mgras/overlay-migration", test_overlay_migration);
-    qtest_add_func("sgi-mgras/dma-image-transfer", test_dma_image_transfer);
-    qtest_add_func("sgi-mgras/invalid-number", test_invalid_number);
-    qtest_add_func("sgi-mgras/invalid-bounds", test_invalid_bounds);
-    qtest_add_func("sgi-mgras/invalid-extra", test_invalid_extra);
-    qtest_add_func("sgi-mgras/invalid-read-extra", test_invalid_read_extra);
-    qtest_add_func("sgi-mgras/invalid-read-mask", test_invalid_read_mask);
-    qtest_add_func("sgi-mgras/invalid-read-mismatch",
+    qtest_add_func("sgi-replay/mgras/cmap-high-byte", test_cmap_high_byte);
+    qtest_add_func("sgi-replay/mgras/char-modes", test_char_modes);
+    qtest_add_func("sgi-replay/mgras/cmap-xmap-wid", test_cmap_xmap_wid);
+    qtest_add_func("sgi-replay/mgras/root-icon", test_root_icon);
+    qtest_add_func("sgi-replay/mgras/overlay", test_overlay);
+    qtest_add_func("sgi-replay/mgras/overlay-migration",
+                   test_overlay_migration);
+    qtest_add_func("sgi-replay/mgras/dma-image-transfer",
+                   test_dma_image_transfer);
+    qtest_add_func("sgi-replay/mgras/invalid-number", test_invalid_number);
+    qtest_add_func("sgi-replay/mgras/invalid-bounds", test_invalid_bounds);
+    qtest_add_func("sgi-replay/mgras/invalid-extra", test_invalid_extra);
+    qtest_add_func("sgi-replay/mgras/invalid-read-extra",
+                   test_invalid_read_extra);
+    qtest_add_func("sgi-replay/mgras/invalid-read-mask",
+                   test_invalid_read_mask);
+    qtest_add_func("sgi-replay/mgras/invalid-read-mismatch",
                    test_invalid_read_mismatch);
-    qtest_add_func("sgi-mgras/invalid-masked-mismatch",
+    qtest_add_func("sgi-replay/mgras/invalid-masked-mismatch",
                    test_invalid_masked_mismatch);
-    qtest_add_func("sgi-mgras/invalid-overflow", test_invalid_overflow);
-    qtest_add_func("sgi-mgras/invalid-wid-bounds", test_invalid_wid_bounds);
-    qtest_add_func("sgi-mgras/invalid-mismatch", test_invalid_mismatch);
-    qtest_add_func("sgi-mgras/invalid-dma-extra", test_invalid_dma_extra);
-    qtest_add_func("sgi-mgras/invalid-dma-hex-mismatch",
+    qtest_add_func("sgi-replay/mgras/invalid-overflow", test_invalid_overflow);
+    qtest_add_func("sgi-replay/mgras/invalid-wid-bounds",
+                   test_invalid_wid_bounds);
+    qtest_add_func("sgi-replay/mgras/invalid-mismatch", test_invalid_mismatch);
+    qtest_add_func("sgi-replay/mgras/invalid-dma-extra",
+                   test_invalid_dma_extra);
+    qtest_add_func("sgi-replay/mgras/invalid-dma-hex-mismatch",
                    test_invalid_dma_hex_mismatch);
     return g_test_run();
 }
