@@ -371,7 +371,8 @@ static void test_warm_reset(void)
     qtest_clock_step(qts, 1);
     /*
      * Fenced in: the core resets and every port whose fence admits the
-     * source is reset, the source's own included ("itself included").
+     * source is reset, the source's own port included (XBridge
+     * specification p.81).
      */
     reg_write(qts, 0x78, 0xff);
     reg_write(qts, 0x80 + (PORT_E - 8) * 8, 0xff & ~(1U << (PORT_A - 8)));
