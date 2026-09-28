@@ -74,10 +74,10 @@ import os
 import re
 
 from qemu_test import QemuSystemTest, skipIfMissingEnv
+from qemu_test.asset import LocalAsset
 
 from lib_prom import (FORK_ROOT, MACHINES, drive_console, file_record,
-                      file_sha256, fork_git_identity, require_assets,
-                      utc_now)
+                      file_sha256, fork_git_identity, utc_now)
 
 
 # The miniroot kernel's own release banner, printed at kernel entry. The
@@ -265,11 +265,14 @@ class IrixMiniroot(QemuSystemTest):
     class.
     """
 
+    ASSET_PROM = LocalAsset(FIRMWARE_REL, PROM_SHA256)
+    ASSET_KERNEL = LocalAsset(
+        os.path.join(TFTP_REL, KERNEL_NAME), KERNEL_SHA256)
+
     @skipIfMissingEnv('QEMU_TEST_SGI_ASSET_DIR')
     def test_irix_miniroot(self):
-        kernel_rel = os.path.join(TFTP_REL, KERNEL_NAME)
-        assets = require_assets(self, FIRMWARE_REL, kernel_rel)
-        prom, kernel = assets[FIRMWARE_REL], assets[kernel_rel]
+        prom = self.ASSET_PROM.fetch()
+        kernel = self.ASSET_KERNEL.fetch()
         tftp = os.path.dirname(kernel)
 
         # Refuse a stale or wrong-release PROM/kernel before spending a
