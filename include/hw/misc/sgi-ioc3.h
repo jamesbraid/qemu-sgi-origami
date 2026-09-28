@@ -521,6 +521,13 @@ struct SGIIOC3State {
     /* The receive timer's count while it is not running. */
     uint16_t sdma_rx_idle_count[SGI_IOC3_SERIAL_PORTS];
 
+    /*
+     * A looped-back character still on the line: when it reaches the
+     * receiver, or 0 with none in flight. The timer is only its wake-up.
+     */
+    int64_t sdma_loop_due[SGI_IOC3_SERIAL_PORTS];
+    QEMUTimer *sdma_loop_timer[SGI_IOC3_SERIAL_PORTS];
+
     AddressSpace *dma_as;   /* ring transfers go through the Bridge */
 
     uint32_t chip_control;

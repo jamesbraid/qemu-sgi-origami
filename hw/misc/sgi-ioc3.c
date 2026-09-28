@@ -33,6 +33,8 @@ static void sgi_ioc3_update_irq(SGIIOC3State *s)
 }
 
 static void sgi_ioc3_sdma_run(SGIIOC3State *s, unsigned int port);
+static void sgi_ioc3_sdma_run_from(SGIIOC3State *s, unsigned int port,
+                                   int64_t since);
 static void sgi_ioc3_sdma_rx_timer_catch_up(SGIIOC3State *s);
 
 static void sgi_ioc3_serial_irq(void *opaque, int port, int level)
@@ -765,8 +767,13 @@ static bool sgi_ioc3_sdma_post(SGIIOC3State *s, unsigned int port,
     return true;
 }
 
-/* The reload is receive idleness, in 16 kHz ticks from the last delivery. */
-static void sgi_ioc3_sdma_rx_timer_start(SGIIOC3State *s, unsigned int port)
+/*
+ * The reload is receive idleness, in 16 kHz ticks from the last delivery,
+ * which `since` places: a loopback arrival serviced late still counts from
+ * when it reached the receiver.
+ */
+static void sgi_ioc3_sdma_rx_timer_start(SGIIOC3State *s, unsigned int port,
+                                         int64_t since)
 {
     uint32_t reload = *sgi_ioc3_sdma_port_reg(s, port, SGI_IOC3_SDMA_RX_TIMER)
                       & SGI_IOC3_SDMA_TIMER_RELOAD;
@@ -774,8 +781,7 @@ static void sgi_ioc3_sdma_rx_timer_start(SGIIOC3State *s, unsigned int port)
     /* Once it has run, the count it held from the reload write is spent. */
     s->sdma_rx_idle_count[port] = 0;
     timer_mod(s->sdma_rx_timer[port],
-              qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
-              (int64_t)reload * SGI_IOC3_SDMA_TIMER_TICK_NS);
+              since + (int64_t)reload * SGI_IOC3_SDMA_TIMER_TICK_NS);
 }
 
 /* A drained ring expires into silence. */
@@ -804,12 +810,32 @@ static void sgi_ioc3_sdma_rx_timer_expired(void *opaque)
     }
 }
 
+/* A looped-back character reaches the receiver; the walk goes on from then. */
+static void sgi_ioc3_sdma_loop_arrived(SGIIOC3State *s, unsigned int port)
+{
+    int64_t when = s->sdma_loop_due[port];
+
+    s->sdma_loop_due[port] = 0;
+    timer_del(s->sdma_loop_timer[port]);
+    sgi_ioc3_sdma_run_from(s, port, when);
+}
+
+static void sgi_ioc3_sdma_loop_expired(void *opaque)
+{
+    SGIIOC3SerialAlias *handle = opaque;
+
+    if (handle->chip->sdma_loop_due[handle->port]) {
+        sgi_ioc3_sdma_loop_arrived(handle->chip, handle->port);
+    }
+}
+
 /*
  * An expiry already due happens before an access, not whenever the main
  * loop next services the timer. The count field is read off the clock, so
  * without this a guest can read a spent count while the source it raises
  * is still clear: the IO-8 board test loads a two-tick reload, waits 10 ms
- * and requires the source set (docs/datasheets/ioc3.md).
+ * and requires the source set (docs/datasheets/ioc3.md). A loopback
+ * arrival already due goes first, since it is what starts the timer.
  */
 static void sgi_ioc3_sdma_rx_timer_catch_up(SGIIOC3State *s)
 {
@@ -818,6 +844,11 @@ static void sgi_ioc3_sdma_rx_timer_catch_up(SGIIOC3State *s)
 
     for (port = 0; port < SGI_IOC3_SERIAL_PORTS; port++) {
         QEMUTimer *timer = s->sdma_rx_timer[port];
+
+        /* Each arrival can send the next character; the ring bounds it. */
+        while (s->sdma_loop_due[port] && s->sdma_loop_due[port] <= now) {
+            sgi_ioc3_sdma_loop_arrived(s, port);
+        }
 
         if (timer_pending(timer) && timer_expire_time_ns(timer) <= now) {
             timer_del(timer);
@@ -850,13 +881,20 @@ static void sgi_ioc3_sdma_update_high_water(SGIIOC3State *s, unsigned int port)
  * End of burst: a short group posts now rather than on timer expiry; the
  * interrupt still waits for the timer, the timing drivers observe.
  */
-static void sgi_ioc3_sdma_flush(SGIIOC3State *s, unsigned int port)
+static void sgi_ioc3_sdma_flush(SGIIOC3State *s, unsigned int port,
+                                int64_t since)
 {
     uint32_t *produce = sgi_ioc3_sdma_port_reg(s, port,
                                                SGI_IOC3_SDMA_RX_PRODUCE);
     uint32_t *consume = sgi_ioc3_sdma_port_reg(s, port,
                                                SGI_IOC3_SDMA_RX_CONSUME);
     uint32_t mask = sgi_ioc3_sdma_pointer_mask(s);
+
+    /* A looped-back character still on the line continues the burst. */
+    if (s->sdma_loop_due[port]) {
+        sgi_ioc3_sdma_update_high_water(s, port);
+        return;
+    }
 
     if (s->sdma_packed[port]) {
         sgi_ioc3_sdma_post(s, port, produce, consume, mask);
@@ -870,7 +908,7 @@ static void sgi_ioc3_sdma_flush(SGIIOC3State *s, unsigned int port)
     s->sdma_delivered[port] = false;
 
     if (*consume & SGI_IOC3_SDMA_ARM_RX_TIMER) {
-        sgi_ioc3_sdma_rx_timer_start(s, port);
+        sgi_ioc3_sdma_rx_timer_start(s, port, since);
     }
 }
 
@@ -882,6 +920,14 @@ static void sgi_ioc3_sdma_receive(SGIIOC3State *s, unsigned int port)
                                                SGI_IOC3_SDMA_RX_CONSUME);
     uint32_t mask = sgi_ioc3_sdma_pointer_mask(s);
     SerialState *serial = &s->serial[port];
+
+    /*
+     * The 16550 core loops a character back the moment it is written; on
+     * the part it takes a character time on the line to arrive.
+     */
+    if (s->sdma_loop_due[port]) {
+        return;
+    }
 
     while (sgi_ioc3_sdma_running(s, port)) {
         uint8_t lsr;
@@ -937,7 +983,8 @@ static void sgi_ioc3_sdma_receive(SGIIOC3State *s, unsigned int port)
  * Each control byte types its data byte; the empty type ends the entry, and
  * sending past it puts memory garbage on the wire.
  */
-static void sgi_ioc3_sdma_transmit(SGIIOC3State *s, unsigned int port)
+static void sgi_ioc3_sdma_transmit(SGIIOC3State *s, unsigned int port,
+                                   int64_t since)
 {
     uint32_t *produce = sgi_ioc3_sdma_port_reg(s, port,
                                                SGI_IOC3_SDMA_TX_PRODUCE);
@@ -952,6 +999,7 @@ static void sgi_ioc3_sdma_transmit(SGIIOC3State *s, unsigned int port)
            (*consume & mask) != (*produce & mask)) {
         uint8_t entry[SGI_IOC3_SDMA_ENTRY_SIZE];
         unsigned int i;
+        bool loop;
 
         /*
          * A refused fetch stops the walk: the stack bytes are not an entry.
@@ -975,11 +1023,23 @@ static void sgi_ioc3_sdma_transmit(SGIIOC3State *s, unsigned int port)
 
             switch (type) {
             case SGI_IOC3_SDMA_TX_CHARACTER:
-                if (!s->sdma_tx_ready[port]) {
+                /* In loopback the line carries one character at a time. */
+                if (!s->sdma_tx_ready[port] || s->sdma_loop_due[port]) {
                     return;
+                }
+                loop = serial->mcr & UART_MCR_LOOP;
+                /* What has already arrived goes ahead of this one. */
+                if (loop) {
+                    sgi_ioc3_sdma_receive(s, port);
                 }
                 serial_io_ops.write(serial, UART_RBR_THR, entry[i], 1);
                 sgi_ioc3_serial_record(s, port, entry[i]);
+                if (loop) {
+                    s->sdma_loop_due[port] = since +
+                                             serial->char_transmit_time;
+                    timer_mod(s->sdma_loop_timer[port],
+                              s->sdma_loop_due[port]);
+                }
                 /*
                  * Drain per character or loopback overruns the 16-byte FIFO.
                  */
@@ -1028,7 +1088,9 @@ static bool sgi_ioc3_sdma_aimed(SGIIOC3State *s, unsigned int port)
     return field == (uart[port] & 0xfff) / 8;
 }
 
-static void sgi_ioc3_sdma_run(SGIIOC3State *s, unsigned int port)
+/* `since` is when the walk starts: now, or when a loopback arrival was due. */
+static void sgi_ioc3_sdma_run_from(SGIIOC3State *s, unsigned int port,
+                                   int64_t since)
 {
     /* The walk drives a 16550 the board may not have fitted. */
     if (!s->board->serial[port]) {
@@ -1045,11 +1107,16 @@ static void sgi_ioc3_sdma_run(SGIIOC3State *s, unsigned int port)
     }
     s->sdma_busy[port] = true;
 
-    sgi_ioc3_sdma_transmit(s, port);
+    sgi_ioc3_sdma_transmit(s, port, since);
     sgi_ioc3_sdma_receive(s, port);
-    sgi_ioc3_sdma_flush(s, port);
+    sgi_ioc3_sdma_flush(s, port, since);
 
     s->sdma_busy[port] = false;
+}
+
+static void sgi_ioc3_sdma_run(SGIIOC3State *s, unsigned int port)
+{
+    sgi_ioc3_sdma_run_from(s, port, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
 }
 
 /* Resets the four indices and nothing else; the settings survive. */
@@ -1209,7 +1276,8 @@ static void sgi_ioc3_sdma_write_port(SGIIOC3State *s, unsigned int port,
         if (!(*consume & SGI_IOC3_SDMA_ARM_RX_TIMER)) {
             timer_del(s->sdma_rx_timer[port]);
         } else if ((*produce ^ *consume) & mask) {
-            sgi_ioc3_sdma_rx_timer_start(s, port);
+            sgi_ioc3_sdma_rx_timer_start(s, port,
+                                         qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
         }
         return;
     }
@@ -1745,6 +1813,9 @@ static void sgi_ioc3_realize(PCIDevice *dev, Error **errp)
         s->sdma_rx_timer[i] = timer_new_ns(QEMU_CLOCK_VIRTUAL,
                                            sgi_ioc3_sdma_rx_timer_expired,
                                            &s->sdma_alias_port[i]);
+        s->sdma_loop_timer[i] = timer_new_ns(QEMU_CLOCK_VIRTUAL,
+                                             sgi_ioc3_sdma_loop_expired,
+                                             &s->sdma_alias_port[i]);
 
         if (!s->board->serial[i]) {
             continue;
@@ -1823,6 +1894,7 @@ static void sgi_ioc3_exit(PCIDevice *dev)
             qdev_unrealize(DEVICE(&s->serial[i]));
         }
         timer_free(s->sdma_rx_timer[i]);
+        timer_free(s->sdma_loop_timer[i]);
     }
     timer_del(s->int_out_timer);
     if (s->board->eth) {
@@ -1855,6 +1927,9 @@ static void sgi_ioc3_reset_hold(Object *obj, ResetType type)
     for (i = 0; i < SGI_IOC3_SERIAL_PORTS; i++) {
         timer_del(s->sdma_rx_timer[i]);
         s->sdma_rx_idle_count[i] = 0;
+        /* The 16550's own reset empties the FIFO the character sits in. */
+        timer_del(s->sdma_loop_timer[i]);
+        s->sdma_loop_due[i] = 0;
         s->sdma_tx_slot[i] = 0;
         s->sdma_packed[i] = 0;
         memset(s->sdma_packer[i], 0, SGI_IOC3_SDMA_ENTRY_SIZE);
@@ -1961,6 +2036,8 @@ static int sgi_ioc3_pre_load(void *opaque)
     SGIIOC3State *s = opaque;
 
     memset(s->sdma_tx_slot, 0, sizeof(s->sdma_tx_slot));
+    /* A stream without the loopback subsection has nothing on the line. */
+    memset(s->sdma_loop_due, 0, sizeof(s->sdma_loop_due));
     return 0;
 }
 
@@ -2003,6 +2080,42 @@ static int sgi_ioc3_post_load(void *opaque, int version_id)
     }
     return 0;
 }
+
+static bool sgi_ioc3_sdma_loop_needed(void *opaque)
+{
+    SGIIOC3State *s = opaque;
+
+    return s->sdma_loop_due[0] || s->sdma_loop_due[1];
+}
+
+/* The due time is the state; the timer is only its wake-up. */
+static int sgi_ioc3_sdma_loop_post_load(void *opaque, int version_id)
+{
+    SGIIOC3State *s = opaque;
+    unsigned int i;
+
+    for (i = 0; i < SGI_IOC3_SERIAL_PORTS; i++) {
+        if (s->sdma_loop_due[i]) {
+            timer_mod(s->sdma_loop_timer[i], s->sdma_loop_due[i]);
+        } else {
+            timer_del(s->sdma_loop_timer[i]);
+        }
+    }
+    return 0;
+}
+
+static const VMStateDescription vmstate_sgi_ioc3_sdma_loop = {
+    .name = "sgi-ioc3/sdma-loop",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = sgi_ioc3_sdma_loop_needed,
+    .post_load = sgi_ioc3_sdma_loop_post_load,
+    .fields = (const VMStateField[]) {
+        VMSTATE_INT64_ARRAY(sdma_loop_due, SGIIOC3State,
+                            SGI_IOC3_SERIAL_PORTS),
+        VMSTATE_END_OF_LIST()
+    }
+};
 
 static const VMStateDescription vmstate_sgi_ioc3 = {
     .name = "sgi-ioc3",
@@ -2049,6 +2162,10 @@ static const VMStateDescription vmstate_sgi_ioc3 = {
                                 SGI_IOC3_SERIAL_PORTS),
         VMSTATE_UINT32_ARRAY(ssram_word, SGIIOC3State, SGI_IOC3_SSRAM_WORDS),
         VMSTATE_END_OF_LIST()
+    },
+    .subsections = (const VMStateDescription * const []) {
+        &vmstate_sgi_ioc3_sdma_loop,
+        NULL
     }
 };
 

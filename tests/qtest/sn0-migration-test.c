@@ -169,6 +169,11 @@
 #define IOC3_RING_RAM            0x00100000u
 #define IOC3_RX_RING_RAM         (IOC3_RING_RAM + 0x1000)
 #define IOC3_RX_TIMER_TICK_NS    62500LL
+/*
+ * One loopback character at the 16550's reset rate, 9600 baud 8N1: the
+ * serial core's single-precision figure rounds a nanosecond under this.
+ */
+#define IOC3_LINE_9600_CHAR_NS   1041667LL
 #define IOC3_TX_CHARACTER        0x40
 #define IOC3_MCR_TX_DMA_EN       (1u << 13)
 #define IOC3_MCR_TX_EN           (1u << 14)
@@ -493,6 +498,7 @@ static void test_a_wound_receive_timer_survives_migration(const void *data)
     unsigned int i;
     GError *err = NULL;
     QTestState *from, *to;
+    int64_t now;
 
     tmpfs = g_dir_make_tmp("sn0-migration-test-XXXXXX", &err);
     g_assert_nonnull(tmpfs);
@@ -519,15 +525,22 @@ static void test_a_wound_receive_timer_survives_migration(const void *data)
     qtest_memwrite(from, IOC3_RING_RAM, entry, sizeof(entry));
     qtest_writel(from, IOC3_SDMA_A_TX_PRODUCE, 8);
 
-    /* Delivered and wound, and the idle time has not passed yet. */
+    /*
+     * The four characters take their time on the line; half a tick after
+     * the last arrives it is delivered and wound, one tick under reload.
+     */
+    now = qtest_clock_step(from, 4 * IOC3_LINE_9600_CHAR_NS +
+                                 IOC3_RX_TIMER_TICK_NS / 2);
     g_assert_cmphex(qtest_readl(from, IOC3_SDMA_A_RX_PRODUCE) & 0xff8, ==, 8);
     g_assert_cmphex((qtest_readl(from, IOC3_SDMA_A_RX_TIMER) >> 16) & 0xfff,
-                    ==, 0x123);
+                    ==, 0x122);
     g_assert_cmphex(qtest_readl(from, IOC3_INT_STATUS) & IOC3_SRC_A_RX_TIMER,
                     ==, 0);
 
+    /* The qtest clock is per process: bring the far side's up to this. */
     dest_cmdline = g_strdup_printf(MACHINE_WITH_BRIDGE " -incoming %s", uri);
     to = qtest_init(dest_cmdline);
+    qtest_clock_set(to, now);
     sgi_migrate_stopped(from, uri);
 
     /* The ring, the index, and the still-counting timer all crossed. */
@@ -538,12 +551,12 @@ static void test_a_wound_receive_timer_survives_migration(const void *data)
     }
     g_assert_cmphex(qtest_readl(to, IOC3_SDMA_A_RX_PRODUCE) & 0xff8, ==, 8);
     g_assert_cmphex((qtest_readl(to, IOC3_SDMA_A_RX_TIMER) >> 16) & 0xfff,
-                    ==, 0x123);
+                    ==, 0x122);
     g_assert_cmphex(qtest_readl(to, IOC3_INT_STATUS) & IOC3_SRC_A_RX_TIMER,
                     ==, 0);
 
     /* And it still expires: the deadline crossed, not just the count. */
-    qtest_clock_step(to, (0x123 + 1) * IOC3_RX_TIMER_TICK_NS);
+    qtest_clock_step(to, (0x122 + 1) * IOC3_RX_TIMER_TICK_NS);
     g_assert_cmphex(qtest_readl(to, IOC3_INT_STATUS) & IOC3_SRC_A_RX_TIMER,
                     ==, IOC3_SRC_A_RX_TIMER);
 

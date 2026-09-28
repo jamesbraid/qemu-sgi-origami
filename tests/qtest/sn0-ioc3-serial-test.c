@@ -392,6 +392,20 @@ static void set_loopback(QTestState *qts, unsigned int port)
 }
 
 /*
+ * One character at 9600 baud, eight data bits and one stop bit: the line
+ * the 16550 resets to, and the one the IO-8 board test programs. A frame
+ * is ten bits; hw/char/serial.c works the time out in single precision,
+ * which lands a fraction of a nanosecond under this.
+ */
+#define LINE_9600_CHAR_NS 1041667LL
+
+/* In loopback each character spends a character time on the line. */
+static void carry_on_the_line(QTestState *qts, unsigned int chars)
+{
+    qtest_clock_step(qts, chars * LINE_9600_CHAR_NS);
+}
+
+/*
  * Collect n characters in order under data-valid flags; entry grouping is
  * the host's chunking, so nothing built on this flakes on segmentation.
  */
@@ -861,6 +875,7 @@ static void test_loopback_flow_control_reports_clear_to_send(const void *data)
 
         write_transmit_entry(qts, RING_TX(0), 0, out, control);
         qtest_writel(qts, sdma(0, SDMA_TX_PRODUCE), 8);
+        carry_on_the_line(qts, sizeof(out));
         collect_rx_chars(qts, 0, sizeof(got), got, status);
 
         g_assert_cmpint(memcmp(got, out, sizeof(out)), ==, 0);
@@ -918,6 +933,7 @@ static void test_an_unaimed_engine_leaves_its_port_alone(const void *data)
 
     /* Aiming the engine starts it on what was waiting. */
     qtest_writel(qts, CHIP_CONTROL, CHIP_CONTROL_PROM);
+    carry_on_the_line(qts, sizeof(out));
     g_assert_cmphex(qtest_readl(qts, sdma(1, SDMA_TX_CONSUME)) & 0xff8, ==, 8);
     g_assert_cmphex(qtest_readl(qts, sdma(1, SDMA_RX_PRODUCE)) & 0xff8, ==, 8);
     qtest_memread(qts, RING_RX(1), landed, sizeof(landed));
@@ -1363,6 +1379,7 @@ static void ring_block_one_port(unsigned int port)
 
     write_transmit_entry(qts, RING_TX(port), 0, out, control);
     qtest_writel(qts, sdma(port, SDMA_TX_PRODUCE), 8);
+    carry_on_the_line(qts, sizeof(out));
 
     /* The engine says it filled one entry, in eight-byte units. */
     g_assert_cmphex(qtest_readl(qts, sdma(port, SDMA_RX_PRODUCE)) & 0xff8,
@@ -1446,6 +1463,7 @@ static void test_the_size_bit_is_not_part_of_the_address(const void *data)
 
     write_transmit_entry(qts, RING_TX(0), 0, out, control);
     qtest_writel(qts, sdma(0, SDMA_TX_PRODUCE), 8);
+    carry_on_the_line(qts, sizeof(out));
 
     qtest_memread(qts, RING_RX(0), landed, sizeof(landed));
     g_assert_cmpint(memcmp(landed, out, sizeof(out)), ==, 0);
@@ -1551,6 +1569,7 @@ static void test_a_modem_entry_reaches_the_modem_register(const void *data)
     /* So the character in the next entry comes back rather than going out. */
     write_transmit_entry(qts, RING_TX(0), 8, after, after_control);
     qtest_writel(qts, sdma(0, SDMA_TX_PRODUCE), 16);
+    carry_on_the_line(qts, 1);
 
     qtest_memread(qts, RING_RX(0), landed, sizeof(landed));
     g_assert_cmphex(landed[0], ==, 'x');
@@ -1591,6 +1610,7 @@ static void test_an_empty_slot_ends_the_entry_mid_way(const void *data)
     write_transmit_entry(qts, RING_TX(0), 0, first, first_ctrl);
     write_transmit_entry(qts, RING_TX(0), 8, second, second_ctrl);
     qtest_writel(qts, sdma(0, SDMA_TX_PRODUCE), 16);
+    carry_on_the_line(qts, sizeof(sent));
     collect_rx_chars(qts, 0, sizeof(got), got, status);
 
     g_assert_cmpmem(got, sizeof(got), sent, sizeof(sent));
@@ -1845,13 +1865,16 @@ static void read_catches_the_receive_timer_up(unsigned int port)
 
     write_transmit_entry(qts, RING_TX(port), 0, one, one_ctrl);
     qtest_writel(qts, sdma(port, SDMA_TX_PRODUCE), 8);
+    /* Still on the line: a character time at the reset rate. */
     g_assert_cmphex(qtest_readl(qts, sdma(port, SDMA_RX_PRODUCE)) & 0xff8,
-                    ==, 8);
+                    ==, 0);
     g_assert_cmphex(qtest_readl(qts, INT_STATUS) & bit, ==, 0);
 
-    /* The board test's 10 ms, well past the two ticks. */
+    /* The board test's 10 ms, well past the arrival and two ticks after. */
     qtest_clock_step(qts, 10 * 1000 * 1000);
     g_assert_cmphex(qtest_readl(qts, INT_STATUS) & bit, ==, bit);
+    g_assert_cmphex(qtest_readl(qts, sdma(port, SDMA_RX_PRODUCE)) & 0xff8,
+                    ==, 8);
     g_assert_cmphex((qtest_readl(qts, sdma(port, SDMA_RX_TIMER)) >> 16) &
                     0xfff, ==, 0);
 
@@ -2155,11 +2178,13 @@ static void test_an_unfilled_slot_carries_no_validity_flag(const void *data)
     /* A full four-character entry, so the packer has held four valid slots. */
     write_transmit_entry(qts, RING_TX(0), 0, full, full_ctrl);
     qtest_writel(qts, sdma(0, SDMA_TX_PRODUCE), 8);
+    carry_on_the_line(qts, sizeof(full));
     g_assert_cmphex(qtest_readl(qts, sdma(0, SDMA_RX_PRODUCE)) & 0xff8, ==, 8);
 
     /* Then a single character. Its entry is the ring's second. */
     write_transmit_entry(qts, RING_TX(0), 8, one, one_ctrl);
     qtest_writel(qts, sdma(0, SDMA_TX_PRODUCE), 16);
+    carry_on_the_line(qts, 1);
     g_assert_cmphex(qtest_readl(qts, sdma(0, SDMA_RX_PRODUCE)) & 0xff8, ==, 16);
 
     qtest_memread(qts, RING_RX(0) + 8, landed, sizeof(landed));
@@ -2196,6 +2221,7 @@ static void hold_two_in_the_packer(QTestState *qts, uint32_t consume)
     qtest_writel(qts, sdma(0, SDMA_TX_PRODUCE), 8);
     write_transmit_entry(qts, RING_TX(0), 8, two, two_ctrl);
     qtest_writel(qts, sdma(0, SDMA_TX_PRODUCE), 16);
+    carry_on_the_line(qts, 6);
 
     g_assert_cmphex((qtest_readl(qts, sdma(0, SDMA_RX_PRODUCE)) >> 24) & 0x7,
                     ==, 2);
@@ -2226,9 +2252,12 @@ static void test_a_system_reset_clears_the_held_packer_and_the_timer(
 
     hold_two_in_the_packer(qts, 16 | CONSUME_ARM_TIMER);
 
-    /* The posted entry wound the armed timer, so it is counting. */
+    /*
+     * The posted entry wound the armed timer, so it is counting: from the
+     * last arrival, which the line time can leave a tick behind the read.
+     */
     g_assert_cmphex((qtest_readl(qts, sdma(0, SDMA_RX_TIMER)) >> 16) & 0xfff,
-                    ==, 0x140);
+                    >=, 0x13f);
 
     qtest_system_reset(qts);
     sn0_ioc3_attach(qts);
@@ -2506,6 +2535,7 @@ static void test_a_loopback_character_stays_out_of_the_record(
 
     write_transmit_entry(qts, RING_TX(0), 0, out, control);
     qtest_writel(qts, sdma(0, SDMA_TX_PRODUCE), 8);
+    carry_on_the_line(qts, sizeof(out));
     collect_rx_chars(qts, 0, sizeof(got), got, status);
     g_assert_cmpint(memcmp(got, out, sizeof(out)), ==, 0);
 
@@ -2588,6 +2618,147 @@ static size_t read_reply(QTestState *qts, unsigned int port,
         buf[got++] = qtest_readb(qts, serial_port(port) + REG_RBR);
     }
     return got;
+}
+
+/*
+ * The Origin 300 IO-8 board test's line: a pre-divider of 0x18 (divide by
+ * 12) and a divisor of 12, for 9600 baud.
+ */
+#define IO8_PREDIVIDER  0x18
+#define IO8_DIVISOR     12
+#define IO8_CHAR_NS     LINE_9600_CHAR_NS
+#define IO8_WAIT_NS     (10 * 1000 * 1000LL)
+
+/* Whole ticks left at `now` on a 0xfff reload started at `start`. */
+static uint32_t ticks_left(int64_t start, int64_t now)
+{
+    return (start + 0xfff * RX_TIMER_TICK_NS - now) / RX_TIMER_TICK_NS;
+}
+
+/* The board test's setup, up to the transmit doorbell. */
+static void loopback_like_the_board_test(QTestState *qts, unsigned int port)
+{
+    const uint8_t one[4] = { 'x', 0, 0, 0 };
+    const uint8_t one_ctrl[4] = { TX_CHARACTER, TX_EMPTY, TX_EMPTY, TX_EMPTY };
+
+    sn0_ioc3_attach(qts);
+    configure_line_at_divisor(qts, port, IO8_PREDIVIDER, IO8_DIVISOR);
+    qtest_writeb(qts, serial_port(port) + REG_FCR, 0x01);
+    set_loopback(qts, port);
+    qtest_writel(qts, SDMA_RING_HI, 0);
+    qtest_writel(qts, SDMA_RING_LO, RING_BASE | RING_4K);
+    qtest_writel(qts, sdma(port, SDMA_CONTROL), CTRL_DMA_ENABLE);
+    qtest_writel(qts, sdma(port, SDMA_RX_TIMER), 0xfff);
+    qtest_writel(qts, sdma(port, SDMA_RX_CONSUME), CONSUME_ARM_TIMER);
+    write_transmit_entry(qts, RING_TX(port), 0, one, one_ctrl);
+}
+
+/*
+ * A 16550 in loopback still clocks each character through its shift
+ * registers at the programmed rate, so the copy reaches the receiver a
+ * character time after the engine hands it over, and the receive timer,
+ * which counts idleness from the last delivery, starts then. Posted at
+ * once, the IO-8 board test reads a whole character time more elapsed than
+ * the line allows (sec1_3.c line 1077).
+ */
+static void test_loopback_arrives_a_character_time_later(
+    const void *data)
+{
+    uint8_t entry[8];
+    int64_t sent;
+
+    serial_reset();
+    loopback_like_the_board_test(qts, 0);
+
+    sent = qtest_clock_step(qts, 1);
+    qtest_writel(qts, sdma(0, SDMA_TX_PRODUCE), 8);
+
+    /* On the line: nothing posted, and the count still the idle reload. */
+    qtest_clock_step(qts, IO8_CHAR_NS - 1000);
+    g_assert_cmphex(qtest_readl(qts, sdma(0, SDMA_RX_PRODUCE)) & 0xff8, ==, 0);
+    g_assert_cmphex((qtest_readl(qts, sdma(0, SDMA_RX_TIMER)) >> 16) & 0xfff,
+                    ==, 0xfff);
+
+    /* Arrived: posted, and the timer running from the arrival. */
+    qtest_clock_step(qts, 1000);
+    g_assert_cmphex(qtest_readl(qts, sdma(0, SDMA_RX_PRODUCE)) & 0xff8, ==, 8);
+    qtest_memread(qts, RING_RX(0), entry, sizeof(entry));
+    g_assert_cmphex(entry[0], ==, 'x');
+    g_assert_cmphex(entry[4] & RX_DATA_VALID, ==, RX_DATA_VALID);
+
+    /* The board test's 10 ms, counted from the doorbell. */
+    qtest_clock_step(qts, IO8_WAIT_NS - IO8_CHAR_NS);
+    g_assert_cmphex((qtest_readl(qts, sdma(0, SDMA_RX_TIMER)) >> 16) & 0xfff,
+                    ==, ticks_left(sent + IO8_CHAR_NS, sent + IO8_WAIT_NS));
+}
+
+/*
+ * The same with no timer callback serviced: a loaded host can leave the
+ * arrival unserviced until the board test's read, which must still see a
+ * count that started when the character arrived, not when it was read.
+ */
+static void test_a_late_serviced_loopback_arrival_keeps_its_time(
+    const void *data)
+{
+    int64_t sent;
+
+    serial_reset();
+    loopback_like_the_board_test(qts, 1);
+    qtest_qmp_assert_success(qts, "{'execute': 'stop'}");
+
+    sent = qtest_clock_step(qts, 1);
+    qtest_writel(qts, sdma(1, SDMA_TX_PRODUCE), 8);
+    qtest_clock_step(qts, IO8_WAIT_NS);
+
+    g_assert_cmphex((qtest_readl(qts, sdma(1, SDMA_RX_TIMER)) >> 16) & 0xfff,
+                    ==, ticks_left(sent + IO8_CHAR_NS, sent + IO8_WAIT_NS));
+    g_assert_cmphex(qtest_readl(qts, sdma(1, SDMA_RX_PRODUCE)) & 0xff8, ==, 8);
+
+    qtest_qmp_assert_success(qts, "{'execute': 'cont'}");
+}
+
+/*
+ * A character half-way along the line when the machine migrates arrives on
+ * the far side when it would have, not at once. The qtest clock is per
+ * process, so the destination's is brought up to the source's first.
+ */
+static void test_a_loopback_character_in_flight_survives_migration(
+    const void *data)
+{
+    g_autofree char *tmpfs = NULL;
+    g_autofree char *uri = NULL;
+    g_autofree char *dest_cmdline = NULL;
+    GError *err = NULL;
+    QTestState *from, *to;
+    int64_t sent, now;
+
+    tmpfs = g_dir_make_tmp("sn0-ioc3-loop-migration-XXXXXX", &err);
+    g_assert_no_error(err);
+    g_assert_nonnull(tmpfs);
+    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+
+    from = qtest_init("-M origin200");
+    loopback_like_the_board_test(from, 0);
+
+    sent = qtest_clock_step(from, 1);
+    qtest_writel(from, sdma(0, SDMA_TX_PRODUCE), 8);
+    now = qtest_clock_step(from, IO8_CHAR_NS / 2);
+
+    dest_cmdline = g_strdup_printf("-M origin200 -incoming %s", uri);
+    to = qtest_init(dest_cmdline);
+    qtest_clock_set(to, now);
+
+    sgi_migrate_stopped(from, uri);
+
+    g_assert_cmphex(qtest_readl(to, sdma(0, SDMA_RX_PRODUCE)) & 0xff8, ==, 0);
+    now = qtest_clock_step(to, sent + IO8_CHAR_NS + RX_TIMER_TICK_NS / 2 -
+                                   now);
+    g_assert_cmphex(qtest_readl(to, sdma(0, SDMA_RX_PRODUCE)) & 0xff8, ==, 8);
+    g_assert_cmphex((qtest_readl(to, sdma(0, SDMA_RX_TIMER)) >> 16) & 0xfff,
+                    ==, ticks_left(sent + IO8_CHAR_NS, now));
+
+    qtest_quit(to);
+    qtest_quit(from);
 }
 
 static void test_the_scratch_predivider_reaches_the_backends_baud_rate(
@@ -3086,6 +3257,15 @@ int main(int argc, char **argv)
                         NULL, test_port_a_read_catches_the_receive_timer_up);
     qtest_add_data_func("sn0/ioc3-serial/port-b-read-catches-receive-timer-up",
                         NULL, test_port_b_read_catches_the_receive_timer_up);
+    qtest_add_data_func("sn0/ioc3-serial/loopback-arrives-a-character-later",
+                        NULL,
+                        test_loopback_arrives_a_character_time_later);
+    qtest_add_data_func("sn0/ioc3-serial/late-loopback-arrival-keeps-its-time",
+                        NULL,
+                        test_a_late_serviced_loopback_arrival_keeps_its_time);
+    qtest_add_data_func("sn0/ioc3-serial/loopback-in-flight-survives-migration",
+                        NULL,
+                        test_a_loopback_character_in_flight_survives_migration);
     qtest_add_data_func("sn0/ioc3-serial/high-water-mark-raises", NULL,
                         test_crossing_the_high_water_mark_raises_its_source);
     qtest_add_data_func("sn0/ioc3-serial/high-water-mark-drops-when-consumed",
