@@ -553,34 +553,45 @@ if QemuSystemTest is not None:
                 self._expect(devices.get(f'{kbd.hw_dir}/{alias}') == card[0],
                              f'{kbd.hw_dir}/{alias} is not '
                              f'{kbd.card}/{leaf}')
-            # Open the keyboard for a read of exactly the expected byte
-            # count before any key is sent, so no byte can arrive while
-            # nothing has the device open.
-            self._run('rm -f /tmp/kbd.out; '
+            # Capture raw bytes as they arrive. Piping dd into od hides
+            # partial reads because od buffers output until dd finishes.
+            self._run('rm -f /tmp/kbd.raw; kbd_wait=30; '
                       f'(dd if={kbd.dev_dir}/keyboard bs=1 '
-                      f'count={len(TYPED_BYTES)} 2>/dev/null | '
-                      'od -An -tx1 > /tmp/kbd.out) & sleep 5',
+                      f'count={len(TYPED_BYTES)} of=/tmp/kbd.raw '
+                      '2>/dev/null) & sleep 5',
                       f'kbdopen{index}')
             vm = self.here.vm
             vm.cmd('qom-set', path=kbd.qom, property='activate-keyboard',
                    value=True)
-            for key in TYPED_KEYS:
+            typed = ''
+            for pair, key in enumerate(TYPED_KEYS, 1):
                 for down in (True, False):
                     vm.cmd('input-send-event', events=[{
                         'type': 'key',
                         'data': {'down': down,
                                  'key': {'type': 'qcode', 'data': key}}}])
-            # Up to 30 guest seconds for the bytes; an empty file means dd
-            # is still blocked and the keystrokes never arrived.
-            typed = self._out(
-                'i=0; while [ $i -lt 30 ]; do [ -s /tmp/kbd.out ] && break; '
-                'sleep 1; i=`expr $i + 1`; done; '
-                'echo KBD""-BEGIN; cat /tmp/kbd.out; echo KBD""-END',
-                f'kbdread{index}')
+                # Let the guest drain each three-byte make/break pair before
+                # sending the next; share the 30-second wait across both.
+                count = pair * 3
+                typed = self._out(
+                    f'while [ "$kbd_wait" -gt 0 ] && '
+                    f'[ "`wc -c < /tmp/kbd.raw`" -lt {count} ]; do '
+                    'sleep 1; kbd_wait=`expr "$kbd_wait" - 1`; done; '
+                    'echo KBD""-BEGIN; wc -c < /tmp/kbd.raw; '
+                    'od -An -tx1 /tmp/kbd.raw; echo KBD""-END',
+                    f'kbdread{index}')
+                match = re.search(r'KBD-BEGIN\s*\n(.*?)KBD-END', typed, re.S)
+                lines = match.group(1).splitlines() if match else []
+                got_count = int(lines[0].strip()) if lines else 0
+                if got_count < count:
+                    break
             match = re.search(r'KBD-BEGIN\s*\n(.*?)KBD-END', typed, re.S)
-            got = od_bytes(match.group(1)) if match else None
+            lines = match.group(1).splitlines() if match else []
+            got_count = int(lines[0].strip()) if lines else 0
+            got = od_bytes('\n'.join(lines[1:])) if lines else []
             self._expect(got == TYPED_BYTES, f'read {got} from '
-                         f'{kbd.dev_dir}/keyboard, not the typed keys')
+                         f'{kbd.dev_dir}/keyboard ({got_count} raw bytes), '
+                         'not the typed keys')
 
         def _check_scsi_card(self):
             card = self.flavour.scsi_card
