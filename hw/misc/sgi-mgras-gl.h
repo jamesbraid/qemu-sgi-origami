@@ -33,6 +33,9 @@ extern const VMStateDescription vmstate_sgi_mgras_gl_context_v22;
 /* Each context's raster position, a subsection sent when it has moved. */
 extern const VMStateDescription vmstate_sgi_mgras_gl_raster;
 
+/* Each context's colour-index state. */
+extern const VMStateDescription vmstate_sgi_mgras_gl_index;
+
 /* Note GE-port traffic the per-context state cannot follow. */
 void sgi_mgras_gl_ge_port_access(SGIMgrasState *s, hwaddr addr, bool write);
 /* The command parser's position, to set aside and take up again. */

@@ -1904,6 +1904,7 @@ static const VMStateDescription vmstate_sgi_mgras = {
     .subsections = (const VMStateDescription * const []) {
         &vmstate_sgi_mgras_timing,
         &vmstate_sgi_mgras_gl_raster,
+        &vmstate_sgi_mgras_gl_index,
         NULL
     }
 };
