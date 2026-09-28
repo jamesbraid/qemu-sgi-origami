@@ -32,6 +32,8 @@ slow_qtests = {
   # These SN0 device qtests run 50-59s under TCG; the 60s default leaves no
   # headroom and they time out under CI load. Give them the 120s slow budget.
   'sn0-pi-error-test': 120,
+  # Eight cases, each a guest run under TCG; one boots two nodes.
+  'sn0-pi-gfx-test': 180,
   # The MTTCG primitives run several thread=multi TCG cases, and the R10000
   # performance test adds live migration and a stream analysis pass. Both fit
   # under 60s unloaded but need headroom under parallel CI load.
@@ -478,6 +480,7 @@ qtests_mips64 = \
                                                    'psitech-rad1-test',
                                                    'sn0-hub-test',
                                                    'sn0-pi-error-test',
+                                                   'sn0-pi-gfx-test',
                                                    'sn0-i2c-test',
                                                    'sn0-elsc-test',
                                                    'sn0-widget-decode-test',

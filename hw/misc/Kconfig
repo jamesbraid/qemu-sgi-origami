@@ -315,6 +315,12 @@ config SGI_HUB_TEST
     depends on TEST_DEVICES && SGI_SN0
     select SGI_HUB
 
+# A graphics head stand-in: returns credits when a qtest says so.
+config SGI_PI_GFX_TEST
+    bool
+    default y if SGI_DEVICES
+    depends on TEST_DEVICES && SGI_PI_GFX
+
 config SGI_ROUTER
     bool
     select ONEWIRE

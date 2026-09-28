@@ -20,6 +20,7 @@
 #include "hw/misc/sgi-elsc.h"
 #include "hw/mips/sgi-net-port.h"
 #include "hw/mips/sgi/net-cable.h"
+#include "hw/mips/sgi/pi-gfx.h"
 #include "system/memory.h"
 #include "qom/object.h"
 
@@ -369,16 +370,13 @@ struct SGIHubState {
     uint64_t pi_rt_local_ctrl;
 
     /*
-     * Graphics flow-control block, per processor: page, credit counter, bias,
-     * interrupt counter and interrupt compare. Plain storage; nothing moves
-     * the credit counter for a completed transaction, the specified
-     * approximation.
+     * Graphics flow-control block, per processor slot: page, credit
+     * counter, bias, interrupt counter and interrupt compare. A slot's
+     * uncached I/O store into its page costs a credit on the processor
+     * path; a head's return comes in through the graphics node-widget map
+     * (io_gfx_init).
      */
-    uint64_t pi_gfx_page[SGI_HUB_PROCESSORS];
-    uint32_t pi_gfx_credit[SGI_HUB_PROCESSORS];
-    uint32_t pi_gfx_bias[SGI_HUB_PROCESSORS];
-    uint32_t pi_gfx_int_count[SGI_HUB_PROCESSORS];
-    uint32_t pi_gfx_int_compare[SGI_HUB_PROCESSORS];
+    SGIPIGfx pi_gfx;
 
     QEMUTimer *rt_timer[SGI_HUB_PROCESSORS];
     SGIHubCounterLine rt_line[SGI_HUB_PROCESSORS];

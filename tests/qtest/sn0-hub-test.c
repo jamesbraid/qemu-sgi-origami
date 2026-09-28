@@ -72,7 +72,7 @@
 #define PI_RT_LOCAL_CTRL_MASK  0x100ffULL
 #define PI_RT_LOCAL_CTRL_RESET 0x10000ULL
 
-/* Graphics flow control, per processor; plain storage. */
+/* Graphics flow control, per processor slot. */
 #define PI_GFX_PAGE_A        0x000300
 #define PI_GFX_CREDIT_A      0x000308
 #define PI_GFX_BIAS_A        0x000310
@@ -89,6 +89,8 @@
 #define PI_GFX_INT_COMPARE_MASK 0x3ffffffULL    /* 26 bits */
 /* The attach sequence's own page-enable bit (public SN0 hubpi.h). */
 #define PI_GFX_PAGE_ENABLE   (1ULL << 40)
+/* What the page register keeps: the enable and bits 39:17 (SN1 hubpi.h). */
+#define PI_GFX_PAGE_MASK     0x1fffffe0000ULL
 
 /*
  * The Hub's outgoing lines: one named GPIO list per kind, each indexed by
@@ -1575,21 +1577,22 @@ static void test_network_ageing_controls(const void *data)
 }
 
 /*
- * Graphics flow control: twelve registers of plain, uncomputed storage,
- * plus the two node/widget routing words. A write
- * stores the masked value and a read returns it. Nothing else changes.
+ * Graphics flow control: ten processor-interface registers and the two
+ * node-widget map words. A register write stores the masked value and a
+ * read returns it; only a processor's store into an enabled page, or a
+ * head's return, moves a credit counter.
  */
 static void test_graphics_flow_control_registers_round_trip(const void *data)
 {
     hub_reset();
 
-    /* The page register keeps a full doubleword, including low bits. */
+    /* The page register keeps its enable and bits 39:17, nothing else. */
     qtest_writeq(qts, HUB_LOCAL + PI_GFX_PAGE_A, 0x0123456789abcdefULL);
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_GFX_PAGE_A), ==,
-                    0x0123456789abcdefULL);
+                    0x0123456789abcdefULL & PI_GFX_PAGE_MASK);
     qtest_writeq(qts, HUB_LOCAL + PI_GFX_PAGE_B, 0xfedcba9876543210ULL);
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_GFX_PAGE_B), ==,
-                    0xfedcba9876543210ULL);
+                    0xfedcba9876543210ULL & PI_GFX_PAGE_MASK);
 
     /* Credit and bias, twelve bits each, A and B independent. */
     qtest_writeq(qts, HUB_LOCAL + PI_GFX_CREDIT_A, 0x065);
@@ -1663,9 +1666,10 @@ static void test_graphics_flow_control_registers_mask_wide_writes(
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + IO_GFX_INIT_0), ==,
                     IO_GFX_INIT_MASK);
 
-    /* The page register alone keeps the full doubleword, unmasked. */
+    /* The page register keeps its enable and its page address, 40:17. */
     qtest_writeq(qts, HUB_LOCAL + PI_GFX_PAGE_A, ~0ULL);
-    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_GFX_PAGE_A), ==, ~0ULL);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_GFX_PAGE_A), ==,
+                    PI_GFX_PAGE_MASK);
 }
 
 /*
@@ -1729,7 +1733,8 @@ static void test_graphics_flow_control_does_not_disturb_rt_compare(
                     0x123456789abcdULL);
 
     /* And the other direction: the RT compare write left the block alone. */
-    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_GFX_PAGE_A), ==, ~0ULL);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_GFX_PAGE_A), ==,
+                    PI_GFX_PAGE_MASK);
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_GFX_CREDIT_A), ==,
                     PI_GFX_CREDIT_MASK);
 
