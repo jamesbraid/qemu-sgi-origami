@@ -1,5 +1,11 @@
 # See docs/devel/tracing.rst for syntax documentation.
 
+# sgi-heart.c
+sgi_heart_packet(int64_t vtime, uint64_t value, uint64_t before, uint64_t after, uint64_t mask0) "vtime %" PRId64 " packet 0x%" PRIx64 " pending 0x%" PRIx64 "->0x%" PRIx64 " mask0 0x%" PRIx64
+sgi_heart_mask_write(int64_t vtime, unsigned index, uint64_t before, uint64_t after, uint64_t pending) "vtime %" PRId64 " mask[%u] 0x%" PRIx64 "->0x%" PRIx64 " pending 0x%" PRIx64
+sgi_heart_pending_write(int64_t vtime, uint64_t offset, uint64_t value, uint64_t before, uint64_t after, uint64_t mask0) "vtime %" PRId64 " register 0x%" PRIx64 " value 0x%" PRIx64 " pending 0x%" PRIx64 "->0x%" PRIx64 " mask0 0x%" PRIx64
+sgi_heart_irq(int64_t vtime, uint64_t pending, uint64_t mask0, uint64_t enabled, bool level0, bool level1, bool level2) "vtime %" PRId64 " pending 0x%" PRIx64 " mask0 0x%" PRIx64 " masked 0x%" PRIx64 " levels %d/%d/%d"
+
 # sgi-mgras.c
 sgi_mgras_mmio(uint64_t sequence, uint64_t offset, uint64_t value, unsigned size, bool write) "seq %" PRIu64 " offset 0x%" PRIx64 " value 0x%" PRIx64 " size %u write=%d"
 # Control accesses omit the high-volume context and scratch command ports.

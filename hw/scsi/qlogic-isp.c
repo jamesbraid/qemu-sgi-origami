@@ -15,6 +15,7 @@
 #include "qemu/main-loop.h"
 #include "qemu/module.h"
 #include "qemu/queue.h"
+#include "qemu/timer.h"
 #include "hw/core/hotplug.h"
 #include "hw/pci/pci_device.h"
 #include "hw/scsi/scsi.h"
@@ -1336,6 +1337,9 @@ static void qlogic_isp_post_one_status(QLogicISPState *s, uint32_t handle,
     trace_qlogic_isp_response_ring(s->resp_prod, s->resp_cons);
 
     s->bus_status |= ISP_BUS_STATUS_INT_REQ | ISP_BUS_STATUS_RISC_INT_REQ;
+    trace_qlogic_isp_status_dma(qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL),
+                                pci->devfn, handle, addr, s->resp_prod,
+                                s->bus_status, s->bus_ctrl);
     qlogic_isp_update_irq(s);
 }
 
