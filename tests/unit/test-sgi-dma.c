@@ -1,7 +1,8 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * SGI graphics DMA: guest pages resolved to host chunks, the chunk trace
- * contract, pixel transfers both ways, and completions.
+ * SGI graphics DMA and command fetch: guest pages resolved to host chunks,
+ * the chunk trace contract, pixel transfers both ways, completions, and a
+ * display-list fetch over the page format measured on MGRAS.
  *
  * Guest memory here is a sparse set of 4 KiB pages behind the three
  * address-space entry points the DMA helpers reach (map, unmap, rw). A map
@@ -14,6 +15,7 @@
 #include "qemu/osdep.h"
 #include "qapi/error.h"
 #include "system/dma.h"
+#include "hw/display/sgi/command-fetch.h"
 #include "hw/display/sgi/pixel-dma.h"
 
 #define PAGE 4096
@@ -111,6 +113,11 @@ typedef struct Chunk {
 typedef struct Head {
     GArray *chunks;             /* of Chunk */
     GArray *done;               /* of SGICompletion */
+    GArray *decoded;            /* of uint32_t */
+    unsigned decode_calls;
+    unsigned next_calls;
+    uint64_t next_offset, next_words;
+    unsigned next_limit;
 } Head;
 
 static bool head_dma_address(void *opaque, uint64_t addr, hwaddr *bus)
@@ -174,6 +181,7 @@ static Head *head_new(void)
 
     h->chunks = g_array_new(false, true, sizeof(Chunk));
     h->done = g_array_new(false, true, sizeof(SGICompletion));
+    h->decoded = g_array_new(false, true, sizeof(uint32_t));
     return h;
 }
 
@@ -181,6 +189,7 @@ static void head_free(Head *h)
 {
     g_array_free(h->chunks, true);
     g_array_free(h->done, true);
+    g_array_free(h->decoded, true);
     g_free(h);
 }
 
@@ -842,6 +851,355 @@ static void test_page_backed_plane(void)
     head_free(h);
 }
 
+/*
+ * Command fetch over the list pool measured on an SI board, as the list
+ * probe measurements in Origami's libGLcore analysis notes record it: a
+ * 256-triangle list called once, the stock client and kernel driving the
+ * model. The page list sat at physical 0x4d74018 and held 4 KiB frame
+ * numbers 0x224bc to 0x224bf first; the invocation named pool offset 0 and
+ * 0x3fa words. The words placed below are the dump's at the positions the
+ * test reads:
+ * page 0's header and first list words, its last list words and the zeros
+ * after them, and page 1's header and first list words. The rest of each
+ * page is a numbered filler, so an out-of-order or misaligned fetch shows.
+ */
+static const uint64_t pool_frames[4] = { 0x224bc, 0x224bd, 0x224be, 0x224bf };
+
+static void pool_setup(void)
+{
+    static const uint32_t page0_head[16] = {
+        0x00004000, 0x00001000, 0x000003f9, 0x00001a00,
+        0x2000020c, 0x3f800000, 0x3f800000, 0x00000000,
+        0x40000008, 0xbf800000, 0xbf800000, 0x40000008,
+        0xbf640000, 0xbf780000, 0x40000008, 0xbf740000,
+    };
+    static const uint32_t page0_tail[8] = {   /* words 1012 .. 1019 */
+        0x40000008, 0x3f3c0000, 0xbef00000, 0x40000008,
+        0x3f2c0000, 0xbec00000, 0x00000000, 0x00000000,
+    };
+    static const uint32_t page1_head[8] = {
+        0x00000000, 0x00002000, 0x000003f9, 0x2000020c,
+        0x3f800000, 0x3f800000, 0x00000000, 0x40000008,
+    };
+    uint8_t w[8];
+
+    for (unsigned pg = 0; pg < 4; pg++) {
+        for (unsigned i = 0; i < PAGE / 4; i++) {
+            stl_be_p(w, 0x5a000000 | (pg << 16) | i);
+            ram_write((pool_frames[pg] << 12) + i * 4, w, 4);
+        }
+    }
+    for (unsigned i = 0; i < 16; i++) {
+        stl_be_p(w, page0_head[i]);
+        ram_write((pool_frames[0] << 12) + i * 4, w, 4);
+    }
+    for (unsigned i = 0; i < 8; i++) {
+        stl_be_p(w, page0_tail[i]);
+        ram_write((pool_frames[0] << 12) + (1012 + i) * 4, w, 4);
+        stl_be_p(w, page1_head[i]);
+        ram_write((pool_frames[1] << 12) + i * 4, w, 4);
+    }
+    for (unsigned i = 0; i < 4; i++) {
+        stq_be_p(w, pool_frames[i]);
+        ram_write(0x4d74018 + i * 8, w, 8);
+    }
+}
+
+static void head_decode(void *opaque, uint32_t context, const uint32_t *words,
+                        unsigned n)
+{
+    Head *h = opaque;
+
+    g_assert_cmpuint(context, ==, 3);
+    h->decode_calls++;
+    g_array_append_vals(h->decoded, words, n);
+}
+
+static bool head_next(void *opaque, const SGICommandFetch *f,
+                      uint64_t *offset, uint64_t *nwords)
+{
+    Head *h = opaque;
+
+    if (h->next_calls++ >= h->next_limit) {
+        return false;
+    }
+    *offset = h->next_offset;
+    *nwords = h->next_words;
+    return true;
+}
+
+/* The family's side: read the page list, frames to device addresses. */
+static void pool_page_list(Head *h, uint64_t addrs[4])
+{
+    SGIDMABus bus = bus_for(h, &head_ops);
+    uint8_t raw[32];
+
+    g_assert_true(sgi_dma_read(&bus, 0x4d74018, raw, sizeof(raw), true, 100));
+    for (unsigned i = 0; i < 4; i++) {
+        addrs[i] = ldq_be_p(raw + i * 8) << 12;
+    }
+}
+
+static void test_fetch_measured_pool(void)
+{
+    Head *h = head_new();
+    SGIDMABus bus = bus_for(h, &head_ops);
+    uint64_t addrs[4];
+    SGIDMAPageList pl = { .addr = addrs, .npages = 4, .page_size = PAGE };
+    SGICommandFetch f = {
+        .context = 3, .decode = head_decode,
+        .trace_chunks = true, .trace_seq = 100,
+        .seq = 21, .cookie = 0xfe,
+    };
+    SGICompletion *c;
+    Chunk *ch;
+
+    setup();
+    pool_setup();
+    pool_page_list(h, addrs);
+    g_assert_cmphex(addrs[0], ==, 0x224bc000);
+    g_assert_cmphex(addrs[3], ==, 0x224bf000);
+
+    g_assert_cmpint(sgi_fetch(&f, &bus, &pl, 0, 0x3fa), ==, 0);
+    g_assert_cmpuint(h->decode_calls, ==, 1);
+    g_assert_cmpuint(h->decoded->len, ==, 0x3fa);
+    g_assert_cmphex(g_array_index(h->decoded, uint32_t, 0), ==, 0x4000);
+    g_assert_cmphex(g_array_index(h->decoded, uint32_t, 1), ==, 0x1000);
+    g_assert_cmphex(g_array_index(h->decoded, uint32_t, 2), ==, 0x3f9);
+    g_assert_cmphex(g_array_index(h->decoded, uint32_t, 3), ==, 0x1a00);
+    g_assert_cmphex(g_array_index(h->decoded, uint32_t, 16), ==, 0x5a000010);
+    g_assert_cmphex(g_array_index(h->decoded, uint32_t, 1017), ==,
+                    0xbec00000);
+
+    /* The page list, then the pool words, each traced at its own address. */
+    g_assert_cmpuint(h->chunks->len, ==, 2);
+    ch = &g_array_index(h->chunks, Chunk, 0);
+    g_assert_cmphex(ch->addr, ==, 0x4d74018);
+    g_assert_cmpuint(ch->len, ==, 32);
+    ch = &g_array_index(h->chunks, Chunk, 1);
+    g_assert_cmphex(ch->addr, ==, 0x224bc000);
+    g_assert_cmpuint(ch->len, ==, 0x3fa * 4);
+    g_assert_cmpuint(ch->seq, ==, 100);
+
+    g_assert_cmpuint(h->done->len, ==, 1);
+    c = &g_array_index(h->done, SGICompletion, 0);
+    g_assert_cmpuint(c->kind, ==, SGI_DONE_CONSUMED);
+    g_assert_cmpuint(c->payload, ==, 0x3fa);
+    g_assert_cmphex(c->cookie, ==, 0xfe);
+    g_assert_cmpuint(c->seq, ==, 21);
+    g_assert_null(f.segments);
+    g_assert_cmpint(maps_outstanding, ==, 0);
+    head_free(h);
+}
+
+/*
+ * How the board reaches later pages is the family's open question: the
+ * fetch asks next() and follows whatever range it names, and the one
+ * completion counts every word the grammar consumed.
+ */
+static void test_fetch_next(void)
+{
+    Head *h = head_new();
+    SGIDMABus bus = bus_for(h, &head_ops);
+    uint64_t addrs[4];
+    SGIDMAPageList pl = { .addr = addrs, .npages = 4, .page_size = PAGE };
+    SGICommandFetch f = {
+        .context = 3, .decode = head_decode, .next = head_next,
+        .cookie = 0xab,
+    };
+
+    setup();
+    pool_setup();
+    pool_page_list(h, addrs);
+    h->next_limit = 1;
+    h->next_offset = PAGE;
+    h->next_words = 8;
+    g_assert_cmpint(sgi_fetch(&f, &bus, &pl, 0, 0x3fa), ==, 0);
+    g_assert_cmpuint(h->decode_calls, ==, 2);
+    g_assert_cmpuint(h->decoded->len, ==, 0x3fa + 8);
+    g_assert_cmphex(g_array_index(h->decoded, uint32_t, 0x3fa + 1), ==,
+                    0x2000);
+    g_assert_cmphex(g_array_index(h->decoded, uint32_t, 0x3fa + 3), ==,
+                    0x2000020c);
+    g_assert_cmpuint(g_array_index(h->done, SGICompletion, 0).payload, ==,
+                     0x3fa + 8);
+
+    /* A next() that never stops runs out of pool, not forever. */
+    g_array_set_size(h->decoded, 0);
+    g_array_set_size(h->done, 0);
+    h->decode_calls = 0;
+    h->next_calls = 0;
+    h->next_limit = UINT_MAX;
+    h->next_offset = 0;
+    h->next_words = 1024;
+    g_assert_cmpint(sgi_fetch(&f, &bus, &pl, 0, 0x3fa), ==, SGI_FAIL_BOUNDS);
+    g_assert_cmpuint(h->decode_calls, ==, 0);
+    g_assert_cmpuint(g_array_index(h->done, SGICompletion, 0).kind, ==,
+                     SGI_DONE_FAILED);
+
+    /* A range of no words ends the fetch. */
+    g_array_set_size(h->done, 0);
+    h->next_calls = 0;
+    h->next_words = 0;
+    g_assert_cmpint(sgi_fetch(&f, &bus, &pl, 0, 4), ==, 0);
+    g_assert_cmpuint(h->next_calls, ==, 1);
+    g_assert_cmpuint(g_array_index(h->done, SGICompletion, 0).payload, ==, 4);
+    g_assert_cmpint(maps_outstanding, ==, 0);
+    head_free(h);
+}
+
+/* A list held in a plane of words, in the plane's byte order. */
+static void test_fetch_plane(void)
+{
+    Head *h = head_new();
+    SGIBoardMemory m;
+    SGIPlane p = {
+        .base = 64, .len = 256, .width = 64, .height = 1, .stride = 256,
+        .format = SGI_PLANE_RAW, .packing = SGI_PACK_LE_RED_LOW,
+    };
+    SGICommandFetch f = { .context = 3, .decode = head_decode };
+    uint32_t id;
+
+    sgi_board_memory_init(&m, 512);
+    id = sgi_board_memory_add_plane(&m, &p, &error_abort);
+    stl_le_p(m.bytes + 64 + 8, 0x01020304);
+    g_assert_cmpint(sgi_fetch_map_plane(&f, &m, id, 8, 2, h), ==, 0);
+    sgi_fetch_run(&f, h);
+    sgi_fetch_finish(&f, 0, &head_ops, h);
+    g_assert_cmphex(g_array_index(h->decoded, uint32_t, 0), ==, 0x01020304);
+    g_assert_cmpuint(g_array_index(h->done, SGICompletion, 0).payload, ==, 2);
+
+    g_assert_cmpint(sgi_fetch_map_plane(&f, &m, id, 252, 2, h), ==,
+                    SGI_FAIL_BOUNDS);
+    sgi_fetch_finish(&f, SGI_FAIL_BOUNDS, &head_ops, h);
+
+    /*
+     * A list invoked as several ranges of the plane is one fetch: next()
+     * names the ranges after the first, and one completion counts them all.
+     */
+    g_array_set_size(h->decoded, 0);
+    g_array_set_size(h->done, 0);
+    stl_le_p(m.bytes + 64 + 100, 0xaabbccdd);
+    f.next = head_next;
+    h->decode_calls = 0;
+    h->next_calls = 0;
+    h->next_limit = 2;
+    h->next_offset = 100;
+    h->next_words = 1;
+    g_assert_cmpint(sgi_fetch_map_plane(&f, &m, id, 8, 2, h), ==, 0);
+    sgi_fetch_run(&f, h);
+    sgi_fetch_finish(&f, 0, &head_ops, h);
+    g_assert_cmpuint(h->decode_calls, ==, 3);
+    g_assert_cmpuint(h->decoded->len, ==, 4);
+    g_assert_cmphex(g_array_index(h->decoded, uint32_t, 2), ==, 0xaabbccdd);
+    g_assert_cmphex(g_array_index(h->decoded, uint32_t, 3), ==, 0xaabbccdd);
+    g_assert_cmpuint(h->done->len, ==, 1);
+    g_assert_cmpuint(g_array_index(h->done, SGICompletion, 0).payload, ==, 4);
+
+    /* The plane's words bound a next() that keeps asking. */
+    h->next_calls = 0;
+    h->next_limit = UINT_MAX;
+    g_assert_cmpint(sgi_fetch_map_plane(&f, &m, id, 0, 1, h), ==,
+                    SGI_FAIL_BOUNDS);
+    sgi_fetch_finish(&f, SGI_FAIL_BOUNDS, &head_ops, h);
+    sgi_board_memory_cleanup(&m);
+    head_free(h);
+}
+
+/*
+ * A range of no words names no page: at the pool's very end, or over an
+ * empty page list, it reads nothing and completes with nothing consumed.
+ */
+static void test_fetch_empty(void)
+{
+    Head *h = head_new();
+    uint64_t addrs[1] = { 0xe0000 };
+    SGIDMABus bus = bus_for(h, &head_ops);
+    SGIDMAPageList pl = { .addr = addrs, .npages = 1, .page_size = PAGE };
+    SGIDMAPageList none = { .addr = NULL, .npages = 0, .page_size = PAGE };
+    SGICommandFetch f = { .context = 3, .decode = head_decode };
+
+    setup();
+    g_assert_cmpint(sgi_fetch(&f, &bus, &pl, PAGE, 0), ==, 0);
+    g_assert_cmpint(sgi_fetch(&f, &bus, &none, 0, 0), ==, 0);
+    g_assert_cmpuint(h->decode_calls, ==, 0);
+    g_assert_cmpuint(h->done->len, ==, 2);
+    g_assert_cmpuint(g_array_index(h->done, SGICompletion, 1).kind, ==,
+                     SGI_DONE_CONSUMED);
+    g_assert_cmpuint(g_array_index(h->done, SGICompletion, 1).payload, ==, 0);
+    g_assert_cmpint(sgi_fetch(&f, &bus, &none, 0, 1), ==, SGI_FAIL_BOUNDS);
+    g_assert_cmpint(maps_made, ==, 0);
+    head_free(h);
+}
+
+/*
+ * A list invoked from inside a list gets a fetch of its own, and both
+ * complete with their own counts. Mapping the outer fetch again from inside
+ * its own decode() would drop its segments, so it asserts.
+ */
+static SGICommandFetch *nested_outer;
+static const SGIDMABus *nested_bus;
+static const SGIDMAPageList *nested_pl;
+static bool nested_reuse;
+
+static void nested_decode(void *opaque, uint32_t context,
+                          const uint32_t *words, unsigned n)
+{
+    Head *h = opaque;
+    SGICommandFetch inner = { .context = 3, .decode = head_decode,
+                              .cookie = 0x2 };
+
+    head_decode(opaque, context, words, n);
+    if (h->decode_calls != 1) {
+        return;
+    }
+    if (nested_reuse) {
+        sgi_fetch_map(nested_outer, nested_bus, nested_pl, 0, 1);
+        return;
+    }
+    g_assert_cmpint(sgi_fetch(&inner, nested_bus, nested_pl, PAGE, 5), ==, 0);
+}
+
+static void run_nested(bool reuse)
+{
+    Head *h = head_new();
+    SGIDMABus bus = bus_for(h, &head_ops);
+    uint64_t addrs[4];
+    SGIDMAPageList pl = { .addr = addrs, .npages = 4, .page_size = PAGE };
+    SGICommandFetch outer = { .context = 3, .decode = nested_decode,
+                              .cookie = 0x1 };
+
+    setup();
+    pool_setup();
+    pool_page_list(h, addrs);
+    nested_outer = &outer;
+    nested_bus = &bus;
+    nested_pl = &pl;
+    nested_reuse = reuse;
+    g_assert_cmpint(sgi_fetch(&outer, &bus, &pl, 0, 4), ==, 0);
+    g_assert_cmpuint(h->decoded->len, ==, 9);
+    g_assert_cmphex(g_array_index(h->decoded, uint32_t, 4), ==, 0);
+    g_assert_cmphex(g_array_index(h->decoded, uint32_t, 5), ==, 0x2000);
+    g_assert_cmpuint(h->done->len, ==, 2);
+    g_assert_cmphex(g_array_index(h->done, SGICompletion, 0).cookie, ==, 0x2);
+    g_assert_cmpuint(g_array_index(h->done, SGICompletion, 0).payload, ==, 5);
+    g_assert_cmphex(g_array_index(h->done, SGICompletion, 1).cookie, ==, 0x1);
+    g_assert_cmpuint(g_array_index(h->done, SGICompletion, 1).payload, ==, 4);
+    head_free(h);
+}
+
+static void test_fetch_nested(void)
+{
+    run_nested(false);
+    if (g_test_subprocess()) {
+        run_nested(true);
+        return;
+    }
+    g_test_trap_subprocess(NULL, 0, 0);
+    g_test_trap_assert_failed();
+    g_test_trap_assert_stderr("*sgi_fetch_begin*");
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -858,5 +1216,10 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-dma/page-cut", test_page_cut);
     g_test_add_func("/sgi-dma/partial-write", test_partial_write);
     g_test_add_func("/sgi-dma/page-backed-plane", test_page_backed_plane);
+    g_test_add_func("/sgi-fetch/measured-pool", test_fetch_measured_pool);
+    g_test_add_func("/sgi-fetch/next", test_fetch_next);
+    g_test_add_func("/sgi-fetch/plane", test_fetch_plane);
+    g_test_add_func("/sgi-fetch/empty", test_fetch_empty);
+    g_test_add_func("/sgi-fetch/nested", test_fetch_nested);
     return g_test_run();
 }
