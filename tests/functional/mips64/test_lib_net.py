@@ -433,18 +433,50 @@ class IrixTgVerdictTests(unittest.TestCase):
             "icmp_invalid_packets": 0,
             "icmp_echo_matching_replies": 1,
         }
+        self.tg_flags = {"L2IPFRAG", "L2TCPSEG"}
+        self.board = {
+            "bare_clean": True,
+            "saved_status": True,
+            "saved": {
+                "autoneg": "1",
+                "link_pref": "AUTO",
+                "flow_ctrl": "1",
+            },
+            "check_mode": True,
+            "options_status": True,
+            "options": {
+                "autoneg": "1",
+                "link_pref": "AUTO",
+                "flow_ctrl": "1",
+            },
+        }
+
+    def verdict(self, traffic):
+        return tg_acceptance_verdict(
+            True, True, True, True, self.tg_flags, self.board, traffic)
 
     def test_requires_the_existing_traffic_verdict_and_arp_resolution(self):
-        report = tg_acceptance_verdict(
-            True, True, True, True, self.traffic)
+        report = self.verdict(self.traffic)
 
         self.assertEqual(report, {"verdict": "PASS", "problems": []})
+
+    def test_requires_complete_tgconfig_readback_and_offload_flags(self):
+        self.board["options"].pop("flow_ctrl")
+        self.tg_flags.remove("L2TCPSEG")
+
+        report = self.verdict(self.traffic)
+
+        self.assertEqual(report["verdict"], "FAIL")
+        self.assertTrue(any("tgconfig -g" in problem
+                            for problem in report["problems"]))
+        self.assertTrue(any("L2IPFRAG or L2TCPSEG" in problem
+                            for problem in report["problems"]))
 
     def test_rejects_a_non_cold_cache_or_missing_wire_exchange(self):
         traffic = dict(self.traffic, arp_cache_cold=False,
                        arp_matching_replies=0)
 
-        report = tg_acceptance_verdict(True, True, True, True, traffic)
+        report = self.verdict(traffic)
 
         self.assertEqual(report["verdict"], "FAIL")
         self.assertEqual(len(report["problems"]), 2)
@@ -452,7 +484,7 @@ class IrixTgVerdictTests(unittest.TestCase):
     def test_rejects_guest_neighbor_mac_that_differs_from_the_reply(self):
         traffic = dict(self.traffic, arp_responder_mac="52:54:00:aa:bb:cc")
 
-        report = tg_acceptance_verdict(True, True, True, True, traffic)
+        report = self.verdict(traffic)
 
         self.assertEqual(report["verdict"], "FAIL")
         self.assertEqual(len(report["problems"]), 1)
@@ -460,7 +492,7 @@ class IrixTgVerdictTests(unittest.TestCase):
     def test_reports_an_unreadable_packet_capture(self):
         traffic = dict(self.traffic, arp_capture_problem="file missing")
 
-        report = tg_acceptance_verdict(True, True, True, True, traffic)
+        report = self.verdict(traffic)
 
         self.assertEqual(report["verdict"], "FAIL")
         self.assertTrue(any("file missing" in problem
@@ -470,7 +502,7 @@ class IrixTgVerdictTests(unittest.TestCase):
         traffic = dict(self.traffic, icmp_guest_to_gateway=0,
                        icmp_invalid_packets=1)
 
-        report = tg_acceptance_verdict(True, True, True, True, traffic)
+        report = self.verdict(traffic)
 
         self.assertEqual(report["verdict"], "FAIL")
         self.assertEqual(len(report["problems"]), 2)
@@ -478,7 +510,7 @@ class IrixTgVerdictTests(unittest.TestCase):
     def test_requires_a_matched_echo_payload(self):
         traffic = dict(self.traffic, icmp_echo_matching_replies=0)
 
-        report = tg_acceptance_verdict(True, True, True, True, traffic)
+        report = self.verdict(traffic)
 
         self.assertEqual(report["verdict"], "FAIL")
         self.assertTrue(any("sequence and exact payload" in problem

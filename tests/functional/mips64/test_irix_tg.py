@@ -21,7 +21,10 @@ climb (the adapter's transmit DMA put the echo requests on the wire) and
 received packets climb with zero input errors (its receive DMA took the gateway
 replies back off it, clean). That is a full round-trip exercise of the device's
 data path, transmit and receive, checked at the counters the driver itself
-maintains.
+maintains. It also reads the saved tgconfig settings, checks them against the
+installed options file, and requires the driver's L2IPFRAG and L2TCPSEG flags
+after bring-up. These are observations of IRIX under QEMU; they do not by
+themselves establish physical-board behavior.
 
 Why the interface counters and not the ping's own summary: the saved packet
 capture has eight gateway echo replies, each matching a guest request by
@@ -55,6 +58,7 @@ miniroot kernel are provisioned out of band.
 
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -70,11 +74,43 @@ from lib_net import (HarnessError, IrixConsole, arp_neighbor_line,
                      summarise_pcap)
 from lib_prom import MACHINES, file_sha256  # noqa: E402
 
-def tg_acceptance_verdict(login_reached, tg1_present, tg_up, link_up, traffic):
+def _labelled_values(output):
+    """Read the label/value forms printed by tgconfig and its options file."""
+    values = {}
+    for line in output.splitlines():
+        line = line.split("#", 1)[0].strip()
+        if not line or line.startswith("DEVICE"):
+            continue
+        match = re.fullmatch(r"([A-Za-z][\w.]*)(?:\s*[=:]\s*|\s+)(\S+)",
+                             line)
+        if match:
+            values[match.group(1).lower()] = match.group(2)
+    return values
+
+
+def _command_payload(output, command, tag):
+    """Remove only the exact echoed command wrapper at the capture start."""
+    echo = f'{command}; echo "MARK""-{tag}-$?"'.encode()
+    if output.startswith(echo + b"\r\n"):
+        output = output[len(echo) + 2:]
+    elif output.startswith(echo + b"\n"):
+        output = output[len(echo) + 1:]
+    return output
+
+
+def _command_output_text(output, command, tag):
+    """Decode command output, preserving all bytes after its echoed wrapper."""
+    return _command_payload(output, command, tag).decode(
+        "utf-8", errors="replace")
+
+
+def tg_acceptance_verdict(login_reached, tg1_present, tg_up, link_up,
+                          tg_flags, board, traffic):
     """Decide PASS/FAIL for one IRIX tg bring-up run.
 
     login_reached, tg1_present, tg_up, link_up: booleans for the four
-    milestones above.
+    milestones above. tg_flags is the set printed by `ifconfig tg1`;
+    board carries the tgconfig readback and options-file checks.
 
     traffic: a dict of the interface's own counters, read from `netstat -in`
     before and after a burst of pings to the SLIRP gateway --
@@ -101,6 +137,28 @@ def tg_acceptance_verdict(login_reached, tg1_present, tg_up, link_up, traffic):
         problems.append(
             "the tg driver never logged its link-up notice; the adapter's "
             "link never came up")
+
+    if not board.get("bare_clean"):
+        problems.append("bare tgconfig was not a clean no-op")
+    saved = board.get("saved", {})
+    required_options = {"autoneg", "link_pref", "flow_ctrl"}
+    if not board.get("saved_status") or not required_options <= saved.keys():
+        problems.append("tgconfig -g did not report the saved link settings")
+    if saved.get("link_pref") not in ("AUTO", "1000_FULL"):
+        problems.append(
+            "tgconfig -g reports a link preference the gigabit PHY cannot "
+            "satisfy")
+    if not board.get("check_mode"):
+        problems.append("tgconfig check mode rejected its installed options")
+    options = board.get("options", {})
+    if (not board.get("options_status")
+            or not required_options <= options.keys()
+            or any(saved.get(name) != options[name]
+                   for name in required_options)):
+        problems.append(
+            "tgconfig -g does not match /etc/config/tgconfig.options")
+    if not {"L2IPFRAG", "L2TCPSEG"} <= set(tg_flags):
+        problems.append("tg1 is missing the L2IPFRAG or L2TCPSEG flag")
 
     ib = traffic.get("ipkts_before")
     ia = traffic.get("ipkts_after")
@@ -277,6 +335,36 @@ if QemuSystemTest is not None:
             ipkts, ierrs, opkts = (int(v) for v in triple.split(","))
             return ipkts, ierrs, opkts
 
+        def _command_output(self, con, command, tag):
+            pos, marker = con._run_to_marker(command, tag, timeout=60)
+            output = bytes(con.buf[pos:marker.start()])
+            output_text = _command_output_text(output, command, tag)
+            return int(marker.group(1)), output_text
+
+        def _read_board_configuration(self, con):
+            status, _output = self._command_output(
+                con, "tgconfig", "tgconfig")
+            bare_clean = status == 0
+            status, output = self._command_output(
+                con, "tgconfig -g", "tgconfig_get")
+            saved = _labelled_values(output)
+            saved_status = status == 0
+            status, _output = self._command_output(
+                con, "tgconfig -c -f /etc/config/tgconfig.options",
+                "tgconfig_check")
+            check_mode = status == 0
+            status, output = self._command_output(
+                con, "cat /etc/config/tgconfig.options", "tgconfig_options")
+            options = _labelled_values(output) if status == 0 else {}
+            return {
+                "bare_clean": bare_clean,
+                "saved_status": saved_status,
+                "saved": saved,
+                "check_mode": check_mode,
+                "options_status": status == 0,
+                "options": options,
+            }
+
         def _read_arp_neighbor(self, con, tag):
             pos, marker = con._run_to_marker("arp -an", tag, timeout=60)
             output = bytes(con.buf[pos:marker.start()]).decode(
@@ -305,7 +393,15 @@ if QemuSystemTest is not None:
                 up = True
             except HarnessError:
                 up = False
-            return present, up
+            flags = set()
+            try:
+                flag_text = con.capture_value(
+                    "ifconfig " + IFACE, "ifflags",
+                    rb"flags=[^<]*<([^>]+)>", timeout=60)
+                flags = {flag.strip() for flag in flag_text.split(",")}
+            except HarnessError:
+                pass
+            return present, up, flags
 
         def _await_link(self, con):
             """Wait for the tg driver's link-up NOTICE on the console. Returns
@@ -372,6 +468,8 @@ if QemuSystemTest is not None:
             login_reached = False
             tg1_present = False
             tg_up = False
+            tg_flags = set()
+            board = {}
             link_up = False
             link_line = None
             counters_before = (None, None, None)
@@ -382,7 +480,8 @@ if QemuSystemTest is not None:
                 try:
                     drive_irix_to_shell(con, LOGIN_BUDGET_SECONDS)
                     login_reached = True
-                    tg1_present, tg_up = self._configure_tg(con)
+                    tg1_present, tg_up, tg_flags = self._configure_tg(con)
+                    board = self._read_board_configuration(con)
                     link_up, link_line = self._await_link(con)
                     arp_cache_cold = (
                         self._read_arp_neighbor(con, "arp_before") is None)
@@ -461,7 +560,8 @@ if QemuSystemTest is not None:
                 "icmp_echo_matching_replies": echo_wire["matching_replies"],
             }
             report = tg_acceptance_verdict(
-                login_reached, tg1_present, tg_up, link_up, traffic)
+                login_reached, tg1_present, tg_up, link_up, tg_flags,
+                board, traffic)
 
             summary_path = self.log_file('irix-tg-summary.json')
             with open(summary_path, 'w', encoding='utf-8') as summary_file:
@@ -472,6 +572,8 @@ if QemuSystemTest is not None:
                     'tg_up': tg_up,
                     'link_up': link_up,
                     'link_line': link_line,
+                    'tg_flags': sorted(tg_flags),
+                    'board': board,
                     'traffic': traffic,
                     'report': report,
                 }, summary_file, indent=2, sort_keys=True, default=str)
