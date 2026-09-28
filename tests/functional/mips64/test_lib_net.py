@@ -34,7 +34,8 @@ from lib_net import (DHCP_NAMES, OPENBSD_LOGIN_STAGES, OPENBSD_TRIPWIRES,
                      ordered_stages, summarise_pcap,
                      tftp_transfer, tftp_transfer_problems,
                      tftp_session_report,
-                     transfer_result_pattern)
+                     transfer_result_pattern,
+                     arp_request_frame, parse_arp_frame)
 from test_irix_tg import tg_acceptance_verdict
 
 
@@ -264,6 +265,43 @@ class ArpResolutionTests(unittest.TestCase):
 
         self.assertEqual(arp_neighbor_line(output, "10.0.2.2"), output)
         self.assertIsNone(arp_neighbor_mac(output, "10.0.2.2"))
+
+
+class ArpFrameTests(unittest.TestCase):
+
+    def test_request_encoding_and_reply_fields(self):
+        peer_mac = bytes.fromhex("02005d270002")
+        guest_mac = bytes.fromhex("02005d270001")
+        request = arp_request_frame(peer_mac, "10.0.2.2", "10.0.2.15")
+
+        self.assertEqual(len(request), 42)
+        self.assertEqual(request[:6], b"\xff" * 6)
+        self.assertEqual(request[6:14], peer_mac + b"\x08\x06")
+        self.assertEqual(parse_arp_frame(request), {
+            "ethernet_dst": b"\xff" * 6,
+            "ethernet_src": peer_mac,
+            "opcode": 1,
+            "sender_mac": peer_mac,
+            "sender_ip": "10.0.2.2",
+            "target_mac": b"\x00" * 6,
+            "target_ip": "10.0.2.15",
+        })
+
+        reply = _arp_frame(2, guest_mac, "10.0.2.15", peer_mac,
+                           "10.0.2.2", peer_mac)
+        self.assertEqual(parse_arp_frame(reply), {
+            "ethernet_dst": peer_mac,
+            "ethernet_src": guest_mac,
+            "opcode": 2,
+            "sender_mac": guest_mac,
+            "sender_ip": "10.0.2.15",
+            "target_mac": peer_mac,
+            "target_ip": "10.0.2.2",
+        })
+
+    def test_parser_rejects_non_arp_and_truncated_frames(self):
+        self.assertIsNone(parse_arp_frame(b"\x00" * 42))
+        self.assertIsNone(parse_arp_frame(b"\xff" * 41))
 
 
 class IrixTgVerdictTests(unittest.TestCase):

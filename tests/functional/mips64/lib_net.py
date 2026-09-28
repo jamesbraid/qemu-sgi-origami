@@ -34,6 +34,33 @@ class GuestFault(HarnessError):
     the wrong value, this ends the whole run."""
 
 
+def arp_request_frame(sender_mac, sender_ip, target_ip):
+    """Build an Ethernet broadcast ARP request from textual IPv4 addresses."""
+    if len(sender_mac) != 6:
+        raise ValueError("an Ethernet address must contain six bytes")
+    return (b"\xff" * 6 + sender_mac + b"\x08\x06"
+            + b"\x00\x01\x08\x00\x06\x04\x00\x01"
+            + sender_mac + socket.inet_aton(sender_ip) + b"\x00" * 6
+            + socket.inet_aton(target_ip))
+
+
+def parse_arp_frame(frame):
+    """Decode a plain Ethernet/IPv4 ARP frame, or return None if malformed."""
+    if len(frame) < 42 or frame[12:14] != b"\x08\x06":
+        return None
+    if frame[14:20] != b"\x00\x01\x08\x00\x06\x04":
+        return None
+    return {
+        "ethernet_dst": frame[0:6],
+        "ethernet_src": frame[6:12],
+        "opcode": int.from_bytes(frame[20:22], "big"),
+        "sender_mac": frame[22:28],
+        "sender_ip": socket.inet_ntoa(frame[28:32]),
+        "target_mac": frame[32:38],
+        "target_ip": socket.inet_ntoa(frame[38:42]),
+    }
+
+
 # The three faults an OpenBSD/IP27 guest shows when it wedges rather than
 # answers. Shared by the install and transfer runs, which drive the same
 # kernel.
