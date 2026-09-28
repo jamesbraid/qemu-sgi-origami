@@ -366,10 +366,9 @@ class QemuArgsTest(unittest.TestCase):
 
 
 class PromArgsTest(unittest.TestCase):
-    """The real-PROM QEMU args (lib_prom's resolve_asset finds the
-    image; test_lib_prom.py covers it)."""
+    """The real-PROM QEMU args (LocalAsset supplies the image)."""
 
-    def test_prom_args_with_resolved_firmware(self):
+    def test_prom_args_with_firmware_path(self):
         self.assertEqual(
             prom_args('/some/sgi-assets/firmware/6.5-base/'
                       'ip27prom.payload.bin'),
@@ -378,9 +377,7 @@ class PromArgsTest(unittest.TestCase):
              '-d', 'trace:sgi_hub_led'])
 
     def test_prom_args_without_firmware(self):
-        # resolve_asset() returns None when the image is not
-        # provisioned under QEMU_TEST_SGI_ASSET_DIR, and the caller passes that
-        # straight through -- must contribute no args at all.
+        # Without a supplied firmware image, there are no PROM args to add.
         self.assertEqual(prom_args(None), [])
 
 
