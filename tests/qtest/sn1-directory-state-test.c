@@ -1252,6 +1252,30 @@ static void test_flush_of_a_released_line(void)
     finish(s, prom);
 }
 
+/*
+ * With directory ECC ignored a rewritten word keeps its old check field,
+ * which may leave it not a codeword; the unit is not checking, so that
+ * does not stop the next transition.
+ */
+static void test_ignore_ecc_keeps_transitions_going(void)
+{
+    const Scenario sc = {
+        .cpus = "2", .ignore_ecc = true,
+        STEPS({ 0, emit_first }, { 0, load_08 }, { 2, load_18 }),
+    };
+    char *prom;
+    QTestState *s;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+    s = run_scenario(&sc, &prom);
+    g_assert_cmphex(result(s, 0x08) & DIRECTORY_FIELDS, ==, POINTER(0));
+    g_assert_cmphex(result(s, 0x18) & DIRECTORY_FIELDS, ==, SHARED(0x3));
+    finish(s, prom);
+}
+
 /* Read the word again without naming the line, load it, read it again. */
 static void reread_then_load(Program *p)
 {
@@ -1397,6 +1421,8 @@ int main(int argc, char **argv)
                    test_loadvm_forgets_watching);
     qtest_add_func("sn1/directory-state/flush-of-a-released-line",
                    test_flush_of_a_released_line);
+    qtest_add_func("sn1/directory-state/ignore-ecc-keeps-transitions-going",
+                   test_ignore_ecc_keeps_transitions_going);
     qtest_add_func("sn1/directory-state/naming-is-spent-on-watching",
                    test_naming_is_spent_on_watching);
     qtest_add_func("sn1/directory-state/page-is-watched",
