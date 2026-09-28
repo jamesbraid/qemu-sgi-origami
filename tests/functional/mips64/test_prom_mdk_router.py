@@ -13,15 +13,12 @@ there is only 1 node board in system"), so this leg boots the
 two-chassis shape the machine model demands (four CPUs as two sockets
 of two cores, one memory node each) and requires the test to run.
 
-THIS LEG IS RED ON CURRENT TRUNK, and deliberately so: the two-chassis
-boot never discovers its second hub ("Found 1 objects (1 hubs, 0
-routers)", then "Headless HUB inaccessible") and loops, so the kernel
-never loads. The project rule is that a broken subject's test stays red
-until it is fixed rather than being marked expected-to-fail; this leg
-is the nightly's standing measure of the two-chassis discovery wall,
-recorded in the project checkout's firmware-diags notebook. Its
-_verdict companion pins the two real failure shapes (the one-node
-decline and the two-chassis wedge) so a pass cannot be faked by either.
+The test boots the two-node Origin 200 configuration, netboots
+MDK_router_sso, and checks that its router link test completes. In the
+standalone run at QEMU e9d6695e71, it discovered both nodes and entered
+the link test, which completed more than 200 numbered passes. The run
+failed after repeated checkbit errors and a timeout before completion.
+Passing requires the link test to finish.
 """
 
 import json
