@@ -1484,7 +1484,7 @@ static const VMStateDescription vmstate_sgi_mgras_xmap = {
  * changes.
  */
 static const VMStateDescription vmstate_sgi_mgras = {
-    .name = TYPE_SGI_MGRAS, .version_id = 20, .minimum_version_id = 9,
+    .name = TYPE_SGI_MGRAS, .version_id = 21, .minimum_version_id = 9,
     .post_load = mgras_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32(front_count, SGIMgrasState),
@@ -1685,6 +1685,14 @@ static const VMStateDescription vmstate_sgi_mgras = {
         VMSTATE_STRUCT_ARRAY(gl_context, SGIMgrasState,
                              SGI_MGRAS_GL_CONTEXTS, 20,
                              vmstate_sgi_mgras_gl_context_v20,
+                             SGIMgrasGLContext),
+        /*
+         * Version 21 adds each context's matrix stacks. An older stream
+         * leaves them empty, as the client had pushed nothing.
+         */
+        VMSTATE_STRUCT_ARRAY(gl_context, SGIMgrasState,
+                             SGI_MGRAS_GL_CONTEXTS, 21,
+                             vmstate_sgi_mgras_gl_context_v21,
                              SGIMgrasGLContext),
         VMSTATE_END_OF_LIST()
     }

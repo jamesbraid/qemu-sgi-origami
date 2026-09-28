@@ -41,6 +41,16 @@
 #define MGRAS_GL_MULT_MATRIX     0x00002d40
 #define MGRAS_GL_FRUSTUM         0x00003418
 #define MGRAS_GL_ORTHO           0x00003518
+/*
+ * The matrix stack and transforms, named by the client's display-list
+ * decoder (notes-lists-arrays-lighting.md in the Origami repository):
+ * glRotatef's words are the angle in degrees and the axis.
+ */
+#define MGRAS_GL_POP_MATRIX      0x00002e00
+#define MGRAS_GL_PUSH_MATRIX     0x00002f00
+#define MGRAS_GL_ROTATE          0x00003010
+#define MGRAS_GL_SCALE           0x0000310c
+#define MGRAS_GL_TRANSLATE       0x0000320c
 #define MGRAS_GL_DEPTH_MASK      0x00003c04
 #define MGRAS_GL_DEPTH_FUNC      0x00004304
 #define MGRAS_GL_DRAW_BUFFER     0x0000490c
@@ -174,6 +184,11 @@ bool sgi_mgras_gl_header(uint32_t header)
     case MGRAS_GL_MULT_MATRIX:
     case MGRAS_GL_FRUSTUM:
     case MGRAS_GL_ORTHO:
+    case MGRAS_GL_POP_MATRIX:
+    case MGRAS_GL_PUSH_MATRIX:
+    case MGRAS_GL_ROTATE:
+    case MGRAS_GL_SCALE:
+    case MGRAS_GL_TRANSLATE:
     case MGRAS_GL_DEPTH_MASK:
     case MGRAS_GL_DEPTH_FUNC:
     case MGRAS_GL_DRAW_BUFFER:
@@ -449,6 +464,22 @@ const VMStateDescription vmstate_sgi_mgras_gl_context_v20 = {
     }
 };
 
+/* The matrix stacks each context gained in version 21. */
+const VMStateDescription vmstate_sgi_mgras_gl_context_v21 = {
+    .name = TYPE_SGI_MGRAS "/gl-context-v21",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32_2DARRAY(modelview_stack, SGIMgrasGLContext,
+                               SGI_MGRAS_GL_STACK_DEPTH - 1, 16),
+        VMSTATE_UINT32_2DARRAY(projection_stack, SGIMgrasGLContext,
+                               SGI_MGRAS_GL_STACK_DEPTH - 1, 16),
+        VMSTATE_UINT32(modelview_depth, SGIMgrasGLContext),
+        VMSTATE_UINT32(projection_depth, SGIMgrasGLContext),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
 bool sgi_mgras_cmd_parser_valid(uint32_t cls, uint32_t reg,
                                 uint32_t words_remaining,
                                 uint32_t payload_count)
@@ -474,6 +505,8 @@ bool sgi_mgras_gl_post_load(SGIMgrasState *s)
 
         if (s->gl_context[i].vertex_count >=
             ARRAY_SIZE(s->gl_context[i].vertex) ||
+            s->gl_context[i].modelview_depth >= SGI_MGRAS_GL_STACK_DEPTH ||
+            s->gl_context[i].projection_depth >= SGI_MGRAS_GL_STACK_DEPTH ||
             !sgi_mgras_cmd_parser_valid(p->cls, p->reg, p->words_remaining,
                                         p->payload_count)) {
             return false;
@@ -691,6 +724,99 @@ static bool mgras_gl_projection_matrix(uint32_t header, const uint32_t *p,
     return true;
 }
 
+/*
+ * glTranslatef's, glScalef's and glRotatef's matrices (OpenGL 1.2.1,
+ * 2.10.2). The rotation is by the angle in degrees, counter-clockwise
+ * looking from the axis toward the origin, about the axis scaled to unit
+ * length; the model forms it in double precision. A zero axis leaves the
+ * matrix unchanged.
+ */
+static bool mgras_gl_transform_matrix(uint32_t header, const uint32_t *p,
+                                      double m[16])
+{
+    double x, y, z, len, a, c, sn;
+
+    memset(m, 0, 16 * sizeof(double));
+    m[0] = m[5] = m[10] = m[15] = 1;
+    switch (header) {
+    case MGRAS_GL_TRANSLATE:
+        m[12] = mgras_gl_float(p[0]);
+        m[13] = mgras_gl_float(p[1]);
+        m[14] = mgras_gl_float(p[2]);
+        return true;
+    case MGRAS_GL_SCALE:
+        m[0] = mgras_gl_float(p[0]);
+        m[5] = mgras_gl_float(p[1]);
+        m[10] = mgras_gl_float(p[2]);
+        return true;
+    default:
+        a = mgras_gl_float(p[0]) * M_PI / 180.0;
+        x = mgras_gl_float(p[1]);
+        y = mgras_gl_float(p[2]);
+        z = mgras_gl_float(p[3]);
+        len = sqrt(x * x + y * y + z * z);
+        if (!(len > 0)) {
+            qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: glRotatef about a "
+                          "zero axis ignored\n");
+            return false;
+        }
+        x /= len;
+        y /= len;
+        z /= len;
+        c = cos(a);
+        sn = sin(a);
+        /* Column-major: m[col * 4 + row]. */
+        m[0] = x * x * (1 - c) + c;
+        m[1] = y * x * (1 - c) + z * sn;
+        m[2] = x * z * (1 - c) - y * sn;
+        m[4] = x * y * (1 - c) - z * sn;
+        m[5] = y * y * (1 - c) + c;
+        m[6] = y * z * (1 - c) + x * sn;
+        m[8] = x * z * (1 - c) + y * sn;
+        m[9] = y * z * (1 - c) - x * sn;
+        m[10] = z * z * (1 - c) + c;
+        return true;
+    }
+}
+
+/*
+ * glPushMatrix and glPopMatrix on the current mode's stack (2.10.2).
+ * Approximated: the board's stack depths are not known. Each stack holds
+ * SGI_MGRAS_GL_STACK_DEPTH matrices, the current one included, the least
+ * OpenGL 1.2.1 allows for the modelview stack (table 6.25) and more than
+ * it requires for the projection stack. A push onto a full stack and a
+ * pop of the last matrix change nothing, which is what the specification
+ * has the stack-overflow and stack-underflow errors do; the client
+ * reports the errors itself, if at all. The discriminating test is
+ * gl-matrix-stack-holds-32.
+ */
+static void mgras_gl_stack_command(SGIMgrasState *s, uint32_t header,
+                                   uint32_t *m)
+{
+    SGIMgrasGLContext *gl = mgras_gl(s);
+    bool modelview = m == gl->modelview;
+    uint32_t (*stack)[16] = modelview ? gl->modelview_stack :
+                                        gl->projection_stack;
+    uint32_t *depth = modelview ? &gl->modelview_depth :
+                                  &gl->projection_depth;
+
+    if (header == MGRAS_GL_PUSH_MATRIX) {
+        if (*depth >= SGI_MGRAS_GL_STACK_DEPTH - 1) {
+            qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: glPushMatrix on a "
+                          "full stack ignored\n");
+            return;
+        }
+        memcpy(stack[(*depth)++], m, 16 * sizeof(uint32_t));
+        return;
+    }
+    if (*depth == 0) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: glPopMatrix of the last "
+                      "matrix ignored\n");
+        return;
+    }
+    memcpy(m, stack[--(*depth)], 16 * sizeof(uint32_t));
+}
+
 static void mgras_gl_matrix_command(SGIMgrasState *s, uint32_t header,
                                     const uint32_t *payload)
 {
@@ -701,6 +827,17 @@ static void mgras_gl_matrix_command(SGIMgrasState *s, uint32_t header,
         return;
     }
     switch (header) {
+    case MGRAS_GL_PUSH_MATRIX:
+    case MGRAS_GL_POP_MATRIX:
+        mgras_gl_stack_command(s, header, m);
+        return;
+    case MGRAS_GL_TRANSLATE:
+    case MGRAS_GL_SCALE:
+    case MGRAS_GL_ROTATE:
+        if (mgras_gl_transform_matrix(header, payload, arg)) {
+            mgras_gl_multiply(m, arg);
+        }
+        return;
     case MGRAS_GL_LOAD_IDENTITY:
         mgras_gl_identity(m);
         return;
@@ -1028,6 +1165,11 @@ void sgi_mgras_gl_execute(SGIMgrasState *s, uint32_t header,
     case MGRAS_GL_MULT_MATRIX:
     case MGRAS_GL_FRUSTUM:
     case MGRAS_GL_ORTHO:
+    case MGRAS_GL_PUSH_MATRIX:
+    case MGRAS_GL_POP_MATRIX:
+    case MGRAS_GL_TRANSLATE:
+    case MGRAS_GL_SCALE:
+    case MGRAS_GL_ROTATE:
         mgras_gl_matrix_command(s, header, payload);
         return;
     case MGRAS_GL_DEPTH_TEST:

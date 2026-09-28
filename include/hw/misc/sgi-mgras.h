@@ -299,6 +299,9 @@ typedef struct SGIMgrasCmdParser {
     uint32_t payload_count;
 } SGIMgrasCmdParser;
 
+/* Matrices a GL matrix stack holds, the current one included. */
+#define SGI_MGRAS_GL_STACK_DEPTH 32
+
 /*
  * One OpenGL context's command state (hw/misc/sgi-mgras-gl.c). Colours and
  * vertex components keep the IEEE single bits the client wrote.
@@ -324,6 +327,11 @@ typedef struct SGIMgrasGLContext {
     uint32_t draw_buffers;
     /* The parser's position while this context is not loaded. */
     SGIMgrasCmdParser parser;
+    /* Matrices glPushMatrix saved under the current ones, oldest first. */
+    uint32_t modelview_stack[SGI_MGRAS_GL_STACK_DEPTH - 1][16];
+    uint32_t projection_stack[SGI_MGRAS_GL_STACK_DEPTH - 1][16];
+    uint32_t modelview_depth;
+    uint32_t projection_depth;
 } SGIMgrasGLContext;
 
 /*

@@ -18,6 +18,7 @@ void sgi_mgras_gl_context_loaded(SGIMgrasState *s);
 #define SGI_MGRAS_GE_PORTS_END  0x058400
 extern const VMStateDescription vmstate_sgi_mgras_gl_context;
 extern const VMStateDescription vmstate_sgi_mgras_gl_context_v20;
+extern const VMStateDescription vmstate_sgi_mgras_gl_context_v21;
 
 /* Note GE-port traffic the per-context state cannot follow. */
 void sgi_mgras_gl_ge_port_access(SGIMgrasState *s, hwaddr addr, bool write);
