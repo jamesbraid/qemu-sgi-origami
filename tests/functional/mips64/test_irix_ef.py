@@ -239,6 +239,14 @@ if QemuSystemTest is not None:
                                           'ef_ifshow', 60)
                 self.assertEqual(rc, 0, 'ifconfig ef0 query failed')
                 self.assertRegex(ifconfig, r'UP[,>]')
+                rc, mtu_output = _run_guest(
+                    con, "netstat -in | awk '$1 == \"ef0\" "
+                    "{print \"MTU=\" $2; exit}'", 'ef_mtu', 60)
+                self.assertEqual(rc, 0, 'ef0 MTU query failed')
+                mtu = re.search(r'MTU=(\d+)', mtu_output)
+                self.assertIsNotNone(mtu, 'ef0 MTU readback missing')
+                self.assertEqual(int(mtu.group(1)), 1500,
+                                 'ef0 reported a non-standard MTU')
 
                 # Host to guest: compare the deterministic host payload using
                 # the POSIX cksum implementation on both ends.
