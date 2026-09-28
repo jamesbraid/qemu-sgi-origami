@@ -11,6 +11,28 @@ Build the MIPS64 system emulator with tests, HMP, and user-mode networking enabl
        --enable-hmp --enable-slirp
    ninja -C build
 
+To build without network access, prepare a source archive from a clean QEMU
+checkout while connected. The archive script may download the declared Meson
+subprojects before adding them to the tarball; the extracted archive contains
+no ``.git`` metadata:
+
+.. code-block:: sh
+
+   scripts/archive-source.sh qemu.tar
+   mkdir qemu-src
+   tar -xf qemu.tar -C qemu-src
+   cd qemu-src
+   ./configure --disable-download --target-list=mips64-softmmu \
+       --enable-tests --enable-hmp --enable-slirp
+   ninja -C build qemu-system-mips64 qemu-img sgi-roms
+
+Run those build commands in an environment that already has QEMU's native
+build dependencies and the functional-test Python dependencies. The public
+Debian Trixie image described below installs ``pygdbmi`` and ``pylint`` for the
+functional tests. ``--disable-download`` prevents configure from fetching
+missing dependencies; it does not install those Python packages. Test assets
+are provisioned separately and are not included in the source archive.
+
 Debian Trixie build dependencies used by the Forgejo workflows are declared in
 ``tests/docker/dockerfiles/debian-sgi.docker``. That image includes the MIPS64
 cross compilers used to build the source ROMs. QEMU builds and tests run inside
@@ -18,6 +40,9 @@ that public image; the Forgejo runner supplies the Docker client, reachable
 container service, and a named volume for its checkout. Those runner facilities
 must be configured before these workflows can run. A missing facility fails
 with a diagnostic; the workflow does not install tools on the runner.
+GitHub Actions workflows are planned to run these same native QEMU commands;
+this guide documents the Forgejo workflows and does not claim that the
+provider-specific workflows have been qualified on both services.
 
 The source-built ROM functional test is registered as
 ``func-mips64-sgi_roms`` in the ``qemu:thorough`` Meson setup. Its required
@@ -27,6 +52,11 @@ case list comes from ``tests/functional/mips64/roms/suite``. Build and run it wi
 
    build/pyvenv/bin/meson test -C build --setup qemu:thorough \
        --print-errorlogs func-mips64-sgi_roms
+
+The offline source-archive build was checked with the ROM matrix's 85 expected
+identities and one selected Origin 200 PROM case. Both emitted fresh JUnit
+reports that passed ``scripts/check-sgi-test-results.py``; this does not
+qualify the complete functional matrix.
 
 The tests that use supplied assets read paths directly below
 ``QEMU_TEST_SGI_ASSET_DIR``. The directory is an asset root, without an extra
@@ -103,6 +133,6 @@ without proprietary files. The full workflow-dispatch check runs on the
 trusted ``sgi-origami`` branch, requires the supplied asset root, and runs the
 register and unit suites, the ROM matrix, and selected PROM, Linux, and IRIX
 boots. The prior pull-request Linux boot is therefore covered by the full
-asset-qualified check. Scheduled nightly runs execute the supplied-asset
-MIPS64 functional matrix; a manual ``suite=asset-free`` run exercises the ROM
-matrix without private files.
+asset-qualified check. Scheduled nightly runs rotate through the supplied-asset
+MIPS64 matrix, diagnostic, install, and OpenBSD workloads. A manual
+``workload=asset-free`` run exercises the ROM matrix without private files.
