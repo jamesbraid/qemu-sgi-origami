@@ -4,20 +4,13 @@
 # cabinet, and on the same converted module in loopback
 #
 # SPDX-License-Identifier: GPL-2.0-or-later
-"""The stock IP27 PROM 6.156 treats an Origin 200 node as a GIGAchannel
-cabinet's host when widget 0 answers a Crossbow's part through its Hub,
-and then loads its BASEIO PROM from the cabinet Bridge's external flash
-(docs/datasheets/sgi-gigachannel.md in the Origami repository). With the
-shipped BASEIO PROM image as the cabinet's flash, the PROM prints the XBOX
-load line and DONE, as a real cabinet does, and the BASEIO PROM banner is
-the flash build. With no flash image attached, the test requires the XBOX
-load line, a bus error in the flash window, a retry from the internal
-copy, and passing diagnostics. The loopback form has no Crossbow at widget
-0, so the test requires the plain load line instead.
-
-The harness's own launches of these topologies reached the menu in under
-four minutes on a heavily loaded host (2026-09-25, load average
-about 125), well inside the 900 s budget per boot.
+"""On QEMU's origin200-gigachannel topology, the stock IP27 PROM 6.156
+prints the XBOX load line and loads the supplied BASEIO PROM image from
+the cabinet flash. The test checks the flash build's BASEIO PROM banner
+and passing diagnostics. Without a flash image, it checks the XBOX load
+line, a bus error in the flash window, a retry from the internal copy,
+and passing diagnostics. On the loopback topology, it checks the plain
+load line and passing diagnostics.
 """
 
 import os
