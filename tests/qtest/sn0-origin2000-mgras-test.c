@@ -12216,6 +12216,42 @@ static void test_gl_depth_range_migration(void)
     gl_migrate(gl_depth_range_setup, gl_depth_range_check);
 }
 
+/*
+ * GL_MODELVIEW_STACK_DEPTH and GL_PROJECTION_STACK_DEPTH are queried at
+ * 0x83 and 0x922, and the client returns ((answer - base) >> 4) + 1 with
+ * base 0x925 and 0xb25, the hq3_revB_HQ4.u symbol-table words at file
+ * offsets 0x210 and 0x214. perfly's draw process stopped after reading a
+ * zero here.
+ */
+#define GL_Q_MODELVIEW_DEPTH  0x083
+#define GL_Q_PROJECTION_DEPTH 0x922
+
+static uint32_t gl_stack_depth(uint32_t answer, uint32_t base)
+{
+    return ((answer - base) >> 4) + 1;
+}
+
+static void test_hq_query_answers_the_stack_depths(void)
+{
+    mgras_reset();
+
+    gl_enter_slot(qts, GL_SLOT_A);
+    gl_word(qts, GL_CONTEXT_OPENER);
+    g_assert_cmphex(gl_query(qts, GL_Q_MODELVIEW_DEPTH, 0), ==, 0x925);
+    g_assert_cmphex(gl_query(qts, GL_Q_PROJECTION_DEPTH, 1), ==, 0xb25);
+    gl_word(qts, GL_PUSH_MATRIX);
+    gl_word(qts, GL_PUSH_MATRIX);
+    gl_one(qts, GL_MATRIX_MODE_HDR, GL_PROJECTION);
+    gl_word(qts, GL_PUSH_MATRIX);
+    g_assert_cmpuint(gl_stack_depth(gl_query(qts, GL_Q_MODELVIEW_DEPTH, 0),
+                                    0x925), ==, 3);
+    g_assert_cmpuint(gl_stack_depth(gl_query(qts, GL_Q_PROJECTION_DEPTH, 1),
+                                    0xb25), ==, 2);
+    gl_word(qts, GL_POP_MATRIX);
+    g_assert_cmphex(gl_query(qts, GL_Q_PROJECTION_DEPTH, 1), ==, 0xb25);
+    g_assert_cmphex(gl_query(qts, GL_Q_MODELVIEW_DEPTH, 0), ==, 0x945);
+}
+
 int main(int argc, char **argv)
 {
     int ret;
@@ -12540,6 +12576,8 @@ int main(int argc, char **argv)
                    test_hq_query_answers_the_colour_index);
     qtest_add_func("sn0/origin2000/mgras/hq-query-answers-the-depth-range",
                    test_hq_query_answers_the_depth_range);
+    qtest_add_func("sn0/origin2000/mgras/hq-query-answers-the-stack-depths",
+                   test_hq_query_answers_the_stack_depths);
     qtest_add_func("sn0/origin2000/mgras/gl-bitmap-draws-its-image",
                    test_gl_bitmap_draws_its_image);
     qtest_add_func("sn0/origin2000/mgras/gl-bitmap-unaligned-image",
