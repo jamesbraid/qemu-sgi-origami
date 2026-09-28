@@ -70,7 +70,15 @@ typedef struct SGIDMAChunk {
     uint64_t addr;              /* device address, as traced */
     hwaddr bus_addr;            /* composed address the map used */
     bool bounce;                /* host is a bounce buffer, not a map */
-    bool written;               /* the head wrote into it */
+    /*
+     * The bytes the head wrote, as offsets into the chunk: one run from the
+     * first to the last, empty while written_end is 0. A pixel transfer
+     * writes each chunk as one run from its start, so the run is exactly
+     * the bytes written; a caller that wrote one chunk in separate pieces
+     * would also write back the zeroed bytes between them.
+     */
+    uint32_t written_start;
+    uint32_t written_end;
 } SGIDMAChunk;
 
 typedef struct SGIDMAMap {
@@ -112,9 +120,13 @@ bool sgi_dma_map_copy(SGIDMAMap *map, uint64_t pos, void *buf, uint64_t len,
                       bool to_guest);
 
 /*
- * Release map. Chunks the head wrote are marked dirty, or for a bounce
+ * Release map. The bytes the head wrote are marked dirty, or for a bounce
  * buffer written back to guest memory, whether or not the transfer
- * completed: the guest's memory then shows how far it got.
+ * completed: the guest's memory then shows how far it got. A bounce buffer
+ * for guest memory the head writes is never filled from that memory first,
+ * so only the chunk's written run goes back and a target that is not RAM
+ * sees no read. A direct map is released with the length from its start to
+ * the end of that run, which is what dma_memory_unmap() takes.
  */
 void sgi_dma_unmap(SGIDMAMap *map);
 
