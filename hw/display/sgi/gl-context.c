@@ -605,8 +605,14 @@ static void sgi_gl_raster_pos(SGIGLContext *c, const float obj[4])
             clip[row] += (double)pr[k * 4 + row] * eye[k];
         }
     }
+    /*
+     * Clip (0, 0, 0, 0) passes the view-volume test and has no window
+     * position; it is culled, the model's choice for a point with no
+     * image.
+     */
     for (int i = 0; i < 3; i++) {
-        if (!(-clip[3] <= clip[i] && clip[i] <= clip[3])) {
+        if (!(clip[3] > 0) ||
+            !(-clip[3] <= clip[i] && clip[i] <= clip[3])) {
             c->raster_valid = 0;
             return;
         }

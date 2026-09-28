@@ -734,6 +734,21 @@ static void test_raster_position(void)
     g_assert_cmpfloat(get_float(&c, SGI_GL_CURRENT_RASTER_POSITION, 3), ==,
                       2);
 
+    /*
+     * A point the projection takes to clip (0, 0, 0, 0) is culled, not
+     * divided by its zero w.
+     */
+    word[0] = bits(2), word[1] = bits(1);
+    command(&c, NULL, SGI_GL_OP_RASTER_POS2F, word, 2);
+    get(&c, SGI_GL_CURRENT_RASTER_POSITION_VALID, out);
+    g_assert_cmphex(out[0], ==, 1);
+    word[0] = word[1] = word[2] = word[3] = bits(0);
+    command(&c, NULL, SGI_GL_OP_RASTER_POS4F, word, 4);
+    get(&c, SGI_GL_CURRENT_RASTER_POSITION_VALID, out);
+    g_assert_cmphex(out[0], ==, 0);
+    g_assert_cmpfloat(get_float(&c, SGI_GL_CURRENT_RASTER_POSITION, 3), ==,
+                      1);
+
     /* Back inside, with z 0 by default: window z 0.5. */
     word[0] = bits(2), word[1] = bits(1);
     command(&c, NULL, SGI_GL_OP_RASTER_POS2F, word, 2);
