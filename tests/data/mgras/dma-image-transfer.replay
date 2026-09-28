@@ -6,13 +6,12 @@ head sgi-mgras
 # register sequence (widget 9, one page-list entry, an 8-byte source row).
 # The two 'dma' lines below are exactly the sgi_mgras_dma_chunk trace events
 # that same sequence produces under
-# test_dma_image_transfer_traces_source_chunks: the page-list entry
-# mgras_raster_dma_load_page_list() fetches, and the row's eight source bytes
-# mgras_raster_dma_draw_image() pulls one at a time and coalesces into one
-# chunk. Both addresses are the plain node address (node 0, so bare byte
-# offsets 0x2018 and 0x7000) the model resolves before
-# sgi_mgras_xio_compose() shifts widget 9 into the high bits -- not that
-# composed fabric address, which only routes the read through
+# test_dma_image_transfer_traces_source_chunks: the page-list entry the
+# transfer fetches, and the row's eight source bytes, which lie inside one
+# guest page and so arrive as one chunk. Both addresses are the plain node
+# address (node 0, so bare byte offsets 0x2018 and 0x7000) the model resolves
+# before sgi_mgras_xio_compose() shifts widget 9 into the high bits -- not
+# that composed fabric address, which only routes the read through
 # s->fabric_as and is not otherwise backed by memory a replay's
 # qtest_memwrite can reach.
 #

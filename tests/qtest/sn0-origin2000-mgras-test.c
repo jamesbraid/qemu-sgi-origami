@@ -1727,19 +1727,18 @@ static void test_dma_image_transfer_paints_from_host_memory(void)
  * actually read. Reuse paints-from-host-memory's exact register sequence
  * (one page-list entry, an 8-byte two-pixel row) under
  * -trace enable=sgi_mgras_dma_chunk and confirm the trace carries both
- * reads the model performs: the one page-list entry
- * mgras_raster_dma_load_page_list() fetches (8 bytes at the list's plain
- * node address) and the row's eight source bytes
- * mgras_raster_dma_draw_image() pulls one at a time and coalesces into a
- * single contiguous chunk. The traced address is the same plain node-offset
- * address qtest_memwrite() below names, not the fully composed fabric
- * address sgi_mgras_xio_compose() derives from it (widget 9 shifted into
- * the high bits) -- because a replay's own memwrite reaches qtest's guest
- * RAM only at the plain address; the fabric address exists only to route
- * dma_memory_read() through s->fabric_as and is not otherwise backed by
- * memory qtest_memwrite() can reach. This needs its own machine rather
- * than the shared `qts`, since trace enablement is a command-line option a
- * running QEMU cannot pick up after the fact.
+ * reads the model performs: the one page-list entry (8 bytes at the
+ * list's plain node address) and the row's eight source bytes, which lie
+ * inside one guest page and so arrive as a single chunk. The traced
+ * address is the same plain node-offset address qtest_memwrite() below
+ * names, not the fully composed fabric address sgi_mgras_xio_compose()
+ * derives from it (widget 9 shifted into the high bits) -- because a
+ * replay's own memwrite reaches qtest's guest RAM only at the plain
+ * address; the fabric address exists only to route the DMA through
+ * s->fabric_as and is not otherwise backed by memory qtest_memwrite() can
+ * reach. This needs its own machine rather than the shared `qts`, since
+ * trace enablement is a command-line option a running QEMU cannot pick up
+ * after the fact.
  */
 #define DMA_CHUNK_NODE       0u
 #define DMA_CHUNK_WIDGET     9u
@@ -2138,6 +2137,109 @@ static void test_dma_image_transfer_reads_list_entry_at_0x18(void)
 #undef DMA_LIST_BASE_LIST_BASE
 #undef DMA_LIST_BASE_REAL_PFN
 #undef DMA_LIST_BASE_REAL_PAGE
+
+/*
+ * A transfer whose rows run past the slot's page list moves nothing, in
+ * either direction. One mapped page and a two-pixel, 8-byte row starting
+ * at buffer offset 0xffc: the first pixel's bytes are the page's last
+ * four, the second pixel's lie past the list. The whole transfer fails
+ * its bounds check before any guest memory is resolved, so the draw
+ * paints neither pixel and the read writes none of the page. The draw
+ * still raises the fence, because the kick has finished with the
+ * descriptor either way.
+ */
+#define DMA_OVERRUN_WIDGET    9u
+#define DMA_OVERRUN_LIST_PAGE 0xc000u
+#define DMA_OVERRUN_LIST_BASE (DMA_OVERRUN_LIST_PAGE | 0x18u)
+#define DMA_OVERRUN_PFN       0x40u
+#define DMA_OVERRUN_PAGE      (DMA_OVERRUN_PFN << 12)
+
+static void dma_overrun_descriptor(uint32_t kick)
+{
+    /* Pitch 8, offset 4 + 0xff8, one row of 8 bytes. */
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x00080404 << 32) | 8);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x00080504 << 32) | 4);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 ((uint64_t)0x00080604 << 32) | 0xff8);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x00080704 << 32) | 1);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x00080804 << 32) | 8);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 ((uint64_t)0x00080b04 << 32) | kick);
+}
+
+static void test_dma_image_transfer_past_page_list_moves_nothing(void)
+{
+    static const uint8_t list_header[24] = { 0 };
+    static const uint8_t list_entry[8] = {
+        0, 0, 0, 0, 0, 0, 0, DMA_OVERRUN_PFN,
+    };
+    static const uint8_t last_pixel[4] = { 0x00, 0x33, 0x22, 0x11 };
+    uint8_t page_end[4];
+
+    mgras_reset();
+    mgras_enter_context(qts);
+
+    qtest_memwrite(qts, DMA_OVERRUN_LIST_PAGE, list_header,
+                   sizeof(list_header));
+    qtest_memwrite(qts, DMA_OVERRUN_LIST_BASE, list_entry, 8);
+    qtest_memwrite(qts, DMA_OVERRUN_PAGE + 0xffc, last_pixel, 4);
+
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, MGRAS_COMMAND(REG_COLORMASKMSBS, 0));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_COLORMASKLSBSA, 0x00ffffff));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_PP1FILLMODE, MGRAS_LOGIC_OP_COPY << 26));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_BLOCK_START, (60u << 16) | 60u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND_EXEC(REG_BLOCK_END, (61u << 16) | 60u));
+
+    /* DMA-map slot 0: entry 0 at 0xc018, one page, widget 9. */
+    qtest_writel(qts, MGRAS_REG(0x130400), 0x00482008);
+    qtest_writeq(qts, MGRAS_REG(0x130400), DMA_OVERRUN_LIST_BASE);
+    qtest_writeq(qts, MGRAS_REG(0x130400), ((uint64_t)0x00483004 << 32) | 1);
+    qtest_writeq(qts, MGRAS_REG(0x130400),
+                 ((uint64_t)0x00484b04 << 32) | (DMA_OVERRUN_WIDGET << 16));
+
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_FLAGS) & MGRAS_HQ_FLAG_FENCE, ==,
+                    0);
+    dma_overrun_descriptor(0);
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_FLAGS) & MGRAS_HQ_FLAG_FENCE, ==,
+                    MGRAS_HQ_FLAG_FENCE);
+    g_assert_cmphex(mgras_test_pixel(qts, 60, 60), ==, 0);
+    g_assert_cmphex(mgras_test_pixel(qts, 61, 60), ==, 0);
+
+    /*
+     * Paint both pixels, then read them back over the same descriptor:
+     * the hardware-y box (60,963)-(61,963) is screen row 60. The page's
+     * last four bytes keep what the guest put there.
+     */
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_FILLMODE, MGRAS_FILLMODE_RECT_FILL_VALUE));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, MGRAS_COMMAND(REG_FILLCOLOR_R, 7));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_BLOCK_START, (60u << 16) | 60u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND_EXEC(REG_BLOCK_END, (61u << 16) | 60u));
+    g_assert_cmphex(mgras_test_pixel(qts, 60, 60), ==, 7);
+
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_BLOCK_START, (60u << 16) | 963u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND_EXEC(REG_BLOCK_END, (61u << 16) | 963u));
+    dma_overrun_descriptor(0xb9);
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+    qtest_memread(qts, DMA_OVERRUN_PAGE + 0xffc, page_end, sizeof(page_end));
+    g_assert_cmpmem(page_end, sizeof(page_end), last_pixel,
+                    sizeof(last_pixel));
+}
+
+#undef DMA_OVERRUN_WIDGET
+#undef DMA_OVERRUN_LIST_PAGE
+#undef DMA_OVERRUN_LIST_BASE
+#undef DMA_OVERRUN_PFN
+#undef DMA_OVERRUN_PAGE
 
 /*
  * Screen-to-host read: the read
@@ -9795,6 +9897,9 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/origin2000/mgras/"
                    "dma-image-transfer-reads-list-entry-at-0x18",
                    test_dma_image_transfer_reads_list_entry_at_0x18);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "dma-image-transfer-past-page-list-moves-nothing",
+                   test_dma_image_transfer_past_page_list_moves_nothing);
     qtest_add_func("sn0/origin2000/mgras/"
                    "dma-image-transfer-reads-screen-to-host",
                    test_dma_image_transfer_reads_screen_to_host);
