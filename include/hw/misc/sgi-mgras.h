@@ -332,6 +332,9 @@ typedef struct SGIMgrasGLContext {
     uint32_t projection_stack[SGI_MGRAS_GL_STACK_DEPTH - 1][16];
     uint32_t modelview_depth;
     uint32_t projection_depth;
+    /* The current normal's IEEE single bits, and the edge flag. */
+    uint32_t normal[3];
+    uint32_t edge_flag;
 } SGIMgrasGLContext;
 
 /*

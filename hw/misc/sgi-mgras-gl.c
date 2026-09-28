@@ -86,6 +86,13 @@
  * takes (mgras-gl-commands.md, "Word framing").
  */
 #define MGRAS_GL_COLOR3UB        0x34800204
+/*
+ * glNormal3f, and glEdgeFlag true and false (mgras-gl-commands.md and
+ * notes-lists-arrays-lighting.md in the Origami repository).
+ */
+#define MGRAS_GL_NORMAL3F        0x0000070c
+#define MGRAS_GL_EDGE_FLAG_TRUE  0x00000f00
+#define MGRAS_GL_EDGE_FLAG_FALSE 0x00001000
 
 #define MGRAS_GL_FLAT            0x1d00
 #define MGRAS_GL_SMOOTH          0x1d01
@@ -231,6 +238,9 @@ bool sgi_mgras_gl_header(uint32_t header)
     case MGRAS_GL_VERTEX2I:
     case MGRAS_GL_COLOR3UB:
     case MGRAS_GL_COLOR4UB:
+    case MGRAS_GL_NORMAL3F:
+    case MGRAS_GL_EDGE_FLAG_TRUE:
+    case MGRAS_GL_EDGE_FLAG_FALSE:
         return true;
     default:
         return false;
@@ -333,6 +343,8 @@ static void mgras_gl_context_init(SGIMgrasGLContext *gl)
     gl->depth_mask = 1;
     gl->clear_depth = MGRAS_GL_DEPTH_MAX;
     gl->draw_buffers = MGRAS_GL_DRAW_FRONT;
+    gl->normal[2] = one_bits;
+    gl->edge_flag = 1;
 }
 
 void sgi_mgras_gl_reset(SGIMgrasState *s)
@@ -424,6 +436,42 @@ void sgi_mgras_gl_context_loaded(SGIMgrasState *s)
     mgras_gl_load_parser(s, &mgras_gl(s)->parser);
 }
 
+/*
+ * The answer to the client's 0xa104 query for one current attribute.
+ * __Mgr_GetCurrentAttrState reads indices 4 to 7 as GL_CURRENT_COLOR's
+ * four floats, 8 to 10 as GL_CURRENT_NORMAL's, 11 to 14 as
+ * GL_CURRENT_TEXTURE_COORDS' and 15 as GL_EDGE_FLAG, true when the answer
+ * has any of bits 0x01c00000 (notes-return-mode-queries.md in the Origami
+ * repository). The model answers with the loaded context's colour, normal
+ * and edge flag; that the board answers with its copy of that state is
+ * inferred. Which of the edge flag's three bits the board sets is
+ * unknown, so the model sets all three. Texture coordinates are not
+ * modelled: the model answers OpenGL's initial (0, 0, 0, 1) (2.7), wrong
+ * once a client has sent glTexCoord. Other indices answer zero, logged.
+ * The discriminating tests are hq-attribute-queries-set-flag-after-arguments
+ * and hq-attribute-query-answers-normal-and-edge-flag.
+ */
+uint32_t sgi_mgras_gl_attribute_answer(SGIMgrasState *s, uint32_t index)
+{
+    SGIMgrasGLContext *gl = mgras_gl(s);
+
+    if (index >= 4 && index <= 7) {
+        return gl->color[index - 4];
+    }
+    if (index >= 8 && index <= 10) {
+        return gl->normal[index - 8];
+    }
+    if (index >= 11 && index <= 14) {
+        return index == 14 ? mgras_gl_bits(1.0f) : 0;
+    }
+    if (index == 15) {
+        return gl->edge_flag ? 0x01c00000 : 0;
+    }
+    qemu_log_mask(LOG_UNIMP, "sgi-mgras: GL current-attribute query index "
+                  "%u answered with zero\n", index);
+    return 0;
+}
+
 void sgi_mgras_gl_ge_port_access(SGIMgrasState *s, hwaddr addr, bool write)
 {
     bool loaded = false;
@@ -505,6 +553,18 @@ const VMStateDescription vmstate_sgi_mgras_gl_context_v21 = {
                                SGI_MGRAS_GL_STACK_DEPTH - 1, 16),
         VMSTATE_UINT32(modelview_depth, SGIMgrasGLContext),
         VMSTATE_UINT32(projection_depth, SGIMgrasGLContext),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
+/* The current normal and edge flag each context gained in version 22. */
+const VMStateDescription vmstate_sgi_mgras_gl_context_v22 = {
+    .name = TYPE_SGI_MGRAS "/gl-context-v22",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32_ARRAY(normal, SGIMgrasGLContext, 3),
+        VMSTATE_UINT32(edge_flag, SGIMgrasGLContext),
         VMSTATE_END_OF_LIST()
     }
 };
@@ -1574,6 +1634,15 @@ void sgi_mgras_gl_execute(SGIMgrasState *s, uint32_t header,
         return;
     case MGRAS_GL_COLOR3UB:
         mgras_gl_color_bytes(gl->color, payload[0], false);
+        return;
+    case MGRAS_GL_NORMAL3F:
+        /* Kept for the 0xa104 query only; lighting is not modelled. */
+        memcpy(gl->normal, payload, sizeof(gl->normal));
+        return;
+    case MGRAS_GL_EDGE_FLAG_TRUE:
+    case MGRAS_GL_EDGE_FLAG_FALSE:
+        /* Kept for the 0xa104 query; polygon edge modes are not modelled. */
+        gl->edge_flag = header == MGRAS_GL_EDGE_FLAG_TRUE;
         return;
     case MGRAS_GL_COLOR4UB:
         mgras_gl_color_bytes(gl->color, payload[0], true);

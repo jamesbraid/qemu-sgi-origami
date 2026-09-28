@@ -11,6 +11,8 @@ bool sgi_mgras_gl_header(uint32_t header);
 void sgi_mgras_gl_execute(SGIMgrasState *s, uint32_t header,
                           const uint32_t *payload, uint32_t words);
 void sgi_mgras_gl_reset(SGIMgrasState *s);
+/* The answer to the 0xa104 current-attribute query for index. */
+uint32_t sgi_mgras_gl_attribute_answer(SGIMgrasState *s, uint32_t index);
 /* Select the GL state a completed context image names. */
 void sgi_mgras_gl_context_loaded(SGIMgrasState *s);
 /* The GE ports, through which the kernel copies GE external RAM. */
@@ -19,6 +21,7 @@ void sgi_mgras_gl_context_loaded(SGIMgrasState *s);
 extern const VMStateDescription vmstate_sgi_mgras_gl_context;
 extern const VMStateDescription vmstate_sgi_mgras_gl_context_v20;
 extern const VMStateDescription vmstate_sgi_mgras_gl_context_v21;
+extern const VMStateDescription vmstate_sgi_mgras_gl_context_v22;
 
 /* Note GE-port traffic the per-context state cannot follow. */
 void sgi_mgras_gl_ge_port_access(SGIMgrasState *s, hwaddr addr, bool write);

@@ -43,6 +43,9 @@
  */
 #define MGRAS_CMD_HDR_CLASS_HQ 0x0000
 #define MGRAS_HQ_OP_QUERY 0xa2
+/* 0xa104: one current-attribute index; 0x8b08: a histogram bin query. */
+#define MGRAS_HQ_OP_ATTR_QUERY 0xa1
+#define MGRAS_HQ_OP_HISTOGRAM_QUERY 0x8b
 #define MGRAS_HQ_OP_SWAP 0x37
 #define MGRAS_HQ_FLAG_QUERY 0x00020000
 
@@ -361,7 +364,9 @@ static void mgras_command_fifo_token(SGIMgrasState *s, uint32_t token)
     }
 
     if (cmd_class == MGRAS_CMD_HDR_CLASS_HQ &&
-        (reg == MGRAS_HQ_OP_QUERY || reg == MGRAS_HQ_OP_SWAP)) {
+        (reg == MGRAS_HQ_OP_QUERY || reg == MGRAS_HQ_OP_SWAP ||
+         reg == MGRAS_HQ_OP_ATTR_QUERY ||
+         reg == MGRAS_HQ_OP_HISTOGRAM_QUERY)) {
         s->cmd_token_class = MGRAS_CMD_HDR_CLASS_HQ;
         s->cmd_token_reg = reg;
         s->cmd_token_payload_count = 0;
@@ -1996,6 +2001,29 @@ static void mgras_raster_command_fifo_dispatch(SGIMgrasState *s)
     if (s->cmd_token_class == MGRAS_CMD_HDR_CLASS_HQ &&
         reg == MGRAS_HQ_OP_QUERY) {
         s->ge_report = 0;
+        s->hq_flags |= MGRAS_HQ_FLAG_QUERY;
+        return;
+    }
+
+    /*
+     * Established (notes-return-mode-queries.md in the Origami repository,
+     * "Other queries answered at 0x028004"): the client's one-argument
+     * 0xa104 query, sent for GL_CURRENT_COLOR and the other current
+     * attributes, and its two-argument 0x8b08 histogram query clear flag
+     * 17 and wait on it like 0xa20c. perfly waited forever on 0xa104 in
+     * run irix-20260928T063220-a9945b. Approximated as for 0xa20c: the
+     * flag is set once the query's own arguments arrive, and the answer
+     * is the model's (sgi_mgras_gl_attribute_answer()). The
+     * discriminating test is hq-attribute-queries-set-flag-after-arguments.
+     */
+    if (s->cmd_token_class == MGRAS_CMD_HDR_CLASS_HQ &&
+        (reg == MGRAS_HQ_OP_ATTR_QUERY ||
+         reg == MGRAS_HQ_OP_HISTOGRAM_QUERY)) {
+        s->ge_report = reg == MGRAS_HQ_OP_ATTR_QUERY &&
+                       s->cmd_token_payload_count == 1 ?
+                       sgi_mgras_gl_attribute_answer(s,
+                                                     s->cmd_token_payload[0]) :
+                       0;
         s->hq_flags |= MGRAS_HQ_FLAG_QUERY;
         return;
     }
