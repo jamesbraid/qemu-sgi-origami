@@ -107,6 +107,22 @@ struct SGIBedrockState {
     uint8_t initiator_region;
     MemoryRegion *widget_mr[16];
     /*
+     * Each fitted slot's processor I/O path: a region the node places over
+     * that processor's uncached view of the I/O space, which forwards to the
+     * processor's own view (cpu_sysmem, "cpu-sysmem<slot>") at io_space_base
+     * plus the offset. It is where a graphics store is counted against the
+     * slot's graphics credits. A slot with no view gets no path.
+     */
+    MemoryRegion *cpu_sysmem[SGI_BEDROCK_PROCESSORS];
+    uint64_t io_space_base;
+    struct SGIBedrockProcessorPath {
+        struct SGIBedrockState *bedrock;
+        unsigned int slot;
+    } pi_path[SGI_BEDROCK_PROCESSORS];
+    AddressSpace pi_view_as[SGI_BEDROCK_PROCESSORS];
+    MemoryRegion pi_io[SGI_BEDROCK_PROCESSORS];
+    bool pi_io_ready[SGI_BEDROCK_PROCESSORS];
+    /*
      * The NUMAlink 3 cable on this node's one network port, or NULL. A
      * machine wires it the way it wires a Hub's; the link may also be set
      * after realize, which is how a two-node register test joins two
@@ -193,6 +209,13 @@ bool sgi_bedrock_hub_registers_permitted(SGIBedrockState *s);
 
 /* The node number this Bedrock decodes by: the local block's latched one. */
 uint8_t sgi_bedrock_node_number(SGIBedrockState *s);
+
+/*
+ * The processor I/O path of physical slot 'slot' (0 to 3), for the node to
+ * place over that processor's uncached view of the I/O space, or NULL when
+ * the slot was given no processor view.
+ */
+MemoryRegion *sgi_bedrock_processor_io(SGIBedrockState *s, unsigned int slot);
 
 /* Whether this node's port has a peer at the other end of an up cable. */
 bool sgi_bedrock_link_up(SGIBedrockState *s);

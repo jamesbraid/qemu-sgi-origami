@@ -113,4 +113,8 @@ MemTxResult sgi_bedrock_io_inbound_rw(SGIBedrockIOState *s, unsigned widget,
 void sgi_bedrock_io_disable_device(SGIBedrockIOState *s, unsigned widget,
                                     unsigned device);
 
+
+/* Graphics node-widget map entry 0 or 1, as last written (0x400140 + 8n). */
+uint64_t sgi_bedrock_io_gfx_map(SGIBedrockIOState *s, unsigned int entry);
+
 #endif

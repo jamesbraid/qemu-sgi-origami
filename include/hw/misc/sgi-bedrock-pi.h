@@ -4,6 +4,7 @@
 #define HW_MISC_SGI_BEDROCK_PI_H
 
 #include "hw/core/sysbus.h"
+#include "hw/mips/sgi/pi-gfx.h"
 #include "qemu/notify.h"
 #include "qemu/timer.h"
 
@@ -80,6 +81,12 @@ struct SGIBedrockPIState {
     QEMUTimer *profile_timer;
     SGIBedrockPITimerLine rt_line[2];
     bool rt_timer_match[2];
+    /*
+     * Graphics flow control, per slot, and the credit-mode bit. The
+     * owning node counts stores into it and routes returns to it.
+     */
+    SGIPIGfx gfx;
+    uint8_t gfx_credit_mode;
     bool lb_error;
     bool ni_error;
     bool xb_error;

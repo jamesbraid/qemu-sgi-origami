@@ -1122,6 +1122,145 @@ static bool bedrock_resolve_slot_processors(SGIBedrockState *s, Error **errp)
     return true;
 }
 
+/*
+ * ---- A processor's I/O-space path ----
+ *
+ * Every uncached I/O-space request a processor makes enters its own
+ * processor interface. The node places one region per fitted slot over that
+ * processor's uncached view of the I/O space; each forwards to the
+ * processor's own view, so it sees the whole physical address and knows the
+ * slot. That is where a graphics store is counted: an uncached I/O store
+ * into the slot's enabled graphics page costs the slot one credit. The
+ * store goes on either way. Only a processor's uncached requests take this
+ * view, so neither a debugger's access nor a device's DMA is counted.
+ */
+#define BEDROCK_IO_SPACE_SIZE   (1ULL << 40)
+
+static bool bedrock_neighbor(SGIBedrockState *s, Object **peer,
+                             unsigned int *peer_index);
+
+static MemTxResult bedrock_pi_io_read(void *opaque, hwaddr addr,
+                                      uint64_t *data, unsigned size,
+                                      MemTxAttrs attrs)
+{
+    struct SGIBedrockProcessorPath *path = opaque;
+    SGIBedrockState *s = path->bedrock;
+    uint8_t bytes[8] = { 0 };
+    MemTxResult result;
+    bool previous;
+
+    previous = sgi_pi_gfx_mark_store(false);
+    result = address_space_read(&s->pi_view_as[path->slot],
+                                s->io_space_base + addr, attrs,
+                                bytes + 8 - size, size);
+    sgi_pi_gfx_unmark_store(previous);
+    *data = ldq_be_p(bytes);
+    return result;
+}
+
+static MemTxResult bedrock_pi_io_write(void *opaque, hwaddr addr,
+                                       uint64_t data, unsigned size,
+                                       MemTxAttrs attrs)
+{
+    struct SGIBedrockProcessorPath *path = opaque;
+    SGIBedrockState *s = path->bedrock;
+    uint8_t bytes[8];
+    MemTxResult result;
+    bool counted, previous;
+
+    counted = sgi_pi_gfx_count_store(
+        &s->pi[path->slot / SGI_BEDROCK_PI_PROCESSORS].gfx,
+        path->slot % SGI_BEDROCK_PI_PROCESSORS, addr, "sgi-bedrock");
+    stq_be_p(bytes, data);
+    /* Marked, so a head returns credit only for a counted store. */
+    previous = sgi_pi_gfx_mark_store(counted);
+    result = address_space_write(&s->pi_view_as[path->slot],
+                                 s->io_space_base + addr, attrs,
+                                 bytes + 8 - size, size);
+    sgi_pi_gfx_unmark_store(previous);
+    return result;
+}
+
+static const MemoryRegionOps bedrock_pi_io_ops = {
+    .read_with_attrs = bedrock_pi_io_read,
+    .write_with_attrs = bedrock_pi_io_write,
+    .endianness = DEVICE_BIG_ENDIAN,
+    .valid = { .min_access_size = 1, .max_access_size = 8, .unaligned = true },
+    .impl = { .min_access_size = 1, .max_access_size = 8, .unaligned = true },
+};
+
+static void bedrock_init_processor_paths(SGIBedrockState *s)
+{
+    for (unsigned int slot = 0; slot < SGI_BEDROCK_PROCESSORS; slot++) {
+        g_autofree char *view_name = NULL;
+        g_autofree char *io_name = NULL;
+
+        if (!s->cpu_sysmem[slot]) {
+            continue;
+        }
+        view_name = g_strdup_printf("sgi-bedrock.cpu%u.view", slot);
+        io_name = g_strdup_printf("sgi-bedrock.cpu%u.io", slot);
+        s->pi_path[slot].bedrock = s;
+        s->pi_path[slot].slot = slot;
+        address_space_init(&s->pi_view_as[slot], s->cpu_sysmem[slot],
+                           view_name);
+        memory_region_init_io(&s->pi_io[slot], OBJECT(s), &bedrock_pi_io_ops,
+                              &s->pi_path[slot], io_name,
+                              BEDROCK_IO_SPACE_SIZE);
+        /* The forwarded request may come back into this device. */
+        s->pi_io[slot].disable_reentrancy_guard = true;
+        s->pi_io_ready[slot] = true;
+    }
+}
+
+MemoryRegion *sgi_bedrock_processor_io(SGIBedrockState *s, unsigned int slot)
+{
+    g_assert(slot < SGI_BEDROCK_PROCESSORS);
+    return s->pi_io_ready[slot] ? &s->pi_io[slot] : NULL;
+}
+
+/*
+ * A graphics head behind this node returned credits: the node-widget map
+ * names the node, the interface and the slot that get them. Another node is
+ * the one at the far end of this node's cable, when it carries that number.
+ */
+static void bedrock_return_gfx_credits(Object *obj, unsigned int widget,
+                                       uint32_t credits)
+{
+    SGIBedrockState *s = SGI_BEDROCK(obj);
+    uint64_t map[2] = {
+        sgi_bedrock_io_gfx_map(&s->io, 0), sgi_bedrock_io_gfx_map(&s->io, 1),
+    };
+    SGIPIGfxRoute route;
+    SGIBedrockState *target = NULL;
+    Object *peer;
+    unsigned int peer_index;
+
+    if (!sgi_pi_gfx_route_bedrock(map, widget, &route)) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-bedrock: %u graphics credits "
+                      "from widget 0x%x match no node-widget map entry\n",
+                      credits, widget);
+        return;
+    }
+    if (route.node == sgi_bedrock_node_number(s)) {
+        target = s;
+    } else if (bedrock_neighbor(s, &peer, &peer_index)) {
+        target = (SGIBedrockState *)object_dynamic_cast(peer,
+                                                        TYPE_SGI_BEDROCK);
+        if (target && sgi_bedrock_node_number(target) != route.node) {
+            target = NULL;
+        }
+    }
+    if (!target) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-bedrock: %u graphics credits "
+                      "from widget 0x%x name node %u, which no reachable "
+                      "Bedrock carries\n", credits, widget, route.node);
+        return;
+    }
+    sgi_pi_gfx_add_credits(&target->pi[route.pi].gfx, route.slot, credits,
+                           "sgi-bedrock");
+}
+
 static void bedrock_realize(DeviceState *dev, Error **errp)
 {
     SGIBedrockState *s = SGI_BEDROCK(dev);
@@ -1290,6 +1429,7 @@ static void bedrock_realize(DeviceState *dev, Error **errp)
         qdev_get_gpio_in_named(dev, "ni-error", 0));
     qdev_connect_gpio_out_named(DEVICE(&s->ni), "local-reset", 0,
         qdev_get_gpio_in_named(dev, "local-reset", 0));
+    bedrock_init_processor_paths(s);
 }
 
 /*
@@ -1457,6 +1597,13 @@ static const Property bedrock_properties[] = {
                      TYPE_MEMORY_REGION, MemoryRegion *),
     DEFINE_PROP_UINT8("initiator-region", SGIBedrockState,
                       initiator_region, UINT8_MAX),
+    DEFINE_PROP_UINT64("io-space-base", SGIBedrockState, io_space_base, 0),
+#define BEDROCK_CPU_SYSMEM_PROP(_n) \
+    DEFINE_PROP_LINK("cpu-sysmem" #_n, SGIBedrockState, cpu_sysmem[_n], \
+                     TYPE_MEMORY_REGION, MemoryRegion *)
+    BEDROCK_CPU_SYSMEM_PROP(0), BEDROCK_CPU_SYSMEM_PROP(1),
+    BEDROCK_CPU_SYSMEM_PROP(2), BEDROCK_CPU_SYSMEM_PROP(3),
+#undef BEDROCK_CPU_SYSMEM_PROP
 #define BEDROCK_WIDGET_PROP(_n) \
     DEFINE_PROP_LINK("widget-" #_n, SGIBedrockState, widget_mr[_n], \
                      TYPE_MEMORY_REGION, MemoryRegion *)
@@ -1746,7 +1893,20 @@ static void bedrock_reset_enter(Object *obj, ResetType type)
 
 static void bedrock_unrealize(DeviceState *dev)
 {
-    sgi_bedrock_hold_reset(SGI_BEDROCK(dev));
+    SGIBedrockState *s = SGI_BEDROCK(dev);
+
+    sgi_bedrock_hold_reset(s);
+    for (unsigned int slot = 0; slot < SGI_BEDROCK_PROCESSORS; slot++) {
+        if (!s->pi_io_ready[slot]) {
+            continue;
+        }
+        if (s->pi_io[slot].container) {
+            memory_region_del_subregion(s->pi_io[slot].container,
+                                        &s->pi_io[slot]);
+        }
+        address_space_destroy(&s->pi_view_as[slot]);
+        s->pi_io_ready[slot] = false;
+    }
 }
 
 static void bedrock_finalize(Object *obj)
@@ -1767,6 +1927,7 @@ static void bedrock_class_init(ObjectClass *klass, const void *data)
     DeviceClass *dc = DEVICE_CLASS(klass);
     ResettableClass *rc = RESETTABLE_CLASS(klass);
     SGINetPortClass *npc = SGI_NET_PORT_CLASS(klass);
+    SGIPIGfxClass *gpc = SGI_PI_GFX_CLASS(klass);
 
     dc->desc = "SGI Bedrock node controller";
     dc->realize = bedrock_realize;
@@ -1777,6 +1938,7 @@ static void bedrock_class_init(ObjectClass *klass, const void *data)
     rc->phases.enter = bedrock_reset_enter;
     npc->describe = bedrock_net_describe;
     npc->receive = bedrock_net_receive;
+    gpc->return_credits = bedrock_return_gfx_credits;
 }
 
 static const TypeInfo bedrock_info = {
@@ -1788,6 +1950,7 @@ static const TypeInfo bedrock_info = {
     .class_init = bedrock_class_init,
     .interfaces = (const InterfaceInfo[]) {
         { TYPE_SGI_NET_PORT },
+        { TYPE_SGI_PI_GFX },
         { }
     },
 };
