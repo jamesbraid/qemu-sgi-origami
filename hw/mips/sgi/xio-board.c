@@ -430,11 +430,6 @@ static bool sgi_xio_board_xio_port_connect(Object *port, unsigned int index,
                                              errp)) {
         return false;
     }
-    /* MGRAS keeps its own widget shift until it adopts the widget layer. */
-    if (object_property_find(port, "fabric-widget-shift")) {
-        object_property_set_uint(port, "fabric-widget-shift",
-                                 SGI_XIO_PACKET_ADDRESS_BITS, &error_abort);
-    }
     return true;
 }
 

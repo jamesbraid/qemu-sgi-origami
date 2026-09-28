@@ -4,6 +4,7 @@
 
 #include "hw/core/resettable.h"
 #include "hw/mips/sgi/xio-board.h"
+#include "hw/mips/sgi/xio-widget.h"
 #include "system/memory.h"
 #include "qom/object.h"
 #include "qemu/units.h"
@@ -28,9 +29,15 @@ OBJECT_DECLARE_TYPE(SGIMgrasState, SGIMgrasClass, SGI_MGRAS)
 #define SGI_MGRAS_GE_READ_1 0x05822c
 #define SGI_MGRAS_GE_READ_2 0x058230
 
-/* Direct-XIO interrupt routing is an approximation. */
-#define SGI_MGRAS_INT_DEST_UPPER 0x000034
-#define SGI_MGRAS_INT_DEST_LOWER 0x00003c
+/*
+ * The widget interrupt destination pair of the block every XIO widget
+ * begins with (hw/mips/sgi/xio-widget.h), at its data halves. Direct-XIO
+ * interrupt routing is an approximation.
+ */
+#define SGI_MGRAS_INT_DEST_UPPER (SGI_XIO_WIDGET_INT_DEST_UPPER + \
+                                  SGI_XIO_WIDGET_REG_DATA)
+#define SGI_MGRAS_INT_DEST_LOWER (SGI_XIO_WIDGET_INT_DEST_LOWER + \
+                                  SGI_XIO_WIDGET_REG_DATA)
 
 /* Unknown control fields are stored without interpreted side effects. */
 #define SGI_MGRAS_WIDGET_CONTROL 0x000024
@@ -147,9 +154,9 @@ OBJECT_DECLARE_TYPE(SGIMgrasState, SGIMgrasClass, SGI_MGRAS)
 #define SGI_MGRAS_VC3_RAM 0x072190
 #define SGI_MGRAS_VC3_SRAM_WORDS 0x8000
 
-/* Alternate interrupt offsets share the approximated destination state. */
-#define SGI_MGRAS_INT_DEST_UPPER_ALT 0x000030
-#define SGI_MGRAS_INT_DEST_LOWER_ALT 0x000038
+/* The slots' other halves share the approximated destination state. */
+#define SGI_MGRAS_INT_DEST_UPPER_ALT SGI_XIO_WIDGET_INT_DEST_UPPER
+#define SGI_MGRAS_INT_DEST_LOWER_ALT SGI_XIO_WIDGET_INT_DEST_LOWER
 
 /* Interrupt sources remain separate, but their routing is approximate. */
 #define SGI_MGRAS_HQ_VECTOR_DEST_UPPER 0x011060
@@ -234,9 +241,9 @@ typedef struct SGIMgrasBoard {
 void sgi_mgras_raise_pending(SGIMgrasState *s, uint32_t sources);
 
 /*
- * Composes a guest-visible widget/address pair into a fabric address space
- * offset, matching whichever addressing mode the machine wired up (packet
- * widget-shift or flat fabric base). Shared with hw/misc/sgi-mgras-raster.c
+ * Composes a guest-visible widget/address pair into the fabric address a
+ * widget-addressed link carries, the widget in bits 51:48 (the XIO widget
+ * layer, hw/mips/sgi/xio-widget.h). Shared with hw/misc/sgi-mgras-raster.c
  * so host-memory DMA reads use the same routing as interrupt packets.
  */
 bool sgi_mgras_xio_compose(SGIMgrasState *s, unsigned int widget,
@@ -246,8 +253,6 @@ struct SGIMgrasState {
     SGIXioBoardState parent_obj;
     MemoryRegion regs;
     MemoryRegion *fabric;
-    uint64_t fabric_base;
-    uint32_t fabric_widget_shift;
     AddressSpace fabric_as;
     uint32_t int_dest_upper;
     uint32_t int_dest_lower;
