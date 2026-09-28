@@ -153,6 +153,7 @@ test_mips64_timeouts = {
   # one boot instead of two.
   'irix_eg' : 4200,
   'irix_eg_arp' : 1800,
+  'irix_tg_arp' : 1800,
   'irix_eg_frag' : 1800,
   'irix_tg_frag' : 1800,
   # The same full multiuser boot of the installed IRIX 6.5.30 disk, with the
@@ -290,6 +291,7 @@ tests_mips64_system_thorough = [
   'mgras_desktop',
   'irix_eg',
   'irix_eg_arp',
+  'irix_tg_arp',
   'irix_eg_frag',
   'irix_tg_frag',
   'irix_ef',
