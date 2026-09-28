@@ -375,6 +375,56 @@ static void test_parent_migration(void)
     g_assert_cmpint(rmdir(directory), ==, 0);
 }
 
+static void withhold_scratch1(QTestState *s, unsigned int slot,
+                              uint64_t value)
+{
+    g_autofree char *spec = g_strdup_printf("%u:0x%" PRIx64, slot, value);
+
+    qtest_qmp_assert_success(s,
+        "{'execute':'qom-set','arguments':"
+        "{'path':%s,'property':'x-test-withhold-scratch1','value':%s}}",
+        BEDROCK_PATH, spec);
+}
+
+/*
+ * A snapshot taken while the reset-barrier park withholds a processor's
+ * scratch-1 write must still deliver that write: the master's release is
+ * the value every other processor polls for with no timeout, and the load
+ * ends the park. So the destination lands every withheld value, in the
+ * order the processors wrote them, and the last one written is what
+ * scratch 1 holds. Slot 2 writes before slot 0 here, so landing by slot
+ * number rather than by write order would leave slot 2's value.
+ */
+static void test_parent_migration_lands_withheld_scratch1(void)
+{
+    GError *error = NULL;
+    g_autofree char *directory =
+        g_dir_make_tmp("sn1-bedrock-withheld-XXXXXX", &error);
+    g_autofree char *socket = NULL;
+    g_autofree char *uri = NULL;
+    QTestState *from, *to;
+
+    g_assert_no_error(error);
+    socket = g_build_filename(directory, "migration.sock", NULL);
+    uri = g_strdup_printf("unix:%s", socket);
+    from = bedrock_start("");
+    to = bedrock_start("-incoming defer");
+    qtest_writeq(from, LB_BASE + 0x8008, 0);
+    withhold_scratch1(from, 2, 0x2222);
+    withhold_scratch1(from, 0, 0x7f80000);
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    qtest_qmp_assert_success(from,
+        "{'execute':'migrate','arguments':{'uri':%s}}", uri);
+    migrate_wait(from);
+    migrate_wait(to);
+    g_assert_cmphex(qtest_readq(to, LB_BASE + 0x8008), ==, 0x7f80000);
+    qtest_quit(from);
+    qtest_quit(to);
+    unlink(socket);
+    g_assert_cmpint(rmdir(directory), ==, 0);
+}
+
 static void test_parent_l1_invalid_region(void)
 {
     QTestState *s;
@@ -964,6 +1014,9 @@ int main(int argc, char **argv)
                    test_parent_dma_and_reset);
     qtest_add_func("sn1/bedrock/composition/migration",
                    test_parent_migration);
+    qtest_add_func("sn1/bedrock/composition/"
+                   "migration-lands-withheld-scratch1",
+                   test_parent_migration_lands_withheld_scratch1);
     qtest_add_func("sn1/bedrock/composition/l1-invalid-region",
                    test_parent_l1_invalid_region);
     qtest_add_func("sn1/bedrock/composition/l1-missing-region",

@@ -1293,19 +1293,27 @@ static void bedrock_realize(DeviceState *dev, Error **errp)
 }
 
 /*
- * Release any hold a migration snapshot caught mid-wait: a vCPU parked in
- * bedrock_hold_cpu()'s wait condition has no way to be woken by a stream
- * that carries no callback state for it, so this mirrors sgi_hub_post_load()
- * kicking the same way through sgi_hub_rt_hold_reset().
+ * End any park a migration snapshot caught: the stream carries no park
+ * condition to wait on, so every parked processor is released, as a local
+ * reset releases it. A withheld scratch-1 write lands first, in write
+ * order, as it would have when its park ended: the master's release is a
+ * value the other processors poll for with no timeout, so dropping it
+ * would leave them polling for good. The LB's own state, scratch 1 among
+ * it, has loaded by now; the LB is realized inside bedrock_realize(), so
+ * its section comes first in the stream.
  */
 static int bedrock_post_load(void *opaque, int version_id)
 {
-    sgi_bedrock_hold_reset(opaque);
+    SGIBedrockState *s = opaque;
+
+    bedrock_scratch1_external(s);
+    sgi_bedrock_hold_reset(s);
     return 0;
 }
 
 /*
- * SGIBedrockState carries no migrated fields of its own. Its registers live
+ * SGIBedrockState carries no migrated fields of its own outside the two
+ * park subsections described last here. Its registers live
  * entirely in the pi/io/md/lb/ni/xb sub-devices, each realized with its own
  * VMStateDescription (device_set_realized() registers every realized
  * sub-device by its own dc->vmsd, independent of this one). Everything else
@@ -1317,27 +1325,29 @@ static int bedrock_post_load(void *opaque, int version_id)
  * cpu_enable_initial_mask, cpu_base, revision, local_region,
  * installed_memory_bank_mask, installed_memory_bank_mib, inbound_widget_mask,
  * inbound_device, device_mask_reset, initiator_region), or the host-only
- * rendezvous-hold scheduling state documented on hold_cpu and
- * hold_scratch1_seen in sgi-bedrock.h: bounded, re-accumulated from the
- * guest's own polling, and never itself a value the guest reads. That state
- * -- hold_cpu, hold_scratch1_seen, hold_scratch1_withheld_valid,
- * hold_scratch1_withheld, presence_seen, presence_abandoned,
- * hold_scratch1_joined, presence_posted, presence_released -- stays out of
- * this description on purpose, the way
- * sgi-hub.c's vmstate_sgi_hub omits its own pi_rt_hold family; post_load
- * puts it through the same reset path a cold reset does.
+ * park scheduling state documented on hold_scratch1_seen and the fields
+ * after it in sgi-bedrock.h: bounded, and never itself a value the guest
+ * reads. That state -- hold_cpu, hold_scratch1_seen, hold_scratch1_seq,
+ * presence_seen, presence_abandoned, hold_scratch1_released,
+ * hold_scratch1_joined, presence_posted, presence_released, park_kind,
+ * park_start and park_deadline -- stays out of this description on
+ * purpose, the way sgi-hub.c's vmstate_sgi_hub omits its own pi_rt_hold
+ * family; post_load puts it through the same reset path a local reset
+ * does.
  *
  * This description still exists, rather than leaving dc->vmsd unset, so this
  * device is accounted for in the migration stream and a future field that
  * does need migrating has a place to land already reviewed for the fields
  * around it.
  *
- * park_mask is the one exception, and travels in a subsection sent only
- * while a processor is parked. A parked processor is halted, and its halted
- * flag migrates with its CPU state; without the mask, the destination would
- * not know the halt is this device's and would never wake it. post_load's
- * hold reset then releases it (park_kind, park_start and park_deadline stay
- * out, as the rest of the join's scheduling state does).
+ * Two parts of the park are exceptions, each in a subsection sent only
+ * while it holds something. park_mask travels while a processor is parked.
+ * A parked processor is halted, and its halted flag migrates with its CPU
+ * state; without the mask, the destination would not know the halt is this
+ * device's and would never wake it. post_load's hold reset then releases
+ * it. The withheld scratch-1 writes travel while one is waiting, with the
+ * order they were written in: each is a value the guest reads once it
+ * lands, and post_load lands them.
  */
 static bool bedrock_park_needed(void *opaque)
 {
@@ -1357,6 +1367,34 @@ static const VMStateDescription vmstate_sgi_bedrock_park = {
     },
 };
 
+static bool bedrock_withheld_needed(void *opaque)
+{
+    SGIBedrockState *s = opaque;
+
+    for (unsigned int slot = 0; slot < SGI_BEDROCK_PROCESSORS; slot++) {
+        if (s->hold_scratch1_withheld_valid[slot]) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static const VMStateDescription vmstate_sgi_bedrock_withheld = {
+    .name = TYPE_SGI_BEDROCK "/withheld-scratch1",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = bedrock_withheld_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_BOOL_ARRAY(hold_scratch1_withheld_valid, SGIBedrockState,
+                           SGI_BEDROCK_PROCESSORS),
+        VMSTATE_UINT64_ARRAY(hold_scratch1_withheld, SGIBedrockState,
+                             SGI_BEDROCK_PROCESSORS),
+        VMSTATE_UINT64_ARRAY(hold_scratch1_withheld_seq, SGIBedrockState,
+                             SGI_BEDROCK_PROCESSORS),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
 static const VMStateDescription vmstate_sgi_bedrock = {
     .name = TYPE_SGI_BEDROCK,
     .version_id = 1,
@@ -1367,6 +1405,7 @@ static const VMStateDescription vmstate_sgi_bedrock = {
     },
     .subsections = (const VMStateDescription * const []) {
         &vmstate_sgi_bedrock_park,
+        &vmstate_sgi_bedrock_withheld,
         NULL
     },
 };
