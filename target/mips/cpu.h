@@ -1526,13 +1526,19 @@ struct ArchCPU {
      * RAM. Unlinked, every reference resolves in the one space as before.
      */
     MemoryRegion *uncached_memory;
+#ifndef CONFIG_USER_ONLY
+    bool r10k_data_cache;
+    bool r10k_data_cache_stream;
+    MemoryRegion r10k_data_memory;
+#endif
 };
 
 /* Address-space indices: cached references first, uncached ones second. */
 enum {
     MIPSASIdx_CACHED = 0,
     MIPSASIdx_UNCACHED = 1,
-    MIPSASIdx_MAX = MIPSASIdx_UNCACHED,
+    MIPSASIdx_DATA_CACHE = 2,
+    MIPSASIdx_MAX = MIPSASIdx_DATA_CACHE,
 };
 
 /**
