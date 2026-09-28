@@ -75,6 +75,7 @@
 #define MGRAS_DESC_20000_REG_ROWS 7
 #define MGRAS_DESC_20000_REG_BPR 8
 #define MGRAS_DESC_20000_REG_KICK 11
+#define MGRAS_DESC_20000_REG_LIST_EXECUTE 0x0c
 #define MGRAS_DMA_KICK_DIRECTION_READ 0x08
 
 
@@ -1921,12 +1922,141 @@ static void mgras_raster_dma_kick(SGIMgrasState *s, uint32_t kick_word)
     s->hq_flags |= MGRAS_HQ_FLAG_FENCE;
 }
 
+/*
+ * Display-list execute, 0x00080c08 with two words: a byte offset into the
+ * pool and a size. The IRIX 6.5.30 GL client sends it from
+ * __glMgrDLExecuteDMA with nothing after it, just after the kernel
+ * installs the pool's page list in DMA-map slot 4 (established from run
+ * irix-20260928T023038-8a94ce: libGLcore.so-IP27GR532
+ * notes-lists-arrays-lighting.md in the Origami repository, "Probe
+ * measurements"). That the board reads the list from slot 4's pages is
+ * inferred from that install being the only one before the execute.
+ *
+ * The board reads the words from host memory itself. The shared command
+ * fetch resolves them from the page list and hands them to the same
+ * command grammar the main port uses. The list gets a parser of its own,
+ * starting at a header, and the port's resumes where it stood once the
+ * list is done, so a list that ends inside a packet cannot swallow the
+ * port's next words, and the port's words cannot finish a list's packet.
+ * The list's words draw with the GL state of the context loaded when the
+ * execute arrives, and change it as the same words on the port would.
+ *
+ * Approximated: the size counts 32-bit words, and the range begins with
+ * three header words that are not commands. In the one pool dumped, the
+ * list's first page begins 0x4000 0x1000 0x3f9 and the size 0x3fa is
+ * exactly those three words and the list words after them on that page;
+ * no other unit fits. The rest of a list longer than the range is not
+ * reached here. The discriminating tests are gl-list-draws-the-probe-list
+ * and gl-list-crosses-a-page.
+ *
+ * The client waits on nothing after the execute, and the board is not
+ * known to report a list's end anywhere the guest can see, so the
+ * completion this publishes goes nowhere (mgras_raster_dma_publish()).
+ * A list is executed inside the port write that invoked it.
+ */
+#define MGRAS_LIST_SLOT 4
+
+/*
+ * The most words one execute may fetch. The board's own limit is not
+ * known; this one bounds host memory and time, since the pool, and so
+ * every size in it, is the guest's choice. It is 2^20 words (4 MiB),
+ * twice the whole pool the IRIX 6.5.30 kernel installed in both runs
+ * (0x204 pages, 528,384 words) and 78 times the largest list measured
+ * (list-big, 13,355 words). An execute over it is refused whole.
+ */
+#define MGRAS_LIST_MAX_WORDS (1u << 20)
+#define MGRAS_LIST_HEADER_WORDS 3
+
+static void mgras_raster_list_decode(void *opaque, uint32_t context,
+                                     const uint32_t *words, unsigned n)
+{
+    MgrasDmaBus *b = opaque;
+
+    if (n < MGRAS_LIST_HEADER_WORDS) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: display list of %u words "
+                      "is shorter than its header\n", n);
+        return;
+    }
+    for (unsigned i = MGRAS_LIST_HEADER_WORDS; i < n; i++) {
+        mgras_command_fifo_token(b->s, words[i]);
+    }
+}
+
+static void mgras_raster_list_execute(SGIMgrasState *s, uint32_t offset,
+                                      uint32_t size)
+{
+    SGICommandFetch *f = &s->list_fetch;
+    SGIMgrasCmdParser port;
+    MgrasDmaBus ctx;
+    SGIDMABus bus;
+    SGIDMAPageList pl;
+    g_autofree uint64_t *page_addr = NULL;
+
+    /*
+     * A list calling a list would arrive here from inside the fetch. The
+     * client can pool call tokens in a list; how the board runs them is
+     * not known.
+     */
+    if (f->open) {
+        qemu_log_mask(LOG_UNIMP, "sgi-mgras: a display list calls the "
+                      "list at pool offset 0x%x; nested lists are not "
+                      "modelled\n", offset);
+        return;
+    }
+    if (size > MGRAS_LIST_MAX_WORDS) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: display list at 0x%x of "
+                      "%u words is over the model's %u-word limit\n", offset,
+                      size, MGRAS_LIST_MAX_WORDS);
+        return;
+    }
+    if (sgi_mgras_dma_map_slot_count(s, MGRAS_LIST_SLOT) == 0) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: display list executed "
+                      "with no pool mapped in DMA-map slot %u\n",
+                      MGRAS_LIST_SLOT);
+        return;
+    }
+    if (!mgras_raster_dma_setup(s, MGRAS_LIST_SLOT, &ctx, &bus, &pl,
+                                &page_addr)) {
+        return;
+    }
+    f->context = s->gl_current;
+    f->decode = mgras_raster_list_decode;
+    f->next = NULL;
+    f->little_endian = false;
+    f->trace_chunks = trace_event_get_state_backends(TRACE_SGI_MGRAS_DMA_CHUNK);
+    f->trace_seq = s->trace_sequence - 1;
+    f->seq = f->trace_seq;
+    f->cookie = 0;
+
+    sgi_mgras_cmd_parser_save(s, &port);
+    s->cmd_token_class = s->cmd_token_reg = 0;
+    s->cmd_token_words_remaining = s->cmd_token_payload_count = 0;
+    if (!sgi_fetch(f, &bus, &pl, offset, size) &&
+        s->cmd_token_words_remaining) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: display list at 0x%x "
+                      "ends %u words short of a packet\n", offset,
+                      s->cmd_token_words_remaining);
+    }
+    sgi_mgras_cmd_parser_load(s, &port);
+}
+
 static void mgras_raster_desc_bank_store(SGIMgrasState *s, uint32_t cmd_class,
                                       uint32_t reg, const uint32_t *payload,
                                       uint32_t payload_words)
 {
     uint32_t *regs;
     uint32_t regs_count;
+
+    if (cmd_class == MGRAS_CMD_HDR_CLASS_DESC_20000 &&
+        reg == MGRAS_DESC_20000_REG_LIST_EXECUTE) {
+        if (payload_words == 2) {
+            mgras_raster_list_execute(s, payload[0], payload[1]);
+        } else {
+            qemu_log_mask(LOG_UNIMP, "sgi-mgras: display-list execute with "
+                          "%u words, not 2\n", payload_words);
+        }
+        return;
+    }
 
     switch (cmd_class) {
     case MGRAS_CMD_HDR_CLASS_DESC_20000:
