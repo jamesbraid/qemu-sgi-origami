@@ -152,6 +152,7 @@ test_mips64_timeouts = {
   # 2400 (irix_eg_perf), summing 4200. After: one target, still 4200,
   # one boot instead of two.
   'irix_eg' : 4200,
+  'irix_eg_arp' : 1800,
   # The same full multiuser boot of the installed IRIX 6.5.30 disk, with the
   # tg (Broadcom BCM570x) adapter brought up instead, its link awaited, and
   # the SLIRP gateway pinged so tg1's own packet counters can be read back.
@@ -286,6 +287,7 @@ tests_mips64_system_thorough = [
   'irix_origin300_installed_boot',
   'mgras_desktop',
   'irix_eg',
+  'irix_eg_arp',
   'irix_ef',
   'irix_tg',
   'irix_tg_perf',
