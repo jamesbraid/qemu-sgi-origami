@@ -39,6 +39,7 @@ from lib_prom_diagnostics import (EXPECTED_FAILURES, EXPECTED_FAILURES_TEXT,
                                   extract_identities)
 from lib_prom_sash import (NETBOOT_PATH, RELEASES,
                            artifact_identity_problems)
+from lib_net import tftp_transfer, tftp_session_report
 
 
 # ---------------------------------------------------------------------------
@@ -137,6 +138,21 @@ class PromDiagnostics(QemuSystemTest):
             vm.shutdown(hard=vm.exitcode() is not None)
         ended = utc_now()
 
+        try:
+            with open(capture, 'rb') as capture_file:
+                transfers = tftp_transfer(capture_file.read())
+        except OSError as exc:
+            tftp_report = {
+                'count': 0,
+                'complete_session': None,
+                'sessions': [],
+                'problems': [f'cannot read TFTP packet capture: {exc}'],
+            }
+        else:
+            tftp_report = tftp_session_report(
+                transfers, NETBOOT_PATH, os.path.getsize(sash))
+        transfer_problems = tftp_report['problems']
+
         if not transcript:
             self.fail(
                 'the firmware printed nothing at all -- a run that '
@@ -150,6 +166,9 @@ class PromDiagnostics(QemuSystemTest):
                 'console driver did not reach the download-server '
                 'confirmation before timeout -- the run never '
                 'proved sash64 actually loaded')
+            report['verdict'] = 'FAIL'
+        report['problems'].extend(transfer_problems)
+        if transfer_problems:
             report['verdict'] = 'FAIL'
 
         summary_path = self.log_file('diag-summary.json')
@@ -173,6 +192,7 @@ class PromDiagnostics(QemuSystemTest):
                 'ended_utc': ended,
                 'console_driver_reached_until': reached,
                 'timeout_seconds': BOOT_TIMEOUT_SECONDS,
+                'tftp_sessions': tftp_report,
                 'command': {
                     'binary': self.qemu_bin,
                     'machine': MACHINES['origin200'],

@@ -29,6 +29,8 @@ from lib_net import (DHCP_NAMES, OPENBSD_LOGIN_STAGES, OPENBSD_TRIPWIRES,
                      HarnessError, IrixConsole, dhcp_kind,
                      drive_irix_to_shell, lease_established, login_steps,
                      ordered_stages, summarise_pcap,
+                     tftp_transfer, tftp_transfer_problems,
+                     tftp_session_report,
                      transfer_result_pattern)
 
 
@@ -63,6 +65,45 @@ def _pcap_bytes(frames) -> bytes:
         struct.pack("<IIII", 0, 0, len(frame), len(frame)) + frame
         for frame in frames)
     return header + body
+
+
+def _tftp_frame(opcode, src_port, dst_port, body=b''):
+    payload = opcode.to_bytes(2, 'big') + body
+    udp = (src_port.to_bytes(2, 'big') + dst_port.to_bytes(2, 'big')
+           + (8 + len(payload)).to_bytes(2, 'big') + b'\x00\x00')
+    src_ip, dst_ip = ((b'\x0a\x00\x02\x02', b'\x0a\x00\x02\x0f')
+                      if src_port == 69 else
+                      (b'\x0a\x00\x02\x0f', b'\x0a\x00\x02\x02'))
+    ip = (b'\x45\x00' + (20 + len(udp) + len(payload)).to_bytes(2, 'big')
+          + b'\x00\x00\x40\x00\x40\x11\x00\x00'
+          + src_ip + dst_ip)
+    return (b'\x52\x54\x00\xab\xcd\xef\x08\x00\x69\x12\x34\x56'
+            + b'\x08\x00' + ip + udp + payload)
+
+
+def _tftp_capture(data=b'file contents', filename=b'boot/sash64', error=False,
+                  malformed_rrq=False, wrong_direction=False,
+                  skip_data_block=False):
+    mode = b'' if malformed_rrq else b'octet'
+    frames = [_tftp_frame(1, 49152, 69,
+                          filename + b'\x00' + mode + b'\x00padding')]
+    blocks = [data[i:i + 512] for i in range(0, len(data), 512)]
+    if not blocks or len(blocks[-1]) == 512:
+        blocks.append(b'')
+    for block, chunk in enumerate(blocks, 1):
+        data_block = block + 1 if skip_data_block and block == 2 else block
+        frames.append(_tftp_frame(3, 69, 49152,
+                                  data_block.to_bytes(2, 'big') + chunk))
+        frames.append(_tftp_frame(4, 49152, 69,
+                                  block.to_bytes(2, 'big')))
+    if error:
+        frames.append(_tftp_frame(5, 69, 49152,
+                                  b'\x00\x01missing\x00'))
+    if wrong_direction:
+        frames.extend((_tftp_frame(3, 49152, 69,
+                                   b'\x00\x01unexpected'),
+                       _tftp_frame(4, 69, 49152, b'\x00\x01')))
+    return _pcap_bytes(frames)
 
 
 class DhcpKindTests(unittest.TestCase):
@@ -120,6 +161,9 @@ class SummarisePcapTests(unittest.TestCase):
     def test_bad_magic_returns_none(self):
         self.assertIsNone(summarise_pcap(b"NOTAPCAP" + b"\x00" * 16))
 
+    def test_truncated_packet_record_returns_none(self):
+        self.assertIsNone(summarise_pcap(_pcap_bytes([_dhcp_frame(1)])[:-1]))
+
     def test_too_short_returns_empty(self):
         self.assertEqual(summarise_pcap(b"\x00" * 10), {})
 
@@ -132,6 +176,106 @@ class SummarisePcapTests(unittest.TestCase):
             "DHCPDISCOVER": 1, "DHCPOFFER": 1, "DHCPREQUEST": 1,
             "DHCPACK": 1,
         }))
+
+
+class TftpTransferTests(unittest.TestCase):
+
+    def test_unreadable_capture_reports_parse_error(self):
+        report = tftp_session_report(None, 'boot/sash64', 9)
+
+        self.assertIsNone(report['complete_session'])
+        self.assertEqual(report['problems'],
+                         ['the TFTP packet capture is unreadable'])
+
+    def test_complete_transfer_matches_file_size_and_path(self):
+        raw = _tftp_capture(b'123456789')
+        transfer = tftp_transfer(raw)[0]
+
+        self.assertEqual(transfer['filename'], 'boot/sash64')
+        self.assertEqual(transfer['data_blocks'], [1])
+        self.assertEqual(transfer['ack_blocks'], [1])
+        self.assertEqual(transfer['data_bytes'], 9)
+        self.assertEqual(transfer['final_data_bytes'], 9)
+        self.assertEqual(
+            tftp_transfer_problems(transfer, 'boot/sash64', 9), [])
+
+    def test_reports_progression_size_path_and_error_problems(self):
+        transfer = tftp_transfer(_tftp_capture(error=True))[0]
+
+        problems = tftp_transfer_problems(transfer, 'wrong/path', 99)
+
+        self.assertTrue(any('requested' in problem for problem in problems))
+        self.assertTrue(any('bytes' in problem for problem in problems))
+        self.assertTrue(any('ERROR' in problem for problem in problems))
+
+    def test_rejects_a_skipped_data_block_from_the_capture(self):
+        transfer = tftp_transfer(_tftp_capture(
+            b'x' * 513, skip_data_block=True))[0]
+
+        self.assertEqual(transfer['data_blocks'], [1, 3])
+        self.assertTrue(any(
+            'DATA progression' in problem
+            for problem in tftp_transfer_problems(
+                transfer, 'boot/sash64', 513)))
+
+    def test_exact_block_multiple_ends_with_empty_data_packet(self):
+        transfer = tftp_transfer(_tftp_capture(b'x' * 512))[0]
+
+        self.assertEqual(transfer['data_blocks'], [1, 2])
+        self.assertEqual(transfer['ack_blocks'], [1, 2])
+        self.assertEqual(transfer['data_bytes'], 512)
+        self.assertEqual(transfer['final_data_bytes'], 0)
+        self.assertEqual(
+            tftp_transfer_problems(transfer, 'boot/sash64', 512), [])
+
+    def test_rejects_an_rrq_without_a_mode(self):
+        transfer = tftp_transfer(_tftp_capture(malformed_rrq=True))[0]
+
+        self.assertFalse(transfer['request_seen'])
+        self.assertTrue(any(
+            'request was not captured' in problem
+            for problem in tftp_transfer_problems(transfer, 'boot/sash64', 13)))
+
+    def test_rejects_data_and_ack_in_the_wrong_direction(self):
+        transfer = tftp_transfer(_tftp_capture(wrong_direction=True))[0]
+
+        self.assertEqual(transfer['direction_errors'], 2)
+        self.assertTrue(any(
+            'wrong direction' in problem
+            for problem in tftp_transfer_problems(
+                transfer, 'boot/sash64', len(b'file contents'))))
+
+    def test_sessions_isolate_complete_and_partial_repeated_requests(self):
+        frames = []
+        for port, partial in ((49152, False), (49152, True),
+                              (49153, True)):
+            frames.append(_tftp_frame(
+                1, port, 69, b'boot/sash64\x00octet\x00'))
+            data = b'x' * (512 if partial else 9)
+            frames.append(_tftp_frame(3, 69, port, b'\x00\x01' + data))
+            frames.append(_tftp_frame(4, port, 69, b'\x00\x01'))
+            if partial:
+                frames.append(_tftp_frame(
+                    3, 69, port, b'\x00\x02' + b'x' * 512))
+                # The client aborts after another full DATA block.
+                frames.append(_tftp_frame(
+                    5, port, 69, b'\x00\x03partial\x00'))
+
+        sessions = tftp_transfer(_pcap_bytes(frames))
+        report = tftp_session_report(sessions, 'boot/sash64', 9)
+
+        self.assertEqual(len(sessions), 3)
+        self.assertEqual(report['complete_session'], 1)
+        self.assertEqual(report['count'], 3)
+        self.assertTrue(report['sessions'][0]['complete'])
+        self.assertFalse(report['sessions'][0]['partial'])
+        self.assertFalse(report['sessions'][1]['complete'])
+        self.assertTrue(report['sessions'][1]['partial'])
+        self.assertEqual(report['sessions'][1]['error_packets'], 1)
+        self.assertEqual(report['sessions'][1]['data_blocks'], 2)
+        self.assertTrue(report['sessions'][2]['partial'])
+        self.assertEqual(report['sessions'][2]['error_packets'], 1)
+        self.assertEqual(report['problems'], [])
 
 
 # The network boot asserts these stages before checking transfers.

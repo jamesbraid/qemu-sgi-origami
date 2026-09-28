@@ -330,7 +330,7 @@ def dhcp_kind(frame: bytes):
     return None
 
 
-def summarise_pcap(raw: bytes):
+def summarise_pcap(raw: bytes, include_frames=False):
     """Count the frames in a captured .pcap file's bytes, by who sent them
     and, for DHCP frames, by message type.
 
@@ -338,7 +338,7 @@ def summarise_pcap(raw: bytes):
     hand-built fixture without a capture file on disk. Returns None on an
     unrecognised magic number, {} on a file too short to hold even the
     24-byte global pcap header, otherwise {"by_src": {...}, "dhcp":
-    {...}}.
+    {...}}. Set include_frames to retain the captured Ethernet frames.
     """
     if len(raw) < 24:
         return {}
@@ -350,19 +350,227 @@ def summarise_pcap(raw: bytes):
     else:
         return None
     by_src, dhcp = {}, {}
+    frames = []
     off = 24
-    while off + 16 <= len(raw):
+    while off < len(raw):
+        if off + 16 > len(raw):
+            return None
         _, _, incl, _ = struct.unpack(end + "IIII", raw[off:off + 16])
         off += 16
+        if off + incl > len(raw):
+            return None
         frame = raw[off:off + incl]
         off += incl
+        if include_frames:
+            frames.append(frame)
         if len(frame) >= 12:
             src = ":".join("%02x" % b for b in frame[6:12])
             by_src[src] = by_src.get(src, 0) + 1
             kind = dhcp_kind(frame)
             if kind:
                 dhcp[kind] = dhcp.get(kind, 0) + 1
-    return {"by_src": by_src, "dhcp": dhcp}
+    summary = {"by_src": by_src, "dhcp": dhcp}
+    if include_frames:
+        summary["frames"] = frames
+    return summary
+
+
+def tftp_transfer(raw: bytes):
+    """Summarize the ordered TFTP read sessions in a packet capture.
+
+    Every RRQ starts a new session, even when it reuses a client address and
+    port. Returns None for an unreadable capture. Packet order is retained so
+    callers can require a complete, monotonic transfer without treating
+    retransmissions as progress.
+    """
+    if len(raw) < 24:
+        return None
+    summary = summarise_pcap(raw, include_frames=True)
+    if summary is None:
+        return None
+
+    sessions = []
+    current = None
+
+    def new_session(frame_payload):
+        fields = frame_payload[2:].split(b"\x00")
+        valid = len(fields) >= 3 and fields[0] and fields[1]
+        return {
+            "request_seen": bool(valid),
+            "filename": (fields[0].decode("ascii", errors="replace")
+                         if valid else None),
+            "client_ip": None,
+            "client_port": None,
+            "server_ip": None,
+            "server": None,
+            "data_blocks": [],
+            "ack_blocks": [],
+            "data_bytes": 0,
+            "final_data_bytes": None,
+            "error_packets": 0,
+            "direction_errors": 0,
+        }
+
+    for frame in summary["frames"]:
+        if len(frame) < 14 or frame[12:14] != b"\x08\x00":
+            continue
+        ip = 14
+        if len(frame) < ip + 20 or frame[ip] >> 4 != 4:
+            continue
+        ihl = (frame[ip] & 0x0f) * 4
+        if ihl < 20 or len(frame) < ip + ihl + 8 or frame[ip + 9] != 17:
+            continue
+        # Ignore fragmented IPv4 datagrams; TFTP packets fit in one frame.
+        if int.from_bytes(frame[ip + 6:ip + 8], "big") & 0x3fff:
+            continue
+        udp = ip + ihl
+        src_ip = frame[ip + 12:ip + 16]
+        dst_ip = frame[ip + 16:ip + 20]
+        src_port = int.from_bytes(frame[udp:udp + 2], "big")
+        dst_port = int.from_bytes(frame[udp + 2:udp + 4], "big")
+        udp_length = int.from_bytes(frame[udp + 4:udp + 6], "big")
+        if udp_length < 10 or udp + udp_length > len(frame):
+            continue
+        payload = frame[udp + 8:udp + udp_length]
+        opcode = int.from_bytes(payload[:2], "big")
+        if opcode == 1 and dst_port == 69:
+            current = new_session(payload)
+            current["client_ip"] = src_ip
+            current["client_port"] = src_port
+            current["server_ip"] = dst_ip
+            sessions.append(current)
+            continue
+
+        if current is None:
+            continue
+        from_client = (src_ip == current["client_ip"]
+                       and src_port == current["client_port"])
+        to_client = (dst_ip == current["client_ip"]
+                     and dst_port == current["client_port"]
+                     and src_ip == current["server_ip"])
+        if not from_client and not to_client:
+            continue
+        if opcode == 5:
+            current["error_packets"] += 1
+            continue
+        if opcode == 3:
+            if to_client and len(payload) >= 4:
+                if current["server"] is None:
+                    current["server"] = (src_ip, src_port)
+                if (src_ip, src_port) == current["server"]:
+                    block = int.from_bytes(payload[2:4], "big")
+                    current["data_blocks"].append(block)
+                    size = len(payload) - 4
+                    current["data_bytes"] += size
+                    current["final_data_bytes"] = size
+                else:
+                    current["direction_errors"] += 1
+            elif from_client:
+                current["direction_errors"] += 1
+            elif to_client:
+                current["direction_errors"] += 1
+        elif opcode == 4:
+            server = current["server"]
+            if from_client and len(payload) >= 4 and server is not None:
+                if (dst_ip, dst_port) == server:
+                    current["ack_blocks"].append(
+                        int.from_bytes(payload[2:4], "big"))
+                else:
+                    current["direction_errors"] += 1
+            elif from_client:
+                current["direction_errors"] += 1
+            elif to_client:
+                current["direction_errors"] += 1
+
+    for session in sessions:
+        for key in ("client_ip", "client_port", "server_ip", "server"):
+            del session[key]
+    return sessions
+
+
+def tftp_transfer_problems(transfer, filename: str, expected_bytes: int):
+    """Return why a captured TFTP read did not transfer one complete file."""
+    if transfer is None:
+        return ["the TFTP packet capture is unreadable"]
+    problems = []
+    if not transfer["request_seen"]:
+        problems.append("the TFTP read request was not captured")
+    elif transfer["filename"] != filename:
+        problems.append(
+            f"TFTP requested {transfer['filename']!r}, expected {filename!r}")
+    for key, label in (("data_blocks", "DATA"), ("ack_blocks", "ACK")):
+        blocks = transfer[key]
+        if not blocks:
+            problems.append(f"the TFTP {label} progression is empty")
+        else:
+            expected = 1
+            for block in blocks:
+                if block != expected:
+                    problems.append(
+                        f"the TFTP {label} progression is not monotonic")
+                    break
+                expected += 1
+    if transfer["data_blocks"] != transfer["ack_blocks"]:
+        problems.append("TFTP DATA and ACK progressions do not match")
+    if transfer["data_bytes"] != expected_bytes:
+        problems.append(
+            f"TFTP transferred {transfer['data_bytes']} bytes, "
+            f"expected {expected_bytes}")
+    final_size = transfer["final_data_bytes"]
+    if final_size is None or final_size >= 512:
+        problems.append("the final TFTP DATA packet was not short")
+    if transfer["error_packets"]:
+        problems.append("the TFTP capture contains an ERROR packet")
+    if transfer["direction_errors"]:
+        problems.append(
+            "the TFTP capture contains a DATA or ACK in the wrong direction")
+    return problems
+
+
+def tftp_session_report(sessions, filename: str, expected_bytes: int):
+    """Describe captured sessions and identify the first complete file read."""
+    if sessions is None:
+        return {
+            "count": 0,
+            "complete_session": None,
+            "sessions": [],
+            "problems": ["the TFTP packet capture is unreadable"],
+        }
+    report = []
+    complete_index = None
+    matching = []
+    for index, session in enumerate(sessions or [], 1):
+        problems = tftp_transfer_problems(session, filename, expected_bytes)
+        complete = not problems
+        if session["filename"] == filename:
+            matching.append((session, problems))
+        if complete and complete_index is None:
+            complete_index = index
+        report.append({
+            "filename": session["filename"],
+            "data_blocks": len(session["data_blocks"]),
+            "ack_blocks": len(session["ack_blocks"]),
+            "data_bytes": session["data_bytes"],
+            "final_data_bytes": session["final_data_bytes"],
+            "error_packets": session["error_packets"],
+            "partial": bool(session["data_blocks"]) and not complete,
+            "complete": complete,
+            "problems": problems,
+        })
+    if complete_index is not None:
+        problems = []
+    elif not sessions:
+        problems = ["the TFTP read request was not captured"]
+    elif matching:
+        problems = matching[0][1]
+    else:
+        problems = [f"TFTP did not request {filename!r}"]
+    return {
+        "count": len(sessions or []),
+        "complete_session": complete_index,
+        "sessions": report,
+        "problems": problems,
+    }
 
 
 def lease_established(dhcp_counts):
