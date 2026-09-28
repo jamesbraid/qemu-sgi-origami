@@ -3177,25 +3177,30 @@ bool sgi_bedrock_md_processor_request(SGIBedrockMDState *s, uint16_t pointer,
 }
 
 /*
- * Software read line @index's directory word through the backdoor. If a
- * processor has named the line in a cache instruction, watch its page from
- * here, in a free slot or the least recently used one; only the overlay
- * moves, and the words and copies of the page it leaves stay as they are.
- * A word nobody has named -- a directory walk's -- watches nothing.
+ * Software read line @index's directory word through the backdoor. A word
+ * on a watched page keeps the page recently used. Otherwise, if a
+ * processor has named the line in a cache instruction since it last let a
+ * page be watched, watch its page from here, in a free slot or the least
+ * recently used one; only the overlay moves, and the words and copies of
+ * the page it leaves stay as they are. A word nobody has named -- a
+ * directory walk's -- watches nothing, and a naming lets one page be
+ * watched once, so a walk over lines firmware once flushed watches none
+ * of their pages again.
  */
 static void md_watch_line(SGIBedrockMDState *s, uint32_t line_index)
 {
     uint32_t index = line_index & ~(uint32_t)(MD_WATCH_PAGE_LINES - 1);
     SGIBedrockMDWatchedPage *slot = NULL;
 
-    if (!s->named_lines || !test_bit(line_index, s->named_lines)) {
-        return;
-    }
     for (unsigned i = 0; i < SGI_BEDROCK_MD_WATCHED_PAGES; i++) {
         SGIBedrockMDWatchedPage *page = &s->watched[i];
 
         if (page->active && page->index == index) {
+            /* Any word read on a watched page keeps it recently used. */
             page->last_use = ++s->use_clock;
+            if (s->named_lines) {
+                clear_bit_atomic(line_index, s->named_lines);
+            }
             return;
         }
         if (!slot || (slot->active &&
@@ -3203,6 +3208,11 @@ static void md_watch_line(SGIBedrockMDState *s, uint32_t line_index)
             slot = page;
         }
     }
+    if (!s->named_lines || !test_bit(line_index, s->named_lines)) {
+        return;
+    }
+    /* A naming is spent on the page it watches. */
+    clear_bit_atomic(line_index, s->named_lines);
     memory_region_transaction_begin();
     md_watched_page_release(s, slot);
     slot->index = index;
