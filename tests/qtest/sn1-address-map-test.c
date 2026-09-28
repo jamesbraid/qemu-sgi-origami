@@ -3041,6 +3041,33 @@ static void assert_qemu_rejects(const char *const args[], const char *message)
     g_assert_nonnull(strstr(error_output, message));
 }
 
+/*
+ * nodes chooses what the machine builds, and a system reset walks what
+ * was built. Changing it once the machine exists is refused, and the
+ * machine still resets afterwards.
+ */
+static void test_nodes_fixed_once_built(const void *data)
+{
+    QTestState *qts = machine_start();
+    QDict *resp;
+
+    resp = qtest_qmp(qts, "{'execute':'qom-set', 'arguments':{"
+                     "'path':'/machine', 'property':'nodes', 'value':2}}");
+    g_assert_true(qdict_haskey(resp, "error"));
+    g_assert_nonnull(strstr(qdict_get_str(qdict_get_qdict(resp, "error"),
+                                          "desc"),
+                            "cannot change once the machine is built"));
+    qobject_unref(resp);
+    resp = qtest_qmp(qts, "{'execute':'qom-set', 'arguments':{"
+                     "'path':'/machine', 'property':'topology', "
+                     "'value':'origin300-two-chassis'}}");
+    g_assert_true(qdict_haskey(resp, "error"));
+    qobject_unref(resp);
+    qtest_system_reset(qts);
+    g_assert_cmphex(widget_reg_read(qts, 0, 0) & 1, ==, 1);
+    qtest_quit(qts);
+}
+
 static char *create_sized_flash_image(off_t size)
 {
     g_autoptr(GError) error = NULL;
@@ -3832,6 +3859,8 @@ int main(int argc, char **argv)
                         test_pi1_a_irq_reaches_cpu1);
     qtest_add_data_func("sn1/address-map/xbridge-topology", NULL,
                         test_xbridge_topology);
+    qtest_add_data_func("sn1/address-map/nodes-fixed-once-built",
+                        NULL, test_nodes_fixed_once_built);
     qtest_add_data_func("sn1/address-map/io8-usb-attachment", NULL,
                         test_io8_usb_attachment);
     qtest_add_data_func("sn1/address-map/io8-usb-invalid-ate", NULL,
