@@ -10,11 +10,9 @@ names ef0. The SLIRP backend attaches through ``-nic user``; no add-in adapter
 is present in this test. Host-to-guest TCP is checked by POSIX cksum and byte
 count. Guest-to-host TCP sends a fixed all-zero stream whose exact bytes and
 length are checked by the host. UDP is exercised in each direction with ttcp;
-the host requires positive received datagrams for guest transmit, while the
-guest's ttcp receive report must account for positive data.
-
-The PROM and installed IRIX disk are local test assets. Missing configured
-assets fail instead of silently skipping a provisioning error.
+payload bytes are checked exactly in both directions. The PROM and installed
+IRIX disk are local test assets. Missing configured assets fail instead of
+silently skipping a provisioning error.
 """
 
 import os
@@ -53,6 +51,8 @@ UDP_RX_PORT = 5002
 TCP_TX_PORT = 5003
 UDP_TX_PORT = 5004
 PAYLOAD_BYTES = 1024 * 1024
+UDP_PAYLOAD = bytes(range(256)) * 4
+UDP_PAYLOAD_COUNT = 8
 STEP_TIMEOUT = 300
 
 
@@ -171,12 +171,11 @@ def _udp_sink(port, ready, packets, controls, errors, stop):
 
 def _send_udp(host_port):
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    payload = bytes(range(256)) * 4
     try:
-        for _ in range(8):
-            sock.sendto(payload, ('127.0.0.1', host_port))
+        for _ in range(UDP_PAYLOAD_COUNT):
+            sock.sendto(UDP_PAYLOAD, ('127.0.0.1', host_port))
             time.sleep(0.02)
-        for _ in range(8):
+        for _ in range(UDP_PAYLOAD_COUNT):
             sock.sendto(b'', ('127.0.0.1', host_port))
             time.sleep(0.02)
     finally:
@@ -292,16 +291,51 @@ if QemuSystemTest is not None:
 
                 # Host to guest UDP: ttcp's empty datagrams terminate the
                 # receive leg, following the established IRIX eg test method.
+                # Without -s, ttcp writes each received datagram to stdout.
+                # Save that stream and compare its POSIX checksum and length.
+                udp_payload_path = self.scratch_file('ef-down-udp.bin')
+                with open(udp_payload_path, 'wb') as payload_file:
+                    payload_file.write(UDP_PAYLOAD * UDP_PAYLOAD_COUNT)
+                udp_host_crc, udp_host_size = _host_cksum(udp_payload_path)
                 udp_pos = _start_guest(
-                    con, f'ttcp -u -r -s -p {UDP_RX_PORT} -l 1024 2>&1',
+                    con, f'ttcp -u -r -p {UDP_RX_PORT} -l 1024 '
+                    '>/tmp/ef-down-udp.bin 2>/tmp/ef-down-udp-report',
                     'ef_rx_udp')
                 time.sleep(3)
                 _send_udp(udp_host_port)
                 rc, udp_out = _finish_guest(con, udp_pos, 'ef_rx_udp',
                                             STEP_TIMEOUT)
-                self.assertEqual(rc, 0, 'guest UDP receive failed')
+                self.assertEqual(rc, 0, 'guest UDP receive failed: '
+                                 f'{udp_out}')
+                report_rc, udp_stderr = _run_guest(
+                    con, 'cat /tmp/ef-down-udp-report',
+                    'ef_udp_stderr', 60)
+                self.assertEqual(report_rc, 0,
+                                 'guest UDP report read failed')
+                report_rc, udp_stdout = _run_guest(
+                    con, 'dd if=/tmp/ef-down-udp.bin bs=1024 skip=8 '
+                    '2>/dev/null | grep \'bytes in .* real sec\' || true',
+                    'ef_udp_stdout', 60)
+                self.assertEqual(report_rc, 0,
+                                 'guest UDP report extraction failed')
+                udp_out += udp_stderr + udp_stdout
                 self.assertGreater(_ttcp_bytes(udp_out), 0,
                                    'guest ttcp received no UDP payload')
+                self.assertEqual(_ttcp_bytes(udp_out), udp_host_size,
+                                 'guest ttcp UDP byte count mismatch')
+                sum_rc, sum_output = _run_guest(
+                    con, f'dd if=/tmp/ef-down-udp.bin bs=1024 '
+                    f'count={UDP_PAYLOAD_COUNT} '
+                    '2>/dev/null | cksum | sed \'s/^/CK=/\'',
+                    'ef_down_udp_sum', 60)
+                self.assertEqual(sum_rc, 0,
+                                 'guest UDP cksum command failed')
+                checksum = re.search(r'CK=(\d+)\s+(\d+)', sum_output)
+                self.assertIsNotNone(checksum,
+                                     'guest UDP cksum output missing')
+                self.assertEqual((checksum.group(1), int(checksum.group(2))),
+                                 (udp_host_crc, udp_host_size),
+                                 'host-to-guest UDP payload mismatch')
 
                 # Permit the observed 4-byte zero control datagrams while
                 # requiring eight full 1024-byte payload datagrams.
