@@ -85,6 +85,15 @@ typedef struct SGIHeadOps {
     void (*resolve_row)(void *opaque, unsigned y, uint32_t *dst);
 
     /*
+     * Scanout: an update is about to resolve the dirty lines. Called once
+     * at the start of every sgi_scanout_update(), before any line is
+     * resolved, so a family that records drawing as a flag of its own can
+     * turn it into invalidations here and have those lines resolved in
+     * this same update. NULL means the family invalidates as it draws.
+     */
+    void (*pre_update)(void *opaque);
+
+    /*
      * A row of pixels between guest bytes and native plane words.
      * to_plane: src is guest bytes, dst is 'pixels' uint32_t native words.
      * Otherwise src is 'pixels' uint32_t native words and dst guest bytes.

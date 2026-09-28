@@ -449,6 +449,94 @@ static void test_dirty_lines(void)
     head_free(h);
 }
 
+typedef struct FlagHead {
+    Head head;                  /* first: the ops take either */
+    bool drawn;                 /* the family's whole-frame dirty flag */
+    unsigned calls;
+    unsigned resolved_before;   /* lines resolved this update, at the call */
+} FlagHead;
+
+static unsigned total_resolved(Head *h)
+{
+    unsigned n = 0;
+
+    for (unsigned y = 0; y < ARRAY_SIZE(h->resolved); y++) {
+        n += h->resolved[y];
+    }
+    return n;
+}
+
+static void flag_pre_update(void *opaque)
+{
+    FlagHead *f = opaque;
+
+    f->calls++;
+    f->resolved_before = total_resolved(&f->head);
+    if (f->drawn) {
+        f->drawn = false;
+        sgi_scanout_invalidate(&f->head.scanout, 3, 1);
+    }
+}
+
+static const SGIHeadOps flag_head_ops = {
+    .publish = head_publish,
+    .resolve_row = head_resolve_row,
+    .retrace = head_retrace,
+    .pre_update = flag_pre_update,
+};
+
+/*
+ * The pre-update hook runs once per update, before any line is resolved,
+ * and a line it invalidates is resolved and presented by that update.
+ */
+static void test_pre_update(void)
+{
+    FlagHead *f = g_new0(FlagHead, 1);
+    Head *h = &f->head;
+    SGIScanout *s = &h->scanout;
+
+    con.updates = g_array_new(false, true, sizeof(Update));
+    h->events = g_string_new("");
+    sgi_scanout_init(s, NULL, &flag_head_ops, h);
+
+    /* No frame yet: the hook still runs, and nothing is resolved. */
+    sgi_scanout_update(s);
+    g_assert_cmpuint(f->calls, ==, 1);
+
+    sgi_scanout_set_mode(s, &small);
+    sgi_scanout_update(s);
+    g_assert_cmpuint(f->calls, ==, 2);
+    g_assert_cmpuint(f->resolved_before, ==, 0);
+    assert_resolved(h, (unsigned[]) { 1, 1, 1, 1, 1, 1 });
+
+    /* Nothing drawn: nothing resolved, but the hook ran. */
+    sgi_scanout_update(s);
+    g_assert_cmpuint(f->calls, ==, 3);
+    assert_resolved(h, (unsigned[]) { 0, 0, 0, 0, 0, 0 });
+
+    g_array_set_size(con.updates, 0);
+    f->drawn = true;
+    sgi_scanout_update(s);
+    g_assert_cmpuint(f->calls, ==, 4);
+    g_assert_cmpuint(f->resolved_before, ==, 0);
+    g_assert_false(f->drawn);
+    assert_resolved(h, (unsigned[]) { 0, 0, 0, 1, 0, 0 });
+    g_assert_cmpuint(con.updates->len, ==, 1);
+    g_assert_cmpint(g_array_index(con.updates, Update, 0).y, ==, 3);
+
+    /* Lines already dirty are resolved after the hook, not before. */
+    sgi_scanout_invalidate(s, 0, 2);
+    sgi_scanout_update(s);
+    g_assert_cmpuint(f->resolved_before, ==, 0);
+    assert_resolved(h, (unsigned[]) { 1, 1, 0, 0, 0, 0 });
+
+    sgi_scanout_cleanup(s);
+    g_string_free(h->events, true);
+    g_array_free(con.updates, true);
+    g_free(f);
+    memset(&con, 0, sizeof(con));
+}
+
 /*
  * A composited cursor is drawn over the lines it covers, with its hot spot
  * at the position given; moving it repaints where it was and where it is,
@@ -666,6 +754,7 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-scanout/swaps", test_swaps);
     g_test_add_func("/sgi-scanout/set-next-retrace", test_set_next_retrace);
     g_test_add_func("/sgi-scanout/dirty-lines", test_dirty_lines);
+    g_test_add_func("/sgi-scanout/pre-update", test_pre_update);
     g_test_add_func("/sgi-scanout/cursor-composite", test_cursor_composite);
     g_test_add_func("/sgi-scanout/cursor-host", test_cursor_host);
     g_test_add_func("/sgi-scanout/cursor-clamp", test_cursor_clamp);
