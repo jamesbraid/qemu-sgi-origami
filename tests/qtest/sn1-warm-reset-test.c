@@ -38,8 +38,9 @@
 /*
  * The start count, in low RAM clear of the flash and of the firmware
  * filter's window at 1 MiB, through Hub special space's uncached alias of
- * the node's own memory, which the host reads the same way (the hub-lock
- * test says why).
+ * the node's own memory, which the host reads the same way: plain node
+ * memory sits behind the memory unit's bank translation, which answers
+ * nothing until firmware configures it.
  */
 #define STATE_PHYS UINT64_C(0x180000)
 #define STATE_HOST (SPACE_HUB + STATE_PHYS)

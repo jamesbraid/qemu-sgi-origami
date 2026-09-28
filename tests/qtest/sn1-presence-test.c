@@ -65,8 +65,10 @@
  * State words in low RAM, clear of the flash and of the 32 KiB
  * per-processor window the firmware filter overlays at 1 MiB, reached by
  * the guest through Hub special space's uncached alias of its own node
- * memory and by the host through the same alias (the hub-lock test says
- * why). One block per processor, by the PI's own processor number.
+ * memory and by the host through the same alias: plain node memory sits
+ * behind the memory unit's bank translation, which answers nothing until
+ * firmware configures it. One block per processor, by the PI's own
+ * processor number.
  */
 #define STATE_PHYS UINT64_C(0x180000)
 #define STATE_HOST (SPACE_HUB + STATE_PHYS)

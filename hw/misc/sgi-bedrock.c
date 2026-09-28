@@ -188,10 +188,10 @@ static CPUState *bedrock_hold_cpu(SGIBedrockState *s, unsigned int physical)
 }
 
 /*
- * Populated and actually able to run -- see the deviation from the Hub
- * template above for why this does not also check the PI cpu-enable
- * register. A processor this device has halted for a park still counts as
- * running: the halt is the model's, not the guest's.
+ * Populated and actually able to run -- see "Running" in the overview
+ * above for why this does not also check the PI cpu-enable register. A
+ * processor this device has halted for a park still counts as running:
+ * the halt is the model's, not the guest's.
  */
 static bool bedrock_hold_slot_running(SGIBedrockState *s,
                                       unsigned int physical)
@@ -1476,14 +1476,14 @@ static const Property bedrock_properties[] = {
 
 /*
  * Test-only: a register-contract qtest cannot be a processor of the node,
- * so it cannot make a real hold withhold a value, and a guest-code test
- * that does races the hold's own wall-clock bound. These two properties
- * place and end that state directly and nothing else. They are not
- * hardware and no machine sets them.
+ * so it cannot make a real park withhold a value, and a guest-code test
+ * would have to stop the processors at the moment the park holds one.
+ * These two properties place and end that state directly and nothing
+ * else. They are not hardware and no machine sets them.
  *
  * x-test-withhold-scratch1 "SLOT:VALUE" records VALUE as slot SLOT's
- * withheld scratch-1 write, as a held processor's second post would be.
- * x-test-release-scratch1 SLOT lands it as the end of that hold does.
+ * withheld scratch-1 write, as a parked processor's second post would be.
+ * x-test-release-scratch1 SLOT lands it as the end of that park does.
  */
 static void bedrock_test_withhold_scratch1(Object *obj, const char *value,
                                            Error **errp)
