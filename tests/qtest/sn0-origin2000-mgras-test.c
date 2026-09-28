@@ -12125,6 +12125,97 @@ static void test_gl_clip_null_and_many_draw_nothing(void)
     g_assert_cmphex(mgras_test_pixel(qts, 640, 512), ==, 0);
 }
 
+/*
+ * Migrate a guest that setup has driven to a fresh destination, and hand
+ * the destination to check.
+ */
+static void gl_migrate(void (*setup)(QTestState *),
+                       void (*check)(QTestState *))
+{
+    g_autofree char *tmpfs = NULL;
+    g_autofree char *uri = NULL;
+    g_autofree char *dest_cmdline = NULL;
+    GError *err = NULL;
+    QTestState *from, *to;
+
+    tmpfs = g_dir_make_tmp("sn0-mgras-gl-state-XXXXXX", &err);
+    g_assert_no_error(err);
+    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+    from = qtest_init(MIGRATION_ARGS);
+    dest_cmdline = g_strdup_printf(MIGRATION_ARGS " -incoming %s", uri);
+    to = qtest_init(dest_cmdline);
+
+    setup(from);
+    sgi_migrate_stopped(from, uri);
+    check(to);
+    g_assert_cmphex(mgras_qom_get_uint(to, "x-test-error"), ==, 0);
+
+    qtest_quit(to);
+    qtest_quit(from);
+    g_rmdir(tmpfs);
+}
+
+/*
+ * glDepthRange is 0x4808 and near and far as floats, which the client
+ * does not clamp (__glMgrim_DepthRange, 0xd960590); GL_DEPTH_RANGE is
+ * queried at 0xc21 and 0xc22 and read as floats (notes-return-mode-
+ * queries.md). OpenGL 1.2.1 (2.10.1) starts the range at [0, 1] and
+ * clamps each value to [0, 1].
+ */
+#define GL_DEPTH_RANGE_HDR    0x00004808
+#define GL_Q_DEPTH_RANGE      0xc21
+
+static void gl_depth_range(QTestState *qts, float n, float f)
+{
+    gl_word(qts, GL_DEPTH_RANGE_HDR);
+    gl_float(qts, n);
+    gl_float(qts, f);
+}
+
+static void test_hq_query_answers_the_depth_range(void)
+{
+    mgras_reset();
+
+    gl_enter_slot(qts, GL_SLOT_A);
+    gl_word(qts, GL_CONTEXT_OPENER);
+    g_assert_cmphex(gl_query(qts, GL_Q_DEPTH_RANGE, 1), ==, gl_bits(0));
+    g_assert_cmphex(gl_query(qts, GL_Q_DEPTH_RANGE + 1, 1), ==, gl_bits(1));
+    gl_depth_range(qts, 0.25f, 2);
+    g_assert_cmphex(gl_query(qts, GL_Q_DEPTH_RANGE, 1), ==, gl_bits(0.25f));
+    g_assert_cmphex(gl_query(qts, GL_Q_DEPTH_RANGE + 1, 1), ==, gl_bits(1));
+    gl_depth_range(qts, -1, 0.5f);
+    g_assert_cmphex(gl_query(qts, GL_Q_DEPTH_RANGE, 1), ==, gl_bits(0));
+    g_assert_cmphex(gl_query(qts, GL_Q_DEPTH_RANGE + 1, 1), ==,
+                    gl_bits(0.5f));
+    /* The opener of a new context restores the initial range. */
+    gl_word(qts, GL_CONTEXT_OPENER);
+    g_assert_cmphex(gl_query(qts, GL_Q_DEPTH_RANGE + 1, 1), ==, gl_bits(1));
+}
+
+static void gl_depth_range_setup(QTestState *from)
+{
+    gl_enter_slot(from, GL_SLOT_A);
+    gl_word(from, GL_CONTEXT_OPENER);
+    gl_depth_range(from, 0.125f, 0.75f);
+    gl_enter_slot(from, GL_SLOT_B);
+    gl_word(from, GL_CONTEXT_OPENER);
+}
+
+static void gl_depth_range_check(QTestState *to)
+{
+    g_assert_cmphex(gl_query(to, GL_Q_DEPTH_RANGE + 1, 1), ==, gl_bits(1));
+    gl_enter_slot(to, GL_SLOT_A);
+    g_assert_cmphex(gl_query(to, GL_Q_DEPTH_RANGE, 1), ==, gl_bits(0.125f));
+    g_assert_cmphex(gl_query(to, GL_Q_DEPTH_RANGE + 1, 1), ==,
+                    gl_bits(0.75f));
+}
+
+/* Each context's depth range crosses a migration. */
+static void test_gl_depth_range_migration(void)
+{
+    gl_migrate(gl_depth_range_setup, gl_depth_range_check);
+}
+
 int main(int argc, char **argv)
 {
     int ret;
@@ -12447,6 +12538,8 @@ int main(int argc, char **argv)
                    test_hq_query_answers_the_raster_position);
     qtest_add_func("sn0/origin2000/mgras/hq-query-answers-the-colour-index",
                    test_hq_query_answers_the_colour_index);
+    qtest_add_func("sn0/origin2000/mgras/hq-query-answers-the-depth-range",
+                   test_hq_query_answers_the_depth_range);
     qtest_add_func("sn0/origin2000/mgras/gl-bitmap-draws-its-image",
                    test_gl_bitmap_draws_its_image);
     qtest_add_func("sn0/origin2000/mgras/gl-bitmap-unaligned-image",
@@ -12723,6 +12816,8 @@ int main(int argc, char **argv)
                    test_gl_raster_position_migration);
     qtest_add_func("sn0/origin2000/mgras/gl-colour-index-migration",
                    test_gl_colour_index_migration);
+    qtest_add_func("sn0/origin2000/mgras/gl-depth-range-migration",
+                   test_gl_depth_range_migration);
     qtest_add_func("sn0/origin2000/mgras/gl-subsections-follow-their-state",
                    test_gl_subsections_follow_their_state);
     qtest_add_func("sn0/origin2000/mgras/gl-longest-block-migration",
