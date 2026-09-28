@@ -2391,16 +2391,34 @@ static const MemoryRegionOps md_memory_ops = {
  * that the copies persist across the page's overlay coming and going, and
  * only a reset discards them.
  *
- * The model's one limit: the directory reflects processor accesses only to
- * lines a processor has named in a secondary-cache instruction, and only
- * while their pages are watched. A read of such a line's word through the
- * backdoor watches its page, in a free slot or the least recently used
- * one; a directory walk, which names nothing, watches nothing.
+ * Limits, each a departure from the hardware a guest could observe:
+ *
+ * - Loads and stores change the directory only on watched pages. A page
+ *   is watched from a backdoor read of the word of a line a processor has
+ *   named in a secondary-cache instruction, in a free slot or the least
+ *   recently used one; a directory walk, which names nothing, watches
+ *   nothing. Cache instructions and the copies they act on are followed
+ *   on every line the model has kept copies for, watched or not.
+ * - No copy is ever displaced by capacity: a processor keeps a line until
+ *   a cache instruction or another processor's request takes it.
+ * - An index instruction acts on every kept line in the named set,
+ *   whichever way holds it, and reaches only the issuing node's unit and
+ *   its peer's.
+ * - A sharer bit covers both processors behind it; a copy taken from
+ *   such a word is given to each of them that is fitted.
+ * - A line first seen owned takes a clean copy for its owner, so a flush
+ *   drops it without a write-back.
+ * - A line followed by more than 16 holders is left alone.
+ * - Requests complete at once; the busy and wait states never appear.
+ * - Watched pages keep their overlay until displaced, and the processor
+ *   runs each access to one as a device access.
  *
  * Words in any state the protocol above does not produce -- busy, wait,
  * poisoned, coarse or sparse, owned by an I/O device, or naming a
- * processor or interface the machine does not have -- are left alone, as
- * is a line whose directory word is marked with a check error.
+ * processor or interface the machine does not have -- are left alone. So
+ * is a line whose word is marked with a check error while the directory
+ * checks ECC; with the ignore-ECC bit set nothing is checked, so such a
+ * line changes like any other and its check field is kept as written.
  */
 /* The unit watches whole 4 KiB pages: one overlay covers 32 lines. */
 #define MD_WATCH_PAGE 4096
@@ -2775,9 +2793,9 @@ static bool md_line_frozen(SGIBedrockMDState *s, uint32_t index)
 }
 
 /*
- * A processor's cached load or store reached the watched line. The issuer
- * is the processor running when the access arrives; see the limits above
- * for a device's access made from inside one.
+ * A cached load or store reached the watched line. The requester is the
+ * directory pointer the reference carries in its requester_id; a device's
+ * access carries no cache algorithm and is left alone below.
  */
 static void md_watched_access(SGIBedrockMDState *s,
                               SGIBedrockMDWatchedPage *page, hwaddr offset,
