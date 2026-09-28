@@ -313,6 +313,12 @@ if sgi_roms_available
   test_mips64_system_extra_deps += {'timer_stall': sgi_timerstall_rom}
 endif
 
+# Preserve the SGI suite membership before adding the general Malta test.
+tests_mips64_system_sgi = tests_mips64_system_quick + \
+                            tests_mips64_system_thorough
+tests_mips64_system_thorough += ['malta']
+test_mips64_timeouts += {'malta': 420}
+
 # The unit tests of the lib_*.py helper modules the boot tests import,
 # plus the one verdict companion that is a parser in its own right (the
 # PROM's RSLT ledger). These unittest modules need no QEMU or assets, but
