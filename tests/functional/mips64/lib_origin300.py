@@ -75,12 +75,12 @@ SPD_INPUTS = (
 ASSET_SPECS = ((FIRMWARE_REL, FIRMWARE_SHA256),) + tuple(
     (rel, sha256) for _prop, rel, sha256 in SPD_INPUTS)
 
-# OpenBSD's Information-Area type/length tag: top two bits the type, low
-# six bits the length in bytes. SGI 007-4498-002 (printed pages 181-182) and
-# 007-4365-001 (printed page 75) for the field boundaries. The values
-# below use those boundaries but are not factory contents -- no
-# EEPROM part, serial number, manufacturing date or encryption key is
-# inferred from the printed examples.
+# OpenBSD's Information-Area type/length tag uses the top two bits for
+# type and the low six bits for byte length. SGI 007-4498-002 (printed
+# pages 181-182) and 007-4365-001 (printed page 75) specify the field
+# boundaries. The values below use those boundaries but are synthetic,
+# not factory contents. They do not infer an EEPROM part, serial number,
+# manufacturing date, or encryption key from the printed examples.
 _IA_TYPE_BINARY = 0
 _IA_TYPE_ASCII = 3
 _IA_EOF = 0xC1
