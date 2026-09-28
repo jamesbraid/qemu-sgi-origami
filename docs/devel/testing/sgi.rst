@@ -102,6 +102,49 @@ full boot cases use the 6.5.30 PROM. The declarations and matching checks in
 ``tests/functional/mips64/test_irix_miniroot.py`` own these identities; tests
 that do not declare a digest still validate the path and file before launch.
 
+Running the focused MDK PROM check locally
+------------------------------------------
+
+The ``func-mips64-prom_mdk`` functional target boots the IP27 PROM and
+netboots ``cpu.mdk``. It can run in a standalone QEMU checkout with two
+already lawfully obtained files. Place them under an asset root using the
+paths below; the root itself must not include another ``assets/`` directory:
+
+.. code-block:: text
+
+   <asset-root>/firmware/6.5.30/ip27prom.payload.bin
+   <asset-root>/boot/mdk/cpu.mdk
+
+For example, create those parent directories below a local ``sgi-assets``
+directory and copy the files there unchanged. Check both files against the
+identities enforced by the test:
+
+.. code-block:: sh
+
+   sha256sum sgi-assets/firmware/6.5.30/ip27prom.payload.bin
+   # c2c69bf33c375b43ec7ac511fab41ddf595be1b6838ae717e58a9a1273437fdd
+   sha256sum sgi-assets/boot/mdk/cpu.mdk
+   # 8a72e5578436b076bae72f6243940a523364ea961604d6070de7f40b408d5d89
+
+Set the asset root and run the target from the QEMU checkout:
+
+.. code-block:: sh
+
+   export QEMU_TEST_SGI_ASSET_DIR="$PWD/sgi-assets"
+   ./configure --target-list=mips64-softmmu --enable-tests \
+       --enable-hmp --enable-slirp
+   ninja -C build
+   build/pyvenv/bin/meson test -C build --setup qemu:thorough \
+       --print-errorlogs func-mips64-prom_mdk
+
+The build needs QEMU's native build dependencies and functional-test Python
+dependencies, as described above. When ``QEMU_TEST_SGI_ASSET_DIR`` is unset,
+the functional case skips. When the root is set but either required file is
+missing, the test fails while resolving its declared local asset. This
+example documents placement and verification only: acquisition instructions
+for these exact files are not established, and public distribution rights
+remain unresolved.
+
 Keep supplied files unchanged. Tests that boot QCOW2 disks use QEMU snapshot
 mode or disposable overlays for guest writes. The installed-disk checks expect
 an already installed IRIX image; they do not install IRIX. The IP27 PROM
