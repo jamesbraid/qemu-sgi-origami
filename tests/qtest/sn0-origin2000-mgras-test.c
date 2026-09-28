@@ -3560,6 +3560,41 @@ static void test_retrace_period_follows_vc3_tables(void)
  * destination's own clock never ran. Whether qtest's virtual clock travels
  * with the stream does not matter: the wait is taken from both clocks.
  */
+/*
+ * A table whose frame is shorter than the scanout's shortest retrace
+ * period, 1 ms, runs the stock period, as a table with no frame does,
+ * rather than stopping the retrace. One line of 10 VC3 clocks is 0.19 us
+ * at the stock PLL. Enabling again with the same table keeps the phase.
+ */
+static void test_retrace_short_frame_runs_stock_period(void)
+{
+    const unsigned int retrace_vector = 54;
+    const MgrasFrameTime *t = &mgras_stock_frame;
+    static const uint16_t line[] = { 0x8080 | (10 << 8), 0x0040 };
+    static const uint16_t frame[] = { 0x0040, 1, 0x0000, 0 };
+    int64_t half = mgras_retrace_gap(t, 3) / 2;
+
+    mgras_reset();
+    mgras_load_vga_timing(qts);
+    mgras_retrace_to_hub_on(qts, retrace_vector);
+    mgras_expect_retraces(qts, &mgras_vga_frame, 1, 1, retrace_vector);
+
+    mgras_vc3_sram_load(qts, 0x0040, line, ARRAY_SIZE(line));
+    mgras_vc3_sram_load(qts, 0x0060, frame, ARRAY_SIZE(frame));
+    qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x00, 0x0060));
+    qtest_writel(qts, REG_VC3_INDEXDATA,
+                 VC3_INDEXDATA(VC3_CONTROL,
+                               VC3_CONTROL_DISPLAY | VC3_CONTROL_VINTR));
+    mgras_expect_retraces(qts, t, 1, 2, retrace_vector);
+
+    qtest_clock_step(qts, half);
+    qtest_writel(qts, REG_VC3_INDEXDATA,
+                 VC3_INDEXDATA(VC3_CONTROL,
+                               VC3_CONTROL_DISPLAY | VC3_CONTROL_VINTR));
+    mgras_expect_retrace_in(qts, mgras_retrace_gap(t, 3) - half,
+                            retrace_vector);
+}
+
 static void mgras_retrace_migration(bool programmed)
 {
     const unsigned int retrace_vector = 54;
@@ -11173,6 +11208,9 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/origin2000/mgras/"
                    "retrace-programmed-period-migration",
                    test_retrace_programmed_period_migration);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "retrace-short-frame-runs-stock-period",
+                   test_retrace_short_frame_runs_stock_period);
     qtest_add_func("sn0/origin2000/mgras/irq-enable-set-and-clear-ports",
                    test_irq_enable_set_and_clear_ports);
     qtest_add_func("sn0/origin2000/mgras/swap-command-raises-interrupt-10",
