@@ -29,7 +29,8 @@ mips_ss.add(when: 'CONFIG_SGI_SN1',
 # The XIO port interface and the two link kinds that connect it:
 # shared by whichever machines build XIO boards or links, so each
 # selects on its own Kconfig symbol rather than either machine's.
-mips_ss.add(when: 'CONFIG_SGI_XIO_PORT', if_true: files('sgi/xio-port.c'))
+mips_ss.add(when: 'CONFIG_SGI_XIO_PORT',
+            if_true: files('sgi/xio-port.c', 'sgi/xio-widget.c'))
 mips_ss.add(when: 'CONFIG_SGI_XIO_LINK', if_true: files('sgi/xio-link.c'))
 # The network port interface and the cable that joins two of them: shared
 # by the Hub and the Router, so each selects on its own Kconfig symbol

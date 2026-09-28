@@ -18,6 +18,7 @@
 #include "hw/1wire/crc.h"
 #include "hw/1wire/ds2505.h"
 #include "hw/mips/sgi-xio-port.h"
+#include "hw/mips/sgi/xio-widget.h"
 #include "hw/misc/sgi-onewire-slot.h"
 #include "hw/pci-host/sgi-bridge.h"
 #include "hw/core/hotplug.h"
@@ -138,12 +139,7 @@ QEMU_BUILD_BUG_ON(NIC_ROM_SIZE != SGI_BRIDGE_ONEWIRE_RECORD_SIZE);
 #define INT_MODE_WRITABLE       0xffu
 /* Three bits per pin naming the device that owns it, eight pins. */
 #define INT_DEVICE_WRITABLE     0xffffffu
-/*
- * The widget-level destination: a target widget and the address's top half.
- */
-#define INT_DEST_ADDRESS_UPPER  0xffffu
-#define INT_DEST_WIDGET_SHIFT   16
-#define INT_DEST_WIDGET         (0xfu << INT_DEST_WIDGET_SHIFT)
+
 /* A host address field and the bit number to set in the host's register. */
 #define INT_HOST_ADDRESS        (0x3ffu << 8)
 #define INT_HOST_FIELD          0xffu
@@ -1813,47 +1809,16 @@ static int sgi_bridge_map_irq(PCIDevice *dev, int pin)
 #define INT_HOST_ADDR_BITS      10
 #define XIO_HOST_ADDR_SHIFT     38
 
-/* The host's interrupt register: data bit 8 selects raise. */
-#define HUB_INT_MODIFY_SET      0x100
-
-/* A write to the host's interrupt register; data bit 8 selects raise. */
-static void sgi_bridge_deliver_interrupt(SGIBridgeState *s, hwaddr where,
-                                         unsigned int bit, bool set)
-{
-    uint64_t value = bit | (set ? HUB_INT_MODIFY_SET : 0);
-
-    address_space_stq(&s->fabric_as, where, value, MEMTXATTRS_UNSPECIFIED,
-                      NULL);
-}
-
 /*
- * A (widget, XIO address) pair as the fabric address it travels at: the
- * widget in bits 51:48, where a link makes room for the packet header's
- * destination field.
+ * The widget-level destination pair, in the layout every XIO widget
+ * shares (hw/mips/sgi/xio-widget.h). The Bridge's packets do not carry
+ * its vector field: a pin's number comes from that pin's host register,
+ * and the chip's own from the host-error field.
  */
-static bool sgi_bridge_compose_xio(SGIBridgeState *s,
-                                   unsigned int widget, hwaddr address,
-                                   hwaddr *fabric)
+static SGIXioIntDest sgi_bridge_int_dest(SGIBridgeState *s)
 {
-    if (widget >= (1U << SGI_BRIDGE_WIDGET_BITS) ||
-        address >> SGI_BRIDGE_PACKET_ADDRESS_BITS) {
-        qemu_log_mask(LOG_GUEST_ERROR,
-                      "sgi-bridge: packet fabric cannot encode widget %u "
-                      "address 0x%" HWADDR_PRIx "\n", widget, address);
-        return false;
-    }
-    *fabric = ((uint64_t)widget << SGI_BRIDGE_PACKET_ADDRESS_BITS) | address;
-    return true;
-}
-
-/* The widget-level destination pair: one XIO address and its widget. */
-static uint64_t sgi_bridge_int_dest(SGIBridgeState *s, unsigned int *widget)
-{
-    uint32_t upper = s->reg[SGI_BRIDGE_SLOT(BRIDGE_INT_DEST_UPPER)];
-    uint32_t lower = s->reg[SGI_BRIDGE_SLOT(BRIDGE_INT_DEST_LOWER)];
-
-    *widget = (upper & INT_DEST_WIDGET) >> INT_DEST_WIDGET_SHIFT;
-    return ((uint64_t)(upper & INT_DEST_ADDRESS_UPPER) << 32) | lower;
+    return sgi_xio_int_dest(s->reg[SGI_BRIDGE_SLOT(BRIDGE_INT_DEST_UPPER)],
+                            s->reg[SGI_BRIDGE_SLOT(BRIDGE_INT_DEST_LOWER)]);
 }
 
 /*
@@ -1864,8 +1829,7 @@ static void sgi_bridge_send_interrupt(SGIBridgeState *s, int pin, bool set)
 {
     uint32_t host = s->reg[SGI_BRIDGE_SLOT(BRIDGE_INT_HOST(pin))];
     unsigned int address = (host & INT_HOST_ADDRESS) >> INT_HOST_ADDR_SHIFT;
-    unsigned int widget;
-    uint64_t dest;
+    SGIXioIntDest dest;
     hwaddr where;
 
     if (!host) {
@@ -1877,12 +1841,13 @@ static void sgi_bridge_send_interrupt(SGIBridgeState *s, int pin, bool set)
     }
 
     /* The pin's own bits replace the destination's, they do not join. */
-    dest = sgi_bridge_int_dest(s, &widget);
-    dest = deposit64(dest, XIO_HOST_ADDR_SHIFT, INT_HOST_ADDR_BITS, address);
-    if (!sgi_bridge_compose_xio(s, widget, dest, &where)) {
+    dest = sgi_bridge_int_dest(s);
+    dest.address = deposit64(dest.address, XIO_HOST_ADDR_SHIFT,
+                             INT_HOST_ADDR_BITS, address);
+    if (!sgi_xio_compose("sgi-bridge", dest.widget, dest.address, &where)) {
         return;
     }
-    sgi_bridge_deliver_interrupt(s, where, host & INT_HOST_FIELD, set);
+    sgi_xio_send_interrupt(&s->fabric_as, where, host & INT_HOST_FIELD, set);
 }
 
 /* Chip errors go to the host-error bit at the widget destination pair. */
@@ -1890,8 +1855,7 @@ static void sgi_bridge_raise_host_error(SGIBridgeState *s)
 {
     unsigned int number = s->reg[SGI_BRIDGE_SLOT(BRIDGE_HOST_ERR_FIELD)] &
                           INT_HOST_FIELD;
-    unsigned int widget;
-    uint64_t dest = sgi_bridge_int_dest(s, &widget);
+    SGIXioIntDest dest = sgi_bridge_int_dest(s);
     hwaddr where;
 
     /*
@@ -1900,16 +1864,16 @@ static void sgi_bridge_raise_host_error(SGIBridgeState *s)
      * the guard predates the widget field and the register description is
      * silent about it, so it stays as it was.
      */
-    if (!dest) {
+    if (!dest.address) {
         qemu_log_mask(LOG_GUEST_ERROR,
                       "sgi-bridge: error interrupt with no destination "
                       "programmed; no packet sent\n");
         return;
     }
-    if (!sgi_bridge_compose_xio(s, widget, dest, &where)) {
+    if (!sgi_xio_compose("sgi-bridge", dest.widget, dest.address, &where)) {
         return;
     }
-    sgi_bridge_deliver_interrupt(s, where, number, true);
+    sgi_xio_send_interrupt(&s->fabric_as, where, number, true);
 }
 
 static void sgi_bridge_update_pin(SGIBridgeState *s, int pin)
@@ -2104,8 +2068,8 @@ static IOMMUTLBEntry sgi_bridge_translate_common(SGIBridgeState *s, int slot,
                           "sgi-bridge: 64-bit DMA names widget 0, which the "
                           "crossbar cannot answer\n");
         }
-        if (!sgi_bridge_compose_xio(s, widget, addr & BRIDGE_XIO_PASS,
-                                    &fabric)) {
+        if (!sgi_xio_compose("sgi-bridge", widget, addr & BRIDGE_XIO_PASS,
+                             &fabric)) {
             return entry;
         }
         entry.translated_addr = fabric & ~page_mask;
@@ -2127,7 +2091,7 @@ static IOMMUTLBEntry sgi_bridge_translate_common(SGIBridgeState *s, int slot,
         }
 
         widget = (direct & DIRECT_WIDGET) >> DIRECT_WIDGET_SHIFT;
-        if (!sgi_bridge_compose_xio(s, widget, offset, &fabric)) {
+        if (!sgi_xio_compose("sgi-bridge", widget, offset, &fabric)) {
             return entry;
         }
         entry.translated_addr = fabric & ~page_mask;
@@ -2159,8 +2123,8 @@ static IOMMUTLBEntry sgi_bridge_translate_common(SGIBridgeState *s, int slot,
         return entry;
     }
 
-    if (!sgi_bridge_compose_xio(s, (ate & ATE_TARGET_WIDGET) >> 8,
-                                ate & ATE_ADDRESS, &fabric)) {
+    if (!sgi_xio_compose("sgi-bridge", (ate & ATE_TARGET_WIDGET) >> 8,
+                         ate & ATE_ADDRESS, &fabric)) {
         return entry;
     }
     entry.translated_addr = fabric & ~page_mask;

@@ -329,6 +329,7 @@ config SGI_XBOW
 config SGI_XBRIDGE_XBOW
     bool
     default y if SGI_DEVICES
+    select SGI_XIO_PORT
 
 config SGI_MGRAS
     bool
