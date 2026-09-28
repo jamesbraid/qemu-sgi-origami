@@ -8,6 +8,7 @@
 #include "migration/vmstate.h"
 #include "qapi/error.h"
 #include "qemu/log.h"
+#include "qemu/bitmap.h"
 #include "qemu/module.h"
 #include "hw/core/cpu.h"
 #include "trace.h"
@@ -650,9 +651,6 @@ static MemTxResult md_directory_write(void *opaque, hwaddr offset,
         s->directory[index] =
             md_directory_word_written(s, value, offset, &index) &
             md_directory_mask(s);
-        if (!attrs.debug) {
-            md_watch_line(s, index);
-        }
     }
     return MEMTX_OK;
 }
@@ -2403,9 +2401,11 @@ static const MemoryRegionOps md_memory_ops = {
  * that the copies persist across the page's overlay coming and going, and
  * only a reset discards them.
  *
- * The model's one limit: the unit watches the pages whose words software
- * most recently read or wrote through the backdoor, and a processor access
- * to a page while it is not watched is not seen.
+ * The model's one limit: the directory reflects processor accesses only to
+ * lines a processor has named in a secondary-cache instruction, and only
+ * while their pages are watched. A read of such a line's word through the
+ * backdoor watches its page, in a free slot or the least recently used
+ * one; a directory walk, which names nothing, watches nothing.
  *
  * Words in any state the protocol above does not produce -- busy, wait,
  * poisoned, coarse or sparse, owned by an I/O device, or naming a
@@ -2978,10 +2978,34 @@ static void md_line_state_from_word(SGIBedrockMDState *s, uint32_t index)
     }
 }
 
-/* A reset, or a stream being loaded, discards every line's copies. */
+/*
+ * A reset, or a stream being loaded, discards every line's copies and
+ * every naming.
+ */
 static void md_line_states_clear(SGIBedrockMDState *s)
 {
     g_hash_table_remove_all(s->line_states);
+    if (s->named_lines) {
+        bitmap_zero(s->named_lines, s->directory_entries);
+    }
+}
+
+void sgi_bedrock_md_name_line(SGIBedrockMDState *s, uint64_t address)
+{
+    unsigned bank = address / MD_MEMORY_BANK_SIZE;
+    uint64_t within = address % MD_MEMORY_BANK_SIZE;
+    uint32_t index;
+
+    if (bank >= 8 || within >= s->bank_alias_size[bank]) {
+        return;
+    }
+    index = (s->bank_alias_base[bank] + within) / MD_DIRECTORY_LINE;
+    if (!s->named_lines || index >= s->directory_entries) {
+        return;
+    }
+    if (!test_bit(index, s->named_lines)) {
+        set_bit_atomic(index, s->named_lines);
+    }
 }
 
 bool sgi_bedrock_md_watching(SGIBedrockMDState *s)
@@ -3064,16 +3088,20 @@ bool sgi_bedrock_md_processor_request(SGIBedrockMDState *s, uint16_t pointer,
 }
 
 /*
- * Software reached line @index's directory word through the backdoor:
- * watch its page from here, in a free slot or the least recently used one.
- * Only the overlay moves; the words and copies of the page it leaves stay
- * as they are.
+ * Software read line @index's directory word through the backdoor. If a
+ * processor has named the line in a cache instruction, watch its page from
+ * here, in a free slot or the least recently used one; only the overlay
+ * moves, and the words and copies of the page it leaves stay as they are.
+ * A word nobody has named -- a directory walk's -- watches nothing.
  */
 static void md_watch_line(SGIBedrockMDState *s, uint32_t line_index)
 {
     uint32_t index = line_index & ~(uint32_t)(MD_WATCH_PAGE_LINES - 1);
     SGIBedrockMDWatchedPage *slot = NULL;
 
+    if (!s->named_lines || !test_bit(line_index, s->named_lines)) {
+        return;
+    }
     for (unsigned i = 0; i < SGI_BEDROCK_MD_WATCHED_PAGES; i++) {
         SGIBedrockMDWatchedPage *page = &s->watched[i];
 
@@ -3496,7 +3524,9 @@ static bool md_line_states_needed(void *opaque)
 {
     SGIBedrockMDState *s = opaque;
 
-    return g_hash_table_size(s->line_states) != 0;
+    return g_hash_table_size(s->line_states) != 0 ||
+           (s->named_lines &&
+            !bitmap_empty(s->named_lines, s->directory_entries));
 }
 
 /* The per-line copies travel flattened into an array. */
@@ -3537,6 +3567,7 @@ static const VMStateDescription vmstate_md_line_states = {
                                     line_state_count, 1,
                                     vmstate_md_line_state,
                                     SGIBedrockMDLineState),
+        VMSTATE_BITMAP(named_lines, SGIBedrockMDState, 1, named_line_bits),
         VMSTATE_END_OF_LIST()
     },
 };
@@ -3760,6 +3791,8 @@ static void md_realize(DeviceState *dev, Error **errp)
     s->directory = g_new0(uint64_t, s->directory_entries);
     s->page_counters = g_new0(uint64_t, s->directory_entries);
     s->ecc = g_new0(uint8_t, s->ecc_entries);
+    s->named_lines = bitmap_new(s->directory_entries);
+    s->named_line_bits = s->directory_entries;
 }
 
 static void md_unrealize(DeviceState *dev)
@@ -3786,6 +3819,7 @@ static void md_unrealize(DeviceState *dev)
     g_clear_pointer(&s->page_counters, g_free);
     g_clear_pointer(&s->protection, g_free);
     g_clear_pointer(&s->ecc, g_free);
+    g_clear_pointer(&s->named_lines, g_free);
     s->directory_entries = 0;
     s->protection_entries = 0;
     s->ecc_entries = 0;
@@ -3847,6 +3881,7 @@ static void md_finalize(Object *obj)
     g_clear_pointer(&s->page_counters, g_free);
     g_clear_pointer(&s->protection, g_free);
     g_clear_pointer(&s->ecc, g_free);
+    g_clear_pointer(&s->named_lines, g_free);
 }
 
 static const TypeInfo md_info = {

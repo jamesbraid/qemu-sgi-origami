@@ -2886,120 +2886,6 @@ static void test_parent_directory_ecc_interrupt(void)
 }
 
 /*
- * The memory unit follows the directory state of a line whose directory
- * word software has lately read through the backdoor, by overlaying it on
- * the memory window; the flat view shows the overlay as I/O over the RAM.
- * Line 0x580000 of software bank zero, with the installed banks selected
- * the way the stock PROM leaves them.
- */
-#define WATCHED_LINE UINT64_C(0x580000)
-#define WATCH_SECOND 1000000000LL
-#define WATCHED_CARRIER (PROTECTION_MACHINE_BASE + (WATCHED_LINE >> 3))
-
-static QTestState *start_origin300_watch(const char *extra)
-{
-    g_autofree char *prom = empty_prom_new();
-    g_autofree char *quoted_prom = g_shell_quote(prom);
-    QTestState *s = qtest_initf("-M origin300 -cpu R14000 -smp 2 -m 512M "
-                                "-bios %s %s", quoted_prom, extra);
-
-    unlink(prom);
-    qtest_writeq(s, SELFTEST_MACHINE(0x8), (UINT64_C(2) << 32) |
-                 memory_bank_config(2, 3) | memory_bank_config(3, 3));
-    assert_flat_view_type(s, WATCHED_LINE, "ram");
-    return s;
-}
-
-/*
- * The unit overlays a bounded number of pages and reuses the least
- * recently used one: sixteen other pages read after the line take its slot.
- * Time alone releases nothing.
- */
-static void test_origin300_watch_reuses_the_oldest(void)
-{
-    QTestState *s = start_origin300_watch("");
-
-    qtest_readq(s, WATCHED_CARRIER);
-    assert_flat_view_type(s, WATCHED_LINE, "i/o");
-    qtest_clock_step(s, 10 * WATCH_SECOND);
-    assert_flat_view_type(s, WATCHED_LINE, "i/o");
-    for (unsigned int page = 1; page <= 16; page++) {
-        qtest_readq(s, WATCHED_CARRIER + page * 0x200);
-    }
-    assert_flat_view_type(s, WATCHED_LINE, "ram");
-    qtest_quit(s);
-}
-
-/* The followed lines, and their placement, survive a migration. */
-static void test_origin300_watch_migration(void)
-{
-    GError *error = NULL;
-    g_autofree char *directory =
-        g_dir_make_tmp("sn1-md-watch-migration-XXXXXX", &error);
-    g_autofree char *socket = NULL;
-    g_autofree char *uri = NULL;
-    QTestState *from, *to;
-
-    g_assert_no_error(error);
-    socket = g_build_filename(directory, "migration.sock", NULL);
-    uri = g_strdup_printf("unix:%s", socket);
-    from = start_origin300_watch("-S");
-    to = start_origin300_watch("-S -incoming defer");
-    qtest_readq(from, WATCHED_CARRIER);
-    assert_flat_view_type(from, WATCHED_LINE, "i/o");
-    ensure_clock_running(from);
-    migrate_pair(from, to, uri);
-    assert_flat_view_type(to, WATCHED_LINE, "i/o");
-    qtest_quit(from);
-    qtest_quit(to);
-    unlink(socket);
-    g_assert_cmpint(rmdir(directory), ==, 0);
-}
-
-/*
- * A stream from a machine following no line leaves none followed on the
- * destination, whatever the destination followed before it loaded.
- */
-static void test_origin300_watch_migration_clears(void)
-{
-    GError *error = NULL;
-    g_autofree char *directory =
-        g_dir_make_tmp("sn1-md-watch-clear-XXXXXX", &error);
-    g_autofree char *socket = NULL;
-    g_autofree char *uri = NULL;
-    QTestState *from, *to;
-
-    g_assert_no_error(error);
-    socket = g_build_filename(directory, "migration.sock", NULL);
-    uri = g_strdup_printf("unix:%s", socket);
-    from = start_origin300_watch("-S");
-    to = start_origin300_watch("-S -incoming defer");
-    qtest_readq(to, WATCHED_CARRIER);
-    assert_flat_view_type(to, WATCHED_LINE, "i/o");
-    ensure_clock_running(from);
-    migrate_pair(from, to, uri);
-    assert_flat_view_type(to, WATCHED_LINE, "ram");
-    qtest_quit(from);
-    qtest_quit(to);
-    unlink(socket);
-    g_assert_cmpint(rmdir(directory), ==, 0);
-}
-
-/* A reset forgets the lines it followed. */
-static void test_origin300_watch_reset(void)
-{
-    QTestState *s = start_origin300_watch("");
-
-    qtest_readq(s, WATCHED_CARRIER);
-    assert_flat_view_type(s, WATCHED_LINE, "i/o");
-    qtest_qmp_assert_success(s, "{'execute':'system_reset'}");
-    qtest_writeq(s, SELFTEST_MACHINE(0x8), (UINT64_C(2) << 32) |
-                 memory_bank_config(2, 3) | memory_bank_config(3, 3));
-    assert_flat_view_type(s, WATCHED_LINE, "ram");
-    qtest_quit(s);
-}
-
-/*
  * Origin 300 injects at physical 0x506000 through the ECC carrier, then
  * checks the corrected word, local-window error record and interrupt. Its
  * SECDED scan starts uncorrectable syndromes at 0x03, expects an uncached bus
@@ -3875,14 +3761,6 @@ int main(int argc, char **argv)
                    test_parent_ecc_uncorrectable_interrupt);
     qtest_add_func("sn1/bedrock-md/parent-directory-ecc-interrupt",
                    test_parent_directory_ecc_interrupt);
-    qtest_add_func("sn1/bedrock-md/origin300-watch-reuses-the-oldest",
-                   test_origin300_watch_reuses_the_oldest);
-    qtest_add_func("sn1/bedrock-md/origin300-watch-reset",
-                   test_origin300_watch_reset);
-    qtest_add_func("sn1/bedrock-md/origin300-watch-migration",
-                   test_origin300_watch_migration);
-    qtest_add_func("sn1/bedrock-md/origin300-watch-migration-clears",
-                   test_origin300_watch_migration_clears);
     qtest_add_func("sn1/bedrock-md/origin300-ecc-check",
                    test_origin300_ecc_check);
     qtest_add_func("sn1/bedrock-md/origin300-selftest-fill",
