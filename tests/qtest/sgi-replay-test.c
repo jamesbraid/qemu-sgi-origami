@@ -338,6 +338,64 @@ static void replay_pixels(QTestState *qts, const ReplayHead *head,
     }
 }
 
+/*
+ * Compare the head's screendump with FILE byte for byte.  A relative FILE
+ * is taken from the fixture's own directory, so a family keeps its
+ * reference images beside its fixtures.  The dump is always PPM: a PNG's
+ * bytes depend on the zlib the build links, and a PPM's depend only on the
+ * pixels.
+ */
+static void replay_screendump(QTestState *qts, const char *path,
+                              unsigned int line, char **words)
+{
+    g_autofree char *dir = NULL;
+    g_autofree char *reference = NULL;
+    g_autofree char *dump = NULL;
+    g_autofree char *expected = NULL;
+    g_autofree char *actual = NULL;
+    g_autoptr(GError) error = NULL;
+    gsize expected_len, actual_len, same = 0;
+    int fd;
+
+    if (!words[1] || words[2]) {
+        g_error("%s:%u: screendump requires FILE", path, line);
+    }
+    if (g_path_is_absolute(words[1])) {
+        reference = g_strdup(words[1]);
+    } else {
+        dir = g_path_get_dirname(path);
+        reference = g_build_filename(dir, words[1], NULL);
+    }
+    if (!g_file_get_contents(reference, &expected, &expected_len, &error)) {
+        g_error("%s:%u: cannot read screendump reference: %s", path, line,
+                error->message);
+    }
+
+    fd = g_file_open_tmp("sgi-replay-XXXXXX.ppm", &dump, &error);
+    if (fd < 0) {
+        g_error("cannot create screendump file: %s", error->message);
+    }
+    close(fd);
+    qtest_qmp_assert_success(qts,
+        "{'execute': 'screendump', 'arguments': {'filename': %s, "
+        "'format': 'ppm'}}", dump);
+    if (!g_file_get_contents(dump, &actual, &actual_len, &error)) {
+        g_error("cannot read screendump %s: %s", dump, error->message);
+    }
+    unlink(dump);
+
+    while (same < actual_len && same < expected_len &&
+           actual[same] == expected[same]) {
+        same++;
+    }
+    if (same != actual_len || same != expected_len) {
+        g_error("%s:%u: screendump differs from %s: %" G_GSIZE_FORMAT
+                " bytes against %" G_GSIZE_FORMAT ", first difference at "
+                "byte %" G_GSIZE_FORMAT, path, line, reference, actual_len,
+                expected_len, same);
+    }
+}
+
 /* Check one byte-wide plane: the WID tag or the overlay index. */
 static void replay_plane(QTestState *qts, const ReplayHead *head,
                          const char *path, unsigned int line, char **words,
@@ -476,6 +534,8 @@ static void replay_line(QTestState *qts, const ReplayHead *head,
         replay_plane(qts, head, path, line, words, "x-test-wid");
     } else if (!strcmp(words[0], "overlay")) {
         replay_plane(qts, head, path, line, words, "x-test-overlay");
+    } else if (!strcmp(words[0], "screendump")) {
+        replay_screendump(qts, path, line, words);
     } else {
         g_error("%s:%u: unknown or malformed operation '%s'", path, line,
                 words[0]);
@@ -1033,6 +1093,72 @@ static void test_invalid_dma_hex_mismatch(void)
 }
 
 /*
+ * Take a reference screendump of fill.replay, then replay a copy of the
+ * fixture that ends in "screendump REFERENCE" from a directory of its own,
+ * so the reference is found relative to the fixture.  With @corrupt the
+ * reference has one byte changed and the record must refuse it.
+ */
+static void run_screendump_record(bool corrupt)
+{
+    g_autofree char *dir = NULL;
+    g_autofree char *reference = NULL;
+    g_autofree char *fixture = NULL;
+    g_autofree char *fill = NULL;
+    g_autofree char *image = NULL;
+    g_autofree char *text = NULL;
+    gsize image_len;
+    g_autoptr(GError) error = NULL;
+
+    if (g_test_subprocess()) {
+        run_replay(g_getenv("SGI_REPLAY_INVALID_FILE"), NULL);
+        return;
+    }
+    dir = g_dir_make_tmp("sgi-replay-XXXXXX", &error);
+    g_assert_no_error(error);
+    reference = g_build_filename(dir, "fill.ppm", NULL);
+    fixture = g_build_filename(dir, "fill.replay", NULL);
+
+    g_setenv("SGI_REPLAY_SCREENDUMP", reference, true);
+    run_replay(DEFAULT_REPLAY, NULL);
+    g_unsetenv("SGI_REPLAY_SCREENDUMP");
+
+    g_assert_true(g_file_get_contents(DEFAULT_REPLAY, &fill, NULL, &error));
+    g_assert_no_error(error);
+    text = g_strconcat(fill, "screendump fill.ppm\n", NULL);
+    g_assert_true(g_file_set_contents(fixture, text, -1, &error));
+    g_assert_no_error(error);
+
+    if (corrupt) {
+        g_assert_true(g_file_get_contents(reference, &image, &image_len,
+                                          &error));
+        g_assert_no_error(error);
+        g_assert_cmpuint(image_len, >, 100);
+        image[image_len - 100] ^= 1;
+        g_assert_true(g_file_set_contents(reference, image, image_len,
+                                          &error));
+        g_assert_no_error(error);
+        test_invalid_replay(fixture, "*fill.replay:*: screendump differs "
+                            "from *fill.ppm*first difference at byte *");
+    } else {
+        run_replay(fixture, NULL);
+    }
+
+    unlink(fixture);
+    unlink(reference);
+    rmdir(dir);
+}
+
+static void test_screendump_record(void)
+{
+    run_screendump_record(false);
+}
+
+static void test_screendump_record_mismatch(void)
+{
+    run_screendump_record(true);
+}
+
+/*
  * A header fault is refused before any machine starts, so these write their
  * fixture to a temporary file instead of carrying one per case.
  */
@@ -1129,6 +1255,9 @@ int main(int argc, char **argv)
                    test_invalid_dma_extra);
     qtest_add_func("sgi-replay/mgras/invalid-dma-hex-mismatch",
                    test_invalid_dma_hex_mismatch);
+    qtest_add_func("sgi-replay/screendump-record", test_screendump_record);
+    qtest_add_func("sgi-replay/screendump-record-mismatch",
+                   test_screendump_record_mismatch);
     qtest_add_func("sgi-replay/header/no-version", test_invalid_no_version);
     qtest_add_func("sgi-replay/header/version", test_invalid_version);
     qtest_add_func("sgi-replay/header/no-head", test_invalid_no_head);
