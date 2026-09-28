@@ -8718,6 +8718,61 @@ static void test_gl_list_chain_over_the_word_limit(void)
 }
 
 /*
+ * The DMA-read fence marker 0x000e0100, which the client also pads
+ * pooled lists with, is consumed without a word of log: on the port it
+ * neither sets HQ flag 0x10000 nor disturbs the framing of the words
+ * after it, and in a list it logs nothing either.
+ */
+static void test_gl_dma_read_fence_is_consumed_quietly(void)
+{
+    static const float v[3][2] = {
+        { -0.75f, -0.75f }, { 0.75f, -0.625f }, { -0.125f, 0.734375f },
+    };
+    uint32_t w[] = { 0xf000, 0, GL_BEGIN_TRIANGLES, 0x000e0100,
+                     GL_END_TRIANGLES, 0x000e0100, 0x000e0100 };
+    g_autofree char *log_path = NULL;
+    g_autofree char *args = NULL;
+    g_autofree char *log = NULL;
+    g_autofree uint32_t *rgb = NULL;
+    g_autoptr(GError) error = NULL;
+    QTestState *t;
+    int fd;
+
+    fd = g_file_open_tmp("sgi-mgras-fence-XXXXXX.log", &log_path, &error);
+    g_assert_no_error(error);
+    close(fd);
+    args = g_strdup_printf(MACHINE_ARGS " -d unimp,guest_errors -D %s",
+                           log_path);
+    t = qtest_init(args);
+
+    gl_list_frame(t);
+    gl_list_install(t, 1);
+    gl_list_put(t, 0, w, ARRAY_SIZE(w));
+    gl_call_list(t, 0, ARRAY_SIZE(w));
+    qtest_writel(t, REG_HQ_FLAGS_CLEAR, MGRAS_HQ_FLAG_FENCE);
+    gl_word(t, 0x000e0100);
+    g_assert_cmphex(qtest_readl(t, REG_HQ_FLAGS) & MGRAS_HQ_FLAG_FENCE, ==,
+                    0);
+    gl_color3f(t, 1, 1, 0);
+    gl_word(t, GL_BEGIN_TRIANGLES);
+    for (int i = 0; i < 3; i++) {
+        gl_word(t, 0x000e0100);
+        gl_vertex2f(t, v[i][0], v[i][1]);
+    }
+    gl_word(t, GL_END_TRIANGLES);
+    gl_word(t, GL_FLUSH);
+    rgb = mgras_screendump(t);
+    gl_check_spans(rgb, gl_triangle_spans, ARRAY_SIZE(gl_triangle_spans),
+                   0xffff00, 0x0000ff);
+    qtest_quit(t);
+
+    g_assert_true(g_file_get_contents(log_path, &log, NULL, &error));
+    g_assert_no_error(error);
+    unlink(log_path);
+    g_assert_null(strstr(log, "class 0x000e"));
+}
+
+/*
  * An execute whose words do not all lie in the pool fails whole: nothing
  * is drawn, the fetch reports SGI_FAIL_BOUNDS (2), and the port goes on.
  * So does a chain that names itself, once it has asked for more words
@@ -10989,6 +11044,8 @@ int main(int argc, char **argv)
                    test_gl_list_over_the_range_limit);
     qtest_add_func("sn0/origin2000/mgras/gl-list-chain-over-the-word-limit",
                    test_gl_list_chain_over_the_word_limit);
+    qtest_add_func("sn0/origin2000/mgras/gl-dma-read-fence-is-consumed-quietly",
+                   test_gl_dma_read_fence_is_consumed_quietly);
     qtest_add_func("sn0/origin2000/mgras/gl-list-past-the-pool-is-bounded",
                    test_gl_list_past_the_pool_is_bounded);
     qtest_add_func("sn0/origin2000/mgras/hq-flags-set-and-clear",
