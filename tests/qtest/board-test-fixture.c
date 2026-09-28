@@ -34,11 +34,10 @@
  * machine builder would hand one down, without needing a whole product
  * machine. Unset by default, like each device's own property.
  *
- * "flash-select1-size", nonzero, fits a part of that many bytes on the
- * Bridge's second external-flash chip select (sgi-bridge's own
- * "flash-select1" link) for board-type=sgi-baseio with a Bridge preset,
- * each byte holding the low byte of its own offset, so a qtest can check
- * the window's decode of that chip select without any product's board.
+ * "flash-select0-size" and "flash-select1-size" fit stand-in parts on a
+ * Bridge's two external-flash chip selects for board-type=sgi-baseio with
+ * a Bridge preset. Their distinct byte patterns let a qtest check the
+ * window's decode without assigning either strap value to a board.
  */
 
 #include "qemu/osdep.h"
@@ -72,11 +71,14 @@ struct SGIBoardTestFixtureState {
     uint32_t slot;
     char *chardev_a_id;
     char *nvram_drive_id;
+    uint32_t flash_select0_size;
     uint32_t flash_select1_size;
 
     MemoryRegion sink;
     SGIXioLink cascade_link;
+    MemoryRegion flash_select0;
     MemoryRegion flash_select1;
+    uint8_t *flash_select0_bytes;
     uint8_t *flash_select1_bytes;
 };
 
@@ -116,30 +118,30 @@ static bool board_test_fixture_realize_cascade(SGIBoardTestFixtureState *s,
 }
 
 /*
- * The second chip select's stand-in part: a byte array behind 16-bit
+ * Each chip select's stand-in part: a byte array behind 16-bit
  * accesses, the width the Bridge's flash port always uses. A RAM region
  * would not do: the port dispatches to the part directly, which only an
  * I/O region answers.
  */
-static uint64_t board_test_fixture_flash1_read(void *opaque, hwaddr addr,
-                                               unsigned size)
+static uint64_t board_test_fixture_flash_read(void *opaque, hwaddr addr,
+                                              unsigned size)
 {
-    SGIBoardTestFixtureState *s = opaque;
+    uint8_t *bytes = opaque;
 
-    return lduw_be_p(&s->flash_select1_bytes[addr]);
+    return lduw_be_p(&bytes[addr]);
 }
 
-static void board_test_fixture_flash1_write(void *opaque, hwaddr addr,
-                                            uint64_t value, unsigned size)
+static void board_test_fixture_flash_write(void *opaque, hwaddr addr,
+                                           uint64_t value, unsigned size)
 {
-    SGIBoardTestFixtureState *s = opaque;
+    uint8_t *bytes = opaque;
 
-    stw_be_p(&s->flash_select1_bytes[addr], value);
+    stw_be_p(&bytes[addr], value);
 }
 
-static const MemoryRegionOps board_test_fixture_flash1_ops = {
-    .read = board_test_fixture_flash1_read,
-    .write = board_test_fixture_flash1_write,
+static const MemoryRegionOps board_test_fixture_flash_ops = {
+    .read = board_test_fixture_flash_read,
+    .write = board_test_fixture_flash_write,
     .endianness = DEVICE_BIG_ENDIAN,
     .valid.min_access_size = 2,
     .valid.max_access_size = 2,
@@ -177,6 +179,21 @@ static bool board_test_fixture_realize_baseio(SGIBoardTestFixtureState *s,
         if (identity) {
             sgi_baseio_preset_set_bridge_identity(chip, identity);
         }
+        if (s->flash_select0_size) {
+            uint32_t i;
+
+            s->flash_select0_bytes = g_malloc(s->flash_select0_size);
+            for (i = 0; i < s->flash_select0_size; i++) {
+                s->flash_select0_bytes[i] = (i & 0xff) ^ 0x80;
+            }
+            memory_region_init_io(&s->flash_select0, OBJECT(s),
+                                  &board_test_fixture_flash_ops,
+                                  s->flash_select0_bytes,
+                                  "sgi-board-test-fixture.flash0",
+                                  s->flash_select0_size);
+            object_property_set_link(OBJECT(chip), "flash",
+                                     OBJECT(&s->flash_select0), &error_abort);
+        }
         if (s->flash_select1_size) {
             uint32_t i;
 
@@ -185,7 +202,8 @@ static bool board_test_fixture_realize_baseio(SGIBoardTestFixtureState *s,
                 s->flash_select1_bytes[i] = i & 0xff;
             }
             memory_region_init_io(&s->flash_select1, OBJECT(s),
-                                  &board_test_fixture_flash1_ops, s,
+                                  &board_test_fixture_flash_ops,
+                                  s->flash_select1_bytes,
                                   "sgi-board-test-fixture.flash1",
                                   s->flash_select1_size);
             object_property_set_link(OBJECT(chip), "flash-select1",
@@ -265,6 +283,8 @@ static const Property board_test_fixture_properties[] = {
     DEFINE_PROP_STRING("chardev-a", SGIBoardTestFixtureState, chardev_a_id),
     DEFINE_PROP_STRING("nvram-drive", SGIBoardTestFixtureState,
                        nvram_drive_id),
+    DEFINE_PROP_UINT32("flash-select0-size", SGIBoardTestFixtureState,
+                       flash_select0_size, 0),
     DEFINE_PROP_UINT32("flash-select1-size", SGIBoardTestFixtureState,
                        flash_select1_size, 0),
 };

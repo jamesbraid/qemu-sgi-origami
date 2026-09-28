@@ -1459,8 +1459,8 @@ static const MemoryRegionOps sgi_bridge_ssram_ops = {
 static MemoryRegion *sgi_bridge_flash_part(SGIBridgeState *s, hwaddr addr,
                                            bool is_write, hwaddr *offset)
 {
-    MemoryRegion *part = addr < BRIDGE_FLASH_SELECT_SIZE ? s->flash :
-                                                           s->flash_select1;
+    bool select1 = (addr >= BRIDGE_FLASH_SELECT_SIZE) ^ s->flash_select;
+    MemoryRegion *part = select1 ? s->flash_select1 : s->flash;
 
     if (part) {
         *offset = addr % BRIDGE_FLASH_SELECT_SIZE;
@@ -2344,6 +2344,9 @@ static void sgi_bridge_reset_core(SGIBridgeState *s)
     /* The one reset value the table cannot hold: the machine's identity. */
     s->reg[SGI_BRIDGE_SLOT(BRIDGE_IDENTIFICATION)] =
         sgi_bridge_identification(s);
+    if (s->flash_select) {
+        s->reg[SGI_BRIDGE_SLOT(BRIDGE_STATUS)] |= STATUS_FLASH_SELECT;
+    }
 
     s->int_error = 0;
 
@@ -2766,6 +2769,7 @@ static const Property sgi_bridge_properties[] = {
      */
     DEFINE_PROP_LINK("flash-select1", SGIBridgeState, flash_select1,
                      TYPE_MEMORY_REGION, MemoryRegion *),
+    DEFINE_PROP_BOOL("flash-select", SGIBridgeState, flash_select, false),
     /*
      * Forces slots exempt whatever their cards say, for a test or a debug run
      * that wants the answer a card cannot be asked for. Cards declare

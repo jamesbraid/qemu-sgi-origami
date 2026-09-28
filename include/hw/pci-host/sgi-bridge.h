@@ -229,18 +229,19 @@ struct SGIBridgeState {
     MemoryRegion ssram;
 
     /*
-     * The external-flash window: 4 MB at 0xc0_0000, two 2 MB chip selects on
-     * a 16-bit port. A board that fits a part links its region as "flash" and
-     * it answers the chip select strapped to the base; the window carries a
-     * read of any width as 16-bit chip cycles and a write only while the
-     * control register's flash write enable is set. The other chip select is
-     * unpopulated unless a board links what it fits there as "flash-select1".
+     * The external-flash window: 4 MB at 0xc0_0000, two 2 MB chip selects
+     * on a 16-bit port. A board that fits a part links its region as
+     * "flash" on CS0. The flash-select strap chooses which CS answers at
+     * the base. The window carries a read of any width as 16-bit chip cycles
+     * and a write only while the control register's flash write enable is
+     * set. CS1 is unpopulated unless a board links a "flash-select1" part.
      */
     MemoryRegion flash_window;
     MemoryRegion flash_read_view;
     MemoryRegion flash_boundary;
     MemoryRegion *flash;
     MemoryRegion *flash_select1;
+    bool flash_select;
 
     /* Configuration space window, type 0 only: no PCI-to-PCI bridge here. */
     MemoryRegion cfg0;
