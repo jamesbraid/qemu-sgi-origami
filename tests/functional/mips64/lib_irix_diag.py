@@ -107,14 +107,6 @@ REASONS = {
     'torpedo-only':
         'this row boots for torpedo alone; the same machine\'s other row runs '
         'this check',
-    'pair-pandora-memory':
-        'pandora\'s memory tests fail on the pair, 4 of 10 on a read and '
-        'write compare (the project checkout\'s run '
-        'irix-20260926T072449-b9ed8b); the row takes it once that is '
-        'explained',
-    'pair-torpedo-unmeasured':
-        'no run has yet finished torpedo on the pair, so it has no budget '
-        'or row of its own',
 }
 
 # The composed tape identity IRIX's driver recognizes as a DAT: the

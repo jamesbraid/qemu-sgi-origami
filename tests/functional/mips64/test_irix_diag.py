@@ -122,7 +122,8 @@ STEP_TIMEOUT_SECONDS = 120
 # Origin 300 ones, from the project checkout's online-diagnostics runs at
 # two and four processors (2026-09-23 to 27): olpci 1s, olperi 4s, olsio
 # 296s, olusb 13s, olvst 1s, pandora 1792s against its own 1800s default,
-# and torpedo 5115s at four processors and 5974s at two.
+# and torpedo 5115s at four processors, 5974s at two and 1634s on the
+# eight-processor pair (more processors ran it faster each time).
 DIAG_TIMEOUT_SECONDS = {
     'olrti': 120,
     'olenet': 120,
