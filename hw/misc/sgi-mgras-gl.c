@@ -751,6 +751,35 @@ static const struct {
 };
 
 /*
+ * GL_MODELVIEW_STACK_DEPTH and GL_PROJECTION_STACK_DEPTH. __glMgrDoGet
+ * queries index 0x83 (table offset 0x1f4, a1 0) and 0x922 (0x1f8, a1 1)
+ * and returns ((answer - base) >> 4) + 1, the base the symbol-table word
+ * at offset 0x1e4 for the modelview stack and 0x1e8 for the projection
+ * stack (0xd99427c-0xd9942a8 and 0xd993678-0xd9936a4 in the IRIX 6.5.30
+ * IP27GR532 libGLcore.so). Those words, at file offsets 0x210 and 0x214
+ * of /usr/gfx/ucode/MGRAS/hq3_revB_HQ4.u (SHA-256
+ * a696e9772a876ed02378111e80a01270161cb4ad8fc39355f40fe96d1fcdb062), are
+ * 0x925 and 0xb25; the index words at 0x220 and 0x224 are 0x83 and
+ * 0x922, as the query notes give them. So the answer is an address in
+ * the GE's matrix stack, 16 words a matrix, and the model answers base +
+ * 16 * (depth - 1) from the loaded context's stack. That the board's
+ * word is that address is inferred from the client's arithmetic; the
+ * modelview base lies 32 matrices below the projection base, the depth
+ * the model gives both stacks. The texture and colour-matrix stacks are
+ * not kept, and their queries still answer zero.
+ */
+static const struct {
+    uint16_t index;
+    uint16_t base;
+    uint16_t pname;
+} mgras_gl_stack_queries[] = {
+    { 0x083, 0x925, SGI_GL_MODELVIEW_STACK_DEPTH },
+    { 0x922, 0xb25, SGI_GL_PROJECTION_STACK_DEPTH },
+};
+
+#define MGRAS_GL_STACK_WORDS     16
+
+/*
  * The library loads hq3.u's table instead of hq3_revB_HQ4.u's when the
  * GE revision the kernel recorded is below 2, or the board has two GEs
  * and one RE (notes-return-mode-queries.md, "Where the index comes
@@ -780,6 +809,14 @@ uint32_t sgi_mgras_gl_query_answer(SGIMgrasState *s, const uint32_t *args,
     if (index == MGRAS_GL_QUERY_RASTER_INDEX && mgras_gl(s)->cur.index_bits &&
         sgi_gl_get(mgras_gl(s), SGI_GL_CURRENT_RASTER_INDEX, out, &n)) {
         return out[0];
+    }
+    for (int i = 0; i < ARRAY_SIZE(mgras_gl_stack_queries); i++) {
+        if (index == mgras_gl_stack_queries[i].index &&
+            sgi_gl_get(mgras_gl(s), mgras_gl_stack_queries[i].pname, out,
+                       &n)) {
+            return mgras_gl_stack_queries[i].base +
+                   MGRAS_GL_STACK_WORDS * (out[0] - 1);
+        }
     }
     for (int i = 0; i < ARRAY_SIZE(mgras_gl_queries); i++) {
         uint32_t element = index - mgras_gl_queries[i].first;
