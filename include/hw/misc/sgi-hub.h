@@ -420,6 +420,17 @@ struct SGIHubState {
     /* Graphics node/widget routing, two entries; plain storage. */
     uint32_t io_gfx_init[2];
 
+    /*
+     * The I/O interface's access protection, widget access, device error
+     * mask, interrupt destination and error-shutdown enables: stored,
+     * none of them enforced (see the Hub I/O interface datasheet).
+     */
+    uint64_t io_local_access;
+    uint64_t io_outbound_access;
+    uint64_t io_inbound_access;
+    uint64_t io_device_error_mask;
+    uint64_t io_int_dest;
+
     /* The engines' six registers each, the whole of an engine's state. */
     uint64_t bte_length[SGI_HUB_BTES];
     uint64_t bte_source[SGI_HUB_BTES];

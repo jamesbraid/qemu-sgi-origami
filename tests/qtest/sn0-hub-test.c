@@ -4430,6 +4430,61 @@ static void test_the_crosstalk_timeouts(const void *data)
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + IO_XTALK_TIMEOUT), ==, 0xff);
 }
 
+/*
+ * The I/O interface's access protection, widget access, device error
+ * mask, interrupt destination and error-shutdown enables: stored at their
+ * datasheet reset values and widths, and put back by a reset. Nothing
+ * enforces them, so the checks are storage only.
+ */
+#define IO_LOCAL_ACCESS     0x400100
+#define IO_ACCESS_OVERRIDE  0x400108
+#define IO_OUTBOUND_ACCESS  0x400110
+#define IO_INBOUND_ACCESS   0x400118
+#define IO_DEVICE_ERR_MASK  0x400120
+#define IO_INT_DEST         0x400138
+#define IO_MISC_ENABLE      0x4001e8
+
+static void test_io_access_registers(const void *data)
+{
+    static const struct {
+        uint64_t offset;
+        uint64_t reset;
+        uint64_t kept;
+    } regs[] = {
+        { IO_LOCAL_ACCESS, ~0ULL, ~0ULL },
+        { IO_OUTBOUND_ACCESS, 0, 0xff01 },
+        { IO_INBOUND_ACCESS, 0, 0xff01 },
+        { IO_DEVICE_ERR_MASK, ~0ULL, ~0ULL },
+        { IO_INT_DEST, 0, 0x1101ff7f },
+        /* A write-only action and three shutdown flags never set. */
+        { IO_MISC_ENABLE, 0, 0 },
+    };
+    unsigned int i;
+
+    hub_reset();
+    for (i = 0; i < ARRAY_SIZE(regs); i++) {
+        uint64_t at = HUB_LOCAL + regs[i].offset;
+
+        g_assert_cmphex(qtest_readq(qts, at), ==, regs[i].reset);
+        /* Reserved bits drop, the rest store. */
+        qtest_writeq(qts, at, 0x5555555555555555ULL);
+        g_assert_cmphex(qtest_readq(qts, at), ==,
+                        0x5555555555555555ULL & regs[i].kept);
+        qtest_writeq(qts, at, ~0ULL);
+        g_assert_cmphex(qtest_readq(qts, at), ==, regs[i].kept);
+    }
+
+    /* The override takes the password and keeps nothing. */
+    qtest_writeq(qts, HUB_LOCAL + IO_ACCESS_OVERRIDE, 0x53474972756c6573ULL);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + IO_ACCESS_OVERRIDE), ==, 0);
+
+    hub_reset();
+    for (i = 0; i < ARRAY_SIZE(regs); i++) {
+        g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + regs[i].offset), ==,
+                        regs[i].reset);
+    }
+}
+
 static void test_io_scratch_registers(const void *data)
 {
     hub_reset();
@@ -6277,6 +6332,8 @@ int main(int argc, char **argv)
                         NULL, test_onyx2_deskside_reads_its_own_slot_bits);
     qtest_add_data_func("sn0/hub/onyx2-rack-reads-the-module-slot-bits",
                         NULL, test_onyx2_rack_reads_the_module_slot_bits);
+    qtest_add_data_func("sn0/hub/io-access-registers", NULL,
+                        test_io_access_registers);
     qtest_add_data_func("sn0/hub/crosstalk-timeouts", NULL,
                         test_the_crosstalk_timeouts);
     qtest_add_data_func("sn0/hub/io-scratch-registers", NULL,
