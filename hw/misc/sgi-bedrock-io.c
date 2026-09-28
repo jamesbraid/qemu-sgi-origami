@@ -101,6 +101,15 @@ static int ii_retained_index(hwaddr offset)
     return -1;
 }
 
+/* The graphics node-widget map, kept as written in the retained set. */
+#define II_GFX_MAP0        0x00140
+
+uint64_t sgi_bedrock_io_gfx_map(SGIBedrockIOState *s, unsigned int entry)
+{
+    g_assert(entry < 2);
+    return s->retained[ii_retained_index(II_GFX_MAP0 + 8 * entry)];
+}
+
 static unsigned ii_reqbuf_index(hwaddr offset)
 {
     if (offset == II_REQBUF0) {

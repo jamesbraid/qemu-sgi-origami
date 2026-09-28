@@ -1326,6 +1326,32 @@ static void sn1_node_create_cpus(SN1NodeState *node, MachineState *machine)
                                  &error_abort);
         cpu->store_transaction = sn1_node_store_transaction;
         cpu->store_transaction_opaque = node;
+        if (!(node->promdata_filter && node->promdata_fast)) {
+            /*
+             * The processor's uncached view, where its Bedrock's I/O-space
+             * path goes once the Bedrock exists (sn1_node_create_bedrock):
+             * everything the physical view holds, for now. The PROM data
+             * filter builds its own when it runs fast.
+             */
+            g_autofree char *uncached_name =
+                g_strdup_printf("sn1.node%u.cpu%u.uncached", node->nasid, i);
+            g_autofree char *uncached_alias_name =
+                g_strdup_printf("sn1.node%u.cpu%u.uncached.memory",
+                                node->nasid, i);
+
+            memory_region_init(&node->cpu_uncached[i], OBJECT(node),
+                               uncached_name, UINT64_MAX);
+            memory_region_init_alias(&node->cpu_uncached_alias[i],
+                                     OBJECT(node), uncached_alias_name,
+                                     &node->cpu_sysmem[i], 0, UINT64_MAX);
+            memory_region_add_subregion_overlap(&node->cpu_uncached[i], 0,
+                                                &node->cpu_uncached_alias[i],
+                                                0);
+            object_property_set_link(OBJECT(cpu_dev), "uncached-memory",
+                                     OBJECT(&node->cpu_uncached[i]),
+                                     &error_abort);
+            node->cpu_uncached_ready[i] = true;
+        }
         qdev_realize(cpu_dev, NULL, &error_fatal);
         if (cpu->env.r10k) {
             cpu->env.r10k->system_requests = &node->system_requests;
@@ -1355,6 +1381,9 @@ static void sn1_node_create_cpus(SN1NodeState *node, MachineState *machine)
                              &node->cpu_uncached[i],
                              &node->cpu_uncached_alias[i],
                              promdata_prefix);
+            if (node->promdata_fast) {
+                node->cpu_uncached_ready[i] = true;
+            }
         }
     }
 }
@@ -1659,11 +1688,39 @@ static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
             &error_abort);
     }
 
+    /*
+     * Each processor's own view, for the Bedrock's processor I/O path; the
+     * path's offsets start at the I/O space.
+     */
+    for (cpu = 0; cpu < node->nr_cpus; cpu++) {
+        g_autofree char *view = g_strdup_printf(
+            "cpu-sysmem%u", sn1_cpu_slot(node->model_node, cpu));
+
+        object_property_set_link(OBJECT(node->bedrock), view,
+                                 OBJECT(&node->cpu_sysmem[cpu]),
+                                 &error_abort);
+    }
+    qdev_prop_set_uint64(node->bedrock, "io-space-base", SN1_IO_SPACE_ADDRESS);
+
     sysbus_realize(SYS_BUS_DEVICE(node->bedrock), &error_fatal);
     object_unref(OBJECT(node->bedrock));
     bedrock = SYS_BUS_DEVICE(node->bedrock);
     SGI_BEDROCK(node->bedrock)->md.pointer_present = sn1_node_pointer_present;
     SGI_BEDROCK(node->bedrock)->md.requester_opaque = node;
+
+    /*
+     * Every uncached I/O-space request a processor makes goes through its
+     * own processor interface, which counts graphics credits on the way.
+     */
+    for (cpu = 0; cpu < node->nr_cpus; cpu++) {
+        MemoryRegion *io = sgi_bedrock_processor_io(
+            SGI_BEDROCK(node->bedrock), sn1_cpu_slot(node->model_node, cpu));
+
+        if (io && node->cpu_uncached_ready[cpu]) {
+            memory_region_add_subregion_overlap(&node->cpu_uncached[cpu],
+                                                SN1_IO_SPACE_ADDRESS, io, 2);
+        }
+    }
 
     memory_region_add_subregion(
         system, sn1_node_address(node, SN1_IO_SPACE_ADDRESS),

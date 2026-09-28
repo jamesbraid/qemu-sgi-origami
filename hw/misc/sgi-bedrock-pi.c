@@ -76,6 +76,15 @@
 #define PI_SPURIOUS_HEADER_0 0x4c8
 #define PI_SPURIOUS_HEADER_1 0x4d0
 #define PI_RT_COUNTER        0x30100
+/*
+ * Graphics flow control: ten registers from 0x300, five per slot, whose
+ * rules are the shared block's (hw/mips/sgi/pi-gfx.c), and the credit-mode
+ * bit in its own page. The count and the return reach the block through
+ * the owning node, which knows the issuing slot and reads the node-widget
+ * map.
+ */
+#define PI_GFX_END           (SGI_PI_GFX_BASE + 8 * SGI_PI_GFX_REGS)
+#define PI_GFX_CREDIT_MODE   0x20068
 
 #define PI_NACK_COUNT_MASK   ((1ULL << 21) - 1)
 #define PI_NACK_COMPARE_MASK ((1ULL << 20) - 1)
@@ -341,6 +350,9 @@ static uint64_t pi_read(void *opaque, hwaddr offset, unsigned size)
     SGIBedrockPIState *s = opaque;
     unsigned mask = pi_population_mask(s);
 
+    if (offset >= SGI_PI_GFX_BASE && offset < PI_GFX_END) {
+        return sgi_pi_gfx_read(&s->gfx, (offset - SGI_PI_GFX_BASE) / 8);
+    }
     switch (offset) {
     case PI_CPU_PROTECT: return s->cpu_protect;
     case PI_IO_PROTECT: return s->io_protect;
@@ -409,6 +421,7 @@ static uint64_t pi_read(void *opaque, hwaddr offset, unsigned size)
     case PI_SPOOL_MASK: return s->spool_mask;
     case PI_SPURIOUS_HEADER_0: return s->spurious_header[0];
     case PI_SPURIOUS_HEADER_1: return s->spurious_header[1];
+    case PI_GFX_CREDIT_MODE: return s->gfx_credit_mode;
     case PI_RT_COUNTER: {
         uint64_t count = pi_rt_count(s);
 
@@ -440,6 +453,10 @@ static void pi_write(void *opaque, hwaddr offset, uint64_t value,
     SGIBedrockPIState *s = opaque;
     int cpu = current_cpu ? current_cpu->cpu_index : -1;
 
+    if (offset >= SGI_PI_GFX_BASE && offset < PI_GFX_END) {
+        sgi_pi_gfx_write(&s->gfx, (offset - SGI_PI_GFX_BASE) / 8, value);
+        return;
+    }
     switch (offset) {
     case PI_CPU_PROTECT:
         s->cpu_protect = value;
@@ -694,6 +711,10 @@ static void pi_write(void *opaque, hwaddr offset, uint64_t value,
     case PI_SPURIOUS_HEADER_1:
         s->spurious_header[1] = value;
         return;
+    case PI_GFX_CREDIT_MODE:
+        /* Kept and read back; the model counts one per store either way. */
+        s->gfx_credit_mode = value & 1;
+        return;
     case PI_RT_COUNTER:
         s->rt_base = value & PI_RT_MASK;
         s->rt_base_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
@@ -722,6 +743,8 @@ static void pi_reset_enter(Object *obj, ResetType type)
 
     s->pending[0] = 0;
     s->pending[1] = 0;
+    sgi_pi_gfx_reset(&s->gfx);
+    s->gfx_credit_mode = 0;
     memset(s->cc_pend, 0, sizeof(s->cc_pend));
     s->cc_pend_mask = 0;
     memset(s->mask, 0, sizeof(s->mask));
@@ -789,7 +812,7 @@ static int pi_pre_save(void *opaque)
 
 static const VMStateDescription vmstate_pi = {
     .name = TYPE_SGI_BEDROCK_PI,
-    .version_id = 5,
+    .version_id = 6,
     .minimum_version_id = 5,
     .pre_save = pi_pre_save,
     .post_load = pi_post_load,
@@ -829,6 +852,9 @@ static const VMStateDescription vmstate_pi = {
         VMSTATE_TIMER_PTR_ARRAY(rt_timer, SGIBedrockPIState, 2),
         VMSTATE_TIMER_PTR(profile_timer, SGIBedrockPIState),
         VMSTATE_BOOL_ARRAY(rt_timer_match, SGIBedrockPIState, 2),
+        VMSTATE_STRUCT(gfx, SGIBedrockPIState, 6, vmstate_sgi_pi_gfx,
+                       SGIPIGfx),
+        VMSTATE_UINT8_V(gfx_credit_mode, SGIBedrockPIState, 6),
         VMSTATE_END_OF_LIST()
     },
 };

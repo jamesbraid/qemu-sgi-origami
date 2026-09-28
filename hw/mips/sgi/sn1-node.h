@@ -91,11 +91,14 @@ typedef struct SN1NodeState {
     MemoryRegion cpu_sysmem[SGI_SN1_NODE_MAX_CPUS];
     MemoryRegion sysmem_alias[SGI_SN1_NODE_MAX_CPUS];
     /*
-     * The uncached view: the cached one, less the private window. Only wired
-     * when promdata_fast is set; see sn-promdata.c.
+     * The uncached view: the cached one, with the processor's own I/O-space
+     * path over the I/O space. The PROM data filter builds it, less its
+     * private window, when promdata_fast is set (sn-promdata.c); otherwise
+     * the node does. cpu_uncached_ready says it was built.
      */
     MemoryRegion cpu_uncached[SGI_SN1_NODE_MAX_CPUS];
     MemoryRegion cpu_uncached_alias[SGI_SN1_NODE_MAX_CPUS];
+    bool cpu_uncached_ready[SGI_SN1_NODE_MAX_CPUS];
     SNPromDataState promdata[SGI_SN1_NODE_MAX_CPUS];
     /* Samples the mapped processors' stack pointers for the exit. */
     SNPromDataPoll promdata_poll;

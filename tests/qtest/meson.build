@@ -34,6 +34,8 @@ slow_qtests = {
   'sn0-pi-error-test': 120,
   # Eight cases, each a guest run under TCG; one boots two nodes.
   'sn0-pi-gfx-test': 180,
+  # Six cases run processors under TCG; one boots two chassis.
+  'sn1-pi-gfx-test': 180,
   # The MTTCG primitives run several thread=multi TCG cases, and the R10000
   # performance test adds live migration and a stream analysis pass. Both fit
   # under 60s unloaded but need headroom under parallel CI load.
@@ -460,7 +462,8 @@ qtests_mips64 = \
     ['sn1-address-map-test', 'sn1-cross-node-test',
      'sn1-cpu-identity-test', 'sn1-directory-state-test',
      'sn1-presence-test', 'sn1-system-request-test',
-     'sn1-io8-scsi-test', 'sn1-warm-reset-test'] : []) + \
+     'sn1-io8-scsi-test', 'sn1-warm-reset-test',
+     'sn1-pi-gfx-test'] : []) + \
   (config_all_devices.has_key('CONFIG_SGI_SN0') ? ['sn0-mttcg-test',
                                                    'sn0-forward-progress-test',
                                                    'sn0-r10k-test',
