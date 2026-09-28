@@ -153,6 +153,74 @@ static QTestState *fuel_start(const char *prom)
                        "-cpu R14000 -smp 1 -m 512M -bios %s -S", quoted);
 }
 
+static void test_fuel_mac_eeprom_machine(const void *data)
+{
+    uint8_t image[512] = { 0 };
+    g_autofree char *path = NULL;
+    GError *error = NULL;
+    QTestState *qts;
+    unsigned sum = 0;
+    int fd;
+
+    if (g_test_subprocess()) {
+        qtest_initf("-M fuel,fuel-board-id-word=0x4abc,"
+                    "fuel-ioc3-subsystem-id=0xc30a,"
+                    "fuel-l1-type-code=0x61,fuel-bedrock-revision=0x2,"
+                    "fuel-mac-eeprom=%s,fuel-rtc-decode=low11-mirror "
+                    "-bios %s -S",
+                    g_getenv("FUEL_MAC_PATH"), (const char *)data);
+        return;
+    }
+    fd = g_file_open_tmp("fuel-mac-XXXXXX.bin", &path, &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(fd, >=, 0);
+    close(fd);
+    image[3] = 4;
+    image[33] = 16;
+    image[39] = 4;
+    memcpy(image + 40, "MAC ", 4);
+    image[44] = 1;
+    image[45] = 'X';
+    image[46] = 1;
+    image[47] = 'Y';
+    image[49] = 1;
+    image[50] = 'Z';
+    image[53] = 1;
+    image[54] = 'Q';
+    image[70] = 12;
+    memcpy(image + 71, "02A1B2C3D4E5", 12);
+    for (unsigned i = 32; i < 160; i++) {
+        sum += image[i];
+    }
+    image[32] = -sum;
+    sum = 0;
+    for (unsigned i = 0; i < 8; i++) {
+        sum += image[i];
+    }
+    image[0] = -sum;
+    g_assert_true(g_file_set_contents(path, (char *)image, sizeof(image),
+                                      &error));
+    g_assert_no_error(error);
+    qts = qtest_initf("-M fuel,fuel-board-id-word=0x4abc,"
+                      "fuel-ioc3-subsystem-id=0xc30a,"
+                      "fuel-l1-type-code=0x61,fuel-bedrock-revision=0x2,"
+                      "fuel-mac-eeprom=%s,fuel-rtc-decode=low11-mirror "
+                      "-bios %s -S", path,
+                      (const char *)data);
+    qtest_quit(qts);
+    image[71] = 'G';
+    image[32] -= 'G' - '0';
+    g_assert_true(g_file_set_contents(path, (char *)image, sizeof(image),
+                                      &error));
+    g_assert_no_error(error);
+    g_setenv("FUEL_MAC_PATH", path, true);
+    g_test_trap_subprocess(NULL, 0, 0);
+    g_test_trap_assert_failed();
+    g_test_trap_assert_stderr("*Fuel MAC EEPROM record is malformed*");
+    g_unsetenv("FUEL_MAC_PATH");
+    unlink(path);
+}
+
 static QTestState *fuel_start_rtc(const char *prom, const char *extra)
 {
     g_autofree char *quoted = g_shell_quote(prom);
@@ -1112,6 +1180,8 @@ int main(int argc, char **argv)
     g_test_init(&argc, &argv, NULL);
     prom = fuel_test_prom();
     qtest_add_data_func("fuel/board-and-cpu", prom, test_fuel_board_and_cpu);
+    qtest_add_data_func("fuel/mac-eeprom-machine", prom,
+                        test_fuel_mac_eeprom_machine);
     qtest_add_data_func("fuel/cpu-grant", prom, test_fuel_cpu_grant);
     qtest_add_data_func("fuel/board-id-migration", prom,
                         test_fuel_board_id_migration);

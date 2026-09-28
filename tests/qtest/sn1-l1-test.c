@@ -2377,6 +2377,100 @@ static void test_general_reads(void)
     qtest_quit(s);
 }
 
+static void fuel_mac_checksum(uint8_t *image)
+{
+    unsigned sum = 0;
+
+    image[32] = 0;
+    image[0] = 0;
+    for (unsigned i = 32; i < 32 + image[33] * 8; i++) {
+        sum += image[i];
+    }
+    image[32] = -sum;
+    sum = 0;
+    for (unsigned i = 0; i < 8; i++) {
+        sum += image[i];
+    }
+    image[0] = -sum;
+}
+
+static void fuel_mac_reject(const char *path, const uint8_t *image)
+{
+    GError *error = NULL;
+
+    g_assert_true(g_file_set_contents(path, (const char *)image, 512, &error));
+    g_assert_no_error(error);
+    g_test_trap_subprocess(NULL, 0, 0);
+    g_test_trap_assert_failed();
+    g_test_trap_assert_stderr("*Fuel MAC EEPROM record is malformed*");
+}
+
+static void test_fuel_mac_eeprom(void)
+{
+    static const char mac[] = "02A1B2C3D4E5";
+    uint8_t image[512] = { 0 }, reply[129];
+    g_autofree char *path = NULL;
+    GError *error = NULL;
+    QTestState *s;
+    int fd;
+
+    if (g_test_subprocess()) {
+        qtest_initf("-M none -cpu R10000 -S -device "
+                    "sgi-l1,id=l1c,fuel-mac-eeprom=%s",
+                    g_getenv("L1_FUEL_MAC_PATH"));
+        return;
+    }
+    fd = g_file_open_tmp("l1-fuel-mac-XXXXXX.bin", &path, &error);
+
+    g_assert_no_error(error);
+    g_assert_cmpint(fd, >=, 0);
+    close(fd);
+    image[3] = 4;
+    image[33] = 16;
+    image[39] = 4;
+    memcpy(image + 40, "MAC ", 4);
+    image[44] = 1;
+    image[45] = 'X';
+    image[46] = 1;
+    image[47] = 'Y';
+    image[49] = 1;
+    image[50] = 'Z';
+    image[53] = 1;
+    image[54] = 'Q';
+    image[70] = 12;
+    memcpy(image + 71, mac, 12);
+    fuel_mac_checksum(image);
+    g_assert_true(g_file_set_contents(path, (char *)image, sizeof(image),
+                                      &error));
+    g_assert_no_error(error);
+    s = qtest_initf("-M none -cpu R10000 -S -device "
+                    "sgi-l1,id=l1c,fuel-mac-eeprom=%s" UART, path);
+    qtest_sysbus_mmio_map(s, PATH, 0, BASE);
+    g_assert_cmpuint(general(s, 8, NULL, 0, 0, reply), ==, 20);
+    g_assert_cmpmem(reply + 7, 12, mac, 12);
+    qtest_quit(s);
+
+    g_setenv("L1_FUEL_MAC_PATH", path, true);
+    image[71] = 'G';
+    fuel_mac_checksum(image);
+    fuel_mac_reject(path, image);
+    image[71] = '0';
+    image[39] = 63;
+    image[33] = 8;
+    fuel_mac_checksum(image);
+    fuel_mac_reject(path, image);
+    image[39] = 4;
+    image[33] = 60;
+    fuel_mac_checksum(image);
+    fuel_mac_reject(path, image);
+    image[33] = 16;
+    fuel_mac_checksum(image);
+    image[0]++;
+    fuel_mac_reject(path, image);
+    g_unsetenv("L1_FUEL_MAC_PATH");
+    unlink(path);
+}
+
 /*
  * A synthetic board serial must survive either local task-6 route unchanged.
  */
@@ -2940,6 +3034,7 @@ int main(int argc, char **argv)
     qtest_add_func("sn1/l1/console-retarget", test_console_retarget);
     qtest_add_func("sn1/l1/console-short-frames", test_console_short_frames);
     qtest_add_func("sn1/l1/general-reads", test_general_reads);
+    qtest_add_func("sn1/l1/fuel-mac-eeprom", test_fuel_mac_eeprom);
     qtest_add_func("sn1/l1/brick-serial", test_brick_serial);
     qtest_add_func("sn1/l1/general-actions", test_general_actions);
     qtest_add_func("sn1/l1/power-cycle", test_power_cycle);

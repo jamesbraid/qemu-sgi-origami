@@ -88,6 +88,7 @@ bool sgi_machine_set_l1_identity_records(MachineState *machine,
                                          DeviceState *l1,
                                          unsigned int node_index,
                                          Error **errp);
+const char *sgi_machine_fuel_mac_eeprom(MachineState *machine);
 
 /*
  * The -serial lines a Bedrock node takes, a block of this many per node in
