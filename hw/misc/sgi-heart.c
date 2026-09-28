@@ -27,6 +27,8 @@
 #define HEART_LEVEL0_MASK 0x000000000000ffffULL
 #define HEART_LEVEL1_MASK 0x00000000ffff0000ULL
 #define HEART_LEVEL2_MASK 0x0003ffff00000000ULL
+#define HEART_LEVEL3_MASK 0x0004000000000000ULL
+#define HEART_LEVEL4_MASK 0xfff8000000000000ULL
 #define HEART_WIDGET_SIZE 0x1000
 #define HEART_PACKET_SIZE (1ULL << 48)
 #define HEART_RAM_PACKET_SIZE ((HEART_MAX_UNITS + 0x1ffULL) * HEART_UNIT)
@@ -85,6 +87,8 @@ static void heart_update_irq(SGIHeartState *s)
     qemu_set_irq(s->processor[0], !!(enabled & HEART_LEVEL0_MASK));
     qemu_set_irq(s->processor[1], !!(enabled & HEART_LEVEL1_MASK));
     qemu_set_irq(s->processor[2], !!(enabled & HEART_LEVEL2_MASK));
+    qemu_set_irq(s->processor[3], !!(enabled & HEART_LEVEL3_MASK));
+    qemu_set_irq(s->processor[4], !!(enabled & HEART_LEVEL4_MASK));
 }
 
 static MemTxResult heart_widget_read(void *opaque, hwaddr offset,
@@ -660,7 +664,7 @@ static void heart_init(Object *obj)
                           "sgi-heart.packet-ram", HEART_RAM_PACKET_SIZE);
     memory_region_add_subregion(&s->packet, HEART_RAM_BASE, &s->packet_ram);
     sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->packet);
-    qdev_init_gpio_out_named(DEVICE(obj), s->processor, "processor", 3);
+    qdev_init_gpio_out_named(DEVICE(obj), s->processor, "processor", 5);
     s->onewire_bus = onewire_create_bus(DEVICE(obj), "onewire");
     s->onewire_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
                                    heart_onewire_complete, s);

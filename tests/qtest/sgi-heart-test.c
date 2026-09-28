@@ -715,6 +715,37 @@ static void test_interrupts(void)
     qtest_quit(s);
 }
 
+static void test_high_interrupt_levels(void)
+{
+    QTestState *s = heart_start(128, "");
+    uint64_t timer = 1ULL << 50;
+    uint64_t error = 1ULL << 51;
+
+    qtest_irq_intercept_out_named(s, HEART_PATH, "processor");
+    for (unsigned cpu = 1; cpu < 4; cpu++) {
+        qtest_writeq(s, HEART_REGS + 0x10000 + cpu * 8, timer | error);
+        g_assert_cmphex(qtest_readq(s, HEART_REGS + 0x10000 + cpu * 8), ==,
+                        timer | error);
+    }
+    qtest_writeq(s, HEART_REGS + 0x10020, timer | error);
+    g_assert_false(qtest_get_irq(s, 3));
+    g_assert_false(qtest_get_irq(s, 4));
+    qtest_writeq(s, HEART_REGS + 0x10000, timer | error);
+    g_assert_true(qtest_get_irq(s, 3));
+    g_assert_true(qtest_get_irq(s, 4));
+    qtest_writeq(s, HEART_REGS + 0x10000, error);
+    g_assert_false(qtest_get_irq(s, 3));
+    g_assert_true(qtest_get_irq(s, 4));
+    qtest_writeq(s, HEART_REGS + 0x10028, error);
+    g_assert_false(qtest_get_irq(s, 4));
+    qtest_writeq(s, HEART_REGS + 0x10000, timer);
+    g_assert_true(qtest_get_irq(s, 3));
+    qtest_qmp_assert_success(s, "{'execute':'system_reset'}");
+    g_assert_false(qtest_get_irq(s, 3));
+    g_assert_false(qtest_get_irq(s, 4));
+    qtest_quit(s);
+}
+
 static void test_processor_status(void)
 {
     QTestState *s = heart_start(128, "");
@@ -1141,6 +1172,8 @@ int main(int argc, char **argv)
     g_test_add_func("/heart/widget-diagnostics", test_widget_diagnostics);
     g_test_add_func("/heart/widget-packets", test_widget_packets);
     g_test_add_func("/heart/interrupts", test_interrupts);
+    g_test_add_func("/heart/high-interrupt-levels",
+                    test_high_interrupt_levels);
     g_test_add_func("/heart/processor-status", test_processor_status);
     g_test_add_func("/heart/reset", test_reset);
     g_test_add_func("/heart/migration", test_migration);

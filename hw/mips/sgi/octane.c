@@ -345,10 +345,12 @@ static void octane_init_common(MachineState *machine, bool octane2)
     memory_region_add_subregion(
         physical, OCTANE_HEART_REGS,
         sysbus_mmio_get_region(SYS_BUS_DEVICE(heart), 0));
-    /* HEART levels 0, 1 and 2 reach CPU IP2, IP3 and IP4. */
+    /* HEART levels 0 through 4 reach CPU IP2 through IP6. */
     qdev_connect_gpio_out_named(heart, "processor", 0, cpu->env.irq[2]);
     qdev_connect_gpio_out_named(heart, "processor", 1, cpu->env.irq[3]);
     qdev_connect_gpio_out_named(heart, "processor", 2, cpu->env.irq[4]);
+    qdev_connect_gpio_out_named(heart, "processor", 3, cpu->env.irq[5]);
+    qdev_connect_gpio_out_named(heart, "processor", 4, cpu->env.irq[6]);
 
     memory_region_init(proxy, OBJECT(machine), "octane.bridge-fabric",
                        SGI_XBOW_WIDGETS * SGI_XBOW_PACKET_SIZE);
