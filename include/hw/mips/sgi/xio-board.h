@@ -35,8 +35,11 @@
 #ifndef HW_MIPS_SGI_XIO_BOARD_H
 #define HW_MIPS_SGI_XIO_BOARD_H
 
+#include "hw/1wire/onewire.h"
 #include "hw/core/sysbus.h"
 #include "hw/misc/sgi-xbow.h"
+#include "hw/pci-host/sgi-bridge.h"
+#include "qapi/qapi-builtin-types.h"
 #include "hw/mips/sgi/xio-link.h"
 #include "qemu/queue.h"
 #include "qom/object.h"
@@ -109,6 +112,17 @@ struct SGIXioBoardState {
      */
     SGIXioLink *link;
 
+    /*
+     * The board's one-wire identity chain, for a class that carries one
+     * (sgi_xio_board_class_set_identity() below): "board-part", the
+     * board's own record's part number; "other-identity-parts", the
+     * other parts the chain carries, by part number; and the bus they
+     * answer on, built at realize. Construction-time only: not migrated.
+     */
+    char *board_part;
+    strList *other_identity_parts;
+    OneWireBus *onewire_bus;
+
     /* < private > */
     bool queued;
     QTAILQ_ENTRY(SGIXioBoardState) node;
@@ -146,7 +160,48 @@ struct SGIXioBoardClass {
      * the board, so it never needed this hook.
      */
     bool (*finish_realize)(SGIXioBoardState *board, Error **errp);
+
+    /* The class's one-wire identity chain, or NULL for a board with none. */
+    const struct SGIXioBoardIdentity *identity;
 };
+
+/*
+ * One DS2502 identity part on a board's one-wire chain: the record it
+ * stores, in the fixed-offset layout sgi_bridge_onewire_build_record()
+ * builds, the one-wire serial it answers to, and the name of its QOM child
+ * under the board. The record's part number is the one the machine-model
+ * catalogue names it by. `fitted` says whether "other-identity-parts"
+ * names the part by default; the board's own part ignores it.
+ */
+typedef struct SGIXioBoardIdentityPart {
+    const char *child_name;
+    const SGIBridgeBoardRecord *record;
+    uint64_t serial;
+    bool fitted;
+} SGIXioBoardIdentityPart;
+
+/*
+ * A board class's one-wire identity chain: the family code its parts
+ * answer with, the board's own part, whose part number "board-part" can
+ * replace, and every other part "other-identity-parts" may name.
+ */
+typedef struct SGIXioBoardIdentity {
+    uint8_t family;
+    SGIXioBoardIdentityPart own;
+    const SGIXioBoardIdentityPart *others;
+    size_t num_others;
+} SGIXioBoardIdentity;
+
+/*
+ * Give a board class a one-wire identity chain and the "board-part" and
+ * "other-identity-parts" properties that configure it. The base class
+ * builds the chain at realize, after the board re-parents and before
+ * finish_realize(), onto `board->onewire_bus`; an unknown or repeated
+ * part number is a realize error. Call from the concrete class's
+ * class_init; `identity` must outlive the class.
+ */
+void sgi_xio_board_class_set_identity(ObjectClass *oc,
+                                      const SGIXioBoardIdentity *identity);
 
 /*
  * The machine side of a board placed by slot name: a machine whose
