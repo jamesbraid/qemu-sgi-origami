@@ -132,7 +132,10 @@ struct SGIBedrockState {
      * hold_scratch1_seen: whether this processor has made its first write
      * to LB scratch 1 since reset. hold_scratch1_withheld(_valid): the
      * value a second-or-later write is holding back until every other
-     * present, running processor has made its own first write.
+     * present, running processor has made its own first write. That value
+     * is guest-visible once it lands, so unlike the rest of the park it
+     * travels in a migration stream and lands on load (sgi-bedrock.c,
+     * bedrock_post_load()).
      */
     bool hold_scratch1_seen[SGI_BEDROCK_PROCESSORS];
     bool hold_scratch1_withheld_valid[SGI_BEDROCK_PROCESSORS];
