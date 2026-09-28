@@ -8475,10 +8475,8 @@
           "id": "bedrock",
           "identity": {
             "i2c-controller": false,
-            "ni-revision": 2,
             "serial": 14345375975689,
-            "system-controller": false,
-            "widget-revision": 2
+            "system-controller": false
           },
           "module-index": 0,
           "slave-role": false,
