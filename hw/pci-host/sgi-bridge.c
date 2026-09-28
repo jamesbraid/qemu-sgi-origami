@@ -2380,10 +2380,6 @@ static void sgi_bridge_realize(DeviceState *dev, Error **errp)
     qdev_init_gpio_in_named_with_opaque(dev, sgi_bridge_set_wire_irq, s, NULL,
                                         SGI_BRIDGE_PINS);
 
-    /* One XIO link, so one line: what the crossbar drives at us. */
-    qdev_init_gpio_in_named_with_opaque(dev, sgi_bridge_link_reset, s,
-                                        "link-reset", 1);
-
     memory_region_init_io(&s->cfg0, obj, &sgi_bridge_config_ops, s,
                           "sgi-bridge.cfg0", BRIDGE_CFG0_SIZE);
     memory_region_add_subregion(&s->widget, SGI_BRIDGE_CFG0_BASE, &s->cfg0);
@@ -2590,6 +2586,23 @@ static bool sgi_bridge_xio_port_connect(Object *port, unsigned int index,
     return true;
 }
 
+/* A reset from the far end of the link clears the chip's core. */
+static qemu_irq sgi_bridge_xio_port_reset_input(Object *port,
+                                                unsigned int index)
+{
+    return qdev_get_gpio_in_named(DEVICE(port), "link-reset", 0);
+}
+
+/*
+ * One XIO link, so one line: what the crossbar drives at us. It exists
+ * from instance init so a link can wire it before realize.
+ */
+static void sgi_bridge_instance_init(Object *obj)
+{
+    qdev_init_gpio_in_named_with_opaque(DEVICE(obj), sgi_bridge_link_reset,
+                                        SGI_BRIDGE(obj), "link-reset", 1);
+}
+
 static void sgi_bridge_class_init(ObjectClass *oc, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
@@ -2617,6 +2630,7 @@ static void sgi_bridge_class_init(ObjectClass *oc, const void *data)
     pc->cpu_face = sgi_bridge_xio_port_cpu_face;
     pc->packet_face = sgi_bridge_xio_port_packet_face;
     pc->connect = sgi_bridge_xio_port_connect;
+    pc->reset_input = sgi_bridge_xio_port_reset_input;
 }
 
 static const TypeInfo sgi_bridge_types[] = {
@@ -2624,6 +2638,7 @@ static const TypeInfo sgi_bridge_types[] = {
         .name = TYPE_SGI_BRIDGE,
         .parent = TYPE_PCI_HOST_BRIDGE,
         .instance_size = sizeof(SGIBridgeState),
+        .instance_init = sgi_bridge_instance_init,
         .class_init = sgi_bridge_class_init,
         .interfaces = (const InterfaceInfo[]) {
             { TYPE_HOTPLUG_HANDLER },

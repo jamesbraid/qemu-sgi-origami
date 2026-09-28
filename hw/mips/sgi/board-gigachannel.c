@@ -171,6 +171,8 @@ static bool gigachannel_build_widget(SGIXioBoardState *board, Error **errp)
 
     board->cpu_face = sysbus_mmio_get_region(SYS_BUS_DEVICE(bridge), 0);
     board->packet_face = sgi_bridge_packet_face(s->bridge);
+    board->link_reset = qdev_get_gpio_in_named(DEVICE(s->bridge),
+                                                "link-reset", 0);
     return true;
 }
 

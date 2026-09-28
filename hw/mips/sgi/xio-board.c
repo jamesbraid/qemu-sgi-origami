@@ -438,6 +438,12 @@ static bool sgi_xio_board_xio_port_connect(Object *port, unsigned int index,
     return true;
 }
 
+static qemu_irq sgi_xio_board_xio_port_reset_input(Object *port,
+                                                   unsigned int index)
+{
+    return SGI_XIO_BOARD(port)->link_reset;
+}
+
 static void sgi_xio_board_class_init(ObjectClass *oc, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
@@ -454,6 +460,7 @@ static void sgi_xio_board_class_init(ObjectClass *oc, const void *data)
     pc->cpu_face = sgi_xio_board_xio_port_cpu_face;
     pc->packet_face = sgi_xio_board_xio_port_packet_face;
     pc->connect = sgi_xio_board_xio_port_connect;
+    pc->reset_input = sgi_xio_board_xio_port_reset_input;
 }
 
 static void sgi_xio_board_finalize(Object *obj)

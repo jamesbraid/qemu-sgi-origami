@@ -1825,6 +1825,17 @@ static bool sgi_xbow_xio_port_connect(Object *port, unsigned int index,
                                          peer->packet_face, errp);
 }
 
+/* A port's per-link reset (the link reset register) reaches its widget. */
+static void sgi_xbow_xio_port_reset_output(Object *port, unsigned int index,
+                                           qemu_irq target)
+{
+    if (index < SGI_XBOW_FIRST_WIDGET || index >= SGI_XBOW_WIDGETS) {
+        return;
+    }
+    qdev_connect_gpio_out_named(DEVICE(port), "link-reset",
+                                index - SGI_XBOW_FIRST_WIDGET, target);
+}
+
 static void sgi_xbow_class_init(ObjectClass *oc, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
@@ -1846,6 +1857,7 @@ static void sgi_xbow_class_init(ObjectClass *oc, const void *data)
     pc->packet_face = sgi_xbow_xio_port_packet_face;
     pc->switched = sgi_xbow_xio_port_switched;
     pc->connect = sgi_xbow_xio_port_connect;
+    pc->reset_output = sgi_xbow_xio_port_reset_output;
 }
 
 static const TypeInfo sgi_xbow_types[] = {

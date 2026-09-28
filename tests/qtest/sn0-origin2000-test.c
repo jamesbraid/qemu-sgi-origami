@@ -736,7 +736,13 @@ static void test_xbow_prom_error_writes(void)
     qtest_quit(qts);
 }
 
-/* Origin 2000 reconnects BaseIO without inventing a wider Bridge reset. */
+/*
+ * Origin 2000 reconnects BaseIO after a Crossbow per-link reset, and the
+ * reset reaches the Bridge's core (the Bridge datasheet's "Reset received
+ * from Crossbow"): control is back at its reset value afterwards.
+ */
+#define BRIDGE_CONTROL_RESET 0x7f0033ffu
+
 static void test_xbow_baseio_link_reset(void)
 {
     QTestState *qts = start_control_module("");
@@ -758,7 +764,7 @@ static void test_xbow_baseio_link_reset(void)
     qtest_clock_step(qts, 1);
     g_assert_cmphex(xbow_read(qts, XBOW_LINK8_STATUS) & XBOW_LINK_ALIVE,
                     ==, XBOW_LINK_ALIVE);
-    g_assert_cmphex(baseio_read(qts, BRIDGE_CONTROL), ==, 0);
+    g_assert_cmphex(baseio_read(qts, BRIDGE_CONTROL), ==, BRIDGE_CONTROL_RESET);
 
     set_crossbow0_links_alive(qts,
                               CROSSBOW0_PRESENT & ~(1u << BASEIO_WIDGET));
