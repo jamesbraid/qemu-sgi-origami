@@ -1,10 +1,8 @@
 /*
- * Two Bridge behaviors the PROM's sanity diagnostic depends on: the
- * external-SSRAM window completes reads (an unguarded probe loop sizes
- * it), and an undefined register-window access posts and latches the
- * invalid-address error instead of bus-erroring. "Posts, not faults" is
- * only visible to an executing processor, so those checks run a hand-
- * built reset-vector fragment and watch for a RAM marker.
+ * Bridge PROM diagnostic checks: unguarded SSRAM sizing reads complete;
+ * undefined register accesses post and latch invalid-address errors without
+ * a bus error. A reset-vector fragment marks RAM to expose CPU-visible
+ * completion and fault behavior.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
@@ -26,15 +24,18 @@
 #define BRIDGE_INT_STATUS   0x100
 #define BRIDGE_INT_ENABLE   0x108
 #define BRIDGE_INT_RESET    0x110
-#define BRIDGE_HOST_ERR     0x128        /* host bit for the Bridge's own errors */
+#define BRIDGE_HOST_ERR     0x128        /* host bit for the Bridge's own
+ * errors */
 #define BRIDGE_INT_DEST_UP  0x030        /* interrupt destination, upper */
 #define BRIDGE_INT_DEST_LO  0x038        /* interrupt destination, lower */
-#define INT_INVALID_ADDR    (1u << 24)   /* "address invalid for this widget" */
+#define INT_INVALID_ADDR    (1u << 24)   /* address invalid for this widget */
 #define INT_RESET_ALL       0x7fu        /* clears every error group */
 #define INT_RESET_PCI_GRP   (1u << 0)    /* clears only the PCI group */
-#define INT_RESET_REQ_DSP_GRP (1u << 3)  /* clears the invalid-address bit's group */
+#define INT_RESET_REQ_DSP_GRP (1u << 3)  /* clears the invalid-address bit's
+ * group */
 
-/* The local Hub's interrupt registers, where the error interrupt is delivered. */
+/* The local Hub's interrupt registers, where the error interrupt is
+ * delivered. */
 #define PI_INT_MODIFY       0x90
 #define ERR_HOST_BIT        5u
 
@@ -138,7 +139,7 @@ static void test_invalid_address_latches_status(const void *data)
 
     /*
      * Plain register state: the store latches the bit, the group strobe
-     * clears it -- the diagnostic's own sequence.
+     * clears it, as in the diagnostic's own sequence.
      */
     g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_INT_STATUS)) & INT_INVALID_ADDR,
                     ==, 0);
@@ -185,11 +186,12 @@ static void test_invalid_address_raises_host_interrupt(const void *data)
 
     /*
      * Point the widget interrupt-destination pair at the local Hub's
-     * interrupt-modify register, name the host bit in the host-error field, and
-     * enable the invalid-address interrupt. A store to an undefined register
-     * then drives the error interrupt across the fabric to the Hub, setting
-     * that pending bit — the delivery the sanity diagnostic waits on. With the
-     * interrupt disabled, or with no destination programmed, no packet goes.
+     * interrupt-modify register, name the host bit in the host-error field,
+     * and enable the invalid-address interrupt. A store to an undefined
+     * register then drives the error interrupt across the fabric to the Hub,
+     * setting that pending bit — the delivery the sanity diagnostic waits
+     * on. With the interrupt disabled, or with no destination programmed, no
+     * packet goes.
      */
     qtest_writel(qts, REG(BRIDGE_INT_DEST_LO),
                  (uint32_t)(HUB_LOCAL - SPACE_XTALK) + PI_INT_MODIFY);
@@ -217,7 +219,7 @@ static uint32_t number_at(QTestState *qts, uint64_t hub)
 /*
  * Number the chassis against their positions: the first is given one, the
  * second keeps the reset number zero. This is the state the whole routing
- * question lives in -- while the numbers agree with the positions nothing
+ * question lives in. While the numbers agree with the positions, nothing
  * can tell a Hub picked by number from a Hub picked by position, and the
  * machine boots through a stretch where they disagree.
  *

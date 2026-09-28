@@ -7,14 +7,12 @@
 # SGI Scalable Node compiled catalogue
 # ***********************************
 #
-# The record types of Origami's compiled catalogue (`hw/mips/sgi/
+# The record types of the compiled machine catalogue (`hw/mips/sgi/
 # sn-catalogue.json`, embedded into the emulator at build time): one
 # `topologies` entry per configuration the SGI Scalable Node family
 # builder can construct, and one `offerings` entry per accepted CPU
 # population a launcher may select.  A `topologies` record carries
-# only what decision D-0026
-# (docs/decisions/D-0026-machine-description- ownership.md in the
-# Origami repository) keeps a machine description responsible for:
+# only what a machine description is responsible for:
 # which devices are present, where each plugs in, and a fitted part's
 # own identity, revision or size.  A fact the same on every machine
 # fitting one chip -- a PCI function's position, an I2C address, a
@@ -64,8 +62,8 @@
 #
 # @mode-bits: the CP0_Config0-derived mode word the flash
 #     configuration block and the board latch both compare against,
-#     computed once by Origami's compiler from this assembly's other
-#     fields
+#     computed once by the catalogue compiler from this
+#     assembly's other fields
 #
 # Since: 11.2
 ##
@@ -816,7 +814,8 @@
 # One accepted configuration a launcher may select: a product, a
 # topology and one of its accepted CPU populations, with every fact a
 # launcher needs to build the QEMU command line for it.  Unlike a
-# `topologies` record, an offering is not filtered by decision D-0026:
+# `topologies` record, an offering is not limited to what a machine
+# description owns:
 # it is the catalogue's launcher-facing half, and carries what a
 # launcher may choose rather than only what QEMU's own builder needs.
 #
@@ -908,11 +907,11 @@
 ##
 # @SGIModelCatalogue:
 #
-# Origami's compiled catalogue: every configuration the SGI Scalable
+# The compiled machine catalogue: every configuration the SGI Scalable
 # Node family builder can construct, and every configuration a
 # launcher may select.  The same document, embedded at build time,
 # backs @query-sgi-sn-catalogue, the running emulator's own copy for a
-# package build to read, and Origami's launch harness.
+# package build to read, and external launch tooling.
 #
 # @schema: catalogue schema name (`sgi-sn-catalogue`)
 #

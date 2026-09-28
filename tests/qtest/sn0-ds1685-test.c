@@ -1,14 +1,10 @@
 /*
- * DS1685/DS1687 real-time clock: the register contract reached through the
- * IOC3's byte bus, where an address port and a data port stand in for the
- * part's multiplexed bus. Everything here is an indirect access, so a model
- * that latches the index wrongly fails every assertion at once and a model
- * that banks the whole file fails only the ones that look for the seam.
- *
- * No machine we build carries this part. The Origin 200's own controller is
- * the IP29 System Board, which fits a Timekeeper on the first byte-bus select
- * instead, so these tests ask for a second controller with the Octane's board
- * identity and drive the clock behind that one.
+ * DS1685/DS1687 RTC register tests through IOC3's indirect byte bus:
+ * address/data ports replace the multiplexed bus. Wrong index latching
+ * breaks all reads; wrong whole-file banking breaks the 40h-7Fh checks.
+ * No current machine carries this RTC. Origin 200 IP29 uses a Timekeeper
+ * on the first byte-bus select; tests add an Octane-identified controller
+ * and drive its RTC instead.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
@@ -32,7 +28,7 @@
 
 /*
  * The machine's own controller sits at device 2. This one takes device 3,
- * whose bridge window is the megabyte above it -- the first two slots get two
+ * whose bridge window is the megabyte above it. The first two slots get two
  * megabytes each and the rest one, so the bases are not evenly spaced.
  */
 #define OCTANE_PCI_DEVICE 3
@@ -203,7 +199,7 @@ static void test_the_index_is_seven_bits(const void *data)
     reg_write(qts, R_RAM_LOW + 2, 0x3c);
     g_assert_cmphex(reg_read(qts, 0x80 | (R_RAM_LOW + 2)), ==, 0x3c);
 
-    /* And the top of the file, where a mask that took a bit too many shows. */
+    /* Also test the file top, where an oversized mask shows. */
     reg_write(qts, 0x7f, 0xc3);
     g_assert_cmphex(reg_read(qts, 0xff), ==, 0xc3);
 
@@ -211,7 +207,7 @@ static void test_the_index_is_seven_bits(const void *data)
 }
 
 /*
- * The seam. Only 40h-7Fh changes meaning with the bank bit, so a byte
+ * Only 40h-7Fh changes meaning with the bank bit, so a byte
  * written into bank-0 user RAM at 4Ah must still be there after a trip
  * through bank 1, where 4Ah is the extended control register.
  */
@@ -239,7 +235,7 @@ static void test_banking_swaps_only_the_upper_half(const void *data)
     qtest_quit(qts);
 }
 
-/* The other half of the seam: nothing below 40h moves when the bank does. */
+/* Bank changes leave addresses below 40h unchanged. */
 static void test_the_low_half_is_common_to_both_banks(const void *data)
 {
     QTestState *qts = octane_start();
@@ -329,7 +325,7 @@ static void test_register_c_clears_its_flags_on_read(const void *data)
      * The periodic tap is the only one of C's three sources a test can arm
      * without waiting a second, so drive the flag through the alarm instead:
      * an update-ended flag needs a second to pass. Use the extended path's
-     * mirror image and assert the rule that matters -- reading clears.
+     * mirror image and assert the rule that matters: reading clears.
      * Register C is read-only, so the flag has to come from the part.
      */
     reg_write(qts, R_CTRL_A, (reg_read(qts, R_CTRL_A) & ~0x0f) | 0x0f);
@@ -365,7 +361,7 @@ static void test_the_extended_flags_clear_only_by_writing_zero(const void *data)
         uint8_t base = reg_read(qts, R_EXT_CTRL_4A) & ~(X4A_RF | X4A_WF |
                                                         X4A_KF);
 
-        /* Software can set these, which is how the datasheet describes them. */
+        /* Software can set these, as the datasheet describes. */
         reg_write(qts, R_EXT_CTRL_4A, base | flags[i]);
 
         g_assert_cmphex(reg_read(qts, R_EXT_CTRL_4A) & flags[i], ==, flags[i]);
@@ -383,7 +379,7 @@ static void test_the_extended_flags_clear_only_by_writing_zero(const void *data)
  * The line is level and IRQF is derived rather than latched: a flag with its
  * enable clear drives nothing, enabling it asserts with no new event, and
  * clearing the flag deasserts. The pin itself is a board wire this controller
- * does not carry -- on an Octane the clock takes its own bridge interrupt --
+ * does not carry. On an Octane the clock takes its own bridge interrupt,
  * so IRQF is the guest-visible face of the same signal.
  */
 static void test_the_interrupt_is_level_and_derived(const void *data)
@@ -431,7 +427,7 @@ static void test_the_model_byte_identifies_the_part(const void *data)
     reg_write(qts, R_MODEL, 0x00);
     g_assert_cmphex(reg_read(qts, R_MODEL), ==, MODEL_DS1685);
 
-    /* Both cells report a healthy battery, which is the truth about a model. */
+    /* Both cells report a healthy battery, as the model does. */
     g_assert_cmphex(reg_read(qts, R_EXT_CTRL_4A) & X4A_VRT2, ==, X4A_VRT2);
     select_bank(qts, 0);
     g_assert_cmphex(reg_read(qts, R_CTRL_D) & D_VRT, ==, D_VRT);
@@ -515,7 +511,7 @@ static void test_reserved_locations_read_zero(const void *data)
 
 /*
  * The extended RAM address does not advance on this member of the family, so
- * a driver has to rewrite it before every byte -- and Linux does.
+ * a driver has to rewrite it before every byte, and Linux does.
  */
 static void test_the_extended_ram_address_does_not_advance(const void *data)
 {
@@ -658,7 +654,7 @@ static void test_a_reset_restores_the_documented_power_up_bits(const void *data)
 
     /*
      * SET clears the update-in-progress bit, so this reads 0 whatever the
-     * moment -- an assertion on a timing window would flake.
+     * moment. An assertion on a timing window would flake.
      */
     select_bank(qts, 0);
     reg_write(qts, R_CTRL_B, reg_read(qts, R_CTRL_B) | B_SET);
@@ -681,7 +677,7 @@ static void test_the_power_active_bit_requests_a_shutdown(const void *data)
 
     /*
      * Hardware clears the bit again whenever an enabled wake-up or kickstart
-     * is asking the supply back on, so clear both flags first -- which is
+     * is asking the supply back on. Clear both flags first, as
      * what Linux's power-off path does before it writes the bit.
      */
     base = reg_read(qts, R_EXT_CTRL_4A) & ~(X4A_RF | X4A_WF | X4A_KF);
@@ -695,7 +691,7 @@ static void test_the_power_active_bit_requests_a_shutdown(const void *data)
 
 /*
  * The same bit does not power the machine down while an enabled wake-up
- * alarm is asking it back on -- the part clears the bit instead. This is the
+ * alarm is asking it back on. The part clears the bit instead. This is the
  * one place the documented side effect is guest-visible, and a model that
  * skips it would power off where the hardware would not.
  */

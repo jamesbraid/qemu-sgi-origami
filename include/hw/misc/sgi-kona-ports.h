@@ -1,20 +1,30 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
+/* InfiniteReality command-port roles and selector tables. */
+#ifndef HW_MISC_SGI_KONA_PORTS_H
+#define HW_MISC_SGI_KONA_PORTS_H
+
+#include "hw/misc/sgi-command-port.h"
+
 /*
  * Data only: no functions, MemoryRegion or reset phase. The generic
  * command-port framer consumes the roles and selector tables declared here.
  * At this revision, the device maps textport at +0xc10000 with mailbox and
  * interrupt cause. FIFO and doorbell MMIO placement remains unknown.
- *
+ */
+/*
  * The kernel FIFO has candidate offsets +0x7c and +0x80007c. The IO6
  * firmware's one-time low-window +0x7c write is a separate operation. FIFO
  * placement is unresolved. Textport commands at +0xc10000 begin with sync
  * word 1, then command code and arguments. The owner strips the sync word
  * before passing the command to the selector-first framer.
- *
+ */
+/*
  * The userspace doorbell is at guest-process VA 0x4000. Candidate device
  * windows are +0x80000, +0x810000 and +0x10000. A +0x10000 base is
  * suggestive but unestablished; no doorbell aperture is selected here.
- *
+ */
+
+/*
  * The following selectors are omitted because their fixed argument count
  * or selector-first order is not established. Omission does not imply
  * that real hardware ignores them:
@@ -35,16 +45,7 @@
  * - Textport 0xa takes six sign-extended halfwords and a packed 1-bpp
  *   bitmap. The owner frames this variable-length transfer outside the
  *   fixed-count sgi_command_port_write() path.
- *
- * Retained raw captures can under-report packet length. Table counts use
- * checked prose rather than raw captures alone. Incomplete captures cannot
- * establish selector-last order for excluded entries. Unknown counts and
- * word order remain unknown.
  */
-#ifndef HW_MISC_SGI_KONA_PORTS_H
-#define HW_MISC_SGI_KONA_PORTS_H
-
-#include "hw/misc/sgi-command-port.h"
 
 typedef enum SGIKonaPort {
     SGI_KONA_PORT_FIFO,
@@ -52,24 +53,15 @@ typedef enum SGIKonaPort {
     SGI_KONA_PORT_DOORBELL,
 } SGIKonaPort;
 
-/*
- * Five fixed-count, selector-first kernel FIFO entries. See the unresolved
- * FIFO placement and excluded-selector limitations above.
- */
+/* Five fixed-count, selector-first kernel FIFO entries at +0x7c. */
 extern const SGICommandPortSelector sgi_kona_fifo_selectors[];
 extern const unsigned sgi_kona_fifo_num_selectors;
 
-/*
- * Textport +0xc10000 selectors follow sync word 1. The owner strips that
- * word before framing the command.
- */
+/* Textport +0xc10000 selectors follow sync word 1, stripped by the owner. */
 extern const SGICommandPortSelector sgi_kona_textport_selectors[];
 extern const unsigned sgi_kona_textport_num_selectors;
 
-/*
- * OpenGL doorbell selectors at guest-process VA 0x4000. The backing
- * device aperture remains unresolved.
- */
+/* OpenGL 3D doorbell selectors at guest VA 0x4000. */
 extern const SGICommandPortSelector sgi_kona_doorbell_selectors[];
 extern const unsigned sgi_kona_doorbell_num_selectors;
 

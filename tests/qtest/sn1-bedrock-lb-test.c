@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * Isolated Bedrock local-block MMIO contract. The empty machine provides an
- * address space only and does not represent an Origin 300.
+ * Isolated Bedrock local-block MMIO; the empty machine supplies only an
+ * address space and does not represent an Origin 300.
  */
 #include "qemu/osdep.h"
 #include "libqtest.h"
@@ -63,9 +63,9 @@
 
 /*
  * The MicroLAN controller. Bit 0 is the sampled level and bit 1 completion,
- * both the device's to publish; the sample offset, the low-pulse duration
- * and the two phase dividers are the guest's, and the upper divider reaches
- * bit 33.
+ * both the device's to publish; the sample offset, the low-pulse duration and
+ * the two phase dividers are the guest's, and the upper divider reaches bit
+ * 33.
  */
 #define MICROLAN_RXDATA (1ULL << 0)
 #define MICROLAN_DONE   (1ULL << 1)
@@ -77,7 +77,7 @@
  * slot delay. Every number here is QEMU's, not Bedrock's: no public source
  * turns this register's encodings into time.
  */
-#define MICROLAN_PULSE_RESET 0x321  /* long low: a 1-Wire reset and presence */
+#define MICROLAN_PULSE_RESET 0x321  /* long low: 1-Wire reset/presence */
 #define MICROLAN_PULSE_SHORT 8      /* releases the wire: a read, or a one */
 #define MICROLAN_PULSE_ZERO  60     /* held low: a zero */
 #define MICROLAN_SLOT_NS     1000
@@ -119,8 +119,8 @@ static QTestState *lb_start_hub(const char *extra)
 /*
  * QEMU starts the virtual clock disabled and vm_start() enables it, so a
  * device timer on a machine launched with -S never fires however far the
- * clock is stepped. Every test that waits for a slot -- or asserts that no
- * slot is waiting -- has to run the machine, or it asserts nothing.
+ * clock is stepped. Every test that waits for a slot, or asserts that no
+ * slot is waiting, has to run the machine, or it asserts nothing.
  */
 static QTestState *lb_start_clock(const char *extra)
 {
@@ -133,8 +133,9 @@ static QTestState *lb_start_clock(const char *extra)
 /*
  * A migration destination can still be loading when the source calls the
  * migration complete, and cont() while it is still coming in only sets
- * autostart and returns success (monitor/qmp-cmds.c) -- the machine starts a
- * moment later. Sampling query-status once would therefore step the clock
+ * autostart and returns success (monitor/qmp-cmds.c). The machine
+ * starts a moment later. Sampling query-status once would therefore step the
+ * clock
  * while it is still disabled, so ask once and then wait for it to be running.
  */
 static void lb_wait_for_clock_running(QTestState *s)
@@ -178,11 +179,11 @@ static void test_identity_and_permissions(void)
 }
 
 /*
- * The parent composes the block with only its revision set, so a
- * one-chassis guest reads the property defaults: manufacturer 0x036 (the
- * model's value from two public widget tables; the hardware word is
- * unobserved), part 0x3012, node 0 and region size 0 (the model's chosen
- * value, and what the Itanium port consults for the machine's size).
+ * The parent composes the block with only its revision set, so a one-chassis
+ * guest reads the property defaults: manufacturer 0x036 (the model's value
+ * from two public widget tables; the hardware word is unobserved), part
+ * 0x3012, node 0 and region size 0 (the model's chosen value, and what the
+ * Itanium port consults for the machine's size).
  */
 static void test_default_identity(void)
 {
@@ -245,10 +246,9 @@ static void test_revision_write_latches_node(void)
 }
 
 /*
- * The datasheet gives the permission registers no reset value and says only
- * that every consumer's first access assumes its region is allowed. Reading
- * all ones at power-on and after the block's own soft reset is the model's
- * choice, asserted as such.
+ * Permission-register reset values are unknown; consumers initially assume
+ * access is allowed. All-ones values at power-on and soft reset are model
+ * policy.
  */
 static void test_permissive_reset(void)
 {
@@ -265,14 +265,14 @@ static void test_permissive_reset(void)
 }
 
 /*
- * No source we may read states either register's power-on contents (see the
- * local block datasheet). Reading zero at power-on and after the block's own
- * soft reset is the model's choice, asserted as such -- not a hardware fact.
- * The maximum-count field this pins at zero is the one the stock PROM's own
- * real-time conversion divides by, so this reset value is known to make that
- * conversion come out about eighty times short (jamesb/qemu#581); a source
- * that settles the real reset value replaces this test's expectation along
- * with the datasheet entry it backs.
+ * No public source states either register's power-on contents. Reading zero
+ * at power-on and after the block's own soft reset is the model's choice,
+ * asserted as a model choice, not a hardware fact. The maximum-count field
+ * this pins
+ * at zero is the one the stock PROM's own real-time conversion divides by, so
+ * this reset value is known to make that conversion come out about eighty
+ * times short (jamesb/qemu#581); a source that settles the real reset value
+ * replaces this test's expectation.
  */
 static void test_rtc_reset(void)
 {
@@ -396,7 +396,9 @@ static void test_scratch_aliases_and_reset(void)
     g_assert_false(qtest_get_irq(s, 0));
     g_assert_cmphex(qtest_readq(s, LB_BASE + SCRATCH(0)), ==, 0);
     g_assert_cmphex(qtest_readq(s, LB_BASE + SCRATCH(1)), ==, 0xdeadbef0);
-    /* The reboot mailbox is not reset, the block's own soft reset included. */
+    /*
+     * The reboot mailbox is not reset, the block's own soft reset included.
+     */
     g_assert_cmphex(qtest_readq(s, LB_BASE + SCRATCH(2)), ==, 0xdeadbef1);
     g_assert_cmphex(qtest_readq(s, LB_BASE + ERROR_BITS), ==, 4);
     qtest_quit(s);
@@ -404,13 +406,12 @@ static void test_scratch_aliases_and_reset(void)
 
 /*
  * hw/misc/sgi-bedrock.c's rendezvous hold at LB scratch 1
- * (sgi_bedrock_hold_scratch1_write, docs/known-issues.md) only arbitrates
- * an access this node's own processor issues. A standalone
- * sgi-bedrock-lb, as every test in this file runs, has no owning node
- * (SGIBedrockLBState.bedrock is only set by sgi-bedrock.c's
- * bedrock_realize), and a qtest backdoor write carries no issuing vCPU
- * either way. A second write to scratch 1 must therefore still round-trip
- * at once, never withheld, exactly as the first assertion in
+ * (sgi_bedrock_hold_scratch1_write) only arbitrates an access this node's own
+ * processor issues. A standalone sgi-bedrock-lb, as every test in this file
+ * runs, has no owning node (SGIBedrockLBState.bedrock is only set by
+ * sgi-bedrock.c's bedrock_realize), and a qtest backdoor write carries no
+ * issuing vCPU either way. A second write to scratch 1 must therefore still
+ * round-trip at once, never withheld, exactly as the first assertion in
  * test_scratch_aliases_and_reset already exercises in passing; this test
  * names the property directly.
  */
@@ -428,7 +429,7 @@ static void test_scratch1_second_write_no_hold(void)
 }
 
 /*
- * The vector registers as the datasheet's checklist states them: parameters
+ * Vector registers: parameters
  * keep their fields with busy reading clear, route and data are plain
  * storage, the PROM's power-on zero writes to status, return route and read
  * data are accepted, and a read of status clear is not an unimplemented
@@ -524,9 +525,9 @@ static void test_vector_no_link(void)
  * six fields, clears completion, and publishes completion and the sampled
  * level only once the slot's virtual delay has passed. Start, completion and
  * that delay are the model's; none is a claim about Bedrock timing.
- *
- * No endpoint is fitted -- which part IP45 carries is not established -- so
- * the bus is empty and every slot reports the bare wire. A released wire
+ * No endpoint is fitted because the part IP45 carries is not
+ * established. The bus is empty and every slot reports the bare wire. A
+ * released wire
  * samples one, a wire held low samples zero, and a reset finds no presence.
  * The zero-sampling slot is what separates this from a controller whose
  * sampled bit is fixed.
@@ -570,8 +571,8 @@ static void test_microlan_slot(void)
 
 /*
  * Half a register cannot start a wire slot. The block takes one aligned
- * eight-byte access -- the model's choice, so that QEMU cannot split a
- * guest's write into two and run two slots -- and the whole access carries
+ * eight-byte access. This model choice prevents QEMU from splitting a
+ * guest's write and running two slots. The whole access carries
  * the dividers above bit 31.
  */
 static void test_microlan_rejects_a_narrow_access(void)
@@ -591,8 +592,8 @@ static void test_microlan_rejects_a_narrow_access(void)
 
 /*
  * A machine reset and the block's own soft reset both cancel a slot in
- * flight, so completion cannot appear afterwards. Zero is the model's
- * chosen value for the register: no public source gives a power-on state.
+ * flight, so completion cannot appear afterwards. Zero is the model's chosen
+ * value for the register: no public source gives a power-on state.
  */
 static void test_microlan_reset_cancels_a_pending_slot(void)
 {
@@ -622,8 +623,8 @@ static void test_microlan_reset_cancels_a_pending_slot(void)
 /*
  * What a second write during a slot does is not published, so the model
  * refuses it rather than guessing a transaction semantics. The first slot
- * runs to its own completion with its own timing, and the discarded write
- * is logged. Its pulse would have sampled the other level, so a model that
+ * runs to its own completion with its own timing, and the discarded write is
+ * logged. Its pulse would have sampled the other level, so a model that
  * quietly took it would be visible here.
  */
 static void test_microlan_write_during_a_slot_is_refused(void)
@@ -738,8 +739,8 @@ static void test_migration(void)
 /*
  * The stream is written with a slot in flight. The destination has to finish
  * it once, with the level the source's wire returned rather than a level
- * recomputed after load: the slot held the wire low and sampled zero, while
- * a controller that dropped the pending level would fall back to the reset
+ * recomputed after load: the slot held the wire low and sampled zero, while a
+ * controller that dropped the pending level would fall back to the reset
  * level and report one.
  */
 static void test_microlan_migration(void)

@@ -1,9 +1,8 @@
 /*
- * The I/O bridge's register face. Whole registers are compared, built from
- * named fields, so a field this file did not think to name still has to be
- * right. Two untestable limits: a refused access and a zero answer are
- * indistinguishable without a processor, and a qtest wide read is split
- * into legal accesses before the chip could refuse it.
+ * Bridge register tests compare whole words assembled from named fields,
+ * including bits without local names.
+ * Qtest cannot distinguish refused access from zero without a CPU, and
+ * splits wide reads into legal accesses before the chip can reject them.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
@@ -21,8 +20,7 @@
 
 /*
  * Origin 200's onboard Bridge, a fitted part of its node's own System
- * Board (docs/designs/sn-machine-model-architecture.md, "Node devices"):
- * sn0.c creates it directly, as a QOM child of the node object, not
+ * Board: sn0.c creates it directly, as a QOM child of the node object, not
  * wrapped in any board class (the base-io-device step's design; see
  * hw/mips/sgi/sn0.c, sn0_node_build_baseio()).
  */
@@ -61,7 +59,8 @@
 
 #define BRIDGE_DEVICES          8
 
-/* The identity a Bridge answers with, and the crossbar identity it must not. */
+/* The identity a Bridge answers with, and the crossbar identity it must
+ * not. */
 #define ID_REVISION_SHIFT       28
 #define ID_PART_SHIFT           12
 #define ID_MANUFACTURER_SHIFT   1
@@ -75,9 +74,9 @@
 #define ID_MANUFACTURER_OF(v)   (((v) >> ID_MANUFACTURER_SHIFT) & 0x7ff)
 
 /*
- * The reset state, field by named field. Seven of the control register's fields
- * come out of reset set, which is the whole reason these are written as sums:
- * a total cannot show which of its terms went missing.
+ * The reset state, field by named field. Seven of the control register's
+ * fields come out of reset set, which is the whole reason these are written
+ * as sums: a total cannot show which of its terms went missing.
  */
 #define STATUS_PCI_MODE         (1u << 5)
 
@@ -134,12 +133,13 @@ static const uint32_t device_reset[8] = {
     0x18001000, 0x18001002, 0x18001004, 0x18001005,
     0x18001006, 0x18001007, 0x18001008, 0x18001009,
 };
-/* Bits 28 down to 12 are defined, and so are the twelve of the window base. */
+/* Bits 28 down to 12 are defined, and so are the twelve of the window
+ * base. */
 #define DEVICE_WRITABLE         0x1fffffffu
 
 /*
- * The machine states one silicon revision for this chip and both registers that
- * report an identity are derived from it, so the test names it once too.
+ * The machine states one silicon revision for this chip and both registers
+ * that report an identity are derived from it, so the test names it once too.
  */
 #define BRIDGE_REVISION         4
 
@@ -170,9 +170,10 @@ static const uint32_t device_reset[8] = {
  * Devices 0 and 1 hold the machine's own adapters and are never free.
  */
 #define PROBE_SLOT              4  /* the card most tests read */
-#define PROBE_SLOT_ABOVE        5  /* the next device up, for the 4 KB stride */
+#define PROBE_SLOT_ABOVE        5  /* next device up, for the 4 KB stride */
 #define DMA_SLOT                6  /* the bus-mastering card */
-#define EMPTY_SLOT              7  /* never populated where emptiness is asserted */
+#define EMPTY_SLOT              7  /* never populated where emptiness is
+ * asserted */
 
 #define PROBE_CARD              " -device lsi53c895a,addr=" stringify(PROBE_SLOT)
 #define PROBE_VENDOR            0x1000
@@ -189,14 +190,14 @@ static const uint32_t device_reset[8] = {
 #define CARD_SCRATCH            0x34
 
 /*
- * Sixteen megabytes apart -- far wider than any window -- so a window
+ * Sixteen megabytes apart, wider than any window, so a window
  * reaching a card reached the one it was aimed at.
  */
 #define CARD_MMIO(slot)         (0x10000000u + (slot) * 0x1000000u)
 
 /*
  * Stated, not computed: recomputing the model's arithmetic checks that it
- * ran, not that it is right. Two 2 MB windows, then six of 1 MB -- the
+ * ran, not that it is right. Two 2 MB windows, then six of 1 MB: the
  * detail every driver gets wrong once.
  */
 static const uint64_t window_offset[BRIDGE_DEVICES] = {
@@ -208,8 +209,8 @@ static const uint64_t window_offset[BRIDGE_DEVICES] = {
 
 /*
  * One plain origin200 serves every case that wants no card and no second
- * node, started in main(). Cases naming any other command line -- a card
- * in a slot, two nodes, a firmware image, a trace file -- keep their own.
+ * node, started in main(). Cases with a card in a slot, two nodes, a
+ * firmware image, or a trace file use their own command lines.
  */
 static QTestState *qts;
 
@@ -301,9 +302,10 @@ static void test_identity(const void *data)
     g_assert_cmphex(id, ==, bridge_identity(BRIDGE_REVISION));
 
     /*
-     * Stated separately because it is the specific wrong answer this chip could
-     * plausibly give: a crossbar reports part zero and manufacturer zero, and
-     * a widget answering that sends both guests down a different probe path.
+     * Stated separately because it is the specific wrong answer this chip
+     * could plausibly give: a crossbar reports part zero and manufacturer
+     * zero, and a widget answering that sends both guests down a different
+     * probe path.
      */
     g_assert_false(ID_PART_OF(id) == XBOW_PART &&
                    ID_MANUFACTURER_OF(id) == XBOW_MANUFACTURER);
@@ -348,7 +350,7 @@ static void test_reset_state(const void *data)
 
     /*
      * The strap-driven bits are undefined at reset, so the flash select is
-     * this model's choice -- asserted so changing it must be deliberate.
+     * this model's choice. Assert it so changes are deliberate.
      */
     g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_STATUS)), ==, STATUS_PCI_MODE);
 }
@@ -363,7 +365,7 @@ static void test_each_slot_resets_to_its_own_window(const void *data)
     bridge_reset();
 
     /*
-     * Three bits set, not two -- memory-or-I/O select is the third. All
+     * Three bits are set: memory-or-I/O select is the third. All
      * eight rows, because a hand-written table is where one goes missing.
      * Every slot, including the ones a stock PROM's own PCI enumeration
      * goes on to program: nothing in this model does that enumeration on
@@ -415,9 +417,9 @@ static void test_fields_are_the_width_they_should_be(const void *data)
     }
 
     /*
-     * The control register's two link-retry-counter strobes are written as ones
-     * and always read back zero, which is what makes them strobes rather than
-     * storage. Everything else in the register takes the write.
+     * The control register's two link-retry-counter strobes are written as
+     * ones and always read back zero, which is what makes them strobes
+     * rather than storage. Everything else in the register takes the write.
      */
     qtest_writel(qts, REG(BRIDGE_CONTROL), 0xffffffff);
     g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_CONTROL)), ==,
@@ -451,9 +453,9 @@ static void test_a_read_only_register_stays_put(const void *data)
     bridge_reset();
 
     /*
-     * The identity is what a guest decides the shape of the machine from, so a
-     * model letting a write land on it would let a guest change what machine it
-     * thinks it is on.
+     * The identity is what a guest decides the shape of the machine from, so
+     * a model letting a write land on it would let a guest change what
+     * machine it thinks it is on.
      */
     qtest_writel(qts, REG(BRIDGE_IDENTIFICATION), 0xdeadbeef);
     g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_IDENTIFICATION)), ==,
@@ -480,7 +482,7 @@ static void test_the_default_machine_has_the_bridge(const void *data)
     /*
      * The default machine must carry the bridge: every other test names the
      * option, so this is the only one that would notice the default going
-     * back -- silently losing the bus everything hangs off.
+     * back and silently lose the bus everything hangs off.
      */
     g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_IDENTIFICATION)), ==,
                     bridge_identity(BRIDGE_REVISION));
@@ -531,13 +533,14 @@ static void test_configuration_space_is_laid_out_right(const void *data)
                     PROBE_IDENTITY);
 
     /*
-     * This card has one function, so function 1 must be empty -- a model
+     * This card has one function, so function 1 must be empty. A model
      * ignoring the field aliases all eight onto function 0 and no test
      * reading only function 0 could tell.
      */
     g_assert_cmphex(qtest_readl(qts, CFG0(PROBE_SLOT, 1)), ==, NO_CARD);
 
-    /* A slot with no card in it answers all ones, and specifically not zero. */
+    /* A slot with no card in it answers all ones, and specifically not
+     * zero. */
     g_assert_cmphex(qtest_readl(qts, CFG0(DMA_SLOT, 0)), ==, NO_CARD);
     g_assert_cmphex(qtest_readl(qts, CFG0(EMPTY_SLOT, 0)), ==, NO_CARD);
 
@@ -546,8 +549,8 @@ static void test_configuration_space_is_laid_out_right(const void *data)
 
 /*
  * Option cards go in devices 5, 6 and 7 (0-2 base I/O, 3 its dual-slot guest,
- * 4 no connector). Each decodes a fitted card on its own -- fit one, only its
- * slot answers, the others read all-ones -- catching a decode that skipped
+ * 4 no connector). Each decodes a fitted card. Fit one: only its slot
+ * answers, and the others read all-ones. This catches a decode that skipped
  * device numbers or aliased slots, which a single-slot check would miss.
  */
 static void test_each_option_slot_decodes_a_card(const void *data)
@@ -680,8 +683,8 @@ static void test_a_window_goes_where_its_base_says(const void *data)
 }
 
 /*
- * The address translation table and its two views, stated here as the datasheet
- * states them rather than as the model computes them.
+ * The address translation table and its two views, specified independently of
+ * the model's computation.
  */
 #define ATE_BASE                0x010000
 #define ATE_ENTRIES             128
@@ -768,23 +771,32 @@ static void test_translation_entries_reset_clear(const void *data)
     "-M origin200,topology=origin200-dual -m 128M " \
     "-smp 4"
 
-#define NODE1_PCI_ADDR          0xa000000100bc4000ULL /* widget 0xa, xtalk 0x100bc4000 */
-#define NODE1_SYS_ADDR          0x100bc4000ULL        /* node 1 RAM: NASID 1 << 32 + off */
-#define NODE0_TRUNCATED_ADDR    0x00bc4000ULL         /* where dropping bit 32 lands it */
+#define NODE1_PCI_ADDR          0xa000000100bc4000ULL /* widget 0xa, xtalk
+ * 0x100bc4000 */
+#define NODE1_SYS_ADDR          0x100bc4000ULL        /* node 1 RAM: NASID 1
+ * << 32 + off */
+#define NODE0_TRUNCATED_ADDR    0x00bc4000ULL         /* where dropping bit 32
+ * lands it */
 #define DMA64_SEED              0x51
 #define DMA64_LEN               16
 
-/* The read direction: a copy's 64-bit source in node 1, its destination in node 0. */
-#define COPY_SRC_PCI            0xa000000100c00000ULL /* widget 0xa, xtalk 0x100c00000 */
-#define COPY_SRC_SYS            0x100c00000ULL        /* node 1 RAM holding the source */
-#define COPY_DST_ADDR           0x00300000u           /* a node-0 local destination */
+/* The read direction: a copy's 64-bit source in node 1, its destination in
+ * node 0. */
+#define COPY_SRC_PCI            0xa000000100c00000ULL /* widget 0xa, xtalk
+ * 0x100c00000 */
+#define COPY_SRC_SYS            0x100c00000ULL        /* node 1 RAM holding
+ * the source */
+#define COPY_DST_ADDR           0x00300000u           /* a node-0 local
+ * destination */
 
 /*
- * A 64-bit cycle must bypass the offset registers -- the reset-active
- * 512 MB step included -- where the 31-bit path would add them.
+ * A 64-bit cycle must bypass the offset registers, including the
+ * reset-active 512 MB step, where the 31-bit path would add them.
  */
-#define DMA64_NODE0_PCI         0xa000000000fbc000ULL /* widget 0xa, xtalk 0xfbc000, NASID 0 */
-#define DMA64_NODE0_SYS         0x00fbc000ULL         /* node 0 guest-phys, where it must land */
+#define DMA64_NODE0_PCI         0xa000000000fbc000ULL /* widget 0xa, xtalk
+ * 0xfbc000, NASID 0 */
+#define DMA64_NODE0_SYS         0x00fbc000ULL         /* node 0 guest-phys,
+ * where it must land */
 
 /* Where the transfer source's own registers are put in PCI memory space. */
 #define DMA_CARD_MMIO           CARD_MMIO(DMA_SLOT)
@@ -803,14 +815,14 @@ static void test_translation_entries_reset_clear(const void *data)
 #define WIDE_GOLDEN_MIRRORED    0xefcdab8967452301ULL
 
 /*
- * The translated window, and the two pages of it this test uses. A page is 4 KB
- * because the control register resets choosing that size.
+ * The translated window, and the two pages of it this test uses. A page is 4
+ * KB because the control register resets choosing that size.
  */
 #define PCI_TRANSLATED          0x40000000u
 #define PAGE_SIZE_4K            0x1000u
 
 /*
- * The two pages translate to non-adjacent places -- the point of the
+ * The two pages translate to non-adjacent places. This is the point of the
  * test: a translate-once-per-transfer model is right whenever the pages
  * happen to be consecutive, so consecutive pages cannot tell it apart.
  */
@@ -898,8 +910,8 @@ static void test_a_transfer_straddling_a_page(const void *data)
 
     /*
      * Stated as its own assertion rather than left implied, because it names
-     * the exact wrong answer: the page physically after the first one is where
-     * a translate-once model puts the tail, and it must be untouched.
+     * the exact wrong answer: the page physically after the first one is
+     * where a translate-once model puts the tail, and it must be untouched.
      */
     for (i = 0; i < STRADDLE_TAIL; i++) {
         g_assert_cmpuint(after[i], ==, 0);
@@ -954,7 +966,8 @@ static void test_an_invalid_entry_transfers_nothing(const void *data)
 #define SWAP_LEN                12
 #define SWAP_SENTINEL           0xee
 
-/* The transfer source's window register, with whatever swap bits are wanted. */
+/* The transfer source's window register, with whatever swap bits are
+ * wanted. */
 static void bridge_source_with_swap_at(QTestState *qts, unsigned int slot,
                                        uint32_t swap_bits)
 {
@@ -1163,10 +1176,11 @@ static void test_dma_swap_bits_reset_clear(const void *data)
 #define MASQ_SLOT               7
 #define MASQ_CARD               " -device sgi-bridge-dma-test,addr=" \
                                 stringify(MASQ_SLOT)
-/* Exempt slot 7 -- bit 7 -- from the Bridge's byte-lane correction. */
+/* Exempt slot 7, bit 7, from the Bridge's byte-lane correction. */
 #define MASQ_EXEMPT             " -global sgi-bridge.byte-lane-exempt=0x80"
 
-/* Bus mastering too: these cards initiate transfers as well as answer them. */
+/* Bus mastering too: these cards initiate transfers as well as answer
+ * them. */
 static void card_start(QTestState *qts, unsigned int slot)
 {
     qtest_writel(qts, CFG0(slot, 0) + 0x10, CARD_MMIO(slot));
@@ -1233,7 +1247,7 @@ static void test_dma_exempt_slot_is_never_swapped(const void *data)
 }
 
 /*
- * Same device, same transfer, exemption dropped: permuted -- so the
+ * Same device and transfer with exemption dropped: permuted, so the
  * exemption above came from the property, not an unexercised correction.
  */
 static void test_dma_unexempt_slot_is_swapped(const void *data)
@@ -1304,8 +1318,8 @@ static void test_dma_swap_on_an_exempt_slot_is_reported(const void *data)
                                              DEV_SWAP_DIRECT));
 
     /*
-     * Same bits, same slot, same register write -- a device the model does
-     * correct. Nothing to report, because this one works.
+     * Same bits, slot, and register write. The model corrects this device.
+     * Nothing to report, because this one works.
      */
     g_assert_false(bridge_log_has_the_message(MASQ_CARD,
                                               DEV_SWAP_TRANSLATED));
@@ -1333,9 +1347,9 @@ static void bridge_clear_the_direct_map(QTestState *qts)
 }
 
 /*
- * Direct window, its bit clear: permuted, exactly as the page-mapped window is
- * with ITS bit clear. This is the window the firmware's own block-RAM download
- * goes through, so it is the branch that carries the boot.
+ * Direct window, its bit clear: permuted, exactly as the page-mapped window
+ * is with ITS bit clear. This is the window the firmware's own block-RAM
+ * download goes through, so it is the branch that carries the boot.
  */
 static void test_dma_direct_window_swap_clear(const void *data)
 {
@@ -1384,9 +1398,8 @@ static void test_dma_direct_window_swap_set(const void *data)
 }
 
 /*
- * One register setting, two windows, opposite orders -- the shape a
- * single-swap-bit model cannot satisfy. A red is a model mismatch: nothing
- * that boots drives the page-mapped window.
+ * One register selects opposite byte orders for the two windows. A single
+ * swap bit cannot model both; boot paths do not use the page-mapped window.
  */
 static void test_dma_the_two_swap_bits_are_independent(const void *data)
 {
@@ -1422,7 +1435,7 @@ static void test_dma_the_two_swap_bits_are_independent(const void *data)
 }
 
 /*
- * Local space is never permuted -- no swapper is in its path. Both
+ * Local space is never permuted; no swapper is in its path. Both
  * settings run, or this is indistinguishable from a forgotten window.
  */
 static void test_dma_local_space_is_never_swapped(const void *data)
@@ -1497,7 +1510,7 @@ static void test_dma_a_self_ordered_card_is_never_swapped(const void *data)
     /*
      * And with the guest asking for the swap the model does not reproduce
      * for such a card. The declaration is the card's, so the guest cannot
-     * reach past it -- and a model keyed on the register would differ here.
+     * reach past it, and a model keyed on the register would differ here.
      */
     qtest_writel(qts, REG(BRIDGE_DEVICE(SELF_SLOT)),
                  DEV_MEMORY_SPACE | (CARD_MMIO(SELF_SLOT) >> 20) |
@@ -1525,7 +1538,7 @@ static void test_dma_a_self_ordered_card_is_never_swapped(const void *data)
  * the board named had its narrow accesses mis-addressed too. The card's
  * 64-bit register block holds a constant whose bytes all differ, and the
  * slot is left 32-bit so that a byte lands on the narrow path: which byte
- * answers says which offset the bridge addressed. Stated, not computed --
+ * answers says which offset the bridge addressed. Stated, not computed,
  * the four low bytes of 0x0123456789abcdef, which the byte-lane rule reaches
  * at the offset itself or at offset xor three.
  */
@@ -1570,7 +1583,7 @@ static void test_a_self_ordered_card_reads_narrow_straight(const void *data)
 /*
  * And the chip the board actually carries, in a slot no board puts it in.
  * The card above declares itself because a test told it to; this one
- * declares itself because of what it is, which is the whole point -- an
+ * declares itself because of what it is. An
  * IOC3 added on the command line must be exempt in slot 5 exactly as the
  * board's own is in slot 2. The model reports the decision when a guest
  * asks for a swap it will not reproduce, which is where this reads it.
@@ -1604,7 +1617,7 @@ static void test_an_ioc3_is_exempt_in_any_slot(const void *data)
 
 /*
  * The 64-bit decode: a node-1 write must land in node 1's RAM and leave
- * node 0's low RAM -- where the dropped NASID bit would have put it --
+ * node 0's low RAM, where the dropped NASID bit would have put it,
  * untouched. For a write, the miss is silent corruption.
  */
 static void test_dma_direct_window_reaches_the_second_node(const void *data)
@@ -1620,7 +1633,8 @@ static void test_dma_direct_window_reaches_the_second_node(const void *data)
     bridge_start_the_transfer_source(qts);
     bridge_source_with_swap(qts, DEV_SWAP_DIRECT);
 
-    /* Offset zero and the 512 MB step cleared, so the address decodes to itself. */
+    /* Offset zero and the 512 MB step cleared, so the address decodes to
+     * itself. */
     qtest_writel(qts, REG(BRIDGE_DIRECT_MAP), 0);
 
     /* Program the 64-bit destination: the low half, then the high half. */
@@ -1632,13 +1646,15 @@ static void test_dma_direct_window_reaches_the_second_node(const void *data)
     qtest_writel(qts, WINDOW(DMA_SLOT) + DMA_REG_SEED, DMA64_SEED);
     qtest_writel(qts, WINDOW(DMA_SLOT) + DMA_REG_GO, 1);
 
-    /* It reached node 1's RAM at the full address, not truncated into node 0. */
+    /* It reached node 1's RAM at the full address, not truncated into node
+     * 0. */
     qtest_memread(qts, NODE1_SYS_ADDR, seen, sizeof(seen));
     for (i = 0; i < DMA64_LEN; i++) {
         g_assert_cmpuint(seen[i], ==, (uint8_t)(DMA64_SEED + i));
     }
 
-    /* Node 0's low RAM, where dropping bit 32 would have landed it, is clean. */
+    /* Node 0's low RAM, where dropping bit 32 would have landed it, is
+     * clean. */
     qtest_memread(qts, NODE0_TRUNCATED_ADDR, node0, sizeof(node0));
     for (i = 0; i < DMA64_LEN; i++) {
         g_assert_cmpuint(node0[i], ==, 0);
@@ -1665,7 +1681,8 @@ static void test_dma_direct_window_reads_the_second_node(const void *data)
     bridge_source_with_swap(qts, DEV_SWAP_DIRECT);
     qtest_writel(qts, REG(BRIDGE_DIRECT_MAP), 0);
 
-    /* Seed node 1's RAM at the 64-bit source; a truncated read would miss it. */
+    /* Seed node 1's RAM at the 64-bit source; a truncated read would miss
+     * it. */
     for (i = 0; i < DMA64_LEN; i++) {
         pattern[i] = (uint8_t)(DMA64_SEED + i);
     }
@@ -1679,7 +1696,8 @@ static void test_dma_direct_window_reads_the_second_node(const void *data)
     qtest_writel(qts, WINDOW(DMA_SLOT) + DMA_REG_LENGTH, DMA64_LEN);
     qtest_writel(qts, WINDOW(DMA_SLOT) + DMA_REG_GO, 2);   /* GO_COPY */
 
-    /* The destination holds node 1's bytes, proving the read reached node 1. */
+    /* The destination holds node 1's bytes, proving the read reached node
+     * 1. */
     qtest_memread(qts, COPY_DST_ADDR, seen, sizeof(seen));
     for (i = 0; i < DMA64_LEN; i++) {
         g_assert_cmpuint(seen[i], ==, (uint8_t)(DMA64_SEED + i));
@@ -1724,9 +1742,10 @@ static void test_dma_direct_window_64bit_ignores_the_offset_step(const void *dat
 /*
  * A 64-bit device window: with the device-size bit set the Bridge serves an
  * eight-byte access as one cycle and mirrors the doubleword on the
- * programmed-access swap bit. Read a fixed register whole under both settings
- * (unchanged clear, byte-reversed set), confirm a 32-bit slot still splits and
- * never mirrors, and round-trip the scratch through the write path.
+ * programmed-access swap bit. Read a fixed register whole under both
+ * settings (unchanged clear, byte-reversed set), confirm a 32-bit slot still
+ * splits and never mirrors, and round-trip the scratch through the write
+ * path.
  */
 static void test_dma_device_window_64bit_doubleword(const void *data)
 {
@@ -1737,24 +1756,26 @@ static void test_dma_device_window_64bit_doubleword(const void *data)
     qtest_writel(qts, CFG0(DMA_SLOT, 0) + PCI_BAR1, WIDE_CARD_MMIO);
     qtest_writel(qts, CFG0(DMA_SLOT, 0) + PCI_COMMAND, PCI_COMMAND_MEMORY);
 
-    /* 64-bit device, programmed-access swap clear: the doubleword is unchanged. */
+    /* 64-bit device, programmed-access swap clear: the doubleword is
+     * unchanged. */
     qtest_writel(qts, REG(BRIDGE_DEVICE(DMA_SLOT)),
                  DEV_MEMORY_SPACE | DEV_64BIT_DEVICE | (WIDE_CARD_MMIO >> 20));
     g_assert_cmphex(qtest_readq(qts, WINDOW(DMA_SLOT) + WIDE_FIXED), ==,
                     WIDE_GOLDEN_UNCHANGED);
 
-    /* Same slot, programmed-access swap set: the doubleword is reversed end to
-     * end. */
+    /* Same slot, programmed-access swap set: the doubleword is reversed end
+     * to end. */
     qtest_writel(qts, REG(BRIDGE_DEVICE(DMA_SLOT)),
                  DEV_MEMORY_SPACE | DEV_64BIT_DEVICE | DEV_SWAP_PROGRAMMED |
                  (WIDE_CARD_MMIO >> 20));
     g_assert_cmphex(qtest_readq(qts, WINDOW(DMA_SLOT) + WIDE_FIXED), ==,
                     WIDE_GOLDEN_MIRRORED);
 
-    /* Clear the device-size bit: a 32-bit slot splits the doubleword into two
-     * word cycles (big-endian high word at the lower offset) and does not consult
-     * the programmed-access swap bit, so the read is the natural doubleword, the
-     * same as the one-cycle read, whether that bit is set or not. */
+    /* Clear the device-size bit: a 32-bit slot splits the doubleword into
+     * two word cycles (big-endian high word at the lower offset) and does
+     * not consult the programmed-access swap bit, so the read is the natural
+     * doubleword, the same as the one-cycle read, whether that bit is set or
+     * not. */
     qtest_writel(qts, REG(BRIDGE_DEVICE(DMA_SLOT)),
                  DEV_MEMORY_SPACE | (WIDE_CARD_MMIO >> 20));
     g_assert_cmphex(qtest_readq(qts, WINDOW(DMA_SLOT) + WIDE_FIXED), ==,
@@ -1765,9 +1786,10 @@ static void test_dma_device_window_64bit_doubleword(const void *data)
                     WIDE_GOLDEN_UNCHANGED);
 
     /*
-     * The write direction round-trips a doubleword to the scratch. The swap bit
-     * mirrors both directions, so the value returns unchanged either way; each
-     * setting confirms the eight-byte write reaches the device whole.
+     * The write direction round-trips a doubleword to the scratch. The swap
+     * bit mirrors both directions, so the value returns unchanged either
+     * way; each setting confirms the eight-byte write reaches the device
+     * whole.
      */
     qtest_writel(qts, REG(BRIDGE_DEVICE(DMA_SLOT)),
                  DEV_MEMORY_SPACE | DEV_64BIT_DEVICE | (WIDE_CARD_MMIO >> 20));
@@ -1784,11 +1806,12 @@ static void test_dma_device_window_64bit_doubleword(const void *data)
 
     /*
      * The 32-bit-slot split has its own write reassembly, uncovered by the
-     * round-trip above, which drives both directions through the one-cycle path.
-     * Exercise it across paths: write the scratch through the split, read it back
-     * through the one-cycle path. A transposed split write surfaces here as a
-     * halves-swapped one-cycle read; it returns the value only when both
-     * directions place the big-endian high word at the lower offset.
+     * round-trip above, which drives both directions through the one-cycle
+     * path. Exercise it across paths: write the scratch through the split,
+     * read it back through the one-cycle path. A transposed split write
+     * surfaces here as a halves-swapped one-cycle read; it returns the value
+     * only when both directions place the big-endian high word at the lower
+     * offset.
      */
     qtest_writel(qts, REG(BRIDGE_DEVICE(DMA_SLOT)),
                  DEV_MEMORY_SPACE | (WIDE_CARD_MMIO >> 20));
@@ -1821,14 +1844,14 @@ static void test_dma_device_window_64bit_doubleword(const void *data)
 
 
 /*
- * Slot 3 drives pin 3 -- the pin the base I/O controller's second
+ * Slot 3 drives pin 3, which the base I/O controller's second
  * interrupt uses, not the convenient one.
  */
 #define INT_TEST_SLOT           3
 
 /*
  * A timing write runs a slot finished by the time it returns; wrong is a
- * hang, not a wrong value -- the guest spins on the finished flag.
+ * hang, not a wrong value: the guest spins on the finished flag.
  */
 static void test_a_write_runs_a_bit_slot(const void *data)
 {
@@ -1878,7 +1901,7 @@ static void test_a_search_returns_the_identity(const void *data)
 
     bridge_reset();
 
-    g_assert_false(NIC_RESET(qts));         /* pulled low: the part is there */
+    g_assert_false(NIC_RESET(qts));         /* low: part present */
 
     /* The search command, least-significant bit first. */
     for (i = 0; i < 8; i++) {
@@ -1955,8 +1978,7 @@ static uint16_t nic_crc(uint16_t crc, const uint8_t *data, unsigned int len)
 
 /*
  * The IP29 board's identity record, page 0 then page 1, check values
- * included (docs/datasheets/bridge.md, "The Origin 200's IP29 record"),
- * restated as bytes so the comparison does not share the model's
+ * included, restated as bytes so the comparison does not share the model's
  * construction.
  */
 static const uint8_t ip29_record[64] = {
@@ -1972,7 +1994,7 @@ static const uint8_t ip29_record[64] = {
 
 /*
  * All three residue checks a guest runs; only the stored-bytes one proves
- * the embedded check -- framing passes whatever the last two bytes hold.
+ * the embedded check. Framing passes whatever the last two bytes hold.
  */
 /*
  * The part number as the positional reader derives it, not as a string
@@ -2118,7 +2140,8 @@ static uint8_t nic_crc8(uint8_t crc, uint64_t rom)
     return crc;
 }
 
-/* The Hub's network interface, as far as renumbering a stock machine needs. */
+/* The Hub's network interface, as far as renumbering a stock machine
+ * needs. */
 #define HUB_NI_STATUS           0x600000
 #define HUB_NI_VECTOR_PARMS     0x600200
 #define HUB_NI_VECTOR           0x600208
@@ -2236,7 +2259,7 @@ static void test_a_named_part_reads_back_its_page(const void *data)
 }
 
 /*
- * A wrong Match ROM deselects the part until reset -- the half that stops
+ * A wrong Match ROM deselects the part until reset. This stops
  * the test above passing a model that selects whatever names it. The
  * check is the wire idling high from the function byte on.
  */
@@ -2267,7 +2290,7 @@ static void test_naming_another_part_deselects_this_one(const void *data)
 
 /*
  * The bytes alone pass an address-ignoring model; the check pairs are the
- * test -- mid-page, the two checks have different bases and a model using
+ * test. Mid-page, the two checks have different bases; a model using
  * one basis for both fails whichever it did not choose.
  */
 static void test_the_status_memory_reads_back_by_the_page(const void *data)
@@ -2329,7 +2352,7 @@ static void nic_status_request(QTestState *qts, uint16_t addr, uint8_t *hdr)
 
 /*
  * One whole eight-byte status page and its check from a page-aligned
- * start, then ten further slots -- a whole page and check pair. All ones
+ * start, then ten further slots: a whole page and check pair. All ones
  * across those ten says the stream ended here rather than carrying on: a
  * page that really followed would close with 0xbe 0x7b, not with ones.
  * The masking and the 0xff fill are both stated in the part
@@ -2340,7 +2363,7 @@ static void nic_status_request(QTestState *qts, uint16_t addr, uint8_t *hdr)
  *
  * `masked` is the address the part reads from, which differs from `addr`
  * only above the top. The check covers the masked address, so where the
- * two differ the residue over what the master sent does not come out --
+ * two differ the residue over what the master sent does not come out,
  * that mismatch is how a master learns its start address was out of range
  * instead of being handed the aliased page as the one it asked for.
  */
@@ -2377,7 +2400,7 @@ static void nic_status_final_page(QTestState *qts, uint16_t addr,
  * The status field is decoded across the same 0x7ff of address the data
  * memory is, and only four small regions inside it are ever programmed.
  * Every other address reads unprogrammed ones, still framed by a check
- * every eight bytes -- so past the programmed regions the part keeps
+ * every eight bytes, so past the programmed regions the part keeps
  * answering instead of going quiet, which is the one thing a guest cannot
  * tell apart from a part that is not fitted. The 0x7ff masking and the
  * 0xff fill are stated in the part specification; where the stream stops
@@ -2474,7 +2497,7 @@ static void test_the_unframed_read_matches_the_framed_one(const void *data)
 
     /*
      * The vendor reader rejects the record unless page A starts with
-     * format 1 -- without it the field parser sees no BaseIO identity.
+     * format 1. Without it the field parser sees no BaseIO identity.
      */
     g_assert_cmphex(plain[0], ==, 0x01);
 
@@ -2539,7 +2562,7 @@ static void test_invalid_board_part_is_rejected(const void *data)
 }
 
 /*
- * Past the programmed pages the memory reads unprogrammed -- not wrapped,
+ * Past the programmed pages the memory reads unprogrammed. It does not wrap,
  * which would hand a guest a spurious second part number.
  */
 static void test_the_data_past_the_image_is_unprogrammed(const void *data)
@@ -2603,7 +2626,7 @@ static void test_the_framed_read_past_the_image_is_unprogrammed(
 
 /*
  * A plain read that runs through the last byte of the memory is followed
- * by a check over the request and every byte read -- the one check the
+ * by a check over the request and every byte read, the one check the
  * unframed path has, and the reason a guest can trust an unframed read at
  * all. Started near the top so the exchange is short.
  */
@@ -2704,8 +2727,8 @@ static void test_the_status_register_follows_the_level(const void *data)
 }
 
 /*
- * One pin, two sources -- a routed INTx and a directly wired line -- and
- * each must hold the pin on its own: a last-writer-wins level word drops a
+ * One pin has two sources: a routed INTx and a directly wired line. Each
+ * must hold the pin on its own: a last-writer-wins level word drops a
  * held PCI level the moment the wire beside it falls.
  */
 static void test_the_pin_ors_its_wire_and_pci_sources(const void *data)
@@ -2778,7 +2801,7 @@ static void test_an_enabled_pin_edge_reaches_the_hub(const void *data)
 }
 
 /*
- * A routed pin with its enable clear sends nothing -- the state Linux
+ * A routed pin with its enable clear sends nothing. Linux
  * leaves a disabled pin in, with the host address still programmed.
  */
 static void test_a_disabled_pin_edge_sends_no_packet(const void *data)
@@ -2828,9 +2851,10 @@ static void test_enabling_an_asserted_pin_reaches_the_hub(const void *data)
 }
 
 /*
- * With the mode bit set the falling edge sends a clearing packet, so the guest
- * need not clear the Hub bit in its own handler. Without this the Hub's pending
- * bit never clears and the processor re-enters the handler forever.
+ * With the mode bit set the falling edge sends a clearing packet, so the
+ * guest need not clear the Hub bit in its own handler. Without this the
+ * Hub's pending bit never clears and the processor re-enters the handler
+ * forever.
  */
 static void test_a_falling_edge_clears_the_hub_pending_bit(const void *data)
 {
@@ -2876,8 +2900,8 @@ static void test_the_enable_register_has_no_bit_31(const void *data)
     bridge_reset();
 
     /*
-     * The multiple-error flag has no enable -- the table starts at bit 30
-     * -- so the bit must refuse to be set at all.
+     * The multiple-error flag has no enable; the table starts at bit 30.
+     * The bit must refuse to be set at all.
      */
     qtest_writel(qts, REG(BRIDGE_INT_ENABLE), 0xffffffff);
     g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_INT_ENABLE)), ==, 0x7fffffff);
@@ -2926,7 +2950,8 @@ static void test_the_per_pin_host_registers(const void *data)
         qtest_writel(qts, REG(BRIDGE_INT_HOST(n)), 0xffffffff);
     }
     for (n = 0; n < BRIDGE_DEVICES; n++) {
-        /* Bits 31:18 are reserved, so all ones reads back as the two fields. */
+        /* Bits 31:18 are reserved, so all ones reads back as the two
+         * fields. */
         g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_INT_HOST(n))), ==, 0x3ffff);
     }
 
@@ -2941,7 +2966,7 @@ static void test_the_per_pin_host_registers(const void *data)
 
 /*
  * The four-onto-eight fold: A and C reach the slot's pin, B and D flip
- * bit two -- both guests compute it, nothing that boots asserts B or C.
+ * bit two. Both guests compute it; nothing that boots asserts B or C.
  */
 static void test_the_interrupt_pins_fold(const void *data)
 {
@@ -3067,8 +3092,8 @@ static void test_an_inbound_link_reset_clears_the_core(const void *data)
 }
 
 /*
- * And it stops at the chip. No reviewed source says Bridge pulses its four
- * external bus-reset outputs or that a downstream device resets, so a card
+ * And it stops at the chip. No source documents Bridge pulsing its four
+ * external bus-reset outputs or a downstream device resetting, so a card
  * keeps its own programming; and the pin it is holding stays up, because a
  * level cleared here would never rise again and the device would go on
  * asking without being heard.
@@ -3097,7 +3122,7 @@ static void test_an_inbound_link_reset_stops_at_the_pci_side(const void *data)
 
     /*
      * The slot's window went with the rest of the core programming, so
-     * reaching the card again takes a fresh aim -- and then the card, which
+     * reaching the card again takes a fresh aim, and then the card, which
      * never reset, is the only thing that can drop the pin.
      */
     qtest_writel(qts, REG(BRIDGE_DEVICE(INT_TEST_SLOT)),
@@ -3134,7 +3159,8 @@ static void test_an_inbound_link_reset_stops_at_the_pci_side(const void *data)
 #define BRIDGE_INT_DEST_LOWER   0x038
 #define BRIDGE_HOST_ERR_FIELD   0x128
 
-/* An undefined slot inside the register block: the invalid-address provoke. */
+/* An undefined slot inside the register block: the invalid-address
+ * provoke. */
 #define UNDEFINED_REG           0x07c
 #define INT_INVALID_ADDR        (1u << 24)
 
@@ -3460,7 +3486,8 @@ static void test_a_pin_packet_addresses_the_named_node(void)
     qtest_quit(qts);
 }
 
-/* The node the register names is multiplied by the node stride, not ignored. */
+/* The node the register names is multiplied by the node stride, not
+ * ignored. */
 static void test_a_pin_host_address_selects_a_node(void)
 {
     QTestState *qts = head_start(0);
@@ -3490,7 +3517,8 @@ static void provoke_the_error(QTestState *qts, unsigned int widget,
     route_the_pin(qts, 1);
     qtest_writel(qts, WIDGET_REG(BRIDGE_INT_ENABLE), INT_INVALID_ADDR);
 
-    /* A write to an undefined slot in the register block posts and reports. */
+    /* A write to an undefined slot in the register block posts and
+     * reports. */
     qtest_writel(qts, WIDGET_BRIDGE_BASE + UNDEFINED_REG, 0);
     g_assert_cmphex(qtest_readl(qts, WIDGET_REG(BRIDGE_INT_STATUS)) &
                     INT_INVALID_ADDR, ==, INT_INVALID_ADDR);
@@ -3635,7 +3663,8 @@ static void test_a_chip_error_carries_the_widget_destination(void)
     g_assert_cmphex(qtest_readq(qts, dest_base() + ERR_OFF), ==,
                     INT_SET | ERR_NUMBER);
 
-    /* The address the programmed pin register would have made is untouched. */
+    /* The address the programmed pin register would have made is
+     * untouched. */
     g_assert_cmphex(qtest_readq(qts, replaced_base() + ERR_OFF), ==, SENTINEL);
 
     qtest_quit(qts);
@@ -3790,7 +3819,7 @@ static void test_full_packet_interrupts(void)
  * The inbound PIO translated window: byte-lane-corrected access onto PCI
  * memory space at PCI address zero, exercised directly against the
  * bridge's sysbus face rather than through a Hub big window or a
- * processor -- the chip's own address decode, not the fabric path a
+ * processor. This tests the chip's address decode, not the fabric path a
  * booted kernel takes to reach it.
  */
 /* The windows the chip decodes above its register block. */
@@ -3807,7 +3836,7 @@ static void test_full_packet_interrupts(void)
 #define PIOX_CARD_MMIO               0x10000000u
 
 /*
- * Restated from the header rather than included from it -- see the comment
+ * Restated from the header rather than included from it. See the comment
  * on SGI_BRIDGE_PIO_XLATE_BASE: byte-lane-corrected access onto PCI memory
  * space at PCI address 0, at this fixed offset inside the widget.
  */
@@ -3844,7 +3873,7 @@ static void piox_card_start(QTestState *qts)
 
 /*
  * A value that lands in PCI memory space through the card's own small
- * window -- the ordinary, already-tested path -- reads back through the new
+ * window (the ordinary, already-tested path) reads back through the new
  * inbound window, and a write through the new window lands where the small
  * window can see it. Either direction, on its own, is evidence of a
  * wired-up register; both together are what a genuine path onto PCI memory
@@ -3879,7 +3908,7 @@ static void test_pio_xlate_reaches_pci_memory(void)
 
 /*
  * One byte past the window's declared size is no longer backed by this
- * window -- it is a hole in the widget's own address space, and every
+ * window. It is a hole in the widget's own address space; every
  * unclaimed offset there reads back zero.
  */
 static void test_pio_xlate_stops_at_its_declared_size(void)

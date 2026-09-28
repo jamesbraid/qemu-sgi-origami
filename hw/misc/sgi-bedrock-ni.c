@@ -24,8 +24,9 @@ static uint64_t ni_read(void *opaque, hwaddr offset, unsigned size)
     }
     /*
      * Link-up needs no software step: the stock PROM programs the port once
-     * and then only polls this bit, so it follows the cable from reset.
-     */
+     * and then only polls this bit, so it follows
+     * the cable from reset.
+    */
     if (offset == 0 && s->bedrock && sgi_bedrock_link_up(s->bedrock)) {
         value |= SGI_BEDROCK_NI_LINK_UP;
     }
@@ -40,8 +41,9 @@ static void ni_write(void *opaque, hwaddr offset, uint64_t value,
 
     /*
      * Port reset, bit 1 of the reset register, sends a warm reset over the
-     * link; a composed Bedrock delivers it to the node at the other end.
-     */
+     * link; a composed Bedrock delivers it to the
+     * node at the other end.
+    */
     if (offset == 0x08 && (value & 2) && s->bedrock) {
         sgi_bedrock_port_reset_send(s->bedrock);
     }

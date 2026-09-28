@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
+/* Dallas/Maxim 1-Wire CRC helper declarations. */
 #ifndef HW_1WIRE_CRC_H
 #define HW_1WIRE_CRC_H
 

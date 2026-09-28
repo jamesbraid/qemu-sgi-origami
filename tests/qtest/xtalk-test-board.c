@@ -1,19 +1,16 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * A crosstalk board that exercises sgi-xtalk-board without any real
- * board: its widget is the existing sgi-xtalk-test-target, so property
- * validation, re-parenting and the deferred-attach hook all have
- * something to attach that carries no product-specific wiring.
- *
- * The second type here, sgi-xtalk-board-fixture, is not a board. It is
- * the smallest stand-in for what a machine builder does with a module's
- * Crossbow: it creates one unrealized, registers the machine-init-done
- * notifier that calls sgi_xio_board_attach_pending() and realizes the
- * Crossbow once that succeeds, and reports the outcome through two
- * read-only properties so a qtest can check it without a real machine.
- * Its own "retry" property lets a qtest run that same attempt a second
- * time, to see what a board plugged in after the notifier already fired
- * gets: see tests/qtest/sgi-xtalk-board-test.c.
+ * Crosstalk board and Crossbow fixtures for property and deferred-attach
+ * tests; the widget uses sgi-xtalk-test-target, with no product wiring.
+ */
+
+/*
+ * The target supports property validation and re-parenting. The fixture
+ * stands in for a machine builder: it creates an unrealized Crossbow, then a
+ * machine-init-done notifier calls sgi_xio_board_attach_pending() and
+ * realizes it on success. Two read-only properties report the result; "retry"
+ * repeats the attempt for a board added after the notifier. See
+ * tests/qtest/sgi-xtalk-board-test.c.
  */
 
 #include "qemu/osdep.h"
@@ -29,10 +26,9 @@
 #include "system/system.h"
 
 /*
- * hw/misc/sgi-xtalk-test-target.c declares this type entirely inside its
- * own source file; it has no header because nothing before this file has
- * needed to name it. Only the string is needed here, to create one by
- * type name.
+ * hw/misc/sgi-xtalk-test-target.c declares this type entirely inside its own
+ * source file; it has no header because nothing before this file has needed
+ * to name it. Only the string is needed here, to create one by type name.
  */
 #define TYPE_SGI_XTALK_TEST_TARGET "sgi-xtalk-test-target"
 
@@ -48,11 +44,9 @@ static bool sgi_xtalk_test_board_build_widget(SGIXioBoardState *board,
 {
     DeviceState *target = qdev_new(TYPE_SGI_XTALK_TEST_TARGET);
     /*
-     * sgi-xtalk-test-target names its RAM block from its own QOM child
-     * name, and RAM block names are unique machine-wide, not merely
-     * per-parent -- two boards both naming their widget "widget" collide
-     * the instant a second board exists. module+slot together are what
-     * sgi_xtalk_board_claim() already guarantees unique.
+     * The target derives its RAM-block name from its QOM child name. RAM
+     * names are machine-wide; two boards using "widget" collide. module+slot
+     * is already unique under sgi_xtalk_board_claim().
      */
     g_autofree char *name =
         g_strdup_printf("widget-module%u-slot%u", board->module, board->slot);
@@ -96,11 +90,9 @@ struct SGIXtalkBoardFixtureState {
     Notifier machine_done;
 
     /*
-     * Whether this fixture's own Crossbow has ever successfully realized:
-     * a ratchet, not the outcome of only the most recent attempt, because
-     * a later attempt made merely to check a late board's fate does not
-     * retroactively undo an earlier success. `error` does hold only the
-     * most recent attempt's failure, once there is one.
+     * A successful Crossbow realization stays true across retries; checking a
+     * late board cannot undo it. `error` records only the latest attempt's
+     * failure.
      */
     bool attached;
     char *error;
@@ -113,23 +105,17 @@ struct SGIXtalkBoardFixtureState {
 #define SGI_XTALK_BOARD_FIXTURE_SPAN (32 * MiB)
 
 /*
- * The two widgets this fixture's Crossbow ever needs alive: 8, where the
- * qtest always puts its attached board, and 9, which the qtest probes
- * from (a link never routes to itself, so reading widget 8 takes a
- * second live port). Nothing here depends on a board actually being at
- * either widget; "alive" only enables the memory regions, independently
- * of whether sgi_xio_board_attach_pending() has attached anything.
+ * Widget 8 holds the attached board; widget 9 probes it because a link cannot
+ * route to itself. "alive" enables port memory regions regardless of whether
+ * sgi_xio_board_attach_pending() attached a board at either port.
  */
 #define SGI_XTALK_BOARD_FIXTURE_HEALTH ((1u << 8) | (1u << 9))
 
 /*
- * qdev_machine_creation_done() asserts every device still reachable from
- * the QOM root is realized, and it runs before any machine-init-done
- * notifier -- including this fixture's own -- ever gets a chance to run.
- * So the Crossbow this fixture builds in its own realize() cannot be
- * QOM-parented there; it stays a floating, singly-referenced object
- * (never invisible to the leak checker, just not yet a child of
- * anything) until the moment it is actually about to realize, here.
+ * qdev_machine_creation_done() requires every QOM-root device to be realized
+ * before machine-init-done notifiers run. The Crossbow cannot be parented in
+ * fixture realize(); it remains a floating, singly referenced object visible
+ * to leak checks until immediately before its own realization.
  */
 static void sgi_xtalk_board_fixture_own_crossbow(SGIXtalkBoardFixtureState *s)
 {
@@ -187,11 +173,10 @@ static void sgi_xtalk_board_fixture_set_retry(Object *obj, bool value,
 }
 
 /*
- * Realizes the Crossbow directly, skipping sgi_xio_board_attach_pending()
- * entirely -- a way to put a fixture's Crossbow into the "already
- * realized, nothing attached" state a qtest cannot otherwise reach
- * without hot-plugging a late board, which -M none's main system bus
- * refuses outright. Paired with auto-attach=false and "retry" below.
+ * Direct realization skips sgi_xio_board_attach_pending() to reach an
+ * already-realized, unattached Crossbow. -M none rejects the late-board
+ * hotplug that would otherwise reach it. Use with auto-attach=false and
+ * "retry".
  */
 static void sgi_xtalk_board_fixture_set_realize_now(Object *obj, bool value,
                                                      Error **errp)
@@ -229,8 +214,8 @@ static void sgi_xtalk_board_fixture_realize(DeviceState *dev, Error **errp)
 
     /*
      * Built but deliberately not yet a QOM child of anything: see
-     * sgi_xtalk_board_fixture_own_crossbow(), which parents it right
-     * before it is actually realized, never here.
+     * sgi_xtalk_board_fixture_own_crossbow(), which parents it right before
+     * it is actually realized, never here.
      */
     s->crossbow = SGI_XBOW(crossbow);
 
@@ -241,13 +226,10 @@ static void sgi_xtalk_board_fixture_realize(DeviceState *dev, Error **errp)
                          SGI_XTALK_BOARD_FIXTURE_HEALTH);
 
     /*
-     * Not realized here: the whole point of this fixture is that the
-     * Crossbow waits for sgi_xio_board_attach_pending() at machine
-     * init done, the way a real builder's would. auto-attach=false skips
-     * even that: nothing calls attach_pending or realizes the Crossbow
-     * until the qtest triggers "realize-now" and "retry" itself, the only
-     * way to reach an already-realized-but-unattached Crossbow with every
-     * device fixed on the initial command line (see the header above).
+     * Defer Crossbow realization to machine-init-done attach_pending, as a
+     * real builder does. With auto-attach=false, only qtest "realize-now" and
+     * "retry" run either step. This reaches an already-realized, unattached
+     * Crossbow with all devices on the initial command line.
      */
     if (s->auto_attach) {
         s->machine_done.notify = sgi_xtalk_board_fixture_machine_done;
@@ -263,8 +245,8 @@ static const Property sgi_xtalk_board_fixture_properties[] = {
 
 /*
  * Test-only harness state, not guest-visible; see the same reasoning on
- * sgi-xtalk-board's own empty description. The embedded Crossbow carries
- * its own.
+ * sgi-xtalk-board's own empty description. The embedded Crossbow carries its
+ * own.
  */
 static const VMStateDescription vmstate_sgi_xtalk_board_fixture = {
     .name = TYPE_SGI_XTALK_BOARD_FIXTURE,

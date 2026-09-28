@@ -1,34 +1,25 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * The Bedrock hub-wide lock under multi-threaded TCG, taken by the
- * processors themselves.
+ * Bedrock hub lock under multi-threaded TCG, exercised by both processors.
+ * The test checks mutual exclusion and blocked-contender wakeup.
+ */
+
+/*
+ * LB scratch 3's read-set-if-zero alias is the node's test-and-set lock. The
+ * IP35 PROM guards its MD performance-counter-0 software lock word with it;
+ * after 10,000,000 busy RTC ticks, a contender clears scratch 3 to break a
+ * presumed dead lock. Hardware holders run continuously through a few
+ * uncached accesses and release before that deadline. Under multi-threaded
+ * TCG, each access takes the big lock. Two accesses per polling iteration can
+ * starve a live holder until the contender breaks its lock; concurrent
+ * read-modify-writes then lose an update and leave an unowned bit set.
  *
- * LB scratch 3's read-set-if-zero twin is the node's test-and-set lock
- * (docs/datasheets/bedrock-local-block.md, "Scratch registers"). The stock
- * IP35 PROM takes it around every read-modify-write of the software lock
- * word it keeps in MD performance counter 0, and a contender that has
- * polled the busy lock for 10,000,000 RTC ticks stores 0 to scratch 3 to
- * break what it takes for a dead holder's lock. On hardware the holder is
- * inside a critical section of a few uncached accesses and runs
- * continuously, so a contender never sees it fail to release. Under
- * multi-threaded TCG every one of those accesses takes the big lock, and
- * a contender polling the lock with two such accesses per iteration can
- * starve the holder of it for the whole deadline: the contender then
- * breaks a live lock, both processors read-modify-write the guarded word
- * at once, and a lost update leaves a bit set that nobody owns
- * (docs/known-issues.md, "The hub lock hold").
- *
- * Both processors run the same program: rendezvous, then repeatedly take
- * the lock with the PROM's own poll-then-break shape, hold it across a
- * critical section of many uncached reads separated by register-only
- * work (the shape that hands the big lock to a polling contender), add
- * one to a shared word in LB scratch 0, and release. Two things the
- * model must show: the shared word ends at exactly the number of rounds
- * both processors made, so no lock was ever broken while a live holder
- * was inside its section; and a contender that found the lock held made
- * few busy reads, because the model parked it until the holder released
- * rather than letting it poll. Without the hold the second fails on any
- * host and the first fails on a host whose lock is unfair enough.
+ * Both CPUs rendezvous, then repeat the PROM's poll-and-break sequence. Each
+ * holds the lock through many uncached reads interleaved with register work,
+ * increments shared LB scratch 0, and releases it. The final word must equal
+ * both CPUs' total rounds, and blocked contenders must make few busy reads.
+ * Parking until release enforces both; without it, the busy-read check fails
+ * on any host and mutual exclusion can fail with an unfair big lock.
  */
 #include "qemu/osdep.h"
 #include "qemu/bswap.h"
@@ -43,13 +34,12 @@
 #define PI_RT_COUNTER UINT64_C(0x30100)
 
 /*
- * State words in low RAM, clear of the flash and of the 32 KiB
- * per-processor window the firmware filter overlays at 1 MiB. The guest
- * reaches them through Hub special space's uncached alias of its own node
- * memory (docs/datasheets/ip35-address-map.md), and the host reads the
- * same alias: plain node memory sits behind the memory/directory unit's
- * bank translation, which answers nothing until firmware configures it.
- * Slot A's block, then slot C's block 0x100 above it.
+ * State words in low RAM, clear of the flash and of the 32 KiB per-processor
+ * window the firmware filter overlays at 1 MiB. The guest reaches them
+ * through Hub special space's uncached alias of its own node memory, and the
+ * host reads the same alias: plain node memory sits behind the
+ * memory/directory unit's bank translation, which answers nothing until
+ * firmware configures it. Slot A's block, then slot C's block 0x100 above it.
  */
 #define STATE_PHYS UINT64_C(0x180000)
 #define STATE_HOST (SPACE_HUB + STATE_PHYS)
@@ -69,17 +59,17 @@
 #define SECTION_SPIN 2000
 /*
  * The contender's break deadline: two seconds of the 1.25 MHz counter,
- * matching the model's own hold bound with room to spare, so a contender
- * the model parks on a held lock is woken by the release long before it
- * would break the lock. A contender left polling instead (no fix) never
- * reaches it either, because the holder's section is far shorter -- so the
- * deadline is a backstop, and breaks stay zero on both paths.
+ * matching the model's own hold bound with room to spare, so a contender the
+ * model parks on a held lock is woken by the release long before it would
+ * break the lock. A contender left polling instead (no fix) never reaches it
+ * either, because the holder's section is far shorter. The deadline is a
+ * backstop, and breaks stay zero on both paths.
  */
 #define DEADLINE_TICKS 2500000
 /*
- * A parked contender makes one busy read per hold, and a hold ends at
- * the holder's release, so busy reads stay near the round count. A
- * polling contender makes hundreds per round.
+ * A parked contender makes one busy read per hold, and a hold ends at the
+ * holder's release, so busy reads stay near the round count. A polling
+ * contender makes hundreds per round.
  */
 #define BUSY_LIMIT (8 * 2 * ROUNDS)
 
@@ -201,10 +191,10 @@ static void emit_count(Image *p, unsigned int offset)
 }
 
 /*
- * Guest code. s0 is the local hub window, s1 this processor's state
- * block, s2 the test-and-set twin, s3 plain scratch 3, s4 the shared word
- * in scratch 0, s5 the real-time counter, s6 the rounds left and s7 the
- * current claim's deadline.
+ * Guest code. s0 is the local hub window, s1 this processor's state block, s2
+ * the test-and-set twin, s3 plain scratch 3, s4 the shared word in scratch 0,
+ * s5 the real-time counter, s6 the rounds left and s7 the current claim's
+ * deadline.
  */
 static void build_program(Image *p)
 {
@@ -241,8 +231,8 @@ static void build_program(Image *p)
     emit_daddu(p, R_S1, R_S1, R_T2);
 
     /*
-     * Rendezvous, so both contend from the first round: publish alive,
-     * then wait on the peer's block, which is the other one of the two.
+     * Rendezvous, so both contend from the first round: publish alive, then
+     * wait on the peer's block, which is the other one of the two.
      */
     emit_i(p, OPC_ORI, R_ZERO, R_T0, ALIVE_MAGIC);
     emit_i(p, OPC_SD, R_S1, R_T0, STATE_ALIVE);
@@ -276,8 +266,8 @@ static void build_program(Image *p)
 
     /*
      * The critical section: read the shared word, then many more uncached
-     * reads each followed by register-only work, then write it back plus
-     * one and release.
+     * reads each followed by register-only work, then write it back plus one
+     * and release.
      */
     patch_branch(p, got, p->pos);
     emit_i(p, OPC_LD, R_S4, R_T5, 0);
@@ -361,8 +351,8 @@ static void test_contender_waits_for_a_running_holder(void)
     prom = write_image();
     quoted = g_shell_quote(prom);
     /*
-     * The accelerator named here wins over the -accel qtest libqtest
-     * appends: the race needs each processor on its own host thread.
+     * The accelerator named here wins over the -accel qtest libqtest appends:
+     * the race needs each processor on its own host thread.
      */
     s = qtest_initf("-M origin300 -cpu R14000 -smp 2 -bios %s "
                     "-accel tcg,thread=multi -no-shutdown -S", quoted);

@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
+/* Dallas/Maxim 1-Wire bus and ROM command handling. */
 #include "qemu/osdep.h"
 #include "qemu/log.h"
 #include "hw/core/qdev-properties.h"
@@ -41,8 +42,9 @@ bool onewire_touch_bit(OneWireBus *bus, bool drive)
 
 /*
  * The state a part returns to on either kind of reset: the long low pulse
- * that starts a 1-Wire transaction, and QEMU's own machine/device reset.
- * Shared so the two can never drift apart -- see onewire_reset() and
+ * that starts a 1-Wire transaction, and
+ * QEMU's own machine/device reset. Both resets share this state; see
+ * onewire_reset() and
  * onewire_slave_reset_hold() below.
  */
 static void onewire_slave_reset_state(OneWireSlave *s)
@@ -86,16 +88,18 @@ void onewire_slave_set_identity(OneWireSlave *s, uint8_t family,
 
 /*
  * The ROM-command phase machine, common to every part regardless of which
- * memory function it implements. Bits arrive and leave LSB first, matching
- * the wire order of every Dallas/Maxim 1-Wire part.
+ * memory function it implements. Bits
+ * arrive and leave LSB first, matching the wire order of every Dallas/Maxim
+ * 1-Wire part.
  *
- * The four ROM-command success paths -- Read ROM, Match ROM, a completed
- * Search ROM, and Skip ROM -- all converge on ONEWIRE_FUNCTION: a part that
- * survives addressing is selected outright, with no second reset or second
+ * Read ROM, Match ROM, a completed Search ROM, and Skip ROM all converge on
+ * ONEWIRE_FUNCTION: a part that survives addressing is selected outright,
+ * with no second reset or second
  * addressing command needed (DS2502/DS2505 ROM-function flow chart). Match
- * ROM drops a part to ONEWIRE_IDLE at the first identity bit that fails to
- * compare, rather than clocking all 64 bits before deciding; the datasheets'
- * prose agrees: a part that does not match simply waits for the next reset.
+ * ROM drops a part to ONEWIRE_IDLE at the
+ * first identity bit that fails to compare, rather than clocking all 64 bits
+ * before deciding; the datasheets' prose
+ * agrees: a part that does not match simply waits for the next reset.
  */
 static bool onewire_slave_slot(OneWireSlave *s, bool drive)
 {
@@ -250,12 +254,14 @@ static bool onewire_slave_slot_advance(OneWireSlave *s, bool drive)
 }
 
 /*
- * The base realize: compute the identity from the family/serial properties
- * -- already applied by the time realize runs -- then chain to the
- * concrete part's own realize, if it has one. A concrete part can never
- * forget this the way it could forget to call onewire_slave_set_identity()
- * itself, because it no longer has a DeviceClass::realize of its own to
- * forget it in (hw/ssi/ssi.c: ssi_peripheral_realize is the same shape).
+ * The base realize computes the identity from the family/serial properties
+ * already applied when realize runs, then calls the concrete part's realize
+ * method, if it has one. A
+ * concrete part can never forget this the
+ * way it could forget to call onewire_slave_set_identity() itself, because it
+ * no longer has a DeviceClass::realize
+ * of its own to forget it in (hw/ssi/ssi.c: ssi_peripheral_realize is the
+ * same shape).
  */
 static void onewire_slave_realize(DeviceState *dev, Error **errp)
 {

@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
+/* Broadcom BCM570x copper PHY interface. */
 /*
  * The Broadcom NetXtreme BCM570x integrated copper PHY, reached through the
  * MAC's MII management registers.
@@ -24,12 +25,12 @@ OBJECT_DECLARE_SIMPLE_TYPE(Bcm570xPhyState, BCM570X_PHY)
 #define BCM570X_PHY_GTCR        0x09    /* 1000baseT control */
 #define BCM570X_PHY_GTSR        0x0a    /* 1000baseT status */
 #define BCM570X_PHY_EXTSR       0x0f    /* extended status */
-#define BCM570X_PHY_AUXSTS      0x19    /* Broadcom auxiliary status summary */
+#define BCM570X_PHY_AUXSTS      0x19    /* Broadcom aux status summary */
 
 /*
  * The identity brgphy binds the BCM5701 on: the "xxBROADCOM" OUI 0x000818 and
- * model 0x11, encoded per IEEE 802.3-22.2.4.3.1 into the two id words --
- * id1 = OUI >> 6, id2 top six bits = OUI & 0x3f, then model << 4, then the
+ * model 0x11, encoded per IEEE 802.3-22.2.4.3.1 into the two id words: id1
+ * = OUI >> 6, id2 top six bits = OUI & 0x3f, then model << 4, then the
  * revision nibble. The revision (0 here) is not part of the match.
  */
 #define BCM570X_PHY_IDR1_VALUE  0x0020
@@ -94,12 +95,13 @@ OBJECT_DECLARE_SIMPLE_TYPE(Bcm570xPhyState, BCM570X_PHY)
 #define BCM570X_PHY_GTCR_RESET_VALUE BCM570X_PHY_GTCR_ADV_1000TFDX
 
 /*
- * How long autonegotiation takes to settle once the interface first reads link
- * status, for a driver that only polls. The settle has to finish inside the
- * driver's own patience, not outside it: IRIX's tg gives up its link wait well
- * before a second, so a two-second settle -- which the DP83840 model can afford
- * because ef0's driver waits longer -- left this one polling a link that
- * completed after it had stopped looking, and the interface never came up.
+ * How long autonegotiation takes to settle once the interface first reads
+ * link status, for a driver that only polls. The settle has to finish inside
+ * the driver's own patience, not outside it: IRIX's tg gives up its link wait
+ * well before a second, so a two-second settle (which the DP83840 model can
+ * afford because ef0's driver waits longer) left this one polling a link
+ * that completed after it had stopped looking, and the interface never came
+ * up.
  */
 #define BCM570X_PHY_AUTONEG_SETTLE_NS (100 * SCALE_MS)
 
@@ -118,7 +120,9 @@ struct Bcm570xPhyState {
      */
     bool autoneg_done;
 
-    /* The far-end link, driven from the MAC's netdev; no cable, no carrier. */
+    /*
+     * The far-end link, driven from the MAC's netdev; no cable, no carrier.
+     */
     bool link_down;
 
     QEMUTimer *settle_timer;

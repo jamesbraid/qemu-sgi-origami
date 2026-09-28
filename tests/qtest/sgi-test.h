@@ -2,13 +2,13 @@
  * Addresses and widths the SGI register tests share.
  *
  * Every value here is a literal repeated from the machine's published
- * address map. None of it is included from the model's own headers: a
- * test that borrowed the model's constant could not catch the model
- * getting that constant wrong.
+ * address map. None of it is included from the model's own headers: a test
+ * that borrowed the model's constant could not catch the model getting that
+ * constant wrong.
  *
- * A name belongs here only when every test that defines it means the
- * same address. Spelling differences do not matter, values do. Names
- * two tests give genuinely different values stay local to each test.
+ * A name belongs here only when every test that defines it means the same
+ * address. Spelling differences do not matter, values do. Names two tests
+ * give genuinely different values stay local to each test.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
@@ -29,10 +29,10 @@
 /*
  * PCI configuration space. A few of these tests reach Linux's pci_regs.h
  * through hw/pci/pci.h, which gives the first three the same values under
- * the same names but spells the literals differently, so defer to
- * whatever is already in scope rather than redefine it. The two
- * base-address offsets are this project's shorter names for what Linux
- * calls PCI_BASE_ADDRESS_0 and PCI_BASE_ADDRESS_1.
+ * the same names but spells the literals differently, so defer to whatever
+ * is already in scope rather than redefine it. The two base-address offsets
+ * are this project's shorter names for what Linux calls PCI_BASE_ADDRESS_0
+ * and PCI_BASE_ADDRESS_1.
  */
 #ifndef PCI_COMMAND
 #define PCI_COMMAND             0x04

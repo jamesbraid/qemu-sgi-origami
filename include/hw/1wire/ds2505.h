@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
+/* DS2505-family add-only EPROM device declarations. */
 #ifndef HW_1WIRE_DS2505_H
 #define HW_1WIRE_DS2505_H
 
@@ -6,10 +7,9 @@
 
 /*
  * The DS2505-family add-only EPROM: 16 kbit (2048 bytes), the class the
- * Bridge's board-identity part and the Hub's node-record part both belong
- * to. See docs/library/dallas-1wire-part-specs.md section C.2 for the
- * command set this implements; DS2506 (the larger, overdrive-capable
- * sibling) is out of scope here.
+ * Bridge's board-identity part and the Hub's node-record part both belong to.
+ * The DS2505 datasheet documents the command set implemented here; DS2506
+ * (the larger, overdrive-capable sibling) is out of scope here.
  */
 #define TYPE_ONEWIRE_DS2505 "ds2505"
 

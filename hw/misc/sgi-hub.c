@@ -1,10 +1,9 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * SGI SN0 Hub ASIC: processor interface, memory/directory controller, I/O
- * interface and network interface behind one 8 MB register window per node.
- * Implements the registers guests touch on the way to a console and reports
- * anything else. See docs/specs/sgi-hub.rst.
- */
+ * SGI SN0 Hub: processor, memory/directory, I/O and network interfaces in an
+ * 8 MB register window per node. Registers support guest console bring-up;
+ * unknown accesses are reported.
+*/
 
 #include "qemu/osdep.h"
 #include "qapi/error.h"
@@ -43,13 +42,19 @@
 #define HUB_PI_REGION_PRESENT   0x000018  /* which memory regions exist */
 #define HUB_PI_PROCESSOR_NUMBER 0x000020  /* which processor is reading */
 #define HUB_PI_CALIAS_SIZE      0x000028  /* size of the cached alias */
-#define HUB_PI_INT_MODIFY       0x000090  /* the only way to set or clear one */
+/* the only way to set or clear one */
+#define HUB_PI_INT_MODIFY       0x000090
 #define HUB_PI_INT_PEND0        0x000098  /* pending interrupts, first bank */
-#define HUB_PI_INT_PEND1        0x0000a0  /* pending interrupts, second bank */
-#define HUB_PI_INT_MASK0_A      0x0000a8  /* first bank reaching processor A */
-#define HUB_PI_INT_MASK1_A      0x0000b0  /* second bank reaching processor A */
-#define HUB_PI_INT_MASK0_B      0x0000b8  /* first bank reaching processor B */
-#define HUB_PI_INT_MASK1_B      0x0000c0  /* second bank reaching processor B */
+/* pending interrupts, second bank */
+#define HUB_PI_INT_PEND1        0x0000a0
+/* first bank reaching processor A */
+#define HUB_PI_INT_MASK0_A      0x0000a8
+/* second bank reaching processor A */
+#define HUB_PI_INT_MASK1_A      0x0000b0
+/* first bank reaching processor B */
+#define HUB_PI_INT_MASK0_B      0x0000b8
+/* second bank reaching processor B */
+#define HUB_PI_INT_MASK1_B      0x0000c0
 
 /* I/O interface: the Hub's own widget block on the crossbar. */
 #define HUB_IO_WIDGET_ID        0x400000
@@ -66,7 +71,7 @@
 /*
  * Widget number resets to 1 (the address map's Hub widget) and the crossbar
  * credit to 2. The tag-mode bit reports hardware and is not writable.
- */
+*/
 #define IO_WIDGET_CONTROL_NUMBER    1ULL
 #define IO_WIDGET_CONTROL_CREDIT    (2ULL << 13)
 #define IO_WIDGET_CONTROL_RESET     (IO_WIDGET_CONTROL_NUMBER | \
@@ -79,17 +84,19 @@
 #define HUB_IO_XTALK_PRESCALE   0x4003c0
 
 /*
- * Graphics node/widget routing, two entries: which node, processor and
- * widget a graphics interrupt targets. Bits 3:0 widget number, bits 12:4
- * node number, bit 16 processor, bit 20 valid (public SN0 hubio.h
- * IIO_IGFX_INIT layout). Plain storage: the low 21 bits store, the rest
- * read and write as zero.
- */
+ * Graphics node/widget routing, two entries: which node, processor and widget
+ * a graphics interrupt targets. Bits 3:0 widget number, bits 12:4 node
+ * number, bit 16 processor, bit 20 valid (public SN0 hubio.h IIO_IGFX_INIT
+ * layout). Plain storage: the low 21 bits store, the rest read and write as
+ * zero.
+*/
 #define HUB_IO_GFX_INIT_0       0x400140
 #define HUB_IO_GFX_INIT_1       0x400148
 #define IO_GFX_INIT_MASK        0x1fffffU    /* bits 20:0 */
 
-/* Scratch: a 36-bit word of four sub-fields, firmware's private boot state. */
+/*
+ * Scratch: a 36-bit word of four sub-fields, firmware's private boot state.
+ */
 #define HUB_IO_SCRATCH_0        0x400150
 #define HUB_IO_SCRATCH_1        0x400158
 #define IO_SCRATCH_MASK         0x0000000f00f11fffULL
@@ -98,18 +105,18 @@
 
 /*
  * Incoming crosstalk request buffers: only slots 7-14's C register, the ones
- * firmware's diagnostic sweep reads. They read zero; nothing is in flight.
- */
+ * firmware's diagnostic scan reads. They read zero; nothing is in flight.
+*/
 #define HUB_IO_ICRB_C_BASE      0x4004f0  /* slot 7's C register */
 #define HUB_IO_ICRB_C_STRIDE    0x20      /* one slot to the next */
 #define HUB_IO_ICRB_C_FIRST     7
 #define HUB_IO_ICRB_C_LAST      14
 
 /*
- * Block transfer engines (Origami project tree, docs/datasheets/hub-bte.md):
- * they work from reset gated on nothing, addresses keep bits 39:7 only, and
- * a transfer completes inside the control store that launches it.
- */
+ * Block transfer engines: they work from reset gated on nothing, addresses
+ * keep bits 39:7 only, and a transfer completes inside the control store that
+ * launches it.
+*/
 #define HUB_BTE_BASE            0x410000  /* engine 0; engine 1 at +0x10000 */
 #define HUB_BTE_STRIDE          0x10000
 #define HUB_BTE_LENGTH          0x00      /* length/status */
@@ -140,15 +147,17 @@
 #define BTE_COPY_CHUNK_LINES    4096
 
 /* Memory and directory interface. */
-#define HUB_MD_INDICATOR_0      0x220050  /* real firmware's diagnostic LED, CPU A */
+/* real firmware's diagnostic LED, CPU A */
+#define HUB_MD_INDICATOR_0      0x220050
 #define HUB_MD_INDICATOR_1      0x220058  /* same, CPU B */
-#define HUB_MD_SN00_INDICATOR_0 0x220080  /* SN00 diagnostic indicator, CPU A */
+/* SN00 diagnostic indicator, CPU A */
+#define HUB_MD_SN00_INDICATOR_0 0x220080
 #define HUB_MD_SN00_INDICATOR_1 0x2200a0  /* same, CPU B */
 
 /*
  * Slot identity and microcontroller status. The boot flash's ready signal
  * appears at two positions that are one signal; both must read ready.
- */
+*/
 #define HUB_MD_SLOT_ID_USTAT    0x220048
 #define MD_SLOT_FLASH_READY_LOW  (1ULL << 0)
 #define MD_SLOT_XJMP_ID          (1ULL << 2)
@@ -162,7 +171,7 @@
 
 /*
  * Memory configuration, masked storage; the non-zero reset value is the fact
- * that matters (Origami project tree, docs/datasheets/hub-memory-directory.md).
+ * that matters.
  */
 #define HUB_MD_CONFIG           0x200018
 
@@ -183,9 +192,9 @@
 
 /*
  * Slot duration, chosen not derived: the encodings' real-time meaning is not
- * established. The phase reset value is the memory/directory datasheet's;
- * the one-wire datasheet does not carry it.
- */
+ * established. The phase reset value comes from the memory-directory unit's
+ * own reset state; the one-wire interface does not otherwise define it.
+*/
 #define MD_ONEWIRE_SLOT_NS      1000
 
 #define MD_ONEWIRE_PHASE_INIT   0x31ULL
@@ -193,14 +202,13 @@
                                  (MD_ONEWIRE_PHASE_INIT << 27))
 
 /*
- * The responder: a DS2505 holding the PIMM manufacturing record -- the hub
- * one-wire datasheet's settled contract, and the part the headless bring-up
- * reads as the remote NIC. Family code 0Bh, and a 48-bit synthetic per-unit
- * serial the machine wires. The part is left unprogrammed, so every memory
- * byte reads 0xff and every redirection byte says "not redirected" by the
- * part's own definition: what the record bytes should say is an open
- * question, and a blank part states nothing.
- */
+ * The Hub one-wire responder is a DS2505 holding the PIMM manufacturing
+ * record; headless bring-up reads it as the remote NIC. Family code 0Bh; the
+ * machine supplies a synthetic 48-bit per-unit serial. The part is
+ * unprogrammed, so every memory byte reads 0xff and every redirection byte
+ * says "not redirected" by the part's own definition: what the record bytes
+ * should say is an open question, and a blank part states nothing.
+*/
 #define MD_ONEWIRE_ROM_FAMILY      0x0b
 #define MD_MODULE_ROM_FAMILY       0x09
 #define MD_ONEWIRE_SERIAL_MASK     MAKE_64BIT_MASK(0, 48)
@@ -228,11 +236,12 @@
 #define ELSC_NVRAM_RESERVED_PAGE 7
 
 /*
- * The junk-bus UART: an NS16550 at an eight-byte stride, which belongs to
- * the junk bus, not the chip. A shipped Origin 200 has no such part.
- */
+ * The junk-bus UART: an NS16550 at an eight-byte stride, which belongs to the
+ * junk bus, not the chip. A shipped Origin 200 has no such part.
+*/
 #define HUB_MD_JUNKUART_BASE    0x2200c0
-#define HUB_MD_JUNKUART_REGSHIFT 3        /* eight-byte stride, junk-bus rule */
+/* eight-byte stride, junk-bus rule */
+#define HUB_MD_JUNKUART_REGSHIFT 3
 #define HUB_MD_JUNKUART_OSC_HZ  12000000  /* the port's reference crystal */
 /* The 16550 wants the oscillator already divided by sixteen. */
 #define HUB_MD_JUNKUART_CLOCK   (HUB_MD_JUNKUART_OSC_HZ / 16)
@@ -268,7 +277,7 @@
  * off the virtual clock so it ticks between two reads a few instructions
  * apart, which Linux's arming depends on. A write moves the origin, not the
  * count.
- */
+*/
 #define HUB_PI_RT_COUNT         0x030100
 #define HUB_PI_RT_COMPARE_A     0x000108
 #define HUB_PI_RT_COMPARE_B     0x000110
@@ -278,8 +287,8 @@
 #define HUB_PI_RT_ENABLE_B      0x000148
 /*
  * The rate a machine supplies when it connects nothing, which every machine
- * in-tree overrides; the datasheet's three supports are for this number.
- */
+ * in-tree overrides; the three supported clock rates include this number.
+*/
 #define PI_RT_DEFAULT_HZ        1250000ULL
 #define PI_RT_MASK              (((uint64_t)1 << 52) - 1)
 
@@ -289,12 +298,11 @@
 #define PI_RT_LOCAL_CTRL_RESET  0x10000ULL
 
 /*
- * Graphics flow control, per processor (hub-processor-interface datasheet,
- * "Graphics flow control"): the attached pipe's page address, a credit
- * counter the pipe's driver seeds and polls against a bias it also writes,
- * and an interrupt counter/compare pair. Plain storage -- see the
- * datasheet for the stated approximation.
- */
+ * Graphics flow control, per processor: the attached pipe's page address, a
+ * credit counter the pipe's driver seeds and polls against a bias it also
+ * writes, and an interrupt counter/compare pair. Plain storage: the model
+ * does not confirm hardware behavior beyond what the driver reads back.
+*/
 #define HUB_PI_GFX_PAGE_A          0x000300
 #define HUB_PI_GFX_CREDIT_A        0x000308
 #define HUB_PI_GFX_BIAS_A          0x000310
@@ -318,7 +326,7 @@
 /*
  * All read zero, nothing being in flight. A guest polls the deallocation
  * registers for a written pending bit to clear, so those must.
- */
+*/
 #define HUB_IO_PIO_DEALLOC      0x400388
 #define HUB_IO_CRB_DEALLOC      0x400390
 #define HUB_IO_IOQ_FIFO_DEPTH   0x400398
@@ -358,10 +366,7 @@
 #define IO_BWIN_SLICE_MASK      0x1f       /* crosstalk address bits 33:29 */
 #define IO_BWIN_SLICE_SHIFT     29
 
-/*
- * Network interface (Origami project tree,
- * docs/datasheets/hub-network-interface.md).
- */
+/* Network interface. */
 #define HUB_NI_STATUS           0x600000  /* status, revision and identity */
 #define HUB_NI_SCRATCH_0        0x600100
 #define HUB_NI_SCRATCH_1        0x600108
@@ -377,9 +382,10 @@
 #define NI_ROUTE_STRIDE         8
 #define NI_ROUTE_MASK           0xf
 
-/* The node numbers an M-mode address can carry: an eight-bit field
- * (docs/datasheets/hub-network-interface.md, "the existing M-mode
- * fabric limits destination numbers to 0 through 255"). */
+/*
+ * The node numbers an M-mode address can carry: an eight-bit field. The
+ * existing M-mode fabric limits destination numbers to 0 through 255.
+*/
 #define SGI_HUB_NET_NUMBERS     256
 
 #define NI_VECTOR_PIOID_MASK    (0x3ffULL << 40)
@@ -400,56 +406,50 @@
  * Port reset: bit 0 resets this Hub, tested alone because the three writers
  * set different companion bits. The protection register is not consulted;
  * only OpenBSD arms it.
- */
+*/
 #define HUB_NI_PORT_RESET       0x600008
 #define NI_PORT_RESET_LOCAL     (1ULL << 0)  /* resets this Hub */
 
 /*
- * Protection configuration: one bit that permits reset, resetting
- * permissive. Storage the model never consults -- the port-reset path
- * must not require it armed, because Linux never arms it -- stored
- * because OpenBSD arms it before rebooting.
- */
+ * Protection configuration: one bit that permits reset, resetting permissive.
+ * Storage the model never consults (the port-reset path must not require it
+ * armed, because Linux never arms it). Store it because OpenBSD arms it
+ * before rebooting.
+*/
 #define HUB_NI_PROTECTION       0x600010
 #define NI_PROTECTION_MASK      0x1ULL
 #define NI_PROTECTION_RESET     0x1ULL
 
 /*
- * Diagnostic parameters: nineteen bits of link fault injection and
- * tuning -- a port-timeout reset, forced eight-bit mode, port disable,
- * deliberate data errors. The routed fabric consumes the data-error bit;
- * the remaining controls are stored and never acted on. The
- * network-interface datasheet defines no reset value for the
- * port-timeout bit and no nonzero reset for the rest; zero at reset
- * is the model's stated choice, the port-error precedent.
- */
+ * Diagnostic parameters: nineteen bits of link fault injection and tuning:
+ * a port-timeout reset, forced eight-bit mode, port disable, deliberate data
+ * errors. The routed fabric consumes the data-error bit; the remaining
+ * controls are stored and never acted on. No source establishes a reset value
+ * for the port-timeout bit or a nonzero reset for the rest; zero at reset is
+ * the model's stated choice, the port-error precedent.
+*/
 #define HUB_NI_DIAG_PARMS       0x600110
 #define NI_DIAG_PARMS_MASK      0x7ffffULL
 #define NI_DIAG_SEND_DATA_ERROR (1ULL << 0)
 
 /*
- * PIO protection: region-permission storage this model never consults
- * -- one bit per region, permissive at reset -- and its write-only
- * override, whose only documented semantic is that writing the
- * password "SGIrules" unlocks the protection. The Origami project
- * tree's network-interface datasheet ("Reset and protection" in
- * docs/datasheets/hub-network-interface.md there) carries both rows.
- */
+ * PIO protection: region-permission storage this model never consults (one
+ * bit per region, permissive at reset) and its write-only override, whose
+ * only documented semantic is that writing the password "SGIrules" unlocks
+ * the protection.
+*/
 #define HUB_NI_IO_PROTECT       0x600400
 #define HUB_NI_IO_PROT_OVRRD    0x600408
 #define NI_IO_PROTECT_RESET     (~0ULL)
 #define NI_PROT_OVRRD_PASSWORD  0x53474972756c6573ULL  /* "SGIrules" */
 
 /*
- * The LLP port registers. The parameters register is sixteen bits of
- * storage -- tuning for a link this machine does not model -- whose
- * reset value carries the null-packet timeout in bits 15:10 and the
- * maximum burst in bits 9:0. The routed fabric latches diagnostic traffic
- * errors in the error register; its clearing alias returns and clears them.
- * The Origami project tree's
- * network-interface datasheet (docs/datasheets/hub-network-interface.md
- * there) carries the field accounts and the choice's justification.
- */
+ * The LLP port registers. The parameters register is sixteen bits of storage
+ * (tuning for a link this machine does not model) whose reset value
+ * carries the null-packet timeout in bits 15:10 and the maximum burst in bits
+ * 9:0. The routed fabric latches diagnostic traffic errors in the error
+ * register; its clearing alias returns and clears them.
+*/
 #define HUB_NI_PORT_PARMS       0x608000
 #define HUB_NI_PORT_ERROR       0x608008
 #define HUB_NI_PORT_ERROR_CLEAR 0x608088
@@ -465,15 +465,14 @@
 
 /*
  * Status: M mode, link-up per the product's wiring, the node field programmed
- * by firmware (or the nasid property), region-size resetting set.
- *
- * With the link down, bit 28 gives the reason: one if the link never came
- * out of reset, zero if it came up and then failed. Reset sets it and the
- * link coming up clears it, so a Hub with no cabled peer (Origin 200, the
- * one-node Origin 2000) reads one. IRIX 6.5.30 treats down-and-zero as a
- * fatal CrayLink loss on every bus error while NI protection permits reset,
- * and the stock PROM leaves protection permitting it.
- */
+ * by firmware (or the nasid property), region-size resetting set. With the
+ * link down, bit 28 gives the reason: one if the link never came out of
+ * reset, zero if it came up and then failed. Reset sets it and the link
+ * coming up clears it, so a Hub with no cabled peer (Origin 200, the one-node
+ * Origin 2000) reads one. IRIX 6.5.30 treats down-and-zero as a fatal
+ * CrayLink loss on every bus error while NI protection permits reset, and the
+ * stock PROM leaves protection permitting it.
+*/
 #define NI_STATUS_MORE_NODES    (1ULL << 18)
 #define NI_STATUS_LINK_UP       (1ULL << 29)
 #define NI_STATUS_NEVER_OUT_OF_RESET (1ULL << 28)
@@ -520,16 +519,16 @@ void sgi_hub_record_port_check_error(SGIHubState *s)
 /*
  * Interrupt modify: seven bits of number, the top bit selecting the bank, and
  * a set bit. The only way to change a pending bit; the Bridge writes here.
- */
+*/
 #define PI_INT_MODIFY_NUMBER    0x7f
 #define PI_INT_MODIFY_SET       0x100
 
 /*
- * The cached-alias size is a four-bit code, and resets to the largest.
- * The reset value covers only the pre-store window: the real PROM
- * stores the 4 KiB code in its earliest per-processor bring-up, before
- * anything cross-node, and never reads the register back.
- */
+ * The cached-alias size is a four-bit code, and resets to the largest. The
+ * reset value covers only the pre-store window: the real PROM stores the 4
+ * KiB code in its earliest per-processor bring-up, before anything
+ * cross-node, and never reads the register back.
+*/
 #define PI_CALIAS_SIZE_MASK     0xf
 #define PI_CALIAS_SIZE_RESET    15
 
@@ -538,7 +537,7 @@ void sgi_hub_record_port_check_error(SGIHubState *s)
  * predicates ahead of the walk. Peek and store are the side-effect-free
  * halves (diagnostic shadow, vector PIO, the 32-bit merge); the read and
  * write hooks carry the guest-visible side effects.
- */
+*/
 enum {
     HUB_REG_STORE       = 1 << 0, /* a plain write stores val & wmask */
     HUB_REG_DIAG        = 1 << 1, /* the diagnostic shadow reads it */
@@ -553,7 +552,8 @@ enum {
 
 typedef struct SGIHubRegDef {
     hwaddr offset;
-    unsigned arg;               /* which of an A/B pair or bank the hooks get */
+    /* which of an A/B pair or bank the hooks get */
+    unsigned arg;
     unsigned flags;
     size_t field;               /* backing state, when width is nonzero */
     unsigned width;             /* sizeof that state: 1, 4 or 8; 0 = none */
@@ -620,7 +620,7 @@ static void sgi_hub_reg_store(SGIHubState *s, const SGIHubRegDef *reg,
 /*
  * Rendezvous-register protocol traces, separate from the generic MMIO trace
  * and tested on the access's aligned register.
- */
+*/
 static void sgi_hub_trace_protocol_write(SGIHubState *s, hwaddr addr,
                                          uint64_t value, unsigned int size)
 {
@@ -691,7 +691,9 @@ static bool sgi_hub_icrb_c_entry(hwaddr addr)
     return slot <= HUB_IO_ICRB_C_LAST;
 }
 
-/* Which engine's register an address is: six aligned doublewords per block. */
+/*
+ * Which engine's register an address is: six aligned doublewords per block.
+ */
 static bool sgi_hub_bte_entry(hwaddr addr, unsigned int *engine, hwaddr *reg)
 {
     hwaddr off;
@@ -723,7 +725,7 @@ static bool sgi_hub_md_error_entry(hwaddr addr)
 /*
  * Aim a window where its entry says. A window naming an absent widget lands
  * over empty crosstalk space and must not fault: guests disable them so.
- */
+*/
 static void sgi_hub_bwin_follow(SGIHubState *s, unsigned int n)
 {
     uint32_t entry = s->io_bwin[n];
@@ -755,7 +757,9 @@ static void sgi_hub_bwin_follow(SGIHubState *s, unsigned int n)
     memory_region_transaction_commit();
 }
 
-/* Floor beneath the windows: zero is a choice, no source says what is real. */
+/*
+ * Floor beneath the windows: zero is a choice, no source says what is real.
+ */
 static uint64_t sgi_hub_bwin_empty_read(void *opaque, hwaddr addr,
                                         unsigned size)
 {
@@ -788,12 +792,11 @@ static const MemoryRegionOps sgi_hub_bwin_empty_ops = {
 };
 
 /*
- * The floor beneath the claim aliases: a node-qualified access whose
- * number neither Hub has programmed fails, and is never served by a Hub
- * the number does not name. The error, not a timeout, is the datasheet's
- * conservative shape for an unobserved fault; discovery only needs the
- * probe not to complete normally.
- */
+ * The floor beneath the claim aliases: a node-qualified access whose number
+ * neither Hub has programmed fails, and is never served by a Hub the number
+ * does not name. The error, not a timeout, is the conservative response to an
+ * unobserved fault; discovery only needs the probe not to complete normally.
+*/
 static MemTxResult sgi_hub_claim_error_read(void *opaque, hwaddr addr,
                                             uint64_t *val, unsigned size,
                                             MemTxAttrs attrs)
@@ -833,9 +836,11 @@ static bool sgi_hub_claim_view_present(const SGIHubState *s, unsigned int view)
     return view == SGI_HUB_DEVICE_VIEW || view < s->cpus;
 }
 
-/* Forward declarations: sgi_hub_walk() needs sgi_hub_first_turn(), defined
+/*
+ * Forward declarations: sgi_hub_walk() needs sgi_hub_first_turn(), defined
  * with the rest of the route-table register handling below; the claim and
- * link-state machinery above needs both. */
+ * link-state machinery above needs both.
+*/
 static bool sgi_hub_net_neighbor(SGIHubState *s, Object **peer_port,
                                  unsigned int *peer_index);
 static SGIHubState *sgi_hub_reach(SGIHubState *s, uint32_t number);
@@ -843,12 +848,12 @@ static SGIHubState *sgi_hub_reach(SGIHubState *s, uint32_t number);
 /*
  * Aim this Hub's claim aliases by its own derived reachability: for every
  * peer Hub this Hub's own hop-by-hop walk reaches at that peer's current
- * number, one alias per view and space sits at that node number and
- * resolves into the peer's own stride in the canonical map; every other
- * alias is disabled, so its stride falls to the error floor. This Hub
- * always reaches itself directly: while two Hubs both hold the reset
- * value zero, each keeps zero for itself.
- */
+ * number, one alias per view and space sits at that node number and resolves
+ * into the peer's own stride in the canonical map; every other alias is
+ * disabled, so its stride falls to the error floor. This Hub always reaches
+ * itself directly: while two Hubs both hold the reset value zero, each keeps
+ * zero for itself.
+*/
 static void sgi_hub_claim_apply(SGIHubState *s)
 {
     unsigned int view, space, i;
@@ -886,13 +891,13 @@ static void sgi_hub_claim_apply(SGIHubState *s)
 }
 
 /*
- * This Hub's own network port's link-up bit: a cable present, not down,
- * with the peer port enabled (sgi_net_cable_neighbor() also requires
- * this Hub's own side enabled, always true -- a Hub has no admin-disable
- * diagnostic). It is read-only to the guest and set again at every reset.
- * The link coming up clears the never-out-of-reset reason for good, until
- * the next reset; a later loss reads as a failure.
- */
+ * This Hub's own network port's link-up bit: a cable present, not down, with
+ * the peer port enabled (sgi_net_cable_neighbor() also requires this Hub's
+ * own side enabled, always true because a Hub has no admin-disable
+ * diagnostic). It is read-only to the guest and set again at every reset. The
+ * link coming up clears the never-out-of-reset reason for good, until the
+ * next reset; a later loss reads as a failure.
+*/
 static void sgi_hub_link_refresh(SGIHubState *s)
 {
     Object *peer_port;
@@ -906,9 +911,11 @@ static void sgi_hub_link_refresh(SGIHubState *s)
     }
 }
 
-/* This Hub's own derived state (link-up bit, claim aliases) needs
+/*
+ * This Hub's own derived state (link-up bit, claim aliases) needs
  * re-deriving, whether because this Hub's own port heard peer_changed or
- * because this Hub is the one that just changed locally. */
+ * because this Hub is the one that just changed locally.
+*/
 static void sgi_hub_net_changed(SGIHubState *s)
 {
     sgi_hub_link_refresh(s);
@@ -917,13 +924,13 @@ static void sgi_hub_net_changed(SGIHubState *s)
 
 /*
  * This Hub's own state changed locally: a route-table write, a
- * programmed-number change, or reset exit. Recompute this Hub's own
- * state and tell this Hub's cable's peer, starting a fresh flood so it
- * reaches every other device transitively -- including every other Hub
- * in the machine, whose own claim aliases may need to move too (a
- * duplicate-number tie-break can shift which Hub answers for a number
- * neither side of this Hub's own cable holds).
- */
+ * programmed-number change, or reset exit. Recompute this Hub's own state and
+ * tell this Hub's cable's peer, starting a fresh flood so it reaches every
+ * other device transitively (including every other Hub in the machine,
+ * whose own claim aliases may need to move too (a duplicate-number tie-break
+ * can shift which Hub answers for a number neither side of this Hub's own
+ * cable holds).
+*/
 static void sgi_hub_net_originate(SGIHubState *s)
 {
     Object *peer_port;
@@ -938,23 +945,23 @@ static void sgi_hub_net_originate(SGIHubState *s)
 }
 
 /*
- * The public size table: zero disables the window, one is 4 KiB, and
- * every further code doubles it, up to 64 MiB at fifteen.
- */
+ * The public size table: zero disables the window, one is 4 KiB, and every
+ * further code doubles it, up to 64 MiB at fifteen.
+*/
 static uint64_t sgi_hub_calias_bytes(uint32_t code)
 {
     return code ? 4 * KiB << (code - 1) : 0;
 }
 
 /*
- * Size the nameless low memory windows to the programmed cached-alias
- * size: within the window a processor's node-field-zero memory access
- * stays on its own node; beyond it the access falls through to the
- * claim layer, which routes stride zero by programmed number. One
- * register serves both processors' views (the PAM idiom again: the
- * machine pre-creates each window at the largest encodable size, and a
- * store, reset or load only resizes and gates it).
- */
+ * Size the nameless low memory windows to the programmed cached-alias size:
+ * within the window a processor's node-field-zero memory access stays on its
+ * own node; beyond it the access falls through to the claim layer, which
+ * routes stride zero by programmed number. One register serves both
+ * processors' views (the PAM idiom again: the machine pre-creates each window
+ * at the largest encodable size, and a store, reset or load only resizes and
+ * gates it).
+*/
 static void sgi_hub_calias_update(SGIHubState *s)
 {
     uint64_t size = sgi_hub_calias_bytes(s->pi_calias_size);
@@ -976,11 +983,11 @@ static void sgi_hub_calias_update(SGIHubState *s)
 }
 
 /*
- * The programmed number moved, by a store, a reset or a load: recompute
- * this Hub's own reachability and tell whatever this Hub's own port
- * connects to, so every other Hub's claim aliases and link bits that
- * depend on it re-derive too.
- */
+ * The programmed number moved, by a store, a reset or a load: recompute this
+ * Hub's own reachability and tell whatever this Hub's own port connects to,
+ * so every other Hub's claim aliases and link bits that depend on it
+ * re-derive too.
+*/
 static void sgi_hub_report_number(SGIHubState *s)
 {
     sgi_hub_net_originate(s);
@@ -1016,9 +1023,9 @@ static void sgi_hub_cpu_halt(CPUState *cs, run_on_cpu_data data)
 }
 
 /*
- * A run-loop exit the Hub forces on a processor, whether a bare kick or
- * the one queued work brings: who kicked (-1 for no processor), whom, why.
- */
+ * A run-loop exit the Hub forces on a processor, whether a bare kick or the
+ * one queued work brings: who kicked (-1 for no processor), whom, why.
+*/
 static void sgi_hub_trace_kick(CPUState *target, const char *reason)
 {
     if (trace_event_get_state_backends(TRACE_SGI_HUB_KICK)) {
@@ -1028,11 +1035,11 @@ static void sgi_hub_trace_kick(CPUState *target, const char *reason)
 }
 
 /*
- * This node's processor for a slice. qemu_get_cpu() walks the machine's
- * whole processor list, and the parked-poller paths below ask for one on
- * every poll, so the answer is kept. A slice not yet created resolves on a
- * later call rather than being remembered as absent.
- */
+ * This node's processor for a slice. qemu_get_cpu() walks the machine's whole
+ * processor list, and the parked-poller paths below ask for one on every
+ * poll, so the answer is kept. A slice not yet created resolves on a later
+ * call rather than being remembered as absent.
+*/
 static CPUState *sgi_hub_cpu(SGIHubState *s, unsigned int slice)
 {
     assert(slice < SGI_HUB_PROCESSORS);
@@ -1091,24 +1098,22 @@ static void sgi_hub_kick_peer(CPUState *peer, const char *reason)
 }
 
 /*
- * The read assists hand a polling reader's local peer a slice. They exist
- * for single-threaded round-robin execution, where one host slice serves
- * every processor and a bounded guest poll can expire before the peer it
- * waits for has run at all. Under multi-threaded execution that peer holds
- * its own host thread and is already running, so the kick releases nobody
- * and costs the peer a run-loop exit on every poll. Write-side phase
- * changes still kick unconditionally: those are rare, and warm-reset
- * discovery depends on them.
- */
+ * The read assists hand a polling reader's local peer a slice. They exist for
+ * single-threaded round-robin execution, where one host slice serves every
+ * processor and a bounded guest poll can expire before the peer it waits for
+ * has run at all. Under multi-threaded execution that peer holds its own host
+ * thread and is already running, so the kick releases nobody and costs the
+ * peer a run-loop exit on every poll. Write-side phase changes still kick
+ * unconditionally: those are rare, and warm-reset discovery depends on them.
+*/
 /*
- * Single-threaded round-robin TCG is the only mode that hands slices
- * around, so it is the only one the assist can help. Asking tcg_enabled()
- * first also keeps the accelerator query out of a build configured
- * without TCG, where it has no definition to link against.
- *
- * Callers with more than one peer to kick ask this before their loop, so a
- * suppressed assist does not resolve processors it will not kick.
- */
+ * Single-threaded round-robin TCG is the only mode that hands slices around,
+ * so it is the only one the assist can help. Asking tcg_enabled() first also
+ * keeps the accelerator query out of a build configured without TCG, where it
+ * has no definition to link against. Callers with more than one peer to kick
+ * ask this before their loop, so a suppressed assist does not resolve
+ * processors it will not kick.
+*/
 static bool sgi_hub_polled_kicks_land(void)
 {
     return tcg_enabled() && !qemu_tcg_mttcg_enabled();
@@ -1154,7 +1159,9 @@ static void sgi_hub_int_modify(SGIHubState *s, uint64_t val)
     }
     sgi_hub_update_irq(s);
 
-    /* Credit slice B a PEND1 snapshot before kicking it: the PROM's bit 113. */
+    /*
+     * Credit slice B a PEND1 snapshot before kicking it: the PROM's bit 113.
+     */
     if (bank == 1 && number == 113 && primary && current_cpu == primary) {
         sgi_hub_trace_pend1_credit(s, "set");
         s->pi_int_pend1_primary_credit = true;
@@ -1162,15 +1169,15 @@ static void sgi_hub_int_modify(SGIHubState *s, uint64_t val)
     }
 
     /*
-     * The PROM uses pending bits as barrier mailboxes; release the pollers.
-     * A write that set a bit already set, or cleared one already clear,
-     * has released nobody: every poller on this bank reads back what it
-     * read last time. Where the kick can hand a slice on -- round-robin --
-     * it still goes out either way, because there the yield is the point
-     * and warm-reset discovery depends on it. Everywhere else the target
-     * is running on its own thread, so the kick costs it a run-loop exit
-     * and buys a poll it was about to make anyway.
-     */
+     * The PROM uses pending bits as barrier mailboxes; release the pollers. A
+     * write that set a bit already set, or cleared one already clear, has
+     * released nobody: every poller on this bank reads back what it read last
+     * time. Where the kick can hand a slice on (round-robin) it still
+     * goes out either way, because there the yield is the point and
+     * warm-reset discovery depends on it. Everywhere else the target is
+     * running on its own thread, so the kick costs it a run-loop exit and
+     * buys a poll it was about to make anyway.
+    */
     if (s->pi_int_pend[bank] != before || sgi_hub_polled_kicks_land()) {
         for (i = 0; i < s->cpus; i++) {
             sgi_hub_kick_peer(sgi_hub_cpu(s, i), "int-modify");
@@ -1210,7 +1217,9 @@ static void sgi_hub_kick_remote_scratch_node(SGIHubState *s)
         return;
     }
 
-    /* A remote scratch write is a discovery phase change; release the node. */
+    /*
+     * A remote scratch write is a discovery phase change; release the node.
+     */
     for (i = 0; i < s->cpus; i++) {
         sgi_hub_kick_peer(sgi_hub_cpu(s, i), "remote-scratch");
     }
@@ -1220,7 +1229,7 @@ static void sgi_hub_kick_remote_scratch_node(SGIHubState *s)
  * Only an unchanged re-read kicks the peers: a read whose value moved is an
  * answered poll. Keyed on neither the bank's value nor the masks; both name
  * the wrong reads.
- */
+*/
 static uint64_t sgi_hub_int_pending_read(SGIHubState *s, unsigned int bank)
 {
     uint64_t value = s->pi_int_pend[bank];
@@ -1247,7 +1256,9 @@ static uint64_t sgi_hub_int_pending_read(SGIHubState *s, unsigned int bank)
     return value;
 }
 
-/* Bits above 39 drop silently, as firmware depends on; bits 6:0 are logged. */
+/*
+ * Bits above 39 drop silently, as firmware depends on; bits 6:0 are logged.
+ */
 static uint64_t sgi_hub_bte_address(unsigned int engine, const char *what,
                                     uint64_t val)
 {
@@ -1260,7 +1271,9 @@ static uint64_t sgi_hub_bte_address(unsigned int engine, const char *what,
     return val & BTE_ADDRESS_MASK;
 }
 
-/* Run the armed transfer inside the launching store, through the node view. */
+/*
+ * Run the armed transfer inside the launching store, through the node view.
+ */
 static void sgi_hub_bte_launch(SGIHubState *s, unsigned int engine)
 {
     uint64_t lines = s->bte_length[engine] & BTE_LENGTH_LINES;
@@ -1274,7 +1287,9 @@ static void sgi_hub_bte_launch(SGIHubState *s, unsigned int engine)
     trace_sgi_hub_bte_launch(engine, control, src, dst, lines);
 
     if (control & BTE_CONTROL_POISON) {
-        /* The poisoned directory state belongs to a directory not modelled. */
+        /*
+         * The poisoned directory state belongs to a directory not modelled.
+         */
         qemu_log_mask(LOG_UNIMP,
                       "sgi-hub: BTE%u launched in poison mode; the copy "
                       "runs but no directory state is poisoned\n", engine);
@@ -1287,9 +1302,9 @@ static void sgi_hub_bte_launch(SGIHubState *s, unsigned int engine)
 
     /*
      * Chunked through one bounce buffer; a failed chunk is retried line by
-     * line to latch the first unmoved line, and overlapping ranges go line
-     * by line to keep the engine's forward propagation.
-     */
+     * line to latch the first unmoved line, and overlapping ranges go line by
+     * line to keep the engine's forward propagation.
+    */
     chunk = BTE_COPY_CHUNK_LINES;
     if (!(control & BTE_CONTROL_ZFILL) &&
         src < dst + lines * BTE_LINE_SIZE &&
@@ -1329,9 +1344,9 @@ static void sgi_hub_bte_launch(SGIHubState *s, unsigned int engine)
             }
             /*
              * A failure latches error beside busy and keeps the unmoved
-             * count; only the I/O error-clear register absolves it.
-             * Neither completion path runs.
-             */
+             * count; only the I/O error-clear register absolves it. Neither
+             * completion path runs.
+            */
             s->bte_length[engine] = BTE_LENGTH_BUSY | BTE_LENGTH_ERROR |
                                     (lines - done);
             qemu_log_mask(LOG_GUEST_ERROR,
@@ -1366,13 +1381,12 @@ static void sgi_hub_bte_launch(SGIHubState *s, unsigned int engine)
         }
     } else {
         /*
-         * Completion arrives as a device interrupt, via interrupt modify,
-         * on whichever Hub this Hub's own reachability walk reaches for
-         * the destination number: this Hub itself when the number is its
-         * own. A direct call, not a store through the network port, so
-         * the launching store never re-enters this Hub's own register
-         * region.
-         */
+         * Completion arrives as a device interrupt, via interrupt modify, on
+         * whichever Hub this Hub's own reachability walk reaches for the
+         * destination number: this Hub itself when the number is its own. A
+         * direct call, not a store through the network port, so the launching
+         * store never re-enters this Hub's own register region.
+        */
         uint64_t level = (s->bte_interrupt[engine] & BTE_INT_LEVEL_MASK) >>
                          BTE_INT_LEVEL_SHIFT;
         uint64_t node = s->bte_interrupt[engine] & BTE_INT_NODE_MASK;
@@ -1419,7 +1433,7 @@ static void sgi_hub_bte_write(SGIHubState *s, unsigned int engine,
         /*
          * A store arms or disarms but never absolves: a set error bit
          * survives. Whether a store can set it is open; not allowed here.
-         */
+        */
         s->bte_length[engine] = (s->bte_length[engine] & BTE_LENGTH_ERROR) |
                                 (val & (BTE_LENGTH_BUSY | BTE_LENGTH_LINES));
         break;
@@ -1432,7 +1446,7 @@ static void sgi_hub_bte_write(SGIHubState *s, unsigned int engine,
         break;
     case HUB_BTE_CONTROL:
         s->bte_control[engine] = val & BTE_CONTROL_MASK;
-        /* Launches if armed; busy clear does nothing (datasheet proposal). */
+        /* Launches if armed; busy clear does nothing (proposed behavior). */
         if (s->bte_length[engine] & BTE_LENGTH_BUSY) {
             sgi_hub_bte_launch(s, engine);
         }
@@ -1455,18 +1469,15 @@ static void sgi_hub_bte_write(SGIHubState *s, unsigned int engine,
  * compiler turns into a call to the 128-by-64 division helper. Every period
  * this machine sets is a whole number of nanoseconds, and for those the
  * division is by a 64-bit number, which an exact reciprocal replaces with a
- * single multiply.
- *
- * With k nanoseconds per tick and m = floor(2^64 / k) + 1, write m*k as
- * 2^64 + excess. Then n*m / 2^64 = n/k + n*excess/(k * 2^64), so for
- * n = qk + r the multiply answers q whenever r + n*excess/2^64 < k, and
- * r is at most k-1, so n*excess <= 2^64 is enough. The limit below is that
- * bound; beyond it the exact division still answers.
- *
- * A period below two nanoseconds per tick has no representable reciprocal
- * -- m would be 2^64 -- and one that is not a whole number of nanoseconds
- * is not this division at all. Both keep clock_ns_to_ticks().
- */
+ * single multiply. With k nanoseconds per tick and m = floor(2^64 / k) + 1,
+ * write m*k as 2^64 + excess. Then n*m / 2^64 = n/k + n*excess/(k * 2^64), so
+ * for n = qk + r the multiply answers q whenever r + n*excess/2^64 < k, and r
+ * is at most k-1, so n*excess <= 2^64 is enough. The limit below is that
+ * bound; beyond it the exact division still answers. A period below two
+ * nanoseconds per tick has no representable reciprocal (m would be 2^64)
+ * and one that is not a whole number of nanoseconds is not this division at
+ * all. Both keep clock_ns_to_ticks().
+*/
 /* Out of line so the read above keeps inlining into its callers. */
 static __attribute__((noinline)) void
 sgi_hub_rt_reciprocal_build(SGIHubState *s, uint64_t period)
@@ -1489,17 +1500,16 @@ sgi_hub_rt_reciprocal_build(SGIHubState *s, uint64_t period)
 
 /*
  * Where the counter has got to, from the clock rather than from stored state.
- *
  * The clock read is what this register costs now, and this register is most
  * of the Hub's traffic, so it gets asked regularly whether a cheaper host
- * time source would do. It would not. The comparator's deadline is a timer
- * on this same virtual clock, so a second time base would fire it at a count
- * the guest never programmed; the virtual clock stops when the machine stops
- * and is stepped outright by the test harness, where host time means nothing;
- * and under instruction counting it is not host time at all. Caching is wrong
- * for the same reason a counter exists: firmware measures elapsed time by
- * polling this register, so a held value shortens what it measures.
- */
+ * time source would do. It would not. The comparator's deadline is a timer on
+ * this same virtual clock, so a second time base would fire it at a count the
+ * guest never programmed; the virtual clock stops when the machine stops and
+ * is stepped outright by the test harness, where host time means nothing; and
+ * under instruction counting it is not host time at all. Caching is wrong for
+ * the same reason a counter exists: firmware measures elapsed time by polling
+ * this register, so a held value shortens what it measures.
+*/
 static uint64_t sgi_hub_rt_count(SGIHubState *s)
 {
     int64_t delta = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) - s->pi_rt_origin_ns;
@@ -1523,11 +1533,10 @@ static uint64_t sgi_hub_rt_count(SGIHubState *s)
 }
 
 /*
- * How long a comparator hold may last. Nothing is held during the wait,
- * so this only decides when a partner that never answers stops being
- * waited for; partner lags measured on a loaded host reach tens of
- * milliseconds.
- */
+ * How long a comparator hold may last. Nothing is held during the wait, so
+ * this only decides when a partner that never answers stops being waited for;
+ * partner lags measured on a loaded host reach tens of milliseconds.
+*/
 #define SGI_HUB_RT_HOLD_MS      2000
 
 /* What a held processor waits for. */
@@ -1599,7 +1608,7 @@ static void sgi_hub_rt_compare_apply(SGIHubState *s, unsigned int arg,
      * PROM arbitrates through it that way, so kick the other processor before
      * its instruction-count timeout expires. A deadline writer has the
      * interrupt enabled and does not kick the peer.
-     */
+    */
     if (!s->pi_rt_enable[arg] && (arg ^ 1) < s->cpus) {
         sgi_hub_kick_peer(other, "rt-compare-post");
     }
@@ -1619,10 +1628,10 @@ static void sgi_hub_rt_flush_withheld(SGIHubState *s, unsigned int slice)
 }
 
 /*
- * The event a hold waits for happened on another thread: end the hold
- * here, under the big lock, rather than when the held thread next runs,
- * so the partner can take its own hold at once.
- */
+ * The event a hold waits for happened on another thread: end the hold here,
+ * under the big lock, rather than when the held thread next runs, so the
+ * partner can take its own hold at once.
+*/
 static void sgi_hub_rt_release(SGIHubState *s, unsigned int slice,
                                SGIHubRTHoldKind kind)
 {
@@ -1645,13 +1654,13 @@ static void sgi_hub_rt_release(SGIHubState *s, unsigned int slice,
 }
 
 /*
- * The first processor's alive signal, as the stock PROM gives it in traced
- * boots: the alive bit in I/O scratch register 0, then interrupt 113 raised
- * through interrupt modify, both from the first processor. Once both stand,
- * the second processor has what it looks for next, so a hold waiting for
- * the signal ends; and the signal counts as given until reset, because
- * firmware clears the bit again much later with no rendezvous to protect.
- */
+ * The first processor's alive signal, as the stock PROM gives it: the alive
+ * bit in I/O scratch register 0, then interrupt 113 raised through interrupt
+ * modify, both from the first processor. Once both stand, the second
+ * processor has what it looks for next, so a hold waiting for the signal
+ * ends; and the signal counts as given until reset, because firmware clears
+ * the bit again much later with no rendezvous to protect.
+*/
 static void sgi_hub_rt_alive_update(SGIHubState *s)
 {
     if (s->pi_rt_alive_seen || s->cpus < 2 ||
@@ -1665,10 +1674,10 @@ static void sgi_hub_rt_alive_update(SGIHubState *s)
 }
 
 /*
- * End a withdrawal hold and land the write it was withholding, whether or
- * not a hold is still outstanding. Every caller is an access that must not
- * see the old post any more.
- */
+ * End a withdrawal hold and land the write it was withholding, whether or not
+ * a hold is still outstanding. Every caller is an access that must not see
+ * the old post any more.
+*/
 static void sgi_hub_rt_withdraw_now(SGIHubState *s, unsigned int slice)
 {
     sgi_hub_rt_release(s, slice, SGI_HUB_RT_HOLD_WITHDRAW);
@@ -1706,12 +1715,11 @@ static void sgi_hub_rt_hold(CPUState *cs, run_on_cpu_data data)
             outcome = "preempted by an interrupt";
         } else if (!cpu_work_list_empty(cs)) {
             /*
-             * Work queued on this processor runs before its next
-             * instruction, and a memory map change anywhere in the
-             * machine queues some on every processor. Step aside for it
-             * and take the hold up again behind it; the guest cannot
-             * come between.
-             */
+             * Work queued on this processor runs before its next instruction,
+             * and a memory map change anywhere in the machine queues some on
+             * every processor. Step aside for it and take the hold up again
+             * behind it; the guest cannot come between.
+            */
             outcome = NULL;
             yield = true;
         } else if (now >= deadline) {
@@ -1724,7 +1732,7 @@ static void sgi_hub_rt_hold(CPUState *cs, run_on_cpu_data data)
          * A wake is traced once the loop has decided what it means. The
          * stamps bracket the wait, which retakes the big lock before it
          * returns; it does not say whether it was signalled or timed out.
-         */
+        */
         if (traced_wait) {
             trace_sgi_hub_rt_hold_wake(cs->cpu_index, hold->id, wait_ms,
                                        wait_start, wait_end,
@@ -1762,7 +1770,7 @@ static void sgi_hub_rt_hold(CPUState *cs, run_on_cpu_data data)
     /*
      * However it ended, the withdrawal lands before this processor's next
      * instruction: it cannot observe a post it has already taken back.
-     */
+    */
     sgi_hub_rt_flush_withheld(s, slice);
     /* End at the clock read the loop decided on, so the length is exact. */
     if (trace_event_get_state_backends(TRACE_SGI_HUB_RT_HOLD_END)) {
@@ -1779,45 +1787,39 @@ static void sgi_hub_rt_hold(CPUState *cs, run_on_cpu_data data)
 /*
  * With its counter interrupt off, a processor's comparator is a progress
  * mailbox. The stock PROM meets a node's two processors through the pair:
- * each posts the same value to its own comparator and polls the other's,
- * and the second to arrive finds the match on its first read and
- * withdraws its post shortly after. Real processors run continuously, so
- * the first poller always reads that post while it stands, and reaches it
- * well inside its poll budget. Host threads do not run continuously: a
- * poller descheduled across the post misses it, spends its budget and
- * disables its partner.
- *
- * The rendezvous has a second race after the match. The node's first
- * processor then publishes an alive signal (sgi_hub_rt_alive_update), and
- * the second processor's next accesses test for it; if the second gets
- * there first it steps one exchange out of the counting handshake, and the
- * node is lost later. A hold must come before the access that decides,
- * because a hold lets the access complete first -- so it sits at the match
- * read, the second processor's last rendezvous access before the test.
- *
- * A reader is therefore held in two cases, each once per partner write. The
- * second processor, reading its own posted value back before the first has
- * given its alive signal since reset, is held until the signal. A processor
- * that has posted, and re-reads anything but its own value with no partner
- * write in between, is held until the partner next writes. The first
- * processor is never held at its match: it is the one that must publish.
- * What its partner needs from it after that is the post, so the hold that
- * keeps the post standing sits at the write that takes it back
- * (sgi_hub_rt_withhold). A hold also ends when the partner can no longer
- * run, when the held processor has a stop or a deliverable interrupt, or
- * after SGI_HUB_RT_HOLD_MS. Work queued on the held processor runs and
- * the hold resumes behind it: a memory map change anywhere in the machine
- * queues such work on every processor, and the stock PROM makes dozens
- * while a node's processors meet.
- *
- * The hold is queued work on the held processor's own vCPU. It starts at
- * that processor's next block boundary, outside the execution loop, and
- * waits on the vCPU's halt condition with the big lock released, so it
- * holds no RCU read-side section and every kick the vCPU honours reaches
- * it. It never waits on another vCPU's queue, and a Hub holds at most one
- * processor at a time. Register values are unchanged; only when the held
- * processor resumes moves.
- */
+ * each posts the same value to its own comparator and polls the other's, and
+ * the second to arrive finds the match on its first read and withdraws its
+ * post shortly after. Real processors run continuously, so the first poller
+ * always reads that post while it stands, and reaches it well inside its poll
+ * budget. Host threads do not run continuously: a poller descheduled across
+ * the post misses it, spends its budget and disables its partner. The
+ * rendezvous has a second race after the match. The node's first processor
+ * then publishes an alive signal (sgi_hub_rt_alive_update), and the second
+ * processor's next accesses test for it; if the second gets there first it
+ * steps one exchange out of the counting handshake, and the node is lost
+ * later. A hold must come before the access that decides, because a hold lets
+ * the access complete first, so it sits at the match read, the second
+ * processor's last rendezvous access before the test. A reader is therefore
+ * held in two cases, each once per partner write. The second processor,
+ * reading its own posted value back before the first has given its alive
+ * signal since reset, is held until the signal. A processor that has posted,
+ * and re-reads anything but its own value with no partner write in between,
+ * is held until the partner next writes. The first processor is never held at
+ * its match: it is the one that must publish. What its partner needs from it
+ * after that is the post, so the hold that keeps the post standing sits at
+ * the write that takes it back (sgi_hub_rt_withhold). A hold also ends when
+ * the partner can no longer run, when the held processor has a stop or a
+ * deliverable interrupt, or after SGI_HUB_RT_HOLD_MS. Work queued on the held
+ * processor runs and the hold resumes behind it: a memory map change anywhere
+ * in the machine queues such work on every processor, and the stock PROM
+ * makes dozens while a node's processors meet. The hold is queued work on the
+ * held processor's own vCPU. It starts at that processor's next block
+ * boundary, outside the execution loop, and waits on the vCPU's halt
+ * condition with the big lock released, so it holds no RCU read-side section
+ * and every kick the vCPU honours reaches it. It never waits on another
+ * vCPU's queue, and a Hub holds at most one processor at a time. Register
+ * values are unchanged; only when the held processor resumes moves.
+*/
 static void sgi_hub_rt_mailbox_read(SGIHubState *s, unsigned int owner,
                                     uint64_t value)
 {
@@ -1879,20 +1881,18 @@ static void sgi_hub_rt_mailbox_read(SGIHubState *s, unsigned int owner,
 
 /*
  * The withdrawal. A processor that clears a post the partner has not read
- * takes the rendezvous away from a partner whose host thread was not
- * running across it; real processors run continuously, so on hardware the
- * partner always reads it. So the write is withheld and the processor
- * parked until the partner reads the post, and the value lands on that
- * read -- under the big lock, at the access that answers it -- or when the
- * hold ends any other way. The partner sees the same values in the same
- * order it sees today; what moves is when the withdrawal appears, which is
- * exactly what parking the processor one instruction earlier did.
- *
- * Only a write of zero over a standing post qualifies. The firmware also
- * uses these registers as progress mailboxes, stepping them through
- * non-zero codes that nothing waits on, and holding those would park a
- * processor for every code it posts.
- */
+ * takes the rendezvous away from a partner whose host thread was not running
+ * across it; real processors run continuously, so on hardware the partner
+ * always reads it. So the write is withheld and the processor parked until
+ * the partner reads the post, and the value lands on that read (under the
+ * big lock, at the access that answers it) or when the hold ends any other
+ * way. The partner sees the same values in the same order it sees today; what
+ * moves is when the withdrawal appears, which is exactly what parking the
+ * processor one instruction earlier did. Only a write of zero over a standing
+ * post qualifies. The firmware also uses these registers as progress
+ * mailboxes, stepping them through non-zero codes that nothing waits on, and
+ * holding those would park a processor for every code it posts.
+*/
 static bool sgi_hub_rt_withhold(SGIHubState *s, unsigned int arg,
                                 uint64_t val)
 {
@@ -1967,7 +1967,9 @@ static uint64_t sgi_hub_read_rt_compare(SGIHubState *s, hwaddr addr,
     }
     value = s->pi_rt_compare[arg];
 
-    /* A progress mailbox: let the owner publish before the poll budget ends. */
+    /*
+     * A progress mailbox: let the owner publish before the poll budget ends.
+     */
     sgi_hub_kick_polled_peer(owner, "rt-compare-poll");
     sgi_hub_rt_mailbox_read(s, arg, value);
     return value;
@@ -1996,12 +1998,12 @@ static void sgi_hub_rt_match(SGIHubState *s, unsigned int index)
 }
 
 /*
- * The comparator fires when the counter reaches the compare value, never
- * on being merely past it: IRIX parks a processor's tick by writing a
- * value behind the counter and depends on the silence. The next match is
- * the modular distance forward -- a whole revolution when the write lands
- * on equality -- and is the same arithmetic as an ordinary short deadline.
- */
+ * The comparator fires when the counter reaches the compare value, never on
+ * being merely past it: IRIX parks a processor's tick by writing a value
+ * behind the counter and depends on the silence. The next match is the
+ * modular distance forward (a whole revolution when the write lands on
+ * equality) and is the same arithmetic as an ordinary short deadline.
+*/
 static void sgi_hub_rt_arm(SGIHubState *s, unsigned int index)
 {
     uint64_t ticks = ((s->pi_rt_compare[index] -
@@ -2020,13 +2022,13 @@ static void sgi_hub_rt_arm(SGIHubState *s, unsigned int index)
 /*
  * Completion and the sampled level, once the slot underway has finished.
  * Derived on the spot rather than delivered by a timer, because a timer
- * callback needs the big lock and firmware bit-banging this bus holds it:
- * the callback for a one-microsecond slot arrived roughly four milliseconds
- * late under eight processors, and the guest spent about two hundred more
- * polls of this register waiting for it. The guest-visible contract is the
- * one the one-wire datasheet sets and is unchanged -- starting a slot clears
+ * callback needs the big lock and firmware bit-banging this bus holds it: the
+ * callback for a one-microsecond slot arrived roughly four milliseconds late
+ * under eight processors, and the guest spent about two hundred more polls of
+ * this register waiting for it. The guest-visible contract is the one the
+ * one-wire interface requires and is unchanged; starting a slot clears
  * completion, and no read before the deadline reports it finished.
- */
+*/
 static uint64_t sgi_hub_onewire_value(SGIHubState *s, unsigned arg)
 {
     if (qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) < s->md_onewire_deadline_ns) {
@@ -2036,13 +2038,15 @@ static uint64_t sgi_hub_onewire_value(SGIHubState *s, unsigned arg)
            (s->onewire_level ? MD_ONEWIRE_RXDATA : 0);
 }
 
-/* Build the two fixed pages the Hub's PIMM record exposes.  The values are
+/*
+ * Build the two fixed pages the Hub's PIMM record exposes. The values are
  * synthetic, but the layout and checks are part of the guest-visible record
- * contract: PROM and IRIX reject a page whose stored CRC does not close. */
+ * contract: PROM and IRIX reject a page whose stored CRC does not close.
+*/
 static void sgi_hub_onewire_build_record(SGIHubState *s, uint8_t image[64])
 {
     char serial[11];
-    static const char part[] = "ORIGAMI-IP27-PIMM";
+    static const char part[] = "SGI-IP27-PIMM";
     static const char revision[] = "1.0 ";
     static const char board[] = "IP27";
 
@@ -2134,10 +2138,10 @@ bool sgi_hub_first_turn(const SGIHubState *s, uint32_t destination,
 /* ---- The network port interface ---- */
 
 /*
- * Whether this Hub's own network port has a genuinely up neighbor (a
- * cable, not down, both ends administratively enabled -- always true on
- * this Hub's own side, which has no such diagnostic), and who it is.
- */
+ * Whether this Hub's own network port has a genuinely up neighbor (a cable,
+ * not down, both ends administratively enabled on this Hub's
+ * side, which has no such diagnostic), and who it is.
+*/
 static bool sgi_hub_net_neighbor(SGIHubState *s, Object **peer_port,
                                  unsigned int *peer_index)
 {
@@ -2150,14 +2154,13 @@ static bool sgi_hub_net_neighbor(SGIHubState *s, Object **peer_port,
 
 /*
  * Walk this Hub's own port hop by hop through whatever Routers its own
- * routing tables and each Router's own tables select -- the same
- * table-driven path a live vector packet takes
- * (docs/datasheets/router.md, "Routing"). Returns the terminal Hub if it
- * currently holds destination, else NULL. Cycle safety: a genuine
- * routing loop still terminates at SGI_NET_PORT_MAX_HOPS, the same bound
- * a live vector obeys, since every observable outcome past that bound is
- * already refused either way (see the packet's own hop cap).
- */
+ * routing tables and each Router's own tables select; the same table-driven
+ * path a live vector packet takes. Returns the terminal Hub if it currently
+ * holds destination, else NULL. Cycle safety: a genuine routing loop still
+ * terminates at SGI_NET_PORT_MAX_HOPS, the same bound a live vector obeys,
+ * since every observable outcome past that bound is already refused either
+ * way (see the packet's own hop cap).
+*/
 static SGIHubState *sgi_hub_walk(SGIHubState *s, uint32_t destination,
                                  uint64_t *vector_out)
 {
@@ -2208,18 +2211,20 @@ static SGIHubState *sgi_hub_walk(SGIHubState *s, uint32_t destination,
 }
 
 /*
- * The public form of the walk above, for the machine's read-only
- * "routes" diagnostic property alone: whether this Hub's own tables
- * currently reach destination, and by what vector.
- */
+ * The public form of the walk above, for the machine's read-only "routes"
+ * diagnostic property alone: whether this Hub's own tables currently reach
+ * destination, and by what vector.
+*/
 bool sgi_hub_route(SGIHubState *s, uint32_t destination, uint64_t *vector)
 {
     return sgi_hub_walk(s, destination, vector) != NULL;
 }
 
-/* This Hub's own number always answers for itself first, exactly as
- * sgi_hub_walk()'s neighbor Hub would if asked -- while two Hubs both
- * hold the reset value zero, each keeps zero for itself. */
+/*
+ * This Hub's own number always answers for itself first, exactly as
+ * sgi_hub_walk()'s neighbor Hub would if asked; while two Hubs both hold
+ * the reset value zero, each keeps zero for itself.
+*/
 static SGIHubState *sgi_hub_reach(SGIHubState *s, uint32_t number)
 {
     if (number < SGI_HUB_NET_NUMBERS && number == sgi_hub_programmed_nasid(s)) {
@@ -2259,7 +2264,9 @@ static bool sgi_hub_vector_target_write(SGIHubState *target, hwaddr addr,
         sgi_hub_route_written(target, addr);
         return true;
     }
-    /* The pure store: a remote vector write has no local write-hook effects. */
+    /*
+     * The pure store: a remote vector write has no local write-hook effects.
+     */
     reg = sgi_hub_reg_lookup(addr);
     if (reg && (reg->flags & HUB_REG_VECTOR) && sgi_hub_reg_storable(reg)) {
         sgi_hub_reg_store(target, reg, value);
@@ -2270,10 +2277,10 @@ static bool sgi_hub_vector_target_write(SGIHubState *target, hwaddr addr,
 
 /*
  * The target's half of a vector operation, delivered to whichever Hub the
- * route ends at, whether directly or after a Router forwarded it. The
- * request carries bits 19:3 of the register address; a Hub target
- * supplies the NI base. An exchange reads, and writes only over a zero.
- */
+ * route ends at, whether directly or after a Router forwarded it. The request
+ * carries bits 19:3 of the register address; a Hub target supplies the NI
+ * base. An exchange reads, and writes only over a zero.
+*/
 bool sgi_hub_vector_access(SGIHubState *target, SGINetPacket *access)
 {
     hwaddr addr = HUB_NI_STATUS + access->addr;
@@ -2299,15 +2306,14 @@ bool sgi_hub_vector_access(SGIHubState *target, SGINetPacket *access)
 
 /*
  * ---- The network port interface: receive ----
- *
- * A Hub's one network port never forwards (packet->vector arrives here
- * only ever zero -- the origin's own launch code and a forwarding
- * Router's own mid-route check both refuse a nonzero vector before ever
- * calling into a Hub). A terminal Hub that declines its own register
- * decode answers with an address error: unlike a terminal Router's
- * unmodeled gap, the Hub's vector-target decode is the reviewed
- * protocol contract, so a miss is confidently a refusal, not a timeout.
- */
+ * A Hub's one network port never forwards (packet->vector arrives here only
+ * ever zero; the origin's own launch code and a forwarding Router's own
+ * mid-route check both refuse a nonzero vector before ever calling into a
+ * Hub). A terminal Hub that declines its own register decode answers with an
+ * address error: unlike a terminal Router's unmodeled gap, the Hub's
+ * vector-target decode is the defined protocol behavior, so a miss is
+ * confidently a refusal, not a timeout.
+*/
 static SGINetPacketResult sgi_hub_net_port_receive(Object *port,
                                                     unsigned int index,
                                                     SGINetPacket *packet,
@@ -2336,8 +2342,10 @@ static SGINetPortLinkState sgi_hub_net_port_link_state(Object *port,
     return (SGINetPortLinkState) { .enabled = true, .eight_bit = false };
 }
 
-/* A Hub never relays further -- it has only the one port -- so hearing
- * peer_changed just re-derives this Hub's own state. */
+/*
+ * A Hub has one port and never relays further. Hearing
+ * peer_changed just re-derives this Hub's own state.
+*/
 static void sgi_hub_net_port_peer_changed(Object *port, unsigned int index)
 {
     sgi_hub_net_changed(SGI_HUB(port));
@@ -2350,13 +2358,13 @@ static void sgi_hub_net_port_record_check_error(Object *port,
 }
 
 /*
- * Launch a vector packet from this Hub's own port: the first hop, and
- * the two checks that belong only there -- the direct Hub-to-Hub address
- * error a nonzero vector meets with no Router to carry it further, and
- * the write-time data-error charge a Hub's own diagnostic bit places on
- * the first Router's arrival port. Every hop after this one is ordinary
- * SGI_NET_PORT forwarding (hw/misc/sgi-router.c).
- */
+ * Launch a vector packet from this Hub's own port: the first hop, and the two
+ * checks that belong only there: the direct Hub-to-Hub address error a
+ * nonzero vector meets with no Router to carry it further, and the write-time
+ * data-error charge a Hub's own diagnostic bit places on the first Router's
+ * arrival port. Every hop after this one is ordinary SGI_NET_PORT forwarding
+ * (hw/misc/sgi-router.c).
+*/
 static SGINetPacketResult sgi_hub_vector_launch(SGIHubState *s,
                                                 SGINetPacket *packet)
 {
@@ -2369,12 +2377,10 @@ static SGINetPacketResult sgi_hub_vector_launch(SGIHubState *s,
     if (!sgi_net_port_forwards(peer_port, peer_index)) {
         if (packet->vector != 0) {
             /*
-             * The neighbor Hub is on the wire and answers, but a route
-             * past it needs a Router the link does not have: the
-             * address-error response, not the timeout a link with
-             * nothing on it leaves (docs/datasheets/hub-network-
-             * interface.md, "the direct Origin 200 link").
-             */
+             * The neighbor Hub is on the wire and answers, but a route past
+             * it needs a Router the link does not have: the address-error
+             * response, not the timeout a link with nothing on it leaves.
+            */
             packet->source = sgi_hub_programmed_nasid(SGI_HUB(peer_port));
             return SGI_NET_PACKET_ERROR;
         }
@@ -2386,12 +2392,12 @@ static SGINetPacketResult sgi_hub_vector_launch(SGIHubState *s,
 }
 
 /*
- * Vector PIO: launch a packet from this Hub's own port and perform the
- * access on whatever the route ends at. A route nothing answers latches
- * nothing and lets the poll time out -- the datasheet's proposal for an
- * unobserved case, not a silicon fact; a device that answers and refuses
- * latches the address-error response.
- */
+ * Vector PIO: launch a packet from this Hub's own port and perform the access
+ * on whatever the route ends at. A route nothing answers latches nothing and
+ * lets the poll time out; the proposed response to an unobserved case, not
+ * a silicon fact; a device that answers and refuses latches the address-error
+ * response.
+*/
 static void sgi_hub_vector_execute(SGIHubState *s, uint64_t parms)
 {
     hwaddr addr = parms & NI_VECTOR_ADDRESS_MASK;
@@ -2423,8 +2429,10 @@ static void sgi_hub_vector_execute(SGIHubState *s, uint64_t parms)
     }
     result = sgi_hub_vector_launch(s, &packet);
     if (result == SGI_NET_PACKET_NONE) {
-        /* Refused requests must not expose a previous reply or a
-         * partial path: only a fully successful walk commits either. */
+        /*
+         * Refused requests must not expose a previous reply or a partial
+         * path: only a fully successful walk commits either.
+        */
         packet.reply_vector = 0;
         qemu_log_mask(LOG_UNIMP,
                       "sgi-hub: vector launch (parms 0x%" PRIx64
@@ -2455,10 +2463,7 @@ static void sgi_hub_vector_execute(SGIHubState *s, uint64_t parms)
     }
 }
 
-/*
- * Firmware's progress codes in our own words (Origami project tree,
- * docs/datasheets/hub-memory-directory.md). NULL marks a reserved code.
- */
+/* Firmware's progress codes. NULL marks a reserved code. */
 static const char *const sgi_hub_led_progress[0x61] = {
     [0x00] = "processor reset",
     [0x01] = "initializing the CPU",
@@ -2588,8 +2593,10 @@ static const char *const sgi_hub_led_failure[0xb6 - 0x81] = {
               "which should never return"), /* 0x97 */
     [0x17] = "this node has no memory of its own installed", /* 0x98 */
     [0x18] = "an I2C condition that should be impossible occurred", /* 0x99 */
-    [0x19] = "this processor is disabled by an environment variable", /* 0x9a */
-    [0x1a] = "a data transfer into memory did not complete correctly", /* 0x9b */
+    /* 0x9a */
+    [0x19] = "this processor is disabled by an environment variable",
+    /* 0x9b */
+    [0x1a] = "a data transfer into memory did not complete correctly",
     [0x1b] = "could not set the core-debug register", /* 0x9c */
     [0x1c] = "I/O widget discovery failed", /* 0x9d */
     [0x1d] = "writing the Hub's configuration entry failed", /* 0x9e */
@@ -2605,7 +2612,8 @@ static const char *const sgi_hub_led_failure[0xb6 - 0x81] = {
     [0x27] = "low-level fabric protocol never came up after reset", /* 0xa8 */
     [0x28] = "no good local memory found", /* 0xa9 */
     [0x29] = NULL, /* 0xaa: reserved (source marks this value avoid-use) */
-    [0x2a] = "surveying the rest of the interconnect fabric did not succeed", /* 0xab */
+    /* 0xab */
+    [0x2a] = "surveying the rest of the interconnect fabric did not succeed",
     [0x2b] = "node-id calculation failed", /* 0xac */
     [0x2c] = ("computing the paths packets should take between nodes "
               "did not succeed"), /* 0xad */
@@ -2651,7 +2659,7 @@ static void sgi_hub_write_processor_number(SGIHubState *s, hwaddr addr,
                                            unsigned arg, uint64_t val,
                                            unsigned size)
 {
-    /* A logic-analyzer convention in the vendor's own drivers, not an error. */
+    /* A logic-analyzer convention on real hardware, not an error. */
     qemu_log_mask(LOG_UNIMP,
                   "sgi-hub: write of 0x%" PRIx64 " to the processor-"
                   "number register 0x%" HWADDR_PRIx " (a logic-analyzer "
@@ -2803,7 +2811,7 @@ static uint64_t sgi_hub_read_err_status_clear(SGIHubState *s, hwaddr addr,
  * per-Hub error setup and after taking a valid status 0 record from its
  * error-stack walker, which then asks again and stops only when status 0
  * reads not valid. Status 0 has to fall for that walk to end.
- */
+*/
 static void sgi_hub_write_err_status_clear(SGIHubState *s, hwaddr addr,
                                            unsigned arg, uint64_t val,
                                            unsigned size)
@@ -2811,7 +2819,7 @@ static void sgi_hub_write_err_status_clear(SGIHubState *s, hwaddr addr,
     /*
      * Only a full-width zero store clears, the same conservative choice the
      * 32-bit read path makes for an unobserved access.
-     */
+    */
     if (size == 8 && val == 0) {
         s->pi_err_status0[arg] = 0;
     }
@@ -2888,37 +2896,32 @@ static void sgi_hub_store_link_status(SGIHubState *s, unsigned arg,
 }
 
 /*
- * The crossbar's per-link reset, arriving on the crosstalk link.
- *
- * The published Crossbow specification establishes three effects at this
- * end and no others: the link-layer transmit buffer is cleared, link-layer
- * protocol state is reset, and width negotiation restarts. This model
- * represents none of the three, so the pulse changes nothing and says so
- * rather than substituting an effect on state the evidence does not reach.
- *
- * There is no transmit buffer to empty, because every crosstalk access
- * this model makes completes before it returns and nothing is ever queued
- * on the link. There is no link-layer protocol state either -- no running
- * sequence numbers, retry counters or credits -- and the link log's two counts
- * are served as zero from a link that commits none. The one field that
- * would show renegotiation is the link state, and it cannot move: no
- * reviewed source gives the value it reads while negotiation runs, and
- * none gives the predicate that ends negotiation, so both the transient
- * code and the return from it would be invented.
- *
- * Nothing else in the link register moves. The maximum burst and retry
- * counts, the null-packet timeout, the link-enable bit firmware operates
- * for itself and the warm-reset trigger are programmed configuration,
- * which is neither the transmit buffer nor protocol state. The contract's
- * one datum about a link-layer control across this reset says retained:
- * Crossbow's own force-eight-bit control survives the pulse so software
- * can pick a mode before negotiation restarts. Unsetting the link-enable
- * bit would be the most expensive guess available, because a Hub that
- * reports its crosstalk link down loses the machine quietly.
- *
- * The wider I/O interface is not in this at all. Every non-link-layer Hub
- * reset effect is open.
- */
+ * The crossbar's per-link reset, arriving on the crosstalk link. The
+ * published Crossbow specification establishes three effects at this end and
+ * no others: the link-layer transmit buffer is cleared, link-layer protocol
+ * state is reset, and width negotiation restarts. This model represents none
+ * of the three, so the pulse changes nothing and says so rather than
+ * substituting an effect on state the evidence does not reach. There is no
+ * transmit buffer to empty, because every crosstalk access this model makes
+ * completes before it returns and nothing is ever queued on the link. There
+ * is no link-layer protocol state either (no running sequence numbers,
+ * retry counters or credits) and the link log's two counts are served as
+ * zero from a link that commits none. The one field that would show
+ * renegotiation is the link state, and it cannot move: no public source gives
+ * the value it reads while negotiation runs, and none gives the predicate
+ * that ends negotiation, so both the transient code and the return from it
+ * would be invented. Nothing else in the link register moves. The maximum
+ * burst and retry counts, the null-packet timeout, the link-enable bit
+ * firmware operates for itself and the warm-reset trigger are programmed
+ * configuration, which is neither the transmit buffer nor protocol state. The
+ * contract's one datum about a link-layer control across this reset says
+ * retained: Crossbow's own force-eight-bit control survives the pulse so
+ * software can pick a mode before negotiation restarts. Unsetting the
+ * link-enable bit would be the most expensive guess available, because a Hub
+ * that reports its crosstalk link down loses the machine quietly. The wider
+ * I/O interface is not in this at all. Every non-link-layer Hub reset effect
+ * is open.
+*/
 static void sgi_hub_link_reset(void *opaque, int line, int level)
 {
     if (!level) {
@@ -2955,14 +2958,18 @@ static void sgi_hub_write_error_clear(SGIHubState *s, hwaddr addr,
 
 static uint64_t sgi_hub_read_ioq(SGIHubState *s, hwaddr addr, unsigned arg)
 {
-    /* Nothing in flight, queued or valid; the deallocation polls need zero. */
+    /*
+     * Nothing in flight, queued or valid; the deallocation polls need zero.
+     */
     return 0;
 }
 
 static void sgi_hub_write_ioq(SGIHubState *s, hwaddr addr,
                               unsigned arg, uint64_t val, unsigned size)
 {
-    /* Nothing outstanding: the free completes at once, the bit reads clear. */
+    /*
+     * Nothing outstanding: the free completes at once, the bit reads clear.
+     */
     qemu_log_mask(LOG_UNIMP,
                   "sgi-hub: write of 0x%" PRIx64 " to I/O-queue register "
                   "0x%" HWADDR_PRIx
@@ -2971,13 +2978,13 @@ static void sgi_hub_write_ioq(SGIHubState *s, hwaddr addr,
 }
 
 /*
- * The link log accretes crosstalk LLP errors -- check-bit counts in bits
- * 31:16, sequence-number counts in 15:0 -- and the emulated link commits
+ * The link log accretes crosstalk LLP errors (check-bit counts in bits
+ * 31:16, sequence-number counts in 15:0) and the emulated link commits
  * none, so the counts hold their reset zero. The 6.5.30 kernel's periodic
  * hub-statistics capture reads the log about once a second and feeds the
- * counts to a rate evaluation, so the value is an input to a decision:
- * never serve an error the link did not commit.
- */
+ * counts to a rate evaluation, so the value is an input to a decision: never
+ * serve an error the link did not commit.
+*/
 static uint64_t sgi_hub_read_llp_log(SGIHubState *s, hwaddr addr,
                                      unsigned arg)
 {
@@ -2992,7 +2999,7 @@ static void sgi_hub_write_llp_log(SGIHubState *s, hwaddr addr,
      * interval; clearing zero counts is complete at once. What a nonzero
      * write does to the real counters is unverified, so it is discarded
      * rather than invented.
-     */
+    */
 }
 
 static uint64_t sgi_hub_read_slot_id(SGIHubState *s, hwaddr addr,
@@ -3012,7 +3019,7 @@ static void sgi_hub_write_dimm_init(SGIHubState *s, hwaddr addr,
                                     unsigned arg, uint64_t val,
                                     unsigned size)
 {
-    /* Firmware's per-DIMM sweep; write-only, with no functional signature. */
+    /* Firmware's per-DIMM scan; write-only, with no functional signature. */
     qemu_log_mask(LOG_UNIMP,
                   "sgi-hub: write of 0x%" PRIx64 " to the DIMM mode "
                   "initialisation register 0x%" HWADDR_PRIx " (write-"
@@ -3027,8 +3034,8 @@ static void sgi_hub_write_onewire(SGIHubState *s, hwaddr addr,
     /*
      * Programs the timing and starts a slot. Starting clears completion. The
      * bus answers inside the write, but this master reports the answer only
-     * from the slot's own deadline -- see sgi_hub_onewire_value().
-     */
+     * from the slot's own deadline; see sgi_hub_onewire_value().
+    */
     s->md_onewire = val & MD_ONEWIRE_WRITABLE;
     s->onewire_level = sgi_onewire_slot(
         s->onewire_bus, (val & MD_ONEWIRE_PULSE) >> MD_ONEWIRE_PULSE_SHIFT,
@@ -3060,7 +3067,9 @@ static void sgi_hub_write_indicator(SGIHubState *s, hwaddr addr,
 static void sgi_hub_store_ni_status(SGIHubState *s, unsigned arg,
                                     uint64_t val)
 {
-    /* Node and region size are firmware's; link state and identity are not. */
+    /*
+     * Node and region size are firmware's; link state and identity are not.
+     */
     s->ni_status = (s->ni_status & ~NI_STATUS_WRITABLE) |
                    (val & NI_STATUS_WRITABLE);
     /* The programmed number moved: the fabric re-derives every map. */
@@ -3078,9 +3087,9 @@ static void sgi_hub_store_pi_calias_size(SGIHubState *s, unsigned arg,
 /*
  * Ask for the reset and stop every processor, from queued work on the
  * processor that asked for it. The work runs at that processor's next
- * translation-block boundary, outside the execution loop, which is where
- * a processor may be stopped.
- */
+ * translation-block boundary, outside the execution loop, which is where a
+ * processor may be stopped.
+*/
 static void sgi_hub_request_machine_reset(CPUState *cs, run_on_cpu_data data)
 {
     CPUState *cpu;
@@ -3092,24 +3101,20 @@ static void sgi_hub_request_machine_reset(CPUState *cs, run_on_cpu_data data)
 }
 
 /*
- * A reset request only wakes the main loop, which performs the reset when
- * it next runs, and the processors keep executing until it does. How many
+ * A reset request only wakes the main loop, which performs the reset when it
+ * next runs, and the processors keep executing until it does. How many
  * instructions the other processors run after this write is then host
- * scheduling's answer, and a different one on every run. The board stops
- * both slices of a node together.
- *
- * Stopping them from the requesting processor's own queued work fixes that
- * point at the guest's write instead. Round-robin execution reaches the
- * work before it schedules any other processor, so no other processor
- * executes another instruction, and every one of them is already stopped
- * when the main loop performs the reset. Multi-threaded execution cannot
- * promise that -- the peers are running on their own host threads -- and
- * this bounds them to their own next block boundary rather than to
- * whenever the main loop arrives.
- *
- * With no processor to carry the work, as under qtest, the request is all
- * there is to make.
- */
+ * scheduling's answer, and a different one on every run. The board stops both
+ * slices of a node together. Stopping them from the requesting processor's
+ * own queued work fixes that point at the guest's write instead. Round-robin
+ * execution reaches the work before it schedules any other processor, so no
+ * other processor executes another instruction, and every one of them is
+ * already stopped when the main loop performs the reset. Multi-threaded
+ * execution cannot promise that (the peers are running on their own host
+ * threads) and this bounds them to their own next block boundary rather
+ * than to whenever the main loop arrives. With no processor to carry the
+ * work, as under qtest, the request is all there is to make.
+*/
 static void sgi_hub_write_port_reset(SGIHubState *s, hwaddr addr,
                                      unsigned arg, uint64_t val,
                                      unsigned size)
@@ -3130,10 +3135,10 @@ static void sgi_hub_store_io_prot_ovrrd(SGIHubState *s, unsigned arg,
                                         uint64_t val)
 {
     /*
-     * The password unlock is a no-op on a model that never enforces
-     * the protection; a non-password write's effect is unstated.
-     * Neither stores anything.
-     */
+     * The password unlock is a no-op on a model that never enforces the
+     * protection; a non-password write's effect is unstated. Neither stores
+     * anything.
+    */
     if (val != NI_PROT_OVRRD_PASSWORD) {
         qemu_log_mask(LOG_UNIMP,
                       "sgi-hub: write of 0x%" PRIx64 " to the protection "
@@ -3335,7 +3340,7 @@ static const SGIHubRegDef sgi_hub_registers[] = {
      * Error status and its read-to-clear aliases; only the first doubleword
      * of each record is modelled, and the aliases clear on full width only.
      * Status 1 reads zero, but a zero store to its alias ends the record.
-     */
+    */
     { .offset = HUB_PI_ERR_STATUS_BASE, .arg = 0,
       .field = offsetof(SGIHubState, pi_err_status0[0]), .width = 8 },
     { .offset = HUB_PI_ERR_STATUS_BASE + 0x08, .arg = 0,
@@ -3444,13 +3449,12 @@ static const SGIHubRegDef sgi_hub_registers[] = {
       .store = sgi_hub_store_ni_status },
     { .offset = HUB_NI_PORT_RESET, .write = sgi_hub_write_port_reset },
     /*
-     * Reset permission and link diagnostics: storage nothing consults
-     * or acts on. Both answer the remote vector decode -- IRIX
-     * 6.5.30's fail-soft burst vector-reads and vector-writes the
-     * diagnostic parameters at every boot, so on a two-chassis
-     * machine an address-error completion there is a phantom failure
-     * in the OS.
-     */
+     * Reset permission and link diagnostics: storage nothing consults or acts
+     * on. Both answer the remote vector decode; IRIX 6.5.30's fail-soft
+     * burst vector-reads and vector-writes the diagnostic parameters at every
+     * boot, so on a two-chassis machine an address-error completion there is
+     * a phantom failure in the OS.
+    */
     { .offset = HUB_NI_PROTECTION,
       .field = offsetof(SGIHubState, ni_protection), .width = 8,
       .flags = HUB_REG_STORE | HUB_REG_DIAG | HUB_REG_VECTOR,
@@ -3498,14 +3502,14 @@ static const SGIHubRegDef sgi_hub_registers[] = {
       .write = sgi_hub_write_vector_clear },
     /*
      * PIO protection is storage, never consulted: enforcing a register
-     * firmware might not open produces a dead machine with no
-     * diagnostic. Both rows answer the remote vector decode -- the
-     * stock PROM's link diagnostic opens its cross-link access by
-     * vector-writing the remote Hub's protection register before its link
-     * reads, and an address-error completion there counts as a phantom
-     * link error. The override is write-only, so its row carries only
-     * a store and a read keeps the undecoded register's answer.
-     */
+     * firmware might not open produces a dead machine with no diagnostic.
+     * Both rows answer the remote vector decode; the stock PROM's link
+     * diagnostic opens its cross-link access by vector-writing the remote
+     * Hub's protection register before its link reads, and an address-error
+     * completion there counts as a phantom link error. The override is
+     * write-only, so its row carries only a store and a read keeps the
+     * undecoded register's answer.
+    */
     { .offset = HUB_NI_IO_PROTECT,
       .field = offsetof(SGIHubState, ni_io_protect), .width = 8,
       .flags = HUB_REG_STORE | HUB_REG_DIAG | HUB_REG_VECTOR,
@@ -3546,14 +3550,14 @@ static const SGIHubRegDef sgi_hub_registers[] = {
       .flags = HUB_REG_STORE | HUB_REG_DIAG | HUB_REG_VECTOR,
       .wmask = NI_AGEING_MASK },
     /*
-     * All three LLP port registers answer the remote vector decode as
-     * well as plain PIO: the stock PROM's link diagnostic vector-reads
-     * the remote Hub's error register, and an address-error completion there
-     * counts as a phantom link error on every two-chassis boot. The
-     * error register's store applies its write-one-to-clear rule. The alias
-     * returns and clears the same traffic-driven state on either a full local
-     * read or a remote vector read.
-     */
+     * All three LLP port registers answer the remote vector decode as well as
+     * plain PIO: the stock PROM's link diagnostic vector-reads the remote
+     * Hub's error register, and an address-error completion there counts as a
+     * phantom link error on every two-chassis boot. The error register's
+     * store applies its write-one-to-clear rule. The alias returns and clears
+     * the same traffic-driven state on either a full local read or a remote
+     * vector read.
+    */
     { .offset = HUB_NI_PORT_PARMS,
       .field = offsetof(SGIHubState, ni_port_parms), .width = 8,
       .flags = HUB_REG_STORE | HUB_REG_DIAG | HUB_REG_VECTOR,
@@ -3581,9 +3585,9 @@ static int sgi_hub_reg_compare(const void *key, const void *element)
 
 /*
  * The table is in offset order, which sgi_hub_realize() asserts, so a decode
- * does not walk it. Decode runs under the BQL, so a walk here is paid by every
- * processor waiting behind the one doing it.
- */
+ * does not walk it. Decode runs under the BQL, so a walk here is paid by
+ * every processor waiting behind the one doing it.
+*/
 static const SGIHubRegDef *sgi_hub_reg_lookup(hwaddr addr)
 {
     return bsearch(&addr, sgi_hub_registers, ARRAY_SIZE(sgi_hub_registers),
@@ -3594,14 +3598,13 @@ static const SGIHubRegDef *sgi_hub_reg_lookup(hwaddr addr)
  * Three registers carry nearly all the read traffic. A census of one
  * eight-processor PROM boot counted 992 million reads of this window, of
  * which 988.3 million were the counter and 1.4 million the pending banks;
- * everything else together came to 2.4 million. The general decode walks
- * five range checks and then binary-searches eighty-nine rows before it
- * knows which of them it is looking at, and it does that holding the big
- * lock while seven other processors wait for it. Answer those three here.
- *
- * None of them can belong to a ranged family -- sgi_hub_realize() checks
- * that, along with each one still being the row it short-circuits.
- */
+ * everything else together came to 2.4 million. The general decode walks five
+ * range checks and then binary-searches eighty-nine rows before it knows
+ * which of them it is looking at, and it does that holding the big lock while
+ * seven other processors wait for it. Answer those three here. None of them
+ * can belong to a ranged family; sgi_hub_realize() checks that, along with
+ * each one still being the row it short-circuits.
+*/
 static bool sgi_hub_read_hot(SGIHubState *s, hwaddr addr, uint64_t *value)
 {
     switch (addr) {
@@ -3704,9 +3707,9 @@ static bool sgi_hub_diagnostic_value(SGIHubState *s, hwaddr addr,
 /*
  * The registers a node's processors coordinate through, narrow enough to
  * trace a whole boot. The pending banks answer their own event: the
- * processors waiting to be launched poll bank zero for the whole of a
- * boot, tens of millions of times, and the other registers are quiet.
- */
+ * processors waiting to be launched poll bank zero for the whole of a boot,
+ * tens of millions of times, and the other registers are quiet.
+*/
 static void sgi_hub_trace_coordination_read(SGIHubState *s, hwaddr addr,
                                             uint64_t value, unsigned int size)
 {
@@ -3747,17 +3750,17 @@ static void sgi_hub_trace_coordination_read(SGIHubState *s, hwaddr addr,
 }
 
 /*
- * A write is traced once it has landed, so anything it set off is
- * recorded first.
+ * A write is traced once it has landed, so anything it set off is recorded
+ * first.
  */
 
 /*
- * The stored value is the one the diagnostic shadow samples after a
- * write, so interrupt modify reports the bank it named; a high-half write
- * reaches that register shifted up, naming bank 0. The shadow samples
- * nothing for processor number, presence or the pending banks, which no
- * write changes, and those report zero.
- */
+ * The stored value is the one the diagnostic shadow samples after a write, so
+ * interrupt modify reports the bank it named; a high-half write reaches that
+ * register shifted up, naming bank 0. The shadow samples nothing for
+ * processor number, presence or the pending banks, which no write changes,
+ * and those report zero.
+*/
 static void sgi_hub_trace_coordination_write(SGIHubState *s, hwaddr addr,
                                              uint64_t value,
                                              unsigned int size)
@@ -3788,10 +3791,10 @@ static void sgi_hub_trace_coordination_write(SGIHubState *s, hwaddr addr,
 /*
  * A 32-bit access names half of the aligned doubleword (offset 0 is bits
  * 63:32), composed here rather than by impl.max_access_size = 8, whose
- * read-modify-write would fire read-to-clear side effects on a store. What
- * a half read of a read-to-clear register does on hardware is unobserved;
- * the conservative choice is that only a full-width read clears.
- */
+ * read-modify-write would fire read-to-clear side effects on a store. What a
+ * half read of a read-to-clear register does on hardware is unobserved; the
+ * conservative choice is that only a full-width read clears.
+*/
 static uint64_t sgi_hub_read_half(SGIHubState *s, hwaddr addr, unsigned size)
 {
     hwaddr aligned = addr & ~(hwaddr)7;
@@ -3859,7 +3862,7 @@ static void sgi_hub_write_internal(void *opaque, hwaddr addr, uint64_t val,
         return;
     }
     if (sgi_hub_icrb_c_entry(addr)) {
-        /* Filled by transactions, not writes; firmware's sweep stores zero. */
+        /* Filled by transactions, not writes; firmware's scan stores zero. */
         qemu_log_mask(LOG_UNIMP,
                       "sgi-hub: write of 0x%" PRIx64 " to the read-only "
                       "incoming-request-buffer register 0x%" HWADDR_PRIx
@@ -3896,7 +3899,7 @@ static void sgi_hub_write_internal(void *opaque, hwaddr addr, uint64_t val,
  * A 32-bit write replaces its half; the other half comes from the shadow, or
  * zero for a register that stores nothing or clears asserted bits. The merged
  * value takes the ordinary write path, the guest's size riding along.
- */
+*/
 static void sgi_hub_write_half(SGIHubState *s, hwaddr addr, uint64_t val,
                                unsigned size)
 {
@@ -3943,12 +3946,12 @@ static void sgi_hub_write(void *opaque, hwaddr addr, uint64_t val,
 }
 
 /*
- * What sgi_hub_read_hot() takes on trust: each offset it answers is still
- * the row it stands in for, and none of them is inside a ranged family the
+ * What sgi_hub_read_hot() takes on trust: each offset it answers is still the
+ * row it stands in for, and none of them is inside a ranged family the
  * general decode would have claimed first. Moving a row or widening a range
  * has to fail here, at realize, rather than by quietly answering the wrong
  * register for the rest of a boot.
- */
+*/
 static void sgi_hub_assert_hot_reads_match_the_table(void)
 {
     static const struct {
@@ -4054,7 +4057,7 @@ static void sgi_hub_reset_enter(Object *obj, ResetType type)
     /*
      * The link comes up reporting itself up, a ratified departure from the
      * documented reset: Linux abandons its crosstalk probe on a down link.
-     */
+    */
     s->io_link_status = IO_LINK_RESET;
     s->io_widget_control = IO_WIDGET_CONTROL_RESET;
     s->io_xtalk_timeout = 0;
@@ -4064,7 +4067,9 @@ static void sgi_hub_reset_enter(Object *obj, ResetType type)
     memset(s->io_gfx_init, 0, sizeof(s->io_gfx_init));
     s->pi_rt_alive_seen = false;
 
-    /* No transfer is ever in flight, so zeroing the registers is the reset. */
+    /*
+     * No transfer is ever in flight, so zeroing the registers is the reset.
+     */
     memset(s->bte_length, 0, sizeof(s->bte_length));
     memset(s->bte_source, 0, sizeof(s->bte_source));
     memset(s->bte_dest, 0, sizeof(s->bte_dest));
@@ -4083,7 +4088,7 @@ static void sgi_hub_reset_enter(Object *obj, ResetType type)
      * Entries reset to zero with the windows enabled: a guest calls a zero
      * entry free, and zero spells widget 0, OpenBSD's only route there.
      * Zeroed entries with disabled windows would pass every Linux test.
-     */
+    */
     for (n = 0; n < SGI_HUB_BWIN_ENTRIES; n++) {
         s->io_bwin[n] = 0;
         sgi_hub_bwin_follow(s, n);
@@ -4103,11 +4108,11 @@ static void sgi_hub_reset_hold(Object *obj, ResetType type)
 }
 
 /*
- * The fabric's maps re-derive once every Hub's programmed number is back
- * at its seeded value -- the exit phase, because a map depends on every
- * endpoint's number, and every enter phase has run by now. The nameless
- * low windows re-derive with them, back to the reset size.
- */
+ * The fabric's maps re-derive once every Hub's programmed number is back at
+ * its seeded value. This happens in the exit phase because a map depends on
+ * endpoint's number, and every enter phase has run by now. The nameless low
+ * windows re-derive with them, back to the reset size.
+*/
 static void sgi_hub_reset_exit(Object *obj, ResetType type)
 {
     SGIHubState *s = SGI_HUB(obj);
@@ -4140,16 +4145,15 @@ bool sgi_hub_attach_module_identity(SGIHubState *s,
 }
 
 /*
- * ---- Origin 2000's PROM PI-error probe, through the Crossbow-attached
- * case ----
- *
- * Through this node's crosstalk container at a fixed widget-2 offset: a
- * zero-length read latches the PI error the same way the direct link's
- * own probe does (hw/mips/sgi/xtalk-link.c). Installed only when this
- * Hub's crosstalk port connects to a Crossbow link, which is the only
- * thing that ever sets xtalk_io; a direct-attach node wires its own
+ * ---- Origin 2000's PROM PI-error probe, through the
+ * Crossbow-attached case ----
+ * Through this node's crosstalk container at a fixed widget-2 offset,
+ * a zero-length read latches the PI error the same way the direct link's
+ * own probe does (hw/mips/sgi/xtalk-link.c). Installed only
+ * when this Hub's crosstalk port connects to a Crossbow link, which is the
+ * only thing that ever sets xtalk_io; a direct-attach node wires its own
  * probe on the widget's own device window instead and never sets it.
- */
+*/
 #define SGI_HUB_ORIGIN2000_BUS_ERROR_ADDR    0x02400208
 #define SGI_HUB_ORIGIN2000_BUS_ERROR_WIDGET  2
 #define SGI_HUB_ORIGIN2000_SMALL_WINDOW_SIZE (16 * MiB)
@@ -4252,8 +4256,10 @@ static void sgi_hub_realize(DeviceState *dev, Error **errp)
     uint32_t unknown_population;
     unsigned int n;
 
-    /* Decode binary searches the table, so an entry added out of order would
-     * silently stop being found. */
+    /*
+     * Decode binary searches the table, so an entry added out of order would
+     * silently stop being found.
+     */
     for (n = 1; n < ARRAY_SIZE(sgi_hub_registers); n++) {
         assert(sgi_hub_registers[n - 1].offset < sgi_hub_registers[n].offset);
     }
@@ -4363,9 +4369,9 @@ static void sgi_hub_realize(DeviceState *dev, Error **errp)
     sysbus_init_mmio(SYS_BUS_DEVICE(dev), &s->regs);
     /*
      * The engines address memory as a processor does, by programmed node
-     * number through the claim layer, minus the per-processor pieces:
-     * their space is the device view and nothing else.
-     */
+     * number through the claim layer, minus the per-processor pieces: their
+     * space is the device view and nothing else.
+    */
     address_space_init(&s->bte_as, s->claim_view[SGI_HUB_DEVICE_VIEW],
                        "sgi-hub.bte");
 
@@ -4410,18 +4416,17 @@ static void sgi_hub_realize(DeviceState *dev, Error **errp)
      * The module system controller (MSC): a real board on the same I2C bus,
      * not something the Hub reaches through a window, so an ordinary
      * addressed slave on the chip's own bus is nearly the whole of the
-     * wiring. It also needs to know how many processors' arbitration
-     * signals to rotate through (this node's own populated count), and the
-     * chardev behind its AUX serial port. The machine resolves that
-     * backend and hands it in through the elsc-chardev property, because
-     * every tower has its own physical AUX connector and only the machine
-     * knows which -serial index this node's connector answers to; a Hub
-     * that resolved an index itself would claim the same backend once per
-     * node. NULL is a connector with no cable, exactly like real
-     * hardware. The firmware redirects its console to this port after a
-     * failed power-on diagnostic; the IRIX console (console=d) is IOC3
-     * serial A, not this one.
-     */
+     * wiring. It also needs to know how many processors' arbitration signals
+     * to rotate through (this node's own populated count), and the chardev
+     * behind its AUX serial port. The machine resolves that backend and hands
+     * it in through the elsc-chardev property, because every tower has its
+     * own physical AUX connector and only the machine knows which -serial
+     * index this node's connector answers to; a Hub that resolved an index
+     * itself would claim the same backend once per node. NULL is a connector
+     * with no cable, exactly like real hardware. The firmware redirects its
+     * console to this port after a failed power-on diagnostic; the IRIX
+     * console (console=d) is IOC3 serial A, not this one.
+    */
     if (s->population & SGI_HUB_POPULATION_ELSC) {
         I2CSlave *elsc = i2c_slave_new(TYPE_SGI_ELSC, s->i2c_elsc_addr);
 
@@ -4443,7 +4448,7 @@ static void sgi_hub_realize(DeviceState *dev, Error **errp)
      * The controller's 2 KiB NVRAM: eight I2C addresses of one 256-byte page
      * each. Page 7 is the reserved page the PROM reads before probing a
      * console; only its validity marker has a required value.
-     */
+    */
     if (s->i2c_nvram_pages) {
         static const uint8_t reserved_page_defaults[16] = { 0x37 };
 
@@ -4462,7 +4467,9 @@ static void sgi_hub_realize(DeviceState *dev, Error **errp)
         }
     }
 
-    /* Each list is indexed by processor slice, so a consumer names its line. */
+    /*
+     * Each list is indexed by processor slice, so a consumer names its line.
+     */
     qdev_init_gpio_out_named(dev, s->bank_irq[0], "bank0",
                              SGI_HUB_PROCESSORS);
     qdev_init_gpio_out_named(dev, s->bank_irq[1], "bank1",
@@ -4474,20 +4481,17 @@ static void sgi_hub_realize(DeviceState *dev, Error **errp)
 
     /*
      * The MicroLAN wire and the PIMM record part hanging off it, hung here
-     * and never again. An EPROM keeps its contents across a reset -- that is
-     * what the technology is -- so a chip that rebuilt a part's bytes on
-     * every reset would be modelling something the hardware does not do.
+     * and never again. An EPROM keeps its contents across a reset. Rebuilding
+     * a part's bytes on every reset would not match the hardware.
      * Those bytes are the part's own migrated state as well, and state with
-     * one owner wants one writer. Reaching into a child device's storage
-     * from a parent's reset is the wrong shape whichever order the phases
-     * run in, and they run in the safe one: hw/core/resettable.c holds
-     * children before the object itself, so the ordering was never the
-     * hazard.
-     *
-     * The generic Hub remains erased. Origin 2000 attaches a synthetic record
+     * one owner wants one writer. Reaching into a child device's storage from
+     * a parent's reset is the wrong shape whichever order the phases run in,
+     * and they run in the safe one: hw/core/resettable.c holds children
+     * before the object itself, so the ordering was never the hazard. The
+     * generic Hub remains erased. Origin 2000 attaches a synthetic record
      * after the Hub has been given its module identity, so the two
      * compositions do not share an invented inventory payload.
-     */
+    */
     s->onewire_bus = onewire_create_bus(dev, "onewire");
     if (s->onewire_kind == SGI_HUB_ONEWIRE_BLANK_DS2505) {
         DeviceState *part = qdev_new(TYPE_ONEWIRE_DS2505);
@@ -4554,13 +4558,13 @@ static void sgi_hub_realize(DeviceState *dev, Error **errp)
     sysbus_init_mmio(SYS_BUS_DEVICE(dev), &s->bwin);
 
     /*
-     * The claim overlays, disabled until this Hub's own first walk aims
-     * them (the PAM idiom: pre-created alternatives, switched, never
-     * recreated). One error floor per view and space covers every node
-     * number's stride, so an unclaimed stride fails rather than falling
-     * through to the static placement; one alias per peer Hub moves to
-     * wherever that peer's number is.
-     */
+     * The claim overlays, disabled until this Hub's own first walk aims them
+     * (the PAM idiom: pre-created alternatives, switched, never recreated).
+     * One error floor per view and space covers every node number's stride,
+     * so an unclaimed stride fails rather than falling through to the static
+     * placement; one alias per peer Hub moves to wherever that peer's number
+     * is.
+    */
     memory_region_transaction_begin();
     for (n = 0; n < SGI_HUB_CLAIM_VIEWS; n++) {
         const char *view_name = n == SGI_HUB_DEVICE_VIEW ? "engines" : "cpu";
@@ -4581,11 +4585,11 @@ static void sgi_hub_realize(DeviceState *dev, Error **errp)
                                   (uint64_t)SGI_HUB_NET_NUMBERS <<
                                   s->claim_node_shift);
             /*
-             * An engine's transfer that lands on the floor re-enters this
-             * Hub from inside the register write that launched it. The
-             * floor holds no state the re-entrancy guard could protect, so
-             * the guard is lifted for it alone; the register region keeps it.
-             */
+             * An engine's transfer that lands on the floor re-enters this Hub
+             * from inside the register write that launched it. The floor
+             * holds no state the re-entrancy guard could protect, so the
+             * guard is lifted for it alone; the register region keeps it.
+            */
             s->claim_error[n][space].disable_reentrancy_guard = true;
             memory_region_add_subregion_overlap(s->claim_view[n], space_base,
                                                 &s->claim_error[n][space], 0);
@@ -4651,7 +4655,7 @@ static int sgi_hub_post_load(void *opaque, int version_id);
  * saved state must show it. The hold itself is host scheduling and is not
  * carried; landing the value here leaves the destination the register
  * contents a machine with no hold would have had.
- */
+*/
 static int sgi_hub_pre_save(void *opaque)
 {
     SGIHubState *s = opaque;
@@ -4739,26 +4743,24 @@ static const VMStateDescription vmstate_sgi_hub = {
         VMSTATE_UINT64_ARRAY_V(bte_notify, SGIHubState, SGI_HUB_BTES, 17),
         VMSTATE_UINT64_ARRAY_V(bte_interrupt, SGIHubState, SGI_HUB_BTES, 17),
         /*
-         * The level the wire sampled in the slot now running, which is
-         * this master's own state: it is what the timer reports when the
-         * slot's deadline arrives. The responder's protocol state used to
-         * sit beside it and now belongs to the part on the bus, travelling
-         * in the part's own stream. The unused spans keep a stream from
-         * before that move loading, in the field order it was written --
-         * phase, bit, command and match ahead of the level; address bytes,
-         * staged answer, cursor and end pair behind it. A half-finished
-         * conversation in such a stream is discarded rather than
-         * translated.
-         *
-         * Discarding is not what a bus reset does. A reset resets the master
-         * too; a load does not. A guest resumed from a stream written before
-         * the move keeps talking to a part that is now idle, and its next
-         * read slots are sampled as a command byte of all ones -- measured,
-         * one "unknown ROM command 0xff" on resume, absent from every boot
-         * that did not migrate. It is benign: the guest recovers at its next
-         * reset pulse. Streams written since the move carry the part's own
-         * section and preserve the conversation intact.
-         */
+         * The level the wire sampled in the slot now running, which is this
+         * master's own state: it is what the timer reports when the slot's
+         * deadline arrives. The responder's protocol state used to sit beside
+         * it and now belongs to the part on the bus, travelling in the part's
+         * own stream. The unused spans keep a stream from before that move
+         * loading, in the field order it was written: phase, bit, command
+         * and match ahead of the level; address bytes, staged answer, cursor
+         * and end pair behind it. A half-finished conversation in such a
+         * stream is discarded rather than translated. Discarding is not what
+         * a bus reset does. A reset resets the master too; a load does not. A
+         * guest resumed from a stream written before the move keeps talking
+         * to a part that is now idle, and its next read slots are sampled as
+         * a command byte of all ones. This produced one "unknown ROM command
+         * 0xff" on resume, absent from every boot that did not migrate. It is
+         * benign: the guest recovers at its next reset pulse. Streams written
+         * since the move carry the part's own section and preserve the
+         * conversation intact.
+        */
         VMSTATE_UNUSED_V(23, 11),
         VMSTATE_BOOL_V(onewire_level, SGIHubState, 23),
         VMSTATE_UNUSED_V(23, 51),
@@ -4801,7 +4803,7 @@ static int sgi_hub_post_load(void *opaque, int version_id)
      * having come out of reset, the peerless machines' state. The
      * sgi_hub_report_number() call below re-derives the link through
      * sgi_hub_link_refresh(), which clears the reason for a link that is up.
-     */
+    */
     if (version_id < 30 && !(s->ni_status & NI_STATUS_LINK_UP)) {
         s->ni_status |= NI_STATUS_NEVER_OUT_OF_RESET;
     }
@@ -4810,11 +4812,11 @@ static int sgi_hub_post_load(void *opaque, int version_id)
         sgi_hub_bwin_follow(s, n);
     }
     /*
-     * The fabric's maps re-derive from the just-restored programmed
-     * number. A map also depends on every other endpoint's number, which
-     * may not have loaded yet -- the recompute in whichever Hub's section
-     * loads last leaves every map aimed by restored state.
-     */
+     * The fabric's maps re-derive from the just-restored programmed number. A
+     * map also depends on every other endpoint's number, which may not have
+     * loaded yet; the recompute in whichever Hub's section loads last
+     * leaves every map aimed by restored state.
+    */
     sgi_hub_report_number(s);
     /* The nameless low windows re-derive from the restored size code. */
     sgi_hub_calias_update(s);
@@ -4822,7 +4824,7 @@ static int sgi_hub_post_load(void *opaque, int version_id)
      * Re-driving outputs from post_load is sound here only because each
      * drives an idempotent level input on the CPU, whose cause bits migrate
      * with it; an edge-detecting consumer would not converge.
-     */
+    */
     sgi_hub_update_irq(s);
     return 0;
 }
@@ -4899,16 +4901,15 @@ static void sgi_hub_init(Object *obj)
 
 /*
  * ---- The crosstalk port interface ----
- *
- * cpu_face() is the container every widget alias a direct link installs
- * lands in: the same "xtalk" link property the Hub's own big windows
- * translate through. packet_face() is the Hub's own engine claim view,
+ * cpu_face() is the container every widget alias a direct link installs lands
+ * in: the same "xtalk" link property the Hub's own big windows translate
+ * through. packet_face() is the Hub's own engine claim view,
  * SGI_HUB_DEVICE_VIEW: what a crosstalk-attach link's inbound decoder
- * dispatches a remote nasid's packet into, the same view a Hub's own
- * network interface and block-transfer engines see memory through.
- * Always present once this Hub realizes -- sgi_hub_claim_view_present()
- * requires it regardless of population.
- */
+ * dispatches a remote nasid's packet into, the same view a Hub's own network
+ * interface and block-transfer engines see memory through. Always present
+ * once this Hub realizes; sgi_hub_claim_view_present() requires it
+ * regardless of population.
+*/
 
 static const char *sgi_hub_xtalk_port_describe(Object *port, unsigned int index)
 {
@@ -4966,8 +4967,10 @@ static void sgi_hub_class_init(ObjectClass *oc, const void *data)
     dc->desc = "SGI SN0 Hub ASIC";
     dc->realize = sgi_hub_realize;
     dc->unrealize = sgi_hub_unrealize;
-    /* The machine supplies the crosstalk space, the network cable and the
-     * views. */
+    /*
+     * The machine supplies the crosstalk space, the network cable and the
+     * views.
+     */
     dc->user_creatable = false;
     dc->vmsd = &vmstate_sgi_hub;
     device_class_set_props(dc, sgi_hub_properties);

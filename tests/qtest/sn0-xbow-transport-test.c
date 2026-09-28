@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
+/* Isolated Crossbow transport register and packet-path tests. */
 #include "qemu/osdep.h"
 #include "libqtest.h"
 #include "qobject/qdict.h"

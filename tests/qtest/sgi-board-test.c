@@ -1,60 +1,57 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * sgi-baseio's three presets, and sgi-pci-expansion: widget identity, PCI
- * population per device number, and the interrupt chain from a device to
- * the widget interrupt, parameterised over every case so the same
- * contract runs against all four (the sibling-parity rule).
+ * population per device number, and the interrupt chain from a device to the
+ * widget interrupt, parameterised over every case so the same contract runs
+ * against all four (the sibling-parity rule).
  *
  * A preset is not itself user_creatable-reachable the way a real carrier
  * builds it (a bare Bridge or XBridge, then sgi-baseio on its bus) --
- * sgi-board-test-fixture builds exactly that pair for the "ip29",
- * "io6" and "io8" presets, the same way sgi-xtalk-board-fixture
- * stands in for a module's Crossbow in the XIO board base class's own
- * qtest; see tests/qtest/board-test-fixture.c. sgi-pci-expansion is also
- * `-device`-creatable now (see its own header comment for the spare
- * fabric proxy that makes it so), but this file still runs it through the
- * same fixture's "module"/"slot"/"fabric" path, matching the other three
- * cases; sgi-xtalk-board-test.c's own attach-pending case, and sn-builder-
- * test.c's test_pci_expansion_attaches_via_spare_fabric and test_xio_
+ * sgi-board-test-fixture builds exactly that pair for the "ip29", "io6" and
+ * "io8" presets, the same way sgi-xtalk-board-fixture stands in for a
+ * module's Crossbow in the XIO board base class's own qtest; see
+ * tests/qtest/board-test-fixture.c. sgi-pci-expansion is also
+ * `-device`-creatable now (see its own header comment for the spare fabric
+ * proxy that makes it so), but this file still runs it through the same
+ * fixture's "module"/"slot"/"fabric" path, matching the other three cases;
+ * sgi-xtalk-board-test.c's own attach-pending case, and sn-builder- test.c's
+ * test_pci_expansion_attaches_via_spare_fabric and test_xio_
  * baseio_attaches_via_spare_fabric (which boot the real -M origin2000
- * machine, unlike this file's bare fixture), cover the real `-device`
- * command line instead.
+ * machine, unlike this file's bare fixture), cover the real `-device` command
+ * line instead.
  *
- * Every case's internal Bridge or XBridge chip shares one register
- * layout (hw/pci-host/sgi-bridge.c and sgi-xbridge.c: "Same programming
- * model as the Bridge with the deltas the XBridge datasheet lists"): a
- * 32-bit value per eight-byte register slot, read and written at the
- * slot's own offset plus four; type-0 PCI configuration space at
- * 0x020000 plus 0x1000 per device; a device's own data window,
- * independent of how its BAR is currently mapped, at 0x200000 plus
- * 0x200000 for device 0 or 1, or plus 0x100000 for device 2 and up from
+ * Every case's internal Bridge or XBridge chip shares one register layout
+ * (hw/pci-host/sgi-bridge.c and sgi-xbridge.c): a 32-bit value per eight-byte
+ * register slot, read and written at the slot's own offset plus four; type-0
+ * PCI configuration space at 0x020000 plus 0x1000 per device; a device's own
+ * data window, independent of how its BAR is currently mapped, at 0x200000
+ * plus 0x200000 for device 0 or 1, or plus 0x100000 for device 2 and up from
  * 0x600000; and BRIDGE_DEVICE(n) at 0x200 plus eight times n, the window
  * control register a probe card's BAR is mapped through the same way
  * test_config_pio() in sn1-xbridge-test.c does it. This file reuses that
  * pattern rather than restating it.
  *
- * Interrupt observation differs by chip family because Bridge exposes no
- * GPIO at all -- only its own register 0x100, which reflects every
- * slot's PCI INTA automatically (OpenBSD's rule, confirmed by a real
- * Origin 200's two SCSI controllers) -- while XBridge's head re-drives
- * every raw PCI interrupt as its own "pci-intx" GPIO output regardless of
- * board wiring, observable with qtest_irq_intercept_out_named() the way
- * sn1-xbridge-test.c already does.
+ * Interrupt observation differs by chip family because Bridge exposes no GPIO
+ * at all. Register 0x100 reflects every slot's PCI INTA automatically
+ * (OpenBSD's rule, confirmed by a real Origin 200's two SCSI
+ * controllers). XBridge's head re-drives every raw PCI interrupt as
+ * its own "pci-intx" GPIO output regardless of board wiring, observable with
+ * qtest_irq_intercept_out_named() the way sn1-xbridge-test.c already does.
  *
  * Two more sections share this file rather than getting one of their own:
  * sgi-baseio also resolves its "chardev-a" and "nvram-drive" properties
- * against the command line's own chardev and drive backends a second
- * time, inside its own preset build() (hw/mips/sgi/baseio.c's header
- * comment explains why: the machine builder hands it an id, not a
- * claimed backend); an id that names no real backend must be refused at
- * realize, naming the id, rather than leaving the IOC3 silently built
- * without it. And sgi-xtalk-board, the base class sgi-pci-expansion
- * derives from, has its own property validation, re-parenting under its
- * module, and the deferred attach hook that lets a `-device` board reach
- * a Crossbow that must realize only once every board is in; the
- * attach-pending case uses sgi-xtalk-board-fixture, a test-only stand-in
- * for a machine builder that owns one Crossbow and drives the same
- * machine-init-done attach path a real builder would.
+ * against the command line's own chardev and drive backends a second time,
+ * inside its own preset build() (hw/mips/sgi/baseio.c's header comment
+ * explains why: the machine builder hands it an id, not a claimed backend);
+ * an id that names no real backend must be refused at realize, naming the id,
+ * rather than leaving the IOC3 silently built without it. And
+ * sgi-xtalk-board, the base class sgi-pci-expansion derives from, has its own
+ * property validation, re-parenting under its module, and the deferred attach
+ * hook that lets a `-device` board reach a Crossbow that must realize only
+ * once every board is in; the attach-pending case uses
+ * sgi-xtalk-board-fixture, a test-only stand-in for a machine builder that
+ * owns one Crossbow and drives the same machine-init-done attach path a real
+ * builder would.
  */
 
 #include "qemu/osdep.h"
@@ -63,13 +60,14 @@
 #include "qobject/qdict.h"
 
 /*
- * sgi-pci-expansion re-parents from the fixture to its module container
- * at its own realize (hw/mips/sgi/xio-board.c, sgi_xio_board_reparent()),
- * under a name from its own qdev id -- unset here, so its slot number,
- * matching board_start()'s own command line for it. A preset built
- * through the fixture's own "board-type=sgi-baseio" path does not
- * re-parent at all (sgi-baseio is not an sgi-xio-board), so its chip and
- * the sgi-baseio behind it stay exactly where the fixture put them.
+ * sgi-pci-expansion re-parents from the fixture to its module container at
+ * its own realize (hw/mips/sgi/xio-board.c, sgi_xio_board_reparent()), under
+ * a name from its own qdev id. That id is unset here, so it uses its
+ * slot number, matching
+ * board_start()'s own command line for it. A preset built through the
+ * fixture's own "board-type=sgi-baseio" path does not re-parent at all
+ * (sgi-baseio is not an sgi-xio-board), so its chip and the sgi-baseio behind
+ * it stay exactly where the fixture put them.
  */
 #define BOARD_REPARENTED "/machine/module0/slot8"
 #define FIXTURE          "/machine/peripheral/wrap"
@@ -99,8 +97,8 @@ static uint64_t window_offset(unsigned int device)
 #define PROBE_DEVICE 3
 #define PROBE_BAR    0x01000000ULL
 /*
- * Matches test_config_pio()'s own value: 32-bit PCI memory space, base
- * field set from PROBE_BAR at the window's 1 MB granularity.
+ * Use 32-bit PCI memory space and PROBE_BAR at 1 MiB window granularity,
+ * as in sn1-xbridge-test.c:test_config_pio().
  */
 #define PROBE_WINDOW_CONTROL 0x3010
 #define PROBE_REG_INTERRUPT  0x10
@@ -113,9 +111,8 @@ typedef struct FixedDevice {
 typedef struct BoardCase {
     const char *subtest;
     /*
-     * board-type=sgi-baseio,preset=<preset> for one of sgi-baseio's three
-     * tested presets; board-type=<type> alone (module/slot/fabric) for
-     * sgi-pci-expansion, the one case still built as an XIO board.
+     * Use board-type=sgi-baseio,preset=<preset> for three BaseIO presets;
+     * board-type=<type> with module/slot/fabric for PCI expansion.
      */
     const char *preset;
     const char *type;
@@ -123,9 +120,8 @@ typedef struct BoardCase {
     /* The chip a real carrier would build, as a QOM child of its path. */
     const char *chip;
     /*
-     * Which of the chip's sysbus MMIO regions carries the fixed devices'
-     * bus (0 unless a board's chip exposes more than one, as XBridge
-     * does).
+     * Select the sysbus MMIO region carrying the fixed-device bus: 0 unless
+     * the chip exposes multiple regions, as XBridge does.
      */
     unsigned int mmio_region;
     const char *bus;
@@ -154,9 +150,8 @@ static const BoardCase board_cases[] = {
         .chip = "chip",
         .bus = "pci", /* Bridge's own unnamed default (sgi-bridge.c). */
         /*
-         * revision 4, part 0xc002 and manufacturer 0x036 (Bridge's own
-         * defaults, both unset by this test's own bare chip): (4 << 28)
-         * | (0xc002 << 12) | (0x036 << 1) | 1.
+         * Bare Bridge defaults: revision 4, part 0xc002, manufacturer 0x036;
+         * (4 << 28) | (0xc002 << 12) | (0x036 << 1) | 1.
          */
         .identification = 0x4c00206dU,
         .fixed = ip29_io_fixed,
@@ -177,24 +172,21 @@ static const BoardCase board_cases[] = {
         .preset = "io8",
         .chip = "chip",
         /*
-         * Sysbus MMIO region 0 is the whole crosstalk space
-         * (hw/pci-host/sgi-xbridge.c, chip_init()); 1, 2 and 3 are the
-         * per-widget views in chip_view_widget[] order (crossbar, head E,
-         * head F), so head F is region 3.
+         * XBridge region 0 covers crosstalk; regions 1-3 are crossbar, head E
+         * and head F widget views, so head F is region 3.
          */
         .mmio_region = 3,
         /*
-         * A head's bus is named from its own unset qdev id, falling back
-         * to its QOM child name (sgi-xbridge.c, xbridge_realize()): the
-         * chip's own head-f child, not a device id this test ever sets.
+         * A head's bus is named from its own unset qdev id, falling back to
+         * its QOM child name (sgi-xbridge.c, xbridge_realize()): the chip's
+         * own head-f child, not a device id this test ever sets.
          */
         .bus = "head-f.0",
         /*
-         * Head F's own identification: unconfigured by this test's own
-         * bare chip, so XBridge's fixed defaults apply (part 0xd002,
-         * manufacturer 0x024, revision 2), the same value
-         * sn1-xbridge-test.c's test_registers() observes on a bare
-         * sgi-xbridge-head.
+         * Head F's own identification: unconfigured by this test's own bare
+         * chip, so XBridge's fixed defaults apply (part 0xd002, manufacturer
+         * 0x024, revision 2), the same value sn1-xbridge-test.c's
+         * test_registers() observes on a bare sgi-xbridge-head.
          */
         .identification = 0x2d002049U,
         .fixed = io8_fixed,
@@ -208,9 +200,8 @@ static const BoardCase board_cases[] = {
         .chip = "bridge",
         .bus = "pci",
         /*
-         * Bridge's own unmodified defaults: revision 1, part 0xc002,
-         * manufacturer 0x036: (1 << 28) | (0xc002 << 12) | (0x036 << 1)
-         * | 1. No fixed devices; this board is a bare Bridge.
+         * Bare Bridge defaults: revision 1, part 0xc002, manufacturer 0x036;
+         * (1 << 28) | (0xc002 << 12) | (0x036 << 1) | 1. No fixed devices.
          */
         .identification = 0x1c00206dU,
         .fixed = NULL,
@@ -257,14 +248,14 @@ static void test_widget_identity(gconstpointer data)
 }
 
 /*
- * A sub-word config access takes the crosstalk PIO byte-lane correction
- * meant for a device's own data window (hw/pci-host/sgi-xbridge.c,
- * xbridge_pio()'s offset ^= width - size, which Bridge's own config
- * dispatch shares) and returns a byte from the wrong lane. A whole-word
- * read is exempt (no correction at width == size) and qtest_readl()
- * itself assembles it back into a normal host-order value, so every
- * config field this test reads comes from one, matching test_config_pio()
- * in sn1-xbridge-test.c reading identification the same way.
+ * A sub-word config access takes the crosstalk PIO byte-lane correction meant
+ * for a device's own data window (hw/pci-host/sgi-xbridge.c, xbridge_pio()'s
+ * offset ^= width - size, which Bridge's own config dispatch shares) and
+ * returns a byte from the wrong lane. A whole-word read is exempt (no
+ * correction at width == size) and qtest_readl() itself assembles it back
+ * into a normal host-order value, so every config field this test reads comes
+ * from one, matching test_config_pio() in sn1-xbridge-test.c reading
+ * identification the same way.
  */
 static uint32_t cfg_read(QTestState *qts, unsigned int device,
                          unsigned int offset)
@@ -317,10 +308,8 @@ static void test_interrupt_chain(gconstpointer data)
         g_autofree char *chip_path = g_strdup_printf(
             "%s/%s", tc->reparents ? BOARD_REPARENTED : FIXTURE, tc->chip);
         /*
-         * The probe card's own INTA, raw output index device * 4 + 0
-         * (PCI_NUM_PINS per device, pin A first): re-driven as the
-         * chip's own "head-f-pci-intx" regardless of whether this
-         * board's own fixed devices wire anything to it.
+         * Probe INTA is raw output device * 4 + 0; XBridge drives
+         * head-f-pci-intx regardless of fixed-device wiring.
          */
         unsigned int line = PROBE_DEVICE * PCI_NUM_PINS;
 
@@ -344,8 +333,8 @@ static void test_interrupt_chain(gconstpointer data)
 }
 
 /*
- * sgi-baseio's backend properties: an id that names no real chardev or
- * drive backend must be refused at realize, naming the id.
+ * BaseIO rejects an unknown chardev or drive backend ID at realize
+ * and names the missing ID.
  */
 
 static void assert_qemu_rejects(const char *const args[], const char *message)
@@ -405,40 +394,39 @@ static void test_io8_unresolved_drive(const void *data)
 }
 
 /*
- * sgi-xtalk-board: property validation, re-parenting under its module,
- * and the deferred attach hook that lets a `-device` board reach a
- * Crossbow that must realize only once every board is in.
+ * sgi-xtalk-board: property validation, re-parenting under its module, and
+ * the deferred attach hook that lets a `-device` board reach a Crossbow that
+ * must realize only once every board is in.
  *
- * -M none's main system bus refuses to hot-plug a sysbus device at all
- * (no dynamic-sysbus allowance is wired up without a machine, and this
- * packet adds none), so every device here is a cold-plugged `-device` on
- * the qtest command line, never a QMP device_add sent afterward. A board
- * whose properties fail realize takes the whole process down as a fatal
+ * -M none's main system bus refuses to hot-plug a sysbus device at all (no
+ * dynamic-sysbus allowance is wired up without a machine, and this packet
+ * adds none), so every device here is a cold-plugged `-device` on the qtest
+ * command line, never a QMP device_add sent afterward. A board whose
+ * properties fail realize takes the whole process down as a fatal
  * command-line error, so the invalid-property cases run as trapped
  * subprocesses and check the process's own failure, the way
- * test_parent_l1_invalid_region() in sn1-bedrock-test.c checks a
- * different device's realize-time refusal.
+ * test_parent_l1_invalid_region() in sn1-bedrock-test.c checks a different
+ * device's realize-time refusal.
  *
- * The attach-pending case uses sgi-xtalk-board-fixture, a test-only
- * stand-in for a machine builder: it owns one Crossbow, created
- * unrealized, and (with auto-attach left at its default) calls
- * sgi_xtalk_board_attach_pending() from the real machine-init-done
- * notifier the way a builder would, then realizes the Crossbow. A second
- * fixture with auto-attach=false does neither on its own; its
- * "realize-now" and "retry" properties let the qtest drive the same two
- * steps by hand, which is the only way to put a Crossbow into "already
- * realized, nothing attached" without a hot-plug -M none refuses.
+ * The attach-pending case uses sgi-xtalk-board-fixture, a test-only stand-in
+ * for a machine builder: it owns one Crossbow, created unrealized, and (with
+ * auto-attach left at its default) calls sgi_xtalk_board_attach_pending()
+ * from the real machine-init-done notifier the way a builder would, then
+ * realizes the Crossbow. A second fixture with auto-attach=false does neither
+ * on its own; its "realize-now" and "retry" properties let the qtest drive
+ * the same two steps by hand, which is the only way to put a Crossbow into
+ * "already realized, nothing attached" without a hot-plug -M none refuses.
  */
 
 /*
- * Matches SGI_XTALK_BOARD_FIXTURE_SPAN in tests/qtest/xtalk-test-board.c:
- * how much address space the fixture's Crossbow gives each widget.
+ * Fixture Crossbow address span per widget: SGI_XTALK_BOARD_FIXTURE_SPAN
+ * in tests/qtest/xtalk-test-board.c.
  */
 #define WIDGET_SPAN (32ULL * 1024 * 1024)
 
 /*
- * Board slot 8 is what fixture0's Crossbow keeps alive alongside 9, the
- * port this test probes from (a link never routes to itself).
+ * fixture0 keeps slot 8 alive beside probe slot 9; a link never
+ * routes to itself.
  */
 #define BOARD_WIDGET 8
 #define PROBE_LINK   1 /* widget 9, the second live port */
@@ -529,8 +517,8 @@ static void test_slot_taken_twice(void)
 static void test_slot_reused_in_another_module(void)
 {
     /*
-     * The same slot number in a different module is unrelated and free:
-     * a success case, so it runs directly rather than trapped.
+     * The same slot is free in another module; test the successful launch
+     * directly.
      */
     QTestState *qts = qtest_init(
         "-M none -device sgi-xtalk-test-board,id=a,module=0,slot=8 "
@@ -552,11 +540,11 @@ static void test_reparent(void)
 }
 
 /*
- * A board built before the machine-init-done notifier fires attaches
- * through sgi_xtalk_board_attach_pending() and is reachable through the
- * Crossbow once it realizes; a board whose Crossbow the qtest realizes
- * by hand first (standing in for one that already realized before this
- * board could reach it) is refused when the hook is then run against it.
+ * A board built before the machine-init-done notifier fires attaches through
+ * sgi_xtalk_board_attach_pending() and is reachable through the Crossbow once
+ * it realizes; a board whose Crossbow the qtest realizes by hand first
+ * (standing in for one that already realized before this board could reach
+ * it) is refused when the hook is then run against it.
  */
 static void test_attach_pending(void)
 {
@@ -571,17 +559,15 @@ static void test_attach_pending(void)
     g_autofree char *error = NULL;
 
     /*
-     * fixture0's own machine-init-done notifier already ran by the time
-     * this process answers its first QMP command.
+     * fixture0's machine-init-done notifier runs before the first QMP reply.
      */
     g_assert_true(qtest_qom_get_bool(qts, FIXTURE0, "attached"));
     error = qom_get_str(qts, FIXTURE0, "error");
     g_assert_cmpstr(error, ==, "");
 
     /*
-     * The Crossbow sees the widget at the slot's widget number: write
-     * through the probe port's view of widget 8, read back through the
-     * test target's own mapping of the same underlying RAM.
+     * Write through probe widget 9's view of widget 8; read the same RAM
+     * through the target mapping.
      */
     qtest_sysbus_mmio_map(qts, FIXTURE0 "/crossbow", PROBE_LINK, CPU_BASE);
     qtest_sysbus_mmio_map(qts, "/machine/module0/board0/widget-module0-slot8",
@@ -592,18 +578,17 @@ static void test_attach_pending(void)
                     0x1122334455667788ULL);
 
     /*
-     * board1 realized and re-parented fine -- it never touched a
-     * Crossbow at its own realize -- but fixture1 left its Crossbow
-     * unrealized (auto-attach=false), so board1 is still pending.
+     * board1 realized and re-parented without attaching; fixture1 has
+     * auto-attach=false and its Crossbow remains unrealized.
      */
     g_assert_true(
         qtest_qom_get_bool(qts, "/machine/module1/board1", "realized"));
     g_assert_false(qtest_qom_get_bool(qts, FIXTURE1, "attached"));
 
     /*
-     * Put fixture1's Crossbow where a real one would be if it had
-     * already realized before board1 could reach it, then run the same
-     * hook board1 was always going to need.
+     * Put fixture1's Crossbow where a real one would be if it had already
+     * realized before board1 could reach it, then run the same hook board1
+     * was always going to need.
      */
     qtest_qom_set_bool(qts, FIXTURE1, "realize-now", true);
     qtest_qom_set_bool(qts, FIXTURE1, "retry", true);
@@ -627,8 +612,7 @@ int main(int argc, char **argv)
         const BoardCase *tc = &board_cases[i];
 
         /*
-         * Not freed: g_test_add_data_func() keeps the path for the life
-         * of the suite, which is the life of this process.
+         * g_test_add_data_func() owns the path for the process lifetime.
          */
         qtest_add_data_func(
             g_strdup_printf("/sgi-board/%s/widget-identity", tc->subtest),

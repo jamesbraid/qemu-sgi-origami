@@ -1,26 +1,29 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * Origin 300 boot flash: adapts Bedrock boot-window cycles to two CFI devices.
- *
+ * Origin 300 boot flash: two CFI PROM positions shared by local and remote
+ * boot spaces.
+*/
+/*
  * Each boot space selects two independently stateful 8 MiB PROM positions on
- * 32 MiB boundaries. Reads are one-to-one within the selected position. A
- * command or programming store is relative to that position: it carries one
- * 16-bit word zero-extended to 64 bits, and a store at position offset 4n
- * addresses the word at byte n. A store is one two-byte cycle, never two
- * one-byte cycles. A value with anything above the word set, a narrower store,
- * or an offset past the selected part is outside the interface and is refused.
- * The local and remote boot spaces reach the same pair, including each part's
- * command state.
- *
- * Published documentation also describes a byte-write view putting byte n at
- * 8n, spanning the whole window; the firmware drives the 16-bit path modelled
- * here. The two position-relative store regions together span its first
- * 64 MiB.
- *
- * Unknown, so not modelled: the fitted part, package and chip-select details,
- * what an absent part answers, and the read decode outside the mapped views.
- * The CFI devices' identifiers are their defaults and name no fitted part.
- */
+ * 32 MiB boundaries. Reads are
+ * one-to-one within the selected position. A command or programming store is
+ * relative to that position: it carries
+ * one 16-bit word zero-extended to 64 bits, and a store at position offset 4n
+ * addresses the word at byte n. A store
+ * is one two-byte cycle, never two one-byte cycles. A value with anything
+ * above the word set, a narrower store, or
+ * an offset past the selected part is outside the interface and is refused.
+ * The local and remote boot spaces reach
+ * the same pair, including each part's command state. Published documentation
+ * also describes a byte-write view
+ * putting byte n at 8n, spanning the whole window; the firmware drives the
+ * 16-bit path modelled here. The two
+ * position-relative store regions together span its first 64 MiB. Unknown, so
+ * not modelled: the fitted part,
+ * package and chip-select details, what an absent part answers, and the read
+ * decode outside the mapped views. The
+ * CFI devices' identifiers are their defaults and name no fitted part.
+*/
 #include "qemu/osdep.h"
 #include "hw/misc/sgi-bedrock-flash.h"
 #include "exec/memop.h"
@@ -41,9 +44,10 @@ static const char *const flash_window_name[SGI_BEDROCK_FLASH_WINDOWS] = {
 
 /*
  * The read addresses this device answers inside a boot space: each PROM
- * position's base, one-to-one over that position's own 8 MiB. The second
- * position does not repeat the first; it holds the upper half of the backing.
- */
+ * position's base, one-to-one over that
+ * position's own 8 MiB. The second position does not repeat the first; it
+ * holds the upper half of the backing.
+*/
 static bool flash_read_position(hwaddr offset, unsigned *position,
                                 hwaddr *part)
 {
@@ -139,8 +143,9 @@ static MemTxResult flash_write(void *opaque, hwaddr offset, uint64_t value,
     if (value > UINT16_MAX) {
         /*
          * No cycle is issued, so the flash stays wherever the sequence had
-         * reached and the next read may return status rather than data.
-         */
+         * reached and the next read may return status
+         * rather than data.
+        */
         qemu_log_mask(LOG_GUEST_ERROR, "sgi-bedrock-flash: %s boot space: "
                       "write of 0x%" PRIx64 " at 0x%" HWADDR_PRIx " sets bits "
                       "above the 16-bit flash word; refused without a flash "
@@ -163,12 +168,13 @@ static MemTxResult flash_write(void *opaque, hwaddr offset, uint64_t value,
                                           value, MO_16 | MO_BE, attrs);
     /*
      * Every accepted cycle, not only ones that end up changing a stored byte:
-     * telling an unlock or a command cycle from the one that actually writes
-     * or erases would mean shadowing the CFI device's own AMD command state
-     * machine here. The notified side tells them apart itself, from the
-     * part's own dirty record, so an unlock or a command cycle that changed
-     * nothing costs it an empty check rather than a copy.
-     */
+     * telling an unlock or a command cycle from
+     * the one that actually writes or erases would mean shadowing the CFI
+     * device's own AMD command state machine here.
+     * The notified side tells them apart itself, from the part's own dirty
+     * record, so an unlock or a command cycle that
+     * changed nothing costs it an empty check rather than a copy.
+    */
     if (result == MEMTX_OK && s->programmed) {
         s->programmed(s->programmed_opaque, position);
     }
@@ -177,8 +183,9 @@ static MemTxResult flash_write(void *opaque, hwaddr offset, uint64_t value,
 
 /*
  * Eight-byte accesses reach the handler whole, so a store is one command
- * rather than a run of narrower ones the firmware never issues.
- */
+ * rather than a run of narrower ones the
+ * firmware never issues.
+*/
 static const MemoryRegionOps flash_ops = {
     .read_with_attrs = flash_read,
     .write_with_attrs = flash_write,
@@ -189,9 +196,9 @@ static const MemoryRegionOps flash_ops = {
 
 /*
  * Every byte, command and mode belongs to the CFI device, which brings its
- * own migration state and its own reset to read-array mode. The adapter
- * translates and holds nothing across either.
- */
+ * own migration state and its own reset to
+ * read-array mode. The adapter translates and holds nothing across either.
+*/
 static const VMStateDescription vmstate_flash = {
     .name = TYPE_SGI_BEDROCK_FLASH,
     .version_id = 1,
@@ -223,9 +230,10 @@ static void flash_realize(DeviceState *dev, Error **errp)
 
         /*
          * One 16-bit bank per position rather than a pair of byte-wide ones:
-         * the firmware hands over a whole flash word per bus cycle, and a
-         * byte-wide configuration would take each of those as two commands.
-         */
+         * the firmware hands over a whole flash word per
+         * bus cycle, and a byte-wide configuration would take each of those
+         * as two commands.
+        */
         qdev_prop_set_string(s->flash[i], "name", name);
         qdev_prop_set_uint32(s->flash[i], "num-blocks",
                              SGI_BEDROCK_FLASH_PART_SIZE /

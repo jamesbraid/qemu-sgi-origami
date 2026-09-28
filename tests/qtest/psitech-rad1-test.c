@@ -1,13 +1,13 @@
 /*
- * PsiTech RAD1 (psitech-rad1): register contract for the reviewed flat-copy
- * functional approximation, through the real Origin 200 Bridge PCI path.
+ * PsiTech RAD1 (psitech-rad1): register contract for the flat-copy functional
+ * approximation, through the real Origin 200 Bridge PCI path.
  *
  * The card is an add-in PCI card, so like tests/qtest/sn0-tigon-test.c and
  * tests/qtest/psitech-rad4-test.c it is instantiated with -device at a free
  * slot and reached through that slot's own Bridge decode. Expected values
- * come from docs/datasheets/psitech-rad1.md in the owning Origami
- * repository and the public TI/3Dlabs TVP4020 Programmer's Reference
- * Manual it cites, not from this device's own implementation.
+ * come from the device's register documentation and the public TI/3Dlabs
+ * TVP4020 Programmer's Reference Manual it cites, not from this device's own
+ * implementation.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
@@ -33,7 +33,7 @@
 /*
  * Devices 0 and 1 are BaseIO's SCSI adapters and 2 is IOC3; 3 is the first
  * free slot, with the first of the six 1 MiB windows beyond the two 2 MiB
- * ones -- the same slot tests/qtest/sn0-tigon-test.c and
+ * ones. The same slot is used by tests/qtest/sn0-tigon-test.c and
  * tests/qtest/psitech-rad4-test.c use for their own single-instance qtest.
  */
 #define RAD1_SLOT       3
@@ -51,8 +51,8 @@
     "-M origin200 -device psitech-rad1,addr=" G_STRINGIFY(RAD1_SLOT)
 
 /*
- * PCI addresses this test assigns the card's apertures; 1 MiB aligned so
- * the window never needs to slide within one BAR's own accesses.
+ * PCI addresses this test assigns the card's apertures; 1 MiB aligned so the
+ * window never needs to slide within one BAR's own accesses.
  */
 #define RAD1_BAR0_PCI   0x20000000u  /* Region Zero, 128 KiB. */
 #define RAD1_BAR1_PCI   0x30000000u  /* Framebuffer, 8 MiB. */
@@ -60,19 +60,17 @@
 
 /*
  * Primary identity is the 3Dlabs-badged Permedia 2 die's own PCI
- * Vendor/Device ID, one of the two the IRIX kernel driver's own
- * registration call accepts (docs/datasheets/psitech-rad1.md,
- * "Kernel-driver attach: the real cause is a PCI identity mismatch") and
- * one of two the IO6 PROM's RAD1 console installer also recognizes by
- * Device ID alone (hw/display/psitech-rad1.c's own comment), not
- * PsiTech's board identity.
+ * Vendor/Device ID, one of the two the IRIX kernel driver's own registration
+ * call accepts (attach fails on a PCI identity mismatch) and one of two the
+ * IO6 PROM's RAD1 console installer also recognizes by Device ID alone
+ * (hw/display/psitech-rad1.c's own comment), not PsiTech's board identity.
  */
 #define RAD1_VENDOR_ID  0x3d3d
 #define RAD1_DEVICE_ID  0x0009
 
 /*
- * PsiTech's board/subsystem identity, exposed as the separate PCI
- * Subsystem Vendor/Device ID rather than the primary Vendor/Device ID.
+ * PsiTech's board/subsystem identity, exposed as the separate PCI Subsystem
+ * Vendor/Device ID rather than the primary Vendor/Device ID.
  */
 #define RAD1_SUBSYSTEM_VENDOR_ID 0x12d1
 #define RAD1_SUBSYSTEM_DEVICE_ID 0x0101
@@ -93,13 +91,10 @@
 #define INT_KNOWN_MASK  (INT_BIT0 | INT_BIT1 | INT_BIT7)
 
 /*
- * Region Zero: Bypass DMA (docs/datasheets/psitech-rad1.md, "Bypass DMA
- * write-completion path"; offsets and field layout cross-checked against
- * the TVP4020 Hardware Reference Manual Issue 6, pages 44-51, and against
- * the driver's own disassembled posting sequence). ByDMAControl's own
- * Mode/RestartGP/format/patch-type field values are not exercised by this
- * model -- any write triggers the transfer -- so BYDMA_CONTROL_TRIGGER
- * below is a nominal value, not a decoded one.
+ * Bypass DMA offsets and fields follow TVP4020 Hardware Reference Manual
+ * Issue 6, pp. 44-51 and driver posting. Mode/RestartGP/format/patch-type
+ * are not decoded: every ByDMAControl write starts transfer, so
+ * BYDMA_CONTROL_TRIGGER is nominal.
  */
 #define R_BYDMA_ADDRESS     0x00a0
 #define R_BYDMA_STRIDE      0x00b8
@@ -115,7 +110,7 @@
     (((uint32_t)(right) << 16) | ((left) & 0xfu))
 #define BYDMA_BYTE_MASK_OPEN    BYDMA_BYTE_MASK(0xf, 0xf)
 
-/* Region Zero: RAMDAC (docs/datasheets/psitech-rad1.md). */
+/* Region Zero: RAMDAC. */
 #define R_RAMDAC_0      0x4000
 #define R_RAMDAC_1      0x4010
 #define R_RAMDAC_6      0x4050
@@ -123,9 +118,8 @@
 #define R_RAMDAC_UNSUPPORTED 0x4008
 
 /*
- * Region Zero: FIFO-tagged GP registers (docs/datasheets/psitech-rad1.md;
- * offsets cross-checked against the TVP4020 Programmer's Reference
- * Manual's own per-register table entries).
+ * Region Zero: FIFO-tagged GP registers (offsets cross-checked against the
+ * TVP4020 Programmer's Reference Manual's own per-register table entries).
  */
 #define R_START_X_DOM       0x8000
 #define R_D_X_DOM           0x8008
@@ -150,17 +144,16 @@
 #define TEXBASE_SYSTEM_MEMORY   (1u << 30)
 #define FBREADMODE_READBACK_BIT (1u << 10)
 
-/* LogicalOpMode bit 5, manual page 231: write FBWriteData, not the fragment. */
+/*
+ * LogicalOpMode bit 5, manual page 231: write FBWriteData, not the fragment.
+ */
 #define LOGICOP_USE_CONSTANT_FB_WRITE_DATA  (1u << 5)
 
 /*
- * Render command bits (manual pages 242-243) and the three whole commands
- * the guests actually write. The kernel driver's rectangle copies
- * (rad1drv.o rect_pio_move/rect_dma_move) carry TextureEnable; the IO6
- * PROM textport's box fill (io6prom 6.156 standalone image, 0x11c2a6bc)
- * and the kernel textport's RAD1TpSboxfi write 0x6000c0; both textport
- * initialisers clear the screen with FastFill, 0x6000c8; both textports
- * plot glyph pixels with the point primitive, 0x80.
+ * Render bits follow manual pp. 242-243. Driver rect_pio_move and
+ * rect_dma_move use TextureEnable; IO6 PROM 6.156 box fill at 0x11c2a6bc
+ * and kernel RAD1TpSboxfi write 0x6000c0. Both clear with FastFill
+ * 0x6000c8 and draw glyph pixels with point command 0x80.
  */
 #define RENDER_FASTFILL         (1u << 3)
 #define RENDER_TRAPEZOID        (1u << 6)
@@ -179,14 +172,15 @@
 #define RECT(x, y)          (((uint32_t)(y) << 16) | ((x) & 0xffffu))
 #define SIZE(w, h)          (((uint32_t)(h) << 16) | ((w) & 0xffffu))
 
-/* ByDMASize: Width in bits 0-11, Height in bits 16-27 (RAD1_BYDMA_DIM_MASK). */
+/*
+ * ByDMASize: Width in bits 0-11, Height in bits 16-27 (RAD1_BYDMA_DIM_MASK).
+ */
 #define BYDMA_SIZE(w, h)    (((uint32_t)(h) << 16) | ((w) & 0x0fffu))
 
 /*
- * Flash/EEPROM: generic JEDEC/AMD unlock-and-program sequence, addressed
- * here using the driver's own disassembled CPU-side literal offsets
- * (docs/datasheets/psitech-rad1.md), not the standard JEDEC addresses
- * hw/display/psitech-rad1.c's state machine matches against -- this
+ * Flash/EEPROM: generic JEDEC/AMD unlock-and-program sequence, addressed here
+ * using the driver's own CPU-side literal offsets, not the standard JEDEC
+ * addresses hw/display/psitech-rad1.c's state machine matches against. This
  * exercises the real Bridge byte-lane swap (addr ^ 3) that reconciles the
  * two, the same way a real driver's own literal store address would.
  */
@@ -198,11 +192,9 @@
 #define FLASH_PROGRAM_DATA  0xa0
 
 /*
- * Bridge's byte-lane correction for a device-initiated DMA transfer
- * (crosses crosstalk, unlike this file's own PIO-only apertures above):
- * tests/qtest/sn0-qlogic-isp-test.c exercises the mechanism itself, and
- * tests/qtest/psitech-rad4-test.c's dma_start() applies the same setup
- * this file needs for a host-memory Render source.
+ * Device DMA crosses crosstalk and needs Bridge Direct-window byte
+ * correction; PIO apertures do not. sn0-qlogic-isp-test.c tests the
+ * mechanism; psitech-rad4-test.c:dma_start() uses the same setup.
  */
 #define DEV_SWAP_DIRECT         (1u << 19)
 #define PCI_DMA_DIRECT          0x80000000u
@@ -253,11 +245,9 @@ static void vram_write(QTestState *qts, uint32_t off, uint32_t val)
 }
 
 /*
- * Byte-wide, unlike every other BAR on this device: the JEDEC/AMD unlock
- * addresses themselves (0x5556, 0x2aa9) are not 4-byte aligned
- * (hw/display/psitech-rad1.c's rad1_flash_ops comment), so this reaches
- * the flash aperture with single-byte accesses rather than
- * regzero_read/write's or vram_read/write's 32-bit ones.
+ * Flash unlock addresses 0x5556/0x2aa9 are unaligned; use byte
+ * accesses, unlike other BARs and 32-bit regzero/vram helpers. See
+ * hw/display/psitech-rad1.c:rad1_flash_ops.
  */
 static uint32_t flash_read(QTestState *qts, uint32_t off)
 {
@@ -276,11 +266,10 @@ static void flash_write(QTestState *qts, uint32_t off, uint32_t val)
 }
 
 /*
- * Programs the card's BARs into PCI space and opens the Bridge slot's
- * memory decode, the way psitech-rad4-test.c's rad4_configure_bars() sets
- * up its own BARs. A PCI reset clears these config-space registers back to
- * unprogrammed, so this must run again after any reset before the card
- * answers PIO again.
+ * Programs the card's BARs into PCI space and opens the Bridge slot's memory
+ * decode, the way psitech-rad4-test.c's rad4_configure_bars() sets up its own
+ * BARs. A PCI reset clears these config-space registers back to unprogrammed,
+ * so this must run again after any reset before the card answers PIO again.
  */
 static void rad1_configure_bars(QTestState *qts)
 {
@@ -301,22 +290,22 @@ static QTestState *rad1_init(void)
 }
 
 /*
- * Enables bus mastering and this slot's Direct-window byte-lane
- * correction, then writes `val` to Region Zero offset `off` to trigger a
- * host-memory-capable transfer -- matching psitech-rad4-test.c's
- * dma_start() exactly, including why it does the triggering write itself
- * rather than through the generic regzero_write()/rad1_writel() helpers:
- * those re-window the Bridge slot's own device register (rad1_window_to()),
- * which shares its storage with this correction bit, so anything windowing
- * after this call would silently drop it again. This also windows to
- * Region Zero's own base (not the host address's), since the triggering
- * write itself is a Region Zero PIO access; the correction bit is this
- * Bridge slot's own property, independent of which window base happens to
- * be selected alongside it, matching how RAD4's own DMA-triggering
- * register lives in the same window its DMA needs the correction for.
- * Shared by every register whose write can start a host-memory DMA
- * (Render, and ByDMAControl below) since the correction is Bridge-slot
- * state, not tied to one particular triggering register.
+ * Enables bus mastering and this slot's Direct-window byte-lane correction,
+ * then writes `val` to Region Zero offset `off` to trigger a
+ * host-memory-capable transfer. It matches psitech-rad4-test.c's dma_start()
+ * exactly, including why it does the triggering write itself rather than
+ * through the generic regzero_write()/rad1_writel() helpers: those re-window
+ * the Bridge slot's own device register (rad1_window_to()), which shares its
+ * storage with this correction bit, so anything windowing after this call
+ * would silently drop it again. This also windows to Region Zero's own base
+ * (not the host address's), since the triggering write itself is a Region
+ * Zero PIO access; the correction bit is this Bridge slot's own property,
+ * independent of which window base happens to be selected alongside it,
+ * matching how RAD4's own DMA-triggering register lives in the same window
+ * its DMA needs the correction for. Shared by every register whose write can
+ * start a host-memory DMA (Render, and ByDMAControl below) since the
+ * correction is Bridge-slot state, not tied to one particular triggering
+ * register.
  */
 static void rad1_trigger_dma(QTestState *qts, uint32_t off, uint32_t val)
 {
@@ -404,11 +393,10 @@ static void test_control_status_registers(void)
     g_assert_cmpuint(regzero_read(qts, R_FIFO_SPACE), >, 0x64);
 
     /*
-     * Live-gdb-traced gate `rad1pciattach` checks before it will finish
-     * attach (docs/datasheets/psitech-rad1.md, "Kernel-driver attach"):
-     * any nonzero word unblocks it, so this only pins "nonzero", not a
-     * specific bit pattern -- see hw/display/psitech-rad1.c's own
-     * disclosure at RAD1_REG_ATTACH_GATE.
+     * The driver's `rad1pciattach` path checks this register before it will
+     * finish attach: any nonzero word unblocks it, so this only pins
+     * "nonzero", not a specific bit pattern; see
+     * hw/display/psitech-rad1.c's own disclosure at RAD1_REG_ATTACH_GATE.
      */
     g_assert_cmpuint(regzero_read(qts, R_ATTACH_GATE), !=, 0);
 
@@ -416,11 +404,10 @@ static void test_control_status_registers(void)
 }
 
 /*
- * An offset this device does not implement stays observable (reads zero,
- * does not crash or silently alias another register) rather than being
- * guessed at -- docs/datasheets/psitech-rad1.md's own requirement that
- * "Unsupported hardware accesses must produce a deterministic error or
- * remain trace-visible".
+ * An offset this device does not implement stays observable (reads zero, does
+ * not crash or silently alias another register). Unsupported hardware
+ * accesses must produce a deterministic error or
+ * remain trace-visible.
  */
 static void test_unsupported_offset_is_safe(void)
 {
@@ -449,11 +436,9 @@ static void test_ramdac_round_trip(void)
 }
 
 /*
- * A same-surface (local buffer) rectangle copy: TextureBaseAddress names a
- * framebuffer offset directly (bit 30 clear, manual page 260), and
- * RectangleOrigin/RectangleSize name the destination -- this exercises the
- * plain forward path every rectangle-move helper in the driver ultimately
- * drives (docs/datasheets/psitech-rad1.md, "Rectangle transfer...").
+ * With TextureBaseAddress bit 30 clear, its offset names local VRAM
+ * (manual p. 260); RectangleOrigin/RectangleSize name the destination
+ * for the driver's forward rectangle-move path.
  */
 static void test_render_local_copy(void)
 {
@@ -479,11 +464,9 @@ static void test_render_local_copy(void)
 }
 
 /*
- * RectangleOrigin's X and Y are 12-bit two's complement (manual page 73,
- * Table 5.5), so a negative origin here puts the whole destination
- * rectangle outside the framebuffer and rad1_do_render() must reject it
- * rather than reinterpret it as a large unsigned coordinate near the far
- * edge of VRAM.
+ * RectangleOrigin X/Y are signed 12-bit two's-complement (manual p. 73,
+ * Table 5.5). A fully offscreen negative rectangle must be rejected,
+ * not interpreted near the unsigned far edge of VRAM.
  */
 static void test_render_negative_origin_rejected(void)
 {
@@ -506,12 +489,11 @@ static void test_render_negative_origin_rejected(void)
 }
 
 /*
- * A host-memory (system memory) rectangle copy: TextureBaseAddress's bit
- * 30 set means this session's copy of the manual's own text -- "the
- * texture resides in system memory ... and should be fetched across the
- * PCI bus" -- so this exercises the same host-DMA-mapped source
- * rect_dma_move()/bigx_update() use (docs/datasheets/psitech-rad1.md,
- * "What 'DMA' means for this driver").
+ * A host-memory (system memory) rectangle copy: TextureBaseAddress's bit 30
+ * set means this session's copy of the manual's own text: "the texture
+ * resides in system memory ... and should be fetched across the PCI bus" --
+ * so this exercises the same host-DMA-mapped source
+ * rect_dma_move()/bigx_update() use.
  */
 static void test_render_host_copy(void)
 {
@@ -537,9 +519,9 @@ static void test_render_host_copy(void)
 
 /*
  * FBHardwareWriteMask (manual page 209): "If a bit is set to one then the
- * corresponding bit in the framebuffer is enabled for writing, otherwise
- * it is disabled" -- a full 32-bit AND mask, not RAD4's software byte-
- * level plane mask.
+ * corresponding bit in the framebuffer is enabled for writing, otherwise it
+ * is disabled". This is a full 32-bit AND mask, unlike RAD4's
+ * software byte-level plane mask.
  */
 static void test_render_honors_write_mask(void)
 {
@@ -563,12 +545,10 @@ static void test_render_honors_write_mask(void)
 }
 
 /*
- * The read-back direction (FBReadMode's Read Destination Enable, manual
- * page 211) copies the framebuffer rectangle out to a host address named
- * by TextureBaseAddress -- the read direction of rad1_dma_patch_move()
- * (docs/datasheets/psitech-rad1.md). This model's specific trigger
- * (Read Destination Enable selecting the read-back path at all) is an
- * approximation disclosed in hw/display/psitech-rad1.c and the datasheet.
+ * FBReadMode Read Destination Enable (manual p. 211) copies a VRAM
+ * rectangle to host TextureBaseAddress, as rad1_dma_patch_move() does.
+ * Using this bit to select readback is a model approximation documented
+ * in hw/display/psitech-rad1.c.
  */
 static void test_render_readback(void)
 {
@@ -588,12 +568,9 @@ static void test_render_readback(void)
 }
 
 /*
- * Round-trip register storage for the six Bypass DMA registers
- * (docs/datasheets/psitech-rad1.md, "Bypass DMA write-completion path"),
- * writing a zero-sized ByDMASize so ByDMAControl's own write -- which
- * always starts a transfer, see hw/display/psitech-rad1.c's
- * rad1_regzero_write() -- returns immediately without touching the
- * framebuffer or the interrupt status this test does not want to disturb.
+ * Round-trip six Bypass DMA registers. Zero ByDMASize makes the
+ * always-triggering ByDMAControl write return without touching VRAM or
+ * interrupt state (hw/display/psitech-rad1.c:rad1_regzero_write()).
  */
 static void test_bydma_registers_round_trip(void)
 {
@@ -622,14 +599,10 @@ static void test_bydma_registers_round_trip(void)
 }
 
 /*
- * The write-DMA completion path itself: a host-memory source posted
- * through ByDMAAddress/ByDMAStride/ByDMAMemAddr/ByDMASize/ByDMAByteMask,
- * started by the ByDMAControl write -- the transfer `rad1pci`'s posted
- * write times out waiting for completion (docs/datasheets/psitech-rad1.md,
- * "Bypass DMA write-completion path"). Confirms both the framebuffer
- * content and that completion raises only IntFlags bit 7, distinct from
- * Render's own RAD1_INT_KNOWN_MASK (see test_interrupt_status_write_clear
- * below).
+ * Start host-memory DMA via ByDMAAddress/ByDMAStride/ByDMAMemAddr/
+ * ByDMASize/ByDMAByteMask and ByDMAControl. Check VRAM and completion
+ * IntFlags bit 7 alone, distinct from Render RAD1_INT_KNOWN_MASK; this
+ * is the path rad1pci's posted write waits for.
  */
 static void test_bydma_write_transfer(void)
 {
@@ -658,13 +631,13 @@ static void test_bydma_write_transfer(void)
 }
 
 /*
- * ByDMAByteMask (page 50, "3.2.23 Bypass DMA Byte Mask", offset D0h)
- * applies only to the first and last column of a transfer row; a middle
- * column of a wider row is always fully written regardless of the mask.
- * The specific lane-to-byte mapping is APPROXIMATED beyond the driver's
- * only-traced fully-open value (hw/display/psitech-rad1.c's
- * rad1_bydma_edge_mask() comment) -- this test pins this model's own
- * chosen mapping, not an independently confirmed hardware fact.
+ * ByDMAByteMask (page 50, "3.2.23 Bypass DMA Byte Mask", offset D0h) applies
+ * only to the first and last column of a transfer row; a middle column of a
+ * wider row is always fully written regardless of the mask. The specific
+ * lane-to-byte mapping is APPROXIMATED beyond the driver's fully-open value
+ * (hw/display/psitech-rad1.c's rad1_bydma_edge_mask() comment). This test
+ * pins this model's own chosen mapping, not an independently confirmed
+ * hardware fact.
  */
 static void test_bydma_byte_mask_edges(void)
 {
@@ -695,11 +668,9 @@ static void test_bydma_byte_mask_edges(void)
 }
 
 /*
- * Every completed Render sets all three known interrupt-status bits
- * together (docs/datasheets/psitech-rad1.md's bit-to-source mapping is
- * unresolved; hw/display/psitech-rad1.c's RAD1_INT_KNOWN_MASK comment
- * discloses this as an approximation), and a guest write-clears exactly
- * the bits it read (rad1_inthandler()'s own documented behavior).
+ * Completed Render sets all three known interrupt bits together; source
+ * mapping is unresolved (hw/display/psitech-rad1.c:RAD1_INT_KNOWN_MASK).
+ * Guest writes clear exactly the bits read, as rad1_inthandler() does.
  */
 static void test_interrupt_status_write_clear(void)
 {
@@ -722,10 +693,9 @@ static void test_interrupt_status_write_clear(void)
 }
 
 /*
- * The full JEDEC/AMD unlock-and-program sequence
- * (docs/datasheets/psitech-rad1.md, "Startup and flash programming")
- * programs one byte; reset-erased flash reads all-ones, and a real NOR
- * program cycle can only clear bits, matching this model's bitwise AND.
+ * The full JEDEC/AMD unlock-and-program sequence programs one byte;
+ * reset-erased flash reads all-ones, and a real NOR program cycle can only
+ * clear bits, matching this model's bitwise AND.
  */
 static void test_flash_program_sequence(void)
 {
@@ -744,12 +714,10 @@ static void test_flash_program_sequence(void)
 }
 
 /*
- * A data write that skips the unlock sequence leaves flash content
- * unchanged -- reproducing, at the register-contract level, the byte-
- * mismatch condition program_eeprom_sector()'s caller detects
- * (docs/datasheets/psitech-rad1.md, "Required qtests before guest
- * execution", item 5), without this model needing to know that caller's
- * own error-code convention.
+ * A data write without the unlock sequence leaves flash unchanged. At
+ * the register level, this reproduces the byte-mismatch condition
+ * program_eeprom_sector()'s caller detects, without this model
+ * needing to know that caller's own error-code convention.
  */
 static void test_flash_program_without_unlock_is_ignored(void)
 {
@@ -769,12 +737,10 @@ static void test_flash_program_without_unlock_is_ignored(void)
 }
 
 /*
- * A point primitive (manual page 62, "5.3.3 Points") writes exactly one
- * pixel at StartXDom/StartY, both 16.16 fixed point, taking its colour
- * from FBWriteData because LogicalOpMode's UseConstantFBWriteData is set
- * (manual pages 217 and 231). This is how both textports draw every glyph
- * pixel: the IO6 PROM console=g textport (io6prom 6.156 standalone image
- * 0x11c2a428-0x11c2a42c) and the kernel's rad1_tport.o RAD1TpDrawbitmap.
+ * Point command (manual p. 62, 5.3.3) writes one pixel at 16.16
+ * StartXDom/StartY using FBWriteData when UseConstantFBWriteData is set
+ * (pp. 217, 231). IO6 PROM 6.156 draws glyphs at 0x11c2a428-
+ * 0x11c2a42c; kernel RAD1TpDrawbitmap does likewise.
  */
 static void test_render_point_writes_one_pixel(void)
 {
@@ -799,8 +765,8 @@ static void test_render_point_writes_one_pixel(void)
 /*
  * A rectangle primitive without TextureEnable is a constant fill of
  * RectangleOrigin/RectangleSize (manual page 62, "5.3.4 Rectangles") with
- * FBWriteData, honoring FBHardwareWriteMask -- the PROM textport's box
- * fill (0x11c2a6a8-0x11c2a6bc) and the kernel's RAD1TpSboxfi.
+ * FBWriteData, honoring FBHardwareWriteMask. The PROM textport uses this
+ * for box fill (0x11c2a6a8-0x11c2a6bc), as does the kernel's RAD1TpSboxfi.
  */
 static void test_render_rectangle_constant_fill(void)
 {
@@ -833,11 +799,9 @@ static void test_render_rectangle_constant_fill(void)
 }
 
 /*
- * Unlike rad1_do_render()'s single-block copy, the constant fill clips
- * pixel by pixel (rad1_put_pixel()), so a rectangle whose signed origin
- * (manual page 73, Table 5.5) starts left of the framebuffer still draws
- * its in-bounds columns -- the case the existing fill/copy tests, which
- * only use small positive origins, never exercise.
+ * Constant fill clips each pixel in rad1_put_pixel(), unlike block copy.
+ * Signed negative origins (manual p. 73, Table 5.5) still draw in-bounds
+ * columns; existing positive-origin tests do not cover this.
  */
 static void test_render_rectangle_fill_negative_origin(void)
 {
@@ -862,8 +826,9 @@ static void test_render_rectangle_fill_negative_origin(void)
 
 /*
  * FastFill (manual page 41, "Block Writes") writes FBBlockColor to every
- * pixel regardless of FBWriteData -- the full-screen clear both textport
- * initialisers issue (0x11c29fc4-0x11c29ff8; rad1_tpinit.o RAD1InitBoard).
+ * pixel regardless of FBWriteData. Both textport
+ * initialisers issue it for full-screen clear (0x11c29fc4-0x11c29ff8;
+ * rad1_tpinit.o RAD1InitBoard).
  */
 static void test_render_fastfill_uses_block_color(void)
 {
@@ -885,9 +850,9 @@ static void test_render_fastfill_uses_block_color(void)
 }
 
 /*
- * With neither FastFill nor UseConstantFBWriteData the fragment colour
- * would come from the Color DDA unit, which this model does not implement:
- * the fill stays an observable no-op rather than guessing a colour.
+ * With neither FastFill nor UseConstantFBWriteData the fragment colour would
+ * come from the Color DDA unit, which this model does not implement: the fill
+ * stays an observable no-op rather than guessing a colour.
  */
 static void test_render_fill_without_colour_source(void)
 {
@@ -909,12 +874,11 @@ static void test_render_fill_without_colour_source(void)
 }
 
 /*
- * A trapezoid primitive fills Count scanlines between its two edges, all
- * of StartXDom/StartXSub/StartY and their deltas being 16.16 fixed point
- * (manual page 70, "5.3.14 Registers"; Count on page 73). dY = 1.0 is
- * exactly what the PROM textport initialiser writes at mode set
- * (0x11c16110); only the kernel driver's fill_fb() (rad1drv.o) renders a
- * trapezoid.
+ * A trapezoid primitive fills Count scanlines between its two edges, all of
+ * StartXDom/StartXSub/StartY and their deltas being 16.16 fixed point (manual
+ * page 70, "5.3.14 Registers"; Count on page 73). dY = 1.0 is exactly what
+ * the PROM textport initialiser writes at mode set (0x11c16110); only the
+ * kernel driver's fill_fb() (rad1drv.o) renders a trapezoid.
  */
 static void test_render_trapezoid_spans(void)
 {

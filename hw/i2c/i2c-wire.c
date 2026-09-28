@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: LGPL-2.1-or-later */
 /*
- * Origami I2C wire bus.
+ * SGI I2C wire bus.
  *
  * A TYPE_I2C_BUS subclass carrying the resolved-master byte API and the timed
  * open-drain SDA/SCL transport that the SGI Origin module-management and

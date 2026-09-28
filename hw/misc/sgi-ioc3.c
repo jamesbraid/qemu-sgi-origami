@@ -1,13 +1,11 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * SGI IOC3 base I/O controller.
- *
- * One PCI device, one BAR: two 16550s and their DMA engines, the ethernet
- * block and its buffer RAM, PS/2, a one-wire ethernet-address part, and
- * the byte bus's timekeeper. See docs/specs/sgi-ioc3.rst.
- *
- * An add-in card can also keep its board-identity record on the MicroLAN,
- * beside the station-address part; the "board-*" properties fit it.
+ * SGI IOC3 PCI base I/O: serial DMA, Ethernet, PS/2, MicroLAN and timekeeper.
+ */
+/*
+ * One PCI device and BAR hold two 16550s, Ethernet buffer RAM and the byte
+ * bus. Add-in cards may carry board identity beside the station address on
+ * MicroLAN; board-* properties describe that population.
  */
 
 #include "qemu/osdep.h"
@@ -46,8 +44,8 @@ static void sgi_ioc3_serial_irq(void *opaque, int port, int level)
     sgi_ioc3_update_irq(s);
 
     /*
-     * On every level, not assertion alone: IRIX's DMA-ring console
-     * receives with the 16550 interrupts disabled entirely.
+     * On every level, not assertion alone: IRIX's DMA-ring console receives
+     * with the 16550 interrupts disabled entirely.
      */
     sgi_ioc3_sdma_run(s, port);
 }
@@ -94,9 +92,9 @@ static void sgi_ioc3_kbc_irq(void *opaque, int n, int level)
  * The parallel port's four sources. Its service interrupt is a level, like
  * the two serial pass-throughs: what quiets it is a write to the port's own
  * extended control register, so a write-one-to-clear here would drop an
- * interrupt this chip would never raise again. The three below it -- one per
- * DMA context, then the DMA fault -- latch on the port's pulse and the
- * driver clears each by writing its bit back.
+ * interrupt this chip would never raise again. The three below it (one per
+ * DMA context, then the DMA fault) latch on the port's pulse and the driver
+ * clears each by writing its bit back.
  */
 static void sgi_ioc3_parallel_irq(void *opaque, int n, int level)
 {
@@ -114,12 +112,12 @@ static void sgi_ioc3_parallel_irq(void *opaque, int n, int level)
 /*
  * The station-address record the guests read out of the part's first page.
  * This is image content, not device behaviour: the marker and the reversed
- * address are the record's own format, and so is the checksum at bytes 11
- * and 12, which a DS2502-class part never computes -- an embedded page
- * checksum is a software file-structure convention, while the part's own
- * CRCs always cover a whole page. It is stored inverted so a guest shifting
- * the record and its checksum through the generator lands on the fixed
- * residue every one-wire CRC-16 stream ends on.
+ * address are the record's own format, and so is the checksum at bytes 11 and
+ * 12, which a DS2502-class part never computes; an embedded page checksum
+ * is a software file-structure convention, while the part's own CRCs always
+ * cover a whole page. It is stored inverted so a guest shifting the record
+ * and its checksum through the generator lands on the fixed residue every
+ * one-wire CRC-16 stream ends on.
  */
 static void sgi_ioc3_onewire_build_page(SGIIOC3State *s,
                                         uint8_t page[DS2502_PAGE_SIZE])
@@ -152,8 +150,8 @@ static void sgi_ioc3_onewire_slot(SGIIOC3State *s, uint32_t val)
          * its pin, and with the bit clear the bus is disconnected; and a
          * board with no ethernet and no board record carries no part, the
          * station-address part being wired up with the ethernet rather than
-         * on its own. Either way no part answers: the wire reads high and
-         * the slot advances no conversation.
+         * on its own. Either way no part answers: the wire reads high and the
+         * slot advances no conversation.
          */
         level = true;
     } else {
@@ -185,7 +183,7 @@ static void sgi_ioc3_int_out_hold_high(SGIIOC3State *s)
 
 /*
  * Every rising edge of the output posts the output-pulse source, whatever
- * mode produced it (docs/datasheets/ioc3.md); the mask only decides the pin.
+ * mode produced it; the mask only decides the pin.
  */
 static void sgi_ioc3_int_out_drive(SGIIOC3State *s, bool level)
 {
@@ -197,8 +195,8 @@ static void sgi_ioc3_int_out_drive(SGIIOC3State *s, bool level)
 }
 
 /*
- * One transition due at @at. The next is scheduled from @at rather than
- * from whenever this runs, so a late transition keeps the output's phase.
+ * One transition due at @at. The next is scheduled from @at rather than from
+ * whenever this runs, so a late transition keeps the output's phase.
  */
 static void sgi_ioc3_int_out_step(SGIIOC3State *s, int64_t at)
 {
@@ -262,8 +260,8 @@ static void sgi_ioc3_int_out_expire(void *opaque)
 
 /*
  * Transitions already due happen before a read, not whenever the main loop
- * next services the timer: the IO-8 board test samples a periodic output in
- * a tight loop and needs both levels.
+ * next services the timer: the IO-8 board test samples a periodic output in a
+ * tight loop and needs both levels.
  */
 static void sgi_ioc3_int_out_catch_up(SGIIOC3State *s)
 {
@@ -322,7 +320,9 @@ static uint64_t sgi_ioc3_main_read(void *opaque, hwaddr addr, unsigned size)
         sgi_ioc3_sdma_rx_timer_catch_up(s);
         return s->int_status;
     case SGI_IOC3_INT_ENABLE_SET:
-        /* The set alias reads back the live mask; the clear alias does not. */
+        /*
+         * The set alias reads back the live mask; the clear alias does not.
+         */
         return s->int_enable;
     case SGI_IOC3_CHIP_CONTROL:
         /* Bit 22: arbiter idle, polled by the kernel's console setup. */
@@ -390,8 +390,8 @@ static void sgi_ioc3_main_write(void *opaque, hwaddr addr, uint64_t val,
         uint32_t int_out = val & SGI_IOC3_INT_OUT_MASK;
 
         /*
-         * Stored as written, as the IO-8 board test requires; a command
-         * with no defined behaviour leaves the running output alone.
+         * Stored as written, as the IO-8 board test requires; a command with
+         * no defined behaviour leaves the running output alone.
          */
         s->int_out = int_out;
         if (!sgi_ioc3_int_out_command_valid(int_out)) {
@@ -408,8 +408,8 @@ static void sgi_ioc3_main_write(void *opaque, hwaddr addr, uint64_t val,
             s->int_out_state = false;
         }
         /*
-         * A fixed level is there for the next read, which the IO-8 board
-         * test checks; a timed mode starts after the MMIO write returns.
+         * A fixed level is there for the next read, which the IO-8 board test
+         * checks; a timed mode starts after the MMIO write returns.
          */
         if ((int_out & SGI_IOC3_INT_OUT_MODE) == SGI_IOC3_INT_OUT_LOW ||
             (int_out & SGI_IOC3_INT_OUT_MODE) == SGI_IOC3_INT_OUT_HIGH) {
@@ -491,32 +491,32 @@ static const MemoryRegionOps sgi_ioc3_main_ops = {
 #define UART_LCR_DLAB   0x80
 
 /*
- * docs/datasheets/ioc3.md, "IOC3 overloads the scratch register": while a
- * port's divisor latch is selected, a write to its scratch register (offset
- * 7) programs the 16550's clock pre-divider instead of storing a scratch
- * byte. The value written is twice the divider wanted -- the PROM and IRIX
- * write 6, for a divide of 3 -- and the reference clock the ordinary
- * divisor latches then work from is the crystal divided by that divider.
+ * IOC3 overloads the scratch register: while a port's divisor latch is
+ * selected, a write to its scratch register (offset 7) programs the 16550's
+ * clock pre-divider instead of storing a scratch byte. The value written is
+ * twice the divider wanted (the PROM and IRIX write 6, for a divide of 3)
+ * and the reference clock the ordinary divisor latches then work from is the
+ * crystal divided by that divider.
  *
- * The datasheet states the header's crystal as 22,000,000 Hz, but argues,
- * as an inference rather than a stated fact, that the real part is a
- * 22.1184 MHz crystal: SGI's manual calls these 460,800-baud ports, and
- * 22.1184 MHz / 3 / 16 lands exactly on 460,800 and on the standard rates
- * below it (divisor 48 gives exactly 9600), where the header's rounded
- * figure is half a percent off. A guest that only ever reads back its own
- * writes cannot tell the two figures apart; it matters here because the
- * emulated baud rate has to line up with a real host serial port.
+ * The commonly quoted figure for this crystal is 22,000,000 Hz, but that
+ * appears to be a rounded figure rather than the real part: SGI's manual
+ * calls these 460,800-baud ports, and 22.1184 MHz / 3 / 16 lands exactly on
+ * 460,800 and on the standard rates below it (divisor 48 gives exactly 9600),
+ * where the rounded 22 MHz figure is half a percent off. A guest that only
+ * ever reads back its own writes cannot tell the two figures apart; it
+ * matters here because the emulated baud rate has to line up with a real host
+ * serial port.
  */
 #define SGI_IOC3_UART_CRYSTAL_HZ 22118400
 
 /*
  * Offset 7 always stores into the 16550 core's own scratch byte first (see
- * the caller), so a guest reads back exactly what it wrote whether or not
- * the divisor latch is selected. This is the overload on top of that: while
- * it is selected, also derive the reference clock the port's baud rate is
- * computed from. A written 0 or 1 would divide by zero; the datasheet
- * describes no meaning for either, and no capture shows one written, so
- * they are read as "leave the reference clock alone".
+ * the caller), so a guest reads back exactly what it wrote whether or not the
+ * divisor latch is selected. This is the overload on top of that: while it is
+ * selected, also derive the reference clock the port's baud rate is computed
+ * from. A written 0 or 1 would divide by zero; no meaning is documented for
+ * either, and no observed guest writes one, so they are read as
+ * "leave the reference clock alone".
  */
 static void sgi_ioc3_serial_program_predivider(SGIIOC3State *s,
                                                unsigned int port,
@@ -535,9 +535,8 @@ static void sgi_ioc3_serial_program_predivider(SGIIOC3State *s,
     /*
      * serial.c only recomputes the baud rate on a divisor-latch or
      * line-control write. Re-issue the port's current line control so a
-     * pre-divider written after the divisor already latched takes effect
-     * at once, rather than waiting on whatever next touches either
-     * register.
+     * pre-divider written after the divisor already latched takes effect at
+     * once, rather than waiting on whatever next touches either register.
      */
     serial_io_ops.write(serial, UART_LCR, serial->lcr, 1);
 }
@@ -559,12 +558,10 @@ static void sgi_ioc3_serial_record(SGIIOC3State *s, unsigned int port,
 }
 
 /*
- * docs/datasheets/ioc3.md, "Clear-to-send in loopback under hardware flow
- * control": looped back with the engine's hardware flow control on, the
- * port reports clear-to-send asserted even with request-to-send clear. The
- * board test observes the level, not the mechanism behind it, so this
- * supplies the level alone and leaves the modem-control register as
- * software wrote it.
+ * Looped back with the engine's hardware flow control on, the port reports
+ * clear-to-send asserted even with request-to-send clear. The board test
+ * observes the level, not the mechanism behind it, so this supplies the level
+ * alone and leaves the modem-control register as software wrote it.
  */
 static bool sgi_ioc3_serial_flow_cts(SGIIOC3State *s, unsigned int port)
 {
@@ -576,7 +573,7 @@ static bool sgi_ioc3_serial_flow_cts(SGIIOC3State *s, unsigned int port)
             SGI_IOC3_SDMA_FLOW_CONTROL);
 }
 
-/* Byte-wide only; both guests place their own byte lanes -- add none here. */
+/* Byte-wide only; both guests place their own byte lanes; add none here. */
 static uint64_t sgi_ioc3_serial_read(void *opaque, hwaddr addr, unsigned size)
 {
     SGIIOC3SerialAlias *handle = opaque;
@@ -588,9 +585,9 @@ static uint64_t sgi_ioc3_serial_read(void *opaque, hwaddr addr, unsigned size)
     }
 
     /*
-     * A factory-test write shows up in the read that follows it and no
-     * later one: reading line status is what clears the error bits it
-     * names, so nothing here outlives its own read.
+     * A factory-test write shows up in the read that follows it and no later
+     * one: reading line status is what clears the error bits it names, so
+     * nothing here outlives its own read.
      */
     if (addr == UART_LSR) {
         val |= handle->chip->serial_lsr_test[handle->port];
@@ -713,8 +710,8 @@ static uint64_t sgi_ioc3_sdma_ring(SGIIOC3State *s, unsigned int port,
 }
 
 /*
- * OR into the live register: a loopback transmit walk re-enters the
- * receiver, and writing back a pre-walk snapshot would lose its sources.
+ * OR into the live register: a loopback transmit walk re-enters the receiver,
+ * and writing back a pre-walk snapshot would lose its sources.
  */
 static void sgi_ioc3_raise_serial_source(SGIIOC3State *s, unsigned int port,
                                          unsigned int source)
@@ -937,8 +934,8 @@ static void sgi_ioc3_sdma_receive(SGIIOC3State *s, unsigned int port)
 }
 
 /*
- * Each control byte types its data byte; the empty type ends the entry,
- * and sending past it puts memory garbage on the wire.
+ * Each control byte types its data byte; the empty type ends the entry, and
+ * sending past it puts memory garbage on the wire.
  */
 static void sgi_ioc3_sdma_transmit(SGIIOC3State *s, unsigned int port)
 {
@@ -956,7 +953,9 @@ static void sgi_ioc3_sdma_transmit(SGIIOC3State *s, unsigned int port)
         uint8_t entry[SGI_IOC3_SDMA_ENTRY_SIZE];
         unsigned int i;
 
-        /* A refused fetch stops the walk: the stack bytes are not an entry. */
+        /*
+         * A refused fetch stops the walk: the stack bytes are not an entry.
+         */
         if (dma_memory_read(s->dma_as, ring + (*consume & mask), entry,
                             sizeof(entry), MEMTXATTRS_UNSPECIFIED) !=
             MEMTX_OK) {
@@ -981,7 +980,9 @@ static void sgi_ioc3_sdma_transmit(SGIIOC3State *s, unsigned int port)
                 }
                 serial_io_ops.write(serial, UART_RBR_THR, entry[i], 1);
                 sgi_ioc3_serial_record(s, port, entry[i]);
-                /* Drain per character or loopback overruns the 16-byte FIFO. */
+                /*
+                 * Drain per character or loopback overruns the 16-byte FIFO.
+                 */
                 sgi_ioc3_sdma_receive(s, port);
                 break;
             case SGI_IOC3_SDMA_TX_MODEM:
@@ -1010,9 +1011,9 @@ static void sgi_ioc3_sdma_transmit(SGIIOC3State *s, unsigned int port)
 }
 
 /*
- * Chip control places each port's 16550 for its DMA engine
- * (docs/datasheets/ioc3.md). Aimed anywhere else, the engine does not reach
- * the port; what it reaches instead is not modelled.
+ * Chip control places each port's 16550 for its DMA engine. Aimed anywhere
+ * else, the engine does not reach the port; what it reaches instead is not
+ * modelled.
  */
 static bool sgi_ioc3_sdma_aimed(SGIIOC3State *s, unsigned int port)
 {
@@ -1071,8 +1072,8 @@ static void sgi_ioc3_sdma_reset_port(SGIIOC3State *s, unsigned int port)
 }
 
 /*
- * A passive mirror read from the register file's fields: the byte-wide
- * read ops clear the latches and this view must not.
+ * A passive mirror read from the register file's fields: the byte-wide read
+ * ops clear the latches and this view must not.
  */
 static uint32_t sgi_ioc3_sdma_shadow(SGIIOC3State *s, unsigned int port)
 {
@@ -1216,7 +1217,9 @@ static void sgi_ioc3_sdma_write_port(SGIIOC3State *s, unsigned int port,
     case SGI_IOC3_SDMA_RX_TIMER:
         *sgi_ioc3_sdma_port_reg(s, port, offset) =
             val & SGI_IOC3_SDMA_TIMER_RELOAD;
-        /* The write loads the count as well; a running timer keeps its own. */
+        /*
+         * The write loads the count as well; a running timer keeps its own.
+         */
         s->sdma_rx_idle_count[port] = val & SGI_IOC3_SDMA_TIMER_RELOAD;
         return;
 
@@ -1225,10 +1228,10 @@ static void sgi_ioc3_sdma_write_port(SGIIOC3State *s, unsigned int port,
         return;
 
     /*
-     * The engine advances these two, and software can still place them:
-     * the board test writes each and reads it back (docs/datasheets/ioc3.md).
-     * Only the pointer field stores, so a write cannot forge the held
-     * counts the engine reports in the bits above it.
+     * The engine advances these two, and software can still place them: the
+     * board test writes each and reads it back. Only the pointer field
+     * stores, so a write cannot forge the held counts the engine reports in
+     * the bits above it.
      */
     case SGI_IOC3_SDMA_TX_CONSUME:
     case SGI_IOC3_SDMA_RX_PRODUCE:
@@ -1317,8 +1320,8 @@ static void sgi_ioc3_sdma_alias_write(void *opaque, hwaddr addr, uint64_t val,
     /*
      * Three of the seven are read-only through a page, which is the whole
      * point of exposing one to a user process: the two indexes the engine
-     * advances and the 16550 shadow (docs/datasheets/ioc3.md). The main
-     * block takes writes to the first two.
+     * advances and the 16550 shadow. The main block takes writes to the first
+     * two.
      */
     if (addr == SGI_IOC3_SDMA_TX_CONSUME ||
         addr == SGI_IOC3_SDMA_RX_PRODUCE ||
@@ -1540,15 +1543,15 @@ static void sgi_ioc3_realize(PCIDevice *dev, Error **errp)
     pci_set_word(dev->config + PCI_STATUS,
                  PCI_STATUS_DEVSEL_MEDIUM | PCI_STATUS_FAST_BACK);
     /*
-     * Parity-error response lives in the Command half beside the enables
-     * the PCI core already lets a guest write (docs/datasheets/ioc3.md):
-     * io8bt writes 0x146 there and expects it back.
+     * Parity-error response lives in the Command half beside the enables the
+     * PCI core already lets a guest write: io8bt writes 0x146 there and
+     * expects it back.
      */
     pci_word_test_and_set_mask(dev->wmask + PCI_COMMAND, PCI_COMMAND_PARITY);
     /*
-     * The latency timer is writable on this part (docs/datasheets/ioc3.md);
-     * the PCI core leaves it read-only by default, and io8bt writes 0xff00
-     * over the cache-line-size word and reads it back.
+     * The latency timer is writable on this part; the PCI core leaves it
+     * read-only by default, and io8bt writes 0xff00 over the cache-line-size
+     * word and reads it back.
      */
     dev->wmask[PCI_LATENCY_TIMER] = 0xff;
 
@@ -1561,9 +1564,9 @@ static void sgi_ioc3_realize(PCIDevice *dev, Error **errp)
         /*
          * A child the board does not fit leaves the composition tree
          * entirely, rather than sitting in it unrealized: qdev asserts after
-         * machine init that every device object it can reach is realized.
-         * Its chardev-a/chardev-b alias goes first, same dangling-alias
-         * hazard as the other conditionally-fitted children below.
+         * machine init that every device object it can reach is realized. Its
+         * chardev-a/chardev-b alias goes first, same dangling-alias hazard as
+         * the other conditionally-fitted children below.
          */
         if (!s->board->serial[i]) {
             object_property_del(OBJECT(dev),
@@ -1603,9 +1606,9 @@ static void sgi_ioc3_realize(PCIDevice *dev, Error **errp)
      * one migration shape across board variants rather than two.
      *
      * It is not created so that an empty bus can answer: a board with no
-     * ethernet carries no station-address part, and the slot handler
-     * answers that case before it ever reaches the bus. The empty bus is
-     * never driven from here.
+     * ethernet carries no station-address part, and the slot handler answers
+     * that case before it ever reaches the bus. The empty bus is never driven
+     * from here.
      */
     s->onewire_bus = onewire_create_bus(DEVICE(dev), "onewire");
 
@@ -1625,11 +1628,11 @@ static void sgi_ioc3_realize(PCIDevice *dev, Error **errp)
 
     } else {
         /*
-         * The instance-init aliases below reach into this child regardless
-         * of population, so they must go before the child does: an alias
-         * left standing over an unparented target is a dangling property,
-         * not an absent one, and a deep introspection walk over a board
-         * that leaves ethernet off reads through it into freed state.
+         * The instance-init aliases below reach into this child regardless of
+         * population, so they must go before the child does: an alias left
+         * standing over an unparented target is a dangling property, not an
+         * absent one, and a deep introspection walk over a board that leaves
+         * ethernet off reads through it into freed state.
          */
         object_property_del(OBJECT(dev), "netdev");
         object_property_del(OBJECT(dev), "mac");
@@ -1644,8 +1647,8 @@ static void sgi_ioc3_realize(PCIDevice *dev, Error **errp)
 
         /*
          * The station-address part, a DS2501: the 512-bit sibling of the
-         * DS2502, which is what the family byte 0x91 -- the custom bit over
-         * base type 0x11 -- identifies. Its bytes use the fitted ethernet
+         * DS2502, which is what the family byte 0x91 (the custom bit over
+         * base type 0x11) identifies. Its bytes use the fitted ethernet
          * address, so validation keeps that engine alongside the part.
          */
         sgi_ioc3_onewire_build_page(s, page);
@@ -1765,8 +1768,8 @@ static void sgi_ioc3_realize(PCIDevice *dev, Error **errp)
      * On the chip's own bus, so a reset of the IOC3 reaches it. Whichever
      * clock this board does not fit is unparented rather than left realized
      * but unmapped, so it is absent from the object graph and from the
-     * migration stream too. The M48T35 alone is reached by an alias, so
-     * only its unparent needs one deleted first, same as ethernet above.
+     * migration stream too. The M48T35 alone is reached by an alias, so only
+     * its unparent needs one deleted first, same as ethernet above.
      */
     if (s->board->timekeeper == SGI_IOC3_TIMEKEEPER_M48T35) {
         if (!qdev_realize(DEVICE(&s->rtc), BUS(&s->ioc3_bus), errp)) {
@@ -1942,9 +1945,9 @@ static void sgi_ioc3_finalize(Object *obj)
  * The 16550s ride in this device's own migration stream rather than being
  * children with a stream each, so a board that fits none has to leave them
  * out. Saving them anyway walks a serial that was never realized, whose
- * receive-timeout timer is a null pointer the subsection test dereferences.
- * A board that fits them writes exactly the field it always did, so the
- * format is unchanged wherever it was ever produced.
+ * receive-timeout timer is a null pointer the subsection test dereferences. A
+ * board that fits them writes exactly the field it always did, so the format
+ * is unchanged wherever it was ever produced.
  */
 static bool sgi_ioc3_serial_needed(void *opaque, int version_id)
 {
@@ -1988,11 +1991,11 @@ static int sgi_ioc3_post_load(void *opaque, int version_id)
         sgi_ioc3_sdma_run(s, i);
         /*
          * baudbase is a realize-time property of the embedded SerialState,
-         * not a migrated field, so vmstate_serial's own post_load -- which
-         * already ran, nested inside the field load above -- computed the
+         * not a migrated field, so vmstate_serial's own post_load (which
+         * already ran, nested inside the field load above) computed the
          * port's baud rate from the 16550 core's stock default rather than
-         * from the pre-divider this chip overloads the scratch register
-         * with. Rederive it now that serial_predivider[] has loaded.
+         * from the pre-divider this chip overloads the scratch register with.
+         * Rederive it now that serial_predivider[] has loaded.
          * sgi_ioc3_serial_program_predivider() already treats 0 or 1 (never
          * programmed, or absent on a pre-17 stream) as "leave it alone".
          */
@@ -2069,12 +2072,12 @@ static const Property sgi_ioc3_properties[] = {
 };
 
 /*
- * Read-only, because it is a fact about this model rather than a setting:
- * the ethernet engine reaches its descriptors and buffers with explicit
+ * Read-only, because it is a fact about this model rather than a setting: the
+ * ethernet engine reaches its descriptors and buffers with explicit
  * big-endian accessors and the serial blocks place their own byte lanes, so
  * the chip already sees guest memory the way the guest wrote it. A bridge
- * that corrected the bytes on top would reverse every word this device
- * reads. True in whichever slot a board fits the chip into.
+ * that corrected the bytes on top would reverse every word this device reads.
+ * True in whichever slot a board fits the chip into.
  */
 static bool sgi_ioc3_byte_lane_self_ordered(Object *obj, Error **errp)
 {

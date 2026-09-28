@@ -1,10 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
-/*
- * The per-CPU cache-as-RAM private window, shared by sgi-sn0-node and
- * sgi-sn1-node. See sn-promdata.h and
- * docs/datasheets/firmware-structures.md, "The PROM cache-as-RAM phase and
- * its boot-status bit", for the contract this implements.
- */
+/* Per-CPU cache-as-RAM window shared by sgi-sn0-node and sgi-sn1-node. */
 
 #include "qemu/osdep.h"
 #include "qemu/main-loop.h"
@@ -17,45 +12,33 @@
 #include "sn-promdata.h"
 
 /*
- * Not a hardware register: the IP27 PROM's own software convention of
- * boot-status flags in FPR 0. Bit 1 marks the cache-as-RAM phase. Read
- * from the IRIX 6.5.7 PROM and stated in our own words; see the datasheet.
+ * IP27 PROM software boot status uses FPR 0, not a hardware register. Bit 1
+ * marks cache-as-RAM in the IRIX 6.5.7 PROM.
  */
 #define SN_PROM_BOOT_STATUS_CACHE_AS_RAM (1U << 1)
 
 /*
- * How often the node's poll samples each processor it watches: for the
- * exit's stack switch while the window is mapped as RAM, and for the OS
- * handoff while the processor is in the phase. A late stack-switch sample
- * only leaves the block mapped that much longer, in a span nothing
- * fetches from the window; a late handoff sample leaves the phase's
- * reader-local routing in place that much longer.
+ * Poll each processor every 10 ms for its stack switch and OS handoff. Delay
+ * extends the mapped block or reader-local routing, respectively.
  */
 #define SN_PROMDATA_POLL_NS (10 * SCALE_MS)
 
 /*
- * How many extra poll periods a still-mapped slot gets once a sibling in
- * its node has already released, before this poll gives up on it too.
- * Every measured boot's own residency is a small fraction of this many
- * periods (see the struct comment on straggler_polls), and QEMU_CLOCK_VIRTUAL
- * itself stretches under host load rather than this count needing to, so a
- * generous bound stays generous under load rather than firing early. This
- * is what distinguishes a slower-but-live sibling, which reaches its own
- * exit within a handful of periods, from a genuinely disabled processor
- * that never does -- the boot's own PROM console reports that case as "CPU
- * failed early init" and it is not this window's job to keep it mapped
- * forever.
+ * Give a mapped CPU 6000 more polls after a sibling releases. Observed
+ * residency is far shorter; QEMU_CLOCK_VIRTUAL stretches under host load. A
+ * live sibling exits within a few polls. A disabled CPU never exits; the PROM
+ * reports "CPU failed early init", so its window must not stay mapped.
  */
 #define SN_PROMDATA_STRAGGLER_LIMIT 6000
 
 /*
- * A virtual address of this processor's, translated through the MMU
- * rather than pattern-matched, because the phase does not stay on the
- * unmapped aliases: besides the compatibility segments and XKPHYS, a
- * guarded probe can run from a TLB-mapped alias of the flash, and under
- * ERL the low region is an unmapped alias of physical memory. A
- * node-qualified physical address reduces to its node-local offset.
- * False when the address does not translate.
+ * A virtual address of this processor's, translated through the MMU rather
+ * than pattern-matched, because the phase does not stay on the unmapped
+ * aliases: besides the compatibility segments and XKPHYS, a guarded probe can
+ * run from a TLB-mapped alias of the flash, and under ERL the low region is
+ * an unmapped alias of physical memory. A node-qualified physical address
+ * reduces to its node-local offset. False when the address does not
+ * translate.
  */
 static bool sn_promdata_local_phys(SNPromDataState *s, uint64_t vaddr,
                                    uint64_t *local)
@@ -79,13 +62,13 @@ static bool sn_promdata_local_phys(SNPromDataState *s, uint64_t vaddr,
 }
 
 /*
- * The phase's execution homes, from the full 64-bit PC. Comparing
- * physically also admits the cached alias of a RAM copy of the PROM;
- * harmless, because the phase bit already over-covers the residency.
- * Post-exit PROM code does touch the window: on the eight-processor
- * Origin 2000 a node's first processor makes 28,673 more doubleword
- * accesses after its stack switch, a memory-test pass, and the held
- * latch serves them from the private block until the OS handoff.
+ * The phase's execution homes, from the full 64-bit PC. Comparing physically
+ * also admits the cached alias of a RAM copy of the PROM; harmless, because
+ * the phase bit already over-covers the residency. Post-exit PROM code does
+ * touch the window: on the eight-processor Origin 2000 a node's first
+ * processor makes 28,673 more doubleword accesses after its stack switch, a
+ * memory-test pass, and the held latch serves them from the private block
+ * until the OS handoff.
  */
 static bool sn_promdata_pc_in_prom(SNPromDataState *s)
 {
@@ -112,14 +95,9 @@ static bool sn_promdata_sp_in_window(SNPromDataState *s)
 }
 
 /*
- * Whether this CPU has withdrawn both of the phase's own recognition
- * inputs at once -- the boot-status bit and the PC being in one of the
- * phase's execution homes -- the same handoff test sn_promdata_is_private()
- * applies on a filter access. Test the bit first: the PC translation
- * only has to run on the phase's way out, not on every private access.
- * Shared with sn_promdata_check_stack() so a CPU whose later traffic
- * never dispatches through the filter's read/write handlers again still
- * gets this test applied, instead of only a CPU whose traffic does.
+ * Leave private mode when both the FPR 0 phase bit and PROM execution PC have
+ * cleared. Check the bit first to avoid PC translation on private accesses.
+ * The poll also calls this test for CPUs that stop using the filter handlers.
  */
 static bool sn_promdata_should_leave(SNPromDataState *s)
 {
@@ -142,40 +120,24 @@ static void sn_promdata_trace_phase(SNPromDataState *s, const char *event)
 }
 
 /*
- * The node's poll: each mapped processor samples itself; rearm while any
- * still needs it. A node's first processor does the bulk of the resident
- * work -- 1.92 to 1.96 million private accesses against 95 to 131
- * thousand for its second, measured on PROM 6.156 -- and is usually the
- * last of the two to release, but not always: a slower sibling that
- * releases after the other is still a live processor finishing the same
- * phase, not the "CPU failed early init" case the eight-processor boot's
- * own PROM console reports for a genuinely disabled one. Coupling a
- * slot's exemption to a specific sibling's index conflates the two --
- * whichever slot happens to release first was treated as proof the other
- * never would, which stranded a still-mapped, still-booting sibling's
- * window open for the rest of the run once it lost the race by even one
- * poll period. Give every slot that outlasts a released sibling a bounded
- * number of further chances (SN_PROMDATA_STRAGGLER_LIMIT) instead: enough
- * for a live straggler to reach its own exit, not so many that a truly
- * disabled processor keeps the node's 100 Hz timer running indefinitely.
+ * Poll each mapped CPU on itself; rearm while one still needs the window.
+ * PROM 6.156 gives the first CPU 1.92-1.96 million private accesses versus
+ * 95-131 thousand for the second. It usually releases last, but a slower
+ * sibling can release later without being disabled. Index-based exemption
+ * left that sibling's window mapped for the run after a one-poll delay.
+ * Give either CPU SN_PROMDATA_STRAGGLER_LIMIT more polls after its sibling
+ * releases. The bound admits live CPUs without running the 100 Hz timer
+ * forever for a disabled CPU ("CPU failed early init" on eight-CPU boots).
  *
- * A slot still in the phase without its fast mapping -- released, or
- * never mapped because the node leaves the fast path off -- stays
- * watched too, unbounded by the straggler count above: only a filter
- * access runs sn_promdata_is_private(), and the fast path's own accesses
- * never reach the filter (data answers them directly), so a processor
- * that never again touches the small filter window after its own stack
- * switch -- every processor but the one doing the boot's node-ID
- * renumbering, on a measured eight-processor boot -- would otherwise
- * never run that reactive detector again and would keep phase_private,
- * and this window's prom-copy-local alias, latched for the rest of its
- * run. sn_promdata_check_stack() applies the same handoff test here.
- * The price is that a processor which stays in the phase for good
- * without its block mapped -- a secondary parked in the PROM after its
- * stack switch, or any such processor on a node without the fast path --
- * is sampled at 100 Hz for as long as it stays. One that stays mapped,
- * such as a processor the PROM disables before its stack switch on a node
- * with the fast path, is still bounded by the straggler count above.
+ * Keep watching phase-private CPUs without a fast mapping, with no straggler
+ * bound. Fast accesses bypass the filter; only filter accesses run
+ * sn_promdata_is_private(). After the stack switch, all but the CPU doing
+ * node-ID renumbering stopped touching the filter in an eight-CPU boot.
+ * Without polling, phase_private and prom-copy-local remain latched for the
+ * run. sn_promdata_check_stack() applies the same handoff test here. A CPU
+ * parked in PROM after its stack switch, or on a node without the fast path,
+ * costs 100 Hz until it exits. A mapped CPU disabled before its stack switch
+ * remains subject to the straggler bound.
  */
 static void sn_promdata_check_stack(CPUState *cs, run_on_cpu_data data);
 static void sn_promdata_leave_private(CPUState *cs, run_on_cpu_data data);
@@ -210,8 +172,8 @@ static void sn_promdata_poll_cb(void *opaque)
             }
         }
         /*
-         * A processor that is not running yet has the previous sample
-         * still queued; one is enough, however long it stays stopped.
+         * A processor that is not running yet has the previous sample still
+         * queued; one is enough, however long it stays stopped.
          */
         if (cpu_work_list_empty(CPU(s->cpu))) {
             async_run_on_cpu(CPU(s->cpu), sn_promdata_check_stack,
@@ -235,14 +197,11 @@ void sn_promdata_poll_init(SNPromDataPoll *poll, SNPromDataState *slots,
     poll->peer_writes = peer_writes;
     poll->peer = peer;
     /*
-     * Every node polls, fast or not: a processor that never touches the
-     * filter window after the OS handoff never runs the per-access
-     * handoff test, and would keep the phase -- and with it the
-     * reader-local routing of the window and of the PROM's RAM-copy range
-     * -- for the rest of its run. On a machine of several nodes that
-     * routing sends another node's memory at those addresses to the
-     * reader's own. The fast path only decides whether the private block
-     * is mapped as RAM.
+     * Poll every node, including those without fast mapping. A CPU may stop
+     * touching the filter after OS handoff; without the poll, phase-private
+     * routing of the window and PROM RAM copy persists. On multi-node systems
+     * that misroutes remote memory to the reader's node. Fast mode controls
+     * only whether the private block is mapped as RAM.
      */
     poll->timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, sn_promdata_poll_cb, poll);
 }
@@ -256,17 +215,13 @@ void sn_promdata_poll_free(SNPromDataPoll *poll)
 }
 
 /*
- * The phase recognised. From here the private RAM block itself answers
- * this processor's cached window accesses: mapped above the filter, a
- * translated load or store resolves to a host pointer and takes neither
- * the dispatch path nor the big lock. The filter stays beneath for what
- * RAM cannot decide -- the uncached view, which the processor's second
- * address space routes to the filter alone, and the release at OS
- * handoff, which needs an access to evaluate. The poll puts the filter
- * back at the exit's stack switch, before that release can matter. While
- * the block is mapped a cached instruction fetch from the window executes
- * the block rather than ending the phase; the PROM never fetches there,
- * and the OS runs long after the switch.
+ * Map private RAM above the filter after phase recognition. Cached loads and
+ * stores resolve to host pointers without dispatch or the big lock. The
+ * second address space still sends uncached accesses through the filter; OS
+ * handoff also needs a filter access. Polling restores the filter at the
+ * stack switch, before handoff. A cached fetch from the mapped window would
+ * execute RAM, not end the phase; PROM never fetches there, and OS execution
+ * follows the switch.
  */
 static void sn_promdata_latch(SNPromDataState *s)
 {
@@ -283,9 +238,8 @@ static void sn_promdata_latch(SNPromDataState *s)
 }
 
 /*
- * The residency the block served is over: the filter answers again
- * from the same block, evaluating the release per access as before.
- * One-way until reset.
+ * After residency, the filter serves the same block and checks release on
+ * each access. Unmapping is one-way until reset.
  */
 static void sn_promdata_unmap(SNPromDataState *s, const char *event)
 {
@@ -297,11 +251,8 @@ static void sn_promdata_unmap(SNPromDataState *s, const char *event)
 }
 
 /*
- * On the processor's own thread: its stack pointer outside the window
- * is the exit's stack switch, the PROM having moved to its real
- * per-processor stack (the cache-as-RAM exit section of
- * docs/datasheets/firmware-structures.md; confirmed on PROM 6.156 by
- * every processor of the eight-processor boots this was measured on).
+ * On the CPU thread, an SP outside the window marks the PROM's move to its
+ * real per-CPU stack. All eight CPUs showed this on PROM 6.156 boots.
  */
 static void sn_promdata_check_stack(CPUState *cs, run_on_cpu_data data)
 {
@@ -313,12 +264,10 @@ static void sn_promdata_check_stack(CPUState *cs, run_on_cpu_data data)
     }
 
     /*
-     * The stack switch above only ever drops the fast mapping; it says
-     * nothing about whether the phase itself is over. Apply the same
-     * handoff test a filter access would, here, on the poll's own
-     * schedule: a CPU that has released its fast mapping may simply
-     * never touch the filter window again for the rest of its run, and
-     * sn_promdata_is_private() only ever runs when something does.
+     * The stack switch drops only the fast mapping. Poll the handoff test
+     * too:
+     * a CPU may never access the filter again after unmapping, and only a
+     * filter access calls sn_promdata_is_private().
      */
     if (s->phase_private && !s->leaving_private &&
         sn_promdata_should_leave(s)) {
@@ -330,18 +279,13 @@ static void sn_promdata_check_stack(CPUState *cs, run_on_cpu_data data)
 }
 
 /*
- * The window holds this CPU's cache-resident PROM stack for the whole
- * cache-as-RAM phase, entered when boot-status bit 1 is set with the PC
- * in one of the phase's execution homes. Once recognised, the phase holds
- * for this CPU until reset or OS handoff: on real hardware the window is
- * resident cache lines, and neither clearing the bookkeeping bit nor
- * moving the PC is a cache operation, so no single later state change may
- * reroute an access. Handoff is both recognition inputs withdrawn at once
- * -- the bit clear and the PC outside every home -- a state first reached
- * with the OS running. Uncached accesses always forward -- the phase's
- * exit copies the persistent structures out to real RAM through exactly
- * that path. sn_promdata_check_stack() applies the same handoff test
- * from the node's poll, not only from a filter access.
+ * Boot-status bit 1 plus a PROM execution PC enters cache-as-RAM. The window
+ * holds this CPU's resident PROM stack until reset or OS handoff. Clearing
+ * the bit or moving the PC alone cannot reroute resident cache lines; handoff
+ * requires both the bit clear and the PC outside every PROM execution home,
+ * first reached in the OS. Uncached accesses always forward, letting PROM
+ * copy persistent structures to RAM on exit. sn_promdata_check_stack() also
+ * checks handoff from the node poll when no filter access occurs.
  */
 static bool sn_promdata_is_private(SNPromDataState *s, MemTxAttrs attrs)
 {
@@ -380,9 +324,9 @@ static bool sn_promdata_is_private(SNPromDataState *s, MemTxAttrs attrs)
 }
 
 /*
- * Only the operating system can execute from inside the window -- the
- * PROM never does -- so execution here ends the private phase for good.
- * The PC is translated through the MMU because kernels run mapped.
+ * Only the operating system can execute from inside the window; the PROM
+ * never does. Execution here ends the private phase for good. The PC is
+ * translated through the MMU because kernels run mapped.
  */
 static bool sn_promdata_executing_here(SNPromDataState *s)
 {
@@ -397,8 +341,8 @@ static bool sn_promdata_executing_here(SNPromDataState *s)
 }
 
 /*
- * Runs at a quiescent point. Disabling the overlay exposes the DRAM
- * alias beneath, which backs cached translations at full speed.
+ * Runs at a quiescent point. Disabling the overlay exposes the DRAM alias
+ * beneath, which backs cached translations at full speed.
  */
 static void sn_promdata_leave_private(CPUState *cs, run_on_cpu_data data)
 {
@@ -531,11 +475,10 @@ void sn_promdata_apply_load(SNPromDataState *s)
 
 /*
  * Version 2 carries whether the RAM block is mapped; the block's bytes
- * migrate as RAM. Migration is between identical builds, so an older
- * stream is refused, not translated. The name stays "sn0-flash/
- * promdata-slice": SN0's wire format predates this file, and sgi-sn1-node
- * has no prior format of its own to preserve, so sharing the identifier
- * is harmless.
+ * migrate as RAM. Migration is between identical builds, so an older stream
+ * is refused, not translated. The name stays "sn0-flash/ promdata-slice":
+ * SN0's wire format predates this file, and sgi-sn1-node has no prior format
+ * of its to preserve, so sharing the identifier is harmless.
  */
 const VMStateDescription vmstate_sn_promdata_slice = {
     .name = "sn0-flash/promdata-slice",
@@ -578,8 +521,8 @@ void sn_promdata_init(SNPromDataState *s, Object *owner, MIPSCPU *cpu,
     memory_region_init_io(&s->filter, owner, &sn_promdata_ops, s,
                           filter_name, SN_PROMDATA_SIZE);
     /*
-     * Firmware traps copy through guest pointers; the shared owner would
-     * trip the reentrancy guard.
+     * Firmware traps copy through guest pointers; the shared owner would trip
+     * the reentrancy guard.
      */
     s->filter.disable_reentrancy_guard = true;
     qemu_register_reset(sn_promdata_reset, s);
@@ -589,11 +532,11 @@ void sn_promdata_init(SNPromDataState *s, Object *owner, MIPSCPU *cpu,
         cpu_sysmem, window_carrier_base + SN_PROMDATA_PADDR, &s->filter, 2);
 
     /*
-     * Keep the RAM-copy range reader-local until this CPU leaves the
-     * private phase (see the struct comment in sn-promdata.h). Disabled
-     * at init: sn_promdata_is_private() enables it only once the phase is
-     * actually latched, so a plain forwarding access before that point
-     * still reaches whatever the claim map above node RAM would give it.
+     * Keep the RAM-copy range reader-local until this CPU leaves the private
+     * phase (see the struct comment in sn-promdata.h). Disabled at init:
+     * sn_promdata_is_private() enables it only once the phase is actually
+     * latched, so a plain forwarding access before that point still reaches
+     * whatever the claim map above node RAM would give it.
      */
     if (copy_size != 0) {
         g_autofree char *copy_name =
@@ -610,11 +553,11 @@ void sn_promdata_init(SNPromDataState *s, Object *owner, MIPSCPU *cpu,
 
     /*
      * Above the filter, the private block as RAM, mapped only while the
-     * phase's stack is resident there, plus the processor's second
-     * address space so an uncached reference still reaches the filter
-     * alone. data itself is always allocated above (even when fast is
-     * false, migrating a fast=false slice into it is harmless) but only
-     * added as a subregion, and only ever enabled, in this case.
+     * phase's stack is resident there, plus the processor's second address
+     * space so an uncached reference still reaches the filter alone. data
+     * itself is always allocated above (even when fast is false, migrating a
+     * fast=false slice into it is harmless) but only added as a subregion,
+     * and only ever enabled, in this case.
      */
     if (fast) {
         g_autofree char *uncached_name =
@@ -631,11 +574,10 @@ void sn_promdata_init(SNPromDataState *s, Object *owner, MIPSCPU *cpu,
             &s->data, 3);
 
         /*
-         * The uncached view: everything the cached one resolves, with
-         * the filter alone at the window, so an uncached reference
-         * forwards to node RAM whatever sits above the filter in the
-         * cached view. The processor selects it by the access's cache
-         * attribute.
+         * The uncached view: everything the cached one resolves, with the
+         * filter alone at the window, so an uncached reference forwards to
+         * node RAM whatever sits above the filter in the cached view. The
+         * processor selects it by the access's cache attribute.
          */
         memory_region_init(cpu_uncached, owner, uncached_name, UINT64_MAX);
         memory_region_init_alias(cpu_uncached_alias, owner,

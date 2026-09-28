@@ -334,7 +334,9 @@ static void test_eeprom(void)
         g_assert_cmphex(reply[11], ==, 0xc0);
         g_assert_cmpmem(reply + 12, 64, spd + 64 * i, 64);
     }
-    /* 116 bytes fill the 128-byte frame; 117 answers the declared minus 105. */
+    /*
+     * 116 bytes fill the 128-byte frame; 117 answers the declared minus 105.
+     */
     g_assert_cmpuint(eeprom_read(s, 0, 4, 0, 116, reply), ==, 128);
     g_assert_cmpmem(reply + 12, 116, spd, 116);
     g_assert_cmpuint(eeprom_read(s, 0, 4, 0, 117, reply), ==, 6);
@@ -348,8 +350,8 @@ static void test_eeprom(void)
     g_assert_cmpuint(eeprom_read(s, 0, 4, 129, 1, reply), ==, 6);
     g_assert_cmphex(reply[4], ==, 0x97);
     /*
-     * Component 6 is beyond the table; an absent component answers minus
-     * 104 before any range check; area 5 on a present one is minus 105.
+     * Component 6 is beyond the table; an absent component answers minus 104
+     * before any range check; area 5 on a present one is minus 105.
      */
     g_assert_cmpuint(eeprom_read(s, 6, 4, 0, 0, reply), ==, 6);
     g_assert_cmphex(reply[4], ==, 0x98);
@@ -1260,7 +1262,9 @@ static void test_reboot_l1(void)
     qtest_quit(s);
     close(fd);
 
-    /* An event subchannel of 4 or more is non-volatile; a lower one is not. */
+    /*
+     * An event subchannel of 4 or more is non-volatile; a lower one is not.
+     */
     for (unsigned subchannel = 1; subchannel <= 23; subchannel += 22) {
         uint8_t events[] = { 0x10, 0x0f, 0xff, 0xf0, 6, 0x10, 0x07, 1,
                              0, 0, 0, 0, subchannel };
@@ -1505,12 +1509,12 @@ static void text_request(uint8_t *request, size_t *n, uint16_t code,
 }
 
 /*
- * Two chassis's L1s over the RS-422 pair in the NUMAlink cable (the
- * datasheet's "Two-chassis pair"): a request for the peer's own rack and
- * bay, or a type-3 attached-C-brick request, is answered by the peer as
- * itself on the requester's subchannel. Either controller's network mode
- * other than 422 leaves the link unusable and the router error stands.
- * "ctc" runs a command on the peer and prints its brick id first.
+ * Two chassis's L1s communicate over the NUMAlink cable's RS-422 pair. A
+ * request for the peer's own rack and bay, or a type-3 attached-C-brick
+ * request, is answered by the peer as itself on the requester's subchannel.
+ * Either controller's network mode other than 422 leaves the link unusable
+ * and the router error stands. "ctc" runs a command on the peer and prints
+ * its brick id first.
  */
 static void test_peer_pair(void)
 {
@@ -1743,8 +1747,8 @@ static void test_receive_tolerance(void)
     qtest_writeq(s, BASE, 0x7e);
     g_assert_cmphex(qtest_readq(s, BASE + 0x28), ==, 0x60);
     /*
-     * An escape before the closing flag drops the frame; that flag opens
-     * the next one, so the next frame needs no flag of its own.
+     * An escape before the closing flag drops the frame; that flag opens the
+     * next one, so the next frame needs no flag of its own.
      */
     qtest_writeq(s, BASE, 0x7e);
     qtest_writeq(s, BASE, 0x10);
@@ -1872,9 +1876,9 @@ static void test_console_retarget(void)
 }
 
 /*
- * The PROM echoes each keystroke, pads and breaks lines one character
- * per frame: a header, one byte and the check sequence, four bytes
- * between the flags. A header alone with its check is three.
+ * The PROM echoes each keystroke, pads and breaks lines one character per
+ * frame: a header, one byte and the check sequence, four bytes between the
+ * flags. A header alone with its check is three.
  */
 static void test_console_short_frames(void)
 {
@@ -2146,7 +2150,9 @@ static void test_node_position(void)
         }
     }
     g_assert_cmpuint(node_position(s, 0x0ffff006), ==, 2);
-    /* A node reset does not reach the controller; a controller restart does. */
+    /*
+     * A node reset does not reach the controller; a controller restart does.
+     */
     qtest_system_reset(s);
     g_assert_cmpuint(node_position(s, 0x0ffff006), ==, 2);
     qtest_quit(s);
@@ -2276,7 +2282,9 @@ static void integer(uint8_t *out, uint32_t value)
     out[4] = value;
 }
 
-/* The read-only rows the firmware serves that the model answers from state. */
+/*
+ * The read-only rows the firmware serves that the model answers from state.
+ */
 static void test_general_reads(void)
 {
     QTestState *s = qtest_init("-M none -cpu R10000 -S -device sgi-l1,id=l1c,"
@@ -2362,7 +2370,9 @@ static void test_general_reads(void)
     qtest_quit(s);
 }
 
-/* A synthetic board serial must survive either local task-6 route unchanged. */
+/*
+ * A synthetic board serial must survive either local task-6 route unchanged.
+ */
 static void test_brick_serial(void)
 {
     QTestState *s = qtest_init("-M none -cpu R10000 -S "
@@ -2384,7 +2394,9 @@ static void test_brick_serial(void)
     qtest_quit(s);
 }
 
-/* Action and setting requests answer the fieldless success, or their error. */
+/*
+ * Action and setting requests answer the fieldless success, or their error.
+ */
 static void test_general_actions(void)
 {
     int fd;
@@ -2446,9 +2458,9 @@ static void test_general_actions(void)
     g_assert_cmpuint(general(s, 0x2002, args, 10, 2, reply), ==, 6);
     g_assert_cmphex(reply[4], ==, 0x9c);
     /*
-     * 0x2001 resets the node, logged as OS. Its reply is queued and then
-     * cut off by the reset it triggers, as the contract records; the
-     * window comes back empty.
+     * 0x2001 resets the node, logged as OS. Its reply is queued and then cut
+     * off by the reset it triggers, as the contract records; the window comes
+     * back empty.
      */
     {
         uint8_t request[] = { 0x10, 0x0f, 0xff, 0xf0, 6, 0x20, 0x01, 0 };
@@ -2498,8 +2510,8 @@ static void test_general_actions(void)
                        STAMP "power up (OS)\r\n"
                        STAMP "power down (OS)\r\n" PROMPT);
     /*
-     * 0x2006 power-cycles: from off it is a power-up, whose reset cuts
-     * off the reply the way 0x2001's does.
+     * 0x2006 power-cycles: from off it is a power-up, whose reset cuts off
+     * the reply the way 0x2001's does.
      */
     console_send(fd, "\004");
     console_expect(fd, ENTER_CPU0);
@@ -2508,7 +2520,9 @@ static void test_general_actions(void)
 
         send_frame(s, request, sizeof(request), false);
     }
-    /* Nobody escaped, so the guest's power-up prints the locked-state form. */
+    /*
+     * Nobody escaped, so the guest's power-up prints the locked-state form.
+     */
     console_expect(fd, PROMPT "\r\n" ENTER_CPU0);
     qtest_qmp_eventwait(s, "RESET");
     wait_running(s);
@@ -2539,7 +2553,9 @@ static void test_power_cycle(void)
     close(fd);
 }
 
-/* Power requests made while off neither shut down QEMU nor power down again. */
+/*
+ * Power requests made while off neither shut down QEMU nor power down again.
+ */
 static void test_power_requests_off(void)
 {
     int fd;

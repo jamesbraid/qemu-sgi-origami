@@ -1,9 +1,7 @@
 /*
- * SGI IOC3 base I/O controller: the serial console's access contract, the
- * one-wire station-address part, the ethernet engine, the buffer RAM, and
- * the timekeeper. The console's byte stride and width are what a working
- * boot cannot prove; the console address is read out of the configuration
- * graph so descriptor and mapping fail together.
+ * Test IOC3 serial, one-wire, Ethernet, buffer RAM and timekeeper access.
+ * Check console byte stride and width; get its address from the
+ * configuration graph so descriptor and mapping fail together.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
@@ -22,7 +20,7 @@
 /*
  * The modelled minimum between a frame arriving and its completion, in
  * nanoseconds: the adapters' device default. Delivery is published only once
- * this much virtual time has passed, so every wait for a completion has to
+ * this much virtual time has passed, so every wait for a completion must
  * advance the clock as well as give the main loop a pass.
  */
 #define RX_ARRIVAL_LATENCY_NS  200000
@@ -77,9 +75,9 @@ static QTestState *qts;
 
 /*
  * Open such a case. Reset turns the chip's memory decode back off, which
- * unmaps its window, so every case re-runs the attach sequence exactly as
- * it did after a boot. Checking the decode bit here is what proves the
- * previous case's attach is gone.
+ * unmaps its window, so every case re-runs the attach sequence exactly as it
+ * did after a boot. Checking the decode bit here is what proves the previous
+ * case's attach is gone.
  */
 static void ioc3_reset(void)
 {
@@ -118,9 +116,9 @@ static void test_ioc3_attach(QTestState *qts)
 #define CHIP_CTRL_STROBE    0x00078000u  /* writable, no status bits */
 
 /*
- * The interrupt-output timer configuration at 0x2c. The interval count
- * (bits 0-15) and the normal mode (bits 16-18) are writable and read back;
- * the pin-state readback (bit 31) and the reserved field are not stored.
+ * The interrupt-output timer configuration at 0x2c. The interval count (bits
+ * 0-15) and the normal mode (bits 16-18) are writable and read back; the
+ * pin-state readback (bit 31) and the reserved field are not stored.
  * Diagnostic behavior remains outside the model's contract.
  */
 #define INT_OUTPUT       (IOC3_BASE + 0x2c)
@@ -149,15 +147,13 @@ static void test_ioc3_attach(QTestState *qts)
 #define REG_MCR         4
 #define REG_SCR         7
 
-/*
- * The Bridge's interrupt status register, where the controller's second
- * interrupt lands; a whole-register access needs no byte-lane correction.
- */
+/* The Bridge's interrupt status register, where the controller's second
+ * interrupt lands; a whole-register access needs no byte-lane correction. */
 #define BRIDGE_INT_STATUS (BRIDGE_BASE + 0x100 + REG_DATA)
 #define BRIDGE_PIN_SUPERIO (1u << 3)   /* IP29 routing, restated here */
 /*
  * The ethernet interrupt travels the chip's PCI pin through the Bridge's
- * INTx routing: slot 2, pin A, lands on Bridge pin 2 -- a restatement of
+ * INTx routing: slot 2, pin A, lands on Bridge pin 2. This restates of
  * sgi_bridge_map_irq() for this slot, not an independent constant.
  */
 #define BRIDGE_PIN_ETH (1u << 2)
@@ -180,10 +176,9 @@ static void test_ioc3_attach(QTestState *qts)
 #define MICROLAN_LEVEL   (1u << 0)
 #define MICROLAN_DONE    (1u << 1)
 
-/*
- * OpenBSD's own reset-and-presence timing: 500 us low, 65 us remainder --
- * a real guest's reset slot, not an arbitrary write.
- */
+/* OpenBSD's own reset-and-presence timing: 500 us low, 65 us remainder. This
+ * is a
+ * real guest's reset slot, not an arbitrary write. */
 #define MICROLAN_RESET_SLOT ((500u << 10) | (65u << 2))
 
 #define PIN_CONTROL_SET  (IOC3_BASE + 0x34)
@@ -217,10 +212,8 @@ static void test_registers_are_a_byte_apart(const void *data)
 
     sn0_ioc3_attach(qts);
 
-    /*
-     * Different values at consecutive offsets prove the one-byte stride;
-     * the LCR value leaves the divisor latch unselected.
-     */
+    /* Different values at consecutive offsets prove the one-byte stride; the
+     * LCR value leaves the divisor latch unselected. */
     qtest_writeb(qts, SERIAL_A + REG_LCR, 0x03);
     qtest_writeb(qts, SERIAL_A + REG_MCR, 0x05);
 
@@ -230,21 +223,20 @@ static void test_registers_are_a_byte_apart(const void *data)
 
 /*
  * The port's file is byte-wide, and a four-byte access to it is four
- * registers rather than one. Nothing rejects the wide access -- the address
+ * registers rather than one. Nothing rejects the wide access. The address
  * space splits it into byte accesses on the way in, because the region says
- * a byte is the widest it takes -- so what this pins is that every lane
+ * a byte is the widest it takes. Thus what this pins is that every lane
  * comes from its own register. A model declaring a four-byte width answers
  * the whole access out of the first register instead, which on the write
- * side would run that register's side effect once for four bytes.
- *
- * The upper half of the port: the four the split reaches, since the split
- * only goes as far as the address is aligned, and the four with no receive
- * register among them, since reading that one would empty the port. The
- * modem control and the scratch register take values of their own, so an
- * access answered from one register cannot match by accident. The two
- * status registers between them are read before the wide access rather
- * than asserted, so that reading the modem status has already cleared its
- * delta bits by the time the wide access reads it again.
+ * side would run that register's side effect once for four bytes. The upper
+ * half of the port: the four the split reaches, since the split only goes as
+ * far as the address is aligned, and the four with no receive register among
+ * them, since reading that one would empty the port. The modem control and
+ * the scratch register take values of their own, so an access answered from
+ * one register cannot match by accident. The two status registers between
+ * them are read before the wide access rather than asserted, so that reading
+ * the modem status has already cleared its delta bits by the time the wide
+ * access reads it again.
  */
 static void test_the_port_answers_a_byte_at_a_time(const void *data)
 {
@@ -276,10 +268,8 @@ static void test_the_enable_mask_has_two_write_aliases(const void *data)
 
     sn0_ioc3_attach(qts);
 
-    /*
-     * One mask behind two addresses. The set alias reads back the live
-     * mask, which is what a model with two independent words fails.
-     */
+    /* One mask behind two addresses. The set alias reads back the live mask,
+     * which is what a model with two independent words fails. */
     g_assert_cmphex(qtest_readl(qts, INT_ENABLE_SET), ==, 0);
 
     qtest_writel(qts, INT_ENABLE_SET, INT_SERIAL_A | INT_SERIAL_B);
@@ -305,17 +295,15 @@ static void test_the_arbiter_reports_idle(const void *data)
     sn0_ioc3_attach(qts);
 
     /*
-     * Bit 22 must report the arbiter idle: the kernel's serial console
-     * setup polls it and a clear bit hangs the boot. Pinned here so a
-     * masking change fails a test rather than a boot.
+     * Bit 22 must report the arbiter idle: the kernel's serial console setup
+     * polls it and a clear bit hangs the boot. Pinned here so a masking
+     * change fails a test rather than a boot.
      */
     cr = qtest_readl(qts, CHIP_CONTROL);
     g_assert_cmphex(cr & CHIP_CTRL_ARB_IDLE, ==, CHIP_CTRL_ARB_IDLE);
 
-    /*
-     * A write with the idle bit clear still reads back set; the writable
-     * field beside it keeps what was written.
-     */
+    /* A write with the idle bit clear still reads back set; the writable
+     * field beside it keeps what was written. */
     qtest_writel(qts, CHIP_CONTROL, CHIP_CTRL_STROBE);
     cr = qtest_readl(qts, CHIP_CONTROL);
     g_assert_cmphex(cr & CHIP_CTRL_ARB_IDLE, ==, CHIP_CTRL_ARB_IDLE);
@@ -331,20 +319,16 @@ static void test_the_interrupt_output_stores_its_configuration(const void *data)
     /* Reset leaves the interrupt-output timer configuration clear. */
     g_assert_cmphex(qtest_readl(qts, INT_OUTPUT), ==, 0);
 
-    /*
-     * A supported interval and mode read back; the pin-state readback and
-     * reserved field are not stored, so writes there read back clear.
-     */
+    /* A supported interval and mode read back; the pin-state readback and
+     * reserved field are not stored, so writes there read back clear. */
     qtest_writel(qts, INT_OUTPUT,
                  INT_OUT_PIN | 0x00100000u | INT_OUT_MODE_SQUARE | 0xfffe);
     g_assert_cmphex(qtest_readl(qts, INT_OUTPUT), ==,
                     INT_OUT_MODE_SQUARE | 0xfffe);
 }
 
-/*
- * A command with no defined behaviour is still stored, so it reads back as
- * written, but the output carries on with the mode already running.
- */
+/* A command with no defined behaviour is still stored, so it reads back as
+ * written, but the output carries on with the mode already running. */
 static void assert_rejected_int_out_keeps_periodic(QTestState *qts,
                                                    uint32_t rejected)
 {
@@ -368,8 +352,8 @@ static void assert_rejected_int_out_keeps_periodic(QTestState *qts,
 }
 
 /*
- * The Origin 300 IO-8 board test writes 0x4007ffff -- diagnostic mode,
- * square wave, count 0xffff -- and requires those bits back under the same
+ * The Origin 300 IO-8 board test writes 0x4007ffff (diagnostic mode,
+ * square wave, count 0xffff) and requires those bits back under the same
  * mask. None of that has a defined behaviour, and the model used to refuse
  * such a write outright, so it read back zero.
  */
@@ -457,9 +441,9 @@ static void test_fixed_interrupt_output_commands_change_the_state(
 
 /*
  * A fixed-level command's new state is there for the very next read. The
- * Origin 300 IO-8 board test writes 0x80040001 -- output high -- and at
- * once reads the register 500 times, requiring bit 31 set on every read;
- * then the same with 0x00000001 for low.
+ * Origin 300 IO-8 board test writes 0x80040001 (output high) and at once
+ * reads the register 500 times, requiring bit 31 set on every read; then the
+ * same with 0x00000001 for low.
  */
 static void test_a_fixed_level_is_visible_to_the_next_read(const void *data)
 {
@@ -477,7 +461,7 @@ static void test_a_fixed_level_is_visible_to_the_next_read(const void *data)
 /*
  * A read sees the output as the clock says it is, even when the timer that
  * moves it has not been serviced yet. The Origin 300 IO-8 board test writes
- * 0x60005 -- periodic pulses, count 5 -- and at once reads the register 500
+ * 0x60005 (periodic pulses, count 5) and at once reads the register 500
  * times, requiring both levels among the reads; under host load the main
  * loop can fall behind a loop like that. Stopping the VM reproduces the gap
  * deterministically: the virtual clock still moves under qtest_clock_step,
@@ -540,8 +524,8 @@ static void test_one_shot_interrupt_output_has_three_tick_width(
 
 /*
  * Any rising edge of the output posts the output-pulse source, not only a
- * one-shot's. The Origin 300 IO-8 board test masks every source, clears
- * the status, commands the output high (0x40005) and then low (0x5), and
+ * one-shot's. The Origin 300 IO-8 board test masks every source, clears the
+ * status, commands the output high (0x40005) and then low (0x5), and
  * requires bit 27 in the status afterwards.
  */
 static void test_a_fixed_high_command_posts_the_output_pulse(const void *data)
@@ -562,10 +546,8 @@ static void test_a_fixed_high_command_posts_the_output_pulse(const void *data)
     g_assert_cmphex(qtest_readl(qts, INT_STATUS) & INT_RT_OUTPUT_PULSE, ==,
                     INT_RT_OUTPUT_PULSE);
 
-    /*
-     * A fall alone posts nothing. The board test cannot tell a rise from a
-     * fall; this follows the one-shot contract, where the rise posts.
-     */
+    /* A fall alone posts nothing. The board test cannot tell a rise from a
+     * fall; this follows the one-shot contract, where the rise posts. */
     qtest_writel(qts, INT_OUTPUT, INT_OUT_MODE_HIGH);
     qtest_clock_step(qts, 1);
     qtest_writel(qts, INT_STATUS, INT_RT_OUTPUT_PULSE);
@@ -585,7 +567,8 @@ static void test_count_zero_output_pulse_interrupt(const void *data)
     qtest_clock_step(qts, 1);
     g_assert_cmphex(qtest_readl(qts, INT_OUTPUT) & INT_OUT_PIN, ==,
                     INT_OUT_PIN);
-    /* That rising edge posted the source too; clear it to see the strobe's. */
+    /* That rising edge posted the source too; clear it to see the
+     * strobe's. */
     qtest_writel(qts, INT_STATUS, INT_RT_OUTPUT_PULSE);
 
     /* The exact internal-test strobe still emits a new rising edge. */
@@ -786,10 +769,8 @@ static void test_the_second_interrupt_reaches_bridge_pin_3(const void *data)
 
     sn0_ioc3_attach(qts);
 
-    /*
-     * The second interrupt travels the board's direct wire, not a PCI
-     * INTx; without that wire modelled the pin never sets.
-     */
+    /* The second interrupt travels the board's direct wire, not a PCI INTx;
+     * without that wire modelled the pin never sets. */
     g_assert_cmphex(qtest_readl(qts, BRIDGE_INT_STATUS) & BRIDGE_PIN_SUPERIO,
                     ==, 0);
 
@@ -798,18 +779,14 @@ static void test_the_second_interrupt_reaches_bridge_pin_3(const void *data)
     g_assert_cmphex(qtest_readl(qts, BRIDGE_INT_STATUS) & BRIDGE_PIN_SUPERIO,
                     ==, 0);
 
-    /*
-     * The port asserting drives the whole chain: source, combined status,
-     * second interrupt pin, board wire, Bridge pin 3.
-     */
+    /* The port asserting drives the whole chain: source, combined status,
+     * second interrupt pin, board wire, Bridge pin 3. */
     qtest_writeb(qts, SERIAL_A + 1, 0x02);
     g_assert_cmphex(qtest_readl(qts, BRIDGE_INT_STATUS) & BRIDGE_PIN_SUPERIO,
                     ==, BRIDGE_PIN_SUPERIO);
 
-    /*
-     * Live, not latched: the source dropping clears the pin with nothing
-     * written to either status register.
-     */
+    /* Live, not latched: the source dropping clears the pin with nothing
+     * written to either status register. */
     qtest_writeb(qts, SERIAL_A + 1, 0x00);
     g_assert_cmphex(qtest_readl(qts, BRIDGE_INT_STATUS) & BRIDGE_PIN_SUPERIO,
                     ==, 0);
@@ -823,8 +800,8 @@ static void test_a_one_wire_slot_always_finishes(const void *data)
 
     /*
      * A guest writes slot timing and polls for done; a slot that never
-     * finishes is a guest polling forever. Any write must bring the done
-     * bit back set, whatever timing was asked.
+     * finishes is a guest polling forever. Any write must bring the done bit
+     * back set, whatever timing was asked.
      */
     g_assert_cmphex(qtest_readl(qts, MICROLAN_CONTROL) & MICROLAN_DONE, ==,
                     0);
@@ -843,10 +820,8 @@ static void test_a_one_wire_reset_finds_the_ethernet_address_part(
     /* Route the MicroLAN engine onto its pin, as a driver does before use. */
     qtest_writel(qts, PIN_CONTROL_SET, PIN_MICROLAN_ENABLE);
 
-    /*
-     * The part answers a reset by pulling the wire low; high is what "no
-     * part" reads as.
-     */
+    /* The part answers a reset by pulling the wire low; high is what "no
+     * part" reads as. */
     qtest_writel(qts, MICROLAN_CONTROL, MICROLAN_RESET_SLOT);
     g_assert_cmphex(qtest_readl(qts, MICROLAN_CONTROL) & MICROLAN_LEVEL, ==,
                     0);
@@ -872,9 +847,9 @@ static void test_the_one_wire_bus_is_dead_until_enabled(const void *data)
 static void test_one_wire_slot_preserves_the_timing_written(const void *data)
 {
     /*
-     * A 5 us pulse lands below both slot-kind thresholds, an ordinary
-     * short slot. Bits 0 and 1 are set in the write to prove hardware
-     * overwrites them; the rest is arbitrary to prove the field stores.
+     * A 5 us pulse lands below both slot-kind thresholds, an ordinary short
+     * slot. Bits 0 and 1 are set in the write to prove hardware overwrites
+     * them; the rest is arbitrary to prove the field stores.
      */
     uint32_t written = (5u << 10) | (0x9eu << 2) | 0x3u;
     uint32_t timing = written & ~(MICROLAN_LEVEL | MICROLAN_DONE);
@@ -885,11 +860,9 @@ static void test_one_wire_slot_preserves_the_timing_written(const void *data)
     /* Route the MicroLAN engine onto its pin, as a driver does before use. */
     qtest_writel(qts, PIN_CONTROL_SET, PIN_MICROLAN_ENABLE);
 
-    /*
-     * With no reset yet the part is idle and does not drive the wire, so
-     * the level reads high; this pins the timing field's storage, not the
-     * part's answers.
-     */
+    /* With no reset yet the part is idle and does not drive the wire, so the
+     * level reads high; this pins the timing field's storage, not the part's
+     * answers. */
     qtest_writel(qts, MICROLAN_CONTROL, written);
     g_assert_cmphex(qtest_readl(qts, MICROLAN_CONTROL), ==,
                     timing | MICROLAN_LEVEL | MICROLAN_DONE);
@@ -901,10 +874,8 @@ static void test_pin_control_has_two_write_aliases(const void *data)
 
     sn0_ioc3_attach(qts);
 
-    /*
-     * Set/clear aliases over one live mask, the interrupt-enable shape;
-     * bit 21 (MicroLAN onto pin 8) is the one both guests use.
-     */
+    /* Set/clear aliases over one live mask, the interrupt-enable shape; bit
+     * 21 (MicroLAN onto pin 8) is the one both guests use. */
     g_assert_cmphex(qtest_readl(qts, PIN_CONTROL_SET), ==, 0);
 
     qtest_writel(qts, PIN_CONTROL_SET, PIN_MICROLAN_ENABLE);
@@ -925,10 +896,8 @@ static void test_a_pin_register_reaches_the_shared_data_word(const void *data)
 
     sn0_ioc3_attach(qts);
 
-    /*
-     * Pin register 3 is an alias onto bit 3 of the shared data word: two
-     * addresses reaching one place, not two places agreeing.
-     */
+    /* Pin register 3 is an alias onto bit 3 of the shared data word: two
+     * addresses reaching one place, not two places agreeing. */
     qtest_writel(qts, PIN_REG(3), 1);
     g_assert_cmphex(qtest_readl(qts, PIN_DATA), ==, 1u << 3);
     g_assert_cmphex(qtest_readl(qts, PIN_REG(3)), ==, 1);
@@ -965,7 +934,7 @@ static void test_a_pin_register_reaches_the_shared_data_word(const void *data)
 #define KBC_K_CLAMP_3     0x00400000
 #define KBC_M_CLAMP_3     0x00800000
 
-/* Receive-register flags, by the datasheet's names for them. */
+/* Receive-register flags, by their register names. */
 #define KBC_RX_OVERFLOW   (1u << 28)
 #define KBC_RX_VALID(p)   (1u << (29 + (p)))
 #define KBC_RX_VALID_ALL  (KBC_RX_VALID(0) | KBC_RX_VALID(1) | KBC_RX_VALID(2))
@@ -1006,25 +975,25 @@ static void test_the_ps2_ports_read_empty(const void *data)
     sn0_ioc3_attach(qts);
 
     /*
-     * Zero means every per-byte valid flag clear -- a port that received
-     * nothing, not three zero bytes. The write first makes the read catch
-     * a model that stores into the read-only register too.
+     * Zero means every per-byte valid flag clear. A port that received
+     * nothing, not three zero bytes. The write first makes the read catch a
+     * model that stores into the read-only register too.
      */
     qtest_writel(qts, KBC_KBD_RECEIVE, 0xffffffff);
     g_assert_cmphex(qtest_readl(qts, KBC_KBD_RECEIVE), ==, 0);
     qtest_writel(qts, KBC_AUX_RECEIVE, 0xffffffff);
     g_assert_cmphex(qtest_readl(qts, KBC_AUX_RECEIVE), ==, 0);
 
-    /*
-     * The hardware-owned bits report busy states this model never enters,
-     * so a driver's post-transmit poll finishes on its first look.
-     */
+    /* The hardware-owned bits report busy states this model never enters, so
+     * a driver's post-transmit poll finishes on its first look. */
     qtest_writel(qts, KBC_CONTROL, 0x00000005);
     g_assert_cmphex(qtest_readl(qts, KBC_CONTROL), ==, 0x00000005);
 
-    /* A transmit register takes a byte and carries it nowhere, which must
-     * still complete -- a refused write would report a fault where the real
-     * chip reports an unplugged port. */
+    /*
+     * A transmit register takes a byte and carries it nowhere, which must
+     * still complete. A refused write would report a fault where the real
+     * chip reports an unplugged port.
+     */
     qtest_writel(qts, KBC_KBD_TRANSMIT, 0xed);
     g_assert_cmphex(qtest_readl(qts, KBC_CONTROL), ==, 0x00000005);
 }
@@ -1057,9 +1026,8 @@ static void test_the_ps2_keyboard_round_trips(const void *data)
  * behind AUX_TRANSMIT/AUX_RECEIVE. A reset packs one more byte than the
  * keyboard's: the generic ps2 mouse answers 0xFF with ACK (0xFA),
  * self-test-pass (0xAA) and a third mouse-ID byte (0x00), all three valid.
- * The source bit (27) is set: this is the one bit the register contract
- * uses to tell the two ports apart once their bytes reach a shared
- * interrupt.
+ * The source bit (27) is set: this is the one bit the register contract uses
+ * to tell the two ports apart once their bytes reach a shared interrupt.
  */
 static void test_the_ps2_mouse_round_trips(const void *data)
 {
@@ -1071,8 +1039,8 @@ static void test_the_ps2_mouse_round_trips(const void *data)
 
     /*
      * Oldest byte in the highest slot: 0xFA in bits 16-23, 0xAA in bits
-     * 8-15, the mouse-ID byte 0x00 in bits 0-7, all three valid flags
-     * (bits 29-31) set and the source bit (27) set for aux.
+     * 8-15, the mouse-ID byte 0x00 in bits 0-7, all three valid flags (bits
+     * 29-31) set and the source bit (27) set for aux.
      */
     g_assert_cmphex(qtest_readl(qts, KBC_AUX_RECEIVE), ==, 0xe8faaa00);
 
@@ -1108,16 +1076,15 @@ static void test_the_ps2_keyboard_acks_set_key_type(const void *data)
         qtest_writel(qts, KBC_KBD_TRANSMIT, one_key[i]);
         g_assert_cmphex(qtest_readl(qts, KBC_KBD_RECEIVE), ==, one_ack);
 
-        /* The key code that follows is consumed, not read back as a command. */
+        /* The key code that follows is consumed, not read back as a
+         * command. */
         qtest_writel(qts, KBC_KBD_TRANSMIT, 0x1c);
         g_assert_cmphex(qtest_readl(qts, KBC_KBD_RECEIVE), ==, one_ack);
     }
 }
 
-/*
- * The receive register packs "bytes since the last read", so reading it
- * pops the queue and a second read finds nothing left.
- */
+/* The receive register packs "bytes since the last read", so reading it pops
+ * the queue and a second read finds nothing left. */
 static void test_the_ps2_receive_drains_on_read(const void *data)
 {
     ioc3_reset();
@@ -1134,8 +1101,8 @@ static void test_the_ps2_receive_drains_on_read(const void *data)
 /*
  * The shared keyboard/mouse source (interrupt-status bit 22) is latched: a
  * queued byte sets it, it survives a drain of the receive register, and only
- * a write-one-to-clear of the status register acknowledges it -- the contract
- * both Linux's edge handler and IRIX's acknowledge writes rely on.
+ * a write-one-to-clear of the status register acknowledges it. The
+ * contract both Linux's edge handler and IRIX's acknowledge writes rely on.
  */
 static void test_the_ps2_interrupt_latches_until_acknowledged(const void *data)
 {
@@ -1153,8 +1120,8 @@ static void test_the_ps2_interrupt_latches_until_acknowledged(const void *data)
 
     /*
      * Draining the receive register delivers the bytes but leaves the latch
-     * set: the guest has read its data, yet the interrupt stays pending until
-     * it acknowledges.
+     * set: the guest has read its data, yet the interrupt stays pending
+     * until it acknowledges.
      */
     (void)qtest_readl(qts, KBC_KBD_RECEIVE);
     g_assert_cmphex(qtest_readl(qts, INT_STATUS) & INT_KEYBOARD, ==,
@@ -1188,7 +1155,8 @@ static void test_the_ps2_receive_holds_three_behind_the_clamp(const void *data)
     qtest_writel(qts, INT_STATUS, INT_KEYBOARD);
     g_assert_cmphex(qtest_readl(qts, INT_STATUS) & INT_KEYBOARD, ==, 0);
 
-    /* Three characters, all valid, nothing lost: the clamp stopped the rest. */
+    /* Three characters, all valid, nothing lost: the clamp stopped the
+     * rest. */
     first = qtest_readl(qts, KBC_KBD_RECEIVE);
     g_assert_cmphex(first & KBC_RX_FLAGS, ==, KBC_RX_VALID_ALL);
 
@@ -1217,7 +1185,7 @@ static void test_the_ps2_receive_holds_three_behind_the_clamp(const void *data)
  * Mainline Linux acknowledges before its handler reads: the kernel's edge
  * handler calls the chip's acknowledge hook, which writes bit 22 to the
  * status register, and only then runs ioc3kbd's receive-register read. A
- * backlog has to survive that order, and a guest that acknowledges without
+ * backlog must survive that order, and a guest that acknowledges without
  * reading anything must not be handed the same interrupt over and over.
  */
 static void test_the_ps2_backlog_survives_an_early_acknowledge(const void *data)
@@ -1235,8 +1203,8 @@ static void test_the_ps2_backlog_survives_an_early_acknowledge(const void *data)
 
     /*
      * Four acknowledges with nothing read, and the source stays clear after
-     * every one. The line is still asserted -- three characters are still
-     * held -- but only a character arriving asserts it afresh, and the clamp
+     * every one. The line is still asserted (three characters are still
+     * held), but only a character arriving asserts it afresh, and the clamp
      * has stopped the keyboard from sending one. A guest that acknowledges
      * and never reads therefore goes quiet instead of taking the same
      * interrupt forever.
@@ -1310,8 +1278,8 @@ static void test_the_ps2_drain_then_acknowledge_takes_one(const void *data)
 }
 
 /*
- * With no clamp armed -- the reset state, before a driver enables the ports
- * -- the controller has nothing to stop the device with, so a fourth
+ * With no clamp armed (the reset state, before a driver enables the ports),
+ * the controller has nothing to stop the device with, so a fourth
  * character arrives while the holding is full and is lost. Bit 28 reports
  * that, and a read clears it along with the characters it reports.
  */
@@ -1362,12 +1330,11 @@ static void test_the_ps2_clamp_after_one_splits_a_reply(const void *data)
 }
 
 /*
- * A migration in the middle of a backlog has to arrive with the interrupt
- * still owed. Everything that decides the next interrupt crosses in the
- * stream -- the characters the controller is holding, the clamp that stopped
- * the keyboard, and the latched source bit -- so the destination carries on
- * where the source left off rather than waiting for a keystroke that has
- * already happened.
+ * A migration in the middle of a backlog must arrive with the interrupt still
+ * owed. Everything that decides the next interrupt crosses in the stream: the
+ * characters the controller is holding, the clamp that stopped the keyboard,
+ * and the latched source bit. The destination carries on where the source
+ * left off rather than waiting for a keystroke that has already happened.
  */
 static void test_the_ps2_backlog_survives_a_migration(const void *data)
 {
@@ -1398,7 +1365,8 @@ static void test_the_ps2_backlog_survives_a_migration(const void *data)
     g_assert_cmphex(qtest_readl(to, INT_STATUS) & INT_KEYBOARD, ==,
                     INT_KEYBOARD);
 
-    /* Acknowledge and read: three held characters, then the two behind them. */
+    /* Acknowledge and read: three held characters, then the two behind
+     * them. */
     qtest_writel(to, INT_STATUS, INT_KEYBOARD);
     g_assert_cmphex(qtest_readl(to, KBC_KBD_RECEIVE) & KBC_RX_FLAGS, ==,
                     KBC_RX_VALID_ALL);
@@ -1465,11 +1433,11 @@ static void test_the_serial_dma_indices_take_a_write(const void *data)
     sn0_ioc3_attach(qts);
 
     /*
-     * All four adjacent indices store a write, including the two the
-     * engine advances: this chip lets software place them, which is what
-     * the Origin 300 board test requires of it. An earlier model refused
-     * the engine's two, so both of those are asserted with a value that
-     * cannot be mistaken for the zero a refusal leaves.
+     * All four adjacent indices store a write, including the two the engine
+     * advances: this chip lets software place them, which is what the Origin
+     * 300 board test requires of it. An earlier model refused the engine's
+     * two, so both of those are asserted with a value that cannot be
+     * mistaken for the zero a refusal leaves.
      */
     qtest_writel(qts, SDMA_A_TX_PRODUCE, 0x40);
     g_assert_cmphex(qtest_readl(qts, SDMA_A_TX_PRODUCE), ==, 0x40);
@@ -1481,10 +1449,10 @@ static void test_the_serial_dma_indices_take_a_write(const void *data)
     g_assert_cmphex(qtest_readl(qts, SDMA_A_RX_PRODUCE), ==, 0x58);
 
     /*
-     * What still separates them is what else the write carries. Only the
-     * receive consume index keeps bit 31, the receive timer's arm; an
-     * all-ones write to the other three keeps the pointer field alone, so
-     * a model that stored the whole word anywhere fails here.
+     * They differ in what else the write carries. Only the receive consume
+     * index keeps bit 31, the receive timer's arm; an all-ones write to the
+     * other three keeps the pointer field alone, so a model that stored the
+     * whole word anywhere fails here.
      */
     qtest_writel(qts, SDMA_A_RX_CONSUME, 0xffffffff);
     g_assert_cmphex(qtest_readl(qts, SDMA_A_RX_CONSUME), ==, 0x800003f8);
@@ -1502,10 +1470,8 @@ static void test_the_serial_dma_ports_are_distinct(const void *data)
 
     sn0_ioc3_attach(qts);
 
-    /*
-     * Different values per port prove the second block is not an alias:
-     * a stride off-by-one or a single-port model answers both from one.
-     */
+    /* Different values per port prove the second block is not an alias: a
+     * stride off-by-one or a single-port model answers both from one. */
     qtest_writel(qts, SDMA_A_TX_PRODUCE, 0x18);
     qtest_writel(qts, SDMA_B_TX_PRODUCE, 0x28);
     g_assert_cmphex(qtest_readl(qts, SDMA_A_TX_PRODUCE), ==, 0x18);
@@ -1531,9 +1497,9 @@ static void test_the_serial_dma_shadow_is_read_only(const void *data)
     sn0_ioc3_attach(qts);
 
     /*
-     * The shadow mirrors live lines; OpenBSD writes zero to it on every
-     * boot and the chip discards that. The port comes up with carrier
-     * asserted, so the pin is write-leaves-it-unchanged, not reads-zero.
+     * The shadow mirrors live lines; OpenBSD writes zero to it on every boot
+     * and the chip discards that. The port comes up with carrier asserted,
+     * so the pin is write-leaves-it-unchanged, not reads-zero.
      */
     shadow_a = qtest_readl(qts, SDMA_A_SHADOW);
     qtest_writel(qts, SDMA_A_SHADOW, 0xffffffff);
@@ -1552,9 +1518,9 @@ static void test_the_serial_dma_shadow_is_read_only(const void *data)
 #define ENET_MII_DATA_R   (IOC3_BASE + 0x14c)
 
 /*
- * The management interface, and the transceiver on the far end of it. A guest
- * reaches the transceiver only through these two registers: it writes an
- * address and a register number here and reads the answer back.
+ * The management interface, and the transceiver on the far end of it. A
+ * guest reaches the transceiver only through these two registers: it writes
+ * an address and a register number here and reads the answer back.
  */
 #define MII_CONTROL     (IOC3_BASE + 0x148)
 #define MII_DATA_R      (IOC3_BASE + 0x14c)
@@ -1583,17 +1549,15 @@ static void test_the_ethernet_interrupt_register_acknowledges(const void *data)
     sn0_ioc3_attach(qts);
 
     /*
-     * A write acknowledges the sources it names. From zero the direction
-     * is observable: storage leaves the value behind, acknowledgement
-     * leaves zero, and only one can be true of the same write.
+     * A write acknowledges the sources it names. From zero the direction is
+     * observable: storage leaves the value behind, acknowledgement leaves
+     * zero, and only one can be true of the same write.
      */
     qtest_writel(qts, ENET_INT_STATUS, 0x00010001);
     g_assert_cmphex(qtest_readl(qts, ENET_INT_STATUS), ==, 0);
 
-    /*
-     * The enable beside it is storage: a model treating the pair alike
-     * fails exactly one of the two assertions either way.
-     */
+    /* The enable beside it is storage: a model treating the pair alike fails
+     * exactly one of the two assertions either way. */
     qtest_writel(qts, ENET_INT_ENABLE, 0x00010001);
     g_assert_cmphex(qtest_readl(qts, ENET_INT_ENABLE), ==, 0x00010001);
 }
@@ -1604,10 +1568,8 @@ static void test_the_ethernet_read_only_registers(const void *data)
 
     sn0_ioc3_attach(qts);
 
-    /*
-     * Read-to-clear counters; nothing sent yet, so this pins only that the
-     * read answers -- a driver's reset path stops on a fault here.
-     */
+    /* Read-to-clear counters; nothing sent yet, so this pins only that the
+     * read answers. A driver's reset path stops on a fault here. */
     g_assert_cmphex(qtest_readl(qts, ENET_COUNTERS), ==, 0);
 
     /* Software cannot place the block's engines, so a write does not take. */
@@ -1649,16 +1611,12 @@ static void test_the_ethernet_read_only_registers(const void *data)
 #define ENET_INT_RX_TIMER     (1u << 0)
 #define ENET_INT_RX_THRESHOLD (1u << 1)
 
-/*
- * Linux gates every delivered frame on the good-packet bit; OpenBSD never
- * reads it -- a field only one of the two guests can miss.
- */
+/* Linux gates every delivered frame on the good-packet bit; OpenBSD never
+ * reads it. This is a field only one of the two guests can miss. */
 #define ENET_RXE_GOODPKT      (1u << 30)
 
-/*
- * The watermark field and the arm bit: the two things that decide which
- * source a delivered frame raises.
- */
+/* The watermark field and the arm bit: the two things that decide which
+ * source a delivered frame raises. */
 #define RX_CONTROL        (IOC3_BASE + 0x0fc)
 #define RX_TIMER          (IOC3_BASE + 0x114)
 #define RPIR_ARM          (1u << 31)
@@ -1675,10 +1633,8 @@ static void test_the_ethernet_read_only_registers(const void *data)
 #define TXD_BUF1_LEN_SHIFT 8
 #define TXD_BUF2_LEN_SHIFT 20
 
-/*
- * Offset and size from the drivers, not the model: restating the model's
- * wrong 16 once passed every transmit assertion.
- */
+/* Offset and size from the drivers, not the model: restating the model's
+ * wrong 16 once passed every transmit assertion. */
 #define TXD_DATA_OFFSET   24
 #define TXD_DATA_SIZE     104
 
@@ -1686,15 +1642,14 @@ static void test_the_ethernet_read_only_registers(const void *data)
  * area holds. */
 #define TXD_DATA_LEN_MAX  127
 
-/* A region of guest RAM well clear of the firmware's own configuration
- * graph (at 0x4000), used as scratch space for descriptors and buffers.
- */
+/* A region of guest RAM well clear of the firmware's own configuration graph
+ * (at 0x4000), used as scratch space for descriptors and buffers. */
 #define RAM_SCRATCH       0x00100000
 
 /*
- * IRIX's two-step reset handshake: write reset, poll the diagnostic
- * idle, clear reset. The seeded witness is a produce index -- the ring
- * bases survive this reset, so seeding one would show nothing.
+ * IRIX's two-step reset handshake: write reset, poll the diagnostic idle,
+ * clear reset. The seeded witness is a produce index because the ring bases
+ * survive this reset, so seeding one would show nothing.
  */
 static void test_the_ethernet_mac_reset_reports_idle(const void *data)
 {
@@ -1712,10 +1667,8 @@ static void test_the_ethernet_mac_reset_reports_idle(const void *data)
     g_assert_cmphex(qtest_readl(qts, MAC_CONTROL), ==, 0);
 }
 
-/*
- * -nic is what qemu_configure_nic_device finds for an on-board controller;
- * also sets bus-master, which only DMA needs.
- */
+/* -nic is what qemu_configure_nic_device finds for an on-board controller;
+ * also sets bus-master, which only DMA needs. */
 static QTestState *sn0_ioc3_attach_with_netdev(int host_fd)
 {
     QTestState *qts;
@@ -1730,10 +1683,8 @@ static QTestState *sn0_ioc3_attach_with_netdev(int host_fd)
     return qts;
 }
 
-/*
- * The one-wire tests need a known MAC to check the part against, which
- * the explicit mac= supplies; the socket backend is otherwise unused.
- */
+/* The one-wire tests need a known MAC to check the part against, which the
+ * explicit mac= supplies; the socket backend is otherwise unused. */
 static QTestState *sn0_ioc3_attach_with_mac(int host_fd, const char *mac)
 {
     QTestState *qts;
@@ -1752,9 +1703,8 @@ static QTestState *sn0_ioc3_attach_with_mac(int host_fd, const char *mac)
 static const uint8_t onewire_test_mac[6] = { 0x52, 0x54, 0x00, 0x11, 0x22, 0x33 };
 #define ONEWIRE_TEST_MAC_STR "52:54:00:11:22:33"
 
-/* One bus slot, returning the level sampled -- the same helper shape
- * sn0-bridge-test.c's nic_slot() uses for the Bridge's identical engine.
- */
+/* One bus slot, returning the level sampled. This uses the same helper shape
+ * sn0-bridge-test.c's nic_slot() uses for the Bridge's identical engine. */
 static bool onewire_slot_node(QTestState *qts, uint64_t node,
                               unsigned int pulse, unsigned int sample)
 {
@@ -1771,9 +1721,10 @@ static bool onewire_slot(QTestState *qts, unsigned int pulse,
     return onewire_slot_node(qts, 0, pulse, sample);
 }
 
-/* The widths OpenBSD's and Linux's one-wire masters both use, per the
- * datasheet's "GPIO and MicroLAN" section: a reset finds presence, a read
- * and a written one share a slot, and a written zero is a longer low pulse.
+/*
+ * The widths OpenBSD's and Linux's one-wire masters both use: a reset finds
+ * presence, a read and a written one share a slot, and a written zero is a
+ * longer low pulse.
  */
 #define ONEWIRE_RESET(q)      onewire_slot((q), 520, 65)
 #define ONEWIRE_READ(q)       onewire_slot((q), 6, 13)
@@ -1806,10 +1757,8 @@ static uint8_t onewire_read_byte(QTestState *qts)
     return byte;
 }
 
-/*
- * The one-wire CRC-8: 0x8c reflected, seeded zero, sent as computed -- a
- * different algorithm and convention from the Bridge file's CRC-16.
- */
+/* The one-wire CRC-8: 0x8c reflected, seeded zero, sent as computed. This is
+ * a different algorithm and convention from the Bridge file's CRC-16. */
 static uint8_t onewire_crc8(uint8_t crc, const uint8_t *data, unsigned int len)
 {
     unsigned int i, bit;
@@ -1823,8 +1772,9 @@ static uint8_t onewire_crc8(uint8_t crc, const uint8_t *data, unsigned int len)
     return crc;
 }
 
-/* The standard one-wire sixteen-bit CRC, same algorithm and convention as
- * sn0-bridge-test.c's nic_crc() -- reused here rather than shared across
+/*
+ * The standard one-wire sixteen-bit CRC, same algorithm and convention as
+ * sn0-bridge-test.c's nic_crc(). It is reused here rather than shared across
  * files, since qtest files in this tree do not share helper code.
  */
 static uint16_t onewire_crc16(uint16_t crc, const uint8_t *data,
@@ -1842,9 +1792,9 @@ static uint16_t onewire_crc16(uint16_t crc, const uint8_t *data,
 }
 
 /*
- * The search exchange both guests perform before addressing the part.
- * Family and serial prefix are required; the low serial bits are the
- * model's own choice and not asserted.
+ * The search exchange both guests perform before addressing the part. Family
+ * and serial prefix are required; the low serial bits are the model's own
+ * choice and not asserted.
  */
 static void test_a_search_finds_the_ethernet_address_part(const void *data)
 {
@@ -1881,36 +1831,30 @@ static void test_a_search_finds_the_ethernet_address_part(const void *data)
 
 /*
  * Read ROM, and the identity down to its last bit. Two things no qtest
- * reaches otherwise.
- *
- * Nothing drives 0x33 here at all -- the one-command path a master takes once
- * it knows the bus holds a single part. tests/unit/test-onewire.c does drive
- * it against the shared bus, but neither the pipeline nor tools/pre-flight
- * runs the unit suite, so no check a change must pass before it lands has an
- * opinion about Read ROM.
- *
- * And the identity arrives only partly checked.
+ * reaches otherwise. Nothing drives 0x33 here at all. The one-command path
+ * a master takes once it knows the bus holds a single part.
+ * tests/unit/test-onewire.c does drive it against the shared bus, but
+ * neither the pipeline nor tools/pre-flight runs the unit suite, so no check
+ * a change must pass before it lands has an opinion about Read ROM. And the
+ * identity arrives only partly checked.
  * test_a_search_finds_the_ethernet_address_part pins the family byte and the
  * twelve serial bits OpenBSD's owmac_match() compares;
  * test_each_node_has_its_own_onewire_identity pins the ROM CRC. That leaves
- * thirty-six of the forty-eight serial bits unchecked.
- *
- * Both gaps are measured rather than argued: making Read ROM answer nothing
- * at all, and handing the part a serial the machine never chose, each leave
- * every other test in this file passing.
- *
- * The value pinned is the machine's rather than the chip's.
- * hw/mips/sn0-origin200.c gives each node's chip a serial one higher than the
- * last, so a guest counts two parts instead of rejecting a duplicate, and the
- * chip's own property default is only what a bare -device gets. Pinning what
- * a master reads is what ties that per-node choice to something a guest sees.
- *
- * The arbitrated path is deliberately not repeated here, having been measured
- * as covered: a search that delivers a wrong identity trips the family and
- * prefix checks in test_a_search_finds_the_ethernet_address_part, and one
- * plausible enough to slip past them still fails the CRC
- * test_each_node_has_its_own_onewire_identity computes over the bytes its own
- * search returned.
+ * thirty-six of the forty-eight serial bits unchecked. Both gaps are
+ * measured rather than argued: making Read ROM answer nothing at all, and
+ * handing the part a serial the machine never chose, each leave every other
+ * test in this file passing. The value pinned is the machine's rather than
+ * the chip's. hw/mips/sn0-origin200.c gives each node's chip a serial one
+ * higher than the last, so a guest counts two parts instead of rejecting a
+ * duplicate, and the chip's own property default is only what a bare -device
+ * gets. Pinning what a master reads is what ties that per-node choice to
+ * something a guest sees. The arbitrated path is deliberately not repeated
+ * here, having been measured as covered: a search that delivers a wrong
+ * identity trips the family and prefix checks in
+ * test_a_search_finds_the_ethernet_address_part, and one plausible enough to
+ * slip past them still fails the CRC
+ * test_each_node_has_its_own_onewire_identity computes over the bytes its
+ * own search returned.
  */
 #define ONEWIRE_NODE0_SERIAL 0x5e7000000001ULL
 
@@ -1939,10 +1883,8 @@ static void test_read_rom_returns_the_whole_identity(const void *data)
     g_assert_cmpmem(id, sizeof(id), expected, sizeof(expected));
 }
 
-/*
- * A Match ROM naming another part leaves this one unselected; a
- * Skip-ROM-only model never answers OpenBSD's owmac.
- */
+/* A Match ROM naming another part leaves this one unselected; a
+ * Skip-ROM-only model never answers OpenBSD's owmac. */
 static void test_a_wrong_match_rom_leaves_the_part_unselected(const void *data)
 {
     int sv[2];
@@ -1969,11 +1911,9 @@ static void test_a_wrong_match_rom_leaves_the_part_unselected(const void *data)
     close(sv[0]);
 }
 
-/*
- * The three guests' three selections -- OpenBSD Match ROM + 0xf0, Linux
- * Skip ROM + 0xc3, SGI's PROM straight from Search ROM -- must answer
- * identically.
- */
+/* The three guests' three selections (OpenBSD Match ROM + 0xf0, Linux Skip
+ * ROM + 0xc3, SGI's PROM straight from Search ROM) must answer
+ * identically. */
 typedef enum OneWireSelection {
     ONEWIRE_SELECT_MATCH,
     ONEWIRE_SELECT_SKIP,
@@ -2042,8 +1982,7 @@ static void assert_ethernet_address_page(QTestState *qts,
     g_assert_cmphex(page[0], ==, 0x0a);
 
     /* Bytes 5..10 hold the station address reversed: byte 10 is the first
-     * octet, byte 5 the last -- see the datasheet section named above.
-     */
+     * octet, byte 5 the last. */
     for (i = 0; i < 6; i++) {
         got_mac[i] = page[10 - i];
     }
@@ -2055,9 +1994,9 @@ static void assert_ethernet_address_page(QTestState *qts,
      * What follows the thirty-second byte is the whole difference between
      * the two read commands, and they are not interchangeable on this part.
      * 0xc3 closes every 32-byte page with a CRC-8 over that page's data.
-     * Plain 0xf0 carries no per-page CRC at all -- its only data CRC comes
-     * at the end of memory -- so it runs straight on into the next page,
-     * and the part holds one programmed page, the rest unprogrammed EPROM.
+     * Plain 0xf0 carries no per-page CRC at all. Its only data CRC comes
+     * at the end of memory, so it runs straight on into the next page, and
+     * the part holds one programmed page, the rest unprogrammed EPROM.
      */
     if (cmd == 0xc3) {
         g_assert_cmphex(trailing, ==, onewire_crc8(0, page, 32));
@@ -2116,8 +2055,8 @@ static void test_reading_the_page_after_search(const void *data)
 
 /*
  * A backend with no mac= must get an SGI address: the PROM reads the
- * one-wire part before enabling the engine, and that is the
- * firmware-visible contract deciding whether netboot starts.
+ * one-wire part before enabling the engine, and that is the firmware-visible
+ * contract deciding whether netboot starts.
  */
 static void test_the_default_station_address_is_an_sgi_address(const void *data)
 {
@@ -2138,11 +2077,8 @@ static void test_the_default_station_address_is_an_sgi_address(const void *data)
     close(sv[0]);
 }
 
-/*
- * The converse: mac= is the operator's word, never rewritten -- even
- * inside the generator's own range, the one range address bytes cannot
- * attribute.
- */
+/* The converse: mac= is the operator's word, never rewritten, even inside
+ * the generator's own range, the one range address bytes cannot attribute. */
 static const uint8_t explicit_prefix_mac[6] = {
     0x52, 0x54, 0x00, 0x12, 0x34, 0x56
 };
@@ -2189,11 +2125,9 @@ static void test_a_device_supplied_mac_survives(const void *data)
 
 /*
  * The redirection bytes OpenBSD reads before trusting a page: it starts a
- * Read Status at 0x0001, page zero's redirection byte, and takes four --
- * one per page. A redirection byte of 0xff means "this page is where it
- * says it is", and it is what ends owmem_redirect()'s walk rather than
- * failing it.
- *
+ * Read Status at 0x0001, page zero's redirection byte, and takes four: one
+ * per page. A redirection byte of 0xff means "this page is where it says it
+ * is", and it is what ends owmem_redirect()'s walk rather than failing it.
  * The value is pinned here because nothing in the model produces it on
  * purpose: 0xff is what an unprogrammed EPROM byte reads as, and the
  * station-address record programs only page zero's data, never the status
@@ -2236,11 +2170,11 @@ static void test_read_status_returns_no_redirection(const void *data)
 
 /*
  * The whole status field, which is not flat. A DS2502-class part serves
- * eight bytes -- the write-protect byte, four redirection bytes, two
- * reserved bytes, and a factory-programmed 0x00 at 0x0007 -- and then a
- * CRC-8 over the bytes it just sent. Only 0x0007 is programmed, so the
- * seven before it read as unprogrammed EPROM; a readout that runs to the
- * end of the field is therefore never all ones.
+ * eight bytes (the write-protect byte, four redirection bytes, two
+ * reserved bytes, and a factory-programmed 0x00 at 0x0007), then a
+ * CRC-8 over the bytes it just sent. Only 0x0007 is programmed, so the seven
+ * before it read as unprogrammed EPROM; a readout that runs to the end of
+ * the field is therefore never all ones.
  */
 static void test_read_status_serves_the_whole_field(const void *data)
 {
@@ -2279,10 +2213,8 @@ static void test_read_status_serves_the_whole_field(const void *data)
     close(sv[0]);
 }
 
-/*
- * A bound on blocking for a late frame: delivery may still be in flight
- * through the main loop when the triggering write returns.
- */
+/* A bound on blocking for a late frame: delivery may still be in flight
+ * through the main loop when the triggering write returns. */
 static void net_socket_set_recv_timeout(int fd, int seconds)
 {
     struct timeval tv = { .tv_sec = seconds, .tv_usec = 0 };
@@ -2292,8 +2224,7 @@ static void net_socket_set_recv_timeout(int fd, int seconds)
 }
 
 /* The framing net_socket_send uses: a four-byte network-order length ahead
- * of each packet, in both directions over the connected socket.
- */
+ * of each packet, in both directions over the connected socket. */
 static void net_socket_send_frame(int fd, const uint8_t *buf, size_t len)
 {
     uint32_t hdr = htonl((uint32_t)len);
@@ -2315,9 +2246,9 @@ static size_t net_socket_recv_frame(int fd, uint8_t *buf, size_t buf_size)
 }
 
 /*
- * For asserting a frame was NOT sent: an absence is waited for in full,
- * so the timeout is short -- but long enough for a frame already in
- * flight to arrive, or the test passes for the wrong reason.
+ * For asserting a frame was NOT sent: an absence is waited for in full, so
+ * the timeout is short but long enough for a frame already in flight to
+ * arrive, or the test passes for the wrong reason.
  */
 static bool net_socket_frame_arrived(int fd)
 {
@@ -2348,10 +2279,8 @@ static void test_the_ethernet_transmit_sends_inline_frame(const void *data)
 
     qtest_writel(qts, MAC_CONTROL, MCR_TX_DMA_EN | MCR_TX_EN);
 
-    /*
-     * The buffer-count word's low seven bits repeat the inline length,
-     * which is what the engine actually reads.
-     */
+    /* The buffer-count word's low seven bits repeat the inline length, which
+     * is what the engine actually reads. */
     qtest_writel(qts, desc + 0, sizeof(frame) | TXD_DATA_VALID | TXD_INT_DONE);
     qtest_writel(qts, desc + 4, sizeof(frame));
     qtest_memwrite(qts, desc + TXD_DATA_OFFSET, frame, sizeof(frame));
@@ -2376,10 +2305,8 @@ static void test_the_ethernet_transmit_sends_inline_frame(const void *data)
     close(sv[0]);
 }
 
-/*
- * Enabling transmit is a start, not only a gate: the diagnostic rings the
- * doorbell first and enables afterwards, an order no guest driver uses.
- */
+/* Enabling transmit starts a queued frame: the diagnostic rings the doorbell
+ * first, unlike guest drivers. */
 static void test_transmit_starts_when_enabled_late(const void *data)
 {
     int sv[2];
@@ -2422,10 +2349,8 @@ static void test_transmit_starts_when_enabled_late(const void *data)
     close(sv[0]);
 }
 
-/*
- * A second MAC control write must not resend the ring: the firmware
- * touches the register twice more adding the receive enables.
- */
+/* A second MAC control write must not resend the ring: the firmware touches
+ * the register twice more adding the receive enables. */
 static void test_a_second_enable_write_does_not_resend(const void *data)
 {
     int sv[2];
@@ -2452,7 +2377,8 @@ static void test_a_second_enable_write_does_not_resend(const void *data)
     g_assert_cmpint(net_socket_recv_frame(sv[0], received, sizeof(received)),
                     ==, sizeof(frame));
 
-    /* The receive enables arrive next, exactly as the firmware writes them. */
+    /* The receive enables arrive next, exactly as the firmware writes
+     * them. */
     qtest_writel(qts, MAC_CONTROL,
                  MCR_TX_DMA_EN | MCR_TX_EN | MCR_RX_DMA_EN | MCR_RX_EN);
 
@@ -2465,8 +2391,8 @@ static void test_a_second_enable_write_does_not_resend(const void *data)
 
 /*
  * The seven-bit inline length can name more than the 104-byte area; an
- * engine trusting it sends bytes past its own descriptor copy. Payload
- * bytes carry their offsets so a misplaced start fails on content too.
+ * engine trusting it sends bytes past its own descriptor copy. Payload bytes
+ * carry their offsets so a misplaced start fails on content too.
  */
 static void test_the_ethernet_transmit_bounds_the_inline_area(const void *data)
 {
@@ -2505,9 +2431,9 @@ static void test_the_ethernet_transmit_bounds_the_inline_area(const void *data)
 }
 
 /*
- * The walk exits on index equality, so a produce index the steps never
- * land on is a hang from two register writes; a model without the bound
- * fails as a timeout, the only way a hang can fail.
+ * The walk exits on index equality, so a produce index the steps never land
+ * on is a hang from two register writes; a model without the bound fails as
+ * a timeout, the only way a hang can fail.
  */
 static void test_an_unaligned_produce_index_terminates(const void *data)
 {
@@ -2527,21 +2453,18 @@ static void test_an_unaligned_produce_index_terminates(const void *data)
     qtest_writel(qts, TX_CONSUME, 0);
     qtest_writel(qts, TX_PRODUCE, 1);
 
-    /*
-     * One byte is below a descriptor, so there is nothing to send and the
-     * engine comes to rest where it started, idle.
-     */
+    /* One byte is below a descriptor, so there is nothing to send and the
+     * engine comes to rest where it started, idle. */
     g_assert_cmphex(qtest_readl(qts, TX_CONSUME), ==, TX_CONSUME_IDLE);
 
-    /*
-     * Eight tells a correct bound from eight-byte rounding; every other
-     * value here rounds identically under both rules.
-     */
+    /* Eight tells a correct bound from eight-byte rounding; every other
+     * value here rounds identically under both rules. */
     qtest_writel(qts, TX_CONSUME, 0);
     qtest_writel(qts, TX_PRODUCE, 8);
     g_assert_cmphex(qtest_readl(qts, TX_CONSUME), ==, TX_CONSUME_IDLE);
 
-    /* And it is still a working engine afterwards rather than a wedged one. */
+    /* And it is still a working engine afterwards rather than a wedged
+     * one. */
     qtest_writel(qts, TX_CONSUME, 3);
     qtest_writel(qts, TX_PRODUCE, 128 + 5);
     g_assert_cmphex(qtest_readl(qts, TX_CONSUME), ==, (128u | TX_CONSUME_IDLE));
@@ -2612,10 +2535,8 @@ static void test_the_ethernet_transmit_gathers_two_buffers(const void *data)
     qtest_memwrite(qts, buf1_addr, buf1, sizeof(buf1));
     qtest_memwrite(qts, buf2_addr, buf2, sizeof(buf2));
 
-    /*
-     * No inline data: both validity flags name out-of-line buffers, read
-     * in flag order.
-     */
+    /* No inline data: both validity flags name out-of-line buffers, read in
+     * flag order. */
     qtest_writel(qts, desc + 0, sizeof(expect) | TXD_BUF1_VALID |
                 TXD_BUF2_VALID);
     qtest_writel(qts, desc + 4, (sizeof(buf1) << TXD_BUF1_LEN_SHIFT) |
@@ -2637,10 +2558,8 @@ static void test_the_ethernet_transmit_gathers_two_buffers(const void *data)
     close(sv[0]);
 }
 
-/*
- * RFC 1071, hand rolled: the assertion is against an independent
- * computation, not two copies of one code agreeing.
- */
+/* RFC 1071, hand rolled: the assertion is against an independent
+ * computation, not two copies of one code agreeing. */
 static uint32_t inet_sum_add(uint32_t sum, const uint8_t *data, size_t len)
 {
     size_t i;
@@ -2664,8 +2583,8 @@ static uint16_t inet_sum_fold(uint32_t sum)
 
 /*
  * The RFC 793/768 transport checksum over pseudo header plus segment with
- * its checksum field zeroed. The caller's buffer is untouched, so this
- * runs against a segment still carrying a deliberately wrong checksum.
+ * its checksum field zeroed. The caller's buffer is untouched, so this runs
+ * against a segment still carrying a deliberately wrong checksum.
  */
 static uint16_t inet_transport_checksum(uint8_t proto,
                                         const uint8_t src_ip[4],
@@ -2710,10 +2629,11 @@ static void test_the_ethernet_transmit_inserts_udp_checksum(const void *data)
         0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff,
         0x11, 0x22, 0x33, 0x44, 0x55, 0x66,
         0x08, 0x00,
-        /* IPv4 header: version/IHL, DSCP, total length 32, id 0,
-         * flags/frag 0, ttl 64, protocol UDP, header checksum 0 (the
-         * driver's own, untouched by this engine), source 10.0.2.15,
-         * destination 10.0.2.3. */
+        /*
+         * IPv4 header: version/IHL, DSCP, total length 32, id 0, flags/frag
+         * 0, ttl 64, protocol UDP, header checksum 0 (the driver's own,
+         * untouched by this engine), source 10.0.2.15, destination 10.0.2.3.
+         */
         0x45, 0x00, 0x00, 0x20, 0x00, 0x00, 0x00, 0x00,
         64, 17, 0x00, 0x00, 10, 0, 2, 15, 10, 0, 2, 3,
         /* UDP header: source port 1024, destination port 53 (DNS), length
@@ -2769,7 +2689,7 @@ static void test_the_ethernet_transmit_inserts_udp_checksum(const void *data)
     close(sv[0]);
 }
 
-/* The TCP case, alongside UDP's -- both are ETXD_DOCHECKSUM's transport. */
+/* The TCP case, alongside UDP's. Both are ETXD_DOCHECKSUM's transport. */
 static void test_the_ethernet_transmit_inserts_tcp_checksum(const void *data)
 {
     int sv[2];
@@ -2781,15 +2701,18 @@ static void test_the_ethernet_transmit_inserts_tcp_checksum(const void *data)
         0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff,
         0x11, 0x22, 0x33, 0x44, 0x55, 0x66,
         0x08, 0x00,
-        /* IPv4 header: version/IHL, DSCP, total length 40, id 0,
-         * flags/frag 0, ttl 64, protocol TCP, header checksum 0 (the
-         * driver's own, untouched by this engine), source 10.0.2.15,
-         * destination 10.0.2.3. */
+        /*
+         * IPv4 header: version/IHL, DSCP, total length 40, id 0, flags/frag
+         * 0, ttl 64, protocol TCP, header checksum 0 (the driver's own,
+         * untouched by this engine), source 10.0.2.15, destination 10.0.2.3.
+         */
         0x45, 0x00, 0x00, 0x28, 0x00, 0x00, 0x00, 0x00,
         64, 6, 0x00, 0x00, 10, 0, 2, 15, 10, 0, 2, 3,
-        /* TCP header, no options: source port 4096, destination port 80,
+        /*
+         * TCP header, no options: source port 4096, destination port 80,
          * sequence number 1, no ack, data offset 5 with SYN set, window
-         * 8192, a deliberately wrong checksum, no urgent pointer. */
+         * 8192, a deliberately wrong checksum, no urgent pointer.
+         */
         0x10, 0x00, 0x00, 0x50,
         0x00, 0x00, 0x00, 0x01,
         0x00, 0x00, 0x00, 0x00,
@@ -2837,10 +2760,8 @@ static void test_the_ethernet_transmit_inserts_tcp_checksum(const void *data)
     close(sv[0]);
 }
 
-/*
- * Without the bit the engine must not touch the checksum -- what tells
- * the positives from a model recomputing every frame regardless.
- */
+/* Without the bit the engine must not touch the checksum. This tells the
+ * positives from a model recomputing every frame regardless. */
 static void test_the_ethernet_transmit_leaves_checksum_alone_when_not_asked(
     const void *data)
 {
@@ -2882,10 +2803,8 @@ static void test_the_ethernet_transmit_leaves_checksum_alone_when_not_asked(
     close(sv[0]);
 }
 
-/*
- * Pad-enable must extend a short frame to sixty zero bytes before the
- * FCS: IRIX and its netboot PROM never pad in software.
- */
+/* Pad-enable must extend a short frame to sixty zero bytes before the FCS:
+ * IRIX and its netboot PROM never pad in software. */
 static void test_the_ethernet_transmit_pads_short_frame(const void *data)
 {
     int sv[2];
@@ -2925,10 +2844,8 @@ static void test_the_ethernet_transmit_pads_short_frame(const void *data)
     close(sv[0]);
 }
 
-/*
- * Pad-enable clear leaves the short frame at its assembled length -- the
- * case that catches unconditional padding.
- */
+/* Pad-enable clear leaves the short frame at its assembled length. The
+ * case that catches unconditional padding. */
 static void test_the_ethernet_transmit_leaves_short_frame_alone_when_pad_off(
     const void *data)
 {
@@ -2967,10 +2884,8 @@ static void test_the_ethernet_transmit_leaves_short_frame_alone_when_pad_off(
     close(sv[0]);
 }
 
-/*
- * The block reset keeps the ring bases -- the diagnostic never rewrites
- * them -- and must clear the indices, or preserving everything passes.
- */
+/* The block reset keeps the ring bases (the diagnostic never rewrites them)
+ * and must clear the indices, or preserving everything passes. */
 static void test_the_block_reset_keeps_the_ring_addresses(const void *data)
 {
     ioc3_reset();
@@ -2997,8 +2912,8 @@ static void test_the_block_reset_keeps_the_ring_addresses(const void *data)
 
 /*
  * The checksum-offload partial: these tests replicate Linux's own
- * reconstruction over the bytes it reads, requiring 0xffff for a good
- * frame and never for a corrupt one.
+ * reconstruction over the bytes it reads, requiring 0xffff for a good frame
+ * and never for a corrupt one.
  */
 static uint16_t rxcsum_fold(uint32_t sum)
 {
@@ -3013,8 +2928,9 @@ static uint32_t rxcsum_be16(const uint8_t *p)
     return (p[0] << 8) | p[1];
 }
 
-/* One's-complement 16-bit sum over a byte range, trailing odd byte padded high
- * -- the ordinary Internet checksum accumulator, not yet complemented. */
+/* One's-complement 16-bit sum over a byte range, trailing odd byte padded
+ * high. This is the ordinary Internet checksum accumulator, not yet
+ * complemented. */
 static uint16_t rxcsum_ones(const uint8_t *data, size_t len)
 {
     uint32_t sum = 0;
@@ -3035,8 +2951,9 @@ static uint16_t rxcsum_ip(const uint8_t *iphdr, size_t ihl)
     return ~rxcsum_ones(iphdr, ihl) & 0xffff;
 }
 
-/* The value a TCP or UDP checksum field carries: the transport segment summed
- * under its IPv4 pseudo-header, with the checksum field itself zero. */
+/* The value a TCP or UDP checksum field carries: the transport segment
+ * summed under its IPv4 pseudo-header, with the checksum field itself
+ * zero. */
 static uint16_t rxcsum_transport(const uint8_t *saddr, const uint8_t *daddr,
                                  uint8_t proto, const uint8_t *seg,
                                  size_t seglen)
@@ -3049,9 +2966,9 @@ static uint16_t rxcsum_transport(const uint8_t *saddr, const uint8_t *daddr,
 }
 
 /*
- * Linux's ioc3_tcpudp_checksum() arithmetic replicated; big-endian words
- * are read explicitly because the driver's CPU is big-endian and the test
- * host may not be.
+ * Linux's ioc3_tcpudp_checksum() arithmetic replicated; big-endian words are
+ * read explicitly because the driver's CPU is big-endian and the test host
+ * may not be.
  */
 static uint32_t rxcsum_driver(const uint8_t *eh, int len, uint32_t hwsum)
 {
@@ -3086,10 +3003,8 @@ static uint32_t rxcsum_driver(const uint8_t *eh, int len, uint32_t hwsum)
     return csum;
 }
 
-/*
- * A well-formed IPv4 frame with correct checksums; corrupting a byte
- * after the fact is what the offload has to refuse.
- */
+/* A well-formed IPv4 frame with correct checksums; corrupting a byte after
+ * the fact is what the offload must refuse. */
 static size_t rxcsum_build_frame(uint8_t *out, uint8_t proto,
                                  const uint8_t *payload, size_t payload_len)
 {
@@ -3149,10 +3064,8 @@ static size_t rxcsum_build_frame(uint8_t *out, uint8_t proto,
     return 14 + iptot;
 }
 
-/*
- * Deliver one frame and return Linux's folded reconstruction; only the
- * framing is asserted so a failure points at the checksum.
- */
+/* Deliver one frame and return Linux's folded reconstruction; only the
+ * framing is asserted so a failure points at the checksum. */
 static uint32_t rxcsum_deliver(const uint8_t *frame, size_t size)
 {
     int sv[2];
@@ -3168,10 +3081,8 @@ static uint32_t rxcsum_deliver(const uint8_t *frame, size_t size)
     net_socket_set_recv_timeout(sv[0], 10);
     qts = sn0_ioc3_attach_with_netdev(sv[1]);
 
-    /*
-     * These frames test the offload partial, not filtering; promiscuous
-     * mode keeps the address filter out of their way.
-     */
+    /* These frames test the offload partial, not filtering; promiscuous mode
+     * keeps the address filter out of their way. */
     qtest_writel(qts, MAC_CONTROL,
                 MCR_PROMISC | MCR_RX_DMA_EN | MCR_RX_EN | MCR_RXOFF(33));
     qtest_writel(qts, RX_RING_HI, 0);
@@ -3232,18 +3143,18 @@ static void test_the_ethernet_receive_refuses_a_corrupt_checksum(const void *dat
     uint8_t frame[128];
     size_t size = rxcsum_build_frame(frame, 6, payload, sizeof(payload));
 
-    /* Corrupt a transport payload byte after the checksums were computed: the
-     * stored checksum no longer matches, and the reconstruction must not fold
-     * to 0xffff -- a corrupt packet is never wrongly reported verified. */
+    /*
+     * Corrupt a transport payload byte after the checksums were computed:
+     * the stored checksum no longer matches, and the reconstruction must not
+     * fold to 0xffff. A corrupt packet is never wrongly reported verified.
+     */
     frame[14 + 20 + 20 + 2] ^= 0xff;
 
     g_assert_cmphex(rxcsum_deliver(frame, size), !=, 0xffff);
 }
 
-/*
- * Address filtering, with the station address programmed the way Linux's
- * __ioc3_set_mac_address() writes it.
- */
+/* Address filtering, with the station address programmed the way Linux's
+ * __ioc3_set_mac_address() writes it. */
 #define FILTER_STATION_HI 0x00005544u
 #define FILTER_STATION_LO 0x33221100u
 
@@ -3261,9 +3172,10 @@ static void sn0_ioc3_filter_setup(QTestState *qts, uint32_t ring,
                 mcr_extra | MCR_RX_DMA_EN | MCR_RX_EN | MCR_RXOFF(33));
 }
 
-/* Waited for rather than checked once: delivery happens inside the main
- * loop noticing the socket is readable, not synchronously with the send
- * that triggers it.
+/*
+ * Waited for rather than checked once: delivery happens inside the main loop
+ * noticing the socket is readable, not synchronously with the send that
+ * triggers it.
  */
 static void sn0_ioc3_wait_for_consume(QTestState *qts)
 {
@@ -3278,10 +3190,8 @@ static void sn0_ioc3_wait_for_consume(QTestState *qts)
     }
 }
 
-/*
- * A frame addressed to the station address the guest programmed lands in
- * the ring -- the ordinary case a filter must not break.
- */
+/* A frame addressed to the station address the guest programmed lands in the
+ * ring, the ordinary case a filter must not break. */
 static void test_address_filter_accepts_station_address(const void *data)
 {
     int sv[2];
@@ -3309,8 +3219,8 @@ static void test_address_filter_accepts_station_address(const void *data)
 
 /*
  * A foreign unicast frame never reaches a buffer. Against an
- * accept-everything receive path, RX_CONSUME advances here exactly as in
- * the station-address test, and this fails.
+ * accept-everything receive path, RX_CONSUME advances here exactly as in the
+ * station-address test, and this fails.
  */
 static void test_address_filter_drops_foreign_unicast(const void *data)
 {
@@ -3330,10 +3240,8 @@ static void test_address_filter_drops_foreign_unicast(const void *data)
     sn0_ioc3_filter_setup(qts, ring, rxbuf, 0);
     net_socket_send_frame(sv[0], frame, sizeof(frame));
 
-    /*
-     * Delivery is not synchronous with the send; the index staying put
-     * through the wait is the assertion.
-     */
+    /* Delivery is not synchronous with the send; the index staying put
+     * through the wait is the assertion. */
     for (attempt = 0; attempt < 20; attempt++) {
         g_usleep(10000);
         qtest_clock_step(qts, RX_ARRIVAL_LATENCY_NS);
@@ -3346,7 +3254,7 @@ static void test_address_filter_drops_foreign_unicast(const void *data)
 }
 
 /*
- * A broadcast frame is delivered regardless of the station address -- the
+ * A broadcast frame is delivered regardless of the station address. The
  * filter's broadcast clause must not regress once station-address filtering
  * exists alongside it.
  */
@@ -3374,10 +3282,8 @@ static void test_the_address_filter_accepts_broadcast(const void *data)
     close(sv[0]);
 }
 
-/*
- * The promiscuous bit overrides the filter entirely: the same foreign
- * unicast address the filter drops above is delivered once it is set.
- */
+/* The promiscuous bit overrides the filter entirely: the same foreign
+ * unicast address the filter drops above is delivered once it is set. */
 static void test_promiscuous_accepts_a_foreign_unicast_address(const void *data)
 {
     int sv[2];
@@ -3403,9 +3309,9 @@ static void test_promiscuous_accepts_a_foreign_unicast_address(const void *data)
 }
 
 /*
- * The hash's two halves against Linux's own ioc3_hash(): an IPv4
- * multicast address lands in the low register, an IPv6 one in the high,
- * proving both are wired to the filter.
+ * The hash's two halves against Linux's own ioc3_hash(): an IPv4 multicast
+ * address lands in the low register, an IPv6 one in the high, proving both
+ * are wired to the filter.
  */
 static void test_multicast_hash_accepts_a_set_bit_in_the_low_register(
     const void *data)
@@ -3517,10 +3423,8 @@ static void sn0_ioc3_rx_one_frame(QTestState *qts, int host_fd, uint32_t ring,
     qtest_writel(qts, RX_TIMER, 0);
     qtest_writel(qts, RX_CONTROL, threshold);
 
-    /*
-     * Four buffers, one page apart, so a frame has somewhere to land and
-     * the supply is deep enough for a watermark to sit below it.
-     */
+    /* Four buffers, one page apart, so a frame has somewhere to land and the
+     * supply is deep enough for a watermark to sit below it. */
     for (i = 0; i < 4; i++) {
         qtest_writel(qts, ring + i * 8, 0);
         qtest_writel(qts, ring + i * 8 + 4, rxbuf + i * 0x1000);
@@ -3538,10 +3442,8 @@ static void sn0_ioc3_rx_one_frame(QTestState *qts, int host_fd, uint32_t ring,
         qtest_clock_step(qts, RX_ARRIVAL_LATENCY_NS / 4);
     }
 
-    /*
-     * Delivered, in every one of the three runs. An assertion about which
-     * source was raised means nothing without this.
-     */
+    /* Delivered, in every one of the three runs. An assertion about which
+     * source was raised means nothing without this. */
     g_assert_cmphex(qtest_readl(qts, RX_CONSUME), ==, 8);
     g_assert_cmphex(qtest_readl(qts, rxbuf + 0) & 0x80000000u, ==, 0x80000000u);
 }
@@ -3571,10 +3473,8 @@ static void test_an_armed_receive_timer_raises_its_own_source(const void *data)
     close(sv[0]);
 }
 
-/*
- * Timer unarmed, supply above the mark: nothing raised -- the run that
- * fails an announce-everything engine.
- */
+/* Timer unarmed, supply above the mark: nothing raised. This is the run that
+ * fails an announce-everything engine. */
 static void test_a_frame_below_the_watermark_raises_nothing(const void *data)
 {
     int sv[2];
@@ -3596,7 +3496,7 @@ static void test_a_frame_below_the_watermark_raises_nothing(const void *data)
 
 /*
  * The same again with the watermark raised to where this frame's delivery
- * puts the supply -- four buffers, one consumed, three left, watermark
+ * puts the supply: four buffers, one consumed, three left, watermark
  * three. The threshold source is raised and the unarmed timer is not.
  */
 static void test_reaching_the_watermark_raises_the_threshold(const void *data)
@@ -3619,10 +3519,8 @@ static void test_reaching_the_watermark_raises_the_threshold(const void *data)
     close(sv[0]);
 }
 
-/*
- * Past the watermark, not merely on it: equality raises once and goes
- * silent; at-or-below raises on both, which a low watermark asks for.
- */
+/* Past the watermark, not merely on it: equality raises once and goes
+ * silent; at-or-below raises on both, which a low watermark asks for. */
 static void test_falling_past_the_watermark_keeps_raising(const void *data)
 {
     int sv[2];
@@ -3676,10 +3574,8 @@ static void test_falling_past_the_watermark_keeps_raising(const void *data)
     close(sv[0]);
 }
 
-/*
- * Arming is a command and the index storage: SGI's driver writes the
- * index without the bit from its interrupt path.
- */
+/* Arming is a command and the index storage: SGI's driver writes the index
+ * without the bit from its interrupt path. */
 static void test_a_bare_produce_write_leaves_the_timer_armed(const void *data)
 {
     int sv[2];
@@ -3720,7 +3616,7 @@ static void test_a_bare_produce_write_leaves_the_timer_armed(const void *data)
 }
 
 /*
- * A source set while masked must raise the line when enabled -- the order
+ * A source set while masked must raise the line when enabled. The order
  * every bring-up takes (OpenBSD writes the enable register last). The
  * Bridge's own pin is read live rather than the model's account of it.
  */
@@ -3733,10 +3629,8 @@ static void test_enabling_a_set_source_raises_the_line(const void *data)
     net_socket_set_recv_timeout(sv[0], 10);
     qts = sn0_ioc3_attach_with_netdev(sv[1]);
 
-    /*
-     * Interrupts off, then a frame delivered: its source sets and the line
-     * must stay low, because nothing is enabled.
-     */
+    /* Interrupts off, then a frame delivered: its source sets and the line
+     * must stay low, because nothing is enabled. */
     qtest_writel(qts, ENET_INT_ENABLE, 0);
     sn0_ioc3_rx_one_frame(qts, sv[0], RAM_SCRATCH, RAM_SCRATCH + 0x4000,
                           (4 << 3) | RPIR_ARM, 0);
@@ -3763,9 +3657,9 @@ static void test_the_media_interface_never_reads_busy(const void *data)
     sn0_ioc3_attach(qts);
 
     /*
-     * Busy must already be clear on the first look after a read is asked
-     * for -- asserted on an untouched register it would pass on a model
-     * that sets busy and never clears it.
+     * Busy must already be clear on the first look after a read is asked for.
+     * Asserted on an untouched register, it would pass on a model that
+     * sets busy and never clears it.
      */
     qtest_writel(qts, ENET_MII_CONTROL, (1u << 10));
     g_assert_cmphex(qtest_readl(qts, ENET_MII_CONTROL) & (1u << 11), ==, 0);
@@ -3774,16 +3668,15 @@ static void test_the_media_interface_never_reads_busy(const void *data)
     g_assert_cmphex(qtest_readl(qts, ENET_MII_DATA_R), ==, 0xffff);
 }
 
-/*
- * The buffer RAM offsets the three sizing drivers touch; the halfway pair
- * is the only one that fails on a window aliasing at its midpoint.
- */
+/* The buffer RAM offsets the three sizing drivers touch; the halfway pair is
+ * the only one that fails on a window aliasing at its midpoint. */
 #define SSRAM_FIRST       (IOC3_BASE + 0x40000)
 #define SSRAM_LINUX_PAIR  (IOC3_BASE + 0x50000)
 #define SSRAM_HALFWAY     (IOC3_BASE + 0x60000)
 #define SSRAM_LAST        (IOC3_BASE + 0x7fffc)
 
-/* The pattern OpenBSD's driver writes, and the complement it writes second. */
+/* The pattern OpenBSD's driver writes, and the complement it writes
+ * second. */
 #define SSRAM_PATTERN     0x55aau
 #define SSRAM_COMPLEMENT  (0xffffu ^ SSRAM_PATTERN)
 
@@ -3793,10 +3686,8 @@ static void test_the_buffer_ram_halves_are_distinct(const void *data)
 
     sn0_ioc3_attach(qts);
 
-    /*
-     * OpenBSD's size probe, comparing the second read as a whole word:
-     * anything above the data bits sends a driver down the 64 KB branch.
-     */
+    /* OpenBSD's size probe, comparing the second read as a whole word:
+     * anything above the data bits sends a driver down the 64 KB branch. */
     qtest_writel(qts, SSRAM_FIRST, SSRAM_PATTERN);
     qtest_writel(qts, SSRAM_HALFWAY, SSRAM_COMPLEMENT);
 
@@ -3835,14 +3726,14 @@ static void test_the_buffer_ram_is_seventeen_bits_wide(const void *data)
 /*
  * Bit 17 is the checker's answer, not storage: even parity over the
  * seventeen stored bits. The four words are the firmware diagnostic's own
- * writes, good and bad parity both -- always-set passes the bad pair and
+ * writes, good and bad parity both. Always-set passes the bad pair and
  * fails the diagnostic's first two writes.
  */
 #define SSRAM_PARITY_ERROR    0x00020000u
 #define MAC_CONTROL_RAM_PARITY 0x00000200u
 
-/* Written by the diagnostic. The first two carry even parity, the last
- * two odd. */
+/* Written by the diagnostic. The first two carry even parity, the last two
+ * odd. */
 #define SSRAM_GOOD_EVEN_DATA  0x0000aa55u
 #define SSRAM_GOOD_ODD_DATA   0x000157aau
 #define SSRAM_BAD_EVEN_DATA   0x0000bad1u
@@ -3854,10 +3745,8 @@ static void test_the_buffer_ram_reports_bad_parity(const void *data)
 
     sn0_ioc3_attach(qts);
 
-    /*
-     * Checking is off until enabled, asserted absent first -- a bit
-     * reported unconditionally lands in OpenBSD's whole-word size probe.
-     */
+    /* Checking is off until enabled, asserted absent first. A bit reported
+     * unconditionally lands in OpenBSD's whole-word size probe. */
     qtest_writel(qts, SSRAM_FIRST, SSRAM_BAD_EVEN_DATA);
     g_assert_cmphex(qtest_readl(qts, SSRAM_FIRST), ==, SSRAM_BAD_EVEN_DATA);
 
@@ -3880,9 +3769,9 @@ static void test_the_buffer_ram_reports_bad_parity(const void *data)
                     SSRAM_BAD_ODD_DATA | SSRAM_PARITY_ERROR);
 
     /*
-     * The report is derived on every read rather than latched at the write, so
-     * clearing the enable takes it away again and the storage underneath it is
-     * untouched.
+     * The report is derived on every read rather than latched at the write,
+     * so clearing the enable takes it away again and the storage underneath
+     * it is untouched.
      */
     qtest_writel(qts, MAC_CONTROL, 0);
     g_assert_cmphex(qtest_readl(qts, SSRAM_FIRST), ==, SSRAM_BAD_ODD_DATA);
@@ -3895,10 +3784,8 @@ static void test_the_buffer_ram_ignores_a_written_parity_report(
 
     sn0_ioc3_attach(qts);
 
-    /*
-     * A write to the report is ignored: stored, the checker would agree
-     * with the guest instead of the data.
-     */
+    /* A write to the report is ignored: stored, the checker would agree with
+     * the guest instead of the data. */
     qtest_writel(qts, MAC_CONTROL, MAC_CONTROL_RAM_PARITY);
 
     qtest_writel(qts, SSRAM_FIRST, SSRAM_PARITY_ERROR | 0x0101u);
@@ -3911,10 +3798,8 @@ static void test_the_size_probe_survives_parity_checking(const void *data)
 
     sn0_ioc3_attach(qts);
 
-    /*
-     * The 64-vs-128 KB probe with checking on, as the firmware runs it: a
-     * report in these words puts the driver on the wrong size branch.
-     */
+    /* The 64-vs-128 KB probe with checking on, as the firmware runs it: a
+     * report in these words puts the driver on the wrong size branch. */
     qtest_writel(qts, MAC_CONTROL, MAC_CONTROL_RAM_PARITY);
 
     qtest_writel(qts, SSRAM_FIRST, SSRAM_PATTERN);
@@ -3933,8 +3818,8 @@ static void test_the_size_probe_survives_parity_checking(const void *data)
 
 /*
  * The byte bus's first device select and the real-time clock behind it. The
- * window is byte-wide, unlike every other block on this chip, and the clock is
- * its top eight bytes.
+ * window is byte-wide, unlike every other block on this chip, and the clock
+ * is its top eight bytes.
  */
 #define BYTEBUS_DEV0    (IOC3_BASE + 0x80000)
 #define RTC_CONTROL     (BYTEBUS_DEV0 + 0x7ff8)
@@ -3951,10 +3836,8 @@ static void test_the_size_probe_survives_parity_checking(const void *data)
 #define RTC_CHECKSUM    (BYTEBUS_DEV0 + 0x04bc)
 #define RTC_LEAP_CYCLE  (BYTEBUS_DEV0 + 0x3883)
 
-/*
- * A fixed base, mid-minute, so the fields assert exactly and the minute
- * cannot roll underneath the test.
- */
+/* A fixed base, mid-minute, so the fields assert exactly and the minute
+ * cannot roll underneath the test. */
 #define RTC_ARGS \
     "-M origin200 -rtc base=2026-08-11T12:30:05,clock=vm"
 
@@ -3966,7 +3849,7 @@ static void test_the_clock_reads_the_time_it_was_given(const void *data)
 
     /*
      * Freeze, read, release. The year is the assertion no boot can check:
-     * two digits from 1970, so 2026 is 0x56 -- calendar digits would answer
+     * two digits from 1970, so 2026 is 0x56. Calendar digits would answer
      * 0x26 and a guest reports 1996 with nothing else looking wrong.
      */
     qtest_writeb(qts, RTC_CONTROL, RTC_CSR_READ);
@@ -3978,10 +3861,8 @@ static void test_the_clock_reads_the_time_it_was_given(const void *data)
     g_assert_cmphex(qtest_readb(qts, RTC_MONTH), ==, 0x08);
     g_assert_cmphex(qtest_readb(qts, RTC_YEAR), ==, 0x56);
 
-    /*
-     * Weekday zero is the part's answer for a day nobody set -- Linux's
-     * driver records that the part leaves it alone until written.
-     */
+    /* Weekday zero is the part's answer for a day nobody set. Linux's
+     * driver records that the part leaves it alone until written. */
     g_assert_cmphex(qtest_readb(qts, RTC_WEEKDAY), ==, 0x00);
 
     qtest_writeb(qts, RTC_CONTROL, 0);
@@ -4022,7 +3903,7 @@ static void test_the_clock_freeze_holds_an_instant(const void *data)
     g_assert_cmphex(qtest_readb(qts, RTC_SECONDS), ==, 0x05);
 
     /*
-     * Step across a minute boundary, so the fields above the seconds have to
+     * Step across a minute boundary, so the fields above the seconds must
      * hold as well. Checking the seconds alone would pass on a freeze that
      * held one field and let the rest run.
      */
@@ -4034,7 +3915,8 @@ static void test_the_clock_freeze_holds_an_instant(const void *data)
     g_assert_cmphex(qtest_readb(qts, RTC_MONTH), ==, 0x08);
     g_assert_cmphex(qtest_readb(qts, RTC_YEAR), ==, 0x56);
 
-    /* Released, the clock is where the stepped time put it, not where it was. */
+    /* Released, the clock is where the stepped time put it, not where it
+     * was. */
     qtest_writeb(qts, RTC_CONTROL, 0);
     g_assert_cmphex(qtest_readb(qts, RTC_SECONDS), ==, 0x07);
     g_assert_cmphex(qtest_readb(qts, RTC_MINUTES), ==, 0x31);
@@ -4070,10 +3952,8 @@ static void test_the_clock_control_register_reads_back(const void *data)
 
     sn0_ioc3_attach(qts);
 
-    /*
-     * Drivers read-modify-write this register; answering zero has every
-     * driver clear the other bit on its way out.
-     */
+    /* Drivers read-modify-write this register; answering zero has every
+     * driver clear the other bit on its way out. */
     qtest_writeb(qts, RTC_CONTROL, RTC_CSR_READ);
     g_assert_cmphex(qtest_readb(qts, RTC_CONTROL), ==, RTC_CSR_READ);
 
@@ -4093,14 +3973,12 @@ static void test_the_clock_takes_a_time_a_guest_sets(const void *data)
 
     sn0_ioc3_attach(qts);
 
-    /*
-     * Arm, write, release. The year written is 0x40, so reading 0x40 back
-     * says the epoch runs the same way in both directions.
-     */
+    /* Arm, write, release. The year written is 0x40, so reading 0x40 back
+     * says the epoch runs the same way in both directions. */
     /*
      * Step the virtual clock away from the host's first: a model
-     * differencing against the wrong clock then fails every time instead
-     * of only on runs where real time crosses a second boundary.
+     * differencing against the wrong clock then fails every time instead of
+     * only on runs where real time crosses a second boundary.
      */
     qtest_clock_step(qts, 5 * 1000000000LL);
 
@@ -4140,24 +4018,25 @@ static void test_the_clock_storage_holds_a_write(const void *data)
 
     /*
      * The cells below the clock are real storage: SGI's driver probes the
-     * part type through them, and zero answers identify a Dallas part with
-     * a register set this device does not have.
+     * part type through them, and zero answers identify a Dallas part with a
+     * register set this device does not have.
      */
     qtest_writeb(qts, BYTEBUS_DEV0 + 0x0b, 0x00);
     qtest_writeb(qts, BYTEBUS_DEV0 + 0x06, 0xff);
     qtest_writeb(qts, BYTEBUS_DEV0 + 0x0b, 0x80);
     g_assert_cmphex(qtest_readb(qts, BYTEBUS_DEV0 + 0x06), ==, 0xff);
 
-    /* The ends of the storage, so a window that stops short is caught here. */
+    /* The ends of the storage, so a window that stops short is caught
+     * here. */
     qtest_writeb(qts, BYTEBUS_DEV0 + 0x0000, 0x5a);
     qtest_writeb(qts, BYTEBUS_DEV0 + 0x7ff7, 0xa5);
     g_assert_cmphex(qtest_readb(qts, BYTEBUS_DEV0 + 0x0000), ==, 0x5a);
     g_assert_cmphex(qtest_readb(qts, BYTEBUS_DEV0 + 0x7ff7), ==, 0xa5);
 
     /*
-     * Consecutive cells are distinct, and the storage does not alias the clock
-     * above it: the byte below the control register keeps its own value while
-     * the control register holds another.
+     * Consecutive cells are distinct, and the storage does not alias the
+     * clock above it: the byte below the control register keeps its own
+     * value while the control register holds another.
      */
     qtest_writeb(qts, RTC_CONTROL, RTC_CSR_READ);
     g_assert_cmphex(qtest_readb(qts, BYTEBUS_DEV0 + 0x7ff7), ==, 0xa5);
@@ -4167,10 +4046,8 @@ static void test_the_clock_storage_holds_a_write(const void *data)
     qtest_quit(qts);
 }
 
-/*
- * Battery power outlasts a process: given a drive, storage must read back
- * across a second, independent QEMU process.
- */
+/* Battery power outlasts a process: given a drive, storage must read back
+ * across a second, independent QEMU process. */
 static void test_the_storage_persists_across_a_process_with_a_drive(
     const void *data)
 {
@@ -4196,10 +4073,8 @@ static void test_the_storage_persists_across_a_process_with_a_drive(
     qtest_writeb(qts, BYTEBUS_DEV0 + 0x0100, 0xc3);
     qtest_quit(qts);
 
-    /*
-     * A second process, not a reset inside the first -- the property this
-     * test exists to check.
-     */
+    /* A second process, not a reset inside the first. This is the property this
+     * test exists to check. */
     qts = qtest_init(args);
     sn0_ioc3_attach(qts);
     g_assert_cmphex(qtest_readb(qts, BYTEBUS_DEV0 + 0x0100), ==, 0xc3);
@@ -4239,11 +4114,9 @@ static void rtc_assert(QTestState *qts, const RtcTime *t)
 
 /*
  * February follows the part's rule, not the calendar's: 29 days when the
- * year cell is a multiple of four (docs/datasheets/timekeeper.md, "The
- * part's calendar and leap-year rule", inferred strongly there). One second
- * after 28 February 23:59:59 is the 29th in cell years 0x56 and 0x60 (2026
- * and 2030, not leap years) and 1 March in 0x54 and 0x58 (2024 and 2028,
- * which are).
+ * year cell is a multiple of four. One second after 28 February 23:59:59 is
+ * the 29th in cell years 0x56 and 0x60 (2026 and 2030, not leap years) and 1
+ * March in 0x54 and 0x58 (2024 and 2028, which are).
  */
 static void test_the_clock_february_follows_the_part(const void *data)
 {
@@ -4313,12 +4186,12 @@ static void test_the_clock_month_carries_into_the_year(const void *data)
 }
 
 /*
- * The clock across a stopped emulator ("The clock across power loss and
- * host restarts"). The storage image is 32 KB; beside it, the reference
- * drive the model finds by the name "<storage drive>-clock" holds the time
- * of the save. Every case runs under a fixed -rtc base on the virtual
- * clock, so the host time a second process starts at is chosen, and the
- * elapsed time with it.
+ * The clock across a stopped emulator ("The clock across power loss and host
+ * restarts"). The storage image is 32 KB; beside it, the reference drive the
+ * model finds by the name "<storage drive>-clock" holds the time of the
+ * save. Every case runs under a fixed -rtc base on the virtual clock, so the
+ * host time a second process starts at is chosen, and the elapsed time with
+ * it.
  */
 #define RTC_IMAGE_BYTES   0x8000
 /* The smallest reference drive the model takes, what a launcher creates. */
@@ -4412,9 +4285,9 @@ static void rtc_files_save(const RtcFiles *f, const RtcTime *t,
 /*
  * A reference drive too small for its 16-byte record would fail every save
  * and lose the elapsed time without saying so; realize refuses it instead.
- * The block layer reports a raw file's length in whole 512-byte sectors,
- * and reads past the end of a short file as zeros, so the one size it
- * can see as too small is an empty file.
+ * The block layer reports a raw file's length in whole 512-byte sectors, and
+ * reads past the end of a short file as zeros, so the one size it can see as
+ * too small is an empty file.
  */
 static void test_the_clock_refuses_a_short_reference(const void *data)
 {
@@ -4507,10 +4380,8 @@ static void test_the_clock_persists_across_a_process(const void *data)
     rtc_files_free(&f);
 }
 
-/*
- * The restore counts elapsed time in the part's calendar: twenty seconds
- * after 28 February 23:59:50 in cell year 0x56 is the 29th.
- */
+/* The restore counts elapsed time in the part's calendar: twenty seconds
+ * after 28 February 23:59:50 in cell year 0x56 is the 29th. */
 static void test_the_clock_restore_follows_the_part(const void *data)
 {
     static const RtcTime saved = { 0x56, 0x02, 0x28, 0x23, 0x59, 0x50 };
@@ -4530,8 +4401,7 @@ static void test_the_clock_restore_follows_the_part(const void *data)
  * The fallbacks. Without a reference the saved calendar comes back as it
  * was; with the stop bit set in the saved seconds the oscillator was
  * stopped, so no time passes; clock cells all zero, or not a date in BCD,
- * were never saved, so the clock follows the host and storage is left
- * alone.
+ * were never saved, so the clock follows the host and storage is left alone.
  */
 static void test_the_clock_restore_fallbacks(const void *data)
 {
@@ -4601,13 +4471,13 @@ static void rtc_image_assert(const RtcFiles *f, const RtcTime *t)
 }
 
 /*
- * The stop bit, bit 7 of the seconds register, stops the oscillator
- * (M48T35 datasheet, section 3.3 and Table 5). A stopped part neither
- * counts while the machine runs nor while it is off, and the bit is part
- * of the battery-backed register, so it reads back and a save keeps it.
- * Restored stopped, run five seconds, stop: the image still holds the
- * stopped calendar with the bit set, and a restart twenty seconds of host
- * time later adds nothing.
+ * The stop bit, bit 7 of the seconds register, stops the oscillator (M48T35
+ * datasheet, section 3.3 and Table 5). A stopped part neither counts while
+ * the machine runs nor while it is off, and the bit is part of the
+ * battery-backed register, so it reads back and a save keeps it. Restored
+ * stopped, run five seconds, stop: the image still holds the stopped
+ * calendar with the bit set, and a restart twenty seconds of host time later
+ * adds nothing.
  */
 static void test_the_clock_stays_stopped_across_a_save(const void *data)
 {
@@ -4628,7 +4498,8 @@ static void test_the_clock_stays_stopped_across_a_save(const void *data)
     rtc_files_free(&f);
 }
 
-/* A restored stopped clock reads its calendar, bit set, and does not count. */
+/* A restored stopped clock reads its calendar, bit set, and does not
+ * count. */
 static void test_the_clock_restored_stopped_does_not_count(const void *data)
 {
     static const RtcTime stopped = { 0x60, 0x01, 0x01, 0x12, 0x00, 0xb3 };
@@ -4646,9 +4517,9 @@ static void test_the_clock_restored_stopped_does_not_count(const void *data)
 }
 
 /*
- * A guest stops the clock by writing the seconds register with bit 7 set
- * and starts it by writing it clear. A completed write that leaves the
- * seconds register alone leaves the bit as it was.
+ * A guest stops the clock by writing the seconds register with bit 7 set and
+ * starts it by writing it clear. A completed write that leaves the seconds
+ * register alone leaves the bit as it was.
  */
 static void test_the_clock_stop_bit_a_guest_writes(const void *data)
 {
@@ -4687,9 +4558,9 @@ static void test_the_clock_stop_bit_a_guest_writes(const void *data)
 }
 
 /*
- * Battery-backed: firmware initializes storage, warm-resets, and expects
- * its records on the next pass. What a reset must clear is only an
- * in-flight transaction, or the next guest inherits a stopped clock.
+ * Battery-backed: firmware initializes storage, warm-resets, and expects its
+ * records on the next pass. What a reset must clear is only an in-flight
+ * transaction, or the next guest inherits a stopped clock.
  */
 static void test_the_storage_survives_a_system_reset(const void *data)
 {
@@ -4743,10 +4614,8 @@ static uint64_t onewire_search_rom_node(QTestState *qts, uint64_t node)
     return rom;
 }
 
-/*
- * Two boards with one serial merge two nodes in the firmware's eyes; the
- * parts must differ while each stays well-formed.
- */
+/* Two boards with one serial merge two nodes in the firmware's eyes; the
+ * parts must differ while each stays well-formed. */
 static void test_each_node_has_its_own_onewire_identity(const void *data)
 {
     QTestState *qts = qtest_init(
@@ -4767,8 +4636,8 @@ static void test_each_node_has_its_own_onewire_identity(const void *data)
     node1 = onewire_search_rom_node(qts, NODE_STRIDE);
 
     /* Each is a well-formed part before they are compared: right family, the
-     * required serial prefix, and a ROM CRC that closes over all eight bytes.
-     */
+     * required serial prefix, and a ROM CRC that closes over all eight
+     * bytes. */
     g_assert_cmphex(node0 & 0xff, ==, 0x91);            /* family */
     g_assert_cmphex(node1 & 0xff, ==, 0x91);
     g_assert_cmphex((node0 >> 44) & 0xfff, ==, 0x5e7);  /* serial prefix */
@@ -4788,11 +4657,9 @@ static void test_each_node_has_its_own_onewire_identity(const void *data)
     qtest_quit(qts);
 }
 
-/*
- * Two nodes, two timekeepers, no aliasing: one part behind both windows
+/* Two nodes, two timekeepers, no aliasing: one part behind both windows
  * shows phantom records on the other node while every single-node test
- * passes.
- */
+ * passes. */
 static void test_each_node_has_its_own_storage(const void *data)
 {
     QTestState *qts = qtest_init(
@@ -4827,9 +4694,9 @@ static void test_the_transceiver_answers_at_one_address(const void *data)
     sn0_ioc3_attach(qts);
 
     /*
-     * Every address: both drivers stop at the first that answers, so a
-     * model answering everywhere is found at address zero and no boot
-     * notices. The count is the assertion.
+     * Every address: both drivers stop at the first that answers, so a model
+     * answering everywhere is found at address zero and no boot notices. The
+     * count is the assertion.
      */
     for (phy = 0; phy < 32; phy++) {
         if (phy_read(qts, phy, 2) != 0xffff) {
@@ -4847,10 +4714,8 @@ static void test_the_transceiver_identity(const void *data)
 
     sn0_ioc3_attach(qts);
 
-    /*
-     * The exact words: an identity passing the cruder scan still fails the
-     * table match that decides which driver binds.
-     */
+    /* The exact words: an identity passing the cruder scan still fails the
+     * table match that decides which driver binds. */
     g_assert_cmphex(phy_read(qts, PHY_ADDRESS, 2), ==, 0x2000);
     g_assert_cmphex(phy_read(qts, PHY_ADDRESS, 3), ==, 0x5c01);
 }
@@ -4861,10 +4726,8 @@ static void test_the_transceiver_reset_is_self_clearing(const void *data)
 
     sn0_ioc3_attach(qts);
 
-    /*
-     * A driver writes reset and then polls for the bit to clear. Left set, it
-     * holds the attach in a loop until the timeout expires.
-     */
+    /* A driver writes reset and then polls for the bit to clear. Left set,
+     * it holds the attach in a loop until the timeout expires. */
     phy_write(qts, PHY_ADDRESS, 0, 0x8000);
     g_assert_cmphex(phy_read(qts, PHY_ADDRESS, 0) & 0x8000, ==, 0);
 }
@@ -4877,10 +4740,8 @@ static void test_the_transceiver_reports_a_usable_link(const void *data)
 
     sn0_ioc3_attach(qts);
 
-    /*
-     * The driver's whole route to a media type, asserted together: each
-     * step alone can pass with the guest reporting no media.
-     */
+    /* The driver's whole route to a media type, asserted together: each step
+     * alone can pass with the guest reporting no media. */
     phy_write(qts, PHY_ADDRESS, 0, 0x1000);   /* enable autonegotiation */
 
     /* Read twice, as the driver does, and assert the union has a link. */
@@ -4908,7 +4769,7 @@ static void test_the_link_settles_when_polled(const void *data)
     sn0_ioc3_attach(qts);
 
     /*
-     * phylib never writes the control register -- the link must come up
+     * phylib never writes the control register. The link must come up
      * unprompted. The first read finds it settling, the bench state the
      * reset-value diagnostic depends on, and arms the settle.
      */
@@ -4937,7 +4798,7 @@ static void test_the_transceiver_configuration_register(const void *data)
 
     /*
      * Read-modify-written once on a media change and never read back for a
-     * decision, so storage is the whole contract -- and the only place it is
+     * decision, so storage is the whole contract and the only place it is
      * checked at all, since no boot depends on it.
      */
     phy_write(qts, PHY_ADDRESS, 0x17, 0x0526);
@@ -4948,10 +4809,10 @@ static void test_the_transceiver_configuration_register(const void *data)
 }
 
 /*
- * The reset values SGI's transceiver test compares, which are also the
- * public DP83840A datasheet's defaults -- two independent sources.
- * Asserted through the diagnostic's masks: bits outside them are
- * don't-care and nothing has checked them.
+ * The reset values SGI's transceiver test compares, which are also the public
+ * DP83840A datasheet's defaults. These are two independent sources. Asserted
+ * through the diagnostic's masks: bits outside them are don't-care and
+ * nothing has checked them.
  */
 static void test_the_transceiver_reset_values(const void *data)
 {
@@ -4969,19 +4830,17 @@ static void test_the_transceiver_reset_values(const void *data)
     g_assert_cmphex(phy_read(qts, PHY_ADDRESS, 0x1c) & 0x003d, ==, 0x0039);
 
     /*
-     * Read before any control write, as the diagnostic reads them: no
-     * link, no negotiation, no partner -- a bench with no cable. A model
-     * with the link already live answered these wrong.
-     */
+ * Read before any control write, as the diagnostic reads them: no link, no
+ * negotiation, no partner. This is a bench with no cable. A model with the
+ * link already live answered these wrong.
+ */
     g_assert_cmphex(phy_read(qts, PHY_ADDRESS, 0x01) & 0xf83f, ==, 0x7809);
     g_assert_cmphex(phy_read(qts, PHY_ADDRESS, 0x05) & 0xe3ff, ==, 0x0000);
     g_assert_cmphex(phy_read(qts, PHY_ADDRESS, 0x06) & 0x001f, ==, 0x0000);
 }
 
-/*
- * Only the firmware's transceiver test reaches this register, so this is
- * the only place its contract is checked.
- */
+/* Only the firmware's transceiver test reaches this register, so this is the
+ * only place its contract is checked. */
 static void test_the_transceiver_loopback_register(const void *data)
 {
     ioc3_reset();
@@ -4992,9 +4851,10 @@ static void test_the_transceiver_loopback_register(const void *data)
     g_assert_cmphex(phy_read(qts, PHY_ADDRESS, 0x18) & 0x0b00, ==, 0x0b00);
 
     /*
-     * And the clear, which the diagnostic issues next. A model answering with
-     * a constant that happened to carry these bits would pass the write above
-     * and fail here, and the firmware's failure line names only the set.
+     * And the clear, which the diagnostic issues next. A model answering
+     * with a constant that happened to carry these bits would pass the write
+     * above and fail here, and the firmware's failure line names only the
+     * set.
      */
     phy_write(qts, PHY_ADDRESS, 0x18, 0x0000);
     g_assert_cmphex(phy_read(qts, PHY_ADDRESS, 0x18) & 0x0b00, ==, 0x0000);
@@ -5006,16 +4866,14 @@ static void test_pci_status_reset_value(const void *data)
 
     /*
      * IRIX compares this dword whole and fails the slot on a zero Status
-     * half; only Status is asserted -- the board pre-enables Command and
-     * the miniroot clears it first.
+     * half; only Status is asserted. The board pre-enables Command and the
+     * miniroot clears it first.
      */
     g_assert_cmphex(qtest_readl(qts, CFG0(PCI_IOC3_DEVICE) + PCI_COMMAND) >> 16,
                     ==, 0x0280u);
 
-    /*
-     * Capability bits read-only, error latches W1C from zero: all-ones
-     * leaves Status exactly 0x0280.
-     */
+    /* Capability bits read-only, error latches W1C from zero: all-ones
+     * leaves Status exactly 0x0280. */
     qtest_writel(qts, CFG0(PCI_IOC3_DEVICE) + PCI_COMMAND, 0xffffffffu);
     g_assert_cmphex(qtest_readl(qts, CFG0(PCI_IOC3_DEVICE) + PCI_COMMAND) >> 16,
                     ==, 0x0280u);
@@ -5071,9 +4929,9 @@ static void test_the_board_is_a_property(const void *data)
 /*
  * What a board fits, as the bus can see it. Each probe writes a register the
  * sub-device stores in and reads it back: a window with nothing behind it
- * swallows the write and reads zero, so one probe answers both ways round and
- * neither answer is a bare "reads zero", which half the live registers here
- * also do.
+ * swallows the write and reads zero, so one probe answers both ways round
+ * and neither answer is a bare "reads zero", which half the live registers
+ * here also do.
  */
 static bool serial_port_is_fitted(QTestState *qts, uint64_t port)
 {
@@ -5159,10 +5017,8 @@ static void assert_ioc3_population(QTestState *qts, bool eth, bool serial_a,
                     g_str_equal(timekeeper, "ds1685"));
 }
 
-/*
- * The semantic population is instance data.  Keep the MENET4 identity while
- * asking for a population that its subsystem lookup would never select.
- */
+/* The semantic population is instance data. Keep the MENET4 identity while
+ * asking for a population that its subsystem lookup would never select. */
 static void test_an_explicit_population_is_independent_of_identity(
     const void *data)
 {
@@ -5258,11 +5114,8 @@ static void test_population_rejects_an_unknown_timekeeper(const void *data)
     assert_qemu_rejects(args, "IOC3 timekeeper kind 3 is unsupported");
 }
 
-/*
- * A board record the layout rules forbid is refused at realize
- * (docs/datasheets/bridge.md, "The record layout, and every constraint on
- * building it"; the IOC3 stores the same layout for an add-in card).
- */
+/* A board record the layout rules forbid is refused at realize (the IOC3
+ * stores the same layout for an add-in card). */
 typedef struct BoardRecordRefusal {
     const char *device;
     const char *message;
@@ -5333,8 +5186,8 @@ typedef struct BoardPopulation {
 
 /*
  * Every board mainline Linux names, and the catch-all it uses for the rest
- * (drivers/mfd/ioc3.c, v7.2-rc7, commit db2ddb8). The Octane's own clock is a
- * DS1685 at a different pair of byte-bus selects, not the M48T35 modelled
+ * (drivers/mfd/ioc3.c, v7.2-rc7, commit db2ddb8). The Octane's own clock is
+ * a DS1685 at a different pair of byte-bus selects, not the M48T35 modelled
  * here, so its timekeeper column is false: what the model must not do is
  * answer that window with the wrong part.
  */
@@ -5387,13 +5240,11 @@ static void test_a_board_fits_its_own_sub_devices(const void *data)
 
 /*
  * TEST_IOC3_DEVICE above is a synthetic slot: the Origin 200's real PCI
- * backplane carries option slots 5 through 7 only (docs/machines/
- * origin200.md), with devices 0-2 fixed to the two onboard SCSI adapters
- * and the system-board IOC3. This group instead attaches at device 6, a
- * real free option slot, to exercise the add-in card this project's own
- * datasheet documents (docs/datasheets/sgi-cad-duo-pci-card.md) the way it
- * is actually meant to be used: alongside the native IOC3 the machine
- * always builds, not in place of it.
+ * backplane carries option slots 5 through 7 only, with devices 0-2 fixed to
+ * the two onboard SCSI adapters and the system-board IOC3. This group
+ * instead attaches at device 6, a real free option slot, to exercise the
+ * add-in card the way it is actually meant to be used: alongside the native
+ * IOC3 the machine always builds, not in place of it.
  */
 #define ADDIN_IOC3_DEVICE   6
 #define BRIDGE_DEVICE6      0xa00000  /* device 2's window plus 4 x 1 MB */
@@ -5409,7 +5260,7 @@ static void test_a_board_fits_its_own_sub_devices(const void *data)
 /*
  * 0xffff is SGI_IOC3_SUBSYS_CAD_DUO_PCI_CARD_UNCAPTURED
  * (include/hw/misc/sgi-ioc3.h): the real card's own subsystem identity has
- * never been captured, so this is the explicit "not observed" placeholder
+ * never been observed, so this is the explicit "not observed" placeholder
  * rather than a guessed value or the class's IP29 System Board default,
  * which would misrepresent the add-in card as a second system board.
  */

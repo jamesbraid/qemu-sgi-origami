@@ -1,29 +1,15 @@
 /*
  * SPDX-License-Identifier: GPL-2.0-or-later
- *
- * The stock PROM's cross-chassis rendezvous primitives on the dual-module
- * Origin 200: vector-routed PIO to a peer Hub that has no node number yet,
- * and direct NASID-qualified access to one that does.
- *
- * These re-home five of the eight bare-metal cells
- * tests/functional/mips64/test_sn0_smp.py carried under
- * synthesized-firmware=on, now that synthesized firmware -- the thing that
- * used to assign every Hub its node number before the guest code in these
- * cells ran a single instruction -- is deleted. Each cell's own MIPS
- * program is unchanged; what changed is how a CPU learns which node and
- * slice it is (SN0_NODE_ID_PHYS and its own Hub-local processor number,
- * the way sn0-cross-node-test.c already established, rather than reading
- * its own Hub's node field, which a real PROM has not assigned yet
- * either -- these cells never depended on that field being right, only on
- * every CPU behaving as its assigned role would), and that the qtest
- * harness programs both Hubs' NASIDs before releasing any CPU, the way
- * the PROM's own node-numbering phase precedes every one of these
- * exchanges. Two vector-routed cells (the port-error read and the I/O-
- * protect write) do not depend on either Hub's programmed number at all
- * -- that is the reviewed point of vector routing, reaching a neighbor
- * Hub by the route rather than its number -- but the harness still
- * programs both, since its own verification reads a few of them by
- * node-explicit physical address, which does.
+ * Dual-module Origin 200 PROM rendezvous: vector PIO reaches an unnumbered
+ * peer Hub; NASID-qualified PIO reaches one after numbering.
+ * Five of eight bare-metal tests moved from
+ * tests/functional/mips64/test_sn0_smp.py after synthesized-firmware=on was
+ * removed. Their MIPS programs are unchanged. CPUs take node and slice from
+ * SN0_NODE_ID_PHYS and the Hub-local processor number, as in
+ * sn0-cross-node-test.c; the PROM has not yet set each Hub's node field.
+ * Both NASIDs are set before CPU release, as the PROM does before these
+ * exchanges. Vector port-error reads and I/O-protect writes need no NASID;
+ * the host checks some results through node-qualified physical addresses.
  */
 
 #include "qemu/osdep.h"
@@ -69,12 +55,10 @@
 #define IO_PROTECT_WRITE_DONE  0x52
 
 /*
- * Vector routing: a zero route reaches the peer directly connected over
- * the CrayLink, by wire rather than by programmed number (Hub network-
- * interface datasheet, "Vector routing"). @target_address is the target
- * register's own offset from HUB_NI_BASE, ORed into the parameters word
- * unsigned -- it can carry bit 15 (the port-error register's offset
- * does), so it must not sign-extend the way an ADDIU load would.
+ * Route zero reaches the direct CrayLink peer before node numbering.
+ * OR @target_address, the peer register's HUB_NI_BASE offset, into the
+ * parameters word unsigned: the port-error offset sets bit 15, which an
+ * ADDIU load would sign-extend.
  */
 static void sn0_emit_vector_read(SN0Image *p, unsigned int hub_reg,
                                  unsigned int target_reg,
@@ -88,8 +72,8 @@ static void sn0_emit_vector_read(SN0Image *p, unsigned int hub_reg,
 }
 
 /*
- * Every cell in this file starts the same way: 64-bit kernel mode, this
- * CPU's own Hub-local NI and PI blocks in two registers.
+ * Every cell in this file starts the same way: 64-bit kernel mode, this CPU's
+ * own Hub-local NI and PI blocks in two registers.
  */
 static void sn0_emit_prologue(SN0Image *p, unsigned int ni_reg,
                               unsigned int pi_reg)
@@ -101,10 +85,10 @@ static void sn0_emit_prologue(SN0Image *p, unsigned int ni_reg,
 }
 
 /*
- * Global identity (0-3): the node the host seeded at SN0_NODE_ID_PHYS,
- * or-ed with this CPU's own Hub-local slice. Replaces reading the local
- * Hub's own node field, which no PROM has programmed yet in any of these
- * cells -- these are exactly the stock PROM's pre-numbering exchanges.
+ * Global identity (0-3): the node the host seeded at SN0_NODE_ID_PHYS, or-ed
+ * with this CPU's own Hub-local slice. Replaces reading the local Hub's own
+ * node field, which no PROM has programmed yet in any of these cells. These
+ * are exactly the stock PROM's pre-numbering exchanges.
  */
 static void sn0_emit_identity(SN0Image *p, unsigned int reg)
 {
@@ -143,10 +127,9 @@ static uint64_t wait_word(QTestState *qts, uint64_t addr, unsigned int seconds)
 }
 
 /*
- * Node zero's A slice (identity 0) vector-reads the peer Hub's LLP port
- * error register, the read the stock PROM's link diagnostic makes; every
- * other CPU parks. docs/datasheets/hub-network-interface.md's reviewed
- * prescription is that the register reads zero and does not fault.
+ * Node zero's A slice (identity 0) vector-reads the peer Hub's LLP port error
+ * register, the read the stock PROM's link diagnostic makes; every other CPU
+ * parks. The register reads zero and does not fault.
  */
 static void build_peer_port_error_read(SN0Image *p)
 {
@@ -195,10 +178,10 @@ static void test_peer_port_error_vector_read_completes_clean(const void *data)
 }
 
 /*
- * The link diagnostic's first vector operation, before its reads: a
- * WRITE granting itself cross-link PIO access to the peer's PIO
- * protection register. The completion must latch clean, the write
- * response type rather than an address error.
+ * The link diagnostic's first vector operation, before its reads: a WRITE
+ * granting itself cross-link PIO access to the peer's PIO protection
+ * register. The completion must latch clean, the write response type rather
+ * than an address error.
  */
 static void build_peer_io_protect_write(SN0Image *p)
 {
@@ -259,14 +242,14 @@ test_peer_io_protect_vector_write_completes_clean(const void *data)
 #define REMOTE_SCRATCH_TIMEOUT         0x3f
 
 /*
- * Node zero writes directly into node one's own Hub scratch register by
- * its NASID-qualified physical address -- the stock PROM's other way to
- * reach a neighbor, once that neighbor's number is known, rather than by
- * vector route -- and requires the peer to answer inside an RTC-ticks
- * deadline. Node one only polls its own local register (the one node
- * zero just wrote) and answers on its own scratch word. Both slice-B
- * CPUs park; both slice-A CPUs run this same image and take one of the
- * two roles by their own identity.
+ * Node zero writes directly into node one's own Hub scratch register by its
+ * NASID-qualified physical address (the stock PROM's other way to reach a
+ * neighbor, once that neighbor's number is known, rather than by vector
+ * route)
+ * and requires the peer to answer inside an RTC-ticks deadline. Node one
+ * only polls its own local register (the one node zero just wrote) and
+ * answers on its own scratch word. Both slice-B CPUs park; both slice-A CPUs
+ * run this same image and take one of the two roles by their own identity.
  */
 static void build_remote_scratch_notification(SN0Image *p)
 {
@@ -277,10 +260,10 @@ static void build_remote_scratch_notification(SN0Image *p)
     sn0_emit_li64(p, SN0_R_S2, UINT64_C(0x9200000001000000) |
                               HUB_PI_RT_COUNT);
     /*
-     * s3: node one's NI_SCRATCH_0 by its NASID-qualified physical
-     * address (NASID 1 is physical bit 32, this file's local-window form
-     * with that bit set on top, the way sn0-fabric-test.c's own renumber
-     * helper reaches a specific Hub's local window).
+     * s3: node one's NI_SCRATCH_0 by its NASID-qualified physical address
+     * (NASID 1 is physical bit 32, this file's local-window form with that
+     * bit set on top, the way sn0-fabric-test.c's own renumber helper reaches
+     * a specific Hub's local window).
      */
     sn0_emit_li64(p, R_S3, UINT64_C(0x9200000101000000) |
                           HUB_NI_SCRATCH_0);
@@ -395,11 +378,11 @@ static void test_remote_hub_scratch_write_schedules_peer(const void *data)
 
 /*
  * Both nodes' A slices publish an identity and ARMED, entirely by vector
- * route -- no NASID needed, the way the stock PROM's own pre-numbering
+ * route, no NASID needed, the way the stock PROM's own pre-numbering
  * handoff works. Node zero then waits for the peer's ARMED, starts an
  * RTC-ticks deadline, and answers GO; node one answers GO in turn, then
- * raises interrupt 114 on its own PI block as its last, device-side
- * action. Node zero must see DONE inside the deadline.
+ * raises interrupt 114 on its own PI block as its last, device-side action.
+ * Node zero must see DONE inside the deadline.
  */
 static void build_peer_scratch_deadline(SN0Image *p)
 {
@@ -510,9 +493,9 @@ static void run_peer_scratch_deadline(bool thread_multi)
     hub1 = HUB_BY_NODE + HUB_NODE_STRIDE;
 
     /*
-     * Node one raises interrupt 114 only after it has seen the
-     * coordinator's DONE; the coordinator's TIMEOUT is the only other
-     * terminal state. Wait for either.
+     * Node one raises interrupt 114 only after it has seen the coordinator's
+     * DONE; the coordinator's TIMEOUT is the only other terminal state. Wait
+     * for either.
      */
     for (;;) {
         uint64_t pend1 = qtest_readq(qts, hub1 + HUB_PI_INT_PEND1);
@@ -590,8 +573,8 @@ static void sn0_emit_dsll32(SN0Image *p, unsigned int rd, unsigned int rt,
 }
 
 /*
- * Leaves 1 in t0 when this CPU's local PI_INT_PEND1 carries the
- * rendezvous interrupt (bank 1, bit 50), 0 otherwise.
+ * Leaves 1 in t0 when this CPU's local PI_INT_PEND1 carries the rendezvous
+ * interrupt (bank 1, bit 50), 0 otherwise.
  */
 static void sn0_emit_pend1_bit_test(SN0Image *p, unsigned int pi_reg)
 {
@@ -615,12 +598,12 @@ static void sn0_emit_wait_nonzero(SN0Image *p, unsigned int base_reg,
 /*
  * The stock PROM's slice-pair rendezvous, as its four-CPU/two-node boot
  * actually runs it: bank 1's interrupt 114 set by slice A and cleared by
- * slice B through PI_INT_MODIFY, each side bounded-polling PI_INT_PEND1
- * for the other's edge, with further bank-1 bits pending across every
- * poll. Node one's pair does not participate; its CPUs prove that the
- * rendezvous does not starve them across repeated rounds. All local Hub
- * traffic, so no NASID needed for the guest code; the harness still
- * programs both, since it checks node one's Hub by node-explicit address.
+ * slice B through PI_INT_MODIFY, each side bounded-polling PI_INT_PEND1 for
+ * the other's edge, with further bank-1 bits pending across every poll. Node
+ * one's pair does not participate; its CPUs prove that the rendezvous does
+ * not starve them across repeated rounds. All local Hub traffic, so no NASID
+ * needed for the guest code; the harness still programs both, since it checks
+ * node one's Hub by node-explicit address.
  */
 static void build_pending_read_rendezvous(SN0Image *p, uint32_t wait_limit)
 {
@@ -643,18 +626,17 @@ static void build_pending_read_rendezvous(SN0Image *p, uint32_t wait_limit)
     select_b = sn0_emit_branch(p, SN0_OPC_BEQ, SN0_R_S1, SN0_R_T0);
 
     /*
-     * Node one's pair: record that this CPU ran at all, without ever
-     * giving up. The old form stopped watching once PEND_READ_DONE_A
-     * reached PEND_READ_ROUNDS, so a host that delayed this CPU's own
-     * thread past the point where slice A and B finished every round
-     * between themselves left fair[] at zero even though this CPU was
-     * never actually starved, only scheduled late -- indistinguishable
-     * from a real starvation bug at the assertion. Looping forever
-     * instead means the one fact under test, whether this CPU ever
-     * gets a timeslice, survives however long the host makes it wait;
-     * a CPU the model truly never schedules still leaves its slot at
-     * zero no matter how long the host side is willing to poll.
-     */
+ * Node one's pair: record that this CPU ran at all, without ever giving up.
+ * The old form stopped watching once PEND_READ_DONE_A reached
+ * PEND_READ_ROUNDS, so a host that delayed this CPU's own thread past the
+ * point where slice A and B finished every round between themselves left
+ * fair[] at zero even though this CPU was never actually starved, only
+ * scheduled late. This is indistinguishable from a real starvation bug at the
+ * assertion. Looping forever instead means the one fact under test, whether
+ * this CPU ever gets a timeslice, survives however long the host makes it
+ * wait; a CPU the model truly never schedules still leaves its slot at zero
+ * no matter how long the host side is willing to poll.
+ */
     sn0_emit(p, (SN0_R_S0 << 21) | (SN0_R_S2 << 16) | (R_S3 << 11) |
              0x2d);                                  /* daddu s3, s0, s2 */
     sn0_emit_wait_nonzero(p, SN0_R_S0, PEND_READ_ROUND);
@@ -666,8 +648,8 @@ static void build_pending_read_rendezvous(SN0Image *p, uint32_t wait_limit)
     sn0_patch_branch(p, branch, observe);
 
     /*
-     * Slice A: publish the interrupt each round, then bounded-poll for
-     * B's acknowledging clear.
+     * Slice A: publish the interrupt each round, then bounded-poll for B's
+     * acknowledging clear.
      */
     sn0_patch_branch(p, select_a, p->pos);
     sn0_emit_i(p, SN0_OPC_ORI, SN0_R_ZERO, SN0_R_S2, 1);   /* s2 = round */
@@ -810,13 +792,12 @@ static void run_pending_read_rendezvous(uint32_t wait_limit, bool thread_multi)
 
     /*
      * Node one's pair now spins forever recording its own progress (see
-     * build_pending_read_rendezvous), so a slow host scheduler only
-     * delays when fair[2]/fair[3] go nonzero rather than erasing the
-     * one chance those CPUs had to prove it. Poll for both for up to
-     * 30 s, generous next to ordinary scheduling delay under a loaded
-     * merge-queue runner; a CPU the model genuinely never schedules
-     * still leaves its slot at zero and still fails the assertion
-     * below.
+     * build_pending_read_rendezvous), so a slow host scheduler only delays
+     * when fair[2]/fair[3] go nonzero rather than erasing the one chance
+     * those CPUs had to prove it. Poll for both for up to 30 s, generous next
+     * to ordinary scheduling delay under a loaded merge-queue runner; a CPU
+     * the model genuinely never schedules still leaves its slot at zero and
+     * still fails the assertion below.
      */
     {
         int64_t deadline = g_get_monotonic_time() + 30 * G_TIME_SPAN_SECOND;

@@ -1,5 +1,5 @@
 /*
- * libqos PCI bindings for the SGI Bridge head
+ * libqos PCI interface for the SGI Bridge.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
@@ -12,14 +12,10 @@
 #include "qgraph.h"
 
 /*
- * The head: a Bridge with nothing above it but the "none" machine, and the
- * memory a card transfers into. Neither is placed by a board, so the bus
- * maps both itself and is the only thing that decides where they sit.
- *
- * The machine is left running, as a PC head is. Under the qtest accelerator
- * the processor never executes either way, but the run state is not inert:
- * a stopped machine hands nothing to a network backend, and a migration
- * destination started with -S stays stopped after the transfer arrives.
+ * The bus maps its Bridge and transfer memory on -M none; no board places
+ * them. Leave the machine running as on PC: qtest executes no processor, but
+ * a stopped machine starves network backends, and a -S migration destination
+ * remains stopped after transfer.
  */
 #define QPCI_SGI_BRIDGE_HEAD \
     "-cpu R10000 " \

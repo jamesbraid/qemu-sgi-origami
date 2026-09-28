@@ -1,16 +1,10 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
+/* Test Origin 2000 node PROM storage and AMD-style flash commands. */
 /*
- * The Origin 2000's node PROMs: test-owned bytes through the flash chip's own
- * command set.
- *
- * Each node carries one byte-wide AMD-style part (hw/block/pflash_cfi02.c),
- * so this file owns both what the machine does with four of them -- one
- * store per node, kept apart, written back to its own file -- and what the
- * chip itself does that only a machine wiring one up can show: the reset
- * back to read-array mapping, and a read-only backing store turning every
- * mutation into a logged no-op instead of a silent one. Those last three
- * cases were qualified on the sh4 r2d board, the only other in-tree machine
- * with this part on it, which cost a whole second emulator to run.
+ * Each node has one byte-wide pflash_cfi02 part and a separate backing file.
+ * System reset restores read-array mode; read-only backing makes mutations
+ * logged no-ops. sh4 r2d is the only other in-tree machine with this part;
+ * checking these behaviors there required a second emulator.
  */
 #include "qemu/osdep.h"
 #include "libqtest.h"
@@ -91,7 +85,7 @@ static void flash_chip_erase(QTestState *qts, unsigned int node)
  * An erase in progress toggles DQ6 on every read, so two reads in a row agree
  * only once it has finished. The part publishes its own deadlines: a sector
  * erase waits 50 us for further sector commands and then 512 us per sector, a
- * chip erase 4096 ms. Step the virtual clock past the one asked for -- this
+ * chip erase 4096 ms. Step the virtual clock past the one asked for. This
  * machine's real-time counter ticks throughout, so stepping to the next timer
  * deadline arrives at that counter rather than at the flash.
  */
@@ -170,9 +164,9 @@ static char *make_log_path(const char *stem)
 }
 
 /*
- * Whether one node's chip is mapped read-array, as the machine itself
- * reports it: a part in read-array answers fetches from its own storage and
- * the flat view calls that romd; any command mode takes the mapping away.
+ * Whether one node's chip is mapped read-array, as the machine itself reports
+ * it: a part in read-array answers fetches from its own storage and the flat
+ * view calls that romd; any command mode takes the mapping away.
  */
 static void assert_flash_read_array(QTestState *qts, unsigned int node,
                                     bool read_array)
@@ -301,10 +295,10 @@ static void test_migration(void)
 }
 
 /*
- * A system reset must return the chip to read-array mapping. Data reads answer
- * identically either way, so the observable difference is the mapping mode
- * itself: read it from the machine's own flat view rather than inferring it
- * from data.
+ * A system reset must return the chip to read-array mapping. Data reads
+ * answer identically either way, so the observable difference is the mapping
+ * mode itself: read it from the machine's own flat view rather than inferring
+ * it from data.
  */
 static void test_reset_to_read_array(void)
 {
@@ -329,8 +323,8 @@ static void test_reset_to_read_array(void)
  * A read-only backing store makes every mutation a no-op. The device used to
  * swallow them without a word, which reads from the guest side exactly like a
  * chip that programmed fine, so the diagnostic is the only way to tell an
- * ignored write from a successful one. Attempt each of the three mutations and
- * require both the complaint and the untouched bytes.
+ * ignored write from a successful one. Attempt each of the three mutations
+ * and require both the complaint and the untouched bytes.
  */
 static void test_readonly_mutations_diagnosed(void)
 {
@@ -353,7 +347,9 @@ static void test_readonly_mutations_diagnosed(void)
     byte0 = flash_read(qts, 0, 0);
     byte1 = flash_read(qts, 0, SECTOR_SIZE);
 
-    /* The pattern, not an erased chip: an unchanged read must mean something */
+    /*
+     * The pattern, not an erased chip: an unchanged read must mean something
+     */
     g_assert_cmphex(byte0, !=, 0xff);
 
     flash_program(qts, 0, 0, 0x12);
@@ -387,7 +383,7 @@ static void test_readonly_mutations_diagnosed(void)
 }
 
 /*
- * The complaint belongs to the mutation, not to the command decoder. Query,
+ * The error belongs to the mutation, not to the command decoder. Query,
  * autoselect and reset never reach a mutation, so a read-only backend must
  * leave the log empty for them. Every message is flushed as it is written, so
  * the log can be read back while the machine is still up: program afterwards
@@ -481,14 +477,14 @@ static void test_launch_selection(gconstpointer data)
     /*
      * which == 1 and which == 2 used to be refused under Origin 2000's own
      * rules ("requires all four node pflash drives", "cannot combine -bios
-     * with node pflash drives"). The one-builder step's unified rule
-     * (-bios fills every node's flash, per-node pflash overrides) accepts
-     * both: which == 1's three drive-less nodes come up with blank flash,
-     * the same as a node would with neither -bios nor a drive of its own;
-     * which == 2's four drives leave nothing for -bios to fill, the same
-     * as passing -bios alongside a full population on every other product.
-     * which == 3's wrong-sized backing file is still refused -- that is
-     * the generic pflash device's own size check, not an Origin 2000 rule.
+     * with node pflash drives"). The one-builder step's unified rule (-bios
+     * fills every node's flash, per-node pflash overrides) accepts both:
+     * which == 1's three drive-less nodes come up with blank flash, the same
+     * as a node would with neither -bios nor a drive of its own; which == 2's
+     * four drives leave nothing for -bios to fill, the same as passing -bios
+     * alongside a full population on every other product. which == 3's
+     * wrong-sized backing file is still refused. That is the generic pflash
+     * device's own size check, not an Origin 2000 rule.
      */
     if (which == 3) {
         g_assert_cmpint(WEXITSTATUS(status), !=, 0);
@@ -512,14 +508,14 @@ int main(int argc, char **argv)
     qtest_add_data_func("sn0/origin2000/pflash/writable-stores",
                         "origin2000", test_writable_stores);
     /*
-     * The reordered-stores variant ran the same assertions against a
-     * fixture machine that built its nodes in an order different from
-     * the descriptor's, to catch a store keyed to the wrong physical
-     * node. That fixture depended on the deleted per-product descriptor
-     * (SN0ModelComposition) and its physical-slot indirection; format 2
-     * has no such indirection left to get wrong; node array index and
-     * descriptor node index are the same number everywhere the builder
-     * reads, so there is no second order left to test against.
+     * The reordered-stores variant ran the same assertions against a fixture
+     * machine that built its nodes in an order different from the
+     * descriptor's, to catch a store keyed to the wrong physical node. That
+     * fixture depended on the deleted per-product descriptor
+     * (SN0ModelComposition) and its physical-slot indirection; format 2 has
+     * no such indirection left to get wrong; node array index and descriptor
+     * node index are the same number everywhere the builder reads, so there
+     * is no second order left to test against.
      */
     qtest_add_func("sn0/origin2000/pflash/migration", test_migration);
     qtest_add_func("sn0/origin2000/pflash/reset-to-read-array",

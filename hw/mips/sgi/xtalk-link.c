@@ -1,10 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * The two SN0 crosstalk link kinds; see the header for the contract.
- * The Hub-side packet adapters and the processor-side refusal face are
- * moved here unaltered in behaviour from the deleted sn0-origin2000-io.c
- * (by way of hw/mips/sgi/sn-machine.c, where the first machine-model
- * rework had relocated them).
+ * SN0 direct and Crossbow links, Hub packet adapters, and processor refusal
+ * face.
  */
 
 #include "qemu/osdep.h"
@@ -25,9 +22,8 @@ QEMU_BUILD_BUG_ON(SGI_XTALK_DIRECT_LINK_MAX_ALIASES != SN0_XTALK_WIDGETS);
 /* ---- The direct link ---- */
 
 /*
- * The PROM's fixed target: widget 2 (a synthetic address, not a
- * populated widget) at the Bridge's own device-window offset for its
- * error-status decode.
+ * The PROM's fixed target: widget 2 (a synthetic address, not a populated
+ * widget) at the Bridge's device-window offset for its error-status decode.
  */
 #define SGI_XTALK_DIRECT_LINK_PROBE_WINDOW_OFFSET 0x208ULL
 
@@ -80,12 +76,10 @@ static bool sgi_xtalk_direct_link_wire_probe(SN0NodeState *node,
 {
     /*
      * The probe is an Origin 200 (IP29) fact only; its one caller
-     * (sn0_node_build_baseio()) always hands the direct link a bare
-     * Bridge as widget_port -- a fitted part of the node board, not
-     * wrapped in any board class (docs/designs/
-     * sn-machine-model-architecture.md, "Node devices") -- so this casts
-     * it directly rather than resolving a "bridge" child the way a
-     * removable board's own wrapper class used to expose one.
+     * (sn0_node_build_baseio()) always hands the direct link a bare Bridge as
+     * widget_port (a fitted part of the node board, not wrapped in any board
+     * class) so this casts it directly rather than resolving a "bridge"
+     * child the way a removable board's wrapper class used to expose one.
      */
     SGIBridgeState *bridge = SGI_BRIDGE(widget_port);
     unsigned int window;
@@ -176,19 +170,19 @@ bool sgi_xtalk_direct_link_connect(SGIXtalkDirectLink *link, Object *owner,
 /* ---- The crossbow link ---- */
 
 /*
- * The packet-addressed access format a switched fabric expects: bit 47
- * set, the destination widget in bits 51:48 (added by the caller, since
- * only it knows whether that is a link index shifted by
- * SGI_XBOW_PACKET_ADDRESS_BITS or a nasid needing a different shift).
+ * The packet-addressed access format a switched fabric expects: bit 47 set,
+ * the destination widget in bits 51:48 (added by the caller, since only it
+ * knows whether that is a link index shifted by SGI_XBOW_PACKET_ADDRESS_BITS
+ * or a nasid needing a different shift).
  */
 #define SGI_XTALK_CROSSBOW_LINK_PACKET_IO (1ULL << 47)
 
 /*
- * Every proxy this file ever hands out, keyed by its own address, so
+ * Every proxy this file ever hands out, keyed by its address, so
  * claim_fabric() below can tell a real one from whatever else a board's
  * generic "fabric" link property happens to be wired to. Storage is
- * caller-owned and never freed before the machine itself, so entries
- * outlive every lookup; the table only ever grows.
+ * caller-owned and never freed before the machine itself, so entries outlive
+ * every lookup; the table only ever grows.
  */
 static GHashTable *sgi_xtalk_crossbow_link_proxies;
 
@@ -212,13 +206,13 @@ void sgi_xtalk_crossbow_link_claim_fabric(MemoryRegion *fabric,
     SGIXtalkCrossbowLink *link;
 
     /*
-     * A board's own "fabric" is a generic link property; a real machine
-     * always resolves it to a proxy prepare() built, but a qtest fixture
-     * standing in for a machine builder (tests/qtest/board-test-fixture.c)
-     * deliberately wires it to a plain sink region instead, so this
-     * cannot assume the pointer it was handed is one of ours the way a
-     * container_of() reversal would. Look it up in the set prepare()
-     * populates and do nothing for anything else.
+     * A board's "fabric" is a generic link property; a real machine always
+     * resolves it to a proxy prepare() built, but a qtest fixture standing in
+     * for a machine builder (tests/qtest/board-test-fixture.c) deliberately
+     * wires it to a plain sink region instead, so this cannot assume the
+     * pointer it was handed is one of ours the way a container_of() reversal
+     * would. Look it up in the set prepare() populates and do nothing for
+     * anything else.
      */
     if (!sgi_xtalk_crossbow_link_proxies ||
         !g_hash_table_contains(sgi_xtalk_crossbow_link_proxies, fabric)) {
@@ -231,14 +225,14 @@ void sgi_xtalk_crossbow_link_claim_fabric(MemoryRegion *fabric,
 }
 
 /*
- * The Hub's big-window "xtalk-io" mode issues a widget-addressed access:
- * a widget number and an offset within one SN0_XTALK_WIDGET_SIZE slice,
- * the same shape a small or big window decodes (hw/misc/sgi-hub.c,
- * IO_BWIN_SPACE). A switched fabric instead expects a packet address,
- * the destination widget in bits 51:48; this translates one into the
- * other before the access ever reaches the proxy sgi_xtalk_crossbow_
- * link_prepare() built. Moved unaltered in behaviour from the deleted
- * sn0-origin2000-io.c's SN0Origin2000HubOutgoingIO.
+ * The Hub's big-window "xtalk-io" mode issues a widget-addressed access: a
+ * widget number and an offset within one SN0_XTALK_WIDGET_SIZE slice, the
+ * same shape a small or big window decodes (hw/misc/sgi-hub.c,
+ * IO_BWIN_SPACE). A switched fabric instead expects a packet address, the
+ * destination widget in bits 51:48; this translates one into the other before
+ * the access ever reaches the proxy sgi_xtalk_crossbow_ link_prepare() built.
+ * Moved unaltered in behaviour from the deleted sn0-origin2000-io.c's
+ * SN0Origin2000HubOutgoingIO.
  */
 static bool sgi_xtalk_crossbow_link_outbound_bounded(uint64_t offset,
                                                       unsigned size)
@@ -333,17 +327,16 @@ bool sgi_xtalk_crossbow_link_prepare_hub(SGIXtalkCrossbowLink *link,
  *
  * Moved unaltered in behaviour from the deleted sn0-origin2000-io.c.
  *
- * The inbound face answers a Crossbow's view of this node's widget
- * position: a packet-space write addressed at the Hub's
- * interrupt-modify register, nasid embedded per the Bridge datasheet's
- * INT_HOST field, decodes to that nasid's physical offset and forwards
- * through this node's device_view, so a remote nasid reaches its own Hub
- * as a direct-attach interrupt does and a local one loops back into this
- * same node.
+ * The inbound face answers a Crossbow's view of this node's widget position:
+ * a packet-space write addressed at the Hub's interrupt-modify register,
+ * nasid embedded in the INT_HOST field, decodes to that nasid's physical
+ * offset and forwards through this node's device_view, so a remote nasid
+ * reaches its Hub as a direct-attach interrupt does and a local one loops
+ * back into this same node.
  *
- * The processor-side face is deliberately narrow: the Hub's own widget-
- * identification word answers its one cleared short read; every other
- * access stops rather than fabricating a value.
+ * The processor-side face is deliberately narrow: the Hub's widget-
+ * identification word answers its one cleared short read; every other access
+ * stops rather than fabricating a value.
  */
 
 #define SGI_XTALK_CROSSBOW_LINK_NASID_SHIFT         38

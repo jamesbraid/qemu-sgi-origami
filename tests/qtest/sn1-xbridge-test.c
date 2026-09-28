@@ -73,11 +73,10 @@ static void test_registers(void)
 }
 
 /*
- * Revision B's table as the SN1 header lays it out (docs/datasheets/
- * xbridge.md, "Translation RAM by chip revision"): 1024 entries written
- * as doublewords from 0x1_0000 to 0x1_1fff, upper words read at each
- * entry's +4, lower words read from a separate view at 0x1_2000. SGI's
- * xbg writes ~i:i to the first 512 and reads the lower word at 0x1_2004.
+ * Revision B's translation-RAM table by chip revision: 1024 entries written
+ * as doublewords from 0x1_0000 to 0x1_1fff, upper words read at each entry's
+ * +4, lower words read from a separate view at 0x1_2000. SGI's xbg writes
+ * ~i:i to the first 512 and reads the lower word at 0x1_2004.
  */
 static void test_ate(void)
 {
@@ -106,9 +105,9 @@ static void test_ate(void)
     g_assert_cmphex(qtest_readl(qts, BASE + 0x13004), ==, 4);
 
     /*
-     * The view is read-only and the RAM takes only doubleword writes: a
-     * write into the view, or a word write into the RAM, is an invalid
-     * address, interrupt status bit 24, and changes no entry.
+     * The view is read-only and the RAM takes only doubleword writes: a write
+     * into the view, or a word write into the RAM, is an invalid address,
+     * interrupt status bit 24, and changes no entry.
      */
     g_assert_cmphex(reg_read(qts, 0x100) & (1U << 24), ==, 0);
     qtest_writeq(qts, BASE + 0x12000, 0x0000000500000006ULL);
@@ -226,9 +225,9 @@ static QTestState *transport_start(const char *extra)
 
 /*
  * The card's own scalar fields (address, count, seed, trigger) need
- * value-preserving placement through the slot's PIO window regardless of
- * what a test has bit 13 set to for its own byte-stream checks elsewhere,
- * so clear it here for the one write and restore whatever the caller had.
+ * value-preserving placement through the slot's PIO window regardless of what
+ * a test has bit 13 set to for its own byte-stream checks elsewhere, so clear
+ * it here for the one write and restore whatever the caller had.
  */
 static void card_write(QTestState *qts, unsigned reg, uint32_t value)
 {
@@ -369,7 +368,9 @@ static void test_byte_lanes(void)
     dma_fill(qts, 0xa000000000008000ULL, 0x40);
     qtest_memread(qts, TARGET_A + SCRATCH, actual, sizeof(actual));
     g_assert_cmpmem(actual, sizeof(actual), swapped, sizeof(swapped));
-    /* BAR 1 accepts narrow cycles; BAR 0's command registers require words. */
+    /*
+     * BAR 1 accepts narrow cycles; BAR 0's command registers require words.
+     */
     qtest_writel(qts, BASE + 0x20014, 0x01200000);
     reg_write(qts, 0x200, 0x481012);
     qtest_writeq(qts, BASE + 0x200008, 0x1122334455667788ULL);
@@ -445,7 +446,9 @@ static void test_upstream_requester(void)
     g_assert_cmphex(qtest_readl(qts, BASE + 0x28000), ==, 0x00051b36);
     qtest_writel(qts, BASE + 0x28010, 0x01200000);
     qtest_writel(qts, BASE + 0x28004, 6);
-    /* PIO window 0 reaches the child; its PCI requester is upstream slot 1. */
+    /*
+     * PIO window 0 reaches the child; its PCI requester is upstream slot 1.
+     */
     reg_write(qts, 0x200, 0x3012);
     reg_write(qts, 0x208, 0x80000);
     reg_write(qts, 0x80, 0xa00000);
@@ -477,7 +480,9 @@ static void test_migration_reset(void)
     reg_write(from, 0x118, 8);
     qtest_set_irq_in(from, HEAD, NULL, 3, 1);
     qtest_writeq(from, BASE + 0x10ff8, 0x123456780021ULL);
-    /* Entry 1023, from the half of the table that migration version 2 adds. */
+    /*
+     * Entry 1023, from the half of the table that migration version 2 adds.
+     */
     qtest_writeq(from, BASE + 0x11ff8, 0x4321876500a1ULL);
     qtest_qmp_assert_success(to,
         "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
@@ -681,7 +686,9 @@ static void test_page_dma(void)
             g_assert_cmphex(qtest_readq(qts, TARGET_A + 0x8238), ==,
                 0x2021222324252627ULL + 0x0101010101010101ULL * i);
         }
-        /* ATE target zero is valid; high address bits belong to the target. */
+        /*
+         * ATE target zero is valid; high address bits belong to the target.
+         */
         ate_write(qts, 0, 0x8021);
         dma_fill(qts, 0x40000000, 0x30);
         g_assert_cmphex(qtest_readq(qts, TARGET_A + 0x8000), ==,
@@ -743,8 +750,8 @@ static void test_page_boundaries(void)
 
 /*
  * Slot 1's own scalar fields, same reasoning as card_write()/card_read():
- * value-preserving placement for configuration, regardless of what the
- * test has slot 1's own bit 13 set to.
+ * value-preserving placement for configuration, regardless of what the test
+ * has slot 1's own bit 13 set to.
  */
 static void tx_write(QTestState *qts, unsigned reg, uint32_t value)
 {
@@ -801,7 +808,7 @@ static void test_page_faults(void)
     g_assert_cmphex(tx_run(qts, 0x00008000), ==, 0xdead0002);
     /*
      * Index 512 now has storage (a valid entry reads back), but the page
-     * mapper keeps the reviewed 512-entry rule, so it still faults.
+     * mapper uses only 512 entries, so it still faults.
      */
     ate_write(qts, 512, 0x8a21);
     g_assert_cmphex(qtest_readl(qts, BASE + 0x12004 + 512 * 8), ==, 0x8a21);
@@ -846,11 +853,11 @@ static void test_space_above_face(void)
     QTestState *qts = transport_start("");
 
     /*
-     * The card's length register through the 32-bit alias, value kept.
-     * Read back through the direct PIO window with its own bit 13 clear,
-     * so that window's placement correction also nets to value-preserved
-     * (a full-width access) rather than the byte-stream mirror
-     * transport_start's shared bit-13-set default would apply here.
+     * The card's length register through the 32-bit alias, value kept. Read
+     * back through the direct PIO window with its own bit 13 clear, so that
+     * window's placement correction also nets to value-preserved (a
+     * full-width access) rather than the byte-stream mirror transport_start's
+     * shared bit-13-set default would apply here.
      */
     qtest_writel(qts, BASE + MEM32 + 0x01000004, 0x10);
     g_assert_cmphex(qtest_readl(qts, BASE + MEM32 + 0x01000004), ==, 0x10);
@@ -892,8 +899,8 @@ static void test_space_above_face(void)
     g_assert_cmphex(qtest_readb(qts, BASE + 0x201004), ==, 0xee);
     g_assert_cmphex(qtest_readb(qts, BASE + 0x201007), ==, 0xdd);
     /*
-     * Outside every range: an undefined address, recorded as the widget
-     * sees it, reaching no PCI space.
+     * Outside every range: an undefined address, recorded as the widget sees
+     * it, reaching no PCI space.
      */
     reg_write(qts, 0x110, 8);
     qtest_writel(qts, BASE + 0x01200008, 0x99999999);
@@ -913,9 +920,9 @@ static void test_space_above_face(void)
 }
 
 /*
- * QEMU's optional, synthetic board-identity responder at the bridge-half
- * NIC register. The XBridge specification calls this register unused in
- * XBridge mode; Origami's docs/datasheets/xbridge.md records the limitation.
+ * QEMU's optional, synthetic board-identity responder at the bridge-half NIC
+ * register. The XBridge specification calls this register unused in XBridge
+ * mode.
  */
 #define BRIDGE_NIC 0xb0
 
@@ -925,16 +932,15 @@ static void test_space_above_face(void)
 #define NIC_SAMPLE(n) ((uint32_t)(n) << 2)
 
 /*
- * The placeholder identity docs/datasheets/xbridge.md and hw/mips/sn1.c
- * cite.
+ * The placeholder identity hw/mips/sn1.c cites.
  */
 #define PLACEHOLDER_PART "NOT-OBSERVED"
 #define PLACEHOLDER_FAMILY 0x0b
 #define PLACEHOLDER_SERIAL 0x060504030201ULL
 
 /*
- * head_start() above already covers the no-board-part case this fixture
- * also needs; only the board-part-supplied case is new here.
+ * head_start() above already covers the no-board-part case this fixture also
+ * needs; only the board-part-supplied case is new here.
  */
 static QTestState *head_start_with_board_part(const char *board_part)
 {
@@ -948,8 +954,8 @@ static QTestState *head_start_with_board_part(const char *board_part)
 }
 
 /*
- * One bit slot, mainline's widths: a long reset, a short write-one/read,
- * a middling write-zero.
+ * One bit slot, mainline's widths: a long reset, a short write-one/read, a
+ * middling write-zero.
  */
 static bool nic_slot(QTestState *qts, unsigned int pulse, unsigned int sample)
 {
@@ -1043,10 +1049,10 @@ static uint64_t nic_search_for_identity(QTestState *qts)
 
 /*
  * The scanning reader: find "name" within the first `len` bytes and copy
- * everything up to the next ';' delimiter, exactly -- unlike the fixed-span
+ * everything up to the next ';' delimiter. Unlike the fixed-span
  * positional reader (sn0-bridge-test.c's partnum_from_page(), not reused
- * here), this never collects the delimiter itself or reads past what it
- * was told to scan.
+ * here), this never collects the delimiter itself or reads past what it was
+ * told to scan.
  */
 static bool page_field(const uint8_t *page, unsigned int len,
                        const char *name, char *out)
@@ -1097,7 +1103,7 @@ static void test_placeholder_identity_reads_back(void)
     g_assert_cmphex(nic_crc8(0, rom), ==, 0);
 
     g_assert_false(NIC_RESET(qts));
-    nic_write_byte(qts, 0xcc);              /* one part on the bus: skip ROM */
+    nic_write_byte(qts, 0xcc);              /* one part on bus: skip ROM */
 
     exchange[0] = 0xa5;                     /* read memory */
     exchange[1] = 0x00;
@@ -1120,8 +1126,8 @@ static void test_placeholder_identity_reads_back(void)
     /*
      * Scan the field by name over page 1 alone (30 bytes, short of its own
      * CRC), exactly as sn0-bridge-test.c's page_field() does: never
-     * collecting the ';' delimiter, unlike the fixed-span positional
-     * reader that field also has to satisfy on a real driver.
+     * collecting the ';' delimiter, unlike the fixed-span positional reader
+     * that field also has to satisfy on a real driver.
      */
     g_assert_true(page_field(page, 30, "Part:", part));
     g_assert_cmpstr(part, ==, PLACEHOLDER_PART);
@@ -1131,8 +1137,8 @@ static void test_placeholder_identity_reads_back(void)
 
 /*
  * A head a machine gives no board-part keeps BRIDGE_NIC exactly as inert as
- * the reviewed rev-A contract recorded: no board behind that widget (like
- * the empty option slot at widget 14) must not gain a responder.
+ * the rev-A contract requires: no board behind that widget (like the empty
+ * option slot at widget 14) must not gain a responder.
  */
 static void test_no_board_stays_inert(void)
 {
@@ -1147,16 +1153,15 @@ static void test_no_board_stays_inert(void)
 }
 
 /*
- * The XBridge head's own error interrupt on the Origin 300, provoked the
- * way the Bridge datasheet records the Origin 200 PROM's bridge_sanity
- * provoking it: a 32-bit store to a register slot the map does not
- * define, with the error interrupt enabled and the destination registers
- * naming the Bedrock's interrupt-pending modify register. The IP35 PROM's
- * diagnostic expects the same status bit and pending bit; which slot it
- * stores to is not observed. What this file pins is the machine path from
- * the head's status bit to the processor interface's pending bit, for
- * both heads; the head's own error contract belongs to this file's own
- * tests above.
+ * The XBridge head's own error interrupt on the Origin 300, provoked the way
+ * the Origin 200 PROM's bridge_sanity provokes it: a 32-bit store to a
+ * register slot the map does not define, with the error interrupt enabled and
+ * the destination registers naming the Bedrock's interrupt-pending modify
+ * register. The IP35 PROM's diagnostic expects the same status bit and
+ * pending bit; which slot it stores to is not observed. What this file pins
+ * is the machine path from the head's status bit to the processor interface's
+ * pending bit, for both heads; the head's own error contract belongs to this
+ * file's own tests above.
  */
 #define MACHINE_ARGS "-M origin300 -cpu R14000 -smp 2"
 
@@ -1178,8 +1183,8 @@ static void test_no_board_stays_inert(void)
 
 /*
  * Where an interrupt packet lands: the node's hub-register window with the
- * register flag at crosstalk address bit 47, which the head takes from bit
- * 15 of the destination-upper register.
+ * register flag at crosstalk address bit 47, which the head takes from bit 15
+ * of the destination-upper register.
  */
 #define PI_REMOTE_WINDOW 0x1800000
 #define PI_PENDING_MODIFY 0x90

@@ -171,9 +171,9 @@ static void sgi_net_cable_class_init(ObjectClass *klass, const void *data)
     /*
      * The ends as properties, for a register test that joins two standalone
      * devices from the command line; a machine sets them with
-     * sgi_net_cable_set_end() instead. Either way each end device's own
-     * cable reference is wired separately. Weak, as the C setter's plain
-     * pointer is: each end usually refers back to this cable.
+     * sgi_net_cable_set_end() instead. Either way each end device's cable
+     * reference is wired separately. Weak, as the C setter's plain pointer is:
+     * each end usually refers back to this cable.
      */
     object_class_property_add_link(klass, "end0", TYPE_SGI_NET_PORT,
                                    offsetof(SGINetCableState, end[0].port),

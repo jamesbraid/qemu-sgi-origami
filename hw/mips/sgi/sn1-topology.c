@@ -3,18 +3,16 @@
 #include "sn1-topology.h"
 
 /*
- * A Bedrock has exactly two processor interfaces, two processors each
- * (docs/datasheets/bedrock-processor-interface.md; the same fact
- * SGI_SN1_NODE_MAX_CPUS (4) records in sn1-node.h and sgi-bedrock.c's
- * own (mask >> (2 * i)) & 3 unpacking assumes). This is a hardware
- * constant, not something to infer from how many of a descriptor's
- * cpu_slots entries happen to be listed: the compiler always emits
- * the full interfaces-times-positions square today, but a lookup that
- * only works because of that convention, with no check that it holds,
- * is a silent miscount waiting for a descriptor shape it does not
- * expect. Kept as a plain constant here rather than an include of
- * sgi-bedrock.h, which would pull in device state this file has none
- * of (its own header comment: "no device state").
+ * A Bedrock has exactly two processor interfaces, two processors each; the
+ * same fact SGI_SN1_NODE_MAX_CPUS (4) records in sn1-node.h and
+ * sgi-bedrock.c's (mask >> (2 * i)) & 3 unpacking assumes. This is a hardware
+ * constant, not something to infer from how many of a descriptor's cpu_slots
+ * entries happen to be listed: the compiler always emits the full
+ * interfaces-times-positions square today, but a lookup that only works
+ * because of that convention, with no check that it holds, is a silent
+ * miscount waiting for a descriptor shape it does not expect. Kept as a plain
+ * constant here rather than an include of sgi-bedrock.h, which would pull in
+ * device state this file has none of (its header comment: "no device state").
  */
 #define SN1_BEDROCK_PROCESSOR_INTERFACES 2
 #define SN1_BEDROCK_PROCESSORS_PER_INTERFACE 2
@@ -22,18 +20,17 @@
     (SN1_BEDROCK_PROCESSOR_INTERFACES * SN1_BEDROCK_PROCESSORS_PER_INTERFACE)
 
 /*
- * Every populated slot, in diagonal population order: round 0 visits
- * each interface's own position 0 before round 1 visits each
- * interface's position 1, and so on. This is the order a real Origin
- * 300 board populates in -- the documented two-processor board fits
- * one processor per interface (PI0/A and PI1/A; see sn1_cpu_slot's own
- * comment) rather than filling one interface first -- so cpu_slots'
- * own list order (which groups every position of one interface before
- * the next) is not itself the population order and has to be walked
- * this way instead of straight through. Returns the count written into
- * physical[]. Aborts if a slot names an interface or position outside
- * the Bedrock's own two-by-two shape, rather than silently computing a
- * physical bit that does not match the hardware register layout.
+ * Every populated slot, in diagonal population order: round 0 visits each
+ * interface's position 0 before round 1 visits each interface's position 1,
+ * and so on. This is the order a real Origin 300 board populates in: the
+ * documented two-processor board fits one processor per interface (PI0/A and
+ * PI1/A; see sn1_cpu_slot's comment) rather than filling one interface
+ * first, so cpu_slots' own list order (which groups every position of one
+ * interface before the next) is not itself the population order and has to be
+ * walked this way instead of straight through. Returns the count written into
+ * physical[]. Aborts if a slot names an interface or position outside the
+ * Bedrock's two-by-two shape, rather than silently computing a physical bit
+ * that does not match the hardware register layout.
  */
 static unsigned sn1_cpu_population_order(
     const SGIModelNode *node,
@@ -58,11 +55,10 @@ static unsigned sn1_cpu_population_order(
             }
             g_assert(count < SN1_BEDROCK_PROCESSORS);
             /*
-             * The hardware bit/register layout sgi-bedrock.c's
-             * processor-mask and cpu-enable-initial-mask split into
-             * per-interface halves (its own (mask >> (2 * i)) & 3
-             * unpacking): interface * processors-per-interface +
-             * position.
+             * The hardware bit/register layout sgi-bedrock.c's processor-mask
+             * and cpu-enable-initial-mask split into per-interface halves
+             * (its (mask >> (2 * i)) & 3 unpacking): interface *
+             * processors-per-interface + position.
              */
             physical[count++] =
                 slot->interface * SN1_BEDROCK_PROCESSORS_PER_INTERFACE +

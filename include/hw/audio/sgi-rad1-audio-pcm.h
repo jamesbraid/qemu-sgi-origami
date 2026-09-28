@@ -1,21 +1,17 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SGI MediaIO RAD1 audio ring and host PCM conversion. */
 /*
- * SGI MediaIO RAD1: conversion between the audio channels' ring frames and
- * 16-bit stereo host frames.
- *
  * A ring frame is one 32-bit word per channel: two for the analog and AES3
  * channels, the first word the left channel, and eight for ADAT. Each word
- * holds a 24-bit signed sample in bits [23:0], sign-extended through
- * [31:24]. The words cross the Bridge's byte-lane reversal like the status
- * descriptors, so the device sees them little-endian. See
- * docs/datasheets/mediaio-rad1-audio.md, "Analog output sample format" and
- * the digital sections' flagged defaults; the left-first order, the
- * digital frame widths and the inputs' use of the same layout are flagged
- * defaults or the model's inference.
+ * holds a 24-bit signed sample in bits [23:0], sign-extended through [31:24].
+ * The words cross the Bridge's byte-lane reversal like the status
+ * descriptors, so the device sees them little-endian. The left-first order,
+ * the digital frame widths and the inputs' use of the same layout are not
+ * independently confirmed; they are the model's inference.
  *
- * Kept apart from sgi-rad1-audio.h, with no dependency beyond byte
- * access, so tests/unit/test-sgi-rad1-audio-pcm.c can pin the conversions
- * the model uses.
+ * Kept apart from sgi-rad1-audio.h, with no dependency beyond byte access, so
+ * tests/unit/test-sgi-rad1-audio-pcm.c can pin the conversions the model
+ * uses.
  */
 
 #ifndef HW_AUDIO_SGI_RAD1_AUDIO_PCM_H
@@ -36,8 +32,8 @@ static inline int16_t sgi_rad1_audio_word_to_sample(uint32_t word)
 }
 
 /*
- * One 16-bit host sample as a ring word: bits [23:8], sign-extended
- * through [31:24], bits [7:0] zero.
+ * One 16-bit host sample as a ring word: bits [23:8], sign-extended through
+ * [31:24], bits [7:0] zero.
  */
 static inline uint32_t sgi_rad1_audio_sample_to_word(int16_t sample)
 {
@@ -45,10 +41,10 @@ static inline uint32_t sgi_rad1_audio_sample_to_word(int16_t sample)
 }
 
 /*
- * Output: @frames ring frames of @words_per_frame little-endian words each
- * to as many stereo 16-bit little-endian host frames. The first word of a
- * ring frame is left and the second right; any further words, ADAT
- * channels 3 to 8, have no host channel and are dropped.
+ * Output: @frames ring frames of @words_per_frame little-endian words each to
+ * as many stereo 16-bit little-endian host frames. The first word of a ring
+ * frame is left and the second right; any further words, ADAT channels 3 to
+ * 8, have no host channel and are dropped.
  */
 static inline void sgi_rad1_audio_frames_to_pcm(const uint8_t *ring,
                                                 uint8_t *pcm, size_t frames,
@@ -69,9 +65,9 @@ static inline void sgi_rad1_audio_frames_to_pcm(const uint8_t *ring,
 
 /*
  * Input: @frames stereo 16-bit little-endian host frames to as many ring
- * frames of @words_per_frame little-endian words. Left fills the first
- * word and right the second; any further words, ADAT channels 3 to 8,
- * record silence.
+ * frames of @words_per_frame little-endian words. Left fills the first word
+ * and right the second; any further words, ADAT channels 3 to 8, record
+ * silence.
  */
 static inline void sgi_rad1_audio_pcm_to_frames(const uint8_t *pcm,
                                                 uint8_t *ring, size_t frames,

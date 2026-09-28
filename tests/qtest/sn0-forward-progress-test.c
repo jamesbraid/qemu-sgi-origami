@@ -1,71 +1,29 @@
 /*
  * SPDX-License-Identifier: GPL-2.0-or-later
  *
- * Forward progress under multi-threaded TCG: what a running kernel does
- * between device events must neither put its processors on the big lock
- * nor leave a deliverable interrupt waiting.
- *
- * Twice a guest has stopped making progress tens of seconds into a run
- * while every register test stayed green, first on the Origin 200 and
- * then on the eight-processor Origin 2000: IRIX reported its scheduler
- * clock interrupt missing for ten to forty-seven seconds at a time and
- * never reached a login.  Live registers on the failing build showed the
- * line pending with its mask open, so the interrupt was deliverable and
- * simply not delivered while every vCPU thread queued on the big lock,
- * which cpu_handle_interrupt() takes on every pass through the execution
- * loop for as long as a processor's interrupt flag is up.
- *
- * Every case here pins an event count against a unit of guest work, never
- * a time: big-lock acquisitions from the synchronisation profiler, and
- * passes through the execution loop counted by the guest itself.  Neither
- * moves with host load.  Wall-clock bounds are absent on purpose: on this
- * project's hosts a healthy build's run-to-run wall-time spread covers the
- * builds it was meant to be told apart from.
- *
- * Two invariants, in two cases:
- *
- *   A pending line the processor cannot take right now -- masked, here --
- *   must cost nothing per pass.  Underneath: the flag drop in
- *   mips_cpu_exec_interrupt().  This is the phase that separates the fix
- *   from the defect, by a factor of the pass count.
- *
- *   A pending line the processor can take must be taken within a bounded
- *   number of its own passes.  Underneath: the re-assert every own-CPU
- *   unmask makes, and the comparator's immediate match.  Only starts the
- *   guest can stamp itself are bounded: unmasking a line it has seen
- *   pending, writing Count to match a standing Compare, raising its own
- *   Hub line.  A raise from a timer or a peer is checked for arrival only,
- *   because the guest cannot see that instant without taking it, and a
- *   pass count from there would be measuring the host.
- *
- * count-wrap/<machine>
- *   On every machine of this target whose default processor is in the
- *   R10000 family, from query-machines at run time, so a new machine is
- *   either covered or fails by name.  The trigger both field failures
- *   shared: the counter's 32-bit wrap against a Compare the guest never
- *   wrote, parked to happen at once rather than 47.7 s after reset.  Taken
- *   masked, then unmasked, then open, then Count written to match a
- *   standing Compare.
- *
- * steady-state/<phase>
- *   On a two-processor Origin 200, the ways a running kernel spends its
- *   time between device events, each with its own work unit: a loop that
- *   ends its translation block on every pass; the same with a Hub line
- *   pending and masked, then unmasked; one processor polling an unchanging
- *   Hub register while its peer computes, where the peer must stay in its
- *   run loop; one processor polling memory while its peer computes, where
- *   memory must never reach the lock; and a processor raising its own Hub
- *   line while open.
- *
- * False passes to watch for.  A loop that never re-enters the execution
- * loop counts nothing whatever the model does, so every phase is one mtc0
- * loop with something added and the plain loop is asserted on its own.  A
- * line that never pended would leave a masked-line phase measuring the
- * plain loop again, so those phases spin until Cause shows the line before
- * counting.  A processor that never ran would never report, so each claims
- * a slot through an atomic increment reconciled against query-cpus-fast,
- * and every phase ends with each processor counting itself finished the
- * same way.
+ * Multi-threaded TCG forward-progress tests. Origin 200 and eight-CPU Origin
+ * 2000 IRIX boots lost scheduler interrupts for 10-47 seconds and never
+ * reached login despite passing register tests. The line was pending and
+ * unmasked while vCPUs queued on the big lock; cpu_handle_interrupt() took
+ * that lock every execution-loop pass while the interrupt flag stayed set.
+ * Guest-counted loop passes and profiler lock acquisitions are compared per
+ * guest work unit; host load changes wall time, so it supplies no bound.
+ * A masked pending line costs no lock per pass (mips_cpu_exec_interrupt()
+ * drops the flag); the defect costs one acquisition per pass. An unmasked
+ * pending line must arrive within bounded passes of its CPU after a guest
+ * unmask, Count/Compare match or own Hub raise. Unmask reasserts the local
+ * line; the comparator matches immediately.
+ * Timer and peer raises have arrival checks only: the guest cannot timestamp
+ * their start without taking them. count-wrap tests every query-machines
+ * R10000-default machine, failing by name if uncovered: 32-bit Count wraps
+ * against unwritten Compare immediately instead of 47.7 s after reset,
+ * then tests masked, unmasked, open and matching Count states. steady-state
+ * tests an Origin 200 pair: one mtc0 loop with a
+ * translation-block end each pass; masked/unmasked Hub line; Hub or memory
+ * polling beside peer compute; and self-raised open Hub line. The plain loop
+ * verifies reentry; pending-line phases wait for Cause before counting.
+ * Atomic claims checked against query-cpus-fast prove both CPUs ran, and
+ * atomic completion counts prove both finished each phase.
  */
 
 #include "qemu/osdep.h"
@@ -363,10 +321,9 @@ static void arm_count_park(SN0Image *p)
 /*
  * The wrap again after an acknowledge has moved Compare: put Compare back
  * at its reset value first, then park Count. Compare is already settled
- * by the time the Count write runs, so that write's own reschedule -- the
- * store's literal Count argument against the Compare field, no fresh
- * clock sample of anything else -- needs nothing from a later instruction
- * to land on time.
+ * by the time the Count write runs. That write reschedules using the store's
+ * literal Count argument against the Compare field, with no fresh clock
+ * sample. It needs no later instruction to land on time.
  *
  * The other order raced the wrap. Parking Count first leaves only
  * COUNT_PARK's fixed 4096-tick gap for the Compare write that follows to
@@ -385,7 +342,7 @@ static void arm_count_park_compare_reset(SN0Image *p)
 
 /*
  * Count written equal to the standing Compare matches at once. Reading
- * Count and writing it into Compare would race the counter instead --
+ * Count and writing it into Compare would race the counter instead,
  * Count keeps advancing between the read and the write, so by the time
  * the write lands it is normally already behind, and the comparator is
  * equality only. Arming from the other side is deterministic: Compare
@@ -628,7 +585,7 @@ typedef struct {
     QTestState *qts;
     unsigned int cpus;
     unsigned int views;
-    unsigned int view_cpu[MAX_CPUS];    /* one processor that sees each view */
+    unsigned int view_cpu[MAX_CPUS];    /* one CPU sees each view */
     unsigned int view_slots[MAX_CPUS];  /* processors that claimed a slot */
 } Run;
 

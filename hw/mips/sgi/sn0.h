@@ -1,10 +1,10 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * SGI Origin 200/2000 ("SN0", IP27) physical address map and family
- * machine, shared by the family's translation units. One flat 40-bit
- * physical address space: the node number is the top eight bits, so any
- * node's resources are reached by changing those bits alone; the two
- * bits above pick which of four spaces an uncached reference means.
+ * SGI Origin 200/2000 ("SN0", IP27) physical address map and family machine,
+ * shared by the family's translation units. One flat 40-bit physical address
+ * space: the node number is the top eight bits, so any node's resources are
+ * reached by changing those bits alone; the two bits above pick which of four
+ * spaces an uncached reference means.
  */
 
 #ifndef HW_MIPS_SN0_H
@@ -20,15 +20,14 @@
 #include "sn-promdata.h"
 
 /*
- * The Hub ASIC's own address-map and memory-geometry shapes: device
- * facts shared by sn0.c (the Hub node, common to every SN0 product) and
- * the family builder (sn-machine.c) that feeds it, identical on every
- * SN0 node measured and defined once in sn0.c (sn0_hub_address_map,
- * sn0_hub_memory below). A node's own fitted-part facts -- identity,
- * slot, flash kind, populated memory banks -- come straight from its
- * compiled-catalogue record (SGIModelNode, qapi/sgi-sn.json); the node
- * device takes that record directly, the way the SN1 node does, rather
- * than through a repacked copy.
+ * The Hub ASIC's address-map and memory-geometry shapes: device facts shared
+ * by sn0.c (the Hub node, common to every SN0 product) and the family builder
+ * (sn-machine.c) that feeds it, identical on every SN0 node measured and
+ * defined once in sn0.c (sn0_hub_address_map, sn0_hub_memory below). A node's
+ * fitted-part facts (identity, slot, flash kind, populated memory banks)
+ * come straight from its compiled-catalogue record (SGIModelNode,
+ * qapi/sgi-sn.json); the node device takes that record directly, the way the
+ * SN1 node does, rather than through a repacked copy.
  */
 
 typedef struct SN0ModelAddressSpace {
@@ -100,11 +99,11 @@ typedef struct SN0FlashImplementation {
 } SN0FlashImplementation;
 
 /*
- * Crosstalk space: a widget number and an offset -- one container
- * indexed by widget, so a small window and a big window are two views
- * of one address. A translation entry supplies bits 33:29 (16 GB per
- * widget); entry bit 12 picks between a widget's two spaces, and the
- * redirection selects memory space, from IRIX's own write of this entry.
+ * Crosstalk space: a widget number and an offset; one container indexed by
+ * widget, so a small window and a big window are two views of one address. A
+ * translation entry supplies bits 33:29 (16 GB per widget); entry bit 12
+ * picks between a widget's two spaces, and the redirection selects memory
+ * space, from IRIX's write of this entry.
  */
 #define SN0_XTALK_WIDGETS       16
 #define SN0_XTALK_WIDGET_SHIFT  34
@@ -113,10 +112,10 @@ typedef struct SN0FlashImplementation {
 #define SN0_XTALK_SIZE          (SN0_XTALK_WIDGETS * SN0_XTALK_WIDGET_SIZE)
 
 /*
- * The sixteen small windows fill the bottom sixteenth, one per widget,
- * each reaching that widget's first 16 MB. Widget 0's must decode:
- * Linux reads widget 0 through it deliberately, while OpenBSD goes
- * through the redirected big window; the machine owes both paths.
+ * The sixteen small windows fill the bottom sixteenth, one per widget, each
+ * reaching that widget's first 16 MB. Widget 0's must decode: Linux reads
+ * widget 0 through it deliberately, while OpenBSD goes through the redirected
+ * big window; the machine owes both paths.
  */
 #define SN0_SMALL_WINDOW_SIZE    (16 * MiB)
 #define SN0_SMALL_WINDOW(widget) ((hwaddr)(widget) * SN0_SMALL_WINDOW_SIZE)
@@ -153,8 +152,8 @@ typedef struct SN0NodeState {
     SysBusDevice parent_obj;
 
     /*
-     * The topology's node record, set by the machine before realize --
-     * the compiled catalogue's descriptor this node builds from
+     * The topology's node record, set by the machine before realize: the
+     * compiled catalogue's descriptor this node builds from
      * (qapi/sgi-sn.json).
      */
     const SGIModelNode *model_node;
@@ -166,17 +165,17 @@ typedef struct SN0NodeState {
     const SN0ModelMemory *memory;
 
     /*
-     * Properties. promdata-filter installs the PROM's cache-as-RAM
-     * overlay; every stock-PROM boot wants it.
+     * Properties. promdata-filter installs the PROM's cache-as-RAM overlay;
+     * every stock-PROM boot wants it.
      */
     uint32_t nasid;
     uint32_t cpu_base;
     uint32_t nr_cpus;
     char *cpu_type;
     /*
-     * Answers module-management commands only through its module's
-     * master, never on its own external AUX line -- true for one node
-     * of a two-chassis Origin 200, and every other product's nodes.
+     * Answers module-management commands only through its module's master,
+     * never on its external AUX line. This is true for one node of a
+     * two-chassis Origin 200, and every other product's nodes.
      */
     bool slave_role;
     MemoryRegion *ram;
@@ -204,8 +203,8 @@ typedef struct SN0NodeState {
     SGIHubState hub;
 
     /*
-     * The Hub's own engines' view: the claim layer alone, so an engine
-     * address resolves by programmed node number like a processor's.
+     * The Hub's engines' view: the claim layer alone, so an engine address
+     * resolves by programmed node number like a processor's.
      */
     MemoryRegion device_view;
 
@@ -225,20 +224,18 @@ typedef struct SN0NodeState {
     MemoryRegion xtalk;
     MemoryRegion prom_pi_probe;
     /*
-     * Origin 200's onboard board answers the probe through its own
-     * Bridge's own device-window region, dispatched to directly rather
-     * than through an address space: that window sits behind Bridge's
-     * own memory/IO routing bit for its device slot (sgi-bridge.c's
-     * device_window_mem[]/device_window_io[], toggled by each slot's own
+     * Origin 200's onboard board answers the probe through its Bridge's
+     * device-window region, dispatched to directly rather than through an
+     * address space: that window sits behind Bridge's memory/IO routing bit
+     * for its device slot (sgi-bridge.c's
+     * device_window_mem[]/device_window_io[], toggled by each slot's
      * DEV_MEMORY_SPACE control bit), off at reset until the PROM itself
-     * configures it, while this probe is meant to reach it regardless --
-     * an address-space read respects that routing and finds nothing
-     * there before the PROM configures it; a direct dispatch does not.
-     * Resolved once, at wiring time, from the Bridge object the direct
-     * link's own widget_port names directly (sn0_node_build_baseio()
-     * hands it sn0.c's own Bridge, the widget in the base-io-device
-     * step's design; see docs/designs/sn-machine-model-architecture.md,
-     * "Node devices").
+     * configures it, while this probe is meant to reach it regardless; an
+     * address-space read respects that routing and finds nothing there before
+     * the PROM configures it; a direct dispatch does not. Resolved once, at
+     * wiring time, from the Bridge object the direct link's widget_port names
+     * directly (sn0_node_build_baseio() hands it sn0.c's Bridge, the widget
+     * in the base-io-device step).
      */
     MemoryRegion *prom_pi_probe_window;
     MemoryRegion small_window[SN0_XTALK_WIDGETS];
@@ -255,25 +252,24 @@ typedef struct SN0NodeState {
 DECLARE_INSTANCE_CHECKER(SN0NodeState, SN0_NODE, TYPE_SGI_SN0_NODE)
 
 /*
- * Shared by every product: one nameless big-window alias per CPU plus
- * one routed alias per (source CPU, target node) pair. owner parents
- * the new MemoryRegions; *route_out receives the array so the caller
- * can free it (nothing frees it today; the machine object outlives the
- * process, as sn0_instance_finalize's own comment notes).
+ * Shared by every product: one nameless big-window alias per CPU plus one
+ * routed alias per (source CPU, target node) pair. owner parents the new
+ * MemoryRegions; *route_out receives the array so the caller can free it
+ * (nothing frees it today; the machine object outlives the process, as
+ * sn0_instance_finalize's comment notes).
  */
 void sn0_map_cpu_big_windows(Object *owner, SN0NodeState **nodes,
                              unsigned int num_nodes,
                              MemoryRegion **route_out);
 
 /*
- * Builds node's onboard base I/O (a Bridge and an sgi-baseio behind it,
- * the "ip29" preset), returns the Bridge through bridge_out, and connects
- * it through the direct link, or leaves it for the caller to attach to a
- * Crossbow when crossbow_fabric is set -- see the definition's own
- * comment. Called once node has realized. link is the caller's own
- * storage (SGIMachineState's direct_links[]); the various ids are
- * resolved backend names, not claimed backends, for the claim-timing
- * reason sgi-baseio's own header explains.
+ * Builds node's onboard base I/O (a Bridge and an sgi-baseio behind it, the
+ * "ip29" preset), returns the Bridge through bridge_out, and connects it
+ * through the direct link, or leaves it for the caller to attach to a
+ * Crossbow when crossbow_fabric is set; see the definition's comment. Called
+ * once node has realized. link is the caller's storage (SGIMachineState's
+ * direct_links[]); the various ids are resolved backend names, not claimed
+ * backends, for the claim-timing reason sgi-baseio's header explains.
  */
 bool sn0_node_build_baseio(SN0NodeState *node, Object *owner,
                            SGIXtalkDirectLink *link,
@@ -301,22 +297,20 @@ extern const SN0ModelMemory sn0_ip27_memory;
 #define SN0_HUB_RTC_CLOCK_HZ 0x1312d0ULL
 
 /*
- * The Hub register offset its I2C adapter answers at, whether it carries
- * a private controller (Origin 200) or is one of a shared module
- * controller's per-node adapters (Origin 2000's MSC): fixed by the Hub
- * chip, the same on every node measured, so the compiled catalogue no
- * longer carries it.
+ * The Hub register offset its I2C adapter answers at, whether it carries a
+ * private controller (Origin 200) or is one of a shared module controller's
+ * per-node adapters (Origin 2000's MSC): fixed by the Hub chip, the same on
+ * every node measured, so the compiled catalogue no longer carries it.
  */
 #define SN0_HUB_MODULE_ADAPTER_OFFSET 0x220000ULL
 
 /*
- * A node's own embedded ELSC answers I2C address 8 on every Hub that
- * carries one (identity->system_controller); its NVRAM pages start at
- * address 80 and there are 8 of them, again fixed by the ELSC/PCF8584
- * pairing, the same on every node measured. The compiled catalogue no
- * longer carries these (unread where the corresponding identity flag is
- * false, since that Hub has no embedded ELSC or I2C controller to
- * address).
+ * A node's embedded ELSC answers I2C address 8 on every Hub that carries one
+ * (identity->system_controller); its NVRAM pages start at address 80 and
+ * there are 8 of them, again fixed by the ELSC/PCF8584 pairing, the same on
+ * every node measured. The compiled catalogue no longer carries these (unread
+ * where the corresponding identity flag is false, since that Hub has no
+ * embedded ELSC or I2C controller to address).
  */
 #define SN0_HUB_I2C_ELSC_ADDR         8
 #define SN0_HUB_I2C_NVRAM_FIRST_ADDR  80

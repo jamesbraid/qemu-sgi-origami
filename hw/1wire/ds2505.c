@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
+/* DS2505-family add-only EPROM memory commands. */
 #include "qemu/osdep.h"
 #include "qemu/module.h"
 #include "qom/object.h"
@@ -8,16 +9,16 @@
 #include "hw/1wire/ds2505.h"
 
 /*
- * DS2505-family add-only EPROM (docs/library/dallas-1wire-part-specs.md
- * section C.2). Same 3-byte memory-command header as the DS2502 family --
- * command, TA1 (address low), TA2 (address high) -- but this class echoes
- * no header CRC: unlike DS2502's F0h/AAh, which answer an echoed CRC-8
- * before any content, this class's F0h/AAh/A5h all start their content
- * (a data byte, a status byte, or A5h's redirection byte) in the very next
- * window after TA2. Confirmed independently against both hw/misc/sgi-hub.c
- * and hw/pci-host/sgi-bridge.c, the two existing hand-written DS2505-class
- * responders this device exists to replace (Tasks 7 and 8): neither answers
- * a header-CRC window either.
+ * DS2505-family add-only EPROM (the DS2505 datasheet, section C.2). It uses
+ * the same 3-byte memory-command header as the DS2502 family:
+ * command, TA1 (address low), and TA2 (address high). This class echoes no
+ * header CRC: unlike DS2502's F0h/AAh, which answer an echoed CRC-8 before
+ * any content, this class's F0h/AAh/A5h all start their content (a data byte,
+ * a status byte, or A5h's redirection byte) in the very next window after
+ * TA2. Confirmed independently against both hw/misc/sgi-hub.c and
+ * hw/pci-host/sgi-bridge.c, the two existing hand-written DS2505-class
+ * responders this device exists to replace: neither answers a header-CRC
+ * window either.
  *
  *   Read Memory (F0h)          a flat stream, no per-page CRC; if the read
  *                               runs through the last byte of the 2048-byte
@@ -32,8 +33,9 @@
  *                               too, later pages' CRC covers just that
  *                               page's bytes (generator cleared each
  *                               time). This model has no Write Status, so
- *                               every status byte -- implemented region or
- *                               not -- reads unprogrammed 0xff; see
+ *                               every status byte reads unprogrammed 0xff,
+ *                               including bytes outside implemented regions;
+ *                               see
  *                               ds2505_status_byte().
  *   Extended Read Memory (A5h) presents the page-address redirection byte
  *                               for the addressed page before its data,
@@ -43,8 +45,8 @@
  *                               bytes and a CRC-16 over just those bytes.
  *                               "The hardware of the DS2505 makes no
  *                               decisions based on the contents of the
- *                               Page Address Redirection Bytes" [datasheet]
- *                               -- it always streams the physically
+ *                               Page Address Redirection Bytes" [datasheet].
+ *                               It always streams the physically
  *                               addressed page; only the master decides
  *                               whether to act on redirection. This model
  *                               never programs a redirection byte away
@@ -52,16 +54,16 @@
  *                               redirected"), so a model that instead
  *                               tried to follow redirection would only be
  *                               distinguishable from a correct one by
- *                               which page's *data* comes back -- which is
- *                               exactly what the tests check.
+ *                               which page's *data* comes back. The tests
+ *                               check that distinction.
  *
- * There is no C3h on this class -- that command, and its CRC-8, belong to
+ * This class has no C3h command. C3h and its CRC-8 belong to
  * the DS2502 family alone (section C.1); this device does not decode it.
  *
  * Both the data field (F0h, and the pages A5h reads) and the status field
  * (AAh) share the same 07FFh top and the same start-address masking: "a
  * start address above the implemented top has its high address bits
- * forced to zero" [datasheet, section D.2] -- TA1/TA2 are an 11-bit
+ * forced to zero" [datasheet, section D.2]. TA1/TA2 are an 11-bit
  * register regardless of which field they address. As with the DS2502
  * sibling, the header CRC covers the address AS MASKED, never as sent,
  * and that is what makes the datasheet's "producing a CRC mismatch"
@@ -78,8 +80,7 @@
  * above a fixed offset (0x13f) instead of masking it, and
  * hw/pci-host/sgi-bridge.c does not mask either field, refusing instead.
  * Both already disagree with each other, so neither is authoritative here;
- * this model follows the datasheet extraction's stated rule instead. See
- * the task report for the discrepancy.
+ * this model follows the datasheet's stated rule instead.
  *
  * Write Memory (0Fh), Speed Write Memory (F3h), Write Status (55h) and
  * Speed Write Status (F5h) are all refused: these parts are modelled
@@ -97,20 +98,23 @@
 
 #define DS2505_STATUS_PAGE_SIZE 8
 
-/* Both fields are addressed by the same 11-bit register; see the note above. */
+/* Both fields are addressed by the same 11-bit register; see the note
+ * above. */
 #define DS2505_ADDR_MASK (DS2505_DATA_SIZE - 1)
 
 OBJECT_DECLARE_SIMPLE_TYPE(DS2505State, ONEWIRE_DS2505)
 
 /*
  * What the *previous* function_byte call placed on the wire, so this call
- * knows how to account for it before deciding what comes next -- see the
- * one-window lag documented on OneWireSlaveClass::function_byte.
+ * knows how to account for it before
+ * deciding what comes next; see the one-window lag documented on
+ * OneWireSlaveClass::function_byte.
  *
  * Every CRC-16 below goes out low byte first, then high (CRC_LO before
- * CRC_HI) -- the extraction never states the byte order for this class's
- * two-byte CRC, but this matches both hw/misc/sgi-hub.c and
- * hw/pci-host/sgi-bridge.c, the existing hand-written responders.
+ * CRC_HI). The datasheet does not state the
+ * byte order for this class's two-byte CRC, but this matches both
+ * hw/misc/sgi-hub.c and hw/pci-host/sgi-bridge.c,
+ * the existing hand-written responders.
  */
 typedef enum {
     DS2505_UNIT_DATA,       /* a plain data or status byte */
@@ -126,9 +130,10 @@ struct DS2505State {
 
     /*
      * Header capture: the command byte, then TA1, then TA2, exactly as
-     * received on the wire. The CRC-16 is seeded from the address as
-     * MASKED rather than from these; they are kept because a running
-     * stream still needs the command it was started with.
+     * received on the wire. The CRC-16 is seeded
+     * from the address as MASKED rather than from these; they are kept
+     * because a running stream still needs the
+     * command it was started with.
      */
     uint8_t cmd;
     uint8_t hdr[3];
@@ -136,10 +141,13 @@ struct DS2505State {
 
     uint16_t addr;          /* address of the byte/segment now in progress */
     uint16_t page_end;      /* last address of the page/status unit in play */
-    uint16_t crc_acc;       /* running CRC-16 of the segment now in progress */
-    uint16_t crc_pending;   /* the full CRC-16, split across its two windows */
+    /* running CRC-16 of the segment now in progress */
+    uint16_t crc_acc;
+    /* the full CRC-16, split across its two windows */
+    uint16_t crc_pending;
     uint8_t sent_byte;      /* the data/status/redirection byte last sent */
-    uint8_t unit;           /* a DS2505Unit value; fixed width so it migrates */
+    /* a DS2505Unit value; fixed width so it migrates */
+    uint8_t unit;
     bool in_redirect;       /* A5h only: mid redirection-byte-then-CRC pair */
     bool finished;          /* nothing further is defined; answer 0xff */
 };
@@ -150,21 +158,25 @@ static uint8_t ds2505_data_byte(DS2505State *d, uint16_t addr)
 }
 
 /*
- * DS2505 status/redirection memory (section D.2): only four small regions
- * are physically implemented -- write-protect bits for the data pages
- * (000h-007h), write-protect bits for the redirection bytes (020h-027h),
- * a bitmap of used pages (040h-047h), and the redirection bytes themselves
- * (100h-13Fh) -- everywhere else reads unprogrammed 0xff. This model has
- * no Write Status support, so none of that content can ever differ from
- * blank EPROM: every status byte, implemented region or not, reads 0xff.
+ * DS2505 status/redirection memory (section D.2): only four small regions are
+ * physically implemented:
+ * write-protect bits for the data pages (000h-007h), write-protect bits for
+ * the redirection bytes (020h-027h), a
+ * bitmap of used pages (040h-047h), and the redirection bytes themselves
+ * (100h-13Fh). All other addresses read unprogrammed 0xff. This model has no
+ * Write Status support, so none of that
+ * content can ever differ from blank
+ * EPROM: every status byte, implemented region or not, reads 0xff.
  *
- * A5h's redirection byte (100h + page number in this same status field)
- * is answered by two other, independent 0xff literals instead of a call
- * through here -- one in ds2505_start_stream() for the start page, one
- * in ds2505_advance_read_extended() for every page after it. All three
- * agree today only because all three are blank EPROM. If Write Status
- * is ever added, this function and both literals must be kept in step,
- * or 0xAA and 0xA5 will read the same address differently.
+ * A5h's redirection byte (100h + page number in this same status field) is
+ * answered by two other, independent 0xff
+ * literals instead of a call through here: one in ds2505_start_stream() for
+ * the start page, one in
+ * ds2505_advance_read_extended() for every page after it. All three agree
+ * today only because all three are blank
+ * EPROM. If Write Status is ever added, this function and both literals must
+ * be kept in step, or 0xAA and 0xA5 will
+ * read the same address differently.
  */
 static uint8_t ds2505_status_byte(void)
 {
@@ -172,8 +184,9 @@ static uint8_t ds2505_status_byte(void)
 }
 
 /*
- * Read Memory (F0h): flat stream, one CRC-16 only at the true end of the
- * data field (07FFh), covering the header and every data byte read.
+ * Read Memory (F0h): flat stream, one CRC-16 only at the true end of the data
+ * field (07FFh), covering the header
+ * and every data byte read.
  */
 static uint8_t ds2505_advance_read_memory(DS2505State *d)
 {
@@ -201,15 +214,17 @@ static uint8_t ds2505_advance_read_memory(DS2505State *d)
 }
 
 /*
- * Read Status (AAh): 8-byte pages, each closed by a CRC-16 -- the first
- * covering the header too, later ones cleared -- continuing to the same
- * 07FFh top the data field shares. The extraction states that top for the
- * status field as well as the data field (section D.2: status addresses
- * are masked at 07FFh and 140h-7FFh reads FFh). What it does not state is
- * that the stream STOPS there rather than running on; that much is
- * inferred from the data field's own stated end of memory, and a literal
- * statement about where an AAh stream ends, or a guest read that reaches
- * this far, would settle it.
+ * Read Status (AAh): 8-byte pages, each closed by a CRC-16. The first CRC
+ * also covers the header; later CRCs start cleared. Reads continue to the
+ * same 07FFh top as the data field. The datasheet
+ * states that top for the status field as
+ * well as the data field (section D.2: status addresses are masked at 07FFh
+ * and 140h-7FFh reads FFh). What it does
+ * not state is that the stream STOPS there rather than running on; that much
+ * is inferred from the data field's own
+ * stated end of memory, and a literal statement about where an AAh stream
+ * ends, or a guest read that reaches this
+ * far, would settle it.
  */
 static uint8_t ds2505_advance_read_status(DS2505State *d)
 {
@@ -246,20 +261,22 @@ static uint8_t ds2505_advance_read_status(DS2505State *d)
 
 /*
  * Extended Read Memory (A5h): a redirection byte and its CRC-16, then that
- * page's 32 data bytes and their own CRC-16, page after page, to the same
- * 07FFh top as a plain read -- this is the data field, just framed
- * differently. A5h reads the data field, whose 07FFh top the extraction
- * does state; what is derived is that an A5h stream STOPS there rather
- * than running on, since the extraction spells that ending out only for
- * F0h. A literal A5h end-of-field statement, or a guest read that
- * actually reaches this far, would settle it.
- * Redirection is always 0xff (never redirected): this model has no
- * Write Memory/Write Status, so no redirection byte can ever be
- * programmed away from its unprogrammed value, and the hardware never
- * acts on it regardless (see the header comment). The redirection
- * byte's literal 0xff below is one of three independent answers for the
- * same address -- see ds2505_status_byte()'s comment for the other two
- * and why that matters.
+ * page's 32 data bytes and their own
+ * CRC-16, page after page, to the same 07FFh top as a plain read. This
+ * reads the data field with different framing. A5h reads the data field,
+ * whose 07FFh top the datasheet does
+ * state; what is derived is that an A5h
+ * stream STOPS there rather than running on, since the datasheet spells that
+ * ending out only for F0h. A literal A5h
+ * end-of-field statement, or a guest read that actually reaches this far,
+ * would settle it. Redirection is always
+ * 0xff (never redirected): this model has no Write Memory/Write Status, so no
+ * redirection byte can ever be
+ * programmed away from its unprogrammed value, and the hardware never acts on
+ * it regardless (see the header
+ * comment). The redirection byte's literal 0xff below is one of three
+ * independent answers for the same address; see ds2505_status_byte()'s
+ * comment for the other two and why that matters.
  */
 static uint8_t ds2505_advance_read_extended(DS2505State *d)
 {
@@ -281,7 +298,8 @@ static uint8_t ds2505_advance_read_extended(DS2505State *d)
         d->addr++;                                  /* now page-aligned */
         d->crc_acc = 0;
         d->in_redirect = true;
-        d->sent_byte = 0xff;   /* redirection byte; see ds2505_status_byte() */
+        /* redirection byte; see ds2505_status_byte() */
+        d->sent_byte = 0xff;
         d->unit = DS2505_UNIT_REDIRECT;
         return d->sent_byte;
     }
@@ -331,12 +349,13 @@ static uint8_t ds2505_advance_stream(DS2505State *d)
 
 /*
  * TA2 has just been captured: this class echoes no header CRC, so the very
- * next window is already the first content byte. Mask the raw address into
- * the field, seed the running CRC-16 with the header carrying that MASKED
- * address -- every one of this class's first CRCs covers the header -- and
- * set up the first byte each command starts with. Masking before the CRC
- * rather than after is what turns an out-of-range start address into a
- * check the master watches fail, instead of a silent alias onto page zero.
+ * next window is already the first content
+ * byte. Mask the raw address into the field, seed the running CRC-16 with the
+ * header carrying that MASKED address, and set up the first byte of the
+ * command. Every first CRC on this class covers the header.
+ * Masking before the CRC rather than after is what turns an out-of-range
+ * start address into a check the master
+ * watches fail, instead of a silent alias onto page zero.
  */
 static void ds2505_start_stream(DS2505State *d)
 {
@@ -391,9 +410,10 @@ static bool ds2505_function_byte(OneWireSlave *s, uint8_t in, uint8_t *out)
         default:
             /*
              * Add-only: writes are refused, not misread as a read. An
-             * unrecognised byte (0xC3 included -- that command does not
-             * exist on this class) is refused the same way. The base
-             * layer logs LOG_UNIMP for both.
+             * unrecognised byte (including 0xC3, which this class lacks) is
+             * refused the same way.
+             * The base layer logs LOG_UNIMP for
+             * both.
              */
             return false;
         }
@@ -449,12 +469,15 @@ static void ds2505_instance_init(Object *obj)
 
 /*
  * `cmd` is loaded unvalidated: a migration stream is not trusted input.
- * ds2505_advance_stream()'s switch on `cmd` only ever reaches its
- * g_assert_not_reached() default when `cmd` holds something other than
- * 0 (no command chosen yet) or one of the three read commands -- a state
- * this device itself never produces, but an incoming stream could claim.
- * Reject it here instead of aborting QEMU, the same way the base class's
- * own post_load rejects an out-of-range `bit` (hw/1wire/core.c).
+ * ds2505_advance_stream()'s switch on `cmd`
+ * only ever reaches its g_assert_not_reached() default when `cmd` holds
+ * something other than 0 (no command chosen
+ * yet) or one of the three read commands. This device never produces such a
+ * state, but an
+ * incoming stream could claim it. Reject it here instead of aborting QEMU,
+ * the same way the base
+ * class's own post_load rejects an
+ * out-of-range `bit` (hw/1wire/core.c).
  */
 static int ds2505_post_load(void *opaque, int version_id)
 {

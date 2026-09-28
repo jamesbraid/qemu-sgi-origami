@@ -1,9 +1,8 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
+/* Bridge qtest PCI device for DMA, IRQ levels and programmable identity. */
 /*
- * Test-only PCI device for the Bridge qtests: page-straddling DMA with a
- * seeded pattern, a held interrupt level, and a settable PCI identity.
- * Like pci-testdev, no machine instantiates it. Retiring it onto an
- * extended iommu-testdev is recorded follow-up work.
+ * Seeded DMA crosses pages; IRQ level is held. Like pci-testdev, no machine
+ * instantiates it. An extended iommu-testdev could replace it.
  */
 
 #include "qemu/osdep.h"
@@ -65,8 +64,8 @@ struct SGIBridgeDMATestState {
 
     /*
      * Whether this card tells the bridge it orders its own byte lanes, so a
-     * test can stand one in for SGI silicon that does. Off by default,
-     * which is what an ordinary card says.
+     * test can stand one in for SGI silicon that does. Off by default, which
+     * is what an ordinary card says.
      */
     bool byte_lane_self_ordered;
     bool plain_dma;
@@ -136,8 +135,8 @@ static void sgi_bridge_dma_test_go(SGIBridgeDMATestState *s)
 }
 
 /*
- * With different settings at the two ends exactly one transform sits in
- * the path, so the read direction is assertable on its own.
+ * With different settings at the two ends exactly one transform sits in the
+ * path, so the read direction is assertable on its own.
  */
 static void sgi_bridge_dma_test_copy(SGIBridgeDMATestState *s)
 {
@@ -247,11 +246,12 @@ static const MemoryRegionOps sgi_bridge_dma_test_ops = {
 };
 
 /*
- * The 64-bit register window: a read-only constant and a writable scratch, each
- * returning the size-byte little-endian slice at the accessed offset, so a split
- * read reassembles the same value a one-cycle read gives. What differs is the
- * Bridge's whole-doubleword swap, which is what a test reads to see. The
- * eight-byte impl size lets a one-cycle doubleword reach the handler whole.
+ * The 64-bit register window: a read-only constant and a writable scratch,
+ * each returning the size-byte little-endian slice at the accessed offset, so
+ * a split read reassembles the same value a one-cycle read gives. What
+ * differs is the Bridge's whole-doubleword swap, which is what a test reads
+ * to see. The eight-byte impl size lets a one-cycle doubleword reach the
+ * handler whole.
  */
 static uint64_t sgi_bridge_dma_test_wide_read(void *opaque, hwaddr addr,
                                               unsigned size)

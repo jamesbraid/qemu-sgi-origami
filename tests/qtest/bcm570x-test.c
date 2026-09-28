@@ -4,11 +4,10 @@
  *
  * The head is one Bridge on the "none" machine with the memory a card
  * transfers into beside it, under -M none. The card is reached over the chip
- * it ships behind -- an Origin never has this adapter anywhere else -- but
+ * it ships behind (an Origin has it nowhere else), but
  * nothing here is an Origin 200 claim: no node, no crossbar, no fabric. How
  * the device composes with a populated machine's DMA routes is a separate
- * integration test, sn0-bcm570x-test.c (see
- * docs/library/nic-on-bridge-conventions.md).
+ * integration test, sn0-bcm570x-test.c.
  *
  * This ran on an x86 PC until the fork stopped building SGI devices for that
  * target, and the move changes what the golden byte assertions below say. The
@@ -16,22 +15,22 @@
  * any Bridge, delivers its DMA integer fields in the driver's own big-endian
  * layout instead of native little-endian, with a 16-bit field in the other
  * half of its 32-bit word (offset xor 2) because the word swap relocates
- * halfwords. The packet payload is copied verbatim. That is the contract in
- * docs/datasheets/bcm570x.md, "Byte order -- the exact bits", and it is the
- * only byte order the product ever presents.
+ * halfwords. The packet payload is copied verbatim. That is the device's
+ * documented byte-order contract, and it is the only byte order the product
+ * ever presents.
  *
  * The card carries the SGI IRIS Release 2 Gigabit board's PCI four-tuple:
- * IRIX's tg driver registers on the raw Broadcom primary vendor/device and then,
- * at attach, insists the card also carry SGI's subsystem identity, so the test
- * asserts the whole four-tuple, plus the two indirect config-space windows the
- * driver uses before it ever touches the BAR (docs/datasheets/bcm570x.md,
- * "three access paths" and the qtest checklist).
+ * IRIX's tg driver registers on the raw Broadcom primary vendor/device and
+ * then, at attach, insists the card also carry SGI's subsystem identity, so
+ * the test asserts the whole four-tuple, plus the two indirect config-space
+ * windows the driver uses before it ever touches the BAR (the device's three
+ * config-space access paths).
  *
  * Byte order is asserted as a golden fixed-byte-layout: on this host a status
  * flag of 0x00000001 lands in guest memory as bytes 00 00 00 01. A
  * self-round-trip through the model cannot see the swap direction
- * (swap-on-write and swap-on-read cancel), so every DMA byte-order check reads
- * the raw bytes and asserts the exact placement.
+ * (swap-on-write and swap-on-read cancel), so every DMA byte-order check
+ * reads the raw bytes and asserts the exact placement.
  */
 
 #include "qemu/osdep.h"
@@ -69,7 +68,7 @@
 #define BCM_SUBSYS_VENDOR_ID    0x10a9
 #define BCM_SUBSYS_ID           0x8010
 
-/* The indirect-access config registers (docs/datasheets/bcm570x.md). */
+/* The indirect-access config registers. */
 #define BCM_PCI_REG_BASEADDR    0x78
 #define BCM_PCI_MEMWIN_BASEADDR 0x7c
 #define BCM_PCI_REG_DATA        0x80
@@ -91,11 +90,12 @@
 #define BCM_MISCCFG_RESET       0x00000001u
 
 /*
- * The buffer-manager mode register (BUFMGR_MODE in tg3, BGE_BMAN_MODE in bge).
- * ENABLE is the enable-request bit; ATTN_ENABLE arms its attention. The public
- * drivers set ENABLE and poll for it to stay SET, but IRIX tg sets ENABLE and
- * polls for it to CLEAR -- the chip acknowledges the request by dropping the
- * bit -- so the model self-clears ENABLE while ATTN_ENABLE persists.
+ * The buffer-manager mode register (BUFMGR_MODE in tg3, BGE_BMAN_MODE in
+ * bge). ENABLE is the enable-request bit; ATTN_ENABLE arms its attention. The
+ * public drivers set ENABLE and poll for it to stay SET, but IRIX tg sets
+ * ENABLE and polls for it to CLEAR. The chip acknowledges the request by
+ * dropping the bit, so the model self-clears ENABLE while ATTN_ENABLE
+ * persists.
  */
 #define BCM_BUFMGR_MODE         0x4400u
 #define BCM_BUFMGR_ENABLE       0x00000002u
@@ -139,10 +139,10 @@
 #define BCM_PHY_IDR2_BCM5701    0x6110u
 
 /*
- * The Broadcom auxiliary status summary register (BRGPHY_MII_AUXSTS, 0x19) the
- * copper link-up path reads for speed and duplex. Its AN_RES field (0x0700)
- * carries the negotiated result -- 0x0700 is 1000baseT full duplex -- alongside
- * the autoneg-complete and link bits.
+ * The Broadcom auxiliary status summary register (BRGPHY_MII_AUXSTS, 0x19)
+ * the copper link-up path reads for speed and duplex. Its AN_RES field
+ * (0x0700) carries the negotiated result alongside the autoneg-complete
+ * and link bits. 0x0700 is 1000baseT full duplex.
  */
 #define BRGPHY_AUXSTS           0x19u
 #define BRGPHY_AUXSTS_ACOMP     0x8000u
@@ -170,12 +170,12 @@
  * clock as well as give the main loop a pass.
  */
 #define RX_ARRIVAL_LATENCY_NS  200000
-#define BCM_HCC_RX_COAL_TICKS   0x3c08u        /* receive coalescing: microseconds */
+#define BCM_HCC_RX_COAL_TICKS   0x3c08u        /* RX coalescing: us */
 #define BCM_HCC_TX_COAL_TICKS   0x3c0cu
 #define BCM_HCC_TX_MAX_COAL_BDS 0x3c14u
-#define BCM_HCC_RX_MAX_COAL_BDS 0x3c10u        /* receive coalescing: descriptors */
+#define BCM_HCC_RX_MAX_COAL_BDS 0x3c10u        /* RX coalescing: BDs */
 #define BCM_MODE_CTL            0x6800u
-#define BCM_DMA_SWAP_OPTIONS    0x36u          /* the driver's MODE_CTL swap arm */
+#define BCM_DMA_SWAP_OPTIONS    0x36u          /* MODE_CTL swap arm */
 #define BCM_MODE_HOST_SEND_BDS  (1u << 17)
 #define BCM_SRAM_SEND_RING_RCB  0x0100u
 #define BCM_TXBDFLAG_TCP_UDP_CKSUM 0x0001u
@@ -188,10 +188,12 @@
 #define BCM_SOURCE_TX_RING_LEN  8u
 #define BCM_STATFLAG_UPDATED    0x00000001u
 #define BCM_STATUS_BLK_SIZE     0x50
-/* Status-block idx[0]: rx_producer at 0x10, tx_consumer at 0x12 (tg3 layout). */
+/*
+ * Status-block idx[0]: rx_producer at 0x10, tx_consumer at 0x12 (tg3 layout).
+ */
 #define BCM_STATUS_RX_PROD_OFF  16
 #define BCM_STATUS_TX_CONS_OFF  18
-#define BCM_STATUS_TAG_OFF       4      /* the device bumps this once per status DMA */
+#define BCM_STATUS_TAG_OFF       4      /* incremented per status DMA */
 
 /* Receive ring. */
 #define BCM_MBX_RX_STD_PROD_LO  0x026cu
@@ -204,21 +206,21 @@
 #define BCM_SRAM_STATS_NO_MORE_RXBDS 0x0898u
 #define BCM_TXBD_SIZE           16
 #define BCM_RXBD_SIZE           32
-#define BCM_RXBD_LEN            0x08   /* idx_len word: length in the low half */
-#define BCM_RXBD_IDX            0x0a   /* idx_len word: ring index in the high half */
-#define BCM_RXBD_FLAGS          0x0c   /* type_flags word: flags in the low half */
+#define BCM_RXBD_LEN            0x08   /* idx_len: length in low half */
+#define BCM_RXBD_IDX            0x0a   /* idx_len: ring index in high half */
+#define BCM_RXBD_FLAGS          0x0c   /* type_flags: flags in low half */
 #define BCM_RX_JUMBO_RCB_HI     0x2440u
 #define BCM_RX_JUMBO_RCB_LO     0x2444u
 #define BCM_RX_JUMBO_RCB_MAXLEN 0x2448u
 #define BCM_MBX_RX_JUMBO_PROD_LO 0x0274u
 #define BCM_RXBDFLAG_JUMBO_RING 0x0020u
-#define BCM_RXBD_TCP_CSUM       0x10   /* csum word: TCP/UDP result in the low half */
-#define BCM_RXBD_IP_CSUM        0x12   /* csum word: IP result in the high half */
+#define BCM_RXBD_TCP_CSUM       0x10   /* csum: TCP/UDP result in low half */
+#define BCM_RXBD_IP_CSUM        0x12   /* csum: IP result in high half */
 #define BCM_RXBDFLAG_TCP_UDP_CKSUM 0x0001u
 #define BCM_RXBDFLAG_IP_CKSUM   0x0002u
 #define BCM_RXBDFLAG_END        0x0004u
-#define BCM_CSUM_GOOD           0xffffu /* a one's-complement sum that checks out */
-#define BCM_ETH_FCS_LEN         4      /* length field carries the FCS the driver strips */
+#define BCM_CSUM_GOOD           0xffffu /* valid one's-complement sum */
+#define BCM_ETH_FCS_LEN         4      /* length includes stripped FCS */
 
 /* Interrupts. */
 #define BCM_MBX_IRQ0_LO         0x0204u
@@ -247,12 +249,13 @@
 #define RET_RING_PHYS           (DMA_BASE + 0x00240000ULL)
 #define RX_BUF_PHYS             (DMA_BASE + 0x00250000ULL)
 #define STATUS2_PHYS            (DMA_BASE + 0x00260000ULL)
-#define TX_RING_LEN            4u             /* descriptors in the test ring */
+#define TX_RING_LEN            4u             /* test ring descriptors */
 #define RX_RING_LEN           4u
 /*
- * The standard ring's control block carries the size of the buffer behind each
- * descriptor, not a count of descriptors. A driver at the standard MTU posts
- * something like this; a frame that does not fit belongs on the jumbo ring.
+ * The standard ring's control block carries the size of the buffer behind
+ * each descriptor, not a count of descriptors. A driver at the standard MTU
+ * posts something like this; a frame that does not fit belongs on the jumbo
+ * ring.
  */
 #define STD_BUF_SIZE          1536u
 #define JUMBO_RING_PHYS       (DMA_BASE + 0x00260000ULL)
@@ -262,7 +265,7 @@
 #define JUMBO_BUF_SIZE        9216u
 /* Past the transfer memory, short of the chip's face: nothing backs it. */
 #define UNMAPPED_PHYS         0x04000000ULL
-#define COAL_RING_LEN         64u            /* a ring long enough for a coalescing burst */
+#define COAL_RING_LEN         64u            /* holds a coalescing burst */
 
 /* A ring and buffer area big enough to time a burst rather than a packet. */
 #define BENCH_RING_PHYS       (DMA_BASE + 0x00300000ULL)
@@ -271,7 +274,7 @@
 #define BENCH_FRAMES          255u
 #define BENCH_FRAME_LEN       1472u
 #define BENCH_BUF_STRIDE      1536u
-#define BENCH_ROUNDS          40u    /* enough frames to be a rate, not a sample */
+#define BENCH_ROUNDS          40u    /* enough frames to measure a rate */
 
 /*
  * A live card: the PCI bus, the device at its slot, and BAR0 mapped and
@@ -409,7 +412,9 @@ static uint32_t ind_mem_readl(Bcm *b, uint32_t off)
     return ind_mem_readl_dev(b->dev, off);
 }
 
-/* A PHY register read/write through the MAC's MI_COMM register (needs BAR0). */
+/*
+ * A PHY register read/write through the MAC's MI_COMM register (needs BAR0).
+ */
 static uint16_t mii_read(Bcm *b, unsigned phy, unsigned reg)
 {
     bar_writel(b, BCM_MI_COMM,
@@ -459,8 +464,8 @@ static uint32_t get32dma(const uint8_t *b)
 
 /*
  * A 16-bit DMA field. The word swap puts it in the other half of its 32-bit
- * word from where the little-endian layout does, so its byte offset within the
- * structure is the model's offset xor 2 and the two bytes there are
+ * word from where the little-endian layout does, so its byte offset within
+ * the structure is the model's offset xor 2 and the two bytes there are
  * big-endian. Off a Bridge the same field is little-endian at the plain
  * offset.
  */
@@ -491,12 +496,13 @@ static bool intr_line_up(QPCIDevice *dev)
 }
 
 /*
- * The minimum plumbing for the chip to DMA a status block: a send-ring control
- * block with a ring length so a doorbell passes the range guard, and the status
- * block's host address. The host-coalescing block is left disabled -- each test
- * enables it when it wants a status update -- and the status region is zeroed. A
- * doorbell of producer 0 then drives a status-block DMA with no ring walk, which
- * is all the interrupt and gating tests need (no descriptors, no frame).
+ * The minimum plumbing for the chip to DMA a status block: a send-ring
+ * control block with a ring length so a doorbell passes the range guard, and
+ * the status block's host address. Host coalescing starts disabled; each
+ * test enables it when it wants a status update. The status region is
+ * zeroed. A doorbell of producer 0 drives a status-block DMA with no ring
+ * walk, which is all the interrupt and gating tests need (no
+ * descriptors, no frame).
  */
 static void bcm_arm_status(Bcm *b)
 {
@@ -647,8 +653,9 @@ static void wait_for_log_marker(QTestState *qts, const char *logfile,
 }
 
 /*
- * A socket backend delivers a received frame on a later pass of the main loop,
- * so the status block's receive producer is polled rather than read once.
+ * A socket backend delivers a received frame on a later pass of the main
+ * loop, so the status block's receive producer is polled rather than read
+ * once.
  */
 static void wait_for_rx_prod(Bcm *b, uint16_t want)
 {
@@ -668,8 +675,11 @@ static void wait_for_rx_prod(Bcm *b, uint16_t want)
     g_assert_cmphex(get16be(idx), ==, want);
 }
 
-/* The status tag the device bumps once per status-block DMA, so its delta over
- * a burst counts how many interrupts the coalescing block actually raised. */
+/*
+ * The status tag the device bumps once per status-block DMA, so its delta
+ * over a burst counts how many interrupts the coalescing block actually
+ * raised.
+ */
 static uint32_t read_status_tag(Bcm *b)
 {
     uint8_t tag[4];
@@ -678,9 +688,9 @@ static uint32_t read_status_tag(Bcm *b)
     return get32dma(tag);
 }
 
-/* Poll the return ring until the descriptor at idx is marked end-of-frame -- the
+/*
  * per-frame completion the device writes even while it coalesces the status
- * block, so a test can tell a frame was received before any interrupt fired. */
+ */
 static void wait_for_ret_end(Bcm *b, unsigned int idx)
 {
     uint8_t flags[2];
@@ -705,16 +715,15 @@ static void wait_for_ret_end(Bcm *b, unsigned int idx)
  * standard, and the SGI subsystem identity sits in the standard PCI subsystem
  * fields: subsystem vendor at config 0x2C, subsystem id at 0x2E.
  *
- * Note on offsets: docs/datasheets/bcm570x.md's config table and qtest
- * checklist place the subsystem *device* at 0x2C and the subsystem *vendor* at
- * 0x2E, taking OpenBSD bge's header macro names (BGE_PCI_SUBSYS 0x2C /
- * BGE_PCI_SUBVID 0x2E) at face value. Those macro names are backwards: bge's
- * own driver (if_bge.c) reads the subsystem through the standard
- * PCI_SUBSYS_ID_REG (0x2C) dword and takes PCI_VENDOR() -- the low half at
- * 0x2C -- as the subsystem vendor and PCI_PRODUCT() -- the high half at 0x2E --
- * as the device. That is plain standard-PCI layout, which is what real silicon
- * and IRIX both use, so the card presents SGI vendor 0x10a9 at 0x2C and the
- * board id 0x8010 at 0x2E.
+ * Note on offsets: the BCM570x datasheet's config table places the subsystem
+ * device* at 0x2C and the subsystem *vendor* at 0x2E, taking OpenBSD bge's
+ * header macro names (BGE_PCI_SUBSYS 0x2C / BGE_PCI_SUBVID 0x2E) at face
+ * value. Those macro names are backwards: bge's own driver (if_bge.c) reads
+ * the subsystem through the standard PCI_SUBSYS_ID_REG (0x2C) dword and takes
+ * PCI_VENDOR() (the low half at 0x2C) as the subsystem vendor and
+ * PCI_PRODUCT() (the high half at 0x2E) as the device. That is plain
+ * standard-PCI layout, which is what real silicon and IRIX both use, so the
+ * card presents SGI vendor 0x10a9 at 0x2C and the board id 0x8010 at 0x2E.
  */
 static void test_pci_four_tuple(const void *data)
 {
@@ -739,10 +748,10 @@ static void test_pci_four_tuple(const void *data)
 }
 
 /*
- * The indirect register window round-trips. Writing a register offset to config
- * 0x78 and a value to config 0x80 must reach the same register file the BAR
- * exposes at 0x0000-0x7FFF: read the register back through BAR0 at that offset
- * and it must match, proving 0x78/0x80 alias the file.
+ * The indirect register window round-trips. Writing a register offset to
+ * config 0x78 and a value to config 0x80 must reach the same register file
+ * the BAR exposes at 0x0000-0x7FFF: read the register back through BAR0 at
+ * that offset and it must match, proving 0x78/0x80 alias the file.
  */
 static void test_indirect_register_window(const void *data)
 {
@@ -767,8 +776,8 @@ static void test_indirect_register_window(const void *data)
  * The indirect memory window round-trips. Writing an on-chip SRAM offset to
  * config 0x7C and a value to config 0x84 reaches one word of SRAM; the same
  * base, masked to a 32 KB boundary, positions the BAR0 window at 0x8000. Read
- * the word back both through config 0x7C/0x84 and through the BAR0 window, and
- * the two views must agree.
+ * the word back both through config 0x7C/0x84 and through the BAR0 window,
+ * and the two views must agree.
  */
 static void test_indirect_memory_window(const void *data)
 {
@@ -794,8 +803,9 @@ static void test_indirect_memory_window(const void *data)
  * The reset handshake completes when the reset is triggered through the BAR.
  * The mailbox stands in for the on-chip bootcode: it reads back the one's-
  * complement of the last value written, so the driver's magic reads as the
- * ready value at once. This covers the bge ordering, where the magic is written
- * before the reset; the reset re-arms the mailbox and self-clears its trigger.
+ * ready value at once. This covers the bge ordering, where the magic is
+ * written before the reset; the reset re-arms the mailbox and self-clears its
+ * trigger.
  */
 static void test_reset_handshake_via_bar(const void *data)
 {
@@ -809,7 +819,9 @@ static void test_reset_handshake_via_bar(const void *data)
 
     bar_writel(&b, BCM_MISC_CFG, BCM_MISCCFG_RESET);
 
-    /* The reset trigger self-clears; the driver polls MISC_CFG bit 0 for it. */
+    /*
+     * The reset trigger self-clears; the driver polls MISC_CFG bit 0 for it.
+     */
     g_assert_cmphex(bar_readl(&b, BCM_MISC_CFG) & BCM_MISCCFG_RESET, ==, 0);
 
     /* The reset leaves the mailbox reading ready for the post-reset poll. */
@@ -820,12 +832,12 @@ static void test_reset_handshake_via_bar(const void *data)
 }
 
 /*
- * The IRIX ordering: the driver resets the chip first, then writes the magic to
- * the firmware mailbox and polls it. Because the mailbox returns the one's-
- * complement of the last value written, the magic reads back ready without any
- * static value having been arranged during the reset -- the case a mailbox that
- * only latched a complement on reset would time out on, the driver's magic
- * write having overwritten it.
+ * The IRIX ordering: the driver resets the chip first, then writes the magic
+ * to the firmware mailbox and polls it. Because the mailbox returns the
+ * one's- complement of the last value written, the magic reads back ready
+ * without any static value having been arranged during the reset. A mailbox
+ * that only latched a complement on reset would time out because the
+ * driver's magic write overwrote it.
  */
 static void test_reset_handshake_magic_after_reset(const void *data)
 {
@@ -843,12 +855,12 @@ static void test_reset_handshake_magic_after_reset(const void *data)
 }
 
 /*
- * The firmware-progress register (0x5034) the IRIX driver polls after reset. It
- * aborts the moment the register changes from its all-ones init to a value it
- * does not recognise, and a bare zero reads as exactly such a value (the boot
- * failure "Progress code=0x0"). The chip holds it at the all-ones "no progress
- * yet" sentinel -- out of reset and after a global reset -- so the driver reads
- * "unchanged" and keeps polling the mailbox instead of failing.
+ * The firmware-progress register (0x5034) the IRIX driver polls after reset.
+ * It aborts the moment the register changes from its all-ones init to a value
+ * it does not recognise, and a bare zero reads as exactly such a value (the
+ * boot failure "Progress code=0x0"). The chip holds it at the all-ones "no
+ * progress yet" sentinel both out of reset and after a global reset, so the
+ * driver reads "unchanged" and keeps polling the mailbox instead of failing.
  */
 static void test_firmware_progress_register(const void *data)
 {
@@ -867,9 +879,9 @@ static void test_firmware_progress_register(const void *data)
 }
 
 /*
- * The same handshake, but the reset is triggered through the indirect register
- * window (config 0x78/0x80) rather than the BAR -- the path the 5700/5701 take.
- * No BAR mapping is needed: every step here is config space.
+ * The same handshake, but the reset is triggered through the indirect
+ * register window (config 0x78/0x80) rather than the BAR, as the
+ * 5700/5701 take. No BAR mapping is needed: every step here is config space.
  */
 static void test_reset_handshake_via_indirect(const void *data)
 {
@@ -889,7 +901,7 @@ static void test_reset_handshake_via_indirect(const void *data)
 
 /*
  * A *_MODE register's reset bit self-clears while the rest of the write
- * persists -- the driver sets the bit and polls for it to read back clear.
+ * persists. The driver sets the bit and polls for it to read back clear.
  */
 static void test_self_clearing_reset_bits(const void *data)
 {
@@ -908,7 +920,7 @@ static void test_self_clearing_reset_bits(const void *data)
 
     /*
      * RX_MODE the same. Then the sequence the IRIX driver actually runs
-     * through it -- reset on its own, carrying no ENABLE, which leaves the
+     * through it: reset on its own, carrying no ENABLE. This leaves the
      * receiver halted rather than restarting it.
      */
     bar_writel(&b, BCM_RX_MODE, BCM_MODE_RESET | BCM_RXMODE_ENABLE);
@@ -922,9 +934,9 @@ static void test_self_clearing_reset_bits(const void *data)
 }
 
 /*
- * HCC_MODE stores and reads back faithfully: the driver's idle sequence writes
- * ENABLE, then writes 0 and polls up to ~2000 times for ENABLE to read clear,
- * aborting the attach if it never does.
+ * HCC_MODE stores and reads back faithfully: the driver's idle sequence
+ * writes ENABLE, then writes 0 and polls up to ~2000 times for ENABLE to read
+ * clear, aborting the attach if it never does.
  */
 static void test_hcc_mode_idle_poll(const void *data)
 {
@@ -946,10 +958,10 @@ static void test_hcc_mode_idle_poll(const void *data)
 /*
  * The buffer-manager enable handshake, where IRIX tg diverges from the public
  * drivers. The driver sets ENABLE (0x2) alongside ATTN_ENABLE (0x4) and then
- * polls ENABLE for CLEAR ("TG3_BM_ENA bit did not clear" on timeout) -- the
- * opposite of tg3/bge, which poll it for SET. So a plain store-and-read-back
- * would leave ENABLE set and hang the driver. The chip acknowledges the request
- * by dropping ENABLE at once, while ATTN_ENABLE persists.
+ * polls ENABLE for CLEAR ("TG3_BM_ENA bit did not clear" on timeout),
+ * unlike tg3/bge, which poll it for SET. A plain store-and-read-back
+ * would leave ENABLE set and hang the driver. The chip acknowledges the
+ * request by dropping ENABLE at once, while ATTN_ENABLE persists.
  */
 static void test_bufmgr_enable_self_clears(const void *data)
 {
@@ -969,10 +981,11 @@ static void test_bufmgr_enable_self_clears(const void *data)
 }
 
 /*
- * The host-coalescing idle poll reads the WHOLE register for zero, not just the
- * ENABLE bit ("Host Coalescing Mode Rgtr did not clear" on timeout). Write a
- * value with several bits set, then write 0 and confirm every bit reads back
- * clear, the state the driver waits for before it reprograms the block.
+ * The host-coalescing idle poll reads the WHOLE register for zero, not just
+ * the ENABLE bit ("Host Coalescing Mode Rgtr did not clear" on timeout).
+ * Write a value with several bits set, then write 0 and confirm every bit
+ * reads back clear, the state the driver waits for before it reprograms the
+ * block.
  */
 static void test_hcc_mode_clears_to_zero(const void *data)
 {
@@ -1002,7 +1015,9 @@ static void test_mi_busy_clears(const void *data)
 
     bcm_open(&b, bcm_init());
 
-    /* A read of the PHY identity: BUSY clears and the low 16 carry the value. */
+    /*
+     * A read of the PHY identity: BUSY clears and the low 16 carry the value.
+     */
     bar_writel(&b, BCM_MI_COMM,
                BCM_MICOMM_BUSY | BCM_MICMD_READ |
                (BCM_PHY_ADDR << BCM_MICOMM_PHY_SHIFT) |
@@ -1024,8 +1039,8 @@ static void test_mi_busy_clears(const void *data)
 
 /*
  * MISC_CTL[31:16] presents the chip id the driver reads its whole identity
- * from. For the single-port default it must decode to BCM5701 (chip id 0x0105,
- * ASIC revision chip-id >> 12 == 0), not merely non-zero.
+ * from. For the single-port default it must decode to BCM5701 (chip id
+ * 0x0105, ASIC revision chip-id >> 12 == 0), not merely non-zero.
  */
 static void test_misc_ctl_asic_revision(const void *data)
 {
@@ -1042,9 +1057,9 @@ static void test_misc_ctl_asic_revision(const void *data)
 }
 
 /*
- * The MAC-address mailbox is honoured. The model presents the six bytes of the
- * -device mac= in SRAM 0x0C14/0x0C18 with the tag 0x484B in the high half of
- * 0x0C14, the path bge_attach reads before it falls back to an EEPROM.
+ * The MAC-address mailbox is honoured. The model presents the six bytes of
+ * the -device mac= in SRAM 0x0C14/0x0C18 with the tag 0x484B in the high half
+ * of 0x0C14, the path bge_attach reads before it falls back to an EEPROM.
  */
 static void test_mac_address_mailbox(const void *data)
 {
@@ -1067,9 +1082,9 @@ static void test_mac_address_mailbox(const void *data)
 /*
  * The station address also appears in MAC address filter slot 0
  * (MAC_ADDR_0_HIGH at 0x0410, MAC_ADDR_0_LOW at 0x0414), which the chip loads
- * from the serial EEPROM at power-on. A driver that reads the address straight
- * from these MAC control registers -- not the SRAM mailbox -- still sees the
- * -device mac=.
+ * from the serial EEPROM at power-on. A driver that reads the address
+ * straight from these MAC control registers (not the SRAM mailbox) still
+ * sees the -device mac=.
  */
 static void test_mac_address_registers(const void *data)
 {
@@ -1122,13 +1137,14 @@ static void test_mac_address_registers(const void *data)
 
 /*
  * The PHY answers through MI_COMM with the identity brgphy binds on, and its
- * link comes up a settle after the part starts negotiating -- the load-bearing
- * link/autoneg result. MI_STS, the auto-poll link latch, follows the carrier.
+ * link comes up after negotiation settles; link/autoneg completion drives
+ * bring-up. MI_STS, the auto-poll link latch, follows the carrier.
  *
- * The settle is the contract, not a detail to assert away: a restart negotiates
- * for a while and completes afterwards, so a driver watching for the completion
- * it asked for sees the transition. Completing the moment the guest writes the
- * control register hides that transition and hangs IRIX tg's bring-up.
+ * The settle is the contract, not a detail to assert away: a restart
+ * negotiates for a while and completes afterwards, so a driver watching for
+ * the completion it asked for sees the transition. Completing the moment the
+ * guest writes the control register hides that transition and hangs IRIX tg's
+ * bring-up.
  */
 static void test_phy_readback(const void *data)
 {
@@ -1147,7 +1163,9 @@ static void test_phy_readback(const void *data)
                     ==, 0);
     g_assert_cmphex(bar_readl(&b, BCM_MI_STS) & BCM_MISTS_LINK, ==, 0);
 
-    /* Configure the interface (restart autonegotiation): still negotiating. */
+    /*
+     * Configure the interface (restart autonegotiation): still negotiating.
+     */
     mii_write(&b, BCM_PHY_ADDR, MII_BMCR,
               MII_BMCR_AUTOEN | MII_BMCR_STARTNEG);
 
@@ -1171,13 +1189,13 @@ static void test_phy_readback(const void *data)
 
 /*
  * The copper link-up gate. IRIX tg's negotiation (tg_neg_copper_link) exits
- * only when the brgphy auxiliary status summary (PHY register 0x19) reads with
- * ACOMP (0x8000) set and a valid highest-common-denominator speed/duplex in the
- * AN_RES field (bits 10:8), and it treats an all-ones read as a PHY that is not
- * responding. So before the link is up the register must answer with ACOMP
- * clear and a real (non-0xffff) value, and once up it must present ACOMP with a
- * settled resolution -- here 1000baseT full duplex, matching the gigabit answer
- * the 1000baseT status register already gives.
+ * only when the brgphy auxiliary status summary (PHY register 0x19) reads
+ * with ACOMP (0x8000) set and a valid highest-common-denominator speed/duplex
+ * in the AN_RES field (bits 10:8), and it treats an all-ones read as a PHY
+ * that is not responding. So before the link is up the register must answer
+ * with ACOMP clear and a real (non-0xffff) value, and once up it must present
+ * ACOMP with a settled resolution of 1000baseT full duplex, matching the
+ * gigabit answer the 1000baseT status register already gives.
  */
 static void test_phy_aux_status_link_up(const void *data)
 {
@@ -1186,7 +1204,9 @@ static void test_phy_aux_status_link_up(const void *data)
 
     bcm_open(&b, bcm_init());
 
-    /* Still negotiating: ACOMP clear, but a real value so it is not "no PHY". */
+    /*
+     * Still negotiating: ACOMP clear, but a real value so it is not "no PHY".
+     */
     aux = mii_read(&b, BCM_PHY_ADDR, BRGPHY_AUXSTS);
     g_assert_cmphex(aux & BRGPHY_AUXSTS_ACOMP, ==, 0);
     g_assert_cmphex(aux, !=, 0xffff);
@@ -1207,11 +1227,11 @@ static void test_phy_aux_status_link_up(const void *data)
 
 /*
  * The byte-order test the rest of the file rests on, as a golden
- * fixed-byte-layout assertion. The chip DMAs the status block to guest memory;
- * behind a Bridge the model delivers the driver's own big-endian layout, so a
- * status flag of 0x00000001 must occupy bytes 00 00 00 01. A self-round-trip
- * could not tell that from the other direction, so the raw bytes are read and
- * the exact placement pinned.
+ * fixed-byte-layout assertion. The chip DMAs the status block to guest
+ * memory; behind a Bridge the model delivers the driver's own big-endian
+ * layout, so a status flag of 0x00000001 must occupy bytes 00 00 00 01. A
+ * self-round-trip could not tell that from the other direction, so the raw
+ * bytes are read and the exact placement pinned.
  */
 static void test_status_block_byte_order(const void *data)
 {
@@ -1242,9 +1262,9 @@ static void test_status_block_byte_order(const void *data)
 
 /*
  * Host-address word-swap. The big-endian IRIX driver sets ENDIAN_WORDSWAP and
- * writes each 64-bit host address as two 32-bit halves word-swapped -- the
- * intended low word into ADDR_HI, the intended high word into ADDR_LO -- so the
- * chip must swap them back when it composes the DMA target. Program a
+ * writes each 64-bit host address as two 32-bit halves word-swapped: the
+ * intended low word into ADDR_HI, the intended high word into ADDR_LO.
+ * The chip must swap them back when it composes the DMA target. Program a
  * status-block address word-swapped (HI <- its low word, LO <- 0) and confirm
  * the block DMAs there. Composing (HI<<32)|LO raw would target that low word
  * shifted into the top half, off the end of the transfer memory, and land
@@ -1315,10 +1335,14 @@ static void test_transmit_round_trip(const void *data)
                              " -device bcm570x,addr=%02x.0,netdev=n0",
                              sv[1], BCM_SLOT));
 
-    /* The driver's byte-swap programming: stored for read-back, no live swap. */
+    /*
+     * The driver's byte-swap programming: stored for read-back, no live swap.
+     */
     ind_reg_writel(&b, BCM_MODE_CTL, BCM_DMA_SWAP_OPTIONS);
 
-    /* The send-ring control block in on-chip SRAM: host base and ring length. */
+    /*
+     * The send-ring control block in on-chip SRAM: host base and ring length.
+     */
     ind_mem_writel(&b, BCM_SRAM_SEND_RING_RCB + 0, TX_RING_PHYS >> 32);
     ind_mem_writel(&b, BCM_SRAM_SEND_RING_RCB + 4, TX_RING_PHYS & 0xffffffff);
     ind_mem_writel(&b, BCM_SRAM_SEND_RING_RCB + 8, TX_RING_LEN << 16);
@@ -1326,7 +1350,9 @@ static void test_transmit_round_trip(const void *data)
     /* The status block's host address, and enable the coalescing block. */
     bar_writel(&b, BCM_HCC_STATUSBLK_HI, STATUS_PHYS >> 32);
     bar_writel(&b, BCM_HCC_STATUSBLK_LO, STATUS_PHYS & 0xffffffff);
-    /* One completed descriptor per update [57XX-PG105-R, printed page 454]. */
+    /*
+     * One completed descriptor per update [57XX-PG105-R, printed page 454].
+     */
     bar_writel(&b, BCM_HCC_TX_MAX_COAL_BDS, 1);
     bar_writel(&b, BCM_HCC_MODE, BCM_HCC_ENABLE);
     bar_writel(&b, BCM_RX_MODE, BCM_RXMODE_ENABLE);
@@ -1335,7 +1361,9 @@ static void test_transmit_round_trip(const void *data)
     memset(bd, 0, sizeof(bd));
     put32dma(bd + 0, TX_BUF_PHYS >> 32);
     put32dma(bd + 4, TX_BUF_PHYS & 0xffffffff);
-    /* len_flags: flags in the low 16 bits (0x08), length in the high (0x0a). */
+    /*
+     * len_flags: flags in the low 16 bits (0x08), length in the high (0x0a).
+     */
     put16dma(bd, 8, BCM_TXBDFLAG_END);
     put16dma(bd, 10, sizeof(frame));
     qtest_memwrite(b.qts, TX_RING_PHYS, bd, sizeof(bd));
@@ -1386,13 +1414,14 @@ static void test_user_backend_reply_waits_for_transmit(const void *data)
     Bcm b;
 
     /*
-     * rx-arrival-latency-us=0 on purpose. This test asserts that a synchronous
-     * backend reply is invisible at the instant the transmit doorbell write
-     * returns, which is what pins the model's rule about deferring a backend
-     * reply until the transmit walk has published its state. Under the arrival
-     * floor no virtual time has passed at that instant either, so the assertion
-     * would hold whether or not that rule existed. Taking the floor out leaves
-     * the rule as the only thing holding the reply back.
+     * rx-arrival-latency-us=0 on purpose. This test asserts that a
+     * synchronous backend reply is invisible at the instant the transmit
+     * doorbell write returns, which is what pins the model's rule about
+     * deferring a backend reply until the transmit walk has published its
+     * state. Under the arrival floor no virtual time has passed at that
+     * instant either, so the assertion would hold whether or not that rule
+     * existed. Taking the floor out leaves the rule as the only thing holding
+     * the reply back.
      */
     bcm_open(&b, qtest_initf(BCM_MACHINE
                              " -netdev user,id=n0"
@@ -1566,7 +1595,9 @@ static void test_transmit_payload_dma_error(const void *data)
     ind_mem_writel(&b, BCM_SRAM_SEND_RING_RCB + 8, TX_RING_LEN << 16);
     bar_writel(&b, BCM_HCC_STATUSBLK_HI, STATUS_PHYS >> 32);
     bar_writel(&b, BCM_HCC_STATUSBLK_LO, STATUS_PHYS & 0xffffffff);
-    /* One completed descriptor per update [57XX-PG105-R, printed page 454]. */
+    /*
+     * One completed descriptor per update [57XX-PG105-R, printed page 454].
+     */
     bar_writel(&b, BCM_HCC_TX_MAX_COAL_BDS, 1);
     bar_writel(&b, BCM_HCC_MODE, BCM_HCC_ENABLE);
     bar_writel(&b, BCM_RX_MODE, BCM_RXMODE_ENABLE);
@@ -1662,7 +1693,9 @@ static void test_transmit_complete_then_fragment_dma_error_retry(
     ind_mem_writel(&b, BCM_SRAM_SEND_RING_RCB + 8, TX_RING_LEN << 16);
     bar_writel(&b, BCM_HCC_STATUSBLK_HI, STATUS_PHYS >> 32);
     bar_writel(&b, BCM_HCC_STATUSBLK_LO, STATUS_PHYS & 0xffffffff);
-    /* One completed descriptor per update [57XX-PG105-R, printed page 454]. */
+    /*
+     * One completed descriptor per update [57XX-PG105-R, printed page 454].
+     */
     bar_writel(&b, BCM_HCC_TX_MAX_COAL_BDS, 1);
     bar_writel(&b, BCM_HCC_MODE, BCM_HCC_ENABLE);
     bar_writel(&b, BCM_RX_MODE, BCM_RXMODE_ENABLE);
@@ -1759,7 +1792,9 @@ static void test_transmit_complete_then_descriptor_dma_error_retry(
     ind_mem_writel(&b, BCM_SRAM_SEND_RING_RCB + 8, TX_RING_LEN << 16);
     bar_writel(&b, BCM_HCC_STATUSBLK_HI, STATUS_PHYS >> 32);
     bar_writel(&b, BCM_HCC_STATUSBLK_LO, STATUS_PHYS & 0xffffffff);
-    /* One completed descriptor per update [57XX-PG105-R, printed page 454]. */
+    /*
+     * One completed descriptor per update [57XX-PG105-R, printed page 454].
+     */
     bar_writel(&b, BCM_HCC_TX_MAX_COAL_BDS, 1);
     bar_writel(&b, BCM_HCC_MODE, BCM_HCC_ENABLE);
     bar_writel(&b, BCM_RX_MODE, BCM_RXMODE_ENABLE);
@@ -1916,9 +1951,10 @@ static void test_transmit_partial_error_descriptor_coalescing(
 /*
  * Source-address insertion is a per-packet send-BD attribute. Bit 12 enables
  * replacement and bits 14:13 select one of the four programmed MAC slots; the
- * selector alone must not rewrite the frame. Packet attributes remain the same
- * on every fragment through the BD carrying END, so the split case keeps them
- * on both descriptors and cuts the source field itself across their boundary.
+ * selector alone must not rewrite the frame. Packet attributes remain the
+ * same on every fragment through the BD carrying END, so the split case keeps
+ * them on both descriptors and cuts the source field itself across their
+ * boundary.
  */
 static void test_transmit_source_address(const void *data)
 {
@@ -2003,7 +2039,9 @@ static void test_transmit_source_address(const void *data)
         g_assert_cmpmem(got, len, expected, sizeof(expected));
     }
 
-    /* A nonzero selector without INSERT leaves the complete frame untouched. */
+    /*
+     * A nonzero selector without INSERT leaves the complete frame untouched.
+     */
     qtest_memwrite(b.qts, TX_BUF_PHYS + 4 * 128, frame, sizeof(frame));
     memset(bd, 0, sizeof(bd));
     put32dma(bd + 0, (TX_BUF_PHYS + 4 * 128) >> 32);
@@ -2049,14 +2087,14 @@ static void test_transmit_source_address(const void *data)
 
 /*
  * Segmentation offload. The driver hands down one buffer holding several
- * segments' worth of payload and names the segment size in the descriptor; the
- * card cuts it up. Sending it whole puts a frame on the wire no peer accepts,
- * and the sender then waits out a retransmission timeout for each one, which
- * reads as a link stalling rather than as a malformed frame.
+ * segments' worth of payload and names the segment size in the descriptor;
+ * the card cuts it up. Sending it whole puts a frame on the wire no peer
+ * accepts, and the sender then waits out a retransmission timeout for each
+ * one, which reads as a link stalling rather than as a malformed frame.
  */
 #define LSO_MSS         512u
 #define LSO_SEGMENTS    3u
-#define LSO_HDR         54u     /* ethernet + IPv4 + TCP, all minimum length */
+#define LSO_HDR         54u     /* min Ethernet + IPv4 + TCP headers */
 
 static void build_lso_frame(uint8_t *f, unsigned int payload)
 {
@@ -2443,9 +2481,9 @@ static void test_transmit_no_segmentation(const void *data)
 }
 
 /*
- * Transmit interrupt coalescing. The driver says how many completed descriptors
- * it will wait for; reporting each one as it happens spends an interrupt per
- * frame on a saving nobody asked for.
+ * Transmit interrupt coalescing. The driver says how many completed
+ * descriptors it will wait for; reporting each one as it happens spends an
+ * interrupt per frame on a saving nobody asked for.
  */
 #define TXC_FRAMES      16u
 #define TXC_COAL        4u
@@ -2493,8 +2531,8 @@ static void txc_post_one_at(Bcm *b, const uint8_t *frame, unsigned int len,
 
 /*
  * Post frames the way a driver does: one descriptor, one doorbell, per frame.
- * That is what makes coalescing worth anything -- a driver that handed the card
- * a whole burst on one doorbell would get one completion either way.
+ * That is what makes coalescing useful. A driver that handed the
+ * card a whole burst on one doorbell would get one completion either way.
  */
 static void txc_post(Bcm *b, const uint8_t *frame, unsigned int len,
                      unsigned int frames)
@@ -2765,8 +2803,8 @@ static void test_transmit_complete_then_split_doorbell(const void *data)
 
 /*
  * The other half, and the one that matters more: a burst that does not fill a
- * group must still be reported. A count with no clock behind it holds the tail
- * of every transfer back for an interrupt that never comes.
+ * group must still be reported. A count with no clock behind it holds the
+ * tail of every transfer back for an interrupt that never comes.
  */
 static void test_transmit_coalescing_timer(const void *data)
 {
@@ -2899,7 +2937,7 @@ static void test_transmit_coalescing_status_dma_retry(const void *data)
  * The MAC status word's change bits are latches, and the driver clears one by
  * writing it back. Storing what it wrote instead leaves every bit it tried to
  * clear reading as set, so the driver sees the condition it just acknowledged
- * still standing and handles it again -- on IRIX that was the carrier being
+ * still standing and handles it again. On IRIX, carrier was
  * re-announced once a second for the life of the interface.
  */
 #define BCM_MAC_STATUS          0x0404u
@@ -2964,7 +3002,7 @@ static void build_cksum_frame(uint8_t *f, uint8_t ihl_byte)
     f[16] = 0x00; f[17] = 48;       /* total length: 20 + 20 + 8 */
     f[22] = 64;                     /* time to live */
     f[23] = 6;                      /* TCP */
-    /* checksum at 24..25 stays zero -- the card is asked to fill it */
+    /* checksum at 24..25 stays zero; the card fills it */
     f[26] = 10; f[27] = 0; f[28] = 2; f[29] = 15;       /* source address */
     f[30] = 10; f[31] = 0; f[32] = 2; f[33] = 2;        /* destination */
 
@@ -3008,11 +3046,12 @@ static size_t transmit_one(Bcm *b, int rx_fd, const uint8_t *frame,
 }
 
 /*
- * The checksums the driver asks the card to finish. IRIX tg hands a frame over
- * with the IP and TCP checksum fields still empty and the offload bits set in
- * the descriptor, so a model that transmits them untouched puts a frame on the
- * wire that every receiver discards in silence -- and the failure hides, because
- * ICMP and ARP carry checksums the guest computed itself and keep working.
+ * The checksums the driver asks the card to finish. IRIX tg hands a frame
+ * over with the IP and TCP checksum fields still empty and the offload bits
+ * set in the descriptor, so a model that transmits them untouched puts a
+ * frame on the wire that every receiver discards in silence. The
+ * failure hides, because ICMP and ARP carry checksums the guest computed
+ * itself and keep working.
  */
 static void test_transmit_checksum_offload(const void *data)
 {
@@ -3066,10 +3105,10 @@ static void test_transmit_checksum_offload(const void *data)
 }
 
 /*
- * The lengths in the frame are the guest's bytes, so they are not to be trusted:
- * a header claiming to be shorter than an IPv4 header can be would run the
- * checksum arithmetic off the front of the buffer. The offload is declined and
- * the frame goes out as it came in.
+ * The lengths in the frame are the guest's bytes, so they are not to be
+ * trusted: a header claiming to be shorter than an IPv4 header can be would
+ * run the checksum arithmetic off the front of the buffer. The offload is
+ * declined and the frame goes out as it came in.
  */
 static void test_transmit_checksum_bad_header(const void *data)
 {
@@ -3101,19 +3140,19 @@ static void test_transmit_checksum_bad_header(const void *data)
 }
 
 /*
- * What ENDIAN_WORDSWAP reaches, and what it does not. The bit decides how
- * the chip composes the register-programmed host addresses -- the driver
- * writes each 64-bit address as two halves word-swapped, the low word into
- * the HI slot -- and the DMA must still land where it was aimed.
+ * What ENDIAN_WORDSWAP reaches, and what it does not. The bit decides how the
+ * chip composes the register-programmed host addresses. The driver writes
+ * each 64-bit address as two halves word-swapped, the low word into the HI
+ * slot. The DMA must still land where it was aimed.
  *
  * It does not reach the payload here. Behind a Bridge the byte-lane
  * correction is the chip's job and the model copies packet payload verbatim
- * on that route, which is the bounded Bridge-machine behavior recorded in
- * docs/datasheets/bcm570x.md: what the card's own clear-data transformation
- * does with these bits set is not known. Off a Bridge the same bits do
- * reverse each 32-bit word of the payload, which is the regime this file
- * asserted when it ran on a PC. So lay a word-reversed buffer down and
- * require the wire to carry it unchanged.
+ * on that route, which is the bounded Bridge-machine behavior this model
+ * documents: what the card's own clear-data transformation does with these
+ * bits set is not known. Off a Bridge the same bits do reverse each 32-bit
+ * word of the payload, which is the regime this file asserted when it ran on
+ * a PC. So lay a word-reversed buffer down and require the wire to carry it
+ * unchanged.
  */
 static void test_transmit_frame_wordswap(const void *data)
 {
@@ -3148,8 +3187,8 @@ static void test_transmit_frame_wordswap(const void *data)
      * The driver arms ENDIAN_WORDSWAP for the big-endian host, so the
      * register-programmed host addresses are written word-swapped: the low
      * word into the HI slot, the high word into the LO slot. The descriptor's
-     * own buffer address is not register-programmed -- it is read from the
-     * descriptor through the DMA accessors -- so it stays in order.
+     * own buffer address is not register-programmed. DMA accessors read it
+     * from the descriptor, so it stays in order.
      */
     misc = qpci_config_readl(b.dev, BCM_PCI_MISC_CTL);
     qpci_config_writel(b.dev, BCM_PCI_MISC_CTL, misc | BCM_MISCCTL_WORDSWAP);
@@ -3218,10 +3257,10 @@ static void test_tx_producer_out_of_range(const void *data)
  * The receive round trip. A standard-ring buffer is posted, a broadcast frame
  * injected from the backend, and the chip DMAs it into the buffer, writes a
  * completed descriptor into the return ring, and advances the status block's
- * receive producer. The device-written descriptor's length field is checked as
- * a golden byte layout -- it proves the device's descriptor-write direction,
- * which the round trip alone cannot. Broadcast so the address filter passes it
- * regardless of the station address.
+ * receive producer. The device-written descriptor's length field is checked
+ * as a golden byte layout. It proves the device's descriptor-write
+ * direction, which the round trip alone cannot. Broadcast so the address
+ * filter passes it regardless of the station address.
  */
 /* SGI documents two MTUs for this adapter, 1500 and 9000. */
 #define BCM_JUMBO_FRAME_LEN     9000u
@@ -3245,10 +3284,10 @@ static void rx_open_one(Bcm *b, int fd)
     bar_writel(b, BCM_HCC_STATUSBLK_HI, STATUS_PHYS >> 32);
     bar_writel(b, BCM_HCC_STATUSBLK_LO, STATUS_PHYS & 0xffffffff);
     /*
-     * One completed descriptor per update -- the guide's "for simplicity"
+     * One completed descriptor per update is the guide's "for simplicity"
      * setting [57XX-PG105-R, printed page 454]. Left at the reset value of
-     * zero the receive count criterion is off, and these tests want to be told
-     * about every frame.
+     * zero the receive count criterion is off, and these tests want to be
+     * told about every frame.
      */
     bar_writel(b, BCM_HCC_RX_MAX_COAL_BDS, 1);
     bar_writel(b, BCM_HCC_MODE, BCM_HCC_ENABLE);
@@ -3267,7 +3306,7 @@ static void rx_open_one(Bcm *b, int fd)
 /*
  * The same plumbing with the receive coalescing registers spelled out and as
  * many buffers posted as the test needs, so a test says exactly which update
- * criterion it is arming -- and, with both zero, that it is arming none.
+ * criterion it arms. Both zero means neither is armed.
  */
 static void rx_criteria_open(Bcm *b, unsigned int buffers,
                              unsigned int max_bds, unsigned int ticks)
@@ -3304,7 +3343,9 @@ static void rx_criteria_open(Bcm *b, unsigned int buffers,
 }
 
 #ifdef CONFIG_LINUX
-/* TAP's negotiated vnet header is transport metadata, not Ethernet payload. */
+/*
+ * TAP's negotiated vnet header is transport metadata, not Ethernet payload.
+ */
 static void test_receive_vnet_plain(const void *data)
 {
     uint8_t packet[sizeof(struct virtio_net_hdr) + 64] = { };
@@ -3335,9 +3376,9 @@ static void test_receive_vnet_plain(const void *data)
 
 /*
  * Post one jumbo-ring descriptor carrying a buffer length: the jumbo RCB's
- * own Max_Len (0x2448) is unused by hardware (PG105 page 91, Table 341),
- * so the model reads each buffer's size from the descriptor the driver
- * posts, the same field IRIX fills in for its jumbo descriptors.
+ * own Max_Len (0x2448) is unused by hardware (PG105 page 91, Table 341), so
+ * the model reads each buffer's size from the descriptor the driver posts,
+ * the same field IRIX fills in for its jumbo descriptors.
  */
 static void write_jumbo_rx_bd(Bcm *b, uint64_t ring, unsigned int idx,
                               uint64_t buffer, uint16_t buf_len)
@@ -3352,7 +3393,9 @@ static void write_jumbo_rx_bd(Bcm *b, uint64_t ring, unsigned int idx,
                    bd, sizeof(bd));
 }
 
-/* Post one jumbo-ring buffer alongside the standard ring rx_open_one set up. */
+/*
+ * Post one jumbo-ring buffer alongside the standard ring rx_open_one set up.
+ */
 static void rx_open_jumbo(Bcm *b)
 {
     bar_writel(b, BCM_RX_JUMBO_RCB_HI, JUMBO_RING_PHYS >> 32);
@@ -3386,15 +3429,15 @@ static uint16_t read_rx_prod(Bcm *b)
 /*
  * A frame does not complete the instant the backend hands it over. The chip
  * writes it into the posted buffer and fills in its return descriptor
- * straight away, and the two things the driver can read -- the status
- * block's receive producer and the interrupt -- appear only once the arrival
- * deadline has passed on the virtual clock. The return descriptor is
- * invisible until the producer names it, so this checks that it is already
- * written while the producer still is not.
+ * straight away, and the two things the driver can read (the status block's
+ * receive producer and the interrupt) appear only once the arrival deadline
+ * has passed on the virtual clock. The return descriptor is invisible until
+ * the producer names it, so this checks that it is already written while the
+ * producer still is not.
  *
  * Without the floor the model published a reply within tens of microseconds
- * of the transmit that provoked it, faster than the wire alone; see
- * docs/datasheets/bcm570x.md's arrival-latency approximation.
+ * of the transmit that provoked it, faster than the wire alone; the model
+ * floors it with an arrival-latency approximation.
  */
 static void test_receive_waits_for_its_arrival_deadline(const void *data)
 {
@@ -3463,12 +3506,12 @@ static void test_receive_waits_for_its_arrival_deadline(const void *data)
 
 
 /*
- * A frame too big for the buffer behind a standard-ring descriptor must not be
- * written into it. The buffer size is the driver's statement of what it set
- * aside; writing past it corrupts whatever the guest put next in memory, and
- * the damage surfaces as a fault somewhere with no connection to this device.
- * Observed for real: at MTU 9000 with no jumbo ring posted, the guest kernel
- * panicked.
+ * A frame too big for the buffer behind a standard-ring descriptor must not
+ * be written into it. The buffer size is the driver's statement of what it
+ * set aside; writing past it corrupts whatever the guest put next in memory,
+ * and the damage surfaces as a fault somewhere with no connection to this
+ * device. Observed for real: at MTU 9000 with no jumbo ring posted, the guest
+ * kernel panicked.
  */
 static void test_receive_overruns_nothing(const void *data)
 {
@@ -3489,7 +3532,7 @@ static void test_receive_overruns_nothing(const void *data)
                              " -netdev socket,fd=%d,id=n0"
                              " -device bcm570x,addr=%02x.0,netdev=n0",
                              sv[1], BCM_SLOT));
-    rx_open_one(&b, sv[0]);             /* standard ring only, no jumbo ring */
+    rx_open_one(&b, sv[0]);             /* standard ring; no jumbo ring */
 
     /* Lay a pattern over the buffer and well past its end. */
     memset(guard, 0xa5, len);
@@ -3515,9 +3558,9 @@ static void test_receive_overruns_nothing(const void *data)
 
 /*
  * A jumbo frame arrives whole, on the ring that exists for it. SGI's board
- * guide gives this adapter two MTUs, 1500 and 9000; the part carries the larger
- * one on a separate receive ring whose buffers are sized for it, and marks the
- * completion so the driver recycles from the right ring.
+ * guide gives this adapter two MTUs, 1500 and 9000; the part carries the
+ * larger one on a separate receive ring whose buffers are sized for it, and
+ * marks the completion so the driver recycles from the right ring.
  */
 static void test_receive_jumbo_frame(const void *data)
 {
@@ -3545,7 +3588,9 @@ static void test_receive_jumbo_frame(const void *data)
     net_socket_send_frame(sv[0], frame, BCM_JUMBO_FRAME_LEN);
     wait_for_rx_prod(&b, 1);
 
-    /* Reported whole, marked as the jumbo ring's, and landed byte for byte. */
+    /*
+     * Reported whole, marked as the jumbo ring's, and landed byte for byte.
+     */
     qtest_memread(b.qts, RET_RING_PHYS, ret, sizeof(ret));
     g_assert_cmphex(get16dma(ret, BCM_RXBD_LEN), ==,
                     BCM_JUMBO_FRAME_LEN + BCM_ETH_FCS_LEN);
@@ -3565,18 +3610,18 @@ static void test_receive_jumbo_frame(const void *data)
  * available, and it cannot borrow that jumbo descriptor: an unposted
  * descriptor is stale guest memory, not permission to DMA through it. With
  * the standard ring empty it has nowhere to go, and the chip discards it --
- * the same disposition the jumbo shortage gets, for the same reason.
- * Refusing it stops the back end reading and strands the jumbo frame behind
- * it, on a ring that does have a buffer.
+ * the same disposition the jumbo shortage gets, for the same reason. Refusing
+ * it stops the back end reading and strands the jumbo frame behind it, on a
+ * ring that does have a buffer.
  *
  * The last step proves the frame was discarded rather than parked: posting a
  * standard buffer afterwards brings nothing back.
  *
  * The manual's counter for this, `nicNoMoreRXBDs`, names no ring (PG105 page
  * 110, Table 49; page 114, Table 54 gives it one offset with no per-ring
- * companion), so this discard counts at the same offset the jumbo case
- * bumps. Read before the drop, immediately after, and once more at the end,
- * the same three points the jumbo test checks.
+ * companion), so this discard counts at the same offset the jumbo case bumps.
+ * Read before the drop, immediately after, and once more at the end, the same
+ * three points the jumbo test checks.
  */
 static void test_receive_drops_standard_with_empty_standard_ring(
     const void *data)
@@ -3612,7 +3657,9 @@ static void test_receive_drops_standard_with_empty_standard_ring(
     wait_for_rx_prod(&b, 1);
     bar_writel(&b, BCM_MBX_RX_CONS0_LO, 1);
 
-    /* The standard ring is now empty; the jumbo ring still holds its buffer. */
+    /*
+     * The standard ring is now empty; the jumbo ring still holds its buffer.
+     */
     qtest_memset(b.qts, RET_RING_PHYS + BCM_RXBD_SIZE, 0, BCM_RXBD_SIZE);
     qtest_memset(b.qts, STD_STALE_BUF_PHYS, 0xa5, sizeof(second));
     qtest_memset(b.qts, JUMBO_BUF_PHYS, 0xa5, sizeof(second));
@@ -3658,7 +3705,9 @@ static void test_receive_drops_standard_with_empty_standard_ring(
     qtest_memread(b.qts, STD_STALE_BUF_PHYS, got, sizeof(got));
     g_assert_cmpmem(got, sizeof(got), untouched, sizeof(untouched));
 
-    /* Neither the delivered jumbo frame nor the late post is this condition. */
+    /*
+     * Neither the delivered jumbo frame nor the late post is this condition.
+     */
     g_assert_cmpuint(bar_readl(&b, BCM_SRAM_WINDOW +
                                 BCM_SRAM_STATS_NO_MORE_RXBDS), ==, 1);
 
@@ -3668,24 +3717,23 @@ static void test_receive_drops_standard_with_empty_standard_ring(
 
 /*
  * The inverse case is not the same contract. A jumbo frame still cannot
- * borrow a posted standard descriptor -- a frame "greater than the Max_Len
+ * borrow a posted standard descriptor. A frame "greater than the Max_Len
  * field of Receive Standard Producer Ring will consume a BD from Receive
- * Jumbo Producer Ring" [57XX-PG105-R, printed page 92] -- but an empty jumbo
+ * Jumbo Producer Ring" [57XX-PG105-R, printed page 92]. An empty jumbo
  * ring does not park it either, because parking it would stop the back end
  * and strand the standard-size frames behind it.
  *
  * What the manual does not say is what becomes of the frame itself: it never
  * addresses a host producer ring with no descriptor at all. The discard the
- * last step pins is the model's own approximation, and the datasheet's jumbo
- * receive contract carries the evidence, the limitation, and the measurement
- * that rejected holding the frame briefly instead.
+ * last step pins is the model's own approximation of that unspecified case;
+ * holding the frame briefly instead was tried and rejected by measurement.
  *
  * The manual does say the chip counts this condition rather than latching it
  * (`nicNoMoreRXBDs`, PG105 page 110), so the discard has to reach the guest
  * there too: the test reads BCM_SRAM_STATS_NO_MORE_RXBDS before and after the
  * dropped frame and asserts it moved by exactly one, then stays there through
- * every step that follows -- the delivered standard frame and the belated
- * jumbo post neither one is the condition this counter names.
+ * every step that follows. Neither the delivered standard frame nor the
+ * belated jumbo post is the condition this counter names.
  */
 static void test_receive_drops_oversize_with_empty_jumbo_ring(const void *data)
 {
@@ -3721,7 +3769,9 @@ static void test_receive_drops_oversize_with_empty_jumbo_ring(const void *data)
     wait_for_rx_prod(&b, 1);
     bar_writel(&b, BCM_MBX_RX_CONS0_LO, 1);
 
-    /* The jumbo ring is now empty; the standard ring still holds its buffer. */
+    /*
+     * The jumbo ring is now empty; the standard ring still holds its buffer.
+     */
     qtest_memset(b.qts, RET_RING_PHYS + BCM_RXBD_SIZE, 0, BCM_RXBD_SIZE);
     qtest_memset(b.qts, JUMBO_STALE_BUF_PHYS, 0xa5,
                  BCM_JUMBO_FRAME_LEN);
@@ -3748,7 +3798,9 @@ static void test_receive_drops_oversize_with_empty_jumbo_ring(const void *data)
     bar_writel(&b, BCM_MBX_IRQ0_LO, 0);
     g_assert_false(intr_line_up(b.dev));
 
-    /* The receiver is not latched: the frame behind the dropped one arrives. */
+    /*
+     * The receiver is not latched: the frame behind the dropped one arrives.
+     */
     net_socket_send_frame(sv[0], small, sizeof(small));
     wait_for_rx_prod(&b, 2);
     qtest_memread(b.qts, RX_BUF_PHYS, small_got, sizeof(small_got));
@@ -3804,9 +3856,10 @@ static void seal_cksum_frame(uint8_t *f)
 
 /*
  * A received IPv4/TCP frame carries its checksum results in the completed
- * descriptor. The part verifies both on the way in and reports the sums, which
- * is what lets a driver hand the frame up without reading the payload again;
- * with nothing reported the stack has to make its own pass over every byte.
+ * descriptor. The part verifies both on the way in and reports the sums,
+ * which is what lets a driver hand the frame up without reading the payload
+ * again; with nothing reported the stack has to make its own pass over every
+ * byte.
  */
 static void test_receive_checksum_offload(const void *data)
 {
@@ -3918,7 +3971,7 @@ static void test_receive_oversize_dropped(const void *data)
 
     /*
      * Nothing completes for it. A frame that does fit, sent after, still
-     * arrives and takes descriptor zero -- so the ring was left usable rather
+     * arrives and takes descriptor zero. The ring was left usable rather
      * than the oversized frame half-consuming it.
      */
     net_socket_send_frame(sv[0], small, sizeof(small));
@@ -3934,12 +3987,12 @@ static void test_receive_oversize_dropped(const void *data)
 }
 
 /*
- * Many laps of the return ring, driven the way the driver drives it: take each
- * completion, then publish the consumer index so the card knows the entry is
- * free again. A ring short enough to wrap several times over a modest burst is
- * the point -- the faults this catches only appear once the producer has been
- * round at least once, which is why a transfer that fits in one lap passes
- * happily and a longer one stops dead.
+ * Many laps of the return ring, driven the way the driver drives it: take
+ * each completion, then publish the consumer index so the card knows the
+ * entry is free again. A ring short enough to wrap several times over a
+ * modest burst is the point. These faults only appear once the
+ * producer has been round at least once, which is why a transfer that fits in
+ * one lap passes happily and a longer one stops dead.
  */
 #define LAP_RET_LEN     8u
 #define LAP_FRAMES      40u     /* five times round */
@@ -4015,7 +4068,9 @@ static void test_receive_ring_laps(const void *data)
 
         /* Release the entry, as the driver does once it has taken it. */
         bar_writel(&b, BCM_MBX_RX_CONS0_LO, (idx + 1) % LAP_RET_LEN);
-        /* And keep buffers posted, the way a driver refills as it consumes. */
+        /*
+         * And keep buffers posted, the way a driver refills as it consumes.
+         */
         bar_writel(&b, BCM_MBX_RX_STD_PROD_LO,
                    (LAP_STD_POSTED + i + 1) % 512u);
     }
@@ -4025,12 +4080,12 @@ static void test_receive_ring_laps(const void *data)
 }
 
 /*
- * The ring fills, and then it recovers. Refusing a frame while the driver still
- * owes itself every entry is right; staying refused after the driver has caught
- * up is the failure that looks like a link going dead mid-transfer, and it is
- * the one worth pinning, because a full ring is reached on any sustained
- * transfer and a card that never comes back from it is a card that works until
- * it is used.
+ * The ring fills, and then it recovers. Refusing a frame while the driver
+ * still owes itself every entry is right; staying refused after the driver
+ * has caught up is the failure that looks like a link going dead
+ * mid-transfer, and it is the one worth pinning, because a full ring is
+ * reached on any sustained transfer and a card that never comes back from it
+ * is a card that works until it is used.
  */
 static void test_receive_ring_full_recovers(const void *data)
 {
@@ -4061,7 +4116,9 @@ static void test_receive_ring_full_recovers(const void *data)
     ind_mem_writel(&b, BCM_SRAM_RX_RETURN_RCB + 8, LAP_RET_LEN << 16);
     bar_writel(&b, BCM_HCC_STATUSBLK_HI, STATUS_PHYS >> 32);
     bar_writel(&b, BCM_HCC_STATUSBLK_LO, STATUS_PHYS & 0xffffffff);
-    /* One completed descriptor per update [57XX-PG105-R, printed page 454]. */
+    /*
+     * One completed descriptor per update [57XX-PG105-R, printed page 454].
+     */
     bar_writel(&b, BCM_HCC_RX_MAX_COAL_BDS, 1);
     bar_writel(&b, BCM_HCC_MODE, BCM_HCC_ENABLE);
     bar_writel(&b, BCM_RX_MODE, BCM_RXMODE_ENABLE);
@@ -4115,8 +4172,8 @@ static void test_receive_ring_full_recovers(const void *data)
 
     /*
      * The driver now takes everything and says so. That consumer write is the
-     * readiness transition, and it retries on its own -- no second interrupt
-     * acknowledgement, only the arrival line's delay.
+     * readiness transition. It retries without another interrupt
+     * acknowledgement, after the arrival line's delay.
      */
     for (i = 0; i < LAP_RET_LEN; i++) {
         qtest_memset(b.qts, RET_RING_PHYS + (uint64_t)i * BCM_RXBD_SIZE, 0,
@@ -4149,22 +4206,23 @@ static void test_receive_ring_full_recovers(const void *data)
 
 /*
  * The receive MAC's ENABLE bit, and what it means for a frame that arrives
- * while it is clear. The bit "controls whether the Receive MAC state machine is
- * active or not" and resets to 0 [57XX-PG105-R, printed page 391, Table 268],
- * so a halted receiver takes nothing and keeps nothing: setting the bit later
- * must not produce frames from before it was set. That is the whole of the
- * wedge this pins -- a back end holds what the device refuses, and IRIX was
- * handed traffic from before the interface existed, mid-bring-up, in two of
- * five boots.
+ * while it is clear. The bit "controls whether the Receive MAC state machine
+ * is active or not" and resets to 0 [57XX-PG105-R, printed page 391, Table
+ * 268], so a halted receiver takes nothing and keeps nothing: setting the bit
+ * later must not produce frames from before it was set. That is the whole of
+ * the wedge this pins. A back end holds what the device refuses, and IRIX
+ * was handed traffic from before the interface existed, mid-bring-up, in two
+ * of five boots.
  *
  * A model that simply never delivered would pass half of this, so each halted
- * stretch is followed by a fresh frame that has to land, and the bit is cleared
- * again afterwards to show the halt is not a one-time bring-up special case.
+ * stretch is followed by a fresh frame that has to land, and the bit is
+ * cleared again afterwards to show the halt is not a one-time bring-up
+ * special case.
  *
  * The manual counts what a running receiver drops for want of descriptors
  * (nicNoMoreRXBDs, printed page 110, Table 49), but a halted receiver is a
- * different condition -- nothing is placed anywhere to run short of -- so
- * that counter does not apply here and there is no other one to assert.
+ * different condition: nothing is placed anywhere to run short of. That
+ * counter does not apply here, and there is no other one to assert.
  */
 static void test_receive_mac_enable(const void *data)
 {
@@ -4211,7 +4269,9 @@ static void test_receive_mac_enable(const void *data)
     bar_writel(&b, BCM_MBX_RX_STD_PROD_LO, 8);
 
     bar_writel(&b, BCM_MBX_IRQ0_LO, 0);
-    /* One completed descriptor per update [57XX-PG105-R, printed page 454]. */
+    /*
+     * One completed descriptor per update [57XX-PG105-R, printed page 454].
+     */
     bar_writel(&b, BCM_HCC_RX_MAX_COAL_BDS, 1);
     bar_writel(&b, BCM_HCC_MODE, BCM_HCC_ENABLE);
     g_assert_cmphex(bar_readl(&b, BCM_RX_MODE) & BCM_RXMODE_ENABLE, ==, 0);
@@ -4277,8 +4337,8 @@ static void test_receive_mac_enable(const void *data)
  * Receive Producer Ring, page 124), and the RX List Initiator "activates
  * whenever the receive producer index for any of receive Buffer Descriptor
  * (BD) rings is written" (page 51). Drivers rely on it: OpenBSD bge refills
- * from a timeout with no interrupt in sight, and Linux tg3 refills inside NAPI
- * poll while its interrupt is still masked.
+ * from a timeout with no interrupt in sight, and Linux tg3 refills inside
+ * NAPI poll while its interrupt is still masked.
  *
  * A false pass here is a frame delivered because something else unmasked the
  * interrupt, so nothing in this test writes the interrupt mailbox after the
@@ -4315,9 +4375,13 @@ static void test_queued_receive_released_by_producer(const void *data)
     qtest_memset(b.qts, RET_RING_PHYS, 0, BCM_RXBD_SIZE);
     qtest_memset(b.qts, STATUS_PHYS, 0, BCM_STATUS_BLK_SIZE);
 
-    /* Bring-up order: interrupts enabled, engine enabled, no buffer posted. */
+    /*
+     * Bring-up order: interrupts enabled, engine enabled, no buffer posted.
+     */
     bar_writel(&b, BCM_MBX_IRQ0_LO, 0);
-    /* One completed descriptor per update [57XX-PG105-R, printed page 454]. */
+    /*
+     * One completed descriptor per update [57XX-PG105-R, printed page 454].
+     */
     bar_writel(&b, BCM_HCC_RX_MAX_COAL_BDS, 1);
     bar_writel(&b, BCM_HCC_MODE, BCM_HCC_ENABLE);
     bar_writel(&b, BCM_RX_MODE, BCM_RXMODE_ENABLE);
@@ -4424,7 +4488,9 @@ static void test_receive_round_trip(const void *data)
     ind_mem_writel(&b, BCM_SRAM_RX_RETURN_RCB + 8, RX_RING_LEN << 16);
     bar_writel(&b, BCM_HCC_STATUSBLK_HI, STATUS_PHYS >> 32);
     bar_writel(&b, BCM_HCC_STATUSBLK_LO, STATUS_PHYS & 0xffffffff);
-    /* One completed descriptor per update [57XX-PG105-R, printed page 454]. */
+    /*
+     * One completed descriptor per update [57XX-PG105-R, printed page 454].
+     */
     bar_writel(&b, BCM_HCC_RX_MAX_COAL_BDS, 1);
     bar_writel(&b, BCM_HCC_MODE, BCM_HCC_ENABLE);
     bar_writel(&b, BCM_RX_MODE, BCM_RXMODE_ENABLE);
@@ -4468,7 +4534,9 @@ static void test_receive_round_trip(const void *data)
     qtest_memread(b.qts, RX_BUF_PHYS, got, sizeof(frame));
     g_assert_cmpmem(got, sizeof(frame), frame, sizeof(frame));
 
-    /* The driver's return-ring acknowledgement is accepted (write returns). */
+    /*
+     * The driver's return-ring acknowledgement is accepted (write returns).
+     */
     bar_writel(&b, BCM_MBX_RX_CONS0_LO, 1);
     g_assert_cmphex(mii_read(&b, BCM_PHY_ADDR, MII_PHYIDR1), ==,
                     BCM_PHY_IDR1_VALUE);
@@ -4626,7 +4694,9 @@ static void test_receive_payload_dma_error(const void *data)
     put32dma(bd, UNMAPPED_PHYS >> 32);
     put32dma(bd + 4, UNMAPPED_PHYS & 0xffffffff);
     qtest_memwrite(b.qts, STD_RING_PHYS, bd, sizeof(bd));
-    /* One completed descriptor per update [57XX-PG105-R, printed page 454]. */
+    /*
+     * One completed descriptor per update [57XX-PG105-R, printed page 454].
+     */
     bar_writel(&b, BCM_HCC_RX_MAX_COAL_BDS, 1);
     bar_writel(&b, BCM_HCC_MODE, BCM_HCC_ENABLE);
     bar_writel(&b, BCM_RX_MODE, BCM_RXMODE_ENABLE);
@@ -4672,10 +4742,11 @@ typedef enum RxDmaFault {
 
 /*
  * A failed receive DMA consumes nothing and leaves the frame at the peer. The
- * guest repairs what faulted -- a descriptor ring, a buffer address, the return
- * ring -- and the receive-ready write that follows retries it. A completion
- * whose interrupt the driver has not acknowledged yet does not hold it back:
- * the receive path is driven by posted buffers, not by the interrupt mailbox.
+ * guest repairs the descriptor ring, buffer address, or return ring that
+ * faulted. The following receive-ready write retries the frame. A
+ * completion whose interrupt the driver has not acknowledged yet does not
+ * hold it back: the receive path is driven by posted buffers, not by the
+ * interrupt mailbox.
  */
 static void test_receive_dma_error_after_progress(const void *data)
 {
@@ -4743,7 +4814,9 @@ static void test_receive_dma_error_after_progress(const void *data)
     qtest_memset(b.qts, STATUS_PHYS, 0, BCM_STATUS_BLK_SIZE);
     bar_writel(&b, BCM_MBX_RX_STD_PROD_LO, 2);
     bar_writel(&b, BCM_MBX_IRQ0_LO, 0);
-    /* One completed descriptor per update [57XX-PG105-R, printed page 454]. */
+    /*
+     * One completed descriptor per update [57XX-PG105-R, printed page 454].
+     */
     bar_writel(&b, BCM_HCC_RX_MAX_COAL_BDS, 1);
     bar_writel(&b, BCM_HCC_MODE, BCM_HCC_ENABLE);
     bar_writel(&b, BCM_RX_MODE, BCM_RXMODE_ENABLE);
@@ -4814,17 +4887,18 @@ static void test_receive_dma_error_after_progress(const void *data)
 }
 
 /*
- * Interrupt coalescing on receive. The host-coalescing block batches completed
- * receive descriptors into one status-block update and one interrupt instead of
- * one per frame: with RX_MAX_COAL_BDS set to K, K received frames raise a single
- * status-block DMA. The status tag, bumped once per status DMA, therefore
- * advances by N/K over N frames, not by N. This is the receive path's per-packet
- * interrupt cost; honouring the value the driver programs is both the fidelity
- * contract (the datasheet's host-coalescing registers) and the performance win.
+ * Interrupt coalescing on receive. The host-coalescing block batches
+ * completed receive descriptors into one status-block update and one
+ * interrupt instead of one per frame: with RX_MAX_COAL_BDS set to K, K
+ * received frames raise a single status-block DMA. The status tag, bumped
+ * once per status DMA, therefore advances by N/K over N frames, not by N.
+ * This is the receive path's per-packet interrupt cost; honouring the value
+ * the driver programs is both the fidelity contract (the datasheet's
+ * host-coalescing registers) and the performance win.
  *
- * The coalescing timer is parked far out so the descriptor count, not the timer,
- * closes each group -- the qtest virtual clock does not advance on its own, so
- * the timer never fires here and the group boundary is deterministic.
+ * The coalescing timer is parked far out so the descriptor count, not the
+ * timer, closes each group. The qtest virtual clock does not advance on its
+ * own, so the timer never fires here and the group boundary is deterministic.
  */
 static void test_receive_interrupt_coalescing(const void *data)
 {
@@ -4833,14 +4907,14 @@ static void test_receive_interrupt_coalescing(const void *data)
     uint8_t frame[64];
     uint8_t bd[BCM_RXBD_SIZE];
     unsigned int i;
-    const unsigned int coal = 4;     /* RX_MAX_COAL_BDS: frames per interrupt */
+    const unsigned int coal = 4;     /* RX_MAX_COAL_BDS: frames/IRQ */
     const unsigned int frames = 16;  /* a whole number of coalescing groups */
     uint32_t tag_before, tag_after;
 
     for (i = 0; i < sizeof(frame); i++) {
         frame[i] = (uint8_t)(i * 7 + 1);
     }
-    memset(frame, 0xff, 6);          /* broadcast destination, always accepted */
+    memset(frame, 0xff, 6);          /* broadcast; always accepted */
 
     g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
     bcm_open(&b, qtest_initf(BCM_MACHINE
@@ -4848,8 +4922,10 @@ static void test_receive_interrupt_coalescing(const void *data)
                              " -device bcm570x,addr=%02x.0,netdev=n0",
                              sv[1], BCM_SLOT));
 
-    /* Standard-ring RCB in CSRs, return-ring RCB in SRAM, a ring long enough for
-     * the whole burst, and the status block's host address. */
+    /*
+     * Standard-ring RCB in CSRs, return-ring RCB in SRAM, a ring long enough
+     * for the whole burst, and the status block's host address.
+     */
     bar_writel(&b, BCM_RX_STD_RCB_HI, STD_RING_PHYS >> 32);
     bar_writel(&b, BCM_RX_STD_RCB_LO, STD_RING_PHYS & 0xffffffff);
     bar_writel(&b, BCM_RX_STD_RCB_MAXLEN, STD_BUF_SIZE << 16);
@@ -4866,8 +4942,10 @@ static void test_receive_interrupt_coalescing(const void *data)
     bar_writel(&b, BCM_HCC_MODE, BCM_HCC_ENABLE);
     bar_writel(&b, BCM_RX_MODE, BCM_RXMODE_ENABLE);
 
-    /* Post COAL_RING_LEN worth of standard-ring buffers -- one scratch buffer is
-     * enough, the payload is irrelevant here, only the interrupt count is. */
+    /*
+     * Post COAL_RING_LEN worth of standard-ring buffers. One scratch buffer
+     * is enough; only the interrupt count matters here.
+     */
     memset(bd, 0, sizeof(bd));
     put32dma(bd + 0, RX_BUF_PHYS >> 32);
     put32dma(bd + 4, RX_BUF_PHYS & 0xffffffff);
@@ -4880,12 +4958,14 @@ static void test_receive_interrupt_coalescing(const void *data)
     qtest_memset(b.qts, STATUS_PHYS, 0, BCM_STATUS_BLK_SIZE);
     bar_writel(&b, BCM_MBX_RX_STD_PROD_LO, frames);
 
-    /* The one-shot bring-up status update fires on that first producer write;
-     * sample the tag after it, so the delta below counts only the coalesced,
-     * frame-driven updates. */
+    /*
+ * sample the tag after it, so the delta below counts only the coalesced,
+ */
     tag_before = read_status_tag(&b);
 
-    /* Send the whole burst, then wait for the receive producer to reach it. */
+    /*
+     * Send the whole burst, then wait for the receive producer to reach it.
+     */
     for (i = 0; i < frames; i++) {
         net_socket_send_frame(sv[0], frame, sizeof(frame));
     }
@@ -4893,8 +4973,10 @@ static void test_receive_interrupt_coalescing(const void *data)
 
     tag_after = read_status_tag(&b);
 
-    /* N frames coalesced K-at-a-time is exactly N/K status-block updates -- one
-     * interrupt per group, not one per frame. */
+    /*
+     * N frames coalesced K-at-a-time is exactly N/K status-block updates --
+     * one interrupt per group, not one per frame.
+     */
     g_assert_cmpuint(tag_after - tag_before, ==, frames / coal);
 
     bcm_close(&b);
@@ -4904,10 +4986,10 @@ static void test_receive_interrupt_coalescing(const void *data)
 /*
  * Coalescing's tick timer flushes a partial group. With RX_MAX_COAL_BDS above
  * the burst size the descriptor count never triggers, so a handful of frames
- * raise no interrupt until the RX_COAL_TICKS budget elapses, at which point the
- * timer flushes them in one update. This is the no-stall guarantee: the tail of
- * a burst is delivered on the tick, never left waiting for a frame that never
- * comes.
+ * raise no interrupt until the RX_COAL_TICKS budget elapses, at which point
+ * the timer flushes them in one update. This is the no-stall guarantee: the
+ * tail of a burst is delivered on the tick, never left waiting for a frame
+ * that never comes.
  */
 static void test_receive_coalescing_timer(const void *data)
 {
@@ -4916,7 +4998,7 @@ static void test_receive_coalescing_timer(const void *data)
     uint8_t frame[64];
     uint8_t bd[BCM_RXBD_SIZE];
     unsigned int i;
-    const unsigned int coal = 8;     /* larger than the burst: count never fires */
+    const unsigned int coal = 8;     /* exceeds burst; count never fires */
     /*
      * RX_COAL_TICKS in microseconds, and it has to outlast the arrival floor
      * for a burst to coalesce at all. A completion reaches the coalescing
@@ -4935,7 +5017,7 @@ static void test_receive_coalescing_timer(const void *data)
     for (i = 0; i < sizeof(frame); i++) {
         frame[i] = (uint8_t)(i * 3 + 9);
     }
-    memset(frame, 0xff, 6);          /* broadcast destination, always accepted */
+    memset(frame, 0xff, 6);          /* broadcast; always accepted */
 
     g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
     bcm_open(&b, qtest_initf(BCM_MACHINE
@@ -4973,9 +5055,9 @@ static void test_receive_coalescing_timer(const void *data)
     for (i = 0; i < frames; i++) {
         net_socket_send_frame(sv[0], frame, sizeof(frame));
     }
-    /* Every frame lands in the return ring, but under coalescing none raises a
-     * status update yet: the count is below the group size and no tick has
-     * elapsed. */
+    /*
+ * status update yet: the count is below the group size and no tick has
+ */
     wait_for_ret_end(&b, frames - 1);
     g_assert_cmpuint(read_status_tag(&b) - tag_before, ==, 0);
 
@@ -5032,8 +5114,8 @@ static void test_receive_coalescing_zero_ticks(const void *data)
 }
 
 /*
- * With neither receive criterion armed -- no max-BD count and no tick budget,
- * which is where a reset leaves them -- the chip completes the frame into the
+ * With neither receive criterion armed (no max-BD count or tick budget,
+ * as after reset), the chip completes the frame into the
  * return ring and tells the host nothing. Nothing else reports it either: the
  * guide gives the status block four update criteria and no clock of its own
  * [57XX-PG105-R, printed page 63].
@@ -5113,7 +5195,7 @@ static void test_transmit_without_a_criterion_is_silent(const void *data)
  * packet had been received ... since the last status block update"
  * [57XX-PG105-R, printed page 453]. So on an idle ring the timer is already
  * expired when a frame arrives, and that frame is reported at once rather
- * than held for a fresh budget -- which is the whole latency of a lone
+ * than held for a fresh budget. This sets the latency of a lone
  * request-reply exchange.
  */
 static void test_receive_expired_timer_reports_at_once(const void *data)
@@ -5437,7 +5519,9 @@ static void test_receive_frame_wordswap(const void *data)
     ind_mem_writel(&b, BCM_SRAM_RX_RETURN_RCB + 8, RX_RING_LEN << 16);
     bar_writel(&b, BCM_HCC_STATUSBLK_HI, (uint32_t)STATUS_PHYS);
     bar_writel(&b, BCM_HCC_STATUSBLK_LO, STATUS_PHYS >> 32);
-    /* One completed descriptor per update [57XX-PG105-R, printed page 454]. */
+    /*
+     * One completed descriptor per update [57XX-PG105-R, printed page 454].
+     */
     bar_writel(&b, BCM_HCC_RX_MAX_COAL_BDS, 1);
     bar_writel(&b, BCM_HCC_MODE, BCM_HCC_ENABLE);
     bar_writel(&b, BCM_RX_MODE, BCM_RXMODE_ENABLE);
@@ -5462,10 +5546,10 @@ static void test_receive_frame_wordswap(const void *data)
 }
 
 /*
- * A receive producer or consumer index past its ring must not hang the mailbox
- * write. The rings hold RX_RING_LEN descriptors, so an index at or beyond that
- * is out of range; each write logs a guest error and returns, proven by the
- * MMIO access after it.
+ * A receive producer or consumer index past its ring must not hang the
+ * mailbox write. The rings hold RX_RING_LEN descriptors, so an index at or
+ * beyond that is out of range; each write logs a guest error and returns,
+ * proven by the MMIO access after it.
  */
 static void test_rx_producer_out_of_range(const void *data)
 {
@@ -5494,12 +5578,13 @@ static void test_rx_producer_out_of_range(const void *data)
 
 /*
  * The interrupt mailbox masks and re-enables the INTA line, and the global
- * MISC_CTL mask suppresses it. The chip drives the line as a level: it goes up
- * when a status-block update is posted with interrupts unmasked and down when
- * the driver acknowledges. The driver reads the line through
+ * MISC_CTL mask suppresses it. The chip drives the line as a level: it goes
+ * up when a status-block update is posted with interrupts unmasked and down
+ * when the driver acknowledges. The driver reads the line through
  * PCISTATE.INTR_NOT_ACTIVE, which the chip clears while the line is asserted.
- * Producer-0 doorbells stand in for real completions -- each drives a
- * status-block DMA with no ring walk, so the test needs no descriptors or frame.
+ * Producer-0 doorbells stand in for real completions. Each drives a
+ * status-block DMA with no ring walk, so the test needs no descriptors or
+ * frame.
  */
 static void test_interrupt_mailbox(const void *data)
 {
@@ -5520,7 +5605,9 @@ static void test_interrupt_mailbox(const void *data)
     bar_writel(&b, BCM_MBX_TX_PROD_LO, 0);
     g_assert_true(intr_line_up(b.dev));
 
-    /* Write 1: masks and acknowledges. The line drops; INTR_NOT_ACTIVE reads. */
+    /*
+     * Write 1: masks and acknowledges. The line drops; INTR_NOT_ACTIVE reads.
+     */
     bar_writel(&b, BCM_MBX_IRQ0_LO, 1);
     g_assert_false(intr_line_up(b.dev));
 
@@ -5536,8 +5623,10 @@ static void test_interrupt_mailbox(const void *data)
     bar_writel(&b, BCM_MBX_TX_PROD_LO, 0);
     g_assert_true(intr_line_up(b.dev));
 
-    /* The global mask in MISC_CTL suppresses the line while it is set, and the
-     * line returns when it clears -- the pending update was never taken. */
+    /*
+     * The global mask in MISC_CTL suppresses the line while it is set, and
+     * the line returns when it clears. The pending update was never taken.
+     */
     misc = qpci_config_readl(b.dev, BCM_PCI_MISC_CTL);
     qpci_config_writel(b.dev, BCM_PCI_MISC_CTL, misc | BCM_MISCCTL_MASK_INTR);
     g_assert_false(intr_line_up(b.dev));
@@ -5635,8 +5724,8 @@ static QDict *bcm570x_vmstate_field(QList *fields, const char *name)
 
 /*
  * Version 6 predates moving the PHY into the MAC's migration section. The
- * nested state must therefore start at a new parent version: reusing version 6
- * makes old and new binaries assign different layouts to the same stream.
+ * nested state must therefore start at a new parent version: reusing version
+ * 6 makes old and new binaries assign different layouts to the same stream.
  */
 static void test_vmstate_versions_nested_phy(const void *data)
 {
@@ -5778,17 +5867,17 @@ static void test_migrated_link_controls_egress(const void *data)
  * 256 slots. Drain one completion clear of the ring's start so the line's
  * head is not still sitting at zero, hold two more behind a floor small
  * polling drift cannot cross by accident, then migrate and confirm the
- * destination still reports all three in order -- the one already-published
+ * destination still reports all three in order: the one already-published
  * completion untouched, the two held ones on their own deadline. Kept under
  * the return ring's own length (RX_RING_LEN) throughout, so the status
- * block's producer index -- itself a value mod that length -- never wraps
- * and can be read as a plain count.
+ * block's producer index (a value mod that length) never wraps and
+ * can be read as a plain count.
  */
 static void test_arrival_line_migrates_only_what_it_holds(const void *data)
 {
     /*
-     * Ten times the default floor: comfortably past the small drift the
-     * held frames' own polling below can add, and still well inside what
+     * Ten times the default floor: comfortably past the small drift the held
+     * frames' own polling below can add, and still well inside what
      * wait_for_rx_prod's clock-stepping retries can cross when draining.
      */
     enum { FLOOR_US = 2000 };
@@ -5874,7 +5963,7 @@ static void test_arrival_line_migrates_only_what_it_holds(const void *data)
     g_assert_cmphex(read_rx_prod(&to), ==, drained);
 
     /*
-     * The three held ones publish together, on their own deadline -- an
+     * The three held ones publish together, on their own deadline, at an
      * absolute QEMU_CLOCK_VIRTUAL value carried over from a source that was
      * not at time zero, so the destination (which starts fresh at zero) is
      * polled up to it rather than stepped by a single guessed amount.
@@ -5890,11 +5979,11 @@ static void test_arrival_line_migrates_only_what_it_holds(const void *data)
 /*
  * The device's state round-trips across a migration. On the source, a
  * register-file word (the status-block host address), an SRAM word, and an
- * asserted interrupt are established, then the machine is migrated stopped. On
- * the destination the register and SRAM words read back, and the interrupt is
- * still live: toggling the global mask drops and re-raises the line with no new
- * update, which holds only if the pending latch and the mailbox mask both
- * crossed the migration.
+ * asserted interrupt are established, then the machine is migrated stopped.
+ * On the destination the register and SRAM words read back, and the interrupt
+ * is still live: toggling the global mask drops and re-raises the line with
+ * no new update, which holds only if the pending latch and the mailbox mask
+ * both crossed the migration.
  */
 static void test_state_survives_migration(const void *data)
 {
@@ -5931,7 +6020,9 @@ static void test_state_survives_migration(const void *data)
     bar_writel(&from, BCM_MAC_ADDR_0_HIGH, 0x0000a1a2);
     bar_writel(&from, BCM_MAC_ADDR_0_LOW, 0xa3a4a5a6);
 
-    /* Enable interrupts and leave the line asserted at the migration point. */
+    /*
+     * Enable interrupts and leave the line asserted at the migration point.
+     */
     bar_writel(&from, BCM_MBX_IRQ0_LO, 0);
     bar_writel(&from, BCM_MBX_TX_PROD_LO, 0);
     g_assert_true(intr_line_up(from.dev));
@@ -5944,7 +6035,10 @@ static void test_state_survives_migration(const void *data)
     bcm_open(&to, to_qts);
     bcm570x_migrate(from_qts, to_qts, uri);
 
-    /* The register file (status-block host address) and SRAM word came across. */
+    /*
+     * The register file (status-block host address) and SRAM word came
+     * across.
+     */
     g_assert_cmphex(ind_reg_readl(&to, BCM_HCC_STATUSBLK_LO), ==,
                     STATUS_PHYS & 0xffffffff);
     g_assert_cmphex(ind_mem_readl(&to, 0x0c1c), ==, sram_sentinel);
@@ -5973,10 +6067,11 @@ static void test_state_survives_migration(const void *data)
 }
 
 /*
- * A write-one mailbox acknowledgement can precede the driver's matching unmask.
- * The mask itself has to survive migration: a frame the destination places goes
- * on raising no line until the driver writes zero. Receiving is not part of
- * that handshake -- the posted buffer releases the frame either way.
+ * A write-one mailbox acknowledgement can precede the driver's matching
+ * unmask. The mask itself has to survive migration: a frame the destination
+ * places goes on raising no line until the driver writes zero. Receiving is
+ * not part of that handshake. The posted buffer releases the frame either
+ * way.
  */
 static void test_masked_interrupt_survives_migration(const void *data)
 {
@@ -6017,7 +6112,9 @@ static void test_masked_interrupt_survives_migration(const void *data)
     qtest_memwrite(from.qts, STD_RING_PHYS, bd, sizeof(bd));
     qtest_memset(from.qts, RET_RING_PHYS, 0, sizeof(ret));
     qtest_memset(from.qts, RX_BUF_PHYS, 0, sizeof(frame));
-    /* One completed descriptor per update [57XX-PG105-R, printed page 454]. */
+    /*
+     * One completed descriptor per update [57XX-PG105-R, printed page 454].
+     */
     bar_writel(&from, BCM_HCC_RX_MAX_COAL_BDS, 1);
     bar_writel(&from, BCM_HCC_MODE, BCM_HCC_ENABLE);
     bar_writel(&from, BCM_RX_MODE, BCM_RXMODE_ENABLE);
@@ -6058,10 +6155,10 @@ static void test_masked_interrupt_survives_migration(const void *data)
 /*
  * Arm a BCM5704 function's status-block DMA entirely through its own config
  * space: enable bus mastering, give its transmit ring a length so a doorbell
- * passes the range guard, program the status block's host page, and enable the
- * host-coalescing block. No BAR mapping is needed -- the indirect windows reach
- * each function's register file and SRAM, so the two functions are configured
- * independently at one slot.
+ * passes the range guard, program the status block's host page, and enable
+ * the host-coalescing block. No BAR mapping is needed. The indirect windows
+ * reach each function's register file and SRAM, so the two functions are
+ * configured independently at one slot.
  */
 static void dual5704_arm(QPCIDevice *dev, uint64_t status_phys)
 {
@@ -6077,8 +6174,8 @@ static void dual5704_arm(QPCIDevice *dev, uint64_t status_phys)
  * The dual-port BCM5704 presents as one multifunction PCI device: function 0
  * and function 1 at the same slot, each carrying the copper four-tuple, each
  * with its own MAC identity, and each with an independent ring engine and
- * status block. Driving one function's transmit doorbell moves that function's
- * status block and leaves the other's untouched.
+ * status block. Driving one function's transmit doorbell moves that
+ * function's status block and leaves the other's untouched.
  */
 static void test_dual_port_present_and_independent(const void *data)
 {
@@ -6117,8 +6214,11 @@ static void test_dual_port_present_and_independent(const void *data)
     g_assert_cmphex(qpci_config_readb(fn0, PCI_HEADER_TYPE) &
                     BCM_HEADER_MULTIFUNC, ==, BCM_HEADER_MULTIFUNC);
 
-    /* Distinct MAC identity per function: both mailboxes carry the 0x484B tag,
-     * and the address bytes differ (each function took its own default MAC). */
+    /*
+     * Distinct MAC identity per function: both mailboxes carry the 0x484B
+     * tag, and the address bytes differ (each function took its own default
+     * MAC).
+     */
     g_assert_cmphex(ind_mem_readl_dev(fn0, 0x0c14) >> 16, ==, 0x484b);
     g_assert_cmphex(ind_mem_readl_dev(fn1, 0x0c14) >> 16, ==, 0x484b);
     g_assert_cmphex(ind_mem_readl_dev(fn0, 0x0c18), !=,
@@ -6137,8 +6237,10 @@ static void test_dual_port_present_and_independent(const void *data)
     qtest_memset(qts, STATUS_PHYS, 0, BCM_STATUS_BLK_SIZE);
     qtest_memset(qts, STATUS2_PHYS, 0, BCM_STATUS_BLK_SIZE);
 
-    /* Drive function 0's doorbell only: its status block updates, function 1's
-     * stays zero -- the engines are independent. */
+    /*
+     * Drive function 0's doorbell only: its status block updates, function
+     * 1's stays zero. The engines are independent.
+     */
     ind_reg_writel_dev(fn0, BCM_MBX_TX_PROD_LO, 0);
     qtest_memread(qts, STATUS_PHYS, sb0, sizeof(sb0));
     qtest_memread(qts, STATUS2_PHYS, sb1, sizeof(sb1));
@@ -6146,7 +6248,10 @@ static void test_dual_port_present_and_independent(const void *data)
                     BCM_STATFLAG_UPDATED);
     g_assert_cmphex(get32dma(sb1), ==, 0);
 
-    /* And driving function 1 moves its own status block -- both work, apart. */
+    /*
+     * Driving function 1 moves its own status block. The engines work
+     * independently.
+     */
     ind_reg_writel_dev(fn1, BCM_MBX_TX_PROD_LO, 0);
     qtest_memread(qts, STATUS2_PHYS, sb1, sizeof(sb1));
     g_assert_cmphex(get32dma(sb1) & BCM_STATFLAG_UPDATED, ==,
@@ -6161,11 +6266,11 @@ static void test_dual_port_present_and_independent(const void *data)
 }
 
 /*
- * Both functions' per-function state migrates independently. Each function is a
- * full PCI device with its own VMStateDescription at its own devfn, so no
- * VMState change was needed for the dual-port device; this proves it by writing
- * a distinct SRAM word to each function, migrating stopped, and reading both
- * back on the destination.
+ * Both functions' per-function state migrates independently. Each function is
+ * a full PCI device with its own VMStateDescription at its own devfn, so no
+ * VMState change was needed for the dual-port device; this proves it by
+ * writing a distinct SRAM word to each function, migrating stopped, and
+ * reading both back on the destination.
  */
 static void test_dual_port_survives_migration(const void *data)
 {

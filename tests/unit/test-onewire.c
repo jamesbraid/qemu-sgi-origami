@@ -58,8 +58,8 @@ static void test_crc16_catalogue(void)
     g_assert_cmpuint(onewire_crc16(0, msg, sizeof(msg)), ==, 0xbb3d);
 }
 
-/* CRC-8 running value: exercise the seed argument. IOC3 datasheet records
- * that IRIX sends {0xF0,0x00,0x00} and requires 0x8D as the next byte.
+/* CRC-8 running value: exercise the seed argument. IRIX sends
+ * {0xF0,0x00,0x00} and requires 0x8D as the next byte.
  */
 static void test_crc8_ioc3_requirement(void)
 {
@@ -92,19 +92,12 @@ static uint8_t bus_touch_byte(OneWireBus *bus, uint8_t out)
 }
 
 /*
- * The shared ROM layer has no machine yet, so every test builds its own
- * throwaway device to hang a 1-Wire bus off. onewire_create_bus() requires
- * a real parent device -- qbus_new() asserts that a parentless bus can
- * only ever be the implicit main system bus (hw/core/bus.c) -- so this
- * anchors the test bus under a bare, unattached device instead. (The
- * plan's original sketch called onewire_create_bus(NULL, "test") directly;
- * James corrected the plan to this form once the assert was found -- see
- * the task report.)
- *
- * An anchor with no bus of its own realizes with bus=NULL, which parents
- * it under "/machine/unattached" (hw/core/qdev.c: device_set_realized()).
- * That container only exists once something has created it, matching
- * tests/unit/test-qdev.c's test_init_machine().
+ * Each test attaches its 1-Wire bus to an unattached device:
+ * onewire_create_bus() needs a parent, and qbus_new() reserves a parentless
+ * bus for the implicit system bus (hw/core/bus.c). An anchor realized with
+ * bus=NULL enters /machine/unattached (hw/core/qdev.c:
+ * device_set_realized()); create that container first, as in
+ * tests/unit/test-qdev.c.
  */
 static void onewire_test_init_machine(void)
 {
@@ -131,11 +124,9 @@ static OneWireBus *onewire_test_bus(void)
 }
 
 /*
- * A minimal slave with no memory function: it exercises the ROM layer
- * alone. It needs no realize of its own -- the abstract onewire-slave's
- * own realize computes the identity from the family/serial properties
- * automatically, which is exactly the behaviour that makes this type
- * trivial to add.
+ * This slave tests only the ROM layer. The abstract onewire-slave realize
+ * derives its identity from family and serial properties; this type needs no
+ * realize callback.
  */
 #define TYPE_ONEWIRE_TEST_STUB "onewire-test-stub"
 
@@ -157,12 +148,9 @@ static OneWireBus *onewire_test_bus_with_part(uint8_t family, uint64_t serial)
 }
 
 /*
- * A slave whose memory function always answers its own family byte,
- * regardless of what it is asked. It exists so a test can tell both
- * whether ONEWIRE_FUNCTION was ever reached at all -- an unselected or
- * IDLE part never calls function_byte, so the bus floats back whatever the
- * caller drove instead of a real reply -- and, with two of these on one
- * bus, which specific part answered.
+ * The memory function returns its family byte for every request. An
+ * unselected or IDLE part never calls function_byte, so the bus returns the
+ * driven byte; two slaves identify which part answered.
  */
 #define TYPE_ONEWIRE_TEST_REPLY "onewire-test-reply"
 
@@ -207,10 +195,8 @@ static OneWireBus *onewire_test_bus_with_reply_part(uint8_t family,
 }
 
 /*
- * Adds a DS2501 or DS2502 to a bus, optionally loading an EPROM image
- * before realize -- ds2502_set_image() must run before the device is
- * realized, matching how a real machine model provisions one of these
- * parts.
+ * Add a DS2501 or DS2502, loading an optional EPROM image through
+ * ds2502_set_image() before realize, as a machine model must.
  */
 static DeviceState *onewire_test_add_ds2502_variant(OneWireBus *bus,
                                                       const char *type_name,
@@ -242,9 +228,8 @@ static OneWireBus *onewire_test_bus_with_ds2501(uint8_t family,
 }
 
 /*
- * A DS2505, optionally loading an EPROM image before realize -- same
- * ds2505_set_image()-before-realize contract as the DS2502 family's own
- * helper above.
+ * Add a DS2505, loading an optional EPROM image through ds2505_set_image()
+ * before realize, as for DS2502.
  */
 static DeviceState *onewire_test_add_ds2505(OneWireBus *bus, uint8_t family,
                                              uint64_t serial,
@@ -263,11 +248,9 @@ static DeviceState *onewire_test_add_ds2505(OneWireBus *bus, uint8_t family,
 }
 
 /*
- * A DS2505 whose 64 pages are each filled with their own page number
- * (0x00..0x3f): distinct, non-blank content per page, so a test can tell
- * which page's data actually came back rather than merely that some data
- * did -- essential for proving Extended Read Memory serves the physically
- * addressed page rather than a redirected one.
+ * Fill each of 64 DS2505 pages with its index (0x00..0x3f). Distinct nonblank
+ * pages show whether Extended Read Memory returns the physical page rather
+ * than following redirection.
  */
 static OneWireBus *onewire_test_bus_with_ds2505_paged(uint8_t family,
                                                        uint64_t serial)
@@ -325,7 +308,7 @@ static void test_match_rom_selects_only_on_an_exact_identity(void)
      * A part freshly reached FUNCTION also has out == 0xff before its
      * first function_byte call, so a bare "does it pull" check right after
      * Match ROM cannot tell selected-but-silent-so-far apart from
-     * deselected -- and a model that ignored the mismatch and selected
+     * deselected, and a model that ignored the mismatch and selected
      * anyway would pass such a check too. Priming and reading back a real
      * function byte is the only way to tell them apart.
      */
@@ -351,14 +334,10 @@ static void test_a_driven_zero_differs_from_a_driven_one(void)
 }
 
 /*
- * Gap 1 of the extraction (DS2502/DS2505 ROM-function flow chart, Figure 9
- * / Figure 8): all four ROM-command success paths -- Read ROM, Match ROM, a
- * completed Search ROM, and Skip ROM -- converge on ONEWIRE_FUNCTION with
- * no second reset or addressing command. This is the one of the four that
- * a naive phase machine is most likely to get wrong, since Search ROM's
- * bit-triplet loop is the most complicated of the four to terminate
- * correctly, so it gets its own test rather than relying on inference from
- * the other three.
+ * The DS2502/DS2505 ROM-function flow charts (Figures 9 and 8) send Read ROM,
+ * Match ROM, completed Search ROM and Skip ROM directly to ONEWIRE_FUNCTION
+ * without another reset or address. Search ROM gets a separate test because
+ * its bit-triplet termination is easiest to get wrong.
  */
 static void test_search_rom_completes_and_reaches_function(void)
 {
@@ -376,7 +355,7 @@ static void test_search_rom_completes_and_reaches_function(void)
     /*
      * Only one part on the bus: it must transmit its own identity bit on
      * the identify slot and the bit's inverse on the complement slot, in
-     * that order -- a model with the two slots swapped would transmit the
+     * that order. A model with the two slots swapped would transmit the
      * identity inverted and still finish the search, since nothing here
      * checked what was actually said until now. Driving the identity bit
      * back on the direction slot keeps the part alive for the whole
@@ -406,12 +385,10 @@ static void test_search_rom_completes_and_reaches_function(void)
 }
 
 /*
- * Gap 2 of the extraction: Match ROM drops a part at the first identity bit
- * that fails to compare, rather than clocking all 64 bits and deciding at
- * the end. The two designs are indistinguishable from outside once the
- * transaction finishes -- test_match_rom_selects_only_on_an_exact_identity
- * already covers that -- so this checks the part's own phase mid
- * transaction, which is where the two designs actually differ.
+ * Match ROM drops a part on the first mismatched identity bit, before all 64
+ * bits arrive. Final selection cannot distinguish delayed rejection; inspect
+ * the part phase mid-transaction.
+ * test_match_rom_selects_only_on_an_exact_identity covers the final result.
  */
 static void test_match_rom_drops_at_first_mismatch(void)
 {
@@ -439,27 +416,15 @@ static void test_match_rom_drops_at_first_mismatch(void)
 }
 
 /*
- * The bus is a bus because more than one part can be on it, and Search ROM
- * is the one ROM command where that actually shows: every other command is
- * entirely master-driven, so a single-part test cannot exercise the
- * wired-AND arbitration at all. Two parts here differ only in the low bit
- * of the family byte, so the very first identity bit is a genuine
- * discrepancy -- both parts are still alive and drive opposite values, so
- * the wired AND of "pull low" from either one produces 0 on both the
- * identify and complement slots, unlike a single live part which always
- * shows the two slots as complements of each other. A model that
- * short-circuited the per-slave OR (stopping at the first slave that
- * pulled, rather than always polling every slave so a migratable part
- * never falls behind bit-for-bit) or dropped the open-drain "master AND
- * every slave" term entirely would not reproduce this 0/0 signature.
- *
- * After that one discrepancy this test always steers toward the part
- * whose family byte is 0x0b, so the OTHER part must go silent from there
- * on -- covered by the remaining 63 bits landing on ordinary, single-part
- * values instead of more (0,0) discrepancies, even though the two parts'
- * identities keep differing in their CRC bytes. If the dropped part failed
- * to go silent and kept driving, those later bits would show spurious
- * discrepancies instead.
+ * Search ROM alone exposes multi-part wired-AND arbitration; other ROM
+ * commands are master-driven. These parts differ at family bit 0: both are
+ * active and drive opposite values, yielding 0/0 in the identify and
+ * complement slots rather than a single part's complementary pair. Poll
+ * every slave even after one pulls low so migratable parts advance every
+ * bit; preserve the open-drain master AND every-slave result. Either error
+ * loses the 0/0 result. Steering toward family 0x0b drops the other part;
+ * the next 63 bits must show single-part values despite differing CRC bytes.
+ * Further 0/0 results would show the dropped part still driving.
  */
 static void test_search_rom_arbitrates_two_parts(void)
 {
@@ -509,8 +474,8 @@ static void test_search_rom_arbitrates_two_parts(void)
 }
 
 /*
- * DS2502-family (docs/library/dallas-1wire-part-specs.md section C.1).
- * The IOC3's part is a DS2501 -- family 0x91, two programmable pages,
+ * DS2502-family.
+ * The IOC3's part is a DS2501, family 0x91, two programmable pages,
  * sharing the DS2502's 128-byte 0000h-007Fh address space and command set.
  */
 
@@ -561,14 +526,14 @@ static void test_ds2502_status_serves_the_real_field(void)
 
     /*
      * 0x0001 is page zero's redirection byte, and 0xff is its unprogrammed
-     * value meaning "not redirected" -- the byte OpenBSD's redirection
+     * value meaning "not redirected", the byte OpenBSD's redirection
      * walk stops on, and it must fall out of blank status memory rather
      * than a coded special case. 0x0007 is the one byte that actually
      * distinguishes this field: factory-programmed 00h, so a genuine
      * DS2502-class status readout is never all-0xff even on a blank part.
      * A regression in DS2502_STATUS_FACTORY_ADDR or in
      * ds2502_status_byte()'s equality check would only show up by reading
-     * this far -- the same reason the closing CRC-8 below is checked too.
+     * this far. The closing CRC-8 below is checked for the same reason.
      */
     for (unsigned i = 0; i < 7; i++) {
         g_assert_cmpuint(status[i], ==, 0xff);
@@ -580,12 +545,9 @@ static void test_ds2502_status_serves_the_real_field(void)
 }
 
 /*
- * The behaviour this task exists to get right: unlike F0h, C3h closes
- * every 32-byte page with a device-generated CRC-8 over that page's data.
- * A model that copied F0h's framing onto C3h -- the exact bug flagged in
- * the datasheet extraction's "Contradictions" section -- would answer
- * 0xff for byte 33 here instead, the same wrong answer
- * test_ds2502_plain_read_has_no_page_crc's F0h case correctly gives.
+ * Unlike F0h, C3h ends each 32-byte page with a device CRC-8 over that page.
+ * Copying F0h framing would return 0xff for byte 33, as
+ * test_ds2502_plain_read_has_no_page_crc expects only for F0h.
  */
 static void test_ds2502_read_data_crc_emits_page_crc_every_32_bytes(void)
 {
@@ -619,7 +581,7 @@ static void test_ds2502_read_data_crc_emits_page_crc_every_32_bytes(void)
 /*
  * C3h's first page can start mid-page, not just page-aligned: the CRC
  * then covers only the bytes actually read in that partial page, from
- * the start address to the page's end -- not a fixed 32 bytes. The
+ * the start address to the page's end, not a fixed 32 bytes. The
  * page-aligned test above only ever exercises
  * `page_end = addr | (DS2502_PAGE_SIZE - 1)` in its trivial case, where
  * the OR happens to be a no-op; this is the case that actually forces
@@ -644,7 +606,7 @@ static void test_ds2502_read_data_crc_first_page_can_start_mid_page(void)
     }
 
     /*
-     * Page 0 ends at 001Fh, 16 bytes from the 0010h start -- not 32. A
+     * Page 0 ends at 001Fh, 16 bytes from the 0010h start, not 32. A
      * model that only ever waited for a full 32-byte count instead of
      * computing the page boundary from the actual address would answer a
      * plain data byte here instead of this CRC.
@@ -653,7 +615,7 @@ static void test_ds2502_read_data_crc_first_page_can_start_mid_page(void)
                       onewire_crc8(0, partial, sizeof(partial)));
 
     /*
-     * Page one starts fresh, page-aligned, at 0020h -- real data again,
+     * Page one starts fresh, page-aligned, at 0020h with real data,
      * not a second CRC.
      */
     g_assert_cmpuint(bus_touch_byte(bus, 0xff), ==, 0xff);
@@ -661,7 +623,7 @@ static void test_ds2502_read_data_crc_first_page_can_start_mid_page(void)
 
 /*
  * Read Memory's one CRC-8 only appears if the read actually runs through
- * the last byte of memory (007Fh) -- unlike C3h, which never stops.
+ * the last byte of memory (007Fh), unlike C3h, which never stops.
  */
 static void test_ds2502_read_memory_emits_one_crc_at_end_of_memory(void)
 {
@@ -678,7 +640,7 @@ static void test_ds2502_read_memory_emits_one_crc_at_end_of_memory(void)
     g_assert_cmpuint(bus_touch_byte(bus, 0xff), ==, onewire_crc8(0, hdr, 3));
 
     tail[0] = bus_touch_byte(bus, 0xff);    /* 007Eh */
-    tail[1] = bus_touch_byte(bus, 0xff);    /* 007Fh: the last byte of memory */
+    tail[1] = bus_touch_byte(bus, 0xff);    /* last memory byte: 007Fh */
 
     /*
      * Only now, having read through 007Fh, does the DS2501 answer a
@@ -699,13 +661,13 @@ static void test_ds2502_read_memory_emits_one_crc_at_end_of_memory(void)
 
 /*
  * "A start address above 007Fh has its 9 most significant bits forced to
- * zero" (docs/library/dallas-1wire-part-specs.md section C.1). TA1=TA2=
+ * zero" (DS2502 datasheet). TA1=TA2=
  * 0xff sends a raw 16-bit start address of 0xffff; masked to 7 bits that
  * lands on 007Fh, the single last byte of memory. A model using the raw,
  * unmasked address would never satisfy the addr==007Fh check that
  * produces the closing CRC below, and so would answer 0xff forever
- * instead -- a different, and wrong, failure than getting the mask width
- * wrong (which would land somewhere else in 0000h-007Fh instead of at the
+ * instead. This differs from getting the mask width wrong (which would land
+ * somewhere else in 0000h-007Fh instead of at the
  * very end, and also never trip this same check).
  */
 static void test_ds2502_start_address_above_top_is_masked(void)
@@ -750,22 +712,19 @@ static void test_ds2502_start_address_above_top_is_masked(void)
 }
 
 /*
- * The masking above belongs to the memory commands only. The DS2502
- * family's eight-byte status field has no documented mask of its own
- * (docs/library/dallas-1wire-part-specs.md section C.1 states the 007Fh
- * forcing for memory, and nothing for status), so AAh keeps the address
- * as sent -- unlike the DS2505, whose status field the datasheet does
- * mask, and which has its own test for that.
- *
- * The difference only shows above 007Fh, so this asks for 0087h: it masks
- * onto 0007h, the one status address whose byte is factory-programmed 00h
- * and the one that closes the field with a CRC-8. A part that masked the
- * status address would therefore answer a completely different stream --
- * an echo over 0007h, then 00h, then a closing CRC -- while the real part
- * reads unprogrammed EPROM at 0087h and never reaches the end of the
- * field at all. Both halves are asserted for the same reason the
- * memory-address test asserts both: only the pair distinguishes a part
- * that masks from one that does not.
+ * The masking above belongs to the memory commands only. The DS2502 family's
+ * eight-byte status field has no documented mask of its own (the datasheet
+ * states the 007Fh forcing for memory, and nothing for status), so AAh keeps
+ * the address as sent, unlike the DS2505, whose status field the datasheet
+ * does mask, and which has its own test for that. The difference only shows
+ * above 007Fh, so this asks for 0087h: it masks onto 0007h, the one status
+ * address whose byte is factory-programmed 00h and the one that closes the
+ * field with a CRC-8. A part that masked the status address would therefore
+ * answer a different stream: an echo over 0007h, then 00h, then
+ * a closing CRC. The real part reads unprogrammed EPROM at 0087h and
+ * never reaches the end of the field at all. Both halves are asserted for the
+ * same reason the memory-address test asserts both: only the pair
+ * distinguishes a part that masks from one that does not.
  */
 static void test_ds2502_status_start_address_is_not_masked(void)
 {
@@ -867,10 +826,10 @@ static void test_ds2502_write_commands_are_refused_not_misread(void)
 }
 
 /*
- * DS2505-family (docs/library/dallas-1wire-part-specs.md section C.2/D.2).
+ * DS2505-family.
  * The Bridge's board-identity part and the Hub's node-record part are both
  * DS2505-class. Unlike the DS2502 family, this class echoes no header CRC
- * after TA2 -- content starts one window earlier -- and its command set
+ * after TA2, content starts one window earlier, and its command set
  * differs: F0h's own CRC-16 covers the header too, AAh serves paged
  * status with a CRC-16 per page, and A5h replaces C3h entirely.
  */
@@ -899,7 +858,7 @@ static void test_ds2505_plain_read_has_no_page_crc(void)
         g_assert_cmpuint(bytes[i], ==, 0x00);          /* page 0 */
     }
     /*
-     * Byte 33 (index 32) is page one's first byte, a real data byte -- not
+     * Byte 33 (index 32) is page one's first byte, a real data byte, not
      * a CRC. A model that copied A5h's or AAh's per-32-byte framing onto
      * F0h would answer something else here.
      */
@@ -910,7 +869,7 @@ static void test_ds2505_plain_read_has_no_page_crc(void)
 
 /*
  * Read Memory's CRC-16, when it appears, covers the header AND the data
- * read -- unlike the DS2502-family F0h CRC-8, which covers data only.
+ * read, unlike the DS2502-family F0h CRC-8, which covers data only.
  * Start two bytes from the end of the 2048-byte field so both the header
  * inclusion and the field's true top (07FFh) are exercised together.
  */
@@ -938,7 +897,7 @@ static void test_ds2505_read_memory_emits_one_crc16_at_end_of_field(void)
     got |= (uint16_t)bus_touch_byte(bus, 0xff) << 8;
 
     /*
-     * The transmitted value is inverted, and covers the header -- a model
+     * The transmitted value is inverted and covers the header. A model
      * that instead sent the raw (un-inverted) CRC-16, or one that covered
      * only the data bytes the way the DS2502-family CRC-8 does, would both
      * fail this check.
@@ -978,9 +937,9 @@ static void test_ds2505_status_page_carries_a_real_crc16(void)
     got = bus_touch_byte(bus, 0xff);
     got |= (uint16_t)bus_touch_byte(bus, 0xff) << 8;
     /*
-     * A model that answered a flat, CRC-less status field -- treating this
-     * class like the DS2502 family's own tiny, single-CRC status field --
-     * would fail this check, even though the FFh data bytes above already
+     * A model that answered a flat, CRC-less status field as on the
+     * DS2502 family's tiny, single-CRC status field would fail this check,
+     * even though the FFh data bytes above already
      * pass either way.
      */
     g_assert_cmpuint(got, ==, (uint16_t)~crc);
@@ -1024,13 +983,10 @@ static void test_ds2505_status_second_page_crc_is_cleared(void)
 }
 
 /*
- * The behaviour this task exists to get right: A5h presents the
- * redirection byte for the addressed page, then streams that SAME
- * physically addressed page's own data regardless of what the byte says.
- * Page 3 here is loaded with a distinct marker (0x03); a model that
- * instead "followed" redirection -- treating the unprogrammed 0xff byte
- * as a jump, or jumping for any other reason -- would serve page 0's
- * marker (0x00) instead, since 0xff's one's complement is page 0.
+ * A5h returns the addressed page redirection byte, then that same physical
+ * page regardless of redirection. Page 3 contains 0x03; following the blank
+ * 0xff redirection byte would instead return page 0's 0x00 marker, since its
+ * one's-complement page number is zero.
  */
 static void
 test_ds2505_extended_read_surfaces_redirection_without_following(void)
@@ -1070,10 +1026,9 @@ test_ds2505_extended_read_surfaces_redirection_without_following(void)
 }
 
 /*
- * Between pages the master reads 24 slots: the next page's redirection
- * byte, then its CRC-16 -- cleared, covering the redirection byte alone,
- * not carried over or re-seeded from the header the way the first page's
- * was. This is the 24-slot cycle the extraction describes.
+ * Between pages, 24 slots carry the next page's redirection byte and CRC-16.
+ * Clear the CRC generator: this CRC covers only that byte, unlike the first
+ * page, whose CRC includes the header.
  */
 static void test_ds2505_extended_read_inter_page_sequence(void)
 {
@@ -1146,7 +1101,7 @@ static void test_ds2505_extended_read_first_page_can_start_mid_page(void)
     }
 
     /*
-     * Page 0 ends at 001Fh, 16 bytes from the 0010h start -- not 32. A
+     * Page 0 ends at 001Fh, 16 bytes from the 0010h start, not 32. A
      * model that always waited for a full 32-byte count instead of
      * computing the page boundary from the actual address would answer a
      * real data byte here instead of this CRC.
@@ -1161,12 +1116,10 @@ static void test_ds2505_extended_read_first_page_can_start_mid_page(void)
 }
 
 /*
- * A part loaded with a short image reads 0xff past the end of that image,
- * all the way out to the true top of its 2048-byte field -- it never
- * wraps back into the image and repeats it. Wrapping an out-of-range
- * offset back to page zero is exactly the defect the Bridge's own
- * hand-written responder currently has (see the task report); this is the
- * behaviour Tasks 7/8 depend on this model not reproducing.
+ * Past a short image, reads return 0xff through the 2048-byte field without
+ * wrapping to page zero. The older Bridge responder does wrap out-of-range
+ * offsets. At address 500, modulo indexing a four-byte image would return
+ * its first byte instead.
  */
 static void test_ds2505_out_of_range_read_pads_not_wraps(void)
 {
@@ -1194,9 +1147,9 @@ static void test_ds2505_out_of_range_read_pads_not_wraps(void)
 
 /*
  * "A start address above the implemented top has its high address bits
- * forced to zero" (docs/library/dallas-1wire-part-specs.md section D.2).
+ * forced to zero" (DS2505 datasheet).
  * TA1=TA2=0xff sends a raw 16-bit start address of 0xffff; masked to the
- * field's 11-bit width that lands on 07FFh, the field's true last byte --
+ * field's 11-bit width that lands on 07FFh, the field's true last byte.
  * page 63's own marker, not some other page's, confirming the mask width
  * as well as its presence.
  */
@@ -1240,15 +1193,10 @@ static void test_ds2505_start_address_masked_to_top(void)
 }
 
 /*
- * The same masking rule, but for Read Status: unlike the two existing
- * hand-written responders this device replaces (both of which refuse a
- * status read outright above a fixed offset instead of masking it -- see
- * the task report), this class masks the status start address exactly
- * like the data field's. Every status byte is blank 0xff regardless of
- * address, so the byte value alone can't tell "masked, then answered"
- * apart from "refused, floating high" -- the closing CRC can: a refusal
- * would leave the CRC floating 0xff too, not this specific computed
- * value.
+ * Read Status masks its start address like Read Memory. Blank status bytes
+ * are 0xff at every address, so only the closing CRC distinguishes a masked
+ * read from a refused read whose bus floats high. Two older hand-written
+ * responders instead refuse status reads above a fixed offset.
  */
 static void test_ds2505_status_start_address_masked_to_top(void)
 {
@@ -1287,8 +1235,8 @@ static void test_ds2505_status_start_address_masked_to_top(void)
  * Add-only: Write Memory, Speed Write Memory, Write Status and Speed
  * Write Status are all refused rather than misread as a read. 0xC3 (the
  * DS2502-family CRC-read command) does not exist on this class either,
- * and is refused the same way -- if any were instead accepted and treated
- * as needing TA1/TA2, the following bytes here would be consumed as a
+ * and is refused the same way. If any were accepted as needing TA1/TA2, the
+ * following bytes here would be consumed as a
  * bogus address instead of a fresh command, and the Read Memory issued
  * right after would not come back with page three's real marker.
  */
@@ -1346,16 +1294,11 @@ static void test_sgi_slot_reset_reports_absence_on_empty_bus(void)
 }
 
 /*
- * A short pulse is a read: it releases the wire and samples whatever a part
- * drives back. Skip ROM selects the reply part, whose function_byte always
- * answers its own family byte; per the one-window lag (include/hw/1wire/
- * onewire.h), that reply appears starting the byte AFTER the one that
- * primes it, so a command byte is written first. Reading the primed reply
- * back eight short-pulse slots at a time must reproduce the family byte. An
- * implementation that instead read sgi_onewire_slot(bus, pulse,
- * sample)'s short-pulse branch as a write-zero -- driving the wire low
- * instead of releasing it -- would read back 0x00 regardless of what the
- * part sends, not the real 0x0b.
+ * Short pulses release the wire and sample the slave. Skip ROM selects a
+ * responder whose function_byte returns its family byte. The one-window lag
+ * (include/hw/1wire/onewire.h) requires a priming command; eight following
+ * read slots must return 0x0b. Treating a short pulse as write-zero would
+ * hold the line low and return 0x00 instead.
  */
 static void test_sgi_slot_short_pulse_reads(void)
 {
@@ -1375,16 +1318,10 @@ static void test_sgi_slot_short_pulse_reads(void)
 }
 
 /*
- * A mid-range pulse holds the wire down: a write-zero. Family byte 0x0b is
- * 00001011b, LSB first, so its first identity bit is 1 -- driving a zero
- * there mismatches on the very first bit of Match ROM, which drops the part
- * to ONEWIRE_IDLE immediately (test_match_rom_drops_at_first_mismatch
- * exercises the same mechanism directly against onewire_touch_bit). This
- * observes that the part actually received a zero, not merely that
- * sgi_onewire_slot() returned some value: an implementation that instead
- * decoded a mid-range pulse as a read or a write-one would drive/echo a 1
- * on that slot, the part would keep matching, and the phase would still be
- * ONEWIRE_ROM_MATCH here rather than IDLE.
+ * A mid-range pulse writes zero. Family 0x0b is 00001011b, LSB first, so
+ * zero mismatches its first Match ROM bit and immediately enters ONEWIRE_IDLE
+ * (also tested through onewire_touch_bit). A read or write-one would leave
+ * the part in ONEWIRE_ROM_MATCH; checking its phase proves it received zero.
  */
 static void test_sgi_slot_mid_pulse_writes_zero(void)
 {
@@ -1404,15 +1341,9 @@ static void test_sgi_slot_mid_pulse_writes_zero(void)
 }
 
 /*
- * The reset threshold is a closed boundary: pulse width exactly 400 must
- * already read as a reset, and 399 -- one below it -- must not. Both are
- * checked on an empty bus, where the two outcomes are unambiguous: a reset
- * with nobody answering samples high (true), while a write-zero always
- * drives the wire low regardless of what is on the bus (false). A `pulse >
- * 400` off-by-one, instead of `pulse >= 400`, would misclassify exactly 400
- * as a write-zero and return false here too -- collapsing what should be
- * two different outcomes onto the same value is exactly what this test
- * exists to catch.
+ * Reset starts at pulse width 400; 399 is write-zero. On an empty bus,
+ * reset samples high and write-zero drives low. A pulse > 400 comparison
+ * would misclassify 400 and make both results false.
  */
 static void test_sgi_slot_reset_threshold_is_closed_at_400(void)
 {
@@ -1424,8 +1355,8 @@ static void test_sgi_slot_reset_threshold_is_closed_at_400(void)
 
 /*
  * The write-zero/read boundary is closed on the write-zero side: pulse
- * width exactly 40 must already hold the wire down, and 39 -- one below it
- * -- must release it. Checked on an empty bus, where a write-zero always
+ * width exactly 40 must already hold the wire down, and 39 must
+ * release it. Checked on an empty bus, where a write-zero always
  * samples low (drive false) and a read always samples high with nobody
  * pulling. A `pulse <= 40` off-by-one, instead of `pulse < 40`, would
  * misclassify exactly 40 as a read and return true here too.
@@ -1435,7 +1366,7 @@ static void test_sgi_slot_zero_threshold_is_closed_at_40(void)
     OneWireBus *bus = onewire_test_bus();
 
     g_assert_false(sgi_onewire_slot(bus, 40, 0));     /* write-zero: low */
-    g_assert_true(sgi_onewire_slot(bus, 39, 0));      /* read: released, high */
+    g_assert_true(sgi_onewire_slot(bus, 39, 0));      /* released high read */
 }
 
 int main(int argc, char **argv)

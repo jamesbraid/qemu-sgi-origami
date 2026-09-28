@@ -1,10 +1,6 @@
 /*
- * Shared stopped-VM migration helper for SGI qtest device tests.
- *
- * qtest never executes guest code, so these tests migrate a paused
- * machine and check device state, not a running guest's behavior --
- * the same reasoning sn0-migration-test.c's own docstring gives for
- * standing outside tests/qtest/migration/.
+ * Migrate paused SGI qtest machines and check device state; qtest runs no
+ * guest code. See sn0-migration-test.c for the same migration-test scope.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
@@ -17,18 +13,17 @@
 #include "qobject/qdict.h"
 
 /*
- * Block until @s reports @status, polling query-migrate against a
- * wall-clock deadline of @deadline_s seconds. Every duplicate this header
- * replaces polled query-migrate this way; none enabled the "events"
- * migration capability, so waiting on the MIGRATION QMP event instead
- * would block forever -- migrate_generate_event() in migration.c only
- * sends it when that capability is on, and turning it on after "migrate"
- * is issued can still race a transfer that completes before the
- * capability change lands.
- * Fails the test immediately if migration reports "failed" before
- * reaching @status. Only logs the states it polled through when the wait
- * is about to fail; at a 1 ms poll interval, logging every poll drowned
- * the test log without telling a passing run anything new.
+ * Block until @s reports @status, polling query-migrate against a wall-clock
+ * deadline of @deadline_s seconds. Every duplicate this header replaces
+ * polled query-migrate this way; none enabled the "events" migration
+ * capability, so waiting on the MIGRATION QMP event instead would block
+ * forever. migrate_generate_event() in migration.c only sends it when that
+ * capability is on, and turning it on after "migrate" is issued can still
+ * race a transfer that completes before the capability change lands. Fails
+ * the test immediately if migration reports "failed" before reaching
+ * @status. Only logs the states it polled through when the wait is about to
+ * fail; at a 1 ms poll interval, logging every poll drowned the test log
+ * without telling a passing run anything new.
  */
 static inline void sgi_wait_migration_status(QTestState *s,
                                               const char *status,
@@ -57,14 +52,14 @@ static inline void sgi_wait_migration_status(QTestState *s,
 }
 
 /*
- * Migrate @from over @uri and block until it reports the transfer
- * completed. The destination must already be listening for the incoming
- * stream, either via "-incoming <uri>" on its command line or a prior
- * "migrate-incoming" QMP command -- this only drives @from's "migrate"
- * command and its own completion wait, matching every existing caller,
- * none of which keeps a handle to the destination QTestState here.
- * Every existing caller used a 30 second deadline (or none at all), so
- * this passes 30 through rather than taking a parameter of its own.
+ * Migrate @from over @uri and block until it reports the transfer completed.
+ * The destination must already be listening for the incoming stream, either
+ * via "-incoming <uri>" on its command line or a prior "migrate-incoming"
+ * QMP command. This only drives @from's "migrate" command and its own
+ * completion wait, matching every existing caller, none of which keeps a
+ * handle to the destination QTestState here. Every existing caller used a 30
+ * second deadline (or none at all), so this passes 30 through rather than
+ * taking a parameter of its own.
  */
 static inline void sgi_migrate_stopped(QTestState *from, const char *uri)
 {

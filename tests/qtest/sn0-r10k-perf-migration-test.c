@@ -1,12 +1,10 @@
 /*
- * R10000 performance-counter and secondary-cache tests.
+ * Test R10000 performance counters and secondary cache.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  *
- * The R10000 is the only CPU this fork builds a machine for, so every case
- * runs on the Origin 200 or Origin 2000 with the synthesized firmware off,
- * leaving the guest fragment in sole possession of the reset vector and low
- * memory.
+ * Origin 200 and Origin 2000 use the only CPU built here; firmware is off so
+ * each guest fragment owns the reset vector and low RAM.
  */
 
 #include "qemu/osdep.h"

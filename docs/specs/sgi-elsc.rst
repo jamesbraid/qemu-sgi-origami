@@ -10,9 +10,7 @@ the console of last resort after a failed power-on diagnostic. QEMU
 models it as an I2C slave (``hw/misc/sgi-elsc.c``) on the same bus as
 each node's PCF8584 controller.
 
-The register-level sources behind every value here are collected in
-the Origami project tree's controller datasheet; this page describes
-the contract the model implements.
+This page describes the register-level contract the model implements.
 
 ASCII command protocol
 ======================
@@ -178,9 +176,8 @@ Command vocabulary
 
 ``nic <p> <s> <d>``
     One-wire identity passthrough, an interactive-monitor command, not
-    boot-driven. Its wire contract is from the controller datasheet's
-    firmware-facing command section: three hex arguments (pulse, sample,
-    delay) bit-bang the midplane one-wire line, and it answers ``ok
+    boot-driven. Its wire contract takes three hex arguments (pulse,
+    sample, delay) that bit-bang the midplane one-wire line, and it answers ``ok
     <hex>`` with the sampled bit, over which a one-wire ROM read is
     layered by repeated calls. No one-wire device is modelled, so the
     open-drain line idles high and every sample reads ``1`` -- a

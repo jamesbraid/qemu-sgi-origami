@@ -1,10 +1,9 @@
 /*
  * SPDX-License-Identifier: GPL-2.0-or-later
  *
- * Exercise the Origin 200 PROM's deliberate I/O bus-error probe through an
- * executing processor.  qtest MMIO cannot observe a processor exception, so
- * the guest installs a DBE handler, probes from each slice, and records Cause
- * and a completion marker in RAM.
+ * Test the Origin 200 PROM I/O bus-error probe with an executing CPU. qtest
+ * MMIO cannot see CPU exceptions; each slice probes with a guest DBE handler
+ * and records Cause and completion in RAM.
  */
 
 #include "qemu/osdep.h"
@@ -71,14 +70,14 @@
 
 /*
  * The probe runs from the reset vector now rather than a directly loaded
- * kernel. Three things changed from the launch_slave-era image, none of
- * them the probe sequence itself: the general exception handler moves to
- * its boot-time (BEV=1) vector, since the BEV=0 one it used to sit at was
- * only reachable after a firmware handoff that no longer happens; slice B
- * runs from reset alongside slice A rather than being launched by it, so
- * it waits on LAUNCH_B itself instead of being held off by never having
- * started; and slice A parks after its own probe instead of launching B,
- * since B no longer needs launching.
+ * kernel. Three things changed from the launch_slave-era image, none of them
+ * the probe sequence itself: the general exception handler moves to its
+ * boot-time (BEV=1) vector, since the BEV=0 one it used to sit at was only
+ * reachable after a firmware handoff that no longer happens; slice B runs
+ * from reset alongside slice A rather than being launched by it, so it waits
+ * on LAUNCH_B itself instead of being held off by never having started; and
+ * slice A parks after its own probe instead of launching B, since B no longer
+ * needs launching.
  */
 #define IMG_PRIMARY   0x800
 #define IMG_SECONDARY 0x1000
@@ -137,9 +136,9 @@ static void build_probe_image(SN0Image *p)
     put_insn(p, p->pos + 0x18, 0x00000000); /* nop */
 
     /*
-     * Identity dispatch: one node, so the Hub-local slice number is all
-     * of it. Slice A falls through into its own body below; slice B
-     * skips it for its own body, placed after.
+     * Identity dispatch: one node, so the Hub-local slice number is all of
+     * it. Slice A falls through into its own body below; slice B skips it for
+     * its own body, placed after.
      */
     p->pos = IMG_PRIMARY - 0x44;
     sn0_emit_li(p, SN0_R_T0, SN0_STATUS_KERNEL);
@@ -497,12 +496,11 @@ static void test_prom_probe_latches_the_issuing_slice(const void *data)
                     PI_STATUS_EXPECTED);
 
     /*
-     * What a 32-bit access to a read-to-clear register does on real
-     * hardware is unobserved, so the model's conservative choice is
-     * pinned here: a half read returns its big-endian half of the
-     * doubleword with the latch intact, and only a full-width access —
-     * the read, or the observed zero store — clears it. A nonzero store
-     * of either width clears nothing.
+     * What a 32-bit access to a read-to-clear register does on real hardware
+     * is unobserved, so the model's conservative choice is pinned here: a
+     * half read returns its big-endian half of the doubleword with the latch
+     * intact, and only a full-width access — the read, or the observed zero
+     * store — clears it. A nonzero store of either width clears nothing.
      */
     g_assert_cmphex(qtest_readl(qts, HUB_LOCAL + PI_ERR_STATUS0_CLR_B), ==,
                     PI_STATUS_EXPECTED >> 32);
@@ -658,13 +656,13 @@ static void test_pi_status_reset_clears_both_slices(const void *data)
 
 /*
  * IRIX 6.5.30 retires a processor's error record with one 64-bit zero store
- * to that processor's status 1 clearing alias, never to the status 0 one:
- * its per-Hub error setup does it for both processors on Hub 2.1 and later,
- * and its error-stack walker does it after taking a valid status 0 record,
- * then asks again and stops only once status 0 reads not valid. That walker
- * would loop on one record forever if the store left status 0 valid, so the
- * store must end the whole record. As with the status 0 alias, only the
- * observed 64-bit zero store is modelled as clearing.
+ * to that processor's status 1 clearing alias, never to the status 0 one: its
+ * per-Hub error setup does it for both processors on Hub 2.1 and later, and
+ * its error-stack walker does it after taking a valid status 0 record, then
+ * asks again and stops only once status 0 reads not valid. That walker would
+ * loop on one record forever if the store left status 0 valid, so the store
+ * must end the whole record. As with the status 0 alias, only the observed
+ * 64-bit zero store is modelled as clearing.
  */
 static void test_status1_clear_alias_retires_the_record(const void *data)
 {

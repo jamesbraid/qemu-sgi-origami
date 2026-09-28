@@ -1,7 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
-/*
- * SGI IOC3 ethernet MAC engine. See docs/specs/sgi-ioc3.rst.
- */
+/* SGI IOC3 Ethernet MAC engine. */
+/* SGI IOC3 ethernet MAC engine. See docs/specs/sgi-ioc3.rst. */
 
 #include "qemu/osdep.h"
 #include "qemu/log.h"
@@ -62,8 +61,9 @@ static void sgi_ioc3_enet_update_irq(SGIIOC3EthState *s)
  * acknowledged yet, so this delivery has no bit of its own to be seen by:
  * mark it deferred so the guest's write-one-to-clear that acknowledges the
  * earlier completion turns into a real edge for this one too, instead of
- * silently clearing both (docs/datasheets/bridge.md, "must never latch and
- * clear on service").
+ * silently clearing both. The interrupt controller upstream of this device
+ * must never let one acknowledge silently absorb a completion it was not
+ * written for.
  */
 static void sgi_ioc3_eth_raise_int(SGIIOC3EthState *s, uint32_t sources)
 {
@@ -75,8 +75,8 @@ static void sgi_ioc3_eth_raise_int(SGIIOC3EthState *s, uint32_t sources)
 }
 
 /*
- * The engine reset keeps the ring bases: SGI's power-on diagnostic
- * programs them once and never rewrites them across its reset.
+ * The engine reset keeps the ring bases: SGI's power-on diagnostic programs
+ * them once and never rewrites them across its reset.
  */
 static void sgi_ioc3_eth_reset_registers(SGIIOC3EthState *s, bool keep_rings)
 {
@@ -123,12 +123,12 @@ static bool sgi_ioc3_eth_looping_back(SGIIOC3EthState *s)
  * this buffer address. The floor writes a frame's bytes into its buffer as
  * soon as the backend hands it over, but defers the header word, the index
  * and the interrupt that tell the guest so; a second frame landing in the
- * same buffer before the first of those completions publishes would
- * overwrite bytes the guest has not been told about yet, so the earlier
- * frame is silently lost while its own completion still reports the slot
- * as delivered. Real hardware cannot receive a second frame before the
- * first's DMA and index update are done, so this is this model's own
- * queueing to prevent, not a hardware contract to reproduce.
+ * same buffer before the first of those completions publishes would overwrite
+ * bytes the guest has not been told about yet, so the earlier frame is
+ * silently lost while its own completion still reports the slot as delivered.
+ * Real hardware cannot receive a second frame before the first's DMA and
+ * index update are done, so this is this model's own queueing to prevent, not
+ * a hardware contract to reproduce.
  */
 static bool sgi_ioc3_eth_rx_pending(SGIIOC3EthState *s, uint64_t buf_addr)
 {
@@ -185,11 +185,11 @@ static bool sgi_ioc3_eth_can_receive(NetClientState *nc)
     /*
      * A driver keeps far fewer physical buffers than the ring has slots and
      * reposts one into a later slot once it has serviced the frame sitting
-     * there. Peek at the buffer that slot names before staging anything
-     * into it: if a completion for an earlier use of the same address is
-     * still held, wait for it to publish rather than overwrite it. A
-     * refused entry fetch is not this check's to report; deliver() makes
-     * and logs that same read shortly after and drops the frame there.
+     * there. Peek at the buffer that slot names before staging anything into
+     * it: if a completion for an earlier use of the same address is still
+     * held, wait for it to publish rather than overwrite it. A refused entry
+     * fetch is not this check's to report; deliver() makes and logs that same
+     * read shortly after and drops the frame there.
      */
     ring_base = ((uint64_t)sgi_ioc3_enet_get(s, SGI_IOC3_ENET_RX_RING_HI)
                 << 32) |
@@ -349,7 +349,7 @@ static bool sgi_ioc3_eth_rx_publish(void *opaque, const void *record)
  * models. It is still published in order behind anything the line is holding,
  * or the consume index it moves would pass a held one and then walk backwards
  * when that one lands. It also arrives from the transmit walk rather than
- * receive(), so can_receive() never ran for it -- the line's room and the
+ * receive(), so can_receive() never ran for it. The line's room and the
  * target buffer's own held completion are both checked here instead, and a
  * full line or a buffer still held is the same overrun any other receive
  * gets.
@@ -406,12 +406,11 @@ static ssize_t sgi_ioc3_eth_deliver(SGIIOC3EthState *s, const uint8_t *buf,
      * can_receive()'s own peek at this buffer address never ran for an
      * immediate delivery (see this function's comment on immediate above).
      * Repeat it here: staging into a buffer a held completion still names
-     * would overwrite that completion's bytes before the guest is told
-     * about them, the same corruption can_receive() now keeps off the wire
-     * path. No later retry reopens this the way a refused wire receive gets
-     * retried from the backend queue, so this is the same overrun drop the
-     * full-line check above already gives a loopback frame with nowhere to
-     * go.
+     * would overwrite that completion's bytes before the guest is told about
+     * them, the same corruption can_receive() now keeps off the wire path. No
+     * later retry reopens this the way a refused wire receive gets retried
+     * from the backend queue, so this is the same overrun drop the full-line
+     * check above already gives a loopback frame with nowhere to go.
      */
     if (immediate && sgi_ioc3_eth_rx_pending(s, buf_addr)) {
         trace_sgi_ioc3_eth_rx_refused(
@@ -426,8 +425,8 @@ static ssize_t sgi_ioc3_eth_deliver(SGIIOC3EthState *s, const uint8_t *buf,
              SGI_IOC3_ENET_MCR_RXOFF_SHIFT) * 2;
 
     /*
-     * Guests read the wire length FCS included; the backend delivers no
-     * FCS, so four phantom bytes are added or minimum frames read short.
+     * Guests read the wire length FCS included; the backend delivers no FCS,
+     * so four phantom bytes are added or minimum frames read short.
      */
     wire_len = (uint32_t)size + (short_circuit ? 0 : 4);
 
@@ -487,9 +486,9 @@ static ssize_t sgi_ioc3_eth_deliver(SGIIOC3EthState *s, const uint8_t *buf,
     s->rx_consume_staged = consume;
 
     /*
-     * The payload and its status vector are in the buffer; the valid bit,
-     * the index and the sources are what the guest sees, and those wait for
-     * the frame's arrival deadline.
+     * The payload and its status vector are in the buffer; the valid bit, the
+     * index and the sources are what the guest sees, and those wait for the
+     * frame's arrival deadline.
      */
     done.buf_addr = buf_addr;
     done.word0 = word0;
@@ -602,8 +601,8 @@ static void sgi_ioc3_eth_do_tx(SGIIOC3EthState *s, uint32_t produce)
     bool completed_one = false;
 
     /*
-     * The walk stops on equality: an index the steps can never land on is
-     * an emulator hang from one register write, so reduce and align both.
+     * The walk stops on equality: an index the steps can never land on is an
+     * emulator hang from one register write, so reduce and align both.
      */
     if ((produce | consume) & (SGI_IOC3_ENET_TX_DESC_SIZE - 1)) {
         qemu_log_mask(LOG_GUEST_ERROR,
@@ -760,15 +759,15 @@ static void sgi_ioc3_enet_write(void *opaque, hwaddr addr, uint64_t val,
         if (deferred) {
             /*
              * A completion landed on one of these bits after the driver's
-             * read but before this acknowledge: the line has just dropped
-             * for the cleared bits above, so restoring the deferred ones
-             * now raises it again as a real edge, rather than the guest's
-             * single write silently absorbing both completions.
+             * read but before this acknowledge: the line has just dropped for
+             * the cleared bits above, so restoring the deferred ones now
+             * raises it again as a real edge, rather than the guest's single
+             * write silently absorbing both completions.
              *
              * This depends on "cleared" being the whole status word the
-             * driver read, so status & enable truly reaches zero above.
-             * All three public drivers write back exactly what they read
-             * here (docs/datasheets/ioc3.md, "0xF4 Interrupt status").
+             * driver read, so status & enable truly reaches zero above. All
+             * three public drivers write back exactly what they read from
+             * this interrupt-status register.
              */
             s->enet_reg[index] |= deferred;
             sgi_ioc3_enet_update_irq(s);
@@ -831,8 +830,8 @@ static void sgi_ioc3_enet_write(void *opaque, hwaddr addr, uint64_t val,
         qemu_bh_schedule(s->rx_flush_bh);
 
         /*
-         * Enabling starts the engine (the diagnostic queues first); only
-         * on the transition, or a rewrite sends the descriptors twice.
+         * Enabling starts the engine (the diagnostic queues first); only on
+         * the transition, or a rewrite sends the descriptors twice.
          */
         if (!was_enabled && sgi_ioc3_eth_tx_enabled(s)) {
             sgi_ioc3_eth_do_tx(s, sgi_ioc3_enet_get(s,
@@ -924,8 +923,8 @@ static void sgi_ioc3_eth_realize(DeviceState *dev, Error **errp)
     }
 
     /*
-     * The firmware expects SGI's OUI on a default address; an explicit
-     * mac= is never rewritten, which the bytes alone cannot decide.
+     * The firmware expects SGI's OUI on a default address; an explicit mac=
+     * is never rewritten, which the bytes alone cannot decide.
      */
     if (sgi_ioc3_eth_mac_unset(&s->conf.macaddr) || s->mac_generated) {
         qemu_macaddr_default_if_unset(&s->conf.macaddr);
@@ -962,7 +961,7 @@ static void sgi_ioc3_eth_unrealize(DeviceState *dev)
      * The transceiver lives inside this object and is realized on the system
      * bus, so it has to leave that bus here. Left on it, it comes off only
      * when this object is finalized, and a bus hands a child's reference back
-     * through RCU -- so the release arrives a grace period after the storage
+     * through RCU, so the release arrives a grace period after the storage
      * it names has been freed with the rest of this object.
      */
     object_unparent(OBJECT(&s->phy));

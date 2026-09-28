@@ -1,10 +1,9 @@
 /*
  * SPDX-License-Identifier: GPL-2.0-or-later
- *
- * Every processor must re-enter a generated ROM after a guest-requested reset.
- * Public Linux arch/mips/sgi-ip27/ip27-reset.c writes NI_PORT_RESET with
- * NPR_PORTRESET | NPR_LOCALRESET. Its asm/sn/sn0/hubni.h and hubpi.h define
- * the reset bits, node ID and processor-number registers used here.
+ * Every processor must re-enter a generated ROM after a guest-requested
+ * reset. Public Linux arch/mips/sgi-ip27/ip27-reset.c writes NI_PORT_RESET
+ * with NPR_PORTRESET | NPR_LOCALRESET. Its asm/sn/sn0/hubni.h and hubpi.h
+ * define the reset bits, node ID and processor-number registers used here.
  */
 
 #include "qemu/osdep.h"
@@ -100,7 +99,9 @@ static void write_guest_image(int fd)
     emit_i(&img, 63, 13, 14, 0);       /* sd t6, 0(t5) */
     emit(&img, 0x0000000f);            /* sync */
 
-    /* Only node zero, slice zero requests resets; other CPUs keep executing. */
+    /*
+     * Only node zero, slice zero requests resets; other CPUs keep executing.
+     */
     emit_branch(&img, 5, 11, 0, PARK);
     emit_branch(&img, 5, 9, 0, PARK);
     poll = img.pos;
@@ -167,9 +168,9 @@ static void test_warm_reset_rendezvous(void)
         "-bios %s -accel tcg,thread=multi -S -no-shutdown", image);
     unlink(image);
     /*
-     * No PROM ran to number node one's Hub; mailbox(2) and mailbox(3)
-     * need it claimed, and a full machine reset (every generation below)
-     * clears it back to zero along with everything else.
+     * No PROM ran to number node one's Hub; mailbox(2) and mailbox(3) need it
+     * claimed, and a full machine reset (every generation below) clears it
+     * back to zero along with everything else.
      */
     sn0_program_nasid(qts, 1);
     for (unsigned int cpu = 0; cpu < 4; cpu++) {
@@ -347,8 +348,8 @@ static void test_scratch_publish(const void *opaque)
     unlink(image);
 
     /*
-     * No PROM ran to number node one's Hub; every base below for node 1
-     * needs it claimed, and phase 1's full machine reset clears it again.
+     * No PROM ran to number node one's Hub; every base below for node 1 needs
+     * it claimed, and phase 1's full machine reset clears it again.
      */
     sn0_program_nasid(qts, 1);
     for (unsigned int phase = 0; phase < 2; phase++) {

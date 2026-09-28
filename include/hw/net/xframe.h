@@ -1,26 +1,23 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
+/* Neterion/S2io Xframe register and device definitions. */
 /*
- * Neterion/S2io Xframe 10-Gigabit Ethernet controller.
- *
- * A public third-party PCI add-in card, not SGI silicon -- see the xframe
- * datasheet (docs/datasheets/xframe.md in the origami project tree, not
- * this repository -- every later citation of it here means that file).
- * The SGI 10-Gigabit Ethernet Network Adapter is
- * one instantiation of this generic device, distinguished by PCI-identity
- * properties (subsystem-vendor-id 0x10a9), the same way upstream e1000 and
- * rtl8139 expose vendor/board identity as properties rather than as
- * separate devices.
+ * A public third-party PCI add-in card, not SGI silicon. The SGI 10-Gigabit
+ * Ethernet Network Adapter is one instantiation of this generic device,
+ * distinguished by PCI-identity properties (subsystem-vendor-id 0x10a9), the
+ * same way upstream e1000 and rtl8139 expose vendor/board identity as
+ * properties rather than as separate devices.
  *
  * This models the generic PCI card's own machine-independent contract. The
- * PIF register window (BAR0) carries the probe/attach register file -- the
+ * PIF register window (BAR0) carries the probe/attach register file: the
  * byte-swapper diagnostic, SW_RESET, the RMAC_CFG_KEY MAC-config lock,
- * ADAPTER_STATUS/ADAPTER_CONTROL and the MAC-address table -- as 64-bit
+ * ADAPTER_STATUS/ADAPTER_CONTROL and the MAC-address table, as 64-bit
  * registers in native little-endian order. The transmit descriptor/doorbell
  * path behind the TxP window (BAR2) is modelled, and so is the receive path:
  * the RxDMA registers (also in BAR0) plus the RxD descriptor ring the card
  * walks in guest memory. A host bridge that corrects register byte order or
  * access width (the Origin 200 Bridge) is that bridge's concern, not this
- * device's -- see docs/library/nic-on-bridge-conventions.md.
+ * device's. This matches the byte-swap and Bridge-facing convention of
+ * this fork's other NIC models.
  */
 
 #ifndef HW_NET_XFRAME_H
@@ -35,10 +32,9 @@
 OBJECT_DECLARE_SIMPLE_TYPE(XframeState, XFRAME)
 
 /*
- * PCI identity. Vendor ID is common to every Xframe/Xframe II part; device
- * ID picks the ASIC generation (Xena vs Herc) and is a settable property,
- * not a separate device type -- docs/datasheets/xframe.md's "Device
- * identity as configurable properties".
+ * PCI identity. Vendor ID is common to every Xframe/Xframe II part; device ID
+ * picks the ASIC generation (Xena vs Herc) and is a settable property rather
+ * than a separate device type, so one model covers both generations.
  */
 #define XFRAME_PCI_VENDOR_ID            0x17d5  /* Neterion / S2io */
 #define XFRAME_PCI_DEVICE_ID_XENA       0x5831  /* Xframe I, SGI Release 1 */
@@ -46,46 +42,41 @@ OBJECT_DECLARE_SIMPLE_TYPE(XframeState, XFRAME)
 
 /*
  * The SGI board's own PCI subsystem vendor ID. Its subsystem device ID is
- * not established from any source read for the datasheet and must not be
- * invented -- the subsystem-id property stays at its generic default (0)
- * until a source settles it.
+ * not established from any public source and must not be invented. The
+ * subsystem-id property stays at its generic default (0) until a public
+ * source settles it.
  */
 #define XFRAME_PCI_SUBSYSTEM_VENDOR_ID_SGI  0x10a9
 
 /*
  * BAR0: the PIF register window (config offset 0x10, a 64-bit memory BAR).
- * The banked register map spans at least 0x0000-0x33ff
- * (docs/datasheets/xframe.md's "PIF window banks"); the exact decoded size
- * is OPEN there, so this is the smallest power-of-two window that covers
- * the documented span.
+ * The banked register map spans at least 0x0000-0x33ff; the exact decoded
+ * size is unestablished, so this is the smallest power-of-two window that
+ * covers the known span.
  */
 #define XFRAME_PIF_WINDOW_SIZE          0x4000
 
 /*
  * The second BAR (config offset 0x18): the TxP transmit descriptor/doorbell
- * window, eight per-FIFO slots at a 0x00020000 stride
- * (docs/datasheets/xframe.md's register map).
+ * window, eight per-FIFO slots at a 0x00020000 stride.
  */
 #define XFRAME_TXP_WINDOW_SIZE          0x100000
 
 /*
  * The station/multicast MAC-address table has 64 entries, addressed by the
  * 6-bit offset field of RMAC_ADDR_CMD_MEM. Entry 0 holds the factory MAC read
- * back at attach (docs/datasheets/xframe.md's "Behavioral contract").
+ * back at attach.
  */
 #define XFRAME_MAC_TABLE_ENTRIES        64
 
-/*
- * The TxP window is eight per-FIFO transmit doorbells at a 0x20000 stride
- * (docs/datasheets/xframe.md's register map).
- */
+/* The TxP window is eight per-FIFO transmit doorbells at a 0x20000 stride. */
 #define XFRAME_TXP_FIFOS                8
 #define XFRAME_TRAFFIC_MEM_ENTRIES      8
 
 /*
- * The largest frame the transmit path assembles from a descriptor list -- the
- * card's 9600-byte jumbo limit (docs/datasheets/xframe.md's "Role"). A
- * guest-supplied length beyond this is clamped rather than copied unbounded.
+ * The largest frame the transmit path assembles from a descriptor list is the
+ * card's 9600-byte jumbo limit. A guest-supplied length beyond this is
+ * clamped rather than copied unbounded.
  */
 #define XFRAME_MAX_FRAME                9600
 
@@ -128,18 +119,14 @@ struct XframeState {
     /* The second BAR: the TxP transmit descriptor/doorbell window. */
     MemoryRegion txp_mmio;
 
-    /* PCI-identity properties -- see "PCI identity" above. */
+    /* PCI-identity properties; see "PCI identity" above. */
     uint16_t vendor_id;
     uint16_t device_id;
     uint16_t subsystem_vendor_id;
     uint16_t subsystem_id;
 
-    /*
-     * PIF register state, all 64-bit and in native little-endian order --
-     * docs/datasheets/xframe.md's "Register map" and "VMState / migration
-     * fields".
-     */
-    uint64_t swapper_ctrl;      /* byte-swap control (stored; not scrambled) */
+    /* PIF register state, all 64-bit and in native little-endian order. */
+    uint64_t swapper_ctrl;      /* byte-swap control; stored, not scrambled */
     uint64_t xmsi_address;      /* MSI address / byte-swap scratch */
     uint64_t sw_reset;          /* reset-lane control (key is write-only) */
     uint64_t adapter_control;   /* ADAPTER_EN, LED, EOI, wait-int, ECC */
@@ -155,9 +142,9 @@ struct XframeState {
     uint64_t gpio_int_mask;     /* readback only for a fresh device */
     uint64_t tx_traffic_mask;   /* TX_TRAFFIC_MASK: gates TX_TRAFFIC_INT */
     uint64_t rx_traffic_mask;   /* RX_TRAFFIC_MASK: gates RX_TRAFFIC_INT */
-    uint64_t mac_int_mask;      /* MAC_INT_MASK: gates the RMAC block roll-up */
-    uint64_t rmac_max_pyld_len; /* RMAC_MAX_PYLD_LEN: largest payload accepted */
-    uint64_t mac_rmac_err_mask; /* MAC_RMAC_ERR_MASK: gates link-state-change */
+    uint64_t mac_int_mask;      /* MAC_INT_MASK: gates RMAC roll-up */
+    uint64_t rmac_max_pyld_len; /* RMAC_MAX_PYLD_LEN: max payload */
+    uint64_t mac_rmac_err_mask; /* MAC_RMAC_ERR_MASK: gates link changes */
     uint64_t mac_rmac_err;      /* MAC_RMAC_ERR_REG: RMAC link-state-change */
     uint64_t gpio_int_reg;      /* GPIO_INT_REG: PIC/GPIO-block link-state */
     uint64_t mac_cfg;           /* TMAC/RMAC config, key-locked */
@@ -173,7 +160,7 @@ struct XframeState {
      * of 4294967284 and falling). The four counters below are what the block
      * is filled from; they only ever increase.
      */
-    uint64_t stat_cfg;          /* STAT_CFG: enable, one-shot, update period */
+    uint64_t stat_cfg;          /* STAT_CFG: enable, one-shot, period */
     uint64_t stat_addr;         /* STAT_ADDR: where the block is DMA'd */
     uint64_t stat_tx_frms;      /* frames put on the wire */
     uint64_t stat_tx_octets;    /* their bytes */
@@ -186,17 +173,17 @@ struct XframeState {
     uint64_t rmac_addr_data1;   /* MAC-table data word 1 (write-only mask) */
     uint64_t mac_addr[XFRAME_MAC_TABLE_ENTRIES]; /* the 64-entry MAC table */
     /*
-     * Per-entry match mask, latched from rmac_addr_data1 on a write strobe
-     * -- see xframe_rx_filter for the compare-on-clear-bit semantics.
+     * Per-entry match mask, latched from rmac_addr_data1 on a write strobe --
+     * see xframe_rx_filter for the compare-on-clear-bit semantics.
      */
     uint64_t mac_addr_mask[XFRAME_MAC_TABLE_ENTRIES];
 
     /*
-     * Transmit doorbell: the pending TxDL list pointer per FIFO, written to the
-     * TxP window before the control word that launches the list.
+     * Transmit doorbell: the pending TxDL list pointer per FIFO, written to
+     * the TxP window before the control word that launches the list.
      */
     uint64_t txdl_par[XFRAME_TXP_FIFOS];
-    uint64_t tx_traffic_int;    /* TX_TRAFFIC_INT: transmit completion status */
+    uint64_t tx_traffic_int;    /* TX_TRAFFIC_INT: TX completion status */
 
     /* Guest-programmed transmit/receive traffic interrupt memories. */
     uint64_t tti_command;
@@ -217,8 +204,8 @@ struct XframeState {
     XframeTrafficContinuous rti_continuous[XFRAME_TRAFFIC_MEM_ENTRIES];
 
     /*
-     * Scratch for assembling one outgoing frame from a descriptor list, or the
-     * whole datagram when the descriptor asks for segmentation offload.
+     * Scratch for assembling one outgoing frame from a descriptor list, or
+     * the whole datagram when the descriptor asks for segmentation offload.
      * Transient within a doorbell; not migrated.
      */
     uint8_t tx_frame[XFRAME_MAX_TSO_FRAME];
@@ -230,15 +217,13 @@ struct XframeState {
     uint8_t tx_segment[XFRAME_MAX_FRAME];
 
     /*
-     * RxDMA ring state -- docs/datasheets/xframe.md's RxDMA register bank and
-     * "Behavioral contract" Receive note. Only ring 0 is modelled: both
-     * public drivers use exactly one of the chip's eight receive rings
-     * (OpenBSD if_xge.c's own comment on PRC_RXD0_0: "PRC_RXD0_[1-7] are not
-     * used").
+     * RxDMA ring state. Only ring 0 is modelled: both public drivers use
+     * exactly one of the chip's eight receive rings (OpenBSD if_xge.c's own
+     * comment on PRC_RXD0_0: "PRC_RXD0_[1-7] are not used").
      */
-    uint64_t prc_rxd0_0;        /* PRC_RXD0_0: ring 0's descriptor-page base */
-    uint64_t prc_ctrl_0;        /* PRC_CTRL_0: ring 0 control (RC_IN_SVC...) */
-    uint64_t rx_traffic_int;    /* RX_TRAFFIC_INT: receive completion status */
+    uint64_t prc_rxd0_0;        /* PRC_RXD0_0: ring 0 descriptor-page base */
+    uint64_t prc_ctrl_0;        /* PRC_CTRL_0: ring 0 control, RC_IN_SVC... */
+    uint64_t rx_traffic_int;    /* RX_TRAFFIC_INT: RX completion status */
 
     /*
      * The card's own walk position through the RxD ring: not itself a
@@ -250,9 +235,9 @@ struct XframeState {
     uint32_t rx_desc_idx;
 
     /*
-     * can_receive's successfully fetched, card-owned head descriptor. The
-     * net core normally calls receive immediately afterwards, so retaining
-     * that immutable descriptor avoids a second PCI-DMA read. The complete
+     * can_receive's successfully fetched, card-owned head descriptor. The net
+     * core normally calls receive immediately afterwards, so retaining that
+     * immutable descriptor avoids a second PCI-DMA read. The complete
      * location/layout key is kept alongside the bytes; this transient cache
      * is invalidated on every input change and is deliberately not migrated.
      */
@@ -276,37 +261,39 @@ struct XframeState {
     /*
      * link_up_timer presents a delayed UP event without requiring a preceding
      * synthetic DOWN. link_down_timer remains allocated and migrated only so
-     * existing version-2-or-newer streams with that old timer pending can load
-     * without changing the VMState layout.
+     * existing version-2-or-newer streams with that old timer pending can
+     * load without changing the VMState layout.
      */
     QEMUTimer *link_down_timer;
     QEMUTimer *link_up_timer;
 
     /*
      * The periodic hardware "scheduled interrupt" the driver programs at
-     * bring-up to feed its "no interrupts" watchdog (see xframe_sched_int_cb in
-     * xframe.c). A live IRIX xg boot's driver watchdog is a pure liveness timer:
-     * it resets the adapter unless an interrupt keeps arriving, and the one-shot
-     * bring-up link transition above is not enough to satisfy it. The driver
-     * arms a periodic scheduled interrupt (scheduled_int_ctrl at 0x918,
-     * SCHED_INT_CTRL_TIMER_EN) and unmasks it through the PIC block (PIC_INT_MASK
-     * PIC_INT_TX) and the TXPIC leaf (TXPIC_INT_MASK). It is a traffic- and
-     * link-independent source on the PIC/TXPIC path -- it never touches the
-     * GPIO/link bits, so it never disturbs carrier. Armed by a SCHED_INT_CTRL
-     * write with TIMER_EN set, re-armed each period, cancelled on soft reset,
-     * on ADAPTER_EN 1->0, and on a SCHED_INT_CTRL write clearing TIMER_EN. Its
-     * pending expiry is migrated (VMSTATE_TIMER_PTR_V); the VMState post_load
-     * re-arms it if sched_int_armed is still set on load -- not merely
-     * TIMER_EN, which stays set across a fired ONE_SHOT interrupt that must
-     * NOT be re-armed (see xframe_post_load and xframe_sched_int_cb).
+     * bring-up to feed its "no interrupts" watchdog (see xframe_sched_int_cb
+     * in xframe.c). A live IRIX xg boot's driver watchdog is a pure liveness
+     * timer: it resets the adapter unless an interrupt keeps arriving, and
+     * the one-shot bring-up link transition above is not enough to satisfy
+     * it. The driver arms a periodic scheduled interrupt (scheduled_int_ctrl
+     * at 0x918, SCHED_INT_CTRL_TIMER_EN) and unmasks it through the PIC block
+     * (PIC_INT_MASK PIC_INT_TX) and the TXPIC leaf (TXPIC_INT_MASK). It is a
+     * traffic-and link-independent source on the PIC/TXPIC path. It never
+     * touches the GPIO/link bits, so it never disturbs carrier. Armed by a
+     * SCHED_INT_CTRL write with TIMER_EN set, re-armed each period, cancelled
+     * on soft reset, on ADAPTER_EN 1->0, and on a SCHED_INT_CTRL write
+     * clearing TIMER_EN. Its pending expiry is migrated
+     * (VMSTATE_TIMER_PTR_V); the VMState post_load re-arms it if
+     * sched_int_armed is still set on load, not merely TIMER_EN, which
+     * stays set across a fired ONE_SHOT interrupt that must NOT be re-armed
+     * (see xframe_post_load and xframe_sched_int_cb).
      */
-    uint64_t sched_int_ctrl;    /* scheduled_int_ctrl (0x918): read-back + arm */
-    bool sched_int_pending;     /* scheduled interrupt latched, cleared on ack */
+    uint64_t sched_int_ctrl;    /* scheduled_int_ctrl (0x918): read/arm */
+    bool sched_int_pending;     /* scheduled IRQ latched until ack */
     /*
      * Whether an arm is actually outstanding, migrated (VMSTATE_BOOL_V) so
      * post_load can tell a still-armed periodic/pending timer from a ONE_SHOT
-     * that already fired and must not be re-armed -- see xframe_sched_int_arm,
-     * xframe_sched_int_cb and xframe_post_load in xframe.c.
+     * that already fired and must not be re-armed; see
+     * xframe_sched_int_arm, xframe_sched_int_cb and xframe_post_load in
+     * xframe.c.
      */
     bool sched_int_armed;
     QEMUTimer *sched_int_timer;

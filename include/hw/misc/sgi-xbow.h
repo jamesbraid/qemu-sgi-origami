@@ -1,17 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
-/*
- * SGI Crossbow, the crosstalk crossbar.
- *
- * Copyright (c) 2026 Origami contributors
- *
- * Nine internal ports: eight external link controllers carrying decoded
- * widget identities 8 through 15, and a ninth that terminates at logical
- * widget zero, where the chip's own registers answer. Only the eight have a
- * crosstalk view of their own here. Widget zero's outbound traffic is the
- * interrupt it raises, which carries a 48-bit destination address of the
- * target's own rather than a crosstalk offset, so it goes into the target's
- * space directly instead of through an addressed route.
- */
+/* SGI Crossbow crosstalk crossbar and nine-port routing state. */
 
 #ifndef HW_MISC_SGI_XBOW_H
 #define HW_MISC_SGI_XBOW_H
@@ -20,6 +8,12 @@
 #include "qemu/timer.h"
 #include "system/memory.h"
 #include "qom/object.h"
+
+/*
+ * Eight external links decode widgets 8-15 and have crosstalk views. The
+ * ninth port, widget 0, answers Crossbow registers. Its interrupt carries a
+ * target-local 48-bit address and writes directly to the target's space.
+ */
 
 #define TYPE_SGI_XBOW "sgi-xbow"
 OBJECT_DECLARE_SIMPLE_TYPE(SGIXbowState, SGI_XBOW)
@@ -36,22 +30,22 @@ typedef struct SGIXbowLink {
 } SGIXbowLink;
 
 /*
- * Two numbering schemes meet in this device, so each is kept to its own
- * side. The properties and the generated machine descriptor mask widget
- * numbers, where bit 8 is the widget at decoded identity 8. Everything
- * inside masks and indexes links, 0 through 7. The property accessors are
- * the only place the two are converted.
+ * Two numbering schemes meet in this device, so each is kept to its own side.
+ * The properties and the generated machine descriptor mask widget numbers,
+ * where bit 8 is the widget at decoded identity 8. Everything inside masks
+ * and indexes links, 0 through 7. The property accessors are the only place
+ * the two are converted.
  */
 struct SGIXbowState {
     SysBusDevice parent_obj;
 
     /*
-     * One crosstalk view per port, because a packet's route depends on
-     * where it entered as well as where it is addressed. A port's view is
-     * disabled while its own link is down, and each destination alias
-     * inside it is disabled while that destination's link is down. No port
-     * carries a route back to itself: a link does not send to itself, so
-     * that widget slot decodes like an empty one.
+     * One crosstalk view per port, because a packet's route depends on where
+     * it entered as well as where it is addressed. A port's view is disabled
+     * while its own link is down, and each destination alias inside it is
+     * disabled while that destination's link is down. No port carries a route
+     * back to itself: a link does not send to itself, so that widget slot
+     * decodes like an empty one.
      */
     MemoryRegion ingress[SGI_XBOW_LINKS];
     MemoryRegion route[SGI_XBOW_LINKS][SGI_XBOW_LINKS];
@@ -59,9 +53,9 @@ struct SGIXbowState {
     MemoryRegion packet_route[SGI_XBOW_LINKS][SGI_XBOW_LINKS];
 
     /*
-     * The widget numbers between the register block and the first link,
-     * which name no destination on any switch. They decode so that a
-     * packet carrying one is reported on the port that received it.
+     * The widget numbers between the register block and the first link, which
+     * name no destination on any switch. They decode so that a packet
+     * carrying one is reported on the port that received it.
      */
     MemoryRegion illegal[SGI_XBOW_LINKS];
 
@@ -71,11 +65,11 @@ struct SGIXbowState {
     MemoryRegion packet_regs_view[SGI_XBOW_LINKS];
 
     /*
-     * What a packet addressed to each widget reaches, from the machine.
-     * The interrupt widget zero raises carries a 48-bit destination
-     * address of the target's own rather than a crosstalk offset, so it is
-     * written into the target's space instead of through the routes a
-     * crosstalk address selects.
+     * What a packet addressed to each widget reaches, from the machine. The
+     * interrupt widget zero raises carries a 48-bit destination address of
+     * the target's own rather than a crosstalk offset, so it is written into
+     * the target's space instead of through the routes a crosstalk address
+     * selects.
      */
     MemoryRegion *face[SGI_XBOW_LINKS];
     MemoryRegion *packet_face[SGI_XBOW_LINKS];
@@ -107,8 +101,8 @@ struct SGIXbowState {
     /*
      * Link masks. Attachment is board wiring. The startup mask is the
      * emulator's configured health, reapplied whenever the machine resets.
-     * The live mask is what software and the link registers change, and it
-     * is what migration carries.
+     * The live mask is what software and the link registers change, and it is
+     * what migration carries.
      */
     uint8_t link_present;
     uint8_t link_startup;
@@ -142,11 +136,11 @@ struct SGIXbowState {
     uint32_t link_aux_status[SGI_XBOW_LINKS];
 
     /*
-     * What has happened on a link since its status was last acknowledged,
-     * in the bit positions its status register uses. A request stands while
-     * one of these is still enabled, so a condition that has been
-     * acknowledged does not raise a second one, and a port that is simply
-     * up or simply failed does not hold a request nothing can clear.
+     * What has happened on a link since its status was last acknowledged, in
+     * the bit positions its status register uses. A request stands while one
+     * of these is still enabled, so a condition that has been acknowledged
+     * does not raise a second one, and a port that is simply up or simply
+     * failed does not hold a request nothing can clear.
      */
     uint32_t link_event[SGI_XBOW_LINKS];
 
@@ -157,11 +151,11 @@ struct SGIXbowState {
 };
 
 /*
- * The crosstalk view a widget attached at this number sends into. The
- * machine maps it where that widget's outbound packets appear: inside a
- * Hub's crosstalk container, or as an I/O bridge's fabric link. Each view
- * is also published as a sysbus region, in link order, for a test that maps
- * the ports itself.
+ * The crosstalk view a widget attached at this number sends into. The machine
+ * maps it where that widget's outbound packets appear: inside a Hub's
+ * crosstalk container, or as an I/O bridge's fabric link. Each view is also
+ * published as a sysbus region, in link order, for a test that maps the ports
+ * itself.
  */
 MemoryRegion *sgi_xbow_ingress(SGIXbowState *s, unsigned int widget);
 
@@ -181,10 +175,10 @@ bool sgi_xbow_attach_widget(SGIXbowState *s, unsigned int widget,
                             MemoryRegion *face, Error **errp);
 
 /*
- * The widgets with an endpoint attached, as a widget mask in the same form
- * as "links-present" (bit N for widget N). A machine compares the two to
- * keep what it reports attached and what it actually attached from drifting
- * apart; the device itself allows a face on an absent port.
+ * The widgets with an endpoint attached, as a widget mask in the same form as
+ * "links-present" (bit N for widget N). A machine compares the two to keep
+ * what it reports attached and what it actually attached from drifting apart;
+ * the device itself allows a face on an absent port.
  */
 uint16_t sgi_xbow_endpoint_widgets(const SGIXbowState *s);
 
@@ -196,25 +190,24 @@ uint16_t sgi_xbow_endpoint_widgets(const SGIXbowState *s);
  * never for a source. With @restore_after_reset the widget also joins the
  * "link-reset-restore-alive" set, so a later link reset returns it to the
  * health it had before the reset, as it does for a link configured there.
- * Fails if the widget is already alive, not present, or the crossbar is
- * not yet realized or is quiesced.
+ * Fails if the widget is already alive, not present, or the crossbar is not
+ * yet realized or is quiesced.
  */
 bool sgi_xbow_mark_widget_alive(SGIXbowState *s, unsigned int widget,
                                 bool restore_after_reset, Error **errp);
 
 /*
- * Attach a widget's endpoint faces after the Crossbow has realized and
- * build the routes into it, the post-realize counterpart of
+ * Attach a widget's endpoint faces after the Crossbow has realized and build
+ * the routes into it, the post-realize counterpart of
  * sgi_xbow_attach_endpoint(): it makes the widget an inbound destination
  * other ports and processors can address, where attach_endpoint() refuses
  * once the Crossbow is realized. For a board that reaches its Crossbow only
- * after machine init -- a `-device` expansion board plugged into the spare
- * fabric proxy -- whose Crossbow is therefore already realized. The port
+ * after machine init (a `-device` expansion board plugged into the spare
+ * fabric proxy), the Crossbow is already realized. The port
  * reports a widget present from here on, whatever "links-present" said at
  * realize. The caller brings the widget's own link alive with
- * sgi_xbow_mark_widget_alive().
- * Fails if the widget already has a face, is out of range, or the crossbar
- * is not realized or is quiesced.
+ * sgi_xbow_mark_widget_alive(). Fails if the widget already has a face, is
+ * out of range, or the crossbar is not realized or is quiesced.
  */
 bool sgi_xbow_attach_endpoint_live(SGIXbowState *s, unsigned int widget,
                                    MemoryRegion *cpu_face,

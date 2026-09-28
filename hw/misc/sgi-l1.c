@@ -1,8 +1,8 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * Origin 300 L1 system controller: the controller itself, and the node-side
- * UART window through which the Bedrock speaks its packet protocol.
- */
+ * Origin 300 L1 system controller and the Bedrock UART window carrying its
+ * packet protocol.
+*/
 #include "qemu/osdep.h"
 #include "hw/misc/sgi-l1.h"
 #include "hw/core/cpu.h"
@@ -23,7 +23,9 @@
 #include "system/runstate.h"
 #include "system/qtest.h"
 
-/* The UART window: registers, interrupt and the byte queue toward the node. */
+/*
+ * The UART window: registers, interrupt and the byte queue toward the node.
+ */
 
 static uint8_t l1_uart_irq_cause(SGIL1UARTState *u)
 {
@@ -226,11 +228,11 @@ static void l1_request_action(bool shutdown)
 
 /*
  * Ask for the action and stop every processor, from queued work on the
- * processor that asked for it -- mirroring sgi_hub_request_machine_reset()
- * in hw/misc/sgi-hub.c and elsc_deferred_action_cpu() in hw/misc/sgi-elsc.c.
- * The work runs at that processor's next translation-block boundary,
- * outside the execution loop, which is where a processor may be stopped.
- */
+ * processor that asked for it, mirroring sgi_hub_request_machine_reset() in
+ * hw/misc/sgi-hub.c and elsc_deferred_action_cpu() in hw/misc/sgi-elsc.c. The
+ * work runs at that processor's next translation-block boundary, outside the
+ * execution loop, which is where a processor may be stopped.
+*/
 static void l1_request_action_cpu(CPUState *cpu, run_on_cpu_data data)
 {
     CPUState *peer;
@@ -276,16 +278,15 @@ static void l1_power_down(SGIL1State *s, uint8_t reason, bool shutdown)
         /*
          * A synchronous shutdown request only wakes the main loop, which
          * carries it out whenever it next runs; nothing stops a peer
-         * processor from executing meanwhile. current_cpu names the
-         * processor whose own guest write reached this MMIO handler (an
-         * L1 protocol frame or an operator's "pwr d" over the L1 console),
-         * so queuing the request on that processor's own work stops every
-         * processor no later than the writer's own next translation-block
-         * boundary, before any peer is scheduled again in round robin.
-         * Without a processor to queue it on, the L1 console callback runs
-         * the same action directly from the main thread while holding the
-         * BQL.
-         */
+         * processor from executing meanwhile. current_cpu names the processor
+         * whose own guest write reached this MMIO handler (an L1 protocol
+         * frame or an operator's "pwr d" over the L1 console), so queuing the
+         * request on that processor's own work stops every processor no later
+         * than the writer's own next translation-block boundary, before any
+         * peer is scheduled again in round robin. Without a processor to
+         * queue it on, the L1 console callback runs the same action directly
+         * from the main thread while holding the BQL.
+        */
         l1_schedule_action(true);
     }
 }
@@ -677,13 +678,12 @@ static void l1_version(SGIL1State *s)
 }
 
 /*
- * The peer's side of a broadcast power or reset command. Both chassis are
- * one QEMU machine here, so the requesting L1's own action already powers
- * or resets every node; the peer only records the state and log entry a
- * real peer would, and does not request a second machine action. What a
- * real pair exchanges to propagate it is unknown (the datasheet's
- * "Two-chassis pair").
- */
+ * The peer's side of a broadcast power or reset command. Both chassis are one
+ * QEMU machine here, so the requesting L1's own action already powers or
+ * resets every node; the peer only records the state and log entry a real
+ * peer would, and does not request a second machine action. What a real pair
+ * exchanges to propagate it is unknown.
+*/
 static void l1_peer_power(SGIL1State *peer, bool up)
 {
     if (up == peer->node_power) {
@@ -709,7 +709,7 @@ static void l1_peer_reset(SGIL1State *peer)
  * Run one command line. Return the task-3 result code. When @console is set,
  * the prompt or the return to console mode follows; the request interpreter
  * collects the output instead.
- */
+*/
 static int l1_run_line(SGIL1State *s, const char *text, bool console)
 {
     char line[sizeof(s->command)];
@@ -767,11 +767,11 @@ static int l1_run_line(SGIL1State *s, const char *text, bool console)
     }
     if (!strcmp(argv[0], "ctc") && argc > 1 && s->serving_peer) {
         /*
-         * A command the peer relayed here names its own chassis as the
-         * peer again. Whether a real L1 relays it back is unknown; the
-         * model refuses it rather than capture into the relaying L1's
-         * collection while that L1 is still collecting (a model choice).
-         */
+         * A command the peer relayed here names its own chassis as the peer
+         * again. Whether a real L1 relays it back is unknown; the model
+         * refuses it rather than capture into the relaying L1's collection
+         * while that L1 is still collecting (a model choice).
+        */
         qemu_log_mask(LOG_UNIMP, "sgi-l1: nested ctc is unsupported\n");
         l1_printf(s, "INFO: nested ctc is unsupported.%s",
                   console ? "\r\n" : "\n");
@@ -814,10 +814,10 @@ static int l1_run_line(SGIL1State *s, const char *text, bool console)
         } else if (argc == 2 && l1_word(argv[1], "down", "d")) {
             l1_power_down(s, 1, true);
             /*
-             * The peer follows only once this chassis has gone down: a
-             * first request that is waiting for its confirmation leaves
-             * both chassis up.
-             */
+             * The peer follows only once this chassis has gone down: a first
+             * request that is waiting for its confirmation leaves both
+             * chassis up.
+            */
             if (broadcast && peer && !s->node_power) {
                 l1_peer_power(peer, false);
             }
@@ -1073,7 +1073,9 @@ static void l1_router_error(SGIL1State *s, uint8_t channel)
     l1_emit(s, payload, sizeof(payload));
 }
 
-/* Task 18 echoes the request: its code as the reply code, up to three args. */
+/*
+ * Task 18 echoes the request: its code as the reply code, up to three args.
+ */
 static void l1_loopback(SGIL1State *s, uint8_t channel, uint16_t command,
                         const uint8_t *args, unsigned args_len, unsigned count)
 {
@@ -1145,12 +1147,12 @@ static void l1_request_frame(SGIL1State *s, const uint8_t *p, unsigned length);
 
 /*
  * A request the local router cannot deliver: the catch-all tries the cabled
- * peer. A type-0 request for the peer's own rack and bay goes there as it
- * is; a type-3 (attached C-brick) request is rewritten to type 0 and tried
- * on the link (the addressing section's routing table). The peer answers as
- * itself, on the requester's subchannel, through the requester's UART.
- * Returns false when nothing across the link takes it.
- */
+ * peer. A type-0 request for the peer's own rack and bay goes there as it is;
+ * a type-3 (attached C-brick) request is rewritten to type 0 and tried on the
+ * link (the addressing section's routing table). The peer answers as itself,
+ * on the requester's subchannel, through the requester's UART. Returns false
+ * when nothing across the link takes it.
+*/
 static bool l1_forward_to_peer(SGIL1State *s, const uint8_t *p,
                                unsigned length, uint32_t address)
 {
@@ -1401,7 +1403,9 @@ static void l1_request_frame(SGIL1State *s, const uint8_t *p, unsigned length)
         if (count != 2) {
             error = -100;
         }
-        /* The per-processor entry is stored by the firmware; not read back. */
+        /*
+         * The per-processor entry is stored by the firmware; not read back.
+         */
         break;
     case 0x2001:
         l1_reply(s, channel, 0, 0, NULL, 0);
@@ -2357,7 +2361,7 @@ static const Property l1_properties[] = {
      * The network mode the L1 keeps in non-volatile memory. 422 is the mode
      * the Origin 300 User's Guide requires for a cabled pair; the factory
      * default is unknown.
-     */
+    */
     DEFINE_PROP_BOOL("network-422", SGIL1State, network_422, true),
 };
 
@@ -2390,9 +2394,9 @@ static void l1_init(Object *obj)
     object_property_add_uint8_ptr(obj, "event-subchannel", &s->event_subchannel,
                                   OBJ_PROP_FLAG_READ);
     /*
-     * Settable after realize: each chassis's node realizes its own L1, so
-     * the machine can only join the two once both exist.
-     */
+     * Settable after realize: each chassis's node realizes its own L1, so the
+     * machine can only join the two once both exist.
+    */
     object_property_add_link(obj, "peer", TYPE_SGI_L1, (Object **)&s->peer,
                              object_property_allow_set_link, 0);
 }

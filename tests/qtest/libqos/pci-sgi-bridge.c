@@ -1,16 +1,8 @@
 /*
- * libqos PCI bindings for the SGI Bridge head
- *
- * The head is one Bridge on the "none" machine with a block of memory beside
- * it, so this file owns the whole address map: where the chip's crosstalk
- * face is mapped, which of its windows carries PCI I/O space, and which
- * addresses the allocator may hand out.
- *
- * Three windows carry everything. Configuration space is the chip's type 0
- * window, eight devices of 4 KB. PCI memory space is the window that reaches
- * PCI address zero whole, so no per-card window has to be aimed. PCI I/O
- * space is only reachable through a slot's device window, so the bus takes
- * one over.
+ * libqos PCI bindings for one SGI Bridge on -M none. This bus maps the
+ * Crosstalk widget, transfer memory, and allocator range. Type 0
+ * configuration covers eight 4 KB devices; one full-range window maps PCI
+ * memory from zero, and a slot device window maps PCI I/O.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
@@ -42,18 +34,16 @@
 
 #define SLOTS                   8
 
-/* Two windows of 2 MB, then six of 1 MB: the detail every driver gets wrong. */
+/* Device windows: two 2 MB slots, then six 1 MB slots. */
 static const uint64_t window_offset[SLOTS] = {
     0x200000, 0x400000, 0x600000, 0x700000,
     0x800000, 0x900000, 0xa00000, 0xb00000,
 };
 
 /*
- * Where a card's registers and its transfer memory live in PCI space. A
- * transfer below the translated window reaches the fabric at the address it
- * names, so an address the allocator hands out is both a PCI address a card
- * can write to and an address qtest can read. Registers sit above that and
- * below the translated window's reach, which is what carries them.
+ * Allocated transfer addresses name both PCI and qtest memory: below the
+ * translated window, transfers reach the same fabric address. Card registers
+ * sit above transfer memory, within the translated window.
  */
 #define PIO_BASE                0x1000
 #define PIO_LIMIT               0x100000
@@ -66,9 +56,8 @@ static QPCIBusSGIBridge *sgi_bridge_bus(QPCIBus *bus)
 }
 
 /*
- * Both guests aim a narrow access at offset xor (4 - width) and every window
- * here undoes it, so a caller wanting a given PCI offset asks for the offset
- * the chip turns back into it.
+ * Narrow accesses use offset xor (4 - width). Every window reverses this
+ * mapping, so callers supply the offset the chip maps to the target byte.
  */
 static uint64_t sgi_bridge_aim(uint64_t offset, unsigned int size)
 {
@@ -130,9 +119,8 @@ static void qpci_sgi_bridge_pio_writeq(QPCIBus *bus, uint32_t addr,
 }
 
 /*
- * The widest aligned cycle a caller's buffer allows. A register file a card
- * only serves a halfword at a time still sees halfword cycles, because
- * libqos asks for a halfword.
+ * Use the widest aligned cycle allowed by the caller's buffer. A halfword
+ * request still reaches a halfword-only register file as one halfword cycle.
  */
 static unsigned int sgi_bridge_step(uint32_t addr, size_t len)
 {
@@ -261,9 +249,8 @@ static void qpci_sgi_bridge_config_writel(QPCIBus *bus, int devfn,
 }
 
 /*
- * Point one slot's device window at the bottom of PCI I/O space. The slot
- * has to be an empty one: a card can declare that it orders the byte lanes
- * itself, which turns off the correction every access above aims through.
+ * Map PCI I/O through an empty slot's device window. A card may disable the
+ * byte-lane correction by declaring that it orders the bytes itself.
  */
 static unsigned int sgi_bridge_take_io_window(QTestState *qts)
 {
@@ -358,11 +345,9 @@ void qpci_free_sgi_bridge(QPCIBus *bus)
 }
 
 /*
- * Its own interface, not the generic "pci-bus": the head is a chip and a
- * block of memory, with none of the machine a generic PCI device test
- * expects behind it -- no message-signalled interrupts, no hotplug handler,
- * no NUMA memory to back a vhost backend. Devices that ship on this bus ask
- * for it by name.
+ * Expose this bus by name: its Bridge and memory lack the message-signalled
+ * interrupts, hotplug handler and NUMA-backed vhost memory expected by
+ * generic PCI device tests.
  */
 static void qpci_sgi_bridge_register_nodes(void)
 {

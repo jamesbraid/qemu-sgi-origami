@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
+/* Isolated Bedrock I/O register, PIO, inbound and DMA tests. */
 #include "qemu/osdep.h"
 #include "libqtest.h"
 #include "qobject/qdict.h"
@@ -21,14 +22,14 @@
 #define MACHINE_NO_HUB MACHINE_BASE " -S"
 
 /*
- * A widget reached through the PIO window can answer synchronously, and
- * its answer arrives back at this device's inbound region: an ordinary
- * DMA write, or an interrupt packet aimed at the node's registers.  Both
- * land while the PIO callback is still running.  Linking widget 8 to this
- * device's own inbound region stands in for that round trip; the crossbar
- * and the device behind it add nothing the re-entrancy guard can see,
- * because the flag it tests belongs to whichever device's callback is
- * running, not to the region named in its warning.
+ * A widget reached through the PIO window can answer synchronously, and its
+ * answer arrives back at this device's inbound region: an ordinary DMA write,
+ * or an interrupt packet aimed at the node's registers. Both land while the
+ * PIO callback is still running. Linking widget 8 to this device's own
+ * inbound region stands in for that round trip; the crossbar and the device
+ * behind it add nothing the re-entrancy guard can see, because the flag it
+ * tests belongs to whichever device's callback is running, not to the region
+ * named in its warning.
  */
 #define MACHINE_LOOPBACK_BASE \
     "-M none -cpu R10000 -m 256M " \
@@ -46,8 +47,8 @@
 
 /*
  * Big window 0 carries the crosstalk register form, big window 1 plain
- * memory, once the translation entries below are programmed.  Both reach
- * the widget, which is this device's inbound region.
+ * memory, once the translation entries below are programmed. Both reach the
+ * widget, which is this device's inbound region.
  */
 #define PIO_REGISTER_FORM(offset) (PIO_BASE + 0x20000000 + (offset))
 #define PIO_MEMORY_FORM(offset) (PIO_BASE + 0x40000000 + (offset))
@@ -75,7 +76,7 @@
 /*
  * The default inbound-widget-mask names the two widget numbers an XBridge
  * presents to its host port (hw/pci-host/sgi-xbridge.c CHIP_HEAD_E/F), the
- * only real inbound sources a Bedrock+XBridge machine has.  Widget 8, the
+ * only real inbound sources a Bedrock+XBridge machine has. Widget 8, the
  * device's old fixed default, names nothing any such machine ever wires up.
  */
 #define IN_WIDGET_E (UINT64_C(1) << 0xe)
@@ -101,9 +102,9 @@ static QTestState *io_start(const char *extra)
 }
 
 /*
- * What the model refuses or leaves unimplemented is part of its contract,
- * and the only trace of it is the log.  These run QEMU with -d unimp into
- * a file and hand its contents back once the machine has exited.
+ * What the model refuses or leaves unimplemented is part of its contract, and
+ * the only trace of it is the log. These run QEMU with -d unimp into a file
+ * and hand its contents back once the machine has exited.
  */
 static char *log_file_new(void)
 {
@@ -167,7 +168,7 @@ static void test_dropped_writes_logged(void)
 }
 
 /*
- * The unit's DMA memory is a separate backend, not the machine's RAM.  The
+ * The unit's DMA memory is a separate backend, not the machine's RAM. The
  * inbound window is the only path a test has into it, so every buffer the
  * engines and the inbound path touch is seeded and read back through it.
  * Plain qtest memory accesses reach the machine's RAM, which no II transfer
@@ -213,8 +214,8 @@ static void assert_ram_filled(QTestState *s, uint64_t addr, uint8_t pattern,
 
 /*
  * A widget's view of the node's register space: crosstalk bit 47 set, the
- * node in bits 46:39, then the Bedrock's own small window in its remote
- * form.  The linked hub-registers RAM is reachable only this way.
+ * node in bits 46:39, then the Bedrock's own small window in its remote form.
+ * The linked hub-registers RAM is reachable only this way.
  */
 static uint64_t xio_readq(QTestState *s, uint64_t address)
 {
@@ -239,8 +240,8 @@ static void test_inbound_register_access(void)
     QTestState *s = io_start("");
 
     /*
-     * The DMA line at the same 39-bit address shows the register form
-     * never reaches memory, and the memory form never reaches a register.
+     * The DMA line at the same 39-bit address shows the register form never
+     * reaches memory, and the memory form never reaches a register.
      */
     dma_writeq(s, HUB_REMOTE + 0x90, UINT64_C(0x1111111111111111));
     dma_writeq(s, 0x1000090, UINT64_C(0x3333333333333333));
@@ -394,9 +395,8 @@ static void test_probe_and_retained_registers(void)
                         registers[i].expected);
     }
     /*
-     * Model policy, not the datasheet: the readback mask is the union of
-     * the header's fields as the model stores them.  Only bits 13 and 10
-     * carry an established meaning, and identity-registers checks those.
+     * Model readback mask combines the stored header fields. Only bits 13
+     * and 10 have established meanings; identity-registers checks them.
      */
     qtest_writeq(s, REG_BASE + LINK_STATUS, UINT64_MAX);
     g_assert_cmphex(qtest_readq(s, REG_BASE + LINK_STATUS), ==,
@@ -404,9 +404,9 @@ static void test_probe_and_retained_registers(void)
     qtest_writeq(s, REG_BASE + 0x138, UINT64_MAX);
     g_assert_cmphex(qtest_readq(s, REG_BASE + 0x138), ==, 0x101ff7f);
     /*
-     * Model policy, per the datasheet: the rows it does not inventory,
-     * the graphics maps among them, are 64-bit retained storage in the
-     * model.  Their hardware field widths are not established.
+     * Model policy: registers without known field maps, including the
+     * graphics maps among them, are 64-bit retained storage in the model.
+     * Their hardware field widths are not established.
      */
     for (size_t i = 0; i < ARRAY_SIZE(retained_offsets); i++) {
         uint64_t value = UINT64_C(0xfeed000000000000) | i;
@@ -421,9 +421,8 @@ static void test_probe_and_retained_registers(void)
                         0x1000 | (i << 8) | i);
     }
     /*
-     * Model policy: the nine PIO request buffers keep all 64 bits as
-     * written.  The datasheet lists their fields but the model does not
-     * mask the rest, so this asserts storage, not a field map.
+     * Model policy: nine PIO request buffers retain all 64 bits. Known
+     * fields do not limit storage; this does not assert a hardware field map.
      */
     for (unsigned i = 0; i < 9; i++) {
         uint64_t offset = i ? 0x198 + i * 8 : 0x198;
@@ -530,7 +529,9 @@ static void test_inbound_protection(void)
     qtest_quit(s);
 }
 
-/* The shared window cannot identify a head; a split permission must refuse. */
+/*
+ * The shared window cannot identify a head; a split permission must refuse.
+ */
 static void test_inbound_source_widgets(void)
 {
     QTestState *s = io_start("");
@@ -553,8 +554,8 @@ static void test_inbound_source_widgets(void)
     dma_writeq(s, 0x191000, UINT64_C(0x4444444444444444));
 
     /*
-     * Refusing both heads also refuses the read back.  Restore access
-     * before checking that none of the refused writes landed.
+     * Refusing both heads also refuses the read back. Restore access before
+     * checking that none of the refused writes landed.
      */
     qtest_writeq(s, REG_BASE + IN_ACCESS,
                 UINT64_MAX & ~(IN_WIDGET_E | IN_WIDGET_F));
@@ -589,11 +590,11 @@ static QTestState *io_start_loopback(const char *machine, const char *extra)
     QTestState *s = qtest_initf("%s %s", machine, extra);
 
     /*
-     * Registers and the PIO window only.  Inbound is deliberately left
-     * unmapped: an address space built over a region that is also a
-     * subregion of the system space renders it at that system address,
-     * so mapping inbound here would move it out of reach of the
-     * crosstalk addresses the PIO window forms.
+     * Registers and the PIO window only. Inbound is deliberately left
+     * unmapped: an address space built over a region that is also a subregion
+     * of the system space renders it at that system address, so mapping
+     * inbound here would move it out of reach of the crosstalk addresses the
+     * PIO window forms.
      */
     qtest_sysbus_mmio_map(s, IO_PATH, 0, REG_BASE);
     qtest_sysbus_mmio_map(s, IO_PATH, 1, PIO_BASE);
@@ -614,9 +615,9 @@ static void test_pio_target_answers_through_inbound(void)
     program_loopback_entries(s);
 
     /*
-     * An interrupt packet: the widget writes the node's register window
-     * in its checked remote form while our PIO callback is still on the
-     * stack.  The same door reads it back out of the node's registers.
+     * An interrupt packet: the widget writes the node's register window in
+     * its checked remote form while our PIO callback is still on the stack.
+     * The same door reads it back out of the node's registers.
      */
     qtest_writeq(s, PIO_REGISTER_FORM(HUB_REMOTE + 0x90),
                  UINT64_C(0x0123456789abcdef));
@@ -663,10 +664,10 @@ static void test_inbound_keeps_its_guard(void)
                     UINT64_C(0x1111111111111111));
 
     /*
-     * Two levels must not.  Here the node's register window is inbound
-     * itself, so forwarding re-enters that region while its own callback
-     * runs, and its guard refuses the write; memory keeps the earlier
-     * value.  Exempting inbound as well would let this through.
+     * Two levels must not. Here the node's register window is inbound itself,
+     * so forwarding re-enters that region while its own callback runs, and
+     * its guard refuses the write; memory keeps the earlier value. Exempting
+     * inbound as well would let this through.
      */
     qtest_writeq(s, PIO_REGISTER_FORM(HUB_REMOTE + 0x90),
                  UINT64_C(0x2222222222222222));
@@ -759,7 +760,7 @@ static void test_bte_error_and_termination(void)
     /*
      * Interrupt mode: a notification address is programmed but notify is
      * clear, so completion leaves that line alone and raises the completion
-     * interrupt through the node register window instead.  Delivery is
+     * interrupt through the node register window instead. Delivery is
      * deferred to a bottom half, so it lands by the next access rather than
      * re-entering this interface from inside the launching write.
      */
@@ -777,7 +778,7 @@ static void test_bte_error_and_termination(void)
     /*
      * The deferred completion interrupt reached the node's pending-modify
      * register through the hub window: a set (bit 8) of level zero, the
-     * engine's unprogrammed interrupt-address default.  Reading it back the
+     * engine's unprogrammed interrupt-address default. Reading it back the
      * crosstalk way also confirms the write was not dropped as re-entrant.
      */
     g_assert_cmphex(xio_readq(s, HUB_REMOTE + 0x90), ==, UINT64_C(1) << 8);
@@ -813,10 +814,9 @@ static void test_bte_error_and_termination(void)
     qtest_clock_step(s, 2);
     g_assert_cmphex(qtest_readq(s, REG_BASE + BTE0), ==, 1 | (1 << 20));
     /*
-     * The control read on an engine that was armed but never started is
-     * only cleanup here.  What it does to that engine's busy bit is the
-     * model's extrapolation, not a datasheet statement, so it is not
-     * asserted.
+     * The control read on an engine that was armed but never started is only
+     * cleanup here. What it does to that engine's busy bit is the model's
+     * extrapolation, so it is not asserted.
      */
     qtest_readq(s, REG_BASE + BTE0 + 0x18);
     qtest_quit(s);
@@ -890,9 +890,8 @@ static void test_itanium_probe_sequence(void)
     qtest_writeq(s, REG_BASE + 0x138, (1 << 24) | 102);
 
     /*
-     * Widget-probe pass.  The consumer's six disable writes name widget 3
-     * but all land on entry 0, the window number spilling into bit 12 and
-     * above.
+     * Widget-probe pass. The consumer's six disable writes name widget 3 but
+     * all land on entry 0, the window number spilling into bit 12 and above.
      */
     for (unsigned window = 0; window < 6; window++) {
         qtest_writeq(s, REG_BASE + ITTE0, ((uint64_t)window << 12) | 0x300);
@@ -933,11 +932,11 @@ static void test_itanium_probe_sequence(void)
  * The PROM's hub BTE check starts engine 0 and then engine 1 on equal copies,
  * waits for engine 0's completion interrupt alone, and compares both copies.
  * On hardware the two starting stores issue back to back, so engine 1 is
- * taken to finish close behind engine 0 (inferred, not measured).  Under TCG
- * the host can take milliseconds between the stores,
- * and without instruction counting that host time is virtual time: the step
- * below stands for it, long enough for engine 0 to finish and raise its
- * interrupt.  Engine 1's copy must still be whole when it is compared.
+ * taken to finish close behind engine 0 (inferred, not measured). Under TCG
+ * the host can take milliseconds between the stores, and without instruction
+ * counting that host time is virtual time: the step below stands for it, long
+ * enough for engine 0 to finish and raise its interrupt. Engine 1's copy must
+ * still be whole when it is compared.
  */
 static void test_bte_back_to_back(void)
 {
@@ -1051,9 +1050,9 @@ static void test_reset(void)
     qtest_writeq(s, REG_BASE + BTE0, 3 | (1 << 20));
     qtest_system_reset(s);
     /*
-     * Local access protection all ones is the datasheet's reset value.
-     * The zeros are the model's choices for registers whose hardware
-     * reset value is unknown.
+     * Local access protection resets to all ones. The
+     * zeros are the model's choices for registers whose hardware reset value
+     * is unknown.
      */
     g_assert_cmphex(qtest_readq(s, REG_BASE + SCRATCH0), ==, 0);
     g_assert_cmphex(qtest_readq(s, REG_BASE + ITTE0), ==, 0);
@@ -1098,9 +1097,9 @@ static void test_migration(void)
     to = io_start("-incoming defer");
     fill_pattern(source, sizeof(source), 0xc7);
     /*
-     * The DMA backend is not migrated RAM.  Seed the destination's copy so
-     * an engine programmed before migration and started after it has a
-     * source to move.
+     * The DMA backend is not migrated RAM. Seed the destination's copy so an
+     * engine programmed before migration and started after it has a source to
+     * move.
      */
     dma_write(to, 0x1a0000, source, sizeof(source));
     dma_set(to, 0x1b0000, 0, sizeof(source));

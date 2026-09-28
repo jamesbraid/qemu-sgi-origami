@@ -66,7 +66,7 @@
  */
 #define RX_ARRIVAL_LATENCY_NS  200000
 
-/* Management requests; the transceiver is at 31 on every real capture. */
+/* Management requests; the transceiver is at 31 on real hardware. */
 #define MII_CTL_READ      (1u << 10)
 #define MII_PHY_SHIFT     5
 #define PHY_ADDRESS       31
@@ -83,9 +83,9 @@
 /*
  * Register 0x17: plain storage on the default DP83840A part (PCS_CONFIG),
  * the DP83843's Loopback Register (LBR) when the "phy-dp83843" property is
- * set. LBR_TW_LBEN is the DP83843's twister/PMD loopback select, the bit
- * the IP35 BASEIO PROM's Twister diagnostic writes (OpenBSD's
- * sys/dev/mii/nsphyterreg.h; docs/datasheets/dp83840.md).
+ * set. LBR_TW_LBEN is the DP83843's twister/PMD loopback select, the bit the
+ * IP35 BASEIO PROM's Twister diagnostic writes (OpenBSD's
+ * sys/dev/mii/nsphyterreg.h).
  */
 #define MII_LBR           0x17
 #define LBR_TW_LBEN       0x0020
@@ -111,8 +111,8 @@
 #define TXD_BYTECNT_MAX   2047
 
 /*
- * The 16 KB boundary a transfer may not cross (OpenBSD's IEC_DMA_BOUNDARY)
- * -- the one limit here from hardware rather than a field width.
+ * The 16 KB boundary a transfer may not cross (OpenBSD's IEC_DMA_BOUNDARY).
+ * This is the one hardware limit here rather than a field width.
  */
 #define TX_DMA_BOUNDARY   0x4000u
 
@@ -277,8 +277,8 @@ static QTestState *ioc3_attach_socket(int guest_fd, unsigned int buffers)
 }
 
 /*
- * The same attachment, with the transceiver switched to the Origin 300
- * IO-8 board's DP83843 instead of the default DP83840A.
+ * The same attachment, with the transceiver switched to the Origin 300 IO-8
+ * board's DP83843 instead of the default DP83840A.
  */
 static QTestState *ioc3_attach_socket_dp83843(int guest_fd,
                                               unsigned int buffers)
@@ -362,10 +362,10 @@ static void assert_reply_landed(QTestState *qts, uint32_t rxbuf)
     int attempt;
 
     /*
-     * The reply is delivered from a bottom half after the transmit walk and
-     * published at its arrival deadline, so give the main loop passes and
-     * advance the virtual clock rather than reading once.
-     */
+ * The reply is delivered from a bottom half after the transmit walk and
+ * published at its arrival deadline, so give the main loop passes and
+ * advance the virtual clock rather than reading once.
+ */
     for (attempt = 0; attempt < 200; attempt++) {
         if (ioc3_readl(qts, ENET_RX_CONSUME) == 8) {
             break;
@@ -479,7 +479,8 @@ static void send_descriptor(QTestState *qts, const uint8_t *frame,
         dma_stl_be(qts, desc + 0, claimed_len | TXD_DATA_VALID);
         dma_stl_be(qts, desc + 4, claimed_len);
     } else {
-        /* The split OpenBSD produces when an mbuf would cross the boundary. */
+        /* The split OpenBSD produces when an mbuf would cross the
+         * boundary. */
         qtest_memwrite(qts, buf1, frame, split);
         qtest_memwrite(qts, buf2, frame + split, actual_len - split);
         dma_stl_be(qts, desc + 0,
@@ -534,9 +535,9 @@ static void test_the_inline_area_boundary(const void *data)
                                got, sizeof(got));
 
         /*
-         * Over the area the frame stops at the area's end: trusting the
-         * field sends bytes from past the descriptor copy.
-         */
+ * Over the area the frame stops at the area's end: trusting the field sends
+ * bytes from past the descriptor copy.
+ */
         g_assert_cmpint(len, ==, expect);
         g_assert_cmpmem(got, len, frame, expect);
 
@@ -547,7 +548,7 @@ static void test_the_inline_area_boundary(const void *data)
 
 /*
  * The count says how many bytes leave; a total past the field wraps in the
- * descriptor as written -- 2048 carries zero, 3000 carries 952.
+ * descriptor as written. 2048 carries zero; 3000 carries 952.
  */
 static void test_the_assembled_frame_limit(const void *data)
 {
@@ -814,9 +815,9 @@ static void test_the_receive_ring_wraps_three_times(const void *data)
     }
 
     /*
-     * Weak alone -- no deliveries also ends at zero -- but the loop named
-     * the exact index after each of the 1536 deliveries.
-     */
+ * Zero alone is weak evidence: no deliveries also ends at zero. The loop
+ * checked the exact index after each of the 1536 deliveries.
+ */
     g_assert_cmphex(ioc3_readl(qts, ENET_RX_CONSUME), ==, 0);
 
     /* And the last lap really wrote a frame. */
@@ -983,8 +984,8 @@ static void test_a_transmit_descriptor_that_cannot_be_read(const void *data)
 }
 
 /*
- * The same for the gather: a failed buffer read must not put stale bytes
- * on the wire and call the transmit a success.
+ * The same for the gather: a failed buffer read must not put stale bytes on
+ * the wire and call the transmit a success.
  */
 static void test_a_transmit_buffer_that_cannot_be_read(const void *data)
 {
@@ -1240,9 +1241,9 @@ static void test_a_reply_after_the_walk_at_one_size(const void *data)
         tx_one(qts, base, slot, frame, size);
 
         /*
-         * The main loop runs the queued receive, and the completion follows
-         * its arrival deadline, so wait for the index rather than read once.
-         */
+ * The main loop runs the queued receive, and the completion follows its
+ * arrival deadline, so wait for the index rather than read once.
+ */
         wait_for_rx_consume(qts, (slot + 1) * RX_RING_STRIDE);
 
         word0 = dma_ldl_be(qts, base_addr);
@@ -1288,8 +1289,8 @@ static void mii_write(QTestState *qts, unsigned int reg, uint16_t val)
 }
 
 /*
- * set_link is the cable being pulled: the link and completion bits must
- * drop and return, or a carrier-watching guest trusts a dead interface.
+ * set_link is the cable being pulled: the link and completion bits must drop
+ * and return, or a carrier-watching guest trusts a dead interface.
  */
 static void test_the_backend_link_reaches_the_status_word(const void *data)
 {
@@ -1319,8 +1320,8 @@ static void test_the_backend_link_reaches_the_status_word(const void *data)
 
 /*
  * Loopback queues refused backend traffic rather than dropping it, so
- * clearing it must deliver the queue unprompted -- the diagnostic walks
- * the loopback selects with traffic free to be waiting.
+ * clearing it must deliver the queue unprompted. The diagnostic walks the
+ * loopback selects with traffic free to be waiting.
  */
 static void test_a_queued_frame_lands_when_phy_loopback_clears(const void *data)
 {
@@ -1357,8 +1358,8 @@ static void test_a_queued_frame_lands_when_phy_loopback_clears(const void *data)
 }
 
 /*
- * An unreadable ring entry drops the frame: advancing would point the
- * driver at a buffer nothing wrote.
+ * An unreadable ring entry drops the frame: advancing would point the driver
+ * at a buffer nothing wrote.
  */
 static void test_a_frame_whose_ring_entry_cannot_be_read(const void *data)
 {
@@ -1565,8 +1566,8 @@ static void test_a_receive_burst_asserts_the_irq_once(const void *data)
 }
 
 /*
- * Stands alone so it inherits no wait; the MAC control write is spelled
- * out to pin both loopback selections clear.
+ * Stands alone so it inherits no wait; the MAC control write is spelled out
+ * to pin both loopback selections clear.
  */
 static void test_a_transmit_with_no_reply_raises_nothing(const void *data)
 {
@@ -1607,9 +1608,9 @@ static void test_a_transmit_with_no_reply_raises_nothing(const void *data)
 
     g_assert_true(g_file_get_contents(path, &trace, NULL, NULL));
     /*
-     * Bring-up's own MAC_CONTROL and RX_PRODUCE writes each schedule one;
-     * the quiet transmit that gets no reply must not add a third.
-     */
+ * Bring-up's own MAC_CONTROL and RX_PRODUCE writes each schedule one; the
+ * quiet transmit that gets no reply must not add a third.
+ */
     g_assert_cmpuint(count_trace_events(trace, "sgi_ioc3_eth_rx_flush"), ==, 2);
     g_assert_cmpint(g_unlink(path), ==, 0);
 }
@@ -1653,13 +1654,13 @@ static void test_deferred_receive_delivers_without_reset(const void *data)
 /*
  * A frame does not complete the instant the backend hands it over. The
  * engine writes it into the posted buffer straight away, and the three
- * things the guest can see -- the header word's valid bit, the consume
- * index, and the receive source -- appear only once the arrival deadline
- * has passed on the virtual clock.
+ * things the guest can see (the header word's valid bit, the consume
+ * index, and the receive source) appear only once the arrival deadline has
+ * passed on the virtual clock.
  *
  * Without the floor the model published a reply in the same virtual instant
- * as the transmit that provoked it, which no wire, peer or DMA can do; see
- * docs/datasheets/ioc3.md's arrival-latency approximation.
+ * as the transmit that provoked it, which no wire, peer or DMA can do; the
+ * model floors it with an arrival-latency approximation.
  */
 static void test_a_receive_waits_for_its_arrival_deadline(const void *data)
 {
@@ -1680,10 +1681,10 @@ static void test_a_receive_waits_for_its_arrival_deadline(const void *data)
     net_socket_send_frame(sv[0], frame, sizeof(frame));
 
     /*
-     * Wait for the engine to take the frame, which it shows by writing it
-     * into the buffer. Nothing here advances the virtual clock, so the
-     * arrival deadline cannot have passed.
-     */
+ * Wait for the engine to take the frame, which it shows by writing it into
+ * the buffer. Nothing here advances the virtual clock, so the arrival
+ * deadline cannot have passed.
+ */
     for (attempt = 0; attempt < 200; attempt++) {
         qtest_memread(qts, rxbuf + RXD_BUF_OFFSET, landed, sizeof(landed));
         if (memcmp(landed, frame, sizeof(frame)) == 0) {
@@ -1718,13 +1719,13 @@ static void test_a_receive_waits_for_its_arrival_deadline(const void *data)
 /*
  * A driver keeps far fewer physical buffers than the ring has slots and
  * reposts one of them into a later slot once it has serviced the frame
- * sitting there -- the receive-ring-wraps test's own ring does exactly
- * this, across every one of its 512 entries, with an eight-buffer pool.
- * Nothing here waits for a repost's buffer to actually be free: this posts
- * a fifth ring entry pointing back at the first of four buffers, fills all
- * four without letting any of them publish, then sends the fifth frame
- * before advancing the clock. The first buffer's completion is still held,
- * so its bytes must survive untouched until that completion publishes.
+ * sitting there. The receive-ring-wraps test's own ring does this
+ * across all 512 entries with an eight-buffer pool. Nothing
+ * here waits for a repost's buffer to actually be free: this posts a fifth
+ * ring entry pointing back at the first of four buffers, fills all four
+ * without letting any of them publish, then sends the fifth frame before
+ * advancing the clock. The first buffer's completion is still held, so its
+ * bytes must survive untouched until that completion publishes.
  */
 static void test_a_reused_buffer_waits_for_its_held_completion(const void *data)
 {
@@ -1749,9 +1750,9 @@ static void test_a_reused_buffer_waits_for_its_held_completion(const void *data)
                ((BUFFERS + 1) * RX_RING_STRIDE) | RPIR_ARM);
 
     /*
-     * Fill all four buffers. Nothing here steps the virtual clock, so none
-     * of the four can have published yet.
-     */
+ * Fill all four buffers. Nothing here steps the virtual clock, so none of
+ * the four can have published yet.
+ */
     for (i = 0; i < BUFFERS; i++) {
         memset(frame, 0xff, 6);
         memset(frame + 6, (uint8_t)(0x40 + i), sizeof(frame) - 6);
@@ -1770,20 +1771,20 @@ static void test_a_reused_buffer_waits_for_its_held_completion(const void *data)
     g_assert_cmphex(ioc3_readl(qts, ENET_RX_CONSUME), ==, 0);
 
     /*
-     * A fifth frame, destined for buffer 0 again: a driver reposting it
-     * into ring slot four before it has seen buffer 0's own completion.
-     */
+ * A fifth frame, destined for buffer 0 again: a driver reposting it into
+ * ring slot four before it has seen buffer 0's own completion.
+ */
     memset(frame, 0xff, 6);
     memset(frame + 6, 0x99, sizeof(frame) - 6);
     net_socket_send_frame(sv[0], frame, sizeof(frame));
     g_usleep(20000);
 
     /*
-     * Buffer 0's first frame must still be there: the guest has not been
-     * told slot 0 is ready, so nothing may overwrite what it will read
-     * once it is. Unfixed, the fifth frame lands straight through and
-     * buffer 0 already holds it here, before its own deadline let it.
-     */
+ * Buffer 0's first frame must still be there: the guest has not been told
+ * slot 0 is ready, so nothing may overwrite what it will read once it is.
+ * Unfixed, the fifth frame lands straight through and buffer 0 already holds
+ * it here, before its own deadline let it.
+ */
     qtest_memread(qts, rxbuf + RXD_BUF_OFFSET, landed, sizeof(frame));
     memset(frame, 0xff, 6);
     memset(frame + 6, 0x40, sizeof(frame) - 6);
@@ -1791,10 +1792,10 @@ static void test_a_reused_buffer_waits_for_its_held_completion(const void *data)
     g_assert_cmphex(ioc3_readl(qts, ENET_RX_CONSUME), ==, 0);
 
     /*
-     * Past the arrival deadline, the four originals publish and the fifth
-     * is retried once buffer 0 is no longer held: all five land, in order,
-     * none lost to the reuse.
-     */
+ * Past the arrival deadline, the four originals publish and the fifth is
+ * retried once buffer 0 is no longer held: all five land, in order, none
+ * lost to the reuse.
+ */
     qtest_clock_step(qts, RX_ARRIVAL_LATENCY_NS);
     wait_for_rx_consume(qts, (BUFFERS + 1) * RX_RING_STRIDE);
     qtest_memread(qts, rxbuf + RXD_BUF_OFFSET, landed, sizeof(frame));
@@ -1819,8 +1820,8 @@ static void test_a_reused_buffer_waits_for_its_held_completion(const void *data)
  * A distinct posted buffer for every one of those frames, not a reused
  * handful: deliver()'s own held-completion guard
  * (loopback-respects-a-held-completion) would otherwise refuse most of these
- * as reuses of whatever a slot past the driver's posted ring happens to
- * read as, which is a fact about this test's ring, not about a full line.
+ * as reuses of whatever a slot past the driver's posted ring happens to read
+ * as, which is a fact about this test's ring, not about a full line.
  */
 static void test_loopback_respects_a_full_arrival_line(const void *data)
 {
@@ -1847,12 +1848,11 @@ static void test_loopback_respects_a_full_arrival_line(const void *data)
     qts = ioc3_attach_socket(sv[1], BUFFERS);
 
     /*
-     * One backend frame, held behind its arrival deadline: the line now
-     * holds one entry, and nothing here steps the virtual clock to let it
-     * publish. The payload lands in the posted buffer before the header's
-     * valid bit does, so polling for it proves the frame was staged without
-     * needing the clock.
-     */
+ * One backend frame, held behind its arrival deadline: the line now holds
+ * one entry, and nothing here steps the virtual clock to let it publish. The
+ * payload lands in the posted buffer before the header's valid bit does, so
+ * polling for it proves the frame was staged without needing the clock.
+ */
     net_socket_send_frame(sv[0], seed, sizeof(seed));
     for (attempt = 0; attempt < 200; attempt++) {
         qtest_memread(qts, rxbuf + RXD_BUF_OFFSET, landed, sizeof(landed));
@@ -1872,10 +1872,10 @@ static void test_loopback_respects_a_full_arrival_line(const void *data)
     ioc3_writel(qts, ENET_TX_RING_LO, (base & 0xffffc000u) | TX_RING_SEL);
 
     /*
-     * 255 loopback deliveries fill the remaining room exactly; the 256th
-     * finds the line already full. Unfixed, that is
-     * sgi_net_rx_latency_enqueue()'s "the caller already checked" assertion.
-     */
+ * 255 loopback deliveries fill the remaining room exactly; the 256th finds
+ * the line already full. Unfixed, that is sgi_net_rx_latency_enqueue()'s
+ * "the caller already checked" assertion.
+ */
     for (i = 0; i < RX_LATENCY_LINE_DEPTH; i++) {
         tx_one(qts, base, i, frame, sizeof(frame));
     }
@@ -1885,10 +1885,10 @@ static void test_loopback_respects_a_full_arrival_line(const void *data)
                     RX_LATENCY_LINE_DEPTH * TX_DESC_SIZE);
 
     /*
-     * Past every held deadline, exactly the line's worth of completions
-     * publish: the seed plus 255 accepted loopback frames, not 256 of them --
-     * the 256th loopback delivery found no room and was dropped.
-     */
+ * Past every held deadline, exactly the line's worth of completions publish:
+ * the seed plus 255 accepted loopback frames, not 256 of them. The 256th
+ * loopback delivery found no room and was dropped.
+ */
     qtest_clock_step(qts, RX_ARRIVAL_LATENCY_NS);
     g_assert_cmphex(ioc3_readl(qts, ENET_RX_CONSUME), ==,
                     RX_LATENCY_LINE_DEPTH * RX_RING_STRIDE);
@@ -1900,7 +1900,7 @@ static void test_loopback_respects_a_full_arrival_line(const void *data)
 /*
  * The wire path's own reused-buffer guard
  * (sgi-ioc3-eth/reused-buffer-waits-for-held-completion) lives in
- * can_receive(), which a loopback frame never passes through -- the same
+ * can_receive(), which a loopback frame never passes through; see the
  * comment on sgi_ioc3_eth_deliver()'s immediate parameter that motivates the
  * full-arrival-line test above. Hold one wire completion for a buffer, then
  * post a second ring slot naming that same buffer and loop a frame back into
@@ -1936,10 +1936,10 @@ static void test_loopback_respects_a_held_completion(const void *data)
     ioc3_writel(qts, ENET_RX_PRODUCE, 2 * RX_RING_STRIDE | RPIR_ARM);
 
     /*
-     * One wire frame, held behind its arrival deadline: nothing here steps
-     * the virtual clock to let it publish. Poll for the payload landing, the
-     * way loopback-respects-a-full-arrival-line does for its seed frame.
-     */
+ * One wire frame, held behind its arrival deadline: nothing here steps the
+ * virtual clock to let it publish. Poll for the payload landing, the way
+ * loopback-respects-a-full-arrival-line does for its seed frame.
+ */
     net_socket_send_frame(sv[0], seed, sizeof(seed));
     for (attempt = 0; attempt < 200; attempt++) {
         qtest_memread(qts, rxbuf + RXD_BUF_OFFSET, landed, sizeof(seed));
@@ -1959,10 +1959,10 @@ static void test_loopback_respects_a_held_completion(const void *data)
     ioc3_writel(qts, ENET_TX_RING_LO, (base & 0xffffc000u) | TX_RING_SEL);
 
     /*
-     * The engine's staged consume index is now on the second ring slot,
-     * which names the same buffer the wire frame is still held in. Unfixed,
-     * this delivery lands straight through and overwrites it.
-     */
+ * The engine's staged consume index is now on the second ring slot, which
+ * names the same buffer the wire frame is still held in. Unfixed, this
+ * delivery lands straight through and overwrites it.
+ */
     tx_one(qts, base, 0, frame, sizeof(frame));
 
     qtest_memread(qts, rxbuf + RXD_BUF_OFFSET, landed, sizeof(seed));
@@ -1974,9 +1974,9 @@ static void test_loopback_respects_a_held_completion(const void *data)
                     TX_DESC_SIZE);
 
     /*
-     * Past the wire frame's own deadline, only it publishes: the loopback
-     * delivery found its target held and was dropped, not queued behind it.
-     */
+ * Past the wire frame's own deadline, only it publishes: the loopback
+ * delivery found its target held and was dropped, not queued behind it.
+ */
     qtest_clock_step(qts, RX_ARRIVAL_LATENCY_NS);
     wait_for_rx_consume(qts, RX_RING_STRIDE);
     qtest_memread(qts, rxbuf + RXD_BUF_OFFSET, landed, sizeof(seed));
@@ -1991,8 +1991,8 @@ static void test_loopback_respects_a_held_completion(const void *data)
  * disables autonegotiation and selects 100 Mb full duplex with no BMCR
  * loopback bit, then LBR's twister/PMD select is OR-ed in. On the DP83843
  * this loops transmitted frames back to the receive ring the way PHY
- * loopback always has -- through the whole controller, four bytes higher
- * and a real status word -- without ever reaching the backend.
+ * loopback always has: through the whole controller, four bytes higher
+ * with a real status word, without reaching the backend.
  */
 static void test_dp83843_twister_loopback_turns_a_frame_round(const void *data)
 {
@@ -2044,7 +2044,7 @@ static void test_dp83843_twister_loopback_turns_a_frame_round(const void *data)
 
 /*
  * The negative control this bug turns on: leaving TW_LBEN clear on the same
- * DP83843 part, same BMCR, same everything else, must not loop -- otherwise
+ * DP83843 part, same BMCR, same everything else, must not loop. Otherwise,
  * the fix would really be "any register 0x17 write loops," not this bit.
  */
 static void test_dp83843_loopback_requires_the_tw_lben_bit(const void *data)

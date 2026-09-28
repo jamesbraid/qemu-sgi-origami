@@ -1,10 +1,8 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
+/* MMIO test device for command-port framing and owner callbacks. */
 /*
- * A minimal device that gives the sgi-command-port-test qtest a real
- * MMIO surface and a place to observe the object's owner callbacks.
- * The register layout and selector table below are test fixtures only:
- * neither is a transcription of any board's address map or command
- * grammar.
+ * Its register layout and selectors are synthetic, not a board address map or
+ * command grammar.
  */
 #include "qemu/osdep.h"
 #include "hw/core/sysbus.h"

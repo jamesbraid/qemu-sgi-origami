@@ -1,48 +1,54 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SGI IOC3 parallel port registers, DMA, and character backend. */
 /*
- * SGI IOC3 base I/O controller: the parallel port.
- *
  * A child of the multifunction chip (hw/misc/sgi-ioc3.c). The port has two
- * faces and they sit far apart in the chip's window, so this device
- * presents two memory regions: a four-byte-wide DMA register block that
- * belongs in the main register block, and the byte-wide IEEE-1284/ECP
- * register file that belongs in the SuperIO window. The project tree's IOC3
- * datasheet is the specification. See docs/specs/sgi-ioc3.rst.
+ * faces and they sit far apart in the
+ * chip's window, so this device presents two memory regions: a four-byte-wide
+ * DMA register block that belongs in
+ * the main register block, and the byte-wide IEEE-1284/ECP register file that
+ * belongs in the SuperIO window. The
+ * IOC3 register behavior is documented in docs/specs/sgi-ioc3.rst.
  *
  * What this models is the register contract, because that is all a source
- * establishes. IRIX's parallel driver probes for the port by reading the
- * extended control register and taking "transmit FIFO empty, not full" as
- * the port answering; without that the driver never attaches and opening
- * the device node fails. Everything past the probe -- the mode field, the
- * negotiation lines, the two DMA contexts -- is a register file a driver
- * writes and reads back.
+ * establishes. IRIX's parallel driver
+ * probes for the port by reading the extended control register and taking
+ * "transmit FIFO empty, not full" as the
+ * port answering; without that the driver never attaches and opening the
+ * device node fails. Past the probe, the mode field, negotiation lines, and
+ * two DMA contexts
+ * form a register file that the driver writes and reads back.
  *
  * No peripheral is modelled. What is on the far side of the cable is a
- * character device the board hands the port, so what a guest prints comes
- * out somewhere a host can read it, and a port with no backend swallows the
- * bytes rather than stalling. Either way nothing holds a byte up: the
- * transmit FIFO never fills, the status register reports an empty cable,
- * and the DMA engine retires a context within the register write that arms
- * it, so its busy flag is never observable.
+ * character device the board hands the port,
+ * so what a guest prints comes out somewhere a host can read it, and a port
+ * with no backend swallows the bytes
+ * rather than stalling. Either way nothing holds a byte up: the transmit FIFO
+ * never fills, the status register
+ * reports an empty cable, and the DMA engine retires a context within the
+ * register write that arms it, so its busy
+ * flag is never observable.
  *
- * A byte-wide cable with no peripheral has no way to hand a byte back, so
- * the read direction moves nothing and its contexts stay armed, which is
- * what the port does with nothing plugged into it.
+ * A byte-wide cable with no peripheral has no way to hand a byte back, so the
+ * read direction moves nothing and its
+ * contexts stay armed, which is what the port does with nothing plugged into
+ * it.
  *
  * Retiring the context in the register file is not on its own enough for a
- * driver: IRIX programs a transfer, sleeps, and is still asleep when the
- * count reads consumed and the bytes are out. What wakes it is the service
+ * driver: IRIX programs a transfer,
+ * sleeps, and is still asleep when the count reads consumed and the bytes are
+ * out. What wakes it is the service
  * interrupt, which the chip raises when the context carrying the last flag
- * reaches terminal count. Its own context interrupt does not do the job --
- * on a single-descriptor transfer the driver masks that source before it
- * waits.
+ * reaches terminal count. Its own context
+ * interrupt does not do the job. On a single-descriptor transfer, the
+ * driver masks that source before it waits.
  *
- * The active sense of the extended control register's two interrupt
- * controls is unresolved, so nothing here reads them to decide whether to
- * raise. What is used instead is the one thing the sources agree on: the
- * driver quiets the service condition by writing that register. So the
- * condition is set at terminal count and falls on the next write there,
- * which needs no polarity.
+ * The active sense of the extended control register's two interrupt controls
+ * is unresolved, so nothing here reads
+ * them to decide whether to raise. What is used instead is the one thing the
+ * sources agree on: the driver quiets
+ * the service condition by writing that register. So the condition is set at
+ * terminal count and falls on the next
+ * write there, which needs no polarity.
  */
 
 #include "qemu/osdep.h"
@@ -63,10 +69,11 @@ static unsigned int sgi_ioc3_parallel_mode(SGIIOC3ParallelState *s)
 }
 
 /*
- * The shared control register's low six bits, which are the engine's view
- * of the two context registers rather than storage. Both busy flags stay
- * clear: a context is retired inside the register write that completes its
- * setup, so no read can land while one is draining.
+ * The shared control register's low six bits, which are the engine's view of
+ * the two context registers rather than
+ * storage. Both busy flags stay clear: a context is retired inside the
+ * register write that completes its setup, so
+ * no read can land while one is draining.
  */
 static uint32_t sgi_ioc3_parallel_dma_status(SGIIOC3ParallelState *s)
 {
@@ -94,18 +101,20 @@ static void sgi_ioc3_parallel_set_service(SGIIOC3ParallelState *s, bool level)
 }
 
 /*
- * Drain one armed context: read its buffer out of memory through the
- * chip's own bus-master view -- never the physical-memory accessors, which
- * would walk around the Bridge translation the guest programmed -- put the
- * bytes on the cable, and retire the context.
+ * Drain one armed context: read its buffer out of memory through the chip's
+ * own bus-master view. Physical-memory accessors would bypass the Bridge
+ * translation programmed by the guest. Put the bytes on the cable and
+ * retire the context.
  *
  * Retiring is the count field down to nothing outstanding and the arm flag
- * clear. The last flag is left as software loaded it: it describes the
- * descriptor rather than the engine's progress through it, and no source
- * says the engine takes it back.
+ * clear. The last flag is left as software
+ * loaded it: it describes the descriptor rather than the engine's progress
+ * through it, and no source says the
+ * engine takes it back.
  *
- * False on a refused fetch, which stops the walk: a chain whose first
- * buffer never arrived must not put the second one on the cable.
+ * False on a refused fetch, which stops the walk: a chain whose first buffer
+ * never arrived must not put the second
+ * one on the cable.
  */
 static bool sgi_ioc3_parallel_dma_drain(SGIIOC3ParallelState *s,
                                         unsigned int context)
@@ -121,9 +130,9 @@ static bool sgi_ioc3_parallel_dma_drain(SGIIOC3ParallelState *s,
                             MEMTXATTRS_UNSPECIFIED) != MEMTX_OK) {
             /*
              * A refused fetch leaves the context armed. On the chip this
-             * raises the port's PCI-error interrupt and the driver recovers
-             * the residual from this register, which is the value it needs
-             * to find here.
+             * raises the port's PCI-error interrupt and
+             * the driver recovers the residual from this register, which is
+             * the value it needs to find here.
              */
             qemu_log_mask(LOG_GUEST_ERROR,
                           "sgi-ioc3-parallel: context %u buffer at 0x%"
@@ -140,9 +149,9 @@ static bool sgi_ioc3_parallel_dma_drain(SGIIOC3ParallelState *s,
     qemu_irq_pulse(s->irq[SGI_IOC3_PAR_IRQ_CONTEXT + context]);
 
     /*
-     * Terminal count: the chain ends here, so the service condition comes
-     * up and stays up until software quiets it. This is the interrupt a
-     * driver blocked in a write is waiting for.
+     * Terminal count: the chain ends here, so the service condition comes up
+     * and stays up until software quiets it.
+     * This is the interrupt a driver blocked in a write is waiting for.
      */
     if (s->count[context] & SGI_IOC3_PAR_COUNT_LAST) {
         sgi_ioc3_parallel_set_service(s, true);
@@ -153,10 +162,12 @@ static bool sgi_ioc3_parallel_dma_drain(SGIIOC3ParallelState *s,
 
 /*
  * Two enables, and the driver sets them in two different registers: the
- * engine's own in the shared control register and the DMA path in the
- * extended control register. Running on one of them alone would start a
- * transfer the driver has not finished setting up, so every write that can
- * complete the pair comes through here and the pair is tested afresh.
+ * engine's own in the shared control register
+ * and the DMA path in the extended control register. Running on one of them
+ * alone would start a transfer the driver
+ * has not finished setting up, so every write that can complete the pair
+ * comes through here and the pair is tested
+ * afresh.
  *
  * Context A before context B, which is the order software chains them in.
  */
@@ -206,7 +217,8 @@ static uint64_t sgi_ioc3_parallel_dma_read(void *opaque, hwaddr addr,
 
     /*
      * The count field reads back what is still outstanding: the value
-     * software loaded until the engine drains the context, nothing after.
+     * software loaded until the engine drains the
+     * context, nothing after.
      */
     case SGI_IOC3_PAR_CTXA_COUNT:
         return s->count[0];
@@ -250,9 +262,10 @@ static void sgi_ioc3_parallel_dma_write(void *opaque, hwaddr addr,
         return;
 
     /*
-     * Direction, the state-machine reset the driver holds high then low,
-     * and the engine enable. The six status bits below them belong to the
-     * contexts, so a write cannot assert one from this side.
+     * Direction, the state-machine reset the driver holds high then low, and
+     * the engine enable. The six status bits
+     * below them belong to the contexts, so a write cannot assert one from
+     * this side.
      */
     case SGI_IOC3_PAR_DMA_CONTROL:
         s->dma_control = val & SGI_IOC3_PAR_DMA_STORED;
@@ -285,10 +298,11 @@ static uint64_t sgi_ioc3_parallel_ecp_read(void *opaque, hwaddr addr,
 
     /*
      * The lines the peripheral drives, and nothing is on the cable. Only
-     * nFault's level is pinned by a source -- clear means a fault -- so an
-     * empty cable reports no fault and leaves the rest clear: no
-     * peripheral selected, no paper error, and never busy, which is the
-     * level a driver waiting for the printer would otherwise wait on
+     * nFault's level is pinned by a source: clear means a fault. An empty
+     * cable reports no fault and leaves
+     * the rest clear: no peripheral selected,
+     * no paper error, and never busy, which is the level a driver waiting for
+     * the printer would otherwise wait on
      * forever.
      */
     case SGI_IOC3_PAR_ECP_STATUS:
@@ -302,10 +316,11 @@ static uint64_t sgi_ioc3_parallel_ecp_read(void *opaque, hwaddr addr,
             return s->config_a;
         }
         /*
-         * The FIFO in every other mode, and it is always empty: nothing
-         * on the cable ever hands a byte back. The shipping driver is
-         * output-only, so a read here is software reading a queue its own
-         * status register just told it was empty.
+         * The FIFO in every other mode, and it is always empty: nothing on
+         * the cable ever hands a byte back. The
+         * shipping driver is output-only, so a read here is software reading
+         * a queue its own status register just
+         * told it was empty.
          */
         qemu_log_mask(LOG_GUEST_ERROR,
                       "sgi-ioc3-parallel: read of the empty FIFO\n");
@@ -343,10 +358,10 @@ static void sgi_ioc3_parallel_ecp_write(void *opaque, hwaddr addr,
         return;
 
     /*
-     * The whole byte is stored. The datasheet names bits 0 to 3 and bit 5
-     * and is silent on the other three, so masking them away would be this
-     * model asserting they read as zero; reading back what was written
-     * asserts nothing.
+     * The whole byte is stored. Bits 0 to 3 and bit 5 are defined; the other
+     * three are unspecified, so masking them
+     * away would be this model asserting they read as zero; reading back what
+     * was written asserts nothing.
      */
     case SGI_IOC3_PAR_ECP_CONTROL:
         s->control = val;
@@ -358,11 +373,12 @@ static void sgi_ioc3_parallel_ecp_write(void *opaque, hwaddr addr,
             return;
         }
         /*
-         * The byte goes out on the data lines, to whatever the board put
-         * on the far side of the cable. Nothing there holds it up, so it
-         * leaves within the write and the FIFO stays empty: a driver
-         * polling for room before each byte never waits, and one polling
-         * for the queue to drain finishes on its first look.
+         * The byte goes out on the data lines, to whatever the board put on
+         * the far side of the cable. Nothing
+         * there holds it up, so it leaves within the write and the FIFO stays
+         * empty: a driver polling for room
+         * before each byte never waits, and one polling for the queue to
+         * drain finishes on its first look.
          */
         {
             uint8_t byte = val;
@@ -376,10 +392,11 @@ static void sgi_ioc3_parallel_ecp_write(void *opaque, hwaddr addr,
         return;
 
     /*
-     * The two FIFO flags are hardware status and are not writable. The
-     * write also quiets the service condition, which is how the driver
-     * acknowledges a completion -- before the store and the engine pass,
-     * so that a transfer this same write sets going can raise it again.
+     * The two FIFO flags are hardware status and are not writable. The write
+     * also quiets the service condition,
+     * which acknowledges a completion. This happens before the store and the
+     * engine pass, so a transfer
+     * this same write sets going can raise it again.
      */
     case SGI_IOC3_PAR_ECP_EXTENDED:
         sgi_ioc3_parallel_set_service(s, false);
@@ -397,8 +414,8 @@ static void sgi_ioc3_parallel_ecp_write(void *opaque, hwaddr addr,
 
 /*
  * Byte-wide, and the implementation width says so: an undeclared maximum
- * would take one four-byte access apart into four calls, running the FIFO
- * write four times over.
+ * would take one four-byte access apart into
+ * four calls, running the FIFO write four times over.
  */
 static const MemoryRegionOps sgi_ioc3_parallel_ecp_ops = {
     .read = sgi_ioc3_parallel_ecp_read,
@@ -448,14 +465,16 @@ static void sgi_ioc3_parallel_unrealize(DeviceState *dev)
 }
 
 /*
- * Every register resets to zero. The extended control register's reset
- * value of 0x01 comes out of that on its own: its stored half is zero, so
- * the mode field reads compatibility and the three control bits read
- * clear, and the FIFO-empty flag the driver's probe looks for is supplied
- * by the read rather than stored.
+ * Every register resets to zero. The extended control register's reset value
+ * of 0x01 comes out of that on its own:
+ * its stored half is zero, so the mode field reads compatibility and the
+ * three control bits read clear, and the
+ * FIFO-empty flag the driver's probe looks for is supplied by the read rather
+ * than stored.
  *
- * The datasheet marks the control and configuration registers' reset
- * values unverified. Zero is this model's choice for them.
+ * The register description marks the control and configuration registers'
+ * reset values unverified. Zero is this
+ * model's choice for them.
  */
 static void sgi_ioc3_parallel_reset_hold(Object *obj, ResetType type)
 {
@@ -477,8 +496,9 @@ static void sgi_ioc3_parallel_reset_hold(Object *obj, ResetType type)
 
 /*
  * The service condition is state a migration has to carry: it is what a
- * driver blocked in a write is waiting on, and a stream without it lands
- * the guest back in the wait with nothing left to end it.
+ * driver blocked in a write is waiting on,
+ * and a stream without it lands the guest back in the wait with nothing left
+ * to end it.
  */
 static int sgi_ioc3_parallel_post_load(void *opaque, int version_id)
 {

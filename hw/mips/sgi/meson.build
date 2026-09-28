@@ -1,10 +1,10 @@
 # SN machine ASIC models and machines
 # Consolidated builds for hw/mips/sgi
 
-# Origami installs sn-catalogue.json here as a tracked source (docs/machines/
-# README.md); this turns it into a C string constant the same way
-# ui/shader/meson.build turns a GLSL source file into one, so sn-catalogue.c
-# parses the embedded bytes rather than reading the file at run time.
+# sn-catalogue.json is a tracked source embedded here as a C string constant,
+# the same way ui/shader/meson.build turns a GLSL source file into one, so
+# sn-catalogue.c parses the embedded bytes rather than reading the file at run
+# time.
 sn_catalogue_embed = find_program('../../../scripts/sn-catalogue-embed.py')
 sn_catalogue_embed_c = custom_target('sn-catalogue-embed.c.inc',
     output: 'sn-catalogue-embed.c.inc',

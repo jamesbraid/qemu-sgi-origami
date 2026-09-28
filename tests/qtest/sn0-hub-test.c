@@ -1,9 +1,7 @@
 /*
- * SGI SN0 Hub ASIC register-contract tests.
- *
- * A qtest cannot see a bus error, so "this window must not reach the device"
- * is asserted as "this must not return what the device holds", with a
- * distinctive value put in the device first.
+ * SGI SN0 Hub register tests. Qtest cannot observe a bus error, so tests
+ * plant a distinct value and check that an inaccessible window cannot
+ * return it.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
@@ -74,7 +72,7 @@
 #define PI_RT_LOCAL_CTRL_MASK  0x100ffULL
 #define PI_RT_LOCAL_CTRL_RESET 0x10000ULL
 
-/* Graphics flow control, per processor; plain storage, see the datasheet. */
+/* Graphics flow control, per processor; plain storage. */
 #define PI_GFX_PAGE_A        0x000300
 #define PI_GFX_CREDIT_A      0x000308
 #define PI_GFX_BIAS_A        0x000310
@@ -275,7 +273,8 @@
 #define CONSOLE_WIDGET  8
 #define IOC3_SCRATCH    (0x600000 + 0x020178 + 7)
 
-/* The IOC3 is PCI behind the Bridge: give it a BAR and aim the window at it. */
+/* The IOC3 is PCI behind the Bridge: give it a BAR and aim the window at
+ * it. */
 #define BRIDGE_BASE      SMALL_WINDOW(CONSOLE_WIDGET)
 #define BRIDGE_REG_DATA  4        /* registers sit at a slot's upper half */
 #define BRIDGE_CFG0_BASE 0x020000
@@ -351,7 +350,8 @@ static void assert_dual_node_master_slave_sense(QTestState *qts)
     g_assert_cmphex(node1 & MD_SLOT_MASTER_MODULE, ==, 0);
 }
 
-/* Physical straps on both nodes, node 0 master; reset must not change them. */
+/* Physical straps on both nodes, node 0 master; reset must not change
+ * them. */
 static void test_dual_node_master_slave_sense(const void *data)
 {
     QTestState *qts = qtest_init(
@@ -493,7 +493,8 @@ static void test_the_real_time_counter_runs_at_its_rate(const void *data)
 {
     hub_reset();
 
-    /* Zeroed as a guest does at boot, putting count and clock on one origin. */
+    /* Zeroed as a guest does at boot, putting count and clock on one
+     * origin. */
     qtest_writeq(qts, HUB_LOCAL + PI_RT_COUNT, 0);
     g_assert_cmpuint(qtest_readq(qts, HUB_LOCAL + PI_RT_COUNT), ==, 0);
 
@@ -506,8 +507,8 @@ static void test_the_real_time_counter_runs_at_its_rate(const void *data)
  * the rate right. Counting from far out is not. A write puts the counter's
  * origin that many ticks in the past without any virtual time passing, so
  * these cases reach elapsed times that cross 2^32 nanoseconds, cross 2^32
- * ticks, and run out to the 52-bit wrap -- the range where a conversion that
- * is only approximately right drifts by a tick -- while the clock itself
+ * ticks, and run out to the 52-bit wrap. This is the range where a conversion
+ * that is only approximately right drifts by a tick, while the clock itself
  * moves a second at most. Stepping the clock that far instead would make the
  * machine's timers fire for every interval in between and never return.
  *
@@ -603,7 +604,7 @@ static void test_a_guarded_rewrite_rearms_the_deadline(const void *data)
 
 /*
  * Linux advertises the whole 52-bit space as its maximum tick interval,
- * which only works if a deadline behind by one -- ahead by the space -- arms
+ * which only works if a deadline behind by one (ahead by the space) arms
  * for the revolution instead of matching at once.
  */
 static void test_a_maximum_interval_arm_waits(const void *data)
@@ -768,7 +769,7 @@ static void test_the_real_time_counter_is_fifty_two_bits(const void *data)
  * QEMU installs an intercept for one named GPIO group per process: the
  * second irq_intercept_out on the same device answers OK and installs
  * nothing (system/qtest.c, the irq_intercept_dev check). This file wants
- * three groups -- the counter lines and both pending banks -- so a
+ * three groups: the counter lines and both pending banks. A a
  * shared machine would hand whichever group ran first to every later
  * case and quietly record no transitions at all.
  */
@@ -934,7 +935,8 @@ static void test_processor_number(const void *data)
     /* The first processor; everything per-processor is selected from this. */
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_PROCESSOR_NUMBER), ==, 0);
 
-    /* Firmware writes here as a debug convention; the answer must not move. */
+    /* Firmware writes here as a debug convention; the answer must not
+     * move. */
     qtest_writeq(qts, HUB_LOCAL + PI_PROCESSOR_NUMBER, 0x1111111111111111ULL);
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_PROCESSOR_NUMBER), ==, 0);
 }
@@ -946,7 +948,7 @@ static void test_processor_number(const void *data)
 #define MD_ONEWIRE_PHASE_LO (0x7fULL << 20)
 #define MD_ONEWIRE_PHASE_HI (0x7fULL << 27)
 
-/* Both phases at 0x31, the memory/directory datasheet's value. */
+/* Both phases at 0x31, the memory/directory unit's documented value. */
 #define MD_ONEWIRE_RESET    ((0x31ULL << 20) | (0x31ULL << 27))
 
 /* A slot armed before reset must not complete after it. */
@@ -967,7 +969,8 @@ static void test_the_one_wire_master_resets_to_its_timing(const void *data)
 {
     hub_reset();
 
-    /* The whole word, not merely non-zero, and not merely the phase fields. */
+    /* The whole word, not merely non-zero, and not merely the phase
+     * fields. */
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + MD_ONEWIRE), ==,
                     MD_ONEWIRE_RESET);
 }
@@ -1010,7 +1013,8 @@ static void test_starting_a_slot_does_not_report_it_finished(const void *data)
     g_assert_cmphex(after & MD_ONEWIRE_DONE, ==, 0);
     g_assert_cmphex(after & MD_ONEWIRE_RXDATA, ==, 0);
 
-    /* Still clear: the virtual clock does not advance on its own in a qtest. */
+    /* Still clear: the virtual clock does not advance on its own in a
+     * qtest. */
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + MD_ONEWIRE) &
                     MD_ONEWIRE_DONE, ==, 0);
 }
@@ -1033,7 +1037,8 @@ static void test_a_slot_finishes_on_the_clock(const void *data)
 
     hub_reset();
 
-    /* A read slot on the empty local bus: the wire floats, so it samples one. */
+    /* A read slot on the empty local bus: the wire floats, so it samples
+     * one. */
     qtest_writeq(qts, HUB_LOCAL + MD_ONEWIRE,
                  MD_ONEWIRE_RESET | (8ULL << 10) | (0x04ULL << 2));
 
@@ -1053,10 +1058,10 @@ static void test_a_slot_finishes_on_the_clock(const void *data)
 }
 
 /*
- * The bus carries the PIMM manufacturing-record part (the hub one-wire
- * datasheet's settled responder contract): a DS2505-compatible responder
- * whose ROM identity the headless bring-up reads as the remote NIC. The
- * pulse thresholds and the synthetic serial mirror the model's choices;
+ * The bus carries the PIMM manufacturing-record part: a DS2505-compatible
+ * responder whose ROM identity the headless bring-up reads as the remote
+ * NIC. The pulse thresholds and the synthetic serial mirror the model's
+ * choices;
  * the serial expression is the machine's per-node wiring.
  */
 #define ONEWIRE_PULSE_RESET   0x321  /* long low: a bus reset */
@@ -1265,8 +1270,8 @@ static void test_each_hub_carries_its_own_identity(const void *data)
 
 /*
  * The memory-function reads, per the public DS2505 datasheet: an
- * unprogrammed part serves 0xff everywhere -- a redirection byte of
- * 0xff means "no redirection, data valid" by the part's own spec --
+ * unprogrammed part serves 0xff everywhere. A redirection byte of
+ * 0xff means "no redirection, data valid" by the part's own spec,
  * behind correct CRC16 framing. The firmware's headless bring-up
  * failed here next: "invalid crc16 reading redirection map page 0",
  * because the selected part went silent and the frame read all-ones.
@@ -1367,13 +1372,13 @@ static void test_a_status_read_frames_the_redirection_map(const void *data)
  * Status memory is addressed at the data field's width, not at the top of
  * the regions the part implements. The redirection bytes end at 0x13f;
  * 0x140 through 0x7ff is unimplemented status space, and the part answers
- * it the same way it answers implemented space it has never programmed --
+ * it the same way it answers implemented space it has never programmed:
  * 0xff bytes in 8-byte pages, each closed by a real CRC16.
  *
  * Pinned because it is the one answer this bus's move onto the shared
  * DS2505 model changes, and nothing else here would notice: the other
  * status read sits at 0x100, inside the implemented region, so a responder
- * that fell silent past 0x13f -- which is what this model used to do --
+ * that fell silent past 0x13f (as this model once did)
  * passes every other test in this file. It fails here on the check pair,
  * whose two bytes are not 0xff, rather than on the data.
  */
@@ -1510,10 +1515,9 @@ static void test_network_ageing_controls(const void *data)
 }
 
 /*
- * Graphics flow control: twelve registers of plain, uncomputed storage
- * (hub-processor-interface datasheet, "Graphics flow control"; hub-io-
- * interface datasheet for the two node/widget routing words). A write
- * stores the masked value and a read returns it -- nothing else.
+ * Graphics flow control: twelve registers of plain, uncomputed storage,
+ * plus the two node/widget routing words. A write
+ * stores the masked value and a read returns it. Nothing else changes.
  */
 static void test_graphics_flow_control_registers_round_trip(const void *data)
 {
@@ -1681,7 +1685,8 @@ static void test_writes_the_guest_makes(const void *data)
 
     hub_reset();
 
-    /* The masks store what is written; the IRIX table's read-only is wrong. */
+    /* The masks store what is written; the IRIX table's read-only is
+     * wrong. */
     for (i = 0; i < ARRAY_SIZE(masks); i++) {
         qtest_writeq(qts, HUB_LOCAL + masks[i], 0);
         g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + masks[i]), ==, 0);
@@ -1941,15 +1946,15 @@ static void test_cpu_enable_registers_control_matching_processors(
 #define RENDEZVOUS_MISSED       2
 
 /*
- * The first processor's signal that it has its answer, in the order the
- * stock PROM gives it in traced boots: a bit in the I/O scratch register,
- * then interrupt 113 raised through interrupt modify.
+ * The first processor signals completion with an I/O scratch bit, then
+ * raises interrupt 113 through interrupt modify, in PROM order.
  */
 #define RENDEZVOUS_ALIVE        0x800000
 #define RENDEZVOUS_ALIVE_IRQ    113
 #define SN0_HUB_IO_BASE         (SN0_HUB_LOCAL_BASE + 0x400000)
 
-/* Publish the alive bit and raise interrupt 113; S0 addresses the I/O block. */
+/* Publish the alive bit and raise interrupt 113; S0 addresses the I/O
+ * block. */
 static void emit_first_processor_alive(SN0Image *p)
 {
     sn0_emit_li(p, SN0_R_T2, RENDEZVOUS_ALIVE);
@@ -2253,12 +2258,12 @@ static int trace_find(char **records, int from, const char *event,
  * generation, 48 and 56 counts kept across a reset.
  *
  * In these images, running from the boot ROM, a hold starts before the
- * held processor's next instruction -- measured, not assumed -- so nothing
+ * held processor's next instruction (measured, not assumed), so nothing
  * a processor writes after the access that holds it can tell the other
  * processor to go on. The tests sequence the two slices from outside
  * instead: they wait until the access is due, allow a few hundred
- * milliseconds -- far longer than one instruction, far shorter than the
- * two-second deadline -- and then write the go word.
+ * milliseconds (far longer than one instruction but shorter than the
+ * two-second deadline) and then write the go word.
  */
 static unsigned int emit_handshake_start(SN0Image *p)
 {
@@ -2301,8 +2306,8 @@ static void emit_handshake_park(SN0Image *p)
 }
 
 /*
- * Slice B's side: wait for A's post, post and read A's comparator back --
- * the match. In a later block, read the I/O scratch register and record
+ * Slice B's side: wait for A's post, post and read A's comparator back
+ * for the match. In a later block, read the I/O scratch register and record
  * the value in word 8 and 1 in word 24.
  */
 static void emit_second_processor_match(SN0Image *p)
@@ -2383,7 +2388,7 @@ static uint64_t trace_hold_id(char **records, int hold)
 
 /*
  * Slice B posts and parks. Slice A waits for that post, posts the same
- * value and reads B's comparator back -- a match -- then records what it
+ * value and reads B's comparator back. It gets a match, then records what it
  * read once its block has ended. Nothing in this image answers a hold.
  */
 static void build_first_match_image(SN0Image *p)
@@ -2435,7 +2440,7 @@ static void test_first_processor_match_read_is_not_parked(const void *data)
 /*
  * Slice B posts first. Slice A waits for that post, posts, reads B's
  * comparator back, gives its alive signal, marks word 16 and takes its post
- * back -- a post B has not read. That write is what the model holds, so A
+ * back before B reads that post. That write is what the model holds, so A
  * sets word 0 only once the hold is over. With partner_reads, B waits for
  * the go word, then polls A's comparator and records in word 8 whether it
  * found the post; without, B never reads it.
@@ -2486,7 +2491,7 @@ static void build_withdraw_image(SN0Image *p, bool partner_reads)
 /*
  * Slice A takes its post back before slice B has read it, and that write is
  * what parks A. B's late poll therefore still finds the post, B's read of it
- * is what lets A go -- the partner's own access, not a timer -- and the
+ * is what lets A go. The partner's own access, not a timer, makes the
  * withdrawal lands on that read.
  */
 static void test_withdrawing_an_unread_post_waits_for_the_partner(
@@ -2833,9 +2838,10 @@ static void build_alive_go_image(SN0Image *p)
 
 /*
  * The first processor gave its alive signal on the source. Whether it has
- * cannot be read back from the registers -- firmware clears the bit again
- * later -- so the state crosses: on the destination the second processor's
- * match read does not wait for a signal that has already been given.
+ * cannot be read back from the registers because firmware clears the bit
+ * again later, so the state crosses: on the destination the second
+ * processor's match read does not wait for a signal that has already been
+ * given.
  */
 static void test_alive_signal_survives_migration(const void *data)
 {
@@ -2892,7 +2898,7 @@ static void test_alive_signal_survives_migration(const void *data)
 /*
  * Round-robin execution runs one processor at a time and keeps its own
  * slice handoff, so neither an unread withdrawal nor a match read ahead of
- * the alive signal -- both of which hold under multi-threaded execution --
+ * the alive signal (both hold under multi-threaded execution)
  * parks anybody there.
  */
 static void test_round_robin_holds_nobody(const void *data)
@@ -2969,7 +2975,8 @@ static void test_a_withheld_withdrawal_migrates_landed(const void *data)
     qtest_qmp_assert_success(from, "{'execute':'cont'}");
     g_assert_cmphex(wait_for_rendezvous_result(from, 2), ==,
                     RENDEZVOUS_VALUE);
-    /* Well inside the two seconds: A executes a single store after the mark. */
+    /* Well inside the two seconds: A executes a single store after the
+     * mark. */
     g_usleep(200 * 1000);
     g_assert_cmphex(cpu_heartbeat(from, 0), ==, 0);
 
@@ -3179,10 +3186,10 @@ static void test_model_population_overrides_class_globals(const void *data)
 static void test_origin2000_hubs_carry_module_identity(const void *data)
 {
     static const uint8_t expected_pages[2][32] = {
-        { 0x01, 0x4b, 0x4f, 0x52, 0x49, 0x47, 0x41, 0x4d,
-          0x49, 0x30, 0x31, 0xff, 0xff, 0xff, 0xff, 0xff,
+        { 0x01, 0x53, 0x47, 0x49, 0x4d, 0x4f, 0x44, 0x55,
+          0x4c, 0x45, 0x31, 0xff, 0xff, 0xff, 0xff, 0xff,
           0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
-          0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xf9, 0x27 },
+          0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x9f, 0x88 },
         { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
           0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
           0x4d, 0x4f, 0x44, 0x55, 0x4c, 0x45, 0x49, 0x44,
@@ -3252,7 +3259,8 @@ static void test_origin2000_hubs_carry_module_identity(const void *data)
         }
     }
 
-    /* Reset drops a partial match while leaving the immutable image intact. */
+    /* Reset drops a partial match while leaving the immutable image
+     * intact. */
     {
         uint64_t module_rom = ONEWIRE_FAMILY_DS2502 |
                               (module_serials[0] << 8);
@@ -3277,7 +3285,8 @@ static void test_origin2000_hubs_carry_module_identity(const void *data)
         }
     }
 
-    /* Origin 2000's family-0x0b PIMM record is populated and page CRCs close. */
+    /* Origin 2000's family-0x0b PIMM record is populated and page CRCs
+     * close. */
     for (unsigned int node = 0; node < ORIGIN2000_NODE_COUNT; node++) {
         unsigned int cpu = node * ORIGIN2000_CPUS_PER_NODE;
         uint64_t pimm_rom = onewire_expected_identity(
@@ -3291,7 +3300,7 @@ static void test_origin2000_hubs_carry_module_identity(const void *data)
         g_snprintf((char *)&expected[1], 11, "%010" PRIx64,
                    (uint64_t)((0x100000000001ULL + node) &
                               UINT64_C(0xffffffffff)));
-        memcpy(&expected[11], "ORIGAMI-IP27-PIMM", 17);
+        memcpy(&expected[11], "SGI-IP27-PIMM", 13);
         crc = ~onewire_crc16(0, expected, 30);
         expected[30] = crc;
         expected[31] = crc >> 8;
@@ -3326,7 +3335,8 @@ static void test_origin2000_hubs_carry_module_identity(const void *data)
     qtest_quit(qts);
 }
 
-/* One stride either side of the block belongs to the unimplemented default. */
+/* One stride either side of the block belongs to the unimplemented
+ * default. */
 static void test_junk_uart_range_is_exact(const void *data)
 {
     QTestState *qts = qtest_init("-M origin200,junk-uart=on");
@@ -3455,7 +3465,8 @@ static void test_both_windows(const void *data)
 {
     hub_reset();
 
-    /* One device through both halves: a write via one is read via the other. */
+    /* One device through both halves: a write via one is read via the
+     * other. */
     g_assert_cmphex(qtest_readq(qts, HUB_BY_NODE + NI_STATUS), ==,
                     qtest_readq(qts, HUB_LOCAL + NI_STATUS));
     g_assert_cmphex(qtest_readq(qts, HUB_BY_NODE + PI_PROCESSOR_NUMBER), ==,
@@ -3472,7 +3483,8 @@ static void test_translation_entries_decode(const void *data)
 
     hub_reset();
 
-    /* Distinct values in all seven separate seven registers from one alias. */
+    /* Distinct values in all seven separate seven registers from one
+     * alias. */
     for (n = 0; n < IO_BWIN_ENTRIES; n++) {
         qtest_writeq(qts, HUB_LOCAL + IO_BWIN_ENTRY(n),
                      IO_BWIN_WIDGET(8 + n) |
@@ -3506,7 +3518,8 @@ static void test_big_window_follows_its_entry(const void *data)
 
     sn0_hub_attach_ioc3(qts);
 
-    /* Write through the small window, read through the big one: one device. */
+    /* Write through the small window, read through the big one: one
+     * device. */
     qtest_writeq(qts, HUB_LOCAL + IO_BWIN_ENTRY(0),
                  IO_BWIN_WIDGET(CONSOLE_WIDGET) |
                  IO_BWIN_SLICE(0));
@@ -3537,7 +3550,8 @@ static void test_big_window_follows_the_slice_too(const void *data)
                  IO_BWIN_SLICE(1));
     g_assert_cmphex(qtest_readb(qts, BIG_WINDOW(1) + IOC3_SCRATCH), !=, 0x3c);
 
-    /* Move it back to the first slice and the same address reaches the chip. */
+    /* Move it back to the first slice and the same address reaches the
+     * chip. */
     qtest_writeq(qts, HUB_LOCAL + IO_BWIN_ENTRY(1),
                  IO_BWIN_WIDGET(CONSOLE_WIDGET) |
                  IO_BWIN_SLICE(0));
@@ -3821,7 +3835,8 @@ static void test_pi_pending_reaches_cpu_cause(const void *data)
             pi_cpu_writeq(qts, 0, NI_PORT_RESET, 0x81);
             qtest_qmp_eventwait(qts, "RESET");
         }
-        /* Initialize both phases explicitly, without assuming reset values. */
+        /* Initialize both phases explicitly, without assuming reset
+         * values. */
         for (unsigned int node = 0; node < 2; node++) {
             for (unsigned int bank = 0; bank < ARRAY_SIZE(banks); bank++) {
                 unsigned int cpu = node * 2;
@@ -3902,7 +3917,8 @@ static void test_the_crosstalk_link_reports_up(const void *data)
     link = qtest_readq(qts, HUB_LOCAL + IO_LINK_STATUS);
     state = (link >> 12) & 3;
 
-    /* Linux drops its probe on a clear high bit; two or three both mean up. */
+    /* Linux drops its probe on a clear high bit; two or three both mean
+     * up. */
     g_assert_cmpuint(state, >=, 2);
     g_assert_cmphex(link & (1ULL << 13), ==, 1ULL << 13);
 
@@ -3961,7 +3977,8 @@ static void test_a_guest_can_write_the_link_enabled_bit(const void *data)
     link = qtest_readq(qts, HUB_LOCAL + IO_LINK_STATUS);
     g_assert_cmphex(link & (1ULL << 10), ==, 1ULL << 10);
 
-    /* And nothing else moves: enabled, but never claiming the link came up. */
+    /* And nothing else moves: enabled, but never claiming the link came
+     * up. */
     qtest_writeq(qts, HUB_LOCAL + IO_LINK_STATUS,
                 (1ULL << 10) | (1ULL << 11) | (3ULL << 12));
     link = qtest_readq(qts, HUB_LOCAL + IO_LINK_STATUS);
@@ -4028,7 +4045,7 @@ static void test_an_inbound_link_reset_leaves_the_link_alone(const void *data)
  * The rest of the device, register by register. Nothing establishes that an
  * incoming link reset clears any wider part of the I/O interface, the
  * network interface's link is a different link entirely, and the processor
- * interface and memory directory are further away still -- but a table's
+ * interface and memory directory are further away still. A table's
  * job is to catch the handler that reaches them anyway, so it covers all
  * four blocks rather than the one the mistake seems likeliest in.
  *
@@ -4100,7 +4117,7 @@ static const struct {
      * One bit wide and resetting set, so zero is the only value that is
      * not its power-up value. It is the one row that cannot catch a
      * handler which zeroes it; every other write below is non-zero, so
-     * the commonest shape of the mistake -- a blanket clear -- shows.
+     * the commonest shape of the mistake (a blanket clear) shows.
      */
     { "network protection", NI_PROTECTION, true, 0 },
     { "network scratch 0", NI_SCRATCH_0, true, 0xfeedfacecafebeefULL },
@@ -4133,7 +4150,7 @@ static const struct {
      * Unwritten rather than absent: every write here arms a slot timer, so
      * a written row would be a runs-on-its-own row in disguise. Its
      * power-up value is not zero, so the row still fails a handler that
-     * clears it -- which is the shape this block would be cleared in.
+     * clears it, as this is the shape this block would be cleared in.
      */
     { "one-wire master", MD_ONEWIRE },
 };
@@ -4290,7 +4307,8 @@ static void test_the_hub_identifies_itself_on_the_crossbar(const void *data)
     /* The low bit is the crosstalk contract's, inherited deliberately. */
     g_assert_cmphex(id & 1, ==, 1);
 
-    /* The two sources disagree, so what is asserted is the machine's choice. */
+    /* The two sources disagree, so what is asserted is the machine's
+     * choice. */
     qtest_quit(qts);
 
     qts = qtest_init("-M origin200 -global sgi-hub.manufacturer=0x24");
@@ -4421,7 +4439,7 @@ static void test_vector_pio_reaches_the_direct_peer(const void *data)
     uint64_t status;
 
     /*
-     * The vector operation under test never needs node 1 numbered -- it
+     * The vector operation under test never needs node 1 numbered. It
      * addresses the peer by route, not by node. Only this test's own
      * planting and checking through the node-qualified stride does.
      */
@@ -4484,8 +4502,8 @@ static void test_vector_pio_reaches_the_direct_peer(const void *data)
 }
 
 /*
- * No peer: nothing latches and the poll times out -- the datasheet's proposal
- * for an unobserved case, pinned as a choice, not silicon.
+ * No peer: nothing latches and the poll times out. This is a model choice for
+ * an unobserved case, not verified silicon behavior.
  */
 static void test_vector_launch_with_no_fabric_stays_silent(const void *data)
 {
@@ -4507,8 +4525,8 @@ static void test_vector_launch_with_no_fabric_stays_silent(const void *data)
  * sixteen-bit storage whose reset value carries the null-packet timeout
  * in bits 15:10 and the maximum burst in bits 9:0; the error register
  * and its clearing alias read zero as this machine's stated modeling
- * choice -- the hardware leaves the register undefined at reset and no
- * fabric exists here to latch an error -- so reading the clearing alias
+ * choice: the hardware leaves the register undefined at reset and no
+ * fabric exists here to latch an error. Reading the clearing alias
  * neither faults nor changes anything.
  */
 static void test_llp_port_registers(const void *data)
@@ -4639,14 +4657,13 @@ static void test_llp_port_registers_answer_the_vector_decode(
 }
 
 /*
- * A vector write lands only on a row that can store. The port error
- * register takes the write and stores nothing -- the datasheet says the
- * register is writable, and no fabric here ever latches a count for the
- * write to clear -- while its clearing alias, which no source documents
- * as writable, rejects the write the way an undecoded register does.
- * Before the decode checked what a row can store, both writes fell
- * through the raw store to state offset zero and corrupted the target
- * hub's object header behind a success completion.
+ * A vector write lands only on a row that can store. The port error register
+ * takes the write and stores nothing. The register is writable, and no
+ * fabric here ever latches a count for the write to clear. Its
+ * clearing alias, which no source documents as writable, rejects the write
+ * the way an undecoded register does. Before the decode checked what a row
+ * can store, both writes fell through the raw store to state offset zero and
+ * corrupted the target hub's object header behind a success completion.
  */
 static void test_vector_writes_land_only_on_rows_that_store(
     const void *data)
@@ -4676,12 +4693,11 @@ static void test_vector_writes_land_only_on_rows_that_store(
 }
 
 /*
- * The PIO-protection register, through plain PIO: full-width storage
- * the model never consults, resetting all ones -- one permissive bit
- * per region. The override register beside it is write-only, and its
- * only documented semantic is the password unlock, a no-op on a model
- * that never enforces the protection: the write is accepted and stores
- * nothing.
+ * The PIO-protection register, through plain PIO: full-width storage the
+ * model never consults, resetting all ones (one permissive bit per region).
+ * The override register beside it is write-only, and its only documented
+ * semantic is the password unlock, a no-op on a model that never enforces the
+ * protection: the write is accepted and stores nothing.
  */
 static void test_io_protect_registers(const void *data)
 {
@@ -4758,9 +4774,9 @@ static void test_io_protect_registers_answer_the_vector_decode(
 
 /*
  * The protection-configuration register: one bit that permits reset,
- * resetting permissive. Storage the model never consults -- the
+ * resetting permissive. Storage the model never consults. The
  * port-reset path must not require it armed, because Linux never arms
- * it -- but OpenBSD arms it before rebooting, so it must store and
+ * it. OpenBSD arms it before rebooting, so it must store and
  * read back.
  */
 static void test_protection_config_register(const void *data)
@@ -4778,11 +4794,11 @@ static void test_protection_config_register(const void *data)
 }
 
 /*
- * The diagnostic-parameters register: nineteen bits of link fault
- * injection and tuning this machine stores and never acts on. The
- * datasheet defines no reset value for the port-timeout bit and no
- * nonzero reset for the rest, so reading zero at reset is the model's
- * stated choice, the port-error precedent.
+ * The diagnostic-parameters register: nineteen bits of link fault injection
+ * and tuning this machine stores and never acts on. No reset value is
+ * specified for the port-timeout bit and no nonzero reset is specified for
+ * the rest, so reading zero at reset is the model's stated choice, the
+ * port-error precedent.
  */
 static void test_diag_parms_register(const void *data)
 {
@@ -4927,7 +4943,7 @@ static void test_stock_prom_hubs_start_unnumbered(const void *data)
 /*
  * The claim decode: a Hub answers the node-qualified stride whose number
  * equals its programmed node number, not its board position. These tests
- * read through a processor's own address space -- the claim overlays are
+ * read through a processor's own address space because the claim overlays are
  * per-view, so the always-correct global space cannot substitute for it.
  * The processor must be named in the same request: each
  * human-monitor-command gets its own monitor, so an "xp" after a separate
@@ -4993,8 +5009,8 @@ static QTestState *qtest_init_dual_node(void)
 
 /*
  * A node-qualified Hub register access resolves by the programmed node
- * number. Reprogramming node 1's Hub to zero -- the value every Hub resets
- * to under a stock PROM -- must make a node-zero-qualified access from
+ * number. Reprogramming node 1's Hub to zero (the value every Hub resets
+ * to under a stock PROM) must make a node-zero-qualified access from
  * node 1's processor land on node 1's own Hub, exactly as each node's
  * pre-assignment self-addressed init requires; restoring the real number
  * must send the same access back to the peer.
@@ -5048,8 +5064,8 @@ static void test_qualified_window_follows_the_programmed_number(
 }
 
 /*
- * A stride claimed by neither Hub fails rather than reaching either --
- * discovery counts on a probe of an absent node not completing -- and the
+ * A stride claimed by neither Hub fails rather than reaching either.
+ * Discovery counts on a probe of an absent node not completing. The
  * failure is not sticky.
  */
 static void test_unclaimed_node_number_fails(const void *data)
@@ -5188,8 +5204,8 @@ static void test_the_calias_bounds_the_nameless_memory_window(
                     CALIAS_PLANT_NODE0);
 
     /*
-     * The destination side of the observed copy -- the node-one-qualified
-     * form -- still names node 1: the bound must not overshoot into the
+     * The destination side of the observed copy (the node-one-qualified
+     * form) still names node 1: the bound must not overshoot into the
      * claimed strides.
      */
     g_assert_cmphex(cpu_view_word64(qts, NODE1_CPU,
@@ -5232,7 +5248,7 @@ static void test_the_calias_window_tracks_the_register(const void *data)
 
 /*
  * Before the numbers are programmed both Hubs claim zero and every node's
- * node-field-zero access stays on its own Hub -- so a bounded, or even
+ * node-field-zero access stays on its own Hub. Thus a bounded, or even
  * disabled, window still leaves the memory-test era decoding locally.
  * Retiring the wide windows without this fall-through is what broke the
  * two-node firmware boot in the first attempt on this defect.
@@ -5260,8 +5276,8 @@ static void test_calias_overflow_stays_local_before_numbering(
 
 /*
  * The Hub-special space is the UALIAS: uncached references to the
- * memory of the reader's node, position-independent by definition --
- * Linux asm/sn/addrs.h's alias table, verbatim -- so the cached-alias
+ * memory of the reader's node, position-independent by definition.
+ * This follows Linux asm/sn/addrs.h's alias table verbatim. The cached-alias
  * size register never moves it. The firmware renumbers a Hub while
  * running its stack through this window precisely because it stays
  * reader-local through the flip. The mirrored bottom of local memory
@@ -5341,7 +5357,8 @@ static void test_md_error_cluster(const void *data)
 
     hub_reset();
 
-    /* All eight read zero, as firmware's memory test needs; writes refused. */
+    /* All eight read zero, as firmware's memory test needs; writes
+     * refused. */
     for (addr = MD_ERROR_BASE; addr <= MD_ERROR_LAST_OFF;
          addr += MD_ERROR_STRIDE) {
         g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + addr), ==, 0);
@@ -5401,7 +5418,8 @@ static void test_bte_registers_reset_to_zero(const void *data)
 
     hub_reset();
 
-    /* Zero at reset, and back to zero after a reset from a programmed state. */
+    /* Zero at reset, and back to zero after a reset from a programmed
+     * state. */
     for (e = 0; e < 2; e++) {
         for (reg = BTE_LENGTH(e); reg <= BTE_INTERRUPT(e); reg += 8) {
             g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + reg), ==, 0);
@@ -5499,7 +5517,8 @@ static void test_bte_control_mode_bits(const void *data)
 
     hub_reset();
 
-    /* Mode bits hold, reserved bits read zero, and a load returns the bits. */
+    /* Mode bits hold, reserved bits read zero, and a load returns the
+     * bits. */
     for (e = 0; e < 2; e++) {
         qtest_writeq(qts, HUB_LOCAL + BTE_CONTROL(e), ~0ULL);
         g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + BTE_CONTROL(e)), ==,
@@ -5575,7 +5594,8 @@ static void test_bte_both_engines_the_diagnostic_shape(const void *data)
 
     hub_reset();
 
-    /* The diagnostic's sequence: it tests both pending bits together, once. */
+    /* The diagnostic's sequence: it tests both pending bits together,
+     * once. */
     for (e = 0; e < 2; e++) {
         qtest_memset(qts, src[e], fill[e], SIZE);
         qtest_memset(qts, dst[e], 0xcc, SIZE);
@@ -5712,7 +5732,8 @@ static void test_bte_error_latches_and_no_store_clears_it(const void *data)
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + BTE_LENGTH(0)), ==,
                     BTE_ERROR);
 
-    /* A later good transfer reports the stale error; byte order shows here. */
+    /* A later good transfer reports the stale error; byte order shows
+     * here. */
     qtest_writeq(qts, HUB_LOCAL + BTE_LENGTH(0), BTE_BUSY | LINES);
     qtest_writeq(qts, HUB_LOCAL + BTE_DEST(0), BTE_TEST_DST);
     qtest_writeq(qts, HUB_LOCAL + BTE_CONTROL(0), BTE_CTL_NOTIFY);
@@ -5921,7 +5942,8 @@ static void test_bte_routing_follows_nasid(const void *data)
     for (node = 0; node < 2; node++) {
         unsigned int cpu = node * 2;
 
-        /* Loader callbacks precede reset exit: make the reset claim usable. */
+        /* Loader callbacks precede reset exit: make the reset claim
+         * usable. */
         bte_reset_write(args, cpu, HUB_LOCAL + NI_STATUS, NI_REGION_SIZE);
         bte_reset_write(args, cpu, src,
                         node ? 0xbbbbbbbbbbbbbbbbULL : 0xaaaaaaaaaaaaaaaaULL);
@@ -5941,7 +5963,8 @@ static void test_bte_routing_follows_nasid(const void *data)
     }
     qts = qtest_init(args->str);
     for (round = 0; round < 2; round++) {
-        /* Both Hubs claim zero at reset. Each engine must copy its own RAM. */
+        /* Both Hubs claim zero at reset. Each engine must copy its own
+         * RAM. */
         for (node = 0; node < 2; node++) {
             for (engine = 0; engine < 2; engine++) {
                 g_assert_cmphex(cpu_view_word64(qts, node * 2,
@@ -6059,7 +6082,8 @@ static void test_bte_zero_length_and_misalignment(const void *data)
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + BTE_SOURCE(0)), ==,
                     BTE_TEST_SRC);
 
-    /* An armed zero-length launch moves nothing and never wedges: a choice. */
+    /* An armed zero-length launch moves nothing and never wedges: a
+     * choice. */
     qtest_memset(qts, BTE_TEST_SRC, 0x99, BTE_LINE);
     qtest_memset(qts, BTE_TEST_DST, 0x66, BTE_LINE);
     qtest_writeq(qts, HUB_LOCAL + BTE_LENGTH(0), BTE_BUSY);

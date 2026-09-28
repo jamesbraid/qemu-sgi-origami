@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
+/* Isolated Bedrock memory, directory, ECC and fetch-and-op tests. */
 #include "qemu/osdep.h"
 #include "qemu/bswap.h"
 #include "libqtest.h"
@@ -89,9 +90,8 @@
     "-object memory-backend-ram,id=node-memory,size=512M "
 
 /*
- * The Origin 300 machine address of the five-eighths ECC-byte carrier for
- * node zero. The machine does not map it yet, so these tests place the
- * device's own region there and use the datasheet's addresses verbatim.
+ * Origin 300 node-zero machine address for the five-eighths ECC-byte carrier.
+ * The machine has no mapping yet; this test places the device region there.
  */
 #define ECC_BASE UINT64_C(0x10140000000)
 #define ECC(_x) (ECC_BASE + (_x))
@@ -102,7 +102,7 @@
 #define ECC_ADMITTED_HALFWORD_HIGH 0x8000006
 
 /*
- * The three diagnostics the reviewed contract spells out character for
+ * The three diagnostics the register contract spells out character for
  * character. Matching them is what separates this model from an empty
  * mapping, a full-aperture sink and an over-wide handler.
  */
@@ -138,8 +138,8 @@
 #define SELFTEST_MEMORY_ERROR (UINT64_C(1) << 48)
 
 /*
- * Bits 58:56 are write-only in the public definition. Reading them back,
- * like the zero cold-reset value of the whole register, is model policy.
+ * Bits 58:56 are write-only in the public definition. Reading them back, like
+ * the zero cold-reset value of the whole register, is model policy.
  */
 #define MEMORY_CONFIG_MASK UINT64_C(0x373ff003fbfbfbfb)
 #define REPLY_QUEUE UINT64_C(0x001818180c0c0c00)
@@ -175,9 +175,9 @@ static const uint64_t protection_bank_bounds[8][2] = {
 };
 
 /*
- * Captured error results, migration candidates and the LED banks read zero
- * while the model generates no event. A guest write is dropped, so no valid
- * or error state can come from guest input.
+ * Error results, migration candidates and the LED banks read zero while the
+ * model generates no event. A guest write is dropped, so no valid or error
+ * state can come from guest input.
  */
 static const uint64_t policy_zero_registers[] = {
     0x20, 0x28, 0x20010, 0x20018, 0x20020, 0x20028, 0x20040,
@@ -419,15 +419,15 @@ static void test_selftest_phases(void)
 }
 
 /*
- * A read at or after the completion time sees the result whether or not
- * the host has run the completion timer yet. The machine here stays
- * stopped, so stepping the clock runs no timer: that stands in for a host
- * too loaded to run the main loop while a processor polls. The stock PROM
- * samples its clock before the start, reads status, then checks the clock,
- * and reports a hang if that read showed done clear and the clock has
- * passed its deadline. The zero-pattern phase is the one whose fill made
- * that window long. The fill takes no virtual time under qtest, so this
- * covers publication on read, not counting the interval from the start.
+ * A read at or after the completion time sees the result whether or not the
+ * host has run the completion timer yet. The machine here stays stopped, so
+ * stepping the clock runs no timer: that stands in for a host too loaded to
+ * run the main loop while a processor polls. The stock PROM samples its clock
+ * before the start, reads status, then checks the clock, and reports a hang
+ * if that read showed done clear and the clock has passed its deadline. The
+ * zero-pattern phase is the one whose fill made that window long. The fill
+ * takes no virtual time under qtest, so this covers publication on read, not
+ * counting the interval from the start.
  */
 static void test_selftest_completion_without_timer(void)
 {
@@ -1447,13 +1447,13 @@ static void test_directory_compatibility_capacity(void)
 }
 
 /*
- * Origin 300's installed-bank-mask=12 population leaves locational banks
- * zero and one absent. Stock IP35 PROM provisionally enables every bank
- * descriptor and walks each enabled bank's directory backdoor as a
- * retention probe, including the absent ones. An aligned carrier within
- * the declared bank size must reach the compatibility store rather than a
- * bus error; only a disabled bank or an offset beyond the declared bank
- * size stays outside configured memory.
+ * Origin 300's installed-bank-mask=12 population leaves locational banks zero
+ * and one absent. Stock IP35 PROM provisionally enables every bank descriptor
+ * and walks each enabled bank's directory backdoor as a retention probe,
+ * including the absent ones. An aligned carrier within the declared bank size
+ * must reach the compatibility store rather than a bus error; only a disabled
+ * bank or an offset beyond the declared bank size stays outside configured
+ * memory.
  */
 static void test_directory_installed_absent_bank_compat(void)
 {
@@ -1652,9 +1652,8 @@ static void test_register_contract(void)
 }
 
 /*
- * Every register is a big-endian 64-bit word. Byte order is the hardware
- * contract. Refusing a narrower access is model policy: the datasheet
- * states the width and nothing about a narrower access.
+ * Registers are big-endian 64-bit words. The model refuses narrower accesses;
+ * hardware behavior at narrower widths is unknown.
  */
 static void test_access_width_policy(void)
 {
@@ -1713,9 +1712,9 @@ static void test_explicit_registers_independent(void)
 }
 
 /*
- * A write to the reply queue register resets hardware credit counters and
- * the request queue fields are programmable up to four. The model has
- * neither credits nor queues, so both keep their fixed reads.
+ * A write to the reply queue register resets hardware credit counters and the
+ * request queue fields are programmable up to four. The model has neither
+ * credits nor queues, so both keep their fixed reads.
  */
 static void test_queue_sizes_fixed(void)
 {
@@ -1735,9 +1734,9 @@ static void test_queue_sizes_fixed(void)
 }
 
 /*
- * The Itanium probe reads the four clear registers and expects the base
- * error registers clean. Idle presence only: the model raises no error,
- * so nothing here shows read-to-clear.
+ * The Itanium probe reads the four clear registers and expects the base error
+ * registers clean. Idle presence only: the model raises no error, so nothing
+ * here shows read-to-clear.
  */
 static void test_error_cluster_idle(void)
 {
@@ -1785,8 +1784,8 @@ static void test_policy_zero_ignores_writes(void)
 }
 
 /*
- * Bits 62:24 are reserved. Bits 23:12 are the live counter, whose write
- * rule is open, so they are never set here.
+ * Bits 62:24 are reserved. Bits 23:12 are the live counter, whose write rule
+ * is open, so they are never set here.
  */
 static void test_refresh_mask(void)
 {
@@ -2264,8 +2263,7 @@ static void test_parent_exports_ecc(void)
 }
 
 /*
- * The memory-special space (docs/datasheets/bedrock-memory-directory.md,
- * "Memory special space"): the doubleword at the base of each 64-byte block
+ * The memory-special space: the doubleword at the base of each 64-byte block
  * of node memory is a fetch-and-op variable and the offset inside the block
  * names the operation. What separates this from a plain alias of memory is
  * the value returned before the variable changes.
@@ -2309,9 +2307,9 @@ static void test_fetchop_operations(void)
 
     /*
      * 32-bit forms: bit 2 names the high (0) or low (4) word, and every
-     * operation acts on that word alone as a 32-bit variable and returns
-     * that word of the old value. The Origin 300 memory diagnostic's word
-     * tests (its 0x1000c100 and 0x1000caa0) require the two words to be
+     * operation acts on that word alone as a 32-bit variable and returns that
+     * word of the old value. The Origin 300 memory diagnostic's word tests
+     * (its 0x1000c100 and 0x1000caa0) require the two words to be
      * independent; that an increment or decrement wraps inside its word
      * rather than carrying into the other is inferred from that.
      */
@@ -2352,9 +2350,9 @@ static void test_fetchop_operations(void)
     g_assert_cmphex(qtest_readq(s, MEMORY(0x1000)), ==, 0);
 
     /*
-     * The diagnostic's own form: 32-bit stores at the increment and
-     * decrement offsets, whose data is ignored, each reach one word. The
-     * high word wraps without touching the low one.
+     * The diagnostic's own form: 32-bit stores at the increment and decrement
+     * offsets, whose data is ignored, each reach one word. The high word
+     * wraps without touching the low one.
      */
     qtest_writel(s, FETCHOP(0x1000), 0xffffffff);
     qtest_writel(s, FETCHOP(0x1004), 0x80000000);
@@ -2372,7 +2370,9 @@ static void test_fetchop_operations(void)
                     UINT64_C(0xffffffff80000000));
     qtest_writeq(s, MEMORY(0x1000), 0);
 
-    /* The next block is its own variable; the rest of a block is unreached. */
+    /*
+     * The next block is its own variable; the rest of a block is unreached.
+     */
     g_assert_cmphex(qtest_readq(s, FETCHOP(0x1048)), ==,
                     UINT64_C(0x1122334455667788));
     g_assert_cmphex(qtest_readq(s, MEMORY(0x1040)), ==,
@@ -2459,9 +2459,9 @@ static void test_parent_exports_fetchop(void)
 }
 
 /*
- * The two addresses the Origin 300's own diagnostics reach through the
- * space: nmem's section 3 pattern word and scct's processor barrier, both
- * in software bank 0, which the PROM's bank-select 2 places on installed
+ * The two addresses the Origin 300's own diagnostics reach through the space:
+ * nmem's section 3 pattern word and scct's processor barrier, both in
+ * software bank 0, which the PROM's bank-select 2 places on installed
  * locational bank 2.
  */
 static void test_origin300_fetchop(void)
@@ -2487,9 +2487,8 @@ static void test_origin300_fetchop(void)
 
 /*
  * The memory ECC code's column table as the Origin 300's memory diagnostic
- * carries it (docs/datasheets/bedrock-memory-directory.md, "Memory ECC").
- * Kept here in full so the check is judged against the code, not against
- * whatever the model happens to compute.
+ * carries it. Kept here in full so the check is judged against the code, not
+ * against whatever the model happens to compute.
  */
 static const uint8_t ecc_column[72] = {
     0x13, 0x23, 0x43, 0x83, 0x2f, 0xf1, 0x0d, 0x07,
@@ -2519,14 +2518,12 @@ static uint8_t ecc_of(uint64_t data)
 #define ECC_BYTE(_index) ECC((_index) ^ 7)
 
 /*
- * A doubleword whose backdoor-written ECC byte disagrees with its data is
- * checked on every read: a single-bit error is corrected and latched with
- * its syndrome and address, a check-bit error latched without changing the
- * data, and a double-bit error latched as uncorrectable. A read with no
- * cache attribute, this test's, completes with the word as stored, as a
- * processor's cached read does; the uncached read that fails is the
- * processor's (sn1-bedrock-ecc-cpu-test). A data write regenerates the ECC
- * and ends the checking; the ignore bit suspends it.
+ * Check each read after a backdoor ECC/data mismatch. A single data-bit error
+ * is corrected and latched with syndrome and address; a check-bit error
+ * latches without data change; two bits latch uncorrectable. This
+ * attribute-free qtest read, like a cached CPU read, returns stored data; an
+ * uncached CPU read fails (sn1-bedrock-ecc-cpu-test). Data writes regenerate
+ * ECC; ignore suspends checks.
  */
 static void test_ecc_check_on_read(void)
 {
@@ -2654,9 +2651,9 @@ static void test_ecc_check_on_read(void)
 }
 
 /*
- * The scrub carrier reads the same bytes from four eighths of the node and
- * an aligned doubleword store there scrubs the 64-byte block: the
- * corrections a read would make, latched the same way.
+ * The scrub carrier reads the same bytes from four eighths of the node and an
+ * aligned doubleword store there scrubs the 64-byte block: the corrections a
+ * read would make, latched the same way.
  */
 static void test_ecc_scrub_carrier(void)
 {
@@ -2819,7 +2816,9 @@ static void test_parent_ecc_uncorrectable_interrupt(void)
     /* The sMDK monitor polls the bit through the writable view. */
     g_assert_cmphex(qtest_readq(s, BEDROCK_BASE + PI_ERROR_SET), ==,
                     MEMORY_UNCORRECTABLE);
-    /* Interface 0's processor A and interface 1's processor B are masked in. */
+    /*
+     * Interface 0's processor A and interface 1's processor B are masked in.
+     */
     g_assert_true(qtest_get_irq(s, ERROR_LINE(0, 0)));
     g_assert_false(qtest_get_irq(s, ERROR_LINE(0, 1)));
     g_assert_false(qtest_get_irq(s, ERROR_LINE(1, 0)));
@@ -2846,9 +2845,9 @@ static void test_parent_ecc_uncorrectable_interrupt(void)
 
 /*
  * A directory error raises the memory errors' interrupts: a correctable one
- * pending bank 1 bit 61, an uncorrectable one error-interrupt bit 24, on
- * both processor interfaces. The Origin 300's directory diagnostic waits
- * for each and then reads the directory error register.
+ * pending bank 1 bit 61, an uncorrectable one error-interrupt bit 24, on both
+ * processor interfaces. The Origin 300's directory diagnostic waits for each
+ * and then reads the directory error register.
  */
 static void test_parent_directory_ecc_interrupt(void)
 {
@@ -2887,14 +2886,11 @@ static void test_parent_directory_ecc_interrupt(void)
 }
 
 /*
- * The Origin 300's memory diagnostic injects at physical 0x506000 through
- * the machine's ECC carrier and expects the corrected word, the error
- * record through the local register window and the interrupt. Its SECDED
- * verification then sweeps the uncorrectable syndromes the same way,
- * beginning with 0x03, reads the word uncached expecting a bus error, and
- * waits for the error interrupt whose handler reads the memory error
- * register; that interrupt is error pending bit 24, which its error mask
- * admits.
+ * Origin 300 injects at physical 0x506000 through the ECC carrier, then
+ * checks the corrected word, local-window error record and interrupt. Its
+ * SECDED scan starts uncorrectable syndromes at 0x03, expects an uncached bus
+ * error, and waits for pending bit 24 admitted by the error mask; the handler
+ * reads the memory error register.
  */
 static void test_origin300_ecc_check(void)
 {
@@ -2932,8 +2928,8 @@ static void test_origin300_ecc_check(void)
     g_assert_cmphex(qtest_readq(s, SELFTEST_MACHINE(MEMORY_ERROR)), ==, 0);
 
     /*
-     * Syndrome 0x03: two check bits, uncorrectable, latched, interrupting.
-     * A read with no cache attribute completes with the word as stored; the
+     * Syndrome 0x03: two check bits, uncorrectable, latched, interrupting. A
+     * read with no cache attribute completes with the word as stored; the
      * uncached read the diagnostic makes, and its bus error, are the
      * processor's (sn1-bedrock-ecc-cpu-test).
      */
@@ -2960,14 +2956,14 @@ static void test_origin300_ecc_check(void)
 /*
  * A self-test write phase with pattern zero fills its bank with zero, check
  * bytes included. The stock PROM runs one over each bank after its memory
- * test, which leaves backdoor check bytes that disagree with their data;
- * the Origin 300's cache-coherency and directory diagnostics later read
- * those doublewords without writing them first. The doubleword here is the
- * one the coherency diagnostic read, left the way the memory test leaves
- * it: data 0x0f0f..., check byte 0x81, with a directory non-codeword on its
- * line. A phase with another pattern leaves memory alone, the fill rewrites
- * the line's directory entry as any data write does, and it stays inside
- * the selected bank.
+ * test, which leaves backdoor check bytes that disagree with their data; the
+ * Origin 300's cache-coherency and directory diagnostics later read those
+ * doublewords without writing them first. The doubleword here is the one the
+ * coherency diagnostic read, left the way the memory test leaves it: data
+ * 0x0f0f..., check byte 0x81, with a directory non-codeword on its line. A
+ * phase with another pattern leaves memory alone, the fill rewrites the
+ * line's directory entry as any data write does, and it stays inside the
+ * selected bank.
  */
 static void test_origin300_selftest_fill(void)
 {
@@ -3031,13 +3027,13 @@ static void test_origin300_selftest_fill(void)
 }
 
 /*
- * The directory word carries its own check field (premium: bits 37:32 and
- * 48; standard: 21:16). A backdoor write regenerates it unless directory
- * ECC is ignored, in which case a non-codeword is stored as written and the
- * next read of its memory line checks it: a single-bit error is corrected
- * in the stored word and latched with the syndrome and the word's Hub
- * special address, a double-bit error latched as uncorrectable and refused.
- * The syndromes are the Origin 300 directory diagnostic's own columns.
+ * The directory word carries its own check field (premium: bits 37:32 and 48;
+ * standard: 21:16). A backdoor write regenerates it unless directory ECC is
+ * ignored, in which case a non-codeword is stored as written and the next
+ * read of its memory line checks it: a single-bit error is corrected in the
+ * stored word and latched with the syndrome and the word's Hub special
+ * address, a double-bit error latched as uncorrectable and refused. The
+ * syndromes are the Origin 300 directory diagnostic's own columns.
  */
 static void test_directory_ecc_check(void)
 {
@@ -3278,10 +3274,10 @@ static void test_ecc_check_many(void)
 
 /*
  * A write that lifts one doubleword's mark frees its slot for the next
- * doubleword marked, and the marks a migration carries are still found on
- * the destination: a read of a marked doubleword or line there is checked,
- * a write there lifts the mark, and the doubleword whose mark was lifted
- * before the migration stays clean.
+ * doubleword marked, and the marks a migration carries are still found on the
+ * destination: a read of a marked doubleword or line there is checked, a
+ * write there lifts the mark, and the doubleword whose mark was lifted before
+ * the migration stays clean.
  */
 static void test_ecc_marks_reused_and_migrated(void)
 {
@@ -3471,8 +3467,8 @@ static void test_ecc_lifted_mark_over_marked_line(void)
 
 /*
  * The Origin 300's directory diagnostic injects at the word for physical
- * 0x506000 through the machine's directory carrier and expects the
- * corrected word and the error record through the local window.
+ * 0x506000 through the machine's directory carrier and expects the corrected
+ * word and the error record through the local window.
  */
 static void test_origin300_directory_ecc_check(void)
 {
@@ -3509,10 +3505,10 @@ static void test_origin300_directory_ecc_check(void)
 #define BEDROCK_NODE0 (SPACE_XTALK + UINT64_C(0x01800000))
 #define MD_MEMORY_CONFIG UINT64_C(0x780008)
 /*
- * Origin 300's installed memory occupies locational banks 2 and 3, not
- * bank 0: map software bank 0 onto them so the guest's low-memory
- * coordination state (its completion flag included) lands in backed RAM
- * instead of an I/O hole.
+ * Origin 300's installed memory occupies locational banks 2 and 3, not bank
+ * 0: map software bank 0 onto them so the guest's low-memory coordination
+ * state (its completion flag included) lands in backed RAM instead of an I/O
+ * hole.
  */
 #define MD_INSTALLED_SELECT2 ((UINT64_C(2) << 32) | UINT64_C(0x3300))
 
@@ -3625,16 +3621,15 @@ static void test_cpu_halfword_stores(void)
 /*
  * The stock PROM's walking-address memory test reads a positioned check word
  * back from the very top of the fitted bank. Repeat all four residues at the
- * last fitted 64-byte line of installed memory. Its residue 0x30 (ECC
- * carrier offset 0) selects source bits 31:16, the slice the first-line
- * cases above never exercise.
- *
+ * last fitted 64-byte line of installed memory. Its residue 0x30 (ECC carrier
+ * offset 0) selects source bits 31:16, the slice the first-line cases above
+ * never exercise.
  * Origin 300's installed memory occupies locational banks 2 and 3, 256 MiB
- * each (see MD_INSTALLED_SELECT2 above), not one 512 MiB bank at slot 0.
- * The last fitted line sits in the second (higher) of those two banks:
- * software bank 1, which the 2-selector routes to locational bank 3, at
- * device offset 0x9fffff8 -- that bank's own last 64-byte line, 0x1fffff8,
- * past its dense base of 0x2000000 (bank 2's own 0x2000000 ECC bytes).
+ * each (see MD_INSTALLED_SELECT2 above), not one 512 MiB bank at slot 0. The
+ * last fitted line sits in the second (higher) of those two banks: software
+ * bank 1, which the 2-selector routes to locational bank 3, at device offset
+ * 0x9fffff8, that bank's own last 64-byte line, 0x1fffff8, past its dense
+ * base of 0x2000000 (bank 2's own 0x2000000 ECC bytes).
  */
 static char *create_prom_top_line(void)
 {
@@ -3669,13 +3664,13 @@ static char *create_prom_top_line(void)
      */
     emit_load64(image, &offset, 8, UINT64_C(0x9000000149fffff8));
     emit_load64(image, &offset, 1, UINT64_C(0x1111222233334444));
-    emit(image, &offset, 0xa5010006); /* sh at, 6(t0)  residue 0x00 -> 0x4444 */
+    emit(image, &offset, 0xa5010006); /* sh 6(t0): res 0x00 -> 0x4444 */
     emit_load64(image, &offset, 1, UINT64_C(0x5555666677778888));
-    emit(image, &offset, 0xa5010004); /* sh at, 4(t0)  residue 0x10 -> 0x5555 */
+    emit(image, &offset, 0xa5010004); /* sh 4(t0): res 0x10 -> 0x5555 */
     emit_load64(image, &offset, 1, UINT64_C(0x9999aaaabbbbcccc));
-    emit(image, &offset, 0xa5010002); /* sh at, 2(t0)  residue 0x20 -> 0xaaaa */
+    emit(image, &offset, 0xa5010002); /* sh 2(t0): res 0x20 -> 0xaaaa */
     emit_load64(image, &offset, 1, UINT64_C(0xddddeeee13572468));
-    emit(image, &offset, 0xa5010000); /* sh at, 0(t0)  residue 0x30 -> 0x1357 */
+    emit(image, &offset, 0xa5010000); /* sh 0(t0): res 0x30 -> 0x1357 */
 
     emit_load64(image, &offset, 8, UINT64_C(0x9000000000000100));
     emit(image, &offset, 0x340b0001); /* ori t3, zero, 1 */
@@ -3713,8 +3708,8 @@ static void test_cpu_halfword_stores_top_line(void)
     g_assert_cmphex(qtest_readq(s, 0x108), ==, 1);
 
     /*
-     * Each residue keeps its own positioned check word at the top
-     * fitted line.
+     * Each residue keeps its own positioned check word at the top fitted
+     * line.
      */
     g_assert_cmphex(qtest_readw(s, HUB_ECC + 0x9fffffe), ==, 0x4444);
     g_assert_cmphex(qtest_readw(s, HUB_ECC + 0x9fffffc), ==, 0x5555);
@@ -3722,8 +3717,8 @@ static void test_cpu_halfword_stores_top_line(void)
     g_assert_cmphex(qtest_readw(s, HUB_ECC + 0x9fffff8), ==, 0x1357);
     /*
      * Big-endian byte view of the residue 0x30 word: the halfword carrier
-     * keeps the even doubleword's byte (0x9fffffe, at byte carrier
-     * 0x9fffffe ^ 7) in its low half.
+     * keeps the even doubleword's byte (0x9fffffe, at byte carrier 0x9fffffe
+     * ^ 7) in its low half.
      */
     g_assert_cmphex(qtest_readb(s, HUB_ECC + 0x9fffff8), ==, 0x13);
     g_assert_cmphex(qtest_readb(s, HUB_ECC + 0x9fffff9), ==, 0x57);

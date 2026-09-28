@@ -1,20 +1,15 @@
 /*
- * Whether device state comes back correct after a migration, including
- * what a .post_load hook re-derives rather than carries in the stream.
- *
- * Deliberately not on tests/qtest/migration/: that framework proves a
- * running guest survives a live migration, and qtest never executes guest
- * code, so a stopped machine's device state is the whole question. The
- * migrate-and-poll steps follow tests/qtest/nvme-test.c, which stands
- * outside the framework for the same reason.
- *
- * The founding case is the Bridge device window, whose aim is derived
- * from the per-slot register on load: the register's bits surviving
- * (VMSTATE_UINT32_ARRAY guarantees that) is a weaker claim than an access
- * through the window still reaching the card, which only a correct
- * .post_load leaves true.
+ * Test stopped-machine device state after migration, including .post_load
+ * derived state. Bridge window access must reach its card after load;
+ * VMSTATE_UINT32_ARRAY alone preserves only the slot register bits.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
+ */
+
+/*
+ * qtest executes no guest code; live migration tests under
+ * tests/qtest/migration/ cannot check this state. Migrate and poll as in
+ * tests/qtest/nvme-test.c.
  */
 
 #include "qemu/osdep.h"
@@ -263,10 +258,10 @@ static void test_module_identity_page_progress_survives_migration(
         0x09, 0x09, 0x00, 0x00, 0x00, 0x00, 0x10, 0xc7,
     };
     static const uint8_t page[32] = {
-        0x01, 0x4b, 0x4f, 0x52, 0x49, 0x47, 0x41, 0x4d,
-        0x49, 0x30, 0x31, 0xff, 0xff, 0xff, 0xff, 0xff,
+        0x01, 0x53, 0x47, 0x49, 0x4d, 0x4f, 0x44, 0x55,
+        0x4c, 0x45, 0x31, 0xff, 0xff, 0xff, 0xff, 0xff,
         0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
-        0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xf9, 0x27,
+        0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x9f, 0x88,
     };
     g_autofree char *tmpfs = NULL;
     g_autofree char *uri = NULL;
@@ -481,10 +476,10 @@ static void test_dual_base_io_survives_migration(const void *data)
 }
 
 /*
- * A wound receive timer's deadline lives in a QEMUTimer, which crosses
- * only if the timer is in the stream; lost in transit it is an interrupt
- * that never fires and a console that waits forever. The far side must
- * show the count still pending and still expire past the deadline.
+ * A wound receive timer's deadline lives in a QEMUTimer, which crosses only
+ * if the timer is in the stream; lost in transit it is an interrupt that
+ * never fires and a console that waits forever. The far side must show the
+ * count still pending and still expire past the deadline.
  */
 static void test_a_wound_receive_timer_survives_migration(const void *data)
 {
@@ -510,8 +505,8 @@ static void test_a_wound_receive_timer_survives_migration(const void *data)
                  PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER);
 
     /*
-     * Loopback delivers the transmit entry to the same port's receive
-     * ring with no chardev in it; the armed timer is wound by delivery.
+     * Loopback delivers the transmit entry to the same port's receive ring
+     * with no chardev in it; the armed timer is wound by delivery.
      */
     qtest_writeb(from, IOC3_SERIAL_A_LCR, 0x03);
     qtest_writeb(from, IOC3_SERIAL_A_FCR, 0x01);
@@ -805,10 +800,9 @@ static void test_legacy_count2_high_migrates_onward(const void *data)
 }
 
 /*
- * Aim a window at a card, migrate, and require the same access to still
- * reach the card: without sgi_bridge_post_load() re-deriving the window's
- * aim, the destination comes up over the wrong PCI space -- observed by
- * mutating post_load to a no-op -- and the read returns the bus's
+ * Aim a window at a card, migrate, and require the same access to still reach
+ * the card: without sgi_bridge_post_load() re-deriving the window's aim, the
+ * destination uses the wrong PCI space and the read returns the bus's
  * unanswered value.
  */
 static void test_a_device_window_survives_migration(const void *data)
@@ -842,8 +836,8 @@ static void test_a_device_window_survives_migration(const void *data)
     sgi_migrate_stopped(from, uri);
 
     /*
-     * The claim: the access still reaches the card, which only holds if
-     * the derived state came back, not just the register.
+     * Check: the access still reaches the card, which only holds if the
+     * derived state came back, not just the register.
      */
     g_assert_cmphex(qtest_readl(to, WINDOW(PROBE_WINDOW_OFFSET) +
                                 CARD_SCRATCH), ==, 0xc0ffee00);
@@ -892,11 +886,11 @@ static void test_network_routes_survive_migration(const void *data)
 
 /*
  * A first START is split across two guest writes: the address reaches the
- * PCF8584 data register before the control write asserts START.  Migrate part
+ * PCF8584 data register before the control write asserts START. Migrate part
  * way through code 0's held slot, after its grant. Migration must preserve
  * both the remaining slot interval and the next code. Code 1 then replaces
- * readable S0 exactly at the slot deadline -- code 0 holds for the base ten
- * milliseconds, not a fixed tick -- while the separately staged address still
+ * readable S0 exactly at the slot deadline. Code 0 holds for the base ten
+ * milliseconds, not a fixed tick, while the separately staged address still
  * makes START reach the ELSC.
  */
 static void test_staged_i2c_start_survives_migration(const void *data)
@@ -1059,14 +1053,13 @@ static const uint8_t ip29_record_page0[32] = {
 
 /*
  * The board identity part is driven one bit per register write, so its
- * conversation state lives between accesses and in no register -- a
- * snapshot at rest restores it correctly by accident. Read half a page on
- * the source and half on the destination, checked as one page: the
- * barcode and the part number sit either side of the boundary and the
- * page's check covers all of it, so a destination that forgot the
- * conversation answers the idle wire (ones) and cannot pass.
- * Snapshot-at-rest-only migration testing certifies a weaker property
- * than the one that must hold.
+ * conversation state lives between accesses and in no register. A snapshot
+ * at rest restores it correctly by accident. Read half a page on the source
+ * and half on the destination, checked as one page: the barcode and the part
+ * number sit either side of the boundary and the page's check covers all of
+ * it, so a destination that forgot the conversation answers the idle wire
+ * (ones) and cannot pass. Snapshot-at-rest-only migration testing certifies a
+ * weaker property than the one that must hold.
  */
 static void test_a_conversation_survives_migration(const void *data)
 {
@@ -1114,9 +1107,8 @@ static void test_a_conversation_survives_migration(const void *data)
     }
 
     /*
-     * One page, not bytes: the whole value rather than a property of it,
-     * the IP29 record's page 0 (docs/datasheets/bridge.md, "The Origin
-     * 200's IP29 record").
+     * One page, not bytes: the whole value rather than a property of it, the
+     * IP29 record's page 0.
      */
     g_assert_cmpmem(page, sizeof(page), ip29_record_page0,
                     sizeof(ip29_record_page0));
@@ -1127,10 +1119,10 @@ static void test_a_conversation_survives_migration(const void *data)
 }
 
 /*
- * BTE registers are the whole of an engine's state, but bit-pattern
- * survival is the weak half: an engine armed on the source must launch on
- * the destination from nothing but its migrated registers, so control is
- * stored only on the far side.
+ * BTE registers are the whole of an engine's state, but bit-pattern survival
+ * is the weak half: an engine armed on the source must launch on the
+ * destination from nothing but its migrated registers, so control is stored
+ * only on the far side.
  */
 static void test_bte_state_survives_migration(const void *data)
 {
@@ -1266,8 +1258,8 @@ static void test_flash_autoselect_survives_migration(const void *data)
     flash_command(from, FLASH_UNLOCK2, 0x55);
     flash_command(from, FLASH_UNLOCK1, 0x90);
     /*
-     * Only the two identity bytes are pinned; what the chip answers past
-     * them follows the flash device model, the same narrowing
+     * Only the two identity bytes are pinned; what the chip answers past them
+     * follows the flash device model, the same narrowing
      * test_flash_autoselect makes.
      */
     g_assert_cmphex(qtest_readb(from, FLASH_HUB), ==, 0x01);
@@ -1318,10 +1310,9 @@ static void test_flash_program_command_survives_migration(const void *data)
 #define BACKDOOR_DIR_HUB        (SPACE_HUB + 0xc0000000ULL)
 
 /*
- * The back-door storage is the backing of a ROM device, so it crosses in
- * the RAM stream -- if it ever stopped doing so the destination would
- * read its realize-time zero fill. The low sixteen bits are the real
- * storage.
+ * The back-door storage is the backing of a ROM device, so it crosses in the
+ * RAM stream. If it ever stopped doing so the destination would read its
+ * realize-time zero fill. The low sixteen bits are the real storage.
  */
 static void test_backdoor_storage_survives_migration(const void *data)
 {
@@ -1471,11 +1462,11 @@ static void test_timekeeper_images_survive_migration(const void *data)
 }
 
 /*
- * Restored state wins over a realize-time clock restore. Both ends back
- * their Timekeeper with an image and a clock reference. The destination's
- * image holds a different saved time, which its realize restores, and the
- * migration stream must replace it: after the transfer the destination
- * reads the source's clock and storage, not its own image's.
+ * Restored state wins over a realize-time clock restore. Both ends back their
+ * Timekeeper with an image and a clock reference. The destination's image
+ * holds a different saved time, which its realize restores, and the migration
+ * stream must replace it: after the transfer the destination reads the
+ * source's clock and storage, not its own image's.
  */
 static char *timekeeper_backing_file(const char *dir, const char *name,
                                      size_t size, const uint8_t *cells)

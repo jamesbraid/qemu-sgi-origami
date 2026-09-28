@@ -1,11 +1,7 @@
 /*
- * SGI Crossbow register contract and crossbar routing.
- *
- * The fixture builds one populated switch on its own: three widget faces
- * of test RAM, one per attached link, and one mapped view per port so a
- * packet's entry port and its destination widget can be told apart. It is
- * not an Origin 2000; the machine wiring is asserted where the machine is.
- *
+ * SGI Crossbow registers and routing on an isolated switch, not Origin 2000.
+ * Three RAM widget faces and per-port views distinguish packet entry ports
+ * from destination widgets; machine wiring is tested with the machine.
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
@@ -19,9 +15,9 @@
 #define XBOW "/machine/peripheral/xbow"
 
 /*
- * The base I/O board sits at widget 8 and the two attached Hubs at 9 and
- * 10, which is the population the module's descriptor gives the first
- * switch. Widget 11 is attached to nothing.
+ * The base I/O board sits at widget 8 and the two attached Hubs at 9 and 10,
+ * which is the population the module's descriptor gives the first switch.
+ * Widget 11 is attached to nothing.
  */
 #define WIDGET_IO       8
 #define WIDGET_HUB_A    9
@@ -43,9 +39,9 @@
 #define WIDGET_BIT(w)   (1u << (w))
 
 /*
- * One widget's crosstalk space. The machine gives this the size its
- * address map defines; a smaller one here keeps the fixture's addresses
- * readable and exercises the property at the same time.
+ * One widget's crosstalk space. The machine gives this the size its address
+ * map defines; a smaller one here keeps the fixture's addresses readable and
+ * exercises the property at the same time.
  */
 #define SPAN            UINT64_C(0x1000000)
 #define PORT_VIEW(w)    (UINT64_C(0x100000000) * ((w) - 7))
@@ -281,8 +277,8 @@ static void test_link_register_decode(void)
 
 /*
  * Attachment is reported whether or not a link trained. A port that never
- * came out of reset stays in initialization failure, whether it has a
- * widget on it or not.
+ * came out of reset stays in initialization failure, whether it has a widget
+ * on it or not.
  */
 static void test_link_population(void)
 {
@@ -310,9 +306,9 @@ static void test_link_population(void)
 }
 
 /*
- * The force control says how a port should come up, not how it came up.
- * Width is what was negotiated, so it moves when the port next does, and
- * the force survives a link reset so software can reset a port into it.
+ * The force control says how a port should come up, not how it came up. Width
+ * is what was negotiated, so it moves when the port next does, and the force
+ * survives a link reset so software can reset a port into it.
  */
 static void test_link_width_and_control(void)
 {
@@ -346,8 +342,8 @@ static void test_link_width_and_control(void)
 
 /*
  * A port with nothing on it goes to initialization failure and stays there.
- * Resetting its link needs no completion predicate, because the
- * specification states where an unattached port lands.
+ * Resetting its link needs no completion predicate, because the specification
+ * states where an unattached port lands.
  */
 static void test_link_reset_on_an_absent_port(void)
 {
@@ -363,8 +359,8 @@ static void test_link_reset_on_an_absent_port(void)
 
 /*
  * A reserved address, a write to a read-only register and a write to a
- * clearing alias are all register-access errors, and a second one while
- * the first stands reports the repeat.
+ * clearing alias are all register-access errors, and a second one while the
+ * first stands reports the repeat.
  */
 static void test_access_errors(void)
 {
@@ -398,10 +394,10 @@ static void test_access_errors(void)
 }
 
 /*
- * The established host form of a register access is the 32-bit access to
- * the data half. An eight-byte access has no established packet form, so
- * the model refuses it instead of answering, and refusing is not a report
- * that the chip saw an error.
+ * The established host form of a register access is the 32-bit access to the
+ * data half. An eight-byte access has no established packet form, so the
+ * model refuses it instead of answering, and refusing is not a report that
+ * the chip saw an error.
  */
 static void test_wide_access_is_refused(void)
 {
@@ -457,11 +453,11 @@ static void test_writable_storage(void)
 }
 
 /*
- * Writing the error command word clears it and both error addresses, and
- * the data written is discarded. Only the discard is pinned here: this
- * device is pristine, so all three registers were already zero and
- * clearing them proves nothing on its own. The illegal-destination tests
- * cover the latch actually holding and rearming.
+ * Writing the error command word clears it and both error addresses, and the
+ * data written is discarded. Only the discard is pinned here: this device is
+ * pristine, so all three registers were already zero and clearing them proves
+ * nothing on its own. The illegal-destination tests cover the latch actually
+ * holding and rearming.
  */
 static void test_error_command_word(void)
 {
@@ -475,9 +471,9 @@ static void test_error_command_word(void)
 }
 
 /*
- * One assertion is outstanding at a time: two enabled conditions produce
- * one packet, acknowledging one leaves it outstanding, and acknowledging
- * the last produces the deassertion.
+ * One assertion is outstanding at a time: two enabled conditions produce one
+ * packet, acknowledging one leaves it outstanding, and acknowledging the last
+ * produces the deassertion.
  */
 static void test_interrupt_coalescing(void)
 {
@@ -613,10 +609,10 @@ static void test_no_route_to_self(void)
 }
 
 /*
- * A destination number that names no port is an error on the port the
- * packet arrived at. Reading the illegal slot cannot tell a correct switch
- * from one that never decoded it -- both answer nothing -- so what is
- * pinned here is which port's status moved and which did not.
+ * A destination number that names no port is an error on the port the packet
+ * arrived at. Reading the illegal slot cannot tell a correct switch from one
+ * that never decoded it. Both answer nothing. Check which port's status
+ * changed and which did not.
  */
 static void test_illegal_destination(void)
 {
@@ -671,12 +667,12 @@ static void test_illegal_destination(void)
 
 /*
  * The first illegal-destination error also fills the global capture
- * registers: the command word's DIDN is the widget the packet named and
- * its SIDN is the widget attached to the port that sent it, and the
- * address registers hold the offset the packet carried within that
- * (illegal) widget's own space. A repeat while the first still stands
- * leaves the capture alone, and writing the command word clears it and
- * rearms capture for the next error.
+ * registers: the command word's DIDN is the widget the packet named and its
+ * SIDN is the widget attached to the port that sent it, and the address
+ * registers hold the offset the packet carried within that (illegal) widget's
+ * own space. A repeat while the first still stands leaves the capture alone,
+ * and writing the command word clears it and rearms capture for the next
+ * error.
  */
 static void test_illegal_destination_captures_command_and_address(void)
 {
@@ -714,10 +710,10 @@ static void test_illegal_destination_captures_command_and_address(void)
 }
 
 /*
- * A legal destination does not become illegal because nothing answers
- * there. A link with no widget on it, one the population leaves out, and
- * one taken down after coming up are all silent, which is what separates a
- * number that decodes to no port from a port that is not working.
+ * A legal destination does not become illegal because nothing answers there.
+ * A link with no widget on it, one the population leaves out, and one taken
+ * down after coming up are all silent, which is what separates a number that
+ * decodes to no port from a port that is not working.
  */
 static void test_unavailable_destination_is_not_illegal(void)
 {
@@ -744,8 +740,8 @@ static void test_unavailable_destination_is_not_illegal(void)
 
 /*
  * The request bit and the packet follow the port's own enable. With the
- * notification off the error still latches, so a test that only read the
- * link status would pass against a switch that interrupted regardless.
+ * notification off the error still latches, so a test that only read the link
+ * status would pass against a switch that interrupted regardless.
  */
 static void test_illegal_destination_interrupt(void)
 {
@@ -784,8 +780,8 @@ static void test_illegal_destination_interrupt(void)
 
 /*
  * One error on this port, no repeat behind it, and clear it again. A macro
- * rather than a function so a failure names the access that caused it
- * instead of naming this line.
+ * rather than a function so a failure names the access that caused it instead
+ * of naming this line.
  */
 #define assert_one_illegal_report(qts, widget) \
     g_assert_cmphex(reg_read(qts, LINK(widget) + LINK_STATUS_CLR), ==, \
@@ -793,9 +789,9 @@ static void test_illegal_destination_interrupt(void)
 
 /*
  * A packet is wrong at its destination before its width matters, so every
- * access the host can issue is one report and never two: multiple error
- * stays clear each time. The last case starts inside the range and runs
- * off the top of it, which is still one packet naming where it began.
+ * access the host can issue is one report and never two: multiple error stays
+ * clear each time. The last case starts inside the range and runs off the top
+ * of it, which is still one packet naming where it began.
  */
 static void test_illegal_destination_one_report_per_access(void)
 {
@@ -833,9 +829,9 @@ static void test_illegal_destination_one_report_per_access(void)
 }
 
 /*
- * A machine reset takes a standing illegal destination with it, request
- * and all. Nothing here is acknowledged first, so a reset that left the
- * sticky bits or the request behind would show.
+ * A machine reset takes a standing illegal destination with it, request and
+ * all. Nothing here is acknowledged first, so a reset that left the sticky
+ * bits or the request behind would show.
  */
 static void test_reset_clears_a_latched_illegal_destination(void)
 {
@@ -918,9 +914,9 @@ static void test_interrupt_needs_its_link(void)
 }
 
 /*
- * Link reset drives the remote signal for two core cycles and leaves the
- * port in initialization: no reviewed source supplies a predicate for a
- * link having trained, so nothing here decides that one has.
+ * Link reset drives the remote signal for two core cycles and leaves the port
+ * in initialization: no reviewed source supplies a predicate for a link
+ * having trained, so nothing here decides that one has.
  */
 static void test_link_reset_pulse(void)
 {
@@ -1042,10 +1038,10 @@ static void test_migration_keeps_runtime_state(void)
 }
 
 /*
- * A latched illegal destination is device state, so it crosses a
- * migration with its repeat and its request, and the far side can
- * acknowledge it. Both status arrays were already in the vmstate; this is
- * what would fail if a later change kept the condition somewhere else.
+ * A latched illegal destination is device state, so it crosses a migration
+ * with its repeat and its request, and the far side can acknowledge it. Both
+ * status arrays were already in the vmstate; this is what would fail if a
+ * later change kept the condition somewhere else.
  */
 static void test_illegal_destination_crosses_migration(void)
 {
@@ -1099,9 +1095,9 @@ static void test_second_population(void)
     QTestState *qts = xbow_start_with(SECOND_PRESENT, SECOND_STARTUP, "");
 
     /*
-     * Presence comes from the population, not from whether a face happens
-     * to be attached: this fixture attaches widget 8's, and the switch that
-     * does not carry it must still report it absent.
+     * Presence comes from the population, not from whether a face happens to
+     * be attached: this fixture attaches widget 8's, and the switch that does
+     * not carry it must still report it absent.
      */
     g_assert_cmphex(reg_read(qts, LINK(WIDGET_HUB_A) + LINK_STATUS) &
                     LINK_ALIVE, ==, LINK_ALIVE);
@@ -1187,10 +1183,10 @@ static void test_interrupt_destination_address(void)
 }
 
 /*
- * Startup health and attachment are different things. A widget bolted to
- * the switch that the configuration does not bring up reports itself
- * present and failed, and a machine reset puts it back there however the
- * running machine had moved it.
+ * Startup health and attachment are different things. A widget bolted to the
+ * switch that the configuration does not bring up reports itself present and
+ * failed, and a machine reset puts it back there however the running machine
+ * had moved it.
  */
 static void test_startup_health_is_not_attachment(void)
 {

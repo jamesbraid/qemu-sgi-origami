@@ -5,7 +5,7 @@
  *
  * The QOM lifecycle, property set and position state are the public QEMU
  * GSoC 2026 scsi-tape skeleton; the command set and the on-file format are
- * the origami fork's own.
+ * specific to this device model.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */

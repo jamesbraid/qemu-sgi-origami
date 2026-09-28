@@ -1,8 +1,8 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * SGI SN0 (IP27) family mechanics and node device.
- * Origin 200 supplies a compiled topology to the generic model consumer.
- * -bios and pflash fill a node's boot flash here.
+ * SGI SN0 (IP27) family mechanics and node device. Origin 200 supplies a
+ * compiled topology to the generic model consumer. -bios and pflash fill a
+ * node's boot flash here.
  */
 
 #include "qemu/osdep.h"
@@ -45,9 +45,9 @@
 #define SN0_HUB_PRIVATE_HALF (SN0_HUB_PRIVATE_SIZE / 2)
 
 /*
- * The PROM's second execution home during the cache-as-RAM phase: a RAM
- * copy of its own text, reached by an ASID re-point rather than a PC
- * change. See sn-promdata.c and the datasheet section it cites.
+ * The PROM's second execution home during the cache-as-RAM phase: a RAM copy
+ * of its text, reached by an ASID re-point rather than a PC change. See
+ * sn-promdata.c for the mapping.
  */
 #define SN0_PROM_COPY_PADDR 0x01a00000
 
@@ -115,9 +115,9 @@ const SN0ModelAddressMap sn0_hub_address_map = {
 };
 
 /*
- * The Hub's bank decode is the same on every SN0 node; which banks a
- * board wires and which sizes its DIMMs make is the board's. This is
- * the Origin 200 (IP29) board: four banks.
+ * The Hub's bank decode is the same on every SN0 node; which banks a board
+ * wires and which sizes its DIMMs make is the board's. This is the Origin 200
+ * (IP29) board: four banks.
  */
 static const uint64_t sn0_hub_memory_sizes_mib[] = {
     0x200ULL, 0x100ULL, 0x80ULL, 0x40ULL,
@@ -137,11 +137,12 @@ const SN0ModelMemory sn0_hub_memory = {
 
 /*
  * The Origin 2000 node board (IP27) wires eight banks, each a DIMM pair.
- * 16-Mb parts make 64 or 128 MB banks and 64-Mb parts 512 MB ones (SGI
- * 007-3439-002, page 35); no part makes a 256 MB bank, and the stock
- * IP27 PROM disables one ("256 MB dimm banks not allowed on IP27 node
- * boards"). The bank-zero limit is the Origin 200's, carried over
- * unestablished for this board; no accepted Origin 2000 total reaches it.
+ * 16-Mb parts make 64 or 128 MB banks, and 64-Mb parts make 512 MB banks
+ * (SGI 007-3439-002, page 35). No part makes a 256 MB bank.
+ * The stock IP27 PROM disables one ("256 MB dimm banks not allowed on IP27
+ * node boards").
+ * The bank-zero limit is the Origin 200's, carried over unestablished for
+ * this board; no accepted Origin 2000 total reaches it.
  */
 static const uint64_t sn0_ip27_memory_sizes_mib[] = {
     0x200ULL, 0x80ULL, 0x40ULL,
@@ -248,14 +249,12 @@ bool sn0_model_memory_layout(const SN0ModelMemory *memory, uint64_t ram_size,
 }
 
 /*
- * The per-CPU cache-as-RAM private window (physical 0x10_0000, keyed on
- * the PROM boot-status flag and the PC being in the PROM) is
- * sn-promdata.c's SNPromDataState and its functions, shared with
- * sgi-sn1-node. See that file and docs/datasheets/firmware-structures.md,
- * "The PROM cache-as-RAM phase and its boot-status bit", for the
- * contract. This file only computes the bounds sn0_node_create_cpus
- * passes it, the peer write counter its trace line reports below, and
- * the array-level migration wrapper.
+ * The per-CPU cache-as-RAM private window (physical 0x10_0000, keyed on the
+ * PROM boot-status flag and the PC being in the PROM) is sn-promdata.c's
+ * SNPromDataState and its functions, shared with sgi-sn1-node, sharing the
+ * same PROM cache-as-RAM phase and boot-status-bit contract. This file only
+ * computes the bounds sn0_node_create_cpus passes it, the peer write counter
+ * its trace line reports below, and the array-level migration wrapper.
  */
 static uint64_t sn0_promdata_peer_writes(const void *peer)
 {
@@ -285,10 +284,10 @@ static int sn0_promdata_post_load(void *opaque, int version_id)
 
 /*
  * vmstate_sn_promdata_slice (sn-promdata.c) is the one-slice subsection,
- * shared with sgi-sn1-node; this array-level wrapper is per node type
- * because it names SN0NodeState's own promdata[] field. Its name stays
- * "sn0-flash/promdata" for wire compatibility with streams saved before
- * the node device carried a shared promdata implementation.
+ * shared with sgi-sn1-node; this array-level wrapper is per node type because
+ * it names SN0NodeState's promdata[] field. Its name stays
+ * "sn0-flash/promdata" for wire compatibility with streams saved before the
+ * node device carried a shared promdata implementation.
  */
 static const VMStateDescription vmstate_sn0_promdata = {
     .name = "sn0-flash/promdata",
@@ -304,10 +303,10 @@ static const VMStateDescription vmstate_sn0_promdata = {
 };
 
 /*
- * Named "sn0-flash" for wire compatibility: the pflash device migrates
- * its own state and the back doors migrate with their RAM blocks, so
- * this carries only promdata. Version 4 drops the back-door buffers and
- * refuses an older stream rather than translating one.
+ * Named "sn0-flash" for wire compatibility: the pflash device migrates its
+ * state and the back doors migrate with their RAM blocks, so this carries
+ * only promdata. Version 4 drops the back-door buffers and refuses an older
+ * stream rather than translating one.
  */
 static const VMStateDescription vmstate_sn0_flash = {
     .name = "sn0-flash",
@@ -323,11 +322,11 @@ static const VMStateDescription vmstate_sn0_flash = {
 };
 
 /*
- * The Hub's flash controller: the decode between the 64-bit junk bus and
- * the byte-wide chip. Reads pack the chip 1:1 and repeat its image across
- * each decoded window; command writes present the byte-wide command
- * port on 64-bit cycles only, chip byte N at bus offset 8N, the mapping
- * the vendor flash programmer states directly.
+ * The Hub's flash controller: the decode between the 64-bit junk bus and the
+ * byte-wide chip. Reads pack the chip 1:1 and repeat its image across each
+ * decoded window; command writes present the byte-wide command port on 64-bit
+ * cycles only, chip byte N at bus offset 8N, the mapping the vendor flash
+ * programmer states directly.
  */
 static uint64_t sn0_boot_mirror_read(void *opaque, hwaddr addr, unsigned size)
 {
@@ -373,10 +372,10 @@ static const MemoryRegionOps sn0_boot_mirror_ops = {
 };
 
 /*
- * The floor beneath a back-door window: firmware's presence probe writes
- * a pattern, then zero, and calls a bank absent when neither survives, so
- * accept both writes and echo neither. 0xa5 is an arbitrary choice -- the
- * real data lines float.
+ * The floor beneath a back-door window: firmware's presence probe writes a
+ * pattern, then zero, and calls a bank absent when neither survives, so
+ * accept both writes and echo neither. 0xa5 is an arbitrary choice; the real
+ * data lines float.
  */
 #define SN0_BACKDOOR_ABSENT_VALUE 0xa5a5a5a5a5a5a5a5ULL
 
@@ -424,17 +423,17 @@ static const MemoryRegionOps sn0_backdoor_absent_ops = {
 
 /*
  * Real storage only as wide as the plainer directory format: the low two
- * bytes of each eight-byte entry, the rest reading zero -- plain RAM
- * would answer firmware's width probe "premium format". Writes drop the
- * dead bytes so a read is a plain load.
+ * bytes of each eight-byte entry, the rest reading zero; plain RAM would
+ * answer firmware's width probe "premium format". Writes drop the dead bytes
+ * so a read is a plain load.
  */
 #define SN0_BACKDOOR_ENTRY_BYTES 8
 #define SN0_BACKDOOR_LIVE_BYTES  2
 
 /*
- * The aliases below fold the window, so an offset the memory core hands
- * a handler is already an index into the storage. Naturally aligned, so
- * the access lies inside one entry.
+ * The aliases below fold the window, so an offset the memory core hands a
+ * handler is already an index into the storage. Naturally aligned, so the
+ * access lies inside one entry.
  */
 static uint8_t *sn0_backdoor_entry(SN0BackdoorState *s, hwaddr addr,
                                    unsigned size)
@@ -445,8 +444,8 @@ static uint8_t *sn0_backdoor_entry(SN0BackdoorState *s, hwaddr addr,
 }
 
 /*
- * The bytes of this access that are stored: the tail of the entry it
- * lies in, which is empty when the access ends before the live bytes.
+ * The bytes of this access that are stored: the tail of the entry it lies in,
+ * which is empty when the access ends before the live bytes.
  */
 static uint64_t sn0_backdoor_live_mask(hwaddr addr, unsigned size)
 {
@@ -458,9 +457,9 @@ static uint64_t sn0_backdoor_live_mask(hwaddr addr, unsigned size)
 }
 
 /*
- * The offset and the storage index are now one number: the aliases fold
- * the window, so the window offset the guest used is gone by the time a
- * handler runs. Only a write reaches one.
+ * The offset and the storage index are now one number: the aliases fold the
+ * window, so the window offset the guest used is gone by the time a handler
+ * runs. Only a write reaches one.
  */
 static void sn0_backdoor_trace_populated(SN0BackdoorState *s, hwaddr addr,
                                          unsigned size, bool write,
@@ -474,9 +473,9 @@ static void sn0_backdoor_trace_populated(SN0BackdoorState *s, hwaddr addr,
 }
 
 /*
- * Only a path that cannot take a host pointer arrives here -- the
- * monitor, the debugger, a qtest. A processor's load is served from the
- * storage by the translation fast path and never enters the memory core.
+ * Only a path that cannot take a host pointer arrives here: the monitor, the
+ * debugger, a qtest. A processor's load is served from the storage by the
+ * translation fast path and never enters the memory core.
  */
 static uint64_t sn0_backdoor_populated_read(void *opaque, hwaddr addr,
                                             unsigned size)
@@ -548,10 +547,10 @@ static const MemoryRegionOps sn0_backdoor_populated_ops = {
 };
 
 /*
- * One window's storage, as a ROM device so a processor's read comes out
- * of it with no dispatch and no lock while a write still traps here.
- * The window repeats each bank's storage across the bank stride, and an
- * alias per repeat leaves that fold to the memory core.
+ * One window's storage, as a ROM device so a processor's read comes out of it
+ * with no dispatch and no lock while a write still traps here. The window
+ * repeats each bank's storage across the bank stride, and an alias per repeat
+ * leaves that fold to the memory core.
  */
 static void sn0_backdoor_configure(SN0BackdoorState *s, SN0NodeState *node,
                                    MemoryRegion *window, hwaddr base,
@@ -651,9 +650,9 @@ static void sn0_node_create_cpus(SN0NodeState *node)
                                             &node->sysmem_alias[slice], -2);
 
         /*
-         * The Hub's claim layer fills this container: the existing
-         * nodes' node-qualified strides route by programmed number,
-         * above the static placement, below the nameless local windows.
+         * The Hub's claim layer fills this container: the existing nodes'
+         * node-qualified strides route by programmed number, above the static
+         * placement, below the nameless local windows.
          */
         memory_region_init(&node->claim_view[slice], OBJECT(node),
                            claim_name, UINT64_MAX);
@@ -661,10 +660,10 @@ static void sn0_node_create_cpus(SN0NodeState *node)
                                             &node->claim_view[slice], -1);
 
         /*
-         * NASID-less addresses name the reading processor's node -- in
-         * the memory space only within the cached-alias bound, beyond
-         * which, like every explicit NASID, they fall to the Hub's
-         * claim layer underneath.
+         * NASID-less addresses name the reading processor's node; in the
+         * memory space only within the cached-alias bound, beyond which, like
+         * every explicit NASID, they fall to the Hub's claim layer
+         * underneath.
          */
         for (space_index = 0;
              space_index < SN0_MAX_ADDRESS_SPACES; space_index++) {
@@ -677,23 +676,22 @@ static void sn0_node_create_cpus(SN0NodeState *node)
             hwaddr local_size = memory_region->size;
 
             /*
-             * Per space, the public alias table (Linux asm/sn/addrs.h
-             * and sn0/addrs.h): the crosstalk space self-decodes the
-             * IALIAS, the Hub's own eight-megabyte register window,
-             * always. The memory space's nameless window is the CALIAS
-             * -- "the first n bytes of memory on the reader's node",
-             * based at the cached base -- pre-created here at the
-             * largest size the register encodes, then resized and gated
-             * by this node's Hub, which gets the region at wiring time.
-             * Below the bound an access stays local even while the
-             * programmed numbers are in motion -- retiring the window
-             * outright put mid-renumbering local accesses into claim
+             * Per space, the public alias table (Linux asm/sn/addrs.h and
+             * sn0/addrs.h): the crosstalk space self-decodes the IALIAS, the
+             * Hub's eight-megabyte register window, always. The memory
+             * space's nameless window is the CALIAS: "the first n bytes of
+             * memory on the reader's node", based at the cached base,
+             * pre-created here at the largest size the register encodes, then
+             * resized and controlled by this node's Hub, which gets the
+             * region at wiring time. Below the bound an access stays local
+             * even while the programmed numbers are in motion; retiring the
+             * window outright put mid-renumbering local accesses into claim
              * transients and broke the two-node firmware boot. The
-             * Hub-special space is the UALIAS, uncached references to
-             * the memory of the reader's node, position-independent by
-             * definition and register-independent; the memory-special
-             * space and the LBOOT path are likewise local. Those keep
-             * the wide reader-local window.
+             * Hub-special space is the UALIAS, uncached references to the
+             * memory of the reader's node, position-independent by definition
+             * and register-independent;
+             * the memory-special space and the LBOOT path are likewise local.
+             * Those keep the wide reader-local window.
              */
             if (space_model == &map->xtalk) {
                 const SN0ModelRegion *hub_region =
@@ -788,8 +786,8 @@ static void sn0_node_map_memory(SN0NodeState *node)
              geometry->interleave_slots_per_bank <=
              geometry->bank_stride_mib);
     /*
-     * A bank no larger than one interleave slot occupies only its first
-     * slot. Larger banks are split evenly over every slot in the bank.
+     * A bank no larger than one interleave slot occupies only its first slot.
+     * Larger banks are split evenly over every slot in the bank.
      */
     for (bank = 0; bank < node->populated_banks; bank++) {
         uint64_t bank_size = (uint64_t)node->bank_mb[bank] * MiB;
@@ -815,8 +813,8 @@ static void sn0_node_map_memory(SN0NodeState *node)
                                         &node->mem_slot[bank][segment]);
 
             /*
-             * The Hub-local region mirrors the bottom of local memory;
-             * mirror each run separately to keep the slot holes.
+             * The Hub-local region mirrors the bottom of local memory; mirror
+             * each run separately to keep the slot holes.
              */
             if (segment_addr < local_memory->size) {
                 uint64_t alias_size = MIN(segment_size,
@@ -887,8 +885,8 @@ static void sn0_node_map_boot_storage(SN0NodeState *node)
         g_strdup_printf("sn0.node%u.backdoor.dir", node_index);
 
     /*
-     * Without a backing drive the firmware loader seeds this byte-wide
-     * flash after realize. Every view uses the same flash device.
+     * Without a backing drive the firmware loader seeds this byte-wide flash
+     * after realize. Every view uses the same flash device.
      */
     DeviceState *flash_dev = qdev_new(TYPE_PFLASH_CFI02);
     if (node->flash_drive) {
@@ -1000,11 +998,11 @@ static void sn0_node_create_hub(SN0NodeState *node)
                        SN0_XTALK_SIZE);
 
     /*
-     * The Hub's engines address memory as this node's processors do,
-     * minus the per-processor pieces -- a device has no slice to flip and
-     * no nameless window. The container is the machine's; the Hub fills
-     * it with its claim layer, which routes every node-qualified address
-     * by programmed number, and an engine sees nothing else.
+     * The Hub's engines address memory as this node's processors do, minus
+     * the per-processor pieces; a device has no slice to flip and no nameless
+     * window. The container is the machine's; the Hub fills it with its claim
+     * layer, which routes every node-qualified address by programmed number,
+     * and an engine sees nothing else.
      */
     memory_region_init(&node->device_view, OBJECT(node), device_view_name,
                        UINT64_MAX);
@@ -1021,8 +1019,8 @@ static void sn0_node_create_hub(SN0NodeState *node)
     qdev_prop_set_uint8(DEVICE(&node->hub), "widget-revision",
                         identity->widget_revision);
     /*
-     * Each PIMM record part gets its own synthetic serial: per-unit as the
-     * hub one-wire datasheet's contract requires, never a real machine's.
+     * Each PIMM record part gets its synthetic serial: per-unit, as the Hub's
+     * one-wire bus requires, never a real machine's.
      */
     qdev_prop_set_uint64(DEVICE(&node->hub), "onewire-serial",
                          identity->serial);
@@ -1032,12 +1030,12 @@ static void sn0_node_create_hub(SN0NodeState *node)
          SGI_HUB_POPULATION_I2C_CONTROLLER : 0) |
         (identity->system_controller ? SGI_HUB_POPULATION_ELSC : 0));
     /*
-     * The ELSC's own address answers only where this Hub's I2C bus
-     * carries one (identity->system_controller); the NVRAM behind it
-     * answers wherever the Hub carries an I2C controller at all
-     * (identity->i2c_controller) -- Origin 2000's Hub has one without an
-     * embedded ELSC. Both are 0 (unread: sgi-hub.c gates each behind its
-     * own population bit) where the fact does not apply.
+     * The ELSC's address answers only where this Hub's I2C bus carries one
+     * (identity->system_controller); the NVRAM behind it answers wherever the
+     * Hub carries an I2C controller at all (identity->i2c_controller);
+     * Origin 2000's Hub has one without an embedded ELSC. Both are 0 (unread:
+     * sgi-hub.c guards each with its population bit) where the fact does not
+     * apply.
      */
     qdev_prop_set_uint32(DEVICE(&node->hub), "i2c-nvram-pages",
                          identity->i2c_controller ?
@@ -1060,9 +1058,9 @@ static void sn0_node_create_hub(SN0NodeState *node)
                          map->xtalk.carrier_base);
 
     /*
-     * The claim layer's wiring: the per-view containers the Hub fills,
-     * the canonical map its aliases resolve into, and the geometry --
-     * the Hub gets offsets to alias by, never the node's own regions.
+     * The claim layer's wiring: the per-view containers the Hub fills, the
+     * canonical map its aliases resolve into, and the geometry; the Hub gets
+     * offsets to alias by, never the node's regions.
      */
     for (slice = 0; slice < node->nr_cpus; slice++) {
         g_autofree char *view_prop = g_strdup_printf("claim-view%u", slice);
@@ -1071,8 +1069,8 @@ static void sn0_node_create_hub(SN0NodeState *node)
                                  &error_fatal);
 
         /*
-         * The one nameless window the cached-alias size bounds: the
-         * memory space's, per view. The other spaces' windows are
+         * The one nameless window the cached-alias size bounds: the memory
+         * space's, per view. The other spaces' windows are
          * position-independent aliases the register never moves.
          */
         g_autofree char *window_prop =
@@ -1083,9 +1081,8 @@ static void sn0_node_create_hub(SN0NodeState *node)
             OBJECT(&node->local_space[slice][0]), &error_fatal);
 
         /*
-         * This processor's own physical view, for the Origin 2000
-         * bus-error aperture the Hub installs when it finds itself
-         * Crossbow-attached.
+         * This processor's physical view, for the Origin 2000 bus-error
+         * aperture the Hub installs when it finds itself Crossbow-attached.
          */
         g_autofree char *sysmem_prop = g_strdup_printf("cpu-sysmem%u", slice);
 
@@ -1223,54 +1220,48 @@ void sn0_map_cpu_big_windows(Object *owner, SN0NodeState **nodes,
 }
 
 /*
- * The PROM's fixed target: widget 2 (a synthetic address, not a
- * populated widget) at the Bridge's own device-window offset for its
- * error-status decode. Origin 2000's Crossbow-attached BaseIO card does
- * not use this probe at all; only IP29's onboard I/O, wired through the
- * direct link, does.
+ * The PROM's fixed target: widget 2 (a synthetic address, not a populated
+ * widget) at the Bridge's device-window offset for its error-status decode.
+ * Origin 2000's Crossbow-attached BaseIO card does not use this probe at all;
+ * only IP29's onboard I/O, wired through the direct link, does.
  */
 #define SN0_PROM_PI_PROBE_WIDGET 2
 #define SN0_PROM_PI_PROBE_OFFSET 0x400208ULL
 
 /*
  * IP29's onboard Bridge is reachable at crosstalk widget 8 on its first
- * discovery and decodes every other widget position the same way
- * (docs/datasheets/bridge.md: a directly linked Hub's Bridge answers its
- * whole face at every widget the Hub decodes to it) except widget 1;
- * fixed by the chip and the System Board's own wiring, the same on
- * every Origin 200 built, so this is a device constant rather than
- * per-topology data -- the compiled catalogue no longer carries it.
+ * discovery and decodes every other widget position the same way (a directly
+ * linked Hub's Bridge answers its whole face at every widget the Hub decodes
+ * to it) except widget 1; fixed by the chip and the System Board's wiring,
+ * the same on every Origin 200 built, so this is a device constant rather
+ * than per-topology data; the compiled catalogue no longer carries it.
  */
 #define SN0_IP29_IO_DISCOVERY_WIDGET   0
 #define SN0_IP29_IO_DECODED_WIDGET_MASK 0xfffdU
 
 /*
- * IP29's onboard base I/O: the System Board's own Bridge, cabled
- * straight to this node's Hub through the direct link (no Crossbow --
- * see docs/designs/sn-machine-model-architecture.md, "Node devices"),
- * and an sgi-baseio behind it with the "ip29" preset. Unlike the Origin
- * 2000 BaseIO card (sgi-xio-baseio), this Bridge is not wrapped in any
- * board class: it is a fitted part of the System Board itself, not a
- * removable card, so it answers the crosstalk port interface directly
- * (hw/pci-host/sgi-bridge.c) rather than through a board's own
- * re-parenting and module/slot registry -- the physical difference
- * baseio.md draws between the two ("The Origin 200 has an integrated
- * IP29 System Board, not an Origin 2000 BaseIO card").
+ * IP29's onboard base I/O: the System Board's Bridge, cabled straight to this
+ * node's Hub through the direct link (no Crossbow), and an sgi-baseio behind
+ * it with the "ip29" preset. Unlike the Origin 2000 BaseIO card
+ * (sgi-xio-baseio), this Bridge is not wrapped in any board class: it is a
+ * fitted part of the System Board itself, not a removable card, so it answers
+ * the crosstalk port interface directly (hw/pci-host/sgi-bridge.c) rather
+ * than through a board's re-parenting and module/slot registry. This is the
+ * physical difference between an Origin 200's integrated IP29 System Board
+ * and an Origin 2000 BaseIO card.
  *
- * Called once node has realized (its Hub's claim view and crosstalk
- * container exist by then), passing every fitted-part value and backend
- * id the family builder (sn-machine.c) already resolved from the
- * descriptor and the command line -- this file owns only the Hub
- * address-map facts (fabric-base, fabric-node-shift, the PROM probe's
- * fixed widget and offset) and the direct-link wiring itself.
+ * Called once node has realized (its Hub's claim view and crosstalk container
+ * exist by then), passing every fitted-part value and backend id the family
+ * builder (sn-machine.c) already resolved from the descriptor and the command
+ * line; this file owns only the Hub address-map facts (fabric-base,
+ * fabric-node-shift, the PROM probe's fixed widget and offset) and the
+ * direct-link wiring itself.
  *
- * A GIGAchannel cabinet takes the Hub's link instead and cables this
- * Bridge to one of the cabinet Crossbow's ports
- * (docs/datasheets/sgi-gigachannel.md, "Crossbow link assignment"). Then
- * crossbow_fabric is that Crossbow link's proxy, the Bridge addresses its
- * packets by widget as every Crossbow-attached Bridge does, no direct link
- * is wired, and the caller attaches the Bridge it gets back through
- * bridge_out to the Crossbow.
+ * A GIGAchannel cabinet takes the Hub's link instead and cables this Bridge
+ * to one of the cabinet Crossbow's ports. Then crossbow_fabric is that
+ * Crossbow link's proxy, the Bridge addresses its packets by widget as every
+ * Crossbow-attached Bridge does, no direct link is wired, and the caller
+ * attaches the Bridge it gets back through bridge_out to the Crossbow.
  */
 bool sn0_node_build_baseio(SN0NodeState *node, Object *owner,
                            SGIXtalkDirectLink *link,
@@ -1305,10 +1296,10 @@ bool sn0_node_build_baseio(SN0NodeState *node, Object *owner,
                              SGI_BRIDGE_PACKET_ADDRESS_BITS);
     } else {
         /*
-         * Interrupt packets travel a processor's claim view, which
-         * resolves a node-qualified address by programmed number, not
-         * by the board's position. View zero speaks for the node; a
-         * node always has a processor.
+         * Interrupt packets travel a processor's claim view, which resolves a
+         * node-qualified address by programmed number, not by the board's
+         * position. View zero speaks for the node; a node always has a
+         * processor.
          */
         object_property_set_link(OBJECT(bridge), "fabric",
                                  OBJECT(&node->claim_view[0]), &error_abort);
@@ -1430,9 +1421,9 @@ static const Property sn0_node_properties[] = {
 };
 
 /*
- * A sysbus device, per the tree's device rule; the main system bus has
- * no get_dev_path, so the vmstate keeps its per-name instance ids. Reset
- * stays on the explicit handlers and their long-standing order for now.
+ * A sysbus device, per the tree's device rule; the main system bus has no
+ * get_dev_path, so the vmstate keeps its per-name instance ids. Reset stays
+ * on the explicit handlers and their long-standing order for now.
  */
 static void sn0_node_class_init(ObjectClass *oc, const void *data)
 {

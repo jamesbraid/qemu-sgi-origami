@@ -1,13 +1,9 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * Confirms each sgi-kona-ports.h table is well-formed (no duplicate
- * selector, no argc beyond the framer's own bound) and that every
- * declared selector actually frames the packet its table entry
- * claims when pushed through a real SGICommandPort. Also confirms a
- * representative sample of the selectors the header's own comment
- * lists as deliberately excluded are not recognised on the port that
- * would otherwise plausibly carry them, so a future transcription
- * cannot silently add one back without touching this test.
+ * Check sgi-kona-ports.h for duplicate selectors and argument counts beyond
+ * the framer limit. Drive every declared selector through SGICommandPort and
+ * check its packet; sample deliberately excluded selectors on plausible
+ * ports to catch accidental additions.
  */
 #include "qemu/osdep.h"
 #include "hw/misc/sgi-command-port.h"

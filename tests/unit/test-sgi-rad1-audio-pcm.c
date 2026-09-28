@@ -1,17 +1,10 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * The SGI MediaIO RAD1 model's conversions between ring frames and 16-bit
- * stereo host frames (include/hw/audio/sgi-rad1-audio-pcm.h), pinned here
- * because no QEMU audio backend can feed a qtest known capture samples:
- * the only input a qtest can bind is silence, which every placement of a
- * sample turns into the same zero word.
- *
- * The cases put a positive sample in one channel and a negative one in the
- * other, and use two frames, so a wrong bit position, a lost sign
- * extension, swapped channels and a wrong frame stride each change the
- * result. The eight-word cases are ADAT's frame; the two-word ones the
- * analog and AES3 frame; the 64- and 32-word ones the AES3-input and
- * ADAT-input subcode records, which the model fills from silence.
+ * Test RAD1 ring-to-host 16-bit stereo conversion
+ * (include/hw/audio/sgi-rad1-audio-pcm.h). qtest audio captures only silence,
+ * so two frames with opposite-sign channels expose bit position, sign,
+ * channel and stride errors. ADAT uses eight words per frame; analog and
+ * AES3 use two. AES3-input and ADAT-input silence subcodes use 64 and 32.
  */
 
 #include "qemu/osdep.h"

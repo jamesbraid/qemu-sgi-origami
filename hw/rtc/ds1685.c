@@ -5,8 +5,6 @@
  * battery-backed RAM in three pieces, and the power control a machine uses
  * to switch itself off.
  *
- * Copyright (c) 2026 Origami contributors
- *
  * Reached indirectly, through an address port and a data port one byte each:
  * a parallel host cannot drive the part's multiplexed bus. The bank bit
  * switches only 40h-7Fh, so the four control registers and the low RAM are

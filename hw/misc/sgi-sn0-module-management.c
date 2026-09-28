@@ -1,12 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * SGI Origin 2000 shared module management
- *
- * Copyright (c) 2026 Origami contributors
- *
- * SPDX-License-Identifier: GPL-2.0-or-later
- *
- * Modelled from the module wiring and PCF8584/ELSC contracts in the Origami
- * project tree's datasheets.
+ * Origin 2000 module management: PCF8584 arbitration, one-wire identity,
+ * shared NVRAM and MSC wiring behind one module's node boards.
  */
 
 #include "qemu/osdep.h"
@@ -77,13 +72,13 @@ static void mgmt_reset_state(SN0ModuleManagementState *s)
 
 /*
  * The controller's own reinitialisation: its wire interface and its protocol
- * queues go back to reset, and the publication enable latch is left alone.
- * It reaches no further. A reset does not establish a reset of the peers on
- * a shared bus, and what an owner's reset does to a peer's transfer is not
+ * queues go back to reset, and the publication enable latch is left alone. It
+ * reaches no further. A reset does not establish a reset of the peers on a
+ * shared bus, and what an owner's reset does to a peer's transfer is not
  * settled, so the node adapters and the shared NVRAM stay untouched here. A
  * module reset reaches the nodes through the reset line the machine wires.
  * The endpoint loses its framing queues and keeps everything that is not a
- * queue, which is as much as the datasheet gives this path.
+ * queue.
  *
  * Reinitialising the controller's own PCF8584 also ends what its slave half
  * was driving. The recovery count exists for a bus that stays busy, and the
@@ -259,8 +254,8 @@ static void mgmt_service(SN0ModuleManagementState *s)
     timer_mod_ns(s->service_timer, s->service_deadline);
 
     /*
-     * A serial command owning the protocol path, or publication switched
-     * off, leaves the recovery counter alone.
+     * A serial command owning the protocol path, or publication switched off,
+     * leaves the recovery counter alone.
      */
     if (!s->publication_enabled || s->serial_granted) {
         return;
@@ -296,8 +291,8 @@ static void mgmt_message_expired(SN0ModuleManagementState *s)
 /*
  * Every line this device drives goes through here, so a line it must not
  * drive stays undriven whatever order a machine connected it in. Realize
- * already refuses a declaration without its output and an output without
- * its declaration, and this keeps the two from depending on that order.
+ * already refuses a declaration without its output and an output without its
+ * declaration, and this keeps the two from depending on that order.
  */
 static void mgmt_drive_pulse_lines(SN0ModuleManagementState *s, bool reset,
                                    bool nmi)
@@ -329,8 +324,8 @@ static void mgmt_pulse_complete(SN0ModuleManagementState *s)
 }
 
 /*
- * The controller's deadlines sit on the wire's timeline, so a node polling its
- * adapter runs them in order with the wire's own edges, each at its own
+ * The controller's deadlines sit on the wire's timeline, so a node polling
+ * its adapter runs them in order with the wire's own edges, each at its own
  * instant. A message expiry is armed a second ahead and a pulse a tenth of a
  * second, the service tick only a millisecond, so where they share an instant
  * the first two go first, as their timers ordinarily did.
@@ -638,11 +633,11 @@ static const SGIElscModuleOps mgmt_elsc_ops = {
 };
 
 /*
- * A module's one-wire identity pages, from its serial alone: page 0 is
- * the family byte plus the ten-character serial, page 1 the fixed
- * "MODULEID" name at offset sixteen, both CRC16-terminated. Fed by the
- * "model-serial" property's value, not by this device's own onewire-bus
- * responder above, which answers the module's separate serial chip.
+ * A module's one-wire identity pages, from its serial alone: page 0 is the
+ * family byte plus the ten-character serial, page 1 the fixed "MODULEID" name
+ * at offset sixteen, both CRC16-terminated. Fed by the "model-serial"
+ * property's value, not by this device's own onewire-bus responder above,
+ * which answers the module's separate serial chip.
  */
 bool sgi_sn0_module_management_identity_pages(
     const char *serial, uint8_t page[2][DS2502_PAGE_SIZE])
@@ -674,12 +669,12 @@ bool sgi_sn0_module_management_identity_pages(
 }
 
 /*
- * The module responder's eight-byte one-wire ROM: family code 0x09, a
- * byte unique per node (0x08 plus slot), the module number folded into
- * the next byte's top nibble, three zero bytes, then a CRC8 self-check.
- * Matches the shipped module (slot 1-4, module number one) byte for
- * byte; the module-number fold is inferred from that one sample and not
- * independently confirmed against a second module number.
+ * The module responder's eight-byte one-wire ROM: family code 0x09, a byte
+ * unique per node (0x08 plus slot), the module number folded into the next
+ * byte's top nibble, three zero bytes, then a CRC8 self-check. Matches the
+ * shipped module (slot 1-4, module number one) byte for byte; the
+ * module-number fold is inferred from that one sample and not independently
+ * confirmed against a second module number.
  */
 void sgi_sn0_module_management_identity_rom(unsigned int slot,
                                             uint8_t module_number,
@@ -693,11 +688,11 @@ void sgi_sn0_module_management_identity_rom(unsigned int slot,
 }
 
 static const uint8_t module_serial_image_template[DS2502_DATA_SIZE] = {
-    0x01, 0x4b, 0x4f, 0x52, 0x49, 0x47, 0x41, 0x4d,
-    0x49, 0x30, 0x31, 0x4f, 0x52, 0x49, 0x47, 0x41,
-    0x4d, 0x49, 0x2d, 0x4d, 0x4f, 0x44, 0x55, 0x4c,
-    0x45, 0x2d, 0x53, 0x45, 0x52, 0x49, 0x80, 0x45,
-    0x41, 0x4c, 0xff, 0xff, 0xff, 0xff, 0x00, 0x00,
+    0x01, 0x53, 0x47, 0x49, 0x4d, 0x4f, 0x44, 0x55,
+    0x4c, 0x45, 0x31, 0x53, 0x47, 0x49, 0x2d, 0x4f,
+    0x32, 0x30, 0x30, 0x30, 0x2d, 0x4d, 0x4f, 0x44,
+    0x55, 0x4c, 0x45, 0x2d, 0x53, 0x4e, 0x80, 0x45,
+    0x30, 0x31, 0xff, 0xff, 0xff, 0xff, 0x00, 0x00,
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     0x4d, 0x4f, 0x44, 0x55, 0x4c, 0x45, 0x49, 0x44,
     0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x0e, 0xcc,
@@ -769,8 +764,8 @@ static void mgmt_realize(DeviceState *dev, Error **errp)
      * the output a declared command would answer "ok" for something nothing
      * carries out; without the declaration a connected line would be driven
      * by a module that refuses every command that drives it. Declaring
-     * nothing and connecting nothing is a whole configuration of its own,
-     * and those commands are refused.
+     * nothing and connecting nothing is a whole configuration of its own, and
+     * those commands are refused.
      */
     for (i = 0; i < ARRAY_SIZE(actions); i++) {
         if (actions[i].declared && !actions[i].line) {
@@ -882,7 +877,7 @@ static void mgmt_init(Object *obj)
     s->module_serial = mgmt_add_child(s, "module-serial",
                                       TYPE_ONEWIRE_DS2502);
     qdev_prop_set_uint8(s->module_serial, "family", 0x09);
-    qdev_prop_set_uint64(s->module_serial, "serial", UINT64_C(0x4d414749524f));
+    qdev_prop_set_uint64(s->module_serial, "serial", UINT64_C(0x304e53494753));
     s->msc = SGI_ELSC(mgmt_add_child(s, "msc", TYPE_SGI_ELSC));
     sgi_elsc_set_module_ops(s->msc, &mgmt_elsc_ops, s);
     /*

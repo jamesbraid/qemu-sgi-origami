@@ -1,12 +1,8 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * Two Bedrocks joined by one NUMAlink 3 cable, as a two-chassis Origin 300
- * joins its nodes (the network-interface datasheet, "Link bring-up"; the
- * local-block datasheet, "Vector engine on the boot path"). The empty
- * machine's R10000 supplies qtest's address space only: no firmware runs,
- * and this bench is not an Origin 300. It covers what the stock PROM needs
- * of the pair at register level: link-up visible from reset with no software
- * step, and route 0 reaching the peer's registers for reads and writes.
+ * Two Bedrocks joined by NUMAlink 3, as in a two-chassis Origin 300.
+ * Empty-machine R10000 supplies qtest address space only; no firmware runs.
+ * Register tests require link-up from reset and route 0 peer reads/writes.
  */
 #include "qemu/osdep.h"
 #include "libqtest.h"
@@ -191,7 +187,9 @@ static void test_route_zero_reads_the_peer(void)
     g_assert_cmphex(status & (STATUS_VALID | STATUS_OVERRUN), ==,
                     STATUS_VALID | STATUS_OVERRUN);
 
-    /* A write to status clear clears a valid reply too, the model's choice. */
+    /*
+     * A write to status clear clears a valid reply too, the model's choice.
+     */
     qtest_writeq(s, LB(A_BASE, VECTOR_STATUS_CLEAR), 0);
     g_assert_cmphex(qtest_readq(s, LB(A_BASE, VECTOR_STATUS)), ==, 0);
     /* So does a write of zero to status itself; a nonzero write does not. */
@@ -246,8 +244,8 @@ static void test_route_zero_writes_the_peer(void)
 }
 
 /*
- * What latches no reply: a nonzero route, which a Bedrock at the other end
- * of a direct cable cannot forward, and any route while the cable is down.
+ * What latches no reply: a nonzero route, which a Bedrock at the other end of
+ * a direct cable cannot forward, and any route while the cable is down.
  * Hardware's answer to either is unknown; the model's is silence, so the
  * firmware's own poll times out. The peer is untouched either way.
  */
@@ -310,8 +308,8 @@ static void release_scratch1(QTestState *s, const char *bedrock,
 
 /*
  * The master tells a peer its NASID by a vector write of the peer's scratch
- * 1, while the peer's own processors may still be parked with a withheld
- * post there (the rendezvous hold, sgi-bedrock.c). Those posts reached the
+ * 1, while the peer's own processors may still be parked with a withheld post
+ * there (the rendezvous hold, sgi-bedrock.c). Those posts reached the
  * register first on hardware, so they land before the write, oldest first,
  * and the hold ending later changes nothing: the NASID stays. A vector read
  * sees the posts the same way. The withheld state is placed through the
@@ -346,10 +344,10 @@ static void test_peer_scratch1_write_follows_withheld_posts(void)
 #define NI_RESET_ENABLE 0x0010
 
 /*
- * Port reset, bit 1 of A's reset register, sends a warm reset over the
- * link. B resets (its LB scratch 0 clears, the reset equation the
- * network-interface datasheet's checklist uses) only while B's reset enable
- * permits it, and not when the cable is down; A is untouched by bit 1.
+ * Port reset, bit 1 of A's reset register, sends a warm reset over the link.
+ * B resets (its LB scratch 0 clears, the reset equation the link bring-up
+ * checklist uses) only while B's reset enable permits it, and not when the
+ * cable is down; A is untouched by bit 1.
  */
 static void test_port_reset_crosses_the_link(void)
 {

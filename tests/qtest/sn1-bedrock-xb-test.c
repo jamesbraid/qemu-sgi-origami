@@ -1,7 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * Isolated Bedrock internal-crossbar MMIO contract. The empty machine provides
- * an address space only and does not represent an Origin 300.
+ * Bedrock internal-crossbar MMIO on an empty machine; no Origin 300 model.
  */
 #include "qemu/osdep.h"
 #include "libqtest.h"
@@ -261,8 +260,8 @@ static void test_relatch(void)
     qtest_writeq(s, XB_BASE + QUEUE_CLEAR(PI0_OUTPUT), 1);
     qtest_writeq(s, XB_BASE + FIRST_ERROR_CLEAR, FIRST_ERROR_PI0_OUTPUT);
     /*
-     * The datasheet gives 0xf for PI0 output and 0x2 for LB input; MD input's
-     * 0x8 follows address order between them, unconfirmed.
+     * PI0 output is 0xf and LB input is 0x2. MD input at 0x8 follows their
+     * address order; its value is unconfirmed.
      */
     g_assert_cmphex(qtest_readq(s, XB_BASE + FIRST_ERROR), ==,
                     FIRST_ERROR_MD_INPUT);
@@ -307,7 +306,9 @@ static void test_probe_replay(void)
         qtest_writeq(s, XB_BASE + QUEUE_CLEAR(n), 0);
     }
     qtest_writeq(s, XB_BASE + FIRST_ERROR_CLEAR, 0);
-    /* The replay is expected consumer traffic, not an unimplemented access. */
+    /*
+     * The replay is expected consumer traffic, not an unimplemented access.
+     */
     g_assert_true(g_file_get_contents(path, &found, NULL, NULL));
     g_assert_null(strstr(found, "sgi-bedrock-xb"));
     g_free(found);
@@ -319,7 +320,7 @@ static void test_probe_replay(void)
     g_assert_false(qtest_get_irq(s, 0));
     g_assert_cmphex(qtest_readq(s, XB_BASE + PARAMETERS), ==,
                     PARAMETERS_RESET);
-    /* Reads of the unmodeled queues stay logged, which proves the capture. */
+    /* Reads of unmodeled queues remain logged. */
     g_assert_true(g_file_get_contents(path, &found, NULL, NULL));
     g_assert_nonnull(strstr(found, "sgi-bedrock-xb"));
     g_free(found);

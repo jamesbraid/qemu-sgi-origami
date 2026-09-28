@@ -2,8 +2,6 @@
 /*
  * M48T35-class Timekeeper: battery-backed storage with a clock in its top
  * bytes.
- *
- * Copyright (c) 2026 Origami contributors
  */
 
 #ifndef HW_RTC_M48T35_H
@@ -48,13 +46,12 @@ OBJECT_DECLARE_SIMPLE_TYPE(M48T35State, M48T35)
 #define M48T35_YEAR_BASE    1970
 
 /*
- * The part's calendar, from docs/datasheets/timekeeper.md's "The part's
- * calendar and leap-year rule": two BCD year digits and no century, with
- * February 29 days long when the year cell is a multiple of four ("inferred,
- * strongly" there). On this machine that puts the leap day in 2022, 2026 and
- * 2030 and none in 2024 or 2028. The model counts the part's time as seconds
- * since 1 January of cell year 00 under that rule, wrapping every hundred
- * cell years, so reads, writes and the restore after a stop all agree with it.
+ * The part's calendar: two BCD year digits and no century, with February 29
+ * days long when the year cell is a multiple of four. On this machine that
+ * puts the leap day in 2022, 2026 and 2030 and none in 2024 or 2028. The
+ * model counts the part's time as seconds since 1 January of cell year 00
+ * under that rule, wrapping every hundred cell years, so reads, writes and
+ * the restore after a stop all agree with it.
  */
 #define M48T35_CELL_YEARS   100
 #define M48T35_CENTURY_DAYS (M48T35_CELL_YEARS * 365 + M48T35_CELL_YEARS / 4)
@@ -65,16 +62,16 @@ OBJECT_DECLARE_SIMPLE_TYPE(M48T35State, M48T35)
 /*
  * Bit 7 of the seconds cell stops the part's oscillator: a stopped clock
  * does not count, the bit reads back, and it is battery-backed, so a save
- * keeps it and a restore adds no time (see "The clock across power loss").
+ * keeps it and a restore adds no time (see "The clock across a stopped
+ * emulator" below).
  * The model takes it, like the rest of the seconds register, when a guest
  * clock write completes.
  */
 #define M48T35_SECONDS_STOP 0x80
 
 /*
- * The clock across a stopped emulator, from docs/datasheets/timekeeper.md's
- * "The clock across power loss and host restarts". With a backing image the
- * model writes the calendar into the image's own clock cells, in the part's
+ * The clock across a stopped emulator. With a backing image the model
+ * writes the calendar into the image's own clock cells, in the part's
  * format, whenever a guest clock write completes and when the VM stops, and
  * restores it at realize with the time that passed in between.
  *

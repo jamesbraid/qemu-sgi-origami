@@ -8,8 +8,7 @@ address, byte-bus device selects (the M48T35 timekeeper among them),
 and buffer RAM. QEMU models it as a composite: the PCI shell and
 SuperIO blocks in ``hw/misc/sgi-ioc3.c``, the ethernet engine as a
 child device in ``hw/net/sgi-ioc3-eth.c`` with its DP83840 PHY child
-in ``hw/net/dp83840.c``. Register-level sources are collected in the
-Origami project tree's IOC3 datasheet.
+in ``hw/net/dp83840.c``.
 
 Unimplemented regions of the window are holes, not zeroes: an access
 there reaches no device and is reported. On a machine this small,
@@ -256,8 +255,8 @@ address the ``phy-addr`` property selects (default 31, an alias
 chain from ``sgi-ioc3`` through the eth child to the transceiver's
 own ``addr`` property). 31 is Origin 200's address; Origin 300's
 IO-8 board sets 1, the address its BASEIO PROM's MII helper
-functions hard-code and a real board's OpenBSD capture confirms
-(docs/datasheets/dp83840.md). Its autonegotiation completes on a
+functions hard-code and OpenBSD on a real board confirms. Its
+autonegotiation completes on a
 settle window timed so the firmware diagnostic's probe lands
 inside it, its link-status bit latches low, and backend link state
 drives it the way lan9118's PHY models the same thing. Its LBREMR
@@ -289,8 +288,8 @@ loopback interpretation differs. A PHY reset clears register 0x17
 to the DP83840A's PCS_CONFIG reset value on both parts -- 0 in both
 of the DP83843's loopback-select bits -- which is reused rather
 than an independent DP83843 reset value, since the DP83843
-datasheet is not in the Library and only OpenBSD's nsphyterreg.h
-gives the bit names (docs/datasheets/dp83840.md).
+datasheet is not publicly available and only OpenBSD's nsphyterreg.h
+gives the bit names.
 
 Buffer RAM
 ==========

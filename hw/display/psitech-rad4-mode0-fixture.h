@@ -1,15 +1,11 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
+/* RAD4 mode-zero BAR2 register write fixture. */
 /*
- * Generated from the reviewed RAD4 mode-zero fixture, not hand-authored.
- *
- * Source: docs/research/graphics/rad4-mode-zero.events.tsv in the Origami
- * repository (fixture SHA-256
- * fc3c9e2542589b5790e3b0af256b25f3dbb5d78db1723abec1eb75e158c0a5d4,
- * reviewed in docs/reviews/rad4-mode-zero-fixture-review-20260916.md).
- * Regenerate from that fixture; do not hand-edit. This header carries a
- * derived software-expectation fixture for the RAD4 one-mode functional
- * approximation (docs/designs/rad4-one-mode-functional-approximation.md
- * in Origami), not a recovered hardware timing specification.
+ * The ordered sequence of BAR2 register writes PsiTech's RAD4 driver performs
+ * to set up its mode zero (1280x1024).
+ * Used to recognize that one exact software path; it is a
+ * software-expectation fixture, not a recovered hardware
+ * timing specification.
  */
 
 #ifndef HW_DISPLAY_PSITECH_RAD4_MODE0_FIXTURE_H
@@ -24,8 +20,9 @@ typedef struct Rad4Mode0Event {
 
 /*
  * Index 0 is the mode routine's own leading zero write to +0xf00000; the
- * recognizer consumes it as the prefix-arming event, not as a strict-match
- * table entry, so strict comparison starts at index 1.
+ * recognizer consumes it as the
+ * prefix-arming event, not as a strict-match table entry, so strict
+ * comparison starts at index 1.
  */
 static const Rad4Mode0Event rad4_mode0_events[RAD4_MODE0_EVENT_COUNT] = {
     { 0x00f00000, 0x00000000 },

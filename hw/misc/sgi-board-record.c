@@ -1,8 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
-/*
- * SGI board-identity records on a DS2505-class one-wire part.
- * See include/hw/misc/sgi-board-record.h.
- */
+/* SGI board-identity records on DS2505-class one-wire parts. */
 
 #include "qemu/osdep.h"
 #include "qapi/error.h"
@@ -12,10 +9,8 @@
 #include "hw/misc/sgi-board-record.h"
 
 /*
- * Field offsets (docs/datasheets/bridge.md, "The record layout, and every
- * constraint on building it"). The part is split around page 0's check
- * value: spaces then the base number at 11-29, spaces then the dash number
- * at 32-37.
+ * Field offsets. The part is split around page 0's check value: spaces then
+ * the base number at 11-29, spaces then the dash number at 32-37.
  */
 #define RECORD_FORMAT        0x01
 #define RECORD_BARCODE       1
@@ -35,9 +30,9 @@
 #define RECORD_SERIAL_MASK   MAKE_64BIT_MASK(0, 48)
 
 /*
- * The formatter IRIX shows these fields through substitutes '?' for ':'
- * and ';', and a NUL shows as '.' or '_', so a field is printable ASCII
- * other than those two.
+ * The formatter IRIX shows these fields through substitutes '?' for ':' and
+ * ';', and a NUL shows as '.' or '_', so a field is printable ASCII other
+ * than those two.
  */
 static const char *sgi_board_record_field_error(const char *field,
                                                 size_t width)
@@ -109,8 +104,8 @@ void sgi_board_record_build(uint8_t rom[SGI_BOARD_RECORD_SIZE],
 
     /*
      * Each page's check is image content, not part behaviour: stored
-     * inverted, so a page and its check shifted through the generator land
-     * on the fixed residue 0xb001.
+     * inverted, so a page and its check shifted through the generator land on
+     * the fixed residue 0xb001.
      */
     for (page = 0; page < 2; page++) {
         uint8_t *at = &rom[page * SGI_BOARD_RECORD_PAGE_SIZE];

@@ -1,8 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * The XBridge crossbar half, as widget 0 presents it in XBridge mode. The
- * fixture maps two of the block's port views so the source-port field and
- * the packet routing can be told apart; it does not represent an Origin 300.
+ * XBridge-mode crossbar at widget 0, with two port views to distinguish
+ * source-port reporting from packet routing; no Origin 300 model.
  */
 #include "qemu/osdep.h"
 #include "libqtest.h"
@@ -173,8 +172,8 @@ static void test_fences(void)
     unsigned off;
 
     /*
-     * Every fence bit is read/write, the link's own bit included: that a
-     * link should admit itself is advice to software, not a fixed bit.
+     * Every fence bit is read/write, the link's own bit included: that a link
+     * should admit itself is advice to software, not a fixed bit.
      */
     for (off = 0x78; off <= 0xb8; off += 8) {
         reg_write(qts, off, 0);
@@ -311,8 +310,8 @@ static void test_interrupt_packets(void)
     reg_read(qts, 0x50);
     /*
      * Enabled: one set packet carrying the vector, then no second one. With
-     * no link conditions modeled, only the widget-0 alias can acknowledge,
-     * so "clearing one leaves it outstanding" has no observable here.
+     * no link conditions modeled, only the widget-0 alias can acknowledge, so
+     * "clearing one leaves it outstanding" has no observable here.
      */
     reg_write(qts, 0x20, 1U << 5);
     reg_read(qts, 0xd0);
@@ -347,9 +346,9 @@ static void test_warm_reset(void)
     reg_write(qts, 0x20, 0xfe);
     reg_write(qts, 0xc0, 0x11);
     /*
-     * Port A is fenced out of widget 0: nothing resets, nothing forwards.
-     * The datasheet settles the first and leaves the second open; the
-     * no-forward half is model behavior.
+     * Port A is fenced out of widget 0: nothing resets, nothing forwards. The
+     * reset behavior is specified; forwarding is unspecified. The model
+     * blocks forwarding.
      */
     reg_write(qts, 0x78, 0xff & ~(1U << (PORT_A - 8)));
     qtest_set_irq_in(qts, XBOW, "warm-reset", PORT_A - 8, 1);

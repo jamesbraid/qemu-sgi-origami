@@ -3845,7 +3845,7 @@
             2,
             3
           ],
-          "serial": "KORIGAMI01"
+          "serial": "SGIMODULE1"
         }
       ],
       "name": "origin2000-menet",
@@ -4354,7 +4354,7 @@
             2,
             3
           ],
-          "serial": "KORIGAMI01"
+          "serial": "SGIMODULE1"
         }
       ],
       "name": "origin2000-module",
@@ -4774,7 +4774,7 @@
           "nodes": [
             0
           ],
-          "serial": "KORIGAMI02"
+          "serial": "SGIMODULE2"
         }
       ],
       "name": "origin2000-one-node",
@@ -5022,7 +5022,7 @@
             2,
             3
           ],
-          "serial": "KORIGAMI01"
+          "serial": "SGIMODULE1"
         }
       ],
       "name": "origin2000-pci-carrier",
@@ -5543,7 +5543,7 @@
             2,
             3
           ],
-          "serial": "KORIGAMI01"
+          "serial": "SGIMODULE1"
         }
       ],
       "name": "origin2000-pci-shoehorn",

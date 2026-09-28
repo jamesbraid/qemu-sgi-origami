@@ -49,8 +49,10 @@ SGINetPacketResult sgi_net_port_receive(Object *port, unsigned int index,
         result = pc->receive(port, index, packet, errp);
     }
     if (result == SGI_NET_PACKET_NONE) {
-        /* Refused at any hop: no partial reply path survives, at any
-         * level of the recursive forwarding chain this unwinds through. */
+        /*
+         * Refused at any hop: no partial reply path survives, at any
+         * * level of the recursive forwarding chain this unwinds through.
+         */
         packet->reply_vector = 0;
     }
     return result;

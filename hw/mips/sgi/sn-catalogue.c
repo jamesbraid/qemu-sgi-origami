@@ -1,11 +1,9 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * The SGI Scalable Node family's compiled catalogue: parses the embedded
- * hw/mips/sgi/sn-catalogue.json once, into the QAPI-generated
- * SGIModelCatalogue types qapi/sgi-sn.json declares, and keeps the
- * result for the process lifetime. hw/uefi/var-service-json.c is this
- * tree's other example of parsing JSON into QAPI types with
- * qobject_from_json() and qobject_input_visitor_new().
+ * Parse embedded hw/mips/sgi/sn-catalogue.json into qapi/sgi-sn.json's
+ * SGIModelCatalogue once. Retain it for the process lifetime;
+ * hw/uefi/var-service-json.c also uses qobject_from_json() and
+ * qobject_input_visitor_new() to parse JSON into QAPI types.
  */
 
 #include "qemu/osdep.h"
@@ -19,8 +17,9 @@
 #include "qobject/qobject.h"
 #include "hw/mips/sgi/sn-catalogue.h"
 
-/* sn_catalogue_json: hw/mips/sgi/sn-catalogue.json, embedded by the
- * custom_target hw/mips/sgi/meson.build defines.
+/*
+ * sn_catalogue_json embeds hw/mips/sgi/sn-catalogue.json via
+ * hw/mips/sgi/meson.build.
  */
 #include "sn-catalogue-embed.c.inc"
 

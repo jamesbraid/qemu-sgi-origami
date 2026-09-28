@@ -1,23 +1,22 @@
 /*
  * Register-contract facts about the per-CPU cache-as-RAM private window
  * (hw/mips/sgi/sn-promdata.c), parameterised over both Scalable Node
- * generations: sgi-sn0-node (Origin 200/2000) and sgi-sn1-node
- * (Origin 300).
+ * generations: sgi-sn0-node (Origin 200/2000) and sgi-sn1-node (Origin 300).
  *
- * Covers placement, priority and memory-space wiring for the
- * flash-execution filter every generation installs, and for the
- * copy_local routing overlay at each generation's PROM RAM-copy address.
+ * Covers placement, priority and memory-space wiring for the flash-execution
+ * filter every generation installs, and for the copy_local routing overlay
+ * at each generation's PROM RAM-copy address.
  *
- * qtest never executes guest code, so the private phase itself cannot
- * be armed here -- the same limitation sn0-migration-test.c's own
- * promdata case already documents. What a qtest can check is that
- * copy_local exists, sits at the right address and priority, and
- * survives a migration; that is exactly what commit d8d18c7aa0 silently
- * dropped for Origin 200 while moving the filter into this shared file,
- * so test_copy_local_window's Origin 200 case is also the regression
- * test for that finding: it fails outright (the region is simply absent
- * from the tree) against a build that carries the drop, and passes once
- * sn_promdata_init() installs copy_local again.
+ * qtest never executes guest code, so the private phase itself cannot be
+ * armed here. The same limitation sn0-migration-test.c's own promdata case
+ * already documents. What a qtest can check is that copy_local exists, sits
+ * at the right address and priority, and survives a migration; that is
+ * exactly what commit d8d18c7aa0 silently dropped for Origin 200 while
+ * moving the filter into this shared file, so test_copy_local_window's
+ * Origin 200 case is also the regression test for that finding: it fails
+ * outright (the region is simply absent from the tree) against a build that
+ * carries the drop, and passes once sn_promdata_init() installs copy_local
+ * again.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
@@ -112,10 +111,10 @@ static void test_filter_window(const void *data)
 }
 
 /*
- * copy_local is a disabled-by-default alias (sn-promdata.c only enables
- * it once a CPU is latched into the private phase), so the flat view
- * "-f" uses above never shows it; "-D" walks the raw tree and marks a
- * disabled region instead of hiding it.
+ * copy_local is a disabled-by-default alias (sn-promdata.c only enables it
+ * once a CPU is latched into the private phase), so the flat view "-f" uses
+ * above never shows it; "-D" walks the raw tree and marks a disabled region
+ * instead of hiding it.
  */
 static void test_copy_local_window(const void *data)
 {
@@ -141,11 +140,11 @@ static void test_copy_local_window(const void *data)
 /*
  * The array-level VMStateDescription wrapper each node type keeps
  * (vmstate_sn0_promdata / vmstate_sn1_node_promdata) calls
- * sn_promdata_apply_load() in its own post_load, which is what
- * re-derives copy_local's enabled state after a migration (the
- * "migration handling 19898fab4f had" the shared helper must keep).
- * Confirm the region -- present, disabled, same address and priority --
- * survives the round trip rather than being dropped or left mis-wired.
+ * sn_promdata_apply_load() in its own post_load, which is what re-derives
+ * copy_local's enabled state after a migration (the "migration handling
+ * 19898fab4f had" the shared helper must keep). Confirm the region
+ * (present, disabled, same address and priority) survives the round trip
+ * rather than being dropped or left mis-wired.
  */
 static void test_copy_local_window_survives_migration(const void *data)
 {

@@ -111,7 +111,7 @@ static DeviceState *module_new(void)
 {
     DeviceState *dev = qdev_new(TYPE_SGI_SN0_MODULE_MANAGEMENT);
 
-    qdev_prop_set_string(dev, "model-serial", "KORIGAMI01");
+    qdev_prop_set_string(dev, "model-serial", "TESTSERIAL");
     return dev;
 }
 
@@ -285,7 +285,7 @@ static void test_failed_attempt_advances(Fixture *f, gconstpointer unused)
     g_assert_cmpuint(f->module->processor_code, ==, 0);
     g_assert_cmpuint(f->module->recovery_ticks, ==, RECOVERY_TICKS);
 
-    /* Occupy the controller's own wire request, so its next one is refused. */
+    /* Occupy the controller's wire request; refuse its next one. */
     g_assert_cmpint(i2c_wire_stage(bus, SGI_O2000_WIRE_MASTERS - 1,
                                    f->module->service_deadline + 1,
                                    true, false), ==, 0);
@@ -437,9 +437,8 @@ static void test_recovery_counter_holds(Fixture *f, gconstpointer unused)
 }
 
 /*
- * A reset request drives its line for the reviewed hundred milliseconds, and
- * grants go on being published throughout: the pulse is a blocking delay on
- * the same periodic interrupt, not a stopped scheduler.
+ * A reset drives its line for 100 milliseconds while grants continue: the
+ * pulse blocks within the periodic interrupt but does not stop the scheduler.
  */
 static void test_reset_pulse(Fixture *f, gconstpointer unused)
 {
@@ -593,9 +592,9 @@ static void test_declared_action_needs_its_line(Fixture *f,
 }
 
 /*
- * The other direction of the same rule. A line arriving without its
- * declaration would be driven by a module that refuses every command that
- * drives it, so it is a build error rather than a quiet mismatch.
+ * A line arriving without its declaration would be driven by a module that
+ * refuses every command that drives it, so it is a build error rather than a
+ * quiet mismatch.
  */
 static void test_connected_line_needs_its_capability(Fixture *f,
                                                      gconstpointer unused)
@@ -714,7 +713,7 @@ static void test_wire_refuses_a_mute_slave(Fixture *f, gconstpointer unused)
     error_free(err);
 }
 
-/* A second destructive action while a pulse runs is refused, not swallowed. */
+/* Refuse a second destructive action while a pulse runs. */
 static void test_overlapping_pulse_refused(Fixture *f, gconstpointer unused)
 {
     g_assert_true(sgi_sn0_module_management_can_execute(f->module,
@@ -947,7 +946,7 @@ static void test_migration_pending_grant(Fixture *f, gconstpointer unused)
         g_assert_cmphex(adapters[i]->data, ==, GRANT_BASE);
         adapters[i]->data = 0x5a;
     }
-    /* A cleared pending flag must not publish the saved grant a second time. */
+    /* A cleared pending flag cannot republish the saved grant. */
     advance_to(virtual_time + 100000);
     for (i = 0; i < SGI_O2000_ADAPTER_COUNT; i++) {
         g_assert_false(adapters[i]->wire_grant_pending);

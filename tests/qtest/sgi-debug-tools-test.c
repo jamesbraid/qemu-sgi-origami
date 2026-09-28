@@ -1,9 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * The host-side debugging and tracing surfaces a guest debugger relies on:
- * the monitor's CP0 register dump, the CPU trace lines a host-side syscall
- * tracer parses, x-query-mips-tlb's view of one CPU's TLB, and ASID- and
- * ExcCode-filtered breakpoints through x-mips-debug-breakpoint.
+ * Test monitor CP0 dumps, CPU trace lines parsed by host syscall tracers,
+ * x-query-mips-tlb, and ASID/ExcCode-filtered x-mips-debug-breakpoint.
  */
 
 #include "qemu/osdep.h"
@@ -29,9 +27,8 @@
 #define WIRED_VALUE     1
 
 /*
- * Program the registers under test, then touch an unmapped address so the
- * refill exception rewrites EntryHi's VPN2 and BadVAddr on the way to the
- * handler, which flags the mailbox and parks.
+ * Program registers, then fault on an unmapped address; refill updates
+ * EntryHi VPN2 and BadVAddr before the handler flags the mailbox and parks.
  */
 static void cpu_registers_build_image(SN0Image *p)
 {
@@ -100,10 +97,8 @@ static void test_info_registers_cp0(void)
 }
 
 /*
- * Pin the CPU trace lines a host-side syscall tracer parses: exception
- * entry, syscall arguments, ERET and TLB writes, each stamped with the CPU
- * index and the EntryHi ASID.  A guest that runs one known syscall from
- * user code under ASID 5 must produce exactly these lines.
+ * Check exception entry, syscall arguments, ERET and TLB-write trace lines,
+ * each with CPU index and EntryHi ASID, for a user syscall under ASID 5.
  */
 
 #define ASID            5
@@ -117,9 +112,8 @@ static void test_info_registers_cp0(void)
 #define STATUS_FAIL     0xff
 
 /*
- * The general vector counts syscalls and steps EPC past each one; v0 == 2
- * ends the run.  Any other exception, and any refill, reports STATUS_FAIL
- * so a wrong path cannot pass as a missing trace line.
+ * Count syscalls and advance EPC; v0 == 2 ends the run. Other exceptions
+ * and refills report STATUS_FAIL rather than a missing trace line.
  */
 static unsigned int syscall_trace_build_image(SN0Image *p)
 {
@@ -288,12 +282,10 @@ static void test_syscall_trace(void)
 }
 
 /*
- * x-query-mips-tlb reads one CPU's TLB and TLB-related CP0 registers on
- * that CPU's own thread.  Each CPU writes two entries with tlbwr under
- * Wired = 63, so both land in index 63 and the emulator keeps the first
- * as a shadow beyond the architectural entries; the query must report the
- * live entry, the shadow only when asked, and on the two-node machine the
- * queried CPU's own ASID rather than another CPU's.
+ * x-query-mips-tlb reads TLB and CP0 state on the selected CPU thread.
+ * With Wired = 63, two tlbwr writes replace entry 63 and retain the first
+ * as a shadow; report the live entry, optional shadow and selected CPU ASID
+ * on a two-node machine.
  */
 
 #define NB_TLB          64
@@ -322,9 +314,8 @@ static uint32_t mailbox_of(unsigned int cpu)
 }
 
 /*
- * Each CPU tags its entries with ASID 5 plus its own index, writes the
- * first pair not global with an uncached attribute on the odd half, then
- * the second pair global, and flags its mailbox.
+ * Each CPU uses ASID 5 plus its index; its first pair is non-global
+ * with an uncached odd half, its second is global, then it flags a mailbox.
  */
 static void tlb_query_build_image(SN0Image *p)
 {
@@ -516,14 +507,10 @@ static void test_query_cpu2(void)
 }
 
 /*
- * ASID- and ExcCode-filtered breakpoints through x-mips-debug-breakpoint.
- *
- * The target CPU takes three syscalls under ASID 5 and a break under ASID
- * 6 before the syscall under ASID 6 that the breakpoint filters for; the
- * machine must stop only there, on that CPU, with the earlier hits counted.
- * On the two-node machine the other CPUs take the same syscall under ASID
- * 6 first, so a breakpoint that ignored its CPU index would stop the
- * machine before the target ever reached user code.
+ * Filter x-mips-debug-breakpoint by ASID, ExcCode and CPU. The target
+ * takes three ASID 5 syscalls and an ASID 6 break before its matching
+ * ASID 6 syscall; peers take the same syscall first on a two-node machine.
+ * Stop only on the target match and count earlier hits.
  */
 
 #define VECTOR_PC       UINT64_C(0xffffffffbfc00380)
@@ -534,15 +521,11 @@ static void test_query_cpu2(void)
 #define CONTROL_CODE    (SN0_USER_TEXT + 0x900)
 
 /*
- * The general vector accepts syscalls and breaks: it counts the hit, moves
- * EntryHi's ASID to a0, steps EPC past the instruction and returns; v0 == 2
- * ends the run.  Anything else reports STATUS_FAIL.  s2 holds the CPU's
- * mailbox pointer throughout and the user programs never touch it.
- *
- * Each CPU learns its index from the host-seeded node word and the Hub's
- * processor number.  The target CPU runs the target program under ASID 5,
- * after waiting for @peer to finish when there is one; every other CPU
- * runs the control program under ASID 6.
+ * Count syscalls and breaks, copy EntryHi ASID to a0, advance EPC and
+ * return; v0 == 2 ends. Other exceptions report STATUS_FAIL. s2 retains
+ * the mailbox pointer. Each CPU gets its index from the host-seeded node
+ * word and Hub processor number; target runs under ASID 5 after @peer,
+ * while peers run the ASID 6 control program.
  */
 static void debug_breakpoint_build_image(SN0Image *p, unsigned int target,
                                          int peer)

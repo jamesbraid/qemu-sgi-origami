@@ -1,19 +1,18 @@
 /*
  * The format-2 builder (sn-machine.c): the command-line contract every
- * product shares -- -numa refused, an unsupported -smp or -m population
- * rejected, and a topology belonging to a different product refused --
- * checked against the real Origin 200, Origin 200 (dual), Origin 2000
- * and Origin 2000 (one-node) machines, whose every accepted population
- * is also checked to build.
- * The console field test drives tests/qtest/sn-builder-fault-test.c's
- * sn-builder-console-test machine, a real two-node build.
+ * product shares: -numa refused, an unsupported -smp or -m population
+ * rejected, and a topology belonging to a different product refused;
+ * checked against the real Origin 200, Origin 200 (dual), Origin 2000 and
+ * Origin 2000 (one-node) machines, whose every accepted population is also
+ * checked to build. The console field test drives
+ * tests/qtest/sn-builder-fault-test.c's sn-builder-console-test machine, a
+ * real two-node build.
  *
- * The named structural faults sgi_machine_validate_topology used to
- * reject here (a minimal two-node fixture topology fed straight to that
- * validator) are gone along with it: hw/mips/sgi/sn-machine.c now trusts
- * the compiled descriptor, and tests/unit/test-sn-model.c checks those
- * invariants once instead. See docs/plans/sn-machine-model.md, "The
- * builder trusts the descriptor".
+ * The named structural faults sgi_machine_validate_topology used to reject
+ * here (a minimal two-node fixture topology fed straight to that validator)
+ * are gone along with it: hw/mips/sgi/sn-machine.c now trusts the compiled
+ * descriptor, and tests/unit/test-sn-model.c checks those invariants once
+ * instead.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
@@ -44,20 +43,16 @@ static void assert_qemu_rejects(const char *const args[], const char *message)
                               NULL, &error_output, &wait_status, NULL));
     g_assert_false(g_spawn_check_exit_status(wait_status, NULL));
     /*
-     * A rejection reports through error_report and exits; it must not
-     * reach the guest as a signal (SIGABRT from a failed assertion,
-     * SIGSEGV from a wild pointer). WIFSIGNALED tells the two apart where
-     * a bare nonzero exit status cannot.
+     * Require a reported error and normal failure exit, not SIGABRT or
+     * SIGSEGV; WIFSIGNALED distinguishes signals from nonzero status.
      */
     g_assert_false(WIFSIGNALED(wait_status));
     g_assert_nonnull(strstr(error_output, message));
 }
 
 /*
- * The QOM type of the named child of a qom-list'd parent, or NULL if no
- * such child exists: proves which board class the builder actually
- * instantiated at a slot, independent of any property both board
- * classes happen to share.
+ * Read a named QOM child's type, or NULL if absent, to distinguish
+ * board classes even when their properties match.
  */
 static char *qom_child_type(QTestState *qts, const char *parent,
                             const char *child)
@@ -88,9 +83,9 @@ static char *qom_child_type(QTestState *qts, const char *parent,
 
 /*
  * A Crossbow's own uint property, the same way sn0-origin2000-xtalk-
- * owner-test.c's assert_crossbow() reads one: used here to confirm a
- * late `-device` board attaching through the spare fabric proxy leaves
- * the Crossbow's own count of populated widgets untouched.
+ * owner-test.c's assert_crossbow() reads one: used here to confirm a late
+ * `-device` board attaching through the spare fabric proxy leaves the
+ * Crossbow's own count of populated widgets untouched.
  */
 static uint64_t xtalk_uint(QTestState *qts, const char *crossbow,
                            const char *property)
@@ -106,10 +101,9 @@ static uint64_t xtalk_uint(QTestState *qts, const char *crossbow,
 
 /*
  * Whether typename's own class (device-list-properties always walks its
- * parents) declares a qdev property named prop -- checked with no
- * instance of either class ever attached, to prove two board classes
- * share a property by name and not merely by coincidence at one
- * particular attachment.
+ * parents) declares a qdev property named prop, checked with no instance
+ * of either class ever attached, to prove two board classes share a property
+ * by name and not merely by coincidence at one particular attachment.
  */
 static bool device_class_has_property(QTestState *qts, const char *typename,
                                       const char *prop)
@@ -150,17 +144,16 @@ static void test_numa_refused(const void *data)
 /*
  * sgi-pci-expansion (board-pci-expansion.c) is user-creatable: a `-device`
  * board's "fabric" link can resolve against the spare fabric proxy
- * sgi_machine_build_crossbars()/sgi_machine_done() hold back and finish
- * for exactly this purpose (see that class's own header comment). Nothing
- * wires "fabric" for it automatically, though -- an explicit `-device`
- * still has to name one itself -- so a bare `-device sgi-pci-expansion`
- * now reaches past qdev's pluggable-device check and refuses for a later,
- * different reason: the same missing-fabric error build_widget() reports
- * from the machine builder or the board-test fixture. -device is
- * processed after sgi_machine_init, so this still needs a -bios that
- * clears the stock-PROM requirement, the same blank flash
- * write_config_block_fixture's sibling in sn0-address-map-test.c uses for
- * the same reason.
+ * sgi_machine_build_crossbars()/sgi_machine_done() hold back and finish for
+ * exactly this purpose (see that class's own header comment). Nothing wires
+ * "fabric" for it automatically, though. An explicit `-device` still has
+ * to name one itself. A bare `-device sgi-pci-expansion` now reaches
+ * past qdev's pluggable-device check and refuses for a later, different
+ * reason: the same missing-fabric error build_widget() reports from the
+ * machine builder or the board-test fixture. -device is processed after
+ * sgi_machine_init, so this still needs a -bios that clears the stock-PROM
+ * requirement, the same blank flash write_config_block_fixture's sibling in
+ * sn0-address-map-test.c uses for the same reason.
  */
 static void test_pci_expansion_requires_fabric(const void *data)
 {
@@ -188,14 +181,11 @@ static void test_pci_expansion_requires_fabric(const void *data)
 }
 
 /*
- * sgi-pci-expansion and sgi-xio-baseio are the two -device-creatable XIO
- * board classes (board-pci-expansion.c, xio-baseio.c); sgi-xio-board
- * (xio-board.c) is their shared, non-instantiable base, which owns
- * "module" and "slot". Each subclass repeats "fabric", "fabric-base",
- * "fabric-node-shift" and "fabric-widget-shift" by name and type itself
- * -- its own internal Bridge needs the link typed on its own class, not
- * the base -- rather than one board's -device surface differing from
- * the other's for what is otherwise the same attach step.
+ * sgi-pci-expansion and sgi-xio-baseio are -device-creatable; their
+ * non-instantiable sgi-xio-board base owns module/slot. Each subclass
+ * declares fabric, fabric-base, fabric-node-shift and fabric-widget-shift
+ * with its own Bridge-typed link. See board-pci-expansion.c, xio-baseio.c
+ * and xio-board.c.
  */
 static void test_expansion_boards_share_the_attach_contract(const void *data)
 {
@@ -222,30 +212,29 @@ static void test_expansion_boards_share_the_attach_contract(const void *data)
 /*
  * The spare fabric proxy sgi_machine_build_crossbars()/sgi_machine_done()
  * hold back and finish for exactly this purpose (see both classes' own
- * header comments) resolves "fabric" for a `-device` board at runtime,
- * the same way for either -device-creatable XIO board class: this board
- * realizes and sgi_xio_board_reparent() (xio-board.c) lands it at
- * /machine/module<N>/slot<S>, "module"/"slot" here chosen well clear of
- * any onboard module the default origin2000 topology already populates.
+ * header comments) resolves "fabric" for a `-device` board at runtime, the
+ * same way for either -device-creatable XIO board class: this board realizes
+ * and sgi_xio_board_reparent() (xio-board.c) lands it at
+ * /machine/module<N>/slot<S>, "module"/"slot" here chosen well clear of any
+ * onboard module the default origin2000 topology already populates.
  * fabric-widget-shift=48 matches SGI_BRIDGE_PACKET_ADDRESS_BITS, the same
  * shift the machine builder gives every onboard board's own Bridge. The
  * "[0]" is not a typo or an artifact of one particular listing: every named
  * MemoryRegion's own QOM child registers under "<name>[*]", an open-array
  * property (system/memory.c, memory_region_do_init()), and QOM assigns it
- * the first free index -- always 0 here, since "crossbow0-spare-fabric" is
- * unique under its owner. Confirmed live: qom-get on the path without the
+ * the first free index (always 0 here, since "crossbow0-spare-fabric" is
+ * unique under its owner). Confirmed live: qom-get on the path without the
  * suffix reports DeviceNotFound.
  *
  * crossbow0's own startup-links-alive (sn0-origin2000-xtalk-owner-test.c:
- * 0x8700, its onboard BaseIO, two host nodes and SI Viz) stays exactly
- * that after this board attaches. sgi_machine_done() does bring the spare
- * widget alive and register it as an inbound destination once a board
- * claims it (sgi_xbow_attach_endpoint_live() then
- * sgi_xbow_mark_widget_alive(), see board-pci-expansion.c's header
- * comment), but through the Crossbow's runtime link state, not by
- * rewriting its configured "startup-links-alive" -- the declared boot
- * health a reset restores. A `-device` board reaching the fabric must not
- * silently rewrite that configured population.
+ * 0x8700, its onboard BaseIO, two host nodes and SI Viz) stays exactly that
+ * after this board attaches. sgi_machine_done() does bring the spare widget
+ * alive and register it as an inbound destination once a board claims it
+ * (sgi_xbow_attach_endpoint_live() then sgi_xbow_mark_widget_alive(), see
+ * board-pci-expansion.c's header comment), but through the Crossbow's
+ * runtime link state, not by rewriting its configured "startup-links-alive"
+ * (the declared boot health a reset restores). A `-device` board reaching
+ * the fabric must not silently rewrite that configured population.
  */
 static void test_pci_expansion_attaches_via_spare_fabric(const void *data)
 {
@@ -264,11 +253,11 @@ static void test_pci_expansion_attaches_via_spare_fabric(const void *data)
 /*
  * sgi-xio-baseio additionally refuses any slot but 8 for its default io6
  * preset: BaseIO is fixed at IO1, crosstalk widget 8 (the preset's own
- * xio_widget in baseio.c), a real
- * hardware fact rather than the free QOM-path choice "slot" is for
- * sgi-pci-expansion above -- slot=8 here satisfies that check, not a
- * coincidence with the sibling test's own unrelated choice. The same
- * configured-startup-links reasoning applies: see the sibling test above.
+ * xio_widget in baseio.c), a real hardware fact rather than the free
+ * QOM-path choice "slot" is for sgi-pci-expansion above. slot=8 here
+ * satisfies that check, not a coincidence with the sibling test's own
+ * unrelated choice. The same configured-startup-links reasoning applies: see
+ * the sibling test above.
  */
 static void test_xio_baseio_attaches_via_spare_fabric(const void *data)
 {
@@ -290,8 +279,8 @@ static void test_xio_baseio_attaches_via_spare_fabric(const void *data)
  * SPACE_XTALK plus a widget's small-window stride plus a register's own
  * offset reaches that widget's real chip registers through the real
  * Crossbow. Reused here read-only, on the machine's own onboard BaseIO
- * (crosstalk widget 8, the io6 preset's own xio_widget), to observe
- * whatever the spare-fabric board below actually delivers to it.
+ * (crosstalk widget 8, the io6 preset's own xio_widget), to observe whatever
+ * the spare-fabric board below actually delivers to it.
  */
 #define SMALL_WINDOW_SIZE       UINT64_C(0x1000000)
 #define SMALL_WINDOW(widget)    (SPACE_XTALK + \
@@ -306,8 +295,8 @@ static void test_xio_baseio_attaches_via_spare_fabric(const void *data)
  * test_pci_expansion_is_inbound_addressable below), but this outbound test
  * keeps to a scratch physical base of its own via qtest_sysbus_mmio_map(),
  * exercising the board's outbound path without leaning on the inbound one;
- * the base sits well clear of every address a real origin2000 topology
- * ever composes.
+ * the base sits well clear of every address a real origin2000 topology ever
+ * composes.
  */
 #define SPARE_BASE              UINT64_C(0xf0000000000)
 #define SPARE_REG(offset)       (SPARE_BASE + (offset) + REG_DATA)
@@ -325,9 +314,9 @@ static void test_xio_baseio_attaches_via_spare_fabric(const void *data)
 
 /*
  * The card this board's own Bridge masters, driven exactly the way
- * sn0-bridge-widget-test.c's card_start()/card_transfer() drive one
- * against a bare Bridge: its config space and window 0 sit at their bare
- * offsets, neither being a chip register with the +REG_DATA skew.
+ * sn0-bridge-widget-test.c's card_start()/card_transfer() drive one against
+ * a bare Bridge: its config space and window 0 sit at their bare offsets,
+ * neither being a chip register with the +REG_DATA skew.
  */
 #define SPARE_CFG0(slot)        (SPARE_BASE + 0x020000 + (slot) * 0x1000)
 #define SPARE_WINDOW0           (SPARE_BASE + 0x200000)
@@ -347,14 +336,14 @@ static void test_xio_baseio_attaches_via_spare_fabric(const void *data)
  * The 64-bit-direct route's own destination: bits 63:60 of a bus-mastered
  * PCI address name a widget (sgi_bridge_translate_common(),
  * hw/pci-host/sgi-bridge.c) and the low 48 bits pass straight through to
- * sgi_bridge_compose_xtalk() -- the same composer sgi_bridge_send_
- * interrupt() uses, so a widget's own decode of the result cannot tell
- * the two delivery mechanisms apart. Bit 47 of that low half is what
+ * sgi_bridge_compose_xtalk(), which sgi_bridge_send_interrupt() also
+ * uses. A widget's own decode of the result cannot tell the
+ * two delivery mechanisms apart. Bit 47 of that low half is what
  * sgi_bridge_realize() maps a widget's own registers onto (the packet_io
- * alias sits at 1 << (SGI_BRIDGE_PACKET_ADDRESS_BITS - 1)), and REG_DATA
- * is the same +4 skew every read in this file adds at the point of
- * access; here it has to be baked into the destination address itself,
- * since a DMA transfer has no separate access-time step once under way.
+ * alias sits at 1 << (SGI_BRIDGE_PACKET_ADDRESS_BITS - 1)), and REG_DATA is
+ * the same +4 skew every read in this file adds at the point of access; here
+ * it has to be baked into the destination address itself, since a DMA
+ * transfer has no separate access-time step once under way.
  */
 #define DEST_WIDGET_SHIFT       60
 #define DEST_PACKET_IO          (UINT64_C(1) << 47)
@@ -367,8 +356,8 @@ static void test_xio_baseio_attaches_via_spare_fabric(const void *data)
 /*
  * Give the card its registers and let it master the bus, the same way
  * sn0-bridge-widget-test.c's card_start() does for a bare Bridge. Both
- * byte-lane bits are set so a transfer carries the bytes it was given:
- * what this test reads is the address, not the order.
+ * byte-lane bits are set so a transfer carries the bytes it was given: what
+ * this test reads is the address, not the order.
  */
 static void spare_card_start(QTestState *qts)
 {
@@ -404,24 +393,24 @@ static void assert_spare_landed(QTestState *qts, uint64_t at, uint32_t seed)
 /*
  * The through-fabric half of the same attach: a spare board's own Bridge
  * masters a real PCI DMA transfer from its own attached card, through the
- * proxy sgi_machine_done() finishes, to BaseIO -- already alive at boot,
- * sharing the fabric this board's own header comment
- * (board-pci-expansion.c) says an outbound transfer can reach. The
- * transfer takes the 64-bit-direct route sn0-bridge-widget-test.c's own
- * WIDE_WIDGET route exercises against a bare fixture; here the widget
- * field names the real BaseIO widget and the destination is one of its
- * own chip registers. BASEIO_RRB_EVEN has no side effect of its own, so
- * a value observed there can only have arrived as the transfer
- * spare_card_transfer() below sends; nothing else in this test or in
- * either board's own realize ever touches it.
+ * proxy sgi_machine_done() finishes, to BaseIO. BaseIO is alive at boot
+ * and shares the fabric. The board's header comment
+ * (board-pci-expansion.c) says outbound transfers can reach it. The
+ * transfer takes the 64-bit-direct
+ * route sn0-bridge-widget-test.c's own WIDE_WIDGET route exercises against a
+ * bare fixture; here the widget field names the real BaseIO widget and the
+ * destination is one of its own chip registers. BASEIO_RRB_EVEN has no side
+ * effect of its own, so a value observed there can only have arrived as the
+ * transfer spare_card_transfer() below sends; nothing else in this test or
+ * in either board's own realize ever touches it.
  *
  * sgi_xbow_sync_routes() disables a port's entire ingress/packet_ingress
- * region whenever that port's own sgi_xbow_alive() is false, always true
- * for the not-alive widget the spare fabric proxy is built against
- * (crossbow0's startup-links-alive, 0x8700, leaves widget 11 the first
- * free one) -- this board's own outbound transfers have nowhere live to
- * originate from until something marks that widget alive without also
- * counting it as one of the Crossbow's own onboard links.
+ * region whenever that port's own sgi_xbow_alive() is false, always true for
+ * the not-alive widget the spare fabric proxy is built against (crossbow0's
+ * startup-links-alive, 0x8700, leaves widget 11 the first free one). This
+ * board's own outbound transfers have nowhere live to originate from until
+ * something marks that widget alive without also counting it as one of the
+ * Crossbow's own onboard links.
  */
 static void test_pci_expansion_delivers_through_spare_fabric(const void *data)
 {
@@ -453,13 +442,13 @@ static void test_pci_expansion_delivers_through_spare_fabric(const void *data)
  * ---- Inbound addressability and interrupt delivery ----
  *
  * The spare fabric widget crossbow0 holds back for a `-device` board is
- * widget 11: the lowest position its startup-links-alive (0x8700 -- BaseIO
+ * widget 11: the lowest position its startup-links-alive (0x8700; BaseIO
  * at widget 8, the two host nodes at 9 and 10, SI Viz at 15) leaves free
  * (sgi_machine_build_crossbars(), hw/mips/sgi/sn-machine.c). A board that
- * takes the proxy is addressable at that widget, so its own Bridge answers
- * a processor through crossbow0's real small window for widget 11 -- the
- * same crosstalk decode SMALL_WINDOW(BASEIO_WIDGET) reaches the onboard
- * BaseIO through -- with no scratch sysbus map of its own.
+ * takes the proxy is addressable at that widget, so its own Bridge answers a
+ * processor through crossbow0's real small window for widget 11. The same
+ * crosstalk decode SMALL_WINDOW(BASEIO_WIDGET) reaches the onboard BaseIO.
+ * Neither path needs a scratch sysbus map.
  */
 #define SPARE_WIDGET            11
 #define SPARE_IN                SMALL_WINDOW(SPARE_WIDGET)
@@ -487,9 +476,9 @@ static void test_pci_expansion_delivers_through_spare_fabric(const void *data)
  * =48 the Bridge composes a packet address carrying the destination widget
  * in bits 51:48, bit 47 marking packet I/O, the nasid in bits 45:38, and the
  * Hub's own interrupt-modify offset (0x01800000 + 0x90) below. An INT_HOST
- * address field of 0x200 sets bit 47 with nasid 0, so node 0's own Hub --
+ * address field of 0x200 sets bit 47 with nasid 0, so node 0's own Hub,
  * read at HUB_LOCAL, whichever host-node widget the packet enters by, since
- * the Hub's claim layer routes by programmed node number -- latches it.
+ * the Hub's claim layer routes by programmed node number, latches it.
  */
 #define HUB_WIDGET_ON_XBOW      9
 #define HUB_INT_MODIFY_OFFSET   0x01800090
@@ -565,8 +554,8 @@ static void test_pci_expansion_delivers_card_interrupt_to_hub(const void *data)
 }
 
 /*
- * A real modeled interrupt-capable card -- the dual-channel QLogic ISP12160
- * SCSI host adapter (hw/scsi/qlogic-isp.c) -- plugged into the expansion
+ * A real modeled interrupt-capable card, the dual-channel QLogic ISP12160
+ * SCSI host adapter (hw/scsi/qlogic-isp.c), plugged into the expansion
  * board's own PCI bus is enumerable behind the expansion widget: its PCI
  * configuration space answers its own vendor/device identity (0x1077/0x1216)
  * through crossbow0's small window for the spare widget, the very config
@@ -589,11 +578,11 @@ static void test_expansion_card_enumerates_inbound(const void *data)
 
 /*
  * The spare widget is an empty XIO slot until a board claims it: its
- * Crossbow port reports no widget and the failed-initialization state,
- * so firmware passes over it. A board taking the proxy is a widget
- * physically attached to that port, which then reads present and alive
- * (docs/datasheets/xbow.md, link auxiliary status bit 5 and link status
- * bit 31). Crossbow 0's own registers are widget 0 of its small windows.
+ * Crossbow port reports no widget and the failed-initialization state, so
+ * firmware passes over it. A board taking the proxy is a widget physically
+ * attached to that port, which then reads present and alive (link auxiliary
+ * status bit 5 and link status bit 31). Crossbow 0's own registers are
+ * widget 0 of its small windows.
  */
 #define SPARE_LINK_STATUS       (SMALL_WINDOW(0) + 0x110 + \
                                 (SPARE_WIDGET - 8) * 0x40 + REG_DATA)
@@ -623,10 +612,10 @@ static void test_spare_widget_present_only_when_claimed(const void *data)
 
 /*
  * The stock PROM resets every link it finds attached and expects one that
- * was alive before the reset to come back after the pulse; the machine
- * gives every topology link that restore. A board claimed on the spare
- * widget is attached the same way, so a link reset of its port must bring
- * it back present and alive rather than leave it initializing.
+ * was alive before the reset to come back after the pulse; the machine gives
+ * every topology link that restore. A board claimed on the spare widget is
+ * attached the same way, so a link reset of its port must bring it back
+ * present and alive rather than leave it initializing.
  */
 #define SPARE_LINK_RESET        (SMALL_WINDOW(0) + 0x130 + \
                                 (SPARE_WIDGET - 8) * 0x40 + REG_DATA)
@@ -661,17 +650,16 @@ static void test_unsupported_smp_population_rejected(const void *data)
 static void test_topology_from_another_product_refused(const void *data)
 {
     /*
-     * The compiled catalogue holds every product's topologies in one
-     * list; topology= names one by string alone, so
-     * sgi_machine_topology() also checks the resolved entry against
-     * this machine's own product (sgi_machine_topology_matches_product)
-     * before handing it back. Origin 2000's "origin2000-module"
-     * descriptor exists and resolves by name just as well for Origin
-     * 200's product class, so without that check Origin 200 would
-     * build Origin 2000's four-node wiring under its own product.
-     * The product mismatch is refused the way any other unknown name
-     * is: sgi_machine_topology() returns NULL either way.
-     */
+ * The compiled catalogue holds every product's topologies in one list;
+ * topology= names one by string alone, so sgi_machine_topology() also checks
+ * the resolved entry against this machine's own product
+ * (sgi_machine_topology_matches_product) before handing it back. Origin
+ * 2000's "origin2000-module" descriptor exists and resolves by name just as
+ * well for Origin 200's product class, so without that check Origin 200
+ * would build Origin 2000's four-node wiring under its own product. The
+ * product mismatch is refused the way any other unknown name is:
+ * sgi_machine_topology() returns NULL either way.
+ */
     const char *args[] = {
         qtest_qemu_binary(NULL), "-M", "origin200,topology=origin2000-module",
         "-display", "none", NULL
@@ -681,11 +669,11 @@ static void test_topology_from_another_product_refused(const void *data)
 }
 
 /*
- * Every accepted -smp/-m population actually builds, for every topology
- * that ships today -- the positive side of the rejection tests above.
+ * Every accepted -smp/-m population actually builds, for every topology that
+ * ships today. These are the accepted counterparts to the rejection tests.
  * qtest_enabled() waives the stock-PROM/-bios requirement, so a bare
- * qtest_init() that returns at all, without QEMU exiting first, is the
- * pass: sgi_machine_init ran its validation and built every node.
+ * qtest_init() that returns at all, without QEMU exiting first, is the pass:
+ * sgi_machine_init ran its validation and built every node.
  */
 static void test_origin200_accepts_its_cpu_populations(const void *data)
 {
@@ -718,11 +706,10 @@ static void test_origin200_accepts_its_memory_populations(const void *data)
 static void test_origin200_dual_accepts_its_populations(const void *data)
 {
     /*
-     * default_ram_size is origin200's own shipped total (one node), so
-     * -m must be named explicitly here: left out, it would divide across
-     * this topology's two real nodes and fail, not fall back to a value
-     * this topology accepts.
-     */
+ * default_ram_size is origin200's own shipped total (one node), so -m must
+ * be named explicitly here: left out, it would divide across this topology's
+ * two real nodes and fail, not fall back to a value this topology accepts.
+ */
     static const unsigned int mib_per_node[] = { 512, 256, 128, 64 };
     unsigned int i;
 
@@ -821,13 +808,13 @@ static void test_origin2000_module_accepts_its_populations(const void *data)
 static void test_origin2000_one_node_accepts_its_populations(const void *data)
 {
     /*
-     * default_ram_size is origin2000's own shipped default (the
-     * four-node module's total), so -m must be named explicitly here
-     * the same way test_origin200_dual_accepts_its_populations names it
-     * for origin200's own two-node topology: left out, it would try
-     * this one node against the four-node module's default total and
-     * fail, not fall back to a value origin2000-one-node itself accepts.
-     */
+ * default_ram_size is origin2000's own shipped default (the four-node
+ * module's total), so -m must be named explicitly here the same way
+ * test_origin200_dual_accepts_its_populations names it for origin200's own
+ * two-node topology: left out, it would try this one node against the
+ * four-node module's default total and fail, not fall back to a value
+ * origin2000-one-node itself accepts.
+ */
     QTestState *qts = qtest_init(
         "-M origin2000,topology=origin2000-one-node -smp 2 -m 64M "
         "-display none");
@@ -837,11 +824,11 @@ static void test_origin2000_one_node_accepts_its_populations(const void *data)
 
 /*
  * origin2000-one-node's own node/CPU-count contract: the topology builds
- * exactly the one node and two CPUs its own supported-cpu-populations
- * entry names -- no node1 QOM child exists, and query-cpus-fast reports
- * both sockets on node 0. sn0-origin2000-test.c's assert_cpu_inventory
- * checks the same shape for the four-node module's own eight CPUs; this
- * is that check scaled down to this topology's own population.
+ * exactly the one node and two CPUs its own supported-cpu-populations entry
+ * names. No node1 QOM child exists, and query-cpus-fast reports both
+ * sockets on node 0. sn0-origin2000-test.c's assert_cpu_inventory checks the
+ * same shape for the four-node module's own eight CPUs; this is that check
+ * scaled down to this topology's own population.
  */
 static void test_origin2000_one_node_has_two_cpus_on_node_zero(
     const void *data)
@@ -878,15 +865,14 @@ static void test_origin2000_one_node_has_two_cpus_on_node_zero(
 /*
  * sn-builder-console-test (sn-builder-fault-test.c) is a two-node topology
  * with console=1: node 1's IOC3 port A, not node 0's, must land on serial
- * line 0. Give the machine exactly one backend, at line 0, and read it
- * back off each node's own onboard sgi-baseio's own IOC3 "chardev-a"
- * property (sn0.c creates the Bridge and the sgi-baseio behind it
- * directly, as QOM children of the node object, since neither is a
- * removable board -- docs/designs/sn-machine-model-architecture.md,
- * "Node devices") -- a chardev property reports the backend's own id
- * once bound (qdev-properties-system.c's get_chr), empty string unbound,
- * so this fails the way the removed boot-and-quit version could not:
- * node 0 answering "probe" instead of node 1 would still exit 0.
+ * line 0. Give the machine exactly one backend, at line 0, and read it back
+ * off each node's own onboard sgi-baseio's own IOC3 "chardev-a" property
+ * (sn0.c creates the Bridge and the sgi-baseio behind it directly, as QOM
+ * children of the node object, since neither is a removable board). A
+ * chardev property reports the backend's own id once bound
+ * (qdev-properties-system.c's get_chr), empty string unbound, so this fails
+ * the way the removed boot-and-quit version could not: node 0 answering
+ * "probe" instead of node 1 would still exit 0.
  */
 static void test_console_field_puts_its_node_on_serial_line_zero(
     const void *data)
@@ -908,12 +894,12 @@ static void test_console_field_puts_its_node_on_serial_line_zero(
 
 /*
  * tests/unit/test-sn-model.c checks xtalk_attachments/io_boards against
- * node_count once, for the compiled descriptor; this fixture corrupts a
- * copy at runtime instead, so a node missing its own crosstalk
- * attachment only fails once sgi_machine_index_xtalk_attachments looks
- * it up during real construction. This must surface as sgi_machine_
- * init's own reported error and a clean exit, not an aborting assertion
- * or a memory-region collision reaching the guest as a signal.
+ * node_count once, for the compiled descriptor; this fixture corrupts a copy
+ * at runtime instead, so a node missing its own crosstalk attachment only
+ * fails once sgi_machine_index_xtalk_attachments looks it up during real
+ * construction. This must surface as sgi_machine_ init's own reported error
+ * and a clean exit, not an aborting assertion or a memory-region collision
+ * reaching the guest as a signal.
  */
 static void test_node_without_xtalk_attachment_rejected(const void *data)
 {
@@ -924,10 +910,9 @@ static void test_node_without_xtalk_attachment_rejected(const void *data)
         "-m", "128M", "-smp", "4",
         "-cpu", "R10000",
         /*
-         * The fault is reported before flash content is ever read, so
-         * this only needs to clear the "-bios or pflash" precondition,
-         * not name a real image.
-         */
+ * The fault is reported before flash content is ever read, so this only
+ * needs to clear the "-bios or pflash" precondition, not name a real image.
+ */
         "-bios", "/dev/null", "-display", "none", NULL
     };
 
@@ -937,16 +922,16 @@ static void test_node_without_xtalk_attachment_rejected(const void *data)
 
 /*
  * The builder dispatches io_boards[] entries on the descriptor's own
- * board_kind alone (sgi_machine_instantiate_io_board), not on how the
- * board attaches: Origin 200's onboard I/O and Origin 2000's BaseIO card
- * both, historically, attached at widget 8 on their own module, and both
- * happen to also differ by attachment kind (direct vs. Crossbow), which
- * is exactly what let a board_kind data defect go unnoticed before.
- * Checking what each carrier actually builds, not merely that something
- * builds, is what a heuristic that happened to agree on both shipped
- * products could not catch: Origin 200's onboard sgi-baseio must carry
- * the "ip29" preset, and Origin 2000's onboard board must be the
- * sgi-xio-baseio card class, not merely something at widget 8.
+ * board_kind alone (sgi_machine_instantiate_io_board), not on how the board
+ * attaches: Origin 200's onboard I/O and Origin 2000's BaseIO card both,
+ * historically, attached at widget 8 on their own module, and both happen to
+ * also differ by attachment kind (direct vs. Crossbow), which is exactly
+ * what let a board_kind data defect go unnoticed before. Checking what each
+ * carrier actually builds, not merely that something builds, is what a
+ * heuristic that happened to agree on both shipped products could not catch:
+ * Origin 200's onboard sgi-baseio must carry the "ip29" preset, and Origin
+ * 2000's onboard board must be the sgi-xio-baseio card class, not merely
+ * something at widget 8.
  */
 static void test_origin200_onboard_board_is_ip29_preset(const void *data)
 {
@@ -977,9 +962,8 @@ static void test_origin2000_onboard_board_is_xio_baseio(const void *data)
 
 /*
  * The one-node module's BaseIO in IO1 is the BaseIO-G, whose MediaIO
- * daughtercard fits the second IOC3 with the keyboard and mouse, and its
- * IO3 position carries the SI graphics head, as the four-node module's
- * does.
+ * daughtercard fits the second IOC3 with the keyboard and mouse, and its IO3
+ * position carries the SI graphics head, as the four-node module's does.
  */
 static void test_origin2000_one_node_onboard_board_is_xio_baseio(
     const void *data)
@@ -1002,11 +986,11 @@ static void test_origin2000_one_node_onboard_board_is_xio_baseio(
  * The builder builds a Bedrock topology of more than one node. This drives
  * it over sn-builder-fault-test.c's own synthetic two-node fixture: two
  * Bedrock nodes, each with its own populated IO-8 board at its own
- * attachment, no controllers and no cable. Population and memory
- * validation, the node loop's per-node board and widget selection, and
- * each node's realize all run for two nodes, and the machine comes up with
- * both nodes as devices. With no cable each node reaches only itself;
- * sn1-cross-node-test covers the cabled pair.
+ * attachment, no controllers and no cable. Population and memory validation,
+ * the node loop's per-node board and widget selection, and each node's
+ * realize all run for two nodes, and the machine comes up with both nodes as
+ * devices. With no cable each node reaches only itself; sn1-cross-node-test
+ * covers the cabled pair.
  */
 static void test_bedrock_topology_accepts_two_nodes(const void *data)
 {
@@ -1034,11 +1018,11 @@ static void test_bedrock_topology_accepts_two_nodes(const void *data)
  * sn-builder-bedrock-nasid-test (sn-builder-fault-test.c) builds two
  * sgi-sn1-node devices directly, at placements 0 and 1, the way
  * sn-machine.c's own per-node loop would, with no cable. Each node's own
- * processor must read its own board-identification register through the
- * Hub special local window, one of the reader-relative forms, and node 0's
- * processor must reach nothing at node field 1: node 1 carries number 0
- * from reset and is not cabled. Collided placements would abort realize,
- * and a local form shared between the nodes would answer only one of them.
+ * processor must read its own board-identification register through the Hub
+ * special local window, one of the reader-relative forms, and node 0's
+ * processor must reach nothing at node field 1: node 1 carries number 0 from
+ * reset and is not cabled. Collided placements would abort realize, and a
+ * local form shared between the nodes would answer only one of them.
  */
 #define NASID_TEST_SPACE_HUB UINT64_C(0x10000000000)
 #define NASID_TEST_HUB_LOCAL_REGISTERS \
@@ -1046,7 +1030,8 @@ static void test_bedrock_topology_accepts_two_nodes(const void *data)
 #define NASID_TEST_BOARD_ID_LOCAL \
     (NASID_TEST_HUB_LOCAL_REGISTERS + UINT64_C(0x4000000))
 #define NASID_TEST_BOARD_ID_VALUE UINT64_C(0x8001)
-/* M mode's node field sits at physical address bit 33 (ip35-address-map.md). */
+/* M mode's node field sits at physical address bit 33
+ * (ip35-address-map.md). */
 #define NASID_TEST_NODE_ADDRESS_SHIFT 33
 
 static bool nasid_test_cpu_readq(QTestState *qts, unsigned int cpu,
@@ -1112,9 +1097,9 @@ static void test_origin300_two_chassis_refuses_an_uneven_record_list(
 }
 
 /*
- * The cable between the two chassis also carries their L1s' RS-422 pair,
- * so the builder makes each chassis's L1 the other's peer when it wires
- * the cable.
+ * The cable between the two chassis also carries their L1s' RS-422 pair, so
+ * the builder makes each chassis's L1 the other's peer when it wires the
+ * cable.
  */
 static void test_origin300_two_chassis_l1s_are_peers(const void *data)
 {
@@ -1145,9 +1130,9 @@ static void test_origin300_two_chassis_l1s_are_peers(const void *data)
 static void test_unsupported_memory_population_rejected(const void *data)
 {
     /*
-     * Origin 200 accepts 512, 256, 128, and 64 MiB per node.
-     * -m 768M (single node, default topology) is not in the accepted list.
-     */
+ * Origin 200 accepts 512, 256, 128, and 64 MiB per node. -m 768M (single
+ * node, default topology) is not in the accepted list.
+ */
     const char *args[] = {
         qtest_qemu_binary(NULL), "-M", "origin200", "-m", "768M",
         "-display", "none", NULL

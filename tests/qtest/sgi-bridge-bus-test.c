@@ -6,7 +6,7 @@
  * device window, and the same registers through the window that reaches PCI
  * memory space whole. A transfer engine on the same bus then writes into the
  * memory the allocator hands out, which is the claim a card cannot check for
- * itself -- that an allocated address is one a card can reach.
+ * itself: whether a card can reach an allocated address.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
@@ -18,7 +18,9 @@
 #include "libqos/pci.h"
 #include "libqos/pci-sgi-bridge.h"
 
-/* Where the two cards sit, and a slot left empty for the bus to answer for. */
+/*
+ * Where the two cards sit, and a slot left empty for the bus to answer for.
+ */
 #define CARD_SLOT       1
 #define TRANSFER_SLOT   2
 #define EMPTY_SLOT      5
@@ -29,7 +31,9 @@
 #define CARD_SCRATCH    0x34
 #define CARD_PATTERN    0x8b7a6950u
 
-/* The transfer engine's registers, and what a write to the last one starts. */
+/*
+ * The transfer engine's registers, and what a write to the last one starts.
+ */
 #define XFER_ADDRESS    0x00
 #define XFER_LENGTH     0x04
 #define XFER_SEED       0x08
@@ -46,11 +50,8 @@ static QTestState *head_start(void)
                        CARD_SLOT, TRANSFER_SLOT);
 }
 
-/*
- * The identity read every driver takes first, whole and in halves and bytes:
- * a bus that aimed a narrow access at the wrong byte would still answer the
- * whole double word correctly.
- */
+/* Read identity as a word, halfwords and bytes to catch narrow access
+ * byte selection errors hidden by a correct word read. */
 static void test_configuration_space(void)
 {
     QTestState *qts = head_start();
@@ -86,9 +87,9 @@ static void test_empty_slot_has_no_device(void)
 
 /*
  * The card's I/O BAR and its memory BAR reach one scratch register, so a
- * value written through either is the value read back through the other.
- * Read again a halfword and a byte at a time, which is where a bus that got
- * the byte order right only for whole words comes apart.
+ * value written through either is the value read back through the other. Read
+ * again a halfword and a byte at a time, which is where a bus that got the
+ * byte order right only for whole words comes apart.
  */
 static void test_both_bars_reach_one_register(void)
 {
@@ -128,11 +129,8 @@ static void test_both_bars_reach_one_register(void)
     qtest_quit(qts);
 }
 
-/*
- * A card transfers into a page the allocator handed out, and the same address
- * reads back the pattern. Nothing else here proves that an address good for
- * qtest is an address a card can name.
- */
+/* DMA into an allocated page and read the pattern back to verify that a
+ * qtest-visible allocated address is reachable by the card. */
 static void test_transfer_reaches_allocated_memory(void)
 {
     QTestState *qts = head_start();

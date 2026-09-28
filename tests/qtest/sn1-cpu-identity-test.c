@@ -1,18 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * Origin 300 processor identity, executed by the processors themselves.
- *
- * The processor-interface CPU number register reports the reading
- * processor's physical slice in bits 1:0. That cannot be checked from a
- * qtest: every access is issued through the first processor's address
- * space with no current processor set, so the register always takes its
- * no-issuing-processor path and an assertion about the second processor
- * would pass against any implementation. The check has to be made by guest
- * code running on the processor whose identity is in question.
- *
- * Both processors enter at the reset vector and run the same instructions,
- * so telling themselves apart is the whole test. Each publishes into the
- * real-time compare register its interface owns.
+ * Origin 300 CPU identity, checked by code running on each processor. Each
+ * publishes its physical slice to its own real-time compare register.
  */
 #include "qemu/osdep.h"
 #include "qemu/bswap.h"
@@ -30,10 +19,9 @@
 #define SLOT_C_MARK 0xc
 
 /*
- * The four-processor marks. Bits 1:0 are the slice the publishing
- * processor read out of the CPU number register, so a processor that
- * misreads its own slot writes into another slot's register and leaves
- * its own at zero.
+ * The four-processor marks. Bits 1:0 are the slice the publishing processor
+ * read out of the CPU number register, so a processor that misreads its own
+ * slot writes into another slot's register and leaves its own at zero.
  */
 #define SLOT_MARK_BASE 0xa0
 
@@ -44,16 +32,20 @@
 #define POLL_INTERVAL_US 10000
 
 /*
- * Guest code. Register t0 holds an uncached pointer to the local processor
- * interface, t2 the slot, t3 the value published.
+ * The CPU number register reports the reader's physical slice in bits 1:0.
+ * qtest uses CPU 0's address space without a current CPU, taking the
+ * no-issuing-processor path; it cannot test another CPU's identity. Both CPUs
+ * enter at the reset vector and run identical code, so each must read its own
+ * identity. t0 points uncached to the local processor interface; t2 is the
+ * slot and t3 the published value.
  *
  * The window a reference is meant for does not live in the physical address
  * on this platform: an uncached reference carries it in the attribute bits
  * above the address, and the memory system lifts that into a window. So the
  * pointer is the crosstalk attribute plus the register offset, not a
- * forty-two bit physical address, and no TLB entry is needed. Sixty-four
- * bit kernel addressing has to be enabled first, which is why the code
- * begins in the status register.
+ * forty-two bit physical address, and no TLB entry is needed. Sixty-four bit
+ * kernel addressing has to be enabled first, which is why the code begins in
+ * the status register.
  */
 static char *create_identity_prom(void)
 {
@@ -93,7 +85,9 @@ static char *create_identity_prom(void)
     stl_be_p(image + 0x440, 0x1000ffff); /* beq zero, zero, self */
     stl_be_p(image + 0x444, 0x00000000); /* nop */
 
-    /* Slice C keeps publishing so the host can observe continued execution. */
+    /*
+     * Slice C keeps publishing so the host can observe continued execution.
+     */
     stl_be_p(image + 0x460, 0x340b000c); /* ori t3, zero, SLOT_C_MARK */
     stl_be_p(image + 0x464, 0xfd0b0108); /* sd t3, 0x108(t0) -- PI1 compare A */
     stl_be_p(image + 0x468, 0x256b0001); /* addiu t3, t3, 1 */
@@ -131,8 +125,8 @@ static void test_each_processor_knows_its_slot(void)
     prom = create_identity_prom();
     quoted = g_shell_quote(prom);
     /*
-     * The accelerator named here wins over the -accel qtest libqtest
-     * appends, and both processors need their own thread to make progress
+     * The accelerator named here wins over the -accel qtest libqtest appends,
+     * and both processors need their own thread to make progress
      * independently.
      */
     s = qtest_initf("-M origin300 -cpu R14000 -smp 2 -bios %s "
@@ -190,13 +184,13 @@ static void test_each_processor_knows_its_slot(void)
 }
 
 /*
- * Guest code for the four-processor population. Every processor runs the
- * same instructions and has to find its own slice: it reads the CPU number
+ * Guest code for the four-processor population. Every processor runs the same
+ * instructions and has to find its own slice: it reads the CPU number
  * register through the crosstalk local form, which resolves to the
  * requester's own processor interface, and publishes a slice-stamped mark
- * into the real-time compare register that interface keeps for its own
- * slot. Four distinct registers end up holding four distinct marks only if
- * every processor read its own slot correctly.
+ * into the real-time compare register that interface keeps for its own slot.
+ * Four distinct registers end up holding four distinct marks only if every
+ * processor read its own slot correctly.
  */
 static char *create_four_slot_identity_prom(void)
 {
@@ -245,10 +239,10 @@ static char *create_four_slot_identity_prom(void)
 
 /*
  * The four-processor population fills both slots of both interfaces. A
- * processor that reads a slot the machine did not put it in publishes into
- * a register another processor owns and leaves its own at zero, which is
- * what a second processor reporting slice A looks like from outside: two
- * boot masters in the stock PROM.
+ * processor that reads a slot the machine did not put it in publishes into a
+ * register another processor owns and leaves its own at zero, which is what a
+ * second processor reporting slice A looks like from outside: two boot
+ * masters in the stock PROM.
  */
 static void test_four_processors_know_their_slots(void)
 {

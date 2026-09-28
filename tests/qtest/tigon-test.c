@@ -1,26 +1,20 @@
 /*
- * Alteon Tigon 2 (the SGI "eg" gigabit board) on the Bridge head.
- *
- * This is the device's contract test. It owns config identity, the register
- * contract, the firmware-mediated ring engine (transmit and receive over host
- * DRAM), ring producer-index safety, the interrupt controls, and -- the point
- * of running here -- the descriptor/data DMA byte order, pinned with golden
- * fixed-byte-layout assertions rather than a self-round-trip (a round trip is
- * self-consistent for both polarities and cannot see the swap direction).
- *
- * The head is one Bridge on the "none" machine with the memory a card
- * transfers into beside it. The card is therefore reached over the chip it
- * ships behind, but nothing here is an Origin 200 claim: no node, no
- * crossbar, no fabric. The composition of this device's native-order DMA with
- * a populated machine's per-slot DEV_SWAP correction is a separate Origin 200
- * integration test; it lives in tests/qtest/sn0-tigon-test.c. See
- * docs/library/nic-on-bridge-conventions.md.
- *
- * Register offsets, ring/descriptor layouts and byte-swap controls come from
- * the reviewed docs/datasheets/tigon.md contract, restated here so the test
- * pins them independently of the model.
+ * Alteon Tigon 2 (SGI "eg") device contract on a Bridge head.
+ * Tests PCI identity, firmware rings, DMA byte order, and interrupts.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
+ */
+
+/*
+ * The "none" machine holds one Bridge and adjacent transfer memory: the card
+ * uses its native head, with no Origin 200 node, crossbar, or fabric. The
+ * populated machine's per-slot DEV_SWAP correction is covered separately in
+ * tests/qtest/sn0-tigon-test.c. Tests cover the register contract, firmware
+ * transmit/receive rings in host DRAM, producer-index safety, and interrupt
+ * controls. Fixed byte-layout assertions check descriptor/data DMA polarity;
+ * a self-round-trip would pass with either swap direction. Register offsets,
+ * ring and descriptor layouts, and swap controls come from Tigon
+ * documentation and are restated independently of the model.
  */
 
 #include "qemu/osdep.h"
@@ -37,7 +31,7 @@
 #define TIGON_MAC       "52:54:00:12:34:56"
 static const uint8_t tigon_mac[6] = { 0x52, 0x54, 0x00, 0x12, 0x34, 0x56 };
 
-/* The card's identity, from docs/datasheets/tigon.md. */
+/* The card's identity. */
 #define TIGON_VENDOR_ID     0x10a9
 #define TIGON_DEVICE_ID     0x0009
 #define TIGON_CLASS_CODE    0x020000
@@ -51,10 +45,8 @@ static const uint8_t tigon_mac[6] = { 0x52, 0x54, 0x00, 0x12, 0x34, 0x56 };
 #define TI_MB_HOSTINTR      0x504
 
 /*
- * The modelled minimum between a frame arriving and its completion, in
- * nanoseconds: the device default. Delivery is published only once this much
- * virtual time has passed, so every wait for a completion has to advance the
- * clock as well as give the main loop a pass.
+ * The device's default arrival-to-completion floor is in nanoseconds.
+ * Completion waits must advance virtual time and run the main loop.
  */
 #define RX_ARRIVAL_LATENCY_NS  200000
 #define TI_MB_SENDPROD_IDX  0x514
@@ -198,10 +190,9 @@ static bool irq_pending(TigonTest *t)
 }
 
 /*
- * Descriptor/GIB DMA lands in guest memory in the byte order the guest
- * programmed through OPMODE, so read and write it explicitly by hand at that
- * order -- never through qtest_writel, whose target-endianness correction would
- * hide the very polarity these accessors have to reproduce for the device.
+ * OPMODE selects guest-memory byte order for descriptor/GIB DMA. Read and
+ * write it explicitly; qtest_writel's target-endian correction would hide
+ * swap polarity.
  */
 static void dma_stl(TigonTest *t, uint64_t addr, uint32_t val)
 {
@@ -236,10 +227,9 @@ static void dma_st_hostaddr(TigonTest *t, uint64_t at, uint64_t addr)
 }
 
 /*
- * Build the general information block and its rings in guest DRAM and program
- * the DMA byte order the driver would on this host, but do not yet publish the
- * GIB address or release the CPU -- so a caller can test the firmware-up
- * preconditions in isolation.
+ * Build GIB and rings in guest DRAM and set host-appropriate DMA order. Leave
+ * the GIB address unpublished and CPU held to test firmware-up preconditions
+ * separately.
  */
 static void tigon_setup_rings(TigonTest *t, bool dma_be)
 {
@@ -290,7 +280,9 @@ static void tigon_setup_rings(TigonTest *t, bool dma_be)
 /* Publish the GIB address and release embedded CPU A -> firmware-up. */
 static void tigon_publish(TigonTest *t)
 {
-    /* The little-endian register view puts the low half at the lower offset. */
+    /*
+     * The little-endian register view puts the low half at the lower offset.
+     */
     reg_wr(t, TI_GCR_GENINFO_HI, t->gib & 0xffffffff);
     reg_wr(t, TI_GCR_GENINFO_LO, t->gib >> 32);
     reg_wr(t, TI_CPU_STATE, 0);   /* clear the halt bit */
@@ -359,7 +351,9 @@ static void test_chip_rev_and_reset(void)
     g_assert_cmphex(reg_rd(&t, TI_MISC_HOST_CTL) & TI_MHC_CHIP_REV_MASK, ==,
                     (uint32_t)TIGON_CHIP_REV << 28);
 
-    /* The RESET bit is accepted and leaves the read-only rev nibble intact. */
+    /*
+     * The RESET bit is accepted and leaves the read-only rev nibble intact.
+     */
     reg_wr(&t, TI_MISC_HOST_CTL, TI_MHC_RESET);
     g_assert_cmphex(reg_rd(&t, TI_MISC_HOST_CTL) & TI_MHC_CHIP_REV_MASK, ==,
                     (uint32_t)TIGON_CHIP_REV << 28);
@@ -368,10 +362,8 @@ static void test_chip_rev_and_reset(void)
 }
 
 /*
- * The register-swap bits and the descriptor-swap operating mode are ordinary
- * read/write state: the guest programs them and reads them back unchanged. This
- * pins that the model stores them rather than acting on them in some hidden way
- * -- the byte-order tests pin what the descriptor-swap bit does.
+ * Register-swap bits and descriptor-swap OPMODE read back as programmed.
+ * Byte-order tests separately check descriptor-swap behavior.
  */
 static void test_register_config_roundtrip(void)
 {
@@ -414,9 +406,9 @@ static void test_station_addr_par(void)
 }
 
 /*
- * The bit-banged serial EEPROM the driver reads at attach, before any firmware
- * download. The helpers replay the exact 24Cxx I2C sequence the NetBSD "ti"
- * driver's ti_eeprom_getbyte()/EEPROM_START()/EEPROM_STOP() macros drive.
+ * Attach reads the serial EEPROM before firmware download. Helpers use the
+ * NetBSD ti driver's exact 24Cxx I2C sequence from
+ * ti_eeprom_getbyte()/EEPROM_START()/EEPROM_STOP().
  */
 static uint32_t ee_read(TigonTest *t)
 {
@@ -774,10 +766,8 @@ static void test_operational_ring_migration(void)
     g_assert_cmphex(dma_ldl(&to, to.tx_cons), ==, 2);
 
     /*
-     * The counters are device state and have to cross with it: two broadcast
-     * frames have gone out, one on each side of the migration, and the
-     * destination has to report both. A 64-bit counter is two words, most
-     * significant first.
+     * Two broadcast frames straddle migration; destination counters must show
+     * both. Each 64-bit counter has two words, most significant first.
      */
     reg_wr(&to, TI_GCR_CMDRING, (uint32_t)TI_CMD_RFRSH_STATS << 24);
     reg_wr(&to, TI_MB_CMDPROD_IDX, 1);
@@ -856,17 +846,12 @@ static void test_receive(void)
 }
 
 /*
- * A frame does not complete the instant the backend hands it over. The card
- * writes it into the posted buffer and fills in its return descriptor
- * straight away, and the two things the driver can actually read -- the
- * return-ring producer index in host memory and the interrupt -- appear only
- * once the arrival deadline has passed on the virtual clock. The return
- * descriptor itself is invisible until the producer names it, so this checks
- * that it is already written while the producer still is not.
- *
- * Without the floor the model published a reply in the same virtual instant
- * as the transmit that provoked it, which no wire, peer or DMA can do; see
- * docs/datasheets/tigon.md's arrival-latency approximation.
+ * The card writes a received frame and return descriptor immediately, but
+ * publishes the host-memory producer index and interrupt only after the
+ * virtual-clock arrival deadline. The descriptor is invisible until indexed;
+ * check it is written while the producer remains unchanged. Without the
+ * floor, a transmit and reply complete in one virtual instant, unlike wire,
+ * peer, or DMA latency.
  */
 static void test_receive_waits_for_its_arrival_deadline(void)
 {
@@ -928,13 +913,10 @@ static void test_receive_waits_for_its_arrival_deadline(void)
 }
 
 /*
- * Compare flat delivery with a two-descriptor transmit split inside IPv4.
- *
- * The fragmented half needs a card that hands the net core a scattered
- * frame, and the only one libqos can drive is an Intel PCI Express part. The
- * Bridge is a conventional PCI chip and mips64-softmmu builds no PCI Express
- * at all, so on that machine there is nothing on the bus to originate the
- * split. Say so rather than compare a fragmented delivery against itself.
+ * Compare flat delivery with a two-descriptor split inside IPv4. libqos can
+ * originate a scattered frame only with an Intel PCI Express card. Bridge is
+ * conventional PCI and mips64-softmmu has no PCI Express, so that target
+ * cannot run the fragmented half without comparing a frame against itself.
  */
 static void test_receive_iov_matches_flat(void)
 {
@@ -1089,10 +1071,9 @@ static void test_receive_filters_other(void)
     reg_wr(&t, TI_MB_STDRXPROD_IDX, 2);
 
     /*
-     * A frame for a different station, then one for us. Both are read from the
-     * backend in order; only the second may reach the ring. If the filter let
-     * the first through, the return producer would reach 2 and the buffer would
-     * hold the wrong frame.
+     * The backend reads a foreign-station frame before one addressed to us.
+     * Only the latter reaches the ring; bad filtering makes producer 2 and
+     * replaces the buffer with the wrong frame.
      */
     net_send_frame(sv[0], rx_frame_other, sizeof(rx_frame_other));
     net_send_frame(sv[0], rx_frame_ours, sizeof(rx_frame_ours));
@@ -1153,12 +1134,9 @@ static void test_receive_clamps_to_buffer(void)
 /* ---- ring producer-index safety ---- */
 
 /*
- * A guest that writes an out-of-range producer index must not hang the
- * emulator. The mailbox values are ring indices, so the model reduces them into
- * range rather than looping over an index it can never reach; if the guard were
- * missing, an index of four billion would spin. The test writes such values and
- * then proves the machine still answers, which it could not do from inside a
- * runaway walk.
+ * Out-of-range mailbox producer indices must reduce into the ring instead of
+ * spinning toward an unreachable value. Four billion would hang without the
+ * guard; after writing it, the test requires the machine to answer.
  */
 static void test_producer_index_safety(void)
 {
@@ -1235,14 +1213,10 @@ static void test_interrupt_hostintr_ack(void)
 /* ---- byte order, pinned by golden fixed-byte-layout ---- */
 
 /*
- * The descriptor/data DMA byte order the guest programs through OPMODE. The
- * same logical values -- the firmware-up event word 0x01000000 and the
- * producer index 1 -- must occupy different bytes in guest memory depending on
- * the swap bit, so we assert the exact in-memory byte pattern, not a value read
- * back through the same order. A self-round-trip is self-consistent for both
- * polarities and would pass either way; only pinning the raw bytes catches a
- * wrong swap direction. This is what needs the generic host: with no Bridge in
- * the path, what the device writes is exactly what lands in guest memory.
+ * OPMODE swap selects raw guest-memory byte positions for event 0x01000000
+ * and producer index 1. Exact byte assertions catch reversed polarity; a
+ * self-round-trip passes either orientation. On the generic host, no Bridge
+ * alters device writes before they reach guest memory.
  */
 static void byte_order_golden(bool dma_be)
 {
@@ -1298,10 +1272,8 @@ int main(int argc, char **argv)
     g_test_init(&argc, &argv, NULL);
 
     /*
-     * A hard assert, not the usual quiet skip: proving the device is a
-     * general-purpose PCI card compiled into a generic target is the whole
-     * point of this file. A silent skip here would let a Kconfig regression
-     * that drops tigon from qemu-system-x86_64 pass as an empty green run.
+     * Require Tigon in generic qemu-system-x86_64. A quiet skip would let a
+     * Kconfig regression produce an empty green run.
      */
     g_assert_true(qtest_has_device("tigon"));
 

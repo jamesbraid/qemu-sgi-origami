@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
+/* Bedrock network-interface device state. */
 #ifndef HW_MISC_SGI_BEDROCK_NI_H
 #define HW_MISC_SGI_BEDROCK_NI_H
 
@@ -14,7 +15,7 @@ typedef struct SGIBedrockState SGIBedrockState;
 /*
  * MMIO 0 uses unit-relative offsets. The parent maps it at its NI unit base.
  * local-reset pulses request a parent reset; error is a reflected level.
- */
+*/
 struct SGIBedrockNIState {
     SysBusDevice parent_obj;
     MemoryRegion mmio;
@@ -24,7 +25,7 @@ struct SGIBedrockNIState {
      * The owning node, set by bedrock_realize(), which owns the port's cable;
      * port status reads the link from it. NULL for a standalone unit, whose
      * port is cabled to nothing.
-     */
+    */
     SGIBedrockState *bedrock;
     SGIBedrockNIRegs regs;
 };

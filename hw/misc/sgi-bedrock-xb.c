@@ -1,5 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
-/* Bedrock internal crossbar: register storage and software error injection. */
+/*
+ * Bedrock internal crossbar: register storage and software error injection.
+ */
 #include "qemu/osdep.h"
 #include "hw/misc/sgi-bedrock-xb.h"
 #include "hw/core/irq.h"
@@ -33,11 +35,11 @@
 
 /*
  * Queue n lives at XB_QUEUE_ERROR_BASE + 8n with its clear alias at
- * XB_QUEUE_CLEAR_BASE + 8n and reports source 0xf - n. The datasheet gives
- * 0xf for PI0 output and 0x2 for LB input; the values between follow address
- * order, unconfirmed. A zero mask marks a queue whose error layout is
+ * XB_QUEUE_CLEAR_BASE + 8n and reports source 0xf
+ * - n. PI0 output is 0xf and LB input is 0x2; the values between follow
+ * address order, unconfirmed. A zero mask marks a queue whose error layout is
  * unpublished.
- */
+*/
 static const uint64_t xb_queue_mask[SGI_BEDROCK_XB_QUEUES] = {
     [0]  = 0x3333,  /* PI0 output */
     [1]  = 0x0033,  /* PI0 input */

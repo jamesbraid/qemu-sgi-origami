@@ -1,9 +1,8 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * sgi-command-port.c exercised through sgi-command-port-test, a fixture
- * device whose register layout and selector table (selector 0x1 takes
- * no arguments, 0x2 takes three, 0x3 takes eleven, matching the largest
- * known real InfiniteReality packet) exist only for this test.
+ * Test sgi-command-port.c with a fixture-only device: selector 0x1 takes
+ * zero arguments, 0x2 takes three, and 0x3 takes eleven, the largest known
+ * InfiniteReality packet.
  */
 #include "qemu/osdep.h"
 #include "libqtest.h"
@@ -72,9 +71,8 @@ static void test_wide_push(void)
 }
 
 /*
- * The eleven-argument selector's payload arrives one word per write,
- * with unrelated register accesses interleaved between them. None of
- * those accesses may disturb the parser's mid-packet state.
+ * Interleave unrelated register accesses with eleven single-word payload
+ * writes; they must preserve mid-packet parser state.
  */
 static void test_split_payload(void)
 {
@@ -99,8 +97,7 @@ static void test_split_payload(void)
 }
 
 /*
- * An unrecognised selector is reported once and never eats the words
- * that follow it: the next word is read fresh as a new selector.
+ * Report an unknown selector once; parse the next word as a new selector.
  */
 static void test_unsupported_selectors(void)
 {
@@ -118,10 +115,8 @@ static void test_unsupported_selectors(void)
 }
 
 /*
- * The credit/occupancy register reports whatever the owner's policy
- * callback returns; the fixture's callback echoes a settable value, so
- * this proves the object defers to the owner rather than fixing a
- * policy of its own.
+ * Return the owner callback's settable value for credit/occupancy; the
+ * command-port object must not impose its own policy.
  */
 static void test_credit_policy(void)
 {
@@ -146,9 +141,8 @@ static void test_kick_register(void)
 }
 
 /*
- * The counters and the fields of the last completed or unsupported word
- * are read-only from the guest; a write is logged as a guest error
- * rather than accepted or silently dropped.
+ * Counters and last completed or unsupported word fields are guest read-only;
+ * writes must log a guest error.
  */
 static void test_read_only_writes(void)
 {
@@ -184,9 +178,8 @@ static void test_read_only_writes(void)
 }
 
 /*
- * Reset clears the parser's mid-packet state along with the plain
- * registers: the ten words that would have completed the packet begun
- * before reset must not complete it afterwards.
+ * Reset clears registers and mid-packet parser state; ten remaining words
+ * must not finish a pre-reset eleven-argument packet.
  */
 static void test_reset(void)
 {
@@ -204,10 +197,9 @@ static void test_reset(void)
     g_assert_cmphex(qtest_readq(s, CP_BASE + REG_PACKET_COUNT), ==, 0);
 
     /*
-     * 0x100 + i, not 0 + i: the fixture's own selectors (0x1, 0x2, 0x3)
-     * live in this range, and a plain 0..9 count would restart framing
-     * by coincidence (1 is a zero-arg selector; 2 is a three-arg
-     * selector that would then swallow 3, 4 and 5 as its arguments).
+     * Use 0x100 + i to avoid fixture selectors 0x1, 0x2 and 0x3. Values
+     *      * 0..9 would restart framing: 1 takes no args and 2 consumes 3,
+     *        4, 5.
      */
     for (unsigned i = 0; i < 10; i++) {
         qtest_writel(s, CP_BASE + REG_PUSH, 0x100 + i);
@@ -217,10 +209,8 @@ static void test_reset(void)
 }
 
 /*
- * Migrate mid-packet: the selector and two of its three arguments are
- * already seen on the source. Completing the packet on the destination
- * with the third argument proves the parser state migrated, not only
- * the plain registers.
+ * Migrate after the selector and two of three arguments; completing the
+ * packet on the destination checks parser state as well as registers.
  */
 static void test_migration(void)
 {

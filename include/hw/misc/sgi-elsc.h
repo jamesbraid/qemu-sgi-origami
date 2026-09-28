@@ -1,9 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SGI Origin 200 module system controller (MSC)
- *
- * Copyright (c) 2026 Origami contributors
- *
- * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 #ifndef HW_MISC_SGI_ELSC_H
@@ -18,15 +15,15 @@
 OBJECT_DECLARE_SIMPLE_TYPE(SGIElscState, SGI_ELSC)
 
 /*
- * Length, text, checksum summing to zero mod 256. A length above 94
- * overruns the firmware's own 96-byte buffers; never emit one.
+ * Length, text, checksum summing to zero mod 256. A length above 94 overruns
+ * the firmware's own 96-byte buffers; never emit one.
  */
 #define SGI_ELSC_MAX_TEXT   94
 #define SGI_ELSC_MAX_FRAME  (SGI_ELSC_MAX_TEXT + 2)
 
 /*
- * AUX input queued for "get". The depth is a model choice; no source
- * states the real queue's.
+ * AUX input queued for "get". The depth is a model choice; no source states
+ * the real queue's.
  */
 #define SGI_ELSC_RX_QUEUE_SIZE 256
 
@@ -46,7 +43,7 @@ typedef enum SGIElscAction {
     SGI_ELSC_ACTION_SHUTDOWN,
 } SGIElscAction;
 
-/* The unprefixed spellings the model and its migration state are written in. */
+/* Unprefixed spellings used by the model and its migration state. */
 #define ELSC_ACTION_NONE     SGI_ELSC_ACTION_NONE
 #define ELSC_ACTION_RESET    SGI_ELSC_ACTION_RESET
 #define ELSC_ACTION_CYCLE    SGI_ELSC_ACTION_CYCLE
@@ -84,8 +81,8 @@ struct SGIElscState {
     void *module_opaque;
 
     /*
-     * The request, one byte per I2C send; sized one over the legal maximum
-     * so an over-long guest frame lands here, not in adjacent state.
+     * The request, one byte per I2C send; sized one over the legal maximum so
+     * an over-long guest frame lands here, not in adjacent state.
      */
     uint8_t rxbuf[SGI_ELSC_MAX_FRAME + 1];
     uint32_t rxlen;
@@ -95,16 +92,15 @@ struct SGIElscState {
     uint32_t txlen;
     uint32_t txpos;
     /*
-     * The pending response's owner: the global processor code whose
-     * request framed txbuf, -1 when none. While the response is
-     * unconsumed, the owner's arbitration grant uses signal 2
-     * (elsc_arb_step()).
+     * The pending response's owner: the global processor code whose request
+     * framed txbuf, -1 when none. While the response is unconsumed, the
+     * owner's arbitration grant uses signal 2 (elsc_arb_step()).
      */
     int32_t resp_owner;
 
     /*
-     * The arbitration grant rotation, free-running from realize
-     * whether or not anything polls (elsc_arb_step()).
+     * The arbitration grant rotation, free-running from realize whether or
+     * not anything polls (elsc_arb_step()).
      */
     I2CBus *bus;
     /*
@@ -121,10 +117,9 @@ struct SGIElscState {
     /* Hub-supplied local population, used to find a grant's queue owner. */
     uint32_t num_cpus;
     /*
-     * Hub-supplied: the global index of this node's slice A processor,
-     * naming this controller's instance in the arbitration trace. The
-     * code space is global processor indexes, so it also says which
-     * codes are local.
+     * Hub-supplied: the global index of this node's slice A processor, naming
+     * this controller's instance in the arbitration trace. The code space is
+     * global processor indexes, so it also says which codes are local.
      */
     uint32_t cpu_base;
     /* Number of positions in the ring; eight unless a machine narrows it. */
@@ -138,8 +133,8 @@ struct SGIElscState {
     int64_t arb_hold_until;   /* legacy pre-v12 deadline, migrated only */
 
     /*
-     * The AUX serial port, multiplexed with the command channel by one
-     * input rule: bytes after 0x14 are a controller command, never queued.
+     * The AUX serial port, multiplexed with the command channel by one input
+     * rule: bytes after 0x14 are a controller command, never queued.
      */
     CharFrontend chr;
     uint8_t rx_queue[SGI_ELSC_RX_QUEUE_SIZE];
@@ -147,17 +142,17 @@ struct SGIElscState {
     bool in_escape;   /* discarding a controller command typed on the line */
 
     /*
-     * Supervisor mode gates the destructive commands (page 124 of the
-     * Origin 200 Owner's Guide); "pas" sets it, factory default "none".
+     * Supervisor mode protects destructive commands (page 124 of the Origin
+     * 200 Owner's Guide); "pas" sets it, factory default "none".
      */
     bool supervisor;
 
     /*
      * Cold power-on latch, read once by "pwr q". Set when the controller
-     * first powers up (realize), never re-armed by a warm reset, and
-     * cleared when read -- so only the first query in a power cycle sees
-     * it. The clear-on-read one-shot is from the 6.5.7 driver and is
-     * unverified on 6.5.30.
+     * first powers up (realize), never re-armed by a warm reset, and cleared
+     * when read, so only the first query in a power cycle sees it. The
+     * clear-on-read one-shot is from the 6.5.7 driver and is unverified on
+     * 6.5.30.
      */
     bool cold_power_on;
 
@@ -166,17 +161,18 @@ struct SGIElscState {
      * do (an ELSC_ACTION_* value), whether the ack has been read, and whether
      * its bottom half has been scheduled.
      *
-     * ARMED (action set, not committed): accepted, ack queued but unread -- a
+     * ARMED (action set, not committed): accepted, ack queued but unread. A
      * superseding request cancels it. COMMITTED (action set, committed): the
-     * ack was fully read at the fetch seam; supersession can no longer cancel
-     * it. SCHEDULED (deferred_scheduled): a transaction boundary has queued the
-     * bottom half that carries the effect out; it is set where the bottom half
-     * is scheduled and cleared when it runs. The effect, and any side effect,
-     * fires only from that bottom half, so a canceled command leaves no trace.
-     * All three fields are migrated so an action in flight behaves correctly
-     * across a migration: post_load re-arms exactly the bottom half the source
-     * had scheduled and not yet run (deferred_scheduled), without reasoning
-     * about the frame state at all.
+     * ack was fully read at the fetch of the last frame byte; supersession
+     * can no longer cancel it. SCHEDULED (deferred_scheduled): a transaction
+     * boundary has queued the bottom half that carries the effect out; it is
+     * set where the bottom half is scheduled and cleared when it runs. The
+     * effect, and any side effect, fires only from that bottom half, so a
+     * canceled command leaves no trace. All three fields are migrated so an
+     * action in flight behaves correctly across a migration: post_load
+     * re-arms exactly the bottom half the source had scheduled and not yet
+     * run (deferred_scheduled), without reasoning about the frame state at
+     * all.
      *
      * The actions are "rst" (reset), "pwr c" (power-cycle) and "pwr d"
      * (shutdown).
@@ -188,9 +184,9 @@ struct SGIElscState {
     /*
      * The "tas" test-and-set lock cell. tas_held is the occupancy; tas_lock
      * is the owner byte, meaningful only while held. Occupancy is kept
-     * separate from the owner byte because any byte is a legal owner --
-     * NUL (0x00) included -- so the owner value alone cannot signal "free".
-     * A distinct service carried over the bus, not the arbitration.
+     * separate from the owner byte because any byte is a legal owner,
+     * including NUL (0x00), so the owner value alone cannot signal "free". A
+     * distinct service carried over the bus, not the arbitration.
      */
     bool tas_held;
     uint8_t tas_lock;
@@ -205,8 +201,7 @@ struct SGIElscState {
 /* Install the module owner. Wiring, so it must precede realize. */
 /*
  * Clear the protocol queues without resetting the controller. A module
- * owner's recovery, reset and power paths reinitialise this much and no
- * more.
+ * owner's recovery, reset and power paths reinitialise this much and no more.
  */
 void sgi_elsc_reinitialize(SGIElscState *s);
 

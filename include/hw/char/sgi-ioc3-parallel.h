@@ -1,11 +1,10 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SGI IOC3 parallel port register and device definitions. */
 /*
- * SGI IOC3 base I/O controller: the parallel port.
- *
  * A child of the multifunction chip (hw/misc/sgi-ioc3.c). The port has two
  * faces in two different parts of the chip's window, so the device presents
- * two memory regions and the chip maps each at its own base. The project
- * tree's IOC3 datasheet is the specification. See docs/specs/sgi-ioc3.rst.
+ * two memory regions and the chip maps each at its own base. The project IOC3
+ * register behavior is documented in docs/specs/sgi-ioc3.rst.
  */
 
 #ifndef HW_CHAR_SGI_IOC3_PARALLEL_H
@@ -23,8 +22,8 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIIOC3ParallelState, SGI_IOC3_PARALLEL)
  * Where the chip puts each face. The DMA block sits in the main register
  * block above the sixteen pin registers and below the PS/2 controller; the
  * register file sits in the byte-wide SuperIO window below serial port B.
- * Kept here rather than with the chip's own offsets so that mapping the
- * port is one constant per region at the wiring site.
+ * Kept here rather than with the chip's own offsets so that mapping the port
+ * is one constant per region at the wiring site.
  */
 #define SGI_IOC3_PARALLEL_DMA_BASE  0x00080
 #define SGI_IOC3_PARALLEL_ECP_BASE  0x20150
@@ -43,9 +42,9 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIIOC3ParallelState, SGI_IOC3_PARALLEL)
 
 /*
  * The four interrupt lines the port drives, in the order the chip's own
- * interrupt register carries them: the service interrupt that reports a
- * whole chain complete, one line per context, and a DMA fault. The chip
- * maps them to consecutive bits, so the wiring is index plus a base.
+ * interrupt register carries them: the service interrupt that reports a whole
+ * chain complete, one line per context, and a DMA fault. The chip maps them
+ * to consecutive bits, so the wiring is index plus a base.
  */
 #define SGI_IOC3_PAR_IRQ_SERVICE    0
 #define SGI_IOC3_PAR_IRQ_CONTEXT    1   /* and CONTEXT + 1 for context B */
@@ -53,10 +52,9 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIIOC3ParallelState, SGI_IOC3_PARALLEL)
 #define SGI_IOC3_PAR_IRQS           4
 
 /*
- * A context's count and control: seventeen count bits, so one context
- * carries up to 131071 bytes, then the arm flag and the flag marking this
- * the last context of a chain. Everything between is undefined and reads
- * zero.
+ * A context's count and control: seventeen count bits, so one context carries
+ * up to 131071 bytes, then the arm flag and the flag marking this the last
+ * context of a chain. Everything between is undefined and reads zero.
  */
 #define SGI_IOC3_PAR_COUNT          0x0001ffffu
 #define SGI_IOC3_PAR_COUNT_ARM      (1u << 30)
@@ -66,10 +64,9 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIIOC3ParallelState, SGI_IOC3_PARALLEL)
                                      SGI_IOC3_PAR_COUNT_LAST)
 
 /*
- * The shared control register. Its low six bits are the engine's view of
- * the two context registers -- armed, last and currently draining, context
- * A then context B -- and are read-only here rather than storage of their
- * own.
+ * The shared control register. Its low six bits are the engine's view of the
+ * two context registers: armed, last and currently draining, context A then
+ * context B. These bits are read-only here, not storage of their own.
  */
 #define SGI_IOC3_PAR_DMA_A_ARMED    (1u << 0)
 #define SGI_IOC3_PAR_DMA_A_LAST     (1u << 1)
@@ -85,23 +82,22 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIIOC3ParallelState, SGI_IOC3_PARALLEL)
                                      SGI_IOC3_PAR_DMA_ENABLE)
 
 /*
- * The byte-wide IEEE-1284/ECP register file. Offsets 0x03 to 0x07 are the
- * gap a PC SuperIO chip fills with its EPP registers; no source names them
- * for this chip, so they are inside the window and answer nothing.
+ * The byte-wide IEEE-1284/ECP register file. Offsets 0x03 to 0x07 are the gap
+ * a PC SuperIO chip fills with its EPP registers; no source names them for
+ * this chip, so they are inside the window and answer nothing.
  */
 #define SGI_IOC3_PAR_ECP_DATA       0x00
 #define SGI_IOC3_PAR_ECP_STATUS     0x01
 #define SGI_IOC3_PAR_ECP_CONTROL    0x02
-#define SGI_IOC3_PAR_ECP_FIFO       0x08    /* configuration A in config mode */
+#define SGI_IOC3_PAR_ECP_FIFO       0x08    /* config A in config mode */
 #define SGI_IOC3_PAR_ECP_CONFIG_B   0x09
 #define SGI_IOC3_PAR_ECP_EXTENDED   0x0a
 #define SGI_IOC3_PAR_ECP_SIZE       (SGI_IOC3_PAR_ECP_EXTENDED + 1)
 
 /*
- * The status register's peripheral lines. The datasheet pins nFault's
- * polarity -- a clear level means a fault -- and names the rest without
- * one, so this model reports the levels an empty cable justifies: no
- * fault, and nothing else.
+ * The status register's peripheral lines. nFault is active low: a clear
+ * level means a fault. The register names the rest without one, so this model
+ * reports the levels an empty cable justifies: no fault, and nothing else.
  */
 #define SGI_IOC3_PAR_STATUS_ATTENTION (1u << 2)
 #define SGI_IOC3_PAR_STATUS_NFAULT    (1u << 3)
@@ -157,9 +153,9 @@ struct SGIIOC3ParallelState {
     qemu_irq irq[SGI_IOC3_PAR_IRQS];
 
     /*
-     * The service condition, which the completion interrupt follows: set
-     * when a chain reaches terminal count and quiet again once software
-     * writes the extended control register.
+     * The service condition, which the completion interrupt follows: set when
+     * a chain reaches terminal count and quiet again once software writes the
+     * extended control register.
      */
     bool service;
 

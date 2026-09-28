@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
+/* XBridge widget-zero register and link state. */
 #ifndef HW_MISC_SGI_XBRIDGE_XBOW_H
 #define HW_MISC_SGI_XBRIDGE_XBOW_H
 

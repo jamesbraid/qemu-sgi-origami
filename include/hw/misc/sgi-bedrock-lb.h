@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
+/* Bedrock local-block register and MicroLAN state. */
 #ifndef HW_MISC_SGI_BEDROCK_LB_H
 #define HW_MISC_SGI_BEDROCK_LB_H
 
@@ -22,20 +23,19 @@ struct SGIBedrockLBState {
     qemu_irq error;
 
     /*
-     * The owning node, set directly by bedrock_realize() the way
-     * sgi-hub.c's elsc back-reference is: a plain pointer rather than a
-     * QOM link, because this child's lifetime is enclosed by its parent's.
-     * Scratch 1 writes are handed to sgi_bedrock_hold_scratch1_write(),
-     * which owns the processor-mask/cpu-enable state and the CPUs; see
-     * sgi-bedrock.h.
-     */
+     * The owning node, set directly by bedrock_realize() the way sgi-hub.c's
+     * elsc back-reference is: a plain pointer rather than a QOM link, because
+     * this child's lifetime is enclosed by its parent's. Scratch 1 writes are
+     * handed to sgi_bedrock_hold_scratch1_write(), which owns the
+     * processor-mask/cpu-enable state and the CPUs; see sgi-bedrock.h.
+    */
     SGIBedrockState *bedrock;
 
     /*
      * The MicroLAN wire and the controller's slot deadline. The endpoint is
      * the machine's to hang here; which part IP45 carries is not established,
      * so nothing is composed by default and the bus can be empty.
-     */
+    */
     OneWireBus *microlan_bus;
     QEMUTimer *microlan_timer;
     /* Sampled when the slot starts, published when its deadline arrives. */
@@ -44,7 +44,7 @@ struct SGIBedrockLBState {
     /*
      * This node's hub register window, where a vector request arriving over
      * the link from a peer reads or writes (sgi_bedrock_lb_hub_access()).
-     */
+    */
     MemoryRegion *hub_registers;
     AddressSpace hub_as;
     bool hub_as_initialized;
@@ -60,10 +60,10 @@ struct SGIBedrockLBState {
     uint8_t programmed_node;
     uint8_t programmed_region;
     /*
-     * Told whenever programmed_node changes, by a write, a reset or a
-     * load: whoever decodes addresses by this node's number (sn1-node.c's
-     * claim layer) re-derives it. Not migrated; listeners re-register.
-     */
+     * Told whenever programmed_node changes, by a write, a reset or a load:
+     * whoever decodes addresses by this node's number (sn1-node.c's claim
+     * layer) re-derives it. Not migrated; listeners re-register.
+    */
     NotifierList node_notifiers;
 
     uint64_t cpu_permission;
@@ -97,7 +97,7 @@ void sgi_bedrock_lb_add_node_notifier(SGIBedrockLBState *s,
  * One aligned 64-bit access to this node's hub register window at a
  * hub-relative offset, as a vector request arriving over the link performs
  * it. A block with no window linked answers MEMTX_DECODE_ERROR.
- */
+*/
 MemTxResult sgi_bedrock_lb_hub_access(SGIBedrockLBState *s, hwaddr addr,
                                       uint64_t *value, bool write);
 

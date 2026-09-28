@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * SGI SN0 Hub ASIC: one 8 MB register window per node, reached through
- * either half of the crossbar's widget 1 window. See docs/specs/sgi-hub.rst.
+ * SGI SN0 Hub ASIC: one 8 MB register window per node, reached through either
+ * half of the crossbar's widget 1 window.
  */
 
 #ifndef HW_MISC_SGI_HUB_H
@@ -34,23 +34,22 @@ typedef struct SGIHubModuleIdentity {
 /*
  * The whole -serial assignment in one place: an index collision between two
  * files is invisible at either call site. Every module carries the same set
- * of serial connectors, so the lines are node-major with a fixed stride:
- * node n owns the block [6n, 6n+6). Within a block, port A of the base I/O
+ * of serial connectors, so the lines are node-major with a fixed stride: node
+ * n owns the block [6n, 6n+6). Within a block, port A of the base I/O
  * controller comes first (also the firmware console), then port B, then the
- * system controller's AUX port -- where firmware redirects after a failed
- * diagnostic -- then the bring-up port, then the two base I/O transmit
- * records. One physical connector per module means one backend per module,
- * so each module's ports take their own indices rather than sharing the
- * first module's: a machine that handed index 2 to two modules' controllers
- * could not launch with that backend provisioned. The six constants below
- * are offsets within a node's block; SN0_NODE_SERIAL() turns a (node,
- * offset) pair into the -serial index, and for node 0 the offset already is
- * that index. The bring-up port has no shipped connector and exists on node
- * 0 only. The two record lines have no connector either: they are write-only
+ * system controller's AUX port (where firmware redirects after a failed
+ * diagnostic), then the bring-up port, then the two base I/O transmit
+ * records. One physical connector per module means one backend per module, so
+ * each module's ports take their own indices rather than sharing the first
+ * module's: a machine that handed index 2 to two modules' controllers could
+ * not launch with that backend provisioned. The six constants below are
+ * offsets within a node's block; SN0_NODE_SERIAL() turns a (node, offset)
+ * pair into the -serial index, and for node 0 the offset already is that
+ * index. The bring-up port has no shipped connector and exists on node 0
+ * only. The two record lines have no connector either: they are write-only
  * sinks taking what each serial port transmitted, so a console consumer that
  * stops reading cannot starve the record. The machine resolves these indices
- * and hands each Hub its own backend; the Hub never calls serial_hd()
- * itself.
+ * and hands each Hub its own backend; the Hub never calls serial_hd() itself.
  */
 #define SN0_SERIAL_LINES_PER_NODE  6
 
@@ -102,19 +101,19 @@ typedef enum SGIHubOneWireKind {
 #define SGI_HUB_CLAIM_SPACES  4
 
 /*
- * The views the Hub's claim aliases fill: one per attached processor, and
- * one for the Hub's own engines, which address memory as a processor does
- * minus the per-processor pieces.
+ * The views the Hub's claim aliases fill: one per attached processor, and one
+ * for the Hub's own engines, which address memory as a processor does minus
+ * the per-processor pieces.
  */
 #define SGI_HUB_CLAIM_VIEWS   (SGI_HUB_PROCESSORS + 1)
 #define SGI_HUB_DEVICE_VIEW   SGI_HUB_PROCESSORS
 
 /*
- * The nameless low window the cached-alias size bounds: the memory
- * space's, one per processor view -- the register's domain is the
- * cached space alone (CALIAS_BASE is the cached base in the public
- * alias table). The machine pre-creates each window at the largest
- * size the register encodes; the Hub only resizes and gates it.
+ * The nameless low window the cached-alias size bounds: the memory space's,
+ * one per processor view. The register's domain is the cached space alone
+ * (CALIAS_BASE is the cached base in the public alias table). The machine
+ * pre-creates each window at the largest size the register encodes; the Hub
+ * only resizes and gates it.
  */
 #define SGI_HUB_CALIAS_MAX_SIZE (64 * MiB)
 
@@ -124,9 +123,8 @@ struct SGIHubState {
     MemoryRegion regs;
 
     /*
-     * The PCF8584 mapped over this window's I2C addresses (Origami project
-     * tree, docs/datasheets/pcf8584-elsc.md); embedded because the bus it
-     * masters belongs to this node.
+     * The PCF8584 mapped over this window's I2C addresses; embedded because
+     * the bus it masters belongs to this node.
      */
     PCF8584State i2c;
 
@@ -155,8 +153,8 @@ struct SGIHubState {
     /*
      * Origin 2000's PROM PI-error probe, installed only when xtalk_io
      * connects this Hub to a Crossbow link: each processor's own physical
-     * view (the machine's to define, one per populated slice) and the
-     * carrier base this node's crosstalk space sits at within it.
+     * view (the machine's to define, one per populated slice) and the carrier
+     * base this node's crosstalk space sits at within it.
      */
     MemoryRegion *cpu_sysmem[SGI_HUB_PROCESSORS];
     uint64_t xtalk_carrier_base;
@@ -167,12 +165,12 @@ struct SGIHubState {
     AddressSpace bte_as;
 
     /*
-     * This Hub's one network port's cable, and the fixed physical
-     * position (the machine bus stride, its own node index) this Hub
-     * itself sits at -- independent of whatever node number firmware
-     * programs. Every other Hub in the machine, including this one, in
-     * the same canonical stride order, for the claim-alias walk below;
-     * set once before realize with sgi_hub_set_net_peers().
+     * This Hub's one network port's cable, and the fixed physical position
+     * (the machine bus stride, its own node index) this Hub itself sits at,
+     * independent of whatever node number firmware programs. Every other Hub
+     * in the machine, including this one, in the same canonical stride order,
+     * for the claim-alias walk below; set once before realize with
+     * sgi_hub_set_net_peers().
      */
     SGINetCableState *net_cable;
     uint32_t stride;
@@ -180,11 +178,11 @@ struct SGIHubState {
     unsigned int net_peer_count;
 
     /*
-     * The claim overlays: per view, one alias per uncached space per
-     * peer Hub, placed at the node number that peer currently holds --
-     * discovered by this Hub's own hop-by-hop walk through its own port
-     * -- and aimed at the peer's own stride in the canonical map, over
-     * an error floor across every stride. The machine wires the per-view
+     * The claim overlays: per view, one alias per uncached space per peer
+     * Hub, placed at the node number that peer currently holds. This Hub
+     * discovers that number by a hop-by-hop walk through its own port and
+     * aims the alias at the peer's own stride in the canonical map, over an
+     * error floor across every stride. The machine wires the per-view
      * containers, the canonical map the aliases resolve into, and the
      * geometry; the Hub owns the regions and moves them whenever its own
      * derived reachability changes.
@@ -198,15 +196,15 @@ struct SGIHubState {
     bool claim_ready;
 
     /*
-     * The nameless low memory window this Hub's cached-alias size
-     * bounds, per processor view, pre-created and placed by the
-     * machine; an unwired slot is a view the register does not reach.
+     * The nameless low memory window this Hub's cached-alias size bounds, per
+     * processor view, pre-created and placed by the machine; an unwired slot
+     * is a view the register does not reach.
      */
     MemoryRegion *calias_window[SGI_HUB_PROCESSORS];
 
     /*
-     * One level-triggered line per processor per pending bank, published
-     * as the named GPIO outputs "bank0" and "bank1", indexed by processor.
+     * One level-triggered line per processor per pending bank, published as
+     * the named GPIO outputs "bank0" and "bank1", indexed by processor.
      */
     qemu_irq bank_irq[SGI_HUB_PENDING_BANKS][SGI_HUB_PROCESSORS];
 
@@ -236,17 +234,18 @@ struct SGIHubState {
 
     /*
      * This node's processors. qemu_get_cpu() walks the machine's whole
-     * processor list, and the polled reads ask for them on every poll,
-     * so they are resolved once and kept. Derived from the machine's
-     * topology, which outlives the device, so neither reset state nor
-     * migration state.
+     * processor list, and the polled reads ask for them on every poll, so
+     * they are resolved once and kept. Derived from the machine's topology,
+     * which outlives the device, so neither reset state nor migration state.
      */
     CPUState *cpu[SGI_HUB_PROCESSORS];
 
     /* Revision reported in the widget identity. */
     uint8_t widget_revision;
 
-    /* Widget manufacturer: the two sources disagree, so the machine chooses. */
+    /*
+     * Widget manufacturer: the two sources disagree, so the machine chooses.
+     */
     uint32_t manufacturer;
 
     uint64_t pi_region_present;
@@ -273,10 +272,10 @@ struct SGIHubState {
 
     /*
      * The counter's reciprocal: the clock period it was computed for, the
-     * multiplier that turns the counter's division into one multiply, and
-     * the largest elapsed time the multiplier is exact over. Derived from
-     * the clock and rebuilt whenever the period changes, so they are
-     * neither reset state nor migrated state.
+     * multiplier that turns the counter's division into one multiply, and the
+     * largest elapsed time the multiplier is exact over. Derived from the
+     * clock and rebuilt whenever the period changes, so they are neither
+     * reset state nor migrated state.
      */
     uint64_t rt_period;
     uint64_t rt_reciprocal;
@@ -291,13 +290,12 @@ struct SGIHubState {
      * The multi-threaded comparator hold, host-only and discarded across
      * reset and migration. Per processor: whether the other has read its
      * comparator since the value changed; how often its comparator has been
-     * written; the other's write count at its last read and at its last
-     * post hold; and its active hold, zero for none, with the hold's kind.
-     *
-     * A withdrawal hold also carries the comparator value its processor
-     * wrote, which lands when the hold ends. That is a write the guest has
-     * already made, so migration lands it before saving rather than
-     * discarding it with the rest.
+     * written; the other's write count at its last read and at its last post
+     * hold; and its active hold, zero for none, with the hold's kind. A
+     * withdrawal hold also carries the comparator value its processor wrote,
+     * which lands when the hold ends. That is a write the guest has already
+     * made, so migration lands it before saving rather than discarding it
+     * with the rest.
      */
     bool pi_rt_seen[SGI_HUB_PROCESSORS];
     uint64_t pi_rt_writes[SGI_HUB_PROCESSORS];
@@ -311,20 +309,21 @@ struct SGIHubState {
 
     /*
      * Whether the first processor has given its alive signal since reset.
-     * Unlike the hold itself it cannot be re-derived from the registers --
-     * firmware clears the alive bit again later -- so it is migrated.
+     * Unlike the hold itself it cannot be re-derived from the registers;
+     * firmware clears the alive bit again later, so it is migrated.
      */
     bool pi_rt_alive_seen;
 
-    /* The counter's clock control -- bit 16 resets set, see the definition. */
+    /*
+     * The counter's clock control. Bit 16 resets set; see the definition.
+     */
     uint64_t pi_rt_local_ctrl;
 
     /*
-     * Graphics flow-control block, per processor: page, credit counter,
-     * bias, interrupt counter and interrupt compare (hub-processor-interface
-     * datasheet, "Graphics flow control"). Plain storage -- nothing moves
-     * the credit counter for a completed transaction, the stated
-     * approximation the datasheet names.
+     * Graphics flow-control block, per processor: page, credit counter, bias,
+     * interrupt counter and interrupt compare. Plain storage; nothing moves
+     * the credit counter for a completed transaction, the specified
+     * approximation.
      */
     uint64_t pi_gfx_page[SGI_HUB_PROCESSORS];
     uint32_t pi_gfx_credit[SGI_HUB_PROCESSORS];
@@ -337,7 +336,9 @@ struct SGIHubState {
     uint8_t ni_revision;
     uint64_t ni_status;
 
-    /* The network interface's two 64-bit general-purpose scratch registers. */
+    /*
+     * The network interface's two 64-bit general-purpose scratch registers.
+     */
     uint64_t ni_scratch[2];
 
     /* Direct-link vector PIO request and completion registers. */
@@ -359,8 +360,8 @@ struct SGIHubState {
     uint64_t ni_io_protect;
 
     /*
-     * Reset permission (one bit, resets permissive, never consulted)
-     * and link diagnostics (nineteen bits stored, never acted on).
+     * Reset permission (one bit, resets permissive, never consulted) and link
+     * diagnostics (nineteen bits stored, never acted on).
      */
     uint64_t ni_protection;
     uint64_t ni_diag_parms;
@@ -395,7 +396,9 @@ struct SGIHubState {
     /* Memory/directory configuration register. Reset value is not zero. */
     uint64_t md_config;
 
-    /* Error spool addresses; firmware parks a reset marker in processor B's. */
+    /*
+     * Error spool addresses; firmware parks a reset marker in processor B's.
+     */
     uint64_t pi_err_spool[SGI_HUB_PROCESSORS];
     uint32_t pi_err_mask[SGI_HUB_PROCESSORS];
     uint8_t pi_err_spool_size;
@@ -413,11 +416,10 @@ struct SGIHubState {
 
     /*
      * The wire itself, and the responder on it: the PIMM manufacturing-record
-     * part, DS2505-compatible (the hub one-wire datasheet's settled
-     * contract). The serial is a synthetic per-unit property the machine
-     * wires, from which the part derives its ROM identity at realize. The
-     * part is left unprogrammed, because what the record bytes should say is
-     * an open question.
+     * part, DS2505-compatible. The serial is a synthetic per-unit property
+     * the machine wires, from which the part derives its ROM identity at
+     * realize. The part is left unprogrammed, because what the record bytes
+     * should say is an open question.
      */
     OneWireBus *onewire_bus;
     uint64_t onewire_serial;
@@ -434,8 +436,8 @@ struct SGIHubState {
 
     /*
      * The backend behind this node's system-controller AUX connector,
-     * resolved and handed in by the machine. NULL is a connector with
-     * no cable.
+     * resolved and handed in by the machine. NULL is a connector with no
+     * cable.
      */
     Chardev *elsc_chr;
 };
@@ -446,8 +448,10 @@ void sgi_hub_latch_port_error(SGIHubState *s, uint64_t errors);
 void sgi_hub_record_port_check_error(SGIHubState *s);
 bool sgi_hub_first_turn(const SGIHubState *s, uint32_t destination,
                          uint8_t *turn);
-/* Whether this Hub's own tables currently reach destination, and by
- * what vector -- the machine's "routes" diagnostic property alone. */
+/*
+ * Whether this Hub's own tables currently reach destination, and by what
+ * vector. Only the machine's "routes" diagnostic property uses it.
+ */
 bool sgi_hub_route(SGIHubState *s, uint32_t destination, uint64_t *vector);
 void sgi_hub_latch_prom_pi_error(SGIHubState *s);
 void sgi_hub_set_cpu_enable(SGIHubState *s, unsigned int cpu, bool enabled,
@@ -458,24 +462,25 @@ bool sgi_hub_attach_module_identity(SGIHubState *s,
 
 /*
  * Wire this Hub's own outbound big-window I/O traffic (the "xtalk-io"
- * property) to target: a crosstalk-attach link's own doing, since a
- * directly attached Hub never populates it. Must run before this Hub
- * realizes, and at most once; target typically outlives the call by
- * far (the crossbow link's own proxy region, filled in once its
- * Crossbow has realized).
+ * property) to target: a crosstalk-attach link's own doing, since a directly
+ * attached Hub never populates it. Must run before this Hub realizes, and at
+ * most once; target typically outlives the call by far (the crossbow link's
+ * own proxy region, filled in once its Crossbow has realized).
  */
 bool sgi_hub_set_xtalk_io(SGIHubState *s, MemoryRegion *target, Error **errp);
 
 /*
  * Every Hub in the machine, in canonical stride order (this Hub's own
- * "stride" property is its index in that same order), this one
- * included. Copied; must run before this Hub realizes.
+ * "stride" property is its index in that same order), this one included.
+ * Copied; must run before this Hub realizes.
  */
 void sgi_hub_set_net_peers(SGIHubState *s, SGIHubState *const *peers,
                            unsigned int count);
 
-/* The target's half of a vector operation delivered through this Hub's
- * network port, whether directly or after a Router forwarded it. */
+/*
+ * The target's half of a vector operation delivered through this Hub's
+ * network port, whether directly or after a Router forwarded it.
+ */
 bool sgi_hub_vector_access(SGIHubState *target, SGINetPacket *packet);
 
 #endif /* HW_MISC_SGI_HUB_H */

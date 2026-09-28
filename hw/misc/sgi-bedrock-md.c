@@ -1,4 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
+/* Bedrock memory/directory unit: bank mapping, ECC, directory state and
+ * atomic memory operations. */
 #include "qemu/osdep.h"
 #include "hw/misc/sgi-bedrock-md.h"
 #include "hw/misc/sgi-bedrock.h"
@@ -29,9 +31,9 @@ enum {
 #define MD_ECC_ADMITTED_HALFWORD_LOW 0x04000006
 #define MD_ECC_ADMITTED_HALFWORD_HIGH 0x08000006
 /*
- * Bits 58:56 are write-only in the public definition; reading them back
- * and resetting them to zero is model policy.
- */
+ * Bits 58:56 are write-only in the public definition; reading them back and
+ * resetting them to zero is model policy.
+*/
 #define MD_MEMORY_CONFIG_MASK (UINT64_C(0xfbfbfbfb) | \
     (UINT64_C(3) << 32) | (UINT64_C(0xf) << 44) | \
     (UINT64_C(0x3f) << 48) | (UINT64_C(7) << 56) | \
@@ -203,11 +205,12 @@ static uint64_t md_read(void *opaque, hwaddr offset, unsigned size)
     if (md_storage(offset, &index, &mask)) {
         /*
          * Performance counter 0 is plain storage, but the stock PROM uses it
-         * as a software lock word at the second SMP rendezvous. The owning
-         * node arbitrates a busy spin on it under multi-threaded TCG
-         * (sgi_bedrock_perf_counter_access, docs/known-issues.md); the value
-         * is unchanged. A standalone sgi-bedrock-md has no owning node.
-         */
+         * as a software lock word at the second SMP
+         * rendezvous. The owning node arbitrates a busy spin on it under
+         * multi-threaded TCG
+         * (sgi_bedrock_perf_counter_access); the value is unchanged. A
+         * standalone sgi-bedrock-md has no owning node.
+        */
         if (index == MD_PERF_COUNTER0) {
             trace_sgi_bedrock_md_perf0_read(
                 current_cpu ? current_cpu->cpu_index : -1, s->storage[index]);
@@ -465,12 +468,12 @@ static bool md_directory_translate(const SGIBedrockMDState *s, hwaddr offset,
             within >= installed_size) {
             /*
              * Enabled bank, valid size code, but this carrier has no fitted
-             * backing (an absent bank, or above a partly-fitted bank's
-             * installed capacity). Firmware walks these provisionally-enabled
-             * carriers during its directory retention probe; admit them to the
-             * stock-PROM directory compatibility store instead of raising a
-             * bus error.
-             */
+             * backing (an absent bank, or above a partly-fitted
+             * bank's installed capacity). Firmware walks these
+             * provisionally-enabled carriers during its directory retention
+             * probe; admit them to the stock-PROM directory compatibility
+             * store instead of raising a bus error.
+            */
             if (configured) {
                 *configured = true;
             }
@@ -649,12 +652,12 @@ static const MemoryRegionOps md_directory_ops = {
 };
 
 /*
- * The directory ECC codes' column tables, one column per word bit, read
- * from the Origin 300's directory diagnostic (its tables at 0x100187d8 and
- * 0x100188d8; docs/datasheets/bedrock-memory-directory.md). A premium word
- * keeps seven check bits at 37:32 and 48, a standard word six at 21:16, and
- * those positions' columns are the unit vectors.
- */
+ * The directory ECC code's column tables, one column per word bit, as the
+ * Origin 300's directory diagnostic uses
+ * them. A premium word keeps seven check bits at 37:32 and 48, a standard
+ * word six at 21:16, and those positions'
+ * columns are the unit vectors.
+*/
 static const uint8_t md_directory_premium_column[64] = {
     0x1f, 0x2f, 0x37, 0x3b, 0x3d, 0x3e, 0x07, 0x0b,
     0x0d, 0x0e, 0x13, 0x15, 0x16, 0x19, 0x1a, 0x1c,
@@ -759,10 +762,11 @@ static void md_directory_error_latch(SGIBedrockMDState *s, int kind,
     s->directory_error |= valid;
     /*
      * The unit's error interrupts are the memory ones: the Origin 300's
-     * directory diagnostic waits for the correctable one and then reads
-     * this register's correctable bit, and waits for error-interrupt bit
-     * 24 before reading its uncorrectable bit.
-     */
+     * directory diagnostic waits for the correctable
+     * one and then reads this register's correctable bit, and waits for
+     * error-interrupt bit 24 before reading its
+     * uncorrectable bit.
+    */
     if (!s->bedrock) {
         return;
     }
@@ -800,10 +804,11 @@ static void md_retired_arm(SGIBedrockMDState *s)
 
 /*
  * Every write to node memory through the memory unit, a fetch-and-op among
- * them, asks whether it covers a marked line, so the lookup goes through a
- * table keyed by line rather than a scan of all the slots: nmem's
- * fetch-and-op test otherwise spends most of its time in the scan.
- */
+ * them, asks whether it covers a marked
+ * line, so the lookup goes through a table keyed by line rather than a scan
+ * of all the slots: nmem's fetch-and-op
+ * test otherwise spends most of its time in the scan.
+*/
 static SGIBedrockMDDirectoryInjection *
 md_directory_injection_find(SGIBedrockMDState *s, uint32_t index)
 {
@@ -832,9 +837,10 @@ static void md_directory_injection_deactivate(
 
 /*
  * Place an overlay of @size bytes over the memory the raw offset @raw backs,
- * at the software-bank address the bank aliases give it, or leave it
- * unplaced when no enabled bank reaches it. A bank-select change moves it.
- */
+ * at the software-bank address the bank
+ * aliases give it, or leave it unplaced when no enabled bank reaches it. A
+ * bank-select change moves it.
+*/
 static bool md_overlay_place(SGIBedrockMDState *s, MemoryRegion *mr,
                              uint64_t raw, uint64_t *address, bool *placed)
 {
@@ -972,9 +978,9 @@ static void md_directory_injection_add(SGIBedrockMDState *s, uint32_t index,
 
 /*
  * A backdoor write of the +0 word: with directory ECC ignored the word is
- * stored as written and a non-codeword starts checking its line; otherwise
- * the check field is regenerated.
- */
+ * stored as written and a non-codeword
+ * starts checking its line; otherwise the check field is regenerated.
+*/
 static uint64_t md_directory_word_written(SGIBedrockMDState *s,
                                           uint64_t value, hwaddr offset,
                                           const uint32_t *index)
@@ -1127,11 +1133,13 @@ static MemTxResult md_directory_overlay_read(void *opaque, hwaddr offset,
 
 /*
  * A write to any part of a marked line rewrites its directory entry, as the
- * unit does on every access it serves: the stored word keeps its bits and
- * gets a fresh check field, so the line is no longer checked. The stock
- * PROM leaves non-codewords behind its directory walk with checking on,
- * then writes and reads inside such lines while it copies itself to memory.
- */
+ * unit does on every access it serves:
+ * the stored word keeps its bits and gets a fresh check field, so the line is
+ * no longer checked. The stock PROM
+ * leaves non-codewords behind its directory walk with checking on, then
+ * writes and reads inside such lines while it
+ * copies itself to memory.
+*/
 static void md_directory_line_written(SGIBedrockMDState *s, uint32_t index)
 {
     if (md_directory_injection_find(s, index)) {
@@ -1181,13 +1189,13 @@ static const MemoryRegionOps md_directory_overlay_ops = {
 
 /*
  * The memory ECC code's column table: the syndrome each of the 64 data bits
- * produces alone, then the eight check bits' unit vectors. Read from the
- * Origin 300's own memory diagnostic, which walks it to inject one
- * single-bit error per entry (docs/datasheets/bedrock-memory-directory.md).
- * Every column has odd weight and no two differ by a column, so a
- * single-bit error is named by its syndrome and a double-bit error is
- * detected and not corrected.
- */
+ * produces alone, then the eight check
+ * bits' unit vectors. The Origin 300 memory diagnostic injects one single-bit
+ * error per table entry. Every column
+ * has odd weight and no two differ by a column, so a single-bit error is
+ * named by its
+ * syndrome and a double-bit error is detected and not corrected.
+*/
 static const uint8_t md_ecc_column[MD_ECC_DATA_BITS + MD_ECC_CHECK_BITS] = {
     0x13, 0x23, 0x43, 0x83, 0x2f, 0xf1, 0x0d, 0x07,
     0xd0, 0x70, 0x4f, 0xf8, 0x61, 0x62, 0x64, 0x68,
@@ -1229,11 +1237,12 @@ enum {
 };
 
 /*
- * Latch an error the way the header describes: each kind's valid bit is
- * set whenever it occurs; the address and syndrome belong to the earliest
- * error of the highest priority so far, and a kind that finds one of equal
- * or higher priority already recorded sets its overrun bit instead.
- */
+ * Latch an error the way the header describes: each kind's valid bit is set
+ * whenever it occurs; the address and
+ * syndrome belong to the earliest error of the highest priority so far, and a
+ * kind that finds one of equal or
+ * higher priority already recorded sets its overrun bit instead.
+*/
 static void md_memory_error_latch(SGIBedrockMDState *s, int kind,
                                   uint64_t address, uint8_t syndrome)
 {
@@ -1324,9 +1333,10 @@ static void md_ecc_injection_retire(SGIBedrockMDState *s,
 
 /*
  * A raw doubleword shows through whichever software bank's alias covers it;
- * the overlay goes at that software-bank address so the processor's read
- * of the doubleword is the one checked. A bank-select change moves it.
- */
+ * the overlay goes at that software-bank
+ * address so the processor's read of the doubleword is the one checked. A
+ * bank-select change moves it.
+*/
 static void md_ecc_injection_place(SGIBedrockMDState *s,
                                    SGIBedrockMDECCInjection *injection)
 {
@@ -1457,10 +1467,11 @@ static void md_ecc_injection_add(SGIBedrockMDState *s, uint64_t raw)
 }
 
 /*
- * The ECC byte a backdoor read returns: the byte written through the
- * backdoor while it disagrees with the data, otherwise the code's own value
- * for the data, as a controller that regenerates ECC on every write holds.
- */
+ * The ECC byte a backdoor read returns: the byte written through the backdoor
+ * while it disagrees with the data,
+ * otherwise the code's own value for the data, as a controller that
+ * regenerates ECC on every write holds.
+*/
 static uint8_t md_ecc_byte(SGIBedrockMDState *s, uint64_t raw)
 {
     MemTxResult result;
@@ -1492,9 +1503,10 @@ static void md_ecc_written(SGIBedrockMDState *s, uint64_t raw)
 }
 
 /*
- * Read a checked doubleword: @address is the software-bank address the
- * error record names, @offset and @size the bytes wanted from it.
- */
+ * Read a checked doubleword: @address is the software-bank address the error
+ * record names, @offset and @size the
+ * bytes wanted from it.
+*/
 static MemTxResult md_ecc_checked_read(SGIBedrockMDECCInjection *injection,
                                        uint64_t address, hwaddr offset,
                                        uint64_t *value, unsigned size,
@@ -1525,34 +1537,34 @@ static MemTxResult md_ecc_checked_read(SGIBedrockMDECCInjection *injection,
                 md_memory_error_latch(s, MD_MEMORY_ERROR_READ_UCE, address,
                                       syndrome);
                 /*
-                 * An uncached processor read fails, which the load reports
-                 * as a bus error: the R10000 family posts one when a
+                 * An uncached processor read fails, which the load reports as
+                 * a bus error: the R10000 family posts one when a
                  * double, single or partial-word response carries the
-                 * uncorrectable-error indication, and the Origin 300's
-                 * memory diagnostic reads each uncorrectable syndrome
-                 * uncached under a bus-error handler. A cached read is a
-                 * block read, for which the processor posts a Cache Error
-                 * exception instead, and the public SN1 header gives the
-                 * processor interface separate error bits for an
-                 * uncorrectable error on an uncached read and during a
-                 * cached load. The model does not raise the Cache Error
-                 * exception: a cached read completes with the word as
-                 * stored and the error reaches software only through the
-                 * record and its interrupt. The attribute marks only a
-                 * processor's uncached or uncached-accelerated reference,
-                 * so a DMA engine's read completes too.
-                 */
+                 * uncorrectable-error indication, and the Origin 300's memory
+                 * diagnostic reads each uncorrectable syndrome uncached under
+                 * a bus-error handler. A cached read is a block read,
+                 * for which the processor posts a Cache Error exception
+                 * instead, and the public SN1 header gives the processor
+                 * interface separate error bits for an uncorrectable error on
+                 * an uncached read and during a cached load. The model
+                 * does not raise the Cache Error exception: a cached read
+                 * completes with the word as stored and the error reaches
+                 * software only through the record and its interrupt. The
+                 * attribute marks only a processor's uncached or
+                 * uncached-accelerated reference, so a DMA engine's read
+                 * completes too.
+                */
                 if (attrs.mips_uncached) {
                     return MEMTX_ERROR;
                 }
             } else {
                 /*
-                 * The corrected word and its check byte are written back,
-                 * so the next read and a backdoor read both see the
+                 * The corrected word and its check byte are written back, so
+                 * the next read and a backdoor read both see the
                  * codeword. The Origin 300's memory diagnostic requires the
                  * check byte to be right after the correcting read (its
                  * section 2 compares it).
-                 */
+                */
                 if (bit < MD_ECC_DATA_BITS) {
                     data ^= UINT64_C(1) << bit;
                     address_space_stq_be(&s->node_as, raw * 8, data, attrs,
@@ -1625,9 +1637,10 @@ static const MemoryRegionOps md_ecc_overlay_ops = {
 
 /*
  * Installed ECC bytes follow the same software-to-locational bank mapping as
- * memory. The carrier packs byte addresses in reverse order within each
- * doubleword, so undo that transform before applying the installed bound.
- */
+ * memory. The carrier packs byte
+ * addresses in reverse order within each doubleword, so undo that transform
+ * before applying the installed bound.
+*/
 static bool md_ecc_translate(const SGIBedrockMDState *s, hwaddr offset,
                              unsigned size, unsigned *index)
 {
@@ -1751,11 +1764,11 @@ static uint64_t md_ecc_read(void *opaque, hwaddr offset, unsigned size)
     }
     /*
      * The halfword carrier at 6 modulo 8 holds the even doubleword's byte in
-     * its low half and the odd doubleword's in its high half: plain
-     * big-endian byte addressing of the ^7 byte carriers, and the lane the
-     * Origin 300's memory diagnostic selects (the memory-directory
-     * datasheet's ECC backdoor section).
-     */
+     * its low half and the odd doubleword's in
+     * its high half: plain big-endian byte addressing of the ^7 byte
+     * carriers, and the byte position the Origin 300's
+     * memory diagnostic selects.
+    */
     return ((uint16_t)md_ecc_byte(s, index + 1) << 8) | md_ecc_byte(s, index);
 }
 
@@ -1789,13 +1802,15 @@ static void md_ecc_write(void *opaque, hwaddr offset, uint64_t value,
 
 /*
  * The scrub carrier at four eighths of the node (BDECC_SCRUB in the public
- * SN1 address header) indexes the ECC bytes the way the entry carrier does.
- * A byte or halfword read returns the byte; an aligned 64-bit store scrubs
+ * SN1 address header) indexes the ECC
+ * bytes the way the entry carrier does. A byte or halfword read returns the
+ * byte; an aligned 64-bit store scrubs
  * the 64-byte block whose eight bytes the carrier word holds, checking and
- * correcting each doubleword the way a read would. The Origin 300's memory
- * diagnostic stores zero here before reading a corrected word back and
- * reads the check byte through it (its 0x100138f0 and 0x10013950).
- */
+ * correcting each doubleword the way a
+ * read would. The Origin 300's memory diagnostic stores zero here before
+ * reading a corrected word back and reads
+ * the check byte through it.
+*/
 static bool md_ecc_scrub_accepts(void *opaque, hwaddr offset, unsigned size,
                                  bool is_write, MemTxAttrs attrs)
 {
@@ -1905,9 +1920,10 @@ static unsigned md_memory_remap_bank(const SGIBedrockMDState *s,
 }
 
 /*
- * Whether the selected bank is fitted and backed, and if so the raw range
- * its configured size covers: @base and @size.
- */
+ * Whether the selected bank is fitted and backed, and if so the raw range its
+ * configured size covers: @base and
+ * @size.
+*/
 static bool md_selftest_bank_fits(const SGIBedrockMDState *s,
                                   unsigned selector,
                                   unsigned configured_bank,
@@ -1976,15 +1992,17 @@ static void md_selftest_cancel(SGIBedrockMDState *s)
 
 /*
  * A write phase with initial pattern zero and no nibble, byte or cycle
- * control writes zero through the whole bank, check bytes included, so it
- * leaves no doubleword the ECC backdoor had marked; like any data write it
- * rewrites the entry of each marked directory line. The stock PROM runs one
- * over each bank before and after its memory test; the test leaves check
- * bytes that disagree with their data behind it, and this fill is what
- * clears them before a diagnostic reads the bank. The other patterns'
- * transformation rules are not published, so their phases leave memory as
- * it is.
- */
+ * control writes zero through the whole bank,
+ * check bytes included, so it leaves no doubleword the ECC backdoor had
+ * marked; like any data write it rewrites the
+ * entry of each marked directory line. The stock PROM runs one over each bank
+ * before and after its memory test; the
+ * test leaves check bytes that disagree with their data behind it, and this
+ * fill is what clears them before a
+ * diagnostic reads the bank. The other patterns' transformation rules are not
+ * published, so their phases leave
+ * memory as it is.
+*/
 static void md_selftest_fill(SGIBedrockMDState *s, uint64_t base,
                              uint64_t size)
 {
@@ -2037,10 +2055,11 @@ static void md_selftest_command(SGIBedrockMDState *s, uint64_t value)
     }
 
     /*
-     * The interval runs from the start command, not from the end of the
-     * fill below: the fill is part of the test, and its host cost must not
-     * push the completion past a deadline firmware sampled before the start.
-     */
+     * The interval runs from the start command, not from the end of the fill
+     * below: the fill is part of the test, and
+     * its host cost must not push the completion past a deadline firmware
+     * sampled before the start.
+    */
     start_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
     s->selftest_running = true;
     s->selftest_selector = extract64(value, 4, 3);
@@ -2075,10 +2094,11 @@ static void md_selftest_complete(void *opaque)
 
 /*
  * A read at or after the completion time sees the result even if the main
- * loop has not yet run the timer. Otherwise a processor polling status
- * could find the test still running after its own clock had passed the
- * completion, for as long as the host kept the main loop from running.
- */
+ * loop has not yet run the timer. Otherwise
+ * a processor polling status could find the test still running after its own
+ * clock had passed the completion, for
+ * as long as the host kept the main loop from running.
+*/
 static void md_selftest_sync(SGIBedrockMDState *s)
 {
     if (s->selftest_running &&
@@ -2212,10 +2232,11 @@ static SGIBedrockMDECCInjection *md_ecc_injection_within(SGIBedrockMDState *s,
 }
 
 /*
- * Node memory was written outside the overlays' own paths, by the decoder
- * or a fetch-and-op store: the write regenerated the ECC of the doublewords
- * it covered and rewrote the directory entry of every line it touched.
- */
+ * Node memory was written outside the overlays' own paths, by the decoder or
+ * a fetch-and-op store: the write
+ * regenerated the ECC of the doublewords it covered and rewrote the directory
+ * entry of every line it touched.
+*/
 static void md_node_memory_written(SGIBedrockMDState *s, uint64_t raw,
                                    unsigned size)
 {
@@ -2331,11 +2352,12 @@ static const MemoryRegionOps md_memory_ops = {
 
 /*
  * Memory-special space: a fetch-and-op variable is the first doubleword of
- * each 64-byte block of node memory, and the offset inside the block names
- * the atomic operation. Only aligned 64-bit and 32-bit accesses reach the
+ * each 64-byte block of node memory, and
+ * the offset inside the block names the atomic operation. Only aligned 64-bit
+ * and 32-bit accesses reach the
  * variable; anything else, and an offset with no operation, is refused as a
  * bus error.
- */
+*/
 static bool md_fetchop_variable(SGIBedrockMDState *s, hwaddr offset,
                                 unsigned size, bool is_write, hwaddr *raw)
 {
@@ -2367,12 +2389,13 @@ static void md_fetchop_refuse_operation(hwaddr offset, bool is_write)
 }
 
 /*
- * A 32-bit access names one word of the variable with address bit 2 (the
- * high word at 0, the low word at 4, in the big-endian order the memory
- * holds) and operates on that word alone, as a 32-bit variable; the
- * operation is still the block offset's, bits 5:3. A 64-bit access
- * operates on the whole doubleword.
- */
+ * A 32-bit access names one word of the variable with address bit 2 (the high
+ * word at 0, the low word at 4, in the
+ * big-endian order the memory holds) and operates on that word alone, as a
+ * 32-bit variable; the operation is still
+ * the block offset's, bits 5:3. A 64-bit access operates on the whole
+ * doubleword.
+*/
 static unsigned md_fetchop_shift(hwaddr offset, unsigned size)
 {
     return size == 8 || offset & 4 ? 0 : 32;
@@ -2569,9 +2592,9 @@ static int md_post_load(void *opaque, int version_id)
 
     /*
      * The lookup tables are derived from the slots, which the stream set.
-     * Empty them first so a rejected stream leaves no key pointing at a
-     * slot the stream rewrote.
-     */
+     * Empty them first so a rejected stream leaves
+     * no key pointing at a slot the stream rewrote.
+    */
     g_hash_table_remove_all(s->ecc_injection_by_raw);
     g_hash_table_remove_all(s->directory_injection_by_index);
     g_hash_table_remove_all(s->ecc_retired_by_raw);
@@ -2752,10 +2775,10 @@ static void md_realize(DeviceState *dev, Error **errp)
         return;
     }
     /*
-     * A node of a several-node machine links its own share of the
-     * machine's RAM, an alias of it; one node links the RAM itself. Find
-     * the RAM under any aliases and the share's offset into it.
-     */
+     * A node of a several-node machine links its own share of the machine's
+     * RAM, an alias of it; one node links the RAM
+     * itself. Find the RAM under any aliases and the share's offset into it.
+    */
     ram = s->node_mr;
     while (ram->alias) {
         offset += ram->alias_offset;
@@ -2779,13 +2802,14 @@ static void md_realize(DeviceState *dev, Error **errp)
     }
     /*
      * Root the address space at an unplaced alias of that RAM, not at
-     * node_mr: rendering an address space adds its root region's own
-     * address (render_memory_region() in system/memory.c), and a node's
-     * share sits at the node's placement, 2^33 for a second node. An
-     * unplaced alias of node_mr itself would not do either, since the
-     * memory core looks through an alias that covers its target whole
-     * from offset zero when it picks the root it renders.
-     */
+     * node_mr: rendering an address space adds its root
+     * region's own address (render_memory_region() in system/memory.c), and a
+     * node's share sits at the node's
+     * placement, 2^33 for a second node. An unplaced alias of node_mr itself
+     * would not do either, since the memory core
+     * looks through an alias that covers its target whole from offset zero
+     * when it picks the root it renders.
+    */
     memory_region_init_alias(&s->node_root, OBJECT(s),
                              TYPE_SGI_BEDROCK_MD "-node-root", ram,
                              offset, node_size);

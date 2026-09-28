@@ -1,9 +1,8 @@
 /*
  * SPDX-License-Identifier: GPL-2.0-or-later
  *
- * Stand-in for the SGI Bridge's plain DMA route on targets without the
- * Bridge. A device that asks (the BCM570x is built wherever PCI is) learns
- * there is no Bridge to skip and keeps its ordinary bus-master path.
+ * Fallback for the SGI Bridge plain DMA route.
+ * BCM570x is built on targets without Bridge; it keeps ordinary bus-master DMA.
  */
 
 #include "qemu/osdep.h"

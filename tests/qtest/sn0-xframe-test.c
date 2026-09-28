@@ -1,32 +1,20 @@
 /*
- * Neterion/S2io Xframe behind the Origin 200 Bridge: the device<->Bridge
- * byte-order composition its own x86_64 qtest cannot reach.
- *
- * tests/qtest/xframe-test.c proves the device's register and DMA contract on a
- * generic little-endian PC, where an 8-byte access is one native cycle and no
- * host bridge sits in the path. This file drives the same device on the real
- * Origin 200 topology, at a free PCI slot behind the SGI Bridge, so the
- * composition the PC machine has no way to exercise is what is under test: the
- * Bridge's register-window byte-order correction over the device's
- * little-endian delivery, and the distinct descriptor and payload DMA routes.
- *
- * The resolved contract (docs/library/nic-on-bridge-conventions.md): the
- * device declares little-endian and delivers native little-endian; the Bridge
- * corrects register MMIO and DMA per the guest-programmed slot DEV register,
- * which for a NIC slot leaves every swap bit clear. Xframe's registers are
- * 64-bit, so the slot is marked DEV_64BIT_DEVICE and a 64-bit register access
- * is served in one eight-byte cycle -- the single-cycle path the Bridge's
- * 64-bit-device fix added. Under that setting a guest 64-bit register access
- * composes to identity. Descriptor fields still use the slot's byte-lane
- * correction; packet payload is a byte stream and uses the Bridge's plain DMA
- * route.
- *
+ * Neterion/S2io Xframe register and DMA tests on the Origin 200 Bridge.
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 #include "qemu/osdep.h"
 #include "libqtest.h"
 #include <sys/socket.h>
+
+/*
+ * xframe-test.c covers native little-endian PC cycles without a host Bridge.
+ * Here a free PCI slot exercises Bridge correction over Xframe's native
+ * little-endian MMIO and DMA. The NIC slot leaves DEV swap bits clear;
+ * DEV_64BIT_DEVICE makes each 64-bit register access one eight-byte cycle,
+ * composing to identity after the Bridge's 64-bit-device fix. Descriptors
+ * use byte-lane correction; payload bytes use plain DMA.
+ */
 #include <netinet/in.h>
 #include "sgi-test.h"
 
@@ -48,7 +36,7 @@
 /*
  * The base I/O board fills PCI devices 0 and 1 (the SCSI adapters) and 2 (the
  * IOC3, which the board exempts from the byte-lane swap). The first free,
- * non-exempt slot is 3 -- the slot generality is the whole point: the Bridge
+ * non-exempt slot is 3. The Bridge
  * corrects by slot, so any free slot would do, and a non-exempt one is what
  * puts the byte-lane path in front of the device's DMA.
  */
@@ -57,7 +45,7 @@
 
 /* The per-slot device register: 32 bits in the low half of an 8-byte slot. */
 #define BRIDGE_DEVICE(n)        (BRIDGE_BASE + 0x200 + 8 * (n) + REG_DATA)
-#define DEV_SWAP_PROGRAMMED     (1u << 13)   /* programmed-access (reg) swap */
+#define DEV_SWAP_PROGRAMMED     (1u << 13)   /* programmed register swap */
 #define DEV_64BIT_DEVICE        (1u << 22)   /* doubleword in one cycle */
 
 /* Type 0 configuration space: eight devices 4 KB apart. */
@@ -120,10 +108,9 @@
 #define RX5_BUF2_PHYS           (TARGET_PAGE + 0x300)
 
 /*
- * The device's PCI identity and register offsets, restated from the xframe
- * datasheet (docs/datasheets/xframe.md in the origami project tree, not this
- * repository) the way tests/qtest/xframe-test.c restates them -- a test pins
- * the contract independently of the model.
+ * The device's PCI identity and register offsets, restated from the Xframe
+ * register documentation as in tests/qtest/xframe-test.c. The test
+ * pins the contract independently of the model.
  */
 #define XFRAME_VENDOR           0x17d5
 #define XFRAME_DEVICE_XENA      0x5831
@@ -214,8 +201,8 @@ static const uint8_t station_mac[6] = { 0x52, 0x54, 0x00, 0x12, 0x34, 0x56 };
 #define TCP_HDR_LEN             20
 
 /*
- * The socket backend frames each packet with a four-byte network-order length,
- * in both directions -- the same helpers tests/qtest/xframe-test.c uses.
+ * The socket backend frames each packet with a four-byte network-order
+ * length in both directions, as in tests/qtest/xframe-test.c.
  */
 static void net_socket_set_recv_timeout(int fd, int seconds)
 {
@@ -246,8 +233,9 @@ static size_t net_socket_recv_frame(int fd, uint8_t *buf, size_t buf_size)
 }
 
 /*
- * Big-endian pack/unpack of a 64-bit descriptor word in a byte buffer -- the
- * descriptor format's reset default, which the always-big-endian Origin 200
+ * Big-endian pack/unpack of a 64-bit descriptor word in a byte buffer.
+ * This is the descriptor format's reset default, which the always-big-endian
+ * Origin 200
  * guest never reprograms away from (hw/net/xframe.c's ldq_be_p/stq_be_p
  * descriptor accessors).
  */
@@ -275,10 +263,11 @@ static uint64_t ldq_be_buf(const uint8_t *b)
  * Reverse each aligned 32-bit word: the correction the Bridge's byte-lane DMA
  * path needs for this non-exempt slot with its swap bits clear. A device that
  * DMA-reads a byte buffer in its own little-endian order sees the canonical
- * bytes back once the guest has laid them out word-reversed, and a byte buffer
- * the device DMA-writes reads back canonical once reversed again -- the same
- * transform in both directions (sn0-qlogic-isp-test.c's normalise_words). The
- * length is a multiple of four here, so every chunk is one aligned word.
+ * bytes back once the guest has laid them out word-reversed, and a byte
+ * buffer the device DMA-writes reads back canonical once reversed again.
+ * the same transform in both directions (sn0-qlogic-isp-test.c's
+ * normalise_words). The length is a multiple of four here, so every chunk is
+ * one aligned word.
  */
 static void normalise_words(uint8_t *buf, size_t len)
 {
@@ -296,10 +285,11 @@ static void normalise_words(uint8_t *buf, size_t len)
 }
 
 /*
- * Descriptor memory as the device sees it: write canonical bytes word-reversed
- * so a device DMA-read recovers them, and read a device DMA-write back
- * word-reversed to recover the canonical bytes it wrote. Packet payload does
- * not use these helpers; it is copied byte-for-byte through plain DMA.
+ * Descriptor memory as the device sees it: write canonical bytes
+ * word-reversed so a device DMA-read recovers them, and read a device
+ * DMA-write back word-reversed to recover the canonical bytes it wrote.
+ * Packet payload does not use these helpers; it is copied byte-for-byte
+ * through plain DMA.
  */
 static void dma_write_canonical(QTestState *qts, uint64_t phys,
                                 const uint8_t *buf, size_t len)
@@ -322,8 +312,8 @@ static void dma_read_canonical(QTestState *qts, uint64_t phys, uint8_t *buf,
 /*
  * A 64-bit register access through the slot window at its natural offset.
  * DEV_64BIT_DEVICE serves the doubleword in one cycle and the swap bit is
- * clear, so the composition -- the device's little-endian delivery, the
- * Bridge's window correction, the guest's big-endian load -- is identity: no
+ * clear. The device's little-endian delivery, the Bridge's window
+ * correction, and the guest's big-endian load compose to identity: no
  * byte-lane address swizzle applies to a single eight-byte cycle.
  */
 static void win_writeq(QTestState *qts, uint64_t off, uint64_t val)
@@ -337,7 +327,7 @@ static uint64_t win_readq(QTestState *qts, uint64_t off)
 }
 
 /*
- * A 32-bit register access through the slot window -- the width IRIX xg reads
+ * A 32-bit register access through the slot window, the width IRIX xg reads
  * these 64-bit registers with. On a DEV_64BIT_DEVICE-clear slot this is one
  * 32-bit device cycle the Bridge byte-lane-corrects, reaching the register's
  * low half at off+0 and its high half at off+4.
@@ -357,7 +347,9 @@ static uint32_t irq_win_readl(QTestState *qts, uint64_t off)
     return qtest_readl(qts, WINDOW_SLOT4 + off);
 }
 
-/* Aim the slot's window at a BAR, marking the device 64-bit and swap-clear. */
+/*
+ * Aim the slot's window at a BAR, marking the device 64-bit and swap-clear.
+ */
 static void aim_window(QTestState *qts, uint32_t pci_base)
 {
     qtest_writel(qts, BRIDGE_DEVICE(XFRAME_SLOT),
@@ -437,13 +429,14 @@ static unsigned count_log_matches(const char *log, const char *needle)
 
 /*
  * Register composition: a big-endian guest 64-bit read of the byte-swapper
- * diagnostic returns the magic through the Bridge's register-window correction
- * composed with the device's little-endian delivery -- the single-cycle path
- * the 64-bit-device fix enabled. The swap bit is pinned clear (the tripwire for
- * a guest ever setting it) and the device-size bit pinned set (the fix keys the
- * one-cycle path on it). ADAPTER_STATUS's quiescent constant is checked too:
- * both halves of that value differ, so a hidden byte or word swap that the
- * magic alone might not expose returns a visibly wrong number.
+ * diagnostic returns the magic through the Bridge's register-window
+ * correction and the device's little-endian delivery. This is the
+ * single-cycle path the 64-bit-device fix enabled. The swap bit is pinned
+ * clear (the tripwire for a guest ever setting it) and the device-size bit
+ * pinned set (the fix keys the one-cycle path on it). ADAPTER_STATUS's
+ * quiescent constant is checked too: both halves of that value differ, so a
+ * hidden byte or word swap that the magic alone might not expose returns a
+ * visibly wrong number.
  */
 static void test_swapper_magic_composes_through_the_bridge(const void *data)
 {
@@ -464,30 +457,22 @@ static void test_swapper_magic_composes_through_the_bridge(const void *data)
 }
 
 /*
- * The real IRIX xg case: the slot's DEV register left with DEV_64BIT_DEVICE
- * CLEAR, the way the live IRIX boot leaves it -- unlike the test above, which
- * marks the slot 64-bit. With the bit clear the Bridge delivers a 32-bit
- * register access to the device as one 32-bit cycle rather than folding a
- * doubleword into an eight-byte cycle, so this is the register access xg's
- * endianness handshake actually issues on hardware: a 32-bit read, byte-lane
- * corrected by the Bridge, of each half of the swapper diagnostic. It reaches
- * the right bytes only because the device now serves 32-bit register cycles --
- * before its window's valid.min_access_size dropped to 4 the cycle was rejected
- * below the valid minimum and the read came back zero, and xg's endian check
- * aborted attach. Both halves of the swapper magic, and both halves of the
- * quiescent ADAPTER_STATUS (whose halves differ, so a half reaching the wrong
- * lane shows), must compose whole.
- *
- * A single 64-bit read on a DEV_64BIT_DEVICE-clear slot is a different path the
- * Bridge word-orders for a 32-bit-device slot; xg never issues one (it reads
- * 32-bit), so that composition -- a Bridge concern -- is not what this asserts.
+ * IRIX xg leaves DEV_64BIT_DEVICE clear and reads each half of the swapper
+ * diagnostic as a Bridge-corrected 32-bit cycle. The device accepts those
+ * cycles only with valid.min_access_size=4; a larger minimum returned zero
+ * and aborted attach. Both swapper-magic and quiescent ADAPTER_STATUS halves
+ * must compose, including distinct status halves that expose wrong byte
+ * positions. xg never issues the separate 64-bit read path for a 32-bit
+ * device slot; the preceding test marks the slot 64-bit.
  */
 static void test_swapper_magic_composes_via_32bit_cycles(const void *data)
 {
     QTestState *qts = boot_plain();
     uint32_t dev;
 
-    /* Decode both BARs and enable memory, but leave DEV_64BIT_DEVICE clear. */
+    /*
+     * Decode both BARs and enable memory, but leave DEV_64BIT_DEVICE clear.
+     */
     qtest_writel(qts, CFG0(XFRAME_SLOT) + PCI_BAR0, PIF_BAR_PCI);
     qtest_writel(qts, CFG0(XFRAME_SLOT) + PCI_BAR0_HIGH, 0);
     qtest_writel(qts, CFG0(XFRAME_SLOT) + PCI_BAR2, TXP_BAR_PCI);
@@ -512,17 +497,12 @@ static void test_swapper_magic_composes_via_32bit_cycles(const void *data)
 }
 
 /*
- * Packet bytes must take the Bridge's plain DMA route while descriptor fields
- * retain their byte-lane correction. This machine leaves the slot's DEV_SWAP
- * bit clear, so correction is active: a 64-byte payload on the old route was
- * split by lane_swap_ops into sixteen 4-byte callbacks, in addition to the
- * descriptor's eight, and landed in guest memory with each of those words
- * reversed. Count the callbacks and compare the bytes without normalization.
- *
- * The trace log is named relative to the working directory, which is the
- * build directory, rather than through g_file_open_tmp as the Tigon and
- * BCM570x suites do: this project's shared /tmp is a small tmpfs that other
- * work fills, and a short write there surfaces as an unrelated failure.
+ * Payload bytes use plain Bridge DMA; descriptors retain byte-lane correction
+ * with DEV_SWAP clear. The old path sent 64 payload bytes through sixteen
+ * lane_swap_ops callbacks plus eight descriptor callbacks, reversing each
+ * payload word. Count callbacks and compare raw bytes. Logs use the build
+ * directory: shared /tmp is a small tmpfs where short writes cause unrelated
+ * failures; Tigon and BCM570x use g_file_open_tmp.
  */
 static void test_transmit_payload_skips_lane_swap(const void *data)
 {
@@ -549,7 +529,9 @@ static void test_transmit_payload_skips_lane_swap(const void *data)
     bring_up(qts, TXP_BAR_PCI, true);
     qtest_writeq(qts, ATE(0), ATE_ENTRY(TARGET_PAGE, 0));
 
-    /* Distinct bytes so a byte or word swap anywhere shows as a wrong frame. */
+    /*
+     * Distinct bytes so a byte or word swap anywhere shows as a wrong frame.
+     */
     for (i = 0; i < FRAME_LEN; i++) {
         frame[i] = (uint8_t)(0x80 + i);
     }
@@ -562,14 +544,18 @@ static void test_transmit_payload_skips_lane_swap(const void *data)
     stq_be_buf(desc + 16, TX_BUF_IOVA);
     dma_write_canonical(qts, DESC_PHYS, desc, sizeof(desc));
 
-    /* Ring the doorbell for a one-descriptor list at the descriptor's IOVA. */
+    /*
+     * Ring the doorbell for a one-descriptor list at the descriptor's IOVA.
+     */
     win_writeq(qts, TXP_TXDL_PAR, DESC_IOVA);
     win_writeq(qts, TXP_TXDL_LCR,
                TXDL_NUMTXD(0) | TXDL_LGC_FIRST | TXDL_LGC_LAST);
 
     len = net_socket_recv_frame(host_fd, got, sizeof(got));
 
-    /* The card released the descriptor: ownership handed back, length kept. */
+    /*
+     * The card released the descriptor: ownership handed back, length kept.
+     */
     dma_read_canonical(qts, DESC_PHYS, handback, sizeof(handback));
     control1 = ldq_be_buf(handback);
 
@@ -604,9 +590,9 @@ static bool wait_rx_traffic(QTestState *qts, int attempts)
 }
 
 /*
- * Receive payload is also a byte stream, but the descriptor and its completion
- * remain word values. Verify the payload without normalization and decode the
- * completion through the lane-corrected descriptor helper.
+ * Receive payload is also a byte stream, but the descriptor and its
+ * completion remain word values. Verify the payload without normalization and
+ * decode the completion through the lane-corrected descriptor helper.
  */
 static void test_receive_payload_skips_lane_swap(const void *data)
 {
@@ -627,7 +613,9 @@ static void test_receive_payload_skips_lane_swap(const void *data)
     }
     memcpy(frame, station_mac, sizeof(station_mac));
 
-    /* host control 0, card-owned, capacity in control2 bits 63:48, buf ptr. */
+    /*
+     * host control 0, card-owned, capacity in control2 bits 63:48, buf ptr.
+     */
     memset(rxd, 0, sizeof(rxd));
     stq_be_buf(rxd + 8, RXD_OWN);
     stq_be_buf(rxd + 16, (uint64_t)RX_BUF_CAPACITY << RXD_BUFSIZ_SHIFT);
@@ -692,8 +680,8 @@ static void assert_dma_landed(QTestState *qts, uint64_t phys,
  * ICMP echo reply, what IRIX's own ping waits for at MTU 9000. The card
  * recognises IPv4 and reports it, so the IP header goes to buffer 1, the
  * layer the classification names, and the ICMP header and data follow in
- * buffer 2. With buffer 1 left empty and the IP header in buffer 2, IRIX drops
- * every such frame before its IP input counts it.
+ * buffer 2. With buffer 1 left empty and the IP header in buffer 2, IRIX
+ * drops every such frame before its IP input counts it.
  */
 static void test_five_buffer_receive_splits_icmp_ip_header(const void *data)
 {
@@ -731,7 +719,9 @@ static void test_five_buffer_receive_splits_icmp_ip_header(const void *data)
     bring_up(qts, PIF_BAR_PCI, true);
     qtest_writeq(qts, ATE(0), ATE_ENTRY(TARGET_PAGE, 0));
 
-    /* Sizes 14 / 128 / 256 in the shape IRIX posts; buffers 3 and 4 unused. */
+    /*
+     * Sizes 14 / 128 / 256 in the shape IRIX posts; buffers 3 and 4 unused.
+     */
     memset(rxd, 0, sizeof(rxd));
     stq_be_buf(rxd + 8, RXD_OWN);
     stq_be_buf(rxd + 16, RXD5_SET_SIZES(eth, 128, 256));

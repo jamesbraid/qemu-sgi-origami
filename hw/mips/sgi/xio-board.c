@@ -19,11 +19,10 @@
 #define SGI_XIO_BOARD_UNSET UINT32_MAX
 
 /*
- * Every sgi-xtalk-board realized so far, attached or not: this is both
- * the module+slot uniqueness registry and the pool
- * sgi_xio_board_attach_pending() scans. Boards are few (a module has at
- * most a handful of XIO slots), so a linear scan costs nothing a hash
- * table would be worth carrying instead.
+ * Every sgi-xtalk-board realized so far, attached or not: this is both the
+ * module+slot uniqueness registry and the pool sgi_xio_board_attach_pending()
+ * scans. Boards are few (a module has at most a handful of XIO slots), so a
+ * linear scan costs nothing a hash table would be worth carrying instead.
  */
 static QTAILQ_HEAD(, SGIXioBoardState) sgi_xio_board_all =
     QTAILQ_HEAD_INITIALIZER(sgi_xio_board_all);
@@ -45,16 +44,16 @@ static Object *sgi_xio_board_module_container(unsigned int module)
 /*
  * Re-parent this board under its module, the way PowerNV re-parents a
  * user-created PHB under its chip (pnv_parent_fixup() in
- * hw/pci-host/pnv_phb.c): drop the QOM child property device_add gave it
- * and add the same object back under the new parent, so info qom-tree
- * shows the board where the hardware puts it rather than wherever it was
- * created from. A board's own `id=`, when given, survives the move.
+ * hw/pci-host/pnv_phb.c): drop the QOM child property device_add gave it and
+ * add the same object back under the new parent, so info qom-tree shows the
+ * board where the hardware puts it rather than wherever it was created from.
+ * A board's `id=`, when given, survives the move.
  *
- * object_unparent() also drops the device's qdev bus parent as a side
- * effect of removing the old QOM child property (pnv_phb.c's comment on
- * pnv_parent_fixup() explains why), so this restores it to the system
- * bus every sgi-xtalk-board is realized on -- qdev_machine_creation_done()
- * asserts every realized device still has one.
+ * object_unparent() also drops the device's qdev bus parent as a side effect
+ * of removing the old QOM child property (pnv_phb.c's comment on
+ * pnv_parent_fixup() explains why), so this restores it to the system bus
+ * every sgi-xtalk-board is realized on; qdev_machine_creation_done() asserts
+ * every realized device still has one.
  */
 static bool sgi_xio_board_reparent(SGIXioBoardState *board, Error **errp)
 {
@@ -75,8 +74,8 @@ static bool sgi_xio_board_reparent(SGIXioBoardState *board, Error **errp)
 }
 
 /*
- * Reject a second board in the same module's slot, and otherwise
- * register this one in the pool sgi_xio_board_attach_pending() reads.
+ * Reject a second board in the same module's slot, and otherwise register
+ * this one in the pool sgi_xio_board_attach_pending() reads.
  */
 static bool sgi_xio_board_claim(SGIXioBoardState *board, Error **errp)
 {
@@ -160,11 +159,11 @@ static const Property sgi_xio_board_properties[] = {
 
 /*
  * Every field on this base is either a fixed construction-time property
- * (module, slot) or bookkeeping this process derives the same way on
- * every boot (attached, queued, the pending-list linkage) -- none of it
- * is guest-visible state a migration stream needs to carry. An empty,
- * named description says so explicitly rather than leaving dc->vmsd
- * unset, matching hw/misc/sgi-xtalk-test-target.c.
+ * (module, slot) or bookkeeping this process derives the same way on every
+ * boot (attached, queued, the pending-list linkage); none of it is
+ * guest-visible state a migration stream needs to carry. An empty, named
+ * description says so explicitly rather than leaving dc->vmsd unset, matching
+ * hw/misc/sgi-xtalk-test-target.c.
  */
 static const VMStateDescription vmstate_sgi_xio_board = {
     .name = TYPE_SGI_XIO_BOARD,
@@ -179,10 +178,10 @@ static const VMStateDescription vmstate_sgi_xio_board = {
  * ---- The crosstalk port interface ----
  *
  * A board is always a leaf: its widget answers a processor and a packet
- * access at the one place build_widget() records, so both faces are
- * whatever it set on cpu_face/packet_face -- NULL before this board's
- * own realize has run. index is unused: a board occupies exactly one
- * widget, named by its own "slot" property instead.
+ * access at the one place build_widget() records, so both faces are whatever
+ * it set on cpu_face/packet_face. Both are NULL before this board realizes.
+ * index is unused: a board occupies exactly one widget, named by its "slot"
+ * property instead.
  */
 
 static const char *sgi_xio_board_xtalk_port_describe(Object *port,

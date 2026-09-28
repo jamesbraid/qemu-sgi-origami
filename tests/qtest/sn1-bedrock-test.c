@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
+/* Bedrock parent composition, reset, register and inbound access tests. */
 #include "qemu/osdep.h"
 #include "libqtest.h"
 #include "qobject/qdict.h"
@@ -475,10 +476,10 @@ static void test_parent_remote_window_logs(void)
 }
 
 /*
- * The remote form of the hub's own register window, as a widget's
- * interrupt write reaches it. Only the two interrupt-pending-modify
- * registers answer, and each write is qualified by the target interface's
- * I/O protect bit for the node's local region.
+ * The remote form of the hub's own register window, as a widget's interrupt
+ * write reaches it. Only the two interrupt-pending-modify registers answer,
+ * and each write is qualified by the target interface's I/O protect bit for
+ * the node's local region.
  */
 static void test_parent_io_interrupt_write(void)
 {
@@ -511,7 +512,9 @@ static void test_parent_io_interrupt_write(void)
     g_assert_cmphex(qtest_readq(s, BASE + 0xa0), ==, 0);
     g_assert_cmphex(qtest_readq(s, IO_REGISTERS_BASE + 0x90), ==, 0);
 
-    /* I/O protect for the local region gates the write; CPU stores are not. */
+    /*
+     * I/O protect for the local region gates the write; CPU stores are not.
+     */
     qtest_writeq(s, BASE + 0x10, UINT64_MAX ^ 1);
     qtest_writeq(s, IO_REGISTERS_BASE + 0x90, 0x107);
     g_assert_cmphex(qtest_readq(s, BASE + 0x98), ==, 0);
@@ -528,11 +531,11 @@ static void test_parent_io_interrupt_write(void)
 }
 
 /*
- * A widget's interrupt write as the I/O interface receives it: crosstalk
- * bit 47, the node at bit 39, small window 1 in its remote form, and the
- * modify register of the chosen interface. The I/O interface forwards it
- * to the parent's register window only after its inbound-access check and
- * only for this node; the parent then applies the interface's I/O protect.
+ * A widget's interrupt write as the I/O interface receives it: crosstalk bit
+ * 47, the node at bit 39, small window 1 in its remote form, and the modify
+ * register of the chosen interface. The I/O interface forwards it to the
+ * parent's register window only after its inbound-access check and only for
+ * this node; the parent then applies the interface's I/O protect.
  */
 static void test_parent_widget_interrupt_write(void)
 {
@@ -576,11 +579,10 @@ static void test_parent_widget_interrupt_write(void)
 
 /*
  * The I/O interface decodes crosstalk register packets against the node
- * number the local block's revision word carries, the one the firmware
- * writes when it assigns the node (the local-block datasheet, "Node number
- * assignment"; one number per chip is the model's choice). Before the write
- * a packet for node 3 arrives nowhere; after it, that packet reaches the
- * interrupt-pending register and one for node 0 no longer does.
+ * number the local block's revision word carries, the one the firmware writes
+ * when it assigns the node (one number per chip is the model's choice).
+ * Before the write a packet for node 3 arrives nowhere; after it, that packet
+ * reaches the interrupt-pending register and one for node 0 no longer does.
  */
 static void test_parent_node_number_follows_revision(void)
 {
@@ -738,8 +740,8 @@ static void test_reset_requests(void)
  * with the enable armed as they arm it: OpenBSD writes local plus link reset
  * (0x5), the Itanium port local plus port reset (0x6). The local block's
  * scratch 0 clears while scratch 1 and 2 survive, on the model's equation of
- * this reset with the header's; the interface's own registers return to
- * zero, model policy.
+ * this reset with the header's; the interface's own registers return to zero,
+ * model policy.
  */
 static void test_composed_consumer_resets(void)
 {
@@ -784,12 +786,12 @@ static void test_disconnected(void)
 
 /*
  * A write to a read-only register changes nothing and is logged as a guest
- * error, so a guest driving the link's status or error capture leaves a
- * trace instead of vanishing into accepted storage. The register-core unit
- * test checks the unchanged state with seeded values; here every register
- * is idle, so the log is what discriminates. Port errors and sideband are
- * not in the list: the stock PROM writes them, and test_power_on_programming
- * covers that.
+ * error, so a guest driving the link's status or error capture leaves a trace
+ * instead of vanishing into accepted storage. The register-core unit test
+ * checks the unchanged state with seeded values; here every register is idle,
+ * so the log is what discriminates. Port errors and sideband are not in the
+ * list: the stock PROM writes them, and test_power_on_programming covers
+ * that.
  */
 static void test_read_only_writes(void)
 {
@@ -823,11 +825,11 @@ static void test_read_only_writes(void)
 
 /*
  * The stock IP35 PROM's one power-on programming pass, in its own order and
- * with its own values (the network-interface datasheet, "Link bring-up"):
- * each reads back through its register's defined bits, and the zero writes to
- * port errors and sideband are accepted without a guest error, after which
- * error clear reads 0. Port parameters is a sign-extended 32-bit constant, so
- * the virtual-channel error enables in bits 34:32 come from the extension.
+ * with its own values: each reads back through its register's defined bits,
+ * and the zero writes to port errors and sideband are accepted without a
+ * guest error, after which error clear reads 0. Port parameters is a
+ * sign-extended 32-bit constant, so the virtual-channel error enables in bits
+ * 34:32 come from the extension.
  */
 static void test_power_on_programming(void)
 {
@@ -887,11 +889,10 @@ static void test_port_errors_write_drives_error_line(void)
 }
 
 /*
- * The datasheet states no reset value for any register here and only that
- * the sideband register is not cleared, a survival the register-core unit
- * test carries with a seeded value that no MMIO path can produce. What this
- * asserts is model policy, not hardware: unknown defaults are modelled as
- * zero, so every guest-writable register reads 0 after a reset.
+ * Hardware reset values are unknown; sideband survives. The register-core
+ * test seeds sideband with a value MMIO cannot produce. Here model policy
+ * clears unknown defaults: every guest-writable register reads zero after
+ * reset.
  */
 static void test_reset_model_policy(void)
 {

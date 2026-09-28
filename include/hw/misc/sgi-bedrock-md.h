@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
+/* Bedrock memory/directory register, ECC and bank state. */
 #ifndef HW_MISC_SGI_BEDROCK_MD_H
 #define HW_MISC_SGI_BEDROCK_MD_H
 
@@ -13,17 +14,19 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIBedrockMDState, SGI_BEDROCK_MD)
 /* One eighth of the 8 GiB M-mode node space, like the directory carrier. */
 #define SGI_BEDROCK_MD_ECC_SIZE 0x40000000
 #define SGI_BEDROCK_MD_MEMORY_SIZE 0x200000000ULL
-/* Fetch-and-op variables: one 64-byte block per variable, over node memory. */
+/*
+ * Fetch-and-op variables: one 64-byte block per variable, over node memory.
+ */
 #define SGI_BEDROCK_MD_FETCHOP_SIZE SGI_BEDROCK_MD_MEMORY_SIZE
 #define SGI_BEDROCK_MD_FETCHOP_BLOCK 64
 #define SGI_BEDROCK_MD_STORAGE 14
 /*
- * Doublewords whose backdoor-written ECC byte disagrees with their data.
- * Each is overlaid on the memory window so a read is checked; a data write
+ * Doublewords whose backdoor-written ECC byte disagrees with their data. Each
+ * is overlaid on the memory window so a read is checked; a data write
  * regenerates the ECC and lifts the overlay. The stock PROM's memory test
- * holds 259 at once on a two-bank node (docs/datasheets/bedrock-memory-
- * directory.md), so the bound leaves an eight-bank node room to spare.
- */
+ * holds 259 at once on a two-bank node, so the bound leaves an eight-bank
+ * node room to spare.
+*/
 #define SGI_BEDROCK_MD_ECC_INJECTIONS 4096
 #define SGI_BEDROCK_MD_PROTECTION_ENTRIES (1 << 21)
 #define SGI_BEDROCK_MD_DIRECTORY_COMPAT_ENTRIES 74
@@ -48,7 +51,7 @@ typedef struct SGIBedrockMDECCInjection {
  * window so a read of the line checks the word and a write rewrites it; the
  * overlay covers the whole 128-byte line. The stock PROM's directory walk
  * holds 45 at once on a two-bank node.
- */
+*/
 #define SGI_BEDROCK_MD_DIRECTORY_INJECTIONS 1024
 
 typedef struct SGIBedrockMDDirectoryInjection {
@@ -71,7 +74,7 @@ struct SGIBedrockMDState {
      * counter 0, which the stock PROM uses as a software lock word, are
      * handed to sgi_bedrock_perf_counter_access() for the second rendezvous's
      * fairness yield; see sgi-bedrock.h.
-     */
+    */
     SGIBedrockState *bedrock;
     MemoryRegion directory_mmio;
     MemoryRegion ecc_mmio;
@@ -102,9 +105,9 @@ struct SGIBedrockMDState {
     MemoryRegion *node_mr;
     /*
      * node_as's root: the node's memory from offset zero wherever node_mr
-     * itself is mapped, since an address space renders its root at the
-     * root's own address in its container.
-     */
+     * itself is mapped, since an address space renders its root at the root's
+     * own address in its container.
+    */
     MemoryRegion node_root;
     AddressSpace node_as;
     bool node_as_initialized;

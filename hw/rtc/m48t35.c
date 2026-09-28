@@ -3,8 +3,6 @@
  * M48T35-class Timekeeper: 32 KB of battery-backed byte-wide storage with a
  * real-time clock in its top eight bytes.
  *
- * Copyright (c) 2026 Origami contributors
- *
  * The storage below the clock must answer: SGI's driver probes which clock
  * part is fitted by writing a byte there and reading it back.
  */

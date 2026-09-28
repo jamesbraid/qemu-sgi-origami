@@ -3,8 +3,6 @@
  * DS1685/DS1687 real-time clock: the industry-standard PC clock's fourteen
  * registers plus a second, software-selected bank carrying everything the
  * older part did not have.
- *
- * Copyright (c) 2026 Origami contributors
  */
 
 #ifndef HW_RTC_DS1685_H

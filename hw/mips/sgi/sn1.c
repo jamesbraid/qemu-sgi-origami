@@ -1,10 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * The Origin 300 product class over the abstract family builder
- * (sn-machine.c). Everything specific to the Bedrock node -- the CPUs,
- * L1, XBridge, PROM policy and PCI population -- lives in sgi-sn1-node
- * (sn1-node.c); this file only registers the machine type and its
- * fixed facts (CPU part, default population, description).
+ * Origin 300 machine class: CPU part, default population, and description.
+ * sn1-node.c owns Bedrock CPUs, L1, XBridge, PROM policy, and PCI population.
  */
 
 #include "qemu/osdep.h"

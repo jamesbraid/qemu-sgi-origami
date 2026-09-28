@@ -38,8 +38,8 @@ static void sn0_flash_test_realize(DeviceState *dev, Error **errp)
     /*
      * The machine's node array is private to the builder (sn-machine.c);
      * every node it builds is a QOM child named "node<index>", so a test
-     * fixture outside that file reaches one by that name instead of a
-     * second accessor API that would exist for this one caller.
+     * fixture outside that file reaches one by that name instead of a second
+     * accessor API that would exist for this one caller.
      */
     node_obj = object_resolve_path_component(OBJECT(current_machine),
                                              node_name);

@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
-/* XBridge PCI head, implemented from the cleared XBridge contract. */
+/* SGI XBridge PCI head. */
 #include "qemu/osdep.h"
 #include "qemu/log.h"
 #include "qemu/bitops.h"
@@ -64,7 +64,9 @@ static int xbridge_map_pci_irq(PCIDevice *dev, int pin)
     unsigned slot = PCI_SLOT(dev->devfn);
 
     if (slot >= 8 || pin < 0 || pin >= PCI_NUM_PINS) {
-        /* Unreachable with the root slot mask; keep a safe accounting sink. */
+        /*
+         * Unreachable with the root slot mask; keep a safe accounting sink.
+         */
         return RAW_PCI_IRQS;
     }
     return slot * PCI_NUM_PINS + pin;
@@ -299,7 +301,7 @@ static void xbridge_error_packet(SGIXBridgeHeadState *s)
     }
 }
 
-/* Defined by the datasheet and deferred here: not an invalid address. */
+/* Deferred register ranges contain valid addresses. */
 static bool xbridge_deferred(hwaddr addr)
 {
     return (addr >= 0x300 && addr < 0x600) ||
@@ -309,8 +311,8 @@ static bool xbridge_deferred(hwaddr addr)
 
 /*
  * The register file's defined slots below 0x300: the Bridge's map with the
- * XBridge's additions. A slot outside them is an undefined address, which
- * the firmware's sanity diagnostic provokes on purpose.
+ * XBridge's additions. A slot outside them is an undefined address, which the
+ * firmware's sanity diagnostic provokes on purpose.
  */
 static bool xbridge_register_defined(unsigned off)
 {
@@ -351,12 +353,10 @@ static bool xbridge_register_defined(unsigned off)
 
 /*
  * SGI_XBRIDGE_NIC_PLACEHOLDER_PART/_SERIAL (sgi-xbridge.h): the identity
- * bytes a real IP45 IO-8 board presents are not observed by anything this
- * project holds (docs/datasheets/xbridge.md's "Origin 300 IO-8 population
- * supplement" records the gap). Family 0x0b matches the one board-identity
- * NIC family this project has confirmed (the Bridge's own part, OpenBSD's
- * family-0x0b read); carrying it to the IO-8 is inferred, not observed,
- * for this specific board.
+ * bytes a real IP45 IO-8 board presents have not been observed on any board.
+ * Family 0x0b matches the one board-identity NIC family confirmed for this
+ * chip family (the Bridge's own part, OpenBSD's family-0x0b read); carrying
+ * it to the IO-8 is inferred, not observed, for this specific board.
  */
 
 static const char xbridge_onewire_image[XBRIDGE_NIC_ROM_SIZE] = {
@@ -474,10 +474,10 @@ static const struct {
 
 /*
  * Placement follows the control register's swap bit for the space, not a
- * device window's. With the bit clear a narrow access lands mirrored
- * within the target's width, as a window places it without its swap bit.
- * That the 64-bit alias mirrors within eight bytes is the datasheet's
- * inference from the alias naming the target width.
+ * device window's. With the bit clear a narrow access lands mirrored within
+ * the target's width, as a window places it without its swap bit. That the
+ * 64-bit alias mirrors within eight bytes is an inference from the alias
+ * naming the target width.
  */
 static MemTxResult xbridge_range_rw(struct XBridgeRange *range, hwaddr addr,
                                     uint8_t *bytes, unsigned size, bool write)
@@ -587,16 +587,15 @@ static MemTxResult xbridge_pio(SGIXBridgeHeadState *s, hwaddr addr,
     base <<= 20;
     as = dev & (1U << 12) ? &s->pci_mem_as : &s->pci_io_as;
     /*
-     * Table 111 (docs/datasheets/xbridge.md): with the device's own swap bit
-     * (bit 13) clear, a narrow access is placed by offset exclusive-or --
-     * the value crosses unchanged. Set, it is a byte stream -- the value is
-     * mirrored and the offset is not touched. The two corrections are
-     * alternatives keyed on that one bit, never both at once; conflating
-     * them (as this function used to) nets to a mirrored value on the
-     * placement path a self-ordered device does not take, which is what a
-     * live BASEIO PROM crash traced back to (OHCI's HcControl read
-     * 0xc0000000 instead of 0xc0, so usb_ohci_bus_attach never saw
-     * UsbSuspend). The big-window path (xbridge_range_rw) already applies
+     * With the device's own swap bit (bit 13) clear, a narrow access is
+     * placed by offset exclusive-or; the value crosses unchanged. Set, it
+     * is a byte stream; the value is mirrored and the offset is not
+     * touched. The two corrections are alternatives keyed on that one bit,
+     * never both at once; conflating them (as this function used to) nets to
+     * a mirrored value on the placement path a self-ordered device does not
+     * take, which is what a live BASEIO PROM crash traced back to (OHCI's
+     * HcControl read 0xc0000000 instead of 0xc0, so usb_ohci_bus_attach never
+     * saw UsbSuspend). The big-window path (xbridge_range_rw) already applies
      * only the placement correction and already matches this rule.
      */
     needs_correction = xbridge_slot_needs_correction(s, slot);
@@ -638,9 +637,9 @@ static uint64_t xbridge_read(void *opaque, hwaddr addr, unsigned size)
             return xbridge_config_read(s, addr, size);
         }
         /*
-         * A doubleword is two configuration words, the lower address in
-         * the upper half: what the Origin 300's io8bt reads a header as
-         * and compares with the two word reads (docs/datasheets/xbridge.md).
+         * A doubleword is two configuration words, the lower address in the
+         * upper half: what the Origin 300's io8bt reads a header as and
+         * compares with the two word reads.
          */
         return xbridge_config_read(s, addr, 4) << 32 |
                xbridge_config_read(s, addr + 4, 4);
@@ -736,7 +735,9 @@ static void xbridge_write(void *opaque, hwaddr addr, uint64_t value,
     case 0x38:
         break;
     case 0x40:
-        /* Error command word: read-only; a write posts and changes nothing. */
+        /*
+         * Error command word: read-only; a write posts and changes nothing.
+         */
         qemu_log_mask(LOG_GUEST_ERROR,
                       "sgi-xbridge: write of 0x%" PRIx64 " to the read-only "
                       "error command word register\n", value);
@@ -884,9 +885,11 @@ static void xbridge_realize(DeviceState *dev, Error **errp)
                        " does not fit in 48 bits", s->onewire_serial);
             return;
         }
-        /* Composed once, like sgi-bridge.c's own part: an EPROM keeps its
+        /*
+         * Composed once, like sgi-bridge.c's own part: an EPROM keeps its
          * contents across a reset, and the bytes become the part's own
-         * migrated state once realized. */
+         * migrated state once realized.
+         */
         s->onewire_bus = onewire_create_bus(dev, "onewire");
         xbridge_onewire_build_rom(rom, s->board_part);
         part = qdev_new(TYPE_ONEWIRE_DS2505);
@@ -1100,9 +1103,10 @@ static const TypeInfo xbridge_type = {
 
 /*
  * The chip: the crossbar half at widget 0, the two heads at widgets 0xe and
- * 0xf, and the routing between them and the one host port. The machine
- * instantiates this and gets the two PCI root buses; it never composes the
- * halves itself.
+ * 0xf, and the routing between them and
+ * the one host port. The machine instantiates this and gets the two PCI root
+ * buses; it never composes the halves
+ * itself.
  */
 
 #define CHIP_WIDGET_SHIFT 44
@@ -1123,7 +1127,9 @@ struct SGIXBridgeState {
     MemoryRegion view[ARRAY_SIZE(chip_view_widget)];
     MemoryRegion *fabric;
     qemu_irq head_reset[2];
-    /* The chip's own lines, and the sinks that re-drive a child's onto them. */
+    /*
+     * The chip's own lines, and the sinks that re-drive a child's onto them.
+     */
     qemu_irq head_intx[2][SGI_XBRIDGE_HEAD_RAW_PCI_IRQS];
     qemu_irq head_intx_sink[2][SGI_XBRIDGE_HEAD_RAW_PCI_IRQS];
     qemu_irq warm_reset_out[SGI_XBRIDGE_EXTERNAL_PORTS];
@@ -1132,8 +1138,8 @@ struct SGIXBridgeState {
     uint8_t pci_speed[2];
     char *board_part[2];
     /*
-     * Prefixed to each head's bus name, so a second chip in one machine
-     * (a two-chassis Origin 300's second IO-8) names its buses apart.
+     * Prefixed to each head's bus name, so a second chip in one machine (a
+     * two-chassis Origin 300's second IO-8) names its buses apart.
      */
     char *bus_prefix;
     uint64_t onewire_serial[2];
@@ -1354,7 +1360,7 @@ static const VMStateDescription vmstate_chip = {
  * ---- The crosstalk port interface ----
  *
  * index is a widget number: 0 (the crossbar's own identity), 0xe or 0xf
- * (the heads). cpu_face() is sgi_xbridge_widget_view() itself -- where a
+ * (the heads). cpu_face() is sgi_xbridge_widget_view() itself, where a
  * peer's processor-addressed traffic at that widget position lands,
  * exactly what the machine linked by hand before. Nothing in this model
  * separately packet-addresses an XBridge widget (unlike a Crossbow, this

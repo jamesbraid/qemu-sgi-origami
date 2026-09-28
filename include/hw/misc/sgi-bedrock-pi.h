@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
+/* Bedrock processor-interface register and interrupt state. */
 #ifndef HW_MISC_SGI_BEDROCK_PI_H
 #define HW_MISC_SGI_BEDROCK_PI_H
 
@@ -28,11 +29,11 @@ struct SGIBedrockPIState {
 
     uint32_t interface;
     /*
-     * The vCPU index in each of this interface's two slots, -1 when the
-     * slot is empty. The CPU number register answers with the reading
-     * processor's own slot, so the interface has to be told which
-     * processor that is rather than deriving it from the population.
-     */
+     * The vCPU index in each of this interface's two slots, -1 when the slot
+     * is empty. The CPU number register answers with the reading processor's
+     * own slot, so the interface has to be told which processor that is
+     * rather than deriving it from the population.
+    */
     int32_t slot_cpu_index[SGI_BEDROCK_PI_PROCESSORS];
     uint32_t processor_count;
     uint32_t processor_mask;
@@ -45,7 +46,7 @@ struct SGIBedrockPIState {
     /*
      * Told when the cached-alias size changes, by a write or a load: the
      * node's address decode (sn1-node.c) sizes the alias window from it.
-     */
+    */
     NotifierList cached_alias_notifiers;
     uint8_t rq_timeout_max;
     uint32_t rq_timeout_scale;
@@ -84,13 +85,12 @@ struct SGIBedrockPIState {
     bool xb_error;
     bool uart_irq;
     /*
-     * The owning node, when this device is one of sgi-bedrock's children:
-     * a plain pointer, as the I/O interface's is. Real-time compare writes
-     * and real-time counter reads are reported to the presence join's
-     * partner park (sgi_bedrock_rt_compare_written(),
-     * sgi_bedrock_rt_counter_read()); see sgi-bedrock.h. NULL for a
-     * standalone device.
-     */
+     * The owning node, when this device is one of sgi-bedrock's children: a
+     * plain pointer, as the I/O interface's is. Real-time compare writes and
+     * real-time counter reads are reported to the presence join's partner
+     * wait (sgi_bedrock_rt_compare_written(), sgi_bedrock_rt_counter_read());
+     * see sgi-bedrock.h. NULL for a standalone device.
+    */
     struct SGIBedrockState *bedrock;
 };
 
@@ -100,9 +100,9 @@ void sgi_bedrock_pi_set_xb_error(SGIBedrockPIState *s, bool level);
 void sgi_bedrock_pi_set_uart_irq(SGIBedrockPIState *s, bool level);
 /*
  * Set one bit a Bedrock unit raises directly in a pending bank, which
- * software then clears through the pending-modify register: the memory
- * unit's correctable-error bit, bank 1 bit 61.
- */
+ * software then clears through the pending-modify register: the memory unit's
+ * correctable-error bit, bank 1 bit 61.
+*/
 void sgi_bedrock_pi_set_pending(SGIBedrockPIState *s, unsigned bank,
                                 unsigned bit);
 /*
@@ -110,14 +110,14 @@ void sgi_bedrock_pi_set_pending(SGIBedrockPIState *s, unsigned bank,
  * pending register's memory-uncorrectable bit, bit 24, the one bit of that
  * register software cannot set through the writable view and clears by
  * writing it back to the pending register.
- */
+*/
 void sgi_bedrock_pi_set_memory_uncorrectable(SGIBedrockPIState *s);
 void sgi_bedrock_pi_recompute(SGIBedrockPIState *s);
 /*
  * An I/O-issued write to the interrupt-pending-modify register from a
  * requester in @region. Applied like a processor write when I/O protect
  * permits the region; otherwise logged and dropped, returning false.
- */
+*/
 bool sgi_bedrock_pi_io_modify(SGIBedrockPIState *s, uint64_t value,
                               unsigned region);
 

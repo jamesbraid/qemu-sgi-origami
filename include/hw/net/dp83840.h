@@ -40,8 +40,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(DP83840State, DP83840)
  * transceiver, selected by the "dp83843" property instead of the default
  * DP83840A. Register 0x17 (DP83840_PCS_CONFIG's address, plain storage on
  * the DP83840A) is its Loopback Register, and register 0x18 (the DP83840A's
- * LBREMR) is its 10BTSCR, plain storage with no loopback function. See
- * docs/datasheets/dp83840.md.
+ * LBREMR) is its 10BTSCR, plain storage with no loopback function.
  */
 #define DP83843_PHYID2          0x5c10
 #define DP83843_LBR_10_ENDEC_LB 0x0010

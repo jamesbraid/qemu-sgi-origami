@@ -1,5 +1,9 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
-/* Bedrock local block: bounded register storage and atomic scratch aliases. */
+/*
+ * Bedrock local block: bounded register storage and atomic scratch aliases.
+ * Offsets and names follow Linux ia64 SN1
+ * include/asm-ia64/sn/sn1/hublb.h and hublb_next.h.
+*/
 #include "qemu/osdep.h"
 #include "hw/misc/sgi-bedrock-lb.h"
 #include "hw/misc/sgi-bedrock.h"
@@ -46,10 +50,11 @@
 #define LB_PASSWORD 0x53474972756c6573ULL
 /*
  * Address, write id and request id occupy the same positions in parameters
- * and status, so the reply echoes them in place. The type width is open (one
- * bit in the union, two in the companion header) and busy (bit 63) never reads
+ * and status, so the reply echoes them in
+ * place. The type width is open (one bit in the union, two in the companion
+ * header) and busy (bit 63) never reads
  * set: the operation completes at once, so no launch is ever seen in flight.
- */
+*/
 #define LB_VECTOR_ADDR         (0x1fffffULL << 3)
 #define LB_VECTOR_WRITE_ID     (0xffULL << 32)
 #define LB_VECTOR_REQUEST_ID   (0x7ffULL << 40)
@@ -83,13 +88,15 @@
 
 /*
  * MicroLAN control. Bit 0 is the level sampled off the wire and bit 1 is
- * completion; then the sample offset, the low-pulse duration and two phase
- * dividers, the upper of which reaches bit 33. The register is therefore not
- * a 32-bit one, and the model already takes only aligned eight-byte accesses
- * -- which also stops QEMU splitting one guest write into two wire slots.
- * Which transfer sizes the hardware accepts is not established: the single
- * wide access is a choice, not a finding about the silicon.
- */
+ * completion; then the sample offset, the
+ * low-pulse duration and two phase dividers, the upper of which reaches bit
+ * 33. The register is therefore not a
+ * 32-bit one, and the model already takes only aligned eight-byte accesses.
+ * This also stops QEMU splitting one
+ * guest write into two wire slots. Which transfer sizes the hardware accepts
+ * is not established: the single wide
+ * access is a choice, not a finding about the silicon.
+*/
 #define LB_MICROLAN_RXDATA       (1ULL << 0)
 #define LB_MICROLAN_DONE         (1ULL << 1)
 #define LB_MICROLAN_SAMPLE_SHIFT 2
@@ -105,11 +112,13 @@
 
 /*
  * Slot duration, chosen not derived. No public source turns this register's
- * pulse and divider encodings into time or gives a completion latency, so
- * the Hub master's one microsecond is reused rather than a second arbitrary
+ * pulse and divider encodings into time
+ * or gives a completion latency, so the Hub master's one microsecond is
+ * reused rather than a second arbitrary
  * number invented. What the delay has to be is positive, so that a slot in
- * flight is a state a register test can see.
- */
+ * flight is a state a register test can
+ * see.
+*/
 #define LB_MICROLAN_SLOT_NS 1000
 
 static uint64_t lb_identity(SGIBedrockLBState *s)
@@ -138,13 +147,14 @@ static void lb_node_changed(SGIBedrockLBState *s)
 }
 
 /*
- * The stock PROM assigns the node number by storing the whole revision word
- * (the local-block datasheet, "Node number assignment"): zero at hub
- * initialisation, then the word it read with bits 39:32 and 47:46 replaced.
- * It addresses itself afterwards by the number it reads back, so the two
- * fields latch; manufacturer, part and revision stay the device's identity,
- * which the early store of zero must not clear.
- */
+ * The stock PROM assigns the node number by storing the whole revision word:
+ * zero at hub initialisation, then the
+ * word it read with bits 39:32 and 47:46 replaced. It addresses itself
+ * afterwards by the number it reads back, so
+ * the two fields latch; manufacturer, part and revision stay the device's
+ * identity, which the early store of zero
+ * must not clear.
+*/
 static void lb_revision_write(SGIBedrockLBState *s, uint64_t value)
 {
     unsigned region = extract64(value, LB_REVISION_REGION_SHIFT,
@@ -206,9 +216,10 @@ static void lb_microlan_write(SGIBedrockLBState *s, uint64_t value)
     if (timer_pending(s->microlan_timer)) {
         /*
          * Unpublished: no source says whether hardware restarts the slot,
-         * queues the write or drops it, and picking one silently would
-         * settle a transaction semantics this model has no evidence for.
-         */
+         * queues the write or drops it, and picking one
+         * silently would settle a transaction semantics this model has no
+         * evidence for.
+        */
         qemu_log_mask(LOG_UNIMP, "sgi-bedrock-lb: MicroLAN write of 0x%"
                       PRIx64 " while a slot is pending is not modelled; no "
                       "second slot is started and the write is discarded\n",
@@ -217,11 +228,12 @@ static void lb_microlan_write(SGIBedrockLBState *s, uint64_t value)
     }
 
     /*
-     * Starting a slot clears completion; the deadline below publishes it.
-     * The bus answers inside this write, but reporting it here would let a
-     * guest read a finished slot it never waited for. Start, completion and
-     * presence handling are the model's choices, not Bedrock's contract.
-     */
+     * Starting a slot clears completion; the deadline below publishes it. The
+     * bus answers inside this write, but
+     * reporting it here would let a guest read a finished slot it never
+     * waited for. Start, completion and presence
+     * handling are the model's choices, not Bedrock's contract.
+    */
     s->microlan = value & LB_MICROLAN_WRITABLE;
     s->microlan_level = sgi_onewire_slot(
         s->microlan_bus,
@@ -233,16 +245,17 @@ static void lb_microlan_write(SGIBedrockLBState *s, uint64_t value)
 
 /*
  * A vector launch. The engine reads or writes a hub register at the end of an
- * explicit route, one port number per hop from the least significant nybble
- * (the local-block datasheet, "Vector engine on the boot path"). Route 0 is
- * the device at the other end of this node's cable; the owning Bedrock sends
- * the request there and the peer performs it on its own registers.
- *
- * What hardware answers with no link, or for a nonzero route on a direct
- * pair, is unknown. Such a launch latches no reply, so the status stays not
- * valid and the firmware's own poll times out, and the launch is logged. The
- * return route and source are not established either and read 0.
- */
+ * explicit route, one port number per
+ * hop from the least significant nybble. Route 0 is the device at the other
+ * end of this node's cable; the owning
+ * Bedrock sends the request there and the peer performs it on its own
+ * registers. What hardware answers with no
+ * link, or for a nonzero route on a direct pair, is unknown. Such a launch
+ * latches no reply, so the status stays
+ * not valid and the firmware's own poll times out, and the launch is logged.
+ * The return route and source are not
+ * established either and read 0.
+*/
 static void lb_vector_launch(SGIBedrockLBState *s)
 {
     uint64_t reply = s->vector_params & LB_VECTOR_ECHO;
@@ -255,10 +268,8 @@ static void lb_vector_launch(SGIBedrockLBState *s)
     };
     SGINetPacketResult result = SGI_NET_PACKET_NONE;
 
-    /*
-     * Software clears the status before launching; a launch over an unread
-     * reply is an overrun, not a reload.
-     */
+    /* Software clears the status before launching; a launch over an unread
+     * reply is an overrun, not a reload. */
     if (s->vector_status & LB_VECTOR_VALID) {
         s->vector_status |= LB_VECTOR_OVERRUN;
         return;
@@ -286,9 +297,10 @@ static void lb_vector_launch(SGIBedrockLBState *s)
         }
         s->vector_return = 0;
         /*
-         * Bits 2:0 carry the request type on success: the stock PROM's
-         * write primitive accepts only 1 there, its read primitive only 0.
-         */
+         * Bits 2:0 carry the request type on success: the stock PROM's write
+         * primitive accepts only 1 there, its read
+         * primitive only 0.
+        */
         s->vector_status = reply | LB_VECTOR_VALID |
                            (s->vector_params & LB_VECTOR_TYPE_WRITE);
         return;
@@ -315,12 +327,13 @@ static uint64_t lb_read(void *opaque, hwaddr offset, unsigned size)
         s->scratch[index] = 1;
         /*
          * Scratch 3's twin is the node's hub lock; the owning node arbitrates
-         * the second multi-threaded-TCG rendezvous there
-         * (sgi_bedrock_scratch3_acquire, docs/known-issues.md). The value is
-         * already produced; the hold only decides when the reader runs next.
-         * A standalone device under a register-contract qtest has no owning
-         * node (s->bedrock is only set by bedrock_realize()) and never holds.
-         */
+         * the second multi-threaded-TCG rendezvous
+         * there (sgi_bedrock_scratch3_acquire). The value is already
+         * produced; the hold only decides when the reader runs
+         * next. A standalone device under a register-contract qtest has no
+         * owning node (s->bedrock is only set by
+         * bedrock_realize()) and never holds.
+        */
         trace_sgi_bedrock_lb_scratch_twin_read(
             current_cpu ? current_cpu->cpu_index : -1, index, old);
         if (index == 3 && s->bedrock) {
@@ -372,8 +385,9 @@ static uint64_t lb_read(void *opaque, hwaddr offset, unsigned size)
     case LB_VECTOR_STATUS_CLEAR: {
         /*
          * The stock PROM reads this before every launch and never writes it,
-         * then fails the operation if status is still valid: the read clears.
-         */
+         * then fails the operation if status is still
+         * valid: the read clears.
+        */
         uint64_t status = s->vector_status;
 
         s->vector_status = 0;
@@ -403,14 +417,15 @@ static void lb_write(void *opaque, hwaddr offset, uint64_t value,
         unsigned index = (offset - LB_SCRATCH_BASE) / 8;
 
         /*
-         * Scratch 1 is the stock PROM's inter-processor rendezvous mailbox
-         * (docs/known-issues.md, docs/datasheets/bedrock-local-block.md);
-         * the owning node arbitrates a multi-threaded-TCG hold there. A
-         * standalone device under a register-contract qtest has no owning
-         * node (s->bedrock is only set by sgi-bedrock.c's bedrock_realize())
-         * and stores the value directly, as before.
-         */
-        /* The value as issued: before the hold below, and scratch 3's mask. */
+         * Scratch 1 is the stock PROM's inter-processor rendezvous mailbox;
+         * the owning node arbitrates a multi-threaded-TCG
+         * hold there. A standalone device under a register-contract qtest has
+         * no owning node (s->bedrock is only set by
+         * sgi-bedrock.c's bedrock_realize()) and stores the value directly,
+         * as before.
+        */
+        /* The value as issued: before the hold below, and scratch 3's
+         * mask. */
         trace_sgi_bedrock_lb_scratch_write(
             current_cpu ? current_cpu->cpu_index : -1, index, value);
         if (index == 1 && s->bedrock) {
@@ -420,9 +435,10 @@ static void lb_write(void *opaque, hwaddr offset, uint64_t value,
         s->scratch[index] = index < 3 ? value : value & 1;
         /*
          * Clearing scratch 3 releases the node's hub lock; wake any peer this
-         * node's own processor parked on it (sgi_bedrock_scratch3_released,
-         * docs/known-issues.md). A standalone device has no owning node.
-         */
+         * node's own processor parked on it
+         * (sgi_bedrock_scratch3_released). A standalone device has no owning
+         * node.
+        */
         if (index == 3 && s->scratch[3] == 0 && s->bedrock) {
             sgi_bedrock_scratch3_released(s->bedrock);
         }
@@ -518,9 +534,9 @@ static void lb_write(void *opaque, hwaddr offset, uint64_t value,
     case LB_VECTOR_STATUS:
         /*
          * The stock PROM zeroes status at hub initialisation. What any write
-         * does on hardware is unknown; zero clears, and nothing else may
-         * fabricate a reply.
-         */
+         * does on hardware is unknown; zero clears, and
+         * nothing else may fabricate a reply.
+        */
         if (value) {
             qemu_log_mask(LOG_UNIMP, "sgi-bedrock-lb: nonzero write 0x%"
                           PRIx64 " to the vector status is ignored\n", value);
@@ -560,18 +576,20 @@ static void lb_reset_enter(Object *obj, ResetType type)
     s->io_permission = UINT64_MAX;
     /*
      * The node number's hardware reset value is unknown; the realized
-     * properties stand in for it, and the firmware rewrites both fields.
-     */
+     * properties stand in for it, and the firmware
+     * rewrites both fields.
+    */
     s->programmed_node = s->node_number;
     s->programmed_region = s->region_size;
     s->region_present = 0;
     s->nodes_absent = 0;
     /*
      * Zero is the model's value: no public source states this register's
-     * power-on contents, so nothing here is a hardware reset state. A slot
-     * armed before the reset must not complete after it, and the endpoint's
-     * own protocol phase is reset by the endpoint, as a child of this bus.
-     */
+     * power-on contents, so nothing here is a
+     * hardware reset state. A slot armed before the reset must not complete
+     * after it, and the endpoint's own protocol
+     * phase is reset by the endpoint, as a child of this bus.
+    */
     s->microlan = 0;
     timer_del(s->microlan_timer);
     s->microlan_level = true;
@@ -580,14 +598,12 @@ static void lb_reset_enter(Object *obj, ResetType type)
     s->error_data = 0;
     s->debug_select = 0;
     /*
-     * Zero is the model's value here too: no source we may read states
-     * either register's power-on contents. The local block's maximum-count
-     * field feeds the PROM's own real-time conversion, so a wrong reset
-     * value here does not misbehave loudly -- it just makes every duration
-     * the firmware derives from the counter come out short. See the local
-     * block datasheet for what is and is not established about these two
-     * registers.
-     */
+     * Zero is the model's value; neither register has a published power-on
+     * value. The local block's maximum-count field feeds the PROM's own
+     * real-time conversion, so a wrong reset value here does not
+     * misbehave loudly; it just makes every duration the firmware derives
+     * from the counter come out short.
+    */
     s->rtc_local = 0;
     s->rtc_filter = 0;
     s->scratch[0] = 0;
@@ -665,13 +681,14 @@ static void lb_realize(DeviceState *dev, Error **errp)
     s->microlan_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
                                      lb_microlan_slot_done, s);
     /*
-     * The MicroLAN wire, with nothing on it. Which identity part IP45
-     * carries is not established -- its family, its commands and its
-     * contents are all open -- so hanging one here would publish an
-     * invented endpoint. The bus exists so a cleared endpoint can be added
-     * later without the controller's contract moving; until then a slot
-     * reports the bare wire and a reset finds no presence.
-     */
+     * The MicroLAN wire, with nothing on it. Which identity part IP45 carries
+     * is not established: its family, its
+     * commands and its contents are all open. Adding one here would
+     * publish an invented endpoint. The bus exists
+     * so a cleared endpoint can be added later without the controller's
+     * contract moving; until then a slot reports the
+     * bare wire and a reset finds no presence.
+    */
     s->microlan_bus = onewire_create_bus(dev, "microlan");
 
     if (s->hub_registers) {

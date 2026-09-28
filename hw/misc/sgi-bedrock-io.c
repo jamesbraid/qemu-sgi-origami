@@ -1,4 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
+/* Bedrock I/O interface: Crosstalk inbound access, widget PIO and block
+ * transfer engines. */
 #include "qemu/osdep.h"
 #include "hw/misc/sgi-bedrock-io.h"
 #include "hw/misc/sgi-bedrock.h"
@@ -49,12 +51,12 @@
 #define II_PASSWORD UINT64_C(0x53474972756c6573)
 
 /*
- * Crosstalk bit 47 selects register space over memory.  The address map
- * puts the target node in bits 46:39 and the Bedrock's own registers in
- * small window 1 of the node's I/O space in the checked remote form (bit
- * 23), 8 MB wide, with the second processor interface 0x200000 above the
- * first.
- */
+ * Crosstalk bit 47 selects register space over memory. The address map puts
+ * the target node in bits 46:39 and the
+ * Bedrock's own registers in small window 1 of the node's I/O space in the
+ * checked remote form (bit 23), 8 MB wide,
+ * with the second processor interface 0x200000 above the first.
+*/
 #define II_XIO_REGISTER   (UINT64_C(1) << 47)
 #define II_XIO_NODE_SHIFT 39
 #define II_XIO_NODE_WIDTH 8
@@ -109,10 +111,11 @@ static SGIBedrockIOBTE *ii_bte(SGIBedrockIOState *s, hwaddr *offset)
 
 /*
  * The node number crosstalk register packets are decoded against. Composed
- * into a Bedrock it is the one the local block's revision word carries, which
- * the firmware writes when it assigns the node (the local-block datasheet,
- * "Node number assignment"); a standalone unit keeps its property.
- */
+ * into a Bedrock it is the one the local
+ * block's revision word carries, which the firmware writes when it assigns
+ * the node; a standalone unit keeps its
+ * property.
+*/
 static unsigned ii_node_number(SGIBedrockIOState *s)
 {
     return s->bedrock ? sgi_bedrock_node_number(s->bedrock) : s->node_number;
@@ -144,13 +147,14 @@ static SGIBedrockIOState *ii_serving(SGIBedrockIOState *s, unsigned number)
 
 /*
  * The engine's interrupt-address register names where its completion
- * interrupt lands: bit 0 selects the processor interface, bits 8:1 the node
- * and bits 22:16 the level.  The hub delivers it by setting that level in the
- * interface's interrupt-pending register through the node's register window,
- * offset 0x90 for interface 0 and 0x200090 for interface 1 -- the same modify
- * register an external widget's interrupt packet reaches.  A modify write
- * carries the level in bits 6:0 and sets it with bit 8.
- */
+ * interrupt lands: bit 0 selects the processor
+ * interface, bits 8:1 the node and bits 22:16 the level. The hub delivers it
+ * by setting that level in the interface's interrupt-pending register through
+ * the node's register window, offset 0x90 for interface 0 and
+ * 0x200090 for interface 1; the same modify register an external widget's
+ * interrupt packet reaches. A modify
+ * write carries the level in bits 6:0 and sets it with bit 8.
+*/
 static void ii_bte_interrupt(SGIBedrockIOState *s, SGIBedrockIOBTE *bte)
 {
     unsigned node = extract64(bte->interrupt, 1, 8);
@@ -178,19 +182,20 @@ static void ii_bte_interrupt(SGIBedrockIOState *s, SGIBedrockIOBTE *bte)
 }
 
 /*
- * A finished engine reports completion the way its launch selected.  With the
- * notify control bit it writes the final length-status word to the
- * notification line; without it it raises the completion interrupt the
- * interrupt-address register names.
- *
- * The interrupt lands in the node's own register window, which reaches this
- * I/O interface again.  Every launch finishes inside the launching MMIO write
- * (ii_bte_run), and a self-directed completion writes back into this device;
- * either way QEMU's re-entrancy guard would drop the write.  Deliver the
- * interrupt from a bottom half that runs once the launching access has
- * returned.  The notification-line write targets ordinary memory and stays
- * synchronous.
- */
+ * A finished engine reports completion the way its launch selected. With the
+ * notify control bit it writes the final
+ * length-status word to the notification line; without it it raises the
+ * completion interrupt the interrupt-address
+ * register names. The interrupt lands in the node's own register window,
+ * which reaches this I/O interface again.
+ * Every launch finishes inside the launching MMIO write (ii_bte_run), and a
+ * self-directed completion writes back
+ * into this device; either way QEMU's re-entrancy guard would drop the write.
+ * Deliver the interrupt from a bottom
+ * half that runs once the launching access has returned. The
+ * notification-line write targets ordinary memory and
+ * stays synchronous.
+*/
 static void ii_bte_signal(SGIBedrockIOState *s, SGIBedrockIOBTE *bte)
 {
     uint64_t value;
@@ -219,18 +224,20 @@ static void ii_bte_signal_bh(void *opaque)
 /*
  * A started engine moves its whole transfer, one 128-byte line at a time,
  * before the write that starts it returns.
- *
  * The PROM's hub BTE check starts both engines on equal copies, waits for
- * engine 0's completion interrupt alone, then compares both copies.  It
- * relies on engine 1 finishing close behind engine 0, which on hardware is
- * inferred from the two starting stores issuing back to back, not measured.
- * An engine paced by a timer instead runs on the host's clock, in the main
- * loop, and the processor can fall arbitrarily far behind it: the store that
- * starts engine 1 has landed milliseconds after engine 0 started, and the
- * check then compared engine 1's copy before it was done.  Finishing the data
- * inside the starting access means no register read or completion signal can
- * show a transfer in progress.
- */
+ * engine 0's completion interrupt alone,
+ * then compares both copies. It relies on engine 1 finishing close behind
+ * engine 0, which on hardware is inferred
+ * from the two starting stores issuing back to back, not measured. An engine
+ * paced by a timer instead runs on the
+ * host's clock, in the main loop, and the processor can fall arbitrarily far
+ * behind it: the store that starts
+ * engine 1 has landed milliseconds after engine 0 started, and the check then
+ * compared engine 1's copy before it
+ * was done. Finishing the data inside the starting access means no register
+ * read or completion signal can show a
+ * transfer in progress.
+*/
 static void ii_bte_run(SGIBedrockIOState *s, SGIBedrockIOBTE *bte)
 {
     uint8_t buffer[128] = { 0 };
@@ -282,10 +289,10 @@ static uint64_t ii_read(void *opaque, hwaddr offset, unsigned size)
         case 0x10: return bte->destination;
         case 0x18:
             /*
-             * Reading control terminates a transfer in progress.  None
-             * outlives its starting write here, so this only drops the busy
-             * bit of an engine armed but never started.
-             */
+             * Reading control terminates a transfer in progress. None
+             * outlives its starting write here, so this only drops the
+             * busy bit of an engine armed but never started.
+            */
             bte->status &= ~II_BTE_BUSY;
             return bte->control;
         case 0x20: return bte->notification;
@@ -453,12 +460,12 @@ static void ii_write(void *opaque, hwaddr offset, uint64_t value, unsigned size)
                                                        : -1,
                                            scratch, value);
         /*
-         * Scratch 0 is where the stock PROM publishes an interface's
-         * fitted processors; the owning node joins its processors on that
-         * publication under multi-threaded TCG (sgi_bedrock_presence_
-         * published, docs/known-issues.md). The value is already stored. A
-         * standalone device has no owning node.
-         */
+         * Scratch 0 is where the stock PROM publishes an interface's fitted
+         * processors; the owning node joins its
+         * processors on that publication under multi-threaded TCG
+         * (sgi_bedrock_presence_published()). The value is already
+         * stored. A standalone device has no owning node.
+        */
         if (scratch == 0 && s->bedrock) {
             sgi_bedrock_presence_published(s->bedrock);
         }
@@ -670,7 +677,8 @@ void sgi_bedrock_io_disable_device(SGIBedrockIOState *s, unsigned widget,
     }
 }
 
-/* With no source ID on the shared window, a denied candidate must block it. */
+/* With no source ID on the shared window, a denied candidate must block
+ * it. */
 static bool ii_inbound_pick_widget(SGIBedrockIOState *s, unsigned *widget)
 {
     bool found = false;
@@ -800,8 +808,9 @@ static const MemoryRegionOps ii_inbound_ops = {
 
 /*
  * A composing parent may hand over its own DMA address space instead of
- * linking a region.  Only before realize: engines may be mid-transfer after.
- */
+ * linking a region. Only before realize:
+ * engines may be mid-transfer after.
+*/
 void sgi_bedrock_io_set_dma_as(SGIBedrockIOState *s, AddressSpace *as)
 {
     assert(!DEVICE(s)->realized);
@@ -910,11 +919,12 @@ static void ii_init(Object *obj)
     memory_region_init_io(&s->pio, obj, &ii_pio_ops, s,
                           TYPE_SGI_BEDROCK_IO "-pio", SGI_BEDROCK_IO_PIO_SIZE);
     /*
-     * A widget reached through this window may answer synchronously, with
-     * DMA or an interrupt packet that returns through our own inbound
-     * region.  The re-entrancy guard is per device, so an outer PIO
-     * callback would block that second dispatch.  Inbound stays guarded.
-     */
+     * A widget reached through this window may answer synchronously, with DMA
+     * or an interrupt packet that returns
+     * through our own inbound region. The re-entrancy guard is per device, so
+     * an outer PIO callback would block that
+     * second dispatch. Inbound stays guarded.
+    */
     s->pio.disable_reentrancy_guard = true;
     memory_region_init_io(&s->inbound, obj, &ii_inbound_ops, s,
                           TYPE_SGI_BEDROCK_IO "-inbound",
@@ -953,11 +963,12 @@ static const Property ii_properties[] = {
     DEFINE_PROP_UINT8("node-number", SGIBedrockIOState, node_number, 0),
     DEFINE_PROP_UINT8("revision", SGIBedrockIOState, revision, 1),
     /*
-     * Default to the two widget numbers an XBridge presents to its host
-     * port (0xe and 0xf: hw/pci-host/sgi-xbridge.c CHIP_HEAD_E/F, matching
-     * every populated SN1 xbridge_widgets list to date).  Nothing in a
-     * Bedrock+XBridge machine is ever wired to widget 8.
-     */
+     * Default to the two widget numbers an XBridge presents to its host port
+     * (0xe and 0xf: hw/pci-host/sgi-xbridge.c
+     * CHIP_HEAD_E/F, matching every populated SN1 xbridge_widgets list to
+     * date). Nothing in a Bedrock+XBridge machine
+     * is ever wired to widget 8.
+    */
     DEFINE_PROP_UINT16("inbound-widget-mask", SGIBedrockIOState,
                        inbound_widget_mask, (1U << 0xe) | (1U << 0xf)),
     DEFINE_PROP_UINT8("inbound-device", SGIBedrockIOState, inbound_device, 0),
@@ -1048,15 +1059,15 @@ static void ii_realize(DeviceState *dev, Error **errp)
 
 /*
  * ---- The crosstalk port interface ----
- *
- * Nothing in this model addresses the Bedrock as a widget from the
- * crosstalk side -- the host is the originator of widget-relative
- * traffic, never its destination here -- so cpu_face() has nothing to
- * answer with. packet_face() is the shared inbound window
- * (sgi_bedrock_io_inbound_rw()'s own decode): what an XBridge's
- * interrupt and register-modify packets, addressed by crosstalk offset
- * rather than by widget position, reach to land on this node.
- */
+ * Nothing in this model addresses the Bedrock as a widget from the crosstalk
+ * side; the host is the originator of widget-relative traffic, never its
+ * destination here, so cpu_face() has
+ * nothing to answer with. packet_face() is the shared inbound window
+ * (sgi_bedrock_io_inbound_rw()'s own decode):
+ * what an XBridge's interrupt and register-modify packets, addressed by
+ * crosstalk offset rather than by widget
+ * position, reach to land on this node.
+*/
 
 static const char *ii_xtalk_port_describe(Object *port, unsigned int index)
 {

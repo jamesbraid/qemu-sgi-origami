@@ -1,9 +1,6 @@
 /*
- * SGI Router register contract.
- *
- * The Router is reached through vector operations, not a processor MMIO
- * window.  Exercise the device's vector target directly here; the routed
- * fabric qtest will cover the Hub-to-Router transport once that adapter exists.
+ * SGI Router register tests use its vector target, not processor MMIO. A
+ * fabric qtest can cover Hub-to-Router transport when that adapter exists.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
@@ -787,7 +784,7 @@ static void test_next_turn_consumption(Fixture *f, gconstpointer unused)
     unsigned int turn;
 
     write_reg(f, 1, RR_PROTECTION_CONFIG, UINT64_C(1) << 12);
-    /* Reset contents do not become a programmed route, even with turn zero. */
+    /* Reset contents are not a programmed route, even with turn zero. */
     g_assert_false(sgi_router_route(f->router, 5, 0, 4,
                                     &exit_port, &next_turn));
     for (turn = 0; turn < 16; turn++) {
@@ -1355,7 +1352,7 @@ static void corrupt_nic_field(Fixture *f, const char *name, uint64_t value)
 {
     const VMStateDescription *vmsd = DEVICE_GET_CLASS(f->dev)->vmsd;
 
-    /* Serialize malicious values through the actual migration field layout. */
+    /* Serialize malicious values through the migration field layout. */
     for (const VMStateField *field = vmsd->fields; field->name; field++) {
         void *address = (char *)f->router + field->offset;
 

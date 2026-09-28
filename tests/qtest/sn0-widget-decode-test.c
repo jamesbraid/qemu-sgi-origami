@@ -1,12 +1,8 @@
 /*
- * The I/O bridge answers at every non-zero crosstalk widget, not only at the
- * widget SGI's firmware picks for it.
- *
- * With no crossbar every widget address reaches the bridge, and the IRIX
- * 6.5.30 miniroot relies on it (it names widget 2 at a bridge window).
- * Widgets 2-7 and 9-15 answer as one chip; widget 0 keeps its alias;
- * widget 1 stays the Hub.
- *
+ * With no crossbar, the I/O Bridge answers widgets 2-7 and 9-15 as one chip;
+ * widget 0 keeps its alias and widget 1 remains the Hub. The IRIX 6.5.30
+ * miniroot accesses a Bridge window through widget 2, not only SGI's usual
+ * Bridge widget.
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
@@ -56,8 +52,8 @@
 #define CFG0(dev, fn)          (BRIDGE_BASE + BRIDGE_CFG0 + \
                                 (dev) * 0x1000 + (fn) * 0x100)
 #define CARD_MMIO(slot)        (0x10000000u + (slot) * 0x1000000u)
-#define ORDER_SLOT             4          /* a free PCI slot for the scratch card */
-#define ORDER_WINDOW           0x800000   /* the device-4 window's widget offset */
+#define ORDER_SLOT             4          /* free PCI scratch card slot */
+#define ORDER_WINDOW           0x800000   /* device-4 widget window offset */
 /* lsi53c895a SCRATCHB/SCRATCHC: adjacent, side-effect-free, spannable. */
 #define LSI_SCRATCHB           0x5c
 
@@ -86,8 +82,8 @@
 #define XBOW_PART           0
 #define XBOW_MANUFACTURER   0
 
-/* The widgets the widen adds: every non-zero one but the Hub's and the
- * bridge's own. */
+/*
+ */
 static const unsigned int new_widgets[] = {
     2, 3, 4, 5, 6, 7, 9, 10, 11, 12, 13, 14, 15,
 };
@@ -149,11 +145,11 @@ static void test_new_widgets_are_one_bridge(const void *data)
 }
 
 /*
- * An eight-byte load through net-new widget 0xa; the marker lands only if
- * it returned. Widget 2 at this offset is the PROM's deliberate PI error
- * probe, tested separately. Runs from the reset vector now rather than a
- * directly loaded kernel, so it sets kernel mode (with KX, for the xkphys
- * forms below) itself instead of inheriting it from a firmware handoff.
+ * An eight-byte load through net-new widget 0xa; the marker lands only if it
+ * returned. Widget 2 at this offset is the PROM's deliberate PI error probe,
+ * tested separately. Runs from the reset vector now rather than a directly
+ * loaded kernel, so it sets kernel mode (with KX, for the xkphys forms below)
+ * itself instead of inheriting it from a firmware handoff.
  */
 static void build_doubleword_load_image(SN0Image *p)
 {
@@ -161,8 +157,8 @@ static void build_doubleword_load_image(SN0Image *p)
     sn0_emit_mtc0(p, SN0_R_T0, SN0_CP0_STATUS);
 
     /*
-     * widget 0xa + 0x400208, the same xkphys form as sn0-bridge-test.c's
-     * PROM PI probe: an 8-byte load, not a qtest chunked read.
+     * widget 0xa + 0x400208, the same xkphys form as sn0-bridge-test.c's PROM
+     * PI probe: an 8-byte load, not a qtest chunked read.
      */
     sn0_emit_li64(p, SN0_R_T0, UINT64_C(0x9200000000000000) | 0x0a400208);
     sn0_emit_i(p, SN0_OPC_LD, SN0_R_T0, SN0_R_T2, 0);
@@ -211,8 +207,8 @@ static void test_doubleword_split_order(const void *data)
     uint64_t at2 = SMALL_WINDOW(2) + ORDER_WINDOW + LSI_SCRATCHB;
 
     /*
-     * The split order alone: high word at the lower offset. Reversed, the
-     * two half reads below would swap.
+     * The split order alone: high word at the lower offset. Reversed, the two
+     * half reads below would swap.
      */
     qtest_writel(qts, CFG0(ORDER_SLOT, 0) + PCI_BAR1, CARD_MMIO(ORDER_SLOT));
     qtest_writel(qts, CFG0(ORDER_SLOT, 0) + PCI_COMMAND, PCI_COMMAND_MEMORY);
@@ -231,7 +227,7 @@ static void test_widget_1_stays_the_hub(const void *data)
 {
     QTestState *qts = qtest_init("-M origin200");
 
-    /* Widget 1 must stay the Hub -- a real read, not the zero of absence. */
+    /* Widget 1 must stay the Hub, a real read, not the zero of absence. */
     g_assert_cmphex(ID_PART(widget_identity(qts, HUB_WIDGET)), !=, BRIDGE_PART);
 
     qtest_quit(qts);
@@ -266,8 +262,8 @@ static void test_it_is_where_the_firmware_put_it(const void *data)
     QTestState *qts = qtest_init("-M origin200");
 
     /*
-     * Pins the constant only: the redirection writes the reset value, so
-     * no register assertion can tell that firmware wrote.
+     * Pins the constant only: the redirection writes the reset value, so no
+     * register assertion can tell that firmware wrote.
      */
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + IO_BWIN_ENTRY(WIDGET0_WINDOW)),
                     ==, FIRMWARE_ENTRY);
@@ -298,20 +294,24 @@ static void test_both_windows_reach_one_device(const void *data)
 
     g_assert_cmphex(through_small, ==, through_big);
 
-    /* And it is the identity, rather than the two agreeing on a wrong value. */
+    /*
+     * And it is the identity, rather than the two agreeing on a wrong value.
+     */
     g_assert_cmphex(ID_PART(through_small), ==, BRIDGE_PART);
     g_assert_cmphex(ID_MANUFACTURER(through_small), ==, BRIDGE_MANUFACTURER);
 
     /*
-     * The negative: agreement is also what one over-broad mapping gives,
-     * so retarget the entry and require the answer to change.
+     * The negative: agreement is also what one over-broad mapping gives, so
+     * retarget the entry and require the answer to change.
      */
     qtest_writeq(qts, HUB_LOCAL + IO_BWIN_ENTRY(WIDGET0_WINDOW),
                  IO_BWIN_WIDGET(HUB_WIDGET));
     g_assert_cmphex(qtest_readl(qts, WIDGET0 + WIDGET_IDENTIFICATION + REG_DATA),
                     !=, through_big);
 
-    /* The small window is unaffected: it does not go through a translation. */
+    /*
+     * The small window is unaffected: it does not go through a translation.
+     */
     g_assert_cmphex(qtest_readl(qts, SPACE_XTALK + WIDGET_IDENTIFICATION +
                                 REG_DATA), ==, through_small);
 

@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
-/* The published module wiring and reviewed programmed-route contract. */
+/* The published module wiring and programmed-route contract. */
 
 #include "qemu/osdep.h"
 #include "qemu/bswap.h"
@@ -81,7 +81,9 @@
 #define CROSSBOW0 "/machine/crossbow0"
 #define CROSSBOW0_PRESENT 0x0700
 
-/* From sn0-origin2000-outgoing-hub-io-test.c: the outgoing big-window face. */
+/*
+ * From sn0-origin2000-outgoing-hub-io-test.c: the outgoing big-window face.
+ */
 #define ORIGIN2000_MACHINE "-M origin2000 -smp 8"
 #define IO_BWIN_TABLE 0x400160
 #define IO_BWIN_STRIDE 8
@@ -94,15 +96,17 @@
 
 /*
  * Bridge's own plain register block is deliberately four-byte-only
- * (hw/pci-host/sgi-bridge.c's sgi_bridge_reg_ops); unpopulated SSRAM is
- * the genuinely byte-addressable region on the same Bridge, so it is
- * what proves the outgoing face forwards every advertised width instead
- * of narrowing to what one particular target happens to accept.
+ * (hw/pci-host/sgi-bridge.c's sgi_bridge_reg_ops); unpopulated SSRAM is the
+ * genuinely byte-addressable region on the same Bridge, so it is what proves
+ * the outgoing face forwards every advertised width instead of narrowing to
+ * what one particular target happens to accept.
  */
 #define BRIDGE_SSRAM_BASE 0x080000
 
-/* A plain storage register with a full writable mask and no read/write
- * side effect, safe for a test to repurpose as a round-trip scratch. */
+/*
+ * A plain storage register with a full writable mask and no read/write side
+ * effect, safe for a test to repurpose as a round-trip scratch.
+ */
 #define BRIDGE_TEST_PIN_CONTROL 0x070
 #define SCRATCH_PATTERN 0x0000c0deU
 
@@ -696,7 +700,9 @@ static void test_xtalk_switch_visible(void)
     qtest_quit(qts);
 }
 
-/* The PROM's deliberate read-only writes complete and report through status. */
+/*
+ * The PROM's deliberate read-only writes complete and report through status.
+ */
 static void test_xbow_prom_error_writes(void)
 {
     QTestState *qts = start_control_module("");
@@ -766,11 +772,11 @@ static void test_xbow_baseio_link_reset(void)
 
 /*
  * A link the machine restores keeps carrying traffic while its reset pulse
- * runs; only its status shows the pulse. The pulse ends on a timer, and
- * under multi-threaded TCG a loaded host ran that timer milliseconds of
- * guest time late: IRIX waits a fixed millisecond after resetting the SI
- * graphics link, and its next access found the route withdrawn. A link
- * that was down before the reset stays unreachable through it.
+ * runs; only its status shows the pulse. The pulse ends on a timer, and under
+ * multi-threaded TCG a loaded host ran that timer milliseconds of guest time
+ * late: IRIX waits a fixed millisecond after resetting the SI graphics link,
+ * and its next access found the route withdrawn. A link that was down before
+ * the reset stays unreachable through it.
  */
 static void test_xbow_link_reset_route_stays_open(void)
 {
@@ -799,8 +805,8 @@ static void test_xbow_link_reset_route_stays_open(void)
 
 /*
  * The Crossbow's own interrupt packet reaches a restored link inside its
- * reset pulse, as the link's routes do: here the Hub's link is reset and
- * the access error raised before the pulse ends.
+ * reset pulse, as the link's routes do: here the Hub's link is reset and the
+ * access error raised before the pulse ends.
  */
 static void test_xbow_link_reset_interrupt_delivered(void)
 {
@@ -1019,10 +1025,10 @@ static void test_programmed_routes(void)
         " 'property': 'down', 'value': false } }");
     g_assert_true(cpu_read(qts, 0, target, &value));
     /*
-     * Two Hubs can hold one number while the nodes are being renumbered,
-     * and the programmed turns decide which of them answers: the walk ends
-     * at one Hub, and that Hub claims the number as its own. A number no
-     * Hub holds is still nobody's.
+     * Two Hubs can hold one number while the nodes are being renumbered, and
+     * the programmed turns decide which of them answers: the walk ends at one
+     * Hub, and that Hub claims the number as its own. A number no Hub holds
+     * is still nobody's.
      */
     node_write(qts, 3, MEM_PROBE, UINT64_C(0xfedcba987654321));
     hub_write(qts, 3, NI_STATUS, NI_REGION_SIZE | (0x21 << 8));
@@ -1079,7 +1085,9 @@ static void test_link_without_routes(void)
     const uint64_t link_up = UINT64_C(1) << 29;
 
     g_assert_cmphex(hub_read(qts, 0, NI_STATUS) & link_up, ==, link_up);
-    /* The other Hub on R1 can disable and restore this Hub's physical port. */
+    /*
+     * The other Hub on R1 can disable and restore this Hub's physical port.
+     */
     vector_op(qts, 1, 0, ROUTER_DIAG_PARMS, 1, UINT64_C(1) << 10);
     g_assert_cmphex(hub_read(qts, 0, NI_STATUS) & link_up, ==, 0);
     vector_op(qts, 1, 0, ROUTER_DIAG_PARMS, 1, 0);
@@ -1452,8 +1460,8 @@ static void hub_write_slice(QTestState *qts, unsigned int cpu,
  * The cached-alias size decides whether a processor's node-field-zero access
  * stays on its own node, so a value nobody wrote moves where a copy lands.
  * Pin the contract: the code every Hub resets to, that a write reaches that
- * Hub and no other, that both processors of a node share one register, that
- * a migration carries the written code across, and that a reset is the only
+ * Hub and no other, that both processors of a node share one register, that a
+ * migration carries the written code across, and that a reset is the only
  * thing besides a guest write that moves it.
  */
 static void test_cached_alias_size(void)
@@ -1894,7 +1902,9 @@ static void test_mutated_reset(void)
         g_assert_cmphex(hub_read(qts, node, NI_VECTOR_READ_DATA), ==, 0);
         g_assert_cmphex(vector_op(qts, node, 6, 0, 0, 0) & VECTOR_VALID, ==, 0);
     }
-    /* A simulated disconnected cable stays disconnected across device reset. */
+    /*
+     * A simulated disconnected cable stays disconnected across device reset.
+     */
     set_cable_down(qts, "r1-r2", false);
     for (unsigned int node = 0; node < 4; node++) {
         hub_write(qts, node, NI_STATUS,
@@ -1976,9 +1986,9 @@ static void test_distinct_table_migration(void)
 
 /*
  * From sn0-origin2000-outgoing-hub-io-test.c: a CPU's own big window in
- * IO_BWIN_SPACE mode, once it names a real widget on the node's own
- * Crossbow. BaseIO's Bridge sits at widget 8 on the default topology's
- * crossbar 0, the same crossbar node 0 attaches to.
+ * IO_BWIN_SPACE mode, once it names a real widget on the node's own Crossbow.
+ * BaseIO's Bridge sits at widget 8 on the default topology's crossbar 0, the
+ * same crossbar node 0 attaches to.
  */
 
 /* Program big-window entry 0 to reach widget's own I/O-space packet face. */
@@ -2045,10 +2055,10 @@ static void test_read_every_advertised_width(const void *data)
 }
 
 /*
- * The write direction at widths the old callback rejected outright: a
- * pattern written through the outgoing face at four and at eight bytes,
- * read back through the direct small window, proving the write reached
- * BaseIO's Bridge rather than being dropped or truncated.
+ * The write direction at widths the old callback rejected outright: a pattern
+ * written through the outgoing face at four and at eight bytes, read back
+ * through the direct small window, proving the write reached BaseIO's Bridge
+ * rather than being dropped or truncated.
  */
 static void test_write_every_advertised_width(const void *data)
 {
@@ -2069,11 +2079,11 @@ static void test_write_every_advertised_width(const void *data)
 }
 
 /*
- * From sn0-origin2000-xtalk-owner-test.c: the family builder realizes
- * each crossbar the topology names only at the deferred machine-init-
- * done hook, once BaseIO and any -device sgi-pci-expansion have had
- * their chance to attach; this checks that wiring is there once
- * origin2000-module has actually been built.
+ * From sn0-origin2000-xtalk-owner-test.c: the family builder realizes each
+ * crossbar the topology names only at the deferred machine-init-done hook,
+ * once BaseIO and any -device sgi-pci-expansion have had their chance to
+ * attach; this checks that wiring is there once origin2000-module has
+ * actually been built.
  */
 static uint64_t xtalk_uint(QTestState *qts, const char *crossbow,
                            const char *property)
@@ -2106,12 +2116,11 @@ static void assert_crossbow(QTestState *qts, const char *crossbow,
 }
 
 /*
- * The shipped module: Crossbow 1 has widgets 8-10 alive at boot (BaseIO
- * plus its two host nodes) and SI Viz at widget 0xf. Crossbow 2 has
- * widgets 9-10 alive for its two host nodes; no other XIO position is
- * populated on either. BaseIO itself re-parents under its module the
- * way every sgi-xio-board does, landing at its own slot name since this
- * builder gives it no id.
+ * The shipped module: Crossbow 1 has widgets 8-10 alive at boot (BaseIO plus
+ * its two host nodes) and SI Viz at widget 0xf. Crossbow 2 has widgets 9-10
+ * alive for its two host nodes; no other XIO position is populated on either.
+ * BaseIO itself re-parents under its module the way every sgi-xio-board does,
+ * landing at its own slot name since this builder gives it no id.
  */
 static void test_xtalk_owner(void)
 {
@@ -2142,11 +2151,11 @@ static uint32_t crossbow_read(QTestState *qts, unsigned int cpu,
 
 /*
  * Only the ports the module wires to something report a widget. The PROM
- * reads auxiliary status bit 5 for each port and, for one that says a
- * widget is there, link status bit 31; a port claiming a widget whose link
- * never came up is what it reports as a bad IO link. An empty XIO slot has
- * no widget, so it reads presence clear and the failed-initialization state
- * (docs/datasheets/xbow.md, link auxiliary status and the port state model).
+ * reads auxiliary status bit 5 for each port and, for one that says a widget
+ * is there, link status bit 31; a port claiming a widget whose link never
+ * came up is what it reports as a bad IO link. An empty XIO slot has no
+ * widget, so it reads presence clear and the failed-initialization state (the
+ * port's link auxiliary status and its port state model).
  */
 static void assert_crossbow_ports(QTestState *qts, unsigned int cpu,
                                   uint16_t attached)
@@ -2183,13 +2192,13 @@ int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
     /*
-     * Test functions test_reordered_model and test_invalid_model were
-     * deleted since they depended on the origin2000-model-test machine,
-     * which was deleted when the Origin 2000 driver moved to the format-2
-     * family builder. These fixture machine tests validated descriptor
-     * composition but are now covered indirectly by acceptance testing
-     * (IRIX boot) and direct validation of the builder output
-     * (sn-builder-test, address-map-test, migration-test).
+     * Test functions test_reordered_model and test_invalid_model were deleted
+     * since they depended on the origin2000-model-test machine, which was
+     * deleted when the Origin 2000 driver moved to the format-2 family
+     * builder. These fixture machine tests validated descriptor composition
+     * but are now covered indirectly by acceptance testing (IRIX boot) and
+     * direct validation of the builder output (sn-builder-test,
+     * address-map-test, migration-test).
      */
     qtest_add_func("sn0/origin2000/remote-cpu-interrupts",
                    test_remote_cpu_interrupts);
@@ -2217,12 +2226,11 @@ int main(int argc, char **argv)
                             test_local_flash_words);
         /*
          * The reordered-flash-words variant ran the same check against a
-         * fixture machine that built its nodes in an order different from
-         * the descriptor's; format 2 has no such indirection left (node
-         * array index and descriptor node index are the same number
-         * everywhere the builder reads), so there is no second order left
-         * to test -- see the same note on the pflash test's own
-         * reordered-stores variant.
+         * fixture machine that built its nodes in an order different from the
+         * descriptor's; format 2 has no such indirection left (node array
+         * index and descriptor node index are the same number everywhere the
+         * builder reads), so there is no second order left to test. See the
+         * same note on the pflash test's own reordered-stores variant.
          */
         qtest_add_func("sn0/origin2000/flash-fixture-isolation",
                        test_flash_fixture_isolation);

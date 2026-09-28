@@ -1,27 +1,29 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SGI MediaIO RAD1 audio registers, DMA, and host audio streams. */
 /*
- * SGI MediaIO RAD1 digital/analog/genlock audio ASIC.
- *
  * Register-file bring-up, the free-running UST counter, the status DMA, and
- * the audio channels' streaming engine: analog input and output (channel
- * types 0 and 1), AES3 input and output (2 and 3) and ADAT input and output
- * (4 and 5). IRIX's rad_dd.o programs a documented set of BAR0 offsets
- * during rad_start_subsys, gated by the board mode it reads from the PCI
- * revision byte (see the header), so this model needs no mode-selection
- * logic of its own -- it accepts whatever the guest's mode-driven dispatch
- * writes and answers with the value last stored there. Modeled pieces of
- * the audio data path: the free-running UST counter at 0x30, whose
- * advancing value clears the driver's "RAD UST not incrementing" report;
- * the status DMA, which fills the driver's host-memory descriptor-ring
- * slots with a register mirror, each running channel's DMA pointer, and
- * receiver words that present the digital inputs the host says are
- * connected; and the six data channels, each of which from its enable edge
- * walks a guest ring buffer at its sample rate, moving frames to or from a
- * host audio backend, and advances its position registers. The subcode
- * channels, genlock and the interface-parameter registers are not modeled
- * -- those registers, and the output subcode windows, accept and shadow
- * writes with no signal path. See
- * docs/datasheets/mediaio-rad1-audio.md.
+ * the audio channels' streaming engine:
+ * analog input and output (channel types 0 and 1), AES3 input and output (2
+ * and 3) and ADAT input and output (4 and
+ * 5). IRIX's rad_dd.o programs a documented set of BAR0 offsets during
+ * rad_start_subsys, gated by the board mode it
+ * reads from the PCI revision byte (see the header), so this model needs no
+ * mode-selection logic of its own. It accepts whatever the guest's
+ * mode-driven dispatch writes and answers with
+ * the value last stored there. Modeled
+ * pieces of the audio data path: the free-running UST counter at 0x30, whose
+ * advancing value clears the driver's
+ * "RAD UST not incrementing" report; the status DMA, which fills the driver's
+ * host-memory descriptor-ring slots
+ * with a register mirror, each running channel's DMA pointer, and receiver
+ * words that present the digital inputs
+ * the host says are connected; and the six data channels, each of which from
+ * its enable edge walks a guest ring
+ * buffer at its sample rate, moving frames to or from a host audio backend,
+ * and advances its position registers.
+ * The subcode channels, genlock and the interface-parameter registers are not
+ * modeled. Those registers and the output subcode windows accept and shadow
+ * writes with no signal path.
  */
 
 #include "qemu/osdep.h"
@@ -41,11 +43,13 @@
 
 /*
  * The free-running UST counter at BAR0 0x30, derived from the virtual clock
- * rather than stored: the value is the virtual time elapsed since reset in
- * UST_NS_PER_TICK-nanosecond ticks, truncated to 32 bits like the hardware
+ * rather than stored: the value is the
+ * virtual time elapsed since reset in UST_NS_PER_TICK-nanosecond ticks,
+ * truncated to 32 bits like the hardware
  * register. rad_set_ust_offset samples it twice a fixed delay apart and warns
- * "RAD UST not incrementing" if it moved by fewer than three ticks; tying it
- * to the clock rather than returning a fixed or just-past-threshold value
+ * "RAD UST not incrementing" if it
+ * moved by fewer than three ticks; tying it to the clock rather than
+ * returning a fixed or just-past-threshold value
  * keeps it a real counter, not a guest-specific reply.
  */
 static uint32_t sgi_rad1_audio_ust_counter(SGIRad1AudioState *s)
@@ -72,12 +76,14 @@ typedef enum SGIRad1AudioIface {
 
 /*
  * What distinguishes one channel from another: its set-A registers, tag,
- * direction, position registers, status-slot pointer word and frame width,
- * all from the datasheet's per-type table and the flagged frame defaults,
- * and its rate and host interface (see the header). Set B is stored in the
- * DMA bank but not consumed: every captured start wrote it identical to
- * set A, and the datasheet only infers that the hardware alternates. A
- * rate of 0 means the AES3 input's, which follows the connected source.
+ * direction, position registers, status-slot
+ * pointer word and frame width, all from the per-type table and the flagged
+ * frame defaults, and its rate and host
+ * interface (see the header). Set B is stored in the DMA bank but not
+ * consumed: it matches set A on every known
+ * start, and whether hardware alternates between the sets is unverified. A
+ * rate of 0 means the AES3 input's, which
+ * follows the connected source.
  */
 typedef struct SGIRad1AudioChannelInfo {
     const char *name;
@@ -249,9 +255,10 @@ static const SGIRad1AudioChannelInfo sgi_rad1_audio_channel_info[] = {
 };
 
 /*
- * The completion word for the connected AES3 source: done with bit 19
- * set when nothing is connected, else done with the datasheet's rate code
- * for a locked input. The property is checked at realize.
+ * The completion word for the connected AES3 source: done with bit 19 set
+ * when nothing is connected, else done with
+ * the documented rate code for a locked input. The property is checked at
+ * realize.
  */
 static uint32_t sgi_rad1_audio_done_word(SGIRad1AudioState *s)
 {
@@ -283,8 +290,9 @@ static uint32_t sgi_rad1_audio_field_bit(uint64_t n)
 
 /*
  * The field events for a completion now: one bit for each video field that
- * began since the last completion reported one, at most the two a slot can
- * carry. None with no reference connected. See the header.
+ * began since the last completion reported
+ * one, at most the two a slot can carry. None with no reference connected.
+ * See the header.
  */
 static uint32_t sgi_rad1_audio_field_events(SGIRad1AudioState *s)
 {
@@ -316,8 +324,9 @@ static uint32_t sgi_rad1_audio_field_events(SGIRad1AudioState *s)
 }
 
 /*
- * The flag word: ADAT present when the host says a source is connected,
- * and the video field events of a connected reference.
+ * The flag word: ADAT present when the host says a source is connected, and
+ * the video field events of a connected
+ * reference.
  */
 static uint32_t sgi_rad1_audio_flags_word(SGIRad1AudioState *s)
 {
@@ -338,21 +347,24 @@ static uint32_t sgi_rad1_audio_chan_pointer(SGIRad1AudioChannel *c)
  * Fill one descriptor-ring slot, as a completion of the status DMA.
  *
  * - +0x44..+0x74: registers 0x04..0x34, the position bank, the 0x30 counter
- *   and the sync status, as they read now. The channel engines are brought
- *   up to the present first, so the positions and pointers are those of
- *   this completion, not of an engine's last timer step.
+ * and the sync status, as they read now.
+ *   The channel engines are brought up to the present first, so the positions
+ * and pointers are those of this
+ *   completion, not of an engine's last timer step.
  * - the even words of +0x00..+0x38: each channel's DMA pointer, once the
- *   channel has been started since reset. The odd words are left alone:
- *   the driver does not read them.
- * - +0x78 and +0x7c: the digital receivers and the video reference as
- *   the host describes them, and done. The done word goes last, so the
- *   driver never sees a done slot with a stale body.
+ * channel has been started since reset. The
+ *   odd words are left alone: the driver does not read them.
+ * - +0x78 and +0x7c: the digital receivers and the video reference as the
+ * host describes them, and done. The done
+ *   word goes last, so the driver never sees a done slot with a stale body.
  *
  * Every word goes through the device's own PCI DMA address space, written
- * little-endian. The RAD1 is a little-endian PCI device that is not
- * byte-lane self-ordered, so the Bridge byte-reverses its DMA into the
+ * little-endian. The RAD1 is a
+ * little-endian PCI device that is not byte-lane self-ordered, so the Bridge
+ * byte-reverses its DMA into the
  * big-endian host memory the driver reads with plain loads; writing
- * big-endian here would put the done bit in the low byte.
+ * big-endian here would put the done bit in the
+ * low byte.
  */
 static bool sgi_rad1_audio_fill_slot(SGIRad1AudioState *s, uint64_t slot)
 {
@@ -417,9 +429,10 @@ static uint64_t sgi_rad1_audio_status_ring_base(SGIRad1AudioState *s)
 
 /*
  * The ring's slot count, recovered from the limit register.
- * rad_start_status_dma encodes it as LIMIT = 0x78 - count * 0x80. A limit that
- * does not decode to a whole ring falls back to a single slot, so a caller that
- * programmed the ring differently than the driver still sees a completion.
+ * rad_start_status_dma encodes it as LIMIT = 0x78 - count
+ * * 0x80. A limit that does not decode to a whole ring falls back to a single
+ * slot, so a caller that programmed the
+ * ring differently than the driver still sees a completion.
  */
 static unsigned int sgi_rad1_audio_status_ring_slots(SGIRad1AudioState *s)
 {
@@ -441,8 +454,9 @@ static unsigned int sgi_rad1_audio_status_ring_slots(SGIRad1AudioState *s)
 
 /*
  * One-shot status transfer. rad_one_shot_status programs the ring base and a
- * -4 limit, writes 0x40001 to 0x5c, and busy-polls the base slot's +0x7c bit
- * 31. The engine fills that one slot, exactly as a continuous completion
+ * -4 limit, writes 0x40001 to 0x5c, and
+ * busy-polls the base slot's +0x7c bit 31. The engine fills that one slot,
+ * exactly as a continuous completion
  * would.
  */
 static void sgi_rad1_audio_one_shot_status(SGIRad1AudioState *s)
@@ -460,11 +474,12 @@ static int64_t sgi_rad1_audio_status_deadline(SGIRad1AudioState *s,
 }
 
 /*
- * Continuous-engine tick: fill the next slot and re-arm for the next
- * deadline on the absolute schedule. The cursor advances in ring order with
- * wrap: the driver's servicer consumes consecutive done slots from just
- * past its own consumer index and clears each done bit, so filling the
- * next slot each completion keeps it finding fresh ones.
+ * Continuous-engine tick: fill the next slot and re-arm for the next deadline
+ * on the absolute schedule. The cursor
+ * advances in ring order with wrap: the driver's servicer consumes
+ * consecutive done slots from just past its own
+ * consumer index and clears each done bit, so filling the next slot each
+ * completion keeps it finding fresh ones.
  */
 static void sgi_rad1_audio_status_tick(void *opaque)
 {
@@ -502,11 +517,12 @@ static void sgi_rad1_audio_status_tick(void *opaque)
 
 /*
  * Start the continuous engine. rad_start_status_dma resets the consumer index
- * to 0 and starts producing; the model starts its cursor one past that (the
- * first slot the servicer checks) and schedules the first completion one
+ * to 0 and starts producing; the model
+ * starts its cursor one past that (the first slot the servicer checks) and
+ * schedules the first completion one
  * interval out. A zero interval names no period, so it stops the engine
- * rather than completing slots as fast as the host can; an interval below
- * the floor is raised to it (see the header).
+ * rather than completing slots as fast as the
+ * host can; an interval below the floor is raised to it (see the header).
  */
 static void sgi_rad1_audio_status_ring_start(SGIRad1AudioState *s,
                                              uint32_t ctrl)
@@ -548,8 +564,9 @@ static void sgi_rad1_audio_status_ring_stop(SGIRad1AudioState *s)
 }
 
 /*
- * The backend calls these when a voice has room or has samples. The
- * engines move frames on their own timers instead, so nothing happens here.
+ * The backend calls these when a voice has room or has samples. The engines
+ * move frames on their own timers
+ * instead, so nothing happens here.
  */
 static void sgi_rad1_audio_out_callback(void *opaque, int avail)
 {
@@ -628,10 +645,11 @@ static void sgi_rad1_audio_open_out(SGIRad1AudioChannel *c)
 
 /*
  * An input voice opens the first time its channel runs and then stays open
- * for the device's lifetime, like an output voice. Opening it at realize
- * would make a backend with no input, such as wav, report an error on
- * every boot whether or not the guest ever records; this way it reports
- * once, when a recording starts.
+ * for the device's lifetime, like an
+ * output voice. Opening it at realize would make a backend with no input,
+ * such as wav, report an error on every
+ * boot whether or not the guest ever records; this way it reports once, when
+ * a recording starts.
  */
 static void sgi_rad1_audio_open_in(SGIRad1AudioChannel *c)
 {
@@ -670,16 +688,18 @@ static void sgi_rad1_audio_set_voice(SGIRad1AudioChannel *c, bool on)
 
 /*
  * Credit frames to a channel's position registers. Both count frames, not
- * words: the datasheet's flagged default.
+ * words: the documented default.
  *
- * A: the frame count in bits [31:18], with natural 32-bit wrap, and the
- * 0x30 counter mod 2^18 latched into bits [17:0] as the count moves.
- * rad_sync_device_ust splices those low bits into its UST.
+ * A: the frame count in bits [31:18], with natural 32-bit wrap, and the 0x30
+ * counter mod 2^18 latched into bits
+ * [17:0] as the count moves. rad_sync_device_ust splices those low bits into
+ * its UST.
  *
  * B: a 14-bit count at the channel's shift, 4 for the analog output and 18
- * for every other type. rad_start_dma's post-enable poll waits for it to
- * change. Only that field moves: the rest of each B register belongs to
- * another channel or to subcode (see the header).
+ * for every other type. rad_start_dma's
+ * post-enable poll waits for it to change. Only that field moves: the rest of
+ * each B register belongs to another
+ * channel or to subcode (see the header).
  */
 /* Add @frames to the 14-bit count at @shift in *@reg, wrapping in place. */
 static void sgi_rad1_audio_add_field(uint32_t *reg, unsigned int shift,
@@ -728,11 +748,12 @@ static void sgi_rad1_audio_chan_stop(SGIRad1AudioChannel *c)
 }
 
 /*
- * One step of an output: read the ring frames at the pointer and push them
- * to the voice as stereo 16-bit frames (sgi-rad1-audio-pcm.h). The read
- * happens whatever the backend accepts, so the pointer and positions
- * advance the same with or without an audio device; a backend that takes
- * less drops the rest.
+ * One step of an output: read the ring frames at the pointer and push them to
+ * the voice as stereo 16-bit frames
+ * (sgi-rad1-audio-pcm.h). The read happens whatever the backend accepts, so
+ * the pointer and positions advance the
+ * same with or without an audio device; a backend that takes less drops the
+ * rest.
  */
 static bool sgi_rad1_audio_out_chunk(SGIRad1AudioChannel *c, uint8_t *ring,
                                      size_t frames)
@@ -755,10 +776,11 @@ static bool sgi_rad1_audio_out_chunk(SGIRad1AudioChannel *c, uint8_t *ring,
 }
 
 /*
- * One step of an input: take stereo frames from the voice and write them
- * into the ring at the pointer (sgi-rad1-audio-pcm.h). Whatever the voice
- * does not supply is silence, so the pointer and positions advance at the
- * sample rate with or without an audio device.
+ * One step of an input: take stereo frames from the voice and write them into
+ * the ring at the pointer
+ * (sgi-rad1-audio-pcm.h). Whatever the voice does not supply is silence, so
+ * the pointer and positions advance at
+ * the sample rate with or without an audio device.
  */
 static bool sgi_rad1_audio_in_chunk(SGIRad1AudioChannel *c, uint8_t *ring,
                                     size_t frames)
@@ -779,9 +801,10 @@ static bool sgi_rad1_audio_in_chunk(SGIRad1AudioChannel *c, uint8_t *ring,
 }
 
 /*
- * Move frames between the ring and the voice, wrapping at the ring's end.
- * The ring is reached through the device's PCI DMA address space, so the
- * Bridge's translation and byte-lane reversal apply.
+ * Move frames between the ring and the voice, wrapping at the ring's end. The
+ * ring is reached through the device's
+ * PCI DMA address space, so the Bridge's translation and byte-lane reversal
+ * apply.
  */
 static bool sgi_rad1_audio_chan_move(SGIRad1AudioChannel *c, uint64_t frames)
 {
@@ -815,10 +838,11 @@ static bool sgi_rad1_audio_chan_move(SGIRad1AudioChannel *c, uint64_t frames)
 
 /*
  * Bring a channel up to the present. The frames due are those the sample
- * clock has produced since the enable edge; computing them from elapsed
- * virtual time keeps the rate exact however late a timer fires. A status
- * completion and a position-register read call this too, so each sees the
- * pointer and positions as of that instant.
+ * clock has produced since the enable edge;
+ * computing them from elapsed virtual time keeps the rate exact however late
+ * a timer fires. A status completion and
+ * a position-register read call this too, so each sees the pointer and
+ * positions as of that instant.
  */
 static void sgi_rad1_audio_chan_sync(SGIRad1AudioChannel *c)
 {
@@ -874,9 +898,10 @@ static void sgi_rad1_audio_chan_tick(void *opaque)
 }
 
 /*
- * The enable edge. rad_start_dma programs set A and set B with the same
- * ring and control word, then sets bit 0 of the channel's enable register;
- * that write alone starts the channel. The engine latches set A.
+ * The enable edge. rad_start_dma programs set A and set B with the same ring
+ * and control word, then sets bit 0 of
+ * the channel's enable register; that write alone starts the channel. The
+ * engine latches set A.
  */
 static void sgi_rad1_audio_chan_start(SGIRad1AudioChannel *c)
 {
@@ -907,9 +932,10 @@ static void sgi_rad1_audio_chan_start(SGIRad1AudioChannel *c)
         len = SGI_RAD1_AUDIO_DMA_MAX_BYTES;
     }
     /*
-     * The length comes in 128-byte units, which a 256-byte subcode frame
-     * need not divide. What hardware does with a partial frame is unknown;
-     * the model starts nothing. The driver's rings are whole frames.
+     * The length comes in 128-byte units, which a 256-byte subcode frame need
+     * not divide. What hardware does with a
+     * partial frame is unknown; the model starts nothing. The driver's rings
+     * are whole frames.
      */
     if (len % sgi_rad1_audio_frame_bytes(c)) {
         qemu_log_mask(LOG_GUEST_ERROR,
@@ -938,9 +964,10 @@ static void sgi_rad1_audio_chan_start(SGIRad1AudioChannel *c)
 }
 
 /*
- * A write to a channel's enable register. The channel's own bit, bit 0 or
- * for an input subcode channel bit 2, starts and stops it; the register's
- * other bits never do. Rewriting a set bit while the engine runs does not
+ * A write to a channel's enable register. The channel's own bit, bit 0 or for
+ * an input subcode channel bit 2,
+ * starts and stops it; the register's other bits never do. Rewriting a set
+ * bit while the engine runs does not
  * restart it.
  */
 static void sgi_rad1_audio_enable_write(SGIRad1AudioChannel *c, uint32_t val)
@@ -958,10 +985,11 @@ static void sgi_rad1_audio_enable_write(SGIRad1AudioChannel *c, uint32_t val)
 
 /*
  * BAR0: the documented register file. None of these offsets has an
- * independently confirmed reset value or read behavior, so reads answer
- * with whatever the guest last wrote -- a generic register-store
- * approximation, not a captured hardware contract. An offset this model
- * does not recognize logs as unimplemented rather than accepting a
+ * independently confirmed reset value or read
+ * behavior, so reads return the guest's last write. This is a register-store
+ * approximation, not verified hardware behavior. An offset this model does
+ * not recognize logs as
+ * unimplemented rather than accepting a
  * silent store, so an undocumented access stays observable.
  */
 static uint64_t sgi_rad1_audio_bar0_read(void *opaque, hwaddr addr,
@@ -973,10 +1001,11 @@ static uint64_t sgi_rad1_audio_bar0_read(void *opaque, hwaddr addr,
         addr <= SGI_RAD1_AUDIO_REG_SAMPLE_POS_LAST) {
         /*
          * The per-channel sample-position bank. Each register reads zero
-         * until a channel's engine advances it; only the analog channels'
-         * registers (0x14, 0x18, 0x2c) move. Read-only, so a guest write
-         * never changes it. The engines catch up first, so a read agrees
-         * with a status slot filled at the same instant.
+         * until a channel's engine advances it; only
+         * the analog channels' registers (0x14, 0x18, 0x2c) move. Read-only,
+         * so a guest write never changes it. The
+         * engines catch up first, so a read agrees with a status slot filled
+         * at the same instant.
          */
         sgi_rad1_audio_sync_all(s);
         return s->sample_pos[SGI_RAD1_AUDIO_POS_IDX(addr)];
@@ -1066,8 +1095,9 @@ static void sgi_rad1_audio_bar0_write(void *opaque, hwaddr addr, uint64_t val,
         break;
     /*
      * The digital channels' enables, bit 0 of each, and the input subcode
-     * channels', bit 2 of 0x44 and 0x48; the other bits (output subcode
-     * controls, bring-up values) are shadowed and start nothing.
+     * channels', bit 2 of 0x44 and 0x48; the
+     * other bits (output subcode controls, bring-up values) are shadowed and
+     * start nothing.
      */
     case SGI_RAD1_AUDIO_REG_PREDISPATCH_A:
         s->predispatch_a = val;
@@ -1082,9 +1112,9 @@ static void sgi_rad1_audio_bar0_write(void *opaque, hwaddr addr, uint64_t val,
     case SGI_RAD1_AUDIO_REG_SHIFT_LOAD_CLOCK:
         /*
          * Bit 0 starts and stops the analog input. Bring-up writes 0x5000000
-         * with it clear, and the MIO mux bit-bang pulses bit 27 while the
-         * driver's shadow keeps bit 0, so those writes leave the input as it
-         * was.
+         * with it clear, and the MIO mux
+         * bit-bang pulses bit 27 while the driver's shadow keeps bit 0, so
+         * those writes leave the input as it was.
          */
         /* Bit 27 clear to set clocks the next mux word bit in from 0x8c. */
         if (!(s->shift_load_clock & SGI_RAD1_AUDIO_MUX_CLOCK) &&
@@ -1106,8 +1136,8 @@ static void sgi_rad1_audio_bar0_write(void *opaque, hwaddr addr, uint64_t val,
     case SGI_RAD1_AUDIO_REG_ANALOG_OUT_EN:
         /*
          * Bit 0 starts and stops the analog output. Bring-up writes
-         * 0x20000000 with it clear; rad_start_dma sets it and rad_stop_dma
-         * clears it, keeping bit 29 from the shadow.
+         * 0x20000000 with it clear; rad_start_dma sets it
+         * and rad_stop_dma clears it, keeping bit 29 from the shadow.
          */
         s->analog_out_en = val;
         sgi_rad1_audio_enable_write(&s->chan[SGI_RAD1_AUDIO_CH_OUT], val);
@@ -1116,10 +1146,12 @@ static void sgi_rad1_audio_bar0_write(void *opaque, hwaddr addr, uint64_t val,
         s->status_dma_ctrl = val;
         /*
          * The ring bit (0x2) tells the continuous ring engine (0x40003) from
-         * the one-shot (0x40001); the interval field in bits [16:2] is masked
-         * off first. The continuous start arms the periodic completion timer;
-         * the one-shot marks a single slot now; the stop word (0x1fffc) halts
-         * the timer; any other write only records the register.
+         * the one-shot (0x40001); the interval
+         * field in bits [16:2] is masked off first. The continuous start arms
+         * the periodic completion timer; the
+         * one-shot marks a single slot now; the stop word (0x1fffc) halts the
+         * timer; any other write only records
+         * the register.
          */
         switch (val & SGI_RAD1_AUDIO_STATUS_CTRL_MASK) {
         case SGI_RAD1_AUDIO_STATUS_START:      /* 0x40003: continuous */
@@ -1148,10 +1180,8 @@ static void sgi_rad1_audio_bar0_write(void *opaque, hwaddr addr, uint64_t val,
         s->mux_clock_select = val;
         break;
     case SGI_RAD1_AUDIO_REG_SHADOW_MASKED:
-        /*
-         * Central control: ADAT-receiver and clock-generator bits. No
-         * channel's transfer starts or waits on it.
-         */
+        /* Central control: ADAT-receiver and clock-generator bits. No
+         * channel's transfer starts or waits on it. */
         s->shadow_masked = val;
         break;
     case SGI_RAD1_AUDIO_REG_MODE_GATED_A:
@@ -1192,10 +1222,11 @@ static void sgi_rad1_audio_bar0_write(void *opaque, hwaddr addr, uint64_t val,
 }
 
 /*
- * The output subcode windows, 0x1000..0x121f. The driver only stores
- * here; a read answers from the shadow like the register file's other
- * stores. The undocumented doubleword between the ADAT and AES3 windows
- * logs as unimplemented.
+ * The output subcode windows, 0x1000..0x121f. The driver only stores here; a
+ * read answers from the shadow like the
+ * register file's other stores. The undocumented doubleword between the ADAT
+ * and AES3 windows logs as
+ * unimplemented.
  */
 static bool sgi_rad1_audio_subcode_gap(hwaddr addr, unsigned size)
 {
@@ -1325,10 +1356,10 @@ static void sgi_rad1_audio_realize(PCIDevice *dev, Error **errp)
 
     /*
      * The MediaIO board always instantiates this device, so a missing audio
-     * backend must not abort machine creation. Resolve the audiodev property
-     * (or the default); if none is available, warn and run without voices --
-     * the register file and the DMA position advance still work, only the
-     * samples to and from the host are skipped.
+     * backend must not abort machine
+     * creation. Resolve the audiodev property (or the default); if none is
+     * available, warn and run without voices. The register file and DMA
+     * position still advance; only host samples are skipped.
      */
     switch (s->aes_input_rate) {
     case 0:
@@ -1370,7 +1401,8 @@ static void sgi_rad1_audio_realize(PCIDevice *dev, Error **errp)
                                 &s->subcode_mr);
     pci_register_bar(dev, 0, PCI_BASE_ADDRESS_SPACE_MEMORY, &s->bar0);
 
-    /* The continuous status-DMA completion timer; armed on a 0x40003 start. */
+    /* The continuous status-DMA completion timer; armed on a 0x40003
+     * start. */
     s->status_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
                                    sgi_rad1_audio_status_tick, s);
     /* Each channel's pacing timer; armed on its enable edge. */
