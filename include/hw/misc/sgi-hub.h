@@ -196,6 +196,7 @@ struct SGIHubState {
     uint64_t io_space_base;
     AddressSpace pi_probe_as;
     MemoryRegion pi_probe[SGI_HUB_PROCESSORS];
+    bool pi_probe_installed;
 
     /* The engines' view of the fabric: the device claim view, as a space. */
     AddressSpace bte_as;

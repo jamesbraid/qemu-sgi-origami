@@ -4152,6 +4152,15 @@ bool sgi_hub_attach_module_identity(SGIHubState *s,
  * 2000 alike, with no test for a Crossbow first. A zero-offset
  * doubleword read latches the error here; every other access passes
  * through to whatever the XIO space holds there.
+ *
+ * This is an interim approximation. On hardware the error has a cause
+ * elsewhere: an Origin 2000 Crossbow refusing an unpopulated port, an
+ * Origin 200 Bridge's PCI master abort on an unconfigured device window.
+ * Its limitation is that it also faults IRIX's later doubleword reads
+ * there, which the Bridge datasheet says complete once the device is
+ * set up. A Hub built with no processor view at all, as a device test
+ * may, has no I/O space to overlay and installs nothing; one with views
+ * for only some of its processors is a wiring mistake and is refused.
  */
 #define SGI_HUB_PI_PROBE_ADDR       0x02400208
 #define SGI_HUB_PI_PROBE_WIDGET     2
@@ -4211,14 +4220,18 @@ static const MemoryRegionOps sgi_hub_pi_probe_ops = {
 
 static bool sgi_hub_install_pi_probe(SGIHubState *s, Error **errp)
 {
-    unsigned int slice;
+    unsigned int slice, views = 0;
 
     for (slice = 0; slice < s->cpus; slice++) {
-        if (!s->cpu_sysmem[slice]) {
-            error_setg(errp, "the Hub needs a cpu-sysmem view for each of "
-                       "its %u processors", s->cpus);
-            return false;
-        }
+        views += !!s->cpu_sysmem[slice];
+    }
+    if (!s->xio || !views) {
+        return true;
+    }
+    if (views != s->cpus) {
+        error_setg(errp, "the Hub has a cpu-sysmem view for %u of its %u "
+                   "processors", views, s->cpus);
+        return false;
     }
     address_space_init(&s->pi_probe_as, s->xio, "sgi-hub.pi-probe-xio");
     for (slice = 0; slice < s->cpus; slice++) {
@@ -4231,6 +4244,7 @@ static bool sgi_hub_install_pi_probe(SGIHubState *s, Error **errp)
             s->cpu_sysmem[slice], s->io_space_base + SGI_HUB_PI_PROBE_ADDR,
             &s->pi_probe[slice], 1);
     }
+    s->pi_probe_installed = true;
     return true;
 }
 
@@ -4895,7 +4909,13 @@ static void sgi_hub_unrealize(DeviceState *dev)
     sgi_hub_rt_hold_reset(s);
     s->claim_ready = false;
     address_space_destroy(&s->bte_as);
-    address_space_destroy(&s->pi_probe_as);
+    if (s->pi_probe_installed) {
+        for (i = 0; i < s->cpus; i++) {
+            memory_region_del_subregion(s->cpu_sysmem[i], &s->pi_probe[i]);
+        }
+        address_space_destroy(&s->pi_probe_as);
+        s->pi_probe_installed = false;
+    }
     address_space_destroy(&s->ii_inbound_as);
     address_space_destroy(&s->ii_local_registers_as);
     if (s->ii_connected) {
