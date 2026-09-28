@@ -28,6 +28,22 @@
 OBJECT_DECLARE_SIMPLE_TYPE(SGIIOC3KBCState, SGI_IOC3_KBC)
 
 /*
+ * The controller's own bus: its two ps2 devices realize onto it rather than
+ * the system bus, so unrealizing the controller reaches them too. On the
+ * system bus they outlive a controller released while the machine keeps
+ * running, and the system bus's deferred release of its reference then
+ * touches memory already freed with the controller. Same shape as
+ * sgi-ioc3's own bus (hw/misc/sgi-ioc3.c).
+ */
+#define TYPE_SGI_IOC3_KBC_BUS "sgi-ioc3-kbc-bus"
+OBJECT_DECLARE_SIMPLE_TYPE(SGIIOC3KBCBusState, SGI_IOC3_KBC_BUS)
+
+struct SGIIOC3KBCBusState {
+    /*< private >*/
+    BusState parent_obj;
+};
+
+/*
  * Register offsets within the controller's window, which the chip places at
  * 0x9c in its main register block.
  */
@@ -114,6 +130,7 @@ typedef struct SGIIOC3KBCPort {
 struct SGIIOC3KBCState {
     SysBusDevice parent_obj;
 
+    SGIIOC3KBCBusState kbc_bus;
     PS2KbdState kbd;
     PS2MouseState mouse;
 

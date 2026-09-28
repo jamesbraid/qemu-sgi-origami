@@ -278,10 +278,10 @@ static void sgi_ioc3_kbc_realize(DeviceState *dev, Error **errp)
 {
     SGIIOC3KBCState *s = SGI_IOC3_KBC(dev);
 
-    if (!sysbus_realize(SYS_BUS_DEVICE(&s->kbd), errp)) {
+    if (!qdev_realize(DEVICE(&s->kbd), BUS(&s->kbc_bus), errp)) {
         return;
     }
-    if (!sysbus_realize(SYS_BUS_DEVICE(&s->mouse), errp)) {
+    if (!qdev_realize(DEVICE(&s->mouse), BUS(&s->kbc_bus), errp)) {
         return;
     }
 
@@ -292,11 +292,21 @@ static void sgi_ioc3_kbc_realize(DeviceState *dev, Error **errp)
                           qdev_get_gpio_in_named(dev, "ps2-input", 1));
 }
 
+static void sgi_ioc3_kbc_unrealize(DeviceState *dev)
+{
+    SGIIOC3KBCState *s = SGI_IOC3_KBC(dev);
+
+    qdev_unrealize(DEVICE(&s->kbd));
+    qdev_unrealize(DEVICE(&s->mouse));
+}
+
 static void sgi_ioc3_kbc_init(Object *obj)
 {
     SGIIOC3KBCState *s = SGI_IOC3_KBC(obj);
     SysBusDevice *sbd = SYS_BUS_DEVICE(obj);
 
+    qbus_init(&s->kbc_bus, sizeof(s->kbc_bus), TYPE_SGI_IOC3_KBC_BUS,
+             DEVICE(obj), "kbc-bus");
     object_initialize_child(obj, "kbd", &s->kbd, TYPE_PS2_KBD_DEVICE);
     object_initialize_child(obj, "mouse", &s->mouse, TYPE_PS2_MOUSE_DEVICE);
 
@@ -400,6 +410,7 @@ static void sgi_ioc3_kbc_class_init(ObjectClass *oc, const void *data)
 
     dc->desc = "SGI IOC3 PS/2 keyboard and mouse controller";
     dc->realize = sgi_ioc3_kbc_realize;
+    dc->unrealize = sgi_ioc3_kbc_unrealize;
     dc->vmsd = &vmstate_sgi_ioc3_kbc;
     /* Instantiated only by the IOC3, which wires its bus and interrupt. */
     dc->user_creatable = false;
@@ -420,6 +431,11 @@ static const TypeInfo sgi_ioc3_kbc_types[] = {
         .instance_size = sizeof(SGIIOC3KBCState),
         .instance_init = sgi_ioc3_kbc_init,
         .class_init = sgi_ioc3_kbc_class_init,
+    },
+    {
+        .name = TYPE_SGI_IOC3_KBC_BUS,
+        .parent = TYPE_SYSTEM_BUS,
+        .instance_size = sizeof(SGIIOC3KBCBusState),
     },
 };
 
