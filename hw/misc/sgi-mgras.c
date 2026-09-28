@@ -1899,6 +1899,8 @@ static void mgras_instance_init(Object *obj)
     object_property_add_uint64_ptr(obj, "x-test-last-interrupt-value",
                                    &s->test_last_interrupt_value,
                                    OBJ_PROP_FLAG_READ);
+    object_property_add_uint64_ptr(obj, "x-test-retraces", &s->retraces,
+                                   OBJ_PROP_FLAG_READ);
     object_property_add_uint32_ptr(obj, "x-test-error", &s->error,
                                    OBJ_PROP_FLAG_READ);
     object_property_add_uint32_ptr(obj, "x-test-error-addr",
