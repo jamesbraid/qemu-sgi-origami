@@ -420,6 +420,42 @@ def arp_resolution(frames, requester_ip, responder_ip):
     }
 
 
+def icmp_ipv4_exchange(frames, guest_ip, gateway_ip):
+    """Count ICMP IPv4 frames and malformed headers between two hosts."""
+    guest = bytes(map(int, guest_ip.split(".")))
+    gateway = bytes(map(int, gateway_ip.split(".")))
+    result = {"guest_to_gateway": 0, "gateway_to_guest": 0,
+              "invalid_packets": 0}
+    for frame in frames:
+        if len(frame) < 34 or frame[12:14] != b"\x08\x00":
+            continue
+        ip = frame[14:]
+        version_ihl = ip[0]
+        ihl = (version_ihl & 0x0f) * 4
+        if ip[9] != 1:
+            continue
+        if ip[12:16] == guest and ip[16:20] == gateway:
+            direction = "guest_to_gateway"
+        elif ip[12:16] == gateway and ip[16:20] == guest:
+            direction = "gateway_to_guest"
+        else:
+            continue
+        result[direction] += 1
+        total_length = int.from_bytes(ip[2:4], "big")
+        if (version_ihl >> 4 != 4 or ihl < 20 or len(ip) < ihl
+                or total_length < ihl + 8 or total_length > len(ip)):
+            result["invalid_packets"] += 1
+            continue
+        header = ip[:ihl]
+        total = sum((header[i] << 8) | header[i + 1]
+                    for i in range(0, ihl, 2))
+        while total >> 16:
+            total = (total & 0xffff) + (total >> 16)
+        if total != 0xffff:
+            result["invalid_packets"] += 1
+    return result
+
+
 def arp_neighbor_line(output, address):
     """Return the `arp -an` entry for address, resolved or incomplete."""
     address_re = re.compile(
