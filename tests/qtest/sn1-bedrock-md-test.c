@@ -3587,6 +3587,27 @@ static char *create_prom(void)
     return path;
 }
 
+/*
+ * The guest images above end by storing 1 at 0x108 and spinning. Wait for
+ * that store rather than for a fixed stretch of host time: the guest runs
+ * at whatever pace the host gives it, and the loop ends as soon as the
+ * store lands. The deadline only bounds a guest that never gets there.
+ */
+#define GUEST_DONE              0x108
+#define GUEST_DEADLINE_SECONDS  60
+
+static void wait_for_guest_done(QTestState *s)
+{
+    int64_t deadline = g_get_monotonic_time() +
+                       GUEST_DEADLINE_SECONDS * G_TIME_SPAN_SECOND;
+
+    while (!qtest_readq(s, GUEST_DONE)) {
+        g_assert_cmpint(g_get_monotonic_time(), <, deadline);
+        g_usleep(1000);
+    }
+    g_assert_cmphex(qtest_readq(s, GUEST_DONE), ==, 1);
+}
+
 static void test_cpu_halfword_stores(void)
 {
     g_autofree char *prom = create_prom();
@@ -3603,10 +3624,7 @@ static void test_cpu_halfword_stores(void)
     qtest_writeq(s, BEDROCK_NODE0 + MD_MEMORY_CONFIG, MD_INSTALLED_SELECT2);
     qtest_qmp_assert_success(s, "{'execute':'cont'}");
 
-    for (unsigned tries = 0; tries < 200 && !qtest_readq(s, 0x108); tries++) {
-        g_usleep(10000);
-    }
-    g_assert_cmphex(qtest_readq(s, 0x108), ==, 1);
+    wait_for_guest_done(s);
     g_assert_cmphex(qtest_readw(s, HUB_ECC + 0), ==, 0);
     g_assert_cmphex(qtest_readw(s, HUB_ECC + 2), ==, 0xaaaa);
     g_assert_cmphex(qtest_readw(s, HUB_ECC + 4), ==, 0x5555);
@@ -3702,10 +3720,7 @@ static void test_cpu_halfword_stores_top_line(void)
     qtest_writeq(s, BEDROCK_NODE0 + MD_MEMORY_CONFIG, MD_INSTALLED_SELECT2);
     qtest_qmp_assert_success(s, "{'execute':'cont'}");
 
-    for (unsigned tries = 0; tries < 200 && !qtest_readq(s, 0x108); tries++) {
-        g_usleep(10000);
-    }
-    g_assert_cmphex(qtest_readq(s, 0x108), ==, 1);
+    wait_for_guest_done(s);
 
     /*
      * Each residue keeps its own positioned check word at the top fitted
