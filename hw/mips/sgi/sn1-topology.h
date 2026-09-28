@@ -30,6 +30,10 @@
  */
 unsigned sn1_cpu_slot(const SGIModelNode *node, unsigned logical);
 
+/* Processor fitted in the logical CPU's physical slot. */
+const SGIModelProcessor *sn1_cpu_processor(const SGIModelNode *node,
+                                            unsigned logical);
+
 /*
  * The bitmask of physical slots this run's first nr_cpus realized processors
  * occupy, in the same diagonal order sn1_cpu_slot walks. It does not cover

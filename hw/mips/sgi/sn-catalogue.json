@@ -8466,7 +8466,7 @@
                 "id": "r14000-500mhz",
                 "kind": "R14000",
                 "mode-bits": 10135941,
-                "prid": 3876
+                "prid": 3875
               },
               "interface": 0,
               "slot": 0

@@ -128,6 +128,28 @@ static void test_all_four_slots_fitted(void)
     g_assert_cmphex(sn1_cpu_population_mask(&node, 4), ==, 0xf);
 }
 
+static void test_processor_follows_population_order(void)
+{
+    SGIModelProcessor processors[] = {
+        { .prid = 0x0f20 }, { .prid = 0x0f21 },
+        { .prid = 0x0f22 }, { .prid = 0x0f23 },
+    };
+    SGIModelCpuSlot slots[] = {
+        { .interface = 0, .slot = 0, .assembly = &processors[0] },
+        { .interface = 0, .slot = 1, .assembly = &processors[1] },
+        { .interface = 1, .slot = 0, .assembly = &processors[2] },
+        { .interface = 1, .slot = 1, .assembly = &processors[3] },
+    };
+    const SGIModelNode node = {
+        .cpu_slots = build_slots(slots, ARRAY_SIZE(slots)),
+    };
+
+    g_assert_cmphex(sn1_cpu_processor(&node, 0)->prid, ==, 0x0f20);
+    g_assert_cmphex(sn1_cpu_processor(&node, 1)->prid, ==, 0x0f22);
+    g_assert_cmphex(sn1_cpu_processor(&node, 2)->prid, ==, 0x0f21);
+    g_assert_cmphex(sn1_cpu_processor(&node, 3)->prid, ==, 0x0f23);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -137,5 +159,7 @@ int main(int argc, char **argv)
                     test_one_cpu_non_default_slot);
     g_test_add_func("/sn1/topology/all-four-slots-fitted",
                     test_all_four_slots_fitted);
+    g_test_add_func("/sn1/topology/processor-population-order",
+                    test_processor_follows_population_order);
     return g_test_run();
 }

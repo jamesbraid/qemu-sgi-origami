@@ -1303,6 +1303,9 @@ static void sn1_node_create_cpus(SN1NodeState *node, MachineState *machine)
         DeviceState *cpu_dev = qdev_new(machine->cpu_type);
         MIPSCPU *cpu = MIPS_CPU(cpu_dev);
 
+        qdev_prop_set_uint32(cpu_dev, "prid",
+                             sn1_cpu_processor(node->model_node, i)->prid);
+
         /*
          * Every existing address still resolves through this alias exactly as
          * it did through the shared system region directly; only the private

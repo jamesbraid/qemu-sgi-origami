@@ -143,6 +143,137 @@ static char *fuel_test_prom(void)
     return path;
 }
 
+static char *fuel_prid_prom(void)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree uint8_t *image = g_malloc0(PROM_SIZE);
+    char *path = NULL;
+    int fd;
+
+    stl_be_p(image, 0x100000ff);        /* branch to 0x400 */
+    stl_be_p(image + 0x004, 0);
+    stl_be_p(image + 0x400, 0x400c6000); /* mfc0 t4, Status */
+    stl_be_p(image + 0x404, 0x358c0080); /* enable 64-bit kernel addresses */
+    stl_be_p(image + 0x408, 0x408c6000); /* mtc0 t4, Status */
+    stl_be_p(image + 0x40c, 0);
+    stl_be_p(image + 0x410, 0x3c089200); /* local crosstalk pointer */
+    stl_be_p(image + 0x414, 0x0008403c);
+    stl_be_p(image + 0x418, 0x3c090100);
+    stl_be_p(image + 0x41c, 0x01094025);
+    stl_be_p(image + 0x420, 0x40097800); /* mfc0 t1, PRId */
+    stl_be_p(image + 0x424, 0xfd090108); /* publish in PI compare A */
+    stl_be_p(image + 0x428, 0x1000ffff);
+    stl_be_p(image + 0x42c, 0);
+
+    fd = g_file_open_tmp("sn1-fuel-prid-XXXXXX.bin", &path, &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(write(fd, image, PROM_SIZE), ==, (ssize_t)PROM_SIZE);
+    g_assert_cmpint(close(fd), ==, 0);
+    return path;
+}
+
+static void fuel_wait_prid(QTestState *qts, uint32_t expected)
+{
+    uint64_t value = 0;
+
+    for (unsigned int attempt = 0; attempt < 200; attempt++) {
+        value = qtest_readq(qts, BEDROCK_LOCAL + 0x108);
+        if (value) {
+            break;
+        }
+        g_usleep(10000);
+    }
+    g_assert_cmphex(value, ==, expected);
+}
+
+static QTestState *fuel_prid_start(const char *prom, const char *extra)
+{
+    g_autofree char *quoted = g_shell_quote(prom);
+
+    return qtest_initf("-M fuel,fuel-board-id-word=0x4abc,"
+                       "fuel-ioc3-subsystem-id=0xc30a,"
+                       "fuel-l1-type-code=0x61,"
+                       "fuel-bedrock-revision=0x2 "
+                       "-cpu R14000 -smp 1 -m 512M -bios %s "
+                       "-accel tcg,thread=multi -S %s", quoted, extra);
+}
+
+static void test_fuel_processor_prid(const void *data)
+{
+    g_autofree char *prom = NULL;
+    g_autofree char *quoted = NULL;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+
+    prom = fuel_prid_prom();
+    quoted = g_shell_quote(prom);
+    for (unsigned int which = 0; which < 2; which++) {
+        QTestState *qts;
+        uint32_t expected = which ? 0x0f24 : 0x0f23;
+
+        if (which) {
+            qts = qtest_initf("-M origin300 -cpu R14000 -smp 2 -m 512M "
+                              "-bios %s -accel tcg,thread=multi -S", quoted);
+        } else {
+            qts = fuel_prid_start(prom, "");
+        }
+        qtest_qmp_assert_success(qts, "{'execute':'cont'}");
+        fuel_wait_prid(qts, expected);
+        qtest_qmp_assert_success(qts, "{'execute':'stop'}");
+        qtest_system_reset(qts);
+        g_assert_cmphex(qtest_readq(qts, BEDROCK_LOCAL + 0x108), ==, 0);
+        qtest_qmp_assert_success(qts, "{'execute':'cont'}");
+        fuel_wait_prid(qts, expected);
+        qtest_quit(qts);
+    }
+    g_assert_cmpint(g_unlink(prom), ==, 0);
+}
+
+static void test_fuel_processor_prid_migration(const void *data)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree char *prom = NULL;
+    g_autofree char *directory = NULL;
+    g_autofree char *socket = NULL;
+    g_autofree char *uri = NULL;
+    QTestState *from, *to;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+
+    prom = fuel_prid_prom();
+    directory = g_dir_make_tmp("sn1-fuel-prid-migration-XXXXXX", &error);
+    g_assert_no_error(error);
+    socket = g_build_filename(directory, "migration.sock", NULL);
+    uri = g_strdup_printf("unix:%s", socket);
+    from = fuel_prid_start(prom, "");
+    to = fuel_prid_start(prom, "-incoming defer");
+    qtest_qmp_assert_success(from, "{'execute':'cont'}");
+    fuel_wait_prid(from, 0x0f23);
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    qtest_qmp_assert_success(from,
+        "{'execute':'migrate','arguments':{'uri':%s}}", uri);
+    sgi_wait_migration_status(from, "completed", 30);
+    sgi_wait_migration_status(to, "completed", 30);
+    g_assert_cmphex(qtest_readq(to, BEDROCK_LOCAL + 0x108), ==, 0x0f23);
+    qtest_qmp_assert_success(to, "{'execute':'stop'}");
+    qtest_system_reset(to);
+    g_assert_cmphex(qtest_readq(to, BEDROCK_LOCAL + 0x108), ==, 0);
+    qtest_qmp_assert_success(to, "{'execute':'cont'}");
+    fuel_wait_prid(to, 0x0f23);
+    qtest_quit(from);
+    qtest_quit(to);
+    g_assert_cmpint(g_unlink(prom), ==, 0);
+    g_assert_cmpint(rmdir(directory), ==, 0);
+}
+
 static QTestState *fuel_start(const char *prom)
 {
     g_autofree char *quoted = g_shell_quote(prom);
@@ -1210,6 +1341,10 @@ int main(int argc, char **argv)
     g_test_init(&argc, &argv, NULL);
     prom = fuel_test_prom();
     qtest_add_data_func("fuel/board-and-cpu", prom, test_fuel_board_and_cpu);
+    qtest_add_data_func("fuel/processor-prid", NULL,
+                        test_fuel_processor_prid);
+    qtest_add_data_func("fuel/processor-prid-migration", NULL,
+                        test_fuel_processor_prid_migration);
     qtest_add_data_func("fuel/mac-eeprom-machine", prom,
                         test_fuel_mac_eeprom_machine);
     qtest_add_data_func("fuel/cpu-grant", prom, test_fuel_cpu_grant);
