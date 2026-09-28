@@ -26,12 +26,15 @@ import unittest
 
 from lib_net import (DHCP_NAMES, OPENBSD_LOGIN_STAGES, OPENBSD_TRIPWIRES,
                      Console, GuestFault,
-                     HarnessError, IrixConsole, dhcp_kind,
+                     HarnessError, IrixConsole, arp_neighbor_line,
+                     arp_neighbor_mac,
+                     arp_resolution, dhcp_kind,
                      drive_irix_to_shell, lease_established, login_steps,
                      ordered_stages, summarise_pcap,
                      tftp_transfer, tftp_transfer_problems,
                      tftp_session_report,
                      transfer_result_pattern)
+from test_irix_tg import tg_acceptance_verdict
 
 
 # ---------------------------------------------------------------------------
@@ -65,6 +68,15 @@ def _pcap_bytes(frames) -> bytes:
         struct.pack("<IIII", 0, 0, len(frame), len(frame)) + frame
         for frame in frames)
     return header + body
+
+
+def _arp_frame(opcode, sender_mac, sender_ip, target_mac, target_ip,
+               ethernet_dst):
+    eth = ethernet_dst + sender_mac + b"\x08\x06"
+    arp = (b"\x00\x01\x08\x00\x06\x04" + opcode.to_bytes(2, "big")
+           + sender_mac + bytes(map(int, sender_ip.split(".")))
+           + target_mac + bytes(map(int, target_ip.split("."))))
+    return eth + arp
 
 
 def _tftp_frame(opcode, src_port, dst_port, body=b''):
@@ -177,6 +189,107 @@ class SummarisePcapTests(unittest.TestCase):
             "DHCPACK": 1,
         }))
 
+
+class ArpResolutionTests(unittest.TestCase):
+
+    def setUp(self):
+        self.guest_mac = bytes.fromhex("525400abcdef")
+        self.gateway_mac = bytes.fromhex("525400123456")
+        self.request = _arp_frame(
+            1, self.guest_mac, "10.0.2.15", bytes(6), "10.0.2.2",
+            b"\xff" * 6)
+        self.reply = _arp_frame(
+            2, self.gateway_mac, "10.0.2.2", self.guest_mac,
+            "10.0.2.15", self.guest_mac)
+
+    def test_matches_request_and_reply_for_the_requested_neighbor(self):
+        result = arp_resolution([self.request, self.reply],
+                                "10.0.2.15", "10.0.2.2")
+
+        self.assertEqual(result, {
+            "requests": 1,
+            "replies": 1,
+            "matching_replies": 1,
+            "responder_mac": "52:54:00:12:34:56",
+            "resolved": True,
+        })
+
+    def test_unrelated_or_malformed_arp_does_not_resolve_neighbor(self):
+        unrelated = _arp_frame(
+            2, self.gateway_mac, "10.0.2.2", self.guest_mac,
+            "10.0.2.15", self.guest_mac)
+
+        result = arp_resolution([unrelated, b"\x00" * 41],
+                                "10.0.2.15", "10.0.2.2")
+
+        self.assertFalse(result["resolved"])
+        self.assertEqual(result["matching_replies"], 0)
+
+    def test_reads_only_a_resolved_unicast_neighbor(self):
+        self.assertEqual(arp_neighbor_mac(
+            "? (10.0.2.2) at 52:54:00:12:34:56",
+            "10.0.2.2"), "52:54:00:12:34:56")
+        self.assertEqual(arp_neighbor_mac(
+            "? (10.0.2.2) at 52:55:a:0:2:2", "10.0.2.2"),
+            "52:55:0a:00:02:02")
+        self.assertIsNone(arp_neighbor_mac("? (10.0.2.2) at 00:00:00:00:00:00",
+                                           "10.0.2.2"))
+
+    def test_cold_check_detects_an_incomplete_neighbor_entry(self):
+        output = "? (10.0.2.2) at (incomplete)"
+
+        self.assertEqual(arp_neighbor_line(output, "10.0.2.2"), output)
+        self.assertIsNone(arp_neighbor_mac(output, "10.0.2.2"))
+
+
+class IrixTgVerdictTests(unittest.TestCase):
+
+    def setUp(self):
+        self.traffic = {
+            "ipkts_before": 0,
+            "ipkts_after": 1,
+            "opkts_before": 0,
+            "opkts_after": 1,
+            "ierrs_after": 0,
+            "arp_cache_cold": True,
+            "arp_requests": 1,
+            "arp_replies": 1,
+            "arp_matching_replies": 1,
+            "arp_neighbor_mac": "52:54:00:12:34:56",
+            "arp_responder_mac": "52:54:00:12:34:56",
+        }
+
+    def test_requires_the_existing_traffic_verdict_and_arp_resolution(self):
+        report = tg_acceptance_verdict(
+            True, True, True, True, self.traffic)
+
+        self.assertEqual(report, {"verdict": "PASS", "problems": []})
+
+    def test_rejects_a_non_cold_cache_or_missing_wire_exchange(self):
+        traffic = dict(self.traffic, arp_cache_cold=False,
+                       arp_matching_replies=0)
+
+        report = tg_acceptance_verdict(True, True, True, True, traffic)
+
+        self.assertEqual(report["verdict"], "FAIL")
+        self.assertEqual(len(report["problems"]), 2)
+
+    def test_rejects_guest_neighbor_mac_that_differs_from_the_reply(self):
+        traffic = dict(self.traffic, arp_responder_mac="52:54:00:aa:bb:cc")
+
+        report = tg_acceptance_verdict(True, True, True, True, traffic)
+
+        self.assertEqual(report["verdict"], "FAIL")
+        self.assertEqual(len(report["problems"]), 1)
+
+    def test_reports_an_unreadable_packet_capture(self):
+        traffic = dict(self.traffic, arp_capture_problem="file missing")
+
+        report = tg_acceptance_verdict(True, True, True, True, traffic)
+
+        self.assertEqual(report["verdict"], "FAIL")
+        self.assertTrue(any("file missing" in problem
+                            for problem in report["problems"]))
 
 class TftpTransferTests(unittest.TestCase):
 
