@@ -9960,6 +9960,10 @@ static void test_hq_query_answers_the_colour_index(void)
     gl_raster_pos2f(qts, 0, 0);
     g_assert_cmphex(gl_query(qts, GL_Q_RASTER_INDEX, 1), ==, gl_bits(9));
 
+    /* The short is signed: glIndexs(-1) is the index -1. */
+    gl_indexs(qts, -1);
+    g_assert_cmphex(gl_attribute_query(qts, 4), ==, gl_bits(-1));
+
     gl_word(qts, GL_INIT_RGB);
     g_assert_cmphex(gl_attribute_query(qts, 4), ==, gl_bits(0.25f));
     g_assert_cmphex(gl_query(qts, GL_Q_RASTER_INDEX, 1), ==, gl_bits(0.25f));
@@ -11472,6 +11476,94 @@ static void test_gl_colour_index_migration(void)
 }
 
 /*
+ * Which of the GL subsections a migration stream from qts carries: bit 0
+ * sgi-mgras/gl-raster, bit 1 gl-index, bit 2 gl-block. Each is sent only
+ * once some state has left what a binary without it keeps, so a guest
+ * that never used the feature migrates to such a binary.
+ */
+static unsigned gl_stream_subsections(QTestState *qts)
+{
+    static const char *const names[] = {
+        "sgi-mgras/gl-raster", "sgi-mgras/gl-index", "sgi-mgras/gl-block",
+    };
+    g_autofree char *tmpfs = NULL;
+    g_autofree char *path = NULL;
+    g_autofree char *uri = NULL;
+    g_autofree char *contents = NULL;
+    GError *err = NULL;
+    gsize length;
+    unsigned found = 0;
+
+    tmpfs = g_dir_make_tmp("sn0-mgras-gl-stream-XXXXXX", &err);
+    g_assert_no_error(err);
+    path = g_strdup_printf("%s/stream", tmpfs);
+    uri = g_strdup_printf("file:%s", path);
+    sgi_migrate_stopped(qts, uri);
+    g_assert_true(g_file_get_contents(path, &contents, &length, &err));
+    g_assert_no_error(err);
+    for (int i = 0; i < ARRAY_SIZE(names); i++) {
+        if (memmem(contents, length, names[i], strlen(names[i]))) {
+            found |= 1u << i;
+        }
+    }
+    unlink(path);
+    g_rmdir(tmpfs);
+    return found;
+}
+
+/*
+ * The GL subsections' rules, each against a state that meets only it.
+ * An RGBA context that drew and holds a vertex sends none; a moved raster
+ * position sends gl-raster; a vertex held with a colour index other than
+ * the initial 1, the current index being 1 again, sends gl-index; and a
+ * glBitmap image under way sends gl-block.
+ */
+static void test_gl_subsections_follow_their_state(void)
+{
+    QTestState *s;
+
+    s = qtest_init(MIGRATION_ARGS);
+    gl_enter_slot(s, GL_SLOT_A);
+    gl_word(s, GL_CONTEXT_OPENER);
+    gl_viewport(s, 0, 0, 128, 128);
+    gl_word(s, GL_BEGIN_TRIANGLES);
+    gl_vertex2f(s, 0, 0);
+    gl_vertex2f(s, 0.5f, 0);
+    gl_vertex2f(s, 0, 0.5f);
+    gl_vertex2f(s, -0.5f, 0);
+    g_assert_cmpuint(gl_stream_subsections(s), ==, 0);
+    qtest_quit(s);
+
+    s = qtest_init(MIGRATION_ARGS);
+    gl_enter_slot(s, GL_SLOT_A);
+    gl_word(s, GL_CONTEXT_OPENER);
+    gl_viewport(s, 0, 0, 128, 128);
+    gl_raster_pos2f(s, 0.5f, 0.5f);
+    g_assert_cmpuint(gl_stream_subsections(s), ==, 1);
+    qtest_quit(s);
+
+    s = qtest_init(MIGRATION_ARGS);
+    gl_enter_slot(s, GL_SLOT_A);
+    gl_word(s, GL_CONTEXT_OPENER);
+    gl_viewport(s, 0, 0, 128, 128);
+    gl_indexs(s, 5);
+    gl_word(s, GL_BEGIN_TRIANGLES);
+    gl_vertex2f(s, 0, 0);
+    gl_indexs(s, 1);
+    g_assert_cmpuint(gl_stream_subsections(s), ==, 2);
+    qtest_quit(s);
+
+    s = qtest_init(MIGRATION_ARGS);
+    gl_enter_slot(s, GL_SLOT_A);
+    gl_word(s, GL_CONTEXT_OPENER);
+    gl_bitmap_packet(s, 16, 4, 0, 0, 0, 0);
+    gl_word(s, GL_INLINE_BLOCK | 8);
+    gl_word(s, 0xffff0000);
+    g_assert_cmpuint(gl_stream_subsections(s), ==, 4);
+    qtest_quit(s);
+}
+
+/*
  * The longest block a header can frame: a 20-bit length of 0xfffff bytes
  * starting at byte 2 of its first word takes 0x40001 words. A migration
  * just after the header carries the discard, and the destination goes on
@@ -12497,6 +12589,8 @@ int main(int argc, char **argv)
                    test_gl_raster_position_migration);
     qtest_add_func("sn0/origin2000/mgras/gl-colour-index-migration",
                    test_gl_colour_index_migration);
+    qtest_add_func("sn0/origin2000/mgras/gl-subsections-follow-their-state",
+                   test_gl_subsections_follow_their_state);
     qtest_add_func("sn0/origin2000/mgras/gl-longest-block-migration",
                    test_gl_longest_block_migration);
     qtest_add_func("sn0/origin2000/mgras/"
