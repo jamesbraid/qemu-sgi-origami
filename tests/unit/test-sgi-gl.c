@@ -5,6 +5,7 @@
  * glFinish, the clear op a context builds, and unsupported rule sets.
  */
 #include "qemu/osdep.h"
+#include <math.h>
 #include "hw/display/sgi/rasterizer.h"
 
 #define W 64
@@ -625,6 +626,109 @@ static void test_get_state(void)
     g_assert_cmphex(out[3], ==, bits(1));
 }
 
+static float get_float(const SGIGLContext *c, uint32_t pname, unsigned i)
+{
+    uint32_t out[SGI_GL_GET_WORDS];
+    float f;
+
+    g_assert_cmpuint(i, <, get(c, pname, out));
+    memcpy(&f, &out[i], sizeof(f));
+    return f;
+}
+
+/*
+ * The current raster position (OpenGL 1.2.1, 2.12): initially (0, 0, 0,
+ * 1), valid, at distance 0 and white; glRasterPos carries its point
+ * through the modelview and projection matrices and the viewport, with
+ * depth range [0, 1], keeps clip w, takes the eye distance and the
+ * current colour clamped to [0, 1], and a point outside the view volume
+ * only resets the valid bit.
+ */
+static void test_raster_position(void)
+{
+    static const uint32_t viewport[4] = { 10, 20, 100, 50 };
+    uint32_t word[6], out[SGI_GL_GET_WORDS];
+    SGIGLContext c;
+
+    context_init(&c);
+    g_assert_cmpuint(get(&c, SGI_GL_CURRENT_RASTER_POSITION, out), ==, 4);
+    g_assert_cmphex(out[0], ==, 0);
+    g_assert_cmphex(out[1], ==, 0);
+    g_assert_cmphex(out[2], ==, 0);
+    g_assert_cmphex(out[3], ==, bits(1));
+    g_assert_cmpuint(get(&c, SGI_GL_CURRENT_RASTER_POSITION_VALID, out),
+                     ==, 1);
+    g_assert_cmphex(out[0], ==, 1);
+    g_assert_cmpfloat(get_float(&c, SGI_GL_CURRENT_RASTER_DISTANCE, 0), ==,
+                      0);
+    for (int i = 0; i < 4; i++) {
+        g_assert_cmpfloat(get_float(&c, SGI_GL_CURRENT_RASTER_COLOR, i), ==,
+                          1);
+        g_assert_cmpfloat(get_float(&c, SGI_GL_CURRENT_RASTER_TEXTURE_COORDS,
+                                    i), ==, i == 3);
+    }
+
+    /* Modelview: translate by (3, 4, 0); projection: glOrtho(0, 10, ...). */
+    word[0] = bits(3), word[1] = bits(4), word[2] = bits(0);
+    command(&c, NULL, SGI_GL_OP_TRANSLATE, word, 3);
+    word[0] = SGI_GL_PROJECTION;
+    command(&c, NULL, SGI_GL_OP_MATRIX_MODE, word, 1);
+    word[0] = bits(0), word[1] = bits(10), word[2] = bits(0);
+    word[3] = bits(10), word[4] = bits(-4), word[5] = bits(4);
+    command(&c, NULL, SGI_GL_OP_ORTHO, word, 6);
+    command(&c, NULL, SGI_GL_OP_VIEWPORT, viewport, 4);
+    word[0] = bits(2), word[1] = bits(-0.5f), word[2] = bits(0.25f);
+    command(&c, NULL, SGI_GL_OP_COLOR3F, word, 3);
+
+    /*
+     * Object (2, 1, 2): eye (5, 5, 2), clip (0, 0, -0.5, 1), window
+     * (10 + 50, 20 + 25, 0.25).
+     */
+    word[0] = bits(2), word[1] = bits(1), word[2] = bits(2);
+    command(&c, NULL, SGI_GL_OP_RASTER_POS3F, word, 3);
+    g_assert_cmpfloat(get_float(&c, SGI_GL_CURRENT_RASTER_POSITION, 0), ==,
+                      60);
+    g_assert_cmpfloat(get_float(&c, SGI_GL_CURRENT_RASTER_POSITION, 1), ==,
+                      45);
+    g_assert_cmpfloat(get_float(&c, SGI_GL_CURRENT_RASTER_POSITION, 2), ==,
+                      0.25f);
+    g_assert_cmpfloat(get_float(&c, SGI_GL_CURRENT_RASTER_POSITION, 3), ==,
+                      1);
+    get(&c, SGI_GL_CURRENT_RASTER_POSITION_VALID, out);
+    g_assert_cmphex(out[0], ==, 1);
+    g_assert_cmpfloat(get_float(&c, SGI_GL_CURRENT_RASTER_DISTANCE, 0), ==,
+                      sqrtf(54));
+    g_assert_cmpfloat(get_float(&c, SGI_GL_CURRENT_RASTER_COLOR, 0), ==, 1);
+    g_assert_cmpfloat(get_float(&c, SGI_GL_CURRENT_RASTER_COLOR, 1), ==, 0);
+    g_assert_cmpfloat(get_float(&c, SGI_GL_CURRENT_RASTER_COLOR, 2), ==,
+                      0.25f);
+    g_assert_cmpfloat(get_float(&c, SGI_GL_CURRENT_RASTER_COLOR, 3), ==, 1);
+
+    /* Object (6, 2, 0, 2): eye (12, 10, 0, 2), clip x 0.4 over w 2. */
+    word[0] = bits(6), word[1] = bits(2), word[2] = bits(0), word[3] = bits(2);
+    command(&c, NULL, SGI_GL_OP_RASTER_POS4F, word, 4);
+    g_assert_cmpfloat(get_float(&c, SGI_GL_CURRENT_RASTER_POSITION, 0), ==,
+                      70);
+    g_assert_cmpfloat(get_float(&c, SGI_GL_CURRENT_RASTER_POSITION, 3), ==,
+                      2);
+
+    /* x beyond the view volume: only the valid bit changes. */
+    word[0] = bits(8), word[1] = bits(1);
+    command(&c, NULL, SGI_GL_OP_RASTER_POS2F, word, 2);
+    get(&c, SGI_GL_CURRENT_RASTER_POSITION_VALID, out);
+    g_assert_cmphex(out[0], ==, 0);
+    g_assert_cmpfloat(get_float(&c, SGI_GL_CURRENT_RASTER_POSITION, 3), ==,
+                      2);
+
+    /* Back inside, with z 0 by default: window z 0.5. */
+    word[0] = bits(2), word[1] = bits(1);
+    command(&c, NULL, SGI_GL_OP_RASTER_POS2F, word, 2);
+    get(&c, SGI_GL_CURRENT_RASTER_POSITION_VALID, out);
+    g_assert_cmphex(out[0], ==, 1);
+    g_assert_cmpfloat(get_float(&c, SGI_GL_CURRENT_RASTER_POSITION, 2), ==,
+                      0.5f);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -639,5 +743,6 @@ int main(int argc, char **argv)
                     test_same_front_and_back);
     g_test_add_func("/sgi-gl/unsupported-rules", test_unsupported_rules);
     g_test_add_func("/sgi-gl/get-state", test_get_state);
+    g_test_add_func("/sgi-gl/raster-position", test_raster_position);
     return g_test_run();
 }
