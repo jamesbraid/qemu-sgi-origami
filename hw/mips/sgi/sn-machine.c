@@ -3208,11 +3208,12 @@ static MemoryRegion *sgi_machine_claim_xio_slot(Object *obj,
 /*
  * A board given its fabric outright: when that fabric is one of this
  * machine's slot proxies, the board must name that slot's own module and
- * widget, and be the first to take it.
+ * widget, and be the first to take it; it is then known by the slot's
+ * machine-wide name.
  */
 static bool sgi_machine_claim_xio_fabric(Object *obj, MemoryRegion *fabric,
                                          uint32_t module, uint32_t widget,
-                                         Error **errp)
+                                         char **name, Error **errp)
 {
     SGIMachineState *s = SGI_MACHINE(obj);
     const SGIModelTopology *t = sgi_machine_topology(MACHINE(s));
@@ -3239,6 +3240,7 @@ static bool sgi_machine_claim_xio_fabric(Object *obj, MemoryRegion *fabric,
             return false;
         }
         s->slot_claimed[i] = true;
+        *name = sgi_machine_xtalk_slot_name(t, slots[i]);
         return true;
     }
     return true;

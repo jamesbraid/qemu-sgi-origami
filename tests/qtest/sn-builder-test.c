@@ -420,6 +420,35 @@ static void test_boards_on_two_crossbows(const void *data)
         "XIO slot io7 already holds a board");
 }
 
+/*
+ * The same two positions reached by widget number, each board handed its
+ * slot's fabric outright and given no id: both are widget 14 of module 0,
+ * so each takes its name from the slot its fabric resolves to rather than
+ * from the widget, which would name both slot14.
+ */
+static void test_widget_boards_on_two_crossbows(const void *data)
+{
+    QTestState *qts = qtest_init(
+        "-M origin2000 -display none "
+        "-device sgi-pci-expansion,module=0,slot=14,"
+        "fabric=/machine/io5-fabric[0],fabric-widget-shift=48 "
+        "-device sgi-pci-expansion,module=0,slot=14,"
+        "fabric=/machine/io7-fabric[0],fabric-widget-shift=48");
+    g_autofree char *io5 = qom_child_type(qts, "/machine/module0", "io5");
+    g_autofree char *io7 = qom_child_type(qts, "/machine/module0", "io7");
+
+    g_assert_cmpstr(io5, ==, "sgi-pci-expansion");
+    g_assert_cmpstr(io7, ==, "sgi-pci-expansion");
+    qtest_quit(qts);
+
+    /* A board that already took the slot's name as its id keeps it. */
+    assert_device_pair_refused(
+        "sgi-xio-baseio,preset=menet,slot=io5,id=io7",
+        "sgi-pci-expansion,module=0,slot=14,fabric=/machine/io7-fabric[0],"
+        "fabric-widget-shift=48",
+        "module 0 already holds a device named 'io7'");
+}
+
 static void test_named_slot_takes_one_board(const void *data)
 {
     g_autoptr(GError) error = NULL;
@@ -448,7 +477,8 @@ static void test_named_slot_takes_one_board(const void *data)
 /*
  * A board given a slot's fabric outright, as a fixture does, must name
  * that slot's own module and widget: the board no longer lands on the
- * fabric's widget while claiming another.
+ * fabric's widget while claiming another. It is then known by that
+ * slot's name.
  */
 static void test_explicit_fabric_must_match_its_slot(const void *data)
 {
@@ -461,7 +491,7 @@ static void test_explicit_fabric_must_match_its_slot(const void *data)
     qts = qtest_init("-M origin2000 -display none -device "
                      "sgi-pci-expansion,module=0,slot=11,"
                      "fabric=/machine/io4-fabric[0],fabric-widget-shift=48");
-    g_assert_cmpstr(qom_child_type(qts, "/machine/module0", "slot11"), ==,
+    g_assert_cmpstr(qom_child_type(qts, "/machine/module0", "io4"), ==,
                     "sgi-pci-expansion");
     qtest_quit(qts);
 }
@@ -1646,6 +1676,8 @@ int main(int argc, char **argv)
                         test_origin2000_deskside_slots);
     qtest_add_data_func("sn/builder/boards-on-two-crossbows", NULL,
                         test_boards_on_two_crossbows);
+    qtest_add_data_func("sn/builder/widget-boards-on-two-crossbows", NULL,
+                        test_widget_boards_on_two_crossbows);
     qtest_add_data_func("sn/builder/board-ids-are-unique", NULL,
                         test_board_ids_are_unique);
     qtest_add_data_func("sn/builder/mgras-fitted-at-a-named-slot", NULL,
