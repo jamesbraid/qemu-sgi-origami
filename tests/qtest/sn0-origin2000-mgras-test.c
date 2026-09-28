@@ -12481,6 +12481,67 @@ static void test_gl_lighting_migration(void)
     gl_migrate(gl_lighting_setup, gl_lighting_check);
 }
 
+/*
+ * The context setup's 32 detail-texture table writes, 0xec10 with 0xc52,
+ * 0xc78, 0x194 and a value (0x1f three times, then 0x1d down to 1), are
+ * texture-only defaults and consumed without a log line; any other value
+ * is logged. Either way the words after them parse as headers.
+ */
+#define GL_TEXTURE_TABLE_HDR  0x0000ec10
+
+static void gl_texture_table(QTestState *qts, uint32_t value)
+{
+    gl_word(qts, GL_TEXTURE_TABLE_HDR);
+    gl_word(qts, 0xc52);
+    gl_word(qts, 0xc78);
+    gl_word(qts, 0x194);
+    gl_word(qts, value);
+}
+
+static void test_gl_texture_table_defaults_are_silent(void)
+{
+    g_autofree char *tmpfs = NULL;
+    g_autofree char *log = NULL;
+    g_autofree char *args = NULL;
+    g_autofree char *contents = NULL;
+    GError *err = NULL;
+    QTestState *t;
+
+    tmpfs = g_dir_make_tmp("sn0-mgras-gl-log-XXXXXX", &err);
+    g_assert_no_error(err);
+    log = g_strdup_printf("%s/unimp.log", tmpfs);
+    args = g_strdup_printf(MIGRATION_ARGS " -d unimp -D %s", log);
+    t = qtest_init(args);
+
+    gl_enter_slot(t, GL_SLOT_A);
+    gl_word(t, GL_CONTEXT_OPENER);
+    for (int i = 0; i < 3; i++) {
+        gl_texture_table(t, 0x1f);
+    }
+    for (uint32_t v = 0x1d; v >= 1; v--) {
+        gl_texture_table(t, v);
+    }
+    gl_depth_range(t, 0.5f, 1);
+    g_assert_cmphex(gl_query(t, GL_Q_DEPTH_RANGE, 1), ==, gl_bits(0.5f));
+    g_assert_true(g_file_get_contents(log, &contents, NULL, &err));
+    g_assert_no_error(err);
+    g_assert_null(strstr(contents, "texture table"));
+    g_assert_null(strstr(contents, "reg 0xec"));
+    g_free(contents);
+
+    gl_texture_table(t, 0x1e);
+    gl_depth_range(t, 0.25f, 1);
+    g_assert_cmphex(gl_query(t, GL_Q_DEPTH_RANGE, 1), ==, gl_bits(0.25f));
+    g_assert_true(g_file_get_contents(log, &contents, NULL, &err));
+    g_assert_no_error(err);
+    g_assert_nonnull(strstr(contents, "texture table write 0xc52 0xc78 "
+                            "0x194 0x1e"));
+
+    qtest_quit(t);
+    unlink(log);
+    g_rmdir(tmpfs);
+}
+
 int main(int argc, char **argv)
 {
     int ret;
@@ -13094,6 +13155,9 @@ int main(int argc, char **argv)
                    test_gl_dither_migration);
     qtest_add_func("sn0/origin2000/mgras/gl-lighting-migration",
                    test_gl_lighting_migration);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "gl-texture-table-defaults-are-silent",
+                   test_gl_texture_table_defaults_are_silent);
     qtest_add_func("sn0/origin2000/mgras/gl-subsections-follow-their-state",
                    test_gl_subsections_follow_their_state);
     qtest_add_func("sn0/origin2000/mgras/gl-longest-block-migration",
