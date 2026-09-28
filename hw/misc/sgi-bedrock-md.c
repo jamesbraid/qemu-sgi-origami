@@ -3003,6 +3003,16 @@ void sgi_bedrock_md_name_line(SGIBedrockMDState *s, uint64_t address)
     if (!s->named_lines || index >= s->directory_entries) {
         return;
     }
+    /*
+     * Test before setting. This is a timing measure, not a correctness
+     * rule: the bit ends up the same either way. The firmware's
+     * cache-flush loops name the same lines over and over from every
+     * processor, and on an eight-processor two-chassis pair an atomic
+     * write every time slowed them enough that the second node missed the
+     * firmware's global barrier ("Global barrier failed at line 5300",
+     * then a General Exception on node 0), as did taking the lock here.
+     * The one probe run with the test passed its boot.
+     */
     if (!test_bit(index, s->named_lines)) {
         set_bit_atomic(index, s->named_lines);
     }
