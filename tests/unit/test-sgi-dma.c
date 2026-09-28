@@ -1252,6 +1252,112 @@ static void test_fetch_reused(void)
     head_free(h);
 }
 
+/*
+ * The guest names every size a fetch resolves, so an invocation's words
+ * are capped over all its ranges, and a range that would pass the cap
+ * fails before it maps a page. Zero is the documented default, which a
+ * family raises by setting the cap.
+ */
+static void test_fetch_word_cap(void)
+{
+    Head *h = head_new();
+    SGIDMABus bus = bus_for(h, &head_ops);
+    uint64_t addrs[4];
+    SGIDMAPageList pl = { .addr = addrs, .npages = 4, .page_size = PAGE };
+    uint64_t big_addr[1] = { 8 << 20 };
+    SGIDMAPageList big = { .addr = big_addr, .npages = 1,
+                           .page_size = 8 << 20 };
+    SGICommandFetch f = { .context = 3, .decode = head_decode,
+                          .next = head_next, .max_words = 8 };
+    SGICommandFetch zeroed = { .context = 3, .decode = head_decode };
+    int maps;
+
+    setup();
+    pool_setup();
+    pool_page_list(h, addrs);
+    g_assert_cmpint(sgi_fetch(&f, &bus, &pl, 0, 9), ==, SGI_FAIL_BOUNDS);
+    g_assert_cmpint(maps_made, ==, 0);
+    g_assert_cmpuint(h->decode_calls, ==, 0);
+    g_assert_cmpuint(g_array_index(h->done, SGICompletion, 0).kind, ==,
+                     SGI_DONE_FAILED);
+    g_assert_cmpuint(g_array_index(h->done, SGICompletion, 0).payload, ==,
+                     SGI_FAIL_BOUNDS);
+
+    g_assert_cmpint(sgi_fetch(&f, &bus, &pl, 0, 8), ==, 0);
+    g_assert_cmpuint(g_array_index(h->done, SGICompletion, 1).payload, ==, 8);
+
+    /* The cap is the invocation's, over every range next() adds. */
+    h->next_calls = 0;
+    h->next_limit = 1;
+    h->next_offset = PAGE;
+    h->next_words = 4;
+    maps = maps_made;
+    g_assert_cmpint(sgi_fetch(&f, &bus, &pl, 0, 6), ==, SGI_FAIL_BOUNDS);
+    g_assert_cmpint(maps_made - maps, ==, 1);
+    g_assert_cmpuint(h->next_calls, ==, 1);
+    g_assert_null(f.segments);
+
+    /* A zeroed fetch has the default cap, well inside this 8 MiB pool. */
+    maps = maps_made;
+    g_assert_cmpint(sgi_fetch(&zeroed, &bus, &big, 0,
+                              SGI_FETCH_MAX_WORDS + 1), ==, SGI_FAIL_BOUNDS);
+    g_assert_cmpint(maps_made, ==, maps);
+    zeroed.max_words = SGI_FETCH_MAX_WORDS + 1;
+    g_assert_cmpint(sgi_fetch(&zeroed, &bus, &big, 0,
+                              SGI_FETCH_MAX_WORDS + 1), ==, 0);
+    g_assert_cmpuint(h->decoded->len, ==, 8 + SGI_FETCH_MAX_WORDS + 1);
+    g_assert_cmpint(maps_outstanding, ==, 0);
+    head_free(h);
+}
+
+/*
+ * Each range a list chains to is a segment held until the finish, so the
+ * ranges are capped too: a next() that keeps naming one word at a time
+ * stops at the cap, not at the pool's end. Zero is the default cap.
+ */
+static void test_fetch_segment_cap(void)
+{
+    Head *h = head_new();
+    SGIDMABus bus = bus_for(h, &head_ops);
+    uint64_t addrs[4];
+    SGIDMAPageList pl = { .addr = addrs, .npages = 4, .page_size = PAGE };
+    SGICommandFetch f = { .context = 3, .decode = head_decode,
+                          .next = head_next, .max_segments = 3 };
+    int maps;
+
+    setup();
+    pool_setup();
+    pool_page_list(h, addrs);
+    h->next_limit = UINT_MAX;
+    h->next_offset = 0;
+    h->next_words = 1;
+    maps = maps_made;
+    g_assert_cmpint(sgi_fetch_map(&f, &bus, &pl, 0, 1), ==, SGI_FAIL_BOUNDS);
+    g_assert_cmpuint(f.nsegments, ==, 3);
+    g_assert_cmpuint(h->next_calls, ==, 3);
+    g_assert_cmpint(maps_made - maps, ==, 3);
+    sgi_fetch_finish(&f, SGI_FAIL_BOUNDS, &head_ops, h);
+    g_assert_cmpuint(h->decode_calls, ==, 0);
+    g_assert_null(f.segments);
+
+    h->next_calls = 0;
+    h->next_limit = 2;
+    g_assert_cmpint(sgi_fetch(&f, &bus, &pl, 0, 1), ==, 0);
+    g_assert_cmpuint(h->decode_calls, ==, 3);
+    g_assert_cmpuint(g_array_index(h->done, SGICompletion, 1).payload, ==, 3);
+
+    /* The pool holds 4,096 one-word ranges; the default cap stops first. */
+    f.max_segments = 0;
+    h->next_calls = 0;
+    h->next_limit = UINT_MAX;
+    g_assert_cmpint(sgi_fetch_map(&f, &bus, &pl, 0, 1), ==, SGI_FAIL_BOUNDS);
+    g_assert_cmpuint(f.nsegments, ==, SGI_FETCH_MAX_SEGMENTS);
+    g_assert_cmpuint(h->next_calls, ==, SGI_FETCH_MAX_SEGMENTS);
+    sgi_fetch_finish(&f, SGI_FAIL_BOUNDS, &head_ops, h);
+    g_assert_cmpint(maps_outstanding, ==, 0);
+    head_free(h);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -1274,5 +1380,7 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-fetch/empty", test_fetch_empty);
     g_test_add_func("/sgi-fetch/nested", test_fetch_nested);
     g_test_add_func("/sgi-fetch/reused", test_fetch_reused);
+    g_test_add_func("/sgi-fetch/word-cap", test_fetch_word_cap);
+    g_test_add_func("/sgi-fetch/segment-cap", test_fetch_segment_cap);
     return g_test_run();
 }
