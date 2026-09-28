@@ -64,7 +64,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from lib_net import (HarnessError, IrixConsole, arp_neighbor_line,
                      arp_neighbor_mac,
-                     arp_resolution, drive_irix_to_shell,  # noqa: E402
+                     arp_resolution, drive_irix_to_shell,
+                     icmp_ipv4_exchange,  # noqa: E402
                      summarise_pcap)
 from lib_prom import MACHINES, file_sha256  # noqa: E402
 
@@ -150,6 +151,18 @@ def tg_acceptance_verdict(login_reached, tg1_present, tg_up, link_up, traffic):
         problems.append(
             "the guest gateway neighbor entry does not match the captured "
             "ARP reply")
+
+    guest_to_gateway = traffic.get("icmp_guest_to_gateway")
+    gateway_to_guest = traffic.get("icmp_gateway_to_guest")
+    if not isinstance(guest_to_gateway, int) or guest_to_gateway < 1:
+        problems.append("the capture has no guest-to-gateway ICMP IPv4 frame")
+    if not isinstance(gateway_to_guest, int) or gateway_to_guest < 1:
+        problems.append("the capture has no gateway-to-guest ICMP IPv4 frame")
+    invalid_packets = traffic.get("icmp_invalid_packets")
+    if not isinstance(invalid_packets, int) or invalid_packets != 0:
+        problems.append(
+            "the captured guest/gateway ICMP IPv4 frames include a malformed "
+            "IPv4 header or invalid checksum")
 
     return {
         "verdict": "PASS" if not problems else "FAIL",
@@ -413,6 +426,9 @@ if QemuSystemTest is not None:
             arp_wire = arp_resolution(
                 capture.get('frames', []) if isinstance(capture, dict) else [],
                 GUEST_ADDR, GATEWAY)
+            icmp_wire = icmp_ipv4_exchange(
+                capture.get('frames', []) if isinstance(capture, dict) else [],
+                GUEST_ADDR, GATEWAY)
 
             traffic = {
                 "ipkts_before": counters_before[0],
@@ -428,6 +444,9 @@ if QemuSystemTest is not None:
                 "arp_matching_replies": arp_wire["matching_replies"],
                 "arp_responder_mac": arp_wire["responder_mac"],
                 "arp_capture_problem": capture_problem,
+                "icmp_guest_to_gateway": icmp_wire["guest_to_gateway"],
+                "icmp_gateway_to_guest": icmp_wire["gateway_to_guest"],
+                "icmp_invalid_packets": icmp_wire["invalid_packets"],
             }
             report = tg_acceptance_verdict(
                 login_reached, tg1_present, tg_up, link_up, traffic)

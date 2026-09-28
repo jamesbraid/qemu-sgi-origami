@@ -28,7 +28,7 @@ from lib_net import (DHCP_NAMES, OPENBSD_LOGIN_STAGES, OPENBSD_TRIPWIRES,
                      Console, GuestFault,
                      HarnessError, IrixConsole, arp_neighbor_line,
                      arp_neighbor_mac,
-                     arp_resolution, dhcp_kind,
+                     arp_resolution, dhcp_kind, icmp_ipv4_exchange,
                      drive_irix_to_shell, lease_established, login_steps,
                      ordered_stages, summarise_pcap,
                      tftp_transfer, tftp_transfer_problems,
@@ -116,6 +116,24 @@ def _tftp_capture(data=b'file contents', filename=b'boot/sash64', error=False,
                                    b'\x00\x01unexpected'),
                        _tftp_frame(4, 69, 49152, b'\x00\x01')))
     return _pcap_bytes(frames)
+
+
+def _icmp_ipv4_frame(src_ip, dst_ip, valid_checksum=True):
+    eth = (b"\x52\x54\x00\x12\x34\x56\x52\x54\x00\xab\xcd\xef"
+           + b"\x08\x00")
+    header = bytearray(
+        b"\x45\x00\x00\x1c\x00\x00\x40\x00\x40\x01\x00\x00"
+        + bytes(map(int, src_ip.split(".")))
+        + bytes(map(int, dst_ip.split("."))))
+    total = sum((header[i] << 8) | header[i + 1]
+                for i in range(0, len(header), 2))
+    while total >> 16:
+        total = (total & 0xffff) + (total >> 16)
+    checksum = (~total) & 0xffff
+    header[10:12] = checksum.to_bytes(2, "big")
+    if not valid_checksum:
+        header[10] ^= 1
+    return eth + header + b"\x08\x00\x00\x00\x00\x00\x00\x00"
 
 
 class DhcpKindTests(unittest.TestCase):
@@ -257,6 +275,9 @@ class IrixTgVerdictTests(unittest.TestCase):
             "arp_matching_replies": 1,
             "arp_neighbor_mac": "52:54:00:12:34:56",
             "arp_responder_mac": "52:54:00:12:34:56",
+            "icmp_guest_to_gateway": 1,
+            "icmp_gateway_to_guest": 1,
+            "icmp_invalid_packets": 0,
         }
 
     def test_requires_the_existing_traffic_verdict_and_arp_resolution(self):
@@ -290,6 +311,50 @@ class IrixTgVerdictTests(unittest.TestCase):
         self.assertEqual(report["verdict"], "FAIL")
         self.assertTrue(any("file missing" in problem
                             for problem in report["problems"]))
+
+    def test_requires_bidirectional_icmp_with_valid_ipv4_checksums(self):
+        traffic = dict(self.traffic, icmp_guest_to_gateway=0,
+                       icmp_invalid_packets=1)
+
+        report = tg_acceptance_verdict(True, True, True, True, traffic)
+
+        self.assertEqual(report["verdict"], "FAIL")
+        self.assertEqual(len(report["problems"]), 2)
+
+
+class IcmpIpv4ExchangeTests(unittest.TestCase):
+
+    def test_counts_only_the_pair_and_checks_both_directions(self):
+        summary = icmp_ipv4_exchange([
+            _icmp_ipv4_frame("10.0.2.15", "10.0.2.2"),
+            _icmp_ipv4_frame("10.0.2.2", "10.0.2.15"),
+            _icmp_ipv4_frame("10.0.2.15", "224.0.0.1"),
+        ], "10.0.2.15", "10.0.2.2")
+
+        self.assertEqual(summary, {
+            "guest_to_gateway": 1,
+            "gateway_to_guest": 1,
+            "invalid_packets": 0,
+        })
+
+    def test_reports_invalid_header_checksum_on_matching_traffic(self):
+        summary = icmp_ipv4_exchange([
+            _icmp_ipv4_frame("10.0.2.15", "10.0.2.2", False),
+        ], "10.0.2.15", "10.0.2.2")
+
+        self.assertEqual(summary["guest_to_gateway"], 1)
+        self.assertEqual(summary["invalid_packets"], 1)
+
+    def test_counts_a_matching_malformed_header_as_invalid(self):
+        frame = bytearray(
+            _icmp_ipv4_frame("10.0.2.15", "10.0.2.2"))
+        frame[14] = 0x44  # IHL claims a 16-byte header.
+
+        summary = icmp_ipv4_exchange(
+            [bytes(frame)], "10.0.2.15", "10.0.2.2")
+
+        self.assertEqual(summary["guest_to_gateway"], 1)
+        self.assertEqual(summary["invalid_packets"], 1)
 
 class TftpTransferTests(unittest.TestCase):
 
