@@ -85,6 +85,8 @@ QEMU_BUILD_BUG_ON(NIC_ROM_SIZE != SGI_BRIDGE_ONEWIRE_RECORD_SIZE);
 
 /* The PCI error upper address: device number above PCI address 47:32. */
 #define PCI_ERR_DEVICE_SHIFT    16
+/* Response buffer error upper: the device at 22:20, the buffer at 19:16. */
+#define RESP_ERR_DEVICE_SHIFT   20
 
 /* The multiple-error flag at bit 31 has no enable bit. */
 #define BRIDGE_INT_STATUS       0x100
@@ -111,6 +113,10 @@ QEMU_BUILD_BUG_ON(NIC_ROM_SIZE != SGI_BRIDGE_ONEWIRE_RECORD_SIZE);
 #define INT_PCI_TARGET_ABORT    (1u << 15)
 /* The PCI group: abort, the three parity errors, master time-out, retries. */
 #define INT_PCI_GROUP           (0x3fu << 10)
+/* Bit 9: a read this chip sent for a device got no response in time. */
+#define INT_XREAD_REQ_TIMEOUT   (1u << 9)
+/* The response-buffer group: framing and error responses, the time-out. */
+#define INT_RESP_BUF_GROUP      ((1u << 28) | (1u << 26) | (1u << 9))
 /* A second error in a group before the first was cleared. */
 #define INT_MULTI_ERR           (1u << 31)
 /* All a guest may enable: bit 31, the multiple-error flag, has no bit. */
@@ -125,6 +131,7 @@ QEMU_BUILD_BUG_ON(NIC_ROM_SIZE != SGI_BRIDGE_ONEWIRE_RECORD_SIZE);
  * not.
  */
 #define INT_RESET_REQ_DSP_GRP   (1u << 3)
+#define INT_RESET_RESP_BUF_GRP  (1u << 4)
 /* Bit 6 clears the multiple-error flag. */
 #define INT_RESET_MULTI_ERR     (1u << 6)
 /* One bit per pin: send a clearing packet when that pin falls. */
@@ -1327,6 +1334,9 @@ static void sgi_bridge_write(void *opaque, hwaddr addr, uint64_t val,
             if ((uint32_t)val & INT_RESET_REQ_DSP_GRP) {
                 s->int_error &= ~INT_INVALID_ADDR;
             }
+            if ((uint32_t)val & INT_RESET_RESP_BUF_GRP) {
+                s->int_error &= ~INT_RESP_BUF_GROUP;
+            }
             if ((uint32_t)val & INT_RESET_MULTI_ERR) {
                 s->int_error &= ~INT_MULTI_ERR;
             }
@@ -1686,6 +1696,39 @@ static void sgi_bridge_pci_error(SGIBridgeState *s, uint32_t bit,
 }
 
 /*
+ * A read this chip sent for a device and a crossbar dropped: no response
+ * comes back, so the chip's own request timer expires (Bridge ASIC
+ * specification rev 4.0, table 58, "Crosstalk Read Request from PCI
+ * device time-out"; the Crossbow datasheet's "DMA to an unavailable
+ * Crossbow destination"). With bit 9 enabled it records the lower 48 bits
+ * of the PCI address, the response buffer and the requesting device in
+ * the response-buffer group. Table 58 names the Bridge error address
+ * registers as the destination; the response buffer error registers
+ * (tables 18 and 19) are the pair whose fields are a device, a buffer
+ * and 48 address bits, so the model takes them (inferred). It holds no
+ * response buffers, so the buffer field is zero. The timer expires at
+ * once: the read has already failed back to the device.
+ */
+static void sgi_bridge_read_timeout(SGIBridgeState *s)
+{
+    if (!(s->reg[SGI_BRIDGE_SLOT(BRIDGE_INT_ENABLE)] &
+          INT_XREAD_REQ_TIMEOUT)) {
+        return;
+    }
+    if (s->int_error & INT_RESP_BUF_GROUP) {
+        s->int_error |= INT_MULTI_ERR;
+    } else {
+        s->reg[SGI_BRIDGE_SLOT(BRIDGE_RESP_ERR_UPPER)] =
+            (s->dma_device << RESP_ERR_DEVICE_SHIFT) |
+            extract64(s->dma_pci_address, 32, 16);
+        s->reg[SGI_BRIDGE_SLOT(BRIDGE_RESP_ERR_LOWER)] =
+            (uint32_t)s->dma_pci_address;
+    }
+    s->int_error |= INT_XREAD_REQ_TIMEOUT;
+    sgi_bridge_raise_host_error(s);
+}
+
+/*
  * The cycle's PCI address: the device's ID select, one address line per
  * device from line 24, then the function and the register's word.
  */
@@ -2035,6 +2078,12 @@ static IOMMUTLBEntry sgi_bridge_translate_common(SGIBridgeState *s, int slot,
     } else {
         trace_sgi_bridge_dma_xlate_plain(addr, flag);
     }
+    /*
+     * The plain route serves a device that skips the byte lanes and names
+     * no slot here, so a timed-out read on it records device zero.
+     */
+    s->dma_pci_address = addr;
+    s->dma_device = slot >= 0 ? slot : 0;
 
     if (addr < BRIDGE_PCI_TRANSLATED) {
         /* Local: not carried to XIO at all. */
@@ -2722,6 +2771,16 @@ static bool sgi_bridge_xio_port_connect(Object *port, unsigned int index,
 }
 
 /* A reset from the far end of the link clears the chip's core. */
+/* Only a read owns a response buffer; a dropped write is never heard of. */
+static void sgi_bridge_xio_port_request_dropped(Object *port,
+                                                unsigned int index,
+                                                hwaddr addr, bool write)
+{
+    if (!write) {
+        sgi_bridge_read_timeout(SGI_BRIDGE(port));
+    }
+}
+
 static qemu_irq sgi_bridge_xio_port_reset_input(Object *port,
                                                 unsigned int index)
 {
@@ -2766,6 +2825,7 @@ static void sgi_bridge_class_init(ObjectClass *oc, const void *data)
     pc->packet_face = sgi_bridge_xio_port_packet_face;
     pc->connect = sgi_bridge_xio_port_connect;
     pc->reset_input = sgi_bridge_xio_port_reset_input;
+    pc->request_dropped = sgi_bridge_xio_port_request_dropped;
 }
 
 static const TypeInfo sgi_bridge_types[] = {

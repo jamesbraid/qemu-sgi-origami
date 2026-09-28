@@ -96,6 +96,13 @@ struct SGIXioBoardState {
     qemu_irq link_reset;
 
     /*
+     * The chip on the board's end of the link, set by build_widget(): a
+     * request of the board's that a crossbar drops is that chip's to
+     * report. NULL for a board with nothing to report it.
+     */
+    Object *link_chip;
+
+    /*
      * The link to a slot's Crossbow port a board fitted at launch claimed
      * from the machine, or NULL for a board the machine links itself or
      * one linked to nothing.

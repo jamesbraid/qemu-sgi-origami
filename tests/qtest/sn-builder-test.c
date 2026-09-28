@@ -671,6 +671,105 @@ static void test_pci_expansion_delivers_through_spare_fabric(const void *data)
 }
 
 /*
+ * A transfer the Crossbow drops has no response, so the spare board's
+ * Bridge hears of a dropped read only from its own request timer:
+ * interrupt status bit 9, with the PCI address and the requesting device
+ * in the response buffer error registers (Bridge ASIC specification rev
+ * 4.0, table 58; tables 18 and 19). A read naming widget 2 is an
+ * illegal destination, which the Crossbow also records on the port the
+ * transfer arrived by, IO4's widget 11; one naming widget 12, legal but
+ * empty, is dropped with nothing recorded at the Crossbow.
+ */
+#define DMA_REG_SOURCE          0x14
+#define DMA_REG_SOURCE_HI       0x1c
+#define DMA_GO_COPY             2
+#define BRIDGE_RESP_ERR_UPPER   0x060
+#define BRIDGE_RESP_ERR_LOWER   0x068
+#define BRIDGE_INT_STATUS       0x100
+#define BRIDGE_INT_ENABLE_REG   0x108
+#define BRIDGE_XREAD_TIMEOUT    (1u << 9)
+#define XBOW_LINK_STATUS(w)     (SMALL_WINDOW(0) + 0x100 + ((w) - 8) * 0x40 + \
+                                 0x10 + REG_DATA)
+#define XBOW_ILLEGAL_DEST       (1u << 17)
+#define SPARE_XBOW_WIDGET       11
+
+static uint64_t dropped_read_source(unsigned int widget)
+{
+    return ((uint64_t)widget << DEST_WIDGET_SHIFT) | 0x1000;
+}
+
+static QTestState *spare_card_read_from(uint64_t source)
+{
+    QTestState *qts = qtest_init(
+        "-M origin2000 -display none -device sgi-pci-expansion,"
+        "slot=io4 "
+        "-device sgi-bridge-dma-test,bus=io4.0,addr=0");
+
+    qtest_sysbus_mmio_map(qts, SPARE_BRIDGE, 0, SPARE_BASE);
+    spare_card_start(qts);
+    qtest_writel(qts, SPARE_REG(BRIDGE_INT_ENABLE_REG), BRIDGE_XREAD_TIMEOUT);
+    qtest_writel(qts, SPARE_WINDOW0 + DMA_REG_SOURCE, (uint32_t)source);
+    qtest_writel(qts, SPARE_WINDOW0 + DMA_REG_SOURCE_HI, source >> 32);
+    qtest_writel(qts, SPARE_WINDOW0 + DMA_REG_ADDRESS,
+                 (uint32_t)DEST_PCI_ADDRESS);
+    qtest_writel(qts, SPARE_WINDOW0 + DMA_REG_ADDRESS_HI,
+                 DEST_PCI_ADDRESS >> 32);
+    qtest_writel(qts, SPARE_WINDOW0 + DMA_REG_LENGTH, sizeof(uint32_t));
+    qtest_writel(qts, SPARE_WINDOW0 + DMA_REG_GO, DMA_GO_COPY);
+    return qts;
+}
+
+static void assert_spare_read_timed_out(QTestState *qts, uint64_t source)
+{
+    g_assert_cmphex(qtest_readl(qts, SPARE_REG(BRIDGE_INT_STATUS)) &
+                    BRIDGE_XREAD_TIMEOUT, ==, BRIDGE_XREAD_TIMEOUT);
+    g_assert_cmphex(qtest_readl(qts, SPARE_REG(BRIDGE_RESP_ERR_UPPER)), ==,
+                    (CARD_SLOT << 20) | ((source >> 32) & 0xffff));
+    g_assert_cmphex(qtest_readl(qts, SPARE_REG(BRIDGE_RESP_ERR_LOWER)), ==,
+                    (uint32_t)source);
+}
+
+static void test_dropped_read_to_illegal_widget_times_out(const void *data)
+{
+    uint64_t source = dropped_read_source(2);
+    QTestState *qts = spare_card_read_from(source);
+
+    assert_spare_read_timed_out(qts, source);
+    g_assert_cmphex(qtest_readl(qts, XBOW_LINK_STATUS(SPARE_XBOW_WIDGET)) &
+                    XBOW_ILLEGAL_DEST, ==, XBOW_ILLEGAL_DEST);
+    qtest_quit(qts);
+}
+
+static void test_dropped_read_to_empty_widget_times_out(const void *data)
+{
+    uint64_t source = dropped_read_source(12);
+    QTestState *qts = spare_card_read_from(source);
+
+    assert_spare_read_timed_out(qts, source);
+    g_assert_cmphex(qtest_readl(qts, XBOW_LINK_STATUS(SPARE_XBOW_WIDGET)) &
+                    XBOW_ILLEGAL_DEST, ==, 0);
+    qtest_quit(qts);
+}
+
+/* A dropped write has no response to wait for, so nothing is recorded. */
+static void test_dropped_write_records_nothing(const void *data)
+{
+    QTestState *qts = qtest_init(
+        "-M origin2000 -display none -device sgi-pci-expansion,"
+        "slot=io4 "
+        "-device sgi-bridge-dma-test,bus=io4.0,addr=0");
+
+    qtest_sysbus_mmio_map(qts, SPARE_BRIDGE, 0, SPARE_BASE);
+    spare_card_start(qts);
+    qtest_writel(qts, SPARE_REG(BRIDGE_INT_ENABLE_REG), BRIDGE_XREAD_TIMEOUT);
+    spare_card_transfer(qts, dropped_read_source(12), sizeof(uint32_t),
+                        DEST_SEED);
+    g_assert_cmphex(qtest_readl(qts, SPARE_REG(BRIDGE_INT_STATUS)) &
+                    BRIDGE_XREAD_TIMEOUT, ==, 0);
+    qtest_quit(qts);
+}
+
+/*
  * ---- Inbound addressability and interrupt delivery ----
  *
  * These tests fit a `-device` board at IO4, an empty slot whose widget is
@@ -1612,6 +1711,12 @@ int main(int argc, char **argv)
                         NULL, test_pci_expansion_attaches_at_a_named_slot);
     qtest_add_data_func("sn/builder/xio-baseio-fits-only-io1", NULL,
                         test_xio_baseio_fits_only_io1);
+    qtest_add_data_func("sn/builder/dropped-read-to-illegal-widget-times-out",
+                        NULL, test_dropped_read_to_illegal_widget_times_out);
+    qtest_add_data_func("sn/builder/dropped-read-to-empty-widget-times-out",
+                        NULL, test_dropped_read_to_empty_widget_times_out);
+    qtest_add_data_func("sn/builder/dropped-write-records-nothing", NULL,
+                        test_dropped_write_records_nothing);
     qtest_add_data_func("sn/builder/pci-expansion-delivers-through-spare-"
                         "fabric", NULL,
                         test_pci_expansion_delivers_through_spare_fabric);

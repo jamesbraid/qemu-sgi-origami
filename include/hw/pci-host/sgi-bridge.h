@@ -393,6 +393,14 @@ struct SGIBridgeState {
      */
     uint32_t int_error;
 
+    /*
+     * The transfer the last DMA translation served: the PCI address and
+     * the requesting device, which a read the crossbar drops is recorded
+     * against. Only meaningful during that transfer, so not migrated.
+     */
+    hwaddr dma_pci_address;
+    unsigned int dma_device;
+
     /* What the identification register answers with. */
     uint32_t revision;
     uint32_t part;

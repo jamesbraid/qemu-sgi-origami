@@ -167,6 +167,7 @@ static bool pci_expansion_build_widget(SGIXioBoardState *board,
     qemu_add_machine_init_done_notifier(&s->machine_done);
     board->link_reset = qdev_get_gpio_in_named(DEVICE(s->bridge),
                                                 "link-reset", 0);
+    board->link_chip = OBJECT(s->bridge);
 
     return true;
 }

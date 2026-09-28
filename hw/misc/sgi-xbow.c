@@ -983,6 +983,20 @@ static uint64_t sgi_xbow_illegal_offset(const SGIXbowState *s, hwaddr addr)
  * entered by is what selects the status register that records it. Nothing is
  * delivered and no value is invented for a read.
  */
+/*
+ * A dropped request has no response, so the widget that sent it learns of
+ * the loss from its own request timer: a Bridge's read times out. The
+ * sender is whatever the receiving port's link joins.
+ */
+static void sgi_xbow_drop(SGIXbowState *s, unsigned int port,
+                          unsigned int widget, uint64_t offset, bool write)
+{
+    sgi_xio_port_request_dropped(s->peer_port[port], s->peer_index[port],
+                                 ((uint64_t)widget <<
+                                  SGI_XIO_PACKET_ADDRESS_BITS) | offset,
+                                 write);
+}
+
 static MemTxResult sgi_xbow_illegal_read(void *opaque, hwaddr addr,
                                          uint64_t *data, unsigned int size,
                                          MemTxAttrs attrs)
@@ -994,6 +1008,8 @@ static MemTxResult sgi_xbow_illegal_read(void *opaque, hwaddr addr,
     sgi_xbow_record_illegal_destination(s, context->link,
                                         sgi_xbow_illegal_widget(s, addr),
                                         sgi_xbow_illegal_offset(s, addr));
+    sgi_xbow_drop(s, context->link, sgi_xbow_illegal_widget(s, addr),
+                  sgi_xbow_illegal_offset(s, addr), false);
     return MEMTX_ERROR;
 }
 
@@ -1007,6 +1023,8 @@ static MemTxResult sgi_xbow_illegal_write(void *opaque, hwaddr addr,
     sgi_xbow_record_illegal_destination(s, context->link,
                                         sgi_xbow_illegal_widget(s, addr),
                                         sgi_xbow_illegal_offset(s, addr));
+    sgi_xbow_drop(s, context->link, sgi_xbow_illegal_widget(s, addr),
+                  sgi_xbow_illegal_offset(s, addr), true);
     return MEMTX_ERROR;
 }
 
@@ -1034,8 +1052,141 @@ static const MemoryRegionOps sgi_xbow_illegal_ops = {
 };
 
 /*
- * Build one directed route: what a packet entering on `port` and addressed to
- * `link` reaches, in both the processor and packet XIO views. The
+ * The same illegal destinations on the packet path, where a widget's
+ * slice is a whole 48-bit XIO space: a Bridge transfer naming widget 1
+ * to 7 is an illegal-destination error on the port it arrived by, the
+ * same as a processor's (the Crossbow datasheet's "DMA to an unavailable
+ * Crossbow destination").
+ */
+static MemTxResult sgi_xbow_packet_illegal_access(SGIXbowLink *context,
+                                                  hwaddr addr, bool write)
+{
+    SGIXbowState *s = context->xbow;
+    unsigned int widget = XBOW_FIRST_ILLEGAL_WIDGET +
+                          (addr >> SGI_XIO_PACKET_ADDRESS_BITS);
+    uint64_t offset = addr & MAKE_64BIT_MASK(0, SGI_XIO_PACKET_ADDRESS_BITS);
+
+    sgi_xbow_record_illegal_destination(s, context->link, widget, offset);
+    sgi_xbow_drop(s, context->link, widget, offset, write);
+    return MEMTX_ERROR;
+}
+
+static MemTxResult sgi_xbow_packet_illegal_read(void *opaque, hwaddr addr,
+                                                uint64_t *data,
+                                                unsigned int size,
+                                                MemTxAttrs attrs)
+{
+    *data = 0;
+    return sgi_xbow_packet_illegal_access(opaque, addr, false);
+}
+
+static MemTxResult sgi_xbow_packet_illegal_write(void *opaque, hwaddr addr,
+                                                 uint64_t value,
+                                                 unsigned int size,
+                                                 MemTxAttrs attrs)
+{
+    return sgi_xbow_packet_illegal_access(opaque, addr, true);
+}
+
+static const MemoryRegionOps sgi_xbow_packet_illegal_ops = {
+    .read_with_attrs = sgi_xbow_packet_illegal_read,
+    .write_with_attrs = sgi_xbow_packet_illegal_write,
+    .endianness = DEVICE_BIG_ENDIAN,
+    .valid.min_access_size = 1,
+    .valid.max_access_size = 8,
+    .valid.unaligned = true,
+    .impl.min_access_size = 1,
+    .impl.max_access_size = 8,
+    .impl.unaligned = true,
+};
+
+/*
+ * A legal destination whose link is down or empty, or the port's own: the
+ * number is legal, so nothing latches here (the Crossbow datasheet: an
+ * unavailable link alone establishes no new retry-exhaustion event), and
+ * the request is dropped, so its sender's timer reports it. One pair of
+ * ops serves both paths; the region's size says which slice a widget
+ * takes.
+ */
+static MemTxResult sgi_xbow_unreachable_access(SGIXbowLink *context,
+                                               hwaddr addr, bool write,
+                                               uint64_t slice)
+{
+    SGIXbowState *s = context->xbow;
+
+    sgi_xbow_drop(s, context->link, SGI_XBOW_FIRST_WIDGET + addr / slice,
+                  addr % slice, write);
+    return MEMTX_ERROR;
+}
+
+static MemTxResult sgi_xbow_unreachable_read(void *opaque, hwaddr addr,
+                                             uint64_t *data, unsigned int size,
+                                             MemTxAttrs attrs)
+{
+    SGIXbowLink *context = opaque;
+
+    *data = 0;
+    return sgi_xbow_unreachable_access(context, addr, false,
+                                       context->xbow->span);
+}
+
+static MemTxResult sgi_xbow_unreachable_write(void *opaque, hwaddr addr,
+                                              uint64_t value, unsigned int size,
+                                              MemTxAttrs attrs)
+{
+    SGIXbowLink *context = opaque;
+
+    return sgi_xbow_unreachable_access(context, addr, true,
+                                       context->xbow->span);
+}
+
+static MemTxResult sgi_xbow_packet_unreachable_read(void *opaque, hwaddr addr,
+                                                    uint64_t *data,
+                                                    unsigned int size,
+                                                    MemTxAttrs attrs)
+{
+    *data = 0;
+    return sgi_xbow_unreachable_access(opaque, addr, false,
+                                       SGI_XIO_PACKET_SIZE);
+}
+
+static MemTxResult sgi_xbow_packet_unreachable_write(void *opaque,
+                                                     hwaddr addr,
+                                                     uint64_t value,
+                                                     unsigned int size,
+                                                     MemTxAttrs attrs)
+{
+    return sgi_xbow_unreachable_access(opaque, addr, true,
+                                       SGI_XIO_PACKET_SIZE);
+}
+
+static const MemoryRegionOps sgi_xbow_unreachable_ops = {
+    .read_with_attrs = sgi_xbow_unreachable_read,
+    .write_with_attrs = sgi_xbow_unreachable_write,
+    .endianness = DEVICE_BIG_ENDIAN,
+    .valid.min_access_size = 1,
+    .valid.max_access_size = 8,
+    .valid.unaligned = true,
+    .impl.min_access_size = 1,
+    .impl.max_access_size = 8,
+    .impl.unaligned = true,
+};
+
+static const MemoryRegionOps sgi_xbow_packet_unreachable_ops = {
+    .read_with_attrs = sgi_xbow_packet_unreachable_read,
+    .write_with_attrs = sgi_xbow_packet_unreachable_write,
+    .endianness = DEVICE_BIG_ENDIAN,
+    .valid.min_access_size = 1,
+    .valid.max_access_size = 8,
+    .valid.unaligned = true,
+    .impl.min_access_size = 1,
+    .impl.max_access_size = 8,
+    .impl.unaligned = true,
+};
+
+/*
+ * Build one directed route: what a packet entering on `port` and addressed
+ * to `link` reaches, in both the processor and packet XIO views. The
  * destination `link`'s own face must already be set. sgi_xbow_realize()
  * builds every route this way as the Crossbow comes up, and
  * sgi_xbow_attach_endpoint_live() builds the routes into a widget attached
@@ -1531,6 +1682,9 @@ static void sgi_xbow_realize(DeviceState *dev, Error **errp)
         g_autofree char *missing =
             g_strdup_printf("sgi-xbow.widget%u.illegal-destinations",
                             sgi_xbow_widget(port));
+        g_autofree char *unreachable =
+            g_strdup_printf("sgi-xbow.widget%u.unreachable-destinations",
+                            sgi_xbow_widget(port));
 
         /* The processor view is exactly sixteen of the machine's spans. */
         memory_region_set_size(&s->ingress[port], SGI_XBOW_WIDGETS * s->span);
@@ -1543,14 +1697,43 @@ static void sgi_xbow_realize(DeviceState *dev, Error **errp)
         memory_region_add_subregion(&s->ingress[port],
                                     (hwaddr)XBOW_FIRST_ILLEGAL_WIDGET *
                                     s->span, &s->illegal[port]);
+        memory_region_init_io(&s->unreachable[port], OBJECT(dev),
+                              &sgi_xbow_unreachable_ops,
+                              &s->link_context[port], unreachable,
+                              SGI_XBOW_LINKS * s->span);
+        memory_region_add_subregion_overlap(
+            &s->ingress[port], (hwaddr)SGI_XBOW_FIRST_WIDGET * s->span,
+            &s->unreachable[port], -1);
         sysbus_init_mmio(sbd, &s->ingress[port]);
         {
             g_autofree char *regs = g_strdup_printf("%s.packet", view);
+            g_autofree char *packet_missing =
+                g_strdup_printf("%s.packet", missing);
+            g_autofree char *packet_unreachable =
+                g_strdup_printf("%s.packet", unreachable);
 
             memory_region_init_alias(&s->packet_regs_view[port], OBJECT(dev),
                                      regs, &s->regs, 0, s->span);
             memory_region_add_subregion(&s->packet_ingress[port], 0,
                                         &s->packet_regs_view[port]);
+            memory_region_init_io(&s->packet_illegal[port], OBJECT(dev),
+                                  &sgi_xbow_packet_illegal_ops,
+                                  &s->link_context[port], packet_missing,
+                                  (uint64_t)XBOW_ILLEGAL_WIDGETS <<
+                                  SGI_XIO_PACKET_ADDRESS_BITS);
+            memory_region_add_subregion(
+                &s->packet_ingress[port],
+                (hwaddr)XBOW_FIRST_ILLEGAL_WIDGET <<
+                SGI_XIO_PACKET_ADDRESS_BITS, &s->packet_illegal[port]);
+            memory_region_init_io(&s->packet_unreachable[port], OBJECT(dev),
+                                  &sgi_xbow_packet_unreachable_ops,
+                                  &s->link_context[port], packet_unreachable,
+                                  (uint64_t)SGI_XBOW_LINKS <<
+                                  SGI_XIO_PACKET_ADDRESS_BITS);
+            memory_region_add_subregion_overlap(
+                &s->packet_ingress[port],
+                (hwaddr)SGI_XBOW_FIRST_WIDGET << SGI_XIO_PACKET_ADDRESS_BITS,
+                &s->packet_unreachable[port], -1);
         }
 
         for (link = 0; link < SGI_XBOW_LINKS; link++) {
@@ -1879,6 +2062,10 @@ static bool sgi_xbow_xio_port_connect(Object *port, unsigned int index,
         error_setg(errp, "a Crossbow port links to a widget, not to "
                    "another crossbar");
         return false;
+    }
+    if (index >= SGI_XBOW_FIRST_WIDGET && index < SGI_XBOW_WIDGETS) {
+        s->peer_port[index - SGI_XBOW_FIRST_WIDGET] = peer->port;
+        s->peer_index[index - SGI_XBOW_FIRST_WIDGET] = peer->index;
     }
     if (!DEVICE(s)->realized) {
         return sgi_xbow_attach_endpoint(s, index, peer->cpu_face,
