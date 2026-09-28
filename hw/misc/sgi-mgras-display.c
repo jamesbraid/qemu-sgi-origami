@@ -254,19 +254,23 @@ void sgi_mgras_display_resolve_row(void *opaque, unsigned y, uint32_t *dst)
  * 1280x1024 at 60 Hz give 1065 lines of 840 clocks.
  *
  * The VC3 clock is half the pixel clock, which the RAMDAC's PLL makes from
- * a 33 MHz reference, or 64 MHz with 0x072408 bit 24 set, as
+ * a 33 MHz reference as
  *     f_ref * (4 * (v + 2) + cntl[7:6]) /
  *     ((r + 2) * 2^cntl[5:4] * 2^cntl[2])
  * from DAC registers 0x0c (r), 0x0f (v) and 0x09 (cntl). IRIX programs
  * r = 2, v = 4, cntl = 0x91: 107.25 MHz, so 894,600 clocks at 53.625 MHz,
  * 59.943 Hz rather than the nominal 60.
  *
- * All of this is inferred, not established hardware behaviour: the table
- * walk from every timing table IRIX ships and MAME's VC2 model, the PLL
+ * This is inferred, not established hardware behaviour: the table walk
+ * from every timing table IRIX ships and MAME's VC2 model, the PLL
  * relation and the clock ratio from the rates SGI's timing compiler
- * records for those tables, the reference select from the kernel pairing
- * it with the tables' reference-clock field. See the timing section of
+ * records for those tables. See the timing section of
  * docs/datasheets/mgras-raster-display.md in the Origami repository.
+ *
+ * The kernel sets 0x072408 bit 24 when a timing file asks for the other
+ * PLL reference, but no shipped file does, and nothing gives that
+ * reference's frequency. The model's 64 MHz for it is unknown, not
+ * inferred: a placeholder no stock mode reaches.
  */
 #define MGRAS_VC3_VID_EP 0x00
 #define MGRAS_VT_DURATION(h) (((h) >> 8) & 0x7f)
