@@ -2409,6 +2409,8 @@ static const MemoryRegionOps md_memory_ops = {
  * - A line first seen owned takes a clean copy for its owner, so a flush
  *   drops it without a write-back.
  * - A line followed by more than 16 holders is left alone.
+ * - A prefetch is served only on a watched page; elsewhere it changes
+ *   neither the word nor the copies.
  * - Requests complete at once; the busy and wait states never appear.
  * - Watched pages keep their overlay until displaced, and the processor
  *   runs each access to one as a device access.
@@ -2418,7 +2420,8 @@ static const MemoryRegionOps md_memory_ops = {
  * processor or interface the machine does not have -- are left alone. So
  * is a line whose word is marked with a check error while the directory
  * checks ECC; with the ignore-ECC bit set nothing is checked, so such a
- * line changes like any other and its check field is kept as written.
+ * line changes like any other and its check field is kept as written,
+ * which is model policy.
  */
 /* The unit watches whole 4 KiB pages: one overlay covers 32 lines. */
 #define MD_WATCH_PAGE 4096
@@ -2768,7 +2771,9 @@ static uint8_t md_directory_request(SGIBedrockMDState *s,
     /*
      * Written as a backdoor write is: with the ignore-ECC bit set the old
      * check field is kept and a word that is then not a codeword starts
-     * being checked; otherwise the check field is regenerated.
+     * being checked; otherwise the check field is regenerated. That the
+     * unit's own rewrite follows the backdoor rule is model policy, not an
+     * established hardware rule (the memory-directory datasheet).
      */
     if (s->directory_config & 2) {
         word |= old & md_directory_check_mask(premium);
@@ -2834,9 +2839,10 @@ static void md_watched_access(SGIBedrockMDState *s,
         /*
          * An instruction fetch arrives here as a read too and is served
          * as its algorithm's load miss. That is inferred: the manual
-         * gives the request for load and store misses only (R10000 User's
+         * gives the request for load and store misses (R10000 User's
          * Manual version 2.0, section 4.4, "Descriptions of the Cache
-         * Algorithms"), never for an instruction miss.
+         * Algorithms"), and its block read protocol covers an instruction
+         * miss without saying whether it reads shared or exclusive.
          */
         if (attrs.mips_cca == 4) {
             /* Under coherent exclusive a load miss reads exclusive. */
@@ -3040,14 +3046,16 @@ void sgi_bedrock_md_name_line(SGIBedrockMDState *s, uint64_t address)
         return;
     }
     /*
-     * Test before setting. This is a timing measure, not a correctness
-     * rule: the bit ends up the same either way. The firmware's
-     * cache-flush loops name the same lines over and over from every
-     * processor, and on an eight-processor two-chassis pair an atomic
-     * write every time slowed them enough that the second node missed the
-     * firmware's global barrier ("Global barrier failed at line 5300",
-     * then a General Exception on node 0), as did taking the lock here.
-     * The one probe run with the test passed its boot.
+     * Test before setting, so the firmware's cache-flush loops, which name
+     * the same lines over and over from every processor, do not each make
+     * an atomic write to a shared word. It costs a naming now and then: a
+     * processor that finds the bit set while md_watch_line() spends it
+     * leaves it clear, and the next read of the line's word watches
+     * nothing. No failure is known to need the test. The eight-processor
+     * pair's "Global barrier failed at line 5300", once put down to the
+     * cost of an atomic write or the lock here, was a board-ID read the
+     * re-entrancy guard refused on the system-request path (run
+     * prom-20260928T101446-25b8e2); sn1-node now exempts that region.
      */
     if (!test_bit(index, s->named_lines)) {
         set_bit_atomic(index, s->named_lines);
