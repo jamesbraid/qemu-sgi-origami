@@ -62,8 +62,10 @@ import time
 # verdict module the same way the other functional tests here find theirs.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from lib_net import (HarnessError, IrixConsole,  # noqa: E402
-                     drive_irix_to_shell)
+from lib_net import (HarnessError, IrixConsole, arp_neighbor_line,
+                     arp_neighbor_mac,
+                     arp_resolution, drive_irix_to_shell,  # noqa: E402
+                     summarise_pcap)
 from lib_prom import MACHINES, file_sha256  # noqa: E402
 
 def tg_acceptance_verdict(login_reached, tg1_present, tg_up, link_up, traffic):
@@ -127,6 +129,27 @@ def tg_acceptance_verdict(login_reached, tg1_present, tg_up, link_up, traffic):
     elif ie != 0:
         problems.append(
             f"tg1 reported {ie} input errors; the frames did not arrive clean")
+
+    if traffic.get("arp_cache_cold") is not True:
+        problems.append(
+            "the gateway ARP cache was not confirmed empty before ping")
+    capture_problem = traffic.get("arp_capture_problem")
+    if capture_problem:
+        problems.append(
+            f"the TG packet capture could not be read: {capture_problem}")
+    requests = traffic.get("arp_requests")
+    replies = traffic.get("arp_replies")
+    matching = traffic.get("arp_matching_replies")
+    if not all(isinstance(value, int) and value > 0
+               for value in (requests, replies, matching)):
+        problems.append(
+            "the captured wire has no matching gateway ARP exchange")
+    neighbor_mac = traffic.get("arp_neighbor_mac")
+    responder_mac = traffic.get("arp_responder_mac")
+    if not isinstance(neighbor_mac, str) or neighbor_mac != responder_mac:
+        problems.append(
+            "the guest gateway neighbor entry does not match the captured "
+            "ARP reply")
 
     return {
         "verdict": "PASS" if not problems else "FAIL",
@@ -235,6 +258,12 @@ if QemuSystemTest is not None:
             ipkts, ierrs, opkts = (int(v) for v in triple.split(","))
             return ipkts, ierrs, opkts
 
+        def _read_arp_neighbor(self, con, tag):
+            pos, marker = con._run_to_marker("arp -an", tag, timeout=60)
+            output = bytes(con.buf[pos:marker.start()]).decode(
+                "utf-8", errors="replace")
+            return arp_neighbor_line(output, GATEWAY)
+
         def _configure_tg(self, con):
             """Bring tg1 up with the SLIRP guest address on its own subnet (the
             gateway is directly reachable, no route needed). Returns
@@ -328,14 +357,27 @@ if QemuSystemTest is not None:
             link_line = None
             counters_before = (None, None, None)
             counters_after = (None, None, None)
+            arp_cache_cold = False
+            arp_neighbor = None
             try:
                 try:
                     drive_irix_to_shell(con, LOGIN_BUDGET_SECONDS)
                     login_reached = True
                     tg1_present, tg_up = self._configure_tg(con)
                     link_up, link_line = self._await_link(con)
+                    arp_cache_cold = (
+                        self._read_arp_neighbor(con, "arp_before") is None)
+                    if not arp_cache_cold:
+                        clear_rc = con.run(
+                            f"/usr/etc/arp -d {GATEWAY}",
+                            "arp_clear", timeout=60)
+                        arp_cache_cold = clear_rc == 0 and \
+                            self._read_arp_neighbor(con, "arp_cleared") is None
                     counters_before = self._read_counters(con, "before")
                     self._ping(con)
+                    arp_entry = self._read_arp_neighbor(con, "arp_after")
+                    arp_neighbor = arp_neighbor_mac(
+                        arp_entry or "", GATEWAY)
                     counters_after = self._read_counters(con, "after")
                     con.send("sync; sync")
                     time.sleep(2)
@@ -356,6 +398,22 @@ if QemuSystemTest is not None:
                     'built, and that nothing ended the machine before it '
                     'printed anything.')
 
+            capture_problem = None
+            try:
+                with open(pcap, 'rb') as capture_file:
+                    capture = summarise_pcap(capture_file.read(),
+                                             include_frames=True)
+                if capture is None:
+                    capture_problem = "unrecognized or truncated pcap"
+                elif "frames" not in capture:
+                    capture_problem = "pcap contains no complete capture header"
+            except OSError as error:
+                capture = None
+                capture_problem = str(error)
+            arp_wire = arp_resolution(
+                capture.get('frames', []) if isinstance(capture, dict) else [],
+                GUEST_ADDR, GATEWAY)
+
             traffic = {
                 "ipkts_before": counters_before[0],
                 "ierrs_before": counters_before[1],
@@ -363,6 +421,13 @@ if QemuSystemTest is not None:
                 "ipkts_after": counters_after[0],
                 "ierrs_after": counters_after[1],
                 "opkts_after": counters_after[2],
+                "arp_cache_cold": arp_cache_cold,
+                "arp_neighbor_mac": arp_neighbor,
+                "arp_requests": arp_wire["requests"],
+                "arp_replies": arp_wire["replies"],
+                "arp_matching_replies": arp_wire["matching_replies"],
+                "arp_responder_mac": arp_wire["responder_mac"],
+                "arp_capture_problem": capture_problem,
             }
             report = tg_acceptance_verdict(
                 login_reached, tg1_present, tg_up, link_up, traffic)

@@ -375,6 +375,73 @@ def summarise_pcap(raw: bytes, include_frames=False):
     return summary
 
 
+def arp_resolution(frames, requester_ip, responder_ip):
+    """Check for a matching Ethernet/IPv4 ARP request and reply.
+
+    This proves the exchange appeared on the captured link. Callers should
+    separately check the guest's neighbor table to prove its ARP client used
+    the reply.
+    """
+    requests = []
+    replies = []
+    for frame in frames:
+        if len(frame) < 42 or frame[12:14] != b"\x08\x06":
+            continue
+        htype = int.from_bytes(frame[14:16], "big")
+        ptype = int.from_bytes(frame[16:18], "big")
+        hlen, plen = frame[18], frame[19]
+        if (htype, ptype, hlen, plen) != (1, 0x0800, 6, 4):
+            continue
+        opcode = int.from_bytes(frame[20:22], "big")
+        sender_mac = frame[22:28]
+        ethernet_source = frame[6:12]
+        sender_ip = ".".join(str(byte) for byte in frame[28:32])
+        target_mac = frame[32:38]
+        target_ip = ".".join(str(byte) for byte in frame[38:42])
+        if opcode == 1 and sender_ip == requester_ip \
+                and target_ip == responder_ip \
+                and sender_mac == ethernet_source:
+            requests.append(sender_mac)
+        elif opcode == 2 and sender_ip == responder_ip \
+                and target_ip == requester_ip \
+                and sender_mac == ethernet_source \
+                and target_mac == frame[0:6]:
+            replies.append((sender_mac, target_mac))
+
+    matched = [sender_mac for sender_mac, target_mac in replies
+               if target_mac in requests]
+    return {
+        "requests": len(requests),
+        "replies": len(replies),
+        "matching_replies": len(matched),
+        "responder_mac": ":".join(f"{byte:02x}" for byte in matched[0])
+        if matched else None,
+        "resolved": bool(matched),
+    }
+
+
+def arp_neighbor_line(output, address):
+    """Return the `arp -an` entry for address, resolved or incomplete."""
+    address_re = re.compile(
+        rf"(?<![0-9.]){re.escape(address)}(?![0-9.])")
+    return next((line for line in output.splitlines()
+                 if address_re.search(line)), None)
+
+
+def arp_neighbor_mac(output, address):
+    """Return a resolved unicast MAC for address from `arp -an` output."""
+    line = arp_neighbor_line(output, address)
+    match = re.search(
+        r"((?:[0-9a-fA-F]{1,2}:){5}[0-9a-fA-F]{1,2})(?:\s|$)",
+        line or "")
+    if not match:
+        return None
+    octets = bytes(int(part, 16) for part in match.group(1).split(":"))
+    if octets == bytes(6) or octets == b"\xff" * 6 or octets[0] & 1:
+        return None
+    return ":".join(f"{byte:02x}" for byte in octets)
+
+
 def tftp_transfer(raw: bytes):
     """Summarize the ordered TFTP read sessions in a packet capture.
 
