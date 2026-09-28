@@ -13,11 +13,17 @@
 #include "qemu/module.h"
 #include "system/dma.h"
 #include "hw/core/cpu.h"
+#include "hw/mips/sgi/xio-widget.h"
 #include "trace.h"
 
-#define II_WIDGET_ID       0x00000
-#define II_WIDGET_STATUS   0x00008
-#define II_WIDGET_CONTROL  0x00020
+/*
+ * The identification, status and control slots of the block every XIO
+ * widget begins with (hw/mips/sgi/xio-widget.h); the rest are the I/O
+ * interface's own.
+ */
+#define II_WIDGET_ID       SGI_XIO_WIDGET_ID
+#define II_WIDGET_STATUS   SGI_XIO_WIDGET_STATUS
+#define II_WIDGET_CONTROL  SGI_XIO_WIDGET_CONTROL
 #define II_LOCAL_PROTECT   0x00100
 #define II_OUT_ACCESS      0x00110
 #define II_IN_ACCESS       0x00118

@@ -22,6 +22,7 @@
 #include "qemu/main-loop.h"
 #include "system/runstate.h"
 #include "hw/mips/sgi-xio-port.h"
+#include "hw/mips/sgi/xio-widget.h"
 #include "hw/misc/sgi-xbow.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/core/sysbus.h"
@@ -103,10 +104,6 @@
 #define XBOW_PACKET_TIMEOUT_MASK    0x000fffff
 #define XBOW_INT_UPPER_MASK         0xff07ffff
 #define XBOW_INT_UPPER_TARGET_HIGH  BIT(19)
-#define XBOW_INT_UPPER_TARGET_SHIFT 16
-#define XBOW_INT_UPPER_VECTOR_SHIFT 24
-#define XBOW_INT_UPPER_ADDRESS      0xffffu
-#define XBOW_INTERRUPT_ASSERT       BIT(8)
 #define XBOW_LLP_CONTROL_MASK       0x03ffffff
 #define XBOW_LLP_CONTROL_RESET      0x03ff1810
 #define XBOW_ARB_RELOAD_MASK        0x0000003f
@@ -302,10 +299,8 @@ static bool sgi_xbow_widget0_requesting(const SGIXbowState *s)
 static bool sgi_xbow_deliver_at(SGIXbowState *s, uint32_t upper,
                                 uint32_t lower, bool raise)
 {
-    unsigned int target = (upper >> XBOW_INT_UPPER_TARGET_SHIFT) & 0xf;
-    uint64_t address = ((uint64_t)(upper & XBOW_INT_UPPER_ADDRESS) << 32) |
-                       lower;
-    uint64_t data = (upper >> XBOW_INT_UPPER_VECTOR_SHIFT) & 0xff;
+    SGIXioIntDest dest = sgi_xio_int_dest(upper, lower);
+    unsigned int target = dest.widget;
     unsigned int link;
 
     if (target < SGI_XBOW_FIRST_WIDGET) {
@@ -321,9 +316,7 @@ static bool sgi_xbow_deliver_at(SGIXbowState *s, uint32_t upper,
                       "nothing attached; no packet sent\n", target);
         return false;
     }
-    address_space_stq_be(s->face_as[link], address,
-                         data | (raise ? XBOW_INTERRUPT_ASSERT : 0),
-                         MEMTXATTRS_UNSPECIFIED, NULL);
+    sgi_xio_send_interrupt(s->face_as[link], dest.address, dest.vector, raise);
     return true;
 }
 
@@ -334,7 +327,7 @@ static bool sgi_xbow_deliver_at(SGIXbowState *s, uint32_t upper,
  */
 static bool sgi_xbow_deliver(SGIXbowState *s, bool raise)
 {
-    unsigned int target = (s->int_upper >> XBOW_INT_UPPER_TARGET_SHIFT) & 0xf;
+    unsigned int target = sgi_xio_int_dest(s->int_upper, s->int_lower).widget;
 
     if (target >= SGI_XBOW_FIRST_WIDGET &&
         !sgi_xbow_carries(s, target - SGI_XBOW_FIRST_WIDGET)) {

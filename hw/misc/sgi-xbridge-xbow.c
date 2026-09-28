@@ -8,6 +8,7 @@
 #include "qemu/timer.h"
 #include "hw/misc/sgi-xbridge-xbow.h"
 #include "hw/mips/sgi-xio-port.h"
+#include "hw/mips/sgi/xio-widget.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/core/irq.h"
 #include "migration/vmstate.h"
@@ -66,20 +67,17 @@ static bool xbow_link_present(SGIXBridgeXbowState *s, unsigned link)
 
 static void xbow_packet(SGIXBridgeXbowState *s, bool set)
 {
-    uint32_t upper = REG(s, 0x30);
-    unsigned target = (upper >> 16) & 0xf;
-    uint64_t addr = ((uint64_t)(upper & 0xffff) << 32) | REG(s, 0x38);
+    SGIXioIntDest dest = sgi_xio_int_dest(REG(s, 0x30), REG(s, 0x38));
     MemTxResult result;
 
-    if (!s->target[target]) {
+    if (!s->target[dest.widget]) {
         qemu_log_mask(LOG_GUEST_ERROR,
                       "sgi-xbridge-xbow: interrupt target %x is absent\n",
-                      target);
+                      dest.widget);
         return;
     }
-    address_space_stq_be(&s->target_as[target], addr,
-                         (upper >> 24) | (set ? 0x100 : 0),
-                         MEMTXATTRS_UNSPECIFIED, &result);
+    result = sgi_xio_send_interrupt(&s->target_as[dest.widget], dest.address,
+                                    dest.vector, set);
     if (result != MEMTX_OK) {
         qemu_log_mask(LOG_GUEST_ERROR,
                       "sgi-xbridge-xbow: interrupt destination refused write\n");

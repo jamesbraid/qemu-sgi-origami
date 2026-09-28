@@ -31,6 +31,7 @@
 #include "qemu/timer.h"
 #include "exec/cpu-interrupt.h"
 #include "hw/core/cpu.h"
+#include "hw/mips/sgi/xio-widget.h"
 #include "system/address-spaces.h"
 #include "system/cpus.h"
 #include "qemu/host-utils.h"
@@ -57,10 +58,16 @@
 /* second bank reaching processor B */
 #define HUB_PI_INT_MASK1_B      0x0000c0
 
-/* I/O interface: the Hub's own widget block on the crossbar. */
-#define HUB_IO_WIDGET_ID        0x400000
-#define HUB_IO_WIDGET_STATUS    0x400008
-#define HUB_IO_WIDGET_CONTROL   0x400020
+/*
+ * I/O interface: the Hub's own widget block on the crossbar. It shares
+ * the identification, status and control slots of the block every widget
+ * begins with (hw/mips/sgi/xio-widget.h); the rest of its registers,
+ * the interrupt destination at 0x400138 among them, are its own.
+ */
+#define HUB_IO_BASE             0x400000
+#define HUB_IO_WIDGET_ID        (HUB_IO_BASE + SGI_XIO_WIDGET_ID)
+#define HUB_IO_WIDGET_STATUS    (HUB_IO_BASE + SGI_XIO_WIDGET_STATUS)
+#define HUB_IO_WIDGET_CONTROL   (HUB_IO_BASE + SGI_XIO_WIDGET_CONTROL)
 
 /* XIO ID layout; the always-one low bit is the XIO contract's. */
 #define IO_WIDGET_ID_REVISION_SHIFT 28

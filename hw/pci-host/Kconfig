@@ -125,3 +125,4 @@ config SGI_XBRIDGE
     default y if SGI_DEVICES
     select PCI
     select SGI_XBRIDGE_XBOW
+    select SGI_XIO_PORT

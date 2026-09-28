@@ -10,6 +10,7 @@
 #include "hw/pci-host/sgi-bridge.h"
 #include "hw/misc/sgi-xbridge-xbow.h"
 #include "hw/mips/sgi-xio-port.h"
+#include "hw/mips/sgi/xio-widget.h"
 #include "hw/core/hotplug.h"
 #include "hw/core/qdev-properties.h"
 #include "migration/vmstate.h"
@@ -36,23 +37,26 @@
 #define ATE_LOW_VIEW_END (ATE_LOW_VIEW + ATE_COUNT * 8)
 #define REG(s, off) ((s)->reg[(off) / 8])
 
+/*
+ * A pin's packet: the widget-level destination pair (hw/mips/sgi/
+ * xio-widget.h), with the pin's host-address field over address bits
+ * 47:38 and the pin's own interrupt number.
+ */
 static void xbridge_packet(SGIXBridgeHeadState *s, unsigned pin, bool set)
 {
-    uint32_t upper = REG(s, 0x30);
+    SGIXioIntDest dest = sgi_xio_int_dest(REG(s, 0x30), REG(s, 0x38));
     uint32_t host = REG(s, 0x130 + pin * 8);
-    unsigned target = (upper >> 16) & 15;
-    uint64_t addr = ((uint64_t)(upper & 0x3f) << 32) | REG(s, 0x38);
     MemTxResult result;
 
-    addr |= (uint64_t)(host >> 8) << 38;
-    if (!s->target[target]) {
+    dest.address = deposit64(dest.address, 38, 10, host >> 8);
+    if (!s->target[dest.widget]) {
         qemu_log_mask(LOG_GUEST_ERROR,
-                      "sgi-xbridge: interrupt target %x is absent\n", target);
+                      "sgi-xbridge: interrupt target %x is absent\n",
+                      dest.widget);
         return;
     }
-    address_space_stq_be(&s->endpoint[target].as, addr,
-                         (host & 0xff) | (set ? 0x100 : 0),
-                         MEMTXATTRS_UNSPECIFIED, &result);
+    result = sgi_xio_send_interrupt(&s->endpoint[dest.widget].as,
+                                    dest.address, host & 0xff, set);
     if (result != MEMTX_OK) {
         qemu_log_mask(LOG_GUEST_ERROR,
                       "sgi-xbridge: interrupt destination refused write\n");
@@ -279,22 +283,20 @@ static void xbridge_iommu_class_init(ObjectClass *oc, const void *data)
     imrc->notify_flag_changed = xbridge_notify_flags;
 }
 
+/* The chip's own error: the destination pair and the host-error field. */
 static void xbridge_error_packet(SGIXBridgeHeadState *s)
 {
-    uint32_t upper = REG(s, 0x30);
-    unsigned target = (upper >> 16) & 15;
-    uint64_t addr = ((uint64_t)(upper & 0xffff) << 32) | REG(s, 0x38);
+    SGIXioIntDest dest = sgi_xio_int_dest(REG(s, 0x30), REG(s, 0x38));
     MemTxResult result;
 
-    if (!s->target[target]) {
+    if (!s->target[dest.widget]) {
         qemu_log_mask(LOG_GUEST_ERROR,
                       "sgi-xbridge: error interrupt target %x is absent\n",
-                      target);
+                      dest.widget);
         return;
     }
-    address_space_stq_be(&s->endpoint[target].as, addr,
-                         (REG(s, 0x128) & 0xff) | 0x100,
-                         MEMTXATTRS_UNSPECIFIED, &result);
+    result = sgi_xio_send_interrupt(&s->endpoint[dest.widget].as,
+                                    dest.address, REG(s, 0x128) & 0xff, true);
     if (result != MEMTX_OK) {
         qemu_log_mask(LOG_GUEST_ERROR,
                       "sgi-xbridge: error destination refused write\n");
