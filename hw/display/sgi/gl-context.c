@@ -708,6 +708,34 @@ bool sgi_gl_get(const SGIGLContext *c, uint32_t pname, uint32_t *out,
         out[0] = c->cur_edge;
         *n = 1;
         return true;
+    case SGI_GL_SHADE_MODEL:
+        out[0] = c->cur.shade_model;
+        *n = 1;
+        return true;
+    case SGI_GL_MATRIX_MODE:
+        out[0] = c->matrix_mode;
+        *n = 1;
+        return true;
+    case SGI_GL_VIEWPORT:
+        memcpy(out, c->cur.viewport, sizeof(c->cur.viewport));
+        *n = 4;
+        return true;
+    /* Column-major, the order glLoadMatrixf takes (6.1.2). */
+    case SGI_GL_MODELVIEW_MATRIX:
+    case SGI_GL_PROJECTION_MATRIX:
+        for (int i = 0; i < 16; i++) {
+            out[i] = sgi_gl_bits(pname == SGI_GL_MODELVIEW_MATRIX ?
+                                 c->cur.modelview[i] :
+                                 c->cur.projection[i]);
+        }
+        *n = 16;
+        return true;
+    case SGI_GL_COLOR_CLEAR_VALUE:
+        for (int i = 0; i < 4; i++) {
+            out[i] = sgi_gl_bits(c->clear_color[i]);
+        }
+        *n = 4;
+        return true;
     default:
         return false;
     }

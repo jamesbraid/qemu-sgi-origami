@@ -100,7 +100,13 @@ enum {
 #define SGI_GL_CURRENT_NORMAL   0x0b02
 #define SGI_GL_CURRENT_TEXTURE_COORDS 0x0b03
 #define SGI_GL_EDGE_FLAG        0x0b43
+#define SGI_GL_SHADE_MODEL      0x0b54
 #define SGI_GL_DEPTH_TEST       0x0b71
+#define SGI_GL_MATRIX_MODE      0x0ba0
+#define SGI_GL_VIEWPORT         0x0ba2
+#define SGI_GL_MODELVIEW_MATRIX 0x0ba6
+#define SGI_GL_PROJECTION_MATRIX 0x0ba7
+#define SGI_GL_COLOR_CLEAR_VALUE 0x0c22
 
 /* Matrices a GL matrix stack holds, the current one included. */
 #define SGI_GL_STACK_DEPTH      32
@@ -275,9 +281,14 @@ uint32_t sgi_gl_draw_targets(const SGIGLDrawState *st,
 /* Execute one command against the context, sending any work to sink. */
 void sgi_gl_command(SGIGLContext *c, const SGIGLSink *sink,
                     const SGIGLCmd *cmd);
+/* The most words one sgi_gl_get() answer takes: a matrix's. */
+#define SGI_GL_GET_WORDS        16
+
 /*
- * The glGet answer for pname as *n 32-bit words, floats as their bits;
- * false for a pname the context does not keep.
+ * The glGet answer for pname as *n 32-bit words into out, which holds
+ * SGI_GL_GET_WORDS; floats as their bits, enumerants and integers as
+ * themselves, a matrix column-major. False for a pname the context does
+ * not keep.
  */
 bool sgi_gl_get(const SGIGLContext *c, uint32_t pname, uint32_t *out,
                 unsigned *n);
