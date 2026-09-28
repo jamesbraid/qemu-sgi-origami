@@ -1283,6 +1283,16 @@ static void sn1_node_create_cpus(SN1NodeState *node, MachineState *machine)
     memory_region_init_io(&node->system_requests, OBJECT(node),
                           &sn1_node_system_request_ops, node,
                           "sn1.system-requests", R10K_SYSTEM_REQUEST_SIZE);
+    /*
+     * Processors dispatch requests here from their own threads without
+     * the BQL. The reentrancy guard is one unlocked flag shared by every
+     * region the node owns, so it would take a request in flight for
+     * reentry: another processor's read of the board ID then fails as a
+     * bus error, and a second concurrent request is dropped. Nothing here
+     * dispatches back into the node, and the handler takes the BQL itself
+     * before touching the memory unit's state.
+     */
+    node->system_requests.disable_reentrancy_guard = true;
     for (i = 0; i < node->nr_cpus; i++) {
         g_autofree char *name = g_strdup_printf("cpu%u", i);
         g_autofree char *alias_name =

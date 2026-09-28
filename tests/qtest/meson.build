@@ -453,7 +453,7 @@ qtests_mips64 = \
   (config_all_devices.has_key('CONFIG_SGI_SN1') ?
     ['sn1-address-map-test', 'sn1-cross-node-test',
      'sn1-cpu-identity-test', 'sn1-directory-state-test',
-     'sn1-presence-test',
+     'sn1-presence-test', 'sn1-system-request-test',
      'sn1-io8-scsi-test', 'sn1-warm-reset-test'] : []) + \
   (config_all_devices.has_key('CONFIG_SGI_SN0') ? ['sn0-mttcg-test',
                                                    'sn0-forward-progress-test',
