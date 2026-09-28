@@ -107,6 +107,7 @@ config SGI_NET_CABLE
 
 config SGI_XIO_BOARD
     bool
+    select SGI_BRIDGE
     select SGI_XBOW
     select SGI_XIO_LINK
 

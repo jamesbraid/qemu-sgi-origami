@@ -3,12 +3,15 @@
 
 #include "qemu/osdep.h"
 #include "hw/mips/sgi/xio-board.h"
+#include "hw/1wire/ds2502.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/core/qdev.h"
 #include "hw/core/sysbus.h"
 #include "hw/mips/sgi-xio-port.h"
 #include "migration/vmstate.h"
 #include "qapi/error.h"
+#include "qapi/qapi-builtin-visit.h"
+#include "qapi/visitor.h"
 #include "qemu/cutils.h"
 #include "qemu/module.h"
 #include "qobject/qnum.h"
@@ -293,6 +296,84 @@ static bool sgi_xio_board_place_by_widget(SGIXioBoardState *board,
     return true;
 }
 
+/* Realize one identity part onto the board's one-wire bus. */
+static bool sgi_xio_board_attach_part(SGIXioBoardState *board,
+                                      const SGIXioBoardIdentity *identity,
+                                      const SGIXioBoardIdentityPart *known,
+                                      const SGIBridgeBoardRecord *record,
+                                      Error **errp)
+{
+    uint8_t rom[SGI_BRIDGE_ONEWIRE_RECORD_SIZE];
+    DeviceState *part;
+
+    sgi_bridge_onewire_build_record(rom, record);
+    part = qdev_new(TYPE_ONEWIRE_DS2502);
+    object_property_add_child(OBJECT(board), known->child_name, OBJECT(part));
+    qdev_prop_set_uint8(part, "family", identity->family);
+    qdev_prop_set_uint64(part, "serial", known->serial);
+    ds2502_set_image(part, rom, sizeof(rom));
+    return qdev_realize_and_unref(part, BUS(board->onewire_bus), errp);
+}
+
+/*
+ * Build the class's identity chain: the board's own record, with the
+ * part number "board-part" gives it, then each part "other-identity-parts"
+ * names. A repeated part is refused here rather than left to collide on
+ * its child name, which object_property_add_child() would abort on.
+ */
+static bool sgi_xio_board_attach_identity(SGIXioBoardState *board,
+                                          Error **errp)
+{
+    const SGIXioBoardIdentity *identity =
+        SGI_XIO_BOARD_GET_CLASS(board)->identity;
+    g_autofree bool *attached = g_new0(bool, identity->num_others);
+    SGIBridgeBoardRecord own = *identity->own.record;
+    const char *board_part_error;
+    strList *entry;
+
+    board_part_error = sgi_bridge_board_part_error(board->board_part);
+    if (board_part_error) {
+        error_setg(errp, "%s %s", object_get_typename(OBJECT(board)),
+                   board_part_error);
+        return false;
+    }
+    own.part = board->board_part;
+
+    board->onewire_bus = onewire_create_bus(DEVICE(board), "onewire");
+    if (!sgi_xio_board_attach_part(board, identity, &identity->own, &own,
+                                   errp)) {
+        return false;
+    }
+    for (entry = board->other_identity_parts; entry; entry = entry->next) {
+        const SGIXioBoardIdentityPart *known = NULL;
+        size_t index;
+
+        for (index = 0; index < identity->num_others; index++) {
+            if (g_str_equal(entry->value,
+                            identity->others[index].record->part)) {
+                known = &identity->others[index];
+                break;
+            }
+        }
+        if (!known) {
+            error_setg(errp, "unknown other-identity-parts entry '%s'",
+                       entry->value);
+            return false;
+        }
+        if (attached[index]) {
+            error_setg(errp, "duplicate other-identity-parts entry '%s'",
+                       entry->value);
+            return false;
+        }
+        if (!sgi_xio_board_attach_part(board, identity, known, known->record,
+                                       errp)) {
+            return false;
+        }
+        attached[index] = true;
+    }
+    return true;
+}
+
 static void sgi_xio_board_realize(DeviceState *dev, Error **errp)
 {
     SGIXioBoardState *board = SGI_XIO_BOARD(dev);
@@ -322,6 +403,7 @@ static void sgi_xio_board_realize(DeviceState *dev, Error **errp)
      */
     if (!bc->build_widget(board, errp) ||
         !sgi_xio_board_reparent(board, errp) ||
+        (bc->identity && !sgi_xio_board_attach_identity(board, errp)) ||
         (bc->finish_realize && !bc->finish_realize(board, errp)) ||
         (board->link && !sgi_xio_link_connect(board->link, errp))) {
         QTAILQ_REMOVE(&sgi_xio_board_all, board, node);
@@ -467,12 +549,104 @@ static void sgi_xio_board_class_init(ObjectClass *oc, const void *data)
     pc->request_dropped = sgi_xio_board_xio_port_request_dropped;
 }
 
+static char *sgi_xio_board_get_board_part(Object *obj, Error **errp)
+{
+    return g_strdup(SGI_XIO_BOARD(obj)->board_part);
+}
+
+static void sgi_xio_board_set_board_part(Object *obj, const char *value,
+                                         Error **errp)
+{
+    SGIXioBoardState *board = SGI_XIO_BOARD(obj);
+
+    if (qdev_is_realized(DEVICE(obj))) {
+        qdev_prop_set_after_realize(DEVICE(obj), "board-part", errp);
+        return;
+    }
+    g_free(board->board_part);
+    board->board_part = g_strdup(value);
+}
+
+/*
+ * A list-of-strings property cannot come from a static Property table, so
+ * it takes a visitor of its own, as sn-machine.c's EEPROM lists do.
+ */
+static void sgi_xio_board_get_other_identity_parts(Object *obj, Visitor *v,
+                                                   const char *name,
+                                                   void *opaque,
+                                                   Error **errp)
+{
+    visit_type_strList(v, name, &SGI_XIO_BOARD(obj)->other_identity_parts,
+                       errp);
+}
+
+static void sgi_xio_board_set_other_identity_parts(Object *obj, Visitor *v,
+                                                   const char *name,
+                                                   void *opaque,
+                                                   Error **errp)
+{
+    SGIXioBoardState *board = SGI_XIO_BOARD(obj);
+    strList *replacement = NULL;
+
+    if (qdev_is_realized(DEVICE(obj))) {
+        qdev_prop_set_after_realize(DEVICE(obj), name, errp);
+        return;
+    }
+    if (!visit_type_strList(v, name, &replacement, errp)) {
+        return;
+    }
+    qapi_free_strList(board->other_identity_parts);
+    board->other_identity_parts = replacement;
+}
+
+void sgi_xio_board_class_set_identity(ObjectClass *oc,
+                                      const SGIXioBoardIdentity *identity)
+{
+    SGI_XIO_BOARD_CLASS(oc)->identity = identity;
+    object_class_property_add_str(oc, "board-part",
+                                  sgi_xio_board_get_board_part,
+                                  sgi_xio_board_set_board_part);
+    object_class_property_set_description(oc, "board-part",
+        "The part number the board's own one-wire identity record stores, "
+        "twelve characters. Fixed once realized.");
+    object_class_property_add(oc, "other-identity-parts", "strList",
+                              sgi_xio_board_get_other_identity_parts,
+                              sgi_xio_board_set_other_identity_parts,
+                              NULL, NULL);
+    object_class_property_set_description(oc, "other-identity-parts",
+        "The identity parts the board's one-wire chain carries beyond its "
+        "own record, by part number. An unknown or repeated part number "
+        "is a realize error. Fixed once realized.");
+}
+
+/* A class with an identity chain starts with its own defaults. */
+static void sgi_xio_board_instance_init(Object *obj)
+{
+    SGIXioBoardState *board = SGI_XIO_BOARD(obj);
+    const SGIXioBoardIdentity *identity =
+        SGI_XIO_BOARD_GET_CLASS(board)->identity;
+    size_t index;
+
+    if (!identity) {
+        return;
+    }
+    board->board_part = g_strdup(identity->own.record->part);
+    for (index = identity->num_others; index-- > 0;) {
+        if (identity->others[index].fitted) {
+            QAPI_LIST_PREPEND(board->other_identity_parts,
+                              g_strdup(identity->others[index].record->part));
+        }
+    }
+}
+
 static void sgi_xio_board_finalize(Object *obj)
 {
     SGIXioBoardState *board = SGI_XIO_BOARD(obj);
 
     g_free(board->slot_label);
     g_free(board->widget_slot_name);
+    g_free(board->board_part);
+    qapi_free_strList(board->other_identity_parts);
 }
 
 static const TypeInfo sgi_xio_board_types[] = {
@@ -485,6 +659,7 @@ static const TypeInfo sgi_xio_board_types[] = {
         .name = TYPE_SGI_XIO_BOARD,
         .parent = TYPE_SYS_BUS_DEVICE,
         .instance_size = sizeof(SGIXioBoardState),
+        .instance_init = sgi_xio_board_instance_init,
         .instance_finalize = sgi_xio_board_finalize,
         .class_size = sizeof(SGIXioBoardClass),
         .class_init = sgi_xio_board_class_init,
