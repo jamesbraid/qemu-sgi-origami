@@ -99,6 +99,11 @@ enum {
 #define SGI_GL_CURRENT_COLOR    0x0b00
 #define SGI_GL_CURRENT_NORMAL   0x0b02
 #define SGI_GL_CURRENT_TEXTURE_COORDS 0x0b03
+#define SGI_GL_CURRENT_RASTER_COLOR 0x0b04
+#define SGI_GL_CURRENT_RASTER_TEXTURE_COORDS 0x0b06
+#define SGI_GL_CURRENT_RASTER_POSITION 0x0b07
+#define SGI_GL_CURRENT_RASTER_POSITION_VALID 0x0b08
+#define SGI_GL_CURRENT_RASTER_DISTANCE 0x0b09
 #define SGI_GL_EDGE_FLAG        0x0b43
 #define SGI_GL_SHADE_MODEL      0x0b54
 #define SGI_GL_DEPTH_TEST       0x0b71
@@ -161,6 +166,14 @@ typedef struct SGIGLContext {
     float cur_color[4];
     float cur_normal[3];
     uint32_t cur_edge;          /* 0 or 1 */
+    /*
+     * The current raster position (2.12): window x, y and z and clip w,
+     * whether it is valid, its eye distance and its colour.
+     */
+    float raster_pos[4];
+    uint32_t raster_valid;      /* 0 or 1 */
+    float raster_distance;
+    float raster_color[4];
     float clear_color[4];
     /*
      * In the depth plane's units, as the family delivered it; a clear
@@ -213,6 +226,9 @@ typedef enum SGIGLOp {
     SGI_GL_OP_FLUSH,
     SGI_GL_OP_CLEAR,            /* SGI_GL_COLOR_BUFFER_BIT and so on */
     SGI_GL_OP_FINISH,
+    SGI_GL_OP_RASTER_POS2F,     /* x, y */
+    SGI_GL_OP_RASTER_POS3F,     /* x, y, z */
+    SGI_GL_OP_RASTER_POS4F,     /* x, y, z, w */
 } SGIGLOp;
 
 /*

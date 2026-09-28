@@ -54,6 +54,11 @@ void sgi_gl_init(SGIGLContext *c, uint32_t hw_id)
     c->cur.draw_buffers = SGI_GL_DRAW_FRONT;
     c->cur_normal[2] = 1.0f;
     c->cur_edge = 1;
+    c->raster_pos[3] = 1.0f;
+    c->raster_valid = 1;
+    for (int i = 0; i < 4; i++) {
+        c->raster_color[i] = 1.0f;
+    }
 }
 
 void sgi_gl_set_drawable(SGIGLContext *c, const SGIGLDrawable *d)
@@ -320,6 +325,9 @@ static const uint8_t sgi_gl_nargs[] = {
     [SGI_GL_OP_FLUSH] = 0,
     [SGI_GL_OP_CLEAR] = 1,
     [SGI_GL_OP_FINISH] = 0,
+    [SGI_GL_OP_RASTER_POS2F] = 2,
+    [SGI_GL_OP_RASTER_POS3F] = 3,
+    [SGI_GL_OP_RASTER_POS4F] = 4,
 };
 
 uint32_t sgi_gl_draw_targets(const SGIGLDrawState *st,
@@ -532,6 +540,54 @@ static void sgi_gl_vertex(SGIGLContext *c, const SGIGLSink *sink,
     c->nheld = n + 1;
 }
 
+/*
+ * glRasterPos (OpenGL 1.2.1, 2.12): the point goes through the modelview
+ * and projection matrices like a vertex. Inside the view volume it
+ * becomes the current raster position in window coordinates, keeping
+ * clip w, with the eye distance and the current colour clamped to
+ * [0, 1] (2.13.6); lighting is not modelled. Outside, only the valid bit
+ * is reset: the specification leaves the rest undefined, and keeping it
+ * is the model's choice. Client clip planes are not modelled, and the
+ * depth range is [0, 1], as for a draw. The eye distance is the exact
+ * Euclidean one of the eye x, y and z, which 2.12 allows a head to
+ * approximate; how a head does is not published.
+ */
+static void sgi_gl_raster_pos(SGIGLContext *c, const float obj[4])
+{
+    const float *mv = c->cur.modelview, *pr = c->cur.projection;
+    const int32_t *vp = c->cur.viewport;
+    double eye[4], clip[4];
+
+    for (int row = 0; row < 4; row++) {
+        eye[row] = 0;
+        for (int k = 0; k < 4; k++) {
+            eye[row] += (double)mv[k * 4 + row] * obj[k];
+        }
+    }
+    for (int row = 0; row < 4; row++) {
+        clip[row] = 0;
+        for (int k = 0; k < 4; k++) {
+            clip[row] += (double)pr[k * 4 + row] * eye[k];
+        }
+    }
+    for (int i = 0; i < 3; i++) {
+        if (!(-clip[3] <= clip[i] && clip[i] <= clip[3])) {
+            c->raster_valid = 0;
+            return;
+        }
+    }
+    c->raster_valid = 1;
+    c->raster_pos[0] = (clip[0] / clip[3] + 1) * vp[2] / 2 + vp[0];
+    c->raster_pos[1] = (clip[1] / clip[3] + 1) * vp[3] / 2 + vp[1];
+    c->raster_pos[2] = (clip[2] / clip[3] + 1) / 2;
+    c->raster_pos[3] = clip[3];
+    c->raster_distance = sqrt(eye[0] * eye[0] + eye[1] * eye[1] +
+                              eye[2] * eye[2]);
+    for (int i = 0; i < 4; i++) {
+        c->raster_color[i] = MIN(MAX(c->cur_color[i], 0.0f), 1.0f);
+    }
+}
+
 static void sgi_gl_capability(SGIGLContext *c, uint32_t cap, bool on)
 {
     switch (cap) {
@@ -661,6 +717,14 @@ void sgi_gl_command(SGIGLContext *c, const SGIGLSink *sink,
         pos[1] = (int32_t)a[1];
         sgi_gl_vertex(c, sink, pos, 2);
         return;
+    case SGI_GL_OP_RASTER_POS2F:
+    case SGI_GL_OP_RASTER_POS3F:
+    case SGI_GL_OP_RASTER_POS4F:
+        pos[2] = 0.0f;
+        pos[3] = 1.0f;
+        memcpy(pos, a, cmd->nargs * sizeof(float));
+        sgi_gl_raster_pos(c, pos);
+        return;
     case SGI_GL_OP_FLUSH:
         /* Every piece has already been sent. */
         return;
@@ -679,9 +743,9 @@ void sgi_gl_command(SGIGLContext *c, const SGIGLSink *sink,
 }
 
 /*
- * Texture coordinates are not kept, so GL_CURRENT_TEXTURE_COORDS answers
- * OpenGL's initial (0, 0, 0, 1) (2.7), wrong once a client has sent
- * glTexCoord.
+ * Texture coordinates are not kept, so GL_CURRENT_TEXTURE_COORDS and
+ * GL_CURRENT_RASTER_TEXTURE_COORDS answer OpenGL's initial (0, 0, 0, 1)
+ * (2.7, 2.12), wrong once a client has sent glTexCoord.
  */
 bool sgi_gl_get(const SGIGLContext *c, uint32_t pname, uint32_t *out,
                 unsigned *n)
@@ -700,6 +764,7 @@ bool sgi_gl_get(const SGIGLContext *c, uint32_t pname, uint32_t *out,
         *n = 3;
         return true;
     case SGI_GL_CURRENT_TEXTURE_COORDS:
+    case SGI_GL_CURRENT_RASTER_TEXTURE_COORDS:
         out[0] = out[1] = out[2] = 0;
         out[3] = sgi_gl_bits(1.0f);
         *n = 4;
@@ -729,6 +794,22 @@ bool sgi_gl_get(const SGIGLContext *c, uint32_t pname, uint32_t *out,
                                  c->cur.projection[i]);
         }
         *n = 16;
+        return true;
+    case SGI_GL_CURRENT_RASTER_POSITION:
+    case SGI_GL_CURRENT_RASTER_COLOR:
+        for (int i = 0; i < 4; i++) {
+            out[i] = sgi_gl_bits(pname == SGI_GL_CURRENT_RASTER_POSITION ?
+                                 c->raster_pos[i] : c->raster_color[i]);
+        }
+        *n = 4;
+        return true;
+    case SGI_GL_CURRENT_RASTER_POSITION_VALID:
+        out[0] = c->raster_valid;
+        *n = 1;
+        return true;
+    case SGI_GL_CURRENT_RASTER_DISTANCE:
+        out[0] = sgi_gl_bits(c->raster_distance);
+        *n = 1;
         return true;
     case SGI_GL_COLOR_CLEAR_VALUE:
         for (int i = 0; i < 4; i++) {
