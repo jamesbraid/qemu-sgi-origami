@@ -65,9 +65,16 @@ static int sgi_fetch_alloc(SGICommandFetch *f, uint64_t nwords,
     if (f->nsegments == f->capacity) {
         uint64_t capacity = MIN(MAX(16, (uint64_t)f->capacity * 2),
                                 sgi_fetch_max_segments(f));
-        SGIFetchSegment *segments = g_try_renew(SGIFetchSegment,
-                                                f->segments, capacity);
+        SGIFetchSegment *segments;
 
+        /* At the cap the array cannot grow, and a segment would not fit. */
+        if (capacity <= f->nsegments) {
+            qemu_log_mask(LOG_GUEST_ERROR, "sgi-fetch: context %u's list "
+                          "has no room past %u ranges\n", f->context,
+                          f->nsegments);
+            return SGI_FAIL_BOUNDS;
+        }
+        segments = g_try_renew(SGIFetchSegment, f->segments, capacity);
         if (!segments) {
             goto fail;
         }

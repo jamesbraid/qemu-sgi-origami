@@ -39,10 +39,10 @@
 #include "hw/display/sgi/pixel-dma.h"
 
 /*
- * The caps a fetch with max_words or max_segments zero uses. MGRAS's
- * longest measured list is 13,355 words in 14 ranges; these are its own
- * limits from before the caps were shared, far above any list seen, and
- * hold one invocation to 4 MiB of words.
+ * The caps a fetch with max_words or max_segments zero uses. They leave
+ * wide headroom over the longest list measured on MGRAS, 13,355 words in
+ * 14 ranges, while holding one invocation to 4 MiB of words. A family
+ * whose lists can be longer raises them.
  */
 #define SGI_FETCH_MAX_WORDS     (1u << 20)
 #define SGI_FETCH_MAX_SEGMENTS  2048
