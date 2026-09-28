@@ -309,3 +309,30 @@ Choose the Meson targets needed for the change, and set
 qualification requires all declared files and rejects skips. The JUnit checker
 can require named results, as shown above; a successful process exit alone does
 not establish that the expected cases ran.
+
+Translation-health failures
+---------------------------
+
+The MIPS64 PROM functional tests can sample HMP ``info jit`` after boot
+progress. A sick result means QEMU is producing very small translation blocks
+or the translation-block hash has not retained entries despite substantial
+translation work. The check reports sick when both the average and maximum
+target block sizes are at most 8 bytes, or when zero of the hash buckets are
+used after at least 1,000,000 translated blocks. These are regression
+thresholds for the observed failure pattern, not a hardware specification.
+
+When this check fails, inspect the guest physical memory map around the address
+where execution is spending time, especially the reset-fetch region. Confirm
+that executable RAM or ROM is mapped as memory rather than as an I/O region.
+Then inspect the reported block sizes, TB count, and hash bucket counts in the
+failure output. A sick result may indicate a bad mapping or another condition
+that prevents useful translation; the counters alone do not identify the
+cause.
+
+The check skips runs launched with ``-d exec``, ``-d in_asm``, ``-d nochain``,
+``-singlestep``, ``-gdb`` or ``-s``, and samples reporting ``one-insn-per-tb``
+or icount. These modes change translation behavior or the counters, so rerun
+without them before using this diagnostic. The included Origin 300 and Origin
+200 counter samples were captured from QEMU using Origami's development
+harness. Their exact QEMU revision and capture environment are not recorded
+in this QEMU tree. The QEMU tests do not depend on Origami at runtime.

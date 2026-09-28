@@ -11,13 +11,15 @@ run --with pytest pytest tests/functional/mips64/test_lib_translation_health
 .py -v`), the same way test_lib_prom.py tests lib_prom.py.
 
 EvaluateTests and LaunchSkipReasonTests pin evaluate()/render() and
-launch_skip_reason() against two real captures (SICK_SAMPLE, an Origin 300
-PROM run stuck translating one instruction per block on its I/O-modeled
-reset window, and HEALTHY_SAMPLE, an ordinary Origin 200 PROM run a few
-seconds in) plus their instrumented derivatives -- the identical fixtures
-tools/origami_lib/tests/test_translation_health.py uses in the Origami
-project checkout, since both parsers read the same QEMU counters against
-the same evidence.
+launch_skip_reason() against two captured HMP ``info jit`` responses from
+QEMU using Origami's development harness. SICK_SAMPLE is from an Origin 300
+PROM run about ten seconds after launch, with its reset window modeled as
+I/O; HEALTHY_SAMPLE is from an Origin 200 PROM run at about the same point.
+The captures preserve the observed counter values. Their acquisition
+environment and exact QEMU revision are not recorded in this QEMU tree, so
+the fixtures establish parser behavior and illustrate the thresholds; they
+do not establish a reproducible machine-level regression. The QEMU tests do
+not depend on Origami at runtime.
 
 AssertTranslationHealthyTests covers assert_translation_healthy() against
 a _FakeVM standing in for QEMUMachine: it records every QMP call it
@@ -37,10 +39,10 @@ from lib_translation_health import (
 )
 
 
-# Captured with `tools/origami hmp RUN 'info jit'` (Origami project
-# checkout) about ten seconds into `tools/origami run prom --machine
-# origin300`, whose reset window is modeled as an I/O region -- the storm
-# this check exists to catch.
+# Captured from QEMU HMP `info jit` using Origami's development harness,
+# about ten seconds into an Origin 300 PROM run. Its reset window was modeled
+# as an I/O region. Exact QEMU revision and capture environment are not
+# recorded in this QEMU tree.
 SICK_SAMPLE = """\
 Accelerator settings:
 one-insn-per-tb: off
@@ -63,9 +65,10 @@ TLB partial flushes 4
 TLB elided flushes  1500
 """
 
-# Captured the same way about ten seconds into `tools/origami run prom
-# --machine origin200`, the stock IP27 PROM, which does not hit an I/O
-# region on reset.
+# Captured from QEMU HMP `info jit` using Origami's development harness,
+# about ten seconds into an Origin 200 PROM run using the stock IP27 PROM.
+# Exact QEMU revision and capture environment are not recorded in this QEMU
+# tree.
 HEALTHY_SAMPLE = """\
 Accelerator settings:
 one-insn-per-tb: off
@@ -245,6 +248,7 @@ class AssertTranslationHealthyTests(unittest.TestCase):
         self.assertIn("sick", message)
         self.assertIn("TB count: 3121546", message)
         self.assertIn("TB hash buckets used: 0/8192", message)
+        self.assertIn("docs/devel/testing/sgi.rst", message)
 
     def test_a_healthy_sample_passes(self) -> None:
         vm = _FakeVM(jit_text=HEALTHY_SAMPLE)

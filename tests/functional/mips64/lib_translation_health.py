@@ -3,34 +3,27 @@
 # per block instead of making real progress
 #
 # SPDX-License-Identifier: GPL-2.0-or-later
-"""
-When a guest CPU fetches instructions from a region this model treats as
-I/O instead of RAM or ROM, TCG translates each instruction as a throwaway
-one-instruction block and never caches it. The guest still makes
-progress, 100 to 300 times slower, with no symptom besides "this boot is
-taking forever" -- which reads exactly like an ordinary slow boot until
-someone runs `info jit` by hand and notices the counters. This cost a day
-on Origin 300 bring-up (the PROM reset window was modeled as an I/O
-region) and had already hit Origin 200 bring-up once before, both in the
-Origami project checkout, not this fork.
+"""Judge whether a running guest is making useful TCG translation progress.
 
-This is a plain port of that project's own `tools/origami_lib/
-translation_health.py` (its docstring carries the full narrative and the
-live captures the thresholds come from) into this fork's functional-test
-tree, split the same way lib_prom.py already is from the *_verdict.py
-companions it feeds: plain Python, no qemu_test import, so
-test_lib_translation_health.py runs under a bare `python3` or `pytest`.
-`evaluate()` turns one `info jit` sample into a healthy/sick/instrumented
-verdict, `render()` prints the numbers behind it, `launch_skip_reason()`
-recognizes a run already started under a mode that produces the same
-numbers on purpose, and `assert_translation_healthy()` is the one call a
-boot test's own console driver makes to turn a sick verdict into a
-failure that names the check instead of a timeout with no diagnosis.
+If guest instruction fetches land in a region mapped as I/O, TCG can emit
+uncached one-instruction translation blocks. A boot may continue very slowly
+without an obvious error. The Origin 300 and Origin 200 samples below were
+captured from QEMU with Origami's development harness. The Origin 300 sample
+shows the pattern while the reset window was modeled as I/O; the Origin 200
+sample is a healthy comparison. This QEMU test has no runtime dependency on
+that harness.
 
-QEMU owns these regression thresholds. The representative counter captures
-in test_lib_translation_health.py preserve their rationale without requiring
-an Origami checkout. Review threshold changes against those captures and a
-measured failing run.
+``evaluate()`` parses one HMP ``info jit`` response. The thresholds are
+deliberately explicit here: average and maximum target block sizes of at most
+8 bytes, or zero used hash buckets after at least 1,000,000 blocks, is sick.
+Instrumented runs and runs that have not translated anything are not judged.
+See ``docs/devel/testing/sgi.rst`` for interpreting a failure and the launch
+modes that this check skips.
+
+This module has no ``qemu_test`` dependency so its parser and policy can be
+tested with plain Python. A functional test calls
+``assert_translation_healthy()`` after boot progress to report a sick sample
+before the overall boot timeout.
 """
 
 from __future__ import annotations
@@ -286,7 +279,8 @@ def assert_translation_healthy(vm) -> None:
     if result.verdict is Verdict.SICK:
         raise AssertionError(
             "translation health: sick -- one instruction is being "
-            "translated per block instead of real progress (see "
-            "docs/known-issues.md in the Origami project checkout)\n"
+            "translated per block instead of useful progress; inspect the "
+            "SGI translation-health troubleshooting notes in "
+            "docs/devel/testing/sgi.rst\n"
             + render(result)
         )

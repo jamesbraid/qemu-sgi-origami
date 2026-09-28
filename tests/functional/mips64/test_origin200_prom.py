@@ -202,17 +202,18 @@ def _assert_copy_speed(test, first_seen):
     test.assertIsNotNone(
         duration,
         'the firmware reached the pre-copy code but never emitted '
-        f'{COPY_BRACKET_END} -- the copy step did not complete. A romd '
-        'regression makes this step take minutes; see '
-        'docs/notebooks/prom-boot-copy-slowness.md.')
+        f'{COPY_BRACKET_END} -- the copy step did not complete. Check '
+        'whether the boot flash Hub-space base resolves through a romd '
+        'view: when it resolves through the I/O mirror, code fetched from '
+        'that I/O region is retranslated per instruction and the copy can '
+        'take minutes.')
     test.assertTrue(
         ok,
-        f'PROM-relocation step took {duration:.1f}s, over the '
-        f'{COPY_BRACKET_MAX_SECONDS:.0f}s budget. The boot flash\'s '
-        'Hub-space base is likely back on the I/O mirror instead of a '
-        'romd view -- code run from an I/O region is retranslated per '
-        'instruction. See docs/notebooks/prom-boot-copy-slowness.md in '
-        'the project checkout.')
+        f'PROM-relocation step took {duration:.1f}s, exceeding the '
+        f'{COPY_BRACKET_MAX_SECONDS:.0f}s budget; check whether the boot '
+        'flash Hub-space base resolves through the I/O mirror instead of '
+        'a romd view, since code fetched from an I/O region is '
+        'retranslated per instruction.')
 
 
 def _make(lineno, line, problem):
