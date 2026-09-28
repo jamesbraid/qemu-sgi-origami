@@ -6,117 +6,25 @@
 # completion banner
 #
 # SPDX-License-Identifier: GPL-2.0-or-later
-"""
-Ports tools/openbsd-install (project checkout, just landed, read from
-fj/main) into this fork's own functional-test framework, the same way
-test_openbsd_net_transfer.py ports the networked login. This
-tool drives the real, interactive OpenBSD/sgi 6.9 installer end to end: it
-creates a blank target disk and writes an OpenBSD struct disklabel into its
-sector 1 (no SGI volume header -- the installer itself writes one during
-install), builds a second "sets" disk containing the install media
-(base69.tgz, comp69.tgz, SHA256, SHA256.sig, and bsd.IP27 -- the installed
-system's own kernel, distinct from the install ramdisk) as an FFS
-filesystem via makefs, boots bsd.rd.IP27 (the install ramdisk kernel) with
-both disks attached, and drives the installer's own prompts through an
-ordered answer table until it either completes or times out. This is the
-FUNCTIONAL-TEST form of that tool: a PASSING test if the install completes
-on current trunk, FAIL red (no expected-failure) if it does not -- the
-documented failure mode is stalling partway through base69.tgz's or
-comp69.tgz's own extraction and never reaching completion (see the
-project checkout's own docs/NOW.md, "a reproducible hang mid-extraction,
-traced to a double-completion in the device model", and the golden
-transcript cited below).
+"""Boot OpenBSD/sgi 6.9 from the stock PROM and run its interactive
+installer to completion. The PROM netboots the install ramdisk; the test
+answers the installer prompts in order and requires its completion banner.
 
-Netboots the ramdisk through the real 6.5.30 PROM rather than loading it
-with -kernel, the same conversion test_openbsd_net_transfer.py and
-test_xframe_pci.py make and for the same reason: commit b707094c18 made
-origin200 refuse -kernel outright at machine construction ("stock-PROM
-boot only; boot a kernel through the PROM's own TFTP netboot or a disk
-image, not -kernel"), and this test's own -kernel command line had been
-refused, never running a single guest instruction, since that commit
-landed -- undetected because it is registered only in the thorough suite
-(mips64/meson.build), which an ordinary run never exercises. Also drops
--no-reboot: a real PROM boot issues a QEMU-classified guest-initiated
-reset at machine construction before the PROM runs a single instruction,
-and -no-reboot turns that into an immediate silent shutdown with no
-console output at all, which would fail this test before the installer
-ever started. lib_prom's prom_netboot_steps() drives the System
-Maintenance Menu and command monitor to `boot -f bootp()/bsd.rd.IP27`;
-because two of its three steps share the literal ">>" prompt text,
-_drive_install()'s own window-clearing loop (which otherwise re-fires a
-rule on every fresh occurrence of the same text, by design, for the
-installer's own repeated prompts) tracks a separate position counter for
-these three steps, firing each exactly once in order -- the same
-duplicate-prompt problem lib_prom.drive_console()'s per-rule "fired"
-flag and test_openbsd_net_transfer.py's own strictly sequential
-_Console.expect()/send() solve differently, described in each of those
-modules' own docstrings.
+The test creates a blank target disk with a disklabel in sector 1. The
+installer creates the target filesystem. A second disk contains the
+release sets and installed kernel in an FFS filesystem made with makefs,
+plus a disklabel. The installed kernel and signed release manifest are
+needed for the installer to confirm completion.
 
-install_verdict() below is the judge of PASS/FAIL, checking the same
-ordered completion progression tests/golden/b4-openbsd-install-session
-shows for a real, complete install (project checkout, read via `git -C
-<project checkout> show fj/main:tests/golden/b4-openbsd-install-session`).
-It scores STAGES with lib_net.ordered_stages(), whose ordering and
-trip-wire rules are unit-tested in test_lib_net.py without booting
-anything; this file wires that to a real install, building the two disks,
-driving the installer and capturing the console.
+The test requires 128 MiB of guest memory. This is an observed limitation
+of the current model; increasing it causes the install to fail. The test
+is skipped when its asset directory is not configured, and is also subject
+to QEMU's large-data and slow-test options. If the asset directory is set
+but an expected input is missing, asset fetching fails the test.
 
-RULES and the location-of-sets handling below are install-driver.py's own
-answer table (assets/openbsd/spike/install-driver.py, project checkout),
-ported verbatim via tools/openbsd-install's own copy of it -- same
-patterns, same two documented fixed bugs: the "Location of sets?" loop
-(install.sub re-offers this prompt after every successful set-fetch batch
-to ask "add another location?", not a re-ask -- the first occurrence
-answers "disk", every occurrence after answers "done", tracked by a plain
-counter since the right answer depends on which occurrence this is, not
-just the prompt text), and driving the installer with bsd.IP27 itself on
-the sets disk (the installer never confirms complete without it -- see
-tools/openbsd-install's own docstring, "WHAT THIS PROMOTES"). Patterns are
-plain str regexes here rather than the tool's own bytes regexes, matching
-this framework's own str-decoded console transcript (the transfer and
-PROM tests both keep the same bytes-to-str conversion for the
-same reason). The disklabel struct-writing logic (_disklabel_bytes,
-_write_disklabel) is the same port of assets/openbsd/spike/
-make-disklabel.py's own build()/build_disklabel() -- see that file's own
-citations for the field-layout and checksum-rule provenance (OpenBSD 6.9's
-own release headers and the pinned refs/openbsd-sgi tree; nothing here is
-IRIX/SGI content, per this fork's cleanroom rule -- this is public BSD
-interop code already committed and cleared in the project checkout, ported
-rather than newly derived from vendor source).
-
-The sets disk is built with makefs directly (`makefs -t ffs -B be`, the
-same invocation tools/mk-disk.py's own run_makefs() uses). The public Debian
-test image installs Debian's `makefs` package. which('makefs') below still
-resolves the executable rather than assuming a fixed path, and skipTest()s
-if it is missing -- the same defensive resolution get_qemu_img()
-(qemu_test.cmd, imported below) already applies to qemu-img.
-
-128 MiB, not the golden's own 256 MiB: tools/openbsd-install's own current
-default is -m 128, with its own docstring explicitly warning "do not raise
-it" -- two guest memory-map defects are filed and unfixed
-(docs/plans/ip27-memory-map-handover.md, project checkout), and 128 MiB is
-the only size that clears both. tests/golden/b4-openbsd-install-session's
-own capture header records a real run made at 256 MiB, before that
-default was established in the now-promoted tool; the CONTRACT this port
-checks (the ordered completion progression) is unaffected by memory size,
-only the argv is, so this test follows the current, landed tool's own
-authoritative default rather than the older capture's incidental one --
-the same reason the network transfer test uses 128 MiB.
-
-Guarded by @skipBigDataTest() (the install media total several hundred
-MB) and @skipSlowTest() (a full install is 20-30 minutes) -- the
-framework's own env-var-gated decorators, matching test_openbsd_net_transfer.py
--- on top of @skipIfMissingEnv('QEMU_TEST_SGI_ASSET_DIR') for a developer with
-no
-assets at all. The install media are published to the forge asset store
-now (nightly provisioning for them is being added separately, out of
-this test's own scope), so QEMU_TEST_SGI_ASSET_DIR being set with an install
-input missing underneath it is a provisioning failure, not an
-absent-assets run, and fails the test loudly rather than skipping it.
-
-The scoring rules install_verdict() applies live in lib_net, which needs
-no qemu_test and is unit-tested on its own. What is left here is this
-installer's own stages and the real install.
+PASS requires the ordered installer stages to reach "CONGRATULATIONS!"
+without an OpenBSD tripwire. A timeout, disconnect, or earlier tripwire
+fails the test and records the console transcript.
 """
 
 import os
@@ -138,7 +46,7 @@ from lib_prom_sash import RELEASES
 from lib_translation_health import assert_translation_healthy
 
 
-# The installer's own ordered completion progression. Each marker is
+# The installer's ordered completion progression. Each marker is
 # searched for only after the one before it, so the second "Location of
 # sets?" prompt needs its own occurrence rather than re-finding the
 # first, and a "CONGRATULATIONS!" spliced in from elsewhere earlier in
@@ -177,40 +85,26 @@ def install_verdict(transcript):
     }
 
 
-# Where QEMU_TEST_SGI_ASSET_DIR resolves the install media, matching
-# test_openbsd_net_transfer.py's own KERNEL_REL/DISK_REL idiom:
-# QEMU_TEST_SGI_ASSET_DIR
-# points directly at the asset directory.
+# Paths below are relative to QEMU_TEST_SGI_ASSET_DIR.
 RELEASE_REL = os.path.join('openbsd', '6.9')
 # The install ramdisk. Also the TFTP bootfile name the PROM's netboot
 # command asks the SLIRP back end for -- it is both the asset's own name
 # and the name it is served under, so one constant names both.
 INSTALL_KERNEL_NAME = 'bsd.rd.IP27'
-# tools/openbsd-install's own current default, "do not raise it" -- see
-# this module's docstring for why this port follows it over the golden's
-# own incidental 256 MiB.
+# Current guest memory limit observed for this install.
 MEMORY_MIB = 128
 
-TARGET_DISK_SIZE = '2G'   # matches the golden's own sd0: 2048MB
-SETS_DISK_SIZE = '512m'   # matches tools/openbsd-install's own default
+TARGET_DISK_SIZE = '2G'
+SETS_DISK_SIZE = '512m'
 
-# A full install is 20-30 minutes under a quiet host (this module's own
-# docstring), but a real run on a contended host was still doing
-# genuine work (confirmed via /proc/<pid>/io, not a hang) in the final
-# kernel-relink step past 40 minutes. 90 minutes gives that headroom;
-# kept a 60s margin under the 5400s meson timeout registered for this
-# test (mips64/meson.build), the same margin every other test in this
-# directory keeps against its own meson timeout.
+# Allow 90 minutes for installation, with a 60-second margin under the
+# Meson test timeout.
 INSTALL_TIMEOUT_SECONDS = 5340
 
 
 # ---------------------------------------------------------------------------
-# The disklabel, ported from assets/openbsd/spike/make-disklabel.py (see
-# this module's docstring for the full provenance). Used for both disks:
-# the target disk gets a blank disklabel over raw sectors (the installer's
-# own newfs formats it during install), the sets disk gets the same
-# disklabel written after makefs has already formatted its FFS content --
-# tools/mk-disk.py's own run_makefs()+label sequence, in that order.
+# The target disk is labeled before installation; the installer creates
+# its filesystem. The sets disk is formatted with makefs, then labeled.
 # ---------------------------------------------------------------------------
 
 DISKMAGIC = 0x82564557
@@ -229,8 +123,7 @@ assert struct.calcsize(PART_FMT) == 16
 
 
 def _ffs_frag_block(fsize, frag):
-    """DISKLABELV1_FFS_FRAGBLOCK(fsize, frag), ported from
-    make-disklabel.py's own ffs_frag_block()."""
+    """Return the FFS fragment-to-block encoding used in the disklabel."""
     def ffs(x):
         if x == 0:
             return 0
@@ -245,12 +138,7 @@ def _ffs_frag_block(fsize, frag):
 
 
 def _disklabel_bytes(secperunit, typename, packname, fsize=1024, frag=8):
-    """One partition ('a', root) spanning the whole image, and 'c'
-    (RAW_PART) for the same span -- ported field-for-field from
-    make-disklabel.py's own build(): no separate swap region, matching
-    both disks this test builds (the target disk's own swap is unused by
-    the installer's own auto-layout during install; the sets disk carries
-    no swap at all)."""
+    """Build a disklabel with a root partition and a whole-disk partition."""
     npartitions = 3  # a (root), b (swap, unused), c (RAW_PART, whole disk)
 
     header = struct.pack(
@@ -324,10 +212,8 @@ def _write_disklabel(image_path, typename, packname):
 
 
 # ---------------------------------------------------------------------------
-# The answer table, ported verbatim from assets/openbsd/spike/
-# install-driver.py via tools/openbsd-install's own copy of it (see this
-# module's docstring). str patterns rather than the tool's own bytes
-# patterns, matching this framework's str-decoded transcript.
+# Ordered answers for the interactive installer. Patterns match the
+# decoded console transcript.
 # ---------------------------------------------------------------------------
 
 RULES = [
@@ -357,10 +243,7 @@ RULES = [
     ("nonfree-firmware", r"non-free firmware", "no\n"),
 ]
 
-# The stock PROM's own dialogue from the System Maintenance Menu to the
-# netboot command, generalized by lib_prom.prom_netboot_steps() -- see
-# this module's own docstring for why _drive_install() answers these by
-# position rather than folding them into RULES above.
+# PROM menu prompts and the netboot command, in order.
 NETBOOT_STEPS = prom_netboot_steps(INSTALL_KERNEL_NAME)
 
 FALLBACK_QUIET = 3.0
@@ -370,48 +253,17 @@ _TAIL_MAX = 4096
 
 
 def _drive_install(sock, log_path, timeout, vm=None):
-    """Answers the installer's prompts as install-driver.py proved,
-    against a real framework console socket -- the same shape
-    test_openbsd_net_transfer.py's own _drive_login() and lib_prom.py's own
-    drive_console() use, adapted for install-driver.py's own generic
-    "prompt went quiet, send a bare newline" fallback (FALLBACK_QUIET),
-    which those two simpler drivers do not need: a real install passes
-    through several prompts (DNS domain, DNS nameservers, root ssh login,
-    "install a Volume Header?", "Which disk do you wish to initialize?")
-    that this port does not need to answer specifically, only accept the
-    guest's own bracketed default for.
+    """Answer PROM and installer prompts on the guest console.
 
-    `window` (not the whole accumulated transcript) is what every rule is
-    matched against, and it is cleared to empty after every send -- ported
-    directly from install-driver.py's own reasoning: several rules must
-    re-fire on a LATER fresh occurrence of the same prompt text (the root
-    password is asked twice, "(will not echo)" then "(again)"), so a
-    per-rule "already fired" flag would wrongly suppress the second
-    occurrence. Clearing the window instead of tracking fired state is
-    what lets the exact same regex answer both.
+    The rolling window is cleared after each answer so repeated prompts,
+    such as the root password prompt, can be answered again. PROM steps
+    are answered by position because two steps share the same prompt text.
+    The repeated sets-location prompt is answered "disk" first and "done"
+    thereafter. When the guest reaches an unanswered prompt with a
+    bracketed default, send a newline after it goes quiet.
 
-    The netboot steps (NETBOOT_STEPS, module level) are checked before
-    everything else, by position rather than by the window-clearing
-    reasoning above: two of the three share the literal ">>" prompt text,
-    and a rule that fires on whichever text is in the window would answer
-    the SAME one of those two forever, never reaching the boot command.
-    A plain counter -- the same fix install-driver.py's own author
-    already made for "Location of sets?" below, which has the identical
-    shape -- answers each of the three exactly once, in order.
-
-    The Location-of-sets special case and the fallback are both
-    RE-CHECKED EVERY LOOP TICK, not only when a byte just arrived --
-    ported for the same reason install-driver.py's own comment gives:
-    once a prompt's full text is already sitting in `window`, the guest
-    goes idle waiting for input and no further byte ever arrives to
-    re-trigger a byte-driven check.
-
-    Returns the full transcript captured (str) up to whichever comes
-    first: the CONGRATULATIONS banner, a TRIPWIRES match, or timeout --
-    install_verdict() is what actually decides PASS/FAIL from what was
-    captured either way (matching test_openbsd_net_transfer.py's own division:
-    the early break here is a runtime-budget optimization, not a second,
-    divergent judgment).
+    Return captured output when the completion banner or a tripwire is
+    seen, or when the run ends. install_verdict() determines PASS or FAIL.
     """
     rules = [(label, re.compile(pattern), answer) for label, pattern, answer in RULES]
     netboot_rules = [(re.compile(pattern), answer) for pattern, answer in NETBOOT_STEPS]
@@ -517,12 +369,7 @@ def _drive_install(sock, log_path, timeout, vm=None):
 
 
 class OpenbsdInstall(QemuSystemTest):
-    """Drives a full, unattended OpenBSD/sgi 6.9 install and requires
-    install_verdict() be PASS. See this module's docstring for the
-    full contract; this class only wires it to a real install, the
-    same division test_openbsd_net_transfer.py and test_prom_sash.py keep
-    between their pure verdict logic and their own QemuSystemTest.
-    """
+    """Run the install and require install_verdict() to return PASS."""
 
     ASSET_FIRMWARE = LocalAsset(
         FIRMWARE_REL, RELEASES['6.5.30']['prom_sha256'])
@@ -548,10 +395,7 @@ class OpenbsdInstall(QemuSystemTest):
         '9b67eac0663a17e73714b896b5d504f26bc022b43607591ee5c7014a680b7494')
 
     def _build_target_disk(self, qemu_img):
-        """The blank root disk, created raw then labeled -- ported
-        from tools/openbsd-install's own step 3 (create, then
-        write_disklabel()); the installer's own newfs formats it
-        during install, so no filesystem is written here."""
+        """Create the blank root disk and write its disklabel."""
         target = self.scratch_file('target.img')
         subprocess.run(
             [qemu_img, 'create', '-f', 'raw', target, TARGET_DISK_SIZE],
@@ -563,12 +407,7 @@ class OpenbsdInstall(QemuSystemTest):
         return target
 
     def _build_sets_disk(self, makefs_bin, sets_files):
-        """The sets disk: an FFS filesystem containing the five
-        install inputs as top-level files, built with makefs (ported
-        from tools/mk-disk.py's own run_makefs()), then labeled --
-        ported from tools/openbsd-install's own step 2 (build the
-        sets disk via mk-disk.py, which pairs this exact makefs
-        invocation with this exact disklabel logic)."""
+        """Build an FFS sets disk and write its disklabel."""
         sets_tree = self.scratch_file('sets-tree')
         os.makedirs(sets_tree, exist_ok=True)
         for path in sets_files:
@@ -576,8 +415,7 @@ class OpenbsdInstall(QemuSystemTest):
                 path, os.path.join(sets_tree, os.path.basename(path)))
 
         sets_img = self.scratch_file('sets.img')
-        # makefs writes into an existing file; touch it first (mirrors
-        # tools/mk-disk.py's own image.touch(exist_ok=True)).
+        # makefs writes into an existing file, so create it first.
         open(sets_img, 'a', encoding='utf-8').close()
         subprocess.run(
             [makefs_bin, '-t', 'ffs', '-B', 'be',
@@ -608,8 +446,7 @@ class OpenbsdInstall(QemuSystemTest):
         makefs_bin = which('makefs')
         if makefs_bin is None:
             self.skipTest("makefs not found in '$PATH' -- needed to "
-                         "build the sets disk (tools/mk-disk.py's own "
-                         "invocation; see this module's docstring)")
+                         "build the sets disk")
 
         target_disk = self._build_target_disk(qemu_img)
         sets_disk = self._build_sets_disk(makefs_bin, sets_files)
@@ -647,7 +484,7 @@ class OpenbsdInstall(QemuSystemTest):
             # PROM boot issues its own guest-initiated reset before the
             # PROM runs a single instruction, and -no-reboot would turn
             # that into an immediate silent shutdown -- see this
-            # module's own docstring), so a live process reaching here
+            # PROM runs a single instruction), so a live process reaches here
             # is the common case, not the exception.
             vm.shutdown(hard=vm.exitcode() is not None)
 

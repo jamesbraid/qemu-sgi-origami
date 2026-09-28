@@ -4,10 +4,9 @@
 #
 # SPDX-License-Identifier: GPL-2.0-or-later
 """
-Ported from tools/diag-gate in the project checkout (since retired);
-test_prom_diagnostics.py's docstring gives the provenance of every name
-here. No qemu_test import, so the verdict companion can import this
-module under a plain python3 or pytest run.
+Pure PROM transcript parsing and verdict logic used by
+test_prom_diagnostics.py. No qemu_test import is needed, so the verdict
+companion can exercise this module with plain Python or pytest.
 """
 
 import re
@@ -17,9 +16,7 @@ from lib_prom_sash import (NETBOOT_PATH,
 
 
 # ---------------------------------------------------------------------------
-# Verdict logic, ported from tools/diag-gate (project checkout). Kept as
-# close to diag-gate's own wording and shape as possible; departures are
-# called out where they happen.
+# PROM transcript parsing and verdict logic.
 # ---------------------------------------------------------------------------
 
 PROM_BANNER_RE = re.compile(r"^IP27 PROM SGI Version.*$", re.M)
@@ -210,9 +207,7 @@ def evaluate_run(log, expected_failures=(), nvram_warnings="expected"):
     # pass that accepts the now-nonzero id. PROM 6.156 (6.5.30) does not:
     # it accepts its factory id (observed as 0, never reassigned) and runs
     # the whole sequence in one pass, with no box and no warm reset.
-    # Confirmed on docs/library/nvram-inventory-characterization.md and
-    # docs/boot-logs/firmware.nvram-6.5.30.2026-08-22T19:53-07:00, and
-    # reproduced again since -- a real release difference, not a defect.
+    # Captured 6.5.30 boots also show this complete single-pass form.
     # A transcript that only got through the box-and-reset half of a
     # genuine two-pass boot still needs both markers absent to qualify, so
     # it stays a wrong-pass-count failure below.
@@ -283,15 +278,9 @@ def evaluate_run(log, expected_failures=(), nvram_warnings="expected"):
                 "single assigned nonzero module id"
             )
     elif len(ids2) not in (1, 2) or (len(ids2) == 2 and ids2[0] != 0):
-        # A single-pass boot has no box-and-reset boundary, but both real
-        # captures of it (docs/boot-logs/firmware.nvram-6.5.30
-        # .2026-08-22T19:53-07:00 and this test's own boot) still show the
-        # same two-id split as the two-pass contract, compressed into one
-        # pass: "Global master is /hw/module/0/..." prints before
-        # assignment, then every later path -- the SCSI adapter walk,
-        # ConsolePath -- uses the single id assigned after it. A third,
-        # unrelated id or a nonzero-only pair with no 0 has no such
-        # explanation in either capture.
+        # A single-pass boot has no box-and-reset boundary. Module 0 may
+        # identify the global master before assignment; later paths must
+        # then use one assigned nonzero module ID.
         problems.append(
             f"pass 2 hardware paths used module ids {ids2} rather than "
             "module id 0 before assignment and a single id after"
@@ -356,16 +345,8 @@ def evaluate_run(log, expected_failures=(), nvram_warnings="expected"):
                     f"nvram_warnings=absent: {warning}"
                 )
 
-    # lib_prom_sash.missing_assertions(log, cpus=1) is tools/sash-gate's own
-    # ASSERTIONS/missing_assertions port, fixed at cpus=1 (the only
-    # population diag-gate ever drove) -- diag-gate's own evaluate_run()
-    # called sash_gate.missing_assertions(log, cpus=1) as its last check.
-    # Absorbing test_prom_sash.py (its own separate 1-CPU netboot test,
-    # deleted once this file grew its coverage) into this same boot means
-    # this call now also carries NETBOOT_PATH_ASSERTION -- proof the PROM's
-    # netboot fetch named the path-structured boot/sash64 this test serves,
-    # not merely a netboot of some name -- rather than reimplementing a
-    # second, narrower copy of the same assertions here.
+    # Check sash's environment and boot path in the same transcript. The
+    # path assertion verifies that the PROM requested boot/sash64.
     report["sash_missing"] = sash_missing_assertions(log, cpus=1)
     for name in report["sash_missing"]:
         problems.append(f"missing {name}")
@@ -374,60 +355,33 @@ def evaluate_run(log, expected_failures=(), nvram_warnings="expected"):
     return report
 
 
-# The expected-failure ledger, ported verbatim (comments included) from
-# tools/diag-gate-expected-failures in the project checkout -- the file
-# this port cannot read at test run time, so its content is embedded here
-# the same way test_prom_boot.py embeds MARK from tests/golden/. Feeding
-# it through parse_expected_failures (the ported function itself, not a
-# hand-picked list) exercises that port against its own real ledger text.
+# The ledger is embedded so the test records exactly which diagnostic
+# failures are accepted. Parsing it here keeps its syntax checked by the
+# same parser used for other ledger text.
 EXPECTED_FAILURES_TEXT = """\
-# Expected diagnostic failures for tools/diag-gate on the current trunk.
+# Expected diagnostic failures for the current PROM configuration.
 #
-# This is the red baseline, not a tolerance. The gate reports any failure
-# not listed here AND any listed diagnostic that stops failing, so a fix
-# that lands must remove its line in the same change. The final acceptance
-# run takes no list at all: an empty list is the full-acceptance contract.
+# Every failure must be listed, and every listed failure must still occur.
+# Remove a line when its failure is fixed. An empty list requires a clean run.
 #
-# The red baseline (one CPU, 64 MiB, PROM release 6.5-base, normal
-# diagnostics; docs/library/one-cpu-normal-diagnostics-gate.md and the
-# boot archive) listed serial_dma, enet_ssram, scsi_ram and scsi_dma. A
-# run of this test on the 2026-08-27 trunk observed no failure in either
-# pass -- the serial-DMA engines, the IOC3 ethernet series and the qlogic
-# fixes had each landed without retiring their lines -- so all four are
-# retired here per the rule above, and the list is empty: the
-# full-acceptance contract is now what this test asserts. The capture
-# that measured it is docs/boot-logs/firmware.diagnostics-all-clear.* in
-# the project checkout.
+# An empty list requires every diagnostic to pass. If a known failure is
+# added, list its exact diagnostic name; a failure outside the list fails,
+# and a listed diagnostic that passes is reported as stale. Remove a line
+# when its failure is fixed.
 """
 
 EXPECTED_FAILURES = parse_expected_failures(EXPECTED_FAILURES_TEXT)
 
 
 def diag_extra_args(prom, tftp, elsc_log, capture):
-    """The QEMU args beyond what QEMUMachine's set_machine()/set_console()
-    already provide, for diag-gate's fixed configuration: one CPU, normal
-    (not skipped) power-on diagnostics, and SLIRP usermode networking
-    serving sash64 with no external TFTP server. Ported from
-    tools/sash-gate's qemu_command(cpus=1, skip_prom_diags=False) in the
-    project checkout -- see this module's own docstring for exactly which
-    call diag-gate made and why netinst-rig is not this argv's source.
-    `bootfile=` names lib_prom_sash.NETBOOT_PATH (boot/sash64), the
-    path-structured layout test_prom_sash.py's own netboot proved before
-    that test was absorbed here, not diag-gate's own flat "bootfile=
-    sash64" -- `tftp` must therefore be a directory that actually has a
-    boot/sash64 under it (test_prom_diagnostics.py stages one), not the
-    flat assets/boot/<release> tree directly.
+    """Return the QEMU args for one CPU, normal PROM diagnostics and
+    SLIRP netboot. `bootfile=` names NETBOOT_PATH (boot/sash64), so `tftp`
+    must contain that path; test_prom_diagnostics.py stages the fixture.
 
-    set_console() already emits "-serial chardev:console" for serial line
-    0 (IOC3 port A, the primary console); the "-serial none" here fills
-    line 1 (IOC3 port B, unused) so the "-serial chardev:elsc" that
-    follows lands on line 2, the ELSC AUX port -- the same
-    podlib.serial_args(ioc3_a=..., elsc=...) numbering sash_gate.
-    qemu_command itself uses. console=d selects IOC3 serial A on line 0,
-    captured by set_console() above; the ELSC AUX on line 2 carries the
-    firmware's power-on-diagnostic console output, which the PROM re-opens
-    on the system controller after a failed diagnostic, captured here
-    rather than lost to a dark port.
+    set_console() assigns serial line 0 to the primary console. The first
+    serial argument here leaves line 1 unused so the ELSC AUX chardev uses
+    line 2. That port captures diagnostic output when the PROM switches
+    consoles after a failed diagnostic.
     """
     return [
         '-cpu', 'R10000',

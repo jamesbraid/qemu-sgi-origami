@@ -6,69 +6,21 @@
 #
 # SPDX-License-Identifier: GPL-2.0-or-later
 """
-Ports the check that used to live in tools/diag-gate, in the PROJECT
-checkout, into this fork's own functional-test framework, the same way
-test_prom_boot.py ports tools/boot-gate. diag-gate (since retired --
-superseded by this functional test) drove one QEMU invocation through the
-whole factory sequence: the cold first pass has no module id, so the
-firmware assigns one and warm-resets itself (same process, no new
-invocation); the second pass accepts that assigned id, runs the normal
-power-on diagnostics, prints the System Configuration and Diagnostics
-Summary, reaches the System Maintenance Menu, and is then driven through
-the command monitor to netboot sash64 over QEMU's own SLIRP usermode
-networking (no external TFTP server). Every `RSLT <name> PASS/FAIL` line on
-both passes is parsed and judged against an explicit expected-failure
-ledger, ported below from diag-gate's own expected-failures list (the file
-that shipped beside it in the project checkout before retirement): an
-unexpected FAIL fails the run, and an expected failure that stops happening
-is reported as stale rather than silently accepted.
+Boot the IP27 PROM through its factory diagnostics, then netboot sash64
+over SLIRP and inspect the resulting console transcript. The verdict
+accepts two passes when the first assigns a module ID and warm resets, and
+the next runs diagnostics and reaches the maintenance menu. It also
+accepts a complete single pass with no assignment box or warm reset. A
+partial sequence fails. Every RSLT result is checked against an
+expected-failure ledger: an unlisted failure fails the run, and a listed
+failure that no longer occurs is reported as stale.
 
-evaluate_run() and the pure functions it calls (split_passes,
-parse_rslt_lines, parse_summary, module_ids, extract_identities,
-parse_expected_failures, _judge_failures) are a direct, close-to-verbatim
-port of diag-gate's own functions of the same names; they live in
-lib_prom_diagnostics.py beside this file. That evaluate_run()'s last
-check calls lib_prom_sash.missing_assertions(log, cpus=1) directly,
-tools/sash-gate's own ASSERTIONS/missing_assertions port that diag-gate
-itself called (via sash_gate) as the last stage of its own evaluate_run,
-fixed at cpus=1 -- the only population diag-gate ever drove.
-
-This test also carries the coverage test_prom_sash.py used to check on
-its own separate 1-CPU netboot boot, since folded in here and deleted:
-lib_prom_sash.missing_assertions() folds in NETBOOT_PATH_ASSERTION,
-proof the PROM's netboot fetch named the path-structured boot/sash64
-this test serves rather than merely a netboot of some name, and
-test_prom_diagnostics() below runs lib_prom_sash.artifact_identity_
-problems() before launching, the same release-matched SHA-256 refusal
-test_prom_sash.py made. Neither check needed a second port:
-lib_prom_sash.py (test_prom_pod.py's own RELEASES import keeps it in
-the tree) already carries both, pure and importable without qemu_test,
-the same way lib_prom_diagnostics.py's own functions are.
-test_prom_diagnostics_verdict.py proves the port in that file against
-real captured transcripts and the ported ledger, without booting
-anything -- see that file's docstring.
-
-The QEMU argv lib_prom_diagnostics.py builds (diag_extra_args) was
-diag-gate's own gate_qemu_command, which was tools/sash-gate's
-qemu_command with cpus=1,
-skip_prom_diags=False -- read directly from tools/sash-gate in the project
-checkout (the "-M origin200,debug-leds=off" machine
-string, the "-nic user,...,tftp=...,bootfile=sash64" SLIRP usermode netboot
-line, and the ELSC AUX chardev on serial line 2 that podlib.serial_args
-wires so the firmware's power-on-diagnostic console output -- which the
-PROM re-opens on the system controller after a failed diagnostic -- is not
-lost to a dark port; console=d selects IOC3 serial A on line 0, the
-primary console, not this port). tools/netinst-rig,
-named in this port's brief as a second reference, turns out to drive a real
-irix-netinst server over bridged tap networking, not SLIRP at all -- a
-different tool for a different (real-server) netboot path -- so it is not
-the source this file's argv was built from; sash_gate.qemu_command is, and
-diag-gate called that function directly. A captured confirmation that this
-fork's own build now needs none of sash_gate's --slirp-dir/LD_LIBRARY_PATH
-plumbing is docs/boot-logs/firmware.sash-netboot-vendored-slirp -- this
-fork's meson build vendors libslirp as a static subproject
-(subprojects/libslirp.wrap), so the emulator built from this tree links it
-in rather than loading it at runtime.
+The verdict logic lives in lib_prom_diagnostics.py and can be exercised
+without QEMU by test_prom_diagnostics_verdict.py. The real boot also
+checks release-matched PROM and sash64 digests and verifies that the
+netboot request names the path-structured boot/sash64 fixture. It then
+drives the command monitor through sash64 and checks the complete
+transcript, including diagnostic console output on the ELSC AUX port.
 """
 
 import hashlib
@@ -90,47 +42,26 @@ from lib_prom_sash import (NETBOOT_PATH, RELEASES,
 
 
 # ---------------------------------------------------------------------------
-# The real boot: the interactive drive through the factory sequence to
-# sash64, and provenance. Not covered by test_prom_diagnostics_verdict.py
-# -- see this module's own docstring for why -- so nothing below this line
-# needs to be pure or independently testable the way the verdict logic in
-# lib_prom_diagnostics.py does.
+# The real boot: the interactive drive through diagnostics to sash64.
+# The verdict companion covers the pure logic without starting QEMU.
 # ---------------------------------------------------------------------------
 
-# The release this test's real boot drives -- matching test_prom_boot.py's
-# own default (tools/sash-gate's CLI default is also 6.5.30).
-# lib_prom_sash.RELEASES carries 6.5-base too, for the verdict logic and
-# its own unit tests, but this one QemuSystemTest method drives one
-# release at a time, the same way test_prom_sash.py's own RELEASE did.
+# The release this test's real boot drives.
+# This QemuSystemTest method drives one release at a time.
 RELEASE = "6.5.30"
 
-# Resolve the firmware and boot tree beneath QEMU_TEST_SGI_ASSET_DIR,
-# matching test_prom_boot.py's FIRMWARE_REL and tools/sash-gate's
-# RELEASES["6.5.30"]
-# in the project checkout: QEMU_TEST_SGI_ASSET_DIR points directly at the
-# asset directory.
+# Resolve the firmware and boot tree beneath QEMU_TEST_SGI_ASSET_DIR.
 FIRMWARE_REL = os.path.join('firmware', RELEASE,
                             'ip27prom.payload.bin')
 TFTP_REL = os.path.join('boot', RELEASE)
 
-# diag-gate's own default (tools/diag-gate's DEFAULT_TIMEOUT_SECONDS,
-# before that tool's retirement) covered both passes and the sash leg in
-# one budget. Kept a little under the meson timeout registered for this
-# test in mips64/meson.build, the same margin test_prom_boot.py keeps
-# against its own 700s meson timeout.
+# One timeout covers the diagnostic sequence and the sash netboot.
 BOOT_TIMEOUT_SECONDS = 1740
 
-# tools/serial-console's own console driver, ported: each (pattern,
-# response) fires once, the first time PATTERN matches the TAIL of
-# what has been received since the last match. The five steps drive the
-# PROM from the System Maintenance Menu through the command monitor to an
-# interactive sash prompt, matching diag-gate's own console_driver
-# (tools/diag-gate's --expect list, before that tool's retirement) with
-# one departure absorbed from test_prom_sash.py: the boot command names
-# NETBOOT_PATH (`boot -f bootp()/boot/sash64`), not diag-gate's own flat
-# `boot -f bootp()/sash64` -- proof the PROM fetches the path-structured
-# file this test serves (see NETBOOT_PATH_ASSERTION's own comment in
-# lib_prom_sash.py).
+# Each (pattern, response) fires once when PATTERN matches the received
+# console tail. The steps drive the PROM from the maintenance menu through
+# the command monitor to sash64. The boot command names NETBOOT_PATH so the
+# transcript proves the PROM requested the path-structured fixture.
 DRIVER_STEPS = (
     (r"Option\?", "5\n"),
     (r">>", "unsetenv netaddr\n"),
@@ -138,19 +69,14 @@ DRIVER_STEPS = (
     (r"sash:", "hinv\n"),
     (r"sash:", "printenv\n"),
 )
-# diag-gate's own --until was: printenv's own dlserver line, the run's
-# proof that sash64 actually loaded and ran rather than merely being
-# requested.
+# printenv's dlserver value proves sash64 loaded and ran, rather than only
+# being requested.
 DRIVER_UNTIL_RE = re.compile(rb"dlserver=192\.0\.2\.2")
 
 
 class PromDiagnostics(QemuSystemTest):
-    """Boots the real IP27 PROM firmware through diag-gate's two-pass
-    factory sequence to an interactive sash prompt and requires
-    evaluate_run's verdict to be PASS. See this module's docstring for
-    the full contract; this class only wires it to a real boot, the
-    same division test_prom_boot.py keeps between its pure logic and
-    PromBoot.
+    """Boot the IP27 PROM through diagnostics to an interactive sash
+    prompt, then require evaluate_run() to return PASS.
     """
 
     ASSET_PROM = LocalAsset(
@@ -162,10 +88,8 @@ class PromDiagnostics(QemuSystemTest):
     def _stage_netboot_tftp(self, sash):
         """A fresh tftp root, under this test's own scratch directory,
         with the real (already digest-checked) sash64 copied in at
-        NETBOOT_PATH -- e.g. <root>/boot/sash64. Ported from
-        test_prom_sash.py's own PromSash._stage_netboot_tftp: this is
-        what proves the netboot is PATH-STRUCTURED, since SLIRP's tftp=
-        serves whatever bootfile= names relative to this root.
+        NETBOOT_PATH -- e.g. <root>/boot/sash64. SLIRP serves the path
+        named by bootfile= relative to this root.
         """
         root = self.scratch_file('netboot-tftp')
         staged_sash = os.path.join(root, *NETBOOT_PATH.split('/'))
@@ -175,18 +99,12 @@ class PromDiagnostics(QemuSystemTest):
 
     @skipIfMissingEnv('QEMU_TEST_SGI_ASSET_DIR')
     def test_prom_diagnostics(self):
-        # sash64 comes from tools/sash-gate's own FLAT assets/boot/<release>
-        # layout (sash64 alongside sashARCS, unix.IP27, ...), shared
-        # read-only project state this test must not restructure -- see
-        # _stage_netboot_tftp() for the PATH-STRUCTURED copy this test's
-        # real boot actually serves.
+        # The source asset tree is flat; _stage_netboot_tftp() creates the
+        # path-structured root served by SLIRP.
         prom, sash = self.ASSET_PROM.fetch(), self.ASSET_SASH.fetch()
 
-        # tools/sash-gate itself refuses to launch against a PROM or
-        # sash64 that does not match the selected release's recorded
-        # digest -- the same refusal here, absorbed from
-        # test_prom_sash.py, before spending a boot on assets that would
-        # silently produce a meaningless pass or a confusing failure.
+        # Check both assets before booting so a release mismatch cannot
+        # produce a misleading diagnostic result.
         identity_problems = artifact_identity_problems(RELEASE, prom, sash)
         if identity_problems:
             self.fail(

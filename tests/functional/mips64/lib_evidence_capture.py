@@ -3,61 +3,37 @@
 #
 # SPDX-License-Identifier: GPL-2.0-or-later
 """
-Validating a new graphics device visually has been the same manual sequence
-every time regardless of which card is attached: boot IRIX, log in through
-the graphical greeter, open the desktop's Console icon, drag it big enough
-to hold a command's full output, type the command, and screendump the
-result. Nothing about that sequence is specific to RAD4, RAD1, or any other
-card this project models or will model -- it is IRIX's stock 4Dwm desktop,
-identical regardless of which device rendered it. This module is that
-sequence as reusable functions, so a caller (tools/graphics-capture-evidence
-in the Origami checkout, or a future graphics-matrix scenario) states which
-guest account, which command and where to write the screendump, and does
-not re-derive the desktop layout.
+The sequence is: log in through the graphical greeter, open the desktop's
+Console, resize it to hold command output, type a command, and save a
+screendump. The desktop interactions use the stock IRIX 6.5.30 xdm greeter
+and 4Dwm layout observed at 1280x1024. They are independent of which
+graphics device renders the desktop; this sequence does not validate that
+device's hardware behavior.
 
-Every coordinate and delta below is measured, not estimated, against IRIX
-6.5.30's stock xdm greeter and 4Dwm desktop at 1280x1024 -- this project's
-only graphics resolution so far. Two sources agree:
+The coordinates below were measured from screendumps in that guest and
+resolution. The Login name field spans x=452..668, y=695..724; the Password
+field is 46 pixels below it. The Console icon is centered near (252, 44).
+A newly opened Console window spans (9, 615)..(681, 1014), or 672x399
+pixels. After widening and then raising its top border, it spans
+(9, ~330)..(1119, 999), enough to display the observed `hinv -v` output.
+The measurements describe this guest desktop at this resolution only.
 
-  - docs/datasheets/psitech-rad4.md's "Window resize is confirmed working"
-    finding (Origami checkout), which first measured the Console window's
-    default size (~670x390) and a working resize target (~1112x677).
-  - A fresh, independent live capture this session (Origami-checkout run
-    irix-20260918T044948-592655, disk copied from
-    /storage/nvme/origami/rad4-bringup-20260916/root.qcow2 with a new
-    `guest` account password set via `passwd guest` at an authenticated
-    root shell), which pixel-measured the same greeter and desktop
-    directly from its own screendumps: the Login name field at
-    x=[452,668] y=[695,724], the Password field 46px below it, the
-    Console desktop icon centered near (252, 44), the freshly-opened
-    Console window at x=[9,681] y=[615,1014] (672x399, matching the
-    datasheet's "~670x390"), and -- after the same two-stage border drag
-    this module implements -- a final window at x=[9,1119] y=[~330,999]
-    (comfortably holding the full `hinv -v` output this tool exists to
-    capture, confirmed by eye against that live screendump).
+The resize uses two separate drags: widen the right border, then raise the
+top border. In QEMU runs, dragging the right border through more than a
+dozen correctly sized movement steps in one held-button pass produced no
+visible change, on two attempts; a later step did commit the resize. In a
+separate attempt, releasing and pressing again without repositioning the
+pointer dragged a desktop icon instead. The input helpers keep the button
+held throughout each drag and position the pointer explicitly before each
+interaction. A screendump taken immediately after release can show a
+partially redrawn window, so the sequence waits before continuing.
 
-That same live capture also reproduced psitech-rad4.md's mouse-drag
-quirk directly: dragging the Console window's right border the full
-measured distance in one held-button pass produced no visible change
-across more than a dozen correctly-sized steps, twice, before either
-committing on a later step or (once, mid-investigation) turning out to
-have silently dragged a desktop icon instead because the cursor's
-position was not reset between two separate press/drag/release attempts.
-Two things fixed it, and both are load-bearing in the functions below:
-never release and re-press mid-drag (drag_mouse() in lib_input.py holds
-the button for every step of one delta and releases once), and always
-re-clamp the cursor to a known position with lib_input.move_to() before
-a new interaction rather than trust wherever the last one left it.
-
-`vm` throughout this module is anything whose `.cmd(name, **kwargs)`
-executes a QMP command by name -- qemu_test's own VM class satisfies
-this directly (see lib_input.py's own docstring for the convention this
-project already uses it for), and so does a caller's own thin adapter
-over another control path, as tools/graphics-capture-evidence's does over
-Origami's `tools/origami qmp`/`tools/origami hmp`. Nothing here launches a
-guest, drives its serial console to a login prompt, or knows what
-graphics device is attached -- that is the caller's job, once for
-whichever card is under test.
+The coordinates and interaction behavior are observations from QEMU runs
+of this guest setup. The original capture notes and image artifacts are
+not included here, so the measurements cannot be independently checked
+from this file alone. This module expects an already booted VM at the
+graphical login screen and uses its QMP command interface; guest startup,
+login credentials, and graphics-device selection belong to the caller.
 """
 
 import time
@@ -101,9 +77,8 @@ OPEN_SETTLE_SECONDS = 2.0
 # (left, top, right, bottom), and the two border-drag grab points and
 # deltas that reliably grow it enough to hold a command's full output.
 # The two drags are independent -- width first (right border), then
-# height (top border) -- because that is the order this module's own
-# docstring found working live; a single combined corner drag was not
-# tried and is not assumed equivalent.
+# height (top border) -- this is the observed working order. A combined
+# corner drag has not been tried and is not assumed equivalent.
 CONSOLE_INITIAL_RECT = (9, 615, 681, 1014)
 CONSOLE_WIDTH_GRAB = (683, 800)
 CONSOLE_WIDTH_DELTA = 438
@@ -117,10 +92,8 @@ CONSOLE_BODY_CLICK = (300, 500)
 
 # How long to settle after each border drag before the next step (or a
 # caller's own verification) trusts the screen. A drag's own effect can
-# still be mid-redraw for a moment after its button-release HMP command
-# returns; this module's docstring's own live capture saw a screendump
-# taken immediately after release catch a stale partial-redraw frame
-# that a later screendump did not.
+# still be mid-redraw for a moment after the mouse button is released.
+# A screendump taken immediately after release can catch a partial frame.
 RESIZE_SETTLE_SECONDS = 1.5
 
 # How long to wait after pressing Return on a typed command before its
@@ -161,7 +134,7 @@ def resize_console(vm, *, width_delta=CONSOLE_WIDTH_DELTA,
     legibly: drag its right border out by `width_delta`, settle, then
     drag its top border up by `height_delta` (a negative value grows
     the window; see CONSOLE_HEIGHT_DELTA), settle again. Defaults are
-    the exact deltas this module's own docstring measured working."""
+    the measured deltas for the observed 1280x1024 desktop."""
     lib_input.drag_from(vm, *CONSOLE_WIDTH_GRAB, width_delta, 0)
     time.sleep(settle_seconds)
     lib_input.drag_from(vm, *CONSOLE_HEIGHT_GRAB, 0, height_delta)
@@ -204,12 +177,8 @@ def capture_evidence(vm, *, username, password, command, out_path,
     resize it, run `command`, and screendump to `out_path`.
 
     `vm` must already be booted and sitting at the graphical login
-    screen -- this function has no idea how it got there or which
-    graphics device is attached, which is the point: it is generic
-    desktop automation, not tied to any one card. tools/graphics-
-    capture-evidence in the Origami checkout calls this directly; a
-    future graphics-matrix scenario needing the same sequence should
-    too, rather than reimplementing it.
+    screen. This function does not start the guest or select a graphics
+    device; it automates the guest desktop through QMP.
     """
     login(vm, username, password, settle_seconds=login_settle_seconds,
           key_settle_seconds=key_settle_seconds)
