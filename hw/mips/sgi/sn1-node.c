@@ -1455,6 +1455,10 @@ static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
     if (node->fuel_experiment) {
         qdev_prop_set_uint32(node->l1, "brick-type-code",
                              node->fuel_l1_type_code);
+        if (sgi_machine_fuel_mac_eeprom(machine)) {
+            qdev_prop_set_string(node->l1, "fuel-mac-eeprom",
+                                sgi_machine_fuel_mac_eeprom(machine));
+        }
     }
     if (l1_console) {
         qdev_prop_set_chr(node->l1, "chardev", l1_console);

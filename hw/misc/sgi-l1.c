@@ -1,8 +1,8 @@
 /* SPDX-License-Identifier: BSD-3-Clause */
 /*
- * Origin 300 L1 system controller and the Bedrock UART window carrying its
- * packet protocol.
-*/
+ * SGI L1 system controller: the controller itself, and the node-side
+ * UART window through which the Bedrock speaks its packet protocol.
+ */
 #include "qemu/osdep.h"
 #include "hw/misc/sgi-l1.h"
 #include "hw/core/cpu.h"
@@ -1981,6 +1981,97 @@ static void l1_realize(DeviceState *dev, Error **errp)
     char **files[] = { s->chassis_files, s->board_files, s->spd_files };
     uint32_t counts[] = { s->chassis_count, s->board_count, s->spd_count };
 
+    if (s->fuel_mac_eeprom) {
+        g_autofree char *data = NULL;
+        gsize length;
+        GError *local_error = NULL;
+        const uint8_t *bytes;
+        size_t start, area_length, cursor;
+        unsigned sum = 0;
+        bool mac_field = false;
+
+        if (s->system_serial) {
+            error_setg(errp, "Fuel MAC EEPROM and system-serial conflict");
+            return;
+        }
+        if (!g_file_get_contents(s->fuel_mac_eeprom, &data, &length,
+                                 &local_error)) {
+            error_setg(errp, "Fuel MAC EEPROM: %s", local_error->message);
+            g_error_free(local_error);
+            return;
+        }
+        bytes = (const uint8_t *)data;
+        if (length != 512) {
+            goto invalid_fuel_mac;
+        }
+        for (size_t i = 0; i < 8; i++) {
+            sum += bytes[i];
+        }
+        start = (size_t)bytes[3] * 8;
+        if ((sum & 0xff) || start < 8 || start + 7 >= length) {
+            goto invalid_fuel_mac;
+        }
+        area_length = (size_t)bytes[start + 1] * 8;
+        if (!area_length || start + area_length >= length) {
+            goto invalid_fuel_mac;
+        }
+        sum = 0;
+        for (size_t i = start; i < start + area_length; i++) {
+            sum += bytes[i];
+        }
+        if (sum & 0xff) {
+            goto invalid_fuel_mac;
+        }
+        cursor = 7 + (bytes[start + 6] & 63);
+        for (unsigned field = 0; field < 5; field++) {
+            size_t field_length, advance;
+
+            if (cursor >= area_length) {
+                goto invalid_fuel_mac;
+            }
+            field_length = bytes[start + cursor] & 63;
+            if (cursor + 1 + field_length > area_length) {
+                goto invalid_fuel_mac;
+            }
+            if (field == 0) {
+                mac_field = field_length >= 4 &&
+                    !memcmp(bytes + start + cursor + 1, "MAC ", 4);
+            }
+            if (field == 1 && field_length &&
+                cursor + 1 + field_length <= area_length &&
+                bytes[start + cursor + field_length] == '\t') {
+                field_length--;
+            }
+            advance = field_length + (field < 2 ? 1 : field == 3 ? 3 : 2);
+            if (cursor + advance > area_length ||
+                cursor + 1 + field_length > area_length) {
+                goto invalid_fuel_mac;
+            }
+            cursor += advance;
+        }
+        if (!mac_field || cursor + 14 >= area_length) {
+            goto invalid_fuel_mac;
+        }
+        cursor += 14;
+        if ((bytes[start + cursor] & 63) != 12 ||
+            cursor + 13 > area_length) {
+            goto invalid_fuel_mac;
+        }
+        for (size_t i = 0; i < 12; i++) {
+            if (!g_ascii_isxdigit(bytes[start + cursor + 1 + i])) {
+                goto invalid_fuel_mac;
+            }
+        }
+        s->system_serial = g_strndup(data + start + cursor + 1, 12);
+        goto fuel_mac_done;
+
+invalid_fuel_mac:
+        error_setg(errp, "Fuel MAC EEPROM record is malformed");
+        return;
+fuel_mac_done:
+        ;
+    }
+
     if (s->revision_major < -1 || s->revision_minor < -1 ||
         s->revision_patch < -1 ||
         ((s->revision_major < 0 || s->revision_minor < 0 ||
@@ -2375,6 +2466,7 @@ static const Property l1_properties[] = {
     DEFINE_PROP_UINT32("debug-switches", SGIL1State, debug_switches, 0),
     DEFINE_PROP_UINT32("partition", SGIL1State, partition, 0),
     DEFINE_PROP_STRING("system-serial", SGIL1State, system_serial),
+    DEFINE_PROP_STRING("fuel-mac-eeprom", SGIL1State, fuel_mac_eeprom),
     DEFINE_PROP_STRING("brick-serial", SGIL1State, brick_serial),
     DEFINE_PROP_UINT32("processors", SGIL1State, processors, 2),
     DEFINE_PROP_STRING("brick-type", SGIL1State, brick_type),
@@ -2451,6 +2543,7 @@ static void l1_finalize(Object *obj)
         g_free(s->selected[i].image);
     }
     g_free(s->system_serial);
+    g_free(s->fuel_mac_eeprom);
     g_free(s->brick_serial);
     g_free(s->brick_type);
 }

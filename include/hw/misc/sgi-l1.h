@@ -78,6 +78,7 @@ struct SGIL1State {
     uint8_t two_bit_setting;
     uint8_t last_reason[2];
     char *system_serial;
+    char *fuel_mac_eeprom;
     char *brick_serial;
     char *brick_type;
     uint32_t brick_type_code;

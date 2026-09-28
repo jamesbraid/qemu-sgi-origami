@@ -244,6 +244,7 @@ struct SGIMachineState {
     uint8_t fuel_bedrock_revision;
     bool fuel_bedrock_revision_set;
     char *fuel_rtc_decode;
+    char *fuel_mac_eeprom;
 };
 
 /*
@@ -303,6 +304,11 @@ static void sgi_machine_set_identity_records(Object *obj, Visitor *v,
 static bool sgi_machine_has_identity_records(SGIMachineState *s)
 {
     return s->chassis_eeprom || s->board_eeprom || s->spd_eeprom;
+}
+
+const char *sgi_machine_fuel_mac_eeprom(MachineState *machine)
+{
+    return SGI_MACHINE(machine)->fuel_mac_eeprom;
 }
 
 /*
@@ -2517,6 +2523,10 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
         error_setg(errp, "fuel-rtc-decode applies only to -M fuel");
         return false;
     }
+    if (strcmp(smc->product, "fuel") && s->fuel_mac_eeprom) {
+        error_setg(errp, "fuel-mac-eeprom applies only to -M fuel");
+        return false;
+    }
     if (strcmp(smc->product, "fuel") && s->fuel_l1_type_code_set) {
         error_setg(errp, "fuel-l1-type-code applies only to -M fuel");
         return false;
@@ -3600,6 +3610,20 @@ static char *sgi_machine_get_fuel_rtc_decode(Object *obj, Error **errp)
     return g_strdup(SGI_MACHINE(obj)->fuel_rtc_decode);
 }
 
+static char *sgi_machine_get_fuel_mac_eeprom(Object *obj, Error **errp)
+{
+    return g_strdup(SGI_MACHINE(obj)->fuel_mac_eeprom);
+}
+
+static void sgi_machine_set_fuel_mac_eeprom(Object *obj, const char *value,
+                                            Error **errp)
+{
+    SGIMachineState *s = SGI_MACHINE(obj);
+
+    g_free(s->fuel_mac_eeprom);
+    s->fuel_mac_eeprom = g_strdup(value);
+}
+
 static void sgi_machine_set_fuel_rtc_decode(Object *obj, const char *value,
                                              Error **errp)
 {
@@ -3723,6 +3747,7 @@ static void sgi_machine_instance_finalize(Object *obj)
     g_free(s->population);
     g_free(s->baseio_preset);
     g_free(s->fuel_rtc_decode);
+    g_free(s->fuel_mac_eeprom);
     for (i = 0; i < ARRAY_SIZE(sgi_machine_identity_records); i++) {
         qapi_free_strList(*sgi_machine_identity_slot(
             obj, (void *)&sgi_machine_identity_records[i]));
@@ -3848,6 +3873,12 @@ static void sgi_machine_class_init(ObjectClass *oc, const void *data)
     object_class_property_set_description(oc, "fuel-rtc-decode",
         "Optional Fuel DS1742 bytebus experiment; accepts low11-mirror. "
         "Absent by default because physical address decoding is unknown.");
+
+    object_class_property_add_str(oc, "fuel-mac-eeprom",
+                                  sgi_machine_get_fuel_mac_eeprom,
+                                  sgi_machine_set_fuel_mac_eeprom);
+    object_class_property_set_description(oc, "fuel-mac-eeprom",
+        "Path to an explicitly supplied 512-byte Fuel L1 MAC EEPROM image");
 
     object_class_property_add_str(oc, "routes", sgi_machine_get_routes, NULL);
     object_class_property_set_description(oc, "routes",
