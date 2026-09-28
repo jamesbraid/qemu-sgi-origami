@@ -401,7 +401,7 @@ static unsigned int mgras_gl_lookup(SGIMgrasState *s, uint32_t slot)
  * whatever HQ state the board saves. The discriminating tests are
  * gl-parser-follows-the-context and gl-packet-split-by-a-context-switch.
  */
-static void mgras_gl_save_parser(SGIMgrasState *s, SGIMgrasCmdParser *p)
+void sgi_mgras_cmd_parser_save(SGIMgrasState *s, SGIMgrasCmdParser *p)
 {
     p->cls = s->cmd_token_class;
     p->reg = s->cmd_token_reg;
@@ -410,7 +410,7 @@ static void mgras_gl_save_parser(SGIMgrasState *s, SGIMgrasCmdParser *p)
     p->payload_count = s->cmd_token_payload_count;
 }
 
-static void mgras_gl_load_parser(SGIMgrasState *s, const SGIMgrasCmdParser *p)
+void sgi_mgras_cmd_parser_load(SGIMgrasState *s, const SGIMgrasCmdParser *p)
 {
     s->cmd_token_class = p->cls;
     s->cmd_token_reg = p->reg;
@@ -423,7 +423,7 @@ void sgi_mgras_gl_context_loaded(SGIMgrasState *s)
 {
     uint32_t slot = s->context[MGRAS_GL_IMAGE_SLOT];
 
-    mgras_gl_save_parser(s, &mgras_gl(s)->parser);
+    sgi_mgras_cmd_parser_save(s, &mgras_gl(s)->parser);
     s->gl_banks[0] = s->context[MGRAS_GL_IMAGE_BANKS];
     s->gl_banks[1] = s->context[MGRAS_GL_IMAGE_BANKS + 1];
     s->gl_ge_port_logged = false;
@@ -433,7 +433,7 @@ void sgi_mgras_gl_context_loaded(SGIMgrasState *s)
         s->gl_current = mgras_gl_lookup(s, slot);
         s->gl_selected[s->gl_current] = ++s->gl_selections;
     }
-    mgras_gl_load_parser(s, &mgras_gl(s)->parser);
+    sgi_mgras_cmd_parser_load(s, &mgras_gl(s)->parser);
 }
 
 /*

@@ -25,6 +25,9 @@ extern const VMStateDescription vmstate_sgi_mgras_gl_context_v22;
 
 /* Note GE-port traffic the per-context state cannot follow. */
 void sgi_mgras_gl_ge_port_access(SGIMgrasState *s, hwaddr addr, bool write);
+/* The command parser's position, to set aside and take up again. */
+void sgi_mgras_cmd_parser_save(SGIMgrasState *s, SGIMgrasCmdParser *p);
+void sgi_mgras_cmd_parser_load(SGIMgrasState *s, const SGIMgrasCmdParser *p);
 /* Whether a migrated parser position is in range. */
 bool sgi_mgras_cmd_parser_valid(uint32_t cls, uint32_t reg,
                                 uint32_t words_remaining,

@@ -9,6 +9,7 @@
 #include "qom/object.h"
 #include "qemu/units.h"
 #include "hw/display/sgi/board-memory.h"
+#include "hw/display/sgi/command-fetch.h"
 
 #define TYPE_SGI_MGRAS "sgi-mgras"
 OBJECT_DECLARE_TYPE(SGIMgrasState, SGIMgrasClass, SGI_MGRAS)
@@ -439,6 +440,11 @@ struct SGIMgrasState {
     uint32_t test_dma_map_slot;
     /* Host-only event ordering. Not guest state and not migrated. */
     uint64_t trace_sequence;
+    /*
+     * The display list being executed, which lives only inside the port
+     * write that invoked it. Not guest state and not migrated.
+     */
+    SGICommandFetch list_fetch;
     QEMUTimer *retrace_timer;
     /*
      * Pixel-memory banks 0 and 1. The X server draws in bank 0; GL front
