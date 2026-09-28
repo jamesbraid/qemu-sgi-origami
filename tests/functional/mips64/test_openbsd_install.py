@@ -130,10 +130,11 @@ import time
 from qemu_test import (
     QemuSystemTest, skipBigDataTest, skipIfMissingEnv, skipSlowTest,
     get_qemu_img, which)
+from qemu_test.asset import LocalAsset
 
 from lib_net import OPENBSD_TRIPWIRES, ordered_stages
-from lib_prom import (FIRMWARE_REL, MACHINES, prom_netboot_steps,
-                      require_assets)
+from lib_prom import FIRMWARE_REL, MACHINES, prom_netboot_steps
+from lib_prom_sash import RELEASES
 from lib_translation_health import assert_translation_healthy
 
 
@@ -185,14 +186,6 @@ RELEASE_REL = os.path.join('openbsd', '6.9')
 # command asks the SLIRP back end for -- it is both the asset's own name
 # and the name it is served under, so one constant names both.
 INSTALL_KERNEL_NAME = 'bsd.rd.IP27'
-# The install media that end up on the sets disk -- base69.tgz/comp69.tgz
-# are the sets themselves, SHA256/SHA256.sig are the release's own signed
-# manifest, and bsd.IP27 is the installed system's own kernel (required for
-# the installer to ever confirm complete -- see this module's docstring).
-SETS_FILE_NAMES = (
-    'bsd.IP27', 'base69.tgz', 'comp69.tgz', 'SHA256', 'SHA256.sig',
-)
-
 # tools/openbsd-install's own current default, "do not raise it" -- see
 # this module's docstring for why this port follows it over the golden's
 # own incidental 256 MiB.
@@ -531,6 +524,29 @@ class OpenbsdInstall(QemuSystemTest):
     between their pure verdict logic and their own QemuSystemTest.
     """
 
+    ASSET_FIRMWARE = LocalAsset(
+        FIRMWARE_REL, RELEASES['6.5.30']['prom_sha256'])
+    ASSET_INSTALL_KERNEL = LocalAsset(
+        os.path.join(RELEASE_REL, INSTALL_KERNEL_NAME),
+        '4d02fc15e5c02c2f351a6e825f617c2dfae1a8dbfb51d283090e1bebc2b31d15')
+    # The sets disk needs the installed kernel, both sets, and their signed
+    # release manifest for the installer to confirm completion.
+    ASSET_SYSTEM_KERNEL = LocalAsset(
+        os.path.join(RELEASE_REL, 'bsd.IP27'),
+        '5c132640eb510cbc0e63bbcca1169f587a168610837687b0d1d02950a349a7a1')
+    ASSET_BASE_SET = LocalAsset(
+        os.path.join(RELEASE_REL, 'base69.tgz'),
+        'b71e368f9f820a3c6ca5df53fc2ba617e9f535b23504f01448fb0e2100aa9530')
+    ASSET_COMP_SET = LocalAsset(
+        os.path.join(RELEASE_REL, 'comp69.tgz'),
+        'f65af2b2351873f9966f75a3f36b9dd3446489be0b05af060a6d5e9f97535d0b')
+    ASSET_SIGNED_MANIFEST = LocalAsset(
+        os.path.join(RELEASE_REL, 'SHA256'),
+        '7ad56623376fff7f869b0b1f08920562e477efb71ada3e7a2da54e96064d5106')
+    ASSET_MANIFEST_SIGNATURE = LocalAsset(
+        os.path.join(RELEASE_REL, 'SHA256.sig'),
+        '9b67eac0663a17e73714b896b5d504f26bc022b43607591ee5c7014a680b7494')
+
     def _build_target_disk(self, qemu_img):
         """The blank root disk, created raw then labeled -- ported
         from tools/openbsd-install's own step 3 (create, then
@@ -578,12 +594,15 @@ class OpenbsdInstall(QemuSystemTest):
     @skipSlowTest()
     @skipIfMissingEnv('QEMU_TEST_SGI_ASSET_DIR')
     def test_openbsd_install(self):
-        kernel_rel = os.path.join(RELEASE_REL, INSTALL_KERNEL_NAME)
-        sets_rels = [os.path.join(RELEASE_REL, name)
-                     for name in SETS_FILE_NAMES]
-        assets = require_assets(self, FIRMWARE_REL, kernel_rel, *sets_rels)
-        firmware, kernel = assets[FIRMWARE_REL], assets[kernel_rel]
-        sets_files = [assets[rel] for rel in sets_rels]
+        firmware = self.ASSET_FIRMWARE.fetch()
+        kernel = self.ASSET_INSTALL_KERNEL.fetch()
+        sets_files = [
+            self.ASSET_SYSTEM_KERNEL.fetch(),
+            self.ASSET_BASE_SET.fetch(),
+            self.ASSET_COMP_SET.fetch(),
+            self.ASSET_SIGNED_MANIFEST.fetch(),
+            self.ASSET_MANIFEST_SIGNATURE.fetch(),
+        ]
 
         qemu_img = get_qemu_img(self)
         makefs_bin = which('makefs')

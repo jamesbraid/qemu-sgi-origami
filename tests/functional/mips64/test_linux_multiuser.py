@@ -57,9 +57,11 @@ import time
 from qemu_test import (QemuSystemTest, skipBigDataTest, skipIfMissingEnv,
                        skipSlowTest)
 from qemu_test.utils import get_usernet_hostfwd_port
+from qemu_test.asset import LocalAsset
 
 from lib_prom import (FIRMWARE_REL, MACHINES, drive_console,
-                      prom_netboot_steps, require_assets, verdict)
+                      prom_netboot_steps, verdict)
+from lib_prom_sash import RELEASES
 
 
 # What a networked multiuser boot of the Gentoo disk should print: the
@@ -141,13 +143,22 @@ class LinuxMultiuser(QemuSystemTest):
     boot, the division test_openbsd_net_transfer.py keeps between its pure
     verdict and its own QemuSystemTest."""
 
+    ASSET_FIRMWARE = LocalAsset(
+        FIRMWARE_REL, RELEASES['6.5.30']['prom_sha256'])
+    ASSET_KERNEL = LocalAsset(
+        KERNEL_REL,
+        '5309e8e14c48bfb52267588b632470d3a89ad6e34e2f18999cf540799d96f265')
+    ASSET_DISK = LocalAsset(
+        DISK_REL,
+        '0eb821e70cd698b83d833a5d937e31aef070eb5e5604294c4e3c693a133fc5ac')
+
     @skipBigDataTest()
     @skipSlowTest()
     @skipIfMissingEnv('QEMU_TEST_SGI_ASSET_DIR')
     def test_linux_multiuser(self):
-        assets = require_assets(self, FIRMWARE_REL, KERNEL_REL, DISK_REL)
-        firmware, kernel = assets[FIRMWARE_REL], assets[KERNEL_REL]
-        disk = assets[DISK_REL]
+        firmware = self.ASSET_FIRMWARE.fetch()
+        kernel = self.ASSET_KERNEL.fetch()
+        disk = self.ASSET_DISK.fetch()
 
         vm = self.get_vm(name='linux_multiuser')
         vm.set_machine(MACHINES['origin200_dual'])

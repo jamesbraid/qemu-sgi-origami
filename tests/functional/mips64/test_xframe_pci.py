@@ -81,10 +81,12 @@ import re
 
 from qemu_test import (QemuSystemTest, skipBigDataTest, skipIfMissingEnv,
                        skipSlowTest)
+from qemu_test.asset import LocalAsset
 
 from lib_net import OPENBSD_TRIPWIRES, ordered_stages
 from lib_prom import (FIRMWARE_REL, MACHINES, drive_console,
-                      prom_netboot_steps, require_assets)
+                      prom_netboot_steps)
+from lib_prom_sash import RELEASES
 
 
 # See this module's own docstring for exactly how the unclaimed-device
@@ -177,13 +179,22 @@ class XframePci(QemuSystemTest):
     verdict logic and its own QemuSystemTest.
     """
 
+    ASSET_FIRMWARE = LocalAsset(
+        FIRMWARE_REL, RELEASES['6.5.30']['prom_sha256'])
+    ASSET_KERNEL = LocalAsset(
+        KERNEL_REL,
+        '5c132640eb510cbc0e63bbcca1169f587a168610837687b0d1d02950a349a7a1')
+    ASSET_DISK = LocalAsset(
+        DISK_REL,
+        '55c53b0268e55682d38485d902e47e9fbeb9e9ef77caf1625d5522dac33c70fd')
+
     @skipBigDataTest()
     @skipSlowTest()
     @skipIfMissingEnv('QEMU_TEST_SGI_ASSET_DIR')
     def test_xframe_pci(self):
-        assets = require_assets(self, FIRMWARE_REL, KERNEL_REL, DISK_REL)
-        firmware, kernel = assets[FIRMWARE_REL], assets[KERNEL_REL]
-        disk = assets[DISK_REL]
+        firmware = self.ASSET_FIRMWARE.fetch()
+        kernel = self.ASSET_KERNEL.fetch()
+        disk = self.ASSET_DISK.fetch()
 
         self.require_netdev('user')
 
