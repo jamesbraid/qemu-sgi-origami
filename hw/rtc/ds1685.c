@@ -658,6 +658,7 @@ static void ds1685_realize(DeviceState *dev, Error **errp)
      * a value for either, and no driver on our paths validates them.
      */
     s->common[DS1685_REG_D] = DS1685_D_VRT;
+    s->common[DS1685_REG_B] = DS1685_B_DM | DS1685_B_24_12;
     s->ext[EXT(DS1685_MODEL)] = DS1685_MODEL_NUMBER;
     s->ext[EXT(DS1685_EXT_CTRL_4A)] = DS1685_4A_VRT2;
 
@@ -665,7 +666,7 @@ static void ds1685_realize(DeviceState *dev, Error **errp)
     s->periodic_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
                                      ds1685_periodic_tick, s);
 
-    /* Binary-coded decimal, because the format bit starts clear. */
+    /* Format the first calendar before a guest can read or change mode. */
     ds1685_publish_time(s);
 
     memory_region_init_io(&s->index_port, OBJECT(dev), &ds1685_index_ops, s,
