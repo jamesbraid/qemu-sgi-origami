@@ -79,6 +79,12 @@ config PSITECH_RAD4
     depends on PCI
     select PSITECH_RAD4_KM
 
+# The graphics code the SGI heads share, in hw/display/sgi/. Built wherever
+# the SGI parts are, so it compiles before any head selects it.
+config SGI_DISPLAY
+    bool
+    default y if SGI_DEVICES
+
 config FRAMEBUFFER
     bool
 

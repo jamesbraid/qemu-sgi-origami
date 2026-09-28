@@ -3618,6 +3618,7 @@ if have_system
     'hw/block',
     'hw/char',
     'hw/display',
+    'hw/display/sgi',
     'hw/dma',
     'hw/fsi',
     'hw/hexagon',

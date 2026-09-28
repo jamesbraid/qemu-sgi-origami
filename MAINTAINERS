@@ -1490,6 +1490,7 @@ F: include/hw/mips/sn0*
 F: include/hw/mips/sgi/
 F: hw/1wire/
 F: hw/audio/sgi-rad1-audio.c
+F: hw/display/sgi/
 F: hw/i2c/pcf8584.c
 F: hw/i2c/i2c-wire.c
 F: hw/input/sgi-ioc3-kbc.c
@@ -1504,6 +1505,7 @@ F: hw/scsi/qlogic-isp.c
 F: include/hw/1wire/
 F: include/hw/audio/sgi-rad1-audio.h
 F: include/hw/audio/sgi-rad1-audio-pcm.h
+F: include/hw/display/sgi/
 F: include/hw/i2c/pcf8584.h
 F: include/hw/i2c/i2c-wire.h
 F: include/hw/input/sgi-ioc3-kbc.h
@@ -1536,6 +1538,7 @@ F: tests/qtest/sn-promdata-window-test.c
 F: tests/qtest/board-test-fixture.c
 F: tests/qtest/ioc3-release-fixture.c
 F: tests/qtest/xtalk-test-board.c
+F: tests/unit/test-sgi-memory.c
 F: tests/unit/test-sgi-o2000-module-mgmt*.c
 F: tests/unit/test-sgi-rad1-audio-pcm.c
 F: tests/unit/test-sgi-router.c

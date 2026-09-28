@@ -1,0 +1,8 @@
+# See docs/devel/tracing.rst for syntax documentation.
+# SPDX-License-Identifier: GPL-2.0-or-later
+#
+# Shared events, named by role. A family's own events (sgi_mgras_dma_chunk
+# and the rest) stay in the family's directory, where its tools parse them.
+
+# board-memory.c
+sgi_plane_add(uint32_t id, uint64_t base, uint64_t len, uint32_t width, uint32_t height, uint32_t stride, int format) "plane %u base 0x%" PRIx64 " len 0x%" PRIx64 " %ux%u stride %u format %d"
