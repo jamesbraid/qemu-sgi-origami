@@ -36,6 +36,43 @@ static void sgi_gl_identity(float m[16])
     }
 }
 
+static void sgi_gl_rgba(float v[4], float r, float g, float b, float a)
+{
+    v[0] = r;
+    v[1] = g;
+    v[2] = b;
+    v[3] = a;
+}
+
+/* The lighting state's initial values (OpenGL 1.2.1, table 2.10). */
+static void sgi_gl_lighting_init(SGIGLContext *c)
+{
+    for (int i = 0; i < SGI_GL_LIGHTS; i++) {
+        SGIGLLight *l = &c->light[i];
+        float on = i == 0 ? 1.0f : 0.0f;
+
+        sgi_gl_rgba(l->ambient, 0, 0, 0, 1);
+        sgi_gl_rgba(l->diffuse, on, on, on, 1);
+        sgi_gl_rgba(l->specular, on, on, on, 1);
+        sgi_gl_rgba(l->position, 0, 0, 1, 0);
+        l->spot_direction[2] = -1.0f;
+        l->spot_cutoff = 180.0f;
+        l->attenuation[0] = 1.0f;
+    }
+    for (int i = 0; i < 2; i++) {
+        SGIGLMaterial *m = &c->material[i];
+
+        sgi_gl_rgba(m->ambient, 0.2f, 0.2f, 0.2f, 1);
+        sgi_gl_rgba(m->diffuse, 0.8f, 0.8f, 0.8f, 1);
+        sgi_gl_rgba(m->specular, 0, 0, 0, 1);
+        sgi_gl_rgba(m->emission, 0, 0, 0, 1);
+        m->color_indexes[1] = m->color_indexes[2] = 1.0f;
+    }
+    sgi_gl_rgba(c->light_model_ambient, 0.2f, 0.2f, 0.2f, 1);
+    c->color_material_face = SGI_GL_FRONT_AND_BACK;
+    c->color_material_mode = SGI_GL_AMBIENT_AND_DIFFUSE;
+}
+
 /* OpenGL 1.2.1 initial state (2.7, 2.10, 2.13.7, 4.1.5, 4.2.1-4.2.3). */
 void sgi_gl_init(SGIGLContext *c, uint32_t hw_id)
 {
@@ -64,6 +101,7 @@ void sgi_gl_init(SGIGLContext *c, uint32_t hw_id)
         c->raster_color[i] = 1.0f;
     }
     c->raster_index = 1.0f;
+    sgi_gl_lighting_init(c);
 }
 
 void sgi_gl_set_drawable(SGIGLContext *c, const SGIGLDrawable *d)
@@ -359,6 +397,10 @@ static const uint8_t sgi_gl_nargs[] = {
     [SGI_GL_OP_INDEX_MASK] = 1,
     [SGI_GL_OP_CLEAR_INDEX] = 1,
     [SGI_GL_OP_DEPTH_RANGE] = 2,
+    [SGI_GL_OP_LIGHT] = 6,
+    [SGI_GL_OP_MATERIAL] = 6,
+    [SGI_GL_OP_LIGHT_MODEL] = 5,
+    [SGI_GL_OP_COLOR_MATERIAL] = 2,
 };
 
 uint32_t sgi_gl_draw_targets(const SGIGLDrawState *st,
@@ -655,6 +697,208 @@ static void sgi_gl_depth_range(SGIGLContext *c, float n, float f)
     }
 }
 
+/*
+ * The faces a glMaterial or glColorMaterial face names, as a mask of
+ * material[] entries, or 0 for a value that names none.
+ */
+static unsigned sgi_gl_faces(uint32_t face)
+{
+    switch (face) {
+    case SGI_GL_FRONT:
+        return 1;
+    case SGI_GL_BACK:
+        return 2;
+    case SGI_GL_FRONT_AND_BACK:
+        return 3;
+    default:
+        return 0;
+    }
+}
+
+/*
+ * One material parameter of the faces in the mask faces (2.13.2). v holds
+ * four floats; GL_SHININESS uses the first and GL_COLOR_INDEXES three.
+ * Shininess outside [0, 128] is an error and changes nothing.
+ */
+static void sgi_gl_material(SGIGLContext *c, unsigned faces, uint32_t pname,
+                            const float v[4])
+{
+    if (pname == SGI_GL_SHININESS && !(v[0] >= 0.0f && v[0] <= 128.0f)) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-gl: material shininess %g "
+                      "ignored\n", v[0]);
+        return;
+    }
+    for (int i = 0; i < 2; i++) {
+        SGIGLMaterial *m = &c->material[i];
+
+        if (!(faces & (1u << i))) {
+            continue;
+        }
+        switch (pname) {
+        case SGI_GL_AMBIENT:
+            memcpy(m->ambient, v, sizeof(m->ambient));
+            break;
+        case SGI_GL_DIFFUSE:
+            memcpy(m->diffuse, v, sizeof(m->diffuse));
+            break;
+        case SGI_GL_AMBIENT_AND_DIFFUSE:
+            memcpy(m->ambient, v, sizeof(m->ambient));
+            memcpy(m->diffuse, v, sizeof(m->diffuse));
+            break;
+        case SGI_GL_SPECULAR:
+            memcpy(m->specular, v, sizeof(m->specular));
+            break;
+        case SGI_GL_EMISSION:
+            memcpy(m->emission, v, sizeof(m->emission));
+            break;
+        case SGI_GL_SHININESS:
+            m->shininess = v[0];
+            break;
+        case SGI_GL_COLOR_INDEXES:
+            memcpy(m->color_indexes, v, sizeof(m->color_indexes));
+            break;
+        default:
+            qemu_log_mask(LOG_GUEST_ERROR, "sgi-gl: material parameter "
+                          "0x%x ignored\n", pname);
+            return;
+        }
+    }
+}
+
+/*
+ * With GL_COLOR_MATERIAL enabled the material parameter glColorMaterial
+ * chose tracks the current colour (2.13.3): each colour command sets it,
+ * and so do enabling and a new glColorMaterial while enabled, since from
+ * then on the parameter is the current colour. Colour-index lighting
+ * takes no part.
+ */
+static void sgi_gl_track_colour(SGIGLContext *c)
+{
+    if (c->color_material) {
+        sgi_gl_material(c, sgi_gl_faces(c->color_material_face),
+                        c->color_material_mode, c->cur_color);
+    }
+}
+
+static void sgi_gl_transform(const float m[16], const float in[4],
+                             unsigned n, float out[4])
+{
+    for (int row = 0; row < 4; row++) {
+        double v = 0;
+
+        for (unsigned k = 0; k < n; k++) {
+            v += (double)m[k * 4 + row] * in[k];
+        }
+        out[row] = v;
+    }
+}
+
+/*
+ * glLightfv (2.13.2). The position is transformed by the modelview
+ * current at the call and the spot direction by its upper left 3x3, so
+ * both are kept in eye coordinates. A spot exponent outside [0, 128], a
+ * cutoff outside [0, 90] other than 180 or a negative attenuation is an
+ * error and changes nothing.
+ */
+static void sgi_gl_light(SGIGLContext *c, uint32_t n, uint32_t pname,
+                         const float v[4])
+{
+    SGIGLLight *l;
+    float eye[4];
+
+    if (n >= SGI_GL_LIGHTS) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-gl: light %u ignored\n", n);
+        return;
+    }
+    l = &c->light[n];
+    switch (pname) {
+    case SGI_GL_AMBIENT:
+        memcpy(l->ambient, v, sizeof(l->ambient));
+        return;
+    case SGI_GL_DIFFUSE:
+        memcpy(l->diffuse, v, sizeof(l->diffuse));
+        return;
+    case SGI_GL_SPECULAR:
+        memcpy(l->specular, v, sizeof(l->specular));
+        return;
+    case SGI_GL_POSITION:
+        sgi_gl_transform(c->cur.modelview, v, 4, l->position);
+        return;
+    case SGI_GL_SPOT_DIRECTION:
+        sgi_gl_transform(c->cur.modelview, v, 3, eye);
+        memcpy(l->spot_direction, eye, sizeof(l->spot_direction));
+        return;
+    case SGI_GL_SPOT_EXPONENT:
+        if (v[0] >= 0.0f && v[0] <= 128.0f) {
+            l->spot_exponent = v[0];
+            return;
+        }
+        break;
+    case SGI_GL_SPOT_CUTOFF:
+        if ((v[0] >= 0.0f && v[0] <= 90.0f) || v[0] == 180.0f) {
+            l->spot_cutoff = v[0];
+            return;
+        }
+        break;
+    case SGI_GL_CONSTANT_ATTENUATION:
+    case SGI_GL_LINEAR_ATTENUATION:
+    case SGI_GL_QUADRATIC_ATTENUATION:
+        if (v[0] >= 0.0f) {
+            l->attenuation[pname - SGI_GL_CONSTANT_ATTENUATION] = v[0];
+            return;
+        }
+        break;
+    default:
+        break;
+    }
+    qemu_log_mask(LOG_GUEST_ERROR, "sgi-gl: light parameter 0x%x value %g "
+                  "ignored\n", pname, v[0]);
+}
+
+static void sgi_gl_light_model(SGIGLContext *c, uint32_t pname,
+                               const float v[4])
+{
+    switch (pname) {
+    case SGI_GL_LIGHT_MODEL_AMBIENT:
+        memcpy(c->light_model_ambient, v, sizeof(c->light_model_ambient));
+        return;
+    case SGI_GL_LIGHT_MODEL_LOCAL_VIEWER:
+        c->light_model_local_viewer = v[0] != 0.0f;
+        return;
+    case SGI_GL_LIGHT_MODEL_TWO_SIDE:
+        c->light_model_two_side = v[0] != 0.0f;
+        return;
+    default:
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-gl: light model parameter 0x%x "
+                      "ignored\n", pname);
+        return;
+    }
+}
+
+static void sgi_gl_color_material(SGIGLContext *c, uint32_t face,
+                                  uint32_t mode)
+{
+    switch (mode) {
+    case SGI_GL_AMBIENT:
+    case SGI_GL_DIFFUSE:
+    case SGI_GL_SPECULAR:
+    case SGI_GL_EMISSION:
+    case SGI_GL_AMBIENT_AND_DIFFUSE:
+        break;
+    default:
+        mode = 0;
+        break;
+    }
+    if (!sgi_gl_faces(face) || !mode) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-gl: glColorMaterial(0x%x, 0x%x) "
+                      "ignored\n", face, mode);
+        return;
+    }
+    c->color_material_face = face;
+    c->color_material_mode = mode;
+    sgi_gl_track_colour(c);
+}
+
 static void sgi_gl_capability(SGIGLContext *c, uint32_t cap, bool on)
 {
     switch (cap) {
@@ -663,6 +907,10 @@ static void sgi_gl_capability(SGIGLContext *c, uint32_t cap, bool on)
         return;
     case SGI_GL_DITHER:
         c->dither = on;
+        return;
+    case SGI_GL_COLOR_MATERIAL:
+        c->color_material = on;
+        sgi_gl_track_colour(c);
         return;
     default:
         qemu_log_mask(LOG_UNIMP, "sgi-gl: capability 0x%x is not modelled; "
@@ -791,9 +1039,11 @@ void sgi_gl_command(SGIGLContext *c, const SGIGLSink *sink,
     case SGI_GL_OP_COLOR3F:
         memcpy(c->cur_color, a, 3 * sizeof(float));
         c->cur_color[3] = 1.0f;
+        sgi_gl_track_colour(c);
         return;
     case SGI_GL_OP_COLOR4F:
         memcpy(c->cur_color, a, sizeof(c->cur_color));
+        sgi_gl_track_colour(c);
         return;
     case SGI_GL_OP_COLOR3UB:
     case SGI_GL_OP_COLOR4UB:
@@ -801,6 +1051,7 @@ void sgi_gl_command(SGIGLContext *c, const SGIGLSink *sink,
         for (int i = 0; i < 4; i++) {
             c->cur_color[i] = i == cmd->nargs ? 1.0f : (a[i] & 0xff) / 255.0f;
         }
+        sgi_gl_track_colour(c);
         return;
     case SGI_GL_OP_NORMAL3F:
         memcpy(c->cur_normal, a, sizeof(c->cur_normal));
@@ -864,6 +1115,26 @@ void sgi_gl_command(SGIGLContext *c, const SGIGLSink *sink,
     case SGI_GL_OP_DEPTH_RANGE:
         sgi_gl_depth_range(c, sgi_gl_float(a[0]), sgi_gl_float(a[1]));
         return;
+    case SGI_GL_OP_LIGHT:
+        memcpy(pos, &a[2], sizeof(pos));
+        sgi_gl_light(c, a[0], a[1], pos);
+        return;
+    case SGI_GL_OP_MATERIAL:
+        memcpy(pos, &a[2], sizeof(pos));
+        if (!sgi_gl_faces(a[0])) {
+            qemu_log_mask(LOG_GUEST_ERROR, "sgi-gl: material face 0x%x "
+                          "ignored\n", a[0]);
+            return;
+        }
+        sgi_gl_material(c, sgi_gl_faces(a[0]), a[1], pos);
+        return;
+    case SGI_GL_OP_LIGHT_MODEL:
+        memcpy(pos, &a[1], sizeof(pos));
+        sgi_gl_light_model(c, a[0], pos);
+        return;
+    case SGI_GL_OP_COLOR_MATERIAL:
+        sgi_gl_color_material(c, a[0], a[1]);
+        return;
     case SGI_GL_OP_FLUSH:
         /* Every piece has already been sent. */
         return;
@@ -878,6 +1149,77 @@ void sgi_gl_command(SGIGLContext *c, const SGIGLSink *sink,
         return;
     default:
         g_assert_not_reached();
+    }
+}
+
+static bool sgi_gl_get_floats(const float *v, unsigned count, uint32_t *out,
+                              unsigned *n)
+{
+    for (unsigned i = 0; i < count; i++) {
+        out[i] = sgi_gl_bits(v[i]);
+    }
+    *n = count;
+    return true;
+}
+
+bool sgi_gl_get_light(const SGIGLContext *c, uint32_t light, uint32_t pname,
+                      uint32_t *out, unsigned *n)
+{
+    const SGIGLLight *l;
+
+    if (light >= SGI_GL_LIGHTS) {
+        return false;
+    }
+    l = &c->light[light];
+    switch (pname) {
+    case SGI_GL_AMBIENT:
+        return sgi_gl_get_floats(l->ambient, 4, out, n);
+    case SGI_GL_DIFFUSE:
+        return sgi_gl_get_floats(l->diffuse, 4, out, n);
+    case SGI_GL_SPECULAR:
+        return sgi_gl_get_floats(l->specular, 4, out, n);
+    case SGI_GL_POSITION:
+        return sgi_gl_get_floats(l->position, 4, out, n);
+    case SGI_GL_SPOT_DIRECTION:
+        return sgi_gl_get_floats(l->spot_direction, 3, out, n);
+    case SGI_GL_SPOT_EXPONENT:
+        return sgi_gl_get_floats(&l->spot_exponent, 1, out, n);
+    case SGI_GL_SPOT_CUTOFF:
+        return sgi_gl_get_floats(&l->spot_cutoff, 1, out, n);
+    case SGI_GL_CONSTANT_ATTENUATION:
+    case SGI_GL_LINEAR_ATTENUATION:
+    case SGI_GL_QUADRATIC_ATTENUATION:
+        return sgi_gl_get_floats(
+            &l->attenuation[pname - SGI_GL_CONSTANT_ATTENUATION], 1, out, n);
+    default:
+        return false;
+    }
+}
+
+bool sgi_gl_get_material(const SGIGLContext *c, uint32_t face,
+                         uint32_t pname, uint32_t *out, unsigned *n)
+{
+    const SGIGLMaterial *m;
+
+    if (face != SGI_GL_FRONT && face != SGI_GL_BACK) {
+        return false;
+    }
+    m = &c->material[face == SGI_GL_BACK];
+    switch (pname) {
+    case SGI_GL_AMBIENT:
+        return sgi_gl_get_floats(m->ambient, 4, out, n);
+    case SGI_GL_DIFFUSE:
+        return sgi_gl_get_floats(m->diffuse, 4, out, n);
+    case SGI_GL_SPECULAR:
+        return sgi_gl_get_floats(m->specular, 4, out, n);
+    case SGI_GL_EMISSION:
+        return sgi_gl_get_floats(m->emission, 4, out, n);
+    case SGI_GL_SHININESS:
+        return sgi_gl_get_floats(&m->shininess, 1, out, n);
+    case SGI_GL_COLOR_INDEXES:
+        return sgi_gl_get_floats(m->color_indexes, 3, out, n);
+    default:
+        return false;
     }
 }
 
@@ -1000,6 +1342,28 @@ bool sgi_gl_get(const SGIGLContext *c, uint32_t pname, uint32_t *out,
             out[i] = sgi_gl_bits(c->cur.depth_range[i]);
         }
         *n = 2;
+        return true;
+    case SGI_GL_LIGHT_MODEL_AMBIENT:
+        return sgi_gl_get_floats(c->light_model_ambient, 4, out, n);
+    case SGI_GL_LIGHT_MODEL_LOCAL_VIEWER:
+        out[0] = c->light_model_local_viewer;
+        *n = 1;
+        return true;
+    case SGI_GL_LIGHT_MODEL_TWO_SIDE:
+        out[0] = c->light_model_two_side;
+        *n = 1;
+        return true;
+    case SGI_GL_COLOR_MATERIAL:
+        out[0] = c->color_material;
+        *n = 1;
+        return true;
+    case SGI_GL_COLOR_MATERIAL_FACE:
+        out[0] = c->color_material_face;
+        *n = 1;
+        return true;
+    case SGI_GL_COLOR_MATERIAL_PARAMETER:
+        out[0] = c->color_material_mode;
+        *n = 1;
         return true;
     default:
         return false;
