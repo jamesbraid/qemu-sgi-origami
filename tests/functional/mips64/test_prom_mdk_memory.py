@@ -36,10 +36,12 @@ import os
 import shutil
 
 from qemu_test import QemuSystemTest, skipIfMissingEnv
+from qemu_test.asset import LocalAsset
 
 from lib_prom import (FIRMWARE_REL, FORK_ROOT, MACHINES, drive_console,
-                      require_assets, run_record, utc_now)
-from lib_prom_mdk import (MEMORY_MDK_SHA256, mdk_extra_args,
+                      run_record, utc_now)
+from lib_prom_mdk import (MEMORY_MDK_SHA256, PROM_SHA256,
+                          mdk_extra_args,
                           payload_identity_problems)
 from lib_prom_mdk_memory import (NETBOOT_PATH, TESTS, reached_all_completions,
                                  verdict)
@@ -66,6 +68,9 @@ class PromMdkMemory(QemuSystemTest):
     """Boots the real IP27 PROM, netboots memory.mdk, drives the
     eight-test battery, and requires verdict() to be PASS."""
 
+    ASSET_PROM = LocalAsset(FIRMWARE_REL, PROM_SHA256)
+    ASSET_MDK = LocalAsset(MDK_REL, MEMORY_MDK_SHA256)
+
     def _stage_netboot_tftp(self, mdk):
         root = self.scratch_file('netboot-tftp')
         staged = os.path.join(root, *NETBOOT_PATH.split('/'))
@@ -75,8 +80,7 @@ class PromMdkMemory(QemuSystemTest):
 
     @skipIfMissingEnv('QEMU_TEST_SGI_ASSET_DIR')
     def test_prom_mdk_memory(self):
-        assets = require_assets(self, FIRMWARE_REL, MDK_REL)
-        prom, mdk = assets[FIRMWARE_REL], assets[MDK_REL]
+        prom, mdk = self.ASSET_PROM.fetch(), self.ASSET_MDK.fetch()
 
         identity_problems = payload_identity_problems(
             prom, mdk, MEMORY_MDK_SHA256, "memory.mdk")

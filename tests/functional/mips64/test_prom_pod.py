@@ -45,8 +45,9 @@ import socket
 import time
 
 from qemu_test import QemuSystemTest, skipIfMissingEnv
+from qemu_test.asset import LocalAsset
 
-from lib_prom import (FORK_ROOT, file_sha256, require_assets, run_record,
+from lib_prom import (FORK_ROOT, file_sha256, run_record,
                       utc_now)
 from lib_prom_pod import COMMANDS, LOCAL_POD_SWITCHES, verdict
 from lib_prom_sash import RELEASES
@@ -133,9 +134,11 @@ class PromPod(QemuSystemTest):
     """Boots the real IP27 PROM with local-POD dip switches and
     requires verdict() to be PASS over the driven command list."""
 
+    ASSET_PROM = LocalAsset(FIRMWARE_REL, PROM_SHA256)
+
     @skipIfMissingEnv('QEMU_TEST_SGI_ASSET_DIR')
     def test_prom_pod(self):
-        prom = require_assets(self, FIRMWARE_REL)[FIRMWARE_REL]
+        prom = self.ASSET_PROM.fetch()
 
         if file_sha256(prom) != PROM_SHA256:
             self.fail('PROM SHA-256 does not match the recorded release')
