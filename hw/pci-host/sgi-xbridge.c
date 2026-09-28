@@ -1145,6 +1145,21 @@ struct SGIXBridgeState {
     bool xio_present;
     MemoryRegion *xio_widget;
     MemoryRegion *xio_widget_packets;
+    /*
+     * What a widget on the external port sends into over its XIO link: a
+     * widget-addressed space, destination in bits 51:48, as a crossbar
+     * port presents it. The crossbar carries a packet from any link to any
+     * other (XBridge specification rev 0.5, printed page 68: "a link
+     * cannot send packets to itself"), so every destination the chip has
+     * is routed: widget 0, the host's port and both heads. Anything else
+     * -- the port itself, or an external port with nothing behind it --
+     * lands on xio_route_none, which logs it.
+     */
+    MemoryRegion xio_routes;
+    MemoryRegion xio_route_none;
+    MemoryRegion xio_route_host;
+    MemoryRegion xio_route_widget0;
+    MemoryRegion xio_route_head[2];
     MemoryRegion *fabric;
     qemu_irq head_reset[2];
     /*
@@ -1227,6 +1242,83 @@ static const MemoryRegionOps chip_unmapped_ops = {
     .impl.min_access_size = 1,
     .impl.max_access_size = 8,
 };
+
+/*
+ * A packet from the external widget for a destination the crossbar does
+ * not deliver: the widget's own port (a link cannot send to itself) or an
+ * external port with no widget behind it. What the chip does with one is
+ * not modelled; the request fails and is logged rather than vanishing.
+ */
+static MemTxResult chip_route_none_read(void *opaque, hwaddr addr,
+                                        uint64_t *data, unsigned size,
+                                        MemTxAttrs attrs)
+{
+    qemu_log_mask(LOG_GUEST_ERROR,
+                  "sgi-xbridge: external widget read of %u bytes for widget "
+                  "%x, which the crossbar does not deliver to\n", size,
+                  (unsigned)(addr >> SGI_XIO_PACKET_ADDRESS_BITS));
+    *data = 0;
+    return MEMTX_ERROR;
+}
+
+static MemTxResult chip_route_none_write(void *opaque, hwaddr addr,
+                                         uint64_t data, unsigned size,
+                                         MemTxAttrs attrs)
+{
+    qemu_log_mask(LOG_GUEST_ERROR,
+                  "sgi-xbridge: external widget write of %u bytes for widget "
+                  "%x, which the crossbar does not deliver to\n", size,
+                  (unsigned)(addr >> SGI_XIO_PACKET_ADDRESS_BITS));
+    return MEMTX_ERROR;
+}
+
+static const MemoryRegionOps chip_route_none_ops = {
+    .read_with_attrs = chip_route_none_read,
+    .write_with_attrs = chip_route_none_write,
+    .endianness = DEVICE_BIG_ENDIAN,
+    .valid = { .min_access_size = 1, .max_access_size = 8 },
+};
+
+/* One destination of the external widget's packets, at its widget number. */
+static void chip_route_one(SGIXBridgeState *s, MemoryRegion *route,
+                           const char *name, MemoryRegion *target,
+                           unsigned int widget)
+{
+    memory_region_init_alias(route, OBJECT(s), name, target, 0,
+                             MIN(memory_region_size(target),
+                                 SGI_XIO_PACKET_SIZE));
+    memory_region_add_subregion(&s->xio_routes,
+                                (uint64_t)widget << SGI_XIO_PACKET_ADDRESS_BITS,
+                                route);
+}
+
+/*
+ * Route the external widget's packets: widget 0 as the crossbar presents
+ * itself to a request arriving on that port, the host's port, and each
+ * head's widget space, the same regions the host reaches them through.
+ */
+static void chip_route_external(SGIXBridgeState *s)
+{
+    unsigned int i;
+
+    memory_region_init_io(&s->xio_route_none, OBJECT(s), &chip_route_none_ops,
+                          s, "sgi-xbridge.xio-route-none",
+                          SGI_XIO_WIDGETS * SGI_XIO_PACKET_SIZE);
+    memory_region_add_subregion_overlap(&s->xio_routes, 0, &s->xio_route_none,
+                                        -1);
+    chip_route_one(s, &s->xio_route_widget0, "sgi-xbridge.xio-route-widget0",
+                   sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->xbow),
+                                          s->xio_port - CHIP_LINK_FIRST), 0);
+    chip_route_one(s, &s->xio_route_host, "sgi-xbridge.xio-route-host",
+                   s->fabric, s->host_port);
+    for (i = 0; i < 2; i++) {
+        chip_route_one(s, &s->xio_route_head[i],
+                       i ? "sgi-xbridge.xio-route-head-f"
+                         : "sgi-xbridge.xio-route-head-e",
+                       sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->head[i]), 0),
+                       i ? CHIP_HEAD_F : CHIP_HEAD_E);
+    }
+}
 
 /* What packets a child addresses to this port reach, by widget number. */
 static bool chip_link_target(Object *child, unsigned port, MemoryRegion *face,
@@ -1389,6 +1481,13 @@ static void chip_realize(DeviceState *dev, Error **errp)
                                     sysbus_mmio_get_region(
                                     SYS_BUS_DEVICE(&s->head[i]), 0));
     }
+    chip_route_external(s);
+    /*
+     * The sixth region: where a widget on the external port sends, for a
+     * machine to hand that widget as its outbound space, the routed
+     * counterpart of "xio-host-face".
+     */
+    sysbus_init_mmio(SYS_BUS_DEVICE(s), &s->xio_routes);
 }
 
 bool sgi_xbridge_attach_xio(SGIXBridgeState *s, MemoryRegion *cpu_face,
@@ -1492,7 +1591,10 @@ static const VMStateDescription vmstate_chip = {
  * chip's internal crossbar-to-head wiring never leaves the windowed
  * form for a destination-prefixed packet one), so packet_face() answers
  * with the same region: the leaf case the interface header documents,
- * a widget whose registers nothing packet-addresses separately.
+ * a widget whose registers nothing packet-addresses separately. The one
+ * exception is the external port seen from the widget plugged into it:
+ * that widget sends through the crossbar, so its end of the link is a
+ * switched port whose packet face routes by destination.
  */
 
 static const char *chip_xio_port_describe(Object *port, unsigned int index)
@@ -1520,19 +1622,74 @@ static MemoryRegion *chip_xio_port_cpu_face(Object *port,
 }
 
 /*
+ * A widget on the external port sends through the crossbar, so the port
+ * it is linked to is a switched one: its packets carry the destination
+ * widget, and xio_routes delivers them. Every other index keeps the
+ * windowed view described above.
+ */
+static MemoryRegion *chip_xio_port_packet_face(Object *port,
+                                               unsigned int index)
+{
+    SGIXBridgeState *s = SGI_XBRIDGE(port);
+
+    if (index == s->xio_port) {
+        return DEVICE(s)->realized ? &s->xio_routes : NULL;
+    }
+    return chip_widget_view(s, index);
+}
+
+static bool chip_xio_port_switched(Object *port, unsigned int index)
+{
+    return index == SGI_XBRIDGE(port)->xio_port;
+}
+
+/*
+ * What the crossbar sends down an external link: its link reset one-shot
+ * and a propagated warm reset both leave on that port's "warm-reset-out"
+ * line, so a widget linked there is reset the way a Crossbow resets the
+ * widget on one of its ports. The host's port and the heads take their
+ * resets inside the chip.
+ */
+static void chip_xio_port_reset_output(Object *port, unsigned int index,
+                                       qemu_irq target)
+{
+    SGIXBridgeState *s = SGI_XBRIDGE(port);
+
+    if (index < CHIP_LINK_FIRST || index > CHIP_LINK_LAST ||
+        index == s->host_port) {
+        return;
+    }
+    qdev_connect_gpio_out_named(DEVICE(s), "warm-reset-out",
+                                index - CHIP_LINK_FIRST, target);
+}
+
+/*
  * The link on the host port brings the chip its host: the host's packet
  * face is where the crossbar's own conditions and both heads' interrupts
  * reach it. It must be in place before the chip realizes, which hands it
- * to the crossbar and both heads. This model links no other port.
+ * to the crossbar and both heads. The link on the external port brings
+ * the widget plugged into it, attached as sgi_xbridge_attach_xio() would;
+ * a board's faces exist only once it has realized, which the link waits
+ * for. This model links no other port.
  */
 static bool chip_xio_port_connect(Object *port, unsigned int index,
                                   const SGIXioPeer *peer, Error **errp)
 {
     SGIXBridgeState *s = SGI_XBRIDGE(port);
 
+    if (index == s->xio_port && index != s->host_port) {
+        if (!DEVICE(s)->realized) {
+            error_setg(errp, "the XBridge takes a widget on its external "
+                       "port once it has realized");
+            return false;
+        }
+        return sgi_xbridge_attach_xio(s, peer->cpu_face,
+                                      peer->packet_face ?: peer->cpu_face,
+                                      errp);
+    }
     if (index != s->host_port) {
-        error_setg(errp, "the XBridge links only its host port, 0x%x",
-                   s->host_port);
+        error_setg(errp, "the XBridge links only its host port, 0x%x, and "
+                   "its external port, 0x%x", s->host_port, s->xio_port);
         return false;
     }
     if (DEVICE(s)->realized || !peer->packet_face) {
@@ -1557,7 +1714,9 @@ static void chip_class_init(ObjectClass *oc, const void *data)
     device_class_set_props(dc, chip_properties);
     pc->describe = chip_xio_port_describe;
     pc->cpu_face = chip_xio_port_cpu_face;
-    pc->packet_face = chip_xio_port_cpu_face;
+    pc->packet_face = chip_xio_port_packet_face;
+    pc->switched = chip_xio_port_switched;
+    pc->reset_output = chip_xio_port_reset_output;
     pc->connect = chip_xio_port_connect;
 }
 
@@ -1597,6 +1756,8 @@ static void chip_init(Object *obj)
     memory_region_add_subregion_overlap(&s->xio, 0, &s->unmapped, -1);
     memory_region_init(&s->xio_face, obj, "sgi-xbridge.xio",
                        CHIP_WIDGET_SPACE);
+    memory_region_init(&s->xio_routes, obj, "sgi-xbridge.xio-routes",
+                       SGI_XIO_WIDGETS * SGI_XIO_PACKET_SIZE);
     memory_region_init(&s->xio_packets, obj, "sgi-xbridge.xio-packets",
                        CHIP_WIDGET_SPACE);
     sysbus_init_mmio(SYS_BUS_DEVICE(s), &s->xio);

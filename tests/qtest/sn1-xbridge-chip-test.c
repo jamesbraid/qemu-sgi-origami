@@ -490,6 +490,62 @@ static void test_xio_host_face_is_the_chip_fabric(void)
     qtest_quit(qts);
 }
 
+/*
+ * The chip's sixth region: where a widget on the external port sends, a
+ * widget-addressed space with the destination in bits 51:48. The crossbar
+ * carries a packet from any link to any other but itself (XBridge
+ * specification rev 0.5, printed page 68), so the widget reaches the host,
+ * widget 0 and both heads through it, and a packet for its own port goes
+ * nowhere.
+ */
+#define ROUTES 0x10000000000000ULL
+#define ROUTE(widget, off) (ROUTES + ((uint64_t)(widget) << 48) + (off))
+
+static void test_xio_widget_routes(void)
+{
+    QTestState *qts = chip_start_with_xio_widget();
+
+    qtest_sysbus_mmio_map(qts, CHIP, 5, ROUTES);
+    /* To the host, through the same fabric the heads send into. */
+    qtest_writeq(qts, ROUTE(HOST_PORT, SCRATCH), 0x0123456789abcdefULL);
+    g_assert_cmphex(qtest_readq(qts, FABRIC + SCRATCH), ==,
+                    0x0123456789abcdefULL);
+    /* To widget 0, the crossbar's own registers. */
+    g_assert_cmphex(qtest_readl(qts, ROUTE(0, 4)), ==, XBOW_ID);
+    /* To each head's registers. */
+    qtest_writel(qts, ROUTE(0xe, 0x28 + 4), 0x12345);
+    g_assert_cmphex(reg_read(qts, 0xe, 0x28), ==, 0x12345);
+    qtest_writel(qts, ROUTE(0xf, 0x28 + 4), 0x23456);
+    g_assert_cmphex(reg_read(qts, 0xf, 0x28), ==, 0x23456);
+    /* Not to its own port: the widget's RAM is untouched. */
+    qtest_writel(qts, ROUTE(XIO_PORT, 0x40), 0xdeadbeef);
+    g_assert_cmphex(qtest_readl(qts, XIO_ALIAS + 0x40), ==, 0);
+    /* Nor to an external port with nothing behind it. */
+    g_assert_cmphex(qtest_readl(qts, ROUTE(9, 0)), ==, 0);
+    qtest_quit(qts);
+}
+
+/*
+ * A reset the crossbar sends down the external link -- the port's link
+ * reset one-shot, or a warm reset propagated from the host's port -- leaves
+ * on that port's warm-reset-out line, which the XIO port interface's
+ * reset output hands to whatever is linked there.
+ */
+static void test_xio_port_sends_resets(void)
+{
+    QTestState *qts = chip_start_with_xio_widget();
+
+    qtest_irq_intercept_out_named(qts, CHIP, "warm-reset-out");
+    reg_write(qts, 0, 0x20, 0xfe);
+    reg_write(qts, 0, 0x100 + (XIO_PORT - 8) * 0x40 + 0x30, 0);
+    g_assert_cmpuint(qtest_get_irq_raise_count(qts, XIO_PORT - 8), ==, 1);
+    g_assert_cmpuint(qtest_get_irq_raise_count(qts, 9 - 8), ==, 0);
+    qtest_set_irq_in(qts, CHIP, "warm-reset", HOST_PORT - 8, 1);
+    qtest_set_irq_in(qts, CHIP, "warm-reset", HOST_PORT - 8, 0);
+    g_assert_cmpuint(qtest_get_irq_raise_count(qts, XIO_PORT - 8), ==, 2);
+    qtest_quit(qts);
+}
+
 static void test_xio_port_is_not_a_head(void)
 {
     if (g_test_subprocess()) {
@@ -584,6 +640,10 @@ int main(int argc, char **argv)
                    test_xio_port_is_not_a_head);
     qtest_add_func("/sn1/xbridge-chip/xio-port-is-not-the-host-port",
                    test_xio_port_is_not_the_host_port);
+    qtest_add_func("/sn1/xbridge-chip/xio-widget-routes",
+                   test_xio_widget_routes);
+    qtest_add_func("/sn1/xbridge-chip/xio-port-sends-resets",
+                   test_xio_port_sends_resets);
     qtest_add_func("/sn1/xbridge-chip/realize-checks", test_realize_checks);
     qtest_add_func("/sn1/xbridge-chip/realize-needs-fabric",
                    test_realize_needs_fabric);

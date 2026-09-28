@@ -1622,6 +1622,24 @@ static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
                                  OBJECT(face), &error_abort);
     }
     /*
+     * The board's rear XIO connector: an external cable port for an
+     * expansion brick (007-4365-002 printed page 8 names an
+     * InfiniteReality pipe), which the model does not provide. No XIO
+     * board attaches to it. The XBridge still decodes its external port
+     * at the model's selected number (SGI_XBRIDGE_XIO_PORT_DEFAULT), and
+     * the Bedrock reaches it, so firmware walking the crossbar finds a
+     * position that reads as present but empty.
+     */
+    {
+        unsigned int port = sgi_xbridge_xio_port(SGI_XBRIDGE(node->xbridge));
+        g_autofree char *property = g_strdup_printf("widget-%u", port);
+
+        object_property_set_link(OBJECT(node->bedrock), property,
+                                 OBJECT(sgi_xio_port_cpu_face(
+                                     OBJECT(node->xbridge), port)),
+                                 &error_abort);
+    }
+    /*
      * A widget scan addresses the board by the physical XIO port
      * Bedrock actually attached it to (SN1_XBRIDGE_HOST_PORT), not only by
      * the widget-zero local-CPU shortcut wired above; both name the same
