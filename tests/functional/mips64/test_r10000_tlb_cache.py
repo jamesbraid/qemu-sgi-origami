@@ -4,7 +4,7 @@
 """Separate R10000 TLB remapping from ordinary data-cache storage.
 
 Public contract: MIPS R10000 User's Manual v2.0, October 10, 1996,
-pp. 48, 53-54, 239, 280, 283 and 287-288. No firmware is required.
+pp. 48, 53-54, 162-163, 239, 280, 283 and 287-288. No firmware is required.
 """
 
 import re
@@ -158,6 +158,46 @@ def diagnostic_rom(mode, migration=False):
     return image
 
 
+def reset_rom():
+    # Record reset status before enabling 64-bit address construction.
+    code = mfc0(16, 12)
+    code += constant(8, 0x00410080) + mtc0(8, 12)
+    code += constant(12, 0xffffffffa0000000 | MAILBOX)
+    code += constant(9, 0x9000000000000000 | PAGE)
+    code += constant(10, 0x9800000000000000 | PAGE)
+    code += [insn_i(0x23, 12, 8, 72)]
+    branch = len(code)
+    code += [0, 0]
+    code += constant(8, FIRST)
+    code += [insn_i(0x2b, 9, 8, 0), insn_i(0x2b, 9, 8, 128)]
+    code += constant(8, SECOND) + [insn_i(0x2b, 10, 8, 0)]
+    code += constant(8, 0xabcdef01)
+    code += [insn_i(0x2b, 10, 8, 128),
+             insn_i(0x2f, 10, 0x15, 128), 0, 0, 0, 0]
+    code += constant(8, 0x52454144)
+    code += [insn_i(0x2b, 12, 8, 68), insn_i(0x04, 0, 0, -1), 0]
+    code[branch] = insn_i(0x05, 8, 0, len(code) - branch - 1)
+    # The soft-reset handler uses uncached instructions and CACHE only.
+    for operation, offset, register, output in ((0x05, 0, 28, 0),
+                                               (0x19, 0, 28, 4),
+                                               (0x07, 128, 28, 8),
+                                               (0x1b, 128, 29, 12)):
+        code += [insn_i(0x2f, 10, operation, offset), 0, 0, 0, 0]
+        code += mfc0(8, register) + [insn_i(0x2b, 12, 8, output)]
+    for offset, output in ((0, 16), (128, 20)):
+        code += [insn_i(0x23, 9, 8, offset), insn_i(0x2b, 12, 8, output)]
+    for offset, output in ((0, 24), (128, 28)):
+        code += [insn_i(0x2f, 10, 0x17, offset), 0, 0, 0, 0,
+                 insn_i(0x23, 9, 8, offset), insn_i(0x2b, 12, 8, output)]
+    code += [insn_i(0x2b, 12, 16, 36)]
+    code += constant(8, DONE)
+    code += [insn_i(0x2b, 12, 8, 32), insn_i(0x04, 0, 0, -1), 0]
+    image = bytearray(0x400 + len(code) * 4)
+    struct.pack_into('>I', image, 0, insn_i(0x04, 0, 0, 0xff))
+    struct.pack_into(f'>{len(code)}I', image, 0x400, *code)
+    return image
+
+
 class R10000TLBCache(QemuSystemTest):
     def run_rom(self, mode):
         image = self.scratch_file(f'{mode}.bin')
@@ -267,6 +307,78 @@ class R10000TLBCache(QemuSystemTest):
             time.sleep(0.05)
         self.assertEqual(words[12:14], [SECOND, SECOND], output)
         self.assertEqual(words[16], 0xabcdef01, output)
+
+    def launch_reset_rom(self):
+        image = self.scratch_file('reset.bin')
+        Path(image).write_bytes(reset_rom())
+        self.set_machine('octane')
+        control = f'{self.socket_dir().name}/reset-control.sock'
+        self.vm.add_args('-accel', 'tcg,thread=single',
+                         '-cpu', 'R10000,r10k-data-cache=on',
+                         '-m', '128M', '-bios', image, '-nodefaults',
+                         '-qtest', f'unix:{control},server=on,wait=off')
+        self.vm.launch()
+        deadline = time.monotonic() + 10
+        while True:
+            output = self.vm.cmd('human-monitor-command',
+                                 command_line=f'xp /1wx {MAILBOX + 68:#x}')
+            if '0x52454144' in output:
+                break
+            self.assertLess(time.monotonic(), deadline, output)
+            time.sleep(0.05)
+        self.vm.cmd('stop')
+        return control
+
+    def read_reset_result(self):
+        self.vm.cmd('cont')
+        deadline = time.monotonic() + 10
+        while True:
+            output = self.vm.cmd('human-monitor-command',
+                                 command_line=f'xp /10wx {MAILBOX:#x}')
+            words = [int(word, 16) for word in
+                     re.findall(r'0x([0-9a-fA-F]{8})\b', output)]
+            if len(words) == 10 and words[8] == DONE:
+                break
+            self.assertLess(time.monotonic(), deadline, output)
+            time.sleep(0.05)
+        self.vm.cmd('stop')
+        Path(self.log_file('reset-mailbox.txt')).write_text(output)
+        return words
+
+    def check_reset(self, soft):
+        control = self.launch_reset_rom()
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as peer:
+            peer.settimeout(10)
+            peer.connect(control)
+            if not soft:
+                self.vm.cmd('system_reset')
+                self.vm.event_wait('RESET', timeout=10)
+            # Octane cold reset clears the low-memory command mailbox.
+            peer.sendall(f'writel {MAILBOX + 72:#x} 1\n'.encode())
+            self.assertEqual(peer.recv(128), b'OK\n')
+            if soft:
+                cpu = self.vm.cmd('query-cpus-fast')[0]['qom-path']
+                for level in (1, 0):
+                    peer.sendall(f'set_irq_in {cpu} soft-reset 0 '
+                                 f'{level}\n'.encode())
+                    self.assertEqual(peer.recv(128), b'OK\n')
+        words = self.read_reset_result()
+        self.assertEqual(words[4:6], [FIRST, FIRST])
+        self.assertEqual(bool(words[9] & (1 << 20)), soft)
+        if soft:
+            self.assertEqual((words[0] >> 6) & 3, 3)
+            self.assertEqual((words[2] >> 10) & 3, 3)
+            self.assertEqual([words[1], words[3]], [SECOND, 0xabcdef01])
+            self.assertEqual(words[6:8], [SECOND, 0xabcdef01])
+        else:
+            self.assertEqual(words[:4], [0, 0, 0, 0])
+            self.assertEqual(words[6:8], [FIRST, FIRST])
+
+    def test_soft_reset_preserves_dirty_caches(self):
+        self.check_reset(soft=True)
+
+    def test_cold_reset_clears_dirty_caches(self):
+        self.check_reset(soft=False)
 
     def test_uncached_tlb_remap(self):
         self.run_rom('remap')
