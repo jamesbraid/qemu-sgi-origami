@@ -145,10 +145,15 @@ enum {
 #define SGI_GL_SHADE_MODEL      0x0b54
 #define SGI_GL_DEPTH_RANGE      0x0b70
 #define SGI_GL_DEPTH_TEST       0x0b71
+#define SGI_GL_DEPTH_WRITEMASK  0x0b72
+#define SGI_GL_DEPTH_FUNC       0x0b74
 #define SGI_GL_MATRIX_MODE      0x0ba0
 #define SGI_GL_VIEWPORT         0x0ba2
+#define SGI_GL_MODELVIEW_STACK_DEPTH 0x0ba3
+#define SGI_GL_PROJECTION_STACK_DEPTH 0x0ba4
 #define SGI_GL_MODELVIEW_MATRIX 0x0ba6
 #define SGI_GL_PROJECTION_MATRIX 0x0ba7
+#define SGI_GL_DITHER           0x0bd0
 #define SGI_GL_INDEX_CLEAR_VALUE 0x0c20
 #define SGI_GL_INDEX_WRITEMASK  0x0c21
 #define SGI_GL_COLOR_CLEAR_VALUE 0x0c22
@@ -215,6 +220,11 @@ typedef struct SGIGLContext {
     uint32_t mv_depth;
     uint32_t pr_depth;
     uint32_t matrix_mode;       /* GL_MODELVIEW, GL_PROJECTION or other */
+    /*
+     * GL_DITHER's enable, initially on (4.1.7). Kept and answered; no
+     * rasterizer dithers.
+     */
+    uint32_t dither;            /* 0 or 1 */
     float cur_color[4];
     float cur_index;
     float cur_normal[3];
