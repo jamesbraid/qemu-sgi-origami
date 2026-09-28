@@ -1053,10 +1053,9 @@ static void test_a_blocked_backend_keeps_every_transmit_character(
 }
 
 /*
- * A backend that is connected but never reads gives the byte-wide UART's
- * transmit path no fd event to wake it up. The qualification harness
- * attaches its console reader after resuming the guest, so bytes can land
- * before anyone is listening. The
+ * This test connects a backend but never drains its peer after guest
+ * resume. A full socket queue gives the byte-wide UART no fd event
+ * to wake transmission: the
  * write returns EAGAIN, a watch is armed, and nothing ever signals it.
  * Real hardware never waits on a listener either: a 16550 clocks each byte
  * out at the programmed baud rate whatever is on the other end of the wire.
