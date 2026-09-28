@@ -44,11 +44,12 @@ import re
 import shutil
 
 from qemu_test import QemuSystemTest, skipIfMissingEnv
+from qemu_test.asset import LocalAsset
 
 from lib_prom import (FIRMWARE_REL, FORK_ROOT, MACHINES, drive_console,
-                      require_assets, run_record, utc_now)
+                      run_record, utc_now)
 from lib_prom_fx import LEDGERS_EXPECTED, NBLOCKS, NETBOOT_PATH, verdict
-from lib_prom_mdk import payload_identity_problems
+from lib_prom_mdk import PROM_SHA256, payload_identity_problems
 
 
 FX_REL = os.path.join('boot', '6.5-base', 'fx.64')
@@ -123,6 +124,9 @@ class PromFx(QemuSystemTest):
     """Boots the real IP27 PROM, netboots fx.64, and requires a clean
     write-compare exercise on a fresh scratch disk."""
 
+    ASSET_PROM = LocalAsset(FIRMWARE_REL, PROM_SHA256)
+    ASSET_FX = LocalAsset(FX_REL, FX_SHA256)
+
     def _stage_netboot_tftp(self, fx):
         root = self.scratch_file('netboot-tftp')
         staged = os.path.join(root, *NETBOOT_PATH.split('/'))
@@ -138,8 +142,7 @@ class PromFx(QemuSystemTest):
 
     @skipIfMissingEnv('QEMU_TEST_SGI_ASSET_DIR')
     def test_prom_fx(self):
-        assets = require_assets(self, FIRMWARE_REL, FX_REL)
-        prom, fx = assets[FIRMWARE_REL], assets[FX_REL]
+        prom, fx = self.ASSET_PROM.fetch(), self.ASSET_FX.fetch()
 
         identity_problems = payload_identity_problems(
             prom, fx, FX_SHA256, "fx.64")

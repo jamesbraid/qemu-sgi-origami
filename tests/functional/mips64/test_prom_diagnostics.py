@@ -78,13 +78,15 @@ import re
 import shutil
 
 from qemu_test import QemuSystemTest, skipIfMissingEnv
+from qemu_test.asset import LocalAsset
 
 from lib_prom import (FORK_ROOT, MACHINES, drive_console, file_record,
-                      fork_git_identity, require_assets, utc_now)
+                      fork_git_identity, utc_now)
 from lib_prom_diagnostics import (EXPECTED_FAILURES, EXPECTED_FAILURES_TEXT,
                                   diag_extra_args, evaluate_run,
                                   extract_identities)
-from lib_prom_sash import NETBOOT_PATH, artifact_identity_problems
+from lib_prom_sash import (NETBOOT_PATH, RELEASES,
+                           artifact_identity_problems)
 
 
 # ---------------------------------------------------------------------------
@@ -151,6 +153,12 @@ class PromDiagnostics(QemuSystemTest):
     PromBoot.
     """
 
+    ASSET_PROM = LocalAsset(
+        FIRMWARE_REL, RELEASES[RELEASE]['prom_sha256'])
+    ASSET_SASH = LocalAsset(
+        os.path.join(TFTP_REL, 'sash64'),
+        RELEASES[RELEASE]['sash_sha256'])
+
     def _stage_netboot_tftp(self, sash):
         """A fresh tftp root, under this test's own scratch directory,
         with the real (already digest-checked) sash64 copied in at
@@ -172,9 +180,7 @@ class PromDiagnostics(QemuSystemTest):
         # read-only project state this test must not restructure -- see
         # _stage_netboot_tftp() for the PATH-STRUCTURED copy this test's
         # real boot actually serves.
-        sash_rel = os.path.join(TFTP_REL, 'sash64')
-        assets = require_assets(self, FIRMWARE_REL, sash_rel)
-        prom, sash = assets[FIRMWARE_REL], assets[sash_rel]
+        prom, sash = self.ASSET_PROM.fetch(), self.ASSET_SASH.fetch()
 
         # tools/sash-gate itself refuses to launch against a PROM or
         # sash64 that does not match the selected release's recorded
