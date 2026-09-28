@@ -296,19 +296,54 @@ static unsigned int mgras_gl_lookup(SGIMgrasState *s, uint32_t slot)
     return free;
 }
 
+/*
+ * A context switch can land inside a packet, and each context's words
+ * continue its own packet when it is loaded again. In run
+ * irix-20260928T000530-78d0c5 (seq 12929748 to 12930582) perfly's context
+ * 0x84c6 was switched out 33 words into the 156 data words of a GE table
+ * load, context 0x5420 was loaded and sent one glFlush header, and 0x84c6
+ * came back and sent its remaining 123 data words. With one parser for
+ * the board the glFlush was consumed as table data and 0x84c6's words then
+ * parsed as headers, which later left the X server polling HQ flag bit 16
+ * forever. The client cannot know where a switch falls, so the board
+ * keeps the position per context (inferred). Approximated: the model
+ * keeps it with the context's GL state, keyed the same way, not in
+ * whatever HQ state the board saves. The discriminating tests are
+ * gl-parser-follows-the-context and gl-packet-split-by-a-context-switch.
+ */
+static void mgras_gl_save_parser(SGIMgrasState *s, SGIMgrasCmdParser *p)
+{
+    p->cls = s->cmd_token_class;
+    p->reg = s->cmd_token_reg;
+    p->words_remaining = s->cmd_token_words_remaining;
+    memcpy(p->payload, s->cmd_token_payload, sizeof(p->payload));
+    p->payload_count = s->cmd_token_payload_count;
+}
+
+static void mgras_gl_load_parser(SGIMgrasState *s, const SGIMgrasCmdParser *p)
+{
+    s->cmd_token_class = p->cls;
+    s->cmd_token_reg = p->reg;
+    s->cmd_token_words_remaining = p->words_remaining;
+    memcpy(s->cmd_token_payload, p->payload, sizeof(p->payload));
+    s->cmd_token_payload_count = p->payload_count;
+}
+
 void sgi_mgras_gl_context_loaded(SGIMgrasState *s)
 {
     uint32_t slot = s->context[MGRAS_GL_IMAGE_SLOT];
 
+    mgras_gl_save_parser(s, &mgras_gl(s)->parser);
     s->gl_banks[0] = s->context[MGRAS_GL_IMAGE_BANKS];
     s->gl_banks[1] = s->context[MGRAS_GL_IMAGE_BANKS + 1];
     s->gl_ge_port_logged = false;
     if ((slot & MGRAS_GL_NO_SLOT) || slot == MGRAS_GL_DEFAULT_SLOT) {
         s->gl_current = 0;
-        return;
+    } else {
+        s->gl_current = mgras_gl_lookup(s, slot);
+        s->gl_selected[s->gl_current] = ++s->gl_selections;
     }
-    s->gl_current = mgras_gl_lookup(s, slot);
-    s->gl_selected[s->gl_current] = ++s->gl_selections;
+    mgras_gl_load_parser(s, &mgras_gl(s)->parser);
 }
 
 void sgi_mgras_gl_ge_port_access(SGIMgrasState *s, hwaddr addr, bool write)
@@ -353,6 +388,47 @@ const VMStateDescription vmstate_sgi_mgras_gl_context = {
     }
 };
 
+static const VMStateDescription vmstate_sgi_mgras_cmd_parser = {
+    .name = TYPE_SGI_MGRAS "/cmd-parser",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32(cls, SGIMgrasCmdParser),
+        VMSTATE_UINT32(reg, SGIMgrasCmdParser),
+        VMSTATE_UINT32(words_remaining, SGIMgrasCmdParser),
+        VMSTATE_UINT32_ARRAY(payload, SGIMgrasCmdParser,
+                             SGI_MGRAS_CMD_TOKEN_PAYLOAD_WORDS),
+        VMSTATE_UINT32(payload_count, SGIMgrasCmdParser),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
+/* The state each context gained in version 20, sent for every entry. */
+const VMStateDescription vmstate_sgi_mgras_gl_context_v20 = {
+    .name = TYPE_SGI_MGRAS "/gl-context-v20",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_STRUCT(parser, SGIMgrasGLContext, 1,
+                       vmstate_sgi_mgras_cmd_parser, SGIMgrasCmdParser),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
+bool sgi_mgras_cmd_parser_valid(uint32_t cls, uint32_t reg,
+                                uint32_t words_remaining,
+                                uint32_t payload_count)
+{
+    if (reg >= sizeof_field(SGIMgrasState, rss) / sizeof(uint32_t) ||
+        payload_count > SGI_MGRAS_CMD_TOKEN_PAYLOAD_WORDS) {
+        return false;
+    }
+    if (cls == SGI_MGRAS_CMD_TOKEN_DISCARD) {
+        return words_remaining <= SGI_MGRAS_CMD_TOKEN_MAX_BLOCK_WORDS;
+    }
+    return words_remaining <= SGI_MGRAS_CMD_TOKEN_PAYLOAD_WORDS;
+}
+
 bool sgi_mgras_gl_post_load(SGIMgrasState *s)
 {
     if (s->gl_current >= SGI_MGRAS_GL_CONTEXTS ||
@@ -360,8 +436,12 @@ bool sgi_mgras_gl_post_load(SGIMgrasState *s)
         return false;
     }
     for (int i = 0; i < SGI_MGRAS_GL_CONTEXTS; i++) {
+        const SGIMgrasCmdParser *p = &s->gl_context[i].parser;
+
         if (s->gl_context[i].vertex_count >=
-            ARRAY_SIZE(s->gl_context[i].vertex)) {
+            ARRAY_SIZE(s->gl_context[i].vertex) ||
+            !sgi_mgras_cmd_parser_valid(p->cls, p->reg, p->words_remaining,
+                                        p->payload_count)) {
             return false;
         }
     }
