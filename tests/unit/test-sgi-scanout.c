@@ -364,6 +364,21 @@ static void test_set_next_retrace(void)
     g_assert_cmpint(ABS(sgi_scanout_retrace_time(s, 5) - when - 2 * period),
                     <=, 1);
 
+    /*
+     * An idle timer's expiry, -1, means now: the retrace fires at once and
+     * keeps going, rather than reading as no retrace and stopping.
+     */
+    g_string_truncate(h->events, 0);
+    virtual_ns = sgi_scanout_retrace_time(s, 5) + 4321;
+    when = virtual_ns;
+    sgi_scanout_set_next_retrace(s, -1);
+    g_assert_cmpint(timer_expire_time_ns(s->retrace_timer), ==, when);
+    run_to(when);
+    g_assert_cmpstr(h->events->str, ==, "retrace:6 ");
+    g_assert_cmpint(sgi_scanout_retrace_time(s, 6), ==, when);
+    run_to(sgi_scanout_retrace_time(s, 7));
+    g_assert_cmpstr(h->events->str, ==, "retrace:6 retrace:7 ");
+
     /* No retrace in the mode: nothing to put anywhere. */
     sgi_scanout_set_mode(s, &(SGIScanoutMode) { .width = 8, .height = 8 });
     sgi_scanout_set_next_retrace(s, virtual_ns + 1000);

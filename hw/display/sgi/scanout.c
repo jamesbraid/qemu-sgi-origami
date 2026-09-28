@@ -85,6 +85,13 @@ void sgi_scanout_set_next_retrace(SGIScanout *s, int64_t when)
         return;
     }
     /*
+     * A negative retrace time reads as no retrace, which would stop the
+     * retrace for good; an idle timer's -1 is a request for one now.
+     */
+    if (when < 0) {
+        when = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    }
+    /*
      * Move the epoch rather than restart the count, so retrace n stays
      * epoch plus n periods and the next one, frames + 1, lands on when.
      */

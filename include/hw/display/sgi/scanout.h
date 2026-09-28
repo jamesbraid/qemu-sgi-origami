@@ -112,8 +112,9 @@ int64_t sgi_scanout_retrace_time(const SGIScanout *s, uint64_t n);
  * from its post_load, after the scanout's, so the destination neither
  * replays every retrace since its own reset nor drifts off the source's
  * phase. A when already past fires at once, and so does every retrace
- * between it and now. With no retrace in the current mode this does
- * nothing.
+ * between it and now. A negative when, such as the -1 of an idle timer's
+ * expiry, means now: the next retrace fires at once and the rest follow a
+ * period apart. With no retrace in the current mode this does nothing.
  */
 void sgi_scanout_set_next_retrace(SGIScanout *s, int64_t when);
 
