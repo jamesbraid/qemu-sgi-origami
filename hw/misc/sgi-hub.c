@@ -4365,10 +4365,14 @@ static const MemoryRegionOps sgi_hub_ii_packet_ops = {
 };
 
 /*
- * A peer's programmed I/O to this Hub's widget number. Only the
- * four-byte identification read at offset 4 has a cleared decode (the
- * hub-io-interface datasheet leaves the short widget offsets
- * unresolved); every other access stops rather than inventing a value.
+ * A peer's programmed I/O to this Hub's widget number. The
+ * hub-io-interface datasheet leaves the short widget offsets unresolved,
+ * so this answers only the one peer access with evidence, IRIX's
+ * four-byte identification read at offset 4, from the identification
+ * register. That alias is an approximation outside the datasheet's
+ * acceptance. Every other access fails the way an unsupported request
+ * does, as a bus error for the processor that made it, rather than
+ * inventing a value or stopping the machine.
  */
 static MemTxResult sgi_hub_ii_widget_access(SGIHubState *s, hwaddr addr,
                                             uint64_t *data, unsigned size,
@@ -4380,12 +4384,10 @@ static MemTxResult sgi_hub_ii_widget_access(SGIHubState *s, hwaddr addr,
                                            HUB_IO_WIDGET_ID + addr, data,
                                            MO_32 | MO_BE, attrs);
     }
-    error_report("Hub %u: unsupported %u-byte %s at 0x%" HWADDR_PRIx
-                 " on the widget face a peer sees, which is outside its "
-                 "cleared decode; stopping instead of answering", s->stride,
-                 size, is_write ? "write" : "read", addr);
-    qemu_system_vmstop_request_prepare();
-    qemu_system_vmstop_request(RUN_STATE_INTERNAL_ERROR);
+    qemu_log_mask(LOG_GUEST_ERROR,
+                  "sgi-hub: unsupported %u-byte peer %s at 0x%" HWADDR_PRIx
+                  " on the Hub's widget face\n", size,
+                  is_write ? "write" : "read", addr);
     if (data) {
         *data = 0;
     }

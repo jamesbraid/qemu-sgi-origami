@@ -15,6 +15,7 @@
 #define HUB_BASE UINT64_C(0x20001000000)
 #define NI_STATUS 0x600000
 #define IO_WIDGET_ID 0x400000
+#define IO_WIDGET_STATUS 0x400008
 #define NI_VECTOR_PARMS 0x600200
 #define NI_VECTOR 0x600208
 #define NI_VECTOR_DATA 0x600210
@@ -1985,6 +1986,165 @@ static void test_distinct_table_migration(void)
 }
 
 /*
+ * A peer Hub's face over XIO, read from node 0's processor. Discovering
+ * the peer by scanning crossbar 0's external ports for the Hub part
+ * keeps the test free of the topology's port numbering.
+ */
+static bool cpu_read_width(QTestState *qts, unsigned int cpu, uint64_t address,
+                           unsigned int size, uint64_t *value)
+{
+    g_autofree char *command = g_strdup_printf(
+        "xp/1%cx 0x%" PRIx64, size == 8 ? 'g' : 'w', address);
+    g_autoptr(QDict) response = qtest_qmp(qts,
+        "{ 'execute': 'human-monitor-command', 'arguments': {"
+        " 'command-line': %s, 'cpu-index': %u } }", command, cpu);
+    const char *dump = qdict_get_str(response, "return");
+    const char *colon;
+
+    if (strstr(dump, "Cannot access memory")) {
+        return false;
+    }
+    colon = strchr(dump, ':');
+    g_assert_nonnull(colon);
+    g_assert_cmpint(sscanf(colon + 1, " 0x%" SCNx64, value), ==, 1);
+    return true;
+}
+
+static void assert_machine_not_stopped(QTestState *qts)
+{
+    g_autoptr(QDict) response = qtest_qmp(qts,
+        "{ 'execute': 'query-status' }");
+    QDict *status = qdict_get_qdict(response, "return");
+
+    g_assert_cmpstr(qdict_get_str(status, "status"), !=, "internal-error");
+}
+
+/*
+ * The bounded 64-bit peer identity probe: a big window aimed at a Hub's
+ * I/O space reads that Hub's network-interface status at 0x01600000,
+ * from the Hub that physically receives it rather than one looked up by
+ * node number.
+ */
+static uint64_t identity_probe(QTestState *qts, unsigned int widget,
+                               uint64_t offset, unsigned int size,
+                               bool *answered)
+{
+    uint8_t bytes[8];
+    uint64_t value = 0;
+
+    stq_be_p(bytes, IO_BWIN_WIDGET(widget) | IO_BWIN_OTHER_SPACE);
+    g_assert_true(qtest_memwrite_cpu(qts, 0, HUB_BASE + IO_BWIN_ENTRY(0),
+                                     bytes, sizeof(bytes)));
+    *answered = cpu_read_width(qts, 0, BIG_WINDOW(0) + offset, size, &value);
+    return value;
+}
+
+/* Node 0's I/O space once it is numbered, where its small windows sit. */
+#define PEER_TEST_NASID0 0x20
+#define NODE0_IO_SPACE (IO_SPACE + ((uint64_t)PEER_TEST_NASID0 << 32))
+
+/*
+ * Give every Hub its own number, so each probe answer names its sender,
+ * and return a widget on node 0's crossbar where a peer Hub answers. At
+ * most one Hub widget there may answer as node 0 itself.
+ */
+static unsigned int find_peer_hub(QTestState *qts, unsigned int *peer_node)
+{
+    uint64_t status[4], value;
+    unsigned int widget, node, node0_seen = 0, peer = 0;
+    bool answered;
+
+    for (node = 0; node < 4; node++) {
+        hub_write(qts, node, NI_STATUS, (hub_read(qts, node, NI_STATUS) &
+                                         ~(0xffULL << 8)) |
+                  ((uint64_t)(PEER_TEST_NASID0 + node) << 8));
+        status[node] = hub_read(qts, node, NI_STATUS);
+    }
+    for (widget = 8; widget < 16; widget++) {
+        uint64_t id;
+
+        if (!cpu_read_width(qts, 0, NODE0_IO_SPACE +
+                            widget * XIO_WIDGET_SIZE + XIO_REG_DATA, 4,
+                            &id) ||
+            XIO_ID_PART(id) != 0xc101) {
+            continue;
+        }
+        value = identity_probe(qts, widget, 0x01600000, 8, &answered);
+        g_assert_true(answered);
+        for (node = 0; node < 4 && value != status[node]; node++) {
+        }
+        g_assert_cmpuint(node, <, 4);
+        if (node == 0) {
+            node0_seen++;
+        } else {
+            peer = widget;
+            *peer_node = node;
+        }
+    }
+    g_assert_cmpuint(node0_seen, <=, 1);
+    g_assert_cmpuint(peer, !=, 0);
+    return peer;
+}
+
+static void test_peer_identity_probe(void)
+{
+    QTestState *qts = start_control_module("");
+    unsigned int node;
+    unsigned int peer = find_peer_hub(qts, &node);
+    uint64_t status = hub_read(qts, node, NI_STATUS);
+    bool answered;
+
+    /*
+     * Other widths and offsets at the probe address are refused, and
+     * leave the receiving Hub's status as it was.
+     */
+    identity_probe(qts, peer, 0x01600004, 4, &answered);
+    g_assert_false(answered);
+    identity_probe(qts, peer, 0x01600008, 8, &answered);
+    g_assert_false(answered);
+    g_assert_cmphex(hub_read(qts, node, NI_STATUS), ==, status);
+    assert_machine_not_stopped(qts);
+    qtest_quit(qts);
+}
+
+/*
+ * The peer's face keeps one bounded alias, IRIX's four-byte identity
+ * read at offset 4. Any other peer access is refused as a bus error
+ * would be, and the machine keeps running rather than stopping.
+ */
+static void test_peer_hub_widget_face(void)
+{
+    QTestState *qts = start_control_module("");
+    unsigned int node;
+    unsigned int peer = find_peer_hub(qts, &node);
+    uint64_t base = NODE0_IO_SPACE + peer * XIO_WIDGET_SIZE;
+    uint64_t status = hub_read(qts, node, IO_WIDGET_STATUS);
+    uint64_t pending = hub_read(qts, node, HUB_PI_INT_PEND0);
+    uint8_t bytes[4] = { 0xff, 0xff, 0xff, 0xff };
+    uint64_t value;
+
+    g_assert_true(cpu_read_width(qts, 0, base + XIO_REG_DATA, 4, &value));
+    g_assert_cmphex(XIO_ID_PART(value), ==, 0xc101);
+    g_assert_cmphex(value & XIO_ID_ALWAYS_ONE, ==, XIO_ID_ALWAYS_ONE);
+
+    g_assert_false(cpu_read_width(qts, 0, base, 8, &value));
+    g_assert_false(cpu_read_width(qts, 0, base + 0x0c, 4, &value));
+    g_assert_false(cpu_read_width(qts, 0, base + IO_WIDGET_ID, 8, &value));
+
+    /* A peer write is refused too, and changes nothing on the peer. */
+    g_assert_true(qtest_memwrite_cpu(qts, 0, base + 0x0c, bytes,
+                                     sizeof(bytes)));
+    g_assert_cmphex(hub_read(qts, node, IO_WIDGET_STATUS), ==, status);
+    g_assert_cmphex(hub_read(qts, node, HUB_PI_INT_PEND0), ==, pending);
+    assert_machine_not_stopped(qts);
+
+    /* The alias still answers after the refusals. */
+    g_assert_true(cpu_read_width(qts, 0, base + XIO_REG_DATA, 4, &value));
+    g_assert_cmphex(XIO_ID_PART(value), ==, 0xc101);
+    qtest_quit(qts);
+}
+
+/*
  * From sn0-origin2000-outgoing-hub-io-test.c: a CPU's own big window in
  * IO_BWIN_SPACE mode, once it names a real widget on the node's own Crossbow.
  * BaseIO's Bridge sits at widget 8 on the default topology's crossbar 0, the
@@ -2265,5 +2425,9 @@ int main(int argc, char **argv)
     qtest_add_data_func("sn0/origin2000/outgoing-hub-io/write-every-width",
                         NULL, test_write_every_advertised_width);
     qtest_add_func("sn0/origin2000/xio-owner/prepare", test_xio_owner);
+    qtest_add_func("sn0/origin2000/peer-hub-widget-face",
+                   test_peer_hub_widget_face);
+    qtest_add_func("sn0/origin2000/peer-identity-probe",
+                   test_peer_identity_probe);
     return g_test_run();
 }
