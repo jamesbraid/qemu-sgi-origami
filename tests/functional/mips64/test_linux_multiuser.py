@@ -160,7 +160,7 @@ class LinuxMultiuser(QemuSystemTest):
             '-smp', '4',
             '-accel', 'tcg,thread=multi',
             '-nic', ('user,id=n1,'
-                    'hostfwd=tcp::0-:22,'
+                    'hostfwd=tcp:127.0.0.1:0-:22,'
                     f'tftp={os.path.dirname(kernel)},'
                     f'bootfile={NETBOOT_BOOTFILE}'))
         vm.launch()
