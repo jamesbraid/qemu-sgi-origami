@@ -46,6 +46,9 @@
 #define IOC3_ENET_TX_RING_LO (IOC3 + 0x12c)
 #define IOC3_ENET_TX_CONSUME (IOC3 + 0x130)
 #define IOC3_ENET_TX_PRODUCE (IOC3 + 0x134)
+#define IOC3_PAR_BUFFER_LO_A (IOC3 + 0x084)
+#define IOC3_PAR_COUNT_A (IOC3 + 0x088)
+#define IOC3_PAR_ECP_DATA (IOC3 + 0x20150)
 #define RTC_INDEX (IOC3 + 0xa0000)
 #define RTC_DATA (IOC3 + 0xc0000)
 #define UART_A (IOC3 + 0x20178)
@@ -371,6 +374,24 @@ static void test_octane_ioc3_ethernet(bool octane2)
 static void test_octane_ethernet(void)
 {
     test_octane_ioc3_ethernet(false);
+}
+
+static void test_ioc3_parallel(gconstpointer data)
+{
+    bool octane2 = GPOINTER_TO_INT(data);
+    QTestState *qts = octane2 ? octane2_start_args("") : octane_start();
+
+    g_assert_cmphex(qtest_readl(qts, CFG(2) + 0x2c), ==, 0xc30410a9);
+    qtest_writel(qts, CFG(2) + 0x10, 0x10000000);
+    qtest_writel(qts, CFG(2) + 0x04, 0x00000002);
+    qtest_writel(qts, BRIDGE + 0x200 + 8 * 2 + 4, 0x1100);
+    qtest_writel(qts, IOC3_PAR_BUFFER_LO_A, 0x11112000);
+    g_assert_cmphex(qtest_readl(qts, IOC3_PAR_BUFFER_LO_A), ==, 0x11112000);
+    qtest_writel(qts, IOC3_PAR_COUNT_A, 0x5a5a);
+    g_assert_cmphex(qtest_readl(qts, IOC3_PAR_COUNT_A) & 0xffff, ==, 0x5a5a);
+    qtest_writeb(qts, IOC3_PAR_ECP_DATA, 0x5a);
+    g_assert_cmphex(qtest_readb(qts, IOC3_PAR_ECP_DATA), ==, 0x5a);
+    qtest_quit(qts);
 }
 
 static void test_octane_ioc3_ethernet_polled(bool octane2)
@@ -1711,6 +1732,10 @@ int main(int argc, char **argv)
                    test_memory_population_rejections);
     qtest_add_func("/octane2/ioc3-ethernet", test_octane2_ethernet);
     qtest_add_func("/octane/ioc3-ethernet", test_octane_ethernet);
+    qtest_add_data_func("/octane/ioc3-parallel", GINT_TO_POINTER(0),
+                        test_ioc3_parallel);
+    qtest_add_data_func("/octane2/ioc3-parallel", GINT_TO_POINTER(1),
+                        test_ioc3_parallel);
     qtest_add_func("/octane/ioc3-ethernet-polled",
                    test_octane_ethernet_polled);
     qtest_add_func("/octane2/ioc3-ethernet-polled",

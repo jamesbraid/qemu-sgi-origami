@@ -201,6 +201,7 @@ static void octane_fit_pci(MachineState *machine, SGIBridgeState *bridge)
                          SGI_IOC3_POPULATION_SERIAL_A |
                          SGI_IOC3_POPULATION_SERIAL_B |
                          SGI_IOC3_POPULATION_ETHERNET |
+                         SGI_IOC3_POPULATION_PARALLEL |
                          SGI_IOC3_POPULATION_ONEWIRE_IDENTITY);
     qdev_prop_set_uint8(DEVICE(pci), "timekeeper-kind",
                        SGI_IOC3_TIMEKEEPER_DS1685);

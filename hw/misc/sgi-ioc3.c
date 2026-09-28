@@ -1451,11 +1451,11 @@ static const MemoryRegionOps sgi_ioc3_ssram_ops = {
 
 /*
  * The sub-devices each board fits, keyed by the subsystem identity a guest
- * reads out of configuration space. Taken from mainline Linux's per-board
- * setup routines (drivers/mfd/ioc3.c, v7.2-rc7, commit db2ddb8), which are
- * the clearest published statement of how much board-to-board variation this
- * chip sees. The IP29 System Board and the IP27 BaseIO6G share one routine
- * there and so share a row here.
+ * reads out of configuration space. Mainline Linux's per-board setup
+ * routines (drivers/mfd/ioc3.c, v7.2-rc7, commit db2ddb8) provide the
+ * starting population. Its driver has no parallel child, so physical
+ * parallel ports also follow the board manuals and OpenBSD attachment.
+ * The IP29 System Board and the IP27 BaseIO6G share one Linux routine.
  */
 static const struct {
     uint16_t subsystem_id;
@@ -1487,7 +1487,7 @@ static const struct {
      */
     { SGI_IOC3_SUBSYS_IP30_SYSBOARD,
       { .eth = true, .serial = { true, true }, .kbc = true,
-        .onewire_identity = true,
+        .parallel = true, .onewire_identity = true,
         .timekeeper = SGI_IOC3_TIMEKEEPER_DS1685 } },
     { SGI_IOC3_SUBSYS_MENET,
       { .eth = true, .serial = { true, true },
