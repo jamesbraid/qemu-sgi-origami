@@ -3479,8 +3479,9 @@ static const uint16_t mgras_vt_frame[] = {
  * MHz and the frame takes 210,000 of its clocks, about 59.911 Hz.
  */
 static const MgrasFrameTime mgras_vga_frame = { 525 * 400, 12581250 };
-/* The same PLL on the 64 MHz reference, 0x072408 bit 24. */
-static const MgrasFrameTime mgras_vga_alt_ref_frame = { 525 * 400, 24400000 };
+/* The same table on the stock PLL bytes: 107.25 MHz, VC3 at 53.625 MHz. */
+static const MgrasFrameTime mgras_vga_stock_pll_frame = { 525 * 400,
+                                                          53625000 };
 
 static void mgras_load_vga_timing(QTestState *q)
 {
@@ -3513,11 +3514,13 @@ static void test_retrace_period_follows_vc3_tables(void)
     mgras_retrace_to_hub_on(qts, retrace_vector);
     mgras_expect_retraces(qts, &mgras_vga_frame, 1, 3, retrace_vector);
 
-    qtest_writel(qts, REG_RESET_CONTROL, 0xe9000000);
+    mgras_dac_reg_write(qts, 0x0c, 2);
+    mgras_dac_reg_write(qts, 0x0f, 4);
+    mgras_dac_reg_write(qts, 0x09, 0x91);
     qtest_writel(qts, REG_VC3_INDEXDATA,
                  VC3_INDEXDATA(VC3_CONTROL,
                                VC3_CONTROL_DISPLAY | VC3_CONTROL_VINTR));
-    mgras_expect_retraces(qts, &mgras_vga_alt_ref_frame, 1, 3,
+    mgras_expect_retraces(qts, &mgras_vga_stock_pll_frame, 1, 3,
                           retrace_vector);
 
     /* Word 0x1000 is still zero: an empty frame table. */
@@ -3531,7 +3534,7 @@ static void test_retrace_period_follows_vc3_tables(void)
     qtest_writel(qts, REG_VC3_INDEXDATA,
                  VC3_INDEXDATA(VC3_CONTROL,
                                VC3_CONTROL_DISPLAY | VC3_CONTROL_VINTR));
-    mgras_expect_retraces(qts, &mgras_vga_alt_ref_frame, 1, 1,
+    mgras_expect_retraces(qts, &mgras_vga_stock_pll_frame, 1, 1,
                           retrace_vector);
     mgras_reset();
     mgras_retrace_to_hub_on(qts, retrace_vector);
