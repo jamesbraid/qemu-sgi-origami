@@ -519,7 +519,7 @@ sgi_qtests = \
   (config_all_devices.has_key('CONFIG_SGI_DEVICES') ?
     ['sgi-heart-test'] : []) + \
   (config_all_devices.has_key('CONFIG_SGI_OCTANE') ?
-    ['octane-test'] : []) + \
+    ['octane-test', 'r10000-identity-test'] : []) + \
   sn0_router_qtests + \
   sn0_ohci_qtests + \
   sgi_bridge_card_qtests + \

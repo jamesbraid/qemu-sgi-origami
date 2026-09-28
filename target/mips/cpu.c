@@ -292,7 +292,8 @@ static void mips_cpu_reset_hold(Object *obj, ResetType type)
     }
 
     /* Reset registers to their default values */
-    env->CP0_PRid = env->cpu_model->CP0_PRid;
+    env->CP0_PRid = !strcmp(env->cpu_model->name, "R10000") ?
+        cpu->r10000_prid : env->cpu_model->CP0_PRid;
     env->CP0_Config0 = deposit32(env->cpu_model->CP0_Config0,
                                  CP0C0_BE, 1, cpu->is_big_endian);
     env->CP0_Config1 = env->cpu_model->CP0_Config1;
@@ -626,6 +627,34 @@ enum {
     R12000_PROFILE_FIELDS,
 };
 
+static void mips_r10000_prid_get(Object *obj, Visitor *v, const char *name,
+                                void *opaque, Error **errp)
+{
+    uint32_t value = MIPS_CPU(obj)->r10000_prid;
+
+    visit_type_uint32(v, name, &value, errp);
+}
+
+static void mips_r10000_prid_set(Object *obj, Visitor *v, const char *name,
+                                void *opaque, Error **errp)
+{
+    uint32_t value;
+
+    if (DEVICE(obj)->realized) {
+        error_setg(errp, "%s cannot change after CPU realization", name);
+        return;
+    }
+    if (!visit_type_uint32(v, name, &value, errp)) {
+        return;
+    }
+    if ((value & ~0xffu) != 0x0900) {
+        error_setg(errp, "%s requires implementation 0x09 and zero upper bits",
+                   name);
+        return;
+    }
+    MIPS_CPU(obj)->r10000_prid = value;
+}
+
 static const char *const r12000_property_names[R12000_PROFILE_FIELDS] = {
     "r12000-prid", "r12000-fpu-id", "r12000-reset-mode",
     "r12000-scache-bytes", "r12000-scache-block-words",
@@ -857,6 +886,12 @@ static void mips_cpu_initfn(Object *obj)
     cpu->count_div = clock_new(OBJECT(obj), "clk-div-count");
     cpu->count_clock = clock_new(OBJECT(obj), "clk-count");
     env->cpu_model = mcc->cpu_def;
+    if (!strcmp(mcc->cpu_def->name, "R10000")) {
+        cpu->r10000_prid = mcc->cpu_def->CP0_PRid;
+        object_property_add(obj, "r10000-prid", "uint32",
+                            mips_r10000_prid_get, mips_r10000_prid_set,
+                            NULL, NULL);
+    }
     if (!strcmp(mcc->cpu_def->name, "R12000")) {
         for (uintptr_t i = 0; i < R12000_PROFILE_FIELDS; i++) {
             object_property_add(obj, r12000_property_names[i], "uint32",

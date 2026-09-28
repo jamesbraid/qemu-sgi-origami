@@ -52,6 +52,11 @@ static int cpu_post_load(void *opaque, int version_id)
     MIPSCPU *cpu = opaque;
     CPUMIPSState *env = &cpu->env;
 
+    /* PRId is immutable configuration, including the value used by reset. */
+    if (!strcmp(MIPS_CPU_GET_CLASS(cpu)->cpu_def->name, "R10000") &&
+        env->CP0_PRid != cpu->r10000_prid) {
+        return -EINVAL;
+    }
     if (cpu->r10k_data_cache != cpu->r10k_data_cache_stream) {
         return -EINVAL;
     }
