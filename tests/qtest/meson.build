@@ -105,6 +105,10 @@ slow_qtests = {
   # The merged 75-case MD file measured 79.48s alone under a 136 host load.
   # Its 60s default timed out during a six-test run. Allow three times that.
   'sn1-bedrock-md-test': 240,
+  # sn1-directory-state-test boots two or four processors for each of its
+  # twenty-three cases, one of them twice around a snapshot. Measured 22s
+  # alone, and past the 60s default beside other suites; allow 240s.
+  'sn1-directory-state-test': 240,
   # sn1-bedrock-flash-test rewrites a whole 64 KiB sector one flash word at a
   # time, which is four qtest round trips per word, and starts eight further
   # QEMU processes for the rejection and migration cases.

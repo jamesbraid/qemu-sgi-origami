@@ -153,6 +153,8 @@ typedef struct Scenario {
     const char *cpus;       /* the -smp argument */
     bool premium;           /* select the premium directory format */
     bool ignore_ecc;        /* set the directory's ignore-ECC bit */
+    const char *snapshot;   /* if set, save this snapshot before running */
+    const char *extra;      /* further command-line arguments */
     uint64_t word;          /* if nonzero, write the line's word first */
     const Step *steps;
     unsigned int nr_steps;
@@ -270,8 +272,8 @@ static QTestState *start_scenario(const Scenario *sc, char **prom)
     *prom = create_prom(sc);
     quoted = g_shell_quote(*prom);
     s = qtest_initf("-M origin300 -cpu R14000 -smp %s -m 512M -bios %s "
-                    "-accel tcg,thread=multi -no-shutdown -S", sc->cpus,
-                    quoted);
+                    "-accel tcg,thread=multi -no-shutdown -S %s", sc->cpus,
+                    quoted, sc->extra ? sc->extra : "");
     qtest_writeq(s, SN1_MD_MEMORY_CONFIG, SN1_MD_INSTALLED_SELECT2);
     if (sc->premium || sc->ignore_ecc) {
         qtest_writeq(s, SN1_MD_DIRECTORY_CONFIG,
@@ -279,6 +281,9 @@ static QTestState *start_scenario(const Scenario *sc, char **prom)
     }
     if (sc->word) {
         qtest_writeq(s, LINE_DIRECTORY, sc->word);
+    }
+    if (sc->snapshot) {
+        g_free(qtest_hmp(s, "savevm %s", sc->snapshot));
     }
     qtest_qmp_assert_success(s, "{'execute':'cont'}");
     return s;
@@ -1120,6 +1125,85 @@ static void test_backdoor_write_does_not_watch(void)
     finish(s, prom);
 }
 
+/*
+ * A reset forgets the pages being watched and the lines processors named:
+ * once the memory is configured again, neither the old overlay nor a read
+ * of the named line's word watches the page.
+ */
+static void test_reset_forgets_watching(void)
+{
+    const Scenario sc = {
+        .cpus = "2",
+        STEPS({ 0, emit_first }, { 0, load_08 }),
+    };
+    char *prom;
+    QTestState *s;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+    s = run_scenario(&sc, &prom);
+    g_assert_cmphex(result(s, 0x08) & DIRECTORY_FIELDS, ==, POINTER(0));
+    g_assert_true(flat_view_type_is(s, LINE_PHYS, "i/o"));
+    /* The processors restart and wait on a step that never comes. */
+    qtest_qmp_assert_success(s, "{'execute':'system_reset'}");
+    qtest_writeq(s, SN1_MD_MEMORY_CONFIG, SN1_MD_INSTALLED_SELECT2);
+    g_assert_true(flat_view_type_is(s, LINE_PHYS, "ram"));
+    qtest_readq(s, LINE_DIRECTORY);
+    g_assert_true(flat_view_type_is(s, LINE_PHYS, "ram"));
+    finish(s, prom);
+}
+
+/*
+ * A snapshot saved while nothing was named or watched carries none of the
+ * unit's watch state. Loading it after the processors have named, watched
+ * and dirtied the line must leave none behind: run again from the
+ * snapshot, the processor's store is a miss that takes the line
+ * exclusive, where a stale dirty copy would make it a silent hit.
+ */
+static void test_loadvm_forgets_watching(void)
+{
+    g_autofree char *dir = NULL;
+    g_autofree char *disk = NULL;
+    g_autofree char *extra = NULL;
+    GError *error = NULL;
+    Scenario sc = {
+        .cpus = "2", .snapshot = "clean",
+        STEPS({ 0, emit_first }, { 0, store_08 }),
+    };
+    char *prom;
+    QTestState *s;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+    if (!have_qemu_img()) {
+        g_test_skip("QTEST_QEMU_IMG not set; cannot create snapshot storage");
+        return;
+    }
+    dir = g_dir_make_tmp("sn1-directory-state-snapshot-XXXXXX", &error);
+    g_assert_no_error(error);
+    disk = g_build_filename(dir, "state.qcow2", NULL);
+    g_assert_true(mkimg(disk, "qcow2", 64));
+    extra = g_strdup_printf("-drive file=%s,format=qcow2,if=none", disk);
+    sc.extra = extra;
+    s = run_scenario(&sc, &prom);
+    g_assert_cmphex(result(s, 0x08) & DIRECTORY_FIELDS, ==, POINTER(0));
+    g_assert_true(flat_view_type_is(s, LINE_PHYS, "i/o"));
+    g_free(qtest_hmp(s, "stop"));
+    g_free(qtest_hmp(s, "loadvm clean"));
+    g_assert_true(flat_view_type_is(s, LINE_PHYS, "ram"));
+    g_assert_cmphex(result(s, RESULT_STEP), ==, 0);
+    qtest_qmp_assert_success(s, "{'execute':'cont'}");
+    wait_steps(s, sc.nr_steps);
+    g_assert_cmphex(result(s, 0x08) & DIRECTORY_FIELDS, ==, POINTER(0));
+    finish(s, prom);
+    g_assert_cmpint(unlink(disk), ==, 0);
+    g_assert_cmpint(rmdir(dir), ==, 0);
+}
+
 static void migrate_wait(QTestState *qts)
 {
     int64_t deadline = g_get_monotonic_time() + 30 * G_TIME_SPAN_SECOND;
@@ -1227,6 +1311,10 @@ int main(int argc, char **argv)
                    test_unnamed_line_is_not_watched);
     qtest_add_func("sn1/directory-state/backdoor-write-does-not-watch",
                    test_backdoor_write_does_not_watch);
+    qtest_add_func("sn1/directory-state/reset-forgets-watching",
+                   test_reset_forgets_watching);
+    qtest_add_func("sn1/directory-state/loadvm-forgets-watching",
+                   test_loadvm_forgets_watching);
     qtest_add_func("sn1/directory-state/page-is-watched",
                    test_page_is_watched);
     qtest_add_func("sn1/directory-state/owner-from-the-word",
