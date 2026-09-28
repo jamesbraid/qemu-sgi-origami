@@ -7552,6 +7552,179 @@ static void test_gl_matrix_stack_holds_32(void)
     g_assert_cmphex(gl_window_pixel(qts, 1, 10), ==, 0xffffff);
 }
 
+/*
+ * The probe's primitive, transform and format cases (Origami branch
+ * mgras-probes-primitives, gl_min_probe.c's prim_cases), sent as the
+ * IRIX 6.5.30 client frames them: glViewport, glDisable(GL_DITHER)
+ * (0x6704 + 0), glShadeModel(GL_FLAT), a blue clear, glOrtho(0, 128, 0,
+ * 128, -1, 1) on the projection, then the case's matrix commands and
+ * primitives in order, then glFlush. Each window must match the image
+ * gl_min_expected.py computes from the OpenGL 1.1 rules, which Mesa
+ * llvmpipe matches exactly; the SHA-256 is of its 128x128 RGB bytes, top
+ * row first, never of this model's output.
+ */
+enum {
+    GL_PRIM_END, GL_PRIM_DRAW, GL_PRIM_PUSH, GL_PRIM_POP, GL_PRIM_TRANSLATE,
+    GL_PRIM_ROTATE, GL_PRIM_SCALE,
+};
+enum {
+    GL_PRIM_FLOAT, GL_PRIM_COLOR3UB, GL_PRIM_COLOR4UB, GL_PRIM_VERTEX2I,
+};
+
+typedef struct GlPrimOp {
+    int op;
+    float arg[4];
+} GlPrimOp;
+
+typedef struct GlPrimVertex {
+    float x, y;
+    uint8_t rgb[3];
+} GlPrimVertex;
+
+typedef struct GlPrimCase {
+    const char *name;
+    const char *sha256;
+    uint32_t begin;
+    int format;
+    GlPrimOp op[6];
+    int count;
+    GlPrimVertex v[8];
+} GlPrimCase;
+
+#define GL_DITHER_HDR         0x00006704
+/* glBegin's token; glEnd's is 0x0a00 above it (mgras-gl-commands.md). */
+#define GL_BEGIN_POINTS       0x00001600
+#define GL_BEGIN_LINES        0x00001700
+#define GL_BEGIN_LINE_STRIP   0x00001800
+#define GL_BEGIN_LINE_LOOP    0x00001900
+#define GL_BEGIN_TRI_STRIP    0x00001b00
+#define GL_BEGIN_TRI_FAN      0x00001c00
+#define GL_BEGIN_QUADS        0x00001d00
+#define GL_BEGIN_QUAD_STRIP   0x00001e00
+#define GL_BEGIN_POLYGON      0x00001f00
+#define GL_END_OF(begin)      ((begin) + 0x0a00)
+
+static const GlPrimCase gl_prim_cases[] = {
+    { "push-pop",
+      "e5b12c008b2c481baf89277d4c29f7ac858fa1c4baee90be25f6ad8b78dc63e2",
+      GL_BEGIN_TRIANGLES, GL_PRIM_FLOAT,
+      { { GL_PRIM_PUSH }, { GL_PRIM_TRANSLATE, { 60, 50, 0 } },
+        { GL_PRIM_DRAW }, { GL_PRIM_POP }, { GL_PRIM_DRAW } }, 3,
+      { { 10.03125f, 10.09375f, { 255, 255, 0 } },
+        { 50.03125f, 20.09375f, { 255, 255, 0 } },
+        { 20.03125f, 55.09375f, { 255, 255, 0 } } } },
+    { "rotate",
+      "8b3d9083f192fb194c6cfe36d1a550caa2cc9829181d68149f0e9af144cdb704",
+      GL_BEGIN_TRIANGLES, GL_PRIM_FLOAT,
+      { { GL_PRIM_TRANSLATE, { 64.5625f, 60.5f, 0 } },
+        { GL_PRIM_ROTATE, { 30, 0, 0, 2 } }, { GL_PRIM_DRAW } }, 3,
+      { { -20, -10, { 255, 255, 0 } }, { 25, -15, { 255, 255, 0 } },
+        { 0, 30, { 255, 255, 0 } } } },
+    { "scale",
+      "91af7b3f7722ad9aaf7e1987b8fb96d9dba646f95144fc90c9ac2c7bbf9ace8a",
+      GL_BEGIN_TRIANGLES, GL_PRIM_FLOAT,
+      { { GL_PRIM_TRANSLATE, { 10, 15.625f, 0 } },
+        { GL_PRIM_SCALE, { 1.5f, 0.75f, 1 } }, { GL_PRIM_DRAW } }, 3,
+      { { 0, 0, { 255, 255, 0 } }, { 70, 10, { 255, 255, 0 } },
+        { 20, 120, { 255, 255, 0 } } } },
+    { "color3ub",
+      "d09bf68e85017e80d767dd08a9495b9236a1d0e3cd023205ff1f26745b51e31b",
+      GL_BEGIN_TRIANGLES, GL_PRIM_COLOR3UB, { { GL_PRIM_DRAW } }, 6,
+      { { 10, 10.3125f, { 0, 0, 0 } }, { 60, 20.3125f, { 0, 0, 0 } },
+        { 20, 60.3125f, { 255, 128, 1 } }, { 70, 60.3125f, { 0, 0, 0 } },
+        { 120, 70.3125f, { 0, 0, 0 } }, { 80, 120.3125f, { 64, 192, 32 } } } },
+    { "color4ub",
+      "c04cac041e808b0c99e96cf4e3611512b18bdaac742cb6ad0934fda0058e5929",
+      GL_BEGIN_TRIANGLES, GL_PRIM_COLOR4UB, { { GL_PRIM_DRAW } }, 6,
+      { { 10, 10.3125f, { 0, 0, 0 } }, { 60, 20.3125f, { 0, 0, 0 } },
+        { 20, 60.3125f, { 32, 64, 192 } }, { 70, 60.3125f, { 0, 0, 0 } },
+        { 120, 70.3125f, { 0, 0, 0 } },
+        { 80, 120.3125f, { 200, 100, 50 } } } },
+    { "vertex2i",
+      "d18b98ea09eb97c0803ac05d5c8fcb55d329817c833e3d3cd2679a355ecadf0f",
+      GL_BEGIN_TRIANGLES, GL_PRIM_VERTEX2I, { { GL_PRIM_DRAW } }, 3,
+      { { 30, 40, { 255, 255, 0 } }, { 70, 50, { 255, 255, 0 } },
+        { 40, 85, { 255, 255, 0 } } } },
+};
+
+static void gl_prim_draw(QTestState *qts, const GlPrimCase *c)
+{
+    gl_word(qts, c->begin);
+    for (int i = 0; i < c->count; i++) {
+        const GlPrimVertex *v = &c->v[i];
+        uint32_t bytes = (v->rgb[0] << 24) | (v->rgb[1] << 16) |
+                         (v->rgb[2] << 8);
+
+        switch (c->format) {
+        case GL_PRIM_COLOR3UB:
+            gl_one(qts, GL_COLOR3UB_HDR, bytes);
+            break;
+        case GL_PRIM_COLOR4UB:
+            gl_one(qts, GL_COLOR4UB_HDR, bytes | 0xff);
+            break;
+        default:
+            gl_color3f(qts, v->rgb[0] / 255.0f, v->rgb[1] / 255.0f,
+                       v->rgb[2] / 255.0f);
+            break;
+        }
+        if (c->format == GL_PRIM_VERTEX2I) {
+            gl_word(qts, GL_VERTEX2I_HDR);
+            gl_word(qts, (int32_t)v->x);
+            gl_word(qts, (int32_t)v->y);
+        } else {
+            gl_vertex2f(qts, v->x, v->y);
+        }
+    }
+    gl_word(qts, GL_END_OF(c->begin));
+}
+
+static void test_gl_prim_matches_the_reference(const void *data)
+{
+    const GlPrimCase *c = data;
+    g_autofree uint32_t *rgb = NULL;
+
+    mgras_reset();
+    mgras_enter_gl_window(qts, 256, 640, 128, 128, 0x11);
+    qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x1e, 0x4));
+    gl_viewport(qts, 0, 0, 128, 128);
+    gl_one(qts, GL_DITHER_HDR, 0);
+    gl_one(qts, GL_SHADE_MODEL_HDR, GL_FLAT);
+    gl_clear_color(qts, 0, 0, 1, 1);
+    gl_word(qts, GL_CLEAR_COLOR_BUFFER);
+    gl_window_projection(qts);
+    gl_one(qts, GL_MATRIX_MODE_HDR, GL_MODELVIEW);
+    for (int i = 0; i < ARRAY_SIZE(c->op) && c->op[i].op != GL_PRIM_END;
+         i++) {
+        const GlPrimOp *op = &c->op[i];
+
+        switch (op->op) {
+        case GL_PRIM_PUSH:
+            gl_word(qts, GL_PUSH_MATRIX);
+            break;
+        case GL_PRIM_POP:
+            gl_word(qts, GL_POP_MATRIX);
+            break;
+        case GL_PRIM_TRANSLATE:
+            gl_three(qts, GL_TRANSLATE_HDR, op->arg[0], op->arg[1],
+                     op->arg[2]);
+            break;
+        case GL_PRIM_SCALE:
+            gl_three(qts, GL_SCALE_HDR, op->arg[0], op->arg[1], op->arg[2]);
+            break;
+        case GL_PRIM_ROTATE:
+            gl_rotate(qts, op->arg[0], op->arg[1], op->arg[2], op->arg[3]);
+            break;
+        default:
+            gl_prim_draw(qts, c);
+            break;
+        }
+    }
+    gl_word(qts, GL_FLUSH);
+    rgb = mgras_screendump(qts);
+    gl_check_window_sha256(rgb, c->sha256);
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+}
+
 static void test_hq_flags_fence_token_sets_bit(void)
 {
     mgras_reset();
@@ -9597,6 +9770,13 @@ int main(int argc, char **argv)
                    test_gl_push_and_pop_restore_the_matrix);
     qtest_add_func("sn0/origin2000/mgras/gl-matrix-stack-holds-32",
                    test_gl_matrix_stack_holds_32);
+    for (size_t i = 0; i < ARRAY_SIZE(gl_prim_cases); i++) {
+        g_autofree char *path = g_strdup_printf(
+            "sn0/origin2000/mgras/gl-reference/%s", gl_prim_cases[i].name);
+
+        qtest_add_data_func(path, &gl_prim_cases[i],
+                            test_gl_prim_matches_the_reference);
+    }
     qtest_add_func("sn0/origin2000/mgras/gl-triangle-spans-a-context-switch",
                    test_gl_triangle_spans_a_context_switch);
     qtest_add_func("sn0/origin2000/mgras/hq-flags-set-and-clear",
