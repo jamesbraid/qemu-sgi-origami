@@ -5193,6 +5193,26 @@ static void test_an_explicit_population_selects_the_other_children(
     qtest_quit(qts);
 }
 
+/*
+ * A chip released while the machine keeps running takes its keyboard and
+ * mouse with it. The fixture realizes an IOC3 fitted with only the PS/2
+ * controller, unparents it, and drains the deferred bus-child frees before
+ * this test's first command (tests/qtest/ioc3-release-fixture.c). A PS/2
+ * device left behind on a bus the chip does not own is freed with the chip
+ * and then released again by that bus, which a sanitizer build reports as a
+ * use-after-free and which kills the machine before the query below.
+ */
+static void test_a_released_chip_takes_its_ps2_devices(const void *data)
+{
+    QTestState *qts = qtest_init(
+        "-M none -display none -device sgi-ioc3-release-fixture,id=release");
+
+    g_assert_true(ioc3_has_child(qts, "/machine/peripheral/release", "chip"));
+    g_assert_false(ioc3_has_child(qts, "/machine/peripheral/release",
+                                  "ioc3"));
+    qtest_quit(qts);
+}
+
 static void assert_qemu_rejects(const char *const args[], const char *message)
 {
     g_autofree char *error_output = NULL;
@@ -5494,6 +5514,8 @@ int main(int argc, char **argv)
                         test_an_explicit_population_is_independent_of_identity);
     qtest_add_data_func("sn0/ioc3/population-selects-other-children", NULL,
                         test_an_explicit_population_selects_the_other_children);
+    qtest_add_data_func("sn0/ioc3/released-chip-takes-its-ps2-devices", NULL,
+                        test_a_released_chip_takes_its_ps2_devices);
     qtest_add_data_func("sn0/ioc3/population-rejects-onewire-without-ethernet",
                         NULL,
                         test_population_rejects_onewire_without_ethernet);

@@ -71,7 +71,8 @@ mips_ss.add(when: 'CONFIG_SGI_PCI_SHOEHORN',
             if_true: files('sgi/board-pci-shoehorn.c'))
 # Likewise for the board fixture: see the comment above.
 mips_ss.add(when: 'CONFIG_SGI_BOARD_TEST',
-            if_true: files('../../tests/qtest/board-test-fixture.c'))
+            if_true: files('../../tests/qtest/board-test-fixture.c',
+                           '../../tests/qtest/ioc3-release-fixture.c'))
 subdir('sgi')
 mips_ss.add(when: 'CONFIG_FULOONG', if_true: files('fuloong2e.c'))
 mips_ss.add(when: 'CONFIG_MIPS_BOSTON', if_true: files('boston.c'))
