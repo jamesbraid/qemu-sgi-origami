@@ -6,6 +6,7 @@
 """Require eg0 to reassemble a peer datagram and transmit one UDP datagram."""
 
 import os
+import re
 import socket
 import subprocess
 import time
@@ -55,7 +56,7 @@ def _host_cksum(payload):
     return int(fields[0]), int(fields[1])
 
 
-def _guest_tx_script():
+def _guest_tx_script(done=GUEST_TX_DONE):
     return f'''#!/usr/bin/perl
 use strict;
 use Socket;
@@ -68,11 +69,12 @@ my $destination = sockaddr_in({PEER_RX_PORT}, inet_aton("{PEER_IP}"));
 my $sent = send(SOCKET, $payload, 0, $destination);
 die "short UDP send" unless defined($sent) and $sent == length($payload);
 close(SOCKET) or die "$!";
-print "{GUEST_TX_DONE}\\n";
+print "{done}\\n";
 '''
 
 
-def _guest_rx_script():
+def _guest_rx_script(ready=GUEST_RX_READY, done=GUEST_RX_DONE,
+                    path=GUEST_RX_DATA, source_marker="QEMU_EG_FRAG_RX_SOURCE"):
     return f'''#!/usr/bin/perl
 use strict;
 use Socket;
@@ -80,19 +82,146 @@ $| = 1;
 socket(SOCKET, PF_INET, SOCK_DGRAM, getprotobyname("udp")) or die "$!";
 bind(SOCKET, sockaddr_in({GUEST_RX_PORT}, inet_aton("{GUEST_IP}")))
     or die "$!";
-print "{GUEST_RX_READY}\\n";
+print "{ready}\\n";
 my $payload = "";
 my $source = recv(SOCKET, $payload, 65535, 0);
 die "UDP receive failed: $!" unless defined($source);
 my ($source_port, $source_addr) = sockaddr_in($source);
-print "QEMU_EG_FRAG_RX_SOURCE=" . inet_ntoa($source_addr) . ":$source_port\\n";
+print "{source_marker}=" . inet_ntoa($source_addr) . ":$source_port\\n";
 close(SOCKET) or die "$!";
-open(PAYLOAD, ">{GUEST_RX_DATA}") or die "$!";
+open(PAYLOAD, ">{path}") or die "$!";
 binmode(PAYLOAD);
 print PAYLOAD $payload or die "$!";
 close(PAYLOAD) or die "$!";
-print "{GUEST_RX_DONE}\\n";
+print "{done}\\n";
 '''
+
+
+
+def run_bidirectional_fragmented_udp(test, adapter, device_model,
+                                    configured_mac):
+    """Run the native fragmented UDP exchange against one SGI adapter."""
+    guest_tx_path = GUEST_TX_PATH.replace("eg", adapter)
+    guest_rx_path = GUEST_RX_PATH.replace("eg", adapter)
+    guest_rx_data = GUEST_RX_DATA.replace("eg", adapter)
+    tx_done = GUEST_TX_DONE.replace("EG", adapter.upper())
+    rx_ready = GUEST_RX_READY.replace("EG", adapter.upper())
+    rx_done = GUEST_RX_DONE.replace("EG", adapter.upper())
+    source_marker = f"QEMU_{adapter.upper()}_FRAG_RX_SOURCE"
+    prom = test.ASSET_FIRMWARE.fetch()
+    disk = test.ASSET_DISK.fetch()
+    if file_sha256(prom) != PROM_SHA256:
+        test.fail("6.5.30 PROM SHA-256 mismatch")
+    test.require_netdev("socket")
+
+    peer, qemu_socket = socket.socketpair(
+        socket.AF_UNIX, socket.SOCK_DGRAM)
+    con = None
+    try:
+        vm = test.get_vm(name=f"irix_{adapter}_frag")
+        vm.set_machine(MACHINES["origin200"])
+        vm.set_console()
+        qemu_socket.set_inheritable(True)
+        vm.add_args(
+            "-cpu", "R10000", "-smp", "1", "-m", "128M",
+            "-bios", prom, "-audio", "none",
+            "-chardev", f"file,id=elsc,path={test.log_file('elsc.log')}",
+            "-serial", "none", "-serial", "chardev:elsc",
+            "-drive", f"if=none,id=disk0,file={disk},format=qcow2",
+            "-device", "scsi-hd,bus=scsi.0,scsi-id=1,lun=0,drive=disk0",
+            "-snapshot", "-nic", "none",
+            "-netdev", f"socket,id=netdev,fd={qemu_socket.fileno()}",
+            "-device", (f"{device_model},netdev=netdev,addr=4,mac="
+                        f"{configured_mac.hex(':')}")
+        )
+        vm.launch()
+        qemu_socket.close()
+        con = IrixConsole(vm.console_socket,
+                          test.log_file(f"irix-{adapter}-frag-console.log"),
+                          exited=lambda: vm.exitcode() is not None)
+        drive_irix_to_shell(con, BOOT_TIMEOUT_SECONDS)
+        if adapter == "eg":
+            test.assertEqual(con.run("egconfig -f 1 eg0", "egconfig",
+                                     STEP_TIMEOUT_SECONDS), 0)
+            guest_ifname = "eg0"
+        else:
+            guest_ifname = "tg1"
+        test.assertEqual(con.run(
+            f"ifconfig {guest_ifname} inet {GUEST_IP} "
+            "netmask 0xffffff00 up", "ifup", STEP_TIMEOUT_SECONDS), 0)
+        if adapter == "tg":
+            con.expect(rb"tg1: Link up[^\r\n]*", 180,
+                       what="the tg1 link-up notice")
+        con.capture_value(f"ifconfig {guest_ifname}", "ifcheck",
+                          rb"(UP)[,>]", STEP_TIMEOUT_SECONDS)
+        # Install the peer mapping so the guest's outbound datagram uses
+        # the same raw socket peer as the injected inbound fragments.
+        test.assertEqual(con.run(
+            f"arp -s {PEER_IP} {PEER_MAC.hex(':')}", "arpentry",
+            STEP_TIMEOUT_SECONDS), 0)
+
+        test._stage_guest_script(con, guest_tx_path, _guest_tx_script(tx_done),
+                                 "txscript")
+        con.run(f"perl {guest_tx_path} & true", "txlaunch", 30)
+        con.expect(tx_done.encode(), FRAGMENT_TIMEOUT_SECONDS,
+                   what="guest UDP sender completion")
+        guest_frames, guest_fragment_count = test._receive_guest_fragments(
+            peer)
+        test._assert_guest_fragment_mtu(guest_frames)
+        test.assertGreaterEqual(guest_fragment_count, 2)
+        source_macs = {
+            frame[6:12] for frame in guest_frames
+            if (fragment := parse_ipv4_udp_fragment(frame)) is not None
+            and fragment["src_ip"] == GUEST_IP
+            and fragment["dst_ip"] == PEER_IP
+        }
+        test.assertEqual(len(source_macs), 1,
+                         "guest fragments used inconsistent Ethernet sources")
+        guest_mac = source_macs.pop()
+        test.assertNotEqual(guest_mac, bytes(6),
+                            "guest fragment source MAC is zero")
+        test.assertEqual(guest_mac[0] & 1, 0,
+                         "guest fragment source MAC is multicast")
+        if adapter == "eg":
+            test.assertEqual(guest_mac, configured_mac,
+                             "eg fragment source differs from configured MAC")
+
+        test.assertEqual(con.run(f"rm -f {guest_rx_data}", "rxrm",
+                                 STEP_TIMEOUT_SECONDS), 0)
+        test._stage_guest_script(
+            con, guest_rx_path,
+            _guest_rx_script(rx_ready, rx_done, guest_rx_data, source_marker),
+            "rxscript")
+        con.run(f"perl {guest_rx_path} & true", "rxlaunch", 30)
+        con.expect(rx_ready.encode(), FRAGMENT_TIMEOUT_SECONDS,
+                   what="guest UDP receiver readiness")
+
+        peer_frames = build_udp_fragments(
+            PEER_MAC, guest_mac, PEER_IP, GUEST_IP,
+            PEER_TX_PORT, GUEST_RX_PORT, PEER_PAYLOAD, mtu=1500,
+            ident=0x4f52)
+        test.assertGreaterEqual(len(peer_frames), 2)
+        for frame in peer_frames:
+            peer.send(frame)
+        con.expect(re.escape(source_marker + "=10.0.2.2:51102").encode(),
+                   FRAGMENT_TIMEOUT_SECONDS,
+                   what="guest UDP sender address and port")
+        con.expect(rx_done.encode(), FRAGMENT_TIMEOUT_SECONDS,
+                   what="guest UDP receiver completion")
+
+        guest_crc, guest_size = con.two_values(
+            f"cksum {guest_rx_data}", "rxcksum",
+            rf"(\d+)\s+(\d+)\s+{re.escape(guest_rx_data)}".encode(),
+            STEP_TIMEOUT_SECONDS)
+        guest_crc = int(guest_crc)
+        host_crc, host_size = _host_cksum(PEER_PAYLOAD)
+        test.assertEqual((guest_crc, guest_size), (host_crc, host_size),
+                         "guest received UDP datagram differs from peer")
+    finally:
+        if con is not None:
+            con.close()
+        peer.close()
+        qemu_socket.close()
 
 
 class IrixEgFrag(QemuSystemTest):
@@ -103,95 +232,7 @@ class IrixEgFrag(QemuSystemTest):
     @skipSlowTest()
     @skipIfMissingEnv("QEMU_TEST_SGI_ASSET_DIR")
     def test_bidirectional_fragmented_udp(self):
-        prom = self.ASSET_FIRMWARE.fetch()
-        disk = self.ASSET_DISK.fetch()
-        if file_sha256(prom) != PROM_SHA256:
-            self.fail("6.5.30 PROM SHA-256 mismatch")
-        self.require_netdev("socket")
-
-        peer, qemu_socket = socket.socketpair(
-            socket.AF_UNIX, socket.SOCK_DGRAM)
-        con = None
-        try:
-            vm = self.get_vm(name="irix_eg_frag")
-            vm.set_machine(MACHINES["origin200"])
-            vm.set_console()
-            qemu_socket.set_inheritable(True)
-            vm.add_args(
-                "-cpu", "R10000", "-smp", "1", "-m", "128M",
-                "-bios", prom, "-audio", "none",
-                "-chardev", f"file,id=elsc,path={self.log_file('elsc.log')}",
-                "-serial", "none", "-serial", "chardev:elsc",
-                "-drive", f"if=none,id=disk0,file={disk},format=qcow2",
-                "-device", "scsi-hd,bus=scsi.0,scsi-id=1,lun=0,drive=disk0",
-                "-snapshot", "-nic", "none",
-                "-netdev", f"socket,id=egnet,fd={qemu_socket.fileno()}",
-                "-device", (f"tigon,netdev=egnet,addr=4,mac="
-                            f"{GUEST_MAC.hex(':')}")
-            )
-            vm.launch()
-            qemu_socket.close()
-            con = IrixConsole(vm.console_socket,
-                              self.log_file("irix-eg-frag-console.log"),
-                              exited=lambda: vm.exitcode() is not None)
-            drive_irix_to_shell(con, BOOT_TIMEOUT_SECONDS)
-            self.assertEqual(con.run("egconfig -f 1 eg0", "egconfig",
-                                     STEP_TIMEOUT_SECONDS), 0)
-            self.assertEqual(con.run(
-                f"ifconfig eg0 inet {GUEST_IP} netmask 0xffffff00 up",
-                "ifup", STEP_TIMEOUT_SECONDS), 0)
-            con.capture_value("ifconfig eg0", "ifcheck", rb"(UP)[,>]",
-                              STEP_TIMEOUT_SECONDS)
-            # Install the peer mapping so the guest's outbound datagram uses
-            # the same raw socket peer as the injected inbound fragments.
-            self.assertEqual(con.run(
-                f"arp -s {PEER_IP} {PEER_MAC.hex(':')}", "arpentry",
-                STEP_TIMEOUT_SECONDS), 0)
-
-            self._stage_guest_script(con, GUEST_TX_PATH, _guest_tx_script(),
-                                     "txscript")
-            con.run(f"perl {GUEST_TX_PATH} & true", "txlaunch", 30)
-            con.expect(GUEST_TX_DONE.encode(), FRAGMENT_TIMEOUT_SECONDS,
-                       what="guest UDP sender completion")
-            guest_frames, guest_fragment_count = self._receive_guest_fragments(
-                peer)
-            self._assert_guest_fragment_mtu(guest_frames)
-            self.assertGreaterEqual(guest_fragment_count, 2)
-
-            self.assertEqual(con.run(f"rm -f {GUEST_RX_DATA}", "rxrm",
-                                     STEP_TIMEOUT_SECONDS), 0)
-            self._stage_guest_script(con, GUEST_RX_PATH, _guest_rx_script(),
-                                     "rxscript")
-            con.run(f"perl {GUEST_RX_PATH} & true", "rxlaunch", 30)
-            con.expect(GUEST_RX_READY.encode(), FRAGMENT_TIMEOUT_SECONDS,
-                       what="guest UDP receiver readiness")
-
-            peer_frames = build_udp_fragments(
-                PEER_MAC, GUEST_MAC, PEER_IP, GUEST_IP,
-                PEER_TX_PORT, GUEST_RX_PORT, PEER_PAYLOAD, mtu=1500,
-                ident=0x4f52)
-            self.assertGreaterEqual(len(peer_frames), 2)
-            for frame in peer_frames:
-                peer.send(frame)
-            con.expect(rb"QEMU_EG_FRAG_RX_SOURCE=10\.0\.2\.2:51102",
-                       FRAGMENT_TIMEOUT_SECONDS,
-                       what="guest UDP sender address and port")
-            con.expect(GUEST_RX_DONE.encode(), FRAGMENT_TIMEOUT_SECONDS,
-                       what="guest UDP receiver completion")
-
-            guest_crc, guest_size = con.two_values(
-                f"cksum {GUEST_RX_DATA}", "rxcksum",
-                rb"(\d+)\s+(\d+)\s+/var/tmp/qemu-eg-frag-rx\.bin",
-                STEP_TIMEOUT_SECONDS)
-            guest_crc = int(guest_crc)
-            host_crc, host_size = _host_cksum(PEER_PAYLOAD)
-            self.assertEqual((guest_crc, guest_size), (host_crc, host_size),
-                             "guest received UDP datagram differs from peer")
-        finally:
-            if con is not None:
-                con.close()
-            peer.close()
-            qemu_socket.close()
+        run_bidirectional_fragmented_udp(self, "eg", "tigon", GUEST_MAC)
 
     @staticmethod
     def _stage_guest_script(con, path, script, tag):
