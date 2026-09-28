@@ -109,6 +109,29 @@ SPD files. The installed-guest tests pin their disk inputs:
      - The IP35 PROM, both SPD files, and
        ``irix/6.5.30/root-diags-origin300.qcow2`` (SHA-256
        ``150cf2c125cb3bd55764acfeec00804899ff3140cc536cf63a254765faa29390``)
+   * - ``func-mips64-sn_reset`` — SN0 reset cases
+     - No supplied assets
+   * - ``func-mips64-sn_reset`` — SN1 L1 reset and power-down cases
+     - ``firmware/6.5.30/ip35prom.payload.bin``
+   * - ``func-mips64-origin200_gigachannel_prom`` — flash case
+       (``Origin200GigachannelPromFlash``)
+     - The IP27 PROM and ``firmware/6.5.30/io6prom.img``
+   * - ``func-mips64-origin200_gigachannel_prom`` — cabinet fallback
+       and loopback cases
+       (``Origin200GigachannelProm``)
+     - The IP27 PROM
+   * - ``func-mips64-prom_diagnostics``
+     - The IP27 PROM and ``boot/6.5.30/sash64``
+   * - ``func-mips64-prom_pod``
+     - ``firmware/6.5-base/ip27prom.payload.bin``
+   * - ``func-mips64-prom_fx``
+     - The 6.5.30 IP27 PROM and ``boot/6.5-base/fx.64``
+   * - ``func-mips64-prom_mdk`` and ``func-mips64-prom_mdk_instgen``
+     - The IP27 PROM and ``boot/mdk/cpu.mdk``
+   * - ``func-mips64-prom_mdk_memory``
+     - The IP27 PROM and ``boot/mdk/memory.mdk``
+   * - ``func-mips64-prom_mdk_router``
+     - The IP27 PROM and ``boot/mdk/MDK_router_sso``
 
 Both installed-guest cases use QEMU's ``skipSlowTest`` and
 ``skipBigDataTest`` decorators. Run them with ``QEMU_TEST_ALLOW_SLOW=1`` and
