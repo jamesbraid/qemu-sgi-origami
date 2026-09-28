@@ -778,6 +778,122 @@ static void test_xbow_baseio_link_reset(void)
 }
 
 /*
+ * A warm reset sent by a Hub's link control register, bit 8, reaches the
+ * Crossbow, which resets its whole core and sends a reset down every link
+ * (Crossbow specification rev 12.0, "Reset of Device", printed pages
+ * 132-133): its registers are back at their reset values and the BaseIO
+ * Bridge's core is reset, while the links that came up with the machine
+ * stay alive. A second warm reset inside 1024 core cycles is ignored.
+ */
+#define HUB_IO_LINK_CONTROL      0x400128
+#define HUB_IO_LINK_WARM_RESET   0x100
+/* 1024 cycles of the 100 MHz core clock (printed page 99). */
+#define XBOW_WARM_RESET_QUIET_NS (1024 * 10)
+
+static void hub_warm_reset(QTestState *qts)
+{
+    hub_write(qts, 0, HUB_IO_LINK_CONTROL,
+              hub_read(qts, 0, HUB_IO_LINK_CONTROL) | HUB_IO_LINK_WARM_RESET);
+}
+
+static void test_hub_warm_reset_resets_the_crossbow(void)
+{
+    QTestState *qts = start_control_module("");
+
+    qtest_qmp_assert_success(qts, "{ 'execute': 'cont' }");
+    xbow_write(qts, XBOW_INT_LOWER, 0x1234);
+    baseio_write(qts, BRIDGE_CONTROL, 0);
+    g_assert_cmphex(xbow_read(qts, XBOW_INT_LOWER), ==, 0x1234);
+
+    hub_warm_reset(qts);
+    g_assert_cmphex(xbow_read(qts, XBOW_INT_LOWER), ==, 0);
+    g_assert_cmphex(baseio_read(qts, BRIDGE_CONTROL), ==, BRIDGE_CONTROL_RESET);
+    g_assert_cmphex(xbow_read(qts, XBOW_LINK8_STATUS) & XBOW_LINK_ALIVE,
+                    ==, XBOW_LINK_ALIVE);
+
+    /* Inside the quiet window nothing resets, the Bridge included. */
+    xbow_write(qts, XBOW_INT_LOWER, 0x1234);
+    baseio_write(qts, BRIDGE_CONTROL, 0);
+    qtest_clock_step(qts, XBOW_WARM_RESET_QUIET_NS - 1);
+    hub_warm_reset(qts);
+    g_assert_cmphex(xbow_read(qts, XBOW_INT_LOWER), ==, 0x1234);
+    g_assert_cmphex(baseio_read(qts, BRIDGE_CONTROL), ==, 0);
+
+    qtest_clock_step(qts, 1);
+    hub_warm_reset(qts);
+    g_assert_cmphex(xbow_read(qts, XBOW_INT_LOWER), ==, 0);
+    g_assert_cmphex(baseio_read(qts, BRIDGE_CONTROL), ==, BRIDGE_CONTROL_RESET);
+    qtest_quit(qts);
+}
+
+/*
+ * The warm reset goes out on every link, the one it came in by included
+ * ("assert a SendWarmReset to all LLPt's in the Crossbow", printed page
+ * 133): one pulse on each link's reset line.
+ */
+static void test_hub_warm_reset_reaches_every_link(void)
+{
+    QTestState *qts = start_control_module("");
+    unsigned int link;
+
+    qtest_qmp_assert_success(qts, "{ 'execute': 'cont' }");
+    qtest_irq_intercept_out_named(qts, CROSSBOW0, "link-reset");
+    hub_warm_reset(qts);
+    for (link = 0; link < 8; link++) {
+        g_assert_cmpuint(qtest_get_irq_raise_count(qts, link), ==, 1);
+    }
+    qtest_quit(qts);
+}
+
+/*
+ * An interrupt the Crossbow has asserted at a Hub stays pending there
+ * across a warm reset: the core forgets it and sends no interrupt-off, so
+ * software clears the Hub's bit itself.
+ */
+#define HUB_PI_INT_MODIFY        0x90
+
+static void test_hub_warm_reset_leaves_the_hub_pending_bit(void)
+{
+    QTestState *qts = start_control_module("");
+
+    qtest_qmp_assert_success(qts, "{ 'execute': 'cont' }");
+    xbow_write(qts, XBOW_INT_UPPER,
+               XBOW_INT_UPPER_VECTOR(16) |
+               XBOW_INT_UPPER_TARGET(LOCAL_HUB_WIDGET) |
+               XBOW_INT_UPPER_IO_ADDRESS);
+    xbow_write(qts, XBOW_INT_LOWER, HUB_PACKET_INT_MODIFY);
+    xbow_write(qts, XBOW_CONTROL, XBOW_CONTROL_ACCESS_ENABLE);
+    xbow_write(qts, XBOW_ERR_UPPER, 0);
+    g_assert_cmphex(hub_read(qts, 0, HUB_PI_INT_PEND0), ==, 1u << 16);
+
+    hub_warm_reset(qts);
+    g_assert_cmphex(xbow_read(qts, XBOW_STATUS), ==, 0);
+    g_assert_cmphex(xbow_read(qts, XBOW_CONTROL), ==, 0);
+    g_assert_cmphex(hub_read(qts, 0, HUB_PI_INT_PEND0), ==, 1u << 16);
+
+    hub_write(qts, 0, HUB_PI_INT_MODIFY, 16);
+    g_assert_cmphex(hub_read(qts, 0, HUB_PI_INT_PEND0), ==, 0);
+    qtest_quit(qts);
+}
+
+/*
+ * A machine reset ends the quiet window: the first warm reset after it
+ * resets the Crossbow however soon it comes.
+ */
+static void test_system_reset_ends_the_warm_reset_window(void)
+{
+    QTestState *qts = start_control_module("");
+
+    qtest_qmp_assert_success(qts, "{ 'execute': 'cont' }");
+    hub_warm_reset(qts);
+    qtest_system_reset(qts);
+    xbow_write(qts, XBOW_INT_LOWER, 0x1234);
+    hub_warm_reset(qts);
+    g_assert_cmphex(xbow_read(qts, XBOW_INT_LOWER), ==, 0);
+    qtest_quit(qts);
+}
+
+/*
  * A link the machine restores keeps carrying traffic while its reset pulse
  * runs; only its status shows the pulse. The pulse ends on a timer, and under
  * multi-threaded TCG a loaded host ran that timer milliseconds of guest time
@@ -2377,6 +2493,14 @@ int main(int argc, char **argv)
                    test_xbow_absent_links);
     qtest_add_func("sn0/origin2000/xbow-baseio-link-reset",
                    test_xbow_baseio_link_reset);
+    qtest_add_func("sn0/origin2000/hub-warm-reset-resets-the-crossbow",
+                   test_hub_warm_reset_resets_the_crossbow);
+    qtest_add_func("sn0/origin2000/hub-warm-reset-reaches-every-link",
+                   test_hub_warm_reset_reaches_every_link);
+    qtest_add_func("sn0/origin2000/hub-warm-reset-leaves-the-hub-pending-bit",
+                   test_hub_warm_reset_leaves_the_hub_pending_bit);
+    qtest_add_func("sn0/origin2000/system-reset-ends-the-warm-reset-window",
+                   test_system_reset_ends_the_warm_reset_window);
     qtest_add_func("sn0/origin2000/xbow-link-reset-route-stays-open",
                    test_xbow_link_reset_route_stays_open);
     qtest_add_func("sn0/origin2000/xbow-link-reset-interrupt-delivered",

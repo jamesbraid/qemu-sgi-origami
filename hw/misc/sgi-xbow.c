@@ -158,11 +158,16 @@
                                      XBOW_FIRST_ILLEGAL_WIDGET)
 
 /*
- * Two Crossbow core cycles of link reset, at the nominal 100 MHz core the
- * specification derives from the transmit clock. This is the pulse width, not
- * a bound on how long link initialization takes.
+ * "The majority of the Crossbow operates off single 100 Mhz clock known as
+ * the core_clock" (specification rev 12.0, printed page 99; the block
+ * diagram on page 23 shows the same CoreClk).
  */
-#define XBOW_LINK_RESET_NS          20
+#define XBOW_CORE_CYCLE_NS          10
+/*
+ * Two core cycles of link reset. This is the pulse width, not a bound on
+ * how long link initialization takes.
+ */
+#define XBOW_LINK_RESET_NS          (2 * XBOW_CORE_CYCLE_NS)
 
 static unsigned int sgi_xbow_widget(unsigned int link)
 {
@@ -1342,9 +1347,9 @@ static void sgi_xbow_set_links_alive(Object *obj, Visitor *v, const char *name,
  * vector no hardware could have put there.
  *
  * That argument holds because the target resets alongside this device. A
- * reset of the crossbar alone would leave a peer with a latched interrupt
- * nothing retracts, since a later condition sends a fresh assertion rather
- * than a deassertion. No machine does that today.
+ * reset of the crossbar alone, the warm reset below, leaves a peer with a
+ * latched interrupt nothing retracts, since a later condition sends a
+ * fresh assertion rather than a deassertion; that case is stated there.
  */
 static void sgi_xbow_reset_enter(Object *obj, ResetType type)
 {
@@ -1374,6 +1379,7 @@ static void sgi_xbow_reset_enter(Object *obj, ResetType type)
     s->link_alive = s->link_startup;
     s->link_came_up = s->link_startup;
     s->link_eight_bit = 0;
+    s->warm_reset_quiet_until = 0;
 
     for (link = 0; link < SGI_XBOW_LINKS; link++) {
         timer_del(s->link_reset_timer[link]);
@@ -1384,6 +1390,60 @@ static void sgi_xbow_reset_enter(Object *obj, ResetType type)
         s->link_status[link] = 0;
         s->link_aux_status[link] = 0;
         s->link_event[link] = 0;
+    }
+}
+
+/*
+ * A warm reset arriving on a link (Crossbow specification rev 12.0,
+ * "Reset of Device", printed pages 132-133): "the Crossbow will consider
+ * this a power on reset and reset all core logic. It will also propagate
+ * the reset and assert a SendWarmReset to all LLPt's in the Crossbow."
+ * Each link's far end gets a reset pulse, the originating one included;
+ * a Bridge resets its core, a Hub records it. The resets that come back
+ * as the pulse spreads are what the 1024-cycle quiet window absorbs, so a
+ * warm reset arriving inside it is ignored. The specification gives that
+ * window to each link's LLP; the model keeps one for the whole chip,
+ * which gives the same answer for a single sender and its echoes
+ * (inferred), and counts it in core cycles (inferred: the page does not
+ * name the clock). As at power-on, the links that come up with the
+ * machine are alive again once the core resets.
+ *
+ * An interrupt the Crossbow had asserted is forgotten with the core, and
+ * no interrupt-off packet follows: the specification's reset section
+ * sends none, and a core in reset has no request left to acknowledge. So
+ * the Hub keeps the pending bit the assertion set until software clears
+ * it there. That retained bit is this model's reading of the
+ * specification's silence, not an observation.
+ *
+ * The only sender here is a Hub's link control warm-reset bit (Linux
+ * hubio.h, ILCSR_WARM_RESET). A widget that sends the other pattern, a
+ * link reset, resets only its own port; no modelled widget sends one,
+ * so the input carries a warm reset alone.
+ */
+static void sgi_xbow_warm_reset_in(void *opaque, int line, int level)
+{
+    SGIXbowState *s = opaque;
+    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    unsigned int link;
+
+    if (!level || s->quiesced) {
+        return;
+    }
+    if (!sgi_xio_llp_reset_accepted(&s->warm_reset_quiet_until, now,
+                                    XBOW_CORE_CYCLE_NS)) {
+        qemu_log_mask(LOG_UNIMP, "sgi-xbow: warm reset from widget %u "
+                      "inside the quiet window after the last one; "
+                      "ignored\n", sgi_xbow_widget(line));
+        return;
+    }
+    sgi_xbow_reset_enter(OBJECT(s), RESET_TYPE_COLD);
+    /* The core reset closes the window; this reset has just opened it. */
+    s->warm_reset_quiet_until = now + SGI_XIO_LLP_RESET_QUIET_CYCLES *
+                                      XBOW_CORE_CYCLE_NS;
+    sgi_xbow_sync_routes(s);
+    sgi_xbow_update_interrupt(s);
+    for (link = 0; link < SGI_XBOW_LINKS; link++) {
+        qemu_irq_pulse(s->link_reset[link]);
     }
 }
 
@@ -1651,7 +1711,7 @@ static int sgi_xbow_post_load(void *opaque, int version_id)
 
 static const VMStateDescription vmstate_sgi_xbow = {
     .name = "sgi-xbow",
-    .version_id = 3,
+    .version_id = 4,
     .minimum_version_id = 3,
     .pre_save = sgi_xbow_pre_save,
     .pre_load = sgi_xbow_pre_load,
@@ -1685,6 +1745,7 @@ static const VMStateDescription vmstate_sgi_xbow = {
         VMSTATE_BOOL(interrupt_asserted, SGIXbowState),
         VMSTATE_INT64_ARRAY(link_reset_remaining, SGIXbowState,
                             SGI_XBOW_LINKS),
+        VMSTATE_INT64_V(warm_reset_quiet_until, SGIXbowState, 4),
         VMSTATE_END_OF_LIST()
     }
 };
@@ -1717,6 +1778,8 @@ static void sgi_xbow_instance_init(Object *obj)
 
     qdev_init_gpio_out_named(DEVICE(obj), s->link_reset, "link-reset",
                              SGI_XBOW_LINKS);
+    qdev_init_gpio_in_named(DEVICE(obj), sgi_xbow_warm_reset_in,
+                            "warm-reset", SGI_XBOW_LINKS);
     for (link = 0; link < SGI_XBOW_LINKS; link++) {
         g_autofree char *name =
             g_strdup_printf("target-%x", sgi_xbow_widget(link));
@@ -1825,6 +1888,17 @@ static bool sgi_xbow_xio_port_connect(Object *port, unsigned int index,
                                          peer->packet_face, errp);
 }
 
+/* A warm reset a widget sends arrives on its port's link. */
+static qemu_irq sgi_xbow_xio_port_reset_input(Object *port,
+                                              unsigned int index)
+{
+    if (index < SGI_XBOW_FIRST_WIDGET || index >= SGI_XBOW_WIDGETS) {
+        return NULL;
+    }
+    return qdev_get_gpio_in_named(DEVICE(port), "warm-reset",
+                                  index - SGI_XBOW_FIRST_WIDGET);
+}
+
 /* A port's per-link reset (the link reset register) reaches its widget. */
 static void sgi_xbow_xio_port_reset_output(Object *port, unsigned int index,
                                            qemu_irq target)
@@ -1858,6 +1932,7 @@ static void sgi_xbow_class_init(ObjectClass *oc, const void *data)
     pc->switched = sgi_xbow_xio_port_switched;
     pc->connect = sgi_xbow_xio_port_connect;
     pc->reset_output = sgi_xbow_xio_port_reset_output;
+    pc->reset_input = sgi_xbow_xio_port_reset_input;
 }
 
 static const TypeInfo sgi_xbow_types[] = {

@@ -89,14 +89,35 @@ struct SGIXioPortClass {
 
     /*
      * A link also carries a reset. reset_input() is the line that resets
-     * this port's chip when the far end resets the link (a Bridge's core,
-     * a Hub's link state); reset_output() wires this port's own link
-     * reset, a Crossbow's per-link reset, to the far end's input. A port
-     * without one leaves it NULL.
+     * this port's chip when the far end sends one down the link (a
+     * Bridge's core, a crossbar's whole core, a Hub's link state);
+     * reset_output() wires what this port sends, a crossbar's per-link or
+     * propagated reset or a Hub's warm reset, to the far end's input. A
+     * port without one leaves it NULL.
      */
     qemu_irq (*reset_input)(Object *port, unsigned int index);
     void (*reset_output)(Object *port, unsigned int index, qemu_irq target);
 };
+
+/*
+ * The link layer's guard against reset loops, the same text in the
+ * Crossbow (rev 12.0, printed page 133) and XBridge (rev 0.5, printed page
+ * 122) specifications: "after detecting the first reset pattern, [it]
+ * will ignore all subsequent reset requests for 1024 cycles". True when a
+ * reset arriving at now is the first; it then opens the quiet window.
+ */
+#define SGI_XIO_LLP_RESET_QUIET_CYCLES 1024
+
+static inline bool sgi_xio_llp_reset_accepted(int64_t *quiet_until,
+                                              int64_t now,
+                                              int64_t cycle_ns)
+{
+    if (now < *quiet_until) {
+        return false;
+    }
+    *quiet_until = now + SGI_XIO_LLP_RESET_QUIET_CYCLES * cycle_ns;
+    return true;
+}
 
 const char *sgi_xio_port_describe(Object *port, unsigned int index);
 MemoryRegion *sgi_xio_port_cpu_face(Object *port, unsigned int index);
