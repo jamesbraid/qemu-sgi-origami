@@ -85,12 +85,9 @@ def verdict(transcript, assertions, tripwires=()):
 
 
 # The firmware-boot golden mark: the progress codes a known-good boot
-# reaches, embedded here because a fork test cannot read the project
-# checkout at runtime. Source: tests/golden/firmware-boot-progress-mark in
-# the PROJECT checkout (/home/jamesb/joy/tech/origami, not this fork) --
-# its non-comment data lines, counted directly (47 codes; 0x80 and 0xff
-# appear only in that file's retirement comment and are correctly excluded
-# here, same as boot-gate's own read_mark() excludes them).
+# reaches. This QEMU test pins the 47 data codes from Origami's
+# tests/golden/firmware-boot-progress-mark and does not read that repository
+# at runtime. Its 0x80 and 0xff entries are comments, not data codes.
 MARK = frozenset({
     '0x00', '0x01', '0x02', '0x03', '0x04', '0x05', '0x06', '0x0a',
     '0x0b', '0x0c', '0x0d', '0x0e', '0x0f', '0x1d', '0x1e', '0x24',
