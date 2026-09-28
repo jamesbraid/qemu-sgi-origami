@@ -9,43 +9,97 @@
 #include "hw/display/sgi/command-fetch.h"
 #include "trace.h"
 
-static SGIFetchSegment *sgi_fetch_append(SGICommandFetch *f)
+static uint64_t sgi_fetch_max_words(const SGICommandFetch *f)
 {
-    f->segments = g_renew(SGIFetchSegment, f->segments, f->nsegments + 1);
-    return &f->segments[f->nsegments++];
+    return f->max_words ? f->max_words : SGI_FETCH_MAX_WORDS;
 }
 
-/* Take a range's words in memory order into a new host-order segment. */
-static void sgi_fetch_take(SGICommandFetch *f, const uint8_t *bytes,
-                           uint64_t nwords, uint64_t addr, bool little_endian)
+static unsigned sgi_fetch_max_segments(const SGICommandFetch *f)
 {
-    SGIFetchSegment *seg = sgi_fetch_append(f);
-
-    seg->words = g_new(uint32_t, nwords);
-    seg->nwords = nwords;
-    seg->addr = addr;
-    for (uint64_t i = 0; i < nwords; i++) {
-        seg->words[i] = little_endian ? ldl_le_p(bytes + i * 4) :
-                                        ldl_be_p(bytes + i * 4);
-    }
-    f->nwords += nwords;
+    return f->max_segments ? f->max_segments : SGI_FETCH_MAX_SEGMENTS;
 }
 
 /*
- * A range may take at most what is left of the source's words, and no
- * more than one segment can count. A range of no words adds nothing, and
- * in particular does not look up a page that may not exist.
+ * A range may take at most what is left of the source's words and of the
+ * fetch's own word cap, and no more than one segment can count. A range
+ * of no words adds nothing, and in particular does not look up a page that
+ * may not exist; any other range needs a segment under the segment cap.
+ * All of this is checked before the range maps or allocates anything.
  */
-static int sgi_fetch_check(uint64_t nwords, uint64_t *budget,
-                           const char *source)
+static int sgi_fetch_check(SGICommandFetch *f, uint64_t nwords,
+                           uint64_t *budget, const char *source)
 {
+    uint64_t max_words = sgi_fetch_max_words(f);
+    unsigned max_segments = sgi_fetch_max_segments(f);
+
     if (nwords > *budget || nwords > UINT32_MAX) {
         qemu_log_mask(LOG_GUEST_ERROR, "sgi-fetch: %" PRIu64 " more words "
                       "exceed the %s\n", nwords, source);
         return SGI_FAIL_BOUNDS;
     }
+    if (f->nwords > max_words || nwords > max_words - f->nwords) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-fetch: %" PRIu64 " more words "
+                      "exceed context %u's cap of %" PRIu64 "\n",
+                      nwords, f->context, max_words);
+        return SGI_FAIL_BOUNDS;
+    }
+    if (nwords && f->nsegments >= max_segments) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-fetch: context %u's list runs "
+                      "past its cap of %u ranges\n", f->context,
+                      max_segments);
+        return SGI_FAIL_BOUNDS;
+    }
     *budget -= nwords;
     return 0;
+}
+
+/*
+ * Room for one more segment, and nwords words for it, without adding it.
+ * The array doubles, so a list of many ranges costs few reallocations, and
+ * never grows past the segment cap. The sizes are the guest's, so a host
+ * that cannot supply them fails the invocation rather than QEMU.
+ */
+static int sgi_fetch_alloc(SGICommandFetch *f, uint64_t nwords,
+                           uint32_t **words)
+{
+    if (f->nsegments == f->capacity) {
+        uint64_t capacity = MIN(MAX(16, (uint64_t)f->capacity * 2),
+                                sgi_fetch_max_segments(f));
+        SGIFetchSegment *segments = g_try_renew(SGIFetchSegment,
+                                                f->segments, capacity);
+
+        if (!segments) {
+            goto fail;
+        }
+        f->segments = segments;
+        f->capacity = capacity;
+    }
+    *words = g_try_new(uint32_t, nwords);
+    if (*words) {
+        return 0;
+    }
+fail:
+    qemu_log_mask(LOG_GUEST_ERROR, "sgi-fetch: no host memory for context "
+                  "%u's %" PRIu64 " more words\n", f->context, nwords);
+    return SGI_FAIL_BOUNDS;
+}
+
+/*
+ * Keep a range's words, read into words in memory order, as a new segment
+ * in host order. sgi_fetch_alloc() made the room.
+ */
+static void sgi_fetch_take(SGICommandFetch *f, uint32_t *words,
+                           uint64_t nwords, uint64_t addr, bool little_endian)
+{
+    for (uint64_t i = 0; i < nwords; i++) {
+        words[i] = little_endian ? ldl_le_p(&words[i]) : ldl_be_p(&words[i]);
+    }
+    f->segments[f->nsegments++] = (SGIFetchSegment) {
+        .words = words,
+        .nwords = nwords,
+        .addr = addr,
+    };
+    f->nwords += nwords;
 }
 
 static int sgi_fetch_add(SGICommandFetch *f, const SGIDMABus *bus,
@@ -53,23 +107,24 @@ static int sgi_fetch_add(SGICommandFetch *f, const SGIDMABus *bus,
                          uint64_t nwords, uint64_t *budget)
 {
     SGIDMAMap map = { };
-    g_autofree uint8_t *bytes = NULL;
-    int ret = sgi_fetch_check(nwords, budget, "pool");
+    g_autofree uint32_t *words = NULL;
+    int ret = sgi_fetch_check(f, nwords, budget, "pool");
 
     if (ret || !nwords) {
         return ret;
     }
+    ret = sgi_fetch_alloc(f, nwords, &words);
+    if (ret) {
+        return ret;
+    }
     ret = sgi_dma_map(bus, &map, pl, offset, nwords * 4,
                       DMA_DIRECTION_TO_DEVICE, f->trace_chunks, f->trace_seq);
-    if (!ret) {
-        bytes = g_malloc(nwords * 4);
-        if (!sgi_dma_map_copy(&map, offset, bytes, nwords * 4, false)) {
-            ret = SGI_FAIL_BOUNDS;
-        }
+    if (!ret && !sgi_dma_map_copy(&map, offset, words, nwords * 4, false)) {
+        ret = SGI_FAIL_BOUNDS;
     }
     sgi_dma_unmap(&map);
     if (!ret) {
-        sgi_fetch_take(f, bytes, nwords,
+        sgi_fetch_take(f, g_steal_pointer(&words), nwords,
                        pl->addr[offset / pl->page_size] +
                        (offset & (pl->page_size - 1)), f->little_endian);
     }
@@ -119,8 +174,8 @@ static int sgi_fetch_add_plane(SGICommandFetch *f, const SGIBoardMemory *m,
                                const SGIPlane *p, uint64_t offset,
                                uint64_t nwords, uint64_t *budget)
 {
-    g_autofree uint8_t *bytes = NULL;
-    int ret = sgi_fetch_check(nwords, budget, "plane");
+    g_autofree uint32_t *words = NULL;
+    int ret = sgi_fetch_check(f, nwords, budget, "plane");
 
     if (ret || !nwords) {
         return ret;
@@ -131,13 +186,16 @@ static int sgi_fetch_add_plane(SGICommandFetch *f, const SGIBoardMemory *m,
                       nwords, offset, p->id);
         return SGI_FAIL_BOUNDS;
     }
-    bytes = g_malloc(nwords * 4);
-    if (!sgi_board_memory_export(m, p->base + offset, nwords * 4, bytes)) {
+    ret = sgi_fetch_alloc(f, nwords, &words);
+    if (ret) {
+        return ret;
+    }
+    if (!sgi_board_memory_export(m, p->base + offset, nwords * 4, words)) {
         qemu_log_mask(LOG_GUEST_ERROR, "sgi-fetch: plane %u's words at 0x%"
                       PRIx64 " are not resolved\n", p->id, offset);
         return SGI_FAIL_BOUNDS;
     }
-    sgi_fetch_take(f, bytes, nwords, p->base + offset,
+    sgi_fetch_take(f, g_steal_pointer(&words), nwords, p->base + offset,
                    p->packing == SGI_PACK_LE_RED_LOW ||
                    p->packing == SGI_PACK_LE_RED_HIGH);
     return 0;
@@ -199,6 +257,7 @@ void sgi_fetch_finish(SGICommandFetch *f, int status, const SGIHeadOps *ops,
     g_free(f->segments);
     f->segments = NULL;
     f->nsegments = 0;
+    f->capacity = 0;
     if (status) {
         sgi_head_publish(ops, opaque, f->seq, SGI_DONE_FAILED, f->cookie,
                          status);

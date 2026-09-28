@@ -23,12 +23,29 @@
  * A family with no rule leaves it NULL and the fetch ends at the words it
  * was asked for. The words handed to the grammar are the pool's words as
  * they are, headers included; what a header means is the family's.
+ *
+ * Every size a fetch resolves is the guest's, and every word it resolves
+ * is host memory held until the finish, so each invocation has two caps:
+ * the most words over all its ranges and the most ranges. A range that
+ * would pass either fails the invocation with SGI_FAIL_BOUNDS, logged as
+ * a guest error, before anything is mapped or allocated for it; so does a
+ * range the host cannot allocate, rather than aborting QEMU. The ranges
+ * already resolved stay for the finish to release.
  */
 #ifndef HW_DISPLAY_SGI_COMMAND_FETCH_H
 #define HW_DISPLAY_SGI_COMMAND_FETCH_H
 
 #include "hw/display/sgi/board-memory.h"
 #include "hw/display/sgi/pixel-dma.h"
+
+/*
+ * The caps a fetch with max_words or max_segments zero uses. MGRAS's
+ * longest measured list is 13,355 words in 14 ranges; these are its own
+ * limits from before the caps were shared, far above any list seen, and
+ * hold one invocation to 4 MiB of words.
+ */
+#define SGI_FETCH_MAX_WORDS     (1u << 20)
+#define SGI_FETCH_MAX_SEGMENTS  2048
 
 typedef struct SGICommandFetch SGICommandFetch;
 
@@ -55,6 +72,14 @@ struct SGICommandFetch {
     uint64_t trace_seq;
     uint64_t seq;               /* the completion's sequence number */
     uint64_t cookie;            /* the family's fence, reply or interrupt */
+    /*
+     * One invocation's caps: its words over all ranges, and its ranges.
+     * Zero means SGI_FETCH_MAX_WORDS or SGI_FETCH_MAX_SEGMENTS, so a
+     * zeroed fetch is bounded too. A family sets them once, before its
+     * first map, from what its hardware can hold.
+     */
+    uint64_t max_words;
+    unsigned max_segments;
 
     /*
      * Resolved at submit, released by sgi_fetch_finish(). A fetch holds
@@ -69,6 +94,7 @@ struct SGICommandFetch {
      */
     SGIFetchSegment *segments;
     unsigned nsegments;
+    unsigned capacity;          /* segments allocated */
     uint64_t nwords;            /* total over the segments */
     unsigned open;              /* maps not yet finished */
 };
@@ -77,8 +103,9 @@ struct SGICommandFetch {
  * Under the lock: resolve nwords words at byte offset in a page-listed
  * pool, then whatever next() asks for, into host-order segments. A range
  * of no words adds nothing. A fetch
- * never resolves more words in total than the pool holds, whatever next()
- * says. Returns 0 or an SGIFailure. next() gets the bus's opaque.
+ * never resolves more words in total than the pool holds or its caps
+ * allow, whatever next() says. Returns 0 or an SGIFailure. next() gets
+ * the bus's opaque.
  */
 int sgi_fetch_map(SGICommandFetch *f, const SGIDMABus *bus,
                   const SGIDMAPageList *pl, uint64_t offset, uint64_t nwords);
