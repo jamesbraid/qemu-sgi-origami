@@ -89,6 +89,21 @@
  * Every context setup sends it with 3.
  */
 #define MGRAS_GL_DITHER          0x00006704
+/*
+ * The context setup's texture-only defaults, consumed without a log line
+ * while they carry the default: 0xec10 from mgrTM_Init (0xd999454 in the
+ * IRIX 6.5.30 IP27GR532 libGLcore.so), 32 per context setup, loading the
+ * detail-texture function table glDetailTexFuncSGIS sets. Its words are
+ * two HQ-table words, 0xc52 and 0xc78 from the hq3_revB_HQ4.u table, the
+ * raster register 0x194 and one table value; the setup's values are 0x1f
+ * three times and then 0x1d down to 1 (notes-unimplemented-tokens.md).
+ * The SI has no texture memory and the model draws no texture, so the
+ * table changes nothing it draws. Any other 0xec10, an application's
+ * glDetailTexFuncSGIS or a texture path's own register, is logged. The
+ * same header from those paths carries other registers (0x191, 0x193,
+ * 0x1a4), which are logged too.
+ */
+#define MGRAS_GL_TEXTURE_TABLE   0x0000ec10
 #define MGRAS_GL_BANKS           0x00009808
 
 /* Vertex-attribute headers: the class names the source format. */
@@ -439,6 +454,7 @@ bool sgi_mgras_gl_header(uint32_t header)
     case MGRAS_GL_DEPTH_TEST:
     case MGRAS_GL_DEPTH_RANGE:
     case MGRAS_GL_DITHER:
+    case MGRAS_GL_TEXTURE_TABLE:
     case MGRAS_GL_LIGHT_MODEL_AMBIENT:
     case MGRAS_GL_LIGHT_MODEL_LOCAL:
     case MGRAS_GL_LIGHT_MODEL_TWO_SIDE:
@@ -2140,6 +2156,16 @@ void sgi_mgras_gl_execute(SGIMgrasState *s, uint32_t header,
         return;
     case MGRAS_GL_DEPTH_MASK:
         mgras_gl_command(s, SGI_GL_OP_DEPTH_MASK, payload, 1);
+        return;
+    case MGRAS_GL_TEXTURE_TABLE:
+        if (payload[0] != 0xc52 || payload[1] != 0xc78 ||
+            payload[2] != 0x194 || !payload[3] ||
+            (payload[3] > 0x1d && payload[3] != 0x1f)) {
+            qemu_log_mask(LOG_UNIMP, "sgi-mgras: texture table write 0x%x "
+                          "0x%x 0x%x 0x%x is not the context setup's "
+                          "default; texturing is not modelled\n",
+                          payload[0], payload[1], payload[2], payload[3]);
+        }
         return;
     case MGRAS_GL_DITHER:
         word[0] = SGI_GL_DITHER;
