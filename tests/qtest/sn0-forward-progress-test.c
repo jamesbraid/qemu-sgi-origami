@@ -170,7 +170,8 @@ static const Recipe recipes[] = {
       0, NULL, 0x3000 },
     { "fuel", "-M fuel,fuel-board-id-word=0x4abc,"
               "fuel-ioc3-subsystem-id=0xc30a,"
-              "fuel-l1-type-code=0x61", 0x1686a8, prepare_fuel },
+              "fuel-l1-type-code=0x61,fuel-bedrock-revision=0x2",
+              0x1686a8, prepare_fuel },
 };
 
 static const char *const r10000_family[] = {

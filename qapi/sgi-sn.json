@@ -143,9 +143,10 @@
 # Bedrock node, whose controller role belongs to its module's or
 # brick's L1 instead, reports both false).
 #
-# @ni-revision: NUMAlink interface revision
+# @ni-revision: NUMAlink interface revision, required for a Hub
 #
-# @widget-revision: XIO widget revision this ASIC's port answers
+# @widget-revision: XIO widget revision this ASIC's port answers, required
+#     for a Hub
 #
 # @serial: fitted-part one-wire serial
 #
@@ -158,8 +159,8 @@
 # Since: 11.2
 ##
 { 'struct': 'SGIModelAsicIdentity',
-  'data': { 'ni-revision': 'uint8',
-            'widget-revision': 'uint8',
+  'data': { '*ni-revision': 'uint8',
+            '*widget-revision': 'uint8',
             'serial': 'uint64',
             'i2c-controller': 'bool',
             'system-controller': 'bool' } }

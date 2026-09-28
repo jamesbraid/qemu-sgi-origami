@@ -48,6 +48,8 @@
 #define MEMORY_BANK_256M UINT64_C(0x10000000)
 #define HUB_LOCAL_BOOT (SPACE_HUB + UINT64_C(0x18000000))
 #define LB_REVISION (BEDROCK_LOCAL + 0x600000)
+#define II_WIDGET_ID (BEDROCK_LOCAL + 0x400000)
+#define BEDROCK_REVISION(word) (((word) >> 28) & 0xf)
 #define FUEL_XBRIDGE 15
 #define XBRIDGE_HOST_PORT 0xa
 #define XBRIDGE_INT_STATUS 0x100
@@ -147,7 +149,7 @@ static QTestState *fuel_start(const char *prom)
 
     return qtest_initf("-M fuel,fuel-board-id-word=0x4abc,"
                        "fuel-ioc3-subsystem-id=0xc30a,"
-                       "fuel-l1-type-code=0x61 "
+                       "fuel-l1-type-code=0x61,fuel-bedrock-revision=0x2 "
                        "-cpu R14000 -smp 1 -m 512M -bios %s -S", quoted);
 }
 
@@ -157,7 +159,7 @@ static QTestState *fuel_start_rtc(const char *prom, const char *extra)
 
     return qtest_initf("-M fuel,fuel-board-id-word=0x4abc,"
                        "fuel-ioc3-subsystem-id=0xc30a,"
-                       "fuel-l1-type-code=0x61,"
+                       "fuel-l1-type-code=0x61,fuel-bedrock-revision=0x2,"
                        "fuel-rtc-decode=low11-mirror "
                        "-cpu R14000 -smp 1 -m 512M -bios %s -S %s",
                        quoted, extra);
@@ -169,7 +171,7 @@ static QTestState *fuel_start_running(const char *prom)
 
     return qtest_initf("-M fuel,fuel-board-id-word=0x4abc,"
                        "fuel-ioc3-subsystem-id=0xc30a,"
-                       "fuel-l1-type-code=0x61 "
+                       "fuel-l1-type-code=0x61,fuel-bedrock-revision=0x2 "
                        "-cpu R14000 -smp 1 -m 512M -bios %s", quoted);
 }
 
@@ -345,7 +347,7 @@ static void test_fuel_ioc3_ethernet_interrupt(const void *data)
     g_assert_cmpint(socketpair(AF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
     qts = qtest_initf("-M fuel,fuel-board-id-word=0x4abc,"
                       "fuel-ioc3-subsystem-id=0xc30a,"
-                      "fuel-l1-type-code=0x61 "
+                      "fuel-l1-type-code=0x61,fuel-bedrock-revision=0x2 "
                       "-cpu R14000 -smp 1 -m 512M -bios %s "
                       "-nic socket,fd=%d,id=ioc3-net", quoted, sv[1]);
     g_assert_cmpint(close(sv[1]), ==, 0);
@@ -639,7 +641,7 @@ static void test_fuel_rejects_other_board_code(const void *data)
     g_autofree char *quoted = g_shell_quote(prom);
     QTestState *qts = qtest_initf("-M fuel,fuel-board-id-word=0x8abc,"
                                   "fuel-ioc3-subsystem-id=0xc30a,"
-                                  "fuel-l1-type-code=0x61 "
+                                  "fuel-l1-type-code=0x61,fuel-bedrock-revision=0x2 "
                                   "-cpu R14000 -smp 1 -m 512M -bios %s -S",
                                   quoted);
     qtest_quit(qts);
@@ -676,9 +678,91 @@ static void test_fuel_rejects_other_l1_type_code(const void *data)
     g_autofree char *quoted = g_shell_quote(prom);
     QTestState *qts = qtest_initf("-M fuel,fuel-board-id-word=0x4abc,"
                                   "fuel-ioc3-subsystem-id=0xc30a,"
-                                  "fuel-l1-type-code=0x35 "
+                                  "fuel-l1-type-code=0x35,fuel-bedrock-revision=0x2 "
                                   "-cpu R14000 -smp 1 -m 512M -bios %s -S",
                                   quoted);
+    qtest_quit(qts);
+}
+
+static void test_fuel_requires_bedrock_revision(const void *data)
+{
+    const char *prom = data;
+
+    if (!g_test_subprocess()) {
+        g_test_trap_subprocess(NULL, 0, 0);
+        g_test_trap_assert_failed();
+        g_test_trap_assert_stderr(
+            "*requires an explicit fuel-bedrock-revision*");
+        return;
+    }
+    g_autofree char *quoted = g_shell_quote(prom);
+    QTestState *qts = qtest_initf("-M fuel,fuel-board-id-word=0x4abc,"
+                                  "fuel-ioc3-subsystem-id=0xc30a,"
+                                  "fuel-l1-type-code=0x61 "
+                                  "-cpu R14000 -smp 1 -m 512M -bios %s -S",
+                                  quoted);
+    qtest_quit(qts);
+}
+
+static void test_fuel_rejects_large_bedrock_revision(const void *data)
+{
+    const char *prom = data;
+
+    if (!g_test_subprocess()) {
+        g_test_trap_subprocess(NULL, 0, 0);
+        g_test_trap_assert_failed();
+        g_test_trap_assert_stderr("*fuel-bedrock-revision must fit four bits*");
+        return;
+    }
+    g_autofree char *quoted = g_shell_quote(prom);
+    QTestState *qts = qtest_initf("-M fuel,fuel-board-id-word=0x4abc,"
+                                  "fuel-ioc3-subsystem-id=0xc30a,"
+                                  "fuel-l1-type-code=0x61,"
+                                  "fuel-bedrock-revision=0x10 "
+                                  "-cpu R14000 -smp 1 -m 512M -bios %s -S",
+                                  quoted);
+    qtest_quit(qts);
+}
+
+static void test_fuel_bedrock_revision_rejects_other_machine(const void *data)
+{
+    const char *prom = data;
+
+    if (!g_test_subprocess()) {
+        g_test_trap_subprocess(NULL, 0, 0);
+        g_test_trap_assert_failed();
+        g_test_trap_assert_stderr(
+            "*fuel-bedrock-revision applies only to -M fuel*");
+        return;
+    }
+    g_autofree char *quoted = g_shell_quote(prom);
+    QTestState *qts = qtest_initf("-M origin300,fuel-bedrock-revision=0x2 "
+                                  "-cpu R14000 -smp 2 -m 512M -bios %s -S",
+                                  quoted);
+    qtest_quit(qts);
+}
+
+static void test_fuel_bedrock_revision(const void *data)
+{
+    g_autofree char *quoted = g_shell_quote(data);
+    QTestState *qts = qtest_initf("-M fuel,fuel-board-id-word=0x4abc,"
+                                  "fuel-ioc3-subsystem-id=0xc30a,"
+                                  "fuel-l1-type-code=0x61,"
+                                  "fuel-bedrock-revision=0x9 "
+                                  "-cpu R14000 -smp 1 -m 512M -bios %s -S",
+                                  quoted);
+
+    g_assert_cmphex(BEDROCK_REVISION(qtest_readq(qts, LB_REVISION)), ==, 9);
+    g_assert_cmphex(BEDROCK_REVISION(qtest_readq(qts, II_WIDGET_ID)), ==, 9);
+    qtest_system_reset(qts);
+    g_assert_cmphex(BEDROCK_REVISION(qtest_readq(qts, LB_REVISION)), ==, 9);
+    g_assert_cmphex(BEDROCK_REVISION(qtest_readq(qts, II_WIDGET_ID)), ==, 9);
+    qtest_quit(qts);
+
+    qts = qtest_initf("-M origin300 -cpu R14000 -smp 2 -m 512M "
+                      "-bios %s -S", quoted);
+    g_assert_cmphex(BEDROCK_REVISION(qtest_readq(qts, LB_REVISION)), ==, 2);
+    g_assert_cmphex(BEDROCK_REVISION(qtest_readq(qts, II_WIDGET_ID)), ==, 2);
     qtest_quit(qts);
 }
 
@@ -716,7 +800,7 @@ static void test_fuel_board_id_migration(const void *data)
     from = fuel_start(prom);
     to = qtest_initf("-M fuel,fuel-board-id-word=0x4def,"
                      "fuel-ioc3-subsystem-id=0xc30a,"
-                     "fuel-l1-type-code=0x61 "
+                     "fuel-l1-type-code=0x61,fuel-bedrock-revision=0x2 "
                      "-cpu R14000 -smp 1 -m 512M -bios %s -S -incoming defer",
                      quoted);
     g_assert_cmphex(qtest_readq(to, HUB_LOCAL_REGISTERS + BOARD_ID_OFFSET),
@@ -758,7 +842,7 @@ static void test_fuel_serial_backends(const void *data)
     QTestState *qts = qtest_initf(
         "-M fuel,fuel-board-id-word=0x4abc,"
         "fuel-ioc3-subsystem-id=0xc30a,"
-        "fuel-l1-type-code=0x61 "
+        "fuel-l1-type-code=0x61,fuel-bedrock-revision=0x2 "
         "-cpu R14000 -smp 1 -m 512M -bios %s -S "
         "-serial null -serial null -serial null "
         "-serial null -serial null", quoted);
@@ -805,7 +889,7 @@ static void test_fuel_serial_bytes(const void *data)
     qts = qtest_initf(
         "-M fuel,fuel-board-id-word=0x4abc,"
         "fuel-ioc3-subsystem-id=0xc30a,"
-        "fuel-l1-type-code=0x61 "
+        "fuel-l1-type-code=0x61,fuel-bedrock-revision=0x2 "
         "-cpu R14000 -smp 1 -m 512M -bios %s -S "
         "-serial null "
         "-chardev socket,id=ioc3-a,fd=%d -serial chardev:ioc3-a "
@@ -1057,6 +1141,14 @@ int main(int argc, char **argv)
                         test_fuel_requires_l1_type_code);
     qtest_add_data_func("fuel/rejects-other-l1-type-code", prom,
                         test_fuel_rejects_other_l1_type_code);
+    qtest_add_data_func("fuel/requires-bedrock-revision", prom,
+                        test_fuel_requires_bedrock_revision);
+    qtest_add_data_func("fuel/rejects-large-bedrock-revision", prom,
+                        test_fuel_rejects_large_bedrock_revision);
+    qtest_add_data_func("fuel/bedrock-revision-rejects-other-machine", prom,
+                        test_fuel_bedrock_revision_rejects_other_machine);
+    qtest_add_data_func("fuel/bedrock-revision", prom,
+                        test_fuel_bedrock_revision);
     qtest_add_data_func("fuel/l1-type-code-rejects-other-machine", prom,
                         test_fuel_l1_type_code_rejects_other_machine);
     qtest_add_data_func("fuel/prom-copy-boundary", prom,

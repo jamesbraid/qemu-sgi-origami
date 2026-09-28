@@ -1526,7 +1526,9 @@ static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
         grant |= 1U << sn1_cpu_slot(node->model_node, cpu);
     }
     qdev_prop_set_uint32(node->bedrock, "cpu-enable-initial-mask", grant);
-    qdev_prop_set_uint8(node->bedrock, "revision", SN1_BEDROCK_REVISION);
+    qdev_prop_set_uint8(node->bedrock, "revision",
+                        node->fuel_experiment ? node->fuel_bedrock_revision :
+                        SN1_BEDROCK_REVISION);
     qdev_prop_set_uint8(node->bedrock, "local-region",
                         SN1_BEDROCK_LOCAL_REGION);
     qdev_prop_set_uint8(node->bedrock, "initiator-region",
@@ -1994,6 +1996,8 @@ static const Property sn1_node_properties[] = {
     DEFINE_PROP_BOOL("fuel-experiment", SN1NodeState, fuel_experiment, false),
     DEFINE_PROP_UINT32("fuel-l1-type-code", SN1NodeState,
                        fuel_l1_type_code, 0),
+    DEFINE_PROP_UINT8("fuel-bedrock-revision", SN1NodeState,
+                      fuel_bedrock_revision, 0),
     /* Set on a machine's last node: a pflash unit past it has no node. */
     DEFINE_PROP_BOOL("last-node", SN1NodeState, last_node, true),
     DEFINE_PROP_BOOL("promdata-filter", SN1NodeState, promdata_filter, true),

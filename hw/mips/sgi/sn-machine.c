@@ -241,6 +241,8 @@ struct SGIMachineState {
     bool fuel_ioc3_subsystem_id_set;
     uint8_t fuel_l1_type_code;
     bool fuel_l1_type_code_set;
+    uint8_t fuel_bedrock_revision;
+    bool fuel_bedrock_revision_set;
     char *fuel_rtc_decode;
 };
 
@@ -2491,6 +2493,15 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
                    "launch input; the physical L1 reply is unknown");
         return false;
     }
+    if (!strcmp(smc->product, "fuel") && !s->fuel_bedrock_revision_set) {
+        error_setg(errp, "fuel requires an explicit fuel-bedrock-revision "
+                   "launch input; the fitted revision is unknown");
+        return false;
+    }
+    if (s->fuel_bedrock_revision_set && s->fuel_bedrock_revision > 0xf) {
+        error_setg(errp, "fuel-bedrock-revision must fit four bits");
+        return false;
+    }
     if (!strcmp(smc->product, "fuel") &&
         s->fuel_l1_type_code != 0x34 && s->fuel_l1_type_code != 0x61) {
         error_setg(errp, "fuel-l1-type-code must be 0x34 (raw 4) or "
@@ -2508,6 +2519,10 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
     }
     if (strcmp(smc->product, "fuel") && s->fuel_l1_type_code_set) {
         error_setg(errp, "fuel-l1-type-code applies only to -M fuel");
+        return false;
+    }
+    if (strcmp(smc->product, "fuel") && s->fuel_bedrock_revision_set) {
+        error_setg(errp, "fuel-bedrock-revision applies only to -M fuel");
         return false;
     }
     if (strcmp(smc->product, "fuel") && s->fuel_board_id_word_set) {
@@ -2758,6 +2773,8 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
                                      s->fuel_board_id_word);
                 qdev_prop_set_uint32(DEVICE(node), "fuel-l1-type-code",
                                      s->fuel_l1_type_code);
+                qdev_prop_set_uint8(DEVICE(node), "fuel-bedrock-revision",
+                                    s->fuel_bedrock_revision);
             }
             qdev_prop_set_bit(DEVICE(node), "last-node",
                               node_index == node_count - 1);
@@ -3613,6 +3630,27 @@ static void sgi_machine_set_fuel_l1_type_code(Object *obj, Visitor *v,
     }
 }
 
+static void sgi_machine_get_fuel_bedrock_revision(Object *obj, Visitor *v,
+                                                   const char *name,
+                                                   void *opaque, Error **errp)
+{
+    uint8_t value = SGI_MACHINE(obj)->fuel_bedrock_revision;
+
+    visit_type_uint8(v, name, &value, errp);
+}
+
+static void sgi_machine_set_fuel_bedrock_revision(Object *obj, Visitor *v,
+                                                   const char *name,
+                                                   void *opaque, Error **errp)
+{
+    uint8_t value;
+
+    if (visit_type_uint8(v, name, &value, errp)) {
+        SGI_MACHINE(obj)->fuel_bedrock_revision = value;
+        SGI_MACHINE(obj)->fuel_bedrock_revision_set = true;
+    }
+}
+
 /*
  * Asks each Hub for its own currently derived reachability, replacing
  * the fabric's central "routes" property: the same string, from each
@@ -3795,6 +3833,14 @@ static void sgi_machine_class_init(ObjectClass *oc, const void *data)
         "Experimental Fuel L1 local identity reply character; required "
         "because its physical stored value is unknown. Accepts 0x34 "
         "(raw 4) or 0x61 (published IP34 code).");
+
+    object_class_property_add(oc, "fuel-bedrock-revision", "uint8",
+                              sgi_machine_get_fuel_bedrock_revision,
+                              sgi_machine_set_fuel_bedrock_revision,
+                              NULL, NULL);
+    object_class_property_set_description(oc, "fuel-bedrock-revision",
+        "Fitted Fuel Bedrock revision, 0 through 15; required because the "
+        "revision of the selected board is unknown.");
 
     object_class_property_add_str(oc, "fuel-rtc-decode",
                                   sgi_machine_get_fuel_rtc_decode,

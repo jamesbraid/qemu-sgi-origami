@@ -2241,7 +2241,8 @@ static void test_l1_product_identity(const void *data)
     for (size_t i = 0; i < ARRAY_SIZE(fuel_codes); i++) {
         qts = qtest_initf("-M fuel,fuel-board-id-word=0x4abc,"
                           "fuel-ioc3-subsystem-id=0xc30a,"
-                          "fuel-l1-type-code=0x%02x -cpu R14000 -smp 1 "
+                          "fuel-l1-type-code=0x%02x,"
+                          "fuel-bedrock-revision=0x2 -cpu R14000 -smp 1 "
                           "-m 512M -bios %s -S", fuel_codes[i], quoted);
         l1_expect_product_identity(qts, fuel_codes[i]);
         qtest_system_reset(qts);
@@ -2265,11 +2266,13 @@ static void test_fuel_l1_type_migration(const void *data)
     uri = g_strdup_printf("unix:%s", socket);
     from = qtest_initf("-M fuel,fuel-board-id-word=0x4abc,"
                        "fuel-ioc3-subsystem-id=0xc30a,"
-                       "fuel-l1-type-code=0x34 -cpu R14000 -smp 1 "
+                       "fuel-l1-type-code=0x34,fuel-bedrock-revision=0x2 "
+                       "-cpu R14000 -smp 1 "
                        "-m 512M -bios %s -S", quoted);
     to = qtest_initf("-M fuel,fuel-board-id-word=0x4abc,"
                      "fuel-ioc3-subsystem-id=0xc30a,"
-                     "fuel-l1-type-code=0x61 -cpu R14000 -smp 1 "
+                     "fuel-l1-type-code=0x61,fuel-bedrock-revision=0x2 "
+                     "-cpu R14000 -smp 1 "
                      "-m 512M -bios %s -S -incoming defer", quoted);
     l1_expect_product_identity(from, 0x34);
     l1_expect_product_identity(to, 0x61);
