@@ -54,11 +54,11 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIXBridgeState, SGI_XBRIDGE)
 #define SGI_XBRIDGE_XIO_PORT_DEFAULT 0xb
 
 /*
- * Put a widget on the chip's external crosstalk port. Until this is
+ * Put a widget on the chip's external XIO port. Until this is
  * called the port reports no widget present and its link not alive, and
  * a processor access to that widget number reaches nothing -- what an
  * empty connector answers. Afterwards the widget answers processor
- * traffic at its own widget position inside the chip's crosstalk space,
+ * traffic at its own widget position inside the chip's XIO space,
  * a peer's packet addressed to that widget reaches packet_face, and the
  * crossbar reports the link populated and alive, which is what firmware
  * walks before it addresses a port at all.

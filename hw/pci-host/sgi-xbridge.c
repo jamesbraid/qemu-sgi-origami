@@ -1132,7 +1132,7 @@ struct SGIXBridgeState {
      * The external port's own two slots, and what a widget put in them
      * is reached through. They are containers rather than the widget's
      * own regions so that everything pointing at the port -- the
-     * crosstalk decode, the crossbar's and both heads' packet targets --
+     * XIO decode, the crossbar's and both heads' packet targets --
      * can be wired before their owners realize, while the widget itself
      * arrives whenever it arrives. Empty, they occlude nothing, so the
      * port answers exactly as an unpopulated one.
@@ -1317,7 +1317,7 @@ static void chip_realize(DeviceState *dev, Error **errp)
 
     /*
      * The one external port a widget can be attached to takes its own
-     * slot in the crosstalk space, so a processor reaches it through the
+     * slot in the XIO space, so a processor reaches it through the
      * same widget decode the heads answer on rather than around the chip.
      * The view exists only from here: which widget it covers is a
      * property, and instance init runs before properties are set.
@@ -1503,7 +1503,7 @@ static const char *chip_xio_port_describe(Object *port, unsigned int index)
         return "the XBridge's host port";
     }
     if (index == s->xio_port) {
-        return "the XBridge's external crosstalk port";
+        return "the XBridge's external XIO port";
     }
     switch (index) {
     case 0: return "the XBridge's own crossbar widget";
