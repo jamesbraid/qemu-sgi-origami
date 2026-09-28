@@ -7955,6 +7955,106 @@ static void test_gl_line_depth_and_colour_follow_t(void)
     g_assert_cmphex(gl_window_pixel(qts, 56, 40), ==, 0xffffff);
 }
 
+/*
+ * Two more queries wait on flag bit 17 and read 0x028004
+ * (notes-return-mode-queries.md, "Other queries answered at 0x028004"):
+ * 0xa104 with one index, which __Mgr_GetCurrentAttrState sends for
+ * GL_CURRENT_COLOR (indices 4 to 7, read as floats) and the other
+ * current attributes, and 0x8b08 with two words, one per histogram bin.
+ * Each sets the flag once its own arguments have arrived. perfly waited
+ * forever on an 0xa104 query in run irix-20260928T063220-a9945b.
+ * Approximated: the answer to indices 4 to 7 is the loaded context's
+ * current colour, which is what the client reads them as; every other
+ * answer is zero.
+ */
+static void test_hq_attribute_queries_set_flag_after_arguments(void)
+{
+    mgras_reset();
+
+    gl_enter_slot(qts, GL_SLOT_A);
+    gl_word(qts, GL_CONTEXT_OPENER);
+    gl_word(qts, 0x00000210);
+    gl_float(qts, 0.25f);
+    gl_float(qts, 0.5f);
+    gl_float(qts, 0.75f);
+    gl_float(qts, 1);
+    qtest_writel(qts, REG_HQ_FLAGS_CLEAR, MGRAS_HQ_FLAG_QUERY);
+    gl_word(qts, 0x0000a104);
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_FLAGS) & MGRAS_HQ_FLAG_QUERY, ==,
+                    0);
+    gl_word(qts, 5);
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_FLAGS) & MGRAS_HQ_FLAG_QUERY, ==,
+                    MGRAS_HQ_FLAG_QUERY);
+    g_assert_cmphex(qtest_readl(qts, REG_QUERY_ANSWER), ==, 0x3f000000);
+
+    qtest_writel(qts, REG_HQ_FLAGS_CLEAR, MGRAS_HQ_FLAG_QUERY);
+    gl_word(qts, 0x00008b08);
+    gl_word(qts, 0x100);
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_FLAGS) & MGRAS_HQ_FLAG_QUERY, ==,
+                    0);
+    gl_word(qts, 3);
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_FLAGS) & MGRAS_HQ_FLAG_QUERY, ==,
+                    MGRAS_HQ_FLAG_QUERY);
+    g_assert_cmphex(qtest_readl(qts, REG_QUERY_ANSWER), ==, 0);
+
+    /* The arguments were consumed: the next word is a header again. */
+    gl_word(qts, MGRAS_FENCE_TOKEN);
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_FLAGS) & MGRAS_HQ_FLAG_FENCE, ==,
+                    MGRAS_HQ_FLAG_FENCE);
+}
+
+static uint32_t gl_attribute_query(QTestState *qts, uint32_t index)
+{
+    qtest_writel(qts, REG_HQ_FLAGS_CLEAR, MGRAS_HQ_FLAG_QUERY);
+    gl_word(qts, 0x0000a104);
+    gl_word(qts, index);
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_FLAGS) & MGRAS_HQ_FLAG_QUERY, ==,
+                    MGRAS_HQ_FLAG_QUERY);
+    return qtest_readl(qts, REG_QUERY_ANSWER);
+}
+
+/*
+ * __Mgr_GetCurrentAttrState reads 0xa104 indices 8 to 10 as
+ * GL_CURRENT_NORMAL's floats, 11 to 14 as GL_CURRENT_TEXTURE_COORDS' and
+ * 15 as GL_EDGE_FLAG, true when the answer has any of bits 0x01c00000
+ * (notes-return-mode-queries.md). A new context answers OpenGL's initial
+ * normal (0, 0, 1), texture coordinates (0, 0, 0, 1) and edge flag true
+ * (2.7), and glNormal3f (0x070c) and glEdgeFlag (0x0f00 true, 0x1000
+ * false) change the answers.
+ */
+static void test_hq_attribute_query_answers_normal_and_edge_flag(void)
+{
+    mgras_reset();
+
+    gl_enter_slot(qts, GL_SLOT_A);
+    gl_word(qts, GL_CONTEXT_OPENER);
+    g_assert_cmphex(gl_attribute_query(qts, 8), ==, 0);
+    g_assert_cmphex(gl_attribute_query(qts, 9), ==, 0);
+    g_assert_cmphex(gl_attribute_query(qts, 10), ==, 0x3f800000);
+    g_assert_cmphex(gl_attribute_query(qts, 13), ==, 0);
+    g_assert_cmphex(gl_attribute_query(qts, 14), ==, 0x3f800000);
+    g_assert_cmphex(gl_attribute_query(qts, 15) & 0x01c00000, !=, 0);
+
+    gl_three(qts, 0x0000070c, 0.5f, -1, 0.25f);
+    gl_word(qts, 0x00001000);
+    g_assert_cmphex(gl_attribute_query(qts, 8), ==, 0x3f000000);
+    g_assert_cmphex(gl_attribute_query(qts, 9), ==, 0xbf800000);
+    g_assert_cmphex(gl_attribute_query(qts, 10), ==, 0x3e800000);
+    g_assert_cmphex(gl_attribute_query(qts, 15) & 0x01c00000, ==, 0);
+    gl_word(qts, 0x00000f00);
+    g_assert_cmphex(gl_attribute_query(qts, 15) & 0x01c00000, !=, 0);
+
+    /* Each context keeps its own. */
+    gl_word(qts, 0x00001000);
+    gl_enter_slot(qts, GL_SLOT_B);
+    gl_word(qts, GL_CONTEXT_OPENER);
+    g_assert_cmphex(gl_attribute_query(qts, 8), ==, 0);
+    g_assert_cmphex(gl_attribute_query(qts, 15) & 0x01c00000, !=, 0);
+    gl_enter_slot(qts, GL_SLOT_A);
+    g_assert_cmphex(gl_attribute_query(qts, 8), ==, 0x3f000000);
+    g_assert_cmphex(gl_attribute_query(qts, 15) & 0x01c00000, ==, 0);
+}
+
 static void test_hq_flags_fence_token_sets_bit(void)
 {
     mgras_reset();
@@ -9264,7 +9364,7 @@ static void test_gl_state_migration(void)
  * Every context's GL state crosses a migration, and so does which one is
  * current: b's clear colour applies before any switch on the destination,
  * and a's after one. So does a's half-sent glClearColor, which a finishes
- * on the destination, and b's matrix stack.
+ * on the destination, b's matrix stack and b's edge flag.
  */
 static void test_gl_context_table_migration(void)
 {
@@ -9297,8 +9397,11 @@ static void test_gl_context_table_migration(void)
     gl_three(from, GL_TRANSLATE_HDR, 8, 0, 0);
     gl_word(from, GL_PUSH_MATRIX);
     gl_three(from, GL_TRANSLATE_HDR, 0, 16, 0);
+    gl_word(from, 0x00001000);
 
     sgi_migrate_stopped(from, uri);
+
+    g_assert_cmphex(gl_attribute_query(to, 15) & 0x01c00000, ==, 0);
 
     gl_word(to, GL_CLEAR_COLOR_BUFFER);
     g_assert_cmphex(mgras_test_pixel(to, 300, 300), ==, 0x00ff00);
@@ -9868,6 +9971,12 @@ int main(int argc, char **argv)
                    test_hq_vector_registers);
     qtest_add_func("sn0/origin2000/mgras/fifo-threshold-registers",
                    test_fifo_threshold_registers);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "hq-attribute-queries-set-flag-after-arguments",
+                   test_hq_attribute_queries_set_flag_after_arguments);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "hq-attribute-query-answers-normal-and-edge-flag",
+                   test_hq_attribute_query_answers_normal_and_edge_flag);
     qtest_add_func("sn0/origin2000/mgras/hq-query-sets-flag-after-arguments",
                    test_hq_query_sets_flag_after_arguments);
     qtest_add_func("sn0/origin2000/mgras/hq-query-flag-only-from-query",

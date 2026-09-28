@@ -1484,7 +1484,7 @@ static const VMStateDescription vmstate_sgi_mgras_xmap = {
  * changes.
  */
 static const VMStateDescription vmstate_sgi_mgras = {
-    .name = TYPE_SGI_MGRAS, .version_id = 21, .minimum_version_id = 9,
+    .name = TYPE_SGI_MGRAS, .version_id = 22, .minimum_version_id = 9,
     .post_load = mgras_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32(front_count, SGIMgrasState),
@@ -1693,6 +1693,14 @@ static const VMStateDescription vmstate_sgi_mgras = {
         VMSTATE_STRUCT_ARRAY(gl_context, SGIMgrasState,
                              SGI_MGRAS_GL_CONTEXTS, 21,
                              vmstate_sgi_mgras_gl_context_v21,
+                             SGIMgrasGLContext),
+        /*
+         * Version 22 adds each context's current normal and edge flag. An
+         * older stream leaves the destination's, OpenGL's initial values.
+         */
+        VMSTATE_STRUCT_ARRAY(gl_context, SGIMgrasState,
+                             SGI_MGRAS_GL_CONTEXTS, 22,
+                             vmstate_sgi_mgras_gl_context_v22,
                              SGIMgrasGLContext),
         VMSTATE_END_OF_LIST()
     }
