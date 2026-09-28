@@ -2764,6 +2764,17 @@ static uint8_t md_directory_request(SGIBedrockMDState *s,
 }
 
 /*
+ * With the directory's ignore-ECC bit set the unit checks no word, so a
+ * line whose word is not a codeword is followed like any other; with the
+ * bit clear such a line is left to the check-error path.
+ */
+static bool md_line_frozen(SGIBedrockMDState *s, uint32_t index)
+{
+    return !(s->directory_config & 2) &&
+           md_directory_injection_find(s, index);
+}
+
+/*
  * A processor's cached load or store reached the watched line. The issuer
  * is the processor running when the access arrives; see the limits above
  * for a device's access made from inside one.
@@ -2786,7 +2797,7 @@ static void md_watched_access(SGIBedrockMDState *s,
      * the unit serves as an I/O requester, not as a processor.
      */
     if ((attrs.mips_cca != 4 && attrs.mips_cca != 5) || attrs.debug ||
-        md_directory_injection_find(s, line->index)) {
+        md_line_frozen(s, line->index)) {
         return;
     }
     /* The processor's directory pointer, from its reference. */
@@ -3120,7 +3131,7 @@ bool sgi_bedrock_md_processor_request(SGIBedrockMDState *s, uint16_t pointer,
             line.index = state->index;
             if (md_line_address(s, line.index, &line.address) &&
                 !((line.address ^ address) & index_mask) &&
-                !md_directory_injection_find(s, line.index)) {
+                !md_line_frozen(s, line.index)) {
                 g_array_append_val(lines, line);
             }
         }
@@ -3139,7 +3150,7 @@ bool sgi_bedrock_md_processor_request(SGIBedrockMDState *s, uint16_t pointer,
         return false;
     }
     line.address = address & ~(uint64_t)(MD_DIRECTORY_LINE - 1);
-    if (md_directory_injection_find(s, line.index)) {
+    if (md_line_frozen(s, line.index)) {
         return false;
     }
     page = md_watched_page_at(s, line.address);
@@ -3224,7 +3235,7 @@ static void md_watch_line(SGIBedrockMDState *s, uint32_t line_index)
     for (uint32_t line = index;
          slot->active && line < index + MD_WATCH_PAGE_LINES &&
          line < s->directory_entries; line++) {
-        if (!md_directory_injection_find(s, line)) {
+        if (!md_line_frozen(s, line)) {
             md_line_state_from_word(s, line);
         }
     }
