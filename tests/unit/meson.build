@@ -9,7 +9,7 @@ fork_unit_tests = [
   'test-sgi-router', 'test-sn0-fabric-routed', 'test-sn1-topology',
   'test-sn-model', 'test-sgi-bedrock-ni', 'test-sgi-rad1-audio-pcm',
   'test-sgi-kona-ports', 'test-sgi-kona-gl-decode',
-  'test-sgi-memory', 'test-sgi-dma',
+  'test-sgi-memory', 'test-sgi-dma', 'test-sgi-scanout',
 ]
 
 tests = {
@@ -211,6 +211,8 @@ if have_system
                      '../../hw/display/sgi/pixel-dma.c',
                      '../../hw/display/sgi/command-fetch.c',
                      migration, io],
+    'test-sgi-scanout': ['../../hw/display/sgi/scanout.c',
+                         migration, io, pixman, opengl],
     'test-iov': [],
     'test-opts-visitor': [testqapi],
     'test-xs-node': [qom],
