@@ -1377,6 +1377,13 @@ static void sn0_node_realize(DeviceState *dev, Error **errp)
         error_setg(errp, "the machine must set the node's ram and cpu-type");
         return;
     }
+    if (!node->model_node->identity ||
+        !node->model_node->identity->has_ni_revision ||
+        !node->model_node->identity->has_widget_revision) {
+        error_setg(errp, "Hub node %u requires ni-revision and "
+                   "widget-revision in its model identity", node->nasid);
+        return;
+    }
 
     node->populated_banks = node->nr_banks_mb;
     for (bank = 0; bank < node->nr_banks_mb; bank++) {

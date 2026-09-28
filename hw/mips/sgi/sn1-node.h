@@ -63,6 +63,7 @@ typedef struct SN1NodeState {
     uint64_t board_id_word;
     bool fuel_experiment;
     uint32_t fuel_l1_type_code;
+    uint8_t fuel_bedrock_revision;
     bool last_node;
     bool promdata_filter;
     bool promdata_fast;
