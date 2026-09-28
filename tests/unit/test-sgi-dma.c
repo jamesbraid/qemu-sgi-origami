@@ -1147,7 +1147,8 @@ static void test_fetch_empty(void)
 /*
  * A list invoked from inside a list gets a fetch of its own, and both
  * complete with their own counts. Mapping the outer fetch again from inside
- * its own decode() would drop its segments, so it asserts.
+ * its own decode() fails that inner invocation with BUSY and leaves the
+ * outer one to finish its own words.
  */
 static SGICommandFetch *nested_outer;
 static const SGIDMABus *nested_bus;
@@ -1166,50 +1167,74 @@ static void nested_decode(void *opaque, uint32_t context,
         return;
     }
     if (nested_reuse) {
-        sgi_fetch_map(nested_outer, nested_bus, nested_pl, 0, 1);
+        g_assert_cmpint(sgi_fetch(nested_outer, nested_bus, nested_pl, PAGE,
+                                  5), ==, SGI_FAIL_BUSY);
         return;
     }
     g_assert_cmpint(sgi_fetch(&inner, nested_bus, nested_pl, PAGE, 5), ==, 0);
 }
 
-static void run_nested(bool reuse)
+static Head *run_nested(bool reuse)
 {
     Head *h = head_new();
     SGIDMABus bus = bus_for(h, &head_ops);
     uint64_t addrs[4];
     SGIDMAPageList pl = { .addr = addrs, .npages = 4, .page_size = PAGE };
     SGICommandFetch outer = { .context = 3, .decode = nested_decode,
-                              .cookie = 0x1 };
+                              .next = head_next, .cookie = 0x1 };
 
     setup();
     pool_setup();
     pool_page_list(h, addrs);
+    /* Two segments, so a run cut short after the first shows. */
+    h->next_offset = 2 * PAGE;
+    h->next_words = 3;
+    h->next_limit = 1;
     nested_outer = &outer;
     nested_bus = &bus;
     nested_pl = &pl;
     nested_reuse = reuse;
     g_assert_cmpint(sgi_fetch(&outer, &bus, &pl, 0, 4), ==, 0);
-    g_assert_cmpuint(h->decoded->len, ==, 9);
-    g_assert_cmphex(g_array_index(h->decoded, uint32_t, 4), ==, 0);
-    g_assert_cmphex(g_array_index(h->decoded, uint32_t, 5), ==, 0x2000);
     g_assert_cmpuint(h->done->len, ==, 2);
-    g_assert_cmphex(g_array_index(h->done, SGICompletion, 0).cookie, ==, 0x2);
-    g_assert_cmpuint(g_array_index(h->done, SGICompletion, 0).payload, ==, 5);
     g_assert_cmphex(g_array_index(h->done, SGICompletion, 1).cookie, ==, 0x1);
-    g_assert_cmpuint(g_array_index(h->done, SGICompletion, 1).payload, ==, 4);
-    head_free(h);
+    g_assert_cmpuint(g_array_index(h->done, SGICompletion, 1).kind, ==,
+                     SGI_DONE_CONSUMED);
+    g_assert_cmpuint(g_array_index(h->done, SGICompletion, 1).payload, ==, 7);
+
+    /* Finished, the outer fetch takes a new list. */
+    g_assert_cmpint(sgi_fetch(&outer, &bus, &pl, PAGE, 5), ==, 0);
+    g_assert_cmpuint(h->done->len, ==, 3);
+    g_assert_cmpuint(g_array_index(h->done, SGICompletion, 2).payload, ==, 5);
+    g_assert_null(outer.segments);
+    return h;
 }
 
 static void test_fetch_nested(void)
 {
-    run_nested(false);
-    if (g_test_subprocess()) {
-        run_nested(true);
-        return;
-    }
-    g_test_trap_subprocess(NULL, 0, 0);
-    g_test_trap_assert_failed();
-    g_test_trap_assert_stderr("*sgi_fetch_begin*");
+    Head *h = run_nested(false);
+
+    g_assert_cmpuint(h->decoded->len, ==, 17);
+    g_assert_cmphex(g_array_index(h->decoded, uint32_t, 4), ==, 0);
+    g_assert_cmphex(g_array_index(h->decoded, uint32_t, 5), ==, 0x2000);
+    g_assert_cmphex(g_array_index(h->decoded, uint32_t, 9), ==, 0x5a020000);
+    g_assert_cmphex(g_array_index(h->done, SGICompletion, 0).cookie, ==, 0x2);
+    g_assert_cmpuint(g_array_index(h->done, SGICompletion, 0).payload, ==, 5);
+    head_free(h);
+}
+
+static void test_fetch_reused(void)
+{
+    Head *h = run_nested(true);
+
+    /* The outer list's seven words, then the second list's five. */
+    g_assert_cmpuint(h->decoded->len, ==, 12);
+    g_assert_cmphex(g_array_index(h->decoded, uint32_t, 4), ==, 0x5a020000);
+    g_assert_cmphex(g_array_index(h->decoded, uint32_t, 7), ==, 0);
+    g_assert_cmpuint(g_array_index(h->done, SGICompletion, 0).kind, ==,
+                     SGI_DONE_FAILED);
+    g_assert_cmpuint(g_array_index(h->done, SGICompletion, 0).payload, ==,
+                     SGI_FAIL_BUSY);
+    head_free(h);
 }
 
 int main(int argc, char **argv)
@@ -1233,5 +1258,6 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-fetch/plane", test_fetch_plane);
     g_test_add_func("/sgi-fetch/empty", test_fetch_empty);
     g_test_add_func("/sgi-fetch/nested", test_fetch_nested);
+    g_test_add_func("/sgi-fetch/reused", test_fetch_reused);
     return g_test_run();
 }

@@ -35,6 +35,7 @@ typedef enum SGIFailure {
     SGI_FAIL_BOUNDS = 2,        /* outside the page list, plane or pool */
     SGI_FAIL_FORMAT = 3,        /* no conversion between the two formats */
     SGI_FAIL_FULL = 4,          /* a fixed-size record queue was full */
+    SGI_FAIL_BUSY = 5,          /* the fetch was still running a list */
 } SGIFailure;
 
 /*
