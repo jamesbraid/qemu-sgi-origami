@@ -248,6 +248,28 @@ if QemuSystemTest is not None:
                 self.assertEqual(int(mtu.group(1)), 1500,
                                  'ef0 reported a non-standard MTU')
 
+                def read_ef_counters(tag):
+                    rc, output = _run_guest(con, 'netstat -in', tag, 60)
+                    self.assertEqual(rc, 0, 'ef0 netstat -in query failed')
+                    rows = map(str.split, output.splitlines())
+                    row = next((fields for fields in rows if fields and
+                                fields[0] in (IFACE, IFACE + '*')), None)
+                    self.assertIsNotNone(row,
+                                         'ef0 row missing from netstat -in')
+                    self.assertGreaterEqual(len(row), 8,
+                                            'malformed ef0 row in netstat -in')
+                    counters = row[4:8]
+                    self.assertTrue(all(value.isdigit()
+                                        for value in counters),
+                                    'malformed ef0 packet/error counters in '
+                                    'netstat -in')
+                    return tuple(map(int, counters))
+
+                # Take the baseline after ifconfig has brought ef0 up, then
+                # require its own counters to account for the checked traffic.
+                ipkts_before, ierrs_before, opkts_before, oerrs_before = \
+                    read_ef_counters('ef_counters_before')
+
                 # Host to guest: compare the deterministic host payload using
                 # the POSIX cksum implementation on both ends.
                 payload = bytes(range(256)) * (PAYLOAD_BYTES // 256)
@@ -370,6 +392,17 @@ if QemuSystemTest is not None:
                     f'{len(udp_controls)} 4-byte zero controls')
                 self.assertEqual(udp_packets, [bytes(1024)] * 8,
                                  'guest-to-host UDP payload mismatch')
+
+                ipkts_after, ierrs_after, opkts_after, oerrs_after = \
+                    read_ef_counters('ef_counters_after')
+                self.assertGreater(ipkts_after, ipkts_before,
+                                   'ef0 Ipkts did not increase during traffic')
+                self.assertGreater(opkts_after, opkts_before,
+                                   'ef0 Opkts did not increase during traffic')
+                self.assertEqual(ierrs_after, ierrs_before,
+                                 'ef0 Ierrs increased during traffic')
+                self.assertEqual(oerrs_after, oerrs_before,
+                                 'ef0 Oerrs increased during traffic')
             except HarnessError as error:
                 self.fail(f'IRIX ef network run stalled: {error} '
                           f'(console log: {log_path})')
