@@ -18,6 +18,11 @@ void sgi_mgras_gl_context_loaded(SGIMgrasState *s);
 /* The GE ports, through which the kernel copies GE external RAM. */
 #define SGI_MGRAS_GE_PORTS      0x058000
 #define SGI_MGRAS_GE_PORTS_END  0x058400
+/* GL floats travel as the IEEE single words the client sent. */
+#define VMSTATE_SGI_GL_FLOATS(_f, _s, _n, _v) \
+    VMSTATE_ARRAY(_f, _s, _n, _v, vmstate_info_uint32, float)
+/* The open primitive, in the layout of the stream since version 15. */
+extern const VMStateDescription vmstate_sgi_mgras_gl_primitive;
 extern const VMStateDescription vmstate_sgi_mgras_gl_context;
 extern const VMStateDescription vmstate_sgi_mgras_gl_context_v20;
 extern const VMStateDescription vmstate_sgi_mgras_gl_context_v21;
