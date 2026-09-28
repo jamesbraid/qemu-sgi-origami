@@ -23,6 +23,8 @@
 
 /* Registers sit in the low half of an eight-byte slot: offset plus four. */
 #define LINK(n) (0x100 + ((n) - 8) * 0x40)
+/* 1024 core cycles at 100 MHz: the reset-loop guard. */
+#define WARM_RESET_QUIET_NS (1024 * 10)
 
 #define ID_REVISION 2
 #define ID_PART 0xd000
@@ -355,7 +357,22 @@ static void test_warm_reset(void)
     qtest_set_irq_in(qts, XBOW, "warm-reset", PORT_A - 8, 0);
     g_assert_cmphex(reg_read(qts, 0x20), ==, 0xfe);
     g_assert_cmpuint(qtest_get_irq_raise_count(qts, PORT_E - 8), ==, 0);
-    /* Fenced in: the core resets and every other fenced port is reset. */
+    /*
+     * The link layer saw a reset pattern all the same, so it opened its
+     * guard (inferred): a reset widget 0 would admit, inside the window,
+     * does nothing. Then wait the guard out.
+     */
+    reg_write(qts, 0x78, 0xff);
+    qtest_clock_step(qts, WARM_RESET_QUIET_NS - 1);
+    qtest_set_irq_in(qts, XBOW, "warm-reset", PORT_A - 8, 1);
+    qtest_set_irq_in(qts, XBOW, "warm-reset", PORT_A - 8, 0);
+    g_assert_cmphex(reg_read(qts, 0x20), ==, 0xfe);
+    g_assert_cmpuint(qtest_get_irq_raise_count(qts, PORT_E - 8), ==, 0);
+    qtest_clock_step(qts, 1);
+    /*
+     * Fenced in: the core resets and every port whose fence admits the
+     * source is reset, the source's own included ("itself included").
+     */
     reg_write(qts, 0x78, 0xff);
     reg_write(qts, 0x80 + (PORT_E - 8) * 8, 0xff & ~(1U << (PORT_A - 8)));
     qtest_set_irq_in(qts, XBOW, "warm-reset", PORT_A - 8, 1);
@@ -364,7 +381,59 @@ static void test_warm_reset(void)
     g_assert_cmphex(reg_read(qts, 0xc0), ==, 0);
     g_assert_cmpuint(qtest_get_irq_raise_count(qts, 0xf - 8), ==, 1);
     g_assert_cmpuint(qtest_get_irq_raise_count(qts, PORT_E - 8), ==, 0);
+    g_assert_cmpuint(qtest_get_irq_raise_count(qts, PORT_A - 8), ==, 1);
+
+    /*
+     * The resets that come back, or any other, inside 1024 core cycles
+     * of the first are ignored (printed page 122).
+     */
+    reg_write(qts, 0x20, 0xfe);
+    qtest_clock_step(qts, WARM_RESET_QUIET_NS - 1);
+    qtest_set_irq_in(qts, XBOW, "warm-reset", 0xf - 8, 1);
+    qtest_set_irq_in(qts, XBOW, "warm-reset", 0xf - 8, 0);
+    g_assert_cmphex(reg_read(qts, 0x20), ==, 0xfe);
+    g_assert_cmpuint(qtest_get_irq_raise_count(qts, 0xf - 8), ==, 1);
+    qtest_clock_step(qts, 1);
+    qtest_set_irq_in(qts, XBOW, "warm-reset", 0xf - 8, 1);
+    qtest_set_irq_in(qts, XBOW, "warm-reset", 0xf - 8, 0);
+    g_assert_cmphex(reg_read(qts, 0x20), ==, 0x80);
+    g_assert_cmpuint(qtest_get_irq_raise_count(qts, 0xf - 8), ==, 2);
+    qtest_quit(qts);
+}
+
+/* A machine reset ends the quiet window: the next warm reset counts. */
+static void test_system_reset_ends_the_window(void)
+{
+    QTestState *qts = xbow_start("");
+
+    qtest_set_irq_in(qts, XBOW, "warm-reset", PORT_A - 8, 1);
+    qtest_set_irq_in(qts, XBOW, "warm-reset", PORT_A - 8, 0);
+    qtest_system_reset(qts);
+    reg_write(qts, 0x20, 0xfe);
+    qtest_set_irq_in(qts, XBOW, "warm-reset", PORT_A - 8, 1);
+    qtest_set_irq_in(qts, XBOW, "warm-reset", PORT_A - 8, 0);
+    g_assert_cmphex(reg_read(qts, 0x20), ==, 0x80);
+    qtest_quit(qts);
+}
+
+/*
+ * A link's reset one-shot resets the widget down that link alone
+ * (printed pages 70 and 122): the core and every other link are not
+ * reset, and a present link still reports alive.
+ */
+static void test_link_reset_one_shot(void)
+{
+    QTestState *qts = xbow_start("");
+
+    qtest_irq_intercept_out_named(qts, XBOW, "warm-reset-out");
+    reg_write(qts, 0x20, 0xfe);
+    reg_write(qts, LINK(PORT_E) + 0x30, 0);
+    g_assert_cmpuint(qtest_get_irq_raise_count(qts, PORT_E - 8), ==, 1);
+    g_assert_cmpuint(qtest_get_irq_raise_count(qts, 0xf - 8), ==, 0);
     g_assert_cmpuint(qtest_get_irq_raise_count(qts, PORT_A - 8), ==, 0);
+    g_assert_cmphex(reg_read(qts, 0x20), ==, 0xfe);
+    g_assert_cmphex(reg_read(qts, LINK(PORT_E) + 0x10) & (1U << 31), ==,
+                    1U << 31);
     qtest_quit(qts);
 }
 
@@ -436,6 +505,10 @@ int main(int argc, char **argv)
     qtest_add_func("/sn1/xbridge-xbow/interrupt-packets",
                    test_interrupt_packets);
     qtest_add_func("/sn1/xbridge-xbow/warm-reset", test_warm_reset);
+    qtest_add_func("/sn1/xbridge-xbow/link-reset-one-shot",
+                   test_link_reset_one_shot);
+    qtest_add_func("/sn1/xbridge-xbow/system-reset-ends-the-window",
+                   test_system_reset_ends_the_window);
     qtest_add_func("/sn1/xbridge-xbow/migration-reset", test_migration_reset);
     return g_test_run();
 }

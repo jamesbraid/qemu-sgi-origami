@@ -27,6 +27,8 @@ struct SGIXBridgeXbowState {
     uint8_t links_8bit;
     uint32_t revision;
     qemu_irq warm_reset[SGI_XBRIDGE_XBOW_LINKS];
+    /* A warm reset arriving before this virtual time is ignored. */
+    int64_t warm_reset_quiet_until;
     MemoryRegion *target[16];
     AddressSpace target_as[16];
 };

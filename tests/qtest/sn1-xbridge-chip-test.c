@@ -336,9 +336,9 @@ static void test_warm_reset_external_ports(void)
     qtest_irq_intercept_out_named(qts, CHIP, "warm-reset-out");
     qtest_set_irq_in(qts, CHIP, "warm-reset", HOST_PORT - 8, 1);
     qtest_set_irq_in(qts, CHIP, "warm-reset", HOST_PORT - 8, 0);
-    /* Every other admitted external port goes out; the source does not. */
+    /* Every admitted external port goes out, the source's own included. */
     g_assert_cmpuint(qtest_get_irq_raise_count(qts, 9 - 8), ==, 1);
-    g_assert_cmpuint(qtest_get_irq_raise_count(qts, HOST_PORT - 8), ==, 0);
+    g_assert_cmpuint(qtest_get_irq_raise_count(qts, HOST_PORT - 8), ==, 1);
     qtest_quit(qts);
 }
 
