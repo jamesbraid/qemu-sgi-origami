@@ -79,6 +79,7 @@ static uint32_t rtype(int rs, int rt, int rd, int sa, unsigned funct)
 #define ORI(_rt, _rs, _imm)     itype(0x0d, _rs, _rt, _imm)
 #define XORI(_rt, _rs, _imm)    itype(0x0e, _rs, _rt, _imm)
 #define ANDI(_rt, _rs, _imm)    itype(0x0c, _rs, _rt, _imm)
+#define LW(_rt, _off, _base)    itype(0x23, _base, _rt, _off)
 #define LD(_rt, _off, _base)    itype(0x37, _base, _rt, _off)
 #define SD(_rt, _off, _base)    itype(0x3f, _base, _rt, _off)
 #define CACHE(_op, _off, _base) itype(0x2f, _base, _op, _off)
@@ -236,8 +237,11 @@ static uint64_t result(QTestState *s, unsigned int slot)
     return qtest_readq(s, RESULT_PHYS + slot);
 }
 
-/* Start both processors, and wait for slices A and C to finish. */
-static QTestState *run(const EmitBody body[4], char **prom)
+/*
+ * Start both processors, with further arguments @extra, and wait for
+ * slices A and C to finish.
+ */
+static QTestState *run(const EmitBody body[4], const char *extra, char **prom)
 {
     g_autofree char *quoted = NULL;
     QTestState *s;
@@ -246,7 +250,8 @@ static QTestState *run(const EmitBody body[4], char **prom)
     *prom = create_prom(body);
     quoted = g_shell_quote(*prom);
     s = qtest_initf("-M origin300 -cpu R14000 -smp 2 -m 512M -bios %s "
-                    "-accel tcg,thread=multi -no-shutdown -S", quoted);
+                    "-accel tcg,thread=multi -no-shutdown -S %s", quoted,
+                    extra ? extra : "");
     qtest_writeq(s, SN1_MD_MEMORY_CONFIG, SN1_MD_INSTALLED_SELECT2);
     qtest_qmp_assert_success(s, "{'execute':'cont'}");
     for (tries = 0; tries < POLL_TRIES; tries++) {
@@ -278,6 +283,15 @@ static void flush_repeatedly(Program *p)
     emit_loop_end(p, top);
 }
 
+/* Point t1 at the local board identification register, uncached. */
+static void emit_board_id_address(Program *p)
+{
+    emit(p, LUI(R_T1, 0x9000));
+    emit(p, DSLL32(R_T1, R_T1));
+    emit(p, LUI(R_T3, 0x1400));
+    emit(p, DADDU(R_T1, R_T1, R_T3));
+}
+
 /*
  * Read the local board identification register over and over, summing
  * what each read returns; a read that faults adds nothing.
@@ -286,10 +300,7 @@ static void read_board_id_repeatedly(Program *p)
 {
     unsigned int top;
 
-    emit(p, LUI(R_T1, 0x9000));
-    emit(p, DSLL32(R_T1, R_T1));
-    emit(p, LUI(R_T3, 0x1400));
-    emit(p, DADDU(R_T1, R_T1, R_T3));
+    emit_board_id_address(p);
     emit_count(p, REQUEST_LOOPS);
     top = p->pc;
     emit(p, DADDU(R_T3, R_ZERO, R_ZERO));
@@ -316,7 +327,7 @@ static void test_register_read_beside_requests(void)
         g_test_skip("TCG is unavailable");
         return;
     }
-    s = run(body, &prom);
+    s = run(body, NULL, &prom);
     g_assert_cmphex(result(s, RESULT_CAUSE), ==, 0);
     g_assert_cmpuint(result(s, RESULT_ERRORS), ==, 0);
     g_assert_cmphex(result(s, RESULT_SUM(2)), ==,
@@ -389,12 +400,64 @@ static void test_concurrent_requests_all_served(void)
         g_test_skip("TCG is unavailable");
         return;
     }
-    s = run(body, &prom);
+    s = run(body, NULL, &prom);
     g_assert_cmphex(result(s, RESULT_CAUSE), ==, 0);
     g_assert_cmpuint(result(s, RESULT_ERRORS), ==, 0);
     g_assert_cmpuint(result(s, RESULT_SUM(0)), ==, FOLLOWED_LOOPS);
     g_assert_cmpuint(result(s, RESULT_SUM(2)), ==, FOLLOWED_LOOPS);
     finish(s, prom);
+}
+
+/* A four-byte read of the board ID, which answers only eight bytes. */
+static void read_board_id_narrow(Program *p)
+{
+    emit_board_id_address(p);
+    emit(p, LW(R_T3, 0, R_T1));
+}
+
+static void do_nothing(Program *p)
+{
+}
+
+/*
+ * The bus error a device's refusal raises names the refusal. The log said
+ * the access "reached no device" for every failure, which sent the
+ * investigation of the refused board ID reads above looking for a hole in
+ * the address map.
+ */
+static void test_refused_read_is_named(void)
+{
+    const EmitBody body[4] = {
+        [0] = read_board_id_narrow,
+        [2] = do_nothing,
+    };
+    g_autofree char *log = NULL;
+    g_autofree char *extra = NULL;
+    g_autofree char *text = NULL;
+    char *prom;
+    QTestState *s;
+    int fd;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+    fd = g_file_open_tmp("sn1-system-request-log-XXXXXX", &log, NULL);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(close(fd), ==, 0);
+    extra = g_strdup_printf("-d unimp -D %s", log);
+    s = run(body, extra, &prom);
+    g_assert_cmphex(result(s, RESULT_CAUSE) & 0x7c, ==, 7 << 2);
+    g_assert_cmpuint(result(s, RESULT_ERRORS), ==, 1);
+    finish(s, prom);
+
+    g_assert_true(g_file_get_contents(log, &text, NULL, NULL));
+    g_assert_nonnull(strstr(text, "mips: load of 4 bytes at "
+                                  "0x9000000014000000 (physical "
+                                  "0x10014000000) was refused by its "
+                                  "device; raising a bus error"));
+    g_assert_null(strstr(text, "reached no device"));
+    g_assert_cmpint(unlink(log), ==, 0);
 }
 
 int main(int argc, char **argv)
@@ -404,5 +467,7 @@ int main(int argc, char **argv)
                    test_register_read_beside_requests);
     qtest_add_func("sn1/system-request/concurrent-requests-all-served",
                    test_concurrent_requests_all_served);
+    qtest_add_func("sn1/system-request/refused-read-is-named",
+                   test_refused_read_is_named);
     return g_test_run();
 }

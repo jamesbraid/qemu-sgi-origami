@@ -351,6 +351,12 @@ void mips_cpu_do_transaction_failed(CPUState *cs, hwaddr physaddr,
 {
     MIPSCPUClass *mcc = MIPS_CPU_GET_CLASS(cs);
     CPUMIPSState *env = cpu_env(cs);
+    /*
+     * Only a decode error means nothing answered; any other failure came
+     * from a device that did, which is a different bug to go looking for.
+     */
+    const char *outcome = response == MEMTX_DECODE_ERROR ?
+                          "reached no device" : "was refused by its device";
 
     trace_mips_transaction_failed(cs->cpu_index, addr, physaddr, size,
                                   access_type, response);
@@ -379,9 +385,9 @@ void mips_cpu_do_transaction_failed(CPUState *cs, hwaddr physaddr,
     if (access_type == MMU_DATA_STORE && env->cfg.stores_are_posted) {
         qemu_log_mask(LOG_UNIMP,
                       "mips: store of %u byte%s at 0x%" VADDR_PRIx
-                      " (physical 0x%" HWADDR_PRIx ") reached no device; the "
-                      "write is posted and completes\n",
-                      size, size == 1 ? "" : "s", addr, physaddr);
+                      " (physical 0x%" HWADDR_PRIx ") %s; the write is "
+                      "posted and completes\n",
+                      size, size == 1 ? "" : "s", addr, physaddr, outcome);
         return;
     }
 
@@ -396,11 +402,10 @@ void mips_cpu_do_transaction_failed(CPUState *cs, hwaddr physaddr,
      */
     qemu_log_mask(LOG_UNIMP,
                   "mips: %s of %u byte%s at 0x%" VADDR_PRIx " (physical "
-                  "0x%" HWADDR_PRIx ") reached no device; raising a bus "
-                  "error\n",
+                  "0x%" HWADDR_PRIx ") %s; raising a bus error\n",
                   access_type == MMU_INST_FETCH ? "instruction fetch" :
                   access_type == MMU_DATA_STORE ? "store" : "load",
-                  size, size == 1 ? "" : "s", addr, physaddr);
+                  size, size == 1 ? "" : "s", addr, physaddr, outcome);
 
     if (access_type == MMU_INST_FETCH) {
         do_raise_exception(env, EXCP_IBE, retaddr);
