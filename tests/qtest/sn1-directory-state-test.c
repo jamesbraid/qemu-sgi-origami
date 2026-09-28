@@ -1252,6 +1252,38 @@ static void test_flush_of_a_released_line(void)
     finish(s, prom);
 }
 
+/* Read the word again without naming the line, load it, read it again. */
+static void reread_then_load(Program *p)
+{
+    emit_publish(p, 0x10);
+    emit(p, LD(R_T3, 0, R_T0));
+    emit_publish(p, 0x18);
+}
+
+/*
+ * A naming is spent by the page it lets the unit watch: once that page
+ * has been given up, reading the line's word again, as a later walk
+ * would, does not watch it again until a processor names the line anew.
+ */
+static void test_naming_is_spent_on_watching(void)
+{
+    const Scenario sc = {
+        .cpus = "2",
+        STEPS({ 0, emit_first }, { 0, evict }, { 0, reread_then_load }),
+    };
+    char *prom;
+    QTestState *s;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+    s = run_scenario(&sc, &prom);
+    g_assert_true(flat_view_type_is(s, LINE_PHYS, "ram"));
+    g_assert_cmphex(result(s, 0x18) & DIRECTORY_FIELDS, ==, UNOWNED);
+    finish(s, prom);
+}
+
 static void migrate_wait(QTestState *qts)
 {
     int64_t deadline = g_get_monotonic_time() + 30 * G_TIME_SPAN_SECOND;
@@ -1365,6 +1397,8 @@ int main(int argc, char **argv)
                    test_loadvm_forgets_watching);
     qtest_add_func("sn1/directory-state/flush-of-a-released-line",
                    test_flush_of_a_released_line);
+    qtest_add_func("sn1/directory-state/naming-is-spent-on-watching",
+                   test_naming_is_spent_on_watching);
     qtest_add_func("sn1/directory-state/page-is-watched",
                    test_page_is_watched);
     qtest_add_func("sn1/directory-state/owner-from-the-word",
