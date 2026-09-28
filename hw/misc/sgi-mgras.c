@@ -1401,13 +1401,9 @@ static int mgras_post_load(void *opaque, int version_id)
         s->ge_write_ptr[0] > s->ge_words[0] ||
         s->ge_write_ptr[1] > s->ge_words[1] ||
         s->context_words > ARRAY_SIZE(s->context) ||
-        s->cmd_token_reg >= ARRAY_SIZE(s->rss) ||
-        s->cmd_token_payload_count > ARRAY_SIZE(s->cmd_token_payload) ||
-        (s->cmd_token_class == SGI_MGRAS_CMD_TOKEN_DISCARD &&
-         s->cmd_token_words_remaining >
-         SGI_MGRAS_CMD_TOKEN_MAX_BLOCK_WORDS) ||
-        (s->cmd_token_class != SGI_MGRAS_CMD_TOKEN_DISCARD &&
-         s->cmd_token_words_remaining > ARRAY_SIZE(s->cmd_token_payload)) ||
+        !sgi_mgras_cmd_parser_valid(s->cmd_token_class, s->cmd_token_reg,
+                                    s->cmd_token_words_remaining,
+                                    s->cmd_token_payload_count) ||
         s->dma_map_words_remaining > SGI_MGRAS_CMD_TOKEN_MAX_DISCARD_WORDS ||
         s->pio_x > s->width || s->pio_y > s->height ||
         !mgras_xmap_indices_valid(s) ||
@@ -1488,7 +1484,7 @@ static const VMStateDescription vmstate_sgi_mgras_xmap = {
  * changes.
  */
 static const VMStateDescription vmstate_sgi_mgras = {
-    .name = TYPE_SGI_MGRAS, .version_id = 19, .minimum_version_id = 9,
+    .name = TYPE_SGI_MGRAS, .version_id = 20, .minimum_version_id = 9,
     .post_load = mgras_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32(front_count, SGIMgrasState),
@@ -1682,6 +1678,14 @@ static const VMStateDescription vmstate_sgi_mgras = {
         VMSTATE_STRUCT_SUB_ARRAY(xmap, SGIMgrasState, 1,
                                  SGI_MGRAS_MAX_PP1 - 1, 19,
                                  vmstate_sgi_mgras_xmap, SGIMgrasXmap),
+        /*
+         * Version 20 keeps each context's parser position. An older
+         * stream leaves every context not loaded between packets.
+         */
+        VMSTATE_STRUCT_ARRAY(gl_context, SGIMgrasState,
+                             SGI_MGRAS_GL_CONTEXTS, 20,
+                             vmstate_sgi_mgras_gl_context_v20,
+                             SGIMgrasGLContext),
         VMSTATE_END_OF_LIST()
     }
 };

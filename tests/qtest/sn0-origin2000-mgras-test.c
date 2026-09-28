@@ -7237,6 +7237,74 @@ static void test_gl_triangle_spans_a_context_switch(void)
     g_assert_cmphex(gl_window_pixel(qts, 61, 50), ==, 0xffff00);
 }
 
+/*
+ * A switch can land inside a packet. In run irix-20260928T000530-78d0c5
+ * (seq 12929748 to 12930582) perfly's context 0x84c6 was switched out 33
+ * words into the 156 data words of its fourth GE table load (header
+ * 0x80000284), context 0x5420 then sent one glFlush, and 0x84c6 came back
+ * and sent the rest of its block. Each context's words are its own
+ * stream: b's clear must draw, and a's remaining block words, fence tokens
+ * here, must stay data.
+ */
+static void test_gl_parser_follows_the_context(void)
+{
+    mgras_reset();
+
+    gl_enter_slot(qts, GL_SLOT_A);
+    gl_word(qts, GL_CONTEXT_OPENER);
+    gl_word(qts, 0x80000284);
+    for (int i = 0; i < 5 + 33; i++) {
+        gl_word(qts, MGRAS_FENCE_TOKEN);
+    }
+
+    gl_enter_slot(qts, GL_SLOT_B);
+    gl_word(qts, GL_CONTEXT_OPENER);
+    gl_clear_color(qts, 0, 1, 0, 1);
+    gl_word(qts, GL_CLEAR_COLOR_BUFFER);
+    g_assert_cmphex(gl_window_pixel(qts, 1, 1), ==, 0x00ff00);
+
+    gl_enter_slot(qts, GL_SLOT_A);
+    for (int i = 33; i < 156; i++) {
+        gl_word(qts, MGRAS_FENCE_TOKEN);
+    }
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_FLAGS) & MGRAS_HQ_FLAG_FENCE, ==,
+                    0);
+    gl_clear_color(qts, 1, 0, 0, 1);
+    gl_word(qts, GL_CLEAR_COLOR_BUFFER);
+    g_assert_cmphex(gl_window_pixel(qts, 1, 1), ==, 0xff0000);
+    gl_word(qts, MGRAS_FENCE_TOKEN);
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_FLAGS) & MGRAS_HQ_FLAG_FENCE, ==,
+                    MGRAS_HQ_FLAG_FENCE);
+}
+
+/*
+ * The payload words a context has already sent wait with it: a's
+ * glClearColor is split by b's whole clear, and a's colour is the four
+ * words a sent, not b's.
+ */
+static void test_gl_packet_split_by_a_context_switch(void)
+{
+    mgras_reset();
+
+    gl_enter_slot(qts, GL_SLOT_A);
+    gl_word(qts, GL_CONTEXT_OPENER);
+    gl_word(qts, GL_CLEAR_COLOR_HDR);
+    gl_float(qts, 1);
+    gl_float(qts, 0);
+
+    gl_enter_slot(qts, GL_SLOT_B);
+    gl_word(qts, GL_CONTEXT_OPENER);
+    gl_clear_color(qts, 0, 1, 1, 1);
+    gl_word(qts, GL_CLEAR_COLOR_BUFFER);
+    g_assert_cmphex(gl_window_pixel(qts, 1, 1), ==, 0x00ffff);
+
+    gl_enter_slot(qts, GL_SLOT_A);
+    gl_float(qts, 1);
+    gl_float(qts, 1);
+    gl_word(qts, GL_CLEAR_COLOR_BUFFER);
+    g_assert_cmphex(gl_window_pixel(qts, 1, 1), ==, 0xff00ff);
+}
+
 static void test_hq_flags_fence_token_sets_bit(void)
 {
     mgras_reset();
@@ -8545,7 +8613,8 @@ static void test_gl_state_migration(void)
 /*
  * Every context's GL state crosses a migration, and so does which one is
  * current: b's clear colour applies before any switch on the destination,
- * and a's after one.
+ * and a's after one. So does a's half-sent glClearColor, which a finishes
+ * on the destination.
  */
 static void test_gl_context_table_migration(void)
 {
@@ -8566,6 +8635,9 @@ static void test_gl_context_table_migration(void)
     gl_enter_slot(from, GL_SLOT_A);
     gl_word(from, GL_CONTEXT_OPENER);
     gl_clear_color(from, 1, 0, 0, 1);
+    gl_word(from, GL_CLEAR_COLOR_HDR);
+    gl_float(from, 1);
+    gl_float(from, 0);
     gl_enter_slot(from, GL_SLOT_B);
     gl_word(from, GL_CONTEXT_OPENER);
     gl_clear_color(from, 0, 1, 0, 1);
@@ -8575,8 +8647,10 @@ static void test_gl_context_table_migration(void)
     gl_word(to, GL_CLEAR_COLOR_BUFFER);
     g_assert_cmphex(mgras_test_pixel(to, 300, 300), ==, 0x00ff00);
     gl_enter_slot(to, GL_SLOT_A);
+    gl_float(to, 1);
+    gl_float(to, 1);
     gl_word(to, GL_CLEAR_COLOR_BUFFER);
-    g_assert_cmphex(mgras_test_pixel(to, 300, 300), ==, 0xff0000);
+    g_assert_cmphex(mgras_test_pixel(to, 300, 300), ==, 0xff00ff);
     g_assert_cmphex(mgras_qom_get_uint(to, "x-test-error"), ==, 0);
 
     qtest_quit(to);
@@ -9248,6 +9322,11 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/origin2000/mgras/"
                    "gl-context-table-replaces-the-least-recent",
                    test_gl_context_table_replaces_the_least_recent);
+    qtest_add_func("sn0/origin2000/mgras/gl-parser-follows-the-context",
+                   test_gl_parser_follows_the_context);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "gl-packet-split-by-a-context-switch",
+                   test_gl_packet_split_by_a_context_switch);
     qtest_add_func("sn0/origin2000/mgras/gl-triangle-spans-a-context-switch",
                    test_gl_triangle_spans_a_context_switch);
     qtest_add_func("sn0/origin2000/mgras/hq-flags-set-and-clear",

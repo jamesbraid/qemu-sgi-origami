@@ -17,9 +17,14 @@ void sgi_mgras_gl_context_loaded(SGIMgrasState *s);
 #define SGI_MGRAS_GE_PORTS      0x058000
 #define SGI_MGRAS_GE_PORTS_END  0x058400
 extern const VMStateDescription vmstate_sgi_mgras_gl_context;
+extern const VMStateDescription vmstate_sgi_mgras_gl_context_v20;
 
 /* Note GE-port traffic the per-context state cannot follow. */
 void sgi_mgras_gl_ge_port_access(SGIMgrasState *s, hwaddr addr, bool write);
+/* Whether a migrated parser position is in range. */
+bool sgi_mgras_cmd_parser_valid(uint32_t cls, uint32_t reg,
+                                uint32_t words_remaining,
+                                uint32_t payload_count);
 /* Whether migrated GL state is in range. */
 bool sgi_mgras_gl_post_load(SGIMgrasState *s);
 
