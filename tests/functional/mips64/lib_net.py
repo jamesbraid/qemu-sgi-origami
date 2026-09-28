@@ -456,6 +456,49 @@ def icmp_ipv4_exchange(frames, guest_ip, gateway_ip):
     return result
 
 
+def icmp_echo_exchange(frames, guest_ip, gateway_ip):
+    """Match gateway echo replies to guest requests by sequence and payload.
+
+    The identifier is omitted because user-mode networking can rewrite it.
+    The returned match count proves the packet pair appeared on the wire; it
+    does not prove the guest accepted the reply.
+    """
+    guest = bytes(map(int, guest_ip.split(".")))
+    gateway = bytes(map(int, gateway_ip.split(".")))
+    requests = {}
+    replies = {}
+    for frame in frames:
+        if len(frame) < 42 or frame[12:14] != b"\x08\x00":
+            continue
+        ip = frame[14:]
+        ihl = (ip[0] & 0x0f) * 4
+        if (ip[0] >> 4 != 4 or ihl < 20 or len(ip) < ihl + 8
+                or ip[9] != 1):
+            continue
+        total_length = int.from_bytes(ip[2:4], "big")
+        if total_length < ihl + 8 or total_length > len(ip):
+            continue
+        if ip[12:16] == guest and ip[16:20] == gateway:
+            expected_type, bucket = 8, requests
+        elif ip[12:16] == gateway and ip[16:20] == guest:
+            expected_type, bucket = 0, replies
+        else:
+            continue
+        icmp = ip[ihl:total_length]
+        if icmp[0] != expected_type or icmp[1] != 0:
+            continue
+        sequence = int.from_bytes(icmp[6:8], "big")
+        key = (sequence, icmp[8:])
+        bucket[key] = bucket.get(key, 0) + 1
+    matching = sum(min(count, replies.get(key, 0))
+                   for key, count in requests.items())
+    return {
+        "requests": sum(requests.values()),
+        "replies": sum(replies.values()),
+        "matching_replies": matching,
+    }
+
+
 def arp_neighbor_line(output, address):
     """Return the `arp -an` entry for address, resolved or incomplete."""
     address_re = re.compile(

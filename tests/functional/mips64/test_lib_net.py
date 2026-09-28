@@ -28,7 +28,8 @@ from lib_net import (DHCP_NAMES, OPENBSD_LOGIN_STAGES, OPENBSD_TRIPWIRES,
                      Console, GuestFault,
                      HarnessError, IrixConsole, arp_neighbor_line,
                      arp_neighbor_mac,
-                     arp_resolution, dhcp_kind, icmp_ipv4_exchange,
+                     arp_resolution, dhcp_kind, icmp_echo_exchange,
+                     icmp_ipv4_exchange,
                      drive_irix_to_shell, lease_established, login_steps,
                      ordered_stages, summarise_pcap,
                      tftp_transfer, tftp_transfer_problems,
@@ -118,11 +119,13 @@ def _tftp_capture(data=b'file contents', filename=b'boot/sash64', error=False,
     return _pcap_bytes(frames)
 
 
-def _icmp_ipv4_frame(src_ip, dst_ip, valid_checksum=True):
+def _icmp_ipv4_frame(src_ip, dst_ip, valid_checksum=True, icmp_type=8,
+                     identifier=0, sequence=0, payload=b'\x00' * 8):
     eth = (b"\x52\x54\x00\x12\x34\x56\x52\x54\x00\xab\xcd\xef"
            + b"\x08\x00")
     header = bytearray(
-        b"\x45\x00\x00\x1c\x00\x00\x40\x00\x40\x01\x00\x00"
+        b"\x45\x00" + (28 + len(payload)).to_bytes(2, "big")
+        + b"\x00\x00\x40\x00\x40\x01\x00\x00"
         + bytes(map(int, src_ip.split(".")))
         + bytes(map(int, dst_ip.split("."))))
     total = sum((header[i] << 8) | header[i + 1]
@@ -133,7 +136,10 @@ def _icmp_ipv4_frame(src_ip, dst_ip, valid_checksum=True):
     header[10:12] = checksum.to_bytes(2, "big")
     if not valid_checksum:
         header[10] ^= 1
-    return eth + header + b"\x08\x00\x00\x00\x00\x00\x00\x00"
+    icmp = (bytes([icmp_type, 0]) + b"\x00\x00"
+            + identifier.to_bytes(2, "big")
+            + sequence.to_bytes(2, "big") + payload)
+    return eth + header + icmp
 
 
 class DhcpKindTests(unittest.TestCase):
@@ -278,6 +284,7 @@ class IrixTgVerdictTests(unittest.TestCase):
             "icmp_guest_to_gateway": 1,
             "icmp_gateway_to_guest": 1,
             "icmp_invalid_packets": 0,
+            "icmp_echo_matching_replies": 1,
         }
 
     def test_requires_the_existing_traffic_verdict_and_arp_resolution(self):
@@ -321,6 +328,15 @@ class IrixTgVerdictTests(unittest.TestCase):
         self.assertEqual(report["verdict"], "FAIL")
         self.assertEqual(len(report["problems"]), 2)
 
+    def test_requires_a_matched_echo_payload(self):
+        traffic = dict(self.traffic, icmp_echo_matching_replies=0)
+
+        report = tg_acceptance_verdict(True, True, True, True, traffic)
+
+        self.assertEqual(report["verdict"], "FAIL")
+        self.assertTrue(any("sequence and exact payload" in problem
+                            for problem in report["problems"]))
+
 
 class IcmpIpv4ExchangeTests(unittest.TestCase):
 
@@ -355,6 +371,42 @@ class IcmpIpv4ExchangeTests(unittest.TestCase):
 
         self.assertEqual(summary["guest_to_gateway"], 1)
         self.assertEqual(summary["invalid_packets"], 1)
+
+
+class IcmpEchoExchangeTests(unittest.TestCase):
+
+    def test_matches_sequence_and_exact_payload_but_ignores_identifier(self):
+        payload = b"timestamp and data"
+        result = icmp_echo_exchange([
+            _icmp_ipv4_frame("10.0.2.15", "10.0.2.2", sequence=3,
+                             identifier=0x040f, payload=payload),
+            _icmp_ipv4_frame("10.0.2.2", "10.0.2.15", icmp_type=0,
+                             sequence=3, identifier=0x0001, payload=payload),
+        ], "10.0.2.15", "10.0.2.2")
+
+        self.assertEqual(result, {
+            "requests": 1, "replies": 1, "matching_replies": 1,
+        })
+
+    def test_rejects_mismatched_sequence_payload_and_unrelated_frames(self):
+        request = _icmp_ipv4_frame(
+            "10.0.2.15", "10.0.2.2", sequence=3, payload=b"request")
+        wrong_sequence = _icmp_ipv4_frame(
+            "10.0.2.2", "10.0.2.15", icmp_type=0, sequence=4,
+            payload=b"request")
+        wrong_payload = _icmp_ipv4_frame(
+            "10.0.2.2", "10.0.2.15", icmp_type=0, sequence=3,
+            payload=b"changed")
+        unrelated = _icmp_ipv4_frame(
+            "10.0.2.15", "224.0.0.1", sequence=3, payload=b"request")
+
+        result = icmp_echo_exchange(
+            [request, wrong_sequence, wrong_payload, unrelated, b"bad"],
+            "10.0.2.15", "10.0.2.2")
+
+        self.assertEqual(result, {
+            "requests": 1, "replies": 2, "matching_replies": 0,
+        })
 
 class TftpTransferTests(unittest.TestCase):
 

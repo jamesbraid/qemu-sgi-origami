@@ -23,14 +23,15 @@ replies back off it, clean). That is a full round-trip exercise of the device's
 data path, transmit and receive, checked at the counters the driver itself
 maintains.
 
-Why the interface counters and not the ping's own summary: over QEMU user-mode
-SLIRP the guest ping prints "0 packets received" even when the replies did
-arrive, because SLIRP answers the gateway echo with an ICMP id the guest ping
-does not match back to its request -- a known SLIRP artifact, not a device
-fault. So this test never trusts the ping's received count; it trusts tg1's
-Ipkts/Opkts in `netstat -in` (both must climb, Ierrs must stay zero) together
-with the driver's link-up notice. The register, ring and DMA contract is
-exercised separately by the tg qtest.
+Why the interface counters and not the ping's own summary: the saved packet
+capture has eight gateway echo replies, each matching a guest request by
+sequence and exact payload, while the guest ping still prints "0 packets
+received". The capture establishes that the reply reached the adapter's link;
+it does not establish that IRIX accepted it. This test therefore checks the
+wire match and tg1's Ipkts/Opkts in `netstat -in` (both must climb, Ierrs must
+stay zero) together with the driver's link-up notice, without treating the
+ping summary as proof of delivery to the guest. The register, ring and DMA
+contract is exercised separately by the tg qtest.
 
 The network back end is placed only on the tg device; the machine's on-board
 IOC3 Ethernet is left with no back end (-nic none), so tg1 is the only interface
@@ -65,7 +66,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from lib_net import (HarnessError, IrixConsole, arp_neighbor_line,
                      arp_neighbor_mac,
                      arp_resolution, drive_irix_to_shell,
-                     icmp_ipv4_exchange,  # noqa: E402
+                     icmp_echo_exchange, icmp_ipv4_exchange,  # noqa: E402
                      summarise_pcap)
 from lib_prom import MACHINES, file_sha256  # noqa: E402
 
@@ -163,6 +164,11 @@ def tg_acceptance_verdict(login_reached, tg1_present, tg_up, link_up, traffic):
         problems.append(
             "the captured guest/gateway ICMP IPv4 frames include a malformed "
             "IPv4 header or invalid checksum")
+    echo_matches = traffic.get("icmp_echo_matching_replies")
+    if not isinstance(echo_matches, int) or echo_matches < 1:
+        problems.append(
+            "the capture has no gateway echo reply matching a guest request "
+            "by sequence and exact payload")
 
     return {
         "verdict": "PASS" if not problems else "FAIL",
@@ -429,6 +435,9 @@ if QemuSystemTest is not None:
             icmp_wire = icmp_ipv4_exchange(
                 capture.get('frames', []) if isinstance(capture, dict) else [],
                 GUEST_ADDR, GATEWAY)
+            echo_wire = icmp_echo_exchange(
+                capture.get('frames', []) if isinstance(capture, dict) else [],
+                GUEST_ADDR, GATEWAY)
 
             traffic = {
                 "ipkts_before": counters_before[0],
@@ -447,6 +456,9 @@ if QemuSystemTest is not None:
                 "icmp_guest_to_gateway": icmp_wire["guest_to_gateway"],
                 "icmp_gateway_to_guest": icmp_wire["gateway_to_guest"],
                 "icmp_invalid_packets": icmp_wire["invalid_packets"],
+                "icmp_echo_requests": echo_wire["requests"],
+                "icmp_echo_replies": echo_wire["replies"],
+                "icmp_echo_matching_replies": echo_wire["matching_replies"],
             }
             report = tg_acceptance_verdict(
                 login_reached, tg1_present, tg_up, link_up, traffic)
