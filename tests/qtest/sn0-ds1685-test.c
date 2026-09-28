@@ -84,6 +84,7 @@
 #define B_AIE           0x20
 #define B_UIE           0x10
 #define B_DM            0x04
+#define B_24_12         0x02
 
 #define C_IRQF          0x80
 #define C_PF            0x40
@@ -163,6 +164,38 @@ static void select_bank(QTestState *qts, unsigned int bank)
     uint8_t a = reg_read(qts, R_CTRL_A);
 
     reg_write(qts, R_CTRL_A, bank ? (a | A_DV0) : (a & ~A_DV0));
+}
+
+static void test_initial_calendar_and_mode_writes(const void *data)
+{
+    QTestState *qts = qtest_init(OCTANE_IOC3(SUBSYS_IP30)
+                                 " -rtc base=2024-12-31T23:45:17,clock=vm");
+
+    octane_attach(qts);
+    g_assert_cmphex(reg_read(qts, R_CTRL_B), ==, B_DM | B_24_12);
+    g_assert_cmphex(reg_read(qts, R_SECONDS), ==, 17);
+    g_assert_cmphex(reg_read(qts, R_MINUTES), ==, 45);
+    g_assert_cmphex(reg_read(qts, R_HOURS), ==, 23);
+    g_assert_cmphex(reg_read(qts, R_DAY), ==, 31);
+    g_assert_cmphex(reg_read(qts, R_MONTH), ==, 12);
+    g_assert_cmphex(reg_read(qts, R_YEAR), ==, 24);
+    select_bank(qts, 1);
+    g_assert_cmphex(reg_read(qts, R_CENTURY), ==, 20);
+
+    /* Format bits do not convert stored calendar bytes. */
+    reg_write(qts, R_CTRL_B, B_SET | B_DM);
+    g_assert_cmphex(reg_read(qts, R_HOURS), ==, 23);
+    reg_write(qts, R_CTRL_B, B_SET | B_DM | B_24_12);
+    g_assert_cmphex(reg_read(qts, R_HOURS), ==, 23);
+    reg_write(qts, R_CTRL_B, B_SET | B_24_12);
+    g_assert_cmphex(reg_read(qts, R_HOURS), ==, 23);
+    g_assert_cmphex(reg_read(qts, R_DAY), ==, 31);
+    reg_write(qts, R_HOURS, 0x11);
+    reg_write(qts, R_DAY, 0x25);
+    reg_write(qts, R_CTRL_B, B_SET | B_DM | B_24_12);
+    g_assert_cmphex(reg_read(qts, R_HOURS), ==, 0x11);
+    g_assert_cmphex(reg_read(qts, R_DAY), ==, 0x25);
+    qtest_quit(qts);
 }
 
 /*
@@ -816,6 +849,8 @@ int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
 
+    qtest_add_data_func("/sn0/ds1685/initial-calendar-and-mode-writes", NULL,
+                        test_initial_calendar_and_mode_writes);
     qtest_add_data_func("/sn0/ds1685/index-latch-persists", NULL,
                         test_the_index_latch_persists);
     qtest_add_data_func("/sn0/ds1685/index-is-seven-bits", NULL,
