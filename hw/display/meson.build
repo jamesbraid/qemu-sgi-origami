@@ -27,7 +27,8 @@ system_ss.add(when: 'CONFIG_PSITECH_RAD1', if_true: files('psitech-rad1.c'))
 system_ss.add(when: 'CONFIG_PSITECH_RAD4', if_true: files('psitech-rad4.c'))
 system_ss.add(when: 'CONFIG_SGI_DISPLAY',
               if_true: files('sgi/board-memory.c', 'sgi/command-fetch.c',
-                             'sgi/pixel-dma.c', 'sgi/scanout.c'))
+                             'sgi/gl-context.c', 'sgi/pixel-dma.c',
+                             'sgi/scanout.c'))
 
 system_ss.add(when: 'CONFIG_EXYNOS4', if_true: files('exynos4210_fimd.c'))
 system_ss.add(when: 'CONFIG_FRAMEBUFFER', if_true: files('framebuffer.c'))

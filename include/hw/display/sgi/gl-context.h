@@ -1,0 +1,285 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
+/*
+ * One OpenGL context's state, in the shape the SGI graphics heads share.
+ *
+ * A head's family code frames and decodes its own command words and keeps
+ * its own table of contexts. What one table entry holds is here: the GL
+ * state a draw is made under (SGIGLDrawState), the matrix stacks, the
+ * current vertex attributes, the clear values and the primitive being
+ * assembled. Nothing here knows which head it serves.
+ *
+ * Colours, matrices and vertex components are IEEE single floats holding
+ * exactly the bits the client sent; arithmetic on them is double.
+ */
+#ifndef HW_DISPLAY_SGI_GL_CONTEXT_H
+#define HW_DISPLAY_SGI_GL_CONTEXT_H
+
+#include "hw/display/sgi/board-memory.h"
+
+/*
+ * A raster operation: pixel work on a head's planes that is not a GL
+ * primitive, queued beside draws in the order the head received it.
+ */
+
+typedef enum SGIRasterKind {
+    SGI_RASTER_FILL,
+    SGI_RASTER_CLEAR,
+    SGI_RASTER_COPY,
+    SGI_RASTER_GLYPH,
+    SGI_RASTER_LINE,
+    SGI_RASTER_POINT,
+    SGI_RASTER_BLIT,
+} SGIRasterKind;
+
+/*
+ * Where colour is stored: a value the family's drawable gives and only
+ * the family's SGIRasterTarget store hook reads. Shared code copies it and
+ * never interprets it.
+ */
+typedef uint32_t SGIColourTarget;
+
+/* The buffers a clear names, glClear's mask bits. */
+#define SGI_GL_DEPTH_BUFFER_BIT 0x0100
+#define SGI_GL_COLOR_BUFFER_BIT 0x4000
+
+/*
+ * Only the fields a kind the rasterizer executes needs are here; the
+ * others arrive with their kind. Coordinates are plane pixels, the
+ * rectangle inclusive.
+ */
+typedef struct SGIRasterOp {
+    uint32_t kind;              /* SGIRasterKind */
+    /* The colour targets written, as the drawable names them. */
+    SGIColourTarget targets[2];
+    uint32_t ntargets;
+    int32_t x0, y0, x1, y1;
+    /* Only pixels inside these are written; at most the rectangle's. */
+    SGIClipList clip;
+    /* CLEAR: SGI_GL_COLOR_BUFFER_BIT and SGI_GL_DEPTH_BUFFER_BIT. */
+    uint32_t clear_buffers;
+    /* The GL clear colour; the rasterizer quantizes it to the plane. */
+    float clear_rgba[4];
+    uint32_t clear_colour_mask;
+    /* In the depth plane's units; the plane keeps its low bits. */
+    uint32_t clear_depth24;
+} SGIRasterOp;
+
+/*
+ * A vertex is 20 floats: position xyzw, colour rgba, normal xyz, the
+ * material index as a uint32 bit pattern, texture coordinate strq, fog
+ * coordinate, the edge flag as a uint32 bit pattern and two pads.
+ */
+#define SGI_GL_VERTEX_FLOATS    20
+#define SGI_GL_V_POSITION       0
+#define SGI_GL_V_COLOR          4
+#define SGI_GL_V_NORMAL         8
+#define SGI_GL_V_MATERIAL       11
+#define SGI_GL_V_TEXCOORD       12
+#define SGI_GL_V_FOG            16
+#define SGI_GL_V_EDGE           17
+
+/* OpenGL 1.2 enumerants the state holds. */
+enum {
+    SGI_GL_POINTS, SGI_GL_LINES, SGI_GL_LINE_LOOP, SGI_GL_LINE_STRIP,
+    SGI_GL_TRIANGLES, SGI_GL_TRIANGLE_STRIP, SGI_GL_TRIANGLE_FAN,
+    SGI_GL_QUADS, SGI_GL_QUAD_STRIP, SGI_GL_POLYGON,
+};
+#define SGI_GL_MODELVIEW        0x1700
+#define SGI_GL_PROJECTION       0x1701
+#define SGI_GL_FLAT             0x1d00
+#define SGI_GL_SMOOTH           0x1d01
+/* The comparisons in GL_NEVER's order, as depth_func holds them. */
+enum {
+    SGI_GL_NEVER, SGI_GL_LESS, SGI_GL_EQUAL, SGI_GL_LEQUAL,
+    SGI_GL_GREATER, SGI_GL_NOTEQUAL, SGI_GL_GEQUAL, SGI_GL_ALWAYS,
+};
+#define SGI_GL_DRAW_FRONT       0x1
+#define SGI_GL_DRAW_BACK        0x2
+#define SGI_GL_NEVER_ENUM       0x0200
+#define SGI_GL_CURRENT_COLOR    0x0b00
+#define SGI_GL_CURRENT_NORMAL   0x0b02
+#define SGI_GL_CURRENT_TEXTURE_COORDS 0x0b03
+#define SGI_GL_EDGE_FLAG        0x0b43
+#define SGI_GL_DEPTH_TEST       0x0b71
+
+/* Matrices a GL matrix stack holds, the current one included. */
+#define SGI_GL_STACK_DEPTH      32
+
+/*
+ * The most vertices a context holds between pieces of a primitive: a quad
+ * is drawn once its fourth arrives, so three wait.
+ */
+#define SGI_GL_HELD_VERTICES    3
+
+/*
+ * Where a context draws, as the family's context switch, window clip and
+ * buffer selection give it. Coordinates are plane pixels.
+ */
+typedef struct SGIGLDrawable {
+    /* False while the family has no window for the context: nothing draws. */
+    bool bound;
+    /* The window's lower-left pixel, where window coordinates start. */
+    int32_t origin[2];
+    /* The pixels the window owns; a bound drawable has at least one. */
+    SGIClipList clip;
+    /* The colour targets glDrawBuffer's front and back buffers name. */
+    SGIColourTarget front;
+    SGIColourTarget back;
+} SGIGLDrawable;
+
+/* The GL state a draw is made under. */
+typedef struct SGIGLDrawState {
+    /* Column-major, as glLoadMatrixf lays a matrix out. */
+    float modelview[16];
+    float projection[16];
+    int32_t viewport[4];
+    uint32_t shade_model;       /* GL_FLAT or GL_SMOOTH */
+    uint32_t depth_test;        /* 0 or 1 */
+    uint32_t depth_func;        /* the comparison minus GL_NEVER, 0 to 7 */
+    uint32_t depth_mask;        /* 0 or 1 */
+    /* SGI_GL_DRAW_FRONT and SGI_GL_DRAW_BACK; other bits are ignored. */
+    uint32_t draw_buffers;
+    SGIGLDrawable drawable;
+} SGIGLDrawState;
+
+typedef struct SGIGLContext {
+    /* The hardware identity the family keys this context by. */
+    uint32_t hw_id;
+    SGIGLDrawState cur;
+    /* Matrices glPushMatrix saved under the current ones, oldest first. */
+    float mv_stack[SGI_GL_STACK_DEPTH - 1][16];
+    float pr_stack[SGI_GL_STACK_DEPTH - 1][16];
+    uint32_t mv_depth;
+    uint32_t pr_depth;
+    uint32_t matrix_mode;       /* GL_MODELVIEW, GL_PROJECTION or other */
+    float cur_color[4];
+    float cur_normal[3];
+    uint32_t cur_edge;          /* 0 or 1 */
+    float clear_color[4];
+    /*
+     * In the depth plane's units, as the family delivered it; a clear
+     * keeps the low bits the plane holds, so all ones is 1.0 at any
+     * depth.
+     */
+    uint32_t clear_depth;
+    /* The primitive open since glBegin, SGI_GL_POINTS to SGI_GL_POLYGON. */
+    uint32_t begin_mode;
+    bool in_begin;
+    /* Vertices waiting for the rest of their piece, nheld of them. */
+    float held[SGI_GL_HELD_VERTICES][SGI_GL_VERTEX_FLOATS];
+    uint32_t nheld;
+} SGIGLContext;
+
+/* The GL entry points a family decodes to, one per command. */
+typedef enum SGIGLOp {
+    SGI_GL_OP_VIEWPORT,         /* x, y, width, height as int32 */
+    SGI_GL_OP_CLEAR_COLOR,      /* r, g, b, a */
+    SGI_GL_OP_CLEAR_DEPTH,      /* in the depth plane's units */
+    SGI_GL_OP_SHADE_MODEL,      /* GL_FLAT or GL_SMOOTH */
+    SGI_GL_OP_MATRIX_MODE,      /* the mode's enumerant */
+    SGI_GL_OP_LOAD_MATRIX,      /* 16, column-major */
+    SGI_GL_OP_LOAD_IDENTITY,
+    SGI_GL_OP_MULT_MATRIX,      /* 16, column-major */
+    SGI_GL_OP_FRUSTUM,          /* left, right, bottom, top, near, far */
+    SGI_GL_OP_ORTHO,            /* left, right, bottom, top, near, far */
+    SGI_GL_OP_PUSH_MATRIX,
+    SGI_GL_OP_POP_MATRIX,
+    SGI_GL_OP_ROTATE,           /* angle in degrees, x, y, z */
+    SGI_GL_OP_SCALE,            /* x, y, z */
+    SGI_GL_OP_TRANSLATE,        /* x, y, z */
+    SGI_GL_OP_ENABLE,           /* the capability's enumerant */
+    SGI_GL_OP_DISABLE,          /* the capability's enumerant */
+    SGI_GL_OP_DEPTH_FUNC,       /* GL_NEVER to GL_ALWAYS */
+    SGI_GL_OP_DEPTH_MASK,       /* 0 or not */
+    SGI_GL_OP_DRAW_BUFFERS,     /* SGI_GL_DRAW_FRONT and SGI_GL_DRAW_BACK */
+    SGI_GL_OP_COLOR3F,          /* r, g, b */
+    SGI_GL_OP_COLOR4F,          /* r, g, b, a */
+    SGI_GL_OP_COLOR3UB,         /* r, g, b, each 0 to 255 */
+    SGI_GL_OP_COLOR4UB,         /* r, g, b, a, each 0 to 255 */
+    SGI_GL_OP_NORMAL3F,         /* x, y, z */
+    SGI_GL_OP_EDGE_FLAG,        /* 0 or not */
+    SGI_GL_OP_BEGIN,            /* SGI_GL_POINTS to SGI_GL_POLYGON */
+    SGI_GL_OP_END,
+    SGI_GL_OP_VERTEX2F,         /* x, y */
+    SGI_GL_OP_VERTEX3F,         /* x, y, z */
+    SGI_GL_OP_VERTEX4F,         /* x, y, z, w */
+    SGI_GL_OP_VERTEX2I,         /* x, y as int32 */
+    SGI_GL_OP_FLUSH,
+    SGI_GL_OP_CLEAR,            /* SGI_GL_COLOR_BUFFER_BIT and so on */
+    SGI_GL_OP_FINISH,
+} SGIGLOp;
+
+/*
+ * A decoded command: its entry point and its scalar arguments as 32-bit
+ * words in the specification's order, a float argument as the IEEE
+ * single bits the client sent.
+ */
+typedef struct SGIGLCmd {
+    uint16_t op;
+    uint16_t nargs;
+    const uint32_t *args;
+} SGIGLCmd;
+
+/*
+ * A batch of vertices drawn as one primitive mode under one draw state.
+ * Lighting is not modelled, so no draw carries materials yet: a vertex's
+ * material index is 0, the draw state's.
+ */
+typedef struct SGIGLDraw {
+    uint32_t context;           /* the context's hw_id */
+    uint32_t mode;              /* SGI_GL_POINTS to SGI_GL_POLYGON */
+    uint32_t count;
+    const float *vertices;      /* count * SGI_GL_VERTEX_FLOATS */
+    const float *materials;
+    uint32_t nmaterials;
+    const SGIGLDrawState *state;
+} SGIGLDraw;
+
+/*
+ * Where a context's work goes. Every item is executed before the call
+ * returns, so what it points at need only live that long.
+ */
+typedef struct SGIGLSink {
+    void (*draw)(void *opaque, const SGIGLDraw *d);
+    void (*raster)(void *opaque, const SGIRasterOp *op);
+    /*
+     * glFinish's fence, once everything sent before it is done; NULL
+     * when the family has nothing to report for it.
+     */
+    void (*fence)(void *opaque, uint32_t context);
+    void *opaque;
+} SGIGLSink;
+
+/* OpenGL 1.2.1's initial state, for the context with identity hw_id. */
+void sgi_gl_init(SGIGLContext *c, uint32_t hw_id);
+/*
+ * Point the context at a drawable. The family calls it at each context
+ * switch and whenever its window or buffer selection changes; sgi_gl_init()
+ * leaves the context unbound.
+ */
+void sgi_gl_set_drawable(SGIGLContext *c, const SGIGLDrawable *d);
+/*
+ * Load m, column-major, as the current matrix of the stack slot names:
+ * SGI_GL_MODELVIEW or SGI_GL_PROJECTION, whatever the context's matrix
+ * mode. For a family whose matrices arrive as a target select and a load
+ * rather than as glMatrixMode and glLoadMatrixf. False, and logged, for
+ * a slot the context does not keep.
+ */
+bool sgi_gl_set_matrix(SGIGLContext *c, uint32_t slot, const float m[16]);
+/*
+ * The colour targets the draw state's draw buffers select, front before
+ * back and each once, into out; returns how many.
+ */
+uint32_t sgi_gl_draw_targets(const SGIGLDrawState *st,
+                             SGIColourTarget out[2]);
+/* Execute one command against the context, sending any work to sink. */
+void sgi_gl_command(SGIGLContext *c, const SGIGLSink *sink,
+                    const SGIGLCmd *cmd);
+/*
+ * The glGet answer for pname as *n 32-bit words, floats as their bits;
+ * false for a pname the context does not keep.
+ */
+bool sgi_gl_get(const SGIGLContext *c, uint32_t pname, uint32_t *out,
+                unsigned *n);
+
+#endif
