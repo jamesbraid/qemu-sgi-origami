@@ -746,6 +746,33 @@ static void sn0_node_create_cpus(SN0NodeState *node)
                              &node->cpu_uncached_alias[slice],
                              promdata_prefix);
         }
+        if (!node->cpu[slice]->uncached_memory) {
+            /*
+             * The processor's uncached view, where its Hub's I/O-space
+             * path goes once the Hub exists: everything the physical
+             * view holds, for now. The PROM data filter builds its own
+             * when it needs one.
+             */
+            g_autofree char *uncached_name =
+                g_strdup_printf("sn0.node%u.cpu%u.uncached", node_index,
+                                slice);
+            g_autofree char *uncached_alias_name =
+                g_strdup_printf("sn0.node%u.cpu%u.uncached.memory",
+                                node_index, slice);
+
+            memory_region_init(&node->cpu_uncached[slice], OBJECT(node),
+                               uncached_name, UINT64_MAX);
+            memory_region_init_alias(&node->cpu_uncached_alias[slice],
+                                     OBJECT(node), uncached_alias_name,
+                                     &node->cpu_sysmem[slice], 0, UINT64_MAX);
+            memory_region_add_subregion_overlap(
+                &node->cpu_uncached[slice], 0,
+                &node->cpu_uncached_alias[slice], 0);
+            object_property_set_link(OBJECT(node->cpu[slice]),
+                                     "uncached-memory",
+                                     OBJECT(&node->cpu_uncached[slice]),
+                                     &error_abort);
+        }
         object_property_add_child(OBJECT(node), name,
                                   OBJECT(node->cpu[slice]));
         object_property_set_link(OBJECT(node->cpu[slice]), "memory",
@@ -1095,10 +1122,7 @@ static void sn0_node_create_hub(SN0NodeState *node)
             OBJECT(&node->hub), window_prop,
             OBJECT(&node->local_space[slice][0]), &error_fatal);
 
-        /*
-         * This processor's physical view, where the Hub installs the
-         * PROM's widget-2 PI-error probe.
-         */
+        /* This processor's physical view, behind its Hub. */
         g_autofree char *sysmem_prop = g_strdup_printf("cpu-sysmem%u", slice);
 
         object_property_set_link(OBJECT(&node->hub), sysmem_prop,
@@ -1128,6 +1152,13 @@ static void sn0_node_create_hub(SN0NodeState *node)
             DEVICE(&node->hub), "rt", slice,
             cpu->env.irq[SN0_HUB_CPU_IRQ_RT +
                          SN0_MIPS_HARDWARE_IRQ_OFFSET]);
+        /*
+         * Every uncached I/O-space request this processor makes goes
+         * through its Hub's processor interface.
+         */
+        memory_region_add_subregion_overlap(
+            &node->cpu_uncached[slice], map->io.carrier_base,
+            sgi_hub_processor_io(&node->hub, slice), 2);
     }
 }
 

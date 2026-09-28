@@ -33,10 +33,6 @@
 #define BRIDGE_REQUEST_TIMEOUT 0x0028
 #define REQUEST_TIMEOUT_MASK   0xfffffu
 
-/* The exact address the miniroot's storm faulted on. */
-#define DEVICE1_PIO_WINDOW     0x400000
-#define STORM_OFFSET           (DEVICE1_PIO_WINDOW + 0x208)
-
 /* The completion word, sn0-bridge-test.c's convention. */
 #define GUEST_MARKER_ADDR      0x30000
 #define GUEST_DEADLINE_SECONDS 60
@@ -61,6 +57,8 @@
 #define ORDER_WINDOW           0x800000   /* device-4 widget window offset */
 /* lsi53c895a SCRATCHB/SCRATCHC: adjacent, side-effect-free, spannable. */
 #define LSI_SCRATCHB           0x5c
+/* Scratch C and D: a doubleword-aligned pair for a real ld. */
+#define LSI_SCRATCHC           0x60
 
 /* From sn0-widget0-test.c: the big window and its firmware redirection. */
 #define BIG_WINDOW_SIZE 0x20000000ULL
@@ -150,11 +148,12 @@ static void test_new_widgets_are_one_bridge(const void *data)
 }
 
 /*
- * An eight-byte load through net-new widget 0xa; the marker lands only if it
- * returned. Widget 2 at this offset is the PROM's deliberate PI error probe,
- * tested separately. Runs from the reset vector now rather than a directly
- * loaded kernel, so it sets kernel mode (with KX, for the xkphys forms below)
- * itself instead of inheriting it from a firmware handoff.
+ * An eight-byte load through net-new widget 0xa of a device window a card
+ * claims; the marker lands only if it returned. An unclaimed window is a
+ * PCI master time-out and faults, which sn0-pi-error-test covers at the
+ * PROM's probe address. Runs from the reset vector now rather than a
+ * directly loaded kernel, so it sets kernel mode (with KX, for the xkphys
+ * forms below) itself instead of inheriting it from a firmware handoff.
  */
 static void build_doubleword_load_image(SN0Image *p)
 {
@@ -162,10 +161,11 @@ static void build_doubleword_load_image(SN0Image *p)
     sn0_emit_mtc0(p, SN0_R_T0, SN0_CP0_STATUS);
 
     /*
-     * widget 0xa + 0x400208, the same xkphys form as sn0-bridge-test.c's PROM
-     * PI probe: an 8-byte load, not a qtest chunked read.
+     * widget 0xa + the scratch card's window, the same xkphys form as the
+     * PROM's PI probe: an 8-byte load, not a qtest chunked read.
      */
-    sn0_emit_li64(p, SN0_R_T0, UINT64_C(0x9200000000000000) | 0x0a400208);
+    sn0_emit_li64(p, SN0_R_T0, UINT64_C(0x9200000000000000) |
+                  (0x0a000000 + ORDER_WINDOW + LSI_SCRATCHC));
     sn0_emit_i(p, SN0_OPC_LD, SN0_R_T0, SN0_R_T2, 0);
 
     sn0_emit_li64(p, SN0_R_T0,
@@ -191,9 +191,16 @@ static void test_other_widget_doubleword_load_completes(const void *data)
      * watched go red by reverting each fix alone.
      */
     g_assert_true(g_setenv("QTEST_QEMU_ARGS", "-accel tcg", true));
-    qts = qtest_initf("-M origin200 -smp 1 -bios %s", path);
+    qts = qtest_initf("-M origin200 -smp 1 -bios %s "
+                      "-device lsi53c895a,addr=4 -S", path);
     g_unsetenv("QTEST_QEMU_ARGS");
     unlink(path);
+
+    qtest_writel(qts, CFG0(ORDER_SLOT, 0) + PCI_BAR1, CARD_MMIO(ORDER_SLOT));
+    qtest_writel(qts, CFG0(ORDER_SLOT, 0) + PCI_COMMAND, PCI_COMMAND_MEMORY);
+    qtest_writel(qts, REG(BRIDGE_DEVICE(ORDER_SLOT)),
+                 DEV_MEMORY_SPACE | (CARD_MMIO(ORDER_SLOT) >> 20));
+    qtest_qmp_assert_success(qts, "{'execute': 'cont'}");
 
     /*
      * The guest reaches its marker after a handful of instructions, but
