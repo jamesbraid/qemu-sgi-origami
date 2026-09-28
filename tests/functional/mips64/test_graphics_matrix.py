@@ -5,14 +5,10 @@
 #
 # SPDX-License-Identifier: GPL-2.0-or-later
 """
-One test_<id> method per row of graphics-matrix whose speed column says
-quick, attached to GraphicsMatrix at import time by
-register_graphics_matrix_cells(); test_graphics_matrix_thorough.py attaches
-the thorough rows to its own class the same way, mirroring
-test_origin200_matrix.py's own quick/thorough split exactly (see that
-file's docstring). Each method parses and validates its own row when it
-runs, so a bad row fails that one test instead of taking the whole script
-down at collection.
+Shared per-row boot and screendump test logic for graphics-matrix.
+test_graphics_matrix_thorough.py registers the thorough rows. Each method
+parses and validates its own row when it runs, so a bad row fails that one
+test instead of taking the whole script down at collection.
 
 This is the sibling matrix origin200-matrix has no room for: a graphics
 device's pass condition is "does the screen look right", not "did a
@@ -26,8 +22,6 @@ boot-drive-screendump attempt body below is new.
 
 import os
 import re
-
-from qemu_test import QemuSystemTest
 
 from lib_matrix import (AttemptResult, MatrixError, matrix_rows, qemu_args,
                         verdict)
@@ -190,16 +184,3 @@ def register_graphics_matrix_cells(cls, speed):
         method = _make(lineno, line, problem)
         method.__name__ = f'test_{name}'
         setattr(cls, method.__name__, method)
-
-
-class GraphicsMatrix(QemuSystemTest):
-    """One test method per quick row of graphics-matrix. See _make() above
-    for what each one does; the manifest, not this class, is the source of
-    truth for what cells exist."""
-
-
-register_graphics_matrix_cells(GraphicsMatrix, 'quick')
-
-
-if __name__ == '__main__':
-    QemuSystemTest.main()

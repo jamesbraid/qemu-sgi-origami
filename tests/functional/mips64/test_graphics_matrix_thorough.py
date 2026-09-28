@@ -6,10 +6,7 @@
 """
 One test method per row of graphics-matrix whose speed column says
 thorough, run from meson's thorough list. test_graphics_matrix.py owns
-the per-row test body and runs the quick rows; this script only selects
-the other half of the manifest, mirroring
-test_origin200_matrix_thorough.py's own relationship to
-test_origin200_matrix.py exactly.
+the shared per-row test body; this script registers the thorough rows.
 """
 
 from qemu_test import QemuSystemTest

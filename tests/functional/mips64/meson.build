@@ -253,10 +253,6 @@ tests_mips64_system_quick = [
   'sn0_smp',
   'sn_reset',
   'origin2000_cache_reset',
-  # graphics-matrix carries no quick row yet (see graphics_matrix_thorough's
-  # own comment below); registered anyway so a future device's quick
-  # smoke-test row needs only a manifest line, not a meson.build edit.
-  'graphics_matrix',
 ]
 
 tests_mips64_system_thorough = [
