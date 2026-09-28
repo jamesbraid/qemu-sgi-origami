@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 #
-# Unit tests for lib_prom's console driver and asset resolver: the rule
+# Unit tests for lib_prom's console driver: the rule
 # table fires once per rule, in order, and the end condition, timeout and
 # a closed socket each end the loop the way the netboot tests rely on;
-# resolve_asset() skips what is not provisioned and refuses what is wrong
 #
 # SPDX-License-Identifier: GPL-2.0-or-later
 """
@@ -12,8 +11,7 @@ A plain unittest -- no QEMU, runnable with just
 end of a socketpair stands in for QEMUMachine.console_socket: a helper
 thread plays a scripted guest, sending its prompts and reading back what
 the driver answers, while drive_console() runs on the other end exactly
-as a netboot test calls it. ResolveAssetTest covers the shared asset
-resolver against a temporary assets tree, and VerdictTests the shared
+as a netboot test calls it. VerdictTests covers the shared
 assertion/trip-wire scorer. lib_prom's progress-code helpers are covered
 by test_lib_matrix.py.
 """
@@ -28,8 +26,7 @@ import unittest
 from unittest import mock
 
 import lib_prom
-from lib_prom import (AssetMismatch, FIRMWARE_REL, drive_console,
-                      file_sha256, prom_netboot_steps, resolve_asset)
+from lib_prom import (drive_console, prom_netboot_steps)
 from qemu_test.asset import Asset, AssetError, LocalAsset
 
 STEPS = (
@@ -193,58 +190,6 @@ class PromNetbootStepsTest(unittest.TestCase):
     def test_no_arguments_means_a_bare_boot_command(self):
         steps = prom_netboot_steps("vmlinux")
         self.assertEqual(steps[-1], (r">>", "boot -f bootp()/vmlinux\n"))
-
-
-class ResolveAssetTest(unittest.TestCase):
-
-    def setUp(self):
-        root = tempfile.TemporaryDirectory()
-        self.addCleanup(root.cleanup)
-        self.root = root.name
-
-    def _provision(self, rel_path, content=b'firmware bytes'):
-        path = os.path.join(self.root, rel_path)
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, 'wb') as provisioned:
-            provisioned.write(content)
-        return path
-
-    def test_a_provisioned_file_resolves(self):
-        path = self._provision(FIRMWARE_REL)
-
-        self.assertEqual(resolve_asset(self.root, FIRMWARE_REL), path)
-        self.assertEqual(path, os.path.join(
-            self.root, 'firmware', '6.5.30', 'ip27prom.payload.bin'))
-
-    def test_an_unprovisioned_file_is_none(self):
-        with self.assertRaises(AssetMismatch) as caught:
-            resolve_asset(self.root, FIRMWARE_REL)
-        self.assertIn(FIRMWARE_REL, str(caught.exception))
-
-    def test_an_unset_or_empty_root_is_none(self):
-        # QEMU_TEST_SGI_ASSET_DIR unset (None via os.environ.get) or set empty.
-        self.assertIsNone(resolve_asset(None, FIRMWARE_REL))
-        self.assertIsNone(resolve_asset('', FIRMWARE_REL))
-
-    def test_a_matching_digest_resolves(self):
-        path = self._provision(FIRMWARE_REL)
-
-        resolved = resolve_asset(self.root, FIRMWARE_REL,
-                                 sha256=file_sha256(path))
-
-        self.assertEqual(resolved, path)
-
-    def test_a_wrong_digest_refuses_loudly(self):
-        # A present-but-wrong file must not masquerade as an
-        # unprovisioned one (None, a skip) -- it raises, naming both
-        # digests.
-        path = self._provision(FIRMWARE_REL, content=b'the wrong bytes')
-        recorded = '0' * 64
-
-        with self.assertRaises(AssetMismatch) as caught:
-            resolve_asset(self.root, FIRMWARE_REL, sha256=recorded)
-        self.assertIn(recorded, str(caught.exception))
-        self.assertIn(file_sha256(path), str(caught.exception))
 
 
 class LocalAssetTests(unittest.TestCase):

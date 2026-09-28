@@ -8,7 +8,7 @@ fields follow the exact order of the Cell dataclass below.
 parse_matrix() turns a manifest into Cell records; machine_props() and
 qemu_args() turn a Cell into the -M value and the rest of the QEMU
 command line; prom_args() supplies the -bios and trace arguments every
-cell's real PROM boot needs (lib_prom.resolve_asset finds the image);
+cell's real PROM boot needs (the test class supplies the image);
 pass_condition_met() decides whether a captured boot log satisfies the
 recorded firmware progress mark; verdict() turns a cell and its
 recorded AttemptResults into a

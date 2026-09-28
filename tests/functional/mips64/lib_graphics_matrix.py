@@ -91,11 +91,9 @@ _VALID_EXPECTS = {'pass', 'xfail'}
 
 # The installed-IRIX disk asset convention test_irix_diag.py and
 # test_irix_installed_boot.py already use: irix/<release>/
-# <variant>.qcow2 under QEMU_TEST_SGI_ASSET_DIR, resolved with
-# lib_prom.resolve_asset
-# exactly as those files do. A graphics-matrix row's `disk` column is just
-# <variant>; disk_rel() below builds the same relative path those files'
-# own DISK_REL constants build by hand.
+# <variant>.qcow2 under QEMU_TEST_SGI_ASSET_DIR. A graphics-matrix row's
+# `disk` column is just <variant>; disk_rel() below builds the same relative
+# path those files' own DISK_REL constants build by hand.
 RELEASE = '6.5.30'
 
 
@@ -104,9 +102,8 @@ def disk_rel(variant):
 
     QEMU_TEST_SGI_ASSET_DIR is the asset root. For example,
     disk_rel('root-rad4') -> 'irix/6.5.30/
-    root-rad4.qcow2'. Resolve it with lib_prom.resolve_asset the same way
-    every other disk-booting test in this directory resolves its own
-    DISK_REL."""
+    root-rad4.qcow2'. The test class declares a checksum-pinned LocalAsset
+    for each disk variant selected by its rows."""
     return os.path.join('irix', RELEASE, f'{variant}.qcow2')
 
 

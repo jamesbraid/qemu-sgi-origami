@@ -49,37 +49,6 @@ MACHINES = {
 }
 
 
-class AssetMismatch(AssertionError):
-    """A provisioned file is present but is not the recorded one."""
-
-
-def resolve_asset(assets_root, rel_path, sha256=None):
-    """The absolute path of rel_path under assets_root, or None if unset.
-
-    A configured but missing file, or a file with the wrong recorded hash,
-    raises AssetMismatch. Callers read QEMU_TEST_SGI_ASSET_DIR themselves and
-    hand the root in. The local asset import is lazy so parser-only companions
-    can import this module without Meson's qemu_test environment.
-
-    A test that knows the recorded SHA-256 of a file may pass it as
-    sha256: a file that is present but does not match raises
-    AssetMismatch naming both digests -- a wrong asset must fail
-    loudly, neither masquerade as an unprovisioned one nor spend a
-    boot producing a mysterious failure. Only record a digest here
-    that was taken from the real provisioned file.
-    """
-    if not assets_root:
-        return None
-    from qemu_test.asset import AssetError, LocalAsset
-
-    asset = LocalAsset(rel_path, sha256, asset_dir=assets_root)
-    try:
-        return asset.fetch()
-    except AssetError as exc:
-        raise AssetMismatch(str(exc)) from exc
-
-
-
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 
