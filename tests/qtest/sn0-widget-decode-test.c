@@ -39,6 +39,7 @@
 
 /* The completion word, sn0-bridge-test.c's convention. */
 #define GUEST_MARKER_ADDR      0x30000
+#define GUEST_DEADLINE_SECONDS 60
 #define GUEST_MARKER           0x5a17c0deu
 
 #define ID_PART(v)          (((v) >> 12) & 0xffff)
@@ -194,8 +195,15 @@ static void test_other_widget_doubleword_load_completes(const void *data)
     g_unsetenv("QTEST_QEMU_ARGS");
     unlink(path);
 
+    /*
+     * The guest reaches its marker after a handful of instructions, but
+     * how long that takes in host time depends on everything else the
+     * host is running. Poll until it appears, and only give up after a
+     * deadline no working run comes near.
+     */
     g_test_timer_start();
-    while (marker != GUEST_MARKER && g_test_timer_elapsed() < 1) {
+    while (marker != GUEST_MARKER &&
+           g_test_timer_elapsed() < GUEST_DEADLINE_SECONDS) {
         marker = qtest_readl(qts, GUEST_MARKER_ADDR);
         g_usleep(1000);
     }
