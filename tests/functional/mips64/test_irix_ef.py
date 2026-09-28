@@ -248,6 +248,25 @@ if QemuSystemTest is not None:
                 self.assertEqual(int(mtu.group(1)), 1500,
                                  'ef0 reported a non-standard MTU')
 
+                _, mtu_refusal = _run_guest(
+                    con, f'ifconfig {IFACE} mtu 9000',
+                    'ef_mtu_refusal', 60)
+                # This IRIX ifconfig reports the ioctl refusal but exits zero.
+                self.assertIn('ioctl (set mtu): Invalid argument',
+                              mtu_refusal,
+                              'ef0 MTU refusal diagnostic changed')
+                rc, mtu_output = _run_guest(
+                    con, "netstat -in | awk '$1 == \"ef0\" "
+                    "{print \"MTU=\" $2; exit}'",
+                    'ef_mtu_after_refusal', 60)
+                self.assertEqual(rc, 0,
+                                 'ef0 MTU query after refusal failed')
+                mtu = re.search(r'MTU=(\d+)', mtu_output)
+                self.assertIsNotNone(
+                    mtu, 'ef0 MTU readback after refusal missing')
+                self.assertEqual(int(mtu.group(1)), 1500,
+                                 'ef0 MTU changed after jumbo refusal')
+
                 def read_ef_counters(tag):
                     rc, output = _run_guest(con, 'netstat -in', tag, 60)
                     self.assertEqual(rc, 0, 'ef0 netstat -in query failed')
