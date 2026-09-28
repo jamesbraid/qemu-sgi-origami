@@ -25,6 +25,9 @@
 #include "qemu/error-report.h"
 #include "qapi/error.h"
 #include "cpu.h"
+#ifndef CONFIG_USER_ONLY
+#include "hw/core/boards.h"
+#endif
 #include "internal.h"
 #include "qemu/module.h"
 #include "qemu/qtree.h"
@@ -722,6 +725,14 @@ static void mips_cpu_realizefn(DeviceState *dev, Error **errp)
     MIPSCPUClass *mcc = MIPS_CPU_GET_CLASS(dev);
     Error *local_err = NULL;
 
+#if defined(CONFIG_TCG) && !defined(CONFIG_USER_ONLY)
+    if (cpu->r10k_data_cache &&
+        (strcmp(mcc->cpu_def->name, "R10000") ||
+         MACHINE(qdev_get_machine())->smp.cpus != 1)) {
+        error_setg(errp, "r10k-data-cache requires one R10000 CPU");
+        return;
+    }
+#endif
     if (!strcmp(mcc->cpu_def->name, "R12000") &&
         !mips_r12000_validate(cpu, errp)) {
         return;
@@ -772,11 +783,16 @@ static void mips_cpu_realizefn(DeviceState *dev, Error **errp)
      * With an uncached view linked, both spaces exist before the vCPU
      * thread starts; qemu_init_vcpu() then leaves the default alone.
      */
-    if (cpu->uncached_memory) {
+    if (cpu->uncached_memory || cpu->r10k_data_cache) {
         cpu_address_space_init(cs, MIPSASIdx_CACHED, "cpu-memory",
                                cs->memory);
         cpu_address_space_init(cs, MIPSASIdx_UNCACHED, "cpu-uncached",
-                               cpu->uncached_memory);
+                               cpu->uncached_memory ?: cs->memory);
+    }
+#endif
+#if defined(CONFIG_TCG) && !defined(CONFIG_USER_ONLY)
+    if (cpu->r10k_data_cache) {
+        mips_r10k_data_cache_init(cpu);
     }
 #endif
     qemu_init_vcpu(cs);
@@ -861,6 +877,9 @@ static ObjectClass *mips_cpu_class_by_name(const char *cpu_model)
 /* The uncached space exists only where a board linked one. */
 static int mips_asidx_from_attrs(CPUState *cs, MemTxAttrs attrs)
 {
+    if (attrs.mips_data_cache) {
+        return MIPSASIdx_DATA_CACHE;
+    }
     return attrs.mips_uncached && MIPS_CPU(cs)->uncached_memory ?
            MIPSASIdx_UNCACHED : MIPSASIdx_CACHED;
 }
@@ -876,6 +895,9 @@ static const struct SysemuCPUOps mips_sysemu_ops = {
 static const Property mips_cpu_properties[] = {
     DEFINE_PROP_BOOL("big-endian", MIPSCPU, is_big_endian, TARGET_BIG_ENDIAN),
 #ifndef CONFIG_USER_ONLY
+#ifdef CONFIG_TCG
+    DEFINE_PROP_BOOL("r10k-data-cache", MIPSCPU, r10k_data_cache, false),
+#endif
     DEFINE_PROP_LINK("uncached-memory", MIPSCPU, uncached_memory,
                      TYPE_MEMORY_REGION, MemoryRegion *),
 #endif

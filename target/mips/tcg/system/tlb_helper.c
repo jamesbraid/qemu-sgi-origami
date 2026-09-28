@@ -672,6 +672,7 @@ static int r4k_map_address(CPUMIPSState *env, hwaddr *physical, int *prot,
                     attrs->requester_id = env->r10k->requester_id;
                 }
 
+                attrs->mips_cca = cca;
                 *physical = window | tlb->PFN[n] | (address & (mask >> 1));
                 *prot = PAGE_READ;
                 if (n ? tlb->D1 : tlb->D0) {
@@ -1187,6 +1188,22 @@ bool mips_cpu_tlb_fill(CPUState *cs, vaddr address, int size,
                      (env->CP0_WatchLo[0] &
                       (CP0WL_R10K_R | CP0WL_R10K_W)))) {
             mips_r10k_watch_fill(cs, env, address, physical);
+        }
+        if (MIPS_CPU(cs)->r10k_data_cache) {
+            if (access_type == MMU_INST_FETCH) {
+                /* Instruction fetching is outside this data-cache model. */
+                prot &= PAGE_EXEC;
+            } else {
+                prot &= ~PAGE_EXEC;
+                if (attrs.mips_cca == 3) {
+                    attrs.mips_data_cache = 1;
+                    /* Carry VA[13:12] beside the 40-bit physical address. */
+                    physical |= (hwaddr)extract64(address, 12, 2) << 40;
+                } else if (attrs.mips_cca != 2 && attrs.mips_cca != 7) {
+                    cpu_abort(cs, "R10000 data cache does not support CCA %u",
+                              attrs.mips_cca);
+                }
+            }
         }
         tlb_set_page_with_attrs(cs, address & TARGET_PAGE_MASK,
                                 physical & TARGET_PAGE_MASK, attrs, prot,

@@ -196,3 +196,31 @@ const VMStateDescription mips_vmstate_r10k_scache_4m = {
         VMSTATE_END_OF_LIST()
     }
 };
+
+/* Older destinations reject this unknown subsection and its dirty data. */
+static bool mips_r10k_data_cache_needed(void *opaque)
+{
+    return MIPS_CPU(opaque)->r10k_data_cache;
+}
+
+static int mips_r10k_data_cache_post_load(void *opaque, int version_id)
+{
+    MIPSCPU *cpu = MIPS_CPU(opaque);
+
+    if (!cpu->r10k_data_cache) {
+        return -EINVAL;
+    }
+    cpu->r10k_data_cache_stream = true;
+    return 0;
+}
+
+const VMStateDescription mips_vmstate_r10k_data_cache = {
+    .name = "cpu/functional-data-cache",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = mips_r10k_data_cache_needed,
+    .post_load = mips_r10k_data_cache_post_load,
+    .fields = (const VMStateField[]) {
+        VMSTATE_END_OF_LIST()
+    }
+};

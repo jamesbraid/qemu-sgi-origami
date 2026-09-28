@@ -125,6 +125,8 @@ enum {
     TLBRET_MATCH = 0
 };
 
+void mips_r10k_data_cache_init(MIPSCPU *cpu);
+
 int get_physical_address(CPUMIPSState *env, hwaddr *physical,
                          int *prot, target_ulong real_address,
                          MMUAccessType access_type, int mmu_idx,
@@ -191,6 +193,7 @@ extern const VMStateDescription vmstate_mips_cpu;
 
 /* r10k_migrate.c: the R10000-family state carried behind env->r10k. */
 extern const VMStateDescription mips_vmstate_r10k;
+extern const VMStateDescription mips_vmstate_r10k_data_cache;
 extern const VMStateDescription mips_vmstate_r14k_scache;
 extern const VMStateDescription mips_vmstate_r12000_extra;
 extern const VMStateDescription mips_vmstate_r10k_scache_4m;
