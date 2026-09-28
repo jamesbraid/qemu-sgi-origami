@@ -3331,6 +3331,125 @@ static void test_retrace_interrupt_needs_vc3_enable(void)
     g_assert_cmphex(mgras_hub_read(HUB_PI_INT_PEND0) & bit, ==, 0);
 }
 
+/*
+ * The model's retrace period: one sixtieth of a second truncated to whole
+ * nanoseconds, the first retrace one period after reset. The rate is the
+ * model's approximation, not the stock mode's; this pins it, and that the
+ * phase does not drift, so a scanout change cannot move it unnoticed.
+ */
+#define MGRAS_RETRACE_NS (NANOSECONDS_PER_SECOND / 60)
+
+static uint64_t mgras_hub_pending(QTestState *q)
+{
+    uint8_t bytes[8];
+
+    g_assert_true(qtest_memread_cpu(q, 0, HUB_BASE + HUB_PI_INT_PEND0, bytes,
+                                    sizeof(bytes)));
+    return ldq_be_p(bytes);
+}
+
+static void mgras_hub_clear(QTestState *q, unsigned int vector)
+{
+    uint8_t bytes[8];
+
+    stq_be_p(bytes, vector);
+    g_assert_true(qtest_memwrite_cpu(q, 0, HUB_BASE + HUB_PI_INT_MODIFY,
+                                     bytes, sizeof(bytes)));
+}
+
+/*
+ * Step to one nanosecond before the next retrace, see none, then step onto
+ * it and see exactly one.
+ */
+static void mgras_expect_retrace_in(QTestState *q, int64_t ns,
+                                    unsigned int vector)
+{
+    const uint64_t bit = UINT64_C(1) << vector;
+    uint64_t before = mgras_qom_get_uint(q, "x-test-retraces");
+
+    mgras_hub_clear(q, vector);
+    qtest_clock_step(q, ns - 1);
+    g_assert_cmphex(mgras_hub_pending(q) & bit, ==, 0);
+    g_assert_cmpuint(mgras_qom_get_uint(q, "x-test-retraces"), ==, before);
+    qtest_clock_step(q, 1);
+    g_assert_cmphex(mgras_hub_pending(q) & bit, ==, bit);
+    g_assert_cmpuint(mgras_qom_get_uint(q, "x-test-retraces"), ==,
+                     before + 1);
+}
+
+static void mgras_retrace_to_hub_on(QTestState *q, unsigned int vector)
+{
+    qtest_writel(q, REG_HQ_VECTOR_DEST_UPPER, KERNEL_HQ_DEST_UPPER);
+    qtest_writel(q, REG_HQ_VECTOR_DEST_LOWER, KERNEL_HQ_DEST_LOWER);
+    qtest_writel(q, REG_HQ_VECTORS, vector << 16);
+    qtest_writel(q, REG_IRQ_MASK, KERNEL_IRQ_MASK);
+    qtest_writel(q, REG_VC3_INDEXDATA,
+                 VC3_INDEXDATA(VC3_CONTROL,
+                               VC3_CONTROL_DISPLAY | VC3_CONTROL_VINTR));
+}
+
+static void test_retrace_period_and_phase(void)
+{
+    const unsigned int retrace_vector = 54;
+
+    mgras_reset();
+    mgras_retrace_to_hub_on(qts, retrace_vector);
+    for (int i = 0; i < 4; i++) {
+        mgras_expect_retrace_in(qts, MGRAS_RETRACE_NS, retrace_vector);
+    }
+    /* A hundred frames later the phase is where the period puts it. */
+    qtest_clock_step(qts, 100 * MGRAS_RETRACE_NS);
+    mgras_expect_retrace_in(qts, MGRAS_RETRACE_NS, retrace_vector);
+}
+
+/*
+ * The stream carries the retrace phase as the next retrace's time. The
+ * destination's next retrace falls where the source's would have, the
+ * ones after it one period apart, and none is made up for the frames the
+ * destination's own clock never ran. Whether qtest's virtual clock travels
+ * with the stream does not matter: the wait is taken from both clocks.
+ */
+static void test_retrace_phase_migration(void)
+{
+    const unsigned int retrace_vector = 54;
+    g_autofree char *tmpfs = NULL;
+    g_autofree char *uri = NULL;
+    g_autofree char *dest_cmdline = NULL;
+    GError *err = NULL;
+    QTestState *from, *to;
+    int64_t reset_at, dest_now;
+
+    tmpfs = g_dir_make_tmp("sn0-mgras-retrace-migration-XXXXXX", &err);
+    g_assert_no_error(err);
+    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+
+    from = qtest_init(MIGRATION_ARGS);
+    dest_cmdline = g_strdup_printf(MIGRATION_ARGS " -incoming %s", uri);
+    to = qtest_init(dest_cmdline);
+
+    /* An offset phase, so a destination that restarts it is caught. */
+    reset_at = qtest_clock_step(from, 12345);
+    qtest_system_reset(from);
+    mgras_retrace_to_hub_on(from, retrace_vector);
+    mgras_expect_retrace_in(from, MGRAS_RETRACE_NS, retrace_vector);
+    mgras_expect_retrace_in(from, MGRAS_RETRACE_NS, retrace_vector);
+    qtest_clock_step(from, MGRAS_RETRACE_NS / 2);
+
+    sgi_migrate_stopped(from, uri);
+
+    /* qtest cannot step by zero; one nanosecond reads the clock. */
+    dest_now = qtest_clock_step(to, 1);
+    mgras_expect_retrace_in(to, reset_at + 3 * MGRAS_RETRACE_NS - dest_now,
+                            retrace_vector);
+    g_assert_cmpuint(mgras_qom_get_uint(to, "x-test-retraces"), ==, 3);
+    mgras_expect_retrace_in(to, MGRAS_RETRACE_NS, retrace_vector);
+    mgras_expect_retrace_in(to, MGRAS_RETRACE_NS, retrace_vector);
+
+    qtest_quit(to);
+    qtest_quit(from);
+    g_rmdir(tmpfs);
+}
+
 
 /*
  * The general line as the IRIX 6.5.30 kernel wires it: MgrasInitialize
@@ -10876,6 +10995,10 @@ int main(int argc, char **argv)
                    test_retrace_interrupt_vector);
     qtest_add_func("sn0/origin2000/mgras/retrace-interrupt-needs-vc3-enable",
                    test_retrace_interrupt_needs_vc3_enable);
+    qtest_add_func("sn0/origin2000/mgras/retrace-period-and-phase",
+                   test_retrace_period_and_phase);
+    qtest_add_func("sn0/origin2000/mgras/retrace-phase-migration",
+                   test_retrace_phase_migration);
     qtest_add_func("sn0/origin2000/mgras/irq-enable-set-and-clear-ports",
                    test_irq_enable_set_and_clear_ports);
     qtest_add_func("sn0/origin2000/mgras/swap-command-raises-interrupt-10",
