@@ -10,6 +10,18 @@ mips_transaction_failed(int cpu, uint64_t vaddr, uint64_t paddr, unsigned int si
 # system/tlb_helper.c
 mips_exception(int cpu, uint32_t asid, int exccode, const char *name, uint64_t pc, uint64_t badvaddr, uint32_t status, uint32_t cause) "cpu %d asid 0x%x exccode %d name \"%s\" pc 0x%" PRIx64 " badvaddr 0x%" PRIx64 " status 0x%08x cause 0x%08x"
 mips_ext_interrupt_entry(int64_t vtime, int cpu, uint64_t pc, uint32_t status, uint32_t cause) "vtime %" PRId64 " cpu %d pc 0x%" PRIx64 " status 0x%08x cause 0x%08x"
+
+# system/cp0_helper.c
+mips_cp0_count_read(int64_t vtime, int cpu, uint64_t saved_pc, uint32_t count) "vtime %" PRId64 " cpu %d saved_pc 0x%" PRIx64 " count 0x%08x"
+
+# system/cp0_timer.c and system/r10k_perf.c
+mips_cp0_count_write(int64_t vtime, int64_t host, int cpu, uint64_t saved_pc, uint32_t count, uint32_t compare, bool adjacent, uint32_t status, uint32_t cause) "vtime %" PRId64 " host %" PRId64 " cpu %d saved_pc 0x%" PRIx64 " count 0x%08x compare 0x%08x adjacent %d status 0x%08x cause 0x%08x"
+mips_cp0_compare_write(int64_t vtime, int64_t host, int cpu, uint64_t saved_pc, uint32_t count, uint32_t compare, bool adjacent, uint64_t elapsed, uint32_t forward, bool matched) "vtime %" PRId64 " host %" PRId64 " cpu %d saved_pc 0x%" PRIx64 " count 0x%08x compare 0x%08x adjacent %d elapsed %" PRIu64 " forward %" PRIu32 " matched %d"
+mips_cp0_timer_arm(int64_t vtime, int64_t host, int cpu, uint64_t saved_pc, uint32_t count, uint32_t compare, uint32_t wait, uint64_t deadline) "vtime %" PRId64 " host %" PRId64 " cpu %d saved_pc 0x%" PRIx64 " count 0x%08x compare 0x%08x wait %" PRIu32 " deadline %" PRIu64
+mips_cp0_timer_expire(int64_t vtime, int64_t host, int cpu, uint64_t saved_pc, uint32_t count, uint32_t compare) "vtime %" PRId64 " host %" PRId64 " cpu %d saved_pc 0x%" PRIx64 " count 0x%08x compare 0x%08x"
+mips_cp0_ip7(int64_t vtime, int64_t host, int cpu, uint64_t saved_pc, const char *source, bool timer, int perf, unsigned irq, uint32_t status, uint32_t cause) "vtime %" PRId64 " host %" PRId64 " cpu %d saved_pc 0x%" PRIx64 " source %s timer %d perf %d irq %u status 0x%08x cause 0x%08x"
+mips_cp0_status_write(int64_t vtime, int64_t host, int cpu, uint64_t saved_pc, uint32_t old_status, uint32_t status, uint32_t cause, bool hard) "vtime %" PRId64 " host %" PRId64 " cpu %d saved_pc 0x%" PRIx64 " old_status 0x%08x status 0x%08x cause 0x%08x hard %d"
+mips_ext_interrupt_check(int64_t vtime, int64_t host, int cpu, uint64_t saved_pc, uint32_t status, uint32_t cause, bool enabled, bool deliverable) "vtime %" PRId64 " host %" PRId64 " cpu %d saved_pc 0x%" PRIx64 " status 0x%08x cause 0x%08x enabled %d deliverable %d"
 mips_syscall(int cpu, uint32_t asid, uint64_t pc, uint64_t v0, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3) "cpu %d asid 0x%x pc 0x%" PRIx64 " v0 0x%" PRIx64 " a0 0x%" PRIx64 " a1 0x%" PRIx64 " a2 0x%" PRIx64 " a3 0x%" PRIx64
 mips_tlb_write(int cpu, int idx, uint64_t entryhi, uint64_t lo0, uint64_t lo1, uint32_t pagemask, uint64_t pc) "cpu %d idx %d entryhi 0x%" PRIx64 " lo0 0x%" PRIx64 " lo1 0x%" PRIx64 " pagemask 0x%x pc 0x%" PRIx64
 
