@@ -33,8 +33,28 @@ extern const VMStateDescription vmstate_sgi_mgras_gl_context_v22;
 /* Each context's raster position, a subsection sent when it has moved. */
 extern const VMStateDescription vmstate_sgi_mgras_gl_raster;
 
-/* Each context's colour-index state. */
+/*
+ * An inline data block's header: bit 31, the byte offset of its first
+ * byte in its first word in bits 23:22, and its byte length in bits 19:0
+ * (mgras-gl-commands.md, "Word framing"; the offset from __glMgrim_Bitmap
+ * in the IRIX 6.5.30 IP27GR532 libGLcore.so). It takes
+ * (offset + length + 3) / 4 words.
+ */
+#define SGI_MGRAS_CMD_BLOCK_OFFSET 0x00c00000u
+#define SGI_MGRAS_CMD_BLOCK_BYTES  0x000fffffu
+/* The parser's class while the words of a block a GL packet owns arrive. */
+#define SGI_MGRAS_CMD_TOKEN_GL_BLOCK (SGI_MGRAS_CMD_TOKEN_DISCARD - 1)
+/*
+ * Whether the inline block header continues the GL packet just executed,
+ * glBitmap's image; if so it sets the parser to take the block's words
+ * through sgi_mgras_gl_block_word(), one at a time after the parser has
+ * counted each off.
+ */
+bool sgi_mgras_gl_block(SGIMgrasState *s, uint32_t header);
+void sgi_mgras_gl_block_word(SGIMgrasState *s, uint32_t word);
+/* Each context's colour-index state, and a marker for a block under way. */
 extern const VMStateDescription vmstate_sgi_mgras_gl_index;
+extern const VMStateDescription vmstate_sgi_mgras_gl_block;
 
 /* Note GE-port traffic the per-context state cannot follow. */
 void sgi_mgras_gl_ge_port_access(SGIMgrasState *s, hwaddr addr, bool write);
