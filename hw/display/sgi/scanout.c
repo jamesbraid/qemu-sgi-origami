@@ -221,6 +221,9 @@ void sgi_scanout_update(SGIScanout *s)
 {
     unsigned long h, y, end;
 
+    if (s->ops->pre_update) {
+        s->ops->pre_update(s->opaque);
+    }
     if (!s->frame) {
         return;
     }
