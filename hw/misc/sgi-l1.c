@@ -2063,6 +2063,16 @@ static void l1_realize(DeviceState *dev, Error **errp)
             }
         }
         s->system_serial = g_strndup(data + start + cursor + 1, 12);
+        for (size_t i = 0; i < sizeof(s->fuel_mac); i++) {
+            s->fuel_mac[i] =
+                (g_ascii_xdigit_value(s->system_serial[2 * i]) << 4) |
+                g_ascii_xdigit_value(s->system_serial[2 * i + 1]);
+        }
+        if (!memcmp(s->fuel_mac, "\0\0\0\0\0\0",
+                    sizeof(s->fuel_mac)) || (s->fuel_mac[0] & 1)) {
+            goto invalid_fuel_mac;
+        }
+        s->fuel_mac_valid = true;
         goto fuel_mac_done;
 
 invalid_fuel_mac:
@@ -2206,6 +2216,17 @@ fuel_mac_done:
                   s->bay);
         l1_power_up(s, 1, false);
     }
+}
+
+bool sgi_l1_fuel_mac(DeviceState *dev, uint8_t mac[6])
+{
+    SGIL1State *s = SGI_L1(dev);
+
+    if (!s->fuel_mac_valid) {
+        return false;
+    }
+    memcpy(mac, s->fuel_mac, sizeof(s->fuel_mac));
+    return true;
 }
 
 static char *l1_display_get(Object *obj, Error **errp)

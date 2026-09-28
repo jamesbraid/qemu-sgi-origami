@@ -48,6 +48,7 @@
 #include "hw/mips/sgi/xio-link.h"
 #include "hw/misc/sgi-elsc.h"
 #include "hw/misc/sgi-hub.h"
+#include "hw/misc/sgi-l1.h"
 #include "hw/misc/sgi-kona.h"
 #include "hw/misc/sgi-mgras.h"
 #include "hw/misc/sgi-router.h"
@@ -1750,10 +1751,19 @@ static bool sgi_machine_instantiate_bedrock_io(
                          record->preset == SGI_MODEL_IO_BOARD_PRESET_FUEL ?
                          "fuel" : "io8");
     if (record->preset == SGI_MODEL_IO_BOARD_PRESET_FUEL) {
+        uint8_t mac[6];
+
         qdev_prop_set_uint32(baseio, "fuel-subsystem-id",
                              s->fuel_ioc3_subsystem_id);
         qdev_prop_set_bit(baseio, "fuel-rtc-low11-mirror",
                           s->fuel_rtc_decode != NULL);
+        if (sgi_l1_fuel_mac(node->l1, mac)) {
+            g_autofree char *address = g_strdup_printf(
+                "%02x:%02x:%02x:%02x:%02x:%02x",
+                mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+
+            qdev_prop_set_string(baseio, "fuel-mac", address);
+        }
     }
     object_property_set_link(OBJECT(baseio), "pci-bus", OBJECT(bus),
                              &error_abort);

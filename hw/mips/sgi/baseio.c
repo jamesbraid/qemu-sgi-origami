@@ -107,6 +107,7 @@ struct SGIBaseioState {
     uint64_t onewire_serial;
     uint32_t fuel_subsystem_id;
     bool fuel_rtc_low11_mirror;
+    char *fuel_mac;
     char *nvram_drive_id;
     char *chardev_a_id;
     char *chardev_b_id;
@@ -767,6 +768,9 @@ static bool baseio_build_fuel(SGIBaseioState *s, Error **errp)
     qdev_prop_set_uint64(DEVICE(ioc3), "onewire-serial", s->onewire_serial);
     qdev_prop_set_uint16(DEVICE(ioc3), "subsystem-id",
                          s->fuel_subsystem_id);
+    if (s->fuel_mac) {
+        qdev_prop_set_string(DEVICE(ioc3), "board-mac", s->fuel_mac);
+    }
     qdev_prop_set_uint8(DEVICE(ioc3), "phy-addr", 1);
     object_property_set_bool(OBJECT(ioc3), "phy-dp83843", true,
                              &error_abort);
@@ -995,6 +999,7 @@ static const Property baseio_properties[] = {
                        UINT32_MAX),
     DEFINE_PROP_BOOL("fuel-rtc-low11-mirror", SGIBaseioState,
                      fuel_rtc_low11_mirror, false),
+    DEFINE_PROP_STRING("fuel-mac", SGIBaseioState, fuel_mac),
     DEFINE_PROP_STRING("nvram-drive", SGIBaseioState, nvram_drive_id),
     DEFINE_PROP_STRING("chardev-a", SGIBaseioState, chardev_a_id),
     DEFINE_PROP_STRING("chardev-b", SGIBaseioState, chardev_b_id),

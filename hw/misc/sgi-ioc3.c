@@ -18,6 +18,7 @@
 #include "hw/misc/sgi-board-record.h"
 #include "hw/misc/sgi-ioc3.h"
 #include "hw/misc/sgi-onewire-slot.h"
+#include "net/util.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/pci-host/sgi-bridge.h"
 #include "hw/pci/pci.h"
@@ -1703,7 +1704,27 @@ static void sgi_ioc3_realize(PCIDevice *dev, Error **errp)
         object_property_set_link(OBJECT(&s->eth), "dma-memory",
                                  OBJECT(&dev->bus_master_container_region),
                                  &error_abort);
-        qemu_configure_nic_device(DEVICE(&s->eth), true, NULL);
+        bool configured = qemu_configure_nic_device(DEVICE(&s->eth), true,
+                                                    NULL);
+
+        if (s->board_mac) {
+            MACAddr address;
+
+            if (net_parse_macaddr(address.a, s->board_mac) < 0 ||
+                !memcmp(address.a, "\0\0\0\0\0\0",
+                        sizeof(address.a)) || (address.a[0] & 1)) {
+                error_setg(errp, "IOC3 board MAC must be a unicast address");
+                return;
+            }
+            if (configured && !s->eth.mac_generated &&
+                memcmp(address.a, s->eth.conf.macaddr.a,
+                       sizeof(address.a))) {
+                error_setg(errp, "IOC3 NIC MAC conflicts with board identity");
+                return;
+            }
+            s->eth.conf.macaddr = address;
+            s->eth.mac_generated = false;
+        }
         if (!qdev_realize(DEVICE(&s->eth), BUS(&s->ioc3_bus), errp)) {
             return;
         }
@@ -2251,6 +2272,7 @@ static const Property sgi_ioc3_properties[] = {
     DEFINE_PROP_STRING("board-barcode", SGIIOC3State, board_barcode),
     DEFINE_PROP_STRING("board-revision", SGIIOC3State, board_revision),
     DEFINE_PROP_STRING("board-name", SGIIOC3State, board_name),
+    DEFINE_PROP_STRING("board-mac", SGIIOC3State, board_mac),
     DEFINE_PROP_UINT64("board-onewire-serial", SGIIOC3State,
                        board_onewire_serial, SGI_IOC3_BOARD_ONEWIRE_SERIAL),
 };
