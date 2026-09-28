@@ -20,7 +20,7 @@ struct SGIHeartState {
     MemoryRegion packet_control;
     MemoryRegion packet_ram;
     MemoryRegion *cpu_memory;
-    qemu_irq processor[3];
+    qemu_irq processor[5];
     MemoryRegion backing[HEART_BANKS];
     MemoryRegion views[HEART_BANKS][HEART_MAX_UNITS];
     uint64_t capacity[HEART_BANKS];
