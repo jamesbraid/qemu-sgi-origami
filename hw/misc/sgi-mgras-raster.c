@@ -138,15 +138,16 @@
 
 
 /*
- * Register 0x05f: function unknown. The DDX writes it 32 times with
- * value 0 immediately before the PIO draw-pixel row loop
- * (mgrasDrawPixels..C, 0x577e68-0x577ee8) in every observed capture. No
- * read, branch or paint result has been tied to it, so it is not treated
- * as a colour or alpha register here; that would assert a meaning the
- * evidence does not establish. Latched silently by the generic
- * mgras_raster_rss_write() store like every other unmodelled register.
+ * Register 0x05f, IMPACTSR_CMD_ALPHA in OpenBSD's impactreg.h. No public
+ * driver writes it, and its function is unknown.
+ * The DDX writes it 33 times per pass with value 0 immediately before
+ * the PIO draw-pixel row loop (mgrasDrawPixels..C, 0x577e68-0x577ee8)
+ * in every observed capture. No read, branch or paint result has been
+ * tied to it, so the name alone does not make it an alpha or colour
+ * register here. Latched silently by the generic mgras_raster_rss_write()
+ * store like every other unmodelled register.
  */
-#define MGRAS_RSS_UNK_05F 0x05f
+#define MGRAS_RSS_ALPHA 0x05f
 #define MGRAS_RSS_COLORMASKLSBSA 0x163
 #define MGRAS_RSS_GLINE_XSTARTF 0x00c
 #define MGRAS_RSS_DRBPOINTERS 0x16d
