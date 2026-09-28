@@ -2242,6 +2242,143 @@ static void test_dma_image_transfer_past_page_list_moves_nothing(void)
 #undef DMA_OVERRUN_PAGE
 
 /*
+ * A DMA draw paints through the same rules as any other paint: the
+ * PP1FILLMODE logic op, the COLORMASKLSBSA write mask, and a format tag
+ * that follows the transfer's pixel width. Each case seeds its pixels with
+ * an RGB fill of 0x0f0f0f, so the op and mask have something to combine
+ * with and the tag has something to change from, then draws one row from
+ * a one-page mapping at widget 9.
+ */
+#define DMA_RULES_WIDGET    9u
+#define DMA_RULES_LIST_PAGE 0xd000u
+#define DMA_RULES_LIST_BASE (DMA_RULES_LIST_PAGE | 0x18u)
+#define DMA_RULES_PFN       0x50u
+#define DMA_RULES_PAGE      (DMA_RULES_PFN << 12)
+#define DMA_RULES_SEED      0x0f
+
+static void dma_rules_seed(uint32_t x0, uint32_t x1, uint32_t y)
+{
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_COLORMASKLSBSA, 0x00ffffff));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_FILLMODE, MGRAS_FILLMODE_RECT_FILL_VALUE));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_PP1FILLMODE,
+                               (MGRAS_LOGIC_OP_COPY << 26) |
+                               MGRAS_PP1FILLMODE_RGB));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_FILLCOLOR_R, DMA_RULES_SEED << 4));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_FILLCOLOR_G, DMA_RULES_SEED << 4));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_FILLCOLOR_B, DMA_RULES_SEED << 4));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_BLOCK_START, (x0 << 16) | y));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND_EXEC(REG_BLOCK_END, (x1 << 16) | y));
+    /* Leave rect fill off, or the draw's own block execute fills again. */
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, MGRAS_COMMAND(REG_FILLMODE, 0));
+    for (uint32_t x = x0; x <= x1; x++) {
+        g_assert_cmphex(mgras_test_pixel(qts, x, y), ==, 0x000f0f0f);
+        g_assert_cmphex(mgras_test_format(qts, x, y), ==,
+                        MGRAS_PIXEL_FORMAT_RGB);
+    }
+}
+
+/* Draw one row of @len guest bytes to @npix pixels from (x0, y). */
+static void dma_rules_draw(uint32_t x0, uint32_t y, uint32_t npix,
+                           const uint8_t *src, uint32_t len, uint8_t op,
+                           uint32_t mask)
+{
+    static const uint8_t list_header[24] = { 0 };
+    static const uint8_t list_entry[8] = {
+        0, 0, 0, 0, 0, 0, 0, DMA_RULES_PFN,
+    };
+
+    qtest_memwrite(qts, DMA_RULES_LIST_PAGE, list_header,
+                   sizeof(list_header));
+    qtest_memwrite(qts, DMA_RULES_LIST_BASE, list_entry, 8);
+    qtest_memwrite(qts, DMA_RULES_PAGE, src, len);
+
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_COLORMASKLSBSA, mask));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_PP1FILLMODE, (uint32_t)op << 26));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_BLOCK_START, (x0 << 16) | y));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND_EXEC(REG_BLOCK_END,
+                                    ((x0 + npix - 1) << 16) | y));
+
+    /* DMA-map slot 0: entry 0 at 0xd018, one page, widget 9. */
+    qtest_writel(qts, MGRAS_REG(0x130400), 0x00482008);
+    qtest_writeq(qts, MGRAS_REG(0x130400), DMA_RULES_LIST_BASE);
+    qtest_writeq(qts, MGRAS_REG(0x130400), ((uint64_t)0x00483004 << 32) | 1);
+    qtest_writeq(qts, MGRAS_REG(0x130400),
+                 ((uint64_t)0x00484b04 << 32) | (DMA_RULES_WIDGET << 16));
+
+    /* Pitch, offset 0, one row of len bytes, draw kick naming slot 0. */
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 ((uint64_t)0x00080404 << 32) | len);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x00080504 << 32) | 0);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x00080604 << 32) | 0);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x00080704 << 32) | 1);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 ((uint64_t)0x00080804 << 32) | len);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x00080b04 << 32) | 0);
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+}
+
+static void test_dma_image_transfer_applies_logic_op(void)
+{
+    /* Red 0xff, green 0x00, blue 0xff, red in the low byte. */
+    static const uint8_t src[4] = { 0x00, 0xff, 0x00, 0xff };
+
+    mgras_reset();
+    mgras_enter_context(qts);
+    dma_rules_seed(70, 70, 70);
+    dma_rules_draw(70, 70, 1, src, sizeof(src), MGRAS_LOGIC_OP_XOR,
+                   0x00ffffff);
+    g_assert_cmphex(mgras_test_pixel(qts, 70, 70), ==, 0x00f00ff0);
+}
+
+static void test_dma_image_transfer_applies_colour_mask(void)
+{
+    static const uint8_t src[4] = { 0x00, 0xc0, 0xb0, 0xa0 };
+
+    mgras_reset();
+    mgras_enter_context(qts);
+    dma_rules_seed(72, 72, 70);
+    dma_rules_draw(72, 70, 1, src, sizeof(src), MGRAS_LOGIC_OP_COPY,
+                   0x0000ff00);
+    g_assert_cmphex(mgras_test_pixel(qts, 72, 70), ==, 0x000fb00f);
+}
+
+static void test_dma_image_transfer_draws_ci8_indices(void)
+{
+    static const uint8_t src[2] = { 0x05, 0xc3 };
+
+    mgras_reset();
+    mgras_enter_context(qts);
+    dma_rules_seed(74, 75, 70);
+    dma_rules_draw(74, 70, 2, src, sizeof(src), MGRAS_LOGIC_OP_COPY,
+                   0x00ffffff);
+    g_assert_cmphex(mgras_test_pixel(qts, 74, 70), ==, 0x05);
+    g_assert_cmphex(mgras_test_pixel(qts, 75, 70), ==, 0xc3);
+    g_assert_cmphex(mgras_test_format(qts, 74, 70), ==,
+                    MGRAS_PIXEL_FORMAT_CI8);
+    g_assert_cmphex(mgras_test_format(qts, 75, 70), ==,
+                    MGRAS_PIXEL_FORMAT_CI8);
+}
+
+#undef DMA_RULES_WIDGET
+#undef DMA_RULES_LIST_PAGE
+#undef DMA_RULES_LIST_BASE
+#undef DMA_RULES_PFN
+#undef DMA_RULES_PAGE
+#undef DMA_RULES_SEED
+
+/*
  * Screen-to-host read: the read
  * descriptor, hw-y box (0,1023)-(3,1020), pitch 4, over the seed weave
  * painted directly at screen (0,0)-(3,3). Checks
@@ -9900,6 +10037,15 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/origin2000/mgras/"
                    "dma-image-transfer-past-page-list-moves-nothing",
                    test_dma_image_transfer_past_page_list_moves_nothing);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "dma-image-transfer-applies-logic-op",
+                   test_dma_image_transfer_applies_logic_op);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "dma-image-transfer-applies-colour-mask",
+                   test_dma_image_transfer_applies_colour_mask);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "dma-image-transfer-draws-ci8-indices",
+                   test_dma_image_transfer_draws_ci8_indices);
     qtest_add_func("sn0/origin2000/mgras/"
                    "dma-image-transfer-reads-screen-to-host",
                    test_dma_image_transfer_reads_screen_to_host);
