@@ -361,6 +361,7 @@ GUEST_ADDR = "10.0.2.15"
 # bring-up captures).
 EG_ADDR = 4
 IFACE = "eg0"
+EG_MAC = "52:54:00:12:34:56"
 
 # The real multiuser IRIX boot budget the absorbed eg_net leg measured
 # sufficient for a single-CPU boot: the PROM's own power-on diagnostics,
@@ -709,6 +710,24 @@ if QemuSystemTest is not None:
             except HarnessError:
                 return None
 
+        def _command_output(self, con, command, tag, timeout=60):
+            start = len(con.buf)
+            status = con.run(command, tag, timeout=timeout)
+            return status, bytes(con.buf[start:]).decode("utf-8", "replace")
+
+        def _eg_board_statistics(self, con):
+            status, output = self._command_output(
+                con, f"egcmd {IFACE} STAT_GET", "egstats", timeout=120)
+            values = {}
+            for line in output.splitlines():
+                match = re.fullmatch(
+                    r"\s*([A-Za-z][A-Za-z0-9]+):\s*(.*?)\s*", line)
+                if match:
+                    values.setdefault(match.group(1), match.group(2))
+            self.assertEqual(status, 0, "egcmd STAT_GET failed")
+            self.assertTrue(values, "egcmd STAT_GET returned no fields")
+            return values
+
         @skipBigDataTest()
         @skipSlowTest()
         @skipIfMissingEnv('QEMU_TEST_SGI_ASSET_DIR')
@@ -750,7 +769,8 @@ if QemuSystemTest is not None:
                 '-d', DFLAGS,
                 '-D', self.log_file('qemu-dbg.log'),
                 '-netdev', netdev,
-                '-device', f'tigon,netdev=egnet,addr={EG_ADDR}',
+                '-device',
+                f'tigon,netdev=egnet,addr={EG_ADDR},mac={EG_MAC}',
                 '-object', f'filter-dump,id=egcap,netdev=egnet,file={pcap}')
             if TRACE:
                 # Which receive ring carried each frame, and how the interrupt
@@ -869,6 +889,26 @@ if QemuSystemTest is not None:
                     eg_up = True
                 except HarnessError:
                     pass
+
+                hinv_status, hinv = self._command_output(
+                    con, "hinv -v", "eg-hinv")
+                self.assertEqual(hinv_status, 0, "hinv -v failed")
+                self.assertRegex(
+                    hinv, r"(?m)^\s*Gigabit Ethernet:.*\b" +
+                    re.escape(IFACE) + r"\b",
+                    "hinv -v did not identify " + IFACE)
+
+                ifconfig_status, ifconfig = self._command_output(
+                    con, "ifconfig " + IFACE, "eg-ifconfig")
+                self.assertEqual(ifconfig_status, 0, "ifconfig eg0 failed")
+                self.assertRegex(
+                    ifconfig, r"(?m)^[ \t]*#?[ \t]*" + re.escape(IFACE) +
+                    r":.*flags=[0-9a-fA-F]+<[^>]*\bUP\b",
+                    "ifconfig did not report eg0 up")
+                self.assertRegex(
+                    ifconfig, r"(?m)^[ \t]+inet " + re.escape(GUEST_ADDR) +
+                    r"(?:[ \t]|$)",
+                    "ifconfig did not read back eg0's address")
 
                 if PARALLEL:
                     # One stream first for the per-stream baseline, then N
@@ -1207,6 +1247,29 @@ if QemuSystemTest is not None:
                     (seg_after - seg_before)
                     if (seg_after is not None and seg_before is not None)
                     else None)
+
+                board = self._eg_board_statistics(con)
+                expected_mtu = (JUMBO_MTU if JUMBO else 1500) + 18
+                self.assertEqual(
+                    board.get("ifMtu"), str(expected_mtu),
+                    "egcmd ifMtu disagrees with the configured MTU")
+                self.assertEqual(
+                    board.get("ifSpeed"), "1000000000",
+                    "egcmd ifSpeed did not read back the gigabit link")
+                self.assertEqual(
+                    board.get("ifOperStatus"), "1",
+                    "egcmd did not report the interface up")
+                board_mac = ":".join(
+                    part.zfill(2) for part in
+                    board.get("ifPhysAddress", "").lower().replace(
+                        "-", ":").split(":"))
+                self.assertEqual(board_mac, EG_MAC,
+                                 "egcmd station address disagrees with launch")
+                for name in ("ifHCOutUcastPkts", "ifHCOutOctets",
+                             "ifHCInUcastPkts", "ifHCInOctets"):
+                    self.assertTrue(board.get(name, "").isdigit()
+                                    and int(board[name]) > 0,
+                                    f"egcmd {name} did not read back traffic")
                 # Whether the driver will take a larger frame at all. Fewer,
                 # bigger packets is the one lever that cuts the guest's
                 # per-packet cost without making the emulated CPU faster, so
