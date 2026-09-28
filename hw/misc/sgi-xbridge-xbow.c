@@ -5,7 +5,9 @@
  */
 #include "qemu/osdep.h"
 #include "qemu/log.h"
+#include "qemu/timer.h"
 #include "hw/misc/sgi-xbridge-xbow.h"
+#include "hw/mips/sgi-xio-port.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/core/irq.h"
 #include "migration/vmstate.h"
@@ -41,6 +43,15 @@
 /* Link control: the force-bad-packet one-shot at bit 23 always reads zero. */
 #define LINK_CONTROL_WRITABLE 0xbf7f01ff
 #define LINK_CONTROL_RESET 0x00080000
+
+/*
+ * "The majority of the Crossbow Subsection of XBridge operates off single
+ * 100 Mhz clock known as the core_clock" (XBridge specification rev 0.5,
+ * printed page 86): the unit of the link reset one-shot's two cycles
+ * (page 70) and, inferred, of the 1024 after a first reset pattern in
+ * which the link layer ignores the rest (page 122).
+ */
+#define CORE_CYCLE_NS 10
 
 #define LINK_STATUS_ALIVE (1U << 31)
 #define LINK_STATUS_MAX_RETRY (1U << 5)
@@ -200,9 +211,22 @@ static void xbow_write(void *opaque, hwaddr addr, uint64_t value,
             REG(s, off) = value;
             return;
         case 0x30:
-            qemu_log_mask(LOG_UNIMP,
-                          "sgi-xbridge-xbow: link %x reset one-shot has no "
-                          "link to reset\n", link);
+            /*
+             * The one-shot resets the widget down this link alone, the
+             * way the Crossbow's does. Which pattern it sends is stated
+             * two ways: the register's own page says it makes the LLP
+             * "assert the remote link reset signal" (printed page 70),
+             * and the reset chapter says it asserts SendWarmReset (page
+             * 122); the Crossbow datasheet leaves the same conflict in
+             * its own specification open. Either way it goes down this
+             * one link, and the modelled widgets, the bridge heads,
+             * reset alike for both, so the model sends the one line it
+             * has (inferred). What ends the link's initialization
+             * afterwards is not stated, so a present link reports alive
+             * throughout, the policy the Crossbow model applies to the
+             * links a machine selects.
+             */
+            qemu_irq_pulse(s->warm_reset[link - LINK_FIRST]);
             return;
         default:
             xbow_access_error(s, addr, size, true);
@@ -294,19 +318,35 @@ static void xbow_reset_core(SGIXBridgeXbowState *s)
 }
 
 /*
- * A warm reset arriving on a port resets the core and goes out on every other
- * port whose fence admits the source, using the fences as they were
- * programmed before the core reset. Returning the fences to all ones on that
- * reset is the model's choice: whether the chip keeps their programmed values
- * is unknown.
+ * A warm reset arriving on a port resets the core and goes out on every
+ * port whose fence admits the source, the source's own included, using
+ * the fences as they were programmed before the core reset. Returning the
+ * fences to all ones on that reset is the model's choice: the change list
+ * says the fences "are reset only by power on reset" (printed page 27)
+ * while the reset chapter treats an accepted warm reset as a power-on
+ * reset of the core (page 122), and which holds is unknown.
  */
 static void xbow_warm_reset(void *opaque, int line, int level)
 {
     SGIXBridgeXbowState *s = opaque;
+    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
     uint8_t fence[LINK_COUNT];
     unsigned i;
 
     if (!level) {
+        return;
+    }
+    /*
+     * "These reset loops are disabled by the LLP which after detecting the
+     * first reset pattern, will ignore all subsequent reset requests for
+     * 1024 cycles" (printed page 122): the resets that come back as this
+     * one spreads, or another port's inside the window, do nothing. The
+     * page gives the window to each port's LLP; the model keeps one for
+     * the chip, and a pattern the widget 0 fence rejects still opens it,
+     * since the LLP detected it (both inferred).
+     */
+    if (!sgi_xio_llp_reset_accepted(&s->warm_reset_quiet_until, now,
+                                    CORE_CYCLE_NS)) {
         return;
     }
     if (!(REG(s, 0x78) & (1U << line))) {
@@ -316,8 +356,15 @@ static void xbow_warm_reset(void *opaque, int line, int level)
         fence[i] = REG(s, 0x80 + i * 8);
     }
     xbow_reset_core(s);
+    /*
+     * Every link whose fence admits the source port forwards it, the
+     * source's own link included. A fence names the ports its link accepts
+     * a warm reset from, and its own port's bit resets set (printed page
+     * 27): "for normal operation a link 8 should always be enabled to
+     * accept a warm reset from itself" (page 81).
+     */
     for (i = 0; i < LINK_COUNT; i++) {
-        if (i != line && (fence[i] & (1U << line))) {
+        if (fence[i] & (1U << line)) {
             qemu_irq_pulse(s->warm_reset[i]);
         }
     }
@@ -325,7 +372,10 @@ static void xbow_warm_reset(void *opaque, int line, int level)
 
 static void xbow_reset_hold(Object *obj, ResetType type)
 {
-    xbow_reset_core(SGI_XBRIDGE_XBOW(obj));
+    SGIXBridgeXbowState *s = SGI_XBRIDGE_XBOW(obj);
+
+    xbow_reset_core(s);
+    s->warm_reset_quiet_until = 0;
 }
 
 static void xbow_realize(DeviceState *dev, Error **errp)
@@ -373,11 +423,12 @@ static void xbow_unrealize(DeviceState *dev)
 
 static const VMStateDescription vmstate_xbow = {
     .name = TYPE_SGI_XBRIDGE_XBOW,
-    .version_id = 1,
+    .version_id = 2,
     .minimum_version_id = 1,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32_ARRAY(reg, SGIXBridgeXbowState, REG_COUNT),
         VMSTATE_UINT32(status, SGIXBridgeXbowState),
+        VMSTATE_INT64_V(warm_reset_quiet_until, SGIXBridgeXbowState, 2),
         VMSTATE_END_OF_LIST()
     }
 };

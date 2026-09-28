@@ -1080,15 +1080,17 @@ static void test_xbridge_topology(const void *data)
     g_assert_cmphex(identity & 1, ==, 1);
 
     /*
-     * A widget scan addresses the same chip by the physical XIO port
-     * Bedrock actually attached it to, not only by the widget-zero local-CPU
-     * shortcut above. Both name the same upstream link, so this must read
-     * identically to widget 0. A field diagnostic that walks Bedrock's own
-     * ports (rather than using the shortcut) reads exactly this address to
-     * decide the IO-8 board is present; before this widget was wired, the
-     * read reached nothing at all (bus error, not the empty-slot 0xffffffff),
-     * and that diagnostic reported no board present without ever exercising
-     * the board's own PCI functions.
+     * A widget scan addresses the same chip by the physical XIO
+     * port Bedrock actually attached it to, not only by the widget-zero
+     * local-CPU shortcut above. The model answers there with widget 0,
+     * an approximation (the XBridge datasheet, "A request to the host's
+     * own port number"), so this reads identically to widget 0. A field
+     * diagnostic that walks Bedrock's own ports (rather than using the
+     * shortcut) reads exactly this address to decide the IO-8 board is
+     * present; before this widget was wired, the read reached nothing at
+     * all (bus error, not the empty-slot 0xffffffff), and that diagnostic
+     * reported no board present without ever exercising the board's own
+     * PCI functions.
      */
     identity = widget_reg_read(qts, XBRIDGE_HOST_PORT, 0);
     g_assert_cmphex(WIDGET_REV(identity), ==, 2);
