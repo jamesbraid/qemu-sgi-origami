@@ -61,11 +61,26 @@ bool sgi_dma_read(const SGIDMABus *bus, uint64_t addr, void *buf,
     return true;
 }
 
+/*
+ * A transfer's chunk count follows sizes the guest chose, so running out
+ * of host memory fails the transfer rather than QEMU.
+ */
 static SGIDMAChunk *sgi_dma_map_append(SGIDMAMap *map)
 {
     if (map->nchunks == map->capacity) {
-        map->capacity = MAX(16, map->capacity * 2);
-        map->chunks = g_renew(SGIDMAChunk, map->chunks, map->capacity);
+        unsigned capacity;
+        SGIDMAChunk *chunks;
+
+        if (map->capacity > UINT_MAX / 2) {
+            return NULL;
+        }
+        capacity = MAX(16, map->capacity * 2);
+        chunks = g_try_renew(SGIDMAChunk, map->chunks, capacity);
+        if (!chunks) {
+            return NULL;
+        }
+        map->chunks = chunks;
+        map->capacity = capacity;
     }
     return &map->chunks[map->nchunks++];
 }
@@ -124,6 +139,12 @@ int sgi_dma_map(const SGIDMABus *bus, SGIDMAMap *map,
             return SGI_FAIL_BUS;
         }
         c = sgi_dma_map_append(map);
+        if (!c) {
+            qemu_log_mask(LOG_GUEST_ERROR, "sgi-dma: no host memory for "
+                          "chunk %u of 0x%" PRIx64 " bytes\n",
+                          map->nchunks, len);
+            return SGI_FAIL_BOUNDS;
+        }
         host = dma_memory_map(bus->as, bus_addr, &n, dir,
                               MEMTXATTRS_UNSPECIFIED);
         *c = (SGIDMAChunk) {
@@ -140,7 +161,13 @@ int sgi_dma_map(const SGIDMABus *bus, SGIDMAMap *map,
             }
             n = MIN(MIN(offset + len - pos, pl->page_size - in_page),
                     SGI_DMA_CHUNK_MAX);
-            c->host = g_malloc0(n);
+            c->host = g_try_malloc0(n);
+            if (!c->host) {
+                map->nchunks--;
+                qemu_log_mask(LOG_GUEST_ERROR, "sgi-dma: no host memory "
+                              "for a %u-byte bounce buffer\n", (unsigned)n);
+                return SGI_FAIL_BOUNDS;
+            }
             c->len = n;
             c->bounce = true;
             trace_sgi_dma_bounce(addr, n);

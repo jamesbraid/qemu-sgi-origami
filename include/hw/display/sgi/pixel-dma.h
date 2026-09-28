@@ -105,8 +105,9 @@ bool sgi_dma_read(const SGIDMABus *bus, uint64_t addr, void *buf,
  * Resolve [offset, offset + len) of a page-listed buffer and append its
  * chunks to map. dir is QEMU's DMA direction: TO_DEVICE when the head reads
  * the guest buffer. Source bytes are traced when trace is set. Returns 0,
- * or an SGIFailure after logging a guest error; on failure the chunks this
- * call added stay in map for sgi_dma_unmap() to release.
+ * or an SGIFailure after logging a guest error, SGI_FAIL_BOUNDS when the
+ * host cannot allocate a chunk or bounce buffer; on failure the chunks
+ * this call added stay in map for sgi_dma_unmap() to release.
  */
 int sgi_dma_map(const SGIDMABus *bus, SGIDMAMap *map,
                 const SGIDMAPageList *pl, uint64_t offset, uint64_t len,
