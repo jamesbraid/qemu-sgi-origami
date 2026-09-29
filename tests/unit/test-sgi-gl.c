@@ -3,7 +3,7 @@
  * The shared GL context and software rasterizer, on paths a family's
  * replay fixtures need not reach: whole batches of every primitive mode,
  * glFinish, the clear op a context builds, unsupported rule sets,
- * colour-index mode and glBitmap.
+ * colour-index mode, glBitmap and view-volume clipping.
  */
 #include "qemu/osdep.h"
 #include <math.h>
@@ -105,7 +105,6 @@ static const SGIRasterRules rules_supported = {
     .tie_rule = SGI_TIE_TOP_LEFT_BOTTOM_ORIGIN,
     .arith = SGI_ARITH_DOUBLE,
     .line_rule = SGI_LINE_COVERAGE_DOUBLE,
-    .drop_nonpositive_w = true,
     .evidence = "test",
 };
 
@@ -579,9 +578,6 @@ static void test_unsupported_rules(void)
 
     g_assert_true(sgi_raster_rules_supported(&rules_supported));
     rules.line_rule = SGI_LINE_BRESENHAM_DIAMOND;
-    g_assert_false(sgi_raster_rules_supported(&rules));
-    rules = rules_supported;
-    rules.drop_nonpositive_w = false;
     g_assert_false(sgi_raster_rules_supported(&rules));
     rules = rules_supported;
     rules.subpixel_bits = 13;
@@ -2298,7 +2294,6 @@ static const SGIRasterRules rules_stencil = {
     .tie_rule = SGI_TIE_TOP_LEFT_BOTTOM_ORIGIN,
     .arith = SGI_ARITH_DOUBLE,
     .line_rule = SGI_LINE_COVERAGE_DOUBLE,
-    .drop_nonpositive_w = true,
     .evidence = "test",
 };
 
@@ -3758,6 +3753,340 @@ static void test_raster_state_kept(void)
     g_assert_cmphex(out[0], ==, 1);
 }
 
+/*
+ * Clip coordinates are compared to within 2^-40 and attributes, which are
+ * floats, to within 2^-20.
+ */
+#define CLIP_EPSILON (1.0 / (1ull << 40))
+#define ATTR_EPSILON (1.0 / (1 << 20))
+
+/*
+ * A vertex at clip coordinates (x, y, z, w), the same in eye coordinates,
+ * with colour (r, g, b, 1), texture coordinate s and fog coordinate f.
+ */
+static SGIVolumeVertex volume_vertex(double x, double y, double z, double w,
+                                     float r, float g, float b, float s,
+                                     float f)
+{
+    SGIVolumeVertex v = { .clip = { x, y, z, w }, .eye = { x, y, z, w } };
+
+    v.attr[SGI_GL_V_POSITION + 3] = 1;
+    v.attr[SGI_GL_V_COLOR] = r;
+    v.attr[SGI_GL_V_COLOR + 1] = g;
+    v.attr[SGI_GL_V_COLOR + 2] = b;
+    v.attr[SGI_GL_V_COLOR + 3] = 1;
+    v.attr[SGI_GL_V_TEXCOORD] = s;
+    v.attr[SGI_GL_V_TEXCOORD + 3] = 1;
+    v.attr[SGI_GL_V_FOG] = f;
+    return v;
+}
+
+/* v is at clip (x, y, z, w) with colour (r, g, b), s and f as above. */
+static void assert_volume_vertex(const SGIVolumeVertex *v, double x,
+                                 double y, double z, double w, float r,
+                                 float g, float b, float s, float f)
+{
+    const double c[4] = { x, y, z, w };
+    const float rgba[4] = { r, g, b, 1 };
+
+    for (int k = 0; k < 4; k++) {
+        g_assert_cmpfloat_with_epsilon(v->clip[k], c[k], CLIP_EPSILON);
+        g_assert_cmpfloat_with_epsilon(v->eye[k], c[k], CLIP_EPSILON);
+    }
+    for (int k = 0; k < 4; k++) {
+        g_assert_cmpfloat_with_epsilon(v->attr[SGI_GL_V_COLOR + k], rgba[k],
+                                       ATTR_EPSILON);
+    }
+    g_assert_cmpfloat_with_epsilon(v->attr[SGI_GL_V_TEXCOORD], s, ATTR_EPSILON);
+    g_assert_cmpfloat_with_epsilon(v->attr[SGI_GL_V_FOG], f, ATTR_EPSILON);
+}
+
+/*
+ * The index in poly, of n vertices, of the vertex at clip (x, y, z, w),
+ * which must be there once.
+ */
+static unsigned volume_find(const SGIVolumeVertex *poly, unsigned n,
+                            double x, double y, double z, double w)
+{
+    unsigned found = n;
+
+    for (unsigned i = 0; i < n; i++) {
+        if (fabs(poly[i].clip[0] - x) < CLIP_EPSILON &&
+            fabs(poly[i].clip[1] - y) < CLIP_EPSILON &&
+            fabs(poly[i].clip[2] - z) < CLIP_EPSILON &&
+            fabs(poly[i].clip[3] - w) < CLIP_EPSILON) {
+            g_assert_cmpuint(found, ==, n);
+            found = i;
+        }
+    }
+    g_assert_cmpuint(found, <, n);
+    return found;
+}
+
+/*
+ * View-volume clipping of a triangle (OpenGL 1.2.1, 2.11) at w 1, where
+ * clip and normalized device coordinates agree. Red (-1/2, -1/2, -3),
+ * green (1/2, -1/2, 3) and blue (0, 1/2, 0) cross the near plane z = -w
+ * and the far plane z = w. By hand: edge red-green crosses the near
+ * plane a third of the way along, at (-1/6, -1/2, -1), and the far plane
+ * two thirds along, at (1/6, -1/2, 1); green-blue crosses the far plane
+ * two thirds along, at (1/6, 1/6, 1); blue-red crosses the near plane a
+ * third along, at (-1/6, 1/6, -1). Each new vertex's colour, texture
+ * coordinate s (0, 1 and 1/2) and fog coordinate (0, 6 and 3) are
+ * interpolated at the same t (2.13.8). The pentagon keeps the triangle's
+ * winding.
+ */
+static void test_volume_clip_triangle_near_and_far(void)
+{
+    const SGIVolumeVertex in[3] = {
+        volume_vertex(-0.5, -0.5, -3, 1, 1, 0, 0, 0, 0),
+        volume_vertex(0.5, -0.5, 3, 1, 0, 1, 0, 1, 6),
+        volume_vertex(0, 0.5, 0, 1, 0, 0, 1, 0.5, 3),
+    };
+    const SGIVolumeVertex inside[3] = {
+        volume_vertex(-1, -1, -1, 1, 1, 0, 0, 0, 0),
+        volume_vertex(2, -2, 2, 2, 0, 1, 0, 1, 6),
+        volume_vertex(0, 0.5, 0.25, 1, 0, 0, 1, 0.5, 3),
+    };
+    SGIVolumeVertex out[SGI_VOLUME_TRIANGLE_MAX];
+    unsigned n = sgi_volume_clip_triangle(in, out), a;
+
+    g_assert_cmpuint(n, ==, 5);
+    a = volume_find(out, n, -1.0 / 6, -0.5, -1, 1);
+    assert_volume_vertex(&out[a], -1.0 / 6, -0.5, -1, 1,
+                         2.0 / 3, 1.0 / 3, 0, 1.0 / 3, 2);
+    assert_volume_vertex(&out[(a + 1) % n], 1.0 / 6, -0.5, 1, 1,
+                         1.0 / 3, 2.0 / 3, 0, 2.0 / 3, 4);
+    assert_volume_vertex(&out[(a + 2) % n], 1.0 / 6, 1.0 / 6, 1, 1,
+                         0, 1.0 / 3, 2.0 / 3, 2.0 / 3, 4);
+    assert_volume_vertex(&out[(a + 3) % n], 0, 0.5, 0, 1,
+                         0, 0, 1, 0.5, 3);
+    assert_volume_vertex(&out[(a + 4) % n], -1.0 / 6, 1.0 / 6, -1, 1,
+                         1.0 / 3, 0, 2.0 / 3, 1.0 / 3, 2);
+
+    /* Inside every plane, even on them: unchanged, bit for bit. */
+    g_assert_cmpuint(sgi_volume_clip_triangle(inside, out), ==, 3);
+    g_assert_cmpmem(out, 3 * sizeof(out[0]), inside, sizeof(inside));
+}
+
+/*
+ * A segment crossing the side planes is clipped in clip coordinates, not
+ * after the divide: from (-2, 0, 0, 1), red 0, to (4, 0, 0, 2), red 1,
+ * w + x is -1 and 6, so the segment enters x >= -w at t = 1/7, at
+ * (-8/7, 0, 0, 8/7), and w - x is 3 and -2, so it leaves x <= w at
+ * t = 3/5, at (8/5, 0, 0, 8/5); red is 1/7 and 3/5 there. A vertical
+ * segment from y = -3 to 3 at w 1 keeps -1 to 1. A segment beyond one
+ * plane at both ends is dropped, and so is one that crosses two planes
+ * but never lies inside both.
+ */
+static void test_volume_clip_segment_side_planes(void)
+{
+    SGIVolumeVertex a = volume_vertex(-2, 0, 0, 1, 0, 0, 0, 0, 0);
+    SGIVolumeVertex b = volume_vertex(4, 0, 0, 2, 1, 0, 0, 1, 7);
+
+    g_assert_true(sgi_volume_clip_segment(&a, &b));
+    assert_volume_vertex(&a, -8.0 / 7, 0, 0, 8.0 / 7, 1.0 / 7, 0, 0,
+                         1.0 / 7, 1);
+    assert_volume_vertex(&b, 8.0 / 5, 0, 0, 8.0 / 5, 3.0 / 5, 0, 0,
+                         3.0 / 5, 21.0 / 5);
+
+    a = volume_vertex(0.25, -3, 0, 1, 0, 1, 0, 0, 0);
+    b = volume_vertex(0.25, 3, 0, 1, 0, 0, 1, 1, 0);
+    g_assert_true(sgi_volume_clip_segment(&a, &b));
+    assert_volume_vertex(&a, 0.25, -1, 0, 1, 0, 2.0 / 3, 1.0 / 3,
+                         1.0 / 3, 0);
+    assert_volume_vertex(&b, 0.25, 1, 0, 1, 0, 1.0 / 3, 2.0 / 3,
+                         2.0 / 3, 0);
+
+    a = volume_vertex(1.5, 0, 0, 1, 0, 0, 0, 0, 0);
+    b = volume_vertex(3, -0.5, 0.5, 2, 0, 0, 0, 0, 0);
+    g_assert_false(sgi_volume_clip_segment(&a, &b));
+
+    /*
+     * One that passes outside a corner, from (-2, 0) to (1/4, 5/2) at
+     * w 1, enters x >= -w only at t = 4/9 but has already left y <= w at
+     * t = 2/5: no part lies inside both, and it is dropped, whichever end
+     * comes first, not drawn reversed between the two cuts.
+     */
+    a = volume_vertex(-2, 0, 0, 1, 0, 0, 0, 0, 0);
+    b = volume_vertex(0.25, 2.5, 0, 1, 0, 0, 0, 0, 0);
+    g_assert_false(sgi_volume_clip_segment(&a, &b));
+    g_assert_false(sgi_volume_clip_segment(&b, &a));
+}
+
+/*
+ * Vertices at w <= 0. The view volume holds no point with w < 0
+ * (2.11), so a triangle with one is cut where it leaves the volume, and
+ * one with every vertex negated, which divides to the same window
+ * points, keeps nothing. Red (-1/2, -1/2, 0, 1), green (1/2, -1/2, 0, 1)
+ * and blue (0, 0, -3, -1): along red-blue w + z is 1 - 5t and every
+ * other plane's value falls to 0 later, at t = 1/3 or 3/5, so the near
+ * plane cuts it first at t = 1/5, at (-2/5, -2/5, -3/5, 3/5), coloured
+ * (4/5, 0, 1/5); green-blue likewise at (2/5, -2/5, -3/5, 3/5), coloured
+ * (0, 4/5, 1/5). A segment from (0, 0, 0, 1) to (0, 0, 2, -1) is cut by
+ * the far plane, w - z = 1 - 4t, at t = 1/4: (0, 0, 1/2, 1/2).
+ */
+static void test_volume_clip_negative_w(void)
+{
+    SGIVolumeVertex in[3] = {
+        volume_vertex(-0.5, -0.5, 0, 1, 1, 0, 0, 0, 0),
+        volume_vertex(0.5, -0.5, 0, 1, 0, 1, 0, 1, 0),
+        volume_vertex(0, 0, -3, -1, 0, 0, 1, 0, 5),
+    };
+    SGIVolumeVertex out[SGI_VOLUME_TRIANGLE_MAX], a, b;
+    unsigned n = sgi_volume_clip_triangle(in, out), i;
+
+    g_assert_cmpuint(n, ==, 4);
+    i = volume_find(out, n, -0.5, -0.5, 0, 1);
+    assert_volume_vertex(&out[i], -0.5, -0.5, 0, 1, 1, 0, 0, 0, 0);
+    assert_volume_vertex(&out[(i + 1) % n], 0.5, -0.5, 0, 1,
+                         0, 1, 0, 1, 0);
+    assert_volume_vertex(&out[(i + 2) % n], 0.4, -0.4, -0.6, 0.6,
+                         0, 0.8, 0.2, 0.8, 1);
+    assert_volume_vertex(&out[(i + 3) % n], -0.4, -0.4, -0.6, 0.6,
+                         0.8, 0, 0.2, 0, 1);
+
+    for (i = 0; i < 3; i++) {
+        for (int k = 0; k < 4; k++) {
+            in[i].clip[k] = -in[i].clip[k];
+        }
+    }
+    g_assert_cmpuint(sgi_volume_clip_triangle(in, out), ==, 0);
+
+    a = volume_vertex(0, 0, 0, 1, 1, 0, 0, 0, 0);
+    b = volume_vertex(0, 0, 2, -1, 0, 0, 1, 1, 0);
+    g_assert_true(sgi_volume_contains(&a));
+    g_assert_false(sgi_volume_contains(&b));
+    g_assert_true(sgi_volume_clip_segment(&a, &b));
+    assert_volume_vertex(&a, 0, 0, 0, 1, 1, 0, 0, 0, 0);
+    assert_volume_vertex(&b, 0, 0, 0.5, 0.5, 0.75, 0, 0.25, 0.25, 0);
+    b = volume_vertex(0.5, 0.5, 0, -1, 0, 0, 0, 0, 0);
+    g_assert_false(sgi_volume_contains(&b));
+    b.clip[3] = 0.5;
+    g_assert_true(sgi_volume_contains(&b));
+}
+
+/*
+ * Two triangles sharing an edge that crosses a plane make the same
+ * vertex on it, bit for bit, whichever way round each has the edge, so
+ * the clipped mesh stays closed: the quad A B C D's triangles A B C and
+ * A C D share A C, which crosses the left, bottom and near planes.
+ */
+static void test_volume_clip_shares_edges(void)
+{
+    const SGIVolumeVertex A = volume_vertex(-1.5, -0.8, -2, 0.5,
+                                            1, 0, 0, 0, 0.3);
+    const SGIVolumeVertex B = volume_vertex(1.5, -0.8, -2, 0.5,
+                                            0, 1, 0, 0.7, 0.1);
+    const SGIVolumeVertex C = volume_vertex(0.6, 0.7, 1.3, 2,
+                                            0, 0, 1, 0.3, 0.9);
+    const SGIVolumeVertex D = volume_vertex(-0.7, 0.6, 1.1, 1.9,
+                                            1, 1, 0, 0.9, 0.2);
+    const SGIVolumeVertex abc[3] = { A, B, C }, acd[3] = { A, C, D };
+    SGIVolumeVertex p[SGI_VOLUME_TRIANGLE_MAX], q[SGI_VOLUME_TRIANGLE_MAX];
+    unsigned np = sgi_volume_clip_triangle(abc, p);
+    unsigned nq = sgi_volume_clip_triangle(acd, q);
+    unsigned shared = 0;
+
+    g_assert_cmpuint(np, >=, 3);
+    g_assert_cmpuint(nq, >=, 3);
+    /* The vertex A C's crossing makes is in both, and the same. */
+    for (unsigned i = 0; i < np; i++) {
+        for (unsigned j = 0; j < nq; j++) {
+            if (fabs(p[i].clip[0] - q[j].clip[0]) < CLIP_EPSILON &&
+                fabs(p[i].clip[1] - q[j].clip[1]) < CLIP_EPSILON &&
+                fabs(p[i].clip[3] - q[j].clip[3]) < CLIP_EPSILON &&
+                p[i].clip[3] != C.clip[3]) {
+                g_assert_cmpmem(&p[i], sizeof(p[i]), &q[j], sizeof(q[j]));
+                shared++;
+            }
+        }
+    }
+    g_assert_cmpuint(shared, ==, 1);
+}
+
+/* A triangle drawn through a scene from its clip coordinates. */
+static void frag_clip_triangle(FragScene *f, const float v[3][4])
+{
+    uint32_t word[4];
+
+    word[0] = SGI_GL_TRIANGLES;
+    frag_command(f, SGI_GL_OP_BEGIN, word, 1);
+    for (int i = 0; i < 3; i++) {
+        for (int k = 0; k < 4; k++) {
+            word[k] = bits(v[i][k]);
+        }
+        frag_command(f, SGI_GL_OP_VERTEX4F, word, 4);
+    }
+    frag_command(f, SGI_GL_OP_END, word, 0);
+}
+
+/*
+ * Drawing clips to the view volume and never divides by a w <= 0. The
+ * negative-w triangle above keeps a trapezoid from normalized y -2/3,
+ * window row 10.7, to -1/2, row 16, x -2/3 to 2/3 at its bottom and -1/2
+ * to 1/2 at its top, and draws only that: row 13 at the centre column
+ * and the pixel at (12, 11) inside its left edge, but neither row 9 below
+ * it nor rows 17 and 20 above, which the triangle's vertices divided by
+ * their w, (16, 16), (48, 16) and (32, 32), would cover. A segment is
+ * cut the same way. The negated triangle draws nothing, and nor does a
+ * point with w < 0 that divides to a window point inside the viewport,
+ * or one beyond the far plane.
+ */
+static void test_draw_clips_to_the_view_volume(void)
+{
+    static FragScene f;
+    float tri[3][4] = {
+        { -0.5, -0.5, 0, 1 }, { 0.5, -0.5, 0, 1 }, { 0, 0, -3, -1 },
+    };
+    uint32_t word[4];
+
+    frag_init(&f);
+    word[0] = bits(1), word[1] = bits(1), word[2] = bits(1);
+    frag_command(&f, SGI_GL_OP_COLOR3F, word, 3);
+    frag_clip_triangle(&f, tri);
+    g_assert_cmphex(frag_pixel(&f, 32, 13), ==, 0xffffff);
+    g_assert_cmphex(frag_pixel(&f, 12, 11), ==, 0xffffff);
+    g_assert_cmphex(frag_pixel(&f, 32, 9), ==, 0);
+    g_assert_cmphex(frag_pixel(&f, 32, 20), ==, 0);
+    g_assert_cmphex(frag_pixel(&f, 20, 17), ==, 0);
+
+    /*
+     * Its left edge as a segment keeps the part from window (16, 16) down
+     * to (10.7, 10.7), through (13, 13), and not the part the divide
+     * would put up towards (32, 32).
+     */
+    memset(&f.p, 0, sizeof(f.p));
+    word[0] = SGI_GL_LINES;
+    frag_command(&f, SGI_GL_OP_BEGIN, word, 1);
+    for (int i = 0; i < 3; i += 2) {
+        for (int k = 0; k < 4; k++) {
+            word[k] = bits(tri[i][k]);
+        }
+        frag_command(&f, SGI_GL_OP_VERTEX4F, word, 4);
+    }
+    frag_command(&f, SGI_GL_OP_END, word, 0);
+    g_assert_cmphex(frag_pixel(&f, 13, 13), ==, 0xffffff);
+    g_assert_cmphex(frag_pixel(&f, 20, 20), ==, 0);
+
+    memset(&f.p, 0, sizeof(f.p));
+    for (int i = 0; i < 3; i++) {
+        for (int k = 0; k < 4; k++) {
+            tri[i][k] = -tri[i][k];
+        }
+    }
+    frag_clip_triangle(&f, tri);
+    word[0] = SGI_GL_POINTS;
+    frag_command(&f, SGI_GL_OP_BEGIN, word, 1);
+    word[0] = bits(0.25), word[1] = bits(0.25), word[2] = bits(0);
+    word[3] = bits(-1);
+    frag_command(&f, SGI_GL_OP_VERTEX4F, word, 4);
+    word[2] = bits(2), word[3] = bits(1);
+    frag_command(&f, SGI_GL_OP_VERTEX4F, word, 4);
+    frag_command(&f, SGI_GL_OP_END, word, 0);
+    g_assert_cmpuint(frag_count(&f, 0), ==, W * H);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -3846,5 +4175,15 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-gl/polygon-offset", test_polygon_offset);
     g_test_add_func("/sgi-gl/clip-planes", test_clip_planes);
     g_test_add_func("/sgi-gl/raster-state-kept", test_raster_state_kept);
+    g_test_add_func("/sgi-gl/volume-clip-triangle-near-and-far",
+                    test_volume_clip_triangle_near_and_far);
+    g_test_add_func("/sgi-gl/volume-clip-segment-side-planes",
+                    test_volume_clip_segment_side_planes);
+    g_test_add_func("/sgi-gl/volume-clip-negative-w",
+                    test_volume_clip_negative_w);
+    g_test_add_func("/sgi-gl/volume-clip-shares-edges",
+                    test_volume_clip_shares_edges);
+    g_test_add_func("/sgi-gl/draw-clips-to-the-view-volume",
+                    test_draw_clips_to_the_view_volume);
     return g_test_run();
 }

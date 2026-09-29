@@ -2,11 +2,12 @@
 /*
  * The software rasterizer the SGI graphics heads share.
  *
- * A draw's vertices are transformed by the draw state's matrices, mapped
- * through its viewport into window coordinates, snapped to a subpixel grid
- * and rasterized with edge functions at pixel centres, clipped by the
- * enabled client clip planes, and fogged while fog is enabled. Each fragment
- * then passes the per-fragment operations in OpenGL 1.2.1's order (4.1):
+ * A draw's vertices are transformed by the draw state's matrices, its
+ * primitives clipped to the view volume, mapped through its viewport into
+ * window coordinates, snapped to a subpixel grid and rasterized with edge
+ * functions at pixel centres, clipped by the enabled client clip planes,
+ * and fogged while fog is enabled. Each fragment then passes the
+ * per-fragment operations in OpenGL 1.2.1's order (4.1):
  * pixel ownership against the drawable's rectangles, the scissor test, the
  * alpha test, the stencil test, the depth test, blending and the logical
  * operation, and is stored under the write masks through the family's
@@ -111,8 +112,7 @@ bool sgi_raster_rules_supported(const SGIRasterRules *r)
            r->rounding <= SGI_ROUND_HALF_AWAY &&
            r->tie_rule == SGI_TIE_TOP_LEFT_BOTTOM_ORIGIN &&
            r->arith == SGI_ARITH_DOUBLE &&
-           r->line_rule == SGI_LINE_COVERAGE_DOUBLE &&
-           r->drop_nonpositive_w;
+           r->line_rule == SGI_LINE_COVERAGE_DOUBLE;
 }
 
 static bool sgi_soft_check_rules(const SGIRasterRules *r)
@@ -653,11 +653,10 @@ static void sgi_soft_fragment_at(const SGISoftDraw *r, int px, int py,
 /*
  * A primitive's fragment at normalized depth z, (zd + 1) / 2 for the
  * normalized device z zd: dropped outside [0, 1], the view volume's near
- * and far planes, and otherwise mapped to window depth n + (f - n) z
- * through the depth range [n, f] (OpenGL 1.2.1, 2.10.1). Clipping on the
- * normalized depth keeps a range with n equal to f from passing depths
- * beyond the far plane. A polygon's offset is then added to the window
- * depth, and the sum clamped to [0, 1] (3.5.5).
+ * and far planes, which clipping has already cut the primitive to, and
+ * otherwise mapped to window depth n + (f - n) z through the depth range
+ * [n, f] (OpenGL 1.2.1, 2.10.1). A polygon's offset is then added to the
+ * window depth, and the sum clamped to [0, 1] (3.5.5).
  */
 static void sgi_soft_fragment(const SGISoftDraw *r, int px, int py, double z,
                               double offset, const SGISoftFrag *frag)
@@ -698,41 +697,190 @@ static double sgi_soft_offset(const SGISoftDraw *r, const SGISoftVertex v[3])
 }
 
 /*
- * Transform one vertex (OpenGL 1.2.1, 2.10): object to eye by the
- * modelview, eye to clip by the projection, the divide by w and the
- * viewport map, with depth left normalized to [0, 1] for clipping; the
- * depth range maps it per fragment. A vertex with w <= 0
- * needs clipping the model does not do, and returns false.
+ * The six planes of the view volume (OpenGL 1.2.1, 2.11), -w <= x, y,
+ * z <= w, as each one's value at a point, which is >= 0 inside it.
  */
-static bool sgi_soft_transform(const SGISoftDraw *r, const float *v,
-                               SGISoftVertex *out)
+#define SGI_VOLUME_PLANES 6
+
+static double sgi_volume_plane(const SGIVolumeVertex *v, int plane)
+{
+    double c = v->clip[plane / 2];
+
+    return plane & 1 ? v->clip[3] - c : v->clip[3] + c;
+}
+
+bool sgi_volume_contains(const SGIVolumeVertex *v)
+{
+    for (int i = 0; i < SGI_VOLUME_PLANES; i++) {
+        if (!(sgi_volume_plane(v, i) >= 0)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/*
+ * The point at t along from in to out, in clip and eye coordinates and
+ * every float attribute (2.13.8); the material index and edge flag are
+ * bit patterns and stay in's.
+ */
+static void sgi_volume_lerp(const SGIVolumeVertex *in,
+                            const SGIVolumeVertex *out, double t,
+                            SGIVolumeVertex *r)
+{
+    for (int k = 0; k < 4; k++) {
+        r->clip[k] = in->clip[k] + t * (out->clip[k] - in->clip[k]);
+        r->eye[k] = in->eye[k] + t * (out->eye[k] - in->eye[k]);
+    }
+    for (int k = 0; k < SGI_GL_VERTEX_FLOATS; k++) {
+        r->attr[k] = k == SGI_GL_V_MATERIAL || k == SGI_GL_V_EDGE ?
+                     in->attr[k] :
+                     in->attr[k] + t * (out->attr[k] - in->attr[k]);
+    }
+}
+
+/*
+ * Where the edge from in, inside a plane with value din, to out, outside
+ * it with value dout, meets the plane. It is always found from the inside
+ * end, so that two primitives sharing the edge make the same vertex.
+ */
+static void sgi_volume_cut(const SGIVolumeVertex *in, double din,
+                           const SGIVolumeVertex *out, double dout,
+                           SGIVolumeVertex *r)
+{
+    sgi_volume_lerp(in, out, din / (din - dout), r);
+}
+
+/*
+ * Sutherland and Hodgman's clipping, one plane at a time: each edge
+ * keeps its inside end and adds the point where it crosses the plane.
+ * A value that is not a number is outside.
+ */
+unsigned sgi_volume_clip_triangle(const SGIVolumeVertex in[3],
+                                  SGIVolumeVertex out[SGI_VOLUME_TRIANGLE_MAX])
+{
+    SGIVolumeVertex buf[SGI_VOLUME_TRIANGLE_MAX];
+    SGIVolumeVertex *src = out, *dst = buf, *t;
+    unsigned n = 3;
+
+    memcpy(out, in, 3 * sizeof(in[0]));
+    if (sgi_volume_contains(&in[0]) && sgi_volume_contains(&in[1]) &&
+        sgi_volume_contains(&in[2])) {
+        return 3;
+    }
+    /* Six planes swap the buffers six times, ending in out. */
+    for (int p = 0; p < SGI_VOLUME_PLANES; p++) {
+        unsigned m = 0;
+
+        for (unsigned i = 0; i < n; i++) {
+            const SGIVolumeVertex *a = &src[i], *b = &src[(i + 1) % n];
+            double da = sgi_volume_plane(a, p), db = sgi_volume_plane(b, p);
+
+            if (da >= 0) {
+                dst[m++] = *a;
+                if (!(db >= 0)) {
+                    sgi_volume_cut(a, da, b, db, &dst[m++]);
+                }
+            } else if (db >= 0) {
+                sgi_volume_cut(b, db, a, da, &dst[m++]);
+            }
+        }
+        n = m;
+        t = src, src = dst, dst = t;
+        if (n < 3) {
+            return 0;
+        }
+    }
+    return n;
+}
+
+/*
+ * Liang and Barsky's clipping: the segment keeps the part every plane
+ * allows. Each end that a plane bounds moves to where the segment meets
+ * that plane, found from the other end, inside it, as a triangle's cut
+ * is: a fraction sa of the way from b to a, and tb from a to b.
+ */
+bool sgi_volume_clip_segment(SGIVolumeVertex *a, SGIVolumeVertex *b)
+{
+    SGIVolumeVertex na = *a, nb = *b;
+    double sa = 1, tb = 1;
+
+    for (int p = 0; p < SGI_VOLUME_PLANES; p++) {
+        double da = sgi_volume_plane(a, p), db = sgi_volume_plane(b, p);
+
+        if (da >= 0 && db >= 0) {
+            continue;
+        }
+        if (!(da >= 0) && !(db >= 0)) {
+            return false;
+        }
+        if (da >= 0) {
+            tb = MIN(tb, da / (da - db));
+        } else {
+            sa = MIN(sa, db / (db - da));
+        }
+    }
+    if (!(sa + tb >= 1)) {
+        return false;
+    }
+    if (sa < 1) {
+        sgi_volume_lerp(b, a, sa, &na);
+    }
+    if (tb < 1) {
+        sgi_volume_lerp(a, b, tb, &nb);
+    }
+    *a = na;
+    *b = nb;
+    return true;
+}
+
+/*
+ * One vertex to clip coordinates (OpenGL 1.2.1, 2.10): object to eye by
+ * the modelview and eye to clip by the projection.
+ */
+static void sgi_soft_to_volume(const SGISoftDraw *r, const float *v,
+                               SGIVolumeVertex *out)
 {
     const SGIGLDrawState *st = r->st;
-    const float *pos = &v[SGI_GL_V_POSITION];
-    const float *rgba = &v[SGI_GL_V_COLOR];
-    double obj[4], eye[4], clip[4];
+
+    for (int row = 0; row < 4; row++) {
+        out->eye[row] = 0;
+        for (int k = 0; k < 4; k++) {
+            out->eye[row] += st->modelview[k * 4 + row] *
+                             (double)v[SGI_GL_V_POSITION + k];
+        }
+    }
+    for (int row = 0; row < 4; row++) {
+        out->clip[row] = 0;
+        for (int k = 0; k < 4; k++) {
+            out->clip[row] += st->projection[k * 4 + row] * out->eye[k];
+        }
+    }
+    memcpy(out->attr, v, sizeof(out->attr));
+}
+
+/*
+ * Map one clipped vertex (2.10): the divide by w and the viewport map,
+ * with depth left normalized to [0, 1]; the depth range maps it per
+ * fragment. Clipping has put the vertex in the view volume, so its
+ * normalized depth is clamped to [0, 1] against rounding. The colour is
+ * the front colour; a back-facing triangle takes its back colour later.
+ * A vertex with w <= 0 is in the volume only at the clip-space origin,
+ * where the divide has no answer, and returns false, as does one mapped
+ * beyond the rasterizer's range.
+ */
+static bool sgi_soft_project(const SGISoftDraw *r, const SGIVolumeVertex *cv,
+                             SGISoftVertex *out)
+{
+    const SGIGLDrawState *st = r->st;
+    const double *clip = cv->clip, *eye = cv->eye;
     int vx = st->viewport[0], vy = st->viewport[1];
     int vw = st->viewport[2], vh = st->viewport[3];
-    double xw, yw;
+    double xw, yw, z;
 
-    for (int k = 0; k < 4; k++) {
-        obj[k] = pos[k];
-    }
-    for (int row = 0; row < 4; row++) {
-        eye[row] = 0;
-        for (int k = 0; k < 4; k++) {
-            eye[row] += st->modelview[k * 4 + row] * obj[k];
-        }
-    }
-    for (int row = 0; row < 4; row++) {
-        clip[row] = 0;
-        for (int k = 0; k < 4; k++) {
-            clip[row] += st->projection[k * 4 + row] * eye[k];
-        }
-    }
     if (!(clip[3] > 0)) {
-        qemu_log_mask(LOG_UNIMP, "sgi-gl: vertex with w %g needs clipping, "
-                      "primitive dropped\n", clip[3]);
+        qemu_log_mask(LOG_UNIMP, "sgi-gl: clipped vertex at w %g has no "
+                      "window position, primitive dropped\n", clip[3]);
         return false;
     }
     /* 2.10.1: xw = (px / 2) xd + ox, ox = x + w / 2. */
@@ -745,7 +893,8 @@ static bool sgi_soft_transform(const SGISoftDraw *r, const float *v,
     }
     out->x = sgi_soft_round(r->rules, xw * (1 << r->rules->subpixel_bits));
     out->y = sgi_soft_round(r->rules, yw * (1 << r->rules->subpixel_bits));
-    out->z = (clip[2] / clip[3] + 1.0) / 2.0;
+    z = (clip[2] / clip[3] + 1.0) / 2.0;
+    out->z = z >= 1 ? 1 : z > 0 ? z : 0;
     out->inv_w = 1.0 / clip[3];
     /*
      * The fog coordinate approximates the eye distance by |z|, which
@@ -760,15 +909,16 @@ static bool sgi_soft_transform(const SGISoftDraw *r, const float *v,
                        p[3] * eye[3];
     }
     for (int k = 0; k < 4; k++) {
-        out->rgba[k] = MIN(MAX(rgba[k], 0.0f), 1.0f);
+        out->rgba[k] = MIN(MAX(cv->attr[SGI_GL_V_COLOR + k], 0.0f), 1.0f);
     }
-    out->index = v[SGI_GL_V_INDEX];
+    out->index = cv->attr[SGI_GL_V_INDEX];
     return true;
 }
 
 /*
- * Transform, map and rasterize one triangle, given its three vertices
- * and, for flat shading, the provoking vertex (OpenGL 1.2.1, 2.13.7 and
+ * Map and rasterize one triangle of a clipped polygon, given its three
+ * vertices in the view volume and, for flat shading, the provoking
+ * vertex of the triangle it was clipped from (OpenGL 1.2.1, 2.13.7 and
  * table 2.9).
  *
  * Facing (2.13.1) is the sign of the triangle's area in window
@@ -777,28 +927,25 @@ static bool sgi_soft_transform(const SGISoftDraw *r, const float *v,
  * enabled a triangle whose facing glCullFace names is not rasterized
  * (3.5.1). When the draw carries back colours a back-facing triangle
  * takes them. A polygon or quad is drawn as triangles, each facing by its
- * own area, which for a convex polygon is the polygon's facing.
+ * own area, which for a convex polygon is the polygon's facing; so is
+ * each triangle of a clipped one.
  *
- * Clipping to the view volume is approximated. In x and y the fragments
- * are bounded by the viewport rectangle, which matches clipping for a
- * positive w; the discriminating test is
- * gl-triangle-bounded-by-the-viewport. In z a fragment whose interpolated
- * window depth lies outside [0, 1] is dropped: window depth is affine in
- * window x and y over the triangle, so that removes exactly the part
- * beyond the near or far plane (gl-triangle-clipped-at-the-far-plane). A
- * vertex with w <= 0 drops the whole triangle
- * (gl-triangle-with-negative-w-is-dropped).
+ * The fragments are also bounded by the viewport rectangle, which
+ * clipping has already made them lie in; a normalized depth outside
+ * [0, 1] could now come only from rounding, and is still dropped.
  *
  * Depth is interpolated linearly in window coordinates and colour with
  * the perspective correction of equation 3.4 (OpenGL 1.2.1, 3.5.1).
  */
-static void sgi_soft_triangle(const SGISoftDraw *r, const float *va,
-                              const float *vb, const float *vc,
-                              const float *provoking)
+static void sgi_soft_clipped_triangle(const SGISoftDraw *r,
+                                      const SGIVolumeVertex *va,
+                                      const SGIVolumeVertex *vb,
+                                      const SGIVolumeVertex *vc,
+                                      const float *provoking)
 {
     const SGIGLDrawState *st = r->st;
     const SGISoftWindow *win = &r->win;
-    const float *verts[3] = { va, vb, vc };
+    const SGIVolumeVertex *verts[3] = { va, vb, vc };
     const float *flat = &provoking[SGI_GL_V_COLOR];
     SGISoftFrag flat_frag;
     SGISoftVertex v[3];
@@ -811,11 +958,8 @@ static void sgi_soft_triangle(const SGISoftDraw *r, const float *va,
     bool smooth = st->shade_model != SGI_GL_FLAT;
     const int sub = r->rules->subpixel_bits;
 
-    if (vw <= 0 || vh <= 0) {
-        return;
-    }
     for (int i = 0; i < 3; i++) {
-        if (!sgi_soft_transform(r, verts[i], &v[i])) {
+        if (!sgi_soft_project(r, verts[i], &v[i])) {
             return;
         }
     }
@@ -833,9 +977,10 @@ static void sgi_soft_triangle(const SGISoftDraw *r, const float *va,
     if (!front && r->back_colors) {
         flat = &provoking[SGI_GL_V_BACK_COLOR];
         for (int i = 0; i < 3; i++) {
+            const float *back = &verts[i]->attr[SGI_GL_V_BACK_COLOR];
+
             for (int k = 0; k < 4; k++) {
-                v[i].rgba[k] = MIN(MAX(verts[i][SGI_GL_V_BACK_COLOR + k],
-                                       0.0f), 1.0f);
+                v[i].rgba[k] = MIN(MAX(back[k], 0.0f), 1.0f);
             }
         }
     }
@@ -921,6 +1066,40 @@ static void sgi_soft_triangle(const SGISoftDraw *r, const float *va,
 }
 
 /*
+ * Transform, clip and rasterize one triangle. It is clipped to the view
+ * volume in clip coordinates, before the divide by w (OpenGL 1.2.1,
+ * 2.11), and what is left, a convex polygon, is drawn as a fan of
+ * triangles from its first vertex, each flat shaded from the triangle's
+ * provoking vertex.
+ *
+ * Approximated: the clipping is OpenGL's, in double arithmetic, not a
+ * head's own clipper, whose arithmetic and any guard band are not known.
+ * Pixels next to the edges clipping makes, and the attributes at them,
+ * may differ from a head's; how a head draws a primitive crossing the
+ * near plane would settle it.
+ */
+static void sgi_soft_triangle(const SGISoftDraw *r, const float *va,
+                              const float *vb, const float *vc,
+                              const float *provoking)
+{
+    const float *verts[3] = { va, vb, vc };
+    SGIVolumeVertex in[3], poly[SGI_VOLUME_TRIANGLE_MAX];
+    unsigned n;
+
+    if (r->st->viewport[2] <= 0 || r->st->viewport[3] <= 0) {
+        return;
+    }
+    for (int i = 0; i < 3; i++) {
+        sgi_soft_to_volume(r, verts[i], &in[i]);
+    }
+    n = sgi_volume_clip_triangle(in, poly);
+    for (unsigned i = 1; i + 1 < n; i++) {
+        sgi_soft_clipped_triangle(r, &poly[0], &poly[i], &poly[i + 1],
+                                  provoking);
+    }
+}
+
+/*
  * Whether a width-1 segment from a to b produces the fragment at pixel
  * (px, py): the diamond-exit rule of OpenGL 1.2.1, 3.4.1. The diamond is
  * the open square |x - xc| + |y - yc| < 1/2 about the pixel's centre, and
@@ -962,17 +1141,14 @@ static bool sgi_soft_line_covers(const SGISoftVertex *a,
 }
 
 /*
- * Transform, map and rasterize one width-1 segment (OpenGL 1.2.1, 3.4.1)
- * with the provoking vertex's colour when flat shaded. A fragment's
- * depth and smooth colour come from t, the centre's projection onto the
- * segment (equations 3.5 to 3.7), the colour corrected for perspective.
- *
- * Approximated like a triangle: the fragments are bounded by the viewport
- * rather than the segment clipped to the view volume, which differs only
- * in the pixels next to where a segment leaves the viewport, and a vertex
- * with w <= 0 drops the segment. The discriminating test is
- * gl-line-bounded-by-the-viewport. glLineWidth, glLineStipple and line
- * antialiasing are not modelled.
+ * Transform, clip, map and rasterize one width-1 segment (OpenGL 1.2.1,
+ * 3.4.1) with the provoking vertex's colour when flat shaded. The segment
+ * is clipped to the view volume in clip coordinates (2.11), approximated
+ * as a triangle is. A fragment's depth and smooth colour come from t, the
+ * centre's projection onto the clipped segment (equations 3.5 to 3.7),
+ * the colour corrected for perspective. The fragments are also bounded by
+ * the viewport. glLineWidth, glLineStipple and line antialiasing are not
+ * modelled.
  */
 static void sgi_soft_line(const SGISoftDraw *r, const float *va,
                           const float *vb, const float *provoking)
@@ -984,13 +1160,19 @@ static void sgi_soft_line(const SGISoftDraw *r, const float *va,
     bool smooth = st->shade_model != SGI_GL_FLAT;
     const int sub = r->rules->subpixel_bits;
     bool x_major;
+    SGIVolumeVertex ca, cb;
     SGISoftVertex a, b;
     double flat[4], len2;
     int major0, major1;
 
-    if (vw <= 0 || vh <= 0 ||
-        !sgi_soft_transform(r, va, &a) ||
-        !sgi_soft_transform(r, vb, &b) || (a.x == b.x && a.y == b.y)) {
+    if (vw <= 0 || vh <= 0) {
+        return;
+    }
+    sgi_soft_to_volume(r, va, &ca);
+    sgi_soft_to_volume(r, vb, &cb);
+    if (!sgi_volume_clip_segment(&ca, &cb) ||
+        !sgi_soft_project(r, &ca, &a) || !sgi_soft_project(r, &cb, &b) ||
+        (a.x == b.x && a.y == b.y)) {
         return;
     }
     for (int k = 0; k < 4; k++) {
@@ -1075,9 +1257,9 @@ static void sgi_soft_line(const SGISoftDraw *r, const float *va,
 /*
  * A size-1 point covers the pixel holding its window position (OpenGL
  * 1.2.1, 3.3), at the subpixel grid the vertex was snapped to. A point
- * outside the viewport or beyond the near or far plane is dropped, which
- * is what clipping a point does while w is positive. glPointSize and
- * point antialiasing are not modelled.
+ * outside the view volume is dropped (2.11), and so is one outside the
+ * viewport, which only a point on the volume's edge can be. glPointSize
+ * and point antialiasing are not modelled.
  */
 static void sgi_soft_point(const SGISoftDraw *r, const float *vp)
 {
@@ -1086,11 +1268,14 @@ static void sgi_soft_point(const SGISoftDraw *r, const float *vp)
     int vx = st->viewport[0], vy = st->viewport[1];
     int vw = st->viewport[2], vh = st->viewport[3];
     const int sub = r->rules->subpixel_bits;
+    SGIVolumeVertex cv;
     SGISoftVertex v;
     SGISoftFrag frag;
     int px, py;
 
-    if (!sgi_soft_transform(r, vp, &v) || sgi_soft_clipped(st, v.clip)) {
+    sgi_soft_to_volume(r, vp, &cv);
+    if (!sgi_volume_contains(&cv) || !sgi_soft_project(r, &cv, &v) ||
+        sgi_soft_clipped(st, v.clip)) {
         return;
     }
     px = v.x >> sub;
