@@ -17,6 +17,7 @@
 #include "qobject/qjson.h"
 #include "sgi-migrate.h"
 #include "sgi-test.h"
+#include "sn0-user-image.h"
 
 #define WIDGET_BASE(w)    (SPACE_IO + ((uint64_t)(w) << 24))
 #define SI_WIDGET         0xf
@@ -12919,6 +12920,185 @@ static void test_gl_state_subsections_follow_their_state(void)
     }
 }
 
+/*
+ * Graphics credits. The Hub charges a processor's uncached I/O store into
+ * its slot's enabled graphics page on the processor's own path, which a
+ * qtest access never takes, so these cases run a processor: it serves a
+ * mailbox in node 0's memory holding a count of doubleword stores and the
+ * address to make them at, and zeroes the count when done. The page is
+ * the one IRIX enables for SI Viz, the widget base plus 0x12_0400, and the
+ * stores go to the main command port there. A doubleword of zero before
+ * the context entry is selected is opaque traffic with no other effect.
+ */
+#define CREDIT_HUB(reg)       (SPACE_IO + 0x01800000 + (reg))
+#define CREDIT_PAGE(slot)     CREDIT_HUB(0x300 + 0x28 * (slot))
+#define CREDIT_COUNT(slot)    CREDIT_HUB(0x308 + 0x28 * (slot))
+#define CREDIT_BIAS(slot)     CREDIT_HUB(0x310 + 0x28 * (slot))
+#define CREDIT_MAP(n)         CREDIT_HUB(0x400140 + 8 * (n))
+#define CREDIT_PAGE_ENABLE    (1ULL << 40)
+#define CREDIT_PORT_PAGE      ((uint64_t)SI_WIDGET << 24 | 0x120000)
+#define CREDIT_PORT_STORE     (UINT64_C(0x9200000000000000) | \
+                               (uint64_t)SI_WIDGET << 24 | 0x120400)
+/* Map entry: valid, slot, node, widget (Linux sn0/hubio.h IIO_IGFX_INIT). */
+#define CREDIT_ROUTE(slot, widget) \
+    ((1ULL << 20) | ((uint64_t)(slot) << 16) | (widget))
+/* What IRIX allocates SI Viz on an Origin 2000: 1024 bytes, bias 68. */
+#define CREDIT_TOTAL          101
+#define CREDIT_BIAS_VALUE     68
+#define CREDIT_MAILBOX        0x50000u
+#define CREDIT_ENTRY          0x800
+
+static void credit_build_store_server(SN0Image *p)
+{
+    unsigned int at, loop, store;
+
+    at = sn0_emit_branch(p, SN0_OPC_BEQ, 0, 0);
+    sn0_patch_branch(p, at, CREDIT_ENTRY);
+    for (unsigned int vec = SN0_VEC_TLB_REFILL; vec <= SN0_VEC_GENERAL;
+         vec += 0x80) {
+        p->pos = vec;
+        sn0_emit_park(p);
+    }
+    p->pos = CREDIT_ENTRY;
+    sn0_emit_li(p, SN0_R_T0, SN0_STATUS_KERNEL);
+    sn0_emit_mtc0(p, SN0_R_T0, SN0_CP0_STATUS);
+    /* Only processor 0 of node 0 serves; the rest park. */
+    sn0_emit_cpu_number(p, SN0_R_T2);
+    at = sn0_emit_branch(p, SN0_OPC_BNE, SN0_R_T2, SN0_R_ZERO);
+    sn0_patch_branch(p, at, SN0_VEC_GENERAL);
+    sn0_emit_li(p, SN0_R_S0, SN0_KSEG1(CREDIT_MAILBOX));
+
+    loop = p->pos;
+    sn0_emit_i(p, SN0_OPC_LD, SN0_R_S0, SN0_R_T1, 0);        /* count */
+    at = sn0_emit_branch(p, SN0_OPC_BEQ, SN0_R_T1, SN0_R_ZERO);
+    sn0_patch_branch(p, at, loop);
+    sn0_emit_i(p, SN0_OPC_LD, SN0_R_S0, SN0_R_T2, 8);        /* address */
+    store = p->pos;
+    sn0_emit_i(p, SN0_OPC_SD, SN0_R_T2, SN0_R_ZERO, 0);
+    sn0_emit_i(p, 25, SN0_R_T1, SN0_R_T1, 0xffff);           /* daddiu -1 */
+    at = sn0_emit_branch(p, SN0_OPC_BNE, SN0_R_T1, SN0_R_ZERO);
+    sn0_patch_branch(p, at, store);
+    sn0_emit_i(p, SN0_OPC_SD, SN0_R_S0, SN0_R_ZERO, 0);      /* done */
+    at = sn0_emit_branch(p, SN0_OPC_BEQ, SN0_R_ZERO, SN0_R_ZERO);
+    sn0_patch_branch(p, at, loop);
+}
+
+/*
+ * A stopped Origin 2000 with SI Viz in IO3, linked to node 0's Hub, and
+ * slot A's page enabled at IRIX's attach values, before any processor
+ * runs.
+ */
+static QTestState *credit_start(void)
+{
+    g_autofree SN0Image *image = g_new0(SN0Image, 1);
+    g_autofree char *path = NULL;
+    QTestState *s;
+
+    credit_build_store_server(image);
+    path = sn0_image_write(image, "sn0-mgras-credit");
+    s = qtest_initf("%s,pi=/machine/node0/hub -accel tcg,thread=multi "
+                    "-no-reboot -no-shutdown -S -bios %s", MACHINE_ARGS, path);
+    unlink(path);
+    qtest_writeq(s, CREDIT_PAGE(0), CREDIT_PAGE_ENABLE | CREDIT_PORT_PAGE);
+    qtest_writeq(s, CREDIT_COUNT(0), CREDIT_TOTAL);
+    qtest_writeq(s, CREDIT_BIAS(0), CREDIT_BIAS_VALUE);
+    return s;
+}
+
+static void credit_run(QTestState *s)
+{
+    qtest_qmp_assert_success(s, "{ 'execute': 'cont' }");
+}
+
+/* Processor 0 makes 'count' doubleword stores at 'addr'. */
+static void credit_stores(QTestState *s, uint64_t addr, uint64_t count)
+{
+    int64_t deadline = g_get_monotonic_time() + 30 * G_TIME_SPAN_SECOND;
+
+    qtest_writeq(s, CREDIT_MAILBOX + 8, addr);
+    qtest_writeq(s, CREDIT_MAILBOX, count);
+    while (qtest_readq(s, CREDIT_MAILBOX)) {
+        g_assert_cmpint(g_get_monotonic_time(), <, deadline);
+        g_usleep(1000);
+    }
+}
+
+static uint64_t credit_count(QTestState *s, unsigned int slot)
+{
+    return qtest_readq(s, CREDIT_COUNT(slot));
+}
+
+/*
+ * A burst of command-port stores twice the allocation leaves the count at
+ * the allocation: each store's credit comes back before the
+ * next is charged. Without the return the count would drain through the
+ * bias and wrap.
+ */
+static void test_credit_burst_returns_to_allocation(void)
+{
+    QTestState *s = credit_start();
+
+    qtest_writeq(s, CREDIT_MAP(0), CREDIT_ROUTE(0, SI_WIDGET));
+    credit_run(s);
+    credit_stores(s, CREDIT_PORT_STORE, 2 * CREDIT_TOTAL);
+    g_assert_cmpuint(credit_count(s, 0), ==, CREDIT_TOTAL);
+    qtest_quit(s);
+}
+
+/*
+ * The charge and the return told apart: the map sends SI Viz's credits
+ * to slot B, so slot A's stores show as A's loss and B's gain. Each
+ * doubleword store is one credit, not one per 32-bit word it carries.
+ */
+static void test_credit_doubleword_store_returns_one_credit(void)
+{
+    QTestState *s = credit_start();
+
+    qtest_writeq(s, CREDIT_COUNT(1), 0);
+    qtest_writeq(s, CREDIT_MAP(0), CREDIT_ROUTE(1, SI_WIDGET));
+    credit_run(s);
+    credit_stores(s, CREDIT_PORT_STORE, 7);
+    g_assert_cmpuint(credit_count(s, 0), ==, CREDIT_TOTAL - 7);
+    g_assert_cmpuint(credit_count(s, 1), ==, 7);
+    qtest_quit(s);
+}
+
+/*
+ * The return names SI Viz's own widget: an entry for another widget does
+ * not match it, and the entry for SI Viz's widget does.
+ */
+static void test_credit_return_names_the_boards_widget(void)
+{
+    QTestState *s = credit_start();
+
+    qtest_writeq(s, CREDIT_COUNT(1), 0);
+    qtest_writeq(s, CREDIT_MAP(0), CREDIT_ROUTE(0, SI_WIDGET - 1));
+    qtest_writeq(s, CREDIT_MAP(1), CREDIT_ROUTE(1, SI_WIDGET));
+    credit_run(s);
+    credit_stores(s, CREDIT_PORT_STORE, 5);
+    g_assert_cmpuint(credit_count(s, 0), ==, CREDIT_TOTAL - 5);
+    g_assert_cmpuint(credit_count(s, 1), ==, 5);
+    qtest_quit(s);
+}
+
+/*
+ * A store the Hub did not charge earns nothing back: with the page
+ * disabled, as IRIX's detach leaves it, neither slot moves.
+ */
+static void test_credit_uncounted_store_returns_nothing(void)
+{
+    QTestState *s = credit_start();
+
+    qtest_writeq(s, CREDIT_PAGE(0), CREDIT_PORT_PAGE);
+    qtest_writeq(s, CREDIT_COUNT(1), 0);
+    qtest_writeq(s, CREDIT_MAP(0), CREDIT_ROUTE(1, SI_WIDGET));
+    credit_run(s);
+    credit_stores(s, CREDIT_PORT_STORE, 4);
+    g_assert_cmpuint(credit_count(s, 0), ==, CREDIT_TOTAL);
+    g_assert_cmpuint(credit_count(s, 1), ==, 0);
+    qtest_quit(s);
+}
+
 int main(int argc, char **argv)
 {
     int ret;
@@ -13581,6 +13761,21 @@ int main(int argc, char **argv)
                    test_visual_state_migration);
     qtest_add_func("sn0/origin2000/mgras/cursor-migration",
                    test_cursor_migration);
+    /* The credit cases run a processor. */
+    if (qtest_has_accel("tcg")) {
+        qtest_add_func("sn0/origin2000/mgras/"
+                       "credit-burst-returns-to-allocation",
+                       test_credit_burst_returns_to_allocation);
+        qtest_add_func("sn0/origin2000/mgras/"
+                       "credit-doubleword-store-returns-one-credit",
+                       test_credit_doubleword_store_returns_one_credit);
+        qtest_add_func("sn0/origin2000/mgras/"
+                       "credit-return-names-the-boards-widget",
+                       test_credit_return_names_the_boards_widget);
+        qtest_add_func("sn0/origin2000/mgras/"
+                       "credit-uncounted-store-returns-nothing",
+                       test_credit_uncounted_store_returns_nothing);
+    }
 
     ret = g_test_run();
     qtest_quit(qts);

@@ -342,6 +342,7 @@ config SGI_MGRAS
     bool
     select SGI_XIO_BOARD
     select SGI_DISPLAY
+    select SGI_PI_GFX
 
 config SGI_KONA
     bool
