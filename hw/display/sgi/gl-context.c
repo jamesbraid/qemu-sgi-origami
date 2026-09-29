@@ -1916,16 +1916,6 @@ static bool sgi_gl_context_post_load(void *opaque, int version_id,
 #define VMSTATE_SGI_GL_FLOATS_2D(_f, _s, _n1, _n2)                       \
     VMSTATE_2DARRAY(_f, _s, _n1, _n2, 0, vmstate_info_uint32, float)
 
-/*
- * Every byte of SGIGLContext but padding. A field added to it, or to a
- * structure inside it, stops the build here until the descriptions below
- * carry it, under the rule in gl-context.h, and this size follows.
- * tests/unit/test-sgi-gl-vmstate.c checks the descriptions byte for byte
- * against the structure.
- */
-#define SGI_GL_CONTEXT_BYTES    7976
-QEMU_BUILD_BUG_ON(sizeof(SGIGLContext) != SGI_GL_CONTEXT_BYTES);
-
 static const VMStateDescription vmstate_sgi_clip_rect = {
     .name = "sgi-clip-rect",
     .version_id = 1,

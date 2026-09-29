@@ -655,9 +655,8 @@ bool sgi_gl_context_valid(const SGIGLContext *c, Error **errp);
  * post_load, which runs after this subsection's.
  *
  * Adding a field. A field added to SGIGLContext, or to a structure inside
- * it, fails the build at a size check beside vmstate_sgi_gl_context, and
- * the byte-coverage test in tests/unit/test-sgi-gl-vmstate.c, until it is
- * described. The structure has no padding, and the test counts a padding
+ * it, fails the byte-coverage test in tests/unit/test-sgi-gl-vmstate.c
+ * until it is described. The structure has no padding, and the test counts a padding
  * byte as one not described, so flags are uint32_t like the rest.
  * A new field is described in a new subsection of vmstate_sgi_gl_context,
  * or of the nested description that holds it, never appended to a base
@@ -668,8 +667,8 @@ bool sgi_gl_context_valid(const SGIGLContext *c, Error **errp);
  * stream. Its .needed may return false only while the field
  * holds what sgi_gl_init() gives it; a stream without the subsection then
  * leaves the destination's initial value, as a source that predates the
- * field had, and a binary without it refuses a stream that needs it. The
- * size check follows and SGI_GL_VMSTATE_VERSION does not change.
+ * field had, and a binary without it refuses a stream that needs it.
+ * SGI_GL_VMSTATE_VERSION does not change.
  *
  * SGI_GL_VMSTATE_VERSION is the base layout's, carried by the family's
  * subsection. It changes only when a described field changes meaning,
