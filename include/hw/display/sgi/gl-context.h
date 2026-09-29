@@ -251,8 +251,8 @@ typedef struct SGIGLDrawState {
     uint32_t depth_func;        /* the comparison minus GL_NEVER, 0 to 7 */
     uint32_t depth_mask;        /* 0 or 1 */
     /*
-     * glDepthRange's near and far, each clamped to [0, 1] (2.10.1). Kept
-     * and answered; no rasterizer maps window depth through them yet.
+     * glDepthRange's near and far, each clamped to [0, 1] (2.10.1), which
+     * map normalized depth to window depth.
      */
     float depth_range[2];
     /* SGI_GL_DRAW_FRONT and SGI_GL_DRAW_BACK; other bits are ignored. */

@@ -38,7 +38,7 @@ typedef struct SGISoftDraw {
 /* A vertex after transformation, ready to rasterize. */
 typedef struct SGISoftVertex {
     int64_t x, y;         /* window position in subpixels */
-    double z;             /* window depth; [0, 1] inside the view volume */
+    double z;             /* normalized depth; [0, 1] inside the view volume */
     double inv_w;         /* 1 / clip w, for perspective-correct colour */
     double rgb[3];
     double index;         /* the colour index, in colour-index mode */
@@ -202,14 +202,13 @@ static bool sgi_soft_depth_passes(uint32_t func, uint32_t z, uint32_t stored)
 
 /*
  * One fragment at window pixel (px, py) with window depth z: dropped
- * outside [0, 1] (the view volume's near and far planes) and outside the
- * window's rectangles, depth tested when the test is enabled, then
- * written to each colour target the draw buffers select. colour is the
- * rules' packed colour in RGBA mode and the stored index in colour-index
- * mode, which glIndexMask masks (4.2.2).
+ * outside [0, 1] and outside the window's rectangles, depth tested when
+ * the test is enabled, then written to each colour target the draw
+ * buffers select. colour is the rules' packed colour in RGBA mode and the
+ * stored index in colour-index mode, which glIndexMask masks (4.2.2).
  */
-static void sgi_soft_fragment(const SGISoftDraw *r, int px, int py, double z,
-                              uint32_t colour)
+static void sgi_soft_fragment_at(const SGISoftDraw *r, int px, int py,
+                                 double z, uint32_t colour)
 {
     const SGIRasterTarget *t = r->t;
     int x = r->win.ox + px, y = r->win.oy + py;
@@ -242,6 +241,25 @@ static void sgi_soft_fragment(const SGISoftDraw *r, int px, int py, double z,
     }
 }
 
+/*
+ * A primitive's fragment at normalized depth z, (zd + 1) / 2 for the
+ * normalized device z zd: dropped outside [0, 1], the view volume's near
+ * and far planes, and otherwise mapped to window depth n + (f - n) z
+ * through the depth range [n, f] (OpenGL 1.2.1, 2.10.1). Clipping on the
+ * normalized depth keeps a range with n equal to f from passing depths
+ * beyond the far plane.
+ */
+static void sgi_soft_fragment(const SGISoftDraw *r, int px, int py, double z,
+                              uint32_t colour)
+{
+    double n = r->st->depth_range[0], f = r->st->depth_range[1];
+
+    if (!(z >= 0.0 && z <= 1.0)) {
+        return;
+    }
+    sgi_soft_fragment_at(r, px, py, n + (f - n) * z, colour);
+}
+
 /* A fragment's colour value from an interpolated or flat index. */
 static uint32_t sgi_soft_index(const SGISoftDraw *r, double index)
 {
@@ -251,7 +269,8 @@ static uint32_t sgi_soft_index(const SGISoftDraw *r, double index)
 /*
  * Transform one vertex (OpenGL 1.2.1, 2.10): object to eye by the
  * modelview, eye to clip by the projection, the divide by w and the
- * viewport map with the default depth range [0, 1]. A vertex with w <= 0
+ * viewport map, with depth left normalized to [0, 1] for clipping; the
+ * depth range maps it per fragment. A vertex with w <= 0
  * needs clipping the model does not do, and returns false.
  */
 static bool sgi_soft_transform(const SGISoftDraw *r, const float *v,
@@ -724,7 +743,7 @@ static void sgi_soft_bitmap(const SGIRasterRules *rules,
                 py < r.win.y0 - r.win.oy || py > r.win.y1 - r.win.oy) {
                 continue;
             }
-            sgi_soft_fragment(&r, px, py, b->z, colour);
+            sgi_soft_fragment_at(&r, px, py, b->z, colour);
         }
     }
 }
