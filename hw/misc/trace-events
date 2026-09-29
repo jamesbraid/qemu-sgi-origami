@@ -1,6 +1,7 @@
 # See docs/devel/tracing.rst for syntax documentation.
 
 # sgi-heart.c
+sgi_heart_piu_access(int64_t vtime, bool write, uint64_t offset, unsigned size, uint64_t value) "vtime %" PRId64 " write=%d offset 0x%" PRIx64 " size %u value 0x%" PRIx64
 sgi_heart_packet(int64_t vtime, uint64_t value, uint64_t before, uint64_t after, uint64_t mask0) "vtime %" PRId64 " packet 0x%" PRIx64 " pending 0x%" PRIx64 "->0x%" PRIx64 " mask0 0x%" PRIx64
 sgi_heart_mask_write(int64_t vtime, unsigned index, uint64_t before, uint64_t after, uint64_t pending) "vtime %" PRId64 " mask[%u] 0x%" PRIx64 "->0x%" PRIx64 " pending 0x%" PRIx64
 sgi_heart_pending_write(int64_t vtime, uint64_t offset, uint64_t value, uint64_t before, uint64_t after, uint64_t mask0) "vtime %" PRId64 " register 0x%" PRIx64 " value 0x%" PRIx64 " pending 0x%" PRIx64 "->0x%" PRIx64 " mask0 0x%" PRIx64
