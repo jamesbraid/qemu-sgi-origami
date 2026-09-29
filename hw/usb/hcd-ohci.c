@@ -1371,11 +1371,32 @@ static void ohci_set_frame_interval(OHCIState *ohci, uint16_t val)
 
 static void ohci_port_power(OHCIState *ohci, int i, int p)
 {
+    OHCIPort *port = &ohci->rhport[i];
+    uint32_t old_state = port->ctrl;
+
     if (p) {
-        ohci->rhport[i].ctrl |= OHCI_PORT_PPS;
+        port->ctrl |= OHCI_PORT_PPS;
+        if (!(port->ctrl & OHCI_PORT_CCS) &&
+            port->port.dev && port->port.dev->attached) {
+            port->ctrl |= OHCI_PORT_CCS | OHCI_PORT_CSC;
+            if (port->port.dev->speed == USB_SPEED_LOW) {
+                port->ctrl |= OHCI_PORT_LSDA;
+            } else {
+                port->ctrl &= ~OHCI_PORT_LSDA;
+            }
+        }
     } else {
-        ohci->rhport[i].ctrl &= ~(OHCI_PORT_PPS | OHCI_PORT_CCS |
-                                  OHCI_PORT_PSS | OHCI_PORT_PRS);
+        port->ctrl &= ~(OHCI_PORT_PPS | OHCI_PORT_CCS | OHCI_PORT_PES |
+                        OHCI_PORT_PSS | OHCI_PORT_PRS | OHCI_PORT_LSDA);
+        if (old_state & OHCI_PORT_CCS) {
+            port->ctrl |= OHCI_PORT_CSC;
+        }
+        if (old_state & OHCI_PORT_PES) {
+            port->ctrl |= OHCI_PORT_PESC;
+        }
+    }
+    if (old_state != port->ctrl) {
+        ohci_set_interrupt(ohci, OHCI_INTR_RHSC);
     }
 }
 
@@ -1841,6 +1862,12 @@ static void ohci_attach(USBPort *port1)
     OHCIState *s = port1->opaque;
     OHCIPort *port = &s->rhport[port1->index];
     uint32_t old_state = port->ctrl;
+
+    if (!(port->ctrl & OHCI_PORT_PPS) &&
+        !(s->rhdesc_a & OHCI_RHA_NPS)) {
+        trace_usb_ohci_port_attach(port1->index);
+        return;
+    }
 
     /* set connect status */
     port->ctrl |= OHCI_PORT_CCS | OHCI_PORT_CSC;
