@@ -188,6 +188,7 @@ static IOMMUTLBEntry xbridge_translate(IOMMUMemoryRegion *iommu, hwaddr addr,
     unsigned widget;
     uint64_t destination;
     bool swap;
+    bool rev2 = (REG(s, 0) >> 28) == 2;
 
     if (addr >= 0x3fff0000 && addr < 0x40000000) {
         entry.target_as = &s->flush_as;
@@ -195,9 +196,11 @@ static IOMMUTLBEntry xbridge_translate(IOMMUMemoryRegion *iommu, hwaddr addr,
         entry.perm = IOMMU_RW;
         return entry;
     }
-    if (addr >= 0x40000000 && addr <= 0x407fffff) {
+    if ((addr >= 0x40000000 && addr <= 0x407fffff) ||
+        (rev2 &&
+         addr >= 0x60000000 && addr <= 0x607fffff)) {
         unsigned shift = (REG(s, 0x20) & (1U << 21)) ? 14 : 12;
-        unsigned index = (addr & 0x3fffffff) >> shift;
+        unsigned index = (addr & (rev2 ? 0x1fffffff : 0x3fffffff)) >> shift;
         uint64_t ate;
 
         entry.addr_mask = (1ULL << shift) - 1;
@@ -213,7 +216,8 @@ static IOMMUTLBEntry xbridge_translate(IOMMUMemoryRegion *iommu, hwaddr addr,
         ate = s->ate[index];
         widget = (ate >> 8) & 15;
         destination = ate & 0x0000fffffffff000ULL;
-        swap = ate & (1U << 5);
+        /* The rev-2 bit-29 path follows public software, not a rev-B spec. */
+        swap = (ate & (1U << 5)) || (rev2 && (addr & (1U << 29)));
     } else if (addr >= 0x1000000000000000ULL) {
         widget = addr >> 60;
         destination = addr & 0x0000ffffffffffffULL;

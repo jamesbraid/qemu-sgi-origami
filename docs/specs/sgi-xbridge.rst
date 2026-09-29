@@ -158,18 +158,27 @@ revision A, gives 512 entries and the Bridge's view at ``0x1_1000``;
 the datasheet records the difference by revision. Only the first 512
 entries map pages; the rest are stored and read back.
 
-Translation is per page, 4 KB or 16 KB by control bit 21: the index
-is PCI bits 29:12 or 29:14 and is rejected above 511 rather than
-wrapped, the target widget is entry bits 11:8 (zero allowed here,
-unlike the 64-bit window), the XIO address is entry bits 47:12
-with bits 13:12 ignored for 16 KB pages, and swapping follows entry
-bit 5. An invalid entry or an index past the table sets status bit
-30 and its view mirror and issues no transaction; reset bit 1 clears
-it. Addresses from ``0x40800000`` to ``0x7fffffff`` are refused,
-because the specification's flow chart still routes them to the
-mapper and the reviewed datasheet leaves them open. The map fault
-address register exists as storage only: nothing publishes its
-layout.
+Translation is per page, 4 KB or 16 KB by control bit 21. The target
+widget is entry bits 11:8 (zero allowed here, unlike the 64-bit window),
+and the XIO address is entry bits 47:12, with bits 13:12 ignored for
+16 KB pages. An invalid entry or an index past 511 sets status bit 30
+and its view mirror and issues no transaction; reset bit 1 clears it.
+The map fault address register exists as storage only: nothing
+publishes its layout.
+
+The published revision-A specification puts PCI bit 29 in the page
+index and assigns swapping to entry bit 5. The model currently reports
+revision 2 for every XBridge head. For that revision, addresses
+``0x60000000`` through ``0x607fffff`` use the same page index as the
+corresponding ``0x40000000`` addresses, and PCI bit 29 requests byte
+swapping even when entry bit 5 is clear. Entry bit 5 also requests
+swapping without address bit 29. The index must still be below 512;
+addresses above either range are unsupported. Other revision values
+retain the revision-A index and swap treatment, although no such head
+is currently instantiated. The revision-2 treatment is a model
+approximation based on public software and an Origin 300 guest trace.
+No revision-B specification or physical measurement establishes it as
+silicon behavior.
 
 Interrupts
 ==========

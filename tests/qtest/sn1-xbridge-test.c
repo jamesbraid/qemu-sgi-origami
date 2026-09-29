@@ -708,6 +708,62 @@ static void test_page_dma(void)
     qtest_quit(qts);
 }
 
+static void test_page_dma_bit29_compat(void)
+{
+    QTestState *qts = transport_start("");
+    const struct {
+        uint32_t pci_bit29;
+        uint32_t ate_swap;
+        uint64_t bytes;
+    } cases[] = {
+        { 0,          0,    0x2322212027262524ULL },
+        { 0,          0x20, 0x2021222324252627ULL },
+        { 0x20000000, 0,    0x2021222324252627ULL },
+        { 0x20000000, 0x20, 0x2021222324252627ULL },
+    };
+
+    g_assert_cmphex(reg_read(qts, 0) >> 28, ==, 2);
+    for (unsigned shift = 12; shift <= 14; shift += 2) {
+        reg_write(qts, 0x20, 0x0f00320f | (shift == 14 ? 1U << 21 : 0));
+        for (unsigned index = 1; index <= 511; index += 510) {
+            for (unsigned i = 0; i < G_N_ELEMENTS(cases); i++) {
+                uint32_t address = 0x40000238 + (index << shift);
+
+                ate_write(qts, index, 0x8a01 | cases[i].ate_swap);
+                qtest_writeq(qts, TARGET_A + 0x8238, 0);
+                dma_fill(qts, address | cases[i].pci_bit29, 0x20);
+                g_assert_cmphex(qtest_readq(qts, TARGET_A + 0x8238), ==,
+                                cases[i].bytes);
+            }
+        }
+    }
+    qtest_quit(qts);
+}
+
+static uint32_t tx_run(QTestState *qts, uint32_t address);
+
+static void test_page_dma_bit29_compat_faults(void)
+{
+    QTestState *qts = transport_start(
+        "-device iommu-testdev,bus=head.0,addr=1");
+    const uint32_t faults[] = { 0x60000000, 0x607ffff8,
+                                0x60800000, 0x7ffffff8 };
+
+    qtest_writel(qts, BASE + 0x21010, 0x01200000);
+    qtest_writel(qts, BASE + 0x21004, 6);
+    reg_write(qts, 0x208, 0x83012);
+    for (unsigned shift = 12; shift <= 14; shift += 2) {
+        reg_write(qts, 0x20, 0x0f00320f | (shift == 14 ? 1U << 21 : 0));
+        ate_write(qts, 512, 0x8a21);
+        for (unsigned i = 0; i < G_N_ELEMENTS(faults); i++) {
+            g_assert_cmphex(tx_run(qts, faults[i]), ==, 0xdead0002);
+        }
+        g_assert_cmphex(tx_run(qts, 0x60000000 + (512U << shift)), ==,
+                        0xdead0002);
+    }
+    qtest_quit(qts);
+}
+
 static void test_page_boundaries(void)
 {
     QTestState *qts = transport_start("");
@@ -795,8 +851,9 @@ static void test_page_faults(void)
 {
     QTestState *qts = transport_start(
         "-device iommu-testdev,bus=head.0,addr=1");
-    const uint32_t faults[] = { 0x40000000, 0x40200000, 0x407ffff8 };
-    const uint32_t unresolved[] = { 0x40800000, 0x60000000, 0x7ffffff8 };
+    const uint32_t faults[] = { 0x40000000, 0x40200000, 0x407ffff8,
+                                0x60000000 };
+    const uint32_t unresolved[] = { 0x40800000, 0x60800000, 0x7ffffff8 };
 
     qtest_writel(qts, BASE + 0x21010, 0x01200000);
     qtest_writel(qts, BASE + 0x21004, 6);
@@ -825,6 +882,7 @@ static void test_page_faults(void)
     }
     ate_write(qts, 0, 0x8a21);
     g_assert_cmphex(tx_run(qts, 0x40000000), ==, 0);
+    g_assert_cmphex(tx_run(qts, 0x60000000), ==, 0);
     ate_write(qts, 0, 0x8a20);
     g_assert_cmphex(tx_run(qts, 0x40000000), ==, 0xdead0002);
     reg_write(qts, 0x110, 2);
@@ -1193,6 +1251,16 @@ static void test_no_board_stays_inert(void)
 
 static char *prom_path;
 
+static void test_origin300_xbridge_revisions(void)
+{
+    g_autofree char *prom = g_shell_quote(prom_path);
+    QTestState *qts = qtest_initf(MACHINE_ARGS " -bios %s", prom);
+
+    g_assert_cmphex(qtest_readl(qts, IO_WIDGET(0xe) + 4), ==, 0x2d002049);
+    g_assert_cmphex(qtest_readl(qts, IO_WIDGET(0xf) + 4), ==, 0x2d002049);
+    qtest_quit(qts);
+}
+
 static char *create_prom(void)
 {
     g_autoptr(GError) error = NULL;
@@ -1288,6 +1356,10 @@ int main(int argc, char **argv)
     qtest_add_func("/sn1/xbridge/raw-pci-interrupts", test_raw_pci_interrupts);
     qtest_add_func("/sn1/xbridge/notifier-rejection", test_notifier_rejection);
     qtest_add_func("/sn1/xbridge/page-dma", test_page_dma);
+    qtest_add_func("/sn1/xbridge/page-dma-bit29-compat",
+                   test_page_dma_bit29_compat);
+    qtest_add_func("/sn1/xbridge/page-dma-bit29-compat-faults",
+                   test_page_dma_bit29_compat_faults);
     qtest_add_func("/sn1/xbridge/page-boundaries", test_page_boundaries);
     qtest_add_func("/sn1/xbridge/page-faults", test_page_faults);
     qtest_add_func("/sn1/xbridge/space-above-face", test_space_above_face);
@@ -1296,6 +1368,8 @@ int main(int argc, char **argv)
     qtest_add_func("/sn1/xbridge/onewire/no-board-stays-inert",
                    test_no_board_stays_inert);
     prom_path = create_prom();
+    qtest_add_func("/sn1/xbridge/origin300-revisions",
+                   test_origin300_xbridge_revisions);
     qtest_add_func("origin300/xbridge/error-reaches-pending",
                    test_error_reaches_pending);
     ret = g_test_run();
