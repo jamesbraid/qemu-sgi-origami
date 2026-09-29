@@ -101,6 +101,9 @@ void sgi_gl_init(SGIGLContext *c, uint32_t hw_id)
     c->cur.blend_src = 1;
     c->cur.blend_equation = SGI_GL_FUNC_ADD;
     c->cur.logic_op_mode = SGI_GL_COPY;
+    c->cur.fog_mode = SGI_GL_EXP;
+    c->cur.fog_density = 1.0f;
+    c->cur.fog_end = 1.0f;
     c->cur.depth_mask = 1;
     c->cur.depth_range[1] = 1.0f;
     c->clear_depth = UINT32_MAX;
@@ -435,6 +438,7 @@ static const uint8_t sgi_gl_nargs[] = {
     [SGI_GL_OP_BLEND_COLOR] = 4,
     [SGI_GL_OP_LOGIC_OP] = 1,
     [SGI_GL_OP_COLOR_MASK] = 4,
+    [SGI_GL_OP_FOG] = 5,
 };
 
 uint32_t sgi_gl_draw_targets(const SGIGLDrawState *st,
@@ -1242,6 +1246,51 @@ static void sgi_gl_light_model(SGIGLContext *c, uint32_t pname,
     }
 }
 
+/*
+ * glFogfv (3.10). A negative density or a mode other than GL_LINEAR,
+ * GL_EXP or GL_EXP2 is an error and changes nothing; the colour is
+ * clamped to [0, 1].
+ */
+static void sgi_gl_fog(SGIGLContext *c, uint32_t pname, const float v[4])
+{
+    uint32_t mode = v[0] >= 0.0f && v[0] < 65536.0f ? (uint32_t)v[0] : 0;
+
+    switch (pname) {
+    case SGI_GL_FOG_MODE:
+        if (mode == SGI_GL_LINEAR || mode == SGI_GL_EXP ||
+            mode == SGI_GL_EXP2) {
+            c->cur.fog_mode = mode;
+            return;
+        }
+        break;
+    case SGI_GL_FOG_DENSITY:
+        if (v[0] >= 0.0f) {
+            c->cur.fog_density = v[0];
+            return;
+        }
+        break;
+    case SGI_GL_FOG_START:
+        c->cur.fog_start = v[0];
+        return;
+    case SGI_GL_FOG_END:
+        c->cur.fog_end = v[0];
+        return;
+    case SGI_GL_FOG_INDEX:
+        c->cur.fog_index = v[0];
+        return;
+    case SGI_GL_FOG_COLOR:
+        for (int i = 0; i < 4; i++) {
+            c->cur.fog_color[i] = v[i] >= 1.0f ? 1.0f :
+                                  v[i] > 0.0f ? v[i] : 0.0f;
+        }
+        return;
+    default:
+        break;
+    }
+    qemu_log_mask(LOG_GUEST_ERROR, "sgi-gl: glFog parameter 0x%x value %g "
+                  "ignored\n", pname, v[0]);
+}
+
 static void sgi_gl_color_material(SGIGLContext *c, uint32_t face,
                                   uint32_t mode)
 {
@@ -1359,6 +1408,9 @@ static void sgi_gl_capability(SGIGLContext *c, uint32_t cap, bool on)
     case SGI_GL_COLOR_LOGIC_OP:
         c->cur.color_logic_op = on;
         return;
+    case SGI_GL_FOG:
+        c->cur.fog = on;
+        return;
     case SGI_GL_COLOR_MATERIAL:
         c->color_material = on;
         sgi_gl_track_colour(c);
@@ -1440,6 +1492,7 @@ void sgi_gl_bitmap_bytes(SGIGLContext *c, const SGIGLSink *sink,
             .bytes = bytes,
             .z = c->raster_pos[2],
             .index = c->raster_index,
+            .distance = c->raster_distance,
         },
     };
 
@@ -1616,6 +1669,10 @@ void sgi_gl_command(SGIGLContext *c, const SGIGLSink *sink,
             return;
         }
         c->cur.logic_op_mode = a[0];
+        return;
+    case SGI_GL_OP_FOG:
+        memcpy(pos, &a[1], sizeof(pos));
+        sgi_gl_fog(c, a[0], pos);
         return;
     case SGI_GL_OP_COLOR_MASK:
         c->cur.colour_mask = 0;
@@ -2001,6 +2058,24 @@ bool sgi_gl_get(const SGIGLContext *c, uint32_t pname, uint32_t *out,
         }
         *n = 4;
         return true;
+    case SGI_GL_FOG:
+        out[0] = c->cur.fog;
+        *n = 1;
+        return true;
+    case SGI_GL_FOG_MODE:
+        out[0] = c->cur.fog_mode;
+        *n = 1;
+        return true;
+    case SGI_GL_FOG_DENSITY:
+        return sgi_gl_get_floats(&c->cur.fog_density, 1, out, n);
+    case SGI_GL_FOG_START:
+        return sgi_gl_get_floats(&c->cur.fog_start, 1, out, n);
+    case SGI_GL_FOG_END:
+        return sgi_gl_get_floats(&c->cur.fog_end, 1, out, n);
+    case SGI_GL_FOG_COLOR:
+        return sgi_gl_get_floats(c->cur.fog_color, 4, out, n);
+    case SGI_GL_FOG_INDEX:
+        return sgi_gl_get_floats(&c->cur.fog_index, 1, out, n);
     case SGI_GL_DEPTH_FUNC:
         out[0] = SGI_GL_NEVER_ENUM + c->cur.depth_func;
         *n = 1;
@@ -2110,6 +2185,7 @@ bool sgi_gl_context_valid(const SGIGLContext *c, Error **errp)
         { "blend", st->blend },
         { "index_logic_op", st->index_logic_op },
         { "color_logic_op", st->color_logic_op },
+        { "fog", st->fog },
         { "drawable.bound", st->drawable.bound },
         { "drawable.clip.empty", st->drawable.clip.empty },
         { "dither", c->dither },
@@ -2221,6 +2297,22 @@ bool sgi_gl_context_valid(const SGIGLContext *c, Error **errp)
     if (st->colour_mask > SGI_GL_COLOUR_MASK_ALL) {
         error_setg(errp, "sgi-gl: colour mask 0x%x", st->colour_mask);
         return false;
+    }
+    if (st->fog_mode != SGI_GL_LINEAR && st->fog_mode != SGI_GL_EXP &&
+        st->fog_mode != SGI_GL_EXP2) {
+        error_setg(errp, "sgi-gl: fog mode 0x%x", st->fog_mode);
+        return false;
+    }
+    if (!(st->fog_density >= 0.0f)) {
+        error_setg(errp, "sgi-gl: fog density %g", st->fog_density);
+        return false;
+    }
+    for (int i = 0; i < 4; i++) {
+        if (!(st->fog_color[i] >= 0.0f && st->fog_color[i] <= 1.0f)) {
+            error_setg(errp, "sgi-gl: fog colour %g is outside [0, 1]",
+                       st->fog_color[i]);
+            return false;
+        }
     }
     if (st->drawable.clip.n > SGI_CLIP_MAX) {
         error_setg(errp, "sgi-gl: %u clip rectangles", st->drawable.clip.n);
@@ -2485,6 +2577,36 @@ static const VMStateDescription vmstate_sgi_gl_colour_mask = {
     },
 };
 
+static bool sgi_gl_fog_needed(void *opaque)
+{
+    const SGIGLDrawState *st = opaque, *init = &sgi_gl_initial()->cur;
+
+    return SGI_GL_MOVED(st, init, fog) ||
+           SGI_GL_MOVED(st, init, fog_mode) ||
+           SGI_GL_MOVED(st, init, fog_density) ||
+           SGI_GL_MOVED(st, init, fog_start) ||
+           SGI_GL_MOVED(st, init, fog_end) ||
+           SGI_GL_MOVED(st, init, fog_color) ||
+           SGI_GL_MOVED(st, init, fog_index);
+}
+
+static const VMStateDescription vmstate_sgi_gl_fog = {
+    .name = "sgi-gl-draw-state/fog",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = sgi_gl_fog_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32(fog, SGIGLDrawState),
+        VMSTATE_UINT32(fog_mode, SGIGLDrawState),
+        VMSTATE_SGI_GL_FLOAT(fog_density, SGIGLDrawState),
+        VMSTATE_SGI_GL_FLOAT(fog_start, SGIGLDrawState),
+        VMSTATE_SGI_GL_FLOAT(fog_end, SGIGLDrawState),
+        VMSTATE_SGI_GL_FLOATS(fog_color, SGIGLDrawState, 4),
+        VMSTATE_SGI_GL_FLOAT(fog_index, SGIGLDrawState),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
 static const VMStateDescription vmstate_sgi_gl_draw_state = {
     .name = "sgi-gl-draw-state",
     .version_id = 1,
@@ -2515,6 +2637,7 @@ static const VMStateDescription vmstate_sgi_gl_draw_state = {
         &vmstate_sgi_gl_blend,
         &vmstate_sgi_gl_logic_op,
         &vmstate_sgi_gl_colour_mask,
+        &vmstate_sgi_gl_fog,
         NULL
     },
 };

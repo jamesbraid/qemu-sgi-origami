@@ -3350,6 +3350,118 @@ static void test_colour_mask(void)
     g_assert_cmpuint(frag_count(&f, 0x00ffff), ==, W * H);
 }
 
+static void frag_fog(FragScene *f, uint32_t pname, float v0, float v1,
+                     float v2, float v3)
+{
+    uint32_t word[5] = { pname, bits(v0), bits(v1), bits(v2), bits(v3) };
+
+    frag_command(f, SGI_GL_OP_FOG, word, 5);
+}
+
+/*
+ * Fog (OpenGL 1.2.1, 3.10) of blue toward red, the fog coordinate |z| in
+ * eye coordinates, 0.5 for a quad at z -0.5 under identity matrices:
+ *
+ * - initially disabled, GL_EXP, density 1, start 0, end 1, colour and
+ *   index 0;
+ * - GL_LINEAR from 0 to 2 gives f 0.75, GL_EXP of density 2 e^-1 and
+ *   GL_EXP2 of density 1 e^-0.25;
+ * - GL_LINEAR with start and end both 0.5 leaves a fragment before them
+ *   and fogs one at them;
+ * - a bitmap takes the raster position's eye distance;
+ * - in colour-index mode (1 - f) times the fog index is added;
+ * - a negative density or an unknown mode changes nothing.
+ */
+static void test_fog(void)
+{
+    static const uint8_t image[1] = { 0x80 };
+    static FragScene f;
+    uint32_t out[SGI_GL_GET_WORDS], word[3];
+    SGIGLBitmap b;
+
+    frag_init(&f);
+    g_assert_cmpuint(get(&f.c, SGI_GL_FOG, out), ==, 1);
+    g_assert_cmphex(out[0], ==, 0);
+    g_assert_cmpuint(get(&f.c, SGI_GL_FOG_MODE, out), ==, 1);
+    g_assert_cmphex(out[0], ==, SGI_GL_EXP);
+    g_assert_cmpfloat(get_float(&f.c, SGI_GL_FOG_DENSITY, 0), ==, 1);
+    g_assert_cmpfloat(get_float(&f.c, SGI_GL_FOG_START, 0), ==, 0);
+    g_assert_cmpfloat(get_float(&f.c, SGI_GL_FOG_END, 0), ==, 1);
+    g_assert_cmpuint(get(&f.c, SGI_GL_FOG_COLOR, out), ==, 4);
+    g_assert_cmphex(out[0] | out[1] | out[2] | out[3], ==, 0);
+    g_assert_cmpfloat(get_float(&f.c, SGI_GL_FOG_INDEX, 0), ==, 0);
+
+    frag_fog(&f, SGI_GL_FOG_COLOR, 2, 0, 0, 1);
+    g_assert_cmpfloat(get_float(&f.c, SGI_GL_FOG_COLOR, 0), ==, 1);
+    frag_fog(&f, SGI_GL_FOG_MODE, SGI_GL_LINEAR, 0, 0, 0);
+    frag_fog(&f, SGI_GL_FOG_END, 2, 0, 0, 0);
+    frag_quad_at(&f, 0, 0, 1, 1, -0.5f);
+    g_assert_cmpuint(frag_count(&f, 0x0000ff), ==, W * H);
+    enable(&f.c, SGI_GL_FOG, true);
+    g_assert_cmpuint(get(&f.c, SGI_GL_FOG, out), ==, 1);
+    g_assert_cmphex(out[0], ==, 1);
+    frag_quad_at(&f, 0, 0, 1, 1, -0.5f);
+    g_assert_cmpuint(frag_count(&f, 0x4000bf), ==, W * H);
+    frag_quad_at(&f, 0, 0, 1, 1, 0.5f);
+    g_assert_cmpuint(frag_count(&f, 0x4000bf), ==, W * H);
+
+    frag_fog(&f, SGI_GL_FOG_MODE, SGI_GL_EXP, 0, 0, 0);
+    frag_fog(&f, SGI_GL_FOG_DENSITY, 2, 0, 0, 0);
+    frag_quad_at(&f, 0, 0, 1, 1, -0.5f);
+    g_assert_cmpuint(frag_count(&f, 0xa1005e), ==, W * H);
+    frag_fog(&f, SGI_GL_FOG_MODE, SGI_GL_EXP2, 0, 0, 0);
+    frag_fog(&f, SGI_GL_FOG_DENSITY, 1, 0, 0, 0);
+    frag_quad_at(&f, 0, 0, 1, 1, -0.5f);
+    g_assert_cmpuint(frag_count(&f, 0x3800c7), ==, W * H);
+
+    frag_fog(&f, SGI_GL_FOG_MODE, SGI_GL_LINEAR, 0, 0, 0);
+    frag_fog(&f, SGI_GL_FOG_START, 0.5f, 0, 0, 0);
+    frag_fog(&f, SGI_GL_FOG_END, 0.5f, 0, 0, 0);
+    frag_quad_at(&f, 0, 0, 1, 1, -0.25f);
+    g_assert_cmpuint(frag_count(&f, 0x0000ff), ==, W * H);
+    frag_quad_at(&f, 0, 0, 1, 1, -0.5f);
+    g_assert_cmpuint(frag_count(&f, 0xff0000), ==, W * H);
+
+    /* A bitmap at eye (0, 0, -0.5), under GL_LINEAR from 0 to 2. */
+    frag_fog(&f, SGI_GL_FOG_START, 0, 0, 0, 0);
+    frag_fog(&f, SGI_GL_FOG_END, 2, 0, 0, 0);
+    word[0] = bits(0), word[1] = bits(0), word[2] = bits(1);
+    frag_command(&f, SGI_GL_OP_COLOR3F, word, 3);
+    word[0] = bits(0), word[1] = bits(0), word[2] = bits(-0.5f);
+    frag_command(&f, SGI_GL_OP_RASTER_POS3F, word, 3);
+    g_assert_true(sgi_gl_bitmap_place(&f.c, 1, 1, 0, 0, 0, 0, &b));
+    sgi_gl_bitmap_bytes(&f.c, &f.sink, &b, 0, image, 1);
+    g_assert_cmphex(frag_pixel(&f, 32, 32), ==, 0x4000bf);
+    g_assert_cmpuint(frag_count(&f, 0x4000bf), ==, 1);
+
+    /* Neither changes the state. */
+    frag_fog(&f, SGI_GL_FOG_DENSITY, -1, 0, 0, 0);
+    frag_fog(&f, SGI_GL_FOG_MODE, 0x2600, 0, 0, 0);
+    g_assert_cmpfloat(get_float(&f.c, SGI_GL_FOG_DENSITY, 0), ==, 1);
+    g_assert_cmpuint(get(&f.c, SGI_GL_FOG_MODE, out), ==, 1);
+    g_assert_cmphex(out[0], ==, SGI_GL_LINEAR);
+
+    /*
+     * Index 4 with fog index 3: f 0.625 gives 5.125, stored as 5, and f
+     * 0.25 gives 6.25, stored as 6.
+     */
+    sgi_gl_set_index_mode(&f.c, 8);
+    frag_fog(&f, SGI_GL_FOG_INDEX, 3, 0, 0, 0);
+    word[0] = bits(4);
+    frag_command(&f, SGI_GL_OP_INDEXF, word, 1);
+    frag_quad_at(&f, 0, 0, 0, 1, -0.75f);
+    g_assert_cmpuint(frag_count(&f, 5), ==, W * H);
+    frag_fog(&f, SGI_GL_FOG_START, 0, 0, 0, 0);
+    frag_fog(&f, SGI_GL_FOG_END, 1, 0, 0, 0);
+    frag_quad_at(&f, 0, 0, 0, 1, -0.75f);
+    g_assert_cmpuint(frag_count(&f, 6), ==, W * H);
+    /* Before the start f is 1 and the index stays 4, not 2.5. */
+    frag_fog(&f, SGI_GL_FOG_START, 1, 0, 0, 0);
+    frag_fog(&f, SGI_GL_FOG_END, 2, 0, 0, 0);
+    frag_quad_at(&f, 0, 0, 0, 1, -0.5f);
+    g_assert_cmpuint(frag_count(&f, 4), ==, W * H);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -3434,5 +3546,6 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-gl/blend", test_blend);
     g_test_add_func("/sgi-gl/logic-op", test_logic_op);
     g_test_add_func("/sgi-gl/colour-mask", test_colour_mask);
+    g_test_add_func("/sgi-gl/fog", test_fog);
     return g_test_run();
 }
