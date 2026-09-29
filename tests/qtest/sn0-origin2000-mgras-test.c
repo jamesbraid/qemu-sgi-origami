@@ -9015,6 +9015,62 @@ static void test_gl_list_big_matches_the_reference(void)
 }
 
 /*
+ * A page-list entry is the page's whole frame number, node included. On
+ * more than one node, as run irix-20260929T044029-961bba had four, a
+ * pool page on node 1 is frame (1 << 20) | f: SN0's node number is
+ * physical address bits 39:32. Two nodes are enough; the peer Hub is
+ * given node number 1, as the PROM would, before anything reaches it.
+ * The page list itself is on node 0. The list on node 1 draws yellow;
+ * node 0's frame f holds a list that draws red, which is what taking the
+ * node from the list's own address would read.
+ */
+#define GL_LIST_NODE_ARGS \
+    "-M origin2000,topology=origin2000-deskside,nodes=2 -smp 4 -m 128M " \
+    "-device sgi-mgras,slot=io3"
+#define GL_LIST_NODE_FRAME 0x1c0u
+
+static void gl_list_window_triangle(QTestState *t, uint64_t addr,
+                                    float red, float green)
+{
+    uint32_t w[] = { GL_LIST_LAST_HDR, 0, GL_BEGIN_TRIANGLES, GL_COLOR3F_HDR,
+                     gl_bits(red), gl_bits(green), gl_bits(0),
+                     GL_VERTEX2F_HDR, gl_bits(-1), gl_bits(-1),
+                     GL_VERTEX2F_HDR, gl_bits(3), gl_bits(-1),
+                     GL_VERTEX2F_HDR, gl_bits(-1), gl_bits(3),
+                     GL_END_TRIANGLES };
+    uint8_t bytes[sizeof(w)];
+
+    for (int i = 0; i < ARRAY_SIZE(w); i++) {
+        stl_be_p(bytes + 4 * i, w[i]);
+    }
+    qtest_memwrite(t, addr, bytes, sizeof(bytes));
+}
+
+static void test_gl_list_page_on_another_node(void)
+{
+    uint64_t node1 = (1ull << 32) | ((uint64_t)GL_LIST_NODE_FRAME << 12);
+    uint8_t entry[8];
+    QTestState *t = qtest_init(GL_LIST_NODE_ARGS);
+
+    sn0_program_nasid(t, 1);
+    stq_be_p(entry, (1ull << 20) | GL_LIST_NODE_FRAME);
+    gl_list_frame(t);
+    qtest_memwrite(t, GL_LIST_PAGE_LIST + 0x18, entry, sizeof(entry));
+    gl_list_window_triangle(t, node1, 1, 1);
+    gl_list_window_triangle(t, (uint64_t)GL_LIST_NODE_FRAME << 12, 1, 0);
+    qtest_writel(t, MGRAS_REG(0x130400), 0x00482808);
+    qtest_writeq(t, MGRAS_REG(0x130400), GL_LIST_PAGE_LIST | 0x19);
+    qtest_writeq(t, MGRAS_REG(0x130400), ((uint64_t)0x00483404 << 32) | 1);
+    qtest_writeq(t, MGRAS_REG(0x130400), ((uint64_t)0x00482f04 << 32) | 0xa);
+    qtest_writeq(t, MGRAS_REG(0x130400),
+                 ((uint64_t)0x00484f04 << 32) | (GL_LIST_WIDGET << 16));
+    gl_call_list(t, 0, 17);
+    g_assert_cmphex(mgras_test_pixel(t, 320, 320), ==, 0xffff00);
+    g_assert_cmphex(mgras_qom_get_uint(t, "x-test-error"), ==, 0);
+    qtest_quit(t);
+}
+
+/*
  * A next range at pool offset 0 is a range like any other. The probe's
  * list with its ranges at 0x3000, 0x0000, 0x1000 and 0x2000: the first
  * header names offset 0, which the client's pool reuses once lists are
@@ -13904,6 +13960,8 @@ int main(int argc, char **argv)
                    test_gl_list_follows_the_chain);
     qtest_add_func("sn0/origin2000/mgras/gl-list-big-matches-the-reference",
                    test_gl_list_big_matches_the_reference);
+    qtest_add_func("sn0/origin2000/mgras/gl-list-page-on-another-node",
+                   test_gl_list_page_on_another_node);
     qtest_add_func("sn0/origin2000/mgras/gl-list-continues-at-offset-zero",
                    test_gl_list_continues_at_offset_zero);
     qtest_add_func("sn0/origin2000/mgras/gl-list-calls-a-list",
