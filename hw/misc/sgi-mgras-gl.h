@@ -73,8 +73,6 @@ extern const VMStateDescription vmstate_sgi_mgras_gl_scissor;
 extern const VMStateDescription vmstate_sgi_mgras_gl_alpha;
 /* Each context's stencil state, sent once one has left the initial. */
 extern const VMStateDescription vmstate_sgi_mgras_gl_stencil;
-/* A marker for a stencil buffer held in the depth plane's top bits. */
-extern const VMStateDescription vmstate_sgi_mgras_gl_stencil_plane;
 /* Each context's blending state, sent once one has left the initial. */
 extern const VMStateDescription vmstate_sgi_mgras_gl_blend;
 /* Each context's logical operation, sent once one has left the initial. */

@@ -2523,36 +2523,6 @@ const VMStateDescription vmstate_sgi_mgras_gl_stencil = {
     }
 };
 
-/*
- * The stencil buffer travels in bits 31:24 of the depth plane the stream
- * already carries. A binary without it would read those bits as depth, so
- * this empty section is sent once any pixel holds a stencil value, for
- * such a binary to refuse. Its name must not begin with another
- * subsection's: the loader takes a name that extends the one it is
- * loading as that one's own subsection.
- */
-static bool mgras_gl_stencil_plane_needed(void *opaque)
-{
-    SGIMgrasState *s = opaque;
-
-    for (uint32_t i = 0; i < s->depth_count; i++) {
-        if (s->depth[i] & ~MGRAS_GL_DEPTH_MASK_24) {
-            return true;
-        }
-    }
-    return false;
-}
-
-const VMStateDescription vmstate_sgi_mgras_gl_stencil_plane = {
-    .name = TYPE_SGI_MGRAS "/gl-plane-stencil",
-    .version_id = 1,
-    .minimum_version_id = 1,
-    .needed = mgras_gl_stencil_plane_needed,
-    .fields = (const VMStateField[]) {
-        VMSTATE_END_OF_LIST()
-    }
-};
-
 static const VMStateDescription vmstate_sgi_mgras_gl_context_blend = {
     .name = TYPE_SGI_MGRAS "/gl-context-blend",
     .version_id = 1,
