@@ -1973,23 +1973,43 @@ static void mgras_raster_dma_kick(SGIMgrasState *s, uint32_t kick_word)
  * page list once and sent one execute, offset 0x1000 and size 0x3fa,
  * which covers the first of the list's 14 pool pages, and nothing else
  * reached the board before glFlush. So the rest of the list can only be
- * reached from the pool. Each range there begins with header words that
- * are not commands:
+ * reached from the pool. Each range there begins with a header the
+ * client's func_d970cf0 (libGLcore.so IP27GR532, SHA-256 626d6d94...,
+ * 0xd970cf0) writes from the range's type, and the same run's fetch
+ * records (sgi_mgras_dma_chunk, seq 7576884 and 7576887) show the board
+ * reading exactly these words at the execute:
  *
- *   previous range's offset, next range's offset, next range's size
- *   previous range's offset, 0                    (on the last range)
+ *   0x00083904, 0                    the list's last range
+ *   0x00080c08, next offset, size    the next range, headers included
+ *   0x00083708, next offset, size,   a range ending in glCallList: the
+ *   0x00080c08, callee offset, size  called list's first range, then next
  *
- * In that run's dump and in run irix-20260928T023038-8a94ce's, each
- * next offset and size is exactly the next range of the list, headers
- * included, in 32-bit words, across 19 ranges of three lists. Inferred:
- * that the board reads these fields this way, that the size counts
- * words, and that a next offset of 0 ends the list. That last is a gap:
- * offset 0 holds a real range in both runs, and no chain has been seen
- * to continue into offset 0, so a list that did would end early here.
- * The first word is not needed, and it is not stable: the same range
- * read 0x00083904 when the model fetched it and 0xf000 in the later
- * dump. The discriminating tests are gl-list-draws-the-probe-list,
- * gl-list-follows-the-chain and gl-list-big-matches-the-reference.
+ * Established from the disassembly: the three forms, their 2, 3 and 6
+ * header words (the table at .rodata 0xdac9588), that __glMgrDLToPool
+ * writes the next range's pool offset and size into a range's words 1
+ * and 2, and that __glMgrDLResolveCalls writes the called list's first
+ * range into words 4 and 5 of a calling range. A descriptor flag would
+ * make a next or call token 0x00080e08 and the last range's second word
+ * 1; the two routines that build the descriptors, func_d970850 and
+ * __glMgrDLToPool, leave that flag clear in every path, and no capture
+ * has either form, so the model treats both as unimplemented and draws
+ * nothing for the list. Established from the
+ * fetch records: 14 ranges of one list read as 13 next headers and one
+ * last header, and the words after each header drew the reference image.
+ * Inferred: that the board reads the size as 32-bit words, and that it
+ * runs a calling range's own words, then the called list up to its last
+ * range, then the next range, which is glCallList's order; no capture
+ * has a list that calls a list. A later dump of the same pool held other
+ * values in word 0; the board had already read the list by then.
+ *
+ * The model follows calls on a stack of MGRAS_LIST_MAX_CALLS returns.
+ * __glMgrDLExecuteDMA sends a list by DMA only while its nesting and the
+ * current call depth come to less than 64 (established), so the client
+ * never nests deeper; the board's own depth is unknown. A call past it
+ * fails the execute whole. The discriminating tests are
+ * gl-list-draws-the-probe-list, gl-list-follows-the-chain,
+ * gl-list-big-matches-the-reference, gl-list-continues-at-offset-zero
+ * and gl-list-calls-a-list.
  *
  * A chain is followed for at most MGRAS_LIST_MAX_RANGES ranges and, over
  * all of them, MGRAS_LIST_MAX_WORDS words. Over either limit, or outside
@@ -2023,29 +2043,72 @@ static void mgras_raster_dma_kick(SGIMgrasState *s, uint32_t kick_word)
  */
 #define MGRAS_LIST_MAX_RANGES 2048
 
-/* A list fetch's view of the bus, and what its chain has refused. */
+/* The deepest call chain the model follows; see above. */
+#define MGRAS_LIST_MAX_CALLS 64
+
+/* A range's header tokens, as func_d970cf0 writes them. */
+#define MGRAS_LIST_HDR_LAST 0x00083904u
+#define MGRAS_LIST_HDR_NEXT 0x00080c08u
+#define MGRAS_LIST_HDR_CALL 0x00083708u
+
+typedef struct MgrasListRange {
+    uint32_t offset;
+    uint32_t size;
+} MgrasListRange;
+
+/* A list fetch's view of the bus, its calls, and what it has refused. */
 typedef struct MgrasListBus {
     MgrasDmaBus dma;
     bool refused;
+    unsigned int depth;
+    MgrasListRange ret[MGRAS_LIST_MAX_CALLS];
 } MgrasListBus;
-#define MGRAS_LIST_NEXT 1
-#define MGRAS_LIST_NEXT_SIZE 2
 
-/* A range's header words: three when it names a next range, else two. */
-static unsigned mgras_raster_list_header(const uint32_t *words, unsigned n)
+typedef enum MgrasListHeader {
+    MGRAS_LIST_BAD,
+    MGRAS_LIST_LAST,
+    MGRAS_LIST_NEXT,
+    MGRAS_LIST_CALL,
+} MgrasListHeader;
+
+/*
+ * Read a range's header: its kind, its length in words, and the ranges it
+ * names, next and, for a call, the called list's first.
+ */
+static MgrasListHeader mgras_raster_list_header(const uint32_t *w, unsigned n,
+                                                unsigned *len,
+                                                MgrasListRange *next,
+                                                MgrasListRange *callee)
 {
-    return n > MGRAS_LIST_NEXT && words[MGRAS_LIST_NEXT] ? 3 : 2;
+    if (n >= 2 && w[0] == MGRAS_LIST_HDR_LAST && w[1] == 0) {
+        *len = 2;
+        return MGRAS_LIST_LAST;
+    }
+    if (n >= 3 && w[0] == MGRAS_LIST_HDR_NEXT) {
+        *len = 3;
+        *next = (MgrasListRange) { w[1], w[2] };
+        return MGRAS_LIST_NEXT;
+    }
+    if (n >= 6 && w[0] == MGRAS_LIST_HDR_CALL &&
+        w[3] == MGRAS_LIST_HDR_NEXT) {
+        *len = 6;
+        *next = (MgrasListRange) { w[1], w[2] };
+        *callee = (MgrasListRange) { w[4], w[5] };
+        return MGRAS_LIST_CALL;
+    }
+    return MGRAS_LIST_BAD;
 }
 
 static void mgras_raster_list_decode(void *opaque, uint32_t context,
                                      const uint32_t *words, unsigned n)
 {
     MgrasDmaBus *b = opaque;
-    unsigned header = mgras_raster_list_header(words, n);
+    MgrasListRange next, callee;
+    unsigned header;
 
-    if (n < header) {
-        qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: display-list range of %u "
-                      "words is shorter than its header\n", n);
+    /* The fetch ends at a range whose header next() did not accept. */
+    if (mgras_raster_list_header(words, n, &header, &next, &callee) ==
+        MGRAS_LIST_BAD) {
         return;
     }
     for (unsigned i = header; i < n; i++) {
@@ -2053,29 +2116,66 @@ static void mgras_raster_list_decode(void *opaque, uint32_t context,
     }
 }
 
+static bool mgras_raster_list_refuse(MgrasListBus *b)
+{
+    b->refused = true;
+    return false;
+}
+
 static bool mgras_raster_list_next(void *opaque, const SGICommandFetch *f,
                                    uint64_t *offset, uint64_t *nwords)
 {
     MgrasListBus *b = container_of(opaque, MgrasListBus, dma);
     const SGIFetchSegment *seg;
+    MgrasListRange next, callee;
+    unsigned header;
 
     if (!f->nsegments) {
         return false;
     }
     seg = &f->segments[f->nsegments - 1];
-    if (seg->nwords <= MGRAS_LIST_NEXT_SIZE || !seg->words[MGRAS_LIST_NEXT]) {
-        return false;
+    switch (mgras_raster_list_header(seg->words, seg->nwords, &header, &next,
+                                     &callee)) {
+    case MGRAS_LIST_LAST:
+        if (!b->depth) {
+            return false;
+        }
+        next = b->ret[--b->depth];
+        break;
+    case MGRAS_LIST_NEXT:
+        break;
+    case MGRAS_LIST_CALL:
+        if (b->depth == MGRAS_LIST_MAX_CALLS) {
+            qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: display list at 0x%"
+                          PRIx64 " calls past the model's %u nested lists\n",
+                          seg->addr, MGRAS_LIST_MAX_CALLS);
+            return mgras_raster_list_refuse(b);
+        }
+        b->ret[b->depth++] = next;
+        next = callee;
+        break;
+    default:
+        qemu_log_mask(LOG_UNIMP, "sgi-mgras: display-list range at 0x%"
+                      PRIx64 " begins 0x%08x, not a range header the "
+                      "model knows\n", seg->addr,
+                      seg->nwords ? seg->words[0] : 0);
+        return mgras_raster_list_refuse(b);
     }
     if (f->nsegments >= MGRAS_LIST_MAX_RANGES ||
-        f->nwords + seg->words[MGRAS_LIST_NEXT_SIZE] > MGRAS_LIST_MAX_WORDS) {
+        f->nwords + next.size > MGRAS_LIST_MAX_WORDS) {
         qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: display list goes on "
                       "past %u ranges or %u words, the model's limits\n",
                       MGRAS_LIST_MAX_RANGES, MGRAS_LIST_MAX_WORDS);
-        b->refused = true;
-        return false;
+        return mgras_raster_list_refuse(b);
     }
-    *offset = seg->words[MGRAS_LIST_NEXT];
-    *nwords = seg->words[MGRAS_LIST_NEXT_SIZE];
+    /* Every range carries a header, so a range of no words is not one. */
+    if (!next.size) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: display list names a "
+                      "range of no words at pool offset 0x%x\n", next.offset);
+        return mgras_raster_list_refuse(b);
+    }
+    *offset = next.offset;
+    *nwords = next.size;
     return true;
 }
 
@@ -2091,14 +2191,14 @@ static void mgras_raster_list_execute(SGIMgrasState *s, uint32_t offset,
     int ret;
 
     /*
-     * A list calling a list would arrive here from inside the fetch. The
-     * client can pool call tokens in a list; how the board runs them is
-     * not known.
+     * An execute among a list's own commands would arrive here from
+     * inside the fetch. The client puts its calls in range headers, which
+     * mgras_raster_list_next() follows, and never among the commands.
      */
     if (f->open) {
-        qemu_log_mask(LOG_UNIMP, "sgi-mgras: a display list calls the "
-                      "list at pool offset 0x%x; nested lists are not "
-                      "modelled\n", offset);
+        qemu_log_mask(LOG_UNIMP, "sgi-mgras: a display list's commands "
+                      "execute the list at pool offset 0x%x; an execute "
+                      "inside a list is not modelled\n", offset);
         return;
     }
     if (size > MGRAS_LIST_MAX_WORDS) {
