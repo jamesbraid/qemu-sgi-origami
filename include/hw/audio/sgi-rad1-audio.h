@@ -663,6 +663,13 @@ struct SGIRad1AudioState {
     /* Virtual-clock time captured at reset; the 0x30 UST counter's origin. */
     int64_t ust_base_ns;
 
+    /* Octane's separate, synthetic UST state. */
+    uint32_t octane_ust_count;
+    uint32_t octane_ust_phase;
+    int64_t octane_ust_last_ns;
+    bool octane_ust_enabled;
+    bool octane_ust_armed;
+
     /*
      * Host audio backends. audio_be, the "audiodev" property, serves the
      * analog pair and falls back to the default backend; aes_be and adat_be,
