@@ -5992,6 +5992,33 @@ static void test_board_identity(gconstpointer data)
 }
 
 /*
+ * The board's RE count, not a separate switch, decides how many PP1s answer
+ * behind PP1SELECT: two per RE (docs/datasheets/mgras-dual-re.md). A write
+ * to every PP1 reaches each one the board has, and each reports the board's
+ * PP1 revision; a PP1 past the board's count reads 0.
+ */
+static void test_board_pp1s_follow_re_count(gconstpointer data)
+{
+    const MgrasBoardExpect *e = data;
+    QTestState *s = mgras_board_init(e);
+
+    mgras_select_xmap(s, PP1_SELECT_ALL, 0);
+    qtest_writel(s, REG_XMAP_MAIN_MODE, 0x111);
+    for (unsigned int n = 0; n < 4; n++) {
+        bool present = n < 2 * e->re;
+
+        mgras_select_xmap(s, mgras_pp1_select_one(n), 0);
+        g_assert_cmphex(qtest_readl(s, REG_XMAP_MAIN_MODE), ==,
+                        present ? 0x111 : 0);
+        qtest_writeb(s, REG_XMAP_INDEX, XMAP_INDEX_PP1_REVISION);
+        g_assert_cmphex(qtest_readl(s, REG_REPP_STATUS_3) & 7, ==,
+                        present ? e->pp1 : 0);
+    }
+    g_assert_cmphex(mgras_qom_get_uint(s, "x-test-error"), ==, 0);
+    qtest_quit(s);
+}
+
+/*
  * 0x028004 carries the GE revision from reset until the first 0xa2 query,
  * the kernel's or a client's, which replaces it with the answer; a reset
  * brings the revision back. The query is the kernel's MgrasFinish fence,
@@ -13531,8 +13558,12 @@ int main(int argc, char **argv)
             "sn0/origin2000/mgras/board-screen-fits-row-buffers/%s",
             e->board);
 
+        g_autofree char *pp1s = g_strdup_printf(
+            "sn0/origin2000/mgras/board-pp1s-follow-re-count/%s", e->board);
+
         qtest_add_data_func(path, e, test_board_identity);
         qtest_add_data_func(screen, e, test_board_screen_fits_row_buffers);
+        qtest_add_data_func(pp1s, e, test_board_pp1s_follow_re_count);
         if (!e->implemented) {
             g_autofree char *refused = g_strdup_printf(
                 "sn0/origin2000/mgras/board-refused/%s", e->board);
