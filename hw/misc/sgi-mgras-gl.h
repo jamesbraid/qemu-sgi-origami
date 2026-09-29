@@ -68,6 +68,34 @@ extern const VMStateDescription vmstate_sgi_mgras_gl_light_enables;
 /* Each context's culling state, sent once one has left the initial. */
 extern const VMStateDescription vmstate_sgi_mgras_gl_cull;
 
+/*
+ * The parser's class while the words of a GE parameter load (a class-0
+ * 0x80 or 0xcd packet) arrive; each goes to sgi_mgras_gl_ge_load_word()
+ * after the parser has counted it off.
+ */
+#define SGI_MGRAS_CMD_TOKEN_GE_LOAD (SGI_MGRAS_CMD_TOKEN_DISCARD - 2)
+/*
+ * Whether a main-port header opens a GE parameter load; if so the parser
+ * is set to stream its words.
+ */
+bool sgi_mgras_gl_ge_load(SGIMgrasState *s, uint32_t header);
+void sgi_mgras_gl_ge_load_word(SGIMgrasState *s, uint32_t word);
+/*
+ * Whether the loaded context has a pixel draw waiting for its image, so
+ * that a host-memory DMA transfer to the GE carries it; *take says whether
+ * the transfer's rows rows of bpr bytes fit the draw. One that does not
+ * ends the draw, logged, and the caller moves nothing.
+ */
+bool sgi_mgras_gl_pixels_dma(SGIMgrasState *s, uint32_t rows, uint32_t bpr,
+                             bool *take);
+/* One row of that transfer's image, from its first byte. */
+void sgi_mgras_gl_pixels_row(SGIMgrasState *s, const uint8_t *bytes,
+                             uint32_t n);
+/* End the draw after a transfer that failed partway. */
+void sgi_mgras_gl_pixels_abort(SGIMgrasState *s);
+/* The GE parameters and each context's pixel draw, once either is used. */
+extern const VMStateDescription vmstate_sgi_mgras_gl_pixels;
+
 /* Note GE-port traffic the per-context state cannot follow. */
 void sgi_mgras_gl_ge_port_access(SGIMgrasState *s, hwaddr addr, bool write);
 /* The command parser's position, to set aside and take up again. */

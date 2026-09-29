@@ -92,6 +92,7 @@ static const ReplayHead *find_head(const char *codename)
 #define ROOT_ICON         "root-icon.replay"
 #define OVERLAY           "overlay.replay"
 #define DMA_IMAGE_TRANSFER "dma-image-transfer.replay"
+#define GL_PIXELS_RECTWRITE "gl-pixels-rectwrite.replay"
 #define INVALID_REPLAY    "invalid.replay"
 #define INVALID_BOUNDS    "invalid-bounds.replay"
 #define INVALID_EXTRA     "invalid-extra.replay"
@@ -939,6 +940,16 @@ static void test_char_modes(void)
     run_fixture(CHAR_MODES, NULL);
 }
 
+/*
+ * One row of mandel's first IRIS GL rectwrite from the IRIX 6.5.30 SI
+ * session: the GE parameter loads, 0x8d20 and the row's inline block of
+ * 16-bit colour indices.
+ */
+static void test_gl_pixels_rectwrite(void)
+{
+    run_fixture(GL_PIXELS_RECTWRITE, NULL);
+}
+
 static void test_cmap_xmap_wid(void)
 {
     run_fixture(CMAP_XMAP_WID, NULL);
@@ -1267,6 +1278,8 @@ int main(int argc, char **argv)
                    test_overlay_migration);
     qtest_add_func("sgi-replay/mgras/dma-image-transfer",
                    test_dma_image_transfer);
+    qtest_add_func("sgi-replay/mgras/gl-pixels-rectwrite",
+                   test_gl_pixels_rectwrite);
     qtest_add_func("sgi-replay/mgras/invalid-number", test_invalid_number);
     qtest_add_func("sgi-replay/mgras/invalid-bounds", test_invalid_bounds);
     qtest_add_func("sgi-replay/mgras/invalid-extra", test_invalid_extra);
