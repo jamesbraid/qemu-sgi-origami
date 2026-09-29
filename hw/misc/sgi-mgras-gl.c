@@ -2016,6 +2016,50 @@ const VMStateDescription vmstate_sgi_mgras_gl_pixels = {
     }
 };
 
+/*
+ * Each context's DMA mark on its waiting pixel draw, and whether another
+ * header has come since the draw's last word, sent only while some
+ * waiting draw has either. A binary without them lets such a draw take
+ * the next inline block, which no captured client sends.
+ */
+static bool mgras_gl_pixel_flags_needed(void *opaque)
+{
+    SGIMgrasState *s = opaque;
+
+    for (int i = 0; i < SGI_MGRAS_GL_CONTEXTS; i++) {
+        const SGIMgrasGLPixels *px = &s->gl_context[i].pixels;
+
+        if (px->active && (px->dma_only || px->apart)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static const VMStateDescription vmstate_sgi_mgras_gl_context_pixel_flags = {
+    .name = TYPE_SGI_MGRAS "/gl-context-pixel-flags",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32(pixels.dma_only, SGIMgrasGLContext),
+        VMSTATE_UINT32(pixels.apart, SGIMgrasGLContext),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
+const VMStateDescription vmstate_sgi_mgras_gl_pixel_flags = {
+    .name = TYPE_SGI_MGRAS "/gl-pixel-flags",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = mgras_gl_pixel_flags_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_STRUCT_ARRAY(gl_context, SGIMgrasState, SGI_MGRAS_GL_CONTEXTS,
+                             1, vmstate_sgi_mgras_gl_context_pixel_flags,
+                             SGIMgrasGLContext),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
 /* Whether a migrated pixel draw is one mgras_gl_pixels_start() makes. */
 static bool mgras_gl_pixels_valid(const SGIMgrasGLPixels *px)
 {
@@ -2027,6 +2071,7 @@ static bool mgras_gl_pixels_valid(const SGIMgrasGLPixels *px)
            px->w <= MGRAS_GL_PIXELS_MAX && px->h >= 1 &&
            px->h <= MGRAS_GL_PIXELS_MAX && px->row < px->h &&
            px->col <= px->w && px->ncarry < px->bpp && px->skip <= 3 &&
+           px->dma_only <= 1 && px->apart <= 1 &&
            px->x >= -MGRAS_GL_PIXELS_FAR && px->x <= MGRAS_GL_PIXELS_FAR &&
            px->y >= -MGRAS_GL_PIXELS_FAR && px->y <= MGRAS_GL_PIXELS_FAR;
 }
@@ -2435,6 +2480,11 @@ static void mgras_gl_bitmap(SGIMgrasState *s, const uint32_t *payload)
  * set when the format is 0x8000, 0xd966a38-0xd966ad0); without it the
  * model reads GL_RGBA (inferred: no capture has it).
  *
+ * The rows. A block is a row of the waiting draw only when it follows
+ * the draw's 0x8d20 or the row before (and the zero word after an odd
+ * one), and only when 0x8d20's last word lacks bit 7, which the client
+ * sets only on its DMA path; any other block is the packet's before it.
+ *
  * The draw. Pixel n of a row lands on the window pixel whose centre lies
  * between xr + n and xr + n + 1 for the raster position's x, and the same
  * for rows (OpenGL 1.2.1, 3.6.4); an invalid raster position draws
@@ -2458,6 +2508,8 @@ static void mgras_gl_bitmap(SGIMgrasState *s, const uint32_t *payload)
  * mandel, snapshot and i3dm on the SI. The discriminating tests are
  * gl-pixels-inline-colour-index, gl-pixels-inline-rgb, gl-pixels-dma-abgr,
  * gl-pixels-dma-rgba-and-rgb, gl-pixels-unmodelled-draw-nothing,
+ * gl-pixels-rows-follow-their-draw, gl-pixels-raster-kick-leaves-the-draw,
+ * gl-pixels-far-raster-position, gl-pixels-follow-the-raster-position,
  * gl-pixels-long-load, gl-pixels-follow-the-context and
  * gl-pixels-migration, and the replay fixture gl-pixels-rectwrite, one
  * row of mandel's words from that run.
@@ -2685,6 +2737,14 @@ static int32_t mgras_gl_pixels_place(int32_t offset, float pos)
     return MIN(MAX(p, -MGRAS_GL_PIXELS_FAR), MGRAS_GL_PIXELS_FAR);
 }
 
+/*
+ * 0x8d20's last word: 0x99 for every draw captured whose image came by
+ * DMA and 0x18 for every one sent inline. The listing sets bit 7 only on
+ * its DMA path (0xd966ca0-0xd966cbc, under two flags of the context), so
+ * a draw with it set takes no inline rows; one without it takes either.
+ */
+#define MGRAS_GL_PIXELS_BY_DMA   0x80
+
 static void mgras_gl_pixels_start(SGIMgrasState *s, const uint32_t *payload)
 {
     SGIMgrasGLPixels *px = mgras_gl_pixels(s);
@@ -2700,6 +2760,8 @@ static void mgras_gl_pixels_start(SGIMgrasState *s, const uint32_t *payload)
         px->bpp = 1;
     }
     px->active = 1;
+    px->dma_only = !!(payload[7] & MGRAS_GL_PIXELS_BY_DMA);
+    px->apart = 0;
     if (px->format == MGRAS_GL_PIXELS_FORMATS) {
         return;
     }
@@ -2839,7 +2901,13 @@ static bool mgras_gl_pixels_block(SGIMgrasState *s, uint32_t header)
     uint32_t offset = (header & SGI_MGRAS_CMD_BLOCK_OFFSET) >> 22;
     uint32_t bytes = header & SGI_MGRAS_CMD_BLOCK_BYTES;
 
-    if (!px->active) {
+    /*
+     * A row follows its draw's 0x8d20, or the row before it and the zero
+     * word the client adds after an odd count, as glBitmap's image
+     * follows its packet; a block after any other header is that
+     * packet's (sgi_mgras_gl_pixels_header()).
+     */
+    if (!px->active || px->dma_only || px->apart) {
         return false;
     }
     /*
@@ -2856,6 +2924,13 @@ static bool mgras_gl_pixels_block(SGIMgrasState *s, uint32_t header)
         mgras_gl_pixels_row_end(s);
     }
     return true;
+}
+
+void sgi_mgras_gl_pixels_header(SGIMgrasState *s, uint32_t header)
+{
+    if (header && !(header & 0x80000000u)) {
+        mgras_gl_pixels(s)->apart = 1;
+    }
 }
 
 static void mgras_gl_pixels_word(SGIMgrasState *s, uint32_t word)

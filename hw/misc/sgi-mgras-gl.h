@@ -93,8 +93,16 @@ void sgi_mgras_gl_pixels_row(SGIMgrasState *s, const uint8_t *bytes,
                              uint32_t n);
 /* End the draw after a transfer that failed partway. */
 void sgi_mgras_gl_pixels_abort(SGIMgrasState *s);
+/*
+ * Note a header in the loaded context for its waiting pixel draw: any
+ * header but a zero word or an inline block ends the draw's claim on the
+ * blocks that follow.
+ */
+void sgi_mgras_gl_pixels_header(SGIMgrasState *s, uint32_t header);
 /* The GE parameters and each context's pixel draw, once either is used. */
 extern const VMStateDescription vmstate_sgi_mgras_gl_pixels;
+/* Each context's DMA mark on a waiting pixel draw, while one has it. */
+extern const VMStateDescription vmstate_sgi_mgras_gl_pixel_flags;
 
 /* Note GE-port traffic the per-context state cannot follow. */
 void sgi_mgras_gl_ge_port_access(SGIMgrasState *s, hwaddr addr, bool write);

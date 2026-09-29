@@ -335,6 +335,7 @@ static void mgras_command_fifo_token(SGIMgrasState *s, uint32_t token)
     cmd_class = token >> 16;
     reg = (token >> 8) & 0xff;
     payload_bytes = token & 0xff;
+    sgi_mgras_gl_pixels_header(s, token);
 
     if (cmd_class == MGRAS_CMD_FIFO_FENCE_CLASS &&
         reg == MGRAS_CMD_FIFO_FENCE_REG && payload_bytes == 0) {
