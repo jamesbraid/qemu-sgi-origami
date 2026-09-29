@@ -7,6 +7,9 @@
  */
 #include "qemu/osdep.h"
 #include <math.h>
+#include "qapi/error.h"
+#include "qemu/log.h"
+#include "qemu/rcu.h"
 #include "hw/display/sgi/rasterizer.h"
 
 #define W 64
@@ -2493,6 +2496,116 @@ static void test_spot_cos_matches_gllight(void)
     g_assert_cmpfloat(c.light[2].spot_cos_cutoff, ==, -1);
 }
 
+/* What the unimplemented and guest-error log masks received from fn. */
+static char *logged_by(void (*fn)(void))
+{
+    g_autofree char *dir = g_dir_make_tmp("test-sgi-gl.XXXXXX", NULL);
+    g_autofree char *path = NULL;
+    char *text = NULL;
+
+    g_assert_nonnull(dir);
+    path = g_build_filename(dir, "log", NULL);
+    qemu_set_log_filename_flags(path, LOG_UNIMP | LOG_GUEST_ERROR,
+                                &error_abort);
+    fn();
+    /* Closing the log is deferred to an RCU callback, which flushes it. */
+    qemu_set_log_filename_flags(NULL, 0, &error_abort);
+    drain_call_rcu();
+    if (!g_file_get_contents(path, &text, NULL, NULL)) {
+        text = g_strdup("");
+    }
+    g_remove(path);
+    g_rmdir(dir);
+    return text;
+}
+
+static Planes window_planes;
+static SGIGLDrawable window_drawable;
+
+/*
+ * A clear to white, a one-pixel bitmap at window (10, 20) and a triangle
+ * over the lower-left half of the viewport, drawn into window_planes
+ * through window_drawable.
+ */
+static void window_scene(void)
+{
+    static const uint8_t image[1] = { 0x80 };
+    Recorder rec = { .rules = &rules_supported };
+    SGIGLSink sink = recorder_sink(&rec);
+    SGIGLContext c;
+    SGIGLBitmap b;
+    uint32_t word[4] = { bits(1), bits(1), bits(1), bits(1) };
+
+    sink.raster = drawing_raster;
+    rec.target = planes_target(&window_planes);
+    memset(&window_planes, 0, sizeof(window_planes));
+    context_init(&c);
+    sgi_gl_set_drawable(&c, &window_drawable);
+    command(&c, &sink, SGI_GL_OP_CLEAR_COLOR, word, 4);
+    word[0] = SGI_GL_COLOR_BUFFER_BIT;
+    command(&c, &sink, SGI_GL_OP_CLEAR, word, 1);
+
+    word[0] = bits(10.5f / 32 - 1), word[1] = bits(20.5f / 32 - 1);
+    command(&c, &sink, SGI_GL_OP_RASTER_POS2F, word, 2);
+    g_assert_true(sgi_gl_bitmap_place(&c, 1, 1, 0, 0, 0, 0, &b));
+    sgi_gl_bitmap_bytes(&c, &sink, &b, 0, image, 1);
+
+    word[0] = SGI_GL_TRIANGLES;
+    command(&c, &sink, SGI_GL_OP_BEGIN, word, 1);
+    word[0] = bits(-1), word[1] = bits(-1);
+    command(&c, &sink, SGI_GL_OP_VERTEX2F, word, 2);
+    word[0] = bits(1);
+    command(&c, &sink, SGI_GL_OP_VERTEX2F, word, 2);
+    word[0] = bits(-1), word[1] = bits(1);
+    command(&c, &sink, SGI_GL_OP_VERTEX2F, word, 2);
+    command(&c, &sink, SGI_GL_OP_END, word, 0);
+}
+
+static unsigned window_pixels_written(void)
+{
+    unsigned n = 0;
+
+    for (int i = 0; i < W * H; i++) {
+        n += window_planes.colour[0][i] != 0;
+    }
+    return n;
+}
+
+/*
+ * A bound window with no visible rectangle, one other windows wholly
+ * cover, is a normal state (OpenGL 1.2.1, 4.1.1: every fragment fails
+ * the pixel ownership test). The clear, the bitmap and the triangle draw
+ * nothing and log nothing. The same scene into the whole plane writes
+ * every pixel, and into no bound window logs each of the three as
+ * dropped, which shows the log is captured.
+ */
+static void test_covered_window_draws_nothing(void)
+{
+    g_autofree char *covered = NULL;
+    g_autofree char *whole = NULL;
+    g_autofree char *unbound = NULL;
+
+    window_drawable = (SGIGLDrawable) { .bound = true };
+    covered = logged_by(window_scene);
+    g_assert_cmpstr(covered, ==, "");
+    g_assert_cmpuint(window_pixels_written(), ==, 0);
+
+    window_drawable = (SGIGLDrawable) {
+        .bound = true,
+        .clip = { .n = 1, .r[0] = { 0, 0, W - 1, H - 1 } },
+    };
+    whole = logged_by(window_scene);
+    g_assert_cmpstr(whole, ==, "");
+    g_assert_cmpuint(window_pixels_written(), ==, W * H);
+
+    window_drawable = (SGIGLDrawable) { .bound = false };
+    unbound = logged_by(window_scene);
+    g_assert_nonnull(strstr(unbound, "glClear with no window bound"));
+    g_assert_nonnull(strstr(unbound, "glBitmap with no window bound"));
+    g_assert_nonnull(strstr(unbound, "draw with no window bound"));
+    g_assert_cmpuint(window_pixels_written(), ==, 0);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -2567,5 +2680,7 @@ int main(int argc, char **argv)
                     test_set_lighting_and_local_viewer);
     g_test_add_func("/sgi-gl/spot-cos-matches-gllight",
                     test_spot_cos_matches_gllight);
+    g_test_add_func("/sgi-gl/covered-window-draws-nothing",
+                    test_covered_window_draws_nothing);
     return g_test_run();
 }

@@ -460,9 +460,13 @@ static void sgi_gl_clear(SGIGLContext *c, const SGIGLSink *sink,
                       "colour and depth ignored\n", mask);
     }
     op.ntargets = sgi_gl_draw_targets(&c->cur, op.targets);
-    if (!d->bound || !d->clip.n) {
+    if (!d->bound) {
         qemu_log_mask(LOG_UNIMP, "sgi-gl: glClear with no window bound "
                       "dropped\n");
+        return;
+    }
+    if (!d->clip.n) {
+        /* A window others wholly cover: nothing to clear. */
         return;
     }
     op.clip = d->clip;
@@ -1313,9 +1317,13 @@ void sgi_gl_bitmap_bytes(SGIGLContext *c, const SGIGLSink *sink,
         },
     };
 
-    if (!d->bound || !d->clip.n) {
+    if (!d->bound) {
         qemu_log_mask(LOG_UNIMP, "sgi-gl: glBitmap with no window bound "
                       "dropped\n");
+        return;
+    }
+    if (!d->clip.n) {
+        /* A window others wholly cover: the image draws nothing. */
         return;
     }
     memcpy(op.bitmap.rgba, c->raster_color, sizeof(op.bitmap.rgba));
