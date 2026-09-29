@@ -2251,6 +2251,100 @@ static void test_l1_product_identity(const void *data)
     }
 }
 
+static void l1_expect_revision(QTestState *qts, int32_t major,
+                               int32_t minor, int32_t patch)
+{
+    const uint8_t request[] = { 0x10, 0x0f, 0xff, 0xf0, 6, 0, 5, 0 };
+    const int32_t expected[] = { major, minor, patch };
+    uint8_t reply[131];
+    size_t length;
+
+    l1_send_at(qts, L1_UART_LOCAL_BASE, request, sizeof(request));
+    length = l1_receive_at(qts, L1_UART_LOCAL_BASE, reply);
+    g_assert_cmphex(reply[0], ==, 0x30);
+    if (major < 0) {
+        g_assert_cmpuint(length, ==, 6);
+        g_assert_cmphex(reply[4], ==, L1_REPLY_ABSENT);
+        return;
+    }
+    g_assert_cmpuint(length, ==, 21);
+    g_assert_cmphex(reply[4], ==, 0);
+    g_assert_cmphex(reply[5], ==, 3);
+    for (size_t i = 0; i < 3; i++) {
+        g_assert_cmphex(reply[6 + i * 5], ==, 0);
+        g_assert_cmpuint(ldl_be_p(reply + 7 + i * 5), ==, expected[i]);
+    }
+}
+
+static void test_fuel_l1_revision(const void *data)
+{
+    g_autofree char *quoted = g_shell_quote(prom_path);
+    QTestState *qts;
+
+    qts = qtest_initf("-M fuel,fuel-board-id-word=0x4abc,"
+                      "fuel-ioc3-subsystem-id=0xc30a,"
+                      "fuel-l1-type-code=0x61,fuel-bedrock-revision=0x2 "
+                      "-cpu R14000 -smp 1 -m 512M -bios %s -S", quoted);
+    l1_expect_revision(qts, -1, -1, -1);
+    qtest_system_reset(qts);
+    l1_expect_revision(qts, -1, -1, -1);
+    qtest_quit(qts);
+
+    qts = qtest_initf("-M fuel,fuel-board-id-word=0x4abc,"
+                      "fuel-ioc3-subsystem-id=0xc30a,"
+                      "fuel-l1-type-code=0x61,fuel-bedrock-revision=0x2,"
+                      "fuel-l1-revision=1.48.1 "
+                      "-cpu R14000 -smp 1 -m 512M -bios %s -S", quoted);
+    l1_expect_revision(qts, 1, 48, 1);
+    qtest_system_reset(qts);
+    l1_expect_revision(qts, 1, 48, 1);
+    qtest_quit(qts);
+
+    qts = qtest_initf("-M fuel,fuel-board-id-word=0x4abc,"
+                      "fuel-ioc3-subsystem-id=0xc30a,"
+                      "fuel-l1-type-code=0x61,fuel-bedrock-revision=0x2,"
+                      "fuel-l1-revision=0.2147483647.0 "
+                      "-cpu R14000 -smp 1 -m 512M -bios %s -S", quoted);
+    l1_expect_revision(qts, 0, INT32_MAX, 0);
+    qtest_quit(qts);
+
+    qts = machine_start_with(prom_path, "-S");
+    l1_expect_revision(qts, 1, 18, 5);
+    qtest_system_reset(qts);
+    l1_expect_revision(qts, 1, 18, 5);
+    qtest_quit(qts);
+}
+
+static void assert_qemu_rejects(const char *const args[], const char *message);
+
+static void test_fuel_l1_revision_rejects_invalid(const void *data)
+{
+    g_autofree char *machine = g_strdup_printf(
+        "fuel,fuel-board-id-word=0x4abc,"
+        "fuel-ioc3-subsystem-id=0xc30a,"
+        "fuel-l1-type-code=0x61,fuel-bedrock-revision=0x2,"
+        "fuel-l1-revision=%s", (const char *)data);
+    const char *args[] = {
+        qtest_qemu_binary(NULL), "-M", machine, "-cpu", "R14000",
+        "-smp", "1", "-m", "512M", "-bios", prom_path,
+        "-display", "none", "-qtest", "stdio", "-accel", "qtest", NULL
+    };
+
+    assert_qemu_rejects(args,
+                        "fuel-l1-revision requires three decimal components");
+}
+
+static void test_fuel_l1_revision_rejects_other_machine(const void *data)
+{
+    const char *args[] = {
+        qtest_qemu_binary(NULL), "-M", "origin300,fuel-l1-revision=1.48.1",
+        "-cpu", "R14000", "-smp", "2", "-m", "512M", "-bios", prom_path,
+        "-display", "none", "-qtest", "stdio", "-accel", "qtest", NULL
+    };
+
+    assert_qemu_rejects(args, "fuel-l1-revision applies only to -M fuel");
+}
+
 static void test_fuel_l1_type_migration(const void *data)
 {
     g_autofree char *quoted = g_shell_quote(prom_path);
@@ -2286,6 +2380,57 @@ static void test_fuel_l1_type_migration(const void *data)
     qtest_quit(from);
     qtest_quit(to);
     g_assert_cmpint(rmdir(directory), ==, 0);
+}
+
+static void test_fuel_l1_revision_migration(const void *data)
+{
+    static const struct {
+        const char *source;
+        const char *destination;
+        int32_t major, minor, patch;
+    } cases[] = {
+        { ",fuel-l1-revision=1.48.1", "", 1, 48, 1 },
+        { ",fuel-l1-revision=1.48.1", ",fuel-l1-revision=1.14.4",
+          1, 48, 1 },
+        { "", ",fuel-l1-revision=1.14.4", -1, -1, -1 },
+    };
+    g_autofree char *quoted = g_shell_quote(prom_path);
+
+    for (size_t i = 0; i < ARRAY_SIZE(cases); i++) {
+        g_autoptr(GError) error = NULL;
+        g_autofree char *directory = g_dir_make_tmp("sn1-fuel-l1-XXXXXX",
+                                                    &error);
+        g_autofree char *socket = NULL;
+        g_autofree char *uri = NULL;
+        QTestState *from, *to;
+
+        g_assert_no_error(error);
+        socket = g_build_filename(directory, "migration.sock", NULL);
+        uri = g_strdup_printf("unix:%s", socket);
+        from = qtest_initf("-M fuel,fuel-board-id-word=0x4abc,"
+                           "fuel-ioc3-subsystem-id=0xc30a,"
+                           "fuel-l1-type-code=0x61,fuel-bedrock-revision=0x2%s "
+                           "-cpu R14000 -smp 1 -m 512M -bios %s -S",
+                           cases[i].source, quoted);
+        to = qtest_initf("-M fuel,fuel-board-id-word=0x4abc,"
+                         "fuel-ioc3-subsystem-id=0xc30a,"
+                         "fuel-l1-type-code=0x61,fuel-bedrock-revision=0x2%s "
+                         "-cpu R14000 -smp 1 -m 512M -bios %s "
+                         "-S -incoming defer", cases[i].destination, quoted);
+        l1_expect_revision(from, cases[i].major, cases[i].minor,
+                           cases[i].patch);
+        qtest_qmp_assert_success(to,
+            "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+        qtest_qmp_assert_success(from,
+            "{'execute':'migrate','arguments':{'uri':%s}}", uri);
+        sgi_wait_migration_status(from, "completed", 30);
+        sgi_wait_migration_status(to, "completed", 30);
+        l1_expect_revision(to, cases[i].major, cases[i].minor,
+                           cases[i].patch);
+        qtest_quit(from);
+        qtest_quit(to);
+        g_assert_cmpint(rmdir(directory), ==, 0);
+    }
 }
 
 /*
@@ -3995,6 +4140,17 @@ int main(int argc, char **argv)
 {
     static const uint64_t nmi_a = PI_NMI_A;
     static const uint64_t nmi_b = PI_NMI_B;
+    static const struct {
+        const char *name;
+        const char *value;
+    } invalid_revisions[] = {
+        { "partial", "1.48" },
+        { "empty", "" },
+        { "missing-component", "1..1" },
+        { "non-decimal", "1.0x30.1" },
+        { "negative", "-1.48.1" },
+        { "out-of-range", "1.2147483648.1" },
+    };
     int result;
 
     g_test_init(&argc, &argv, NULL);
@@ -4080,8 +4236,22 @@ int main(int argc, char **argv)
                         test_prom_cpu_module_config);
     qtest_add_data_func("sn1/address-map/l1-product-identity", NULL,
                         test_l1_product_identity);
+    qtest_add_data_func("sn1/address-map/fuel-l1-revision", NULL,
+                        test_fuel_l1_revision);
+    qtest_add_data_func("sn1/address-map/fuel-l1-revision-other-machine", NULL,
+                        test_fuel_l1_revision_rejects_other_machine);
+    for (size_t i = 0; i < ARRAY_SIZE(invalid_revisions); i++) {
+        g_autofree char *path = g_strdup_printf(
+            "sn1/address-map/fuel-l1-revision-invalid-%s",
+            invalid_revisions[i].name);
+
+        qtest_add_data_func(path, invalid_revisions[i].value,
+                            test_fuel_l1_revision_rejects_invalid);
+    }
     qtest_add_data_func("sn1/address-map/fuel-l1-type-migration", NULL,
                         test_fuel_l1_type_migration);
+    qtest_add_data_func("sn1/address-map/fuel-l1-revision-migration", NULL,
+                        test_fuel_l1_revision_migration);
     qtest_add_data_func("sn1/address-map/l1-identity-records", NULL,
                         test_l1_identity_records_come_from_the_command_line);
     qtest_add_data_func("sn1/address-map/l1-identity-records-absent", NULL,
