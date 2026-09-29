@@ -4341,6 +4341,303 @@ static void test_dither_none_is_unchanged(void)
                          sizeof(off.p.colour)) != 0);
 }
 
+/*
+ * Give the scene's context the window matrix whose rows, as a matrix is
+ * written on paper, are rows.
+ */
+static void window_matrix(FragScene *f, const float rows[4][4], float scale,
+                          bool down)
+{
+    float m[16];
+
+    for (int row = 0; row < 4; row++) {
+        for (int col = 0; col < 4; col++) {
+            m[col * 4 + row] = rows[row][col];
+        }
+    }
+    sgi_gl_set_window_matrix(&f->c, m, scale, down);
+}
+
+/* White primitive of mode through eye positions xyz, n of them. */
+static void window_draw(FragScene *f, uint32_t mode, const float v[][3],
+                        unsigned n)
+{
+    uint32_t word[3] = { bits(1), bits(1), bits(1) };
+
+    frag_command(f, SGI_GL_OP_COLOR3F, word, 3);
+    word[0] = mode;
+    frag_command(f, SGI_GL_OP_BEGIN, word, 1);
+    for (unsigned i = 0; i < n; i++) {
+        for (int k = 0; k < 3; k++) {
+            word[k] = bits(v[i][k]);
+        }
+        frag_command(f, SGI_GL_OP_VERTEX3F, word, 3);
+    }
+    frag_command(f, SGI_GL_OP_END, word, 0);
+}
+
+/* Whether each row y0 to y1 of column x holds white, and no other row. */
+static void assert_column(const FragScene *f, int x, int y0, int y1)
+{
+    for (int y = 0; y < H; y++) {
+        g_assert_cmphex(frag_pixel(f, x, y), ==,
+                        y >= y0 && y <= y1 ? 0xffffff : 0);
+    }
+}
+
+static const float window_square[4][3] = {
+    { -1, -1, 0 }, { 1, -1, 0 }, { 1, 1, 0 }, { -1, 1, 0 },
+};
+
+/*
+ * A window matrix places a primitive in window pixels as it gives them,
+ * unrounded, and the viewport, here one pixel, plays no part. The matrix
+ * x' = 16 x + 32, y' = 16 y + Y takes the square from -1 to 1 to columns
+ * 16 to 48 and rows Y - 16 to Y + 16. With Y = 32.5 its bottom edge lies
+ * on row 16's centres, which a bottom edge does not own, and its top edge
+ * on row 48's, which a top edge does: rows 17 to 48. A client's bias of
+ * 1/256 row down, Y = 32.5 - 1/256, puts row 16's centres inside and row
+ * 48's outside: rows 16 to 47. Columns 16 to 47 in both. A point at the
+ * eye origin under y' = 16 y + 17 - 1/256 lies at window row 16.996, in
+ * row 16; rounded to a whole row it would be in row 17.
+ */
+static void test_window_matrix_position(void)
+{
+    static FragScene f;
+    static const struct {
+        float y;
+        int row0, row1;
+    } runs[] = { { 32.5f, 17, 48 }, { 32.5f - 1.0f / 256, 16, 47 } };
+    uint32_t viewport[4] = { 0, 0, 1, 1 };
+
+    for (int i = 0; i < ARRAY_SIZE(runs); i++) {
+        const float rows[4][4] = {
+            { 16, 0, 0, 32 }, { 0, 16, 0, runs[i].y },
+            { 0, 0, 0, 0.5f }, { 0, 0, 0, 1 },
+        };
+
+        frag_init(&f);
+        frag_command(&f, SGI_GL_OP_VIEWPORT, viewport, 4);
+        window_matrix(&f, rows, 1, false);
+        window_draw(&f, SGI_GL_QUADS, window_square, 4);
+        assert_column(&f, 16, runs[i].row0, runs[i].row1);
+        assert_column(&f, 47, runs[i].row0, runs[i].row1);
+        assert_column(&f, 15, 1, 0);
+        assert_column(&f, 48, 1, 0);
+    }
+
+    {
+        static const float point[1][3] = { { 0, 0, 0 } };
+        const float rows[4][4] = {
+            { 16, 0, 0, 32 }, { 0, 16, 0, 17 - 1.0f / 256 },
+            { 0, 0, 0, 0.5f }, { 0, 0, 0, 1 },
+        };
+
+        frag_init(&f);
+        window_matrix(&f, rows, 1, false);
+        window_draw(&f, SGI_GL_POINTS, point, 1);
+        assert_column(&f, 32, 16, 16);
+    }
+}
+
+/*
+ * Window depth is the depth scale times h2 / h3, and the depth range does
+ * not map it again. Under x' = (32 x + 64) / 2, y' = (32 y + 64) / 2,
+ * h2 = -z and h3 = 2, a scale of -0.5 puts eye z 2 at window depth
+ * -0.5 x -2 / 2 = 0.5, stored as 0.5 x (2^24 - 1) rounded half away,
+ * 8388608, whatever glDepthRange says; eye (0.5, -0.25) is window (40, 28).
+ * glRasterPos goes through the same matrix, to (40, 28, 0.5) with w 2.
+ */
+static void test_window_matrix_depth(void)
+{
+    static FragScene f;
+    static const float rows[4][4] = {
+        { 32, 0, 0, 64 }, { 0, 32, 0, 64 }, { 0, 0, -1, 0 }, { 0, 0, 0, 2 },
+    };
+    static const float square[4][3] = {
+        { -1, -1, 2 }, { 1, -1, 2 }, { 1, 1, 2 }, { -1, 1, 2 },
+    };
+    uint32_t word[3] = { SGI_GL_DEPTH_TEST };
+
+    frag_init(&f);
+    frag_command(&f, SGI_GL_OP_ENABLE, word, 1);
+    word[0] = SGI_GL_ALWAYS + SGI_GL_NEVER_ENUM;
+    frag_command(&f, SGI_GL_OP_DEPTH_FUNC, word, 1);
+    word[0] = bits(0.5f), word[1] = bits(1);
+    frag_command(&f, SGI_GL_OP_DEPTH_RANGE, word, 2);
+    window_matrix(&f, rows, -0.5f, false);
+    window_draw(&f, SGI_GL_QUADS, square, 4);
+    g_assert_cmphex(frag_pixel(&f, 40, 28), ==, 0xffffff);
+    g_assert_cmpuint(f.p.depth[planes_index(40, 28)], ==, 8388608);
+    g_assert_cmpuint(f.p.depth[planes_index(16, 16)], ==, 8388608);
+    g_assert_cmpuint(f.p.depth[planes_index(15, 16)], ==, 0);
+
+    word[0] = bits(0.5f), word[1] = bits(-0.25f), word[2] = bits(2);
+    frag_command(&f, SGI_GL_OP_RASTER_POS3F, word, 3);
+    g_assert_cmpfloat(get_float(&f.c, SGI_GL_CURRENT_RASTER_POSITION, 0), ==,
+                      40);
+    g_assert_cmpfloat(get_float(&f.c, SGI_GL_CURRENT_RASTER_POSITION, 1), ==,
+                      28);
+    g_assert_cmpfloat(get_float(&f.c, SGI_GL_CURRENT_RASTER_POSITION, 2), ==,
+                      0.5f);
+    g_assert_cmpfloat(get_float(&f.c, SGI_GL_CURRENT_RASTER_POSITION, 3), ==,
+                      2);
+}
+
+/*
+ * Under a window matrix a primitive is clipped to window depth 0 to 1,
+ * OpenGL's near and far planes, before the divide. The perspective matrix
+ * x' = (16 x - 32 z) / -z, y' = (16 y - 32 z) / -z, depth
+ * (-1.5 z - 1.5) / -z puts eye z -1 at depth 0 and -3 at depth 1, and eye
+ * z -2 at window (8 x + 32, 8 y + 32) and depth 0.75. The triangle
+ * (-2, -2, -2), (2, -2, -2), (0, 2, 1) has its third vertex behind the
+ * eye. Cut at z -1, a third and a quarter of the way along its sides, it
+ * keeps the trapezoid (16, 16), (48, 16), (53.33, 21.33), (10.67, 21.33):
+ * rows 16 to 20 at column 32, row 20 reaching column 12 but not 10, and
+ * nothing below or above. Its depth falls linearly from 0.75 at row 16's
+ * edge to 0 at the cut, 0.3984375 at row 18's centres, to within the
+ * cut's snapping to the subpixel grid.
+ */
+static void test_window_matrix_clips_near(void)
+{
+    static FragScene f;
+    static const float rows[4][4] = {
+        { 16, 0, -32, 0 }, { 0, 16, -32, 0 },
+        { 0, 0, -1.5f, -1.5f }, { 0, 0, -1, 0 },
+    };
+    static const float tri[3][3] = {
+        { -2, -2, -2 }, { 2, -2, -2 }, { 0, 2, 1 },
+    };
+    uint32_t word[1] = { SGI_GL_DEPTH_TEST };
+    double want = 0.3984375 * 16777215;
+
+    frag_init(&f);
+    frag_command(&f, SGI_GL_OP_ENABLE, word, 1);
+    word[0] = SGI_GL_ALWAYS + SGI_GL_NEVER_ENUM;
+    frag_command(&f, SGI_GL_OP_DEPTH_FUNC, word, 1);
+    window_matrix(&f, rows, 1, false);
+    window_draw(&f, SGI_GL_TRIANGLES, tri, 3);
+    assert_column(&f, 32, 16, 20);
+    g_assert_cmphex(frag_pixel(&f, 12, 20), ==, 0xffffff);
+    g_assert_cmphex(frag_pixel(&f, 10, 20), ==, 0);
+    g_assert_cmpfloat_with_epsilon(f.p.depth[planes_index(32, 18)], want,
+                                   16777215.0 / 1024);
+}
+
+/*
+ * Facing under a window matrix whose rows run down the display. The matrix
+ * x' = 16 x + 32, y' = -16 y + 32 turns the client's y upside down, so a
+ * triangle counter-clockwise as the client drew it runs clockwise in
+ * window rows. It is still the front face: kept with back faces culled,
+ * culled with front faces culled, and the reverse under glFrontFace(GL_CW).
+ * Two-sided colour follows the same facing, and rows running up give the
+ * same answers.
+ */
+static void test_window_matrix_rows_down_facing(void)
+{
+    static FragScene f;
+    static const float ccw[3][3] = { { -1, -1, 0 }, { 1, -1, 0 },
+                                     { 0, 1, 0 } };
+    static const float cw[3][3] = { { -1, -1, 0 }, { 0, 1, 0 },
+                                    { 1, -1, 0 } };
+    static const struct {
+        uint32_t cull, front;
+        bool ccw_drawn, cw_drawn;
+    } runs[] = {
+        { SGI_GL_BACK, SGI_GL_CCW, true, false },
+        { SGI_GL_FRONT, SGI_GL_CCW, false, true },
+        { SGI_GL_BACK, SGI_GL_CW, false, true },
+        { SGI_GL_FRONT, SGI_GL_CW, true, false },
+    };
+    uint32_t word[1];
+
+    for (int down = 0; down < 2; down++) {
+        const float rows[4][4] = {
+            { 16, 0, 0, 32 }, { 0, down ? -16 : 16, 0, 32 },
+            { 0, 0, 0, 0.5f }, { 0, 0, 0, 1 },
+        };
+
+        for (int i = 0; i < ARRAY_SIZE(runs); i++) {
+            frag_init(&f);
+            window_matrix(&f, rows, 1, down);
+            enable(&f.c, SGI_GL_CULL_FACE, true);
+            word[0] = runs[i].cull;
+            frag_command(&f, SGI_GL_OP_CULL_FACE, word, 1);
+            word[0] = runs[i].front;
+            frag_command(&f, SGI_GL_OP_FRONT_FACE, word, 1);
+            window_draw(&f, SGI_GL_TRIANGLES, ccw, 3);
+            g_assert_cmpint(frag_pixel(&f, 32, 32) == 0xffffff, ==,
+                            runs[i].ccw_drawn);
+            memset(&f.p, 0, sizeof(f.p));
+            window_draw(&f, SGI_GL_TRIANGLES, cw, 3);
+            g_assert_cmpint(frag_pixel(&f, 32, 32) == 0xffffff, ==,
+                            runs[i].cw_drawn);
+        }
+
+        /* Front red, back blue, drawn straight through the rasterizer. */
+        frag_init(&f);
+        window_matrix(&f, rows, 1, down);
+        for (int t = 0; t < 2; t++) {
+            const float (*v)[3] = t ? cw : ccw;
+            float verts[3][SGI_GL_VERTEX_FLOATS] = { { 0 } };
+            SGIGLDraw d = {
+                .context = 0x1234, .mode = SGI_GL_TRIANGLES, .count = 3,
+                .vertices = &verts[0][0], .back_colors = true,
+                .state = &f.c.cur,
+            };
+
+            for (int i = 0; i < 3; i++) {
+                memcpy(&verts[i][SGI_GL_V_POSITION], v[i], sizeof(v[i]));
+                verts[i][SGI_GL_V_POSITION + 3] = 1;
+                verts[i][SGI_GL_V_COLOR] = 1;
+                verts[i][SGI_GL_V_COLOR + 3] = 1;
+                verts[i][SGI_GL_V_BACK_COLOR + 2] = 1;
+                verts[i][SGI_GL_V_BACK_COLOR + 3] = 1;
+            }
+            memset(&f.p, 0, sizeof(f.p));
+            sgi_soft_draw(&rules_stencil, &f.rec.target, &d);
+            g_assert_cmphex(frag_pixel(&f, 32, 32), ==, t ? 0x0000ff :
+                                                            0xff0000);
+        }
+    }
+}
+
+/*
+ * Without a window matrix nothing changes: a context given one and then
+ * none draws, byte for byte, as one never given one, and its window
+ * matrix state is sgi_gl_init()'s again, which migration then leaves out.
+ */
+static void test_window_matrix_off_is_unchanged(void)
+{
+    static FragScene plain, cleared;
+    static const float rows[4][4] = {
+        { 3, 0, 0, 1 }, { 0, -5, 0, 2 }, { 0, 0, 7, 0 }, { 0, 0, 0, 1 },
+    };
+    static const float tri[3][3] = {
+        { -0.9f, -0.7f, 0.3f }, { 0.8f, -0.2f, -0.4f }, { -0.1f, 0.95f, 0 },
+    };
+    SGIGLContext init;
+
+    frag_init(&plain);
+    frag_init(&cleared);
+    window_matrix(&cleared, rows, -2, true);
+    sgi_gl_set_window_matrix(&cleared.c, NULL, 4, true);
+    sgi_gl_init(&init, 0);
+    g_assert_cmpmem(&cleared.c.cur.window_matrix_given,
+                    offsetof(SGIGLDrawState, window_rows_down) +
+                    sizeof(uint32_t) -
+                    offsetof(SGIGLDrawState, window_matrix_given),
+                    &init.cur.window_matrix_given,
+                    offsetof(SGIGLDrawState, window_rows_down) +
+                    sizeof(uint32_t) -
+                    offsetof(SGIGLDrawState, window_matrix_given));
+    window_draw(&plain, SGI_GL_TRIANGLES, tri, 3);
+    window_draw(&cleared, SGI_GL_TRIANGLES, tri, 3);
+    g_assert_cmpuint(frag_count(&plain, 0), <, W * H);
+    g_assert_cmpmem(&plain.p, sizeof(plain.p), &cleared.p,
+                    sizeof(cleared.p));
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -4447,5 +4744,14 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-gl/dither-skips-clears", test_dither_skips_clears);
     g_test_add_func("/sgi-gl/dither-none-is-unchanged",
                     test_dither_none_is_unchanged);
+    g_test_add_func("/sgi-gl/window-matrix-position",
+                    test_window_matrix_position);
+    g_test_add_func("/sgi-gl/window-matrix-depth", test_window_matrix_depth);
+    g_test_add_func("/sgi-gl/window-matrix-clips-near",
+                    test_window_matrix_clips_near);
+    g_test_add_func("/sgi-gl/window-matrix-rows-down-facing",
+                    test_window_matrix_rows_down_facing);
+    g_test_add_func("/sgi-gl/window-matrix-off-is-unchanged",
+                    test_window_matrix_off_is_unchanged);
     return g_test_run();
 }

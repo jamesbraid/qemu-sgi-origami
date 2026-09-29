@@ -1001,13 +1001,15 @@ static void sgi_gl_vertex(SGIGLContext *c, const SGIGLSink *sink,
  * rest undefined, and keeping it is the model's choice. Window depth goes
  * through the depth range, as for a draw. The eye distance is the
  * exact Euclidean one of the eye x, y and z, which 2.12 allows a head to
- * approximate; how a head does is not published.
+ * approximate; how a head does is not published. A window matrix, when
+ * the draw state has one, takes the projection's, the viewport's and the
+ * depth range's places here as in a draw; a bitmap's rows still run up
+ * window y, which under window_rows_down is down the display.
  */
 static void sgi_gl_raster_pos(SGIGLContext *c, const float obj[4])
 {
-    const float *mv = c->cur.modelview, *pr = c->cur.projection;
-    const int32_t *vp = c->cur.viewport;
-    double eye[4], clip[4];
+    const float *mv = c->cur.modelview;
+    double eye[4], clip[4], win[3];
 
     for (int row = 0; row < 4; row++) {
         eye[row] = 0;
@@ -1015,12 +1017,7 @@ static void sgi_gl_raster_pos(SGIGLContext *c, const float obj[4])
             eye[row] += (double)mv[k * 4 + row] * obj[k];
         }
     }
-    for (int row = 0; row < 4; row++) {
-        clip[row] = 0;
-        for (int k = 0; k < 4; k++) {
-            clip[row] += (double)pr[k * 4 + row] * eye[k];
-        }
-    }
+    sgi_gl_eye_to_clip(&c->cur, eye, clip);
     /*
      * Clip (0, 0, 0, 0) passes the view-volume test and has no window
      * position; it is culled, the model's choice for a point with no
@@ -1044,11 +1041,13 @@ static void sgi_gl_raster_pos(SGIGLContext *c, const float obj[4])
         }
     }
     c->raster_valid = 1;
-    c->raster_pos[0] = (clip[0] / clip[3] + 1) * vp[2] / 2 + vp[0];
-    c->raster_pos[1] = (clip[1] / clip[3] + 1) * vp[3] / 2 + vp[1];
-    c->raster_pos[2] = c->cur.depth_range[0] +
+    sgi_gl_clip_to_window(&c->cur, clip, win);
+    c->raster_pos[0] = win[0];
+    c->raster_pos[1] = win[1];
+    c->raster_pos[2] = c->cur.window_matrix_given ? win[2] :
+                       c->cur.depth_range[0] +
                        (c->cur.depth_range[1] - c->cur.depth_range[0]) *
-                       ((clip[2] / clip[3] + 1) / 2);
+                       win[2];
     c->raster_pos[3] = clip[3];
     c->raster_distance = sqrt(eye[0] * eye[0] + eye[1] * eye[1] +
                               eye[2] * eye[2]);
@@ -1284,6 +1283,56 @@ void sgi_gl_set_normal_matrix(SGIGLContext *c, const float m[9])
     } else {
         memset(c->normal_matrix, 0, sizeof(c->normal_matrix));
     }
+}
+
+void sgi_gl_set_window_matrix(SGIGLContext *c, const float m[16],
+                              float depth_scale, bool rows_down)
+{
+    SGIGLDrawState *st = &c->cur;
+
+    st->window_matrix_given = m != NULL;
+    if (m) {
+        memcpy(st->window_matrix, m, sizeof(st->window_matrix));
+    } else {
+        memset(st->window_matrix, 0, sizeof(st->window_matrix));
+    }
+    st->window_depth_scale = m ? depth_scale : 0;
+    st->window_rows_down = m && rows_down;
+}
+
+void sgi_gl_eye_to_clip(const SGIGLDrawState *st, const double eye[4],
+                        double clip[4])
+{
+    const float *m = st->window_matrix_given ? st->window_matrix :
+                                               st->projection;
+
+    for (int row = 0; row < 4; row++) {
+        clip[row] = 0;
+        for (int k = 0; k < 4; k++) {
+            clip[row] += m[k * 4 + row] * eye[k];
+        }
+    }
+    if (st->window_matrix_given) {
+        clip[0] /= SGI_GL_WINDOW_GUARD;
+        clip[1] /= SGI_GL_WINDOW_GUARD;
+        clip[2] = 2.0 * st->window_depth_scale * clip[2] - clip[3];
+    }
+}
+
+void sgi_gl_clip_to_window(const SGIGLDrawState *st, const double clip[4],
+                           double out[3])
+{
+    const int32_t *vp = st->viewport;
+
+    if (st->window_matrix_given) {
+        out[0] = clip[0] * SGI_GL_WINDOW_GUARD / clip[3];
+        out[1] = clip[1] * SGI_GL_WINDOW_GUARD / clip[3];
+    } else {
+        /* 2.10.1: xw = (px / 2) xd + ox, ox = x + w / 2. */
+        out[0] = (clip[0] / clip[3] + 1.0) * vp[2] / 2.0 + vp[0];
+        out[1] = (clip[1] / clip[3] + 1.0) * vp[3] / 2.0 + vp[1];
+    }
+    out[2] = (clip[2] / clip[3] + 1.0) / 2.0;
 }
 
 void sgi_gl_set_normalize_always(SGIGLContext *c, bool on)
@@ -2452,6 +2501,8 @@ bool sgi_gl_context_valid(const SGIGLContext *c, Error **errp)
         { "fog", st->fog },
         { "drawable.bound", st->drawable.bound },
         { "drawable.clip.empty", st->drawable.clip.empty },
+        { "window_matrix_given", st->window_matrix_given },
+        { "window_rows_down", st->window_rows_down },
         { "dither", st->dither },
         { "light_model_local_viewer", c->light_model_local_viewer },
         { "light_model_two_side", c->light_model_two_side },
@@ -2951,6 +3002,30 @@ static const VMStateDescription vmstate_sgi_gl_clip_planes = {
     },
 };
 
+static bool sgi_gl_window_matrix_needed(void *opaque)
+{
+    const SGIGLDrawState *st = opaque, *init = &sgi_gl_initial()->cur;
+
+    return SGI_GL_MOVED(st, init, window_matrix_given) ||
+           SGI_GL_MOVED(st, init, window_matrix) ||
+           SGI_GL_MOVED(st, init, window_depth_scale) ||
+           SGI_GL_MOVED(st, init, window_rows_down);
+}
+
+static const VMStateDescription vmstate_sgi_gl_window_matrix = {
+    .name = "sgi-gl-draw-state/window-matrix",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = sgi_gl_window_matrix_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32(window_matrix_given, SGIGLDrawState),
+        VMSTATE_SGI_GL_FLOATS(window_matrix, SGIGLDrawState, 16),
+        VMSTATE_SGI_GL_FLOAT(window_depth_scale, SGIGLDrawState),
+        VMSTATE_UINT32(window_rows_down, SGIGLDrawState),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
 static const VMStateDescription vmstate_sgi_gl_draw_state = {
     .name = "sgi-gl-draw-state",
     .version_id = 1,
@@ -2984,6 +3059,7 @@ static const VMStateDescription vmstate_sgi_gl_draw_state = {
         &vmstate_sgi_gl_fog,
         &vmstate_sgi_gl_polygon_offset,
         &vmstate_sgi_gl_clip_planes,
+        &vmstate_sgi_gl_window_matrix,
         NULL
     },
 };
