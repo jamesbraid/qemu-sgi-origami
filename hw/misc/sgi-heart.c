@@ -387,6 +387,13 @@ static uint64_t heart_read(void *opaque, hwaddr offset, unsigned size)
 {
     SGIHeartState *s = opaque;
 
+    if (offset == 0x00 || offset == 0x98 || offset == 0xa0 ||
+        offset == 0x10040) {
+        trace_sgi_heart_piu_access(qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL),
+                                   false, offset, size,
+                                   offset == 0x00 && size == 8 ? s->mode : 0);
+    }
+
     if (offset >= 0x20 && offset < 0x40) {
         unsigned n = (offset - 0x20) / 4;
 
@@ -439,6 +446,12 @@ static void heart_write(void *opaque, hwaddr offset, uint64_t value,
                         unsigned size)
 {
     SGIHeartState *s = opaque;
+
+    if (offset == 0x00 || offset == 0x98 || offset == 0xa0 ||
+        offset == 0x10040) {
+        trace_sgi_heart_piu_access(qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL),
+                                   true, offset, size, value);
+    }
 
     if (offset >= 0x20 && offset < 0x40) {
         unsigned n = (offset - 0x20) / 4;
