@@ -2058,6 +2058,36 @@ static void test_lighting_rescale_normal_uses_a_row(void)
                 0.7071068f, 1);
 }
 
+/*
+ * With both the light and the vertex at infinity, the vector from the
+ * vertex to the light is P2 - P1 made unit length (2.13.1). The light
+ * (0, 0, 1, 0) and the vertex (1, 0, 1, 0) give (-1, 0, 0), which the
+ * normal (-1, 0, 0) meets at 1; the light's own direction would meet it
+ * at 0. The specification leaves the result of lighting a vertex whose
+ * eye w is 0 undefined, but not the vector.
+ */
+static void test_lighting_both_at_infinity(void)
+{
+    static Capture cap;
+    SGIGLSink sink = capture_sink(&cap);
+    SGIGLContext c;
+    uint32_t word[4];
+
+    lit_init(&c);
+    light_command(&c, SGI_GL_OP_LIGHT, 0, SGI_GL_DIFFUSE, 1, 1, 1, 1);
+    light_command(&c, SGI_GL_OP_MATERIAL, SGI_GL_FRONT, SGI_GL_DIFFUSE,
+                  0.5f, 0.5f, 0.5f, 1);
+    three(&c, SGI_GL_OP_NORMAL3F, -1, 0, 0);
+    memset(&cap, 0, sizeof(cap));
+    word[0] = SGI_GL_POINTS;
+    command(&c, &sink, SGI_GL_OP_BEGIN, word, 1);
+    word[0] = bits(1), word[1] = bits(0), word[2] = bits(1), word[3] = 0;
+    command(&c, &sink, SGI_GL_OP_VERTEX4F, word, 4);
+    command(&c, &sink, SGI_GL_OP_END, word, 0);
+    g_assert_cmpuint(cap.draws, ==, 1);
+    assert_rgba(&cap.v[0][SGI_GL_V_COLOR], 0.5f, 0.5f, 0.5f, 1);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -2114,5 +2144,7 @@ int main(int argc, char **argv)
                     test_lighting_two_sided_draws);
     g_test_add_func("/sgi-gl/lighting-rescale-normal-uses-a-row",
                     test_lighting_rescale_normal_uses_a_row);
+    g_test_add_func("/sgi-gl/lighting-both-at-infinity",
+                    test_lighting_both_at_infinity);
     return g_test_run();
 }
