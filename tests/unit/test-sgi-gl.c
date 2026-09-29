@@ -580,6 +580,15 @@ static void test_unsupported_rules(void)
     rules.line_rule = SGI_LINE_BRESENHAM_DIAMOND;
     g_assert_false(sgi_raster_rules_supported(&rules));
     rules = rules_supported;
+    rules.dither = SGI_DITHER_BAYER4_TOP_ROWS + 1;
+    g_assert_false(sgi_raster_rules_supported(&rules));
+    /* A window anchor needs the window's top row; none needs no anchor. */
+    rules.dither = SGI_DITHER_BAYER4_TOP_ROWS;
+    rules.dither_anchor = SGI_DITHER_WINDOW;
+    g_assert_false(sgi_raster_rules_supported(&rules));
+    rules.dither = SGI_DITHER_NONE;
+    g_assert_true(sgi_raster_rules_supported(&rules));
+    rules = rules_supported;
     rules.subpixel_bits = 13;
     g_assert_false(sgi_raster_rules_supported(&rules));
 
@@ -4087,6 +4096,233 @@ static void test_draw_clips_to_the_view_volume(void)
     g_assert_cmpuint(frag_count(&f, 0), ==, W * H);
 }
 
+/* The stencil rules with the 4x4 ordered dither, anchored to the screen. */
+static const SGIRasterRules rules_dither = {
+    .subpixel_bits = 8,
+    .color_bits = 8,
+    .depth_bits = 24,
+    .stencil_bits = 8,
+    .rounding = SGI_ROUND_HALF_AWAY,
+    .tie_rule = SGI_TIE_TOP_LEFT_BOTTOM_ORIGIN,
+    .arith = SGI_ARITH_DOUBLE,
+    .line_rule = SGI_LINE_COVERAGE_DOUBLE,
+    .dither = SGI_DITHER_BAYER4_TOP_ROWS,
+    .dither_anchor = SGI_DITHER_SCREEN,
+    .evidence = "test",
+};
+
+/* The 4x4 Bayer thresholds, in sixteenths, the top row first. */
+static const unsigned test_bayer4[4][4] = {
+    { 0, 8, 2, 10 }, { 12, 4, 14, 6 }, { 3, 11, 1, 9 }, { 15, 7, 13, 5 },
+};
+
+/* A scene drawing under the dither, the display's top line plane row 63. */
+static void dither_init(FragScene *f)
+{
+    frag_init(f);
+    f->rec.rules = &rules_dither;
+    f->rec.target.screen_top = H - 1;
+}
+
+/* A flat-shaded triangle in one colour whose view-volume clip is the window. */
+static void dither_triangle(FragScene *f, float r, float g, float b)
+{
+    static const float corner[3][2] = { { -1, -1 }, { 3, -1 }, { -1, 3 } };
+    uint32_t word[3] = { SGI_GL_FLAT };
+
+    frag_command(f, SGI_GL_OP_SHADE_MODEL, word, 1);
+    word[0] = bits(r), word[1] = bits(g), word[2] = bits(b);
+    frag_command(f, SGI_GL_OP_COLOR3F, word, 3);
+    word[0] = SGI_GL_TRIANGLES;
+    frag_command(f, SGI_GL_OP_BEGIN, word, 1);
+    for (int i = 0; i < 3; i++) {
+        word[0] = bits(corner[i][0]);
+        word[1] = bits(corner[i][1]);
+        frag_command(f, SGI_GL_OP_VERTEX2F, word, 2);
+    }
+    frag_command(f, SGI_GL_OP_END, word, 0);
+}
+
+/*
+ * Every 4x4 block of plane 0, wherever it starts, holds each of a
+ * channel's values lo and hi exactly n_lo and 16 - n_lo times. A 4x4
+ * block of a pattern repeating every four pixels holds each threshold
+ * once, whatever the pattern is anchored to, so this holds whichever
+ * anchor the hardware has.
+ */
+static void assert_dither_blocks(const FragScene *f, uint32_t lo,
+                                 unsigned n_lo)
+{
+    for (int by = 0; by + 4 <= H; by++) {
+        for (int bx = 0; bx + 4 <= W; bx++) {
+            for (int k = 0; k < 3; k++) {
+                unsigned nlo = 0, nhi = 0;
+
+                for (int y = by; y < by + 4; y++) {
+                    for (int x = bx; x < bx + 4; x++) {
+                        uint32_t v = (frag_pixel(f, x, y) >> (8 * k)) & 0xff;
+
+                        nlo += v == lo;
+                        nhi += v == lo + 1;
+                    }
+                }
+                g_assert_cmpuint(nlo, ==, n_lo);
+                g_assert_cmpuint(nhi, ==, 16 - n_lo);
+            }
+        }
+    }
+}
+
+/*
+ * The 4x4 ordered dither turns a flat 0.5 grey, 127.5 steps, into 127
+ * where the threshold is below 8 sixteenths and 128 where it is not: in
+ * every 4x4 block eight of each, for every channel. With GL_DITHER
+ * disabled every pixel rounds to 128. The result of a blend is dithered
+ * too, the source rounded before blending: a white source by a constant
+ * factor of 0.5 dithers as the grey does.
+ */
+static void test_dither_counts(void)
+{
+    static FragScene f;
+    uint32_t word[4];
+
+    dither_init(&f);
+    dither_triangle(&f, 0.5f, 0.5f, 0.5f);
+    assert_dither_blocks(&f, 127, 8);
+
+    memset(&f.p, 0, sizeof(f.p));
+    enable(&f.c, SGI_GL_DITHER, false);
+    dither_triangle(&f, 0.5f, 0.5f, 0.5f);
+    g_assert_cmpuint(frag_count(&f, 0x808080), ==, W * H);
+
+    memset(&f.p, 0, sizeof(f.p));
+    enable(&f.c, SGI_GL_DITHER, true);
+    enable(&f.c, SGI_GL_BLEND, true);
+    for (int i = 0; i < 4; i++) {
+        word[i] = bits(0.5f);
+    }
+    frag_command(&f, SGI_GL_OP_BLEND_COLOR, word, 4);
+    frag_blend(&f, SGI_GL_CONSTANT_COLOR, 0, SGI_GL_FUNC_ADD);
+    dither_triangle(&f, 1, 1, 1);
+    assert_dither_blocks(&f, 127, 8);
+}
+
+/*
+ * Where the pattern falls, anchored to the screen, rows counted down from
+ * the display's top line: each channel of pixel (x, y) is
+ * floor(c * 255 + B / 16) for the threshold B at column x mod 4 and row
+ * (top - y) mod 4 in planes whose rows run up the display, (y - top) mod 4
+ * in planes whose rows run down it. Red 0.5, green 0.25 and blue 0.0396,
+ * 127.5, 63.75 and 10.098 steps, round up from 8, 4 and 15 sixteenths.
+ * Moving the top line a row moves the pattern with it. Which anchor the
+ * hardware has is not known; this pins the one the model takes.
+ */
+static void test_dither_screen_pattern(void)
+{
+    static FragScene f;
+    static const float c[3] = { 0.5f, 0.25f, 0.0396f };
+    static const struct {
+        int top;
+        bool down;
+    } runs[] = { { H - 1, false }, { H, false }, { 0, true }, { 1, true } };
+
+    for (int i = 0; i < ARRAY_SIZE(runs); i++) {
+        int top = runs[i].top;
+
+        dither_init(&f);
+        f.rec.target.screen_top = top;
+        f.rec.target.screen_rows_down = runs[i].down;
+        dither_triangle(&f, c[0], c[1], c[2]);
+        for (int y = 0; y < H; y++) {
+            for (int x = 0; x < W; x++) {
+                int row = runs[i].down ? y - top : top - y;
+                unsigned b = test_bayer4[row & 3][x & 3];
+                uint32_t want = 0;
+
+                for (int k = 0; k < 3; k++) {
+                    want = (want << 8) |
+                           (uint32_t)floor(c[k] * 255 + b / 16.0);
+                }
+                g_assert_cmphex(frag_pixel(&f, x, y), ==, want);
+            }
+        }
+    }
+}
+
+/*
+ * A clear is not dithered, whatever GL_DITHER's enable: a clear colour of
+ * 0.5 grey rounds to 128 at every pixel under the dithering rules.
+ */
+static void test_dither_skips_clears(void)
+{
+    static FragScene f;
+    uint32_t word[4];
+
+    dither_init(&f);
+    for (int i = 0; i < 4; i++) {
+        word[i] = bits(0.5f);
+    }
+    frag_command(&f, SGI_GL_OP_CLEAR_COLOR, word, 4);
+    frag_clear(&f, SGI_GL_COLOR_BUFFER_BIT);
+    g_assert_cmpuint(frag_count(&f, 0x808080), ==, W * H);
+}
+
+/*
+ * Draws a smooth-shaded, partly blended scene of random triangles, with
+ * GL_DITHER on or off, under rules.
+ */
+static void dither_scene(FragScene *f, const SGIRasterRules *rules,
+                         bool dither)
+{
+    GRand *rand = g_rand_new_with_seed(4129);
+    uint32_t word[4];
+
+    frag_init(f);
+    f->rec.rules = rules;
+    f->rec.target.screen_top = H - 1;
+    enable(&f->c, SGI_GL_DITHER, dither);
+    frag_blend(f, SGI_GL_SRC_ALPHA, SGI_GL_ONE_MINUS_SRC_ALPHA,
+               SGI_GL_FUNC_ADD);
+    for (int t = 0; t < 24; t++) {
+        enable(&f->c, SGI_GL_BLEND, t & 1);
+        word[0] = SGI_GL_TRIANGLES;
+        frag_command(f, SGI_GL_OP_BEGIN, word, 1);
+        for (int i = 0; i < 3; i++) {
+            for (int k = 0; k < 4; k++) {
+                word[k] = bits(g_rand_double(rand));
+            }
+            frag_command(f, SGI_GL_OP_COLOR4F, word, 4);
+            word[0] = bits(g_rand_double_range(rand, -1.2, 1.2));
+            word[1] = bits(g_rand_double_range(rand, -1.2, 1.2));
+            frag_command(f, SGI_GL_OP_VERTEX2F, word, 2);
+        }
+        frag_command(f, SGI_GL_OP_END, word, 0);
+    }
+    g_rand_free(rand);
+}
+
+/*
+ * Rules without a dither draw exactly as before dithering existed:
+ * GL_DITHER's enable, on initially, changes no byte of a smooth-shaded,
+ * partly blended scene, which the dithering rules do change, and a window
+ * anchor beside no dither is never read.
+ */
+static void test_dither_none_is_unchanged(void)
+{
+    static FragScene off, on, anchored, dithered;
+    SGIRasterRules window = rules_stencil;
+
+    window.dither_anchor = SGI_DITHER_WINDOW;
+    dither_scene(&off, &rules_stencil, false);
+    dither_scene(&on, &rules_stencil, true);
+    dither_scene(&anchored, &window, true);
+    dither_scene(&dithered, &rules_dither, true);
+    g_assert_cmpmem(&off.p, sizeof(off.p), &on.p, sizeof(on.p));
+    g_assert_cmpmem(&off.p, sizeof(off.p), &anchored.p, sizeof(anchored.p));
+    g_assert_true(memcmp(&off.p.colour, &dithered.p.colour,
+                         sizeof(off.p.colour)) != 0);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -4185,5 +4421,11 @@ int main(int argc, char **argv)
                     test_volume_clip_shares_edges);
     g_test_add_func("/sgi-gl/draw-clips-to-the-view-volume",
                     test_draw_clips_to_the_view_volume);
+    g_test_add_func("/sgi-gl/dither-counts", test_dither_counts);
+    g_test_add_func("/sgi-gl/dither-screen-pattern",
+                    test_dither_screen_pattern);
+    g_test_add_func("/sgi-gl/dither-skips-clears", test_dither_skips_clears);
+    g_test_add_func("/sgi-gl/dither-none-is-unchanged",
+                    test_dither_none_is_unchanged);
     return g_test_run();
 }

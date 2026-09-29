@@ -9,14 +9,14 @@
  * and fogged while fog is enabled. Each fragment then passes the
  * per-fragment operations in OpenGL 1.2.1's order (4.1):
  * pixel ownership against the drawable's rectangles, the scissor test, the
- * alpha test, the stencil test, the depth test, blending and the logical
- * operation, and is stored under the write masks through the family's
- * target. What it draws follows OpenGL 1.2.1 for untextured points, lines,
- * polygons and bitmaps at size and width 1, flat or smooth shaded, in RGBA
- * or colour-index mode, from vertex colours the context has already lit,
- * with a back-facing polygon's back colours under two-sided lighting, and
- * polygons culled by facing. Where OpenGL leaves a choice, the head's
- * SGIRasterRules make it.
+ * alpha test, the stencil test, the depth test, blending, dithering and
+ * the logical operation, and is stored under the write masks through the
+ * family's target. What it draws follows OpenGL 1.2.1 for untextured
+ * points, lines, polygons and bitmaps at size and width 1, flat or smooth
+ * shaded, in RGBA or colour-index mode, from vertex colours the context
+ * has already lit, with a back-facing polygon's back colours under
+ * two-sided lighting, and polygons culled by facing. Where OpenGL leaves a
+ * choice, the head's SGIRasterRules make it.
  */
 #include "qemu/osdep.h"
 #include <math.h>
@@ -49,6 +49,8 @@ typedef struct SGISoftDraw {
     bool logic_op;
     /* In RGBA mode, the packed colour's bits glColorMask lets through. */
     uint32_t colour_mask;
+    /* The stored colour is dithered: GL_DITHER and the rules' dither. */
+    bool dither;
 } SGISoftDraw;
 
 /* A vertex after transformation, ready to rasterize. */
@@ -112,7 +114,10 @@ bool sgi_raster_rules_supported(const SGIRasterRules *r)
            r->rounding <= SGI_ROUND_HALF_AWAY &&
            r->tie_rule == SGI_TIE_TOP_LEFT_BOTTOM_ORIGIN &&
            r->arith == SGI_ARITH_DOUBLE &&
-           r->line_rule == SGI_LINE_COVERAGE_DOUBLE;
+           r->line_rule == SGI_LINE_COVERAGE_DOUBLE &&
+           r->dither <= SGI_DITHER_BAYER4_TOP_ROWS &&
+           (r->dither == SGI_DITHER_NONE ||
+            r->dither_anchor == SGI_DITHER_SCREEN);
 }
 
 static bool sgi_soft_check_rules(const SGIRasterRules *r)
@@ -188,6 +193,50 @@ static uint32_t sgi_soft_rgb(const SGIRasterRules *r, const double c[3])
     return (sgi_soft_channel(r, c[0]) << (2 * r->color_bits)) |
            (sgi_soft_channel(r, c[1]) << r->color_bits) |
            sgi_soft_channel(r, c[2]);
+}
+
+/* SGI_DITHER_BAYER4_TOP_ROWS's thresholds, in sixteenths of a step. */
+static const uint8_t sgi_soft_bayer4[4][4] = {
+    {  0,  8,  2, 10 },
+    { 12,  4, 14,  6 },
+    {  3, 11,  1,  9 },
+    { 15,  7, 13,  5 },
+};
+
+/*
+ * A fragment's colour at plane pixel (x, y) as the planes store it:
+ * dithered while the draw dithers, otherwise rounded as sgi_soft_rgb()
+ * rounds. A clamped component of 0 or 1 is exact either way, and one
+ * below 1 stays below max + 1 with the largest threshold added.
+ */
+static uint32_t sgi_soft_store_rgb(const SGISoftDraw *r, int x, int y,
+                                   const double c[3])
+{
+    const int bits = r->rules->color_bits;
+    const uint32_t max = (1u << bits) - 1;
+    int64_t row;
+    double b;
+    uint32_t out = 0;
+
+    if (!r->dither) {
+        return sgi_soft_rgb(r->rules, c);
+    }
+    row = r->t->screen_rows_down ? (int64_t)y - r->t->screen_top :
+                                   (int64_t)r->t->screen_top - y;
+    b = sgi_soft_bayer4[row & 3][x & 3] / 16.0;
+    for (int k = 0; k < 3; k++) {
+        uint32_t v;
+
+        if (!(c[k] > 0.0)) {
+            v = 0;
+        } else if (c[k] >= 1.0) {
+            v = max;
+        } else {
+            v = floor(c[k] * max + b);
+        }
+        out |= v << ((2 - k) * bits);
+    }
+    return out;
 }
 
 static int64_t sgi_soft_edge(const SGISoftVertex *a, const SGISoftVertex *b,
@@ -329,10 +378,10 @@ static double sgi_soft_blend_factor(uint32_t factor, int k, const double s[4],
  * destination dst (4.1.6), each component the fixed point of the rules'
  * colour bits taken as a fraction of its largest value. The planes hold
  * no alpha, so the destination's alpha is 1. The result is clamped to
- * [0, 1] and rounded to the colour bits as a fragment's colour is.
+ * [0, 1] and stored at plane pixel (x, y) as a fragment's colour is.
  */
-static uint32_t sgi_soft_blend(const SGISoftDraw *r, uint32_t src,
-                               uint32_t alpha, uint32_t dst)
+static uint32_t sgi_soft_blend(const SGISoftDraw *r, int x, int y,
+                               uint32_t src, uint32_t alpha, uint32_t dst)
 {
     const SGIGLDrawState *st = r->st;
     const int bits = r->rules->color_bits;
@@ -371,7 +420,7 @@ static uint32_t sgi_soft_blend(const SGISoftDraw *r, uint32_t src,
             break;
         }
     }
-    return sgi_soft_rgb(r->rules, out);
+    return sgi_soft_store_rgb(r, x, y, out);
 }
 
 /*
@@ -448,7 +497,8 @@ static uint32_t sgi_soft_colour_bits(const SGIRasterRules *r)
  * (4.1.8). A colour mask with some channels clear keeps the stored
  * bits of those (4.2.2). Planes that cannot be read draw as if the
  * operations were disabled and the mask were all ones, logged once for
- * the draw.
+ * the draw. An RGBA draw is dithered while GL_DITHER is enabled under
+ * rules that name a dither; a colour index never is.
  */
 static void sgi_soft_setup_ops(SGISoftDraw *r)
 {
@@ -463,6 +513,7 @@ static void sgi_soft_setup_ops(SGISoftDraw *r)
         r->blend = st->blend && !r->logic_op;
     }
     r->colour_mask = sgi_soft_colour_mask(r->rules, st->colour_mask);
+    r->dither = st->dither && r->rules->dither != SGI_DITHER_NONE;
     if ((r->blend || r->logic_op ||
          (!st->index_bits && r->colour_mask &&
           r->colour_mask != sgi_soft_colour_bits(r->rules))) &&
@@ -538,8 +589,10 @@ static uint32_t sgi_soft_index(const SGISoftDraw *r, double index)
  * its outcome selects, blended in RGBA mode while blending is enabled or
  * combined by the logical operation while it is enabled, then written under
  * the index or colour mask to each colour target the draw buffers select.
- * Its colour is stored as the rules' packed colour in RGBA mode and as its
- * index in colour-index mode, which glIndexMask masks (4.2.2).
+ * Its colour is stored as the rules' packed colour in RGBA mode, dithered
+ * after blending and before the logical operation while the draw dithers
+ * (4.1.7), and as its index in colour-index mode, which glIndexMask masks
+ * (4.2.2).
  */
 static void sgi_soft_fragment_at(const SGISoftDraw *r, int px, int py,
                                  double z, const SGISoftFrag *frag)
@@ -613,8 +666,13 @@ static void sgi_soft_fragment_at(const SGISoftDraw *r, int px, int py,
     if (stencil) {
         sgi_soft_stencil_op(r, x, y, r->st->stencil_op[2], smax, sref);
     }
+    /*
+     * Dithering follows blending (4.1.7), so a colour to be blended is
+     * rounded and the blend's result dithered.
+     */
     colour = r->st->index_bits ? sgi_soft_index(r, f->index) :
-                                 sgi_soft_rgb(r->rules, f->rgba);
+             r->blend ? sgi_soft_rgb(r->rules, f->rgba) :
+                        sgi_soft_store_rgb(r, x, y, f->rgba);
     for (uint32_t i = 0; i < r->ntargets; i++) {
         uint32_t out = colour;
 
@@ -636,7 +694,7 @@ static void sgi_soft_fragment_at(const SGISoftDraw *r, int px, int py,
             continue;
         }
         if (r->blend) {
-            out = sgi_soft_blend(r, colour,
+            out = sgi_soft_blend(r, x, y, colour,
                                  sgi_soft_channel(r->rules, f->rgba[3]),
                                  t->load_colour(t->opaque, r->targets[i],
                                                 x, y));
