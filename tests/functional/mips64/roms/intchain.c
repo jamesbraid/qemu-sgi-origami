@@ -82,8 +82,8 @@
  * The QEMU functional ROM matrix is registered as
  * `func-mips64-sgi_roms` and source-builds its images. This case stays out
  * of its manifest because that runner cannot add `sgi-bridge-dma-test`.
- * Build the image with `ninja sgi-roms` and use the explicit QEMU command
- * above.
+ * Build the image with `ninja -C build sgi-roms`, then use the explicit
+ * QEMU command above.
  *
  * Keep it out of the manifest: a ROM that skipped when its subject was
  * absent would be worse than no ROM. R10000 only, for the reason the
