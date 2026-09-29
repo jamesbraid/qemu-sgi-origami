@@ -525,6 +525,27 @@ static void test_fuel_ioc3_superio_interrupt(const void *data)
     qtest_quit(qts);
 }
 
+static void test_fuel_ioc3_superio_interrupt_reset(const void *data)
+{
+    const unsigned int pin = 0, pending_bit = 18;
+    QTestState *qts = fuel_start(data);
+
+    fuel_map_ioc3(qts);
+    fuel_route_irq(qts, pin, pending_bit);
+    qtest_writel(qts, IOC3_WINDOW + IOC3_INT_ENABLE_SET,
+                 IOC3_INT_SERIAL_A);
+    qtest_writeb(qts, IOC3_WINDOW + IOC3_SERIAL_A + 1, 0x02);
+    fuel_expect_irq(qts, pin, pending_bit);
+
+    qtest_system_reset(qts);
+    g_assert_cmphex(fuel_xbridge_read(qts, XBRIDGE_INT_STATUS) & (1U << pin),
+                    ==, 0);
+    g_assert_cmphex(qtest_readq(qts, BEDROCK_LOCAL + PI_PENDING_0) &
+                    (UINT64_C(1) << pending_bit), ==, 0);
+    g_assert_cmphex(fuel_cpu_cause(qts) & MIPS_CAUSE_HARDWARE_IRQ0, ==, 0);
+    qtest_quit(qts);
+}
+
 static void test_fuel_ohci_interrupt(const void *data)
 {
     const unsigned int pin = 5, pending_bit = 19;
@@ -1409,6 +1430,8 @@ int main(int argc, char **argv)
                         test_fuel_scsi_interrupt);
     qtest_add_data_func("fuel/ioc3-superio-interrupt", prom,
                         test_fuel_ioc3_superio_interrupt);
+    qtest_add_data_func("fuel/ioc3-superio-interrupt-reset", prom,
+                        test_fuel_ioc3_superio_interrupt_reset);
     qtest_add_data_func("fuel/ohci-interrupt", prom,
                         test_fuel_ohci_interrupt);
     qtest_add_data_func("fuel/ohci-frame-remaining", prom,
