@@ -16,7 +16,7 @@
  * projection matrices and their stacks, and bitmaps, leave in the
  * window's front or back buffer after the per-fragment operations the
  * shared rasterizer carries out (the scissor, alpha, stencil and depth
- * tests and blending), in RGBA or
+ * tests, blending and the logical operation), in RGBA or
  * colour-index mode, and the main-port framing,
  * so the words after a packet still parse as headers. What it does not: the
  * raster-engine register writes the GE would make, the timing of the
@@ -167,6 +167,23 @@
 #define MGRAS_GL_BLEND_EQUATION  0x00006004
 #define MGRAS_GL_BLEND_COLOR     0x0000d910
 #define MGRAS_GL_BLEND           0x00006504
+/*
+ * The logical operation, established from the listing: glLogicOp
+ * (__glMgrim_LogicOp 0xd95ee20) accepts GL_CLEAR to GL_SET and writes
+ * 0x4004 and the operation less GL_CLEAR. glEnable of GL_COLOR_LOGIC_OP
+ * writes 0x6b04 and 1 when the context byte at 0xc94 is set
+ * (__glMgrim_Enable 0xd97e4e8-0xd97e50c, capability 0xbf2), and of
+ * GL_INDEX_LOGIC_OP when it is clear (0xd97e814-0xd97e83c, capability
+ * 0xbf1), so one token enables the operation for the context's own
+ * colour form, the byte marking an RGBA context (inferred from which
+ * capability each path serves); glDisable writes 0x6b04 and 0
+ * (0xd980274). The model applies the token to GL_INDEX_LOGIC_OP in a
+ * colour-index context and GL_COLOR_LOGIC_OP otherwise. That the board
+ * combines fragments as OpenGL 1.2.1, 4.1.8 says is inferred; the
+ * discriminating test is gl-logic-op-combines-with-the-window.
+ */
+#define MGRAS_GL_LOGIC_OP        0x00004004
+#define MGRAS_GL_LOGIC_OP_ENABLE 0x00006b04
 
 /* glStencilOp's operations by the number the client sends for each. */
 static const uint16_t mgras_gl_stencil_ops[] = {
@@ -710,6 +727,8 @@ bool sgi_mgras_gl_header(uint32_t header)
     case MGRAS_GL_BLEND_EQUATION:
     case MGRAS_GL_BLEND_COLOR:
     case MGRAS_GL_BLEND:
+    case MGRAS_GL_LOGIC_OP:
+    case MGRAS_GL_LOGIC_OP_ENABLE:
     case MGRAS_GL_DEPTH_RANGE:
     case MGRAS_GL_DITHER:
     case MGRAS_GL_CULL_ON:
@@ -1276,9 +1295,9 @@ static bool mgras_gl_raster_query(SGIMgrasState *s, uint32_t index,
         untracked = true;
         break;
     case MGRAS_GL_QUERY_PIXEL_ENABLES:
-        *answer = (MGRAS_GL_PIXEL_SETUP & ~0x51u) | gl->cur.dither |
-                  st->stencil_test << 4 | st->alpha_test << 6;
-        untracked = true;
+        *answer = (MGRAS_GL_PIXEL_SETUP & ~0x3c000051u) | gl->cur.dither |
+                  st->stencil_test << 4 | st->alpha_test << 6 |
+                  (st->logic_op_mode - SGI_GL_CLEAR) << 26;
         break;
     case MGRAS_GL_QUERY_STENCIL:
         *answer = st->stencil_func |
@@ -2302,6 +2321,52 @@ const VMStateDescription vmstate_sgi_mgras_gl_blend = {
     }
 };
 
+static const VMStateDescription vmstate_sgi_mgras_gl_context_logic_op = {
+    .name = TYPE_SGI_MGRAS "/gl-context-logic-op",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32(cur.index_logic_op, SGIGLContext),
+        VMSTATE_UINT32(cur.color_logic_op, SGIGLContext),
+        VMSTATE_UINT32(cur.logic_op_mode, SGIGLContext),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
+/*
+ * Every context's logical operation, sent once some context has one
+ * enabled or an operation other than GL_COPY. A stream without it comes
+ * from a model that consumed 0x4004 and 0x6b04 and drew as the initial
+ * state does.
+ */
+static bool mgras_gl_logic_op_needed(void *opaque)
+{
+    SGIMgrasState *s = opaque;
+
+    for (int i = 0; i < SGI_MGRAS_GL_CONTEXTS; i++) {
+        const SGIGLDrawState *st = &s->gl[i].cur;
+
+        if (st->index_logic_op || st->color_logic_op ||
+            st->logic_op_mode != SGI_GL_COPY) {
+            return true;
+        }
+    }
+    return false;
+}
+
+const VMStateDescription vmstate_sgi_mgras_gl_logic_op = {
+    .name = TYPE_SGI_MGRAS "/gl-logic-op",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = mgras_gl_logic_op_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_STRUCT_ARRAY(gl, SGIMgrasState, SGI_MGRAS_GL_CONTEXTS, 1,
+                             vmstate_sgi_mgras_gl_context_logic_op,
+                             SGIGLContext),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
 const VMStateDescription vmstate_sgi_mgras_gl_cull = {
     .name = TYPE_SGI_MGRAS "/gl-cull",
     .version_id = 1,
@@ -2514,6 +2579,9 @@ bool sgi_mgras_gl_post_load(SGIMgrasState *s)
             gl->strip_odd > 1 || gl->cur.cull_face > 1 ||
             gl->cur.scissor_test > 1 || gl->cur.alpha_test > 1 ||
             gl->cur.stencil_test > 1 || gl->cur.blend > 1 ||
+            gl->cur.index_logic_op > 1 || gl->cur.color_logic_op > 1 ||
+            gl->cur.logic_op_mode - SGI_GL_CLEAR >
+                SGI_GL_SET - SGI_GL_CLEAR ||
             gl->cur.stencil_func > SGI_GL_ALWAYS ||
             gl->cur.alpha_func > SGI_GL_ALWAYS ||
             !(gl->cur.alpha_ref >= 0.0f && gl->cur.alpha_ref <= 1.0f) ||
@@ -3858,6 +3926,16 @@ void sgi_mgras_gl_execute(SGIMgrasState *s, uint32_t header,
         return;
     case MGRAS_GL_BLEND:
         word[0] = SGI_GL_BLEND;
+        mgras_gl_command(s, payload[0] ? SGI_GL_OP_ENABLE :
+                         SGI_GL_OP_DISABLE, word, 1);
+        return;
+    case MGRAS_GL_LOGIC_OP:
+        word[0] = SGI_GL_CLEAR + payload[0];
+        mgras_gl_command(s, SGI_GL_OP_LOGIC_OP, word, 1);
+        return;
+    case MGRAS_GL_LOGIC_OP_ENABLE:
+        word[0] = mgras_gl(s)->cur.index_bits ? SGI_GL_INDEX_LOGIC_OP :
+                                                SGI_GL_COLOR_LOGIC_OP;
         mgras_gl_command(s, payload[0] ? SGI_GL_OP_ENABLE :
                          SGI_GL_OP_DISABLE, word, 1);
         return;
