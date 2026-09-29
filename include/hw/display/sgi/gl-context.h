@@ -353,6 +353,18 @@ typedef struct SGIGLContext {
     uint32_t lights_enabled;            /* bit i: GL_LIGHTi's enable */
     uint32_t normalize;                 /* GL_NORMALIZE's enable */
     uint32_t rescale_normal;            /* GL_RESCALE_NORMAL's enable */
+    /*
+     * A family whose board sends its own normal matrix: while
+     * normal_matrix_given is 1, normals go to eye coordinates by
+     * normal_matrix, column-major 3x3, exactly as given, in place of the
+     * modelview's inverse transpose and GL_RESCALE_NORMAL's rescale.
+     * normalize_always makes every eye normal unit length, as
+     * GL_NORMALIZE does, whatever GL_NORMALIZE's enable. None of the three
+     * is GL state; sgi_gl_init() clears them.
+     */
+    uint32_t normal_matrix_given;       /* 0 or 1 */
+    float normal_matrix[9];
+    uint32_t normalize_always;          /* 0 or 1 */
     float cur_color[4];
     float cur_index;
     float cur_normal[3];
@@ -563,6 +575,14 @@ void sgi_gl_bitmap_bytes(SGIGLContext *c, const SGIGLSink *sink,
  */
 bool sgi_gl_set_light(SGIGLContext *c, uint32_t light,
                       const SGIGLEyeLight *l);
+/*
+ * Take normals to eye coordinates by m, column-major 3x3, used as given
+ * with no inverse or transpose and no rescale; NULL returns to the
+ * modelview's inverse transpose (2.10.3).
+ */
+void sgi_gl_set_normal_matrix(SGIGLContext *c, const float m[9]);
+/* Make every eye normal unit length, whatever GL_NORMALIZE's enable. */
+void sgi_gl_set_normalize_always(SGIGLContext *c, bool on);
 /* Execute one command against the context, sending any work to sink. */
 void sgi_gl_command(SGIGLContext *c, const SGIGLSink *sink,
                     const SGIGLCmd *cmd);

@@ -529,11 +529,25 @@ static void sgi_gl_unit3(float v[3])
  * enabled and then made unit length when GL_NORMALIZE is. n M^-1 is M's
  * cofactor matrix applied to n and divided by M's determinant. A singular
  * M, for which the specification gives no normal, leaves n unchanged.
+ * A family's own normal matrix N replaces both M^-1 and the rescale:
+ * n' = N n, as given.
  */
 static void sgi_gl_eye_normal(const SGIGLContext *c, const float n[3],
                               float out[3])
 {
     const float *m = c->cur.modelview;
+
+    if (c->normal_matrix_given) {
+        const float *nm = c->normal_matrix;
+
+        for (int j = 0; j < 3; j++) {
+            out[j] = nm[j] * n[0] + nm[3 + j] * n[1] + nm[6 + j] * n[2];
+        }
+        if (c->normalize || c->normalize_always) {
+            sgi_gl_unit3(out);
+        }
+        return;
+    }
     /* M[row][col] is m[col * 4 + row]. */
 #define M(r, k) m[(k) * 4 + (r)]
     float cof[3][3] = {
@@ -572,7 +586,7 @@ static void sgi_gl_eye_normal(const SGIGLContext *c, const float n[3],
             }
         }
     }
-    if (c->normalize) {
+    if (c->normalize || c->normalize_always) {
         sgi_gl_unit3(out);
     }
 }
@@ -1136,6 +1150,21 @@ bool sgi_gl_set_light(SGIGLContext *c, uint32_t light,
         l->spot_cutoff = acos(l->spot_cos_cutoff) * 180.0 / M_PI;
     }
     return true;
+}
+
+void sgi_gl_set_normal_matrix(SGIGLContext *c, const float m[9])
+{
+    c->normal_matrix_given = m != NULL;
+    if (m) {
+        memcpy(c->normal_matrix, m, sizeof(c->normal_matrix));
+    } else {
+        memset(c->normal_matrix, 0, sizeof(c->normal_matrix));
+    }
+}
+
+void sgi_gl_set_normalize_always(SGIGLContext *c, bool on)
+{
+    c->normalize_always = on;
 }
 
 static void sgi_gl_light_model(SGIGLContext *c, uint32_t pname,
