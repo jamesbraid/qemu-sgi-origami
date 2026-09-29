@@ -39,6 +39,13 @@ typedef enum SGIRasterKind {
  */
 typedef uint32_t SGIColourTarget;
 
+/* The channels glColorMask lets a draw or clear write (4.2.2). */
+#define SGI_GL_COLOUR_MASK_RED   0x1
+#define SGI_GL_COLOUR_MASK_GREEN 0x2
+#define SGI_GL_COLOUR_MASK_BLUE  0x4
+#define SGI_GL_COLOUR_MASK_ALPHA 0x8
+#define SGI_GL_COLOUR_MASK_ALL   0xf
+
 /* The buffers a clear names, glClear's mask bits. */
 #define SGI_GL_DEPTH_BUFFER_BIT 0x0100
 #define SGI_GL_STENCIL_BUFFER_BIT 0x0400
@@ -89,6 +96,7 @@ typedef struct SGIRasterOp {
     uint32_t clear_buffers;
     /* The GL clear colour; the rasterizer quantizes it to the plane. */
     float clear_rgba[4];
+    /* glColorMask's channels written: SGI_GL_COLOUR_MASK_RED and so on. */
     uint32_t clear_colour_mask;
     /* In the depth plane's units; the plane keeps its low bits. */
     uint32_t clear_depth24;
@@ -205,6 +213,7 @@ enum {
 #define SGI_GL_INDEX_CLEAR_VALUE 0x0c20
 #define SGI_GL_INDEX_WRITEMASK  0x0c21
 #define SGI_GL_COLOR_CLEAR_VALUE 0x0c22
+#define SGI_GL_COLOR_WRITEMASK  0x0c23
 #define SGI_GL_LIGHT0           0x4000
 #define SGI_GL_BLEND_COLOR      0x8005
 #define SGI_GL_BLEND_EQUATION   0x8009
@@ -380,6 +389,8 @@ typedef struct SGIGLDrawState {
     uint32_t index_bits;
     /* glIndexMask's write mask (4.2.2). */
     uint32_t index_mask;
+    /* glColorMask's channels, SGI_GL_COLOUR_MASK_RED and so on (4.2.2). */
+    uint32_t colour_mask;
     /*
      * Polygon culling (3.5.1): GL_CULL_FACE's enable, glCullFace's
      * GL_FRONT, GL_BACK or GL_FRONT_AND_BACK, and glFrontFace's GL_CW or
@@ -595,6 +606,7 @@ typedef enum SGIGLOp {
     SGI_GL_OP_BLEND_EQUATION,   /* the equation */
     SGI_GL_OP_BLEND_COLOR,      /* r, g, b, a */
     SGI_GL_OP_LOGIC_OP,         /* GL_CLEAR to GL_SET */
+    SGI_GL_OP_COLOR_MASK,       /* r, g, b, a, each 0 or not */
 } SGIGLOp;
 
 /*

@@ -106,6 +106,7 @@ void sgi_gl_init(SGIGLContext *c, uint32_t hw_id)
     c->clear_depth = UINT32_MAX;
     c->cur.draw_buffers = SGI_GL_DRAW_FRONT;
     c->cur.index_mask = UINT32_MAX;
+    c->cur.colour_mask = SGI_GL_COLOUR_MASK_ALL;
     c->cur.cull_face_mode = SGI_GL_BACK;
     c->cur.front_face = SGI_GL_CCW;
     c->cur_index = 1.0f;
@@ -433,6 +434,7 @@ static const uint8_t sgi_gl_nargs[] = {
     [SGI_GL_OP_BLEND_EQUATION] = 1,
     [SGI_GL_OP_BLEND_COLOR] = 4,
     [SGI_GL_OP_LOGIC_OP] = 1,
+    [SGI_GL_OP_COLOR_MASK] = 4,
 };
 
 uint32_t sgi_gl_draw_targets(const SGIGLDrawState *st,
@@ -461,12 +463,13 @@ uint32_t sgi_gl_draw_targets(const SGIGLDrawState *st,
 
 /*
  * glClear (OpenGL 1.2.1, 4.2.3) as a raster op over the drawable's
- * rectangles. A clear passes only the pixel ownership, scissor and
- * dither steps, and the viewport does not bound it; ownership is the
- * drawable's rectangles, the scissor box bounds the op's rectangle while
- * the test is enabled, and no dithering is modelled. The depth buffer is
- * cleared only when the depth mask allows, the stencil buffer under the
- * stencil write mask, and the accumulation buffer is not modelled.
+ * rectangles. A clear passes only the pixel ownership, scissor and dither
+ * steps, and the viewport does not bound it; ownership is the drawable's
+ * rectangles, the scissor box bounds the op's rectangle while the test is
+ * enabled, and no dithering is modelled. The depth buffer is cleared only
+ * when the depth mask allows, the stencil buffer under the stencil write
+ * mask, the colour buffers under the colour or index mask, and the
+ * accumulation buffer is not modelled.
  */
 static void sgi_gl_clear(SGIGLContext *c, const SGIGLSink *sink,
                          uint32_t mask)
@@ -520,7 +523,7 @@ static void sgi_gl_clear(SGIGLContext *c, const SGIGLSink *sink,
     if (mask & SGI_GL_COLOR_BUFFER_BIT) {
         op.clear_buffers |= SGI_GL_COLOR_BUFFER_BIT;
         memcpy(op.clear_rgba, c->clear_color, sizeof(op.clear_rgba));
-        op.clear_colour_mask = UINT32_MAX;
+        op.clear_colour_mask = c->cur.colour_mask;
         /* In colour-index mode the clear index, under glIndexMask (4.2.3). */
         op.index_bits = c->cur.index_bits;
         op.clear_index = sgi_gl_index_value(c->cur.index_bits,
@@ -1614,6 +1617,12 @@ void sgi_gl_command(SGIGLContext *c, const SGIGLSink *sink,
         }
         c->cur.logic_op_mode = a[0];
         return;
+    case SGI_GL_OP_COLOR_MASK:
+        c->cur.colour_mask = 0;
+        for (int i = 0; i < 4; i++) {
+            c->cur.colour_mask |= (a[i] != 0) << i;
+        }
+        return;
     case SGI_GL_OP_COLOR3F:
         memcpy(c->cur_color, a, 3 * sizeof(float));
         c->cur_color[3] = 1.0f;
@@ -1986,6 +1995,12 @@ bool sgi_gl_get(const SGIGLContext *c, uint32_t pname, uint32_t *out,
         out[0] = c->cur.logic_op_mode;
         *n = 1;
         return true;
+    case SGI_GL_COLOR_WRITEMASK:
+        for (int i = 0; i < 4; i++) {
+            out[i] = extract32(c->cur.colour_mask, i, 1);
+        }
+        *n = 4;
+        return true;
     case SGI_GL_DEPTH_FUNC:
         out[0] = SGI_GL_NEVER_ENUM + c->cur.depth_func;
         *n = 1;
@@ -2201,6 +2216,10 @@ bool sgi_gl_context_valid(const SGIGLContext *c, Error **errp)
     }
     if (st->logic_op_mode - SGI_GL_CLEAR > SGI_GL_SET - SGI_GL_CLEAR) {
         error_setg(errp, "sgi-gl: logical operation 0x%x", st->logic_op_mode);
+        return false;
+    }
+    if (st->colour_mask > SGI_GL_COLOUR_MASK_ALL) {
+        error_setg(errp, "sgi-gl: colour mask 0x%x", st->colour_mask);
         return false;
     }
     if (st->drawable.clip.n > SGI_CLIP_MAX) {
@@ -2448,6 +2467,24 @@ static const VMStateDescription vmstate_sgi_gl_logic_op = {
     },
 };
 
+static bool sgi_gl_colour_mask_needed(void *opaque)
+{
+    const SGIGLDrawState *st = opaque, *init = &sgi_gl_initial()->cur;
+
+    return SGI_GL_MOVED(st, init, colour_mask);
+}
+
+static const VMStateDescription vmstate_sgi_gl_colour_mask = {
+    .name = "sgi-gl-draw-state/colour-mask",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = sgi_gl_colour_mask_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32(colour_mask, SGIGLDrawState),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
 static const VMStateDescription vmstate_sgi_gl_draw_state = {
     .name = "sgi-gl-draw-state",
     .version_id = 1,
@@ -2477,6 +2514,7 @@ static const VMStateDescription vmstate_sgi_gl_draw_state = {
         &vmstate_sgi_gl_stencil,
         &vmstate_sgi_gl_blend,
         &vmstate_sgi_gl_logic_op,
+        &vmstate_sgi_gl_colour_mask,
         NULL
     },
 };
