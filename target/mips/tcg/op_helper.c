@@ -369,8 +369,8 @@ void mips_cpu_do_transaction_failed(CPUState *cs, hwaddr physaddr,
                                   access_type, response);
 
     /*
-     * A failed store is not the processor's to report. The R10000 User's
-     * Manual version 2.0 gives the Bus Error exception one cause, and
+     * A failed uncached store is not the processor's to report. The R10000
+     * User's Manual version 2.0 gives the Bus Error exception one cause, and
      * every request kind in it is a read: "a processor block read,
      * upgrade, or double/single/partial-word read request receives an
      * external ERR completion response". An uncached store leaves the
@@ -383,13 +383,13 @@ void mips_cpu_do_transaction_failed(CPUState *cs, hwaddr physaddr,
      * a write that reaches no device at all completes silently here, named
      * only by the log line below.
      *
-     * A store through a *cached* mapping could still take a bus error on
-     * real hardware — its cache refill is the block read, and gaining
-     * ownership is the upgrade, in the cause above. TCG has no cache model,
-     * so every store that gets this far is treated as the posted uncached
-     * write, which is what device probing actually uses.
+     * The optional R10000 cache path can issue a block read or upgrade
+     * for a store. Its explicit external-agent ERR response is a processor
+     * Bus Error, not a failure of a posted uncached write.
      */
-    if (access_type == MMU_DATA_STORE && env->cfg.stores_are_posted) {
+    if (access_type == MMU_DATA_STORE && env->cfg.stores_are_posted &&
+        !(attrs.mips_data_cache && env->r10k &&
+          env->r10k->system_requests)) {
         qemu_log_mask(LOG_UNIMP,
                       "mips: store of %u byte%s at 0x%" VADDR_PRIx
                       " (physical 0x%" HWADDR_PRIx ") %s; the write is "

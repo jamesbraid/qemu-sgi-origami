@@ -1531,6 +1531,7 @@ struct ArchCPU {
 #ifndef CONFIG_USER_ONLY
     bool r10k_data_cache;
     bool r10k_sccoren;
+    uint32_t r10k_scache_line_size;
     bool r10k_data_cache_stream;
     MemoryRegion r10k_data_memory;
 #endif
