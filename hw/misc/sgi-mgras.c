@@ -1962,6 +1962,7 @@ static const VMStateDescription vmstate_sgi_mgras = {
         &vmstate_sgi_mgras_gl_stencil_plane,
         &vmstate_sgi_mgras_gl_blend,
         &vmstate_sgi_mgras_gl_logic_op,
+        &vmstate_sgi_mgras_gl_colour_mask,
         NULL
     }
 };

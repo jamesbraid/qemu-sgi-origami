@@ -16,7 +16,7 @@
  * projection matrices and their stacks, and bitmaps, leave in the
  * window's front or back buffer after the per-fragment operations the
  * shared rasterizer carries out (the scissor, alpha, stencil and depth
- * tests, blending and the logical operation), in RGBA or
+ * tests, blending, the logical operation and the write masks), in RGBA or
  * colour-index mode, and the main-port framing,
  * so the words after a packet still parse as headers. What it does not: the
  * raster-engine register writes the GE would make, the timing of the
@@ -184,6 +184,15 @@
  */
 #define MGRAS_GL_LOGIC_OP        0x00004004
 #define MGRAS_GL_LOGIC_OP_ENABLE 0x00006b04
+/*
+ * glColorMask: __glMgrim_ColorMask (0xd95e8e0) writes 0x3b04 and one word
+ * with bit 0 set for red, 1 green, 2 blue and 3 alpha (0xd95e900-
+ * 0xd95e940), the bits the GL_COLOR_WRITEMASK query decodes. Established
+ * from the listing; that the board keeps a masked channel's stored bits
+ * (OpenGL 1.2.1, 4.2.2) is inferred. The discriminating test is
+ * gl-colour-mask-keeps-channels.
+ */
+#define MGRAS_GL_COLOR_MASK      0x00003b04
 
 /* glStencilOp's operations by the number the client sends for each. */
 static const uint16_t mgras_gl_stencil_ops[] = {
@@ -729,6 +738,7 @@ bool sgi_mgras_gl_header(uint32_t header)
     case MGRAS_GL_BLEND:
     case MGRAS_GL_LOGIC_OP:
     case MGRAS_GL_LOGIC_OP_ENABLE:
+    case MGRAS_GL_COLOR_MASK:
     case MGRAS_GL_DEPTH_RANGE:
     case MGRAS_GL_DITHER:
     case MGRAS_GL_CULL_ON:
@@ -1345,26 +1355,17 @@ static bool mgras_gl_raster_query(SGIMgrasState *s, uint32_t index,
  * (0xd9959f4-0xd995a30). Established from the IRIX 6.5.30 IP27GR532
  * libGLcore.so. That the board keeps one write-mask word for both is
  * inferred from the shared index. In colour-index mode the model answers
- * glIndexMask's mask; in RGBA mode it answers 0xf, all four colour
- * channels writable as OpenGL starts, since glColorMask is not decoded,
- * and logs that answer. 0x32c is glGetError's index, not a mask, and its
+ * glIndexMask's mask, and in RGBA mode glColorMask's channels in the bits
+ * 0x3b04 sends them in. 0x32c is glGetError's index, not a mask, and its
  * zero answer stays right.
  */
 #define MGRAS_GL_QUERY_WRITEMASK 0x32b
-#define MGRAS_GL_COLOUR_WRITES   0xf
 
 static uint32_t mgras_gl_writemask_answer(SGIMgrasState *s)
 {
-    uint32_t out[SGI_GL_GET_WORDS];
-    unsigned n;
+    const SGIGLDrawState *st = &mgras_gl(s)->cur;
 
-    if (mgras_gl(s)->cur.index_bits &&
-        sgi_gl_get(mgras_gl(s), SGI_GL_INDEX_WRITEMASK, out, &n)) {
-        return out[0];
-    }
-    qemu_log_mask(LOG_UNIMP, "sgi-mgras: GL colour write mask query answers "
-                  "OpenGL's initial mask; glColorMask is not tracked\n");
-    return MGRAS_GL_COLOUR_WRITES;
+    return st->index_bits ? st->index_mask : st->colour_mask;
 }
 
 uint32_t sgi_mgras_gl_query_answer(SGIMgrasState *s, const uint32_t *args,
@@ -2367,6 +2368,46 @@ const VMStateDescription vmstate_sgi_mgras_gl_logic_op = {
     }
 };
 
+static const VMStateDescription vmstate_sgi_mgras_gl_context_colour_mask = {
+    .name = TYPE_SGI_MGRAS "/gl-context-colour-mask",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32(cur.colour_mask, SGIGLContext),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
+/*
+ * Every context's colour mask, sent once some context has masked a
+ * channel. A stream without it comes from a model that consumed 0x3b04
+ * and wrote every channel, as the initial mask does.
+ */
+static bool mgras_gl_colour_mask_needed(void *opaque)
+{
+    SGIMgrasState *s = opaque;
+
+    for (int i = 0; i < SGI_MGRAS_GL_CONTEXTS; i++) {
+        if (s->gl[i].cur.colour_mask != SGI_GL_COLOUR_MASK_ALL) {
+            return true;
+        }
+    }
+    return false;
+}
+
+const VMStateDescription vmstate_sgi_mgras_gl_colour_mask = {
+    .name = TYPE_SGI_MGRAS "/gl-colour-mask",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = mgras_gl_colour_mask_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_STRUCT_ARRAY(gl, SGIMgrasState, SGI_MGRAS_GL_CONTEXTS, 1,
+                             vmstate_sgi_mgras_gl_context_colour_mask,
+                             SGIGLContext),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
 const VMStateDescription vmstate_sgi_mgras_gl_cull = {
     .name = TYPE_SGI_MGRAS "/gl-cull",
     .version_id = 1,
@@ -2580,6 +2621,7 @@ bool sgi_mgras_gl_post_load(SGIMgrasState *s)
             gl->cur.scissor_test > 1 || gl->cur.alpha_test > 1 ||
             gl->cur.stencil_test > 1 || gl->cur.blend > 1 ||
             gl->cur.index_logic_op > 1 || gl->cur.color_logic_op > 1 ||
+            gl->cur.colour_mask > SGI_GL_COLOUR_MASK_ALL ||
             gl->cur.logic_op_mode - SGI_GL_CLEAR >
                 SGI_GL_SET - SGI_GL_CLEAR ||
             gl->cur.stencil_func > SGI_GL_ALWAYS ||
@@ -3938,6 +3980,12 @@ void sgi_mgras_gl_execute(SGIMgrasState *s, uint32_t header,
                                                 SGI_GL_COLOR_LOGIC_OP;
         mgras_gl_command(s, payload[0] ? SGI_GL_OP_ENABLE :
                          SGI_GL_OP_DISABLE, word, 1);
+        return;
+    case MGRAS_GL_COLOR_MASK:
+        for (int i = 0; i < 4; i++) {
+            word[i] = extract32(payload[0], i, 1);
+        }
+        mgras_gl_command(s, SGI_GL_OP_COLOR_MASK, word, 4);
         return;
     case MGRAS_GL_DEPTH_RANGE:
         /* The client does not clamp, so the board does (2.10.1). */
