@@ -440,11 +440,13 @@ static const uint16_t mgras_gl_stencil_ops[] = {
  * - glTexCoord3i (0xdac874c) and 3iv: 0x3800080c, s, t, r.
  * - glTexCoord2f (0xdac85fc) and 2fv (0xdac8618): 0x40000808, s, t as
  *   floats; 2fv stores the pair with one 64-bit store, s first.
+ * - glTexCoord4f (0xdac8844) and 4fv: 0x00000810, s, t, r, q as floats.
  *
  * The client converts nothing, so the board does; that it takes an
  * integer coordinate unscaled, as OpenGL 1.2.1 does (2.7), is inferred.
- * blast and mview send glVertex3i, and blast and buttonfly glTexCoord2f
- * (the 2026-09-28 demo survey's -d unimp logs). The model draws no
+ * blast and mview send glVertex3i, blast and buttonfly glTexCoord2f
+ * (the 2026-09-28 demo survey's -d unimp logs), and mirrors and perfly
+ * glTexCoord4f. The model draws no
  * texture and keeps no texture coordinate, so the texture forms are
  * consumed and logged, and the 0xa104 query still answers OpenGL's
  * initial texture coordinate.
@@ -453,6 +455,7 @@ static const uint16_t mgras_gl_stencil_ops[] = {
 #define MGRAS_GL_RASTER_POS3I    0x3800380c
 #define MGRAS_GL_TEX_COORD3I     0x3800080c
 #define MGRAS_GL_TEX_COORD2F     0x40000808
+#define MGRAS_GL_TEX_COORD4F     0x00000810
 #define MGRAS_GL_EDGE_FLAG_TRUE  0x00000f00
 #define MGRAS_GL_EDGE_FLAG_FALSE 0x00001000
 
@@ -940,6 +943,7 @@ bool sgi_mgras_gl_header(uint32_t header)
     case MGRAS_GL_RASTER_POS3I:
     case MGRAS_GL_TEX_COORD3I:
     case MGRAS_GL_TEX_COORD2F:
+    case MGRAS_GL_TEX_COORD4F:
     case MGRAS_GL_COLOR3UB:
     case MGRAS_GL_COLOR4UB:
     case MGRAS_GL_NORMAL3F:
@@ -4651,6 +4655,7 @@ void sgi_mgras_gl_execute(SGIMgrasState *s, uint32_t header,
     }
     case MGRAS_GL_TEX_COORD3I:
     case MGRAS_GL_TEX_COORD2F:
+    case MGRAS_GL_TEX_COORD4F:
         qemu_log_mask(LOG_UNIMP, "sgi-mgras: glTexCoord is not kept; the "
                       "model draws no texture\n");
         return;
