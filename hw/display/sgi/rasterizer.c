@@ -45,9 +45,19 @@ typedef struct SGISoftVertex {
     int64_t x, y;         /* window position in subpixels */
     double z;             /* normalized depth; [0, 1] inside the view volume */
     double inv_w;         /* 1 / clip w, for perspective-correct colour */
-    double rgb[3];
+    double rgba[4];
     double index;         /* the colour index, in colour-index mode */
 } SGISoftVertex;
+
+/*
+ * A fragment's values as rasterization leaves them (OpenGL 1.2.1, 3.1),
+ * before the per-fragment operations of chapter 4: its colour, each
+ * component in [0, 1], and in colour-index mode its index.
+ */
+typedef struct SGISoftFrag {
+    double rgba[4];
+    double index;
+} SGISoftFrag;
 
 static bool sgi_soft_window(const SGIGLDrawState *st, SGISoftWindow *win)
 {
@@ -209,19 +219,26 @@ static bool sgi_soft_depth_passes(uint32_t func, uint32_t z, uint32_t stored)
     }
 }
 
+/* A fragment's colour value from an interpolated or flat index. */
+static uint32_t sgi_soft_index(const SGISoftDraw *r, double index)
+{
+    return sgi_gl_index_value(r->st->index_bits, index);
+}
+
 /*
  * One fragment at window pixel (px, py) with window depth z: dropped
  * outside [0, 1] and outside the window's rectangles, depth tested when
  * the test is enabled, then written to each colour target the draw
- * buffers select. colour is the rules' packed colour in RGBA mode and the
- * stored index in colour-index mode, which glIndexMask masks (4.2.2).
+ * buffers select. Its colour is stored as the rules' packed colour in
+ * RGBA mode and as its index in colour-index mode, which glIndexMask
+ * masks (4.2.2).
  */
 static void sgi_soft_fragment_at(const SGISoftDraw *r, int px, int py,
-                                 double z, uint32_t colour)
+                                 double z, const SGISoftFrag *f)
 {
     const SGIRasterTarget *t = r->t;
     int x = r->win.ox + px, y = r->win.oy + py;
-    uint32_t zq;
+    uint32_t zq, colour;
 
     if (!(z >= 0.0 && z <= 1.0)) {
         return;
@@ -240,6 +257,8 @@ static void sgi_soft_fragment_at(const SGISoftDraw *r, int px, int py,
             t->store_depth(t->opaque, x, y, zq);
         }
     }
+    colour = r->st->index_bits ? sgi_soft_index(r, f->index) :
+                                 sgi_soft_rgb(r->rules, f->rgba);
     for (uint32_t i = 0; i < r->ntargets; i++) {
         if (r->st->index_bits) {
             t->store_index(t->opaque, r->targets[i], x, y, colour,
@@ -259,20 +278,14 @@ static void sgi_soft_fragment_at(const SGISoftDraw *r, int px, int py,
  * beyond the far plane.
  */
 static void sgi_soft_fragment(const SGISoftDraw *r, int px, int py, double z,
-                              uint32_t colour)
+                              const SGISoftFrag *frag)
 {
     double n = r->st->depth_range[0], f = r->st->depth_range[1];
 
     if (!(z >= 0.0 && z <= 1.0)) {
         return;
     }
-    sgi_soft_fragment_at(r, px, py, n + (f - n) * z, colour);
-}
-
-/* A fragment's colour value from an interpolated or flat index. */
-static uint32_t sgi_soft_index(const SGISoftDraw *r, double index)
-{
-    return sgi_gl_index_value(r->st->index_bits, index);
+    sgi_soft_fragment_at(r, px, py, n + (f - n) * z, frag);
 }
 
 /*
@@ -325,8 +338,8 @@ static bool sgi_soft_transform(const SGISoftDraw *r, const float *v,
     out->y = sgi_soft_round(r->rules, yw * (1 << r->rules->subpixel_bits));
     out->z = (clip[2] / clip[3] + 1.0) / 2.0;
     out->inv_w = 1.0 / clip[3];
-    for (int k = 0; k < 3; k++) {
-        out->rgb[k] = MIN(MAX(rgba[k], 0.0f), 1.0f);
+    for (int k = 0; k < 4; k++) {
+        out->rgba[k] = MIN(MAX(rgba[k], 0.0f), 1.0f);
     }
     out->index = v[SGI_GL_V_INDEX];
     return true;
@@ -366,8 +379,7 @@ static void sgi_soft_triangle(const SGISoftDraw *r, const float *va,
     const SGISoftWindow *win = &r->win;
     const float *verts[3] = { va, vb, vc };
     const float *flat = &provoking[SGI_GL_V_COLOR];
-    double flat_c[3];
-    uint32_t flat_rgb;
+    SGISoftFrag flat_frag;
     SGISoftVertex v[3];
     int64_t min_x, max_x, min_y, max_y, area;
     bool front;
@@ -399,17 +411,16 @@ static void sgi_soft_triangle(const SGISoftDraw *r, const float *va,
     if (!front && r->back_colors) {
         flat = &provoking[SGI_GL_V_BACK_COLOR];
         for (int i = 0; i < 3; i++) {
-            for (int k = 0; k < 3; k++) {
-                v[i].rgb[k] = MIN(MAX(verts[i][SGI_GL_V_BACK_COLOR + k],
-                                      0.0f), 1.0f);
+            for (int k = 0; k < 4; k++) {
+                v[i].rgba[k] = MIN(MAX(verts[i][SGI_GL_V_BACK_COLOR + k],
+                                       0.0f), 1.0f);
             }
         }
     }
-    for (int k = 0; k < 3; k++) {
-        flat_c[k] = flat[k];
+    for (int k = 0; k < 4; k++) {
+        flat_frag.rgba[k] = flat[k];
     }
-    flat_rgb = st->index_bits ? sgi_soft_index(r, provoking[SGI_GL_V_INDEX]) :
-                                sgi_soft_rgb(r->rules, flat_c);
+    flat_frag.index = provoking[SGI_GL_V_INDEX];
     if (area < 0) {
         /* Rasterize either winding the same way from here. */
         SGISoftVertex t = v[1];
@@ -441,7 +452,7 @@ static void sgi_soft_triangle(const SGISoftDraw *r, const float *va,
             int64_t e1 = sgi_soft_edge(&v[2], &v[0], cx, cy);
             int64_t e2 = sgi_soft_edge(&v[0], &v[1], cx, cy);
             double b1, b2, z;
-            uint32_t rgb = flat_rgb;
+            SGISoftFrag frag = flat_frag;
 
             if (!sgi_soft_owns(&v[1], &v[2], e0) ||
                 !sgi_soft_owns(&v[2], &v[0], e1) ||
@@ -455,24 +466,21 @@ static void sgi_soft_triangle(const SGISoftDraw *r, const float *va,
                 double w0 = (1.0 - b1 - b2) * v[0].inv_w;
                 double w1 = b1 * v[1].inv_w, w2 = b2 * v[2].inv_w;
                 double sum = w0 + w1 + w2;
-                double c[3];
 
-                for (int k = 0; k < 3; k++) {
-                    c[k] = (w0 * v[0].rgb[k] + w1 * v[1].rgb[k] +
-                            w2 * v[2].rgb[k]) / sum;
+                for (int k = 0; k < 4; k++) {
+                    frag.rgba[k] = (w0 * v[0].rgba[k] + w1 * v[1].rgba[k] +
+                                    w2 * v[2].rgba[k]) / sum;
                 }
                 /*
                  * An index is taken as a difference from the first
                  * vertex's, so a constant one stays exact before its
                  * integer part is taken.
                  */
-                rgb = st->index_bits ?
-                      sgi_soft_index(r, v[0].index +
-                                     (w1 * (v[1].index - v[0].index) +
-                                      w2 * (v[2].index - v[0].index)) / sum) :
-                      sgi_soft_rgb(r->rules, c);
+                frag.index = v[0].index +
+                             (w1 * (v[1].index - v[0].index) +
+                              w2 * (v[2].index - v[0].index)) / sum;
             }
-            sgi_soft_fragment(r, px, py, z, rgb);
+            sgi_soft_fragment(r, px, py, z, &frag);
         }
     }
 }
@@ -542,7 +550,7 @@ static void sgi_soft_line(const SGISoftDraw *r, const float *va,
     const int sub = r->rules->subpixel_bits;
     bool x_major;
     SGISoftVertex a, b;
-    double flat[3], len2;
+    double flat[4], len2;
     int major0, major1;
 
     if (vw <= 0 || vh <= 0 ||
@@ -550,7 +558,7 @@ static void sgi_soft_line(const SGISoftDraw *r, const float *va,
         !sgi_soft_transform(r, vb, &b) || (a.x == b.x && a.y == b.y)) {
         return;
     }
-    for (int k = 0; k < 3; k++) {
+    for (int k = 0; k < 4; k++) {
         flat[k] = provoking[SGI_GL_V_COLOR + k];
     }
     len2 = (double)(b.x - a.x) * (b.x - a.x) +
@@ -591,8 +599,8 @@ static void sgi_soft_line(const SGISoftDraw *r, const float *va,
             int px = x_major ? m : n, py = x_major ? n : m;
             double cx = (px + 0.5) * (1 << sub);
             double cy = (py + 0.5) * (1 << sub);
-            double t, wa, wb, c[3];
-            uint32_t colour;
+            double t, wa, wb;
+            SGISoftFrag frag;
 
             if (px < MAX(vx, win->x0 - win->ox) ||
                 px > MIN(vx + vw - 1, win->x1 - win->ox) ||
@@ -605,20 +613,15 @@ static void sgi_soft_line(const SGISoftDraw *r, const float *va,
             t = MIN(MAX(t, 0.0), 1.0);
             wa = (1 - t) * a.inv_w;
             wb = t * b.inv_w;
-            if (st->index_bits) {
-                colour = sgi_soft_index(r, smooth ?
-                                        a.index + wb * (b.index - a.index) /
-                                        (wa + wb) :
-                                        provoking[SGI_GL_V_INDEX]);
-            } else {
-                for (int k = 0; k < 3; k++) {
-                    c[k] = smooth ?
-                           (wa * a.rgb[k] + wb * b.rgb[k]) / (wa + wb) :
-                           flat[k];
-                }
-                colour = sgi_soft_rgb(r->rules, c);
+            frag.index = smooth ? a.index + wb * (b.index - a.index) /
+                                  (wa + wb) :
+                         provoking[SGI_GL_V_INDEX];
+            for (int k = 0; k < 4; k++) {
+                frag.rgba[k] = smooth ?
+                               (wa * a.rgba[k] + wb * b.rgba[k]) / (wa + wb) :
+                               flat[k];
             }
-            sgi_soft_fragment(r, px, py, a.z + t * (b.z - a.z), colour);
+            sgi_soft_fragment(r, px, py, a.z + t * (b.z - a.z), &frag);
         }
     }
 }
@@ -638,6 +641,7 @@ static void sgi_soft_point(const SGISoftDraw *r, const float *vp)
     int vw = st->viewport[2], vh = st->viewport[3];
     const int sub = r->rules->subpixel_bits;
     SGISoftVertex v;
+    SGISoftFrag frag;
     int px, py;
 
     if (!sgi_soft_transform(r, vp, &v)) {
@@ -651,9 +655,9 @@ static void sgi_soft_point(const SGISoftDraw *r, const float *vp)
         py > MIN(vy + vh - 1, win->y1 - win->oy)) {
         return;
     }
-    sgi_soft_fragment(r, px, py, v.z,
-                      st->index_bits ? sgi_soft_index(r, v.index) :
-                                       sgi_soft_rgb(r->rules, v.rgb));
+    memcpy(frag.rgba, v.rgba, sizeof(frag.rgba));
+    frag.index = v.index;
+    sgi_soft_fragment(r, px, py, v.z, &frag);
 }
 
 /*
@@ -761,15 +765,15 @@ static void sgi_soft_bitmap(const SGIRasterRules *rules,
     const SGIRasterBitmap *b = &op->bitmap;
     SGISoftDraw r = { .rules = rules, .t = t, .st = b->state };
     uint32_t row_bytes = DIV_ROUND_UP(b->width, 8);
-    double rgba[3] = { b->rgba[0], b->rgba[1], b->rgba[2] };
-    uint32_t colour;
+    SGISoftFrag frag = {
+        .rgba = { b->rgba[0], b->rgba[1], b->rgba[2], b->rgba[3] },
+        .index = b->index,
+    };
 
     if (!sgi_soft_window(b->state, &r.win) ||
         !sgi_soft_check_index(t, b->state->index_bits)) {
         return;
     }
-    colour = b->state->index_bits ? sgi_soft_index(&r, b->index) :
-                                    sgi_soft_rgb(rules, rgba);
     r.ntargets = MIN(op->ntargets, 2);
     memcpy(r.targets, op->targets, sizeof(r.targets));
     for (uint32_t i = 0; i < b->count && row_bytes; i++) {
@@ -787,7 +791,7 @@ static void sgi_soft_bitmap(const SGIRasterRules *rules,
                 py < r.win.y0 - r.win.oy || py > r.win.y1 - r.win.oy) {
                 continue;
             }
-            sgi_soft_fragment_at(&r, px, py, b->z, colour);
+            sgi_soft_fragment_at(&r, px, py, b->z, &frag);
         }
     }
 }
