@@ -2262,6 +2262,99 @@ static void test_lighting_two_sided_front_face(void)
     g_assert_cmphex(p.colour[0][planes_index(12, 12)], ==, 0x00ff00);
 }
 
+/*
+ * A light as a family decodes it: white diffuse along +z, no spot, no
+ * attenuation, black ambient and specular.
+ */
+static SGIGLEyeLight eye_light(float x, float y, float z, float w)
+{
+    return (SGIGLEyeLight) {
+        .position = { x, y, z, w },
+        .spot_direction = { 0, 0, -1 },
+        .spot_cos_cutoff = -1,
+        .attenuation = { 1, 0, 0 },
+        .ambient = { 0, 0, 0, 1 },
+        .diffuse = { 1, 1, 1, 1 },
+        .specular = { 0, 0, 0, 1 },
+    };
+}
+
+/*
+ * sgi_gl_set_light() takes eye coordinates as given: set under
+ * glRotatef(90, 1, 0, 0), which would take (0, 0, 1) to (0, -1, 0), the
+ * light at infinity along +z still meets the normal (0, 0, 1) at 1 once
+ * the modelview is the identity again, and diffuse 0.5 times material
+ * diffuse 1 gives 0.5. glGetLightfv answers what was given, and a cutoff
+ * cosine of -1 as 180 degrees. Light 8 does not exist.
+ */
+static void test_set_light_is_eye_space(void)
+{
+    SGIGLEyeLight e = eye_light(0, 0, 1, 0);
+    SGIGLContext c;
+
+    lit_init(&c);
+    light_command(&c, SGI_GL_OP_MATERIAL, SGI_GL_FRONT, SGI_GL_DIFFUSE,
+                  1, 1, 1, 1);
+    command(&c, NULL, SGI_GL_OP_ROTATE,
+            (uint32_t[]) { bits(90), bits(1), bits(0), bits(0) }, 4);
+    e.diffuse[0] = e.diffuse[1] = e.diffuse[2] = 0.5f;
+    g_assert_true(sgi_gl_set_light(&c, 0, &e));
+    command(&c, NULL, SGI_GL_OP_LOAD_IDENTITY, NULL, 0);
+    assert_rgba(lit_point(&c, 0, 0, 0, 0, 0, 1), 0.5f, 0.5f, 0.5f, 1);
+
+    g_assert_cmpfloat(light_float(&c, 0, SGI_GL_POSITION, 1), ==, 0);
+    g_assert_cmpfloat(light_float(&c, 0, SGI_GL_POSITION, 2), ==, 1);
+    g_assert_cmpfloat(light_float(&c, 0, SGI_GL_DIFFUSE, 0), ==, 0.5f);
+    g_assert_cmpfloat(light_float(&c, 0, SGI_GL_SPOT_CUTOFF, 0), ==, 180);
+    g_assert_false(sgi_gl_set_light(&c, SGI_GL_LIGHTS, &e));
+}
+
+/*
+ * The spot cutoff arrives as a cosine and is compared as one. The
+ * spotlight at (0, 0, 2) pointing down -z with exponent 2, as
+ * lighting-spot has, but with cosine 0.75 (41.4 degrees): at (1, 0, 0)
+ * the light-to-vertex direction makes cosine 2 / sqrt(5) = 0.894 with the
+ * axis, inside the cone, so the spot factor is 0.8 and n . VP 0.894427,
+ * 0.715542; at (2, 0, 0) it makes 0.707, outside, and is unlit. A cosine
+ * of -1, or below, is no spot at all, even at exponent 128: (2, 0, 0) then
+ * takes n . VP = 0.707107. Attenuation (0.5, 0.25, 0.125) at distance 2,
+ * straight below, gives 1 / 1.5.
+ */
+static void test_set_light_spot_cosine(void)
+{
+    SGIGLEyeLight e = eye_light(0, 0, 2, 1);
+    SGIGLContext c;
+
+    lit_init(&c);
+    light_command(&c, SGI_GL_OP_MATERIAL, SGI_GL_FRONT, SGI_GL_DIFFUSE,
+                  1, 1, 1, 1);
+    e.spot_cos_cutoff = 0.75f;
+    e.spot_exponent = 2;
+    g_assert_true(sgi_gl_set_light(&c, 0, &e));
+    assert_rgba(lit_point(&c, 1, 0, 0, 0, 0, 1), 0.7155418f, 0.7155418f,
+                0.7155418f, 1);
+    assert_rgba(lit_point(&c, 2, 0, 0, 0, 0, 1), 0, 0, 0, 1);
+    g_assert_cmpfloat_with_epsilon(light_float(&c, 0, SGI_GL_SPOT_CUTOFF, 0),
+                                   41.40962f, 0.0001);
+
+    e.spot_exponent = 128;
+    e.spot_cos_cutoff = -1;
+    g_assert_true(sgi_gl_set_light(&c, 0, &e));
+    assert_rgba(lit_point(&c, 2, 0, 0, 0, 0, 1), 0.7071068f, 0.7071068f,
+                0.7071068f, 1);
+    e.spot_cos_cutoff = -2;
+    g_assert_true(sgi_gl_set_light(&c, 0, &e));
+    assert_rgba(lit_point(&c, 2, 0, 0, 0, 0, 1), 0.7071068f, 0.7071068f,
+                0.7071068f, 1);
+
+    e.attenuation[0] = 0.5f;
+    e.attenuation[1] = 0.25f;
+    e.attenuation[2] = 0.125f;
+    g_assert_true(sgi_gl_set_light(&c, 0, &e));
+    assert_rgba(lit_point(&c, 0, 0, 0, 0, 0, 1), 2 / 3.0f, 2 / 3.0f,
+                2 / 3.0f, 1);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -2324,5 +2417,9 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-gl/cull-face-draws", test_cull_face_draws);
     g_test_add_func("/sgi-gl/lighting-two-sided-front-face",
                     test_lighting_two_sided_front_face);
+    g_test_add_func("/sgi-gl/set-light-is-eye-space",
+                    test_set_light_is_eye_space);
+    g_test_add_func("/sgi-gl/set-light-spot-cosine",
+                    test_set_light_spot_cosine);
     return g_test_run();
 }
