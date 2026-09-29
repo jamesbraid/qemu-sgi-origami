@@ -104,19 +104,18 @@ class CheckSgiTestResults(unittest.TestCase):
         with self.assertRaisesRegex(ResultError, 'skipped testcases'):
             read_report(self.junit)
 
-    def test_allows_only_missing_v9_mgras_reference(self):
-        suite = ('qemu:qtest+qtest-mips64+sgi / '
+    def test_allows_only_optional_v9_mgras_case(self):
+        suite = ('qemu.qemu:qtest+qtest-mips64+slow+sgi+sgi-qtest / '
                  'qtest-mips64/sn0-origin2000-mgras-test')
         case = ('156 /mips64/sn0/origin2000/mgras/'
                 'migration-from-v9-format-default')
-        for reason, allowed in (
-                ('QTEST_QEMU_BINARY_MGRAS_V9 is not set', True),
-                ('unexpected skip', False)):
-            with self.subTest(reason=reason):
+        for name, allowed in ((case, True),
+                              ('157 /mips64/sn0/origin2000/mgras/other', False)):
+            with self.subTest(name=name):
                 self.write_report(f'''<testsuite name="{suite}" tests="1"
                     skipped="1">
-                  <testcase classname="{suite}" name="{case}">
-                    <skipped message="{reason}"/>
+                  <testcase classname="{suite}" name="{name}">
+                    <skipped message="QTEST_QEMU_BINARY_MGRAS_V9 is not set"/>
                   </testcase>
                 </testsuite>''')
                 if allowed:

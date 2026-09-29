@@ -25,8 +25,7 @@ _ROM_PARSER_SPEC.loader.exec_module(_ROM_PARSER)
 # This cross-version migration case needs a separately supplied v9 QEMU.
 # Its explicit skip is expected when that reference binary is unavailable.
 _OPTIONAL_SKIP = ('qtest-mips64/sn0-origin2000-mgras-test',
-                  '/mips64/sn0/origin2000/mgras/migration-from-v9-format-default',
-                  'QTEST_QEMU_BINARY_MGRAS_V9 is not set')
+                  '/mips64/sn0/origin2000/mgras/migration-from-v9-format-default')
 
 
 class ResultError(Exception):
@@ -125,11 +124,10 @@ def read_report(path):
         for key in {name, _testcase_name(name), _suite_name(name),
                     identity}:
             found.setdefault(key, []).append(case)
-        for skip in case.findall('skipped'):
-            reason = skip.get('message') or (skip.text or '').strip()
-            if (_suite_name(classname or ''), _testcase_name(name),
-                    reason) != _OPTIONAL_SKIP:
-                skips.append(identity)
+        if (case.findall('skipped') and
+                (_suite_name(classname or ''),
+                 _testcase_name(name)) != _OPTIONAL_SKIP):
+            skips.append(identity)
         if case.findall('failure') or case.findall('error'):
             failures.append(identity)
 
