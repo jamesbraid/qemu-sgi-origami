@@ -799,6 +799,8 @@ typedef enum MgrasGLQueryPacking {
  *   index 0x3a + i and 0x4a + i, each word stored as a float into
  *   element i of the result (the loop at 0xd992d28 advances its output
  *   one float per query), which glGet returns column-major.
+ * - GL_TEXTURE_MATRIX: 0x6a + i with a1 0 (table offset 0x164), read the
+ *   same way (0xd994030).
  * - GL_MATRIX_MODE: index 0x29, a1 0; the client returns the word plus
  *   0x1701, so the word is the mode's enumerant less GL_PROJECTION.
  * - GL_VIEWPORT: 0xc1d to 0xc20, stored as integers x, y, width, height.
@@ -842,6 +844,7 @@ static const struct {
 } mgras_gl_queries[] = {
     { 0x03a, 16, MGRAS_GL_QUERY_WORD, SGI_GL_MODELVIEW_MATRIX, 0 },
     { 0x04a, 16, MGRAS_GL_QUERY_WORD, SGI_GL_PROJECTION_MATRIX, 0 },
+    { 0x06a, 16, MGRAS_GL_QUERY_WORD, SGI_GL_TEXTURE_MATRIX, 0 },
     { 0x029, 1, MGRAS_GL_QUERY_MATRIX_MODE, SGI_GL_MATRIX_MODE, 0 },
     { 0xc1d, 4, MGRAS_GL_QUERY_WORD, SGI_GL_VIEWPORT, 0 },
     { 0xc19, 1, MGRAS_GL_QUERY_WORD, SGI_GL_SHADE_MODEL, 0 },
@@ -877,8 +880,14 @@ static const struct {
  * 16 * (depth - 1) from the loaded context's stack. That the board's
  * word is that address is inferred from the client's arithmetic; the
  * modelview base lies 32 matrices below the projection base, the depth
- * the model gives both stacks. The texture and colour-matrix stacks are
- * not kept, and their queries still answer zero.
+ * the model gives both stacks.
+ *
+ * GL_TEXTURE_STACK_DEPTH is index 0x923 (table offset 0x1fc) with its
+ * base at table offset 0x1ec (0xd994db8-0xd994de4); the file words at
+ * 0x228 and 0x218 are 0x923 and 0xb45. The texture base lies two
+ * matrices above the projection base, so the board's projection stack
+ * holds two (inferred), where the model's holds 32 like its others. The
+ * colour-matrix stack is not kept, and its query still answers zero.
  */
 static const struct {
     uint16_t index;
@@ -887,6 +896,7 @@ static const struct {
 } mgras_gl_stack_queries[] = {
     { 0x083, 0x925, SGI_GL_MODELVIEW_STACK_DEPTH },
     { 0x922, 0xb25, SGI_GL_PROJECTION_STACK_DEPTH },
+    { 0x923, 0xb45, SGI_GL_TEXTURE_STACK_DEPTH },
 };
 
 #define MGRAS_GL_STACK_WORDS     16
@@ -1553,6 +1563,53 @@ const VMStateDescription vmstate_sgi_mgras_gl_lighting = {
     }
 };
 
+static const VMStateDescription vmstate_sgi_mgras_gl_context_texture = {
+    .name = TYPE_SGI_MGRAS "/gl-context-texture",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_SGI_GL_FLOATS(texture, SGIGLContext, 16, 0),
+        VMSTATE_2DARRAY(tx_stack, SGIGLContext, MGRAS_GL_WIRE_STACK, 16,
+                        0, vmstate_info_uint32, float),
+        VMSTATE_UINT32(tx_depth, SGIGLContext),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
+/*
+ * Every context's texture matrix and stack, sent only once some context
+ * has left the identity with an empty stack. A stream without it comes
+ * from a model that dropped every texture-matrix command, whose contexts
+ * all kept the identity: the destination's initial state.
+ */
+static bool mgras_gl_texture_needed(void *opaque)
+{
+    SGIMgrasState *s = opaque;
+    g_autofree SGIGLContext *init = g_new(SGIGLContext, 1);
+
+    sgi_gl_init(init, 0);
+    for (int i = 0; i < SGI_MGRAS_GL_CONTEXTS; i++) {
+        if (s->gl[i].tx_depth ||
+            memcmp(s->gl[i].texture, init->texture, sizeof(init->texture))) {
+            return true;
+        }
+    }
+    return false;
+}
+
+const VMStateDescription vmstate_sgi_mgras_gl_texture = {
+    .name = TYPE_SGI_MGRAS "/gl-texture",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = mgras_gl_texture_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_STRUCT_ARRAY(gl, SGIMgrasState, SGI_MGRAS_GL_CONTEXTS, 1,
+                             vmstate_sgi_mgras_gl_context_texture,
+                             SGIGLContext),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
 /*
  * The parser inside a glBitmap image, live or set aside with a context,
  * keeps its place in the payload fields the stream already carries. A
@@ -1615,6 +1672,7 @@ bool sgi_mgras_gl_post_load(SGIMgrasState *s)
             gl->begin_mode > SGI_GL_POLYGON ||
             gl->mv_depth >= SGI_GL_STACK_DEPTH ||
             gl->pr_depth >= SGI_GL_STACK_DEPTH ||
+            gl->tx_depth >= SGI_GL_STACK_DEPTH ||
             gl->raster_valid > 1 || gl->cur.index_bits > 32 ||
             gl->cur.dither > 1 || gl->light_model_local_viewer > 1 ||
             gl->light_model_two_side > 1 || gl->color_material > 1 ||
