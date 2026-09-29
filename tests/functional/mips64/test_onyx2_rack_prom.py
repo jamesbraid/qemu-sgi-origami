@@ -8,10 +8,10 @@
 module, so the stock IP27 PROM 6.156 names its slots exactly as an
 Origin 2000's: nodes n1 to n4, the BaseIO-G in io1 at widget 8, and the
 pipe under the slot its Xtown occupies, io3, where the real rack capture
-has it (docs/datasheets/onyx2.md in the Origami repository).
+has it (documented in the Origami repository's Onyx2 datasheet).
 
-The harness's own launch reached the menu in about two minutes on
-2026-09-27.
+A recorded harness run reached the menu in about two minutes on
+2026-09-27; this test uses QEMU's functional-test framework.
 """
 
 from lib_prom import FIRMWARE_REL

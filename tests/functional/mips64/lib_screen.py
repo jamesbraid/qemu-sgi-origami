@@ -12,7 +12,7 @@ bounded, general checks rather than an exact pixel-for-pixel golden image:
   - NotAllBlackCheck: is any pixel above a small threshold at all. This is
     the coarsest possible check and exactly what would have caught RAD4's
     real BAR2-unreachable regression (docs/research/graphics/
-    rad4-xradsgi-connection-hang-20260916.md in the Origami checkout):
+    rad4-xradsgi-connection-hang-20260916.md in the Origami research records):
     with that gap in place, every framebuffer byte a booted guest produced
     stayed zero for the whole run, confirmed live against the pre-fix
     revision (QEMU commit c9d4b3d6e2's parent) while developing this
@@ -42,7 +42,7 @@ real bitmap from a solid fill of the same mean brightness:
     distinct (r, g, b) values. A live measurement of the IRIX 6.5.30 SI
     greeter's icon-chooser capture (docs/notebooks/
     si-target-first-chooser-20260921/si-chooser.png in the Origami
-    checkout) found this genuinely discriminating: the whole 1280x1024
+    research records) found this genuinely discriminating: the whole 1280x1024
     frame carries only three colors total (black background, one cyan
     foreground value, and a handful of white cursor pixels), yet the
     account icon's own 98x98 rectangle -- a solid cyan fill crossed by a

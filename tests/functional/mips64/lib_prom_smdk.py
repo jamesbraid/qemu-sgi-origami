@@ -19,13 +19,10 @@ diagnostic; a cell is `run` or a key of REASONS saying why that population
 does not run it yet. DIAGS holds each diagnostic's arguments and what it
 needs served. SmdkDriver is the dialogue.
 
-This ports the verdict rules and the dialogue of the project checkout's
-own harness (tools/origami_lib/drivers/smdk.py and
-tools/origami.d/run/smdk.py), and render_terminal() from its
-tools/origami_lib/terminal_transcript.py: those are this project's own
-tools, the same way lib_origin300.py ports its boot-flash seeding. The
-evidence for each rule is recorded there and in the project checkout's
-NOW.md sMDK section; the comments here say what each rule is for.
+This QEMU functional-test helper implements the sMDK dialogue and
+verdict rules independently. Their evidence and rationale are recorded in
+the Origami repository's sMDK research notes; the comments here explain
+what each rule checks.
 
 Plain Python with no qemu_test dependency, the same rule lib_prom.py
 follows: test_lib_prom_smdk.py exercises it under a bare python3.
