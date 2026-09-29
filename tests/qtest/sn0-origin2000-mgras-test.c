@@ -12130,7 +12130,9 @@ static void test_gl_clip_null_and_many_draw_nothing(void)
 
 /*
  * Migrate a guest that setup has driven to a fresh destination, and hand
- * the destination to check.
+ * the destination to check. QTEST_QEMU_BINARY_SRC and
+ * QTEST_QEMU_BINARY_DST, when set, name the two binaries, so each GL
+ * state's migration can be run between builds.
  */
 static void gl_migrate(void (*setup)(QTestState *),
                        void (*check)(QTestState *))
@@ -12144,9 +12146,10 @@ static void gl_migrate(void (*setup)(QTestState *),
     tmpfs = g_dir_make_tmp("sn0-mgras-gl-state-XXXXXX", &err);
     g_assert_no_error(err);
     uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
-    from = qtest_init(MIGRATION_ARGS);
+    from = qtest_init_ext("QTEST_QEMU_BINARY_SRC", MIGRATION_ARGS, NULL,
+                          true);
     dest_cmdline = g_strdup_printf(MIGRATION_ARGS " -incoming %s", uri);
-    to = qtest_init(dest_cmdline);
+    to = qtest_init_ext("QTEST_QEMU_BINARY_DST", dest_cmdline, NULL, true);
 
     setup(from);
     sgi_migrate_stopped(from, uri);
