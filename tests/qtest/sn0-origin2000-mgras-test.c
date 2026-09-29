@@ -14039,6 +14039,17 @@ static void test_gl_stencil_masks_drawing(void)
     g_assert_cmphex(gl_query(qts, GL_Q_STENCIL_MASKS, 1) & 0xffff, ==,
                     0x5a3c);
     g_assert_cmphex(gl_query(qts, GL_Q_STENCIL_CLEAR, 1), ==, 7);
+    /*
+     * The depth and index clear values beside it, 0xc12 and 0xc13; the
+     * initial depth is 1.0, 24 bits of ones.
+     */
+    g_assert_cmphex(gl_query(qts, GL_Q_STENCIL_CLEAR - 2, 1), ==, 0xffffff);
+    gl_one(qts, GL_CLEAR_DEPTH_HDR, 0x123456);
+    g_assert_cmphex(gl_query(qts, GL_Q_STENCIL_CLEAR - 2, 1), ==, 0x123456);
+    gl_word(qts, GL_CLEAR_INDEX_HDR);
+    gl_float(qts, 2.5f);
+    g_assert_cmphex(gl_query(qts, GL_Q_STENCIL_CLEAR - 1, 1), ==,
+                    gl_bits(2.5f));
     gl_one(qts, GL_STENCIL_TEST_HDR, 0);
     g_assert_cmphex(gl_query(qts, GL_Q_PIXEL_ENABLES, 1) & 0x10, ==, 0);
 }

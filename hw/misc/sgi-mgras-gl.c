@@ -1275,7 +1275,10 @@ typedef enum MgrasGLQueryPacking {
  *   and y + height - 1: the client returns the first two and the last two
  *   less the first two plus 1 (0xd994f1c-0xd994f5c). GL_SCISSOR_TEST at
  *   0xc28, the whole word the boolean.
- * - GL_STENCIL_CLEAR_VALUE at 0xc14, an integer.
+ * - GL_INDEX_CLEAR_VALUE at 0xc13, a float, and GL_STENCIL_CLEAR_VALUE at
+ *   0xc14, an integer. GL_DEPTH_CLEAR_VALUE at 0xc12 the client divides
+ *   by 16777215.0 (the float at file offset 0x1d9450, 0xd992ab4), so the
+ *   answer is the clear depth in the 24-bit units 0xbc04 sends it in.
  * - GL_BLEND at 0xc4a, the whole word the boolean, and GL_BLEND_SRC,
  *   GL_BLEND_DST and GL_BLEND_EQUATION at 0xc4b to 0xc4d, integers.
  * - GL_FOG_MODE at 0xbce, an integer; GL_FOG_DENSITY, _START and _END at
@@ -1288,7 +1291,7 @@ typedef enum MgrasGLQueryPacking {
  *   GL_POLYGON_MODE's front and back at 0xc17 and 0xc18, enumerants; and
  *   GL_LINE_SMOOTH at 0xc30, the whole word the boolean. The line
  *   stipple's pattern and repeat, at 0xc46 and 0xc47, are answered in the
- *   form 0x4608 sends them (mgras_gl_stipple_query()).
+ *   form 0x4608 sends them (mgras_gl_client_form_query()).
  *
  * What a1 and a2 select is unknown; the model answers by index alone.
  * Every other index answers zero, logged, which is right for the
@@ -1329,6 +1332,7 @@ static const struct {
     { 0xc24, 2, MGRAS_GL_QUERY_WORD, SGI_GL_SCISSOR_BOX, 0 },
     { 0xc26, 2, MGRAS_GL_QUERY_BOX_END, SGI_GL_SCISSOR_BOX, 2 },
     { 0xc28, 1, MGRAS_GL_QUERY_WORD, SGI_GL_SCISSOR_TEST, 0 },
+    { 0xc13, 1, MGRAS_GL_QUERY_WORD, SGI_GL_INDEX_CLEAR_VALUE, 0 },
     { 0xc14, 1, MGRAS_GL_QUERY_WORD, SGI_GL_STENCIL_CLEAR_VALUE, 0 },
     { 0xc4a, 1, MGRAS_GL_QUERY_WORD, SGI_GL_BLEND, 0 },
     { 0xc4b, 1, MGRAS_GL_QUERY_WORD, SGI_GL_BLEND_SRC, 0 },
@@ -1362,16 +1366,23 @@ static uint32_t mgras_gl_reverse16(uint32_t pattern)
     return out;
 }
 
+#define MGRAS_GL_QUERY_CLEAR_DEPTH 0xc12
+
 /*
- * GL_LINE_STIPPLE_PATTERN at 0xc46, whose low 16 bits the client
- * reverses, and GL_LINE_STIPPLE_REPEAT at 0xc47, to which it adds 1.
+ * The answers kept in the form the client sends them rather than glGet's:
+ * GL_DEPTH_CLEAR_VALUE in 24-bit units; GL_LINE_STIPPLE_PATTERN at 0xc46,
+ * whose low 16 bits the client reverses; and GL_LINE_STIPPLE_REPEAT at
+ * 0xc47, to which it adds 1.
  */
-static bool mgras_gl_stipple_query(SGIMgrasState *s, uint32_t index,
-                                   uint32_t *answer)
+static bool mgras_gl_client_form_query(SGIMgrasState *s, uint32_t index,
+                                       uint32_t *answer)
 {
     const SGIGLContext *gl = mgras_gl(s);
 
     switch (index) {
+    case MGRAS_GL_QUERY_CLEAR_DEPTH:
+        *answer = gl->clear_depth & MGRAS_GL_DEPTH_MASK_24;
+        return true;
     case 0xc46:
         *answer = mgras_gl_reverse16(gl->line_stipple_pattern);
         return true;
@@ -1605,7 +1616,7 @@ uint32_t sgi_mgras_gl_query_answer(SGIMgrasState *s, const uint32_t *args,
         return mgras_gl_writemask_answer(s);
     }
     if (mgras_gl_clip_query(s, index, &out[0]) ||
-        mgras_gl_stipple_query(s, index, &out[0])) {
+        mgras_gl_client_form_query(s, index, &out[0])) {
         return out[0];
     }
     if (index >= MGRAS_GL_QUERY_READBACK &&
