@@ -9951,13 +9951,15 @@ static void test_gl_raster_pos2i(void)
  * client sends them: glVertex3i (0x3800000c) draws where glVertex3f of
  * the same values would, glRasterPos3i (0x3800380c) sets the raster
  * position with its z, window depth 0 for z 1 under glOrtho's -1 to 1,
- * and glTexCoord2f (0x40000808) and glTexCoord3i (0x3800080c) between
- * the vertices are consumed by their length and change nothing drawn.
+ * and glTexCoord2f (0x40000808), glTexCoord3i (0x3800080c) and
+ * glTexCoord4f (0x00000810) between the vertices are consumed by their
+ * length and change nothing drawn.
  */
 #define GL_VERTEX3I_HDR       0x3800000c
 #define GL_RASTER_POS3I_HDR   0x3800380c
 #define GL_TEX_COORD3I_HDR    0x3800080c
 #define GL_TEX_COORD2F_HDR    0x40000808
+#define GL_TEX_COORD4F_HDR    0x00000810
 
 static void gl_vertex3i(QTestState *qts, int32_t x, int32_t y, int32_t z)
 {
@@ -9983,6 +9985,10 @@ static void test_gl_integer_and_texture_forms(void)
     gl_word(qts, 2);
     gl_word(qts, 3);
     gl_vertex3i(qts, 40, 10, 0);
+    gl_word(qts, GL_TEX_COORD4F_HDR);
+    for (int i = 0; i < 4; i++) {
+        gl_word(qts, gl_bits(0.5f));
+    }
     gl_vertex3i(qts, 10, 40, 0);
     gl_word(qts, GL_END_TRIANGLES);
     g_assert_cmphex(gl_window_pixel(qts, 15, 15), ==, 0xffffff);
