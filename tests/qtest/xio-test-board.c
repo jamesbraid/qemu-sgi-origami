@@ -9,6 +9,7 @@
 
 #include "qemu/osdep.h"
 #include "hw/mips/sgi/xio-board.h"
+#include "hw/mips/sgi/pi-gfx.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/core/sysbus.h"
 #include "hw/misc/sgi-xbow.h"
@@ -74,9 +75,49 @@ static const TypeInfo sgi_xio_test_board_type = {
     .class_init = sgi_xio_test_board_class_init,
 };
 
+/*
+ * The same board with a graphics head's "pi" link, the link a head returns
+ * its graphics credits through. It lets a test see which node's Hub or
+ * Bedrock the machine links a placed board to; it returns no credits. The
+ * "fabric" link makes it placeable by slot name; its widget makes no DMA,
+ * so the fabric is kept and not used.
+ */
+#define TYPE_SGI_XIO_PI_TEST_BOARD "sgi-xio-pi-test-board"
+OBJECT_DECLARE_SIMPLE_TYPE(SGIXioPiTestBoardState, SGI_XIO_PI_TEST_BOARD)
+
+struct SGIXioPiTestBoardState {
+    SGIXioTestBoardState parent_obj;
+    Object *pi;
+    MemoryRegion *fabric;
+};
+
+static const Property sgi_xio_pi_test_board_properties[] = {
+    DEFINE_PROP_LINK("pi", SGIXioPiTestBoardState, pi, TYPE_SGI_PI_GFX,
+                     Object *),
+    DEFINE_PROP_LINK("fabric", SGIXioPiTestBoardState, fabric,
+                     TYPE_MEMORY_REGION, MemoryRegion *),
+};
+
+static void sgi_xio_pi_test_board_class_init(ObjectClass *oc,
+                                             const void *data)
+{
+    DeviceClass *dc = DEVICE_CLASS(oc);
+
+    dc->desc = "XIO test board with a graphics credit link";
+    device_class_set_props(dc, sgi_xio_pi_test_board_properties);
+}
+
+static const TypeInfo sgi_xio_pi_test_board_type = {
+    .name = TYPE_SGI_XIO_PI_TEST_BOARD,
+    .parent = TYPE_SGI_XIO_TEST_BOARD,
+    .instance_size = sizeof(SGIXioPiTestBoardState),
+    .class_init = sgi_xio_pi_test_board_class_init,
+};
+
 static void sgi_xio_test_board_register_types(void)
 {
     type_register_static(&sgi_xio_test_board_type);
+    type_register_static(&sgi_xio_pi_test_board_type);
 }
 
 type_init(sgi_xio_test_board_register_types)

@@ -1284,6 +1284,27 @@ static bool sgi_machine_instantiate_ip29_io(
 }
 
 /*
+ * A graphics head returns the credits its port takes to its master node,
+ * the node whose I/O interface its Crossbow port reaches: that node's
+ * graphics node-widget map routes them on to the processor that paid.
+ * Every board with a "pi" link gets that node's Hub, or its Bedrock; a
+ * board given one outright keeps it.
+ */
+static void sgi_machine_link_board_pi(SGIMachineState *s, Object *board,
+                                      unsigned int node_index)
+{
+    Object *node;
+
+    if (!object_property_find(board, "pi") ||
+        object_property_get_link(board, "pi", &error_abort)) {
+        return;
+    }
+    node = s->nodes ? OBJECT(&s->nodes[node_index]->hub) :
+        OBJECT(SN1_NODE(s->bedrock_nodes[node_index])->bedrock);
+    object_property_set_link(board, "pi", node, &error_abort);
+}
+
+/*
  * Link a Crossbow-attached XIO card @dev to its Crossbow port at
  * @attachment's widget and realize it: the card takes its fabric from the
  * link before it builds its widget, and the Crossbow takes the widget's
@@ -1300,6 +1321,7 @@ static bool sgi_machine_attach_xio_card(
     sgi_xio_link_init(link, OBJECT(s), name,
                       OBJECT(s->crossbars[attachment->crossbar_index]),
                       attachment->widget, OBJECT(dev), 0);
+    sgi_machine_link_board_pi(s, OBJECT(dev), attachment->node_index);
     if (!sgi_xio_link_connect(link, errp) ||
         !sysbus_realize(SYS_BUS_DEVICE(dev), errp) ||
         !sgi_xio_link_connect(link, errp)) {
@@ -2918,8 +2940,9 @@ static char *sgi_machine_slot_needs_node(MachineState *machine,
 
 /*
  * The machine's side of a board fitted by slot name (TYPE_SGI_XIO_SLOTS,
- * xio-board.h): the named empty slot's module and widget, and the link
- * from its Crossbow port to the board.
+ * xio-board.h): the named empty slot's module and widget, the link
+ * from its Crossbow port to the board, and the board's link to the
+ * graphics credits of the node that controls the slot.
  */
 static void sgi_machine_link_slot(SGIMachineState *s,
                                   const SGIModelTopology *t,
@@ -2933,6 +2956,7 @@ static void sgi_machine_link_slot(SGIMachineState *s,
     sgi_xio_link_init(&s->slot_links[index], OBJECT(s), name,
                       OBJECT(s->crossbars[slot->crossbar_index]),
                       slot->widget, board, 0);
+    sgi_machine_link_board_pi(s, board, slot->controlling_node);
 }
 
 static SGIXioLink *sgi_machine_claim_xio_slot(Object *obj, Object *board,
