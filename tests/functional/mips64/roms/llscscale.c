@@ -12,8 +12,9 @@
  * is embarrassingly parallel -- four processors doing it should take
  * about as long as one. The native QEMU ROM test
  * (`func-mips64-sgi_roms`, registered by
- * `tests/functional/mips64/test_sgi_roms.py`) records the timed case's
- * duration; it does not calculate a throughput ratio.
+ * `tests/functional/mips64/test_sgi_roms.py`) has its duration recorded in
+ * Meson's test results; the framework does not calculate a throughput
+ * ratio.
  *
  * NOTHING PASSES OR FAILS ON THAT NUMBER, which was settled by
  * measuring it
