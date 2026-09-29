@@ -270,11 +270,18 @@ typedef struct SGIGLMaterial {
  * buffer selection give it. Coordinates are plane pixels.
  */
 typedef struct SGIGLDrawable {
-    /* 0 while the family has no window for the context: nothing draws. */
+    /*
+     * 0 while the family has no window for the context: nothing draws,
+     * and each draw, clear or bitmap is logged as dropped.
+     */
     uint32_t bound;             /* 0 or 1 */
     /* The window's lower-left pixel, where window coordinates start. */
     int32_t origin[2];
-    /* The pixels the window owns; a bound drawable has at least one. */
+    /*
+     * The pixels the window owns. A bound window with no rectangle is one
+     * other windows wholly cover, a normal state: nothing draws and
+     * nothing is logged.
+     */
     SGIClipList clip;
     /* The colour targets glDrawBuffer's front and back buffers name. */
     SGIColourTarget front;

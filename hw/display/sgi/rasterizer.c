@@ -53,9 +53,13 @@ static bool sgi_soft_window(const SGIGLDrawState *st, SGISoftWindow *win)
 {
     const SGIGLDrawable *d = &st->drawable;
 
-    if (!d->bound || !d->clip.n) {
+    if (!d->bound) {
         qemu_log_mask(LOG_UNIMP, "sgi-gl: draw with no window bound "
                       "dropped\n");
+        return false;
+    }
+    if (!d->clip.n) {
+        /* Other windows cover all of this one: nothing to draw. */
         return false;
     }
     win->ox = d->origin[0];
