@@ -437,7 +437,8 @@ static int net_slirp_init(NetClientState *peer, const char *model,
                           bool ipv6, const char *vprefix6, int vprefix6_len,
                           const char *vhost6,
                           const char *vhostname, const char *tftp_export,
-                          const char *bootfile, const char *vdhcp_start,
+                          const char *bootfile, bool bootfile_from_request,
+                          const char *vdhcp_start,
                           const char *vnameserver, const char *vnameserver6,
                           const char *smb_export, const char *vsmbserver,
                           const char **dnssearch, const char *vdomainname,
@@ -666,6 +667,9 @@ static int net_slirp_init(NetClientState *peer, const char *model,
     cfg.vdnssearch = dnssearch;
     cfg.vdomainname = vdomainname;
     s->slirp = slirp_new(&cfg, &slirp_cb, s);
+    if (bootfile_from_request) {
+        slirp_set_bootp_use_client_filename(s->slirp, true);
+    }
     QTAILQ_INSERT_TAIL(&slirp_stacks, s, entry);
 
     /*
@@ -1336,7 +1340,8 @@ int net_init_slirp(const Netdev *netdev, const char *name,
                          ipv4, vnet, user->host,
                          ipv6, user->ipv6_prefix, user->ipv6_prefixlen,
                          user->ipv6_host, user->hostname, user->tftp,
-                         user->bootfile, user->dhcpstart,
+                         user->bootfile, user->bootfile_from_request,
+                         user->dhcpstart,
                          user->dns, user->ipv6_dns, user->smb,
                          user->smbserver, dnssearch, user->domainname,
                          user->tftp_server_name, errp);

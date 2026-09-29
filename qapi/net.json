@@ -326,6 +326,9 @@
 #
 # @bootfile: BOOTP filename, for use with tftp=
 #
+# @bootfile-from-request: Use a nonempty, terminated BOOTP request
+#     filename in that reply.  Otherwise use @bootfile.
+#
 # @dhcpstart: the first of the 16 IPs the built-in DHCP server can
 #     assign
 #
@@ -373,6 +376,7 @@
     '*host':      'str',
     '*tftp':      'str',
     '*bootfile':  'str',
+    '*bootfile-from-request': 'bool',
     '*dhcpstart': 'str',
     '*dns':       'str',
     '*dnssearch': ['NetdevUserDomainSuffix'],
