@@ -156,6 +156,10 @@ static bool mips_cpu_has_work(CPUState *cs)
         return true;
     }
 
+    if (env->r10k && env->r10k->coherence_waiting) {
+        return false;
+    }
+
     /*
      * Prior to MIPS Release 6 it is implementation dependent if non-enabled
      * interrupts wake-up the CPU, however most of the implementations only
@@ -279,6 +283,7 @@ static void mips_cpu_reset_hold(Object *obj, ResetType type)
         R10KState *r10k = env->r10k;
 
         memset(r10k, 0, offsetof(R10KState, system_requests));
+        r10k->globally_performed = true;
         r10k->CP0_TagLo_rw_bitmask = env->cpu_model->CP0_TagLo_rw_bitmask;
         r10k->CP0_ECC_rw_bitmask = env->cpu_model->CP0_ECC_rw_bitmask;
         r10k->CP0_Config0_preserve_bitmask =
@@ -764,14 +769,24 @@ static void mips_cpu_realizefn(DeviceState *dev, Error **errp)
         error_setg(errp, "r10k-data-cache requires one R10000 CPU");
         return;
     }
-    if (cpu->r10k_sccoren) {
+    if (cpu->r10k_scache_line_size != 64 && cpu->r10k_scache_line_size != 128) {
+        error_setg(errp, "r10k-scache-line-size must be 64 or 128");
+        return;
+    }
+    if (cpu->r10k_sccoren || cpu->r10k_scache_line_size != 128) {
         if (strcmp(mcc->cpu_def->name, "R10000")) {
             error_setg(errp, "r10k-sccoren requires an R10000 CPU");
             return;
         }
         cpu->r10k_cpu_model = g_new(mips_def_t, 1);
         *cpu->r10k_cpu_model = *env->cpu_model;
-        cpu->r10k_cpu_model->CP0_Config0 |= 1 << CP0C0_R10K_SK;
+        if (cpu->r10k_sccoren) {
+            cpu->r10k_cpu_model->CP0_Config0 |= 1 << CP0C0_R10K_SK;
+        }
+        cpu->r10k_cpu_model->cfg.scache_line_size = cpu->r10k_scache_line_size;
+        cpu->r10k_cpu_model->CP0_Config0 = deposit32(
+            cpu->r10k_cpu_model->CP0_Config0, CP0C0_R10K_SB, 1,
+            cpu->r10k_scache_line_size == 128);
         env->cpu_model = cpu->r10k_cpu_model;
     }
 #endif
@@ -964,6 +979,8 @@ static const Property mips_cpu_properties[] = {
 #ifdef CONFIG_TCG
     DEFINE_PROP_BOOL("r10k-data-cache", MIPSCPU, r10k_data_cache, false),
     DEFINE_PROP_BOOL("r10k-sccoren", MIPSCPU, r10k_sccoren, false),
+    DEFINE_PROP_UINT32("r10k-scache-line-size", MIPSCPU,
+                       r10k_scache_line_size, 128),
 #endif
     DEFINE_PROP_LINK("uncached-memory", MIPSCPU, uncached_memory,
                      TYPE_MEMORY_REGION, MemoryRegion *),

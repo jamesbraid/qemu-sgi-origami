@@ -43,6 +43,7 @@ guest hardware that is specific to QEMU.
    aspeed-intc
    iommu-testdev
    s390x-secure-ipl
+   r10000-coherence
    sgi-bridge
    sgi-elsc
    sgi-hub

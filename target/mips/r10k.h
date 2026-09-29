@@ -16,6 +16,8 @@
 #ifndef MIPS_R10K_H
 #define MIPS_R10K_H
 
+#include "hw/mips/r10k-coherence.h"
+
 /* External secondary-cache geometry used by R10000-family definitions. */
 #define R10K_SCACHE_SIZE       (1024 * 1024)
 #define R14K_SCACHE_SIZE       (2 * 1024 * 1024)
@@ -193,18 +195,18 @@ typedef struct R10KState {
     uint8_t dcache_lru[R10K_DCACHE_SETS];
     uint32_t dcache_data[R10K_PCACHE_WORDS];
     uint8_t dcache_parity[R10K_PCACHE_WORDS];
+    R10KTransaction request;
+    R10KTransaction outgoing;
+    R10KExternalTransaction external[2];
+    unsigned int external_count;
+    bool coherence_waiting;
+    bool coherence_sync_waiting;
+    bool globally_performed;
 
-    /*
-     * Set by the board and kept across reset, so they stay last: reset
-     * clears the state above them only. Not migrated.
-     */
+    /* Board links and request identities survive reset. */
     MemoryRegion *system_requests;
-    /*
-     * The identity the board gives this processor's requests, carried in
-     * each reference's requester_id so a memory unit can tell processors
-     * apart. The board keeps it current.
-     */
     uint16_t requester_id;
+    uint64_t next_request_id;
 } R10KState;
 
 #endif /* MIPS_R10K_H */

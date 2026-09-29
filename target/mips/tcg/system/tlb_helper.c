@@ -1195,7 +1195,10 @@ bool mips_cpu_tlb_fill(CPUState *cs, vaddr address, int size,
                 prot &= PAGE_EXEC;
             } else {
                 prot &= ~PAGE_EXEC;
-                if (attrs.mips_cca == 3) {
+                if (attrs.mips_cca == 5 && !env->r10k->system_requests) {
+                    cpu_abort(cs, "R10000 CCA 5 requires an external agent");
+                }
+                if (attrs.mips_cca == 3 || attrs.mips_cca == 5) {
                     attrs.mips_data_cache = 1;
                     /* Carry VA[13:12] beside the 40-bit physical address. */
                     physical |= (hwaddr)extract64(address, 12, 2) << 40;
@@ -1753,6 +1756,11 @@ bool mips_cpu_exec_interrupt(CPUState *cs, int interrupt_request)
         env->error_code = 0;
         mips_cpu_do_interrupt(cs);
         return true;
+    }
+    /* Complete the stalled instruction before admitting maskable interrupts. */
+    if (cpu_env(cs)->r10k &&
+        cpu_env(cs)->r10k->request.phase != R10K_REQUEST_FREE) {
+        return false;
     }
     if ((interrupt_request & CPU_INTERRUPT_DWATCH) &&
         mips_r10k_deliver_delayed_watch(cs)) {

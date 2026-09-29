@@ -250,11 +250,15 @@ int get_physical_address(CPUMIPSState *env, hwaddr *physical,
         }
 #endif
     } else if (address < KSEG1_BASE) {
-        /* kseg0 */
+        /* R10000 has Config.K0, not a writable segment control register. */
+        uint16_t segctl = env->CP0_SegCtl1 >> 16;
+
+        if (!strcmp(env->cpu_model->name, "R10000")) {
+            segctl = deposit32(segctl, CP0SC_C, 3, env->CP0_Config0 & 7);
+        }
         ret = get_segctl_physical_address(env, physical, prot, real_address,
                                           access_type, mmu_idx,
-                                          env->CP0_SegCtl1 >> 16, 0x1FFFFFFF,
-                                          attrs);
+                                          segctl, 0x1FFFFFFF, attrs);
     } else if (address < KSEG2_BASE) {
         /* kseg1 */
         ret = get_segctl_physical_address(env, physical, prot, real_address,

@@ -324,6 +324,10 @@ F: target/mips/
 F: disas/*mips.c
 F: docs/system/cpu-models-mips.rst.inc
 F: tests/tcg/mips*/
+F: docs/specs/r10000-coherence.rst
+F: hw/misc/r10k-test-agent.c
+F: include/hw/mips/r10k-coherence.h
+F: tests/functional/mips64/test_r10000_coherence.py
 
 OpenRISC TCG CPUs
 M: Stafford Horne <shorne@gmail.com>

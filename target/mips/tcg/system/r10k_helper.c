@@ -19,6 +19,8 @@
 #include "qemu/osdep.h"
 #include "qemu/main-loop.h"
 #include "qemu/log.h"
+#include "qapi/error.h"
+#include "system/cpus.h"
 #include "cpu.h"
 #include "internal.h"
 #include "exec/cputlb.h"
@@ -452,8 +454,12 @@ static bool r10k_cache_backing(CPUMIPSState *env, hwaddr block,
     return supported;
 }
 
+static MemTxResult r10k_coherent_writeback(CPUMIPSState *env,
+                                          unsigned int tag, uintptr_t ra,
+                                          R10KRequestCause cause);
+
 static MemTxResult r10k_scache_writeback(CPUMIPSState *env, unsigned int tag,
-                                         uintptr_t ra)
+                                         uintptr_t ra, R10KRequestCause cause)
 {
     uint8_t data[128];
     unsigned int size = r10k_scache_line_size(env);
@@ -462,6 +468,9 @@ static MemTxResult r10k_scache_writeback(CPUMIPSState *env, unsigned int tag,
 
     if (extract32(env->r10k->scache_taglo[tag], 10, 2) != 3) {
         return MEMTX_OK;
+    }
+    if (env->r10k->system_requests) {
+        return r10k_coherent_writeback(env, tag, ra, cause);
     }
     if (!r10k_cache_backing(env, block, size, true)) {
         return MEMTX_ACCESS_ERROR;
@@ -489,9 +498,500 @@ static void r10k_data_cache_error(CPUMIPSState *env, MemTxResult result,
     }
 }
 
+/*
+ * All ordinary cache references enter through a BQL-protected CPU memory
+ * region. CACHE and SYNC helpers take the BQL explicitly. Agent calls use
+ * the same lock, so data and ownership always change together.
+ */
+static void r10k_coherent_wake(CPUMIPSState *env)
+{
+    R10KState *r = env->r10k;
+    CPUState *cs = env_cpu(env);
+
+    assert(bql_locked());
+    if (r->coherence_waiting || r->coherence_sync_waiting) {
+        r->coherence_waiting = false;
+        r->coherence_sync_waiting = false;
+        cs->halted = false;
+        qemu_cpu_kick(cs);
+    }
+}
+
+static G_NORETURN void r10k_coherent_wait(CPUMIPSState *env, uintptr_t ra)
+{
+    CPUState *cs = env_cpu(env);
+
+    assert(bql_locked());
+    assert(cs == current_cpu);
+    env->r10k->coherence_waiting = true;
+    cs->halted = true;
+    cs->exception_index = EXCP_HLT;
+    /* cpu_loop_exit_restore skips the memory accessor's normal cleanup. */
+    DEVICE(cs)->mem_reentrancy_guard.engaged_in_io = false;
+    cpu_loop_exit_restore(cs, ra);
+}
+
+static bool r10k_external_busy(R10KState *r, uint64_t block)
+{
+    unsigned int i;
+
+    for (i = 0; i < r->external_count; i++) {
+        if (r->external[i].block == block) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static MemTxResult r10k_coherent_notify(CPUMIPSState *env,
+                                        R10KTransaction *t)
+{
+    R10KState *r = env->r10k;
+    MemTxAttrs attrs = { .requester_id = r->requester_id,
+                         .mips_cca = t->cca };
+    uint64_t found;
+
+    r->globally_performed = false;
+    return memory_region_dispatch_read(r->system_requests,
+                t->address | (uint64_t)t->command <<
+                             R10K_SYSTEM_REQUEST_KIND_SHIFT,
+                &found, MO_BEUQ, attrs);
+}
+
+bool mips_r10k_attach_agent(CPUState *cs, MemoryRegion *requests, Error **errp)
+{
+    MIPSCPU *cpu = MIPS_CPU(cs);
+
+    assert(bql_locked());
+    if (!cpu->r10k_data_cache || !cpu->env.r10k ||
+        cpu->env.r10k->system_requests) {
+        error_setg(errp, "coherence agent requires an unconnected R10000 "
+                        "with r10k-data-cache=on");
+        return false;
+    }
+    cpu->env.r10k->system_requests = requests;
+    cpu->env.r10k->globally_performed = true;
+    return true;
+}
+
+void mips_r10k_detach_agent(CPUState *cs, MemoryRegion *requests)
+{
+    CPUMIPSState *env = cpu_env(cs);
+
+    assert(bql_locked());
+    assert(env->r10k->system_requests == requests);
+    env->r10k->system_requests = NULL;
+}
+
+bool mips_r10k_request_snapshot(CPUState *cs, bool writeback,
+                                R10KTransaction *out)
+{
+    R10KState *r = cpu_env(cs)->r10k;
+    R10KTransaction *t = writeback ? &r->outgoing : &r->request;
+
+    assert(bql_locked());
+    *out = *t;
+    return t->phase != R10K_REQUEST_FREE;
+}
+
+bool mips_r10k_request_issue(CPUState *cs, uint64_t id)
+{
+    R10KState *r = cpu_env(cs)->r10k;
+    R10KTransaction *t = r->request.id == id ? &r->request : &r->outgoing;
+
+    assert(bql_locked());
+    if (!id || t->id != id || t->phase != R10K_REQUEST_PENDING_ISSUE ||
+        r10k_external_busy(r, t->block) ||
+        (t == &r->request && r->outgoing.phase != R10K_REQUEST_FREE &&
+         r->outgoing.block == t->block)) {
+        return false;
+    }
+    t->phase = t == &r->outgoing ? R10K_REQUEST_TRANSFERRING :
+                                 R10K_REQUEST_PENDING_RESPONSE;
+    return true;
+}
+
+bool mips_r10k_response_data(CPUState *cs, uint64_t id,
+                             R10KCoherenceState state,
+                             const uint8_t *data, unsigned int size)
+{
+    R10KState *r = cpu_env(cs)->r10k;
+    R10KTransaction *t = &r->request;
+
+    assert(bql_locked());
+    if (!id || t->id != id || t->phase != R10K_REQUEST_PENDING_RESPONSE ||
+        t->have_data || size != t->size || state < R10K_SHARED ||
+        state > R10K_DIRTY_EXCLUSIVE || r10k_external_busy(r, t->block) ||
+        (state == R10K_SHARED && (t->command == R10K_REQUEST_READ_EXCLUSIVE ||
+                                 t->command == R10K_REQUEST_UPGRADE))) {
+        return false;
+    }
+    memcpy(t->data, data, size);
+    t->response_state = state;
+    t->have_data = true;
+    return true;
+}
+
+static void r10k_coherent_state(CPUMIPSState *env, unsigned int tag,
+                                R10KCoherenceState state);
+
+bool mips_r10k_response_complete(CPUState *cs, uint64_t id,
+                                 R10KCompletion completion)
+{
+    CPUMIPSState *env = cpu_env(cs);
+    R10KState *r = env->r10k;
+    R10KTransaction *t = &r->request;
+
+    assert(bql_locked());
+    if (!id || t->id != id || t->phase != R10K_REQUEST_PENDING_RESPONSE ||
+        completion < R10K_ACK || completion > R10K_ERR ||
+        r10k_external_busy(r, t->block) ||
+        (completion == R10K_ACK && !t->have_data &&
+         (t->command != R10K_REQUEST_UPGRADE || t->need_data))) {
+        return false;
+    }
+    if (completion == R10K_ACK) {
+        unsigned int tag = t->tag;
+        unsigned int i;
+
+        if (t->have_data) {
+            r10k_scache_invalidate_subsets(env, t->block,
+                         extract32(r->scache_taglo[tag], 7, 2));
+            r->scache_taglo[tag] = (extract64(t->address, 18, 18) << 14) |
+                                  (t->response_state << 10) | (t->pidx << 7);
+            r->scache_taghi[tag] = extract64(t->address, 36, 4);
+            for (i = 0; i < t->size; i++) {
+                r10k_scache_put_byte(env, t->block + i, tag & 1, t->data[i]);
+            }
+        } else {
+            r10k_coherent_state(env, tag, R10K_DIRTY_EXCLUSIVE);
+        }
+    }
+    t->completion = completion;
+    t->phase = R10K_REQUEST_COMPLETE;
+    r10k_coherent_wake(env);
+    return true;
+}
+
+bool mips_r10k_writeback_consumed(CPUState *cs, uint64_t id)
+{
+    CPUMIPSState *env = cpu_env(cs);
+    R10KTransaction *t = &env->r10k->outgoing;
+
+    assert(bql_locked());
+    if (!id || t->id != id || t->phase != R10K_REQUEST_TRANSFERRING) {
+        return false;
+    }
+    t->phase = R10K_REQUEST_FREE;
+    r10k_coherent_wake(env);
+    return true;
+}
+
+static void r10k_coherent_state(CPUMIPSState *env, unsigned int tag,
+                                R10KCoherenceState state)
+{
+    R10KState *r = env->r10k;
+    hwaddr block = r10k_scache_block(env, tag);
+    hwaddr mask = r10k_scache_line_size(env) - 1;
+    unsigned int i;
+
+    r->scache_taglo[tag] = deposit32(r->scache_taglo[tag], 10, 2, state);
+    for (i = 0; i < R10K_DCACHE_TAGS; i++) {
+        if ((r->dcache_taglo[i] & (3 << 6)) &&
+            (r10k_dcache_block(env, i) & ~mask) == block) {
+            r->dcache_taglo[i] = deposit32(r->dcache_taglo[i], 6, 2, state);
+            r10k_dcache_tag_parity(env, i);
+        }
+    }
+}
+
+static void r10k_coherent_copy(CPUMIPSState *env, unsigned int tag,
+                               uint8_t *data)
+{
+    hwaddr block = r10k_scache_block(env, tag);
+    unsigned int i;
+
+    r10k_scache_collect(env, tag);
+    for (i = 0; i < r10k_scache_line_size(env); i++) {
+        unsigned int entry = r10k_scache_dword(env, block + i, tag & 1);
+
+        data[i] = env->r10k->scache_data[entry] >> ((7 - (i & 7)) * 8);
+    }
+}
+
+bool mips_r10k_external_request(CPUState *cs, uint64_t id, uint64_t address,
+                                R10KIntervention kind,
+                                R10KExternalTransaction *out)
+{
+    CPUMIPSState *env = cpu_env(cs);
+    R10KState *r = env->r10k;
+    R10KTransaction *t = &r->request;
+    R10KTransaction *wb = &r->outgoing;
+    R10KExternalTransaction e = { .id = id };
+    unsigned int set, way, i;
+
+    assert(bql_locked());
+    if (!id || !r->system_requests || kind < R10K_INTERVENTION_SHARED ||
+        kind > R10K_INTERVENTION_INVALIDATE ||
+        r->external_count == ARRAY_SIZE(r->external)) {
+        return false;
+    }
+    for (i = 0; i < r->external_count; i++) {
+        if (r->external[i].id == id) {
+            return false;
+        }
+    }
+    e.size = r10k_scache_line_size(env);
+    e.block = address & ~(uint64_t)(e.size - 1);
+    /* Once transfer starts, admission waits for the adapter's consumption. */
+    if (wb->phase == R10K_REQUEST_TRANSFERRING && wb->block == e.block) {
+        return false;
+    }
+    if (wb->phase == R10K_REQUEST_PENDING_ISSUE && wb->block == e.block) {
+        e.former = R10K_DIRTY_EXCLUSIVE;
+        if (kind != R10K_INTERVENTION_INVALIDATE) {
+            e.have_data = true;
+            e.data_state = R10K_DIRTY_EXCLUSIVE;
+            memcpy(e.data, wb->data, e.size);
+        }
+        wb->phase = R10K_REQUEST_FREE;
+    } else {
+        set = e.block / e.size & (r10k_scache_sets(env) - 1);
+        for (way = 0; way < 2; way++) {
+            unsigned int tag = set * 2 + way;
+            R10KCoherenceState state = extract32(r->scache_taglo[tag], 10, 2);
+
+            if (!state || r10k_scache_block(env, tag) != e.block) {
+                continue;
+            }
+            e.former = state;
+            if (state == R10K_DIRTY_EXCLUSIVE &&
+                kind != R10K_INTERVENTION_INVALIDATE) {
+                r10k_coherent_copy(env, tag, e.data);
+                e.have_data = true;
+                e.data_state = kind == R10K_INTERVENTION_SHARED ?
+                               R10K_SHARED : R10K_DIRTY_EXCLUSIVE;
+            }
+            if (kind == R10K_INTERVENTION_INVALIDATE &&
+                state >= R10K_CLEAN_EXCLUSIVE) {
+                qemu_log_mask(LOG_GUEST_ERROR,
+                              "R10000 invalidate discards exclusive block "
+                              "at 0x%" PRIx64 "\n", e.block);
+            }
+            r10k_coherent_state(env, tag, kind == R10K_INTERVENTION_SHARED ?
+                                R10K_SHARED : R10K_INVALID);
+            break;
+        }
+    }
+    if ((t->phase == R10K_REQUEST_PENDING_ISSUE ||
+         t->phase == R10K_REQUEST_PENDING_RESPONSE) && t->block == e.block) {
+        if (t->command == R10K_REQUEST_UPGRADE) {
+            if (t->phase == R10K_REQUEST_PENDING_ISSUE) {
+                t->need_data = true;
+            } else if (kind != R10K_INTERVENTION_SHARED) {
+                t->need_data = true;
+                t->have_data = false;
+            }
+        }
+    }
+    r->external[r->external_count++] = e;
+    r->globally_performed = false;
+    *out = e;
+    return true;
+}
+
+bool mips_r10k_external_consumed(CPUState *cs, uint64_t id)
+{
+    R10KState *r = cpu_env(cs)->r10k;
+    unsigned int i;
+
+    assert(bql_locked());
+    for (i = 0; i < r->external_count; i++) {
+        if (r->external[i].id == id && r->external[i].have_data &&
+            !r->external[i].consumed) {
+            r->external[i].consumed = true;
+            return true;
+        }
+    }
+    return false;
+}
+
+bool mips_r10k_external_complete(CPUState *cs, uint64_t id)
+{
+    CPUMIPSState *env = cpu_env(cs);
+    R10KState *r = env->r10k;
+    R10KTransaction *t = &r->request;
+
+    assert(bql_locked());
+    if (!r->external_count || r->external[0].id != id ||
+        (r->external[0].have_data && !r->external[0].consumed)) {
+        return false;
+    }
+    r->external_count--;
+    memmove(r->external, r->external + 1,
+            r->external_count * sizeof(r->external[0]));
+    if (t->phase == R10K_REQUEST_PENDING_ISSUE &&
+        t->command == R10K_REQUEST_UPGRADE && t->need_data &&
+        !r10k_external_busy(r, t->block)) {
+        t->completion = R10K_NACK;
+        t->phase = R10K_REQUEST_COMPLETE;
+    }
+    r10k_coherent_wake(env);
+    return true;
+}
+
+void mips_r10k_global_performed(CPUState *cs, bool performed)
+{
+    CPUMIPSState *env = cpu_env(cs);
+
+    assert(bql_locked());
+    env->r10k->globally_performed = performed;
+    if (performed) {
+        r10k_coherent_wake(env);
+    }
+}
+
+static MemTxResult r10k_coherent_writeback(CPUMIPSState *env,
+                                          unsigned int tag, uintptr_t ra,
+                                          R10KRequestCause cause)
+{
+    R10KState *r = env->r10k;
+    R10KTransaction *t = &r->outgoing;
+    MemTxResult result;
+
+    if (t->phase != R10K_REQUEST_FREE) {
+        r10k_coherent_wait(env, ra);
+    }
+    *t = (R10KTransaction) {
+        .id = ++r->next_request_id,
+        .address = r10k_scache_block(env, tag),
+        .block = r10k_scache_block(env, tag),
+        .size = r10k_scache_line_size(env),
+        .tag = tag,
+        .command = R10K_REQUEST_WRITEBACK,
+        .cause = cause,
+        .former = R10K_DIRTY_EXCLUSIVE,
+        .phase = R10K_REQUEST_PENDING_ISSUE,
+        .have_data = true,
+    };
+    r10k_coherent_copy(env, tag, t->data);
+    result = r10k_coherent_notify(env, t);
+    if (result != MEMTX_OK) {
+        t->phase = R10K_REQUEST_FREE;
+    }
+    return result;
+}
+
+static MemTxResult r10k_coherent_prepare(CPUMIPSState *env, hwaddr pa,
+                                         unsigned int pidx, bool store,
+                                         unsigned int cca)
+{
+    R10KState *r = env->r10k;
+    R10KTransaction *t = &r->request;
+    unsigned int size = r10k_scache_line_size(env);
+    hwaddr block = pa & ~(hwaddr)(size - 1);
+    unsigned int set = pa / size & (r10k_scache_sets(env) - 1);
+    unsigned int tag, way, i;
+    R10KCoherenceState former;
+    MemTxResult result;
+    uintptr_t ra = env_cpu(env)->mem_io_pc;
+
+    assert(bql_locked());
+retry:
+    if (t->phase != R10K_REQUEST_FREE) {
+        if (t->address != pa || t->store != store) {
+            qemu_log_mask(LOG_UNIMP, "R10000 interrupted cache transaction\n");
+            return MEMTX_ERROR;
+        }
+        if (t->phase != R10K_REQUEST_COMPLETE) {
+            r10k_coherent_wait(env, ra);
+        }
+        t->phase = R10K_REQUEST_FREE;
+        if (t->completion == R10K_ERR) {
+            return MEMTX_ERROR;
+        }
+        if (t->completion == R10K_NACK) {
+            /* Re-evaluate in a new CPU execution pass, releasing the BQL. */
+            DEVICE(env_cpu(env))->mem_reentrancy_guard.engaged_in_io = false;
+            env_cpu(env)->exception_index = EXCP_INTERRUPT;
+            cpu_loop_exit_restore(env_cpu(env), ra);
+        }
+
+    }
+    if (r10k_external_busy(r, block) ||
+        (r->outgoing.phase != R10K_REQUEST_FREE &&
+         r->outgoing.block == block)) {
+        r10k_coherent_wait(env, ra);
+    }
+    for (way = 0; way < 2; way++) {
+        tag = set * 2 + way;
+        if ((r->scache_taglo[tag] & (3 << 10)) &&
+            r10k_scache_block(env, tag) == block) {
+            break;
+        }
+    }
+    if (way < 2) {
+        former = extract32(r->scache_taglo[tag], 10, 2);
+        if (!store || former != R10K_SHARED) {
+            return MEMTX_OK;
+        }
+    } else {
+        way = r->scache_mru[set] ^ 1;
+        for (i = 0; i < 2; i++) {
+            if (!(r->scache_taglo[set * 2 + i] & (3 << 10))) {
+                way = i;
+                break;
+            }
+        }
+        tag = set * 2 + way;
+        former = extract32(r->scache_taglo[tag], 10, 2);
+        result = r10k_scache_writeback(env, tag, ra, R10K_CAUSE_REPLACEMENT);
+        if (result != MEMTX_OK) {
+            return result;
+        }
+        r10k_scache_invalidate(env, set, way, pa, (target_ulong)pidx << 12);
+    }
+    *t = (R10KTransaction) {
+        .id = ++r->next_request_id,
+        .address = pa,
+        .block = block,
+        .size = size,
+        .tag = tag,
+        .pidx = pidx,
+        .cca = cca,
+        .store = store,
+        .cause = store ? R10K_CAUSE_STORE : R10K_CAUSE_LOAD,
+        .command = (r->scache_taglo[tag] & (3 << 10)) ?
+                   R10K_REQUEST_UPGRADE : cca == 3 ?
+                   R10K_REQUEST_READ_NONCOHERENT : store ?
+                   R10K_REQUEST_READ_EXCLUSIVE : R10K_REQUEST_READ_SHARED,
+        .former = former,
+        .phase = R10K_REQUEST_PENDING_ISSUE,
+    };
+    result = r10k_coherent_notify(env, t);
+    if (result != MEMTX_OK) {
+        t->phase = R10K_REQUEST_FREE;
+        return result;
+    }
+    goto retry;
+}
+
+void helper_r10k_sync(CPUMIPSState *env)
+{
+    if (env->r10k && env->r10k->system_requests) {
+        BQL_LOCK_GUARD();
+        if (!env->r10k->globally_performed ||
+            env->r10k->outgoing.phase != R10K_REQUEST_FREE ||
+            env->r10k->external_count) {
+            env->r10k->coherence_sync_waiting = true;
+            r10k_coherent_wait(env, GETPC());
+        }
+    }
+}
+
 static MemTxResult r10k_data_cache_line(CPUMIPSState *env, hwaddr pa,
                                        unsigned int pidx, bool is_write,
-                                       unsigned int *out)
+                                       unsigned int cca, unsigned int *out)
 {
     R10KState *r = env->r10k;
     unsigned int dset = (pidx << 7) | extract64(pa, 5, 7);
@@ -503,7 +1003,12 @@ static MemTxResult r10k_data_cache_line(CPUMIPSState *env, hwaddr pa,
     uint8_t fill[128];
     uint64_t corrected[4];
 
-    if (!r10k_cache_backing(env, block, size, is_write)) {
+    if (r->system_requests) {
+        result = r10k_coherent_prepare(env, pa, pidx, is_write, cca);
+        if (result != MEMTX_OK) {
+            return result;
+        }
+    } else if (cca == 5 || !r10k_cache_backing(env, block, size, is_write)) {
         return MEMTX_ACCESS_ERROR;
     }
     for (way = 0; way < 2; way++) {
@@ -537,7 +1042,8 @@ static MemTxResult r10k_data_cache_line(CPUMIPSState *env, hwaddr pa,
             }
         }
         stag = sset * 2 + way;
-        result = r10k_scache_writeback(env, stag, env_cpu(env)->mem_io_pc);
+        result = r10k_scache_writeback(env, stag, env_cpu(env)->mem_io_pc,
+                                         R10K_CAUSE_REPLACEMENT);
         if (result != MEMTX_OK) {
             return result;
         }
@@ -590,7 +1096,7 @@ static MemTxResult r10k_data_read(void *opaque, hwaddr address, uint64_t *value,
     hwaddr pa = extract64(address, 0, 40);
     unsigned int tag, i;
     MemTxResult result = r10k_data_cache_line(env, pa, address >> 40,
-                                              false, &tag);
+                                              false, attrs.mips_cca, &tag);
 
     if (result != MEMTX_OK) {
         return result;
@@ -610,7 +1116,7 @@ static MemTxResult r10k_data_write(void *opaque, hwaddr address, uint64_t value,
     hwaddr pa = extract64(address, 0, 40);
     unsigned int tag, stag, i;
     MemTxResult result = r10k_data_cache_line(env, pa, address >> 40,
-                                              true, &tag);
+                                              true, attrs.mips_cca, &tag);
 
     if (result != MEMTX_OK) {
         return result;
@@ -665,6 +1171,7 @@ void mips_r10k_data_cache_init(MIPSCPU *cpu)
 void r10k_cache_op(CPUMIPSState *env, target_ulong addr, uint32_t op,
                    uintptr_t ra)
 {
+    BQL_LOCK_GUARD();
     uint32_t cache_type = extract32(op, 0, 2);
     uint32_t cache_operation = extract32(op, 2, 3);
     hwaddr paddr;
@@ -862,7 +1369,8 @@ void r10k_cache_op(CPUMIPSState *env, target_ulong addr, uint32_t op,
             (3 << 10)) {
             if (env_archcpu(env)->r10k_data_cache) {
                 r10k_data_cache_error(env,
-                    r10k_scache_writeback(env, set * 2 + way, ra), ra);
+                    r10k_scache_writeback(env, set * 2 + way, ra,
+                                           R10K_CAUSE_CACHE), ra);
             }
             r10k_scache_invalidate(env, set, way, paddr, addr);
         }
@@ -893,9 +1401,10 @@ void r10k_cache_op(CPUMIPSState *env, target_ulong addr, uint32_t op,
                 r10k_scache_tag_pa(env, tag) == extract64(paddr, 18, 22)) {
                 if (env_archcpu(env)->r10k_data_cache &&
                     cache_operation == 0b101) {
-                    r10k_data_cache_error(env,
-                                         r10k_scache_writeback(env, tag, ra),
-                                         ra);
+                    MemTxResult result = r10k_scache_writeback(env, tag, ra,
+                                                              R10K_CAUSE_CACHE);
+
+                    r10k_data_cache_error(env, result, ra);
                 }
                 r10k_scache_invalidate(env, set, w, paddr, addr);
                 hit = true;

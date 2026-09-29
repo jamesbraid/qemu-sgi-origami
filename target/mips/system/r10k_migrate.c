@@ -202,6 +202,19 @@ static bool mips_r10k_data_cache_needed(void *opaque)
     return MIPS_CPU(opaque)->r10k_data_cache;
 }
 
+static int mips_r10k_data_cache_pre_save(void *opaque)
+{
+    R10KState *r = MIPS_CPU(opaque)->env.r10k;
+
+    if (r->request.phase != R10K_REQUEST_FREE ||
+        r->outgoing.phase != R10K_REQUEST_FREE || r->external_count ||
+        r->coherence_waiting || r->coherence_sync_waiting) {
+        return -EBUSY;
+    }
+    /* External-agent state has no migration contract yet. */
+    return r->system_requests ? -ENOTSUP : 0;
+}
+
 static int mips_r10k_data_cache_post_load(void *opaque, int version_id)
 {
     MIPSCPU *cpu = MIPS_CPU(opaque);
@@ -215,11 +228,13 @@ static int mips_r10k_data_cache_post_load(void *opaque, int version_id)
 
 const VMStateDescription mips_vmstate_r10k_data_cache = {
     .name = "cpu/functional-data-cache",
-    .version_id = 1,
-    .minimum_version_id = 1,
+    .version_id = 2,
+    .minimum_version_id = 2,
     .needed = mips_r10k_data_cache_needed,
+    .pre_save = mips_r10k_data_cache_pre_save,
     .post_load = mips_r10k_data_cache_post_load,
     .fields = (const VMStateField[]) {
+        VMSTATE_UINT32_EQUAL(r10k_scache_line_size, MIPSCPU),
         VMSTATE_END_OF_LIST()
     }
 };

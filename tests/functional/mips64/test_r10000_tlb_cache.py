@@ -550,15 +550,17 @@ class R10000TLBCache(QemuSystemTest):
                                       0x00112233, 0x44556677,
                                       0x88000000], output)
 
-    def test_dirty_cache_migration(self):
+    def run_dirty_cache_migration(self, source_line=128, destination_line=128):
         image = self.scratch_file('migration.bin')
         rom = diagnostic_rom('mapped', migration=True)
         Path(image).write_bytes(rom)
         self.set_machine('octane')
         destination = self.get_vm('destination')
-        for vm in (self.vm, destination):
+        for vm, line_size in ((self.vm, source_line),
+                              (destination, destination_line)):
             vm.add_args('-accel', 'tcg,thread=single',
-                        '-cpu', 'R10000,r10k-data-cache=on',
+                        '-cpu', 'R10000,r10k-data-cache=on,'
+                        f'r10k-scache-line-size={line_size}',
                         '-m', '128M', '-bios', image, '-nodefaults', '-S')
         control = f'{self.socket_dir().name}/cache-control.sock'
         destination.add_args('-incoming', 'defer',
@@ -578,6 +580,17 @@ class R10000TLBCache(QemuSystemTest):
         uri = f'unix:{self.socket_dir().name}/migration.sock'
         destination.cmd('migrate-incoming', uri=uri)
         self.vm.cmd('migrate', uri=uri)
+        if source_line != destination_line:
+            deadline = time.monotonic() + 20
+            while destination.exitcode() is None:
+                self.assertLess(time.monotonic(), deadline)
+                time.sleep(0.05)
+            self.assertEqual(destination.exitcode(), 1)
+            destination.wait()
+            output = destination.get_log()
+            self.assertIn("subsection 'cpu/functional-data-cache'", output)
+            self.assertIn(f'{destination_line:x} != {source_line:x}', output)
+            return
         for vm in (self.vm, destination):
             deadline = time.monotonic() + 20
             while True:
@@ -605,6 +618,18 @@ class R10000TLBCache(QemuSystemTest):
             time.sleep(0.05)
         self.assertEqual(words[12:14], [SECOND, SECOND], output)
         self.assertEqual(words[16], 0xabcdef01, output)
+
+    def test_dirty_cache_migration(self):
+        self.run_dirty_cache_migration()
+
+    def test_dirty_cache_migration_64(self):
+        self.run_dirty_cache_migration(64, 64)
+
+    def test_dirty_cache_migration_rejects_smaller_line(self):
+        self.run_dirty_cache_migration(128, 64)
+
+    def test_dirty_cache_migration_rejects_larger_line(self):
+        self.run_dirty_cache_migration(64, 128)
 
     def launch_reset_rom(self):
         image = self.scratch_file('reset.bin')

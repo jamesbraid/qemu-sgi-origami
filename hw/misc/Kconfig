@@ -433,3 +433,8 @@ config SGI_COMMAND_PORT_TEST
 config SGI_KONA_PORTS
     bool
     select SGI_COMMAND_PORT
+
+config R10K_TEST_AGENT
+    bool
+    default y
+    depends on TEST_DEVICES && MIPS
