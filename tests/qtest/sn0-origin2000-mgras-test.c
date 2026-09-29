@@ -10716,6 +10716,48 @@ static void test_gl_pixels_follow_the_raster_position(void)
 }
 
 /*
+ * An inline row belongs to the draw only when it follows the draw's
+ * 0x8d20, or the row before it. A draw 0x8d20 marks as DMA (0x99) takes
+ * no inline row at all, and its DMA transfer still draws; an inline draw
+ * (0x18) takes no block that follows another packet, here a raster
+ * register pair's, while the rows after a later 0x8d20 draw.
+ */
+static void test_gl_pixels_rows_follow_their_draw(void)
+{
+    static const uint8_t image[8] = {
+        0x01, 0x02, 0x03, 0xff, 0x04, 0x05, 0x06, 0xff,
+    };
+    static const uint32_t row[2] = { 0x0a0b0cff, 0x0d0e0fff };
+
+    gl_pixels_context(qts, 0);
+    gl_pixels_program(qts, GL_PIX_4UB, 8, 50, 60, 51, 60, 1);
+    gl_pixels_draw_as(qts, 2, GL_PIXELS_BY_DMA);
+    gl_pixels_row(qts, 0, row, 2);
+    gl_pixels_fence(qts);
+    g_assert_cmphex(gl_window_pixel(qts, 50, 60), ==, 0);
+    gl_pixels_dma(qts, image, sizeof(image), 8, 1, 8, 0xa7);
+    g_assert_cmphex(gl_window_pixel(qts, 50, 60), ==, 0x010203);
+
+    gl_pixels_draw(qts, 2);
+    gl_word(qts, 0x00007f08);
+    gl_word(qts, 1);
+    gl_word(qts, 2);
+    gl_word(qts, GL_INLINE_BLOCK | 8);
+    gl_word(qts, 0x156);
+    gl_word(qts, 0xffffffff);
+    gl_pixels_row(qts, 0, row, 2);
+    gl_pixels_fence(qts);
+    g_assert_cmphex(gl_window_pixel(qts, 50, 60), ==, 0x010203);
+
+    gl_pixels_draw(qts, 2);
+    gl_pixels_row(qts, 0, row, 2);
+    gl_pixels_fence(qts);
+    g_assert_cmphex(gl_window_pixel(qts, 50, 60), ==, 0x0a0b0c);
+    g_assert_cmphex(gl_window_pixel(qts, 51, 60), ==, 0x0d0e0f);
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+}
+
+/*
  * Only a kick with bit 4 clear feeds a waiting draw. A raster-engine
  * kick (0xb7, as the X server's) while one waits paints the raster
  * engine's rectangle as before, and the draw still takes the 0xa7
@@ -12363,6 +12405,7 @@ static unsigned gl_stream_subsections(QTestState *qts)
         "sgi-mgras/gl-depth-range", "sgi-mgras/gl-dither",
         "sgi-mgras/gl-lighting", "sgi-mgras/gl-texture",
         "sgi-mgras/gl-light-enables", "sgi-mgras/gl-cull",
+        "sgi-mgras/gl-pixels", "sgi-mgras/gl-pixel-flags",
     };
     g_autofree char *tmpfs = NULL;
     g_autofree char *path = NULL;
@@ -13940,6 +13983,31 @@ static void test_gl_state_subsections_follow_their_state(void)
         qtest_quit(s);
     }
 
+    /*
+     * Pixels: one GE parameter load alone, or an inline draw waiting,
+     * sends gl-pixels; a draw 0x8d20 marks as DMA waiting, or an inline
+     * one another header has come after, sends gl-pixel-flags too. The
+     * contexts above, which loaded nothing, sent neither.
+     */
+    for (int i = 0; i < 4; i++) {
+        s = qtest_init(MIGRATION_ARGS);
+        gl_enter_slot(s, GL_SLOT_A);
+        gl_word(s, GL_CONTEXT_OPENER);
+        if (i == 0) {
+            gl_ge_load(s, GL_GE_CRAM, GL_GE_ZOOM,
+                       (const uint32_t[]){ 0, 0x3f800000 }, 2);
+        } else {
+            gl_pixels_program(s, GL_PIX_4UB, 8, 0, 0, 1, 0, 1);
+            gl_pixels_draw_as(s, 2, i == 2 ? GL_PIXELS_BY_DMA :
+                                             GL_PIXELS_INLINE);
+        }
+        if (i == 3) {
+            gl_word(s, GL_FLUSH);
+        }
+        g_assert_cmpuint(gl_stream_subsections(s), ==,
+                         i >= 2 ? 512 | 1024 : 512);
+        qtest_quit(s);
+    }
 }
 
 /*
@@ -14493,6 +14561,8 @@ int main(int argc, char **argv)
                    test_gl_pixels_unmodelled_draw_nothing);
     qtest_add_func("sn0/origin2000/mgras/gl-pixels-long-load",
                    test_gl_pixels_long_load);
+    qtest_add_func("sn0/origin2000/mgras/gl-pixels-rows-follow-their-draw",
+                   test_gl_pixels_rows_follow_their_draw);
     qtest_add_func("sn0/origin2000/mgras/"
                    "gl-pixels-raster-kick-leaves-the-draw",
                    test_gl_pixels_raster_kick_leaves_the_draw);
