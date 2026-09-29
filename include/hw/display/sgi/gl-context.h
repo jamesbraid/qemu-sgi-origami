@@ -229,6 +229,17 @@ enum {
 #define SGI_GL_BLEND_COLOR      0x8005
 #define SGI_GL_BLEND_EQUATION   0x8009
 #define SGI_GL_RESCALE_NORMAL   0x803a
+/* Polygon offset (3.5.5, and EXT_polygon_offset's bias). */
+#define SGI_GL_POLYGON_OFFSET_UNITS 0x2a00
+#define SGI_GL_POLYGON_OFFSET_POINT 0x2a01
+#define SGI_GL_POLYGON_OFFSET_LINE 0x2a02
+#define SGI_GL_POLYGON_OFFSET_FILL 0x8037
+#define SGI_GL_POLYGON_OFFSET_FACTOR 0x8038
+#define SGI_GL_POLYGON_OFFSET_BIAS 0x8039
+/* The polygon_offset bits: the enable of each polygon mode's offset. */
+#define SGI_GL_OFFSET_FILL      0x1
+#define SGI_GL_OFFSET_LINE      0x2
+#define SGI_GL_OFFSET_POINT     0x4
 
 /*
  * glBlendFunc's factors (4.1.6, and the imaging subset's constant
@@ -470,6 +481,17 @@ typedef struct SGIGLDrawState {
     float fog_end;
     float fog_color[4];
     float fog_index;
+    /*
+     * Polygon offset (3.5.5): the GL_POLYGON_OFFSET_FILL, _LINE and
+     * _POINT enables as SGI_GL_OFFSET_FILL and so on, the factor, and the
+     * constant term, either glPolygonOffset's units of the smallest
+     * resolvable depth difference or EXT_polygon_offset's bias in window
+     * depth; the command last given sets its own and zeroes the other.
+     */
+    uint32_t polygon_offset;
+    float offset_factor;
+    float offset_units;
+    float offset_bias;
     SGIGLDrawable drawable;
 } SGIGLDrawState;
 
@@ -638,6 +660,8 @@ typedef enum SGIGLOp {
      * it takes; GL_FOG_MODE's is the mode's enumerant as a float.
      */
     SGI_GL_OP_FOG,
+    SGI_GL_OP_POLYGON_OFFSET,   /* factor, units */
+    SGI_GL_OP_POLYGON_OFFSET_EXT, /* factor, bias */
 } SGIGLOp;
 
 /*

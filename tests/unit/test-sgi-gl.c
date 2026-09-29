@@ -3462,6 +3462,127 @@ static void test_fog(void)
     g_assert_cmpuint(frag_count(&f, 4), ==, W * H);
 }
 
+static void frag_offset(FragScene *f, SGIGLOp op, float factor, float c)
+{
+    uint32_t word[2] = { bits(factor), bits(c) };
+
+    frag_command(f, op, word, 2);
+}
+
+/* A quad over the window whose normalized depth runs from z0 to z1 in x. */
+static void frag_slope(FragScene *f, float r, float g, float b, float z0,
+                       float z1)
+{
+    static const float corner[4][2] = { { -1, -1 }, { 1, -1 },
+                                        { 1, 1 }, { -1, 1 } };
+    uint32_t word[4] = { bits(r), bits(g), bits(b), bits(1) };
+
+    frag_command(f, SGI_GL_OP_COLOR4F, word, 4);
+    word[0] = SGI_GL_QUADS;
+    frag_command(f, SGI_GL_OP_BEGIN, word, 1);
+    for (int i = 0; i < 4; i++) {
+        word[0] = bits(corner[i][0]);
+        word[1] = bits(corner[i][1]);
+        /* Normalized z (zd + 1) / 2 under identity matrices. */
+        word[2] = bits(2 * (corner[i][0] < 0 ? z0 : z1) - 1);
+        frag_command(f, SGI_GL_OP_VERTEX3F, word, 3);
+    }
+    frag_command(f, SGI_GL_OP_END, word, 0);
+}
+
+/*
+ * Polygon offset (OpenGL 1.2.1, 3.5.5): a second quad at the depth of
+ * the first fails GL_LESS unless offset toward the eye. Initially every
+ * enable is off and factor, units and bias 0. With GL_POLYGON_OFFSET_FILL
+ * enabled, units of -1 move it one depth step nearer and +1 one farther;
+ * EXT_polygon_offset's bias moves it in window depth; a factor scales the
+ * larger depth slope, here 0.5 over the window's 64 pixels, so a factor
+ * of -0.5 moves it 1/256 nearer, more than the depth rounding. Lines are
+ * not offset, and neither are polygons with only the line and point
+ * enables. The offset depth is clamped to [0, 1].
+ */
+static void test_polygon_offset(void)
+{
+    static FragScene f;
+    uint32_t out[SGI_GL_GET_WORDS], word[2];
+    static const uint32_t caps[3] = { SGI_GL_POLYGON_OFFSET_FILL,
+                                      SGI_GL_POLYGON_OFFSET_LINE,
+                                      SGI_GL_POLYGON_OFFSET_POINT };
+
+    frag_init(&f);
+    for (int i = 0; i < 3; i++) {
+        g_assert_cmpuint(get(&f.c, caps[i], out), ==, 1);
+        g_assert_cmphex(out[0], ==, 0);
+    }
+    g_assert_cmpfloat(get_float(&f.c, SGI_GL_POLYGON_OFFSET_FACTOR, 0), ==, 0);
+    g_assert_cmpfloat(get_float(&f.c, SGI_GL_POLYGON_OFFSET_UNITS, 0), ==, 0);
+    g_assert_cmpfloat(get_float(&f.c, SGI_GL_POLYGON_OFFSET_BIAS, 0), ==, 0);
+    enable(&f.c, SGI_GL_DEPTH_TEST, true);
+    frag_clear(&f, SGI_GL_DEPTH_BUFFER_BIT);
+
+    /* Units: -1 passes GL_LESS at an equal depth, +1 does not. */
+    frag_quad_at(&f, 1, 0, 0, 1, 0);
+    frag_offset(&f, SGI_GL_OP_POLYGON_OFFSET, 0, -1);
+    frag_quad_at(&f, 0, 1, 0, 1, 0);
+    g_assert_cmpuint(frag_count(&f, 0xff0000), ==, W * H);
+    enable(&f.c, SGI_GL_POLYGON_OFFSET_LINE, true);
+    enable(&f.c, SGI_GL_POLYGON_OFFSET_POINT, true);
+    frag_quad_at(&f, 0, 1, 0, 1, 0);
+    g_assert_cmpuint(frag_count(&f, 0xff0000), ==, W * H);
+    enable(&f.c, SGI_GL_POLYGON_OFFSET_FILL, true);
+    g_assert_cmpuint(get(&f.c, SGI_GL_POLYGON_OFFSET_FILL, out), ==, 1);
+    g_assert_cmphex(out[0], ==, 1);
+    frag_offset(&f, SGI_GL_OP_POLYGON_OFFSET, 0, 1);
+    frag_quad_at(&f, 0, 1, 0, 1, 0);
+    g_assert_cmpuint(frag_count(&f, 0xff0000), ==, W * H);
+    frag_offset(&f, SGI_GL_OP_POLYGON_OFFSET, 0, -1);
+    frag_quad_at(&f, 0, 1, 0, 1, 0);
+    g_assert_cmpuint(frag_count(&f, 0x00ff00), ==, W * H);
+    g_assert_cmpfloat(get_float(&f.c, SGI_GL_POLYGON_OFFSET_UNITS, 0), ==,
+                      -1);
+
+    /* A line at that depth is not offset: GL_LESS fails. */
+    word[0] = SGI_GL_LINES;
+    frag_command(&f, SGI_GL_OP_BEGIN, word, 1);
+    word[0] = bits(-1), word[1] = bits(0.5f / 32);
+    frag_command(&f, SGI_GL_OP_VERTEX2F, word, 2);
+    word[0] = bits(1);
+    frag_command(&f, SGI_GL_OP_VERTEX2F, word, 2);
+    frag_command(&f, SGI_GL_OP_END, word, 0);
+    g_assert_cmpuint(frag_count(&f, 0x00ff00), ==, W * H);
+
+    /* EXT's bias of -1/1024 in window depth; it zeroes the units. */
+    frag_offset(&f, SGI_GL_OP_POLYGON_OFFSET_EXT, 0, -1.0f / 1024);
+    g_assert_cmpfloat(get_float(&f.c, SGI_GL_POLYGON_OFFSET_UNITS, 0), ==, 0);
+    g_assert_cmpfloat(get_float(&f.c, SGI_GL_POLYGON_OFFSET_BIAS, 0), ==,
+                      -1.0f / 1024);
+    frag_quad_at(&f, 0, 0, 1, 1, 0);
+    g_assert_cmpuint(frag_count(&f, 0x0000ff), ==, W * H);
+
+    /* The slope: a sloped quad over itself, factor -0.5 then +0.5. */
+    frag_offset(&f, SGI_GL_OP_POLYGON_OFFSET, 0, 0);
+    frag_clear(&f, SGI_GL_DEPTH_BUFFER_BIT);
+    frag_slope(&f, 1, 0, 0, 0.25f, 0.75f);
+    frag_offset(&f, SGI_GL_OP_POLYGON_OFFSET, 0.5f, 0);
+    frag_slope(&f, 0, 1, 0, 0.25f, 0.75f);
+    g_assert_cmpuint(frag_count(&f, 0xff0000), ==, W * H);
+    frag_offset(&f, SGI_GL_OP_POLYGON_OFFSET, -0.5f, 0);
+    frag_slope(&f, 0, 1, 0, 0.25f, 0.75f);
+    g_assert_cmpuint(frag_count(&f, 0x00ff00), ==, W * H);
+    g_assert_cmpfloat(get_float(&f.c, SGI_GL_POLYGON_OFFSET_FACTOR, 0), ==,
+                      -0.5f);
+
+    /* Clamped: at the near plane an offset nearer still is 0, not less. */
+    frag_offset(&f, SGI_GL_OP_POLYGON_OFFSET, 0, 0);
+    frag_quad_at(&f, 1, 0, 0, 1, -1);
+    frag_offset(&f, SGI_GL_OP_POLYGON_OFFSET_EXT, 0, -0.5f);
+    word[0] = 0x200 + SGI_GL_LEQUAL;
+    frag_command(&f, SGI_GL_OP_DEPTH_FUNC, word, 1);
+    frag_quad_at(&f, 0, 1, 0, 1, -1);
+    g_assert_cmpuint(frag_count(&f, 0x00ff00), ==, W * H);
+    g_assert_cmphex(f.p.depth[planes_index(5, 5)], ==, 0);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -3547,5 +3668,6 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-gl/logic-op", test_logic_op);
     g_test_add_func("/sgi-gl/colour-mask", test_colour_mask);
     g_test_add_func("/sgi-gl/fog", test_fog);
+    g_test_add_func("/sgi-gl/polygon-offset", test_polygon_offset);
     return g_test_run();
 }

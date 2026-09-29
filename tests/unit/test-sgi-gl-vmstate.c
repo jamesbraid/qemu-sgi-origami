@@ -176,6 +176,8 @@ static void populate(SGIGLContext *c, bool other)
     for (int i = 0; i < 4; i++) {
         c->cur.fog_color[i] = other ? 1.0f - 0.25f * i : 0.125f * i;
     }
+    c->cur.polygon_offset = other ? SGI_GL_OFFSET_LINE :
+                                    SGI_GL_OFFSET_FILL | SGI_GL_OFFSET_POINT;
 
     g_assert_true(sgi_gl_context_valid(c, &error_abort));
 }
@@ -728,6 +730,7 @@ static const Corruption corruptions[] = {
     BAD(cur.fog_density, 0xbf800000 /* -1 */, "fog density"),
     BAD(cur.fog_density, 0x7fc00000 /* NaN */, "fog density"),
     BAD(cur.fog_color[0], 0xbe800000 /* -0.25 */, "fog colour"),
+    BAD(cur.polygon_offset, SGI_GL_OFFSET_POINT << 1, "polygon offset"),
     BAD(lights_enabled, 1u << SGI_GL_LIGHTS, "light enables"),
     BAD(color_material_face, 0, "colour material face"),
     BAD(color_material_mode, SGI_GL_SHININESS, "colour material parameter"),
