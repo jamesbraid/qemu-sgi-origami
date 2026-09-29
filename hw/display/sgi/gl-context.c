@@ -582,8 +582,10 @@ static void sgi_gl_eye_normal(const SGIGLContext *c, const float n[3],
  * with the face's material e, a, d, s and shininess, the light model's
  * ambient as, and alpha the material's diffuse alpha. V is the vertex in
  * eye coordinates and n the face's normal. VP_i is the unit vector from V
- * to the light, the light's own direction for a light at infinity (w 0);
- * a dot product below 0 counts as 0, and f_i is 1 when n . VP_i does not.
+ * to the light: the light's own direction for a light at infinity (w 0),
+ * the reverse of V's direction for a vertex at infinity, and the light's
+ * direction less V's when both are; a dot product below 0 counts as 0,
+ * and f_i is 1 when n . VP_i does not.
  * h_i is VP_i plus the unit vector from V to the eye, (0, 0, 1) without a
  * local viewer, made unit length. att_i is 1 / (k0 + k1 d + k2 d^2) at the
  * distance d from V to a light with w not 0, and 1 otherwise; spot_i is 1
@@ -617,7 +619,9 @@ static void sgi_gl_light_face(const SGIGLContext *c, const float eye[4],
         }
         /* The vector from V to the light (2.13.1's P1P2). */
         for (int k = 0; k < 3; k++) {
-            if (p[3] == 0.0f) {
+            if (p[3] == 0.0f && eye[3] == 0.0f) {
+                vp[k] = p[k] - eye[k];
+            } else if (p[3] == 0.0f) {
                 vp[k] = p[k];
             } else if (eye[3] == 0.0f) {
                 vp[k] = -eye[k];
