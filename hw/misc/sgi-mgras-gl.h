@@ -83,6 +83,8 @@ extern const VMStateDescription vmstate_sgi_mgras_gl_logic_op;
 extern const VMStateDescription vmstate_sgi_mgras_gl_colour_mask;
 /* Each context's fog state, sent once one has left the initial. */
 extern const VMStateDescription vmstate_sgi_mgras_gl_fog;
+/* Each context's polygon offset, sent once one has left the initial. */
+extern const VMStateDescription vmstate_sgi_mgras_gl_polygon_offset;
 
 /*
  * The parser's class while the words of a GE parameter load (a class-0

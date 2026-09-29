@@ -12,8 +12,9 @@
  * What it preserves: the pixels that colour and depth clears, untextured
  * points, lines, triangles, strips, fans, quads and polygons, at size and
  * width 1, flat or smooth shaded, lit per vertex by OpenGL's lighting
- * equation, fogged, culled by facing, transformed by the modelview and
- * projection matrices and their stacks, and bitmaps, leave in the
+ * equation, fogged, culled by facing, offset in depth, transformed by the
+ * modelview and projection matrices and their stacks, and bitmaps, leave
+ * in the
  * window's front or back buffer after the per-fragment operations the
  * shared rasterizer carries out (the scissor, alpha, stencil and depth
  * tests, blending, the logical operation and the write masks), in RGBA or
@@ -213,6 +214,30 @@
 #define MGRAS_GL_FOG_INDEX       0x0000b804
 #define MGRAS_GL_FOG_MODE        0x0000b904
 #define MGRAS_GL_FOG             0x00006804
+/*
+ * Polygon offset, established from the listing: glPolygonOffsetEXT
+ * (0xd9619a0) writes 0xe70c, the factor, the bias and the float 1.0 (file
+ * offset 0x1d93f4); glPolygonOffset (0xd961a10) writes 0xe70c, the
+ * factor, the units and the float 1.1 (0x1d9418). glEnable and glDisable
+ * write 0xe804 and the context's word of three enables, bit 0 for
+ * GL_POLYGON_OFFSET_FILL (capability 0x8037, 0xd97dd70), bit 1 for
+ * _LINE (0x2a02, 0xd97dc68) and bit 2 for _POINT (0x2a01, 0xd97e3c8);
+ * glDisable clears its bit (0xd97faf8, 0xd97f9e8, 0xd980114).
+ *
+ * The third word is all that tells the two commands apart, and what the
+ * board does with its value is unknown. The model reads 1.0 as the EXT
+ * form, whose second word is a bias in window depth, and any other value
+ * as the core form, whose second word counts depth steps, logging a value
+ * other than 1.1. The GE keeps the bias and the units apart, since
+ * GL_POLYGON_OFFSET_BIAS_EXT and GL_POLYGON_OFFSET_UNITS are different
+ * query indices (0xca3 and 0xca4). That the board offsets depth as OpenGL
+ * 1.2.1, 3.5.5 and EXT_polygon_offset say is inferred; the discriminating
+ * test is gl-polygon-offset-moves-depth.
+ */
+#define MGRAS_GL_POLYGON_OFFSET  0x0000e70c
+#define MGRAS_GL_OFFSET_ENABLES  0x0000e804
+#define MGRAS_GL_OFFSET_EXT      0x3f800000u
+#define MGRAS_GL_OFFSET_CORE     0x3f8ccccdu
 
 /* glStencilOp's operations by the number the client sends for each. */
 static const uint16_t mgras_gl_stencil_ops[] = {
@@ -766,6 +791,8 @@ bool sgi_mgras_gl_header(uint32_t header)
     case MGRAS_GL_FOG_INDEX:
     case MGRAS_GL_FOG_MODE:
     case MGRAS_GL_FOG:
+    case MGRAS_GL_POLYGON_OFFSET:
+    case MGRAS_GL_OFFSET_ENABLES:
     case MGRAS_GL_DEPTH_RANGE:
     case MGRAS_GL_DITHER:
     case MGRAS_GL_CULL_ON:
@@ -1183,6 +1210,8 @@ typedef enum MgrasGLQueryPacking {
  * - GL_FOG_MODE at 0xbce, an integer; GL_FOG_DENSITY, _START and _END at
  *   0xbcf to 0xbd1 and GL_FOG_COLOR at 0xbd2 to 0xbd5, floats; and
  *   GL_FOG_INDEX at 0xbd6, an integer.
+ * - GL_POLYGON_OFFSET_FACTOR, GL_POLYGON_OFFSET_BIAS_EXT and
+ *   GL_POLYGON_OFFSET_UNITS at 0xca2 to 0xca4, floats.
  *
  * What a1 and a2 select is unknown; the model answers by index alone.
  * Every other index answers zero, logged, which is right for the
@@ -1234,6 +1263,9 @@ static const struct {
     { 0xbd1, 1, MGRAS_GL_QUERY_WORD, SGI_GL_FOG_END, 0 },
     { 0xbd2, 4, MGRAS_GL_QUERY_WORD, SGI_GL_FOG_COLOR, 0 },
     { 0xbd6, 1, MGRAS_GL_QUERY_INTEGER, SGI_GL_FOG_INDEX, 0 },
+    { 0xca2, 1, MGRAS_GL_QUERY_WORD, SGI_GL_POLYGON_OFFSET_FACTOR, 0 },
+    { 0xca3, 1, MGRAS_GL_QUERY_WORD, SGI_GL_POLYGON_OFFSET_BIAS, 0 },
+    { 0xca4, 1, MGRAS_GL_QUERY_WORD, SGI_GL_POLYGON_OFFSET_UNITS, 0 },
 };
 
 /*
@@ -2518,6 +2550,58 @@ const VMStateDescription vmstate_sgi_mgras_gl_fog = {
     }
 };
 
+static const VMStateDescription vmstate_sgi_mgras_gl_context_offset = {
+    .name = TYPE_SGI_MGRAS "/gl-context-polygon-offset",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32(cur.polygon_offset, SGIGLContext),
+        VMSTATE_SINGLE(cur.offset_factor, SGIGLContext, 0,
+                       vmstate_info_uint32, float),
+        VMSTATE_SINGLE(cur.offset_units, SGIGLContext, 0,
+                       vmstate_info_uint32, float),
+        VMSTATE_SINGLE(cur.offset_bias, SGIGLContext, 0,
+                       vmstate_info_uint32, float),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
+/*
+ * Every context's polygon offset, sent once some context has an enable
+ * on or a factor, units or bias other than 0. A stream without it comes
+ * from a model that consumed 0xe70c and 0xe804 and offset nothing.
+ */
+static bool mgras_gl_offset_needed(void *opaque)
+{
+    SGIMgrasState *s = opaque;
+    static const float zero;
+
+    for (int i = 0; i < SGI_MGRAS_GL_CONTEXTS; i++) {
+        const SGIGLDrawState *st = &s->gl[i].cur;
+
+        if (st->polygon_offset ||
+            memcmp(&st->offset_factor, &zero, sizeof(zero)) ||
+            memcmp(&st->offset_units, &zero, sizeof(zero)) ||
+            memcmp(&st->offset_bias, &zero, sizeof(zero))) {
+            return true;
+        }
+    }
+    return false;
+}
+
+const VMStateDescription vmstate_sgi_mgras_gl_polygon_offset = {
+    .name = TYPE_SGI_MGRAS "/gl-polygon-offset",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = mgras_gl_offset_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_STRUCT_ARRAY(gl, SGIMgrasState, SGI_MGRAS_GL_CONTEXTS, 1,
+                             vmstate_sgi_mgras_gl_context_offset,
+                             SGIGLContext),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
 const VMStateDescription vmstate_sgi_mgras_gl_cull = {
     .name = TYPE_SGI_MGRAS "/gl-cull",
     .version_id = 1,
@@ -2733,6 +2817,8 @@ bool sgi_mgras_gl_post_load(SGIMgrasState *s)
             gl->cur.index_logic_op > 1 || gl->cur.color_logic_op > 1 ||
             gl->cur.colour_mask > SGI_GL_COLOUR_MASK_ALL ||
             gl->cur.fog > 1 ||
+            gl->cur.polygon_offset > (SGI_GL_OFFSET_FILL | SGI_GL_OFFSET_LINE |
+                                      SGI_GL_OFFSET_POINT) ||
             gl->cur.logic_op_mode - SGI_GL_CLEAR >
                 SGI_GL_SET - SGI_GL_CLEAR ||
             gl->cur.stencil_func > SGI_GL_ALWAYS ||
@@ -4141,6 +4227,30 @@ void sgi_mgras_gl_execute(SGIMgrasState *s, uint32_t header,
         mgras_gl_command(s, payload[0] ? SGI_GL_OP_ENABLE :
                          SGI_GL_OP_DISABLE, word, 1);
         return;
+    case MGRAS_GL_POLYGON_OFFSET:
+        if (payload[2] != MGRAS_GL_OFFSET_EXT &&
+            payload[2] != MGRAS_GL_OFFSET_CORE) {
+            qemu_log_mask(LOG_UNIMP, "sgi-mgras: polygon offset form 0x%x "
+                          "is not the client's; taken as glPolygonOffset's\n",
+                          payload[2]);
+        }
+        mgras_gl_command(s, payload[2] == MGRAS_GL_OFFSET_EXT ?
+                         SGI_GL_OP_POLYGON_OFFSET_EXT :
+                         SGI_GL_OP_POLYGON_OFFSET, payload, 2);
+        return;
+    case MGRAS_GL_OFFSET_ENABLES: {
+        static const uint32_t caps[3] = {
+            SGI_GL_POLYGON_OFFSET_FILL, SGI_GL_POLYGON_OFFSET_LINE,
+            SGI_GL_POLYGON_OFFSET_POINT,
+        };
+
+        for (int i = 0; i < 3; i++) {
+            mgras_gl_command(s, extract32(payload[0], i, 1) ?
+                             SGI_GL_OP_ENABLE : SGI_GL_OP_DISABLE,
+                             &caps[i], 1);
+        }
+        return;
+    }
     case MGRAS_GL_DEPTH_RANGE:
         /* The client does not clamp, so the board does (2.10.1). */
         mgras_gl_command(s, SGI_GL_OP_DEPTH_RANGE, payload, 2);
