@@ -1137,6 +1137,7 @@ static void test_fuel_serial_bytes(const void *data)
     g_autofree char *quoted = g_shell_quote(prom);
     QTestState *qts;
     int a[2], b[2];
+    uint32_t saved_window, pci_bar;
 
     g_assert_cmpint(socketpair(AF_UNIX, SOCK_STREAM, 0, a), ==, 0);
     g_assert_cmpint(socketpair(AF_UNIX, SOCK_STREAM, 0, b), ==, 0);
@@ -1193,6 +1194,25 @@ static void test_fuel_serial_bytes(const void *data)
     g_assert_cmpint(write(b[0], "n", 1), ==, 1);
     fuel_wait_serial_input(qts, IOC3_WINDOW + IOC3_SERIAL_B);
     g_assert_cmphex(qtest_readb(qts, IOC3_WINDOW + IOC3_SERIAL_B), ==, 'n');
+
+    pci_bar = qtest_readl(qts, PCI_CONFIG(15, 4) + PCI_BAR0);
+    saved_window = fuel_xbridge_read(qts, XBRIDGE_DEVICE(4));
+    qtest_writeb(qts, IOC3_WINDOW + IOC3_SERIAL_A + IOC3_UART_SCR, 0x5a);
+    /* Move only the documented PCI memory base bits, then restore them. */
+    fuel_xbridge_write(qts, XBRIDGE_DEVICE(4),
+                       (saved_window & ~0x3ffu) | 0x3ffu);
+    g_assert_cmphex(qtest_readb(qts, IOC3_WINDOW + IOC3_SERIAL_A +
+                                IOC3_UART_SCR), !=, 0x5a);
+    g_assert_cmpint(write(a[0], "z", 1), ==, 1);
+    fuel_xbridge_write(qts, XBRIDGE_DEVICE(4), saved_window);
+    g_assert_cmphex(qtest_readl(qts, PCI_CONFIG(15, 4) + PCI_BAR0), ==,
+                    pci_bar);
+    g_assert_cmphex(qtest_readb(qts, IOC3_WINDOW + IOC3_SERIAL_A +
+                                IOC3_UART_SCR), ==, 0x5a);
+    fuel_wait_serial_input(qts, IOC3_WINDOW + IOC3_SERIAL_A);
+    g_assert_cmphex(qtest_readb(qts, IOC3_WINDOW + IOC3_SERIAL_A), ==, 'z');
+    qtest_writeb(qts, IOC3_WINDOW + IOC3_SERIAL_A, 'Z');
+    fuel_expect_serial_byte(a[0], 'Z');
 
     qtest_quit(qts);
     g_assert_cmpint(close(a[0]), ==, 0);
