@@ -50,6 +50,8 @@ static uint16_t dp83840_status(DP83840State *s)
     }
     if (s->autoneg_done && !s->link_down) {
         status |= MII_BMSR_LINK_ST | MII_BMSR_AN_COMP;
+    } else if (s->forced_link && !s->link_down) {
+        status |= MII_BMSR_LINK_ST;
     }
 
     return status;
@@ -176,6 +178,7 @@ void dp83840_write(DP83840State *s, int reg, uint16_t val)
             if ((val & (MII_BMCR_AUTOEN | MII_BMCR_ANRESTART)) ==
                 (MII_BMCR_AUTOEN | MII_BMCR_ANRESTART)) {
                 s->autoneg_done = false;
+                s->forced_link = false;
                 s->settle_armed = true;
                 s->restart_phase = DP83843_RESTART_BREAK_LINK;
                 s->restart_complete_ns =
@@ -186,11 +189,14 @@ void dp83840_write(DP83840State *s, int reg, uint16_t val)
                 s->control = val & ~MII_BMCR_ANRESTART;
                 return;
             }
-            if (s->restart_phase != DP83843_RESTART_IDLE) {
+            if (s->restart_phase != DP83843_RESTART_IDLE ||
+                (s->forced_link && !(val & MII_BMCR_AUTOEN))) {
                 /* Clearing the request alone does not cancel negotiation. */
                 if (!(val & MII_BMCR_AUTOEN)) {
                     s->restart_phase = DP83843_RESTART_IDLE;
                     timer_del(s->settle_timer);
+                    /* Approximate immediate forced link to our partner. */
+                    s->forced_link = !(val & MII_BMCR_PDOWN);
                 }
                 s->control = val & ~MII_BMCR_ANRESTART;
                 return;
@@ -199,6 +205,7 @@ void dp83840_write(DP83840State *s, int reg, uint16_t val)
 
         /* No cable to negotiate against: a configuring write links at once. */
         s->restart_phase = DP83843_RESTART_IDLE;
+        s->forced_link = false;
         if (val & MII_BMCR_ISOLATE) {
             s->autoneg_done = false;
             s->settle_armed = false;
@@ -287,6 +294,7 @@ void dp83840_reset(DP83840State *s)
     s->loopback_bypass = s->dp83843 ? 0 : DP83840_LBREMR_RESET_VALUE;
     s->tenbt_config = DP83840_10BT_RESET_VALUE;
     s->autoneg_done = false;
+    s->forced_link = false;
     s->settle_armed = false;
     s->restart_phase = DP83843_RESTART_IDLE;
     s->restart_complete_ns = 0;
@@ -317,7 +325,7 @@ static void dp83840_unrealize(DeviceState *dev)
 
 static const VMStateDescription vmstate_dp83840 = {
     .name = "dp83840",
-    .version_id = 6,
+    .version_id = 7,
     .minimum_version_id = 3,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT16(control, DP83840State),
@@ -332,6 +340,7 @@ static const VMStateDescription vmstate_dp83840 = {
         VMSTATE_BOOL_V(link_down, DP83840State, 4),
         VMSTATE_UINT8_V(restart_phase, DP83840State, 6),
         VMSTATE_INT64_V(restart_complete_ns, DP83840State, 6),
+        VMSTATE_BOOL_V(forced_link, DP83840State, 7),
         VMSTATE_END_OF_LIST()
     }
 };

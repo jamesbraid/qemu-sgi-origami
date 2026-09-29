@@ -2518,6 +2518,12 @@ static void phy_assert_negotiation(QTestState *qts, bool complete)
                     complete ? BMSR_AN_COMP : 0);
 }
 
+static void phy_assert_forced_link(QTestState *qts, bool up)
+{
+    g_assert_cmphex(mii_read(qts, PHY_BMSR) & (BMSR_LINK | BMSR_AN_COMP),
+                    ==, up ? BMSR_LINK : 0);
+}
+
 static void test_dp83843_restart_timing(const void *data)
 {
     int sv[2];
@@ -2572,10 +2578,26 @@ static void test_dp83843_restart_cancel(const void *data)
 
         mii_write(qts, PHY_BMCR, BMCR_AUTOEN | BMCR_RESTART);
         qtest_clock_step(qts, phase ? PHY_BREAK_LINK_NS : 1);
-        mii_write(qts, PHY_BMCR, BMCR_SPEED100);
-        phy_assert_negotiation(qts, false);
+        mii_write(qts, PHY_BMCR, BMCR_SPEED100 | BMCR_DUPLEX);
+        phy_assert_forced_link(qts, true);
         qtest_clock_step(qts, PHY_BREAK_LINK_NS + PHY_NEGOTIATE_NS);
-        phy_assert_negotiation(qts, false);
+        phy_assert_forced_link(qts, true);
+        mii_write(qts, PHY_BMCR, BMCR_SPEED100 | BMCR_DUPLEX);
+        phy_assert_forced_link(qts, true);
+        mii_write(qts, PHY_BMCR, 0x8000);
+        phy_assert_forced_link(qts, false);
+
+        qtest_qmp_assert_success(qts, "{'execute':'set_link', 'arguments':"
+                                 "{'name':'n0', 'up':false}}");
+        mii_write(qts, PHY_BMCR, BMCR_AUTOEN | BMCR_RESTART);
+        qtest_clock_step(qts, phase ? PHY_BREAK_LINK_NS : 1);
+        mii_write(qts, PHY_BMCR, BMCR_SPEED100 | BMCR_DUPLEX);
+        phy_assert_forced_link(qts, false);
+        qtest_clock_step(qts, PHY_BREAK_LINK_NS + PHY_NEGOTIATE_NS);
+        phy_assert_forced_link(qts, false);
+        qtest_qmp_assert_success(qts, "{'execute':'set_link', 'arguments':"
+                                 "{'name':'n0', 'up':true}}");
+        phy_assert_forced_link(qts, true);
     }
     ioc3_quit(qts);
     close(sv[0]);
@@ -2597,6 +2619,21 @@ static void test_dp83840a_restart_unchanged(const void *data)
     close(sv[0]);
 }
 
+typedef struct PHYMigrationCase {
+    unsigned int elapsed_ms;
+    bool force_before;
+    bool force_after;
+} PHYMigrationCase;
+
+static const PHYMigrationCase phy_migration_cases[] = {
+    { 750, false, false },
+    { 2000, false, false },
+    { 750, true, false },
+    { 2000, true, false },
+    { 750, false, true },
+    { 2000, false, true },
+};
+
 static void test_dp83843_register_migration(const void *data)
 {
     GError *error = NULL;
@@ -2606,7 +2643,8 @@ static void test_dp83843_register_migration(const void *data)
     g_autofree char *uri = NULL;
     QTestState *from, *to;
     int from_sv[2], to_sv[2];
-    int64_t elapsed = GPOINTER_TO_UINT(data) * INT64_C(1000000);
+    const PHYMigrationCase *test = data;
+    int64_t elapsed = test->elapsed_ms * INT64_C(1000000);
     int64_t source_time;
 
     g_assert_no_error(error);
@@ -2627,6 +2665,10 @@ static void test_dp83843_register_migration(const void *data)
         source_time = qtest_clock_step(from, elapsed);
     }
     phy_assert_negotiation(from, false);
+    if (test->force_before) {
+        mii_write(from, PHY_BMCR, BMCR_SPEED100 | BMCR_DUPLEX);
+        phy_assert_forced_link(from, true);
+    }
 
     /* The fixture keeps one host PCI bus handle; the VM stays alive. */
     g_clear_pointer(&ioc3_dev, g_free);
@@ -2644,15 +2686,25 @@ static void test_dp83843_register_migration(const void *data)
 
     qtest_clock_set(to, source_time);
     phy_assert_negotiation(to, false);
-    if (elapsed < PHY_BREAK_LINK_NS) {
-        qtest_clock_step(to, PHY_BREAK_LINK_NS - elapsed);
-        phy_assert_negotiation(to, false);
-        elapsed = PHY_BREAK_LINK_NS;
+    if (test->force_after) {
+        mii_write(to, PHY_BMCR, BMCR_SPEED100 | BMCR_DUPLEX);
     }
-    qtest_clock_step(to, PHY_BREAK_LINK_NS + PHY_NEGOTIATE_NS - elapsed - 1);
-    phy_assert_negotiation(to, false);
-    qtest_clock_step(to, 1);
-    phy_assert_negotiation(to, true);
+    if (test->force_before || test->force_after) {
+        phy_assert_forced_link(to, true);
+        qtest_clock_step(to, PHY_BREAK_LINK_NS + PHY_NEGOTIATE_NS);
+        phy_assert_forced_link(to, true);
+    } else {
+        if (elapsed < PHY_BREAK_LINK_NS) {
+            qtest_clock_step(to, PHY_BREAK_LINK_NS - elapsed);
+            phy_assert_negotiation(to, false);
+            elapsed = PHY_BREAK_LINK_NS;
+        }
+        qtest_clock_step(to,
+                         PHY_BREAK_LINK_NS + PHY_NEGOTIATE_NS - elapsed - 1);
+        phy_assert_negotiation(to, false);
+        qtest_clock_step(to, 1);
+        phy_assert_negotiation(to, true);
+    }
 
     qtest_quit(from);
     ioc3_quit(to);
@@ -2770,9 +2822,26 @@ int main(int argc, char **argv)
     qtest_add_data_func("sgi-ioc3-eth/dp83843-next-page-transmit-register",
                         NULL, test_dp83843_next_page_transmit_register);
     qtest_add_data_func("sgi-ioc3-eth/dp83843-register-migration",
-                        GUINT_TO_POINTER(750), test_dp83843_register_migration);
+                        &phy_migration_cases[0],
+                        test_dp83843_register_migration);
     qtest_add_data_func("sgi-ioc3-eth/dp83843-negotiation-migration",
-                        GUINT_TO_POINTER(2000),
+                        &phy_migration_cases[1],
+                        test_dp83843_register_migration);
+    qtest_add_data_func("sgi-ioc3-eth/"
+                        "dp83843-force-before-migration-break-link",
+                        &phy_migration_cases[2],
+                        test_dp83843_register_migration);
+    qtest_add_data_func("sgi-ioc3-eth/"
+                        "dp83843-force-before-migration-negotiating",
+                        &phy_migration_cases[3],
+                        test_dp83843_register_migration);
+    qtest_add_data_func("sgi-ioc3-eth/"
+                        "dp83843-force-after-migration-break-link",
+                        &phy_migration_cases[4],
+                        test_dp83843_register_migration);
+    qtest_add_data_func("sgi-ioc3-eth/"
+                        "dp83843-force-after-migration-negotiating",
+                        &phy_migration_cases[5],
                         test_dp83843_register_migration);
     qtest_add_data_func("sgi-ioc3-eth/dp83843-bmcr-loopback-selects-lbr",
                         NULL, test_dp83843_bmcr_loopback_selects_lbr);
