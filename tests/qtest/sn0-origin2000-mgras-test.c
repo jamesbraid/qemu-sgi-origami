@@ -11488,7 +11488,7 @@ static unsigned gl_stream_subsections(QTestState *qts)
         "sgi-mgras/gl-raster", "sgi-mgras/gl-index", "sgi-mgras/gl-block",
         "sgi-mgras/gl-depth-range", "sgi-mgras/gl-dither",
         "sgi-mgras/gl-lighting", "sgi-mgras/gl-texture",
-        "sgi-mgras/gl-light-enables",
+        "sgi-mgras/gl-light-enables", "sgi-mgras/gl-cull",
     };
     g_autofree char *tmpfs = NULL;
     g_autofree char *path = NULL;
@@ -12707,6 +12707,123 @@ static void test_gl_light_enables_migration(void)
 }
 
 /*
+ * Polygon culling as the client sends it (__glMgrim_CullFace 0xd95f260,
+ * __glMgrim_FrontFace 0xd9544b0, __glMgrim_Enable and __glMgrim_Disable
+ * for GL_CULL_FACE): 0x7404 and the face, 0x5604 and the direction,
+ * 0x7200 and 0x7300 alone.
+ */
+#define GL_CULL_ON            0x00007200
+#define GL_CULL_OFF           0x00007300
+#define GL_CULL_FACE_HDR      0x00007404
+#define GL_FRONT_FACE_HDR     0x00005604
+#define GL_FRONT_AND_BACK     0x408
+#define GL_CW                 0x900
+#define GL_CCW                0x901
+
+/* The pixel a cleared window shows after gl_lit_triangle(). */
+static uint32_t gl_cull_triangle(QTestState *qts, bool cw)
+{
+    gl_word(qts, GL_CLEAR_COLOR_BUFFER);
+    return gl_lit_triangle(qts, cw);
+}
+
+/*
+ * Unlit and green over black, a triangle draws unless culled (OpenGL
+ * 1.2.1, 3.5.1). Culling starts disabled; 0x7200 culls the clockwise,
+ * back-facing one; 0x7404 with GL_FRONT the counter-clockwise one
+ * instead, and with GL_FRONT_AND_BACK both; 0x5604 with GL_CW makes the
+ * clockwise one the front, so GL_BACK culls the other; 0x7300 draws both
+ * again.
+ */
+static void test_gl_cull_face_culls_by_facing(void)
+{
+    static const struct {
+        uint32_t header;
+        uint32_t word;
+        uint32_t cw;
+        uint32_t ccw;
+    } steps[] = {
+        { 0, 0, 0x00ff00, 0x00ff00 },
+        { GL_CULL_ON, 0, 0, 0x00ff00 },
+        { GL_CULL_FACE_HDR, GL_FRONT_FACE, 0x00ff00, 0 },
+        { GL_CULL_FACE_HDR, GL_FRONT_AND_BACK, 0, 0 },
+        { GL_CULL_FACE_HDR, GL_BACK_FACE, 0, 0x00ff00 },
+        { GL_FRONT_FACE_HDR, GL_CW, 0x00ff00, 0 },
+        { GL_CULL_OFF, 0, 0x00ff00, 0x00ff00 },
+        { GL_FRONT_FACE_HDR, GL_CCW, 0x00ff00, 0x00ff00 },
+    };
+
+    gl_scene_start(qts, GL_FLAT);
+    gl_clear_color(qts, 0, 0, 0, 1);
+    gl_color3f(qts, 0, 1, 0);
+    for (int i = 0; i < ARRAY_SIZE(steps); i++) {
+        if (steps[i].header == GL_CULL_ON || steps[i].header == GL_CULL_OFF) {
+            gl_word(qts, steps[i].header);
+        } else if (steps[i].header) {
+            gl_one(qts, steps[i].header, steps[i].word);
+        }
+        g_assert_cmphex(gl_cull_triangle(qts, true), ==, steps[i].cw);
+        g_assert_cmphex(gl_cull_triangle(qts, false), ==, steps[i].ccw);
+    }
+}
+
+/*
+ * Two-sided lighting's back colour goes to the back face that 0x5604
+ * names: with GL_CW the counter-clockwise triangle is the back and takes
+ * the back material's green over the 0.04 ambient, and the clockwise one
+ * the front colour, the ambient alone (the normal faces away).
+ */
+static void test_gl_front_face_selects_the_two_sided_colour(void)
+{
+    gl_lit_start(qts);
+    gl_material(qts, GL_FRONT_FACE, GL_DIFFUSE, 1, 0, 0, 1);
+    gl_material(qts, GL_BACK_FACE, GL_DIFFUSE, 0, 1, 0, 1);
+    gl_three(qts, GL_NORMAL3F_HDR, 0, 0, -1);
+    gl_one(qts, GL_LIGHT_MODEL_TWO_SIDE_HDR, 1);
+    gl_one(qts, GL_FRONT_FACE_HDR, GL_CW);
+    g_assert_cmphex(gl_lit_triangle(qts, false), ==, 0x0aff0a);
+    g_assert_cmphex(gl_lit_triangle(qts, true), ==, 0x0a0a0a);
+}
+
+/*
+ * Both slots cull the front face, slot B with clockwise front. After the
+ * migration a clockwise triangle draws in slot A's context only and a
+ * counter-clockwise one in slot B's only.
+ */
+static void gl_cull_setup(QTestState *from)
+{
+    for (int slot = 0; slot < 2; slot++) {
+        gl_enter_slot(from, slot ? GL_SLOT_B : GL_SLOT_A);
+        gl_word(from, GL_CONTEXT_OPENER);
+        gl_viewport(from, 0, 0, 128, 128);
+        gl_word(from, GL_CULL_ON);
+        gl_one(from, GL_CULL_FACE_HDR, GL_FRONT_FACE);
+        gl_color3f(from, 0, 1, 0);
+    }
+    gl_one(from, GL_FRONT_FACE_HDR, GL_CW);
+}
+
+static void gl_cull_check(QTestState *to)
+{
+    for (int slot = 0; slot < 2; slot++) {
+        for (int cw = 0; cw < 2; cw++) {
+            gl_enter_slot(to, slot ? GL_SLOT_B : GL_SLOT_A);
+            gl_clear_color(to, 0, 0, 0, 1);
+            gl_word(to, GL_CLEAR_COLOR_BUFFER);
+            gl_lit_triangle(to, cw);
+            g_assert_cmphex(mgras_test_pixel(to, 256 + 64, 383 - 50), ==,
+                            slot != cw ? 0x00ff00 : 0);
+        }
+    }
+}
+
+/* Each context's culling enable, face and front face migrate. */
+static void test_gl_cull_migration(void)
+{
+    gl_migrate(gl_cull_setup, gl_cull_check);
+}
+
+/*
  * The context setup's 32 detail-texture table writes, 0xec10 with 0xc52,
  * 0xc78, 0x194 and a value (0x1f three times, then 0x1d down to 1), are
  * texture-only defaults and consumed without a log line; any other value
@@ -12916,6 +13033,36 @@ static void test_gl_state_subsections_follow_their_state(void)
             gl_one(s, GL_NORMALIZE_HDR, 1);
         }
         g_assert_cmpuint(gl_stream_subsections(s), ==, i == 1 ? 0 : 128);
+        qtest_quit(s);
+    }
+
+    /*
+     * Culling: 0x7200, a cull face other than GL_BACK or a front face
+     * other than GL_CCW sends gl-cull; culling turned off again, and the
+     * setup's own GL_BACK and GL_CCW, send nothing.
+     */
+    for (int i = 0; i < 5; i++) {
+        s = qtest_init(MIGRATION_ARGS);
+        gl_enter_slot(s, GL_SLOT_A);
+        gl_word(s, GL_CONTEXT_OPENER);
+        if (i < 2) {
+            gl_word(s, GL_CULL_ON);
+        }
+        if (i == 1) {
+            gl_word(s, GL_CULL_OFF);
+        }
+        if (i == 2) {
+            gl_one(s, GL_CULL_FACE_HDR, GL_FRONT_FACE);
+        }
+        if (i == 3) {
+            gl_one(s, GL_FRONT_FACE_HDR, GL_CW);
+        }
+        if (i == 4) {
+            gl_one(s, GL_CULL_FACE_HDR, GL_BACK_FACE);
+            gl_one(s, GL_FRONT_FACE_HDR, GL_CCW);
+        }
+        g_assert_cmpuint(gl_stream_subsections(s), ==,
+                         i == 1 || i == 4 ? 0 : 256);
         qtest_quit(s);
     }
 }
@@ -13736,6 +13883,13 @@ int main(int argc, char **argv)
                    test_gl_two_sided_lighting_lights_the_back);
     qtest_add_func("sn0/origin2000/mgras/gl-light-enables-migration",
                    test_gl_light_enables_migration);
+    qtest_add_func("sn0/origin2000/mgras/gl-cull-face-culls-by-facing",
+                   test_gl_cull_face_culls_by_facing);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "gl-front-face-selects-the-two-sided-colour",
+                   test_gl_front_face_selects_the_two_sided_colour);
+    qtest_add_func("sn0/origin2000/mgras/gl-cull-migration",
+                   test_gl_cull_migration);
     qtest_add_func("sn0/origin2000/mgras/gl-texture-matrix-migration",
                    test_gl_texture_matrix_migration);
     qtest_add_func("sn0/origin2000/mgras/"

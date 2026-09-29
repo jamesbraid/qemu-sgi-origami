@@ -12,7 +12,7 @@
  * What it preserves: the pixels that colour and depth clears, untextured
  * points, lines, triangles, strips, fans, quads and polygons, at size and
  * width 1, flat or smooth shaded, lit per vertex by OpenGL's lighting
- * equation, transformed by the modelview and
+ * equation, culled by facing, transformed by the modelview and
  * projection matrices and their stacks and depth tested, and bitmaps,
  * leave in the window's front or back buffer, in RGBA or colour-index
  * mode, and the main-port framing,
@@ -91,6 +91,39 @@
  * Every context setup sends it with 3.
  */
 #define MGRAS_GL_DITHER          0x00006704
+/*
+ * Polygon culling, from the IRIX 6.5.30 IP27GR532 libGLcore.so (SHA-256
+ * 626d6d94...), established from the listing:
+ *
+ * - glCullFace: __glMgrim_CullFace (0xd95f260) accepts a mode from
+ *   0x404 to 0x408 and writes 0x7404 and the mode unchanged (0xd95f2a8,
+ *   0xd95f2ac); __glMgrlc_CullFace (0xd958c00) compiles the same pair
+ *   into a display list.
+ * - glFrontFace: __glMgrim_FrontFace (0xd9544b0) accepts 0x900 (GL_CW)
+ *   or 0x901 (GL_CCW) and writes 0x5604 and the direction unchanged
+ *   (0xd95450c, 0xd954510); __glMgrlc_FrontFace (0xd956450) compiles it.
+ * - glEnable(GL_CULL_FACE): __glMgrim_Enable, for capability 0xb44,
+ *   writes 0x7200 alone and sets bit 0x1000 of the context word at
+ *   +0x700 (0xd97e300-0xd97e324). glDisable writes 0x7300 alone and
+ *   clears the bit, only while it is set (__glMgrim_Disable,
+ *   0xd980360-0xd980394).
+ * - __glMgr_RestoreGE11CullState (0xd9e39a0) writes 0x7200 or 0x7300
+ *   from that bit, and the host-culling glDrawArrays path
+ *   (__glMgrim_HostCullDrawArraysEXT, 0xd9e3bc0) writes 0x7300 before
+ *   drawing, so a client that culls on the host turns the board's
+ *   culling off first and restores it after.
+ *
+ * Every context setup sends 0x7404 with 0x405 and 0x5604 with 0x901,
+ * OpenGL's initial values (notes-unimplemented-tokens.md). That the
+ * board then culls and chooses two-sided colours as OpenGL 1.2.1, 3.5.1
+ * and 2.13.1 give is inferred from the specification; the discriminating
+ * tests are gl-cull-face-culls-by-facing and
+ * gl-front-face-selects-the-two-sided-colour.
+ */
+#define MGRAS_GL_CULL_ON         0x00007200
+#define MGRAS_GL_CULL_OFF        0x00007300
+#define MGRAS_GL_CULL_FACE       0x00007404
+#define MGRAS_GL_FRONT_FACE      0x00005604
 /*
  * The context setup's texture-only defaults, consumed without a log line
  * while they carry the default: 0xec10 from mgrTM_Init (0xd999454 in the
@@ -515,6 +548,10 @@ bool sgi_mgras_gl_header(uint32_t header)
     case MGRAS_GL_DEPTH_TEST:
     case MGRAS_GL_DEPTH_RANGE:
     case MGRAS_GL_DITHER:
+    case MGRAS_GL_CULL_ON:
+    case MGRAS_GL_CULL_OFF:
+    case MGRAS_GL_CULL_FACE:
+    case MGRAS_GL_FRONT_FACE:
     case MGRAS_GL_TEXTURE_TABLE:
     case MGRAS_GL_LIGHT_MODEL_AMBIENT:
     case MGRAS_GL_LIGHT_MODEL_LOCAL:
@@ -1772,6 +1809,53 @@ const VMStateDescription vmstate_sgi_mgras_gl_light_enables = {
     }
 };
 
+static const VMStateDescription vmstate_sgi_mgras_gl_context_cull = {
+    .name = TYPE_SGI_MGRAS "/gl-context-cull",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32(cur.cull_face, SGIGLContext),
+        VMSTATE_UINT32(cur.cull_face_mode, SGIGLContext),
+        VMSTATE_UINT32(cur.front_face, SGIGLContext),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
+/*
+ * Every context's culling enable, cull face and front face, sent only
+ * once some context has left OpenGL's initial disabled, GL_BACK and
+ * GL_CCW. A stream without it comes from a model that consumed 0x7200,
+ * 0x7300, 0x7404 and 0x5604 without acting on them, whose contexts all
+ * drew as that initial state does: the destination's.
+ */
+static bool mgras_gl_cull_needed(void *opaque)
+{
+    SGIMgrasState *s = opaque;
+
+    for (int i = 0; i < SGI_MGRAS_GL_CONTEXTS; i++) {
+        const SGIGLDrawState *st = &s->gl[i].cur;
+
+        if (st->cull_face || st->cull_face_mode != SGI_GL_BACK ||
+            st->front_face != SGI_GL_CCW) {
+            return true;
+        }
+    }
+    return false;
+}
+
+const VMStateDescription vmstate_sgi_mgras_gl_cull = {
+    .name = TYPE_SGI_MGRAS "/gl-cull",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = mgras_gl_cull_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_STRUCT_ARRAY(gl, SGIMgrasState, SGI_MGRAS_GL_CONTEXTS, 1,
+                             vmstate_sgi_mgras_gl_context_cull,
+                             SGIGLContext),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
 /*
  * The parser inside a glBitmap image, live or set aside with a context,
  * keeps its place in the payload fields the stream already carries. A
@@ -1840,7 +1924,12 @@ bool sgi_mgras_gl_post_load(SGIMgrasState *s)
             gl->light_model_two_side > 1 || gl->color_material > 1 ||
             gl->lighting > 1 || gl->lights_enabled >> SGI_GL_LIGHTS ||
             gl->normalize > 1 || gl->rescale_normal > 1 ||
-            gl->strip_odd > 1 ||
+            gl->strip_odd > 1 || gl->cur.cull_face > 1 ||
+            (gl->cur.cull_face_mode != SGI_GL_FRONT &&
+             gl->cur.cull_face_mode != SGI_GL_BACK &&
+             gl->cur.cull_face_mode != SGI_GL_FRONT_AND_BACK) ||
+            (gl->cur.front_face != SGI_GL_CW &&
+             gl->cur.front_face != SGI_GL_CCW) ||
             !(gl->cur.depth_range[0] >= 0.0f &&
               gl->cur.depth_range[0] <= 1.0f) ||
             !(gl->cur.depth_range[1] >= 0.0f &&
@@ -2453,6 +2542,18 @@ void sgi_mgras_gl_execute(SGIMgrasState *s, uint32_t header,
         word[0] = SGI_GL_DITHER;
         mgras_gl_command(s, payload[0] ? SGI_GL_OP_ENABLE :
                          SGI_GL_OP_DISABLE, word, 1);
+        return;
+    case MGRAS_GL_CULL_ON:
+    case MGRAS_GL_CULL_OFF:
+        word[0] = SGI_GL_CULL_FACE;
+        mgras_gl_command(s, header == MGRAS_GL_CULL_ON ? SGI_GL_OP_ENABLE :
+                         SGI_GL_OP_DISABLE, word, 1);
+        return;
+    case MGRAS_GL_CULL_FACE:
+        mgras_gl_command(s, SGI_GL_OP_CULL_FACE, payload, 1);
+        return;
+    case MGRAS_GL_FRONT_FACE:
+        mgras_gl_command(s, SGI_GL_OP_FRONT_FACE, payload, 1);
         return;
     case MGRAS_GL_DEPTH_RANGE:
         /* The client does not clamp, so the board does (2.10.1). */
