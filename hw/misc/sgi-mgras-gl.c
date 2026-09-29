@@ -255,6 +255,49 @@
 #define MGRAS_GL_CLIP_PLANE      0x0000a514
 #define MGRAS_GL_CLIP_PLANE_ON   0x0000a604
 #define MGRAS_GL_CLIP_PLANE_OFF  0x0000a704
+/*
+ * Rasterization state the model keeps and answers but does not draw
+ * with, established from the listing:
+ *
+ * - glLineWidth (0xd9601f0) and glPointSize (0xd9603f0) reject a value
+ *   not above 0 with the client's own GL_INVALID_VALUE and write 0x4504
+ *   or 0x4d04 and the float.
+ * - glLineStipple (0xd960010) writes 0x4608, the repeat clamped to [1,
+ *   256] less 1, and the pattern with its 16 bits reversed
+ *   (0xd960050-0xd9600d8); the queries undo both (0xc46's low 16 bits
+ *   reversed, 0xc47's answer plus 1).
+ * - glPolygonMode (0xd95f310) writes 0xa808 and the face and mode
+ *   enumerants unchanged.
+ * - glEnable and glDisable write 1 or 0 after 0x6904 for GL_LINE_SMOOTH
+ *   (0xd97df0c, capability 0xb20), 0x6a04 for GL_LINE_STIPPLE (0xd97dd28,
+ *   0xb24), 0x6c04 for GL_POINT_SMOOTH (0xd97e294, 0xb10) and 0x6d04 for
+ *   GL_POLYGON_STIPPLE (0xd97e7e4, 0xb42). GL_POLYGON_SMOOTH sends no
+ *   token (0xd97e120-0xd97e164), so the model cannot follow it.
+ *
+ * The rasterizer draws lines of width 1, points of size 1 and filled,
+ * unstippled polygons whatever this state holds, and logs a value it does
+ * not draw. perfly reads all of it back at start; with zero answers it
+ * sent glPointSize(0) and glLineWidth(0), which the client rejects.
+ */
+#define MGRAS_GL_LINE_WIDTH      0x00004504
+#define MGRAS_GL_POINT_SIZE      0x00004d04
+#define MGRAS_GL_LINE_STIPPLE    0x00004608
+#define MGRAS_GL_POLYGON_MODE    0x0000a808
+#define MGRAS_GL_LINE_SMOOTH     0x00006904
+#define MGRAS_GL_LINE_STIPPLE_ON 0x00006a04
+#define MGRAS_GL_POINT_SMOOTH    0x00006c04
+#define MGRAS_GL_POLYGON_STIPPLE 0x00006d04
+
+/* The capability each enable token names. */
+static const struct {
+    uint32_t header;
+    uint32_t cap;
+} mgras_gl_raster_enables[] = {
+    { MGRAS_GL_LINE_SMOOTH, SGI_GL_LINE_SMOOTH },
+    { MGRAS_GL_LINE_STIPPLE_ON, SGI_GL_LINE_STIPPLE },
+    { MGRAS_GL_POINT_SMOOTH, SGI_GL_POINT_SMOOTH },
+    { MGRAS_GL_POLYGON_STIPPLE, SGI_GL_POLYGON_STIPPLE },
+};
 
 /* glStencilOp's operations by the number the client sends for each. */
 static const uint16_t mgras_gl_stencil_ops[] = {
@@ -813,6 +856,14 @@ bool sgi_mgras_gl_header(uint32_t header)
     case MGRAS_GL_CLIP_PLANE:
     case MGRAS_GL_CLIP_PLANE_ON:
     case MGRAS_GL_CLIP_PLANE_OFF:
+    case MGRAS_GL_LINE_WIDTH:
+    case MGRAS_GL_POINT_SIZE:
+    case MGRAS_GL_LINE_STIPPLE:
+    case MGRAS_GL_POLYGON_MODE:
+    case MGRAS_GL_LINE_SMOOTH:
+    case MGRAS_GL_LINE_STIPPLE_ON:
+    case MGRAS_GL_POINT_SMOOTH:
+    case MGRAS_GL_POLYGON_STIPPLE:
     case MGRAS_GL_DEPTH_RANGE:
     case MGRAS_GL_DITHER:
     case MGRAS_GL_CULL_ON:
@@ -1232,6 +1283,12 @@ typedef enum MgrasGLQueryPacking {
  *   GL_FOG_INDEX at 0xbd6, an integer.
  * - GL_POLYGON_OFFSET_FACTOR, GL_POLYGON_OFFSET_BIAS_EXT and
  *   GL_POLYGON_OFFSET_UNITS at 0xca2 to 0xca4, floats.
+ * - GL_POINT_SIZE and GL_LINE_WIDTH at 0xc3d and 0xc3e, floats;
+ *   GL_CULL_FACE_MODE and GL_FRONT_FACE at 0xc3f and 0xc40 and
+ *   GL_POLYGON_MODE's front and back at 0xc17 and 0xc18, enumerants; and
+ *   GL_LINE_SMOOTH at 0xc30, the whole word the boolean. The line
+ *   stipple's pattern and repeat, at 0xc46 and 0xc47, are answered in the
+ *   form 0x4608 sends them (mgras_gl_stipple_query()).
  *
  * What a1 and a2 select is unknown; the model answers by index alone.
  * Every other index answers zero, logged, which is right for the
@@ -1286,7 +1343,45 @@ static const struct {
     { 0xca2, 1, MGRAS_GL_QUERY_WORD, SGI_GL_POLYGON_OFFSET_FACTOR, 0 },
     { 0xca3, 1, MGRAS_GL_QUERY_WORD, SGI_GL_POLYGON_OFFSET_BIAS, 0 },
     { 0xca4, 1, MGRAS_GL_QUERY_WORD, SGI_GL_POLYGON_OFFSET_UNITS, 0 },
+    { 0xc3d, 1, MGRAS_GL_QUERY_WORD, SGI_GL_POINT_SIZE, 0 },
+    { 0xc3e, 1, MGRAS_GL_QUERY_WORD, SGI_GL_LINE_WIDTH, 0 },
+    { 0xc3f, 1, MGRAS_GL_QUERY_WORD, SGI_GL_CULL_FACE_MODE, 0 },
+    { 0xc40, 1, MGRAS_GL_QUERY_WORD, SGI_GL_FRONT_FACE, 0 },
+    { 0xc17, 2, MGRAS_GL_QUERY_WORD, SGI_GL_POLYGON_MODE, 0 },
+    { 0xc30, 1, MGRAS_GL_QUERY_WORD, SGI_GL_LINE_SMOOTH, 0 },
 };
+
+/* A 16-bit line stipple pattern with its bits in the other order. */
+static uint32_t mgras_gl_reverse16(uint32_t pattern)
+{
+    uint32_t out = 0;
+
+    for (int i = 0; i < 16; i++) {
+        out |= extract32(pattern, i, 1) << (15 - i);
+    }
+    return out;
+}
+
+/*
+ * GL_LINE_STIPPLE_PATTERN at 0xc46, whose low 16 bits the client
+ * reverses, and GL_LINE_STIPPLE_REPEAT at 0xc47, to which it adds 1.
+ */
+static bool mgras_gl_stipple_query(SGIMgrasState *s, uint32_t index,
+                                   uint32_t *answer)
+{
+    const SGIGLContext *gl = mgras_gl(s);
+
+    switch (index) {
+    case 0xc46:
+        *answer = mgras_gl_reverse16(gl->line_stipple_pattern);
+        return true;
+    case 0xc47:
+        *answer = gl->line_stipple_repeat - 1;
+        return true;
+    default:
+        return false;
+    }
+}
 
 /*
  * GL_MODELVIEW_STACK_DEPTH and GL_PROJECTION_STACK_DEPTH. __glMgrDoGet
@@ -1368,9 +1463,8 @@ static bool mgras_gl_query_table_known(const SGIMgrasBoard *b)
  * glDepthFunc (0x4304), which the GE turns into register writes the model
  * never sees as triples, so a stored triple would go stale at the first
  * of them. Instead each field comes from the loaded context's state
- * (inferred: that the board answers with the state the client last set).
- * A field the model does not track keeps the setup value, and such an
- * answer is logged; the bits no query reads keep the setup value's.
+ * (inferred: that the board answers with the state the client last set);
+ * the bits no query reads keep the setup value's.
  *
  * glIsEnabled(GL_FOG) reads a second index, 0x3 with a1 0, only when bit
  * 17 of 0x286 is clear, and tests it against the table word at offset
@@ -1394,15 +1488,15 @@ static bool mgras_gl_raster_query(SGIMgrasState *s, uint32_t index,
 {
     const SGIGLContext *gl = mgras_gl(s);
     const SGIGLDrawState *st = &gl->cur;
-    bool untracked = false;
 
     switch (index) {
     case MGRAS_GL_QUERY_FOG_SECOND:
         *answer = 0;
         break;
     case MGRAS_GL_QUERY_FILL_ENABLES:
-        *answer = (MGRAS_GL_FILL_SETUP & ~0x20000u) | st->fog << 17;
-        untracked = true;
+        *answer = (MGRAS_GL_FILL_SETUP & ~0x20021u) | st->fog << 17 |
+                  !!(gl->raster_enables & SGI_GL_RASTER_POLYGON_STIPPLE) |
+                  !!(gl->raster_enables & SGI_GL_RASTER_LINE_STIPPLE) << 5;
         break;
     case MGRAS_GL_QUERY_PIXEL_ENABLES:
         *answer = (MGRAS_GL_PIXEL_SETUP & ~0x3c000051u) | gl->cur.dither |
@@ -1437,11 +1531,6 @@ static bool mgras_gl_raster_query(SGIMgrasState *s, uint32_t index,
     }
     default:
         return false;
-    }
-    if (untracked) {
-        qemu_log_mask(LOG_UNIMP, "sgi-mgras: GL state query index 0x%x "
-                      "answers OpenGL's initial value for state the model "
-                      "does not track\n", index);
     }
     return true;
 }
@@ -1515,7 +1604,8 @@ uint32_t sgi_mgras_gl_query_answer(SGIMgrasState *s, const uint32_t *args,
     if (index == MGRAS_GL_QUERY_WRITEMASK) {
         return mgras_gl_writemask_answer(s);
     }
-    if (mgras_gl_clip_query(s, index, &out[0])) {
+    if (mgras_gl_clip_query(s, index, &out[0]) ||
+        mgras_gl_stipple_query(s, index, &out[0])) {
         return out[0];
     }
     if (index >= MGRAS_GL_QUERY_READBACK &&
@@ -2701,6 +2791,61 @@ const VMStateDescription vmstate_sgi_mgras_gl_clip_planes = {
     }
 };
 
+static const VMStateDescription vmstate_sgi_mgras_gl_context_line_point = {
+    .name = TYPE_SGI_MGRAS "/gl-context-line-point",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_SINGLE(point_size, SGIGLContext, 0, vmstate_info_uint32,
+                       float),
+        VMSTATE_SINGLE(line_width, SGIGLContext, 0, vmstate_info_uint32,
+                       float),
+        VMSTATE_UINT32(line_stipple_repeat, SGIGLContext),
+        VMSTATE_UINT32(line_stipple_pattern, SGIGLContext),
+        VMSTATE_UINT32_ARRAY(polygon_mode, SGIGLContext, 2),
+        VMSTATE_UINT32(raster_enables, SGIGLContext),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
+/*
+ * Every context's point, line and polygon rasterization state, sent once
+ * some context has left OpenGL's initial values, which every context
+ * setup restates. A stream without it comes from a model that consumed
+ * those packets and answered zero; the destination's initial state draws
+ * the same.
+ */
+static bool mgras_gl_line_point_needed(void *opaque)
+{
+    SGIMgrasState *s = opaque;
+
+    for (int i = 0; i < SGI_MGRAS_GL_CONTEXTS; i++) {
+        const SGIGLContext *gl = &s->gl[i];
+
+        if (gl->point_size != 1.0f || gl->line_width != 1.0f ||
+            gl->line_stipple_repeat != 1 ||
+            gl->line_stipple_pattern != 0xffff ||
+            gl->polygon_mode[0] != SGI_GL_FILL ||
+            gl->polygon_mode[1] != SGI_GL_FILL || gl->raster_enables) {
+            return true;
+        }
+    }
+    return false;
+}
+
+const VMStateDescription vmstate_sgi_mgras_gl_line_point = {
+    .name = TYPE_SGI_MGRAS "/gl-line-point",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = mgras_gl_line_point_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_STRUCT_ARRAY(gl, SGIMgrasState, SGI_MGRAS_GL_CONTEXTS, 1,
+                             vmstate_sgi_mgras_gl_context_line_point,
+                             SGIGLContext),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
 const VMStateDescription vmstate_sgi_mgras_gl_cull = {
     .name = TYPE_SGI_MGRAS "/gl-cull",
     .version_id = 1,
@@ -2919,6 +3064,8 @@ bool sgi_mgras_gl_post_load(SGIMgrasState *s)
             gl->cur.polygon_offset > (SGI_GL_OFFSET_FILL | SGI_GL_OFFSET_LINE |
                                       SGI_GL_OFFSET_POINT) ||
             gl->cur.clip_planes >> SGI_GL_CLIP_PLANES ||
+            gl->line_stipple_repeat - 1 > 255 ||
+            gl->line_stipple_pattern > 0xffff ||
             gl->cur.logic_op_mode - SGI_GL_CLEAR >
                 SGI_GL_SET - SGI_GL_CLEAR ||
             gl->cur.stencil_func > SGI_GL_ALWAYS ||
@@ -4345,6 +4492,32 @@ void sgi_mgras_gl_execute(SGIMgrasState *s, uint32_t header,
         mgras_gl_command(s, SGI_GL_OP_CLIP_PLANE, plane, 5);
         return;
     }
+    case MGRAS_GL_LINE_WIDTH:
+        mgras_gl_command(s, SGI_GL_OP_LINE_WIDTH, payload, 1);
+        return;
+    case MGRAS_GL_POINT_SIZE:
+        mgras_gl_command(s, SGI_GL_OP_POINT_SIZE, payload, 1);
+        return;
+    case MGRAS_GL_LINE_STIPPLE:
+        word[0] = payload[0] + 1;
+        word[1] = mgras_gl_reverse16(payload[1]);
+        mgras_gl_command(s, SGI_GL_OP_LINE_STIPPLE, word, 2);
+        return;
+    case MGRAS_GL_POLYGON_MODE:
+        mgras_gl_command(s, SGI_GL_OP_POLYGON_MODE, payload, 2);
+        return;
+    case MGRAS_GL_LINE_SMOOTH:
+    case MGRAS_GL_LINE_STIPPLE_ON:
+    case MGRAS_GL_POINT_SMOOTH:
+    case MGRAS_GL_POLYGON_STIPPLE:
+        for (int i = 0; i < ARRAY_SIZE(mgras_gl_raster_enables); i++) {
+            if (header == mgras_gl_raster_enables[i].header) {
+                word[0] = mgras_gl_raster_enables[i].cap;
+            }
+        }
+        mgras_gl_command(s, payload[0] ? SGI_GL_OP_ENABLE :
+                         SGI_GL_OP_DISABLE, word, 1);
+        return;
     case MGRAS_GL_CLIP_PLANE_ON:
     case MGRAS_GL_CLIP_PLANE_OFF:
         if (payload[0] - SGI_GL_CLIP_PLANE0 >= SGI_GL_CLIP_PLANES) {

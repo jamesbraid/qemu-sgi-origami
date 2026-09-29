@@ -1966,6 +1966,7 @@ static const VMStateDescription vmstate_sgi_mgras = {
         &vmstate_sgi_mgras_gl_fog,
         &vmstate_sgi_mgras_gl_polygon_offset,
         &vmstate_sgi_mgras_gl_clip_planes,
+        &vmstate_sgi_mgras_gl_line_point,
         NULL
     }
 };
