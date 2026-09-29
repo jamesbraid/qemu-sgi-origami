@@ -485,7 +485,7 @@ static void check_slots_are_unoccupied(const SGIModelTopology *t)
 
 /*
  * A Bedrock topology has one fitted base I/O board per node. Both XBridge
- * heads are present in xtalk-attachments, including the empty head.
+ * heads are present in xio-attachments, including the empty head.
  */
 static void check_bedrock_has_populated_io(const SGIModelTopology *t)
 {
@@ -497,7 +497,7 @@ static void check_bedrock_has_populated_io(const SGIModelTopology *t)
         return;
     }
     for (entry = t->io_boards; entry; entry = entry->next) {
-        const SGIModelXtalkAttachmentList *attachment = t->xtalk_attachments;
+        const SGIModelXioAttachmentList *attachment = t->xio_attachments;
         unsigned int index = entry->value->attachment;
 
         g_assert_true(entry->value->preset == SGI_MODEL_IO_BOARD_PRESET_IO8 ||
