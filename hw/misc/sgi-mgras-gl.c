@@ -985,6 +985,37 @@ static bool mgras_gl_raster_query(SGIMgrasState *s, uint32_t index,
     return false;
 }
 
+/*
+ * GL_COLOR_WRITEMASK and GL_INDEX_WRITEMASK are both query 0x32b (table
+ * offset 0x4c0; notes-return-mode-queries.md). For the colour mask the
+ * client tests the answer's bits 0 to 3 in turn as red, green, blue and
+ * alpha (0xd992858-0xd9928e0); for the index mask it returns the answer
+ * ANDed with (1 << n) - 1, n the context word at 0xcb4, the index's bits
+ * (0xd9959f4-0xd995a30). Established from the IRIX 6.5.30 IP27GR532
+ * libGLcore.so. That the board keeps one write-mask word for both is
+ * inferred from the shared index. In colour-index mode the model answers
+ * glIndexMask's mask; in RGBA mode it answers 0xf, all four colour
+ * channels writable as OpenGL starts, since glColorMask is not decoded,
+ * and logs that answer. 0x32c is glGetError's index, not a mask, and its
+ * zero answer stays right.
+ */
+#define MGRAS_GL_QUERY_WRITEMASK 0x32b
+#define MGRAS_GL_COLOUR_WRITES   0xf
+
+static uint32_t mgras_gl_writemask_answer(SGIMgrasState *s)
+{
+    uint32_t out[SGI_GL_GET_WORDS];
+    unsigned n;
+
+    if (mgras_gl(s)->cur.index_bits &&
+        sgi_gl_get(mgras_gl(s), SGI_GL_INDEX_WRITEMASK, out, &n)) {
+        return out[0];
+    }
+    qemu_log_mask(LOG_UNIMP, "sgi-mgras: GL colour write mask query answers "
+                  "OpenGL's initial mask; glColorMask is not tracked\n");
+    return MGRAS_GL_COLOUR_WRITES;
+}
+
 uint32_t sgi_mgras_gl_query_answer(SGIMgrasState *s, const uint32_t *args,
                                    uint32_t nargs)
 {
@@ -999,6 +1030,9 @@ uint32_t sgi_mgras_gl_query_answer(SGIMgrasState *s, const uint32_t *args,
     }
     if (mgras_gl_raster_query(s, index, &out[0])) {
         return out[0];
+    }
+    if (index == MGRAS_GL_QUERY_WRITEMASK) {
+        return mgras_gl_writemask_answer(s);
     }
     if (index >= MGRAS_GL_QUERY_READBACK &&
         index < MGRAS_GL_QUERY_READBACK + 4) {

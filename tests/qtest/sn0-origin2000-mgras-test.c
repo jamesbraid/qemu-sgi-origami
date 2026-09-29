@@ -12599,6 +12599,27 @@ static void test_gl_texture_matrix_migration(void)
     gl_migrate(gl_texture_setup, gl_texture_check);
 }
 
+/*
+ * GL_INDEX_WRITEMASK and GL_COLOR_WRITEMASK are both query 0x32b: the
+ * index mask in colour-index mode, and red, green, blue and alpha in bits
+ * 0 to 3 in RGBA mode, all set as OpenGL starts.
+ */
+#define GL_Q_WRITEMASK        0x32b
+
+static void test_hq_query_answers_the_write_mask(void)
+{
+    mgras_reset();
+
+    gl_enter_slot(qts, GL_SLOT_A);
+    gl_word(qts, GL_CONTEXT_OPENER);
+    g_assert_cmphex(gl_query(qts, GL_Q_WRITEMASK, 1) & 0xf, ==, 0xf);
+    gl_one(qts, GL_INIT_CI_HDR, 8);
+    gl_one(qts, GL_INDEX_MASK_HDR, 0x3c);
+    g_assert_cmphex(gl_query(qts, GL_Q_WRITEMASK, 1) & 0xff, ==, 0x3c);
+    gl_word(qts, GL_INIT_RGB);
+    g_assert_cmphex(gl_query(qts, GL_Q_WRITEMASK, 1) & 0xf, ==, 0xf);
+}
+
 int main(int argc, char **argv)
 {
     int ret;
@@ -12928,6 +12949,8 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/origin2000/mgras/"
                    "hq-query-answers-the-texture-matrix",
                    test_hq_query_answers_the_texture_matrix);
+    qtest_add_func("sn0/origin2000/mgras/hq-query-answers-the-write-mask",
+                   test_hq_query_answers_the_write_mask);
     qtest_add_func("sn0/origin2000/mgras/hq-query-answers-the-raster-state",
                    test_hq_query_answers_the_raster_state);
     qtest_add_func("sn0/origin2000/mgras/"
