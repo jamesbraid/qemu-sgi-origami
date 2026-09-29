@@ -19,6 +19,7 @@
 typedef struct Planes {
     uint32_t colour[2][W * H];
     uint32_t depth[W * H];
+    uint32_t stencil[W * H];
 } Planes;
 
 static unsigned planes_index(int x, int y)
@@ -59,6 +60,16 @@ static void planes_store_depth(void *opaque, int x, int y, uint32_t depth)
     ((Planes *)opaque)->depth[planes_index(x, y)] = depth;
 }
 
+static uint32_t planes_load_stencil(void *opaque, int x, int y)
+{
+    return ((Planes *)opaque)->stencil[planes_index(x, y)];
+}
+
+static void planes_store_stencil(void *opaque, int x, int y, uint32_t value)
+{
+    ((Planes *)opaque)->stencil[planes_index(x, y)] = value;
+}
+
 static SGIRasterTarget planes_target(Planes *p)
 {
     return (SGIRasterTarget) {
@@ -66,6 +77,8 @@ static SGIRasterTarget planes_target(Planes *p)
         .store_index = planes_store_index,
         .load_depth = planes_load_depth,
         .store_depth = planes_store_depth,
+        .load_stencil = planes_load_stencil,
+        .store_stencil = planes_store_stencil,
         .opaque = p,
     };
 }
@@ -2265,6 +2278,20 @@ static void test_lighting_two_sided_front_face(void)
     g_assert_cmphex(p.colour[0][planes_index(12, 12)], ==, 0x00ff00);
 }
 
+/* The supported rules with an eight-bit stencil buffer. */
+static const SGIRasterRules rules_stencil = {
+    .subpixel_bits = 8,
+    .color_bits = 8,
+    .depth_bits = 24,
+    .stencil_bits = 8,
+    .rounding = SGI_ROUND_HALF_AWAY,
+    .tie_rule = SGI_TIE_TOP_LEFT_BOTTOM_ORIGIN,
+    .arith = SGI_ARITH_DOUBLE,
+    .line_rule = SGI_LINE_COVERAGE_DOUBLE,
+    .drop_nonpositive_w = true,
+    .evidence = "test",
+};
+
 /*
  * A light as a family decodes it: white diffuse along +z, no spot, no
  * attenuation, black ambient and specular.
@@ -2655,7 +2682,7 @@ static void test_empty_clip_without_a_window(void)
 
 /*
  * The per-fragment operations' cases draw through a context whose draws
- * and raster ops land in one set of planes.
+ * and raster ops land in one set of planes, with a stencil buffer.
  */
 typedef struct FragScene {
     Planes p;
@@ -2669,7 +2696,7 @@ static void frag_init(FragScene *f)
     memset(&f->p, 0, sizeof(f->p));
     context_init(&f->c);
     f->rec = (Recorder) {
-        .rules = &rules_supported,
+        .rules = &rules_stencil,
         .target = planes_target(&f->p),
     };
     f->sink = recorder_sink(&f->rec);
@@ -2873,6 +2900,200 @@ static void test_alpha_test(void)
     g_assert_cmpuint(frag_count(&f, 1), ==, W * H);
 }
 
+static void frag_stencil(FragScene *f, uint32_t func, int32_t ref,
+                         uint32_t mask, uint32_t fail, uint32_t zfail,
+                         uint32_t zpass)
+{
+    uint32_t word[3] = { func, ref, mask };
+
+    frag_command(f, SGI_GL_OP_STENCIL_FUNC, word, 3);
+    word[0] = fail, word[1] = zfail, word[2] = zpass;
+    frag_command(f, SGI_GL_OP_STENCIL_OP, word, 3);
+}
+
+static void frag_clear(FragScene *f, uint32_t buffers)
+{
+    frag_command(f, SGI_GL_OP_CLEAR, &buffers, 1);
+}
+
+static uint32_t frag_stencil_at(const FragScene *f, int x, int y)
+{
+    return f->p.stencil[planes_index(x, y)];
+}
+
+/*
+ * The stencil test (OpenGL 1.2.1, 4.1.5) and glClear's stencil buffer
+ * (4.2.3), against an eight-bit stencil buffer:
+ *
+ * - initially disabled, GL_ALWAYS, reference 0, masks all ones, every
+ *   operation GL_KEEP, clear value 0;
+ * - a clear writes the clear value under the write mask;
+ * - a fragment passes when the masked reference compares with the masked
+ *   stored value as the function says, and the operation for its outcome
+ *   updates the buffer: fail, depth fail or depth pass, a disabled depth
+ *   test passing;
+ * - GL_INCR and GL_DECR clamp, GL_INVERT inverts, GL_REPLACE writes the
+ *   reference clamped to 255, GL_ZERO zero, always under the write mask;
+ * - an operation or function the specification lacks changes nothing;
+ * - planes with no stencil buffer pass every fragment.
+ */
+static void test_stencil_test(void)
+{
+    static FragScene f;
+    uint32_t out[SGI_GL_GET_WORDS], word[1];
+
+    frag_init(&f);
+    g_assert_cmpuint(get(&f.c, SGI_GL_STENCIL_TEST, out), ==, 1);
+    g_assert_cmphex(out[0], ==, 0);
+    g_assert_cmpuint(get(&f.c, SGI_GL_STENCIL_FUNC, out), ==, 1);
+    g_assert_cmphex(out[0], ==, 0x207);
+    g_assert_cmpuint(get(&f.c, SGI_GL_STENCIL_REF, out), ==, 1);
+    g_assert_cmphex(out[0], ==, 0);
+    g_assert_cmpuint(get(&f.c, SGI_GL_STENCIL_VALUE_MASK, out), ==, 1);
+    g_assert_cmphex(out[0], ==, UINT32_MAX);
+    g_assert_cmpuint(get(&f.c, SGI_GL_STENCIL_WRITEMASK, out), ==, 1);
+    g_assert_cmphex(out[0], ==, UINT32_MAX);
+    for (uint32_t p = SGI_GL_STENCIL_FAIL; p <= SGI_GL_STENCIL_PASS_DEPTH_PASS;
+         p++) {
+        g_assert_cmpuint(get(&f.c, p, out), ==, 1);
+        g_assert_cmphex(out[0], ==, SGI_GL_KEEP);
+    }
+    g_assert_cmpuint(get(&f.c, SGI_GL_STENCIL_CLEAR_VALUE, out), ==, 1);
+    g_assert_cmphex(out[0], ==, 0);
+
+    /* Clear to 0x5a under write mask 0x0f over 0xff: 0xfa. */
+    memset(f.p.stencil, 0xff, sizeof(f.p.stencil));
+    word[0] = 0x5a;
+    frag_command(&f, SGI_GL_OP_CLEAR_STENCIL, word, 1);
+    word[0] = 0x0f;
+    frag_command(&f, SGI_GL_OP_STENCIL_MASK, word, 1);
+    frag_clear(&f, SGI_GL_STENCIL_BUFFER_BIT);
+    g_assert_cmphex(frag_stencil_at(&f, 0, 0), ==, 0xfa);
+    g_assert_cmphex(frag_stencil_at(&f, W - 1, H - 1), ==, 0xfa);
+    word[0] = UINT32_MAX;
+    frag_command(&f, SGI_GL_OP_STENCIL_MASK, word, 1);
+    word[0] = 0;
+    frag_command(&f, SGI_GL_OP_CLEAR_STENCIL, word, 1);
+    frag_clear(&f, SGI_GL_STENCIL_BUFFER_BIT);
+    g_assert_cmphex(frag_stencil_at(&f, 3, 3), ==, 0);
+
+    /* Mark the left half with 1, then draw only where it is 1. */
+    enable(&f.c, SGI_GL_STENCIL_TEST, true);
+    enable(&f.c, SGI_GL_SCISSOR_TEST, true);
+    frag_scissor(&f, 0, 0, W / 2, H);
+    frag_stencil(&f, 0x207, 1, 0xff, SGI_GL_KEEP, SGI_GL_KEEP,
+                 SGI_GL_REPLACE);
+    frag_quad(&f, 0, 0, 1, 1);
+    enable(&f.c, SGI_GL_SCISSOR_TEST, false);
+    g_assert_cmphex(frag_stencil_at(&f, 0, 0), ==, 1);
+    g_assert_cmphex(frag_stencil_at(&f, W / 2, 0), ==, 0);
+    memset(f.p.colour, 0, sizeof(f.p.colour));
+    frag_stencil(&f, 0x202, 1, 0xff, SGI_GL_KEEP, SGI_GL_KEEP, SGI_GL_KEEP);
+    frag_quad(&f, 0, 1, 0, 1);
+    g_assert_cmpuint(frag_count(&f, 0x00ff00), ==, W * H / 2);
+    g_assert_cmphex(frag_pixel(&f, W / 2 - 1, 5), ==, 0x00ff00);
+    g_assert_cmphex(frag_pixel(&f, W / 2, 5), ==, 0);
+    /* GL_LESS: reference 0 below the stored 1, the left half again. */
+    memset(f.p.colour, 0, sizeof(f.p.colour));
+    frag_stencil(&f, 0x201, 0, 0xff, SGI_GL_KEEP, SGI_GL_KEEP, SGI_GL_KEEP);
+    frag_quad(&f, 0, 1, 0, 1);
+    g_assert_cmpuint(frag_count(&f, 0x00ff00), ==, W * H / 2);
+    g_assert_cmphex(frag_pixel(&f, 0, 5), ==, 0x00ff00);
+    /* The value mask: reference 3 and stored 1 agree in bit 0. */
+    memset(f.p.colour, 0, sizeof(f.p.colour));
+    frag_stencil(&f, 0x202, 3, 0x01, SGI_GL_KEEP, SGI_GL_KEEP, SGI_GL_KEEP);
+    frag_quad(&f, 0, 1, 0, 1);
+    g_assert_cmpuint(frag_count(&f, 0x00ff00), ==, W * H / 2);
+
+    /*
+     * Failing: GL_NEVER, fail GL_INCR twice from 254 clamps at 255;
+     * GL_DECR from 1 clamps at 0; GL_INVERT of 0x0f under write mask
+     * 0x3c is 0x33; GL_ZERO; GL_REPLACE with reference 300 writes 255.
+     */
+    memset(f.p.stencil, 0, sizeof(f.p.stencil));
+    f.p.stencil[planes_index(0, 0)] = 254;
+    f.p.stencil[planes_index(1, 0)] = 1;
+    f.p.stencil[planes_index(2, 0)] = 0x0f;
+    f.p.stencil[planes_index(3, 0)] = 0x77;
+    f.p.stencil[planes_index(4, 0)] = 0x10;
+    memset(f.p.colour, 0, sizeof(f.p.colour));
+    frag_stencil(&f, 0x200, 0, 0xff, SGI_GL_INCR, SGI_GL_KEEP, SGI_GL_KEEP);
+    frag_quad(&f, 0, 1, 0, 1);
+    frag_quad(&f, 0, 1, 0, 1);
+    g_assert_cmpuint(frag_count(&f, 0), ==, W * H);
+    g_assert_cmphex(frag_stencil_at(&f, 0, 0), ==, 255);
+    g_assert_cmphex(frag_stencil_at(&f, 5, 5), ==, 2);
+    g_assert_cmphex(frag_stencil_at(&f, 1, 0), ==, 3);
+    frag_stencil(&f, 0x200, 0, 0xff, SGI_GL_DECR, SGI_GL_KEEP, SGI_GL_KEEP);
+    for (int i = 0; i < 3; i++) {
+        frag_quad(&f, 0, 1, 0, 1);
+    }
+    g_assert_cmphex(frag_stencil_at(&f, 5, 5), ==, 0);
+    g_assert_cmphex(frag_stencil_at(&f, 1, 0), ==, 0);
+    g_assert_cmphex(frag_stencil_at(&f, 0, 0), ==, 252);
+    g_assert_cmphex(frag_stencil_at(&f, 2, 0), ==, 0x0e);
+    word[0] = 0x3c;
+    frag_command(&f, SGI_GL_OP_STENCIL_MASK, word, 1);
+    frag_stencil(&f, 0x200, 0, 0xff, SGI_GL_INVERT, SGI_GL_KEEP,
+                 SGI_GL_KEEP);
+    frag_quad(&f, 0, 1, 0, 1);
+    g_assert_cmphex(frag_stencil_at(&f, 2, 0), ==, 0x32);
+    word[0] = UINT32_MAX;
+    frag_command(&f, SGI_GL_OP_STENCIL_MASK, word, 1);
+    frag_stencil(&f, 0x200, 0, 0xff, 0, SGI_GL_KEEP, SGI_GL_KEEP);
+    frag_quad(&f, 0, 1, 0, 1);
+    g_assert_cmphex(frag_stencil_at(&f, 3, 0), ==, 0);
+    frag_stencil(&f, 0x200, 300, 0xff, SGI_GL_REPLACE, SGI_GL_KEEP,
+                 SGI_GL_KEEP);
+    frag_quad(&f, 0, 1, 0, 1);
+    g_assert_cmphex(frag_stencil_at(&f, 4, 0), ==, 255);
+    g_assert_cmpuint(get(&f.c, SGI_GL_STENCIL_REF, out), ==, 1);
+    g_assert_cmpint(out[0], ==, 300);
+
+    /*
+     * Depth fail and depth pass: the depth buffer holds 0 on the left and
+     * the far plane on the right, so GL_LESS fails on the left.
+     */
+    for (int y = 0; y < H; y++) {
+        for (int x = 0; x < W; x++) {
+            f.p.depth[planes_index(x, y)] = x < W / 2 ? 0 : 0xffffff;
+            f.p.stencil[planes_index(x, y)] = 10;
+        }
+    }
+    enable(&f.c, SGI_GL_DEPTH_TEST, true);
+    frag_stencil(&f, 0x207, 0, 0xff, SGI_GL_KEEP, SGI_GL_INCR, SGI_GL_DECR);
+    frag_quad(&f, 0, 1, 0, 1);
+    g_assert_cmphex(frag_stencil_at(&f, 0, 0), ==, 11);
+    g_assert_cmphex(frag_stencil_at(&f, W - 1, 0), ==, 9);
+    enable(&f.c, SGI_GL_DEPTH_TEST, false);
+    frag_quad(&f, 0, 1, 0, 1);
+    g_assert_cmphex(frag_stencil_at(&f, 0, 0), ==, 10);
+    g_assert_cmphex(frag_stencil_at(&f, W - 1, 0), ==, 8);
+
+    /* Neither a bad operation nor a bad function changes anything. */
+    frag_stencil(&f, 0x208, 7, 0x12, 0x1e04, SGI_GL_KEEP, SGI_GL_KEEP);
+    g_assert_cmpuint(get(&f.c, SGI_GL_STENCIL_FUNC, out), ==, 1);
+    g_assert_cmphex(out[0], ==, 0x207);
+    g_assert_cmpuint(get(&f.c, SGI_GL_STENCIL_FAIL, out), ==, 1);
+    g_assert_cmphex(out[0], ==, SGI_GL_KEEP);
+    g_assert_cmpuint(get(&f.c, SGI_GL_STENCIL_PASS_DEPTH_PASS, out), ==, 1);
+    g_assert_cmphex(out[0], ==, SGI_GL_DECR);
+
+    /* Without a stencil buffer GL_NEVER draws, and clears write nothing. */
+    f.rec.rules = &rules_supported;
+    memset(f.p.colour, 0, sizeof(f.p.colour));
+    frag_stencil(&f, 0x200, 0, 0xff, SGI_GL_INCR, SGI_GL_INCR, SGI_GL_INCR);
+    frag_quad(&f, 0, 1, 0, 1);
+    g_assert_cmpuint(frag_count(&f, 0x00ff00), ==, W * H);
+    g_assert_cmphex(frag_stencil_at(&f, 0, 0), ==, 10);
+    frag_clear(&f, SGI_GL_STENCIL_BUFFER_BIT);
+    g_assert_cmphex(frag_stencil_at(&f, 0, 0), ==, 10);
+    f.rec.rules = &rules_stencil;
+    f.rec.target.load_stencil = NULL;
+    frag_quad(&f, 0, 1, 0, 1);
+    g_assert_cmphex(frag_stencil_at(&f, 0, 0), ==, 10);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -2953,5 +3174,6 @@ int main(int argc, char **argv)
                     test_empty_clip_without_a_window);
     g_test_add_func("/sgi-gl/scissor", test_scissor);
     g_test_add_func("/sgi-gl/alpha-test", test_alpha_test);
+    g_test_add_func("/sgi-gl/stencil-test", test_stencil_test);
     return g_test_run();
 }

@@ -92,6 +92,12 @@ void sgi_gl_init(SGIGLContext *c, uint32_t hw_id)
     sgi_gl_identity(c->texture);
     c->cur.depth_func = SGI_GL_LESS;
     c->cur.alpha_func = SGI_GL_ALWAYS;
+    c->cur.stencil_func = SGI_GL_ALWAYS;
+    c->cur.stencil_value_mask = UINT32_MAX;
+    c->cur.stencil_write_mask = UINT32_MAX;
+    for (int i = 0; i < 3; i++) {
+        c->cur.stencil_op[i] = SGI_GL_KEEP;
+    }
     c->cur.depth_mask = 1;
     c->cur.depth_range[1] = 1.0f;
     c->clear_depth = UINT32_MAX;
@@ -416,6 +422,10 @@ static const uint8_t sgi_gl_nargs[] = {
     [SGI_GL_OP_FRONT_FACE] = 1,
     [SGI_GL_OP_SCISSOR] = 4,
     [SGI_GL_OP_ALPHA_FUNC] = 2,
+    [SGI_GL_OP_STENCIL_FUNC] = 3,
+    [SGI_GL_OP_STENCIL_OP] = 3,
+    [SGI_GL_OP_STENCIL_MASK] = 1,
+    [SGI_GL_OP_CLEAR_STENCIL] = 1,
 };
 
 uint32_t sgi_gl_draw_targets(const SGIGLDrawState *st,
@@ -448,8 +458,8 @@ uint32_t sgi_gl_draw_targets(const SGIGLDrawState *st,
  * dither steps, and the viewport does not bound it; ownership is the
  * drawable's rectangles, the scissor box bounds the op's rectangle while
  * the test is enabled, and no dithering is modelled. The depth buffer is
- * cleared only when the depth mask allows, and the stencil and
- * accumulation buffers are not modelled.
+ * cleared only when the depth mask allows, the stencil buffer under the
+ * stencil write mask, and the accumulation buffer is not modelled.
  */
 static void sgi_gl_clear(SGIGLContext *c, const SGIGLSink *sink,
                          uint32_t mask)
@@ -459,9 +469,10 @@ static void sgi_gl_clear(SGIGLContext *c, const SGIGLSink *sink,
         .kind = SGI_RASTER_CLEAR,
     };
 
-    if (mask & ~(SGI_GL_COLOR_BUFFER_BIT | SGI_GL_DEPTH_BUFFER_BIT)) {
+    if (mask & ~(SGI_GL_COLOR_BUFFER_BIT | SGI_GL_DEPTH_BUFFER_BIT |
+                 SGI_GL_STENCIL_BUFFER_BIT)) {
         qemu_log_mask(LOG_UNIMP, "sgi-gl: glClear of buffers 0x%x beyond "
-                      "colour and depth ignored\n", mask);
+                      "colour, depth and stencil ignored\n", mask);
     }
     op.ntargets = sgi_gl_draw_targets(&c->cur, op.targets);
     if (!d->bound) {
@@ -512,6 +523,11 @@ static void sgi_gl_clear(SGIGLContext *c, const SGIGLSink *sink,
     if ((mask & SGI_GL_DEPTH_BUFFER_BIT) && c->cur.depth_mask) {
         op.clear_buffers |= SGI_GL_DEPTH_BUFFER_BIT;
         op.clear_depth24 = c->clear_depth;
+    }
+    if (mask & SGI_GL_STENCIL_BUFFER_BIT) {
+        op.clear_buffers |= SGI_GL_STENCIL_BUFFER_BIT;
+        op.clear_stencil = c->clear_stencil;
+        op.stencil_mask = c->cur.stencil_write_mask;
     }
     if (op.clear_buffers) {
         sink->raster(sink->opaque, &op);
@@ -1240,6 +1256,22 @@ static void sgi_gl_color_material(SGIGLContext *c, uint32_t face,
     sgi_gl_track_colour(c);
 }
 
+/* Whether op is one of glStencilOp's operations (4.1.5). */
+static bool sgi_gl_stencil_op_valid(uint32_t op)
+{
+    switch (op) {
+    case 0:
+    case SGI_GL_KEEP:
+    case SGI_GL_REPLACE:
+    case SGI_GL_INCR:
+    case SGI_GL_DECR:
+    case SGI_GL_INVERT:
+        return true;
+    default:
+        return false;
+    }
+}
+
 static void sgi_gl_capability(SGIGLContext *c, uint32_t cap, bool on)
 {
     switch (cap) {
@@ -1257,6 +1289,9 @@ static void sgi_gl_capability(SGIGLContext *c, uint32_t cap, bool on)
         return;
     case SGI_GL_ALPHA_TEST:
         c->cur.alpha_test = on;
+        return;
+    case SGI_GL_STENCIL_TEST:
+        c->cur.stencil_test = on;
         return;
     case SGI_GL_COLOR_MATERIAL:
         c->color_material = on;
@@ -1457,6 +1492,32 @@ void sgi_gl_command(SGIGLContext *c, const SGIGLSink *sink,
         c->cur.alpha_ref = ref >= 1.0f ? 1.0f : ref > 0.0f ? ref : 0.0f;
         return;
     }
+    case SGI_GL_OP_STENCIL_FUNC:
+        if (a[0] - SGI_GL_NEVER_ENUM > SGI_GL_ALWAYS) {
+            qemu_log_mask(LOG_GUEST_ERROR, "sgi-gl: stencil function 0x%x "
+                          "ignored\n", a[0]);
+            return;
+        }
+        c->cur.stencil_func = a[0] - SGI_GL_NEVER_ENUM;
+        c->cur.stencil_ref = a[1];
+        c->cur.stencil_value_mask = a[2];
+        return;
+    case SGI_GL_OP_STENCIL_OP:
+        for (int i = 0; i < 3; i++) {
+            if (!sgi_gl_stencil_op_valid(a[i])) {
+                qemu_log_mask(LOG_GUEST_ERROR, "sgi-gl: glStencilOp(0x%x, "
+                              "0x%x, 0x%x) ignored\n", a[0], a[1], a[2]);
+                return;
+            }
+        }
+        memcpy(c->cur.stencil_op, a, sizeof(c->cur.stencil_op));
+        return;
+    case SGI_GL_OP_STENCIL_MASK:
+        c->cur.stencil_write_mask = a[0];
+        return;
+    case SGI_GL_OP_CLEAR_STENCIL:
+        c->clear_stencil = a[0];
+        return;
     case SGI_GL_OP_COLOR3F:
         memcpy(c->cur_color, a, 3 * sizeof(float));
         c->cur_color[3] = 1.0f;
@@ -1773,6 +1834,36 @@ bool sgi_gl_get(const SGIGLContext *c, uint32_t pname, uint32_t *out,
         return true;
     case SGI_GL_ALPHA_TEST_REF:
         return sgi_gl_get_floats(&c->cur.alpha_ref, 1, out, n);
+    case SGI_GL_STENCIL_TEST:
+        out[0] = c->cur.stencil_test;
+        *n = 1;
+        return true;
+    case SGI_GL_STENCIL_FUNC:
+        out[0] = SGI_GL_NEVER_ENUM + c->cur.stencil_func;
+        *n = 1;
+        return true;
+    case SGI_GL_STENCIL_REF:
+        out[0] = c->cur.stencil_ref;
+        *n = 1;
+        return true;
+    case SGI_GL_STENCIL_VALUE_MASK:
+        out[0] = c->cur.stencil_value_mask;
+        *n = 1;
+        return true;
+    case SGI_GL_STENCIL_WRITEMASK:
+        out[0] = c->cur.stencil_write_mask;
+        *n = 1;
+        return true;
+    case SGI_GL_STENCIL_FAIL:
+    case SGI_GL_STENCIL_PASS_DEPTH_FAIL:
+    case SGI_GL_STENCIL_PASS_DEPTH_PASS:
+        out[0] = c->cur.stencil_op[pname - SGI_GL_STENCIL_FAIL];
+        *n = 1;
+        return true;
+    case SGI_GL_STENCIL_CLEAR_VALUE:
+        out[0] = c->clear_stencil;
+        *n = 1;
+        return true;
     case SGI_GL_DEPTH_FUNC:
         out[0] = SGI_GL_NEVER_ENUM + c->cur.depth_func;
         *n = 1;
@@ -1878,6 +1969,7 @@ bool sgi_gl_context_valid(const SGIGLContext *c, Error **errp)
         { "cull_face", st->cull_face },
         { "scissor_test", st->scissor_test },
         { "alpha_test", st->alpha_test },
+        { "stencil_test", st->stencil_test },
         { "drawable.bound", st->drawable.bound },
         { "drawable.clip.empty", st->drawable.clip.empty },
         { "dither", c->dither },
@@ -1953,6 +2045,17 @@ bool sgi_gl_context_valid(const SGIGLContext *c, Error **errp)
         error_setg(errp, "sgi-gl: alpha reference %g is outside [0, 1]",
                    st->alpha_ref);
         return false;
+    }
+    if (st->stencil_func > SGI_GL_ALWAYS) {
+        error_setg(errp, "sgi-gl: stencil function %u", st->stencil_func);
+        return false;
+    }
+    for (int i = 0; i < 3; i++) {
+        if (!sgi_gl_stencil_op_valid(st->stencil_op[i])) {
+            error_setg(errp, "sgi-gl: stencil operation 0x%x",
+                       st->stencil_op[i]);
+            return false;
+        }
     }
     if (st->drawable.clip.n > SGI_CLIP_MAX) {
         error_setg(errp, "sgi-gl: %u clip rectangles", st->drawable.clip.n);
@@ -2123,6 +2226,34 @@ static const VMStateDescription vmstate_sgi_gl_alpha_test = {
     },
 };
 
+static bool sgi_gl_stencil_needed(void *opaque)
+{
+    const SGIGLDrawState *st = opaque, *init = &sgi_gl_initial()->cur;
+
+    return SGI_GL_MOVED(st, init, stencil_test) ||
+           SGI_GL_MOVED(st, init, stencil_func) ||
+           SGI_GL_MOVED(st, init, stencil_ref) ||
+           SGI_GL_MOVED(st, init, stencil_value_mask) ||
+           SGI_GL_MOVED(st, init, stencil_write_mask) ||
+           SGI_GL_MOVED(st, init, stencil_op);
+}
+
+static const VMStateDescription vmstate_sgi_gl_stencil = {
+    .name = "sgi-gl-draw-state/stencil",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = sgi_gl_stencil_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32(stencil_test, SGIGLDrawState),
+        VMSTATE_UINT32(stencil_func, SGIGLDrawState),
+        VMSTATE_INT32(stencil_ref, SGIGLDrawState),
+        VMSTATE_UINT32(stencil_value_mask, SGIGLDrawState),
+        VMSTATE_UINT32(stencil_write_mask, SGIGLDrawState),
+        VMSTATE_UINT32_ARRAY(stencil_op, SGIGLDrawState, 3),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
 static const VMStateDescription vmstate_sgi_gl_draw_state = {
     .name = "sgi-gl-draw-state",
     .version_id = 1,
@@ -2149,6 +2280,7 @@ static const VMStateDescription vmstate_sgi_gl_draw_state = {
     .subsections = (const VMStateDescription * const []) {
         &vmstate_sgi_gl_scissor,
         &vmstate_sgi_gl_alpha_test,
+        &vmstate_sgi_gl_stencil,
         NULL
     },
 };
@@ -2182,6 +2314,24 @@ static const VMStateDescription vmstate_sgi_gl_material = {
         VMSTATE_SGI_GL_FLOATS(emission, SGIGLMaterial, 4),
         VMSTATE_SGI_GL_FLOAT(shininess, SGIGLMaterial),
         VMSTATE_SGI_GL_FLOATS(color_indexes, SGIGLMaterial, 3),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
+static bool sgi_gl_clear_stencil_needed(void *opaque)
+{
+    const SGIGLContext *c = opaque;
+
+    return SGI_GL_MOVED(c, sgi_gl_initial(), clear_stencil);
+}
+
+static const VMStateDescription vmstate_sgi_gl_clear_stencil = {
+    .name = "sgi-gl-context/clear-stencil",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = sgi_gl_clear_stencil_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32(clear_stencil, SGIGLContext),
         VMSTATE_END_OF_LIST()
     },
 };
@@ -2243,5 +2393,9 @@ const VMStateDescription vmstate_sgi_gl_context = {
         VMSTATE_UINT32(nheld, SGIGLContext),
         VMSTATE_UINT32(strip_odd, SGIGLContext),
         VMSTATE_END_OF_LIST()
+    },
+    .subsections = (const VMStateDescription * const []) {
+        &vmstate_sgi_gl_clear_stencil,
+        NULL
     },
 };

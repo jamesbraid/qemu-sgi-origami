@@ -7,13 +7,13 @@
  * and rasterized with edge functions at pixel centres. Each fragment then
  * passes the per-fragment operations in OpenGL 1.2.1's order (4.1): pixel
  * ownership against the drawable's rectangles, the scissor test, the alpha
- * test and the depth test, and is stored through the family's target. What
- * it draws follows OpenGL 1.2.1 for untextured points, lines, polygons and
- * bitmaps at size and width 1, flat or smooth shaded, in RGBA or
- * colour-index mode, from vertex colours the context has already lit, with a
- * back-facing polygon's back colours under two-sided lighting, and polygons
- * culled by facing. Where OpenGL leaves a choice, the head's SGIRasterRules
- * make it.
+ * test, the stencil test and the depth test, and is stored through the
+ * family's target. What it draws follows OpenGL 1.2.1 for untextured points,
+ * lines, polygons and bitmaps at size and width 1, flat or smooth shaded, in
+ * RGBA or colour-index mode, from vertex colours the context has already
+ * lit, with a back-facing polygon's back colours under two-sided lighting,
+ * and polygons culled by facing. Where OpenGL leaves a choice, the head's
+ * SGIRasterRules make it.
  */
 #include "qemu/osdep.h"
 #include <math.h>
@@ -95,6 +95,7 @@ bool sgi_raster_rules_supported(const SGIRasterRules *r)
     return r->subpixel_bits >= 1 && r->subpixel_bits <= 12 &&
            r->color_bits >= 1 && r->color_bits <= 10 &&
            r->depth_bits >= 1 && r->depth_bits <= 32 &&
+           r->stencil_bits <= 16 &&
            r->rounding <= SGI_ROUND_HALF_AWAY &&
            r->tie_rule == SGI_TIE_TOP_LEFT_BOTTOM_ORIGIN &&
            r->arith == SGI_ARITH_DOUBLE &&
@@ -203,7 +204,8 @@ static bool sgi_soft_owns(const SGISoftVertex *a, const SGISoftVertex *b,
  * Whether value passes a test comparing it with ref by func, the
  * comparison minus GL_NEVER: the depth test's incoming depth against the
  * stored one (4.1.5), the alpha test's alpha against its reference
- * (4.1.4).
+ * (4.1.4), the stencil test's masked reference against the masked stored
+ * value (4.1.5).
  */
 static bool sgi_soft_compare(uint32_t func, uint32_t value, uint32_t ref)
 {
@@ -227,6 +229,48 @@ static bool sgi_soft_compare(uint32_t func, uint32_t value, uint32_t ref)
     }
 }
 
+/* Whether the planes have a stencil buffer, and its largest value. */
+static bool sgi_soft_stencil_max(const SGIRasterRules *rules,
+                                 const SGIRasterTarget *t, uint32_t *max)
+{
+    *max = (1u << rules->stencil_bits) - 1;
+    return rules->stencil_bits && t->load_stencil && t->store_stencil;
+}
+
+/*
+ * One of glStencilOp's operations on the stencil value at (x, y), the
+ * result written under the stencil write mask (4.1.5, 4.2.2). GL_INCR
+ * and GL_DECR clamp to the buffer's range.
+ */
+static void sgi_soft_stencil_op(const SGISoftDraw *r, int x, int y,
+                                uint32_t op, uint32_t max, uint32_t ref)
+{
+    const SGIRasterTarget *t = r->t;
+    uint32_t old = t->load_stencil(t->opaque, x, y) & max, value;
+    uint32_t mask = r->st->stencil_write_mask & max;
+
+    switch (op) {
+    case SGI_GL_KEEP:
+        return;
+    case SGI_GL_REPLACE:
+        value = ref;
+        break;
+    case SGI_GL_INCR:
+        value = old < max ? old + 1 : max;
+        break;
+    case SGI_GL_DECR:
+        value = old ? old - 1 : 0;
+        break;
+    case SGI_GL_INVERT:
+        value = ~old & max;
+        break;
+    default:
+        value = 0;
+        break;
+    }
+    t->store_stencil(t->opaque, x, y, (old & ~mask) | (value & mask));
+}
+
 /* A fragment's colour value from an interpolated or flat index. */
 static uint32_t sgi_soft_index(const SGISoftDraw *r, double index)
 {
@@ -237,8 +281,9 @@ static uint32_t sgi_soft_index(const SGISoftDraw *r, double index)
  * One fragment at window pixel (px, py) with window depth z: dropped
  * outside [0, 1], outside the window's rectangles and, while the scissor
  * test is enabled, outside the scissor box (4.1.2), in RGBA mode alpha
- * tested (4.1.4) and depth tested when those tests are enabled, then
- * written to each colour target the draw
+ * tested (4.1.4), stencil tested and depth tested (4.1.5) when those tests
+ * are enabled, the stencil buffer updated by the operation its outcome
+ * selects, then written to each colour target the draw
  * buffers select. Its colour is stored as the rules' packed colour in
  * RGBA mode and as its index in colour-index mode, which glIndexMask
  * masks (4.2.2).
@@ -248,7 +293,8 @@ static void sgi_soft_fragment_at(const SGISoftDraw *r, int px, int py,
 {
     const SGIRasterTarget *t = r->t;
     int x = r->win.ox + px, y = r->win.oy + py;
-    uint32_t zq, colour;
+    uint32_t zq, colour, smax = 0, sref = 0;
+    bool stencil;
 
     if (!(z >= 0.0 && z <= 1.0)) {
         return;
@@ -273,16 +319,41 @@ static void sgi_soft_fragment_at(const SGISoftDraw *r, int px, int py,
                           sgi_soft_channel(r->rules, r->st->alpha_ref))) {
         return;
     }
+    /*
+     * The reference clamps to the buffer's range; with no stencil buffer
+     * the test passes and nothing is written.
+     */
+    stencil = r->st->stencil_test && sgi_soft_stencil_max(r->rules, t, &smax);
+    if (stencil) {
+        uint32_t vmask = r->st->stencil_value_mask;
+
+        sref = r->st->stencil_ref < 0 ? 0 : MIN((uint32_t)r->st->stencil_ref,
+                                                smax);
+        if (!sgi_soft_compare(r->st->stencil_func, sref & vmask,
+                              t->load_stencil(t->opaque, x, y) & smax &
+                              vmask)) {
+            sgi_soft_stencil_op(r, x, y, r->st->stencil_op[0], smax, sref);
+            return;
+        }
+    }
     zq = (uint32_t)sgi_soft_round(r->rules,
                                   z * sgi_soft_depth_max(r->rules));
     if (r->st->depth_test) {
         if (!sgi_soft_compare(r->st->depth_func, zq,
                               t->load_depth(t->opaque, x, y))) {
+            if (stencil) {
+                sgi_soft_stencil_op(r, x, y, r->st->stencil_op[1], smax,
+                                    sref);
+            }
             return;
         }
         if (r->st->depth_mask) {
             t->store_depth(t->opaque, x, y, zq);
         }
+    }
+    /* A disabled depth test passes (4.1.5). */
+    if (stencil) {
+        sgi_soft_stencil_op(r, x, y, r->st->stencil_op[2], smax, sref);
     }
     colour = r->st->index_bits ? sgi_soft_index(r, f->index) :
                                  sgi_soft_rgb(r->rules, f->rgba);
@@ -824,17 +895,19 @@ static void sgi_soft_bitmap(const SGIRasterRules *rules,
 }
 
 /*
- * CLEAR writes the clear colour, or in colour-index mode the clear index,
- * to the op's targets and the clear depth to the depth plane at every
- * pixel of its rectangle its clip list keeps. BITMAP draws its run of a
- * bitmap. The other kinds are not executed here yet.
+ * CLEAR writes the clear colour, or in colour-index mode the clear index, to
+ * the op's targets, the clear depth to the depth plane and the clear stencil
+ * value under its mask to the stencil buffer, where the planes have one, at
+ * every pixel of its rectangle its clip list keeps. BITMAP draws its run of
+ * a bitmap. The other kinds are not executed here yet.
  */
 void sgi_soft_raster(const SGIRasterRules *rules, const SGIRasterTarget *t,
                      const SGIRasterOp *op)
 {
     bool colour = op->clear_buffers & SGI_GL_COLOR_BUFFER_BIT;
     bool depth = op->clear_buffers & SGI_GL_DEPTH_BUFFER_BIT;
-    uint32_t rgb = 0;
+    bool stencil = op->clear_buffers & SGI_GL_STENCIL_BUFFER_BIT;
+    uint32_t rgb = 0, smax;
 
     if (!sgi_soft_check_rules(rules)) {
         return;
@@ -850,6 +923,9 @@ void sgi_soft_raster(const SGIRasterRules *rules, const SGIRasterTarget *t,
     }
     if (!op->clip.n && op->clip.empty) {
         return;
+    }
+    if (stencil && !sgi_soft_stencil_max(rules, t, &smax)) {
+        stencil = false;
     }
     if (colour && op->index_bits && !sgi_soft_check_index(t, op->index_bits)) {
         colour = false;
@@ -873,6 +949,14 @@ void sgi_soft_raster(const SGIRasterRules *rules, const SGIRasterTarget *t,
                 t->store_depth(t->opaque, x, y,
                                op->clear_depth24 &
                                sgi_soft_depth_max(rules));
+            }
+            if (stencil) {
+                uint32_t mask = op->stencil_mask & smax;
+
+                t->store_stencil(t->opaque, x, y,
+                                 (t->load_stencil(t->opaque, x, y) &
+                                  ~mask & smax) |
+                                 (op->clear_stencil & mask));
             }
             for (uint32_t i = 0; colour && i < MIN(op->ntargets, 2); i++) {
                 if (op->index_bits) {
