@@ -12406,7 +12406,7 @@ static unsigned gl_stream_subsections(QTestState *qts)
         "sgi-mgras/gl-lighting", "sgi-mgras/gl-texture",
         "sgi-mgras/gl-light-enables", "sgi-mgras/gl-cull",
         "sgi-mgras/gl-pixels", "sgi-mgras/gl-pixel-flags",
-        "sgi-mgras/gl-scissor",
+        "sgi-mgras/gl-scissor", "sgi-mgras/gl-alpha",
     };
     g_autofree char *tmpfs = NULL;
     g_autofree char *path = NULL;
@@ -13858,6 +13858,103 @@ static void test_gl_scissor_migration(void)
 }
 
 /*
+ * glAlphaFunc (__glMgrim_AlphaFunc 0xd95ea40): 0x3e08, the function less
+ * GL_NEVER and the reference as a 12-bit fraction; glEnable and glDisable
+ * of GL_ALPHA_TEST: 0x6404 and 1 or 0. GL_ALPHA_TEST is bit 6 of query
+ * 0x288, and GL_ALPHA_TEST_FUNC and _REF bits 2:0 and 14:3 of 0x2cc.
+ */
+#define GL_ALPHA_FUNC_HDR     0x00003e08
+#define GL_ALPHA_TEST_HDR     0x00006404
+#define GL_COLOR4F_HDR        0x00000210
+#define GL_GREATER            4
+
+static void gl_color4f(QTestState *qts, float r, float g, float b, float a)
+{
+    gl_word(qts, GL_COLOR4F_HDR);
+    gl_float(qts, r);
+    gl_float(qts, g);
+    gl_float(qts, b);
+    gl_float(qts, a);
+}
+
+static void gl_alpha_func(QTestState *qts, uint32_t func, uint32_t ref12)
+{
+    gl_word(qts, GL_ALPHA_FUNC_HDR);
+    gl_word(qts, func);
+    gl_word(qts, ref12);
+}
+
+/* A window of colour (r, g, b, a) and one pixel of it afterwards. */
+static uint32_t gl_alpha_window(QTestState *qts, float a)
+{
+    gl_word(qts, GL_CLEAR_COLOR_BUFFER);
+    gl_color4f(qts, 0, 1, 0, a);
+    gl_word(qts, GL_BEGIN_QUADS);
+    gl_vertex2f(qts, -1, -1);
+    gl_vertex2f(qts, 1, -1);
+    gl_vertex2f(qts, 1, 1);
+    gl_vertex2f(qts, -1, 1);
+    gl_word(qts, GL_END_OF(GL_BEGIN_QUADS));
+    return gl_window_pixel(qts, 64, 64);
+}
+
+/*
+ * GL_GREATER against 2048 / 4095 discards alpha 0.25 and keeps 0.75 once
+ * enabled (OpenGL 1.2.1, 4.1.4); disabled, both draw. The queries answer
+ * the enable, the function and the reference as the client sent it.
+ */
+static void test_gl_alpha_test_discards(void)
+{
+    uint32_t a;
+
+    gl_scene_start(qts, GL_FLAT);
+    gl_clear_color(qts, 0, 0, 0, 1);
+    gl_alpha_func(qts, GL_GREATER, 2048);
+    g_assert_cmphex(gl_alpha_window(qts, 0.25f), ==, 0x00ff00);
+    gl_one(qts, GL_ALPHA_TEST_HDR, 1);
+    g_assert_cmphex(gl_alpha_window(qts, 0.25f), ==, 0);
+    g_assert_cmphex(gl_alpha_window(qts, 0.75f), ==, 0x00ff00);
+    g_assert_cmphex(gl_query(qts, GL_Q_PIXEL_ENABLES, 1) & 0x40, ==, 0x40);
+    a = gl_query(qts, GL_Q_ALPHA, 1);
+    g_assert_cmphex((a & 7) + 0x200, ==, 0x204);
+    g_assert_cmphex((a >> 3) & 0xfff, ==, 2048);
+    gl_one(qts, GL_ALPHA_TEST_HDR, 0);
+    g_assert_cmphex(gl_alpha_window(qts, 0.25f), ==, 0x00ff00);
+    g_assert_cmphex(gl_query(qts, GL_Q_PIXEL_ENABLES, 1) & 0x40, ==, 0);
+}
+
+/* Slot A tests alpha against GL_GREATER 0.5; slot B keeps the initial. */
+static void gl_alpha_setup(QTestState *from)
+{
+    for (int slot = 0; slot < 2; slot++) {
+        gl_enter_slot(from, slot ? GL_SLOT_B : GL_SLOT_A);
+        gl_word(from, GL_CONTEXT_OPENER);
+        gl_viewport(from, 0, 0, 128, 128);
+    }
+    gl_enter_slot(from, GL_SLOT_A);
+    gl_alpha_func(from, GL_GREATER, 2048);
+    gl_one(from, GL_ALPHA_TEST_HDR, 1);
+}
+
+static void gl_alpha_check(QTestState *to)
+{
+    for (int slot = 0; slot < 2; slot++) {
+        gl_enter_slot(to, slot ? GL_SLOT_B : GL_SLOT_A);
+        gl_clear_color(to, 0, 0, 0, 1);
+        g_assert_cmphex(mgras_test_pixel(to, 256 + 64, 383 - 64), ==, 0);
+        g_assert_cmphex(gl_alpha_window(to, 0.25f), ==, slot ? 0x00ff00 : 0);
+        g_assert_cmphex((gl_query(to, GL_Q_ALPHA, 1) >> 3) & 0xfff, ==,
+                        slot ? 0 : 2048);
+    }
+}
+
+/* Each context's alpha test migrates. */
+static void test_gl_alpha_migration(void)
+{
+    gl_migrate(gl_alpha_setup, gl_alpha_check);
+}
+
+/*
  * The context setup's 32 detail-texture table writes, 0xec10 with 0xc52,
  * 0xc78, 0x194 and a value (0x1f three times, then 0x1d down to 1), are
  * texture-only defaults and consumed without a log line; any other value
@@ -14143,6 +14240,31 @@ static void test_gl_state_subsections_follow_their_state(void)
             gl_one(s, GL_SCISSOR_TEST_HDR, 0);
         }
         g_assert_cmpuint(gl_stream_subsections(s), ==, i == 2 ? 0 : 2048);
+        qtest_quit(s);
+    }
+
+    /*
+     * The alpha test: its enable or a function or reference other than
+     * GL_ALWAYS and 0 sends gl-alpha; the test turned off again sends
+     * nothing.
+     */
+    for (int i = 0; i < 4; i++) {
+        s = qtest_init(MIGRATION_ARGS);
+        gl_enter_slot(s, GL_SLOT_A);
+        gl_word(s, GL_CONTEXT_OPENER);
+        if (i < 2) {
+            gl_one(s, GL_ALPHA_TEST_HDR, 1);
+        }
+        if (i == 1) {
+            gl_one(s, GL_ALPHA_TEST_HDR, 0);
+        }
+        if (i == 2) {
+            gl_alpha_func(s, GL_GREATER, 0);
+        }
+        if (i == 3) {
+            gl_alpha_func(s, 7, 1);
+        }
+        g_assert_cmpuint(gl_stream_subsections(s), ==, i == 1 ? 0 : 4096);
         qtest_quit(s);
     }
 }
@@ -15019,6 +15141,10 @@ int main(int argc, char **argv)
                    test_gl_scissor_bounds_draws_and_clears);
     qtest_add_func("sn0/origin2000/mgras/gl-scissor-migration",
                    test_gl_scissor_migration);
+    qtest_add_func("sn0/origin2000/mgras/gl-alpha-test-discards",
+                   test_gl_alpha_test_discards);
+    qtest_add_func("sn0/origin2000/mgras/gl-alpha-migration",
+                   test_gl_alpha_migration);
     qtest_add_func("sn0/origin2000/mgras/gl-texture-matrix-migration",
                    test_gl_texture_matrix_migration);
     qtest_add_func("sn0/origin2000/mgras/"

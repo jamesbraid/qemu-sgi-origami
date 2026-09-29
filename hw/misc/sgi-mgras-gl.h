@@ -69,6 +69,8 @@ extern const VMStateDescription vmstate_sgi_mgras_gl_light_enables;
 extern const VMStateDescription vmstate_sgi_mgras_gl_cull;
 /* Each context's scissor state, sent once one has left the initial. */
 extern const VMStateDescription vmstate_sgi_mgras_gl_scissor;
+/* Each context's alpha test, sent once one has left the initial. */
+extern const VMStateDescription vmstate_sgi_mgras_gl_alpha;
 
 /*
  * The parser's class while the words of a GE parameter load (a class-0
