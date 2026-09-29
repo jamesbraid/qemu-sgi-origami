@@ -157,8 +157,7 @@ mode or disposable overlays for guest writes. The installed-disk checks expect
 an already installed IRIX image; they do not install IRIX. The IP27 PROM
 miniroot check downloads the supplied kernel over QEMU
 user-mode networking, then executes it through the PROM boot path. It does not use an external
-netinst server. External installation services and package qualification remain
-separate checks.
+netinst server. QEMU no longer checks the external ``irix-netinst`` DHCP/TFTP service.
 
 The Origin 300's two first-line PROM cases require only
 ``firmware/6.5.30/ip35prom.payload.bin``. Its menu cases also require both
