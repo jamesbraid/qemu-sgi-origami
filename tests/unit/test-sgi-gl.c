@@ -2317,7 +2317,8 @@ static void test_set_light_is_eye_space(void)
  * axis, inside the cone, so the spot factor is 0.8 and n . VP 0.894427,
  * 0.715542; at (2, 0, 0) it makes 0.707, outside, and is unlit. A cosine
  * of -1, or below, is no spot at all, even at exponent 128: (2, 0, 0) then
- * takes n . VP = 0.707107. Attenuation (0.5, 0.25, 0.125) at distance 2,
+ * takes n . VP = 0.707107. One above 1 is clamped to 1, 0 degrees, which
+ * glGetLightfv answers. Attenuation (0.5, 0.25, 0.125) at distance 2,
  * straight below, gives 1 / 1.5.
  */
 static void test_set_light_spot_cosine(void)
@@ -2346,6 +2347,17 @@ static void test_set_light_spot_cosine(void)
     g_assert_true(sgi_gl_set_light(&c, 0, &e));
     assert_rgba(lit_point(&c, 2, 0, 0, 0, 0, 1), 0.7071068f, 0.7071068f,
                 0.7071068f, 1);
+
+    /*
+     * A cosine above 1 is clamped to 1, a cutoff of 0 degrees: only the
+     * spot's axis is lit, and (1, 0, 0), off it, is not.
+     */
+    e.spot_exponent = 0;
+    e.spot_cos_cutoff = 2;
+    g_assert_true(sgi_gl_set_light(&c, 0, &e));
+    g_assert_cmpfloat(light_float(&c, 0, SGI_GL_SPOT_CUTOFF, 0), ==, 0);
+    assert_rgba(lit_point(&c, 1, 0, 0, 0, 0, 1), 0, 0, 0, 1);
+    e.spot_cos_cutoff = -1;
 
     e.attenuation[0] = 0.5f;
     e.attenuation[1] = 0.25f;
