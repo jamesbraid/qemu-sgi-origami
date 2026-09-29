@@ -85,31 +85,6 @@ static int load_head(GByteArray *stream, TestHead *h, char **why)
     return ret;
 }
 
-/*
- * The bytes of SGIGLContext no field holds, which the compiler leaves
- * after each bool. They are found from the neighbours' offsets, so the
- * list follows the structure; the field-coverage test fails on any other
- * byte no description carries.
- */
-static const struct {
-    size_t start, end;
-} padding[] = {
-    { offsetof(SGIGLContext, cur.drawable.bound) + sizeof(bool),
-      offsetof(SGIGLContext, cur.drawable.origin) },
-    { offsetof(SGIGLContext, in_begin) + sizeof(bool),
-      offsetof(SGIGLContext, held) },
-};
-
-static bool is_padding(size_t at)
-{
-    for (size_t i = 0; i < ARRAY_SIZE(padding); i++) {
-        if (at >= padding[i].start && at < padding[i].end) {
-            return true;
-        }
-    }
-    return false;
-}
-
 static void put_u32(SGIGLContext *c, size_t offset, uint32_t v)
 {
     memcpy((uint8_t *)c + offset, &v, sizeof(v));
@@ -135,9 +110,6 @@ static void populate(SGIGLContext *c, bool other)
 
     for (size_t i = 0; i < sizeof(*c); i++) {
         b[i] = (uint8_t)(i * 131 + 29) ^ (other ? 0xff : 0);
-    }
-    for (size_t i = 0; i < ARRAY_SIZE(padding); i++) {
-        memset(b + padding[i].start, 0, padding[i].end - padding[i].start);
     }
 
     /* Everything sgi_gl_context_valid() limits, set inside its limits. */
@@ -229,28 +201,20 @@ static void cover(const VMStateDescription *vmsd, size_t base,
 }
 
 /*
- * Every byte of SGIGLContext but padding is migrated, once. A field added
- * without a description, or dropped from one, fails here.
+ * Every byte of SGIGLContext is migrated, once. A field added without a
+ * description, or dropped from one, fails here, and so does padding, in
+ * which a small field could otherwise hide.
  */
 static void test_every_byte_described(void)
 {
     g_autofree uint8_t *covered = g_malloc0(sizeof(SGIGLContext));
-    size_t described = 0, padded = 0;
-
-    for (size_t i = 0; i < ARRAY_SIZE(padding); i++) {
-        g_assert_cmpuint(padding[i].start, <, padding[i].end);
-        padded += padding[i].end - padding[i].start;
-    }
     cover(&vmstate_sgi_gl_context, 0, covered, sizeof(SGIGLContext));
     for (size_t i = 0; i < sizeof(SGIGLContext); i++) {
-        if (!covered[i] && !is_padding(i)) {
+        if (!covered[i]) {
             g_test_message("byte %zu of SGIGLContext is not migrated", i);
         }
-        g_assert_true(covered[i] || is_padding(i));
-        g_assert_false(covered[i] && is_padding(i));
-        described += covered[i];
+        g_assert_true(covered[i]);
     }
-    g_assert_cmpuint(described + padded, ==, sizeof(SGIGLContext));
 }
 
 /* Each variant survives the trip over the other, byte for byte. */
@@ -540,6 +504,8 @@ static const Corruption corruptions[] = {
     BAD(cur_edge, 0x80000000, "cur_edge"),
     BAD(raster_valid, 2, "raster_valid"),
     BAD(strip_odd, 2, "strip_odd"),
+    BAD(cur.drawable.bound, 2, "drawable.bound"),
+    BAD(in_begin, 2, "in_begin"),
     BAD(mv_depth, SGI_GL_STACK_DEPTH, "mv_depth"),
     BAD(pr_depth, SGI_GL_STACK_DEPTH, "pr_depth"),
     BAD(tx_depth, UINT32_MAX, "tx_depth"),

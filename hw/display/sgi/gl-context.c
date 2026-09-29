@@ -1801,6 +1801,7 @@ bool sgi_gl_context_valid(const SGIGLContext *c, Error **errp)
         { "depth_test", st->depth_test },
         { "depth_mask", st->depth_mask },
         { "cull_face", st->cull_face },
+        { "drawable.bound", st->drawable.bound },
         { "dither", c->dither },
         { "light_model_local_viewer", c->light_model_local_viewer },
         { "light_model_two_side", c->light_model_two_side },
@@ -1813,6 +1814,7 @@ bool sgi_gl_context_valid(const SGIGLContext *c, Error **errp)
         { "cur_edge", c->cur_edge },
         { "raster_valid", c->raster_valid },
         { "strip_odd", c->strip_odd },
+        { "in_begin", c->in_begin },
     };
     const struct {
         const char *name;
@@ -1942,7 +1944,7 @@ static const VMStateDescription vmstate_sgi_gl_drawable = {
     .version_id = 1,
     .minimum_version_id = 1,
     .fields = (const VMStateField[]) {
-        VMSTATE_BOOL(bound, SGIGLDrawable),
+        VMSTATE_UINT32(bound, SGIGLDrawable),
         VMSTATE_INT32_ARRAY(origin, SGIGLDrawable, 2),
         VMSTATE_UINT32(clip.n, SGIGLDrawable),
         VMSTATE_STRUCT_ARRAY(clip.r, SGIGLDrawable, SGI_CLIP_MAX, 0,
@@ -2062,7 +2064,7 @@ const VMStateDescription vmstate_sgi_gl_context = {
         VMSTATE_SGI_GL_FLOAT(clear_index, SGIGLContext),
         VMSTATE_UINT32(clear_depth, SGIGLContext),
         VMSTATE_UINT32(begin_mode, SGIGLContext),
-        VMSTATE_BOOL(in_begin, SGIGLContext),
+        VMSTATE_UINT32(in_begin, SGIGLContext),
         VMSTATE_SGI_GL_FLOATS_2D(held, SGIGLContext, SGI_GL_HELD_VERTICES,
                                  SGI_GL_VERTEX_FLOATS),
         VMSTATE_UINT32(nheld, SGIGLContext),
