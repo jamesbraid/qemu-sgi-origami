@@ -116,7 +116,7 @@ static void populate(SGIGLContext *c, bool other)
     c->cur.depth_test = !other;
     c->cur.depth_mask = !other;
     c->cur.cull_face = !other;
-    c->dither = !other;
+    c->cur.dither = !other;
     c->light_model_local_viewer = !other;
     c->light_model_two_side = !other;
     c->color_material = !other;
@@ -684,7 +684,7 @@ static const Corruption corruptions[] = {
     BAD(cur.depth_test, 2, "depth_test"),
     BAD(cur.depth_mask, 2, "depth_mask"),
     BAD(cur.cull_face, 2, "cull_face"),
-    BAD(dither, 2, "dither"),
+    BAD(cur.dither, 2, "dither"),
     BAD(light_model_local_viewer, 2, "light_model_local_viewer"),
     BAD(light_model_two_side, 2, "light_model_two_side"),
     BAD(color_material, 2, "color_material is"),

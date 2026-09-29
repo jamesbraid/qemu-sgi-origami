@@ -527,6 +527,11 @@ typedef struct SGIGLDrawState {
     uint32_t clip_planes;
     float clip_plane[SGI_GL_CLIP_PLANES][4];
     SGIGLDrawable drawable;
+    /*
+     * GL_DITHER's enable, initially on (4.1.7). Kept and answered; no
+     * rasterizer dithers.
+     */
+    uint32_t dither;            /* 0 or 1 */
 } SGIGLDrawState;
 
 typedef struct SGIGLContext {
@@ -548,11 +553,6 @@ typedef struct SGIGLContext {
     uint32_t tx_depth;
     /* GL_MODELVIEW, GL_PROJECTION, GL_TEXTURE or other */
     uint32_t matrix_mode;
-    /*
-     * GL_DITHER's enable, initially on (4.1.7). Kept and answered; no
-     * rasterizer dithers.
-     */
-    uint32_t dither;            /* 0 or 1 */
     /*
      * The lighting state glLight, glLightModel, glMaterial and
      * glColorMaterial set, which lights each vertex while GL_LIGHTING is
