@@ -3293,8 +3293,10 @@ static void mgras_gl_store_stencil(void *opaque, int x, int y,
  * - Lines cover the pixels the diamond-exit rule gives on the subpixel
  *   grid, with no endpoint perturbation (gl-reference/lines and
  *   gl-line-leaves-out-its-last-pixel).
- * - A primitive with a vertex at w <= 0 is dropped, not clipped
- *   (gl-triangle-with-negative-w-is-dropped).
+ * - Primitives are clipped to the view volume as OpenGL 1.2.1, 2.11
+ *   describes, in double arithmetic, not by the GE's own clipper, whose
+ *   arithmetic and any guard band are not published (the shared
+ *   rasterizer's sgi_soft_triangle()).
  * - The stencil buffer holds 8 bits, as every visual with a depth buffer
  *   has (above, with the stencil packets).
  */
