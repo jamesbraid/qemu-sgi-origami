@@ -86,6 +86,7 @@ void sgi_gl_init(SGIGLContext *c, uint32_t hw_id)
     c->dither = 1;
     sgi_gl_identity(c->cur.modelview);
     sgi_gl_identity(c->cur.projection);
+    sgi_gl_identity(c->texture);
     c->cur.depth_func = SGI_GL_LESS;
     c->cur.depth_mask = 1;
     c->cur.depth_range[1] = 1.0f;
@@ -160,6 +161,8 @@ static float *sgi_gl_slot_matrix(SGIGLContext *c, uint32_t slot)
         return c->cur.modelview;
     case SGI_GL_PROJECTION:
         return c->cur.projection;
+    case SGI_GL_TEXTURE:
+        return c->texture;
     default:
         qemu_log_mask(LOG_UNIMP, "sgi-gl: matrix mode 0x%x is not "
                       "modelled; matrix command ignored\n", slot);
@@ -280,17 +283,19 @@ static bool sgi_gl_transform_matrix(uint16_t op, const uint32_t *p,
  * glPushMatrix and glPopMatrix on the current mode's stack (2.10.2). Each
  * stack holds SGI_GL_STACK_DEPTH matrices, the current one included, the
  * least OpenGL 1.2.1 allows for the modelview stack (table 6.25) and more
- * than it requires for the projection stack; what depths a head has is
- * not known. A push onto a full stack and a pop of the last matrix change
- * nothing, which is what the specification has the stack-overflow and
- * stack-underflow errors do; the client reports the errors itself, if at
- * all. The discriminating test is gl-matrix-stack-holds-32.
+ * than it requires for the projection and texture stacks, which need only
+ * two; what depths a head has is not known. A push onto a full stack and
+ * a pop of the last matrix change nothing, which is what the
+ * specification has the stack-overflow and stack-underflow errors do; the
+ * client reports the errors itself, if at all. The discriminating test
+ * is gl-matrix-stack-holds-32.
  */
 static void sgi_gl_stack_command(SGIGLContext *c, uint16_t op, float *m)
 {
-    bool modelview = m == c->cur.modelview;
-    float (*stack)[16] = modelview ? c->mv_stack : c->pr_stack;
-    uint32_t *depth = modelview ? &c->mv_depth : &c->pr_depth;
+    float (*stack)[16] = m == c->cur.modelview ? c->mv_stack :
+                         m == c->cur.projection ? c->pr_stack : c->tx_stack;
+    uint32_t *depth = m == c->cur.modelview ? &c->mv_depth :
+                      m == c->cur.projection ? &c->pr_depth : &c->tx_depth;
 
     if (op == SGI_GL_OP_PUSH_MATRIX) {
         if (*depth >= SGI_GL_STACK_DEPTH - 1) {
@@ -1337,6 +1342,12 @@ bool sgi_gl_get(const SGIGLContext *c, uint32_t pname, uint32_t *out,
         out[0] = c->pr_depth + 1;
         *n = 1;
         return true;
+    case SGI_GL_TEXTURE_STACK_DEPTH:
+        out[0] = c->tx_depth + 1;
+        *n = 1;
+        return true;
+    case SGI_GL_TEXTURE_MATRIX:
+        return sgi_gl_get_floats(c->texture, 16, out, n);
     case SGI_GL_DEPTH_RANGE:
         for (int i = 0; i < 2; i++) {
             out[i] = sgi_gl_bits(c->cur.depth_range[i]);

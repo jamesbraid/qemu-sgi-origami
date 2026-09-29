@@ -121,6 +121,7 @@ enum {
 };
 #define SGI_GL_MODELVIEW        0x1700
 #define SGI_GL_PROJECTION       0x1701
+#define SGI_GL_TEXTURE          0x1702
 #define SGI_GL_FLAT             0x1d00
 #define SGI_GL_SMOOTH           0x1d01
 /* The comparisons in GL_NEVER's order, as depth_func holds them. */
@@ -157,8 +158,10 @@ enum {
 #define SGI_GL_VIEWPORT         0x0ba2
 #define SGI_GL_MODELVIEW_STACK_DEPTH 0x0ba3
 #define SGI_GL_PROJECTION_STACK_DEPTH 0x0ba4
+#define SGI_GL_TEXTURE_STACK_DEPTH 0x0ba5
 #define SGI_GL_MODELVIEW_MATRIX 0x0ba6
 #define SGI_GL_PROJECTION_MATRIX 0x0ba7
+#define SGI_GL_TEXTURE_MATRIX   0x0ba8
 #define SGI_GL_DITHER           0x0bd0
 #define SGI_GL_INDEX_CLEAR_VALUE 0x0c20
 #define SGI_GL_INDEX_WRITEMASK  0x0c21
@@ -273,7 +276,16 @@ typedef struct SGIGLContext {
     float pr_stack[SGI_GL_STACK_DEPTH - 1][16];
     uint32_t mv_depth;
     uint32_t pr_depth;
-    uint32_t matrix_mode;       /* GL_MODELVIEW, GL_PROJECTION or other */
+    /*
+     * The texture matrix and the ones glPushMatrix saved under it (2.10.2),
+     * kept and answered; no rasterizer textures, so nothing draws with
+     * them.
+     */
+    float texture[16];
+    float tx_stack[SGI_GL_STACK_DEPTH - 1][16];
+    uint32_t tx_depth;
+    /* GL_MODELVIEW, GL_PROJECTION, GL_TEXTURE or other */
+    uint32_t matrix_mode;
     /*
      * GL_DITHER's enable, initially on (4.1.7). Kept and answered; no
      * rasterizer dithers.
@@ -431,10 +443,10 @@ void sgi_gl_init(SGIGLContext *c, uint32_t hw_id);
 void sgi_gl_set_drawable(SGIGLContext *c, const SGIGLDrawable *d);
 /*
  * Load m, column-major, as the current matrix of the stack slot names:
- * SGI_GL_MODELVIEW or SGI_GL_PROJECTION, whatever the context's matrix
- * mode. For a family whose matrices arrive as a target select and a load
- * rather than as glMatrixMode and glLoadMatrixf. False, and logged, for
- * a slot the context does not keep.
+ * SGI_GL_MODELVIEW, SGI_GL_PROJECTION or SGI_GL_TEXTURE, whatever the
+ * context's matrix mode. For a family whose matrices arrive as a target
+ * select and a load rather than as glMatrixMode and glLoadMatrixf. False,
+ * and logged, for a slot the context does not keep.
  */
 bool sgi_gl_set_matrix(SGIGLContext *c, uint32_t slot, const float m[16]);
 /*
