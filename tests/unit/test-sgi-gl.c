@@ -1436,6 +1436,66 @@ static void test_texture_matrix(void)
     g_assert_cmphex(out[12], ==, bits(5));
 }
 
+/*
+ * The depth range maps normalized depth (zd + 1) / 2 to window depth
+ * n + (f - n) z (OpenGL 1.2.1, 2.10.1), for a draw and for glRasterPos.
+ * The view volume still clips on normalized depth, so a point beyond the
+ * far plane is dropped even where the mapped depth would lie in [0, 1];
+ * far may be below near.
+ */
+static void test_depth_range_maps_window_depth(void)
+{
+    static const struct {
+        float zd, n, f;
+        uint32_t depth;         /* 0 for a dropped point */
+    } cases[] = {
+        { 0, 0.25f, 0.75f, 0x800000 },
+        { -1, 0.25f, 0.75f, 0x400000 },
+        { 1, 0.25f, 0.75f, 0xbfffff },
+        { 1.5f, 0.25f, 0.75f, 0 },
+        { -1, 1, 0, 0xffffff },
+        { 1, 0.5f, 0.5f, 0x800000 },
+    };
+
+    for (int i = 0; i < ARRAY_SIZE(cases); i++) {
+        static Planes p;
+        SGIRasterTarget t = planes_target(&p);
+        SGIGLContext c;
+        float v[SGI_GL_VERTEX_FLOATS] = { 0, 0, cases[i].zd, 1, 1, 1, 1, 1 };
+        uint32_t word[2] = { bits(cases[i].n), bits(cases[i].f) };
+        SGIGLDraw draw = {
+            .mode = SGI_GL_POINTS,
+            .count = 1,
+            .vertices = v,
+            .state = &c.cur,
+        };
+
+        memset(&p, 0, sizeof(p));
+        context_init(&c);
+        command(&c, NULL, SGI_GL_OP_DEPTH_RANGE, word, 2);
+        c.cur.depth_test = 1;
+        c.cur.depth_func = SGI_GL_ALWAYS;
+        sgi_soft_draw(&rules_supported, &t, &draw);
+        g_assert_cmphex(p.depth[planes_index(W / 2, H / 2)], ==,
+                        cases[i].depth);
+    }
+}
+
+/* glRasterPos's window z goes through the depth range too (2.12). */
+static void test_depth_range_maps_the_raster_position(void)
+{
+    uint32_t word[3];
+    SGIGLContext c;
+
+    context_init(&c);
+    word[0] = bits(0.25f), word[1] = bits(0.75f);
+    command(&c, NULL, SGI_GL_OP_DEPTH_RANGE, word, 2);
+    word[0] = bits(0), word[1] = bits(0), word[2] = bits(-1);
+    command(&c, NULL, SGI_GL_OP_RASTER_POS3F, word, 3);
+    g_assert_cmpfloat(get_float(&c, SGI_GL_CURRENT_RASTER_POSITION, 2), ==,
+                      0.25f);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -1458,6 +1518,10 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-gl/bitmap-bounds-and-depth",
                     test_bitmap_bounds_and_depth);
     g_test_add_func("/sgi-gl/depth-range", test_depth_range);
+    g_test_add_func("/sgi-gl/depth-range-maps-window-depth",
+                    test_depth_range_maps_window_depth);
+    g_test_add_func("/sgi-gl/depth-range-maps-the-raster-position",
+                    test_depth_range_maps_the_raster_position);
     g_test_add_func("/sgi-gl/get-enables-and-depths",
                     test_get_enables_and_depths);
     g_test_add_func("/sgi-gl/lighting-initial-state",

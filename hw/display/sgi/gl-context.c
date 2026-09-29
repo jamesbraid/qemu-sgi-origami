@@ -632,8 +632,8 @@ static void sgi_gl_vertex(SGIGLContext *c, const SGIGLSink *sink,
  * (2.13.6) and the current colour index; lighting is not modelled.
  * Outside, only the valid bit is reset: the specification leaves the
  * rest undefined, and keeping it is the model's choice. Client clip
- * planes are not modelled, and window depth is formed over [0, 1]
- * whatever glDepthRange kept, as for a draw. The eye distance is the
+ * planes are not modelled, and window depth goes through the depth
+ * range, as for a draw. The eye distance is the
  * exact Euclidean one of the eye x, y and z, which 2.12 allows a head to
  * approximate; how a head does is not published.
  */
@@ -670,7 +670,9 @@ static void sgi_gl_raster_pos(SGIGLContext *c, const float obj[4])
     c->raster_valid = 1;
     c->raster_pos[0] = (clip[0] / clip[3] + 1) * vp[2] / 2 + vp[0];
     c->raster_pos[1] = (clip[1] / clip[3] + 1) * vp[3] / 2 + vp[1];
-    c->raster_pos[2] = (clip[2] / clip[3] + 1) / 2;
+    c->raster_pos[2] = c->cur.depth_range[0] +
+                       (c->cur.depth_range[1] - c->cur.depth_range[0]) *
+                       ((clip[2] / clip[3] + 1) / 2);
     c->raster_pos[3] = clip[3];
     c->raster_distance = sqrt(eye[0] * eye[0] + eye[1] * eye[1] +
                               eye[2] * eye[2]);
@@ -683,9 +685,8 @@ static void sgi_gl_raster_pos(SGIGLContext *c, const float obj[4])
 /*
  * glDepthRange (OpenGL 1.2.1, 2.10.1): near and far are each clamped to
  * [0, 1] and kept, far may be below near, and a value that is not a number
- * clamps to 0, the model's choice. Window depth is still formed over
- * [0, 1] by every rasterizer and by glRasterPos, so another range is
- * logged: what it would draw is not modelled yet.
+ * clamps to 0, the model's choice. Draws and glRasterPos map normalized
+ * depth through the range.
  */
 static void sgi_gl_depth_range(SGIGLContext *c, float n, float f)
 {
@@ -694,11 +695,6 @@ static void sgi_gl_depth_range(SGIGLContext *c, float n, float f)
     for (int i = 0; i < 2; i++) {
         range[i] = range[i] >= 1.0f ? 1.0f : range[i] > 0.0f ? range[i] : 0.0f;
         c->cur.depth_range[i] = range[i];
-    }
-    if (range[0] != 0.0f || range[1] != 1.0f) {
-        qemu_log_mask(LOG_UNIMP, "sgi-gl: depth range [%g, %g] kept; window "
-                      "depth is still drawn over [0, 1]\n", range[0],
-                      range[1]);
     }
 }
 
