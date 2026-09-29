@@ -267,7 +267,62 @@ def refused_rom_store_rom(romd):
     return image
 
 
+def secondary_ecc_rom():
+    code = constant(8, 0x00410080) + mtc0(8, 12)  # BEV, DE, KX
+    code += constant(12, 0xffffffffa0000000 | MAILBOX)
+    code += constant(9, 0x9000000000000000 | PAGE)
+    code += constant(10, 0x9800000000000000 | PAGE)
+    code += constant(8, 0x80000000)
+    code += [insn_i(0x2b, 9, 8, 0), insn_i(0x23, 10, 8, 0),
+             insn_i(0x2b, 12, 8, 8)]
+    for way in (0, 1):
+        code += [insn_i(0x2f, 10, 0x1b, way), 0, 0, 0, 0]
+        code += mfc0(8, 26) + [insn_i(0x2b, 12, 8, way * 4)]
+        code += [insn_i(0x2f, 10, 0x07, way), 0, 0, 0, 0]
+        code += mfc0(8, 28) + [insn_i(0x2b, 12, 8, 12 + way * 4)]
+    code += constant(8, 1)
+    code += [insn_i(0x2b, 10, 8, 28),
+             insn_i(0x2f, 10, 0x15, 28), 0, 0, 0, 0]
+    code += constant(11, (0x9800000000000000 | PAGE) + 16)
+    for way in (0, 1):
+        code += [insn_i(0x2f, 11, 0x1b, way), 0, 0, 0, 0]
+        code += mfc0(8, 26) + [insn_i(0x2b, 12, 8, 20 + way * 4)]
+    code += constant(8, DONE)
+    code += [insn_i(0x2b, 12, 8, 32), insn_i(0x04, 0, 0, -1), 0]
+    image = bytearray(0x400 + len(code) * 4)
+    struct.pack_into('>I', image, 0, insn_i(0x04, 0, 0, 0xff))
+    struct.pack_into(f'>{len(code)}I', image, 0x400, *code)
+    return image
+
+
 class R10000TLBCache(QemuSystemTest):
+    def test_secondary_ecc_from_fill_and_writeback(self):
+        image = self.scratch_file('secondary-ecc.bin')
+        Path(image).write_bytes(secondary_ecc_rom())
+        self.set_machine('octane')
+        self.vm.add_args('-accel', 'tcg,thread=single',
+                         '-cpu', 'R10000,r10k-data-cache=on',
+                         '-m', '128M', '-bios', image, '-nodefaults')
+        self.vm.launch()
+        deadline = time.monotonic() + 10
+        while True:
+            output = self.vm.cmd('human-monitor-command',
+                                 command_line=f'xp /9wx {MAILBOX:#x}')
+            words = [int(word, 16) for word in
+                     re.findall(r'0x([0-9a-fA-F]{8})\b', output)]
+            if len(words) == 9 and words[8] == DONE:
+                break
+            self.assertLess(time.monotonic(), deadline, output)
+            time.sleep(0.05)
+        self.assertEqual(sorted(words[:2]), [0, 0x3c0], output)
+        self.assertEqual(words[2], 0x80000000, output)
+        self.assertEqual(sorted(words[5:7]), [0, 0x207], output)
+        valid_ways = [way for way, tag in enumerate(words[3:5])
+                      if tag & (3 << 10)]
+        self.assertEqual(len(valid_ways), 1, output)
+        self.assertEqual(words[valid_ways[0]], 0x3c0, output)
+        self.assertEqual(words[5 + valid_ways[0]], 0x207, output)
+
     def run_rom(self, mode, cache=True):
         image = self.scratch_file(f'{mode}.bin')
         Path(image).write_bytes(diagnostic_rom(mode))

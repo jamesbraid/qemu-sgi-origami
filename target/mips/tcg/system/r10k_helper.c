@@ -235,8 +235,8 @@ void helper_r10k_prefetch(CPUMIPSState *env, target_ulong addr, uint32_t hint)
  * accesses remain QEMU memory accesses, including alignment, protection,
  * watchpoint and LL/SC handling. Instruction fetching still uses RAM.
  *
- * This model regenerates primary byte parity. Secondary ECC generation and
- * error injection are not modeled; ordinary writes discard injected ECC.
+ * This model regenerates primary byte parity and secondary data check bits.
+ * Ordinary reads do not yet detect injected secondary errors.
  */
 static hwaddr r10k_dcache_block(CPUMIPSState *env, unsigned int tag)
 {
@@ -264,6 +264,31 @@ static uint8_t r10k_scache_byte(CPUMIPSState *env, hwaddr pa, unsigned int way)
     return env->r10k->scache_data[r10k_scache_dword(env, pa, way)] >> shift;
 }
 
+/* R10000 User's Manual, v2.0, printed p. 178: rows for ECC bits 8:0. */
+static const uint64_t r10k_scache_ecc_mask[9][2] = {
+    { 0xff03ffe306ff0721ULL, 0x62d0b0d000202080ULL },
+    { 0xffff030fff0703b2ULL, 0x100848c802909020ULL },
+    { 0x83ffff030503ff5cULL, 0x808404c438484850ULL },
+    { 0x42808012fcfbfc3fULL, 0xfd6202228504c408ULL },
+    { 0x214043ff808084ffULL, 0xff210101ffc20284ULL },
+    { 0x10232081444046bfULL, 0xfc3fdf3f4c010142ULL },
+    { 0x0a12121823202100ULL, 0xbaffc0a0d0ffffc1ULL },
+    { 0x0409094413121008ULL, 0x4dc0e0ffe0c0ffffULL },
+    { 0x010404200b0d0b47ULL, 0x04e0ff60c3ffc0ffULL },
+};
+
+static uint16_t r10k_scache_check_bits(uint64_t high, uint64_t low)
+{
+    uint16_t ecc = ((ctpop64(high) + ctpop64(low)) & 1) << 9;
+    unsigned int i;
+
+    for (i = 0; i < ARRAY_SIZE(r10k_scache_ecc_mask); i++) {
+        ecc |= ((ctpop64(high & r10k_scache_ecc_mask[i][0]) +
+                 ctpop64(low & r10k_scache_ecc_mask[i][1])) & 1) << (8 - i);
+    }
+    return ecc;
+}
+
 static void r10k_scache_put_byte(CPUMIPSState *env, hwaddr pa,
                                 unsigned int way, uint8_t value)
 {
@@ -272,7 +297,9 @@ static void r10k_scache_put_byte(CPUMIPSState *env, hwaddr pa,
     uint64_t *data = &env->r10k->scache_data[entry];
 
     *data = (*data & ~(0xffULL << shift)) | ((uint64_t)value << shift);
-    env->r10k->scache_ecc[entry / 2] = 0;
+    env->r10k->scache_ecc[entry / 2] =
+        r10k_scache_check_bits(env->r10k->scache_data[entry & ~1u],
+                               env->r10k->scache_data[entry | 1u]);
 }
 
 static uint8_t r10k_dcache_byte(CPUMIPSState *env, unsigned int tag,
