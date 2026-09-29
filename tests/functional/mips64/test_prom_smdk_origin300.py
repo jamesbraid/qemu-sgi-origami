@@ -17,19 +17,18 @@ row is read and why).
 smdk-matrix names the populations and the diagnostics each runs;
 lib_prom_smdk.DIAGS holds each diagnostic's arguments. This file owns the
 two-processor Origin 300 and each test_prom_smdk_origin300_<row>.py beside
-it registers one more population, each its own meson target. Each
-diagnostic gets a fresh boot, as the project checkout's `tools/origami
-run smdk` gives it: that is the sequence every recorded verdict was taken
-on, and a diagnostic that leaves the memory or directory state changed
-cannot then decide the next one's. Every diagnostic runs even after
-another fails; the test fails at the end naming each one that did not
-pass, and writes the verdicts, the status rows and the times to
+it registers one more population, each its own Meson target. Each
+diagnostic gets a fresh boot because a diagnostic that leaves memory or
+directory state changed cannot then decide the next one's. Every
+diagnostic runs even after another fails; the test fails at the end
+naming each one that did not pass, and writes the verdicts, the status
+rows and the times to
 <row>-summary.json.
 
 The package is `field_diags_stand` from Internal Support Tools 2.7, IRIX
-6.5.17 build, which `tools/extract-irix smdk` in the project checkout
-lands in <ORIGAMI_ASSETS>/assets/boot/smdk; each file's SHA-256 is checked
-against that checkout's asset manifest before a boot is spent on it.
+6.5.17 build. Supply its files below the QEMU SGI asset root at
+`boot/smdk`; each file is checked against its declared SHA-256 before a
+boot is started.
 """
 
 import json
@@ -43,7 +42,7 @@ import lib_origin300  # noqa: E402
 from lib_host_cpus import pin  # noqa: E402
 from lib_matrix import MatrixError  # noqa: E402
 from lib_net import Console, HarnessError  # noqa: E402
-from lib_prom import FORK_ROOT, require_assets, run_record  # noqa: E402
+from lib_prom import FORK_ROOT, run_record  # noqa: E402
 from lib_prom_smdk import (DIAG_ORDER, DIAGS, PACKAGE_DIR,  # noqa: E402
                            PACKAGE_SHA256, POPULATIONS, SmdkDriver, TftpRoot,
                            bound_end_pass, manifest_row, package_files)
@@ -51,20 +50,20 @@ from lib_prom_smdk import (DIAG_ORDER, DIAGS, PACKAGE_DIR,  # noqa: E402
 try:
     from qemu_test import QemuSystemTest
     from qemu_test import skipSlowTest, skipIfMissingEnv
+    from qemu_test.asset import LocalAsset
 except (ImportError, RuntimeError):
     QemuSystemTest = None
 
 
-# The stock PROM's power-on diagnostics, then the monitor's netboot and
-# discovery pass, to smdk>: on the project checkout's runs of 2026-09-26
-# and 27 a whole one-chassis run took 100 to 370s including its
-# diagnostic, and a pair's 740 to 2040s. Each boot and each diagnostic is
-# also cut to what is left of the row's budget.
+# In QEMU functional runs on 2026-09-26 and 27, a one-chassis row took
+# 100 to 370 seconds including its diagnostic, and a pair took 740 to
+# 2040 seconds. These are emulator test timings, not hardware timings.
+# Each boot and diagnostic is cut to the time left in the row budget.
 BOOT_TIMEOUT_SECONDS = {1: 600, 2: 1200}
 
-# A diagnostic's own limit, from `run` to its verdict: System_Level_Test's
-# one pass took 130s, a pair's scct ran for most of its 2040s, and nmem
-# needs about 3600s on the pair to sync the two chassis.
+# In QEMU functional runs, System_Level_Test took 130 seconds, scct used
+# most of a 2040-second pair run, and nmem needed about 3600 seconds to
+# synchronize two chassis.
 DIAG_TIMEOUT_SECONDS = {1: 900, 2: 3900}
 
 # The address the IO8 board record carries, and the user-mode network
@@ -95,14 +94,13 @@ if QemuSystemTest is not None:
                 self.fail(str(exc))
             self.deadline = started + self.row.budget
             self.populations = POPULATIONS[row_id]
-            files = package_files(self.row)
-            rels = [os.path.join(PACKAGE_DIR, name) for name in files]
-            assets = require_assets(
-                self, *lib_origin300.ASSET_SPECS,
-                *[(rel, PACKAGE_SHA256[name])
-                  for rel, name in zip(rels, files)])
-            self.package = {name: assets[rel]
-                            for rel, name in zip(rels, files)}
+            self.firmware = self.ASSET_FIRMWARE.fetch()
+            self.spd_paths = (self.ASSET_SPD_3.fetch(),
+                              self.ASSET_SPD_5.fetch())
+            self.package = {
+                name: getattr(self, asset_name).fetch()
+                for name, asset_name in self.PACKAGE_ASSETS.items()
+            }
             results = {}
             for name in DIAG_ORDER:
                 if not self.row.runs(name):
@@ -130,13 +128,14 @@ if QemuSystemTest is not None:
             if diag.fetch and diag.passes:
                 tftp.edit(diag.fetch,
                           lambda data: bound_end_pass(data, diag.passes))
-            root = os.environ['ORIGAMI_ASSETS']
             if len(self.populations) > 1:
                 machine, argv = lib_origin300.launch_args_two_chassis(
-                    root, self.populations, scratch)
+                    self.firmware, self.spd_paths,
+                    self.populations, scratch)
             else:
                 machine, argv = lib_origin300.launch_args(
-                    root, self.populations[0], scratch)
+                    self.firmware, self.spd_paths,
+                    self.populations[0], scratch)
             vm = self.get_vm(name=f'{self.row.id}-{name}')
             vm.set_machine(machine)
             vm.set_console()
@@ -196,8 +195,21 @@ if QemuSystemTest is not None:
     def register_smdk_row(cls, row_id):
         """Attach test_<row_id> to cls: one population's diagnostics."""
 
+        cls.ASSET_FIRMWARE = LocalAsset(*lib_origin300.ASSET_SPECS[0])
+        cls.ASSET_SPD_3 = LocalAsset(*lib_origin300.ASSET_SPECS[1])
+        cls.ASSET_SPD_5 = LocalAsset(*lib_origin300.ASSET_SPECS[2])
+
+        row = manifest_row(row_id)
+        package_assets = {}
+        for index, name in enumerate(package_files(row)):
+            asset_name = f'ASSET_PACKAGE_{index}'
+            rel = os.path.join(os.path.relpath(PACKAGE_DIR, 'assets'), name)
+            setattr(cls, asset_name, LocalAsset(rel, PACKAGE_SHA256[name]))
+            package_assets[name] = asset_name
+        cls.PACKAGE_ASSETS = package_assets
+
         @skipSlowTest()
-        @skipIfMissingEnv('ORIGAMI_ASSETS')
+        @skipIfMissingEnv('QEMU_TEST_SGI_ASSET_DIR')
         def test_row(self):
             self._run_row(row_id)
 
