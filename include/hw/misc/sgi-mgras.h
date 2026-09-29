@@ -468,7 +468,7 @@ struct SGIMgrasState {
     /*
      * Pixel-memory banks 0 and 1. The X server draws in bank 0; GL front
      * and back buffers map to either (hw/misc/sgi-mgras-gl.c), and bank 1
-     * holds only direct colour.
+     * holds only what GL draws, a direct colour or a colour index.
      */
     uint32_t *front;
     uint32_t *back;
@@ -497,6 +497,11 @@ struct SGIMgrasState {
      * content within one WID. This is a model approximation.
      */
     uint8_t *format;
+    /*
+     * The same tag for bank 1, where only GL draws: CI8 for a colour
+     * index, RGB for a direct colour.
+     */
+    uint8_t *back_format;
     /* Per-pixel overlay index. 0 is transparent and shows the main planes. */
     uint8_t *overlay;
     uint32_t hq[5120];
