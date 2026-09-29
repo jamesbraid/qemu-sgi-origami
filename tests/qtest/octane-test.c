@@ -727,6 +727,114 @@ static void test_heart_widget_errors(void)
     qtest_quit(qts);
 }
 
+static void test_heart_diagnostic_storage(gconstpointer data)
+{
+    bool octane2 = GPOINTER_TO_INT(data);
+    QTestState *qts = octane2 ? octane2_start_args("") : octane_start();
+    const uint64_t flow_a = 0xa51923456789abc3ULL;
+    const uint64_t flow_b = 0x5a96fedcba76543cULL;
+    uint64_t wide, count;
+    uint32_t word;
+
+    g_assert_cmphex(qtest_readq(qts, HEART_WIDGET + 0x28), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, HEART_WIDGET + 0x2c), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, HEART + 0x50), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, HEART + 0x58), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, HEART + 0xb0), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, HEART + 0x30000), ==, 0);
+
+    qtest_writel(qts, HEART_WIDGET + 0x2c, 0x12345678);
+    g_assert_cmphex(qtest_readq(qts, HEART_WIDGET + 0x28), ==, 0x12345678);
+    qtest_writeq(qts, HEART_WIDGET + 0x28, 0xaabbccddeeadb5a7ULL);
+    g_assert_cmphex(qtest_readq(qts, HEART_WIDGET + 0x28), ==, 0xeeadb5a7);
+    g_assert_cmphex(qtest_readl(qts, HEART_WIDGET + 0x2c), ==, 0xeeadb5a7);
+    qtest_writeq(qts, HEART_WIDGET + 0x28, 0x112233440019d246ULL);
+    g_assert_cmphex(qtest_readq(qts, HEART_WIDGET + 0x28), ==, 0x0019d246);
+    g_assert_cmphex(qtest_readl(qts, HEART_WIDGET + 0x2c), ==, 0x0019d246);
+    g_assert_cmpuint(qtest_readl_tx(qts, HEART_WIDGET + 0x28, &word), !=,
+                     MEMTX_OK);
+    g_assert_cmpuint(qtest_writew_tx(qts, HEART_WIDGET + 0x2c, 0), !=,
+                     MEMTX_OK);
+    g_assert_cmpuint(qtest_readq_tx(qts, HEART_WIDGET + 0x30, &wide), !=,
+                     MEMTX_OK);
+    g_assert_cmphex(qtest_readq(qts, HEART_WIDGET + 0x28), ==, 0x0019d246);
+
+    qtest_writeq(qts, HEART + 0x50, flow_a);
+    qtest_writeq(qts, HEART + 0x58, flow_b);
+    g_assert_cmphex(qtest_readq(qts, HEART + 0x50), ==, flow_a);
+    g_assert_cmphex(qtest_readq(qts, HEART + 0x58), ==, flow_b);
+    qtest_writeq(qts, HEART + 0x50, flow_b ^ 0x123456789abcdef0ULL);
+    qtest_writeq(qts, HEART + 0x58, flow_a ^ 0xfedcba9876543210ULL);
+    g_assert_cmphex(qtest_readq(qts, HEART + 0x50), ==,
+                    flow_b ^ 0x123456789abcdef0ULL);
+    g_assert_cmphex(qtest_readq(qts, HEART + 0x58), ==,
+                    flow_a ^ 0xfedcba9876543210ULL);
+
+    qtest_writeq(qts, HEART + 0xb0, 0xfedcba9876548080ULL);
+    g_assert_cmphex(qtest_readq(qts, HEART + 0xb0), ==,
+                    0xfedcba9876548080ULL);
+    qtest_writeq(qts, HEART + 0xb0, 0x123456789abca55aULL);
+    g_assert_cmphex(qtest_readq(qts, HEART + 0xb0), ==,
+                    0x123456789abca55aULL);
+
+    qtest_writeq(qts, HEART + 0x10000, UINT64_MAX);
+    wide = qtest_readq(qts, HEART + 0x10030);
+    g_assert_cmphex(wide, ==, 0);
+    count = qtest_readq(qts, HEART + 0x20000);
+    qtest_writeq(qts, HEART + 0x30000, 0x1234567800abcde1ULL);
+    g_assert_cmphex(qtest_readq(qts, HEART + 0x30000), ==, 0xabcde1);
+    qtest_writeq(qts, HEART + 0x30000, 0xfedcba9800abcde1ULL);
+    g_assert_cmphex(qtest_readq(qts, HEART + 0x30000), ==, 0xabcde1);
+    qtest_writeq(qts, HEART + 0x30000, 0xa5a5a5a501573ecaULL);
+    g_assert_cmphex(qtest_readq(qts, HEART + 0x30000), ==, 0x573eca);
+    g_assert_cmphex(qtest_readq(qts, HEART + 0x10030), ==, wide);
+    g_assert_cmphex(qtest_readq(qts, HEART + 0x10038), ==, wide);
+    g_assert_cmphex(qtest_readq(qts, HEART + 0x20000), ==, count);
+
+    qtest_writel(qts, HEART + 0x50, 0);
+    qtest_writel(qts, HEART + 0xb0, 0);
+    qtest_writel(qts, HEART + 0x30000, 0);
+    qtest_writeq(qts, HEART + 0x48, 0);
+    qtest_writeq(qts, HEART + 0x60, 0);
+    qtest_writeq(qts, HEART + 0x30008, 0);
+    g_assert_cmphex(qtest_readq(qts, HEART + 0x50), ==,
+                    flow_b ^ 0x123456789abcdef0ULL);
+    g_assert_cmphex(qtest_readq(qts, HEART + 0xb0), ==,
+                    0x123456789abca55aULL);
+    g_assert_cmphex(qtest_readq(qts, HEART + 0x30000), ==, 0x573eca);
+    g_assert_cmphex(qtest_readl(qts, HEART + 0x50), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, HEART + 0x58), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, HEART + 0xb0), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, HEART + 0x30000), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, HEART + 0x48), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, HEART + 0x60), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, HEART + 0x30008), ==, 0);
+
+    qtest_system_reset(qts);
+    g_assert_cmphex(qtest_readq(qts, HEART_WIDGET + 0x28), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, HEART_WIDGET + 0x2c), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, HEART + 0x50), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, HEART + 0x58), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, HEART + 0xb0), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, HEART + 0x30000), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, HEART + 0x10030), ==, 0);
+    qtest_quit(qts);
+}
+
+static void test_heart_divider_onewire_time(void)
+{
+    QTestState *qts = octane_start();
+    const uint64_t command = (500u << 10) | (65u << 2);
+
+    qtest_writeq(qts, HEART + 0xb8, command);
+    qtest_writeq(qts, HEART + 0xb0, 0x123456789abc7f7fULL);
+    qtest_clock_step(qts, 564000);
+    g_assert_cmphex(qtest_readq(qts, HEART + 0xb8) & 2, ==, 0);
+    qtest_clock_step(qts, 1000);
+    g_assert_cmphex(qtest_readq(qts, HEART + 0xb8) & 2, ==, 2);
+    qtest_quit(qts);
+}
+
 static void test_low_ram(void)
 {
     QTestState *qts = octane_start();
@@ -1623,7 +1731,13 @@ static void test_migration_state(void)
     qtest_writel(from, HEART + 0x20, WIDE);
     qtest_writel(from, HEART_WIDGET + 0x24, 0x3ca596f0);
     qtest_writel(from, HEART_WIDGET + 0x2c, 0x12345678);
+    qtest_writeq(from, HEART_WIDGET + 0x28, 0x991b2837a5c37e19ULL);
     qtest_writeq(from, HEART_WIDGET + 0x68, 0x3ff62c07);
+    qtest_writeq(from, HEART + 0x50, 0xe524351324f105a7ULL);
+    qtest_writeq(from, HEART + 0x58, 0x1adbc29db3c7e85aULL);
+    qtest_writeq(from, HEART + 0xb0, 0x71938f76a5c37f7fULL);
+    qtest_writeq(from, HEART + 0x30000, 0xfedcba9800246aceULL);
+    qtest_writeq(from, HEART + 0x10008, 0x1234567887654321ULL);
     qtest_writeq(from, HIGH_RAM, 0x0123456789abcdefULL);
     qtest_writeq(from, HIGH_RAM + 8, 0xfedcba9876543210ULL);
     qtest_writel(from, CFG(2) + 0x10, 0x10000000);
@@ -1662,9 +1776,19 @@ static void test_migration_state(void)
 
     g_assert_cmphex(qtest_readl(to, HEART + 0x20), ==, WIDE);
     g_assert_cmphex(qtest_readl(to, HEART_WIDGET + 0x24), ==, 0x3ca596f0);
-    g_assert_cmphex(qtest_readl(to, HEART_WIDGET + 0x2c), ==, 0x12345678);
+    g_assert_cmphex(qtest_readq(to, HEART_WIDGET + 0x28), ==, 0xa5c37e19);
+    g_assert_cmphex(qtest_readl(to, HEART_WIDGET + 0x2c), ==, 0xa5c37e19);
     g_assert_cmphex(qtest_readl(to, HEART_WIDGET + 0x44), ==, 0);
     g_assert_cmphex(qtest_readq(to, HEART_WIDGET + 0x68), ==, 0x3ff62c07);
+    g_assert_cmphex(qtest_readq(to, HEART + 0x50), ==,
+                    0xe524351324f105a7ULL);
+    g_assert_cmphex(qtest_readq(to, HEART + 0x58), ==,
+                    0x1adbc29db3c7e85aULL);
+    g_assert_cmphex(qtest_readq(to, HEART + 0xb0), ==,
+                    0x71938f76a5c37f7fULL);
+    g_assert_cmphex(qtest_readq(to, HEART + 0x30000), ==, 0x246ace);
+    g_assert_cmphex(qtest_readq(to, HEART + 0x10008), ==,
+                    0x1234567887654321ULL);
     g_assert_cmphex(qtest_readq(to, HIGH_RAM), ==, 0x0123456789abcdefULL);
     g_assert_cmphex(qtest_readq(to, ATTR0 + HIGH_RAM), ==,
                     0x0123456789abcdefULL);
@@ -1702,7 +1826,12 @@ static void test_migration_state(void)
     qtest_system_reset(to);
     g_assert_cmphex(qtest_readl(to, HEART_WIDGET + 0x24), ==, 0);
     g_assert_cmphex(qtest_readl(to, HEART_WIDGET + 0x2c), ==, 0);
+    g_assert_cmphex(qtest_readq(to, HEART_WIDGET + 0x28), ==, 0);
     g_assert_cmphex(qtest_readq(to, HEART_WIDGET + 0x68), ==, 0);
+    g_assert_cmphex(qtest_readq(to, HEART + 0x50), ==, 0);
+    g_assert_cmphex(qtest_readq(to, HEART + 0x58), ==, 0);
+    g_assert_cmphex(qtest_readq(to, HEART + 0xb0), ==, 0);
+    g_assert_cmphex(qtest_readq(to, HEART + 0x30000), ==, 0);
     qtest_memread(to, 0, low_seen, sizeof(low_seen));
     g_assert_cmpmem(low_seen, sizeof(low_seen), low_zero, sizeof(low_zero));
 
@@ -1751,6 +1880,12 @@ int main(int argc, char **argv)
     qtest_add_func("/octane2/serial", test_octane2_serial);
     qtest_add_func("/octane/heart-widget-control", test_heart_widget_control);
     qtest_add_func("/octane/heart-widget-errors", test_heart_widget_errors);
+    qtest_add_data_func("/octane/heart-diagnostic-storage", GINT_TO_POINTER(0),
+                        test_heart_diagnostic_storage);
+    qtest_add_data_func("/octane2/heart-diagnostic-storage", GINT_TO_POINTER(1),
+                        test_heart_diagnostic_storage);
+    qtest_add_func("/octane/heart-divider-onewire-time",
+                   test_heart_divider_onewire_time);
     qtest_add_func("/octane/low-ram", test_low_ram);
     qtest_add_func("/octane/flash-and-pci", test_flash_and_pci);
     qtest_add_data_func("/octane/alternate-flash", GINT_TO_POINTER(0),
