@@ -78,7 +78,11 @@ typedef struct SGIRasterOp {
     SGIColourTarget targets[2];
     uint32_t ntargets;
     int32_t x0, y0, x1, y1;
-    /* Only pixels inside these are written; at most the rectangle's. */
+    /*
+     * Only pixels inside these are written; at most the rectangle's. An
+     * op needs no bound window, so an empty list here is how a family
+     * says that its window has no visible pixel.
+     */
     SGIClipList clip;
     /* CLEAR: SGI_GL_COLOR_BUFFER_BIT and SGI_GL_DEPTH_BUFFER_BIT. */
     uint32_t clear_buffers;
@@ -280,7 +284,7 @@ typedef struct SGIGLDrawable {
     /*
      * The pixels the window owns. A bound window with no rectangle is one
      * other windows wholly cover, a normal state: nothing draws and
-     * nothing is logged.
+     * nothing is logged. The list's empty flag plays no part here.
      */
     SGIClipList clip;
     /* The colour targets glDrawBuffer's front and back buffers name. */

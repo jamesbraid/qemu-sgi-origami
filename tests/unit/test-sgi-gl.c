@@ -2575,19 +2575,25 @@ static unsigned window_pixels_written(void)
  * A bound window with no visible rectangle, one other windows wholly
  * cover, is a normal state (OpenGL 1.2.1, 4.1.1: every fragment fails
  * the pixel ownership test). The clear, the bitmap and the triangle draw
- * nothing and log nothing. The same scene into the whole plane writes
- * every pixel, and into no bound window logs each of the three as
- * dropped, which shows the log is captured.
+ * nothing and log nothing, whatever the list's empty flag says. The same
+ * scene into the whole plane writes every pixel, and into no bound window
+ * logs each of the three as dropped, which shows the log is captured.
  */
 static void test_covered_window_draws_nothing(void)
 {
     g_autofree char *covered = NULL;
+    g_autofree char *covered_empty = NULL;
     g_autofree char *whole = NULL;
     g_autofree char *unbound = NULL;
 
     window_drawable = (SGIGLDrawable) { .bound = true };
     covered = logged_by(window_scene);
     g_assert_cmpstr(covered, ==, "");
+    g_assert_cmpuint(window_pixels_written(), ==, 0);
+
+    window_drawable.clip.empty = true;
+    covered_empty = logged_by(window_scene);
+    g_assert_cmpstr(covered_empty, ==, "");
     g_assert_cmpuint(window_pixels_written(), ==, 0);
 
     window_drawable = (SGIGLDrawable) {
@@ -2604,6 +2610,47 @@ static void test_covered_window_draws_nothing(void)
     g_assert_nonnull(strstr(unbound, "glBitmap with no window bound"));
     g_assert_nonnull(strstr(unbound, "draw with no window bound"));
     g_assert_cmpuint(window_pixels_written(), ==, 0);
+}
+
+static SGIRasterOp window_op;
+
+static void window_op_clear(void)
+{
+    SGIRasterTarget t = planes_target(&window_planes);
+
+    memset(&window_planes, 0, sizeof(window_planes));
+    sgi_soft_raster(&rules_supported, &t, &window_op);
+}
+
+/*
+ * A raster op carries its own clip and needs no bound window. A clear
+ * whose list is empty writes nothing and logs nothing, even under a
+ * colour mask that would otherwise be reported as unmodelled; a zeroed
+ * list is still no clip and writes the whole rectangle.
+ */
+static void test_empty_clip_without_a_window(void)
+{
+    g_autofree char *empty = NULL;
+    g_autofree char *unclipped = NULL;
+
+    window_op = (SGIRasterOp) {
+        .kind = SGI_RASTER_CLEAR,
+        .ntargets = 1,
+        .x0 = 2, .y0 = 3, .x1 = 9, .y1 = 7,
+        .clip = { .empty = true },
+        .clear_buffers = SGI_GL_COLOR_BUFFER_BIT,
+        .clear_rgba = { 1, 1, 1, 1 },
+        .clear_colour_mask = 0xff,
+    };
+    empty = logged_by(window_op_clear);
+    g_assert_cmpstr(empty, ==, "");
+    g_assert_cmpuint(window_pixels_written(), ==, 0);
+
+    window_op.clip.empty = false;
+    window_op.clear_colour_mask = UINT32_MAX;
+    unclipped = logged_by(window_op_clear);
+    g_assert_cmpstr(unclipped, ==, "");
+    g_assert_cmpuint(window_pixels_written(), ==, 8 * 5);
 }
 
 int main(int argc, char **argv)
@@ -2682,5 +2729,7 @@ int main(int argc, char **argv)
                     test_spot_cos_matches_gllight);
     g_test_add_func("/sgi-gl/covered-window-draws-nothing",
                     test_covered_window_draws_nothing);
+    g_test_add_func("/sgi-gl/empty-clip-without-a-window",
+                    test_empty_clip_without_a_window);
     return g_test_run();
 }

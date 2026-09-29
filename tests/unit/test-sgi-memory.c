@@ -267,8 +267,19 @@ static void test_clip(void)
         .n = 2,
         .r = { { 0, 0, 3, 3 }, { 10, 10, 10, 12 } },
     };
+    SGIClipList empty = { .empty = true };
+    SGIClipList one = {
+        .n = 1,
+        .empty = true,
+        .r = { { 0, 0, 3, 3 } },
+    };
 
     g_assert_true(sgi_clip_contains(&none, -100, 100));
+    /* An empty list keeps nothing; with a rectangle the flag is ignored. */
+    g_assert_false(sgi_clip_contains(&empty, 0, 0));
+    g_assert_false(sgi_clip_contains(&empty, -100, 100));
+    g_assert_true(sgi_clip_contains(&one, 3, 3));
+    g_assert_false(sgi_clip_contains(&one, 4, 3));
     g_assert_true(sgi_clip_contains(&two, 3, 3));
     g_assert_false(sgi_clip_contains(&two, 4, 3));
     g_assert_true(sgi_clip_contains(&two, 10, 12));
