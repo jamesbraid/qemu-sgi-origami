@@ -639,17 +639,45 @@ static void sgi_soft_fragment_at(const SGISoftDraw *r, int px, int py,
  * and far planes, and otherwise mapped to window depth n + (f - n) z
  * through the depth range [n, f] (OpenGL 1.2.1, 2.10.1). Clipping on the
  * normalized depth keeps a range with n equal to f from passing depths
- * beyond the far plane.
+ * beyond the far plane. A polygon's offset is then added to the window
+ * depth, and the sum clamped to [0, 1] (3.5.5).
  */
 static void sgi_soft_fragment(const SGISoftDraw *r, int px, int py, double z,
-                              const SGISoftFrag *frag)
+                              double offset, const SGISoftFrag *frag)
 {
-    double n = r->st->depth_range[0], f = r->st->depth_range[1];
+    double n = r->st->depth_range[0], f = r->st->depth_range[1], zw;
 
     if (!(z >= 0.0 && z <= 1.0)) {
         return;
     }
-    sgi_soft_fragment_at(r, px, py, n + (f - n) * z, frag);
+    zw = n + (f - n) * z + offset;
+    sgi_soft_fragment_at(r, px, py, zw >= 1 ? 1 : zw > 0 ? zw : 0, frag);
+}
+
+/*
+ * A triangle's polygon offset (3.5.5), o = m factor + r units, where m is
+ * the larger magnitude of its window depth's slopes in x and y, which the
+ * specification allows in place of their length, and r the rules' one
+ * depth step; EXT_polygon_offset's bias adds in window depth. Only filled
+ * polygons are drawn here, so GL_POLYGON_OFFSET_FILL alone applies.
+ */
+static double sgi_soft_offset(const SGISoftDraw *r, const SGISoftVertex v[3])
+{
+    const SGIGLDrawState *st = r->st;
+    const double sub = 1 << r->rules->subpixel_bits;
+    double x1, y1, z1, x2, y2, z2, det, m;
+
+    if (!(st->polygon_offset & SGI_GL_OFFSET_FILL)) {
+        return 0;
+    }
+    x1 = (v[1].x - v[0].x) / sub, y1 = (v[1].y - v[0].y) / sub;
+    x2 = (v[2].x - v[0].x) / sub, y2 = (v[2].y - v[0].y) / sub;
+    z1 = v[1].z - v[0].z, z2 = v[2].z - v[0].z;
+    det = x1 * y2 - x2 * y1;
+    m = MAX(fabs(z1 * y2 - z2 * y1), fabs(x1 * z2 - x2 * z1)) / fabs(det) *
+        fabs(st->depth_range[1] - st->depth_range[0]);
+    return m * st->offset_factor +
+           st->offset_units / sgi_soft_depth_max(r->rules) + st->offset_bias;
 }
 
 /*
@@ -752,6 +780,7 @@ static void sgi_soft_triangle(const SGISoftDraw *r, const float *va,
     SGISoftFrag flat_frag;
     SGISoftVertex v[3];
     int64_t min_x, max_x, min_y, max_y, area;
+    double offset;
     bool front;
     int vx = st->viewport[0], vy = st->viewport[1];
     int vw = st->viewport[2], vh = st->viewport[3];
@@ -791,6 +820,7 @@ static void sgi_soft_triangle(const SGISoftDraw *r, const float *va,
         flat_frag.rgba[k] = flat[k];
     }
     flat_frag.index = provoking[SGI_GL_V_INDEX];
+    offset = sgi_soft_offset(r, v);
     if (area < 0) {
         /* Rasterize either winding the same way from here. */
         SGISoftVertex t = v[1];
@@ -851,7 +881,7 @@ static void sgi_soft_triangle(const SGISoftDraw *r, const float *va,
                              (w1 * (v[1].index - v[0].index) +
                               w2 * (v[2].index - v[0].index)) / sum;
             }
-            sgi_soft_fragment(r, px, py, z, &frag);
+            sgi_soft_fragment(r, px, py, z, offset, &frag);
         }
     }
 }
@@ -993,7 +1023,7 @@ static void sgi_soft_line(const SGISoftDraw *r, const float *va,
                                (wa * a.rgba[k] + wb * b.rgba[k]) / (wa + wb) :
                                flat[k];
             }
-            sgi_soft_fragment(r, px, py, a.z + t * (b.z - a.z), &frag);
+            sgi_soft_fragment(r, px, py, a.z + t * (b.z - a.z), 0, &frag);
         }
     }
 }
@@ -1030,7 +1060,7 @@ static void sgi_soft_point(const SGISoftDraw *r, const float *vp)
     memcpy(frag.rgba, v.rgba, sizeof(frag.rgba));
     frag.index = v.index;
     frag.fog = v.fog;
-    sgi_soft_fragment(r, px, py, v.z, &frag);
+    sgi_soft_fragment(r, px, py, v.z, 0, &frag);
 }
 
 /*

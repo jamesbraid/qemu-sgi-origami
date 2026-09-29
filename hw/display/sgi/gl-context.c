@@ -439,6 +439,8 @@ static const uint8_t sgi_gl_nargs[] = {
     [SGI_GL_OP_LOGIC_OP] = 1,
     [SGI_GL_OP_COLOR_MASK] = 4,
     [SGI_GL_OP_FOG] = 5,
+    [SGI_GL_OP_POLYGON_OFFSET] = 2,
+    [SGI_GL_OP_POLYGON_OFFSET_EXT] = 2,
 };
 
 uint32_t sgi_gl_draw_targets(const SGIGLDrawState *st,
@@ -1411,6 +1413,15 @@ static void sgi_gl_capability(SGIGLContext *c, uint32_t cap, bool on)
     case SGI_GL_FOG:
         c->cur.fog = on;
         return;
+    case SGI_GL_POLYGON_OFFSET_FILL:
+        c->cur.polygon_offset = deposit32(c->cur.polygon_offset, 0, 1, on);
+        return;
+    case SGI_GL_POLYGON_OFFSET_LINE:
+        c->cur.polygon_offset = deposit32(c->cur.polygon_offset, 1, 1, on);
+        return;
+    case SGI_GL_POLYGON_OFFSET_POINT:
+        c->cur.polygon_offset = deposit32(c->cur.polygon_offset, 2, 1, on);
+        return;
     case SGI_GL_COLOR_MATERIAL:
         c->color_material = on;
         sgi_gl_track_colour(c);
@@ -1673,6 +1684,14 @@ void sgi_gl_command(SGIGLContext *c, const SGIGLSink *sink,
     case SGI_GL_OP_FOG:
         memcpy(pos, &a[1], sizeof(pos));
         sgi_gl_fog(c, a[0], pos);
+        return;
+    case SGI_GL_OP_POLYGON_OFFSET:
+    case SGI_GL_OP_POLYGON_OFFSET_EXT:
+        c->cur.offset_factor = sgi_gl_float(a[0]);
+        c->cur.offset_units = cmd->op == SGI_GL_OP_POLYGON_OFFSET ?
+                              sgi_gl_float(a[1]) : 0.0f;
+        c->cur.offset_bias = cmd->op == SGI_GL_OP_POLYGON_OFFSET_EXT ?
+                             sgi_gl_float(a[1]) : 0.0f;
         return;
     case SGI_GL_OP_COLOR_MASK:
         c->cur.colour_mask = 0;
@@ -2076,6 +2095,20 @@ bool sgi_gl_get(const SGIGLContext *c, uint32_t pname, uint32_t *out,
         return sgi_gl_get_floats(c->cur.fog_color, 4, out, n);
     case SGI_GL_FOG_INDEX:
         return sgi_gl_get_floats(&c->cur.fog_index, 1, out, n);
+    case SGI_GL_POLYGON_OFFSET_FILL:
+    case SGI_GL_POLYGON_OFFSET_LINE:
+    case SGI_GL_POLYGON_OFFSET_POINT:
+        out[0] = extract32(c->cur.polygon_offset,
+                           pname == SGI_GL_POLYGON_OFFSET_FILL ? 0 :
+                           pname == SGI_GL_POLYGON_OFFSET_LINE ? 1 : 2, 1);
+        *n = 1;
+        return true;
+    case SGI_GL_POLYGON_OFFSET_FACTOR:
+        return sgi_gl_get_floats(&c->cur.offset_factor, 1, out, n);
+    case SGI_GL_POLYGON_OFFSET_UNITS:
+        return sgi_gl_get_floats(&c->cur.offset_units, 1, out, n);
+    case SGI_GL_POLYGON_OFFSET_BIAS:
+        return sgi_gl_get_floats(&c->cur.offset_bias, 1, out, n);
     case SGI_GL_DEPTH_FUNC:
         out[0] = SGI_GL_NEVER_ENUM + c->cur.depth_func;
         *n = 1;
@@ -2313,6 +2346,12 @@ bool sgi_gl_context_valid(const SGIGLContext *c, Error **errp)
                        st->fog_color[i]);
             return false;
         }
+    }
+    if (st->polygon_offset & ~(SGI_GL_OFFSET_FILL | SGI_GL_OFFSET_LINE |
+                               SGI_GL_OFFSET_POINT)) {
+        error_setg(errp, "sgi-gl: polygon offset enables 0x%x",
+                   st->polygon_offset);
+        return false;
     }
     if (st->drawable.clip.n > SGI_CLIP_MAX) {
         error_setg(errp, "sgi-gl: %u clip rectangles", st->drawable.clip.n);
@@ -2607,6 +2646,30 @@ static const VMStateDescription vmstate_sgi_gl_fog = {
     },
 };
 
+static bool sgi_gl_polygon_offset_needed(void *opaque)
+{
+    const SGIGLDrawState *st = opaque, *init = &sgi_gl_initial()->cur;
+
+    return SGI_GL_MOVED(st, init, polygon_offset) ||
+           SGI_GL_MOVED(st, init, offset_factor) ||
+           SGI_GL_MOVED(st, init, offset_units) ||
+           SGI_GL_MOVED(st, init, offset_bias);
+}
+
+static const VMStateDescription vmstate_sgi_gl_polygon_offset = {
+    .name = "sgi-gl-draw-state/polygon-offset",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = sgi_gl_polygon_offset_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32(polygon_offset, SGIGLDrawState),
+        VMSTATE_SGI_GL_FLOAT(offset_factor, SGIGLDrawState),
+        VMSTATE_SGI_GL_FLOAT(offset_units, SGIGLDrawState),
+        VMSTATE_SGI_GL_FLOAT(offset_bias, SGIGLDrawState),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
 static const VMStateDescription vmstate_sgi_gl_draw_state = {
     .name = "sgi-gl-draw-state",
     .version_id = 1,
@@ -2638,6 +2701,7 @@ static const VMStateDescription vmstate_sgi_gl_draw_state = {
         &vmstate_sgi_gl_logic_op,
         &vmstate_sgi_gl_colour_mask,
         &vmstate_sgi_gl_fog,
+        &vmstate_sgi_gl_polygon_offset,
         NULL
     },
 };
