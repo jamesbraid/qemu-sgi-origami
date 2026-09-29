@@ -1288,10 +1288,35 @@ static const MemoryRegionOps sgi_rad1_audio_bar0_ops = {
     .impl.max_access_size = 4,
 };
 
+/* Selected Octane board policy; physical UST timing is unmeasured. */
+#define SGI_RAD1_OCTANE_UST_NS_PER_TICK 960
+#define SGI_RAD1_OCTANE_REG_UST_CONTROL 0x40
+
+static void sgi_rad1_octane_ust_update(SGIRad1AudioState *s)
+{
+    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+
+    if (s->octane_ust_enabled && now > s->octane_ust_last_ns) {
+        uint64_t elapsed = now - s->octane_ust_last_ns;
+        uint64_t total = elapsed + s->octane_ust_phase;
+
+        s->octane_ust_count += total / SGI_RAD1_OCTANE_UST_NS_PER_TICK;
+        s->octane_ust_phase = total % SGI_RAD1_OCTANE_UST_NS_PER_TICK;
+    }
+    s->octane_ust_last_ns = now;
+}
+
 static MemTxResult sgi_rad1_octane_read(void *opaque, hwaddr addr,
                                        uint64_t *value, unsigned size,
                                        MemTxAttrs attrs)
 {
+    SGIRad1AudioState *s = opaque;
+
+    if (addr == SGI_RAD1_AUDIO_REG_UST_COUNTER && size == 4) {
+        sgi_rad1_octane_ust_update(s);
+        *value = s->octane_ust_count;
+        return MEMTX_OK;
+    }
     qemu_log_mask(LOG_UNIMP,
                   "sgi-rad1-octane: unsupported %u-byte BAR0 read at "
                   "0x%" HWADDR_PRIx "\n", size, addr);
@@ -1303,9 +1328,36 @@ static MemTxResult sgi_rad1_octane_write(void *opaque, hwaddr addr,
                                         uint64_t value, unsigned size,
                                         MemTxAttrs attrs)
 {
+    SGIRad1AudioState *s = opaque;
+
+    if (addr == SGI_RAD1_OCTANE_REG_UST_CONTROL && size == 4) {
+        switch (value) {
+        case 0x0e:
+            sgi_rad1_octane_ust_update(s);
+            s->octane_ust_enabled = false;
+            s->octane_ust_armed = true;
+            return MEMTX_OK;
+        case 0x0a:
+            if (s->octane_ust_armed) {
+                sgi_rad1_octane_ust_update(s);
+                s->octane_ust_enabled = true;
+                s->octane_ust_armed = false;
+                return MEMTX_OK;
+            }
+            break;
+        case 0x02:
+            sgi_rad1_octane_ust_update(s);
+            s->octane_ust_enabled = false;
+            s->octane_ust_armed = false;
+            return MEMTX_OK;
+        default:
+            break;
+        }
+    }
     qemu_log_mask(LOG_UNIMP,
                   "sgi-rad1-octane: unsupported %u-byte BAR0 write at "
-                  "0x%" HWADDR_PRIx "\n", size, addr);
+                  "0x%" HWADDR_PRIx " value 0x%" PRIx64 "\n",
+                  size, addr, value);
     return MEMTX_ERROR;
 }
 
@@ -1579,12 +1631,46 @@ static const VMStateDescription vmstate_sgi_rad1_audio = {
     }
 };
 
+static void sgi_rad1_octane_reset_hold(Object *obj, ResetType type)
+{
+    SGIRad1AudioState *s = SGI_RAD1_AUDIO(obj);
+
+    s->octane_ust_count = 0;
+    s->octane_ust_phase = 0;
+    s->octane_ust_enabled = false;
+    s->octane_ust_armed = false;
+    s->octane_ust_last_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+}
+
+static int sgi_rad1_octane_pre_save(void *opaque)
+{
+    sgi_rad1_octane_ust_update(opaque);
+    return 0;
+}
+
+static int sgi_rad1_octane_post_load(void *opaque, int version_id)
+{
+    SGIRad1AudioState *s = opaque;
+
+    if (s->octane_ust_phase >= SGI_RAD1_OCTANE_UST_NS_PER_TICK) {
+        return -EINVAL;
+    }
+    s->octane_ust_last_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    return 0;
+}
+
 static const VMStateDescription vmstate_sgi_rad1_octane = {
     .name = "sgi-rad1-octane",
-    .version_id = 1,
-    .minimum_version_id = 1,
+    .version_id = 2,
+    .minimum_version_id = 2,
+    .pre_save = sgi_rad1_octane_pre_save,
+    .post_load = sgi_rad1_octane_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_PCI_DEVICE(parent_obj, SGIRad1AudioState),
+        VMSTATE_UINT32(octane_ust_count, SGIRad1AudioState),
+        VMSTATE_UINT32(octane_ust_phase, SGIRad1AudioState),
+        VMSTATE_BOOL(octane_ust_enabled, SGIRad1AudioState),
+        VMSTATE_BOOL(octane_ust_armed, SGIRad1AudioState),
         VMSTATE_END_OF_LIST()
     },
 };
@@ -1631,12 +1717,14 @@ static void sgi_rad1_octane_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     PCIDeviceClass *pc = PCI_DEVICE_CLASS(klass);
+    ResettableClass *rc = RESETTABLE_CLASS(klass);
 
-    dc->desc = "SGI Octane RAD PCI shell";
+    dc->desc = "SGI Octane RAD UST register model";
     dc->vmsd = &vmstate_sgi_rad1_octane;
     pc->revision = 0xc0;
     pc->realize = sgi_rad1_octane_realize;
     pc->exit = NULL;
+    rc->phases.hold = sgi_rad1_octane_reset_hold;
 }
 
 static const TypeInfo sgi_rad1_audio_types[] = {

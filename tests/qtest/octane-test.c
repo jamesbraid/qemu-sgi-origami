@@ -54,7 +54,7 @@
 #define UART_A (IOC3 + 0x20178)
 #define UART_B (IOC3 + 0x20170)
 #define IOC3_SERIAL_IRQ (1u << 6)
-#define RAD_BAR0 (BRIDGE + 0x800000)
+#define RAD_BAR0 (BRIDGE + 0x700000)
 #define RAD_PCI_BAR0 0x13000000u
 #define RAD_PCI_ID 0x000510a9u
 #define RAD_REVISION 0xc0u
@@ -1027,7 +1027,7 @@ static void test_rad_pci(void)
     g_assert_cmphex(qtest_readl(qts, CFG(3) + 0x10), ==, 0xffffe000);
     qtest_writel(qts, CFG(3) + 0x10, RAD_PCI_BAR0);
     qtest_writel(qts, CFG(3) + 0x04, 0x00000002);
-    qtest_writel(qts, BRIDGE + 0x200 + 8 * 3 + 4, 0x1300);
+    qtest_writel(qts, BRIDGE + 0x200 + 8 * 3 + 4, 0x1130);
     g_assert_cmphex(qtest_readl(qts, CFG(3) + 0x10), ==, RAD_PCI_BAR0);
     /* Bridge absorbs the unsupported BAR transaction; zero is model output. */
     g_assert_cmpuint(qtest_readl_tx(qts, RAD_BAR0, &value), ==, MEMTX_OK);
@@ -1037,6 +1037,187 @@ static void test_rad_pci(void)
     g_assert_cmphex(qtest_readl(qts, FLASH), ==, 0x12345678);
 
     qtest_quit(qts);
+}
+
+static void octane_rad_map(QTestState *qts)
+{
+    qtest_writel(qts, CFG(3) + 0x10, RAD_PCI_BAR0);
+    qtest_writel(qts, CFG(3) + 0x04, 0x00000002);
+    qtest_writel(qts, BRIDGE + 0x200 + 8 * 3 + 4, 0x1130);
+}
+
+static void test_rad_ust_clock(void)
+{
+    QTestState *qts = octane_start();
+    uint32_t before;
+
+    octane_rad_map(qts);
+    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x30), ==, 0);
+    qtest_clock_step(qts, 9600);
+    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x30), ==, 0);
+
+    qtest_writel(qts, RAD_BAR0 + 0x40, 0x0e);
+    qtest_clock_step(qts, 9600);
+    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x30), ==, 0);
+    qtest_writel(qts, RAD_BAR0 + 0x40, 0x0a);
+    qtest_clock_step(qts, 9600);
+    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x30), ==, 10);
+    qtest_clock_step(qts, 959);
+    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x30), ==, 10);
+    qtest_clock_step(qts, 1);
+    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x30), ==, 11);
+
+    qtest_writel(qts, RAD_BAR0 + 0x40, 0x02);
+    qtest_clock_step(qts, 9600);
+    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x30), ==, 11);
+    qtest_writel(qts, RAD_BAR0 + 0x40, 0x0a);
+    qtest_clock_step(qts, 9600);
+    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x30), ==, 11);
+    qtest_writel(qts, RAD_BAR0 + 0x40, 0x0e);
+    qtest_writel(qts, RAD_BAR0 + 0x40, 0x0a);
+    before = qtest_readl(qts, RAD_BAR0 + 0x30);
+    qtest_clock_step(qts, 10000);
+    g_assert_cmpuint(qtest_readl(qts, RAD_BAR0 + 0x30) - before, >=, 3);
+    qtest_system_reset(qts);
+    octane_rad_map(qts);
+    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x30), ==, 0);
+    qtest_quit(qts);
+}
+
+static void test_rad_ust_word_and_wrap(void)
+{
+    QTestState *qts = octane_start();
+    const uint64_t device_reg = BRIDGE + 0x200 + 8 * 3 + 4;
+
+    octane_rad_map(qts);
+    g_assert_cmphex(qtest_readl(qts, device_reg) & (1u << 13), ==, 0);
+    qtest_writel(qts, RAD_BAR0 + 0x40, 0x0e);
+    qtest_writel(qts, RAD_BAR0 + 0x40, 0x0a);
+    qtest_clock_step(qts, UINT64_C(0x01020304) * 960);
+    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x30), ==, 0x01020304);
+    qtest_clock_step(qts, (UINT64_C(0xffffffff) - 0x01020304) * 960);
+    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x30), ==, 0xffffffff);
+    qtest_clock_step(qts, 960);
+    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x30), ==, 0);
+    qtest_quit(qts);
+}
+
+static void test_rad_ust_unsupported(void)
+{
+    g_autofree char *log_path = NULL;
+    g_autofree char *quoted = NULL;
+    g_autofree char *args = NULL;
+    g_autofree char *log = NULL;
+    int fd = g_file_open_tmp("octane-rad-ust-XXXXXX", &log_path, NULL);
+    QTestState *qts;
+    const uint64_t device_reg = BRIDGE + 0x200 + 8 * 3 + 4;
+    uint8_t byte;
+    uint16_t half;
+    uint32_t count;
+    uint64_t wide;
+
+    g_assert_cmpint(fd, >=, 0);
+    close(fd);
+    quoted = g_shell_quote(log_path);
+    args = g_strdup_printf("-d unimp -D %s", quoted);
+    qts = octane_start_args(args);
+    octane_rad_map(qts);
+    qtest_writel(qts, RAD_BAR0 + 0x40, 0x0e);
+    qtest_writel(qts, RAD_BAR0 + 0x40, 0x0a);
+    qtest_clock_step(qts, 960);
+    count = qtest_readl(qts, RAD_BAR0 + 0x30);
+    g_assert_cmphex(count, ==, 1);
+    qtest_writel(qts, RAD_BAR0 + 0x40, 0x0e);
+    qtest_writel(qts, RAD_BAR0 + 0x40, 0x55);
+    qtest_writel(qts, RAD_BAR0 + 0x30, 0x12345678);
+    /*
+     * Bridge consumes the PCI error, so QTest reports success. The RAD log
+     * and later enable check prove rejection. Narrow CPU addresses correct
+     * back to the same BAR0 offset.
+     */
+    g_assert_cmpuint(qtest_writeb_tx(qts, RAD_BAR0 + 0x43, 0x0a), ==,
+                     MEMTX_OK);
+    g_assert_cmpuint(qtest_readb_tx(qts, RAD_BAR0 + 0x43, &byte), ==,
+                     MEMTX_OK);
+    g_assert_cmpuint(qtest_writew_tx(qts, RAD_BAR0 + 0x42, 0x0a), ==,
+                     MEMTX_OK);
+    g_assert_cmpuint(qtest_readw_tx(qts, RAD_BAR0 + 0x42, &half), ==,
+                     MEMTX_OK);
+    qtest_readl(qts, RAD_BAR0 + 0x40);
+    /* A 64-bit Bridge cycle reaches RAD whole when Device(3) says 64-bit. */
+    qtest_writel(qts, device_reg, qtest_readl(qts, device_reg) | (1u << 22));
+    g_assert_cmpuint(qtest_writeq_tx(qts, RAD_BAR0 + 0x40,
+                                     UINT64_C(0x1122334455667788)), ==,
+                     MEMTX_OK);
+    g_assert_cmpuint(qtest_readq_tx(qts, RAD_BAR0 + 0x40, &wide), ==,
+                     MEMTX_OK);
+    qtest_writel(qts, device_reg, qtest_readl(qts, device_reg) & ~(1u << 22));
+    qtest_writel(qts, RAD_BAR0 + 0x40, 0x0a);
+    qtest_clock_step(qts, 9600);
+    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x30), ==, count + 10);
+    qtest_quit(qts);
+    g_assert_true(g_file_get_contents(log_path, &log, NULL, NULL));
+    g_assert_nonnull(strstr(log, "unsupported 4-byte BAR0 write at 0x40"));
+    g_assert_nonnull(strstr(log, "unsupported 4-byte BAR0 write at 0x30"));
+    g_assert_nonnull(strstr(log, "unsupported 1-byte BAR0 write at 0x40"));
+    g_assert_nonnull(strstr(log, "unsupported 1-byte BAR0 read at 0x40"));
+    g_assert_nonnull(strstr(log, "unsupported 2-byte BAR0 write at 0x40"));
+    g_assert_nonnull(strstr(log, "unsupported 2-byte BAR0 read at 0x40"));
+    g_assert_nonnull(strstr(log, "unsupported 4-byte BAR0 read at 0x40"));
+    g_assert_nonnull(strstr(log, "unsupported 8-byte BAR0 write at 0x40"));
+    g_assert_nonnull(strstr(log, "unsupported 8-byte BAR0 read at 0x40"));
+    g_assert_cmpint(g_unlink(log_path), ==, 0);
+}
+
+static void test_rad_ust_migration(void)
+{
+    for (unsigned mode = 0; mode < 3; mode++) {
+        g_autoptr(GError) error = NULL;
+        g_autofree char *directory = g_dir_make_tmp("octane-rad-mig-XXXXXX",
+                                                     &error);
+        g_autofree char *socket = NULL;
+        g_autofree char *uri = NULL;
+        QTestState *from, *to;
+
+        g_assert_no_error(error);
+        socket = g_build_filename(directory, "migration.sock", NULL);
+        uri = g_strdup_printf("unix:%s", socket);
+        from = octane_start();
+        to = octane_start_args("-incoming defer");
+        octane_rad_map(from);
+        qtest_writel(from, RAD_BAR0 + 0x40, 0x0e);
+        if (mode != 1) {
+            qtest_writel(from, RAD_BAR0 + 0x40, 0x0a);
+            qtest_clock_step(from, 1234);
+        }
+        if (mode == 2) {
+            qtest_writel(from, RAD_BAR0 + 0x40, 0x02);
+        }
+        qtest_qmp_assert_success(to,
+            "{'execute':'migrate-incoming', 'arguments':{'uri':%s}}", uri);
+        sgi_migrate_stopped(from, uri);
+        g_assert_cmphex(qtest_readl(to, RAD_BAR0 + 0x30), ==,
+                        mode == 1 ? 0 : 1);
+        qtest_clock_step(to, mode == 0 ? 686 : 960);
+        g_assert_cmphex(qtest_readl(to, RAD_BAR0 + 0x30), ==,
+                        mode == 0 ? 2 : mode == 1 ? 0 : 1);
+        if (mode == 1) {
+            qtest_writel(to, RAD_BAR0 + 0x40, 0x0a);
+            qtest_clock_step(to, 960);
+            g_assert_cmphex(qtest_readl(to, RAD_BAR0 + 0x30), ==, 1);
+        } else if (mode == 2) {
+            qtest_writel(to, RAD_BAR0 + 0x40, 0x0e);
+            qtest_writel(to, RAD_BAR0 + 0x40, 0x0a);
+            qtest_clock_step(to, 686);
+            g_assert_cmphex(qtest_readl(to, RAD_BAR0 + 0x30), ==, 2);
+        }
+        qtest_quit(to);
+        qtest_quit(from);
+        if (g_file_test(socket, G_FILE_TEST_EXISTS)) {
+            g_assert_cmpint(g_unlink(socket), ==, 0);
+        }
+        g_assert_cmpint(g_rmdir(directory), ==, 0);
+    }
 }
 
 static void test_firmware_rejections(void)
@@ -1615,7 +1796,7 @@ static void test_reset_state(void)
     qtest_writel(qts, BRIDGE + 0x200 + 8 * 2 + 4, 0x1100);
     qtest_writel(qts, CFG(3) + 0x10, RAD_PCI_BAR0);
     qtest_writel(qts, CFG(3) + 0x04, 0x00000002);
-    qtest_writel(qts, BRIDGE + 0x200 + 8 * 3 + 4, 0x1300);
+    qtest_writel(qts, BRIDGE + 0x200 + 8 * 3 + 4, 0x1130);
     qtest_writeb(qts, UART_A + 7, 0x5a);
     g_assert_cmphex(qtest_readb(qts, UART_A + 7), ==, 0x5a);
 
@@ -1745,7 +1926,7 @@ static void test_migration_state(void)
     qtest_writel(from, BRIDGE + 0x200 + 8 * 2 + 4, 0x1100);
     qtest_writel(from, CFG(3) + 0x10, RAD_PCI_BAR0);
     qtest_writel(from, CFG(3) + 0x04, 0x00000002);
-    qtest_writel(from, BRIDGE + 0x200 + 8 * 3 + 4, 0x1300);
+    qtest_writel(from, BRIDGE + 0x200 + 8 * 3 + 4, 0x1130);
     qtest_writeb(from, UART_A + 7, 0x5a);
     qtest_writel(from, BRIDGE_REG(0x030), 8u << 16);
     qtest_writel(from, BRIDGE_REG(0x038), 0x80);
@@ -1893,6 +2074,13 @@ int main(int argc, char **argv)
     qtest_add_data_func("/octane2/alternate-flash", GINT_TO_POINTER(1),
                         test_alternate_flash);
     qtest_add_func("/octane/rad-pci", test_rad_pci);
+    qtest_add_func("/octane/rad-ust-clock", test_rad_ust_clock);
+    qtest_add_func("/octane/rad-ust-word-and-wrap",
+                   test_rad_ust_word_and_wrap);
+    qtest_add_func("/octane/rad-ust-unsupported",
+                   test_rad_ust_unsupported);
+    qtest_add_func("/octane/rad-ust-migration",
+                   test_rad_ust_migration);
     qtest_add_func("/octane/firmware-rejections", test_firmware_rejections);
     qtest_add_func("/octane/pci-bar-separation", test_pci_bar_separation);
     qtest_add_func("/octane/scsi-dma-to-heart-ram",
