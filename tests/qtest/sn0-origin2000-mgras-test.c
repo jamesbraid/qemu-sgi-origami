@@ -12408,7 +12408,7 @@ static unsigned gl_stream_subsections(QTestState *qts)
         "sgi-mgras/gl-pixels", "sgi-mgras/gl-pixel-flags",
         "sgi-mgras/gl-scissor", "sgi-mgras/gl-alpha",
         "sgi-mgras/gl-stencil", "sgi-mgras/gl-plane-stencil",
-        "sgi-mgras/gl-blend",
+        "sgi-mgras/gl-blend", "sgi-mgras/gl-logic-op",
     };
     g_autofree char *tmpfs = NULL;
     g_autofree char *path = NULL;
@@ -14217,6 +14217,70 @@ static void test_gl_blend_migration(void)
 }
 
 /*
+ * The logical operation as the client sends it: glLogicOp 0x4004 and the
+ * operation less GL_CLEAR, 0x6b04 and 1 or 0 to enable it; query 0x288
+ * holds the operation in bits 29:26.
+ */
+#define GL_LOGIC_OP_HDR       0x00004004
+#define GL_LOGIC_OP_ENABLE_HDR 0x00006b04
+#define GL_LOGIC_XOR          6
+
+/*
+ * 0xcc XOR 0xf0 is 0x3c in every channel (OpenGL 1.2.1, 4.1.8), and
+ * disabled the source replaces the window again.
+ */
+static void test_gl_logic_op_combines_with_the_window(void)
+{
+    const float d = 0xf0 / 255.0f, c = 0xcc / 255.0f;
+
+    gl_scene_start(qts, GL_FLAT);
+    gl_clear_color(qts, d, d, d, 1);
+    gl_word(qts, GL_CLEAR_COLOR_BUFFER);
+    g_assert_cmphex((gl_query(qts, GL_Q_PIXEL_ENABLES, 1) >> 26) & 0xf, ==,
+                    3);
+    gl_one(qts, GL_LOGIC_OP_HDR, GL_LOGIC_XOR);
+    gl_one(qts, GL_LOGIC_OP_ENABLE_HDR, 1);
+    g_assert_cmphex((gl_query(qts, GL_Q_PIXEL_ENABLES, 1) >> 26) & 0xf, ==,
+                    GL_LOGIC_XOR);
+    gl_fill_window(qts, c, c, c);
+    g_assert_cmphex(gl_window_pixel(qts, 64, 64), ==, 0x3c3c3c);
+    gl_one(qts, GL_LOGIC_OP_ENABLE_HDR, 0);
+    gl_fill_window(qts, c, c, c);
+    g_assert_cmphex(gl_window_pixel(qts, 64, 64), ==, 0xcccccc);
+}
+
+/* Slot A inverts the window; slot B keeps GL_COPY. */
+static void gl_logic_op_setup(QTestState *from)
+{
+    for (int slot = 0; slot < 2; slot++) {
+        gl_enter_slot(from, slot ? GL_SLOT_B : GL_SLOT_A);
+        gl_word(from, GL_CONTEXT_OPENER);
+        gl_viewport(from, 0, 0, 128, 128);
+    }
+    gl_enter_slot(from, GL_SLOT_A);
+    gl_one(from, GL_LOGIC_OP_HDR, 0xa);
+    gl_one(from, GL_LOGIC_OP_ENABLE_HDR, 1);
+}
+
+static void gl_logic_op_check(QTestState *to)
+{
+    for (int slot = 0; slot < 2; slot++) {
+        gl_enter_slot(to, slot ? GL_SLOT_B : GL_SLOT_A);
+        gl_clear_color(to, 1, 0, 0, 1);
+        gl_word(to, GL_CLEAR_COLOR_BUFFER);
+        gl_fill_window(to, 0, 1, 0);
+        g_assert_cmphex(mgras_test_pixel(to, 256 + 64, 383 - 64), ==,
+                        slot ? 0x00ff00 : 0x00ffff);
+    }
+}
+
+/* Each context's logical operation migrates. */
+static void test_gl_logic_op_migration(void)
+{
+    gl_migrate(gl_logic_op_setup, gl_logic_op_check);
+}
+
+/*
  * The context setup's 32 detail-texture table writes, 0xec10 with 0xc52,
  * 0xc78, 0x194 and a value (0x1f three times, then 0x1d down to 1), are
  * texture-only defaults and consumed without a log line; any other value
@@ -14593,6 +14657,26 @@ static void test_gl_state_subsections_follow_their_state(void)
             gl_float(s, 1);
         }
         g_assert_cmpuint(gl_stream_subsections(s), ==, i == 1 ? 0 : 32768);
+        qtest_quit(s);
+    }
+
+    /*
+     * The logical operation: its enable or an operation other than
+     * GL_COPY sends gl-logic-op; the setup's GL_COPY, and the operation
+     * turned off again, send nothing.
+     */
+    for (int i = 0; i < 3; i++) {
+        s = qtest_init(MIGRATION_ARGS);
+        gl_enter_slot(s, GL_SLOT_A);
+        gl_word(s, GL_CONTEXT_OPENER);
+        gl_one(s, GL_LOGIC_OP_HDR, i == 2 ? GL_LOGIC_XOR : 3);
+        if (i < 2) {
+            gl_one(s, GL_LOGIC_OP_ENABLE_HDR, 1);
+        }
+        if (i == 1) {
+            gl_one(s, GL_LOGIC_OP_ENABLE_HDR, 0);
+        }
+        g_assert_cmpuint(gl_stream_subsections(s), ==, i == 1 ? 0 : 65536);
         qtest_quit(s);
     }
 }
@@ -15483,6 +15567,10 @@ int main(int argc, char **argv)
                    test_gl_blend_mixes_with_the_window);
     qtest_add_func("sn0/origin2000/mgras/gl-blend-migration",
                    test_gl_blend_migration);
+    qtest_add_func("sn0/origin2000/mgras/gl-logic-op-combines-with-the-window",
+                   test_gl_logic_op_combines_with_the_window);
+    qtest_add_func("sn0/origin2000/mgras/gl-logic-op-migration",
+                   test_gl_logic_op_migration);
     qtest_add_func("sn0/origin2000/mgras/gl-texture-matrix-migration",
                    test_gl_texture_matrix_migration);
     qtest_add_func("sn0/origin2000/mgras/"

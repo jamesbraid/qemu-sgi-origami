@@ -77,6 +77,8 @@ extern const VMStateDescription vmstate_sgi_mgras_gl_stencil;
 extern const VMStateDescription vmstate_sgi_mgras_gl_stencil_plane;
 /* Each context's blending state, sent once one has left the initial. */
 extern const VMStateDescription vmstate_sgi_mgras_gl_blend;
+/* Each context's logical operation, sent once one has left the initial. */
+extern const VMStateDescription vmstate_sgi_mgras_gl_logic_op;
 
 /*
  * The parser's class while the words of a GE parameter load (a class-0
