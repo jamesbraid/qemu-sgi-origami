@@ -9,6 +9,7 @@
 #include "hw/misc/sgi-mgras-display.h"
 #include "hw/misc/sgi-mgras-gl.h"
 #include "hw/misc/sgi-mgras-raster.h"
+#include "hw/mips/sgi/pi-gfx.h"
 #include "hw/mips/sgi/xio-link.h"
 #include "hw/mips/sgi/xio-widget.h"
 #include "migration/vmstate.h"
@@ -1258,10 +1259,37 @@ static uint64_t mgras_mmio_read(void *opaque, hwaddr addr, unsigned size)
     return value;
 }
 
+/*
+ * The processor interface counts a store into the page the driver
+ * enables, which covers both command ports, and the pipe returns the
+ * credit when it frees the store's FIFO slot. The model takes every store
+ * off the port before the handler returns, so the credit goes back at
+ * once, to the widget's entry in the master node's map. The mark is
+ * sampled first: one store is one credit, whatever the handler stores in
+ * turn and however wide the store was.
+ */
+static void mgras_return_credit(SGIMgrasState *s)
+{
+    if (!s->pi) {
+        if (!s->pi_unlinked_logged) {
+            s->pi_unlinked_logged = true;
+            qemu_log_mask(LOG_UNIMP, "sgi-mgras: no pi link; graphics "
+                          "credits are not returned\n");
+        }
+        return;
+    }
+    sgi_pi_gfx_return_credits(s->pi, SGI_XIO_BOARD(s)->slot, 1);
+}
+
 static void mgras_mmio_write(void *opaque, hwaddr addr, uint64_t value,
                              unsigned size)
 {
+    bool counted = sgi_pi_gfx_store_counted();
+
     mgras_write(opaque, addr, value, size);
+    if (counted) {
+        mgras_return_credit(opaque);
+    }
     sgi_mgras_display_flush(opaque);
 }
 
@@ -1925,6 +1953,7 @@ static const Property mgras_properties[] = {
                      unimplemented_board, false),
     DEFINE_PROP_LINK("fabric", SGIMgrasState, fabric, TYPE_MEMORY_REGION,
                      MemoryRegion *),
+    DEFINE_PROP_LINK("pi", SGIMgrasState, pi, TYPE_SGI_PI_GFX, Object *),
 };
 
 static bool mgras_test_get_first_ack(Object *obj, Error **errp)

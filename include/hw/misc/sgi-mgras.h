@@ -346,6 +346,15 @@ struct SGIMgrasState {
     MemoryRegion regs;
     MemoryRegion *fabric;
     AddressSpace fabric_as;
+    /*
+     * The master node's graphics credits (sgi-pi-gfx), which the machine
+     * links when it places the board. Each processor store the node
+     * counted on its way to the port returns one credit there as soon as
+     * the handler has taken it, since nothing here queues port words.
+     */
+    Object *pi;
+    /* Host-only: the missing link has been logged once. */
+    bool pi_unlinked_logged;
     uint32_t int_dest_upper;
     uint32_t int_dest_lower;
     uint32_t widget_control;
