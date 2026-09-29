@@ -64,7 +64,10 @@ typedef struct SGIRasterRules {
     uint8_t tie_rule;           /* SGITieRule */
     uint8_t arith;              /* SGIArith */
     uint8_t line_rule;          /* SGILineRule */
-    /* Drop a primitive with a vertex at w <= 0, instead of clipping it. */
+    /*
+     * No longer read: every primitive is clipped to the view volume.
+     * It stays only until no family's rule set names it.
+     */
     bool drop_nonpositive_w;
     /* Where the values come from, for logs and reports. */
     const char *evidence;
@@ -74,9 +77,49 @@ typedef struct SGIRasterRules {
  * Whether the rasterizer implements a rule set. It implements subpixel_bits
  * 1 to 12, color_bits 1 to 10, depth_bits 1 to 32, stencil_bits 0 to 16,
  * every rounding, and otherwise only SGI_TIE_TOP_LEFT_BOTTOM_ORIGIN,
- * SGI_ARITH_DOUBLE, SGI_LINE_COVERAGE_DOUBLE and dropping w <= 0.
+ * SGI_ARITH_DOUBLE and SGI_LINE_COVERAGE_DOUBLE.
  */
 bool sgi_raster_rules_supported(const SGIRasterRules *r);
+
+/*
+ * A vertex in clip coordinates, as view-volume clipping (OpenGL 1.2.1,
+ * 2.11) takes and makes it: its clip and eye coordinates and its
+ * attributes in the draw's vertex layout.
+ */
+typedef struct SGIVolumeVertex {
+    double clip[4];
+    double eye[4];
+    float attr[SGI_GL_VERTEX_FLOATS];
+} SGIVolumeVertex;
+
+/* The most vertices clipping a triangle by the six planes leaves. */
+#define SGI_VOLUME_TRIANGLE_MAX (3 + 6)
+
+/*
+ * Whether a point lies in the view volume, -w <= x, y, z <= w. No point
+ * with w < 0 does.
+ */
+bool sgi_volume_contains(const SGIVolumeVertex *v);
+
+/*
+ * Clip a triangle to the view volume. out takes what is left, a convex
+ * polygon in the triangle's winding, and the count is returned: 0 when
+ * nothing is left, otherwise 3 to SGI_VOLUME_TRIANGLE_MAX. A vertex a
+ * plane makes lies on the edge it cuts, its clip and eye coordinates and
+ * float attributes interpolated at the same point (2.13.8), always from
+ * the edge's inside end, so two triangles sharing the edge make the same
+ * vertex; the material index and edge flag, bit patterns, are the inside
+ * end's. A triangle inside every plane is returned unchanged.
+ */
+unsigned sgi_volume_clip_triangle(const SGIVolumeVertex in[3],
+                                  SGIVolumeVertex out[SGI_VOLUME_TRIANGLE_MAX]);
+
+/*
+ * Clip a segment to the view volume in place, each end moved along the
+ * segment to where it enters the volume and its attributes interpolated
+ * as a triangle's are; false when no part of it lies inside.
+ */
+bool sgi_volume_clip_segment(SGIVolumeVertex *a, SGIVolumeVertex *b);
 
 /*
  * The family's planes as the rasterizer reaches them, in plane pixels.
