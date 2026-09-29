@@ -2416,10 +2416,10 @@ static void mgras_gl_bitmap(SGIMgrasState *s, const uint32_t *payload)
  * two tiles at x 0 and 69. The GE adds the raster position, which 0xd700
  * loads before each draw (inferred from those and the word's emitter's
  * name).
- * The routine and parameter addresses are GE microcode addresses, the same
- * in every capture; the model recognises the three programs the survey
- * programs build, each with the pixel transfer state at OpenGL's initial
- * values:
+ * The routine and parameter words are GE addresses as the client passes
+ * them, the same in every capture, and the model treats them as opaque
+ * values; it recognises the three programs the survey programs build,
+ * each with the pixel transfer state at OpenGL's initial values:
  *
  *   0x1f44/0, 0x3e65/0xd91, 0x156a/0x1b4, 0x352d/0xdf3, with 0x4064 in
  *   0xd91's second word: 4 unsigned bytes a pixel (ipaste, i3dm);
@@ -2733,7 +2733,11 @@ static void mgras_gl_pixels_start(SGIMgrasState *s, const uint32_t *payload)
 /*
  * One fragment at window pixel (x, y) in a colour or index, drawn as a
  * one-pixel glBitmap so that it meets the window's clip, the depth test
- * and the index mask on the path every bitmap takes.
+ * and the index mask on the path every bitmap takes. This costs one
+ * raster op a pixel: a DMA transfer of the largest draw, 4096 by 4096,
+ * makes 16.7 million of them inside the single port write that kicks
+ * it. A raster op for a run of pixels in shared code (hw/display/sgi)
+ * would take a row at once.
  */
 static void mgras_gl_pixels_put(SGIMgrasState *s, int32_t x, int32_t y,
                                 const float rgba[4], float index)
