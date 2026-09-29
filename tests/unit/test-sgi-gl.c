@@ -1076,6 +1076,43 @@ static void test_bitmap_bounds_and_depth(void)
 }
 
 /*
+ * The raster position's z is already a window depth, through the depth
+ * range when glRasterPos set it (2.12), and a bitmap's fragments take it
+ * as it is (3.7). With glDepthRange(0.5, 1) a raster position at
+ * normalized depth 0.5 has window depth 0.75, stored as 0xbfffff in 24
+ * bits; mapped through the range a second time it would be 0.875,
+ * 0xdfffff.
+ */
+static void test_bitmap_depth_is_the_raster_depth(void)
+{
+    static const uint8_t one = 0x80;
+    static Planes p;
+    Recorder rec = { .rules = &rules_supported };
+    SGIGLSink sink = recorder_sink(&rec);
+    SGIGLContext c;
+    SGIGLBitmap b;
+    uint32_t word[3];
+
+    sink.raster = drawing_raster;
+    rec.target = planes_target(&p);
+    memset(&p, 0, sizeof(p));
+    context_init(&c);
+    word[0] = bits(0.5f), word[1] = bits(1);
+    command(&c, &sink, SGI_GL_OP_DEPTH_RANGE, word, 2);
+    word[0] = bits(10.5f / 32 - 1), word[1] = bits(20.5f / 32 - 1);
+    word[2] = bits(0);
+    command(&c, &sink, SGI_GL_OP_RASTER_POS3F, word, 3);
+    g_assert_cmpfloat(get_float(&c, SGI_GL_CURRENT_RASTER_POSITION, 2), ==,
+                      0.75f);
+    c.cur.depth_test = 1;
+    c.cur.depth_func = SGI_GL_ALWAYS;
+    g_assert_true(sgi_gl_bitmap_place(&c, 1, 1, 0, 0, 0, 0, &b));
+    sgi_gl_bitmap_bytes(&c, &sink, &b, 0, &one, 1);
+    g_assert_cmphex(p.colour[0][planes_index(10, 20)], ==, 0xffffff);
+    g_assert_cmphex(p.depth[planes_index(10, 20)], ==, 0xbfffff);
+}
+
+/*
  * glDepthRange (OpenGL 1.2.1, 2.10.1): initially [0, 1]; each value is
  * clamped to [0, 1] and kept, and far may be below near.
  */
@@ -1517,6 +1554,8 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-gl/bitmap", test_bitmap);
     g_test_add_func("/sgi-gl/bitmap-bounds-and-depth",
                     test_bitmap_bounds_and_depth);
+    g_test_add_func("/sgi-gl/bitmap-depth-is-the-raster-depth",
+                    test_bitmap_depth_is_the_raster_depth);
     g_test_add_func("/sgi-gl/depth-range", test_depth_range);
     g_test_add_func("/sgi-gl/depth-range-maps-window-depth",
                     test_depth_range_maps_window_depth);
