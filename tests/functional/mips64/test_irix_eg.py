@@ -910,6 +910,20 @@ if QemuSystemTest is not None:
                     r"(?:[ \t]|$)",
                     "ifconfig did not read back eg0's address")
 
+                if JUMBO:
+                    try:
+                        mtu = con.capture_value(
+                            "netstat -in | awk '$1 == \"%s\" || "
+                            "$1 == \"%s*\" {print \"M=\" $2; exit}'"
+                            % (IFACE, IFACE),
+                            "jumbo_mtu", rb"M=(\d+)", timeout=60)
+                    except HarnessError as error:
+                        self.fail(f"could not read eg0 MTU from netstat -in: "
+                                  f"{error}")
+                    self.assertEqual(int(mtu), JUMBO_MTU,
+                                     "netstat -in did not report the jumbo "
+                                     "MTU on eg0")
+
                 if PARALLEL:
                     # One stream first for the per-stream baseline, then N
                     # concurrent. If the aggregate is near the single, the
