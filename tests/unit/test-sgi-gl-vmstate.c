@@ -149,6 +149,9 @@ static void populate(SGIGLContext *c, bool other)
     c->cur.scissor_test = !other;
     c->cur.scissor[2] = other ? 0 : 1280;
     c->cur.scissor[3] = other ? 1024 : 0;
+    c->cur.alpha_test = !other;
+    c->cur.alpha_func = other ? SGI_GL_EQUAL : SGI_GL_NOTEQUAL;
+    c->cur.alpha_ref = other ? 1.0f : 0.375f;
 
     g_assert_true(sgi_gl_context_valid(c, &error_abort));
 }
@@ -674,6 +677,11 @@ static const Corruption corruptions[] = {
     BAD(cur.scissor_test, 2, "scissor_test"),
     BAD(cur.scissor[2], 0xffffffff /* -1 */, "scissor box"),
     BAD(cur.scissor[3], 0x80000000, "scissor box"),
+    BAD(cur.alpha_test, 2, "alpha_test"),
+    BAD(cur.alpha_func, SGI_GL_ALWAYS + 1, "alpha function"),
+    BAD(cur.alpha_ref, 0x3f800001 /* just above 1 */, "alpha reference"),
+    BAD(cur.alpha_ref, 0x80000001 /* just below 0 */, "alpha reference"),
+    BAD(cur.alpha_ref, 0x7fc00000 /* NaN */, "alpha reference"),
     BAD(lights_enabled, 1u << SGI_GL_LIGHTS, "light enables"),
     BAD(color_material_face, 0, "colour material face"),
     BAD(color_material_mode, SGI_GL_SHININESS, "colour material parameter"),

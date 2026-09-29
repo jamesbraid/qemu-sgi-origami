@@ -91,6 +91,7 @@ void sgi_gl_init(SGIGLContext *c, uint32_t hw_id)
     sgi_gl_identity(c->cur.projection);
     sgi_gl_identity(c->texture);
     c->cur.depth_func = SGI_GL_LESS;
+    c->cur.alpha_func = SGI_GL_ALWAYS;
     c->cur.depth_mask = 1;
     c->cur.depth_range[1] = 1.0f;
     c->clear_depth = UINT32_MAX;
@@ -414,6 +415,7 @@ static const uint8_t sgi_gl_nargs[] = {
     [SGI_GL_OP_CULL_FACE] = 1,
     [SGI_GL_OP_FRONT_FACE] = 1,
     [SGI_GL_OP_SCISSOR] = 4,
+    [SGI_GL_OP_ALPHA_FUNC] = 2,
 };
 
 uint32_t sgi_gl_draw_targets(const SGIGLDrawState *st,
@@ -1253,6 +1255,9 @@ static void sgi_gl_capability(SGIGLContext *c, uint32_t cap, bool on)
     case SGI_GL_SCISSOR_TEST:
         c->cur.scissor_test = on;
         return;
+    case SGI_GL_ALPHA_TEST:
+        c->cur.alpha_test = on;
+        return;
     case SGI_GL_COLOR_MATERIAL:
         c->color_material = on;
         sgi_gl_track_colour(c);
@@ -1439,6 +1444,19 @@ void sgi_gl_command(SGIGLContext *c, const SGIGLSink *sink,
             c->cur.scissor[i] = a[i];
         }
         return;
+    case SGI_GL_OP_ALPHA_FUNC: {
+        float ref = sgi_gl_float(a[1]);
+
+        if (a[0] - SGI_GL_NEVER_ENUM > SGI_GL_ALWAYS) {
+            qemu_log_mask(LOG_GUEST_ERROR, "sgi-gl: alpha function 0x%x "
+                          "ignored\n", a[0]);
+            return;
+        }
+        c->cur.alpha_func = a[0] - SGI_GL_NEVER_ENUM;
+        /* Clamped to [0, 1] (4.1.4); not a number clamps to 0. */
+        c->cur.alpha_ref = ref >= 1.0f ? 1.0f : ref > 0.0f ? ref : 0.0f;
+        return;
+    }
     case SGI_GL_OP_COLOR3F:
         memcpy(c->cur_color, a, 3 * sizeof(float));
         c->cur_color[3] = 1.0f;
@@ -1745,6 +1763,16 @@ bool sgi_gl_get(const SGIGLContext *c, uint32_t pname, uint32_t *out,
         memcpy(out, c->cur.scissor, sizeof(c->cur.scissor));
         *n = 4;
         return true;
+    case SGI_GL_ALPHA_TEST:
+        out[0] = c->cur.alpha_test;
+        *n = 1;
+        return true;
+    case SGI_GL_ALPHA_TEST_FUNC:
+        out[0] = SGI_GL_NEVER_ENUM + c->cur.alpha_func;
+        *n = 1;
+        return true;
+    case SGI_GL_ALPHA_TEST_REF:
+        return sgi_gl_get_floats(&c->cur.alpha_ref, 1, out, n);
     case SGI_GL_DEPTH_FUNC:
         out[0] = SGI_GL_NEVER_ENUM + c->cur.depth_func;
         *n = 1;
@@ -1849,6 +1877,7 @@ bool sgi_gl_context_valid(const SGIGLContext *c, Error **errp)
         { "depth_mask", st->depth_mask },
         { "cull_face", st->cull_face },
         { "scissor_test", st->scissor_test },
+        { "alpha_test", st->alpha_test },
         { "drawable.bound", st->drawable.bound },
         { "drawable.clip.empty", st->drawable.clip.empty },
         { "dither", c->dither },
@@ -1914,6 +1943,15 @@ bool sgi_gl_context_valid(const SGIGLContext *c, Error **errp)
     if (st->scissor[2] < 0 || st->scissor[3] < 0) {
         error_setg(errp, "sgi-gl: scissor box of %d by %d", st->scissor[2],
                    st->scissor[3]);
+        return false;
+    }
+    if (st->alpha_func > SGI_GL_ALWAYS) {
+        error_setg(errp, "sgi-gl: alpha function %u", st->alpha_func);
+        return false;
+    }
+    if (!(st->alpha_ref >= 0.0f && st->alpha_ref <= 1.0f)) {
+        error_setg(errp, "sgi-gl: alpha reference %g is outside [0, 1]",
+                   st->alpha_ref);
         return false;
     }
     if (st->drawable.clip.n > SGI_CLIP_MAX) {
@@ -2063,6 +2101,28 @@ static const VMStateDescription vmstate_sgi_gl_scissor = {
     },
 };
 
+static bool sgi_gl_alpha_test_needed(void *opaque)
+{
+    const SGIGLDrawState *st = opaque, *init = &sgi_gl_initial()->cur;
+
+    return SGI_GL_MOVED(st, init, alpha_test) ||
+           SGI_GL_MOVED(st, init, alpha_func) ||
+           SGI_GL_MOVED(st, init, alpha_ref);
+}
+
+static const VMStateDescription vmstate_sgi_gl_alpha_test = {
+    .name = "sgi-gl-draw-state/alpha-test",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = sgi_gl_alpha_test_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32(alpha_test, SGIGLDrawState),
+        VMSTATE_UINT32(alpha_func, SGIGLDrawState),
+        VMSTATE_SGI_GL_FLOAT(alpha_ref, SGIGLDrawState),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
 static const VMStateDescription vmstate_sgi_gl_draw_state = {
     .name = "sgi-gl-draw-state",
     .version_id = 1,
@@ -2088,6 +2148,7 @@ static const VMStateDescription vmstate_sgi_gl_draw_state = {
     },
     .subsections = (const VMStateDescription * const []) {
         &vmstate_sgi_gl_scissor,
+        &vmstate_sgi_gl_alpha_test,
         NULL
     },
 };
