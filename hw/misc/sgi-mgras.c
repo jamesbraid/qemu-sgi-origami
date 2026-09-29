@@ -1910,6 +1910,7 @@ static const VMStateDescription vmstate_sgi_mgras = {
         &vmstate_sgi_mgras_gl_dither,
         &vmstate_sgi_mgras_gl_lighting,
         &vmstate_sgi_mgras_gl_texture,
+        &vmstate_sgi_mgras_gl_light_enables,
         NULL
     }
 };

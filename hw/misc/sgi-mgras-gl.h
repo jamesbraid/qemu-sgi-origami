@@ -63,6 +63,8 @@ extern const VMStateDescription vmstate_sgi_mgras_gl_dither;
 extern const VMStateDescription vmstate_sgi_mgras_gl_lighting;
 /* Each context's texture matrix and stack, sent once one has changed. */
 extern const VMStateDescription vmstate_sgi_mgras_gl_texture;
+/* Each context's lighting enables, sent once one is on. */
+extern const VMStateDescription vmstate_sgi_mgras_gl_light_enables;
 
 /* Note GE-port traffic the per-context state cannot follow. */
 void sgi_mgras_gl_ge_port_access(SGIMgrasState *s, hwaddr addr, bool write);
