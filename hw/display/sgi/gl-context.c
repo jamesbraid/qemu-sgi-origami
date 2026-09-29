@@ -86,7 +86,7 @@ void sgi_gl_init(SGIGLContext *c, uint32_t hw_id)
     }
     c->cur.shade_model = SGI_GL_SMOOTH;
     c->matrix_mode = SGI_GL_MODELVIEW;
-    c->dither = 1;
+    c->cur.dither = 1;
     sgi_gl_identity(c->cur.modelview);
     sgi_gl_identity(c->cur.projection);
     sgi_gl_identity(c->texture);
@@ -1566,7 +1566,7 @@ static void sgi_gl_capability(SGIGLContext *c, uint32_t cap, bool on)
         c->cur.depth_test = on;
         return;
     case SGI_GL_DITHER:
-        c->dither = on;
+        c->cur.dither = on;
         return;
     case SGI_GL_CULL_FACE:
         c->cur.cull_face = on;
@@ -2184,7 +2184,7 @@ bool sgi_gl_get(const SGIGLContext *c, uint32_t pname, uint32_t *out,
         *n = 1;
         return true;
     case SGI_GL_DITHER:
-        out[0] = c->dither;
+        out[0] = c->cur.dither;
         *n = 1;
         return true;
     case SGI_GL_CULL_FACE:
@@ -2451,7 +2451,7 @@ bool sgi_gl_context_valid(const SGIGLContext *c, Error **errp)
         { "fog", st->fog },
         { "drawable.bound", st->drawable.bound },
         { "drawable.clip.empty", st->drawable.clip.empty },
-        { "dither", c->dither },
+        { "dither", st->dither },
         { "light_model_local_viewer", c->light_model_local_viewer },
         { "light_model_two_side", c->light_model_two_side },
         { "color_material", c->color_material },
@@ -3086,7 +3086,11 @@ const VMStateDescription vmstate_sgi_gl_context = {
                                  SGI_GL_STACK_DEPTH - 1, 16),
         VMSTATE_UINT32(tx_depth, SGIGLContext),
         VMSTATE_UINT32(matrix_mode, SGIGLContext),
-        VMSTATE_UINT32(dither, SGIGLContext),
+        /*
+         * The draw state's enable, described here in the context's list,
+         * where the base layout has always carried it.
+         */
+        VMSTATE_UINT32(cur.dither, SGIGLContext),
         VMSTATE_STRUCT_ARRAY(light, SGIGLContext, SGI_GL_LIGHTS, 0,
                              vmstate_sgi_gl_light, SGIGLLight),
         VMSTATE_STRUCT_ARRAY(material, SGIGLContext, 2, 0,
