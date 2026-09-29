@@ -6191,20 +6191,16 @@ static void test_command_fifo_skips_unaligned_and_oversized_state(void)
 
 
 /*
- * destroy2.trace shows the guest driving classes (0x8, 0xa, 0xc) framed
- * like a STATE/EXEC header with a one-word payload (see docs/analysis's
- * class-decode notes); those are now implemented as the host-memory DMA
- * image-transfer descriptor banks (mgras_raster_desc_bank_store()). This
- * test instead covers a class the model still does not implement, to
- * confirm the FIFO still consumes a still-unimplemented header's
- * declared payload and re-syncs on the next real header.
+ * Send a header for a class the model does not implement, followed by its
+ * declared payload and a real header. The FIFO must consume the payload
+ * and resume at the real header.
  *
- * The payload word below (0x00180004) is not an observed guest value: it
- * is chosen so that, without the fix, the pre-fix parser reads it as a
- * second bogus STATE header that swallows the next real header token as
- * its own payload, corrupting the PACKEDCOLOR write that follows and
- * making the corruption observable in a paint. Any nonzero payload_bytes
- * this class might carry has to be consumed the same way.
+ * The payload word below (0x00180004) is chosen so that, without the fix,
+ * the parser reads it as a second bogus STATE header. That header then
+ * consumes the next real header token as its payload, corrupting the
+ * PACKEDCOLOR write that follows and making the corruption observable in
+ * a paint. Any nonzero payload_bytes this class might carry has to be
+ * consumed the same way.
  */
 static void test_command_fifo_unrecognized_class_resyncs(void)
 {
