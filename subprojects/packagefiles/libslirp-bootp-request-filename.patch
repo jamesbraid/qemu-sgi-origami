@@ -1,0 +1,144 @@
+From: origami QEMU bring-up
+Subject: [PATCH] bootp: optionally return the requested boot filename
+
+Keep the configured bootfile as the default. An opt-in per-instance
+policy lets a BOOTP client request successive TFTP files by name.
+Only a nonempty request filename with a terminator inside its fixed
+field is copied; all other requests use the configured fallback.
+
+diff --git a/src/bootp.c b/src/bootp.c
+--- a/src/bootp.c
++++ b/src/bootp.c
+@@ -260,9 +260,20 @@
+             *q++ = DHCPACK;
+         }
+ 
+-        if (slirp->bootp_filename) {
+-            g_assert(strlen(slirp->bootp_filename) < sizeof(rbp->bp_file));
+-            strcpy(rbp->bp_file, slirp->bootp_filename);
++        const char *bootfile = slirp->bootp_filename;
++
++        if (slirp->bootp_use_client_filename) {
++            const char *name_end = memchr(bp->bp_file, '\0',
++                                          sizeof(bp->bp_file));
++
++            if (name_end && name_end != bp->bp_file) {
++                memcpy(rbp->bp_file, bp->bp_file, name_end - bp->bp_file);
++                bootfile = NULL;
++            }
++        }
++        if (bootfile) {
++            g_assert(strlen(bootfile) < sizeof(rbp->bp_file));
++            strcpy(rbp->bp_file, bootfile);
+         }
+ 
+         *q++ = RFC2132_SRV_ID;
+diff --git a/src/libslirp.h b/src/libslirp.h
+--- a/src/libslirp.h
++++ b/src/libslirp.h
+@@ -200,6 +200,9 @@
+ SLIRP_EXPORT
+ Slirp *slirp_new(const SlirpConfig *cfg, const SlirpCb *callbacks,
+                  void *opaque);
++/* Use a terminated, nonempty request filename in each BOOTP reply. */
++SLIRP_EXPORT
++void slirp_set_bootp_use_client_filename(Slirp *slirp, bool enabled);
+ /* slirp_init is deprecated in favor of slirp_new */
+ SLIRP_EXPORT
+ Slirp *slirp_init(int restricted, bool in_enabled, struct in_addr vnetwork,
+diff --git a/src/slirp.h b/src/slirp.h
+--- a/src/slirp.h
++++ b/src/slirp.h
+@@ -178,6 +178,7 @@
+     /* bootp/dhcp states */
+     BOOTPClient bootp_clients[NB_BOOTP_CLIENTS];
+     char *bootp_filename;
++    bool bootp_use_client_filename;
+     size_t vdnssearch_len;
+     uint8_t *vdnssearch;
+     char *vdomainname;
+diff --git a/src/slirp.c b/src/slirp.c
+--- a/src/slirp.c
++++ b/src/slirp.c
+@@ -690,6 +690,11 @@
+     return slirp;
+ }
+ 
++void slirp_set_bootp_use_client_filename(Slirp *slirp, bool enabled)
++{
++    slirp->bootp_use_client_filename = enabled;
++}
++
+ Slirp *slirp_init(int restricted, bool in_enabled, struct in_addr vnetwork,
+                   struct in_addr vnetmask, struct in_addr vhost,
+                   bool in6_enabled, struct in6_addr vprefix_addr6,
+diff --git a/src/libslirp.map b/src/libslirp.map
+--- a/src/libslirp.map
++++ b/src/libslirp.map
+@@ -38,3 +38,7 @@
+ SLIRP_4.7 {
+     slirp_handle_timer;
+ } SLIRP_4.5;
++
++SLIRP_ORIGAMI {
++    slirp_set_bootp_use_client_filename;
++} SLIRP_4.7;
+diff --git a/test/bootptest.c b/test/bootptest.c
+--- a/test/bootptest.c
++++ b/test/bootptest.c
+@@ -6,12 +6,15 @@
+  */
+ 
+ #include <stdint.h>
++#include <stddef.h>
+ #include <string.h>
+ #include <assert.h>
+ 
+ #include <glib.h>
+ 
+ #include "slirp.h"
++
++#define FILE_OFFSET (ETH_HLEN + offsetof(struct bootp_t, bp_file))
+ 
+ static uint8_t reply[IP_MAXPACKET];
+ 
+@@ -70,7 +73,10 @@
+         .send_packet = send_packet,
+         .clock_get_ns = clock_get_ns,
+     };
+-    Slirp *slirp = slirp_new(&config, &callbacks, reply);
++    Slirp *slirp;
++
++    config.bootfile = "smdk";
++    slirp = slirp_new(&config, &callbacks, reply);
+ 
+     /* Acquisition, ciaddr still zero: the reply is broadcast. */
+     assert(reply_dst(slirp) == 0xffffffff);
+@@ -79,6 +85,27 @@
+     memcpy(request + 54, "\x0a\x00\x02\x0f", 4);
+     assert(reply_dst(slirp) == 0x0a00020f);
+ 
++    memcpy(request + FILE_OFFSET, "CPU_Test", sizeof("CPU_Test"));
++    reply_dst(slirp);
++    assert(strcmp((char *)reply + FILE_OFFSET, "smdk") == 0);
++
++    slirp_set_bootp_use_client_filename(slirp, true);
++    reply_dst(slirp);
++    assert(strcmp((char *)reply + FILE_OFFSET, "CPU_Test") == 0);
++
++    memset(request + FILE_OFFSET, 0, sizeof(((struct bootp_t *)0)->bp_file));
++    memcpy(request + FILE_OFFSET, "nmem", sizeof("nmem"));
++    reply_dst(slirp);
++    assert(strcmp((char *)reply + FILE_OFFSET, "nmem") == 0);
++
++    memset(request + FILE_OFFSET, 0, sizeof(((struct bootp_t *)0)->bp_file));
++    reply_dst(slirp);
++    assert(strcmp((char *)reply + FILE_OFFSET, "smdk") == 0);
++
++    memset(request + FILE_OFFSET, 'x', sizeof(((struct bootp_t *)0)->bp_file));
++    reply_dst(slirp);
++    assert(strcmp((char *)reply + FILE_OFFSET, "smdk") == 0);
++
+     slirp_cleanup(slirp);
+     return 0;
+ }

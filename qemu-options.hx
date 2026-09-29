@@ -3009,7 +3009,8 @@ DEF("netdev", HAS_ARG, QEMU_OPTION_netdev,
     "         [,ipv6=on|off][,ipv6-net=addr[/int]][,ipv6-host=addr]\n"
     "         [,restrict=on|off][,hostname=host][,dhcpstart=addr]\n"
     "         [,dns=addr][,ipv6-dns=addr][,dnssearch=domain][,domainname=domain]\n"
-    "         [,tftp=dir][,tftp-server-name=name][,bootfile=f][,hostfwd=rule][,guestfwd=rule]"
+    "         [,tftp=dir][,tftp-server-name=name][,bootfile=f]\n"
+    "         [,bootfile-from-request=on|off][,hostfwd=rule][,guestfwd=rule]"
 #ifndef _WIN32
                                              "[,smb=dir[,smbserver=addr]]\n"
 #endif
@@ -3459,6 +3460,11 @@ SRST
         When using the user mode network stack, broadcast file as the
         BOOTP filename. In conjunction with ``tftp``, this can be used
         to network boot a guest from a local directory.
+
+    ``bootfile-from-request=on|off``
+        Use a nonempty BOOTP filename supplied by the guest in that
+        request's reply. An empty or unterminated request filename uses
+        ``bootfile`` instead. The default is ``off``.
 
         Example (using pxelinux):
 
