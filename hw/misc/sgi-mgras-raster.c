@@ -1517,26 +1517,34 @@ static bool mgras_raster_dma_select_slot(SGIMgrasState *s, uint32_t kick_byte,
  * Host-memory source address formula from DMA-source captures:
  * va = addr_low + addr_high +
  * row*pitch + byte, page_ix = va >> 12, and the source page's physical
- * address is (list_node << 32) | (pagelist[page_ix] << 12) | (va & 0xfff).
- * The page list itself is `count` big-endian 64-bit page-frame-number
- * entries at (list_node << 32) | list_pa, both taken from the selected
- * mapping slot. Consecutive page-list entries need not be adjacent, so a
- * row's bytes can span a page boundary at an arbitrary offset: the shared
- * DMA code cuts every transfer at each guest page and resolves each page
- * through the list.
+ * address is (pagelist[page_ix] << 12) | (va & 0xfff). The page list
+ * itself is `count` big-endian 64-bit page-frame-number entries at
+ * (list_node << 32) | list_pa, both taken from the selected mapping slot.
+ * Consecutive page-list entries need not be adjacent, so a row's bytes
+ * can span a page boundary at an arbitrary offset: the shared DMA code
+ * cuts every transfer at each guest page and resolves each page through
+ * the list.
  *
- * A page-frame number wider than 20 bits would collide with the node
- * identifier this formula ORs in at bit 32 (PFN << 12 would reach bit 32
- * at PFN 0x100000): 20 bits is both the formula's own ceiling and what a
- * node's up-to-4-GiB RAM needs for a 4 KiB page (2**32 / 2**12 = 2**20
- * frames). The observed captures only exercise page-frame numbers under
- * 0x4000 (64 MiB/node) and show every entry's top six bytes zero, which
- * is consistent with a plain PFN field carrying no flag bits -- unlike
- * the unrelated DMA-map base pair, whose low word packs flags into bits
- * 2:0 -- but does not by itself distinguish a 16-bit field from a wider
- * one. Mask to the formula's 20-bit ceiling rather than guess narrower.
+ * An entry is a whole 4 KiB frame number of the node physical address
+ * space, node included, not a frame within the list's own node. The IRIX
+ * 6.5.30 kernel's mgrasFillTxTbl (unix.IP27, SHA-256 cbdb02ea5d33...)
+ * stores each entry as a 64-bit doubleword from vtopv, then the next
+ * three entries as that value plus 1, 2 and 3, one per 4 KiB of the
+ * kernel's 16 KiB page (established from the disassembly). On SN0 the
+ * node number is physical address bits 39:32 (NASID_SHFT 32 in Linux's
+ * asm/sn/sn0/addrs.h), so a frame on node n has n in entry bits 27:20.
+ * The pages a process locks for a pool or an image lie on whatever node
+ * holds them, and the list names each one's node itself (inferred: no
+ * other field in the slot could). Every single-node capture has entries
+ * below 2^20, which cannot tell this reading from the model's earlier
+ * one, which took the node from the list's address and masked entries to
+ * 20 bits. On four nodes (run irix-20260929T044029-961bba) that reading
+ * sent list fetches for pool pages off node 0 to node 0's memory, whose
+ * zeros, floats and user-space pointers the list grammar then parsed.
+ * The 28-bit mask keeps the 40-bit node physical space and nothing above
+ * it.
  */
-#define MGRAS_DMA_PAGE_LIST_PFN_MASK 0xfffffu
+#define MGRAS_DMA_PAGE_LIST_PFN_MASK 0xfffffffu
 #define MGRAS_DMA_PAGE_SIZE 4096
 
 /*
@@ -1659,8 +1667,7 @@ static bool mgras_raster_dma_setup(SGIMgrasState *s, unsigned int slot,
         return false;
     }
     for (uint32_t i = 0; i < count; i++) {
-        addr[i] = ((uint64_t)list_node << 32) |
-                  ((ldq_be_p(&addr[i]) & MGRAS_DMA_PAGE_LIST_PFN_MASK) << 12);
+        addr[i] = (ldq_be_p(&addr[i]) & MGRAS_DMA_PAGE_LIST_PFN_MASK) << 12;
     }
     *pl = (SGIDMAPageList) {
         .addr = addr,
