@@ -322,6 +322,8 @@
 #define MGRAS_HQ_PIXEL_SIZE      0x03
 #define MGRAS_GL_FLOAT_ONE       0x3f800000u
 #define MGRAS_GL_PIXELS_MAX      4096
+/* How far from the origin a draw may lie; see mgras_gl_pixels_place(). */
+#define MGRAS_GL_PIXELS_FAR      0x40000000
 
 enum {
     MGRAS_GL_PIXELS_ABGR8,
@@ -2024,7 +2026,9 @@ static bool mgras_gl_pixels_valid(const SGIMgrasGLPixels *px)
            px->bpp >= 1 && px->bpp <= 4 && px->w >= 1 &&
            px->w <= MGRAS_GL_PIXELS_MAX && px->h >= 1 &&
            px->h <= MGRAS_GL_PIXELS_MAX && px->row < px->h &&
-           px->col <= px->w && px->ncarry < px->bpp && px->skip <= 3;
+           px->col <= px->w && px->ncarry < px->bpp && px->skip <= 3 &&
+           px->x >= -MGRAS_GL_PIXELS_FAR && px->x <= MGRAS_GL_PIXELS_FAR &&
+           px->y >= -MGRAS_GL_PIXELS_FAR && px->y <= MGRAS_GL_PIXELS_FAR;
 }
 
 bool sgi_mgras_cmd_parser_valid(uint32_t cls, uint32_t reg,
@@ -2550,8 +2554,9 @@ static bool mgras_gl_pixels_program(SGIMgrasState *s, uint32_t row_words,
     const uint32_t *ge = s->ge_param;
     const uint32_t *box = &ge[MGRAS_GE_PIXEL_BOX];
     uint32_t hq = s->dma_desc_30000[0];
-    int32_t w = (int32_t)box[2] - (int32_t)box[0] + 1;
-    int32_t h = (int32_t)box[3] - (int32_t)box[1] + 1;
+    /* The guest's words, so the differences are taken in 64 bits. */
+    int64_t w = (int64_t)(int32_t)box[2] - (int32_t)box[0] + 1;
+    int64_t h = (int64_t)(int32_t)box[3] - (int32_t)box[1] + 1;
     uint32_t pairs = 0, format;
 
     /*
@@ -2662,6 +2667,24 @@ static bool mgras_gl_pixels_program(SGIMgrasState *s, uint32_t row_words,
     return true;
 }
 
+/*
+ * The window pixel an image's column or row offset lands on for one
+ * raster-position coordinate. The position comes from the guest's
+ * viewport and matrices, and the offset is a guest word, so both are
+ * kept within 2^30 of the origin in 64-bit arithmetic, as glBitmap's
+ * placement keeps its corner (sgi_gl_bitmap_place()): beyond that an
+ * image lies off any plane, and there it stays. A position that is not
+ * a number clamps to the lower bound.
+ */
+static int32_t mgras_gl_pixels_place(int32_t offset, float pos)
+{
+    double at = ceil(round(pos * 256.0) / 256.0 - 0.5);
+    int64_t p = MIN(MAX(at, -MGRAS_GL_PIXELS_FAR), MGRAS_GL_PIXELS_FAR);
+
+    p += offset;
+    return MIN(MAX(p, -MGRAS_GL_PIXELS_FAR), MGRAS_GL_PIXELS_FAR);
+}
+
 static void mgras_gl_pixels_start(SGIMgrasState *s, const uint32_t *payload)
 {
     SGIMgrasGLPixels *px = mgras_gl_pixels(s);
@@ -2697,8 +2720,8 @@ static void mgras_gl_pixels_start(SGIMgrasState *s, const uint32_t *payload)
         px->format = MGRAS_GL_PIXELS_FORMATS;
         return;
     }
-    px->x += (int32_t)ceil(round(c->raster_pos[0] * 256.0) / 256.0 - 0.5);
-    px->y += (int32_t)ceil(round(c->raster_pos[1] * 256.0) / 256.0 - 0.5);
+    px->x = mgras_gl_pixels_place(px->x, c->raster_pos[0]);
+    px->y = mgras_gl_pixels_place(px->y, c->raster_pos[1]);
     if (!c->cur.drawable.bound) {
         qemu_log_mask(LOG_UNIMP, "sgi-mgras: pixel draw with no window bound "
                       "dropped\n");
