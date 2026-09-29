@@ -12410,6 +12410,7 @@ static unsigned gl_stream_subsections(QTestState *qts)
         "sgi-mgras/gl-stencil", "sgi-mgras/gl-plane-stencil",
         "sgi-mgras/gl-blend", "sgi-mgras/gl-logic-op",
         "sgi-mgras/gl-colour-mask", "sgi-mgras/gl-fog",
+        "sgi-mgras/gl-polygon-offset",
     };
     g_autofree char *tmpfs = NULL;
     g_autofree char *path = NULL;
@@ -14439,6 +14440,103 @@ static void test_gl_fog_migration(void)
 }
 
 /*
+ * Polygon offset as the client sends it: 0xe70c, the factor, the bias
+ * and 1.0 for glPolygonOffsetEXT, or the factor, the units and 1.1 for
+ * glPolygonOffset; 0xe804 and the fill, line and point enables in bits 0
+ * to 2. GL_POLYGON_OFFSET_FACTOR, _BIAS_EXT and _UNITS are queries 0xca2
+ * to 0xca4.
+ */
+#define GL_POLYGON_OFFSET_HDR 0x0000e70c
+#define GL_OFFSET_ENABLES_HDR 0x0000e804
+#define GL_Q_OFFSET_FACTOR    0xca2
+
+static void gl_polygon_offset(QTestState *qts, float factor, float c,
+                              bool ext)
+{
+    gl_word(qts, GL_POLYGON_OFFSET_HDR);
+    gl_float(qts, factor);
+    gl_float(qts, c);
+    gl_float(qts, ext ? 1.0f : 1.1f);
+}
+
+/*
+ * A second quad at the depth of a first fails GL_LESS (OpenGL 1.2.1,
+ * 3.5.5) until offset one depth step nearer by glPolygonOffset, or by
+ * glPolygonOffsetEXT's bias, with the fill enable; the line and point
+ * enables alone offset no filled polygon.
+ */
+static void test_gl_polygon_offset_moves_depth(void)
+{
+    gl_scene_start(qts, GL_FLAT);
+    gl_clear_color(qts, 0, 0, 0, 1);
+    gl_word(qts, GL_CLEAR_COLOR_BUFFER);
+    gl_one(qts, GL_CLEAR_DEPTH_HDR, GL_DEPTH_ONE);
+    gl_word(qts, GL_CLEAR_DEPTH_BUFFER);
+    gl_one(qts, GL_DEPTH_TEST_HDR, 1);
+    gl_one(qts, GL_DEPTH_FUNC_HDR, GL_DEPTH_LESS);
+    gl_fill_window(qts, 1, 0, 0);
+    gl_polygon_offset(qts, 0, -1, false);
+    gl_one(qts, GL_OFFSET_ENABLES_HDR, 6);
+    gl_fill_window(qts, 0, 1, 0);
+    g_assert_cmphex(gl_window_pixel(qts, 64, 64), ==, 0xff0000);
+    gl_one(qts, GL_OFFSET_ENABLES_HDR, 1);
+    gl_fill_window(qts, 0, 1, 0);
+    g_assert_cmphex(gl_window_pixel(qts, 64, 64), ==, 0x00ff00);
+    g_assert_cmphex(gl_query(qts, GL_Q_OFFSET_FACTOR + 2, 1), ==,
+                    gl_bits(-1));
+    g_assert_cmphex(gl_query(qts, GL_Q_OFFSET_FACTOR + 1, 1), ==, 0);
+
+    gl_polygon_offset(qts, 0, -1.0f / 1024, true);
+    gl_fill_window(qts, 0, 0, 1);
+    g_assert_cmphex(gl_window_pixel(qts, 64, 64), ==, 0x0000ff);
+    g_assert_cmphex(gl_query(qts, GL_Q_OFFSET_FACTOR + 1, 1), ==,
+                    gl_bits(-1.0f / 1024));
+    g_assert_cmphex(gl_query(qts, GL_Q_OFFSET_FACTOR + 2, 1), ==, 0);
+    gl_one(qts, GL_OFFSET_ENABLES_HDR, 0);
+    gl_fill_window(qts, 1, 1, 1);
+    g_assert_cmphex(gl_window_pixel(qts, 64, 64), ==, 0x0000ff);
+}
+
+/* Slot A offsets its fills one step nearer; slot B does not. */
+static void gl_offset_setup(QTestState *from)
+{
+    for (int slot = 0; slot < 2; slot++) {
+        gl_enter_slot(from, slot ? GL_SLOT_B : GL_SLOT_A);
+        gl_word(from, GL_CONTEXT_OPENER);
+        gl_viewport(from, 0, 0, 128, 128);
+        gl_one(from, GL_DEPTH_TEST_HDR, 1);
+        gl_one(from, GL_DEPTH_FUNC_HDR, GL_DEPTH_LESS);
+    }
+    gl_enter_slot(from, GL_SLOT_A);
+    gl_polygon_offset(from, 0, -1, false);
+    gl_one(from, GL_OFFSET_ENABLES_HDR, 1);
+}
+
+/*
+ * A quad at z 0 has window depth 0x800000 in 24 bits, so against a depth
+ * buffer cleared to that it passes GL_LESS only when offset nearer.
+ */
+static void gl_offset_check(QTestState *to)
+{
+    for (int slot = 0; slot < 2; slot++) {
+        gl_enter_slot(to, slot ? GL_SLOT_B : GL_SLOT_A);
+        gl_clear_color(to, 0, 0, 0, 1);
+        gl_word(to, GL_CLEAR_COLOR_BUFFER);
+        gl_one(to, GL_CLEAR_DEPTH_HDR, 0x800000);
+        gl_word(to, GL_CLEAR_DEPTH_BUFFER);
+        gl_fill_window(to, 0, 1, 0);
+        g_assert_cmphex(mgras_test_pixel(to, 256 + 64, 383 - 64), ==,
+                        slot ? 0 : 0x00ff00);
+    }
+}
+
+/* Each context's polygon offset migrates. */
+static void test_gl_polygon_offset_migration(void)
+{
+    gl_migrate(gl_offset_setup, gl_offset_check);
+}
+
+/*
  * The context setup's 32 detail-texture table writes, 0xec10 with 0xc52,
  * 0xc78, 0x194 and a value (0x1f three times, then 0x1d down to 1), are
  * texture-only defaults and consumed without a log line; any other value
@@ -14869,6 +14967,26 @@ static void test_gl_state_subsections_follow_their_state(void)
             gl_one(s, GL_FOG_HDR, 0);
         }
         g_assert_cmpuint(gl_stream_subsections(s), ==, i == 1 ? 0 : 262144);
+        qtest_quit(s);
+    }
+
+    /*
+     * Polygon offset: an enable or a nonzero factor, units or bias sends
+     * gl-polygon-offset; the setup's zero EXT offset, and the enables
+     * cleared again, send nothing.
+     */
+    for (int i = 0; i < 3; i++) {
+        s = qtest_init(MIGRATION_ARGS);
+        gl_enter_slot(s, GL_SLOT_A);
+        gl_word(s, GL_CONTEXT_OPENER);
+        gl_polygon_offset(s, 0, i == 2 ? 2 : 0, true);
+        if (i < 2) {
+            gl_one(s, GL_OFFSET_ENABLES_HDR, 4);
+        }
+        if (i == 1) {
+            gl_one(s, GL_OFFSET_ENABLES_HDR, 0);
+        }
+        g_assert_cmpuint(gl_stream_subsections(s), ==, i == 1 ? 0 : 524288);
         qtest_quit(s);
     }
 }
@@ -15771,6 +15889,10 @@ int main(int argc, char **argv)
                    test_gl_fog_blends_toward_the_fog_colour);
     qtest_add_func("sn0/origin2000/mgras/gl-fog-migration",
                    test_gl_fog_migration);
+    qtest_add_func("sn0/origin2000/mgras/gl-polygon-offset-moves-depth",
+                   test_gl_polygon_offset_moves_depth);
+    qtest_add_func("sn0/origin2000/mgras/gl-polygon-offset-migration",
+                   test_gl_polygon_offset_migration);
     qtest_add_func("sn0/origin2000/mgras/gl-texture-matrix-migration",
                    test_gl_texture_matrix_migration);
     qtest_add_func("sn0/origin2000/mgras/"
