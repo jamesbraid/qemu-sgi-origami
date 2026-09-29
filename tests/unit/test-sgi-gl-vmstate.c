@@ -391,6 +391,129 @@ static void test_reachable_states_valid(void)
     }
 }
 
+/*
+ * A field added to a nested description, as the header's rule says: a
+ * subsection named for that description, here a stand-in for a light
+ * inside a context, both nested in a family's table.
+ */
+typedef struct TestLight {
+    uint32_t base;
+    uint32_t added;
+} TestLight;
+
+typedef struct TestTable {
+    TestLight light[2];
+} TestTable;
+
+static bool test_added_needed(void *opaque)
+{
+    return true;
+}
+
+static const VMStateDescription vmstate_test_light_added = {
+    .name = "test-light/added",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = test_added_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32(added, TestLight),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
+/* The same field under the outer description's name, against the rule. */
+static const VMStateDescription vmstate_test_light_misnamed = {
+    .name = "test-table/added",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = test_added_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32(added, TestLight),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
+#define TEST_LIGHT(_vmsd, _sub)                                          \
+    static const VMStateDescription _vmsd = {                            \
+        .name = "test-light",                                            \
+        .version_id = 1,                                                 \
+        .minimum_version_id = 1,                                         \
+        .fields = (const VMStateField[]) {                               \
+            VMSTATE_UINT32(base, TestLight),                             \
+            VMSTATE_END_OF_LIST()                                        \
+        },                                                               \
+        .subsections = (const VMStateDescription * const []) {           \
+            &(_sub), NULL                                                \
+        },                                                               \
+    }
+
+#define TEST_TABLE(_vmsd, _light)                                        \
+    static const VMStateDescription _vmsd = {                            \
+        .name = "test-table",                                            \
+        .version_id = 1,                                                 \
+        .minimum_version_id = 1,                                         \
+        .fields = (const VMStateField[]) {                               \
+            VMSTATE_STRUCT_ARRAY(light, TestTable, 2, 0, _light,         \
+                                 TestLight),                             \
+            VMSTATE_END_OF_LIST()                                        \
+        },                                                               \
+    }
+
+TEST_LIGHT(vmstate_test_light, vmstate_test_light_added);
+TEST_TABLE(vmstate_test_table, vmstate_test_light);
+TEST_LIGHT(vmstate_test_light_bad, vmstate_test_light_misnamed);
+TEST_TABLE(vmstate_test_table_bad, vmstate_test_light_bad);
+
+/* Save src and load it into dst under vmsd; the load's result. */
+static int table_trip(const VMStateDescription *vmsd, TestTable *src,
+                      TestTable *dst)
+{
+    QIOChannelBuffer *bioc = qio_channel_buffer_new(4096);
+    QEMUFile *f = qemu_file_new_output(QIO_CHANNEL(bioc));
+    GByteArray *stream = g_byte_array_new();
+    Error *err = NULL;
+    int ret;
+
+    g_assert_cmpint(vmstate_save_state(f, vmsd, src, NULL, &error_abort),
+                    ==, 0);
+    g_assert_cmpint(qemu_fflush(f), ==, 0);
+    g_byte_array_append(stream, bioc->data, bioc->usage);
+    g_byte_array_append(stream, (const guint8 *)"", 1);
+    qemu_fclose(f);
+    object_unref(OBJECT(bioc));
+
+    bioc = qio_channel_buffer_new(stream->len);
+    memcpy(bioc->data, stream->data, stream->len);
+    bioc->usage = stream->len;
+    f = qemu_file_new_input(QIO_CHANNEL(bioc));
+    ret = vmstate_load_state(f, vmsd, dst, 1, &err);
+    if (err) {
+        g_test_message("load: %s", error_get_pretty(err));
+    }
+    error_free(err);
+    qemu_fclose(f);
+    object_unref(OBJECT(bioc));
+    g_byte_array_unref(stream);
+    return ret;
+}
+
+static void test_nested_subsection_name(void)
+{
+    TestTable src = { { { 1, 0x11 }, { 2, 0x22 } } }, dst = { 0 };
+
+    g_assert_cmpint(table_trip(&vmstate_test_table, &src, &dst), ==, 0);
+    g_assert_cmpmem(&dst, sizeof(dst), &src, sizeof(src));
+
+    /*
+     * Named for the outer description, the subsection is not found under
+     * the light's name, and the rest of the stream is misread.
+     */
+    memset(&dst, 0, sizeof(dst));
+    if (table_trip(&vmstate_test_table_bad, &src, &dst) == 0) {
+        g_assert_cmpint(memcmp(&dst, &src, sizeof(dst)), !=, 0);
+    }
+}
+
 /* A field set to value, and the words the refusal names. */
 typedef struct Corruption {
     size_t offset;
@@ -483,5 +606,7 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-gl-vmstate/reachable-states-valid",
                     test_reachable_states_valid);
     g_test_add_func("/sgi-gl-vmstate/refuses-corrupt", test_refuses_corrupt);
+    g_test_add_func("/sgi-gl-vmstate/nested-subsection-name",
+                    test_nested_subsection_name);
     return g_test_run();
 }

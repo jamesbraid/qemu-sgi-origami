@@ -659,11 +659,13 @@ bool sgi_gl_context_valid(const SGIGLContext *c, Error **errp);
  * the byte-coverage test in tests/unit/test-sgi-gl-vmstate.c, until it is
  * described. Neither sees a field small enough to sit in the padding the
  * compiler leaves after a bool, so flags are uint32_t, as the rest are.
- * A new field is described in a new subsection of vmstate_sgi_gl_context
- * (or of the nested description that holds it), named
- * "sgi-gl-context/<what>", never appended to a base field list: nested
- * descriptions put no version on the stream, and a subsection carries its
- * own name and version. Its .needed may return false only while the field
+ * A new field is described in a new subsection of vmstate_sgi_gl_context,
+ * or of the nested description that holds it, never appended to a base
+ * field list. The subsection's name is the name of the description it
+ * joins, a slash and the field ("sgi-gl-light/<what>" for a light's):
+ * loading looks for a subsection only under its parent's name. Unlike a
+ * nested description, a subsection puts its own name and version on the
+ * stream. Its .needed may return false only while the field
  * holds what sgi_gl_init() gives it; a stream without the subsection then
  * leaves the destination's initial value, as a source that predates the
  * field had, and a binary without it refuses a stream that needs it. The
