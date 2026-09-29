@@ -12407,6 +12407,7 @@ static unsigned gl_stream_subsections(QTestState *qts)
         "sgi-mgras/gl-light-enables", "sgi-mgras/gl-cull",
         "sgi-mgras/gl-pixels", "sgi-mgras/gl-pixel-flags",
         "sgi-mgras/gl-scissor", "sgi-mgras/gl-alpha",
+        "sgi-mgras/gl-stencil", "sgi-mgras/gl-plane-stencil",
     };
     g_autofree char *tmpfs = NULL;
     g_autofree char *path = NULL;
@@ -13955,6 +13956,167 @@ static void test_gl_alpha_migration(void)
 }
 
 /*
+ * The stencil test as the client sends it: glStencilFunc 0x410c with the
+ * function less GL_NEVER, the reference and the mask; glStencilOp 0x420c
+ * with GL_KEEP 0, GL_ZERO 1, GL_REPLACE 2, GL_INCR 3, GL_DECR 4 and
+ * GL_INVERT 5; glStencilMask 0x3a04; glClearStencil 0xbe04; glClear's
+ * stencil buffer 0x4c00; GL_STENCIL_TEST 0x6f04 and 1 or 0. Query 0x288
+ * bit 4 is the enable, 0x2c6 holds the function in bits 2:0, the
+ * operations in 5:3, 8:6 and 11:9 and the reference in 19:12, 0x2c8 the
+ * value and write masks in bits 7:0 and 15:8, and 0xc14 the clear value.
+ */
+#define GL_STENCIL_FUNC_HDR   0x0000410c
+#define GL_STENCIL_OP_HDR     0x0000420c
+#define GL_STENCIL_MASK_HDR   0x00003a04
+#define GL_CLEAR_STENCIL_HDR  0x0000be04
+#define GL_CLEAR_STENCIL_BUFFER 0x00004c00
+#define GL_STENCIL_TEST_HDR   0x00006f04
+#define GL_CLEAR_DEPTH_BUFFER 0x00004a00
+#define GL_Q_STENCIL_CLEAR    0xc14
+#define GL_STENCIL_EQUAL      2
+#define GL_STENCIL_ALWAYS     7
+#define GL_OP_KEEP            0
+#define GL_OP_REPLACE         2
+#define GL_OP_INCR            3
+
+static void gl_stencil(QTestState *qts, uint32_t func, uint32_t ref,
+                       uint32_t mask, uint32_t fail, uint32_t zfail,
+                       uint32_t zpass)
+{
+    gl_word(qts, GL_STENCIL_FUNC_HDR);
+    gl_word(qts, func);
+    gl_word(qts, ref);
+    gl_word(qts, mask);
+    gl_word(qts, GL_STENCIL_OP_HDR);
+    gl_word(qts, fail);
+    gl_word(qts, zfail);
+    gl_word(qts, zpass);
+}
+
+/*
+ * Clear the stencil to 5, replace it with 1 in the window's left half
+ * through the scissor, then draw green where the stencil equals 1 (OpenGL
+ * 1.2.1, 4.1.5): only the left half turns green. The queries answer the
+ * state as sent.
+ */
+static void test_gl_stencil_masks_drawing(void)
+{
+    uint32_t a;
+
+    gl_scene_start(qts, GL_FLAT);
+    gl_clear_color(qts, 0, 0, 0, 1);
+    gl_word(qts, GL_CLEAR_COLOR_BUFFER);
+    gl_one(qts, GL_CLEAR_STENCIL_HDR, 5);
+    gl_word(qts, GL_CLEAR_STENCIL_BUFFER);
+    gl_one(qts, GL_STENCIL_TEST_HDR, 1);
+    gl_stencil(qts, GL_STENCIL_ALWAYS, 1, 0xff, GL_OP_KEEP, GL_OP_KEEP,
+               GL_OP_REPLACE);
+    gl_scissor(qts, 0, 0, 64, 128);
+    gl_one(qts, GL_SCISSOR_TEST_HDR, 1);
+    gl_fill_window(qts, 0, 0, 1);
+    gl_one(qts, GL_SCISSOR_TEST_HDR, 0);
+    gl_stencil(qts, GL_STENCIL_EQUAL, 1, 0xff, GL_OP_KEEP, GL_OP_KEEP,
+               GL_OP_KEEP);
+    gl_fill_window(qts, 0, 1, 0);
+    g_assert_cmphex(gl_window_pixel(qts, 63, 64), ==, 0x00ff00);
+    g_assert_cmphex(gl_window_pixel(qts, 64, 64), ==, 0);
+
+    gl_stencil(qts, GL_STENCIL_EQUAL, 0x1a5, 0x3c, GL_OP_INCR, GL_OP_KEEP,
+               GL_OP_REPLACE);
+    gl_one(qts, GL_STENCIL_MASK_HDR, 0x5a);
+    gl_one(qts, GL_CLEAR_STENCIL_HDR, 7);
+    g_assert_cmphex(gl_query(qts, GL_Q_PIXEL_ENABLES, 1) & 0x10, ==, 0x10);
+    a = gl_query(qts, GL_Q_STENCIL, 1);
+    g_assert_cmphex((a & 7) + 0x200, ==, 0x202);
+    g_assert_cmphex((a >> 3) & 7, ==, GL_OP_INCR);
+    g_assert_cmphex((a >> 6) & 7, ==, GL_OP_KEEP);
+    g_assert_cmphex((a >> 9) & 7, ==, GL_OP_REPLACE);
+    g_assert_cmphex((a >> 12) & 0xff, ==, 0xff);
+    g_assert_cmphex(gl_query(qts, GL_Q_STENCIL_MASKS, 1) & 0xffff, ==,
+                    0x5a3c);
+    g_assert_cmphex(gl_query(qts, GL_Q_STENCIL_CLEAR, 1), ==, 7);
+    gl_one(qts, GL_STENCIL_TEST_HDR, 0);
+    g_assert_cmphex(gl_query(qts, GL_Q_PIXEL_ENABLES, 1) & 0x10, ==, 0);
+}
+
+/*
+ * The stencil and depth buffers share each pixel's plane in the model:
+ * clearing either keeps the other. After a depth-tested quad at depth
+ * 0.5, a stencil clear to 5 leaves that depth, so a farther quad fails;
+ * after a depth clear to 1.0 a stencil test for 5 still passes.
+ */
+static void test_gl_stencil_clear_keeps_depth(void)
+{
+    gl_scene_start(qts, GL_FLAT);
+    gl_clear_color(qts, 0, 0, 0, 1);
+    gl_word(qts, GL_CLEAR_COLOR_BUFFER);
+    gl_one(qts, GL_CLEAR_DEPTH_HDR, GL_DEPTH_ONE);
+    gl_word(qts, GL_CLEAR_DEPTH_BUFFER);
+    gl_one(qts, GL_DEPTH_TEST_HDR, 1);
+    gl_one(qts, GL_DEPTH_FUNC_HDR, GL_DEPTH_LESS);
+    gl_fill_window_at(qts, 0, 0, 1, 0);
+    gl_one(qts, GL_CLEAR_STENCIL_HDR, 5);
+    gl_word(qts, GL_CLEAR_STENCIL_BUFFER);
+    gl_fill_window_at(qts, 1, 0, 0, 0.5f);
+    g_assert_cmphex(gl_window_pixel(qts, 64, 64), ==, 0x0000ff);
+
+    gl_word(qts, GL_CLEAR_DEPTH_BUFFER);
+    gl_one(qts, GL_STENCIL_TEST_HDR, 1);
+    gl_stencil(qts, GL_STENCIL_EQUAL, 5, 0xff, GL_OP_KEEP, GL_OP_KEEP,
+               GL_OP_KEEP);
+    gl_fill_window_at(qts, 0, 1, 0, 0.5f);
+    g_assert_cmphex(gl_window_pixel(qts, 64, 64), ==, 0x00ff00);
+    gl_stencil(qts, GL_STENCIL_EQUAL, 4, 0xff, GL_OP_KEEP, GL_OP_KEEP,
+               GL_OP_KEEP);
+    gl_fill_window_at(qts, 1, 1, 1, -0.5f);
+    g_assert_cmphex(gl_window_pixel(qts, 64, 64), ==, 0x00ff00);
+}
+
+/*
+ * Slot A tests for stencil 3, which the window's pixels hold, and slot B
+ * keeps the test off; both the state and the buffer migrate.
+ */
+static void gl_stencil_setup(QTestState *from)
+{
+    for (int slot = 0; slot < 2; slot++) {
+        gl_enter_slot(from, slot ? GL_SLOT_B : GL_SLOT_A);
+        gl_word(from, GL_CONTEXT_OPENER);
+        gl_viewport(from, 0, 0, 128, 128);
+    }
+    gl_enter_slot(from, GL_SLOT_A);
+    gl_one(from, GL_CLEAR_STENCIL_HDR, 3);
+    gl_word(from, GL_CLEAR_STENCIL_BUFFER);
+    gl_one(from, GL_STENCIL_TEST_HDR, 1);
+    gl_stencil(from, GL_STENCIL_EQUAL, 3, 0xff, GL_OP_KEEP, GL_OP_KEEP,
+               GL_OP_INCR);
+}
+
+static void gl_stencil_check(QTestState *to)
+{
+    for (int slot = 0; slot < 2; slot++) {
+        gl_enter_slot(to, slot ? GL_SLOT_B : GL_SLOT_A);
+        gl_clear_color(to, 0, 0, 0, 1);
+        gl_word(to, GL_CLEAR_COLOR_BUFFER);
+        gl_fill_window(to, 0, 1, 0);
+        g_assert_cmphex(mgras_test_pixel(to, 256 + 64, 383 - 64), ==,
+                        0x00ff00);
+    }
+    /* Slot A's pass incremented the stencil to 4: it now fails. */
+    gl_enter_slot(to, GL_SLOT_A);
+    gl_word(to, GL_CLEAR_COLOR_BUFFER);
+    gl_fill_window(to, 0, 1, 0);
+    g_assert_cmphex(mgras_test_pixel(to, 256 + 64, 383 - 64), ==, 0);
+    g_assert_cmphex((gl_query(to, GL_Q_STENCIL, 1) >> 9) & 7, ==,
+                    GL_OP_INCR);
+}
+
+/* Each context's stencil state and the stencil buffer migrate. */
+static void test_gl_stencil_migration(void)
+{
+    gl_migrate(gl_stencil_setup, gl_stencil_check);
+}
+
+/*
  * The context setup's 32 detail-texture table writes, 0xec10 with 0xc52,
  * 0xc78, 0x194 and a value (0x1f three times, then 0x1d down to 1), are
  * texture-only defaults and consumed without a log line; any other value
@@ -14265,6 +14427,42 @@ static void test_gl_state_subsections_follow_their_state(void)
             gl_alpha_func(s, 7, 1);
         }
         g_assert_cmpuint(gl_stream_subsections(s), ==, i == 1 ? 0 : 4096);
+        qtest_quit(s);
+    }
+
+    /*
+     * The stencil test: its enable, a function, a write mask or a clear
+     * value sends gl-stencil; a clear of the buffer to a nonzero value
+     * sends gl-plane-stencil too, and one to 0 does not; the test turned
+     * off again sends nothing.
+     */
+    for (int i = 0; i < 6; i++) {
+        static const unsigned want[6] = { 8192, 0, 8192, 8192, 24576, 8192 };
+
+        s = qtest_init(MIGRATION_ARGS);
+        gl_enter_slot(s, GL_SLOT_A);
+        gl_word(s, GL_CONTEXT_OPENER);
+        if (i < 2) {
+            gl_one(s, GL_STENCIL_TEST_HDR, 1);
+        }
+        if (i == 1) {
+            gl_one(s, GL_STENCIL_TEST_HDR, 0);
+        }
+        if (i == 2) {
+            gl_stencil(s, GL_STENCIL_EQUAL, 0, 0xffffffff, GL_OP_KEEP,
+                       GL_OP_KEEP, GL_OP_KEEP);
+        }
+        if (i == 3) {
+            gl_one(s, GL_STENCIL_MASK_HDR, 0xff);
+        }
+        if (i >= 4) {
+            gl_one(s, GL_CLEAR_STENCIL_HDR, i == 4 ? 9 : 0);
+            gl_word(s, GL_CLEAR_STENCIL_BUFFER);
+            if (i == 5) {
+                gl_one(s, GL_CLEAR_STENCIL_HDR, 1);
+            }
+        }
+        g_assert_cmpuint(gl_stream_subsections(s), ==, want[i]);
         qtest_quit(s);
     }
 }
@@ -15145,6 +15343,12 @@ int main(int argc, char **argv)
                    test_gl_alpha_test_discards);
     qtest_add_func("sn0/origin2000/mgras/gl-alpha-migration",
                    test_gl_alpha_migration);
+    qtest_add_func("sn0/origin2000/mgras/gl-stencil-masks-drawing",
+                   test_gl_stencil_masks_drawing);
+    qtest_add_func("sn0/origin2000/mgras/gl-stencil-clear-keeps-depth",
+                   test_gl_stencil_clear_keeps_depth);
+    qtest_add_func("sn0/origin2000/mgras/gl-stencil-migration",
+                   test_gl_stencil_migration);
     qtest_add_func("sn0/origin2000/mgras/gl-texture-matrix-migration",
                    test_gl_texture_matrix_migration);
     qtest_add_func("sn0/origin2000/mgras/"

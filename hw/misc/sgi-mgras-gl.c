@@ -15,8 +15,8 @@
  * equation, culled by facing, transformed by the modelview and
  * projection matrices and their stacks, and bitmaps, leave in the
  * window's front or back buffer after the per-fragment operations the
- * shared rasterizer carries out (the scissor, alpha and depth tests), in
- * RGBA or
+ * shared rasterizer carries out (the scissor, alpha, stencil and depth
+ * tests), in RGBA or
  * colour-index mode, and the main-port framing,
  * so the words after a packet still parse as headers. What it does not: the
  * raster-engine register writes the GE would make, the timing of the
@@ -107,6 +107,51 @@
 #define MGRAS_GL_ALPHA_FUNC      0x00003e08
 #define MGRAS_GL_ALPHA_TEST      0x00006404
 #define MGRAS_GL_ALPHA_REF_MAX   4095
+/*
+ * The stencil test, from the IRIX 6.5.30 IP27GR532 libGLcore.so's
+ * emitters, established from the listing:
+ *
+ * - glStencilFunc (__glMgrim_StencilFunc 0xd95eec0): 0x410c, the function
+ *   less GL_NEVER, the reference clamped to [0, 255] and the mask as the
+ *   application passed it.
+ * - glStencilOp (__glMgrim_StencilOp 0xd95ef80): 0x420c and the three
+ *   operations as small numbers, GL_KEEP 0, GL_ZERO 1, GL_REPLACE 2,
+ *   GL_INCR 3, GL_DECR 4 and GL_INVERT 5 (0xd95f074-0xd95f1b4); the
+ *   glGet decoding maps them back the same way (__glMgrDoGet
+ *   0xd993294-0xd9932e4).
+ * - glStencilMask (0xd95e880): 0x3a04 and the mask.
+ * - glClearStencil (0xd980c40): 0xbe04 and the value masked to the
+ *   visual's stencil bits.
+ * - glClear with GL_STENCIL_BUFFER_BIT (__glMgrim_Clear 0xd9e3670): 0x4c00
+ *   alone, only when the visual has a stencil buffer.
+ * - glEnable and glDisable of GL_STENCIL_TEST (0xd97e58c for capability
+ *   0xb90, 0xd980354): 0x6f04 and 1 or 0.
+ *
+ * Every visual the X server offers with a depth buffer has 24 depth bits
+ * and 8 stencil bits (glxinfo on the model, run
+ * irix-20260928T004550-1040f3), so the board has an 8-bit stencil buffer
+ * beside the 24-bit depth buffer (inferred). The model keeps it in bits
+ * 31:24 of each pixel's depth word, an internal layout: how the board
+ * packs the two is unknown. That the board tests and updates it as
+ * OpenGL 1.2.1, 4.1.5 says is inferred. A context whose visual has no
+ * stencil buffer still tests against the planes, which the specification
+ * says pass every fragment; the model cannot tell the visual. The
+ * discriminating tests are gl-stencil-masks-drawing and
+ * gl-stencil-clear-keeps-depth.
+ */
+#define MGRAS_GL_STENCIL_FUNC    0x0000410c
+#define MGRAS_GL_STENCIL_OP      0x0000420c
+#define MGRAS_GL_STENCIL_MASK    0x00003a04
+#define MGRAS_GL_CLEAR_STENCIL   0x0000be04
+#define MGRAS_GL_CLEAR_STENCIL_BUF 0x00004c00
+#define MGRAS_GL_STENCIL_TEST    0x00006f04
+#define MGRAS_GL_STENCIL_SHIFT   24
+#define MGRAS_GL_DEPTH_MASK_24   0x00ffffffu
+
+/* glStencilOp's operations by the number the client sends for each. */
+static const uint16_t mgras_gl_stencil_ops[] = {
+    SGI_GL_KEEP, 0, SGI_GL_REPLACE, SGI_GL_INCR, SGI_GL_DECR, SGI_GL_INVERT,
+};
 /*
  * glDepthRange: __glMgrim_DepthRange (0xd960590 in the IRIX 6.5.30
  * IP27GR532 libGLcore.so, SHA-256 626d6d94...) writes 0x4808 and near and
@@ -635,6 +680,12 @@ bool sgi_mgras_gl_header(uint32_t header)
     case MGRAS_GL_SCISSOR_TEST:
     case MGRAS_GL_ALPHA_FUNC:
     case MGRAS_GL_ALPHA_TEST:
+    case MGRAS_GL_STENCIL_FUNC:
+    case MGRAS_GL_STENCIL_OP:
+    case MGRAS_GL_STENCIL_MASK:
+    case MGRAS_GL_CLEAR_STENCIL:
+    case MGRAS_GL_CLEAR_STENCIL_BUF:
+    case MGRAS_GL_STENCIL_TEST:
     case MGRAS_GL_DEPTH_RANGE:
     case MGRAS_GL_DITHER:
     case MGRAS_GL_CULL_ON:
@@ -1044,6 +1095,7 @@ typedef enum MgrasGLQueryPacking {
  *   and y + height - 1: the client returns the first two and the last two
  *   less the first two plus 1 (0xd994f1c-0xd994f5c). GL_SCISSOR_TEST at
  *   0xc28, the whole word the boolean.
+ * - GL_STENCIL_CLEAR_VALUE at 0xc14, an integer.
  *
  * What a1 and a2 select is unknown; the model answers by index alone.
  * Every other index answers zero, logged, which is right for the
@@ -1084,6 +1136,7 @@ static const struct {
     { 0xc24, 2, MGRAS_GL_QUERY_WORD, SGI_GL_SCISSOR_BOX, 0 },
     { 0xc26, 2, MGRAS_GL_QUERY_BOX_END, SGI_GL_SCISSOR_BOX, 2 },
     { 0xc28, 1, MGRAS_GL_QUERY_WORD, SGI_GL_SCISSOR_TEST, 0 },
+    { 0xc14, 1, MGRAS_GL_QUERY_WORD, SGI_GL_STENCIL_CLEAR_VALUE, 0 },
 };
 
 /*
@@ -1193,17 +1246,24 @@ static bool mgras_gl_raster_query(SGIMgrasState *s, uint32_t index,
         untracked = true;
         break;
     case MGRAS_GL_QUERY_PIXEL_ENABLES:
-        *answer = (MGRAS_GL_PIXEL_SETUP & ~0x41u) | gl->cur.dither |
-                  st->alpha_test << 6;
+        *answer = (MGRAS_GL_PIXEL_SETUP & ~0x51u) | gl->cur.dither |
+                  st->stencil_test << 4 | st->alpha_test << 6;
         untracked = true;
         break;
     case MGRAS_GL_QUERY_STENCIL:
-        *answer = 7;
-        untracked = true;
+        *answer = st->stencil_func |
+                  MIN(MAX(st->stencil_ref, 0), 0xff) << 12;
+        for (int i = 0; i < 3; i++) {
+            for (int n = 0; n < ARRAY_SIZE(mgras_gl_stencil_ops); n++) {
+                if (st->stencil_op[i] == mgras_gl_stencil_ops[n]) {
+                    *answer |= n << (3 + 3 * i);
+                }
+            }
+        }
         break;
     case MGRAS_GL_QUERY_STENCIL_MASKS:
-        *answer = 0xffff;
-        untracked = true;
+        *answer = (st->stencil_value_mask & 0xff) |
+                  (st->stencil_write_mask & 0xff) << 8;
         break;
     case MGRAS_GL_QUERY_DEPTH:
         *answer = (st->depth_mask ? MGRAS_GL_DEPTH_WRITES : 0) |
@@ -2073,6 +2133,94 @@ const VMStateDescription vmstate_sgi_mgras_gl_alpha = {
     }
 };
 
+static const VMStateDescription vmstate_sgi_mgras_gl_context_stencil = {
+    .name = TYPE_SGI_MGRAS "/gl-context-stencil",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32(cur.stencil_test, SGIGLContext),
+        VMSTATE_UINT32(cur.stencil_func, SGIGLContext),
+        VMSTATE_INT32(cur.stencil_ref, SGIGLContext),
+        VMSTATE_UINT32(cur.stencil_value_mask, SGIGLContext),
+        VMSTATE_UINT32(cur.stencil_write_mask, SGIGLContext),
+        VMSTATE_UINT32_ARRAY(cur.stencil_op, SGIGLContext, 3),
+        VMSTATE_UINT32(clear_stencil, SGIGLContext),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
+/*
+ * Every context's stencil state, sent once some context has left
+ * OpenGL's initial state for it. A stream without it comes from a model
+ * that consumed the stencil packets and drew as that initial state does,
+ * with the test disabled.
+ */
+static bool mgras_gl_stencil_needed(void *opaque)
+{
+    SGIMgrasState *s = opaque;
+    g_autofree SGIGLContext *init = g_new(SGIGLContext, 1);
+
+    sgi_gl_init(init, 0);
+    for (int i = 0; i < SGI_MGRAS_GL_CONTEXTS; i++) {
+        const SGIGLContext *gl = &s->gl[i];
+
+        if (gl->cur.stencil_test != init->cur.stencil_test ||
+            gl->cur.stencil_func != init->cur.stencil_func ||
+            gl->cur.stencil_ref != init->cur.stencil_ref ||
+            gl->cur.stencil_value_mask != init->cur.stencil_value_mask ||
+            gl->cur.stencil_write_mask != init->cur.stencil_write_mask ||
+            memcmp(gl->cur.stencil_op, init->cur.stencil_op,
+                   sizeof(init->cur.stencil_op)) ||
+            gl->clear_stencil != init->clear_stencil) {
+            return true;
+        }
+    }
+    return false;
+}
+
+const VMStateDescription vmstate_sgi_mgras_gl_stencil = {
+    .name = TYPE_SGI_MGRAS "/gl-stencil",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = mgras_gl_stencil_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_STRUCT_ARRAY(gl, SGIMgrasState, SGI_MGRAS_GL_CONTEXTS, 1,
+                             vmstate_sgi_mgras_gl_context_stencil,
+                             SGIGLContext),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
+/*
+ * The stencil buffer travels in bits 31:24 of the depth plane the stream
+ * already carries. A binary without it would read those bits as depth, so
+ * this empty section is sent once any pixel holds a stencil value, for
+ * such a binary to refuse. Its name must not begin with another
+ * subsection's: the loader takes a name that extends the one it is
+ * loading as that one's own subsection.
+ */
+static bool mgras_gl_stencil_plane_needed(void *opaque)
+{
+    SGIMgrasState *s = opaque;
+
+    for (uint32_t i = 0; i < s->depth_count; i++) {
+        if (s->depth[i] & ~MGRAS_GL_DEPTH_MASK_24) {
+            return true;
+        }
+    }
+    return false;
+}
+
+const VMStateDescription vmstate_sgi_mgras_gl_stencil_plane = {
+    .name = TYPE_SGI_MGRAS "/gl-plane-stencil",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = mgras_gl_stencil_plane_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_END_OF_LIST()
+    }
+};
+
 const VMStateDescription vmstate_sgi_mgras_gl_cull = {
     .name = TYPE_SGI_MGRAS "/gl-cull",
     .version_id = 1,
@@ -2284,6 +2432,8 @@ bool sgi_mgras_gl_post_load(SGIMgrasState *s)
             gl->normalize > 1 || gl->rescale_normal > 1 ||
             gl->strip_odd > 1 || gl->cur.cull_face > 1 ||
             gl->cur.scissor_test > 1 || gl->cur.alpha_test > 1 ||
+            gl->cur.stencil_test > 1 ||
+            gl->cur.stencil_func > SGI_GL_ALWAYS ||
             gl->cur.alpha_func > SGI_GL_ALWAYS ||
             !(gl->cur.alpha_ref >= 0.0f && gl->cur.alpha_ref <= 1.0f) ||
             (gl->cur.cull_face_mode != SGI_GL_FRONT &&
@@ -2299,6 +2449,18 @@ bool sgi_mgras_gl_post_load(SGIMgrasState *s)
                                         p->payload_count) ||
             !mgras_gl_pixels_valid(&s->gl_context[i].pixels)) {
             return false;
+        }
+    }
+    for (int i = 0; i < SGI_MGRAS_GL_CONTEXTS; i++) {
+        for (int k = 0; k < 3; k++) {
+            bool known = false;
+
+            for (int n = 0; n < ARRAY_SIZE(mgras_gl_stencil_ops); n++) {
+                known |= s->gl[i].cur.stencil_op[k] == mgras_gl_stencil_ops[n];
+            }
+            if (!known) {
+                return false;
+            }
         }
     }
     /* An entry's identity is its slot, which the stream carries. */
@@ -2347,6 +2509,7 @@ static void mgras_gl_put(SGIMgrasState *s, unsigned int banks, int x, int y,
     }
 }
 
+/* The pixel's depth word: the depth in bits 23:0, the stencil in 31:24. */
 static uint32_t *mgras_gl_depth(SGIMgrasState *s, int x, int y)
 {
     return &s->depth[(s->height - 1 - y) * s->width + x];
@@ -2402,12 +2565,29 @@ static void mgras_gl_check_index(uint32_t index_bits,
 
 static uint32_t mgras_gl_load_depth(void *opaque, int x, int y)
 {
-    return *mgras_gl_depth(opaque, x, y);
+    return *mgras_gl_depth(opaque, x, y) & MGRAS_GL_DEPTH_MASK_24;
 }
 
 static void mgras_gl_store_depth(void *opaque, int x, int y, uint32_t depth)
 {
-    *mgras_gl_depth(opaque, x, y) = depth;
+    uint32_t *word = mgras_gl_depth(opaque, x, y);
+
+    *word = (*word & ~MGRAS_GL_DEPTH_MASK_24) |
+            (depth & MGRAS_GL_DEPTH_MASK_24);
+}
+
+static uint32_t mgras_gl_load_stencil(void *opaque, int x, int y)
+{
+    return *mgras_gl_depth(opaque, x, y) >> MGRAS_GL_STENCIL_SHIFT;
+}
+
+static void mgras_gl_store_stencil(void *opaque, int x, int y,
+                                   uint32_t value)
+{
+    uint32_t *word = mgras_gl_depth(opaque, x, y);
+
+    *word = (*word & MGRAS_GL_DEPTH_MASK_24) |
+            value << MGRAS_GL_STENCIL_SHIFT;
 }
 
 /*
@@ -2438,11 +2618,14 @@ static void mgras_gl_store_depth(void *opaque, int x, int y, uint32_t depth)
  *   gl-line-leaves-out-its-last-pixel).
  * - A primitive with a vertex at w <= 0 is dropped, not clipped
  *   (gl-triangle-with-negative-w-is-dropped).
+ * - The stencil buffer holds 8 bits, as every visual with a depth buffer
+ *   has (above, with the stencil packets).
  */
 static const SGIRasterRules mgras_gl_raster_rules = {
     .subpixel_bits = 8,
     .color_bits = 8,
     .depth_bits = 24,
+    .stencil_bits = 8,
     .rounding = SGI_ROUND_HALF_AWAY,
     .tie_rule = SGI_TIE_TOP_LEFT_BOTTOM_ORIGIN,
     .arith = SGI_ARITH_DOUBLE,
@@ -2457,6 +2640,8 @@ static const SGIRasterTarget mgras_gl_target = {
     .store_index = mgras_gl_store_index,
     .load_depth = mgras_gl_load_depth,
     .store_depth = mgras_gl_store_depth,
+    .load_stencil = mgras_gl_load_stencil,
+    .store_stencil = mgras_gl_store_stencil,
 };
 
 /* A GL context's draw, rasterized into the banks and the depth plane. */
@@ -3531,6 +3716,39 @@ void sgi_mgras_gl_execute(SGIMgrasState *s, uint32_t header,
     }
     case MGRAS_GL_ALPHA_TEST:
         word[0] = SGI_GL_ALPHA_TEST;
+        mgras_gl_command(s, payload[0] ? SGI_GL_OP_ENABLE :
+                         SGI_GL_OP_DISABLE, word, 1);
+        return;
+    case MGRAS_GL_STENCIL_FUNC:
+        word[0] = SGI_GL_NEVER_ENUM + payload[0];
+        word[1] = payload[1];
+        word[2] = payload[2];
+        mgras_gl_command(s, SGI_GL_OP_STENCIL_FUNC, word, 3);
+        return;
+    case MGRAS_GL_STENCIL_OP:
+        for (int i = 0; i < 3; i++) {
+            if (payload[i] >= ARRAY_SIZE(mgras_gl_stencil_ops)) {
+                qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: stencil operations "
+                              "%u, %u, %u ignored\n", payload[0], payload[1],
+                              payload[2]);
+                return;
+            }
+            word[i] = mgras_gl_stencil_ops[payload[i]];
+        }
+        mgras_gl_command(s, SGI_GL_OP_STENCIL_OP, word, 3);
+        return;
+    case MGRAS_GL_STENCIL_MASK:
+        mgras_gl_command(s, SGI_GL_OP_STENCIL_MASK, payload, 1);
+        return;
+    case MGRAS_GL_CLEAR_STENCIL:
+        mgras_gl_command(s, SGI_GL_OP_CLEAR_STENCIL, payload, 1);
+        return;
+    case MGRAS_GL_CLEAR_STENCIL_BUF:
+        word[0] = SGI_GL_STENCIL_BUFFER_BIT;
+        mgras_gl_command(s, SGI_GL_OP_CLEAR, word, 1);
+        return;
+    case MGRAS_GL_STENCIL_TEST:
+        word[0] = SGI_GL_STENCIL_TEST;
         mgras_gl_command(s, payload[0] ? SGI_GL_OP_ENABLE :
                          SGI_GL_OP_DISABLE, word, 1);
         return;
