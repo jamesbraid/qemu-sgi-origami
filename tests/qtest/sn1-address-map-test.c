@@ -2229,7 +2229,7 @@ static void l1_expect_product_identity(QTestState *qts, uint8_t code)
 static void test_l1_product_identity(const void *data)
 {
     g_autofree char *quoted = g_shell_quote(prom_path);
-    const uint8_t fuel_codes[] = { 0x61, 0x34 };
+    const uint8_t fuel_codes[] = { 0x61, 0x34, 0x41 };
     QTestState *qts;
 
     qts = machine_start_with(prom_path, "-S");

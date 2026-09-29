@@ -989,20 +989,39 @@ static void test_fuel_requires_l1_type_code(const void *data)
     qtest_quit(qts);
 }
 
-static void test_fuel_rejects_other_l1_type_code(const void *data)
+static void test_fuel_rejects_out_of_range_l1_type_code(const void *data)
 {
     const char *prom = data;
 
     if (!g_test_subprocess()) {
         g_test_trap_subprocess(NULL, 0, 0);
         g_test_trap_assert_failed();
-        g_test_trap_assert_stderr("*fuel-l1-type-code must be 0x34*");
+        g_test_trap_assert_stderr("*fuel-l1-type-code*uint8*");
         return;
     }
     g_autofree char *quoted = g_shell_quote(prom);
     QTestState *qts = qtest_initf("-M fuel,fuel-board-id-word=0x4abc,"
                                   "fuel-ioc3-subsystem-id=0xc30a,"
-                                  "fuel-l1-type-code=0x35,fuel-bedrock-revision=0x2 "
+                                  "fuel-l1-type-code=0x100,fuel-bedrock-revision=0x2 "
+                                  "-cpu R14000 -smp 1 -m 512M -bios %s -S",
+                                  quoted);
+    qtest_quit(qts);
+}
+
+static void test_fuel_rejects_zero_l1_type_code(const void *data)
+{
+    const char *prom = data;
+
+    if (!g_test_subprocess()) {
+        g_test_trap_subprocess(NULL, 0, 0);
+        g_test_trap_assert_failed();
+        g_test_trap_assert_stderr("*fuel-l1-type-code must be nonzero*");
+        return;
+    }
+    g_autofree char *quoted = g_shell_quote(prom);
+    QTestState *qts = qtest_initf("-M fuel,fuel-board-id-word=0x4abc,"
+                                  "fuel-ioc3-subsystem-id=0xc30a,"
+                                  "fuel-l1-type-code=0,fuel-bedrock-revision=0x2 "
                                   "-cpu R14000 -smp 1 -m 512M -bios %s -S",
                                   quoted);
     qtest_quit(qts);
@@ -1495,8 +1514,10 @@ int main(int argc, char **argv)
                         test_fuel_rejects_other_board_code);
     qtest_add_data_func("fuel/requires-l1-type-code", prom,
                         test_fuel_requires_l1_type_code);
-    qtest_add_data_func("fuel/rejects-other-l1-type-code", prom,
-                        test_fuel_rejects_other_l1_type_code);
+    qtest_add_data_func("fuel/rejects-out-of-range-l1-type-code", prom,
+                        test_fuel_rejects_out_of_range_l1_type_code);
+    qtest_add_data_func("fuel/rejects-zero-l1-type-code", prom,
+                        test_fuel_rejects_zero_l1_type_code);
     qtest_add_data_func("fuel/requires-bedrock-revision", prom,
                         test_fuel_requires_bedrock_revision);
     qtest_add_data_func("fuel/rejects-large-bedrock-revision", prom,

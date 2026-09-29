@@ -2516,10 +2516,8 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
         error_setg(errp, "fuel-bedrock-revision must fit four bits");
         return false;
     }
-    if (!strcmp(smc->product, "fuel") &&
-        s->fuel_l1_type_code != 0x34 && s->fuel_l1_type_code != 0x61) {
-        error_setg(errp, "fuel-l1-type-code must be 0x34 (raw 4) or "
-                   "0x61 (published IP34 code)");
+    if (!strcmp(smc->product, "fuel") && !s->fuel_l1_type_code) {
+        error_setg(errp, "fuel-l1-type-code must be nonzero");
         return false;
     }
     if (s->fuel_rtc_decode &&
@@ -3964,8 +3962,7 @@ static void sgi_machine_class_init(ObjectClass *oc, const void *data)
                               sgi_machine_set_fuel_l1_type_code, NULL, NULL);
     object_class_property_set_description(oc, "fuel-l1-type-code",
         "Experimental Fuel L1 local identity reply character; required "
-        "because its physical stored value is unknown. Accepts 0x34 "
-        "(raw 4) or 0x61 (published IP34 code).");
+        "because its physical stored value is unknown. Accepts a nonzero byte.");
 
     object_class_property_add_str(oc, "fuel-l1-revision",
                                   sgi_machine_get_fuel_l1_revision,
