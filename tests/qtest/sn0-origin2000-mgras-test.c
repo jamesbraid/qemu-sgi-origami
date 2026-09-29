@@ -9910,6 +9910,35 @@ static void test_hq_query_answers_the_raster_position(void)
 }
 
 /*
+ * glRasterPos2i (0x58003808 and two integers) sets the raster position as
+ * glRasterPos2f of the same values would.
+ */
+#define GL_RASTER_POS2I_HDR   0x58003808
+
+static void test_gl_raster_pos2i(void)
+{
+    mgras_reset();
+    gl_enter_slot(qts, GL_SLOT_A);
+    gl_word(qts, GL_CONTEXT_OPENER);
+    gl_viewport(qts, 0, 0, 128, 128);
+    gl_window_projection(qts);
+    gl_word(qts, GL_RASTER_POS2I_HDR);
+    gl_word(qts, 20);
+    gl_word(qts, 30);
+    g_assert_cmphex(gl_query(qts, GL_Q_RASTER_X, 1), ==,
+                    gl_bits(20 + GL_RASTER_BIAS));
+    g_assert_cmphex(gl_query(qts, GL_Q_RASTER_Y, 1), ==,
+                    gl_bits(30 + GL_RASTER_BIAS));
+    /* Below the window: culled, so the position stays (2.12). */
+    gl_word(qts, GL_RASTER_POS2I_HDR);
+    gl_word(qts, 5);
+    gl_word(qts, (uint32_t)-3);
+    g_assert_cmphex(gl_query(qts, GL_Q_RASTER_X, 1), ==,
+                    gl_bits(20 + GL_RASTER_BIAS));
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+}
+
+/*
  * glBitmap, as the IRIX 6.5.30 IP27GR532 client's __glMgrim_Bitmap forms
  * it for a small image: 0x9420, a flags word, the width and height, xorig,
  * yorig, xmove and ymove as floats and the image's length in words; then
@@ -13880,6 +13909,8 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/origin2000/mgras/"
                    "hq-query-answers-lights-and-materials",
                    test_hq_query_answers_lights_and_materials);
+    qtest_add_func("sn0/origin2000/mgras/gl-raster-pos2i",
+                   test_gl_raster_pos2i);
     qtest_add_func("sn0/origin2000/mgras/gl-bitmap-draws-its-image",
                    test_gl_bitmap_draws_its_image);
     qtest_add_func("sn0/origin2000/mgras/gl-bitmap-unaligned-image",

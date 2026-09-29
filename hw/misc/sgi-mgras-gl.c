@@ -276,6 +276,11 @@
  * it moves a valid raster position by them (inferred, 3.7).
  */
 #define MGRAS_GL_MOVE_RASTER     0x0000d608
+/*
+ * __glMgrim_RasterPos2i (0xdac81e8) writes 0x58003808 and the two
+ * integers; OpenGL takes them as glRasterPos4f(x, y, 0, 1) (2.12).
+ */
+#define MGRAS_GL_RASTER_POS2I    0x58003808
 
 /*
  * glShadeModel's and glMatrixMode's words are the OpenGL enumerants, and
@@ -596,6 +601,7 @@ bool sgi_mgras_gl_header(uint32_t header)
     case MGRAS_GL_CLEAR_INDEX:
     case MGRAS_GL_BITMAP:
     case MGRAS_GL_MOVE_RASTER:
+    case MGRAS_GL_RASTER_POS2I:
         return true;
     default:
         return false;
@@ -2663,6 +2669,13 @@ void sgi_mgras_gl_execute(SGIMgrasState *s, uint32_t header,
 
         memcpy(f, payload, sizeof(f));
         sgi_gl_bitmap_place(mgras_gl(s), 0, 0, 0, 0, f[0], f[1], &b);
+        return;
+    }
+    case MGRAS_GL_RASTER_POS2I: {
+        float f[2] = { (int32_t)payload[0], (int32_t)payload[1] };
+
+        memcpy(word, f, sizeof(f));
+        mgras_gl_command(s, SGI_GL_OP_RASTER_POS2F, word, 2);
         return;
     }
     default:
