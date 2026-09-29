@@ -10,12 +10,10 @@
  * run on a word its node's other processor is hammering too. The first
  * loop
  * is embarrassingly parallel -- four processors doing it should take
- * about as
- * long as one -- so the wall time of the whole ROM against the wall
- * time of a
- * single-processor run is a throughput ratio, and tools/rom-run prints
- * that
- * pair of times and the number they make.
+ * about as long as one. The native QEMU ROM test
+ * (`func-mips64-sgi_roms`, registered by
+ * `tests/functional/mips64/test_sgi_roms.py`) records the timed case's
+ * duration; it does not calculate a throughput ratio.
  *
  * NOTHING PASSES OR FAILS ON THAT NUMBER, which was settled by
  * measuring it

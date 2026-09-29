@@ -71,7 +71,7 @@
  *     qemu-system-mips64 -M origin200 -cpu R10000 \
  *         -nodefaults -display none -no-reboot -semihosting \
  *         -device sgi-bridge-dma-test,addr=3 -bios
- * prebuilt/intchain.bin
+ * build/tests/functional/mips64/roms/intchain.bin
  *
  * **The `-semihosting` is not optional and its absence does not look
  * like an
@@ -79,20 +79,15 @@
  * passes,
  * and cannot say so, which from outside is indistinguishable from a
  * hang.
- * This
- * line was written without it once and the next person to follow it
- * timed out
- * and came within a step of reporting that the ROM's evidence did not
- * reproduce. `tools/rom-run` passes these four flags for every ROM it
- * runs;
- * this one cannot use it only because that script has no way to name a
- * device.
+ * The QEMU functional ROM matrix is registered as
+ * `func-mips64-sgi_roms` and source-builds its images. This case stays out
+ * of its manifest because that runner cannot add `sgi-bridge-dma-test`.
+ * Build the image with `ninja sgi-roms` and use the explicit QEMU command
+ * above.
  *
- * and is deliberately not in the suite list: the suite has no way to
- * name a
- * device, and a ROM that skipped when its subject was absent would be
- * worse
- * than no ROM. R10000 only, for the reason the other machine ROMs are —
+ * Keep it out of the manifest: a ROM that skipped when its subject was
+ * absent would be worse than no ROM. R10000 only, for the reason the
+ * other machine ROMs are —
  * the
  * route to crosstalk space is an R10000-family addressing extension.
  */

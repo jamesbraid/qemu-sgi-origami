@@ -52,30 +52,13 @@ docs/notebooks/mttcg-4cpu-usercheck-two-bugs.md (project checkout).
 missing_assertions() below is a verbatim port of linux-usercheck's own
 function of the same name, for the one-, two-, and four-CPU cases.
 
-The QEMU argv this file builds (cpu_qemu_args) replicates
-tools/linux_topology.py's own topology_args()/accelerator_args() for the
-one-, two-, and four-CPU cells (project checkout): -smp only above one
-CPU, the two memory-backends and NUMA nodes at four CPUs, and FIXED
-instruction counting (-accel tcg,thread=single -icount) at all -- shift=3
-at one and two CPUs, shift=2 at four -- deterministic machine-model
-correctness, not a host-speed gate, per that module's own comment.
-KERNEL_REL and the rest of the launch (-cpu R10000, -m) replicate
-tools/linux-run's own invocation; linux-run passes no -append at all, so
-neither does the boot command below -- the embedded userspace's console
-binds without one. `-no-reboot`, part of the direct-`-kernel` launch this
-ports, is dropped here: booting the real PROM (`-bios`) issues a reset
-classified as guest-initiated at machine init, before the PROM has run a
-single instruction, and `-no-reboot` turns that into an immediate
-shutdown with no console output at all -- reproduced directly by
-launching this exact command line with and without `-no-reboot`, the
-difference between a boot that runs and one that exits in well under a
-second. That reset is a QEMU-core classification of the origin200
-board's own realize-time reset chain, not guest code, and its
-correction belongs to a machine-model change, out of scope for a
-tests-only packet; it costs nothing here because the embedded userspace
-stub never asks the kernel to reboot on panic (see below), so `-kernel`'s
-own reason for carrying `-no-reboot` -- stopping a reboot loop -- never
-applied to netboot in the first place.
+This QEMU functional test runs the one-, two-, and four-CPU cases through
+QemuSystemTest. It loads the PROM and linux-ip27/vmlinux from
+QEMU_TEST_SGI_ASSET_DIR, then fetches the kernel over SLIRP TFTP through the
+PROM's netboot path. The embedded userspace binds its console without an
+-append argument; the test therefore supplies none. It also omits
+-no-reboot: with the PROM boot path that option shuts QEMU down during the
+machine's initial reset, before the PROM can print to the console.
 
 The guest never exits on its own: init's death panics the kernel, which
 spins rather than terminating the process, so this test drives the
@@ -153,11 +136,10 @@ def missing_assertions(log, cpus):
     return verdict(log, MARKERS[cpus])
 
 
-# Resolve the built kernel beneath QEMU_TEST_SGI_ASSET_DIR, matching
-# tools/linux-run's own default kernel path ("linux-ip27/vmlinux", Origami
-# source tree)
-# and lib_prom.FIRMWARE_REL's own idiom: QEMU_TEST_SGI_ASSET_DIR points
-# directly at the directory containing those files.
+# The native QEMU functional test is registered as
+# func-mips64-linux_kernel. Resolve its kernel input beneath
+# QEMU_TEST_SGI_ASSET_DIR, which points directly at the directory containing
+# linux-ip27/vmlinux and the PROM asset used by lib_prom.FIRMWARE_REL.
 KERNEL_REL = os.path.join('linux-ip27', 'vmlinux')
 
 # The boot file this test's own SLIRP TFTP server serves the kernel under
