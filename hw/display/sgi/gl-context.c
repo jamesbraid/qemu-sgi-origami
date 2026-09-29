@@ -524,10 +524,11 @@ uint32_t sgi_gl_draw_targets(const SGIGLDrawState *st,
  * rectangles. A clear passes only the pixel ownership, scissor and dither
  * steps, and the viewport does not bound it; ownership is the drawable's
  * rectangles, the scissor box bounds the op's rectangle while the test is
- * enabled, and no dithering is modelled. The depth buffer is cleared only
- * when the depth mask allows, the stencil buffer under the stencil write
- * mask, the colour buffers under the colour or index mask, and the
- * accumulation buffer is not modelled.
+ * enabled, and the clear colour is not dithered, whatever GL_DITHER's
+ * enable, as the hardware goldens of the one head measured show. The
+ * depth buffer is cleared only when the depth mask allows, the stencil
+ * buffer under the stencil write mask, the colour buffers under the colour
+ * or index mask, and the accumulation buffer is not modelled.
  */
 static void sgi_gl_clear(SGIGLContext *c, const SGIGLSink *sink,
                          uint32_t mask)

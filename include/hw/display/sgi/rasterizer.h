@@ -51,6 +51,46 @@ typedef enum SGILineRule {
     SGI_LINE_COVERAGE_DOUBLE,
 } SGILineRule;
 
+/*
+ * How a fragment's colour is dithered to the rules' colour bits while
+ * GL_DITHER is enabled (OpenGL 1.2.1, 4.1.7, which leaves the algorithm to
+ * the implementation).
+ */
+typedef enum SGIDither {
+    /* Rounded to the nearest step, as with GL_DITHER disabled. */
+    SGI_DITHER_NONE,
+    /*
+     * A 4x4 ordered dither: channel c in [0, 1] is stored as
+     * floor(c * max + B / 16), max the largest channel value and B the
+     * threshold, 0 to 15, of the recursive 4x4 Bayer index matrix
+     *
+     *     0  8  2 10
+     *    12  4 14  6
+     *     3 11  1  9
+     *    15  7 13  5
+     *
+     * at the pixel's column and row modulo 4, rows counted down from the
+     * top. An approximation fitted to two hardware goldens, not a
+     * specification.
+     */
+    SGI_DITHER_BAYER4_TOP_ROWS,
+} SGIDither;
+
+/* What a dither pattern is anchored to. */
+typedef enum SGIDitherAnchor {
+    /*
+     * The display: the pattern's first column is plane column 0 and its
+     * first row the target's screen_top, its rows running down the display
+     * as the target says plane rows do.
+     */
+    SGI_DITHER_SCREEN,
+    /*
+     * The window, the pattern moving with it. Needs the window's top row,
+     * which the drawable does not carry.
+     */
+    SGI_DITHER_WINDOW,
+} SGIDitherAnchor;
+
 typedef struct SGIRasterRules {
     uint8_t subpixel_bits;      /* window coordinates snap to 2^-n pixel */
     uint8_t color_bits;         /* per channel of a stored colour */
@@ -64,6 +104,8 @@ typedef struct SGIRasterRules {
     uint8_t tie_rule;           /* SGITieRule */
     uint8_t arith;              /* SGIArith */
     uint8_t line_rule;          /* SGILineRule */
+    uint8_t dither;             /* SGIDither */
+    uint8_t dither_anchor;      /* SGIDitherAnchor */
     /* Where the values come from, for logs and reports. */
     const char *evidence;
 } SGIRasterRules;
@@ -71,8 +113,10 @@ typedef struct SGIRasterRules {
 /*
  * Whether the rasterizer implements a rule set. It implements subpixel_bits
  * 1 to 12, color_bits 1 to 10, depth_bits 1 to 32, stencil_bits 0 to 16,
- * every rounding, and otherwise only SGI_TIE_TOP_LEFT_BOTTOM_ORIGIN,
- * SGI_ARITH_DOUBLE and SGI_LINE_COVERAGE_DOUBLE.
+ * every rounding and dither, and otherwise only
+ * SGI_TIE_TOP_LEFT_BOTTOM_ORIGIN, SGI_ARITH_DOUBLE,
+ * SGI_LINE_COVERAGE_DOUBLE and SGI_DITHER_SCREEN; the anchor is not
+ * checked without a dither.
  */
 bool sgi_raster_rules_supported(const SGIRasterRules *r);
 
@@ -149,6 +193,14 @@ typedef struct SGIRasterTarget {
     uint32_t (*load_stencil)(void *opaque, int x, int y);
     void (*store_stencil)(void *opaque, int x, int y, uint32_t value);
     void *opaque;
+    /*
+     * Where a dither anchored to the screen counts its rows from: the
+     * plane row of the display's top line, and whether plane rows below it
+     * have larger y, as in planes whose row 0 is the top line, or smaller.
+     * Read only under such a dither.
+     */
+    int32_t screen_top;
+    bool screen_rows_down;
 } SGIRasterTarget;
 
 /*

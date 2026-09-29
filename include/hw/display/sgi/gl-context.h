@@ -528,8 +528,8 @@ typedef struct SGIGLDrawState {
     float clip_plane[SGI_GL_CLIP_PLANES][4];
     SGIGLDrawable drawable;
     /*
-     * GL_DITHER's enable, initially on (4.1.7). Kept and answered; no
-     * rasterizer dithers.
+     * GL_DITHER's enable, initially on (4.1.7). A draw is dithered while
+     * it is on and the head's rules name a dither; clears never are.
      */
     uint32_t dither;            /* 0 or 1 */
 } SGIGLDrawState;
