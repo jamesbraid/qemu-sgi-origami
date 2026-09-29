@@ -12374,25 +12374,40 @@ static void test_gl_colour_index_migration(void)
 }
 
 /*
- * Which of the GL subsections a migration stream from qts carries: bit 0
- * sgi-mgras/gl-raster, bit 1 gl-index, bit 2 gl-block. Each is sent only
- * once some state has left what a binary without it keeps, so a guest
- * that never used the feature migrates to such a binary.
+ * The optional subsections a migration stream can carry for GL state:
+ * MGRAS's own, and the shared context description's, each sent only while
+ * its state has left what a reset gives.
  */
+enum {
+    GL_SUB_BLOCK = 1u << 0,
+    GL_SUB_READBACK = 1u << 1,
+    GL_SUB_PIXELS = 1u << 2,
+    GL_SUB_PIXEL_FLAGS = 1u << 3,
+    GL_SUB_SCISSOR = 1u << 4,
+    GL_SUB_ALPHA_TEST = 1u << 5,
+    GL_SUB_STENCIL = 1u << 6,
+    GL_SUB_CLEAR_STENCIL = 1u << 7,
+    GL_SUB_BLEND = 1u << 8,
+    GL_SUB_LOGIC_OP = 1u << 9,
+    GL_SUB_COLOUR_MASK = 1u << 10,
+    GL_SUB_FOG = 1u << 11,
+    GL_SUB_POLYGON_OFFSET = 1u << 12,
+    GL_SUB_CLIP_PLANES = 1u << 13,
+    GL_SUB_RASTERIZATION = 1u << 14,
+};
+
+/* Which of those a migration stream from qts carries, as GL_SUB_ bits. */
 static unsigned gl_stream_subsections(QTestState *qts)
 {
     static const char *const names[] = {
-        "sgi-mgras/gl-raster", "sgi-mgras/gl-index", "sgi-mgras/gl-block",
-        "sgi-mgras/gl-depth-range", "sgi-mgras/gl-dither",
-        "sgi-mgras/gl-lighting", "sgi-mgras/gl-texture",
-        "sgi-mgras/gl-light-enables", "sgi-mgras/gl-cull",
+        "sgi-mgras/gl-block", "sgi-mgras/gl-readback",
         "sgi-mgras/gl-pixels", "sgi-mgras/gl-pixel-flags",
-        "sgi-mgras/gl-scissor", "sgi-mgras/gl-alpha",
-        "sgi-mgras/gl-stencil", "sgi-mgras/gl-blend",
-        "sgi-mgras/gl-logic-op",
-        "sgi-mgras/gl-colour-mask", "sgi-mgras/gl-fog",
-        "sgi-mgras/gl-polygon-offset", "sgi-mgras/gl-clip-planes",
-        "sgi-mgras/gl-line-point",
+        "sgi-gl-draw-state/scissor", "sgi-gl-draw-state/alpha-test",
+        "sgi-gl-draw-state/stencil", "sgi-gl-context/clear-stencil",
+        "sgi-gl-draw-state/blend", "sgi-gl-draw-state/logic-op",
+        "sgi-gl-draw-state/colour-mask", "sgi-gl-draw-state/fog",
+        "sgi-gl-draw-state/polygon-offset", "sgi-gl-draw-state/clip-planes",
+        "sgi-gl-context/rasterization",
     };
     g_autofree char *tmpfs = NULL;
     g_autofree char *path = NULL;
@@ -12409,6 +12424,9 @@ static unsigned gl_stream_subsections(QTestState *qts)
     sgi_migrate_stopped(qts, uri);
     g_assert_true(g_file_get_contents(path, &contents, &length, &err));
     g_assert_no_error(err);
+    /* The shared context description is always sent. */
+    g_assert_nonnull(memmem(contents, length, "sgi-mgras/gl-contexts",
+                            strlen("sgi-mgras/gl-contexts")));
     for (int i = 0; i < ARRAY_SIZE(names); i++) {
         if (memmem(contents, length, names[i], strlen(names[i]))) {
             found |= 1u << i;
@@ -12421,10 +12439,10 @@ static unsigned gl_stream_subsections(QTestState *qts)
 
 /*
  * The GL subsections' rules, each against a state that meets only it.
- * An RGBA context that drew and holds a vertex sends none; a moved raster
- * position sends gl-raster; a vertex held with a colour index other than
- * the initial 1, the current index being 1 again, sends gl-index; and a
- * glBitmap image under way sends gl-block.
+ * An RGBA context that drew, moved its raster position and holds a
+ * vertex with a colour index other than the initial 1 sends none: all of
+ * that is the shared context's base state. A glBitmap image under way
+ * sends gl-block.
  */
 static void test_gl_subsections_follow_their_state(void)
 {
@@ -12434,31 +12452,15 @@ static void test_gl_subsections_follow_their_state(void)
     gl_enter_slot(s, GL_SLOT_A);
     gl_word(s, GL_CONTEXT_OPENER);
     gl_viewport(s, 0, 0, 128, 128);
+    gl_raster_pos2f(s, 0.5f, 0.5f);
+    gl_indexs(s, 5);
     gl_word(s, GL_BEGIN_TRIANGLES);
     gl_vertex2f(s, 0, 0);
     gl_vertex2f(s, 0.5f, 0);
     gl_vertex2f(s, 0, 0.5f);
     gl_vertex2f(s, -0.5f, 0);
-    g_assert_cmpuint(gl_stream_subsections(s), ==, 0);
-    qtest_quit(s);
-
-    s = qtest_init(MIGRATION_ARGS);
-    gl_enter_slot(s, GL_SLOT_A);
-    gl_word(s, GL_CONTEXT_OPENER);
-    gl_viewport(s, 0, 0, 128, 128);
-    gl_raster_pos2f(s, 0.5f, 0.5f);
-    g_assert_cmpuint(gl_stream_subsections(s), ==, 1);
-    qtest_quit(s);
-
-    s = qtest_init(MIGRATION_ARGS);
-    gl_enter_slot(s, GL_SLOT_A);
-    gl_word(s, GL_CONTEXT_OPENER);
-    gl_viewport(s, 0, 0, 128, 128);
-    gl_indexs(s, 5);
-    gl_word(s, GL_BEGIN_TRIANGLES);
-    gl_vertex2f(s, 0, 0);
     gl_indexs(s, 1);
-    g_assert_cmpuint(gl_stream_subsections(s), ==, 2);
+    g_assert_cmpuint(gl_stream_subsections(s), ==, 0);
     qtest_quit(s);
 
     s = qtest_init(MIGRATION_ARGS);
@@ -12467,7 +12469,7 @@ static void test_gl_subsections_follow_their_state(void)
     gl_bitmap_packet(s, 16, 4, 0, 0, 0, 0);
     gl_word(s, GL_INLINE_BLOCK | 8);
     gl_word(s, 0xffff0000);
-    g_assert_cmpuint(gl_stream_subsections(s), ==, 4);
+    g_assert_cmpuint(gl_stream_subsections(s), ==, GL_SUB_BLOCK);
     qtest_quit(s);
 }
 
@@ -14924,12 +14926,13 @@ static void test_hq_query_answers_the_write_mask(void)
 }
 
 /*
- * The rules of the subsections for the depth range, dither, lighting,
- * texture matrix and lighting enables, each against a state that meets
- * only it. What every context setup sends, the opener,
- * glEnable(GL_DITHER) as 0x6704 with 3 and glDepthRange(0, 1), leaves
- * OpenGL's initial state and sends none of them, so a guest that only set
- * up contexts still migrates to a binary without them.
+ * The rules of the optional GL state subsections, each against a state
+ * that meets only it. What every context setup sends, the opener,
+ * glEnable(GL_DITHER) as 0x6704 with 3, glDepthRange(0, 1) and a
+ * viewport, leaves the optional state as a reset has it and sends none of
+ * them; so do the lighting, texture-matrix and culling state, which are
+ * the shared context's base state. glGetLightfv's readback sends
+ * gl-readback.
  */
 static void test_gl_state_subsections_follow_their_state(void)
 {
@@ -14948,84 +14951,23 @@ static void test_gl_state_subsections_follow_their_state(void)
     gl_enter_slot(s, GL_SLOT_A);
     gl_word(s, GL_CONTEXT_OPENER);
     gl_depth_range(s, 0.25f, 1);
-    g_assert_cmpuint(gl_stream_subsections(s), ==, 8);
-    qtest_quit(s);
-
-    s = qtest_init(MIGRATION_ARGS);
-    gl_enter_slot(s, GL_SLOT_A);
-    gl_word(s, GL_CONTEXT_OPENER);
     gl_one(s, GL_DITHER_HDR, 0);
-    g_assert_cmpuint(gl_stream_subsections(s), ==, 16);
-    qtest_quit(s);
-
-    s = qtest_init(MIGRATION_ARGS);
-    gl_enter_slot(s, GL_SLOT_A);
-    gl_word(s, GL_CONTEXT_OPENER);
     gl_word(s, GL_COLOR_MATERIAL_ON);
-    g_assert_cmpuint(gl_stream_subsections(s), ==, 32);
-    qtest_quit(s);
-
-    s = qtest_init(MIGRATION_ARGS);
-    gl_enter_slot(s, GL_SLOT_A);
-    gl_word(s, GL_CONTEXT_OPENER);
     gl_one(s, GL_MATRIX_MODE_HDR, GL_TEXTURE);
     gl_word(s, GL_PUSH_MATRIX);
-    g_assert_cmpuint(gl_stream_subsections(s), ==, 64);
+    gl_word(s, GL_LIGHTING_ON);
+    gl_word(s, GL_CULL_ON);
+    g_assert_cmpuint(gl_stream_subsections(s), ==, 0);
     qtest_quit(s);
 
-    /*
-     * The lighting enables: lighting, a light or GL_NORMALIZE on sends
-     * gl-light-enables, and lighting turned off again sends nothing.
-     */
-    for (int i = 0; i < 4; i++) {
-        s = qtest_init(MIGRATION_ARGS);
-        gl_enter_slot(s, GL_SLOT_A);
-        gl_word(s, GL_CONTEXT_OPENER);
-        if (i < 2) {
-            gl_word(s, GL_LIGHTING_ON);
-        }
-        if (i == 1) {
-            gl_word(s, GL_LIGHTING_OFF);
-        }
-        if (i == 2) {
-            gl_one(s, GL_LIGHT_ON_HDR, 7);
-        }
-        if (i == 3) {
-            gl_one(s, GL_NORMALIZE_HDR, 1);
-        }
-        g_assert_cmpuint(gl_stream_subsections(s), ==, i == 1 ? 0 : 128);
-        qtest_quit(s);
-    }
-
-    /*
-     * Culling: 0x7200, a cull face other than GL_BACK or a front face
-     * other than GL_CCW sends gl-cull; culling turned off again, and the
-     * setup's own GL_BACK and GL_CCW, send nothing.
-     */
-    for (int i = 0; i < 5; i++) {
-        s = qtest_init(MIGRATION_ARGS);
-        gl_enter_slot(s, GL_SLOT_A);
-        gl_word(s, GL_CONTEXT_OPENER);
-        if (i < 2) {
-            gl_word(s, GL_CULL_ON);
-        }
-        if (i == 1) {
-            gl_word(s, GL_CULL_OFF);
-        }
-        if (i == 2) {
-            gl_one(s, GL_CULL_FACE_HDR, GL_FRONT_FACE);
-        }
-        if (i == 3) {
-            gl_one(s, GL_FRONT_FACE_HDR, GL_CW);
-        }
-        if (i == 4) {
-            gl_one(s, GL_CULL_FACE_HDR, GL_BACK_FACE);
-            gl_one(s, GL_FRONT_FACE_HDR, GL_CCW);
-        }
-        g_assert_cmpuint(gl_stream_subsections(s), ==,
-                         i == 1 || i == 4 ? 0 : 256);
-        qtest_quit(s);
-    }
+    s = qtest_init(MIGRATION_ARGS);
+    gl_enter_slot(s, GL_SLOT_A);
+    gl_word(s, GL_CONTEXT_OPENER);
+    gl_word(s, GL_GET_LIGHT_HDR);
+    gl_word(s, 0);
+    gl_word(s, GL_DIFFUSE);
+    g_assert_cmpuint(gl_stream_subsections(s), ==, GL_SUB_READBACK);
+    qtest_quit(s);
 
     /*
      * Pixels: one GE parameter load alone, or an inline draw waiting,
@@ -15049,12 +14991,13 @@ static void test_gl_state_subsections_follow_their_state(void)
             gl_word(s, GL_FLUSH);
         }
         g_assert_cmpuint(gl_stream_subsections(s), ==,
-                         i >= 2 ? 512 | 1024 : 512);
+                         i >= 2 ? GL_SUB_PIXELS | GL_SUB_PIXEL_FLAGS :
+                                  GL_SUB_PIXELS);
         qtest_quit(s);
     }
 
     /*
-     * The scissor: a box or the enable sends gl-scissor, and the test
+     * The scissor: a box or the enable sends its subsection, and the test
      * turned off again with no box sends nothing.
      */
     for (int i = 0; i < 3; i++) {
@@ -15069,13 +15012,14 @@ static void test_gl_state_subsections_follow_their_state(void)
         if (i == 2) {
             gl_one(s, GL_SCISSOR_TEST_HDR, 0);
         }
-        g_assert_cmpuint(gl_stream_subsections(s), ==, i == 2 ? 0 : 2048);
+        g_assert_cmpuint(gl_stream_subsections(s), ==,
+                         i == 2 ? 0 : GL_SUB_SCISSOR);
         qtest_quit(s);
     }
 
     /*
      * The alpha test: its enable or a function or reference other than
-     * GL_ALWAYS and 0 sends gl-alpha; the test turned off again sends
+     * GL_ALWAYS and 0 sends its subsection; the test turned off again sends
      * nothing.
      */
     for (int i = 0; i < 4; i++) {
@@ -15094,18 +15038,22 @@ static void test_gl_state_subsections_follow_their_state(void)
         if (i == 3) {
             gl_alpha_func(s, 7, 1);
         }
-        g_assert_cmpuint(gl_stream_subsections(s), ==, i == 1 ? 0 : 4096);
+        g_assert_cmpuint(gl_stream_subsections(s), ==,
+                         i == 1 ? 0 : GL_SUB_ALPHA_TEST);
         qtest_quit(s);
     }
 
     /*
-     * The stencil test: its enable, a function, a write mask or a clear
-     * value sends gl-stencil, and the test turned off again sends
-     * nothing. The buffer's values travel in the depth plane, whatever
-     * they are.
+     * The stencil test: its enable, a function or a write mask sends its
+     * subsection, a clear value the context's clear-stencil subsection,
+     * and the test turned off again sends nothing. The buffer's values
+     * travel in the depth plane, whatever they are.
      */
     for (int i = 0; i < 6; i++) {
-        static const unsigned want[6] = { 8192, 0, 8192, 8192, 8192, 8192 };
+        static const unsigned want[6] = {
+            GL_SUB_STENCIL, 0, GL_SUB_STENCIL, GL_SUB_STENCIL,
+            GL_SUB_CLEAR_STENCIL, GL_SUB_CLEAR_STENCIL,
+        };
 
         s = qtest_init(MIGRATION_ARGS);
         gl_enter_slot(s, GL_SLOT_A);
@@ -15136,7 +15084,7 @@ static void test_gl_state_subsections_follow_their_state(void)
 
     /*
      * Blending: its enable, factors other than the setup's GL_ONE and
-     * GL_ZERO, or a constant colour sends gl-blend; the setup's own
+     * GL_ZERO, or a constant colour sends its subsection; the setup's own
      * factors and equation, and blending turned off again, send nothing.
      */
     for (int i = 0; i < 4; i++) {
@@ -15160,13 +15108,14 @@ static void test_gl_state_subsections_follow_their_state(void)
             gl_float(s, 0);
             gl_float(s, 1);
         }
-        g_assert_cmpuint(gl_stream_subsections(s), ==, i == 1 ? 0 : 16384);
+        g_assert_cmpuint(gl_stream_subsections(s), ==,
+                         i == 1 ? 0 : GL_SUB_BLEND);
         qtest_quit(s);
     }
 
     /*
      * The logical operation: its enable or an operation other than
-     * GL_COPY sends gl-logic-op; the setup's GL_COPY, and the operation
+     * GL_COPY sends its subsection; the setup's GL_COPY, and the operation
      * turned off again, send nothing.
      */
     for (int i = 0; i < 3; i++) {
@@ -15180,11 +15129,12 @@ static void test_gl_state_subsections_follow_their_state(void)
         if (i == 1) {
             gl_one(s, GL_LOGIC_OP_ENABLE_HDR, 0);
         }
-        g_assert_cmpuint(gl_stream_subsections(s), ==, i == 1 ? 0 : 32768);
+        g_assert_cmpuint(gl_stream_subsections(s), ==,
+                         i == 1 ? 0 : GL_SUB_LOGIC_OP);
         qtest_quit(s);
     }
 
-    /* A masked channel sends gl-colour-mask; every channel again, nothing. */
+    /* A masked channel sends its subsection; every channel again, nothing. */
     for (int i = 0; i < 2; i++) {
         s = qtest_init(MIGRATION_ARGS);
         gl_enter_slot(s, GL_SLOT_A);
@@ -15193,13 +15143,14 @@ static void test_gl_state_subsections_follow_their_state(void)
         if (i == 1) {
             gl_one(s, GL_COLOR_MASK_HDR, 0xf);
         }
-        g_assert_cmpuint(gl_stream_subsections(s), ==, i ? 0 : 65536);
+        g_assert_cmpuint(gl_stream_subsections(s), ==,
+                         i ? 0 : GL_SUB_COLOUR_MASK);
         qtest_quit(s);
     }
 
     /*
      * Fog: its enable or a parameter other than OpenGL's initial one
-     * sends gl-fog; the initial parameters, and fog turned off again,
+     * sends its subsection; the initial parameters, and fog turned off again,
      * send nothing.
      */
     for (int i = 0; i < 3; i++) {
@@ -15214,13 +15165,14 @@ static void test_gl_state_subsections_follow_their_state(void)
         if (i == 1) {
             gl_one(s, GL_FOG_HDR, 0);
         }
-        g_assert_cmpuint(gl_stream_subsections(s), ==, i == 1 ? 0 : 131072);
+        g_assert_cmpuint(gl_stream_subsections(s), ==,
+                         i == 1 ? 0 : GL_SUB_FOG);
         qtest_quit(s);
     }
 
     /*
      * Polygon offset: an enable or a nonzero factor, units or bias sends
-     * gl-polygon-offset; the setup's zero EXT offset, and the enables
+     * its subsection; the setup's zero EXT offset, and the enables
      * cleared again, send nothing.
      */
     for (int i = 0; i < 3; i++) {
@@ -15234,13 +15186,14 @@ static void test_gl_state_subsections_follow_their_state(void)
         if (i == 1) {
             gl_one(s, GL_OFFSET_ENABLES_HDR, 0);
         }
-        g_assert_cmpuint(gl_stream_subsections(s), ==, i == 1 ? 0 : 262144);
+        g_assert_cmpuint(gl_stream_subsections(s), ==,
+                         i == 1 ? 0 : GL_SUB_POLYGON_OFFSET);
         qtest_quit(s);
     }
 
     /*
      * Client clip planes: an enable or a plane other than zero sends
-     * gl-clip-planes; the setup's zero planes, disabled, send nothing.
+     * its subsection; the setup's zero planes, disabled, send nothing.
      */
     for (int i = 0; i < 3; i++) {
         s = qtest_init(MIGRATION_ARGS);
@@ -15253,13 +15206,15 @@ static void test_gl_state_subsections_follow_their_state(void)
         if (i == 1) {
             gl_one(s, GL_CLIP_PLANE_OFF_HDR, GL_CLIP_PLANE0 + 5);
         }
-        g_assert_cmpuint(gl_stream_subsections(s), ==, i == 1 ? 0 : 524288);
+        g_assert_cmpuint(gl_stream_subsections(s), ==,
+                         i == 1 ? 0 : GL_SUB_CLIP_PLANES);
         qtest_quit(s);
     }
 
     /*
      * Point, line and polygon state: an enable or a width other than 1
-     * sends gl-line-point; the setup's width 1 and solid stipple, and the
+     * sends the rasterization subsection; the setup's width 1 and solid
+     * stipple, and the
      * enable turned off again, send nothing.
      */
     for (int i = 0; i < 3; i++) {
@@ -15277,7 +15232,8 @@ static void test_gl_state_subsections_follow_their_state(void)
         if (i == 1) {
             gl_one(s, GL_POLYGON_STIPPLE_HDR, 0);
         }
-        g_assert_cmpuint(gl_stream_subsections(s), ==, i == 1 ? 0 : 1048576);
+        g_assert_cmpuint(gl_stream_subsections(s), ==,
+                         i == 1 ? 0 : GL_SUB_RASTERIZATION);
         qtest_quit(s);
     }
 }

@@ -21,17 +21,10 @@ void sgi_mgras_gl_context_loaded(SGIMgrasState *s);
 /* The GE ports, through which the kernel copies GE external RAM. */
 #define SGI_MGRAS_GE_PORTS      0x058000
 #define SGI_MGRAS_GE_PORTS_END  0x058400
-/* GL floats travel as the IEEE single words the client sent. */
-#define VMSTATE_SGI_GL_FLOATS(_f, _s, _n, _v) \
-    VMSTATE_ARRAY(_f, _s, _n, _v, vmstate_info_uint32, float)
-/* The open primitive, in the layout of the stream since version 15. */
-extern const VMStateDescription vmstate_sgi_mgras_gl_primitive;
-extern const VMStateDescription vmstate_sgi_mgras_gl_context;
-extern const VMStateDescription vmstate_sgi_mgras_gl_context_v20;
-extern const VMStateDescription vmstate_sgi_mgras_gl_context_v21;
-extern const VMStateDescription vmstate_sgi_mgras_gl_context_v22;
-/* Each context's raster position, a subsection sent when it has moved. */
-extern const VMStateDescription vmstate_sgi_mgras_gl_raster;
+/* Each context's parser position. */
+extern const VMStateDescription vmstate_sgi_mgras_gl_context_parser;
+/* Each context's light or material readback, once one has been asked. */
+extern const VMStateDescription vmstate_sgi_mgras_gl_readback;
 
 /*
  * An inline data block's header: bit 31, the byte offset of its first
@@ -52,41 +45,8 @@ extern const VMStateDescription vmstate_sgi_mgras_gl_raster;
  */
 bool sgi_mgras_gl_block(SGIMgrasState *s, uint32_t header);
 void sgi_mgras_gl_block_word(SGIMgrasState *s, uint32_t word);
-/* Each context's colour-index state, and a marker for a block under way. */
-extern const VMStateDescription vmstate_sgi_mgras_gl_index;
+/* A marker for a block under way. */
 extern const VMStateDescription vmstate_sgi_mgras_gl_block;
-/* Each context's depth range, sent once one has left [0, 1]. */
-extern const VMStateDescription vmstate_sgi_mgras_gl_depth_range;
-/* Each context's dither enable, sent once one has turned it off. */
-extern const VMStateDescription vmstate_sgi_mgras_gl_dither;
-/* Each context's lighting state and readback, sent once either is used. */
-extern const VMStateDescription vmstate_sgi_mgras_gl_lighting;
-/* Each context's texture matrix and stack, sent once one has changed. */
-extern const VMStateDescription vmstate_sgi_mgras_gl_texture;
-/* Each context's lighting enables, sent once one is on. */
-extern const VMStateDescription vmstate_sgi_mgras_gl_light_enables;
-/* Each context's culling state, sent once one has left the initial. */
-extern const VMStateDescription vmstate_sgi_mgras_gl_cull;
-/* Each context's scissor state, sent once one has left the initial. */
-extern const VMStateDescription vmstate_sgi_mgras_gl_scissor;
-/* Each context's alpha test, sent once one has left the initial. */
-extern const VMStateDescription vmstate_sgi_mgras_gl_alpha;
-/* Each context's stencil state, sent once one has left the initial. */
-extern const VMStateDescription vmstate_sgi_mgras_gl_stencil;
-/* Each context's blending state, sent once one has left the initial. */
-extern const VMStateDescription vmstate_sgi_mgras_gl_blend;
-/* Each context's logical operation, sent once one has left the initial. */
-extern const VMStateDescription vmstate_sgi_mgras_gl_logic_op;
-/* Each context's colour mask, sent once one has masked a channel. */
-extern const VMStateDescription vmstate_sgi_mgras_gl_colour_mask;
-/* Each context's fog state, sent once one has left the initial. */
-extern const VMStateDescription vmstate_sgi_mgras_gl_fog;
-/* Each context's polygon offset, sent once one has left the initial. */
-extern const VMStateDescription vmstate_sgi_mgras_gl_polygon_offset;
-/* Each context's client clip planes, sent once one is in use. */
-extern const VMStateDescription vmstate_sgi_mgras_gl_clip_planes;
-/* Each context's point, line and polygon state, once one has left it. */
-extern const VMStateDescription vmstate_sgi_mgras_gl_line_point;
 
 /*
  * The parser's class while the words of a GE parameter load (a class-0

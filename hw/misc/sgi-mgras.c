@@ -1708,8 +1708,17 @@ static const VMStateDescription vmstate_sgi_mgras_timing = {
     }
 };
 
+/*
+ * Every GL context's shared state, the table entry the loaded context
+ * selects and the no-context entry 0 alike, through the shared layer's
+ * description; the MGRAS state beside each travels in MGRAS's own.
+ */
+DEFINE_VMSTATE_SGI_GL_CONTEXTS(vmstate_sgi_mgras_gl_contexts,
+                               TYPE_SGI_MGRAS "/gl-contexts", SGIMgrasState,
+                               gl, SGI_MGRAS_GL_CONTEXTS);
+
 static const VMStateDescription vmstate_sgi_mgras = {
-    .name = TYPE_SGI_MGRAS, .version_id = 22, .minimum_version_id = 22,
+    .name = TYPE_SGI_MGRAS, .version_id = 23, .minimum_version_id = 23,
     .post_load = mgras_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32(front_count, SGIMgrasState),
@@ -1841,42 +1850,16 @@ static const VMStateDescription vmstate_sgi_mgras = {
         VMSTATE_UINT32_ARRAY_V(xmap[0].buf_select, SGIMgrasState,
                                SGI_MGRAS_XMAP_ENTRIES, 11),
         VMSTATE_TIMER_PTR_V(scanout.retrace_timer, SGIMgrasState, 2),
-        VMSTATE_INT32_ARRAY_V(gl[0].cur.viewport, SGIMgrasState, 4, 15),
-        VMSTATE_SGI_GL_FLOATS(gl[0].clear_color, SGIMgrasState, 4, 14),
-        VMSTATE_SGI_GL_FLOATS(gl[0].cur_color, SGIMgrasState, 4, 15),
-        VMSTATE_UINT32_V(gl[0].cur.shade_model, SGIMgrasState, 15),
-        VMSTATE_STRUCT(gl[0], SGIMgrasState, 15,
-                       vmstate_sgi_mgras_gl_primitive, SGIGLContext),
         VMSTATE_UINT32_V(ge_report, SGIMgrasState, 16),
         /*
          * Version 17 grows the command payload to 16 words for
-         * glLoadMatrixf; an older stream carries the first 8, and a packet
-         * it left open had no more than that.
+         * glLoadMatrixf; the stream keeps the second 8 here.
          */
         VMSTATE_SUB_ARRAY(cmd_token_payload, SGIMgrasState, 8, 8, 17,
                           vmstate_info_uint32, uint32_t),
-        VMSTATE_UINT32_V(gl[0].matrix_mode, SGIMgrasState, 17),
-        VMSTATE_SGI_GL_FLOATS(gl[0].cur.modelview, SGIMgrasState, 16, 17),
-        VMSTATE_SGI_GL_FLOATS(gl[0].cur.projection, SGIMgrasState, 16, 17),
-        VMSTATE_UINT32_V(gl[0].cur.depth_test, SGIMgrasState, 17),
-        VMSTATE_UINT32_V(gl[0].cur.depth_func, SGIMgrasState, 17),
-        VMSTATE_UINT32_V(gl[0].cur.depth_mask, SGIMgrasState, 17),
-        VMSTATE_UINT32_V(gl[0].clear_depth, SGIMgrasState, 17),
-        VMSTATE_UINT32_V(gl[0].cur.draw_buffers, SGIMgrasState, 17),
         VMSTATE_UINT32_ARRAY_V(gl_banks, SGIMgrasState, 2, 17),
         VMSTATE_VARRAY_UINT32(depth, SGIMgrasState, depth_count, 17,
                               vmstate_info_uint32, uint32_t),
-        /*
-         * Versions 14 to 17 kept one GL state for the board, sent above as
-         * entry 0, the state used with no GL context loaded. Version 18
-         * adds the per-context entries. After an older stream loads, the
-         * table is empty and gl_current is 0, so the state the source's
-         * client was using becomes the no-context entry; that client
-         * starts from initial state at its next switch-in.
-         */
-        VMSTATE_STRUCT_SUB_ARRAY(gl, SGIMgrasState, 1,
-                                 SGI_MGRAS_GL_CONTEXTS - 1, 18,
-                                 vmstate_sgi_mgras_gl_context, SGIGLContext),
         VMSTATE_UINT32_ARRAY_V(gl_slot, SGIMgrasState, SGI_MGRAS_GL_CONTEXTS,
                                18),
         VMSTATE_UINT64_ARRAY_V(gl_selected, SGIMgrasState,
@@ -1887,51 +1870,19 @@ static const VMStateDescription vmstate_sgi_mgras = {
         VMSTATE_STRUCT_SUB_ARRAY(xmap, SGIMgrasState, 1,
                                  SGI_MGRAS_MAX_PP1 - 1, 19,
                                  vmstate_sgi_mgras_xmap, SGIMgrasXmap),
-        /*
-         * Version 20 keeps each context's parser position. An older
-         * stream leaves every context not loaded between packets.
-         */
         VMSTATE_STRUCT_ARRAY(gl_context, SGIMgrasState,
                              SGI_MGRAS_GL_CONTEXTS, 20,
-                             vmstate_sgi_mgras_gl_context_v20,
+                             vmstate_sgi_mgras_gl_context_parser,
                              SGIMgrasGLContext),
-        /*
-         * Version 21 adds each context's matrix stacks. An older stream
-         * leaves them empty, as the client had pushed nothing.
-         */
-        VMSTATE_STRUCT_ARRAY(gl, SGIMgrasState, SGI_MGRAS_GL_CONTEXTS, 21,
-                             vmstate_sgi_mgras_gl_context_v21, SGIGLContext),
-        /*
-         * Version 22 adds each context's current normal and edge flag. An
-         * older stream leaves the destination's, OpenGL's initial values.
-         */
-        VMSTATE_STRUCT_ARRAY(gl, SGIMgrasState, SGI_MGRAS_GL_CONTEXTS, 22,
-                             vmstate_sgi_mgras_gl_context_v22, SGIGLContext),
         VMSTATE_END_OF_LIST()
     },
     .subsections = (const VMStateDescription * const []) {
         &vmstate_sgi_mgras_timing,
-        &vmstate_sgi_mgras_gl_raster,
-        &vmstate_sgi_mgras_gl_index,
+        &vmstate_sgi_mgras_gl_contexts,
+        &vmstate_sgi_mgras_gl_readback,
         &vmstate_sgi_mgras_gl_block,
-        &vmstate_sgi_mgras_gl_depth_range,
-        &vmstate_sgi_mgras_gl_dither,
-        &vmstate_sgi_mgras_gl_lighting,
-        &vmstate_sgi_mgras_gl_texture,
-        &vmstate_sgi_mgras_gl_light_enables,
-        &vmstate_sgi_mgras_gl_cull,
         &vmstate_sgi_mgras_gl_pixels,
         &vmstate_sgi_mgras_gl_pixel_flags,
-        &vmstate_sgi_mgras_gl_scissor,
-        &vmstate_sgi_mgras_gl_alpha,
-        &vmstate_sgi_mgras_gl_stencil,
-        &vmstate_sgi_mgras_gl_blend,
-        &vmstate_sgi_mgras_gl_logic_op,
-        &vmstate_sgi_mgras_gl_colour_mask,
-        &vmstate_sgi_mgras_gl_fog,
-        &vmstate_sgi_mgras_gl_polygon_offset,
-        &vmstate_sgi_mgras_gl_clip_planes,
-        &vmstate_sgi_mgras_gl_line_point,
         NULL
     }
 };
