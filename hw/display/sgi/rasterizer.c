@@ -4,8 +4,11 @@
  *
  * A draw's vertices are transformed by the draw state's matrices, mapped
  * through its viewport into window coordinates, snapped to a subpixel
- * grid and rasterized with edge functions at pixel centres, then depth
- * tested and stored through the family's target. What it draws follows
+ * grid and rasterized with edge functions at pixel centres. Each fragment
+ * then passes the per-fragment operations in OpenGL 1.2.1's order (4.1):
+ * pixel ownership against the drawable's rectangles, the scissor test and
+ * the depth test, and is stored through the family's target. What it
+ * draws follows
  * OpenGL 1.2.1 for untextured points, lines, polygons and bitmaps at size
  * and width 1, flat or smooth shaded, in RGBA or colour-index mode, from
  * vertex colours the context has already lit, with a back-facing
@@ -227,7 +230,8 @@ static uint32_t sgi_soft_index(const SGISoftDraw *r, double index)
 
 /*
  * One fragment at window pixel (px, py) with window depth z: dropped
- * outside [0, 1] and outside the window's rectangles, depth tested when
+ * outside [0, 1], outside the window's rectangles and, while the scissor
+ * test is enabled, outside the scissor box (4.1.2), depth tested when
  * the test is enabled, then written to each colour target the draw
  * buffers select. Its colour is stored as the rules' packed colour in
  * RGBA mode and as its index in colour-index mode, which glIndexMask
@@ -244,6 +248,13 @@ static void sgi_soft_fragment_at(const SGISoftDraw *r, int px, int py,
         return;
     }
     if (r->win.clip->n > 1 && !sgi_clip_contains(r->win.clip, x, y)) {
+        return;
+    }
+    if (r->st->scissor_test &&
+        !(px >= r->st->scissor[0] &&
+          (int64_t)px < (int64_t)r->st->scissor[0] + r->st->scissor[2] &&
+          py >= r->st->scissor[1] &&
+          (int64_t)py < (int64_t)r->st->scissor[1] + r->st->scissor[3])) {
         return;
     }
     zq = (uint32_t)sgi_soft_round(r->rules,

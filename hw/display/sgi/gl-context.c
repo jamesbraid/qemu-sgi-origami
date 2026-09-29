@@ -413,6 +413,7 @@ static const uint8_t sgi_gl_nargs[] = {
     [SGI_GL_OP_COLOR_MATERIAL] = 2,
     [SGI_GL_OP_CULL_FACE] = 1,
     [SGI_GL_OP_FRONT_FACE] = 1,
+    [SGI_GL_OP_SCISSOR] = 4,
 };
 
 uint32_t sgi_gl_draw_targets(const SGIGLDrawState *st,
@@ -443,9 +444,10 @@ uint32_t sgi_gl_draw_targets(const SGIGLDrawState *st,
  * glClear (OpenGL 1.2.1, 4.2.3) as a raster op over the drawable's
  * rectangles. A clear passes only the pixel ownership, scissor and
  * dither steps, and the viewport does not bound it; ownership is the
- * drawable's rectangles, and the scissor test and dithering are not
- * modelled. The depth buffer is cleared only when the depth mask allows,
- * and the stencil and accumulation buffers are not modelled.
+ * drawable's rectangles, the scissor box bounds the op's rectangle while
+ * the test is enabled, and no dithering is modelled. The depth buffer is
+ * cleared only when the depth mask allows, and the stencil and
+ * accumulation buffers are not modelled.
  */
 static void sgi_gl_clear(SGIGLContext *c, const SGIGLSink *sink,
                          uint32_t mask)
@@ -479,6 +481,21 @@ static void sgi_gl_clear(SGIGLContext *c, const SGIGLSink *sink,
         op.y0 = MIN(op.y0, d->clip.r[i].y0);
         op.x1 = MAX(op.x1, d->clip.r[i].x1);
         op.y1 = MAX(op.y1, d->clip.r[i].y1);
+    }
+    if (c->cur.scissor_test) {
+        int64_t sx = (int64_t)d->origin[0] + c->cur.scissor[0];
+        int64_t sy = (int64_t)d->origin[1] + c->cur.scissor[1];
+        int64_t x0 = MAX(op.x0, sx), y0 = MAX(op.y0, sy);
+        int64_t x1 = MIN(op.x1, sx + c->cur.scissor[2] - 1);
+        int64_t y1 = MIN(op.y1, sy + c->cur.scissor[3] - 1);
+
+        if (x0 > x1 || y0 > y1) {
+            return;
+        }
+        op.x0 = x0;
+        op.y0 = y0;
+        op.x1 = x1;
+        op.y1 = y1;
     }
     if (mask & SGI_GL_COLOR_BUFFER_BIT) {
         op.clear_buffers |= SGI_GL_COLOR_BUFFER_BIT;
@@ -1233,6 +1250,9 @@ static void sgi_gl_capability(SGIGLContext *c, uint32_t cap, bool on)
     case SGI_GL_CULL_FACE:
         c->cur.cull_face = on;
         return;
+    case SGI_GL_SCISSOR_TEST:
+        c->cur.scissor_test = on;
+        return;
     case SGI_GL_COLOR_MATERIAL:
         c->color_material = on;
         sgi_gl_track_colour(c);
@@ -1407,6 +1427,17 @@ void sgi_gl_command(SGIGLContext *c, const SGIGLSink *sink,
         return;
     case SGI_GL_OP_DRAW_BUFFERS:
         c->cur.draw_buffers = a[0];
+        return;
+    case SGI_GL_OP_SCISSOR:
+        /* A negative width or height is an error and changes nothing. */
+        if ((int32_t)a[2] < 0 || (int32_t)a[3] < 0) {
+            qemu_log_mask(LOG_GUEST_ERROR, "sgi-gl: glScissor of %d by %d "
+                          "ignored\n", (int32_t)a[2], (int32_t)a[3]);
+            return;
+        }
+        for (int i = 0; i < 4; i++) {
+            c->cur.scissor[i] = a[i];
+        }
         return;
     case SGI_GL_OP_COLOR3F:
         memcpy(c->cur_color, a, 3 * sizeof(float));
@@ -1706,6 +1737,14 @@ bool sgi_gl_get(const SGIGLContext *c, uint32_t pname, uint32_t *out,
         out[0] = c->cur.front_face;
         *n = 1;
         return true;
+    case SGI_GL_SCISSOR_TEST:
+        out[0] = c->cur.scissor_test;
+        *n = 1;
+        return true;
+    case SGI_GL_SCISSOR_BOX:
+        memcpy(out, c->cur.scissor, sizeof(c->cur.scissor));
+        *n = 4;
+        return true;
     case SGI_GL_DEPTH_FUNC:
         out[0] = SGI_GL_NEVER_ENUM + c->cur.depth_func;
         *n = 1;
@@ -1809,6 +1848,7 @@ bool sgi_gl_context_valid(const SGIGLContext *c, Error **errp)
         { "depth_test", st->depth_test },
         { "depth_mask", st->depth_mask },
         { "cull_face", st->cull_face },
+        { "scissor_test", st->scissor_test },
         { "drawable.bound", st->drawable.bound },
         { "drawable.clip.empty", st->drawable.clip.empty },
         { "dither", c->dither },
@@ -1871,6 +1911,11 @@ bool sgi_gl_context_valid(const SGIGLContext *c, Error **errp)
         error_setg(errp, "sgi-gl: front face 0x%x", st->front_face);
         return false;
     }
+    if (st->scissor[2] < 0 || st->scissor[3] < 0) {
+        error_setg(errp, "sgi-gl: scissor box of %d by %d", st->scissor[2],
+                   st->scissor[3]);
+        return false;
+    }
     if (st->drawable.clip.n > SGI_CLIP_MAX) {
         error_setg(errp, "sgi-gl: %u clip rectangles", st->drawable.clip.n);
         return false;
@@ -1925,6 +1970,27 @@ static bool sgi_gl_context_post_load(void *opaque, int version_id,
 #define VMSTATE_SGI_GL_FLOATS_2D(_f, _s, _n1, _n2)                       \
     VMSTATE_2DARRAY(_f, _s, _n1, _n2, 0, vmstate_info_uint32, float)
 
+/*
+ * What sgi_gl_init() leaves, which a subsection's .needed compares its
+ * fields against: a subsection is sent whenever one of its fields holds
+ * anything else.
+ */
+static const SGIGLContext *sgi_gl_initial(void)
+{
+    static SGIGLContext initial;
+    static gsize done;
+
+    if (g_once_init_enter(&done)) {
+        sgi_gl_init(&initial, 0);
+        g_once_init_leave(&done, 1);
+    }
+    return &initial;
+}
+
+/* Whether field _f of _s differs, bit for bit, from _init's. */
+#define SGI_GL_MOVED(_s, _init, _f) \
+    (memcmp(&(_s)->_f, &(_init)->_f, sizeof((_s)->_f)) != 0)
+
 static const VMStateDescription vmstate_sgi_clip_rect = {
     .name = "sgi-clip-rect",
     .version_id = 1,
@@ -1977,6 +2043,26 @@ static const VMStateDescription vmstate_sgi_gl_drawable = {
     },
 };
 
+static bool sgi_gl_scissor_needed(void *opaque)
+{
+    const SGIGLDrawState *st = opaque, *init = &sgi_gl_initial()->cur;
+
+    return SGI_GL_MOVED(st, init, scissor_test) ||
+           SGI_GL_MOVED(st, init, scissor);
+}
+
+static const VMStateDescription vmstate_sgi_gl_scissor = {
+    .name = "sgi-gl-draw-state/scissor",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = sgi_gl_scissor_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32(scissor_test, SGIGLDrawState),
+        VMSTATE_INT32_ARRAY(scissor, SGIGLDrawState, 4),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
 static const VMStateDescription vmstate_sgi_gl_draw_state = {
     .name = "sgi-gl-draw-state",
     .version_id = 1,
@@ -1999,6 +2085,10 @@ static const VMStateDescription vmstate_sgi_gl_draw_state = {
         VMSTATE_STRUCT(drawable, SGIGLDrawState, 0, vmstate_sgi_gl_drawable,
                        SGIGLDrawable),
         VMSTATE_END_OF_LIST()
+    },
+    .subsections = (const VMStateDescription * const []) {
+        &vmstate_sgi_gl_scissor,
+        NULL
     },
 };
 

@@ -175,6 +175,8 @@ enum {
 #define SGI_GL_PROJECTION_MATRIX 0x0ba7
 #define SGI_GL_TEXTURE_MATRIX   0x0ba8
 #define SGI_GL_DITHER           0x0bd0
+#define SGI_GL_SCISSOR_BOX      0x0c10
+#define SGI_GL_SCISSOR_TEST     0x0c11
 #define SGI_GL_INDEX_CLEAR_VALUE 0x0c20
 #define SGI_GL_INDEX_WRITEMASK  0x0c21
 #define SGI_GL_COLOR_CLEAR_VALUE 0x0c22
@@ -325,6 +327,12 @@ typedef struct SGIGLDrawState {
     uint32_t cull_face;         /* 0 or 1 */
     uint32_t cull_face_mode;
     uint32_t front_face;
+    /*
+     * The scissor test (4.1.2): its enable and glScissor's box, x, y,
+     * width and height in window coordinates.
+     */
+    uint32_t scissor_test;      /* 0 or 1 */
+    int32_t scissor[4];
     SGIGLDrawable drawable;
 } SGIGLDrawState;
 
@@ -475,6 +483,7 @@ typedef enum SGIGLOp {
     SGI_GL_OP_COLOR_MATERIAL,   /* face, parameter */
     SGI_GL_OP_CULL_FACE,        /* GL_FRONT, GL_BACK or GL_FRONT_AND_BACK */
     SGI_GL_OP_FRONT_FACE,       /* GL_CW or GL_CCW */
+    SGI_GL_OP_SCISSOR,          /* x, y, width, height as int32 */
 } SGIGLOp;
 
 /*
@@ -639,8 +648,9 @@ bool sgi_gl_get(const SGIGLContext *c, uint32_t pname, uint32_t *out,
 /*
  * Whether c holds state the context's own commands could have left: each
  * enable 0 or 1, stack depths inside their stacks, enumerants the setters
- * accept, the depth range inside [0, 1], at most SGI_CLIP_MAX clip
- * rectangles, and no more vertices held than the open primitive keeps.
+ * accept, the depth range inside [0, 1], no box of negative size, at most
+ * SGI_CLIP_MAX clip rectangles, and no more vertices held than the open
+ * primitive keeps.
  * False, with the reason in errp, otherwise. Loading a context refuses
  * one that fails; a family that fills a context from its own older stream
  * layout checks it here too.

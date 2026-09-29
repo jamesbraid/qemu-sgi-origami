@@ -146,6 +146,9 @@ static void populate(SGIGLContext *c, bool other)
     c->in_begin = !other;
     c->begin_mode = other ? SGI_GL_LINE_STRIP : SGI_GL_QUAD_STRIP;
     c->nheld = other ? 0 : 3;
+    c->cur.scissor_test = !other;
+    c->cur.scissor[2] = other ? 0 : 1280;
+    c->cur.scissor[3] = other ? 1024 : 0;
 
     g_assert_true(sgi_gl_context_valid(c, &error_abort));
 }
@@ -201,6 +204,86 @@ static void cover(const VMStateDescription *vmsd, size_t base,
     }
 }
 
+typedef void (*SubsectionFn)(const VMStateDescription *sub, size_t base,
+                             void *opaque);
+
+/*
+ * Call fn for every subsection of vmsd and of the descriptions nested in
+ * it, with base the offset in the context of the structure it describes.
+ */
+static void for_each_subsection(const VMStateDescription *vmsd, size_t base,
+                                SubsectionFn fn, void *opaque)
+{
+    for (const VMStateField *f = vmsd->fields; f->name; f++) {
+        size_t n = f->flags & VMS_ARRAY ? f->num : 1;
+
+        for (size_t i = 0; f->flags & VMS_STRUCT && i < n; i++) {
+            for_each_subsection(f->vmsd, base + f->offset + i * f->size, fn,
+                                opaque);
+        }
+    }
+    for (const VMStateDescription * const *s = vmsd->subsections; s && *s;
+         s++) {
+        fn(*s, base, opaque);
+        for_each_subsection(*s, base, fn, opaque);
+    }
+}
+
+typedef void (*ElementFn)(const VMStateDescription *sub, size_t base,
+                          size_t at, size_t size, void *opaque);
+
+typedef struct ElementWalk {
+    ElementFn fn;
+    void *opaque;
+} ElementWalk;
+
+static void walk_elements(const VMStateDescription *sub, size_t base,
+                          void *opaque)
+{
+    ElementWalk *w = opaque;
+
+    for (const VMStateField *f = sub->fields; f->name; f++) {
+        size_t n = f->flags & VMS_ARRAY ? f->num : 1;
+
+        g_assert_false(f->flags & VMS_STRUCT);
+        for (size_t i = 0; i < n; i++) {
+            w->fn(sub, base, base + f->offset + i * f->size, f->size,
+                  w->opaque);
+        }
+    }
+}
+
+/*
+ * Call fn for each element of each field a subsection describes, at its
+ * offset in the context, with the subsection and its structure's offset.
+ */
+static void for_each_optional(ElementFn fn, void *opaque)
+{
+    ElementWalk w = { fn, opaque };
+
+    for_each_subsection(&vmstate_sgi_gl_context, 0, walk_elements, &w);
+}
+
+static void reset_element(const VMStateDescription *sub, size_t base,
+                          size_t at, size_t size, void *opaque)
+{
+    SGIGLContext *c = opaque;
+    g_autofree SGIGLContext *init = g_new(SGIGLContext, 1);
+
+    sgi_gl_init(init, 0);
+    memcpy((uint8_t *)c + at, (uint8_t *)init + at, size);
+}
+
+/*
+ * Give every field a subsection describes sgi_gl_init()'s value, which a
+ * real load finds in a reset device: a subsection that .needed leaves
+ * out keeps the destination's value.
+ */
+static void reset_optional(SGIGLContext *c)
+{
+    for_each_optional(reset_element, c);
+}
+
 /*
  * Every byte of SGIGLContext is migrated, once. A field added without a
  * description, or dropped from one, fails here, and so does padding, in
@@ -231,12 +314,7 @@ static void test_round_trip(void)
         for (int i = 0; i < CONTEXTS; i++) {
             populate(&src->gl[i], dir ^ i);
             populate(&dst->gl[i], !(dir ^ i));
-            /*
-             * A subsection that .needed leaves out keeps the destination's
-             * value, which a real load finds at sgi_gl_init()'s: reset
-             * those fields here, as a device reset would.
-             */
-            dst->gl[i].cur.drawable.clip.empty = 0;
+            reset_optional(&dst->gl[i]);
         }
         stream = save_head(src);
         g_assert_cmpint(load_head(stream, dst, NULL), ==, 0);
@@ -249,6 +327,74 @@ static void test_round_trip(void)
             g_assert_cmpint(diff, ==, -1);
         }
         g_byte_array_unref(stream);
+    }
+}
+
+static void assert_not_needed(const VMStateDescription *sub, size_t base,
+                              void *opaque)
+{
+    SGIGLContext *c = opaque;
+
+    g_assert_nonnull(sub->needed);
+    if (sub->needed((uint8_t *)c + base)) {
+        g_test_message("%s is needed at sgi_gl_init()'s values", sub->name);
+    }
+    g_assert_false(sub->needed((uint8_t *)c + base));
+}
+
+/* A context at sgi_gl_init()'s values needs no subsection. */
+static void test_initial_needs_no_subsection(void)
+{
+    g_autofree SGIGLContext *c = g_new(SGIGLContext, 1);
+
+    sgi_gl_init(c, 1);
+    for_each_subsection(&vmstate_sgi_gl_context, 0, assert_not_needed, c);
+}
+
+/*
+ * One element of a subsection's field moved away from sgi_gl_init()'s
+ * value, to the one moved holds, in an otherwise initial context: the
+ * subsection is needed, and the context survives the trip into a reset
+ * destination byte for byte.
+ */
+static void trip_one_element(const VMStateDescription *sub, size_t base,
+                             size_t at, size_t size, void *opaque)
+{
+    const SGIGLContext *moved = opaque;
+    g_autofree TestHead *src = g_new0(TestHead, 1);
+    g_autofree TestHead *dst = g_new0(TestHead, 1);
+    uint8_t *field;
+    GByteArray *stream;
+
+    for (int i = 0; i < CONTEXTS; i++) {
+        sgi_gl_init(&src->gl[i], 0x40 + i);
+        sgi_gl_init(&dst->gl[i], 0);
+    }
+    field = (uint8_t *)&src->gl[1] + at;
+    if (!memcmp(field, (const uint8_t *)moved + at, size)) {
+        return;
+    }
+    memcpy(field, (const uint8_t *)moved + at, size);
+    g_assert_true(sgi_gl_context_valid(&src->gl[1], &error_abort));
+    if (!sub->needed((uint8_t *)&src->gl[1] + base)) {
+        g_test_message("%s is not needed with byte %zu moved", sub->name,
+                       at);
+    }
+    g_assert_true(sub->needed((uint8_t *)&src->gl[1] + base));
+    stream = save_head(src);
+    g_assert_cmpint(load_head(stream, dst, NULL), ==, 0);
+    g_byte_array_unref(stream);
+    g_assert_cmpint(first_difference(&dst->gl[1], &src->gl[1]), ==, -1);
+}
+
+/* Each field a subsection describes, element by element, needs it. */
+static void test_each_optional_field_travels(void)
+{
+    for (int other = 0; other < 2; other++) {
+        g_autofree SGIGLContext *moved = g_new(SGIGLContext, 1);
+
+        populate(moved, other);
+        for_each_optional(trip_one_element, moved);
     }
 }
 
@@ -525,6 +671,9 @@ static const Corruption corruptions[] = {
     BAD(cur.cull_face_mode, SGI_GL_CW, "cull face"),
     BAD(cur.front_face, SGI_GL_FRONT, "front face"),
     BAD(cur.drawable.clip.n, SGI_CLIP_MAX + 1, "clip rectangles"),
+    BAD(cur.scissor_test, 2, "scissor_test"),
+    BAD(cur.scissor[2], 0xffffffff /* -1 */, "scissor box"),
+    BAD(cur.scissor[3], 0x80000000, "scissor box"),
     BAD(lights_enabled, 1u << SGI_GL_LIGHTS, "light enables"),
     BAD(color_material_face, 0, "colour material face"),
     BAD(color_material_mode, SGI_GL_SHININESS, "colour material parameter"),
@@ -575,6 +724,10 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-gl-vmstate/every-byte-described",
                     test_every_byte_described);
     g_test_add_func("/sgi-gl-vmstate/round-trip", test_round_trip);
+    g_test_add_func("/sgi-gl-vmstate/initial-needs-no-subsection",
+                    test_initial_needs_no_subsection);
+    g_test_add_func("/sgi-gl-vmstate/each-optional-field-travels",
+                    test_each_optional_field_travels);
     g_test_add_func("/sgi-gl-vmstate/open-primitive-survives",
                     test_open_primitive_survives);
     g_test_add_func("/sgi-gl-vmstate/reachable-states-valid",
