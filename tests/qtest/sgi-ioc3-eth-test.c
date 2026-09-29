@@ -2483,7 +2483,30 @@ static void test_dp83843_next_page_transmit_register(const void *data)
     close(sv[0]);
 }
 
-static void test_dp83843_next_page_migration(const void *data)
+static void test_dp83843_bmcr_loopback_selects_lbr(const void *data)
+{
+    int sv[2];
+    QTestState *qts;
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    qts = ioc3_attach_socket_dp83843(sv[1], 2, "");
+
+    mii_write(qts, MII_LBR, 0x0180);
+    mii_write(qts, PHY_BMCR, 0x7300);
+    g_assert_cmphex(mii_read(qts, MII_LBR) & 0x03b0, ==, 0x0030);
+
+    mii_write(qts, MII_LBR, mii_read(qts, MII_LBR) | 0x0180);
+    mii_write(qts, PHY_BMCR, 0x3100);
+    g_assert_cmphex(mii_read(qts, MII_LBR) & 0x0380, ==, 0);
+
+    mii_write(qts, PHY_BMCR, 0x8000);
+    g_assert_cmphex(mii_read(qts, MII_LBR), ==, 0);
+
+    ioc3_quit(qts);
+    close(sv[0]);
+}
+
+static void test_dp83843_register_migration(const void *data)
 {
     GError *error = NULL;
     g_autofree char *directory =
@@ -2500,7 +2523,9 @@ static void test_dp83843_next_page_migration(const void *data)
     g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, to_sv), ==, 0);
     from = ioc3_attach_socket_dp83843(from_sv[1], 2, "");
     mii_write(from, PHY_ANNPTR, 0x1234);
+    mii_write(from, PHY_BMCR, 0x7300);
     g_assert_cmphex(mii_read(from, PHY_ANNPTR), ==, 0x1a34);
+    g_assert_cmphex(mii_read(from, MII_LBR) & 0x0030, ==, 0x0030);
 
     /* The fixture keeps one host PCI bus handle; the VM stays alive. */
     g_clear_pointer(&ioc3_dev, g_free);
@@ -2514,6 +2539,7 @@ static void test_dp83843_next_page_migration(const void *data)
     sgi_wait_migration_status(from, "completed", 30);
     sgi_wait_migration_status(to, "completed", 30);
     g_assert_cmphex(mii_read(to, PHY_ANNPTR), ==, 0x1a34);
+    g_assert_cmphex(mii_read(to, MII_LBR) & 0x0030, ==, 0x0030);
 
     qtest_quit(from);
     ioc3_quit(to);
@@ -2624,8 +2650,10 @@ int main(int argc, char **argv)
                         test_dp83843_reset_clears_lbr_and_reopens_the_backend);
     qtest_add_data_func("sgi-ioc3-eth/dp83843-next-page-transmit-register",
                         NULL, test_dp83843_next_page_transmit_register);
-    qtest_add_data_func("sgi-ioc3-eth/dp83843-next-page-migration",
-                        NULL, test_dp83843_next_page_migration);
+    qtest_add_data_func("sgi-ioc3-eth/dp83843-register-migration",
+                        NULL, test_dp83843_register_migration);
+    qtest_add_data_func("sgi-ioc3-eth/dp83843-bmcr-loopback-selects-lbr",
+                        NULL, test_dp83843_bmcr_loopback_selects_lbr);
 
     return g_test_run();
 }
