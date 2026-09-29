@@ -38,6 +38,17 @@ qtests_mips64 = (config_all_devices.has_key('CONFIG_SGI_SN0') ?
         self.assertIn('sn0-present-test', names)
         self.assertNotIn('sn0-missing-test', names)
 
+    def test_suite_tag_is_not_a_qtest_registration(self):
+        meson = """qtests_mips64 = (config_all_devices.has_key('CONFIG_SGI_SN0') ?
+  ['sn0-present-test'] : [])
+sgi_suites = ['sgi', 'sgi-qtest']
+"""
+        names = registration_names(meson)
+        self.assertIn('sn0-present-test', names)
+        self.assertNotIn('sgi-qtest', names)
+        status, output = self.check_tree(meson, ('sn0-present-test',))
+        self.assertEqual(status, 0, output)
+
     def test_wrong_guard_does_not_register_the_device_test(self):
         meson = """qtests_mips64 = (config_all_devices.has_key('CONFIG_MALTA') ?
   ['sn0-wrong-test'] : []) + \\

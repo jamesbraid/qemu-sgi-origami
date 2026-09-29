@@ -27,7 +27,10 @@ def registration_names(meson: str) -> set[str]:
     # A timeout or scheduling entry does not put a binary in a test suite.
     for table in ("slow_qtests", "qtest_priorities"):
         text = re.sub(rf"(?ms)^{table}\s*=\s*\{{.*?^\}}", "", text)
-    return set(re.findall(r"'([^']+)'", text))
+    # Meson also uses quoted strings for suite labels such as 'sgi-qtest'.
+    # Registered qtest executables all use the source basename's -test suffix.
+    return {name for name in re.findall(r"'([^']+)'", text)
+            if name.endswith("-test")}
 
 
 def guarded_names(meson: str, config_pattern: str) -> set[str]:
