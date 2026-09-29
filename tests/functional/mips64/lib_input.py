@@ -20,7 +20,7 @@ diagnosed live against RAD4's login screen this session (four calibrated
 click attempts missed their target for exactly this reason before it was
 understood): see docs/datasheets/psitech-rad4.md's "Mouse input works"
 section and QEMU commit 8d0899df18 ("hw/input/sgi-ioc3-kbc: add mouse
-register-contract coverage") in the Origami checkout. move_mouse() below
+register-contract coverage"). move_mouse() below
 bakes in the fix that investigation converged on -- walk the cursor in
 steps no larger than MOUSE_MOVE_STEP_MAX, with a short settle between
 steps -- so a future test that needs to move a guest's pointer does not
