@@ -370,9 +370,7 @@ static void octane_init_common(MachineState *machine, bool octane2)
     }
 
     object_property_add_child(OBJECT(machine), "crossbow", OBJECT(xbow));
-    if (!octane2) {
-        qdev_prop_set_uint32(xbow, "revision", 4);
-    }
+    qdev_prop_set_uint32(xbow, "revision", octane2 ? 5 : 4);
     qdev_prop_set_uint64(xbow, "span", OCTANE_SHORT_SPAN);
     qdev_prop_set_uint16(xbow, "links-present", (1 << 8) | (1 << 15));
     qdev_prop_set_uint16(xbow, "startup-links-alive", (1 << 8) | (1 << 15));
