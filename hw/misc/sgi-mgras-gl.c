@@ -98,10 +98,12 @@
  * raster register 0x194 and one table value; the setup's values are 0x1f
  * three times and then 0x1d down to 1 (notes-unimplemented-tokens.md).
  * The SI has no texture memory and the model draws no texture, so the
- * table changes nothing it draws. Any other 0xec10, an application's
- * glDetailTexFuncSGIS or a texture path's own register, is logged. The
- * same header from those paths carries other registers (0x191, 0x193,
- * 0x1a4), which are logged too.
+ * table changes nothing it draws. The test is on each packet's values,
+ * not on the setup's sequence, so an application's glDetailTexFuncSGIS
+ * whose values fall in the same set also goes unlogged; that loses
+ * nothing, since nothing is textured. Any other 0xec10, an application's
+ * table with another value or a texture path's own register (0x191,
+ * 0x193, 0x1a4), is logged.
  */
 #define MGRAS_GL_TEXTURE_TABLE   0x0000ec10
 #define MGRAS_GL_BANKS           0x00009808
@@ -252,8 +254,10 @@
  *
  * - Word 3 is (mode << 4) | enables. Enable bit i is set for each of the
  *   first four visible rectangles, rectangle 0 in words 11 and 12, 1 in
- *   9 and 10, 2 in 7 and 8 and 3 in 5 and 6; the words of a clear bit
- *   are not written and hold whatever the image held.
+ *   9 and 10, 2 in 7 and 8 and 3 in 5 and 6. All four pairs are stored
+ *   on every call (0x6534-0x6558 on the port, 0x63e8-0x6424 in the saved
+ *   copy); a pair whose bit is clear carries leftover stack contents that
+ *   mean nothing.
  * - A window with one to four visible rectangles gets mode 1 and those
  *   rectangles. One with none, but a nonzero width, gets mode 1 and its
  *   own rectangle clamped to the screen.
