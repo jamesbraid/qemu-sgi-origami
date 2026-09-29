@@ -240,10 +240,13 @@ SPD files. The installed-guest tests pin their disk inputs:
        and ``SHA256.sig`` (SHA-256
        ``9b67eac0663a17e73714b896b5d504f26bc022b43607591ee5c7014a680b7494``)
 
-The OpenBSD tests use checksummed supplied fixtures. Public download locations
-and preparation provenance have not been established for these exact inputs.
-The full installer remains an optional slow/large test and prepares scratch
-disks with the host tools ``makefs`` and ``qemu-img``.
+The OpenBSD tests use checksummed supplied files, but public download locations
+and preparation provenance have not been established for those files. The
+installer creates its blank target disk with ``qemu-img`` and builds the sets
+disk from the listed kernel, sets, and signed manifest with ``makefs``; these
+scratch disks are not supplied fixtures. Do not treat the scratch-disk recipe
+as provenance for the source files. The full installer remains optional and
+requires QEMU's slow-test and large-data opt-ins.
 
 Both IRIX installed-guest cases use QEMU's ``skipSlowTest`` and
 ``skipBigDataTest`` decorators. Run them with ``QEMU_TEST_ALLOW_SLOW=1`` and
