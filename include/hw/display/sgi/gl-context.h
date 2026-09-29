@@ -270,8 +270,8 @@ typedef struct SGIGLMaterial {
  * buffer selection give it. Coordinates are plane pixels.
  */
 typedef struct SGIGLDrawable {
-    /* False while the family has no window for the context: nothing draws. */
-    bool bound;
+    /* 0 while the family has no window for the context: nothing draws. */
+    uint32_t bound;             /* 0 or 1 */
     /* The window's lower-left pixel, where window coordinates start. */
     int32_t origin[2];
     /* The pixels the window owns; a bound drawable has at least one. */
@@ -393,7 +393,7 @@ typedef struct SGIGLContext {
     uint32_t clear_depth;
     /* The primitive open since glBegin, SGI_GL_POINTS to SGI_GL_POLYGON. */
     uint32_t begin_mode;
-    bool in_begin;
+    uint32_t in_begin;          /* 0 or 1 */
     /* Vertices waiting for the rest of their piece, nheld of them. */
     float held[SGI_GL_HELD_VERTICES][SGI_GL_VERTEX_FLOATS];
     uint32_t nheld;
@@ -657,8 +657,8 @@ bool sgi_gl_context_valid(const SGIGLContext *c, Error **errp);
  * Adding a field. A field added to SGIGLContext, or to a structure inside
  * it, fails the build at a size check beside vmstate_sgi_gl_context, and
  * the byte-coverage test in tests/unit/test-sgi-gl-vmstate.c, until it is
- * described. Neither sees a field small enough to sit in the padding the
- * compiler leaves after a bool, so flags are uint32_t, as the rest are.
+ * described. The structure has no padding, and the test counts a padding
+ * byte as one not described, so flags are uint32_t like the rest.
  * A new field is described in a new subsection of vmstate_sgi_gl_context,
  * or of the nested description that holds it, never appended to a base
  * field list. The subsection's name is the name of the description it
