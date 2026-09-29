@@ -1233,26 +1233,18 @@ static void test_reset_clears_plain_storage(void)
 }
 
 /*
- * Independent review (Origami PR #1799) found increment 2's own fields
- * left out of the widget's existing reset method: sgi_kona_reset_hold()
- * clears widget_control/onewire_reg but stopped there. This is the claim
- * that the fix (hw/misc/sgi-kona.c) covers every field increment 2 added:
- * the register window, the mailbox queue, the textport command port's
- * framing state and the framebuffer.
- *
- * Two phases, dirtied and reset separately: the textport's generic-framer
- * mid-packet state and its bitmap mid-payload state are mutually
- * exclusive (the bitmap interceptor only engages once selector 0xa is
- * seen, and while engaged no word reaches the generic framer), so no
- * single dirty pass can leave both at once.
+ * Dirty each state added by the Kona device, reset, then probe it. The
+ * textport's generic-framer state and bitmap mid-payload state need
+ * separate phases: once selector 0xa engages the bitmap interceptor, its
+ * words no longer reach the generic framer.
  *
  * Phase 1 dirties the generic framer with selector 0x3 (argc 4),
  * deliberately not the verification probe's own argc (selector 0x9,
- * argc 1): a framer left stuck mid packet would otherwise misconsume the
- * probe's own words at the same argc and coincidentally complete with
- * the same net effect, passing even though reset never ran. With
- * mismatched argc, a stuck framer instead misaligns word consumption and
- * the probe genuinely fails to complete.
+ * argc 1): a framer left stuck mid-packet would otherwise misconsume the
+ * probe's own words at the same argc and coincidentally complete with the
+ * same net effect, passing even though reset never ran. With mismatched
+ * argc, a stuck framer instead misaligns word consumption and the probe
+ * genuinely fails to complete.
  */
 static void test_reset_clears_increment2_state(void)
 {
@@ -1345,21 +1337,10 @@ static void test_reset_clears_increment2_state(void)
 }
 
 /*
- * Independent review (Origami PR #1799) found the framebuffer pixel array
- * missing from vmstate_sgi_kona despite the header's own claim of parity
- * with hw/misc/sgi-mgras.c's migrated front/back planes. Draw a pixel
- * through the textport, migrate to a second instance, and read it back on
- * the destination: proves the array itself crossed over, not only the
- * registers and framing state the cases above already exercise. Follows
- * sn0-origin2000-mgras-test.c's own test_migration() -- the closest
- * sibling, another origin2000 sgi-xio-board graphics device with a migrated
- * pixel array and the same x-test-pixel introspection pattern -- rather
- * than tests/qtest/sgi-command-port-test.c's generic "-M none" fixture,
- * whose destination waits on "-incoming defer" plus a separate
- * migrate-incoming QMP command: mgras's own precedent instead starts the
- * destination directly with "-incoming <uri>" on its command line and
- * neither instance needs -S, so this follows suit rather than inventing a
- * third convention.
+ * Draw a pixel through the textport, migrate to a second instance, and
+ * read the pixel on the destination. This checks that migration carries
+ * the framebuffer array as well as the separately tested registers and
+ * framing state.
  */
 static void test_migration(void)
 {
