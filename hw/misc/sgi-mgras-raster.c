@@ -316,6 +316,11 @@ static void mgras_command_fifo_token(SGIMgrasState *s, uint32_t token)
             sgi_mgras_gl_block_word(s, token);
             return;
         }
+        if (s->cmd_token_class == SGI_MGRAS_CMD_TOKEN_GE_LOAD) {
+            s->cmd_token_words_remaining--;
+            sgi_mgras_gl_ge_load_word(s, token);
+            return;
+        }
         if (s->cmd_token_class != MGRAS_CMD_HDR_CLASS_DISCARD &&
             s->cmd_token_payload_count < SGI_MGRAS_CMD_TOKEN_PAYLOAD_WORDS) {
             s->cmd_token_payload[s->cmd_token_payload_count++] = token;
@@ -411,6 +416,11 @@ static void mgras_command_fifo_token(SGIMgrasState *s, uint32_t token)
         if (s->cmd_token_words_remaining == 0) {
             mgras_raster_command_fifo_dispatch(s);
         }
+        return;
+    }
+
+    /* GE parameter loads stream: their payload can pass 64 words. */
+    if (sgi_mgras_gl_ge_load(s, token)) {
         return;
     }
 
@@ -1936,15 +1946,88 @@ static void mgras_raster_dma_read_image(SGIMgrasState *s, uint32_t kick_byte)
     mgras_raster_dma_transfer(s, slot, &d, 0, 0);
 }
 
+/*
+ * A transfer to the GE, carrying the image of the loaded context's pixel
+ * draw (sgi-mgras-gl.c, mgras_gl_pixels_start()). The OpenGL client kicks
+ * it with (slot << 1) | 0xa1 (__glMgr_WriteDMAHQSetup, 0xd9c2b10 in the
+ * IRIX 6.5.30 IP27GR532 libGLcore.so): 0xa7 for slot 3 in every capture
+ * of ipaste, imgview and i3dm (run irix-20260929T063522-625ddc), where the
+ * X server's transfers into the raster engine are 0xb1 to 0xbf. The model
+ * reads bit 4 clear as the GE's port only with a draw waiting, inferred
+ * from that split: the kernel's GE-memory transfers (0xa5) also clear it,
+ * and a transfer with no draw waiting keeps the raster path's handling.
+ * The descriptor is the raster path's, and each row goes to the draw as
+ * the GE would take it, the first row the image's bottom one.
+ */
+#define MGRAS_DMA_KICK_TO_RASTER 0x10
+
+static void mgras_raster_dma_ge_pixels(SGIMgrasState *s, uint32_t kick_byte)
+{
+    uint32_t pitch = s->dma_desc_20000[MGRAS_DESC_20000_REG_PITCH];
+    uint32_t rows = s->dma_desc_20000[MGRAS_DESC_20000_REG_ROWS];
+    uint32_t bpr = s->dma_desc_20000[MGRAS_DESC_20000_REG_BPR];
+    uint64_t offset = mgras_raster_dma_src_offset(s);
+    bool trace = trace_event_get_state_backends(TRACE_SGI_MGRAS_DMA_CHUNK);
+    g_autofree uint64_t *page_addr = NULL;
+    g_autofree uint8_t *row = NULL;
+    unsigned int slot;
+    MgrasDmaBus ctx;
+    SGIDMABus bus;
+    SGIDMAPageList pl;
+    int ret = 0;
+
+    if (!mgras_raster_dma_select_slot(s, kick_byte, &slot) ||
+        !mgras_raster_dma_setup(s, slot, &ctx, &bus, &pl, &page_addr)) {
+        sgi_mgras_gl_pixels_abort(s);
+        return;
+    }
+    if (offset + (uint64_t)(rows - 1) * pitch + bpr >
+        sgi_dma_page_list_bytes(&pl)) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: pixel DMA of %u rows of "
+                      "%u bytes at 0x%" PRIx64 " runs past its %u mapped "
+                      "pages; not drawn\n", rows, bpr, offset, pl.npages);
+        sgi_mgras_gl_pixels_abort(s);
+        return;
+    }
+    row = g_malloc(bpr);
+    for (uint32_t r = 0; r < rows && !ret; r++) {
+        uint64_t pos = offset + (uint64_t)r * pitch;
+        SGIDMAMap map = { 0 };
+
+        ret = sgi_dma_map(&bus, &map, &pl, pos, bpr, DMA_DIRECTION_TO_DEVICE,
+                          trace, s->trace_sequence - 1);
+        if (!ret && !sgi_dma_map_copy(&map, pos, row, bpr, false)) {
+            ret = SGI_FAIL_BOUNDS;
+        }
+        sgi_dma_unmap(&map);
+        if (!ret) {
+            sgi_mgras_gl_pixels_row(s, row, bpr);
+        }
+    }
+    if (ret) {
+        sgi_mgras_gl_pixels_abort(s);
+    }
+}
+
 static void mgras_raster_dma_kick(SGIMgrasState *s, uint32_t kick_word)
 {
     uint32_t kick_byte = kick_word & 0xff;
+    bool take;
 
     if (kick_word & MGRAS_DMA_KICK_DIRECTION_READ) {
         mgras_raster_dma_read_image(s, kick_byte);
         return;
     }
-    mgras_raster_dma_draw_image(s, kick_byte);
+    if (!(kick_byte & MGRAS_DMA_KICK_TO_RASTER) &&
+        sgi_mgras_gl_pixels_dma(s, s->dma_desc_20000[MGRAS_DESC_20000_REG_ROWS],
+                                s->dma_desc_20000[MGRAS_DESC_20000_REG_BPR],
+                                &take)) {
+        if (take) {
+            mgras_raster_dma_ge_pixels(s, kick_byte);
+        }
+    } else {
+        mgras_raster_dma_draw_image(s, kick_byte);
+    }
     /*
      * This model is synchronous: the transfer above already ran to
      * completion (or was a no-op on malformed descriptor state) by the

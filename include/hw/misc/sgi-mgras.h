@@ -304,6 +304,23 @@ typedef struct SGIMgrasCmdParser {
 } SGIMgrasCmdParser;
 
 /*
+ * A GE pixel draw (0x8d20) waiting for its image, which arrives as inline
+ * blocks, one a row, or through one host-memory DMA transfer
+ * (hw/misc/sgi-mgras-gl.c). The rectangle is in window pixels.
+ */
+typedef struct SGIMgrasGLPixels {
+    uint32_t active;            /* 0 or 1 */
+    uint32_t format;            /* MGRAS_GL_PIXELS_* in sgi-mgras-gl.c */
+    uint32_t bpp;               /* host bytes a pixel */
+    int32_t x, y;
+    uint32_t w, h;
+    uint32_t row, col;          /* the next pixel */
+    uint32_t skip;              /* bytes still to drop from this row's block */
+    uint32_t carry;             /* bytes of a pixel split across words */
+    uint32_t ncarry;
+} SGIMgrasGLPixels;
+
+/*
  * The family's side of one GL context-table entry: where the main-port
  * parser stood when the context was last switched out, beside the entry's
  * GL state. SGIGLContext is the GL state machine's; the parser position is
@@ -318,7 +335,16 @@ typedef struct SGIMgrasGLContext {
      * 0x3bd queries read them (hw/misc/sgi-mgras-gl.c).
      */
     uint32_t readback[4];
+    /* A pixel draw under way in this context. */
+    SGIMgrasGLPixels pixels;
 } SGIMgrasGLContext;
+
+/*
+ * The GE parameter words the client's 0x80 and 0xcd packets load, by the
+ * address each load names (hw/misc/sgi-mgras-gl.c). Every address the
+ * IRIX 6.5.30 client was seen to load is below this.
+ */
+#define SGI_MGRAS_GE_PARAM_WORDS 0x1000
 
 /*
  * Entry 0 is the state used while no GL context is loaded; the others
@@ -536,6 +562,10 @@ struct SGIMgrasState {
     bool gl_ge_port_logged;
     /* The bank holding the back buffer, from 0x9808 or context words 16-17. */
     uint32_t gl_banks[2];
+    /* The GE's pixel parameters, one copy for the board. */
+    uint32_t ge_param[SGI_MGRAS_GE_PARAM_WORDS];
+    /* Host-only: a load past ge_param has been logged once. */
+    bool ge_param_logged;
     uint64_t retraces;
     /*
      * One XMAP register file per PP1 the largest board has; a board uses

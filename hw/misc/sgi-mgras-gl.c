@@ -281,6 +281,55 @@
  * integers; OpenGL takes them as glRasterPos4f(x, y, 0, 1) (2.12).
  */
 #define MGRAS_GL_RASTER_POS2I    0x58003808
+/*
+ * The words each pixel transfer brackets its GE program with:
+ * __glMgrSaveRSS (0xd9c8da0) writes 0xd214 and five words and
+ * __glMgrRestoreRSS 0xd300, __glMgrSaveTexmode (0xd9a17c0) 0xe910 and
+ * four words and __glMgrRestoreTexmode 0xea00, and
+ * __glMgrLoadRasterPosInfo (0xd9c9030) 0xd700 alone. The model draws the
+ * image without raster registers or texturing, so it consumes them;
+ * that they change nothing a later draw sees is inferred from their
+ * names and pairing.
+ */
+#define MGRAS_GL_SAVE_RSS        0x0000d214
+#define MGRAS_GL_RESTORE_RSS     0x0000d300
+#define MGRAS_GL_LOAD_RASTER_INFO 0x0000d700
+#define MGRAS_GL_SAVE_TEXMODE    0x0000e910
+#define MGRAS_GL_RESTORE_TEXMODE 0x0000ea00
+/* A GE pixel draw, whose image follows it; see mgras_gl_pixels_start(). */
+#define MGRAS_GL_PIXELS          0x00008d20
+#define MGRAS_GL_PIXELS_OP       0x8d
+#define MGRAS_GL_PIXELS_WORDS    8
+/* The GE parameter loads and pixel draws; see mgras_gl_pixels_start(). */
+#define MGRAS_GL_GE_CRAM_OP      0x80
+#define MGRAS_GL_GE_ERAM_OP      0xcd
+#define MGRAS_GL_GE_LOAD_HEAD    7      /* payload words before list one */
+#define MGRAS_GL_GE_LOAD_ADDR    3
+#define MGRAS_GL_GE_LOAD_COUNT   6
+/* Parser payload slots a load keeps its place in. */
+#define MGRAS_GL_GE_LOAD_SECOND  7      /* list two's length */
+#define MGRAS_GL_GE_LOAD_TOTAL   8      /* the load's payload words */
+#define MGRAS_GL_GE_LOAD_DONE    9      /* payload words taken */
+#define MGRAS_GL_GE_LOAD_SLOTS   10
+#define MGRAS_GE_PIXEL_PROGRAM   0x13b
+#define MGRAS_GE_PIXEL_PROGRAM_PAIRS 8
+#define MGRAS_GE_PIXEL_ZOOM      0x191
+#define MGRAS_GE_PIXEL_BOX       0xe34
+#define MGRAS_GE_ROUTINE_END     0x352d
+#define MGRAS_GE_UNPACK_4UB      0x4064
+#define MGRAS_GE_UNPACK_3UB      0x40f2
+#define MGRAS_HQ_PIXEL_ABGR      0x80
+#define MGRAS_HQ_PIXEL_SIZE      0x03
+#define MGRAS_GL_FLOAT_ONE       0x3f800000u
+#define MGRAS_GL_PIXELS_MAX      4096
+
+enum {
+    MGRAS_GL_PIXELS_ABGR8,
+    MGRAS_GL_PIXELS_RGBA8,
+    MGRAS_GL_PIXELS_RGB8,
+    MGRAS_GL_PIXELS_INDEX,
+    MGRAS_GL_PIXELS_FORMATS,
+};
 
 /*
  * glShadeModel's and glMatrixMode's words are the OpenGL enumerants, and
@@ -601,7 +650,13 @@ bool sgi_mgras_gl_header(uint32_t header)
     case MGRAS_GL_CLEAR_INDEX:
     case MGRAS_GL_BITMAP:
     case MGRAS_GL_MOVE_RASTER:
+    case MGRAS_GL_PIXELS:
     case MGRAS_GL_RASTER_POS2I:
+    case MGRAS_GL_SAVE_RSS:
+    case MGRAS_GL_RESTORE_RSS:
+    case MGRAS_GL_LOAD_RASTER_INFO:
+    case MGRAS_GL_SAVE_TEXMODE:
+    case MGRAS_GL_RESTORE_TEXMODE:
         return true;
     default:
         return false;
@@ -726,8 +781,12 @@ void sgi_mgras_gl_reset(SGIMgrasState *s)
         memset(&s->gl_context[i].parser, 0, sizeof(s->gl_context[i].parser));
         memset(s->gl_context[i].readback, 0,
                sizeof(s->gl_context[i].readback));
+        memset(&s->gl_context[i].pixels, 0,
+               sizeof(s->gl_context[i].pixels));
         sgi_gl_init(&s->gl[i], 0);
     }
+    memset(s->ge_param, 0, sizeof(s->ge_param));
+    s->ge_param_logged = false;
     memset(s->gl_slot, 0, sizeof(s->gl_slot));
     memset(s->gl_selected, 0, sizeof(s->gl_selected));
     s->gl_selections = 0;
@@ -763,6 +822,8 @@ static unsigned int mgras_gl_lookup(SGIMgrasState *s, uint32_t slot)
            sizeof(s->gl_context[free].parser));
     memset(s->gl_context[free].readback, 0,
            sizeof(s->gl_context[free].readback));
+    memset(&s->gl_context[free].pixels, 0,
+           sizeof(s->gl_context[free].pixels));
     s->gl_slot[free] = slot;
     return free;
 }
@@ -1890,6 +1951,82 @@ const VMStateDescription vmstate_sgi_mgras_gl_block = {
     }
 };
 
+/*
+ * The GE's pixel parameters and each context's pixel draw, sent once a
+ * parameter has been loaded, a draw or load is under way, or a parser is
+ * inside a load or a pixel row: a binary without them would read those
+ * words as other packets.
+ */
+static bool mgras_gl_pixels_needed(void *opaque)
+{
+    SGIMgrasState *s = opaque;
+    bool used = s->cmd_token_class == SGI_MGRAS_CMD_TOKEN_GE_LOAD ||
+                (s->cmd_token_class == SGI_MGRAS_CMD_TOKEN_GL_BLOCK &&
+                 s->cmd_token_reg == MGRAS_GL_PIXELS_OP);
+
+    for (int i = 0; !used && i < SGI_MGRAS_GE_PARAM_WORDS; i++) {
+        used = s->ge_param[i] != 0;
+    }
+    for (int i = 0; !used && i < SGI_MGRAS_GL_CONTEXTS; i++) {
+        const SGIMgrasCmdParser *p = &s->gl_context[i].parser;
+
+        used = s->gl_context[i].pixels.active ||
+               p->cls == SGI_MGRAS_CMD_TOKEN_GE_LOAD ||
+               (p->cls == SGI_MGRAS_CMD_TOKEN_GL_BLOCK &&
+                p->reg == MGRAS_GL_PIXELS_OP);
+    }
+    return used;
+}
+
+static const VMStateDescription vmstate_sgi_mgras_gl_context_pixels = {
+    .name = TYPE_SGI_MGRAS "/gl-context-pixels",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32(pixels.active, SGIMgrasGLContext),
+        VMSTATE_UINT32(pixels.format, SGIMgrasGLContext),
+        VMSTATE_UINT32(pixels.bpp, SGIMgrasGLContext),
+        VMSTATE_INT32(pixels.x, SGIMgrasGLContext),
+        VMSTATE_INT32(pixels.y, SGIMgrasGLContext),
+        VMSTATE_UINT32(pixels.w, SGIMgrasGLContext),
+        VMSTATE_UINT32(pixels.h, SGIMgrasGLContext),
+        VMSTATE_UINT32(pixels.row, SGIMgrasGLContext),
+        VMSTATE_UINT32(pixels.col, SGIMgrasGLContext),
+        VMSTATE_UINT32(pixels.skip, SGIMgrasGLContext),
+        VMSTATE_UINT32(pixels.carry, SGIMgrasGLContext),
+        VMSTATE_UINT32(pixels.ncarry, SGIMgrasGLContext),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
+const VMStateDescription vmstate_sgi_mgras_gl_pixels = {
+    .name = TYPE_SGI_MGRAS "/gl-pixels",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = mgras_gl_pixels_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32_ARRAY(ge_param, SGIMgrasState,
+                             SGI_MGRAS_GE_PARAM_WORDS),
+        VMSTATE_STRUCT_ARRAY(gl_context, SGIMgrasState, SGI_MGRAS_GL_CONTEXTS,
+                             1, vmstate_sgi_mgras_gl_context_pixels,
+                             SGIMgrasGLContext),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
+/* Whether a migrated pixel draw is one mgras_gl_pixels_start() makes. */
+static bool mgras_gl_pixels_valid(const SGIMgrasGLPixels *px)
+{
+    if (!px->active) {
+        return true;
+    }
+    return px->active == 1 && px->format <= MGRAS_GL_PIXELS_FORMATS &&
+           px->bpp >= 1 && px->bpp <= 4 && px->w >= 1 &&
+           px->w <= MGRAS_GL_PIXELS_MAX && px->h >= 1 &&
+           px->h <= MGRAS_GL_PIXELS_MAX && px->row < px->h &&
+           px->col <= px->w && px->ncarry < px->bpp && px->skip <= 3;
+}
+
 bool sgi_mgras_cmd_parser_valid(uint32_t cls, uint32_t reg,
                                 uint32_t words_remaining,
                                 uint32_t payload_count)
@@ -1903,9 +2040,14 @@ bool sgi_mgras_cmd_parser_valid(uint32_t cls, uint32_t reg,
         return words_remaining <= SGI_MGRAS_CMD_TOKEN_MAX_BLOCK_WORDS + 1;
     }
     if (cls == SGI_MGRAS_CMD_TOKEN_GL_BLOCK) {
-        return reg == MGRAS_GL_BITMAP_OP &&
+        return (reg == MGRAS_GL_BITMAP_OP || reg == MGRAS_GL_PIXELS_OP) &&
                payload_count == MGRAS_GL_BITMAP_WORDS &&
                words_remaining <= SGI_MGRAS_CMD_TOKEN_MAX_BLOCK_WORDS + 1;
+    }
+    if (cls == SGI_MGRAS_CMD_TOKEN_GE_LOAD) {
+        return (reg == MGRAS_GL_GE_CRAM_OP || reg == MGRAS_GL_GE_ERAM_OP) &&
+               payload_count == MGRAS_GL_GE_LOAD_SLOTS &&
+               words_remaining <= SGI_MGRAS_CMD_TOKEN_MAX_BLOCK_WORDS;
     }
     return words_remaining <= SGI_MGRAS_CMD_TOKEN_PAYLOAD_WORDS;
 }
@@ -1941,7 +2083,8 @@ bool sgi_mgras_gl_post_load(SGIMgrasState *s)
             !(gl->cur.depth_range[1] >= 0.0f &&
               gl->cur.depth_range[1] <= 1.0f) ||
             !sgi_mgras_cmd_parser_valid(p->cls, p->reg, p->words_remaining,
-                                        p->payload_count)) {
+                                        p->payload_count) ||
+            !mgras_gl_pixels_valid(&s->gl_context[i].pixels)) {
             return false;
         }
     }
@@ -2227,12 +2370,547 @@ static void mgras_gl_bitmap(SGIMgrasState *s, const uint32_t *payload)
     slot[MGRAS_GL_BITMAP_NEXT] = 0;
 }
 
+/*
+ * Pixel image transfers: glDrawPixels, and IRIS GL's lrectwrite and
+ * rectwrite, which the IRIX 6.5.30 IGLOO libgl.so sends the same way.
+ * The client (__glMgrSendPixels, 0xd9665c0 in IP27GR532 libGLcore.so,
+ * SHA-256 626d6d94...) does not send the image's format to the board.
+ * It builds a program for the GE out of routines, loads each routine's
+ * parameters into GE memory with 0x80 and 0xcd packets, sends 0x8d20 and
+ * eight words, and then the image: either inline, one block a row
+ * (0xd9670bc-0xd96716c, through __glMgr_PushPixels), or through one
+ * host-memory DMA transfer (__glMgr_WriteDMAHQSetup, kick byte
+ * (slot << 1) | 0xa1). The GE runs the program over the pixels and draws
+ * them.
+ *
+ * The loads. __glMgrInitPixelStateCRAM (0xd9bf030) and
+ * __glMgrInitPixelStateERAM (0xd9bf260) collect two lists of words and
+ * send them as one packet, header 0x8000 or 0xcd00 with the byte length
+ * 0x20 + 4 * (a + b) in bits 7:0, or, from 0x100 bytes up, that header
+ * with no length and an inline block giving it. The payload is seven
+ * words, a / 5 and a % 5 (a / 4 and a % 4 for 0xcd), 4 * a, the address,
+ * 0, (a == 0) | (b == 0) << 1 and a; then the a words of the first list,
+ * b, and the b words of the second. Established: the words, from the
+ * listing and from every load in the captures below. Inferred: that the
+ * GE stores the first list from the address on, which is what each
+ * load's name and the routines reading it back need. The model stores the
+ * first list in ge_param[] and consumes the second: it was either empty or
+ * the same as the first in every load captured, and what the GE does with
+ * it is unknown. Whether 0x80 and 0xcd address one memory or two is
+ * unknown; the client never used an address in both, and the model keeps
+ * one. It keeps one for the board, too, where the kernel may save and
+ * restore GE memory at a context switch; a context whose program another
+ * context overwrote between its load and its draw would draw with the
+ * other's here.
+ *
+ * The program. The client puts it at 0x13b as (routine, parameters)
+ * pairs ending with routine 0x352d, and puts the destination rectangle at
+ * 0xe34 (__glMgrInitHostToRSS, 0xd9641b0): x0, y0, x1, y1, then
+ * height << 16 | width, then 1. The rectangle is the image's own, its
+ * tiles' offsets from the raster position: mandel's 293 rows all come at
+ * 0, 0 to 99, 0 while its glRasterPos2i moves up the window, and ipaste's
+ * two tiles at x 0 and 69. The GE adds the raster position, which 0xd700
+ * loads before each draw (inferred from those and the word's emitter's
+ * name).
+ * The routine and parameter addresses are GE microcode addresses, the same
+ * in every capture; the model recognises the three programs the survey
+ * programs build, each with the pixel transfer state at OpenGL's initial
+ * values:
+ *
+ *   0x1f44/0, 0x3e65/0xd91, 0x156a/0x1b4, 0x352d/0xdf3, with 0x4064 in
+ *   0xd91's second word: 4 unsigned bytes a pixel (ipaste, i3dm);
+ *   0x1f44/0, 0x1655/0xd91, 0x3e65/0x1d6, 0x156a/0x1b4, 0x352d/0xdf3,
+ *   with 0x40f2 there: 3 unsigned bytes a pixel, GL_RGB (imgview);
+ *   0x1a3e/0, 0x352d/p: colour indices (mandel's rectwrite).
+ *
+ * Any other program, and a pixel zoom other than 1 (the client loads 0.0
+ * and 1 / y zoom at 0x191, both floats), is logged and its image consumed
+ * without drawing: its rows, or its DMA transfer, which moves nothing.
+ * Of the four-byte form the client marks GL_ABGR_EXT with bit 7 of the
+ * HQ pixel-format word (0x000c0004 before 0x8d20, value 0xe8d in ipaste;
+ * set when the format is 0x8000, 0xd966a38-0xd966ad0); without it the
+ * model reads GL_RGBA (inferred: no capture has it).
+ *
+ * The draw. Pixel n of a row lands on the window pixel whose centre lies
+ * between xr + n and xr + n + 1 for the raster position's x, and the same
+ * for rows (OpenGL 1.2.1, 3.6.4); an invalid raster position draws
+ * nothing. 0x8d20's first word is the image's words a row: 69 for
+ * ipaste's 69-pixel tiles of four bytes, 51 for imgview's 68 pixels of
+ * three, 50 for mandel's 100 indices (inferred from those; it is the tile
+ * descriptor's word +8 in the listing). A colour-index image's bytes a
+ * pixel are the 1, 2 or 4 that give that many words, which is 2 for every
+ * rectwrite captured; an image too narrow to tell (one index wide, or two
+ * at 1 or 2 bytes) is logged and not drawn. The image is the bottom row
+ * first and each row's first pixel leftmost (OpenGL 1.2.1, 3.6.4), host
+ * bytes in the order EXT_abgr or glDrawPixels names; an index is
+ * big-endian. Each pixel goes down as a fragment of the raster position's
+ * depth through the same path as glBitmap's, so the window's clip, the
+ * depth test and the index write mask apply (3.6.5, 4.1). With the
+ * transfer state at its initial values the program's result is the host
+ * colour or index unchanged (3.6.5), which is what the model draws:
+ * inferred, as the GE program is not read.
+ *
+ * Evidence: run irix-20260929T063522-625ddc, a trace of ipaste, imgview,
+ * mandel, snapshot and i3dm on the SI. The discriminating tests are
+ * gl-pixels-inline-colour-index, gl-pixels-inline-rgb, gl-pixels-dma-abgr,
+ * gl-pixels-dma-rgba-and-rgb, gl-pixels-unmodelled-draw-nothing,
+ * gl-pixels-long-load, gl-pixels-follow-the-context and
+ * gl-pixels-migration, and the replay fixture gl-pixels-rectwrite, one
+ * row of mandel's words from that run.
+ */
+static const struct {
+    uint32_t pairs;
+    uint32_t routine[5];
+    uint32_t unpack;            /* the routine's word, 0 for none */
+} mgras_gl_pixel_programs[] = {
+    [MGRAS_GL_PIXELS_ABGR8] = { 4, { 0x1f44, 0x3e65, 0x156a, 0x352d },
+                                MGRAS_GE_UNPACK_4UB },
+    [MGRAS_GL_PIXELS_RGB8] = { 5, { 0x1f44, 0x1655, 0x3e65, 0x156a, 0x352d },
+                               MGRAS_GE_UNPACK_3UB },
+    [MGRAS_GL_PIXELS_INDEX] = { 2, { 0x1a3e, 0x352d } },
+};
+
+static SGIMgrasGLPixels *mgras_gl_pixels(SGIMgrasState *s)
+{
+    return &s->gl_context[s->gl_current].pixels;
+}
+
+bool sgi_mgras_gl_ge_load(SGIMgrasState *s, uint32_t header)
+{
+    uint32_t op = (header >> 8) & 0xff;
+
+    if ((header >> 16) || (op != MGRAS_GL_GE_CRAM_OP &&
+                           op != MGRAS_GL_GE_ERAM_OP)) {
+        return false;
+    }
+    s->cmd_token_class = 0;
+    s->cmd_token_reg = op;
+    s->cmd_token_payload_count = 0;
+    s->cmd_token_words_remaining = 0;
+    /* No length: the inline block after it carries the words. */
+    if (!(header & 0xff)) {
+        return true;
+    }
+    s->cmd_token_class = SGI_MGRAS_CMD_TOKEN_GE_LOAD;
+    s->cmd_token_words_remaining = DIV_ROUND_UP(header & 0xff,
+                                                sizeof(uint32_t));
+    memset(s->cmd_token_payload, 0, sizeof(s->cmd_token_payload));
+    s->cmd_token_payload[MGRAS_GL_GE_LOAD_TOTAL] =
+        s->cmd_token_words_remaining;
+    s->cmd_token_payload_count = MGRAS_GL_GE_LOAD_SLOTS;
+    return true;
+}
+
+void sgi_mgras_gl_ge_load_word(SGIMgrasState *s, uint32_t word)
+{
+    uint32_t *p = s->cmd_token_payload;
+    uint32_t k = p[MGRAS_GL_GE_LOAD_DONE]++;
+    uint32_t first = p[MGRAS_GL_GE_LOAD_COUNT];
+    uint32_t total = p[MGRAS_GL_GE_LOAD_TOTAL];
+    /* The words both lists share: all but the head and list two's length. */
+    uint32_t lists = total > MGRAS_GL_GE_LOAD_HEAD ?
+                     total - MGRAS_GL_GE_LOAD_HEAD - 1 : 0;
+
+    if (k < MGRAS_GL_GE_LOAD_HEAD) {
+        p[k] = word;
+        if (k == MGRAS_GL_GE_LOAD_COUNT && word > lists) {
+            qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: GE parameter load of "
+                          "%u words names %u in its first list; nothing "
+                          "stored\n", total, word);
+            p[MGRAS_GL_GE_LOAD_COUNT] = 0;
+        }
+    } else if (k < MGRAS_GL_GE_LOAD_HEAD + first) {
+        uint32_t addr = p[MGRAS_GL_GE_LOAD_ADDR] + k - MGRAS_GL_GE_LOAD_HEAD;
+
+        if (addr < SGI_MGRAS_GE_PARAM_WORDS) {
+            s->ge_param[addr] = word;
+        } else if (!s->ge_param_logged) {
+            s->ge_param_logged = true;
+            qemu_log_mask(LOG_UNIMP, "sgi-mgras: GE parameter load at 0x%x "
+                          "is past the 0x%x words the model keeps\n", addr,
+                          SGI_MGRAS_GE_PARAM_WORDS);
+        }
+    } else if (k == MGRAS_GL_GE_LOAD_HEAD + first) {
+        p[MGRAS_GL_GE_LOAD_SECOND] = word;
+        if (word != lists - first) {
+            qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: GE parameter load of "
+                          "%u words gives lists of %u and %u\n", total,
+                          first, word);
+        }
+    }
+    if (!s->cmd_token_words_remaining) {
+        s->cmd_token_class = SGI_MGRAS_CMD_TOKEN_DISCARD;
+    }
+}
+
+/* The rectangle and form of the draw 0x8d20 starts, or false, logged. */
+static bool mgras_gl_pixels_program(SGIMgrasState *s, uint32_t row_words,
+                                    SGIMgrasGLPixels *px)
+{
+    const uint32_t *ge = s->ge_param;
+    const uint32_t *box = &ge[MGRAS_GE_PIXEL_BOX];
+    uint32_t hq = s->dma_desc_30000[0];
+    int32_t w = (int32_t)box[2] - (int32_t)box[0] + 1;
+    int32_t h = (int32_t)box[3] - (int32_t)box[1] + 1;
+    uint32_t pairs = 0, format;
+
+    /*
+     * A refused draw still owns the image that follows it: its rows as
+     * the rectangle gives them, or the next block alone when the
+     * rectangle is not one.
+     */
+    *px = (SGIMgrasGLPixels) {
+        .format = MGRAS_GL_PIXELS_FORMATS,
+        .bpp = 1,
+        .w = MGRAS_GL_PIXELS_MAX,
+        .h = 1,
+    };
+    if (w <= 0 || h <= 0 || w > MGRAS_GL_PIXELS_MAX ||
+        h > MGRAS_GL_PIXELS_MAX || (uint32_t)w != (box[4] & 0xffff) ||
+        (uint32_t)h != box[4] >> 16) {
+        qemu_log_mask(LOG_UNIMP, "sgi-mgras: pixel rectangle %d,%d to %d,%d "
+                      "(size word 0x%x) is not modelled\n", box[0], box[1],
+                      box[2], box[3], box[4]);
+        return false;
+    }
+    px->h = h;
+    while (pairs < MGRAS_GE_PIXEL_PROGRAM_PAIRS &&
+           ge[MGRAS_GE_PIXEL_PROGRAM + 2 * pairs] != MGRAS_GE_ROUTINE_END) {
+        pairs++;
+    }
+    pairs++;
+    for (format = 0; format < ARRAY_SIZE(mgras_gl_pixel_programs); format++) {
+        bool same = mgras_gl_pixel_programs[format].pairs == pairs;
+
+        for (uint32_t i = 0; same && i < pairs; i++) {
+            same = ge[MGRAS_GE_PIXEL_PROGRAM + 2 * i] ==
+                   mgras_gl_pixel_programs[format].routine[i];
+        }
+        if (same && mgras_gl_pixel_programs[format].unpack) {
+            uint32_t params = ge[MGRAS_GE_PIXEL_PROGRAM + 3];
+
+            same = params < SGI_MGRAS_GE_PARAM_WORDS - 1 &&
+                   ge[params + 1] == mgras_gl_pixel_programs[format].unpack;
+        }
+        if (same) {
+            break;
+        }
+    }
+    if (format >= ARRAY_SIZE(mgras_gl_pixel_programs)) {
+        qemu_log_mask(LOG_UNIMP, "sgi-mgras: GE pixel program of %u "
+                      "routines from 0x%x, 0x%x is not modelled; its image "
+                      "is not drawn\n", pairs, ge[MGRAS_GE_PIXEL_PROGRAM],
+                      ge[MGRAS_GE_PIXEL_PROGRAM + 2]);
+        return false;
+    }
+    if (ge[MGRAS_GE_PIXEL_ZOOM] || ge[MGRAS_GE_PIXEL_ZOOM + 1] !=
+        MGRAS_GL_FLOAT_ONE) {
+        qemu_log_mask(LOG_UNIMP, "sgi-mgras: pixel zoom (GE words 0x%x "
+                      "0x%x) is not modelled; the image is not drawn\n",
+                      ge[MGRAS_GE_PIXEL_ZOOM], ge[MGRAS_GE_PIXEL_ZOOM + 1]);
+        return false;
+    }
+    px->format = format;
+    px->x = box[0];
+    px->y = box[1];
+    px->w = w;
+    px->bpp = 0;
+    switch (format) {
+    case MGRAS_GL_PIXELS_ABGR8:
+        px->bpp = 4;
+        if (!(hq & MGRAS_HQ_PIXEL_ABGR)) {
+            px->format = MGRAS_GL_PIXELS_RGBA8;
+        } else if ((hq & MGRAS_HQ_PIXEL_SIZE) != 1) {
+            qemu_log_mask(LOG_UNIMP, "sgi-mgras: HQ pixel format 0x%x with a "
+                          "four-byte GE program is not modelled\n", hq);
+            return false;
+        }
+        break;
+    case MGRAS_GL_PIXELS_RGB8:
+        px->bpp = 3;
+        break;
+    default:
+        /*
+         * An image one or two indices wide gives the same words a row at
+         * more than one width; which the client sent cannot be told.
+         */
+        for (uint32_t bpp = 1; bpp <= 4; bpp *= 2) {
+            if (DIV_ROUND_UP(px->w * bpp, 4) == row_words) {
+                if (px->bpp) {
+                    qemu_log_mask(LOG_UNIMP, "sgi-mgras: colour-index image "
+                                  "%u wide in %u words a row could be %u or "
+                                  "%u bytes an index; not drawn\n", px->w,
+                                  row_words, px->bpp, bpp);
+                    return false;
+                }
+                px->bpp = bpp;
+            }
+        }
+        px->bpp = px->bpp ? px->bpp : 8;
+        break;
+    }
+    if (px->bpp > 4 || DIV_ROUND_UP(px->w * px->bpp, 4) != row_words) {
+        qemu_log_mask(LOG_UNIMP, "sgi-mgras: pixel draw of %u words a row "
+                      "for %u pixels is not modelled\n", row_words, px->w);
+        return false;
+    }
+    if (format == MGRAS_GL_PIXELS_INDEX && !mgras_gl(s)->cur.index_bits) {
+        qemu_log_mask(LOG_UNIMP, "sgi-mgras: colour-index image into an RGBA "
+                      "context is not modelled\n");
+        return false;
+    }
+    return true;
+}
+
+static void mgras_gl_pixels_start(SGIMgrasState *s, const uint32_t *payload)
+{
+    SGIMgrasGLPixels *px = mgras_gl_pixels(s);
+    SGIGLContext *c = mgras_gl(s);
+    SGIColourTarget targets[SGI_GL_MAX_TARGETS];
+
+    if (px->active) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: pixel draw ended after "
+                      "%u of %u rows by the next\n", px->row, px->h);
+    }
+    if (!mgras_gl_pixels_program(s, payload[0], px)) {
+        px->format = MGRAS_GL_PIXELS_FORMATS;
+        px->bpp = 1;
+    }
+    px->active = 1;
+    if (px->format == MGRAS_GL_PIXELS_FORMATS) {
+        return;
+    }
+    /*
+     * The rectangle is the image's own, and the GE places it at the
+     * raster position (0xd700 loads it before each draw): mandel's rows
+     * all come at 0, 0 to 99, 0 while its glRasterPos2i moves up the
+     * window. Pixel n of a row covers window x from xr + n to xr + n + 1,
+     * so its fragment is the pixel whose centre lies there (OpenGL 1.2.1,
+     * 3.6.4). With the raster position invalid nothing is drawn (3.6.4).
+     * The position is first snapped to the 1/256 pixel the model snaps
+     * vertices to (mgras_gl_raster_rules): mandel's glRasterPos2i(0, 0)
+     * through its projection comes out at 0.500003, a pixel-centre
+     * position the client meant exactly, which unsnapped would move the
+     * image one pixel. How the GE rounds it is not published.
+     */
+    if (!c->raster_valid) {
+        px->format = MGRAS_GL_PIXELS_FORMATS;
+        return;
+    }
+    px->x += (int32_t)ceil(round(c->raster_pos[0] * 256.0) / 256.0 - 0.5);
+    px->y += (int32_t)ceil(round(c->raster_pos[1] * 256.0) / 256.0 - 0.5);
+    if (!c->cur.drawable.bound) {
+        qemu_log_mask(LOG_UNIMP, "sgi-mgras: pixel draw with no window bound "
+                      "dropped\n");
+    }
+    mgras_gl_check_index(c->cur.index_bits, targets,
+                         sgi_gl_draw_targets(&c->cur, targets));
+}
+
+/*
+ * One fragment at window pixel (x, y) in a colour or index, drawn as a
+ * one-pixel glBitmap so that it meets the window's clip, the depth test
+ * and the index mask on the path every bitmap takes.
+ */
+static void mgras_gl_pixels_put(SGIMgrasState *s, int32_t x, int32_t y,
+                                const float rgba[4], float index)
+{
+    static const uint8_t set = 0x80;
+    SGIGLContext *c = mgras_gl(s);
+    SGIGLSink sink = mgras_gl_sink(s);
+    SGIRasterOp op = {
+        .kind = SGI_RASTER_BITMAP,
+        .bitmap = {
+            .state = &c->cur,
+            .x = x,
+            .y = y,
+            .width = 1,
+            .height = 1,
+            .count = 1,
+            .bytes = &set,
+            .z = c->raster_pos[2],
+            .index = index,
+        },
+    };
+    SGIColourTarget targets[SGI_GL_MAX_TARGETS];
+    uint32_t n = sgi_gl_draw_targets(&c->cur, targets);
+
+    memcpy(op.bitmap.rgba, rgba, sizeof(op.bitmap.rgba));
+    for (uint32_t i = 0; i < n; i++) {
+        /* An index for bank 1 is dropped, logged once at the draw's start. */
+        if (!c->cur.index_bits || !(targets[i] & 2)) {
+            op.targets[op.ntargets++] = targets[i];
+        }
+    }
+    op.clip = c->cur.drawable.clip;
+    sink.raster(sink.opaque, &op);
+}
+
+static void mgras_gl_pixels_pixel(SGIMgrasState *s, SGIMgrasGLPixels *px,
+                                  uint32_t v)
+{
+    float rgba[4] = { 0, 0, 0, 1.0f };
+    uint8_t b[4];
+
+    if (px->format == MGRAS_GL_PIXELS_FORMATS) {
+        return;
+    }
+    stl_be_p(b, v << (8 * (4 - px->bpp)));
+    switch (px->format) {
+    case MGRAS_GL_PIXELS_ABGR8:
+        rgba[0] = b[3] / 255.0f;
+        rgba[1] = b[2] / 255.0f;
+        rgba[2] = b[1] / 255.0f;
+        rgba[3] = b[0] / 255.0f;
+        break;
+    case MGRAS_GL_PIXELS_RGBA8:
+        rgba[3] = b[3] / 255.0f;
+        /* fall through */
+    case MGRAS_GL_PIXELS_RGB8:
+        rgba[0] = b[0] / 255.0f;
+        rgba[1] = b[1] / 255.0f;
+        rgba[2] = b[2] / 255.0f;
+        break;
+    }
+    mgras_gl_pixels_put(s, px->x + px->col, px->y + px->row, rgba, v);
+}
+
+/* Take n image bytes of the current row; bytes past its last pixel drop. */
+static void mgras_gl_pixels_bytes(SGIMgrasState *s, const uint8_t *bytes,
+                                  uint32_t n)
+{
+    SGIMgrasGLPixels *px = mgras_gl_pixels(s);
+
+    for (uint32_t i = 0; i < n && px->col < px->w; i++) {
+        px->carry = px->carry << 8 | bytes[i];
+        if (++px->ncarry == px->bpp) {
+            mgras_gl_pixels_pixel(s, px, px->carry);
+            px->col++;
+            px->carry = px->ncarry = 0;
+        }
+    }
+}
+
+static void mgras_gl_pixels_row_end(SGIMgrasState *s)
+{
+    SGIMgrasGLPixels *px = mgras_gl_pixels(s);
+
+    if (px->col < px->w && px->format != MGRAS_GL_PIXELS_FORMATS) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: pixel row %u ended after "
+                      "%u of %u pixels\n", px->row, px->col, px->w);
+    }
+    px->col = px->carry = px->ncarry = px->skip = 0;
+    if (++px->row == px->h) {
+        memset(px, 0, sizeof(*px));
+    }
+}
+
+/* Whether an inline block is the next row of a pixel draw. */
+static bool mgras_gl_pixels_block(SGIMgrasState *s, uint32_t header)
+{
+    SGIMgrasGLPixels *px = mgras_gl_pixels(s);
+    uint32_t offset = (header & SGI_MGRAS_CMD_BLOCK_OFFSET) >> 22;
+    uint32_t bytes = header & SGI_MGRAS_CMD_BLOCK_BYTES;
+
+    if (!px->active) {
+        return false;
+    }
+    /*
+     * The row's length counts the offset's word (0xd967118-0xd967140):
+     * the words sent, not the bytes after the offset.
+     */
+    s->cmd_token_class = SGI_MGRAS_CMD_TOKEN_GL_BLOCK;
+    s->cmd_token_reg = MGRAS_GL_PIXELS_OP;
+    s->cmd_token_payload_count = MGRAS_GL_PIXELS_WORDS;
+    s->cmd_token_words_remaining = DIV_ROUND_UP(bytes, sizeof(uint32_t));
+    px->skip = offset;
+    if (!s->cmd_token_words_remaining) {
+        s->cmd_token_class = SGI_MGRAS_CMD_TOKEN_DISCARD;
+        mgras_gl_pixels_row_end(s);
+    }
+    return true;
+}
+
+static void mgras_gl_pixels_word(SGIMgrasState *s, uint32_t word)
+{
+    SGIMgrasGLPixels *px = mgras_gl_pixels(s);
+    uint8_t b[4];
+    uint32_t n = 0;
+
+    for (int i = 0; i < 4; i++) {
+        if (px->skip) {
+            px->skip--;
+        } else {
+            b[n++] = word >> (24 - 8 * i);
+        }
+    }
+    mgras_gl_pixels_bytes(s, b, n);
+    if (!s->cmd_token_words_remaining) {
+        s->cmd_token_class = SGI_MGRAS_CMD_TOKEN_DISCARD;
+        mgras_gl_pixels_row_end(s);
+    }
+}
+
+bool sgi_mgras_gl_pixels_dma(SGIMgrasState *s, uint32_t rows, uint32_t bpr,
+                             bool *take)
+{
+    SGIMgrasGLPixels *px = mgras_gl_pixels(s);
+
+    *take = false;
+    if (!px->active) {
+        return false;
+    }
+    if (px->format == MGRAS_GL_PIXELS_FORMATS) {
+        memset(px, 0, sizeof(*px));
+        return true;
+    }
+    if (px->row || rows != px->h || bpr != px->w * px->bpp) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: DMA of %u rows of %u "
+                      "bytes for a pixel draw of %u by %u at %u bytes a "
+                      "pixel; not drawn\n", rows, bpr, px->w, px->h,
+                      px->bpp);
+        memset(px, 0, sizeof(*px));
+        return true;
+    }
+    *take = true;
+    return true;
+}
+
+void sgi_mgras_gl_pixels_abort(SGIMgrasState *s)
+{
+    memset(mgras_gl_pixels(s), 0, sizeof(SGIMgrasGLPixels));
+}
+
+void sgi_mgras_gl_pixels_row(SGIMgrasState *s, const uint8_t *bytes,
+                             uint32_t n)
+{
+    if (mgras_gl_pixels(s)->active) {
+        mgras_gl_pixels_bytes(s, bytes, n);
+        mgras_gl_pixels_row_end(s);
+    }
+}
+
 bool sgi_mgras_gl_block(SGIMgrasState *s, uint32_t header)
 {
     const uint32_t *slot = s->cmd_token_payload;
     uint32_t offset = (header & SGI_MGRAS_CMD_BLOCK_OFFSET) >> 22;
     uint32_t bytes = header & SGI_MGRAS_CMD_BLOCK_BYTES;
 
+    /* A long GE parameter load: its header had no length. */
+    if (s->cmd_token_class == 0 && s->cmd_token_payload_count == 0 &&
+        (s->cmd_token_reg == MGRAS_GL_GE_CRAM_OP ||
+         s->cmd_token_reg == MGRAS_GL_GE_ERAM_OP) && !offset && bytes) {
+        s->cmd_token_class = SGI_MGRAS_CMD_TOKEN_GE_LOAD;
+        s->cmd_token_words_remaining = DIV_ROUND_UP(bytes, sizeof(uint32_t));
+        memset(s->cmd_token_payload, 0, sizeof(s->cmd_token_payload));
+        s->cmd_token_payload[MGRAS_GL_GE_LOAD_TOTAL] =
+            s->cmd_token_words_remaining;
+        s->cmd_token_payload_count = MGRAS_GL_GE_LOAD_SLOTS;
+        return true;
+    }
+    if (mgras_gl_pixels_block(s, header)) {
+        return true;
+    }
     if (s->cmd_token_class != 0 || s->cmd_token_reg != MGRAS_GL_BITMAP_OP ||
         s->cmd_token_payload_count != MGRAS_GL_BITMAP_WORDS) {
         return false;
@@ -2258,6 +2936,10 @@ void sgi_mgras_gl_block_word(SGIMgrasState *s, uint32_t word)
     uint32_t first = slot[MGRAS_GL_BITMAP_NEXT], n = 0;
     uint8_t bytes[4];
 
+    if (s->cmd_token_reg == MGRAS_GL_PIXELS_OP) {
+        mgras_gl_pixels_word(s, word);
+        return;
+    }
     for (int i = 0; i < 4; i++) {
         if (slot[MGRAS_GL_BITMAP_SKIP]) {
             slot[MGRAS_GL_BITMAP_SKIP]--;
@@ -2678,6 +3360,15 @@ void sgi_mgras_gl_execute(SGIMgrasState *s, uint32_t header,
         mgras_gl_command(s, SGI_GL_OP_RASTER_POS2F, word, 2);
         return;
     }
+    case MGRAS_GL_PIXELS:
+        mgras_gl_pixels_start(s, payload);
+        return;
+    case MGRAS_GL_SAVE_RSS:
+    case MGRAS_GL_RESTORE_RSS:
+    case MGRAS_GL_LOAD_RASTER_INFO:
+    case MGRAS_GL_SAVE_TEXMODE:
+    case MGRAS_GL_RESTORE_TEXMODE:
+        return;
     default:
         g_assert_not_reached();
     }

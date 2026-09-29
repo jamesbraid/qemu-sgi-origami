@@ -10323,6 +10323,470 @@ static void test_gl_bitmap_split_by_a_context_switch(void)
     g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
 }
 
+/*
+ * Pixel image transfers as the IRIX 6.5.30 IP27GR532 client sends them
+ * (hw/misc/sgi-mgras-gl.c, mgras_gl_pixels_start()): GE parameter loads,
+ * header 0x8000 or 0xcd00 with the byte length 0x20 + 4 * (a + b) and a
+ * seven-word head before two lists; the program at 0x13b, the unpack
+ * routine's word in its parameters, the zoom at 0x191 and the window
+ * rectangle at 0xe34; then 0x8d20 and eight words, the first the image's
+ * words a row; then the image, inline one block a row, or by a DMA
+ * transfer kicked with 0xa7. The values are the ones run
+ * irix-20260929T063522-625ddc captured from ipaste, imgview and mandel.
+ */
+#define GL_GE_CRAM            0x80
+#define GL_GE_ERAM            0xcd
+#define GL_PIXELS_HDR         0x00008d20
+#define GL_HQ_PIXEL_FORMAT    0x000c0004
+#define GL_HQ_PIXEL_ABGR      0xe8d
+#define GL_HQ_PIXEL_REST      0xe00
+#define GL_GE_PROGRAM         0x13b
+#define GL_GE_UNPACK          0xd91
+#define GL_GE_ZOOM            0x191
+#define GL_GE_BOX             0xe34
+
+enum { GL_PIX_4UB, GL_PIX_3UB, GL_PIX_INDEX, GL_PIX_SCALED };
+
+static void gl_ge_load(QTestState *qts, uint32_t op, uint32_t addr,
+                       const uint32_t *words, uint32_t n)
+{
+    uint32_t len = 0x20 + 4 * n;
+
+    if (len < 0x100) {
+        gl_word(qts, op << 8 | len);
+    } else {
+        gl_word(qts, op << 8);
+        gl_word(qts, GL_INLINE_BLOCK | len);
+    }
+    gl_word(qts, op == GL_GE_CRAM ? n / 5 : n / 4);
+    gl_word(qts, op == GL_GE_CRAM ? n % 5 : n % 4);
+    gl_word(qts, 4 * n);
+    gl_word(qts, addr);
+    gl_word(qts, 0);
+    gl_word(qts, 2);
+    gl_word(qts, n);
+    for (uint32_t i = 0; i < n; i++) {
+        gl_word(qts, words[i]);
+    }
+    gl_word(qts, 0);
+}
+
+/* The client's loads for a draw of the form kind into window x0..x1. */
+static void gl_pixels_program(QTestState *qts, int kind, uint32_t bpr,
+                              uint32_t x0, uint32_t y0, uint32_t x1,
+                              uint32_t y1, float zoom)
+{
+    static const uint32_t programs[][10] = {
+        [GL_PIX_4UB] = { 0x1f44, 0, 0x3e65, 0xd91, 0x156a, 0x1b4,
+                         0x352d, 0xdf3 },
+        [GL_PIX_3UB] = { 0x1f44, 0, 0x1655, 0xd91, 0x3e65, 0x1d6,
+                         0x156a, 0x1b4, 0x352d, 0xdf3 },
+        [GL_PIX_INDEX] = { 0x1a3e, 0, 0x352d, 0x1d6 },
+        [GL_PIX_SCALED] = { 0x1f44, 0, 0x1234, 0x200, 0x3e65, 0xd91,
+                            0x156a, 0x1b4, 0x352d, 0xdf3 },
+    };
+    static const uint32_t length[] = { 8, 10, 4, 10 };
+    uint32_t unpack[6] = {
+        bpr, kind == GL_PIX_3UB ? 0x40f2 : 0x4064, 0x464, 0xb, 0xc,
+        0x3b808081,
+    };
+    uint32_t zooms[2];
+    uint32_t box[6] = {
+        x0, y0, x1, y1, (y1 - y0 + 1) << 16 | (x1 - x0 + 1), 1,
+    };
+    float z[2] = { 0, 1 / zoom };
+
+    memcpy(zooms, z, sizeof(zooms));
+    gl_ge_load(qts, GL_GE_CRAM, GL_GE_PROGRAM, programs[kind], length[kind]);
+    if (kind != GL_PIX_INDEX) {
+        gl_ge_load(qts, GL_GE_ERAM, GL_GE_UNPACK, unpack, 6);
+    }
+    gl_ge_load(qts, GL_GE_CRAM, GL_GE_ZOOM, zooms, 2);
+    gl_ge_load(qts, GL_GE_ERAM, GL_GE_BOX, box, 6);
+}
+
+static void gl_pixels_draw(QTestState *qts, uint32_t row_words)
+{
+    static const uint32_t rest[7] = { 0, 0, 2, 0x2a, 1, 0x49d0, 0x99 };
+
+    gl_word(qts, GL_PIXELS_HDR);
+    gl_word(qts, row_words);
+    for (int i = 0; i < 7; i++) {
+        gl_word(qts, rest[i]);
+    }
+}
+
+/* One row inline, its first byte at byte offset of the first word. */
+static void gl_pixels_row(QTestState *qts, uint32_t offset,
+                          const uint32_t *words, uint32_t n)
+{
+    gl_word(qts, GL_INLINE_BLOCK | offset << 22 | n * 4);
+    for (uint32_t i = 0; i < n; i++) {
+        gl_word(qts, words[i]);
+    }
+    if (n & 1) {
+        gl_word(qts, 0);
+    }
+}
+
+static void gl_pixels_context(QTestState *qts, uint32_t index_bits)
+{
+    mgras_reset();
+    gl_enter_slot(qts, GL_SLOT_A);
+    gl_word(qts, GL_CONTEXT_OPENER);
+    if (index_bits) {
+        gl_one(qts, GL_INIT_CI_HDR, index_bits);
+    }
+    gl_viewport(qts, 0, 0, 128, 128);
+    gl_window_projection(qts);
+}
+
+static void gl_pixels_fence(QTestState *qts)
+{
+    qtest_writel(qts, REG_HQ_FLAGS_CLEAR, MGRAS_HQ_FLAG_FENCE);
+    gl_word(qts, MGRAS_FENCE_TOKEN);
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_FLAGS) & MGRAS_HQ_FLAG_FENCE, ==,
+                    MGRAS_HQ_FLAG_FENCE);
+}
+
+/*
+ * mandel's rectwrite: colour indices, two bytes each, big-endian, inline
+ * one block a row, the bottom row first. Three indices a row take two
+ * words; the second row's block starts at byte 2 of its first word, which
+ * bits 23:22 give, and counts that word (its length is the words sent).
+ * An index keeps its low eight bits, the context's mask.
+ */
+static void test_gl_pixels_inline_colour_index(void)
+{
+    gl_pixels_context(qts, 8);
+    gl_pixels_program(qts, GL_PIX_INDEX, 6, 10, 20, 12, 21, 1);
+    gl_pixels_draw(qts, 2);
+    gl_pixels_row(qts, 0, (const uint32_t[]){ 0x01230045, 0x00670000 }, 2);
+    gl_pixels_row(qts, 2, (const uint32_t[]){ 0xdead0089, 0x00ab00cd }, 2);
+    gl_pixels_fence(qts);
+
+    g_assert_cmphex(gl_window_pixel(qts, 10, 20), ==, 0x23);
+    g_assert_cmphex(gl_window_pixel(qts, 11, 20), ==, 0x45);
+    g_assert_cmphex(gl_window_pixel(qts, 12, 20), ==, 0x67);
+    g_assert_cmphex(gl_window_pixel(qts, 10, 21), ==, 0x89);
+    g_assert_cmphex(gl_window_pixel(qts, 11, 21), ==, 0xab);
+    g_assert_cmphex(gl_window_pixel(qts, 12, 21), ==, 0xcd);
+    g_assert_cmphex(gl_window_pixel(qts, 13, 20), ==, 0);
+    g_assert_cmphex(gl_window_pixel(qts, 10, 22), ==, 0);
+    g_assert_cmphex(gl_window_pixel(qts, 9, 21), ==, 0);
+    g_assert_cmphex(mgras_test_format(qts, 256 + 10, 383 - 20), ==,
+                    MGRAS_PIXEL_FORMAT_CI8);
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+}
+
+/*
+ * imgview's image inline: GL_RGB, three bytes a pixel, so a pixel runs
+ * across a word boundary. Five pixels a row are 15 bytes in four words;
+ * the last byte is padding.
+ */
+static void test_gl_pixels_inline_rgb(void)
+{
+    gl_pixels_context(qts, 0);
+    gl_pixels_program(qts, GL_PIX_3UB, 15, 30, 40, 34, 40, 1);
+    gl_pixels_draw(qts, 4);
+    gl_pixels_row(qts, 0, (const uint32_t[]){
+        0x10203011, 0x21311222, 0x32132333, 0x142434ff }, 4);
+    gl_pixels_fence(qts);
+
+    g_assert_cmphex(gl_window_pixel(qts, 30, 40), ==, 0x102030);
+    g_assert_cmphex(gl_window_pixel(qts, 31, 40), ==, 0x112131);
+    g_assert_cmphex(gl_window_pixel(qts, 32, 40), ==, 0x122232);
+    g_assert_cmphex(gl_window_pixel(qts, 33, 40), ==, 0x132333);
+    g_assert_cmphex(gl_window_pixel(qts, 34, 40), ==, 0x142434);
+    g_assert_cmphex(gl_window_pixel(qts, 35, 40), ==, 0);
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+}
+
+/*
+ * The DMA form, as ipaste sends it: node 0's page list with entries for
+ * pages 7 and 8, an image at page 7 of rows pitch bytes apart, and a kick
+ * of slot 3 with bit 4 clear.
+ */
+#define GL_PIX_DMA_LIST       0x2000u
+#define GL_PIX_DMA_SRC        0x7000u
+#define GL_PIX_DMA_WIDGET     9u
+
+static void gl_pixels_dma(QTestState *qts, const uint8_t *image, uint32_t len,
+                          uint32_t pitch, uint32_t rows, uint32_t bpr,
+                          uint32_t kick)
+{
+    static const uint8_t header[24] = { 0 };
+    static const uint8_t list[16] = {
+        0, 0, 0, 0, 0, 0, 0, 0x07, 0, 0, 0, 0, 0, 0, 0, 0x08,
+    };
+
+    qtest_memwrite(qts, GL_PIX_DMA_LIST, header, sizeof(header));
+    qtest_memwrite(qts, GL_PIX_DMA_LIST + 0x18, list, sizeof(list));
+    qtest_memwrite(qts, GL_PIX_DMA_SRC, image, len);
+    /* DMA-map slot 3: registers 0x26/0x27, 0x33 and 0x4e. */
+    qtest_writel(qts, MGRAS_REG(0x130400), 0x00482608);
+    qtest_writeq(qts, MGRAS_REG(0x130400), GL_PIX_DMA_LIST + 0x18);
+    qtest_writeq(qts, MGRAS_REG(0x130400), ((uint64_t)0x00483304 << 32) | 2);
+    qtest_writeq(qts, MGRAS_REG(0x130400),
+                 ((uint64_t)0x00484e04 << 32) | (GL_PIX_DMA_WIDGET << 16));
+    gl_word(qts, 0x00080004);
+    gl_word(qts, 0x80000000);
+    gl_word(qts, 0x00080404);
+    gl_word(qts, pitch);
+    gl_word(qts, 0x00080504);
+    gl_word(qts, 0);
+    gl_word(qts, 0x00080604);
+    gl_word(qts, 0);
+    gl_word(qts, 0x00080704);
+    gl_word(qts, rows);
+    gl_word(qts, 0x00080804);
+    gl_word(qts, bpr);
+    qtest_writel(qts, REG_HQ_FLAGS_CLEAR, MGRAS_HQ_FLAG_FENCE);
+    gl_word(qts, 0x00080b04);
+    gl_word(qts, kick);
+}
+
+/*
+ * ipaste's GL_ABGR_EXT image by DMA: bytes alpha, blue, green, red, which
+ * the HQ pixel-format word 0xe8d marks, three pixels a row and rows 16
+ * bytes apart, the bottom row first. The raster engine's own rectangle
+ * from before is not painted: the transfer is the GE's.
+ */
+static void test_gl_pixels_dma_abgr(void)
+{
+    static const uint8_t image[32] = {
+        0xff, 0x03, 0x02, 0x01, 0xff, 0x06, 0x05, 0x04,
+        0xff, 0x09, 0x08, 0x07, 0xee, 0xee, 0xee, 0xee,
+        0xff, 0x13, 0x12, 0x11, 0xff, 0x16, 0x15, 0x14,
+        0xff, 0x19, 0x18, 0x17, 0xee, 0xee, 0xee, 0xee,
+    };
+
+    gl_pixels_context(qts, 0);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_BLOCK_START, (400u << 16) | 400u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_BLOCK_END, (402u << 16) | 401u));
+    gl_pixels_program(qts, GL_PIX_4UB, 12, 5, 7, 7, 8, 1);
+    gl_one(qts, GL_HQ_PIXEL_FORMAT, GL_HQ_PIXEL_ABGR);
+    gl_pixels_draw(qts, 3);
+    gl_pixels_dma(qts, image, sizeof(image), 16, 2, 12, 0xa7);
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_FLAGS) & MGRAS_HQ_FLAG_FENCE, ==,
+                    MGRAS_HQ_FLAG_FENCE);
+    gl_one(qts, GL_HQ_PIXEL_FORMAT, GL_HQ_PIXEL_REST);
+
+    g_assert_cmphex(gl_window_pixel(qts, 5, 7), ==, 0x010203);
+    g_assert_cmphex(gl_window_pixel(qts, 6, 7), ==, 0x040506);
+    g_assert_cmphex(gl_window_pixel(qts, 7, 7), ==, 0x070809);
+    g_assert_cmphex(gl_window_pixel(qts, 5, 8), ==, 0x111213);
+    g_assert_cmphex(gl_window_pixel(qts, 7, 8), ==, 0x171819);
+    g_assert_cmphex(gl_window_pixel(qts, 8, 7), ==, 0);
+    g_assert_cmphex(gl_window_pixel(qts, 5, 9), ==, 0);
+    g_assert_cmphex(mgras_test_pixel(qts, 400, 400), ==, 0);
+    g_assert_cmphex(mgras_test_pixel(qts, 402, 401), ==, 0);
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+}
+
+/*
+ * Without the ABGR bit a four-byte image is GL_RGBA (inferred: no capture
+ * has one), and imgview's GL_RGB image by DMA takes three bytes a pixel.
+ */
+static void test_gl_pixels_dma_rgba_and_rgb(void)
+{
+    static const uint8_t rgba[8] = {
+        0x01, 0x02, 0x03, 0xff, 0x04, 0x05, 0x06, 0xff,
+    };
+    static const uint8_t rgb[6] = { 0x21, 0x22, 0x23, 0x24, 0x25, 0x26 };
+
+    gl_pixels_context(qts, 0);
+    gl_pixels_program(qts, GL_PIX_4UB, 8, 50, 60, 51, 60, 1);
+    gl_pixels_draw(qts, 2);
+    gl_pixels_dma(qts, rgba, sizeof(rgba), 8, 1, 8, 0xa7);
+    g_assert_cmphex(gl_window_pixel(qts, 50, 60), ==, 0x010203);
+    g_assert_cmphex(gl_window_pixel(qts, 51, 60), ==, 0x040506);
+
+    gl_pixels_program(qts, GL_PIX_3UB, 6, 50, 61, 51, 61, 1);
+    gl_pixels_draw(qts, 2);
+    gl_pixels_dma(qts, rgb, sizeof(rgb), 6, 1, 6, 0xa7);
+    g_assert_cmphex(gl_window_pixel(qts, 50, 61), ==, 0x212223);
+    g_assert_cmphex(gl_window_pixel(qts, 51, 61), ==, 0x242526);
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+}
+
+/*
+ * A program the model does not know (a routine between the head and the
+ * unpack, as a scale or bias would add) and a pixel zoom other than 1
+ * draw nothing, and their images are consumed: the fence after each
+ * parses as a header, and a DMA transfer paints neither the window nor
+ * the raster engine's rectangle. A DMA transfer that does not fit a draw
+ * moves nothing either, and the draw ends.
+ */
+static void test_gl_pixels_unmodelled_draw_nothing(void)
+{
+    static const uint8_t image[8] = {
+        0x01, 0x02, 0x03, 0xff, 0x04, 0x05, 0x06, 0xff,
+    };
+
+    gl_pixels_context(qts, 0);
+    gl_pixels_program(qts, GL_PIX_SCALED, 8, 50, 60, 51, 60, 1);
+    gl_pixels_draw(qts, 2);
+    gl_pixels_row(qts, 0, (const uint32_t[]){ 0x010203ff, 0x040506ff }, 2);
+    gl_pixels_fence(qts);
+    g_assert_cmphex(gl_window_pixel(qts, 50, 60), ==, 0);
+
+    gl_pixels_program(qts, GL_PIX_4UB, 8, 50, 60, 51, 60, 2);
+    gl_pixels_draw(qts, 2);
+    gl_pixels_row(qts, 0, (const uint32_t[]){ 0x010203ff, 0x040506ff }, 2);
+    gl_pixels_fence(qts);
+    g_assert_cmphex(gl_window_pixel(qts, 50, 60), ==, 0);
+
+    /* A refused draw's DMA transfer moves nothing, into either engine. */
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_BLOCK_START, (400u << 16) | 400u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_BLOCK_END, (401u << 16) | 400u));
+    gl_pixels_program(qts, GL_PIX_SCALED, 8, 50, 60, 51, 60, 1);
+    gl_pixels_draw(qts, 2);
+    gl_pixels_dma(qts, image, sizeof(image), 8, 1, 8, 0xa7);
+    g_assert_cmphex(gl_window_pixel(qts, 50, 60), ==, 0);
+    g_assert_cmphex(mgras_test_pixel(qts, 400, 400), ==, 0);
+
+    gl_pixels_program(qts, GL_PIX_4UB, 8, 50, 60, 51, 60, 1);
+    gl_pixels_draw(qts, 2);
+    gl_pixels_dma(qts, image, sizeof(image), 8, 1, 4, 0xa7);
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_FLAGS) & MGRAS_HQ_FLAG_FENCE, ==,
+                    MGRAS_HQ_FLAG_FENCE);
+    g_assert_cmphex(gl_window_pixel(qts, 50, 60), ==, 0);
+    gl_pixels_fence(qts);
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+}
+
+/*
+ * The rectangle is the image's own; the draw lands at the raster
+ * position. At (10.75, 20.25) pixel 0 of the bottom row covers x 10.75 to
+ * 11.75 and y 20.25 to 21.25, whose centres are (11.5, 20.5): window pixel
+ * (11, 20) (OpenGL 1.2.1, 3.6.4). mandel's rows all come at 0, 0 this way.
+ * With the raster position culled, the image is consumed and nothing is
+ * drawn.
+ */
+static void test_gl_pixels_follow_the_raster_position(void)
+{
+    gl_pixels_context(qts, 8);
+    gl_raster_pos2f(qts, 10.75f, 20.25f);
+    gl_pixels_program(qts, GL_PIX_INDEX, 6, 0, 0, 2, 0, 1);
+    gl_pixels_draw(qts, 2);
+    gl_pixels_row(qts, 0, (const uint32_t[]){ 0x00010002, 0x00030000 }, 2);
+    gl_pixels_fence(qts);
+    g_assert_cmphex(gl_window_pixel(qts, 10, 20), ==, 0);
+    g_assert_cmphex(gl_window_pixel(qts, 11, 20), ==, 1);
+    g_assert_cmphex(gl_window_pixel(qts, 13, 20), ==, 3);
+    g_assert_cmphex(gl_window_pixel(qts, 11, 21), ==, 0);
+    g_assert_cmphex(gl_window_pixel(qts, 0, 0), ==, 0);
+
+    gl_raster_pos2f(qts, 30, 200);
+    gl_pixels_draw(qts, 2);
+    gl_pixels_row(qts, 0, (const uint32_t[]){ 0x00040005, 0x00060000 }, 2);
+    gl_pixels_fence(qts);
+    g_assert_cmphex(gl_window_pixel(qts, 11, 20), ==, 1);
+    g_assert_cmphex(gl_window_pixel(qts, 0, 0), ==, 0);
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+}
+
+/*
+ * A load from 0x100 bytes on is the header with no length and an inline
+ * block giving it. A 60-word program load that way is stored like a short
+ * one: the draw after it reads its program.
+ */
+static void test_gl_pixels_long_load(void)
+{
+    uint32_t words[60] = { 0 };
+
+    gl_pixels_context(qts, 8);
+    gl_pixels_program(qts, GL_PIX_4UB, 12, 70, 80, 72, 80, 1);
+    words[0] = 0x1a3e;
+    words[2] = 0x352d;
+    words[3] = 0x1d6;
+    gl_ge_load(qts, GL_GE_CRAM, GL_GE_PROGRAM, words, 60);
+    gl_pixels_fence(qts);
+    gl_pixels_draw(qts, 2);
+    gl_pixels_row(qts, 0, (const uint32_t[]){ 0x00110022, 0x00330000 }, 2);
+    gl_pixels_fence(qts);
+    g_assert_cmphex(gl_window_pixel(qts, 70, 80), ==, 0x11);
+    g_assert_cmphex(gl_window_pixel(qts, 72, 80), ==, 0x33);
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+}
+
+/*
+ * A context switch between rows: the other context's words parse as its
+ * own and the first draw continues where it stopped.
+ */
+static void test_gl_pixels_follow_the_context(void)
+{
+    gl_pixels_context(qts, 8);
+    gl_pixels_program(qts, GL_PIX_INDEX, 6, 90, 90, 92, 91, 1);
+    gl_pixels_draw(qts, 2);
+    gl_pixels_row(qts, 0, (const uint32_t[]){ 0x00050005, 0x00050000 }, 2);
+    gl_enter_slot(qts, GL_SLOT_B);
+    gl_word(qts, GL_CONTEXT_OPENER);
+    gl_pixels_row(qts, 0, (const uint32_t[]){ 0x0, 0x0 }, 2);
+    gl_pixels_fence(qts);
+    gl_enter_slot(qts, GL_SLOT_A);
+    gl_pixels_row(qts, 0, (const uint32_t[]){ 0x00060006, 0x00060000 }, 2);
+    gl_pixels_fence(qts);
+    g_assert_cmphex(gl_window_pixel(qts, 90, 90), ==, 5);
+    g_assert_cmphex(gl_window_pixel(qts, 92, 91), ==, 6);
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+}
+
+/*
+ * The GE's parameters and a draw stopped between rows cross a migration
+ * and the draw finishes on the destination.
+ */
+static void test_gl_pixels_migration(void)
+{
+    g_autofree char *tmpfs = NULL;
+    g_autofree char *uri = NULL;
+    g_autofree char *dest_cmdline = NULL;
+    GError *err = NULL;
+    QTestState *from, *to;
+
+    tmpfs = g_dir_make_tmp("sn0-mgras-gl-pixels-XXXXXX", &err);
+    g_assert_no_error(err);
+    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+
+    from = qtest_init(MIGRATION_ARGS);
+    dest_cmdline = g_strdup_printf(MIGRATION_ARGS " -incoming %s", uri);
+    to = qtest_init(dest_cmdline);
+
+    gl_enter_slot(from, GL_SLOT_A);
+    gl_word(from, GL_CONTEXT_OPENER);
+    gl_one(from, GL_INIT_CI_HDR, 8);
+    gl_pixels_program(from, GL_PIX_INDEX, 6, 20, 30, 22, 31, 1);
+    gl_pixels_draw(from, 2);
+    gl_pixels_row(from, 0, (const uint32_t[]){ 0x00070008, 0x00070000 }, 2);
+    gl_word(from, GL_INLINE_BLOCK | 8);
+    gl_word(from, 0x0009000a);
+
+    sgi_migrate_stopped(from, uri);
+
+    gl_word(to, 0x00090000);
+    gl_pixels_fence(to);
+    g_assert_cmphex(gl_window_pixel(to, 20, 30), ==, 7);
+    g_assert_cmphex(gl_window_pixel(to, 21, 30), ==, 8);
+    g_assert_cmphex(gl_window_pixel(to, 20, 31), ==, 9);
+    g_assert_cmphex(gl_window_pixel(to, 21, 31), ==, 0xa);
+    g_assert_cmphex(gl_window_pixel(to, 22, 31), ==, 9);
+    /* The parameters crossed: a second draw needs only 0x8d20. */
+    gl_pixels_draw(to, 2);
+    gl_pixels_row(to, 0, (const uint32_t[]){ 0x00010002, 0x00030000 }, 2);
+    gl_pixels_row(to, 0, (const uint32_t[]){ 0x00040005, 0x00060000 }, 2);
+    g_assert_cmphex(gl_window_pixel(to, 22, 31), ==, 6);
+    g_assert_cmphex(mgras_qom_get_uint(to, "x-test-error"), ==, 0);
+
+    qtest_quit(to);
+    qtest_quit(from);
+    g_rmdir(tmpfs);
+}
+
 static void test_hq_flags_fence_token_sets_bit(void)
 {
     mgras_reset();
@@ -13923,6 +14387,24 @@ int main(int argc, char **argv)
                    test_gl_colour_index_zero_mask_keeps_the_pixel);
     qtest_add_func("sn0/origin2000/mgras/gl-bitmap-split-by-a-context-switch",
                    test_gl_bitmap_split_by_a_context_switch);
+    qtest_add_func("sn0/origin2000/mgras/gl-pixels-inline-colour-index",
+                   test_gl_pixels_inline_colour_index);
+    qtest_add_func("sn0/origin2000/mgras/gl-pixels-inline-rgb",
+                   test_gl_pixels_inline_rgb);
+    qtest_add_func("sn0/origin2000/mgras/gl-pixels-dma-abgr",
+                   test_gl_pixels_dma_abgr);
+    qtest_add_func("sn0/origin2000/mgras/gl-pixels-dma-rgba-and-rgb",
+                   test_gl_pixels_dma_rgba_and_rgb);
+    qtest_add_func("sn0/origin2000/mgras/gl-pixels-unmodelled-draw-nothing",
+                   test_gl_pixels_unmodelled_draw_nothing);
+    qtest_add_func("sn0/origin2000/mgras/gl-pixels-long-load",
+                   test_gl_pixels_long_load);
+    qtest_add_func("sn0/origin2000/mgras/gl-pixels-follow-the-raster-position",
+                   test_gl_pixels_follow_the_raster_position);
+    qtest_add_func("sn0/origin2000/mgras/gl-pixels-follow-the-context",
+                   test_gl_pixels_follow_the_context);
+    qtest_add_func("sn0/origin2000/mgras/gl-pixels-migration",
+                   test_gl_pixels_migration);
     qtest_add_func("sn0/origin2000/mgras/hq-query-flag-only-from-query",
                    test_hq_query_flag_only_from_query);
     qtest_add_func("sn0/origin2000/mgras/inline-block-uses-20-bit-length",
