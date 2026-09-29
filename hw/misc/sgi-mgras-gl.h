@@ -65,6 +65,8 @@ extern const VMStateDescription vmstate_sgi_mgras_gl_lighting;
 extern const VMStateDescription vmstate_sgi_mgras_gl_texture;
 /* Each context's lighting enables, sent once one is on. */
 extern const VMStateDescription vmstate_sgi_mgras_gl_light_enables;
+/* Each context's culling state, sent once one has left the initial. */
+extern const VMStateDescription vmstate_sgi_mgras_gl_cull;
 
 /* Note GE-port traffic the per-context state cannot follow. */
 void sgi_mgras_gl_ge_port_access(SGIMgrasState *s, hwaddr addr, bool write);
