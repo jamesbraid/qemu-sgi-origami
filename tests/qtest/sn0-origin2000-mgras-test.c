@@ -12984,9 +12984,8 @@ static void credit_build_store_server(SN0Image *p)
 }
 
 /*
- * A stopped Origin 2000 with SI Viz in IO3, linked to node 0's Hub, and
- * slot A's page enabled at IRIX's attach values, before any processor
- * runs.
+ * A stopped Origin 2000 with SI Viz in IO3 and slot A's page enabled at
+ * IRIX's attach values, before any processor runs.
  */
 static QTestState *credit_start(void)
 {
@@ -12996,8 +12995,8 @@ static QTestState *credit_start(void)
 
     credit_build_store_server(image);
     path = sn0_image_write(image, "sn0-mgras-credit");
-    s = qtest_initf("%s,pi=/machine/node0/hub -accel tcg,thread=multi "
-                    "-no-reboot -no-shutdown -S -bios %s", MACHINE_ARGS, path);
+    s = qtest_initf("%s -accel tcg,thread=multi -no-reboot -no-shutdown -S "
+                    "-bios %s", MACHINE_ARGS, path);
     unlink(path);
     qtest_writeq(s, CREDIT_PAGE(0), CREDIT_PAGE_ENABLE | CREDIT_PORT_PAGE);
     qtest_writeq(s, CREDIT_COUNT(0), CREDIT_TOTAL);
@@ -13029,14 +13028,21 @@ static uint64_t credit_count(QTestState *s, unsigned int slot)
 }
 
 /*
- * A burst of command-port stores twice the allocation leaves the count at
- * the allocation: each store's credit comes back before the
+ * The machine links the board to the Hub of the node that controls IO3,
+ * and a burst of command-port stores twice the allocation leaves the
+ * count at the allocation: each store's credit comes back before the
  * next is charged. Without the return the count would drain through the
  * bias and wrap.
  */
 static void test_credit_burst_returns_to_allocation(void)
 {
     QTestState *s = credit_start();
+    g_autoptr(QDict) link = qtest_qmp(s,
+        "{ 'execute': 'qom-get', 'arguments': {"
+        "  'path': %s, 'property': 'pi' } }", MGRAS_QOM_PATH);
+
+    g_assert(qdict_haskey(link, "return"));
+    g_assert_cmpstr(qdict_get_str(link, "return"), ==, "/machine/node0/hub");
 
     qtest_writeq(s, CREDIT_MAP(0), CREDIT_ROUTE(0, SI_WIDGET));
     credit_run(s);
