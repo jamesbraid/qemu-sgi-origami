@@ -12,9 +12,9 @@
  * What it preserves: the pixels that colour and depth clears, untextured
  * points, lines, triangles, strips, fans, quads and polygons, at size and
  * width 1, flat or smooth shaded, lit per vertex by OpenGL's lighting
- * equation, fogged, culled by facing, offset in depth, transformed by the
- * modelview and projection matrices and their stacks, and bitmaps, leave
- * in the
+ * equation, fogged, culled by facing, offset in depth, clipped by the
+ * client clip planes, transformed by the modelview and projection
+ * matrices and their stacks, and bitmaps, leave in the
  * window's front or back buffer after the per-fragment operations the
  * shared rasterizer carries out (the scissor, alpha, stencil and depth
  * tests, blending, the logical operation and the write masks), in RGBA or
@@ -238,6 +238,23 @@
 #define MGRAS_GL_OFFSET_ENABLES  0x0000e804
 #define MGRAS_GL_OFFSET_EXT      0x3f800000u
 #define MGRAS_GL_OFFSET_CORE     0x3f8ccccdu
+/*
+ * Client clip planes, established from the listing: glClipPlane
+ * (__glMgrim_ClipPlane 0xd97c310) accepts a plane below the context's
+ * count and writes 0xa514, the plane's enumerant and its four
+ * coefficients converted from double to float, untransformed
+ * (0xd97c364-0xd97c3a0). glEnable and glDisable of GL_CLIP_PLANEi write
+ * 0xa604 and 0xa704 and the enumerant (__glMgrim_Enable 0xd97de34,
+ * __glMgrim_Disable 0xd97fbfc). Every context setup sends all six planes
+ * as zeros through two unnamed routines and perfly disables all six each
+ * frame. The client does not transform the plane, so the board does, by
+ * the inverse of the modelview current when it arrives (OpenGL 1.2.1,
+ * 2.11; inferred), and clips as that section says. The discriminating
+ * test is gl-clip-plane-clips-in-eye-space.
+ */
+#define MGRAS_GL_CLIP_PLANE      0x0000a514
+#define MGRAS_GL_CLIP_PLANE_ON   0x0000a604
+#define MGRAS_GL_CLIP_PLANE_OFF  0x0000a704
 
 /* glStencilOp's operations by the number the client sends for each. */
 static const uint16_t mgras_gl_stencil_ops[] = {
@@ -793,6 +810,9 @@ bool sgi_mgras_gl_header(uint32_t header)
     case MGRAS_GL_FOG:
     case MGRAS_GL_POLYGON_OFFSET:
     case MGRAS_GL_OFFSET_ENABLES:
+    case MGRAS_GL_CLIP_PLANE:
+    case MGRAS_GL_CLIP_PLANE_ON:
+    case MGRAS_GL_CLIP_PLANE_OFF:
     case MGRAS_GL_DEPTH_RANGE:
     case MGRAS_GL_DITHER:
     case MGRAS_GL_CULL_ON:
@@ -1441,6 +1461,35 @@ static bool mgras_gl_raster_query(SGIMgrasState *s, uint32_t index,
  */
 #define MGRAS_GL_QUERY_WRITEMASK 0x32b
 
+/*
+ * glIsEnabled(GL_CLIP_PLANEi) queries 0xb87 + i and takes the answer's
+ * sign bit as the boolean; glGetClipPlane queries 0xb8d + 4i + k for
+ * coefficient k and reads floats (notes-return-mode-queries.md). The
+ * model answers the plane in eye coordinates, as the specification has
+ * glGetClipPlane return it.
+ */
+#define MGRAS_GL_QUERY_CLIP_ENABLES 0xb87
+#define MGRAS_GL_QUERY_CLIP_PLANES 0xb8d
+
+static bool mgras_gl_clip_query(SGIMgrasState *s, uint32_t index,
+                                uint32_t *answer)
+{
+    uint32_t n = index - MGRAS_GL_QUERY_CLIP_ENABLES;
+    uint32_t plane[4];
+
+    if (n < SGI_GL_CLIP_PLANES) {
+        *answer = mgras_gl(s)->cur.clip_planes & (1u << n) ? 0x80000000u : 0;
+        return true;
+    }
+    n = index - MGRAS_GL_QUERY_CLIP_PLANES;
+    if (n < 4 * SGI_GL_CLIP_PLANES &&
+        sgi_gl_get_clip_plane(mgras_gl(s), n / 4, plane)) {
+        *answer = plane[n % 4];
+        return true;
+    }
+    return false;
+}
+
 static uint32_t mgras_gl_writemask_answer(SGIMgrasState *s)
 {
     const SGIGLDrawState *st = &mgras_gl(s)->cur;
@@ -1465,6 +1514,9 @@ uint32_t sgi_mgras_gl_query_answer(SGIMgrasState *s, const uint32_t *args,
     }
     if (index == MGRAS_GL_QUERY_WRITEMASK) {
         return mgras_gl_writemask_answer(s);
+    }
+    if (mgras_gl_clip_query(s, index, &out[0])) {
+        return out[0];
     }
     if (index >= MGRAS_GL_QUERY_READBACK &&
         index < MGRAS_GL_QUERY_READBACK + 4) {
@@ -2602,6 +2654,53 @@ const VMStateDescription vmstate_sgi_mgras_gl_polygon_offset = {
     }
 };
 
+static const VMStateDescription vmstate_sgi_mgras_gl_context_clip = {
+    .name = TYPE_SGI_MGRAS "/gl-context-clip-planes",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32(cur.clip_planes, SGIGLContext),
+        VMSTATE_2DARRAY(cur.clip_plane, SGIGLContext, SGI_GL_CLIP_PLANES, 4,
+                        0, vmstate_info_uint32, float),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
+/*
+ * Every context's client clip planes, sent once some context has one
+ * enabled or not zero. A stream without it comes from a model that
+ * consumed the clip-plane packets and clipped nothing, which is what the
+ * setup's six zero planes, all disabled, do.
+ */
+static bool mgras_gl_clip_needed(void *opaque)
+{
+    SGIMgrasState *s = opaque;
+    static const float zero[SGI_GL_CLIP_PLANES][4];
+
+    for (int i = 0; i < SGI_MGRAS_GL_CONTEXTS; i++) {
+        const SGIGLDrawState *st = &s->gl[i].cur;
+
+        if (st->clip_planes ||
+            memcmp(st->clip_plane, zero, sizeof(zero))) {
+            return true;
+        }
+    }
+    return false;
+}
+
+const VMStateDescription vmstate_sgi_mgras_gl_clip_planes = {
+    .name = TYPE_SGI_MGRAS "/gl-clip-planes",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = mgras_gl_clip_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_STRUCT_ARRAY(gl, SGIMgrasState, SGI_MGRAS_GL_CONTEXTS, 1,
+                             vmstate_sgi_mgras_gl_context_clip,
+                             SGIGLContext),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
 const VMStateDescription vmstate_sgi_mgras_gl_cull = {
     .name = TYPE_SGI_MGRAS "/gl-cull",
     .version_id = 1,
@@ -2819,6 +2918,7 @@ bool sgi_mgras_gl_post_load(SGIMgrasState *s)
             gl->cur.fog > 1 ||
             gl->cur.polygon_offset > (SGI_GL_OFFSET_FILL | SGI_GL_OFFSET_LINE |
                                       SGI_GL_OFFSET_POINT) ||
+            gl->cur.clip_planes >> SGI_GL_CLIP_PLANES ||
             gl->cur.logic_op_mode - SGI_GL_CLEAR >
                 SGI_GL_SET - SGI_GL_CLEAR ||
             gl->cur.stencil_func > SGI_GL_ALWAYS ||
@@ -4237,6 +4337,23 @@ void sgi_mgras_gl_execute(SGIMgrasState *s, uint32_t header,
         mgras_gl_command(s, payload[2] == MGRAS_GL_OFFSET_EXT ?
                          SGI_GL_OP_POLYGON_OFFSET_EXT :
                          SGI_GL_OP_POLYGON_OFFSET, payload, 2);
+        return;
+    case MGRAS_GL_CLIP_PLANE: {
+        uint32_t plane[5] = { payload[0] - SGI_GL_CLIP_PLANE0, payload[1],
+                              payload[2], payload[3], payload[4] };
+
+        mgras_gl_command(s, SGI_GL_OP_CLIP_PLANE, plane, 5);
+        return;
+    }
+    case MGRAS_GL_CLIP_PLANE_ON:
+    case MGRAS_GL_CLIP_PLANE_OFF:
+        if (payload[0] - SGI_GL_CLIP_PLANE0 >= SGI_GL_CLIP_PLANES) {
+            qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: clip plane 0x%x "
+                          "enable ignored\n", payload[0]);
+            return;
+        }
+        mgras_gl_command(s, header == MGRAS_GL_CLIP_PLANE_ON ?
+                         SGI_GL_OP_ENABLE : SGI_GL_OP_DISABLE, payload, 1);
         return;
     case MGRAS_GL_OFFSET_ENABLES: {
         static const uint32_t caps[3] = {

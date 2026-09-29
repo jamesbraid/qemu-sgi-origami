@@ -12410,7 +12410,7 @@ static unsigned gl_stream_subsections(QTestState *qts)
         "sgi-mgras/gl-stencil", "sgi-mgras/gl-plane-stencil",
         "sgi-mgras/gl-blend", "sgi-mgras/gl-logic-op",
         "sgi-mgras/gl-colour-mask", "sgi-mgras/gl-fog",
-        "sgi-mgras/gl-polygon-offset",
+        "sgi-mgras/gl-polygon-offset", "sgi-mgras/gl-clip-planes",
     };
     g_autofree char *tmpfs = NULL;
     g_autofree char *path = NULL;
@@ -14537,6 +14537,91 @@ static void test_gl_polygon_offset_migration(void)
 }
 
 /*
+ * Client clip planes as the client sends them: glClipPlane 0xa514, the
+ * plane's enumerant and four floats in object coordinates; 0xa604 and
+ * 0xa704 and the enumerant to enable and disable one. Query 0xb87 + i's
+ * sign bit is GL_CLIP_PLANEi's enable, and 0xb8d + 4i + k coefficient k.
+ */
+#define GL_CLIP_PLANE_HDR     0x0000a514
+#define GL_CLIP_PLANE_ON_HDR  0x0000a604
+#define GL_CLIP_PLANE_OFF_HDR 0x0000a704
+#define GL_CLIP_PLANE0        0x3000
+#define GL_Q_CLIP_ENABLES     0xb87
+#define GL_Q_CLIP_PLANES      0xb8d
+
+static void gl_clip_plane(QTestState *qts, uint32_t plane, float a, float b,
+                          float c, float d)
+{
+    gl_word(qts, GL_CLIP_PLANE_HDR);
+    gl_word(qts, GL_CLIP_PLANE0 + plane);
+    gl_float(qts, a);
+    gl_float(qts, b);
+    gl_float(qts, c);
+    gl_float(qts, d);
+}
+
+/*
+ * x >= 0 given under a translation of 0.5 in x keeps eye x >= 0.5
+ * (OpenGL 1.2.1, 2.11), window columns 96 and up, while GL_CLIP_PLANE2 is
+ * enabled; glGetClipPlane answers (1, 0, 0, -0.5).
+ */
+static void test_gl_clip_plane_clips_in_eye_space(void)
+{
+    gl_scene_start(qts, GL_FLAT);
+    gl_clear_color(qts, 0, 0, 0, 1);
+    gl_word(qts, GL_CLEAR_COLOR_BUFFER);
+    gl_three(qts, GL_TRANSLATE_HDR, 0.5f, 0, 0);
+    gl_clip_plane(qts, 2, 1, 0, 0, 0);
+    gl_word(qts, GL_LOAD_IDENTITY);
+    g_assert_cmphex(gl_query(qts, GL_Q_CLIP_ENABLES + 2, 1), ==, 0);
+    gl_one(qts, GL_CLIP_PLANE_ON_HDR, GL_CLIP_PLANE0 + 2);
+    g_assert_cmphex(gl_query(qts, GL_Q_CLIP_ENABLES + 2, 1) >> 31, ==, 1);
+    g_assert_cmphex(gl_query(qts, GL_Q_CLIP_PLANES + 8, 1), ==, gl_bits(1));
+    g_assert_cmphex(gl_query(qts, GL_Q_CLIP_PLANES + 11, 1), ==,
+                    gl_bits(-0.5f));
+    gl_fill_window(qts, 0, 1, 0);
+    g_assert_cmphex(gl_window_pixel(qts, 96, 64), ==, 0x00ff00);
+    g_assert_cmphex(gl_window_pixel(qts, 95, 64), ==, 0);
+    gl_one(qts, GL_CLIP_PLANE_OFF_HDR, GL_CLIP_PLANE0 + 2);
+    g_assert_cmphex(gl_query(qts, GL_Q_CLIP_ENABLES + 2, 1), ==, 0);
+    gl_fill_window(qts, 0, 1, 0);
+    g_assert_cmphex(gl_window_pixel(qts, 95, 64), ==, 0x00ff00);
+}
+
+/* Slot A clips to x >= 0; slot B does not. */
+static void gl_clip_setup(QTestState *from)
+{
+    for (int slot = 0; slot < 2; slot++) {
+        gl_enter_slot(from, slot ? GL_SLOT_B : GL_SLOT_A);
+        gl_word(from, GL_CONTEXT_OPENER);
+        gl_viewport(from, 0, 0, 128, 128);
+    }
+    gl_enter_slot(from, GL_SLOT_A);
+    gl_clip_plane(from, 0, 1, 0, 0, 0);
+    gl_one(from, GL_CLIP_PLANE_ON_HDR, GL_CLIP_PLANE0);
+}
+
+static void gl_clip_check(QTestState *to)
+{
+    for (int slot = 0; slot < 2; slot++) {
+        gl_enter_slot(to, slot ? GL_SLOT_B : GL_SLOT_A);
+        gl_clear_color(to, 0, 0, 0, 1);
+        gl_word(to, GL_CLEAR_COLOR_BUFFER);
+        gl_fill_window(to, 0, 1, 0);
+        g_assert_cmphex(mgras_test_pixel(to, 256 + 32, 383 - 64), ==,
+                        slot ? 0x00ff00 : 0);
+        g_assert_cmphex(mgras_test_pixel(to, 256 + 96, 383 - 64), ==,
+                        0x00ff00);
+    }
+}
+
+/* Each context's client clip planes migrate. */
+static void test_gl_clip_plane_migration(void)
+{
+    gl_migrate(gl_clip_setup, gl_clip_check);
+}
+
+/*
  * The context setup's 32 detail-texture table writes, 0xec10 with 0xc52,
  * 0xc78, 0x194 and a value (0x1f three times, then 0x1d down to 1), are
  * texture-only defaults and consumed without a log line; any other value
@@ -14987,6 +15072,25 @@ static void test_gl_state_subsections_follow_their_state(void)
             gl_one(s, GL_OFFSET_ENABLES_HDR, 0);
         }
         g_assert_cmpuint(gl_stream_subsections(s), ==, i == 1 ? 0 : 524288);
+        qtest_quit(s);
+    }
+
+    /*
+     * Client clip planes: an enable or a plane other than zero sends
+     * gl-clip-planes; the setup's zero planes, disabled, send nothing.
+     */
+    for (int i = 0; i < 3; i++) {
+        s = qtest_init(MIGRATION_ARGS);
+        gl_enter_slot(s, GL_SLOT_A);
+        gl_word(s, GL_CONTEXT_OPENER);
+        gl_clip_plane(s, 5, 0, 0, 0, i == 2 ? 1 : 0);
+        if (i < 2) {
+            gl_one(s, GL_CLIP_PLANE_ON_HDR, GL_CLIP_PLANE0 + 5);
+        }
+        if (i == 1) {
+            gl_one(s, GL_CLIP_PLANE_OFF_HDR, GL_CLIP_PLANE0 + 5);
+        }
+        g_assert_cmpuint(gl_stream_subsections(s), ==, i == 1 ? 0 : 1048576);
         qtest_quit(s);
     }
 }
@@ -15893,6 +15997,10 @@ int main(int argc, char **argv)
                    test_gl_polygon_offset_moves_depth);
     qtest_add_func("sn0/origin2000/mgras/gl-polygon-offset-migration",
                    test_gl_polygon_offset_migration);
+    qtest_add_func("sn0/origin2000/mgras/gl-clip-plane-clips-in-eye-space",
+                   test_gl_clip_plane_clips_in_eye_space);
+    qtest_add_func("sn0/origin2000/mgras/gl-clip-plane-migration",
+                   test_gl_clip_plane_migration);
     qtest_add_func("sn0/origin2000/mgras/gl-texture-matrix-migration",
                    test_gl_texture_matrix_migration);
     qtest_add_func("sn0/origin2000/mgras/"
