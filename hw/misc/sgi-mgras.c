@@ -384,10 +384,9 @@ static void mgras_update_timing(SGIMgrasState *s, bool log)
  * The period the destination runs: the one the source was running, which
  * the stream carries only when it differs from what the loaded VC3 and DAC
  * state gives, because the guest changed the tables or PLL after its last
- * enable write. A stream before version 13 carries no DAC registers, so
- * the loaded state cannot give a pixel clock; run the stock period.
+ * enable write.
  */
-static void mgras_load_timing(SGIMgrasState *s, int version_id)
+static void mgras_load_timing(SGIMgrasState *s)
 {
     SGIScanoutMode mode;
 
@@ -399,9 +398,6 @@ static void mgras_load_timing(SGIMgrasState *s, int version_id)
             .frame_clocks = s->timing_frame_clocks,
             .clock_hz = s->timing_clock_hz,
         };
-        mgras_set_timing(s, &mode);
-    } else if (version_id < 13) {
-        sgi_mgras_display_default_timing(s, &mode);
         mgras_set_timing(s, &mode);
     } else {
         mgras_update_timing(s, false);
@@ -415,13 +411,13 @@ static void mgras_load_timing(SGIMgrasState *s, int version_id)
  * ones after it then keep the source's phase. A stream with no retrace
  * pending, which this model never sends, restarts the phase at load.
  */
-static void mgras_retrace_rephase(SGIMgrasState *s, int version_id)
+static void mgras_retrace_rephase(SGIMgrasState *s)
 {
     SGIScanout *so = &s->scanout;
     int64_t next = timer_expire_time_ns(so->retrace_timer);
     int64_t period;
 
-    mgras_load_timing(s, version_id);
+    mgras_load_timing(s);
     period = sgi_scanout_retrace_time(so, 1) - so->epoch;
     if (period < 0) {
         timer_del(so->retrace_timer);
@@ -1610,20 +1606,10 @@ static int mgras_post_load(void *opaque, int version_id)
         !sgi_mgras_gl_post_load(s)) {
         return -EINVAL;
     }
-
-    /*
-     * A stream before version 19 held one XMAP; every PP1 had what it
-     * held, as the kernel keeps them.
-     */
-    if (version_id < 19) {
-        for (int pp = 1; pp < SGI_MGRAS_MAX_PP1; pp++) {
-            s->xmap[pp] = s->xmap[0];
-        }
-    }
     s->display_enabled =
         (s->vc3_reg[MGRAS_VC3_CONTROL] & MGRAS_VC3_CONTROL_DISPLAY) != 0;
     s->cursor_enabled = (s->vc3_reg[0x1d] & 0x2) != 0;
-    mgras_retrace_rephase(s, version_id);
+    mgras_retrace_rephase(s);
     s->dirty = true;
     sgi_mgras_display_flush(s);
     return 0;
@@ -1641,18 +1627,6 @@ static bool mgras_back_count_valid(void *opaque, int version_id)
     SGIMgrasState *s = opaque;
 
     return s->back_count == s->width * s->height;
-}
-
-/*
- * Version 11 (introduced by the XMAP swap-mask select commit) still carries
- * both the retired per-pixel WID plane and the unindexed overlay-mode word
- * on the wire: that commit only added xmap_buf_select, it did not touch
- * either field. The WID-to-overlay and overlay-mode-to-per-WID-array cutover
- * lands at version 12, so streams from 9, 10 and 11 all need the old layout.
- */
-static bool mgras_stream_before_v12(void *opaque, int version_id)
-{
-    return version_id < 12;
 }
 
 static bool mgras_ge_lengths_valid(void *opaque, int version_id)
@@ -1735,7 +1709,7 @@ static const VMStateDescription vmstate_sgi_mgras_timing = {
 };
 
 static const VMStateDescription vmstate_sgi_mgras = {
-    .name = TYPE_SGI_MGRAS, .version_id = 22, .minimum_version_id = 9,
+    .name = TYPE_SGI_MGRAS, .version_id = 22, .minimum_version_id = 22,
     .post_load = mgras_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32(front_count, SGIMgrasState),
@@ -1747,12 +1721,6 @@ static const VMStateDescription vmstate_sgi_mgras = {
         VMSTATE_VALIDATE("back plane length is fixed", mgras_back_count_valid),
         VMSTATE_VARRAY_UINT32(back, SGIMgrasState, back_count, 0,
                               vmstate_info_uint32, uint32_t),
-        /*
-         * Streams before version 12 carry the retired per-pixel WID plane,
-         * sized for the only screen the model then had.
-         */
-        VMSTATE_UNUSED_BUFFER(mgras_stream_before_v12, 0,
-                              1280 * 1024),
         /* The per-pixel format tag; see mgras_put_pixel(). */
         VMSTATE_VARRAY_UINT32(format, SGIMgrasState, front_count, 10,
                               vmstate_info_uint8, uint8_t),
@@ -1831,8 +1799,6 @@ static const VMStateDescription vmstate_sgi_mgras = {
         VMSTATE_UINT32_ARRAY(dma_desc_30000, SGIMgrasState, 1),
         VMSTATE_UINT32(bringup_arg_3, SGIMgrasState),
         VMSTATE_UINT32(vc3_arg, SGIMgrasState),
-        /* Before version 12 this was one unindexed overlay-mode word. */
-        VMSTATE_UNUSED_BUFFER(mgras_stream_before_v12, 0, 4),
         VMSTATE_UINT32_ARRAY_V(xmap[0].overlay_mode, SGIMgrasState,
                                SGI_MGRAS_XMAP_ENTRIES, 12),
         VMSTATE_UINT32(hq_status_extra, SGIMgrasState),

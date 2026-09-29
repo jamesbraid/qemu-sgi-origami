@@ -3599,12 +3599,11 @@ static void test_retrace_short_frame_runs_stock_period(void)
 }
 
 /*
- * One retrace migration: the source, started by src_env's binary if set,
- * runs src until half-way through its third frame; the destination must
- * fire that retrace where the source would have, then run dst.
+ * One retrace migration: the source runs src until half-way through its
+ * third frame; the destination must fire that retrace where the source
+ * would have, then run dst.
  */
-static void mgras_retrace_migration(const char *src_env, bool programmed,
-                                    bool stale_table,
+static void mgras_retrace_migration(bool programmed, bool stale_table,
                                     const MgrasFrameTime *src,
                                     const MgrasFrameTime *dst)
 {
@@ -3620,7 +3619,7 @@ static void mgras_retrace_migration(const char *src_env, bool programmed,
     g_assert_no_error(err);
     uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
 
-    from = qtest_init_ext(src_env, MIGRATION_ARGS, NULL, true);
+    from = qtest_init(MIGRATION_ARGS);
     dest_cmdline = g_strdup_printf(MIGRATION_ARGS " -incoming %s", uri);
     to = qtest_init(dest_cmdline);
 
@@ -3717,14 +3716,14 @@ static void test_retrace_phase_migration(void)
         mgras_retrace_cross_binary_migration();
         return;
     }
-    mgras_retrace_migration(NULL, false, false, &mgras_stock_frame,
+    mgras_retrace_migration(false, false, &mgras_stock_frame,
                             &mgras_stock_frame);
 }
 
 /* The destination takes the period from the loaded VC3 and DAC state. */
 static void test_retrace_programmed_period_migration(void)
 {
-    mgras_retrace_migration(NULL, true, false, &mgras_vga_frame,
+    mgras_retrace_migration(true, false, &mgras_vga_frame,
                             &mgras_vga_frame);
 }
 
@@ -3735,27 +3734,9 @@ static void test_retrace_programmed_period_migration(void)
  */
 static void test_retrace_running_period_migration(void)
 {
-    mgras_retrace_migration(NULL, true, true, &mgras_vga_frame,
+    mgras_retrace_migration(true, true, &mgras_vga_frame,
                             &mgras_vga_frame);
 }
-
-/*
- * A stream before version 13 has no DAC registers, so the destination
- * cannot take a pixel clock from it and runs the stock period, not one
- * from DAC registers left at zero. Needs a binary that sends such a
- * stream, for example this tree built with the MGRAS description at
- * version 12; skipped otherwise, like the v9 format test below.
- */
-static void test_retrace_pre_dac_stream_runs_stock_period(void)
-{
-    if (!g_getenv("QTEST_QEMU_BINARY_MGRAS_V12")) {
-        g_test_skip("QTEST_QEMU_BINARY_MGRAS_V12 is not set");
-        return;
-    }
-    mgras_retrace_migration("QTEST_QEMU_BINARY_MGRAS_V12", true, false,
-                            &mgras_vga_frame, &mgras_stock_frame);
-}
-
 
 /*
  * The general line as the IRIX 6.5.30 kernel wires it: MgrasInitialize
@@ -12079,76 +12060,6 @@ static void test_pp1_xmap_migration(void)
     g_rmdir(tmpfs);
 }
 
-static void test_migration_from_v9_format_default(void)
-{
-    g_autofree char *tmpfs = NULL;
-    g_autofree char *uri = NULL;
-    g_autofree char *dest_cmdline = NULL;
-    GError *err = NULL;
-    QTestState *from, *to;
-
-    /*
-     * A v9 source has no per-pixel format array to send: vmstate_sgi_mgras
-     * gates the "format" field at version 10, and minimum_version_id stays
-     * at 9 so a v9 stream is still accepted. Confirms the destination's
-     * post_load leaves a migrated-in pixel at its zero default,
-     * SGI_MGRAS_PIXEL_FORMAT_CI8, matching what a v9 source always
-     * painted -- not misread as RGB, which would corrupt every CI8 pixel
-     * already on screen when an old-stream guest migrates onto this code.
-     * Skipped unless a v9 reference binary is available; see
-     * sn0-migration-test.c's QTEST_QEMU_BINARY_IOC3_V15 for the same
-     * pattern.
-     *
-     * v9's rect fill has no FILLCOLOR_R/G/B: this exact FILLMODE value
-     * (0x00100000) has bit 20 set, which v9's background check
-     * (FILLMODE & 0x00500000, bits 20 and 22) reads as true, so v9 paints
-     * from BKGRD_RG instead. Both v9 and v10 then resolve front[]'s low
-     * byte through CMAP map 29 the same way, so the two binaries reach
-     * the same display pixel by different, version-appropriate paths.
-     * Byte-for-byte front[] equality across the migration, not visual
-     * equivalence, is the actual claim under test: v9's raw plane and
-     * v10's CI8-indexed plane are different storage conventions in
-     * general, and only happen to coincide for a plain CI8 paint here.
-     */
-    if (!g_getenv("QTEST_QEMU_BINARY_MGRAS_V9")) {
-        g_test_skip("QTEST_QEMU_BINARY_MGRAS_V9 is not set");
-        return;
-    }
-
-    tmpfs = g_dir_make_tmp("sn0-mgras-v9-migration-XXXXXX", &err);
-    g_assert_no_error(err);
-    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
-
-    from = qtest_init_ext("QTEST_QEMU_BINARY_MGRAS_V9", MIGRATION_ARGS,
-                          NULL, true);
-    dest_cmdline = g_strdup_printf(MIGRATION_ARGS " -incoming %s", uri);
-    to = qtest_init(dest_cmdline);
-
-    mgras_enter_context(from);
-    qtest_writel(from, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x1e, 0x4));
-    mgras_write_cmap_entry(from, 29, 0x66, 0x66554400);
-    qtest_writeq(from, REG_CONTEXT_COMMAND,
-                MGRAS_COMMAND(REG_FILLMODE, MGRAS_FILLMODE_RECT_FILL_VALUE));
-    qtest_writeq(from, REG_CONTEXT_COMMAND,
-                MGRAS_COMMAND(REG_BKGRD_RG, 0x66));
-    qtest_writeq(from, REG_CONTEXT_COMMAND,
-                MGRAS_COMMAND(REG_BLOCK_START, (5u << 16) | 5u));
-    qtest_writeq(from, REG_CONTEXT_COMMAND,
-                MGRAS_COMMAND_EXEC(REG_BLOCK_END, (5u << 16) | 5u));
-    g_assert_cmphex(mgras_test_pixel(from, 5, 5), ==, 0x66);
-    g_assert_cmphex(mgras_test_display_pixel(from, 5, 5), ==, 0x00665544);
-
-    sgi_migrate_stopped(from, uri);
-
-    g_assert_cmphex(mgras_test_format(to, 5, 5), ==, MGRAS_PIXEL_FORMAT_CI8);
-    g_assert_cmphex(mgras_test_pixel(to, 5, 5), ==, 0x66);
-    g_assert_cmphex(mgras_test_display_pixel(to, 5, 5), ==, 0x00665544);
-
-    qtest_quit(to);
-    qtest_quit(from);
-    g_rmdir(tmpfs);
-}
-
 static void test_context_ack_migration(void)
 {
     g_autofree char *tmpfs = NULL;
@@ -15730,9 +15641,6 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/origin2000/mgras/"
                    "retrace-running-period-migration",
                    test_retrace_running_period_migration);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "retrace-pre-dac-stream-runs-stock-period",
-                   test_retrace_pre_dac_stream_runs_stock_period);
     qtest_add_func("sn0/origin2000/mgras/irq-enable-set-and-clear-ports",
                    test_irq_enable_set_and_clear_ports);
     qtest_add_func("sn0/origin2000/mgras/swap-command-raises-interrupt-10",
@@ -16205,8 +16113,6 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/origin2000/mgras/migration", test_migration);
     qtest_add_func("sn0/origin2000/mgras/pp1-xmap-migration",
                    test_pp1_xmap_migration);
-    qtest_add_func("sn0/origin2000/mgras/migration-from-v9-format-default",
-                   test_migration_from_v9_format_default);
     qtest_add_func("sn0/origin2000/mgras/context-ack-migration",
                    test_context_ack_migration);
     qtest_add_func("sn0/origin2000/mgras/gl-state-migration",
