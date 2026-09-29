@@ -1446,8 +1446,17 @@ static void sgi_ioc3_ssram_write(void *opaque, hwaddr addr, uint64_t val,
                                  unsigned size)
 {
     SGIIOC3State *s = opaque;
+    uint32_t word = val & SGI_IOC3_SSRAM_STORED;
 
-    s->ssram_word[addr / 4] = val & SGI_IOC3_SSRAM_STORED;
+    /* With checking enabled, bit 17 requests generated stored parity. */
+    if (sgi_ioc3_eth_ram_parity_enabled(&s->eth) &&
+        (val & SGI_IOC3_SSRAM_PARITY_ERROR)) {
+        word &= ~SGI_IOC3_SSRAM_PARITY;
+        if (ctpop32(word & SGI_IOC3_SSRAM_DATA) & 1) {
+            word |= SGI_IOC3_SSRAM_PARITY;
+        }
+    }
+    s->ssram_word[addr / 4] = word;
 }
 
 static const MemoryRegionOps sgi_ioc3_ssram_ops = {
