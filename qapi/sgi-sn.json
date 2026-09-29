@@ -445,6 +445,9 @@
 #
 # @mscsi: the MSCSI XIO card, four QLogic ISP1040 SCSI controllers
 #
+# @odyssey: a synthetic direct V12 widget on the Origin 300 XBridge
+#     external port, without a physical V-brick enclosure
+#
 # @mgras: the SI/MXI (MGRAS) graphics board, an XIO card whose widget
 #     answers XIO directly with no Bridge; the widget's own
 #     identity is fixed by the device, so the record's @part,
@@ -455,7 +458,7 @@
 { 'enum': 'SGIModelIoBoardPreset',
   'data': ['ip29-io', 'ip29-io-crosstown', 'io6', 'io6g', 'io8', 'io9',
            'pci-shoehorn', 'pci-carrier', 'gigachannel', 'menet', 'kona',
-           'mscsi', 'mgras'] }
+           'mscsi', 'mgras', 'odyssey'] }
 
 ##
 # @SGIModelIoBoardCarrier:

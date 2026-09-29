@@ -1067,6 +1067,41 @@ static void count_cpus_per_node(QTestState *qts, unsigned int *counts,
     }
 }
 
+static void test_origin300_direct_v12_requires_device(const void *data)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree uint8_t *image = g_malloc0(PROM_SIZE);
+    g_autofree char *path = NULL;
+    g_autofree char *node = NULL;
+    QTestState *qts;
+    int fd;
+
+    fd = g_file_open_tmp("sn-builder-o300-v12-prom-XXXXXX.bin", &path,
+                         &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(write(fd, image, PROM_SIZE), ==, (ssize_t)PROM_SIZE);
+    g_assert_cmpint(close(fd), ==, 0);
+
+    qts = qtest_initf("-M origin300 -cpu R14000 -smp 2 -m 512M "
+                      "-bios %s -S", path);
+    node = qom_child_type(qts, "/machine", "node0");
+    g_assert_cmpstr(node, ==, "sgi-sn1-node");
+    qtest_quit(qts);
+
+    {
+        const char *args[] = {
+            qtest_qemu_binary(NULL), "-M",
+            "origin300,topology=origin300-v12-direct",
+            "-cpu", "R14000", "-smp", "2", "-m", "512M", "-bios", path,
+            "-display", "none", "-S", NULL
+        };
+
+        assert_qemu_rejects(args, "direct V12 profile requires the "
+                                  "sgi-odyssey device");
+    }
+    g_unlink(path);
+}
+
 /*
  * A two-chassis Origin 300 fits six processors as 4:2 or 2:4, so -smp 6
  * alone is refused and population= names the one wanted; -smp 4 and 8 have
@@ -1759,6 +1794,8 @@ int main(int argc, char **argv)
                         NULL, test_origin200_accepts_its_memory_populations);
     qtest_add_data_func("sn/builder/origin200-dual-accepts-its-populations",
                         NULL, test_origin200_dual_accepts_its_populations);
+    qtest_add_data_func("sn/builder/origin300-direct-v12-requires-device",
+                        NULL, test_origin300_direct_v12_requires_device);
     qtest_add_data_func("sn/builder/origin300-two-chassis-population",
                         NULL, test_origin300_two_chassis_population);
     qtest_add_data_func(
