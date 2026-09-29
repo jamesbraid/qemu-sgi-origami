@@ -4,17 +4,18 @@
  *
  * A draw's vertices are transformed by the draw state's matrices, mapped
  * through its viewport into window coordinates, snapped to a subpixel grid
- * and rasterized with edge functions at pixel centres, and fogged while fog
- * is enabled. Each fragment then passes the per-fragment operations in
- * OpenGL 1.2.1's order (4.1): pixel ownership against the drawable's
- * rectangles, the scissor test, the alpha test, the stencil test, the depth
- * test, blending and the logical operation, and is stored under the write
- * masks through the family's target. What it draws follows OpenGL 1.2.1 for
- * untextured points, lines, polygons and bitmaps at size and width 1, flat
- * or smooth shaded, in RGBA or colour-index mode, from vertex colours the
- * context has already lit, with a back-facing polygon's back colours under
- * two-sided lighting, and polygons culled by facing. Where OpenGL leaves a
- * choice, the head's SGIRasterRules make it.
+ * and rasterized with edge functions at pixel centres, clipped by the
+ * enabled client clip planes, and fogged while fog is enabled. Each fragment
+ * then passes the per-fragment operations in OpenGL 1.2.1's order (4.1):
+ * pixel ownership against the drawable's rectangles, the scissor test, the
+ * alpha test, the stencil test, the depth test, blending and the logical
+ * operation, and is stored under the write masks through the family's
+ * target. What it draws follows OpenGL 1.2.1 for untextured points, lines,
+ * polygons and bitmaps at size and width 1, flat or smooth shaded, in RGBA
+ * or colour-index mode, from vertex colours the context has already lit,
+ * with a back-facing polygon's back colours under two-sided lighting, and
+ * polygons culled by facing. Where OpenGL leaves a choice, the head's
+ * SGIRasterRules make it.
  */
 #include "qemu/osdep.h"
 #include <math.h>
@@ -57,6 +58,8 @@ typedef struct SGISoftVertex {
     double rgba[4];
     double index;         /* the colour index, in colour-index mode */
     double fog;           /* the fog coordinate, |z| in eye coordinates */
+    /* Each client clip plane's value at the vertex, kept where >= 0. */
+    double clip[SGI_GL_CLIP_PLANES];
 } SGISoftVertex;
 
 /*
@@ -506,6 +509,20 @@ static void sgi_soft_fog(const SGIGLDrawState *st, SGISoftFrag *frag)
     }
 }
 
+/*
+ * Whether a point whose client clip plane values are d lies outside an
+ * enabled plane (2.11).
+ */
+static bool sgi_soft_clipped(const SGIGLDrawState *st, const double d[])
+{
+    for (int i = 0; i < SGI_GL_CLIP_PLANES; i++) {
+        if ((st->clip_planes & (1u << i)) && !(d[i] >= 0)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 /* A fragment's colour value from an interpolated or flat index. */
 static uint32_t sgi_soft_index(const SGISoftDraw *r, double index)
 {
@@ -736,6 +753,12 @@ static bool sgi_soft_transform(const SGISoftDraw *r, const float *v,
      * vertex attribute gives it exactly at each fragment.
      */
     out->fog = fabs(eye[3] != 0 ? eye[2] / eye[3] : eye[2]);
+    for (int i = 0; i < SGI_GL_CLIP_PLANES; i++) {
+        const float *p = st->clip_plane[i];
+
+        out->clip[i] = p[0] * eye[0] + p[1] * eye[1] + p[2] * eye[2] +
+                       p[3] * eye[3];
+    }
     for (int k = 0; k < 4; k++) {
         out->rgba[k] = MIN(MAX(rgba[k], 0.0f), 1.0f);
     }
@@ -867,6 +890,17 @@ static void sgi_soft_triangle(const SGISoftDraw *r, const float *va,
             w2 = b2 * v[2].inv_w;
             sum = w0 + w1 + w2;
             frag.fog = (w0 * v[0].fog + w1 * v[1].fog + w2 * v[2].fog) / sum;
+            if (st->clip_planes) {
+                double d[SGI_GL_CLIP_PLANES];
+
+                for (int i = 0; i < SGI_GL_CLIP_PLANES; i++) {
+                    d[i] = (w0 * v[0].clip[i] + w1 * v[1].clip[i] +
+                            w2 * v[2].clip[i]) / sum;
+                }
+                if (sgi_soft_clipped(st, d)) {
+                    continue;
+                }
+            }
             if (smooth) {
                 for (int k = 0; k < 4; k++) {
                     frag.rgba[k] = (w0 * v[0].rgba[k] + w1 * v[1].rgba[k] +
@@ -1018,6 +1052,16 @@ static void sgi_soft_line(const SGISoftDraw *r, const float *va,
                                   (wa + wb) :
                          provoking[SGI_GL_V_INDEX];
             frag.fog = (wa * a.fog + wb * b.fog) / (wa + wb);
+            if (st->clip_planes) {
+                double d[SGI_GL_CLIP_PLANES];
+
+                for (int i = 0; i < SGI_GL_CLIP_PLANES; i++) {
+                    d[i] = (wa * a.clip[i] + wb * b.clip[i]) / (wa + wb);
+                }
+                if (sgi_soft_clipped(st, d)) {
+                    continue;
+                }
+            }
             for (int k = 0; k < 4; k++) {
                 frag.rgba[k] = smooth ?
                                (wa * a.rgba[k] + wb * b.rgba[k]) / (wa + wb) :
@@ -1046,7 +1090,7 @@ static void sgi_soft_point(const SGISoftDraw *r, const float *vp)
     SGISoftFrag frag;
     int px, py;
 
-    if (!sgi_soft_transform(r, vp, &v)) {
+    if (!sgi_soft_transform(r, vp, &v) || sgi_soft_clipped(st, v.clip)) {
         return;
     }
     px = v.x >> sub;
