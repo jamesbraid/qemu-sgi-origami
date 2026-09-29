@@ -4208,6 +4208,24 @@ static void test_dither_counts(void)
 }
 
 /*
+ * Dithering follows blending (4.1.7): the source is rounded, not
+ * dithered, before it is blended. A 0.5 grey source, 127.5 steps, blended
+ * with GL_ONE and GL_ZERO rounds to 128 and blends to 128 exactly, which
+ * no threshold moves: every pixel 128. Dithered first, half its pixels
+ * would be 127.
+ */
+static void test_dither_follows_blend(void)
+{
+    static FragScene f;
+
+    dither_init(&f);
+    enable(&f.c, SGI_GL_BLEND, true);
+    frag_blend(&f, 1, 0, SGI_GL_FUNC_ADD);
+    dither_triangle(&f, 0.5f, 0.5f, 0.5f);
+    g_assert_cmpuint(frag_count(&f, 0x808080), ==, W * H);
+}
+
+/*
  * Where the pattern falls, anchored to the screen, rows counted down from
  * the display's top line: each channel of pixel (x, y) is
  * floor(c * 255 + B / 16) for the threshold B at column x mod 4 and row
@@ -4422,6 +4440,8 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-gl/draw-clips-to-the-view-volume",
                     test_draw_clips_to_the_view_volume);
     g_test_add_func("/sgi-gl/dither-counts", test_dither_counts);
+    g_test_add_func("/sgi-gl/dither-follows-blend",
+                    test_dither_follows_blend);
     g_test_add_func("/sgi-gl/dither-screen-pattern",
                     test_dither_screen_pattern);
     g_test_add_func("/sgi-gl/dither-skips-clears", test_dither_skips_clears);
