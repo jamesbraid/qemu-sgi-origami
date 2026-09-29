@@ -22,7 +22,8 @@
 #define FLASH_SELECT_SIZE 0x200000
 #define FLASH_WRITE_EN (1u << 31)
 #define RAM 0x20000000ULL
-#define LOW_RAM_SIZE 0x2000
+#define LOW_RAM_SIZE 0x4000
+#define LOW_RAM_HALF 0x2000
 #define HIGH_GUARD RAM
 #define HIGH_RAM (RAM + 0x4000)
 #define ATTR0 (1ULL << 40)
@@ -835,15 +836,17 @@ static void test_heart_divider_onewire_time(void)
     qtest_quit(qts);
 }
 
-static void test_low_ram(void)
+static void test_low_ram(gconstpointer data)
 {
-    QTestState *qts = octane_start();
+    bool octane2 = GPOINTER_TO_INT(data);
+    QTestState *qts = octane2 ? octane2_start_args("") : octane_start();
+    const uint64_t offsets[] = { 0, 0x1234, 0x1fff };
     uint64_t wide;
     uint32_t word;
     uint16_t half;
     uint8_t byte;
 
-    for (uint64_t addr = 0; addr <= 0x1ff8; addr += 0x400) {
+    for (uint64_t addr = 0; addr <= 0x3ff8; addr += 0x400) {
         g_assert_cmpuint(qtest_readb_tx(qts, addr, &byte), ==, MEMTX_OK);
         g_assert_cmphex(byte, ==, 0);
         g_assert_cmpuint(qtest_readw_tx(qts, addr, &half), ==, MEMTX_OK);
@@ -891,11 +894,33 @@ static void test_low_ram(void)
     g_assert_cmpuint(qtest_writeb_tx(qts, 0x1fff, 0x9a), ==, MEMTX_OK);
     g_assert_cmphex(qtest_readq(qts, 0x1ff8), ==, 0x102030405060709aULL);
 
-    g_assert_cmpuint(qtest_readb_tx(qts, 0x2000, &byte), !=, MEMTX_OK);
-    g_assert_cmpuint(qtest_writeb_tx(qts, 0x2000, 0xff), !=, MEMTX_OK);
-    g_assert_cmpuint(qtest_readb_tx(qts, 0x3fff, &byte), !=, MEMTX_OK);
-    g_assert_cmpuint(qtest_writeb_tx(qts, 0x3fff, 0xff), !=, MEMTX_OK);
-    g_assert_cmpuint(qtest_readb_tx(qts, ATTR0 + 0x2000, &byte), !=,
+    g_assert_cmpuint(qtest_readq_tx(qts, LOW_RAM_HALF, &wide), ==, MEMTX_OK);
+    g_assert_cmphex(wide, ==, 0);
+    for (unsigned i = 0; i < G_N_ELEMENTS(offsets); i++) {
+        uint64_t lower = offsets[i];
+        uint64_t upper = LOW_RAM_HALF + lower;
+        uint8_t lower_value = 0x31 + i;
+        uint8_t upper_value = 0xa1 + i;
+
+        g_assert_cmpuint(qtest_writeb_tx(qts, lower, lower_value), ==,
+                         MEMTX_OK);
+        g_assert_cmpuint(qtest_writeb_tx(qts, upper, upper_value), ==,
+                         MEMTX_OK);
+        g_assert_cmpuint(qtest_readb_tx(qts, lower, &byte), ==, MEMTX_OK);
+        g_assert_cmphex(byte, ==, lower_value);
+        g_assert_cmpuint(qtest_readb_tx(qts, upper, &byte), ==, MEMTX_OK);
+        g_assert_cmphex(byte, ==, upper_value);
+    }
+    g_assert_cmpuint(qtest_writeq_tx(qts, LOW_RAM_SIZE - 8,
+                                     0x1020304050607080ULL), ==, MEMTX_OK);
+    g_assert_cmpuint(qtest_readq_tx(qts, LOW_RAM_SIZE - 8, &wide), ==,
+                     MEMTX_OK);
+    g_assert_cmphex(wide, ==, 0x1020304050607080ULL);
+    g_assert_cmpuint(qtest_readb_tx(qts, 0x3fff, &byte), ==, MEMTX_OK);
+    g_assert_cmphex(byte, ==, 0x80);
+    g_assert_cmpuint(qtest_readb_tx(qts, 0x4000, &byte), !=, MEMTX_OK);
+    g_assert_cmpuint(qtest_writeb_tx(qts, 0x4000, 0xff), !=, MEMTX_OK);
+    g_assert_cmpuint(qtest_readb_tx(qts, ATTR0 + LOW_RAM_HALF, &byte), ==,
                      MEMTX_OK);
     g_assert_cmpuint(qtest_readb_tx(qts, HIGH_GUARD, &byte), !=, MEMTX_OK);
     g_assert_cmpuint(qtest_writeb_tx(qts, HIGH_GUARD, 0xff), !=, MEMTX_OK);
@@ -920,48 +945,17 @@ static void test_low_ram(void)
         g_assert_cmpuint(qtest_readq_tx(qts, addr, &wide), ==, MEMTX_OK);
         g_assert_cmphex(wide, ==, 0);
     }
-    g_assert_cmphex(qtest_readb(qts, 0x1fff), ==, 0);
+    g_assert_cmphex(qtest_readb(qts, 0x3fff), ==, 0);
     qtest_quit(qts);
 }
 
-static void test_octane2_heart_identity_and_low_alias(void)
+static void test_octane2_heart_identity(void)
 {
     QTestState *qts = octane2_start_args("");
-    const uint64_t offsets[] = { 0, 0x614, 0x1fff };
     uint64_t wide;
-    uint8_t byte;
 
     g_assert_cmpuint(qtest_readq_tx(qts, HEART_WIDGET, &wide), ==, MEMTX_OK);
     g_assert_cmphex(wide, ==, UINT64_C(0x000000006c00106d));
-    g_assert_cmpuint(qtest_readq_tx(qts, LOW_RAM_SIZE, &wide), ==, MEMTX_OK);
-    g_assert_cmphex(wide, ==, 0);
-
-    for (unsigned i = 0; i < G_N_ELEMENTS(offsets); i++) {
-        uint64_t lower = offsets[i];
-        uint64_t upper = LOW_RAM_SIZE + lower;
-        uint8_t lower_value = 0x31 + i;
-        uint8_t upper_value = 0xa1 + i;
-
-        g_assert_cmpuint(qtest_writeb_tx(qts, lower, lower_value), ==,
-                         MEMTX_OK);
-        g_assert_cmpuint(qtest_readb_tx(qts, upper, &byte), ==, MEMTX_OK);
-        g_assert_cmphex(byte, ==, lower_value);
-        g_assert_cmpuint(qtest_writeb_tx(qts, upper, upper_value), ==,
-                         MEMTX_OK);
-        g_assert_cmpuint(qtest_readb_tx(qts, lower, &byte), ==, MEMTX_OK);
-        g_assert_cmphex(byte, ==, upper_value);
-    }
-    g_assert_cmpuint(qtest_readb_tx(qts, 0x4000, &byte), !=, MEMTX_OK);
-    g_assert_cmpuint(qtest_writeb_tx(qts, 0x4000, 0xff), !=, MEMTX_OK);
-
-    qtest_system_reset(qts);
-    g_assert_cmpuint(qtest_readq_tx(qts, LOW_RAM_SIZE, &wide), ==, MEMTX_OK);
-    g_assert_cmphex(wide, ==, 0);
-    for (unsigned i = 0; i < G_N_ELEMENTS(offsets); i++) {
-        g_assert_cmpuint(qtest_readb_tx(qts, LOW_RAM_SIZE + offsets[i],
-                                        &byte), ==, MEMTX_OK);
-        g_assert_cmphex(byte, ==, 0);
-    }
     qtest_quit(qts);
 }
 
@@ -2066,7 +2060,7 @@ static void test_migration_state(void)
     g_assert_cmpint(g_rmdir(directory), ==, 0);
 }
 
-static void test_octane2_low_alias_migration(void)
+static void test_octane2_low_ram_migration(void)
 {
     uint8_t pattern[LOW_RAM_SIZE];
     uint8_t seen[LOW_RAM_SIZE];
@@ -2077,7 +2071,7 @@ static void test_octane2_low_alias_migration(void)
     QTestState *from, *to;
     uint8_t byte;
 
-    directory = g_dir_make_tmp("octane2-alias-migration-XXXXXX", &error);
+    directory = g_dir_make_tmp("octane2-low-ram-migration-XXXXXX", &error);
     g_assert_no_error(error);
     socket = g_build_filename(directory, "migration.sock", NULL);
     uri = g_strdup_printf("unix:%s", socket);
@@ -2095,17 +2089,11 @@ static void test_octane2_low_alias_migration(void)
 
     qtest_memread(to, 0, seen, sizeof(seen));
     g_assert_cmpmem(seen, sizeof(seen), pattern, sizeof(pattern));
-    qtest_memread(to, LOW_RAM_SIZE, seen, sizeof(seen));
-    g_assert_cmpmem(seen, sizeof(seen), pattern, sizeof(pattern));
-    for (unsigned i = 0; i < 3; i++) {
-        const uint64_t offsets[] = { 0, 0x614, 0x1fff };
-
-        g_assert_cmpuint(qtest_readb_tx(to, LOW_RAM_SIZE + offsets[i],
-                                        &byte), ==, MEMTX_OK);
-        g_assert_cmphex(byte, ==, pattern[offsets[i]]);
-    }
+    g_assert_cmpuint(qtest_readb_tx(to, LOW_RAM_SIZE - 1, &byte), ==,
+                     MEMTX_OK);
+    g_assert_cmphex(byte, ==, pattern[LOW_RAM_SIZE - 1]);
     qtest_system_reset(to);
-    qtest_memread(to, LOW_RAM_SIZE, seen, sizeof(seen));
+    qtest_memread(to, 0, seen, sizeof(seen));
     for (unsigned i = 0; i < sizeof(seen); i++) {
         g_assert_cmphex(seen[i], ==, 0);
     }
@@ -2159,9 +2147,9 @@ int main(int argc, char **argv)
                         test_heart_diagnostic_storage);
     qtest_add_func("/octane/heart-divider-onewire-time",
                    test_heart_divider_onewire_time);
-    qtest_add_func("/octane/low-ram", test_low_ram);
-    qtest_add_func("/octane2/heart-identity-and-low-alias",
-                   test_octane2_heart_identity_and_low_alias);
+    qtest_add_data_func("/octane/low-ram", GINT_TO_POINTER(0), test_low_ram);
+    qtest_add_data_func("/octane2/low-ram", GINT_TO_POINTER(1), test_low_ram);
+    qtest_add_func("/octane2/heart-identity", test_octane2_heart_identity);
     qtest_add_func("/octane/flash-and-pci", test_flash_and_pci);
     qtest_add_data_func("/octane/alternate-flash", GINT_TO_POINTER(0),
                         test_alternate_flash);
@@ -2196,8 +2184,8 @@ int main(int argc, char **argv)
     qtest_add_func("/octane/memory-population-migration",
                    test_memory_population_migration);
     qtest_add_func("/octane/migration-state", test_migration_state);
-    qtest_add_func("/octane2/low-alias-migration",
-                   test_octane2_low_alias_migration);
+    qtest_add_func("/octane2/low-ram-migration",
+                   test_octane2_low_ram_migration);
     int result = g_test_run();
     unlink(flash_path);
     g_free(flash_path);

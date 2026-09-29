@@ -41,14 +41,13 @@
 #define OCTANE_BANK_UNIT (32 * MiB)
 #define OCTANE_PHYSICAL_SPAN (1ULL << 40)
 #define OCTANE_ATTR0_BASE (1ULL << 40)
-#define OCTANE_LOW_RAM_SIZE 0x2000
+#define OCTANE_LOW_RAM_SIZE 0x4000
 #define OCTANE_HIGH_GUARD_BASE 0x20000000ULL
 #define OCTANE_HIGH_GUARD_SIZE 0x4000
 
 typedef struct OctaneMachineState {
     MachineState parent;
     MemoryRegion low_ram;
-    MemoryRegion low_alias;
     MemoryRegion high_guard;
     uint64_t bank_size[HEART_BANKS];
     bool octane2;
@@ -320,17 +319,10 @@ static void octane_init_common(MachineState *machine, bool octane2)
     memory_region_init(physical, OBJECT(machine), "octane.physical",
                        OCTANE_PHYSICAL_SPAN);
     memory_region_add_subregion(system, 0, physical);
+    /* Functional storage approximation for the full 16 KiB low window. */
     memory_region_init_ram(&s->low_ram, NULL, "octane.low-ram",
                            OCTANE_LOW_RAM_SIZE, &error_fatal);
     memory_region_add_subregion(physical, 0, &s->low_ram);
-    if (octane2) {
-        /* Functional approximation: the upper 8 KiB shares the low RAM. */
-        memory_region_init_alias(&s->low_alias, OBJECT(machine),
-                                 "octane2.low-alias", &s->low_ram, 0,
-                                 OCTANE_LOW_RAM_SIZE);
-        memory_region_add_subregion(physical, OCTANE_LOW_RAM_SIZE,
-                                    &s->low_alias);
-    }
     memory_region_init_alias(attr0, OBJECT(machine), "octane.attr0",
                              physical, 0, OCTANE_PHYSICAL_SPAN);
     memory_region_add_subregion(system, OCTANE_ATTR0_BASE, attr0);
