@@ -16,7 +16,7 @@
  * projection matrices and their stacks, and bitmaps, leave in the
  * window's front or back buffer after the per-fragment operations the
  * shared rasterizer carries out (the scissor, alpha, stencil and depth
- * tests), in RGBA or
+ * tests and blending), in RGBA or
  * colour-index mode, and the main-port framing,
  * so the words after a packet still parse as headers. What it does not: the
  * raster-engine register writes the GE would make, the timing of the
@@ -147,6 +147,26 @@
 #define MGRAS_GL_STENCIL_TEST    0x00006f04
 #define MGRAS_GL_STENCIL_SHIFT   24
 #define MGRAS_GL_DEPTH_MASK_24   0x00ffffffu
+
+/*
+ * Blending, established from the listing: glBlendFunc (__glMgrim_BlendFunc
+ * 0xd95ebd0) validates both factors and writes 0x3f08 and the two
+ * enumerants unchanged (0xd95ecf8-0xd95ed08); glBlendEquationEXT
+ * (0xd95eb20) accepts GL_LOGIC_OP, GL_FUNC_ADD, GL_MIN, GL_MAX,
+ * GL_FUNC_SUBTRACT and GL_FUNC_REVERSE_SUBTRACT and writes 0x6004 and the
+ * enumerant; glBlendColorEXT (0xd960600) writes 0xd910 and four floats as
+ * the application passed them; glEnable and glDisable of GL_BLEND write
+ * 0x6504 and 1 or 0 (0xd97dd00 for capability 0xbe2, 0xd97fa8c). Every
+ * context setup sends 0x3f08 with 1 and 0 and 0x6004 with 0x8006,
+ * OpenGL's initial GL_ONE, GL_ZERO and GL_FUNC_ADD. That the board blends
+ * as OpenGL 1.2.1, 4.1.6 says, with the stored colour at the eight bits a
+ * channel the model keeps, is inferred; the stored colour has no alpha.
+ * The discriminating test is gl-blend-mixes-with-the-window.
+ */
+#define MGRAS_GL_BLEND_FUNC      0x00003f08
+#define MGRAS_GL_BLEND_EQUATION  0x00006004
+#define MGRAS_GL_BLEND_COLOR     0x0000d910
+#define MGRAS_GL_BLEND           0x00006504
 
 /* glStencilOp's operations by the number the client sends for each. */
 static const uint16_t mgras_gl_stencil_ops[] = {
@@ -686,6 +706,10 @@ bool sgi_mgras_gl_header(uint32_t header)
     case MGRAS_GL_CLEAR_STENCIL:
     case MGRAS_GL_CLEAR_STENCIL_BUF:
     case MGRAS_GL_STENCIL_TEST:
+    case MGRAS_GL_BLEND_FUNC:
+    case MGRAS_GL_BLEND_EQUATION:
+    case MGRAS_GL_BLEND_COLOR:
+    case MGRAS_GL_BLEND:
     case MGRAS_GL_DEPTH_RANGE:
     case MGRAS_GL_DITHER:
     case MGRAS_GL_CULL_ON:
@@ -1096,6 +1120,8 @@ typedef enum MgrasGLQueryPacking {
  *   less the first two plus 1 (0xd994f1c-0xd994f5c). GL_SCISSOR_TEST at
  *   0xc28, the whole word the boolean.
  * - GL_STENCIL_CLEAR_VALUE at 0xc14, an integer.
+ * - GL_BLEND at 0xc4a, the whole word the boolean, and GL_BLEND_SRC,
+ *   GL_BLEND_DST and GL_BLEND_EQUATION at 0xc4b to 0xc4d, integers.
  *
  * What a1 and a2 select is unknown; the model answers by index alone.
  * Every other index answers zero, logged, which is right for the
@@ -1137,6 +1163,10 @@ static const struct {
     { 0xc26, 2, MGRAS_GL_QUERY_BOX_END, SGI_GL_SCISSOR_BOX, 2 },
     { 0xc28, 1, MGRAS_GL_QUERY_WORD, SGI_GL_SCISSOR_TEST, 0 },
     { 0xc14, 1, MGRAS_GL_QUERY_WORD, SGI_GL_STENCIL_CLEAR_VALUE, 0 },
+    { 0xc4a, 1, MGRAS_GL_QUERY_WORD, SGI_GL_BLEND, 0 },
+    { 0xc4b, 1, MGRAS_GL_QUERY_WORD, SGI_GL_BLEND_SRC, 0 },
+    { 0xc4c, 1, MGRAS_GL_QUERY_WORD, SGI_GL_BLEND_DST, 0 },
+    { 0xc4d, 1, MGRAS_GL_QUERY_WORD, SGI_GL_BLEND_EQUATION, 0 },
 };
 
 /*
@@ -2221,6 +2251,57 @@ const VMStateDescription vmstate_sgi_mgras_gl_stencil_plane = {
     }
 };
 
+static const VMStateDescription vmstate_sgi_mgras_gl_context_blend = {
+    .name = TYPE_SGI_MGRAS "/gl-context-blend",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32(cur.blend, SGIGLContext),
+        VMSTATE_UINT32(cur.blend_src, SGIGLContext),
+        VMSTATE_UINT32(cur.blend_dst, SGIGLContext),
+        VMSTATE_UINT32(cur.blend_equation, SGIGLContext),
+        VMSTATE_SGI_GL_FLOATS(cur.blend_color, SGIGLContext, 4, 0),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
+/*
+ * Every context's blending state, sent once some context has left
+ * OpenGL's initial disabled blending, GL_ONE, GL_ZERO, GL_FUNC_ADD and a
+ * zero constant, which every context setup sends. A stream without it
+ * comes from a model that consumed the blending packets and drew as that
+ * initial state does.
+ */
+static bool mgras_gl_blend_needed(void *opaque)
+{
+    SGIMgrasState *s = opaque;
+    static const float zero[4];
+
+    for (int i = 0; i < SGI_MGRAS_GL_CONTEXTS; i++) {
+        const SGIGLDrawState *st = &s->gl[i].cur;
+
+        if (st->blend || st->blend_src != 1 || st->blend_dst != 0 ||
+            st->blend_equation != SGI_GL_FUNC_ADD ||
+            memcmp(st->blend_color, zero, sizeof(zero))) {
+            return true;
+        }
+    }
+    return false;
+}
+
+const VMStateDescription vmstate_sgi_mgras_gl_blend = {
+    .name = TYPE_SGI_MGRAS "/gl-blend",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = mgras_gl_blend_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_STRUCT_ARRAY(gl, SGIMgrasState, SGI_MGRAS_GL_CONTEXTS, 1,
+                             vmstate_sgi_mgras_gl_context_blend,
+                             SGIGLContext),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
 const VMStateDescription vmstate_sgi_mgras_gl_cull = {
     .name = TYPE_SGI_MGRAS "/gl-cull",
     .version_id = 1,
@@ -2432,7 +2513,7 @@ bool sgi_mgras_gl_post_load(SGIMgrasState *s)
             gl->normalize > 1 || gl->rescale_normal > 1 ||
             gl->strip_odd > 1 || gl->cur.cull_face > 1 ||
             gl->cur.scissor_test > 1 || gl->cur.alpha_test > 1 ||
-            gl->cur.stencil_test > 1 ||
+            gl->cur.stencil_test > 1 || gl->cur.blend > 1 ||
             gl->cur.stencil_func > SGI_GL_ALWAYS ||
             gl->cur.alpha_func > SGI_GL_ALWAYS ||
             !(gl->cur.alpha_ref >= 0.0f && gl->cur.alpha_ref <= 1.0f) ||
@@ -2520,6 +2601,19 @@ static void mgras_gl_store_colour(void *opaque, SGIColourTarget target,
                                   int x, int y, uint32_t colour)
 {
     mgras_gl_put(opaque, target, x, y, colour);
+}
+
+/*
+ * The stored pixel of the first bank in target: a direct colour's 24
+ * bits, or a CI8 pixel's index.
+ */
+static uint32_t mgras_gl_load_colour(void *opaque, SGIColourTarget target,
+                                     int x, int y)
+{
+    SGIMgrasState *s = opaque;
+    unsigned int idx = (s->height - 1 - y) * s->width + x;
+
+    return (target & 1 ? s->front[idx] : s->back[idx]) & 0xffffff;
 }
 
 /*
@@ -2637,6 +2731,7 @@ static const SGIRasterRules mgras_gl_raster_rules = {
 
 static const SGIRasterTarget mgras_gl_target = {
     .store_colour = mgras_gl_store_colour,
+    .load_colour = mgras_gl_load_colour,
     .store_index = mgras_gl_store_index,
     .load_depth = mgras_gl_load_depth,
     .store_depth = mgras_gl_store_depth,
@@ -3749,6 +3844,20 @@ void sgi_mgras_gl_execute(SGIMgrasState *s, uint32_t header,
         return;
     case MGRAS_GL_STENCIL_TEST:
         word[0] = SGI_GL_STENCIL_TEST;
+        mgras_gl_command(s, payload[0] ? SGI_GL_OP_ENABLE :
+                         SGI_GL_OP_DISABLE, word, 1);
+        return;
+    case MGRAS_GL_BLEND_FUNC:
+        mgras_gl_command(s, SGI_GL_OP_BLEND_FUNC, payload, 2);
+        return;
+    case MGRAS_GL_BLEND_EQUATION:
+        mgras_gl_command(s, SGI_GL_OP_BLEND_EQUATION, payload, 1);
+        return;
+    case MGRAS_GL_BLEND_COLOR:
+        mgras_gl_command(s, SGI_GL_OP_BLEND_COLOR, payload, 4);
+        return;
+    case MGRAS_GL_BLEND:
+        word[0] = SGI_GL_BLEND;
         mgras_gl_command(s, payload[0] ? SGI_GL_OP_ENABLE :
                          SGI_GL_OP_DISABLE, word, 1);
         return;
