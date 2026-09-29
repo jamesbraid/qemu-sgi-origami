@@ -259,7 +259,8 @@ static void check_io_board_presets(const SGIModelTopology *t)
                       preset == SGI_MODEL_IO_BOARD_PRESET_MENET ||
                       preset == SGI_MODEL_IO_BOARD_PRESET_MSCSI ||
                       preset == SGI_MODEL_IO_BOARD_PRESET_KONA ||
-                      preset == SGI_MODEL_IO_BOARD_PRESET_MGRAS);
+                      preset == SGI_MODEL_IO_BOARD_PRESET_MGRAS ||
+                      preset == SGI_MODEL_IO_BOARD_PRESET_ODYSSEY);
     }
 }
 
@@ -460,10 +461,48 @@ static void test_every_topology_is_well_formed(void)
     g_assert_cmpuint(topology_count, >, 0);
 }
 
+static void test_origin300_direct_v12_attachment(void)
+{
+    g_autoptr(SGIModelCatalogue) catalogue = load_catalogue();
+    const SGIModelTopologyList *entry;
+
+    for (entry = catalogue->topologies; entry; entry = entry->next) {
+        const SGIModelTopology *t = entry->value;
+        const SGIModelIoBoardList *board;
+        const SGIModelXioAttachmentList *attachment;
+        unsigned int index = 0;
+
+        if (!g_str_equal(t->name, "origin300-v12-direct")) {
+            continue;
+        }
+        g_assert_null(t->xio_slots);
+        for (board = t->io_boards; board; board = board->next, index++) {
+            if (board->value->preset != SGI_MODEL_IO_BOARD_PRESET_ODYSSEY) {
+                continue;
+            }
+            g_assert_cmpuint(board->value->attachment, ==, index);
+            attachment = t->xio_attachments;
+            for (unsigned int i = 0; i < index; i++) {
+                g_assert_nonnull(attachment);
+                attachment = attachment->next;
+            }
+            g_assert_nonnull(attachment);
+            g_assert_cmpint(attachment->value->crossbar_index, ==, -1);
+            g_assert_cmpuint(attachment->value->node_index, ==, 0);
+            g_assert_cmpuint(attachment->value->widget, ==, 0xb);
+            return;
+        }
+        g_error("origin300-v12-direct has no Odyssey board");
+    }
+    g_error("origin300-v12-direct is missing");
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
     g_test_add_func("/sn-model/every-topology-is-well-formed",
                     test_every_topology_is_well_formed);
+    g_test_add_func("/sn-model/origin300-direct-v12-attachment",
+                    test_origin300_direct_v12_attachment);
     return g_test_run();
 }

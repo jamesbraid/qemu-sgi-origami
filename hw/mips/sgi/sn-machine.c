@@ -54,6 +54,7 @@
 #include "hw/misc/sgi-sn0-module-management.h"
 #include "hw/misc/sgi-xbow.h"
 #include "hw/pci-host/sgi-bridge.h"
+#include "hw/pci-host/sgi-xbridge.h"
 #include "hw/pci/pci.h"
 #include "system/block-backend.h"
 #include "system/blockdev.h"
@@ -1575,6 +1576,44 @@ static bool sgi_machine_instantiate_mgras(
     return sgi_machine_attach_xio_card(s, dev, board_index, attachment, errp);
 }
 
+/* The direct V12 profile occupies the Origin 300 XBridge's external port. */
+static bool sgi_machine_instantiate_odyssey(
+    SGIMachineState *s, const SGIModelIoBoard *record,
+    unsigned int board_index, const SGIModelXioAttachment *attachment,
+    Error **errp)
+{
+    SN1NodeState *node = SN1_NODE(s->bedrock_nodes[attachment->node_index]);
+    SGIXioLink *link = &s->board_links[board_index];
+    g_autofree char *name = g_strdup_printf("io-board%u-link", board_index);
+    DeviceState *dev;
+
+    if (attachment->crossbar_index >= 0 ||
+        attachment->widget !=
+        sgi_xbridge_xio_port(SGI_XBRIDGE(node->xbridge))) {
+        error_setg(errp, "the direct V12 board must use the node "
+                   "XBridge external port");
+        return false;
+    }
+    dev = qdev_try_new("sgi-odyssey");
+    if (!dev) {
+        error_setg(errp, "the direct V12 profile requires the "
+                   "sgi-odyssey device");
+        return false;
+    }
+    sgi_machine_add_xio_board(s, dev, record, board_index, attachment);
+    sgi_xio_link_init(link, OBJECT(s), name,
+                      OBJECT(node->xbridge), attachment->widget,
+                      OBJECT(dev), 0);
+    sgi_machine_link_board_pi(s, OBJECT(dev), attachment->node_index);
+    if (!sgi_xio_link_connect(link, errp) ||
+        !sysbus_realize(SYS_BUS_DEVICE(dev), errp) ||
+        !sgi_xio_link_connect(link, errp)) {
+        return false;
+    }
+    s->io_boards[board_index] = SGI_XIO_BOARD(dev);
+    return true;
+}
+
 /*
  * The IO-8's fixed devices: an sgi-baseio (the "io8" preset) on the
  * Bedrock node's own XBridge head F, reached through
@@ -1720,6 +1759,9 @@ static bool sgi_machine_instantiate_io_board(
     case SGI_MODEL_IO_BOARD_PRESET_MGRAS:
         return sgi_machine_instantiate_mgras(s, record, board_index,
                                              attachment, errp);
+    case SGI_MODEL_IO_BOARD_PRESET_ODYSSEY:
+        return sgi_machine_instantiate_odyssey(s, record, board_index,
+                                                attachment, errp);
     default:
         error_setg(errp, "topology '%s' io board %u names an unsupported "
                   "preset for this family", t->name, board_index);
