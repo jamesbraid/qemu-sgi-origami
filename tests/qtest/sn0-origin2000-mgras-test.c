@@ -10692,6 +10692,44 @@ static void test_gl_pixels_follow_the_raster_position(void)
 }
 
 /*
+ * A raster position and rectangle as far out as a guest can put them: a
+ * viewport 2^31 - 1 pixels wide from x 2^30 puts the position about
+ * 2.7 * 10^9 pixels out, past what an int32 holds, and a rectangle at
+ * x 0x7ffffffe is past it again. The draw
+ * lands off the window, draws nothing and leaves the port framed; so
+ * does the same far to the left.
+ */
+static void test_gl_pixels_far_raster_position(void)
+{
+    static const uint32_t row[2] = { 0x010203ff, 0x040506ff };
+
+    gl_pixels_context(qts, 0);
+    gl_viewport(qts, 0x40000000, 0, 0x7fffffff, 128);
+    gl_raster_pos2f(qts, 100, 64);
+    g_assert_cmphex(gl_query(qts, GL_Q_RASTER_VALID, 1), ==, UINT32_MAX);
+    gl_pixels_program(qts, GL_PIX_4UB, 8, 0x7ffffffe, 0x7ffffffe,
+                      0x7fffffff, 0x7ffffffe, 1);
+    gl_pixels_draw(qts, 2);
+    gl_pixels_row(qts, 0, row, 2);
+    gl_pixels_fence(qts);
+
+    gl_viewport(qts, 0x80000001, 0x80000001, 0x7fffffff, 0x7fffffff);
+    gl_raster_pos2f(qts, 100, 64);
+    gl_pixels_program(qts, GL_PIX_4UB, 8, 0x80000000, 0x80000000,
+                      0x80000001, 0x80000000, 1);
+    gl_pixels_draw(qts, 2);
+    gl_pixels_row(qts, 0, row, 2);
+    gl_pixels_fence(qts);
+
+    for (int y = 0; y < 128; y += 7) {
+        for (int x = 0; x < 128; x += 7) {
+            g_assert_cmphex(gl_window_pixel(qts, x, y), ==, 0);
+        }
+    }
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+}
+
+/*
  * A load from 0x100 bytes on is the header with no length and an inline
  * block giving it. A 60-word program load that way is stored like a short
  * one: the draw after it reads its program.
@@ -14399,6 +14437,8 @@ int main(int argc, char **argv)
                    test_gl_pixels_unmodelled_draw_nothing);
     qtest_add_func("sn0/origin2000/mgras/gl-pixels-long-load",
                    test_gl_pixels_long_load);
+    qtest_add_func("sn0/origin2000/mgras/gl-pixels-far-raster-position",
+                   test_gl_pixels_far_raster_position);
     qtest_add_func("sn0/origin2000/mgras/gl-pixels-follow-the-raster-position",
                    test_gl_pixels_follow_the_raster_position);
     qtest_add_func("sn0/origin2000/mgras/gl-pixels-follow-the-context",
