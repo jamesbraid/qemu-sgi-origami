@@ -3205,6 +3205,96 @@ static void test_blend(void)
     g_assert_cmpuint(frag_count(&f, 5), ==, W * H);
 }
 
+static void frag_logic_op(FragScene *f, uint32_t op)
+{
+    frag_command(f, SGI_GL_OP_LOGIC_OP, &op, 1);
+}
+
+/*
+ * The logical operation (OpenGL 1.2.1, 4.1.8, table 4.3): each of the 16
+ * over a destination of 0xf0 in every channel with a source of 0xcc,
+ * while GL_COLOR_LOGIC_OP is enabled, and replacing blending; through
+ * EXT_blend_logic_op's blend equation; on a colour index while
+ * GL_INDEX_LOGIC_OP is enabled, under the index mask. Initially both are
+ * disabled with GL_COPY, and an operation outside GL_CLEAR to GL_SET
+ * changes nothing.
+ */
+static void test_logic_op(void)
+{
+    static const uint8_t want[16] = {
+        0x00, 0xc0, 0x0c, 0xcc, 0x30, 0xf0, 0x3c, 0xfc,
+        0x03, 0xc3, 0x0f, 0xcf, 0x33, 0xf3, 0x3f, 0xff,
+    };
+    static FragScene f;
+    uint32_t out[SGI_GL_GET_WORDS], word[1];
+    const float s = 0xcc / 255.0f, d = 0xf0 / 255.0f;
+
+    frag_init(&f);
+    g_assert_cmpuint(get(&f.c, SGI_GL_COLOR_LOGIC_OP, out), ==, 1);
+    g_assert_cmphex(out[0], ==, 0);
+    g_assert_cmpuint(get(&f.c, SGI_GL_INDEX_LOGIC_OP, out), ==, 1);
+    g_assert_cmphex(out[0], ==, 0);
+    g_assert_cmpuint(get(&f.c, SGI_GL_LOGIC_OP_MODE, out), ==, 1);
+    g_assert_cmphex(out[0], ==, SGI_GL_COPY);
+
+    enable(&f.c, SGI_GL_BLEND, true);
+    frag_blend(&f, 1, 1, SGI_GL_FUNC_ADD);
+    for (uint32_t op = 0; op < 16; op++) {
+        enable(&f.c, SGI_GL_COLOR_LOGIC_OP, false);
+        enable(&f.c, SGI_GL_BLEND, false);
+        frag_quad(&f, d, d, d, 1);
+        enable(&f.c, SGI_GL_BLEND, true);
+        enable(&f.c, SGI_GL_COLOR_LOGIC_OP, true);
+        frag_logic_op(&f, SGI_GL_CLEAR + op);
+        frag_quad(&f, s, s, s, 1);
+        g_assert_cmpuint(frag_count(&f, want[op] * 0x010101), ==, W * H);
+    }
+    g_assert_cmpuint(get(&f.c, SGI_GL_COLOR_LOGIC_OP, out), ==, 1);
+    g_assert_cmphex(out[0], ==, 1);
+    frag_logic_op(&f, SGI_GL_SET + 1);
+    g_assert_cmpuint(get(&f.c, SGI_GL_LOGIC_OP_MODE, out), ==, 1);
+    g_assert_cmphex(out[0], ==, SGI_GL_SET);
+
+    /* The blend equation GL_LOGIC_OP: GL_XOR. */
+    enable(&f.c, SGI_GL_COLOR_LOGIC_OP, false);
+    frag_logic_op(&f, SGI_GL_CLEAR + 6);
+    enable(&f.c, SGI_GL_BLEND, false);
+    frag_quad(&f, d, d, d, 1);
+    enable(&f.c, SGI_GL_BLEND, true);
+    frag_blend(&f, 1, 1, SGI_GL_LOGIC_OP);
+    frag_quad(&f, s, s, s, 1);
+    g_assert_cmpuint(frag_count(&f, 0x3c3c3c), ==, W * H);
+
+    /*
+     * Colour index 0xcc XOR 0xf0 under the mask 0x3f; GL_INDEX_LOGIC_OP
+     * applies there, GL_COLOR_LOGIC_OP does not.
+     */
+    enable(&f.c, SGI_GL_BLEND, false);
+    enable(&f.c, SGI_GL_COLOR_LOGIC_OP, true);
+    sgi_gl_set_index_mode(&f.c, 8);
+    for (int i = 0; i < W * H; i++) {
+        f.p.colour[0][i] = 0xf0;
+    }
+    word[0] = bits(0xcc);
+    frag_command(&f, SGI_GL_OP_INDEXF, word, 1);
+    frag_quad(&f, 0, 0, 0, 1);
+    g_assert_cmpuint(frag_count(&f, 0xcc), ==, W * H);
+    enable(&f.c, SGI_GL_INDEX_LOGIC_OP, true);
+    word[0] = 0x3f;
+    frag_command(&f, SGI_GL_OP_INDEX_MASK, word, 1);
+    frag_quad(&f, 0, 0, 0, 1);
+    g_assert_cmpuint(frag_count(&f, 0xc0 | ((0xcc ^ 0xcc) & 0x3f)), ==,
+                     W * H);
+    frag_quad(&f, 0, 0, 0, 1);
+    g_assert_cmpuint(frag_count(&f, 0xc0 | ((0xcc ^ 0xc0) & 0x3f)), ==,
+                     W * H);
+
+    /* Planes that cannot be read store the index as it is. */
+    f.rec.target.load_colour = NULL;
+    frag_quad(&f, 0, 0, 0, 1);
+    g_assert_cmpuint(frag_count(&f, 0xcc), ==, W * H);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -3287,5 +3377,6 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-gl/alpha-test", test_alpha_test);
     g_test_add_func("/sgi-gl/stencil-test", test_stencil_test);
     g_test_add_func("/sgi-gl/blend", test_blend);
+    g_test_add_func("/sgi-gl/logic-op", test_logic_op);
     return g_test_run();
 }

@@ -164,6 +164,9 @@ static void populate(SGIGLContext *c, bool other)
     for (int i = 0; i < 4; i++) {
         c->cur.blend_color[i] = other ? 0.25f * i : 1.0f - 0.125f * i;
     }
+    c->cur.index_logic_op = !other;
+    c->cur.color_logic_op = other;
+    c->cur.logic_op_mode = other ? SGI_GL_SET : SGI_GL_CLEAR;
 
     g_assert_true(sgi_gl_context_valid(c, &error_abort));
 }
@@ -705,6 +708,10 @@ static const Corruption corruptions[] = {
     BAD(cur.blend_dst, SGI_GL_SRC_ALPHA_SATURATE, "blend factors"),
     BAD(cur.blend_equation, SGI_GL_FUNC_ADD + 3, "blend equation"),
     BAD(cur.blend_color[3], 0x3f800001 /* just above 1 */, "blend colour"),
+    BAD(cur.index_logic_op, 2, "index_logic_op"),
+    BAD(cur.color_logic_op, 2, "color_logic_op"),
+    BAD(cur.logic_op_mode, SGI_GL_SET + 1, "logical operation"),
+    BAD(cur.logic_op_mode, SGI_GL_CLEAR - 1, "logical operation"),
     BAD(lights_enabled, 1u << SGI_GL_LIGHTS, "light enables"),
     BAD(color_material_face, 0, "colour material face"),
     BAD(color_material_mode, SGI_GL_SHININESS, "colour material parameter"),

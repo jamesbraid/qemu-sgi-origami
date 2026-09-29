@@ -100,6 +100,7 @@ void sgi_gl_init(SGIGLContext *c, uint32_t hw_id)
     }
     c->cur.blend_src = 1;
     c->cur.blend_equation = SGI_GL_FUNC_ADD;
+    c->cur.logic_op_mode = SGI_GL_COPY;
     c->cur.depth_mask = 1;
     c->cur.depth_range[1] = 1.0f;
     c->clear_depth = UINT32_MAX;
@@ -431,6 +432,7 @@ static const uint8_t sgi_gl_nargs[] = {
     [SGI_GL_OP_BLEND_FUNC] = 2,
     [SGI_GL_OP_BLEND_EQUATION] = 1,
     [SGI_GL_OP_BLEND_COLOR] = 4,
+    [SGI_GL_OP_LOGIC_OP] = 1,
 };
 
 uint32_t sgi_gl_draw_targets(const SGIGLDrawState *st,
@@ -1348,6 +1350,12 @@ static void sgi_gl_capability(SGIGLContext *c, uint32_t cap, bool on)
     case SGI_GL_BLEND:
         c->cur.blend = on;
         return;
+    case SGI_GL_INDEX_LOGIC_OP:
+        c->cur.index_logic_op = on;
+        return;
+    case SGI_GL_COLOR_LOGIC_OP:
+        c->cur.color_logic_op = on;
+        return;
     case SGI_GL_COLOR_MATERIAL:
         c->color_material = on;
         sgi_gl_track_colour(c);
@@ -1597,6 +1605,14 @@ void sgi_gl_command(SGIGLContext *c, const SGIGLSink *sink,
 
             c->cur.blend_color[i] = v >= 1.0f ? 1.0f : v > 0.0f ? v : 0.0f;
         }
+        return;
+    case SGI_GL_OP_LOGIC_OP:
+        if (a[0] - SGI_GL_CLEAR > SGI_GL_SET - SGI_GL_CLEAR) {
+            qemu_log_mask(LOG_GUEST_ERROR, "sgi-gl: glLogicOp(0x%x) "
+                          "ignored\n", a[0]);
+            return;
+        }
+        c->cur.logic_op_mode = a[0];
         return;
     case SGI_GL_OP_COLOR3F:
         memcpy(c->cur_color, a, 3 * sizeof(float));
@@ -1960,6 +1976,16 @@ bool sgi_gl_get(const SGIGLContext *c, uint32_t pname, uint32_t *out,
         return true;
     case SGI_GL_BLEND_COLOR:
         return sgi_gl_get_floats(c->cur.blend_color, 4, out, n);
+    case SGI_GL_INDEX_LOGIC_OP:
+    case SGI_GL_COLOR_LOGIC_OP:
+        out[0] = pname == SGI_GL_INDEX_LOGIC_OP ? c->cur.index_logic_op :
+                                                  c->cur.color_logic_op;
+        *n = 1;
+        return true;
+    case SGI_GL_LOGIC_OP_MODE:
+        out[0] = c->cur.logic_op_mode;
+        *n = 1;
+        return true;
     case SGI_GL_DEPTH_FUNC:
         out[0] = SGI_GL_NEVER_ENUM + c->cur.depth_func;
         *n = 1;
@@ -2067,6 +2093,8 @@ bool sgi_gl_context_valid(const SGIGLContext *c, Error **errp)
         { "alpha_test", st->alpha_test },
         { "stencil_test", st->stencil_test },
         { "blend", st->blend },
+        { "index_logic_op", st->index_logic_op },
+        { "color_logic_op", st->color_logic_op },
         { "drawable.bound", st->drawable.bound },
         { "drawable.clip.empty", st->drawable.clip.empty },
         { "dither", c->dither },
@@ -2170,6 +2198,10 @@ bool sgi_gl_context_valid(const SGIGLContext *c, Error **errp)
                        st->blend_color[i]);
             return false;
         }
+    }
+    if (st->logic_op_mode - SGI_GL_CLEAR > SGI_GL_SET - SGI_GL_CLEAR) {
+        error_setg(errp, "sgi-gl: logical operation 0x%x", st->logic_op_mode);
+        return false;
     }
     if (st->drawable.clip.n > SGI_CLIP_MAX) {
         error_setg(errp, "sgi-gl: %u clip rectangles", st->drawable.clip.n);
@@ -2394,6 +2426,28 @@ static const VMStateDescription vmstate_sgi_gl_blend = {
     },
 };
 
+static bool sgi_gl_logic_op_needed(void *opaque)
+{
+    const SGIGLDrawState *st = opaque, *init = &sgi_gl_initial()->cur;
+
+    return SGI_GL_MOVED(st, init, index_logic_op) ||
+           SGI_GL_MOVED(st, init, color_logic_op) ||
+           SGI_GL_MOVED(st, init, logic_op_mode);
+}
+
+static const VMStateDescription vmstate_sgi_gl_logic_op = {
+    .name = "sgi-gl-draw-state/logic-op",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = sgi_gl_logic_op_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32(index_logic_op, SGIGLDrawState),
+        VMSTATE_UINT32(color_logic_op, SGIGLDrawState),
+        VMSTATE_UINT32(logic_op_mode, SGIGLDrawState),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
 static const VMStateDescription vmstate_sgi_gl_draw_state = {
     .name = "sgi-gl-draw-state",
     .version_id = 1,
@@ -2422,6 +2476,7 @@ static const VMStateDescription vmstate_sgi_gl_draw_state = {
         &vmstate_sgi_gl_alpha_test,
         &vmstate_sgi_gl_stencil,
         &vmstate_sgi_gl_blend,
+        &vmstate_sgi_gl_logic_op,
         NULL
     },
 };
