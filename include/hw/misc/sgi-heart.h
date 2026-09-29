@@ -34,6 +34,9 @@ struct SGIHeartState {
     uint64_t sdram_mode;
     uint64_t mem_refresh;
     uint64_t mem_req_arb;
+    uint64_t flow_cell[2];
+    uint64_t clock_divider;
+    uint32_t compare;
     uint32_t descriptor[8];
     uint64_t mask[4];
     uint64_t pending;

@@ -142,7 +142,8 @@ static MemTxResult heart_widget_write(void *opaque, hwaddr offset,
         s->widget_control = value;
         return MEMTX_OK;
     }
-    if (offset == 0x2c && size == 4) {
+    if ((offset == 0x28 && size == 8) ||
+        (offset == 0x2c && size == 4)) {
         s->widget_request_timeout = value;
         return MEMTX_OK;
     }
@@ -407,7 +408,10 @@ static uint64_t heart_read(void *opaque, hwaddr offset, unsigned size)
         case 0x08: return s->sdram_mode;
         case 0x10: return s->mem_refresh;
         case 0x18: return s->mem_req_arb;
+        case 0x50: return s->flow_cell[0];
+        case 0x58: return s->flow_cell[1];
         case 0x80: return 0x18;
+        case 0xb0: return s->clock_divider;
         case 0x10000 ... 0x10018:
             if (!(offset & 7)) {
                 return s->mask[(offset - 0x10000) / 8];
@@ -416,6 +420,7 @@ static uint64_t heart_read(void *opaque, hwaddr offset, unsigned size)
         case 0x10030: return s->pending;
         case 0x10038: return s->pending & s->mask[0];
         case 0x20000: return heart_counter(s);
+        case 0x30000: return s->compare;
         case 0x50000: return 0;
         default:
             break;
@@ -472,6 +477,18 @@ static void heart_write(void *opaque, hwaddr offset, uint64_t value,
         case 0x18:
             s->mem_req_arb = value;
             return;
+        case 0x50:
+            s->flow_cell[0] = value;
+            return;
+        case 0x58:
+            s->flow_cell[1] = value;
+            return;
+        case 0xb0:
+            s->clock_divider = value;
+            return;
+        case 0x30000:
+            s->compare = value & 0xffffff;
+            return;
         case 0x10000 ... 0x10018:
             if (!(offset & 7)) {
                 uint64_t old = s->mask[(offset - 0x10000) / 8];
@@ -523,6 +540,9 @@ static void heart_reset_enter(Object *obj, ResetType type)
     s->sdram_mode = 0;
     s->mem_refresh = 0;
     s->mem_req_arb = 0;
+    memset(s->flow_cell, 0, sizeof(s->flow_cell));
+    s->clock_divider = 0;
+    s->compare = 0;
     memset(s->descriptor, 0, sizeof(s->descriptor));
     memset(s->mask, 0, sizeof(s->mask));
     s->pending = 0;
@@ -585,6 +605,9 @@ static const VMStateDescription vmstate_heart = {
         VMSTATE_UINT64(sdram_mode, SGIHeartState),
         VMSTATE_UINT64(mem_refresh, SGIHeartState),
         VMSTATE_UINT64(mem_req_arb, SGIHeartState),
+        VMSTATE_UINT64_ARRAY(flow_cell, SGIHeartState, 2),
+        VMSTATE_UINT64(clock_divider, SGIHeartState),
+        VMSTATE_UINT32(compare, SGIHeartState),
         VMSTATE_UINT32_ARRAY(descriptor, SGIHeartState, 8),
         VMSTATE_UINT64_ARRAY(mask, SGIHeartState, 4),
         VMSTATE_UINT64(pending, SGIHeartState),
