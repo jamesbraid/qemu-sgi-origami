@@ -60,6 +60,13 @@
 #define MGRAS_XMAP_CONFIG_REVISION 1
 #define MGRAS_XMAP_CONFIG_FIFO_CAPACITY 2
 
+/*
+ * The monitor ID in 0x071308 bits 7:4: 0xf, what every captured Origin
+ * board read with its monitor (mgras-board-identity.md). It belongs to the
+ * monitor, not the board, so every board answers alike.
+ */
+#define MGRAS_MONITOR_ID 0xf
+
 /* DAC register addresses, as written to the DAC address halfword. */
 #define MGRAS_DAC_REG_ID 0x0300
 #define MGRAS_DAC_REG_REVISION 0x0b00
@@ -86,7 +93,7 @@
  * the one command FIFO, so one set of planes stands for both.
  *
  * Only 0x071308 is left out: its bits 7:4 are the attached monitor's ID,
- * not the board's.
+ * not the board's (MGRAS_MONITOR_ID).
  *
  * Every board scans out 1280x1024, the screen IRIX's default timing table
  * sets up. Which boards also drive 1600x1200 is unsettled: the OCTANE
@@ -751,13 +758,20 @@ static uint64_t mgras_read_internal(SGIMgrasState *s, hwaddr addr,
     case 0x028004:
         return s->ge_report;
     /*
-     * The kernel's GFX_GETBOARDINFO handler performs a one-byte read here
-     * on every OpenGL context query; the captured flow answers 0 and
-     * raises no error (glx-ioctl-trace.md). The field's meaning is
-     * otherwise unknown.
+     * Bits 7:4 are the attached monitor's ID. The kernel reads this byte
+     * while it builds the board record and again on every OpenGL context
+     * query (MgrasGatherInfo, MgrasGatherDynamicInfo), and gfxinfo prints
+     * the field. Every captured Origin board reports 0xf, which gfxinfo
+     * prints as "unknown, assuming 19"" and which, like 0, selects the
+     * kernel's stock 1280x1024 60 Hz timing record
+     * (mgras-board-identity.md). Bits 3:0 are never read; 0 is
+     * approximated.
      */
-    case 0x071308:
-        return 0;
+    case 0x071308: {
+        uint8_t v = MGRAS_MONITOR_ID << 4;
+
+        return size == 1 ? v : (uint32_t)v << 24;
+    }
     case SGI_MGRAS_BRINGUP_ARG_2: return s->bringup_arg_2;
     case SGI_MGRAS_BRINGUP_BLOCK_1: return s->bringup_block[0];
     case SGI_MGRAS_BRINGUP_BLOCK_2: return s->bringup_block[1];
