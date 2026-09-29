@@ -432,9 +432,11 @@ static bool r10k_cache_backing(CPUMIPSState *env, hwaddr block,
 {
     MemoryRegionSection section = memory_region_find(env_cpu(env)->memory,
                                                      block, size);
-    bool supported = section.mr && memory_region_is_ram(section.mr) &&
-                     !memory_region_is_ram_device(section.mr) &&
-                     !section.mr->rom_device &&
+    bool supported = section.mr &&
+                     ((memory_region_is_ram(section.mr) &&
+                       !memory_region_is_ram_device(section.mr) &&
+                       !section.mr->rom_device) ||
+                      (!is_write && memory_region_is_romd(section.mr))) &&
                      int128_get64(section.size) == size &&
                      (!is_write || !section.readonly);
 

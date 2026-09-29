@@ -208,10 +208,10 @@ def reset_rom():
     return image
 
 
-def rom_data_rom():
+def rom_data_rom(address=0x980000001fc00200, offset=0x200):
     code = constant(8, 0x00410080) + mtc0(8, 12)
     code += constant(12, 0xffffffffa0000000 | MAILBOX)
-    code += constant(10, 0x980000001fc00200)
+    code += constant(10, address)
     code += [insn_i(0x23, 10, 8, 0), insn_i(0x2b, 12, 8, 0),
              insn_i(0x23, 10, 8, 4), insn_i(0x2b, 12, 8, 4)]
     # The tag/data observation proves the ROM read allocated a cache line.
@@ -221,9 +221,9 @@ def rom_data_rom():
     code += mfc0(8, 28) + [insn_i(0x2b, 12, 8, 12)]
     code += constant(8, DONE)
     code += [insn_i(0x2b, 12, 8, 32), insn_i(0x04, 0, 0, -1), 0]
-    image = bytearray(0x400 + len(code) * 4)
+    image = bytearray(max(0x400 + len(code) * 4, offset + 8))
     struct.pack_into('>I', image, 0, insn_i(0x04, 0, 0, 0xff))
-    struct.pack_into('>II', image, 0x200, FIRST, SECOND)
+    struct.pack_into('>II', image, offset, FIRST, SECOND)
     struct.pack_into(f'>{len(code)}I', image, 0x400, *code)
     return image
 
@@ -234,13 +234,15 @@ def refused_rom_store_rom(romd):
     code += constant(12, 0xffffffffa0000000 | MAILBOX)
     code += constant(10, 0x9800000000000000 | address)
     if romd:
-        code += [insn_i(0x23, 10, 8, 0)]
+        code += [insn_i(0x23, 10, 8, 0), insn_i(0x2b, 12, 8, 8)]
     code += constant(8, SECOND) + [insn_i(0x2b, 10, 8, 0)]
-    # A refused store must not allocate either primary way.
+    # A refused store must leave an existing line unchanged.
     for way in (0, 1):
         code += [insn_i(0x2f, 10, 0x05, way), 0, 0, 0, 0]
         code += mfc0(8, 28) + [insn_i(0x2b, 12, 8, way * 4)]
-    if not romd:
+    if romd:
+        code += [insn_i(0x23, 10, 8, 0), insn_i(0x2b, 12, 8, 20)]
+    else:
         # Refuse the same store when the immutable ROM line is already cached.
         code += [insn_i(0x23, 10, 8, 0), insn_i(0x2b, 12, 8, 8)]
         code += [insn_i(0x2f, 10, 0x05, 0), 0, 0, 0, 0]
@@ -265,7 +267,7 @@ def refused_rom_store_rom(romd):
     struct.pack_into('>I', image, 0, insn_i(0x04, 0, 0, 0xff))
     struct.pack_into('>I', image, 0x200, FIRST)
     if romd:
-        # Record the refused load's exception, then resume after that load.
+        # Record any unexpected exception so a failed load does not hang.
         handler = mfc0(26, 13) + [insn_i(0x2b, 12, 26, 36)]
         handler += mfc0(26, 14) + [insn_i(0x09, 26, 26, 4)]
         handler += mtc0(26, 14) + [0x42000018, 0]
@@ -691,6 +693,22 @@ class R10000TLBCache(QemuSystemTest):
         self.assertEqual(words[2] >> 8, 0x1fc00)
         self.assertEqual(words[3], FIRST)
 
+    def test_octane_cached_flash_read(self):
+        offset = 0x1bf9c
+        image = self.scratch_file('octane-flash.bin')
+        Path(image).write_bytes(rom_data_rom(0xffffffff9fc00000 | offset,
+                                             offset))
+        self.set_machine('octane')
+        self.vm.add_args('-accel', 'tcg,thread=single',
+                         '-cpu', 'R10000,r10k-data-cache=on',
+                         '-m', '128M', '-bios', image, '-nodefaults')
+        self.vm.launch()
+        words = self.read_reset_result()
+        self.assertEqual(words[:2], [FIRST, SECOND])
+        self.assertEqual((words[2] >> 6) & 3, 2)
+        self.assertEqual(words[2] >> 8, 0x1fc1b)
+        self.assertEqual(words[3], FIRST)
+
     def check_refused_rom_store(self, romd):
         image = self.scratch_file('refused-rom-store.bin')
         Path(image).write_bytes(refused_rom_store_rom(romd))
@@ -704,19 +722,24 @@ class R10000TLBCache(QemuSystemTest):
         self.vm.launch()
         words = self.read_reset_result()
         self.vm.shutdown()
-        self.assertEqual(words[:2], [0, 0])
         self.assertIn('experimental data cache: unsupported write',
                       Path(trace).read_text())
         callbacks = [line for line in Path(trace).read_text().splitlines()
                      if 'pflash_io_write' in line]
         if romd:
-            self.assertEqual(words[9] & 0x7c, 7 << 2)
-            self.assertIn('experimental data cache: unsupported read',
-                          Path(trace).read_text())
-            self.assertEqual(words[6:8], [0, 0])
+            self.assertNotIn('experimental data cache: unsupported read',
+                             Path(trace).read_text())
+            self.assertEqual(words[9], 0)
+            self.assertEqual(words[2], FIRST)
+            self.assertEqual(words[5], FIRST)
+            self.assertEqual(sorted((tag >> 6) & 3 for tag in words[:2]),
+                             [0, 2])
+            self.assertEqual([(tag >> 10) & 3 for tag in words[6:8]],
+                             [0, 0])
             self.assertEqual(len(callbacks), 1, callbacks)
             self.assertIn('value:0x00ff', callbacks[0])
         else:
+            self.assertEqual(words[:2], [0, 0])
             self.assertEqual(words[2], FIRST)
             self.assertEqual(words[3], words[4])
             self.assertEqual((words[4] >> 6) & 3, 2)
