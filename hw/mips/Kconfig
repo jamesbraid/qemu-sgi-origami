@@ -121,6 +121,7 @@ config SGI_XIO_BOARD_TEST
     default y if SGI_DEVICES
     select SGI_XIO_BOARD
     select SGI_XIO_TEST_TARGET
+    select SGI_PI_GFX
 
 # sgi-baseio (the base I/O functional unit, presets ip29/baseio/io8) is
 # selected directly by whichever family builds base I/O at all: Origin

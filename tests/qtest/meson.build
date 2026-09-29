@@ -484,6 +484,7 @@ qtests_mips64 = \
                                                    'sn0-hub-test',
                                                    'sn0-pi-error-test',
                                                    'sn0-pi-gfx-test',
+                                                   'sn0-pi-link-test',
                                                    'sn0-i2c-test',
                                                    'sn0-elsc-test',
                                                    'sn0-widget-decode-test',
