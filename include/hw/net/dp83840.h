@@ -43,6 +43,10 @@ OBJECT_DECLARE_SIMPLE_TYPE(DP83840State, DP83840)
  * LBREMR) is its 10BTSCR, plain storage with no loopback function.
  */
 #define DP83843_PHYID2          0x5c10
+#define DP83843_ANNPTR          0x07
+#define DP83843_ANNPTR_RW_MASK  0xb7ff
+#define DP83843_ANNPTR_TOGGLE   0x0800
+#define DP83843_ANNPTR_RESET    0x2801
 #define DP83843_LBR_10_ENDEC_LB 0x0010
 #define DP83843_LBR_TW_LBEN     0x0020
 
@@ -63,6 +67,7 @@ struct DP83840State {
 
     uint16_t control;
     uint16_t advertise;
+    uint16_t next_page;
     uint16_t pcs_config;
 
     /* Only SGI's power-on diagnostic reaches these; it fails without them. */
