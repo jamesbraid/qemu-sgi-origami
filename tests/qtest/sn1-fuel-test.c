@@ -546,6 +546,55 @@ static void test_fuel_ioc3_superio_interrupt_reset(const void *data)
     qtest_quit(qts);
 }
 
+static void test_fuel_ioc3_superio_interrupt_migration(const void *data)
+{
+    const unsigned int pin = 0, pending_bit = 18;
+    g_autoptr(GError) error = NULL;
+    g_autofree char *directory = NULL;
+    g_autofree char *socket = NULL;
+    g_autofree char *uri = NULL;
+    g_autofree char *quoted = g_shell_quote(data);
+    QTestState *from, *to;
+
+    directory = g_dir_make_tmp("sn1-fuel-irq-migration-XXXXXX", &error);
+    g_assert_no_error(error);
+    socket = g_build_filename(directory, "migration.sock", NULL);
+    uri = g_strdup_printf("unix:%s", socket);
+    from = fuel_start(data);
+    to = qtest_initf("-M fuel,fuel-board-id-word=0x4abc,"
+                     "fuel-ioc3-subsystem-id=0xc30a,"
+                     "fuel-l1-type-code=0x61,fuel-bedrock-revision=0x2 "
+                     "-cpu R14000 -smp 1 -m 512M -bios %s -S "
+                     "-incoming defer", quoted);
+    fuel_map_ioc3(from);
+    fuel_route_irq(from, pin, pending_bit);
+    qtest_writel(from, IOC3_WINDOW + IOC3_INT_ENABLE_SET,
+                 IOC3_INT_SERIAL_A);
+    qtest_writeb(from, IOC3_WINDOW + IOC3_SERIAL_A + 1, 0x02);
+    fuel_expect_irq(from, pin, pending_bit);
+
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    qtest_qmp_assert_success(from,
+        "{'execute':'migrate','arguments':{'uri':%s}}", uri);
+    sgi_wait_migration_status(from, "completed", 30);
+    sgi_wait_migration_status(to, "completed", 30);
+    g_assert_cmphex(qtest_readl(to, IOC3_WINDOW + IOC3_INT_STATUS) &
+                    IOC3_INT_SERIAL_A, ==, IOC3_INT_SERIAL_A);
+    g_assert_cmphex(fuel_xbridge_read(to, XBRIDGE_INT_STATUS) & (1U << pin),
+                    ==, 1U << pin);
+    g_assert_cmphex(qtest_readq(to, BEDROCK_LOCAL + PI_PENDING_0) &
+                    (UINT64_C(1) << pending_bit), ==,
+                    UINT64_C(1) << pending_bit);
+    g_assert_cmphex(fuel_cpu_cause(to) & MIPS_CAUSE_HARDWARE_IRQ0, ==,
+                    MIPS_CAUSE_HARDWARE_IRQ0);
+    qtest_writeb(to, IOC3_WINDOW + IOC3_SERIAL_A + 1, 0);
+    fuel_ack_irq(to, pending_bit);
+    qtest_quit(from);
+    qtest_quit(to);
+    g_assert_cmpint(rmdir(directory), ==, 0);
+}
+
 static void test_fuel_ohci_interrupt(const void *data)
 {
     const unsigned int pin = 5, pending_bit = 19;
@@ -1432,6 +1481,8 @@ int main(int argc, char **argv)
                         test_fuel_ioc3_superio_interrupt);
     qtest_add_data_func("fuel/ioc3-superio-interrupt-reset", prom,
                         test_fuel_ioc3_superio_interrupt_reset);
+    qtest_add_data_func("fuel/ioc3-superio-interrupt-migration", prom,
+                        test_fuel_ioc3_superio_interrupt_migration);
     qtest_add_data_func("fuel/ohci-interrupt", prom,
                         test_fuel_ohci_interrupt);
     qtest_add_data_func("fuel/ohci-frame-remaining", prom,
