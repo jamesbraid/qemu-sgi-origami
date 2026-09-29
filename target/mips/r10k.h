@@ -37,6 +37,7 @@
 #define R10K_SCACHE_4M_TAGS    (R10K_SCACHE_4M_SETS * R10K_SCACHE_WAYS)
 #define R10K_SCACHE_4M_QUADWORDS (R10K_SCACHE_4M_SIZE / 16)
 #define R10K_SCACHE_4M_DWORDS  (R10K_SCACHE_4M_SIZE / 8)
+#define CP0St_R10K_DE          16
 #define R10K_SCACHE_TAGLO_MASK 0xffffcdff
 #define R10K_SCACHE_TAGHI_MASK 0x8000000f
 
@@ -164,13 +165,9 @@ typedef struct R10KState {
      */
     uint32_t CP0_R10K_DelayedWatch;
 
-    /*
-     * CP0 Register 27, the CacheErr register: read-only to software, loaded
-     * by hardware when a Cache Error exception is taken. Nothing in the model
-     * raises that exception yet, so the register holds zero until the
-     * cache-error delivery path exists to load it.
-     */
+    /* CP0 CacheErr is copied from the reporting cache on exception delivery. */
     int32_t CP0_CacheErr;
+    uint32_t scache_local_cacheerr;
 
     /* R10000 external secondary-cache diagnostic state. */
     uint32_t scache_taglo[R10K_SCACHE_4M_TAGS];

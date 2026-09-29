@@ -19,16 +19,14 @@
  * The base R10000 state: the first megabyte of the secondary-cache diagnostic
  * arrays, the primary caches, and the CP0 registers the family defines. The
  * Diagnostic register is 64 bits wide and travels whole, along with the branch
- * prediction table its operation fields read and write. The CacheErr register
- * is loaded only by a Cache Error exception, which nothing raises yet, so it
- * carries zero until that delivery path exists. The postponed Watch exception
- * is invisible in the architectural registers, so it travels too: a guest that
- * referenced its watched doubleword under EXL is owed a Watch on the far side.
+ * prediction table its operation fields read and write. The postponed Watch
+ * exception is invisible in the architectural registers, so it travels too.
+ * A watched access under EXL is owed an exception after migration.
  */
 static const VMStateDescription vmstate_r10k_state = {
     .name = "mips/r10k",
-    .version_id = 1,
-    .minimum_version_id = 1,
+    .version_id = 2,
+    .minimum_version_id = 2,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32_SUB_ARRAY(scache_taglo, R10KState, 0, R10K_SCACHE_TAGS),
         VMSTATE_UINT8_SUB_ARRAY(scache_taghi, R10KState, 0, R10K_SCACHE_TAGS),
@@ -47,6 +45,7 @@ static const VMStateDescription vmstate_r10k_state = {
         VMSTATE_UINT32_ARRAY(dcache_data, R10KState, R10K_PCACHE_WORDS),
         VMSTATE_UINT8_ARRAY(dcache_parity, R10KState, R10K_PCACHE_WORDS),
         VMSTATE_INT32(CP0_CacheErr, R10KState),
+        VMSTATE_UINT32(scache_local_cacheerr, R10KState),
         VMSTATE_UINT64(CP0_Diagnostic, R10KState),
         VMSTATE_UINT8_SUB_ARRAY(bpt, R10KState, 0, R10K_BPT_ENTRIES),
         VMSTATE_UINT32(CP0_R10K_DelayedWatch, R10KState),

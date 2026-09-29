@@ -236,7 +236,7 @@ void helper_r10k_prefetch(CPUMIPSState *env, target_ulong addr, uint32_t hint)
  * watchpoint and LL/SC handling. Instruction fetching still uses RAM.
  *
  * This model regenerates primary byte parity and secondary data check bits.
- * Ordinary reads do not yet detect injected secondary errors.
+ * Ordinary reads check secondary data and deliver uncorrectable errors.
  */
 static hwaddr r10k_dcache_block(CPUMIPSState *env, unsigned int tag)
 {
@@ -255,13 +255,6 @@ static unsigned int r10k_scache_dword(CPUMIPSState *env, hwaddr pa,
 {
     return ((pa / 16) & (r10k_scache_quad_sets(env) - 1)) * 4 +
            way * 2 + ((pa >> 3) & 1);
-}
-
-static uint8_t r10k_scache_byte(CPUMIPSState *env, hwaddr pa, unsigned int way)
-{
-    unsigned int shift = (7 - (pa & 7)) * 8;
-
-    return env->r10k->scache_data[r10k_scache_dword(env, pa, way)] >> shift;
 }
 
 /* R10000 User's Manual, v2.0, printed p. 178: rows for ECC bits 8:0. */
@@ -287,6 +280,62 @@ static uint16_t r10k_scache_check_bits(uint64_t high, uint64_t low)
                  ctpop64(low & r10k_scache_ecc_mask[i][1])) & 1) << (8 - i);
     }
     return ecc;
+}
+
+static void r10k_scache_read_quad(CPUMIPSState *env, hwaddr pa,
+                                  unsigned int way, uintptr_t ra,
+                                  uint64_t *high, uint64_t *low)
+{
+    R10KState *r = env->r10k;
+    unsigned int entry = r10k_scache_dword(env, pa, way) & ~1u;
+    uint16_t stored = r->scache_ecc[entry / 2];
+    uint16_t generated;
+    uint16_t syndrome;
+    unsigned int bit, row;
+
+    *high = r->scache_data[entry];
+    *low = r->scache_data[entry + 1];
+    generated = r10k_scache_check_bits(*high, *low);
+    if (!(env->CP0_Config0 & (1 << CP0C0_R10K_SK)) &&
+        !((stored ^ generated) & (1 << 9))) {
+        return;
+    }
+    syndrome = (stored ^ generated) & 0x1ff;
+    if (!syndrome) {
+        if ((stored ^ generated) & (1 << 9)) {
+            qemu_log_mask(LOG_UNIMP, "R10000 secondary parity-only error "
+                          "at 0x%" HWADDR_PRIx "\n", pa);
+        }
+        return;
+    }
+    if (!(syndrome & (syndrome - 1))) {
+        return;
+    }
+    for (bit = 0; bit < 128; bit++) {
+        uint16_t column = 0;
+
+        for (row = 0; row < ARRAY_SIZE(r10k_scache_ecc_mask); row++) {
+            column |= ((r10k_scache_ecc_mask[row][bit >= 64 ? 0 : 1] >>
+                        (bit & 63)) & 1) << (8 - row);
+        }
+        if (syndrome == column) {
+            if (bit >= 64) {
+                *high ^= 1ULL << (bit - 64);
+            } else {
+                *low ^= 1ULL << bit;
+            }
+            return;
+        }
+    }
+    if (env->CP0_Status & (1 << CP0St_R10K_DE)) {
+        return;
+    }
+    r->scache_local_cacheerr = 0x80000000u | (1u << (26 + way)) |
+        ((pa & ~(hwaddr)(r10k_scache_line_size(env) - 1)) & 0x7fffc0);
+    if (!(env->CP0_Status & (1 << CP0St_ERL))) {
+        r->CP0_CacheErr = r->scache_local_cacheerr;
+        do_raise_exception_err(env, EXCP_CACHE, 0, ra);
+    }
 }
 
 static void r10k_scache_put_byte(CPUMIPSState *env, hwaddr pa,
@@ -401,12 +450,13 @@ static bool r10k_cache_backing(CPUMIPSState *env, hwaddr block,
     return supported;
 }
 
-static MemTxResult r10k_scache_writeback(CPUMIPSState *env, unsigned int tag)
+static MemTxResult r10k_scache_writeback(CPUMIPSState *env, unsigned int tag,
+                                         uintptr_t ra)
 {
     uint8_t data[128];
     unsigned int size = r10k_scache_line_size(env);
     hwaddr block = r10k_scache_block(env, tag);
-    unsigned int i;
+    unsigned int i, j;
 
     if (extract32(env->r10k->scache_taglo[tag], 10, 2) != 3) {
         return MEMTX_OK;
@@ -415,8 +465,14 @@ static MemTxResult r10k_scache_writeback(CPUMIPSState *env, unsigned int tag)
         return MEMTX_ACCESS_ERROR;
     }
     r10k_scache_collect(env, tag);
-    for (i = 0; i < size; i++) {
-        data[i] = r10k_scache_byte(env, block + i, tag & 1);
+    for (i = 0; i < size; i += 16) {
+        uint64_t high, low;
+
+        r10k_scache_read_quad(env, block + i, tag & 1, ra, &high, &low);
+        for (j = 0; j < 8; j++) {
+            data[i + j] = high >> ((7 - j) * 8);
+            data[i + 8 + j] = low >> ((7 - j) * 8);
+        }
     }
     return address_space_write(cpu_get_address_space(env_cpu(env),
                                MIPSASIdx_CACHED), block,
@@ -443,6 +499,7 @@ static MemTxResult r10k_data_cache_line(CPUMIPSState *env, hwaddr pa,
     hwaddr block = pa & ~(hwaddr)(size - 1);
     MemTxResult result;
     uint8_t fill[128];
+    uint64_t corrected[4];
 
     if (!r10k_cache_backing(env, block, size, is_write)) {
         return MEMTX_ACCESS_ERROR;
@@ -478,7 +535,7 @@ static MemTxResult r10k_data_cache_line(CPUMIPSState *env, hwaddr pa,
             }
         }
         stag = sset * 2 + way;
-        result = r10k_scache_writeback(env, stag);
+        result = r10k_scache_writeback(env, stag, env_cpu(env)->mem_io_pc);
         if (result != MEMTX_OK) {
             return result;
         }
@@ -505,6 +562,11 @@ static MemTxResult r10k_data_cache_line(CPUMIPSState *env, hwaddr pa,
         }
     }
     r10k_dcache_writeback(env, dtag);
+    for (i = 0; i < 2; i++) {
+        r10k_scache_read_quad(env, (pa & ~31ULL) + i * 16, way,
+                              env_cpu(env)->mem_io_pc,
+                              &corrected[i * 2], &corrected[i * 2 + 1]);
+    }
     r->dcache_taglo[dtag] = (extract64(pa, 12, 24) << 8) |
                            (extract32(r->scache_taglo[stag], 10, 2) << 6) |
                            (way << 1);
@@ -512,7 +574,7 @@ static MemTxResult r10k_data_cache_line(CPUMIPSState *env, hwaddr pa,
     r10k_dcache_tag_parity(env, dtag);
     for (i = 0; i < R10K_DCACHE_LINE_SIZE; i++) {
         r10k_dcache_put_byte(env, dtag, i,
-                            r10k_scache_byte(env, (pa & ~31ULL) + i, way));
+                            corrected[i / 8] >> ((7 - (i & 7)) * 8));
     }
     r->dcache_lru[dset] = (dtag & 1) ^ 1;
     *out = dtag;
@@ -798,7 +860,7 @@ void r10k_cache_op(CPUMIPSState *env, target_ulong addr, uint32_t op,
             (3 << 10)) {
             if (env_archcpu(env)->r10k_data_cache) {
                 r10k_data_cache_error(env,
-                    r10k_scache_writeback(env, set * 2 + way), ra);
+                    r10k_scache_writeback(env, set * 2 + way, ra), ra);
             }
             r10k_scache_invalidate(env, set, way, paddr, addr);
         }
@@ -830,7 +892,8 @@ void r10k_cache_op(CPUMIPSState *env, target_ulong addr, uint32_t op,
                 if (env_archcpu(env)->r10k_data_cache &&
                     cache_operation == 0b101) {
                     r10k_data_cache_error(env,
-                                         r10k_scache_writeback(env, tag), ra);
+                                         r10k_scache_writeback(env, tag, ra),
+                                         ra);
                 }
                 r10k_scache_invalidate(env, set, w, paddr, addr);
                 hit = true;
