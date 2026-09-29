@@ -63,7 +63,10 @@
 #define OHCI_INTERRUPT_SF          0x00000004
 #define OHCI_INTERRUPT_RHSC        0x00000040
 #define OHCI_INTERRUPT_MIE         0x80000000
+#define OHCI_PORT_CCS              0x00000001
 #define OHCI_PORT_PES              0x00000002
+#define OHCI_PORT_PRS              0x00000010
+#define OHCI_PORT_PESC             0x00020000
 #define OHCI_PORT_PPS              0x00000100
 #define OHCI_PORT_LSDA             0x00000200
 #define OHCI_RHS_LPS               0x00000001
@@ -605,10 +608,169 @@ static void test_port_power_per_port_switching(void)
     lucent_ohci_close(&ohci);
 }
 
+/* An attached device becomes visible again after its root port is powered. */
+static void test_attached_devices_reconnect_after_port_power_cycle(void)
+{
+    LucentOHCI ohci = { 0 };
+    uint32_t status;
+    unsigned int port;
+
+    lucent_ohci_open(&ohci, qtest_initf(
+        "-nodefaults -machine origin200"
+        " -device lucent-ohci,addr=%02x.0"
+        " -device usb-kbd,bus=usb-bus.0,port=1"
+        " -device usb-tablet,bus=usb-bus.0,port=2",
+        LUCENT_OHCI_SLOT));
+    lucent_ohci_map_bar(&ohci);
+
+    for (port = 0; port < 2; port++) {
+        status = lucent_ohci_readl(&ohci, OHCI_HC_RH_PORT_STATUS(port));
+        g_assert_cmphex(status & OHCI_PORT_CCS, ==, 0);
+    }
+
+    lucent_ohci_writel(&ohci, OHCI_HC_CONTROL, OHCI_CONTROL_OPERATIONAL);
+    lucent_ohci_writel(&ohci, OHCI_HC_CONTROL, 0);
+    for (port = 0; port < 2; port++) {
+        status = lucent_ohci_readl(&ohci, OHCI_HC_RH_PORT_STATUS(port));
+        g_assert_cmphex(status & OHCI_PORT_CCS, ==, 0);
+        lucent_ohci_writel(&ohci, OHCI_HC_RH_PORT_STATUS(port), OHCI_PORT_PPS);
+        status = lucent_ohci_readl(&ohci, OHCI_HC_RH_PORT_STATUS(port));
+        g_assert_cmphex(status & (OHCI_PORT_CCS | OHCI_PORT_PPS), ==,
+                        OHCI_PORT_CCS | OHCI_PORT_PPS);
+        lucent_ohci_writel(&ohci, OHCI_HC_RH_PORT_STATUS(port), OHCI_PORT_CSC);
+        lucent_ohci_writel(&ohci, OHCI_HC_RH_PORT_STATUS(port), OHCI_PORT_PRS);
+        status = lucent_ohci_readl(&ohci, OHCI_HC_RH_PORT_STATUS(port));
+        g_assert_cmphex(status & OHCI_PORT_PES, ==, OHCI_PORT_PES);
+        lucent_ohci_writel(&ohci, OHCI_HC_RH_PORT_STATUS(port), OHCI_PORT_LSDA);
+        status = lucent_ohci_readl(&ohci, OHCI_HC_RH_PORT_STATUS(port));
+        g_assert_cmphex(status & (OHCI_PORT_CCS | OHCI_PORT_PES |
+                                  OHCI_PORT_PPS), ==, 0);
+        g_assert_cmphex(status & (OHCI_PORT_CSC | OHCI_PORT_PESC), ==,
+                        OHCI_PORT_CSC | OHCI_PORT_PESC);
+        lucent_ohci_writel(&ohci, OHCI_HC_RH_PORT_STATUS(port), OHCI_PORT_PPS);
+        status = lucent_ohci_readl(&ohci, OHCI_HC_RH_PORT_STATUS(port));
+        g_assert_cmphex(status & (OHCI_PORT_CCS | OHCI_PORT_PPS), ==,
+                        OHCI_PORT_CCS | OHCI_PORT_PPS);
+        g_assert_cmphex(status & OHCI_PORT_CSC, ==, OHCI_PORT_CSC);
+    }
+
+    lucent_ohci_close(&ohci);
+}
+
 /*
  * Global power switching, PowerSwitchingMode clear: only SetGlobalPower
  * and ClearGlobalPower switch the ports, all of them together.
  */
+static void test_attached_devices_reconnect_after_global_power(void)
+{
+    LucentOHCI ohci = { 0 };
+    uint32_t status;
+    unsigned int port;
+
+    lucent_ohci_open(&ohci, qtest_initf(
+        "-nodefaults -machine origin200"
+        " -device lucent-ohci,addr=%02x.0"
+        " -device usb-kbd,bus=usb-bus.0,port=1"
+        " -device usb-tablet,bus=usb-bus.0,port=2",
+        LUCENT_OHCI_SLOT));
+    lucent_ohci_map_bar(&ohci);
+    lucent_ohci_writel(&ohci, OHCI_HC_RH_DESCRIPTOR_A, 0);
+    lucent_ohci_writel(&ohci, OHCI_HC_RH_STATUS, OHCI_RHS_LPS);
+    for (port = 0; port < 2; port++) {
+        status = lucent_ohci_readl(&ohci, OHCI_HC_RH_PORT_STATUS(port));
+        g_assert_cmphex(status & (OHCI_PORT_CCS | OHCI_PORT_PPS), ==, 0);
+        lucent_ohci_writel(&ohci, OHCI_HC_RH_PORT_STATUS(port), OHCI_PORT_CSC);
+    }
+    lucent_ohci_writel(&ohci, OHCI_HC_INTERRUPT_STATUS, OHCI_INTERRUPT_RHSC);
+    lucent_ohci_writel(&ohci, OHCI_HC_RH_STATUS, OHCI_RHS_LPSC);
+    for (port = 0; port < 2; port++) {
+        status = lucent_ohci_readl(&ohci, OHCI_HC_RH_PORT_STATUS(port));
+        g_assert_cmphex(status & (OHCI_PORT_CCS | OHCI_PORT_PPS |
+                                  OHCI_PORT_CSC), ==,
+                        OHCI_PORT_CCS | OHCI_PORT_PPS | OHCI_PORT_CSC);
+        lucent_ohci_writel(&ohci, OHCI_HC_RH_PORT_STATUS(port), OHCI_PORT_CSC);
+    }
+    g_assert_cmphex(lucent_ohci_readl(&ohci, OHCI_HC_INTERRUPT_STATUS) &
+                    OHCI_INTERRUPT_RHSC, ==, OHCI_INTERRUPT_RHSC);
+    lucent_ohci_writel(&ohci, OHCI_HC_INTERRUPT_STATUS, OHCI_INTERRUPT_RHSC);
+    lucent_ohci_writel(&ohci, OHCI_HC_RH_STATUS, OHCI_RHS_LPSC);
+    g_assert_cmphex(lucent_ohci_readl(&ohci, OHCI_HC_INTERRUPT_STATUS) &
+                    OHCI_INTERRUPT_RHSC, ==, 0);
+    lucent_ohci_close(&ohci);
+}
+
+static void test_attach_while_unpowered(void)
+{
+    LucentOHCI ohci = { 0 };
+    uint32_t status;
+
+    lucent_ohci_open(&ohci, lucent_ohci_start("lucent-ohci", ""));
+    lucent_ohci_map_bar(&ohci);
+    qtest_qmp_device_add(ohci.qts, "usb-kbd", "kbd",
+                         "{'bus':'ohci.0','port':'1'}");
+    status = lucent_ohci_readl(&ohci, OHCI_HC_RH_PORT_STATUS(0));
+    g_assert_cmphex(status & (OHCI_PORT_CCS | OHCI_PORT_CSC), ==, 0);
+    lucent_ohci_writel(&ohci, OHCI_HC_RH_PORT_STATUS(0), OHCI_PORT_PPS);
+    status = lucent_ohci_readl(&ohci, OHCI_HC_RH_PORT_STATUS(0));
+    g_assert_cmphex(status & (OHCI_PORT_CCS | OHCI_PORT_CSC), ==,
+                    OHCI_PORT_CCS | OHCI_PORT_CSC);
+    lucent_ohci_writel(&ohci, OHCI_HC_RH_PORT_STATUS(0), OHCI_PORT_CSC);
+    lucent_ohci_writel(&ohci, OHCI_HC_INTERRUPT_STATUS, OHCI_INTERRUPT_RHSC);
+    lucent_ohci_writel(&ohci, OHCI_HC_RH_PORT_STATUS(0), OHCI_PORT_LSDA);
+    lucent_ohci_writel(&ohci, OHCI_HC_RH_PORT_STATUS(0), OHCI_PORT_CSC);
+    lucent_ohci_writel(&ohci, OHCI_HC_INTERRUPT_STATUS, OHCI_INTERRUPT_RHSC);
+    qtest_qmp_device_del(ohci.qts, "kbd");
+    qtest_qmp_device_add(ohci.qts, "usb-tablet", "tablet",
+                         "{'bus':'ohci.0','port':'1'}");
+    status = lucent_ohci_readl(&ohci, OHCI_HC_RH_PORT_STATUS(0));
+    g_assert_cmphex(status & (OHCI_PORT_CCS | OHCI_PORT_CSC), ==, 0);
+    lucent_ohci_writel(&ohci, OHCI_HC_RH_PORT_STATUS(0), OHCI_PORT_PPS);
+    status = lucent_ohci_readl(&ohci, OHCI_HC_RH_PORT_STATUS(0));
+    g_assert_cmphex(status & (OHCI_PORT_CCS | OHCI_PORT_CSC), ==,
+                    OHCI_PORT_CCS | OHCI_PORT_CSC);
+    g_assert_cmphex(lucent_ohci_readl(&ohci, OHCI_HC_INTERRUPT_STATUS) &
+                    OHCI_INTERRUPT_RHSC, ==, OHCI_INTERRUPT_RHSC);
+    lucent_ohci_close(&ohci);
+}
+
+static void test_usb_reset_after_power_off(void)
+{
+    LucentOHCI ohci = { 0 };
+    uint32_t status;
+    unsigned int port;
+
+    lucent_ohci_open(&ohci, qtest_initf(
+        "-nodefaults -machine origin200"
+        " -device lucent-ohci,addr=%02x.0"
+        " -device usb-kbd,bus=usb-bus.0,port=1"
+        " -device usb-tablet,bus=usb-bus.0,port=2",
+        LUCENT_OHCI_SLOT));
+    lucent_ohci_map_bar(&ohci);
+    for (port = 0; port < 2; port++) {
+        lucent_ohci_writel(&ohci, OHCI_HC_RH_PORT_STATUS(port), OHCI_PORT_PPS);
+        lucent_ohci_writel(&ohci, OHCI_HC_RH_PORT_STATUS(port), OHCI_PORT_LSDA);
+    }
+    lucent_ohci_writel(&ohci, OHCI_HC_CONTROL, OHCI_CONTROL_OPERATIONAL);
+    lucent_ohci_writel(&ohci, OHCI_HC_CONTROL, 0);
+    for (port = 0; port < 2; port++) {
+        status = lucent_ohci_readl(&ohci, OHCI_HC_RH_PORT_STATUS(port));
+        g_assert_cmphex(status & (OHCI_PORT_CCS | OHCI_PORT_PPS |
+                                  OHCI_PORT_CSC), ==, 0);
+    }
+    g_assert_cmphex(lucent_ohci_readl(&ohci, OHCI_HC_INTERRUPT_STATUS) &
+                    OHCI_INTERRUPT_RHSC, ==, 0);
+    for (port = 0; port < 2; port++) {
+        lucent_ohci_writel(&ohci, OHCI_HC_RH_PORT_STATUS(port), OHCI_PORT_PPS);
+        status = lucent_ohci_readl(&ohci, OHCI_HC_RH_PORT_STATUS(port));
+        g_assert_cmphex(status & (OHCI_PORT_CCS | OHCI_PORT_PPS |
+                                  OHCI_PORT_CSC), ==,
+                        OHCI_PORT_CCS | OHCI_PORT_PPS | OHCI_PORT_CSC);
+    }
+    g_assert_cmphex(lucent_ohci_readl(&ohci, OHCI_HC_INTERRUPT_STATUS) &
+                    OHCI_INTERRUPT_RHSC, ==, OHCI_INTERRUPT_RHSC);
+    lucent_ohci_close(&ohci);
+}
+
 static void test_port_power_global_switching(void)
 {
     LucentOHCI ohci = { 0 };
@@ -983,6 +1145,14 @@ int main(int argc, char **argv)
                    test_root_hub_power_on_values);
     qtest_add_func("/lucent-ohci/port-power-per-port-switching",
                    test_port_power_per_port_switching);
+    qtest_add_func("/lucent-ohci/attached-port-reconnect",
+                   test_attached_devices_reconnect_after_port_power_cycle);
+    qtest_add_func("/lucent-ohci/attached-global-power",
+                   test_attached_devices_reconnect_after_global_power);
+    qtest_add_func("/lucent-ohci/attach-while-unpowered",
+                   test_attach_while_unpowered);
+    qtest_add_func("/lucent-ohci/usb-reset-after-power-off",
+                   test_usb_reset_after_power_off);
     qtest_add_func("/lucent-ohci/port-power-global-switching",
                    test_port_power_global_switching);
     qtest_add_func("/lucent-ohci/port-power-without-switching",

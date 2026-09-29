@@ -57,11 +57,11 @@ DECLARE_CLASS_CHECKERS(LucentOHCIClass, LUCENT_OHCI, TYPE_LUCENT_OHCI)
  * PortPowerStatus (SetPortPower when written) and LowSpeedDeviceAttached
  * (ClearPortPower when written) bits.
  */
+#define LUCENT_OHCI_INTERRUPT_STATUS 0x0c
+#define LUCENT_OHCI_INTR_RHSC       (1u << 6)
 #define LUCENT_OHCI_RH_PORT_STATUS  0x54
 #define LUCENT_OHCI_PORT_PPS        (1u << 8)
 #define LUCENT_OHCI_PORT_LSDA       (1u << 9)
-/* What the core's own power-off clears: PPS, CCS, PSS and PRS. */
-#define LUCENT_OHCI_PORT_POWER_OFF  0x115u
 /*
  * The root-hub descriptors' power-on values from the USS-312 datasheet
  * (Advance Data Sheet Rev. 5, March 2000, Tables 45 and 46): in
@@ -106,6 +106,12 @@ static void lucent_ohci_root_hub_power_on(OHCIState *ohci)
 
     ohci->rhdesc_a = LUCENT_OHCI_RHA_POWER_ON | ohci->num_ports;
     ohci->rhdesc_b = LUCENT_OHCI_RHB_POWER_ON & (ports << 16);
+    for (unsigned i = 0; i < ohci->num_ports; i++) {
+        ohci->rhport[i].ctrl = 0;
+    }
+    /* The core's temporary no-switching reset can signal a hidden attach. */
+    ohci->mem.ops->write(ohci->mem.opaque, LUCENT_OHCI_INTERRUPT_STATUS,
+                         LUCENT_OHCI_INTR_RHSC, 4);
 }
 
 static OHCIState *lucent_ohci_core(PCIDevice *dev)
@@ -386,11 +392,7 @@ static uint64_t lucent_ohci_rh_status_read(void *opaque, hwaddr addr,
                                size);
 }
 
-/*
- * The global commands go to the ports they may switch here rather than to
- * the core, which would switch them all. A power-off clears what the
- * core's own does, and neither changes an interrupt, as in the core.
- */
+/* Route permitted global commands through the core's port transition. */
 static void lucent_ohci_rh_status_write(void *opaque, hwaddr addr,
                                         uint64_t val, unsigned size)
 {
@@ -409,10 +411,14 @@ static void lucent_ohci_rh_status_write(void *opaque, hwaddr addr,
             continue;
         }
         if (power & LUCENT_OHCI_RHS_LPS) {
-            ohci->rhport[i].ctrl &= ~LUCENT_OHCI_PORT_POWER_OFF;
+            ohci->mem.ops->write(ohci->mem.opaque,
+                                 LUCENT_OHCI_RH_PORT_STATUS + i * 4,
+                                 LUCENT_OHCI_PORT_LSDA, 4);
         }
         if (power & LUCENT_OHCI_RHS_LPSC) {
-            ohci->rhport[i].ctrl |= LUCENT_OHCI_PORT_PPS;
+            ohci->mem.ops->write(ohci->mem.opaque,
+                                 LUCENT_OHCI_RH_PORT_STATUS + i * 4,
+                                 LUCENT_OHCI_PORT_PPS, 4);
         }
     }
 }
