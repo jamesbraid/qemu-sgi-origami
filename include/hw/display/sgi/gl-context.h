@@ -225,6 +225,7 @@ enum {
 #define SGI_GL_INDEX_WRITEMASK  0x0c21
 #define SGI_GL_COLOR_CLEAR_VALUE 0x0c22
 #define SGI_GL_COLOR_WRITEMASK  0x0c23
+#define SGI_GL_CLIP_PLANE0      0x3000
 #define SGI_GL_LIGHT0           0x4000
 #define SGI_GL_BLEND_COLOR      0x8005
 #define SGI_GL_BLEND_EQUATION   0x8009
@@ -301,6 +302,9 @@ enum {
 #define SGI_GL_SHININESS        0x1601
 #define SGI_GL_AMBIENT_AND_DIFFUSE 0x1602
 #define SGI_GL_COLOR_INDEXES    0x1603
+
+/* The client clip planes a context keeps, GL_CLIP_PLANE0 to 5 (2.11). */
+#define SGI_GL_CLIP_PLANES      6
 
 /* The lights a context keeps, GL_LIGHT0 to GL_LIGHT7. */
 #define SGI_GL_LIGHTS           8
@@ -492,6 +496,13 @@ typedef struct SGIGLDrawState {
     float offset_factor;
     float offset_units;
     float offset_bias;
+    /*
+     * Client clip planes (2.11): bit i enables GL_CLIP_PLANEi, and each
+     * plane is kept in eye coordinates, as glClipPlane's modelview left
+     * it.
+     */
+    uint32_t clip_planes;
+    float clip_plane[SGI_GL_CLIP_PLANES][4];
     SGIGLDrawable drawable;
 } SGIGLDrawState;
 
@@ -662,6 +673,7 @@ typedef enum SGIGLOp {
     SGI_GL_OP_FOG,
     SGI_GL_OP_POLYGON_OFFSET,   /* factor, units */
     SGI_GL_OP_POLYGON_OFFSET_EXT, /* factor, bias */
+    SGI_GL_OP_CLIP_PLANE,       /* plane number, a, b, c, d */
 } SGIGLOp;
 
 /*
@@ -811,6 +823,13 @@ bool sgi_gl_get_light(const SGIGLContext *c, uint32_t light, uint32_t pname,
                       uint32_t *out, unsigned *n);
 bool sgi_gl_get_material(const SGIGLContext *c, uint32_t face,
                          uint32_t pname, uint32_t *out, unsigned *n);
+/*
+ * glGetClipPlane of plane number plane (0 for GL_CLIP_PLANE0): its four
+ * coefficients in eye coordinates as float words into out. False for a
+ * plane the context does not keep.
+ */
+bool sgi_gl_get_clip_plane(const SGIGLContext *c, uint32_t plane,
+                           uint32_t out[4]);
 /* The most words one sgi_gl_get() answer takes: a matrix's. */
 #define SGI_GL_GET_WORDS        16
 

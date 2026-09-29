@@ -172,6 +172,48 @@ static void sgi_gl_multiply(float m[16], const double b[16])
     memcpy(m, r, sizeof(r));
 }
 
+/*
+ * inv = m^-1, both column-major, by cofactors in double precision; false,
+ * with inv unset, for a singular or non-finite m.
+ */
+static bool sgi_gl_invert(const float m[16], double inv[16])
+{
+    double a[16], det = 0;
+
+    for (int i = 0; i < 16; i++) {
+        a[i] = m[i];
+    }
+    for (int col = 0; col < 4; col++) {
+        for (int row = 0; row < 4; row++) {
+            double minor[9];
+            int n = 0;
+
+            for (int c = 0; c < 4; c++) {
+                for (int r = 0; r < 4; r++) {
+                    if (c != col && r != row) {
+                        minor[n++] = a[c * 4 + r];
+                    }
+                }
+            }
+            /* The cofactor of a[col][row] is the adjugate's [row][col]. */
+            inv[row * 4 + col] = ((row + col) & 1 ? -1 : 1) *
+                (minor[0] * (minor[4] * minor[8] - minor[5] * minor[7]) -
+                 minor[3] * (minor[1] * minor[8] - minor[2] * minor[7]) +
+                 minor[6] * (minor[1] * minor[5] - minor[2] * minor[4]));
+        }
+    }
+    for (int k = 0; k < 4; k++) {
+        det += a[k * 4] * inv[k];
+    }
+    if (det == 0 || !isfinite(det)) {
+        return false;
+    }
+    for (int i = 0; i < 16; i++) {
+        inv[i] /= det;
+    }
+    return true;
+}
+
 /* The current matrix of the stack a matrix mode names, or NULL. */
 static float *sgi_gl_slot_matrix(SGIGLContext *c, uint32_t slot)
 {
@@ -441,6 +483,7 @@ static const uint8_t sgi_gl_nargs[] = {
     [SGI_GL_OP_FOG] = 5,
     [SGI_GL_OP_POLYGON_OFFSET] = 2,
     [SGI_GL_OP_POLYGON_OFFSET_EXT] = 2,
+    [SGI_GL_OP_CLIP_PLANE] = 5,
 };
 
 uint32_t sgi_gl_draw_targets(const SGIGLDrawState *st,
@@ -938,15 +981,15 @@ static void sgi_gl_vertex(SGIGLContext *c, const SGIGLSink *sink,
 
 /*
  * glRasterPos (OpenGL 1.2.1, 2.12): the point goes through the modelview
- * and projection matrices like a vertex. Inside the view volume it
+ * and projection matrices like a vertex. Inside the view volume and on
+ * the kept side of every enabled client clip plane (2.11) it
  * becomes the current raster position in window coordinates, keeping
  * clip w, with the eye distance, the current colour clamped to [0, 1]
  * (2.13.6), or with lighting enabled the front colour the current normal
  * lights there, and the current colour index.
  * Outside, only the valid bit is reset: the specification leaves the
- * rest undefined, and keeping it is the model's choice. Client clip
- * planes are not modelled, and window depth goes through the depth
- * range, as for a draw. The eye distance is the
+ * rest undefined, and keeping it is the model's choice. Window depth goes
+ * through the depth range, as for a draw. The eye distance is the
  * exact Euclidean one of the eye x, y and z, which 2.12 allows a head to
  * approximate; how a head does is not published.
  */
@@ -976,6 +1019,16 @@ static void sgi_gl_raster_pos(SGIGLContext *c, const float obj[4])
     for (int i = 0; i < 3; i++) {
         if (!(clip[3] > 0) ||
             !(-clip[3] <= clip[i] && clip[i] <= clip[3])) {
+            c->raster_valid = 0;
+            return;
+        }
+    }
+    for (int i = 0; i < SGI_GL_CLIP_PLANES; i++) {
+        const float *p = c->cur.clip_plane[i];
+
+        if ((c->cur.clip_planes & (1u << i)) &&
+            !(p[0] * eye[0] + p[1] * eye[1] + p[2] * eye[2] +
+              p[3] * eye[3] >= 0)) {
             c->raster_valid = 0;
             return;
         }
@@ -1380,6 +1433,34 @@ static bool sgi_gl_blend_equation_valid(uint32_t equation)
     }
 }
 
+/*
+ * glClipPlane (2.11): the plane p in object coordinates becomes p M^-1 in
+ * eye coordinates, M the modelview current at the call. A plane number
+ * the context does not keep, or a modelview with no inverse, which the
+ * specification leaves undefined, changes nothing.
+ */
+static void sgi_gl_clip_plane(SGIGLContext *c, uint32_t plane,
+                              const float p[4])
+{
+    double inv[16];
+
+    if (plane >= SGI_GL_CLIP_PLANES ||
+        !sgi_gl_invert(c->cur.modelview, inv)) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-gl: glClipPlane of plane %u "
+                      "ignored\n", plane);
+        return;
+    }
+    for (int j = 0; j < 4; j++) {
+        double v = 0;
+
+        /* (p M^-1)_j = sum_i p_i M^-1[i][j], M^-1[i][j] at inv[j * 4 + i]. */
+        for (int i = 0; i < 4; i++) {
+            v += p[i] * inv[j * 4 + i];
+        }
+        c->cur.clip_plane[plane][j] = v;
+    }
+}
+
 static void sgi_gl_capability(SGIGLContext *c, uint32_t cap, bool on)
 {
     switch (cap) {
@@ -1421,6 +1502,10 @@ static void sgi_gl_capability(SGIGLContext *c, uint32_t cap, bool on)
         return;
     case SGI_GL_POLYGON_OFFSET_POINT:
         c->cur.polygon_offset = deposit32(c->cur.polygon_offset, 2, 1, on);
+        return;
+    case SGI_GL_CLIP_PLANE0 ... SGI_GL_CLIP_PLANE0 + SGI_GL_CLIP_PLANES - 1:
+        c->cur.clip_planes = deposit32(c->cur.clip_planes,
+                                       cap - SGI_GL_CLIP_PLANE0, 1, on);
         return;
     case SGI_GL_COLOR_MATERIAL:
         c->color_material = on;
@@ -1693,6 +1778,10 @@ void sgi_gl_command(SGIGLContext *c, const SGIGLSink *sink,
         c->cur.offset_bias = cmd->op == SGI_GL_OP_POLYGON_OFFSET_EXT ?
                              sgi_gl_float(a[1]) : 0.0f;
         return;
+    case SGI_GL_OP_CLIP_PLANE:
+        memcpy(pos, &a[1], sizeof(pos));
+        sgi_gl_clip_plane(c, a[0], pos);
+        return;
     case SGI_GL_OP_COLOR_MASK:
         c->cur.colour_mask = 0;
         for (int i = 0; i < 4; i++) {
@@ -1859,6 +1948,15 @@ bool sgi_gl_get_light(const SGIGLContext *c, uint32_t light, uint32_t pname,
     default:
         return false;
     }
+}
+
+bool sgi_gl_get_clip_plane(const SGIGLContext *c, uint32_t plane,
+                           uint32_t out[4])
+{
+    unsigned n;
+
+    return plane < SGI_GL_CLIP_PLANES &&
+           sgi_gl_get_floats(c->cur.clip_plane[plane], 4, out, &n);
 }
 
 bool sgi_gl_get_material(const SGIGLContext *c, uint32_t face,
@@ -2105,6 +2203,10 @@ bool sgi_gl_get(const SGIGLContext *c, uint32_t pname, uint32_t *out,
         return true;
     case SGI_GL_POLYGON_OFFSET_FACTOR:
         return sgi_gl_get_floats(&c->cur.offset_factor, 1, out, n);
+    case SGI_GL_CLIP_PLANE0 ... SGI_GL_CLIP_PLANE0 + SGI_GL_CLIP_PLANES - 1:
+        out[0] = extract32(c->cur.clip_planes, pname - SGI_GL_CLIP_PLANE0, 1);
+        *n = 1;
+        return true;
     case SGI_GL_POLYGON_OFFSET_UNITS:
         return sgi_gl_get_floats(&c->cur.offset_units, 1, out, n);
     case SGI_GL_POLYGON_OFFSET_BIAS:
@@ -2351,6 +2453,10 @@ bool sgi_gl_context_valid(const SGIGLContext *c, Error **errp)
                                SGI_GL_OFFSET_POINT)) {
         error_setg(errp, "sgi-gl: polygon offset enables 0x%x",
                    st->polygon_offset);
+        return false;
+    }
+    if (st->clip_planes >> SGI_GL_CLIP_PLANES) {
+        error_setg(errp, "sgi-gl: clip plane enables 0x%x", st->clip_planes);
         return false;
     }
     if (st->drawable.clip.n > SGI_CLIP_MAX) {
@@ -2670,6 +2776,27 @@ static const VMStateDescription vmstate_sgi_gl_polygon_offset = {
     },
 };
 
+static bool sgi_gl_clip_planes_needed(void *opaque)
+{
+    const SGIGLDrawState *st = opaque, *init = &sgi_gl_initial()->cur;
+
+    return SGI_GL_MOVED(st, init, clip_planes) ||
+           SGI_GL_MOVED(st, init, clip_plane);
+}
+
+static const VMStateDescription vmstate_sgi_gl_clip_planes = {
+    .name = "sgi-gl-draw-state/clip-planes",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = sgi_gl_clip_planes_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32(clip_planes, SGIGLDrawState),
+        VMSTATE_SGI_GL_FLOATS_2D(clip_plane, SGIGLDrawState,
+                                 SGI_GL_CLIP_PLANES, 4),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
 static const VMStateDescription vmstate_sgi_gl_draw_state = {
     .name = "sgi-gl-draw-state",
     .version_id = 1,
@@ -2702,6 +2829,7 @@ static const VMStateDescription vmstate_sgi_gl_draw_state = {
         &vmstate_sgi_gl_colour_mask,
         &vmstate_sgi_gl_fog,
         &vmstate_sgi_gl_polygon_offset,
+        &vmstate_sgi_gl_clip_planes,
         NULL
     },
 };

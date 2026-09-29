@@ -3583,6 +3583,100 @@ static void test_polygon_offset(void)
     g_assert_cmphex(f.p.depth[planes_index(5, 5)], ==, 0);
 }
 
+static void frag_clip_plane(FragScene *f, uint32_t plane, float a, float b,
+                            float c, float d)
+{
+    uint32_t word[5] = { plane, bits(a), bits(b), bits(c), bits(d) };
+
+    frag_command(f, SGI_GL_OP_CLIP_PLANE, word, 5);
+}
+
+/*
+ * Client clip planes (OpenGL 1.2.1, 2.11): a plane is transformed by the
+ * inverse of the modelview current when it is given, so (1, 0, 0, 0)
+ * given under a translation of 0.5 in x keeps x >= 0.5 in eye
+ * coordinates, window columns 48 and up under identity matrices, while
+ * GL_CLIP_PLANE2 is enabled. A quad, a line and a point are clipped, and
+ * a raster position outside is invalid. Planes start disabled and zero;
+ * glGetClipPlane answers the eye-coordinate plane, and a plane number
+ * past the last changes nothing.
+ */
+static void test_clip_planes(void)
+{
+    static FragScene f;
+    uint32_t out[SGI_GL_GET_WORDS], word[3];
+    float p;
+
+    frag_init(&f);
+    for (int i = 0; i < SGI_GL_CLIP_PLANES; i++) {
+        g_assert_cmpuint(get(&f.c, SGI_GL_CLIP_PLANE0 + i, out), ==, 1);
+        g_assert_cmphex(out[0], ==, 0);
+        g_assert_true(sgi_gl_get_clip_plane(&f.c, i, out));
+        g_assert_cmphex(out[0] | out[1] | out[2] | out[3], ==, 0);
+    }
+    g_assert_false(sgi_gl_get_clip_plane(&f.c, SGI_GL_CLIP_PLANES, out));
+
+    word[0] = bits(0.5f), word[1] = 0, word[2] = 0;
+    frag_command(&f, SGI_GL_OP_TRANSLATE, word, 3);
+    frag_clip_plane(&f, 2, 1, 0, 0, 0);
+    /* Plane 3 would keep nothing, but stays disabled. */
+    frag_clip_plane(&f, 3, 0, 0, 0, -1);
+    frag_clip_plane(&f, SGI_GL_CLIP_PLANES, 0, 1, 0, 0);
+    frag_command(&f, SGI_GL_OP_LOAD_IDENTITY, word, 0);
+    g_assert_true(sgi_gl_get_clip_plane(&f.c, 2, out));
+    memcpy(&p, &out[3], sizeof(p));
+    g_assert_cmpfloat(p, ==, -0.5f);
+    memcpy(&p, &out[0], sizeof(p));
+    g_assert_cmpfloat(p, ==, 1);
+
+    frag_quad(&f, 1, 1, 1, 1);
+    g_assert_cmpuint(frag_count(&f, 0xffffff), ==, W * H);
+    memset(&f.p, 0, sizeof(f.p));
+    enable(&f.c, SGI_GL_CLIP_PLANE0 + 2, true);
+    g_assert_cmpuint(get(&f.c, SGI_GL_CLIP_PLANE0 + 2, out), ==, 1);
+    g_assert_cmphex(out[0], ==, 1);
+    frag_quad(&f, 1, 1, 1, 1);
+    g_assert_cmpuint(frag_count(&f, 0xffffff), ==, 16 * H);
+    g_assert_cmphex(frag_pixel(&f, 48, 0), ==, 0xffffff);
+    g_assert_cmphex(frag_pixel(&f, 47, 0), ==, 0);
+
+    /* A line along row 10 and points either side of x 0.5. */
+    memset(&f.p, 0, sizeof(f.p));
+    word[0] = SGI_GL_LINES;
+    frag_command(&f, SGI_GL_OP_BEGIN, word, 1);
+    word[0] = bits(-1), word[1] = bits(10.5f / 32 - 1);
+    frag_command(&f, SGI_GL_OP_VERTEX2F, word, 2);
+    word[0] = bits(1);
+    frag_command(&f, SGI_GL_OP_VERTEX2F, word, 2);
+    frag_command(&f, SGI_GL_OP_END, word, 0);
+    g_assert_cmpuint(frag_count(&f, 0xffffff), ==, 16);
+    g_assert_cmphex(frag_pixel(&f, 48, 10), ==, 0xffffff);
+    word[0] = SGI_GL_POINTS;
+    frag_command(&f, SGI_GL_OP_BEGIN, word, 1);
+    word[0] = bits(0.25f), word[1] = bits(0.5f);
+    frag_command(&f, SGI_GL_OP_VERTEX2F, word, 2);
+    word[0] = bits(0.75f);
+    frag_command(&f, SGI_GL_OP_VERTEX2F, word, 2);
+    frag_command(&f, SGI_GL_OP_END, word, 0);
+    g_assert_cmpuint(frag_count(&f, 0xffffff), ==, 17);
+    g_assert_cmphex(frag_pixel(&f, 56, 48), ==, 0xffffff);
+
+    word[0] = bits(0.25f), word[1] = bits(0);
+    frag_command(&f, SGI_GL_OP_RASTER_POS2F, word, 2);
+    g_assert_cmpuint(get(&f.c, SGI_GL_CURRENT_RASTER_POSITION_VALID, out),
+                     ==, 1);
+    g_assert_cmphex(out[0], ==, 0);
+    word[0] = bits(0.75f);
+    frag_command(&f, SGI_GL_OP_RASTER_POS2F, word, 2);
+    g_assert_cmpuint(get(&f.c, SGI_GL_CURRENT_RASTER_POSITION_VALID, out),
+                     ==, 1);
+    g_assert_cmphex(out[0], ==, 1);
+
+    enable(&f.c, SGI_GL_CLIP_PLANE0 + 2, false);
+    frag_quad(&f, 1, 1, 1, 1);
+    g_assert_cmpuint(frag_count(&f, 0xffffff), ==, W * H);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -3669,5 +3763,6 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-gl/colour-mask", test_colour_mask);
     g_test_add_func("/sgi-gl/fog", test_fog);
     g_test_add_func("/sgi-gl/polygon-offset", test_polygon_offset);
+    g_test_add_func("/sgi-gl/clip-planes", test_clip_planes);
     return g_test_run();
 }
