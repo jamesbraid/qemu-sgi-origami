@@ -288,6 +288,21 @@
 #define MGRAS_GL_POINT_SMOOTH    0x00006c04
 #define MGRAS_GL_POLYGON_STIPPLE 0x00006d04
 
+/*
+ * Consumed and named, not modelled: glMapGrid1f (0xd990410) writes 0xae10,
+ * the count, u1, u2 and the step; glMapGrid2f (0xd9905d0) 0xaf20 and the
+ * same for u then v; glClearAccum (0xd980a40) 0xbb10 and the four clamped
+ * components. Established from the listing. The client evaluates and
+ * accumulates on the host: glClear's accumulation bit calls a routine
+ * through the context (__glMgrim_Clear 0xd9e3638) and writes no port
+ * token, so the board has no accumulation buffer for these words to
+ * reach (inferred). What the GE does with the grids is unknown; the model
+ * draws nothing for them, logged.
+ */
+#define MGRAS_GL_MAP_GRID1       0x0000ae10
+#define MGRAS_GL_MAP_GRID2       0x0000af20
+#define MGRAS_GL_CLEAR_ACCUM     0x0000bb10
+
 /* The capability each enable token names. */
 static const struct {
     uint32_t header;
@@ -864,6 +879,9 @@ bool sgi_mgras_gl_header(uint32_t header)
     case MGRAS_GL_LINE_STIPPLE_ON:
     case MGRAS_GL_POINT_SMOOTH:
     case MGRAS_GL_POLYGON_STIPPLE:
+    case MGRAS_GL_MAP_GRID1:
+    case MGRAS_GL_MAP_GRID2:
+    case MGRAS_GL_CLEAR_ACCUM:
     case MGRAS_GL_DEPTH_RANGE:
     case MGRAS_GL_DITHER:
     case MGRAS_GL_CULL_ON:
@@ -4503,6 +4521,16 @@ void sgi_mgras_gl_execute(SGIMgrasState *s, uint32_t header,
         mgras_gl_command(s, SGI_GL_OP_CLIP_PLANE, plane, 5);
         return;
     }
+    case MGRAS_GL_MAP_GRID1:
+    case MGRAS_GL_MAP_GRID2:
+        qemu_log_mask(LOG_UNIMP, "sgi-mgras: glMapGrid%d is not modelled; "
+                      "evaluator grids draw nothing\n",
+                      header == MGRAS_GL_MAP_GRID1 ? 1 : 2);
+        return;
+    case MGRAS_GL_CLEAR_ACCUM:
+        qemu_log_mask(LOG_UNIMP, "sgi-mgras: glClearAccum is not modelled; "
+                      "the client accumulates on the host\n");
+        return;
     case MGRAS_GL_LINE_WIDTH:
         mgras_gl_command(s, SGI_GL_OP_LINE_WIDTH, payload, 1);
         return;
