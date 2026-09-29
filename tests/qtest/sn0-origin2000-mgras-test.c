@@ -14739,6 +14739,31 @@ static void test_gl_line_point_migration(void)
 }
 
 /*
+ * glMapGrid1f 0xae10 and four words, glMapGrid2f 0xaf20 and eight and
+ * glClearAccum 0xbb10 and four are consumed, not drawn: a clear after
+ * them still parses and draws.
+ */
+static void test_gl_grids_and_accum_are_consumed(void)
+{
+    static const uint32_t packets[][9] = {
+        { 0x0000ae10, 1, 0, 0x3f800000, 0x3f800000 },
+        { 0x0000af20, 1, 0, 0x3f800000, 0x3f800000, 1, 0, 0x3f800000,
+          0x3f800000 },
+        { 0x0000bb10, 0, 0, 0, 0 },
+    };
+
+    gl_scene_start(qts, GL_FLAT);
+    for (int i = 0; i < ARRAY_SIZE(packets); i++) {
+        for (int k = 0; k <= (packets[i][0] & 0xff) / 4; k++) {
+            gl_word(qts, packets[i][k]);
+        }
+    }
+    gl_clear_color(qts, 0, 0, 1, 1);
+    gl_word(qts, GL_CLEAR_COLOR_BUFFER);
+    g_assert_cmphex(gl_window_pixel(qts, 64, 64), ==, 0x0000ff);
+}
+
+/*
  * The context setup's 32 detail-texture table writes, 0xec10 with 0xc52,
  * 0xc78, 0x194 and a value (0x1f three times, then 0x1d down to 1), are
  * texture-only defaults and consumed without a log line; any other value
@@ -16146,6 +16171,8 @@ int main(int argc, char **argv)
                    test_gl_line_point_state_answers);
     qtest_add_func("sn0/origin2000/mgras/gl-line-point-migration",
                    test_gl_line_point_migration);
+    qtest_add_func("sn0/origin2000/mgras/gl-grids-and-accum-are-consumed",
+                   test_gl_grids_and_accum_are_consumed);
     qtest_add_func("sn0/origin2000/mgras/gl-texture-matrix-migration",
                    test_gl_texture_matrix_migration);
     qtest_add_func("sn0/origin2000/mgras/"
