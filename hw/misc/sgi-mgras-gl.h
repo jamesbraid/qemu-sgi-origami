@@ -71,6 +71,10 @@ extern const VMStateDescription vmstate_sgi_mgras_gl_cull;
 extern const VMStateDescription vmstate_sgi_mgras_gl_scissor;
 /* Each context's alpha test, sent once one has left the initial. */
 extern const VMStateDescription vmstate_sgi_mgras_gl_alpha;
+/* Each context's stencil state, sent once one has left the initial. */
+extern const VMStateDescription vmstate_sgi_mgras_gl_stencil;
+/* A marker for a stencil buffer held in the depth plane's top bits. */
+extern const VMStateDescription vmstate_sgi_mgras_gl_stencil_plane;
 
 /*
  * The parser's class while the words of a GE parameter load (a class-0
