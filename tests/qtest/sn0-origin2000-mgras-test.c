@@ -12406,6 +12406,7 @@ static unsigned gl_stream_subsections(QTestState *qts)
         "sgi-mgras/gl-lighting", "sgi-mgras/gl-texture",
         "sgi-mgras/gl-light-enables", "sgi-mgras/gl-cull",
         "sgi-mgras/gl-pixels", "sgi-mgras/gl-pixel-flags",
+        "sgi-mgras/gl-scissor",
     };
     g_autofree char *tmpfs = NULL;
     g_autofree char *path = NULL;
@@ -13741,6 +13742,122 @@ static void test_gl_cull_migration(void)
 }
 
 /*
+ * The per-fragment operations as the client sends them. Each scene draws
+ * over the probe window's 128x128 viewport; gl_fill_window() covers all
+ * of it in one colour at normalized-device depth z.
+ */
+static void gl_fill_window_at(QTestState *qts, float r, float g, float b,
+                              float z)
+{
+    gl_color3f(qts, r, g, b);
+    gl_word(qts, GL_BEGIN_QUADS);
+    gl_vertex3f(qts, -1, -1, z);
+    gl_vertex3f(qts, 1, -1, z);
+    gl_vertex3f(qts, 1, 1, z);
+    gl_vertex3f(qts, -1, 1, z);
+    gl_word(qts, GL_END_OF(GL_BEGIN_QUADS));
+}
+
+static void gl_fill_window(QTestState *qts, float r, float g, float b)
+{
+    gl_fill_window_at(qts, r, g, b, 0);
+}
+
+/*
+ * glScissor (__glMgrim_Scissor 0xd97c260): 0x3910 and x, width - 1, y,
+ * height - 1; glEnable and glDisable of GL_SCISSOR_TEST: 0x6e04 and 1 or
+ * 0. GL_SCISSOR_BOX is queried at 0xc24 to 0xc27 as x, y and the last
+ * column and row, and GL_SCISSOR_TEST at 0xc28 (notes-return-mode-
+ * queries.md).
+ */
+#define GL_SCISSOR_HDR        0x00003910
+#define GL_SCISSOR_TEST_HDR   0x00006e04
+#define GL_Q_SCISSOR_BOX      0xc24
+#define GL_Q_SCISSOR_TEST     0xc28
+
+static void gl_scissor(QTestState *qts, int32_t x, int32_t y, int32_t w,
+                       int32_t h)
+{
+    gl_word(qts, GL_SCISSOR_HDR);
+    gl_word(qts, x);
+    gl_word(qts, w - 1);
+    gl_word(qts, y);
+    gl_word(qts, h - 1);
+}
+
+/*
+ * With the test enabled a draw and a clear touch only the box, window
+ * columns 32 to 63 and rows 16 to 31 here (OpenGL 1.2.1, 4.1.2, 4.2.3);
+ * disabled, the whole window again. The box and enable are answered.
+ */
+static void test_gl_scissor_bounds_draws_and_clears(void)
+{
+    gl_scene_start(qts, GL_FLAT);
+    gl_clear_color(qts, 0, 0, 0, 1);
+    gl_word(qts, GL_CLEAR_COLOR_BUFFER);
+    g_assert_cmphex(gl_query(qts, GL_Q_SCISSOR_TEST, 1), ==, 0);
+    gl_scissor(qts, 32, 16, 32, 16);
+    gl_one(qts, GL_SCISSOR_TEST_HDR, 1);
+    g_assert_cmphex(gl_query(qts, GL_Q_SCISSOR_BOX, 1), ==, 32);
+    g_assert_cmphex(gl_query(qts, GL_Q_SCISSOR_BOX + 1, 1), ==, 16);
+    g_assert_cmphex(gl_query(qts, GL_Q_SCISSOR_BOX + 2, 1), ==, 63);
+    g_assert_cmphex(gl_query(qts, GL_Q_SCISSOR_BOX + 3, 1), ==, 31);
+    g_assert_cmphex(gl_query(qts, GL_Q_SCISSOR_TEST, 1), ==, 1);
+
+    gl_fill_window(qts, 1, 1, 1);
+    g_assert_cmphex(gl_window_pixel(qts, 32, 16), ==, 0xffffff);
+    g_assert_cmphex(gl_window_pixel(qts, 63, 31), ==, 0xffffff);
+    g_assert_cmphex(gl_window_pixel(qts, 31, 16), ==, 0);
+    g_assert_cmphex(gl_window_pixel(qts, 63, 32), ==, 0);
+    gl_clear_color(qts, 1, 0, 0, 1);
+    gl_word(qts, GL_CLEAR_COLOR_BUFFER);
+    g_assert_cmphex(gl_window_pixel(qts, 40, 20), ==, 0xff0000);
+    g_assert_cmphex(gl_window_pixel(qts, 64, 20), ==, 0);
+
+    gl_one(qts, GL_SCISSOR_TEST_HDR, 0);
+    g_assert_cmphex(gl_query(qts, GL_Q_SCISSOR_TEST, 1), ==, 0);
+    gl_word(qts, GL_CLEAR_COLOR_BUFFER);
+    g_assert_cmphex(gl_window_pixel(qts, 64, 20), ==, 0xff0000);
+}
+
+/* Slot A scissors to the window's left half, slot B does not. */
+static void gl_scissor_setup(QTestState *from)
+{
+    for (int slot = 0; slot < 2; slot++) {
+        gl_enter_slot(from, slot ? GL_SLOT_B : GL_SLOT_A);
+        gl_word(from, GL_CONTEXT_OPENER);
+        gl_viewport(from, 0, 0, 128, 128);
+        gl_scissor(from, 0, 0, 64, 128);
+    }
+    gl_enter_slot(from, GL_SLOT_A);
+    gl_one(from, GL_SCISSOR_TEST_HDR, 1);
+}
+
+static void gl_scissor_check(QTestState *to)
+{
+    for (int slot = 0; slot < 2; slot++) {
+        gl_enter_slot(to, slot ? GL_SLOT_B : GL_SLOT_A);
+        g_assert_cmphex(gl_query(to, GL_Q_SCISSOR_TEST, 1), ==, !slot);
+        gl_clear_color(to, 0, 0, 0, 1);
+        gl_one(to, GL_SCISSOR_TEST_HDR, 0);
+        gl_word(to, GL_CLEAR_COLOR_BUFFER);
+        gl_one(to, GL_SCISSOR_TEST_HDR, !slot);
+        gl_fill_window(to, 0, 1, 0);
+        g_assert_cmphex(mgras_test_pixel(to, 256 + 96, 383 - 50), ==,
+                        slot ? 0x00ff00 : 0);
+        g_assert_cmphex(mgras_test_pixel(to, 256 + 10, 383 - 50), ==,
+                        0x00ff00);
+    }
+    g_assert_cmphex(gl_query(to, GL_Q_SCISSOR_BOX + 2, 1), ==, 63);
+}
+
+/* Each context's scissor enable and box migrate. */
+static void test_gl_scissor_migration(void)
+{
+    gl_migrate(gl_scissor_setup, gl_scissor_check);
+}
+
+/*
  * The context setup's 32 detail-texture table writes, 0xec10 with 0xc52,
  * 0xc78, 0x194 and a value (0x1f three times, then 0x1d down to 1), are
  * texture-only defaults and consumed without a log line; any other value
@@ -14006,6 +14123,26 @@ static void test_gl_state_subsections_follow_their_state(void)
         }
         g_assert_cmpuint(gl_stream_subsections(s), ==,
                          i >= 2 ? 512 | 1024 : 512);
+        qtest_quit(s);
+    }
+
+    /*
+     * The scissor: a box or the enable sends gl-scissor, and the test
+     * turned off again with no box sends nothing.
+     */
+    for (int i = 0; i < 3; i++) {
+        s = qtest_init(MIGRATION_ARGS);
+        gl_enter_slot(s, GL_SLOT_A);
+        gl_word(s, GL_CONTEXT_OPENER);
+        if (i == 0) {
+            gl_scissor(s, 0, 0, 1, 1);
+        } else {
+            gl_one(s, GL_SCISSOR_TEST_HDR, 1);
+        }
+        if (i == 2) {
+            gl_one(s, GL_SCISSOR_TEST_HDR, 0);
+        }
+        g_assert_cmpuint(gl_stream_subsections(s), ==, i == 2 ? 0 : 2048);
         qtest_quit(s);
     }
 }
@@ -14878,6 +15015,10 @@ int main(int argc, char **argv)
                    test_gl_front_face_selects_the_two_sided_colour);
     qtest_add_func("sn0/origin2000/mgras/gl-cull-migration",
                    test_gl_cull_migration);
+    qtest_add_func("sn0/origin2000/mgras/gl-scissor-bounds-draws-and-clears",
+                   test_gl_scissor_bounds_draws_and_clears);
+    qtest_add_func("sn0/origin2000/mgras/gl-scissor-migration",
+                   test_gl_scissor_migration);
     qtest_add_func("sn0/origin2000/mgras/gl-texture-matrix-migration",
                    test_gl_texture_matrix_migration);
     qtest_add_func("sn0/origin2000/mgras/"

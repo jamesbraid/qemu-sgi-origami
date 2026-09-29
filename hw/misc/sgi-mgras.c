@@ -1956,6 +1956,7 @@ static const VMStateDescription vmstate_sgi_mgras = {
         &vmstate_sgi_mgras_gl_cull,
         &vmstate_sgi_mgras_gl_pixels,
         &vmstate_sgi_mgras_gl_pixel_flags,
+        &vmstate_sgi_mgras_gl_scissor,
         NULL
     }
 };
