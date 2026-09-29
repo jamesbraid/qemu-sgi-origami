@@ -2032,6 +2032,32 @@ static void test_lighting_two_sided_draws(void)
     }
 }
 
+/*
+ * Rescaling multiplies the transformed normal by 1 / |row 3 of M^-1|
+ * (2.10.3, m31, m32 and m33 of M^-1), M the modelview. With M's third
+ * row (0, 1, 2), M^-1's third row is (0, -0.5, 0.5) and its third column
+ * (0, 0, 0.5). The normal (0, 0, 1) becomes (0, -0.5, 0.5), rescaled to
+ * (0, -0.707107, 0.707107), which a light along +z meets at 0.707107;
+ * scaled by the column instead it would be (0, -1, 1), which clamps to 1.
+ */
+static void test_lighting_rescale_normal_uses_a_row(void)
+{
+    uint32_t m[16] = { 0 };
+    SGIGLContext c;
+
+    lit_init(&c);
+    light_command(&c, SGI_GL_OP_LIGHT, 0, SGI_GL_DIFFUSE, 1, 1, 1, 1);
+    light_command(&c, SGI_GL_OP_MATERIAL, SGI_GL_FRONT, SGI_GL_DIFFUSE,
+                  1, 1, 1, 1);
+    m[0] = m[5] = m[15] = bits(1);
+    m[6] = bits(1);
+    m[10] = bits(2);
+    command(&c, NULL, SGI_GL_OP_LOAD_MATRIX, m, 16);
+    enable(&c, SGI_GL_RESCALE_NORMAL, true);
+    assert_rgba(lit_point(&c, 0, 0, 0, 0, 0, 1), 0.7071068f, 0.7071068f,
+                0.7071068f, 1);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -2086,5 +2112,7 @@ int main(int argc, char **argv)
                     test_lighting_raster_position);
     g_test_add_func("/sgi-gl/lighting-two-sided-draws",
                     test_lighting_two_sided_draws);
+    g_test_add_func("/sgi-gl/lighting-rescale-normal-uses-a-row",
+                    test_lighting_rescale_normal_uses_a_row);
     return g_test_run();
 }
