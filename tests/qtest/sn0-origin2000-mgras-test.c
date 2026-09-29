@@ -10309,6 +10309,104 @@ static void test_gl_colour_index_zero_mask_keeps_the_pixel(void)
 }
 
 /*
+ * A colour-index context on display ID 14 whose map, 29 under the reset
+ * mode, gives index 5 red, 0x13 blue and 0x15 green, drawing into its
+ * back buffer, which the reset bank words put in bank 1.
+ */
+static void gl_colour_index_back_buffer(QTestState *qts)
+{
+    gl_enter_slot(qts, GL_SLOT_A);
+    gl_word(qts, GL_CONTEXT_OPENER);
+    gl_one(qts, GL_INIT_CI_HDR, 8);
+    gl_viewport(qts, 0, 0, 128, 128);
+    gl_window_projection(qts);
+    qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x1e, 0x4));
+    mgras_tag_wid(qts, 256, 256, 383, 383, 14);
+    mgras_write_cmap_entry(qts, 29, 5, 0xff000000);
+    mgras_write_cmap_entry(qts, 29, 0x13, 0x0000ff00);
+    mgras_write_cmap_entry(qts, 29, 0x15, 0x00ff0000);
+    gl_draw_buffer(qts, 2);
+}
+
+/*
+ * A double-buffered colour-index visual's back buffer holds indices as
+ * its front does. __glMgrInitCI sends 0x0a04 once for each colour buffer
+ * func_d9502f0 sets up, and it sets up a second one when the visual is
+ * double-buffered, which bz's context shows by sending 0x0a04 twice. So
+ * an index drawn into bank 1 is a CI8 pixel there as in bank 0, showing
+ * through the colour map of the pixel's display ID once the buffer-select
+ * mask selects bank 1 for that ID, under the index mask, and bank 0 is
+ * left alone. An RGBA draw after it stores direct colour again.
+ */
+static void test_gl_colour_index_draws_into_bank_one(void)
+{
+    mgras_reset();
+    gl_colour_index_back_buffer(qts);
+    gl_word(qts, GL_CLEAR_INDEX_HDR);
+    gl_float(qts, 5);
+    gl_word(qts, GL_CLEAR_COLOR_BUFFER);
+    gl_indexs(qts, 0x13);
+    gl_window_rect(qts, 10, 10, 20, 30);
+    gl_raster_pos2f(qts, 80, 80);
+    gl_bitmap_packet(qts, 8, 1, 0, 0, 0, 0);
+    gl_bitmap_image(qts, (const uint32_t[]){ 0x80000000 }, 1);
+    /* 0x13 under the mask 0xf0 over 5 keeps 5's low bits: 0x15. */
+    gl_one(qts, GL_INDEX_MASK_HDR, 0xf0);
+    gl_window_rect(qts, 40, 10, 50, 30);
+    gl_one(qts, GL_INDEX_MASK_HDR, 0xff);
+
+    g_assert_cmphex(mgras_test_pixel(qts, 256 + 100, 383 - 100), ==, 0);
+    g_assert_cmphex(mgras_test_display_pixel(qts, 256 + 100, 383 - 100), ==,
+                    0);
+    qtest_writeb(qts, REG_XMAP_INDEX, 0);
+    qtest_writel(qts, REG_XMAP_BUF_SELECT, 1u << 14);
+    g_assert_cmphex(mgras_test_display_pixel(qts, 256 + 100, 383 - 100), ==,
+                    0xff0000);
+    g_assert_cmphex(mgras_test_display_pixel(qts, 256 + 15, 383 - 20), ==,
+                    0x0000ff);
+    g_assert_cmphex(mgras_test_display_pixel(qts, 256 + 80, 383 - 80), ==,
+                    0x0000ff);
+    g_assert_cmphex(mgras_test_display_pixel(qts, 256 + 81, 383 - 80), ==,
+                    0xff0000);
+    g_assert_cmphex(mgras_test_display_pixel(qts, 256 + 45, 383 - 20), ==,
+                    0x00ff00);
+
+    gl_word(qts, GL_INIT_RGB);
+    gl_color3f(qts, 1, 1, 1);
+    gl_window_rect(qts, 90, 10, 100, 30);
+    g_assert_cmphex(mgras_test_display_pixel(qts, 256 + 95, 383 - 20), ==,
+                    0xffffff);
+    g_assert_cmphex(mgras_test_pixel(qts, 256 + 95, 383 - 20), ==, 0);
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+}
+
+/*
+ * Swapping a double-buffered colour-index window shows the bank drawn
+ * last: frame A into bank 1, a swap that selects bank 1 for display ID 14
+ * and moves the back buffer to bank 0, frame B there, which stays hidden
+ * until the swap back.
+ */
+static void test_gl_colour_index_swap_shows_the_drawn_bank(void)
+{
+    mgras_reset();
+    gl_colour_index_back_buffer(qts);
+    gl_word(qts, GL_CLEAR_INDEX_HDR);
+    gl_float(qts, 5);
+    gl_word(qts, GL_CLEAR_COLOR_BUFFER);
+    gl_swap(qts, 0, 1u << 14);
+    g_assert_cmphex(mgras_test_display_pixel(qts, 300, 300), ==, 0xff0000);
+
+    gl_word(qts, GL_CLEAR_INDEX_HDR);
+    gl_float(qts, 0x13);
+    gl_word(qts, GL_CLEAR_COLOR_BUFFER);
+    g_assert_cmphex(mgras_test_pixel(qts, 300, 300), ==, 0x13);
+    g_assert_cmphex(mgras_test_display_pixel(qts, 300, 300), ==, 0xff0000);
+    gl_swap(qts, 1, 0);
+    g_assert_cmphex(mgras_test_display_pixel(qts, 300, 300), ==, 0x0000ff);
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+}
+
+/*
  * The client reads GL_CURRENT_INDEX through the 0xa104 query at index 4,
  * GL_CURRENT_COLOR's red, and GL_CURRENT_RASTER_INDEX through 0xa20c at
  * 0x351, the raster colour's red (notes-return-mode-queries.md). In a
@@ -10543,6 +10641,35 @@ static void test_gl_pixels_inline_colour_index(void)
     g_assert_cmphex(gl_window_pixel(qts, 9, 21), ==, 0);
     g_assert_cmphex(mgras_test_format(qts, 256 + 10, 383 - 20), ==,
                     MGRAS_PIXEL_FORMAT_CI8);
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+}
+
+/*
+ * A colour-index image into the back buffer lands in bank 1 as CI8
+ * pixels, as a colour-index draw does there, and bank 0 keeps its own.
+ */
+static void test_gl_pixels_colour_index_into_bank_one(void)
+{
+    gl_pixels_context(qts, 8);
+    qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x1e, 0x4));
+    mgras_tag_wid(qts, 256, 256, 383, 383, 14);
+    mgras_write_cmap_entry(qts, 29, 5, 0xff000000);
+    mgras_write_cmap_entry(qts, 29, 0x13, 0x0000ff00);
+    gl_draw_buffer(qts, 2);
+    gl_pixels_program(qts, GL_PIX_INDEX, 6, 10, 20, 12, 20, 1);
+    gl_pixels_draw(qts, 2);
+    gl_pixels_row(qts, 0, (const uint32_t[]){ 0x00050013, 0x00050000 }, 2);
+    gl_pixels_fence(qts);
+
+    g_assert_cmphex(gl_window_pixel(qts, 11, 20), ==, 0);
+    qtest_writeb(qts, REG_XMAP_INDEX, 0);
+    qtest_writel(qts, REG_XMAP_BUF_SELECT, 1u << 14);
+    g_assert_cmphex(mgras_test_display_pixel(qts, 256 + 10, 383 - 20), ==,
+                    0xff0000);
+    g_assert_cmphex(mgras_test_display_pixel(qts, 256 + 11, 383 - 20), ==,
+                    0x0000ff);
+    g_assert_cmphex(mgras_test_display_pixel(qts, 256 + 12, 383 - 20), ==,
+                    0xff0000);
     g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
 }
 
@@ -12366,6 +12493,48 @@ static void test_gl_colour_index_migration(void)
     gl_word(to, GL_CLEAR_COLOR_BUFFER);
     g_assert_cmphex(gl_window_pixel(to, 15, 15), ==, 0x13);
     g_assert_cmphex(gl_window_pixel(to, 30, 30), ==, 0x03);
+    g_assert_cmphex(mgras_qom_get_uint(to, "x-test-error"), ==, 0);
+
+    qtest_quit(to);
+    qtest_quit(from);
+    g_rmdir(tmpfs);
+}
+
+/*
+ * Bank 1's pixels cross a migration with their format: an index shown
+ * through the colour map and a direct colour shown as it is.
+ */
+static void test_gl_colour_index_bank_one_migration(void)
+{
+    g_autofree char *tmpfs = NULL;
+    g_autofree char *uri = NULL;
+    g_autofree char *dest_cmdline = NULL;
+    GError *err = NULL;
+    QTestState *from, *to;
+
+    tmpfs = g_dir_make_tmp("sn0-mgras-gl-ci-bank-XXXXXX", &err);
+    g_assert_no_error(err);
+    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+
+    from = qtest_init(MIGRATION_ARGS);
+    dest_cmdline = g_strdup_printf(MIGRATION_ARGS " -incoming %s", uri);
+    to = qtest_init(dest_cmdline);
+
+    gl_colour_index_back_buffer(from);
+    gl_indexs(from, 0x13);
+    gl_window_rect(from, 10, 10, 20, 30);
+    gl_word(from, GL_INIT_RGB);
+    gl_color3f(from, 1, 1, 1);
+    gl_window_rect(from, 90, 10, 100, 30);
+    qtest_writeb(from, REG_XMAP_INDEX, 0);
+    qtest_writel(from, REG_XMAP_BUF_SELECT, 1u << 14);
+
+    sgi_migrate_stopped(from, uri);
+
+    g_assert_cmphex(mgras_test_display_pixel(to, 256 + 15, 383 - 20), ==,
+                    0x0000ff);
+    g_assert_cmphex(mgras_test_display_pixel(to, 256 + 95, 383 - 20), ==,
+                    0xffffff);
     g_assert_cmphex(mgras_qom_get_uint(to, "x-test-error"), ==, 0);
 
     qtest_quit(to);
@@ -15774,10 +15943,19 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/origin2000/mgras/"
                    "gl-colour-index-zero-mask-keeps-the-pixel",
                    test_gl_colour_index_zero_mask_keeps_the_pixel);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "gl-colour-index-draws-into-bank-one",
+                   test_gl_colour_index_draws_into_bank_one);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "gl-colour-index-swap-shows-the-drawn-bank",
+                   test_gl_colour_index_swap_shows_the_drawn_bank);
     qtest_add_func("sn0/origin2000/mgras/gl-bitmap-split-by-a-context-switch",
                    test_gl_bitmap_split_by_a_context_switch);
     qtest_add_func("sn0/origin2000/mgras/gl-pixels-inline-colour-index",
                    test_gl_pixels_inline_colour_index);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "gl-pixels-colour-index-into-bank-one",
+                   test_gl_pixels_colour_index_into_bank_one);
     qtest_add_func("sn0/origin2000/mgras/gl-pixels-inline-rgb",
                    test_gl_pixels_inline_rgb);
     qtest_add_func("sn0/origin2000/mgras/gl-pixels-dma-abgr",
@@ -16077,6 +16255,8 @@ int main(int argc, char **argv)
                    test_gl_raster_position_migration);
     qtest_add_func("sn0/origin2000/mgras/gl-colour-index-migration",
                    test_gl_colour_index_migration);
+    qtest_add_func("sn0/origin2000/mgras/gl-colour-index-bank-one-migration",
+                   test_gl_colour_index_bank_one_migration);
     qtest_add_func("sn0/origin2000/mgras/gl-depth-range-migration",
                    test_gl_depth_range_migration);
     qtest_add_func("sn0/origin2000/mgras/gl-dither-migration",

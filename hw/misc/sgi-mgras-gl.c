@@ -1996,8 +1996,7 @@ bool sgi_mgras_gl_post_load(SGIMgrasState *s)
  * the bottom, in each bank of @banks. The GL window's WID selects an XMAP
  * mode, 0x1408 for the probe's visual, whose colour map is never loaded;
  * an RGB pixel bypasses that map (sgi-mgras-display.c), which is what
- * makes the drawing visible. Bank 1 holds only direct colour in this
- * model, so it needs no format tag.
+ * makes the drawing visible. Each bank keeps its own format tag.
  */
 static void mgras_gl_put(SGIMgrasState *s, unsigned int banks, int x, int y,
                          uint32_t rgb)
@@ -2010,6 +2009,7 @@ static void mgras_gl_put(SGIMgrasState *s, unsigned int banks, int x, int y,
     }
     if (banks & 2) {
         s->back[idx] = rgb;
+        s->back_format[idx] = SGI_MGRAS_PIXEL_FORMAT_RGB;
     }
 }
 
@@ -2040,13 +2040,20 @@ static uint32_t mgras_gl_load_colour(void *opaque, SGIColourTarget target,
 }
 
 /*
- * A colour index into bank 0 as a CI8 pixel, which scans out through the
- * colour map the window's display ID selects, the X server's own CI8 form
- * (mgras-raster-display.md, "Scanout"). The write mask keeps the stored
- * index's bits where it is clear. Bank 1 holds only direct colour in this
- * model, so an index for it is dropped; mgras_gl_check_index() logs that.
- * A context deeper than eight bits keeps its low eight, logged at its
- * setup.
+ * A colour index as a CI8 pixel in each bank of target, which scans out
+ * through the colour map the window's display ID selects, the X server's
+ * own CI8 form (mgras-raster-display.md, "Scanout"). The write mask keeps
+ * the stored index's bits where it is clear. A context deeper than eight
+ * bits keeps its low eight, logged at its setup.
+ *
+ * Bank 1 takes indices as bank 0 does. The client sets up each colour
+ * buffer of a colour-index visual with 0x0a04 (__glMgrInitCI, which
+ * func_d9502f0 calls a second time for the back buffer of a
+ * double-buffered visual), so it expects its back buffer to hold
+ * indices; bz's double-buffered context sends 0x0a04 twice. How the board
+ * stores an index in either bank is not published. The discriminating
+ * tests are gl-colour-index-draws-into-bank-one and
+ * gl-colour-index-swap-shows-the-drawn-bank.
  *
  * A mask with none of the eight bits set leaves the pixel as it was
  * (OpenGL 1.2.1, 4.2.2), whatever its format. Approximated: the model
@@ -2061,22 +2068,16 @@ static void mgras_gl_store_index(void *opaque, SGIColourTarget target,
     SGIMgrasState *s = opaque;
     unsigned int idx = (s->height - 1 - y) * s->width + x;
 
-    if ((target & 1) && (mask & 0xff)) {
+    if (!(mask & 0xff)) {
+        return;
+    }
+    if (target & 1) {
         s->front[idx] = ((s->front[idx] & ~mask) | (index & mask)) & 0xff;
         s->format[idx] = SGI_MGRAS_PIXEL_FORMAT_CI8;
     }
-}
-
-/* Log colour-index work bound for bank 1, which the model cannot hold. */
-static void mgras_gl_check_index(uint32_t index_bits,
-                                 const SGIColourTarget *targets, uint32_t n)
-{
-    for (uint32_t i = 0; index_bits && i < n; i++) {
-        if (targets[i] & 2) {
-            qemu_log_mask(LOG_UNIMP, "sgi-mgras: colour-index drawing into "
-                          "pixel-memory bank 1 is not modelled; dropped\n");
-            return;
-        }
+    if (target & 2) {
+        s->back[idx] = ((s->back[idx] & ~mask) | (index & mask)) & 0xff;
+        s->back_format[idx] = SGI_MGRAS_PIXEL_FORMAT_CI8;
     }
 }
 
@@ -2169,11 +2170,8 @@ static void mgras_gl_draw(void *opaque, const SGIGLDraw *d)
 {
     SGIMgrasState *s = opaque;
     SGIRasterTarget t = mgras_gl_target;
-    SGIColourTarget targets[SGI_GL_MAX_TARGETS];
 
     t.opaque = s;
-    mgras_gl_check_index(d->state->index_bits, targets,
-                         sgi_gl_draw_targets(d->state, targets));
     sgi_soft_draw(&mgras_gl_raster_rules, &t, d);
     s->dirty = true;
 }
@@ -2185,9 +2183,6 @@ static void mgras_gl_raster(void *opaque, const SGIRasterOp *op)
     SGIRasterTarget t = mgras_gl_target;
 
     t.opaque = s;
-    mgras_gl_check_index(op->kind == SGI_RASTER_BITMAP ?
-                         op->bitmap.state->index_bits : op->index_bits,
-                         op->targets, op->ntargets);
     sgi_soft_raster(&mgras_gl_raster_rules, &t, op);
     s->dirty = true;
 }
@@ -2618,7 +2613,6 @@ static void mgras_gl_pixels_start(SGIMgrasState *s, const uint32_t *payload)
 {
     SGIMgrasGLPixels *px = mgras_gl_pixels(s);
     SGIGLContext *c = mgras_gl(s);
-    SGIColourTarget targets[SGI_GL_MAX_TARGETS];
 
     if (px->active) {
         qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: pixel draw ended after "
@@ -2657,8 +2651,6 @@ static void mgras_gl_pixels_start(SGIMgrasState *s, const uint32_t *payload)
         qemu_log_mask(LOG_UNIMP, "sgi-mgras: pixel draw with no window bound "
                       "dropped\n");
     }
-    mgras_gl_check_index(c->cur.index_bits, targets,
-                         sgi_gl_draw_targets(&c->cur, targets));
 }
 
 /*
@@ -2690,16 +2682,9 @@ static void mgras_gl_pixels_put(SGIMgrasState *s, int32_t x, int32_t y,
             .index = index,
         },
     };
-    SGIColourTarget targets[SGI_GL_MAX_TARGETS];
-    uint32_t n = sgi_gl_draw_targets(&c->cur, targets);
 
     memcpy(op.bitmap.rgba, rgba, sizeof(op.bitmap.rgba));
-    for (uint32_t i = 0; i < n; i++) {
-        /* An index for bank 1 is dropped, logged once at the draw's start. */
-        if (!c->cur.index_bits || !(targets[i] & 2)) {
-            op.targets[op.ntargets++] = targets[i];
-        }
-    }
+    op.ntargets = sgi_gl_draw_targets(&c->cur, op.targets);
     op.clip = c->cur.drawable.clip;
     sink.raster(sink.opaque, &op);
 }

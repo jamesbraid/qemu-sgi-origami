@@ -1323,6 +1323,7 @@ static void mgras_reset_enter(Object *obj, ResetType type)
     memset(s->back, 0, s->width * s->height * sizeof(*s->back));
     memset(s->depth, 0, s->width * s->height * sizeof(*s->depth));
     memset(s->format, 0, s->width * s->height);
+    memset(s->back_format, 0, s->width * s->height);
     memset(s->overlay, 0, s->width * s->height);
     memset(s->hq, 0, sizeof(s->hq));
     for (int slot = 0; slot < 2; slot++) {
@@ -1539,6 +1540,7 @@ static bool mgras_build_widget(SGIXioBoardState *board, Error **errp)
     s->front_count = s->back_count = s->width * s->height;
     s->depth_count = s->width * s->height;
     s->format = g_new0(uint8_t, s->width * s->height);
+    s->back_format = g_new0(uint8_t, s->width * s->height);
     s->overlay = g_new0(uint8_t, s->width * s->height);
     s->ge[SGI_MGRAS_GE_SLOT_A] = g_new0(uint32_t, SGI_MGRAS_GE_WORDS);
     s->ge[SGI_MGRAS_GE_SLOT_B] = g_new0(uint32_t, SGI_MGRAS_GE_WORDS);
@@ -1573,6 +1575,7 @@ static void mgras_unrealize(DeviceState *dev)
     address_space_destroy(&s->fabric_as);
     sgi_board_memory_cleanup(&s->mem);
     g_free(s->depth); g_free(s->format);
+    g_free(s->back_format);
     g_free(s->overlay);
     g_free(s->ge[SGI_MGRAS_GE_SLOT_A]); g_free(s->ge[SGI_MGRAS_GE_SLOT_B]);
 }
@@ -1718,7 +1721,7 @@ DEFINE_VMSTATE_SGI_GL_CONTEXTS(vmstate_sgi_mgras_gl_contexts,
                                gl, SGI_MGRAS_GL_CONTEXTS);
 
 static const VMStateDescription vmstate_sgi_mgras = {
-    .name = TYPE_SGI_MGRAS, .version_id = 23, .minimum_version_id = 23,
+    .name = TYPE_SGI_MGRAS, .version_id = 24, .minimum_version_id = 24,
     .post_load = mgras_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32(front_count, SGIMgrasState),
@@ -1874,6 +1877,9 @@ static const VMStateDescription vmstate_sgi_mgras = {
                              SGI_MGRAS_GL_CONTEXTS, 20,
                              vmstate_sgi_mgras_gl_context_parser,
                              SGIMgrasGLContext),
+        /* Bank 1's format tag, since that bank holds indices too. */
+        VMSTATE_VARRAY_UINT32(back_format, SGIMgrasState, back_count, 24,
+                              vmstate_info_uint8, uint8_t),
         VMSTATE_END_OF_LIST()
     },
     .subsections = (const VMStateDescription * const []) {

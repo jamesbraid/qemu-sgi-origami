@@ -128,21 +128,44 @@ static bool mgras_overlay_bgr(SGIMgrasState *s, int i, uint8_t did,
 }
 
 /*
- * Resolve one pixel to mgras_cmap_rgb()'s native 0x00BBGGRR order, keyed by
- * the per-pixel format tag (sgi-mgras.h). CI8 indexes through the WID's
- * colour map as before. RGB is a direct 0x00RRGGBB triple a paint wrote
- * (see mgras_draw_fill() and its siblings in hw/misc/sgi-mgras-raster.c)
- * and bypasses the CMAP entirely; only its R and B bytes need swapping
- * to this function's native order. RGB12 is the 0xBGR nibble form a
- * 12-bit window's paint stores; each nibble widens to eight bits by
- * repeating itself, so 0xf is full scale. How the hardware widens a
- * four-bit channel is not known: shifting alone would show the white the
- * Icon Catalog draws its icons' bodies on as 240. Neither direct form's
- * main WID is read: no register or capture is known to source a map a
- * direct-colour pixel would use. A visible overlay pixel covers every
- * kind. A main display ID whose bit is set in the XMAP buffer-select
- * word under index 0 shows bank 1, which holds only the GL client's
- * direct colour (SGI_MGRAS_XMAP_BUF_SELECT in sgi-mgras.h).
+ * Resolve one bank word to mgras_cmap_rgb()'s native 0x00BBGGRR order,
+ * keyed by its per-pixel format tag (sgi-mgras.h). CI8 indexes through the
+ * WID's colour map as before. RGB is a direct 0x00RRGGBB triple a paint
+ * wrote (see mgras_draw_fill() and its siblings in
+ * hw/misc/sgi-mgras-raster.c) and bypasses the CMAP entirely; only its R
+ * and B bytes need swapping to this function's native order. RGB12 is the
+ * 0xBGR nibble form a 12-bit window's paint stores; each nibble widens to
+ * eight bits by repeating itself, so 0xf is full scale. How the hardware
+ * widens a four-bit channel is not known: shifting alone would show the
+ * white the Icon Catalog draws its icons' bodies on as 240. Neither direct
+ * form's main WID is read: no register or capture is known to source a
+ * map a direct-colour pixel would use.
+ */
+static uint32_t mgras_bank_bgr(SGIMgrasState *s, uint32_t word,
+                               uint8_t format, uint8_t main_did)
+{
+    if (format == SGI_MGRAS_PIXEL_FORMAT_RGB) {
+        uint32_t rgb = word & 0x00ffffff;
+
+        return ((rgb & 0xff) << 16) | (rgb & 0xff00) | ((rgb >> 16) & 0xff);
+    }
+    if (format == SGI_MGRAS_PIXEL_FORMAT_RGB12) {
+        uint32_t r = word & 0xf;
+        uint32_t g = (word >> 4) & 0xf;
+        uint32_t b = (word >> 8) & 0xf;
+
+        return (b * 0x11) << 16 | (g * 0x11) << 8 | r * 0x11;
+    }
+    return mgras_cmap_rgb(s, main_did, word & 0xff);
+}
+
+/*
+ * One pixel in mgras_cmap_rgb()'s native order. A visible overlay pixel
+ * covers every kind. A main display ID whose bit is set in the XMAP
+ * buffer-select word under index 0 shows bank 1, which holds the GL
+ * client's direct colours and colour indices, each resolved by bank 1's
+ * own format tag (SGI_MGRAS_XMAP_BUF_SELECT in sgi-mgras.h); every other
+ * pixel shows bank 0.
  */
 static uint32_t mgras_resolve_pixel_bgr(SGIMgrasState *s, int i,
                                         uint8_t main_did, uint8_t overlay_did)
@@ -153,23 +176,9 @@ static uint32_t mgras_resolve_pixel_bgr(SGIMgrasState *s, int i,
         return overlay;
     }
     if ((s->xmap[0].buf_select[0] >> (main_did & MGRAS_DID_MASK)) & 1) {
-        uint32_t rgb = s->back[i] & 0x00ffffff;
-
-        return ((rgb & 0xff) << 16) | (rgb & 0xff00) | ((rgb >> 16) & 0xff);
+        return mgras_bank_bgr(s, s->back[i], s->back_format[i], main_did);
     }
-    if (s->format[i] == SGI_MGRAS_PIXEL_FORMAT_RGB) {
-        uint32_t rgb = s->front[i] & 0x00ffffff;
-
-        return ((rgb & 0xff) << 16) | (rgb & 0xff00) | ((rgb >> 16) & 0xff);
-    }
-    if (s->format[i] == SGI_MGRAS_PIXEL_FORMAT_RGB12) {
-        uint32_t r = s->front[i] & 0xf;
-        uint32_t g = (s->front[i] >> 4) & 0xf;
-        uint32_t b = (s->front[i] >> 8) & 0xf;
-
-        return (b * 0x11) << 16 | (g * 0x11) << 8 | r * 0x11;
-    }
-    return mgras_cmap_rgb(s, main_did, s->front[i] & 0xff);
+    return mgras_bank_bgr(s, s->front[i], s->format[i], main_did);
 }
 
 /* mgras_cmap_rgb()'s native 0x00BBGGRR as the scanout's 0x00RRGGBB. */
