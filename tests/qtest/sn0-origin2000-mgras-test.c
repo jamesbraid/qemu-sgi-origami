@@ -12471,8 +12471,8 @@ static unsigned gl_stream_subsections(QTestState *qts)
         "sgi-mgras/gl-light-enables", "sgi-mgras/gl-cull",
         "sgi-mgras/gl-pixels", "sgi-mgras/gl-pixel-flags",
         "sgi-mgras/gl-scissor", "sgi-mgras/gl-alpha",
-        "sgi-mgras/gl-stencil", "sgi-mgras/gl-plane-stencil",
-        "sgi-mgras/gl-blend", "sgi-mgras/gl-logic-op",
+        "sgi-mgras/gl-stencil", "sgi-mgras/gl-blend",
+        "sgi-mgras/gl-logic-op",
         "sgi-mgras/gl-colour-mask", "sgi-mgras/gl-fog",
         "sgi-mgras/gl-polygon-offset", "sgi-mgras/gl-clip-planes",
         "sgi-mgras/gl-line-point",
@@ -15183,12 +15183,12 @@ static void test_gl_state_subsections_follow_their_state(void)
 
     /*
      * The stencil test: its enable, a function, a write mask or a clear
-     * value sends gl-stencil; a clear of the buffer to a nonzero value
-     * sends gl-plane-stencil too, and one to 0 does not; the test turned
-     * off again sends nothing.
+     * value sends gl-stencil, and the test turned off again sends
+     * nothing. The buffer's values travel in the depth plane, whatever
+     * they are.
      */
     for (int i = 0; i < 6; i++) {
-        static const unsigned want[6] = { 8192, 0, 8192, 8192, 24576, 8192 };
+        static const unsigned want[6] = { 8192, 0, 8192, 8192, 8192, 8192 };
 
         s = qtest_init(MIGRATION_ARGS);
         gl_enter_slot(s, GL_SLOT_A);
@@ -15243,7 +15243,7 @@ static void test_gl_state_subsections_follow_their_state(void)
             gl_float(s, 0);
             gl_float(s, 1);
         }
-        g_assert_cmpuint(gl_stream_subsections(s), ==, i == 1 ? 0 : 32768);
+        g_assert_cmpuint(gl_stream_subsections(s), ==, i == 1 ? 0 : 16384);
         qtest_quit(s);
     }
 
@@ -15263,7 +15263,7 @@ static void test_gl_state_subsections_follow_their_state(void)
         if (i == 1) {
             gl_one(s, GL_LOGIC_OP_ENABLE_HDR, 0);
         }
-        g_assert_cmpuint(gl_stream_subsections(s), ==, i == 1 ? 0 : 65536);
+        g_assert_cmpuint(gl_stream_subsections(s), ==, i == 1 ? 0 : 32768);
         qtest_quit(s);
     }
 
@@ -15276,7 +15276,7 @@ static void test_gl_state_subsections_follow_their_state(void)
         if (i == 1) {
             gl_one(s, GL_COLOR_MASK_HDR, 0xf);
         }
-        g_assert_cmpuint(gl_stream_subsections(s), ==, i ? 0 : 131072);
+        g_assert_cmpuint(gl_stream_subsections(s), ==, i ? 0 : 65536);
         qtest_quit(s);
     }
 
@@ -15297,7 +15297,7 @@ static void test_gl_state_subsections_follow_their_state(void)
         if (i == 1) {
             gl_one(s, GL_FOG_HDR, 0);
         }
-        g_assert_cmpuint(gl_stream_subsections(s), ==, i == 1 ? 0 : 262144);
+        g_assert_cmpuint(gl_stream_subsections(s), ==, i == 1 ? 0 : 131072);
         qtest_quit(s);
     }
 
@@ -15317,7 +15317,7 @@ static void test_gl_state_subsections_follow_their_state(void)
         if (i == 1) {
             gl_one(s, GL_OFFSET_ENABLES_HDR, 0);
         }
-        g_assert_cmpuint(gl_stream_subsections(s), ==, i == 1 ? 0 : 524288);
+        g_assert_cmpuint(gl_stream_subsections(s), ==, i == 1 ? 0 : 262144);
         qtest_quit(s);
     }
 
@@ -15336,7 +15336,7 @@ static void test_gl_state_subsections_follow_their_state(void)
         if (i == 1) {
             gl_one(s, GL_CLIP_PLANE_OFF_HDR, GL_CLIP_PLANE0 + 5);
         }
-        g_assert_cmpuint(gl_stream_subsections(s), ==, i == 1 ? 0 : 1048576);
+        g_assert_cmpuint(gl_stream_subsections(s), ==, i == 1 ? 0 : 524288);
         qtest_quit(s);
     }
 
@@ -15360,7 +15360,7 @@ static void test_gl_state_subsections_follow_their_state(void)
         if (i == 1) {
             gl_one(s, GL_POLYGON_STIPPLE_HDR, 0);
         }
-        g_assert_cmpuint(gl_stream_subsections(s), ==, i == 1 ? 0 : 2097152);
+        g_assert_cmpuint(gl_stream_subsections(s), ==, i == 1 ? 0 : 1048576);
         qtest_quit(s);
     }
 }
