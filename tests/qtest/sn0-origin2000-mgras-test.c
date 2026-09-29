@@ -12409,6 +12409,7 @@ static unsigned gl_stream_subsections(QTestState *qts)
         "sgi-mgras/gl-scissor", "sgi-mgras/gl-alpha",
         "sgi-mgras/gl-stencil", "sgi-mgras/gl-plane-stencil",
         "sgi-mgras/gl-blend", "sgi-mgras/gl-logic-op",
+        "sgi-mgras/gl-colour-mask",
     };
     g_autofree char *tmpfs = NULL;
     g_autofree char *path = NULL;
@@ -14281,6 +14282,69 @@ static void test_gl_logic_op_migration(void)
 }
 
 /*
+ * glColorMask as the client sends it: 0x3b04 and red in bit 0, green 1,
+ * blue 2, alpha 3, the bits the write-mask query 0x32b answers in an RGBA
+ * context.
+ */
+#define GL_COLOR_MASK_HDR     0x00003b04
+#define GL_Q_COLOR_WRITEMASK  0x32b
+
+/*
+ * Masking green over a window of (0, 0.5, 1) keeps its 0x80 (OpenGL
+ * 1.2.1, 4.2.2) under a yellow draw and a white clear; masking every
+ * channel writes nothing.
+ */
+static void test_gl_colour_mask_keeps_channels(void)
+{
+    gl_scene_start(qts, GL_FLAT);
+    gl_clear_color(qts, 0, 0.5f, 1, 1);
+    gl_word(qts, GL_CLEAR_COLOR_BUFFER);
+    gl_one(qts, GL_COLOR_MASK_HDR, 0xd);
+    g_assert_cmphex(gl_query(qts, GL_Q_COLOR_WRITEMASK, 1), ==, 0xd);
+    gl_fill_window(qts, 1, 1, 0);
+    g_assert_cmphex(gl_window_pixel(qts, 64, 64), ==, 0xff8000);
+    gl_clear_color(qts, 1, 1, 1, 1);
+    gl_word(qts, GL_CLEAR_COLOR_BUFFER);
+    g_assert_cmphex(gl_window_pixel(qts, 64, 64), ==, 0xff80ff);
+    gl_one(qts, GL_COLOR_MASK_HDR, 0x8);
+    gl_fill_window(qts, 0, 0, 0);
+    g_assert_cmphex(gl_window_pixel(qts, 64, 64), ==, 0xff80ff);
+    gl_one(qts, GL_COLOR_MASK_HDR, 0xf);
+    g_assert_cmphex(gl_query(qts, GL_Q_COLOR_WRITEMASK, 1), ==, 0xf);
+}
+
+/* Slot A writes red only; slot B every channel. */
+static void gl_colour_mask_setup(QTestState *from)
+{
+    for (int slot = 0; slot < 2; slot++) {
+        gl_enter_slot(from, slot ? GL_SLOT_B : GL_SLOT_A);
+        gl_word(from, GL_CONTEXT_OPENER);
+        gl_viewport(from, 0, 0, 128, 128);
+        gl_clear_color(from, 0, 0, 1, 1);
+        gl_word(from, GL_CLEAR_COLOR_BUFFER);
+    }
+    gl_enter_slot(from, GL_SLOT_A);
+    gl_one(from, GL_COLOR_MASK_HDR, 1);
+}
+
+static void gl_colour_mask_check(QTestState *to)
+{
+    for (int slot = 0; slot < 2; slot++) {
+        gl_enter_slot(to, slot ? GL_SLOT_B : GL_SLOT_A);
+        gl_fill_window(to, 1, 1, 0);
+        g_assert_cmphex(mgras_test_pixel(to, 256 + 64, 383 - 64), ==,
+                        slot ? 0xffff00 : 0xff00ff);
+        gl_fill_window(to, 0, 0, 1);
+    }
+}
+
+/* Each context's colour mask migrates. */
+static void test_gl_colour_mask_migration(void)
+{
+    gl_migrate(gl_colour_mask_setup, gl_colour_mask_check);
+}
+
+/*
  * The context setup's 32 detail-texture table writes, 0xec10 with 0xc52,
  * 0xc78, 0x194 and a value (0x1f three times, then 0x1d down to 1), are
  * texture-only defaults and consumed without a log line; any other value
@@ -14677,6 +14741,19 @@ static void test_gl_state_subsections_follow_their_state(void)
             gl_one(s, GL_LOGIC_OP_ENABLE_HDR, 0);
         }
         g_assert_cmpuint(gl_stream_subsections(s), ==, i == 1 ? 0 : 65536);
+        qtest_quit(s);
+    }
+
+    /* A masked channel sends gl-colour-mask; every channel again, nothing. */
+    for (int i = 0; i < 2; i++) {
+        s = qtest_init(MIGRATION_ARGS);
+        gl_enter_slot(s, GL_SLOT_A);
+        gl_word(s, GL_CONTEXT_OPENER);
+        gl_one(s, GL_COLOR_MASK_HDR, 7);
+        if (i == 1) {
+            gl_one(s, GL_COLOR_MASK_HDR, 0xf);
+        }
+        g_assert_cmpuint(gl_stream_subsections(s), ==, i ? 0 : 131072);
         qtest_quit(s);
     }
 }
@@ -15571,6 +15648,10 @@ int main(int argc, char **argv)
                    test_gl_logic_op_combines_with_the_window);
     qtest_add_func("sn0/origin2000/mgras/gl-logic-op-migration",
                    test_gl_logic_op_migration);
+    qtest_add_func("sn0/origin2000/mgras/gl-colour-mask-keeps-channels",
+                   test_gl_colour_mask_keeps_channels);
+    qtest_add_func("sn0/origin2000/mgras/gl-colour-mask-migration",
+                   test_gl_colour_mask_migration);
     qtest_add_func("sn0/origin2000/mgras/gl-texture-matrix-migration",
                    test_gl_texture_matrix_migration);
     qtest_add_func("sn0/origin2000/mgras/"
