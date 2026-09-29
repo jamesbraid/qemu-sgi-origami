@@ -56,6 +56,9 @@ def mapping(paddr, cca):
 
 
 def diagnostic_rom(mode, migration=False):
+    signed_remap = mode == 'cached-remap-signed'
+    first = 0x12345678 if signed_remap else FIRST
+    second = 0x87654321 if signed_remap else SECOND
     # Keep code, stack-free working state and output outside the data cache.
     code = constant(8, 0x00410080) + mtc0(8, 12)  # BEV, DE, KX
     code += constant(12, 0xffffffffa0000000 | MAILBOX)
@@ -68,15 +71,18 @@ def diagnostic_rom(mode, migration=False):
              insn_i(0x09, 8, 8, -1)]
     code += [insn_i(0x01, 8, 1, loop - len(code) - 1), 0]  # bgez
     code += constant(9, 0x9000000000000000 | PAGE)
-    for offset, value in ((0, FIRST), (0x1000, SECOND)):
+    for offset, value in ((0, first), (0x1000, second)):
         code += constant(8, value) + [insn_i(0x2b, 9, 8, offset)]
     code += [insn_i(0x23, 9, 8, 0), 0x0000000f]
 
-    if mode == 'remap':
-        code += mapping(PAGE, 2) + constant(10, VIRTUAL)
+    if mode in ('remap', 'cached-remap', 'cached-remap-signed'):
+        cca = 2 if mode == 'remap' else 3
+        code += mapping(PAGE, cca) + constant(10, VIRTUAL)
         code += [insn_i(0x23, 10, 8, 0), insn_i(0x2b, 12, 8, 0)]
-        code += mapping(PAGE + 0x1000, 2)
+        code += mapping(PAGE + 0x1000, cca)
         code += [insn_i(0x23, 10, 8, 0), insn_i(0x2b, 12, 8, 4)]
+        if signed_remap:
+            code += [insn_i(0x3f, 12, 8, 8)]
     else:
         code += mapping(PAGE, 3)
         address = VIRTUAL if mode == 'mapped' else 0x9800000000000000 | PAGE
@@ -510,7 +516,9 @@ class R10000TLBCache(QemuSystemTest):
         self.vm.cmd('stop')
         self.log.info('%s result: %s', mode, output)
         Path(self.log_file('mailbox.txt')).write_text(output, encoding='utf-8')
-        self.assertEqual(words[:2], [FIRST, SECOND], output)
+        expected = ([0x12345678, 0x87654321]
+                    if mode == 'cached-remap-signed' else [FIRST, SECOND])
+        self.assertEqual(words[:2], expected, output)
         return words, output
 
     def check_cache(self, mode):
@@ -730,6 +738,16 @@ class R10000TLBCache(QemuSystemTest):
 
     def test_uncached_tlb_remap(self):
         self.run_rom('remap')
+
+    def test_cached_tlb_remap_without_data_cache(self):
+        self.run_rom('cached-remap', cache=False)
+
+    def test_cached_tlb_remap_with_data_cache(self):
+        self.run_rom('cached-remap')
+
+    def test_cached_tlb_remap_sign_extends(self):
+        words, output = self.run_rom('cached-remap-signed', cache=False)
+        self.assertEqual(words[2:4], [0xffffffff, 0x87654321], output)
 
     def test_mapped_cached_store(self):
         self.check_cache('mapped')
