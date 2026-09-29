@@ -47,6 +47,7 @@
 #include "hw/mips/sgi/baseio.h"
 #include "hw/pci-host/sgi-bridge.h"
 #include "hw/pci-host/sgi-xbridge.h"
+#include "hw/mips/sgi/xio-link.h"
 #include "hw/pci/pci.h"
 #include "migration/vmstate.h"
 #include "qapi/error.h"
@@ -74,9 +75,45 @@ struct SGIBoardTestFixtureState {
     uint32_t flash_select1_size;
 
     MemoryRegion sink;
+    SGIXioLink cascade_link;
     MemoryRegion flash_select1;
     uint8_t *flash_select1_bytes;
 };
+
+/* Test-only composition of two XBridge ports, with no graphics device. */
+static bool board_test_fixture_realize_cascade(SGIBoardTestFixtureState *s,
+                                               bool attach, Error **errp)
+{
+    DeviceState *node = qdev_new(TYPE_SGI_XBRIDGE);
+    DeviceState *remote;
+
+    object_property_add_child(OBJECT(s), "chip", OBJECT(node));
+    qdev_prop_set_uint8(node, "host-port", 0xa);
+    object_property_set_link(OBJECT(node), "fabric", OBJECT(&s->sink),
+                             &error_abort);
+    if (!sysbus_realize(SYS_BUS_DEVICE(node), errp)) {
+        return false;
+    }
+    if (!attach) {
+        return true;
+    }
+
+    remote = qdev_new(TYPE_SGI_XBRIDGE);
+    object_property_add_child(OBJECT(s), "remote", OBJECT(remote));
+    qdev_prop_set_uint8(remote, "host-port", 0xa);
+    sgi_xio_link_init(&s->cascade_link, OBJECT(s), "cascade-link",
+                      OBJECT(node), 0xb, OBJECT(remote), 0xa);
+    if (!sgi_xio_link_connect(&s->cascade_link, errp) ||
+        !sysbus_realize(SYS_BUS_DEVICE(remote), errp) ||
+        !sgi_xio_link_connect(&s->cascade_link, errp)) {
+        return false;
+    }
+    if (!sgi_xio_link_complete(&s->cascade_link)) {
+        error_setg(errp, "two-XBridge XIO link is incomplete");
+        return false;
+    }
+    return true;
+}
 
 /*
  * The second chip select's stand-in part: a byte array behind 16-bit
@@ -191,6 +228,13 @@ static void board_test_fixture_realize(DeviceState *dev, Error **errp)
     /* Widget-addressed like a link's fabric: bits 51:48 name the widget. */
     memory_region_init(&s->sink, OBJECT(s), "sgi-board-test-fixture.sink",
                        1ULL << 52);
+
+    if (g_str_equal(s->board_type, "xbridge-cascade") ||
+        g_str_equal(s->board_type, "xbridge-cascade-empty")) {
+        board_test_fixture_realize_cascade(s,
+            g_str_equal(s->board_type, "xbridge-cascade"), errp);
+        return;
+    }
 
     if (g_str_equal(s->board_type, TYPE_SGI_BASEIO)) {
         board_test_fixture_realize_baseio(s, errp);
