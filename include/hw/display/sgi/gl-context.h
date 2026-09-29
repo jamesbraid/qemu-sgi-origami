@@ -194,13 +194,43 @@ enum {
 #define SGI_GL_ALPHA_TEST_FUNC  0x0bc1
 #define SGI_GL_ALPHA_TEST_REF   0x0bc2
 #define SGI_GL_DITHER           0x0bd0
+#define SGI_GL_BLEND_DST        0x0be0
+#define SGI_GL_BLEND_SRC        0x0be1
+#define SGI_GL_BLEND            0x0be2
 #define SGI_GL_SCISSOR_BOX      0x0c10
 #define SGI_GL_SCISSOR_TEST     0x0c11
 #define SGI_GL_INDEX_CLEAR_VALUE 0x0c20
 #define SGI_GL_INDEX_WRITEMASK  0x0c21
 #define SGI_GL_COLOR_CLEAR_VALUE 0x0c22
 #define SGI_GL_LIGHT0           0x4000
+#define SGI_GL_BLEND_COLOR      0x8005
+#define SGI_GL_BLEND_EQUATION   0x8009
 #define SGI_GL_RESCALE_NORMAL   0x803a
+
+/*
+ * glBlendFunc's factors (4.1.6, and the imaging subset's constant
+ * factors) and glBlendEquation's equations. GL_ZERO is 0 and GL_ONE 1;
+ * GL_LOGIC_OP is EXT_blend_logic_op's equation.
+ */
+#define SGI_GL_SRC_COLOR        0x0300
+#define SGI_GL_ONE_MINUS_SRC_COLOR 0x0301
+#define SGI_GL_SRC_ALPHA        0x0302
+#define SGI_GL_ONE_MINUS_SRC_ALPHA 0x0303
+#define SGI_GL_DST_ALPHA        0x0304
+#define SGI_GL_ONE_MINUS_DST_ALPHA 0x0305
+#define SGI_GL_DST_COLOR        0x0306
+#define SGI_GL_ONE_MINUS_DST_COLOR 0x0307
+#define SGI_GL_SRC_ALPHA_SATURATE 0x0308
+#define SGI_GL_CONSTANT_COLOR   0x8001
+#define SGI_GL_ONE_MINUS_CONSTANT_COLOR 0x8002
+#define SGI_GL_CONSTANT_ALPHA   0x8003
+#define SGI_GL_ONE_MINUS_CONSTANT_ALPHA 0x8004
+#define SGI_GL_FUNC_ADD         0x8006
+#define SGI_GL_MIN              0x8007
+#define SGI_GL_MAX              0x8008
+#define SGI_GL_FUNC_SUBTRACT    0x800a
+#define SGI_GL_FUNC_REVERSE_SUBTRACT 0x800b
+#define SGI_GL_LOGIC_OP         0x0bf1
 
 /* Faces, and the light and material parameters (OpenGL 1.2.1, 2.13.2). */
 #define SGI_GL_FRONT            0x0404
@@ -379,6 +409,16 @@ typedef struct SGIGLDrawState {
     uint32_t stencil_value_mask;
     uint32_t stencil_write_mask;
     uint32_t stencil_op[3];
+    /*
+     * Blending (4.1.6): its enable, glBlendFunc's source and destination
+     * factors, glBlendEquation's equation, and glBlendColor's constant
+     * colour clamped to [0, 1].
+     */
+    uint32_t blend;             /* 0 or 1 */
+    uint32_t blend_src;
+    uint32_t blend_dst;
+    uint32_t blend_equation;
+    float blend_color[4];
     SGIGLDrawable drawable;
 } SGIGLDrawState;
 
@@ -537,6 +577,9 @@ typedef enum SGIGLOp {
     SGI_GL_OP_STENCIL_OP,       /* fail, depth fail and depth pass */
     SGI_GL_OP_STENCIL_MASK,     /* the write mask */
     SGI_GL_OP_CLEAR_STENCIL,    /* the clear value */
+    SGI_GL_OP_BLEND_FUNC,       /* source and destination factors */
+    SGI_GL_OP_BLEND_EQUATION,   /* the equation */
+    SGI_GL_OP_BLEND_COLOR,      /* r, g, b, a */
 } SGIGLOp;
 
 /*

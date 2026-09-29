@@ -38,6 +38,15 @@ static void planes_store_colour(void *opaque, SGIColourTarget target, int x,
     p->colour[target][planes_index(x, y)] = colour;
 }
 
+static uint32_t planes_load_colour(void *opaque, SGIColourTarget target,
+                                   int x, int y)
+{
+    Planes *p = opaque;
+
+    g_assert_cmpuint(target, <, 2);
+    return p->colour[target][planes_index(x, y)];
+}
+
 /* An index plane keeps the bits the write mask leaves (4.2.2). */
 static void planes_store_index(void *opaque, SGIColourTarget target, int x,
                                int y, uint32_t index, uint32_t mask)
@@ -74,6 +83,7 @@ static SGIRasterTarget planes_target(Planes *p)
 {
     return (SGIRasterTarget) {
         .store_colour = planes_store_colour,
+        .load_colour = planes_load_colour,
         .store_index = planes_store_index,
         .load_depth = planes_load_depth,
         .store_depth = planes_store_depth,
@@ -3094,6 +3104,107 @@ static void test_stencil_test(void)
     g_assert_cmphex(frag_stencil_at(&f, 0, 0), ==, 10);
 }
 
+static void frag_blend(FragScene *f, uint32_t src, uint32_t dst,
+                       uint32_t equation)
+{
+    uint32_t word[2] = { src, dst };
+
+    frag_command(f, SGI_GL_OP_BLEND_FUNC, word, 2);
+    frag_command(f, SGI_GL_OP_BLEND_EQUATION, &equation, 1);
+}
+
+/*
+ * Blending (OpenGL 1.2.1, 4.1.6), over a window of (1, 0.5, 0) and with
+ * source alpha 0.25, which eight bits hold as 64 / 255:
+ *
+ * - initially disabled, GL_ONE, GL_ZERO and GL_FUNC_ADD, constant 0;
+ * - source over destination by the source alpha;
+ * - each equation, the constant factors and GL_SRC_ALPHA_SATURATE, with
+ *   the destination's alpha 1 as planes without alpha have it;
+ * - a factor or equation the specification lacks changes nothing;
+ * - not in colour-index mode, and not where the planes cannot be read.
+ */
+static void test_blend(void)
+{
+    static const struct {
+        uint32_t src, dst, eq;
+        float r, g, b, a;
+        uint32_t want;
+    } runs[] = {
+        /* 64 / 255 (0, 1, 1) + 191 / 255 (1, 128 / 255, 0) */
+        { SGI_GL_SRC_ALPHA, SGI_GL_ONE_MINUS_SRC_ALPHA, SGI_GL_FUNC_ADD,
+          0, 1, 1, 0.25f, 0xbfa040 },
+        { 1, 1, SGI_GL_FUNC_ADD, 0, 0.25f, 1, 1, 0xffc0ff },
+        { 1, 1, SGI_GL_FUNC_SUBTRACT, 0.5f, 0.25f, 1, 1, 0x0000ff },
+        { 1, 1, SGI_GL_FUNC_REVERSE_SUBTRACT, 0.5f, 0.25f, 1, 1, 0x7f4000 },
+        { 0, 0, SGI_GL_MIN, 0.5f, 1, 1, 1, 0x808000 },
+        { 0, 0, SGI_GL_MAX, 0.5f, 0.25f, 1, 1, 0xff80ff },
+        /* Destination alpha 1: the source whole, the destination not. */
+        { SGI_GL_DST_ALPHA, SGI_GL_ONE_MINUS_DST_ALPHA, SGI_GL_FUNC_ADD,
+          0, 0, 1, 0, 0x0000ff },
+        /* min(0.251, 1 - 1) = 0 */
+        { SGI_GL_SRC_ALPHA_SATURATE, 1, SGI_GL_FUNC_ADD, 0, 0, 1, 0.25f,
+          0xff8000 },
+        /* Constant (0.5, 0.25, 1, 0.5); 0.25 + 0.5 * 128 / 255 is 128. */
+        { SGI_GL_CONSTANT_COLOR, SGI_GL_ONE_MINUS_CONSTANT_ALPHA,
+          SGI_GL_FUNC_ADD, 1, 1, 1, 1, 0xff80ff },
+        { SGI_GL_DST_COLOR, SGI_GL_SRC_COLOR, SGI_GL_FUNC_ADD,
+          0.5f, 0.5f, 0.5f, 1, 0xff8100 },
+    };
+    static FragScene f;
+    uint32_t out[SGI_GL_GET_WORDS], word[4];
+
+    frag_init(&f);
+    g_assert_cmpuint(get(&f.c, SGI_GL_BLEND, out), ==, 1);
+    g_assert_cmphex(out[0], ==, 0);
+    g_assert_cmpuint(get(&f.c, SGI_GL_BLEND_SRC, out), ==, 1);
+    g_assert_cmphex(out[0], ==, 1);
+    g_assert_cmpuint(get(&f.c, SGI_GL_BLEND_DST, out), ==, 1);
+    g_assert_cmphex(out[0], ==, 0);
+    g_assert_cmpuint(get(&f.c, SGI_GL_BLEND_EQUATION, out), ==, 1);
+    g_assert_cmphex(out[0], ==, SGI_GL_FUNC_ADD);
+    g_assert_cmpuint(get(&f.c, SGI_GL_BLEND_COLOR, out), ==, 4);
+    g_assert_cmphex(out[0] | out[1] | out[2] | out[3], ==, 0);
+
+    word[0] = bits(0.5f), word[1] = bits(0.25f), word[2] = bits(2);
+    word[3] = bits(0.5f);
+    frag_command(&f, SGI_GL_OP_BLEND_COLOR, word, 4);
+    g_assert_cmpfloat(get_float(&f.c, SGI_GL_BLEND_COLOR, 2), ==, 1);
+    enable(&f.c, SGI_GL_BLEND, true);
+    for (int i = 0; i < ARRAY_SIZE(runs); i++) {
+        enable(&f.c, SGI_GL_BLEND, false);
+        frag_quad(&f, 1, 0.5f, 0, 1);
+        enable(&f.c, SGI_GL_BLEND, true);
+        frag_blend(&f, runs[i].src, runs[i].dst, runs[i].eq);
+        frag_quad(&f, runs[i].r, runs[i].g, runs[i].b, runs[i].a);
+        g_assert_cmphex(frag_pixel(&f, 7, 9), ==, runs[i].want);
+        g_assert_cmpuint(frag_count(&f, runs[i].want), ==, W * H);
+    }
+
+    /* GL_SRC_COLOR is no source factor, 0x8005 no equation. */
+    frag_blend(&f, SGI_GL_SRC_COLOR, 0, 0x8005);
+    g_assert_cmpuint(get(&f.c, SGI_GL_BLEND_SRC, out), ==, 1);
+    g_assert_cmphex(out[0], ==, SGI_GL_DST_COLOR);
+    g_assert_cmpuint(get(&f.c, SGI_GL_BLEND_EQUATION, out), ==, 1);
+    g_assert_cmphex(out[0], ==, SGI_GL_FUNC_ADD);
+    g_assert_cmpuint(get(&f.c, SGI_GL_BLEND, out), ==, 1);
+    g_assert_cmphex(out[0], ==, 1);
+
+    /* Planes that cannot be read take the source. */
+    frag_blend(&f, 1, 1, SGI_GL_FUNC_ADD);
+    f.rec.target.load_colour = NULL;
+    frag_quad(&f, 0, 0, 1, 1);
+    g_assert_cmpuint(frag_count(&f, 0x0000ff), ==, W * H);
+    f.rec.target = planes_target(&f.p);
+
+    /* In colour-index mode the index is stored as it is. */
+    sgi_gl_set_index_mode(&f.c, 8);
+    word[0] = bits(5);
+    frag_command(&f, SGI_GL_OP_INDEXF, word, 1);
+    frag_quad(&f, 0, 0, 1, 1);
+    g_assert_cmpuint(frag_count(&f, 5), ==, W * H);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -3175,5 +3286,6 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-gl/scissor", test_scissor);
     g_test_add_func("/sgi-gl/alpha-test", test_alpha_test);
     g_test_add_func("/sgi-gl/stencil-test", test_stencil_test);
+    g_test_add_func("/sgi-gl/blend", test_blend);
     return g_test_run();
 }
