@@ -2653,6 +2653,150 @@ static void test_empty_clip_without_a_window(void)
     g_assert_cmpuint(window_pixels_written(), ==, 8 * 5);
 }
 
+/*
+ * The per-fragment operations' cases draw through a context whose draws
+ * and raster ops land in one set of planes.
+ */
+typedef struct FragScene {
+    Planes p;
+    SGIGLContext c;
+    Recorder rec;
+    SGIGLSink sink;
+} FragScene;
+
+static void frag_init(FragScene *f)
+{
+    memset(&f->p, 0, sizeof(f->p));
+    context_init(&f->c);
+    f->rec = (Recorder) {
+        .rules = &rules_supported,
+        .target = planes_target(&f->p),
+    };
+    f->sink = recorder_sink(&f->rec);
+    f->sink.raster = drawing_raster;
+}
+
+static void frag_command(FragScene *f, SGIGLOp op, const uint32_t *args,
+                         unsigned nargs)
+{
+    command(&f->c, &f->sink, op, args, nargs);
+}
+
+/* A quad over the whole window in one colour, at normalized depth z. */
+static void frag_quad_at(FragScene *f, float r, float g, float b, float a,
+                         float z)
+{
+    static const float corner[4][2] = { { -1, -1 }, { 1, -1 },
+                                        { 1, 1 }, { -1, 1 } };
+    uint32_t word[4] = { bits(r), bits(g), bits(b), bits(a) };
+
+    frag_command(f, SGI_GL_OP_COLOR4F, word, 4);
+    word[0] = SGI_GL_QUADS;
+    frag_command(f, SGI_GL_OP_BEGIN, word, 1);
+    for (int i = 0; i < 4; i++) {
+        word[0] = bits(corner[i][0]);
+        word[1] = bits(corner[i][1]);
+        word[2] = bits(z);
+        frag_command(f, SGI_GL_OP_VERTEX3F, word, 3);
+    }
+    frag_command(f, SGI_GL_OP_END, word, 0);
+}
+
+static void frag_quad(FragScene *f, float r, float g, float b, float a)
+{
+    frag_quad_at(f, r, g, b, a, 0);
+}
+
+static uint32_t frag_pixel(const FragScene *f, int x, int y)
+{
+    return f->p.colour[0][planes_index(x, y)];
+}
+
+/* How many of plane 0's pixels hold colour. */
+static unsigned frag_count(const FragScene *f, uint32_t colour)
+{
+    unsigned n = 0;
+
+    for (int i = 0; i < W * H; i++) {
+        n += f->p.colour[0][i] == colour;
+    }
+    return n;
+}
+
+static void frag_scissor(FragScene *f, int32_t x, int32_t y, int32_t w,
+                         int32_t h)
+{
+    uint32_t word[4] = { x, y, w, h };
+
+    frag_command(f, SGI_GL_OP_SCISSOR, word, 4);
+}
+
+/*
+ * The scissor test (OpenGL 1.2.1, 4.1.2): disabled at first; enabled, a
+ * fragment is kept only inside the box, window x from 8 to 11 and y from
+ * 16 to 17 here, for draws, glClear and glBitmap alike. A negative size
+ * is an error and changes nothing, and glGet answers the enable and box.
+ */
+static void test_scissor(void)
+{
+    static const uint8_t image[2] = { 0xff, 0xff };
+    static FragScene f;
+    uint32_t out[SGI_GL_GET_WORDS], word[4];
+    SGIGLBitmap b;
+
+    frag_init(&f);
+    g_assert_cmpuint(get(&f.c, SGI_GL_SCISSOR_TEST, out), ==, 1);
+    g_assert_cmphex(out[0], ==, 0);
+    frag_scissor(&f, 8, 16, 4, 2);
+    frag_scissor(&f, 0, 0, -1, 2);
+    g_assert_cmpuint(get(&f.c, SGI_GL_SCISSOR_BOX, out), ==, 4);
+    g_assert_cmpint(out[0], ==, 8);
+    g_assert_cmpint(out[1], ==, 16);
+    g_assert_cmpint(out[2], ==, 4);
+    g_assert_cmpint(out[3], ==, 2);
+
+    frag_quad(&f, 1, 1, 1, 1);
+    g_assert_cmpuint(frag_count(&f, 0xffffff), ==, W * H);
+    memset(&f.p, 0, sizeof(f.p));
+    enable(&f.c, SGI_GL_SCISSOR_TEST, true);
+    g_assert_cmpuint(get(&f.c, SGI_GL_SCISSOR_TEST, out), ==, 1);
+    g_assert_cmphex(out[0], ==, 1);
+    frag_quad(&f, 1, 1, 1, 1);
+    g_assert_cmpuint(frag_count(&f, 0xffffff), ==, 8);
+    g_assert_cmphex(frag_pixel(&f, 8, 16), ==, 0xffffff);
+    g_assert_cmphex(frag_pixel(&f, 11, 17), ==, 0xffffff);
+    g_assert_cmphex(frag_pixel(&f, 7, 16), ==, 0);
+    g_assert_cmphex(frag_pixel(&f, 12, 17), ==, 0);
+    g_assert_cmphex(frag_pixel(&f, 8, 15), ==, 0);
+    g_assert_cmphex(frag_pixel(&f, 11, 18), ==, 0);
+
+    word[0] = bits(1), word[1] = bits(0), word[2] = bits(0), word[3] = 0;
+    frag_command(&f, SGI_GL_OP_CLEAR_COLOR, word, 4);
+    word[0] = SGI_GL_COLOR_BUFFER_BIT;
+    frag_command(&f, SGI_GL_OP_CLEAR, word, 1);
+    g_assert_cmpuint(frag_count(&f, 0xff0000), ==, 8);
+    g_assert_cmpuint(frag_count(&f, 0), ==, W * H - 8);
+
+    /* A 16 by 1 bitmap across the box's lower row. */
+    memset(&f.p, 0, sizeof(f.p));
+    word[0] = bits(0.5f / 32 - 1), word[1] = bits(16.5f / 32 - 1);
+    frag_command(&f, SGI_GL_OP_RASTER_POS2F, word, 2);
+    g_assert_true(sgi_gl_bitmap_place(&f.c, 16, 1, 0, 0, 0, 0, &b));
+    sgi_gl_bitmap_bytes(&f.c, &f.sink, &b, 0, image, 2);
+    g_assert_cmpuint(frag_count(&f, 0xffffff), ==, 4);
+    g_assert_cmphex(frag_pixel(&f, 8, 16), ==, 0xffffff);
+
+    /* A box beyond the window clears nothing; disabled, all of it. */
+    memset(&f.p, 0, sizeof(f.p));
+    frag_scissor(&f, W, 0, 4, 4);
+    word[0] = SGI_GL_COLOR_BUFFER_BIT;
+    frag_command(&f, SGI_GL_OP_CLEAR, word, 1);
+    g_assert_cmpuint(frag_count(&f, 0), ==, W * H);
+    enable(&f.c, SGI_GL_SCISSOR_TEST, false);
+    frag_command(&f, SGI_GL_OP_CLEAR, word, 1);
+    g_assert_cmpuint(frag_count(&f, 0xff0000), ==, W * H);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -2731,5 +2875,6 @@ int main(int argc, char **argv)
                     test_covered_window_draws_nothing);
     g_test_add_func("/sgi-gl/empty-clip-without-a-window",
                     test_empty_clip_without_a_window);
+    g_test_add_func("/sgi-gl/scissor", test_scissor);
     return g_test_run();
 }
