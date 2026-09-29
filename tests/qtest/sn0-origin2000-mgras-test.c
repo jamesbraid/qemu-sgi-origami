@@ -2930,11 +2930,12 @@ static void test_board_info_byte_read_does_not_raise_error(void)
     QTestState *qts = qtest_init(MACHINE_ARGS);
 
     /*
-     * The kernel's GFX_GETBOARDINFO handler performs a one-byte read here
-     * on every OpenGL context query; the captured flow answers 0 and the
-     * error state stays clear.
+     * The kernel reads this byte while it builds the board record and on
+     * every OpenGL context query. Bits 7:4 are the monitor ID, 0xf on
+     * every captured Origin board, and the read leaves the error state
+     * clear.
      */
-    g_assert_cmphex(qtest_readb(qts, MGRAS_REG(0x071308)), ==, 0);
+    g_assert_cmphex(qtest_readb(qts, MGRAS_REG(0x071308)), ==, 0xf0);
     g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
 
     qtest_quit(qts);
@@ -5886,6 +5887,7 @@ static const MgrasBoardExpect mgras_board_expect[] = {
 #define REG_GE_STATUS          MGRAS_REG(0x028000)
 #define REG_GE_REVISION        MGRAS_REG(0x028004)
 #define REG_CMAP_RA_REVISION   MGRAS_REG(0x071708)
+#define REG_MONITOR_ID         MGRAS_REG(0x071308)
 #define XMAP_INDEX_PP1_REVISION 4
 
 /*
@@ -5977,6 +5979,15 @@ static void test_board_identity(gconstpointer data)
     g_assert_cmphex(qtest_readb(s, REG_CMAP_RA_REVISION) & 0x80, ==, 0x80);
     g_assert_cmphex(qtest_readl(s, REG_CMAP_RA_REVISION), ==,
                     (uint32_t)qtest_readb(s, REG_CMAP_RA_REVISION) << 24);
+
+    /*
+     * The monitor ID in bits 7:4 belongs to the attached monitor, 0xf on
+     * every captured Origin board, so every board answers alike. The
+     * kernel keeps (byte >> 4) & 0xf; 0xf, like 0, picks its stock 60 Hz
+     * timing record.
+     */
+    g_assert_cmphex(qtest_readb(s, REG_MONITOR_ID), ==, 0xf0);
+    g_assert_cmphex(qtest_readl(s, REG_MONITOR_ID), ==, 0xf0000000);
 
     name = mgras_decode_hinv_name(version1, version0, ge_revision, &ge, &re,
                                   &tram0, &tram1);
