@@ -320,6 +320,12 @@ static void check_io_board_presets(const SGIModelTopology *t)
                       preset == SGI_MODEL_IO_BOARD_PRESET_MGRAS ||
                       preset == SGI_MODEL_IO_BOARD_PRESET_ODYSSEY ||
                       preset == SGI_MODEL_IO_BOARD_PRESET_VBRICK);
+        if (preset != SGI_MODEL_IO_BOARD_PRESET_IO8 &&
+            preset != SGI_MODEL_IO_BOARD_PRESET_FUEL) {
+            g_assert_nonnull(entry->value->part);
+            g_assert_true(entry->value->has_revision);
+            g_assert_true(entry->value->has_serial);
+        }
     }
 }
 
@@ -327,12 +333,8 @@ static void check_io_board_presets(const SGIModelTopology *t)
  * Every node claims exactly one crosstalk attachment as its own, and the
  * remaining attachments own the topology's io-boards entries one for
  * one: the same split sgi_machine_index_xio_attachments() computes at
- * realize time. Hub topologies only -- sgi_machine_realize() builds a
- * Bedrock node and returns before that function ever runs, because a
- * Bedrock node's XBridge is not a separate crosstalk-attached board the
- * way a Hub's onboard or Crossbow-attached board is; a Bedrock
- * topology's io-boards entries are checked by
- * check_bedrock_has_populated_io() below instead.
+ * realize time. Bedrock topologies are checked separately because their
+ * XBridge heads are node parts, with only fitted I/O boards in io-boards.
  */
 static void check_xio_attachments(const SGIModelTopology *t)
 {
@@ -482,26 +484,36 @@ static void check_slots_are_unoccupied(const SGIModelTopology *t)
 }
 
 /*
- * A Bedrock topology has one populated I/O head. Its IOC3 identity
- * distinguishes that record from the empty XBridge head.
+ * A Bedrock topology has one fitted base I/O board per node. Both XBridge
+ * heads are present in xtalk-attachments, including the empty head.
  */
 static void check_bedrock_has_populated_io(const SGIModelTopology *t)
 {
-    bool has_populated_io = false;
+    size_t nodes = node_count(t);
+    g_autofree bool *seen = g_new0(bool, nodes);
     const SGIModelIoBoardList *entry;
 
     if (node0(t)->asic_kind != SGI_MODEL_ASIC_KIND_BEDROCK) {
         return;
     }
     for (entry = t->io_boards; entry; entry = entry->next) {
-        if ((entry->value->preset == SGI_MODEL_IO_BOARD_PRESET_IO8 ||
-             entry->value->preset == SGI_MODEL_IO_BOARD_PRESET_FUEL) &&
-            entry->value->has_ioc3_serial) {
-            has_populated_io = true;
-            break;
+        const SGIModelXtalkAttachmentList *attachment = t->xtalk_attachments;
+        unsigned int index = entry->value->attachment;
+
+        g_assert_true(entry->value->preset == SGI_MODEL_IO_BOARD_PRESET_IO8 ||
+                      entry->value->preset == SGI_MODEL_IO_BOARD_PRESET_FUEL);
+        while (index-- && attachment) {
+            attachment = attachment->next;
         }
+        g_assert_nonnull(attachment);
+        g_assert_cmpint(attachment->value->crossbar_index, ==, -1);
+        g_assert_cmpuint(attachment->value->node_index, <, nodes);
+        g_assert_false(seen[attachment->value->node_index]);
+        seen[attachment->value->node_index] = true;
     }
-    g_assert_true(has_populated_io);
+    for (size_t i = 0; i < nodes; i++) {
+        g_assert_true(seen[i]);
+    }
 }
 
 static char *catalogue_path(void)

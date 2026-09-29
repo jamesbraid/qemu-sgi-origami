@@ -500,8 +500,7 @@
 #
 # @io8: the Origin 300 IO-8
 #
-# @fuel: Fuel IP34 XBridge head.  An IOC3 identity marks the populated
-#     head; the other head is empty.
+# @fuel: Fuel IP34 system board I/O on XBridge head F
 #
 # @io9: the IO-9
 #
@@ -550,7 +549,7 @@
 # What physically carries a base I/O board.
 #
 # @onboard: a fitted part of the node board itself (Origin 200's IP29
-#     System Board)
+#     System Board or Fuel's IP34 System Board)
 #
 # @xio-slot: a removable XIO card
 #
@@ -578,26 +577,24 @@
 #
 # @carrier: what physically carries it
 #
-# @attachment: physical slot or head label
+# @attachment: index of this board's crosstalk attachment
 #
 # @label: the IRIX slot name of the XIO position this board occupies
 #     (io1, io5); absent for I/O that sits in no XIO slot, such as a
 #     node board's own onboard I/O
 #
-# @part: fitted-part design number
+# @part: fitted-part design number, if known
 #
 # @other-identity-parts: additional one-wire board part numbers on the
 #     same carrier.  A device uses these only when its board model
 #     explicitly supports them.
 #
-# @revision: fitted-part revision
+# @revision: fitted-part revision, if known
 #
-# @serial: fitted-part one-wire serial
+# @serial: fitted-part one-wire serial, if known
 #
 # @ioc3-serial: the IOC3 function's own one-wire serial, a distinct
-#     fitted-part identity from the board's own @serial; absent where
-#     this board's preset carries no IOC3 population (an Origin 300
-#     XBridge head with nothing fitted)
+#     fitted-part identity from the board's own @serial, if known
 #
 # Since: 11.2
 ##
@@ -608,10 +605,10 @@
             'carrier': 'SGIModelIoBoardCarrier',
             'attachment': 'uint32',
             '*label': 'str',
-            'part': 'str',
+            '*part': 'str',
             '*other-identity-parts': ['str'],
-            'revision': 'uint8',
-            'serial': 'uint64',
+            '*revision': 'uint8',
+            '*serial': 'uint64',
             '*ioc3-serial': 'uint64' } }
 
 ##

@@ -1724,10 +1724,8 @@ static bool sgi_machine_instantiate_vbrick(
  * Bridge in sgi_machine_instantiate_ip29_io(); an attachment with
  * crossbar_index -1, so sgi_machine_index_xio_attachments() already
  * buckets it as a board-owning entry rather than a Crossbow one). The
- * XBridge always answers both heads -- one carries the fitted I/O, the
- * other stays inert -- so an io_boards
- * entry with no fitted IOC3 one-wire serial names the empty head, and
- * building nothing for it is correct, not a fault. Resolves every
+ * XBridge always answers both heads. The board record selects the head
+ * carrying the fitted I/O; the empty head has no board record. Resolves every
  * backend id from this record and the command line, the policy
  * sn1_node_build_io8() applied before this step moved it here.
  */
@@ -1739,10 +1737,6 @@ static bool sgi_machine_instantiate_bedrock_io(
     SN1NodeState *node = SN1_NODE(s->bedrock_nodes[attachment->node_index]);
     DeviceState *baseio;
     PCIBus *bus;
-
-    if (!record->has_ioc3_serial) {
-        return true;
-    }
 
     bus = sn1_node_xbridge_pci_bus(node, attachment->widget);
     baseio = qdev_new(TYPE_SGI_BASEIO);
@@ -1767,7 +1761,9 @@ static bool sgi_machine_instantiate_bedrock_io(
     }
     object_property_set_link(OBJECT(baseio), "pci-bus", OBJECT(bus),
                              &error_abort);
-    qdev_prop_set_uint64(baseio, "onewire-serial", record->ioc3_serial);
+    if (record->has_ioc3_serial) {
+        qdev_prop_set_uint64(baseio, "onewire-serial", record->ioc3_serial);
+    }
     /*
      * The onboard IOC3's Timekeeper storage: an indexed `-drive if=mtd`
      * first, else a bare `-drive if=none,id=sgi-nvramN` by name, N the
@@ -2744,14 +2740,14 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
             g_autofree unsigned int *widgets = NULL;
             size_t widget_count = 0;
             size_t i;
+            const SGIModelIoBoardList *board_entry;
+            bool found_board = false;
 
             /*
              * Widget zero is the crossbar's own local view; the rest come
-             * one per this node's own XIO attachment (a board slot,
-             * populated or not -- see sn1-node.c's widget-wiring comment
-             * for why an empty slot still needs one). Which of those
-             * boards is actually populated is the io_boards loop's own
-             * concern below, once every node here has realized.
+             * one per this node's own XIO attachment. The empty
+             * head still needs a widget; the board loop selects the fitted
+             * population after the node realizes.
              */
             widgets = g_new0(unsigned int, attachment_count + 1);
             widgets[widget_count++] = 0;
@@ -2765,6 +2761,42 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
             qdev_prop_set_uint32(DEVICE(node), "nasid",
                                  sgi_machine_topology_nasid(t, node_index));
             node->model_node = nodes[node_index];
+            for (board_entry = t->io_boards; board_entry;
+                 board_entry = board_entry->next) {
+                const SGIModelIoBoard *board = board_entry->value;
+                const SGIModelXtalkAttachment *placement;
+
+                if (board->attachment >= attachment_count) {
+                    error_setg(errp, "topology '%s' io board '%s' names "
+                               "attachment %u, past its %zu attachment(s)",
+                               t->name, board->id, board->attachment,
+                               attachment_count);
+                    return false;
+                }
+                placement = attachments[board->attachment];
+                if (placement->node_index != node_index) {
+                    continue;
+                }
+                if (found_board || placement->crossbar_index >= 0 ||
+                    (placement->widget != 14 && placement->widget != 15)) {
+                    error_setg(errp, "topology '%s' node %u has invalid "
+                               "XBridge I/O board placement", t->name,
+                               node_index);
+                    return false;
+                }
+                found_board = true;
+                qdev_prop_set_uint8(DEVICE(node), "io-board-widget",
+                                    placement->widget);
+                if (board->part) {
+                    qdev_prop_set_string(DEVICE(node), "io-board-part",
+                                         board->part);
+                }
+            }
+            if (!found_board) {
+                error_setg(errp, "topology '%s' node %u has no XBridge "
+                           "I/O board", t->name, node_index);
+                return false;
+            }
             node->xbridge_widgets = g_steal_pointer(&widgets);
             node->xbridge_widget_count = widget_count;
             /*
@@ -2827,15 +2859,8 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
         }
 
         /*
-         * Every node is realized now, so a head's PCI bus link property
-         * exists. Each io_boards entry names its own attachment directly
-         * (record->attachment, an index into t->xio_attachments) rather
-         * than through node_attachment/board_attachment's claim-by-
-         * crossbar resolution below: a Bedrock head is not behind a real
-         * Crossbow, so there is no crossbar to claim through, and both
-         * of an XBridge's heads carry their own io_boards entry (one
-         * populated, one not) rather than one node-owned link plus a
-         * card behind it.
+         * Each fitted I/O board names the attachment of its XBridge head.
+         * The node already created both heads from xtalk_attachments.
          */
         {
             g_autofree const SGIModelIoBoard **io_boards = NULL;
@@ -2852,6 +2877,12 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
                               "attachment %u, past its %zu XIO "
                               "attachment(s)", t->name, board_index,
                               record->attachment, attachment_count);
+                    return false;
+                }
+                if (attachments[record->attachment]->node_index >= node_count ||
+                    attachments[record->attachment]->crossbar_index >= 0) {
+                    error_setg(errp, "topology '%s' io board %u has no direct "
+                               "Bedrock attachment", t->name, board_index);
                     return false;
                 }
                 if (!sgi_machine_instantiate_io_board(
