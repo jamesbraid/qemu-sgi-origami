@@ -97,6 +97,22 @@ The tests that use supplied assets read paths directly below
    <asset-root>/linux-ip27/vmlinux
    <asset-root>/boot/6.5.30/unix.IP27
 
+These three files are the inputs for focused Origin 200 PROM, Linux kernel,
+and IRIX miniroot checks. In the current local sample they occupy 28,287,976
+bytes in total; this is a sum of those file sizes, not a distribution
+guarantee. Run the existing targets with the local asset root set:
+
+.. code-block:: sh
+
+   export QEMU_TEST_SGI_ASSET_DIR=/path/to/sgi-assets
+   meson test -C build --print-errorlogs \
+       func-mips64-origin200_prom func-mips64-linux_kernel \
+       func-mips64-irix_miniroot
+
+This documents local placement only. Public acquisition instructions for
+these files remain unresolved, and this note makes no claim about distribution
+rights.
+
 The installed-disk tests also use preinstalled images such as
 ``<asset-root>/irix/6.5.30/root.qcow2``. Additional functional cases declare
 their own asset paths in their test modules. The PROM checks recognize the
