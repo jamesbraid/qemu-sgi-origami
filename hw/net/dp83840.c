@@ -143,6 +143,14 @@ void dp83840_write(DP83840State *s, int reg, uint16_t val)
             return;
         }
 
+        if (s->dp83843) {
+            s->pcs_config &= ~DP83843_LBR_100_DP_CTL;
+            if (val & MII_BMCR_LOOPBACK) {
+                s->pcs_config |= DP83843_LBR_TW_LBEN |
+                                 DP83843_LBR_10_ENDEC_LB;
+            }
+        }
+
         /* No cable to negotiate against: a configuring write links at once. */
         if (val & MII_BMCR_ISOLATE) {
             s->autoneg_done = false;
