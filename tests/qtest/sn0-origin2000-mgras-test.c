@@ -12411,6 +12411,7 @@ static unsigned gl_stream_subsections(QTestState *qts)
         "sgi-mgras/gl-blend", "sgi-mgras/gl-logic-op",
         "sgi-mgras/gl-colour-mask", "sgi-mgras/gl-fog",
         "sgi-mgras/gl-polygon-offset", "sgi-mgras/gl-clip-planes",
+        "sgi-mgras/gl-line-point",
     };
     g_autofree char *tmpfs = NULL;
     g_autofree char *path = NULL;
@@ -14622,6 +14623,111 @@ static void test_gl_clip_plane_migration(void)
 }
 
 /*
+ * Point, line and polygon state as the client sends it: glLineWidth
+ * 0x4504 and glPointSize 0x4d04 and a float; glLineStipple 0x4608, the
+ * repeat less 1 and the pattern bit-reversed; glPolygonMode 0xa808, face
+ * and mode; GL_LINE_SMOOTH 0x6904, GL_LINE_STIPPLE 0x6a04,
+ * GL_POINT_SMOOTH 0x6c04 and GL_POLYGON_STIPPLE 0x6d04 and 1 or 0. The
+ * queries: 0xc3d and 0xc3e the size and width, 0xc3f and 0xc40 the cull
+ * face and front face, 0xc17 and 0xc18 the polygon modes, 0xc30 the line
+ * smoothing, 0xc46 and 0xc47 the stipple as it was sent, and bits 0 and 5
+ * of 0x286 the polygon and line stipple enables.
+ */
+#define GL_LINE_WIDTH_HDR     0x00004504
+#define GL_POINT_SIZE_HDR     0x00004d04
+#define GL_LINE_STIPPLE_HDR   0x00004608
+#define GL_POLYGON_MODE_HDR   0x0000a808
+#define GL_LINE_SMOOTH_HDR    0x00006904
+#define GL_LINE_STIPPLE_ON_HDR 0x00006a04
+#define GL_POLYGON_STIPPLE_HDR 0x00006d04
+#define GL_Q_POINT_SIZE       0xc3d
+#define GL_Q_POLYGON_MODE     0xc17
+#define GL_Q_LINE_SMOOTH      0xc30
+#define GL_Q_LINE_STIPPLE     0xc46
+#define GL_LINE_MODE          0x1b01
+#define GL_FILL_MODE          0x1b02
+
+/*
+ * The context setup's initial values answer as OpenGL's, not zero, which
+ * glPointSize and glLineWidth would reject; what the client sets answers
+ * back; and the window still draws filled at size 1.
+ */
+static void test_gl_line_point_state_answers(void)
+{
+    gl_scene_start(qts, GL_FLAT);
+    g_assert_cmphex(gl_query(qts, GL_Q_POINT_SIZE, 1), ==, gl_bits(1));
+    g_assert_cmphex(gl_query(qts, GL_Q_POINT_SIZE + 1, 1), ==, gl_bits(1));
+    g_assert_cmphex(gl_query(qts, GL_Q_POINT_SIZE + 2, 1), ==,
+                    GL_BACK_FACE);
+    g_assert_cmphex(gl_query(qts, GL_Q_POINT_SIZE + 3, 1), ==, GL_CCW);
+    g_assert_cmphex(gl_query(qts, GL_Q_POLYGON_MODE, 1), ==, GL_FILL_MODE);
+    g_assert_cmphex(gl_query(qts, GL_Q_LINE_STIPPLE, 1) & 0xffff, ==,
+                    0xffff);
+    g_assert_cmphex(gl_query(qts, GL_Q_LINE_STIPPLE + 1, 1) + 1, ==, 1);
+
+    gl_word(qts, GL_POINT_SIZE_HDR);
+    gl_float(qts, 4);
+    gl_word(qts, GL_LINE_WIDTH_HDR);
+    gl_float(qts, 2.5f);
+    gl_word(qts, GL_LINE_STIPPLE_HDR);
+    gl_word(qts, 2);
+    gl_word(qts, 0xff00);
+    gl_word(qts, GL_POLYGON_MODE_HDR);
+    gl_word(qts, GL_BACK_FACE);
+    gl_word(qts, GL_LINE_MODE);
+    gl_one(qts, GL_LINE_SMOOTH_HDR, 1);
+    gl_one(qts, GL_LINE_STIPPLE_ON_HDR, 1);
+    gl_one(qts, GL_POLYGON_STIPPLE_HDR, 1);
+    g_assert_cmphex(gl_query(qts, GL_Q_POINT_SIZE, 1), ==, gl_bits(4));
+    g_assert_cmphex(gl_query(qts, GL_Q_POINT_SIZE + 1, 1), ==,
+                    gl_bits(2.5f));
+    g_assert_cmphex(gl_query(qts, GL_Q_POLYGON_MODE, 1), ==, GL_FILL_MODE);
+    g_assert_cmphex(gl_query(qts, GL_Q_POLYGON_MODE + 1, 1), ==,
+                    GL_LINE_MODE);
+    g_assert_cmphex(gl_query(qts, GL_Q_LINE_SMOOTH, 1), ==, 1);
+    g_assert_cmphex(gl_query(qts, GL_Q_LINE_STIPPLE, 1) & 0xffff, ==,
+                    0xff00);
+    g_assert_cmphex(gl_query(qts, GL_Q_LINE_STIPPLE + 1, 1) + 1, ==, 3);
+    g_assert_cmphex(gl_query(qts, GL_Q_FILL_ENABLES, 1) & 0x21, ==, 0x21);
+    gl_one(qts, GL_LINE_STIPPLE_ON_HDR, 0);
+    g_assert_cmphex(gl_query(qts, GL_Q_FILL_ENABLES, 1) & 0x21, ==, 1);
+
+    gl_clear_color(qts, 0, 0, 0, 1);
+    gl_word(qts, GL_CLEAR_COLOR_BUFFER);
+    gl_fill_window(qts, 0, 1, 0);
+    g_assert_cmphex(gl_window_pixel(qts, 64, 64), ==, 0x00ff00);
+}
+
+/* Slot A has a point size of 3 and line smoothing on; slot B neither. */
+static void gl_line_point_setup(QTestState *from)
+{
+    for (int slot = 0; slot < 2; slot++) {
+        gl_enter_slot(from, slot ? GL_SLOT_B : GL_SLOT_A);
+        gl_word(from, GL_CONTEXT_OPENER);
+    }
+    gl_enter_slot(from, GL_SLOT_A);
+    gl_word(from, GL_POINT_SIZE_HDR);
+    gl_float(from, 3);
+    gl_one(from, GL_LINE_SMOOTH_HDR, 1);
+}
+
+static void gl_line_point_check(QTestState *to)
+{
+    for (int slot = 0; slot < 2; slot++) {
+        gl_enter_slot(to, slot ? GL_SLOT_B : GL_SLOT_A);
+        g_assert_cmphex(gl_query(to, GL_Q_POINT_SIZE, 1), ==,
+                        gl_bits(slot ? 1 : 3));
+        g_assert_cmphex(gl_query(to, GL_Q_LINE_SMOOTH, 1), ==, !slot);
+    }
+}
+
+/* Each context's point, line and polygon state migrates. */
+static void test_gl_line_point_migration(void)
+{
+    gl_migrate(gl_line_point_setup, gl_line_point_check);
+}
+
+/*
  * The context setup's 32 detail-texture table writes, 0xec10 with 0xc52,
  * 0xc78, 0x194 and a value (0x1f three times, then 0x1d down to 1), are
  * texture-only defaults and consumed without a log line; any other value
@@ -15091,6 +15197,30 @@ static void test_gl_state_subsections_follow_their_state(void)
             gl_one(s, GL_CLIP_PLANE_OFF_HDR, GL_CLIP_PLANE0 + 5);
         }
         g_assert_cmpuint(gl_stream_subsections(s), ==, i == 1 ? 0 : 1048576);
+        qtest_quit(s);
+    }
+
+    /*
+     * Point, line and polygon state: an enable or a width other than 1
+     * sends gl-line-point; the setup's width 1 and solid stipple, and the
+     * enable turned off again, send nothing.
+     */
+    for (int i = 0; i < 3; i++) {
+        s = qtest_init(MIGRATION_ARGS);
+        gl_enter_slot(s, GL_SLOT_A);
+        gl_word(s, GL_CONTEXT_OPENER);
+        gl_word(s, GL_LINE_WIDTH_HDR);
+        gl_float(s, i == 2 ? 2 : 1);
+        gl_word(s, GL_LINE_STIPPLE_HDR);
+        gl_word(s, 0);
+        gl_word(s, 0xffff);
+        if (i < 2) {
+            gl_one(s, GL_POLYGON_STIPPLE_HDR, 1);
+        }
+        if (i == 1) {
+            gl_one(s, GL_POLYGON_STIPPLE_HDR, 0);
+        }
+        g_assert_cmpuint(gl_stream_subsections(s), ==, i == 1 ? 0 : 2097152);
         qtest_quit(s);
     }
 }
@@ -16001,6 +16131,10 @@ int main(int argc, char **argv)
                    test_gl_clip_plane_clips_in_eye_space);
     qtest_add_func("sn0/origin2000/mgras/gl-clip-plane-migration",
                    test_gl_clip_plane_migration);
+    qtest_add_func("sn0/origin2000/mgras/gl-line-point-state-answers",
+                   test_gl_line_point_state_answers);
+    qtest_add_func("sn0/origin2000/mgras/gl-line-point-migration",
+                   test_gl_line_point_migration);
     qtest_add_func("sn0/origin2000/mgras/gl-texture-matrix-migration",
                    test_gl_texture_matrix_migration);
     qtest_add_func("sn0/origin2000/mgras/"
