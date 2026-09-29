@@ -4,17 +4,17 @@
  *
  * A draw's vertices are transformed by the draw state's matrices, mapped
  * through its viewport into window coordinates, snapped to a subpixel grid
- * and rasterized with edge functions at pixel centres. Each fragment then
- * passes the per-fragment operations in OpenGL 1.2.1's order (4.1): pixel
- * ownership against the drawable's rectangles, the scissor test, the alpha
- * test, the stencil test, the depth test, blending and the logical
- * operation, and is stored under the write masks through the family's
- * target. What it draws follows OpenGL 1.2.1 for untextured points, lines,
- * polygons and bitmaps at size and width 1, flat or smooth shaded, in RGBA
- * or colour-index mode, from vertex colours the context has already lit,
- * with a back-facing polygon's back colours under two-sided lighting, and
- * polygons culled by facing. Where OpenGL leaves a choice, the head's
- * SGIRasterRules make it.
+ * and rasterized with edge functions at pixel centres, and fogged while fog
+ * is enabled. Each fragment then passes the per-fragment operations in
+ * OpenGL 1.2.1's order (4.1): pixel ownership against the drawable's
+ * rectangles, the scissor test, the alpha test, the stencil test, the depth
+ * test, blending and the logical operation, and is stored under the write
+ * masks through the family's target. What it draws follows OpenGL 1.2.1 for
+ * untextured points, lines, polygons and bitmaps at size and width 1, flat
+ * or smooth shaded, in RGBA or colour-index mode, from vertex colours the
+ * context has already lit, with a back-facing polygon's back colours under
+ * two-sided lighting, and polygons culled by facing. Where OpenGL leaves a
+ * choice, the head's SGIRasterRules make it.
  */
 #include "qemu/osdep.h"
 #include <math.h>
@@ -56,6 +56,7 @@ typedef struct SGISoftVertex {
     double inv_w;         /* 1 / clip w, for perspective-correct colour */
     double rgba[4];
     double index;         /* the colour index, in colour-index mode */
+    double fog;           /* the fog coordinate, |z| in eye coordinates */
 } SGISoftVertex;
 
 /*
@@ -66,6 +67,7 @@ typedef struct SGISoftVertex {
 typedef struct SGISoftFrag {
     double rgba[4];
     double index;
+    double fog;           /* the fog coordinate (3.10) */
 } SGISoftFrag;
 
 static bool sgi_soft_window(const SGIGLDrawState *st, SGISoftWindow *win)
@@ -470,6 +472,40 @@ static void sgi_soft_setup_ops(SGISoftDraw *r)
     }
 }
 
+/*
+ * Fog (3.10): the fog factor f from the fragment's fog coordinate c by
+ * the mode, clamped to [0, 1], blends an RGBA fragment's red, green and
+ * blue toward the fog colour, f C + (1 - f) Cf, and adds (1 - f) times
+ * the fog index to a colour index. GL_LINEAR with start equal to end
+ * divides by zero; the model takes f as 1 before the end and 0 from it,
+ * the limit of the equation from either side.
+ */
+static void sgi_soft_fog(const SGIGLDrawState *st, SGISoftFrag *frag)
+{
+    double c = frag->fog, f;
+
+    switch (st->fog_mode) {
+    case SGI_GL_LINEAR:
+        f = st->fog_end == st->fog_start ? (c < st->fog_end ? 1 : 0) :
+            (st->fog_end - c) / (st->fog_end - st->fog_start);
+        break;
+    case SGI_GL_EXP2:
+        f = exp(-(st->fog_density * c) * (st->fog_density * c));
+        break;
+    default:
+        f = exp(-st->fog_density * c);
+        break;
+    }
+    f = f >= 1 ? 1 : f > 0 ? f : 0;
+    if (st->index_bits) {
+        frag->index += (1 - f) * st->fog_index;
+        return;
+    }
+    for (int k = 0; k < 3; k++) {
+        frag->rgba[k] = f * frag->rgba[k] + (1 - f) * st->fog_color[k];
+    }
+}
+
 /* A fragment's colour value from an interpolated or flat index. */
 static uint32_t sgi_soft_index(const SGISoftDraw *r, double index)
 {
@@ -477,28 +513,32 @@ static uint32_t sgi_soft_index(const SGISoftDraw *r, double index)
 }
 
 /*
- * One fragment at window pixel (px, py) with window depth z: dropped
- * outside [0, 1], outside the window's rectangles and, while the scissor
- * test is enabled, outside the scissor box (4.1.2), in RGBA mode alpha
- * tested (4.1.4), stencil tested and depth tested (4.1.5) when those tests
- * are enabled, the stencil buffer updated by the operation its outcome
- * selects, blended in RGBA mode while blending is enabled or combined by
- * the logical operation while it is enabled, then written under the index
- * or colour mask to each colour target the draw
- * buffers select. Its colour is stored as the rules' packed colour in
- * RGBA mode and as its index in colour-index mode, which glIndexMask
- * masks (4.2.2).
+ * One fragment at window pixel (px, py) with window depth z: fogged while
+ * fog is enabled, dropped outside [0, 1], outside the window's rectangles
+ * and, while the scissor test is enabled, outside the scissor box (4.1.2),
+ * in RGBA mode alpha tested (4.1.4), stencil tested and depth tested (4.1.5)
+ * when those tests are enabled, the stencil buffer updated by the operation
+ * its outcome selects, blended in RGBA mode while blending is enabled or
+ * combined by the logical operation while it is enabled, then written under
+ * the index or colour mask to each colour target the draw buffers select.
+ * Its colour is stored as the rules' packed colour in RGBA mode and as its
+ * index in colour-index mode, which glIndexMask masks (4.2.2).
  */
 static void sgi_soft_fragment_at(const SGISoftDraw *r, int px, int py,
-                                 double z, const SGISoftFrag *f)
+                                 double z, const SGISoftFrag *frag)
 {
     const SGIRasterTarget *t = r->t;
+    SGISoftFrag fogged = *frag;
+    const SGISoftFrag *f = &fogged;
     int x = r->win.ox + px, y = r->win.oy + py;
     uint32_t zq, colour, smax = 0, sref = 0;
     bool stencil;
 
     if (!(z >= 0.0 && z <= 1.0)) {
         return;
+    }
+    if (r->st->fog) {
+        sgi_soft_fog(r->st, &fogged);
     }
     if (r->win.clip->n > 1 && !sgi_clip_contains(r->win.clip, x, y)) {
         return;
@@ -662,6 +702,12 @@ static bool sgi_soft_transform(const SGISoftDraw *r, const float *v,
     out->y = sgi_soft_round(r->rules, yw * (1 << r->rules->subpixel_bits));
     out->z = (clip[2] / clip[3] + 1.0) / 2.0;
     out->inv_w = 1.0 / clip[3];
+    /*
+     * The fog coordinate approximates the eye distance by |z|, which
+     * 3.10 allows; it is affine in eye space, so interpolating it as a
+     * vertex attribute gives it exactly at each fragment.
+     */
+    out->fog = fabs(eye[3] != 0 ? eye[2] / eye[3] : eye[2]);
     for (int k = 0; k < 4; k++) {
         out->rgba[k] = MIN(MAX(rgba[k], 0.0f), 1.0f);
     }
@@ -775,7 +821,7 @@ static void sgi_soft_triangle(const SGISoftDraw *r, const float *va,
             int64_t e0 = sgi_soft_edge(&v[1], &v[2], cx, cy);
             int64_t e1 = sgi_soft_edge(&v[2], &v[0], cx, cy);
             int64_t e2 = sgi_soft_edge(&v[0], &v[1], cx, cy);
-            double b1, b2, z;
+            double b1, b2, z, w0, w1, w2, sum;
             SGISoftFrag frag = flat_frag;
 
             if (!sgi_soft_owns(&v[1], &v[2], e0) ||
@@ -786,11 +832,12 @@ static void sgi_soft_triangle(const SGISoftDraw *r, const float *va,
             b1 = (double)e1 / area;
             b2 = (double)e2 / area;
             z = v[0].z + b1 * (v[1].z - v[0].z) + b2 * (v[2].z - v[0].z);
+            w0 = (1.0 - b1 - b2) * v[0].inv_w;
+            w1 = b1 * v[1].inv_w;
+            w2 = b2 * v[2].inv_w;
+            sum = w0 + w1 + w2;
+            frag.fog = (w0 * v[0].fog + w1 * v[1].fog + w2 * v[2].fog) / sum;
             if (smooth) {
-                double w0 = (1.0 - b1 - b2) * v[0].inv_w;
-                double w1 = b1 * v[1].inv_w, w2 = b2 * v[2].inv_w;
-                double sum = w0 + w1 + w2;
-
                 for (int k = 0; k < 4; k++) {
                     frag.rgba[k] = (w0 * v[0].rgba[k] + w1 * v[1].rgba[k] +
                                     w2 * v[2].rgba[k]) / sum;
@@ -940,6 +987,7 @@ static void sgi_soft_line(const SGISoftDraw *r, const float *va,
             frag.index = smooth ? a.index + wb * (b.index - a.index) /
                                   (wa + wb) :
                          provoking[SGI_GL_V_INDEX];
+            frag.fog = (wa * a.fog + wb * b.fog) / (wa + wb);
             for (int k = 0; k < 4; k++) {
                 frag.rgba[k] = smooth ?
                                (wa * a.rgba[k] + wb * b.rgba[k]) / (wa + wb) :
@@ -981,6 +1029,7 @@ static void sgi_soft_point(const SGISoftDraw *r, const float *vp)
     }
     memcpy(frag.rgba, v.rgba, sizeof(frag.rgba));
     frag.index = v.index;
+    frag.fog = v.fog;
     sgi_soft_fragment(r, px, py, v.z, &frag);
 }
 
@@ -1093,6 +1142,7 @@ static void sgi_soft_bitmap(const SGIRasterRules *rules,
     SGISoftFrag frag = {
         .rgba = { b->rgba[0], b->rgba[1], b->rgba[2], b->rgba[3] },
         .index = b->index,
+        .fog = b->distance,
     };
 
     if (!sgi_soft_window(b->state, &r.win) ||

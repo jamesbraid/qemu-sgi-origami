@@ -170,6 +170,12 @@ static void populate(SGIGLContext *c, bool other)
     c->cur.colour_mask = other ? SGI_GL_COLOUR_MASK_RED :
                                  SGI_GL_COLOUR_MASK_ALL &
                                  ~SGI_GL_COLOUR_MASK_GREEN;
+    c->cur.fog = !other;
+    c->cur.fog_mode = other ? SGI_GL_LINEAR : SGI_GL_EXP2;
+    c->cur.fog_density = other ? 0.0f : 2.5f;
+    for (int i = 0; i < 4; i++) {
+        c->cur.fog_color[i] = other ? 1.0f - 0.25f * i : 0.125f * i;
+    }
 
     g_assert_true(sgi_gl_context_valid(c, &error_abort));
 }
@@ -716,6 +722,12 @@ static const Corruption corruptions[] = {
     BAD(cur.logic_op_mode, SGI_GL_SET + 1, "logical operation"),
     BAD(cur.logic_op_mode, SGI_GL_CLEAR - 1, "logical operation"),
     BAD(cur.colour_mask, SGI_GL_COLOUR_MASK_ALL + 1, "colour mask"),
+    BAD(cur.fog, 2, "fog is"),
+    BAD(cur.fog_mode, SGI_GL_EXP2 + 1, "fog mode"),
+    BAD(cur.fog_mode, 0, "fog mode"),
+    BAD(cur.fog_density, 0xbf800000 /* -1 */, "fog density"),
+    BAD(cur.fog_density, 0x7fc00000 /* NaN */, "fog density"),
+    BAD(cur.fog_color[0], 0xbe800000 /* -0.25 */, "fog colour"),
     BAD(lights_enabled, 1u << SGI_GL_LIGHTS, "light enables"),
     BAD(color_material_face, 0, "colour material face"),
     BAD(color_material_mode, SGI_GL_SHININESS, "colour material parameter"),

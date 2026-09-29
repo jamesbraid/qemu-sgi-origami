@@ -69,10 +69,14 @@ typedef struct SGIRasterBitmap {
     uint32_t first;
     uint32_t count;
     const uint8_t *bytes;
-    /* The raster position's window depth, colour and colour index. */
+    /*
+     * The raster position's window depth, colour and colour index, and
+     * its eye distance, the fragments' fog coordinate (3.10).
+     */
     float z;
     float rgba[4];
     float index;
+    float distance;
 } SGIRasterBitmap;
 
 /*
@@ -176,6 +180,13 @@ enum {
 #define SGI_GL_COLOR_MATERIAL_FACE 0x0b55
 #define SGI_GL_COLOR_MATERIAL_PARAMETER 0x0b56
 #define SGI_GL_COLOR_MATERIAL   0x0b57
+#define SGI_GL_FOG              0x0b60
+#define SGI_GL_FOG_INDEX        0x0b61
+#define SGI_GL_FOG_DENSITY      0x0b62
+#define SGI_GL_FOG_START        0x0b63
+#define SGI_GL_FOG_END          0x0b64
+#define SGI_GL_FOG_MODE         0x0b65
+#define SGI_GL_FOG_COLOR        0x0b66
 #define SGI_GL_DEPTH_RANGE      0x0b70
 #define SGI_GL_DEPTH_TEST       0x0b71
 #define SGI_GL_DEPTH_WRITEMASK  0x0b72
@@ -252,6 +263,10 @@ enum {
 #define SGI_GL_FRONT            0x0404
 #define SGI_GL_BACK             0x0405
 #define SGI_GL_FRONT_AND_BACK   0x0408
+/* glFog's modes (3.10). */
+#define SGI_GL_EXP              0x0800
+#define SGI_GL_EXP2             0x0801
+#define SGI_GL_LINEAR           0x2601
 /* glStencilOp's operations (4.1.5); GL_ZERO is 0. */
 #define SGI_GL_INVERT           0x150a
 #define SGI_GL_KEEP             0x1e00
@@ -444,6 +459,17 @@ typedef struct SGIGLDrawState {
     uint32_t index_logic_op;    /* 0 or 1 */
     uint32_t color_logic_op;    /* 0 or 1 */
     uint32_t logic_op_mode;
+    /*
+     * Fog (3.10): its enable, glFog's mode, density, start and end, the
+     * fog colour clamped to [0, 1] and the fog index.
+     */
+    uint32_t fog;               /* 0 or 1 */
+    uint32_t fog_mode;
+    float fog_density;
+    float fog_start;
+    float fog_end;
+    float fog_color[4];
+    float fog_index;
     SGIGLDrawable drawable;
 } SGIGLDrawState;
 
@@ -607,6 +633,11 @@ typedef enum SGIGLOp {
     SGI_GL_OP_BLEND_COLOR,      /* r, g, b, a */
     SGI_GL_OP_LOGIC_OP,         /* GL_CLEAR to GL_SET */
     SGI_GL_OP_COLOR_MASK,       /* r, g, b, a, each 0 or not */
+    /*
+     * glFogfv: the parameter and four floats, of which it uses as many as
+     * it takes; GL_FOG_MODE's is the mode's enumerant as a float.
+     */
+    SGI_GL_OP_FOG,
 } SGIGLOp;
 
 /*
@@ -772,8 +803,8 @@ bool sgi_gl_get(const SGIGLContext *c, uint32_t pname, uint32_t *out,
  * Whether c holds state the context's own commands could have left: each
  * enable 0 or 1, stack depths inside their stacks, enumerants the setters
  * accept, the depth range and values the setters clamp inside [0, 1], no
- * box of negative size, at most SGI_CLIP_MAX clip rectangles, and no more
- * vertices held than the open primitive keeps.
+ * box of negative size or negative fog density, at most SGI_CLIP_MAX clip
+ * rectangles, and no more vertices held than the open primitive keeps.
  * False, with the reason in errp, otherwise. Loading a context refuses
  * one that fails; a family that fills a context from its own older stream
  * layout checks it here too.
