@@ -129,6 +129,42 @@ static void test_both_bars_reach_one_register(void)
     qtest_quit(qts);
 }
 
+/*
+ * A card transfers into a page the allocator handed out, and the same address
+ * reads back the pattern. Nothing else here proves that an address good for
+ * qtest is an address a card can name.
+ */
+/* The fixture's little-endian fixed word has PCI lanes 12 34 56 78. */
+static void test_device3_programmed_lanes(void)
+{
+    QTestState *qts = qtest_initf("-M none " QPCI_SGI_BRIDGE_HEAD
+                                 "-device sgi-bridge-dma-test,bus=pci,addr=3");
+    QPCIBus *bus = qpci_init_sgi_bridge(qts, NULL);
+    QPCIDevice *dev = qpci_device_find(bus, QPCI_DEVFN(3, 0));
+    const uint64_t window = 0x40000000ULL + 0x700000;
+    const uint64_t raw = 0x40000000ULL + 0x40000000 + 0x13000000;
+    const uint64_t device_reg = 0x40000000ULL + 0x200 + 8 * 3 + 4;
+
+    g_assert_nonnull(dev);
+    qpci_config_writel(dev, PCI_BASE_ADDRESS_0, 0x13000000);
+    qpci_config_writew(dev, PCI_COMMAND, PCI_COMMAND_MEMORY);
+    qtest_writel(qts, device_reg, 0x1130);
+    g_assert_cmphex(qtest_readl(qts, device_reg) & 0x3130, ==, 0x1130);
+    g_assert_cmphex(qtest_readl(qts, window + 0x20), ==, 0x12345678);
+    qtest_writel(qts, window + 0x24, 0x12345678);
+    g_assert_cmphex(qtest_readl(qts, raw + 0x24), ==, 0x12345678);
+
+    qtest_writel(qts, device_reg, 0x3130);
+    g_assert_cmphex(qtest_readl(qts, device_reg) & 0x3130, ==, 0x3130);
+    g_assert_cmphex(qtest_readl(qts, window + 0x20), ==, 0x78563412);
+    qtest_writel(qts, window + 0x24, 0x12345678);
+    g_assert_cmphex(qtest_readl(qts, raw + 0x24), ==, 0x78563412);
+
+    g_free(dev);
+    qpci_free_sgi_bridge(bus);
+    qtest_quit(qts);
+}
+
 /* DMA into an allocated page and read the pattern back to verify that a
  * qtest-visible allocated address is reachable by the card. */
 static void test_transfer_reaches_allocated_memory(void)
@@ -177,6 +213,8 @@ int main(int argc, char **argv)
                    test_empty_slot_has_no_device);
     qtest_add_func("/sgi-bridge-bus/both-bars-reach-one-register",
                    test_both_bars_reach_one_register);
+    qtest_add_func("/sgi-bridge-bus/device3-programmed-lanes",
+                   test_device3_programmed_lanes);
     qtest_add_func("/sgi-bridge-bus/transfer-reaches-allocated-memory",
                    test_transfer_reaches_allocated_memory);
 
