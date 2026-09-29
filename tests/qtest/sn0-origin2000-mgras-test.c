@@ -11485,6 +11485,8 @@ static unsigned gl_stream_subsections(QTestState *qts)
 {
     static const char *const names[] = {
         "sgi-mgras/gl-raster", "sgi-mgras/gl-index", "sgi-mgras/gl-block",
+        "sgi-mgras/gl-depth-range", "sgi-mgras/gl-dither",
+        "sgi-mgras/gl-lighting", "sgi-mgras/gl-texture",
     };
     g_autofree char *tmpfs = NULL;
     g_autofree char *path = NULL;
@@ -12620,6 +12622,57 @@ static void test_hq_query_answers_the_write_mask(void)
     g_assert_cmphex(gl_query(qts, GL_Q_WRITEMASK, 1) & 0xf, ==, 0xf);
 }
 
+/*
+ * The rules of the subsections for the depth range, dither, lighting and
+ * texture matrix, each against a state that meets only it. What every
+ * context setup sends, the opener, glEnable(GL_DITHER) as 0x6704 with 3
+ * and glDepthRange(0, 1), leaves OpenGL's initial state and sends none of
+ * them, so a guest that only set up contexts still migrates to a binary
+ * without them.
+ */
+static void test_gl_state_subsections_follow_their_state(void)
+{
+    QTestState *s;
+
+    s = qtest_init(MIGRATION_ARGS);
+    gl_enter_slot(s, GL_SLOT_A);
+    gl_word(s, GL_CONTEXT_OPENER);
+    gl_one(s, GL_DITHER_HDR, 3);
+    gl_depth_range(s, 0, 1);
+    gl_viewport(s, 0, 0, 128, 128);
+    g_assert_cmpuint(gl_stream_subsections(s), ==, 0);
+    qtest_quit(s);
+
+    s = qtest_init(MIGRATION_ARGS);
+    gl_enter_slot(s, GL_SLOT_A);
+    gl_word(s, GL_CONTEXT_OPENER);
+    gl_depth_range(s, 0.25f, 1);
+    g_assert_cmpuint(gl_stream_subsections(s), ==, 8);
+    qtest_quit(s);
+
+    s = qtest_init(MIGRATION_ARGS);
+    gl_enter_slot(s, GL_SLOT_A);
+    gl_word(s, GL_CONTEXT_OPENER);
+    gl_one(s, GL_DITHER_HDR, 0);
+    g_assert_cmpuint(gl_stream_subsections(s), ==, 16);
+    qtest_quit(s);
+
+    s = qtest_init(MIGRATION_ARGS);
+    gl_enter_slot(s, GL_SLOT_A);
+    gl_word(s, GL_CONTEXT_OPENER);
+    gl_word(s, GL_COLOR_MATERIAL_ON);
+    g_assert_cmpuint(gl_stream_subsections(s), ==, 32);
+    qtest_quit(s);
+
+    s = qtest_init(MIGRATION_ARGS);
+    gl_enter_slot(s, GL_SLOT_A);
+    gl_word(s, GL_CONTEXT_OPENER);
+    gl_one(s, GL_MATRIX_MODE_HDR, GL_TEXTURE);
+    gl_word(s, GL_PUSH_MATRIX);
+    g_assert_cmpuint(gl_stream_subsections(s), ==, 64);
+    qtest_quit(s);
+}
+
 int main(int argc, char **argv)
 {
     int ret;
@@ -13245,6 +13298,9 @@ int main(int argc, char **argv)
                    test_gl_texture_table_defaults_are_silent);
     qtest_add_func("sn0/origin2000/mgras/gl-subsections-follow-their-state",
                    test_gl_subsections_follow_their_state);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "gl-state-subsections-follow-their-state",
+                   test_gl_state_subsections_follow_their_state);
     qtest_add_func("sn0/origin2000/mgras/gl-longest-block-migration",
                    test_gl_longest_block_migration);
     qtest_add_func("sn0/origin2000/mgras/"
