@@ -109,6 +109,11 @@ static uint16_t dp83840_read_impl(DP83840State *s, int reg)
     case DP83840_ADDRESS_STATUS:
         return s->addr;
 
+    case DP83843_ANNPTR:
+        if (s->dp83843) {
+            return s->next_page;
+        }
+        /* fall through */
     default:
         /* Zero: all-ones reads as an absent transceiver. */
         qemu_log_mask(LOG_UNIMP,
@@ -179,6 +184,13 @@ void dp83840_write(DP83840State *s, int reg, uint16_t val)
                       val, reg);
         return;
 
+    case DP83843_ANNPTR:
+        if (s->dp83843) {
+            s->next_page = (val & DP83843_ANNPTR_RW_MASK) |
+                           DP83843_ANNPTR_TOGGLE;
+            return;
+        }
+        /* fall through */
     default:
         qemu_log_mask(LOG_UNIMP,
                       "dp83840: write of 0x%04x to register %d which this "
@@ -214,6 +226,7 @@ void dp83840_reset(DP83840State *s)
     /* Link down: SGI's diagnostic probes the not-yet-settled state. */
     s->control = DP83840_CONTROL_RESET_VALUE;
     s->advertise = DP83840_ADVERTISE_RESET;
+    s->next_page = DP83843_ANNPTR_RESET;
     /* The DP83843 selects the normal copper strap configuration here. */
     s->pcs_config = s->dp83843 ? 0 : DP83840_PCS_RESET_VALUE;
     s->loopback_bypass = s->dp83843 ? 0 : DP83840_LBREMR_RESET_VALUE;
@@ -247,11 +260,12 @@ static void dp83840_unrealize(DeviceState *dev)
 
 static const VMStateDescription vmstate_dp83840 = {
     .name = "dp83840",
-    .version_id = 4,
+    .version_id = 5,
     .minimum_version_id = 3,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT16(control, DP83840State),
         VMSTATE_UINT16(advertise, DP83840State),
+        VMSTATE_UINT16_V(next_page, DP83840State, 5),
         VMSTATE_UINT16(pcs_config, DP83840State),
         VMSTATE_UINT16(loopback_bypass, DP83840State),
         VMSTATE_UINT16(tenbt_config, DP83840State),

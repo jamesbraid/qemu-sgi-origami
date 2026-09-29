@@ -78,6 +78,7 @@
 #define PHY_BMCR          0
 #define PHY_BMSR          1
 #define PHY_ANER          6
+#define PHY_ANNPTR        7
 #define MII_10BTSCR       0x18
 #define BMCR_LOOPBACK     0x4000
 #define BMCR_SPEED100     0x2000
@@ -292,15 +293,16 @@ static QTestState *ioc3_attach_socket(int guest_fd, unsigned int buffers)
  * board's DP83843 instead of the default DP83840A.
  */
 static QTestState *ioc3_attach_socket_dp83843(int guest_fd,
-                                              unsigned int buffers)
+                                              unsigned int buffers,
+                                              const char *extra)
 {
     QTestState *qts;
 
     qts = qtest_initf("-M none " QPCI_SGI_BRIDGE_HEAD "-display none "
                       "-netdev socket,fd=%d,id=n0 "
                       "-device sgi-ioc3,bus=pci,addr=%02x.0,netdev=n0,"
-                      "phy-dp83843=on",
-                      guest_fd, IOC3_PCI_SLOT);
+                      "phy-dp83843=on %s",
+                      guest_fd, IOC3_PCI_SLOT, extra);
     ioc3_bring_up(qts, RAM_SCRATCH + 0x8000, RAM_SCRATCH + 0xc000, buffers);
     return qts;
 }
@@ -2023,7 +2025,7 @@ static void test_dp83843_twister_loopback_turns_a_frame_round(const void *data)
 
     g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
     net_socket_set_recv_timeout(sv[0], 1);
-    qts = ioc3_attach_socket_dp83843(sv[1], 2);
+    qts = ioc3_attach_socket_dp83843(sv[1], 2, "");
 
     mii_write(qts, PHY_BMCR, BMCR_SPEED100 | BMCR_DUPLEX);
     mii_write(qts, MII_LBR, mii_read(qts, MII_LBR) | LBR_TW_LBEN);
@@ -2076,7 +2078,7 @@ static void test_dp83843_loopback_requires_the_tw_lben_bit(const void *data)
 
     g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
     net_socket_set_recv_timeout(sv[0], 10);
-    qts = ioc3_attach_socket_dp83843(sv[1], 2);
+    qts = ioc3_attach_socket_dp83843(sv[1], 2, "");
 
     mii_write(qts, PHY_BMCR, BMCR_SPEED100 | BMCR_DUPLEX);
     /* Bit 5 explicitly left clear; the rest of the sequence is unchanged. */
@@ -2159,7 +2161,7 @@ static void test_dp83843_reset_clears_lbr_and_reopens_the_backend(
 
     g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
     net_socket_set_recv_timeout(sv[0], 10);
-    qts = ioc3_attach_socket_dp83843(sv[1], 2);
+    qts = ioc3_attach_socket_dp83843(sv[1], 2, "");
 
     g_assert_cmphex(mii_read(qts, PHY_BMSR) & 0x7849, ==, 0x7849);
     g_assert_cmphex(mii_read(qts, PHY_ANER) & 0x0004, ==, 0x0004);
@@ -2444,6 +2446,83 @@ static void test_stopped_storage_migration(const void *data)
     g_rmdir(dir);
 }
 
+static void test_dp83843_next_page_transmit_register(const void *data)
+{
+    static const uint16_t values[] = { 0, 0xffff, 0x4000, 0x0800, 0xb7ff };
+    int sv[2];
+    QTestState *qts;
+    unsigned int i;
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    qts = ioc3_attach_socket_dp83843(sv[1], 2, "");
+
+    g_assert_cmphex(mii_read(qts, PHY_ANNPTR), ==, 0x2801);
+    for (i = 0; i < G_N_ELEMENTS(values); i++) {
+        mii_write(qts, PHY_ANNPTR, values[i]);
+        g_assert_cmphex(mii_read(qts, PHY_ANNPTR), ==,
+                        (values[i] & 0xb7ff) | 0x0800);
+    }
+    for (i = 0; i < 16; i++) {
+        uint16_t value = 1u << i;
+
+        mii_write(qts, PHY_ANNPTR, value);
+        g_assert_cmphex(mii_read(qts, PHY_ANNPTR), ==,
+                        (value & 0xb7ff) | 0x0800);
+    }
+    mii_write(qts, PHY_BMCR, 0x8000);
+    g_assert_cmphex(mii_read(qts, PHY_ANNPTR), ==, 0x2801);
+
+    ioc3_quit(qts);
+    close(sv[0]);
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    qts = ioc3_attach_socket(sv[1], 2);
+    mii_write(qts, PHY_ANNPTR, 0xffff);
+    g_assert_cmphex(mii_read(qts, PHY_ANNPTR), ==, 0);
+    ioc3_quit(qts);
+    close(sv[0]);
+}
+
+static void test_dp83843_next_page_migration(const void *data)
+{
+    GError *error = NULL;
+    g_autofree char *directory =
+        g_dir_make_tmp("dp83843-next-page-migration-XXXXXX", &error);
+    g_autofree char *socket = NULL;
+    g_autofree char *uri = NULL;
+    QTestState *from, *to;
+    int from_sv[2], to_sv[2];
+
+    g_assert_no_error(error);
+    socket = g_build_filename(directory, "migration.sock", NULL);
+    uri = g_strdup_printf("unix:%s", socket);
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, from_sv), ==, 0);
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, to_sv), ==, 0);
+    from = ioc3_attach_socket_dp83843(from_sv[1], 2, "");
+    mii_write(from, PHY_ANNPTR, 0x1234);
+    g_assert_cmphex(mii_read(from, PHY_ANNPTR), ==, 0x1a34);
+
+    /* The fixture keeps one host PCI bus handle; the VM stays alive. */
+    g_clear_pointer(&ioc3_dev, g_free);
+    qpci_free_sgi_bridge(ioc3_bus);
+    ioc3_bus = NULL;
+    to = ioc3_attach_socket_dp83843(to_sv[1], 2, "-incoming defer");
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming', 'arguments':{'uri':%s}}", uri);
+    qtest_qmp_assert_success(from,
+        "{'execute':'migrate', 'arguments':{'uri':%s}}", uri);
+    sgi_wait_migration_status(from, "completed", 30);
+    sgi_wait_migration_status(to, "completed", 30);
+    g_assert_cmphex(mii_read(to, PHY_ANNPTR), ==, 0x1a34);
+
+    qtest_quit(from);
+    ioc3_quit(to);
+    close(from_sv[0]);
+    close(to_sv[0]);
+    unlink(socket);
+    g_assert_cmpint(rmdir(directory), ==, 0);
+}
+
 int main(int argc, char **argv)
 {
     unsigned int i;
@@ -2543,6 +2622,10 @@ int main(int argc, char **argv)
     qtest_add_data_func("sgi-ioc3-eth/dp83843-reset-reopens-the-backend",
                         NULL,
                         test_dp83843_reset_clears_lbr_and_reopens_the_backend);
+    qtest_add_data_func("sgi-ioc3-eth/dp83843-next-page-transmit-register",
+                        NULL, test_dp83843_next_page_transmit_register);
+    qtest_add_data_func("sgi-ioc3-eth/dp83843-next-page-migration",
+                        NULL, test_dp83843_next_page_migration);
 
     return g_test_run();
 }
