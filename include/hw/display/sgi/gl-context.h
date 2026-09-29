@@ -146,6 +146,9 @@ enum {
 #define SGI_GL_CURRENT_RASTER_POSITION_VALID 0x0b08
 #define SGI_GL_CURRENT_RASTER_DISTANCE 0x0b09
 #define SGI_GL_EDGE_FLAG        0x0b43
+#define SGI_GL_CULL_FACE        0x0b44
+#define SGI_GL_CULL_FACE_MODE   0x0b45
+#define SGI_GL_FRONT_FACE       0x0b46
 #define SGI_GL_LIGHTING         0x0b50
 #define SGI_GL_LIGHT_MODEL_LOCAL_VIEWER 0x0b51
 #define SGI_GL_LIGHT_MODEL_TWO_SIDE 0x0b52
@@ -178,6 +181,9 @@ enum {
 #define SGI_GL_FRONT            0x0404
 #define SGI_GL_BACK             0x0405
 #define SGI_GL_FRONT_AND_BACK   0x0408
+/* glFrontFace's directions (2.13.1). */
+#define SGI_GL_CW               0x0900
+#define SGI_GL_CCW              0x0901
 #define SGI_GL_AMBIENT          0x1200
 #define SGI_GL_DIFFUSE          0x1201
 #define SGI_GL_SPECULAR         0x1202
@@ -271,6 +277,15 @@ typedef struct SGIGLDrawState {
     uint32_t index_bits;
     /* glIndexMask's write mask (4.2.2). */
     uint32_t index_mask;
+    /*
+     * Polygon culling (3.5.1): GL_CULL_FACE's enable, glCullFace's
+     * GL_FRONT, GL_BACK or GL_FRONT_AND_BACK, and glFrontFace's GL_CW or
+     * GL_CCW, which also chooses the colour two-sided lighting gives a
+     * polygon (2.13.1). Any front_face but GL_CW is GL_CCW.
+     */
+    uint32_t cull_face;         /* 0 or 1 */
+    uint32_t cull_face_mode;
+    uint32_t front_face;
     SGIGLDrawable drawable;
 } SGIGLDrawState;
 
@@ -407,6 +422,8 @@ typedef enum SGIGLOp {
      */
     SGI_GL_OP_LIGHT_MODEL,
     SGI_GL_OP_COLOR_MATERIAL,   /* face, parameter */
+    SGI_GL_OP_CULL_FACE,        /* GL_FRONT, GL_BACK or GL_FRONT_AND_BACK */
+    SGI_GL_OP_FRONT_FACE,       /* GL_CW or GL_CCW */
 } SGIGLOp;
 
 /*

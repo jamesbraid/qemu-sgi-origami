@@ -9,8 +9,9 @@
  * OpenGL 1.2.1 for untextured points, lines, polygons and bitmaps at size
  * and width 1, flat or smooth shaded, in RGBA or colour-index mode, from
  * vertex colours the context has already lit, with a back-facing
- * polygon's back colours under two-sided lighting. Where OpenGL leaves a
- * choice, the head's SGIRasterRules make it.
+ * polygon's back colours under two-sided lighting, and polygons culled by
+ * facing. Where OpenGL leaves a choice, the head's SGIRasterRules make
+ * it.
  */
 #include "qemu/osdep.h"
 #include <math.h>
@@ -333,11 +334,12 @@ static bool sgi_soft_transform(const SGISoftDraw *r, const float *v,
  * table 2.9).
  *
  * Facing (2.13.1) is the sign of the triangle's area in window
- * coordinates on the subpixel grid, counter-clockwise front facing, which
- * is glFrontFace's initial state; glFrontFace is not modelled. When the
- * draw carries back colours a back-facing triangle takes them. A polygon
- * or quad is drawn as triangles, each facing by its own area, which for a
- * convex polygon is the polygon's facing.
+ * coordinates on the subpixel grid: a positive area is front facing under
+ * glFrontFace(GL_CCW) and a negative one under GL_CW. With GL_CULL_FACE
+ * enabled a triangle whose facing glCullFace names is not rasterized
+ * (3.5.1). When the draw carries back colours a back-facing triangle
+ * takes them. A polygon or quad is drawn as triangles, each facing by its
+ * own area, which for a convex polygon is the polygon's facing.
  *
  * Clipping to the view volume is approximated. In x and y the fragments
  * are bounded by the viewport rectangle, which matches clipping for a
@@ -364,6 +366,7 @@ static void sgi_soft_triangle(const SGISoftDraw *r, const float *va,
     uint32_t flat_rgb;
     SGISoftVertex v[3];
     int64_t min_x, max_x, min_y, max_y, area;
+    bool front;
     int vx = st->viewport[0], vy = st->viewport[1];
     int vw = st->viewport[2], vh = st->viewport[3];
     int px0, px1, py0, py1;
@@ -383,7 +386,13 @@ static void sgi_soft_triangle(const SGISoftDraw *r, const float *va,
     if (area == 0) {
         return;
     }
-    if (area < 0 && r->back_colors) {
+    front = st->front_face == SGI_GL_CW ? area < 0 : area > 0;
+    if (st->cull_face &&
+        (st->cull_face_mode == SGI_GL_FRONT_AND_BACK ||
+         st->cull_face_mode == (front ? SGI_GL_FRONT : SGI_GL_BACK))) {
+        return;
+    }
+    if (!front && r->back_colors) {
         flat = &provoking[SGI_GL_V_BACK_COLOR];
         for (int i = 0; i < 3; i++) {
             for (int k = 0; k < 3; k++) {
@@ -398,7 +407,7 @@ static void sgi_soft_triangle(const SGISoftDraw *r, const float *va,
     flat_rgb = st->index_bits ? sgi_soft_index(r, provoking[SGI_GL_V_INDEX]) :
                                 sgi_soft_rgb(r->rules, flat_c);
     if (area < 0) {
-        /* Culling is off (3.5.1): draw either winding the same way. */
+        /* Rasterize either winding the same way from here. */
         SGISoftVertex t = v[1];
 
         v[1] = v[2];

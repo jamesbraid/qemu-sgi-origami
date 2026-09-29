@@ -94,6 +94,8 @@ void sgi_gl_init(SGIGLContext *c, uint32_t hw_id)
     c->clear_depth = UINT32_MAX;
     c->cur.draw_buffers = SGI_GL_DRAW_FRONT;
     c->cur.index_mask = UINT32_MAX;
+    c->cur.cull_face_mode = SGI_GL_BACK;
+    c->cur.front_face = SGI_GL_CCW;
     c->cur_index = 1.0f;
     c->cur_normal[2] = 1.0f;
     c->cur_edge = 1;
@@ -407,6 +409,8 @@ static const uint8_t sgi_gl_nargs[] = {
     [SGI_GL_OP_MATERIAL] = 6,
     [SGI_GL_OP_LIGHT_MODEL] = 5,
     [SGI_GL_OP_COLOR_MATERIAL] = 2,
+    [SGI_GL_OP_CULL_FACE] = 1,
+    [SGI_GL_OP_FRONT_FACE] = 1,
 };
 
 uint32_t sgi_gl_draw_targets(const SGIGLDrawState *st,
@@ -942,8 +946,8 @@ static void sgi_gl_depth_range(SGIGLContext *c, float n, float f)
 }
 
 /*
- * The faces a glMaterial or glColorMaterial face names, as a mask of
- * material[] entries, or 0 for a value that names none.
+ * The faces a glMaterial, glColorMaterial or glCullFace face names, as a
+ * mask of material[] entries, or 0 for a value that names none.
  */
 static unsigned sgi_gl_faces(uint32_t face)
 {
@@ -1152,6 +1156,9 @@ static void sgi_gl_capability(SGIGLContext *c, uint32_t cap, bool on)
     case SGI_GL_DITHER:
         c->dither = on;
         return;
+    case SGI_GL_CULL_FACE:
+        c->cur.cull_face = on;
+        return;
     case SGI_GL_COLOR_MATERIAL:
         c->color_material = on;
         sgi_gl_track_colour(c);
@@ -1293,6 +1300,22 @@ void sgi_gl_command(SGIGLContext *c, const SGIGLSink *sink,
         return;
     case SGI_GL_OP_DEPTH_MASK:
         c->cur.depth_mask = a[0] != 0;
+        return;
+    case SGI_GL_OP_CULL_FACE:
+        if (!sgi_gl_faces(a[0])) {
+            qemu_log_mask(LOG_GUEST_ERROR, "sgi-gl: glCullFace(0x%x) "
+                          "ignored\n", a[0]);
+            return;
+        }
+        c->cur.cull_face_mode = a[0];
+        return;
+    case SGI_GL_OP_FRONT_FACE:
+        if (a[0] != SGI_GL_CW && a[0] != SGI_GL_CCW) {
+            qemu_log_mask(LOG_GUEST_ERROR, "sgi-gl: glFrontFace(0x%x) "
+                          "ignored\n", a[0]);
+            return;
+        }
+        c->cur.front_face = a[0];
         return;
     case SGI_GL_OP_DRAW_BUFFERS:
         c->cur.draw_buffers = a[0];
@@ -1581,6 +1604,18 @@ bool sgi_gl_get(const SGIGLContext *c, uint32_t pname, uint32_t *out,
         return true;
     case SGI_GL_DITHER:
         out[0] = c->dither;
+        *n = 1;
+        return true;
+    case SGI_GL_CULL_FACE:
+        out[0] = c->cur.cull_face;
+        *n = 1;
+        return true;
+    case SGI_GL_CULL_FACE_MODE:
+        out[0] = c->cur.cull_face_mode;
+        *n = 1;
+        return true;
+    case SGI_GL_FRONT_FACE:
+        out[0] = c->cur.front_face;
         *n = 1;
         return true;
     case SGI_GL_DEPTH_FUNC:
