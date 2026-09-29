@@ -138,6 +138,7 @@ static void populate(SGIGLContext *c, bool other)
     c->cur.cull_face_mode = other ? SGI_GL_FRONT : SGI_GL_FRONT_AND_BACK;
     c->cur.front_face = other ? SGI_GL_CCW : SGI_GL_CW;
     c->cur.drawable.bound = !other;
+    c->cur.drawable.clip.empty = !other;
     c->cur.drawable.clip.n = other ? 3 : SGI_CLIP_MAX;
     c->lights_enabled = other ? 0x5a : 0xa5;
     c->color_material_face = other ? SGI_GL_FRONT : SGI_GL_BACK;
@@ -230,6 +231,12 @@ static void test_round_trip(void)
         for (int i = 0; i < CONTEXTS; i++) {
             populate(&src->gl[i], dir ^ i);
             populate(&dst->gl[i], !(dir ^ i));
+            /*
+             * A subsection that .needed leaves out keeps the destination's
+             * value, which a real load finds at sgi_gl_init()'s: reset
+             * those fields here, as a device reset would.
+             */
+            dst->gl[i].cur.drawable.clip.empty = 0;
         }
         stream = save_head(src);
         g_assert_cmpint(load_head(stream, dst, NULL), ==, 0);
@@ -505,6 +512,7 @@ static const Corruption corruptions[] = {
     BAD(raster_valid, 2, "raster_valid"),
     BAD(strip_odd, 2, "strip_odd"),
     BAD(cur.drawable.bound, 2, "drawable.bound"),
+    BAD(cur.drawable.clip.empty, 2, "drawable.clip.empty"),
     BAD(in_begin, 2, "in_begin"),
     BAD(mv_depth, SGI_GL_STACK_DEPTH, "mv_depth"),
     BAD(pr_depth, SGI_GL_STACK_DEPTH, "pr_depth"),

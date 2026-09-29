@@ -87,7 +87,12 @@ typedef struct SGIBoardMemory {
     uint32_t nplanes;
 } SGIBoardMemory;
 
-/* Up to 16 inclusive rectangles, in plane coordinates. n == 0: no clip. */
+/*
+ * Up to 16 inclusive rectangles, in plane coordinates. With n 0 the list
+ * is no clip, keeping every pixel, unless empty is set: then it keeps no
+ * pixel, as for a window that other windows wholly cover. A zeroed list
+ * is no clip.
+ */
 #define SGI_CLIP_MAX 16
 
 typedef struct SGIClipRect {
@@ -96,6 +101,7 @@ typedef struct SGIClipRect {
 
 typedef struct SGIClipList {
     uint32_t n;
+    uint32_t empty;             /* 0 or 1; with n 0, 1 keeps nothing */
     SGIClipRect r[SGI_CLIP_MAX];
 } SGIClipList;
 

@@ -817,6 +817,9 @@ void sgi_soft_raster(const SGIRasterRules *rules, const SGIRasterTarget *t,
                       "executed\n", op->kind);
         return;
     }
+    if (!op->clip.n && op->clip.empty) {
+        return;
+    }
     if (colour && op->index_bits && !sgi_soft_check_index(t, op->index_bits)) {
         colour = false;
     }

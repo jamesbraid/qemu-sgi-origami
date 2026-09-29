@@ -115,7 +115,7 @@ const SGIPlane *sgi_board_memory_plane(const SGIBoardMemory *m, uint32_t id)
 bool sgi_clip_contains(const SGIClipList *clip, int x, int y)
 {
     if (!clip->n) {
-        return true;
+        return !clip->empty;
     }
     for (uint32_t i = 0; i < MIN(clip->n, SGI_CLIP_MAX); i++) {
         const SGIClipRect *r = &clip->r[i];

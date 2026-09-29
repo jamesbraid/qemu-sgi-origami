@@ -1810,6 +1810,7 @@ bool sgi_gl_context_valid(const SGIGLContext *c, Error **errp)
         { "depth_mask", st->depth_mask },
         { "cull_face", st->cull_face },
         { "drawable.bound", st->drawable.bound },
+        { "drawable.clip.empty", st->drawable.clip.empty },
         { "dither", c->dither },
         { "light_model_local_viewer", c->light_model_local_viewer },
         { "light_model_two_side", c->light_model_two_side },
@@ -1937,10 +1938,33 @@ static const VMStateDescription vmstate_sgi_clip_rect = {
     },
 };
 
+static bool sgi_gl_clip_empty_needed(void *opaque)
+{
+    SGIGLDrawable *d = opaque;
+
+    return d->clip.empty != 0;
+}
+
+/* Sent only while the clip keeps no pixel; sgi_gl_init() leaves it 0. */
+static const VMStateDescription vmstate_sgi_gl_clip_empty = {
+    .name = "sgi-gl-drawable/clip-empty",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = sgi_gl_clip_empty_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32(clip.empty, SGIGLDrawable),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
 static const VMStateDescription vmstate_sgi_gl_drawable = {
     .name = "sgi-gl-drawable",
     .version_id = 1,
     .minimum_version_id = 1,
+    .subsections = (const VMStateDescription * const []) {
+        &vmstate_sgi_gl_clip_empty,
+        NULL
+    },
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32(bound, SGIGLDrawable),
         VMSTATE_INT32_ARRAY(origin, SGIGLDrawable, 2),
