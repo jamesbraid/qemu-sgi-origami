@@ -103,11 +103,14 @@ class SmdkDiag:
     and xbg read empty, and a second iocfg pass fills it. fetch names a
     package file the diagnostic fetches for itself once running, and
     passes the end pass written into the served copy of that file.
+    pin_cpus holds each vCPU thread to a host CPU of its own for the run
+    (lib_host_cpus.py says why).
     """
     args: tuple = ()
     prime_iocfg: bool = False
     fetch: str = None
     passes: int = None
+    pin_cpus: bool = False
 
 
 DIAGS = {
@@ -120,8 +123,11 @@ DIAGS = {
     # The default sections, USB included, and one pass (-e 1): without it
     # io8bt loops pass after pass. The default mask used to exclude USB
     # (-d 5) for a HcFmNumber check that contradicted OpenHCI 1.0a; that is
-    # fixed on trunk (jamesb/qemu#915).
-    'io8bt': SmdkDiag(args=('-e', '1'), prime_iocfg=True),
+    # fixed on trunk (jamesb/qemu#915). Its serial receive-timer check
+    # times the IOC3 timer against a 10 ms CP0 Count wait, and a vCPU
+    # thread left waiting for a host core stretches that window and
+    # fails it: the verdict counts with the vCPUs pinned.
+    'io8bt': SmdkDiag(args=('-e', '1'), prime_iocfg=True, pin_cpus=True),
     # The register and array-RAM sections, as the package's diaglist runs
     # it; the others need an Alteon Gigabit Ethernet card.
     'xbg': SmdkDiag(args=('-S', '0x3'), prime_iocfg=True),

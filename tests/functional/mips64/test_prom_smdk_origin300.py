@@ -40,6 +40,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import lib_origin300  # noqa: E402
+from lib_host_cpus import pin  # noqa: E402
 from lib_matrix import MatrixError  # noqa: E402
 from lib_net import Console, HarnessError  # noqa: E402
 from lib_prom import FORK_ROOT, require_assets, run_record  # noqa: E402
@@ -142,6 +143,8 @@ if QemuSystemTest is not None:
             vm.add_args(*argv, '-nic', NETWORK.format(
                 mac=lib_origin300.NETWORK_MAC, tftp=tftp.directory), '-S')
             vm.launch()
+            if diag.pin_cpus:
+                pin(vm.get_pid(), sum(self.populations), self.log)
             vm.cmd('cont')
             con = Console(vm.console_socket,
                           self.log_file(f'{self.row.id}-{name}-console.log'),
