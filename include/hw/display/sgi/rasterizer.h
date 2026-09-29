@@ -64,11 +64,6 @@ typedef struct SGIRasterRules {
     uint8_t tie_rule;           /* SGITieRule */
     uint8_t arith;              /* SGIArith */
     uint8_t line_rule;          /* SGILineRule */
-    /*
-     * No longer read: every primitive is clipped to the view volume.
-     * It stays only until no family's rule set names it.
-     */
-    bool drop_nonpositive_w;
     /* Where the values come from, for logs and reports. */
     const char *evidence;
 } SGIRasterRules;
