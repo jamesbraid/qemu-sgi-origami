@@ -1251,6 +1251,16 @@ static void sgi_gl_capability(SGIGLContext *c, uint32_t cap, bool on)
     }
 }
 
+void sgi_gl_set_lighting(SGIGLContext *c, bool on)
+{
+    sgi_gl_capability(c, SGI_GL_LIGHTING, on);
+}
+
+void sgi_gl_set_local_viewer(SGIGLContext *c, bool on)
+{
+    c->light_model_local_viewer = on;
+}
+
 bool sgi_gl_bitmap_place(SGIGLContext *c, uint32_t width, uint32_t height,
                          float xorig, float yorig, float xmove, float ymove,
                          SGIGLBitmap *b)

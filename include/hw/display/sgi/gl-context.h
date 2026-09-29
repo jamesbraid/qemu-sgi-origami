@@ -583,6 +583,13 @@ bool sgi_gl_set_light(SGIGLContext *c, uint32_t light,
 void sgi_gl_set_normal_matrix(SGIGLContext *c, const float m[9]);
 /* Make every eye normal unit length, whatever GL_NORMALIZE's enable. */
 void sgi_gl_set_normalize_always(SGIGLContext *c, bool on);
+/*
+ * GL_LIGHTING's enable and GL_LIGHT_MODEL_LOCAL_VIEWER, for a family whose
+ * board sets them in a state word rather than by glEnable and
+ * glLightModel; the same state those commands set.
+ */
+void sgi_gl_set_lighting(SGIGLContext *c, bool on);
+void sgi_gl_set_local_viewer(SGIGLContext *c, bool on);
 /* Execute one command against the context, sending any work to sink. */
 void sgi_gl_command(SGIGLContext *c, const SGIGLSink *sink,
                     const SGIGLCmd *cmd);

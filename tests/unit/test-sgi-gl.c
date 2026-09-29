@@ -2420,6 +2420,47 @@ static void test_normal_matrix_normalize_always(void)
     assert_rgba(lit_point(&c, 0, 0, 0, 0, 0, 1), 0.5f, 0.5f, 0.5f, 1);
 }
 
+/*
+ * The direct setters change the state glEnable(GL_LIGHTING) and
+ * glLightModel(GL_LIGHT_MODEL_LOCAL_VIEWER) change. With lighting off the
+ * point takes the current colour, white. The light along (0.6, 0, 0.8)
+ * at infinity, material specular 0.5 and shininess 10 give the specular
+ * term lighting-specular has: 0.295245 with the viewer at infinity, and
+ * 0.5 with a local viewer and the vertex at (3, 0, -4), where h is
+ * (0, 0, 1).
+ */
+static void test_set_lighting_and_local_viewer(void)
+{
+    uint32_t out[SGI_GL_GET_WORDS];
+    SGIGLContext c;
+
+    lit_init(&c);
+    light_command(&c, SGI_GL_OP_LIGHT, 0, SGI_GL_POSITION, 3, 0, 4, 0);
+    light_command(&c, SGI_GL_OP_LIGHT, 0, SGI_GL_SPECULAR, 1, 1, 1, 1);
+    light_command(&c, SGI_GL_OP_MATERIAL, SGI_GL_FRONT, SGI_GL_SPECULAR,
+                  0.5f, 0.5f, 0.5f, 1);
+    light_command(&c, SGI_GL_OP_MATERIAL, SGI_GL_FRONT, SGI_GL_SHININESS,
+                  10, 0, 0, 0);
+
+    sgi_gl_set_lighting(&c, false);
+    g_assert_cmpuint(get(&c, SGI_GL_LIGHTING, out), ==, 1);
+    g_assert_cmphex(out[0], ==, 0);
+    assert_rgba(lit_point(&c, 3, 0, -4, 0, 0, 1), 1, 1, 1, 1);
+    sgi_gl_set_lighting(&c, true);
+    g_assert_cmpuint(get(&c, SGI_GL_LIGHTING, out), ==, 1);
+    g_assert_cmphex(out[0], ==, 1);
+    assert_rgba(lit_point(&c, 3, 0, -4, 0, 0, 1), 0.295245f, 0.295245f,
+                0.295245f, 1);
+
+    sgi_gl_set_local_viewer(&c, true);
+    g_assert_cmpuint(get(&c, SGI_GL_LIGHT_MODEL_LOCAL_VIEWER, out), ==, 1);
+    g_assert_cmphex(out[0], ==, 1);
+    assert_rgba(lit_point(&c, 3, 0, -4, 0, 0, 1), 0.5f, 0.5f, 0.5f, 1);
+    sgi_gl_set_local_viewer(&c, false);
+    assert_rgba(lit_point(&c, 3, 0, -4, 0, 0, 1), 0.295245f, 0.295245f,
+                0.295245f, 1);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -2490,5 +2531,7 @@ int main(int argc, char **argv)
                     test_normal_matrix_as_given);
     g_test_add_func("/sgi-gl/normal-matrix-normalize-always",
                     test_normal_matrix_normalize_always);
+    g_test_add_func("/sgi-gl/set-lighting-and-local-viewer",
+                    test_set_lighting_and_local_viewer);
     return g_test_run();
 }
