@@ -51,13 +51,13 @@ static MemoryRegion *sgi_xio_link_leaf_fabric(SGIXioLink *link,
 static void sgi_xio_link_wire_reset(SGIXioLink *link, unsigned int side)
 {
     SGIXioLinkEnd *end = &link->end[side];
-    SGIXioLinkEnd *far = &link->end[!side];
+    SGIXioLinkEnd *other_end = &link->end[!side];
     qemu_irq target;
 
     if (end->reset_wired) {
         return;
     }
-    target = sgi_xio_port_reset_input(far->port, far->index);
+    target = sgi_xio_port_reset_input(other_end->port, other_end->index);
     if (target && sgi_xio_port_reset_output(end->port, end->index, target)) {
         end->reset_wired = true;
     }
@@ -69,14 +69,18 @@ bool sgi_xio_link_connect(SGIXioLink *link, Error **errp)
 
     for (side = 0; side < 2; side++) {
         SGIXioLinkEnd *end = &link->end[side];
-        SGIXioLinkEnd *far = &link->end[!side];
+        SGIXioLinkEnd *other_end = &link->end[!side];
         SGIXioPeer peer = {
-            .port = far->port,
-            .index = far->index,
-            .description = sgi_xio_port_describe(far->port, far->index),
-            .cpu_face = sgi_xio_port_cpu_face(far->port, far->index),
-            .packet_face = sgi_xio_port_packet_face(far->port, far->index),
-            .switched = sgi_xio_port_switched(far->port, far->index),
+            .port = other_end->port,
+            .index = other_end->index,
+            .description = sgi_xio_port_describe(other_end->port,
+                                                 other_end->index),
+            .cpu_face = sgi_xio_port_cpu_face(other_end->port,
+                                              other_end->index),
+            .packet_face = sgi_xio_port_packet_face(other_end->port,
+                                                    other_end->index),
+            .switched = sgi_xio_port_switched(other_end->port,
+                                              other_end->index),
         };
 
         if (end->connected || (!peer.cpu_face && !peer.packet_face)) {
