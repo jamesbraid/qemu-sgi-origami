@@ -3677,6 +3677,87 @@ static void test_clip_planes(void)
     g_assert_cmpuint(frag_count(&f, 0xffffff), ==, W * H);
 }
 
+/*
+ * The rasterization state kept and answered but not drawn with (OpenGL
+ * 1.2.1, 3.3 to 3.5): point size and line width 1, stipple repeat 1 and
+ * pattern 0xffff, both polygon modes GL_FILL and the smoothing and
+ * stipple enables off at first. A size or width of 0 and a bad face or
+ * mode change nothing; the repeat clamps to [1, 256]; drawing is as the
+ * initial state draws.
+ */
+static void test_raster_state_kept(void)
+{
+    static const uint32_t caps[5] = {
+        SGI_GL_POINT_SMOOTH, SGI_GL_LINE_SMOOTH, SGI_GL_LINE_STIPPLE,
+        SGI_GL_POLYGON_SMOOTH, SGI_GL_POLYGON_STIPPLE,
+    };
+    static FragScene f;
+    uint32_t out[SGI_GL_GET_WORDS], word[2];
+
+    frag_init(&f);
+    g_assert_cmpfloat(get_float(&f.c, SGI_GL_POINT_SIZE, 0), ==, 1);
+    g_assert_cmpfloat(get_float(&f.c, SGI_GL_LINE_WIDTH, 0), ==, 1);
+    g_assert_cmpuint(get(&f.c, SGI_GL_LINE_STIPPLE_REPEAT, out), ==, 1);
+    g_assert_cmphex(out[0], ==, 1);
+    g_assert_cmpuint(get(&f.c, SGI_GL_LINE_STIPPLE_PATTERN, out), ==, 1);
+    g_assert_cmphex(out[0], ==, 0xffff);
+    g_assert_cmpuint(get(&f.c, SGI_GL_POLYGON_MODE, out), ==, 2);
+    g_assert_cmphex(out[0], ==, SGI_GL_FILL);
+    g_assert_cmphex(out[1], ==, SGI_GL_FILL);
+
+    word[0] = bits(4);
+    frag_command(&f, SGI_GL_OP_POINT_SIZE, word, 1);
+    word[0] = bits(0);
+    frag_command(&f, SGI_GL_OP_POINT_SIZE, word, 1);
+    g_assert_cmpfloat(get_float(&f.c, SGI_GL_POINT_SIZE, 0), ==, 4);
+    word[0] = bits(2.5f);
+    frag_command(&f, SGI_GL_OP_LINE_WIDTH, word, 1);
+    word[0] = bits(-1);
+    frag_command(&f, SGI_GL_OP_LINE_WIDTH, word, 1);
+    g_assert_cmpfloat(get_float(&f.c, SGI_GL_LINE_WIDTH, 0), ==, 2.5f);
+    word[0] = 300, word[1] = 0x1f0f0f;
+    frag_command(&f, SGI_GL_OP_LINE_STIPPLE, word, 2);
+    g_assert_cmpuint(get(&f.c, SGI_GL_LINE_STIPPLE_REPEAT, out), ==, 1);
+    g_assert_cmphex(out[0], ==, 256);
+    g_assert_cmpuint(get(&f.c, SGI_GL_LINE_STIPPLE_PATTERN, out), ==, 1);
+    g_assert_cmphex(out[0], ==, 0x0f0f);
+    word[0] = -3;
+    frag_command(&f, SGI_GL_OP_LINE_STIPPLE, word, 2);
+    g_assert_cmpuint(get(&f.c, SGI_GL_LINE_STIPPLE_REPEAT, out), ==, 1);
+    g_assert_cmphex(out[0], ==, 1);
+    word[0] = SGI_GL_BACK, word[1] = SGI_GL_LINE;
+    frag_command(&f, SGI_GL_OP_POLYGON_MODE, word, 2);
+    word[0] = SGI_GL_FRONT, word[1] = SGI_GL_FILL + 1;
+    frag_command(&f, SGI_GL_OP_POLYGON_MODE, word, 2);
+    word[0] = 0x406, word[1] = SGI_GL_POINT;
+    frag_command(&f, SGI_GL_OP_POLYGON_MODE, word, 2);
+    g_assert_cmpuint(get(&f.c, SGI_GL_POLYGON_MODE, out), ==, 2);
+    g_assert_cmphex(out[0], ==, SGI_GL_FILL);
+    g_assert_cmphex(out[1], ==, SGI_GL_LINE);
+    word[0] = SGI_GL_FRONT_AND_BACK, word[1] = SGI_GL_POINT;
+    frag_command(&f, SGI_GL_OP_POLYGON_MODE, word, 2);
+    g_assert_cmpuint(get(&f.c, SGI_GL_POLYGON_MODE, out), ==, 2);
+    g_assert_cmphex(out[0], ==, SGI_GL_POINT);
+    g_assert_cmphex(out[1], ==, SGI_GL_POINT);
+
+    for (int i = 0; i < ARRAY_SIZE(caps); i++) {
+        g_assert_cmpuint(get(&f.c, caps[i], out), ==, 1);
+        g_assert_cmphex(out[0], ==, 0);
+        enable(&f.c, caps[i], true);
+        for (int j = 0; j < ARRAY_SIZE(caps); j++) {
+            g_assert_cmpuint(get(&f.c, caps[j], out), ==, 1);
+            g_assert_cmphex(out[0], ==, j <= i);
+        }
+    }
+    frag_quad(&f, 1, 1, 1, 1);
+    g_assert_cmpuint(frag_count(&f, 0xffffff), ==, W * H);
+    enable(&f.c, SGI_GL_LINE_STIPPLE, false);
+    g_assert_cmpuint(get(&f.c, SGI_GL_LINE_STIPPLE, out), ==, 1);
+    g_assert_cmphex(out[0], ==, 0);
+    g_assert_cmpuint(get(&f.c, SGI_GL_POLYGON_STIPPLE, out), ==, 1);
+    g_assert_cmphex(out[0], ==, 1);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -3764,5 +3845,6 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-gl/fog", test_fog);
     g_test_add_func("/sgi-gl/polygon-offset", test_polygon_offset);
     g_test_add_func("/sgi-gl/clip-planes", test_clip_planes);
+    g_test_add_func("/sgi-gl/raster-state-kept", test_raster_state_kept);
     return g_test_run();
 }

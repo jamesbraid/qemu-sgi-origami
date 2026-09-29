@@ -179,6 +179,15 @@ static void populate(SGIGLContext *c, bool other)
     c->cur.polygon_offset = other ? SGI_GL_OFFSET_LINE :
                                     SGI_GL_OFFSET_FILL | SGI_GL_OFFSET_POINT;
     c->cur.clip_planes = other ? 0x15 : 0x2a;
+    c->point_size = other ? 0.5f : 64.0f;
+    c->line_width = other ? 3.0f : 0.0078125f;
+    c->line_stipple_repeat = other ? 1 : 256;
+    c->line_stipple_pattern = other ? 0xffff : 0x5a5a;
+    c->polygon_mode[0] = other ? SGI_GL_POINT : SGI_GL_LINE;
+    c->polygon_mode[1] = other ? SGI_GL_FILL : SGI_GL_POINT;
+    c->raster_enables = other ? SGI_GL_RASTER_POLYGON_STIPPLE :
+                                SGI_GL_RASTER_POINT_SMOOTH |
+                                SGI_GL_RASTER_LINE_STIPPLE;
 
     g_assert_true(sgi_gl_context_valid(c, &error_abort));
 }
@@ -736,6 +745,16 @@ static const Corruption corruptions[] = {
     BAD(lights_enabled, 1u << SGI_GL_LIGHTS, "light enables"),
     BAD(color_material_face, 0, "colour material face"),
     BAD(color_material_mode, SGI_GL_SHININESS, "colour material parameter"),
+    BAD(point_size, 0, "point size"),
+    BAD(line_width, 0xbf800000 /* -1 */, "line width"),
+    BAD(line_width, 0x7fc00000 /* NaN */, "line width"),
+    BAD(line_stipple_repeat, 0, "line stipple"),
+    BAD(line_stipple_repeat, 257, "line stipple"),
+    BAD(line_stipple_pattern, 0x10000, "line stipple"),
+    BAD(polygon_mode[0], SGI_GL_FILL + 1, "polygon mode"),
+    BAD(polygon_mode[1], SGI_GL_POINT - 1, "polygon mode"),
+    BAD(raster_enables, SGI_GL_RASTER_POLYGON_STIPPLE << 1,
+        "rasterization enables"),
     BAD(begin_mode, SGI_GL_POLYGON + 1, "primitive mode"),
     /* The valid context holds three vertices of a quad strip. */
     BAD(nheld, SGI_GL_HELD_VERTICES + 1, "vertices held"),

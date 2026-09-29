@@ -168,6 +168,16 @@ enum {
 #define SGI_GL_CURRENT_RASTER_POSITION 0x0b07
 #define SGI_GL_CURRENT_RASTER_POSITION_VALID 0x0b08
 #define SGI_GL_CURRENT_RASTER_DISTANCE 0x0b09
+#define SGI_GL_POINT_SMOOTH     0x0b10
+#define SGI_GL_POINT_SIZE       0x0b11
+#define SGI_GL_LINE_SMOOTH      0x0b20
+#define SGI_GL_LINE_WIDTH       0x0b21
+#define SGI_GL_LINE_STIPPLE     0x0b24
+#define SGI_GL_LINE_STIPPLE_PATTERN 0x0b25
+#define SGI_GL_LINE_STIPPLE_REPEAT 0x0b26
+#define SGI_GL_POLYGON_MODE     0x0b40
+#define SGI_GL_POLYGON_SMOOTH   0x0b41
+#define SGI_GL_POLYGON_STIPPLE  0x0b42
 #define SGI_GL_EDGE_FLAG        0x0b43
 #define SGI_GL_CULL_FACE        0x0b44
 #define SGI_GL_CULL_FACE_MODE   0x0b45
@@ -275,6 +285,19 @@ enum {
 #define SGI_GL_FRONT            0x0404
 #define SGI_GL_BACK             0x0405
 #define SGI_GL_FRONT_AND_BACK   0x0408
+/* glPolygonMode's modes (3.5.4). */
+#define SGI_GL_POINT            0x1b00
+#define SGI_GL_LINE             0x1b01
+#define SGI_GL_FILL             0x1b02
+/*
+ * The rasterization enables a context keeps but does not draw with, as
+ * bits of raster_enables.
+ */
+#define SGI_GL_RASTER_POINT_SMOOTH 0x01
+#define SGI_GL_RASTER_LINE_SMOOTH 0x02
+#define SGI_GL_RASTER_LINE_STIPPLE 0x04
+#define SGI_GL_RASTER_POLYGON_SMOOTH 0x08
+#define SGI_GL_RASTER_POLYGON_STIPPLE 0x10
 /* glFog's modes (3.10). */
 #define SGI_GL_EXP              0x0800
 #define SGI_GL_EXP2             0x0801
@@ -581,6 +604,19 @@ typedef struct SGIGLContext {
      */
     uint32_t clear_depth;
     uint32_t clear_stencil;     /* glClearStencil's value */
+    /*
+     * Rasterization state the rasterizer does not draw with, which it
+     * draws as the initial state does, kept and answered: glPointSize,
+     * glLineWidth, glLineStipple's repeat and pattern, glPolygonMode's
+     * front and back modes, and the smoothing and stipple enables as
+     * SGI_GL_RASTER_POINT_SMOOTH and so on (3.3 to 3.5).
+     */
+    float point_size;
+    float line_width;
+    uint32_t line_stipple_repeat;
+    uint32_t line_stipple_pattern;
+    uint32_t polygon_mode[2];
+    uint32_t raster_enables;
     /* The primitive open since glBegin, SGI_GL_POINTS to SGI_GL_POLYGON. */
     uint32_t begin_mode;
     uint32_t in_begin;          /* 0 or 1 */
@@ -674,6 +710,10 @@ typedef enum SGIGLOp {
     SGI_GL_OP_POLYGON_OFFSET,   /* factor, units */
     SGI_GL_OP_POLYGON_OFFSET_EXT, /* factor, bias */
     SGI_GL_OP_CLIP_PLANE,       /* plane number, a, b, c, d */
+    SGI_GL_OP_POINT_SIZE,       /* the size */
+    SGI_GL_OP_LINE_WIDTH,       /* the width */
+    SGI_GL_OP_LINE_STIPPLE,     /* the repeat as int32, the pattern */
+    SGI_GL_OP_POLYGON_MODE,     /* face, mode */
 } SGIGLOp;
 
 /*
@@ -845,9 +885,10 @@ bool sgi_gl_get(const SGIGLContext *c, uint32_t pname, uint32_t *out,
 /*
  * Whether c holds state the context's own commands could have left: each
  * enable 0 or 1, stack depths inside their stacks, enumerants the setters
- * accept, the depth range and values the setters clamp inside [0, 1], no
- * box of negative size or negative fog density, at most SGI_CLIP_MAX clip
- * rectangles, and no more vertices held than the open primitive keeps.
+ * accept, the depth range and values the setters clamp inside their
+ * ranges, no box, size, width or fog density the setters refuse, at most
+ * SGI_CLIP_MAX clip rectangles, and no more vertices held than the open
+ * primitive keeps.
  * False, with the reason in errp, otherwise. Loading a context refuses
  * one that fails; a family that fills a context from its own older stream
  * layout checks it here too.
