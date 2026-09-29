@@ -692,11 +692,7 @@ static MemTxResult sgi_bridge_window_failed(SGIBridgeState *s,
     return MEMTX_ERROR;
 }
 
-/*
- * address_space_read/write move raw bytes, so the only byte order in play is
- * this window's LE declaration against the BE packing below: one swap at the
- * window boundary, independent of the host's endianness.
- */
+/* Raw PCI bytes are packed according to the programmed-I/O swap bit. */
 /*
  * One window cycle of up to four bytes, corrected if the caller needs it: a
  * byte, halfword or word, and each half of a 32-bit device's split
@@ -705,12 +701,14 @@ static MemTxResult sgi_bridge_window_failed(SGIBridgeState *s,
  * being the caller's. Parameterized on a plain base and a correction flag
  * rather than a slot: the per-device windows pass their slot's own base and
  * its self-ordered exemption, the inbound PIO translated window (no slot, no
- * exemption a card can declare into) always corrects from PCI address zero.
+ * exemption a card can declare into) always corrects from PCI address zero
+ * and leaves word lanes unswapped.
  * device is the number a failure records.
  */
 static MemTxResult sgi_bridge_window_read_word(SGIBridgeState *s,
                                                unsigned int device,
                                                hwaddr base, bool correct,
+                                               bool swap,
                                                AddressSpace *space,
                                                hwaddr addr, unsigned int size,
                                                uint64_t *value)
@@ -723,7 +721,7 @@ static MemTxResult sgi_bridge_window_read_word(SGIBridgeState *s,
     assert(size <= sizeof(bytes));
     result = address_space_read(space, target, MEMTXATTRS_UNSPECIFIED, bytes,
                                 size);
-    *value = ldn_be_p(bytes, size);
+    *value = swap && size == 4 ? ldl_le_p(bytes) : ldn_be_p(bytes, size);
     return sgi_bridge_window_failed(s, device, space, target, result);
 }
 
@@ -736,16 +734,17 @@ static MemTxResult sgi_bridge_window_read_word(SGIBridgeState *s,
 static MemTxResult sgi_bridge_window_read_split(SGIBridgeState *s,
                                                 unsigned int device,
                                                 hwaddr base, bool correct,
+                                               bool swap,
                                                 AddressSpace *space,
                                                 hwaddr addr, uint64_t *value)
 {
     uint64_t word0, word1;
     MemTxResult result;
 
-    result = sgi_bridge_window_read_word(s, device, base, correct, space,
+    result = sgi_bridge_window_read_word(s, device, base, correct, swap, space,
                                          addr, 4, &word0);
     if (result == MEMTX_OK) {
-        result = sgi_bridge_window_read_word(s, device, base, correct, space,
+        result = sgi_bridge_window_read_word(s, device, base, correct, swap, space,
                                              addr + 4, 4, &word1);
     }
     *value = result == MEMTX_OK ? (word0 << 32) | word1 : 0;
@@ -782,11 +781,13 @@ static MemTxResult sgi_bridge_window_read(SGIBridgeState *s,
     }
 
     if (size == 8) {
-        return sgi_bridge_window_read_split(s, slot, base, correct, space,
+        return sgi_bridge_window_read_split(s, slot, base, correct,
+                                            dev & DEV_SWAP_PROGRAMMED, space,
                                             addr, value);
     }
 
-    return sgi_bridge_window_read_word(s, slot, base, correct, space, addr,
+    return sgi_bridge_window_read_word(s, slot, base, correct,
+                                            dev & DEV_SWAP_PROGRAMMED, space, addr,
                                        size, value);
 }
 
@@ -796,7 +797,8 @@ static MemTxResult sgi_bridge_window_read(SGIBridgeState *s,
  */
 static void sgi_bridge_window_write_word(SGIBridgeState *s,
                                          unsigned int device, hwaddr base,
-                                         bool correct, AddressSpace *space,
+                                         bool correct, bool swap,
+                                         AddressSpace *space,
                                          hwaddr addr, uint64_t val,
                                          unsigned int size)
 {
@@ -805,7 +807,11 @@ static void sgi_bridge_window_write_word(SGIBridgeState *s,
     uint8_t bytes[4];
 
     assert(size <= sizeof(bytes));
-    stn_be_p(bytes, size, val);
+    if (swap && size == 4) {
+        stl_le_p(bytes, val);
+    } else {
+        stn_be_p(bytes, size, val);
+    }
     sgi_bridge_window_failed(s, device, space, target,
                              address_space_write(space, target,
                                                  MEMTXATTRS_UNSPECIFIED,
@@ -842,14 +848,17 @@ static void sgi_bridge_window_write(SGIBridgeState *s, unsigned int slot,
     }
 
     if (size == 8) {
-        sgi_bridge_window_write_word(s, slot, base, correct, space, addr,
+        sgi_bridge_window_write_word(s, slot, base, correct,
+                                            dev & DEV_SWAP_PROGRAMMED, space, addr,
                                      val >> 32, 4);
-        sgi_bridge_window_write_word(s, slot, base, correct, space, addr + 4,
+        sgi_bridge_window_write_word(s, slot, base, correct,
+                                            dev & DEV_SWAP_PROGRAMMED, space, addr + 4,
                                      val, 4);
         return;
     }
 
-    sgi_bridge_window_write_word(s, slot, base, correct, space, addr, val,
+    sgi_bridge_window_write_word(s, slot, base, correct,
+                                            dev & DEV_SWAP_PROGRAMMED, space, addr, val,
                                  size);
 }
 
@@ -950,11 +959,11 @@ static MemTxResult sgi_bridge_pio_xlate_read(void *opaque, hwaddr addr,
     SGIBridgeState *s = opaque;
 
     if (size == 8) {
-        return sgi_bridge_window_read_split(s, 0, 0, true, &s->pci_mmio_as,
+        return sgi_bridge_window_read_split(s, 0, 0, true, false, &s->pci_mmio_as,
                                             addr, data);
     }
 
-    return sgi_bridge_window_read_word(s, 0, 0, true, &s->pci_mmio_as, addr,
+    return sgi_bridge_window_read_word(s, 0, 0, true, false, &s->pci_mmio_as, addr,
                                        size, data);
 }
 
@@ -965,14 +974,14 @@ static MemTxResult sgi_bridge_pio_xlate_write(void *opaque, hwaddr addr,
     SGIBridgeState *s = opaque;
 
     if (size == 8) {
-        sgi_bridge_window_write_word(s, 0, 0, true, &s->pci_mmio_as, addr,
+        sgi_bridge_window_write_word(s, 0, 0, true, false, &s->pci_mmio_as, addr,
                                      val >> 32, 4);
-        sgi_bridge_window_write_word(s, 0, 0, true, &s->pci_mmio_as, addr + 4,
+        sgi_bridge_window_write_word(s, 0, 0, true, false, &s->pci_mmio_as, addr + 4,
                                      val, 4);
         return MEMTX_OK;
     }
 
-    sgi_bridge_window_write_word(s, 0, 0, true, &s->pci_mmio_as, addr, val,
+    sgi_bridge_window_write_word(s, 0, 0, true, false, &s->pci_mmio_as, addr, val,
                                  size);
     return MEMTX_OK;
 }

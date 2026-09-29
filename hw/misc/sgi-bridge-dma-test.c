@@ -46,6 +46,7 @@ struct SGIBridgeDMATestState {
      */
     MemoryRegion io;
     uint64_t io_scratch;
+    uint32_t lane_scratch;
 
     /* 64-bit so a test can exercise the Bridge's 64-bit direct decode. */
     uint64_t address;
@@ -87,7 +88,10 @@ struct SGIBridgeDMATestState {
 /* Address high halves; the window is reached with 32-bit accesses. */
 #define REG_ADDRESS_HI  0x18
 #define REG_SOURCE_HI   0x1c
-#define REG_WINDOW      0x20   /* size of the register block */
+/* Little-endian words put 12 34 56 78 on PCI lanes 31:24 through 7:0. */
+#define REG_LANE_FIXED  0x20
+#define REG_LANE_SCRATCH 0x24
+#define REG_WINDOW      0x40   /* size of the register block */
 #define IO_WINDOW       0x08   /* size of the I/O-space scratch */
 
 /* What a write to REG_GO asks for. */
@@ -192,6 +196,10 @@ static uint64_t sgi_bridge_dma_test_read(void *opaque, hwaddr addr,
         return s->source >> 32;
     case REG_INTERRUPT:
         return s->interrupt;
+    case REG_LANE_FIXED:
+        return 0x12345678;
+    case REG_LANE_SCRATCH:
+        return s->lane_scratch;
     default:
         qemu_log_mask(LOG_GUEST_ERROR,
                       "sgi-bridge-dma-test: read of undefined register 0x%"
@@ -234,6 +242,9 @@ static void sgi_bridge_dma_test_write(void *opaque, hwaddr addr, uint64_t val,
     case REG_INTERRUPT:
         s->interrupt = val ? 1 : 0;
         pci_set_irq(PCI_DEVICE(s), s->interrupt);
+        break;
+    case REG_LANE_SCRATCH:
+        s->lane_scratch = val;
         break;
     default:
         qemu_log_mask(LOG_GUEST_ERROR,
@@ -368,20 +379,22 @@ static void sgi_bridge_dma_test_reset_hold(Object *obj, ResetType type)
     s->source = 0;
     s->wide_scratch = 0;
     s->io_scratch = 0;
+    s->lane_scratch = 0;
     s->interrupt = 0;
     pci_set_irq(PCI_DEVICE(s), 0);
 }
 
 static const VMStateDescription vmstate_sgi_bridge_dma_test = {
     .name = "sgi-bridge-dma-test",
-    .version_id = 5,
-    .minimum_version_id = 5,
+    .version_id = 6,
+    .minimum_version_id = 6,
     .fields = (const VMStateField[]) {
         VMSTATE_PCI_DEVICE(parent_obj, SGIBridgeDMATestState),
         VMSTATE_UINT64(address, SGIBridgeDMATestState),
         VMSTATE_UINT64(source, SGIBridgeDMATestState),
         VMSTATE_UINT64(wide_scratch, SGIBridgeDMATestState),
         VMSTATE_UINT64(io_scratch, SGIBridgeDMATestState),
+        VMSTATE_UINT32(lane_scratch, SGIBridgeDMATestState),
         VMSTATE_UINT32(length, SGIBridgeDMATestState),
         VMSTATE_UINT32(seed, SGIBridgeDMATestState),
         VMSTATE_UINT32(interrupt, SGIBridgeDMATestState),
