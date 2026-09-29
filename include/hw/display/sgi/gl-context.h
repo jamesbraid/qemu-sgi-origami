@@ -673,7 +673,11 @@ bool sgi_gl_context_valid(const SGIGLContext *c, Error **errp);
  * SGI_GL_VMSTATE_VERSION is the base layout's, carried by the family's
  * subsection. It changes only when a described field changes meaning,
  * type or position; the minimum version follows it, so the older layout
- * is refused by name rather than misread.
+ * is refused by name rather than misread. The bare
+ * VMSTATE_SGI_GL_CONTEXTS, embedded in a description of the family's own,
+ * puts no GL version on the stream, which is enough while migration is
+ * supported only between identical builds (Origami decision D-0019); the
+ * DEFINE_ form carries it.
  */
 #define SGI_GL_VMSTATE_VERSION  1
 
