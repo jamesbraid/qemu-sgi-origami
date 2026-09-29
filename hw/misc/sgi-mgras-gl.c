@@ -15,7 +15,8 @@
  * equation, culled by facing, transformed by the modelview and
  * projection matrices and their stacks, and bitmaps, leave in the
  * window's front or back buffer after the per-fragment operations the
- * shared rasterizer carries out (the scissor and depth tests), in RGBA or
+ * shared rasterizer carries out (the scissor, alpha and depth tests), in
+ * RGBA or
  * colour-index mode, and the main-port framing,
  * so the words after a packet still parse as headers. What it does not: the
  * raster-engine register writes the GE would make, the timing of the
@@ -91,6 +92,21 @@
  */
 #define MGRAS_GL_SCISSOR         0x00003910
 #define MGRAS_GL_SCISSOR_TEST    0x00006e04
+/*
+ * glAlphaFunc: __glMgrim_AlphaFunc (0xd95ea40) accepts a function from
+ * GL_NEVER to GL_ALWAYS and writes 0x3e08, the function minus GL_NEVER,
+ * and the reference clamped to [0, 1], times 4095.0, plus 0.5 and
+ * truncated (the float at file offset 0x1d9414 is 4095.0 and the double
+ * at 0x1d96a0 0.5), as a 16-bit signed value (0xd95eaa4-0xd95eae4): the
+ * reference as a 12-bit fraction. glEnable and glDisable of
+ * GL_ALPHA_TEST write 0x6404 and 1 or 0 (__glMgrim_Enable 0xd97dea4 for
+ * capability 0xbc0; __glMgrim_Disable 0xd97fcb4). Established from the
+ * listing; that the board tests fragments as OpenGL 1.2.1, 4.1.4 says is
+ * inferred. The discriminating test is gl-alpha-test-discards.
+ */
+#define MGRAS_GL_ALPHA_FUNC      0x00003e08
+#define MGRAS_GL_ALPHA_TEST      0x00006404
+#define MGRAS_GL_ALPHA_REF_MAX   4095
 /*
  * glDepthRange: __glMgrim_DepthRange (0xd960590 in the IRIX 6.5.30
  * IP27GR532 libGLcore.so, SHA-256 626d6d94...) writes 0x4808 and near and
@@ -617,6 +633,8 @@ bool sgi_mgras_gl_header(uint32_t header)
     case MGRAS_GL_DEPTH_TEST:
     case MGRAS_GL_SCISSOR:
     case MGRAS_GL_SCISSOR_TEST:
+    case MGRAS_GL_ALPHA_FUNC:
+    case MGRAS_GL_ALPHA_TEST:
     case MGRAS_GL_DEPTH_RANGE:
     case MGRAS_GL_DITHER:
     case MGRAS_GL_CULL_ON:
@@ -1121,71 +1139,92 @@ static bool mgras_gl_query_table_known(const SGIMgrasBoard *b)
 
 /*
  * Six queries read raster-register state packed as the raster engine
- * holds it (notes-return-mode-queries.md): 0x286 the polygon stipple,
- * line stipple and fog enables in bits 0, 5 and 17; 0x288 dither, stencil
- * and alpha test in bits 0, 4 and 6 and the logic op in bits 29:26;
- * 0x2c6 the stencil function, operations and reference; 0x2c8 the
- * stencil masks; 0x2ca the depth function in bits 2:0 and the depth
- * write mask, true when bits 27:4 are all set (0xd9949bc-0xd9949d4); and
- * 0x2cc the alpha function and reference. Every context setup's 0x7c08
- * block pairs a raster register and value with one of these indices as
- * a third word, and each value decodes, as the client decodes that
- * query, to OpenGL's initial state; those values are the initial answers
- * below (notes-unimplemented-tokens.md, "The triple's third word is a
- * query address").
+ * holds it (notes-return-mode-queries.md), and the client decodes each
+ * field as below (established from the listing). Every context setup's
+ * 0x7c08 block pairs a raster register and value with one of these
+ * indices as a third word, and each value decodes, as the client decodes
+ * that query, to OpenGL's initial state (notes-unimplemented-tokens.md,
+ * "The triple's third word is a query address"):
  *
- * The model does not answer from a table of those 0x7c08 values. The
- * same state reaches the raster engine through other GL opcodes, such as
- * glDepthFunc (0x4304), glDepthMask (0x3c04) and glDisable(GL_DITHER)
- * (0x6704), which the GE turns into register writes the model never sees
- * as triples, so a stored triple goes stale at the first of them. Instead
- * the fields the shared context tracks, the depth function and write
- * mask and dither, come from it; the others keep their initial values,
- * right until the client sends the setter, which the model does not
- * decode and logs. Such an answer is logged as well. The bits no query
- * reads keep the setup value's.
+ * - 0x286, setup 0x10009000: the polygon stipple, line stipple and fog
+ *   enables in bits 0, 5 and 17;
+ * - 0x288, setup 0x0c000503: the dither, stencil and alpha test enables in
+ *   bits 0, 4 and 6, the logic op less GL_CLEAR in bits 29:26;
+ * - 0x2c6, setup 7: the stencil function less GL_NEVER in bits 2:0, the
+ *   fail, depth-fail and depth-pass operations in bits 5:3, 8:6 and 11:9,
+ *   the reference in bits 19:12;
+ * - 0x2c8, setup 0xffff: the stencil value mask in bits 7:0 and the write
+ *   mask in bits 15:8;
+ * - 0x2ca, setup 0x0ffffff1: the depth function less GL_NEVER in bits 2:0,
+ *   the depth write mask true when bits 27:4 are all set
+ *   (0xd9949bc-0xd9949d4);
+ * - 0x2cc, setup 7: the alpha function less GL_NEVER in bits 2:0, the
+ *   reference as the 12-bit fraction glAlphaFunc sends in bits 14:3.
+ *
+ * The model does not answer from a table of those 0x7c08 values: the
+ * same state reaches the raster engine through GL opcodes, such as
+ * glDepthFunc (0x4304), which the GE turns into register writes the model
+ * never sees as triples, so a stored triple would go stale at the first
+ * of them. Instead each field comes from the loaded context's state
+ * (inferred: that the board answers with the state the client last set).
+ * A field the model does not track keeps the setup value, and such an
+ * answer is logged; the bits no query reads keep the setup value's.
  */
 #define MGRAS_GL_QUERY_FILL_ENABLES 0x286
 #define MGRAS_GL_QUERY_PIXEL_ENABLES 0x288
+#define MGRAS_GL_QUERY_STENCIL   0x2c6
+#define MGRAS_GL_QUERY_STENCIL_MASKS 0x2c8
 #define MGRAS_GL_QUERY_DEPTH     0x2ca
+#define MGRAS_GL_QUERY_ALPHA     0x2cc
 #define MGRAS_GL_DEPTH_WRITES    0x0ffffff0u
-
-static const struct {
-    uint16_t index;
-    uint32_t initial;
-} mgras_gl_raster_queries[] = {
-    { MGRAS_GL_QUERY_FILL_ENABLES, 0x10009000 },
-    { MGRAS_GL_QUERY_PIXEL_ENABLES, 0x0c000503 },
-    { 0x2c6, 0x00000007 },
-    { 0x2c8, 0x0000ffff },
-    { MGRAS_GL_QUERY_DEPTH, 0x0ffffff1 },
-    { 0x2cc, 0x00000007 },
-};
+#define MGRAS_GL_FILL_SETUP      0x10009000u
+#define MGRAS_GL_PIXEL_SETUP     0x0c000503u
 
 static bool mgras_gl_raster_query(SGIMgrasState *s, uint32_t index,
                                   uint32_t *answer)
 {
     const SGIGLContext *gl = mgras_gl(s);
+    const SGIGLDrawState *st = &gl->cur;
+    bool untracked = false;
 
-    for (int i = 0; i < ARRAY_SIZE(mgras_gl_raster_queries); i++) {
-        if (index != mgras_gl_raster_queries[i].index) {
-            continue;
-        }
-        *answer = mgras_gl_raster_queries[i].initial;
-        if (index == MGRAS_GL_QUERY_DEPTH) {
-            *answer = (gl->cur.depth_mask ? MGRAS_GL_DEPTH_WRITES : 0) |
-                      gl->cur.depth_func;
-            return true;
-        }
-        if (index == MGRAS_GL_QUERY_PIXEL_ENABLES) {
-            *answer = (*answer & ~1u) | gl->cur.dither;
-        }
+    switch (index) {
+    case MGRAS_GL_QUERY_FILL_ENABLES:
+        *answer = MGRAS_GL_FILL_SETUP;
+        untracked = true;
+        break;
+    case MGRAS_GL_QUERY_PIXEL_ENABLES:
+        *answer = (MGRAS_GL_PIXEL_SETUP & ~0x41u) | gl->cur.dither |
+                  st->alpha_test << 6;
+        untracked = true;
+        break;
+    case MGRAS_GL_QUERY_STENCIL:
+        *answer = 7;
+        untracked = true;
+        break;
+    case MGRAS_GL_QUERY_STENCIL_MASKS:
+        *answer = 0xffff;
+        untracked = true;
+        break;
+    case MGRAS_GL_QUERY_DEPTH:
+        *answer = (st->depth_mask ? MGRAS_GL_DEPTH_WRITES : 0) |
+                  st->depth_func;
+        break;
+    case MGRAS_GL_QUERY_ALPHA: {
+        /* The reference in [0, 1] as the client's 12-bit fraction. */
+        uint32_t ref = lroundf(st->alpha_ref * MGRAS_GL_ALPHA_REF_MAX);
+
+        *answer = st->alpha_func | ref << 3;
+        break;
+    }
+    default:
+        return false;
+    }
+    if (untracked) {
         qemu_log_mask(LOG_UNIMP, "sgi-mgras: GL state query index 0x%x "
                       "answers OpenGL's initial value for state the model "
                       "does not track\n", index);
-        return true;
     }
-    return false;
+    return true;
 }
 
 /*
@@ -1987,6 +2026,53 @@ const VMStateDescription vmstate_sgi_mgras_gl_scissor = {
     }
 };
 
+static const VMStateDescription vmstate_sgi_mgras_gl_context_alpha = {
+    .name = TYPE_SGI_MGRAS "/gl-context-alpha",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32(cur.alpha_test, SGIGLContext),
+        VMSTATE_UINT32(cur.alpha_func, SGIGLContext),
+        VMSTATE_SINGLE(cur.alpha_ref, SGIGLContext, 0, vmstate_info_uint32,
+                       float),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
+/*
+ * Every context's alpha test, sent once some context has left the
+ * initial disabled test, GL_ALWAYS and reference 0. A stream without it
+ * comes from a model that consumed 0x3e08 and 0x6404 and drew as that
+ * initial state does.
+ */
+static bool mgras_gl_alpha_needed(void *opaque)
+{
+    SGIMgrasState *s = opaque;
+
+    for (int i = 0; i < SGI_MGRAS_GL_CONTEXTS; i++) {
+        const SGIGLDrawState *st = &s->gl[i].cur;
+
+        if (st->alpha_test || st->alpha_func != SGI_GL_ALWAYS ||
+            st->alpha_ref != 0.0f) {
+            return true;
+        }
+    }
+    return false;
+}
+
+const VMStateDescription vmstate_sgi_mgras_gl_alpha = {
+    .name = TYPE_SGI_MGRAS "/gl-alpha",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = mgras_gl_alpha_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_STRUCT_ARRAY(gl, SGIMgrasState, SGI_MGRAS_GL_CONTEXTS, 1,
+                             vmstate_sgi_mgras_gl_context_alpha,
+                             SGIGLContext),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
 const VMStateDescription vmstate_sgi_mgras_gl_cull = {
     .name = TYPE_SGI_MGRAS "/gl-cull",
     .version_id = 1,
@@ -2197,7 +2283,9 @@ bool sgi_mgras_gl_post_load(SGIMgrasState *s)
             gl->lighting > 1 || gl->lights_enabled >> SGI_GL_LIGHTS ||
             gl->normalize > 1 || gl->rescale_normal > 1 ||
             gl->strip_odd > 1 || gl->cur.cull_face > 1 ||
-            gl->cur.scissor_test > 1 ||
+            gl->cur.scissor_test > 1 || gl->cur.alpha_test > 1 ||
+            gl->cur.alpha_func > SGI_GL_ALWAYS ||
+            !(gl->cur.alpha_ref >= 0.0f && gl->cur.alpha_ref <= 1.0f) ||
             (gl->cur.cull_face_mode != SGI_GL_FRONT &&
              gl->cur.cull_face_mode != SGI_GL_BACK &&
              gl->cur.cull_face_mode != SGI_GL_FRONT_AND_BACK) ||
@@ -3430,6 +3518,19 @@ void sgi_mgras_gl_execute(SGIMgrasState *s, uint32_t header,
         return;
     case MGRAS_GL_SCISSOR_TEST:
         word[0] = SGI_GL_SCISSOR_TEST;
+        mgras_gl_command(s, payload[0] ? SGI_GL_OP_ENABLE :
+                         SGI_GL_OP_DISABLE, word, 1);
+        return;
+    case MGRAS_GL_ALPHA_FUNC: {
+        float ref = (int16_t)payload[1] / (float)MGRAS_GL_ALPHA_REF_MAX;
+
+        word[0] = SGI_GL_NEVER_ENUM + payload[0];
+        memcpy(&word[1], &ref, sizeof(ref));
+        mgras_gl_command(s, SGI_GL_OP_ALPHA_FUNC, word, 2);
+        return;
+    }
+    case MGRAS_GL_ALPHA_TEST:
+        word[0] = SGI_GL_ALPHA_TEST;
         mgras_gl_command(s, payload[0] ? SGI_GL_OP_ENABLE :
                          SGI_GL_OP_DISABLE, word, 1);
         return;
