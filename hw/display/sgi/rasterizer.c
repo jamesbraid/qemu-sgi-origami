@@ -7,8 +7,8 @@
  * grid and rasterized with edge functions at pixel centres. Each fragment
  * then passes the per-fragment operations in OpenGL 1.2.1's order (4.1):
  * pixel ownership against the drawable's rectangles, the scissor test,
- * the alpha test, the stencil test, the depth test and blending, and is
- * stored through the family's target. What it
+ * the alpha test, the stencil test, the depth test, blending and the
+ * logical operation, and is stored through the family's target. What it
  * draws follows
  * OpenGL 1.2.1 for untextured points, lines, polygons and bitmaps at size
  * and width 1, flat or smooth shaded, in RGBA or colour-index mode, from
@@ -44,6 +44,8 @@ typedef struct SGISoftDraw {
     bool back_colors;
     /* Fragments blend with the colour they replace. */
     bool blend;
+    /* Fragments combine with it by the logical operation instead. */
+    bool logic_op;
 } SGISoftDraw;
 
 /* A vertex after transformation, ready to rasterize. */
@@ -367,20 +369,73 @@ static uint32_t sgi_soft_blend(const SGISoftDraw *r, uint32_t src,
 }
 
 /*
- * The per-fragment operations a draw state enables that its target
- * cannot carry out, logged once for the draw and then left out:
- * blending needs the stored colour.
+ * glLogicOp's operation (4.1.8, table 4.3) on the source s and the
+ * destination d, bit by bit.
+ */
+static uint32_t sgi_soft_logic_op(uint32_t op, uint32_t s, uint32_t d)
+{
+    switch (op - SGI_GL_CLEAR) {
+    case 0x0:
+        return 0;
+    case 0x1:
+        return s & d;
+    case 0x2:
+        return s & ~d;
+    case 0x4:
+        return ~s & d;
+    case 0x5:
+        return d;
+    case 0x6:
+        return s ^ d;
+    case 0x7:
+        return s | d;
+    case 0x8:
+        return ~(s | d);
+    case 0x9:
+        return ~(s ^ d);
+    case 0xa:
+        return ~d;
+    case 0xb:
+        return s | ~d;
+    case 0xc:
+        return ~s;
+    case 0xd:
+        return ~s | d;
+    case 0xe:
+        return ~(s & d);
+    case 0xf:
+        return UINT32_MAX;
+    default:
+        return s;
+    }
+}
+
+/*
+ * Which of the operations that read the stored colour a draw state
+ * enables. The logical operation applies to a colour index while
+ * GL_INDEX_LOGIC_OP is enabled, and to an RGBA colour while
+ * GL_COLOR_LOGIC_OP is, or while blending is enabled with
+ * EXT_blend_logic_op's GL_LOGIC_OP equation; it replaces blending
+ * (4.1.8). Planes that cannot be read draw as if the operations were
+ * disabled, logged once for the draw.
  */
 static void sgi_soft_setup_ops(SGISoftDraw *r)
 {
     const SGIGLDrawState *st = r->st;
 
-    r->blend = st->blend && !st->index_bits &&
-               st->blend_equation != SGI_GL_LOGIC_OP;
-    if (r->blend && !r->t->load_colour) {
-        qemu_log_mask(LOG_UNIMP, "sgi-gl: blending needs planes that can be "
-                      "read back; drawn without it\n");
+    if (st->index_bits) {
         r->blend = false;
+        r->logic_op = st->index_logic_op;
+    } else {
+        r->logic_op = st->color_logic_op ||
+                      (st->blend && st->blend_equation == SGI_GL_LOGIC_OP);
+        r->blend = st->blend && !r->logic_op;
+    }
+    if ((r->blend || r->logic_op) && !r->t->load_colour) {
+        qemu_log_mask(LOG_UNIMP, "sgi-gl: blending and logical operations "
+                      "need planes that can be read back; drawn without "
+                      "them\n");
+        r->blend = r->logic_op = false;
     }
 }
 
@@ -396,10 +451,11 @@ static uint32_t sgi_soft_index(const SGISoftDraw *r, double index)
  * enabled, outside the scissor box (4.1.2), in RGBA mode alpha tested
  * (4.1.4), stencil tested and depth tested (4.1.5) when those tests are
  * enabled, the stencil buffer updated by the operation its outcome selects,
- * blended in RGBA mode while blending is enabled, then written to each
- * colour target the draw buffers select. Its colour is stored as the rules'
- * packed colour in RGBA mode and as its index in colour-index mode, which
- * glIndexMask masks (4.2.2).
+ * blended in RGBA mode while blending is enabled or combined by the logical
+ * operation while it is enabled, then written to each colour target the draw
+ * buffers select. Its colour is stored as the rules' packed colour in RGBA
+ * mode and as its index in colour-index mode, which glIndexMask masks
+ * (4.2.2).
  */
 static void sgi_soft_fragment_at(const SGISoftDraw *r, int px, int py,
                                  double z, const SGISoftFrag *f)
@@ -473,8 +529,17 @@ static void sgi_soft_fragment_at(const SGISoftDraw *r, int px, int py,
     for (uint32_t i = 0; i < r->ntargets; i++) {
         uint32_t out = colour;
 
+        if (r->logic_op) {
+            uint32_t bits = r->st->index_bits ? r->st->index_bits :
+                                                3 * r->rules->color_bits;
+
+            out = sgi_soft_logic_op(r->st->logic_op_mode, colour,
+                                    t->load_colour(t->opaque, r->targets[i],
+                                                   x, y)) &
+                  (bits >= 32 ? UINT32_MAX : (1u << bits) - 1);
+        }
         if (r->st->index_bits) {
-            t->store_index(t->opaque, r->targets[i], x, y, colour,
+            t->store_index(t->opaque, r->targets[i], x, y, out,
                            r->st->index_mask);
             continue;
         }

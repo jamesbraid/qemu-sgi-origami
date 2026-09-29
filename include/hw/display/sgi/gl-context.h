@@ -197,6 +197,9 @@ enum {
 #define SGI_GL_BLEND_DST        0x0be0
 #define SGI_GL_BLEND_SRC        0x0be1
 #define SGI_GL_BLEND            0x0be2
+#define SGI_GL_LOGIC_OP_MODE    0x0bf0
+#define SGI_GL_INDEX_LOGIC_OP   0x0bf1
+#define SGI_GL_COLOR_LOGIC_OP   0x0bf2
 #define SGI_GL_SCISSOR_BOX      0x0c10
 #define SGI_GL_SCISSOR_TEST     0x0c11
 #define SGI_GL_INDEX_CLEAR_VALUE 0x0c20
@@ -231,6 +234,10 @@ enum {
 #define SGI_GL_FUNC_SUBTRACT    0x800a
 #define SGI_GL_FUNC_REVERSE_SUBTRACT 0x800b
 #define SGI_GL_LOGIC_OP         0x0bf1
+/* glLogicOp's operations run from GL_CLEAR to GL_SET (4.1.8). */
+#define SGI_GL_CLEAR            0x1500
+#define SGI_GL_COPY             0x1503
+#define SGI_GL_SET              0x150f
 
 /* Faces, and the light and material parameters (OpenGL 1.2.1, 2.13.2). */
 #define SGI_GL_FRONT            0x0404
@@ -419,6 +426,13 @@ typedef struct SGIGLDrawState {
     uint32_t blend_dst;
     uint32_t blend_equation;
     float blend_color[4];
+    /*
+     * The logical operation (4.1.8): the GL_INDEX_LOGIC_OP and
+     * GL_COLOR_LOGIC_OP enables and glLogicOp's operation.
+     */
+    uint32_t index_logic_op;    /* 0 or 1 */
+    uint32_t color_logic_op;    /* 0 or 1 */
+    uint32_t logic_op_mode;
     SGIGLDrawable drawable;
 } SGIGLDrawState;
 
@@ -580,6 +594,7 @@ typedef enum SGIGLOp {
     SGI_GL_OP_BLEND_FUNC,       /* source and destination factors */
     SGI_GL_OP_BLEND_EQUATION,   /* the equation */
     SGI_GL_OP_BLEND_COLOR,      /* r, g, b, a */
+    SGI_GL_OP_LOGIC_OP,         /* GL_CLEAR to GL_SET */
 } SGIGLOp;
 
 /*
