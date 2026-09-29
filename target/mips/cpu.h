@@ -56,6 +56,8 @@ typedef struct MIPSCPUConfig {
      * Operation.
      */
     bool fp_traps_denormal_result;
+    /* R10000/R12000 ADD.S and DIV.S refuse denormal inputs with FS clear. */
+    bool fp_traps_denormal_input;
     /*
      * Conversion to long refuses results wider than 51 bits with
      * Unimplemented Operation.
