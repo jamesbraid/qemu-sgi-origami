@@ -10,6 +10,7 @@
  */
 #include "qemu/osdep.h"
 #include <math.h>
+#include "qemu/bitops.h"
 #include "qemu/log.h"
 #include "hw/display/sgi/gl-context.h"
 
@@ -488,6 +489,219 @@ static void sgi_gl_clear(SGIGLContext *c, const SGIGLSink *sink,
     }
 }
 
+/*
+ * Whether vertices are lit: GL_LIGHTING enabled in RGBA mode. Colour-index
+ * lighting (2.13.5) is not modelled; an index stays the current index.
+ */
+static bool sgi_gl_lit(const SGIGLContext *c)
+{
+    return c->lighting && !c->cur.index_bits;
+}
+
+static float sgi_gl_dot3(const float a[3], const float b[3])
+{
+    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+}
+
+/*
+ * v scaled to unit length in place; a zero vector, whose direction the
+ * specification leaves undefined, stays zero and so lights nothing.
+ */
+static void sgi_gl_unit3(float v[3])
+{
+    float len = sqrtf(sgi_gl_dot3(v, v));
+
+    if (len > 0.0f) {
+        for (int i = 0; i < 3; i++) {
+            v[i] /= len;
+        }
+    }
+}
+
+/*
+ * The normal in eye coordinates (OpenGL 1.2.1, 2.10.3): n' = n M^-1 for M
+ * the modelview's upper left 3x3, rescaled when GL_RESCALE_NORMAL is
+ * enabled and then made unit length when GL_NORMALIZE is. n M^-1 is M's
+ * cofactor matrix applied to n and divided by M's determinant. A singular
+ * M, for which the specification gives no normal, leaves n unchanged.
+ */
+static void sgi_gl_eye_normal(const SGIGLContext *c, const float n[3],
+                              float out[3])
+{
+    const float *m = c->cur.modelview;
+    /* M[row][col] is m[col * 4 + row]. */
+#define M(r, k) m[(k) * 4 + (r)]
+    float cof[3][3] = {
+        { M(1, 1) * M(2, 2) - M(1, 2) * M(2, 1),
+          M(1, 2) * M(2, 0) - M(1, 0) * M(2, 2),
+          M(1, 0) * M(2, 1) - M(1, 1) * M(2, 0) },
+        { M(0, 2) * M(2, 1) - M(0, 1) * M(2, 2),
+          M(0, 0) * M(2, 2) - M(0, 2) * M(2, 0),
+          M(0, 1) * M(2, 0) - M(0, 0) * M(2, 1) },
+        { M(0, 1) * M(1, 2) - M(0, 2) * M(1, 1),
+          M(0, 2) * M(1, 0) - M(0, 0) * M(1, 2),
+          M(0, 0) * M(1, 1) - M(0, 1) * M(1, 0) },
+    };
+    float det = M(0, 0) * cof[0][0] + M(0, 1) * cof[0][1] +
+                M(0, 2) * cof[0][2];
+#undef M
+
+    if (det == 0.0f || !isfinite(det)) {
+        memcpy(out, n, 3 * sizeof(float));
+    } else {
+        /* (n M^-1)_j = sum_i n_i cof[j][i] / det: M^-1[i][j] = cof[j][i]. */
+        for (int j = 0; j < 3; j++) {
+            out[j] = (n[0] * cof[j][0] + n[1] * cof[j][1] +
+                      n[2] * cof[j][2]) / det;
+        }
+        if (c->rescale_normal) {
+            /* 1 / |row 3 of M^-1|: row 3 is cof[.][2] / det. */
+            float r[3] = { cof[0][2] / det, cof[1][2] / det,
+                           cof[2][2] / det };
+            float len = sqrtf(sgi_gl_dot3(r, r));
+
+            if (len > 0.0f) {
+                for (int i = 0; i < 3; i++) {
+                    out[i] /= len;
+                }
+            }
+        }
+    }
+    if (c->normalize) {
+        sgi_gl_unit3(out);
+    }
+}
+
+/*
+ * One face's lit colour (OpenGL 1.2.1, 2.13.1), clamped to [0, 1] (2.13.6):
+ *
+ *   c = e + a * as + sum over enabled lights i of
+ *       att_i spot_i (a * a_i + (n . VP_i) d * d_i +
+ *                     f_i (n . h_i)^s s * s_i)
+ *
+ * with the face's material e, a, d, s and shininess, the light model's
+ * ambient as, and alpha the material's diffuse alpha. V is the vertex in
+ * eye coordinates and n the face's normal. VP_i is the unit vector from V
+ * to the light, the light's own direction for a light at infinity (w 0);
+ * a dot product below 0 counts as 0, and f_i is 1 when n . VP_i does not.
+ * h_i is VP_i plus the unit vector from V to the eye, (0, 0, 1) without a
+ * local viewer, made unit length. att_i is 1 / (k0 + k1 d + k2 d^2) at the
+ * distance d from V to a light with w not 0, and 1 otherwise; spot_i is 1
+ * for a cutoff of 180 and otherwise (PV_i . sd_i)^exponent, where PV_i is
+ * the unit vector from the light to V, the reverse of VP_i, and sd_i the
+ * unit spot direction, or 0 if that product is below the cutoff's cosine.
+ * The specification reads spot_i the same for a light at infinity, and so
+ * does this.
+ *
+ * Approximated: this is the specification's equation in single-precision
+ * arithmetic in the order written, not a head's geometry-engine
+ * arithmetic, whose precision and ordering are not published. A head's
+ * own lit pixels would settle how far they differ.
+ */
+static void sgi_gl_light_face(const SGIGLContext *c, const float eye[4],
+                              const float n[3], const SGIGLMaterial *m,
+                              float out[4])
+{
+    float sum[3];
+
+    for (int k = 0; k < 3; k++) {
+        sum[k] = m->emission[k] + m->ambient[k] * c->light_model_ambient[k];
+    }
+    for (int i = 0; i < SGI_GL_LIGHTS; i++) {
+        const SGIGLLight *l = &c->light[i];
+        const float *p = l->position;
+        float vp[3], h[3], sd[3], ndl, ndh, att = 1.0f, spot = 1.0f;
+
+        if (!(c->lights_enabled & (1u << i))) {
+            continue;
+        }
+        /* The vector from V to the light (2.13.1's P1P2). */
+        for (int k = 0; k < 3; k++) {
+            if (p[3] == 0.0f) {
+                vp[k] = p[k];
+            } else if (eye[3] == 0.0f) {
+                vp[k] = -eye[k];
+            } else {
+                vp[k] = p[k] / p[3] - eye[k] / eye[3];
+            }
+        }
+        if (p[3] != 0.0f) {
+            float d = sqrtf(sgi_gl_dot3(vp, vp));
+
+            att = 1.0f / (l->attenuation[0] + l->attenuation[1] * d +
+                          l->attenuation[2] * d * d);
+        }
+        sgi_gl_unit3(vp);
+        if (l->spot_cutoff != 180.0f) {
+            float s;
+
+            memcpy(sd, l->spot_direction, sizeof(sd));
+            sgi_gl_unit3(sd);
+            s = -sgi_gl_dot3(vp, sd);
+            spot = s >= cosf(l->spot_cutoff * (float)M_PI / 180.0f) ?
+                   powf(MAX(s, 0.0f), l->spot_exponent) : 0.0f;
+        }
+        ndl = MAX(sgi_gl_dot3(n, vp), 0.0f);
+        /* The half vector, with the eye's direction from V. */
+        for (int k = 0; k < 3; k++) {
+            float ve = k == 2 ? 1.0f : 0.0f;
+
+            if (c->light_model_local_viewer) {
+                ve = eye[3] == 0.0f ? -eye[k] : -eye[k] / eye[3];
+            }
+            h[k] = ve;
+        }
+        if (c->light_model_local_viewer) {
+            sgi_gl_unit3(h);
+        }
+        for (int k = 0; k < 3; k++) {
+            h[k] += vp[k];
+        }
+        sgi_gl_unit3(h);
+        ndh = ndl != 0.0f ? powf(MAX(sgi_gl_dot3(n, h), 0.0f),
+                                 m->shininess) : 0.0f;
+        for (int k = 0; k < 3; k++) {
+            sum[k] += att * spot * (m->ambient[k] * l->ambient[k] +
+                                    ndl * m->diffuse[k] * l->diffuse[k] +
+                                    ndh * m->specular[k] * l->specular[k]);
+        }
+    }
+    for (int k = 0; k < 3; k++) {
+        out[k] = MIN(MAX(sum[k], 0.0f), 1.0f);
+    }
+    out[3] = MIN(MAX(m->diffuse[3], 0.0f), 1.0f);
+}
+
+/*
+ * Light a vertex at object position obj with normal n: its front colour
+ * into front and, with two-sided lighting, its back colour into back,
+ * from the back material and the reversed normal (2.13.1). Without
+ * two-sided lighting a back-facing polygon takes the front colour, and
+ * back is the front colour.
+ */
+static void sgi_gl_light_vertex(const SGIGLContext *c, const float obj[4],
+                                const float n[3], float front[4],
+                                float back[4])
+{
+    const float *mv = c->cur.modelview;
+    float eye[4], normal[3];
+
+    for (int row = 0; row < 4; row++) {
+        eye[row] = mv[row] * obj[0] + mv[4 + row] * obj[1] +
+                   mv[8 + row] * obj[2] + mv[12 + row] * obj[3];
+    }
+    sgi_gl_eye_normal(c, n, normal);
+    sgi_gl_light_face(c, eye, normal, &c->material[0], front);
+    if (!c->light_model_two_side) {
+        memcpy(back, front, 4 * sizeof(float));
+        return;
+    }
+    for (int k = 0; k < 3; k++) {
+        normal[k] = -normal[k];
+    }
+    sgi_gl_light_face(c, eye, normal, &c->material[1], back);
+}
+
 /* Send one piece of the open primitive: count of v0 to v3. */
 static void sgi_gl_submit(SGIGLContext *c, const SGIGLSink *sink,
                           uint32_t mode, uint32_t count, const float *v0,
@@ -500,6 +714,7 @@ static void sgi_gl_submit(SGIGLContext *c, const SGIGLSink *sink,
         .mode = mode,
         .count = count,
         .vertices = &verts[0][0],
+        .back_colors = sgi_gl_lit(c) && c->light_model_two_side,
         .state = &c->cur,
     };
 
@@ -543,6 +758,18 @@ static void sgi_gl_vertex(SGIGLContext *c, const SGIGLSink *sink,
     cur[SGI_GL_V_TEXCOORD + 3] = 1.0f;
     memcpy(&cur[SGI_GL_V_EDGE], &c->cur_edge, sizeof(c->cur_edge));
     cur[SGI_GL_V_INDEX] = c->cur_index;
+    /*
+     * Lit where it arrives, under the material and matrices current then:
+     * glMaterial may change between the vertices of a primitive, and the
+     * light, light model and modelview may not (2.13.2, 2.6.3).
+     */
+    if (sgi_gl_lit(c)) {
+        sgi_gl_light_vertex(c, &cur[SGI_GL_V_POSITION], c->cur_normal,
+                            &cur[SGI_GL_V_COLOR], &cur[SGI_GL_V_BACK_COLOR]);
+    } else {
+        memcpy(&cur[SGI_GL_V_BACK_COLOR], c->cur_color,
+               sizeof(c->cur_color));
+    }
 
     switch (c->begin_mode) {
     case SGI_GL_POINTS:
@@ -583,7 +810,12 @@ static void sgi_gl_vertex(SGIGLContext *c, const SGIGLSink *sink,
         if (n < 2) {
             break;
         }
-        sgi_gl_submit(c, sink, SGI_GL_TRIANGLES, 3, h0, h1, cur, NULL);
+        if (c->strip_odd) {
+            sgi_gl_submit(c, sink, SGI_GL_TRIANGLES, 3, h1, h0, cur, NULL);
+        } else {
+            sgi_gl_submit(c, sink, SGI_GL_TRIANGLES, 3, h0, h1, cur, NULL);
+        }
+        c->strip_odd = !c->strip_odd;
         sgi_gl_hold(c, 0, h1);
         sgi_gl_hold(c, 1, cur);
         return;
@@ -629,7 +861,8 @@ static void sgi_gl_vertex(SGIGLContext *c, const SGIGLSink *sink,
  * and projection matrices like a vertex. Inside the view volume it
  * becomes the current raster position in window coordinates, keeping
  * clip w, with the eye distance, the current colour clamped to [0, 1]
- * (2.13.6) and the current colour index; lighting is not modelled.
+ * (2.13.6), or with lighting enabled the front colour the current normal
+ * lights there, and the current colour index.
  * Outside, only the valid bit is reset: the specification leaves the
  * rest undefined, and keeping it is the model's choice. Client clip
  * planes are not modelled, and window depth goes through the depth
@@ -676,8 +909,14 @@ static void sgi_gl_raster_pos(SGIGLContext *c, const float obj[4])
     c->raster_pos[3] = clip[3];
     c->raster_distance = sqrt(eye[0] * eye[0] + eye[1] * eye[1] +
                               eye[2] * eye[2]);
-    for (int i = 0; i < 4; i++) {
-        c->raster_color[i] = MIN(MAX(c->cur_color[i], 0.0f), 1.0f);
+    if (sgi_gl_lit(c)) {
+        float back[4];
+
+        sgi_gl_light_vertex(c, obj, c->cur_normal, c->raster_color, back);
+    } else {
+        for (int i = 0; i < 4; i++) {
+            c->raster_color[i] = MIN(MAX(c->cur_color[i], 0.0f), 1.0f);
+        }
     }
     c->raster_index = c->cur_index;
 }
@@ -913,6 +1152,23 @@ static void sgi_gl_capability(SGIGLContext *c, uint32_t cap, bool on)
         c->color_material = on;
         sgi_gl_track_colour(c);
         return;
+    case SGI_GL_LIGHTING:
+        c->lighting = on;
+        if (on && c->cur.index_bits) {
+            qemu_log_mask(LOG_UNIMP, "sgi-gl: colour-index lighting is not "
+                          "modelled; indices stay unlit\n");
+        }
+        return;
+    case SGI_GL_NORMALIZE:
+        c->normalize = on;
+        return;
+    case SGI_GL_RESCALE_NORMAL:
+        c->rescale_normal = on;
+        return;
+    case SGI_GL_LIGHT0 ... SGI_GL_LIGHT0 + SGI_GL_LIGHTS - 1:
+        c->lights_enabled = deposit32(c->lights_enabled, cap - SGI_GL_LIGHT0,
+                                      1, on);
+        return;
     default:
         qemu_log_mask(LOG_UNIMP, "sgi-gl: capability 0x%x is not modelled; "
                       "%s ignored\n", cap, on ? "glEnable" : "glDisable");
@@ -1069,6 +1325,7 @@ void sgi_gl_command(SGIGLContext *c, const SGIGLSink *sink,
         c->in_begin = true;
         c->begin_mode = a[0];
         c->nheld = 0;
+        c->strip_odd = 0;
         return;
     case SGI_GL_OP_END:
         /*
@@ -1083,6 +1340,7 @@ void sgi_gl_command(SGIGLContext *c, const SGIGLSink *sink,
         c->in_begin = false;
         c->begin_mode = 0;
         c->nheld = 0;
+        c->strip_odd = 0;
         return;
     case SGI_GL_OP_VERTEX2F:
     case SGI_GL_OP_VERTEX3F:
@@ -1362,6 +1620,22 @@ bool sgi_gl_get(const SGIGLContext *c, uint32_t pname, uint32_t *out,
         return true;
     case SGI_GL_COLOR_MATERIAL:
         out[0] = c->color_material;
+        *n = 1;
+        return true;
+    case SGI_GL_LIGHTING:
+        out[0] = c->lighting;
+        *n = 1;
+        return true;
+    case SGI_GL_NORMALIZE:
+        out[0] = c->normalize;
+        *n = 1;
+        return true;
+    case SGI_GL_RESCALE_NORMAL:
+        out[0] = c->rescale_normal;
+        *n = 1;
+        return true;
+    case SGI_GL_LIGHT0 ... SGI_GL_LIGHT0 + SGI_GL_LIGHTS - 1:
+        out[0] = extract32(c->lights_enabled, pname - SGI_GL_LIGHT0, 1);
         *n = 1;
         return true;
     case SGI_GL_COLOR_MATERIAL_FACE:

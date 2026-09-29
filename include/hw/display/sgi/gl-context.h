@@ -98,12 +98,14 @@ typedef struct SGIRasterOp {
 } SGIRasterOp;
 
 /*
- * A vertex is 20 floats: position xyzw, colour rgba, normal xyz, the
+ * A vertex is 24 floats: position xyzw, colour rgba, normal xyz, the
  * material index as a uint32 bit pattern, texture coordinate strq, fog
- * coordinate, the edge flag as a uint32 bit pattern, the colour index and
- * a pad.
+ * coordinate, the edge flag as a uint32 bit pattern, the colour index, a
+ * pad and the back colour rgba. With lighting enabled the colour is the
+ * vertex's lit front colour and the back colour its lit back colour
+ * (OpenGL 1.2.1, 2.13.1); a draw says whether it carries back colours.
  */
-#define SGI_GL_VERTEX_FLOATS    20
+#define SGI_GL_VERTEX_FLOATS    24
 #define SGI_GL_V_POSITION       0
 #define SGI_GL_V_COLOR          4
 #define SGI_GL_V_NORMAL         8
@@ -112,6 +114,7 @@ typedef struct SGIRasterOp {
 #define SGI_GL_V_FOG            16
 #define SGI_GL_V_EDGE           17
 #define SGI_GL_V_INDEX          18
+#define SGI_GL_V_BACK_COLOR     20
 
 /* OpenGL 1.2 enumerants the state holds. */
 enum {
@@ -143,6 +146,7 @@ enum {
 #define SGI_GL_CURRENT_RASTER_POSITION_VALID 0x0b08
 #define SGI_GL_CURRENT_RASTER_DISTANCE 0x0b09
 #define SGI_GL_EDGE_FLAG        0x0b43
+#define SGI_GL_LIGHTING         0x0b50
 #define SGI_GL_LIGHT_MODEL_LOCAL_VIEWER 0x0b51
 #define SGI_GL_LIGHT_MODEL_TWO_SIDE 0x0b52
 #define SGI_GL_LIGHT_MODEL_AMBIENT 0x0b53
@@ -155,6 +159,7 @@ enum {
 #define SGI_GL_DEPTH_WRITEMASK  0x0b72
 #define SGI_GL_DEPTH_FUNC       0x0b74
 #define SGI_GL_MATRIX_MODE      0x0ba0
+#define SGI_GL_NORMALIZE        0x0ba1
 #define SGI_GL_VIEWPORT         0x0ba2
 #define SGI_GL_MODELVIEW_STACK_DEPTH 0x0ba3
 #define SGI_GL_PROJECTION_STACK_DEPTH 0x0ba4
@@ -166,6 +171,8 @@ enum {
 #define SGI_GL_INDEX_CLEAR_VALUE 0x0c20
 #define SGI_GL_INDEX_WRITEMASK  0x0c21
 #define SGI_GL_COLOR_CLEAR_VALUE 0x0c22
+#define SGI_GL_LIGHT0           0x4000
+#define SGI_GL_RESCALE_NORMAL   0x803a
 
 /* Faces, and the light and material parameters (OpenGL 1.2.1, 2.13.2). */
 #define SGI_GL_FRONT            0x0404
@@ -293,8 +300,8 @@ typedef struct SGIGLContext {
     uint32_t dither;            /* 0 or 1 */
     /*
      * The lighting state glLight, glLightModel, glMaterial and
-     * glColorMaterial set, kept and answered; no rasterizer lights a
-     * vertex yet. material[0] is the front face's, [1] the back's.
+     * glColorMaterial set, which lights each vertex while GL_LIGHTING is
+     * enabled. material[0] is the front face's, [1] the back's.
      */
     SGIGLLight light[SGI_GL_LIGHTS];
     SGIGLMaterial material[2];
@@ -304,6 +311,10 @@ typedef struct SGIGLContext {
     uint32_t color_material;            /* GL_COLOR_MATERIAL's enable */
     uint32_t color_material_face;       /* GL_FRONT, GL_BACK or both */
     uint32_t color_material_mode;       /* a material parameter */
+    uint32_t lighting;                  /* GL_LIGHTING's enable */
+    uint32_t lights_enabled;            /* bit i: GL_LIGHTi's enable */
+    uint32_t normalize;                 /* GL_NORMALIZE's enable */
+    uint32_t rescale_normal;            /* GL_RESCALE_NORMAL's enable */
     float cur_color[4];
     float cur_index;
     float cur_normal[3];
@@ -331,6 +342,12 @@ typedef struct SGIGLContext {
     /* Vertices waiting for the rest of their piece, nheld of them. */
     float held[SGI_GL_HELD_VERTICES][SGI_GL_VERTEX_FLOATS];
     uint32_t nheld;
+    /*
+     * 1 while the next triangle of an open strip is an odd one, whose
+     * first two vertices are sent swapped so that every triangle of the
+     * strip keeps the strip's orientation (2.6.1), which facing needs.
+     */
+    uint32_t strip_odd;
 } SGIGLContext;
 
 /* The GL entry points a family decodes to, one per command. */
@@ -405,8 +422,8 @@ typedef struct SGIGLCmd {
 
 /*
  * A batch of vertices drawn as one primitive mode under one draw state.
- * Lighting is not modelled, so no draw carries materials yet: a vertex's
- * material index is 0, the draw state's.
+ * The context lights each vertex before it is drawn, so no draw carries
+ * materials: a vertex's material index is 0, the draw state's.
  */
 typedef struct SGIGLDraw {
     uint32_t context;           /* the context's hw_id */
@@ -415,6 +432,12 @@ typedef struct SGIGLDraw {
     const float *vertices;      /* count * SGI_GL_VERTEX_FLOATS */
     const float *materials;
     uint32_t nmaterials;
+    /*
+     * True when the vertices carry a back colour that a back-facing
+     * polygon takes instead of the colour: two-sided lighting (2.13.1).
+     * Points and lines always take the colour.
+     */
+    bool back_colors;
     const SGIGLDrawState *state;
 } SGIGLDraw;
 

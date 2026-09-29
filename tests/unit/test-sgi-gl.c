@@ -1533,6 +1533,505 @@ static void test_depth_range_maps_the_raster_position(void)
                       0.25f);
 }
 
+/*
+ * Per-vertex lighting (OpenGL 1.2.1, 2.13.1). Each case lights one point
+ * or triangle and compares the vertex's lit colour with the equation's
+ * value worked by hand. The model evaluates the equation in single
+ * precision, so the comparisons allow 2^-16.
+ */
+#define LIT_EPSILON (1.0 / 65536)
+
+/* The last draw's vertices, as the context sent them. */
+typedef struct Capture {
+    float v[4][SGI_GL_VERTEX_FLOATS];
+    unsigned count;
+    bool back_colors;
+    unsigned draws;
+} Capture;
+
+static void capture_draw(void *opaque, const SGIGLDraw *d)
+{
+    Capture *cap = opaque;
+
+    g_assert_cmpuint(d->count, <=, 4);
+    memcpy(cap->v, d->vertices, d->count * sizeof(cap->v[0]));
+    cap->count = d->count;
+    cap->back_colors = d->back_colors;
+    cap->draws++;
+}
+
+static SGIGLSink capture_sink(Capture *cap)
+{
+    return (SGIGLSink) { .draw = capture_draw, .opaque = cap };
+}
+
+static void enable(SGIGLContext *c, uint32_t cap, bool on)
+{
+    command(c, NULL, on ? SGI_GL_OP_ENABLE : SGI_GL_OP_DISABLE, &cap, 1);
+}
+
+static void light_model(SGIGLContext *c, uint32_t pname, float v0, float v1,
+                        float v2, float v3)
+{
+    uint32_t word[5] = { pname, bits(v0), bits(v1), bits(v2), bits(v3) };
+
+    command(c, NULL, SGI_GL_OP_LIGHT_MODEL, word, 5);
+}
+
+static void three(SGIGLContext *c, SGIGLOp op, float x, float y, float z)
+{
+    uint32_t word[3] = { bits(x), bits(y), bits(z) };
+
+    command(c, NULL, op, word, 3);
+}
+
+/*
+ * A context with lighting and light 0 enabled and every lighting colour
+ * zero: no light model ambient, black lights 0 and 1, and a black
+ * material on both faces with diffuse alpha 1. A case turns on only the
+ * terms it tests.
+ */
+static void lit_init(SGIGLContext *c)
+{
+    static const uint32_t pnames[] = {
+        SGI_GL_AMBIENT, SGI_GL_DIFFUSE, SGI_GL_SPECULAR,
+    };
+
+    context_init(c);
+    enable(c, SGI_GL_LIGHTING, true);
+    enable(c, SGI_GL_LIGHT0, true);
+    light_model(c, SGI_GL_LIGHT_MODEL_AMBIENT, 0, 0, 0, 1);
+    for (int i = 0; i < ARRAY_SIZE(pnames); i++) {
+        light_command(c, SGI_GL_OP_LIGHT, 0, pnames[i], 0, 0, 0, 1);
+        light_command(c, SGI_GL_OP_MATERIAL, SGI_GL_FRONT_AND_BACK,
+                      pnames[i], 0, 0, 0, 1);
+    }
+}
+
+/* The vertex of one point drawn at (x, y, z) with normal n. */
+static const float *lit_vertex(SGIGLContext *c, float x, float y, float z,
+                               float nx, float ny, float nz)
+{
+    static Capture cap;
+    SGIGLSink sink = capture_sink(&cap);
+    uint32_t word[3] = { bits(nx), bits(ny), bits(nz) };
+
+    memset(&cap, 0, sizeof(cap));
+    command(c, &sink, SGI_GL_OP_NORMAL3F, word, 3);
+    word[0] = SGI_GL_POINTS;
+    command(c, &sink, SGI_GL_OP_BEGIN, word, 1);
+    word[0] = bits(x), word[1] = bits(y), word[2] = bits(z);
+    command(c, &sink, SGI_GL_OP_VERTEX3F, word, 3);
+    command(c, &sink, SGI_GL_OP_END, word, 0);
+    g_assert_cmpuint(cap.draws, ==, 1);
+    return cap.v[0];
+}
+
+/* Its colour. */
+static const float *lit_point(SGIGLContext *c, float x, float y, float z,
+                              float nx, float ny, float nz)
+{
+    return &lit_vertex(c, x, y, z, nx, ny, nz)[SGI_GL_V_COLOR];
+}
+
+static void assert_rgba(const float *got, float r, float g, float b,
+                        float a)
+{
+    g_assert_cmpfloat_with_epsilon(got[0], r, LIT_EPSILON);
+    g_assert_cmpfloat_with_epsilon(got[1], g, LIT_EPSILON);
+    g_assert_cmpfloat_with_epsilon(got[2], b, LIT_EPSILON);
+    g_assert_cmpfloat_with_epsilon(got[3], a, LIT_EPSILON);
+}
+
+/*
+ * The ambient terms alone: material ambient (0.4, 0.2, 0.1) times the
+ * light model's (0.25, 0.5, 1) is (0.1, 0.1, 0.1), and times light 0's
+ * (0.5, 0.5, 0.5) adds (0.2, 0.1, 0.05). Alpha is the material's diffuse
+ * alpha. Emission adds as it is. Disabling light 0 drops its term, and
+ * enabling light 1 adds its own.
+ */
+static void test_lighting_ambient_and_emission(void)
+{
+    SGIGLContext c;
+
+    lit_init(&c);
+    light_model(&c, SGI_GL_LIGHT_MODEL_AMBIENT, 0.25f, 0.5f, 1, 1);
+    light_command(&c, SGI_GL_OP_LIGHT, 0, SGI_GL_AMBIENT, 0.5f, 0.5f, 0.5f,
+                  1);
+    light_command(&c, SGI_GL_OP_MATERIAL, SGI_GL_FRONT, SGI_GL_AMBIENT,
+                  0.4f, 0.2f, 0.1f, 1);
+    light_command(&c, SGI_GL_OP_MATERIAL, SGI_GL_FRONT, SGI_GL_DIFFUSE,
+                  0, 0, 0, 0.75f);
+    assert_rgba(lit_point(&c, 0, 0, 0, 0, 0, 1), 0.3f, 0.2f, 0.15f, 0.75f);
+
+    light_command(&c, SGI_GL_OP_MATERIAL, SGI_GL_FRONT, SGI_GL_EMISSION,
+                  0.25f, 0, 0, 1);
+    assert_rgba(lit_point(&c, 0, 0, 0, 0, 0, 1), 0.55f, 0.2f, 0.15f, 0.75f);
+
+    enable(&c, SGI_GL_LIGHT0, false);
+    assert_rgba(lit_point(&c, 0, 0, 0, 0, 0, 1), 0.35f, 0.1f, 0.1f, 0.75f);
+
+    light_command(&c, SGI_GL_OP_LIGHT, 1, SGI_GL_AMBIENT, 1, 1, 1, 1);
+    enable(&c, SGI_GL_LIGHT0 + 1, true);
+    assert_rgba(lit_point(&c, 0, 0, 0, 0, 0, 1), 0.75f, 0.3f, 0.2f, 0.75f);
+}
+
+/*
+ * The diffuse term: a light at infinity toward (0, 3, 4), made unit
+ * (0, 0.6, 0.8), on normal (0, 0, 1) gives n . VP = 0.8, times light
+ * diffuse (1, 0.5, 1) and material diffuse (0.5, 1, 0.25): (0.4, 0.4,
+ * 0.2). A normal facing away gives 0, not a negative colour.
+ */
+static void test_lighting_diffuse(void)
+{
+    SGIGLContext c;
+
+    lit_init(&c);
+    light_command(&c, SGI_GL_OP_LIGHT, 0, SGI_GL_POSITION, 0, 3, 4, 0);
+    light_command(&c, SGI_GL_OP_LIGHT, 0, SGI_GL_DIFFUSE, 1, 0.5f, 1, 1);
+    light_command(&c, SGI_GL_OP_MATERIAL, SGI_GL_FRONT, SGI_GL_DIFFUSE,
+                  0.5f, 1, 0.25f, 1);
+    assert_rgba(lit_point(&c, 7, -2, 5, 0, 0, 1), 0.4f, 0.4f, 0.2f, 1);
+    assert_rgba(lit_point(&c, 7, -2, 5, 0, 0, -1), 0, 0, 0, 1);
+}
+
+/*
+ * The specular term with a viewer at infinity: h = (0, 0.6, 0.8) +
+ * (0, 0, 1) = (0, 0.6, 1.8), and n . h made unit is 1.8 / sqrt(3.6), whose
+ * square is 0.9, so to shininess 10 it is 0.9^5 = 0.59049; times material
+ * specular (1, 0.5, 0.25). With the light behind the surface n . VP is
+ * negative and f is 0, though n . h, 0.316 at shininess 1, is not. With a
+ * local viewer and the
+ * vertex at (3, 0, -4), the eye lies along (-0.6, 0, 0.8) and a light
+ * along (0.6, 0, 0.8) makes h (0, 0, 1.6), so n . h is 1; at infinity the
+ * same light gives 0.59049 again.
+ */
+static void test_lighting_specular(void)
+{
+    SGIGLContext c;
+
+    lit_init(&c);
+    light_command(&c, SGI_GL_OP_LIGHT, 0, SGI_GL_POSITION, 0, 3, 4, 0);
+    light_command(&c, SGI_GL_OP_LIGHT, 0, SGI_GL_SPECULAR, 1, 1, 1, 1);
+    light_command(&c, SGI_GL_OP_MATERIAL, SGI_GL_FRONT, SGI_GL_SPECULAR,
+                  1, 0.5f, 0.25f, 1);
+    light_command(&c, SGI_GL_OP_MATERIAL, SGI_GL_FRONT, SGI_GL_SHININESS,
+                  10, 0, 0, 0);
+    assert_rgba(lit_point(&c, 0, 0, 0, 0, 0, 1), 0.59049f, 0.295245f,
+                0.1476225f, 1);
+
+    light_command(&c, SGI_GL_OP_LIGHT, 0, SGI_GL_POSITION, 0, 3, -4, 0);
+    light_command(&c, SGI_GL_OP_MATERIAL, SGI_GL_FRONT, SGI_GL_SHININESS,
+                  1, 0, 0, 0);
+    assert_rgba(lit_point(&c, 0, 0, 0, 0, 0, 1), 0, 0, 0, 1);
+    light_command(&c, SGI_GL_OP_MATERIAL, SGI_GL_FRONT, SGI_GL_SHININESS,
+                  10, 0, 0, 0);
+
+    light_command(&c, SGI_GL_OP_LIGHT, 0, SGI_GL_POSITION, 3, 0, 4, 0);
+    light_command(&c, SGI_GL_OP_MATERIAL, SGI_GL_FRONT, SGI_GL_SPECULAR,
+                  0.5f, 0.5f, 0.5f, 1);
+    assert_rgba(lit_point(&c, 3, 0, -4, 0, 0, 1), 0.295245f, 0.295245f,
+                0.295245f, 1);
+    light_model(&c, SGI_GL_LIGHT_MODEL_LOCAL_VIEWER, 1, 0, 0, 0);
+    assert_rgba(lit_point(&c, 3, 0, -4, 0, 0, 1), 0.5f, 0.5f, 0.5f, 1);
+}
+
+/*
+ * Attenuation 1 / (k0 + k1 d + k2 d^2) with k = (0.5, 0.25, 0.125) for a
+ * light 2 from the vertex is 1 / 1.5, whether the position is (0, 0, 2, 1)
+ * or (0, 0, 4, 2); it scales the light's ambient term too. A light at
+ * infinity is not attenuated.
+ */
+static void test_lighting_attenuation(void)
+{
+    SGIGLContext c;
+
+    lit_init(&c);
+    light_command(&c, SGI_GL_OP_LIGHT, 0, SGI_GL_DIFFUSE, 1, 1, 1, 1);
+    light_command(&c, SGI_GL_OP_LIGHT, 0, SGI_GL_AMBIENT, 0.5f, 0, 0, 1);
+    light_command(&c, SGI_GL_OP_MATERIAL, SGI_GL_FRONT,
+                  SGI_GL_AMBIENT_AND_DIFFUSE, 0.5f, 0.5f, 0.5f, 1);
+    light_command(&c, SGI_GL_OP_LIGHT, 0, SGI_GL_CONSTANT_ATTENUATION,
+                  0.5f, 0, 0, 0);
+    light_command(&c, SGI_GL_OP_LIGHT, 0, SGI_GL_LINEAR_ATTENUATION,
+                  0.25f, 0, 0, 0);
+    light_command(&c, SGI_GL_OP_LIGHT, 0, SGI_GL_QUADRATIC_ATTENUATION,
+                  0.125f, 0, 0, 0);
+    light_command(&c, SGI_GL_OP_LIGHT, 0, SGI_GL_POSITION, 0, 0, 2, 1);
+    assert_rgba(lit_point(&c, 0, 0, 0, 0, 0, 1), 0.5f, 1 / 3.0f, 1 / 3.0f,
+                1);
+    light_command(&c, SGI_GL_OP_LIGHT, 0, SGI_GL_POSITION, 0, 0, 4, 2);
+    assert_rgba(lit_point(&c, 0, 0, 0, 0, 0, 1), 0.5f, 1 / 3.0f, 1 / 3.0f,
+                1);
+    light_command(&c, SGI_GL_OP_LIGHT, 0, SGI_GL_POSITION, 0, 0, 1, 0);
+    assert_rgba(lit_point(&c, 0, 0, 0, 0, 0, 1), 0.75f, 0.5f, 0.5f, 1);
+}
+
+/*
+ * A spotlight at (0, 0, 2) pointing down -z with cutoff 30 degrees and
+ * exponent 2. Straight below it the spot factor is 1. At (1, 0, 0) the
+ * light-to-vertex direction (1, 0, -2) / sqrt(5) makes 26.6 degrees with
+ * the axis, so the factor is (2 / sqrt(5))^2 = 0.8, and n . VP is
+ * 2 / sqrt(5): 0.8 * 0.894427 = 0.715542. At (2, 0, 0), 45 degrees off,
+ * it is outside the cone and unlit.
+ */
+static void test_lighting_spot(void)
+{
+    SGIGLContext c;
+
+    lit_init(&c);
+    light_command(&c, SGI_GL_OP_LIGHT, 0, SGI_GL_DIFFUSE, 1, 1, 1, 1);
+    light_command(&c, SGI_GL_OP_MATERIAL, SGI_GL_FRONT, SGI_GL_DIFFUSE,
+                  1, 1, 1, 1);
+    light_command(&c, SGI_GL_OP_LIGHT, 0, SGI_GL_POSITION, 0, 0, 2, 1);
+    light_command(&c, SGI_GL_OP_LIGHT, 0, SGI_GL_SPOT_DIRECTION, 0, 0, -3,
+                  0);
+    light_command(&c, SGI_GL_OP_LIGHT, 0, SGI_GL_SPOT_CUTOFF, 30, 0, 0, 0);
+    light_command(&c, SGI_GL_OP_LIGHT, 0, SGI_GL_SPOT_EXPONENT, 2, 0, 0, 0);
+    assert_rgba(lit_point(&c, 0, 0, 0, 0, 0, 1), 1, 1, 1, 1);
+    assert_rgba(lit_point(&c, 1, 0, 0, 0, 0, 1), 0.7155418f, 0.7155418f,
+                0.7155418f, 1);
+    assert_rgba(lit_point(&c, 2, 0, 0, 0, 0, 1), 0, 0, 0, 1);
+}
+
+/*
+ * The normal goes to eye coordinates by the inverse transpose of the
+ * modelview's upper left 3x3 (2.10.3). Under glScalef(2, 1, 1) the normal
+ * (1, 1, 0) becomes (0.5, 1, 0), which a light along +x set before the
+ * scale meets at 0.5, halved by material diffuse 0.5: 0.25. With
+ * GL_NORMALIZE it is (1, 2, 0) / sqrt(5), giving 0.5 / sqrt(5). Under
+ * glScalef(2, 2, 2) the normal (1, 0, 0) shrinks to 0.5; GL_RESCALE_NORMAL
+ * scales it back to 1. Under glRotatef(90, 0, 0, 1) then glScalef(2, 1, 1)
+ * the upper left 3x3 is not symmetric: (1, 1, 0) becomes (-1, 0.5, 0),
+ * which a light along +y meets at 0.5, where the matrix itself would give
+ * 2 and its inverse without the transpose -1.
+ */
+static void test_lighting_normal_transform(void)
+{
+    SGIGLContext c;
+
+    lit_init(&c);
+    light_command(&c, SGI_GL_OP_LIGHT, 0, SGI_GL_POSITION, 1, 0, 0, 0);
+    light_command(&c, SGI_GL_OP_LIGHT, 0, SGI_GL_DIFFUSE, 1, 1, 1, 1);
+    light_command(&c, SGI_GL_OP_MATERIAL, SGI_GL_FRONT, SGI_GL_DIFFUSE,
+                  0.5f, 0.5f, 0.5f, 1);
+    three(&c, SGI_GL_OP_SCALE, 2, 1, 1);
+    assert_rgba(lit_point(&c, 0, 0, 0, 1, 1, 0), 0.25f, 0.25f, 0.25f, 1);
+    enable(&c, SGI_GL_NORMALIZE, true);
+    assert_rgba(lit_point(&c, 0, 0, 0, 1, 1, 0), 0.2236068f, 0.2236068f,
+                0.2236068f, 1);
+    enable(&c, SGI_GL_NORMALIZE, false);
+
+    command(&c, NULL, SGI_GL_OP_LOAD_IDENTITY, NULL, 0);
+    three(&c, SGI_GL_OP_SCALE, 2, 2, 2);
+    assert_rgba(lit_point(&c, 0, 0, 0, 1, 0, 0), 0.25f, 0.25f, 0.25f, 1);
+    enable(&c, SGI_GL_RESCALE_NORMAL, true);
+    assert_rgba(lit_point(&c, 0, 0, 0, 1, 0, 0), 0.5f, 0.5f, 0.5f, 1);
+    enable(&c, SGI_GL_RESCALE_NORMAL, false);
+
+    command(&c, NULL, SGI_GL_OP_LOAD_IDENTITY, NULL, 0);
+    light_command(&c, SGI_GL_OP_LIGHT, 0, SGI_GL_POSITION, 0, 1, 0, 0);
+    command(&c, NULL, SGI_GL_OP_ROTATE,
+            (uint32_t[]) { bits(90), bits(0), bits(0), bits(1) }, 4);
+    three(&c, SGI_GL_OP_SCALE, 2, 1, 1);
+    assert_rgba(lit_point(&c, 0, 0, 0, 1, 1, 0), 0.25f, 0.25f, 0.25f, 1);
+}
+
+/*
+ * Two-sided lighting lights the back colour with the back material and
+ * the reversed normal. A normal pointing away from a light along +z
+ * leaves the front colour black and gives the back the back material's
+ * diffuse and alpha. One-sided, the back colour is the front one and the
+ * draw says it carries none.
+ */
+static void test_lighting_two_sided(void)
+{
+    static Capture cap;
+    SGIGLSink sink = capture_sink(&cap);
+    SGIGLContext c;
+    const float *v;
+
+    lit_init(&c);
+    light_command(&c, SGI_GL_OP_LIGHT, 0, SGI_GL_DIFFUSE, 1, 1, 1, 1);
+    light_command(&c, SGI_GL_OP_MATERIAL, SGI_GL_FRONT, SGI_GL_DIFFUSE,
+                  1, 0, 0, 1);
+    light_command(&c, SGI_GL_OP_MATERIAL, SGI_GL_BACK, SGI_GL_DIFFUSE,
+                  0, 1, 0, 0.5f);
+    v = lit_vertex(&c, 0, 0, 0, 0, 0, -1);
+    assert_rgba(&v[SGI_GL_V_COLOR], 0, 0, 0, 1);
+    assert_rgba(&v[SGI_GL_V_BACK_COLOR], 0, 0, 0, 1);
+    light_model(&c, SGI_GL_LIGHT_MODEL_TWO_SIDE, 1, 0, 0, 0);
+    v = lit_vertex(&c, 0, 0, 0, 0, 0, -1);
+    assert_rgba(&v[SGI_GL_V_COLOR], 0, 0, 0, 1);
+    assert_rgba(&v[SGI_GL_V_BACK_COLOR], 0, 1, 0, 0.5f);
+
+    /* The draw's flag follows two-sided lighting. */
+    memset(&cap, 0, sizeof(cap));
+    command(&c, &sink, SGI_GL_OP_BEGIN, (uint32_t[]) { SGI_GL_POINTS }, 1);
+    command(&c, &sink, SGI_GL_OP_VERTEX2F, (uint32_t[]) { 0, 0 }, 2);
+    g_assert_true(cap.back_colors);
+    light_model(&c, SGI_GL_LIGHT_MODEL_TWO_SIDE, 0, 0, 0, 0);
+    command(&c, &sink, SGI_GL_OP_VERTEX2F, (uint32_t[]) { 0, 0 }, 2);
+    g_assert_false(cap.back_colors);
+    command(&c, &sink, SGI_GL_OP_END, NULL, 0);
+}
+
+/*
+ * With GL_COLOR_MATERIAL on the front diffuse, glColor3f(0.25, 0.5, 1)
+ * is the diffuse material the light at (0, 0.6, 0.8) meets at 0.8.
+ */
+static void test_lighting_color_material(void)
+{
+    uint32_t word[2] = { SGI_GL_FRONT, SGI_GL_DIFFUSE };
+    SGIGLContext c;
+
+    lit_init(&c);
+    light_command(&c, SGI_GL_OP_LIGHT, 0, SGI_GL_POSITION, 0, 3, 4, 0);
+    light_command(&c, SGI_GL_OP_LIGHT, 0, SGI_GL_DIFFUSE, 1, 1, 1, 1);
+    command(&c, NULL, SGI_GL_OP_COLOR_MATERIAL, word, 2);
+    enable(&c, SGI_GL_COLOR_MATERIAL, true);
+    three(&c, SGI_GL_OP_COLOR3F, 0.25f, 0.5f, 1);
+    assert_rgba(lit_point(&c, 0, 0, 0, 0, 0, 1), 0.2f, 0.4f, 0.8f, 1);
+}
+
+/*
+ * The lit colour is clamped to [0, 1] (2.13.6), alpha too. Unlit, the
+ * vertex keeps the current colour and its back colour is the same.
+ */
+static void test_lighting_clamps_and_disables(void)
+{
+    uint32_t out[SGI_GL_GET_WORDS];
+    SGIGLContext c;
+    const float *v;
+
+    lit_init(&c);
+    light_command(&c, SGI_GL_OP_MATERIAL, SGI_GL_FRONT, SGI_GL_EMISSION,
+                  2, -1, 0.5f, 1);
+    light_command(&c, SGI_GL_OP_MATERIAL, SGI_GL_FRONT, SGI_GL_DIFFUSE,
+                  0, 0, 0, 1.5f);
+    assert_rgba(lit_point(&c, 0, 0, 0, 0, 0, 1), 1, 0, 0.5f, 1);
+
+    g_assert_cmpuint(get(&c, SGI_GL_LIGHTING, out), ==, 1);
+    g_assert_cmphex(out[0], ==, 1);
+    g_assert_cmpuint(get(&c, SGI_GL_LIGHT0, out), ==, 1);
+    g_assert_cmphex(out[0], ==, 1);
+    g_assert_cmpuint(get(&c, SGI_GL_LIGHT0 + 1, out), ==, 1);
+    g_assert_cmphex(out[0], ==, 0);
+    enable(&c, SGI_GL_LIGHTING, false);
+    three(&c, SGI_GL_OP_COLOR3F, 0.25f, 0.5f, 0.75f);
+    v = lit_vertex(&c, 0, 0, 0, 0, 0, 1);
+    assert_rgba(&v[SGI_GL_V_COLOR], 0.25f, 0.5f, 0.75f, 1);
+    assert_rgba(&v[SGI_GL_V_BACK_COLOR], 0.25f, 0.5f, 0.75f, 1);
+    g_assert_cmpuint(get(&c, SGI_GL_LIGHTING, out), ==, 1);
+    g_assert_cmphex(out[0], ==, 0);
+}
+
+/* With lighting enabled glRasterPos takes the lit front colour (2.12). */
+static void test_lighting_raster_position(void)
+{
+    SGIGLContext c;
+
+    lit_init(&c);
+    light_command(&c, SGI_GL_OP_LIGHT, 0, SGI_GL_POSITION, 0, 3, 4, 0);
+    light_command(&c, SGI_GL_OP_LIGHT, 0, SGI_GL_DIFFUSE, 1, 1, 1, 1);
+    light_command(&c, SGI_GL_OP_MATERIAL, SGI_GL_FRONT, SGI_GL_DIFFUSE,
+                  0.5f, 0.25f, 1, 1);
+    three(&c, SGI_GL_OP_COLOR3F, 1, 1, 1);
+    three(&c, SGI_GL_OP_RASTER_POS3F, 0, 0, 0);
+    g_assert_cmpfloat_with_epsilon(get_float(&c, SGI_GL_CURRENT_RASTER_COLOR,
+                                             0), 0.4f, LIT_EPSILON);
+    g_assert_cmpfloat_with_epsilon(get_float(&c, SGI_GL_CURRENT_RASTER_COLOR,
+                                             2), 0.8f, LIT_EPSILON);
+}
+
+/*
+ * Drawn, a back-facing triangle (clockwise in window coordinates) takes
+ * its back colour under two-sided lighting and the front colour
+ * otherwise; a front-facing one always takes the front colour. Every
+ * triangle of a strip has the strip's facing, the odd ones included, and
+ * a strip drawn as one batch does the same.
+ */
+static void test_lighting_two_sided_draws(void)
+{
+    static Planes p;
+    SGIGLContext c;
+    Recorder rec = { .rules = &rules_supported };
+    SGIGLSink sink;
+    /* Clockwise, then counter-clockwise, then a strip of two. */
+    static const float cw[3][2] = { { -1, 0 }, { -1, 1 }, { 0, 0 } };
+    static const float ccw[3][2] = { { 0, -1 }, { 1, -1 }, { 1, 0 } };
+    static const float strip[4][2] = {
+        { -1, -1 }, { -0.5f, -1 }, { -1, -0.5f }, { -0.5f, -0.5f },
+    };
+    uint32_t word[3];
+
+    rec.target = planes_target(&p);
+    sink = recorder_sink(&rec);
+    for (int two = 0; two < 2; two++) {
+        memset(&p, 0, sizeof(p));
+        lit_init(&c);
+        light_command(&c, SGI_GL_OP_LIGHT, 0, SGI_GL_DIFFUSE, 1, 1, 1, 1);
+        light_command(&c, SGI_GL_OP_MATERIAL, SGI_GL_FRONT, SGI_GL_DIFFUSE,
+                      1, 0, 0, 1);
+        light_command(&c, SGI_GL_OP_MATERIAL, SGI_GL_BACK, SGI_GL_EMISSION,
+                      0, 1, 0, 1);
+        light_model(&c, SGI_GL_LIGHT_MODEL_TWO_SIDE, two, 0, 0, 0);
+        three(&c, SGI_GL_OP_NORMAL3F, 0, 0, 1);
+        word[0] = SGI_GL_TRIANGLES;
+        command(&c, &sink, SGI_GL_OP_BEGIN, word, 1);
+        for (int i = 0; i < 3; i++) {
+            word[0] = bits(cw[i][0]), word[1] = bits(cw[i][1]);
+            command(&c, &sink, SGI_GL_OP_VERTEX2F, word, 2);
+        }
+        for (int i = 0; i < 3; i++) {
+            word[0] = bits(ccw[i][0]), word[1] = bits(ccw[i][1]);
+            command(&c, &sink, SGI_GL_OP_VERTEX2F, word, 2);
+        }
+        command(&c, &sink, SGI_GL_OP_END, word, 0);
+        word[0] = SGI_GL_TRIANGLE_STRIP;
+        command(&c, &sink, SGI_GL_OP_BEGIN, word, 1);
+        for (int i = 0; i < 4; i++) {
+            word[0] = bits(strip[i][0]), word[1] = bits(strip[i][1]);
+            command(&c, &sink, SGI_GL_OP_VERTEX2F, word, 2);
+        }
+        command(&c, &sink, SGI_GL_OP_END, word, 0);
+
+        /* Lit front red; the back material's emission is green. */
+        g_assert_cmphex(p.colour[0][planes_index(20, 36)], ==,
+                        two ? 0x00ff00 : 0xff0000);
+        g_assert_cmphex(p.colour[0][planes_index(56, 20)], ==, 0xff0000);
+        /* Strip pieces 0 and 1, at (-0.9, -0.9) and (-0.6, -0.6). */
+        g_assert_cmphex(p.colour[0][planes_index(3, 3)], ==, 0xff0000);
+        g_assert_cmphex(p.colour[0][planes_index(12, 12)], ==, 0xff0000);
+    }
+
+    /* The batch strip, with back colours marked green. */
+    {
+        float verts[4][SGI_GL_VERTEX_FLOATS] = { 0 };
+        SGIRasterTarget t = planes_target(&p);
+        SGIGLDraw d = {
+            .mode = SGI_GL_TRIANGLE_STRIP,
+            .count = 4,
+            .vertices = &verts[0][0],
+            .back_colors = true,
+        };
+
+        memset(&p, 0, sizeof(p));
+        context_init(&c);
+        d.state = &c.cur;
+        for (int i = 0; i < 4; i++) {
+            verts[i][SGI_GL_V_POSITION] = strip[i][0];
+            verts[i][SGI_GL_V_POSITION + 1] = strip[i][1];
+            verts[i][SGI_GL_V_POSITION + 3] = 1;
+            verts[i][SGI_GL_V_COLOR] = 1;
+            verts[i][SGI_GL_V_BACK_COLOR + 1] = 1;
+        }
+        sgi_soft_draw(&rules_supported, &t, &d);
+        g_assert_cmphex(p.colour[0][planes_index(3, 3)], ==, 0xff0000);
+        g_assert_cmphex(p.colour[0][planes_index(12, 12)], ==, 0xff0000);
+    }
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -1569,5 +2068,23 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-gl/texture-matrix", test_texture_matrix);
     g_test_add_func("/sgi-gl/color-material-tracks-the-colour",
                     test_color_material_tracks_the_colour);
+    g_test_add_func("/sgi-gl/lighting-ambient-and-emission",
+                    test_lighting_ambient_and_emission);
+    g_test_add_func("/sgi-gl/lighting-diffuse", test_lighting_diffuse);
+    g_test_add_func("/sgi-gl/lighting-specular", test_lighting_specular);
+    g_test_add_func("/sgi-gl/lighting-attenuation",
+                    test_lighting_attenuation);
+    g_test_add_func("/sgi-gl/lighting-spot", test_lighting_spot);
+    g_test_add_func("/sgi-gl/lighting-normal-transform",
+                    test_lighting_normal_transform);
+    g_test_add_func("/sgi-gl/lighting-two-sided", test_lighting_two_sided);
+    g_test_add_func("/sgi-gl/lighting-color-material",
+                    test_lighting_color_material);
+    g_test_add_func("/sgi-gl/lighting-clamps-and-disables",
+                    test_lighting_clamps_and_disables);
+    g_test_add_func("/sgi-gl/lighting-raster-position",
+                    test_lighting_raster_position);
+    g_test_add_func("/sgi-gl/lighting-two-sided-draws",
+                    test_lighting_two_sided_draws);
     return g_test_run();
 }
