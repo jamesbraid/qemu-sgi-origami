@@ -310,6 +310,7 @@ tests_mips64_system_thorough = [
 tests_mips64_unit = [
   'lib_evidence_capture',
   'lib_graphics_matrix',
+  'lib_host_cpus',
   'lib_input',
   'lib_irix_diag',
   'lib_matrix',
