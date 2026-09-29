@@ -11,6 +11,7 @@ fork_unit_tests = [
   'test-sgi-rad1-audio-pcm',
   'test-sgi-kona-ports', 'test-sgi-kona-gl-decode',
   'test-sgi-memory', 'test-sgi-dma', 'test-sgi-scanout', 'test-sgi-gl',
+  'test-sgi-gl-vmstate',
 ]
 
 tests = {
@@ -213,6 +214,8 @@ if have_system
                     '../../hw/display/sgi/rasterizer.c',
                     '../../hw/display/sgi/board-memory.c',
                     migration, io],
+    'test-sgi-gl-vmstate': ['../../hw/display/sgi/gl-context.c',
+                            migration, io],
     'test-sgi-dma': ['../../hw/display/sgi/board-memory.c',
                      '../../hw/display/sgi/pixel-dma.c',
                      '../../hw/display/sgi/command-fetch.c',

@@ -12,6 +12,7 @@
 #include <math.h>
 #include "qemu/bitops.h"
 #include "qemu/log.h"
+#include "qapi/error.h"
 #include "hw/display/sgi/gl-context.h"
 
 static float sgi_gl_float(uint32_t bits)
@@ -1768,3 +1769,304 @@ bool sgi_gl_get(const SGIGLContext *c, uint32_t pname, uint32_t *out,
         return false;
     }
 }
+
+/*
+ * The most vertices each primitive mode leaves held between pieces, as
+ * sgi_gl_vertex() keeps them: a line strip keeps its last vertex, a line
+ * loop its first and last, a quad strip three until its first quad.
+ */
+static unsigned int sgi_gl_held_max(uint32_t mode)
+{
+    switch (mode) {
+    case SGI_GL_POINTS:
+        return 0;
+    case SGI_GL_LINES:
+    case SGI_GL_LINE_STRIP:
+        return 1;
+    case SGI_GL_QUADS:
+    case SGI_GL_QUAD_STRIP:
+        return 3;
+    default:
+        return 2;
+    }
+}
+
+bool sgi_gl_context_valid(const SGIGLContext *c, Error **errp)
+{
+    const SGIGLDrawState *st = &c->cur;
+    const struct {
+        const char *name;
+        uint32_t value;
+    } flags[] = {
+        { "depth_test", st->depth_test },
+        { "depth_mask", st->depth_mask },
+        { "cull_face", st->cull_face },
+        { "dither", c->dither },
+        { "light_model_local_viewer", c->light_model_local_viewer },
+        { "light_model_two_side", c->light_model_two_side },
+        { "color_material", c->color_material },
+        { "lighting", c->lighting },
+        { "normalize", c->normalize },
+        { "rescale_normal", c->rescale_normal },
+        { "normal_matrix_given", c->normal_matrix_given },
+        { "normalize_always", c->normalize_always },
+        { "cur_edge", c->cur_edge },
+        { "raster_valid", c->raster_valid },
+        { "strip_odd", c->strip_odd },
+    };
+    const struct {
+        const char *name;
+        uint32_t depth;
+    } stacks[] = {
+        { "mv_depth", c->mv_depth },
+        { "pr_depth", c->pr_depth },
+        { "tx_depth", c->tx_depth },
+    };
+
+    for (size_t i = 0; i < ARRAY_SIZE(flags); i++) {
+        if (flags[i].value > 1) {
+            error_setg(errp, "sgi-gl: %s is %u, not 0 or 1", flags[i].name,
+                       flags[i].value);
+            return false;
+        }
+    }
+    for (size_t i = 0; i < ARRAY_SIZE(stacks); i++) {
+        if (stacks[i].depth >= SGI_GL_STACK_DEPTH) {
+            error_setg(errp, "sgi-gl: %s %u is past the stack's %u",
+                       stacks[i].name, stacks[i].depth, SGI_GL_STACK_DEPTH);
+            return false;
+        }
+    }
+    if (st->depth_func > SGI_GL_ALWAYS) {
+        error_setg(errp, "sgi-gl: depth function %u", st->depth_func);
+        return false;
+    }
+    for (int i = 0; i < 2; i++) {
+        if (!(st->depth_range[i] >= 0.0f && st->depth_range[i] <= 1.0f)) {
+            error_setg(errp, "sgi-gl: depth range %g is outside [0, 1]",
+                       st->depth_range[i]);
+            return false;
+        }
+    }
+    if (st->index_bits > 32) {
+        error_setg(errp, "sgi-gl: %u bits a colour index", st->index_bits);
+        return false;
+    }
+    if (!sgi_gl_faces(st->cull_face_mode)) {
+        error_setg(errp, "sgi-gl: cull face 0x%x", st->cull_face_mode);
+        return false;
+    }
+    if (st->front_face != SGI_GL_CW && st->front_face != SGI_GL_CCW) {
+        error_setg(errp, "sgi-gl: front face 0x%x", st->front_face);
+        return false;
+    }
+    if (st->drawable.clip.n > SGI_CLIP_MAX) {
+        error_setg(errp, "sgi-gl: %u clip rectangles", st->drawable.clip.n);
+        return false;
+    }
+    if (c->lights_enabled >> SGI_GL_LIGHTS) {
+        error_setg(errp, "sgi-gl: light enables 0x%x", c->lights_enabled);
+        return false;
+    }
+    if (!sgi_gl_faces(c->color_material_face)) {
+        error_setg(errp, "sgi-gl: colour material face 0x%x",
+                   c->color_material_face);
+        return false;
+    }
+    switch (c->color_material_mode) {
+    case SGI_GL_AMBIENT:
+    case SGI_GL_DIFFUSE:
+    case SGI_GL_SPECULAR:
+    case SGI_GL_EMISSION:
+    case SGI_GL_AMBIENT_AND_DIFFUSE:
+        break;
+    default:
+        error_setg(errp, "sgi-gl: colour material parameter 0x%x",
+                   c->color_material_mode);
+        return false;
+    }
+    if (c->begin_mode > SGI_GL_POLYGON) {
+        error_setg(errp, "sgi-gl: primitive mode %u", c->begin_mode);
+        return false;
+    }
+    if (c->nheld > (c->in_begin ? sgi_gl_held_max(c->begin_mode) : 0)) {
+        error_setg(errp, "sgi-gl: %u vertices held in mode %u%s", c->nheld,
+                   c->begin_mode, c->in_begin ? "" : " outside glBegin");
+        return false;
+    }
+    return true;
+}
+
+static bool sgi_gl_context_post_load(void *opaque, int version_id,
+                                     Error **errp)
+{
+    return sgi_gl_context_valid(opaque, errp);
+}
+
+/*
+ * A float travels as the IEEE single bits it holds, in the stream's byte
+ * order, so a NaN's payload and a zero's sign survive.
+ */
+#define VMSTATE_SGI_GL_FLOAT(_f, _s)                                     \
+    VMSTATE_SINGLE(_f, _s, 0, vmstate_info_uint32, float)
+#define VMSTATE_SGI_GL_FLOATS(_f, _s, _n)                                \
+    VMSTATE_ARRAY(_f, _s, _n, 0, vmstate_info_uint32, float)
+#define VMSTATE_SGI_GL_FLOATS_2D(_f, _s, _n1, _n2)                       \
+    VMSTATE_2DARRAY(_f, _s, _n1, _n2, 0, vmstate_info_uint32, float)
+
+/*
+ * Every byte of SGIGLContext but padding. A field added to it, or to a
+ * structure inside it, stops the build here until the descriptions below
+ * carry it, under the rule in gl-context.h, and this size follows.
+ * tests/unit/test-sgi-gl-vmstate.c checks the descriptions byte for byte
+ * against the structure.
+ */
+#define SGI_GL_CONTEXT_BYTES    7976
+QEMU_BUILD_BUG_ON(sizeof(SGIGLContext) != SGI_GL_CONTEXT_BYTES);
+
+static const VMStateDescription vmstate_sgi_clip_rect = {
+    .name = "sgi-clip-rect",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_INT32(x0, SGIClipRect),
+        VMSTATE_INT32(y0, SGIClipRect),
+        VMSTATE_INT32(x1, SGIClipRect),
+        VMSTATE_INT32(y1, SGIClipRect),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
+static const VMStateDescription vmstate_sgi_gl_drawable = {
+    .name = "sgi-gl-drawable",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_BOOL(bound, SGIGLDrawable),
+        VMSTATE_INT32_ARRAY(origin, SGIGLDrawable, 2),
+        VMSTATE_UINT32(clip.n, SGIGLDrawable),
+        VMSTATE_STRUCT_ARRAY(clip.r, SGIGLDrawable, SGI_CLIP_MAX, 0,
+                             vmstate_sgi_clip_rect, SGIClipRect),
+        VMSTATE_UINT32(front, SGIGLDrawable),
+        VMSTATE_UINT32(back, SGIGLDrawable),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
+static const VMStateDescription vmstate_sgi_gl_draw_state = {
+    .name = "sgi-gl-draw-state",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_SGI_GL_FLOATS(modelview, SGIGLDrawState, 16),
+        VMSTATE_SGI_GL_FLOATS(projection, SGIGLDrawState, 16),
+        VMSTATE_INT32_ARRAY(viewport, SGIGLDrawState, 4),
+        VMSTATE_UINT32(shade_model, SGIGLDrawState),
+        VMSTATE_UINT32(depth_test, SGIGLDrawState),
+        VMSTATE_UINT32(depth_func, SGIGLDrawState),
+        VMSTATE_UINT32(depth_mask, SGIGLDrawState),
+        VMSTATE_SGI_GL_FLOATS(depth_range, SGIGLDrawState, 2),
+        VMSTATE_UINT32(draw_buffers, SGIGLDrawState),
+        VMSTATE_UINT32(index_bits, SGIGLDrawState),
+        VMSTATE_UINT32(index_mask, SGIGLDrawState),
+        VMSTATE_UINT32(cull_face, SGIGLDrawState),
+        VMSTATE_UINT32(cull_face_mode, SGIGLDrawState),
+        VMSTATE_UINT32(front_face, SGIGLDrawState),
+        VMSTATE_STRUCT(drawable, SGIGLDrawState, 0, vmstate_sgi_gl_drawable,
+                       SGIGLDrawable),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
+static const VMStateDescription vmstate_sgi_gl_light = {
+    .name = "sgi-gl-light",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_SGI_GL_FLOATS(ambient, SGIGLLight, 4),
+        VMSTATE_SGI_GL_FLOATS(diffuse, SGIGLLight, 4),
+        VMSTATE_SGI_GL_FLOATS(specular, SGIGLLight, 4),
+        VMSTATE_SGI_GL_FLOATS(position, SGIGLLight, 4),
+        VMSTATE_SGI_GL_FLOATS(spot_direction, SGIGLLight, 3),
+        VMSTATE_SGI_GL_FLOAT(spot_exponent, SGIGLLight),
+        VMSTATE_SGI_GL_FLOAT(spot_cutoff, SGIGLLight),
+        VMSTATE_SGI_GL_FLOATS(attenuation, SGIGLLight, 3),
+        VMSTATE_SGI_GL_FLOAT(spot_cos_cutoff, SGIGLLight),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
+static const VMStateDescription vmstate_sgi_gl_material = {
+    .name = "sgi-gl-material",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_SGI_GL_FLOATS(ambient, SGIGLMaterial, 4),
+        VMSTATE_SGI_GL_FLOATS(diffuse, SGIGLMaterial, 4),
+        VMSTATE_SGI_GL_FLOATS(specular, SGIGLMaterial, 4),
+        VMSTATE_SGI_GL_FLOATS(emission, SGIGLMaterial, 4),
+        VMSTATE_SGI_GL_FLOAT(shininess, SGIGLMaterial),
+        VMSTATE_SGI_GL_FLOATS(color_indexes, SGIGLMaterial, 3),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
+const VMStateDescription vmstate_sgi_gl_context = {
+    .name = "sgi-gl-context",
+    .version_id = SGI_GL_VMSTATE_VERSION,
+    .minimum_version_id = SGI_GL_VMSTATE_VERSION,
+    .post_load_errp = sgi_gl_context_post_load,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32(hw_id, SGIGLContext),
+        VMSTATE_STRUCT(cur, SGIGLContext, 0, vmstate_sgi_gl_draw_state,
+                       SGIGLDrawState),
+        VMSTATE_SGI_GL_FLOATS_2D(mv_stack, SGIGLContext,
+                                 SGI_GL_STACK_DEPTH - 1, 16),
+        VMSTATE_SGI_GL_FLOATS_2D(pr_stack, SGIGLContext,
+                                 SGI_GL_STACK_DEPTH - 1, 16),
+        VMSTATE_UINT32(mv_depth, SGIGLContext),
+        VMSTATE_UINT32(pr_depth, SGIGLContext),
+        VMSTATE_SGI_GL_FLOATS(texture, SGIGLContext, 16),
+        VMSTATE_SGI_GL_FLOATS_2D(tx_stack, SGIGLContext,
+                                 SGI_GL_STACK_DEPTH - 1, 16),
+        VMSTATE_UINT32(tx_depth, SGIGLContext),
+        VMSTATE_UINT32(matrix_mode, SGIGLContext),
+        VMSTATE_UINT32(dither, SGIGLContext),
+        VMSTATE_STRUCT_ARRAY(light, SGIGLContext, SGI_GL_LIGHTS, 0,
+                             vmstate_sgi_gl_light, SGIGLLight),
+        VMSTATE_STRUCT_ARRAY(material, SGIGLContext, 2, 0,
+                             vmstate_sgi_gl_material, SGIGLMaterial),
+        VMSTATE_SGI_GL_FLOATS(light_model_ambient, SGIGLContext, 4),
+        VMSTATE_UINT32(light_model_local_viewer, SGIGLContext),
+        VMSTATE_UINT32(light_model_two_side, SGIGLContext),
+        VMSTATE_UINT32(color_material, SGIGLContext),
+        VMSTATE_UINT32(color_material_face, SGIGLContext),
+        VMSTATE_UINT32(color_material_mode, SGIGLContext),
+        VMSTATE_UINT32(lighting, SGIGLContext),
+        VMSTATE_UINT32(lights_enabled, SGIGLContext),
+        VMSTATE_UINT32(normalize, SGIGLContext),
+        VMSTATE_UINT32(rescale_normal, SGIGLContext),
+        VMSTATE_UINT32(normal_matrix_given, SGIGLContext),
+        VMSTATE_SGI_GL_FLOATS(normal_matrix, SGIGLContext, 9),
+        VMSTATE_UINT32(normalize_always, SGIGLContext),
+        VMSTATE_SGI_GL_FLOATS(cur_color, SGIGLContext, 4),
+        VMSTATE_SGI_GL_FLOAT(cur_index, SGIGLContext),
+        VMSTATE_SGI_GL_FLOATS(cur_normal, SGIGLContext, 3),
+        VMSTATE_UINT32(cur_edge, SGIGLContext),
+        VMSTATE_SGI_GL_FLOATS(raster_pos, SGIGLContext, 4),
+        VMSTATE_UINT32(raster_valid, SGIGLContext),
+        VMSTATE_SGI_GL_FLOAT(raster_distance, SGIGLContext),
+        VMSTATE_SGI_GL_FLOATS(raster_color, SGIGLContext, 4),
+        VMSTATE_SGI_GL_FLOAT(raster_index, SGIGLContext),
+        VMSTATE_SGI_GL_FLOATS(clear_color, SGIGLContext, 4),
+        VMSTATE_SGI_GL_FLOAT(clear_index, SGIGLContext),
+        VMSTATE_UINT32(clear_depth, SGIGLContext),
+        VMSTATE_UINT32(begin_mode, SGIGLContext),
+        VMSTATE_BOOL(in_begin, SGIGLContext),
+        VMSTATE_SGI_GL_FLOATS_2D(held, SGIGLContext, SGI_GL_HELD_VERTICES,
+                                 SGI_GL_VERTEX_FLOATS),
+        VMSTATE_UINT32(nheld, SGIGLContext),
+        VMSTATE_UINT32(strip_odd, SGIGLContext),
+        VMSTATE_END_OF_LIST()
+    },
+};

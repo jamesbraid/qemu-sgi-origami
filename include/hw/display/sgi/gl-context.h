@@ -625,4 +625,72 @@ bool sgi_gl_get_material(const SGIGLContext *c, uint32_t face,
 bool sgi_gl_get(const SGIGLContext *c, uint32_t pname, uint32_t *out,
                 unsigned *n);
 
+/*
+ * Whether c holds state the context's own commands could have left: each
+ * enable 0 or 1, stack depths inside their stacks, enumerants the setters
+ * accept, the depth range inside [0, 1], at most SGI_CLIP_MAX clip
+ * rectangles, and no more vertices held than the open primitive keeps.
+ * False, with the reason in errp, otherwise. Loading a context refuses
+ * one that fails; a family that fills a context from its own older stream
+ * layout checks it here too.
+ */
+bool sgi_gl_context_valid(const SGIGLContext *c, Error **errp);
+
+/*
+ * Migration of one context: every field of SGIGLContext, described field
+ * by field so that neither the host's byte order nor its padding reaches
+ * the stream, floats as the IEEE single bits they hold. A family keeps its
+ * own table of contexts and sends the table as a subsection of its own
+ * description, so adopting it does not change the family's version:
+ *
+ *     DEFINE_VMSTATE_SGI_GL_CONTEXTS(vmstate_foo_gl, "foo/gl-contexts",
+ *                                    FooState, gl, FOO_GL_CONTEXTS);
+ *     ... .subsections = (const VMStateDescription * const []) {
+ *             &vmstate_foo_gl, NULL },
+ *
+ * The name must begin with the family description's name and a slash, and
+ * the count is the length of the family's array. Loading refuses a context
+ * sgi_gl_context_valid() refuses. hw_id and the drawable travel as saved;
+ * a family that derives them from its own state sets them again in its own
+ * post_load, which runs after this subsection's.
+ *
+ * Adding a field. A field added to SGIGLContext, or to a structure inside
+ * it, fails the build at a size check beside vmstate_sgi_gl_context, and
+ * the byte-coverage test in tests/unit/test-sgi-gl-vmstate.c, until it is
+ * described. Neither sees a field small enough to sit in the padding the
+ * compiler leaves after a bool, so flags are uint32_t, as the rest are.
+ * A new field is described in a new subsection of vmstate_sgi_gl_context
+ * (or of the nested description that holds it), named
+ * "sgi-gl-context/<what>", never appended to a base field list: nested
+ * descriptions put no version on the stream, and a subsection carries its
+ * own name and version. Its .needed may return false only while the field
+ * holds what sgi_gl_init() gives it; a stream without the subsection then
+ * leaves the destination's initial value, as a source that predates the
+ * field had, and a binary without it refuses a stream that needs it. The
+ * size check follows and SGI_GL_VMSTATE_VERSION does not change.
+ *
+ * SGI_GL_VMSTATE_VERSION is the base layout's, carried by the family's
+ * subsection. It changes only when a described field changes meaning,
+ * type or position; the minimum version follows it, so the older layout
+ * is refused by name rather than misread.
+ */
+#define SGI_GL_VMSTATE_VERSION  1
+
+extern const VMStateDescription vmstate_sgi_gl_context;
+
+#define VMSTATE_SGI_GL_CONTEXTS(_field, _state, _n)                      \
+    VMSTATE_STRUCT_ARRAY(_field, _state, _n, 0, vmstate_sgi_gl_context,  \
+                         SGIGLContext)
+
+#define DEFINE_VMSTATE_SGI_GL_CONTEXTS(_vmsd, _name, _state, _field, _n) \
+    static const VMStateDescription _vmsd = {                            \
+        .name = (_name),                                                 \
+        .version_id = SGI_GL_VMSTATE_VERSION,                            \
+        .minimum_version_id = SGI_GL_VMSTATE_VERSION,                    \
+        .fields = (const VMStateField[]) {                               \
+            VMSTATE_SGI_GL_CONTEXTS(_field, _state, _n),                 \
+            VMSTATE_END_OF_LIST()                                        \
+        },                                                               \
+    }
+
 #endif

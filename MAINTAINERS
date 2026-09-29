@@ -1544,6 +1544,7 @@ F: tests/qtest/ioc3-release-fixture.c
 F: tests/qtest/xio-test-board.c
 F: tests/unit/test-sgi-dma.c
 F: tests/unit/test-sgi-gl.c
+F: tests/unit/test-sgi-gl-vmstate.c
 F: tests/unit/test-sgi-memory.c
 F: tests/unit/test-sgi-o2000-module-mgmt*.c
 F: tests/unit/test-sgi-pi-gfx.c
