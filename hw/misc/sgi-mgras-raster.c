@@ -2175,7 +2175,14 @@ static bool mgras_raster_list_next(void *opaque, const SGICommandFetch *f,
                       MGRAS_LIST_MAX_RANGES, MGRAS_LIST_MAX_WORDS);
         return mgras_raster_list_refuse(b);
     }
-    /* Every range carries a header, so a range of no words is not one. */
+    /*
+     * Every range carries a header, so a range of no words is not one.
+     * Unknown: whether the client ever ends a list with a call, a calling
+     * range whose next range is (0, 0). The listing's three header forms
+     * always name a next range, __glMgrDLToPool was not read far enough to
+     * rule the case out, and no capture has a list that calls a list. The
+     * model refuses such a list here, on the return from the called list.
+     */
     if (!next.size) {
         qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: display list names a "
                       "range of no words at pool offset 0x%x\n", next.offset);

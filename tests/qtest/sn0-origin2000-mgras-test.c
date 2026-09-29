@@ -9057,17 +9057,18 @@ static void gl_list_window_triangle(QTestState *t, uint64_t addr,
     qtest_memwrite(t, addr, bytes, sizeof(bytes));
 }
 
-static void test_gl_list_page_on_another_node(void)
+static void gl_list_page_on_node(unsigned int nasid)
 {
-    uint64_t node1 = (1ull << 32) | ((uint64_t)GL_LIST_NODE_FRAME << 12);
+    uint64_t node = ((uint64_t)nasid << 32) |
+                    ((uint64_t)GL_LIST_NODE_FRAME << 12);
     uint8_t entry[8];
     QTestState *t = qtest_init(GL_LIST_NODE_ARGS);
 
-    sn0_program_nasid(t, 1);
-    stq_be_p(entry, (1ull << 20) | GL_LIST_NODE_FRAME);
+    sn0_program_nasid(t, nasid);
+    stq_be_p(entry, ((uint64_t)nasid << 20) | GL_LIST_NODE_FRAME);
     gl_list_frame(t);
     qtest_memwrite(t, GL_LIST_PAGE_LIST + 0x18, entry, sizeof(entry));
-    gl_list_window_triangle(t, node1, 1, 1);
+    gl_list_window_triangle(t, node, 1, 1);
     gl_list_window_triangle(t, (uint64_t)GL_LIST_NODE_FRAME << 12, 1, 0);
     qtest_writel(t, MGRAS_REG(0x130400), 0x00482808);
     qtest_writeq(t, MGRAS_REG(0x130400), GL_LIST_PAGE_LIST | 0x19);
@@ -9079,6 +9080,21 @@ static void test_gl_list_page_on_another_node(void)
     g_assert_cmphex(mgras_test_pixel(t, 320, 320), ==, 0xffff00);
     g_assert_cmphex(mgras_qom_get_uint(t, "x-test-error"), ==, 0);
     qtest_quit(t);
+}
+
+static void test_gl_list_page_on_another_node(void)
+{
+    gl_list_page_on_node(1);
+}
+
+/*
+ * The node field is all eight bits of the SN0 node number, entry bits
+ * 27:20: the same list on a peer numbered 255, the highest the Hub
+ * routes, draws yellow.
+ */
+static void test_gl_list_page_on_the_highest_node(void)
+{
+    gl_list_page_on_node(255);
 }
 
 /*
@@ -9146,6 +9162,76 @@ static void test_gl_list_calls_a_list(void)
     gl_word(qts, GL_FLUSH);
     rgb = mgras_screendump(qts);
     gl_check_window_sha256(rgb, GL_LIST_SHA256);
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+}
+
+/*
+ * Calls for the two limit tests below: pool page 0 holds 65 calling
+ * ranges of header alone, 0x40 bytes apart, each calling the next and
+ * returning to a last range at 0x1c00; the 65th calls a list at 0x1800
+ * whose one range draws a yellow triangle over the window.
+ */
+#define GL_LIST_CALLERS 65
+#define GL_LIST_CALLER(k) (0x40u * (k))
+#define GL_LIST_LEAF 0x1800u
+#define GL_LIST_RETURN 0x1c00u
+#define GL_LIST_LEAF_WORDS 17
+
+static void gl_list_leaf_and_return(QTestState *t)
+{
+    static const uint32_t last[2] = { GL_LIST_LAST_HDR, 0 };
+
+    gl_list_window_triangle(t, ((uint64_t)GL_LIST_POOL_PFN(1) << 12) |
+                            (GL_LIST_LEAF & 0xfff), 1, 1);
+    gl_list_put(t, GL_LIST_RETURN, last, ARRAY_SIZE(last));
+}
+
+/*
+ * The model follows 64 nested calls, as many as __glMgrDLExecuteDMA lets
+ * a list by DMA reach, and refuses a 65th whole. Called from the second
+ * range the chain is 64 calls deep and draws; from the first it is 65
+ * and draws nothing.
+ */
+static void test_gl_list_calls_nest_64_deep(void)
+{
+    mgras_reset();
+    gl_list_frame(qts);
+    gl_list_install(qts, 2);
+    for (unsigned int k = 0; k < GL_LIST_CALLERS; k++) {
+        bool leaf = k == GL_LIST_CALLERS - 1;
+        const uint32_t call[6] = {
+            GL_LIST_CALL_HDR, GL_LIST_RETURN, 2, GL_LIST_NEXT_HDR,
+            leaf ? GL_LIST_LEAF : GL_LIST_CALLER(k + 1),
+            leaf ? GL_LIST_LEAF_WORDS : 6,
+        };
+
+        gl_list_put(qts, GL_LIST_CALLER(k), call, ARRAY_SIZE(call));
+    }
+    gl_list_leaf_and_return(qts);
+    gl_call_list(qts, GL_LIST_CALLER(0), 6);
+    g_assert_cmphex(mgras_test_pixel(qts, 320, 320), ==, 0x0000ff);
+    gl_call_list(qts, GL_LIST_CALLER(1), 6);
+    g_assert_cmphex(mgras_test_pixel(qts, 320, 320), ==, 0xffff00);
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+}
+
+/*
+ * A call's fourth word must be 0x00080c08. The client could form
+ * 0x00080e08 there from a flag it never sets; the model refuses it and
+ * does not run the called list, which would draw the window yellow.
+ */
+static void test_gl_list_call_needs_its_next_token(void)
+{
+    const uint32_t call[6] = { GL_LIST_CALL_HDR, GL_LIST_RETURN, 2,
+                               0x00080e08, GL_LIST_LEAF, GL_LIST_LEAF_WORDS };
+
+    mgras_reset();
+    gl_list_frame(qts);
+    gl_list_install(qts, 2);
+    gl_list_put(qts, 0, call, ARRAY_SIZE(call));
+    gl_list_leaf_and_return(qts);
+    gl_call_list(qts, 0, ARRAY_SIZE(call));
+    g_assert_cmphex(mgras_test_pixel(qts, 320, 320), ==, 0x0000ff);
     g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
 }
 
@@ -13973,6 +14059,12 @@ int main(int argc, char **argv)
                    test_gl_list_big_matches_the_reference);
     qtest_add_func("sn0/origin2000/mgras/gl-list-page-on-another-node",
                    test_gl_list_page_on_another_node);
+    qtest_add_func("sn0/origin2000/mgras/gl-list-page-on-the-highest-node",
+                   test_gl_list_page_on_the_highest_node);
+    qtest_add_func("sn0/origin2000/mgras/gl-list-calls-nest-64-deep",
+                   test_gl_list_calls_nest_64_deep);
+    qtest_add_func("sn0/origin2000/mgras/gl-list-call-needs-its-next-token",
+                   test_gl_list_call_needs_its_next_token);
     qtest_add_func("sn0/origin2000/mgras/gl-list-continues-at-offset-zero",
                    test_gl_list_continues_at_offset_zero);
     qtest_add_func("sn0/origin2000/mgras/gl-list-calls-a-list",
