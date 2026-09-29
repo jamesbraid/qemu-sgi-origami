@@ -242,6 +242,8 @@ struct SGIMachineState {
     bool fuel_ioc3_subsystem_id_set;
     uint8_t fuel_l1_type_code;
     bool fuel_l1_type_code_set;
+    int32_t fuel_l1_revision[3];
+    bool fuel_l1_revision_set;
     uint8_t fuel_bedrock_revision;
     bool fuel_bedrock_revision_set;
     char *fuel_rtc_decode;
@@ -2537,6 +2539,10 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
         error_setg(errp, "fuel-l1-type-code applies only to -M fuel");
         return false;
     }
+    if (strcmp(smc->product, "fuel") && s->fuel_l1_revision_set) {
+        error_setg(errp, "fuel-l1-revision applies only to -M fuel");
+        return false;
+    }
     if (strcmp(smc->product, "fuel") && s->fuel_bedrock_revision_set) {
         error_setg(errp, "fuel-bedrock-revision applies only to -M fuel");
         return false;
@@ -2825,6 +2831,14 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
                                      s->fuel_board_id_word);
                 qdev_prop_set_uint32(DEVICE(node), "fuel-l1-type-code",
                                      s->fuel_l1_type_code);
+                if (s->fuel_l1_revision_set) {
+                    qdev_prop_set_int32(DEVICE(node), "fuel-l1-revision-major",
+                                       s->fuel_l1_revision[0]);
+                    qdev_prop_set_int32(DEVICE(node), "fuel-l1-revision-minor",
+                                       s->fuel_l1_revision[1]);
+                    qdev_prop_set_int32(DEVICE(node), "fuel-l1-revision-patch",
+                                       s->fuel_l1_revision[2]);
+                }
                 qdev_prop_set_uint8(DEVICE(node), "fuel-bedrock-revision",
                                     s->fuel_bedrock_revision);
             }
@@ -3695,6 +3709,59 @@ static void sgi_machine_set_fuel_l1_type_code(Object *obj, Visitor *v,
     }
 }
 
+static char *sgi_machine_get_fuel_l1_revision(Object *obj, Error **errp)
+{
+    SGIMachineState *s = SGI_MACHINE(obj);
+
+    if (!s->fuel_l1_revision_set) {
+        return NULL;
+    }
+    return g_strdup_printf("%d.%d.%d", s->fuel_l1_revision[0],
+                           s->fuel_l1_revision[1], s->fuel_l1_revision[2]);
+}
+
+static void sgi_machine_set_fuel_l1_revision(Object *obj, const char *value,
+                                              Error **errp)
+{
+    SGIMachineState *s = SGI_MACHINE(obj);
+    int32_t revision[3];
+    const char *p = value;
+
+    if (!p) {
+        goto invalid;
+    }
+    for (size_t i = 0; i < ARRAY_SIZE(revision); i++) {
+        int32_t number = 0;
+
+        if (!g_ascii_isdigit(*p)) {
+            goto invalid;
+        }
+        do {
+            unsigned digit = *p++ - '0';
+
+            if (number > (INT32_MAX - digit) / 10) {
+                goto invalid;
+            }
+            number = number * 10 + digit;
+        } while (g_ascii_isdigit(*p));
+        revision[i] = number;
+        if (i < ARRAY_SIZE(revision) - 1) {
+            if (*p++ != '.') {
+                goto invalid;
+            }
+        } else if (*p) {
+            goto invalid;
+        }
+    }
+    memcpy(s->fuel_l1_revision, revision, sizeof(revision));
+    s->fuel_l1_revision_set = true;
+    return;
+
+invalid:
+    error_setg(errp, "fuel-l1-revision requires three decimal components "
+               "(major.minor.patch), each at most %d", INT32_MAX);
+}
+
 static void sgi_machine_get_fuel_bedrock_revision(Object *obj, Visitor *v,
                                                    const char *name,
                                                    void *opaque, Error **errp)
@@ -3899,6 +3966,13 @@ static void sgi_machine_class_init(ObjectClass *oc, const void *data)
         "Experimental Fuel L1 local identity reply character; required "
         "because its physical stored value is unknown. Accepts 0x34 "
         "(raw 4) or 0x61 (published IP34 code).");
+
+    object_class_property_add_str(oc, "fuel-l1-revision",
+                                  sgi_machine_get_fuel_l1_revision,
+                                  sgi_machine_set_fuel_l1_revision);
+    object_class_property_set_description(oc, "fuel-l1-revision",
+        "Optional Fuel L1 firmware revision as decimal major.minor.patch; "
+        "absent when the fitted revision is unknown.");
 
     object_class_property_add(oc, "fuel-bedrock-revision", "uint8",
                               sgi_machine_get_fuel_bedrock_revision,

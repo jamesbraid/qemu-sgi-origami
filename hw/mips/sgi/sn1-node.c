@@ -1482,6 +1482,13 @@ static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
         qdev_prop_set_int32(node->l1, "revision-major", 1);
         qdev_prop_set_int32(node->l1, "revision-minor", 18);
         qdev_prop_set_int32(node->l1, "revision-patch", 5);
+    } else if (node->fuel_l1_revision[0] >= 0) {
+        qdev_prop_set_int32(node->l1, "revision-major",
+                           node->fuel_l1_revision[0]);
+        qdev_prop_set_int32(node->l1, "revision-minor",
+                           node->fuel_l1_revision[1]);
+        qdev_prop_set_int32(node->l1, "revision-patch",
+                           node->fuel_l1_revision[2]);
     }
     qdev_realize(node->l1, NULL, &error_fatal);
     object_unref(OBJECT(node->l1));
@@ -2001,6 +2008,12 @@ static const Property sn1_node_properties[] = {
     DEFINE_PROP_BOOL("fuel-experiment", SN1NodeState, fuel_experiment, false),
     DEFINE_PROP_UINT32("fuel-l1-type-code", SN1NodeState,
                        fuel_l1_type_code, 0),
+    DEFINE_PROP_INT32("fuel-l1-revision-major", SN1NodeState,
+                      fuel_l1_revision[0], -1),
+    DEFINE_PROP_INT32("fuel-l1-revision-minor", SN1NodeState,
+                      fuel_l1_revision[1], -1),
+    DEFINE_PROP_INT32("fuel-l1-revision-patch", SN1NodeState,
+                      fuel_l1_revision[2], -1),
     DEFINE_PROP_UINT8("fuel-bedrock-revision", SN1NodeState,
                       fuel_bedrock_revision, 0),
     DEFINE_PROP_UINT8("io-board-widget", SN1NodeState, io_board_widget, 0),

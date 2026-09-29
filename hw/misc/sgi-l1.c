@@ -1831,6 +1831,12 @@ static int l1_post_load(void *opaque, int version_id)
     if (s->command_len >= sizeof(s->command) ||
         s->frame_len > SGI_L1_FRAME_SIZE ||
         s->port_field > 0x7f ||
+        s->revision_major < -1 || s->revision_minor < -1 ||
+        s->revision_patch < -1 ||
+        ((s->revision_major < 0 || s->revision_minor < 0 ||
+          s->revision_patch < 0) &&
+         (s->revision_major >= 0 || s->revision_minor >= 0 ||
+          s->revision_patch >= 0)) ||
         s->two_bit_setting > 3 || s->debug_switches > 0xffff ||
         s->brick_type_code > 0xff ||
         s->log_head >= SGI_L1_LOG_ENTRIES ||
@@ -1929,7 +1935,7 @@ static const VMStateDescription vmstate_l1_selected = {
 /* The selected record cache and raw identity code are controller state. */
 static const VMStateDescription vmstate_l1 = {
     .name = TYPE_SGI_L1,
-    .version_id = 9,
+    .version_id = 10,
     .minimum_version_id = 7,
     .post_load = l1_post_load,
     .fields = (const VMStateField[]) {
@@ -1953,6 +1959,9 @@ static const VMStateDescription vmstate_l1 = {
         VMSTATE_UINT32(rack, SGIL1State),
         VMSTATE_UINT32(bay, SGIL1State),
         VMSTATE_UINT32_V(brick_type_code, SGIL1State, 9),
+        VMSTATE_INT32_V(revision_major, SGIL1State, 10),
+        VMSTATE_INT32_V(revision_minor, SGIL1State, 10),
+        VMSTATE_INT32_V(revision_patch, SGIL1State, 10),
         VMSTATE_UINT32(pending_rack, SGIL1State),
         VMSTATE_UINT32(pending_bay, SGIL1State),
         VMSTATE_UINT8(port_field, SGIL1State),
