@@ -105,8 +105,8 @@ guarantee. Run the existing targets with the local asset root set:
 .. code-block:: sh
 
    export QEMU_TEST_SGI_ASSET_DIR=/path/to/sgi-assets
-   meson test -C build --print-errorlogs \
-       func-mips64-origin200_prom func-mips64-linux_kernel \
+   build/pyvenv/bin/meson test -C build --setup qemu:thorough \
+       --print-errorlogs func-mips64-origin200_prom func-mips64-linux_kernel \
        func-mips64-irix_miniroot
 
 This documents local placement only. Public acquisition instructions for
