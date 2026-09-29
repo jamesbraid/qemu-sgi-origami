@@ -12408,6 +12408,7 @@ static unsigned gl_stream_subsections(QTestState *qts)
         "sgi-mgras/gl-pixels", "sgi-mgras/gl-pixel-flags",
         "sgi-mgras/gl-scissor", "sgi-mgras/gl-alpha",
         "sgi-mgras/gl-stencil", "sgi-mgras/gl-plane-stencil",
+        "sgi-mgras/gl-blend",
     };
     g_autofree char *tmpfs = NULL;
     g_autofree char *path = NULL;
@@ -14117,6 +14118,105 @@ static void test_gl_stencil_migration(void)
 }
 
 /*
+ * Blending as the client sends it: glBlendFunc 0x3f08 and the two
+ * factors' enumerants, glBlendEquationEXT 0x6004 and the equation's,
+ * glBlendColorEXT 0xd910 and four floats, GL_BLEND 0x6504 and 1 or 0.
+ * GL_BLEND is query 0xc4a and GL_BLEND_SRC, _DST and _EQUATION 0xc4b to
+ * 0xc4d.
+ */
+#define GL_BLEND_FUNC_HDR     0x00003f08
+#define GL_BLEND_EQUATION_HDR 0x00006004
+#define GL_BLEND_COLOR_HDR    0x0000d910
+#define GL_BLEND_HDR          0x00006504
+#define GL_Q_BLEND            0xc4a
+#define GL_SRC_ALPHA          0x302
+#define GL_ONE_MINUS_SRC_ALPHA 0x303
+#define GL_CONSTANT_COLOR     0x8001
+#define GL_FUNC_ADD           0x8006
+#define GL_FUNC_REVERSE_SUBTRACT 0x800b
+
+static void gl_blend(QTestState *qts, uint32_t src, uint32_t dst,
+                     uint32_t equation)
+{
+    gl_word(qts, GL_BLEND_FUNC_HDR);
+    gl_word(qts, src);
+    gl_word(qts, dst);
+    gl_one(qts, GL_BLEND_EQUATION_HDR, equation);
+}
+
+/*
+ * Over a red window (OpenGL 1.2.1, 4.1.6): green of alpha 0.25 by its
+ * alpha gives (191, 64, 0); the reverse difference with GL_ONE of red 0.5
+ * gives 127; the constant (0.5, 0.25, 1, 1) of white 0.5 red and 0.25
+ * green added to the window. Disabled, the source replaces the window.
+ */
+static void test_gl_blend_mixes_with_the_window(void)
+{
+    gl_scene_start(qts, GL_FLAT);
+    gl_clear_color(qts, 1, 0, 0, 1);
+    gl_word(qts, GL_CLEAR_COLOR_BUFFER);
+    gl_one(qts, GL_BLEND_HDR, 1);
+    gl_blend(qts, GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_FUNC_ADD);
+    g_assert_cmphex(gl_query(qts, GL_Q_BLEND, 1), ==, 1);
+    g_assert_cmphex(gl_query(qts, GL_Q_BLEND + 1, 1), ==, GL_SRC_ALPHA);
+    g_assert_cmphex(gl_query(qts, GL_Q_BLEND + 2, 1), ==,
+                    GL_ONE_MINUS_SRC_ALPHA);
+    g_assert_cmphex(gl_query(qts, GL_Q_BLEND + 3, 1), ==, GL_FUNC_ADD);
+    g_assert_cmphex(gl_alpha_window(qts, 0.25f), ==, 0xbf4000);
+
+    gl_word(qts, GL_CLEAR_COLOR_BUFFER);
+    gl_blend(qts, 1, 1, GL_FUNC_REVERSE_SUBTRACT);
+    gl_fill_window(qts, 0.5f, 0, 0);
+    g_assert_cmphex(gl_window_pixel(qts, 64, 64), ==, 0x7f0000);
+
+    gl_word(qts, GL_BLEND_COLOR_HDR);
+    gl_float(qts, 0.5f);
+    gl_float(qts, 0.25f);
+    gl_float(qts, 1);
+    gl_float(qts, 1);
+    gl_word(qts, GL_CLEAR_COLOR_BUFFER);
+    gl_blend(qts, GL_CONSTANT_COLOR, 1, GL_FUNC_ADD);
+    gl_fill_window(qts, 1, 1, 0);
+    g_assert_cmphex(gl_window_pixel(qts, 64, 64), ==, 0xff4000);
+
+    gl_one(qts, GL_BLEND_HDR, 0);
+    g_assert_cmphex(gl_query(qts, GL_Q_BLEND, 1), ==, 0);
+    gl_fill_window(qts, 0, 0, 1);
+    g_assert_cmphex(gl_window_pixel(qts, 64, 64), ==, 0x0000ff);
+}
+
+/* Slot A adds its colour to the window; slot B replaces it. */
+static void gl_blend_setup(QTestState *from)
+{
+    for (int slot = 0; slot < 2; slot++) {
+        gl_enter_slot(from, slot ? GL_SLOT_B : GL_SLOT_A);
+        gl_word(from, GL_CONTEXT_OPENER);
+        gl_viewport(from, 0, 0, 128, 128);
+    }
+    gl_enter_slot(from, GL_SLOT_A);
+    gl_one(from, GL_BLEND_HDR, 1);
+    gl_blend(from, 1, 1, GL_FUNC_ADD);
+}
+
+static void gl_blend_check(QTestState *to)
+{
+    for (int slot = 0; slot < 2; slot++) {
+        gl_enter_slot(to, slot ? GL_SLOT_B : GL_SLOT_A);
+        gl_clear_color(to, 1, 0, 0, 1);
+        gl_word(to, GL_CLEAR_COLOR_BUFFER);
+        gl_fill_window(to, 0, 1, 0);
+        g_assert_cmphex(mgras_test_pixel(to, 256 + 64, 383 - 64), ==,
+                        slot ? 0x00ff00 : 0xffff00);
+    }
+}
+
+/* Each context's blending state migrates. */
+static void test_gl_blend_migration(void)
+{
+    gl_migrate(gl_blend_setup, gl_blend_check);
+}
+
+/*
  * The context setup's 32 detail-texture table writes, 0xec10 with 0xc52,
  * 0xc78, 0x194 and a value (0x1f three times, then 0x1d down to 1), are
  * texture-only defaults and consumed without a log line; any other value
@@ -14463,6 +14563,36 @@ static void test_gl_state_subsections_follow_their_state(void)
             }
         }
         g_assert_cmpuint(gl_stream_subsections(s), ==, want[i]);
+        qtest_quit(s);
+    }
+
+    /*
+     * Blending: its enable, factors other than the setup's GL_ONE and
+     * GL_ZERO, or a constant colour sends gl-blend; the setup's own
+     * factors and equation, and blending turned off again, send nothing.
+     */
+    for (int i = 0; i < 4; i++) {
+        s = qtest_init(MIGRATION_ARGS);
+        gl_enter_slot(s, GL_SLOT_A);
+        gl_word(s, GL_CONTEXT_OPENER);
+        gl_blend(s, 1, 0, GL_FUNC_ADD);
+        if (i < 2) {
+            gl_one(s, GL_BLEND_HDR, 1);
+        }
+        if (i == 1) {
+            gl_one(s, GL_BLEND_HDR, 0);
+        }
+        if (i == 2) {
+            gl_blend(s, GL_SRC_ALPHA, 0, GL_FUNC_ADD);
+        }
+        if (i == 3) {
+            gl_word(s, GL_BLEND_COLOR_HDR);
+            gl_float(s, 0);
+            gl_float(s, 0);
+            gl_float(s, 0);
+            gl_float(s, 1);
+        }
+        g_assert_cmpuint(gl_stream_subsections(s), ==, i == 1 ? 0 : 32768);
         qtest_quit(s);
     }
 }
@@ -15349,6 +15479,10 @@ int main(int argc, char **argv)
                    test_gl_stencil_clear_keeps_depth);
     qtest_add_func("sn0/origin2000/mgras/gl-stencil-migration",
                    test_gl_stencil_migration);
+    qtest_add_func("sn0/origin2000/mgras/gl-blend-mixes-with-the-window",
+                   test_gl_blend_mixes_with_the_window);
+    qtest_add_func("sn0/origin2000/mgras/gl-blend-migration",
+                   test_gl_blend_migration);
     qtest_add_func("sn0/origin2000/mgras/gl-texture-matrix-migration",
                    test_gl_texture_matrix_migration);
     qtest_add_func("sn0/origin2000/mgras/"
