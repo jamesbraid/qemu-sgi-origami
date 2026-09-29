@@ -11,7 +11,8 @@
  *
  * What it preserves: the pixels that colour and depth clears, untextured
  * points, lines, triangles, strips, fans, quads and polygons, at size and
- * width 1, flat or smooth shaded, transformed by the modelview and
+ * width 1, flat or smooth shaded, lit per vertex by OpenGL's lighting
+ * equation, transformed by the modelview and
  * projection matrices and their stacks and depth tested, and bitmaps,
  * leave in the window's front or back buffer, in RGBA or colour-index
  * mode, and the main-port framing,
@@ -23,6 +24,7 @@
  */
 #include "qemu/osdep.h"
 #include <math.h>
+#include "qemu/bitops.h"
 #include "qemu/log.h"
 #include "hw/misc/sgi-mgras-gl.h"
 #include "hw/display/sgi/rasterizer.h"
@@ -127,6 +129,30 @@
  * notes-lists-arrays-lighting.md in the Origami repository).
  */
 #define MGRAS_GL_NORMAL3F        0x0000070c
+/*
+ * The other glNormal3 forms, from their emitters in the IRIX 6.5.30
+ * IP27GR532 libGLcore.so (SHA-256 626d6d94...), each the components as the
+ * application passed them, established from the listing:
+ *
+ * - glNormal3d (0xdac8040) and 3dv: 0x12000718 and three doubles, each
+ *   one 64-bit store, so its high word first.
+ * - glNormal3i (0xdac80cc) and 3iv: 0x1c00070c and three ints.
+ * - glNormal3s (0xdac8114) and 3sv: 0x1d000706, then x in bits 31:16 and
+ *   y in 15:0 of one word, and z in bits 31:16 of a second.
+ * - glNormal3b (0xdac7fd0) and 3bv: 0x1c800703, then x, y and z in bits
+ *   31:24, 23:16 and 15:8 of one word.
+ *
+ * The short and byte headers are matched with their lengths rounded up
+ * to the words they take. The client converts nothing, so the board does;
+ * that it converts as OpenGL 1.2.1's table 2.6 gives for a signed normal
+ * component, (2c + 1) / (2^b - 1) for b bits, is inferred from the
+ * specification and the classes' reading as scaled types in
+ * mgras-gl-commands.md.
+ */
+#define MGRAS_GL_NORMAL3D        0x12000718
+#define MGRAS_GL_NORMAL3I        0x1c00070c
+#define MGRAS_GL_NORMAL3S        0x1d000708
+#define MGRAS_GL_NORMAL3B        0x1c800704
 /* glRasterPos2f and 3f (mgras-gl-commands.md, attribute table). */
 #define MGRAS_GL_RASTER_POS2F    0x40003808
 #define MGRAS_GL_RASTER_POS3F    0x2000380c
@@ -315,8 +341,34 @@ static const uint8_t mgras_gl_clip_words[MGRAS_GL_CLIP_RECTS][2] = {
  * not depend on the light or face, so the board puts the parameter in
  * one place for the queries (inferred). The model keeps the state in the
  * shared context, which transforms positions and spot directions by the
- * modelview when they arrive, and answers from it. Lighting a vertex is
- * not modelled: every draw still takes its vertex colours.
+ * modelview when they arrive, and answers from it.
+ *
+ * The enables, from __glMgrim_Enable (0xd97d970) and __glMgrim_Disable
+ * (0xd97f710), established from the listing:
+ *
+ * - glEnable(GL_LIGHTING) sets bit 0x40 of the context's flags word and
+ *   calls __glMgrEnableLighting (0xd9543a0), which writes 0x0d00 alone
+ *   while that bit is set; the probe's lighting-only case captured
+ *   0x0d00 and nothing else. glDisable(GL_LIGHTING) writes 0x0e00 through
+ *   __glMgrDisableLighting (0xd9543d0), and __glMgrSetSoftHardwareState
+ *   (0xd9dfbfc) writes it as a header too. The other 0x0e00 words in the
+ *   listing are payloads of 0x000c0004 descriptor headers.
+ * - glEnable(GL_LIGHTi) writes 0x7104 and i, the capability less
+ *   GL_LIGHT0 (0xd97de60, __glMgrEnableLightSource 0xd97d950), and
+ *   glDisable 0xa004 and i (0xd97fc28, 0xd97f6f0).
+ * - glEnable(GL_NORMALIZE) writes 0xa304 and 1 (0xd97e1cc, the 1 held in
+ *   $a3 from 0xd97d980), glDisable 0xa304 and 0 (0xd97ff54).
+ *   GL_RESCALE_NORMAL is GL_INVALID_ENUM to this client, which sends
+ *   nothing for it.
+ *
+ * That the board lights each vertex as OpenGL 1.2.1, 2.13.1 gives while
+ * these are enabled is inferred from the specification. The shared
+ * context evaluates the lighting equation in single-precision floats,
+ * which approximates the geometry engine's own arithmetic: a real
+ * board's pixels for a lit primitive would settle how closely. The
+ * discriminating tests are gl-lit-triangle-matches-the-equation,
+ * gl-light-enables-select-the-lights, gl-normalize-enable,
+ * gl-normal-forms-convert and gl-two-sided-lighting-lights-the-back.
  */
 #define MGRAS_GL_LIGHT_AMBIENT   0x00001214
 #define MGRAS_GL_LIGHT_DIFFUSE   0x00001314
@@ -337,6 +389,11 @@ static const uint8_t mgras_gl_clip_words[MGRAS_GL_CLIP_RECTS][2] = {
 #define MGRAS_GL_COLOR_MATERIAL_BOTH 0x0000c104
 #define MGRAS_GL_COLOR_MATERIAL_ON 0x0000c200
 #define MGRAS_GL_COLOR_MATERIAL_OFF 0x0000c300
+#define MGRAS_GL_LIGHTING_ON     0x00000d00
+#define MGRAS_GL_LIGHTING_OFF    0x00000e00
+#define MGRAS_GL_LIGHT_ON        0x00007104
+#define MGRAS_GL_LIGHT_OFF       0x0000a004
+#define MGRAS_GL_NORMALIZE       0x0000a304
 #define MGRAS_GL_GET_LIGHT       0x0000ef08
 #define MGRAS_GL_GET_MATERIAL    0x0000ee08
 #define MGRAS_GL_QUERY_READBACK  0x3ba
@@ -468,6 +525,11 @@ bool sgi_mgras_gl_header(uint32_t header)
     case MGRAS_GL_COLOR_MATERIAL_BOTH:
     case MGRAS_GL_COLOR_MATERIAL_ON:
     case MGRAS_GL_COLOR_MATERIAL_OFF:
+    case MGRAS_GL_LIGHTING_ON:
+    case MGRAS_GL_LIGHTING_OFF:
+    case MGRAS_GL_LIGHT_ON:
+    case MGRAS_GL_LIGHT_OFF:
+    case MGRAS_GL_NORMALIZE:
     case MGRAS_GL_GET_LIGHT:
     case MGRAS_GL_GET_MATERIAL:
     case MGRAS_GL_BANKS:
@@ -480,6 +542,10 @@ bool sgi_mgras_gl_header(uint32_t header)
     case MGRAS_GL_COLOR3UB:
     case MGRAS_GL_COLOR4UB:
     case MGRAS_GL_NORMAL3F:
+    case MGRAS_GL_NORMAL3D:
+    case MGRAS_GL_NORMAL3I:
+    case MGRAS_GL_NORMAL3S:
+    case MGRAS_GL_NORMAL3B:
     case MGRAS_GL_EDGE_FLAG_TRUE:
     case MGRAS_GL_EDGE_FLAG_FALSE:
     case MGRAS_GL_RASTER_POS2F:
@@ -1121,8 +1187,10 @@ QEMU_BUILD_BUG_ON(SGI_GL_STACK_DEPTH - 1 != MGRAS_GL_WIRE_STACK);
  *
  * The stream carries no other attribute of a held vertex, so one loaded
  * from it takes OpenGL's initial normal, texture coordinate and edge
- * flag, not the ones current when it was sent. Nothing reads those yet;
- * lighting and edge flags will need them carried.
+ * flag, not the ones current when it was sent. Nothing reads those once
+ * the vertex is held: lighting reads the normal as the vertex arrives,
+ * and a lit vertex's colour is its lit colour. Its back colour travels
+ * in the light-enables subsection; edge flags will need theirs carried.
  */
 typedef struct MgrasGLPrimitiveWire {
     SGIGLContext *parent;
@@ -1648,6 +1716,62 @@ const VMStateDescription vmstate_sgi_mgras_gl_texture = {
     }
 };
 
+static const VMStateDescription vmstate_sgi_mgras_gl_context_light_enables = {
+    .name = TYPE_SGI_MGRAS "/gl-context-light-enables",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32(lighting, SGIGLContext),
+        VMSTATE_UINT32(lights_enabled, SGIGLContext),
+        VMSTATE_UINT32(normalize, SGIGLContext),
+        VMSTATE_UINT32(rescale_normal, SGIGLContext),
+        VMSTATE_UINT32(strip_odd, SGIGLContext),
+        VMSTATE_SUB_ARRAY(held[0], SGIGLContext, SGI_GL_V_BACK_COLOR, 4, 0,
+                          vmstate_info_uint32, float),
+        VMSTATE_SUB_ARRAY(held[1], SGIGLContext, SGI_GL_V_BACK_COLOR, 4, 0,
+                          vmstate_info_uint32, float),
+        VMSTATE_SUB_ARRAY(held[2], SGIGLContext, SGI_GL_V_BACK_COLOR, 4, 0,
+                          vmstate_info_uint32, float),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
+/*
+ * Every context's lighting, light, normalize and rescale enables, its
+ * strip's parity and its held vertices' back colours, sent only once
+ * some context has one of the enables on. A stream without it comes from
+ * a model that lit nothing, or from a guest that enabled none of them:
+ * the destination's initial state, all off, draws the same. The parity
+ * and the back colours matter only while lighting is on.
+ */
+static bool mgras_gl_light_enables_needed(void *opaque)
+{
+    SGIMgrasState *s = opaque;
+
+    for (int i = 0; i < SGI_MGRAS_GL_CONTEXTS; i++) {
+        const SGIGLContext *gl = &s->gl[i];
+
+        if (gl->lighting || gl->lights_enabled || gl->normalize ||
+            gl->rescale_normal) {
+            return true;
+        }
+    }
+    return false;
+}
+
+const VMStateDescription vmstate_sgi_mgras_gl_light_enables = {
+    .name = TYPE_SGI_MGRAS "/gl-light-enables",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = mgras_gl_light_enables_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_STRUCT_ARRAY(gl, SGIMgrasState, SGI_MGRAS_GL_CONTEXTS, 1,
+                             vmstate_sgi_mgras_gl_context_light_enables,
+                             SGIGLContext),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
 /*
  * The parser inside a glBitmap image, live or set aside with a context,
  * keeps its place in the payload fields the stream already carries. A
@@ -1714,6 +1838,9 @@ bool sgi_mgras_gl_post_load(SGIMgrasState *s)
             gl->raster_valid > 1 || gl->cur.index_bits > 32 ||
             gl->cur.dither > 1 || gl->light_model_local_viewer > 1 ||
             gl->light_model_two_side > 1 || gl->color_material > 1 ||
+            gl->lighting > 1 || gl->lights_enabled >> SGI_GL_LIGHTS ||
+            gl->normalize > 1 || gl->rescale_normal > 1 ||
+            gl->strip_odd > 1 ||
             !(gl->cur.depth_range[0] >= 0.0f &&
               gl->cur.depth_range[0] <= 1.0f) ||
             !(gl->cur.depth_range[1] >= 0.0f &&
@@ -2144,6 +2271,28 @@ static bool mgras_gl_lighting(SGIMgrasState *s, uint32_t header,
         mgras_gl_command(s, header == MGRAS_GL_COLOR_MATERIAL_ON ?
                          SGI_GL_OP_ENABLE : SGI_GL_OP_DISABLE, word, 1);
         return true;
+    case MGRAS_GL_LIGHTING_ON:
+    case MGRAS_GL_LIGHTING_OFF:
+        word[0] = SGI_GL_LIGHTING;
+        mgras_gl_command(s, header == MGRAS_GL_LIGHTING_ON ?
+                         SGI_GL_OP_ENABLE : SGI_GL_OP_DISABLE, word, 1);
+        return true;
+    case MGRAS_GL_LIGHT_ON:
+    case MGRAS_GL_LIGHT_OFF:
+        if (payload[0] >= SGI_GL_LIGHTS) {
+            qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: light %u enable "
+                          "ignored\n", payload[0]);
+            return true;
+        }
+        word[0] = SGI_GL_LIGHT0 + payload[0];
+        mgras_gl_command(s, header == MGRAS_GL_LIGHT_ON ?
+                         SGI_GL_OP_ENABLE : SGI_GL_OP_DISABLE, word, 1);
+        return true;
+    case MGRAS_GL_NORMALIZE:
+        word[0] = SGI_GL_NORMALIZE;
+        mgras_gl_command(s, payload[0] ? SGI_GL_OP_ENABLE :
+                         SGI_GL_OP_DISABLE, word, 1);
+        return true;
     case MGRAS_GL_GET_LIGHT:
     case MGRAS_GL_GET_MATERIAL:
         mgras_gl_readback(s, header, payload);
@@ -2151,6 +2300,43 @@ static bool mgras_gl_lighting(SGIMgrasState *s, uint32_t header,
     default:
         return false;
     }
+}
+
+/*
+ * A glNormal3 packet's components as the floats glNormal3f takes, by
+ * table 2.6's conversion for a signed component of the packet's type.
+ */
+static void mgras_gl_normal(SGIMgrasState *s, uint32_t header,
+                            const uint32_t *payload)
+{
+    uint32_t word[3];
+    float f[3];
+
+    for (int i = 0; i < 3; i++) {
+        switch (header) {
+        case MGRAS_GL_NORMAL3D: {
+            uint64_t bits = deposit64(payload[2 * i + 1], 32, 32,
+                                      payload[2 * i]);
+            double d;
+
+            memcpy(&d, &bits, sizeof(d));
+            f[i] = d;
+            break;
+        }
+        case MGRAS_GL_NORMAL3I:
+            f[i] = (2.0 * (int32_t)payload[i] + 1) / 4294967295.0;
+            break;
+        case MGRAS_GL_NORMAL3S:
+            f[i] = (2.0 * (int16_t)(payload[i / 2] >>
+                                    (i == 1 ? 0 : 16)) + 1) / 65535.0;
+            break;
+        default:
+            f[i] = (2.0 * (int8_t)(payload[0] >> (24 - 8 * i)) + 1) / 255.0;
+            break;
+        }
+    }
+    memcpy(word, f, sizeof(word));
+    mgras_gl_command(s, SGI_GL_OP_NORMAL3F, word, 3);
 }
 
 void sgi_mgras_gl_execute(SGIMgrasState *s, uint32_t header,
@@ -2300,8 +2486,13 @@ void sgi_mgras_gl_execute(SGIMgrasState *s, uint32_t header,
         mgras_gl_command(s, SGI_GL_OP_COLOR4UB, word, 4);
         return;
     case MGRAS_GL_NORMAL3F:
-        /* Kept for the 0xa104 query only; lighting is not modelled. */
         mgras_gl_command(s, SGI_GL_OP_NORMAL3F, payload, 3);
+        return;
+    case MGRAS_GL_NORMAL3D:
+    case MGRAS_GL_NORMAL3I:
+    case MGRAS_GL_NORMAL3S:
+    case MGRAS_GL_NORMAL3B:
+        mgras_gl_normal(s, header, payload);
         return;
     case MGRAS_GL_EDGE_FLAG_TRUE:
     case MGRAS_GL_EDGE_FLAG_FALSE:

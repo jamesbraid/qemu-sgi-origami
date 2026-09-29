@@ -11487,6 +11487,7 @@ static unsigned gl_stream_subsections(QTestState *qts)
         "sgi-mgras/gl-raster", "sgi-mgras/gl-index", "sgi-mgras/gl-block",
         "sgi-mgras/gl-depth-range", "sgi-mgras/gl-dither",
         "sgi-mgras/gl-lighting", "sgi-mgras/gl-texture",
+        "sgi-mgras/gl-light-enables",
     };
     g_autofree char *tmpfs = NULL;
     g_autofree char *path = NULL;
@@ -12484,6 +12485,224 @@ static void test_gl_lighting_migration(void)
 }
 
 /*
+ * The lighting enables and normals as the client sends them
+ * (notes-lists-arrays-lighting.md; __glMgrim_Enable, __glMgrim_Disable and
+ * the glNormal3 emitters of the IRIX 6.5.30 IP27GR532 libGLcore.so):
+ * glEnable and glDisable(GL_LIGHTING) 0x0d00 and 0x0e00 alone,
+ * glEnable(GL_LIGHTi) 0x7104 and i, glDisable 0xa004 and i,
+ * glEnable/glDisable(GL_NORMALIZE) 0xa304 with 1 or 0, glNormal3f 0x070c,
+ * glNormal3d 0x12000718 with three doubles high word first, glNormal3i
+ * 0x1c00070c, glNormal3s 0x1d000706 with x and y in one word and z in the
+ * high half of a second, glNormal3b 0x1c800703 with x, y and z from bit
+ * 31 down, and glLightModel(GL_LIGHT_MODEL_TWO_SIDE) 0x5904.
+ */
+#define GL_LIGHTING_ON        0x00000d00
+#define GL_LIGHTING_OFF       0x00000e00
+#define GL_LIGHT_ON_HDR       0x00007104
+#define GL_LIGHT_OFF_HDR      0x0000a004
+#define GL_NORMALIZE_HDR      0x0000a304
+#define GL_NORMAL3F_HDR       0x0000070c
+#define GL_NORMAL3D_HDR       0x12000718
+#define GL_NORMAL3I_HDR       0x1c00070c
+#define GL_NORMAL3S_HDR       0x1d000706
+#define GL_NORMAL3B_HDR       0x1c800703
+#define GL_EMISSION           0x1600
+
+/*
+ * A flat, lit scene in the probe window: light 0 as OpenGL starts it,
+ * white along +z, enabled with lighting, and the vertex colour green, which
+ * a lit vertex does not take. Unchanged, a front material ambient 0.2
+ * under light model ambient 0.2 gives 0.04, 10 in eight bits.
+ */
+static void gl_lit_start(QTestState *qts)
+{
+    gl_scene_start(qts, GL_FLAT);
+    gl_clear_color(qts, 0, 0, 0, 1);
+    gl_word(qts, GL_CLEAR_COLOR_BUFFER);
+    gl_one(qts, GL_LIGHT_ON_HDR, 0);
+    gl_word(qts, GL_LIGHTING_ON);
+    gl_color3f(qts, 0, 1, 0);
+}
+
+/*
+ * A triangle over window pixel (64, 50), counter-clockwise, or clockwise
+ * for back, and that pixel afterwards.
+ */
+static uint32_t gl_lit_triangle(QTestState *qts, bool back)
+{
+    gl_word(qts, GL_BEGIN_TRIANGLES);
+    gl_vertex3f(qts, -0.9f, -0.9f, 0);
+    gl_vertex3f(qts, back ? 0 : 0.9f, back ? 0.9f : -0.9f, 0);
+    gl_vertex3f(qts, back ? 0.9f : 0, back ? -0.9f : 0.9f, 0);
+    gl_word(qts, GL_END_TRIANGLES);
+    return gl_window_pixel(qts, 64, 50);
+}
+
+/*
+ * Material diffuse (0.5, 0.25, 0.125) facing light 0 adds itself to the
+ * 0.04 ambient: (0.54, 0.29, 0.165), rounded to eight bits 138, 74 and 42
+ * (OpenGL 1.2.1, 2.13.1, 2.13.9). Disabled, lighting leaves the vertex
+ * colour; with light 0 off only the ambient remains.
+ */
+static void test_gl_lit_triangle_matches_the_equation(void)
+{
+    gl_lit_start(qts);
+    gl_material(qts, GL_FRONT_FACE, GL_DIFFUSE, 0.5f, 0.25f, 0.125f, 1);
+    gl_three(qts, GL_NORMAL3F_HDR, 0, 0, 1);
+    g_assert_cmphex(gl_lit_triangle(qts, false), ==, 0x8a4a2a);
+    gl_word(qts, GL_LIGHTING_OFF);
+    g_assert_cmphex(gl_lit_triangle(qts, false), ==, 0x00ff00);
+    gl_word(qts, GL_LIGHTING_ON);
+    gl_one(qts, GL_LIGHT_OFF_HDR, 0);
+    g_assert_cmphex(gl_lit_triangle(qts, false), ==, 0x0a0a0a);
+}
+
+/*
+ * 0x7104's word names the light: light 1 alone, red at OpenGL's initial
+ * position, on the initial diffuse 0.8 gives red 0.84, 214.
+ */
+static void test_gl_light_enables_select_the_lights(void)
+{
+    gl_lit_start(qts);
+    gl_one(qts, GL_LIGHT_OFF_HDR, 0);
+    gl_light4(qts, GL_LIGHT_DIFFUSE_HDR, 1, 1, 0, 0, 1);
+    gl_one(qts, GL_LIGHT_ON_HDR, 1);
+    gl_three(qts, GL_NORMAL3F_HDR, 0, 0, 1);
+    g_assert_cmphex(gl_lit_triangle(qts, false), ==, 0xd60a0a);
+    gl_one(qts, GL_LIGHT_OFF_HDR, 1);
+    g_assert_cmphex(gl_lit_triangle(qts, false), ==, 0x0a0a0a);
+}
+
+/*
+ * The normal (0, 0, 2) doubles diffuse 0.25 to 0.5, 0.54 with the
+ * ambient; 0xa304 with 1 makes it unit, 0.29, and with 0 no longer.
+ */
+static void test_gl_normalize_enable(void)
+{
+    gl_lit_start(qts);
+    gl_material(qts, GL_FRONT_FACE, GL_DIFFUSE, 0.25f, 0.25f, 0.25f, 1);
+    gl_three(qts, GL_NORMAL3F_HDR, 0, 0, 2);
+    g_assert_cmphex(gl_lit_triangle(qts, false), ==, 0x8a8a8a);
+    gl_one(qts, GL_NORMALIZE_HDR, 1);
+    g_assert_cmphex(gl_lit_triangle(qts, false), ==, 0x4a4a4a);
+    gl_one(qts, GL_NORMALIZE_HDR, 0);
+    g_assert_cmphex(gl_lit_triangle(qts, false), ==, 0x8a8a8a);
+}
+
+/*
+ * Each glNormal3 form's component reaches the lighting as table 2.6
+ * converts it, (2c + 1) / (2^b - 1): a byte 63 is 127 / 255, a short
+ * 16383 is 32767 / 65535, an int 0x3fffffff is 0.5 in single precision,
+ * and the double 0.5 is itself. Facing a white light on diffuse 1, with
+ * the 0.04 ambient, they give 137, 138, 138 and 138. A component read
+ * from the wrong place gives 0 and the ambient alone, 10; one taken
+ * unconverted gives 255. The z component is tested along +z, and the y
+ * component of the short and byte forms along +y.
+ */
+static void test_gl_normal_forms_convert(void)
+{
+    static const struct {
+        uint32_t header;
+        uint32_t words[6];
+        unsigned n;
+        bool y;
+        uint32_t pixel;
+    } cases[] = {
+        { GL_NORMAL3B_HDR, { 0x00003f00 }, 1, false, 0x898989 },
+        { GL_NORMAL3B_HDR, { 0x003f0000 }, 1, true, 0x898989 },
+        { GL_NORMAL3S_HDR, { 0, 0x3fff0000 }, 2, false, 0x8a8a8a },
+        { GL_NORMAL3S_HDR, { 0x00003fff, 0 }, 2, true, 0x8a8a8a },
+        { GL_NORMAL3I_HDR, { 0, 0, 0x3fffffff }, 3, false, 0x8a8a8a },
+        { GL_NORMAL3D_HDR, { 0, 0, 0, 0, 0x3fe00000, 0 }, 6, false,
+          0x8a8a8a },
+    };
+
+    for (int i = 0; i < ARRAY_SIZE(cases); i++) {
+        gl_lit_start(qts);
+        gl_material(qts, GL_FRONT_FACE, GL_DIFFUSE, 1, 1, 1, 1);
+        if (cases[i].y) {
+            gl_light4(qts, GL_LIGHT_POSITION_HDR, 0, 0, 1, 0, 0);
+        }
+        gl_word(qts, cases[i].header);
+        for (unsigned k = 0; k < cases[i].n; k++) {
+            gl_word(qts, cases[i].words[k]);
+        }
+        g_assert_cmphex(gl_lit_triangle(qts, false), ==, cases[i].pixel);
+    }
+}
+
+/*
+ * 0x5904 with 1 lights the back of a back-facing triangle (clockwise in
+ * the window) with the back material and the reversed normal. The normal
+ * (0, 0, -1) turns the front away from light 0, leaving the 0.04 ambient,
+ * and the back toward it: back diffuse green 1 over the ambient, 0x0aff0a.
+ * One-sided, the back-facing triangle takes the front colour.
+ */
+static void test_gl_two_sided_lighting_lights_the_back(void)
+{
+    gl_lit_start(qts);
+    gl_material(qts, GL_FRONT_FACE, GL_DIFFUSE, 1, 0, 0, 1);
+    gl_material(qts, GL_BACK_FACE, GL_DIFFUSE, 0, 1, 0, 1);
+    gl_three(qts, GL_NORMAL3F_HDR, 0, 0, -1);
+    g_assert_cmphex(gl_lit_triangle(qts, true), ==, 0x0a0a0a);
+    gl_one(qts, GL_LIGHT_MODEL_TWO_SIDE_HDR, 1);
+    g_assert_cmphex(gl_lit_triangle(qts, true), ==, 0x0aff0a);
+    g_assert_cmphex(gl_lit_triangle(qts, false), ==, 0x0a0a0a);
+}
+
+/*
+ * Slot A holds two vertices of a back-facing, smooth, two-sided lit
+ * triangle whose back colour is the back material's emission, green, and
+ * no ambient; slot B has drawn one triangle of a strip, so its next is an
+ * odd one, with a red front emission. Slot A's third vertex after the
+ * migration completes the triangle in green only if the held vertices'
+ * back colours travelled; slot B's fourth draws its triangle in the front
+ * colour only if the strip's parity did. Both need the lighting enables.
+ */
+static void gl_light_enables_setup(QTestState *from)
+{
+    for (int slot = 0; slot < 2; slot++) {
+        gl_enter_slot(from, slot ? GL_SLOT_B : GL_SLOT_A);
+        gl_word(from, GL_CONTEXT_OPENER);
+        gl_viewport(from, 0, 0, 128, 128);
+        gl_three(from, GL_LIGHT_MODEL_AMBIENT_HDR, 0, 0, 0);
+        gl_one(from, GL_LIGHT_MODEL_TWO_SIDE_HDR, 1);
+        gl_material(from, GL_FRONT_FACE, GL_EMISSION, 1, 0, 0, 1);
+        gl_material(from, GL_BACK_FACE, GL_EMISSION, 0, 1, 0, 1);
+        gl_one(from, GL_LIGHT_ON_HDR, 3);
+        gl_one(from, GL_NORMALIZE_HDR, 1);
+        gl_word(from, GL_LIGHTING_ON);
+    }
+    gl_enter_slot(from, GL_SLOT_A);
+    gl_word(from, GL_BEGIN_TRIANGLES);
+    gl_vertex3f(from, -0.9f, -0.9f, 0);
+    gl_vertex3f(from, 0, 0.9f, 0);
+    gl_enter_slot(from, GL_SLOT_B);
+    gl_word(from, GL_BEGIN_TRI_STRIP);
+    gl_vertex3f(from, -1, -1, 0);
+    gl_vertex3f(from, -0.5f, -1, 0);
+    gl_vertex3f(from, -1, -0.5f, 0);
+}
+
+static void gl_light_enables_check(QTestState *to)
+{
+    gl_enter_slot(to, GL_SLOT_A);
+    gl_vertex3f(to, 0.9f, -0.9f, 0);
+    gl_word(to, GL_END_TRIANGLES);
+    g_assert_cmphex(mgras_test_pixel(to, 256 + 64, 383 - 50), ==, 0x00ff00);
+    gl_enter_slot(to, GL_SLOT_B);
+    gl_vertex3f(to, -0.5f, -0.5f, 0);
+    gl_word(to, GL_END_TRIANGLES);
+    g_assert_cmphex(mgras_test_pixel(to, 256 + 24, 383 - 24), ==, 0xff0000);
+}
+
+/* Each context's lighting enables, parity and back colours migrate. */
+static void test_gl_light_enables_migration(void)
+{
+    gl_migrate(gl_light_enables_setup, gl_light_enables_check);
+}
+
+/*
  * The context setup's 32 detail-texture table writes, 0xec10 with 0xc52,
  * 0xc78, 0x194 and a value (0x1f three times, then 0x1d down to 1), are
  * texture-only defaults and consumed without a log line; any other value
@@ -12623,12 +12842,12 @@ static void test_hq_query_answers_the_write_mask(void)
 }
 
 /*
- * The rules of the subsections for the depth range, dither, lighting and
- * texture matrix, each against a state that meets only it. What every
- * context setup sends, the opener, glEnable(GL_DITHER) as 0x6704 with 3
- * and glDepthRange(0, 1), leaves OpenGL's initial state and sends none of
- * them, so a guest that only set up contexts still migrates to a binary
- * without them.
+ * The rules of the subsections for the depth range, dither, lighting,
+ * texture matrix and lighting enables, each against a state that meets
+ * only it. What every context setup sends, the opener,
+ * glEnable(GL_DITHER) as 0x6704 with 3 and glDepthRange(0, 1), leaves
+ * OpenGL's initial state and sends none of them, so a guest that only set
+ * up contexts still migrates to a binary without them.
  */
 static void test_gl_state_subsections_follow_their_state(void)
 {
@@ -12671,6 +12890,30 @@ static void test_gl_state_subsections_follow_their_state(void)
     gl_word(s, GL_PUSH_MATRIX);
     g_assert_cmpuint(gl_stream_subsections(s), ==, 64);
     qtest_quit(s);
+
+    /*
+     * The lighting enables: lighting, a light or GL_NORMALIZE on sends
+     * gl-light-enables, and lighting turned off again sends nothing.
+     */
+    for (int i = 0; i < 4; i++) {
+        s = qtest_init(MIGRATION_ARGS);
+        gl_enter_slot(s, GL_SLOT_A);
+        gl_word(s, GL_CONTEXT_OPENER);
+        if (i < 2) {
+            gl_word(s, GL_LIGHTING_ON);
+        }
+        if (i == 1) {
+            gl_word(s, GL_LIGHTING_OFF);
+        }
+        if (i == 2) {
+            gl_one(s, GL_LIGHT_ON_HDR, 7);
+        }
+        if (i == 3) {
+            gl_one(s, GL_NORMALIZE_HDR, 1);
+        }
+        g_assert_cmpuint(gl_stream_subsections(s), ==, i == 1 ? 0 : 128);
+        qtest_quit(s);
+    }
 }
 
 int main(int argc, char **argv)
@@ -13291,6 +13534,19 @@ int main(int argc, char **argv)
                    test_gl_dither_migration);
     qtest_add_func("sn0/origin2000/mgras/gl-lighting-migration",
                    test_gl_lighting_migration);
+    qtest_add_func("sn0/origin2000/mgras/gl-lit-triangle-matches-the-equation",
+                   test_gl_lit_triangle_matches_the_equation);
+    qtest_add_func("sn0/origin2000/mgras/gl-light-enables-select-the-lights",
+                   test_gl_light_enables_select_the_lights);
+    qtest_add_func("sn0/origin2000/mgras/gl-normalize-enable",
+                   test_gl_normalize_enable);
+    qtest_add_func("sn0/origin2000/mgras/gl-normal-forms-convert",
+                   test_gl_normal_forms_convert);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "gl-two-sided-lighting-lights-the-back",
+                   test_gl_two_sided_lighting_lights_the_back);
+    qtest_add_func("sn0/origin2000/mgras/gl-light-enables-migration",
+                   test_gl_light_enables_migration);
     qtest_add_func("sn0/origin2000/mgras/gl-texture-matrix-migration",
                    test_gl_texture_matrix_migration);
     qtest_add_func("sn0/origin2000/mgras/"
