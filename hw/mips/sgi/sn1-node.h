@@ -64,17 +64,17 @@ typedef struct SN1NodeState {
     bool fuel_experiment;
     uint32_t fuel_l1_type_code;
     uint8_t fuel_bedrock_revision;
+    uint8_t io_board_widget;
+    char *io_board_part;
     bool last_node;
     bool promdata_filter;
     bool promdata_fast;
 
     /*
-     * The topology's Bedrock node record, set by the machine before realize,
-     * the compiled catalogue this node builds from (qapi/sgi-sn.json). The
-     * IO-8's populated-board record is the machine's concern now
-     * (sgi_machine_instantiate_io_board() in sn-machine.c): this node exposes
-     * the chip's PCI bus through sn1_node_xbridge_pci_bus() instead of taking
-     * the record as a property of its own.
+     * The topology's Bedrock node record, set by the machine before
+     * realize -- the compiled catalogue this node builds from
+     * (qapi/sgi-sn.json). The machine passes the I/O board's fitted identity
+     * through properties before this node realizes the XBridge.
      */
     const SGIModelNode *model_node;
     /*

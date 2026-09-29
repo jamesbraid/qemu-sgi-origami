@@ -8404,27 +8404,13 @@
       "generation": "sn1",
       "io-boards": [
         {
-          "attachment": 0,
-          "carrier": "machine-placed",
-          "id": "xbridge-bridge-e",
-          "module-index": 0,
-          "other-identity-parts": [],
-          "part": "",
-          "preset": "fuel",
-          "revision": 2,
-          "serial": 47413004296
-        },
-        {
           "attachment": 1,
-          "carrier": "machine-placed",
-          "id": "xbridge-bridge-f",
+          "carrier": "onboard",
+          "id": "ip34-system-board",
           "ioc3-serial": 103835129348099,
           "module-index": 0,
           "other-identity-parts": [],
-          "part": "",
-          "preset": "fuel",
-          "revision": 2,
-          "serial": 47413004296
+          "preset": "fuel"
         }
       ],
       "junk-uart": -1,
@@ -12172,50 +12158,24 @@
       "generation": "sn1",
       "io-boards": [
         {
-          "attachment": 0,
-          "carrier": "machine-placed",
-          "id": "master-xbridge-bridge-e",
-          "module-index": 0,
-          "other-identity-parts": [],
-          "part": "030-1673-003",
-          "preset": "io8",
-          "revision": 2,
-          "serial": 47413004295
-        },
-        {
           "attachment": 1,
           "carrier": "machine-placed",
-          "id": "master-xbridge-bridge-f",
+          "id": "master-io8-board",
           "ioc3-serial": 103835129348098,
           "module-index": 0,
           "other-identity-parts": [],
           "part": "030-1673-003",
-          "preset": "io8",
-          "revision": 2,
-          "serial": 47413004295
-        },
-        {
-          "attachment": 2,
-          "carrier": "machine-placed",
-          "id": "slave-xbridge-bridge-e",
-          "module-index": 1,
-          "other-identity-parts": [],
-          "part": "030-1673-003",
-          "preset": "io8",
-          "revision": 2,
-          "serial": 47413004296
+          "preset": "io8"
         },
         {
           "attachment": 3,
           "carrier": "machine-placed",
-          "id": "slave-xbridge-bridge-f",
+          "id": "slave-io8-board",
           "ioc3-serial": 103835129348099,
           "module-index": 1,
           "other-identity-parts": [],
           "part": "030-1673-003",
-          "preset": "io8",
-          "revision": 2,
-          "serial": 47413004296
+          "preset": "io8"
         }
       ],
       "junk-uart": -1,
@@ -12909,27 +12869,14 @@
       "generation": "sn1",
       "io-boards": [
         {
-          "attachment": 0,
-          "carrier": "machine-placed",
-          "id": "xbridge-bridge-e",
-          "module-index": 0,
-          "other-identity-parts": [],
-          "part": "030-1673-003",
-          "preset": "io8",
-          "revision": 2,
-          "serial": 47413004295
-        },
-        {
           "attachment": 1,
           "carrier": "machine-placed",
-          "id": "xbridge-bridge-f",
+          "id": "io8-board",
           "ioc3-serial": 103835129348098,
           "module-index": 0,
           "other-identity-parts": [],
           "part": "030-1673-003",
-          "preset": "io8",
-          "revision": 2,
-          "serial": 47413004295
+          "preset": "io8"
         }
       ],
       "junk-uart": -1,

@@ -34,7 +34,6 @@
 #include "hw/core/cpu.h"
 #include "hw/core/qdev-clock.h"
 #include "hw/core/qdev-properties.h"
-#include "hw/mips/sgi/baseio.h"
 #include "hw/mips/sgi/sn-machine.h"
 #include "hw/mips/sgi/xio-link.h"
 #include "hw/mips/sgi-xio-port.h"
@@ -1626,11 +1625,12 @@ static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
 
         qdev_prop_set_string(node->xbridge, "bus-prefix", prefix);
     }
-    if (!node->fuel_experiment) {
-        qdev_prop_set_string(node->xbridge, "board-part-f",
-                             sgi_baseio_preset_lookup("io8")->board_part);
-        qdev_prop_set_uint64(node->xbridge, "onewire-serial-f",
-                             SGI_XBRIDGE_NIC_PLACEHOLDER_SERIAL);
+    if (node->io_board_part) {
+        g_assert(node->io_board_widget == 14 || node->io_board_widget == 15);
+        qdev_prop_set_string(node->xbridge,
+                             node->io_board_widget == 14 ?
+                             "board-part-e" : "board-part-f",
+                             node->io_board_part);
     }
     sgi_xio_link_init(&node->xbridge_link, OBJECT(node), "xbridge-link",
                       OBJECT(&SGI_BEDROCK(node->bedrock)->io), 0,
@@ -2005,6 +2005,8 @@ static const Property sn1_node_properties[] = {
                        fuel_l1_type_code, 0),
     DEFINE_PROP_UINT8("fuel-bedrock-revision", SN1NodeState,
                       fuel_bedrock_revision, 0),
+    DEFINE_PROP_UINT8("io-board-widget", SN1NodeState, io_board_widget, 0),
+    DEFINE_PROP_STRING("io-board-part", SN1NodeState, io_board_part),
     /* Set on a machine's last node: a pflash unit past it has no node. */
     DEFINE_PROP_BOOL("last-node", SN1NodeState, last_node, true),
     DEFINE_PROP_BOOL("promdata-filter", SN1NodeState, promdata_filter, true),
