@@ -101,6 +101,8 @@
 #define OHCI_INTERRUPT_STATUS 0x0c
 #define OHCI_INTERRUPT_ENABLE 0x10
 #define OHCI_HCCA 0x18
+#define OHCI_FM_INTERVAL 0x34
+#define OHCI_FM_REMAINING 0x38
 #define OHCI_CONTROL_OPERATIONAL 0x80
 #define OHCI_CONTROL_SUSPEND 0xc0
 #define OHCI_INTERRUPT_SF 0x04
@@ -558,6 +560,29 @@ static void test_fuel_ohci_interrupt(const void *data)
                  OHCI_INTERRUPT_SF);
     fuel_ack_irq(qts, pending_bit);
     qtest_writel(qts, OHCI_WINDOW + OHCI_CONTROL, OHCI_CONTROL_SUSPEND);
+    qtest_quit(qts);
+}
+
+static void test_fuel_ohci_frame_remaining(const void *data)
+{
+    QTestState *qts = fuel_start(data);
+
+    qtest_writel(qts, PCI_CONFIG(FUEL_XBRIDGE, 5) + 0x10, OHCI_BAR);
+    qtest_writel(qts, PCI_CONFIG(FUEL_XBRIDGE, 5) + PCI_COMMAND,
+                 PCI_COMMAND_MEMORY);
+    fuel_xbridge_write(qts, XBRIDGE_DEVICE(5),
+                       XBRIDGE_DEVICE_MEMORY | (OHCI_BAR >> 20));
+
+    g_assert_cmphex(qtest_readl(qts, OHCI_WINDOW), ==, 0x10);
+    g_assert_cmphex(qtest_readl(qts, OHCI_WINDOW + OHCI_FM_REMAINING), ==, 0);
+    qtest_writel(qts, OHCI_WINDOW + OHCI_FM_INTERVAL, 0xffff3fff);
+    g_assert_cmphex(qtest_readl(qts, OHCI_WINDOW + OHCI_FM_INTERVAL), ==,
+                    0xffff3fff);
+    qtest_writel(qts, OHCI_WINDOW + OHCI_FM_INTERVAL, 0);
+
+    /* Lucent USS-312 Rev. 5 Table 41 marks this register host read-only. */
+    qtest_writel(qts, OHCI_WINDOW + OHCI_FM_REMAINING, 0x80003fff);
+    g_assert_cmphex(qtest_readl(qts, OHCI_WINDOW + OHCI_FM_REMAINING), ==, 0);
     qtest_quit(qts);
 }
 
@@ -1366,6 +1391,8 @@ int main(int argc, char **argv)
                         test_fuel_ioc3_superio_interrupt);
     qtest_add_data_func("fuel/ohci-interrupt", prom,
                         test_fuel_ohci_interrupt);
+    qtest_add_data_func("fuel/ohci-frame-remaining", prom,
+                        test_fuel_ohci_frame_remaining);
     qtest_add_data_func("fuel/ioc3-ethernet-interrupt", prom,
                         test_fuel_ioc3_ethernet_interrupt);
     qtest_add_data_func("fuel/ps2", prom, test_fuel_ps2);
