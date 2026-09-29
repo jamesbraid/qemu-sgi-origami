@@ -48,6 +48,7 @@
 typedef struct OctaneMachineState {
     MachineState parent;
     MemoryRegion low_ram;
+    MemoryRegion low_alias;
     MemoryRegion high_guard;
     uint64_t bank_size[HEART_BANKS];
     bool octane2;
@@ -322,6 +323,14 @@ static void octane_init_common(MachineState *machine, bool octane2)
     memory_region_init_ram(&s->low_ram, NULL, "octane.low-ram",
                            OCTANE_LOW_RAM_SIZE, &error_fatal);
     memory_region_add_subregion(physical, 0, &s->low_ram);
+    if (octane2) {
+        /* Functional approximation: the upper 8 KiB shares the low RAM. */
+        memory_region_init_alias(&s->low_alias, OBJECT(machine),
+                                 "octane2.low-alias", &s->low_ram, 0,
+                                 OCTANE_LOW_RAM_SIZE);
+        memory_region_add_subregion(physical, OCTANE_LOW_RAM_SIZE,
+                                    &s->low_alias);
+    }
     memory_region_init_alias(attr0, OBJECT(machine), "octane.attr0",
                              physical, 0, OCTANE_PHYSICAL_SPAN);
     memory_region_add_subregion(system, OCTANE_ATTR0_BASE, attr0);
@@ -333,6 +342,10 @@ static void octane_init_common(MachineState *machine, bool octane2)
         qdev_prop_set_uint64(heart, name, s->bank_size[bank]);
     }
     qdev_prop_set_uint8(heart, "widget-revision", octane2 ? 6 : 4);
+    if (octane2) {
+        qdev_prop_set_uint64(heart, "widget-id-64",
+                            UINT64_C(0x000000006c00106d));
+    }
     object_property_set_link(OBJECT(heart), "cpu-memory", OBJECT(physical),
                              &error_fatal);
     sysbus_realize(SYS_BUS_DEVICE(heart), &error_fatal);
