@@ -12542,6 +12542,63 @@ static void test_gl_texture_table_defaults_are_silent(void)
     g_rmdir(tmpfs);
 }
 
+/*
+ * GL_TEXTURE_MATRIX is queried at 0x6a + i, column-major like the other
+ * matrices, and GL_TEXTURE_STACK_DEPTH at 0x923, returned as
+ * ((answer - 0xb45) >> 4) + 1 with 0xb45 the hq3_revB_HQ4.u symbol-table
+ * word at file offset 0x218. glMatrixMode(GL_TEXTURE) sends 0x2a04 with
+ * 0x1702.
+ */
+#define GL_Q_TEXTURE          0x06a
+#define GL_Q_TEXTURE_DEPTH    0x923
+
+static void test_hq_query_answers_the_texture_matrix(void)
+{
+    mgras_reset();
+
+    gl_enter_slot(qts, GL_SLOT_A);
+    gl_word(qts, GL_CONTEXT_OPENER);
+    g_assert_cmphex(gl_query(qts, GL_Q_TEXTURE, 0), ==, gl_bits(1));
+    g_assert_cmphex(gl_query(qts, GL_Q_TEXTURE + 12, 0), ==, gl_bits(0));
+    g_assert_cmphex(gl_query(qts, GL_Q_TEXTURE_DEPTH, 1), ==, 0xb45);
+    gl_one(qts, GL_MATRIX_MODE_HDR, GL_TEXTURE);
+    gl_word(qts, GL_PUSH_MATRIX);
+    gl_three(qts, GL_TRANSLATE_HDR, 0.5f, 0.25f, 0);
+    g_assert_cmphex(gl_query(qts, GL_Q_TEXTURE + 12, 0), ==, gl_bits(0.5f));
+    g_assert_cmphex(gl_query(qts, GL_Q_TEXTURE + 13, 0), ==, gl_bits(0.25f));
+    g_assert_cmpuint(gl_stack_depth(gl_query(qts, GL_Q_TEXTURE_DEPTH, 1),
+                                    0xb45), ==, 2);
+    g_assert_cmphex(gl_query(qts, GL_Q_MODELVIEW + 12, 0), ==, gl_bits(0));
+    gl_word(qts, GL_POP_MATRIX);
+    g_assert_cmphex(gl_query(qts, GL_Q_TEXTURE + 12, 0), ==, gl_bits(0));
+    g_assert_cmphex(gl_query(qts, GL_Q_TEXTURE_DEPTH, 1), ==, 0xb45);
+}
+
+static void gl_texture_setup(QTestState *from)
+{
+    gl_enter_slot(from, GL_SLOT_A);
+    gl_word(from, GL_CONTEXT_OPENER);
+    gl_one(from, GL_MATRIX_MODE_HDR, GL_TEXTURE);
+    gl_three(from, GL_TRANSLATE_HDR, 0.5f, 0, 0);
+    gl_word(from, GL_PUSH_MATRIX);
+    gl_three(from, GL_TRANSLATE_HDR, 0.25f, 0, 0);
+}
+
+static void gl_texture_check(QTestState *to)
+{
+    gl_enter_slot(to, GL_SLOT_A);
+    g_assert_cmphex(gl_query(to, GL_Q_TEXTURE + 12, 0), ==, gl_bits(0.75f));
+    g_assert_cmphex(gl_query(to, GL_Q_TEXTURE_DEPTH, 1), ==, 0xb55);
+    gl_word(to, GL_POP_MATRIX);
+    g_assert_cmphex(gl_query(to, GL_Q_TEXTURE + 12, 0), ==, gl_bits(0.5f));
+}
+
+/* Each context's texture matrix and stack cross a migration. */
+static void test_gl_texture_matrix_migration(void)
+{
+    gl_migrate(gl_texture_setup, gl_texture_check);
+}
+
 int main(int argc, char **argv)
 {
     int ret;
@@ -12868,6 +12925,9 @@ int main(int argc, char **argv)
                    test_hq_query_answers_the_depth_range);
     qtest_add_func("sn0/origin2000/mgras/hq-query-answers-the-stack-depths",
                    test_hq_query_answers_the_stack_depths);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "hq-query-answers-the-texture-matrix",
+                   test_hq_query_answers_the_texture_matrix);
     qtest_add_func("sn0/origin2000/mgras/hq-query-answers-the-raster-state",
                    test_hq_query_answers_the_raster_state);
     qtest_add_func("sn0/origin2000/mgras/"
@@ -13155,6 +13215,8 @@ int main(int argc, char **argv)
                    test_gl_dither_migration);
     qtest_add_func("sn0/origin2000/mgras/gl-lighting-migration",
                    test_gl_lighting_migration);
+    qtest_add_func("sn0/origin2000/mgras/gl-texture-matrix-migration",
+                   test_gl_texture_matrix_migration);
     qtest_add_func("sn0/origin2000/mgras/"
                    "gl-texture-table-defaults-are-silent",
                    test_gl_texture_table_defaults_are_silent);
