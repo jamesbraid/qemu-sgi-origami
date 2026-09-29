@@ -1665,13 +1665,11 @@ static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
                                  OBJECT(face), &error_abort);
     }
     /*
-     * The board's rear XIO connector: an external cable port for an
-     * expansion brick (007-4365-002 printed page 8 names an
-     * InfiniteReality pipe), which the model does not provide. No XIO
-     * board attaches to it. The XBridge still decodes its external port
-     * at the model's selected number (SGI_XBRIDGE_XIO_PORT_DEFAULT), and
-     * the Bedrock reaches it, so firmware walking the crossbar finds a
-     * position that reads as present but empty.
+     * Origin 300 has a rear XIO cable connector (007-4365-002, page 8).
+     * Fuel's rear-panel diagram (007-4480-001, page 6) shows none. This
+     * shared model still decodes the XBridge's selected external port
+     * (SGI_XBRIDGE_XIO_PORT_DEFAULT) through Bedrock. Fuel's unused-port
+     * wiring and register response are unknown.
      */
     {
         unsigned int port = sgi_xbridge_xio_port(SGI_XBRIDGE(node->xbridge));
