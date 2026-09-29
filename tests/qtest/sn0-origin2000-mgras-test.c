@@ -10345,7 +10345,9 @@ static void test_gl_bitmap_split_by_a_context_switch(void)
 #define GL_GE_ZOOM            0x191
 #define GL_GE_BOX             0xe34
 
-enum { GL_PIX_4UB, GL_PIX_3UB, GL_PIX_INDEX, GL_PIX_SCALED };
+enum {
+    GL_PIX_4UB, GL_PIX_3UB, GL_PIX_INDEX, GL_PIX_SCALED, GL_PIX_4UB_AS_3,
+};
 
 static void gl_ge_load(QTestState *qts, uint32_t op, uint32_t addr,
                        const uint32_t *words, uint32_t n)
@@ -10384,11 +10386,14 @@ static void gl_pixels_program(QTestState *qts, int kind, uint32_t bpr,
         [GL_PIX_INDEX] = { 0x1a3e, 0, 0x352d, 0x1d6 },
         [GL_PIX_SCALED] = { 0x1f44, 0, 0x1234, 0x200, 0x3e65, 0xd91,
                             0x156a, 0x1b4, 0x352d, 0xdf3 },
+        /* The four-byte program with the three-byte unpack word. */
+        [GL_PIX_4UB_AS_3] = { 0x1f44, 0, 0x3e65, 0xd91, 0x156a, 0x1b4,
+                              0x352d, 0xdf3 },
     };
-    static const uint32_t length[] = { 8, 10, 4, 10 };
+    static const uint32_t length[] = { 8, 10, 4, 10, 8 };
     uint32_t unpack[6] = {
-        bpr, kind == GL_PIX_3UB ? 0x40f2 : 0x4064, 0x464, 0xb, 0xc,
-        0x3b808081,
+        bpr, kind == GL_PIX_3UB || kind == GL_PIX_4UB_AS_3 ? 0x40f2 : 0x4064,
+        0x464, 0xb, 0xc, 0x3b808081,
     };
     uint32_t zooms[2];
     uint32_t box[6] = {
@@ -10405,15 +10410,26 @@ static void gl_pixels_program(QTestState *qts, int kind, uint32_t bpr,
     gl_ge_load(qts, GL_GE_ERAM, GL_GE_BOX, box, 6);
 }
 
-static void gl_pixels_draw(QTestState *qts, uint32_t row_words)
+/* 0x8d20's last word: 0x18 before inline rows, 0x99 before a DMA. */
+#define GL_PIXELS_INLINE      0x18
+#define GL_PIXELS_BY_DMA      0x99
+
+static void gl_pixels_draw_as(QTestState *qts, uint32_t row_words,
+                              uint32_t flags)
 {
-    static const uint32_t rest[7] = { 0, 0, 2, 0x2a, 1, 0x49d0, 0x99 };
+    static const uint32_t rest[6] = { 0, 0, 2, 0x2a, 1, 0x49d0 };
 
     gl_word(qts, GL_PIXELS_HDR);
     gl_word(qts, row_words);
-    for (int i = 0; i < 7; i++) {
+    for (int i = 0; i < 6; i++) {
         gl_word(qts, rest[i]);
     }
+    gl_word(qts, flags);
+}
+
+static void gl_pixels_draw(QTestState *qts, uint32_t row_words)
+{
+    gl_pixels_draw_as(qts, row_words, GL_PIXELS_INLINE);
 }
 
 /* One row inline, its first byte at byte offset of the first word. */
@@ -10568,7 +10584,7 @@ static void test_gl_pixels_dma_abgr(void)
                  MGRAS_COMMAND(REG_BLOCK_END, (402u << 16) | 401u));
     gl_pixels_program(qts, GL_PIX_4UB, 12, 5, 7, 7, 8, 1);
     gl_one(qts, GL_HQ_PIXEL_FORMAT, GL_HQ_PIXEL_ABGR);
-    gl_pixels_draw(qts, 3);
+    gl_pixels_draw_as(qts, 3, GL_PIXELS_BY_DMA);
     gl_pixels_dma(qts, image, sizeof(image), 16, 2, 12, 0xa7);
     g_assert_cmphex(qtest_readl(qts, REG_HQ_FLAGS) & MGRAS_HQ_FLAG_FENCE, ==,
                     MGRAS_HQ_FLAG_FENCE);
@@ -10599,13 +10615,13 @@ static void test_gl_pixels_dma_rgba_and_rgb(void)
 
     gl_pixels_context(qts, 0);
     gl_pixels_program(qts, GL_PIX_4UB, 8, 50, 60, 51, 60, 1);
-    gl_pixels_draw(qts, 2);
+    gl_pixels_draw_as(qts, 2, GL_PIXELS_BY_DMA);
     gl_pixels_dma(qts, rgba, sizeof(rgba), 8, 1, 8, 0xa7);
     g_assert_cmphex(gl_window_pixel(qts, 50, 60), ==, 0x010203);
     g_assert_cmphex(gl_window_pixel(qts, 51, 60), ==, 0x040506);
 
     gl_pixels_program(qts, GL_PIX_3UB, 6, 50, 61, 51, 61, 1);
-    gl_pixels_draw(qts, 2);
+    gl_pixels_draw_as(qts, 2, GL_PIXELS_BY_DMA);
     gl_pixels_dma(qts, rgb, sizeof(rgb), 6, 1, 6, 0xa7);
     g_assert_cmphex(gl_window_pixel(qts, 50, 61), ==, 0x212223);
     g_assert_cmphex(gl_window_pixel(qts, 51, 61), ==, 0x242526);
@@ -10614,9 +10630,10 @@ static void test_gl_pixels_dma_rgba_and_rgb(void)
 
 /*
  * A program the model does not know (a routine between the head and the
- * unpack, as a scale or bias would add) and a pixel zoom other than 1
- * draw nothing, and their images are consumed: the fence after each
- * parses as a header, and a DMA transfer paints neither the window nor
+ * unpack, as a scale or bias would add, or a known program whose unpack
+ * word is another's) and a pixel zoom other than 1 draw nothing, and
+ * their images are consumed: the fence after each parses as a header,
+ * and a DMA transfer paints neither the window nor
  * the raster engine's rectangle. A DMA transfer that does not fit a draw
  * moves nothing either, and the draw ends.
  */
@@ -10639,19 +10656,26 @@ static void test_gl_pixels_unmodelled_draw_nothing(void)
     gl_pixels_fence(qts);
     g_assert_cmphex(gl_window_pixel(qts, 50, 60), ==, 0);
 
+    /* The four-byte program whose unpack word is the three-byte one's. */
+    gl_pixels_program(qts, GL_PIX_4UB_AS_3, 8, 50, 60, 51, 60, 1);
+    gl_pixels_draw(qts, 2);
+    gl_pixels_row(qts, 0, (const uint32_t[]){ 0x010203ff, 0x040506ff }, 2);
+    gl_pixels_fence(qts);
+    g_assert_cmphex(gl_window_pixel(qts, 50, 60), ==, 0);
+
     /* A refused draw's DMA transfer moves nothing, into either engine. */
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  MGRAS_COMMAND(REG_BLOCK_START, (400u << 16) | 400u));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  MGRAS_COMMAND(REG_BLOCK_END, (401u << 16) | 400u));
     gl_pixels_program(qts, GL_PIX_SCALED, 8, 50, 60, 51, 60, 1);
-    gl_pixels_draw(qts, 2);
+    gl_pixels_draw_as(qts, 2, GL_PIXELS_BY_DMA);
     gl_pixels_dma(qts, image, sizeof(image), 8, 1, 8, 0xa7);
     g_assert_cmphex(gl_window_pixel(qts, 50, 60), ==, 0);
     g_assert_cmphex(mgras_test_pixel(qts, 400, 400), ==, 0);
 
     gl_pixels_program(qts, GL_PIX_4UB, 8, 50, 60, 51, 60, 1);
-    gl_pixels_draw(qts, 2);
+    gl_pixels_draw_as(qts, 2, GL_PIXELS_BY_DMA);
     gl_pixels_dma(qts, image, sizeof(image), 8, 1, 4, 0xa7);
     g_assert_cmphex(qtest_readl(qts, REG_HQ_FLAGS) & MGRAS_HQ_FLAG_FENCE, ==,
                     MGRAS_HQ_FLAG_FENCE);
@@ -10688,6 +10712,37 @@ static void test_gl_pixels_follow_the_raster_position(void)
     gl_pixels_fence(qts);
     g_assert_cmphex(gl_window_pixel(qts, 11, 20), ==, 1);
     g_assert_cmphex(gl_window_pixel(qts, 0, 0), ==, 0);
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+}
+
+/*
+ * Only a kick with bit 4 clear feeds a waiting draw. A raster-engine
+ * kick (0xb7, as the X server's) while one waits paints the raster
+ * engine's rectangle as before, and the draw still takes the 0xa7
+ * transfer after it.
+ */
+static void test_gl_pixels_raster_kick_leaves_the_draw(void)
+{
+    static const uint8_t image[8] = {
+        0x01, 0x02, 0x03, 0xff, 0x04, 0x05, 0x06, 0xff,
+    };
+
+    gl_pixels_context(qts, 0);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_COLORMASKLSBSA, 0x00ffffff));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_PP1FILLMODE, MGRAS_LOGIC_OP_COPY << 26));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_BLOCK_START, (400u << 16) | 400u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_BLOCK_END, (401u << 16) | 400u));
+    gl_pixels_program(qts, GL_PIX_4UB, 8, 50, 60, 51, 60, 1);
+    gl_pixels_draw_as(qts, 2, GL_PIXELS_BY_DMA);
+    gl_pixels_dma(qts, image, sizeof(image), 8, 1, 8, 0xb7);
+    g_assert_cmphex(mgras_test_pixel(qts, 400, 400), !=, 0);
+    g_assert_cmphex(gl_window_pixel(qts, 50, 60), ==, 0);
+    gl_pixels_dma(qts, image, sizeof(image), 8, 1, 8, 0xa7);
+    g_assert_cmphex(gl_window_pixel(qts, 50, 60), ==, 0x010203);
     g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
 }
 
@@ -13884,6 +13939,7 @@ static void test_gl_state_subsections_follow_their_state(void)
                          i == 1 || i == 4 ? 0 : 256);
         qtest_quit(s);
     }
+
 }
 
 /*
@@ -14437,6 +14493,9 @@ int main(int argc, char **argv)
                    test_gl_pixels_unmodelled_draw_nothing);
     qtest_add_func("sn0/origin2000/mgras/gl-pixels-long-load",
                    test_gl_pixels_long_load);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "gl-pixels-raster-kick-leaves-the-draw",
+                   test_gl_pixels_raster_kick_leaves_the_draw);
     qtest_add_func("sn0/origin2000/mgras/gl-pixels-far-raster-position",
                    test_gl_pixels_far_raster_position);
     qtest_add_func("sn0/origin2000/mgras/gl-pixels-follow-the-raster-position",
