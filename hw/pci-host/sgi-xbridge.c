@@ -1582,19 +1582,11 @@ static const VMStateDescription vmstate_chip = {
 /*
  * ---- The XIO port interface ----
  *
- * index is a widget number: 0 (the crossbar's own identity), 0xe or 0xf
- * (the heads), or the external port, populated or not. cpu_face() is
- * sgi_xbridge_widget_view() itself, where a
- * peer's processor-addressed traffic at that widget position lands,
- * exactly what the machine linked by hand before. Nothing in this model
- * separately packet-addresses an XBridge widget (unlike a Crossbow, this
- * chip's internal crossbar-to-head wiring never leaves the windowed
- * form for a destination-prefixed packet one), so packet_face() answers
- * with the same region: the leaf case the interface header documents,
- * a widget whose registers nothing packet-addresses separately. The one
- * exception is the external port seen from the widget plugged into it:
- * that widget sends through the crossbar, so its end of the link is a
- * switched port whose packet face routes by destination.
+ * A peer connected to the host port sees widget 0 at that port's processor
+ * face. This is the proposed two-chip address projection, not a measured
+ * board route. Its packet face uses the existing destination router. Other
+ * widget indices retain their own windowed views; the external port also
+ * exposes that router to a widget plugged into it.
  */
 
 static const char *chip_xio_port_describe(Object *port, unsigned int index)
@@ -1618,20 +1610,26 @@ static const char *chip_xio_port_describe(Object *port, unsigned int index)
 static MemoryRegion *chip_xio_port_cpu_face(Object *port,
                                             unsigned int index)
 {
-    return chip_widget_view(SGI_XBRIDGE(port), index);
+    SGIXBridgeState *s = SGI_XBRIDGE(port);
+
+    if (index == s->host_port) {
+        return chip_widget_view(s, 0);
+    }
+    return chip_widget_view(s, index);
 }
 
 /*
- * A widget on the external port sends through the crossbar, so the port
- * it is linked to is a switched one: its packets carry the destination
- * widget, and xio_routes delivers them. Every other index keeps the
- * windowed view described above.
+ * The host and external ports are switched: packets carry their destination
+ * widget and xio_routes delivers them. Other indices keep windowed views.
  */
 static MemoryRegion *chip_xio_port_packet_face(Object *port,
                                                unsigned int index)
 {
     SGIXBridgeState *s = SGI_XBRIDGE(port);
 
+    if (index == s->host_port) {
+        return &s->xio_routes;
+    }
     if (index == s->xio_port) {
         return DEVICE(s)->realized ? &s->xio_routes : NULL;
     }
@@ -1640,7 +1638,9 @@ static MemoryRegion *chip_xio_port_packet_face(Object *port,
 
 static bool chip_xio_port_switched(Object *port, unsigned int index)
 {
-    return index == SGI_XBRIDGE(port)->xio_port;
+    SGIXBridgeState *s = SGI_XBRIDGE(port);
+
+    return index == s->host_port || index == s->xio_port;
 }
 
 /*

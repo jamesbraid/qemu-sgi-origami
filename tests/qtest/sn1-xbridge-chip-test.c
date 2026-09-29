@@ -10,6 +10,7 @@
 
 #define CHIP "/machine/peripheral/xbridge"
 #define HOST_PORT 0xb
+#define CASCADE_PORT 0xb
 
 /*
  * The external XIO port these tests attach to. Not the chip's own
@@ -525,6 +526,44 @@ static void test_xio_widget_routes(void)
     qtest_quit(qts);
 }
 
+/* Exercise the proposed widget-0 projection, not a physical cable route. */
+static void test_two_xbridges(void)
+{
+    QTestState *qts = qtest_init("-M none -cpu R10000 -S "
+        "-device sgi-board-test-fixture,id=cascade,"
+        "board-type=xbridge-cascade");
+
+    qtest_sysbus_mmio_map(qts, "/machine/peripheral/cascade/chip", 0, BASE);
+    /* Region 1 is already owned by the node port; map the remote root. */
+    qtest_sysbus_mmio_map(qts, "/machine/peripheral/cascade/remote", 0,
+                          VIEW(0));
+    g_assert_cmphex(qtest_readl(qts, VIEW(0) + 4), ==, XBOW_ID);
+    g_assert_cmphex(reg_read(qts, CASCADE_PORT, 0), ==, XBOW_ID);
+    /* Distinguish the remote crossbar from the node's identical chip. */
+    g_assert_cmphex(reg_read(qts, 0, 0x58), ==, 2);
+    qtest_writel(qts, VIEW(0) + 0x58 + 4, 0x1f);
+    g_assert_cmphex(qtest_readl(qts, VIEW(0) + 0x58 + 4), ==, 0x1f);
+    g_assert_cmphex(reg_read(qts, CASCADE_PORT, 0x58), ==, 0x1f);
+    g_assert_cmphex(reg_read(qts, 0, 0x58), ==, 2);
+    g_assert_cmphex(reg_read(qts, 0, 0x100 + (CASCADE_PORT - 8) * 0x40 + 0x38) &
+                    (1U << 5), ==, 1U << 5);
+    g_assert_cmphex(reg_read(qts, 0, 0x100 + (CASCADE_PORT - 8) * 0x40 + 0x10) &
+                    (1U << 31), ==, 1U << 31);
+    qtest_quit(qts);
+
+    qts = qtest_init("-M none -cpu R10000 -S "
+        "-device sgi-board-test-fixture,id=cascade,"
+        "board-type=xbridge-cascade-empty");
+    qtest_sysbus_mmio_map(qts, "/machine/peripheral/cascade/chip", 0, BASE);
+    g_assert_cmphex(reg_read(qts, CASCADE_PORT, 0), ==, 0);
+    g_assert_cmphex(reg_read(qts, CASCADE_PORT, 0x58), ==, 0);
+    g_assert_cmphex(reg_read(qts, 0, 0x100 + (CASCADE_PORT - 8) * 0x40 + 0x38) &
+                    (1U << 5), ==, 0);
+    g_assert_cmphex(reg_read(qts, 0, 0x100 + (CASCADE_PORT - 8) * 0x40 + 0x10) &
+                    (1U << 31), ==, 0);
+    qtest_quit(qts);
+}
+
 /*
  * A reset the crossbar sends down the external link -- the port's link
  * reset one-shot, or a warm reset propagated from the host's port -- leaves
@@ -642,6 +681,7 @@ int main(int argc, char **argv)
                    test_xio_port_is_not_the_host_port);
     qtest_add_func("/sn1/xbridge-chip/xio-widget-routes",
                    test_xio_widget_routes);
+    qtest_add_func("/sn1/xbridge-chip/two-xbridges", test_two_xbridges);
     qtest_add_func("/sn1/xbridge-chip/xio-port-sends-resets",
                    test_xio_port_sends_resets);
     qtest_add_func("/sn1/xbridge-chip/realize-checks", test_realize_checks);
