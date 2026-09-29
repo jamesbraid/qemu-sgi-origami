@@ -3,18 +3,17 @@
  * The software rasterizer the SGI graphics heads share.
  *
  * A draw's vertices are transformed by the draw state's matrices, mapped
- * through its viewport into window coordinates, snapped to a subpixel
- * grid and rasterized with edge functions at pixel centres. Each fragment
- * then passes the per-fragment operations in OpenGL 1.2.1's order (4.1):
- * pixel ownership against the drawable's rectangles, the scissor test and
- * the depth test, and is stored through the family's target. What it
- * draws follows
- * OpenGL 1.2.1 for untextured points, lines, polygons and bitmaps at size
- * and width 1, flat or smooth shaded, in RGBA or colour-index mode, from
- * vertex colours the context has already lit, with a back-facing
- * polygon's back colours under two-sided lighting, and polygons culled by
- * facing. Where OpenGL leaves a choice, the head's SGIRasterRules make
- * it.
+ * through its viewport into window coordinates, snapped to a subpixel grid
+ * and rasterized with edge functions at pixel centres. Each fragment then
+ * passes the per-fragment operations in OpenGL 1.2.1's order (4.1): pixel
+ * ownership against the drawable's rectangles, the scissor test, the alpha
+ * test and the depth test, and is stored through the family's target. What
+ * it draws follows OpenGL 1.2.1 for untextured points, lines, polygons and
+ * bitmaps at size and width 1, flat or smooth shaded, in RGBA or
+ * colour-index mode, from vertex colours the context has already lit, with a
+ * back-facing polygon's back colours under two-sided lighting, and polygons
+ * culled by facing. Where OpenGL leaves a choice, the head's SGIRasterRules
+ * make it.
  */
 #include "qemu/osdep.h"
 #include <math.h>
@@ -200,23 +199,29 @@ static bool sgi_soft_owns(const SGISoftVertex *a, const SGISoftVertex *b,
     return b->y < a->y || (b->y == a->y && b->x < a->x);
 }
 
-static bool sgi_soft_depth_passes(uint32_t func, uint32_t z, uint32_t stored)
+/*
+ * Whether value passes a test comparing it with ref by func, the
+ * comparison minus GL_NEVER: the depth test's incoming depth against the
+ * stored one (4.1.5), the alpha test's alpha against its reference
+ * (4.1.4).
+ */
+static bool sgi_soft_compare(uint32_t func, uint32_t value, uint32_t ref)
 {
     switch (func) {
     case SGI_GL_NEVER:
         return false;
     case SGI_GL_LESS:
-        return z < stored;
+        return value < ref;
     case SGI_GL_EQUAL:
-        return z == stored;
+        return value == ref;
     case SGI_GL_LEQUAL:
-        return z <= stored;
+        return value <= ref;
     case SGI_GL_GREATER:
-        return z > stored;
+        return value > ref;
     case SGI_GL_NOTEQUAL:
-        return z != stored;
+        return value != ref;
     case SGI_GL_GEQUAL:
-        return z >= stored;
+        return value >= ref;
     default:
         return true;
     }
@@ -231,8 +236,9 @@ static uint32_t sgi_soft_index(const SGISoftDraw *r, double index)
 /*
  * One fragment at window pixel (px, py) with window depth z: dropped
  * outside [0, 1], outside the window's rectangles and, while the scissor
- * test is enabled, outside the scissor box (4.1.2), depth tested when
- * the test is enabled, then written to each colour target the draw
+ * test is enabled, outside the scissor box (4.1.2), in RGBA mode alpha
+ * tested (4.1.4) and depth tested when those tests are enabled, then
+ * written to each colour target the draw
  * buffers select. Its colour is stored as the rules' packed colour in
  * RGBA mode and as its index in colour-index mode, which glIndexMask
  * masks (4.2.2).
@@ -257,11 +263,21 @@ static void sgi_soft_fragment_at(const SGISoftDraw *r, int px, int py,
           (int64_t)py < (int64_t)r->st->scissor[1] + r->st->scissor[3])) {
         return;
     }
+    /*
+     * Alpha and reference each as the fixed point a stored alpha of the
+     * rules' colour bits would hold (4.1.4, 2.13.9).
+     */
+    if (r->st->alpha_test && !r->st->index_bits &&
+        !sgi_soft_compare(r->st->alpha_func,
+                          sgi_soft_channel(r->rules, f->rgba[3]),
+                          sgi_soft_channel(r->rules, r->st->alpha_ref))) {
+        return;
+    }
     zq = (uint32_t)sgi_soft_round(r->rules,
                                   z * sgi_soft_depth_max(r->rules));
     if (r->st->depth_test) {
-        if (!sgi_soft_depth_passes(r->st->depth_func, zq,
-                                   t->load_depth(t->opaque, x, y))) {
+        if (!sgi_soft_compare(r->st->depth_func, zq,
+                              t->load_depth(t->opaque, x, y))) {
             return;
         }
         if (r->st->depth_mask) {

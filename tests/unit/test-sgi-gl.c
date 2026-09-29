@@ -2797,6 +2797,82 @@ static void test_scissor(void)
     g_assert_cmpuint(frag_count(&f, 0xff0000), ==, W * H);
 }
 
+static void frag_alpha_func(FragScene *f, uint32_t func, float ref)
+{
+    uint32_t word[2] = { func, bits(ref) };
+
+    frag_command(f, SGI_GL_OP_ALPHA_FUNC, word, 2);
+}
+
+/*
+ * The alpha test (OpenGL 1.2.1, 4.1.4): initially disabled, GL_ALWAYS and
+ * 0. Enabled, a fragment of alpha 0.5 is kept by the comparisons that
+ * hold for it against the reference, both in eight bits, where 0.5 and
+ * 0.501 are the same 128. A reference outside [0, 1] clamps, a function
+ * outside GL_NEVER to GL_ALWAYS changes nothing, and in colour-index mode
+ * the test does not apply.
+ */
+static void test_alpha_test(void)
+{
+    static const struct {
+        uint32_t func;
+        float ref;
+        bool kept;
+    } runs[] = {
+        { 0x200, 0, false },            /* GL_NEVER */
+        { 0x201, 0.5f, false },         /* GL_LESS */
+        { 0x201, 0.51f, true },
+        { 0x202, 0.501f, true },        /* GL_EQUAL, both 128 */
+        { 0x203, 0.5f, true },          /* GL_LEQUAL */
+        { 0x204, 0.5f, false },         /* GL_GREATER */
+        { 0x204, -1, true },
+        { 0x205, 0.5f, false },         /* GL_NOTEQUAL */
+        { 0x206, 2, false },            /* GL_GEQUAL, reference 1 */
+        { 0x207, 1, true },             /* GL_ALWAYS */
+    };
+    static FragScene f;
+    uint32_t out[SGI_GL_GET_WORDS];
+
+    frag_init(&f);
+    g_assert_cmpuint(get(&f.c, SGI_GL_ALPHA_TEST, out), ==, 1);
+    g_assert_cmphex(out[0], ==, 0);
+    g_assert_cmpuint(get(&f.c, SGI_GL_ALPHA_TEST_FUNC, out), ==, 1);
+    g_assert_cmphex(out[0], ==, 0x207);
+    g_assert_cmpfloat(get_float(&f.c, SGI_GL_ALPHA_TEST_REF, 0), ==, 0);
+
+    frag_alpha_func(&f, 0x200, 0);
+    frag_quad(&f, 1, 1, 1, 0.5f);
+    g_assert_cmpuint(frag_count(&f, 0xffffff), ==, W * H);
+    enable(&f.c, SGI_GL_ALPHA_TEST, true);
+    g_assert_cmpuint(get(&f.c, SGI_GL_ALPHA_TEST, out), ==, 1);
+    g_assert_cmphex(out[0], ==, 1);
+    for (int i = 0; i < ARRAY_SIZE(runs); i++) {
+        memset(&f.p, 0, sizeof(f.p));
+        frag_alpha_func(&f, runs[i].func, runs[i].ref);
+        frag_quad(&f, 1, 1, 1, 0.5f);
+        g_assert_cmpuint(frag_count(&f, 0xffffff), ==,
+                         runs[i].kept ? W * H : 0);
+    }
+    g_assert_cmpuint(get(&f.c, SGI_GL_ALPHA_TEST_FUNC, out), ==, 1);
+    g_assert_cmphex(out[0], ==, 0x207);
+    g_assert_cmpfloat(get_float(&f.c, SGI_GL_ALPHA_TEST_REF, 0), ==, 1);
+    frag_alpha_func(&f, 0x207, -1);
+    g_assert_cmpfloat(get_float(&f.c, SGI_GL_ALPHA_TEST_REF, 0), ==, 0);
+    frag_alpha_func(&f, 0x207, 2);
+    g_assert_cmpfloat(get_float(&f.c, SGI_GL_ALPHA_TEST_REF, 0), ==, 1);
+    frag_alpha_func(&f, 0x208, 0.25f);
+    g_assert_cmpuint(get(&f.c, SGI_GL_ALPHA_TEST_FUNC, out), ==, 1);
+    g_assert_cmphex(out[0], ==, 0x207);
+    g_assert_cmpfloat(get_float(&f.c, SGI_GL_ALPHA_TEST_REF, 0), ==, 1);
+
+    /* GL_NEVER passes everything in colour-index mode. */
+    memset(&f.p, 0, sizeof(f.p));
+    frag_alpha_func(&f, 0x200, 0);
+    sgi_gl_set_index_mode(&f.c, 8);
+    frag_quad(&f, 1, 1, 1, 0.5f);
+    g_assert_cmpuint(frag_count(&f, 1), ==, W * H);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -2876,5 +2952,6 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-gl/empty-clip-without-a-window",
                     test_empty_clip_without_a_window);
     g_test_add_func("/sgi-gl/scissor", test_scissor);
+    g_test_add_func("/sgi-gl/alpha-test", test_alpha_test);
     return g_test_run();
 }
