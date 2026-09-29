@@ -22,6 +22,8 @@ VIRTUAL = 0x40000000
 FIRST = 0x10203040
 SECOND = 0x55667788
 DONE = 0x43414348
+ECC_EXCEPTION = 0x45584350
+ECC_NORMAL = 0x4e4f524d
 
 
 def insn_i(op, rs, rt, imm):
@@ -295,7 +297,168 @@ def secondary_ecc_rom():
     return image
 
 
+def secondary_error_rom(mode):
+    status = 0x00400080  # BEV, KX
+    if mode == 'de':
+        status |= 1 << 16
+    if mode == 'erl':
+        status |= 1 << 2
+    code = constant(8, status) + mtc0(8, 12)
+    code += constant(12, 0xffffffffa0000000 | MAILBOX)
+    code += constant(10, 0x9800000000000000 | PAGE)
+    if mode == 'way1':
+        code += constant(11, 0x9800000000000000 | (PAGE + 0x100000))
+        code += [insn_i(0x23, 11, 8, 0)]
+    code += [insn_i(0x23, 10, 8, 0)]
+    if mode == 'writeback':
+        code += constant(8, 0x1234) + [insn_i(0x2b, 10, 8, 64)]
+    code += [insn_i(0x2f, 10, 0x11, 0), 0, 0, 0, 0]
+    code += mtc0(0, 28)
+    injected = (0 if mode == 'parity_only' else
+                0xc0000000 if mode == 'two_data' else 0x80000000)
+    code += constant(8, injected) + mtc0(8, 29)
+    check = (0x200 if mode == 'parity_only' else
+             0 if mode in ('correctable', 'two_data') else 0x100)
+    code += constant(8, check)
+    code += mtc0(8, 26)
+    for way in (0, 1):
+        code += [insn_i(0x2f, 10, 0x1f, way), 0, 0, 0, 0]
+    error_pc = 0xbfc00400 + len(code) * 4
+    if mode == 'writeback':
+        code += [insn_i(0x2f, 10, 0x17, 0), 0, 0, 0, 0]
+    else:
+        code += [insn_i(0x23, 10, 8, 0), insn_i(0x2b, 12, 8, 12)]
+    code += mfc0(8, 27) + [insn_i(0x2b, 12, 8, 0)]
+    code += mfc0(8, 12) + [insn_i(0x2b, 12, 8, 4)]
+    code += mfc0(8, 30) + [insn_i(0x2b, 12, 8, 8)]
+    code += constant(8, ECC_NORMAL)
+    code += [insn_i(0x2b, 12, 8, 16)]
+    code += constant(8, DONE)
+    code += [insn_i(0x2b, 12, 8, 32), insn_i(0x04, 0, 0, -1), 0]
+
+    handler = mfc0(8, 27) + [insn_i(0x2b, 12, 8, 0)]
+    handler += mfc0(8, 12) + [insn_i(0x2b, 12, 8, 4)]
+    handler += mfc0(8, 30) + [insn_i(0x2b, 12, 8, 8)]
+    for way in (0, 1):
+        handler += [insn_i(0x2f, 10, 0x05, way), 0, 0, 0, 0]
+        handler += mfc0(8, 28) + [insn_i(0x2b, 12, 8, 20 + way * 4)]
+    handler += constant(8, ECC_EXCEPTION)
+    handler += [insn_i(0x2b, 12, 8, 16)]
+    handler += constant(8, DONE)
+    handler += [insn_i(0x2b, 12, 8, 32), insn_i(0x04, 0, 0, -1), 0]
+    assert len(handler) * 4 <= 0x100
+
+    image = bytearray(0x400 + len(code) * 4)
+    struct.pack_into('>I', image, 0, insn_i(0x04, 0, 0, 0xff))
+    struct.pack_into(f'>{len(handler)}I', image, 0x300, *handler)
+    struct.pack_into(f'>{len(code)}I', image, 0x400, *code)
+    return image, error_pc
+
+
 class R10000TLBCache(QemuSystemTest):
+    def run_secondary_error(self, mode, correction=False, log_unimp=False):
+        image = self.scratch_file('secondary-error.bin')
+        rom, error_pc = secondary_error_rom(mode)
+        Path(image).write_bytes(rom)
+        self.set_machine('octane')
+        cpu = 'R10000,r10k-data-cache=on'
+        if correction:
+            cpu += ',r10k-sccoren=on'
+        self.vm.add_args('-accel', 'tcg,thread=single', '-cpu', cpu,
+                         '-m', '128M', '-bios', image, '-nodefaults')
+        if log_unimp:
+            self.vm.add_args('-d', 'unimp', '-D', self.log_file('ecc.trace'))
+        self.vm.launch()
+        deadline = time.monotonic() + 10
+        while True:
+            output = self.vm.cmd('human-monitor-command',
+                                 command_line=f'xp /9wx {MAILBOX:#x}')
+            words = [int(word, 16) for word in
+                     re.findall(r'0x([0-9a-fA-F]{8})\b', output)]
+            if len(words) == 9 and words[8] == DONE:
+                break
+            self.assertLess(time.monotonic(), deadline, output)
+            time.sleep(0.05)
+        return words, error_pc, output
+
+    def test_secondary_uncorrectable_error_vector(self):
+        words, error_pc, output = self.run_secondary_error('uncorrectable')
+        self.assertEqual(words[4], ECC_EXCEPTION, output)
+        self.assertEqual(words[0] & 0xc0000000, 0x80000000, output)
+        self.assertEqual(words[0] & 0x0c000000, 0x04000000, output)
+        self.assertEqual(words[0] & 0x007fffc0, PAGE & 0x007fff80,
+                         output)
+        self.assertTrue(words[1] & 4, output)
+        self.assertEqual(words[2], error_pc, output)
+        for tag in words[5:7]:
+            self.assertFalse(tag & 0xc0, output)
+
+    def test_secondary_error_reports_way_one(self):
+        words, error_pc, output = self.run_secondary_error('way1')
+        self.assertEqual(words[4], ECC_EXCEPTION, output)
+        self.assertEqual(words[0] & 0x0c000000, 0x08000000, output)
+        self.assertEqual(words[2], error_pc, output)
+        self.assertFalse(any((tag & 0xc0) and
+                             (tag >> 8) == (PAGE >> 12)
+                             for tag in words[5:7]), output)
+
+    def test_secondary_writeback_checks_ecc(self):
+        words, error_pc, output = self.run_secondary_error('writeback')
+        self.assertEqual(words[4], ECC_EXCEPTION, output)
+        self.assertEqual(words[2], error_pc, output)
+        self.assertEqual(words[0] & 0xc0000000, 0x80000000, output)
+
+    def test_secondary_correctable_error(self):
+        words, _, output = self.run_secondary_error('correctable')
+        self.assertEqual(words[4], ECC_NORMAL, output)
+        self.assertEqual(words[3], 0, output)
+        self.assertFalse(words[1] & 4, output)
+        self.assertEqual(words[0], 0, output)
+
+    def test_secondary_de_suppresses_posting(self):
+        words, _, output = self.run_secondary_error('de')
+        self.assertEqual(words[4], ECC_NORMAL, output)
+        self.assertFalse(words[1] & 4, output)
+        self.assertEqual(words[0], 0, output)
+
+    def test_secondary_erl_suppresses_delivery(self):
+        words, _, output = self.run_secondary_error('erl')
+        self.assertEqual(words[4], ECC_NORMAL, output)
+        self.assertTrue(words[1] & 4, output)
+        self.assertEqual(words[0], 0, output)
+
+    def test_secondary_correction_mode_detects_two_data_bits(self):
+        words, error_pc, output = self.run_secondary_error('two_data', True)
+        self.assertEqual(words[4], ECC_EXCEPTION, output)
+        self.assertEqual(words[2], error_pc, output)
+        self.assertTrue(words[1] & 4, output)
+
+    def test_secondary_parity_mode_skips_two_data_bits(self):
+        words, _, output = self.run_secondary_error('two_data')
+        self.assertEqual(words[4], ECC_NORMAL, output)
+        self.assertEqual(words[3], 0xc0000000, output)
+        self.assertFalse(words[1] & 4, output)
+
+    def test_secondary_parity_only_is_reported_as_unimplemented(self):
+        words, _, output = self.run_secondary_error('parity_only',
+                                                    log_unimp=True)
+        self.assertEqual(words[4], ECC_NORMAL, output)
+        self.assertEqual(words[3], 0, output)
+        self.assertEqual(words[0], 0, output)
+        self.assertFalse(words[1] & 4, output)
+        self.assertIn('secondary parity-only error',
+                      Path(self.log_file('ecc.trace')).read_text())
+
+    def test_secondary_correction_mode_parity_only(self):
+        words, _, output = self.run_secondary_error('parity_only', True,
+                                                    log_unimp=True)
+        self.assertEqual(words[4], ECC_NORMAL, output)
+        self.assertEqual(words[3], 0, output)
+        self.assertEqual(words[0], 0, output)
+        self.assertFalse(words[1] & 4, output)
+        self.assertIn('secondary parity-only error',
+                      Path(self.log_file('ecc.trace')).read_text())
+
     def test_secondary_ecc_from_fill_and_writeback(self):
         image = self.scratch_file('secondary-ecc.bin')
         Path(image).write_bytes(secondary_ecc_rom())

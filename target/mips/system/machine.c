@@ -60,6 +60,11 @@ static int cpu_post_load(void *opaque, int version_id)
     if (cpu->r10k_data_cache != cpu->r10k_data_cache_stream) {
         return -EINVAL;
     }
+    if (!strcmp(MIPS_CPU_GET_CLASS(cpu)->cpu_def->name, "R10000") &&
+        !!(env->CP0_Config0 & (1 << CP0C0_R10K_SK)) !=
+        cpu->r10k_sccoren) {
+        return -EINVAL;
+    }
     if (env->timer_adjacent_pending) {
         uint64_t now_ticks = clock_ns_to_ticks(cpu->count_clock,
             qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));

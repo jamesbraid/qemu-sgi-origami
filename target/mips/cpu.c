@@ -544,6 +544,7 @@ static void mips_cpu_finalize(Object *obj)
 
     mips_octeon_destroy_llm_state(&cpu->env.octeon_crypto);
     g_free(cpu->r12000_cpu_model);
+    g_free(cpu->r10k_cpu_model);
 }
 
 static void mips_cpu_disas_set_info(const CPUState *cs, disassemble_info *info)
@@ -763,6 +764,16 @@ static void mips_cpu_realizefn(DeviceState *dev, Error **errp)
         error_setg(errp, "r10k-data-cache requires one R10000 CPU");
         return;
     }
+    if (cpu->r10k_sccoren) {
+        if (strcmp(mcc->cpu_def->name, "R10000")) {
+            error_setg(errp, "r10k-sccoren requires an R10000 CPU");
+            return;
+        }
+        cpu->r10k_cpu_model = g_new(mips_def_t, 1);
+        *cpu->r10k_cpu_model = *env->cpu_model;
+        cpu->r10k_cpu_model->CP0_Config0 |= 1 << CP0C0_R10K_SK;
+        env->cpu_model = cpu->r10k_cpu_model;
+    }
 #endif
     if (!strcmp(mcc->cpu_def->name, "R12000") &&
         !mips_r12000_validate(cpu, errp)) {
@@ -840,6 +851,7 @@ static void mips_cpu_unrealizefn(DeviceState *dev)
     g_free(cpu->env.r10k);
     cpu->env.cpu_model = mcc->cpu_def;
     g_clear_pointer(&cpu->r12000_cpu_model, g_free);
+    g_clear_pointer(&cpu->r10k_cpu_model, g_free);
     cpu->r12000_profile_valid = false;
 
     mcc->parent_unrealize(dev);
@@ -951,6 +963,7 @@ static const Property mips_cpu_properties[] = {
 #ifndef CONFIG_USER_ONLY
 #ifdef CONFIG_TCG
     DEFINE_PROP_BOOL("r10k-data-cache", MIPSCPU, r10k_data_cache, false),
+    DEFINE_PROP_BOOL("r10k-sccoren", MIPSCPU, r10k_sccoren, false),
 #endif
     DEFINE_PROP_LINK("uncached-memory", MIPSCPU, uncached_memory,
                      TYPE_MEMORY_REGION, MemoryRegion *),

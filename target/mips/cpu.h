@@ -1518,6 +1518,7 @@ struct ArchCPU {
     bool r12000_set[5];
     uint32_t r12000_migration_profile[5];
     mips_def_t *r12000_cpu_model;
+    mips_def_t *r10k_cpu_model;
     bool r12000_profile_valid;
     /*
      * Where an uncached or uncached-accelerated reference resolves when a
@@ -1529,6 +1530,7 @@ struct ArchCPU {
     MemoryRegion *uncached_memory;
 #ifndef CONFIG_USER_ONLY
     bool r10k_data_cache;
+    bool r10k_sccoren;
     bool r10k_data_cache_stream;
     MemoryRegion r10k_data_memory;
 #endif
