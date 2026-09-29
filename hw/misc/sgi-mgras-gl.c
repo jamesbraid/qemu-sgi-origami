@@ -12,7 +12,7 @@
  * What it preserves: the pixels that colour and depth clears, untextured
  * points, lines, triangles, strips, fans, quads and polygons, at size and
  * width 1, flat or smooth shaded, lit per vertex by OpenGL's lighting
- * equation, culled by facing, transformed by the modelview and
+ * equation, fogged, culled by facing, transformed by the modelview and
  * projection matrices and their stacks, and bitmaps, leave in the
  * window's front or back buffer after the per-fragment operations the
  * shared rasterizer carries out (the scissor, alpha, stencil and depth
@@ -193,6 +193,26 @@
  * gl-colour-mask-keeps-channels.
  */
 #define MGRAS_GL_COLOR_MASK      0x00003b04
+/*
+ * Fog, established from the listing: glFogfv (__glMgrim_Fogfv 0xd9614c0;
+ * glFogf and glFogi call it) writes, by parameter, GL_FOG_COLOR as 0xb410
+ * and the four floats as the application passed them, GL_FOG_START as
+ * 0xb504, GL_FOG_END as 0xb604 and GL_FOG_DENSITY as 0xb704 and a float,
+ * a negative density being the client's own GL_INVALID_VALUE, and
+ * GL_FOG_INDEX as 0xb804 and GL_FOG_MODE as 0xb904 and the value
+ * truncated to an integer, the mode only when it is GL_EXP, GL_EXP2 or
+ * GL_LINEAR. glEnable and glDisable of GL_FOG write 0x6804 and 1 or 0
+ * (0xd97e238 for capability 0xb60, 0xd9802f4). That the board fogs
+ * fragments as OpenGL 1.2.1, 3.10 says is inferred; the discriminating
+ * test is gl-fog-blends-toward-the-fog-colour.
+ */
+#define MGRAS_GL_FOG_COLOR       0x0000b410
+#define MGRAS_GL_FOG_START       0x0000b504
+#define MGRAS_GL_FOG_END         0x0000b604
+#define MGRAS_GL_FOG_DENSITY     0x0000b704
+#define MGRAS_GL_FOG_INDEX       0x0000b804
+#define MGRAS_GL_FOG_MODE        0x0000b904
+#define MGRAS_GL_FOG             0x00006804
 
 /* glStencilOp's operations by the number the client sends for each. */
 static const uint16_t mgras_gl_stencil_ops[] = {
@@ -739,6 +759,13 @@ bool sgi_mgras_gl_header(uint32_t header)
     case MGRAS_GL_LOGIC_OP:
     case MGRAS_GL_LOGIC_OP_ENABLE:
     case MGRAS_GL_COLOR_MASK:
+    case MGRAS_GL_FOG_COLOR:
+    case MGRAS_GL_FOG_START:
+    case MGRAS_GL_FOG_END:
+    case MGRAS_GL_FOG_DENSITY:
+    case MGRAS_GL_FOG_INDEX:
+    case MGRAS_GL_FOG_MODE:
+    case MGRAS_GL_FOG:
     case MGRAS_GL_DEPTH_RANGE:
     case MGRAS_GL_DITHER:
     case MGRAS_GL_CULL_ON:
@@ -1091,6 +1118,8 @@ typedef enum MgrasGLQueryPacking {
     MGRAS_GL_QUERY_RASTER_XY,
     /* All ones for true, zero for false. */
     MGRAS_GL_QUERY_BOOLEAN_MASK,
+    /* A float glGet keeps, as the integer the client reads. */
+    MGRAS_GL_QUERY_INTEGER,
 } MgrasGLQueryPacking;
 
 /*
@@ -1151,6 +1180,9 @@ typedef enum MgrasGLQueryPacking {
  * - GL_STENCIL_CLEAR_VALUE at 0xc14, an integer.
  * - GL_BLEND at 0xc4a, the whole word the boolean, and GL_BLEND_SRC,
  *   GL_BLEND_DST and GL_BLEND_EQUATION at 0xc4b to 0xc4d, integers.
+ * - GL_FOG_MODE at 0xbce, an integer; GL_FOG_DENSITY, _START and _END at
+ *   0xbcf to 0xbd1 and GL_FOG_COLOR at 0xbd2 to 0xbd5, floats; and
+ *   GL_FOG_INDEX at 0xbd6, an integer.
  *
  * What a1 and a2 select is unknown; the model answers by index alone.
  * Every other index answers zero, logged, which is right for the
@@ -1196,6 +1228,12 @@ static const struct {
     { 0xc4b, 1, MGRAS_GL_QUERY_WORD, SGI_GL_BLEND_SRC, 0 },
     { 0xc4c, 1, MGRAS_GL_QUERY_WORD, SGI_GL_BLEND_DST, 0 },
     { 0xc4d, 1, MGRAS_GL_QUERY_WORD, SGI_GL_BLEND_EQUATION, 0 },
+    { 0xbce, 1, MGRAS_GL_QUERY_WORD, SGI_GL_FOG_MODE, 0 },
+    { 0xbcf, 1, MGRAS_GL_QUERY_WORD, SGI_GL_FOG_DENSITY, 0 },
+    { 0xbd0, 1, MGRAS_GL_QUERY_WORD, SGI_GL_FOG_START, 0 },
+    { 0xbd1, 1, MGRAS_GL_QUERY_WORD, SGI_GL_FOG_END, 0 },
+    { 0xbd2, 4, MGRAS_GL_QUERY_WORD, SGI_GL_FOG_COLOR, 0 },
+    { 0xbd6, 1, MGRAS_GL_QUERY_INTEGER, SGI_GL_FOG_INDEX, 0 },
 };
 
 /*
@@ -1281,7 +1319,14 @@ static bool mgras_gl_query_table_known(const SGIMgrasBoard *b)
  * (inferred: that the board answers with the state the client last set).
  * A field the model does not track keeps the setup value, and such an
  * answer is logged; the bits no query reads keep the setup value's.
+ *
+ * glIsEnabled(GL_FOG) reads a second index, 0x3 with a1 0, only when bit
+ * 17 of 0x286 is clear, and tests it against the table word at offset
+ * 0x440, 0x40000 (notes-return-mode-queries.md). What the word holds is
+ * unknown; the model answers zero, which reads as fog disabled, as bit 17
+ * already said.
  */
+#define MGRAS_GL_QUERY_FOG_SECOND 0x003
 #define MGRAS_GL_QUERY_FILL_ENABLES 0x286
 #define MGRAS_GL_QUERY_PIXEL_ENABLES 0x288
 #define MGRAS_GL_QUERY_STENCIL   0x2c6
@@ -1300,8 +1345,11 @@ static bool mgras_gl_raster_query(SGIMgrasState *s, uint32_t index,
     bool untracked = false;
 
     switch (index) {
+    case MGRAS_GL_QUERY_FOG_SECOND:
+        *answer = 0;
+        break;
     case MGRAS_GL_QUERY_FILL_ENABLES:
-        *answer = MGRAS_GL_FILL_SETUP;
+        *answer = (MGRAS_GL_FILL_SETUP & ~0x20000u) | st->fog << 17;
         untracked = true;
         break;
     case MGRAS_GL_QUERY_PIXEL_ENABLES:
@@ -1425,6 +1473,9 @@ uint32_t sgi_mgras_gl_query_answer(SGIMgrasState *s, const uint32_t *args,
             return out[element];
         case MGRAS_GL_QUERY_BOOLEAN_MASK:
             return out[element] ? UINT32_MAX : 0;
+        case MGRAS_GL_QUERY_INTEGER:
+            memcpy(&f, &out[element], sizeof(f));
+            return (int32_t)MIN(MAX(f, (float)INT32_MIN), (float)INT32_MAX);
         default:
             return out[element];
         }
@@ -2408,6 +2459,65 @@ const VMStateDescription vmstate_sgi_mgras_gl_colour_mask = {
     }
 };
 
+static const VMStateDescription vmstate_sgi_mgras_gl_context_fog = {
+    .name = TYPE_SGI_MGRAS "/gl-context-fog",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32(cur.fog, SGIGLContext),
+        VMSTATE_UINT32(cur.fog_mode, SGIGLContext),
+        VMSTATE_SINGLE(cur.fog_density, SGIGLContext, 0, vmstate_info_uint32,
+                       float),
+        VMSTATE_SINGLE(cur.fog_start, SGIGLContext, 0, vmstate_info_uint32,
+                       float),
+        VMSTATE_SINGLE(cur.fog_end, SGIGLContext, 0, vmstate_info_uint32,
+                       float),
+        VMSTATE_SGI_GL_FLOATS(cur.fog_color, SGIGLContext, 4, 0),
+        VMSTATE_SINGLE(cur.fog_index, SGIGLContext, 0, vmstate_info_uint32,
+                       float),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
+/*
+ * Every context's fog state, sent once some context has left OpenGL's
+ * initial fog state. A stream without it comes from a model that
+ * consumed the fog packets and drew unfogged, as that initial state does.
+ */
+static bool mgras_gl_fog_needed(void *opaque)
+{
+    SGIMgrasState *s = opaque;
+    g_autofree SGIGLContext *init = g_new(SGIGLContext, 1);
+
+    sgi_gl_init(init, 0);
+    for (int i = 0; i < SGI_MGRAS_GL_CONTEXTS; i++) {
+        const SGIGLDrawState *st = &s->gl[i].cur, *in = &init->cur;
+
+        if (st->fog != in->fog || st->fog_mode != in->fog_mode ||
+            memcmp(&st->fog_density, &in->fog_density, sizeof(float)) ||
+            memcmp(&st->fog_start, &in->fog_start, sizeof(float)) ||
+            memcmp(&st->fog_end, &in->fog_end, sizeof(float)) ||
+            memcmp(st->fog_color, in->fog_color, sizeof(in->fog_color)) ||
+            memcmp(&st->fog_index, &in->fog_index, sizeof(float))) {
+            return true;
+        }
+    }
+    return false;
+}
+
+const VMStateDescription vmstate_sgi_mgras_gl_fog = {
+    .name = TYPE_SGI_MGRAS "/gl-fog",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = mgras_gl_fog_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_STRUCT_ARRAY(gl, SGIMgrasState, SGI_MGRAS_GL_CONTEXTS, 1,
+                             vmstate_sgi_mgras_gl_context_fog,
+                             SGIGLContext),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
 const VMStateDescription vmstate_sgi_mgras_gl_cull = {
     .name = TYPE_SGI_MGRAS "/gl-cull",
     .version_id = 1,
@@ -2622,6 +2732,7 @@ bool sgi_mgras_gl_post_load(SGIMgrasState *s)
             gl->cur.stencil_test > 1 || gl->cur.blend > 1 ||
             gl->cur.index_logic_op > 1 || gl->cur.color_logic_op > 1 ||
             gl->cur.colour_mask > SGI_GL_COLOUR_MASK_ALL ||
+            gl->cur.fog > 1 ||
             gl->cur.logic_op_mode - SGI_GL_CLEAR >
                 SGI_GL_SET - SGI_GL_CLEAR ||
             gl->cur.stencil_func > SGI_GL_ALWAYS ||
@@ -3735,6 +3846,36 @@ static bool mgras_gl_lighting(SGIMgrasState *s, uint32_t header,
     }
 }
 
+/* A glFog packet as glFogfv: the index and mode arrive as integers. */
+static void mgras_gl_fog(SGIMgrasState *s, uint32_t header,
+                         const uint32_t *payload)
+{
+    uint32_t word[5] = { 0 };
+    float f;
+
+    switch (header) {
+    case MGRAS_GL_FOG_COLOR:
+        word[0] = SGI_GL_FOG_COLOR;
+        memcpy(&word[1], payload, 4 * sizeof(uint32_t));
+        break;
+    case MGRAS_GL_FOG_START:
+    case MGRAS_GL_FOG_END:
+    case MGRAS_GL_FOG_DENSITY:
+        word[0] = header == MGRAS_GL_FOG_START ? SGI_GL_FOG_START :
+                  header == MGRAS_GL_FOG_END ? SGI_GL_FOG_END :
+                  SGI_GL_FOG_DENSITY;
+        word[1] = payload[0];
+        break;
+    default:
+        word[0] = header == MGRAS_GL_FOG_INDEX ? SGI_GL_FOG_INDEX :
+                  SGI_GL_FOG_MODE;
+        f = (int32_t)payload[0];
+        memcpy(&word[1], &f, sizeof(f));
+        break;
+    }
+    mgras_gl_command(s, SGI_GL_OP_FOG, word, 5);
+}
+
 /*
  * A glNormal3 packet's components as the floats glNormal3f takes, by
  * table 2.6's conversion for a signed component of the packet's type.
@@ -3986,6 +4127,19 @@ void sgi_mgras_gl_execute(SGIMgrasState *s, uint32_t header,
             word[i] = extract32(payload[0], i, 1);
         }
         mgras_gl_command(s, SGI_GL_OP_COLOR_MASK, word, 4);
+        return;
+    case MGRAS_GL_FOG_COLOR:
+    case MGRAS_GL_FOG_START:
+    case MGRAS_GL_FOG_END:
+    case MGRAS_GL_FOG_DENSITY:
+    case MGRAS_GL_FOG_INDEX:
+    case MGRAS_GL_FOG_MODE:
+        mgras_gl_fog(s, header, payload);
+        return;
+    case MGRAS_GL_FOG:
+        word[0] = SGI_GL_FOG;
+        mgras_gl_command(s, payload[0] ? SGI_GL_OP_ENABLE :
+                         SGI_GL_OP_DISABLE, word, 1);
         return;
     case MGRAS_GL_DEPTH_RANGE:
         /* The client does not clamp, so the board does (2.10.1). */

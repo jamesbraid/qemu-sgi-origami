@@ -81,6 +81,8 @@ extern const VMStateDescription vmstate_sgi_mgras_gl_blend;
 extern const VMStateDescription vmstate_sgi_mgras_gl_logic_op;
 /* Each context's colour mask, sent once one has masked a channel. */
 extern const VMStateDescription vmstate_sgi_mgras_gl_colour_mask;
+/* Each context's fog state, sent once one has left the initial. */
+extern const VMStateDescription vmstate_sgi_mgras_gl_fog;
 
 /*
  * The parser's class while the words of a GE parameter load (a class-0
