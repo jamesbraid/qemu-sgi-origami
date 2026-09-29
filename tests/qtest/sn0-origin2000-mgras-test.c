@@ -6968,10 +6968,10 @@ static void test_gl_triangle_shared_edge_centres_drawn_once(void)
 }
 
 /*
- * The model bounds fragments to the viewport rectangle instead of clipping
- * to the view volume. A triangle reaching NDC -5 and 5 covers the whole
- * 64x64 viewport at (32, 32) and draws nothing outside it, though its
- * interior extends there.
+ * A triangle reaching NDC -5 and 5 is clipped to the view volume's side
+ * planes (OpenGL 1.2.1, 2.11): it covers the whole 64x64 viewport at
+ * (32, 32) and draws nothing outside it, though its interior extends
+ * there.
  */
 static void test_gl_triangle_bounded_by_the_viewport(void)
 {
@@ -6996,30 +6996,40 @@ static void test_gl_triangle_bounded_by_the_viewport(void)
 }
 
 /*
- * A vertex with w <= 0 needs view-volume clipping, which the model does
- * not do, so it drops the triangle. (0.5, -1, 0, -1) divides to the same
- * point as (-0.5, 1, 0, 1), which draws.
+ * A triangle with a vertex at w < 0 is clipped where it leaves the view
+ * volume, before the divide (OpenGL 1.2.1, 2.11). With (-1/2, -1/2, 0, 1),
+ * (1/2, -1/2, 0, 1) and (0, 0, -3, -s) scaled by s, the near plane cuts
+ * the two edges to the third vertex a fifth of the way along, at
+ * normalized (-2/3, -2/3) and (2/3, -2/3), leaving a trapezoid from
+ * window row 21.3 to 32 in the 128-pixel viewport. Row 26 draws, and row
+ * 40, inside the triangle the three vertices would make divided by their
+ * w, does not. With every vertex negated (s = -1) the triangle lies
+ * wholly outside the volume, since no point there has w < 0, and draws
+ * nothing, though it divides to the same window points.
  */
-static void gl_draw_w_triangle(QTestState *qts, float x, float y, float w)
+static void gl_draw_w_triangle(QTestState *qts, float s)
 {
     mgras_reset();
     mgras_enter_gl_window(qts, 256, 640, 128, 128, 0x11);
     gl_viewport(qts, 0, 0, 128, 128);
     gl_color3f(qts, 1, 1, 1);
     gl_word(qts, GL_BEGIN_TRIANGLES);
-    gl_vertex4f(qts, -1, -1, 0, 1);
-    gl_vertex4f(qts, 1, -1, 0, 1);
-    gl_vertex4f(qts, x, y, 0, w);
+    gl_vertex4f(qts, -0.5f * s, -0.5f * s, 0, s);
+    gl_vertex4f(qts, 0.5f * s, -0.5f * s, 0, s);
+    gl_vertex4f(qts, 0, 0, -3 * s, -s);
     gl_word(qts, GL_END_TRIANGLES);
 }
 
-static void test_gl_triangle_with_negative_w_is_dropped(void)
+static void test_gl_triangle_behind_the_eye_is_clipped(void)
 {
-    gl_draw_w_triangle(qts, -0.5, 1, 1);
-    g_assert_cmphex(gl_window_pixel(qts, 20, 20), ==, 0xffffff);
+    gl_draw_w_triangle(qts, 1);
+    g_assert_cmphex(gl_window_pixel(qts, 64, 26), ==, 0xffffff);
+    g_assert_cmphex(gl_window_pixel(qts, 64, 20), ==, 0);
+    g_assert_cmphex(gl_window_pixel(qts, 64, 40), ==, 0);
 
-    gl_draw_w_triangle(qts, 0.5, -1, -1);
-    g_assert_cmphex(gl_window_pixel(qts, 20, 20), ==, 0);
+    gl_draw_w_triangle(qts, -1);
+    g_assert_cmphex(gl_window_pixel(qts, 64, 26), ==, 0);
+    g_assert_cmphex(gl_window_pixel(qts, 64, 40), ==, 0);
 }
 
 /*
@@ -7575,8 +7585,7 @@ static void test_gl_clear_depth_sets_the_plane(void)
 }
 
 /*
- * A fragment whose window depth lies outside [0, 1] belongs to the part
- * of the triangle beyond the far or near plane, which clipping removes
+ * The part of a triangle beyond the far or near plane is clipped away
  * (OpenGL 1.2.1, 2.11). Window depth here is 0.25 + 1.5 * y / 128, so
  * rows from 64 up are beyond the far plane, depth test or not.
  */
@@ -8676,9 +8685,8 @@ static void test_gl_line_leaves_out_its_last_pixel(void)
 }
 
 /*
- * Approximated: like a triangle's, a segment's fragments are bounded by
- * the viewport instead of the segment being clipped to the view volume.
- * A segment across a 32-pixel viewport's right edge stops at column 31.
+ * Like a triangle, a segment is clipped to the view volume (2.11): one
+ * across a 32-pixel viewport's right edge stops at column 31.
  */
 static void test_gl_line_bounded_by_the_viewport(void)
 {
@@ -15863,8 +15871,8 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/origin2000/mgras/gl-triangle-bounded-by-the-viewport",
                    test_gl_triangle_bounded_by_the_viewport);
     qtest_add_func("sn0/origin2000/mgras/"
-                   "gl-triangle-with-negative-w-is-dropped",
-                   test_gl_triangle_with_negative_w_is_dropped);
+                   "gl-triangle-behind-the-eye-is-clipped",
+                   test_gl_triangle_behind_the_eye_is_clipped);
     qtest_add_func("sn0/origin2000/mgras/"
                    "gl-ortho-matches-the-reference",
                    test_gl_ortho_matches_the_reference);
