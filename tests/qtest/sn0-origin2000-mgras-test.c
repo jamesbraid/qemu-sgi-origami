@@ -9947,6 +9947,62 @@ static void test_gl_raster_pos2i(void)
 }
 
 /*
+ * The class-0x3800 forms and glTexCoord2f, as the IRIX 6.5.30 IP27GR532
+ * client sends them: glVertex3i (0x3800000c) draws where glVertex3f of
+ * the same values would, glRasterPos3i (0x3800380c) sets the raster
+ * position with its z, window depth 0 for z 1 under glOrtho's -1 to 1,
+ * and glTexCoord2f (0x40000808) and glTexCoord3i (0x3800080c) between
+ * the vertices are consumed by their length and change nothing drawn.
+ */
+#define GL_VERTEX3I_HDR       0x3800000c
+#define GL_RASTER_POS3I_HDR   0x3800380c
+#define GL_TEX_COORD3I_HDR    0x3800080c
+#define GL_TEX_COORD2F_HDR    0x40000808
+
+static void gl_vertex3i(QTestState *qts, int32_t x, int32_t y, int32_t z)
+{
+    gl_word(qts, GL_VERTEX3I_HDR);
+    gl_word(qts, x);
+    gl_word(qts, y);
+    gl_word(qts, z);
+}
+
+static void test_gl_integer_and_texture_forms(void)
+{
+    gl_transform_start(qts);
+    gl_clear_color(qts, 0, 0, 0, 1);
+    gl_word(qts, GL_CLEAR_COLOR_BUFFER);
+    gl_color3f(qts, 1, 1, 1);
+    gl_word(qts, GL_BEGIN_TRIANGLES);
+    gl_word(qts, GL_TEX_COORD2F_HDR);
+    gl_word(qts, gl_bits(0.25f));
+    gl_word(qts, gl_bits(0.75f));
+    gl_vertex3i(qts, 10, 10, 0);
+    gl_word(qts, GL_TEX_COORD3I_HDR);
+    gl_word(qts, 1);
+    gl_word(qts, 2);
+    gl_word(qts, 3);
+    gl_vertex3i(qts, 40, 10, 0);
+    gl_vertex3i(qts, 10, 40, 0);
+    gl_word(qts, GL_END_TRIANGLES);
+    g_assert_cmphex(gl_window_pixel(qts, 15, 15), ==, 0xffffff);
+    g_assert_cmphex(gl_window_pixel(qts, 38, 38), ==, 0);
+    g_assert_cmphex(gl_window_pixel(qts, 9, 15), ==, 0);
+
+    gl_word(qts, GL_RASTER_POS3I_HDR);
+    gl_word(qts, 20);
+    gl_word(qts, 30);
+    gl_word(qts, 1);
+    g_assert_cmphex(gl_query(qts, GL_Q_RASTER_VALID, 1), ==, UINT32_MAX);
+    g_assert_cmphex(gl_query(qts, GL_Q_RASTER_X, 1), ==,
+                    gl_bits(20 + GL_RASTER_BIAS));
+    g_assert_cmphex(gl_query(qts, GL_Q_RASTER_Y, 1), ==,
+                    gl_bits(30 + GL_RASTER_BIAS));
+    g_assert_cmphex(gl_query(qts, GL_Q_RASTER_Z, 1), ==, gl_bits(0));
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+}
+
+/*
  * glBitmap, as the IRIX 6.5.30 IP27GR532 client's __glMgrim_Bitmap forms
  * it for a small image: 0x9420, a flags word, the width and height, xorig,
  * yorig, xmove and ymove as floats and the image's length in words; then
@@ -15796,6 +15852,8 @@ int main(int argc, char **argv)
                    test_hq_query_answers_lights_and_materials);
     qtest_add_func("sn0/origin2000/mgras/gl-raster-pos2i",
                    test_gl_raster_pos2i);
+    qtest_add_func("sn0/origin2000/mgras/gl-integer-and-texture-forms",
+                   test_gl_integer_and_texture_forms);
     qtest_add_func("sn0/origin2000/mgras/gl-bitmap-draws-its-image",
                    test_gl_bitmap_draws_its_image);
     qtest_add_func("sn0/origin2000/mgras/gl-bitmap-unaligned-image",
