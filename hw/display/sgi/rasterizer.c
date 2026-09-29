@@ -3,8 +3,9 @@
  * The software rasterizer the SGI graphics heads share.
  *
  * A draw's vertices are transformed by the draw state's matrices, its
- * primitives clipped to the view volume, mapped through its viewport into
- * window coordinates, snapped to a subpixel grid and rasterized with edge
+ * primitives clipped to the view volume, mapped through its viewport, or
+ * a window matrix in place of projection and viewport, into window
+ * coordinates, snapped to a subpixel grid and rasterized with edge
  * functions at pixel centres, clipped by the enabled client clip planes,
  * and fogged while fog is enabled. Each fragment then passes the
  * per-fragment operations in OpenGL 1.2.1's order (4.1):
@@ -709,6 +710,48 @@ static void sgi_soft_fragment_at(const SGISoftDraw *r, int px, int py,
 }
 
 /*
+ * The depth range [n, f] normalized depth is mapped through (2.10.1): the
+ * draw state's, or [0, 1] under a window matrix, whose depth is already
+ * window depth.
+ */
+static void sgi_soft_depth_range(const SGIGLDrawState *st, double *n,
+                                 double *f)
+{
+    *n = st->window_matrix_given ? 0 : st->depth_range[0];
+    *f = st->window_matrix_given ? 1 : st->depth_range[1];
+}
+
+/*
+ * The window pixels a primitive's fragments may fall on, inclusive: the
+ * bounds of those the window owns, within the viewport unless a window
+ * matrix replaces it. False when there are none.
+ */
+static bool sgi_soft_bounds(const SGISoftDraw *r, int *x0, int *y0, int *x1,
+                            int *y1)
+{
+    const SGIGLDrawState *st = r->st;
+    const SGISoftWindow *win = &r->win;
+    int vx = st->viewport[0], vy = st->viewport[1];
+    int vw = st->viewport[2], vh = st->viewport[3];
+
+    *x0 = win->x0 - win->ox;
+    *y0 = win->y0 - win->oy;
+    *x1 = win->x1 - win->ox;
+    *y1 = win->y1 - win->oy;
+    if (st->window_matrix_given) {
+        return true;
+    }
+    if (vw <= 0 || vh <= 0) {
+        return false;
+    }
+    *x0 = MAX(*x0, vx);
+    *y0 = MAX(*y0, vy);
+    *x1 = MIN(*x1, vx + vw - 1);
+    *y1 = MIN(*y1, vy + vh - 1);
+    return true;
+}
+
+/*
  * A primitive's fragment at normalized depth z, (zd + 1) / 2 for the
  * normalized device z zd: dropped outside [0, 1], the view volume's near
  * and far planes, which clipping has already cut the primitive to, and
@@ -719,8 +762,9 @@ static void sgi_soft_fragment_at(const SGISoftDraw *r, int px, int py,
 static void sgi_soft_fragment(const SGISoftDraw *r, int px, int py, double z,
                               double offset, const SGISoftFrag *frag)
 {
-    double n = r->st->depth_range[0], f = r->st->depth_range[1], zw;
+    double n, f, zw;
 
+    sgi_soft_depth_range(r->st, &n, &f);
     if (!(z >= 0.0 && z <= 1.0)) {
         return;
     }
@@ -739,17 +783,18 @@ static double sgi_soft_offset(const SGISoftDraw *r, const SGISoftVertex v[3])
 {
     const SGIGLDrawState *st = r->st;
     const double sub = 1 << r->rules->subpixel_bits;
-    double x1, y1, z1, x2, y2, z2, det, m;
+    double x1, y1, z1, x2, y2, z2, det, m, n, f;
 
     if (!(st->polygon_offset & SGI_GL_OFFSET_FILL)) {
         return 0;
     }
+    sgi_soft_depth_range(st, &n, &f);
     x1 = (v[1].x - v[0].x) / sub, y1 = (v[1].y - v[0].y) / sub;
     x2 = (v[2].x - v[0].x) / sub, y2 = (v[2].y - v[0].y) / sub;
     z1 = v[1].z - v[0].z, z2 = v[2].z - v[0].z;
     det = x1 * y2 - x2 * y1;
     m = MAX(fabs(z1 * y2 - z2 * y1), fabs(x1 * z2 - x2 * z1)) / fabs(det) *
-        fabs(st->depth_range[1] - st->depth_range[0]);
+        fabs(f - n);
     return m * st->offset_factor +
            st->offset_units / sgi_soft_depth_max(r->rules) + st->offset_bias;
 }
@@ -894,7 +939,8 @@ bool sgi_volume_clip_segment(SGIVolumeVertex *a, SGIVolumeVertex *b)
 
 /*
  * One vertex to clip coordinates (OpenGL 1.2.1, 2.10): object to eye by
- * the modelview and eye to clip by the projection.
+ * the modelview and eye to clip by the projection, or by the window
+ * matrix as sgi_gl_eye_to_clip() takes it.
  */
 static void sgi_soft_to_volume(const SGISoftDraw *r, const float *v,
                                SGIVolumeVertex *out)
@@ -908,20 +954,16 @@ static void sgi_soft_to_volume(const SGISoftDraw *r, const float *v,
                              (double)v[SGI_GL_V_POSITION + k];
         }
     }
-    for (int row = 0; row < 4; row++) {
-        out->clip[row] = 0;
-        for (int k = 0; k < 4; k++) {
-            out->clip[row] += st->projection[k * 4 + row] * out->eye[k];
-        }
-    }
+    sgi_gl_eye_to_clip(st, out->eye, out->clip);
     memcpy(out->attr, v, sizeof(out->attr));
 }
 
 /*
  * Map one clipped vertex (2.10): the divide by w and the viewport map,
  * with depth left normalized to [0, 1]; the depth range maps it per
- * fragment. Clipping has put the vertex in the view volume, so its
- * normalized depth is clamped to [0, 1] against rounding. The colour is
+ * fragment. Under a window matrix the position is the matrix's and the
+ * depth its window depth. Clipping has put the vertex in the view volume,
+ * so its normalized depth is clamped to [0, 1] against rounding. The colour is
  * the front colour; a back-facing triangle takes its back colour later.
  * A vertex with w <= 0 is in the volume only at the clip-space origin,
  * where the divide has no answer, and returns false, as does one mapped
@@ -932,18 +974,16 @@ static bool sgi_soft_project(const SGISoftDraw *r, const SGIVolumeVertex *cv,
 {
     const SGIGLDrawState *st = r->st;
     const double *clip = cv->clip, *eye = cv->eye;
-    int vx = st->viewport[0], vy = st->viewport[1];
-    int vw = st->viewport[2], vh = st->viewport[3];
-    double xw, yw, z;
+    double win[3], xw, yw, z;
 
     if (!(clip[3] > 0)) {
         qemu_log_mask(LOG_UNIMP, "sgi-gl: clipped vertex at w %g has no "
                       "window position, primitive dropped\n", clip[3]);
         return false;
     }
-    /* 2.10.1: xw = (px / 2) xd + ox, ox = x + w / 2. */
-    xw = (clip[0] / clip[3] + 1.0) * vw / 2.0 + vx;
-    yw = (clip[1] / clip[3] + 1.0) * vh / 2.0 + vy;
+    sgi_gl_clip_to_window(st, clip, win);
+    xw = win[0];
+    yw = win[1];
     if (!(fabs(xw) < 65536.0 && fabs(yw) < 65536.0)) {
         qemu_log_mask(LOG_UNIMP, "sgi-gl: vertex outside the rasterizer's "
                       "range, primitive dropped\n");
@@ -951,7 +991,7 @@ static bool sgi_soft_project(const SGISoftDraw *r, const SGIVolumeVertex *cv,
     }
     out->x = sgi_soft_round(r->rules, xw * (1 << r->rules->subpixel_bits));
     out->y = sgi_soft_round(r->rules, yw * (1 << r->rules->subpixel_bits));
-    z = (clip[2] / clip[3] + 1.0) / 2.0;
+    z = win[2];
     out->z = z >= 1 ? 1 : z > 0 ? z : 0;
     out->inv_w = 1.0 / clip[3];
     /*
@@ -981,16 +1021,23 @@ static bool sgi_soft_project(const SGISoftDraw *r, const SGIVolumeVertex *cv,
  *
  * Facing (2.13.1) is the sign of the triangle's area in window
  * coordinates on the subpixel grid: a positive area is front facing under
- * glFrontFace(GL_CCW) and a negative one under GL_CW. With GL_CULL_FACE
- * enabled a triangle whose facing glCullFace names is not rasterized
- * (3.5.1). When the draw carries back colours a back-facing triangle
- * takes them. A polygon or quad is drawn as triangles, each facing by its
- * own area, which for a convex polygon is the polygon's facing; so is
- * each triangle of a clipped one.
+ * glFrontFace(GL_CCW) and a negative one under GL_CW. Under a window
+ * matrix whose rows run down the display, window y runs opposite to the
+ * client's, which mirrors the winding, so the area's sign is taken
+ * negated: a triangle counter-clockwise as the client drew it is
+ * counter-clockwise here too, for culling and two-sided colour alike.
+ * With GL_CULL_FACE enabled a triangle whose facing glCullFace names is
+ * not rasterized (3.5.1). When the draw carries back colours a
+ * back-facing triangle takes them. A polygon or quad is drawn as
+ * triangles, each facing by its own area, which for a convex polygon is
+ * the polygon's facing; so is each triangle of a clipped one. The tie
+ * rule still names edges in window rows as they run, so under rows down
+ * the display SGI_TIE_TOP_LEFT_BOTTOM_ORIGIN's owned edges are the
+ * bottom and left ones on the display.
  *
- * The fragments are also bounded by the viewport rectangle, which
- * clipping has already made them lie in; a normalized depth outside
- * [0, 1] could now come only from rounding, and is still dropped.
+ * The fragments are also bounded by the viewport rectangle, when there
+ * is one, which clipping has already made them lie in; a normalized depth
+ * outside [0, 1] could now come only from rounding, and is still dropped.
  *
  * Depth is interpolated linearly in window coordinates and colour with
  * the perspective correction of equation 3.4 (OpenGL 1.2.1, 3.5.1).
@@ -1002,16 +1049,13 @@ static void sgi_soft_clipped_triangle(const SGISoftDraw *r,
                                       const float *provoking)
 {
     const SGIGLDrawState *st = r->st;
-    const SGISoftWindow *win = &r->win;
     const SGIVolumeVertex *verts[3] = { va, vb, vc };
     const float *flat = &provoking[SGI_GL_V_COLOR];
     SGISoftFrag flat_frag;
     SGISoftVertex v[3];
     int64_t min_x, max_x, min_y, max_y, area;
     double offset;
-    bool front;
-    int vx = st->viewport[0], vy = st->viewport[1];
-    int vw = st->viewport[2], vh = st->viewport[3];
+    bool ccw, front;
     int px0, px1, py0, py1;
     bool smooth = st->shade_model != SGI_GL_FLAT;
     const int sub = r->rules->subpixel_bits;
@@ -1026,7 +1070,9 @@ static void sgi_soft_clipped_triangle(const SGISoftDraw *r,
     if (area == 0) {
         return;
     }
-    front = st->front_face == SGI_GL_CW ? area < 0 : area > 0;
+    ccw = st->window_matrix_given && st->window_rows_down ? area < 0 :
+                                                            area > 0;
+    front = st->front_face == SGI_GL_CW ? !ccw : ccw;
     if (st->cull_face &&
         (st->cull_face_mode == SGI_GL_FRONT_AND_BACK ||
          st->cull_face_mode == (front ? SGI_GL_FRONT : SGI_GL_BACK))) {
@@ -1062,10 +1108,13 @@ static void sgi_soft_clipped_triangle(const SGISoftDraw *r,
     max_y = MAX(v[0].y, MAX(v[1].y, v[2].y)) >> sub;
 
     /* Window pixels, bounded by the viewport and the owned rectangle. */
-    px0 = MAX(MAX((int)min_x, vx), win->x0 - win->ox);
-    px1 = MIN(MIN((int)max_x, vx + vw - 1), win->x1 - win->ox);
-    py0 = MAX(MAX((int)min_y, vy), win->y0 - win->oy);
-    py1 = MIN(MIN((int)max_y, vy + vh - 1), win->y1 - win->oy);
+    if (!sgi_soft_bounds(r, &px0, &py0, &px1, &py1)) {
+        return;
+    }
+    px0 = MAX((int)min_x, px0);
+    px1 = MIN((int)max_x, px1);
+    py0 = MAX((int)min_y, py0);
+    py1 = MIN((int)max_y, py1);
 
     for (int py = py0; py <= py1; py++) {
         int64_t cy = ((int64_t)py << sub) +
@@ -1135,6 +1184,17 @@ static void sgi_soft_clipped_triangle(const SGISoftDraw *r,
  * Pixels next to the edges clipping makes, and the attributes at them,
  * may differ from a head's; how a head draws a primitive crossing the
  * near plane would settle it.
+ *
+ * Under a window matrix there is no clip space of the projection's own,
+ * so the clipping is in the window matrix's homogeneous output, the clip
+ * space composed with the viewport map, which clipping commutes with.
+ * The near and far planes are OpenGL's, window depth 0 and 1, and keep
+ * w positive as OpenGL's do. The side planes, which the viewport would
+ * place and the window matrix does not say, become a guard band of
+ * SGI_GL_WINDOW_GUARD pixels about the drawable's origin, and the
+ * window's own pixels and the scissor box bound what is drawn. That
+ * matches OpenGL wherever the viewport the client meant covers the
+ * window; where a head clips x and y is not known.
  */
 static void sgi_soft_triangle(const SGISoftDraw *r, const float *va,
                               const float *vb, const float *vc,
@@ -1143,8 +1203,9 @@ static void sgi_soft_triangle(const SGISoftDraw *r, const float *va,
     const float *verts[3] = { va, vb, vc };
     SGIVolumeVertex in[3], poly[SGI_VOLUME_TRIANGLE_MAX];
     unsigned n;
+    int x0, y0, x1, y1;
 
-    if (r->st->viewport[2] <= 0 || r->st->viewport[3] <= 0) {
+    if (!sgi_soft_bounds(r, &x0, &y0, &x1, &y1)) {
         return;
     }
     for (int i = 0; i < 3; i++) {
@@ -1205,25 +1266,22 @@ static bool sgi_soft_line_covers(const SGISoftVertex *a,
  * as a triangle is. A fragment's depth and smooth colour come from t, the
  * centre's projection onto the clipped segment (equations 3.5 to 3.7),
  * the colour corrected for perspective. The fragments are also bounded by
- * the viewport. glLineWidth, glLineStipple and line antialiasing are not
- * modelled.
+ * the viewport, when there is one. glLineWidth, glLineStipple and line
+ * antialiasing are not modelled.
  */
 static void sgi_soft_line(const SGISoftDraw *r, const float *va,
                           const float *vb, const float *provoking)
 {
     const SGIGLDrawState *st = r->st;
-    const SGISoftWindow *win = &r->win;
-    int vx = st->viewport[0], vy = st->viewport[1];
-    int vw = st->viewport[2], vh = st->viewport[3];
     bool smooth = st->shade_model != SGI_GL_FLAT;
     const int sub = r->rules->subpixel_bits;
     bool x_major;
     SGIVolumeVertex ca, cb;
     SGISoftVertex a, b;
     double flat[4], len2;
-    int major0, major1;
+    int major0, major1, bx0, by0, bx1, by1;
 
-    if (vw <= 0 || vh <= 0) {
+    if (!sgi_soft_bounds(r, &bx0, &by0, &bx1, &by1)) {
         return;
     }
     sgi_soft_to_volume(r, va, &ca);
@@ -1277,10 +1335,7 @@ static void sgi_soft_line(const SGISoftDraw *r, const float *va,
             double t, wa, wb;
             SGISoftFrag frag;
 
-            if (px < MAX(vx, win->x0 - win->ox) ||
-                px > MIN(vx + vw - 1, win->x1 - win->ox) ||
-                py < MAX(vy, win->y0 - win->oy) ||
-                py > MIN(vy + vh - 1, win->y1 - win->oy) ||
+            if (px < bx0 || px > bx1 || py < by0 || py > by1 ||
                 !sgi_soft_line_covers(&a, &b, px, py, sub)) {
                 continue;
             }
@@ -1316,20 +1371,17 @@ static void sgi_soft_line(const SGISoftDraw *r, const float *va,
  * A size-1 point covers the pixel holding its window position (OpenGL
  * 1.2.1, 3.3), at the subpixel grid the vertex was snapped to. A point
  * outside the view volume is dropped (2.11), and so is one outside the
- * viewport, which only a point on the volume's edge can be. glPointSize
- * and point antialiasing are not modelled.
+ * viewport, when there is one, which only a point on the volume's edge
+ * can be. glPointSize and point antialiasing are not modelled.
  */
 static void sgi_soft_point(const SGISoftDraw *r, const float *vp)
 {
     const SGIGLDrawState *st = r->st;
-    const SGISoftWindow *win = &r->win;
-    int vx = st->viewport[0], vy = st->viewport[1];
-    int vw = st->viewport[2], vh = st->viewport[3];
     const int sub = r->rules->subpixel_bits;
     SGIVolumeVertex cv;
     SGISoftVertex v;
     SGISoftFrag frag;
-    int px, py;
+    int px, py, bx0, by0, bx1, by1;
 
     sgi_soft_to_volume(r, vp, &cv);
     if (!sgi_volume_contains(&cv) || !sgi_soft_project(r, &cv, &v) ||
@@ -1338,10 +1390,8 @@ static void sgi_soft_point(const SGISoftDraw *r, const float *vp)
     }
     px = v.x >> sub;
     py = v.y >> sub;
-    if (px < MAX(vx, win->x0 - win->ox) ||
-        px > MIN(vx + vw - 1, win->x1 - win->ox) ||
-        py < MAX(vy, win->y0 - win->oy) ||
-        py > MIN(vy + vh - 1, win->y1 - win->oy)) {
+    if (!sgi_soft_bounds(r, &bx0, &by0, &bx1, &by1) ||
+        px < bx0 || px > bx1 || py < by0 || py > by1) {
         return;
     }
     memcpy(frag.rgba, v.rgba, sizeof(frag.rgba));

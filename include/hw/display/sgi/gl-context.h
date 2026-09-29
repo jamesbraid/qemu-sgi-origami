@@ -405,7 +405,10 @@ typedef struct SGIGLDrawable {
      * and each draw, clear or bitmap is logged as dropped.
      */
     uint32_t bound;             /* 0 or 1 */
-    /* The window's lower-left pixel, where window coordinates start. */
+    /*
+     * The window's lower-left pixel, where window coordinates start; its
+     * top-left under a window matrix whose rows run down the display.
+     */
     int32_t origin[2];
     /*
      * The pixels the window owns. A bound window with no rectangle is one
@@ -532,7 +535,34 @@ typedef struct SGIGLDrawState {
      * it is on and the head's rules name a dither; clears never are.
      */
     uint32_t dither;            /* 0 or 1 */
+    /*
+     * A window matrix, for a family whose board takes one eye-to-window
+     * transform in place of a projection and a viewport; none of it is GL
+     * state (sgi_gl_set_window_matrix()). While window_matrix_given is 1,
+     * an eye position e goes to h = W e by window_matrix W, column-major,
+     * and h replaces the projection, the divide and the viewport map
+     * (2.10): window x and y are h0 / h3 and h1 / h3, unrounded, in pixels
+     * from the drawable's origin, and window depth is
+     * window_depth_scale * h2 / h3, which the depth range does not map
+     * again. With window_rows_down 1 window y counts rows down the display
+     * from the drawable's origin, which is then the window's top-left
+     * pixel; facing (2.13.1, 3.5.1) is still judged as the client sees it.
+     * Clipping keeps OpenGL's near and far planes, window depth 0 and 1,
+     * and bounds x and y by SGI_GL_WINDOW_GUARD instead of the viewport.
+     */
+    uint32_t window_matrix_given;       /* 0 or 1 */
+    float window_matrix[16];
+    float window_depth_scale;
+    uint32_t window_rows_down;          /* 0 or 1 */
 } SGIGLDrawState;
+
+/*
+ * Under a window matrix, the window pixels about the drawable's origin,
+ * in each direction, that a primitive is clipped to in place of the
+ * viewport's sides: more than any head's window, so nothing a window
+ * owns is cut, and within the rasterizer's reach.
+ */
+#define SGI_GL_WINDOW_GUARD     16384
 
 typedef struct SGIGLContext {
     /* The hardware identity the family keys this context by. */
@@ -841,6 +871,31 @@ bool sgi_gl_set_light(SGIGLContext *c, uint32_t light,
  * modelview's inverse transpose (2.10.3).
  */
 void sgi_gl_set_normal_matrix(SGIGLContext *c, const float m[9]);
+/*
+ * An eye position's clip coordinates (2.10) under the draw state: by the
+ * projection, or under a window matrix the window matrix's h with x and y
+ * scaled by 1 / SGI_GL_WINDOW_GUARD and z by 2 window_depth_scale, less
+ * w, so that OpenGL's view volume, -w <= x, y, z <= w, is the guard band
+ * and window depth 0 to 1. Either is clipped by sgi_volume_clip_*().
+ */
+void sgi_gl_eye_to_clip(const SGIGLDrawState *st, const double eye[4],
+                        double clip[4]);
+/*
+ * Clip coordinates as sgi_gl_eye_to_clip() gives them to window x and y
+ * and normalized depth, (z / w + 1) / 2, in out: by the divide and the
+ * viewport, or under a window matrix the window matrix's own window
+ * position, unrounded, and its window depth. w must be positive.
+ */
+void sgi_gl_clip_to_window(const SGIGLDrawState *st, const double clip[4],
+                           double out[3]);
+/*
+ * Draw through the window matrix m, column-major, with depth scale
+ * depth_scale and rows running down when rows_down, as the draw state
+ * describes them; NULL returns to the projection and viewport, and clears
+ * all three. The same state goes to glRasterPos.
+ */
+void sgi_gl_set_window_matrix(SGIGLContext *c, const float m[16],
+                              float depth_scale, bool rows_down);
 /* Make every eye normal unit length, whatever GL_NORMALIZE's enable. */
 void sgi_gl_set_normalize_always(SGIGLContext *c, bool on);
 /*

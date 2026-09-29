@@ -179,6 +179,8 @@ static void populate(SGIGLContext *c, bool other)
     c->cur.polygon_offset = other ? SGI_GL_OFFSET_LINE :
                                     SGI_GL_OFFSET_FILL | SGI_GL_OFFSET_POINT;
     c->cur.clip_planes = other ? 0x15 : 0x2a;
+    c->cur.window_matrix_given = !other;
+    c->cur.window_rows_down = other;
     c->point_size = other ? 0.5f : 64.0f;
     c->line_width = other ? 3.0f : 0.0078125f;
     c->line_stipple_repeat = other ? 1 : 256;
@@ -698,6 +700,8 @@ static const Corruption corruptions[] = {
     BAD(strip_odd, 2, "strip_odd"),
     BAD(cur.drawable.bound, 2, "drawable.bound"),
     BAD(cur.drawable.clip.empty, 2, "drawable.clip.empty"),
+    BAD(cur.window_matrix_given, 2, "window_matrix_given"),
+    BAD(cur.window_rows_down, 2, "window_rows_down"),
     BAD(in_begin, 2, "in_begin"),
     BAD(mv_depth, SGI_GL_STACK_DEPTH, "mv_depth"),
     BAD(pr_depth, SGI_GL_STACK_DEPTH, "pr_depth"),
