@@ -2355,6 +2355,71 @@ static void test_set_light_spot_cosine(void)
                 2 / 3.0f, 1);
 }
 
+/*
+ * A light at infinity along +z, white, on material diffuse 0.5: a unit
+ * normal (0, 0, 1) in eye coordinates lights to 0.5, and n . VP scales it.
+ */
+static void normal_matrix_init(SGIGLContext *c)
+{
+    lit_init(c);
+    light_command(c, SGI_GL_OP_LIGHT, 0, SGI_GL_DIFFUSE, 1, 1, 1, 1);
+    light_command(c, SGI_GL_OP_MATERIAL, SGI_GL_FRONT, SGI_GL_DIFFUSE,
+                  0.5f, 0.5f, 0.5f, 1);
+}
+
+/*
+ * A family's normal matrix N is used as given: n' = N n. With N's first
+ * column (0.6, 0, 0.8), the normal (1, 0, 0) becomes (0.6, 0, 0.8), which
+ * the light meets at 0.8: 0.4. N's transpose would give (0.6, 0, 0) and
+ * its inverse transpose (1.667, 0, 0), both 0. The modelview, here
+ * glScalef(2, 2, 2), plays no part. Without N the modelview's inverse
+ * transpose returns: (0, 0, 1) shrinks to 0.5, giving 0.25.
+ */
+static void test_normal_matrix_as_given(void)
+{
+    static const float n[9] = { 0.6f, 0, 0.8f, 0, 1, 0, 0, 0, 1 };
+    SGIGLContext c;
+
+    normal_matrix_init(&c);
+    three(&c, SGI_GL_OP_SCALE, 2, 2, 2);
+    sgi_gl_set_normal_matrix(&c, n);
+    assert_rgba(lit_point(&c, 0, 0, 0, 1, 0, 0), 0.4f, 0.4f, 0.4f, 1);
+    sgi_gl_set_normal_matrix(&c, NULL);
+    assert_rgba(lit_point(&c, 0, 0, 0, 1, 0, 0), 0, 0, 0, 1);
+    assert_rgba(lit_point(&c, 0, 0, 0, 0, 0, 1), 0.25f, 0.25f, 0.25f, 1);
+}
+
+/*
+ * N = 0.5 I makes (0, 0, 1) half length: 0.25, and GL_RESCALE_NORMAL,
+ * whose factor comes from the modelview (1 / 0.5 under glScalef(2, 2, 2)),
+ * leaves it so. Always-normalise makes it unit, 0.5, as GL_NORMALIZE
+ * does. It does the same without N: the modelview's 0.5 normal becomes
+ * unit, where it lights to 0.25 with neither enable.
+ */
+static void test_normal_matrix_normalize_always(void)
+{
+    static const float half[9] = { 0.5f, 0, 0, 0, 0.5f, 0, 0, 0, 0.5f };
+    SGIGLContext c;
+
+    normal_matrix_init(&c);
+    three(&c, SGI_GL_OP_SCALE, 2, 2, 2);
+    sgi_gl_set_normal_matrix(&c, half);
+    enable(&c, SGI_GL_RESCALE_NORMAL, true);
+    assert_rgba(lit_point(&c, 0, 0, 0, 0, 0, 1), 0.25f, 0.25f, 0.25f, 1);
+    enable(&c, SGI_GL_RESCALE_NORMAL, false);
+    sgi_gl_set_normalize_always(&c, true);
+    assert_rgba(lit_point(&c, 0, 0, 0, 0, 0, 1), 0.5f, 0.5f, 0.5f, 1);
+    sgi_gl_set_normalize_always(&c, false);
+    enable(&c, SGI_GL_NORMALIZE, true);
+    assert_rgba(lit_point(&c, 0, 0, 0, 0, 0, 1), 0.5f, 0.5f, 0.5f, 1);
+    enable(&c, SGI_GL_NORMALIZE, false);
+
+    sgi_gl_set_normal_matrix(&c, NULL);
+    assert_rgba(lit_point(&c, 0, 0, 0, 0, 0, 1), 0.25f, 0.25f, 0.25f, 1);
+    sgi_gl_set_normalize_always(&c, true);
+    assert_rgba(lit_point(&c, 0, 0, 0, 0, 0, 1), 0.5f, 0.5f, 0.5f, 1);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -2421,5 +2486,9 @@ int main(int argc, char **argv)
                     test_set_light_is_eye_space);
     g_test_add_func("/sgi-gl/set-light-spot-cosine",
                     test_set_light_spot_cosine);
+    g_test_add_func("/sgi-gl/normal-matrix-as-given",
+                    test_normal_matrix_as_given);
+    g_test_add_func("/sgi-gl/normal-matrix-normalize-always",
+                    test_normal_matrix_normalize_always);
     return g_test_run();
 }
