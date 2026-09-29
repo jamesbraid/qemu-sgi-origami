@@ -23,6 +23,10 @@
 # (test_prom_smdk_origin300.py's DIAG_TIMEOUT_SECONDS) to sync across the
 # two chassis.
 #
+# io8bt runs with each vCPU thread pinned to a host CPU of its own
+# (lib_prom_smdk.DIAGS): its serial receive-timer check fails when a vCPU
+# waits for a host core, which is what kept it off the pair before.
+#
 # budget is the seconds the whole row may take, test start to report;
 # every wait is cut to what is left of it. meson.build gives each row's
 # target 120s more.
@@ -30,4 +34,4 @@
 # id | cpus | budget | nmem | ndir | scct | System_Level_Test | io8bt | xbg
 origin300 | 2 | 2880 | run | run | run | run | run | run
 origin300_4cpu | 4 | 2880 | run | run | run | run | run | run
-origin300_pair | 8 | 7200 | run | run | run | run | pair-io8bt-timer | run
+origin300_pair | 8 | 7200 | run | run | run | run | run | run

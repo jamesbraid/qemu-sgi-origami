@@ -59,14 +59,8 @@ DIAG_ORDER = ('nmem', 'ndir', 'scct', 'System_Level_Test', 'io8bt', 'xbg')
 RUN = 'run'
 
 # Why a population does not run a diagnostic yet. The manifest cites these
-# by key.
-REASONS = {
-    'pair-io8bt-timer':
-        'io8bt passed on the pair in one of eight runs of the project '
-        'harness (2026-09-26): its serial receive-timer check fails there '
-        'while the idle processors\' register polls hold up the one under '
-        'test',
-}
+# by key; every population runs every diagnostic today.
+REASONS = {}
 
 # Each package file a row can need, with the SHA-256 the project
 # checkout's assets/MANIFEST.sha256 records for it (`tools/extract-irix

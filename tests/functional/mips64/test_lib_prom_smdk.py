@@ -19,11 +19,12 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import lib_prom_smdk as lib
 from lib_matrix import MatrixError
 from lib_net import Console, HarnessError
-from lib_prom_smdk import (DIAG_ORDER, DIAGS, REASONS, RUN, SmdkDriver,
+from lib_prom_smdk import (DIAG_ORDER, DIAGS, RUN, SmdkDriver,
                            StatusRow, TftpRoot, bound_end_pass,
                            package_files, parse_manifest, parse_row,
                            render_terminal, row_verdict, status_rows,
@@ -59,6 +60,12 @@ def _row(status, fails=None):
     return StatusRow(1, 'xbg', status, 3, 2, fails, 100)
 
 
+# A reason key for the cases that need a population to skip something;
+# the committed manifest runs every diagnostic everywhere.
+SKIP = 'fixture-skip'
+
+
+@mock.patch.dict(lib.REASONS, {SKIP: 'a fixture reason'})
 class ManifestTests(unittest.TestCase):
 
     def _line(self, row_id='origin300', cpus='2', budget='2880', **cells):
@@ -90,11 +97,11 @@ class ManifestTests(unittest.TestCase):
         self.assertEqual(registered, {r.id for r in parse_manifest()})
 
     def test_a_row_parses_into_cells(self):
-        row = parse_row('m', 1, self._line(io8bt='pair-io8bt-timer'))
+        row = parse_row('m', 1, self._line(io8bt=SKIP))
         self.assertEqual((row.id, row.cpus, row.budget),
                          ('origin300', 2, 2880))
         self.assertTrue(row.runs('scct'))
-        self.assertEqual(row.reason('io8bt'), REASONS['pair-io8bt-timer'])
+        self.assertEqual(row.reason('io8bt'), 'a fixture reason')
 
     def test_bad_rows_are_refused(self):
         for line, message in (
@@ -109,11 +116,16 @@ class ManifestTests(unittest.TestCase):
 
     def test_a_row_needs_the_files_its_diagnostics_fetch(self):
         row = parse_row('m', 1, self._line(
-            nmem='pair-io8bt-timer', ndir='pair-io8bt-timer',
-            scct='pair-io8bt-timer', io8bt='pair-io8bt-timer'))
+            nmem=SKIP, ndir=SKIP, scct=SKIP, io8bt=SKIP))
         self.assertEqual(package_files(row),
                          ['smdk', 'iocfg', 'System_Level_Test',
                           'SLT_Cmd_Option_File', 'xbg'])
+
+    def test_every_population_runs_io8bt_pinned(self):
+        for row in parse_manifest():
+            self.assertTrue(row.runs('io8bt'), row.id)
+        self.assertEqual([name for name in DIAG_ORDER if DIAGS[name].pin_cpus],
+                         ['io8bt'])
 
     def test_every_file_has_a_recorded_digest(self):
         for row in parse_manifest():
