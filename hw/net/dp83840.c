@@ -3,7 +3,8 @@
  * DP83840 ethernet transceiver, reached through the IOC3's management
  * registers (the lan9118-phy shape). Out of reset the link is down; it
  * comes up a settle after the first status read, or at once on a
- * control-register write. The "dp83843" property switches the model to
+ * control-register write. DP83843 restarts use timed negotiation instead.
+ * The "dp83843" property switches the model to
  * the Origin 300 IO-8 board's DP83843 part, with its own identity,
  * loopback selection and reset register values. See
  * docs/specs/sgi-ioc3.rst.
@@ -22,6 +23,20 @@
 #define DP83840_ADVERTISE_RESET (MII_ANAR_TXFD | MII_ANAR_TX | \
                                  MII_ANAR_10FD | MII_ANAR_10 | \
                                  MII_ANAR_CSMACD)
+
+/*
+ * Revision B describes about 1.5 s of break-link and 2-3 s negotiation.
+ * Two additional seconds with our synthetic partner is an approximation:
+ * the datasheet does not say whether its estimate includes break-link.
+ */
+#define DP83843_BREAK_LINK_NS (1500 * SCALE_MS)
+#define DP83843_NEGOTIATE_NS  (2 * NANOSECONDS_PER_SECOND)
+
+enum {
+    DP83843_RESTART_IDLE,
+    DP83843_RESTART_BREAK_LINK,
+    DP83843_RESTART_NEGOTIATE,
+};
 
 /* The link bit latches low on hardware; the live level satisfies both reads. */
 static uint16_t dp83840_status(DP83840State *s)
@@ -50,6 +65,12 @@ static void dp83840_settle_done(void *opaque)
 {
     DP83840State *s = opaque;
 
+    if (s->restart_phase == DP83843_RESTART_BREAK_LINK) {
+        s->restart_phase = DP83843_RESTART_NEGOTIATE;
+        timer_mod(s->settle_timer, s->restart_complete_ns);
+        return;
+    }
+    s->restart_phase = DP83843_RESTART_IDLE;
     s->autoneg_done = true;
 }
 
@@ -151,7 +172,33 @@ void dp83840_write(DP83840State *s, int reg, uint16_t val)
             }
         }
 
+        if (s->dp83843 && !(val & MII_BMCR_ISOLATE)) {
+            if ((val & (MII_BMCR_AUTOEN | MII_BMCR_ANRESTART)) ==
+                (MII_BMCR_AUTOEN | MII_BMCR_ANRESTART)) {
+                s->autoneg_done = false;
+                s->settle_armed = true;
+                s->restart_phase = DP83843_RESTART_BREAK_LINK;
+                s->restart_complete_ns =
+                    qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+                    DP83843_BREAK_LINK_NS + DP83843_NEGOTIATE_NS;
+                timer_mod(s->settle_timer,
+                          s->restart_complete_ns - DP83843_NEGOTIATE_NS);
+                s->control = val & ~MII_BMCR_ANRESTART;
+                return;
+            }
+            if (s->restart_phase != DP83843_RESTART_IDLE) {
+                /* Clearing the request alone does not cancel negotiation. */
+                if (!(val & MII_BMCR_AUTOEN)) {
+                    s->restart_phase = DP83843_RESTART_IDLE;
+                    timer_del(s->settle_timer);
+                }
+                s->control = val & ~MII_BMCR_ANRESTART;
+                return;
+            }
+        }
+
         /* No cable to negotiate against: a configuring write links at once. */
+        s->restart_phase = DP83843_RESTART_IDLE;
         if (val & MII_BMCR_ISOLATE) {
             s->autoneg_done = false;
             s->settle_armed = false;
@@ -241,6 +288,8 @@ void dp83840_reset(DP83840State *s)
     s->tenbt_config = DP83840_10BT_RESET_VALUE;
     s->autoneg_done = false;
     s->settle_armed = false;
+    s->restart_phase = DP83843_RESTART_IDLE;
+    s->restart_complete_ns = 0;
     if (s->settle_timer) {
         timer_del(s->settle_timer);
     }
@@ -268,7 +317,7 @@ static void dp83840_unrealize(DeviceState *dev)
 
 static const VMStateDescription vmstate_dp83840 = {
     .name = "dp83840",
-    .version_id = 5,
+    .version_id = 6,
     .minimum_version_id = 3,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT16(control, DP83840State),
@@ -281,6 +330,8 @@ static const VMStateDescription vmstate_dp83840 = {
         VMSTATE_BOOL(settle_armed, DP83840State),
         VMSTATE_TIMER_PTR(settle_timer, DP83840State),
         VMSTATE_BOOL_V(link_down, DP83840State, 4),
+        VMSTATE_UINT8_V(restart_phase, DP83840State, 6),
+        VMSTATE_INT64_V(restart_complete_ns, DP83840State, 6),
         VMSTATE_END_OF_LIST()
     }
 };
