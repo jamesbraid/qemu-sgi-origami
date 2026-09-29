@@ -549,6 +549,20 @@ typedef struct SGIGLDrawState {
      * pixel; facing (2.13.1, 3.5.1) is still judged as the client sees it.
      * Clipping keeps OpenGL's near and far planes, window depth 0 and 1,
      * and bounds x and y by SGI_GL_WINDOW_GUARD instead of the viewport.
+     *
+     * Where this departs from OpenGL, for want of a viewport or because
+     * rows run down:
+     * - glRasterPos is valid anywhere inside the guard band, where OpenGL
+     *   makes a raster position outside the viewport invalid (2.12), so a
+     *   bitmap starting just outside the window draws its visible part;
+     * - a bitmap's rows still step up window y, down the display under
+     *   window_rows_down;
+     * - the tie rule names edges in window rows as they run, so under
+     *   window_rows_down SGI_TIE_TOP_LEFT_BOTTOM_ORIGIN owns the bottom
+     *   and left edges on the display;
+     * - the scissor box is tested in window rows as they run, so under
+     *   window_rows_down it is measured from the window's top, and the
+     *   family gives it that way.
      */
     uint32_t window_matrix_given;       /* 0 or 1 */
     float window_matrix[16];
