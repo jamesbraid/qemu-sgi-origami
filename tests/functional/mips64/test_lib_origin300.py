@@ -60,6 +60,8 @@ class LaunchTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         root = self.tmp.name
+        self.firmware = os.path.join(root, lib.FIRMWARE_REL)
+        self.spd_paths = []
         for rel, contents in ((lib.FIRMWARE_REL, b'\x00' * 4096),
                               (lib.SPD_INPUTS[0][1], b'\x01' * 256),
                               (lib.SPD_INPUTS[1][1], b'\x02' * 256)):
@@ -67,13 +69,12 @@ class LaunchTests(unittest.TestCase):
             os.makedirs(os.path.dirname(path), exist_ok=True)
             with open(path, 'wb') as out:
                 out.write(contents)
+            if rel != lib.FIRMWARE_REL:
+                self.spd_paths.append(path)
         self.scratch = os.path.join(root, 'scratch')
         os.makedirs(self.scratch)
-        # A stand-in payload cannot match the reviewed seeds or asset
-        # digests, so accept whatever it builds.
-        self.enterContext(mock.patch.object(lib, 'resolve_asset',
-                                            lambda a, rel, sha=None:
-                                            os.path.join(a, rel)))
+        # The stand-in firmware cannot match the reviewed boot-flash digest.
+        # Use a fixed hash for this synthetic fixture.
         self.enterContext(mock.patch.object(
             lib, 'hashlib', mock.Mock(sha256=lambda data: mock.Mock(
                 hexdigest=lambda: 'seed'))))
@@ -86,7 +87,8 @@ class LaunchTests(unittest.TestCase):
                     for option in machine.split(',')[1:])
 
     def test_one_chassis_carries_the_node_board_record(self):
-        machine, _argv = lib.launch_args(self.tmp.name, 2, self.scratch)
+        machine, _argv = lib.launch_args(self.firmware, self.spd_paths, 2,
+                                         self.scratch)
         props = self._props(machine)
         with open(props['board-eeprom.0'], 'rb') as record:
             self.assertEqual(record.read(),
@@ -96,8 +98,8 @@ class LaunchTests(unittest.TestCase):
                              lib._build_node_chassis_eeprom_record())
 
     def test_the_pair_gives_each_node_its_own_board_record(self):
-        machine, argv = lib.launch_args_two_chassis(self.tmp.name, (4, 2),
-                                                    self.scratch)
+        machine, argv = lib.launch_args_two_chassis(
+            self.firmware, self.spd_paths, (4, 2), self.scratch)
         props = self._props(machine)
         with open(props['board-eeprom.0'], 'rb') as record:
             self.assertIn(b'IP45_4CPU', record.read())
