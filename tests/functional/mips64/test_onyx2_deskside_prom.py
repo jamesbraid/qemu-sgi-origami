@@ -15,21 +15,26 @@ The harness's own launch reached the menu in about two minutes on
 2026-09-27.
 """
 
-from lib_prom import FIRMWARE_REL, require_assets
+from lib_prom import FIRMWARE_REL
 
 from qemu_test import QemuSystemTest
 from qemu_test import skipIfMissingEnv
 from qemu_test import wait_for_console_pattern
 from qemu_test import exec_command_and_wait_for_pattern
+from qemu_test.asset import LocalAsset
+
+
+PROM_SHA256 = 'c2c69bf33c375b43ec7ac511fab41ddf595be1b6838ae717e58a9a1273437fdd'
 
 
 class Onyx2DesksideProm(QemuSystemTest):
 
     timeout = 900
+    ASSET_PROM = LocalAsset(FIRMWARE_REL, PROM_SHA256)
 
-    @skipIfMissingEnv('ORIGAMI_ASSETS')
+    @skipIfMissingEnv('QEMU_TEST_SGI_ASSET_DIR')
     def test_hinv_names_the_deskside_slots(self):
-        prom = require_assets(self, FIRMWARE_REL)[FIRMWARE_REL]
+        prom = self.ASSET_PROM.fetch()
 
         self.set_machine('onyx2')
         self.vm.set_console()
