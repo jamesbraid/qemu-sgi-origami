@@ -656,8 +656,9 @@ bool sgi_gl_context_valid(const SGIGLContext *c, Error **errp);
  *
  * Adding a field. A field added to SGIGLContext, or to a structure inside
  * it, fails the byte-coverage test in tests/unit/test-sgi-gl-vmstate.c
- * until it is described. The structure has no padding, and the test counts a padding
- * byte as one not described, so flags are uint32_t like the rest.
+ * until it is described. The structure has no padding, and the test
+ * counts a padding byte as one not described, so flags are uint32_t like
+ * the rest.
  * A new field is described in a new subsection of vmstate_sgi_gl_context,
  * or of the nested description that holds it, never appended to a base
  * field list. The subsection's name is the name of the description it
