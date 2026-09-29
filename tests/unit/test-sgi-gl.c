@@ -2088,6 +2088,180 @@ static void test_lighting_both_at_infinity(void)
     assert_rgba(&cap.v[0][SGI_GL_V_COLOR], 0.5f, 0.5f, 0.5f, 1);
 }
 
+/* A clockwise and a counter-clockwise triangle, as two-sided-draws has. */
+static const float cull_cw[3][2] = { { -1, 0 }, { -1, 1 }, { 0, 0 } };
+static const float cull_ccw[3][2] = { { 0, -1 }, { 1, -1 }, { 1, 0 } };
+/* A counter-clockwise strip of two triangles in the lower-left corner. */
+static const float cull_strip[4][2] = {
+    { -1, -1 }, { -0.5f, -1 }, { -1, -0.5f }, { -0.5f, -0.5f },
+};
+
+static void cull_vertices(SGIGLContext *c, const SGIGLSink *sink,
+                          uint32_t mode, const float (*v)[2], unsigned n)
+{
+    uint32_t word[2] = { mode };
+
+    command(c, sink, SGI_GL_OP_BEGIN, word, 1);
+    for (unsigned i = 0; i < n; i++) {
+        word[0] = bits(v[i][0]), word[1] = bits(v[i][1]);
+        command(c, sink, SGI_GL_OP_VERTEX2F, word, 2);
+    }
+    command(c, sink, SGI_GL_OP_END, word, 0);
+}
+
+/*
+ * Into cleared planes: both triangles, the strip, a point at pixel
+ * (48, 48) and a line along row 60.
+ */
+static void cull_scene(SGIGLContext *c, const SGIGLSink *sink, Planes *p)
+{
+    static const float point[1][2] = { { 0.51f, 0.51f } };
+    static const float line[2][2] = { { 0.2f, 0.9f }, { 0.8f, 0.9f } };
+
+    memset(p, 0, sizeof(*p));
+    cull_vertices(c, sink, SGI_GL_TRIANGLES, cull_cw, 3);
+    cull_vertices(c, sink, SGI_GL_TRIANGLES, cull_ccw, 3);
+    cull_vertices(c, sink, SGI_GL_TRIANGLE_STRIP, cull_strip, 4);
+    cull_vertices(c, sink, SGI_GL_POINTS, point, 1);
+    cull_vertices(c, sink, SGI_GL_LINES, line, 2);
+}
+
+/*
+ * glCullFace, glFrontFace and GL_CULL_FACE (OpenGL 1.2.1, 3.5.1 and
+ * 2.13.1): culling starts disabled, on the back face, counter-clockwise
+ * front, and glGet answers each; a bad mode or direction changes nothing.
+ */
+static void test_cull_face_state(void)
+{
+    uint32_t word[1], out[SGI_GL_GET_WORDS];
+    SGIGLContext c;
+
+    context_init(&c);
+    g_assert_cmpuint(get(&c, SGI_GL_CULL_FACE, out), ==, 1);
+    g_assert_cmphex(out[0], ==, 0);
+    g_assert_cmpuint(get(&c, SGI_GL_CULL_FACE_MODE, out), ==, 1);
+    g_assert_cmphex(out[0], ==, SGI_GL_BACK);
+    g_assert_cmpuint(get(&c, SGI_GL_FRONT_FACE, out), ==, 1);
+    g_assert_cmphex(out[0], ==, SGI_GL_CCW);
+
+    enable(&c, SGI_GL_CULL_FACE, true);
+    word[0] = SGI_GL_FRONT_AND_BACK;
+    command(&c, NULL, SGI_GL_OP_CULL_FACE, word, 1);
+    word[0] = SGI_GL_CW;
+    command(&c, NULL, SGI_GL_OP_FRONT_FACE, word, 1);
+    g_assert_cmpuint(get(&c, SGI_GL_CULL_FACE, out), ==, 1);
+    g_assert_cmphex(out[0], ==, 1);
+    g_assert_cmpuint(get(&c, SGI_GL_CULL_FACE_MODE, out), ==, 1);
+    g_assert_cmphex(out[0], ==, SGI_GL_FRONT_AND_BACK);
+    g_assert_cmpuint(get(&c, SGI_GL_FRONT_FACE, out), ==, 1);
+    g_assert_cmphex(out[0], ==, SGI_GL_CW);
+
+    /* GL_LEFT is no face to cull, and 0x902 no direction. */
+    word[0] = 0x406;
+    command(&c, NULL, SGI_GL_OP_CULL_FACE, word, 1);
+    word[0] = 0x902;
+    command(&c, NULL, SGI_GL_OP_FRONT_FACE, word, 1);
+    g_assert_cmpuint(get(&c, SGI_GL_CULL_FACE_MODE, out), ==, 1);
+    g_assert_cmphex(out[0], ==, SGI_GL_FRONT_AND_BACK);
+    g_assert_cmpuint(get(&c, SGI_GL_FRONT_FACE, out), ==, 1);
+    g_assert_cmphex(out[0], ==, SGI_GL_CW);
+
+    enable(&c, SGI_GL_CULL_FACE, false);
+    g_assert_cmpuint(get(&c, SGI_GL_CULL_FACE, out), ==, 1);
+    g_assert_cmphex(out[0], ==, 0);
+}
+
+/*
+ * Which polygons are rasterized (3.5.1): with culling disabled, all of
+ * them; enabled, the front-facing ones unless the mode is GL_FRONT or
+ * GL_FRONT_AND_BACK, and the back-facing ones unless it is GL_BACK or
+ * GL_FRONT_AND_BACK. A positive window area is front facing under GL_CCW
+ * and a negative one under GL_CW. Every triangle of a strip keeps the
+ * strip's facing. Points and lines are never culled. The last case
+ * turns culling off again under GL_FRONT_AND_BACK.
+ */
+static void test_cull_face_draws(void)
+{
+    static const struct {
+        bool enable;
+        uint32_t mode;
+        uint32_t front;
+        bool cw_drawn;
+        bool ccw_drawn;
+    } runs[] = {
+        { false, SGI_GL_BACK, SGI_GL_CCW, true, true },
+        { true, SGI_GL_BACK, SGI_GL_CCW, false, true },
+        { true, SGI_GL_FRONT, SGI_GL_CCW, true, false },
+        { true, SGI_GL_FRONT_AND_BACK, SGI_GL_CCW, false, false },
+        { true, SGI_GL_BACK, SGI_GL_CW, true, false },
+        { true, SGI_GL_FRONT, SGI_GL_CW, false, true },
+        { false, SGI_GL_FRONT_AND_BACK, SGI_GL_CW, true, true },
+    };
+    static Planes p;
+    SGIGLContext c;
+    Recorder rec = { .rules = &rules_supported };
+    SGIGLSink sink;
+    uint32_t word[1];
+
+    rec.target = planes_target(&p);
+    sink = recorder_sink(&rec);
+    for (int i = 0; i < ARRAY_SIZE(runs); i++) {
+        context_init(&c);
+        enable(&c, SGI_GL_CULL_FACE, true);
+        enable(&c, SGI_GL_CULL_FACE, runs[i].enable);
+        word[0] = runs[i].mode;
+        command(&c, NULL, SGI_GL_OP_CULL_FACE, word, 1);
+        word[0] = runs[i].front;
+        command(&c, NULL, SGI_GL_OP_FRONT_FACE, word, 1);
+        cull_scene(&c, &sink, &p);
+
+        g_assert_cmphex(p.colour[0][planes_index(20, 36)], ==,
+                        runs[i].cw_drawn ? 0xffffff : 0);
+        g_assert_cmphex(p.colour[0][planes_index(56, 20)], ==,
+                        runs[i].ccw_drawn ? 0xffffff : 0);
+        /* Strip pieces 0 and 1, the odd one at (12, 12). */
+        g_assert_cmphex(p.colour[0][planes_index(3, 3)], ==,
+                        runs[i].ccw_drawn ? 0xffffff : 0);
+        g_assert_cmphex(p.colour[0][planes_index(12, 12)], ==,
+                        runs[i].ccw_drawn ? 0xffffff : 0);
+        g_assert_cmphex(p.colour[0][planes_index(48, 48)], ==, 0xffffff);
+        g_assert_cmphex(p.colour[0][planes_index(48, 60)], ==, 0xffffff);
+    }
+}
+
+/*
+ * Two-sided lighting's colour choice follows glFrontFace (2.13.1): under
+ * GL_CW the clockwise triangle is the front and takes the lit front
+ * colour, red, and the counter-clockwise triangle and strip are the back
+ * and take the back material's green emission.
+ */
+static void test_lighting_two_sided_front_face(void)
+{
+    static Planes p;
+    SGIGLContext c;
+    Recorder rec = { .rules = &rules_supported };
+    SGIGLSink sink;
+    uint32_t word[1] = { SGI_GL_CW };
+
+    rec.target = planes_target(&p);
+    sink = recorder_sink(&rec);
+    lit_init(&c);
+    light_command(&c, SGI_GL_OP_LIGHT, 0, SGI_GL_DIFFUSE, 1, 1, 1, 1);
+    light_command(&c, SGI_GL_OP_MATERIAL, SGI_GL_FRONT, SGI_GL_DIFFUSE,
+                  1, 0, 0, 1);
+    light_command(&c, SGI_GL_OP_MATERIAL, SGI_GL_BACK, SGI_GL_EMISSION,
+                  0, 1, 0, 1);
+    light_model(&c, SGI_GL_LIGHT_MODEL_TWO_SIDE, 1, 0, 0, 0);
+    command(&c, NULL, SGI_GL_OP_FRONT_FACE, word, 1);
+    three(&c, SGI_GL_OP_NORMAL3F, 0, 0, 1);
+    cull_scene(&c, &sink, &p);
+
+    g_assert_cmphex(p.colour[0][planes_index(20, 36)], ==, 0xff0000);
+    g_assert_cmphex(p.colour[0][planes_index(56, 20)], ==, 0x00ff00);
+    g_assert_cmphex(p.colour[0][planes_index(3, 3)], ==, 0x00ff00);
+    g_assert_cmphex(p.colour[0][planes_index(12, 12)], ==, 0x00ff00);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -2146,5 +2320,9 @@ int main(int argc, char **argv)
                     test_lighting_rescale_normal_uses_a_row);
     g_test_add_func("/sgi-gl/lighting-both-at-infinity",
                     test_lighting_both_at_infinity);
+    g_test_add_func("/sgi-gl/cull-face-state", test_cull_face_state);
+    g_test_add_func("/sgi-gl/cull-face-draws", test_cull_face_draws);
+    g_test_add_func("/sgi-gl/lighting-two-sided-front-face",
+                    test_lighting_two_sided_front_face);
     return g_test_run();
 }
