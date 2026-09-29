@@ -6,9 +6,11 @@
  * through its viewport into window coordinates, snapped to a subpixel
  * grid and rasterized with edge functions at pixel centres, then depth
  * tested and stored through the family's target. What it draws follows
- * OpenGL 1.2.1 for untextured, unlit points, lines, polygons and bitmaps
- * at size and width 1, flat or smooth shaded, in RGBA or colour-index
- * mode. Where OpenGL leaves a choice, the head's SGIRasterRules make it.
+ * OpenGL 1.2.1 for untextured points, lines, polygons and bitmaps at size
+ * and width 1, flat or smooth shaded, in RGBA or colour-index mode, from
+ * vertex colours the context has already lit, with a back-facing
+ * polygon's back colours under two-sided lighting. Where OpenGL leaves a
+ * choice, the head's SGIRasterRules make it.
  */
 #include "qemu/osdep.h"
 #include <math.h>
@@ -33,6 +35,8 @@ typedef struct SGISoftDraw {
     SGISoftWindow win;
     SGIColourTarget targets[2];
     uint32_t ntargets;
+    /* Back-facing polygons take the vertices' back colours. */
+    bool back_colors;
 } SGISoftDraw;
 
 /* A vertex after transformation, ready to rasterize. */
@@ -328,6 +332,13 @@ static bool sgi_soft_transform(const SGISoftDraw *r, const float *v,
  * and, for flat shading, the provoking vertex (OpenGL 1.2.1, 2.13.7 and
  * table 2.9).
  *
+ * Facing (2.13.1) is the sign of the triangle's area in window
+ * coordinates on the subpixel grid, counter-clockwise front facing, which
+ * is glFrontFace's initial state; glFrontFace is not modelled. When the
+ * draw carries back colours a back-facing triangle takes them. A polygon
+ * or quad is drawn as triangles, each facing by its own area, which for a
+ * convex polygon is the polygon's facing.
+ *
  * Clipping to the view volume is approximated. In x and y the fragments
  * are bounded by the viewport rectangle, which matches clipping for a
  * positive w; the discriminating test is
@@ -349,6 +360,8 @@ static void sgi_soft_triangle(const SGISoftDraw *r, const float *va,
     const SGISoftWindow *win = &r->win;
     const float *verts[3] = { va, vb, vc };
     const float *flat = &provoking[SGI_GL_V_COLOR];
+    double flat_c[3];
+    uint32_t flat_rgb;
     SGISoftVertex v[3];
     int64_t min_x, max_x, min_y, max_y, area;
     int vx = st->viewport[0], vy = st->viewport[1];
@@ -356,10 +369,6 @@ static void sgi_soft_triangle(const SGISoftDraw *r, const float *va,
     int px0, px1, py0, py1;
     bool smooth = st->shade_model != SGI_GL_FLAT;
     const int sub = r->rules->subpixel_bits;
-    double flat_c[3] = { flat[0], flat[1], flat[2] };
-    uint32_t flat_rgb = st->index_bits ?
-                        sgi_soft_index(r, provoking[SGI_GL_V_INDEX]) :
-                        sgi_soft_rgb(r->rules, flat_c);
 
     if (vw <= 0 || vh <= 0) {
         return;
@@ -374,6 +383,20 @@ static void sgi_soft_triangle(const SGISoftDraw *r, const float *va,
     if (area == 0) {
         return;
     }
+    if (area < 0 && r->back_colors) {
+        flat = &provoking[SGI_GL_V_BACK_COLOR];
+        for (int i = 0; i < 3; i++) {
+            for (int k = 0; k < 3; k++) {
+                v[i].rgb[k] = MIN(MAX(verts[i][SGI_GL_V_BACK_COLOR + k],
+                                      0.0f), 1.0f);
+            }
+        }
+    }
+    for (int k = 0; k < 3; k++) {
+        flat_c[k] = flat[k];
+    }
+    flat_rgb = st->index_bits ? sgi_soft_index(r, provoking[SGI_GL_V_INDEX]) :
+                                sgi_soft_rgb(r->rules, flat_c);
     if (area < 0) {
         /* Culling is off (3.5.1): draw either winding the same way. */
         SGISoftVertex t = v[1];
@@ -625,8 +648,9 @@ static void sgi_soft_point(const SGISoftDraw *r, const float *vp)
  * colour from the vertex table 2.9 names: a point's own, the second
  * vertex of a segment, the last vertex of a triangle, strip or fan
  * triangle, quad or quad-strip quad, and the first vertex of a polygon.
- * Strip triangles keep the order their vertices arrived in, since culling
- * is off.
+ * Every triangle of a strip keeps the strip's orientation (2.6.1), so an
+ * odd one takes its first two vertices swapped, which changes only its
+ * facing.
  *
  * A quadrilateral a, b, c, d in order around its edge is drawn as the
  * triangles a b c and a c d. OpenGL 1.2.1 (3.5.1) allows any split of a
@@ -639,7 +663,10 @@ static void sgi_soft_point(const SGISoftDraw *r, const float *vp)
 void sgi_soft_draw(const SGIRasterRules *rules, const SGIRasterTarget *t,
                    const SGIGLDraw *d)
 {
-    SGISoftDraw r = { .rules = rules, .t = t, .st = d->state };
+    SGISoftDraw r = {
+        .rules = rules, .t = t, .st = d->state,
+        .back_colors = d->back_colors,
+    };
     uint32_t n = d->count;
 
 #define V(i) (&d->vertices[(i) * SGI_GL_VERTEX_FLOATS])
@@ -675,7 +702,11 @@ void sgi_soft_draw(const SGIRasterRules *rules, const SGIRasterTarget *t,
         return;
     case SGI_GL_TRIANGLE_STRIP:
         for (uint32_t i = 0; i + 2 < n; i++) {
-            sgi_soft_triangle(&r, V(i), V(i + 1), V(i + 2), V(i + 2));
+            if (i & 1) {
+                sgi_soft_triangle(&r, V(i + 1), V(i), V(i + 2), V(i + 2));
+            } else {
+                sgi_soft_triangle(&r, V(i), V(i + 1), V(i + 2), V(i + 2));
+            }
         }
         return;
     case SGI_GL_TRIANGLE_FAN:
