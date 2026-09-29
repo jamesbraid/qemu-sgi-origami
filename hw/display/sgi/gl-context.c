@@ -1057,6 +1057,12 @@ static void sgi_gl_transform(const float m[16], const float in[4],
     }
 }
 
+float sgi_gl_spot_cos(float degrees)
+{
+    return degrees == 180.0f ? -1.0f :
+           cosf(degrees * (float)M_PI / 180.0f);
+}
+
 /*
  * glLightfv (2.13.2). The position is transformed by the modelview
  * current at the call and the spot direction by its upper left 3x3, so
@@ -1101,8 +1107,7 @@ static void sgi_gl_light(SGIGLContext *c, uint32_t n, uint32_t pname,
     case SGI_GL_SPOT_CUTOFF:
         if ((v[0] >= 0.0f && v[0] <= 90.0f) || v[0] == 180.0f) {
             l->spot_cutoff = v[0];
-            l->spot_cos_cutoff = v[0] == 180.0f ? -1.0f :
-                                 cosf(v[0] * (float)M_PI / 180.0f);
+            l->spot_cos_cutoff = sgi_gl_spot_cos(v[0]);
             return;
         }
         break;

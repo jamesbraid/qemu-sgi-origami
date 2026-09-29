@@ -2461,6 +2461,26 @@ static void test_set_lighting_and_local_viewer(void)
                 0.295245f, 1);
 }
 
+/*
+ * sgi_gl_spot_cos() is the cosine glLightfv stores, so a family that
+ * migrates only the degrees rebuilds it exactly: -1 for 180, 0.5 for 60,
+ * and bit for bit what glLightf(GL_SPOT_CUTOFF) left for 25, an angle
+ * whose single-precision cosine differs from the double one rounded.
+ */
+static void test_spot_cos_matches_gllight(void)
+{
+    SGIGLContext c;
+
+    context_init(&c);
+    g_assert_cmpfloat(sgi_gl_spot_cos(180), ==, -1);
+    g_assert_cmpfloat_with_epsilon(sgi_gl_spot_cos(60), 0.5, LIT_EPSILON);
+    light_command(&c, SGI_GL_OP_LIGHT, 2, SGI_GL_SPOT_CUTOFF, 25, 0, 0, 0);
+    g_assert_cmphex(bits(c.light[2].spot_cos_cutoff), ==,
+                    bits(sgi_gl_spot_cos(25)));
+    light_command(&c, SGI_GL_OP_LIGHT, 2, SGI_GL_SPOT_CUTOFF, 180, 0, 0, 0);
+    g_assert_cmpfloat(c.light[2].spot_cos_cutoff, ==, -1);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -2533,5 +2553,7 @@ int main(int argc, char **argv)
                     test_normal_matrix_normalize_always);
     g_test_add_func("/sgi-gl/set-lighting-and-local-viewer",
                     test_set_lighting_and_local_viewer);
+    g_test_add_func("/sgi-gl/spot-cos-matches-gllight",
+                    test_spot_cos_matches_gllight);
     return g_test_run();
 }
