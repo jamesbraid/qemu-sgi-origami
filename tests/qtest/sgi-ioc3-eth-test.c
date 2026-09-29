@@ -2506,6 +2506,97 @@ static void test_dp83843_bmcr_loopback_selects_lbr(const void *data)
     close(sv[0]);
 }
 
+/* Chosen model intervals, not exact silicon deadlines. */
+#define PHY_BREAK_LINK_NS INT64_C(1500000000)
+#define PHY_NEGOTIATE_NS  INT64_C(2000000000)
+#define BMCR_AUTOEN      0x1000
+#define BMCR_RESTART     0x0200
+
+static void phy_assert_negotiation(QTestState *qts, bool complete)
+{
+    g_assert_cmphex(mii_read(qts, PHY_BMSR) & BMSR_AN_COMP, ==,
+                    complete ? BMSR_AN_COMP : 0);
+}
+
+static void test_dp83843_restart_timing(const void *data)
+{
+    int sv[2];
+    QTestState *qts;
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    qts = ioc3_attach_socket_dp83843(sv[1], 2, "");
+    mii_write(qts, PHY_BMCR, BMCR_AUTOEN);
+    phy_assert_negotiation(qts, true);
+    mii_write(qts, PHY_BMCR, BMCR_AUTOEN | BMCR_RESTART);
+    phy_assert_negotiation(qts, false);
+    qtest_clock_step(qts, PHY_BREAK_LINK_NS - 1);
+    phy_assert_negotiation(qts, false);
+    qtest_clock_step(qts, 1);
+    phy_assert_negotiation(qts, false);
+    qtest_clock_step(qts, PHY_NEGOTIATE_NS - 1);
+    phy_assert_negotiation(qts, false);
+    qtest_clock_step(qts, 1);
+    phy_assert_negotiation(qts, true);
+
+    /* One clock advance must finish both phases without status polling. */
+    mii_write(qts, PHY_BMCR, BMCR_AUTOEN | BMCR_RESTART);
+    qtest_clock_step(qts, PHY_BREAK_LINK_NS + PHY_NEGOTIATE_NS);
+    phy_assert_negotiation(qts, true);
+
+    /* Neither status polling nor retaining the request bit drives progress. */
+    mii_write(qts, PHY_BMCR, BMCR_AUTOEN | BMCR_RESTART);
+    qtest_clock_step(qts, PHY_BREAK_LINK_NS / 2);
+    mii_write(qts, PHY_BMCR, BMCR_AUTOEN);
+    qtest_clock_step(qts, PHY_BREAK_LINK_NS / 2);
+    mii_write(qts, PHY_BMCR, BMCR_AUTOEN);
+    qtest_clock_step(qts, PHY_NEGOTIATE_NS);
+    phy_assert_negotiation(qts, true);
+    ioc3_quit(qts);
+    close(sv[0]);
+}
+
+static void test_dp83843_restart_cancel(const void *data)
+{
+    unsigned int phase;
+    int sv[2];
+    QTestState *qts;
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    qts = ioc3_attach_socket_dp83843(sv[1], 2, "");
+    for (phase = 0; phase < 2; phase++) {
+        mii_write(qts, PHY_BMCR, BMCR_AUTOEN | BMCR_RESTART);
+        qtest_clock_step(qts, phase ? PHY_BREAK_LINK_NS : 1);
+        mii_write(qts, PHY_BMCR, 0x8000);
+        qtest_clock_step(qts, PHY_BREAK_LINK_NS + PHY_NEGOTIATE_NS);
+        phy_assert_negotiation(qts, false);
+
+        mii_write(qts, PHY_BMCR, BMCR_AUTOEN | BMCR_RESTART);
+        qtest_clock_step(qts, phase ? PHY_BREAK_LINK_NS : 1);
+        mii_write(qts, PHY_BMCR, BMCR_SPEED100);
+        phy_assert_negotiation(qts, false);
+        qtest_clock_step(qts, PHY_BREAK_LINK_NS + PHY_NEGOTIATE_NS);
+        phy_assert_negotiation(qts, false);
+    }
+    ioc3_quit(qts);
+    close(sv[0]);
+}
+
+static void test_dp83840a_restart_unchanged(const void *data)
+{
+    int sv[2];
+    QTestState *qts;
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    qts = ioc3_attach_socket(sv[1], 2);
+    mii_write(qts, PHY_BMCR, BMCR_AUTOEN | BMCR_RESTART);
+    phy_assert_negotiation(qts, true);
+    g_assert_cmphex(mii_read(qts, PHY_BMCR) & BMCR_RESTART, ==, 0);
+    qtest_clock_step(qts, PHY_BREAK_LINK_NS + PHY_NEGOTIATE_NS);
+    phy_assert_negotiation(qts, true);
+    ioc3_quit(qts);
+    close(sv[0]);
+}
+
 static void test_dp83843_register_migration(const void *data)
 {
     GError *error = NULL;
@@ -2515,6 +2606,8 @@ static void test_dp83843_register_migration(const void *data)
     g_autofree char *uri = NULL;
     QTestState *from, *to;
     int from_sv[2], to_sv[2];
+    int64_t elapsed = GPOINTER_TO_UINT(data) * INT64_C(1000000);
+    int64_t source_time;
 
     g_assert_no_error(error);
     socket = g_build_filename(directory, "migration.sock", NULL);
@@ -2526,6 +2619,14 @@ static void test_dp83843_register_migration(const void *data)
     mii_write(from, PHY_BMCR, 0x7300);
     g_assert_cmphex(mii_read(from, PHY_ANNPTR), ==, 0x1a34);
     g_assert_cmphex(mii_read(from, MII_LBR) & 0x0030, ==, 0x0030);
+
+    if (elapsed >= PHY_BREAK_LINK_NS) {
+        qtest_clock_step(from, PHY_BREAK_LINK_NS);
+        source_time = qtest_clock_step(from, elapsed - PHY_BREAK_LINK_NS);
+    } else {
+        source_time = qtest_clock_step(from, elapsed);
+    }
+    phy_assert_negotiation(from, false);
 
     /* The fixture keeps one host PCI bus handle; the VM stays alive. */
     g_clear_pointer(&ioc3_dev, g_free);
@@ -2541,6 +2642,18 @@ static void test_dp83843_register_migration(const void *data)
     g_assert_cmphex(mii_read(to, PHY_ANNPTR), ==, 0x1a34);
     g_assert_cmphex(mii_read(to, MII_LBR) & 0x0030, ==, 0x0030);
 
+    qtest_clock_set(to, source_time);
+    phy_assert_negotiation(to, false);
+    if (elapsed < PHY_BREAK_LINK_NS) {
+        qtest_clock_step(to, PHY_BREAK_LINK_NS - elapsed);
+        phy_assert_negotiation(to, false);
+        elapsed = PHY_BREAK_LINK_NS;
+    }
+    qtest_clock_step(to, PHY_BREAK_LINK_NS + PHY_NEGOTIATE_NS - elapsed - 1);
+    phy_assert_negotiation(to, false);
+    qtest_clock_step(to, 1);
+    phy_assert_negotiation(to, true);
+
     qtest_quit(from);
     ioc3_quit(to);
     close(from_sv[0]);
@@ -2554,6 +2667,12 @@ int main(int argc, char **argv)
     unsigned int i;
 
     g_test_init(&argc, &argv, NULL);
+    qtest_add_data_func("sgi-ioc3-eth/dp83843-restart-timing", NULL,
+                        test_dp83843_restart_timing);
+    qtest_add_data_func("sgi-ioc3-eth/dp83843-restart-cancel", NULL,
+                        test_dp83843_restart_cancel);
+    qtest_add_data_func("sgi-ioc3-eth/dp83840a-restart-unchanged", NULL,
+                        test_dp83840a_restart_unchanged);
 
     qtest_add_data_func("sgi-ioc3-eth/stopped-counter-storage", NULL,
                         test_stopped_counter_storage);
@@ -2651,7 +2770,10 @@ int main(int argc, char **argv)
     qtest_add_data_func("sgi-ioc3-eth/dp83843-next-page-transmit-register",
                         NULL, test_dp83843_next_page_transmit_register);
     qtest_add_data_func("sgi-ioc3-eth/dp83843-register-migration",
-                        NULL, test_dp83843_register_migration);
+                        GUINT_TO_POINTER(750), test_dp83843_register_migration);
+    qtest_add_data_func("sgi-ioc3-eth/dp83843-negotiation-migration",
+                        GUINT_TO_POINTER(2000),
+                        test_dp83843_register_migration);
     qtest_add_data_func("sgi-ioc3-eth/dp83843-bmcr-loopback-selects-lbr",
                         NULL, test_dp83843_bmcr_loopback_selects_lbr);
 

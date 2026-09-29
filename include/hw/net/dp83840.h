@@ -79,9 +79,11 @@ struct DP83840State {
 
     bool link_down;     /* the cable, apart from the negotiation */
 
-    /* Armed on the first status read; see dp83840_status_read(). */
+    /* Shared by legacy settling and the DP83843 restart phases. */
     QEMUTimer *settle_timer;
     bool settle_armed;
+    uint8_t restart_phase;
+    int64_t restart_complete_ns;
 };
 
 void dp83840_reset(DP83840State *s);
