@@ -1238,6 +1238,7 @@ uint32_t HELPER(float_add_s)(CPUMIPSState *env,
 {
     uint32_t wt2;
 
+    check_denormal_input_s(env, fst0, fst1, GETPC());
     wt2 = float32_add(fst0, fst1, &env->active_fpu.fp_status);
     check_denormal_result_s(env, wt2, GETPC());
     update_fcr31(env, GETPC());
@@ -1352,6 +1353,7 @@ uint32_t HELPER(float_div_s)(CPUMIPSState *env,
 {
     uint32_t wt2;
 
+    check_denormal_input_s(env, fst0, fst1, GETPC());
     wt2 = float32_div(fst0, fst1, &env->active_fpu.fp_status);
     check_denormal_result_s(env, wt2, GETPC());
     update_fcr31(env, GETPC());

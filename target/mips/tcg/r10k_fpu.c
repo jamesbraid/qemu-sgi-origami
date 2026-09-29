@@ -1,17 +1,16 @@
 /* SPDX-License-Identifier: LGPL-2.1-or-later */
 /*
- * The R10000 family's floating-point behaviours, split out of the shared FP
- * helpers: the Unimplemented Operation exception the family raises for a
- * denormalized result or an out-of-range CVT.L, and the arithmetic ABS.fmt
- * and NEG.fmt whose NaN operand signals Invalid.
+ * R10000-family floating-point behaviours split out of the shared FP helpers:
+ * Unimplemented Operation for denormalized results, denormal inputs to
+ * R10000/R12000 ADD.S and DIV.S with FS clear, and out-of-range CVT.L.
+ * Arithmetic ABS.fmt and NEG.fmt signal Invalid for NaN operands.
  *
  * gen_farith() emits the ABS/NEG variants for every MIPS target, linux-user
  * included, so this lives beside the shared fpu_helper.c in the common source
  * set rather than in an R10000 system file. The shared FP helpers call the
- * denormal-result and CVT.L range checks here by a one-line delegation; both
- * are inert on any processor whose definition does not set the matching
- * config flag. update_fcr31() is the shared FP result epilogue, reused from
- * fpu_helper.c.
+ * input-denormal check for ADD.S and DIV.S and the result-denormal and CVT.L
+ * checks here. Each check is inert unless the CPU model sets its config flag.
+ * update_fcr31() is the shared FP result epilogue, reused from fpu_helper.c.
  */
 
 #include "qemu/osdep.h"
@@ -46,6 +45,16 @@ static G_NORETURN void raise_unimplemented_operation(CPUMIPSState *env,
     set_float_exception_flags(0, &env->active_fpu.fp_status);
     SET_FP_CAUSE(env->active_fpu.fcr31, FP_UNIMPLEMENTED);
     do_raise_exception(env, EXCP_FPE, pc);
+}
+
+void check_denormal_input_s(CPUMIPSState *env, uint32_t a, uint32_t b,
+                            uintptr_t pc)
+{
+    if (unlikely(env->cfg.fp_traps_denormal_input &&
+                 !(env->active_fpu.fcr31 & (1 << FCR31_FS)) &&
+                 (float32_is_denormal(a) || float32_is_denormal(b)))) {
+        raise_unimplemented_operation(env, pc);
+    }
 }
 
 void check_denormal_result_d(CPUMIPSState *env, uint64_t ret, uintptr_t pc)
