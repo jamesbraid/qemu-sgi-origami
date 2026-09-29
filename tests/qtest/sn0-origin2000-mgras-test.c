@@ -14119,6 +14119,46 @@ static void test_gl_stencil_masks_drawing(void)
 }
 
 /*
+ * glStencilOp's codes 3 and 4 are GL_INCR and GL_DECR, as the listing's
+ * table gives them (__glMgrim_StencilOp 0xd95ef80, its mapping at
+ * 0xd95f074-0xd95f1b4, in mgras-gl-commands.md). Over a stencil cleared
+ * to 5, one pass with code 3 leaves 6 and then two with code 4 leave 4,
+ * each shown by a green fill where the stencil equals the expected value
+ * and not where it equals the other.
+ */
+#define GL_OP_DECR            4
+
+static uint32_t gl_stencil_fill_if(QTestState *qts, uint32_t ref)
+{
+    gl_clear_color(qts, 0, 0, 0, 1);
+    gl_word(qts, GL_CLEAR_COLOR_BUFFER);
+    gl_stencil(qts, GL_STENCIL_EQUAL, ref, 0xff, GL_OP_KEEP, GL_OP_KEEP,
+               GL_OP_KEEP);
+    gl_fill_window(qts, 0, 1, 0);
+    return gl_window_pixel(qts, 64, 64);
+}
+
+static void test_gl_stencil_incr_and_decr_codes(void)
+{
+    gl_scene_start(qts, GL_FLAT);
+    gl_one(qts, GL_CLEAR_STENCIL_HDR, 5);
+    gl_word(qts, GL_CLEAR_STENCIL_BUFFER);
+    gl_one(qts, GL_STENCIL_TEST_HDR, 1);
+    gl_stencil(qts, GL_STENCIL_ALWAYS, 0, 0xff, GL_OP_KEEP, GL_OP_KEEP,
+               GL_OP_INCR);
+    gl_fill_window(qts, 0, 0, 1);
+    g_assert_cmphex(gl_stencil_fill_if(qts, 4), ==, 0);
+    g_assert_cmphex(gl_stencil_fill_if(qts, 6), ==, 0x00ff00);
+
+    gl_stencil(qts, GL_STENCIL_ALWAYS, 0, 0xff, GL_OP_KEEP, GL_OP_KEEP,
+               GL_OP_DECR);
+    gl_fill_window(qts, 0, 0, 1);
+    gl_fill_window(qts, 0, 0, 1);
+    g_assert_cmphex(gl_stencil_fill_if(qts, 6), ==, 0);
+    g_assert_cmphex(gl_stencil_fill_if(qts, 4), ==, 0x00ff00);
+}
+
+/*
  * The stencil and depth buffers share each pixel's plane in the model:
  * clearing either keeps the other. After a depth-tested quad at depth
  * 0.5, a stencil clear to 5 leaves that depth, so a farther quad fails;
@@ -16205,6 +16245,8 @@ int main(int argc, char **argv)
                    test_gl_alpha_migration);
     qtest_add_func("sn0/origin2000/mgras/gl-stencil-masks-drawing",
                    test_gl_stencil_masks_drawing);
+    qtest_add_func("sn0/origin2000/mgras/gl-stencil-incr-and-decr-codes",
+                   test_gl_stencil_incr_and_decr_codes);
     qtest_add_func("sn0/origin2000/mgras/gl-stencil-clear-keeps-depth",
                    test_gl_stencil_clear_keeps_depth);
     qtest_add_func("sn0/origin2000/mgras/gl-stencil-migration",
