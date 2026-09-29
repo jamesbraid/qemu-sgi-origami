@@ -58,6 +58,7 @@ static void sgi_gl_lighting_init(SGIGLContext *c)
         sgi_gl_rgba(l->position, 0, 0, 1, 0);
         l->spot_direction[2] = -1.0f;
         l->spot_cutoff = 180.0f;
+        l->spot_cos_cutoff = -1.0f;
         l->attenuation[0] = 1.0f;
     }
     for (int i = 0; i < 2; i++) {
@@ -595,7 +596,8 @@ static void sgi_gl_eye_normal(const SGIGLContext *c, const float n[3],
  * distance d from V to a light with w not 0, and 1 otherwise; spot_i is 1
  * for a cutoff of 180 and otherwise (PV_i . sd_i)^exponent, where PV_i is
  * the unit vector from the light to V, the reverse of VP_i, and sd_i the
- * unit spot direction, or 0 if that product is below the cutoff's cosine.
+ * unit spot direction, or 0 if that product is below the cutoff's cosine,
+ * spot_cos_cutoff.
  * The specification reads spot_i the same for a light at infinity, and so
  * does this.
  *
@@ -646,7 +648,7 @@ static void sgi_gl_light_face(const SGIGLContext *c, const float eye[4],
             memcpy(sd, l->spot_direction, sizeof(sd));
             sgi_gl_unit3(sd);
             s = -sgi_gl_dot3(vp, sd);
-            spot = s >= cosf(l->spot_cutoff * (float)M_PI / 180.0f) ?
+            spot = s >= l->spot_cos_cutoff ?
                    powf(MAX(s, 0.0f), l->spot_exponent) : 0.0f;
         }
         ndl = MAX(sgi_gl_dot3(n, vp), 0.0f);
@@ -1085,6 +1087,8 @@ static void sgi_gl_light(SGIGLContext *c, uint32_t n, uint32_t pname,
     case SGI_GL_SPOT_CUTOFF:
         if ((v[0] >= 0.0f && v[0] <= 90.0f) || v[0] == 180.0f) {
             l->spot_cutoff = v[0];
+            l->spot_cos_cutoff = v[0] == 180.0f ? -1.0f :
+                                 cosf(v[0] * (float)M_PI / 180.0f);
             return;
         }
         break;
@@ -1101,6 +1105,37 @@ static void sgi_gl_light(SGIGLContext *c, uint32_t n, uint32_t pname,
     }
     qemu_log_mask(LOG_GUEST_ERROR, "sgi-gl: light parameter 0x%x value %g "
                   "ignored\n", pname, v[0]);
+}
+
+bool sgi_gl_set_light(SGIGLContext *c, uint32_t light,
+                      const SGIGLEyeLight *e)
+{
+    SGIGLLight *l;
+
+    if (light >= SGI_GL_LIGHTS) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-gl: light %u ignored\n", light);
+        return false;
+    }
+    l = &c->light[light];
+    memcpy(l->position, e->position, sizeof(l->position));
+    memcpy(l->spot_direction, e->spot_direction, sizeof(l->spot_direction));
+    l->spot_exponent = e->spot_exponent;
+    memcpy(l->attenuation, e->attenuation, sizeof(l->attenuation));
+    memcpy(l->ambient, e->ambient, sizeof(l->ambient));
+    memcpy(l->diffuse, e->diffuse, sizeof(l->diffuse));
+    memcpy(l->specular, e->specular, sizeof(l->specular));
+    /*
+     * The cosine is kept as given, so the cone's edge falls where the
+     * family's board puts it; the degrees are only glGet's answer.
+     */
+    if (e->spot_cos_cutoff <= -1.0f) {
+        l->spot_cos_cutoff = -1.0f;
+        l->spot_cutoff = 180.0f;
+    } else {
+        l->spot_cos_cutoff = MIN(e->spot_cos_cutoff, 1.0f);
+        l->spot_cutoff = acos(l->spot_cos_cutoff) * 180.0 / M_PI;
+    }
+    return true;
 }
 
 static void sgi_gl_light_model(SGIGLContext *c, uint32_t pname,

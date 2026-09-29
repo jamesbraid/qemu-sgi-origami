@@ -206,6 +206,10 @@ enum {
  * One light's parameters (2.13.1, table 2.10): position and spot
  * direction in eye coordinates, as the modelview current when they were
  * set left them; attenuation constant, linear and quadratic.
+ * spot_cutoff is in degrees, as glGetLightfv answers it; the lighting
+ * equation compares against spot_cos_cutoff, its cosine, which is what a
+ * family setting the light with sgi_gl_set_light() gives. A family that
+ * migrates a light must migrate both.
  */
 typedef struct SGIGLLight {
     float ambient[4];
@@ -216,7 +220,26 @@ typedef struct SGIGLLight {
     float spot_exponent;
     float spot_cutoff;
     float attenuation[3];
+    float spot_cos_cutoff;
 } SGIGLLight;
+
+/*
+ * A light as a family's board delivers it, already decoded to eye
+ * coordinates: for sgi_gl_set_light(). position has w 0 for a light at
+ * infinity. spot_cos_cutoff is the cosine of the spot cutoff; -1 or less
+ * is a cutoff of 180, no spot. attenuation is constant, linear and
+ * quadratic.
+ */
+typedef struct SGIGLEyeLight {
+    float position[4];
+    float spot_direction[3];
+    float spot_cos_cutoff;
+    float spot_exponent;
+    float attenuation[3];
+    float ambient[4];
+    float diffuse[4];
+    float specular[4];
+} SGIGLEyeLight;
 
 /* One face's material (2.13.1, table 2.10). */
 typedef struct SGIGLMaterial {
@@ -531,6 +554,15 @@ bool sgi_gl_bitmap_place(SGIGLContext *c, uint32_t width, uint32_t height,
 void sgi_gl_bitmap_bytes(SGIGLContext *c, const SGIGLSink *sink,
                          const SGIGLBitmap *b, uint32_t first,
                          const uint8_t *bytes, uint32_t count);
+/*
+ * Set light number light (0 for GL_LIGHT0) from values a family has
+ * decoded from its board's own encoding, already in eye coordinates: no
+ * modelview is applied, unlike glLightfv. glGetLightfv then answers the
+ * cutoff in degrees. False, and logged, for a light the context does not
+ * keep. The light's enable is GL_LIGHTi's, unchanged.
+ */
+bool sgi_gl_set_light(SGIGLContext *c, uint32_t light,
+                      const SGIGLEyeLight *l);
 /* Execute one command against the context, sending any work to sink. */
 void sgi_gl_command(SGIGLContext *c, const SGIGLSink *sink,
                     const SGIGLCmd *cmd);
