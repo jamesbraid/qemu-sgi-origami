@@ -208,8 +208,13 @@ enum {
  * set left them; attenuation constant, linear and quadratic.
  * spot_cutoff is in degrees, as glGetLightfv answers it; the lighting
  * equation compares against spot_cos_cutoff, its cosine, which is what a
- * family setting the light with sgi_gl_set_light() gives. A family that
- * migrates a light must migrate both.
+ * family setting the light with sgi_gl_set_light() gives. Each is exact
+ * for one setter and neither converts to the other without loss, so both
+ * are kept. A family whose lights come only from glLightfv may migrate
+ * spot_cutoff alone and recompute the cosine after loading with
+ * sgi_gl_spot_cos(), the expression glLightfv itself uses; one that uses
+ * sgi_gl_set_light() must migrate spot_cos_cutoff, or rebuild it from its
+ * own migrated state.
  */
 typedef struct SGIGLLight {
     float ambient[4];
@@ -566,6 +571,11 @@ bool sgi_gl_bitmap_place(SGIGLContext *c, uint32_t width, uint32_t height,
 void sgi_gl_bitmap_bytes(SGIGLContext *c, const SGIGLSink *sink,
                          const SGIGLBitmap *b, uint32_t first,
                          const uint8_t *bytes, uint32_t count);
+/*
+ * The cosine glLightfv stores for a spot cutoff of degrees: -1 for 180,
+ * no spot, and otherwise the single-precision cosine.
+ */
+float sgi_gl_spot_cos(float degrees);
 /*
  * Set light number light (0 for GL_LIGHT0) from values a family has
  * decoded from its board's own encoding, already in eye coordinates: no
