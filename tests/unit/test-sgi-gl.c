@@ -391,7 +391,7 @@ static void test_set_matrix(void)
     g_assert(memcmp(c.cur.projection, identity, sizeof(identity)) == 0);
     g_assert_cmphex(c.matrix_mode, ==, SGI_GL_PROJECTION);
 
-    g_assert_false(sgi_gl_set_matrix(&c, 0x1702, twos));
+    g_assert_false(sgi_gl_set_matrix(&c, 0x1800, twos));
     g_assert(memcmp(c.cur.modelview, shift, sizeof(shift)) == 0);
     g_assert(memcmp(c.cur.projection, identity, sizeof(identity)) == 0);
 
@@ -1386,6 +1386,56 @@ static void test_color_material_tracks_the_colour(void)
                       ==, 0.125f);
 }
 
+/*
+ * GL_TEXTURE selects the texture matrix (OpenGL 1.2.1, 2.10.2), initially
+ * the identity, with its own stack: matrix commands in that mode change it
+ * and leave the modelview and projection alone, glGet answers it
+ * column-major, and its stack depth counts the current matrix.
+ */
+static void test_texture_matrix(void)
+{
+    uint32_t word[3], out[SGI_GL_GET_WORDS];
+    SGIGLContext c;
+
+    context_init(&c);
+    g_assert_cmpuint(get(&c, SGI_GL_TEXTURE_MATRIX, out), ==, 16);
+    for (int i = 0; i < 16; i++) {
+        g_assert_cmphex(out[i], ==, bits(i % 5 == 0));
+    }
+    /* A saved modelview, which a texture push must not disturb. */
+    word[0] = bits(5), word[1] = bits(0), word[2] = bits(0);
+    command(&c, NULL, SGI_GL_OP_TRANSLATE, word, 3);
+    command(&c, NULL, SGI_GL_OP_PUSH_MATRIX, word, 0);
+    command(&c, NULL, SGI_GL_OP_LOAD_IDENTITY, word, 0);
+    word[0] = SGI_GL_TEXTURE;
+    command(&c, NULL, SGI_GL_OP_MATRIX_MODE, word, 1);
+    command(&c, NULL, SGI_GL_OP_PUSH_MATRIX, word, 0);
+    word[0] = bits(2), word[1] = bits(3), word[2] = bits(4);
+    command(&c, NULL, SGI_GL_OP_TRANSLATE, word, 3);
+    g_assert_cmpuint(get(&c, SGI_GL_TEXTURE_STACK_DEPTH, out), ==, 1);
+    g_assert_cmphex(out[0], ==, 2);
+    g_assert_cmpuint(get(&c, SGI_GL_TEXTURE_MATRIX, out), ==, 16);
+    g_assert_cmphex(out[12], ==, bits(2));
+    g_assert_cmphex(out[14], ==, bits(4));
+    g_assert_cmpuint(get(&c, SGI_GL_MODELVIEW_MATRIX, out), ==, 16);
+    g_assert_cmphex(out[12], ==, bits(0));
+    g_assert_cmpuint(get(&c, SGI_GL_MODELVIEW_STACK_DEPTH, out), ==, 1);
+    g_assert_cmphex(out[0], ==, 2);
+    g_assert_cmpuint(get(&c, SGI_GL_PROJECTION_STACK_DEPTH, out), ==, 1);
+    g_assert_cmphex(out[0], ==, 1);
+
+    command(&c, NULL, SGI_GL_OP_POP_MATRIX, word, 0);
+    g_assert_cmpuint(get(&c, SGI_GL_TEXTURE_STACK_DEPTH, out), ==, 1);
+    g_assert_cmphex(out[0], ==, 1);
+    g_assert_cmpuint(get(&c, SGI_GL_TEXTURE_MATRIX, out), ==, 16);
+    g_assert_cmphex(out[12], ==, bits(0));
+    word[0] = SGI_GL_MODELVIEW;
+    command(&c, NULL, SGI_GL_OP_MATRIX_MODE, word, 1);
+    command(&c, NULL, SGI_GL_OP_POP_MATRIX, word, 0);
+    g_assert_cmpuint(get(&c, SGI_GL_MODELVIEW_MATRIX, out), ==, 16);
+    g_assert_cmphex(out[12], ==, bits(5));
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -1413,6 +1463,7 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-gl/lighting-initial-state",
                     test_lighting_initial_state);
     g_test_add_func("/sgi-gl/lighting-commands", test_lighting_commands);
+    g_test_add_func("/sgi-gl/texture-matrix", test_texture_matrix);
     g_test_add_func("/sgi-gl/color-material-tracks-the-colour",
                     test_color_material_tracks_the_colour);
     return g_test_run();
