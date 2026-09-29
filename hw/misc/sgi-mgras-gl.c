@@ -13,9 +13,10 @@
  * points, lines, triangles, strips, fans, quads and polygons, at size and
  * width 1, flat or smooth shaded, lit per vertex by OpenGL's lighting
  * equation, culled by facing, transformed by the modelview and
- * projection matrices and their stacks and depth tested, and bitmaps,
- * leave in the window's front or back buffer, in RGBA or colour-index
- * mode, and the main-port framing,
+ * projection matrices and their stacks, and bitmaps, leave in the
+ * window's front or back buffer after the per-fragment operations the
+ * shared rasterizer carries out (the scissor and depth tests), in RGBA or
+ * colour-index mode, and the main-port framing,
  * so the words after a packet still parse as headers. What it does not: the
  * raster-engine register writes the GE would make, the timing of the
  * work, any GE state visible to a later readback, and every command
@@ -78,6 +79,18 @@
 #define MGRAS_GL_DEPTH_FUNC      0x00004304
 #define MGRAS_GL_DRAW_BUFFER     0x0000490c
 #define MGRAS_GL_DEPTH_TEST      0x00006604
+/*
+ * glScissor: __glMgrim_Scissor (0xd97c260 in the IRIX 6.5.30 IP27GR532
+ * libGLcore.so, SHA-256 626d6d94...) rejects a negative width or height
+ * and writes 0x3910 and x, width - 1, y, height - 1 (0xd97c2a0-0xd97c2d8).
+ * glEnable and glDisable of GL_SCISSOR_TEST write 0x6e04 and 1 or 0
+ * (__glMgrim_Enable 0xd97e110 for capability 0xc11, __glMgrim_Disable
+ * 0xd97fec4). Established from the listing. That the board discards
+ * fragments outside the box as OpenGL 1.2.1, 4.1.2 says is inferred; the
+ * discriminating test is gl-scissor-bounds-draws-and-clears.
+ */
+#define MGRAS_GL_SCISSOR         0x00003910
+#define MGRAS_GL_SCISSOR_TEST    0x00006e04
 /*
  * glDepthRange: __glMgrim_DepthRange (0xd960590 in the IRIX 6.5.30
  * IP27GR532 libGLcore.so, SHA-256 626d6d94...) writes 0x4808 and near and
@@ -602,6 +615,8 @@ bool sgi_mgras_gl_header(uint32_t header)
     case MGRAS_GL_DEPTH_FUNC:
     case MGRAS_GL_DRAW_BUFFER:
     case MGRAS_GL_DEPTH_TEST:
+    case MGRAS_GL_SCISSOR:
+    case MGRAS_GL_SCISSOR_TEST:
     case MGRAS_GL_DEPTH_RANGE:
     case MGRAS_GL_DITHER:
     case MGRAS_GL_CULL_ON:
@@ -943,6 +958,11 @@ uint32_t sgi_mgras_gl_attribute_answer(SGIMgrasState *s, uint32_t index)
 typedef enum MgrasGLQueryPacking {
     /* The word glGet gives, float or integer. */
     MGRAS_GL_QUERY_WORD,
+    /*
+     * A box's last column or row, its start plus its size less 1, from
+     * glGet's x, y, width and height.
+     */
+    MGRAS_GL_QUERY_BOX_END,
     /* The matrix mode's enumerant less GL_PROJECTION. */
     MGRAS_GL_QUERY_MATRIX_MODE,
     /* A raster window coordinate plus MGRAS_GL_RASTER_BIAS. */
@@ -1002,6 +1022,10 @@ typedef enum MgrasGLQueryPacking {
  *   floats; GL_LIGHT_MODEL_LOCAL_VIEWER 0xc1a and GL_LIGHT_MODEL_TWO_SIDE
  *   0xc1b, stored as a byte; GL_COLOR_MATERIAL_PARAMETER 0x56b and
  *   GL_COLOR_MATERIAL_FACE 0x56c, as the enumerant.
+ * - GL_SCISSOR_BOX at 0xc24 to 0xc27 as the integers x, y, x + width - 1
+ *   and y + height - 1: the client returns the first two and the last two
+ *   less the first two plus 1 (0xd994f1c-0xd994f5c). GL_SCISSOR_TEST at
+ *   0xc28, the whole word the boolean.
  *
  * What a1 and a2 select is unknown; the model answers by index alone.
  * Every other index answers zero, logged, which is right for the
@@ -1039,6 +1063,9 @@ static const struct {
     { 0xc1b, 1, MGRAS_GL_QUERY_WORD, SGI_GL_LIGHT_MODEL_TWO_SIDE, 0 },
     { 0x56b, 1, MGRAS_GL_QUERY_WORD, SGI_GL_COLOR_MATERIAL_PARAMETER, 0 },
     { 0x56c, 1, MGRAS_GL_QUERY_WORD, SGI_GL_COLOR_MATERIAL_FACE, 0 },
+    { 0xc24, 2, MGRAS_GL_QUERY_WORD, SGI_GL_SCISSOR_BOX, 0 },
+    { 0xc26, 2, MGRAS_GL_QUERY_BOX_END, SGI_GL_SCISSOR_BOX, 2 },
+    { 0xc28, 1, MGRAS_GL_QUERY_WORD, SGI_GL_SCISSOR_TEST, 0 },
 };
 
 /*
@@ -1238,6 +1265,8 @@ uint32_t sgi_mgras_gl_query_answer(SGIMgrasState *s, const uint32_t *args,
         element += mgras_gl_queries[i].element;
         assert(element < n);
         switch (mgras_gl_queries[i].packing) {
+        case MGRAS_GL_QUERY_BOX_END:
+            return out[element - 2] + out[element] - 1;
         case MGRAS_GL_QUERY_MATRIX_MODE:
             return out[element] - SGI_GL_PROJECTION;
         case MGRAS_GL_QUERY_RASTER_XY:
@@ -1912,6 +1941,52 @@ static bool mgras_gl_cull_needed(void *opaque)
     return false;
 }
 
+static const VMStateDescription vmstate_sgi_mgras_gl_context_scissor = {
+    .name = TYPE_SGI_MGRAS "/gl-context-scissor",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32(cur.scissor_test, SGIGLContext),
+        VMSTATE_INT32_ARRAY(cur.scissor, SGIGLContext, 4),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
+/*
+ * Every context's scissor enable and box, sent once some context has
+ * left the initial disabled test and empty box. A stream without it
+ * comes from a model that consumed 0x3910 and 0x6e04 without acting on
+ * them, which drew as a disabled test does and answered zero: the
+ * destination's initial state.
+ */
+static bool mgras_gl_scissor_needed(void *opaque)
+{
+    SGIMgrasState *s = opaque;
+
+    for (int i = 0; i < SGI_MGRAS_GL_CONTEXTS; i++) {
+        const SGIGLDrawState *st = &s->gl[i].cur;
+
+        if (st->scissor_test || st->scissor[0] || st->scissor[1] ||
+            st->scissor[2] || st->scissor[3]) {
+            return true;
+        }
+    }
+    return false;
+}
+
+const VMStateDescription vmstate_sgi_mgras_gl_scissor = {
+    .name = TYPE_SGI_MGRAS "/gl-scissor",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = mgras_gl_scissor_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_STRUCT_ARRAY(gl, SGIMgrasState, SGI_MGRAS_GL_CONTEXTS, 1,
+                             vmstate_sgi_mgras_gl_context_scissor,
+                             SGIGLContext),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
 const VMStateDescription vmstate_sgi_mgras_gl_cull = {
     .name = TYPE_SGI_MGRAS "/gl-cull",
     .version_id = 1,
@@ -2122,6 +2197,7 @@ bool sgi_mgras_gl_post_load(SGIMgrasState *s)
             gl->lighting > 1 || gl->lights_enabled >> SGI_GL_LIGHTS ||
             gl->normalize > 1 || gl->rescale_normal > 1 ||
             gl->strip_odd > 1 || gl->cur.cull_face > 1 ||
+            gl->cur.scissor_test > 1 ||
             (gl->cur.cull_face_mode != SGI_GL_FRONT &&
              gl->cur.cull_face_mode != SGI_GL_BACK &&
              gl->cur.cull_face_mode != SGI_GL_FRONT_AND_BACK) ||
@@ -3344,6 +3420,18 @@ void sgi_mgras_gl_execute(SGIMgrasState *s, uint32_t header,
         return;
     case MGRAS_GL_FRONT_FACE:
         mgras_gl_command(s, SGI_GL_OP_FRONT_FACE, payload, 1);
+        return;
+    case MGRAS_GL_SCISSOR:
+        word[0] = payload[0];
+        word[1] = payload[2];
+        word[2] = payload[1] + 1;
+        word[3] = payload[3] + 1;
+        mgras_gl_command(s, SGI_GL_OP_SCISSOR, word, 4);
+        return;
+    case MGRAS_GL_SCISSOR_TEST:
+        word[0] = SGI_GL_SCISSOR_TEST;
+        mgras_gl_command(s, payload[0] ? SGI_GL_OP_ENABLE :
+                         SGI_GL_OP_DISABLE, word, 1);
         return;
     case MGRAS_GL_DEPTH_RANGE:
         /* The client does not clamp, so the board does (2.10.1). */
