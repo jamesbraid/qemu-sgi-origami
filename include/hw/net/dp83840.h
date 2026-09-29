@@ -76,6 +76,7 @@ struct DP83840State {
     uint16_t tenbt_config;
 
     bool autoneg_done;
+    bool forced_link;   /* DP83843 restart cancelled by forced mode */
 
     bool link_down;     /* the cable, apart from the negotiation */
 
