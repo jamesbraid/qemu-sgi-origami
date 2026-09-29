@@ -4441,6 +4441,32 @@ static void test_window_matrix_position(void)
 }
 
 /*
+ * A primitive reaching far past the window is clipped to the guard band,
+ * not dropped. Under x' = 16 x + 32, y' = 16 y + 32 the triangle
+ * (-1, -1), (6250, -1), (-1, 4) runs from window (16, 16) to (100032, 16)
+ * and (16, 96), beyond the rasterizer's reach of 65536 pixels, and covers
+ * the window from column and row 16 up: the guard band cuts it back, and
+ * its part in the window draws.
+ */
+static void test_window_matrix_guard_band(void)
+{
+    static FragScene f;
+    static const float rows[4][4] = {
+        { 16, 0, 0, 32 }, { 0, 16, 0, 32 }, { 0, 0, 0, 0.5f }, { 0, 0, 0, 1 },
+    };
+    static const float tri[3][3] = {
+        { -1, -1, 0 }, { 6250, -1, 0 }, { -1, 4, 0 },
+    };
+
+    frag_init(&f);
+    window_matrix(&f, rows, 1, false);
+    window_draw(&f, SGI_GL_TRIANGLES, tri, 3);
+    assert_column(&f, 16, 16, H - 1);
+    assert_column(&f, W - 1, 16, H - 1);
+    assert_column(&f, 15, 1, 0);
+}
+
+/*
  * Window depth is the depth scale times h2 / h3, and the depth range does
  * not map it again. Under x' = (32 x + 64) / 2, y' = (32 y + 64) / 2,
  * h2 = -z and h3 = 2, a scale of -0.5 puts eye z 2 at window depth
@@ -4746,6 +4772,8 @@ int main(int argc, char **argv)
                     test_dither_none_is_unchanged);
     g_test_add_func("/sgi-gl/window-matrix-position",
                     test_window_matrix_position);
+    g_test_add_func("/sgi-gl/window-matrix-guard-band",
+                    test_window_matrix_guard_band);
     g_test_add_func("/sgi-gl/window-matrix-depth", test_window_matrix_depth);
     g_test_add_func("/sgi-gl/window-matrix-clips-near",
                     test_window_matrix_clips_near);
