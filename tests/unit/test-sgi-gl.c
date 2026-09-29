@@ -3295,6 +3295,61 @@ static void test_logic_op(void)
     g_assert_cmpuint(frag_count(&f, 0xcc), ==, W * H);
 }
 
+static void frag_colour_mask(FragScene *f, bool r, bool g, bool b, bool a)
+{
+    uint32_t word[4] = { r, g, b, a };
+
+    frag_command(f, SGI_GL_OP_COLOR_MASK, word, 4);
+}
+
+/*
+ * glColorMask (OpenGL 1.2.1, 4.2.2): initially every channel; with some
+ * cleared a draw and a clear keep the stored bits of those channels, with
+ * none they write nothing, and the alpha channel's bit changes nothing in
+ * planes without alpha. Planes that cannot be read are written whole.
+ */
+static void test_colour_mask(void)
+{
+    static FragScene f;
+    uint32_t out[SGI_GL_GET_WORDS], word[4];
+
+    frag_init(&f);
+    g_assert_cmpuint(get(&f.c, SGI_GL_COLOR_WRITEMASK, out), ==, 4);
+    for (int i = 0; i < 4; i++) {
+        g_assert_cmphex(out[i], ==, 1);
+    }
+    frag_quad(&f, 0, 0.5f, 1, 1);
+    frag_colour_mask(&f, true, false, true, false);
+    g_assert_cmpuint(get(&f.c, SGI_GL_COLOR_WRITEMASK, out), ==, 4);
+    g_assert_cmphex(out[0] << 3 | out[1] << 2 | out[2] << 1 | out[3], ==,
+                    0xa);
+    frag_quad(&f, 1, 1, 0, 1);
+    g_assert_cmpuint(frag_count(&f, 0xff8000), ==, W * H);
+
+    word[0] = bits(0), word[1] = bits(1), word[2] = bits(1);
+    word[3] = bits(1);
+    frag_command(&f, SGI_GL_OP_CLEAR_COLOR, word, 4);
+    frag_colour_mask(&f, false, false, true, true);
+    frag_clear(&f, SGI_GL_COLOR_BUFFER_BIT);
+    g_assert_cmpuint(frag_count(&f, 0xff80ff), ==, W * H);
+
+    frag_colour_mask(&f, false, false, false, true);
+    frag_quad(&f, 0, 0, 0, 1);
+    frag_clear(&f, SGI_GL_COLOR_BUFFER_BIT);
+    g_assert_cmpuint(frag_count(&f, 0xff80ff), ==, W * H);
+
+    /* Unreadable planes: no channel still writes nothing, some all. */
+    f.rec.target.load_colour = NULL;
+    frag_quad(&f, 0, 0, 0, 1);
+    frag_clear(&f, SGI_GL_COLOR_BUFFER_BIT);
+    g_assert_cmpuint(frag_count(&f, 0xff80ff), ==, W * H);
+    frag_colour_mask(&f, true, false, false, false);
+    frag_quad(&f, 0, 0, 0, 1);
+    g_assert_cmpuint(frag_count(&f, 0), ==, W * H);
+    frag_clear(&f, SGI_GL_COLOR_BUFFER_BIT);
+    g_assert_cmpuint(frag_count(&f, 0x00ffff), ==, W * H);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -3378,5 +3433,6 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-gl/stencil-test", test_stencil_test);
     g_test_add_func("/sgi-gl/blend", test_blend);
     g_test_add_func("/sgi-gl/logic-op", test_logic_op);
+    g_test_add_func("/sgi-gl/colour-mask", test_colour_mask);
     return g_test_run();
 }

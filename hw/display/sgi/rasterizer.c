@@ -3,19 +3,18 @@
  * The software rasterizer the SGI graphics heads share.
  *
  * A draw's vertices are transformed by the draw state's matrices, mapped
- * through its viewport into window coordinates, snapped to a subpixel
- * grid and rasterized with edge functions at pixel centres. Each fragment
- * then passes the per-fragment operations in OpenGL 1.2.1's order (4.1):
- * pixel ownership against the drawable's rectangles, the scissor test,
- * the alpha test, the stencil test, the depth test, blending and the
- * logical operation, and is stored through the family's target. What it
- * draws follows
- * OpenGL 1.2.1 for untextured points, lines, polygons and bitmaps at size
- * and width 1, flat or smooth shaded, in RGBA or colour-index mode, from
- * vertex colours the context has already lit, with a back-facing
- * polygon's back colours under two-sided lighting, and polygons culled by
- * facing. Where OpenGL leaves a choice, the head's SGIRasterRules make
- * it.
+ * through its viewport into window coordinates, snapped to a subpixel grid
+ * and rasterized with edge functions at pixel centres. Each fragment then
+ * passes the per-fragment operations in OpenGL 1.2.1's order (4.1): pixel
+ * ownership against the drawable's rectangles, the scissor test, the alpha
+ * test, the stencil test, the depth test, blending and the logical
+ * operation, and is stored under the write masks through the family's
+ * target. What it draws follows OpenGL 1.2.1 for untextured points, lines,
+ * polygons and bitmaps at size and width 1, flat or smooth shaded, in RGBA
+ * or colour-index mode, from vertex colours the context has already lit,
+ * with a back-facing polygon's back colours under two-sided lighting, and
+ * polygons culled by facing. Where OpenGL leaves a choice, the head's
+ * SGIRasterRules make it.
  */
 #include "qemu/osdep.h"
 #include <math.h>
@@ -46,6 +45,8 @@ typedef struct SGISoftDraw {
     bool blend;
     /* Fragments combine with it by the logical operation instead. */
     bool logic_op;
+    /* In RGBA mode, the packed colour's bits glColorMask lets through. */
+    uint32_t colour_mask;
 } SGISoftDraw;
 
 /* A vertex after transformation, ready to rasterize. */
@@ -411,13 +412,38 @@ static uint32_t sgi_soft_logic_op(uint32_t op, uint32_t s, uint32_t d)
 }
 
 /*
+ * The bits of a packed colour of the rules' colour bits that a
+ * glColorMask channel mask lets through. The planes hold no alpha, so
+ * its bit has no effect.
+ */
+static uint32_t sgi_soft_colour_mask(const SGIRasterRules *r, uint32_t mask)
+{
+    uint32_t channel = (1u << r->color_bits) - 1, out = 0;
+
+    for (int k = 0; k < 3; k++) {
+        if (mask & (SGI_GL_COLOUR_MASK_RED << k)) {
+            out |= channel << ((2 - k) * r->color_bits);
+        }
+    }
+    return out;
+}
+
+/* The packed colour's bits, all of which a full mask writes. */
+static uint32_t sgi_soft_colour_bits(const SGIRasterRules *r)
+{
+    return sgi_soft_colour_mask(r, SGI_GL_COLOUR_MASK_ALL);
+}
+
+/*
  * Which of the operations that read the stored colour a draw state
  * enables. The logical operation applies to a colour index while
  * GL_INDEX_LOGIC_OP is enabled, and to an RGBA colour while
  * GL_COLOR_LOGIC_OP is, or while blending is enabled with
  * EXT_blend_logic_op's GL_LOGIC_OP equation; it replaces blending
- * (4.1.8). Planes that cannot be read draw as if the operations were
- * disabled, logged once for the draw.
+ * (4.1.8). A colour mask with some channels clear keeps the stored
+ * bits of those (4.2.2). Planes that cannot be read draw as if the
+ * operations were disabled and the mask were all ones, logged once for
+ * the draw.
  */
 static void sgi_soft_setup_ops(SGISoftDraw *r)
 {
@@ -431,11 +457,16 @@ static void sgi_soft_setup_ops(SGISoftDraw *r)
                       (st->blend && st->blend_equation == SGI_GL_LOGIC_OP);
         r->blend = st->blend && !r->logic_op;
     }
-    if ((r->blend || r->logic_op) && !r->t->load_colour) {
-        qemu_log_mask(LOG_UNIMP, "sgi-gl: blending and logical operations "
-                      "need planes that can be read back; drawn without "
-                      "them\n");
+    r->colour_mask = sgi_soft_colour_mask(r->rules, st->colour_mask);
+    if ((r->blend || r->logic_op ||
+         (!st->index_bits && r->colour_mask &&
+          r->colour_mask != sgi_soft_colour_bits(r->rules))) &&
+        !r->t->load_colour) {
+        qemu_log_mask(LOG_UNIMP, "sgi-gl: blending, logical operations and "
+                      "partial colour masks need planes that can be read "
+                      "back; drawn without them\n");
         r->blend = r->logic_op = false;
+        r->colour_mask = sgi_soft_colour_bits(r->rules);
     }
 }
 
@@ -446,16 +477,17 @@ static uint32_t sgi_soft_index(const SGISoftDraw *r, double index)
 }
 
 /*
- * One fragment at window pixel (px, py) with window depth z: dropped outside
- * [0, 1], outside the window's rectangles and, while the scissor test is
- * enabled, outside the scissor box (4.1.2), in RGBA mode alpha tested
- * (4.1.4), stencil tested and depth tested (4.1.5) when those tests are
- * enabled, the stencil buffer updated by the operation its outcome selects,
- * blended in RGBA mode while blending is enabled or combined by the logical
- * operation while it is enabled, then written to each colour target the draw
- * buffers select. Its colour is stored as the rules' packed colour in RGBA
- * mode and as its index in colour-index mode, which glIndexMask masks
- * (4.2.2).
+ * One fragment at window pixel (px, py) with window depth z: dropped
+ * outside [0, 1], outside the window's rectangles and, while the scissor
+ * test is enabled, outside the scissor box (4.1.2), in RGBA mode alpha
+ * tested (4.1.4), stencil tested and depth tested (4.1.5) when those tests
+ * are enabled, the stencil buffer updated by the operation its outcome
+ * selects, blended in RGBA mode while blending is enabled or combined by
+ * the logical operation while it is enabled, then written under the index
+ * or colour mask to each colour target the draw
+ * buffers select. Its colour is stored as the rules' packed colour in
+ * RGBA mode and as its index in colour-index mode, which glIndexMask
+ * masks (4.2.2).
  */
 static void sgi_soft_fragment_at(const SGISoftDraw *r, int px, int py,
                                  double z, const SGISoftFrag *f)
@@ -543,11 +575,19 @@ static void sgi_soft_fragment_at(const SGISoftDraw *r, int px, int py,
                            r->st->index_mask);
             continue;
         }
+        if (!r->colour_mask) {
+            continue;
+        }
         if (r->blend) {
             out = sgi_soft_blend(r, colour,
                                  sgi_soft_channel(r->rules, f->rgba[3]),
                                  t->load_colour(t->opaque, r->targets[i],
                                                 x, y));
+        }
+        if (r->colour_mask != sgi_soft_colour_bits(r->rules)) {
+            out = (out & r->colour_mask) |
+                  (t->load_colour(t->opaque, r->targets[i], x, y) &
+                   ~r->colour_mask);
         }
         t->store_colour(t->opaque, r->targets[i], x, y, out);
     }
@@ -1083,11 +1123,12 @@ static void sgi_soft_bitmap(const SGIRasterRules *rules,
 }
 
 /*
- * CLEAR writes the clear colour, or in colour-index mode the clear index, to
- * the op's targets, the clear depth to the depth plane and the clear stencil
- * value under its mask to the stencil buffer, where the planes have one, at
- * every pixel of its rectangle its clip list keeps. BITMAP draws its run of
- * a bitmap. The other kinds are not executed here yet.
+ * CLEAR writes the clear colour under the colour mask, or in colour-index
+ * mode the clear index under the index mask, to the op's targets, the
+ * clear depth to the depth plane and the clear stencil value under its
+ * mask to the stencil buffer, where the planes have one, at every pixel of
+ * its rectangle its clip list keeps. BITMAP draws its run of a bitmap.
+ * The other kinds are not executed here yet.
  */
 void sgi_soft_raster(const SGIRasterRules *rules, const SGIRasterTarget *t,
                      const SGIRasterOp *op)
@@ -1095,7 +1136,7 @@ void sgi_soft_raster(const SGIRasterRules *rules, const SGIRasterTarget *t,
     bool colour = op->clear_buffers & SGI_GL_COLOR_BUFFER_BIT;
     bool depth = op->clear_buffers & SGI_GL_DEPTH_BUFFER_BIT;
     bool stencil = op->clear_buffers & SGI_GL_STENCIL_BUFFER_BIT;
-    uint32_t rgb = 0, smax;
+    uint32_t rgb = 0, smax, mask = sgi_soft_colour_bits(rules);
 
     if (!sgi_soft_check_rules(rules)) {
         return;
@@ -1122,10 +1163,14 @@ void sgi_soft_raster(const SGIRasterRules *rules, const SGIRasterTarget *t,
         double c[3] = { op->clear_rgba[0], op->clear_rgba[1],
                         op->clear_rgba[2] };
 
-        if (op->clear_colour_mask != UINT32_MAX) {
-            qemu_log_mask(LOG_UNIMP, "sgi-gl: clear colour mask 0x%x is not "
-                          "modelled\n", op->clear_colour_mask);
+        mask = sgi_soft_colour_mask(rules, op->clear_colour_mask);
+        if (mask != sgi_soft_colour_bits(rules) && mask && !t->load_colour) {
+            qemu_log_mask(LOG_UNIMP, "sgi-gl: a partial colour mask needs "
+                          "planes that can be read back; cleared without "
+                          "it\n");
+            mask = sgi_soft_colour_bits(rules);
         }
+        colour = mask != 0;
         rgb = sgi_soft_rgb(rules, c);
     }
     for (int y = op->y0; y <= op->y1; y++) {
@@ -1139,19 +1184,24 @@ void sgi_soft_raster(const SGIRasterRules *rules, const SGIRasterTarget *t,
                                sgi_soft_depth_max(rules));
             }
             if (stencil) {
-                uint32_t mask = op->stencil_mask & smax;
+                uint32_t smask = op->stencil_mask & smax;
 
                 t->store_stencil(t->opaque, x, y,
                                  (t->load_stencil(t->opaque, x, y) &
-                                  ~mask & smax) |
-                                 (op->clear_stencil & mask));
+                                  ~smask & smax) |
+                                 (op->clear_stencil & smask));
             }
             for (uint32_t i = 0; colour && i < MIN(op->ntargets, 2); i++) {
                 if (op->index_bits) {
                     t->store_index(t->opaque, op->targets[i], x, y,
                                    op->clear_index, op->index_mask);
-                } else {
+                } else if (mask == sgi_soft_colour_bits(rules)) {
                     t->store_colour(t->opaque, op->targets[i], x, y, rgb);
+                } else {
+                    t->store_colour(t->opaque, op->targets[i], x, y,
+                                    (rgb & mask) |
+                                    (t->load_colour(t->opaque, op->targets[i],
+                                                    x, y) & ~mask));
                 }
             }
         }
