@@ -145,8 +145,8 @@
 #
 # @ni-revision: NUMAlink interface revision, required for a Hub
 #
-# @widget-revision: XIO widget revision this ASIC's port answers, required
-#     for a Hub
+# @widget-revision: XIO widget revision answered by this ASIC's port;
+#     required for a Hub
 #
 # @serial: fitted-part one-wire serial
 #

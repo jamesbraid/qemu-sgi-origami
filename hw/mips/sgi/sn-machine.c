@@ -2764,7 +2764,7 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
             for (board_entry = t->io_boards; board_entry;
                  board_entry = board_entry->next) {
                 const SGIModelIoBoard *board = board_entry->value;
-                const SGIModelXtalkAttachment *placement;
+                const SGIModelXioAttachment *placement;
 
                 if (board->attachment >= attachment_count) {
                     error_setg(errp, "topology '%s' io board '%s' names "
@@ -2860,7 +2860,7 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
 
         /*
          * Each fitted I/O board names the attachment of its XBridge head.
-         * The node already created both heads from xtalk_attachments.
+         * The node already created both heads from xio_attachments.
          */
         {
             g_autofree const SGIModelIoBoard **io_boards = NULL;

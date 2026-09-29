@@ -8426,6 +8426,24 @@
         }
       ],
       "name": "fuel",
+      "node-populations": [
+        {
+          "cables": [],
+          "grade": "established",
+          "nodes": [
+            0
+          ],
+          "routers": [],
+          "supported-cpu-populations": [
+            {
+              "cpus-per-node": [
+                1
+              ]
+            }
+          ],
+          "xio-slots": []
+        }
+      ],
       "nodes": [
         {
           "accepted-memory-mib": [
@@ -8487,14 +8505,7 @@
       ],
       "product": "fuel",
       "routers": [],
-      "supported-cpu-populations": [
-        {
-          "cpus-per-node": [
-            1
-          ]
-        }
-      ],
-      "xtalk-attachments": [
+      "xio-attachments": [
         {
           "crossbar-index": -1,
           "node-index": 0,
@@ -8506,7 +8517,7 @@
           "widget": 15
         }
       ],
-      "xtalk-slots": []
+      "xio-slots": []
     },
     {
       "cables": [
