@@ -157,6 +157,13 @@ static void populate(SGIGLContext *c, bool other)
     c->cur.stencil_op[0] = other ? SGI_GL_INVERT : 0;
     c->cur.stencil_op[1] = other ? SGI_GL_INCR : SGI_GL_REPLACE;
     c->cur.stencil_op[2] = other ? SGI_GL_DECR : SGI_GL_KEEP;
+    c->cur.blend = !other;
+    c->cur.blend_src = other ? SGI_GL_SRC_ALPHA_SATURATE : SGI_GL_DST_ALPHA;
+    c->cur.blend_dst = other ? SGI_GL_SRC_COLOR : 0;
+    c->cur.blend_equation = other ? SGI_GL_MAX : SGI_GL_FUNC_SUBTRACT;
+    for (int i = 0; i < 4; i++) {
+        c->cur.blend_color[i] = other ? 0.25f * i : 1.0f - 0.125f * i;
+    }
 
     g_assert_true(sgi_gl_context_valid(c, &error_abort));
 }
@@ -692,6 +699,12 @@ static const Corruption corruptions[] = {
     BAD(cur.stencil_op[0], 1, "stencil operation"),
     BAD(cur.stencil_op[1], SGI_GL_DECR + 1, "stencil operation"),
     BAD(cur.stencil_op[2], SGI_GL_KEEP - 1, "stencil operation"),
+    BAD(cur.blend, 2, "blend is"),
+    /* A destination-only factor as the source, and the reverse. */
+    BAD(cur.blend_src, SGI_GL_SRC_COLOR, "blend factors"),
+    BAD(cur.blend_dst, SGI_GL_SRC_ALPHA_SATURATE, "blend factors"),
+    BAD(cur.blend_equation, SGI_GL_FUNC_ADD + 3, "blend equation"),
+    BAD(cur.blend_color[3], 0x3f800001 /* just above 1 */, "blend colour"),
     BAD(lights_enabled, 1u << SGI_GL_LIGHTS, "light enables"),
     BAD(color_material_face, 0, "colour material face"),
     BAD(color_material_mode, SGI_GL_SHININESS, "colour material parameter"),

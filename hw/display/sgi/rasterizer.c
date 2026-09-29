@@ -3,17 +3,19 @@
  * The software rasterizer the SGI graphics heads share.
  *
  * A draw's vertices are transformed by the draw state's matrices, mapped
- * through its viewport into window coordinates, snapped to a subpixel grid
- * and rasterized with edge functions at pixel centres. Each fragment then
- * passes the per-fragment operations in OpenGL 1.2.1's order (4.1): pixel
- * ownership against the drawable's rectangles, the scissor test, the alpha
- * test, the stencil test and the depth test, and is stored through the
- * family's target. What it draws follows OpenGL 1.2.1 for untextured points,
- * lines, polygons and bitmaps at size and width 1, flat or smooth shaded, in
- * RGBA or colour-index mode, from vertex colours the context has already
- * lit, with a back-facing polygon's back colours under two-sided lighting,
- * and polygons culled by facing. Where OpenGL leaves a choice, the head's
- * SGIRasterRules make it.
+ * through its viewport into window coordinates, snapped to a subpixel
+ * grid and rasterized with edge functions at pixel centres. Each fragment
+ * then passes the per-fragment operations in OpenGL 1.2.1's order (4.1):
+ * pixel ownership against the drawable's rectangles, the scissor test,
+ * the alpha test, the stencil test, the depth test and blending, and is
+ * stored through the family's target. What it
+ * draws follows
+ * OpenGL 1.2.1 for untextured points, lines, polygons and bitmaps at size
+ * and width 1, flat or smooth shaded, in RGBA or colour-index mode, from
+ * vertex colours the context has already lit, with a back-facing
+ * polygon's back colours under two-sided lighting, and polygons culled by
+ * facing. Where OpenGL leaves a choice, the head's SGIRasterRules make
+ * it.
  */
 #include "qemu/osdep.h"
 #include <math.h>
@@ -40,6 +42,8 @@ typedef struct SGISoftDraw {
     uint32_t ntargets;
     /* Back-facing polygons take the vertices' back colours. */
     bool back_colors;
+    /* Fragments blend with the colour they replace. */
+    bool blend;
 } SGISoftDraw;
 
 /* A vertex after transformation, ready to rasterize. */
@@ -271,6 +275,115 @@ static void sgi_soft_stencil_op(const SGISoftDraw *r, int x, int y,
     t->store_stencil(t->opaque, x, y, (old & ~mask) | (value & mask));
 }
 
+/*
+ * One blend factor (OpenGL 1.2.1, tables 4.1 and 4.2) for component k,
+ * red to alpha, from the source s, destination d and constant colour c.
+ */
+static double sgi_soft_blend_factor(uint32_t factor, int k, const double s[4],
+                                    const double d[4], const float c[4])
+{
+    switch (factor) {
+    case 1:
+        return 1;
+    case SGI_GL_SRC_COLOR:
+        return s[k];
+    case SGI_GL_ONE_MINUS_SRC_COLOR:
+        return 1 - s[k];
+    case SGI_GL_DST_COLOR:
+        return d[k];
+    case SGI_GL_ONE_MINUS_DST_COLOR:
+        return 1 - d[k];
+    case SGI_GL_SRC_ALPHA:
+        return s[3];
+    case SGI_GL_ONE_MINUS_SRC_ALPHA:
+        return 1 - s[3];
+    case SGI_GL_DST_ALPHA:
+        return d[3];
+    case SGI_GL_ONE_MINUS_DST_ALPHA:
+        return 1 - d[3];
+    case SGI_GL_SRC_ALPHA_SATURATE:
+        return k == 3 ? 1 : MIN(s[3], 1 - d[3]);
+    case SGI_GL_CONSTANT_COLOR:
+        return c[k];
+    case SGI_GL_ONE_MINUS_CONSTANT_COLOR:
+        return 1 - c[k];
+    case SGI_GL_CONSTANT_ALPHA:
+        return c[3];
+    case SGI_GL_ONE_MINUS_CONSTANT_ALPHA:
+        return 1 - c[3];
+    default:
+        return 0;
+    }
+}
+
+/*
+ * Blend the packed source colour src, with alpha alpha, and the packed
+ * destination dst (4.1.6), each component the fixed point of the rules'
+ * colour bits taken as a fraction of its largest value. The planes hold
+ * no alpha, so the destination's alpha is 1. The result is clamped to
+ * [0, 1] and rounded to the colour bits as a fragment's colour is.
+ */
+static uint32_t sgi_soft_blend(const SGISoftDraw *r, uint32_t src,
+                               uint32_t alpha, uint32_t dst)
+{
+    const SGIGLDrawState *st = r->st;
+    const int bits = r->rules->color_bits;
+    const double max = (1u << bits) - 1;
+    double s[4], d[4], out[3];
+
+    for (int k = 0; k < 3; k++) {
+        int shift = (2 - k) * bits;
+
+        s[k] = ((src >> shift) & (uint32_t)max) / max;
+        d[k] = ((dst >> shift) & (uint32_t)max) / max;
+    }
+    s[3] = alpha / max;
+    d[3] = 1;
+    for (int k = 0; k < 3; k++) {
+        double sf = sgi_soft_blend_factor(st->blend_src, k, s, d,
+                                          st->blend_color);
+        double df = sgi_soft_blend_factor(st->blend_dst, k, s, d,
+                                          st->blend_color);
+
+        switch (st->blend_equation) {
+        case SGI_GL_MIN:
+            out[k] = MIN(s[k], d[k]);
+            break;
+        case SGI_GL_MAX:
+            out[k] = MAX(s[k], d[k]);
+            break;
+        case SGI_GL_FUNC_SUBTRACT:
+            out[k] = s[k] * sf - d[k] * df;
+            break;
+        case SGI_GL_FUNC_REVERSE_SUBTRACT:
+            out[k] = d[k] * df - s[k] * sf;
+            break;
+        default:
+            out[k] = s[k] * sf + d[k] * df;
+            break;
+        }
+    }
+    return sgi_soft_rgb(r->rules, out);
+}
+
+/*
+ * The per-fragment operations a draw state enables that its target
+ * cannot carry out, logged once for the draw and then left out:
+ * blending needs the stored colour.
+ */
+static void sgi_soft_setup_ops(SGISoftDraw *r)
+{
+    const SGIGLDrawState *st = r->st;
+
+    r->blend = st->blend && !st->index_bits &&
+               st->blend_equation != SGI_GL_LOGIC_OP;
+    if (r->blend && !r->t->load_colour) {
+        qemu_log_mask(LOG_UNIMP, "sgi-gl: blending needs planes that can be "
+                      "read back; drawn without it\n");
+        r->blend = false;
+    }
+}
+
 /* A fragment's colour value from an interpolated or flat index. */
 static uint32_t sgi_soft_index(const SGISoftDraw *r, double index)
 {
@@ -278,15 +391,15 @@ static uint32_t sgi_soft_index(const SGISoftDraw *r, double index)
 }
 
 /*
- * One fragment at window pixel (px, py) with window depth z: dropped
- * outside [0, 1], outside the window's rectangles and, while the scissor
- * test is enabled, outside the scissor box (4.1.2), in RGBA mode alpha
- * tested (4.1.4), stencil tested and depth tested (4.1.5) when those tests
- * are enabled, the stencil buffer updated by the operation its outcome
- * selects, then written to each colour target the draw
- * buffers select. Its colour is stored as the rules' packed colour in
- * RGBA mode and as its index in colour-index mode, which glIndexMask
- * masks (4.2.2).
+ * One fragment at window pixel (px, py) with window depth z: dropped outside
+ * [0, 1], outside the window's rectangles and, while the scissor test is
+ * enabled, outside the scissor box (4.1.2), in RGBA mode alpha tested
+ * (4.1.4), stencil tested and depth tested (4.1.5) when those tests are
+ * enabled, the stencil buffer updated by the operation its outcome selects,
+ * blended in RGBA mode while blending is enabled, then written to each
+ * colour target the draw buffers select. Its colour is stored as the rules'
+ * packed colour in RGBA mode and as its index in colour-index mode, which
+ * glIndexMask masks (4.2.2).
  */
 static void sgi_soft_fragment_at(const SGISoftDraw *r, int px, int py,
                                  double z, const SGISoftFrag *f)
@@ -358,12 +471,20 @@ static void sgi_soft_fragment_at(const SGISoftDraw *r, int px, int py,
     colour = r->st->index_bits ? sgi_soft_index(r, f->index) :
                                  sgi_soft_rgb(r->rules, f->rgba);
     for (uint32_t i = 0; i < r->ntargets; i++) {
+        uint32_t out = colour;
+
         if (r->st->index_bits) {
             t->store_index(t->opaque, r->targets[i], x, y, colour,
                            r->st->index_mask);
-        } else {
-            t->store_colour(t->opaque, r->targets[i], x, y, colour);
+            continue;
         }
+        if (r->blend) {
+            out = sgi_soft_blend(r, colour,
+                                 sgi_soft_channel(r->rules, f->rgba[3]),
+                                 t->load_colour(t->opaque, r->targets[i],
+                                                x, y));
+        }
+        t->store_colour(t->opaque, r->targets[i], x, y, out);
     }
 }
 
@@ -790,6 +911,7 @@ void sgi_soft_draw(const SGIRasterRules *rules, const SGIRasterTarget *t,
         !sgi_soft_check_index(t, d->state->index_bits)) {
         return;
     }
+    sgi_soft_setup_ops(&r);
     switch (d->mode) {
     case SGI_GL_POINTS:
         for (uint32_t i = 0; i < n; i++) {
@@ -872,6 +994,7 @@ static void sgi_soft_bitmap(const SGIRasterRules *rules,
         !sgi_soft_check_index(t, b->state->index_bits)) {
         return;
     }
+    sgi_soft_setup_ops(&r);
     r.ntargets = MIN(op->ntargets, 2);
     memcpy(r.targets, op->targets, sizeof(r.targets));
     for (uint32_t i = 0; i < b->count && row_bytes; i++) {

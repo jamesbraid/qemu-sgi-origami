@@ -98,6 +98,8 @@ void sgi_gl_init(SGIGLContext *c, uint32_t hw_id)
     for (int i = 0; i < 3; i++) {
         c->cur.stencil_op[i] = SGI_GL_KEEP;
     }
+    c->cur.blend_src = 1;
+    c->cur.blend_equation = SGI_GL_FUNC_ADD;
     c->cur.depth_mask = 1;
     c->cur.depth_range[1] = 1.0f;
     c->clear_depth = UINT32_MAX;
@@ -426,6 +428,9 @@ static const uint8_t sgi_gl_nargs[] = {
     [SGI_GL_OP_STENCIL_OP] = 3,
     [SGI_GL_OP_STENCIL_MASK] = 1,
     [SGI_GL_OP_CLEAR_STENCIL] = 1,
+    [SGI_GL_OP_BLEND_FUNC] = 2,
+    [SGI_GL_OP_BLEND_EQUATION] = 1,
+    [SGI_GL_OP_BLEND_COLOR] = 4,
 };
 
 uint32_t sgi_gl_draw_targets(const SGIGLDrawState *st,
@@ -1272,6 +1277,53 @@ static bool sgi_gl_stencil_op_valid(uint32_t op)
     }
 }
 
+/*
+ * Whether glBlendFunc accepts factor as a source factor (OpenGL 1.2.1,
+ * table 4.1, with the imaging subset's constant factors) or, with dst,
+ * as a destination one (table 4.2).
+ */
+static bool sgi_gl_blend_factor_valid(uint32_t factor, bool dst)
+{
+    switch (factor) {
+    case 0:
+    case 1:
+    case SGI_GL_SRC_ALPHA:
+    case SGI_GL_ONE_MINUS_SRC_ALPHA:
+    case SGI_GL_DST_ALPHA:
+    case SGI_GL_ONE_MINUS_DST_ALPHA:
+    case SGI_GL_CONSTANT_COLOR:
+    case SGI_GL_ONE_MINUS_CONSTANT_COLOR:
+    case SGI_GL_CONSTANT_ALPHA:
+    case SGI_GL_ONE_MINUS_CONSTANT_ALPHA:
+        return true;
+    case SGI_GL_SRC_COLOR:
+    case SGI_GL_ONE_MINUS_SRC_COLOR:
+        return dst;
+    case SGI_GL_DST_COLOR:
+    case SGI_GL_ONE_MINUS_DST_COLOR:
+    case SGI_GL_SRC_ALPHA_SATURATE:
+        return !dst;
+    default:
+        return false;
+    }
+}
+
+/* Whether glBlendEquation accepts equation. */
+static bool sgi_gl_blend_equation_valid(uint32_t equation)
+{
+    switch (equation) {
+    case SGI_GL_FUNC_ADD:
+    case SGI_GL_MIN:
+    case SGI_GL_MAX:
+    case SGI_GL_FUNC_SUBTRACT:
+    case SGI_GL_FUNC_REVERSE_SUBTRACT:
+    case SGI_GL_LOGIC_OP:
+        return true;
+    default:
+        return false;
+    }
+}
+
 static void sgi_gl_capability(SGIGLContext *c, uint32_t cap, bool on)
 {
     switch (cap) {
@@ -1292,6 +1344,9 @@ static void sgi_gl_capability(SGIGLContext *c, uint32_t cap, bool on)
         return;
     case SGI_GL_STENCIL_TEST:
         c->cur.stencil_test = on;
+        return;
+    case SGI_GL_BLEND:
+        c->cur.blend = on;
         return;
     case SGI_GL_COLOR_MATERIAL:
         c->color_material = on;
@@ -1517,6 +1572,31 @@ void sgi_gl_command(SGIGLContext *c, const SGIGLSink *sink,
         return;
     case SGI_GL_OP_CLEAR_STENCIL:
         c->clear_stencil = a[0];
+        return;
+    case SGI_GL_OP_BLEND_FUNC:
+        if (!sgi_gl_blend_factor_valid(a[0], false) ||
+            !sgi_gl_blend_factor_valid(a[1], true)) {
+            qemu_log_mask(LOG_GUEST_ERROR, "sgi-gl: glBlendFunc(0x%x, 0x%x) "
+                          "ignored\n", a[0], a[1]);
+            return;
+        }
+        c->cur.blend_src = a[0];
+        c->cur.blend_dst = a[1];
+        return;
+    case SGI_GL_OP_BLEND_EQUATION:
+        if (!sgi_gl_blend_equation_valid(a[0])) {
+            qemu_log_mask(LOG_GUEST_ERROR, "sgi-gl: glBlendEquation(0x%x) "
+                          "ignored\n", a[0]);
+            return;
+        }
+        c->cur.blend_equation = a[0];
+        return;
+    case SGI_GL_OP_BLEND_COLOR:
+        for (int i = 0; i < 4; i++) {
+            float v = sgi_gl_float(a[i]);
+
+            c->cur.blend_color[i] = v >= 1.0f ? 1.0f : v > 0.0f ? v : 0.0f;
+        }
         return;
     case SGI_GL_OP_COLOR3F:
         memcpy(c->cur_color, a, 3 * sizeof(float));
@@ -1864,6 +1944,22 @@ bool sgi_gl_get(const SGIGLContext *c, uint32_t pname, uint32_t *out,
         out[0] = c->clear_stencil;
         *n = 1;
         return true;
+    case SGI_GL_BLEND:
+        out[0] = c->cur.blend;
+        *n = 1;
+        return true;
+    case SGI_GL_BLEND_SRC:
+    case SGI_GL_BLEND_DST:
+        out[0] = pname == SGI_GL_BLEND_SRC ? c->cur.blend_src :
+                                             c->cur.blend_dst;
+        *n = 1;
+        return true;
+    case SGI_GL_BLEND_EQUATION:
+        out[0] = c->cur.blend_equation;
+        *n = 1;
+        return true;
+    case SGI_GL_BLEND_COLOR:
+        return sgi_gl_get_floats(c->cur.blend_color, 4, out, n);
     case SGI_GL_DEPTH_FUNC:
         out[0] = SGI_GL_NEVER_ENUM + c->cur.depth_func;
         *n = 1;
@@ -1970,6 +2066,7 @@ bool sgi_gl_context_valid(const SGIGLContext *c, Error **errp)
         { "scissor_test", st->scissor_test },
         { "alpha_test", st->alpha_test },
         { "stencil_test", st->stencil_test },
+        { "blend", st->blend },
         { "drawable.bound", st->drawable.bound },
         { "drawable.clip.empty", st->drawable.clip.empty },
         { "dither", c->dither },
@@ -2054,6 +2151,23 @@ bool sgi_gl_context_valid(const SGIGLContext *c, Error **errp)
         if (!sgi_gl_stencil_op_valid(st->stencil_op[i])) {
             error_setg(errp, "sgi-gl: stencil operation 0x%x",
                        st->stencil_op[i]);
+            return false;
+        }
+    }
+    if (!sgi_gl_blend_factor_valid(st->blend_src, false) ||
+        !sgi_gl_blend_factor_valid(st->blend_dst, true)) {
+        error_setg(errp, "sgi-gl: blend factors 0x%x and 0x%x", st->blend_src,
+                   st->blend_dst);
+        return false;
+    }
+    if (!sgi_gl_blend_equation_valid(st->blend_equation)) {
+        error_setg(errp, "sgi-gl: blend equation 0x%x", st->blend_equation);
+        return false;
+    }
+    for (int i = 0; i < 4; i++) {
+        if (!(st->blend_color[i] >= 0.0f && st->blend_color[i] <= 1.0f)) {
+            error_setg(errp, "sgi-gl: blend colour %g is outside [0, 1]",
+                       st->blend_color[i]);
             return false;
         }
     }
@@ -2254,6 +2368,32 @@ static const VMStateDescription vmstate_sgi_gl_stencil = {
     },
 };
 
+static bool sgi_gl_blend_needed(void *opaque)
+{
+    const SGIGLDrawState *st = opaque, *init = &sgi_gl_initial()->cur;
+
+    return SGI_GL_MOVED(st, init, blend) ||
+           SGI_GL_MOVED(st, init, blend_src) ||
+           SGI_GL_MOVED(st, init, blend_dst) ||
+           SGI_GL_MOVED(st, init, blend_equation) ||
+           SGI_GL_MOVED(st, init, blend_color);
+}
+
+static const VMStateDescription vmstate_sgi_gl_blend = {
+    .name = "sgi-gl-draw-state/blend",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = sgi_gl_blend_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32(blend, SGIGLDrawState),
+        VMSTATE_UINT32(blend_src, SGIGLDrawState),
+        VMSTATE_UINT32(blend_dst, SGIGLDrawState),
+        VMSTATE_UINT32(blend_equation, SGIGLDrawState),
+        VMSTATE_SGI_GL_FLOATS(blend_color, SGIGLDrawState, 4),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
 static const VMStateDescription vmstate_sgi_gl_draw_state = {
     .name = "sgi-gl-draw-state",
     .version_id = 1,
@@ -2281,6 +2421,7 @@ static const VMStateDescription vmstate_sgi_gl_draw_state = {
         &vmstate_sgi_gl_scissor,
         &vmstate_sgi_gl_alpha_test,
         &vmstate_sgi_gl_stencil,
+        &vmstate_sgi_gl_blend,
         NULL
     },
 };

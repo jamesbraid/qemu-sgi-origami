@@ -91,6 +91,14 @@ bool sgi_raster_rules_supported(const SGIRasterRules *r);
 typedef struct SGIRasterTarget {
     void (*store_colour)(void *opaque, SGIColourTarget target, int x, int y,
                          uint32_t colour);
+    /*
+     * The colour stored at (x, y) as store_colour takes it, or in
+     * colour-index mode the stored index; NULL for planes that cannot be
+     * read back, where the operations that read the destination draw as
+     * if disabled.
+     */
+    uint32_t (*load_colour)(void *opaque, SGIColourTarget target, int x,
+                            int y);
     void (*store_index)(void *opaque, SGIColourTarget target, int x, int y,
                         uint32_t index, uint32_t mask);
     uint32_t (*load_depth)(void *opaque, int x, int y);
