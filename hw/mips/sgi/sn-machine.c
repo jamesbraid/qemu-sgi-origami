@@ -2303,6 +2303,21 @@ static bool sgi_machine_load_flash(MachineState *machine,
     return true;
 }
 
+static void sgi_machine_build_module_containers(MachineState *machine,
+                                                const SGIModelTopology *t)
+{
+    const SGIModelModuleList *entry;
+    unsigned int index = 0;
+
+    for (entry = t->modules; entry; entry = entry->next, index++) {
+        g_autofree char *name = g_strdup_printf("module%u", index);
+        Object *container = object_new(TYPE_CONTAINER);
+
+        object_property_add_child(OBJECT(machine), name, container);
+        object_unref(container);
+    }
+}
+
 static bool sgi_machine_realize(MachineState *machine, Error **errp)
 {
     SGIMachineState *s = SGI_MACHINE(machine);
@@ -2489,6 +2504,8 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
     s->cpu_refclk = clock_new(OBJECT(machine), "cpu-refclk");
     clock_set_hz(s->cpu_refclk,
                 sgi_machine_topology_node0(t)->cpu_slots->value->assembly->clock_hz);
+
+    sgi_machine_build_module_containers(machine, t);
 
     kind = sgi_machine_topology_node0(t)->asic_kind;
     nodes = sgi_model_node_array(t->nodes, &node_count_check);

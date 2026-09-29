@@ -1072,6 +1072,10 @@ static void test_xbridge_topology(const void *data)
     g_autoptr(QDict) response = NULL;
     uint32_t identity;
 
+    qobject_unref(qtest_qmp_assert_success_ref(qts,
+        "{'execute': 'qom-list', 'arguments': {"
+        "'path': '/machine/module0'}}"));
+
     identity = widget_reg_read(qts, 0, 0);
     g_assert_cmphex(WIDGET_REV(identity), ==, 2);
     g_assert_cmphex(WIDGET_PART(identity), ==, XBRIDGE_XBOW_PART);
