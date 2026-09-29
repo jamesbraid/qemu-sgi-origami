@@ -55,6 +55,11 @@ typedef struct SGIRasterRules {
     uint8_t subpixel_bits;      /* window coordinates snap to 2^-n pixel */
     uint8_t color_bits;         /* per channel of a stored colour */
     uint8_t depth_bits;         /* of a stored depth */
+    /*
+     * Of a stored stencil value, 0 for planes with no stencil buffer; a
+     * target without the stencil hooks has none either.
+     */
+    uint8_t stencil_bits;
     uint8_t rounding;           /* SGIRounding, for snapping and depth */
     uint8_t tie_rule;           /* SGITieRule */
     uint8_t arith;              /* SGIArith */
@@ -66,9 +71,9 @@ typedef struct SGIRasterRules {
 } SGIRasterRules;
 
 /*
- * Whether the rasterizer implements a rule set. It implements
- * subpixel_bits 1 to 12, color_bits 1 to 10, depth_bits 1 to 32, every
- * rounding, and otherwise only SGI_TIE_TOP_LEFT_BOTTOM_ORIGIN,
+ * Whether the rasterizer implements a rule set. It implements subpixel_bits
+ * 1 to 12, color_bits 1 to 10, depth_bits 1 to 32, stencil_bits 0 to 16,
+ * every rounding, and otherwise only SGI_TIE_TOP_LEFT_BOTTOM_ORIGIN,
  * SGI_ARITH_DOUBLE, SGI_LINE_COVERAGE_DOUBLE and dropping w <= 0.
  */
 bool sgi_raster_rules_supported(const SGIRasterRules *r);
@@ -90,6 +95,13 @@ typedef struct SGIRasterTarget {
                         uint32_t index, uint32_t mask);
     uint32_t (*load_depth)(void *opaque, int x, int y);
     void (*store_depth)(void *opaque, int x, int y, uint32_t depth);
+    /*
+     * The stencil buffer, a value of the rules' stencil bits a pixel;
+     * NULL for planes without one, where the stencil test passes and
+     * changes nothing (OpenGL 1.2.1, 4.1.5).
+     */
+    uint32_t (*load_stencil)(void *opaque, int x, int y);
+    void (*store_stencil)(void *opaque, int x, int y, uint32_t value);
     void *opaque;
 } SGIRasterTarget;
 

@@ -41,6 +41,7 @@ typedef uint32_t SGIColourTarget;
 
 /* The buffers a clear names, glClear's mask bits. */
 #define SGI_GL_DEPTH_BUFFER_BIT 0x0100
+#define SGI_GL_STENCIL_BUFFER_BIT 0x0400
 #define SGI_GL_COLOR_BUFFER_BIT 0x4000
 
 struct SGIGLDrawState;
@@ -91,6 +92,12 @@ typedef struct SGIRasterOp {
     uint32_t clear_colour_mask;
     /* In the depth plane's units; the plane keeps its low bits. */
     uint32_t clear_depth24;
+    /*
+     * SGI_GL_STENCIL_BUFFER_BIT: the clear value, written under the
+     * stencil write mask; the plane keeps its low bits.
+     */
+    uint32_t clear_stencil;
+    uint32_t stencil_mask;
     /*
      * CLEAR in colour-index mode: nonzero index_bits, and the clear index
      * already masked to them, written under index_mask.
@@ -165,6 +172,15 @@ enum {
 #define SGI_GL_DEPTH_TEST       0x0b71
 #define SGI_GL_DEPTH_WRITEMASK  0x0b72
 #define SGI_GL_DEPTH_FUNC       0x0b74
+#define SGI_GL_STENCIL_TEST     0x0b90
+#define SGI_GL_STENCIL_CLEAR_VALUE 0x0b91
+#define SGI_GL_STENCIL_FUNC     0x0b92
+#define SGI_GL_STENCIL_VALUE_MASK 0x0b93
+#define SGI_GL_STENCIL_FAIL     0x0b94
+#define SGI_GL_STENCIL_PASS_DEPTH_FAIL 0x0b95
+#define SGI_GL_STENCIL_PASS_DEPTH_PASS 0x0b96
+#define SGI_GL_STENCIL_REF      0x0b97
+#define SGI_GL_STENCIL_WRITEMASK 0x0b98
 #define SGI_GL_MATRIX_MODE      0x0ba0
 #define SGI_GL_NORMALIZE        0x0ba1
 #define SGI_GL_VIEWPORT         0x0ba2
@@ -190,6 +206,12 @@ enum {
 #define SGI_GL_FRONT            0x0404
 #define SGI_GL_BACK             0x0405
 #define SGI_GL_FRONT_AND_BACK   0x0408
+/* glStencilOp's operations (4.1.5); GL_ZERO is 0. */
+#define SGI_GL_INVERT           0x150a
+#define SGI_GL_KEEP             0x1e00
+#define SGI_GL_REPLACE          0x1e01
+#define SGI_GL_INCR             0x1e02
+#define SGI_GL_DECR             0x1e03
 /* glFrontFace's directions (2.13.1). */
 #define SGI_GL_CW               0x0900
 #define SGI_GL_CCW              0x0901
@@ -343,6 +365,20 @@ typedef struct SGIGLDrawState {
     uint32_t alpha_test;        /* 0 or 1 */
     uint32_t alpha_func;
     float alpha_ref;
+    /*
+     * The stencil test (4.1.5): its enable, glStencilFunc's comparison
+     * minus GL_NEVER, reference and value mask, glStencilMask's write
+     * mask, and glStencilOp's operations on failing the stencil test, on
+     * failing the depth test and on passing both, as their enumerants.
+     * The reference is kept as sent and clamped to the stencil planes'
+     * range where it is used.
+     */
+    uint32_t stencil_test;      /* 0 or 1 */
+    uint32_t stencil_func;
+    int32_t stencil_ref;
+    uint32_t stencil_value_mask;
+    uint32_t stencil_write_mask;
+    uint32_t stencil_op[3];
     SGIGLDrawable drawable;
 } SGIGLDrawState;
 
@@ -420,6 +456,7 @@ typedef struct SGIGLContext {
      * depth.
      */
     uint32_t clear_depth;
+    uint32_t clear_stencil;     /* glClearStencil's value */
     /* The primitive open since glBegin, SGI_GL_POINTS to SGI_GL_POLYGON. */
     uint32_t begin_mode;
     uint32_t in_begin;          /* 0 or 1 */
@@ -495,6 +532,11 @@ typedef enum SGIGLOp {
     SGI_GL_OP_FRONT_FACE,       /* GL_CW or GL_CCW */
     SGI_GL_OP_SCISSOR,          /* x, y, width, height as int32 */
     SGI_GL_OP_ALPHA_FUNC,       /* GL_NEVER to GL_ALWAYS, reference */
+    /* GL_NEVER to GL_ALWAYS, the reference as int32, the value mask */
+    SGI_GL_OP_STENCIL_FUNC,
+    SGI_GL_OP_STENCIL_OP,       /* fail, depth fail and depth pass */
+    SGI_GL_OP_STENCIL_MASK,     /* the write mask */
+    SGI_GL_OP_CLEAR_STENCIL,    /* the clear value */
 } SGIGLOp;
 
 /*
