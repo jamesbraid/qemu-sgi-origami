@@ -58,9 +58,7 @@ RUN = 'run'
 # by key; every population runs every diagnostic today.
 REASONS = {}
 
-# Each package file a row can need, with the SHA-256 the project
-# checkout's assets/MANIFEST.sha256 records for it (`tools/extract-irix
-# smdk` produces the package).
+# Declared SHA-256 identities for the supplied sMDK package files.
 PACKAGE_DIR = os.path.join('assets', 'boot', 'smdk')
 PACKAGE_SHA256 = {
     'smdk':
