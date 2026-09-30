@@ -5060,6 +5060,33 @@ static void test_texture_errors(void)
     }
 }
 
+static void test_texture_environment_without_image(void)
+{
+    static const uint32_t modes[] = {
+        SGI_GL_REPLACE, SGI_GL_MODULATE, SGI_GL_DECAL, SGI_GL_BLEND,
+    };
+
+    texture_error_init();
+    texture_error_scene.rec.target.texture = NULL;
+    texture_error_scene.rec.target.store_colour = counting_store_colour;
+    texture_error_scene.c.cur.texture_env_mode = 0;
+    counted_stores = 0;
+    texture_error_assert("unsupported texture state", 0);
+    g_assert_cmpuint(counted_stores, ==, 0);
+    g_assert_cmpuint(texture_error_pixels.reads, ==, 0);
+
+    for (unsigned i = 0; i < ARRAY_SIZE(modes); i++) {
+        texture_error_init();
+        texture_error_scene.rec.target.texture = NULL;
+        texture_error_scene.rec.target.store_colour = counting_store_colour;
+        texture_error_scene.c.cur.texture_env_mode = modes[i];
+        counted_stores = 0;
+        texture_error_assert("incomplete texture image", 0xff00ff);
+        g_assert_cmpuint(counted_stores, >, 0);
+        g_assert_cmpuint(texture_error_pixels.reads, ==, 0);
+    }
+}
+
 /* Points, lines, matrix mixing and a fresh descriptor at each binding. */
 static void test_texture_points_lines_binding(void)
 {
@@ -5221,6 +5248,8 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-gl/texture-projective", test_texture_projective);
     g_test_add_func("/sgi-gl/texture-fog-order", test_texture_fog_order);
     g_test_add_func("/sgi-gl/texture-errors", test_texture_errors);
+    g_test_add_func("/sgi-gl/texture-environment-without-image",
+                    test_texture_environment_without_image);
     g_test_add_func("/sgi-gl/texture-invalid-quad-polygon",
                     test_texture_invalid_quad_polygon);
     g_test_add_func("/sgi-gl/texture-invalid-clipped-polygon",
