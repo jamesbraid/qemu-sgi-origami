@@ -1541,7 +1541,7 @@ F: tests/qtest/libqos/sgi-bridge-machine.c
 F: tests/qtest/sgi-bridge-bus-test.c
 F: tests/qtest/sgi-ioc3-eth-test.c
 F: tests/qtest/ics1890-test.c
-F: tests/qtest/sgi-heart-test.c
+F: tests/qtest/sgi-heart*-test.c
 F: tests/qtest/octane-test.c
 F: tests/qtest/sharp-storage-fault.c
 F: tests/qtest/r10000-identity-test.c
