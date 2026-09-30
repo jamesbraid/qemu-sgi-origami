@@ -10,6 +10,7 @@
  */
 #include "qemu/osdep.h"
 #include "qapi/error.h"
+#include "block/block-io.h"
 #include "hw/rtc/ds1742.h"
 #include "hw/core/qdev-properties-system.h"
 #include "migration/vmstate.h"
@@ -78,11 +79,18 @@ static void ds1742_image(DS1742State *s, uint8_t image[8])
     image[7] = to_bcd((tm.tm_year + 1900) % 100);
 }
 
+static bool ds1742_drive_writable(BlockBackend *blk)
+{
+    BlockDriverState *bs = blk ? blk_bs(blk) : NULL;
+
+    return bs && bdrv_is_writable(bs);
+}
+
 static void ds1742_save_clock(DS1742State *s)
 {
     uint8_t image[8], record[CLOCK_REF_BYTES];
 
-    if (!s->blk) {
+    if (!ds1742_drive_writable(s->blk)) {
         return;
     }
     if (s->control & (W | R)) {
@@ -94,7 +102,7 @@ static void ds1742_save_clock(DS1742State *s)
     if (blk_pwrite(s->blk, CTRL, sizeof(image), image, 0) < 0) {
         error_report("ds1742: could not save calendar to backing store");
     }
-    if (s->clock_blk) {
+    if (ds1742_drive_writable(s->clock_blk)) {
         memcpy(record, CLOCK_REF_MAGIC, 8);
         stq_le_p(record + 8, ds1742_wall_seconds());
         if (blk_pwrite(s->clock_blk, 0, sizeof(record), record, 0) < 0) {
