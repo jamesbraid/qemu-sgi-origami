@@ -3,7 +3,7 @@
 # Boot the supplied Fuel IRIX disk through its stock PROM on IOC3-A
 #
 # SPDX-License-Identifier: GPL-2.0-or-later
-"""Require a one-processor Fuel serial boot and a usable IRIX 6.5.30 shell."""
+"""Require a Fuel IRIX 6.5.30 shell and shutdown back to the PROM menu."""
 
 import json
 import re
@@ -30,7 +30,15 @@ DISK_RE = re.compile(
     r'1\+ Device Vendor Product: QEMU QEMU HARDDISK')
 ROOT_RE = re.compile(r'\buid=0\(root\)')
 UNAME_RE = re.compile(r'IRIX64[^\r\n]*6\.5\.30m\b[^\r\n]*\bIP35\b')
-SHUTDOWN_STARTED_RE = re.compile(rb'Shutdown started')
+# Scope the return to PROM after the command, excluding the initial menu.
+SHUTDOWN_TO_PROM_RE = re.compile(
+    rb'sync; /etc/shutdown -y -g0 -i0[\r\n]+'
+    rb'.*Shutdown started'
+    rb'.*INIT: New run level:[ \t]*0[\r\n]+'
+    rb'.*IP35 PROM SGI Version 6\.210\b'
+    rb'.*Skipping diags as requested by kernel'
+    rb'.*System Maintenance Menu[\r\n]+'
+    rb'.*Option\?', re.S)
 
 
 class IrixFuelInstalledBoot(QemuSystemTest):
@@ -61,7 +69,7 @@ class IrixFuelInstalledBoot(QemuSystemTest):
             transcript, reached = drive_console(
                 self.vm.console_socket, log_path, BOOT_TIMEOUT_SECONDS,
                 DRIVER_STEPS,
-                reached_when=lambda t: bool(SHUTDOWN_STARTED_RE.search(t)),
+                reached_when=lambda t: bool(SHUTDOWN_TO_PROM_RE.search(t)),
                 vm=self.vm)
         except Exception as exc:
             error = f'{type(exc).__name__}: {exc}'
@@ -76,7 +84,8 @@ class IrixFuelInstalledBoot(QemuSystemTest):
                 'root_shell': bool(ROOT_RE.search(transcript)),
                 'run_level_2': 'run-level 2' in transcript,
                 'irix_release_platform': bool(UNAME_RE.search(transcript)),
-                'shutdown_started': reached,
+                'shutdown_started': 'Shutdown started' in transcript,
+                'shutdown_to_prom_menu': reached,
             }
             with open(record_path, 'w', encoding='utf-8') as output:
                 json.dump({
