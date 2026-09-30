@@ -1001,6 +1001,12 @@ static void test_widget_id(void)
     g_assert_cmpuint(qtest_readl_tx(s, HEART_WIDGET, &id), ==, MEMTX_ERROR);
     g_assert_cmpuint(qtest_readq_tx(s, HEART_WIDGET + 8, &wide),
                      ==, MEMTX_ERROR);
+    g_assert_cmphex(qtest_readl(s, HEART_WIDGET + 4), ==, HEART_WIDGET_ID);
+    qtest_qmp_assert_success(s, "{'execute':'system_reset'}");
+    g_assert_cmpuint(qtest_readl_tx(s, HEART_WIDGET + 4, &id), ==, MEMTX_OK);
+    g_assert_cmphex(id, ==, HEART_WIDGET_ID);
+    g_assert_cmpuint(qtest_readq_tx(s, HEART_WIDGET, &wide), ==, MEMTX_OK);
+    g_assert_cmphex(wide, ==, HEART_WIDGET_ID);
     qtest_quit(s);
 }
 

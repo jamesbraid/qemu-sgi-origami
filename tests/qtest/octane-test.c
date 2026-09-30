@@ -122,6 +122,28 @@ static QTestState *octane2_start_args(const char *extra)
                        " -bios %s -S %s", quoted, extra);
 }
 
+static void octane_heart_identity_check(QTestState *qts, bool octane2)
+{
+    const uint32_t expected = octane2 ? 0x6c00106d : 0x4c00106d;
+    uint64_t wide;
+    uint32_t word;
+
+    g_assert_cmpuint(qtest_readq_tx(qts, HEART_WIDGET, &wide), ==, MEMTX_OK);
+    g_assert_cmphex(wide, ==, expected);
+    g_assert_cmpuint(qtest_readl_tx(qts, HEART_WIDGET + 4, &word), ==,
+                     MEMTX_OK);
+    g_assert_cmphex(word, ==, expected);
+    g_assert_cmphex(word, ==, (uint32_t)wide);
+    g_assert_cmphex(wide >> 32, ==, 0);
+    g_assert_cmphex(word >> 28, ==, octane2 ? 6 : 4);
+    g_assert_cmphex(word & 1, ==, 1);
+    g_assert_cmpuint(qtest_readq_tx(qts, HEART_WIDGET + 8, &wide), ==,
+                     octane2 ? MEMTX_OK : MEMTX_ERROR);
+    if (octane2) {
+        g_assert_cmphex(wide, ==, 0x60);
+    }
+}
+
 static uint64_t octane_cpu_clock_period(QTestState *qts)
 {
     g_autoptr(QDict) reply = qtest_qmp(qts,
@@ -151,7 +173,7 @@ static void test_octane2_population(void)
     uint64_t missing;
 
     g_assert_cmphex(qtest_readl(qts, HEART + 0x20), ==, OCTANE2_BANK0);
-    g_assert_cmphex(qtest_readl(qts, HEART_WIDGET + 4), ==, 0x6c00106c);
+    g_assert_cmphex(qtest_readl(qts, HEART_WIDGET + 4), ==, 0x6c00106d);
     g_assert_cmpuint(qtest_readl_tx(qts, XBOW + 4, &value), ==, MEMTX_OK);
     g_assert_cmphex(value, ==, 0x50000001);
     g_assert_cmpuint(qtest_readl_tx(qts, BRIDGE + 4, &value), ==, MEMTX_OK);
@@ -659,6 +681,7 @@ static void test_board_identity_migration(gconstpointer data)
     uint8_t records[3][64];
 
     g_assert_no_error(error);
+    octane_heart_identity_check(from, octane2);
     octane_identity_map(from);
     for (unsigned i = 0; i < 3; i++) {
         octane_onewire_address(from, boards[i].master, boards[i].rom, 0xf0, 0);
@@ -668,11 +691,13 @@ static void test_board_identity_migration(gconstpointer data)
         "{'execute':'migrate-incoming', 'arguments':{'uri':%s}}", uri);
     sgi_migrate_stopped(from, uri);
     sgi_wait_migration_status(to, "completed", 30);
+    octane_heart_identity_check(to, octane2);
     for (unsigned i = 0; i < 3; i++) {
         octane_onewire_read(to, boards[i].master, records[i] + 17, 47);
         octane_identity_check(&boards[i], records[i]);
     }
     qtest_system_reset(to);
+    octane_heart_identity_check(to, octane2);
     octane_identity_map(to);
     for (unsigned i = 0; i < 4; i++) {
         octane_identity_read(to, &boards[i]);
@@ -990,7 +1015,7 @@ static void test_widgets_and_memory(void)
     g_assert_cmphex(value, ==, 0x40000001);
     g_assert_cmpuint(qtest_readl_tx(qts, HEART_WIDGET + 4, &value), ==,
                      MEMTX_OK);
-    g_assert_cmphex(value, ==, 0x4c00106c);
+    g_assert_cmphex(value, ==, 0x4c00106d);
     g_assert_cmpuint(qtest_readq_tx(qts, HEART_WIDGET, &missing), ==,
                      MEMTX_OK);
     g_assert_cmphex(missing, ==, (uint64_t)value);
@@ -1300,13 +1325,37 @@ static void test_low_ram(gconstpointer data)
     qtest_quit(qts);
 }
 
-static void test_octane2_heart_identity(void)
+static void test_heart_identity(gconstpointer data)
 {
-    QTestState *qts = octane2_start_args("");
+    bool octane2 = GPOINTER_TO_INT(data);
+    QTestState *qts = octane2 ? octane2_start_args("") : octane_start();
+    uint8_t byte;
+    uint16_t half;
+    uint32_t word;
     uint64_t wide;
 
-    g_assert_cmpuint(qtest_readq_tx(qts, HEART_WIDGET, &wide), ==, MEMTX_OK);
-    g_assert_cmphex(wide, ==, UINT64_C(0x000000006c00106d));
+    octane_heart_identity_check(qts, octane2);
+    for (unsigned offset = 0; offset < 8; offset++) {
+        uint64_t addr = HEART_WIDGET + offset;
+
+        g_assert_cmpuint(qtest_readb_tx(qts, addr, &byte), ==, MEMTX_ERROR);
+        g_assert_cmpuint(qtest_readw_tx(qts, addr, &half), ==, MEMTX_ERROR);
+        if (offset != 4) {
+            g_assert_cmpuint(qtest_readl_tx(qts, addr, &word), ==,
+                             MEMTX_ERROR);
+        }
+        if (offset != 0) {
+            g_assert_cmpuint(qtest_readq_tx(qts, addr, &wide), ==,
+                             MEMTX_ERROR);
+        }
+        g_assert_cmpuint(qtest_writeb_tx(qts, addr, 0), ==, MEMTX_ERROR);
+        g_assert_cmpuint(qtest_writew_tx(qts, addr, 0), ==, MEMTX_ERROR);
+        g_assert_cmpuint(qtest_writel_tx(qts, addr, 0), ==, MEMTX_ERROR);
+        g_assert_cmpuint(qtest_writeq_tx(qts, addr, 0), ==, MEMTX_ERROR);
+    }
+    octane_heart_identity_check(qts, octane2);
+    qtest_system_reset(qts);
+    octane_heart_identity_check(qts, octane2);
     qtest_quit(qts);
 }
 
@@ -3934,7 +3983,10 @@ int main(int argc, char **argv)
                    test_heart_divider_onewire_time);
     qtest_add_data_func("/octane/low-ram", GINT_TO_POINTER(0), test_low_ram);
     qtest_add_data_func("/octane2/low-ram", GINT_TO_POINTER(1), test_low_ram);
-    qtest_add_func("/octane2/heart-identity", test_octane2_heart_identity);
+    qtest_add_data_func("/octane/heart-identity", GINT_TO_POINTER(0),
+                        test_heart_identity);
+    qtest_add_data_func("/octane2/heart-identity", GINT_TO_POINTER(1),
+                        test_heart_identity);
     qtest_add_func("/octane2/heart-widget-status",
                    test_octane2_heart_widget_status);
     qtest_add_func("/octane/flash-and-pci", test_flash_and_pci);
