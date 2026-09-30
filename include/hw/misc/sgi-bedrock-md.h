@@ -76,7 +76,7 @@ typedef struct SGIBedrockMDDirectoryInjection {
  * when it is admitted, into a free slot or the least recently used one.
  * Losing the overlay is the model's bookkeeping only: the processors'
  * copies of a line are kept apart from the slot, and are there again when
- * its page is watched again (docs/datasheets/bedrock-memory-directory.md).
+ * its page is watched again.
  *
  * Sixteen slots: the one reader of transitions, the Origin 300's directory
  * diagnostic, checks one line at a time per node, and every slot adds to

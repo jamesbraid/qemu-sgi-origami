@@ -46,7 +46,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIXBridgeState, SGI_XBRIDGE)
  * "xio-port" property's default. No source binds the Origin 300's rear
  * XIO connector to a port number: its own manual records the connector
  * and the XBridge specification records the six ports, and nothing read
- * so far joins the two (docs/datasheets/xbridge.md, "Role"). 0xb is the
+ * so far joins the two. 0xb is the
  * lowest external port left once the Bedrock takes 0xa, chosen for that
  * and nothing else. A machine sets the property from its own topology,
  * so an observed number replaces this in one place.

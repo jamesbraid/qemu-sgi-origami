@@ -429,7 +429,7 @@ struct SGIHubState {
     /*
      * The I/O interface's access protection, widget access, device error
      * mask, interrupt destination and error-shutdown enables: stored,
-     * none of them enforced (see the Hub I/O interface datasheet).
+     * none of them enforced.
      */
     uint64_t io_local_access;
     uint64_t io_outbound_access;

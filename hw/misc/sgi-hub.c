@@ -105,9 +105,8 @@
 /* Scratch: a 36-bit word of four sub-fields, firmware's private boot state. */
 /*
  * Access protection, widget access, the inbound device error mask, the
- * interrupt destination and the error-shutdown enables (the Hub I/O
- * interface datasheet's register map). The model stores them and
- * enforces none, as it does the processor interface's protection.
+ * interrupt destination and the error-shutdown enables. The model stores
+ * them and enforces none, as it does the processor interface's protection.
  */
 #define HUB_IO_LOCAL_ACCESS     0x400100
 #define HUB_IO_ACCESS_OVERRIDE  0x400108
@@ -2851,7 +2850,7 @@ static void sgi_hub_write_access_override(SGIHubState *s, hwaddr addr,
 /*
  * The miscellaneous enable register reads zero here. Bit 12 is a
  * write-only action that clears the precise-error latch, which this
- * model does not have (hub-io-interface datasheet). Bits 0, 4 and 8 say
+ * model does not have. Bits 0, 4 and 8 say
  * that widget 0, BTE 0 or BTE 1 shut down after an error (Linux
  * hubio.h); IRIX reads and tests them in its I/O error handlers and
  * writes ones back after handling a BTE error. Nothing here ever shuts
@@ -4129,7 +4128,7 @@ static void sgi_hub_assert_hot_reads_match_the_table(void)
  * says only that an overrun means the error stack may hold more). The
  * error type, request number, supplemental and command fields stay
  * zero: which values the chip records in them for such a read is not
- * established (hub-processor-interface datasheet, "Error status").
+ * established.
  */
 static void sgi_hub_processor_read_error(SGIHubState *s, unsigned int slice,
                                          hwaddr physaddr)
@@ -4474,8 +4473,7 @@ MemoryRegion *sgi_hub_processor_io(SGIHubState *s, unsigned int slice)
 #define SGI_HUB_XIO_INT_MODIFY      (SGI_HUB_NODE_REGISTERS + HUB_PI_INT_MODIFY)
 /*
  * The bounded peer identity probe: node field zero, small-window field
- * one, local, at the network-interface status register (hub-io-interface
- * datasheet, "Bounded peer-Hub identity probe").
+ * one, local, at the network-interface status register.
  */
 #define SGI_HUB_XIO_IDENTITY        0x01600000ULL
 #define SGI_HUB_XIO_NI_STATUS       0x600000
@@ -4561,12 +4559,12 @@ static const MemoryRegionOps sgi_hub_ii_packet_ops = {
 };
 
 /*
- * A peer's programmed I/O to this Hub's widget number. The
- * hub-io-interface datasheet leaves the short widget offsets unresolved,
- * so this answers only the one peer access with evidence, IRIX's
+ * A peer's programmed I/O to this Hub's widget number. The short widget
+ * offsets are unresolved, so this answers only the one peer access with
+ * evidence, IRIX's
  * four-byte identification read at offset 4, from the identification
- * register. That alias is an approximation outside the datasheet's
- * acceptance. Every other access fails the way an unsupported request
+ * register. That alias is an approximation, not established hardware
+ * behavior. Every other access fails the way an unsupported request
  * does, as a bus error for the processor that made it, rather than
  * inventing a value or stopping the machine.
  */
@@ -4618,8 +4616,8 @@ static const MemoryRegionOps sgi_hub_ii_widget_ops = {
  * the XIO space, the shape a memory-space window decodes too. On the
  * link it becomes a packet into the I/O view: bit 47 set above the
  * offset, the destination widget in bits 51:48. That space selection
- * supplies the I/O class is the hub-io-interface datasheet's bounded
- * inference from the firmware's peer identity probe.
+ * supplies the I/O class is inferred from the firmware's peer identity
+ * probe.
  */
 static bool sgi_hub_ii_io_out_packet(SGIHubState *s, hwaddr addr,
                                      unsigned size, bool write,

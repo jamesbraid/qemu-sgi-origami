@@ -421,8 +421,8 @@ static void lb_write(void *opaque, hwaddr offset, uint64_t value,
         s->scratch[index] = index < 3 ? value : value & 1;
         /*
          * Clearing scratch 3 releases the node's hub lock, which the stock
-         * PROM publishes presence under (sgi_bedrock_scratch3_released,
-         * docs/known-issues.md). A standalone device has no owning node.
+         * PROM publishes presence under (sgi_bedrock_scratch3_released).
+         * A standalone device has no owning node.
          */
         if (index == 3 && s->scratch[3] == 0 && s->bedrock) {
             sgi_bedrock_scratch3_released(s->bedrock);

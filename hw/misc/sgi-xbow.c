@@ -1049,8 +1049,7 @@ static const MemoryRegionOps sgi_xbow_illegal_ops = {
  * The same illegal destinations on the packet path, where a widget's
  * slice is a whole 48-bit XIO space: a Bridge transfer naming widget 1
  * to 7 is an illegal-destination error on the port it arrived by, the
- * same as a processor's (the Crossbow datasheet's "DMA to an unavailable
- * Crossbow destination").
+ * same as a processor's.
  */
 static MemTxResult sgi_xbow_packet_illegal_access(SGIXbowLink *context,
                                                   hwaddr addr, bool write)
@@ -1096,8 +1095,8 @@ static const MemoryRegionOps sgi_xbow_packet_illegal_ops = {
 
 /*
  * A legal destination whose link is down or empty, or the port's own: the
- * number is legal, so nothing latches here (the Crossbow datasheet: an
- * unavailable link alone establishes no new retry-exhaustion event), and
+ * number is legal, so nothing latches here (an unavailable link alone
+ * establishes no new retry-exhaustion event), and
  * the request is dropped, so its sender's timer reports it. One pair of
  * ops serves both paths; the region's size says which slice a widget
  * takes.
