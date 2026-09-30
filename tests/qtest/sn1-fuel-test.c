@@ -1084,20 +1084,21 @@ static void test_fuel_requires_l1_type_code(const void *data)
 static void test_fuel_rejects_out_of_range_l1_type_code(const void *data)
 {
     const char *prom = data;
+    const char *args[] = {
+        qtest_qemu_binary(NULL), "-M", "fuel,fuel-board-id-word=0x4abc,"
+        "fuel-ioc3-subsystem-id=0xc30a,"
+        "fuel-l1-type-code=0x100,fuel-bedrock-revision=0x2",
+        "-cpu", "R14000", "-smp", "1", "-m", "512M", "-bios", prom, "-S",
+        "-display", "none", "-qtest", "stdio", "-accel", "qtest", NULL
+    };
+    g_autofree char *error_output = NULL;
+    int wait_status = 0;
 
-    if (!g_test_subprocess()) {
-        g_test_trap_subprocess(NULL, 0, 0);
-        g_test_trap_assert_failed();
-        g_test_trap_assert_stderr("*fuel-l1-type-code*uint8*");
-        return;
-    }
-    g_autofree char *quoted = g_shell_quote(prom);
-    QTestState *qts = qtest_initf("-M fuel,fuel-board-id-word=0x4abc,"
-                                  "fuel-ioc3-subsystem-id=0xc30a,"
-                                  "fuel-l1-type-code=0x100,fuel-bedrock-revision=0x2 "
-                                  "-cpu R14000 -smp 1 -m 512M -bios %s -S",
-                                  quoted);
-    qtest_quit(qts);
+    g_assert_true(g_spawn_sync(NULL, (char **)args, NULL, 0, NULL, NULL,
+                              NULL, &error_output, &wait_status, NULL));
+    g_assert_false(g_spawn_check_exit_status(wait_status, NULL));
+    g_assert_true(g_pattern_match_simple("*fuel-l1-type-code*uint8*",
+                                        error_output));
 }
 
 static void test_fuel_rejects_zero_l1_type_code(const void *data)
