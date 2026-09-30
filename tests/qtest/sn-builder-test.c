@@ -1636,8 +1636,7 @@ static void test_bedrock_topology_accepts_two_nodes(const void *data)
 #define NASID_TEST_BOARD_ID_LOCAL \
     (NASID_TEST_HUB_LOCAL_REGISTERS + UINT64_C(0x4000000))
 #define NASID_TEST_BOARD_ID_VALUE UINT64_C(0x8001)
-/* M mode's node field sits at physical address bit 33
- * (ip35-address-map.md). */
+/* M mode's node field starts at physical address bit 33. */
 #define NASID_TEST_NODE_ADDRESS_SHIFT 33
 
 static bool nasid_test_cpu_readq(QTestState *qts, unsigned int cpu,

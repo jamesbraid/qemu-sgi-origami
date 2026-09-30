@@ -188,8 +188,7 @@ class DragMouseTest(unittest.TestCase):
             self.assertLessEqual(abs(int(sx)), 30)
 
     def test_default_step_is_tighter_than_the_plain_move_default(self):
-        # psitech-rad4.md's resize finding: a held-button drag needs
-        # smaller steps than an ordinary cursor move.
+        # A held-button drag needs smaller steps than an ordinary move.
         self.assertLess(DRAG_MOVE_STEP_MAX, MOUSE_MOVE_STEP_MAX)
 
     @patch('lib_input.time.sleep')

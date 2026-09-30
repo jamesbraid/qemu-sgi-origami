@@ -565,7 +565,7 @@ static uint8_t nic_read_byte(NIC *nic)
     return value;
 }
 
-/* Separate bitwise oracles from the DS2505 production CRC helpers. */
+/* Check CRC bits independently of the DS2505 production helpers. */
 static uint16_t nic_crc16(uint16_t crc, uint8_t byte)
 {
     for (unsigned int bit = 0; bit < 8; bit++) {
