@@ -12189,6 +12189,37 @@ static void test_public_fifo_unsupported(void)
     mgras_assert_width_error(qts, MGRAS_REG(0x020400));
 }
 
+static void test_public_fifo_unsupported_execute_selectors(void)
+{
+    static const struct {
+        uint64_t packet;
+        uint32_t mode;
+    } cases[] = {
+        { 0x001d410400000d00ULL, 0 },
+        { 0x001c4004001f002bULL, 0 },
+        { 0x001c41040020002bULL, 0 },
+        { 0x001c47040020002bULL, 0x00100000 },
+        { 0x001c7004ff000000ULL, 0x10400008 },
+        { 0x001c7104ff000000ULL, 0x10400008 },
+        { 0x001c7104ff000000ULL, 0x10c00000 },
+    };
+
+    for (unsigned i = 0; i < G_N_ELEMENTS(cases); i++) {
+        mgras_reset();
+        mgras_public_setup(qts, false);
+        mgras_public_rect(qts, 31, 43, 2, 1, false);
+        mgras_public_write(qts, 0x110, cases[i].mode, false);
+        mgras_public_write(qts, 0x40, (31 << 16) | 43, false);
+        mgras_public_write(qts, 0x70, 0xff000000, false);
+        qtest_writeq(qts, MGRAS_REG(0x020400), cases[i].packet);
+        for (unsigned y = 42; y <= 44; y++) {
+            for (unsigned x = 30; x <= 33; x++) {
+                g_assert_cmphex(mgras_test_pixel(qts, x, y), ==, 0);
+            }
+        }
+    }
+}
+
 static void test_public_fifo_glyph_widths(void)
 {
     static const unsigned widths[] = { 1, 8, 9, 16 };
@@ -16559,6 +16590,9 @@ int main(int argc, char **argv)
                    test_public_fifo_glyph_wide_migration);
     qtest_add_func("sn0/origin2000/mgras/public-fifo/glyph-narrow-migration",
                    test_public_fifo_glyph_narrow_migration);
+    qtest_add_func("sn0/origin2000/mgras/public-fifo/"
+                   "unsupported-execute-selectors",
+                   test_public_fifo_unsupported_execute_selectors);
     qtest_add_func("sn0/origin2000/mgras/public-fifo/glyph-widths",
                    test_public_fifo_glyph_widths);
     qtest_add_func("sn0/origin2000/mgras/public-fifo/unsupported",

@@ -1557,11 +1557,6 @@ void sgi_mgras_raster_fifo_write(SGIMgrasState *s, uint64_t word)
     uint32_t reg = (word >> 40) & 0x1ff;
     bool execute = word & 0x0004000000000000ULL;
     unsigned x0, y0, x1, y1;
-    SGIMgrasRasterSubmission submission = {
-        .form = SGI_MGRAS_RASTER_FIFO,
-        .reg = reg,
-    };
-
     if ((word & ~variable) != 0x0018000400000000ULL) {
         qemu_log_mask(LOG_UNIMP, "sgi-mgras: unsupported normal-FIFO "
                       "packet 0x%016" PRIx64 "\n", word);
@@ -1584,7 +1579,9 @@ void sgi_mgras_raster_fifo_write(SGIMgrasState *s, uint64_t word)
                s->rss[MGRAS_RSS_FILLMODE] == MGRAS_FILLMODE_PUBLIC_BITMAP) {
         mgras_public_char_execute(s, reg);
     } else {
-        mgras_raster_command_execute(s, &submission);
+        qemu_log_mask(LOG_UNIMP, "sgi-mgras: unsupported normal-FIFO "
+                      "execute, register 0x%x, fillmode 0x%x\n", reg,
+                      s->rss[MGRAS_RSS_FILLMODE]);
     }
 }
 
