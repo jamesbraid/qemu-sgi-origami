@@ -974,6 +974,7 @@ static int ohci_service_td(OHCIState *ohci, struct ohci_ed *ed)
                 if (ohci_copy_td(ohci, &td, ohci->usb_buf, pktlen,
                                  DMA_DIRECTION_TO_DEVICE)) {
                     ohci_die(ohci);
+                    return 1;
                 }
             }
         }
@@ -1027,6 +1028,7 @@ static int ohci_service_td(OHCIState *ohci, struct ohci_ed *ed)
             if (ohci_copy_td(ohci, &td, ohci->usb_buf, ret,
                              DMA_DIRECTION_FROM_DEVICE)) {
                 ohci_die(ohci);
+                return 1;
             }
             ohci_td_pkt("IN", ohci->usb_buf, pktlen);
         } else {
@@ -1183,6 +1185,9 @@ static int ohci_service_ed_list(OHCIState *ohci, uint32_t head)
             }
         }
 
+        if (ohci->intr_status & OHCI_INTR_UE) {
+            return active;
+        }
         if (ohci_put_ed(ohci, cur, &ed)) {
             ohci_die(ohci);
             return 0;
@@ -1208,18 +1213,31 @@ static void ohci_sof(OHCIState *ohci)
 /* Process Control and Bulk lists. */
 static void ohci_process_lists(OHCIState *ohci)
 {
+    int active;
+
+    if (ohci->intr_status & OHCI_INTR_UE) {
+        return;
+    }
     if ((ohci->ctl & OHCI_CTL_CLE) && (ohci->status & OHCI_STATUS_CLF)) {
         if (ohci->ctrl_cur && ohci->ctrl_cur != ohci->ctrl_head) {
             trace_usb_ohci_process_lists(ohci->ctrl_head, ohci->ctrl_cur);
         }
-        if (!ohci_service_ed_list(ohci, ohci->ctrl_head)) {
+        active = ohci_service_ed_list(ohci, ohci->ctrl_head);
+        if (ohci->intr_status & OHCI_INTR_UE) {
+            return;
+        }
+        if (!active) {
             ohci->ctrl_cur = 0;
             ohci->status &= ~OHCI_STATUS_CLF;
         }
     }
 
     if ((ohci->ctl & OHCI_CTL_BLE) && (ohci->status & OHCI_STATUS_BLF)) {
-        if (!ohci_service_ed_list(ohci, ohci->bulk_head)) {
+        active = ohci_service_ed_list(ohci, ohci->bulk_head);
+        if (ohci->intr_status & OHCI_INTR_UE) {
+            return;
+        }
+        if (!active) {
             ohci->bulk_cur = 0;
             ohci->status &= ~OHCI_STATUS_BLF;
         }
@@ -1244,6 +1262,10 @@ static void ohci_frame_boundary(void *opaque)
 
         n = ohci->frame_number & 0x1f;
         ohci_service_ed_list(ohci, le32_to_cpu(hcca.intr[n]));
+    }
+
+    if (ohci->intr_status & OHCI_INTR_UE) {
+        return;
     }
 
     /* Cancel all pending packets if either of the lists has been disabled. */
