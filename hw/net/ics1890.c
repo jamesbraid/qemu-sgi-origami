@@ -141,6 +141,10 @@ uint16_t ics1890_read(ICS1890State *s, unsigned reg)
     }
     val = s->regs[reg];
     switch (reg) {
+    case ICS_ECR:
+        /* RevG p29 permits either value for this reserved read bit. */
+        val |= 0x0010;
+        break;
     case MII_BMSR:
         val |= s->autoneg_done ? MII_BMSR_AN_COMP : 0;
         if (ics1890_live_link(s) && !(s->link_low & 1)) {
