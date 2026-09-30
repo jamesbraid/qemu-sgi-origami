@@ -72,7 +72,7 @@ static void assert_core(QTestState *qts, bool octane2)
     uint32_t value;
 
     g_assert_cmphex(qtest_readl(qts, HEART_WIDGET + 4), ==,
-                    octane2 ? 0x6c00106c : 0x4c00106c);
+                    octane2 ? 0x6c00106d : 0x4c00106d);
 
     g_assert_cmpuint(qtest_readl_tx(qts, BRIDGE + 4, &value), ==, 0);
 }

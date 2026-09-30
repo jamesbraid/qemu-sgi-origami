@@ -489,9 +489,10 @@ static void octane_init_common(MachineState *machine, bool octane2)
         qdev_prop_set_uint64(heart, name, s->bank_size[bank]);
     }
     qdev_prop_set_uint8(heart, "widget-revision", octane2 ? 6 : 4);
+    qdev_prop_set_uint64(heart, "widget-id-64",
+                        octane2 ? UINT64_C(0x000000006c00106d) :
+                        UINT64_C(0x000000004c00106d));
     if (octane2) {
-        qdev_prop_set_uint64(heart, "widget-id-64",
-                            UINT64_C(0x000000006c00106d));
         /* This board returned 0x60 for one PROM-time 64-bit status read. */
         qdev_prop_set_bit(heart, "widget-status-f-measured", true);
     }
