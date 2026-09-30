@@ -1151,19 +1151,21 @@ static char *sgi_machine_xio_board_name(const SGIModelTopology *t,
         if (board->value != record && board->value->label &&
             g_str_equal(board->value->label, record->label) &&
             board->value->module_index != record->module_index) {
-            return g_strdup_printf("m%u-%s", record->module_index,
-                                   record->label);
+            return g_strdelimit(g_strdup_printf("m%u-%s",
+                                               record->module_index,
+                                               record->label), " ", '-');
         }
     }
     for (slot = t->xio_slots; slot; slot = slot->next) {
         if (g_str_equal(slot->value->label, record->label) &&
             sgi_machine_xio_slot_module(t, slot->value) !=
             record->module_index) {
-            return g_strdup_printf("m%u-%s", record->module_index,
-                                   record->label);
+            return g_strdelimit(g_strdup_printf("m%u-%s",
+                                               record->module_index,
+                                               record->label), " ", '-');
         }
     }
-    return g_strdup(record->label);
+    return g_strdelimit(g_strdup(record->label), " ", '-');
 }
 
 /*
@@ -2544,6 +2546,10 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
         size_t attachment_count;
 
         uint64_t node_ram = machine->ram_size / node_count;
+        size_t bedrock_board_capacity = sgi_machine_topology_io_board_count(t);
+
+        s->io_boards = g_new0(SGIXioBoardState *, bedrock_board_capacity);
+        s->board_links = g_new0(SGIXioLink, bedrock_board_capacity);
 
         attachments = sgi_model_xio_attachment_array(t->xio_attachments,
                                                      &attachment_count);

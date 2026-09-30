@@ -23,6 +23,9 @@ sgi_kona_pio_write(int cpu, uint64_t offset, uint64_t value, unsigned int size) 
 # consumes them.
 sgi_mgras_dma_chunk(uint64_t sequence, uint64_t addr, unsigned len, const char *hex) "seq %" PRIu64 " addr 0x%" PRIx64 " len %u hex %s"
 
+# sgi-odyssey.c
+sgi_odyssey_mmio(uint64_t offset, unsigned size, uint64_t value, bool write) "offset 0x%" PRIx64 " size %u value 0x%" PRIx64 " write=%d"
+
 # allwinner-cpucfg.c
 allwinner_cpucfg_cpu_reset(uint8_t cpu_id, uint32_t reset_addr) "id %u, reset_addr 0x%" PRIx32
 allwinner_cpucfg_read(uint64_t offset, uint64_t data, unsigned size) "offset 0x%" PRIx64 " data 0x%" PRIx64 " size %" PRIu32
