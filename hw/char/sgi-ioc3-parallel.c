@@ -19,14 +19,13 @@
  * form a register file that the driver writes and reads back.
  *
  * No peripheral is modelled. What is on the far side of the cable is a
- * character device the board hands the port,
- * so what a guest prints comes out somewhere a host can read it, and a port
- * with no backend swallows the bytes
- * rather than stalling. Either way nothing holds a byte up: the transmit FIFO
- * never fills, the status register
- * reports an empty cable, and the DMA engine retires a context within the
- * register write that arms it, so its busy
- * flag is never observable.
+ * character device the board hands the port, so what a guest prints comes
+ * out somewhere a host can read it, and a port with no backend swallows the
+ * bytes rather than stalling. In output modes nothing holds a byte up, so
+ * the transmit FIFO stays empty. Test mode tracks occupancy only when an
+ * explicit depth is configured. The status register reports an empty cable,
+ * and the DMA engine retires a context within the register write that arms
+ * it, so its busy flag is never observable.
  *
  * A byte-wide cable with no peripheral has no way to hand a byte back, so the
  * read direction moves nothing and its
@@ -315,12 +314,14 @@ static uint64_t sgi_ioc3_parallel_ecp_read(void *opaque, hwaddr addr,
         if (sgi_ioc3_parallel_mode(s) == SGI_IOC3_PAR_MODE_CONFIG) {
             return s->config_a;
         }
+        if (sgi_ioc3_parallel_mode(s) == SGI_IOC3_PAR_MODE_TEST &&
+            !fifo8_is_empty(&s->test_fifo)) {
+            return fifo8_pop(&s->test_fifo);
+        }
         /*
-         * The FIFO in every other mode, and it is always empty: nothing on
-         * the cable ever hands a byte back. The
-         * shipping driver is output-only, so a read here is software reading
-         * a queue its own status register just
-         * told it was empty.
+         * No peripheral hands a byte back in output modes. The shipping
+         * driver is output-only, so a read here is software reading a queue
+         * its own status register just told it was empty.
          */
         qemu_log_mask(LOG_GUEST_ERROR,
                       "sgi-ioc3-parallel: read of the empty FIFO\n");
@@ -330,7 +331,18 @@ static uint64_t sgi_ioc3_parallel_ecp_read(void *opaque, hwaddr addr,
         return s->config_b;
 
     case SGI_IOC3_PAR_ECP_EXTENDED:
-        /* Empty and not full, over software's own control bits. */
+        if (sgi_ioc3_parallel_mode(s) == SGI_IOC3_PAR_MODE_TEST) {
+            uint8_t status = s->extended;
+
+            if (fifo8_is_empty(&s->test_fifo)) {
+                status |= SGI_IOC3_PAR_ECR_FIFO_EMPTY;
+            }
+            if (s->fifo_depth && fifo8_is_full(&s->test_fifo)) {
+                status |= SGI_IOC3_PAR_ECR_FIFO_FULL;
+            }
+            return status;
+        }
+        /* Other modes have no modeled peripheral to hold up the FIFO. */
         return s->extended | SGI_IOC3_PAR_ECR_FIFO_EMPTY;
 
     default:
@@ -372,6 +384,15 @@ static void sgi_ioc3_parallel_ecp_write(void *opaque, hwaddr addr,
             s->config_a = val;
             return;
         }
+        if (sgi_ioc3_parallel_mode(s) == SGI_IOC3_PAR_MODE_TEST) {
+            if (s->fifo_depth && !fifo8_is_full(&s->test_fifo)) {
+                fifo8_push(&s->test_fifo, val);
+            } else if (s->fifo_depth) {
+                qemu_log_mask(LOG_UNIMP,
+                              "sgi-ioc3-parallel: write to a full test FIFO\n");
+            }
+            return;
+        }
         /*
          * The byte goes out on the data lines, to whatever the board put on
          * the far side of the cable. Nothing
@@ -401,6 +422,10 @@ static void sgi_ioc3_parallel_ecp_write(void *opaque, hwaddr addr,
     case SGI_IOC3_PAR_ECP_EXTENDED:
         sgi_ioc3_parallel_set_service(s, false);
         s->extended = val & SGI_IOC3_PAR_ECR_STORED;
+        if (sgi_ioc3_parallel_mode(s) == SGI_IOC3_PAR_MODE_COMPAT ||
+            sgi_ioc3_parallel_mode(s) == SGI_IOC3_PAR_MODE_BYTE) {
+            fifo8_reset(&s->test_fifo);
+        }
         sgi_ioc3_parallel_dma_run(s);
         return;
 
@@ -454,6 +479,7 @@ static void sgi_ioc3_parallel_realize(DeviceState *dev, Error **errp)
         error_setg(errp, TYPE_SGI_IOC3_PARALLEL " 'dma-memory' link not set");
         return;
     }
+    fifo8_create(&s->test_fifo, s->fifo_depth);
     address_space_init(&s->dma_as, s->dma_mr, "sgi-ioc3-parallel-dma");
 }
 
@@ -462,6 +488,7 @@ static void sgi_ioc3_parallel_unrealize(DeviceState *dev)
     SGIIOC3ParallelState *s = SGI_IOC3_PARALLEL(dev);
 
     address_space_destroy(&s->dma_as);
+    fifo8_destroy(&s->test_fifo);
 }
 
 /*
@@ -490,6 +517,7 @@ static void sgi_ioc3_parallel_reset_hold(Object *obj, ResetType type)
     s->config_a = 0;
     s->config_b = 0;
     s->extended = 0;
+    fifo8_reset(&s->test_fifo);
 
     sgi_ioc3_parallel_set_service(s, false);
 }
@@ -504,13 +532,23 @@ static int sgi_ioc3_parallel_post_load(void *opaque, int version_id)
 {
     SGIIOC3ParallelState *s = opaque;
 
+    if (s->test_fifo.num > s->test_fifo.capacity ||
+        (s->fifo_depth ? s->test_fifo.head >= s->fifo_depth :
+         s->test_fifo.head)) {
+        return -EINVAL;
+    }
     qemu_set_irq(s->irq[SGI_IOC3_PAR_IRQ_SERVICE], s->service);
     return 0;
 }
 
+static bool sgi_ioc3_parallel_has_test_fifo(void *opaque, int version_id)
+{
+    return version_id >= 3;
+}
+
 static const VMStateDescription vmstate_sgi_ioc3_parallel = {
     .name = "sgi-ioc3-parallel",
-    .version_id = 2,
+    .version_id = 3,
     .minimum_version_id = 2,
     .post_load = sgi_ioc3_parallel_post_load,
     .fields = (const VMStateField[]) {
@@ -526,6 +564,9 @@ static const VMStateDescription vmstate_sgi_ioc3_parallel = {
         VMSTATE_UINT8(config_a, SGIIOC3ParallelState),
         VMSTATE_UINT8(config_b, SGIIOC3ParallelState),
         VMSTATE_UINT8(extended, SGIIOC3ParallelState),
+        VMSTATE_UINT16_EQUAL_V(fifo_depth, SGIIOC3ParallelState, 3),
+        VMSTATE_FIFO8_TEST(test_fifo, SGIIOC3ParallelState,
+                           sgi_ioc3_parallel_has_test_fifo),
         VMSTATE_BOOL(service, SGIIOC3ParallelState),
         VMSTATE_END_OF_LIST()
     }
@@ -533,6 +574,7 @@ static const VMStateDescription vmstate_sgi_ioc3_parallel = {
 
 static const Property sgi_ioc3_parallel_properties[] = {
     DEFINE_PROP_CHR("chardev", SGIIOC3ParallelState, chr),
+    DEFINE_PROP_UINT16("fifo-depth", SGIIOC3ParallelState, fifo_depth, 0),
     DEFINE_PROP_LINK("dma-memory", SGIIOC3ParallelState, dma_mr,
                      TYPE_MEMORY_REGION, MemoryRegion *),
 };

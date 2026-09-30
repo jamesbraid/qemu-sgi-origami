@@ -123,6 +123,7 @@ static void test_ioc3_attach(QTestState *qts)
 #define MODE_BYTE         1
 #define MODE_COMPAT_FIFO  2    /* what the driver selects for itself */
 #define MODE_ECP          3
+#define MODE_TEST         6
 #define MODE_CONFIG       7
 
 /*
@@ -213,7 +214,8 @@ static void test_the_extended_control_holds_its_control_bits(const void *data)
 static void test_the_mode_field_holds_each_encoding(const void *data)
 {
     static const uint8_t modes[] = {
-        MODE_COMPAT, MODE_BYTE, MODE_COMPAT_FIFO, MODE_ECP, MODE_CONFIG,
+        MODE_COMPAT, MODE_BYTE, MODE_COMPAT_FIFO, MODE_ECP, MODE_TEST,
+        MODE_CONFIG,
     };
     QTestState *qts = qtest_init("-M origin200");
     unsigned int i;
@@ -253,6 +255,153 @@ static void test_the_transmit_fifo_never_fills(const void *data)
                     ECR_MODE(MODE_COMPAT_FIFO) | ECR_FIFO_EMPTY);
 
     qtest_quit(qts);
+}
+
+static void test_the_test_mode_fifo_reports_occupancy(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200 "
+                                 "-global sgi-ioc3-parallel.fifo-depth=4");
+    unsigned int i;
+
+    sn0_ioc3_attach(qts);
+    qtest_writeb(qts, ECP_EXTENDED, ECR_MODE(MODE_TEST));
+    g_assert_cmphex(qtest_readb(qts, ECP_EXTENDED), ==,
+                    ECR_MODE(MODE_TEST) | ECR_FIFO_EMPTY);
+
+    for (i = 0; i < 4; i++) {
+        qtest_writeb(qts, ECP_FIFO, 0x10 + i);
+        g_assert_cmphex(qtest_readb(qts, ECP_EXTENDED), ==,
+                        ECR_MODE(MODE_TEST) |
+                        (i == 3 ? ECR_FIFO_FULL : 0));
+    }
+
+    qtest_writeb(qts, ECP_FIFO, 0xff);
+    g_assert_cmphex(qtest_readb(qts, ECP_EXTENDED), ==,
+                    ECR_MODE(MODE_TEST) | ECR_FIFO_FULL);
+    g_assert_cmphex(qtest_readb(qts, ECP_FIFO), ==, 0x10);
+    g_assert_cmphex(qtest_readb(qts, ECP_EXTENDED), ==,
+                    ECR_MODE(MODE_TEST));
+    qtest_writeb(qts, ECP_FIFO, 0x44);
+    g_assert_cmphex(qtest_readb(qts, ECP_EXTENDED), ==,
+                    ECR_MODE(MODE_TEST) | ECR_FIFO_FULL);
+    for (i = 0; i < 3; i++) {
+        g_assert_cmphex(qtest_readb(qts, ECP_FIFO), ==, 0x11 + i);
+    }
+    g_assert_cmphex(qtest_readb(qts, ECP_FIFO), ==, 0x44);
+    g_assert_cmphex(qtest_readb(qts, ECP_EXTENDED), ==,
+                    ECR_MODE(MODE_TEST) | ECR_FIFO_EMPTY);
+
+    for (i = 0; i < 4; i++) {
+        qtest_writeb(qts, ECP_FIFO, i);
+    }
+    qtest_writeb(qts, ECP_FIFO, 0xff);
+    g_assert_cmphex(qtest_readb(qts, ECP_EXTENDED), ==,
+                    ECR_MODE(MODE_TEST) | ECR_FIFO_FULL);
+
+    /* Linux uses SPP and PS/2 mode writes to reset the FIFO. */
+    qtest_writeb(qts, ECP_EXTENDED, ECR_MODE(MODE_COMPAT));
+    g_assert_cmphex(qtest_readb(qts, ECP_EXTENDED), ==, ECR_FIFO_EMPTY);
+    qtest_writeb(qts, ECP_EXTENDED, ECR_MODE(MODE_TEST));
+    g_assert_cmphex(qtest_readb(qts, ECP_EXTENDED), ==,
+                    ECR_MODE(MODE_TEST) | ECR_FIFO_EMPTY);
+    qtest_writeb(qts, ECP_FIFO, 0x55);
+    g_assert_cmphex(qtest_readb(qts, ECP_FIFO), ==, 0x55);
+
+    for (i = 0; i < 4; i++) {
+        qtest_writeb(qts, ECP_FIFO, i);
+    }
+    qtest_writeb(qts, ECP_EXTENDED, ECR_MODE(MODE_BYTE));
+    g_assert_cmphex(qtest_readb(qts, ECP_EXTENDED), ==,
+                    ECR_MODE(MODE_BYTE) | ECR_FIFO_EMPTY);
+    qtest_writeb(qts, ECP_EXTENDED, ECR_MODE(MODE_TEST));
+    g_assert_cmphex(qtest_readb(qts, ECP_EXTENDED), ==,
+                    ECR_MODE(MODE_TEST) | ECR_FIFO_EMPTY);
+    qtest_writeb(qts, ECP_FIFO, 0x66);
+    g_assert_cmphex(qtest_readb(qts, ECP_FIFO), ==, 0x66);
+
+    qtest_system_reset(qts);
+    sn0_ioc3_attach(qts);
+    g_assert_cmphex(qtest_readb(qts, ECP_EXTENDED), ==, ECR_FIFO_EMPTY);
+
+    qtest_quit(qts);
+}
+
+static void test_unconfigured_test_fifo_stays_empty(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+    unsigned int i;
+
+    sn0_ioc3_attach(qts);
+    qtest_writeb(qts, ECP_EXTENDED, ECR_MODE(MODE_TEST));
+    for (i = 0; i < 4; i++) {
+        qtest_writeb(qts, ECP_FIFO, i);
+    }
+    g_assert_cmphex(qtest_readb(qts, ECP_EXTENDED), ==,
+                    ECR_MODE(MODE_TEST) | ECR_FIFO_EMPTY);
+
+    qtest_quit(qts);
+}
+
+static void test_test_fifo_occupancy_survives_savevm_loadvm(const void *data)
+{
+    g_autofree gchar *tmpdir = NULL;
+    g_autofree gchar *image = NULL;
+    g_autofree gchar *drive = NULL;
+    g_autofree gchar *args = NULL;
+    GError *err = NULL;
+    QTestState *qts;
+    char *hmp_ret;
+
+    if (!have_qemu_img()) {
+        g_test_skip("QTEST_QEMU_IMG not set; cannot create snapshot storage");
+        return;
+    }
+
+    tmpdir = g_dir_make_tmp("sn0-parallel-fifo-XXXXXX", &err);
+    g_assert_no_error(err);
+    image = g_build_filename(tmpdir, "state.qcow2", NULL);
+    g_assert(mkimg(image, "qcow2", 128));
+    drive = g_strdup_printf(" -drive file=%s,format=qcow2,if=none", image);
+    args = g_strdup_printf("-M origin200 -global "
+                           "sgi-ioc3-parallel.fifo-depth=4%s", drive);
+    qts = qtest_init(args);
+    sn0_ioc3_attach(qts);
+    qtest_writeb(qts, ECP_EXTENDED, ECR_MODE(MODE_TEST));
+    qtest_writeb(qts, ECP_FIFO, 0xa5);
+    qtest_writeb(qts, ECP_FIFO, 0x5a);
+    g_assert_cmphex(qtest_readb(qts, ECP_FIFO), ==, 0xa5);
+    hmp_ret = qtest_hmp(qts, "savevm fifo-occupancy");
+    g_assert_nonnull(hmp_ret);
+    g_assert_null(strstr(hmp_ret, "Error:"));
+    g_free(hmp_ret);
+    qtest_quit(qts);
+
+    g_free(args);
+    args = g_strdup_printf("-M origin200 -global "
+                           "sgi-ioc3-parallel.fifo-depth=4%s "
+                           "-loadvm fifo-occupancy", drive);
+    qts = qtest_init(args);
+    sn0_ioc3_attach(qts);
+    g_assert_cmphex(qtest_readb(qts, ECP_EXTENDED), ==,
+                    ECR_MODE(MODE_TEST));
+    g_assert_cmphex(qtest_readb(qts, ECP_FIFO), ==, 0x5a);
+    g_assert_cmphex(qtest_readb(qts, ECP_EXTENDED), ==,
+                    ECR_MODE(MODE_TEST) | ECR_FIFO_EMPTY);
+
+    qtest_quit(qts);
+
+    g_free(args);
+    args = g_strdup_printf("-M origin200 -global "
+                           "sgi-ioc3-parallel.fifo-depth=3%s", drive);
+    qts = qtest_init(args);
+    hmp_ret = qtest_hmp(qts, "loadvm fifo-occupancy");
+    g_assert_nonnull(hmp_ret);
+    g_assert_nonnull(strstr(hmp_ret, "Error:"));
+    g_free(hmp_ret);
+    qtest_quit(qts);
+
+    g_assert_cmpint(g_unlink(image), ==, 0);
+    g_assert_cmpint(g_rmdir(tmpdir), ==, 0);
 }
 
 /* The eight data lines, which software also drives during negotiation. */
@@ -1027,6 +1176,12 @@ int main(int argc, char **argv)
                         NULL, test_the_mode_field_holds_each_encoding);
     qtest_add_data_func("sn0/ioc3/parallel-transmit-fifo-never-fills", NULL,
                         test_the_transmit_fifo_never_fills);
+    qtest_add_data_func("sn0/ioc3/parallel-test-mode-fifo-occupancy", NULL,
+                        test_the_test_mode_fifo_reports_occupancy);
+    qtest_add_data_func("sn0/ioc3/parallel-test-fifo-default-depth", NULL,
+                        test_unconfigured_test_fifo_stays_empty);
+    qtest_add_data_func("sn0/ioc3/parallel-test-fifo-savevm-loadvm", NULL,
+                        test_test_fifo_occupancy_survives_savevm_loadvm);
     qtest_add_data_func("sn0/ioc3/parallel-data-register-holds-a-byte", NULL,
                         test_the_data_register_holds_a_byte);
     qtest_add_data_func("sn0/ioc3/parallel-status-reports-an-empty-cable",
