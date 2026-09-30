@@ -9,6 +9,7 @@
 #define HW_RTC_DS1685_H
 
 #include "hw/core/sysbus.h"
+#include "system/runstate.h"
 #include "qom/object.h"
 
 /*
@@ -34,6 +35,10 @@ OBJECT_DECLARE_SIMPLE_TYPE(DS1685State, DS1685)
 #define DS1685_COMMON_SIZE      0x40
 #define DS1685_UPPER_SIZE       0x40
 #define DS1685_EXTRAM_SIZE      0x80
+#define DS1685_PAYLOAD_SIZE     0x140
+#define DS1685_IMAGE_SIZE       0x200
+#define DS1685_CLOCK_REF_BYTES  24
+#define DS1685_CLOCK_REF_MAGIC  "DS168RF1"
 
 /* Common to both banks. */
 #define DS1685_SECONDS          0x00
@@ -144,6 +149,16 @@ struct DS1685State {
 
     /* Guest-set time as an offset from the host clock, in seconds. */
     int64_t time_offset;
+    int64_t held_seconds;
+    bool counter_held;
+
+    BlockBackend *blk;
+    BlockBackend *clock_blk;
+    VMChangeStateEntry *vmstate_change;
+    QEMUBH *save_bh;
+    bool incoming;
+    bool load_pending;
+    bool storage_failed;
 
     /*
      * The once-a-second transfer into the visible bytes, and the deadline it

@@ -1605,6 +1605,12 @@ static void sgi_ioc3_realize(PCIDevice *dev, Error **errp)
         return;
     }
 
+    if (s->board->timekeeper != SGI_IOC3_TIMEKEEPER_DS1685 &&
+        (s->ds1685.blk || s->ds1685.clock_blk)) {
+        error_setg(errp, "DS1685 backing requires a board with a DS1685");
+        return;
+    }
+
     if (s->onewire_serial & ~SGI_IOC3_ONEWIRE_SERIAL_MASK) {
         error_setg(errp, "onewire-serial 0x%" PRIx64
                    " does not fit in 48 bits", s->onewire_serial);
@@ -1853,8 +1859,8 @@ static void sgi_ioc3_realize(PCIDevice *dev, Error **errp)
      * On the chip's own bus, so a reset of the IOC3 reaches it. Whichever
      * clock this board does not fit is unparented rather than left realized
      * but unmapped, so it is absent from the object graph and from the
-     * migration stream too. The M48T35 alone is reached by an alias, so only
-     * its unparent needs one deleted first, same as ethernet above.
+     * migration stream too. Remove the backend aliases before unparenting
+     * their child, same as ethernet above.
      */
     if (s->board->timekeeper == SGI_IOC3_TIMEKEEPER_M48T35) {
         if (!qdev_realize(DEVICE(&s->rtc), BUS(&s->ioc3_bus), errp)) {
@@ -1884,6 +1890,8 @@ static void sgi_ioc3_realize(PCIDevice *dev, Error **errp)
                                     sysbus_mmio_get_region(
                                         SYS_BUS_DEVICE(&s->ds1685), 1));
     } else {
+        object_property_del(OBJECT(dev), "ds1685-drive");
+        object_property_del(OBJECT(dev), "ds1685-clock-drive");
         object_unparent(OBJECT(&s->ds1685));
     }
 
@@ -2023,6 +2031,10 @@ static void sgi_ioc3_init(Object *obj)
     object_initialize_child(obj, "ds1685", &s->ds1685, TYPE_DS1685);
 
     object_property_add_alias(obj, "nvram-drive", OBJECT(&s->rtc), "drive");
+    object_property_add_alias(obj, "ds1685-drive",
+                              OBJECT(&s->ds1685), "drive");
+    object_property_add_alias(obj, "ds1685-clock-drive",
+                              OBJECT(&s->ds1685), "clock-drive");
 }
 
 static void sgi_ioc3_finalize(Object *obj)

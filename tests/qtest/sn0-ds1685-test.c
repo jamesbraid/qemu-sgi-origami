@@ -10,9 +10,11 @@
  */
 
 #include "qemu/osdep.h"
+#include "qemu/bswap.h"
 #include "libqtest.h"
 #include "qobject/qdict.h"
 #include "sgi-migrate.h"
+#include "sgi-launch.h"
 #include "sgi-test.h"
 
 /* I/O space, and the bridge that carries both controllers. */
@@ -845,10 +847,739 @@ static void test_a_board_without_the_clock_still_migrates(const void *data)
 }
 
 
+static void test_volatile_counter_hold(const void *data)
+{
+    QTestState *qts = qtest_init(OCTANE_IOC3(SUBSYS_IP30)
+                                " -rtc base=2024-01-01T00:00:00,clock=vm");
+    uint8_t a;
+
+    octane_attach(qts);
+    qtest_clock_step(qts, 2 * 1000000000LL);
+    g_assert_cmpuint(reg_read(qts, R_SECONDS), ==, 2);
+    a = reg_read(qts, R_CTRL_A);
+    reg_write(qts, R_CTRL_A, a & ~A_DV1);
+    qtest_clock_step(qts, 10 * 1000000000LL);
+    g_assert_cmpuint(reg_read(qts, R_SECONDS), ==, 2);
+    reg_write(qts, R_CTRL_A, a);
+    qtest_clock_step(qts, 1000000000LL);
+    g_assert_cmpuint(reg_read(qts, R_SECONDS), ==, 3);
+    qtest_quit(qts);
+}
+
+
+static QTestState *start_with_store(const char *store, const char *clock,
+                                   const char *base)
+{
+    g_autofree char *clock_args = clock ?
+        g_strdup_printf(" -drive if=none,id=rtc-store-clock,file=%s,format=raw",
+                        clock) : g_strdup("");
+    QTestState *qts = qtest_initf(OCTANE_IOC3(SUBSYS_IP30)
+        ",ds1685-drive=rtc-store -rtc base=%s,clock=vm"
+        " -drive if=none,id=rtc-store,file=%s,format=raw"
+        "%s", base, store, clock_args);
+
+    octane_attach(qts);
+    return qts;
+}
+
+static void create_store(const char *store, const char *clock)
+{
+    char image[512] = { 0 };
+    char reference[24] = { 0 };
+
+    g_assert_true(g_file_set_contents(store, image, sizeof(image), NULL));
+    if (clock) {
+        g_assert_true(g_file_set_contents(clock, reference,
+                                          sizeof(reference), NULL));
+    }
+}
+
+static void set_calendar_2025(QTestState *qts)
+{
+    reg_write(qts, R_CTRL_B, B_SET | B_DM | B_24_12);
+    reg_write(qts, R_SECONDS, 10);
+    reg_write(qts, R_MINUTES, 0);
+    reg_write(qts, R_HOURS, 0);
+    reg_write(qts, R_WEEKDAY, 4);
+    reg_write(qts, R_DAY, 1);
+    reg_write(qts, R_MONTH, 1);
+    reg_write(qts, R_YEAR, 25);
+    select_bank(qts, 1);
+    reg_write(qts, R_CENTURY, 20);
+    reg_write(qts, R_CTRL_B, B_DM | B_24_12);
+}
+
+static void test_storage_process_restart(const void *data)
+{
+    g_autofree char *dir = g_dir_make_tmp("ds1685-store-XXXXXX", NULL);
+    g_autofree char *store = g_build_filename(dir, "rtc.raw", NULL);
+    g_autofree char *clock = g_build_filename(dir, "rtc.clock", NULL);
+    g_autofree char *image = NULL;
+    g_autofree char *reference = NULL;
+    gsize len;
+    QTestState *qts;
+
+    create_store(store, clock);
+    qts = start_with_store(store, clock, "2024-01-01T00:00:00");
+    set_calendar_2025(qts);
+    reg_write(qts, R_RAM_LOW, 0xa5);
+    select_bank(qts, 0);
+    reg_write(qts, 0x40, 0x5a);
+    select_bank(qts, 1);
+    reg_write(qts, R_EXTRAM_ADDR, 0x7f);
+    reg_write(qts, R_EXTRAM_DATA, 0x3c);
+    qtest_clock_step(qts, 2 * 1000000000LL);
+    qtest_quit(qts);
+
+    g_assert_true(g_file_get_contents(store, &image, &len, NULL));
+    g_assert_cmpuint(len, ==, 512);
+    g_assert_cmphex((uint8_t)image[0x0e], ==, 0xa5);
+    g_assert_cmphex((uint8_t)image[0x40], ==, 0x5a);
+    g_assert_cmphex((uint8_t)image[0x13f], ==, 0x3c);
+    g_assert_true(g_file_get_contents(clock, &reference, &len, NULL));
+    g_assert_cmpuint(len, ==, 24);
+    g_assert_cmpmem(reference, 8, "DS168RF1", 8);
+    g_assert_cmpint(ldq_le_p(reference + 8), ==, 1704067202);
+    g_assert_cmpint(ldq_le_p(reference + 16), ==, 1735689612);
+
+    qts = start_with_store(store, clock, "2024-01-01T00:00:12");
+    g_assert_cmpuint(reg_read(qts, R_SECONDS), ==, 22);
+    g_assert_cmpuint(reg_read(qts, R_YEAR), ==, 25);
+    g_assert_cmphex(reg_read(qts, R_RAM_LOW), ==, 0xa5);
+    g_assert_cmphex(reg_read(qts, R_CTRL_A) & A_DV0, ==, A_DV0);
+    g_assert_cmphex(reg_read(qts, R_EXTRAM_DATA), ==, 0x3c);
+    qtest_system_reset(qts);
+    octane_attach(qts);
+    g_assert_cmpuint(reg_read(qts, R_SECONDS), ==, 22);
+    g_assert_cmphex(reg_read(qts, R_RAM_LOW), ==, 0xa5);
+    qtest_quit(qts);
+    g_unlink(store);
+    g_unlink(clock);
+    g_rmdir(dir);
+}
+
+
+static void test_storage_rejects_backend(const void *data)
+{
+    const char *kind = data;
+    g_autofree char *dir = g_dir_make_tmp("ds1685-bad-XXXXXX", NULL);
+    g_autofree char *store = g_build_filename(dir, "rtc.raw", NULL);
+    g_autofree char *clock = g_build_filename(dir, "rtc.clock", NULL);
+    g_autofree char *config = g_build_filename(dir, "blkdebug.conf", NULL);
+    g_autofree char *drive = NULL;
+    g_autofree char *rtc = NULL;
+    char image[1024] = { 0 };
+    const char *message = "requires exactly 512";
+    const char *args[] = { qtest_qemu_binary(NULL), "-M", "origin200",
+        "-display", "none", "-qmp", "stdio", "-drive", NULL,
+        "-device", NULL, "-accel", "qtest", NULL };
+
+    create_store(store, clock);
+    if (!strcmp(kind, "empty") || !strcmp(kind, "oversize")) {
+        g_assert_true(g_file_set_contents(store, image,
+            !strcmp(kind, "empty") ? 0 : sizeof(image), NULL));
+    }
+    if (!strcmp(kind, "read-error")) {
+        g_assert_true(g_file_set_contents(config,
+            "[inject-error]\nevent = \"read_aio\"\n"
+            "errno = \"5\"\nonce = \"on\"\n", -1, NULL));
+        drive = g_strdup_printf("if=none,id=rtc-store,file=blkdebug:%s:%s,"
+                                 "format=raw", config, store);
+        message = "reading NVRAM image failed";
+    } else {
+        drive = g_strdup_printf("if=none,id=rtc-store,file=%s,format=raw%s",
+            store, !strcmp(kind, "readonly") ? ",readonly=on" : "");
+        if (!strcmp(kind, "readonly")) {
+            message = "read-only";
+        }
+    }
+    rtc = g_strdup_printf("sgi-ioc3,addr=3,subsystem-id=%s,%s=rtc-store",
+        !strcmp(kind, "wrong-board") ? SUBSYS_IP29 : SUBSYS_IP30,
+        !strcmp(kind, "orphan") ? "ds1685-clock-drive" : "ds1685-drive");
+    if (!strcmp(kind, "orphan")) {
+        message = "clock-drive requires drive";
+    } else if (!strcmp(kind, "wrong-board")) {
+        message = "requires a board with a DS1685";
+    }
+    args[8] = drive;
+    args[10] = rtc;
+    assert_launch_rejected(args, message);
+    g_unlink(store);
+    g_unlink(clock);
+    g_unlink(config);
+    g_rmdir(dir);
+}
+
+static void test_storage_write_error(const void *data)
+{
+    const char *kind = data;
+    g_autofree char *dir = NULL;
+    g_autofree char *store = NULL;
+    g_autofree char *clock = NULL;
+    g_autofree char *config = NULL;
+    g_autofree char *rules = NULL;
+
+    if (g_test_subprocess()) {
+        g_autofree char *fault = g_strdup_printf("blkdebug:%s:%s",
+            g_getenv("DS1685_ERROR_CONFIG"),
+            g_getenv("DS1685_ERROR_IMAGE"));
+        QTestState *qts = start_with_store(
+            strstr(kind, "main") ? fault : g_getenv("DS1685_MAIN"),
+            strstr(kind, "main") ? g_getenv("DS1685_CLOCK") : fault,
+            "2024-01-01T00:00:00");
+        g_autofree char *image = NULL;
+        g_autofree char *ref = NULL;
+        gsize len;
+
+        reg_write(qts, R_RAM_LOW, 0xa5);
+        g_assert_cmphex(reg_read(qts, R_RAM_LOW), ==, 0xa5);
+        g_assert_true(g_file_get_contents(g_getenv("DS1685_MAIN"),
+                                          &image, &len, NULL));
+        g_assert_cmphex((uint8_t)image[R_RAM_LOW], ==, 0xa5);
+        g_assert_true(g_file_get_contents(g_getenv("DS1685_CLOCK"),
+                                          &ref, &len, NULL));
+        g_assert_cmpmem(ref, 8, "DS168RF1", 8);
+        qtest_quit(qts);
+        return;
+    }
+    dir = g_dir_make_tmp("ds1685-error-XXXXXX", NULL);
+    store = g_build_filename(dir, "rtc.raw", NULL);
+    clock = g_build_filename(dir, "rtc.clock", NULL);
+    config = g_build_filename(dir, "blkdebug.conf", NULL);
+    create_store(store, clock);
+    rules = g_strdup_printf("[inject-error]\nevent = \"%s\"\n"
+        "errno = \"5\"\nonce = \"on\"\n",
+        strstr(kind, "write") ? "write_aio" : "flush_to_disk");
+    g_assert_true(g_file_set_contents(config, rules, -1, NULL));
+    g_setenv("DS1685_ERROR_CONFIG", config, true);
+    g_setenv("DS1685_ERROR_IMAGE", strstr(kind, "main") ? store : clock, true);
+    g_setenv("DS1685_MAIN", store, true);
+    g_setenv("DS1685_CLOCK", clock, true);
+    g_test_trap_subprocess(NULL, 15 * G_TIME_SPAN_SECOND, 0);
+    g_test_trap_assert_passed();
+    g_test_trap_assert_stderr("*ds1685:*failed*Input/output error*"
+                             "persistent storage recovered*");
+    g_unsetenv("DS1685_ERROR_CONFIG");
+    g_unsetenv("DS1685_ERROR_IMAGE");
+    g_unsetenv("DS1685_MAIN");
+    g_unsetenv("DS1685_CLOCK");
+    g_unlink(store);
+    g_unlink(clock);
+    g_unlink(config);
+    g_rmdir(dir);
+}
+
+static void test_storage_failed_incoming(const void *data)
+{
+    g_autofree char *dir = g_dir_make_tmp("ds1685-failed-XXXXXX", NULL);
+    g_autofree char *store = g_build_filename(dir, "rtc.raw", NULL);
+    g_autofree char *clock = g_build_filename(dir, "rtc.clock", NULL);
+    g_autofree char *source = g_build_filename(dir, "source.raw", NULL);
+    g_autofree char *source_clock = g_build_filename(dir, "source.clock", NULL);
+    g_autofree char *outgoing = NULL;
+    g_autofree char *contents = NULL;
+    g_autofree char *stream = g_build_filename(dir, "bad.stream", NULL);
+    g_autofree char *quoted = g_shell_quote(stream);
+    g_autofree char *uri = g_strdup_printf("exec:cat %s", quoted);
+    g_autofree char *stored = NULL;
+    char image[512] = { 0 }, reference[24];
+    gsize len;
+    QTestState *qts;
+
+    image[R_RAM_LOW] = 0x5a;
+    memset(reference, 0xa5, sizeof(reference));
+    g_assert_true(g_file_set_contents(store, image, sizeof(image), NULL));
+    g_assert_true(g_file_set_contents(clock, reference,
+                                      sizeof(reference), NULL));
+    if (data) {
+        QTestState *from;
+
+        create_store(source, source_clock);
+        from = start_with_store(source, source_clock, "2024-01-01T00:00:00");
+        reg_write(from, R_RAM_LOW, 0xa5);
+        outgoing = g_strdup_printf("exec:cat > %s", quoted);
+        sgi_migrate_stopped(from, outgoing);
+        qtest_quit(from);
+        g_assert_true(g_file_get_contents(stream, &contents, &len, NULL));
+        bool damaged = false;
+
+        /* Reject a footer after DS1685 post_load has accepted its fields. */
+        for (gsize i = 0; i + 14 < len && !damaged; i++) {
+            unsigned name_len = (uint8_t)contents[i + 5];
+            g_autofree char *name = NULL;
+
+            if ((uint8_t)contents[i] != 0x04 || i + 14 + name_len >= len) {
+                continue;
+            }
+            name = g_strndup(contents + i + 6, name_len);
+            if (!g_str_has_suffix(name, "ds1685")) {
+                continue;
+            }
+            for (gsize j = i + 14 + name_len; j + 5 <= len; j++) {
+                if ((uint8_t)contents[j] == 0x7e &&
+                    !memcmp(contents + j + 1, contents + i + 1, 4)) {
+                    contents[j] = 0;
+                    damaged = true;
+                    break;
+                }
+            }
+        }
+        g_assert_true(damaged);
+        g_assert_true(g_file_set_contents(stream, contents, len, NULL));
+    } else {
+        g_assert_true(g_file_set_contents(stream, "bad stream", -1, NULL));
+    }
+    qts = qtest_initf(OCTANE_IOC3(SUBSYS_IP30)
+        ",ds1685-drive=rtc-store -rtc base=2024-01-01T00:00:00,clock=vm"
+        " -drive if=none,id=rtc-store,file=%s,format=raw"
+        " -drive if=none,id=rtc-store-clock,file=%s,format=raw"
+        " -incoming defer", store, clock);
+    qtest_qmp_assert_success(qts,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s,"
+        "'exit-on-error':false}}", uri);
+    sgi_wait_migration_status(qts, "failed", 30);
+    if (data) {
+        octane_attach(qts);
+        g_assert_cmphex(reg_read(qts, R_RAM_LOW), ==, 0xa5);
+    }
+    qtest_quit(qts);
+    g_assert_true(g_file_get_contents(store, &stored, &len, NULL));
+    g_assert_cmpmem(stored, len, image, sizeof(image));
+    g_clear_pointer(&stored, g_free);
+    g_assert_true(g_file_get_contents(clock, &stored, &len, NULL));
+    g_assert_cmpmem(stored, len, reference, sizeof(reference));
+    g_unlink(store);
+    g_unlink(clock);
+    g_unlink(stream);
+    g_unlink(source);
+    g_unlink(source_clock);
+    g_rmdir(dir);
+}
+
+static void test_storage_snapshot(const void *data)
+{
+    g_autofree char *dir = g_dir_make_tmp("ds1685-snapshot-XXXXXX", NULL);
+    g_autofree char *store = g_build_filename(dir, "rtc.qcow2", NULL);
+    g_autofree char *clock = g_build_filename(dir, "rtc-clock.qcow2", NULL);
+    g_autofree char *reply = NULL;
+    QTestState *qts;
+
+    if (!have_qemu_img()) {
+        g_test_skip("QTEST_QEMU_IMG not set; cannot create snapshot storage");
+        return;
+    }
+    for (int i = 0; i < 2; i++) {
+        const char *args[] = { g_getenv("QTEST_QEMU_IMG"), "create", "-q",
+            "-f", "qcow2", i ? clock : store, "512", NULL };
+        int status;
+
+        g_assert_true(g_spawn_sync(NULL, (char **)args, NULL, 0,
+            NULL, NULL, NULL, NULL, &status, NULL));
+        g_assert_true(WIFEXITED(status));
+        g_assert_cmpint(WEXITSTATUS(status), ==, 0);
+    }
+    qts = qtest_initf(OCTANE_IOC3(SUBSYS_IP30)
+        ",ds1685-drive=rtc-store -rtc base=2024-01-01T00:00:00,clock=vm"
+        " -drive if=none,id=rtc-store,file=%s,format=qcow2"
+        " -drive if=none,id=rtc-store-clock,file=%s,format=qcow2",
+        store, clock);
+    octane_attach(qts);
+    set_calendar_2025(qts);
+    reg_write(qts, R_RAM_LOW, 0xa5);
+    reg_write(qts, R_CTRL_A, A_DV0);
+    reg_write(qts, R_CTRL_B, B_SET | B_DM | B_24_12);
+    reg_write(qts, R_SECONDS, 55);
+    reply = qtest_hmp(qts, "savevm rtc-state");
+    g_assert_nonnull(reply);
+    g_assert_null(strstr(reply, "Error"));
+    g_clear_pointer(&reply, g_free);
+    reg_write(qts, R_RAM_LOW, 0x5a);
+    reg_write(qts, R_SECONDS, 33);
+    reply = qtest_hmp(qts, "loadvm rtc-state");
+    g_assert_nonnull(reply);
+    g_assert_null(strstr(reply, "Error"));
+    g_assert_cmphex(reg_read(qts, R_RAM_LOW), ==, 0xa5);
+    g_assert_cmpuint(reg_read(qts, R_SECONDS), ==, 55);
+    g_assert_cmphex(reg_read(qts, R_CTRL_A) & A_DV1, ==, 0);
+    qtest_system_reset(qts);
+    octane_attach(qts);
+    reg_write(qts, R_CTRL_B, B_DM | B_24_12);
+    qtest_clock_step(qts, 1000000000LL);
+    g_assert_cmpuint(reg_read(qts, R_SECONDS), ==, 56);
+    qtest_quit(qts);
+    g_unlink(store);
+    g_unlink(clock);
+    g_rmdir(dir);
+}
+
+static void test_storage_octane_named_drive(const void *data)
+{
+    const char *machine = data;
+    g_autofree char *dir = g_dir_make_tmp("ds1685-octane-XXXXXX", NULL);
+    g_autofree char *store = g_build_filename(dir, "rtc.raw", NULL);
+    g_autofree char *clock = g_build_filename(dir, "rtc.clock", NULL);
+    g_autofree char *firmware = g_build_filename(dir, "synthetic.rom", NULL);
+    const char prom[4] = { 0 };
+    const char *cpu = !strcmp(machine, "octane") ? "R10000" :
+        "R12000,r12000-prid=0xe24,r12000-fpu-id=0x7654,"
+        "r12000-reset-mode=0x1aa683,r12000-scache-bytes=2097152,"
+        "r12000-scache-block-words=32";
+    const uint64_t bridge = 0x1f000000;
+    const uint64_t index = bridge + 0x600000 + 0xa0000;
+    const uint64_t data_port = bridge + 0x600000 + 0xc0000;
+    g_autofree char *image = NULL;
+    gsize len;
+
+    create_store(store, clock);
+    g_assert_true(g_file_set_contents(firmware, prom, sizeof(prom), NULL));
+    for (int pass = 0; pass < 2; pass++) {
+        QTestState *qts = qtest_initf("-M %s -cpu %s -m %dM -bios %s"
+            " -rtc base=2024-01-01T00:00:00,clock=vm"
+            " -drive if=none,id=sgi-nvram0,file=%s,format=raw"
+            " -drive if=none,id=sgi-nvram0-clock,file=%s,format=raw",
+            machine, cpu, !strcmp(machine, "octane") ? 128 : 256,
+            firmware, store, clock);
+
+        qtest_writel(qts, bridge + 0x022010, 0x10000000);
+        qtest_writel(qts, bridge + 0x022004, 0x00000002);
+        qtest_writel(qts, bridge + 0x214, 0x1100);
+        qtest_writeb(qts, index, R_RAM_LOW);
+        if (!pass) {
+            qtest_writeb(qts, data_port, 0xa5);
+        }
+        g_assert_cmphex(qtest_readb(qts, data_port), ==, 0xa5);
+        qtest_quit(qts);
+    }
+    g_assert_true(g_file_get_contents(store, &image, &len, NULL));
+    g_assert_cmphex((uint8_t)image[R_RAM_LOW], ==, 0xa5);
+    g_clear_pointer(&image, g_free);
+    g_assert_true(g_file_get_contents(clock, &image, &len, NULL));
+    g_assert_cmpmem(image, 8, "DS168RF1", 8);
+    g_unlink(firmware);
+    g_unlink(store);
+    g_unlink(clock);
+    g_rmdir(dir);
+}
+
+static void test_storage_all_ram(const void *data)
+{
+    g_autofree char *dir = g_dir_make_tmp("ds1685-ram-XXXXXX", NULL);
+    g_autofree char *store = g_build_filename(dir, "rtc.raw", NULL);
+    g_autofree char *clock = g_build_filename(dir, "rtc.clock", NULL);
+    QTestState *qts;
+
+    create_store(store, clock);
+    qts = start_with_store(store, clock, "2024-01-01T00:00:00");
+    for (int reg = R_RAM_LOW; reg < 0x40; reg++) {
+        reg_write(qts, reg, reg ^ 0xa5);
+    }
+    select_bank(qts, 0);
+    for (int reg = 0x40; reg < 0x80; reg++) {
+        reg_write(qts, reg, reg ^ 0x5a);
+    }
+    select_bank(qts, 1);
+    for (int addr = 0; addr < 128; addr++) {
+        reg_write(qts, R_EXTRAM_ADDR, addr);
+        reg_write(qts, R_EXTRAM_DATA, addr ^ 0xff);
+    }
+    qtest_quit(qts);
+    qts = start_with_store(store, clock, "2024-01-01T00:00:12");
+    for (int reg = R_RAM_LOW; reg < 0x40; reg++) {
+        g_assert_cmphex(reg_read(qts, reg), ==, reg ^ 0xa5);
+    }
+    select_bank(qts, 0);
+    for (int reg = 0x40; reg < 0x80; reg++) {
+        g_assert_cmphex(reg_read(qts, reg), ==, reg ^ 0x5a);
+    }
+    select_bank(qts, 1);
+    for (int addr = 0; addr < 128; addr++) {
+        reg_write(qts, R_EXTRAM_ADDR, addr);
+        g_assert_cmphex(reg_read(qts, R_EXTRAM_DATA), ==, addr ^ 0xff);
+    }
+    qtest_quit(qts);
+    g_unlink(store);
+    g_unlink(clock);
+    g_rmdir(dir);
+}
+
+static void test_storage_migration(const void *data)
+{
+    g_autofree char *dir = g_dir_make_tmp("ds1685-migrate-XXXXXX", NULL);
+    g_autofree char *store = g_build_filename(dir, "source.raw", NULL);
+    g_autofree char *clock = g_build_filename(dir, "source.clock", NULL);
+    g_autofree char *dst = g_build_filename(dir, "dest.raw", NULL);
+    g_autofree char *dst_clock = g_build_filename(dir, "dest.clock", NULL);
+    g_autofree char *uri = g_strdup_printf("unix:%s/migrate.sock", dir);
+    g_autofree char *image = NULL;
+    gsize len;
+    QTestState *from, *to;
+
+    create_store(store, clock);
+    create_store(dst, dst_clock);
+    from = start_with_store(store, clock, "2024-01-01T00:00:00");
+    set_calendar_2025(from);
+    reg_write(from, R_RAM_LOW, 0xa5);
+    reg_write(from, R_CTRL_B, B_SET | B_DM | B_24_12);
+    reg_write(from, R_SECONDS, 55);
+    reg_write(from, R_MONTH, 0);
+    if (!data) {
+        reg_write(from, R_CTRL_A, A_DV0);
+    }
+    qtest_clock_step(from, 2 * 1000000000LL);
+    reg_write(from, R_EXT_CTRL_4A, X4A_KF);
+    reg_write(from, R_EXT_CTRL_4B, X4B_KSE);
+    to = qtest_initf(OCTANE_IOC3(SUBSYS_IP30)
+        ",ds1685-drive=rtc-store -rtc base=2034-01-01T00:00:00,clock=vm"
+        " -drive if=none,id=rtc-store,file=%s,format=raw"
+        " -drive if=none,id=rtc-store-clock,file=%s,format=raw"
+        " -incoming %s", dst, dst_clock, uri);
+    sgi_migrate_stopped(from, uri);
+    sgi_wait_migration_status(to, "completed", 30);
+    octane_attach(to);
+    g_assert_cmphex(reg_read(to, R_RAM_LOW), ==, 0xa5);
+    g_assert_cmpuint(reg_read(to, R_SECONDS), ==, 55);
+    g_assert_cmpuint(reg_read(to, R_MONTH), ==, 0);
+    g_assert_cmphex(reg_read(to, R_CTRL_A) & A_DV1, ==,
+                    data ? A_DV1 : 0);
+    g_assert_cmphex(reg_read(to, R_EXT_CTRL_4A) & X4A_KF, ==, X4A_KF);
+    g_assert_cmphex(reg_read(to, R_EXT_CTRL_4B) & X4B_KSE, ==, X4B_KSE);
+    reg_write(to, R_RAM_LOW + 1, 0x5a);
+    g_assert_true(g_file_get_contents(dst, &image, &len, NULL));
+    g_assert_cmphex((uint8_t)image[R_RAM_LOW], ==, 0xa5);
+    g_assert_cmphex((uint8_t)image[R_RAM_LOW + 1], ==, 0x5a);
+    g_clear_pointer(&image, g_free);
+    g_assert_true(g_file_get_contents(dst_clock, &image, &len, NULL));
+    g_assert_cmpint(ldq_le_p(image + 16), ==,
+                    data ? 1735689612 : 1735689610);
+    qtest_quit(from);
+    qtest_quit(to);
+    g_unlink(store);
+    g_unlink(clock);
+    g_unlink(dst);
+    g_unlink(dst_clock);
+    g_rmdir(dir);
+}
+
+static void test_storage_set_edit(const void *data)
+{
+    g_autofree char *dir = g_dir_make_tmp("ds1685-set-XXXXXX", NULL);
+    g_autofree char *store = g_build_filename(dir, "rtc.raw", NULL);
+    g_autofree char *clock = g_build_filename(dir, "rtc.clock", NULL);
+    g_autofree char *reference = NULL;
+    gsize len;
+    QTestState *qts;
+
+    create_store(store, clock);
+    qts = start_with_store(store, clock, "2024-01-01T00:00:00");
+    set_calendar_2025(qts);
+    reg_write(qts, R_CTRL_B, B_SET | B_DM | B_24_12);
+    reg_write(qts, R_SECONDS, 55);
+    reg_write(qts, R_MONTH, 0);
+    qtest_clock_step(qts, 7 * 1000000000LL);
+    qtest_quit(qts);
+    qts = start_with_store(store, clock, "2024-01-01T00:00:12");
+    g_assert_cmpuint(reg_read(qts, R_SECONDS), ==, 55);
+    g_assert_cmpuint(reg_read(qts, R_MONTH), ==, 0);
+    g_assert_cmphex(reg_read(qts, R_CTRL_B) & B_SET, ==, B_SET);
+    reg_write(qts, R_RAM_LOW, 0xa5);
+    g_assert_true(g_file_get_contents(clock, &reference, &len, NULL));
+    g_assert_cmpint(ldq_le_p(reference + 16), ==, 1735689622);
+    reg_write(qts, R_MONTH, 1);
+    reg_write(qts, R_CTRL_B, B_DM | B_24_12);
+    qtest_clock_step(qts, 1000000000LL);
+    g_assert_cmpuint(reg_read(qts, R_SECONDS), ==, 56);
+    qtest_quit(qts);
+    g_unlink(store);
+    g_unlink(clock);
+    g_rmdir(dir);
+}
+
+static void test_storage_preserves_raw_calendar(const void *data)
+{
+    g_autofree char *dir = g_dir_make_tmp("ds1685-raw-XXXXXX", NULL);
+    g_autofree char *store = g_build_filename(dir, "rtc.raw", NULL);
+    g_autofree char *clock = g_build_filename(dir, "rtc.clock", NULL);
+    g_autofree char *image = NULL;
+    gsize len;
+    QTestState *qts;
+
+    create_store(store, clock);
+    qts = start_with_store(store, clock, "2024-01-01T00:00:00");
+    reg_write(qts, R_WEEKDAY, 0xff);
+    reg_write(qts, R_RAM_LOW, 0xa5);
+    select_bank(qts, 1);
+    g_assert_cmphex(reg_read(qts, R_WEEKDAY), ==, 0xff);
+    qtest_qmp_assert_success(qts, "{'execute':'stop'}");
+    g_assert_true(g_file_get_contents(store, &image, &len, NULL));
+    g_assert_cmphex((uint8_t)image[R_WEEKDAY], ==, 0xff);
+    g_assert_cmphex(reg_read(qts, R_WEEKDAY), ==, 0xff);
+    qtest_qmp_assert_success(qts, "{'execute':'cont'}");
+    qtest_clock_step(qts, 1000000000LL);
+    g_assert_cmpuint(reg_read(qts, R_WEEKDAY), ==, 2);
+    qtest_quit(qts);
+    g_unlink(store);
+    g_unlink(clock);
+    g_rmdir(dir);
+}
+
+static void test_storage_restore_case(const void *data)
+{
+    const char *kind = data;
+    g_autofree char *dir = g_dir_make_tmp("ds1685-restore-XXXXXX", NULL);
+    g_autofree char *store = g_build_filename(dir, "rtc.raw", NULL);
+    g_autofree char *clock = g_build_filename(dir, "rtc.clock", NULL);
+    uint8_t image[512] = { 0 };
+    uint8_t reference[24] = { 0 };
+    g_autofree char *saved = NULL;
+    gsize len;
+    bool fresh = !strcmp(kind, "fresh-padding");
+    bool invalid = !strcmp(kind, "invalid-calendar");
+    bool stopped = !strcmp(kind, "stopped");
+    bool countdown = !strcmp(kind, "countdown-reset");
+    bool missing = !strcmp(kind, "missing-reference");
+    bool negative = !strcmp(kind, "negative-elapsed");
+    bool wrong_magic = !strcmp(kind, "wrong-magic");
+    QTestState *qts;
+
+    if (!fresh) {
+        image[0] = 10;
+        image[R_WEEKDAY] = 4;
+        image[R_DAY] = 1;
+        image[R_MONTH] = invalid ? 0 : 1;
+        image[R_YEAR] = 25;
+        image[R_CTRL_A] = stopped ? 0x10 : countdown ? 0x70 : 0x30;
+        image[R_CTRL_B] = B_DM | B_24_12;
+        image[R_RAM_LOW] = 0xa5;
+        image[0x88] = 20;
+    }
+    memset(image + 320, 0xa5, 192);
+    memcpy(reference, wrong_magic ? "M48TREF1" : "DS168RF1", 8);
+    stq_le_p(reference + 8, negative ? 1704067220 : 1704067200);
+    stq_le_p(reference + 16, 1735689610);
+    g_assert_true(g_file_set_contents(store, (char *)image,
+                                      sizeof(image), NULL));
+    if (!missing) {
+        g_assert_true(g_file_set_contents(clock, (char *)reference,
+                                          sizeof(reference), NULL));
+    }
+    qts = start_with_store(store, missing ? NULL : clock,
+                          "2024-01-01T00:00:00");
+    g_assert_cmpuint(reg_read(qts, R_YEAR), ==, fresh || invalid ? 24 : 25);
+    g_assert_cmpuint(reg_read(qts, R_SECONDS), ==, fresh || invalid ? 0 : 10);
+    g_assert_cmphex(reg_read(qts, R_RAM_LOW), ==, fresh ? 0 : 0xa5);
+    if (countdown) {
+        reg_write(qts, R_CTRL_A, 0x30);
+    }
+    if (stopped || countdown) {
+        qtest_clock_step(qts, 1000000000LL);
+        g_assert_cmpuint(reg_read(qts, R_SECONDS), ==, 11);
+    }
+    qtest_quit(qts);
+    g_assert_true(g_file_get_contents(store, &saved, &len, NULL));
+    for (int i = 320; i < 512; i++) {
+        g_assert_cmphex((uint8_t)saved[i], ==, 0);
+    }
+    g_unlink(store);
+    if (!missing) {
+        g_unlink(clock);
+    }
+    g_rmdir(dir);
+}
+
+static void test_storage_bcd_twelve_hour(const void *data)
+{
+    g_autofree char *dir = g_dir_make_tmp("ds1685-bcd-XXXXXX", NULL);
+    g_autofree char *store = g_build_filename(dir, "rtc.raw", NULL);
+    g_autofree char *clock = g_build_filename(dir, "rtc.clock", NULL);
+    QTestState *qts;
+
+    create_store(store, clock);
+    qts = start_with_store(store, clock, "2024-01-01T00:00:00");
+    reg_write(qts, R_CTRL_B, B_SET);
+    reg_write(qts, R_SECONDS, 0x17);
+    reg_write(qts, R_MINUTES, 0x45);
+    reg_write(qts, R_HOURS, 0x81);
+    reg_write(qts, R_WEEKDAY, 0x04);
+    reg_write(qts, R_DAY, 0x01);
+    reg_write(qts, R_MONTH, 0x01);
+    reg_write(qts, R_YEAR, 0x25);
+    select_bank(qts, 1);
+    reg_write(qts, R_CENTURY, 0x20);
+    reg_write(qts, R_CTRL_B, 0);
+    qtest_quit(qts);
+    qts = start_with_store(store, clock, "2024-01-01T00:00:02");
+    g_assert_cmphex(reg_read(qts, R_SECONDS), ==, 0x19);
+    g_assert_cmphex(reg_read(qts, R_MINUTES), ==, 0x45);
+    g_assert_cmphex(reg_read(qts, R_HOURS), ==, 0x81);
+    g_assert_cmphex(reg_read(qts, R_YEAR), ==, 0x25);
+    g_assert_cmphex(reg_read(qts, R_CENTURY), ==, 0x20);
+    qtest_quit(qts);
+    g_unlink(store);
+    g_unlink(clock);
+    g_rmdir(dir);
+}
+
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
 
+    qtest_add_data_func("/sn0/ds1685/storage-set-edit", NULL,
+                        test_storage_set_edit);
+    qtest_add_data_func("/sn0/ds1685/storage-raw-calendar", NULL,
+                        test_storage_preserves_raw_calendar);
+    qtest_add_data_func("/sn0/ds1685/storage-bcd-twelve-hour", NULL,
+                        test_storage_bcd_twelve_hour);
+    {
+        const char *cases[] = { "fresh-padding", "invalid-calendar",
+                               "missing-reference", "wrong-magic",
+                               "negative-elapsed", "stopped",
+                               "countdown-reset" };
+
+        for (int i = 0; i < ARRAY_SIZE(cases); i++) {
+            g_autofree char *name = g_strdup_printf(
+                "/sn0/ds1685/storage-restore/%s", cases[i]);
+
+            qtest_add_data_func(name, cases[i], test_storage_restore_case);
+        }
+    }
+    {
+        const char *bad[] = { "empty", "oversize", "readonly", "orphan",
+                              "wrong-board", "read-error" };
+        const char *errors[] = { "main-write", "main-flush",
+                                 "clock-write", "clock-flush" };
+
+        for (int i = 0; i < ARRAY_SIZE(bad); i++) {
+            g_autofree char *name = g_strdup_printf(
+                "/sn0/ds1685/storage-reject/%s", bad[i]);
+            qtest_add_data_func(name, bad[i], test_storage_rejects_backend);
+        }
+        for (int i = 0; i < ARRAY_SIZE(errors); i++) {
+            g_autofree char *name = g_strdup_printf(
+                "/sn0/ds1685/storage-error/%s", errors[i]);
+            qtest_add_data_func(name, errors[i], test_storage_write_error);
+        }
+    }
+    qtest_add_data_func("/sn0/ds1685/storage-failed-incoming", NULL,
+                        test_storage_failed_incoming);
+    qtest_add_data_func("/sn0/ds1685/storage-invalid-footer", "footer",
+                        test_storage_failed_incoming);
+    qtest_add_data_func("/sn0/ds1685/storage-snapshot", NULL,
+                        test_storage_snapshot);
+    qtest_add_data_func("/sn0/ds1685/storage-octane", "octane",
+                        test_storage_octane_named_drive);
+    qtest_add_data_func("/sn0/ds1685/storage-octane2", "octane2",
+                        test_storage_octane_named_drive);
+    qtest_add_data_func("/sn0/ds1685/storage-all-ram", NULL,
+                        test_storage_all_ram);
+    qtest_add_data_func("/sn0/ds1685/storage-running-migration", "running",
+                        test_storage_migration);
+    qtest_add_data_func("/sn0/ds1685/storage-migration", NULL,
+                        test_storage_migration);
+    qtest_add_data_func("/sn0/ds1685/storage-process-restart", NULL,
+                        test_storage_process_restart);
+    qtest_add_data_func("/sn0/ds1685/volatile-counter-hold", NULL,
+                        test_volatile_counter_hold);
     qtest_add_data_func("/sn0/ds1685/initial-calendar-and-mode-writes", NULL,
                         test_initial_calendar_and_mode_writes);
     qtest_add_data_func("/sn0/ds1685/index-latch-persists", NULL,
