@@ -1019,10 +1019,19 @@ static void mgras_gl_color_bytes(uint32_t bytes[4], uint32_t word)
  * context's words start at a header and its GL state starts at OpenGL's
  * initial state (inferred: the client's setup assumes both, and the board
  * cannot resume a dead client's packet for a new one). What the board does
- * with each bit is unknown. The discriminating tests are
- * gl-new-context-starts-at-a-header,
- * gl-new-context-starts-in-the-initial-state and
- * gl-default-context-keeps-its-packet.
+ * with each bit is unknown.
+ *
+ * A new context whose word 0 is still -1 would share entry 0 with the
+ * default context and every other context without a slot. That entry is
+ * not started afresh, so a packet the default left open survives. Neither
+ * captured run has such an image, and the kernel paths that switch a
+ * context in were not all traced to rule one out; a new slotless context
+ * therefore keeps whatever entry 0 holds (approximated).
+ *
+ * The discriminating tests are gl-new-context-starts-at-a-header,
+ * gl-new-context-starts-in-the-initial-state,
+ * gl-default-context-keeps-its-packet and
+ * gl-new-context-without-a-slot-keeps-the-default.
  */
 #define MGRAS_GL_IMAGE_STATUS    1
 #define MGRAS_GL_IMAGE_NEW       0xc0000000u
@@ -1226,7 +1235,8 @@ void sgi_mgras_gl_context_loaded(SGIMgrasState *s)
         s->gl_current = mgras_gl_lookup(s, slot);
         s->gl_selected[s->gl_current] = ++s->gl_selections;
     }
-    if ((s->context[MGRAS_GL_IMAGE_STATUS] & MGRAS_GL_IMAGE_NEW) ==
+    if (s->gl_current &&
+        (s->context[MGRAS_GL_IMAGE_STATUS] & MGRAS_GL_IMAGE_NEW) ==
         MGRAS_GL_IMAGE_NEW) {
         mgras_gl_forget(s, s->gl_current, s->gl[s->gl_current].hw_id);
     }
