@@ -93,6 +93,8 @@ static const ReplayHead *find_head(const char *codename)
 #define OVERLAY           "overlay.replay"
 #define DMA_IMAGE_TRANSFER "dma-image-transfer.replay"
 #define GL_PIXELS_RECTWRITE "gl-pixels-rectwrite.replay"
+#define GL_NEW_CONTEXT_SLOT_REUSE \
+    "gl-new-context-slot-reuse.replay"
 #define INVALID_REPLAY    "invalid.replay"
 #define INVALID_BOUNDS    "invalid-bounds.replay"
 #define INVALID_EXTRA     "invalid-extra.replay"
@@ -950,6 +952,16 @@ static void test_gl_pixels_rectwrite(void)
     run_fixture(GL_PIXELS_RECTWRITE, NULL);
 }
 
+/*
+ * ivview's context dies four words short in slot 0x5420, and the next
+ * ivview's new context in the same slot sets up and answers its queries
+ * (run irix-20260930T204826-66052a).
+ */
+static void test_gl_new_context_slot_reuse(void)
+{
+    run_fixture(GL_NEW_CONTEXT_SLOT_REUSE, NULL);
+}
+
 static void test_cmap_xmap_wid(void)
 {
     run_fixture(CMAP_XMAP_WID, NULL);
@@ -1280,6 +1292,8 @@ int main(int argc, char **argv)
                    test_dma_image_transfer);
     qtest_add_func("sgi-replay/mgras/gl-pixels-rectwrite",
                    test_gl_pixels_rectwrite);
+    qtest_add_func("sgi-replay/mgras/gl-new-context-slot-reuse",
+                   test_gl_new_context_slot_reuse);
     qtest_add_func("sgi-replay/mgras/invalid-number", test_invalid_number);
     qtest_add_func("sgi-replay/mgras/invalid-bounds", test_invalid_bounds);
     qtest_add_func("sgi-replay/mgras/invalid-extra", test_invalid_extra);
