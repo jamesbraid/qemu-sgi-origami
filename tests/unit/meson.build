@@ -298,6 +298,9 @@ foreach test_name, extra: tests
     test_link_args = ['-Wl,--wrap=g_try_realloc_n']
     test_c_args = ['-DSGI_GL_ALLOCATION_WRAP']
   endif
+  if test_name == 'test-sgi-gl'
+    test_c_args += ['-DSGI_GL_TEXTURE_TEST']
+  endif
   exe = executable(test_name, src, genh, dependencies: deps,
                    link_args: test_link_args, c_args: test_c_args)
 
