@@ -101,6 +101,8 @@ void sgi_gl_init(SGIGLContext *c, uint32_t hw_id)
     c->cur.blend_src = 1;
     c->cur.blend_equation = SGI_GL_FUNC_ADD;
     c->cur.logic_op_mode = SGI_GL_COPY;
+    c->cur.texture_env_mode = SGI_GL_MODULATE;
+    c->cur_texcoord[3] = c->raster_texcoord[3] = 1.0f;
     c->cur.fog_mode = SGI_GL_EXP;
     c->cur.fog_density = 1.0f;
     c->cur.fog_end = 1.0f;
@@ -493,6 +495,10 @@ static const uint8_t sgi_gl_nargs[] = {
     [SGI_GL_OP_LINE_WIDTH] = 1,
     [SGI_GL_OP_LINE_STIPPLE] = 2,
     [SGI_GL_OP_POLYGON_MODE] = 2,
+    [SGI_GL_OP_TEXCOORD2F] = 2,
+    [SGI_GL_OP_TEXCOORD3F] = 3,
+    [SGI_GL_OP_TEXCOORD4F] = 4,
+    [SGI_GL_OP_TEX_ENV] = 5,
 };
 
 uint32_t sgi_gl_draw_targets(const SGIGLDrawState *st,
@@ -857,6 +863,19 @@ static void sgi_gl_submit(SGIGLContext *c, const SGIGLSink *sink,
     sink->draw(sink->opaque, &d);
 }
 
+/* Texture coordinates transform before clipping (OpenGL 1.2.1, 2.10.2). */
+static void sgi_gl_texture_coord(const SGIGLContext *c, float out[4])
+{
+    for (int row = 0; row < 4; row++) {
+        double value = 0;
+
+        for (int k = 0; k < 4; k++) {
+            value += (double)c->texture[k * 4 + row] * c->cur_texcoord[k];
+        }
+        out[row] = value;
+    }
+}
+
 /* Hold a vertex in slot n of the three a context keeps. */
 static void sgi_gl_hold(SGIGLContext *c, unsigned int n, const float *v)
 {
@@ -888,7 +907,7 @@ static void sgi_gl_vertex(SGIGLContext *c, const SGIGLSink *sink,
     memcpy(&cur[SGI_GL_V_POSITION], pos, components * sizeof(float));
     memcpy(&cur[SGI_GL_V_COLOR], c->cur_color, sizeof(c->cur_color));
     memcpy(&cur[SGI_GL_V_NORMAL], c->cur_normal, sizeof(c->cur_normal));
-    cur[SGI_GL_V_TEXCOORD + 3] = 1.0f;
+    sgi_gl_texture_coord(c, &cur[SGI_GL_V_TEXCOORD]);
     memcpy(&cur[SGI_GL_V_EDGE], &c->cur_edge, sizeof(c->cur_edge));
     cur[SGI_GL_V_INDEX] = c->cur_index;
     /*
@@ -1061,6 +1080,7 @@ static void sgi_gl_raster_pos(SGIGLContext *c, const float obj[4])
         }
     }
     c->raster_index = c->cur_index;
+    sgi_gl_texture_coord(c, c->raster_texcoord);
 }
 
 /*
@@ -1639,6 +1659,9 @@ static void sgi_gl_capability(SGIGLContext *c, uint32_t cap, bool on)
     case SGI_GL_COLOR_LOGIC_OP:
         c->cur.color_logic_op = on;
         return;
+    case SGI_GL_TEXTURE_2D:
+        c->cur.texture_2d = on;
+        return;
     case SGI_GL_FOG:
         c->cur.fog = on;
         return;
@@ -1768,6 +1791,34 @@ void sgi_gl_command(SGIGLContext *c, const SGIGLSink *sink,
         return;
     }
     switch (cmd->op) {
+    case SGI_GL_OP_TEXCOORD2F:
+    case SGI_GL_OP_TEXCOORD3F:
+    case SGI_GL_OP_TEXCOORD4F:
+        c->cur_texcoord[2] = 0;
+        c->cur_texcoord[3] = 1;
+        memcpy(c->cur_texcoord, a, cmd->nargs * sizeof(float));
+        return;
+    case SGI_GL_OP_TEX_ENV:
+        if (a[0] == SGI_GL_TEXTURE_ENV_MODE) {
+            float mode = sgi_gl_float(a[1]);
+
+            if (mode == SGI_GL_REPLACE || mode == SGI_GL_MODULATE ||
+                mode == SGI_GL_DECAL || mode == SGI_GL_BLEND) {
+                c->cur.texture_env_mode = mode;
+                return;
+            }
+        } else if (a[0] == SGI_GL_TEXTURE_ENV_COLOR) {
+            for (int i = 0; i < 4; i++) {
+                float v = sgi_gl_float(a[i + 1]);
+
+                c->cur.texture_env_color[i] = v >= 1 ? 1 : v > 0 ? v : 0;
+            }
+            return;
+        }
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-gl: texture environment "
+                      "parameter 0x%x value %g ignored\n", a[0],
+                      sgi_gl_float(a[1]));
+        return;
     case SGI_GL_OP_VIEWPORT:
         for (int i = 0; i < 4; i++) {
             c->cur.viewport[i] = (int32_t)a[i];
@@ -2162,11 +2213,19 @@ bool sgi_gl_get(const SGIGLContext *c, uint32_t pname, uint32_t *out,
         *n = 3;
         return true;
     case SGI_GL_CURRENT_TEXTURE_COORDS:
+        return sgi_gl_get_floats(c->cur_texcoord, 4, out, n);
     case SGI_GL_CURRENT_RASTER_TEXTURE_COORDS:
-        out[0] = out[1] = out[2] = 0;
-        out[3] = sgi_gl_bits(1.0f);
-        *n = 4;
+        return sgi_gl_get_floats(c->raster_texcoord, 4, out, n);
+    case SGI_GL_TEXTURE_2D:
+        out[0] = c->cur.texture_2d;
+        *n = 1;
         return true;
+    case SGI_GL_TEXTURE_ENV_MODE:
+        out[0] = c->cur.texture_env_mode;
+        *n = 1;
+        return true;
+    case SGI_GL_TEXTURE_ENV_COLOR:
+        return sgi_gl_get_floats(c->cur.texture_env_color, 4, out, n);
     case SGI_GL_EDGE_FLAG:
         out[0] = c->cur_edge;
         *n = 1;
@@ -2499,6 +2558,7 @@ bool sgi_gl_context_valid(const SGIGLContext *c, Error **errp)
         { "index_logic_op", st->index_logic_op },
         { "color_logic_op", st->color_logic_op },
         { "fog", st->fog },
+        { "texture_2d", st->texture_2d },
         { "drawable.bound", st->drawable.bound },
         { "drawable.clip.empty", st->drawable.clip.empty },
         { "window_matrix_given", st->window_matrix_given },
@@ -2612,6 +2672,21 @@ bool sgi_gl_context_valid(const SGIGLContext *c, Error **errp)
     if (st->colour_mask > SGI_GL_COLOUR_MASK_ALL) {
         error_setg(errp, "sgi-gl: colour mask 0x%x", st->colour_mask);
         return false;
+    }
+    if (st->texture_env_mode != SGI_GL_REPLACE &&
+        st->texture_env_mode != SGI_GL_MODULATE &&
+        st->texture_env_mode != SGI_GL_DECAL &&
+        st->texture_env_mode != SGI_GL_BLEND) {
+        error_setg(errp, "sgi-gl: texture environment mode 0x%x",
+                   st->texture_env_mode);
+        return false;
+    }
+    for (int i = 0; i < 4; i++) {
+        if (!(st->texture_env_color[i] >= 0 && st->texture_env_color[i] <= 1)) {
+            error_setg(errp, "sgi-gl: texture environment colour %g is "
+                       "outside [0, 1]", st->texture_env_color[i]);
+            return false;
+        }
     }
     if (st->fog_mode != SGI_GL_LINEAR && st->fog_mode != SGI_GL_EXP &&
         st->fog_mode != SGI_GL_EXP2) {
@@ -3026,6 +3101,28 @@ static const VMStateDescription vmstate_sgi_gl_window_matrix = {
     },
 };
 
+static bool sgi_gl_texture_env_needed(void *opaque)
+{
+    const SGIGLDrawState *st = opaque, *init = &sgi_gl_initial()->cur;
+
+    return SGI_GL_MOVED(st, init, texture_2d) ||
+           SGI_GL_MOVED(st, init, texture_env_mode) ||
+           SGI_GL_MOVED(st, init, texture_env_color);
+}
+
+static const VMStateDescription vmstate_sgi_gl_texture_env = {
+    .name = "sgi-gl-draw-state/texture-environment",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = sgi_gl_texture_env_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32(texture_2d, SGIGLDrawState),
+        VMSTATE_UINT32(texture_env_mode, SGIGLDrawState),
+        VMSTATE_SGI_GL_FLOATS(texture_env_color, SGIGLDrawState, 4),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
 static const VMStateDescription vmstate_sgi_gl_draw_state = {
     .name = "sgi-gl-draw-state",
     .version_id = 1,
@@ -3057,6 +3154,7 @@ static const VMStateDescription vmstate_sgi_gl_draw_state = {
         &vmstate_sgi_gl_logic_op,
         &vmstate_sgi_gl_colour_mask,
         &vmstate_sgi_gl_fog,
+        &vmstate_sgi_gl_texture_env,
         &vmstate_sgi_gl_polygon_offset,
         &vmstate_sgi_gl_clip_planes,
         &vmstate_sgi_gl_window_matrix,
@@ -3143,6 +3241,26 @@ static const VMStateDescription vmstate_sgi_gl_rasterization = {
     },
 };
 
+static bool sgi_gl_texture_coords_needed(void *opaque)
+{
+    const SGIGLContext *c = opaque, *init = sgi_gl_initial();
+
+    return SGI_GL_MOVED(c, init, cur_texcoord) ||
+           SGI_GL_MOVED(c, init, raster_texcoord);
+}
+
+static const VMStateDescription vmstate_sgi_gl_texture_coords = {
+    .name = "sgi-gl-context/texture-coordinates",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = sgi_gl_texture_coords_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_SGI_GL_FLOATS(cur_texcoord, SGIGLContext, 4),
+        VMSTATE_SGI_GL_FLOATS(raster_texcoord, SGIGLContext, 4),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
 const VMStateDescription vmstate_sgi_gl_context = {
     .name = "sgi-gl-context",
     .version_id = SGI_GL_VMSTATE_VERSION,
@@ -3208,6 +3326,7 @@ const VMStateDescription vmstate_sgi_gl_context = {
     .subsections = (const VMStateDescription * const []) {
         &vmstate_sgi_gl_clear_stencil,
         &vmstate_sgi_gl_rasterization,
+        &vmstate_sgi_gl_texture_coords,
         NULL
     },
 };

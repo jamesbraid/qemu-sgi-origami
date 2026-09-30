@@ -170,6 +170,11 @@ static void populate(SGIGLContext *c, bool other)
     c->cur.colour_mask = other ? SGI_GL_COLOUR_MASK_RED :
                                  SGI_GL_COLOUR_MASK_ALL &
                                  ~SGI_GL_COLOUR_MASK_GREEN;
+    c->cur.texture_2d = !other;
+    c->cur.texture_env_mode = other ? SGI_GL_DECAL : SGI_GL_BLEND;
+    for (int i = 0; i < 4; i++) {
+        c->cur.texture_env_color[i] = other ? 0.25f * i : 1 - 0.125f * i;
+    }
     c->cur.fog = !other;
     c->cur.fog_mode = other ? SGI_GL_LINEAR : SGI_GL_EXP2;
     c->cur.fog_density = other ? 0.0f : 2.5f;
@@ -445,6 +450,7 @@ typedef struct Draws {
     uint32_t count[8];
     float modelview_x[8];
     float position[8][4][4];
+    float texcoord[8][4][4];
 } Draws;
 
 static void record_draw(void *opaque, const SGIGLDraw *d)
@@ -459,6 +465,9 @@ static void record_draw(void *opaque, const SGIGLDraw *d)
         memcpy(r->position[r->n][v],
                &d->vertices[v * SGI_GL_VERTEX_FLOATS + SGI_GL_V_POSITION],
                sizeof(r->position[r->n][v]));
+        memcpy(r->texcoord[r->n][v],
+               &d->vertices[v * SGI_GL_VERTEX_FLOATS + SGI_GL_V_TEXCOORD],
+               sizeof(r->texcoord[r->n][v]));
     }
     r->n++;
 }
@@ -501,6 +510,9 @@ static void test_open_primitive_survives(void)
         sgi_gl_init(&dst->gl[i], 0);
     }
     sgi_gl_set_matrix(&src->gl[1], SGI_GL_MODELVIEW, scale2);
+    send_cmd(&src->gl[1], &before, SGI_GL_OP_TEXCOORD4F, 4,
+             (uint32_t[]) { float_bits(.25f), float_bits(.5f),
+                            float_bits(.75f), float_bits(2) });
     send_cmd(&src->gl[1], &before, SGI_GL_OP_BEGIN, 1, &mode);
     send_vertex(&src->gl[1], &before, 0.25f, 0.0f);
     send_vertex(&src->gl[1], &before, 0.0f, 0.25f);
@@ -520,6 +532,10 @@ static void test_open_primitive_survives(void)
     g_assert_cmpuint(after.mode[0], ==, SGI_GL_TRIANGLES);
     g_assert_cmpuint(after.count[0], ==, 3);
     g_assert_cmpfloat(after.modelview_x[0], ==, 2.0f);
+    for (int v = 0; v < 3; v++) {
+        g_assert_cmpfloat(after.texcoord[0][v][0], ==, .25f);
+        g_assert_cmpfloat(after.texcoord[0][v][3], ==, 2);
+    }
     /* The held vertices keep the object coordinates they arrived with. */
     g_assert_cmpfloat(after.position[0][0][0], ==, 0.25f);
     g_assert_cmpfloat(after.position[0][1][1], ==, 0.25f);
@@ -738,6 +754,10 @@ static const Corruption corruptions[] = {
     BAD(cur.logic_op_mode, SGI_GL_SET + 1, "logical operation"),
     BAD(cur.logic_op_mode, SGI_GL_CLEAR - 1, "logical operation"),
     BAD(cur.colour_mask, SGI_GL_COLOUR_MASK_ALL + 1, "colour mask"),
+    BAD(cur.texture_2d, 2, "texture_2d"),
+    BAD(cur.texture_env_mode, 0, "texture environment mode"),
+    BAD(cur.texture_env_color[0], 0x7fc00000, "texture environment colour"),
+    BAD(cur.texture_env_color[3], 0x3fc00000, "texture environment colour"),
     BAD(cur.fog, 2, "fog is"),
     BAD(cur.fog_mode, SGI_GL_EXP2 + 1, "fog mode"),
     BAD(cur.fog_mode, 0, "fog mode"),
