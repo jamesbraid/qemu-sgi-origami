@@ -1122,6 +1122,13 @@ static void mgras_write(void *opaque, hwaddr addr, uint64_t value,
         /* A new transaction restarts the context word count. */
         s->context_words = 0;
         s->pending |= MGRAS_PENDING_FLAGS; mgras_update_irq(s); return;
+    case 0x020400:
+        if (size != 8) {
+            mgras_error(s, addr, size, "unsupported normal-FIFO width");
+            return;
+        }
+        sgi_mgras_raster_fifo_write(s, value);
+        return;
     case 0x120400:
         /*
          * s->ready alone cannot gate this dispatch: it latches true after
@@ -1338,6 +1345,8 @@ static void mgras_reset_enter(Object *obj, ResetType type)
     s->rss[0x161] = 0x3 << 26;
     s->rss[0x163] = 0xffffffff;
     s->glyph_row = s->glyph_unit = s->pio_x = s->pio_y = 0;
+    s->public_glyph_row = 0;
+    s->public_glyph_armed = s->public_glyph_wide_valid = false;
     s->cmd_token_class = s->cmd_token_reg = 0;
     s->cmd_token_words_remaining = s->cmd_token_payload_count = 0;
     memset(s->cmd_token_payload, 0, sizeof(s->cmd_token_payload));
@@ -1604,6 +1613,7 @@ static int mgras_post_load(void *opaque, int version_id)
                                     s->cmd_token_payload_count) ||
         s->dma_map_words_remaining > SGI_MGRAS_CMD_TOKEN_MAX_DISCARD_WORDS ||
         s->pio_x > s->width || s->pio_y > s->height ||
+        !sgi_mgras_raster_pending_valid(s) ||
         !mgras_xmap_indices_valid(s) ||
         s->dac_lut_load_channel >= 3 ||
         !sgi_mgras_gl_post_load(s)) {
@@ -1721,7 +1731,7 @@ DEFINE_VMSTATE_SGI_GL_CONTEXTS(vmstate_sgi_mgras_gl_contexts,
                                gl, SGI_MGRAS_GL_CONTEXTS);
 
 static const VMStateDescription vmstate_sgi_mgras = {
-    .name = TYPE_SGI_MGRAS, .version_id = 24, .minimum_version_id = 24,
+    .name = TYPE_SGI_MGRAS, .version_id = 25, .minimum_version_id = 25,
     .post_load = mgras_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32(front_count, SGIMgrasState),
@@ -1835,6 +1845,9 @@ static const VMStateDescription vmstate_sgi_mgras = {
         VMSTATE_UINT32_ARRAY(rss, SGIMgrasState, 0x200),
         VMSTATE_UINT32(glyph_row, SGIMgrasState),
         VMSTATE_UINT32(glyph_unit, SGIMgrasState),
+        VMSTATE_UINT32(public_glyph_row, SGIMgrasState),
+        VMSTATE_BOOL(public_glyph_armed, SGIMgrasState),
+        VMSTATE_BOOL(public_glyph_wide_valid, SGIMgrasState),
         VMSTATE_UINT32(pio_x, SGIMgrasState),
         VMSTATE_UINT32(pio_y, SGIMgrasState),
         VMSTATE_UINT32(cmd_token_class, SGIMgrasState),

@@ -191,6 +191,7 @@
  * and inert.
  */
 #define MGRAS_RSS_FILLMODE 0x110
+#define MGRAS_FILLMODE_PUBLIC_BITMAP 0x00400018
 #define MGRAS_FILLMODE_GLYPH_ROW 0x10400008
 #define MGRAS_FILLMODE_BYTE_XFER 0x10c00000
 
@@ -1435,6 +1436,158 @@ static void mgras_draw_line(SGIMgrasState *s)
     s->rss[MGRAS_RSS_RE_POINT] = xy1;
 }
 
+static bool mgras_public_bounds(SGIMgrasState *s, unsigned *x0,
+                                unsigned *y0, unsigned *x1, unsigned *y1)
+{
+    uint32_t start = s->rss[MGRAS_RSS_BLOCKXYSTARTI];
+    uint32_t end = s->rss[MGRAS_RSS_BLOCKXYENDI];
+
+    *x0 = start >> 16;
+    *y0 = start & 0xffff;
+    *x1 = end >> 16;
+    *y1 = end & 0xffff;
+    return *x0 <= *x1 && *y0 <= *y1 &&
+           *x1 < s->width && *y1 < s->height;
+}
+
+bool sgi_mgras_raster_pending_valid(SGIMgrasState *s)
+{
+    unsigned x0, y0, x1, y1;
+
+    if (s->public_glyph_row >= s->height ||
+        (s->public_glyph_wide_valid && !s->public_glyph_armed)) {
+        return false;
+    }
+    if (!s->public_glyph_armed) {
+        return true;
+    }
+    return s->rss[MGRAS_RSS_FILLMODE] == MGRAS_FILLMODE_PUBLIC_BITMAP &&
+           mgras_public_bounds(s, &x0, &y0, &x1, &y1) && x1 - x0 < 16 &&
+           s->public_glyph_row >= y0 && s->public_glyph_row <= y1 &&
+           (x1 - x0 < 8 ? !s->public_glyph_wide_valid : y0 == y1);
+}
+
+static void mgras_public_alias_execute(SGIMgrasState *s)
+{
+    unsigned x0, y0, x1, y1;
+    uint32_t mode = s->rss[MGRAS_RSS_FILLMODE];
+    uint32_t pp1 = s->rss[MGRAS_RSS_PP1FILLMODE];
+
+    s->public_glyph_armed = false;
+    s->public_glyph_wide_valid = false;
+    if (s->rss[MGRAS_RSS_IR_ALIAS] != 0x18 ||
+        !mgras_public_bounds(s, &x0, &y0, &x1, &y1)) {
+        goto unsupported;
+    }
+    if (mode == 0 && (pp1 == 0x0c006300 || pp1 == 0x18006304)) {
+        uint32_t color =
+            mgras_rgb_from_pixel_word(s->rss[MGRAS_RSS_PACKEDCOLOR]);
+
+        mgras_fill_rect(s, s->rss[MGRAS_RSS_BLOCKXYSTARTI],
+                        s->rss[MGRAS_RSS_BLOCKXYENDI],
+                        color, pp1 >> 26, s->rss[MGRAS_RSS_COLORMASKLSBSA],
+                        SGI_MGRAS_PIXEL_FORMAT_RGB);
+        s->dirty = true;
+        return;
+    }
+    if (mode == MGRAS_FILLMODE_PUBLIC_BITMAP && pp1 == 0x0c006300 &&
+        x1 - x0 < 16 && (x1 - x0 < 8 || y0 == y1)) {
+        s->public_glyph_armed = true;
+        s->public_glyph_row = y0;
+        return;
+    }
+unsupported:
+    qemu_log_mask(LOG_UNIMP, "sgi-mgras: unsupported normal-FIFO alias "
+                  "0x%x, fillmode 0x%x, PP1 fillmode 0x%x\n",
+                  s->rss[MGRAS_RSS_IR_ALIAS], mode, pp1);
+}
+
+static void mgras_public_char_execute(SGIMgrasState *s, uint32_t reg)
+{
+    unsigned x0, y0, x1, y1;
+    uint32_t foreground, background, rg, ba;
+    uint16_t bits;
+    bool wide;
+
+    if (!s->public_glyph_armed ||
+        s->rss[MGRAS_RSS_PP1FILLMODE] != 0x0c006300 ||
+        !mgras_public_bounds(s, &x0, &y0, &x1, &y1)) {
+        goto unsupported;
+    }
+    wide = x1 - x0 >= 8;
+    if ((!wide && reg != MGRAS_RSS_CHAR_H) ||
+        (wide && (reg != MGRAS_RSS_CHAR_L ||
+                  !s->public_glyph_wide_valid))) {
+        goto unsupported;
+    }
+    bits = (s->rss[MGRAS_RSS_CHAR_H] >> 24) << 8;
+    if (wide) {
+        bits |= s->rss[MGRAS_RSS_CHAR_L] >> 24;
+    }
+    foreground = mgras_rgb_from_pixel_word(s->rss[MGRAS_RSS_PACKEDCOLOR]);
+    rg = s->rss[MGRAS_RSS_BKGRD_RG];
+    ba = s->rss[MGRAS_RSS_BKGRD_BA];
+    /* Public OpenBSD packing; red and blue low nibbles stay zero. */
+    background = ((rg & 0xf00) << 12) | ((rg >> 8) & 0xff00) |
+                 ((ba >> 4) & 0xf0);
+    for (unsigned i = 0; i <= x1 - x0; i++) {
+        uint32_t color = bits & (0x8000 >> i) ? foreground : background;
+
+        mgras_put_pixel(s, s->public_glyph_row * s->width + x0 + i,
+                        color, 3, s->rss[MGRAS_RSS_COLORMASKLSBSA],
+                        SGI_MGRAS_PIXEL_FORMAT_RGB);
+    }
+    s->public_glyph_wide_valid = false;
+    if (wide || s->public_glyph_row == y1) {
+        s->public_glyph_armed = false;
+    } else {
+        s->public_glyph_row++;
+    }
+    s->dirty = true;
+    return;
+unsupported:
+    qemu_log_mask(LOG_UNIMP, "sgi-mgras: unsupported normal-FIFO CHAR "
+                  "execute, register 0x%x\n", reg);
+}
+
+void sgi_mgras_raster_fifo_write(SGIMgrasState *s, uint64_t word)
+{
+    const uint64_t variable = (0x1ffULL << 40) | 0x0004000000000000ULL |
+                              UINT32_MAX;
+    uint32_t reg = (word >> 40) & 0x1ff;
+    bool execute = word & 0x0004000000000000ULL;
+    unsigned x0, y0, x1, y1;
+    SGIMgrasRasterSubmission submission = {
+        .form = SGI_MGRAS_RASTER_FIFO,
+        .reg = reg,
+    };
+
+    if ((word & ~variable) != 0x0018000400000000ULL) {
+        qemu_log_mask(LOG_UNIMP, "sgi-mgras: unsupported normal-FIFO "
+                      "packet 0x%016" PRIx64 "\n", word);
+        return;
+    }
+    mgras_raster_rss_write(s, reg, word);
+    if (!execute) {
+        if (reg == MGRAS_RSS_CHAR_H && s->public_glyph_armed &&
+            s->rss[MGRAS_RSS_FILLMODE] == MGRAS_FILLMODE_PUBLIC_BITMAP &&
+            mgras_public_bounds(s, &x0, &y0, &x1, &y1) && x1 - x0 >= 8) {
+            s->public_glyph_wide_valid = true;
+        }
+        return;
+    }
+    if (reg == MGRAS_RSS_IR_ALIAS &&
+        (s->rss[MGRAS_RSS_FILLMODE] == 0 ||
+         s->rss[MGRAS_RSS_FILLMODE] == MGRAS_FILLMODE_PUBLIC_BITMAP)) {
+        mgras_public_alias_execute(s);
+    } else if ((reg == MGRAS_RSS_CHAR_H || reg == MGRAS_RSS_CHAR_L) &&
+               s->rss[MGRAS_RSS_FILLMODE] == MGRAS_FILLMODE_PUBLIC_BITMAP) {
+        mgras_public_char_execute(s, reg);
+    } else {
+        mgras_raster_command_execute(s, &submission);
+    }
+}
+
 static void mgras_raster_command_execute(
     SGIMgrasState *s, const SGIMgrasRasterSubmission *submission)
 {
@@ -1486,6 +1639,14 @@ static void mgras_raster_rss_write(SGIMgrasState *s, uint32_t reg,
                                     uint32_t value)
 {
     s->rss[reg] = value;
+    if (reg == MGRAS_RSS_FILLMODE || reg == MGRAS_RSS_BLOCKXYSTARTI ||
+        reg == MGRAS_RSS_BLOCKXYENDI) {
+        s->public_glyph_armed = false;
+        s->public_glyph_wide_valid = false;
+    }
+    if (reg == MGRAS_RSS_CHAR_H) {
+        s->public_glyph_wide_valid = false;
+    }
     if (reg == MGRAS_RSS_CLIP_MODE && value != 0 &&
         value != MGRAS_CLIP_MODE_ON) {
         qemu_log_mask(LOG_UNIMP, "sgi-mgras: clip mode 0x%x not modelled, "
