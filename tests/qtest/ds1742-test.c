@@ -214,6 +214,77 @@ static void test_migration(void)
     g_assert_cmpint(rmdir(dir), ==, 0);
 }
 
+static void test_backed_migration_quit(void)
+{
+    g_autofree char *dir = g_dir_make_tmp("ds1742-migrate-store-XXXXXX", NULL);
+    g_autofree char *image = g_build_filename(dir, "calendar.img", NULL);
+    g_autofree char *reference = g_build_filename(dir, "clock.img", NULL);
+    g_autofree char *socket = g_build_filename(dir, "migration.sock", NULL);
+    g_autofree char *uri = g_strdup_printf("unix:%s", socket);
+    g_autofree char *saved_image = NULL;
+    g_autofree char *saved_reference = NULL;
+    char contents[0x800] = { 0 };
+    char clock_record[512] = { 0 };
+    gsize saved_image_size, saved_reference_size;
+    g_autoptr(QDict) status = NULL;
+    QTestState *from, *to;
+    int fd;
+
+    g_assert_true(g_file_set_contents(image, contents, sizeof(contents), NULL));
+    g_assert_true(g_file_set_contents(reference, clock_record,
+                                      sizeof(clock_record), NULL));
+    from = qtest_initf("-M none -cpu R10000 -S "
+                       "-rtc base=2024-01-01T00:00:00 "
+                       "-drive if=none,id=nvram,file=%s,format=raw "
+                       "-drive if=none,id=reference,file=%s,format=raw "
+                       "-device ds1742,id=clock,drive=nvram,clock-drive=reference",
+                       image, reference);
+    qtest_sysbus_mmio_map(from, PATH, 0, BASE);
+    to = start("-incoming defer");
+    wr(from, 0x7f7, 0x5a);
+    set_time(from, 0x47, 0x23, 0x10, 0x25, 0x09, 0x26, 0x20);
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    sgi_migrate_stopped(from, uri);
+    sgi_wait_migration_status(to, "completed", 30);
+    g_assert_cmphex(rd(to, 0x7f7), ==, 0x5a);
+    status = qtest_qmp_assert_success_ref(from,
+        "{'execute':'query-status'}");
+    g_assert_cmpstr(qdict_get_str(status, "status"), ==, "postmigrate");
+
+    /* An inactive source must leave storage changed by its new owner alone. */
+    memset(contents, 0xa5, sizeof(contents));
+    memset(clock_record, 0x5a, sizeof(clock_record));
+    fd = open(image, O_WRONLY);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(pwrite(fd, contents, sizeof(contents), 0), ==,
+                    (ssize_t)sizeof(contents));
+    g_assert_cmpint(close(fd), ==, 0);
+    fd = open(reference, O_WRONLY);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(pwrite(fd, clock_record, sizeof(clock_record), 0), ==,
+                    (ssize_t)sizeof(clock_record));
+    g_assert_cmpint(close(fd), ==, 0);
+    qtest_qmp_assert_success(from, "{'execute':'quit'}");
+    qtest_wait_qemu(from);
+    g_assert_true(g_file_get_contents(image, &saved_image,
+                                      &saved_image_size, NULL));
+    g_assert_cmpuint(saved_image_size, ==, sizeof(contents));
+    g_assert_cmpmem(saved_image, saved_image_size,
+                    contents, sizeof(contents));
+    g_assert_true(g_file_get_contents(reference, &saved_reference,
+                                      &saved_reference_size, NULL));
+    g_assert_cmpuint(saved_reference_size, ==, sizeof(clock_record));
+    g_assert_cmpmem(saved_reference, saved_reference_size,
+                    clock_record, sizeof(clock_record));
+    qtest_quit(from);
+    qtest_quit(to);
+    unlink(socket);
+    g_assert_cmpint(unlink(image), ==, 0);
+    g_assert_cmpint(unlink(reference), ==, 0);
+    g_assert_cmpint(rmdir(dir), ==, 0);
+}
+
 static void test_restart_persistence(void)
 {
     g_autofree char *dir = g_dir_make_tmp("ds1742-store-XXXXXX", NULL);
@@ -314,6 +385,8 @@ int main(int argc, char **argv)
     qtest_add_func("/ds1742/reset-with-read", test_reset_with_read);
     qtest_add_func("/ds1742/stop-test-mode", test_stop_and_test_mode);
     qtest_add_func("/ds1742/migration", test_migration);
+    qtest_add_func("/ds1742/backed-migration-quit",
+                   test_backed_migration_quit);
     qtest_add_func("/ds1742/restart-persistence", test_restart_persistence);
     return g_test_run();
 }
