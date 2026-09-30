@@ -53,7 +53,7 @@ config SGI_OCTANE
     select SGI_BRIDGE
     select SGI_IOC3
     select SGI_XBOW
-    select SGI_XTALK_PORT
+    select SGI_XIO_PORT
 
 config SGI_SN0
     bool

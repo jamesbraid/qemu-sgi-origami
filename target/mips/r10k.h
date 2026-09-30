@@ -80,35 +80,6 @@
 #define R12K_BPT_ENTRIES  2048
 #define R10K_BPT_LINE     8
 
-/*
- * What the processor puts on its system interface that the board sees no
- * memory access for: a secondary-cache instruction that may write a block
- * back or drop it, and a prefetch (R10000 User's Manual version 2.0, the
- * processor block read, block write and eliminate protocols).
- */
-typedef enum R10KSystemRequest {
-    R10K_REQUEST_INDEX_WRITEBACK_INVALIDATE,
-    R10K_REQUEST_HIT_WRITEBACK_INVALIDATE,
-    R10K_REQUEST_HIT_INVALIDATE,
-    R10K_REQUEST_PREFETCH_LOAD,
-    R10K_REQUEST_PREFETCH_STORE,
-} R10KSystemRequest;
-
-/*
- * The processor dispatches each such request as a read of the board's
- * system-request region, as the generic CACHE model dispatches tag
- * operations to its ITC region. The read is 8 bytes and big-endian, so
- * the region is DEVICE_BIG_ENDIAN with 8-byte valid and impl sizes and
- * its value arrives unswapped. The offset carries the physical
- * address, the request and, for an index request, which names a set rather
- * than a block, the number of secondary-cache set-index bits. The value
- * read back is nonzero when the request found a block the board follows
- * for this processor; the reference's requester_id names the processor.
- */
-#define R10K_SYSTEM_REQUEST_PADDR_BITS 48
-#define R10K_SYSTEM_REQUEST_KIND_SHIFT 48
-#define R10K_SYSTEM_REQUEST_SET_BITS_SHIFT 52
-#define R10K_SYSTEM_REQUEST_SIZE (UINT64_C(1) << 58)
 
 typedef struct R10KState {
     /*
