@@ -57,6 +57,7 @@ typedef struct SGISoftDraw {
     const SGIGLTexImage *texture;
     unsigned *texture_reports;
     uint32_t point_size, line_width;
+    const uint32_t *polygon_stipple;
     uint32_t rgba_mask;
     bool rgba_read;
     bool *rgba_reported;
@@ -1549,11 +1550,11 @@ static void sgi_soft_clipped_triangle(const SGISoftDraw *r,
     py1 = MIN((int)max_y, py1);
 
     for (int py = py0; py <= py1; py++) {
-        int64_t cy = ((int64_t)py << sub) +
+        int64_t cy = ((int64_t)py * (1 << sub)) +
                      (1 << (sub - 1));
 
         for (int px = px0; px <= px1; px++) {
-            int64_t cx = ((int64_t)px << sub) +
+            int64_t cx = ((int64_t)px * (1 << sub)) +
                          (1 << (sub - 1));
             int64_t e0 = sgi_soft_edge(&v[1], &v[2], cx, cy);
             int64_t e1 = sgi_soft_edge(&v[2], &v[0], cx, cy);
@@ -1564,6 +1565,12 @@ static void sgi_soft_clipped_triangle(const SGISoftDraw *r,
             if (!sgi_soft_owns(&v[1], &v[2], e0) ||
                 !sgi_soft_owns(&v[2], &v[0], e1) ||
                 !sgi_soft_owns(&v[0], &v[1], e2)) {
+                continue;
+            }
+            /* Window phase precedes plane translation and fragment work. */
+            if (r->polygon_stipple &&
+                !(r->polygon_stipple[(uint32_t)py & 31] &
+                  (1u << ((uint32_t)px & 31)))) {
                 continue;
             }
             b1 = (double)e1 / area;
@@ -1970,6 +1977,8 @@ void sgi_soft_draw(const SGIRasterRules *rules, const SGIRasterTarget *t,
     SGISoftDraw r = {
         .rules = rules, .t = t, .st = d->state,
         .back_colors = d->back_colors,
+        .polygon_stipple = d->polygon_stipple_enabled ?
+                           d->polygon_stipple : NULL,
     };
     uint32_t n = d->count;
     unsigned texture_reports = 0;

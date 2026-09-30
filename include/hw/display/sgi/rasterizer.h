@@ -251,7 +251,8 @@ typedef struct SGIRasterTarget {
  * rules. A rule set sgi_raster_rules_supported() refuses draws nothing.
  * Aliased dimensions round half up to at least one; zero defaults to one.
  * Rounded widths above INT32_MAX exceed the internal arithmetic domain, not
- * an established hardware maximum. Stipple and smoothing are omitted.
+ * an established hardware maximum. Line stipple and smoothing are omitted.
+ * Filled samples use d's borrowed canonical window stipple rows.
  */
 void sgi_soft_draw(const SGIRasterRules *r, const SGIRasterTarget *t,
                    const SGIGLDraw *d);

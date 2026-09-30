@@ -669,11 +669,8 @@ typedef struct SGIGLContext {
     uint32_t clear_depth;
     uint32_t clear_stencil;     /* glClearStencil's value */
     /*
-     * Rasterization state the rasterizer does not draw with, which it
-     * draws as the initial state does, kept and answered: glPointSize,
-     * glLineWidth, glLineStipple's repeat and pattern, glPolygonMode's
-     * front and back modes, and the smoothing and stipple enables as
-     * SGI_GL_RASTER_POINT_SMOOTH and so on (3.3 to 3.5).
+     * Aliased sizes and retained polygon modes (3.3 to 3.5).
+     * Smoothing and line stipple remain unimplemented.
      */
     float point_size;
     float line_width;
@@ -681,6 +678,8 @@ typedef struct SGIGLContext {
     uint32_t line_stipple_pattern;
     uint32_t polygon_mode[2];
     uint32_t raster_enables;
+    /* Canonical window rows: bit x of row y (OpenGL 1.2.1, 3.5.3). */
+    uint32_t polygon_stipple[32];
     /* The primitive open since glBegin, SGI_GL_POINTS to SGI_GL_POLYGON. */
     uint32_t begin_mode;
     uint32_t in_begin;          /* 0 or 1 */
@@ -821,6 +820,9 @@ typedef struct SGIGLDraw {
     /* Borrowed dimensions; zero in direct submissions means one. */
     float point_size;
     float line_width;
+    /* Borrowed canonical rows; absent rows mean stipple is disabled. */
+    const uint32_t *polygon_stipple;
+    bool polygon_stipple_enabled;
 } SGIGLDraw;
 
 /*
@@ -840,6 +842,15 @@ typedef struct SGIGLSink {
 
 /* OpenGL 1.2.1's initial state, for the context with identity hw_id. */
 void sgi_gl_init(SGIGLContext *c, uint32_t hw_id);
+
+/*
+ * Canonical 32x32 pattern, copied on upload. Bit x in row y names window
+ * (x, y). These public-command helpers reject use inside Begin/End.
+ * Device transport and public BITMAP unpacking belong to the caller.
+ */
+bool sgi_gl_polygon_stipple(SGIGLContext *c, const uint32_t rows[32]);
+bool sgi_gl_get_polygon_stipple(const SGIGLContext *c, uint32_t rows[32]);
+
 /*
  * Point the context at a drawable. The family calls it at each context
  * switch and whenever its window or buffer selection changes; sgi_gl_init()

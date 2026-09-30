@@ -3889,6 +3889,171 @@ static void test_wide_dimensions(void)
  * mode change nothing; the repeat clamps to [1, 256]; drawing is as the
  * initial state draws.
  */
+static void test_polygon_stipple_state(void)
+{
+    SGIGLContext a, b;
+    uint32_t rows[32] = { 0 }, out[32];
+
+    sgi_gl_init(&a, 1);
+    sgi_gl_init(&b, 2);
+    g_assert_true(sgi_gl_get_polygon_stipple(&a, out));
+    for (unsigned i = 0; i < 32; i++) {
+        g_assert_cmphex(out[i], ==, UINT32_MAX);
+        rows[i] = 1u << i;
+    }
+    g_assert_true(sgi_gl_polygon_stipple(&a, rows));
+    rows[0] = 0;
+    g_assert_true(sgi_gl_get_polygon_stipple(&a, out));
+    g_assert_cmphex(out[0], ==, 1);
+    g_assert_true(sgi_gl_get_polygon_stipple(&b, out));
+    g_assert_cmphex(out[0], ==, UINT32_MAX);
+    a.in_begin = true;
+    g_assert_false(sgi_gl_polygon_stipple(&a, rows));
+    memset(out, 0x5a, sizeof(out));
+    g_assert_false(sgi_gl_get_polygon_stipple(&a, out));
+    g_assert_cmphex(out[0], ==, 0x5a5a5a5a);
+    a.in_begin = false;
+    g_assert_true(sgi_gl_get_polygon_stipple(&a, out));
+    g_assert_cmphex(out[0], ==, 1);
+}
+
+/* Absolute window phase survives fan splits and drawable translation. */
+static void test_polygon_stipple_phase(void)
+{
+    FragScene f;
+    uint32_t rows[32] = { 0 };
+
+    rows[0] = 1;
+    rows[1] = 1u << 31;
+    rows[31] = (1u << 31) | 1;
+    for (unsigned shifted = 0; shifted < 2; shifted++) {
+        int shift = shifted ? 16 : 0;
+
+        frag_init(&f);
+        f.c.cur.viewport[0] = f.c.cur.viewport[1] = -shift;
+        f.c.cur.drawable.origin[0] = f.c.cur.drawable.origin[1] = shift;
+        g_assert_true(sgi_gl_polygon_stipple(&f.c, rows));
+        enable(&f.c, SGI_GL_POLYGON_STIPPLE, true);
+        frag_quad(&f, 1, 0, 0, 1);
+        for (int y = 0; y < H; y++) {
+            for (int x = 0; x < W; x++) {
+                unsigned wx = (unsigned)(x - shift) & 31;
+                unsigned wy = (unsigned)(y - shift) & 31;
+
+                g_assert_cmphex(frag_pixel(&f, x, y), ==,
+                               (rows[wy] & (1u << wx)) ? 0xff0000 : 0);
+            }
+        }
+        memset(&f.p, 0, sizeof(f.p));
+        enable(&f.c, SGI_GL_POLYGON_STIPPLE, false);
+        frag_quad(&f, 1, 0, 0, 1);
+        g_assert_cmpuint(frag_count(&f, 0xff0000), ==, W * H);
+        for (unsigned i = 0; i < 32; i++) {
+            rows[i] = UINT32_MAX;
+        }
+        g_assert_true(sgi_gl_polygon_stipple(&f.c, rows));
+        enable(&f.c, SGI_GL_POLYGON_STIPPLE, true);
+        frag_quad(&f, 0, 1, 0, 1);
+        g_assert_cmpuint(frag_count(&f, 0x00ff00), ==, W * H);
+        rows[0] = 1;
+        rows[1] = 1u << 31;
+        memset(&rows[2], 0, 29 * sizeof(rows[0]));
+        rows[31] = (1u << 31) | 1;
+    }
+}
+
+static void test_polygon_stipple_fragment_ops(void)
+{
+    FragScene f;
+    uint32_t rows[32] = { 0 };
+    Planes before;
+
+    for (unsigned index = 0; index < 2; index++) {
+        for (unsigned targets = 0; targets < 2; targets++) {
+            frag_init(&f);
+            memset(&f.p, 0x55, sizeof(f.p));
+            before = f.p;
+            f.c.cur.index_bits = index ? 8 : 0;
+            f.c.cur.index_mask = 3;
+            f.c.cur.colour_mask = SGI_GL_COLOUR_MASK_RED;
+            f.c.cur.blend = true;
+            f.c.cur.blend_src = f.c.cur.blend_dst = 1;
+            f.c.cur.draw_buffers = targets ? SGI_GL_DRAW_FRONT : 0;
+            f.c.cur.depth_test = f.c.cur.stencil_test = true;
+            f.c.cur.depth_func = SGI_GL_ALWAYS;
+            f.c.cur.stencil_op[2] = SGI_GL_INCR;
+            g_assert_true(sgi_gl_polygon_stipple(&f.c, rows));
+            enable(&f.c, SGI_GL_POLYGON_STIPPLE, true);
+            frag_quad(&f, 1, 0, 0, 1);
+            g_assert_cmpmem(&f.p, sizeof(f.p), &before, sizeof(before));
+            rows[0] = 1;
+            g_assert_true(sgi_gl_polygon_stipple(&f.c, rows));
+            frag_quad(&f, 1, 0, 0, 1);
+            g_assert_cmpuint(f.p.depth[0], !=, before.depth[0]);
+            g_assert_cmpuint(f.p.stencil[0], ==, 0x56);
+            g_assert_cmpuint(f.p.depth[1], ==, before.depth[1]);
+            if (!targets) {
+                g_assert_cmpmem(f.p.colour, sizeof(f.p.colour),
+                                before.colour, sizeof(before.colour));
+            }
+            rows[0] = 0;
+        }
+    }
+    frag_init(&f);
+    g_assert_true(sgi_gl_polygon_stipple(&f.c, rows));
+    enable(&f.c, SGI_GL_POLYGON_STIPPLE, true);
+    frag_command(&f, SGI_GL_OP_BEGIN, (uint32_t[]) { SGI_GL_POINTS }, 1);
+    wide_vertex(&f, 1.5, 1.5);
+    frag_command(&f, SGI_GL_OP_END, NULL, 0);
+    g_assert_cmphex(frag_pixel(&f, 1, 1), ==, 0xffffff);
+    frag_command(&f, SGI_GL_OP_BEGIN, (uint32_t[]) { SGI_GL_LINES }, 1);
+    wide_vertex(&f, 2.5, 2.5);
+    wide_vertex(&f, 6.5, 2.5);
+    frag_command(&f, SGI_GL_OP_END, NULL, 0);
+    g_assert_cmphex(frag_pixel(&f, 3, 2), ==, 0xffffff);
+    {
+        SGIGLBitmap bitmap;
+        uint8_t byte = 0x80;
+
+        frag_command(&f, SGI_GL_OP_RASTER_POS2F,
+                     (uint32_t[]) { bits(8.5f / 32 - 1),
+                                    bits(8.5f / 32 - 1) }, 2);
+        g_assert_true(sgi_gl_bitmap_place(&f.c, 1, 1, 0, 0, 0, 0, &bitmap));
+        sgi_gl_bitmap_bytes(&f.c, &f.sink, &bitmap, 0, &byte, 1);
+        g_assert_cmphex(frag_pixel(&f, 8, 8), ==, 0xffffff);
+    }
+    f.c.clear_color[0] = 1;
+    frag_clear(&f, SGI_GL_COLOR_BUFFER_BIT);
+    g_assert_cmpuint(frag_count(&f, 0xff0000), ==, W * H);
+}
+
+static void test_polygon_state_begin_guard(void)
+{
+    FragScene f;
+
+    frag_init(&f);
+    frag_command(&f, SGI_GL_OP_BEGIN, (uint32_t[]) { SGI_GL_TRIANGLES }, 1);
+    frag_command(&f, SGI_GL_OP_POLYGON_MODE,
+                 (uint32_t[]) { SGI_GL_FRONT_AND_BACK, SGI_GL_LINE }, 2);
+    enable(&f.c, SGI_GL_POLYGON_STIPPLE, true);
+    g_assert_cmphex(f.c.polygon_mode[0], ==, SGI_GL_FILL);
+    g_assert_cmphex(f.c.polygon_mode[1], ==, SGI_GL_FILL);
+    g_assert_cmpuint(f.c.raster_enables & SGI_GL_RASTER_POLYGON_STIPPLE, ==, 0);
+    frag_command(&f, SGI_GL_OP_END, NULL, 0);
+    enable(&f.c, SGI_GL_POLYGON_STIPPLE, true);
+    frag_command(&f, SGI_GL_OP_BEGIN, (uint32_t[]) { SGI_GL_TRIANGLES }, 1);
+    enable(&f.c, SGI_GL_POLYGON_STIPPLE, false);
+    g_assert_cmpuint(f.c.raster_enables & SGI_GL_RASTER_POLYGON_STIPPLE, !=, 0);
+    {
+        uint32_t out = 0x5a5a5a5a;
+        unsigned n = 0;
+
+        g_assert_false(sgi_gl_get(&f.c, SGI_GL_POLYGON_STIPPLE, &out, &n));
+        g_assert_cmphex(out, ==, 0x5a5a5a5a);
+    }
+    frag_command(&f, SGI_GL_OP_END, NULL, 0);
+}
+
 static void test_raster_state_kept(void)
 {
     static const uint32_t caps[5] = {
@@ -5587,6 +5752,39 @@ static void alpha_point(AlphaScene *s, unsigned r, unsigned g, unsigned b,
     frag_command(&s->f, SGI_GL_OP_END, NULL, 0);
 }
 
+static void test_polygon_stipple_rgba_texture(void)
+{
+    AlphaScene s;
+    TexturePixels pixels = { .pixel = {
+        0xff000040, 0xff000040, 0xff000040, 0xff000040 } };
+    SGIGLTexImage image = texture_image(&pixels);
+    uint32_t rows[32] = { 0 };
+
+    alpha_init(&s);
+    s.f.c.cur.drawable.clip.r[0] = (SGIClipRect) {32, 32, 32, 32};
+    s.pixel[0] = (SGIRasterColour) { {10, 20, 30, 40} };
+    s.f.c.cur.colour_mask = SGI_GL_COLOUR_MASK_ALPHA;
+    s.f.c.cur.blend = true;
+    s.f.c.cur.blend_src = s.f.c.cur.blend_dst = 1;
+    s.f.rec.target.texture = &image;
+    enable(&s.f.c, SGI_GL_TEXTURE_2D, true);
+    g_assert_true(sgi_gl_polygon_stipple(&s.f.c, rows));
+    enable(&s.f.c, SGI_GL_POLYGON_STIPPLE, true);
+    frag_quad(&s.f, 1, 1, 1, 1);
+    g_assert_cmpuint(s.stores, ==, 0);
+    g_assert_cmpuint(s.reads, ==, 0);
+    g_assert_cmpuint(pixels.reads, ==, 0);
+    g_assert_cmpuint(s.pixel[0].component[3], ==, 40);
+    rows[0] = 1;
+    g_assert_true(sgi_gl_polygon_stipple(&s.f.c, rows));
+    frag_quad(&s.f, 1, 1, 1, 1);
+    g_assert_cmpuint(s.stores, ==, 1);
+    g_assert_cmpuint(s.reads, ==, 1);
+    g_assert_cmpuint(pixels.reads, >, 0);
+    g_assert_cmpuint(s.pixel[0].component[0], ==, 10);
+    g_assert_cmpuint(s.pixel[0].component[3], ==, 104);
+}
+
 static void test_alpha_storage(void)
 {
     AlphaScene s;
@@ -6052,6 +6250,16 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-gl/wide-interpolation", test_wide_interpolation);
     g_test_add_func("/sgi-gl/wide-fragment-ops", test_wide_fragment_ops);
     g_test_add_func("/sgi-gl/wide-dimensions", test_wide_dimensions);
+    g_test_add_func("/sgi-gl/polygon-stipple-rgba-texture",
+                    test_polygon_stipple_rgba_texture);
+    g_test_add_func("/sgi-gl/polygon-stipple-state",
+                    test_polygon_stipple_state);
+    g_test_add_func("/sgi-gl/polygon-stipple-phase",
+                    test_polygon_stipple_phase);
+    g_test_add_func("/sgi-gl/polygon-stipple-fragment-ops",
+                    test_polygon_stipple_fragment_ops);
+    g_test_add_func("/sgi-gl/polygon-state-begin-guard",
+                    test_polygon_state_begin_guard);
     g_test_add_func("/sgi-gl/raster-state-kept", test_raster_state_kept);
     g_test_add_func("/sgi-gl/volume-clip-triangle-near-and-far",
                     test_volume_clip_triangle_near_and_far);
