@@ -353,7 +353,8 @@ static void usb_wacom_handle_reset(USBDevice *dev)
     memset(s->btns, 0, sizeof(s->btns));
     s->dz = 0;
     s->mode = WACOM_MODE_HID;
-    g_clear_pointer(&s->hs, qemu_input_handler_unregister);
+    s->changed = 1;
+    usb_wacom_register_input_handler(s, false);
 }
 
 static void usb_wacom_handle_control(USBDevice *dev, USBPacket *p,
@@ -380,8 +381,13 @@ static void usb_wacom_handle_control(USBDevice *dev, USBPacket *p,
         }
         break;
     case WACOM_SET_REPORT:
-        g_clear_pointer(&s->hs, qemu_input_handler_unregister);
         s->mode = data[0];
+        if (s->mode == WACOM_MODE_HID || s->mode == WACOM_MODE_WACOM) {
+            usb_wacom_register_input_handler(s, s->mode == WACOM_MODE_WACOM);
+        } else {
+            g_clear_pointer(&s->hs, qemu_input_handler_unregister);
+        }
+        s->changed = 1;
         break;
     case WACOM_GET_REPORT:
         data[0] = 0;
@@ -450,6 +456,8 @@ static void usb_wacom_realize(USBDevice *dev, Error **errp)
     usb_desc_init(dev);
     s->intr = usb_ep_get(dev, USB_TOKEN_IN, 1);
     s->changed = 1;
+    s->mode = WACOM_MODE_HID;
+    usb_wacom_register_input_handler(s, false);
 }
 
 static const VMStateDescription vmstate_usb_wacom = {
