@@ -929,13 +929,9 @@ void rom_main(void)
     rom_assert_eq(113, SINGLE_0_5, get_f2());
 
     /*
-     * The review of the gate found the model refuses twelve decoder
-     * sites
-     * while this ROM probed six: every double-precision leg and the
-     * move-on-zero forms are distinct cases in the decoder, each with
-     * its
-     * own gate call, and an ungated one would pass the six-probe ROM
-     * silently. One refused-and-permitted pair per remaining site.
+     * Check the double-precision and move-on-zero forms too. Each has a
+     * separate decoder case, so test both the refused and permitted
+     * instruction for every case.
      */
     set_fsr(0);
     set_f2(0);

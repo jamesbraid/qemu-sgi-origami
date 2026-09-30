@@ -1673,12 +1673,10 @@ static void test_graphics_flow_control_registers_mask_wide_writes(
 }
 
 /*
- * gfx_flow_attach_me's own sequence (si-graphics-widget-wiring-handoff-
- * 20260916.md): seed bias at zero, write the real credit value, program
- * the page and the II routing word, then raise bias to the comparison
- * value MgrasResume polls against. The counter is untouched by any of
- * the other writes, so the driver's own "credit >= bias" test is
- * satisfied without this model inventing a value.
+ * Seed bias at zero, write the credit value, program the page and II
+ * routing word, then raise bias to the value MgrasResume compares against.
+ * Other writes leave the counter unchanged, so the driver's "credit >=
+ * bias" check succeeds without the model inventing a value.
  */
 static void test_graphics_flow_control_replays_the_attach_sequence(
     const void *data)

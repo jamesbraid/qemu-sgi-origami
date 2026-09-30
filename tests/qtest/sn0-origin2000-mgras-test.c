@@ -446,7 +446,7 @@ static void mgras_enter_context(QTestState *qts)
 
     /*
      * No closing word exists at 0x120400: the image completes as soon as
-     * the 63rd word lands (mgras-hq4.md, "Context switch and HQ flags").
+     * the 63rd word lands.
      */
     for (int i = 0; i < MGRAS_CONTEXT_WORDS; i++) {
         qtest_writel(qts, REG_CONTEXT_COMMAND, i);
@@ -1368,7 +1368,7 @@ static void test_dma_image_transfer_paints_from_host_memory(void)
     mgras_enter_context(qts);
 
     /*
-     * Page list: the kernel's own layout (FIX-SPEC.md section 2) -- three
+     * Page list: three
      * zero 8-byte header words, then page-frame-number entries starting
      * at byte 0x18. One entry here, page-frame 7 (0x7000 >> 12). Source
      * pixels live at page 7, offset 0 -- the same bytes the va = 0..7
@@ -1656,7 +1656,7 @@ static void test_dma_image_transfer_src_off_aligned_selects_page(void)
 
 /*
  * Two source-mapping slots held open at once, as every capture that
- * reaches a copy does (FIX-SPEC.md section 1): the DDX keeps a
+ * reaches a copy: the DDX keeps a
  * long-lived slot 0 mapping for its small-copy bounce buffer alongside a
  * per-transfer slot 3 mapping for larger copies. The kick byte's bits
  * 2:1 name which one a given transfer reads; a scan for "the only
@@ -1682,7 +1682,7 @@ static void test_dma_image_transfer_kick_byte_selects_slot(void)
     mgras_enter_context(qts);
 
     /*
-     * Each list is the kernel's own layout (FIX-SPEC.md section 2): three
+     * Each list has three
      * zero header words at the mapped page's start, then the entry at
      * byte 0x18.
      */
@@ -1769,7 +1769,7 @@ static void test_dma_image_transfer_kick_byte_selects_slot(void)
 #undef DMA_SLOT_TEST_WIDGET
 
 /*
- * Page-list base regression (FIX-SPEC.md section 2): the base pair's low
+ * Page-list base regression: the base pair's low
  * word is entry 0's byte address, three zero 8-byte header words then
  * page-frame-number entries from byte 0x18, not a page-aligned address
  * with flag bits. Plant different pixel bytes at the real page-frame
@@ -1850,9 +1850,9 @@ static void test_dma_image_transfer_reads_list_entry_at_0x18(void)
 #undef DMA_LIST_BASE_REAL_PAGE
 
 /*
- * Screen-to-host read (FIX-SPEC.md section 3): the trace's own read
+ * Screen-to-host read: the read
  * descriptor, hw-y box (0,1023)-(3,1020), pitch 4, over the seed weave
- * (FIX-SPEC.md section 0) painted directly at screen (0,0)-(3,3). Checks
+ * painted directly at screen (0,0)-(3,3). Checks
  * the read lands the box top-down at pitch 4 in host memory and leaves
  * 0x020010 bit 16 alone, then replays the paired 0xb1 write -- the same
  * host bytes, reusing the read's page-list mapping -- to confirm the
@@ -1877,7 +1877,7 @@ static void test_dma_image_transfer_reads_screen_to_host(void)
     static const uint8_t list_entry[8] = {
         0, 0, 0, 0, 0, 0, 0, DMA_READ_DATA_PFN,
     };
-    /* FIX-SPEC.md section 0's seed weave: one set pixel per row. */
+    /* Seed pattern: one set pixel per row. */
     static const uint8_t weave[16] = {
         0x00, 0x00, 0x00, 0x07,
         0x00, 0x07, 0x00, 0x00,
@@ -1943,8 +1943,7 @@ static void test_dma_image_transfer_reads_screen_to_host(void)
                     0);
 
     /*
-     * Read descriptor: the trace's own values (FIX-SPEC.md section 3
-     * table), hw-y box (0,1023)-(3,1020), pitch 4, kick 0xb9 (slot 0,
+     * Read descriptor: hw-y box (0,1023)-(3,1020), pitch 4, kick 0xb9 (slot 0,
      * read).
      */
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
@@ -1968,7 +1967,7 @@ static void test_dma_image_transfer_reads_screen_to_host(void)
     g_assert_cmpmem(got, sizeof(got), weave, sizeof(weave));
 
     /*
-     * Paired write (FIX-SPEC.md section 3, step 6): reuses pitch (reg 4)
+     * Paired write: reuses pitch (reg 4)
      * from the read unwritten, same host bytes, box (4,0)-(7,3) -- the
      * capture's first doubling, weave beside itself.
      */
@@ -2358,7 +2357,7 @@ static void test_board_info_byte_read_does_not_raise_error(void)
     /*
      * The kernel's GFX_GETBOARDINFO handler performs a one-byte read here
      * on every OpenGL context query; the captured flow answers 0 and the
-     * error state stays clear (glx-ioctl-trace.md).
+     * error state stays clear.
      */
     g_assert_cmphex(qtest_readb(qts, MGRAS_REG(0x071308)), ==, 0);
     g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
@@ -2556,7 +2555,7 @@ static void test_entry_requires_prefix(void)
 }
 
 /*
- * Established (mgras-hq4.md): MgrasCtxsw never writes or reads a closing
+ * MgrasCtxsw does not write or read a closing
  * word at 0x120400 -- the image completes on the 63rd word alone. A word
  * written afterward is ordinary command-FIFO traffic, parsed like any
  * other command token rather than checked against a fixed value.
@@ -2776,8 +2775,7 @@ static void mgras_general_to_hub(unsigned int general_vector)
 /*
  * MgrasInitialize writes 0x3008a200 to 0x011040, MgrasSchedSwapBuf adds 0x400
  * with a plain store, and MgrasGeneralInterrupt and the context switch's
- * tail remove bits through 0x011048 (mgras-hq4.md, "Interrupt block
- * registers as the kernel uses them").
+ * tail remove bits through 0x011048.
  */
 static void test_irq_enable_set_and_clear_ports(void)
 {
@@ -2796,9 +2794,9 @@ static void test_irq_enable_set_and_clear_ports(void)
 
 /*
  * MgrasSchedSwapBuf enables source 10 and writes the one word 0x3700; the
- * handler disables the source at 0x011048 and acknowledges 0x401
- * (mgras-hq4.md, "Swap scheduling"). That the word raises bit 10 is
- * Inferred there; the model raises it on consuming the word.
+ * handler disables the source at 0x011048 and acknowledges 0x401.
+ * That the word raises bit 10 is inferred; the model raises it on
+ * consuming the word.
  */
 static void test_swap_command_raises_interrupt_10(void)
 {
@@ -3893,9 +3891,9 @@ static void test_direct_byte_row_pairs(void)
 /*
  * The real xdm chooser ORs the row-padding field (bits 16:14) into the
  * same 0x159 word as the packing selector bit, e.g. 0x00010080 rather
- * than the bare 0x0080 the test above drives (blockcopy-grammar.md's
- * field table: "row padding to 8 bytes in bits 16:14, caller flags in
- * bits 7:4 and 3:0"). mgras_draw_byte_row()'s packing switch used an exact
+ * than the bare 0x0080 the test above drives: row padding to 8 bytes is
+ * in bits 16:14 and caller flags are in bits 7:4 and 3:0.
+ * mgras_draw_byte_row()'s packing switch used an exact
  * match against the whole register value, so every one of these calls
  * fell to the LOG_UNIMP default and was dropped -- 252 drops in a single
  * capture, wiping icon glyph and button/field content
@@ -3977,7 +3975,7 @@ static void test_direct_byte_row_with_row_pad_bits(void)
 /*
  * The desktop backdrop's 4x4 seed weave: register 0x159 == 0 (neither bit
  * 15 nor bit 7 set), a value mgras_draw_byte_row() used to route to the
- * unimplemented default and drop. FIX-SPEC.md section 0's trace values:
+ * unimplemented default and drop. Captured trace values:
  * box (0,0)-(3,3), then four STATE CHAR_H / EXEC CHAR_L pairs painting the
  * X root window's weave (one set pixel per row, colour index 7 on 0):
  *
@@ -4896,8 +4894,7 @@ static const MgrasBoardExpect mgras_board_expect[] = {
 /*
  * The name IRIX 6.5.x hinv prints for the counts MgrasGatherInfo decodes
  * from the two version bytes, and the E-series marker the kernel sets from
- * a GE revision of 3 or more (mgras-board-identity.md, "The inventory word
- * and what hinv prints"). Products 2 and 3 only: RE count equals GE count,
+ * a GE revision of 3 or more. Products 2 and 3 only: RE count equals GE count,
  * and a TRAM path holds 4 TRAMs unless its field is 3.
  */
 static const char *mgras_decode_hinv_name(uint8_t version1, uint8_t version0,
@@ -5314,9 +5311,8 @@ static void test_hq_flags_set_and_clear(void)
 
 /*
  * __Mgr_ReturnMode clears flag 17, writes 0xa20c and three arguments, polls
- * 0x020010 until bit 17 is set, then reads the answer at 0x028004 once
- * (mgras-gl-commands.md, "Context setup, synchronization and queries"). The
- * answer's value is unknown; the model answers zero.
+ * 0x020010 until bit 17 is set, then reads the answer at 0x028004 once.
+ * The answer's value is unknown; the model answers zero.
  */
 static void test_hq_query_sets_flag_after_arguments(void)
 {
@@ -5356,10 +5352,10 @@ static void test_hq_query_flag_only_from_query(void)
 }
 
 /*
- * An inline data block's header has bit 31 set and a 20-bit byte length
- * (mgras-gl-commands.md, "Word framing"). The GL client's first GE table
- * load is 0x80000214: five descriptor words and 128 data words. Filling
- * the block with fence tokens shows whether any of it parsed as headers.
+ * An inline data block's header has bit 31 set and a 20-bit byte length.
+ * The GL client's first GE table load is 0x80000214: five descriptor words
+ * and 128 data words. Filling the block with fence tokens shows whether
+ * any of it parsed as headers.
  */
 static void test_inline_block_uses_20_bit_length(void)
 {
@@ -5380,9 +5376,9 @@ static void test_inline_block_uses_20_bit_length(void)
 
 /*
  * The OpenGL client's own words on the main port, as the IRIX 6.5.30
- * IP27GR532 libGLcore.so frames them (mgras-gl-commands.md, "Decoded
- * commands"): glViewport 0x3310, glClearColor 0xba10, glClear's colour
- * token 0x1500, glShadeModel 0x4704, glColor3f 0x2000020c, glBegin and
+ * IP27GR532 libGLcore.so frames them: glViewport 0x3310,
+ * glClearColor 0xba10, glClear's colour token 0x1500,
+ * glShadeModel 0x4704, glColor3f 0x2000020c, glBegin and
  * glEnd for GL_TRIANGLES 0x1a00 and 0x2400, glVertex2f 0x40000008 and
  * glFlush 0x3600.
  */
@@ -5989,7 +5985,7 @@ static void test_hq_flags_fence_token_isolated(void)
 }
 
 /*
- * Established (mgras-gl-commands.md, word framing): a header's payload is
+ * A header's payload is
  * (len + 3) / 4 words. The IRIX 6.5.30 GL client writes glColor3ub as
  * 0x34800203 and one packed word, and glVertex3s as 0x39000006 and two
  * words. Each payload below would, if read as a header, claim eight bytes

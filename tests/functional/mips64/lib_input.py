@@ -117,20 +117,15 @@ def run_script(vm, steps):
 
 # The largest single mouse_move delta this module will ever send to force
 # the cursor to a screen corner regardless of where it already was (see
-# move_to() below). 1280x1024 is this project's only graphics resolution
-# so far (psitech-rad4.md); this comfortably clears either axis of any
-# resolution the emulated framebuffers here use.
+# move_to() below). 1280x1024 is the largest graphics resolution currently
+# supported, so this clears either axis of the emulated framebuffers here.
 CLAMP_MOVE_DELTA = 2000
 
 # The step size a held-button drag needs, tighter than MOUSE_MOVE_STEP_MAX
-# above. psitech-rad4.md's window-resize finding (see this module's own
-# docstring) is that a drag can silently queue several correctly-sized
-# ~100-150 unit moves with no visible effect, then flush the whole
-# backlog at once on a later move -- smaller steps keep that backlog
-# smaller and make the eventual flush less likely to overshoot a target
-# rectangle by a wide margin. Still an unverified-but-conservative choice
-# in the same sense MOUSE_MOVE_STEP_MAX's own comment describes, not a
-# measured minimum.
+# above. A held-button drag can queue several correctly-sized moves with
+# no visible effect, then apply them together later. Smaller steps limit
+# how far that delayed movement can overshoot. This is conservative; it is
+# not a measured minimum.
 DRAG_MOVE_STEP_MAX = 30
 
 
@@ -174,9 +169,8 @@ def drag_mouse(vm, dx, dy, button=1, step=DRAG_MOVE_STEP_MAX,
     move_mouse() applies, but at DRAG_MOVE_STEP_MAX's smaller default.
     A caller must not assume the drag's effect (a resize, a
     repositioned window) lands after any one step, or even immediately
-    after release: psitech-rad4.md's window-resize finding is that a
-    held-button drag can visibly do nothing for many correctly-sized
-    steps and then jump straight to the final result once the guest's
+    after release: a held-button drag can visibly do nothing for many
+    correctly-sized steps, then jump to the final result once the guest's
     PS/2 queue drains, sometimes after the button is already back up.
     Check the result (e.g. with a screendump), retrying the check with
     a short wait rather than assuming a fixed number of steps or a
