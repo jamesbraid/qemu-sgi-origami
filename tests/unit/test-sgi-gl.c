@@ -7565,9 +7565,473 @@ static void test_mipmap_format_pipeline(void)
     }
 }
 
+
+/* Positions come from horizontal/vertical half-centred analytic geometry. */
+static SGIGLDraw line_stipple_draw(FragScene *f,
+                                   float v[][SGI_GL_VERTEX_FLOATS],
+                                   const float xy[][2], unsigned n,
+                                   uint32_t mode, uint32_t repeat,
+                                   uint32_t pattern, uint32_t *phase)
+{
+    polygon_mode_vertices(v, xy, n);
+    return (SGIGLDraw) {
+        .mode = mode, .count = n, .vertices = &v[0][0], .state = &f->c.cur,
+        .line_stipple_enabled = true, .line_stipple_repeat = repeat,
+        .line_stipple_pattern = pattern, .line_phase = phase,
+    };
+}
+
+static void test_line_stipple_direct(void)
+{
+    FragScene f;
+    float v[5][SGI_GL_VERTEX_FLOATS];
+    const float long_xy[][2] = { { 8.5, 8.5 }, { 42.5, 8.5 } };
+    const float pairs[][2] = {
+        { 8.5, 8.5 }, { 14.5, 8.5 }, { 20.5, 8.5 }, { 26.5, 8.5 },
+        { 30.5, 8.5 },
+    };
+    const float strip[][2] = {
+        { 8.5, 8.5 }, { 13.5, 8.5 }, { 17.5, 8.5 },
+    };
+    const float loop[][2] = {
+        { 8.5, 8.5 }, { 11.5, 8.5 }, { 11.5, 10.5 },
+    };
+    SGIGLDraw d;
+
+    frag_init(&f);
+    d = line_stipple_draw(&f, v, long_xy, 2, SGI_GL_LINES, 2, 1, NULL);
+    sgi_soft_draw(f.rec.rules, &f.rec.target, &d);
+    for (unsigned x = 8; x < 42; x++) {
+        g_assert_cmphex(frag_pixel(&f, x, 8), ==,
+                        x == 8 || x == 9 || x == 40 || x == 41 ? 0xffffff : 0);
+    }
+    g_assert_cmpuint(frag_count(&f, 0xffffff), ==, 4);
+    memset(&f.p, 0, sizeof(f.p));
+    d = line_stipple_draw(&f, v, pairs, 5, SGI_GL_LINES, 2, 1, NULL);
+    sgi_soft_draw(f.rec.rules, &f.rec.target, &d);
+    g_assert_cmpuint(frag_count(&f, 0xffffff), ==, 4);
+    for (unsigned x = 8; x < 31; x++) {
+        g_assert_cmphex(frag_pixel(&f, x, 8), ==,
+                        x == 8 || x == 9 || x == 20 || x == 21 ? 0xffffff : 0);
+    }
+    memset(&f.p, 0, sizeof(f.p));
+    d = line_stipple_draw(&f, v, strip, 3, SGI_GL_LINE_STRIP, 1, 0x41, NULL);
+    sgi_soft_draw(f.rec.rules, &f.rec.target, &d);
+    g_assert_cmpuint(frag_count(&f, 0xffffff), ==, 2);
+    g_assert_cmphex(frag_pixel(&f, 8, 8), ==, 0xffffff);
+    g_assert_cmphex(frag_pixel(&f, 14, 8), ==, 0xffffff);
+    g_assert_cmphex(frag_pixel(&f, 13, 8), ==, 0);
+    memset(&f.p, 0, sizeof(f.p));
+    d = line_stipple_draw(&f, v, loop, 3, SGI_GL_LINE_LOOP, 1, 0x20, NULL);
+    sgi_soft_draw(f.rec.rules, &f.rec.target, &d);
+    g_assert_cmpuint(frag_count(&f, 0xffffff), ==, 1);
+    g_assert_cmphex(frag_pixel(&f, 11, 10), ==, 0xffffff);
+}
+
+static void test_line_stipple_direction(void)
+{
+    for (unsigned axis = 0; axis < 2; axis++) {
+        for (unsigned reverse = 0; reverse < 2; reverse++) {
+            for (unsigned rows_down = 0; rows_down < 2; rows_down++) {
+                FragScene f;
+                float v[2][SGI_GL_VERTEX_FLOATS];
+                float xy[2][2] = { { 8.5, 8.5 }, { 8.5, 8.5 } };
+                unsigned start = reverse ? 14 : 8;
+                SGIGLDraw d;
+
+                frag_init(&f);
+                xy[0][axis] = start + 0.5;
+                xy[1][axis] = (reverse ? 8 : 14) + 0.5;
+                d = line_stipple_draw(&f, v, xy, 2, SGI_GL_LINES, 1, 1, NULL);
+                d.line_width = 3;
+                f.c.cur.drawable.origin[0] = 3;
+                f.c.cur.drawable.origin[1] = 2;
+                if (rows_down) {
+                    f.c.cur.window_matrix_given = true;
+                    f.c.cur.window_matrix[0] = 32;
+                    f.c.cur.window_matrix[5] = -32;
+                    f.c.cur.window_matrix[10] = 1;
+                    f.c.cur.window_matrix[12] = 32;
+                    f.c.cur.window_matrix[13] = 32;
+                    f.c.cur.window_matrix[14] = 0.5;
+                    f.c.cur.window_matrix[15] = 1;
+                    f.c.cur.window_depth_scale = 1;
+                    f.c.cur.window_rows_down = true;
+                }
+                sgi_soft_draw(f.rec.rules, &f.rec.target, &d);
+                g_assert_cmpuint(frag_count(&f, 0xffffff), ==, 3);
+                for (int minor = 7; minor <= 9; minor++) {
+                    unsigned x = (axis ? minor : start) + 3;
+                    unsigned y = axis ? start : minor;
+
+                    y = (rows_down ? 63 - y : y) + 2;
+
+                    g_assert_cmphex(frag_pixel(&f, x, y), ==, 0xffffff);
+                }
+            }
+        }
+    }
+}
+
+static void test_line_stipple_phase(void)
+{
+    const float xy[][2] = { { 8.5, 8.5 }, { 13.5, 8.5 } };
+    const float wrap[][2] = { { 8.5, 8.5 }, { 24.5, 8.5 } };
+    FragScene f;
+    float v[2][SGI_GL_VERTEX_FLOATS];
+    uint32_t phase = 11;
+    SGIGLDraw d;
+    SGIRasterRules invalid = rules_stencil;
+
+    frag_init(&f);
+    d = line_stipple_draw(&f, v, xy, 2, SGI_GL_LINES, 1, 0x20, &phase);
+    d.line_phase_reset = true;
+    invalid.subpixel_bits = 0;
+    sgi_soft_draw(&invalid, &f.rec.target, &d);
+    g_assert_cmpuint(phase, ==, 11);
+    d.line_width = NAN;
+    sgi_soft_draw(f.rec.rules, &f.rec.target, &d);
+    g_assert_cmpuint(phase, ==, 11);
+    d.line_width = 1;
+    v[1][0] = v[0][0];
+    sgi_soft_draw(f.rec.rules, &f.rec.target, &d);
+    g_assert_cmpuint(phase, ==, 11);
+    d = line_stipple_draw(&f, v, wrap, 2, SGI_GL_LINES, 1, 0, &phase);
+    d.line_phase_reset = true;
+    sgi_soft_draw(f.rec.rules, &f.rec.target, &d);
+    g_assert_cmpuint(phase, ==, 0);
+    g_assert_cmpuint(frag_count(&f, 0xffffff), ==, 0);
+    /* Empty ownership, viewport and scissor still count five positions. */
+    for (unsigned reject = 0; reject < 3; reject++) {
+        frag_init(&f);
+        phase = 0;
+        d = line_stipple_draw(&f, v, xy, 2, SGI_GL_LINES, 1, 0x20, &phase);
+        if (reject == 0) {
+            f.c.cur.drawable.clip.n = 0;
+        } else if (reject == 1) {
+            f.c.cur.viewport[0] = 32;
+        } else {
+            frag_scissor(&f, 32, 32, 1, 1);
+            enable(&f.c, SGI_GL_SCISSOR_TEST, true);
+        }
+        sgi_soft_draw(f.rec.rules, &f.rec.target, &d);
+        g_assert_cmpuint(phase, ==, 5);
+        g_assert_cmpuint(frag_count(&f, 0xffffff), ==, 0);
+        context_init(&f.c);
+        d.state = &f.c.cur;
+        sgi_soft_draw(f.rec.rules, &f.rec.target, &d);
+        g_assert_cmpuint(phase, ==, 10);
+        g_assert_cmphex(frag_pixel(&f, 8, 8), ==, 0xffffff);
+    }
+    /* A fully rejected six-plane segment consumes nothing. */
+    phase = 7;
+    v[0][0] = v[1][0] = -2;
+    sgi_soft_draw(f.rec.rules, &f.rec.target, &d);
+    g_assert_cmpuint(phase, ==, 7);
+    /*
+     * The integer clipped endpoint owns column -1 before drawable rejection.
+     * Five positions count, so bit one selects the first visible column.
+     */
+    {
+        const float clipped[][2] = { { -4.5, 8.5 }, { 4.5, 8.5 } };
+
+        phase = 0;
+        memset(&f.p, 0, sizeof(f.p));
+        d = line_stipple_draw(&f, v, clipped, 2, SGI_GL_LINES, 1, 2, &phase);
+        sgi_soft_draw(f.rec.rules, &f.rec.target, &d);
+        g_assert_cmpuint(phase, ==, 5);
+        g_assert_cmphex(frag_pixel(&f, 0, 8), ==, 0xffffff);
+    }
+    /* Client planes reject fragments after five geometric positions count. */
+    phase = 0;
+    memset(&f.p, 0, sizeof(f.p));
+    d = line_stipple_draw(&f, v, xy, 2, SGI_GL_LINES, 1, 1, &phase);
+    f.c.cur.clip_planes = 1;
+    f.c.cur.clip_plane[0][3] = -1;
+    sgi_soft_draw(f.rec.rules, &f.rec.target, &d);
+    g_assert_cmpuint(phase, ==, 5);
+    g_assert_cmpuint(frag_count(&f, 0xffffff), ==, 0);
+    f.c.cur.clip_planes = 0;
+    phase = UINT32_MAX;
+    d.line_stipple_repeat = 3;
+    sgi_soft_draw(f.rec.rules, &f.rec.target, &d);
+    g_assert_cmpuint(phase, ==, 20);
+    /* Repeated 34-position draws stay bounded and wrap repeatedly. */
+    {
+        const float long_xy[][2] = { { 8.5, 8.5 }, { 42.5, 8.5 } };
+
+        phase = 0;
+        d = line_stipple_draw(&f, v, long_xy, 2, SGI_GL_LINES, 256, 0, &phase);
+        for (unsigned i = 0; i < 4096; i++) {
+            sgi_soft_draw(f.rec.rules, &f.rec.target, &d);
+            g_assert_cmpuint(phase, <, 4096);
+        }
+        g_assert_cmpuint(phase, ==, 0);
+    }
+}
+
+static void line_stipple_activate(FragScene *f)
+{
+    f->sink.draw_checked = recorder_checked_draw;
+    g_assert_true(sgi_gl_enable_line_stipple(&f->c, &f->sink));
+    enable(&f->c, SGI_GL_LINE_STIPPLE, true);
+}
+
+static void test_line_stipple_stream(void)
+{
+    for (unsigned mode = SGI_GL_LINES; mode <= SGI_GL_LINE_STRIP; mode++) {
+        FragScene f;
+
+        if (mode == SGI_GL_LINE_LOOP) {
+            continue;
+        }
+        frag_init(&f);
+        line_stipple_activate(&f);
+        f.c.line_stipple_pattern = mode == SGI_GL_LINES ? 1 : 0x41;
+        frag_command(&f, SGI_GL_OP_BEGIN, &mode, 1);
+        wide_vertex(&f, 8.5, 8.5);
+        wide_vertex(&f, 13.5, 8.5);
+        if (mode == SGI_GL_LINES) {
+            wide_vertex(&f, 13.5, 8.5);
+        }
+        wide_vertex(&f, 17.5, 8.5);
+        g_assert_cmpuint(f.c.line_phase, ==, mode == SGI_GL_LINES ? 4 : 9);
+        g_assert_cmphex(frag_pixel(&f, 8, 8), ==, 0xffffff);
+        g_assert_cmphex(frag_pixel(&f, mode == SGI_GL_LINES ? 13 : 14, 8), ==,
+                        0xffffff);
+        frag_command(&f, SGI_GL_OP_END, NULL, 0);
+        g_assert_cmpuint(f.c.line_phase, ==, 0);
+        g_assert_cmpuint(f.rec.draws, ==, 2);
+    }
+    {
+        FragScene f;
+        uint32_t mode = SGI_GL_LINE_LOOP;
+
+        frag_init(&f);
+        line_stipple_activate(&f);
+        f.c.line_stipple_pattern = 0x20;
+        frag_command(&f, SGI_GL_OP_BEGIN, &mode, 1);
+        wide_vertex(&f, 8.5, 8.5);
+        wide_vertex(&f, 11.5, 8.5);
+        wide_vertex(&f, 11.5, 10.5);
+        g_assert_cmpuint(f.c.line_phase, ==, 5);
+        g_assert_cmpuint(frag_count(&f, 0xffffff), ==, 0);
+        frag_command(&f, SGI_GL_OP_END, NULL, 0);
+        g_assert_cmphex(frag_pixel(&f, 11, 10), ==, 0xffffff);
+        g_assert_cmpuint(f.c.line_phase, ==, 0);
+        g_assert_cmpuint(f.rec.draws, ==, 3);
+    }
+}
+
+static void test_line_stipple_activation(void)
+{
+    for (unsigned standalone = 0; standalone < 2; standalone++) {
+        for (unsigned polygon = 0; polygon < 2; polygon++) {
+            FragScene f;
+            uint32_t mode = SGI_GL_LINES;
+
+            frag_init(&f);
+            f.sink.draw_checked = recorder_checked_draw;
+            if (polygon) {
+                g_assert_true(sgi_gl_enable_polygon_modes(&f.c, &f.sink));
+            }
+            if (standalone) {
+                g_assert_true(sgi_gl_enable_line_stipple(&f.c, &f.sink));
+            }
+            enable(&f.c, SGI_GL_LINE_STIPPLE, true);
+            f.c.line_stipple_pattern = 1;
+            frag_command(&f, SGI_GL_OP_BEGIN, &mode, 1);
+            wide_vertex(&f, 8.5, 8.5);
+            wide_vertex(&f, 13.5, 8.5);
+            g_assert_cmpuint(frag_count(&f, 0xffffff), ==, standalone ? 1 : 5);
+            f.sink.draw_checked = NULL;
+            f.c.line_phase = 7;
+            wide_vertex(&f, 20.5, 8.5);
+            wide_vertex(&f, 25.5, 8.5);
+            g_assert_cmpuint(f.c.line_phase, ==, 7);
+            g_assert_cmpuint(f.rec.draws, ==, standalone || polygon ? 1 : 2);
+            frag_command(&f, SGI_GL_OP_END, NULL, 0);
+        }
+    }
+}
+
+static void test_line_stipple_guards(void)
+{
+    FragScene f;
+    uint32_t mode = SGI_GL_LINE_STRIP;
+    uint32_t out[4] = { 91, 92, 93, 94 }, unchanged[4];
+    unsigned n = 77;
+    const uint32_t pnames[] = {
+        SGI_GL_LINE_STIPPLE, SGI_GL_LINE_STIPPLE_REPEAT,
+        SGI_GL_LINE_STIPPLE_PATTERN,
+    };
+
+    frag_init(&f);
+    line_stipple_activate(&f);
+    for (unsigned i = 0; i < 3; i++) {
+        const int factors[] = { INT32_MIN, 0, INT32_MAX };
+
+        frag_command(&f, SGI_GL_OP_LINE_STIPPLE,
+                     (uint32_t[]) { factors[i], 0x12345678 }, 2);
+        g_assert_cmpuint(f.c.line_stipple_repeat, ==, i == 2 ? 256 : 1);
+        g_assert_cmphex(f.c.line_stipple_pattern, ==, 0x5678);
+    }
+    f.c.line_phase = 13;
+    enable(&f.c, SGI_GL_LINE_STIPPLE, false);
+    frag_command(&f, SGI_GL_OP_BEGIN, &mode, 1);
+    g_assert_cmpuint(f.c.line_phase, ==, 0);
+    f.c.line_phase = 9;
+    frag_command(&f, SGI_GL_OP_BEGIN, &mode, 1);
+    g_assert_cmpuint(f.c.line_phase, ==, 9);
+    frag_command(&f, SGI_GL_OP_LINE_STIPPLE, (uint32_t[]) { 2, 1 }, 2);
+    enable(&f.c, SGI_GL_LINE_STIPPLE, true);
+    g_assert_cmpuint(f.c.line_stipple_repeat, ==, 256);
+    g_assert_cmphex(f.c.line_stipple_pattern, ==, 0x5678);
+    g_assert_cmpuint(f.c.raster_enables & SGI_GL_RASTER_LINE_STIPPLE, ==, 0);
+    memcpy(unchanged, out, sizeof(out));
+    for (unsigned i = 0; i < G_N_ELEMENTS(pnames); i++) {
+        g_assert_false(sgi_gl_get(&f.c, pnames[i], out, &n));
+        g_assert_cmpmem(out, sizeof(out), unchanged, sizeof(unchanged));
+        g_assert_cmpuint(n, ==, 77);
+    }
+    g_assert_false(sgi_gl_enable_line_stipple(&f.c, &f.sink));
+    frag_command(&f, SGI_GL_OP_END, NULL, 0);
+    f.c.line_phase = 13;
+    frag_command(&f, SGI_GL_OP_BEGIN, (uint32_t[]) { UINT32_MAX }, 1);
+    g_assert_cmpuint(f.c.line_phase, ==, 13);
+    g_assert_false(f.c.in_begin);
+}
+
+static void test_line_stipple_suppression(void)
+{
+    const float xy[][2] = { { 8.5, 8.5 }, { 13.5, 8.5 } };
+    for (unsigned targets = 0; targets < 2; targets++) {
+        FragScene f;
+        float v[2][SGI_GL_VERTEX_FLOATS];
+        TexturePixels pixels = { .pixel = { 0xffffffff, 0xffffffff,
+                                           0xffffffff, 0xffffffff } };
+        SGIGLTexImage image = texture_image(&pixels);
+        uint32_t phase = 0;
+        SGIGLDraw d;
+
+        frag_init(&f);
+        f.rec.target.texture = &image;
+        f.c.cur.texture_2d = true;
+        f.c.cur.draw_buffers = targets ? SGI_GL_DRAW_FRONT : 0;
+        f.c.cur.depth_test = f.c.cur.stencil_test = true;
+        f.c.cur.depth_func = SGI_GL_ALWAYS;
+        f.c.cur.stencil_op[2] = SGI_GL_INCR;
+        d = line_stipple_draw(&f, v, xy, 2, SGI_GL_LINES, 1, 0, &phase);
+        sgi_soft_draw(f.rec.rules, &f.rec.target, &d);
+        g_assert_cmpuint(phase, ==, 5);
+        g_assert_cmpuint(pixels.reads, ==, 0);
+        g_assert_cmpuint(frag_count(&f, 0xffffff), ==, 0);
+        for (unsigned i = 0; i < W * H; i++) {
+            g_assert_cmpuint(f.p.depth[i], ==, 0);
+            g_assert_cmpuint(f.p.stencil[i], ==, 0);
+        }
+        d.line_stipple_pattern = 0xffff;
+        sgi_soft_draw(f.rec.rules, &f.rec.target, &d);
+        g_assert_cmpuint(pixels.reads, ==, 5);
+        for (unsigned x = 8; x < 13; x++) {
+            g_assert_cmpuint(f.p.stencil[planes_index(x, 8)], ==, 1);
+        }
+        memset(&f.p, 0, sizeof(f.p));
+        d.line_stipple_enabled = false;
+        d.line_stipple_pattern = 0;
+        sgi_soft_draw(f.rec.rules, &f.rec.target, &d);
+        g_assert_cmpuint(pixels.reads, ==, 10);
+        for (unsigned x = 8; x < 13; x++) {
+            g_assert_cmpuint(f.p.stencil[planes_index(x, 8)], ==, 1);
+        }
+    }
+}
+
+static SGIGLDrawResult line_stipple_prefix_failure(void *opaque,
+                                                   const SGIGLDraw *d)
+{
+    Recorder *r = opaque;
+    SGIGLDraw prefix = *d;
+    float v[2][SGI_GL_VERTEX_FLOATS];
+
+    memcpy(v, d->vertices, sizeof(v));
+    v[1][0] = v[0][0] + 2.0 / 32;
+    prefix.vertices = &v[0][0];
+    sgi_soft_draw(r->rules, &r->target, &prefix);
+    r->draws++;
+    return SGI_GL_DRAW_OUT_OF_MEMORY;
+}
+
+
+static void test_line_stipple_context_ownership(void)
+{
+    FragScene a, b;
+    uint32_t mode = SGI_GL_LINE_STRIP;
+
+    frag_init(&a);
+    frag_init(&b);
+    line_stipple_activate(&a);
+    line_stipple_activate(&b);
+    a.c.line_stipple_pattern = b.c.line_stipple_pattern = 0x41;
+    frag_command(&a, SGI_GL_OP_BEGIN, &mode, 1);
+    wide_vertex(&a, 8.5, 8.5);
+    wide_vertex(&a, 13.5, 8.5);
+    g_assert_cmpuint(a.c.line_phase, ==, 5);
+    g_assert_cmpuint(b.c.line_phase, ==, 0);
+    g_assert_true(sgi_gl_clone(&b.c, &a.c));
+    g_assert_cmpuint(b.c.line_phase, ==, 5);
+    wide_vertex(&a, 17.5, 8.5);
+    g_assert_cmpuint(a.c.line_phase, ==, 9);
+    g_assert_cmpuint(b.c.line_phase, ==, 5);
+    wide_vertex(&b, 17.5, 8.5);
+    g_assert_cmpuint(b.c.line_phase, ==, 9);
+    g_assert_cmphex(frag_pixel(&a, 14, 8), ==, 0xffffff);
+    g_assert_cmphex(frag_pixel(&b, 14, 8), ==, 0xffffff);
+    g_assert_cmphex(frag_pixel(&b, 13, 8), ==, 0);
+    frag_command(&a, SGI_GL_OP_END, NULL, 0);
+    g_assert_cmpuint(a.c.line_phase, ==, 0);
+    g_assert_cmpuint(b.c.line_phase, ==, 9);
+    frag_command(&b, SGI_GL_OP_END, NULL, 0);
+    sgi_gl_cleanup(&a.c);
+    sgi_gl_cleanup(&b.c);
+}
+
+static void test_line_stipple_failure(void)
+{
+    FragScene f;
+    uint32_t mode = SGI_GL_LINE_STRIP;
+
+    frag_init(&f);
+    line_stipple_activate(&f);
+    f.c.line_stipple_pattern = 0xffff;
+    f.sink.draw_checked = line_stipple_prefix_failure;
+    frag_command(&f, SGI_GL_OP_BEGIN, &mode, 1);
+    wide_vertex(&f, 8.5, 8.5);
+    wide_vertex(&f, 13.5, 8.5);
+    g_assert_cmpuint(f.c.line_phase, ==, 2);
+    g_assert_cmpuint(f.rec.draws, ==, 1);
+    g_assert_cmpuint(frag_count(&f, 0xffffff), ==, 2);
+    g_assert_cmphex(f.c.polygon.error, ==, SGI_GL_OUT_OF_MEMORY);
+    frag_command(&f, SGI_GL_OP_END, NULL, 0);
+    g_assert_cmpuint(f.c.line_phase, ==, 0);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
+    g_test_add_func("/sgi-gl/line-stipple-direct", test_line_stipple_direct);
+    g_test_add_func("/sgi-gl/line-stipple-direction",
+                    test_line_stipple_direction);
+    g_test_add_func("/sgi-gl/line-stipple-phase", test_line_stipple_phase);
+    g_test_add_func("/sgi-gl/line-stipple-stream", test_line_stipple_stream);
+    g_test_add_func("/sgi-gl/line-stipple-activation",
+                    test_line_stipple_activation);
+    g_test_add_func("/sgi-gl/line-stipple-guards", test_line_stipple_guards);
+    g_test_add_func("/sgi-gl/line-stipple-suppression",
+                    test_line_stipple_suppression);
+    g_test_add_func("/sgi-gl/line-stipple-failure", test_line_stipple_failure);
+    g_test_add_func("/sgi-gl/line-stipple-context-ownership",
+                    test_line_stipple_context_ownership);
     g_test_add_func("/sgi-gl/mipmap-format-pipeline",
                     test_mipmap_format_pipeline);
     g_test_add_func("/sgi-gl/mipmap-numeric-derivatives",

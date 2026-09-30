@@ -114,6 +114,8 @@ static void populate(SGIGLContext *c, bool other)
 
     /* Host ownership is not populated with arbitrary pointer bytes. */
     memset(&c->polygon, 0, sizeof(c->polygon));
+    c->standalone_stipple = c->line_phase_loaded = false;
+    c->line_phase = 0;
 
     /* Everything sgi_gl_context_valid() limits, set inside its limits. */
     c->cur.depth_test = !other;
@@ -213,8 +215,13 @@ static bool context_padding(size_t at)
     size_t end = offsetof(SGIGLContext, raster_texcoord) +
                  sizeof(((SGIGLContext *)0)->raster_texcoord);
 
+    if (at >= offsetof(SGIGLContext, standalone_stipple) &&
+        at < offsetof(SGIGLContext, line_phase)) {
+        return true;
+    }
     return (at >= before && at < offsetof(SGIGLContext, polygon)) ||
-           at >= end;
+           (at >= end && at < offsetof(SGIGLContext, line_phase)) ||
+           at >= offsetof(SGIGLContext, line_phase) + sizeof(uint32_t);
 }
 
 /* The first byte at which two contexts differ, or -1. */
@@ -1305,9 +1312,230 @@ static void test_polygon_duplicate_subsection(void)
     sgi_gl_cleanup(&dst.gl[0]);
 }
 
+
+typedef struct LinePhaseRecorder {
+    unsigned calls;
+    uint32_t phase[2];
+} LinePhaseRecorder;
+
+static SGIGLDrawResult line_phase_draw(void *opaque, const SGIGLDraw *d)
+{
+    LinePhaseRecorder *r = opaque;
+
+    g_assert_nonnull(d->line_phase);
+    g_assert_cmpuint(r->calls, <, G_N_ELEMENTS(r->phase));
+    r->phase[r->calls++] = *d->line_phase;
+    *d->line_phase = (*d->line_phase + 3) % (16 * d->line_stipple_repeat);
+    return SGI_GL_DRAW_OK;
+}
+
+static void test_line_phase_lifecycle(void)
+{
+    for (unsigned mode = SGI_GL_LINE_LOOP; mode <= SGI_GL_LINE_STRIP; mode++) {
+        for (unsigned source = 0; source < 2; source++) {
+            for (unsigned destination = 0; destination < 2; destination++) {
+                SGIGLContext src, dst, saved;
+                LinePhaseRecorder recorder = { 0 };
+                SGIGLSink sink = { .draw_checked = line_phase_draw,
+                                   .opaque = &recorder };
+
+                sgi_gl_init(&src, 1);
+                sgi_gl_init(&dst, 2);
+                if (source) {
+                    g_assert_true(sgi_gl_enable_line_stipple(&src, &sink));
+                }
+                if (destination) {
+                    g_assert_true(sgi_gl_enable_line_stipple(&dst, &sink));
+                }
+                src.in_begin = true;
+                src.begin_mode = mode;
+                saved = dst;
+                g_assert_cmpint(sgi_gl_clone(&dst, &src), ==,
+                                source == destination);
+                if (source != destination) {
+                    g_assert_cmpmem(&dst, sizeof(dst), &saved, sizeof(saved));
+                } else {
+                    src.line_phase = 7;
+                    g_assert_true(sgi_gl_clone(&dst, &src));
+                    g_assert_cmpuint(dst.line_phase, ==, 7);
+                    dst.line_phase = 9;
+                    g_assert_cmpuint(src.line_phase, ==, 7);
+                }
+                sgi_gl_reset(&dst, 3);
+                g_assert_cmpint(dst.standalone_stipple, ==, destination);
+                g_assert_cmpuint(dst.line_phase, ==, 0);
+                g_assert_cmpuint(dst.line_stipple_repeat, ==, 1);
+                g_assert_cmphex(dst.line_stipple_pattern, ==, 0xffff);
+                sgi_gl_cleanup(&dst);
+                g_assert_false(dst.standalone_stipple);
+                g_assert_cmpuint(dst.line_phase, ==, 0);
+                sgi_gl_cleanup(&src);
+            }
+        }
+    }
+}
+
+static void line_phase_heads_init(TestHead *src, TestHead *dst)
+{
+    for (unsigned i = 0; i < CONTEXTS; i++) {
+        sgi_gl_init(&src->gl[i], i);
+        sgi_gl_init(&dst->gl[i], i);
+    }
+}
+
+static void test_line_phase_restore(void)
+{
+    for (unsigned mode = SGI_GL_LINE_LOOP; mode <= SGI_GL_LINE_STRIP; mode++) {
+        for (unsigned phase = 0; phase <= 5; phase += 5) {
+            TestHead src = { 0 }, dst = { 0 };
+            LinePhaseRecorder before = { 0 }, after = { 0 };
+            SGIGLSink source_sink = { .draw_checked = line_phase_draw,
+                                      .opaque = &before };
+            SGIGLSink target_sink = { .draw_checked = line_phase_draw,
+                                      .opaque = &after };
+            GByteArray *stream;
+            uint32_t vertex[] = { 0, 0 };
+            SGIGLCmd end = { .op = SGI_GL_OP_END };
+            SGIGLCmd next = { .op = SGI_GL_OP_VERTEX2F,
+                              .nargs = 2, .args = vertex };
+
+            line_phase_heads_init(&src, &dst);
+            g_assert_true(sgi_gl_enable_line_stipple(&src.gl[0], &source_sink));
+            g_assert_true(sgi_gl_enable_line_stipple(&dst.gl[0], &target_sink));
+            src.gl[0].in_begin = true;
+            src.gl[0].begin_mode = mode;
+            src.gl[0].line_phase = phase;
+            src.gl[0].nheld = mode == SGI_GL_LINE_LOOP ? 2 : 1;
+            src.gl[0].held[0][3] = src.gl[0].held[1][3] = 1;
+            dst.gl[0].line_phase = 13;
+            dst.gl[0].line_phase_loaded = true;
+            stream = save_head(&src);
+            g_assert_cmpint(load_head(stream, &dst, NULL), ==, 0);
+            g_byte_array_unref(stream);
+            g_assert_true(dst.gl[0].standalone_stipple);
+            g_assert_false(dst.gl[0].line_phase_loaded);
+            g_assert_cmpuint(dst.gl[0].line_phase, ==, phase);
+            sgi_gl_command(&src.gl[0], &source_sink, &next);
+            sgi_gl_command(&dst.gl[0], &target_sink, &next);
+            g_assert_cmpuint(src.gl[0].line_phase, ==, phase + 3);
+            g_assert_cmpuint(dst.gl[0].line_phase, ==, phase + 3);
+            sgi_gl_command(&src.gl[0], &source_sink, &end);
+            sgi_gl_command(&dst.gl[0], &target_sink, &end);
+            g_assert_cmpuint(before.calls, ==,
+                             mode == SGI_GL_LINE_LOOP ? 2 : 1);
+            g_assert_cmpmem(&after, sizeof(after), &before, sizeof(before));
+            g_assert_cmpuint(after.phase[0], ==, phase);
+            if (mode == SGI_GL_LINE_LOOP) {
+                g_assert_cmpuint(after.phase[1], ==, phase + 3);
+            }
+            g_assert_cmpuint(src.gl[0].line_phase, ==, 0);
+            g_assert_cmpuint(dst.gl[0].line_phase, ==, 0);
+        }
+    }
+}
+
+static void test_line_phase_activation_matrix(void)
+{
+    const uint32_t modes[] = { SGI_GL_POINTS, SGI_GL_LINES,
+                              SGI_GL_LINE_STRIP, SGI_GL_LINE_LOOP };
+
+    for (unsigned mode = 0; mode < G_N_ELEMENTS(modes); mode++) {
+        for (unsigned open = 0; open < 2; open++) {
+            for (unsigned source = 0; source < 2; source++) {
+                for (unsigned destination = 0; destination < 2; destination++) {
+                    TestHead src = { 0 }, dst = { 0 };
+                    SGIGLSink sink = { .draw_checked = line_phase_draw };
+                    bool continuous = open && modes[mode] >= SGI_GL_LINE_LOOP;
+                    GByteArray *stream;
+
+                    line_phase_heads_init(&src, &dst);
+                    if (source) {
+                        g_assert_true(sgi_gl_enable_line_stipple(&src.gl[0],
+                                                                &sink));
+                    }
+                    if (destination) {
+                        g_assert_true(sgi_gl_enable_line_stipple(&dst.gl[0],
+                                                                &sink));
+                    }
+                    src.gl[0].in_begin = open;
+                    src.gl[0].begin_mode = open ? modes[mode] : 0;
+                    dst.gl[0].line_phase = 12;
+                    dst.gl[0].line_phase_loaded = true;
+                    stream = save_head(&src);
+                    g_assert_cmpint(load_head(stream, &dst, NULL) == 0, ==,
+                                    !continuous || source == destination);
+                    g_byte_array_unref(stream);
+                    g_assert_cmpint(dst.gl[0].standalone_stipple, ==,
+                                    destination);
+                    if (!continuous) {
+                        g_assert_cmpuint(dst.gl[0].line_phase, ==, 0);
+                        g_assert_false(dst.gl[0].line_phase_loaded);
+                    }
+                }
+            }
+        }
+    }
+}
+
+static void test_line_phase_invalid_marker(void)
+{
+    TestHead src = { 0 }, dst = { 0 };
+    SGIGLSink sink = { .draw_checked = line_phase_draw };
+    GByteArray *stream;
+    const char name[] = "sgi-gl-context/line-phase";
+    size_t payload = 0;
+
+    line_phase_heads_init(&src, &dst);
+    g_assert_true(sgi_gl_enable_line_stipple(&src.gl[0], &sink));
+    g_assert_true(sgi_gl_enable_line_stipple(&dst.gl[0], &sink));
+    src.gl[0].in_begin = true;
+    src.gl[0].begin_mode = SGI_GL_LINE_STRIP;
+    stream = save_head(&src);
+    for (size_t i = 0; i + sizeof(name) - 1 + 8 <= stream->len; i++) {
+        if (!memcmp(stream->data + i, name, sizeof(name) - 1)) {
+            payload = i + sizeof(name) - 1 + 4;
+            break;
+        }
+    }
+    g_assert_cmpuint(payload, >, 0);
+    /* Phase equal to the repeat-one period is invalid. */
+    stream->data[payload + 3] = 16;
+    g_assert_cmpint(load_head(stream, &dst, NULL), !=, 0);
+    g_byte_array_unref(stream);
+    /* A marker on a closed or independent-pair stream is incompatible. */
+    for (unsigned open = 0; open < 2; open++) {
+        src.gl[0].begin_mode = SGI_GL_LINE_STRIP;
+        src.gl[0].in_begin = true;
+        stream = save_head(&src);
+        src.gl[0].in_begin = open;
+        src.gl[0].begin_mode = open ? SGI_GL_LINES : 0;
+        {
+            GByteArray *plain = save_head(&src);
+            size_t marker_start = payload - 4 - (sizeof(name) - 1) - 2;
+            size_t marker_size = 2 + sizeof(name) - 1 + 8;
+            size_t plain_end = marker_start;
+
+            /* Earlier fields have fixed size and unchanged optional state. */
+            g_assert_cmpuint(plain->len, ==, stream->len - marker_size);
+            memcpy(stream->data, plain->data, plain_end);
+            g_byte_array_unref(plain);
+        }
+        g_assert_cmpint(load_head(stream, &dst, NULL), !=, 0);
+        g_byte_array_unref(stream);
+    }
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
+    g_test_add_func("/sgi-gl-vmstate/line-phase-lifecycle",
+                    test_line_phase_lifecycle);
+    g_test_add_func("/sgi-gl-vmstate/line-phase-restore",
+                    test_line_phase_restore);
+    g_test_add_func("/sgi-gl-vmstate/line-phase-activation-matrix",
+                    test_line_phase_activation_matrix);
+    g_test_add_func("/sgi-gl-vmstate/line-phase-invalid-marker",
+                    test_line_phase_invalid_marker);
     module_call_init(MODULE_INIT_QOM);
     g_test_add_func("/sgi-gl-vmstate/every-byte-described",
                     test_every_byte_described);

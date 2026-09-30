@@ -721,8 +721,8 @@ typedef struct SGIGLContext {
     uint32_t clear_stencil;     /* glClearStencil's value */
     /*
      * Aliased sizes and retained polygon modes (3.3 to 3.5).
-     * Activated polygon LINE supports stipple. Standalone line stipple and
-     * smoothing remain unimplemented.
+     * Activated polygon outlines and standalone lines support stipple.
+     * Smoothing remains unimplemented.
      */
     float point_size;
     float line_width;
@@ -747,6 +747,10 @@ typedef struct SGIGLContext {
     uint32_t strip_odd;
     float cur_texcoord[4];
     float raster_texcoord[4];
+    /* Host policy and migration-presence marker are never serialized. */
+    bool standalone_stipple;
+    bool line_phase_loaded;
+    uint32_t line_phase;
 } SGIGLContext;
 
 /* The GL entry points a family decodes to, one per command. */
@@ -881,6 +885,10 @@ typedef struct SGIGLDraw {
     bool fill_by_triangle;
     bool line_stipple_enabled;
     uint32_t line_stipple_repeat, line_stipple_pattern;
+    /* Borrowed through one synchronous rasterization; absent means local. */
+    uint32_t *line_phase;
+    /* With a borrowed phase, reset a local candidate before counting. */
+    bool line_phase_reset;
 } SGIGLDraw;
 
 /*
@@ -904,6 +912,7 @@ typedef struct SGIGLSink {
 void sgi_gl_init(SGIGLContext *c, uint32_t hw_id);
 /* Audited host consumers opt in; reset preserves that host policy. */
 bool sgi_gl_enable_polygon_modes(SGIGLContext *c, const SGIGLSink *sink);
+bool sgi_gl_enable_line_stipple(SGIGLContext *c, const SGIGLSink *sink);
 void sgi_gl_cleanup(SGIGLContext *c);
 void sgi_gl_reset(SGIGLContext *c, uint32_t hw_id);
 /* Both contexts initialized and distinct; failure leaves both unchanged. */

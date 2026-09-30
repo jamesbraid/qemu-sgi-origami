@@ -2183,20 +2183,21 @@ static bool sgi_soft_line_covers(const SGISoftVertex *a,
  * the colour corrected for perspective. The fragments are also bounded by
  * the viewport, when there is one. Width follows the minor-axis shift and
  * replication of 3.4.3. Polygon boundaries count stipple in submitted
- * direction; standalone lines retain their legacy policy. Antialiasing is
- * not modelled.
+ * direction; activated standalone lines count across streamed segments.
+ * Antialiasing is not modelled.
  */
 typedef struct SGISoftLineStipple {
-    uint64_t counter;
+    uint32_t counter;
     uint32_t repeat, pattern;
-    bool enabled;
+    bool enabled, consumed;
 } SGISoftLineStipple;
 
 static void sgi_soft_line_projected(const SGISoftDraw *r,
                                     const SGISoftVertex *pa,
                                     const SGISoftVertex *pb,
                                     const float *provoking, double offset,
-                                    SGISoftLineStipple *stipple)
+                                    SGISoftLineStipple *stipple,
+                                    bool client_clip)
 {
     const SGIGLDrawState *st = r->st;
     bool smooth = st->shade_model != SGI_GL_FLAT;
@@ -2299,7 +2300,9 @@ static void sgi_soft_line_projected(const SGISoftDraw *r,
                 unsigned bit = (stipple->counter / stipple->repeat) % 16;
 
                 keep = !stipple->enabled || (stipple->pattern & (1u << bit));
-                stipple->counter++;
+                stipple->counter = (stipple->counter + 1) %
+                                   (16 * stipple->repeat);
+                stipple->consumed = true;
             }
             if (!keep || !visible || replica0 > replica1 ||
                 m < (x_major ? bx0 : by0) || m > (x_major ? bx1 : by1)) {
@@ -2327,7 +2330,7 @@ static void sgi_soft_line_projected(const SGISoftDraw *r,
                                         wb * b.texcoord[k]) / (wa + wb);
                 }
                 frag.fog = (wa * a.fog + wb * b.fog) / (wa + wb);
-                if (st->clip_planes && !stipple) {
+                if (st->clip_planes && client_clip) {
                     double d[SGI_GL_CLIP_PLANES];
 
                     for (int i = 0; i < SGI_GL_CLIP_PLANES; i++) {
@@ -2360,22 +2363,23 @@ static void sgi_soft_line_projected(const SGISoftDraw *r,
     }
 }
 
-/* Standalone lines retain their original clipping and omit stipple. */
+/* Keep standalone client-plane rejection after geometric counting. */
 static void sgi_soft_line(const SGISoftDraw *r, const float *va,
-                          const float *vb, const float *provoking)
+                          const float *vb, const float *provoking,
+                          SGISoftLineStipple *stipple)
 {
     SGIVolumeVertex ca, cb;
     SGISoftVertex a, b;
     int bx0, by0, bx1, by1;
 
-    if (!sgi_soft_bounds(r, &bx0, &by0, &bx1, &by1)) {
+    if (!stipple && !sgi_soft_bounds(r, &bx0, &by0, &bx1, &by1)) {
         return;
     }
     sgi_soft_to_volume(r, va, &ca);
     sgi_soft_to_volume(r, vb, &cb);
     if (sgi_volume_clip_segment(&ca, &cb) &&
         sgi_soft_project(r, &ca, &a) && sgi_soft_project(r, &cb, &b)) {
-        sgi_soft_line_projected(r, &a, &b, provoking, 0, NULL);
+        sgi_soft_line_projected(r, &a, &b, provoking, 0, stipple, true);
     }
 }
 
@@ -2727,7 +2731,7 @@ static SGIGLDrawResult sgi_soft_polygon(const SGISoftDraw *r,
         } else {
             sgi_soft_project(r, &poly[(i + 1) % n], &next);
             sgi_soft_line_projected(&coverage, &current, &next, flat,
-                                     offset, &stipple);
+                                     offset, &stipple, false);
         }
     }
 out:
@@ -2807,18 +2811,36 @@ SGIGLDrawResult sgi_soft_draw(const SGIRasterRules *rules,
         .polygon_stipple = d->polygon_stipple_enabled ?
                            d->polygon_stipple : NULL,
     };
+    SGISoftLineStipple line = {
+        .counter = d->line_phase && !d->line_phase_reset ? *d->line_phase : 0,
+        .enabled = d->line_stipple_enabled,
+        .repeat = MAX(1, MIN(d->line_stipple_repeat, 256)),
+        .pattern = d->line_stipple_pattern,
+    };
+    SGISoftLineStipple *stipple = d->line_phase || d->line_stipple_enabled ?
+                                &line : NULL;
     uint32_t n = d->count;
     unsigned texture_reports = 0;
     bool rgba_reported = false;
 
+    line.counter %= 16 * line.repeat;
     r.texture_reports = &texture_reports;
     r.rgba_reported = &rgba_reported;
 
 #define V(i) (&d->vertices[(size_t)(i) * SGI_GL_VERTEX_FLOATS])
     r.ntargets = sgi_gl_draw_targets(d->state, r.targets);
-    if (!sgi_soft_check_rules(rules) || !sgi_soft_window(d->state, &r.win) ||
+    if (!sgi_soft_check_rules(rules) ||
         !sgi_soft_check_index(t, d->state->index_bits)) {
         return SGI_GL_DRAW_OK;
+    }
+    if (!sgi_soft_window(d->state, &r.win)) {
+        if (!stipple || d->mode < SGI_GL_LINES ||
+            d->mode > SGI_GL_LINE_STRIP || !d->state->drawable.bound ||
+            d->state->drawable.clip.n) {
+            return SGI_GL_DRAW_OK;
+        }
+        /* Empty ownership still counts standalone geometric coverage. */
+        r.win.x1 = r.win.y1 = -1;
     }
     if (!sgi_soft_texture_setup(&r)) {
         return SGI_GL_DRAW_OK;
@@ -2846,7 +2868,13 @@ SGIGLDrawResult sgi_soft_draw(const SGIRasterRules *rules,
             return SGI_GL_DRAW_OK;
         }
         for (uint32_t i = 0; i + 1 < n; i += 2) {
-            sgi_soft_line(&r, V(i), V(i + 1), V(i + 1));
+            if (!d->line_phase) {
+                line.counter = 0;
+            }
+            sgi_soft_line(&r, V(i), V(i + 1), V(i + 1), stipple);
+        }
+        if (d->line_phase && line.consumed) {
+            *d->line_phase = line.counter;
         }
         return SGI_GL_DRAW_OK;
     case SGI_GL_LINE_STRIP:
@@ -2855,10 +2883,13 @@ SGIGLDrawResult sgi_soft_draw(const SGIRasterRules *rules,
             return SGI_GL_DRAW_OK;
         }
         for (uint32_t i = 0; i + 1 < n; i++) {
-            sgi_soft_line(&r, V(i), V(i + 1), V(i + 1));
+            sgi_soft_line(&r, V(i), V(i + 1), V(i + 1), stipple);
         }
         if (d->mode == SGI_GL_LINE_LOOP && n >= 2) {
-            sgi_soft_line(&r, V(n - 1), V(0), V(0));
+            sgi_soft_line(&r, V(n - 1), V(0), V(0), stipple);
+        }
+        if (d->line_phase && line.consumed) {
+            *d->line_phase = line.counter;
         }
         return SGI_GL_DRAW_OK;
     case SGI_GL_TRIANGLES:
