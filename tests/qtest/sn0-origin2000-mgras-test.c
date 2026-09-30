@@ -15266,6 +15266,247 @@ static void test_gl_line_point_migration(void)
     gl_migrate(gl_line_point_setup, gl_line_point_check);
 }
 
+/* Analytical OpenGL footprints in window pixels, including a black border. */
+static void gl_width_check_rect(QTestState *qts, int x0, int y0,
+                                int x1, int y1, uint32_t colour)
+{
+    for (int y = y0 - 1; y <= y1 + 1; y++) {
+        for (int x = x0 - 1; x <= x1 + 1; x++) {
+            uint32_t expected = x >= x0 && x <= x1 && y >= y0 && y <= y1 ?
+                                colour : 0;
+            uint32_t actual = gl_window_pixel(qts, x, y);
+
+            if (actual != expected) {
+                g_test_message("pixel (%d, %d), rectangle (%d, %d)-(%d, %d)",
+                               x, y, x0, y0, x1, y1);
+            }
+            g_assert_cmphex(actual, ==, expected);
+        }
+    }
+}
+
+static void gl_width_clear(QTestState *qts)
+{
+    gl_clear_color(qts, 0, 0, 0, 1);
+    gl_word(qts, GL_CLEAR_COLOR_BUFFER);
+    gl_color3f(qts, 1, 1, 1);
+}
+
+/* Halfway sizes round up by the renderer's declared arithmetic choice. */
+static void test_gl_native_width_points(void)
+{
+    static const struct {
+        float size;
+        int x0, y0, x1, y1;
+    } cases[] = {
+        { 1, 4, 3, 4, 3 },
+        { 2, 3, 3, 4, 4 },
+        { 5, 2, 1, 6, 5 },
+        { 2.5f, 3, 2, 5, 4 },
+    };
+
+    for (int i = 0; i < G_N_ELEMENTS(cases); i++) {
+        gl_transform_start(qts);
+        gl_width_clear(qts);
+        /* The first case exercises the initial size without a setter. */
+        if (i) {
+            gl_word(qts, GL_POINT_SIZE_HDR);
+            gl_float(qts, cases[i].size);
+        }
+        gl_word(qts, GL_BEGIN_POINTS);
+        gl_vertex2f(qts, 4.25f, 3.75f);
+        gl_word(qts, GL_END_OF(GL_BEGIN_POINTS));
+        gl_width_check_rect(qts, cases[i].x0, cases[i].y0,
+                            cases[i].x1, cases[i].y1, 0xffffff);
+    }
+}
+
+/*
+ * Width expands on the minor axis. For odd widths, reversing excludes the
+ * opposite endpoint. For an even horizontal width, the shifted y is on a
+ * diamond boundary: subtracting (epsilon, epsilon squared) puts the endpoint
+ * outside that diamond since epsilon - epsilon squared is positive. Reversal
+ * therefore keeps the same columns, unlike the odd-width and vertical cases.
+ */
+static void test_gl_native_width_lines(void)
+{
+    static const struct {
+        float width, ax, ay, bx, by;
+        int x0, y0, x1, y1;
+    } cases[] = {
+        { 1, 1.5f, 3.5f, 5.5f, 3.5f, 1, 3, 4, 3 },
+        { 2, 1.5f, 3.5f, 5.5f, 3.5f, 1, 2, 4, 3 },
+        { 3, 1.5f, 3.5f, 5.5f, 3.5f, 1, 2, 4, 4 },
+        { 2.5f, 1.5f, 3.5f, 5.5f, 3.5f, 1, 2, 4, 4 },
+        { 2, 5.5f, 3.5f, 1.5f, 3.5f, 1, 2, 4, 3 },
+        { 3, 5.5f, 3.5f, 1.5f, 3.5f, 2, 2, 5, 4 },
+        { 2, 3.5f, 1.5f, 3.5f, 5.5f, 2, 1, 3, 4 },
+        { 3, 3.5f, 1.5f, 3.5f, 5.5f, 2, 1, 4, 4 },
+        { 2, 3.5f, 5.5f, 3.5f, 1.5f, 2, 2, 3, 5 },
+    };
+
+    for (int i = 0; i < G_N_ELEMENTS(cases); i++) {
+        gl_transform_start(qts);
+        gl_width_clear(qts);
+        if (i) {
+            gl_word(qts, GL_LINE_WIDTH_HDR);
+            gl_float(qts, cases[i].width);
+        }
+        gl_word(qts, GL_BEGIN_LINES);
+        gl_vertex2f(qts, cases[i].ax, cases[i].ay);
+        gl_vertex2f(qts, cases[i].bx, cases[i].by);
+        gl_word(qts, GL_END_OF(GL_BEGIN_LINES));
+        gl_width_check_rect(qts, cases[i].x0, cases[i].y0,
+                            cases[i].x1, cases[i].y1, 0xffffff);
+    }
+}
+
+/* Neither setter is permitted inside Begin/End; both retain their old value. */
+static void test_gl_native_width_rejected_inside_begin(void)
+{
+    gl_transform_start(qts);
+    gl_width_clear(qts);
+    gl_word(qts, GL_POINT_SIZE_HDR);
+    gl_float(qts, 2);
+    gl_word(qts, GL_BEGIN_POINTS);
+    gl_word(qts, GL_POINT_SIZE_HDR);
+    gl_float(qts, 5);
+    gl_vertex2f(qts, 4.25f, 3.75f);
+    gl_word(qts, GL_END_OF(GL_BEGIN_POINTS));
+    gl_width_check_rect(qts, 3, 3, 4, 4, 0xffffff);
+    g_assert_cmphex(gl_query(qts, GL_Q_POINT_SIZE, 1), ==, gl_bits(2));
+
+    gl_width_clear(qts);
+    gl_word(qts, GL_LINE_WIDTH_HDR);
+    gl_float(qts, 2);
+    gl_word(qts, GL_BEGIN_LINES);
+    gl_word(qts, GL_LINE_WIDTH_HDR);
+    gl_float(qts, 5);
+    gl_vertex2f(qts, 1.5f, 3.5f);
+    gl_vertex2f(qts, 5.5f, 3.5f);
+    gl_word(qts, GL_END_OF(GL_BEGIN_LINES));
+    gl_width_check_rect(qts, 1, 2, 4, 3, 0xffffff);
+    g_assert_cmphex(gl_query(qts, GL_Q_POINT_SIZE + 1, 1), ==, gl_bits(2));
+}
+
+/* Both contexts use the same window, so only retained slot state can differ. */
+static void test_gl_native_width_contexts(void)
+{
+    mgras_reset();
+    for (int i = 0; i < 3; i++) {
+        bool b = i == 1;
+
+        gl_enter_slot(qts, b ? GL_SLOT_B : GL_SLOT_A);
+        if (i < 2) {
+            gl_word(qts, GL_CONTEXT_OPENER);
+            gl_viewport(qts, 0, 0, 128, 128);
+            gl_window_projection(qts);
+            gl_word(qts, GL_POINT_SIZE_HDR);
+            gl_float(qts, b ? 5 : 2);
+            gl_word(qts, GL_LINE_WIDTH_HDR);
+            gl_float(qts, b ? 3 : 2);
+        }
+        gl_width_clear(qts);
+        gl_word(qts, GL_BEGIN_POINTS);
+        gl_vertex2f(qts, 4.25f, 3.75f);
+        gl_word(qts, GL_END_OF(GL_BEGIN_POINTS));
+        gl_width_check_rect(qts, b ? 2 : 3, b ? 1 : 3,
+                            b ? 6 : 4, b ? 5 : 4, 0xffffff);
+        gl_word(qts, GL_BEGIN_LINES);
+        gl_vertex2f(qts, 1.5f, 13.5f);
+        gl_vertex2f(qts, 5.5f, 13.5f);
+        gl_word(qts, GL_END_OF(GL_BEGIN_LINES));
+        gl_width_check_rect(qts, 1, 12, 4, b ? 14 : 13, 0xffffff);
+    }
+}
+
+/* Scissor removes individual expanded fragments, without changing coverage. */
+static void test_gl_native_width_scissor(void)
+{
+    gl_transform_start(qts);
+    gl_width_clear(qts);
+    gl_scissor(qts, 3, 3, 2, 2);
+    gl_one(qts, GL_SCISSOR_TEST_HDR, 1);
+    gl_word(qts, GL_POINT_SIZE_HDR);
+    gl_float(qts, 5);
+    gl_word(qts, GL_BEGIN_POINTS);
+    gl_vertex2f(qts, 4.25f, 3.75f);
+    gl_word(qts, GL_END_OF(GL_BEGIN_POINTS));
+    gl_width_check_rect(qts, 3, 3, 4, 4, 0xffffff);
+
+    gl_one(qts, GL_SCISSOR_TEST_HDR, 0);
+    gl_width_clear(qts);
+    gl_scissor(qts, 2, 3, 2, 1);
+    gl_one(qts, GL_SCISSOR_TEST_HDR, 1);
+    gl_word(qts, GL_LINE_WIDTH_HDR);
+    gl_float(qts, 3);
+    gl_word(qts, GL_BEGIN_LINES);
+    gl_vertex2f(qts, 1.5f, 3.5f);
+    gl_vertex2f(qts, 5.5f, 3.5f);
+    gl_word(qts, GL_END_OF(GL_BEGIN_LINES));
+    gl_width_check_rect(qts, 2, 3, 3, 3, 0xffffff);
+}
+
+/* Existing RGB and CI8 paths, in each supported colour bank. */
+static void test_gl_native_width_targets(void)
+{
+    for (int ci = 0; ci < 2; ci++) {
+        for (int bank = 0; bank < 2; bank++) {
+            uint32_t colour = ci ? 0x13 : 0x00ff00;
+
+            gl_transform_start(qts);
+            gl_width_clear(qts);
+            if (ci) {
+                gl_one(qts, GL_INIT_CI_HDR, 8);
+                gl_indexs(qts, colour);
+                mgras_write_cmap_entry(qts, 29, colour, 0x00ff0000);
+            } else {
+                gl_color3f(qts, 0, 1, 0);
+            }
+            gl_draw_buffer(qts, bank ? 2 : 1);
+            gl_word(qts, GL_POINT_SIZE_HDR);
+            gl_float(qts, 2);
+            gl_word(qts, GL_BEGIN_POINTS);
+            gl_vertex2f(qts, 4.25f, 3.75f);
+            gl_word(qts, GL_END_OF(GL_BEGIN_POINTS));
+            gl_word(qts, GL_LINE_WIDTH_HDR);
+            gl_float(qts, 2);
+            gl_word(qts, GL_BEGIN_LINES);
+            gl_vertex2f(qts, 1.5f, 13.5f);
+            gl_vertex2f(qts, 5.5f, 13.5f);
+            gl_word(qts, GL_END_OF(GL_BEGIN_LINES));
+            if (!bank) {
+                gl_width_check_rect(qts, 3, 3, 4, 4, colour);
+                gl_width_check_rect(qts, 1, 12, 4, 13, colour);
+                g_assert_cmphex(mgras_test_format(qts, 259, 380), ==,
+                                ci ? MGRAS_PIXEL_FORMAT_CI8 :
+                                MGRAS_PIXEL_FORMAT_RGB);
+                g_assert_cmphex(mgras_test_format(qts, 257, 371), ==,
+                                ci ? MGRAS_PIXEL_FORMAT_CI8 :
+                                MGRAS_PIXEL_FORMAT_RGB);
+            } else {
+                /* Plane reads expose bank 0; scanout selects bank 1. */
+                qtest_writel(qts, REG_VC3_INDEXDATA,
+                             VC3_INDEXDATA(0x1e, 0x4));
+                mgras_tag_wid(qts, 256, 256, 383, 383, 0);
+                qtest_writeb(qts, REG_XMAP_INDEX, 0);
+                qtest_writel(qts, REG_XMAP_BUF_SELECT, 1);
+                for (int y = 0; y <= 15; y++) {
+                    for (int x = 0; x <= 6; x++) {
+                        bool point = x >= 3 && x <= 4 && y >= 3 && y <= 4;
+                        bool line = x >= 1 && x <= 4 && y >= 12 && y <= 13;
+
+                        g_assert_cmphex(gl_window_pixel(qts, x, y), ==, 0);
+                        g_assert_cmphex(mgras_test_display_pixel(qts,
+                                        256 + x, 383 - y), ==,
+                                        point || line ? 0x00ff00 : 0);
+                    }
+                }
+            }
+        }
+    }
+}
+
 /*
  * glMapGrid1f 0xae10 and four words, glMapGrid2f 0xaf20 and eight and
  * glClearAccum 0xbb10 and four are consumed, not drawn: a clear after
@@ -16734,6 +16975,19 @@ int main(int argc, char **argv)
                        "credit-uncounted-store-returns-nothing",
                        test_credit_uncounted_store_returns_nothing);
     }
+
+    qtest_add_func("sn0/origin2000/mgras/gl-native-width/points",
+                   test_gl_native_width_points);
+    qtest_add_func("sn0/origin2000/mgras/gl-native-width/lines",
+                   test_gl_native_width_lines);
+    qtest_add_func("sn0/origin2000/mgras/gl-native-width/rejected-inside-begin",
+                   test_gl_native_width_rejected_inside_begin);
+    qtest_add_func("sn0/origin2000/mgras/gl-native-width/contexts",
+                   test_gl_native_width_contexts);
+    qtest_add_func("sn0/origin2000/mgras/gl-native-width/scissor",
+                   test_gl_native_width_scissor);
+    qtest_add_func("sn0/origin2000/mgras/gl-native-width/targets",
+                   test_gl_native_width_targets);
 
     ret = g_test_run();
     qtest_quit(qts);
