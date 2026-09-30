@@ -7829,8 +7829,16 @@
       "resources": [
         {
           "argument": "-drive if=mtd,index=N",
+          "board-indices": [
+            0
+          ],
+          "clock-reference": true,
           "count": 1,
+          "drive-indices": [
+            0
+          ],
           "kind": "nvram",
+          "part": "m48t35",
           "scope": "board",
           "size": 32768
         },
@@ -7953,8 +7961,16 @@
       "resources": [
         {
           "argument": "-drive if=mtd,index=N",
+          "board-indices": [
+            0
+          ],
+          "clock-reference": true,
           "count": 1,
+          "drive-indices": [
+            0
+          ],
           "kind": "nvram",
+          "part": "m48t35",
           "scope": "board",
           "size": 32768
         },
@@ -8077,8 +8093,16 @@
       "resources": [
         {
           "argument": "-drive if=mtd,index=N",
+          "board-indices": [
+            0
+          ],
+          "clock-reference": true,
           "count": 1,
+          "drive-indices": [
+            0
+          ],
           "kind": "nvram",
+          "part": "m48t35",
           "scope": "board",
           "size": 32768
         },
@@ -8201,8 +8225,16 @@
       "resources": [
         {
           "argument": "-drive if=mtd,index=N",
+          "board-indices": [
+            0
+          ],
+          "clock-reference": true,
           "count": 1,
+          "drive-indices": [
+            0
+          ],
           "kind": "nvram",
+          "part": "m48t35",
           "scope": "board",
           "size": 32768
         },
@@ -12962,27 +12994,14 @@
       "generation": "sn1",
       "io-boards": [
         {
-          "attachment": 0,
-          "carrier": "machine-placed",
-          "id": "xbridge-bridge-e",
-          "module-index": 0,
-          "other-identity-parts": [],
-          "part": "030-1673-003",
-          "preset": "io8",
-          "revision": 2,
-          "serial": 47413004295
-        },
-        {
           "attachment": 1,
           "carrier": "machine-placed",
-          "id": "xbridge-bridge-f",
+          "id": "io8-board",
           "ioc3-serial": 103835129348098,
           "module-index": 0,
           "other-identity-parts": [],
           "part": "030-1673-003",
-          "preset": "io8",
-          "revision": 2,
-          "serial": 47413004295
+          "preset": "io8"
         },
         {
           "attachment": 2,
@@ -13165,27 +13184,14 @@
       "generation": "sn1",
       "io-boards": [
         {
-          "attachment": 0,
-          "carrier": "machine-placed",
-          "id": "xbridge-bridge-e",
-          "module-index": 0,
-          "other-identity-parts": [],
-          "part": "030-1673-003",
-          "preset": "io8",
-          "revision": 2,
-          "serial": 47413004295
-        },
-        {
           "attachment": 1,
           "carrier": "machine-placed",
-          "id": "xbridge-bridge-f",
+          "id": "io8-board",
           "ioc3-serial": 103835129348098,
           "module-index": 0,
           "other-identity-parts": [],
           "part": "030-1673-003",
-          "preset": "io8",
-          "revision": 2,
-          "serial": 47413004295
+          "preset": "io8"
         },
         {
           "attachment": 2,

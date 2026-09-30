@@ -2771,6 +2771,10 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
                 const SGIModelIoBoard *board = board_entry->value;
                 const SGIModelXioAttachment *placement;
 
+                if (board->preset != SGI_MODEL_IO_BOARD_PRESET_IO8 &&
+                    board->preset != SGI_MODEL_IO_BOARD_PRESET_FUEL) {
+                    continue;
+                }
                 if (board->attachment >= attachment_count) {
                     error_setg(errp, "topology '%s' io board '%s' names "
                                "attachment %u, past its %zu attachment(s)",
