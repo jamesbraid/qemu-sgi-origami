@@ -312,6 +312,9 @@ static uint64_t sgi_ioc3_parallel_ecp_read(void *opaque, hwaddr addr,
 
     case SGI_IOC3_PAR_ECP_FIFO:
         if (sgi_ioc3_parallel_mode(s) == SGI_IOC3_PAR_MODE_CONFIG) {
+            if (s->parallel_part == SGI_IOC3_PAR_PART_TL16PIR552) {
+                return 0x1f;
+            }
             return s->config_a;
         }
         if (sgi_ioc3_parallel_mode(s) == SGI_IOC3_PAR_MODE_TEST &&
@@ -328,6 +331,14 @@ static uint64_t sgi_ioc3_parallel_ecp_read(void *opaque, hwaddr addr,
         return 0;
 
     case SGI_IOC3_PAR_ECP_CONFIG_B:
+        if (s->parallel_part == SGI_IOC3_PAR_PART_TL16PIR552 &&
+            sgi_ioc3_parallel_mode(s) == SGI_IOC3_PAR_MODE_CONFIG) {
+            /* IRQ routing is unknown; bit 6 reads as an idle-line sample. */
+            qemu_log_mask(LOG_UNIMP,
+                          "sgi-ioc3-parallel: TL16PIR552 CNFGB IRQ sample "
+                          "is unmodeled\n");
+            return 0x0b;
+        }
         return s->config_b;
 
     case SGI_IOC3_PAR_ECP_EXTENDED:
@@ -381,16 +392,35 @@ static void sgi_ioc3_parallel_ecp_write(void *opaque, hwaddr addr,
 
     case SGI_IOC3_PAR_ECP_FIFO:
         if (sgi_ioc3_parallel_mode(s) == SGI_IOC3_PAR_MODE_CONFIG) {
+            if (s->parallel_part == SGI_IOC3_PAR_PART_TL16PIR552) {
+                qemu_log_mask(LOG_GUEST_ERROR,
+                              "sgi-ioc3-parallel: write to read-only "
+                              "TL16PIR552 CNFGA\n");
+                return;
+            }
             s->config_a = val;
             return;
         }
         if (sgi_ioc3_parallel_mode(s) == SGI_IOC3_PAR_MODE_TEST) {
-            if (s->fifo_depth && !fifo8_is_full(&s->test_fifo)) {
-                fifo8_push(&s->test_fifo, val);
-            } else if (s->fifo_depth) {
-                qemu_log_mask(LOG_UNIMP,
-                              "sgi-ioc3-parallel: write to a full test FIFO\n");
+            if (!s->fifo_depth) {
+                return;
             }
+            if (fifo8_is_full(&s->test_fifo)) {
+                if (s->parallel_part == SGI_IOC3_PAR_PART_TL16PIR552) {
+                    /*
+                     * TI specifies overrun but leaves the byte after one
+                     * full write unspecified. Drop-oldest is the model's
+                     * bounded policy; a full circuit replaces every byte.
+                     */
+                    fifo8_pop(&s->test_fifo);
+                } else {
+                    qemu_log_mask(LOG_UNIMP,
+                                  "sgi-ioc3-parallel: write to a full "
+                                  "test FIFO\n");
+                    return;
+                }
+            }
+            fifo8_push(&s->test_fifo, val);
             return;
         }
         /*
@@ -409,6 +439,13 @@ static void sgi_ioc3_parallel_ecp_write(void *opaque, hwaddr addr,
         return;
 
     case SGI_IOC3_PAR_ECP_CONFIG_B:
+        if (s->parallel_part == SGI_IOC3_PAR_PART_TL16PIR552 &&
+            sgi_ioc3_parallel_mode(s) == SGI_IOC3_PAR_MODE_CONFIG) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "sgi-ioc3-parallel: write to read-only "
+                          "TL16PIR552 CNFGB\n");
+            return;
+        }
         s->config_b = val;
         return;
 
@@ -477,6 +514,17 @@ static void sgi_ioc3_parallel_realize(DeviceState *dev, Error **errp)
 
     if (!s->dma_mr) {
         error_setg(errp, TYPE_SGI_IOC3_PARALLEL " 'dma-memory' link not set");
+        return;
+    }
+    if (s->parallel_part > SGI_IOC3_PAR_PART_TL16PIR552) {
+        error_setg(errp, TYPE_SGI_IOC3_PARALLEL " has unknown parallel-part "
+                   "%u", s->parallel_part);
+        return;
+    }
+    if (s->parallel_part == SGI_IOC3_PAR_PART_TL16PIR552 &&
+        s->fifo_depth != SGI_IOC3_PAR_TL16_FIFO_DEPTH) {
+        error_setg(errp, TYPE_SGI_IOC3_PARALLEL " TL16PIR552 requires a "
+                   "16-byte test FIFO");
         return;
     }
     fifo8_create(&s->test_fifo, s->fifo_depth);
@@ -548,7 +596,7 @@ static bool sgi_ioc3_parallel_has_test_fifo(void *opaque, int version_id)
 
 static const VMStateDescription vmstate_sgi_ioc3_parallel = {
     .name = "sgi-ioc3-parallel",
-    .version_id = 3,
+    .version_id = 4,
     .minimum_version_id = 2,
     .post_load = sgi_ioc3_parallel_post_load,
     .fields = (const VMStateField[]) {
@@ -564,6 +612,7 @@ static const VMStateDescription vmstate_sgi_ioc3_parallel = {
         VMSTATE_UINT8(config_a, SGIIOC3ParallelState),
         VMSTATE_UINT8(config_b, SGIIOC3ParallelState),
         VMSTATE_UINT8(extended, SGIIOC3ParallelState),
+        VMSTATE_UINT16_EQUAL_V(parallel_part, SGIIOC3ParallelState, 4),
         VMSTATE_UINT16_EQUAL_V(fifo_depth, SGIIOC3ParallelState, 3),
         VMSTATE_FIFO8_TEST(test_fifo, SGIIOC3ParallelState,
                            sgi_ioc3_parallel_has_test_fifo),
@@ -574,6 +623,8 @@ static const VMStateDescription vmstate_sgi_ioc3_parallel = {
 
 static const Property sgi_ioc3_parallel_properties[] = {
     DEFINE_PROP_CHR("chardev", SGIIOC3ParallelState, chr),
+    DEFINE_PROP_UINT16("parallel-part", SGIIOC3ParallelState, parallel_part,
+                       SGI_IOC3_PAR_PART_GENERIC),
     DEFINE_PROP_UINT16("fifo-depth", SGIIOC3ParallelState, fifo_depth, 0),
     DEFINE_PROP_LINK("dma-memory", SGIIOC3ParallelState, dma_mr,
                      TYPE_MEMORY_REGION, MemoryRegion *),
