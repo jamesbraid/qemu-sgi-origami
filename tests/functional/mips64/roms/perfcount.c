@@ -12,12 +12,7 @@
 
 const char rom_name[] = "perfcount";
 
-/*
- * The same arming distance and poll bound the timer ROM uses: waits end
- * on
- * their condition, the bound only turns a wedge into a numbered
- * failure.
- */
+/* Bound waits so a stopped clock fails with a ROM assertion. */
 #define TIMER_TARGET (1u << 22)
 #define POLL_LIMIT   50000000
 
@@ -32,16 +27,8 @@ const char rom_name[] = "perfcount";
 #define PC_EXL      (1u << 0)
 
 /*
- * The four registers behind coprocessor 0 register 25, named by the low
- * bits
- * of the opcode as Tables 14-19 and 14-20 lay them out. The suite is
- * assembled as MIPS III, where the assembler has no syntax for those
- * bits,
- * so each accessor states the later dialect that has one — the
- * instruction
- * word it emits, COP0 with the selector in bits 2:0, is exactly the
- * encoding
- * those tables give.
+ * R10000 User's Manual v2.0, Tables 14-19 and 14-20 define CP0 selectors.
+ * The MIPS III assembler lacks syntax for them.
  */
 #define ROM_PERF(name, sel)                                                   \
     static inline uint32_t rom_get_##name(void)                               \
@@ -64,11 +51,7 @@ ROM_PERF(perfcnt0, 1)
 ROM_PERF(perfctl1, 2)
 ROM_PERF(perfcnt1, 3)
 
-/*
- * Let a known amount of virtual time pass, measured by the Count
- * register so
- * the wait is against the same clock cycles are derived from.
- */
+/* Count measures elapsed time on the same clock as the performance counters. */
 static void wait_ticks(uint32_t ticks)
 {
     uint32_t start = rom_get_count();
@@ -85,54 +68,24 @@ void rom_main(void)
 
     rom_exc_reset();
 
-    /*
-     * Interrupts stay off in the Status register for the whole ROM, so
-     * a
-     * pending IP[7] is only ever observed as a bit in the Cause
-     * register.
-     */
+    /* Keep interrupts masked; observe pending IP[7] in Cause. */
     rom_set_status(rom_get_status() & ~ROM_ST_IE);
 
-    /*
-     * Park the timer far away so it cannot raise IP[7] underneath the
-     * overflow tests; Compare's write also clears any pending timer
-     * level.
-     */
+    /* Clear any timer level and keep the timer from interfering. */
     rom_set_count(0);
     rom_set_compare(0x7fffffffu);
 
-    /*
-     * Out of reset, the Event field of both control registers is zero —
-     * the
-     * one reset promise the manual makes about these registers.
-     */
+    /* The manual specifies a zero reset value for both Event fields. */
     rom_assert_eq(1, 0, (rom_get_perfctl0() >> 5) & 0xf);
     rom_assert_eq(2, 0, (rom_get_perfctl1() >> 5) & 0xf);
 
-    /*
-     * The control registers keep bits 8:0 and nothing else: writing all
-     * ones
-     * reads back exactly the event field, the interrupt enable and the
-     * four
-     * count enable bits.
-     */
+    /* Figure 14-22 defines control bits 8:0. */
     rom_set_perfctl0(0xffffffffu);
     rom_assert_eq(3, 0x1ffu, rom_get_perfctl0());
     rom_set_perfctl1(0xffffffffu);
     rom_assert_eq(4, 0x1ffu, rom_get_perfctl1());
 
-    /*
-     * The counters are full 32-bit read/write registers, and the four
-     * selectors reach four distinct registers: distinct values written
-     * through each selector all read back through their own.
-     *
-     * The controls are set to distinct patterns whose event fields name
-     * events nothing in this loop performs, so the counters hold still
-     * for
-     * the exact comparison. (An all-ones control would do the same —
-     * its
-     * event is not Cycles — but naming the intent beats leaning on it.)
-     */
+    /* Select unsupported events so counter readback is stable. */
     rom_set_perfctl0(PC_EVENT(10) | PC_U);
     rom_set_perfctl1(PC_EVENT(5) | PC_S);
     rom_set_perfcnt0(0x13572468u);
@@ -142,15 +95,7 @@ void rom_main(void)
     rom_assert_eq(7, 0x13572468u, rom_get_perfcnt0());
     rom_assert_eq(8, 0x2468ace0u, rom_get_perfcnt1());
 
-    /*
-     * The overflow interrupt is a level derived from the pair (counter
-     * bit
-     * 31, control interrupt enable): preloading a counter with bit 31
-     * set
-     * while the enable is on asserts IP[7] with no interrupt delivered
-     * —
-     * interrupts are masked — and clearing either half takes it away.
-     */
+    /* IP[7] is the level of counter bit 31 and its interrupt enable. */
     rom_set_perfctl0(PC_IE);
     rom_set_perfctl1(0);
     rom_set_perfcnt1(0);
@@ -158,24 +103,17 @@ void rom_main(void)
     rom_set_perfcnt0(0x80000000u);
     rom_assert_eq(10, ROM_CAUSE_IP7, rom_get_cause() & ROM_CAUSE_IP7);
 
-    /*
-     * Writing a value with bit 31 clear is the manual's way to clear
-     * it.
-     */
+    /* Clearing bit 31 deasserts the overflow level. */
     rom_set_perfcnt0(0x7fffffffu);
     rom_assert_eq(11, 0, rom_get_cause() & ROM_CAUSE_IP7);
 
-    /*
-     * Clearing the enable instead: the pending condition needs both.
-     */
+    /* Clearing the enable also deasserts the level. */
     rom_set_perfcnt0(0x80000000u);
     rom_assert_eq(12, ROM_CAUSE_IP7, rom_get_cause() & ROM_CAUSE_IP7);
     rom_set_perfctl0(0);
     rom_assert_eq(13, 0, rom_get_cause() & ROM_CAUSE_IP7);
 
-    /*
-     * Either counter is enough, and each needs its own clearing.
-     */
+    /* Either counter can assert IP[7]; both must be cleared. */
     rom_set_perfctl0(PC_IE);
     rom_set_perfctl1(PC_IE);
     rom_set_perfcnt0(0x80000000u);
@@ -186,35 +124,14 @@ void rom_main(void)
     rom_set_perfcnt1(0);
     rom_assert_eq(16, 0, rom_get_cause() & ROM_CAUSE_IP7);
 
-    /*
-     * The manual's own sentence about sharing IP[7]: a Compare write
-     * clears
-     * the timer interrupt but not a simultaneous counter overflow.
-     */
+    /* Compare clears the timer source but leaves counter overflow pending. */
     rom_set_perfcnt0(0x80000000u);
     rom_set_compare(0x7fffffffu);
     rom_assert_eq(17, ROM_CAUSE_IP7, rom_get_cause() & ROM_CAUSE_IP7);
     rom_set_perfcnt0(0);
     rom_assert_eq(18, 0, rom_get_cause() & ROM_CAUSE_IP7);
 
-    /*
-     * And the other direction: a pending timer interrupt survives the
-     * counter overflow being cleared, and only its own Compare write
-     * takes
-     * it down. The timer is armed the way the interrupt-delivery ROM
-     * hardened its arming: writing Count and Compare is two
-     * instructions,
-     * and a host that stalls the emulated processor between them for
-     * longer than the arming distance lets Count cross Compare before
-     * Compare is written — the match is then a whole counter wrap away,
-     * the old poll on Count returned at once (Count already past the
-     * target), and the assertion read a line that was never owed. A
-     * lost
-     * window is detectable right after the writes and is re-armed; the
-     * wait polls the line itself, the same shape as the delivery ROM. A
-     * line that fails to rise from a cleanly armed crossing still falls
-     * through to the assertion.
-     */
+    /* Counter overflow must not clear a pending timer interrupt. */
     for (v = 0; v < 8; v++) {
         rom_set_count(0);
         rom_set_compare(TIMER_TARGET);
@@ -236,13 +153,7 @@ void rom_main(void)
     rom_set_perfctl0(0);
     rom_set_perfctl1(0);
 
-    /*
-     * Cycles, the one event the emulator can honestly derive. Selected
-     * with
-     * the K enable while the ROM runs in kernel mode with EXL and ERL
-     * clear,
-     * the counter moves on its own and only forward.
-     */
+    /* Cycles are the only event the model derives. */
     rom_set_perfctl0(PC_EVENT(0) | PC_K);
     rom_set_perfcnt0(0);
     first = 0;
@@ -253,27 +164,13 @@ void rom_main(void)
     }
     rom_assert(23, v > first);
 
-    /*
-     * The count enable bits gate by mode: the same event with only the
-     * U
-     * enable counts nothing while the processor is in kernel mode.
-     */
+    /* User-mode counting is disabled while the ROM runs in kernel mode. */
     rom_set_perfctl0(PC_EVENT(0) | PC_U);
     rom_set_perfcnt0(12345);
     wait_ticks(20000);
     rom_assert_eq(24, 12345, rom_get_perfcnt0());
 
-    /*
-     * The EXL enable is the exception-level qualifier: with EXL raised
-     * the
-     * K-qualified counter stands still and the EXL-qualified one moves.
-     * The K-qualified counter is live until the Status write lands, so
-     * its
-     * held value is whatever it reached by then — the assertion is that
-     * it
-     * does not move any further while EXL stays up, not that it never
-     * moved.
-     */
+    /* EXL and kernel mode qualifiers select different counters here. */
     rom_set_perfctl0(PC_EVENT(0) | PC_EXL);
     rom_set_perfcnt0(0);
     rom_set_perfctl1(PC_EVENT(0) | PC_K);
@@ -289,12 +186,7 @@ void rom_main(void)
     rom_set_perfctl1(0);
     rom_set_perfcnt1(0);
 
-    /*
-     * A counter whose event the emulator cannot derive holds exactly
-     * what
-     * was written, whatever the mode enables say: no invented
-     * increments.
-     */
+    /* Unsupported events do not fabricate increments. */
     rom_set_perfctl1(PC_EVENT(8) | PC_U | PC_S | PC_K | PC_EXL);
     rom_set_perfcnt1(0xcafe1234u);
     wait_ticks(20000);
@@ -302,13 +194,7 @@ void rom_main(void)
     rom_set_perfctl1(0);
     rom_set_perfcnt1(0);
 
-    /*
-     * Counting continues after overflow: preloaded just below the wrap
-     * with
-     * bit 31 already set and the interrupt enable off, the counter
-     * keeps
-     * moving, wraps through zero and lands small.
-     */
+    /* The counter continues through overflow and wraps. */
     rom_set_perfctl0(PC_EVENT(0) | PC_K);
     rom_set_perfcnt0(0xffff0000u);
     for (i = 0; i < POLL_LIMIT && (v = rom_get_perfcnt0()) >= 0xffff0000u;
@@ -316,24 +202,14 @@ void rom_main(void)
     }
     rom_assert(28, v < 0x01000000u);
 
-    /*
-     * An overflow reached by counting, not by a write: armed a little
-     * below
-     * bit 31 with the interrupt enable on, the pending bit must appear
-     * in
-     * the Cause register on its own, with no access to the counter in
-     * the
-     * polling loop.
-     */
+    /* Poll Cause alone to prove counting raises IP[7]. */
     rom_set_perfctl0(PC_EVENT(0) | PC_K | PC_IE);
     rom_set_perfcnt0(0x80000000u - 0x40000u);
     for (i = 0; i < POLL_LIMIT && !(rom_get_cause() & ROM_CAUSE_IP7); i++) {
     }
     rom_assert_eq(29, ROM_CAUSE_IP7, rom_get_cause() & ROM_CAUSE_IP7);
 
-    /*
-     * Leave nothing pending and nothing counting behind.
-     */
+    /* Leave no interrupt pending or counter enabled. */
     rom_set_perfctl0(0);
     rom_set_perfcnt0(0);
     rom_set_perfctl1(0);
@@ -341,45 +217,14 @@ void rom_main(void)
     rom_set_compare(0x7fffffffu);
     rom_assert_eq(30, 0, rom_get_cause() & ROM_CAUSE_IP7);
 
-    /*
-     * Nothing above raised an exception.
-     */
     rom_assert_eq(31, 0, rom_exc.count);
 
-    /*
-     * A write that lands a counting counter at or past overflow is a
-     * standing level, not an edge to wait for: with the interrupt
-     * enable
-     * on, bit 31 set in the written value must show in the Cause
-     * register
-     * at once, not a counter wrap later. The write anchors the counter
-     * at
-     * exactly the written value, so unlike arming below the edge this
-     * is
-     * not a race against the clock.
-     */
+    /* A write at overflow asserts the level immediately. */
     rom_set_perfctl0(PC_EVENT(0) | PC_K | PC_IE);
     rom_set_perfcnt0(0x80000000u);
     rom_assert_eq(32, ROM_CAUSE_IP7, rom_get_cause() & ROM_CAUSE_IP7);
 
-    /*
-     * The far edge is a deadline of its own: rewritten near the wrap,
-     * the
-     * level stands until the counter runs off bit 31, then falls on its
-     * own, with no access to the counter in the polling loop.
-     *
-     * The write is deliberately close to the wrap so the fall arrives
-     * while the poll below is still running, which makes the standing
-     * level a window rather than a state: the counter advances on the
-     * emulated processor's clock, so a host that stalls this processor
-     * between the write and the read for longer than the sixty-odd
-     * thousand counts left can run it off bit 31 before the level is
-     * ever observed, and the read then sees a line that has already
-     * fallen for the right reason. A lost window is detectable and is
-     * rewritten, the same shape as the arming above; the level observed
-     * inside the loop is the one asserted, so the assertion cannot race
-     * a second read.
-     */
+    /* Poll Cause while the overflow level falls as Count advances. */
     for (v = 0, i = 0; i < 8; i++) {
         rom_set_perfcnt0(0xffff0000u);
         v = rom_get_cause() & ROM_CAUSE_IP7;
@@ -392,16 +237,11 @@ void rom_main(void)
     }
     rom_assert_eq(34, 0, rom_get_cause() & ROM_CAUSE_IP7);
 
-    /*
-     * Leave nothing pending and nothing counting, again.
-     */
+    /* Clear both counters and enables. */
     rom_set_perfctl0(0);
     rom_set_perfcnt0(0);
     rom_assert_eq(35, 0, rom_get_cause() & ROM_CAUSE_IP7);
 
-    /*
-     * Nothing in the write-at-overflow block raised an exception.
-     */
     rom_assert_eq(36, 0, rom_exc.count);
 
     /*

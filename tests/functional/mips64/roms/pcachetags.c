@@ -1,12 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * R10000 primary-cache index tag operations preserve each cache's tag
- * array. Loads return defined TagLo and TagHi fields; invalidation
- * changes state fields while retaining the tag address.
- *
- * Source: MIPS R10000 Microprocessor User's Manual, version 2.0,
- * sections 10.2, 10.3, 10.5, 10.6, 10.8, 10.9, 10.11, 10.12, 10.15
- * and 14.23.
+ * R10000 primary-cache index tag operations
+ * (User's Manual 2.0, 10.2-10.15, 14.23).
  */
 
 #include "rom.h"
@@ -18,9 +13,6 @@ const char rom_name[] = "pcachetags";
 #define DCACHE_TAGLO_MASK 0xffffffcfu
 #define DCACHE_TAGHI_MASK 0xe000000fu
 
-/*
- * Volatile keeps the memory accesses visible to this cache test.
- */
 static volatile unsigned char scratch[256] __attribute__((aligned(128)));
 
 #define KSEG0_VIEW(p) ((unsigned long)(p) & ~0x20000000ul)
@@ -44,16 +36,9 @@ static volatile unsigned char scratch[256] __attribute__((aligned(128)));
 #define DCACHE_HIT_WBINV(addr) \
     __asm__ __volatile__("cache 0x15, 0(%0)" : : "r"(addr) : "memory")
 
-/*
- * The tag-address field a primary tag carries for a kseg0 view:
- * PA[35:12]
- * into TagLo[31:8].  PA[39:36] of anything kseg0 can reach is zero.
- */
+/* kseg0 PA[35:12] maps to primary TagLo[31:8]. */
 #define PTAG_LO(addr) ((uint32_t)((((addr) & 0x1ffffffful) >> 12) << 8))
 
-/*
- * Primary tag field bits shared by both caches' TagLo formats.
- */
 #define PT_TP    (1u << 0)
 #define PT_SP    (1u << 2)
 #define PT_LRU   (1u << 3)
@@ -68,10 +53,7 @@ static void set_tags(uint32_t lo, uint32_t hi)
     rom_set_taghi(hi);
 }
 
-/*
- * Poison both staging registers so a load-back that skips a bit shows
- * it.
- */
+/* Detect load operations that fail to overwrite staged tag values. */
 static void poison_tags(void)
 {
     set_tags(0xdeadbeefu, 0xdeadbeefu);
@@ -86,20 +68,14 @@ void rom_main(void)
 
     rom_exc_reset();
 
-    /*
-     * Instruction cache: each way of one set keeps its own tag, every
-     * defined bit round-trips, and every reserved bit reads back zero
-     * however hard it was written.
-     */
+    /* I-cache ways retain their own tags; reserved bits read as zero. */
     set_tags(0xffffffffu, 0xffffffffu);
     ICACHE_STORE_TAG(iset0);
     set_tags(0x00000000u, 0x00000000u);
     ICACHE_STORE_TAG(iset0 | 1);
     poison_tags();
     ICACHE_LOAD_TAG(iset0);
-    /*
-     * Way 1's store cleared the set's shared least-recently-used bit.
-     */
+    /* Way 1 updates the set's shared LRU bit. */
     rom_assert_eq(1, ICACHE_TAGLO_MASK & ~(1u << 3), rom_get_taglo());
     rom_assert_eq(2, ICACHE_TAGHI_MASK, rom_get_taghi());
     poison_tags();
@@ -107,9 +83,6 @@ void rom_main(void)
     rom_assert_eq(3, 0, rom_get_taglo());
     rom_assert_eq(4, 0, rom_get_taghi());
 
-    /*
-     * Writing either way moves the set-wide least-recently-used bit.
-     */
     set_tags(1u << 3, 0);
     ICACHE_STORE_TAG(iset0 | 1);
     poison_tags();
@@ -117,10 +90,7 @@ void rom_main(void)
     rom_assert_eq(5, (ICACHE_TAGLO_MASK & ~(1u << 3)) | (1u << 3),
                   rom_get_taglo());
 
-    /*
-     * The neighboring set holds its own tag and does not alias set
-     * zero.
-     */
+    /* The neighboring set has independent tags. */
     set_tags(0x55555555u, 0x55555555u);
     ICACHE_STORE_TAG(iset1);
     poison_tags();
@@ -131,13 +101,7 @@ void rom_main(void)
     ICACHE_LOAD_TAG(iset0);
     rom_assert_eq(8, ICACHE_TAGLO_MASK, rom_get_taglo());
 
-    /*
-     * Data cache: same shape, its own field set, and an array
-     * independent
-     * of the instruction cache's — the address both caches were given
-     * is
-     * the same one.
-     */
+    /* D-cache tags use their own fields and array at the same addresses. */
     set_tags(0xffffffffu, 0xffffffffu);
     DCACHE_STORE_TAG(dset0);
     set_tags(0x00000000u, 0x00000000u);
@@ -165,20 +129,12 @@ void rom_main(void)
     rom_assert_eq(14, 0xaaaaaaaau & DCACHE_TAGLO_MASK, rom_get_taglo());
     rom_assert_eq(15, 0xaaaaaaaau & DCACHE_TAGHI_MASK, rom_get_taghi());
 
-    /*
-     * The instruction cache set at the shared address kept its own tag.
-     */
+    /* D-cache operations leave the I-cache tag unchanged. */
     poison_tags();
     ICACHE_LOAD_TAG(iset0);
     rom_assert_eq(16, ICACHE_TAGLO_MASK, rom_get_taglo());
 
-    /*
-     * Tag operations move tag parity inside TagLo — "Tag ECC and parity
-     * are
-     * loaded to and stored from the TagLo register" — so the ECC
-     * register
-     * stays out of them entirely.
-     */
+    /* Tag parity is in TagLo; tag operations leave ECC unchanged. */
     rom_set_ecc(0x2aau);
     set_tags(0, 0);
     ICACHE_STORE_TAG(iset0);
@@ -187,12 +143,8 @@ void rom_main(void)
     rom_assert_eq(17, 0x2aau, rom_get_ecc());
 
     /*
-     * Index Invalidate (I) clears the addressed way's state and state
-     * parity, and nothing else: the tag address and tag parity survive,
-     * the
-     * set's least-recently-used bit does not move, and the other way is
-     * not
-     * touched.
+     * I-cache index invalidate clears state and state parity while
+     * preserving the tag, parity, LRU, and other way.
      */
     set_tags(PTAG_LO(iset0) | PT_IVAL | PT_SP | PT_LRU | PT_TP, 0);
     ICACHE_STORE_TAG(iset0);
@@ -206,15 +158,7 @@ void rom_main(void)
     ICACHE_LOAD_TAG(iset0 | 1);
     rom_assert_eq(19, 0x00004500u | PT_IVAL | PT_LRU, rom_get_taglo());
 
-    /*
-     * Hit Invalidate (I) compares the physical address against both
-     * ways: a
-     * valid way whose tag matches is invalidated, a way holding a
-     * different
-     * address is left alone. Way one holds a tag one page away, so only
-     * way
-     * zero can hit.
-     */
+    /* I-cache hit invalidate changes only the matching way. */
     set_tags(PTAG_LO(iset0) | PT_IVAL | PT_SP | PT_TP, 0);
     ICACHE_STORE_TAG(iset0);
     set_tags(PTAG_LO(iset0 + 0x1000) | PT_IVAL | PT_TP, 0);
@@ -228,9 +172,7 @@ void rom_main(void)
     rom_assert_eq(21, PTAG_LO(iset0 + 0x1000) | PT_IVAL | PT_TP,
                   rom_get_taglo());
 
-    /*
-     * A second hit operation misses everywhere and changes nothing.
-     */
+    /* A miss leaves both ways unchanged. */
     ICACHE_HIT_INV(iset0);
     poison_tags();
     ICACHE_LOAD_TAG(iset0 | 1);
@@ -238,12 +180,8 @@ void rom_main(void)
                   rom_get_taglo());
 
     /*
-     * Index WriteBack Invalidate (D) rewrites the state side of the tag
-     * —
-     * state to invalid, secondary-way bit to zero, state modifier back
-     * to
-     * normal, state parity to zero — and keeps the tag address, the tag
-     * parity and the least-recently-used bit.
+     * D-cache index writeback-invalidate clears state fields but preserves
+     * the tag address and parity.
      */
     set_tags(PTAG_LO(dset1) | PT_DSTATE(3) | PT_SP | PT_SCWAY | PT_TP,
              PT_STMOD(2) | 0x5u);
@@ -254,11 +192,7 @@ void rom_main(void)
     rom_assert_eq(23, PTAG_LO(dset1) | PT_TP, rom_get_taglo());
     rom_assert_eq(24, PT_STMOD(1) | 0x5u, rom_get_taghi());
 
-    /*
-     * Hit Invalidate (D) and Hit WriteBack Invalidate (D) leave the
-     * same
-     * state behind on a hit, and a mismatched way keeps everything.
-     */
+    /* D-cache hit operations update matching tags only. */
     set_tags(PTAG_LO(dset0) | PT_DSTATE(2) | PT_SP | PT_SCWAY | PT_TP,
              PT_STMOD(2));
     DCACHE_STORE_TAG(dset0);
@@ -274,9 +208,7 @@ void rom_main(void)
     rom_assert_eq(27, PTAG_LO(dset0 + 0x1000) | PT_DSTATE(3) | PT_TP,
                   rom_get_taglo());
 
-    /*
-     * The tag's upper-nibble address bits must be zero to match kseg0.
-     */
+    /* Hit matching also requires zero upper address bits for kseg0. */
     set_tags(PTAG_LO(dset1) | PT_DSTATE(3) | PT_SP | PT_SCWAY | PT_TP,
              PT_STMOD(2));
     DCACHE_STORE_TAG(dset1);

@@ -1,14 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * The interface a bare-metal test ROM is written against.
- *
- * A ROM defines its name and a rom_main(); returning from rom_main() reports a
- * pass. Everything else here is either a way to reach a coprocessor 0
- * register, a way to arm and inspect an exception, or an assertion.
- *
- * Assertion numbers are per ROM and start at one. A failing assertion is the
- * ROM's exit status as well as a printed line, so a runner can tell which
- * check failed without parsing anything.
+ * Each ROM defines rom_name and rom_main. Returning from rom_main reports a
+ * pass; assertion IDs are per ROM and identify failures in output and status.
  */
 
 #ifndef ROM_H
@@ -25,11 +18,7 @@ typedef signed int int32_t;
 extern const char rom_name[];
 void rom_main(void);
 
-/*
- * Statuses that are not assertion numbers. An assertion number must stay
- * below the first of them, and the process exit status is only eight bits
- * wide, so there is no room to be generous.
- */
+/* Assertion IDs stop at 199; 250 reports unexpected exceptions. */
 #define ROM_STATUS_UNEXPECTED_EXCEPTION 250
 #define ROM_STATUS_MAX_ASSERT           199
 
@@ -42,7 +31,6 @@ void rom_fail(int id, uint64_t expected, uint64_t actual)
     __attribute__((noreturn));
 void rom_report_unexpected_exception(void) __attribute__((noreturn));
 
-/* The workhorse: every expected value in the suite arrives through here. */
 static inline void rom_assert_eq(int id, uint64_t expected, uint64_t actual)
 {
     if (expected != actual) {
@@ -55,7 +43,9 @@ static inline void rom_assert(int id, int condition)
     rom_assert_eq(id, 1, condition ? 1 : 0);
 }
 
-/* The record the assembly exception handler writes. */
+/*
+ * Shared record written by the assembly exception handler.
+ */
 struct rom_exc {
     uint64_t count;
     uint64_t vector;
@@ -113,12 +103,8 @@ _Static_assert(__builtin_offsetof(struct rom_exc, jump) == EXC_JUMP, "jump");
 _Static_assert(sizeof(struct rom_exc) == EXC_SIZE, "record size");
 
 /*
- * Run one or more instructions with a return address armed, so that a fault
- * anywhere inside them continues after the block instead of being reported as
- * unexpected. Registers the block needs are passed as extra operands, exactly
- * as for a plain asm statement. The kernel scratch register the arming code
- * uses is declared clobbered because an exception would have overwritten it
- * anyway.
+ * Arm a resume address for the instruction block. Pass its operands as for
+ * inline asm; $26 is clobbered while the resume address is installed.
  */
 #define ROM_TRY(insns, ...)                                                   \
     __asm__ __volatile__(".set push\n\t.set noreorder\n\t"                    \
@@ -142,7 +128,7 @@ static inline void rom_exc_reset(void)
     rom_exc.jump = 0;
 }
 
-/* Coprocessor 0. The register numbers are the ones the manual gives. */
+/* CP0 accessors; register numbers follow the R10000 User's Manual. */
 #define ROM_CP0_32(name, reg)                                                 \
     static inline uint32_t rom_get_##name(void)                               \
     {                                                                         \
@@ -255,12 +241,8 @@ ROM_CP0_64(errorepc, 30)
 #define ROM_CACHE_NONCOHERENT 3
 
 /*
- * The uncached attribute an entry carries, in the top two bits of the low half.
- * An uncached reference drives it out beside the address. On this machine it
- * names which of four spaces the reference is for. A mapping that means memory
- * has to say so: the value that means memory is three, and zero — which is
- * an entry built without thinking about it would carry — means the Hub's own
- * registers.
+ * EntryLo[63:62] selects the R10000 uncached space: Hub, crosstalk, special,
+ * or memory. Ordinary memory mappings must use attribute 3; zero selects Hub.
  */
 #define ROM_ENTRYLO_UC_SHIFT 62
 #define ROM_UC_HUB      0
@@ -269,9 +251,7 @@ ROM_CP0_64(errorepc, 30)
 #define ROM_UC_MEMORY   3
 
 /*
- * Build the low half of a TLB entry mapping a physical address in a named
- * space. Only an uncached entry carries an attribute; a cached one reaches
- * memory whatever is in those bits.
+ * Build EntryLo for a physical address and explicit uncached-space attribute.
  */
 static inline uint64_t rom_entrylo_in(uint64_t paddr, uint64_t flags, int cache,
                                       int uc)
@@ -282,11 +262,8 @@ static inline uint64_t rom_entrylo_in(uint64_t paddr, uint64_t flags, int cache,
 }
 
 /*
- * The same with the attribute left zero, for a cached mapping, where no
- * attribute is driven and the bits mean nothing. A ROM that runs against more
- * than one processor has to use this: on the R4000 those two bits are the
- * read-inhibit and execute-inhibit bits, so setting them there makes the page
- * unreadable rather than naming a space.
+ * Build a cached mapping with zero attribute bits. On R4000 these bits are
+ * read/execute inhibit controls, not an uncached-space selector.
  */
 static inline uint64_t rom_entrylo(uint64_t paddr, uint64_t flags, int cache)
 {
@@ -303,10 +280,7 @@ static inline uint64_t rom_entrylo(uint64_t paddr, uint64_t flags, int cache)
 #define ROM_PAGEMASK_16M  0x01ffe000u
 
 /*
- * Put every TLB entry out of the way of the addresses the tests use, the way
- * firmware does before it installs any mapping of its own: a distinct virtual
- * page number per entry, both halves invalid. The chosen page numbers sit far
- * above the region the suite maps, so no test can accidentally hit one.
+ * Install invalid 4 KiB pairs at unique VPNs above the test mappings.
  */
 #define ROM_TLB_ENTRIES 64
 #define ROM_TLB_PARK_BASE 0x000000003f000000ull

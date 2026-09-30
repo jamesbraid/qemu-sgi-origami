@@ -3,12 +3,11 @@
 Bare-metal MIPS regression ROMs
 ==============================
 
-These GPL-2.0-or-later programs check CPU and machine behavior without a
-proprietary firmware input. The ``suite`` manifest lists the ROM, CPU models
-and machine configuration for every required case. R10000 cases run on
-``origin200``; R4000 and R14000 cases run on ``malta``. The four-CPU cases
-use ``origin200-dual``. Instruction-counting cases retain their explicit
-``-icount`` configuration.
+These GPL-2.0-or-later programs test CPU and machine behavior without
+proprietary firmware. The ``suite`` manifest lists each required ROM, CPU and
+machine. R10000 cases run on ``origin200``; R4000 and R14000 cases run on
+``malta``. Four-CPU cases use ``origin200-dual``. Instruction-counting cases
+specify their ``-icount`` configuration in the manifest.
 
 Build and run
 -------------
@@ -23,9 +22,7 @@ From the configured build directory::
   ninja sgi-roms
   meson test --setup qemu:thorough func-mips64-sgi_roms --print-errorlogs
 
-Meson builds the ROM dependencies before testing. Outputs remain under
-``tests/functional/mips64/roms`` in the build directory. No prebuilt image,
-source hash stamp or source-tree build directory is used. To select one case::
+Meson builds the ROM dependencies in the build tree. To select one case::
 
   meson test --setup qemu:thorough func-mips64-sgi_roms --test-args SGIRoms.test_tlb_R10000_default
 

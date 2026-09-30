@@ -1,18 +1,11 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
-/*
- * Check translation and address exceptions from R10000 CACHE
- * operations. See the MIPS R10000 Microprocessor User's Manual version
- * 2.0, CACHE operation notes and the CP0 CACHE instruction section.
- */
+/* Check address and TLB exceptions raised by R10000 CACHE operations. */
 
 #include "rom.h"
 
 const char rom_name[] = "cachefaults";
 
-/*
- * A physical page nothing else in a ROM uses, and user-segment virtual
- * pages translated from kernel mode too.
- */
+/* Scratch page and virtual aliases used by the translation probes. */
 #define PHYS_PAGE  0x00300000ull
 #define VIRT_VALID 0x10000000ull
 #define VIRT_INVAL 0x12000000ull
@@ -25,16 +18,12 @@ const char rom_name[] = "cachefaults";
 #define MAP_RW (ROM_ENTRYLO_V | ROM_ENTRYLO_D | ROM_ENTRYLO_G)
 #define MAP_RO (ROM_ENTRYLO_V | ROM_ENTRYLO_G)
 
-/*
- * Volatile keeps the memory accesses visible to this cache test.
- */
+/* Keep the scratch object materialized for cache operations. */
 static volatile unsigned char scratch[256] __attribute__((aligned(128)));
 
 #define KSEG0_VIEW(p) ((unsigned long)(p) & ~0x20000000ul)
 
-/*
- * A cache operation that may fault, with the resume address armed.
- */
+/* Arm exception recovery before a potentially faulting operation. */
 #define TRY_CACHE(op, vaddr) \
     ROM_TRY("cache " #op ", 0(%[a])", [a] "r"(vaddr))
 
@@ -89,14 +78,8 @@ void rom_main(void)
     rom_assert_eq(5, 0, rom_exc.count);
 
     /*
-     * A Hit operation's low address bits are don't-care, never an
-     * alignment fault: the operation tag-searches both ways, the
-     * manual's
-     * address-error section limits CacheOps to privilege-type address
-     * errors, and the secondary flush every shipped kernel runs sets
-     * bit 0
-     * as a vestigial way-select it expects ignored. Only an Index
-     * operation's bit 1 faults.
+     * Hit operations ignore low address bits. Only Index bit 1 causes an
+     * alignment error; rejecting other low bits breaks normal way selects.
      */
     rom_exc_reset();
     TRY_CACHE(0x11, kaddr | 1);
@@ -111,11 +94,7 @@ void rom_main(void)
     TRY_CACHE(0x17, kaddr | 2);
     rom_assert_eq(9, 0, rom_exc.count);
 
-    /*
-     * A Hit operation through an unmapped page takes a TLB Refill, like
-     * the
-     * load its translation is.
-     */
+    /* Hit operations still require translation and raise TLB Refill. */
     rom_exc_reset();
     TRY_CACHE(0x11, VIRT_MISS);
     rom_assert_eq(10, 1, rom_exc.count);
@@ -133,23 +112,14 @@ void rom_main(void)
     rom_assert_eq(16, ROM_EXC_TLBL, ROM_CAUSE_EXC(rom_exc.cause));
     rom_assert_eq(17, VIRT_INVAL, rom_exc.badvaddr);
 
-    /*
-     * An index operation is "any operation" too: unmapped addresses
-     * avoid
-     * the exception only because they never miss, not because index
-     * operations are exempt.
-     */
+    /* Index operations also translate and are not exempt from TLB misses. */
     rom_exc_reset();
     TRY_CACHE(0x00, VIRT_MISS);
     rom_assert_eq(18, 1, rom_exc.count);
     rom_assert_eq(19, VEC_BOOTSTRAP_REFILL, rom_exc.vector);
     rom_assert_eq(20, ROM_EXC_TLBL, ROM_CAUSE_EXC(rom_exc.cause));
 
-    /*
-     * Never a TLB Modified exception: a writeback-invalidate through a
-     * mapping whose dirty bit is clear is still a load-type
-     * translation.
-     */
+    /* Writeback-invalidate through a clean mapping must not raise Modified. */
     rom_exc_reset();
     TRY_CACHE(0x15, VIRT_RO);
     rom_assert_eq(21, 0, rom_exc.count);

@@ -1,36 +1,17 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
-/*
- * Check that timer interrupts arrive while a branch loop runs under
- * instruction counting, including branch delay-slot boundaries. Run
- * under -icount; otherwise the instruction-budget case is inactive.
- */
+/* Timer delivery at branch and delay-slot boundaries under -icount. */
 
 #include "rom.h"
 
 const char rom_name[] = "icountslot";
 
-/*
- * Interrupt mask bit 7 of the Status register, the timer's mask.
- */
+/* Status.IM7 enables the timer interrupt. */
 #define ROM_ST_IM7 (1u << 15)
 
-/*
- * How far ahead of Count each phase arms Compare. Far enough that the
- * loop
- * reaches its steady translation block before the deadline's budget
- * shrinks,
- * near enough that five phases stay quick.
- */
+/* Let the loop reach steady state before the instruction budget expires. */
 #define SLOT_TARGET 0x4000u
 
-/*
- * One spin phase: arm the deadline, open the interrupt, spin until the
- * handler resumes past the loop, then assert exactly one interrupt
- * arrived.
- * The loop body is given whole, because its instruction alignment is
- * the
- * thing under test and a shared body would share one alignment.
- */
+/* Keep each loop inline to make the tested instruction alignment explicit. */
 #define SLOT_PHASE(n, loop)                                                   \
     do {                                                                      \
         uint32_t on;                                                          \
@@ -52,16 +33,12 @@ void rom_main(void)
     rom_exc_reset();
     rom_set_status(rom_get_status() & ~ROM_ST_IE);
 
-    /*
-     * The two-instruction loop, at both entry alignments.
-     */
+    /* Two-instruction loop at both entry alignments. */
     SLOT_PHASE(1, "1:\tb 1b\n\tnop");
     SLOT_PHASE(3, "nop\n"
                   "1:\tb 1b\n\tnop");
 
-    /*
-     * The three-instruction loop, at all three entry alignments.
-     */
+    /* Three-instruction loop at all three entry alignments. */
     SLOT_PHASE(5, "1:\tnop\n\tb 1b\n\tnop");
     SLOT_PHASE(7, "nop\n"
                   "1:\tnop\n\tb 1b\n\tnop");

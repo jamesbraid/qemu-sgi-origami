@@ -1,17 +1,11 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
-/*
- * Check R10000 Random, Cause, and LLAddr register behavior. See the
- * MIPS R10000 User's Manual version 2.0, sections 14.2, 14.11, and
- * 14.15.
- */
+/* Check R10000 Random, Cause, and LLAddr register behavior. */
 
 #include "rom.h"
 
 const char rom_name[] = "cp0misc";
 
-/*
- * The upper bound of the Random register: the entry count minus one.
- */
+/* Random's upper bound for a 64-entry TLB. */
 #define RANDOM_UPPER 63
 
 /*
@@ -20,11 +14,7 @@ const char rom_name[] = "cp0misc";
 #define CAUSE_RESERVED_27_16 (0x0fffu << 16)
 #define CAUSE_IP1_0          (3u << 8)
 
-/*
- * A word for the load-linked probe to link against, and a sentinel that
- * no
- * physical address in the machine's first terabyte can alias.
- */
+/* Load-linked operand and non-aliasing physical-address sentinel. */
 #define LLADDR_SENTINEL 0x5aa55aa5u
 
 /*
@@ -43,19 +33,11 @@ void rom_main(void)
      */
     rom_set_status(rom_get_status() & ~ROM_ST_IE);
 
-    /*
-     * Reset left the Random register at its upper bound, and nothing
-     * between
-     * reset and here consults it — the startup code takes no refills —
-     * so the
-     * first read returns the bound.
-     */
+    /* Reset establishes the initial Random value before any TLB lookup. */
     rom_assert_eq(1, RANDOM_UPPER, rom_get_random());
     {
         /*
-         * A consultation moves the register; the step size is
-         * cycle-derived
-         * and not pinned, only the bounds are.
+         * Reads advance Random; its cycle-derived step is not fixed.
          */
         uint32_t second = rom_get_random();
 
@@ -68,11 +50,7 @@ void rom_main(void)
     rom_set_wired(10);
     rom_assert_eq(3, RANDOM_UPPER, rom_get_random());
 
-    /*
-     * The register never leaves the range the two bounds pin: with the
-     * floor at 60 every read sits in the four-value window however the
-     * cycle-derived step lands.
-     */
+    /* With Wired at 60, Random must remain in the four-entry range. */
     rom_set_wired(60);
     for (i = 0; i < 8; i++) {
         uint32_t r = rom_get_random();
@@ -88,15 +66,8 @@ void rom_main(void)
     rom_assert_eq(12, RANDOM_UPPER, rom_get_random());
 
     /*
-     * The icount configuration advances eight virtual nanoseconds per
-     * instruction.
-     * Ten nops separate two Random reads, so the delayed update cannot
-     * wrap
-     * to a unit decrement. Reads return the pre-update value: the third
-     * read
-     * observes the update calculated by the second. The old unit-step
-     * approximation fails this deliberate approximation regression
-     * check.
+     * Separate reads so delayed updates are visible without assuming a
+     * fixed decrement. This catches the former unit-step approximation.
      */
     {
         uint32_t anchor, before, after;
@@ -117,22 +88,9 @@ void rom_main(void)
     }
 
     /*
-     * The Cause register: only the two software interrupt bits take a
-     * write,
-     * and the reserved field 27:16 returns zeroes however it is
-     * written. The
-     * bits at 23 and 22 are where a model built from the later
-     * architecture
-     * would give itself away, because that architecture defines
-     * vectoring and
-     * watch-deferral controls there; on the R10000 they are reserved
-     * zeroes
-     * like the rest of the field.
-     *
-     * The software interrupt bits are exercised with the interrupt
-     * enable off
-     * and both interrupts masked, so posting them is observable only as
-     * bits.
+     * Only software interrupt bits are writable; 23:22 and 27:16 are
+     * reserved on R10000. Keep interrupts disabled so writes are observed
+     * as bits only.
      */
     rom_set_cause(rom_get_cause() | CAUSE_RESERVED_27_16);
     rom_assert_eq(14, 0, rom_get_cause() & CAUSE_RESERVED_27_16);
@@ -143,19 +101,8 @@ void rom_main(void)
     rom_assert_eq(16, 0, rom_get_cause() & CAUSE_IP1_0);
 
     /*
-     * The load-linked address register holds what software last put
-     * there and
-     * nothing else: the manual says physical addresses for load-linked
-     * instructions "are no longer written into this register", leaving
-     * a
-     * plain
-     * read/write scratch word. So a sentinel must survive both of the
-     * writers
-     * the R4000 lineage had - a load-linked instruction, and the
-     * exception
-     * return that every handled exception ends with. The link itself
-     * lives
-     * elsewhere; breaking it does not touch this register.
+     * LLAddr is software-visible storage here. A load-linked instruction
+     * and exception return must not overwrite its sentinel.
      */
     rom_set_lladdr(LLADDR_SENTINEL);
     rom_assert_eq(18, LLADDR_SENTINEL, rom_get_lladdr());

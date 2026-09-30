@@ -1,8 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * Check that Status bit 31 gates MIPS IV instructions in user mode and
- * is ignored in kernel and supervisor modes. See the MIPS R10000 User's
- * Manual version 2.0.
+ * Status.XX gates MIPS IV instructions in user mode
+ * (R10000 User's Manual 2.0).
  */
 
 #include "rom.h"
@@ -11,18 +10,8 @@
 const char rom_name[] = "mips4user";
 
 /*
- * The user routine. It runs the instruction under test, then leaves a
- * marker
- * and traps back into the kernel; reaching either of those means the
- * instruction was allowed. It uses only the two registers the
- * architecture
- * reserves for kernel scratch, which the compiler never allocates, so
- * the
- * kernel can hand it a pointer and a value without agreeing on a
- * calling
- * convention. The exception handler overwrites both, which does not
- * matter
- * because the routine never runs twice.
+ * Use kernel-reserved $26/$27 to pass probe inputs without a C ABI. The
+ * exception handler clobbers them, so each probe runs once.
  */
 __asm__(".pushsection .text.rom_user_probe, \"ax\"\n\t"
         ".set push\n\t"
@@ -31,35 +20,24 @@ __asm__(".pushsection .text.rom_user_probe, \"ax\"\n\t"
         ".set hardfloat\n\t"
         ".globl rom_user_probe\n"
         "rom_user_probe:\n\t"
-        "ldxc1 $f0, $0($26)\n\t"        /* the MIPS IV instruction under test */
-        "sw $27, 8($26)\n\t"            /* got here: leave the marker behind */
-        "syscall\n\t"                   /* hand control back to the kernel */
+        "ldxc1 $f0, $0($26)\n\t"        /* MIPS IV instruction under test */
+        "sw $27, 8($26)\n\t"            /* Probe succeeded. */
+        "syscall\n\t"                   /* Return control to the kernel. */
         "nop\n\t"
         ".globl rom_user_probe_end\n"
         "rom_user_probe_end:\n\t"
         ".set pop\n\t"
         ".popsection");
 
-/*
- * A user routine for the mode itself rather than an instruction: it
- * loads
- * from a kernel-segment address, which user mode refuses with an
- * address
- * error before any translation happens. Reaching the marker means the
- * processor granted kernel addressing. The load address is built inside
- * the
- * routine — the upper-immediate load sign-extends, giving the uncached
- * window
- * onto the same spare physical page the probes are copied to.
- */
+/* Probe kernel addressing by loading the uncached alias of the probe page. */
 __asm__(".pushsection .text.rom_kload_probe, \"ax\"\n\t"
         ".set push\n\t"
         ".set noreorder\n\t"
         ".globl rom_kload_probe\n"
         "rom_kload_probe:\n\t"
-        "lui $25, 0xa030\n\t"           /* 0xffffffffa0300000, kernel space */
-        "ld $25, 0($25)\n\t"            /* refused in user mode: AdEL */
-        "sw $27, 8($26)\n\t"            /* got here: kernel addressing worked */
+        "lui $25, 0xa030\n\t"           /* Sign-extends to the KSEG1 address. */
+        "ld $25, 0($25)\n\t"            /* User mode must raise AdEL. */
+        "sw $27, 8($26)\n\t"            /* Access was allowed. */
         "syscall\n\t"
         "nop\n\t"
         ".globl rom_kload_probe_end\n"
@@ -67,18 +45,7 @@ __asm__(".pushsection .text.rom_kload_probe, \"ax\"\n\t"
         ".set pop\n\t"
         ".popsection");
 
-/*
- * The other user routines, one per class the exception table separates.
- * Each
- * has the same shape as the first: the instruction under test, the
- * marker
- * store, the system call. The two integer conditional moves overwrite
- * the
- * marker register on purpose, so the value that lands in the marker
- * word says
- * whether the move itself happened rather than merely that the routine
- * survived it.
- */
+/* Build one isolated user routine per instruction class. */
 #define USER_PROBE(name, body)                                                \
     __asm__(".pushsection .text.rom_probe_" #name ", \"ax\"\n\t"              \
             ".set push\n\t"                                                   \
@@ -93,18 +60,14 @@ __asm__(".pushsection .text.rom_kload_probe, \"ax\"\n\t"
             ".set pop\n\t"                                                    \
             ".popsection");
 
-/*
- * The marker register is never zero, so the move-on-nonzero happens.
- */
+/* The nonzero marker makes MOVN take its move path. */
 USER_PROBE(movn,
            "movn $27, $26, $27\n\t"
            "sw $27, 8($26)\n\t"
            "syscall\n\t"
            "nop");
 
-/*
- * The first condition bit is held zero, so the move-on-false happens.
- */
+/* FCC0 starts clear, so MOVF takes its move path. */
 USER_PROBE(movf,
            "movf $27, $26, $fcc0\n\t"
            "sw $27, 8($26)\n\t"
@@ -123,14 +86,7 @@ USER_PROBE(prefx,
            "syscall\n\t"
            "nop");
 
-/*
- * The branch-on-false is taken when its condition bit is zero, which is
- * how
- * the kernel left it, so the taken path stores the marker value. The
- * fall-through path stores the data address's low half instead: a
- * branch that
- * executes but goes the wrong way is caught, not mistaken for a pass.
- */
+/* Store a distinct value on fall-through to catch a misdirected branch. */
 USER_PROBE(bc1_cc1,
            "bc1f $fcc1, 1f\n\t"
            "nop\n\t"
@@ -229,9 +185,7 @@ USER_PROBE(rsqrt_d,
            "syscall\n\t"
            "nop");
 
-/*
- * MIPS III standing alone: the 64-bit fixed-point conversion.
- */
+/* MIPS III L-format conversion, gated by UX. */
 USER_PROBE(cvt_l_d,
            "cvt.l.d $f2, $f4\n\t"
            "sw $27, 8($26)\n\t"
@@ -245,64 +199,34 @@ USER_PROBE(madd_s,
            "syscall\n\t"
            "nop");
 
-/*
- * The user page pair. Both addresses are above the two-gigabyte
- * boundary, in
- * the part of the user segment that is translated with no compatibility
- * special cases, and both are inside the segment either processor has.
- * The
- * physical pages are spare: the harness itself uses only the first two
- * megabytes.
- */
+/* Probes above 2 GiB require UX; their backing pages are unused by the ROM. */
 #define USER_CODE_VA 0x0000000080400000ull
 #define USER_DATA_VA 0x0000000080401000ull
 #define USER_CODE_PA 0x0000000000300000ull
 #define USER_DATA_PA 0x0000000000301000ull
 
-/*
- * The same physical pages aliased below two gigabytes, for a probe that
- * must run without extended user addressing: with UX clear the user
- * segment ends at two gigabytes, so the ordinary pages are out of
- * reach.
- */
+/* Low aliases let the UX-clear probe reach the same backing pages. */
 #define USER32_CODE_VA 0x0000000000400000ull
 #define USER32_DATA_VA 0x0000000000401000ull
 
-/*
- * The same physical pages seen uncached from kernel mode.
- */
+/* Uncached kernel aliases of the probe pages. */
 #define KSEG1_OF(pa) (0xffffffffa0000000ull + (pa))
 
 #define MARKER_OFFSET 8
 #define MARKER_VALUE  0x5a5aa5a5u
 
-/*
- * What the integer conditional moves leave in the marker word: the
- * moved
- * pointer's low half, which the marker store truncates to.
- */
+/* Integer conditional moves store the low word of USER_DATA_VA. */
 #define MOVED_POINTER_LO ((uint32_t)USER_DATA_VA)
 
-/*
- * The entry the user mapping lives in, held down so nothing can replace
- * it.
- */
+/* Keep user mappings in wired entries. */
 #define USER_TLB_INDEX 0
 
-/*
- * Floating-Point Status register fields, from its figure (Figure 15-7):
- * the
- * first two condition bits and the cause field's E bit.
- */
+/* FSR condition bits and Unimplemented Operation cause bit. */
 #define FSR_FCC0    (1u << 23)
 #define FSR_FCC1    (1u << 25)
 #define FSR_CAUSE_E (1u << 17)
 
-/*
- * Operands and results as register bit patterns, all exactly
- * representable,
- * so no assertion depends on a rounding mode.
- */
+/* Exactly representable operands keep results independent of rounding mode. */
 #define SINGLE_2_0 0x40000000u
 #define SINGLE_4_0 0x40800000u
 #define SINGLE_0_5 0x3f000000u
@@ -311,15 +235,7 @@ USER_PROBE(madd_s,
 #define DOUBLE_4_0 0x4010000000000000ull
 #define DOUBLE_0_5 0x3fe0000000000000ull
 
-/*
- * The kernel's own door to the floating-point unit, for staging
- * operands and
- * reading results back. The ROM is compiled soft-float, so the compiler
- * never
- * touches these registers; the probes and these helpers are the only
- * users,
- * and a value staged here is still in place when a probe runs.
- */
+/* The ROM is soft-float, so staged FPU registers remain available to probes. */
 static inline void set_fsr(uint32_t v)
 {
     __asm__ __volatile__(".set push\n\t.set hardfloat\n\t"
@@ -416,9 +332,7 @@ static void map_user32_page(void)
 static void copy_user_probe(const unsigned char *begin,
                             const unsigned char *end)
 {
-    /*
-     * Volatile preserves accesses through the uncached KSEG1 alias.
-     */
+    /* Volatile writes preserve accesses through the uncached alias. */
     volatile unsigned char *dst =
         (volatile unsigned char *)KSEG1_OF(USER_CODE_PA); /* KSEG1 uncached */
     unsigned long len = (unsigned long)(end - begin);
@@ -431,13 +345,7 @@ static void copy_user_probe(const unsigned char *begin,
 
 static void set_marker(uint32_t v)
 {
-    /*
-     * Volatile preserves accesses through the uncached KSEG1 alias.
-     */
     volatile uint32_t *m =
-        /*
-         * Volatile preserves accesses through the uncached KSEG1 alias.
-         */
         (volatile uint32_t *)KSEG1_OF(USER_DATA_PA + MARKER_OFFSET);
 
     *m = v;
@@ -445,28 +353,15 @@ static void set_marker(uint32_t v)
 
 static uint32_t get_marker(void)
 {
-    /*
-     * Volatile preserves accesses through the uncached KSEG1 alias.
-     */
     volatile uint32_t *m =
-        /*
-         * Volatile preserves accesses through the uncached KSEG1 alias.
-         */
         (volatile uint32_t *)KSEG1_OF(USER_DATA_PA + MARKER_OFFSET);
 
     return *m;
 }
 
 /*
- * Drop into the user routine and come back. The return address is armed
- * by
- * the
- * block itself; the Status register to install on the way back has to
- * be
- * staged
- * separately, because resuming at a kernel address while still in user
- * mode
- * would take an address error instead.
+ * Stage kernel Status for the exception return; resuming in user mode
+ * at a kernel address would raise AdEL.
  */
 static void run_user_probe(uint32_t ustatus, uint32_t kstatus)
 {
@@ -483,9 +378,7 @@ static void run_user_probe(uint32_t ustatus, uint32_t kstatus)
             [entry] "r"(USER_CODE_VA), [ust] "r"(ustatus));
 }
 
-/*
- * The same entry sequence through the below-two-gigabyte alias.
- */
+/* Enter the same routine through its low address alias. */
 static void run_user_probe32(uint32_t ustatus, uint32_t kstatus)
 {
     set_marker(0);
@@ -514,36 +407,18 @@ void rom_main(void)
     uint64_t scratch = KSEG1_OF(USER_DATA_PA);
     uint64_t moved;
 
-    /*
-     * The floating-point unit has to be usable and in its 64-bit
-     * register
-     * mode
-     * before any of the instructions below mean anything, and extended
-     * kernel
-     * addressing is switched on so that nothing in this ROM depends on
-     * which
-     * addressing width the kernel happens to be in.
-     */
+    /* Enable the FPU, 64-bit FPRs, and extended kernel addressing. */
     kstatus = rom_get_status() | ROM_ST_CU1 | ROM_ST_FR | ROM_ST_KX;
     rom_set_status(kstatus);
 
-    /*
-     * A processor that does not have the bit cannot answer anything
-     * else.
-     */
+    /* Skip no feature check: Status.XX must be implemented and writable. */
     rom_set_status(kstatus | ROM_ST_XX);
     rom_assert_eq(1, ROM_ST_XX, rom_get_status() & ROM_ST_XX);
 
-    /*
-     * It is a real read/write bit, not one stuck on.
-     */
     rom_set_status(kstatus);
     rom_assert_eq(2, 0, rom_get_status() & ROM_ST_XX);
 
-    /*
-     * In kernel mode the bit is ignored, so with it clear MIPS IV still
-     * runs.
-     */
+    /* Status.XX does not gate MIPS IV instructions in kernel mode. */
     rom_exc_reset();
     ROM_TRY(".set mips4\n\t.set hardfloat\n\t"
             "ldxc1 $f0, $0(%[a])\n\t"
@@ -551,9 +426,6 @@ void rom_main(void)
             [a] "r"(scratch));
     rom_assert_eq(3, 0, rom_exc.count);
 
-    /*
-     * And with it set, unchanged.
-     */
     rom_set_status(kstatus | ROM_ST_XX);
     rom_exc_reset();
     ROM_TRY(".set mips4\n\t.set hardfloat\n\t"
@@ -563,18 +435,12 @@ void rom_main(void)
     rom_assert_eq(4, 0, rom_exc.count);
     rom_set_status(kstatus);
 
-    /*
-     * Everything from here on runs in user mode out of a page we map.
-     */
+    /* Run user probes from a mapped, wired page. */
     rom_tlb_park(ROM_TLB_ENTRIES);
     map_user_page();
     copy_user_probe(rom_user_probe, rom_user_probe_end);
 
-    /*
-     * User mode with the bit clear: the instruction is refused as a
-     * reserved
-     * instruction, and the routine never reaches its marker.
-     */
+    /* In user mode, XX clear must reject the MIPS IV instruction. */
     ustatus = ROM_ST_BEV | ROM_ST_CU1 | ROM_ST_FR | ROM_ST_UX |
               ROM_ST_KSU_USER | ROM_ST_EXL;
     run_user_probe(ustatus, kstatus);
@@ -582,27 +448,16 @@ void rom_main(void)
     rom_assert_eq(6, ROM_EXC_RI, ROM_CAUSE_EXC(rom_exc.cause));
     rom_assert_eq(7, 0, get_marker());
 
-    /*
-     * User mode with the bit set: the instruction runs, the marker is
-     * written,
-     * and the routine gets back to the kernel through its own system
-     * call.
-     */
+    /* With XX set, the probe reaches its marker and returns by syscall. */
     run_user_probe(ustatus | ROM_ST_XX, kstatus);
     rom_assert_eq(8, 1, rom_exc.count);
     rom_assert_eq(9, ROM_EXC_SYS, ROM_CAUSE_EXC(rom_exc.cause));
     rom_assert_eq(10, MARKER_VALUE, get_marker());
 
     /*
-     * User mode with the bit set but the floating-point unit unusable:
-     * the
-     * instruction is refused for that reason instead, and the Cause
-     * register
-     * names the coprocessor it wanted.
-     * With XX and CU1 clear, the manual specifies Reserved Instruction,
-     * but QEMU checks CU1 first for extended FP opcodes and reports
-     * Coprocessor Unusable. That combination is omitted except for MOVF,
-     * whose decoder checks XX first.
+     * CU1 clear takes priority for these extended FP instructions. With
+     * XX clear, the manual specifies RI, but QEMU reports CPU unusable;
+     * MOVF is tested separately because its decoder checks XX first.
      */
     run_user_probe((ustatus | ROM_ST_XX) & ~ROM_ST_CU1, kstatus);
     rom_assert_eq(11, 1, rom_exc.count);
@@ -610,51 +465,30 @@ void rom_main(void)
     rom_assert_eq(13, 1, (rom_exc.cause >> ROM_CAUSE_CE_SHIFT) & 3);
     rom_assert_eq(14, 0, get_marker());
 
-    /*
-     * The integer conditional move on a register value, refused as a
-     * reserved
-     * instruction with the bit clear. The exception lands on the
-     * instruction
-     * itself, and the move never happens.
-     */
+    /* MOVN is RI with XX clear; EPC must identify the trapped instruction. */
     run_probe(rom_probe_movn, rom_probe_movn_end, ustatus, kstatus);
     rom_assert_eq(15, 1, rom_exc.count);
     rom_assert_eq(16, ROM_EXC_RI, ROM_CAUSE_EXC(rom_exc.cause));
     rom_assert_eq(17, USER_CODE_VA, rom_exc.epc);
     rom_assert_eq(18, 0, get_marker());
 
-    /*
-     * Permitted, the move happens: the marker holds the moved pointer.
-     */
     run_probe(rom_probe_movn, rom_probe_movn_end, ustatus | ROM_ST_XX, kstatus);
     rom_assert_eq(19, 1, rom_exc.count);
     rom_assert_eq(20, ROM_EXC_SYS, ROM_CAUSE_EXC(rom_exc.cause));
     rom_assert_eq(21, MOVED_POINTER_LO, get_marker());
 
-    /*
-     * The integer conditional move on a condition bit: the same
-     * reserved-instruction refusal with the bit clear...
-     */
+    /* MOVF on FCC0: XX clear, enabled with CU1, and both bits clear. */
     set_fsr(0);
     run_probe(rom_probe_movf, rom_probe_movf_end, ustatus, kstatus);
     rom_assert_eq(22, 1, rom_exc.count);
     rom_assert_eq(23, ROM_EXC_RI, ROM_CAUSE_EXC(rom_exc.cause));
     rom_assert_eq(24, 0, get_marker());
 
-    /*
-     * ...the move itself when permitted...
-     */
     run_probe(rom_probe_movf, rom_probe_movf_end, ustatus | ROM_ST_XX, kstatus);
     rom_assert_eq(25, 1, rom_exc.count);
     rom_assert_eq(26, ROM_EXC_SYS, ROM_CAUSE_EXC(rom_exc.cause));
     rom_assert_eq(27, MOVED_POINTER_LO, get_marker());
 
-    /*
-     * ...the coprocessor refusal when MIPS IV is enabled but the
-     * coprocessor
-     * is not, since the instruction reads a floating-point condition
-     * bit...
-     */
     run_probe(rom_probe_movf, rom_probe_movf_end,
               (ustatus | ROM_ST_XX) & ~ROM_ST_CU1, kstatus);
     rom_assert_eq(28, 1, rom_exc.count);
@@ -662,42 +496,24 @@ void rom_main(void)
     rom_assert_eq(30, 1, (rom_exc.cause >> ROM_CAUSE_CE_SHIFT) & 3);
     rom_assert_eq(31, 0, get_marker());
 
-    /*
-     * ...and, alone among the gated classes, the both-bits-clear row
-     * exactly
-     * as the exception table writes it: reserved instruction, with the
-     * coprocessor bit a don't-care.
-     */
     run_probe(rom_probe_movf, rom_probe_movf_end,
               ustatus & ~ROM_ST_CU1, kstatus);
     rom_assert_eq(32, 1, rom_exc.count);
     rom_assert_eq(33, ROM_EXC_RI, ROM_CAUSE_EXC(rom_exc.cause));
     rom_assert_eq(34, 0, get_marker());
 
-    /*
-     * The prefetch: refused as a reserved instruction with the bit
-     * clear.
-     */
+    /* PREF is a hint; success is established by reaching the marker. */
     run_probe(rom_probe_pref, rom_probe_pref_end, ustatus, kstatus);
     rom_assert_eq(35, 1, rom_exc.count);
     rom_assert_eq(36, ROM_EXC_RI, ROM_CAUSE_EXC(rom_exc.cause));
     rom_assert_eq(37, 0, get_marker());
 
-    /*
-     * Permitted, it is a hint with no architectural result of its own,
-     * so
-     * reaching the marker store behind it is all there is to assert.
-     */
     run_probe(rom_probe_pref, rom_probe_pref_end, ustatus | ROM_ST_XX, kstatus);
     rom_assert_eq(38, 1, rom_exc.count);
     rom_assert_eq(39, ROM_EXC_SYS, ROM_CAUSE_EXC(rom_exc.cause));
     rom_assert_eq(40, MARKER_VALUE, get_marker());
 
-    /*
-     * The indexed prefetch, the extended opcode's hint instruction: the
-     * same
-     * reserved-instruction refusal, the same hint-only pass.
-     */
+    /* PREFX is also a hint with no architectural result to inspect. */
     run_probe(rom_probe_prefx, rom_probe_prefx_end, ustatus, kstatus);
     rom_assert_eq(41, 1, rom_exc.count);
     rom_assert_eq(42, ROM_EXC_RI, ROM_CAUSE_EXC(rom_exc.cause));
@@ -709,11 +525,7 @@ void rom_main(void)
     rom_assert_eq(45, ROM_EXC_SYS, ROM_CAUSE_EXC(rom_exc.cause));
     rom_assert_eq(46, MARKER_VALUE, get_marker());
 
-    /*
-     * The floating-point branch naming the second condition bit:
-     * refused as
-     * a reserved instruction with the bit clear, taken when permitted.
-     */
+    /* FCC1 branch is gated; FCC0 is MIPS I and remains available. */
     set_fsr(0);
     run_probe(rom_probe_bc1_cc1, rom_probe_bc1_cc1_end, ustatus, kstatus);
     rom_assert_eq(47, 1, rom_exc.count);
@@ -726,24 +538,14 @@ void rom_main(void)
     rom_assert_eq(51, ROM_EXC_SYS, ROM_CAUSE_EXC(rom_exc.cause));
     rom_assert_eq(52, MARKER_VALUE, get_marker());
 
-    /*
-     * The same branch naming the first condition bit is MIPS I, and
-     * must not
-     * be caught in the gate: with MIPS IV disabled it still executes
-     * and is
-     * still taken.
-     */
     run_probe(rom_probe_bc1_cc0, rom_probe_bc1_cc0_end, ustatus, kstatus);
     rom_assert_eq(53, 1, rom_exc.count);
     rom_assert_eq(54, ROM_EXC_SYS, ROM_CAUSE_EXC(rom_exc.cause));
     rom_assert_eq(55, MARKER_VALUE, get_marker());
 
     /*
-     * The floating-point compare naming the second condition bit: the
-     * Unimplemented Operation refusal with the bit clear -- a
-     * Floating-Point
-     * exception on the instruction itself, the E cause bit set, and the
-     * condition bit left untouched by the killed compare.
+     * FCC1 compare is unimplemented when XX is clear; FCC0 compare below
+     * is MIPS I and must remain available.
      */
     set_fsr(0);
     set_f4(SINGLE_2_0);
@@ -755,9 +557,6 @@ void rom_main(void)
     rom_assert_eq(60, 0, get_fsr() & FSR_FCC1);
     rom_assert_eq(61, 0, get_marker());
 
-    /*
-     * Permitted, the compare of a register with itself sets its bit.
-     */
     set_fsr(0);
     run_probe(rom_probe_ceq_cc1, rom_probe_ceq_cc1_end,
               ustatus | ROM_ST_XX, kstatus);
@@ -766,11 +565,6 @@ void rom_main(void)
     rom_assert_eq(64, FSR_FCC1, get_fsr() & FSR_FCC1);
     rom_assert_eq(65, MARKER_VALUE, get_marker());
 
-    /*
-     * The compare naming the first condition bit is MIPS I and must not
-     * be
-     * caught in the gate either.
-     */
     set_fsr(0);
     run_probe(rom_probe_ceq_cc0, rom_probe_ceq_cc0_end, ustatus, kstatus);
     rom_assert_eq(66, 1, rom_exc.count);
@@ -778,11 +572,7 @@ void rom_main(void)
     rom_assert_eq(68, FSR_FCC0, get_fsr() & FSR_FCC0);
     rom_assert_eq(69, MARKER_VALUE, get_marker());
 
-    /*
-     * The double-precision compare goes through its own leg of the
-     * decoder,
-     * so one representative pins it to the same rule.
-     */
+    /* Check the double-precision decoder path as well. */
     set_fsr(0);
     set_f4_double(DOUBLE_2_0);
     run_probe(rom_probe_ceq_d_cc1, rom_probe_ceq_d_cc1_end, ustatus, kstatus);
@@ -797,15 +587,7 @@ void rom_main(void)
     rom_assert_eq(74, ROM_EXC_SYS, ROM_CAUSE_EXC(rom_exc.cause));
     rom_assert_eq(75, FSR_FCC1, get_fsr() & FSR_FCC1);
 
-    /*
-     * The conditional move of floating-point registers on a register
-     * value:
-     * the Unimplemented Operation refusal with the bit clear, the moved
-     * value
-     * when permitted. The marker register is never zero, so the
-     * permitted
-     * move happens.
-     */
+    /* Floating-point MOVN and MOVF have separate decoder paths. */
     set_fsr(0);
     set_f2(0);
     set_f4(SINGLE_2_0);
@@ -821,13 +603,6 @@ void rom_main(void)
     rom_assert_eq(81, ROM_EXC_SYS, ROM_CAUSE_EXC(rom_exc.cause));
     rom_assert_eq(82, SINGLE_2_0, get_f2());
 
-    /*
-     * The conditional move of floating-point registers on a condition
-     * bit,
-     * which the decoder handles apart from the move on a register
-     * value: the
-     * same refusal, and the move-on-false when permitted.
-     */
     set_fsr(0);
     set_f2(0);
     set_f4(SINGLE_2_0);
@@ -843,11 +618,7 @@ void rom_main(void)
     rom_assert_eq(88, ROM_EXC_SYS, ROM_CAUSE_EXC(rom_exc.cause));
     rom_assert_eq(89, SINGLE_2_0, get_f2());
 
-    /*
-     * The reciprocal estimate: the Unimplemented Operation refusal with
-     * the
-     * bit clear, and the reciprocal of two when permitted.
-     */
+    /* Reciprocal estimate. */
     set_fsr(0);
     set_f2(0);
     set_f4(SINGLE_2_0);
@@ -863,10 +634,7 @@ void rom_main(void)
     rom_assert_eq(95, ROM_EXC_SYS, ROM_CAUSE_EXC(rom_exc.cause));
     rom_assert_eq(96, SINGLE_0_5, get_f2());
 
-    /*
-     * The reciprocal square-root estimate, the same way: one over root
-     * four.
-     */
+    /* Reciprocal square-root estimate. */
     set_fsr(0);
     set_f2(0);
     set_f4(SINGLE_4_0);
@@ -882,12 +650,7 @@ void rom_main(void)
     rom_assert_eq(102, ROM_EXC_SYS, ROM_CAUSE_EXC(rom_exc.cause));
     rom_assert_eq(103, SINGLE_0_5, get_f2());
 
-    /*
-     * The multiply-add, standing for the extended opcode's arithmetic:
-     * the
-     * reserved-instruction refusal with the bit clear, like the indexed
-     * loads, and two times two plus two when permitted.
-     */
+    /* MADD.S represents the extended arithmetic opcode class. */
     set_fsr(0);
     set_f6(0);
     set_f4(SINGLE_2_0);
@@ -902,13 +665,7 @@ void rom_main(void)
     rom_assert_eq(108, ROM_EXC_SYS, ROM_CAUSE_EXC(rom_exc.cause));
     rom_assert_eq(109, SINGLE_6_0, get_f6());
 
-    /*
-     * Back in kernel mode with the bit clear, one representative of
-     * each
-     * newly gated class runs ungated, with its result checked: the gate
-     * is a
-     * user-mode gate, not a processor-wide one.
-     */
+    /* These instructions remain available in kernel mode with XX clear. */
     rom_set_status(kstatus);
     set_fsr(0);
     set_f2(0);
@@ -928,11 +685,7 @@ void rom_main(void)
     rom_assert_eq(112, FSR_FCC1, get_fsr() & FSR_FCC1);
     rom_assert_eq(113, SINGLE_0_5, get_f2());
 
-    /*
-     * Check the double-precision and move-on-zero forms too. Each has a
-     * separate decoder case, so test both the refused and permitted
-     * instruction for every case.
-     */
+    /* Exercise separate MOVZ and double-precision decoder cases. */
     set_fsr(0);
     set_f2(0);
     set_f4(SINGLE_2_0);
@@ -1024,13 +777,8 @@ void rom_main(void)
     rom_assert_eq(155, DOUBLE_0_5, get_f2_double());
 
     /*
-     * The L format outside MIPS III mode: "The attempted execution of
-     * the
-     * L format takes an Unimplemented Operation exception when the MIPS
-     * III mode is not enabled" (chapter 17.6). User mode without
-     * extended
-     * addressing is that mode, whatever the register-width bit says, so
-     * the conversion is refused there and runs once UX grants MIPS III.
+     * L-format conversion raises Unimplemented Operation without MIPS III
+     * mode (User's Manual 2.0, 17.6). UX enables that mode in user state.
      */
     map_user32_page();
     set_fsr(0);
@@ -1052,14 +800,7 @@ void rom_main(void)
     rom_assert_eq(161, ROM_EXC_SYS, ROM_CAUSE_EXC(rom_exc.cause));
     rom_assert_eq(162, 2, get_f2_double());
 
-    /*
-     * The mode field itself. First the control: ordinary user mode
-     * refuses a
-     * load from a kernel segment with an address error naming the
-     * address,
-     * and
-     * the routine never reaches its marker.
-     */
+    /* User mode must reject a load from the kernel segment with AdEL. */
     run_probe(rom_kload_probe, rom_kload_probe_end, ustatus, kstatus);
     rom_assert_eq(163, 1, rom_exc.count);
     rom_assert_eq(164, ROM_EXC_ADEL, ROM_CAUSE_EXC(rom_exc.cause));
@@ -1067,25 +808,8 @@ void rom_main(void)
     rom_assert_eq(166, 0, get_marker());
 
     /*
-     * Now both mode bits at once. The Status register section calls the
-     * processor mode undefined for that value and then defines it
-     * anyway:
-     * "The R10000 processor implements this as User mode." So the same
-     * kernel-segment load is refused the same way. A model that routes
-     * the
-     * value to any kernel-like mode instead lets the load through and
-     * comes
-     * back by the system call with the marker written.
-     *
-     * The same section's companion is the performance counters' mode
-     * enables,
-     * whose user-mode counting must cover this value too; that half
-     * shares
-     * the fork's mode derivation but is not asserted here, because
-     * counting
-     * is driven by wall-clock cycles and a handful of user instructions
-     * may
-     * honestly count zero of them.
+     * KSU=3 is implemented as User mode (User's Manual 2.0). Performance
+     * counter behavior is not checked: a short probe may count zero cycles.
      */
     run_probe(rom_kload_probe, rom_kload_probe_end,
               (ustatus & ~ROM_ST_KSU_USER) | (3u << 3), kstatus);

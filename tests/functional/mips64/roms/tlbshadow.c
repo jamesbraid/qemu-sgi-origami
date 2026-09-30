@@ -8,11 +8,7 @@
 
 const char rom_name[] = "tlbshadow";
 
-/*
- * Physical frames nothing else in a ROM uses: the harness keeps its
- * data
- * below physical 0x200000 and its stack just under that.
- */
+/* Physical frames reserved above the harness data and stack. */
 #define PHYS_A 0x00320000ull
 #define PHYS_B 0x00324000ull
 #define PHYS_C 0x00328000ull
@@ -35,25 +31,13 @@ const char rom_name[] = "tlbshadow";
 #define VIRT  0x11000000ull
 #define VIRT2 0x11002000ull
 
-/*
- * The differing-page-size leg. A 64 Kbyte pair covers 128 Kbytes from
- * its
- * base; the small mapping sits inside it but away from that base, which
- * is where a coverage test that masks at only one of the two page sizes
- * gets the wrong answer -- the two page numbers agree only once both
- * masks are taken into account.
- */
+/* Place the small page inside, but away from the base of, the larger pair. */
 #define LARGE_VBASE 0x11800000ull
 #define SMALL_IN    (LARGE_VBASE + 0x8000ull)
 
 #define MAP_RW (ROM_ENTRYLO_V | ROM_ENTRYLO_D | ROM_ENTRYLO_G)
 
-/*
- * How many entries this processor's TLB has. The suite's constant is
- * the
- * largest any model here carries, and a smaller TLB keeps Wired modulo
- * its own size, so a readback below what was written names the size.
- */
+/* Smaller TLBs reduce Wired modulo their entry count. */
 static int tlb_entries(void)
 {
     unsigned int probe = ROM_TLB_ENTRIES - 1;
@@ -139,10 +123,7 @@ void rom_main(void)
     *phys(PHYS_C) = PAT_C;
     *phys(PHYS_D) = PAT_D;
 
-    /*
-     * Pin the victim. With every entry below the last one wired, the
-     * random register has a single value left to give.
-     */
+/* Wire every entry except the victim so Random selects it deterministically. */
     last = tlb_entries() - 1;
     rom_set_wired(last);
     rom_assert_eq(1, last, rom_get_random());
@@ -181,13 +162,7 @@ void rom_main(void)
     rom_exc_reset();
     ROM_TRY("lw $27, 0(%[addr])", [addr] "r"(VIRT));
     rom_assert_eq(6, 1, rom_exc.count);
-    /*
-     * A miss with nothing matching arrives at a refill entry point. An
-     * entry that matched but was unusable would arrive at the general
-     * one instead, so this is what distinguishes "no mapping at all"
-     * from "mapping present but invalid" -- and only the former is what
-     * the guest asked for here.
-     */
+/* Require a refill miss, not a general exception for an invalid match. */
     rom_assert_eq(7, VEC_BOOTSTRAP_REFILL, rom_exc.vector);
     rom_assert_eq(8, VIRT, rom_exc.badvaddr);
 

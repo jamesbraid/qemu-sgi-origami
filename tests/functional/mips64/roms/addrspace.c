@@ -1,10 +1,9 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * Check R10000 extended address-space boundaries and the supervisor SX
- * instruction-set mode. See the MIPS R10000 User's Manual version 2.0.
- * The cacheless ROM cannot test ERL's uncached attribute. Its low-boundary
- * probe uses backed memory to avoid confusing segment behavior with a bus
- * error from an absent physical page.
+ * Check R10000 extended address boundaries and supervisor SX permission
+ * (R10000 User's Manual v2.0).
+ * The low ERL alias uses backed memory so a bus error cannot mimic a segment
+ * refusal; this cacheless ROM does not test ERL's uncached attribute.
  */
 
 #include "rom.h"
@@ -12,35 +11,20 @@
 
 const char rom_name[] = "addrspace";
 
-/*
- * The bootstrap entry points, from the vector identifier scheme.
- */
+/* Bootstrap vector identifiers used by the exception checks below. */
 #define VEC_BOOTSTRAP_XTLB    (ROM_VEC_BOOTSTRAP | ROM_VEC_XTLB_REFILL)
 #define VEC_BOOTSTRAP_GENERAL (ROM_VEC_BOOTSTRAP | ROM_VEC_GENERAL)
 
-/*
- * Backed by memory on every machine this runs on; xkphys.c uses the
- * same.
- */
+/* Backed scratch page, also used by xkphys.c. */
 #define SCRATCH_PA 0x00400000ull
 
-/*
- * The scratch page seen three ways: uncached compatibility segment from
- * kernel mode, and the user segment alias that exists only under ERL.
- */
+/* Uncached compatibility-segment alias of the scratch page. */
 #define KSEG1_OF(pa) (0xffffffffa0000000ull + (pa))
 
-/*
- * A value nothing else in this ROM writes anywhere.
- */
+/* Distinct marker for alias readback. */
 #define SENTINEL 0xa5d0fadeb00cfaceull
 
-/*
- * The probe addresses. All are doubleword-aligned so that an address
- * error
- * can only mean the segment rule refused the address, never mere
- * misalignment.
- */
+/* Aligned probes distinguish segment refusals from address errors. */
 #define XKUSEG_FIRST_HIGH 0x0000000080000000ull  /* first byte above 2G */
 #define XKUSEG_LAST       0x00000ffffffffff8ull  /* last dword of 16T */
 #define XKUSEG_PAST       0x0000100000000000ull  /* first byte past 16T */
@@ -54,12 +38,8 @@ const char rom_name[] = "addrspace";
 #define XKSEG_HOLE_HIGH   0xc0000fff7ffffff8ull
 
 /*
- * One load, with the resume address armed; reports via the record. The
- * Status register to reinstall on the way back is staged after the
- * record is
- * reset, because resetting the record clears it; the probes that run
- * with
- * error level set need one for the handler's own return to work.
+ * Stage Status after resetting the exception record; ERL probes need the
+ * handler to clear ERL before returning to the kernel address.
  */
 static void probe_staged(uint64_t addr, uint64_t status_set)
 {
@@ -84,9 +64,7 @@ static void probe(uint64_t addr)
     probe_staged(addr, 0);
 }
 
-/*
- * The same load keeping its value, for the access that must succeed.
- */
+/* Load variant used for successful accesses. */
 static uint64_t load64(uint64_t addr)
 {
     uint64_t v;
@@ -96,15 +74,8 @@ static uint64_t load64(uint64_t addr)
 }
 
 /*
- * The supervisor routine, copied into the page this ROM maps. It runs
- * the
- * doubleword instruction under test, then leaves a marker and traps
- * back
- * into the kernel; reaching either of those means the instruction was
- * allowed. Only the two kernel scratch registers are used, exactly as
- * in
- * mips4user.c, so the kernel can hand it a pointer and a value with no
- * calling convention.
+ * Runs the tested instruction in supervisor mode, writes a marker on
+ * success, then traps back to the kernel.
  */
 __asm__(".pushsection .text.rom_sup_probe, \"ax\"\n\t"
         ".set push\n\t"
@@ -121,12 +92,7 @@ __asm__(".pushsection .text.rom_sup_probe, \"ax\"\n\t"
         ".set pop\n\t"
         ".popsection");
 
-/*
- * The supervisor page pair, in the part of the user segment a 32-bit
- * supervisor can reach. The physical pages are spare: the harness
- * itself
- * uses only the first two megabytes.
- */
+/* Supervisor code and data pages in the 32-bit reachable user segment. */
 #define SUP_CODE_VA 0x0000000040400000ull
 #define SUP_DATA_VA 0x0000000040401000ull
 #define SUP_CODE_PA 0x0000000000300000ull
@@ -135,9 +101,7 @@ __asm__(".pushsection .text.rom_sup_probe, \"ax\"\n\t"
 #define MARKER_OFFSET 8
 #define MARKER_VALUE  0x5a5aa5a5u
 
-/*
- * The entry the supervisor mapping lives in, held down.
- */
+/* Reserved TLB entry for the supervisor mapping. */
 #define SUP_TLB_INDEX 0
 
 static uint32_t kstatus;
@@ -175,9 +139,6 @@ static void set_marker(uint32_t v)
 {
     /* Volatile preserves writes through the uncached KSEG1 alias. */
     volatile uint32_t *m =
-        /*
-         * Volatile preserves accesses through the uncached KSEG1 alias.
-         */
         (volatile uint32_t *)KSEG1_OF(SUP_DATA_PA + MARKER_OFFSET);
 
     *m = v;
@@ -187,23 +148,15 @@ static uint32_t get_marker(void)
 {
     /* Volatile preserves reads through the uncached KSEG1 alias. */
     volatile uint32_t *m =
-        /*
-         * Volatile preserves accesses through the uncached KSEG1 alias.
-         */
         (volatile uint32_t *)KSEG1_OF(SUP_DATA_PA + MARKER_OFFSET);
 
     return *m;
 }
 
 /*
- * Drop into the supervisor routine and come back, exactly as
- * mips4user.c
- * drops into user mode: the return address is armed by the block
- * itself, and
- * the Status register to reinstall is staged separately because
- * resuming at
- * a kernel address from supervisor mode would take an address error
- * instead.
+ * Enter supervisor mode and return through the exception handler; its
+ * staged Status value is required because a supervisor return to kernel
+ * space would itself address-error.
  */
 static void run_sup_probe(uint32_t sstatus)
 {

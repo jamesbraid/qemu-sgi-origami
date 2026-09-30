@@ -31,16 +31,7 @@ const char rom_name[] = "xtlbvector";
 #define BOOTSTRAP_XTLB (ROM_VEC_BOOTSTRAP | ROM_VEC_XTLB_REFILL)
 #define BOOTSTRAP_GEN  (ROM_VEC_BOOTSTRAP | ROM_VEC_GENERAL)
 
-/*
- * Stage a translation for the page pair containing an address, so the
- * miss
- * the
- * probe provokes is repaired by the harness and the access completes.
- * The
- * entries are global, which keeps the address space identifier out of
- * the
- * question entirely.
- */
+/* The global entry lets the harness repair the miss without an ASID check. */
 static void arm_refill(uint64_t paddr)
 {
     const uint64_t flags = ROM_ENTRYLO_V | ROM_ENTRYLO_D | ROM_ENTRYLO_G;
@@ -73,10 +64,6 @@ void rom_main(void)
     uint32_t status = rom_get_status();
     uint64_t seen;
 
-    /*
-     * Nothing here should disturb the state the startup code
-     * established.
-     */
     rom_assert_eq(1, ROM_ST_BEV, status);
 
     /*
@@ -91,15 +78,7 @@ void rom_main(void)
     rom_assert_eq(3, 1, rom_exc.count);
     rom_assert_eq(4, USER_VADDR, rom_exc.badvaddr);
 
-    /*
-     * The repaired translation really did reach the intended memory.
-     */
     rom_assert_eq(5, 0x5a5a5a5aull,
-                  /*
-                   * Volatile preserves the marker access through the
-                   * uncached
-                   * KSEG1 alias.
-                   */
                   *(volatile uint32_t *)(0xffffffffa0000000ull +
                                          USER_TARGET_PHYS));
 

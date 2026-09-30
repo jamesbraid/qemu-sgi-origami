@@ -11,11 +11,7 @@
 
 const char rom_name[] = "watch";
 
-/*
- * Physical pages nothing else in a ROM uses: the harness keeps its data
- * below
- * physical 0x200000 and its stack just under that.
- */
+/* Reserved physical pages, above the harness data and stack. */
 #define WATCH_PA  0x00340000ull         /* the watched doubleword */
 #define OTHER_PA  0x00340008ull         /* the doubleword next to it */
 
@@ -61,12 +57,7 @@ static volatile uint32_t *phys32(uint64_t paddr)
     return (volatile uint32_t *)(unsigned long)(0xffffffffa0000000ull + paddr);
 }
 
-/*
- * A doubleword store or load with a return address armed, so that a
- * Watch
- * exception continues after it, and with the address of the memory
- * instruction itself returned so EPC can be checked exactly.
- */
+/* Return the faulting instruction address for EPC assertions. */
 #define TRY_SD(vaddr, val, insn_addr)                                         \
     __asm__ __volatile__(".set push\n\t.set noreorder\n\t"                    \
                          "lui $26, %%hi(9f)\n\t"                              \
@@ -108,22 +99,7 @@ static volatile uint32_t *phys32(uint64_t paddr)
                            [v] "r"(val)                                       \
                          : "$26", "memory")
 
-/*
- * The postponement block: raise EXL, execute the store, then clear EXL,
- * all
- * with a return address armed past the block. If the exception is
- * delayed
- * as the manual says, it arrives at the first instruction boundary
- * after
- * the Status write, so EPC must hold the address of the label right
- * after
- * the MTC0 — the next unexecuted instruction. The optional MTC0 to
- * WatchLo
- * between the store and the unmask is the manual's way of clearing a
- * delayed Watch exception; writing the register's current value back
- * keeps
- * the arming unchanged while still being a write.
- */
+/* Delay Watch until EXL clears; EPC identifies the next instruction. */
 #define DEFER_BLOCK(vaddr, val, st_exl, st_base, after_addr)                  \
     __asm__ __volatile__(".set push\n\t.set noreorder\n\t"                    \
                          "lui $26, %%hi(9f)\n\t"                              \
@@ -169,18 +145,10 @@ void rom_main(void)
     rom_set_entryhi(0);
     base = rom_get_status();
 
-    /*
-     * Nothing armed the pair, so both read zero out of reset.
-     */
     rom_assert_eq(1, 0, rom_get_watchlo());
     rom_assert_eq(2, 0, rom_get_watchhi());
 
-    /*
-     * The field masks, from Figure 14-18: writing all ones leaves
-     * WatchLo
-     * with everything but bit 2, which is ignored on write and reads as
-     * zero, and WatchHi with only its low eight bits.
-     */
+    /* WatchLo bit 2 is ignored; WatchHi keeps bits 7:0 (Figure 14-18). */
     rom_set_watchlo(0xffffffffu);
     rom_assert_eq(3, 0xfffffffbu, rom_get_watchlo());
     rom_set_watchhi(0xffffffffu);
@@ -191,21 +159,12 @@ void rom_main(void)
     rom_assert_eq(5, 0, rom_get_watchlo());
     rom_assert_eq(6, 0, rom_get_watchhi());
 
-    /*
-     * A baseline store with nothing armed: no exception.
-     */
     rom_exc_reset();
     *phys64(WATCH_PA) = 0x0123456789abcdefull;
     *phys64(OTHER_PA) = 0x1111111111111111ull;
     rom_assert_eq(7, 0, rom_exc.count);
 
-    /*
-     * Arm the W bit on the doubleword and store to it: exactly one
-     * exception, at the common vector, carrying the WATCH code, with
-     * EPC
-     * naming the store itself — and the store must not have retired, so
-     * the memory still holds the old value.
-     */
+    /* A watched store traps before retiring; EPC identifies the store. */
     rom_set_watchlo((uint32_t)WATCH_PA | WATCHLO_W);
     rom_exc_reset();
     TRY_SD(phys64(WATCH_PA), 0x5105105105105105ull, insn_addr);
@@ -215,45 +174,29 @@ void rom_main(void)
     rom_assert_eq(11, insn_addr, rom_exc.epc);
     rom_assert_eq(12, 0x0123456789abcdefull, *phys64(WATCH_PA));
 
-    /*
-     * The doubleword next to it is not watched.
-     */
     rom_exc_reset();
     *phys64(OTHER_PA) = 0x2222222222222222ull;
     rom_assert_eq(13, 0, rom_exc.count);
 
-    /*
-     * The W bit traps stores alone: a load from the watched doubleword
-     * passes.
-     */
+    /* WatchLo.W traps stores, not loads. */
     rom_exc_reset();
     got = *phys64(WATCH_PA);
     rom_assert_eq(14, 0x0123456789abcdefull, got);
     rom_assert_eq(15, 0, rom_exc.count);
 
-    /*
-     * A word store inside the doubleword is a reference to it: the
-     * watched
-     * unit is the doubleword, not just its first byte.
-     */
+    /* A word access within the watched doubleword also matches. */
     rom_exc_reset();
     TRY_SW(phys32(WATCH_PA + 4), 0xfeedf00du, insn_addr);
     rom_assert_eq(16, 1, rom_exc.count);
     rom_assert_eq(17, ROM_EXC_WATCH, ROM_CAUSE_EXC(rom_exc.cause));
 
-    /*
-     * Disarmed, the same store goes through.
-     */
     rom_set_watchlo(0);
     rom_exc_reset();
     *phys64(WATCH_PA) = 0x5105105105105105ull;
     rom_assert_eq(18, 0, rom_exc.count);
     rom_assert_eq(19, 0x5105105105105105ull, *phys64(WATCH_PA));
 
-    /*
-     * The R bit, the same way: a load traps precisely, a store does
-     * not.
-     */
+    /* WatchLo.R traps loads, not stores. */
     rom_set_watchlo((uint32_t)WATCH_PA | WATCHLO_R);
     rom_exc_reset();
     TRY_LD(phys64(WATCH_PA), got, insn_addr);
@@ -265,20 +208,12 @@ void rom_main(void)
     *phys64(WATCH_PA) = 0xabcdabcdabcdabcdull;
     rom_assert_eq(23, 0, rom_exc.count);
 
-    /*
-     * A load from the neighbouring doubleword passes.
-     */
     rom_exc_reset();
     got = *phys64(OTHER_PA);
     rom_assert_eq(24, 0x2222222222222222ull, got);
     rom_assert_eq(25, 0, rom_exc.count);
 
-    /*
-     * WatchHi is part of the comparison: with bits 39:32 naming a
-     * different
-     * physical address, the same WatchLo matches nothing this access
-     * touches.
-     */
+    /* WatchHi[39:32] participates in the physical address match. */
     rom_set_watchlo((uint32_t)WATCH_PA | WATCHLO_W);
     rom_set_watchhi(1);
     rom_exc_reset();
@@ -286,10 +221,7 @@ void rom_main(void)
     rom_assert_eq(26, 0, rom_exc.count);
     rom_set_watchhi(0);
 
-    /*
-     * The comparison is physical: a store through a TLB mapping of the
-     * watched page traps just the same, and just as precisely.
-     */
+    /* A TLB alias of the watched physical page also matches. */
     rom_tlb_park(ROM_TLB_ENTRIES);
     rom_set_pagemask(ROM_PAGEMASK_4K);
     rom_set_entryhi(VIRT_WIN);
@@ -309,12 +241,7 @@ void rom_main(void)
     rom_assert_eq(30, 0x3333333333333333ull, *phys64(WATCH_PA));
     rom_tlb_park(ROM_TLB_ENTRIES);
 
-    /*
-     * Postponement. With EXL set the store is executed — the memory
-     * changes — and no exception is taken until EXL is cleared again;
-     * the delayed exception then arrives with the WATCH code and EPC
-     * holding the next unexecuted instruction after the unmasking MTC0.
-     */
+    /* With EXL set, the store retires; delayed EPC points past the MTC0. */
     rom_exc_reset();
     DEFER_BLOCK(phys64(WATCH_PA), 0x5555555555555555ull,
                 base | ROM_ST_EXL, base, after_addr);
@@ -323,11 +250,7 @@ void rom_main(void)
     rom_assert_eq(33, after_addr, rom_exc.epc);
     rom_assert_eq(34, 0x5555555555555555ull, *phys64(WATCH_PA));
 
-    /*
-     * An MTC0 to WatchLo clears a delayed Watch exception, the manual's
-     * own escape hatch: defer a store the same way, write WatchLo while
-     * still masked, and nothing may arrive when EXL clears.
-     */
+    /* Writing WatchLo while EXL is set cancels the delayed exception. */
     rom_exc_reset();
     DEFER_CLEAR_BLOCK(phys64(WATCH_PA), 0x6666666666666666ull,
                       (uint32_t)WATCH_PA | WATCHLO_W,
@@ -335,9 +258,6 @@ void rom_main(void)
     rom_assert_eq(35, 0, rom_exc.count);
     rom_assert_eq(36, 0x6666666666666666ull, *phys64(WATCH_PA));
 
-    /*
-     * Disarm and leave nothing behind.
-     */
     rom_set_watchlo(0);
     rom_set_watchhi(0);
     rom_exc_reset();

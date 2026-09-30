@@ -1,24 +1,8 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * Exception handling for the bare-metal test ROMs.
- *
- * There are eight entry points: the four architectural ones for a TLB refill,
- * an extended-addressing TLB refill, a cache error and everything else, in
- * each of the two places the processor looks for them depending on the
- * boot-exception-vector bit of the Status register. Each entry point records
- * which one it was and funnels into one handler.
- *
- * The handler touches only the two registers the architecture reserves for
- * kernel scratch use, so a test's registers come back from an exception
- * exactly as they went in and a test can compare values across a fault. It
- * writes what it saw into a record in uncached memory and then either fills
- * the TLB and retries the access, or returns to an address the test armed
- * beforehand, or — if the test armed nothing — reports an unexpected
- * exception and stops.
- *
- * The armed address is consumed when it is used. A second unexpected fault
- * therefore reports rather than looping, which is what turns a runaway test
- * into a legible failure instead of a timeout.
+ * Eight vectors funnel into one handler, which records exception state without
+ * clobbering test registers. It can refill the TLB, resume at an armed address,
+ * or report an unexpected exception. Resume state is consumed to prevent loops.
  */
 
 #include "exc-offsets.h"
@@ -27,9 +11,7 @@
 	.set	noat
 
 /*
- * An entry point: remember which one ran, then jump to the handler. The
- * absolute jump matters for the copies in low memory, because a region-based
- * jump from there could not reach the handler in ROM.
+ * Low-memory vectors need an absolute jump to reach the ROM handler.
  */
 	.macro	rom_vector id
 	lui	$26, %hi(rom_exc_entry)
@@ -92,12 +74,9 @@ rom_exc_entry:
 	dmfc0	$27, $30			/* ErrorEPC */
 	sd	$27, EXC_ERROREPC($26)
 
-	/*
-	 * Filling the TLB and retrying only makes sense for the two refill
-	 * entry points; an invalid or modified entry arrives at the general
-	 * one, and a test that wants to see that must not have it repaired
-	 * underneath it.
-	 */
+/*
+ * Refill only on refill vectors; invalid or modified entries use the general.
+ */
 	ld	$27, EXC_VECTOR($26)
 	andi	$27, $27, 3
 	sltiu	$27, $27, ROM_VEC_CACHE_ERROR
@@ -107,11 +86,9 @@ rom_exc_entry:
 	beqz	$27, rom_exc_resume
 	 nop
 
-	/*
-	 * The faulting virtual page number is already in EntryHi, put there
-	 * when the exception was taken, so the entry the test staged completes
-	 * the translation. A random write is what a refill handler does.
-	 */
+/*
+ * EntryHi holds the faulting VPN; install the staged entry and retry.
+ */
 	ld	$27, EXC_ENTRYLO0($26)
 	dmtc0	$27, $2				/* EntryLo0 */
 	ld	$27, EXC_ENTRYLO1($26)
@@ -129,17 +106,8 @@ rom_exc_resume:
 	dmtc0	$27, $14			/* EPC */
 
 	/*
-	 * A test that wants to see what taking the exception did — as opposed
-	 * to what returning from it does — arms this flag along with the
-	 * resume address, and the handler goes back by an ordinary jump. ERET
-	 * is defined to end a load-linked sequence on its own, so a jump
-	 * return is the only way a test can put a store-conditional after a
-	 * fault and observe what the entry alone did to the link. What ERET
-	 * would have done to the exception level is done by hand, with the
-	 * set-then-flip pair because the two scratch registers leave no room
-	 * for a mask; the staged Status word is not consulted on this path.
-	 * The resume address was just parked in the exception program
-	 * counter, so it is read back from there for the jump.
+	 * Jump return preserves LL/SC state: ERET clears the link. Clear EXL
+	 * manually, then resume at EPC; staged Status is ignored on this path.
 	 */
 	ld	$27, EXC_JUMP($26)
 	beqz	$27, 1f
@@ -154,10 +122,7 @@ rom_exc_resume:
 	 nop
 
 	/*
-	 * A test that faulted from user mode cannot be resumed at a kernel
-	 * address without also putting the processor back in kernel mode, so it
-	 * may stage the Status register to install on the way out. Like the
-	 * resume address, it is consumed when it is used.
+	 * A user-mode test stages Status before resuming in kernel mode.
 	 */
 1:	ld	$27, EXC_STATUS_SET($26)
 	beqz	$27, 2f

@@ -91,17 +91,7 @@ static uint32_t load32(uint64_t vaddr)
                          : [res] "r"(&rom_exc.resume), [a] "r"(vaddr)         \
                          : "$26", "memory")
 
-/*
- * Word-sized moves to the two EntryLo registers, for the R10000-only
- * checks:
- * the harness accessors use the doubleword form throughout, as the
- * operating
- * systems do. The word shift by zero pins the register to the
- * sign-extended
- * form a 32-bit-mode register file holds, so the check does not depend
- * on
- * what the compiler left in the upper half.
- */
+/* Force 32-bit sign extension before testing word writes to EntryLo. */
 static void mtc0_word_entrylo0(uint64_t v)
 {
     __asm__ __volatile__("sll %0, %0, 0\n\tmtc0 %0, $2" : "+r"(v));
@@ -313,17 +303,7 @@ void rom_main(void)
     rom_assert_eq(34, VEC_BOOTSTRAP_REFILL, rom_exc.vector);
     rom_set_entryhi(0);
 
-    /*
-     * Every page size in the manual's table, one at a time in the same
-     * entry:
-     * the mask reads back exactly, and a translated access near the top
-     * of
-     * each half of the pair reaches the right physical address. Reusing
-     * one
-     * virtual and physical base works for all of them because both are
-     * aligned
-     * to twice the largest size.
-     */
+    /* Test each supported page size and both halves of its pair. */
     id = 35;
     for (i = 0; i < sizeof(sizes) / sizeof(sizes[0]); i++) {
         uint64_t size = sizes[i].size;
@@ -379,16 +359,7 @@ void rom_main(void)
     rom_assert_eq(id++, rom_entrylo(PHYS_EVEN, MAP_RW, ROM_CACHE_NONCOHERENT),
                   rom_get_entrylo0());
 
-    /*
-     * The last page refilled is still there, at an index at or above
-     * the
-     * floor.
-     * Only the last one can be checked: replacement picks its victim at
-     * random
-     * within the range above the floor, so earlier refills may well
-     * have
-     * evicted each other.
-     */
+    /* Random replacement may evict earlier refills; check the last one. */
     probe = tlb_probe(VIRT_MISS + 7 * 0x2000);
     rom_assert_eq(id++, 0, probe & 0x80000000u);
     rom_assert(id++, (probe & 0x3f) >= 40);
@@ -396,79 +367,30 @@ void rom_main(void)
     rom_set_wired(0);
     rom_set_entryhi(0);
 
-    /*
-     * Register semantics only the R10000 pins down. The R4000 leg of
-     * this ROM
-     * ends here: the fork leaves the other models' TLB registers with
-     * QEMU's
-     * long-standing behaviour, so these assertions hold only for the
-     * R10000.
-     */
+    /* The following register assertions are specific to R10000. */
     if (((rom_get_prid() >> 8) & 0xff) != 0x09) {
         return;
     }
 
-    /*
-     * The PageMask mask field is bits 24:13 and nothing wider: the
-     * fields
-     * either side are reserved, written as zeroes and returning zeroes.
-     * A
-     * write with every bit set carries a legal 16 Mbyte mask in the
-     * field the
-     * register has, and nothing from the bits it does not.
-     */
+    /* PageMask bits 24:13 are defined (R10000 manual, section 14.3). */
     rom_set_pagemask(0xffffffffu);
     rom_assert_eq(id++, ROM_PAGEMASK_16M, rom_get_pagemask());
 
-    /*
-     * The next size up would need bits 26:25; the field stops below
-     * them.
-     */
+    /* Bits 26:25 are outside the PageMask field. */
     rom_set_pagemask(0x07ffe000u);
     rom_assert_eq(id++, ROM_PAGEMASK_16M, rom_get_pagemask());
 
     rom_set_pagemask(ROM_PAGEMASK_4K);
     rom_assert_eq(id++, ROM_PAGEMASK_4K, rom_get_pagemask());
 
-    /*
-     * Reading an entry back presents EntryHi with the bits under that
-     * entry's
-     * page mask cleared: the TLBR pseudocode reads the entry and-not
-     * its page
-     * mask word (section 14.35). Write a 16 Mbyte entry whose virtual
-     * page
-     * number deliberately carries every maskable bit — a guest never
-     * installs
-     * such an entry, which is why the aligned large-page checks above
-     * cannot
-     * see this — and read it back. The entry is written invalid so it
-     * maps
-     * nothing while it sits in the buffer.
-     */
+    /* TLBR clears masked EntryHi bits (R10000 manual, section 14.35). */
     tlb_write_index(4, VIRT_BIG | 0x01ffe000ull, 0, 0, ROM_PAGEMASK_16M);
     rom_set_index(4);
     __asm__ __volatile__("tlbr" : : : "memory");
     rom_assert_eq(id++, VIRT_BIG, rom_get_entryhi());
     rom_assert_eq(id++, ROM_PAGEMASK_16M, rom_get_pagemask());
 
-    /*
-     * A word-sized move to EntryLo carries the whole general register:
-     * the
-     * manual's CP0 move table (Table 14-26) defines MTC0 to a 64-bit
-     * register
-     * as taking all sixty-four bits, and a 32-bit-mode register file
-     * holds
-     * the sign-extended word - which is how "EntryLo[33:31] ... can
-     * only be
-     * set to all zeroes or all ones" (section 14.3) comes about. So a
-     * negative word sets the uncached attribute and the top physical
-     * frame
-     * bits from its sign, a positive word clears them - the whole
-     * register is
-     * replaced, including an attribute a doubleword write had set - and
-     * the
-     * reserved field between reads back zeroes either way.
-     */
+    /* Word MTC0 sign extends (manual, Table 14-26, section 14.3). */
     mtc0_word_entrylo0(0x89abc000u);
     rom_assert_eq(id++, 0xc000000389abc000ull, rom_get_entrylo0());
 
@@ -483,19 +405,7 @@ void rom_main(void)
     rom_assert_eq(id++, 0x0000000001234000ull, rom_get_entrylo1());
 
     /*
-     * A TLB write also trims the physical frame number: "the lower bits
-     * not
-     * used for address translation are forced to zeroes during a TLB
-     * write.
-     * This does not affect TLB address translation, however a TLB read
-     * may
-     * not retrieve what was originally written" (the manual's TLBWI and
-     * TLBWR sections; the R4400 keeps the bits, which is why this sits
-     * in
-     * the R10000-only section). A 16 Mbyte entry whose frame numbers
-     * carry
-     * bits inside the page - physical bits 23:12 - reads back with them
-     * gone. The entry is again written invalid so it maps nothing.
+     * R10000 manual v2.0, TLBWI/TLBWR: clear PFN bits below the page size.
      */
     tlb_write_index(4, VIRT_BIG,
                     rom_entrylo(PHYS_BIG | 0x00345000ull, 0,
