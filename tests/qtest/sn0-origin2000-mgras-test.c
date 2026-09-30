@@ -8180,6 +8180,36 @@ static void test_gl_default_context_keeps_its_packet(void)
 }
 
 /*
+ * A context with no slot yet carries -1 in word 0, as the allocator
+ * leaves it, and shares the default context's entry. Such an image with
+ * both new-context bits must not start that shared entry afresh, or the
+ * packet the default context left short is lost. Neither captured run has
+ * such an image; the kernel paths that switch contexts in were not all
+ * traced to rule it out.
+ */
+static void test_gl_new_context_without_a_slot_keeps_the_default(void)
+{
+    mgras_reset();
+
+    mgras_enter_gl_image(qts, GL_SLOT_DEFAULT, GL_IMAGE_DEFAULT_CONTEXT, 256,
+                         640, 128, 128, 0x11);
+    gl_word(qts, GL_CONTEXT_OPENER);
+    gl_word(qts, GL_CLEAR_COLOR_HDR);
+    gl_float(qts, 1);
+    gl_float(qts, 0);
+
+    mgras_enter_gl_image(qts, 0xffffffff, GL_IMAGE_NEW_CONTEXT, 256, 640, 128,
+                         128, 0x11);
+
+    mgras_enter_gl_image(qts, GL_SLOT_DEFAULT, GL_IMAGE_DEFAULT_CONTEXT, 256,
+                         640, 128, 128, 0x11);
+    gl_float(qts, 1);
+    gl_float(qts, 1);
+    gl_word(qts, GL_CLEAR_COLOR_BUFFER);
+    g_assert_cmphex(gl_window_pixel(qts, 1, 1), ==, 0xff00ff);
+}
+
+/*
  * glColor3ub, glColor4ub and glVertex2i (mgras-gl-commands.md, vertex
  * attributes): 0x34800203 and one word, 0x14800204 and one word,
  * 0x58000008 and two ints.
@@ -17705,6 +17735,9 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/origin2000/mgras/"
                    "gl-default-context-keeps-its-packet",
                    test_gl_default_context_keeps_its_packet);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "gl-new-context-without-a-slot-keeps-the-default",
+                   test_gl_new_context_without_a_slot_keeps_the_default);
     qtest_add_func("sn0/origin2000/mgras/gl-color-bytes-unpack-red-first",
                    test_gl_color_bytes_unpack_red_first);
     qtest_add_func("sn0/origin2000/mgras/gl-vertex2i-matches-the-reference",
