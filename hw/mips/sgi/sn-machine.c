@@ -2443,6 +2443,7 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
     SGIMachineState *s = SGI_MACHINE(machine);
     SGIMachineClass *smc = SGI_MACHINE_GET_CLASS(machine);
     MachineClass *mc = MACHINE_GET_CLASS(machine);
+    bool is_fuel = g_strcmp0(smc->product, "fuel") == 0;
     Error *local_err = NULL;
     const SGIModelTopology *t = sgi_machine_resolve(machine, &local_err);
     const SN0ModelMemory *node_memory =
@@ -2485,29 +2486,29 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
         g_string_free(names, true);
         return false;
     }
-    if (!strcmp(smc->product, "fuel") && !s->fuel_board_id_word_set) {
+    if (is_fuel && !s->fuel_board_id_word_set) {
         error_setg(errp, "fuel requires an experimental fuel-board-id-word "
                    "launch input; the physical reset word is unknown");
         return false;
     }
-    if (!strcmp(smc->product, "fuel") &&
+    if (is_fuel &&
         (s->fuel_board_id_word & 0xf000) != 0x4000) {
         error_setg(errp, "fuel-board-id-word must identify Fuel in bits "
                    "15:12 (0x4); the remaining bits are experimental");
         return false;
     }
-    if (!strcmp(smc->product, "fuel") && !s->fuel_ioc3_subsystem_id_set) {
+    if (is_fuel && !s->fuel_ioc3_subsystem_id_set) {
         error_setg(errp, "fuel requires an experimental "
                    "fuel-ioc3-subsystem-id launch input; the physical "
                    "PCI subsystem identity is unknown");
         return false;
     }
-    if (!strcmp(smc->product, "fuel") && !s->fuel_l1_type_code_set) {
+    if (is_fuel && !s->fuel_l1_type_code_set) {
         error_setg(errp, "fuel requires an explicit fuel-l1-type-code "
                    "launch input; the physical L1 reply is unknown");
         return false;
     }
-    if (!strcmp(smc->product, "fuel") && !s->fuel_bedrock_revision_set) {
+    if (is_fuel && !s->fuel_bedrock_revision_set) {
         error_setg(errp, "fuel requires an explicit fuel-bedrock-revision "
                    "launch input; the fitted revision is unknown");
         return false;
@@ -2516,7 +2517,7 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
         error_setg(errp, "fuel-bedrock-revision must fit four bits");
         return false;
     }
-    if (!strcmp(smc->product, "fuel") && !s->fuel_l1_type_code) {
+    if (is_fuel && !s->fuel_l1_type_code) {
         error_setg(errp, "fuel-l1-type-code must be nonzero");
         return false;
     }
@@ -2525,31 +2526,31 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
         error_setg(errp, "fuel-rtc-decode accepts only low11-mirror");
         return false;
     }
-    if (strcmp(smc->product, "fuel") && s->fuel_rtc_decode) {
+    if (!is_fuel && s->fuel_rtc_decode) {
         error_setg(errp, "fuel-rtc-decode applies only to -M fuel");
         return false;
     }
-    if (strcmp(smc->product, "fuel") && s->fuel_mac_eeprom) {
+    if (!is_fuel && s->fuel_mac_eeprom) {
         error_setg(errp, "fuel-mac-eeprom applies only to -M fuel");
         return false;
     }
-    if (strcmp(smc->product, "fuel") && s->fuel_l1_type_code_set) {
+    if (!is_fuel && s->fuel_l1_type_code_set) {
         error_setg(errp, "fuel-l1-type-code applies only to -M fuel");
         return false;
     }
-    if (strcmp(smc->product, "fuel") && s->fuel_l1_revision_set) {
+    if (!is_fuel && s->fuel_l1_revision_set) {
         error_setg(errp, "fuel-l1-revision applies only to -M fuel");
         return false;
     }
-    if (strcmp(smc->product, "fuel") && s->fuel_bedrock_revision_set) {
+    if (!is_fuel && s->fuel_bedrock_revision_set) {
         error_setg(errp, "fuel-bedrock-revision applies only to -M fuel");
         return false;
     }
-    if (strcmp(smc->product, "fuel") && s->fuel_board_id_word_set) {
+    if (!is_fuel && s->fuel_board_id_word_set) {
         error_setg(errp, "fuel-board-id-word applies only to -M fuel");
         return false;
     }
-    if (strcmp(smc->product, "fuel") && s->fuel_ioc3_subsystem_id_set) {
+    if (!is_fuel && s->fuel_ioc3_subsystem_id_set) {
         error_setg(errp, "fuel-ioc3-subsystem-id applies only to -M fuel");
         return false;
     }
@@ -2823,7 +2824,7 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
             }
             qdev_prop_set_uint32(DEVICE(node), "nr-cpus",
                                  requested[node_index]);
-            if (!strcmp(smc->product, "fuel")) {
+            if (is_fuel) {
                 qdev_prop_set_bit(DEVICE(node), "fuel-experiment", true);
                 qdev_prop_set_uint64(DEVICE(node), "board-id-word",
                                      s->fuel_board_id_word);
