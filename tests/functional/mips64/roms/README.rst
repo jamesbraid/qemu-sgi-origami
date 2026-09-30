@@ -15,9 +15,8 @@ Build and run
 
 Configure QEMU for ``mips64-softmmu`` with tests, TCG and HMP enabled. Install
 ``mips64-linux-gnuabi64-gcc`` and ``mips64-linux-gnuabi64-objcopy`` in the build
-environment. The SGI container recipe includes both. Meson omits the ROM
-functional test when either cross tool is absent; required CI must require
-this test to appear and pass.
+environment. Meson omits the ROM functional test when either cross tool is
+absent; required CI must require this test to appear and pass.
 
 From the configured build directory::
 
@@ -48,9 +47,8 @@ and four CPUs; durations are recorded by the native framework, with no host
 wall-clock ratio used as a pass criterion.
 
 The linker places code at the reset vector and writable data in RAM. The
-shared startup and exception code lives in ``lib/``. Assertion comments cite
-the specifications and reviewed contracts used when the tests were written.
-References to Origami identify historical review evidence, not runtime inputs.
+shared startup and exception code lives in ``lib/``. Comments distinguish
+documented behavior from emulator compatibility expectations.
 
 Some source files are intentionally outside the suite. ``timerstall`` runs
 through ``func-mips64-timer_stall``, which launches QEMU under host GDB and

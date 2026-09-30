@@ -1,48 +1,8 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * A timer interrupt must reach a processor spinning in a branch loop.
- *
- * On hardware this is trivially true: a processor that is executing
- * instructions has a clock that moves, so an armed timer deadline
- * arrives
- * however tight the loop it interrupts. The ROM pins that property
- * under the
- * emulator's deterministic execution mode (-icount), where instruction
- * budgets bound each translation block against the next timer deadline
- * and a
- * branch is never split from its delay slot. Those two rules meet
- * exactly
- * when the budget boundary lands on a branch, and a block extended for
- * its
- * delay slot must still retire — a model that refuses it stops
- * executing and
- * stops virtual time with it, forever, at the first loop whose
- * alignment
- * collides.
- *
- * Each phase arms the CP0 timer a short distance ahead, opens the
- * interrupt,
- * and spins in a bare branch loop until the handler fires. The phases
- * repeat
- * the loop at different instruction alignments and loop lengths:
- * budgets
- * count down in whole loop bodies, so which alignment lands the
- * boundary on
- * the branch depends on parities the guest cannot know, and covering
- * both
- * parities of the two-instruction loop guarantees one phase collides.
- * The
- * three-instruction phases cover the residues of the longer body the
- * same
- * way.
- *
- * Nothing here is specific to the R10000 — every MIPS branch carries a
- * delay
- * slot — so the ROM runs against QEMU's R4000 model as well. The suite
- * runs
- * this ROM under -icount; without that flag the budget machinery is
- * idle and
- * every phase passes vacuously.
+ * Check that timer interrupts arrive while a branch loop runs under
+ * instruction counting, including branch delay-slot boundaries. Run
+ * under -icount; otherwise the instruction-budget case is inactive.
  */
 
 #include "rom.h"

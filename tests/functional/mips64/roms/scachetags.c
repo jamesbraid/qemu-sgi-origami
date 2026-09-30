@@ -1,56 +1,12 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * R10000 secondary-cache index tag operations preserve the external tag
- * array's state.
+ * R10000 secondary-cache index tag operations preserve the external
+ * tag array's state. Loads return defined tag fields. Invalidation
+ * updates matching tags and related primary-cache entries; rewritten
+ * tag ECC is not asserted because its encoding is unpublished.
  *
- * Index Store Tag (S) copies the defined fields of CP0 TagLo and TagHi
- * into
- * the secondary-cache tag and MRU arrays.  Index Load Tag (S) copies
- * them
- * back, clearing every reserved register bit.  The operation's physical
- * address selects a cache set and address bit zero selects one of its
- * two
- * ways.  The MRU bit belongs to the set, rather than to either way.
- *
- * The invalidating operations rewrite the same array.  Index WriteBack
- * Invalidate (S) takes the way from address bit zero: a block already
- * invalid is left entirely alone, and a valid one has its whole tag
- * entry
- * rewritten — state to invalid, the tag from the operation's physical
- * address, the virtual index from its VA[13:12] — because the array is
- * built so all tag bits are written at once.  Hit Invalidate (S) and
- * Hit
- * WriteBack Invalidate (S) compare both ways' tags against the physical
- * address first, rewrite only a valid matching way the same way, and
- * record
- * the outcome in the Status register's CH bit: set on a hit, cleared on
- * a
- * miss.  On any secondary invalidation the MRU bit is written to point
- * away
- * from the invalidated way, and every primary-cache block that is a
- * subset
- * of the invalidated secondary block — found through the virtual index
- * the
- * secondary tag keeps for it — is invalidated too.  What no operation
- * does
- * here is write anything back: this model's memory is always current
- * and
- * the cache arrays are diagnostic stores beside it.
- *
- * The rewritten tag's ECC field is not asserted below.  Hardware
- * generates
- * it over the new tag fields; the manual does not publish the code, so
- * a
- * value asserted here would pin the model's placeholder rather than the
- * machine.
- *
- * Oracle: MIPS R10000 Microprocessor User's Manual, version 2.0 of
- * January
- * 29, 1997, sections 10.4, 10.7, 10.10, 10.13 and 10.16, and the CACHE
- * chapter's CH bit note.  For the Origin 200 reset-mode configuration
- * the
- * secondary cache is 1 Mbyte, two-way set associative, with 128-byte
- * blocks.  Consecutive sets are therefore 128 bytes apart.
+ * Source: MIPS R10000 Microprocessor User's Manual, version 2.0,
+ * sections 10.4, 10.7, 10.10, 10.13, 10.16 and the CACHE chapter.
  */
 
 #include "rom.h"

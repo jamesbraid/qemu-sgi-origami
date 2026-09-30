@@ -1,15 +1,9 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SGI KONA register-contract, one-wire identity and textport qtests.
- *
- * Increment 1 is identity only: a widget-ID/probe register set and the
- * DS2502 identity parts a stock PROM reads while classifying the
- * InfiniteReality graphics pipe (hw/misc/sgi-kona.c). Increment 2 adds the
- * `+0x800xxx` register window, the `+0xc10000` textport command port and a
- * native display surface; see docs/designs/
- * infinitereality-host-command-approximation.md for what each case below
- * approximates and why. This fixture fits KONA to an origin2000 the same
- * way sn-builder-test.c's boards reach it: as a `-device` at the empty
+ * These tests exercise the model's identity registers, textport commands,
+ * and rendered pixels. They establish QEMU behavior only. This fixture
+ * fits KONA to an origin2000 as a `-device` at the empty
  * XIO slot IO4, crossbow0's widget 11, outside the default topology's
  * startup-links-alive (BaseIO at 8, the two host-node Hubs at 9 and
  * 10). It takes a fixed `id=kona0`
@@ -438,11 +432,9 @@ static void kona_read_memory(QTestState *s, uint64_t reg,
 #define KONA_RECORD_SIZE 64
 
 /*
- * Field offsets matching hw/pci-host/sgi-bridge.c's own fixed-offset
- * board-identity record (docs/datasheets/bridge.md, "The record layout,
- * and every constraint on building it") -- sgi_kona_onewire_attach_part()
- * (hw/misc/sgi-kona.c) shares that file's
- * sgi_bridge_onewire_build_record() rather than building its own record.
+ * Field offsets for the modeled fixed-offset board-identity record.
+ * sgi_kona_onewire_attach_part() shares sgi_bridge_onewire_build_record()
+ * rather than building its own record.
  * A discriminating test does not call the code it is checking, so this
  * constructs the expected bytes independently, the same way
  * sn0-bridge-identity-test.c's own records are hardcoded rather than
@@ -652,10 +644,8 @@ static void test_textport_graphics_info_mailbox_protocol(void)
 }
 
 /*
- * Set color (0x2) then point (0x6): the only two textport selectors with
- * a confirmed rendering role beyond the bitmap blit (docs/datasheets/
- * infinitereality-display.md). Each point uses a coordinate no earlier
- * case in this file touches.
+ * Set color (0x2) then point (0x6), the selectors exercised by this
+ * rendering check. Each point uses a coordinate no earlier case touches.
  */
 static void test_textport_set_color_and_point_render_pixels(void)
 {
@@ -720,13 +710,8 @@ static void test_textport_bitmap_blit_renders_payload(void)
 }
 
 /*
- * Selectors 1, 3, 4, 5 and 7 have an established argument shape but no
- * confirmed rendering, blanking or cursor role (docs/datasheets/
- * infinitereality-display.md's "Textport-era blanking and cursor
- * commands"): that same evidence leaves kona_unblank() itself unread, so
- * which command number, if any, it pushes to +0xc10000 is unknown, and
- * none of these five may be assumed to carry it. This model frames and
- * traces all five only.
+ * Selectors 1, 3, 4, 5 and 7 are framed and traced here. This test does
+ * not assert their rendering, blanking, or cursor effects.
  */
 static void test_textport_reserved_selectors_have_no_render_effect(void)
 {

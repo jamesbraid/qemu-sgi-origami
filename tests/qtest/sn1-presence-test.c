@@ -13,8 +13,8 @@
  * left unscheduled across that window, so its peers read the bits clear,
  * pass their first barrier without it, and stay a barrier ahead of it for
  * the rest of the boot -- until the copy barrier, where they switch to the
- * PROM's RAM copy while it is still being made (docs/known-issues.md, "The
- * presence-publication join").
+ * PROM's RAM copy while it is still being made. A successful first barrier
+ * therefore does not prove the processors stayed synchronized.
  *
  * Four processors run the same program, with the roles the PROM gives them:
  * every one makes its first LB scratch 1 write; the publishers (slots A and

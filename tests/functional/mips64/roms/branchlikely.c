@@ -1,44 +1,8 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * A branch-likely instruction must not execute its delay slot when it
- * falls
- * through.
- *
- * This is boot-critical rather than academic. The TLB refill path SGI
- * ships
- * to
- * work around the R10000's speculative load erratum is built out of a
- * branch-likely, so a model that executes the nullified delay slot
- * corrupts
- * the first page fault a kernel takes, long before there is any console
- * output to diagnose it with.
- *
- * Oracle: the MIPS64 instruction set reference (MD00087 revision 6.06).
- * Every
- * likely form says the same thing in its description — "If the branch
- * is not
- * taken, the instruction in the delay slot is not executed" — and
- * spells it
- * out in the operation as NullifyCurrentInstruction. The two and-link
- * forms
- * additionally place the return address in register 31 in their first
- * step,
- * before the condition is even evaluated, so they link whether or not
- * they
- * branch.
- *
- * Each probe below reports what happened as a two-bit value: bit 0 is
- * set by
- * the instruction in the delay slot and bit 1 by the branch target. A
- * correct
- * branch-likely therefore yields 3 when it is taken and 0 when it is
- * not, and
- * the two ways of being wrong are distinguishable — 1 means the delay
- * slot
- * ran
- * when it should have been nullified, 2 means it did not run when it
- * should
- * have.
+ * Check that untaken branch-likely instructions nullify their delay
+ * slots and that the and-link forms still set the return address.
+ * See the MIPS64 instruction set reference, MD00087 revision 6.06.
  */
 
 #include "rom.h"

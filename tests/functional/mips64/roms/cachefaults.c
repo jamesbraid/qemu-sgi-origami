@@ -1,47 +1,8 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * The exceptions a CACHE instruction takes on the R10000, and the ones
- * it
- * must not.
- *
- * The manual's notes on CACHE instruction operations say TLB Refill and
- * TLB
- * Invalid exceptions "can occur on any operation" — index operations
- * included, which is why the same notes advise unmapped addresses for
- * them
- * — and that "the operation never causes TLB Modified exceptions"; the
- * CACHE instruction's own section adds that CacheOps "may induce
- * Address
- * Error or TLBL exceptions (Refill or Invalid) during address
- * translation,
- * but never take a TLBS or Mod exception". For address errors the
- * low-bit
- * rules are: bit 0 of an Index operation is the way indicator and never
- * checked, bit 1 of an Index operation generates an Address Error if
- * set,
- * and a Hit operation's low bits are don't-care — the notes' one
- * sentence
- * demanding them zero is contradicted two sentences later by "a CacheOp
- * is
- * never checked for alignment Address Error exceptions, only for
- * privilege-type", and by the shipped kernels that set bit 0.
- *
- * The addresses in the exception record are asserted too: an address
- * error
- * or a translation fault must leave the operation's own virtual address
- * in
- * BadVAddr, exactly as a load would.
- *
- * This ROM is R10000-only: QEMU's R4000 model treats the whole
- * instruction
- * as a no-operation, so there is nothing there to take these
- * exceptions.
- *
- * Oracle: MIPS R10000 Microprocessor User's Manual, version 2.0 of
- * October
- * 10, 1996: the notes on CACHE instruction operations in the CACHE
- * chapter,
- * and the CACHE instruction section of the coprocessor 0 chapter.
+ * Check translation and address exceptions from R10000 CACHE
+ * operations. See the MIPS R10000 Microprocessor User's Manual version
+ * 2.0, CACHE operation notes and the CP0 CACHE instruction section.
  */
 
 #include "rom.h"

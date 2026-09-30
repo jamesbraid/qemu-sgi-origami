@@ -1,94 +1,10 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * The boundaries the R10000 draws around its 64-bit address spaces, and
- * the
- * one instruction-set gate that depends on a Status register mode bit
- * rather
- * than an address: which parts of the user and kernel regions exist
- * under
- * each combination of the extended-addressing bits, and whether
- * supervisor
- * mode may run MIPS III instructions at all.
- *
- * Three rules are checked, each from both sides of its boundary.
- *
- * First, the user region in 64-bit kernel mode. The manual's 64-bit
- * kernel
- * mode user space section says selection "is dependent upon the UX and
- * ERL
- * bits": with UX = 1 and ERL = 0 the whole 16-Tbyte space exists, but
- * "If
- * UX = 0 or ERL = 1, the address space 0x0000 0000 0000 0000 through
- * 0000 0000 7FFF FFFF (2 Gbytes) is selected. Addressing the space
- * ranging
- * from 0000 0000 8000 0000 through 0000 0FFF FFFF FFFF will cause an
- * address
- * error. Moreover, if ERL=1, the selected 2-Gbyte address space becomes
- * unmapped and uncached." An error handler running with error level
- * still
- * set must find the low user segment aliasing physical memory and
- * everything
- * above it refused, whatever UX says.
- *
- * Second, the top of mapped kernel space. The manual bounds xkseg at
- * 0xC000 0FFE FFFF FFFF in three independent places -- its 64-bit
- * kernel mode
- * address space figure, its virtual address space table ("C0000000
- * 00000000
- * TO C0000FFE FFFFFFFF" is xkseg, "C0000FFF 00000000 TO FFFFFFFF
- * 7FFFFFFF"
- * is an address error), and its TLB refill vector table -- so the top
- * 0x1 0000 0000 bytes of the 44-bit region are not a mapped hole but a
- * refusal. That is one 2^32-byte band more than the R4000's rule of
- * stopping
- * 2^31 short, which is what a model derived from the R4000 gets wrong.
- *
- * Third, the supervisor instruction set. The manual's addressing modes
- * section says "In Supervisor mode, the SX bit allows 64-bit addressing
- * and
- * the MIPS III instructions", its operating-mode table shows MIPS III
- * disabled in the supervisor rows with SX clear while every kernel row
- * has
- * it enabled regardless of KX, and its reserved instruction exception
- * cause
- * list includes "an attempt is made to execute 64-bit operations in
- * 32-bit
- * mode when in User or Supervisor modes". A doubleword instruction in
- * supervisor mode with SX clear must be refused as a reserved
- * instruction,
- * and the same instruction with SX set must run.
- *
- * Oracle: the MIPS R10000 User's Manual version 2.0, memory management
- * chapter (operating modes, addressing modes, 64-bit kernel mode
- * spaces,
- * virtual address space table), CPU exceptions chapter (TLB refill
- * vector
- * table, reserved instruction exception cause list).
- *
- * Two halves of the rules above are deliberately not asserted here. The
- * "uncached" half of the ERL rule is invisible to a ROM: this model has
- * no
- * caches, and the attribute an uncached reference presents to the
- * machine is
- * pinned by the fork's own machine-level tests instead. And the last
- * mapped
- * byte below the 2-Gbyte line under ERL is probed at a backed physical
- * page
- * rather than at 0x7FFF FFF8, because an unmapped reference lands on
- * physical memory and this machine answers unclaimed physical addresses
- * with
- * a bus error, which would measure the machine's population rather than
- * the
- * segment rule.
- *
- * This ROM is for the R10000 alone. The fork scopes all three rules to
- * that
- * processor; QEMU's long-established R4000 model keeps its upstream
- * behaviour, and the real R4000's boundaries differ anyway -- its
- * address
- * space is narrower and its xkseg stops 2^31 short of the region top
- * rather
- * than 2^32.
+ * Check R10000 extended address-space boundaries and the supervisor SX
+ * instruction-set mode. See the MIPS R10000 User's Manual version 2.0.
+ * The cacheless ROM cannot test ERL's uncached attribute. Its low-boundary
+ * probe uses backed memory to avoid confusing segment behavior with a bus
+ * error from an absent physical page.
  */
 
 #include "rom.h"

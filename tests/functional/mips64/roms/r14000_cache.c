@@ -1,16 +1,8 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * R14000 cache choices that distinguish the selected 2 MiB secondary
- * cache
- * from the existing 1 MiB R10000 model.
- *
- * Oracle: docs/datasheets/r14000.md at Origami commit 14dbec407f.  The
- * cache
- * has two ways and 128-byte lines by reviewed R12000A policy.  A 2 MiB
- * cache
- * therefore has twice the index span of the R10000 implementation.  The
- * same
- * contract also clears Linux's read-modify-write of Diagnostic bit 26.
+ * Check the R14000 model's selected 2 MiB secondary-cache behavior and
+ * Diagnostic register compatibility. These are emulator expectations;
+ * this ROM does not establish the physical R14000 cache contract.
  */
 
 #include "rom.h"

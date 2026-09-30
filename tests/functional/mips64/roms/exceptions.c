@@ -1,62 +1,8 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * The exception machinery: where the processor goes, what it records,
- * and how
- * it gets back.
- *
- * Every guest we intend to boot depends on all three. A kernel's first
- * page
- * fault, its first system call and its first illegal access all arrive
- * through
- * this path, and the two values the handler reads to decide what to do
- * are
- * the
- * exception program counter and the branch-delay bit of the Cause
- * register.
- * Get
- * the branch-delay case wrong and a kernel restarts at the wrong
- * instruction
- * after any fault taken in a delay slot, which on this architecture is
- * a
- * routine occurrence rather than a corner case.
- *
- * Oracle: the R10000 User's Manual version 2.0. Its exception vector
- * address
- * table (Table 17-1) gives both sets of entry points and notes the two
- * refill
- * entry points apply only while the exception-level bit is clear. Its
- * per-exception descriptions all repeat the same rule for the recorded
- * program
- * counter, in the words of the bus error description: "The EPC register
- * contains the address of the instruction that caused the exception,
- * unless
- * it
- * is in a branch delay slot, in which case the EPC register contains
- * the
- * address of the preceding branch instruction and the BD bit of the
- * Cause
- * register is set." Its integer overflow description names the
- * instructions
- * that can overflow, and its ERET description states that when the
- * error-level
- * bit is set the instruction takes the program counter from the error
- * program
- * counter register and clears that bit.
- *
- * Exception codes come from the Cause register's exception code
- * assignments:
- * modified 1, load translation 2, store translation 3, address error on
- * load
- * 4,
- * address error on store 5, system call 8, breakpoint 9, integer
- * overflow 12,
- * trap 13.
- *
- * Nothing here is specific to the R10000, which is the point: it must
- * pass
- * against QEMU's long-established R4000 model, where a failure means
- * the ROM
- * is wrong rather than the processor model.
+ * Check exception vectors, recorded state, exception codes, and return
+ * behavior. See the R10000 User's Manual version 2.0. The general rules
+ * are also checked against QEMU's R4000 model.
  */
 
 #include "rom.h"

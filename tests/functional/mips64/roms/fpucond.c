@@ -1,39 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * The floating-point status register's eight condition bits, through
- * the
- * control-register write a kernel uses to restore them.
- *
- * The R10000 implements the MIPS IV compare model: eight condition
- * bits,
- * bit 23 and bits 31:25, each settable by a compare naming it and each
- * testable by branches and conditional moves naming it. A compiler
- * targeting this processor schedules several compares onto different
- * condition bits as a matter of course, and a kernel context switch
- * saves
- * and restores the whole status register with CFC1 and CTC1. A model
- * that
- * lets compares set all eight bits but lets CTC1 write only bit 23 —
- * the
- * single-condition-bit mask of the older processors — corrupts every
- * restored context that held a result in bits 31:25, silently.
- *
- * Oracle: the manual's FSR chapter. "Condition Bits [31:25,23]: The
- * Condition bits indicate the result of floating-point compare
- * instructions." The FS bit is 24, the cause bits are 17:12 (E, the
- * always-enabled unimplemented-operation bit, at 17), enables 11:7,
- * flags 6:2, rounding mode 1:0 — and bits 22:18 are not implemented,
- * ignored on write and zero on read. So every bit outside 22:18 accepts
- * a control-register write, and 22:18 never do.
- *
- * The writes below keep every enable bit zero: writing a cause bit and
- * its enable together signals the exception at the CTC1 itself, which
- * is
- * not the contract under test.
- *
- * The compare model is the R10000's MIPS IV one, so this ROM runs
- * against
- * the R10000 alone.
+ * Check all eight R10000 floating-point condition bits through FSR
+ * writes. See the R10000 User's Manual, FSR chapter.
  */
 
 #include "rom.h"

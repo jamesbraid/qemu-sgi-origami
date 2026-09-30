@@ -1,17 +1,9 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * R14000 exception and address behavior selected from the R12000A
- * contract.
- *
- * Oracle: docs/datasheets/r14000.md at Origami commit 14dbec407f.  ERL
- * limits
- * xkuseg to its low 2 GiB, exception entry breaks LL/SC, and uncached
- * stores
- * are posted while a load from the same unimplemented address raises
- * DBE.
- * Warm-reset and Cache Error entry require an external injection path
- * and are
- * covered separately once such a path is available.
+ * Check exception and address behavior selected for the R14000 model.
+ * The tested outcomes are emulator compatibility expectations, not
+ * claims about undocumented physical behavior. Warm reset and Cache
+ * Error entry are outside this ROM's coverage.
  */
 
 #include "rom.h"

@@ -1,63 +1,9 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * The conflicting-write rule: a TLB write whose entry would let one
- * translation match more than one entry invalidates the overlapped
- * entries
- * and records that it did.
+ * Test TLB conflict behavior and verify that a replacement translation
+ * is used instead of a stale cached mapping.
  *
- * A kernel leans on this when it remaps a virtual page at a different
- * index
- * without invalidating the old entry first. On this processor that is
- * legal:
- * the write removes the stale entry itself. A model that stores the new
- * entry
- * beside the old one leaves translation to whichever entry it finds
- * first,
- * which is how a remap silently keeps reading the old physical page.
- *
- * Oracle: the R10000 User's Manual version 2.0.
- *  - Its Status register section's diagnostic status field: the TS bit
- *    "indicates a TLB write has introduced an entry that would allow
- * matching
- *    of more than one virtual page entry during translation. In this
- * case,
- *    the TLB entries that allow the multiple matches, even in the Wired
- * area,
- *    are invalidated before the new TLB entry is written." The bit "is
- *    updated for each TLB write" and "can also be read and written by
- *    software"; "to clear the TS bit one needs to write a 0 into it".
- * No
- *    exception is raised - the R4400's TLB shutdown is contrasted as
- * the
- *    thing this processor does instead of.
- *  - Its memory management chapter says the same under "Avoiding TLB
- *    Conflict", for "an entry being presented to the TLB".
- *  - "Matching" is the translation match: virtual page number under the
- *    entry's page mask, and the address space identifier unless either
- * entry
- *    is global. Two non-global entries with the same page number but
- *    different identifiers can never both match one translation, so
- * writing
- *    the second is not a conflict.
- *
- * The last scenario is a different register: writing coprocessor 0
- * register
- * 23, which the manual's register table leaves undefined on this
- * processor,
- * must not put the model into another architecture's debug mode. The
- * only
- * clean guest-visible probe is that a pending, unmasked interrupt still
- * delivers afterwards: EJTAG debug mode masks all interrupts, and this
- * processor has no such mode to enter. The written value is the EJTAG
- * debug
- * register's debug-mode bit, the exact pattern that would wedge a model
- * that
- * still dispatches register 23 there. What a read of register 23 or 24
- * returns is undefined by the manual, so no value is pinned for one.
- *
- * Everything here is the R10000's own behaviour, so this ROM runs
- * against
- * the R10000 alone.
+ * Source: R10000 User's Manual, version 2.0.
  */
 
 #include "rom.h"

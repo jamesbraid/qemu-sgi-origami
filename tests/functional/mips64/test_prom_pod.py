@@ -6,33 +6,14 @@
 #
 # SPDX-License-Identifier: GPL-2.0-or-later
 """
-POD is the IP27 PROM's own diagnostics mode. With the ELSC debug
-switches set to local-POD (0x10) the firmware drops to its POD prompt on
-the junk-bus UART after its power-on diagnostics, and the roadmap's
-real-PROM milestone names exactly this as its check: an interactive POD
-prompt with sane memory and configuration output. The vendor's
-MDK-based field-diagnostics manual separately names the commands a field
-engineer is told to use when a machine misbehaves (why, error,
-error_dump, dumpspool, pr, crb, crbx); this test drives those plus the
-configuration, memory-test, TLB and switch commands and holds the
-output to fixed lines.
+This test enters POD mode, runs configuration, memory, TLB, switch, and
+error-reporting commands, and checks their output. Memory tests use
+xkphys addresses. The test uses 0xa800000002000000, 32 MiB into node
+0's memory and clear of the PROM's own structures.
 
-The memory tests take xkphys addresses: POD in cached mode treats a
-bare number as a virtual address and a store to unmapped kuseg is a TLB
-miss, observed live before this test existed (the project checkout's
-firmware-diags notebook records the session). santest/memtest at
-0xa800000002000000 -- 32 MiB into node 0's memory, clear of the PROM's
-own structures -- pass on this machine.
-
-Deliberately NOT driven: bist (it asks to reset the system), nic and
-modnic (the Hub one-wire NIC responder is not modelled -- both answers
-are recorded in the notebook, and the one-wire bus is off the critical
-path per the roadmap), and dirtest (it randomizes the directory and
-warns). The console is the junk-bus UART on serial line 3
-(set_console(console_index=3)); the three earlier lines get the null
-backend the framework emits for skipped indexes, which is acceptable
-here because the dip switches place the firmware's console on the junk
-UART by design.
+The test skips `bist` because it resets the machine, `nic` and `modnic`
+because their responder is not modeled, and `dirtest` because it
+randomizes directory state. The console is serial line 3.
 
 test_prom_pod_verdict.py proves the verdict logic against real captured
 POD transcripts without booting anything.

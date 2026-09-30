@@ -1,53 +1,8 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * The FrameMask register's effect on translation buffer writes.
- *
- * The register itself — sixteen bits, reset to zero, the rest ignored
- * on
- * write and read as zeroes — is asserted by the diagregs ROM. This ROM
- * asserts the masking that register exists to do, which is what a
- * kernel
- * actually leans on: IRIX parks software page-table bits in EntryLo
- * 33:32
- * and programs the mask so the hardware never treats them as address. A
- * model that stores the register without applying it turns those
- * software
- * bits into physical address bits 39:38 — the top of this machine's
- * node
- * number — and the kernel's first store through such a mapping lands on
- * a
- * node that does not exist.
- *
- * Oracle: the R10000 User's Manual version 2.0, section 14.18.
- *  - The register "masks bits of the EntryLo0 and EntryLo1 registers so
- * that
- *    these masked bits are not passed to the TLB while doing a TLB
- * write
- *    (either TLBWI or TLBWR)".
- *  - "A zero in the FrameMask register allows its corresponding bit in
- * the
- *    EntryLo[1,0] registers to pass to the TLB; a one in the FrameMask
- *    register masks off its corresponding bit in the EntryLo registers
- * and
- *    passes a zero to the TLB."
- *  - "Bits 15:0 of the FrameMask register control bits 33:18 of the
- * EntryLo
- *    registers", which are bits 39:24 of the physical address.
- *  - "The content of this register is set to zero after a processor
- * reset."
- *
- * Both ends of that correspondence are pinned: mask bits 15:14 must
- * clear
- * EntryLo 33:32 and nothing else, and mask bit 0 must clear EntryLo 18
- * and
- * nothing else, checked by a translated load that must reach the
- * physical
- * page with address bit 24 dropped. A model shifting the mask into the
- * wrong position fails one end or the other.
- *
- * The register exists on the R10000 family alone, so this ROM runs
- * against
- * the R10000 alone.
+ * Check how the R10000 FrameMask register masks EntryLo address bits
+ * during TLB writes. See the R10000 User's Manual version 2.0,
+ * section 14.18.
  */
 
 #include "rom.h"

@@ -10,8 +10,8 @@ A plain unittest -- no QEMU, no qemu_test import, runnable with just
 `uv run --with pytest pytest
 tests/functional/mips64/test_prom_diagnostics_verdict.py -v`. It exercises
 evaluate_run() and the functions it is built from
-against real captured console transcripts (docs/boot-logs/ in the project
-checkout) plus the ported expected-failure ledger, and one clearly-labeled
+against real captured console transcripts plus the expected-failure ledger,
+and one clearly-labeled
 synthetic transcript for the scenarios no single archived capture covers.
 
 Fixture provenance (each is real captured guest-console text unless
@@ -19,7 +19,7 @@ labeled SYNTHETIC; see each fixture's own comment for the exact source
 file and what, if anything, was changed):
 
   REAL_TWO_PASS_TRANSCRIPT
-      docs/boot-logs/firmware.boot.2026-08-18T03:28-07:00, the only
+      `firmware.boot.2026-08-18T03:28-07:00`, the captured sample with the
       archived capture with the real two-pass factory-sequence shape
       (module-id assignment box, warm reset, then a second pass) --
       named in this port's brief as the fixture source to prefer. Its
@@ -32,9 +32,8 @@ file and what, if anything, was changed):
       informative failure mode, not a fixture defect.
 
   REAL_SERIAL_DMA_EXCERPT, REAL_SUMMARY_EXCERPT
-      Five- and eighteen-line excerpts of the two other transcripts named
-      in this port's brief, docs/boot-logs/firmware.enet-diag-pass and
-      firmware.enet-diag-all-pass, used for two smaller, targeted tests
+      Five- and eighteen-line excerpts from `firmware.enet-diag-pass` and
+      `firmware.enet-diag-all-pass`, used for two targeted tests
       (a single real RSLT FAIL line with a diag_rc, and a real DIAG
       RESULTS block with four "Reason:" lines under one result -- which
       demonstrates parse_summary keeps only the LAST reason line per
@@ -97,8 +96,8 @@ file and what, if anything, was changed):
       the module-id assignment box or warm resets: it runs the whole
       factory sequence, sash netboot included, in one pass. The same
       single-pass shape was already measured independently a month
-      earlier in docs/boot-logs/firmware.nvram-6.5.30
-      .2026-08-22T19:53-07:00, so this is a second, cleaner
+      earlier in `firmware.nvram-6.5.30.2026-08-22T19:53-07:00`, so this
+      is a second, cleaner
       confirmation, not the only one. module_ids() still reads {0, 1}
       from this one pass, the same two ids REAL_TWO_PASS_TRANSCRIPT's
       pass 2 shows split across the warm reset: "Global master is
@@ -586,8 +585,8 @@ class ParseExpectedFailuresTest(unittest.TestCase):
 class ParseRsltLinesTest(unittest.TestCase):
 
     def test_real_fail_line_with_diag_rc_and_no_detail(self):
-        # docs/boot-logs/firmware.enet-diag-pass: serial_dma FAILs with a
-        # diag_rc and nothing else on the RSLT line itself.
+        # The captured serial_dma FAIL line has a diag_rc and nothing else
+        # on the RSLT line itself.
         entries = parse_rslt_lines(REAL_SERIAL_DMA_EXCERPT)
         self.assertEqual(len(entries), 1)
         self.assertEqual(entries[0], {
@@ -768,9 +767,8 @@ class EvaluateRunTest(unittest.TestCase):
         self.assertEqual(report["failures"]["stale"], [])
 
     def test_unexpected_failure_is_rejected(self):
-        # A real RSLT FAIL line (hub_bte_diag, in the same real format
-        # docs/boot-logs/firmware.enet-diag-pass and -all-pass both show
-        # it) injected into an otherwise clean run must fail the verdict
+        # A captured-format RSLT FAIL line (hub_bte_diag) injected into an
+        # otherwise clean run must fail the verdict
         # and be named, even though the ledger it is checked against is
         # otherwise satisfied.
         injected = SYNTHETIC_ALL_PASS_TRANSCRIPT.replace(

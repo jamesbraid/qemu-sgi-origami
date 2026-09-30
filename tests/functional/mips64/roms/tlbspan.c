@@ -1,36 +1,8 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * Replacing a large-page TLB entry invalidates its whole span.
- *
- * A TLB entry maps more than the smallest page when PageMask says so,
- * and
- * the emulator caches its translations at the smallest-page grain — one
- * guest 16 Kbyte page is four cached translations. When a TLB write
- * replaces such an entry, every one of those cached translations must
- * go:
- * a model that drops only part of the span leaves a load in the middle
- * of
- * the page reading through the old mapping after the guest replaced it,
- * which no hardware TLB can do — the entry is one entry, present or
- * not.
- *
- * The ROM maps a 16 Kbyte even/odd pair, reads a planted pattern
- * through
- * every smallest-page quarter of both halves so each translation is
- * exercised, rewrites the same entry to new frames with tlbwi, and
- * reads
- * every quarter again expecting the new frames' pattern. A stale cached
- * translation on any quarter returns the old pattern and its own assert
- * names the quarter. Nothing here is R10000-specific — page masks are
- * R4000-family behavior — so the ROM runs against both processor
- * models,
- * and passing on the R4000 is the check on the ROM itself.
- *
- * This pins the contract under the invalidation path's batching:
- * however
- * the model discards the span — page by page or as one range — the
- * whole
- * span must be gone.
+ * Replacing a large-page TLB entry must invalidate cached translations
+ * across its full span. Each smallest-page quarter is read before and
+ * after the replacement to expose stale mappings.
  */
 
 #include "rom.h"

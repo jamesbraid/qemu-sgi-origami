@@ -2,8 +2,7 @@
 /*
  * Register-contract tests for the Origin 200 GIGAchannel expansion cabinet
  * as the origin200-gigachannel topology builds it, and for the converted
- * module in loopback (origin200-gigachannel-loopback), from
- * docs/datasheets/sgi-gigachannel.md in the Origami repository.
+ * module in loopback (origin200-gigachannel-loopback).
  *
  * The IP27 PROM finds the cabinet by reading widget 0's identity through
  * the node's Hub: the Crossbow's part number there marks the node, a
@@ -130,8 +129,8 @@ static void test_widget0_marks_the_cabinet(void)
 /*
  * Links 8, 9 and A carry a widget from reset, so the PROM's link walk
  * finds them; every other port reads presence clear and the failed
- * initialization state an empty XIO slot shows (docs/datasheets/xbow.md,
- * link auxiliary status). One of links B to F is the spare widget a
+ * initialization state the model reports for an empty XIO slot. One of
+ * links B to F is the spare widget a
  * `-device` XIO card claims, and it stays empty until one does.
  */
 static void test_crossbow_links(void)

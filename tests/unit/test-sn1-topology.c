@@ -97,13 +97,9 @@ static void test_one_cpu_non_default_slot(void)
 
 /*
  * The four-processor origin300 wiring: every slot fitted (A, B, C, D),
- * shared by both the two- and four-processor offerings
- * (docs/machines/layers/products/origin300.yaml's
- * supported_cpu_populations names [2] and [4] against this one
- * topology). A run's nr_cpus, not the catalogue's own populated count,
- * decides how many of these get realized -- and which ones: a
- * two-processor run still wants A and C, the diagonal a real
- * two-processor board ships, not A and B.
+ * shared by the two- and four-processor model configurations. A run's
+ * nr_cpus determines which slots are realized; the two-processor
+ * configuration selects slots A and C.
  */
 static void test_all_four_slots_fitted(void)
 {

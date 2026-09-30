@@ -1,58 +1,10 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * The WatchLo and WatchHi registers, and the Watch exception they
- * raise.
+ * Test WatchLo and WatchHi address matching, Watch exceptions, and
+ * delayed exceptions while EXL or ERL is set.
  *
- * The pair names one doubleword of physical memory; with an enable bit
- * set,
- * a load from it or a store to it raises the Watch exception. Kernels
- * use it
- * as a hardware data breakpoint, and a model that stores the registers
- * without ever comparing an access against them turns that debugging
- * aid
- * into silence.
- *
- * Oracle: the R10000 User's Manual version 2.0.
- *  - Its WatchLo and WatchHi registers section (section 14.16, Figure
- * 14-18,
- *    Table 14-16): both are 32-bit read/write registers holding a
- * physical
- *    address of a doubleword. WatchLo carries physical address bits
- * 31:3 in
- *    bits 31:3, the R bit (trap on load) in bit 1 and the W bit (trap
- * on
- *    store) in bit 0; WatchHi carries physical address bits 39:32 in
- * bits
- *    7:0. The remaining bits of each register are ignored on write and
- * read
- *    as zero.
- *  - Its Cause register exception code table (Table 14-13): code 23,
- * WATCH,
- *    "Reference to WatchHi/WatchLo address".
- *  - Its Watch exception section (chapter 17): the exception uses the
- * common
- *    exception vector. It is postponed while either EXL or ERL is set
- * in the
- *    Status register: the referencing instruction is executed and the
- *    exception is delayed until both are clear, with EPC holding the
- * address
- *    of the next unexecuted instruction. A delayed Watch exception is
- *    cleared by system reset or by an MTC0 to the WatchLo register.
- *
- * The comparison is against the physical address, which two assertions
- * pin
- * from opposite sides: an access through a TLB mapping of the watched
- * page
- * must trap even though its virtual address shares nothing with the
- * uncached window the watch was armed through, and an access to the
- * watched
- * doubleword with a different WatchHi — naming a physical address this
- * machine's memory does not even reach — must not.
- *
- * The registers exist in this form on the R10000 family alone (the
- * R4000's
- * pair lays its enables out differently and QEMU's R4000 model does not
- * implement them), so this ROM runs against the R10000 alone.
+ * Source: R10000 User's Manual, version 2.0, sections 14.16 and 17,
+ * and tables 14-13 and 14-16.
  */
 
 #include "rom.h"

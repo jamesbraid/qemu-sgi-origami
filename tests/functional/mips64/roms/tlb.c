@@ -1,77 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * Address translation: misses, repairs, probes, protection bits,
- * address
- * space
- * identifiers and every page size the processor supports.
- *
- * This is the machinery a kernel leans on hardest and earliest. Before
- * an
- * Origin 200 guest prints anything it has already parked every buffer
- * entry,
- * installed its own wired mappings and taken its first refill; a defect
- * anywhere here shows up as a hang with no output.
- *
- * Oracle: the R10000 User's Manual version 2.0.
- *  - Its memory management chapter states the buffer contains 64
- * entries,
- * each
- *    mapping a pair of virtual pages, and that the low bit of the
- * virtual
- * page
- *    number is not compared because it selects between the two physical
- * pages.
- *  - Its PageMask register section (section 14.5, Figure 14-5, Table
- * 14-6)
- *    gives the mask field as bits 24:13 with the reserved bits written
- * as
- * zero
- *    and read as zero, and lists the seven legal page sizes: 4 Kbyte
- * with an
- *    all-zero mask, then 16 Kbyte, 64 Kbyte, 256 Kbyte, 1 Mbyte, 4
- * Mbyte and
- *    16 Mbyte, each adding two more mask bits.
- *  - Its exception vector address table (Table 17-1) shows a refill
- * uses its
- * own
- *    entry point while the exception-level bit is clear, whereas the
- * invalid
- * and
- *    modified cases are among the "others" that use the general entry
- * point.
- *  - Its Cause register exception codes: modified 1, load translation
- * 2,
- * store
- *    translation 3.
- *  - Its Index register section (section 14.1) states the high-order
- * bit of
- * that
- *    register reports whether a probe succeeded or failed.
- *  - Its Wired register description is the count of low entries the
- * random
- *    replacement counter will not choose.
- *
- * The reserved bits of the PageMask register are checked in the
- * R10000-only
- * section at the end: a write of every bit reads back as the 16 Mbyte
- * mask,
- * because the field is twelve bits and the rest of the register returns
- * zeroes. On the R4000 leg that behaviour is deliberately not asserted
- * — QEMU
- * accepts mask fields up to sixteen bits wide there, the manual
- * declares
- * buffer behaviour undefined for any mask value outside its table, and
- * the
- * fork corrects only the R10000 — so the shared part of this ROM checks
- * the
- * seven legal sizes exactly and leaves the reserved bits to that
- * section.
- *
- * Nothing here is specific to the R10000 beyond the entry count, which
- * a
- * different ROM checks, so this must pass against QEMU's
- * long-established
- * R4000 model.
+ * Test R4000-family TLB operations, including entry readback,
+ * replacement and exception behavior.
  */
 
 #include "rom.h"

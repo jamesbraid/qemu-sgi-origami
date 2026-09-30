@@ -1,11 +1,8 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * The Onyx2 machine's two topologies, as the Onyx2 datasheet in the Origami
- * repository describes them (docs/datasheets/onyx2.md): the rack is the
- * Origin 2000 eight-processor module with a BaseIO-G in IO1 (Crossbow 0
- * widget 8) and the pipe's KONA widget behind an Xtown in IO3 (widget F);
- * the deskside has one Crossbow whose table puts the BaseIO-G at widget F
- * and the pipe directly at widget 8. Neither fits an SI graphics board.
+ * This test checks the rack and deskside layouts configured by the Onyx2
+ * machine model, including the presence of their modeled BaseIO-G and
+ * KONA widgets.
  */
 
 #include "qemu/osdep.h"
@@ -82,9 +79,8 @@ static bool qom_has_child(QTestState *qts, const char *parent,
 /*
  * The pipe's one-wire chain, read the way the PROM reads it: through KONA's
  * +0x98 bit-level register (hw/misc/sgi-kona.c), whose pulse and sample
- * fields and done/level bits are the Bridge NIC register's. Each part is
- * a DS2502 holding the fixed-offset board record docs/datasheets/bridge.md
- * in the Origami tree lays out.
+ * fields and done/level bits are the Bridge NIC register's. The model
+ * exposes a DS2502 board record through this interface.
  */
 #define KONA_ONEWIRE           0x98
 #define ONEWIRE_LEVEL          (1u << 0)

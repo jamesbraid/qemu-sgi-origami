@@ -3,8 +3,7 @@
 /*
  * Register-contract tests for the Origin 2000 PCI Carrier Assembly fitted in
  * IO2, crossbow0 widget 12: sgi-pci-carrier, an sgi-pci-expansion with
- * three PCI slots and the carrier's own board record
- * (docs/datasheets/sgi-pci-shoebox.md in the Origami repository).
+ * three PCI slots and the carrier's own board record.
  *
  * The owner's guide gives the carrier three slots; which PCI device number
  * each slot is wired to is not captured, so the catalogue selects devices 0,
@@ -100,9 +99,8 @@ static void test_input_reaches_carrier_ioc3_kbc(void)
 }
 
 /*
- * The carrier's widget reads present and alive once the machine is up,
- * which is what lets the stock PROM discover it (docs/datasheets/xbow.md,
- * link auxiliary status bit 5 and link status bit 31).
+ * The carrier's widget reads present and alive once the machine is up in
+ * this model.
  */
 static void test_widget_alive(void)
 {

@@ -1,63 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * The three coprocessor 0 registers the R10000 adds or repurposes,
- * which a
- * guest touches on its way up: the frame mask, the diagnostic register,
- * and the performance counters.
- *
- * None of them carries any of the machine's real work, and that is
- * exactly
- * why
- * they matter. A kernel writes them early, unconditionally, and without
- * checking anything, so a model that faults on one of them turns into a
- * hang
- * long before there is console output to diagnose it with. Linux's
- * processor
- * probe reads the diagnostic register, sets a bit in it and writes it
- * back
- * during its R12000 and R14000 startup, and IRIX's profiler reads the
- * performance counters whether or not anything is profiling.
- *
- * Oracle: the MIPS R10000 User's Manual version 2.0. Its coprocessor 0
- * register
- * table (Table 14-1) names all three; its FrameMask register section
- * (section 14.18, Figure 14-20) gives that register's layout and reset
- * value;
- * its Diagnostic register section (section 14.19, Figure 14-21) gives
- * that
- * register's twelve fields; its performance counter registers section
- * (section 14.20, Figure 14-22) and its move to and from the
- * performance
- * counter instruction descriptions (section 14.32) give how the
- * counters are
- * reached and what they contain.
- *
- * The R10000 is the only processor this ROM can run against: the frame
- * mask
- * register is new with it, the diagnostic register is R10000-family
- * specific,
- * and the performance counters are reached through an encoding no other
- * processor in the fork implements.
- *
- * If this ROM reports an unexpected reserved-instruction exception
- * rather
- * than
- * a numbered assertion, the performance counter accesses are the cause
- * and
- * the
- * reason is known: the coprocessor 0 move instructions in the fork
- * reject any
- * nonzero selector unless the processor claims a MIPS32-era instruction
- * set,
- * so
- * a processor whose instruction set is MIPS IV cannot reach selectors 1
- * to 3
- * at
- * all. That gate has to be relaxed for the R10000 family, because on
- * this
- * processor those instruction bits are not a MIPS32 register selector —
- * they
- * are the R10000's own move instructions for its performance counters.
+ * Check the R10000 FrameMask, Diagnostic, and performance counter
+ * registers. See the MIPS R10000 User's Manual version 2.0.
  */
 
 #include "rom.h"

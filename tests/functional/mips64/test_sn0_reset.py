@@ -202,9 +202,9 @@ CTL_STA = 0x04
 CTL_STO = 0x02
 CTL_ACK = 0x01
 
-# Framed requests, checksum included: length byte, ASCII text, a checksum
-# byte chosen so the whole packet sums to zero modulo 256
-# (docs/datasheets/pcf8584-elsc.md). Precomputed rather than assembled by
+# Framed requests, checksum included: length byte, ASCII text, and a
+# checksum byte chosen so the whole packet sums to zero modulo 256.
+# Precomputed rather than assembled by
 # the guest program, which has no need to compute a checksum it never
 # varies.
 PAS_NONE = bytes([0x08]) + b'pas none' + bytes([0xe4])

@@ -1,42 +1,12 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * R10000 primary-cache index data operations preserve diagnostic data.
+ * Instruction-cache entries store 36-bit instructions and parity;
+ * data-cache entries store words and byte parity. Loads return the
+ * stored fields and clear reserved bits.
  *
- * The primary instruction cache holds predecoded instructions of 36
- * bits:
- * Index Store Data (I) writes one from TagHi[3:0] and TagLo[31:0] with
- * its
- * parity bit from ECC[0], and Index Load Data (I) hands all three back.
- * The
- * primary data cache holds 32-bit words: Index Store Data (D) writes
- * one
- * from TagLo with four byte-parity bits from ECC[3:0], and Index Load
- * Data
- * (D) returns them.  VA[13:2] of the operation names the word and VA[0]
- * names the way.  On a load the ECC register's unused bits read zero —
- * the
- * manual says loads fill them with zeroes where stores ignore them —
- * and
- * the instruction-cache load clears TagHi above the instruction's top
- * nibble, which the register format leaves reserved.
- *
- * The data stored here never reaches a load instruction and no fetch
- * ever
- * returns it: the model's diagnostic arrays sit beside the flat memory
- * the
- * machine actually runs from, the same decoupling the secondary-cache
- * data
- * array has.  What these operations promise is only that a diagnostic
- * gets
- * back what it stored, which is exactly what a cache-array self-test
- * does.
- *
- * Oracle: MIPS R10000 Microprocessor User's Manual, version 2.0 of
- * October
- * 10, 1996, sections 10.17, 10.18, 10.20 and 10.21, the ECC register of
- * section 14.21, and the data formats of section 14.23 (Figures 14-31
- * and
- * 14-32).
+ * Source: MIPS R10000 Microprocessor User's Manual, version 2.0,
+ * sections 10.17, 10.18, 10.20, 10.21, 14.21 and 14.23.
  */
 
 #include "rom.h"

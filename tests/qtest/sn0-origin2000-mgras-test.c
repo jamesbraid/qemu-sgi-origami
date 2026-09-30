@@ -764,8 +764,7 @@ static void test_repp_status_byte_writes(void)
 }
 
 /*
- * XMAP_BUF_SELECT (docs/datasheets/mgras-hq4.md, "Swap scheduling") is a
- * word register indexed by REG_XMAP_INDEX the same way as
+ * XMAP_BUF_SELECT is a word register indexed by REG_XMAP_INDEX the same way as
  * REG_XMAP_MAIN_MODE. Other widths raise the width exception.
  */
 static void test_xmap_buf_select_write(void)
@@ -4864,9 +4863,8 @@ static void test_board_inventory_registers(void)
 }
 
 /*
- * The per-variant identity table in docs/datasheets/mgras-board-identity.md,
- * restated from that document rather than from the model: version bytes,
- * revisions, and the counts and hinv name IRIX 6.5.x derives from them.
+ * Expected identity values for each model variant: version bytes,
+ * revisions, counts, and the name returned by hinv.
  */
 typedef struct MgrasBoardExpect {
     const char *board;
@@ -5626,11 +5624,8 @@ static void test_gl_clear_shows_through_a_direct_colour_display_id(void)
 }
 
 /*
- * Rows of the 128x128 window, counted from its top, and the first and last
- * yellow column in each, from the independently computed expected images
- * of the probe's triangle cases (gl_min_expected.py in Origami PR 1899,
- * matched by Mesa llvmpipe; triangle.ppm SHA-256 a6cb9409..., moved
- * d47f6025...). Every other window pixel is the clear colour.
+ * Expected yellow spans for the triangle test cases in a 128x128 window.
+ * Every other window pixel is the clear color.
  */
 typedef struct GlSpan {
     uint8_t row;
@@ -6336,10 +6331,7 @@ static void test_re_line_execute(void)
 /*
  * A run of RE_LINEs chains: each one draws from the previous RE_POINT or
  * RE_LINE's own end point, not from the original RE_POINT every time.
- * 2,861 of the 2,862 RE_LINE executes in the retained Toolchest capture
- * chain exactly this way, tracing closed button and glyph outlines (see
- * "RE_POINT and RE_LINE addressing" in docs/datasheets/mgras-raster-
- * display.md). A vertical leg from (10,10) to (10,20) followed by a
+ * A vertical leg from (10,10) to (10,20) followed by a
  * horizontal leg to (20,20) must start its second leg at (10,20), not
  * back at the original (10,10): a direct diagonal from (10,10) to
  * (20,20) would also light (15,15), which this checks stays unpainted.
@@ -6645,15 +6637,8 @@ static void test_re_line_clip_follows_xywin_origin(void)
 }
 
 /*
- * XYWIN (0x115) carries a per-window screen origin that RE_POINT/RE_LINE
- * add to their own coordinate whenever its x field is nonzero: a retained
- * greeter capture's icon-panel outlines otherwise land in a "ghost
- * cluster" at the top-left instead of on their icons. OpenBSD's impact(4)
- * driver (sys/arch/sgi/dev/impactreg.h) names it IMPACTSR_CMD_XYWIN and
- * packs it through IMPACTSR_YXCOORDS(x, y) = (y << 16) | x. See
- * mgras_apply_window_origin() in hw/misc/sgi-mgras-raster.c and
- * "RE_POINT and RE_LINE addressing" in docs/datasheets/mgras-raster-
- * display.md.
+ * XYWIN (0x115) supplies a window origin used by RE_POINT and RE_LINE.
+ * This test checks that the model applies it to the drawing coordinates.
  */
 static void test_re_point_execute_applies_xywin_origin(void)
 {

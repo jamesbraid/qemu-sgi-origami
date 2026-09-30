@@ -117,14 +117,7 @@ class Origin2000CacheReset(QemuSystemTest):
         records = []
         for cpu in cpus:
             index = cpu['cpu-index']
-            # socket-id/core-id no longer encode the node-local slot: QEMU
-            # commit 97f2ec759fb0 ("hw/mips/sgi: make -smp N mean N
-            # single-core sockets") made socket-id a flat global index and
-            # core-id always 0, since every R10000/R14000 is genuinely a
-            # single-core socket. The mailbox record layout is per
-            # node-local slot (two CPUs per Hub), which the ROM loader
-            # step in test_selected_cache_reset already derives the same
-            # way.
+            # The mailbox record layout uses the node-local CPU slot.
             address = MAILBOX + (index % 2) * RECORD_SIZE
             output = self.vm.cmd('human-monitor-command',
                                  command_line=f'xp /4wx {address:#x}',
@@ -199,11 +192,7 @@ class Origin2000CacheReset(QemuSystemTest):
         for index, cpu in enumerate(cpus):
             self.assertEqual(cpu['cpu-index'], index)
             self.assertEqual(cpu['props']['node-id'], index // 2)
-            # socket-id is a flat global index and core-id is always 0
-            # since QEMU commit 97f2ec759fb0 ("hw/mips/sgi: make -smp N
-            # mean N single-core sockets"): every R10000/R14000 is
-            # genuinely a single-core socket. node-id still carries the
-            # physical Hub grouping this test actually cares about.
+            # Check the model's advertised socket, core, and node IDs.
             self.assertEqual(cpu['props']['socket-id'], index)
             self.assertEqual(cpu['props']['core-id'], 0)
         self.check_phase('cold', cpus)

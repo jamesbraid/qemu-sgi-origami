@@ -29,33 +29,19 @@ IP35_FIRMWARE_REL = os.path.join('firmware', '6.5.30',
                                  'ip35prom.payload.bin')
 
 # The L1 UART's node-local registers, reached through the Hub-special
-# window (attribute 0, window one): established from the stock PROM's own
-# transport (docs/datasheets/l1-controller.md, "Transport") and
-# hw/misc/sgi-bedrock.c's BEDROCK_L1_UART_OFFSET.
+# window (attribute 0, window one), at BEDROCK_L1_UART_OFFSET.
 L1_UART_DATA = 0x30000080
 
-# The Bedrock memory/directory chip's memory-configuration register
-# (docs/datasheets/bedrock-memory-directory.md, register 0x780008),
-# reached through the Bedrock node register window mapped at
+# The Bedrock memory-configuration register at 0x780008, reached through
+# the node register window mapped at
 # SN1_BEDROCK_NODE_ADDRESS in hw/mips/sgi/sn1-node.c. A -device loader
 # writes to that physical address without the CPU's xkphys decode.
 MD_MEMORY_CONFIG = 0x20001800000 + 0x780008
 
-# The shipped Origin 300 installs two 256 MiB DIMM banks at locational
-# banks two and three, not locational bank zero (hw/mips/sgi/sn1-node.c,
-# sn1_installed_bank_mib); the memory-configuration register's bank-select
-# field (bits 33:32) maps a locational bank onto a software bank by
-# exclusive-or (docs/datasheets/bedrock-memory-directory.md, "Bank
-# geometry"), so selecting 2 there puts locational bank two -- the first
-# installed one -- at software bank zero, physical 0x0 through
-# 0x1fffffff, where STATE and both slices' own load addresses live.
-# Bit 8 enables that bank; bits 15:12 carry its size code, 3 for 256 MiB
-# (same datasheet, the memory-configuration register's field table).
-# The stock PROM performs the equivalent programming itself before
-# trusting memory (same datasheet, "Stock-PROM self-test requirement");
-# this section never runs the PROM (see the module docstring), so it must
-# do the minimum of that job itself or physical memory stays exactly as
-# unbacked as it is before the PROM runs on real hardware.
+# Configure the modeled memory map used by this test: select locational
+# bank two as software bank zero, enable it, and set its size code to 3.
+# This test bypasses the PROM, so the fixture must configure memory before
+# loading and running the two test programs.
 MD_MEMORY_CONFIG_VALUE = (2 << 32) | (3 << 12) | (1 << 8)
 
 # Physical load addresses for each processor's own program; well clear of
@@ -70,10 +56,7 @@ KSEG1_BASE = 0xffffffffa0000000
 SLICE_A_PC = KSEG1_BASE | SLICE_A_LOAD
 SLICE_B_PC = KSEG1_BASE | SLICE_B_LOAD
 
-# The general task's local destination (docs/datasheets/l1-controller.md,
-# "The stock IP35 PROM", "local general task"); request 0x2001 is the
-# node reset the "reset" command itself performs (change 2 under
-# "Contract changes in this revision"), no arguments.
+# The local general-task destination and reset request used by this test.
 L1_LOCAL_GENERAL_TASK = 0x0ffff006
 L1_REQUEST_RESET = 0x2001
 # The request subchannel is 16 plus the issuing CPU's index.

@@ -4,16 +4,11 @@
 # names
 #
 # SPDX-License-Identifier: GPL-2.0-or-later
-"""The Onyx2 deskside's midplane drives Hub slot bits 3 and 2, which the
-stock IP27 PROM 6.156 reads as the deskside's own n1 and n2 codes and
-answers with that chassis's own Crossbow table
-(docs/datasheets/onyx2.md in the Origami repository). A real deskside's
-PROM hinv -v names node boards n2 (NASID 0) and n1, the BaseIO in io1 at
-widget 15, and the KONA board in io4; this test checks that the model
-does the same.
+"""Boot the IP27 PROM with the deskside topology and check its `hinv -v`
+output for the expected node, BaseIO, and KONA entries. This verifies the
+emulated configuration and PROM interaction.
 
-A recorded harness run reached the menu in about two minutes on
-2026-09-27; this test uses QEMU's functional-test framework.
+This test runs under QEMU's functional-test framework.
 """
 
 from lib_prom import FIRMWARE_REL

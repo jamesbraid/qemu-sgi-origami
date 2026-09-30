@@ -1,19 +1,9 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * R14000 revision 2.4 identity and the reviewed register state that
- * differs
- * from a renamed R10000.
- *
- * Oracle: docs/datasheets/r14000.md at Origami commit 14dbec407f.  The
- * processor and FPU identifiers are bounded R14000 compatibility
- * choices.
- * The cache fields, TLB population, masks, and reset values below are
- * the
- * reviewed R14000 facts or explicit R12000A compatibility policy
- * recorded by
- * that contract.  Config bits 24 through 0 are supplied by the machine,
- * so
- * this ROM neither asserts nor manufactures a board mode word.
+ * Check the R14000 model's processor and FPU identifiers and selected
+ * register behavior. These expectations include emulator compatibility
+ * choices and do not establish undocumented physical R14000 behavior.
+ * Config bits 24 through 0 come from the machine and are not asserted.
  */
 
 #include "rom.h"

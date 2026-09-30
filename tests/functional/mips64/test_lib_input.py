@@ -44,11 +44,8 @@ class SplitDeltaTest(unittest.TestCase):
         self.assertEqual(sum(sy for _sx, sy in steps), 2000)
 
     def test_default_step_matches_the_documented_quirk_fix(self):
-        # MOUSE_MOVE_STEP_MAX is the constant move_mouse()'s default
-        # bounds every step by; this pins it against the value the RAD4
-        # investigation (docs/datasheets/psitech-rad4.md in the Origami
-        # checkout) found reliable, so a future edit that loosens it
-        # fails a test instead of silently drifting.
+        # Pin the default so a change that permits larger deltas is
+        # reviewed alongside the input helper's packet-drain limitation.
         self.assertEqual(MOUSE_MOVE_STEP_MAX, 500)
 
 

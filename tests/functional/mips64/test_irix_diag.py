@@ -5,71 +5,22 @@
 # log in, and run every check irix-diag-matrix marks for the flavour
 #
 # SPDX-License-Identifier: GPL-2.0-or-later
-"""
-The layer above the firmware. The MDK, POD and fx legs run diagnostics
-before or instead of IRIX; this runs IRIX's own online diagnostics
-(`/usr/diags/bin`) on a booted, multi-user system -- the diagnostic
-stack a field engineer uses on a live machine, exercising the hardware
-through IRIX's real drivers -- and checks each IOC3 port the flavour
-brings out, on every machine flavour we model an IOC3 on.
+"""Run IRIX online diagnostics on the emulated machine and check each
+flavour's supported commands and IOC3 ports.
 
-irix-diag-matrix names the flavours and which checks each runs;
-lib_irix_diag.FLAVOURS holds how each is launched and the device names
-IRIX gives it on the diagnostics disk; lib_irix_diag.REASONS says why a
-flavour skips a check. Each flavour is one test method in its own meson
-target, so the nightly runs them side by side: this file owns the
-two-chassis Origin 200, the flavour this test began on, and each
-test_irix_diag_<flavour>.py beside it registers one more. A flavour boots
-once and runs every check in that session; only the reboot, persistence
-and parallel checks end it, by rebooting IRIX and then stopping and
-relaunching QEMU on the same NVRAM and disk images. Every check runs
-even after another fails, and the test fails at the end naming each
-failed check; the per-check results and the time each boot phase and
-check took are written to <flavour>-summary.json.
+`lib_irix_diag.FLAVOURS` defines how each configuration boots and which
+checks it runs. A flavour boots once; checks continue after an individual
+failure, and the test reports all results in a summary file. Reboot,
+persistence, and parallel checks may restart QEMU with the same NVRAM and
+disk images. Each run uses a private disk overlay.
 
-The disks are the published golden-with-diagnostics images:
-`irix/6.5.30/root-diags.qcow2`, the installed IRIX 6.5.30 root
-with the `field_diags_irix` product added and its environment loaded by
-a post-install reboot (the project checkout's irix-online-diagnostics
-notebook records how it is built and why the reboot matters), and
-`root-diags-origin300.qcow2`, the Origin 300 install with
-field_diags_irix 1.8 from Internal Support Tools 2.7. Each run writes to
-its own overlay in the test's scratch directory, never to the golden
-image. IRIX numbers devices from the disk's own /etc/ioconfig.conf
-history, not from the topology, so the device names in FLAVOURS hold for
-these disks and would differ on another.
+The device names in `FLAVOURS` apply to the supplied disk images, whose
+`/etc/ioconfig.conf` determines IRIX device numbering. They may differ on
+other images. Some checks are omitted when the required device or network
+topology is not modeled.
 
-The diagnostics, and why these:
-
-  - oldisk  -- a disk exerciser: asynchronous direct pattern read/write
-    through the SCSI controller;
-  - olmem   -- tag RAM, L1 cache, L2 cache, address-pattern and
-    moving-inversion memory;
-  - oltape  -- rw, thrash and block against an emulated `scsi-tape`
-    carrying a composed `ARCHIVE Python 25601` identity IRIX's driver
-    recognizes as a DAT (the recorded real drive's own identity matches
-    nothing in IRIX's table and the extended-status ioctl it needs
-    refuses);
-  - olcdrom -- reads an emulated `scsi-cd` holding a generated data CD;
-  - olrti   -- the IOC3's real-time interrupt, internal loopback only:
-    the external test needs a cable from output to input;
-  - olenet  -- the IOC3 Ethernet probe, where the disk carries it;
-  - olpci, olsio, olusb -- the Origin 300 package's Bridge configuration
-    check, IOC3 serial internal loopback and USB host-controller check;
-  - olperi  -- the random-instruction test, on processor 0;
-  - olvst   -- socket-based network read and write;
-  - pandora -- its own thirty-minute default system stress;
-  - torpedo -- its own default of one loop of one floating-point test,
-    an hour and more under emulation, so the Origin 300 runs it in rows
-    of its own.
-
-The Origin 300 disk carries the fourteen commands the Online Diagnostics
-manual marks for that machine; root-diags.qcow2 carries eleven, without
-olpci, olsio and olusb. On the Origin 200 olperi is not for IP29 and
-fails on it, and olvst from that disk passes interactively but stalled
-under the container the functional tests run in. olvht and linktest
-need a HIPPI channel or a router topology. The project checkout's
-irix-online-diagnostics notebook characterizes each of them.
+`olrti` runs in internal-loopback mode. `olvht` and `linktest` are omitted
+because the test topology has no HIPPI channel or router network.
 """
 
 import calendar
@@ -106,11 +57,7 @@ except (ImportError, RuntimeError):
     QemuSystemTest = None
 
 
-# Each wait below is capped twice: by its own limit, about two to four
-# times the slowest this matrix measured on 2026-09-26 (debug_tcg build/,
-# MTTCG), and by what is left of the row's budget in irix-diag-matrix.
-# The slowest figures come from builds with the missed Compare matches of
-# jamesb/qemu#866, which slowed disk and CD-ROM I/O several-fold.
+# Each wait is capped by its own limit and by the remaining flavour budget.
 
 # PROM power-on, kernel and init to a root shell: 1075s at most (the
 # four-node shoehorn, 391s PROM and 685s IRIX), 125 to 400s on the Origin
@@ -120,13 +67,8 @@ BOOT_BUDGET_SECONDS = 1500
 # Ordinary shell commands: hinv, netstat and the like took 22s at most.
 STEP_TIMEOUT_SECONDS = 120
 
-# Each diagnostic's own limit, against the slowest measured: olrti 27s,
-# olenet 15s, oldisk 894s, olmem 1246s, oltape 12s, olcdrom 329s. The
-# Origin 300 ones, from the project checkout's online-diagnostics runs at
-# two and four processors (2026-09-23 to 27): olpci 1s, olperi 4s, olsio
-# 296s, olusb 13s, olvst 1s, pandora 1792s against its own 1800s default,
-# and torpedo 5115s at four processors, 5974s at two and 1634s on the
-# eight-processor pair (more processors ran it faster each time).
+# Per-diagnostic time limits, including longer limits for disk, memory,
+# CD-ROM, serial, stress, and processor tests.
 DIAG_TIMEOUT_SECONDS = {
     'olrti': 120,
     'olenet': 120,
@@ -143,15 +85,10 @@ DIAG_TIMEOUT_SECONDS = {
     'torpedo': 7800,
 }
 
-# How the project checkout's online-diagnostics driver runs the Origin 300
-# package's diagnostics: no colour, and -operator to keep only the tagged
-# result lines.
+# Run diagnostics without color and keep their tagged result lines.
 OPERATOR = '-nocolor -operator'
 
-# olperi's random-instruction test on processor 0, seed 222, 1024
-# instructions, one loop: the invocation recorded working on the Origin
-# 2000 and the Origin 300 (the project checkout's online-diagnostics
-# notebook).
+# Run olperi on processor 0 with a fixed seed, instruction count, and loop.
 OLPERI_ARGS = '-m -r 0 -s 222 -i 1024 -il 1'
 
 # After a timed-out diagnostic is interrupted it still prints its summary
@@ -675,8 +612,8 @@ if QemuSystemTest is not None:
             # the seconds IRIX reports: one whole Count wrap
             # (Flavour.wrap_seconds) is a Compare match the CPU model
             # missed; any other gap is a tick the guest did not get for
-            # another reason (docs/known-issues.md in the project
-            # checkout). The trailer IRIX prints does not tell them apart.
+            # another reason. The trailer IRIX prints does not identify
+            # the cause, so this check classifies gaps by duration.
             # It runs even after the row was cut short or its relaunch
             # failed (lib_irix_diag.OBSERVERS), counting every console the
             # row opened, a relaunch that never reached a shell included.

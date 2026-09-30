@@ -1,118 +1,13 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * A TLB miss must arrive at the right one of the two refill entry
- * points.
+ * Test TLB refill vector selection by faulting address space and its
+ * UX, SX or KX enable, including exceptions taken with EXL set.
+ * The supervisor-space row remains untested.
+ * QEMU R4000 selects by faulting address, unlike real R4400. The two
+ * UX-set user-address assertions check ROM mechanics on R4000, not R4400 behavior.
  *
- * The processor has a separate entry point for misses on addresses that
- * need
- * 64-bit handling, and a 64-bit kernel puts a completely different
- * refill
- * handler there — one that reads a different page table through a
- * different
- * page-table-pointer register. Send a miss to the wrong entry point and
- * the
- * kernel walks the wrong table with the wrong shift, so the first page
- * fault
- * either installs a garbage translation or faults again forever. There
- * is no
- * console output at that point, so this has to be settled before a
- * kernel is
- * ever loaded.
- *
- * The R10000 changed how the choice is made. Oracle: the R10000 User's
- * Manual
- * version 2.0. Its TLB refill vector selection section states that "The
- * TLB
- * refill vector selection is based on the address space of the address
- * (user,
- * supervisor, or kernel) that caused the TLB miss, and the value of the
- * corresponding extended addressing bit in the Status register (UX, SX,
- * or
- * KX)", and adds that "The current operating mode of the processor is
- * not
- * important except that it plays a part in specifying in which address
- * space
- * an
- * address resides". The manual contrasts this with the R4400, which
- * chooses
- * from the mode the processor is currently running in. That is why
- * every
- * probe
- * below runs in kernel mode throughout and still expects the entry
- * point the
- * faulting address calls for.
- *
- * The manual's TLB refill vectors table gives the ranges. Two of its
- * rows are
- * used here: an address from 0x0000000000000000 to 0x000000007fffffff
- * belongs
- * to the user address space and takes the 32-bit entry point when the
- * user
- * extended addressing bit is clear and the extended entry point when it
- * is
- * set;
- * an address from 0xffffffffc0000000 to 0xffffffffffffffff belongs to
- * the
- * kernel address space and follows the kernel extended addressing bit
- * the
- * same
- * way.
- *
- * The manual's exception vector address table gives the addresses of
- * both
- * entry points in each of the two placements, and qualifies both refill
- * rows
- * with the exception level bit being clear. A miss taken while that bit
- * is
- * already set therefore goes to the entry point used for everything
- * else,
- * which
- * is what lets a refill handler fault on its own page table without
- * looping.
- *
- * One row of the refill vector table is deliberately left untested: the
- * supervisor 64-bit region reached from 0x4000000000000000, which the
- * manual
- * says follows the supervisor extended addressing bit. QEMU sends
- * misses
- * there
- * to the extended entry point whatever that bit holds. No operating
- * system we
- * intend to boot on this machine uses the supervisor address space at
- * all, so
- * the gap is recorded here rather than turned into a failing test.
- *
- * What the R4000 run of this ROM does and does not establish. Most of
- * what is
- * checked below is common ground: a miss on a kernel address follows
- * the
- * kernel
- * extended addressing bit on either processor, and so does a miss on a
- * user
- * address while the user bit is clear, because in kernel mode with both
- * bits
- * clear the two rules give the same answer. Two assertions are the
- * exception,
- * the two that touch a user-space address while the user extended
- * addressing
- * bit
- * is set and the kernel one is clear: a real R4400 would send those to
- * the
- * 32-bit entry point, following the mode it is running in, and the
- * R10000
- * sends
- * them to the extended one, following the address. QEMU's R4000 model
- * does
- * not
- * implement the R4400 rule — it selects from the faulting address for
- * every
- * 64-bit processor it models — so those two assertions passing there
- * says
- * only
- * that the ROM drives the machinery correctly, not that a known-good
- * R4400
- * agrees with them. The manual quoted above is the whole of their
- * authority.
+ * Source: R10000 User's Manual, version 2.0, TLB refill vector selection
+ * section and refill-vector and exception-vector tables.
  */
 
 #include "rom.h"
