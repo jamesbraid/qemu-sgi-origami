@@ -31,6 +31,20 @@ QEMU as a whole is released under the GNU General Public License,
 version 2. For full licensing details, consult the LICENSE file.
 
 
+Origami SGI branch
+==================
+
+This repository also maintains Origami's experimental SGI emulator on the
+``sgi-origami`` branch. The project is a hobby effort developed largely with
+AI assistance. Hardware behavior and guest compatibility are incomplete.
+
+Use `Origami QEMU issues and pull requests
+<https://github.com/jamesbraid/qemu>`_ for this branch. Its
+`contribution guide <.github/CONTRIBUTING.md>`_ describes how to report
+problems and propose changes. The sections below describe the upstream QEMU
+project.
+
+
 Documentation
 =============
 
