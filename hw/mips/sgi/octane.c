@@ -22,6 +22,7 @@
 #include "hw/audio/sgi-rad1-audio.h"
 #include "hw/mips/mips.h"
 #include "hw/mips/sgi-xtalk-port.h"
+#include "hw/misc/sgi-board-record.h"
 #include "hw/misc/sgi-heart.h"
 #include "hw/misc/sgi-ioc3.h"
 #include "hw/misc/sgi-xbow.h"
@@ -52,6 +53,26 @@ typedef struct OctaneMachineState {
     uint64_t bank_size[HEART_BANKS];
     bool octane2;
 } OctaneMachineState;
+
+/* Virtual records from the reviewed IP30 board-identity contract. */
+static const SGIBoardRecord octane_board_records[2][4] = {
+    {
+        { "SIM3010001", "030-0888-004", "B", "PM10" },
+        { "SIM3010002", "030-0887-003", "F", "IP30" },
+        { "SIM3010003", "030-0891-003", "A", "FP1" },
+        { "SIM3010004", "060-0028-003", "A", "PWR.SPPLY.SR" },
+    }, {
+        { "SIM3020001", "030-1590-002", "B", "PM10360MHZ" },
+        { "SIM3020002", "030-1467-001", "B", "IP30" },
+        { "SIM3020003", "030-0891-003", "H", "FP1" },
+        { "SIM3020004", "060-0035-002", "A", "PWR.SPPLY.ER" },
+    },
+};
+
+static uint64_t octane_board_serial(bool octane2, unsigned board)
+{
+    return (octane2 ? 0x7a3002000001ULL : 0x7a3001000001ULL) + board;
+}
 
 static bool octane_valid_banks(OctaneMachineState *s, bool octane2)
 {
@@ -181,6 +202,7 @@ static void octane_reset(MachineState *machine, ResetType type)
 
 static void octane_fit_pci(MachineState *machine, SGIBridgeState *bridge)
 {
+    OctaneMachineState *s = (OctaneMachineState *)machine;
     PCIBus *bus = PCI_HOST_BRIDGE(bridge)->bus;
     PCIDevice *pci;
 
@@ -212,6 +234,18 @@ static void octane_fit_pci(MachineState *machine, SGIBridgeState *bridge)
         qdev_prop_set_chr(DEVICE(pci), "chardev-b", serial_hd(1));
     }
     pci_realize_and_unref(pci, bus, &error_fatal);
+    for (unsigned i = 2; i < 4; i++) {
+        if (!sgi_board_record_attach(OBJECT(pci),
+                                     i == 2 ? "frontplane-record" :
+                                     "power-supply-record",
+                                     SGI_IOC3(pci)->onewire_bus,
+                                     &octane_board_records[s->octane2][i],
+                                     octane_board_serial(s->octane2, i),
+                                     i == 2 ? "frontplane" : "power supply",
+                                     &error_fatal)) {
+            return;
+        }
+    }
     /* The fitted SuperIO line is Bridge input 4; Ethernet uses input 2. */
     qdev_connect_gpio_out(DEVICE(pci), 0,
                           qdev_get_gpio_in(DEVICE(bridge), 4));
@@ -343,6 +377,13 @@ static void octane_init_common(MachineState *machine, bool octane2)
     object_property_set_link(OBJECT(heart), "cpu-memory", OBJECT(physical),
                              &error_fatal);
     sysbus_realize(SYS_BUS_DEVICE(heart), &error_fatal);
+    if (!sgi_board_record_attach(OBJECT(heart), "processor-record",
+                                 SGI_HEART(heart)->onewire_bus,
+                                 &octane_board_records[octane2][0],
+                                 octane_board_serial(octane2, 0),
+                                 "processor module", &error_fatal)) {
+        return;
+    }
     memory_region_init_io(&s->high_guard, OBJECT(machine),
                           &octane_high_guard_ops, s, "octane.high-guard",
                           OCTANE_HIGH_GUARD_SIZE);
@@ -362,7 +403,16 @@ static void octane_init_common(MachineState *machine, bool octane2)
     memory_region_init(proxy, OBJECT(machine), "octane.bridge-fabric",
                        SGI_XBOW_WIDGETS * SGI_XBOW_PACKET_SIZE);
     object_property_add_child(OBJECT(machine), "bridge", OBJECT(bridge));
-    qdev_prop_set_bit(bridge, "no-board-identity", true);
+    qdev_prop_set_string(bridge, "board-barcode",
+                         octane_board_records[octane2][1].barcode);
+    qdev_prop_set_string(bridge, "board-part",
+                         octane_board_records[octane2][1].part);
+    qdev_prop_set_string(bridge, "board-revision",
+                         octane_board_records[octane2][1].revision);
+    qdev_prop_set_string(bridge, "board-name",
+                         octane_board_records[octane2][1].name);
+    qdev_prop_set_uint64(bridge, "onewire-serial",
+                         octane_board_serial(octane2, 1));
     object_property_set_link(OBJECT(bridge), "fabric", OBJECT(proxy),
                              &error_fatal);
     qdev_prop_set_uint32(bridge, "fabric-widget-shift", 48);
