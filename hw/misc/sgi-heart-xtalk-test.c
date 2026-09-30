@@ -5,7 +5,7 @@
 #include "hw/core/qdev-properties.h"
 #include "hw/misc/sgi-heart.h"
 #include "hw/misc/sgi-xbow.h"
-#include "hw/mips/sgi-xtalk-port.h"
+#include "hw/mips/sgi-xio-port.h"
 #include "migration/vmstate.h"
 #include "qemu/module.h"
 #include "qemu/units.h"
@@ -55,8 +55,8 @@ static void heart_test_realize(DeviceState *dev, Error **errp)
     qdev_prop_set_uint16(DEVICE(&s->xbow), "links-present", 0x8100);
     qdev_prop_set_uint16(DEVICE(&s->xbow), "startup-links-alive", 0x8100);
     if (!sgi_xbow_attach_endpoint(&s->xbow, 8,
-            sgi_xtalk_port_cpu_face(OBJECT(&s->heart), 0),
-            sgi_xtalk_port_packet_face(OBJECT(&s->heart), 0), errp) ||
+            sgi_xio_port_cpu_face(OBJECT(&s->heart), 0),
+            sgi_xio_port_packet_face(OBJECT(&s->heart), 0), errp) ||
         !sysbus_realize(SYS_BUS_DEVICE(&s->xbow), errp)) {
         return;
     }

@@ -8,7 +8,7 @@
 #include "qemu/osdep.h"
 #include "hw/misc/sgi-heart.h"
 #include "hw/misc/sgi-onewire-slot.h"
-#include "hw/mips/sgi-xtalk-port.h"
+#include "hw/mips/sgi-xio-port.h"
 #include "hw/core/irq.h"
 #include "hw/core/cpu.h"
 #include "hw/core/qdev-properties.h"
@@ -1175,7 +1175,7 @@ static void heart_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     ResettableClass *rc = RESETTABLE_CLASS(klass);
-    SGIXtalkPortClass *pc = SGI_XTALK_PORT_CLASS(klass);
+    SGIXioPortClass *pc = SGI_XIO_PORT_CLASS(klass);
 
     dc->desc = "SGI IP30 HEART standalone functional profile";
     dc->realize = heart_realize;
@@ -1197,7 +1197,7 @@ static const TypeInfo heart_info = {
     .instance_finalize = heart_finalize,
     .class_init = heart_class_init,
     .interfaces = (const InterfaceInfo[]) {
-        { TYPE_SGI_XTALK_PORT },
+        { TYPE_SGI_XIO_PORT },
         { },
     },
 };

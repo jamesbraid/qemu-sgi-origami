@@ -1615,7 +1615,7 @@ static void test_bridge_dma(void)
     QTestState *s = heart_xtalk_start(
         "-device sgi-bridge,id=bridge,board-part=123-4567-890,"
         "fabric=/machine/peripheral/heart-xtalk/xbow/"
-        "sgi-xbow.widget15.ingress.packet[0],fabric-widget-shift=48 "
+        "sgi-xbow.widget15.ingress.packet[0] "
         "-device sgi-bridge-dma-test,bus=pci,addr=6");
     uint8_t seen[8], expected[8];
     uint64_t where = HEART_RAM + 0x1000;
@@ -1836,7 +1836,7 @@ int main(int argc, char **argv)
     g_test_add_func("/heart/onewire-replace-reset", test_onewire_replace_reset);
     g_test_add_func("/heart/xtalk-routing", test_xtalk_routing);
     g_test_add_func("/heart/xtalk-dma", test_xtalk_dma);
-    g_test_add_func("/heart/bridge-dma", test_bridge_dma);
+    qtest_add_func("/heart/bridge-dma", test_bridge_dma);
     g_test_add_func("/heart/xtalk-migration", test_xtalk_migration);
     return g_test_run();
 }

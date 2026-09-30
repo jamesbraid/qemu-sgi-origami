@@ -216,7 +216,7 @@ static void test_reset(gconstpointer data)
     assert_reset(qts);
     {
         g_autoptr(QDict) reply = qtest_qmp(qts,
-            "{'execute':'qom-get','arguments':{'path':'/machine/mgras',"
+            "{'execute':'qom-get','arguments':{'path':'/machine/module0/mgras',"
             "'property':'x-test-first-ack'}}");
 
         g_assert_false(qdict_get_bool(reply, "return"));
@@ -269,9 +269,9 @@ static void descriptor(QTestState *qts, uint8_t reg, uint32_t value)
 
 static uint32_t pixel(QTestState *qts, unsigned x, unsigned y)
 {
-    set_property(qts, "/machine/mgras", "x-test-pixel-x", x);
-    set_property(qts, "/machine/mgras", "x-test-pixel-y", y);
-    return property(qts, "/machine/mgras", "x-test-pixel");
+    set_property(qts, "/machine/module0/mgras", "x-test-pixel-x", x);
+    set_property(qts, "/machine/module0/mgras", "x-test-pixel-y", y);
+    return property(qts, "/machine/module0/mgras", "x-test-pixel");
 }
 
 static void test_local_dma(gconstpointer data)
@@ -311,7 +311,8 @@ static void test_local_dma(gconstpointer data)
     descriptor(qts, 11, 0xb9);
     qtest_memread(qts, 0x20010ffc, returned, sizeof(returned));
     g_assert_cmpmem(returned, sizeof(returned), source, sizeof(source));
-    g_assert_cmphex(property(qts, "/machine/mgras", "x-test-error"), ==, 0);
+    g_assert_cmphex(property(qts, "/machine/module0/mgras", "x-test-error"),
+                    ==, 0);
     qtest_quit(qts);
 }
 

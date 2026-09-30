@@ -734,7 +734,7 @@ static MemTxResult sgi_bridge_window_read_word(SGIBridgeState *s,
 static MemTxResult sgi_bridge_window_read_split(SGIBridgeState *s,
                                                 unsigned int device,
                                                 hwaddr base, bool correct,
-                                               bool swap,
+                                                bool swap,
                                                 AddressSpace *space,
                                                 hwaddr addr, uint64_t *value)
 {
@@ -744,8 +744,8 @@ static MemTxResult sgi_bridge_window_read_split(SGIBridgeState *s,
     result = sgi_bridge_window_read_word(s, device, base, correct, swap, space,
                                          addr, 4, &word0);
     if (result == MEMTX_OK) {
-        result = sgi_bridge_window_read_word(s, device, base, correct, swap, space,
-                                             addr + 4, 4, &word1);
+        result = sgi_bridge_window_read_word(s, device, base, correct, swap,
+                                             space, addr + 4, 4, &word1);
     }
     *value = result == MEMTX_OK ? (word0 << 32) | word1 : 0;
     return result;
@@ -758,7 +758,7 @@ static MemTxResult sgi_bridge_window_read_split(SGIBridgeState *s,
  * on the programmed-access swap bit. The window is DEVICE_LITTLE_ENDIAN, so
  * reading the buffer big-endian nets to the doubleword unchanged and
  * little-endian to the mirror. A byte, halfword or word is one corrected
- * cycle.
+ * cycle; the programmed-access swap bit also reverses each four-byte cycle.
  */
 static MemTxResult sgi_bridge_window_read(SGIBridgeState *s,
                                           unsigned int slot,
@@ -787,7 +787,7 @@ static MemTxResult sgi_bridge_window_read(SGIBridgeState *s,
     }
 
     return sgi_bridge_window_read_word(s, slot, base, correct,
-                                            dev & DEV_SWAP_PROGRAMMED, space, addr,
+                                       dev & DEV_SWAP_PROGRAMMED, space, addr,
                                        size, value);
 }
 
@@ -849,16 +849,16 @@ static void sgi_bridge_window_write(SGIBridgeState *s, unsigned int slot,
 
     if (size == 8) {
         sgi_bridge_window_write_word(s, slot, base, correct,
-                                            dev & DEV_SWAP_PROGRAMMED, space, addr,
+                                     dev & DEV_SWAP_PROGRAMMED, space, addr,
                                      val >> 32, 4);
         sgi_bridge_window_write_word(s, slot, base, correct,
-                                            dev & DEV_SWAP_PROGRAMMED, space, addr + 4,
-                                     val, 4);
+                                     dev & DEV_SWAP_PROGRAMMED, space,
+                                     addr + 4, val, 4);
         return;
     }
 
     sgi_bridge_window_write_word(s, slot, base, correct,
-                                            dev & DEV_SWAP_PROGRAMMED, space, addr, val,
+                                 dev & DEV_SWAP_PROGRAMMED, space, addr, val,
                                  size);
 }
 

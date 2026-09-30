@@ -22,7 +22,7 @@
 #include "hw/core/irq.h"
 #include "hw/audio/sgi-rad1-audio.h"
 #include "hw/mips/mips.h"
-#include "hw/mips/sgi-xtalk-port.h"
+#include "hw/mips/sgi-xio-port.h"
 #include "hw/misc/sgi-board-record.h"
 #include "hw/misc/sgi-heart.h"
 #include "hw/misc/sgi-ioc3.h"
@@ -550,7 +550,6 @@ static void octane_init_common(MachineState *machine, bool octane2)
                          octane_board_serial(octane2, 1));
     object_property_set_link(OBJECT(bridge), "fabric", OBJECT(proxy),
                              &error_fatal);
-    qdev_prop_set_uint32(bridge, "fabric-widget-shift", 48);
     if (!sharp_flash || s->flash_select == 0) {
         object_property_set_link(OBJECT(bridge), "flash", OBJECT(firmware),
                                  &error_fatal);
@@ -596,10 +595,12 @@ static void octane_init_common(MachineState *machine, bool octane2)
                            SGI_XBOW_WIDGETS * SGI_XBOW_PACKET_SIZE);
         object_property_add_child(OBJECT(machine), "mgras", OBJECT(mgras));
         mgras->id = g_strdup("mgras");
+        qdev_prop_set_uint32(mgras, "module", 0);
+        qdev_prop_set_string(mgras, "slot",
+                             G_STRINGIFY(OCTANE_GRAPHICS_WIDGET));
         qdev_prop_set_string(mgras, "board", "si");
         object_property_set_link(OBJECT(mgras), "fabric",
                                  OBJECT(&s->graphics_fabric), &error_fatal);
-        qdev_prop_set_uint32(mgras, "fabric-widget-shift", 48);
         sysbus_realize(SYS_BUS_DEVICE(mgras), &error_fatal);
         face = sysbus_mmio_get_region(SYS_BUS_DEVICE(mgras), 0);
         if (!sgi_xbow_attach_endpoint(crossbow, OCTANE_GRAPHICS_WIDGET,
@@ -612,8 +613,8 @@ static void octane_init_common(MachineState *machine, bool octane2)
     qdev_prop_set_uint16(xbow, "links-present", links);
     qdev_prop_set_uint16(xbow, "startup-links-alive", links);
     if (!sgi_xbow_attach_endpoint(crossbow, 8,
-            sgi_xtalk_port_cpu_face(OBJECT(heart), 0),
-            sgi_xtalk_port_packet_face(OBJECT(heart), 0), &error_fatal) ||
+            sgi_xio_port_cpu_face(OBJECT(heart), 0),
+            sgi_xio_port_packet_face(OBJECT(heart), 0), &error_fatal) ||
         !sgi_xbow_attach_endpoint(crossbow, 15,
             sysbus_mmio_get_region(SYS_BUS_DEVICE(bridge), 0),
             sgi_bridge_packet_face(SGI_BRIDGE(bridge)), &error_fatal)) {
@@ -650,7 +651,7 @@ static void octane_init_common(MachineState *machine, bool octane2)
     /* The CPU addresses local HEART without a Crossbow loopback. */
     memory_region_init_alias(heart_local, OBJECT(machine),
                              "octane.heart-local",
-                             sgi_xtalk_port_cpu_face(OBJECT(heart), 0), 0,
+                             sgi_xio_port_cpu_face(OBJECT(heart), 0), 0,
                              0x1000);
     memory_region_add_subregion_overlap(physical, OCTANE_HEART_WIDGET,
                                         heart_local, 1);

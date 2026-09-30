@@ -349,11 +349,6 @@ config SGI_KONA
     select SGI_BRIDGE
     select SGI_KONA_PORTS
 
-config SGI_ODYSSEY
-    bool
-    select ONEWIRE
-    select SGI_XIO_BOARD
-
 config SGI_BRIDGE_DMA_TEST
     bool
     default y if SGI_DEVICES
