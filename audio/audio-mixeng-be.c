@@ -973,7 +973,7 @@ static void audio_run_out(AudioMixengBackend *s)
             continue;
         }
 
-        if (hw->pending_disable && !nb_live) {
+        if (hw->pending_disable && !nb_live && !hw->pending_emul) {
             SWVoiceCap *sc;
 
             trace_audio_out_disable();

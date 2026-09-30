@@ -14,6 +14,7 @@
 #include "glib.h"
 
 #include "audio/audio_int.h"
+#include "audio-test.h"
 
 #include <math.h>
 #ifdef CONFIG_SDL
@@ -732,6 +733,65 @@ static void test_audio_cleanup_volume(gconstpointer data)
     audio_be_close_in(be, in);
 }
 
+static void test_audio_out_wav_drain(void)
+{
+    AudioBackend *be;
+    SWVoiceOut *out;
+    g_autofree char *path = NULL;
+    g_autofree char *spec = NULL;
+    g_autofree char *contents = NULL;
+    gsize length;
+    uint8_t samples[512];
+    int fd;
+
+    if (!g_test_subprocess()) {
+        g_test_trap_subprocess(NULL, 10 * G_USEC_PER_SEC, 0);
+        g_test_trap_assert_passed();
+        return;
+    }
+
+    audio_test_set_virtual_clock(0);
+    path = g_test_build_filename(G_TEST_BUILT, "..", "..",
+                                "audio-tail-drain-XXXXXX", NULL);
+    fd = g_mkstemp(path);
+    g_assert_cmpint(fd, >=, 0);
+    close(fd);
+    spec = g_strdup_printf("wav,id=drain,path=%s", path);
+    audio_parse_option(spec);
+    audio_init_audiodevs();
+    be = audio_be_by_name("drain", &error_abort);
+    out = open_test_voice_out(be, "drain", NULL, dummy_audio_callback);
+    audio_be_set_active_out(be, out, true);
+    for (int i = 0; i < sizeof(samples) / 2; i++) {
+        stw_le_p(samples + 2 * i, i - 128);
+    }
+    g_assert_cmpuint(audio_be_write(be, out, samples, sizeof(samples)), ==,
+                     sizeof(samples));
+    audio_run(AUDIO_MIXENG_BACKEND(be), "test-stage");
+    g_assert_true(out->empty);
+    g_assert_cmpuint(out->hw->pending_emul, ==, sizeof(samples));
+    audio_test_set_virtual_clock(SCALE_MS);
+    audio_run(AUDIO_MIXENG_BACKEND(be), "test-prefix");
+    g_assert_cmpuint(out->hw->pending_emul, >, 0);
+    g_assert_cmpuint(out->hw->pending_emul, <, sizeof(samples));
+    audio_be_set_active_out(be, out, false);
+
+    audio_test_set_virtual_clock(10 * SCALE_MS);
+    audio_run(AUDIO_MIXENG_BACKEND(be), "test-drain");
+    audio_test_set_virtual_clock(11 * SCALE_MS);
+    audio_run(AUDIO_MIXENG_BACKEND(be), "test-disable");
+    g_assert_false(out->hw->enabled);
+    audio_cleanup();
+    g_assert_cmpuint(out->hw->pending_emul, ==, 0);
+    g_assert_true(g_file_get_contents(path, &contents, &length, NULL));
+    g_assert_cmpuint(length, ==, 44 + sizeof(samples));
+    g_assert_cmpmem(contents + 44, sizeof(samples), samples, sizeof(samples));
+    g_assert_cmpuint(ldl_le_p(contents + 4), ==, length - 8);
+    g_assert_cmpuint(ldl_le_p(contents + 40), ==, sizeof(samples));
+    audio_be_close_out(be, out);
+    g_assert_cmpint(unlink(path), ==, 0);
+}
+
 int main(int argc, char **argv)
 {
     GOptionContext *context;
@@ -798,6 +858,8 @@ int main(int argc, char **argv)
                          test_audio_cleanup_volume);
     g_test_add_data_func("/audio/cleanup/volume-in", GINT_TO_POINTER(0),
                          test_audio_cleanup_volume);
+
+    g_test_add_func("/audio/out/wav-drain", test_audio_out_wav_drain);
 
     ret = g_test_run();
 
