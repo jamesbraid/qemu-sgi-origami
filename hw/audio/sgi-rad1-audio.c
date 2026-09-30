@@ -766,7 +766,8 @@ static void sgi_rad1_audio_advance_pos(SGIRad1AudioChannel *c,
                                   *pos_a, *pos_b);
 }
 
-static void sgi_rad1_audio_chan_stop(SGIRad1AudioChannel *c)
+static void sgi_rad1_audio_chan_stop(SGIRad1AudioChannel *c,
+                                     const char *reason)
 {
     if (c->timer) {
         timer_del(c->timer);
@@ -778,6 +779,10 @@ static void sgi_rad1_audio_chan_stop(SGIRad1AudioChannel *c)
     sgi_rad1_audio_set_voice(c, false);
     trace_sgi_rad1_audio_stop(sgi_rad1_audio_chan_index(c),
                               sgi_rad1_audio_chan_pointer(c), c->frames);
+    trace_sgi_rad1_audio_stop_reason(sgi_rad1_audio_chan_index(c), reason,
+                                     qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL),
+                                     c->start_ns, c->frames,
+                                     sgi_rad1_audio_chan_pointer(c));
 }
 
 /*
@@ -896,7 +901,7 @@ static void sgi_rad1_audio_chan_sync(SGIRad1AudioChannel *c)
     if (due > c->frames) {
         frames = due - c->frames;
         if (!sgi_rad1_audio_chan_move(c, frames)) {
-            sgi_rad1_audio_chan_stop(c);
+            sgi_rad1_audio_chan_stop(c, "dma-failure");
             return;
         }
         if (!c->dev->octane) {
@@ -1018,7 +1023,7 @@ static void sgi_rad1_audio_enable_write(SGIRad1AudioChannel *c, uint32_t val)
     } else {
         /* Stop where the sample clock has got to, not the last step. */
         sgi_rad1_audio_chan_sync(c);
-        sgi_rad1_audio_chan_stop(c);
+        sgi_rad1_audio_chan_stop(c, "disable");
     }
 }
 
@@ -1470,9 +1475,13 @@ static MemTxResult sgi_rad1_octane_write(void *opaque, hwaddr addr,
                    (value == 0x20000000 || value == 0x20000001)) {
             if (value == 0x20000000 ||
                 sgi_rad1_octane_ring_valid(s, true, 0xfffff008)) {
-                sgi_rad1_audio_enable_write(&s->chan[SGI_RAD1_AUDIO_CH_OUT],
-                                            value);
+                SGIRad1AudioChannel *c = &s->chan[SGI_RAD1_AUDIO_CH_OUT];
+
+                sgi_rad1_audio_enable_write(c, value);
                 s->analog_out_en = value;
+                trace_sgi_rad1_octane_output_control(value,
+                    qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL), c->start_ns,
+                    c->frames, c->running);
                 return MEMTX_OK;
             }
         } else if (addr == SGI_RAD1_AUDIO_REG_STATUS_DMA_CTRL) {
@@ -1567,7 +1576,7 @@ static void sgi_rad1_audio_reset_hold(Object *obj, ResetType type)
     for (i = 0; i < SGI_RAD1_AUDIO_NUM_CH; i++) {
         SGIRad1AudioChannel *c = &s->chan[i];
 
-        sgi_rad1_audio_chan_stop(c);
+        sgi_rad1_audio_chan_stop(c, "reset");
         c->base = 0;
         c->len = 0;
         c->offset = 0;
