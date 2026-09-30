@@ -8016,9 +8016,61 @@ static void test_line_stipple_failure(void)
     g_assert_cmpuint(f.c.line_phase, ==, 0);
 }
 
+static void test_line_stipple_error_clone(gconstpointer closed)
+{
+    FragScene src, dst;
+    SGIGLContext legacy, saved;
+    uint32_t mode = SGI_GL_LINE_STRIP, error = 123;
+
+    frag_init(&src);
+    frag_init(&dst);
+    line_stipple_activate(&src);
+    line_stipple_activate(&dst);
+    src.sink.draw_checked = line_stipple_prefix_failure;
+    frag_command(&src, SGI_GL_OP_BEGIN, &mode, 1);
+    wide_vertex(&src, 8.5, 8.5);
+    wide_vertex(&src, 13.5, 8.5);
+    g_assert_cmpuint(src.rec.draws, ==, 1);
+    g_assert_cmpuint(src.c.line_phase, ==, 2);
+    g_assert_cmphex(src.c.polygon.error, ==, SGI_GL_OUT_OF_MEMORY);
+    if (closed) {
+        frag_command(&src, SGI_GL_OP_END, NULL, 0);
+    }
+    sgi_gl_init(&legacy, 7);
+    saved = legacy;
+    g_assert_false(sgi_gl_clone(&legacy, &src.c));
+    g_assert_cmpmem(&legacy, sizeof(legacy), &saved, sizeof(saved));
+    g_assert_true(sgi_gl_clone(&dst.c, &src.c));
+    g_assert_false(dst.c.polygon.enabled);
+    g_assert_true(dst.c.standalone_stipple);
+    g_assert_cmpuint(dst.c.line_phase, ==, closed ? 0 : 2);
+    g_assert_cmphex(dst.c.polygon.error, ==, SGI_GL_OUT_OF_MEMORY);
+    if (!closed) {
+        wide_vertex(&dst, 17.5, 8.5);
+        g_assert_cmpuint(dst.c.line_phase, ==, 6);
+        g_assert_cmpuint(src.c.line_phase, ==, 2);
+        g_assert_false(sgi_gl_consume_error(&dst.c, &error));
+        g_assert_cmpuint(error, ==, 123);
+        frag_command(&src, SGI_GL_OP_END, NULL, 0);
+        frag_command(&dst, SGI_GL_OP_END, NULL, 0);
+    }
+    g_assert_true(sgi_gl_consume_error(&dst.c, &error));
+    g_assert_cmphex(error, ==, SGI_GL_OUT_OF_MEMORY);
+    g_assert_cmphex(src.c.polygon.error, ==, SGI_GL_OUT_OF_MEMORY);
+    g_assert_true(sgi_gl_consume_error(&dst.c, &error));
+    g_assert_cmpuint(error, ==, 0);
+    sgi_gl_cleanup(&src.c);
+    sgi_gl_cleanup(&dst.c);
+    sgi_gl_cleanup(&legacy);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
+    g_test_add_data_func("/sgi-gl/line-stipple-error-clone-open", NULL,
+                         test_line_stipple_error_clone);
+    g_test_add_data_func("/sgi-gl/line-stipple-error-clone-closed",
+                         GINT_TO_POINTER(1), test_line_stipple_error_clone);
     g_test_add_func("/sgi-gl/line-stipple-direct", test_line_stipple_direct);
     g_test_add_func("/sgi-gl/line-stipple-direction",
                     test_line_stipple_direction);
