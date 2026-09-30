@@ -57,6 +57,9 @@ typedef struct SGISoftDraw {
     const SGIGLTexImage *texture;
     unsigned *texture_reports;
     uint32_t point_size, line_width;
+    uint32_t rgba_mask;
+    bool rgba_read;
+    bool *rgba_reported;
 } SGISoftDraw;
 
 /* A vertex after transformation, ready to rasterize. */
@@ -118,7 +121,7 @@ bool sgi_raster_rules_supported(const SGIRasterRules *r)
     return r->subpixel_bits >= 1 && r->subpixel_bits <= 12 &&
            r->color_bits >= 1 && r->color_bits <= 10 &&
            r->depth_bits >= 1 && r->depth_bits <= 32 &&
-           r->stencil_bits <= 16 &&
+           r->stencil_bits <= 16 && r->alpha_bits <= 10 &&
            r->rounding <= SGI_ROUND_HALF_AWAY &&
            r->tie_rule == SGI_TIE_TOP_LEFT_BOTTOM_ORIGIN &&
            r->arith == SGI_ARITH_DOUBLE &&
@@ -193,6 +196,77 @@ static uint32_t sgi_soft_channel(const SGIRasterRules *r, double c)
         return max;
     }
     return (uint32_t)(c * max + 0.5);
+}
+
+/* Incoming alpha precision is independent of absent or narrower stored A. */
+static uint32_t sgi_soft_alpha_max(const SGIRasterRules *r)
+{
+    return (1u << MAX(2, MAX(r->color_bits, r->alpha_bits))) - 1;
+}
+
+static uint32_t sgi_soft_alpha(const SGIRasterRules *r, double value)
+{
+    uint32_t max = sgi_soft_alpha_max(r);
+
+    return !(value > 0) ? 0 : value >= 1 ? max : value * max + 0.5;
+}
+
+/* Internal nearest conversion precedes storage truncation, even on clears. */
+static uint32_t sgi_soft_stored_alpha(const SGIRasterRules *r, double value)
+{
+    return sgi_soft_alpha(r, value) * ((1u << r->alpha_bits) - 1) /
+           sgi_soft_alpha_max(r);
+}
+
+static uint32_t sgi_soft_rgba_mask(const SGIRasterRules *r, uint32_t mask)
+{
+    return mask & (r->alpha_bits ? SGI_GL_COLOUR_MASK_ALL :
+                                  SGI_GL_COLOUR_MASK_ALPHA - 1);
+}
+
+/* Reject unsupported capabilities before the operation can write any plane. */
+static bool sgi_soft_rgba_capable(const SGIRasterRules *r,
+                                 const SGIRasterTarget *t, bool read)
+{
+    if ((r->alpha_bits && !t->store_rgba) ||
+        (t->store_rgba && read && !t->load_rgba) ||
+        (!t->store_rgba && t->load_rgba)) {
+        qemu_log_mask(LOG_UNIMP, "sgi-gl: inconsistent RGBA callbacks; "
+                      "operation dropped\n");
+        return false;
+    }
+    return true;
+}
+
+/* Read every selected destination before any colour/depth/stencil write. */
+static bool sgi_soft_rgba_load(const SGIRasterRules *r,
+                              const SGIRasterTarget *t,
+                              const SGIColourTarget *targets, unsigned count,
+                              int x, int y, SGIRasterColour dest[2],
+                              bool *reported)
+{
+    for (unsigned i = 0; i < count; i++) {
+        bool valid = t->load_rgba(t->opaque, targets[i], x, y, &dest[i]);
+
+        for (unsigned k = 0; valid && k < 4; k++) {
+            unsigned bits = k == 3 ? r->alpha_bits : r->color_bits;
+
+            /* An absent A is ignored, including its returned representation. */
+            valid = !bits || dest[i].component[k] < (1u << bits);
+        }
+        if (!valid) {
+            if (!*reported) {
+                qemu_log_mask(LOG_UNIMP, "sgi-gl: RGBA destination read "
+                              "failed; pixel writes dropped\n");
+                *reported = true;
+            }
+            return false;
+        }
+        if (!r->alpha_bits) {
+            dest[i].component[3] = 0;
+        }
+    }
+    return true;
 }
 
 /* A colour, each component clamped and rounded to the rules' bits. */
@@ -381,6 +455,28 @@ static double sgi_soft_blend_factor(uint32_t factor, int k, const double s[4],
     }
 }
 
+static double sgi_soft_blend_component(const SGIGLDrawState *st, unsigned k,
+                                       const double src[4], const double dst[4])
+{
+    double sf = sgi_soft_blend_factor(st->blend_src, k, src, dst,
+                                      st->blend_color);
+    double df = sgi_soft_blend_factor(st->blend_dst, k, src, dst,
+                                      st->blend_color);
+
+    switch (st->blend_equation) {
+    case SGI_GL_MIN:
+        return MIN(src[k], dst[k]);
+    case SGI_GL_MAX:
+        return MAX(src[k], dst[k]);
+    case SGI_GL_FUNC_SUBTRACT:
+        return src[k] * sf - dst[k] * df;
+    case SGI_GL_FUNC_REVERSE_SUBTRACT:
+        return dst[k] * df - src[k] * sf;
+    default:
+        return src[k] * sf + dst[k] * df;
+    }
+}
+
 /*
  * Blend the packed source colour src, with alpha alpha, and the packed
  * destination dst (4.1.6), each component the fixed point of the rules'
@@ -389,7 +485,7 @@ static double sgi_soft_blend_factor(uint32_t factor, int k, const double s[4],
  * [0, 1] and stored at plane pixel (x, y) as a fragment's colour is.
  */
 static uint32_t sgi_soft_blend(const SGISoftDraw *r, int x, int y,
-                               uint32_t src, uint32_t alpha, uint32_t dst)
+                               uint32_t src, double alpha, uint32_t dst)
 {
     const SGIGLDrawState *st = r->st;
     const int bits = r->rules->color_bits;
@@ -402,31 +498,10 @@ static uint32_t sgi_soft_blend(const SGISoftDraw *r, int x, int y,
         s[k] = ((src >> shift) & (uint32_t)max) / max;
         d[k] = ((dst >> shift) & (uint32_t)max) / max;
     }
-    s[3] = alpha / max;
+    s[3] = alpha;
     d[3] = 1;
     for (int k = 0; k < 3; k++) {
-        double sf = sgi_soft_blend_factor(st->blend_src, k, s, d,
-                                          st->blend_color);
-        double df = sgi_soft_blend_factor(st->blend_dst, k, s, d,
-                                          st->blend_color);
-
-        switch (st->blend_equation) {
-        case SGI_GL_MIN:
-            out[k] = MIN(s[k], d[k]);
-            break;
-        case SGI_GL_MAX:
-            out[k] = MAX(s[k], d[k]);
-            break;
-        case SGI_GL_FUNC_SUBTRACT:
-            out[k] = s[k] * sf - d[k] * df;
-            break;
-        case SGI_GL_FUNC_REVERSE_SUBTRACT:
-            out[k] = d[k] * df - s[k] * sf;
-            break;
-        default:
-            out[k] = s[k] * sf + d[k] * df;
-            break;
-        }
+        out[k] = sgi_soft_blend_component(st, k, s, d);
     }
     return sgi_soft_store_rgb(r, x, y, out);
 }
@@ -473,6 +548,64 @@ static uint32_t sgi_soft_logic_op(uint32_t op, uint32_t s, uint32_t d)
     }
 }
 
+/* RGB retains its existing arithmetic; spatial alpha dithering is omitted. */
+static SGIRasterColour sgi_soft_rgba_value(const SGIRasterRules *rules,
+                                          uint32_t rgb, double alpha)
+{
+    SGIRasterColour c;
+    uint32_t max = (1u << rules->color_bits) - 1;
+
+    for (unsigned k = 0; k < 3; k++) {
+        c.component[k] = (rgb >> ((2 - k) * rules->color_bits)) & max;
+    }
+    c.component[3] = sgi_soft_stored_alpha(rules, alpha);
+    return c;
+}
+
+static SGIRasterColour sgi_soft_rgba_result(const SGISoftDraw *r, int x, int y,
+                                           const SGISoftFrag *frag,
+                                           const SGIRasterColour *dest)
+{
+    SGIRasterColour out;
+    uint32_t max = (1u << r->rules->color_bits) - 1;
+    double alpha = sgi_soft_alpha(r->rules, frag->rgba[3]) /
+                   (double)sgi_soft_alpha_max(r->rules);
+    uint32_t rgb = r->blend ? sgi_soft_rgb(r->rules, frag->rgba) :
+                              sgi_soft_store_rgb(r, x, y, frag->rgba);
+
+    out = sgi_soft_rgba_value(r->rules, rgb, alpha);
+    if (r->blend) {
+        double src[4], dst[4], blended[4];
+
+        for (unsigned k = 0; k < 3; k++) {
+            src[k] = out.component[k] / (double)max;
+            dst[k] = dest->component[k] / (double)max;
+        }
+        src[3] = alpha;
+        dst[3] = r->rules->alpha_bits ? dest->component[3] /
+                  (double)((1u << r->rules->alpha_bits) - 1) : 1;
+        for (unsigned k = 0; k < 4; k++) {
+            blended[k] = sgi_soft_blend_component(r->st, k, src, dst);
+        }
+        out = sgi_soft_rgba_value(r->rules,
+                                  sgi_soft_store_rgb(r, x, y, blended),
+                                  blended[3]);
+    }
+    for (unsigned k = 0; k < 4; k++) {
+        uint32_t bits = k == 3 ? r->rules->alpha_bits : r->rules->color_bits;
+
+        if (r->logic_op) {
+            out.component[k] = sgi_soft_logic_op(r->st->logic_op_mode,
+                                  out.component[k], dest->component[k]) &
+                               ((1u << bits) - 1);
+        }
+        if (!(r->rgba_mask & (1u << k))) {
+            out.component[k] = dest->component[k];
+        }
+    }
+    return out;
+}
+
 /*
  * The bits of a packed colour of the rules' colour bits that a
  * glColorMask channel mask lets through. The planes hold no alpha, so
@@ -508,7 +641,7 @@ static uint32_t sgi_soft_colour_bits(const SGIRasterRules *r)
  * the draw. An RGBA draw is dithered while GL_DITHER is enabled under
  * rules that name a dither; a colour index never is.
  */
-static void sgi_soft_setup_ops(SGISoftDraw *r)
+static bool sgi_soft_setup_ops(SGISoftDraw *r)
 {
     const SGIGLDrawState *st = r->st;
 
@@ -522,6 +655,18 @@ static void sgi_soft_setup_ops(SGISoftDraw *r)
     }
     r->colour_mask = sgi_soft_colour_mask(r->rules, st->colour_mask);
     r->dither = st->dither && r->rules->dither != SGI_DITHER_NONE;
+    if (!st->index_bits) {
+        r->rgba_mask = sgi_soft_rgba_mask(r->rules, st->colour_mask);
+        r->rgba_read = r->rgba_mask && (r->blend || r->logic_op ||
+            r->rgba_mask != sgi_soft_rgba_mask(r->rules,
+                                              SGI_GL_COLOUR_MASK_ALL));
+        if (!sgi_soft_rgba_capable(r->rules, r->t, r->rgba_read)) {
+            return false;
+        }
+        if (r->t->store_rgba) {
+            return true;
+        }
+    }
     if ((r->blend || r->logic_op ||
          (!st->index_bits && r->colour_mask &&
           r->colour_mask != sgi_soft_colour_bits(r->rules))) &&
@@ -532,6 +677,7 @@ static void sgi_soft_setup_ops(SGISoftDraw *r)
         r->blend = r->logic_op = false;
         r->colour_mask = sgi_soft_colour_bits(r->rules);
     }
+    return true;
 }
 
 /* Runtime errors are observable without logging once for every pixel. */
@@ -865,6 +1011,7 @@ static void sgi_soft_fragment_at(const SGISoftDraw *r, int px, int py,
     int x = r->win.ox + px, y = r->win.oy + py;
     uint32_t zq, colour, smax = 0, sref = 0;
     bool stencil;
+    SGIRasterColour dest[2] = { 0 };
 
     if (!(z >= 0.0 && z <= 1.0)) {
         return;
@@ -886,13 +1033,18 @@ static void sgi_soft_fragment_at(const SGISoftDraw *r, int px, int py,
         return;
     }
     /*
-     * Alpha and reference each as the fixed point a stored alpha of the
-     * rules' colour bits would hold (4.1.4, 2.13.9).
+     * Incoming alpha and reference use at least two bits and at least the
+     * stored alpha width, independently of the colour mask (4.1.4, 2.13.9).
      */
     if (r->st->alpha_test && !r->st->index_bits &&
         !sgi_soft_compare(r->st->alpha_func,
-                          sgi_soft_channel(r->rules, f->rgba[3]),
-                          sgi_soft_channel(r->rules, r->st->alpha_ref))) {
+                          sgi_soft_alpha(r->rules, f->rgba[3]),
+                          sgi_soft_alpha(r->rules, r->st->alpha_ref))) {
+        return;
+    }
+    if (!r->st->index_bits && t->store_rgba && r->rgba_read &&
+        !sgi_soft_rgba_load(r->rules, t, r->targets, r->ntargets, x, y,
+                            dest, r->rgba_reported)) {
         return;
     }
     /*
@@ -931,6 +1083,14 @@ static void sgi_soft_fragment_at(const SGISoftDraw *r, int px, int py,
     if (stencil) {
         sgi_soft_stencil_op(r, x, y, r->st->stencil_op[2], smax, sref);
     }
+    if (!r->st->index_bits && t->store_rgba) {
+        for (unsigned i = 0; r->rgba_mask && i < r->ntargets; i++) {
+            SGIRasterColour out = sgi_soft_rgba_result(r, x, y, f, &dest[i]);
+
+            t->store_rgba(t->opaque, r->targets[i], x, y, &out);
+        }
+        return;
+    }
     /*
      * Dithering follows blending (4.1.7), so a colour to be blended is
      * rounded and the blend's result dithered.
@@ -960,7 +1120,8 @@ static void sgi_soft_fragment_at(const SGISoftDraw *r, int px, int py,
         }
         if (r->blend) {
             out = sgi_soft_blend(r, x, y, colour,
-                                 sgi_soft_channel(r->rules, f->rgba[3]),
+                                 sgi_soft_alpha(r->rules, f->rgba[3]) /
+                                 (double)sgi_soft_alpha_max(r->rules),
                                  t->load_colour(t->opaque, r->targets[i],
                                                 x, y));
         }
@@ -1811,8 +1972,10 @@ void sgi_soft_draw(const SGIRasterRules *rules, const SGIRasterTarget *t,
     };
     uint32_t n = d->count;
     unsigned texture_reports = 0;
+    bool rgba_reported = false;
 
     r.texture_reports = &texture_reports;
+    r.rgba_reported = &rgba_reported;
 
 #define V(i) (&d->vertices[(i) * SGI_GL_VERTEX_FLOATS])
     r.ntargets = sgi_gl_draw_targets(d->state, r.targets);
@@ -1823,7 +1986,9 @@ void sgi_soft_draw(const SGIRasterRules *rules, const SGIRasterTarget *t,
     if (!sgi_soft_texture_setup(&r)) {
         return;
     }
-    sgi_soft_setup_ops(&r);
+    if (!sgi_soft_setup_ops(&r)) {
+        return;
+    }
     switch (d->mode) {
     case SGI_GL_POINTS:
         if (!sgi_soft_dimension(d->point_size, &r.point_size)) {
@@ -1928,17 +2093,21 @@ static void sgi_soft_bitmap(const SGIRasterRules *rules,
     const SGIRasterBitmap *b = &op->bitmap;
     SGISoftDraw r = { .rules = rules, .t = t, .st = b->state };
     uint32_t row_bytes = DIV_ROUND_UP(b->width, 8);
+    bool rgba_reported = false;
     SGISoftFrag frag = {
         .rgba = { b->rgba[0], b->rgba[1], b->rgba[2], b->rgba[3] },
         .index = b->index,
         .fog = b->distance,
     };
 
+    r.rgba_reported = &rgba_reported;
     if (!sgi_soft_window(b->state, &r.win) ||
         !sgi_soft_check_index(t, b->state->index_bits)) {
         return;
     }
-    sgi_soft_setup_ops(&r);
+    if (!sgi_soft_setup_ops(&r)) {
+        return;
+    }
     r.ntargets = MIN(op->ntargets, 2);
     memcpy(r.targets, op->targets, sizeof(r.targets));
     for (uint32_t i = 0; i < b->count && row_bytes; i++) {
@@ -1976,6 +2145,13 @@ void sgi_soft_raster(const SGIRasterRules *rules, const SGIRasterTarget *t,
     bool depth = op->clear_buffers & SGI_GL_DEPTH_BUFFER_BIT;
     bool stencil = op->clear_buffers & SGI_GL_STENCIL_BUFFER_BIT;
     uint32_t rgb = 0, smax, mask = sgi_soft_colour_bits(rules);
+    uint32_t rgba_mask = sgi_soft_rgba_mask(rules, op->clear_colour_mask);
+    bool rgba = !op->index_bits && t->store_rgba;
+    bool rgba_read = colour && rgba_mask &&
+                     rgba_mask != sgi_soft_rgba_mask(rules,
+                                                    SGI_GL_COLOUR_MASK_ALL);
+    bool rgba_reported = false;
+    SGIRasterColour clear = { 0 };
 
     if (!sgi_soft_check_rules(rules)) {
         return;
@@ -1998,23 +2174,38 @@ void sgi_soft_raster(const SGIRasterRules *rules, const SGIRasterTarget *t,
     if (colour && op->index_bits && !sgi_soft_check_index(t, op->index_bits)) {
         colour = false;
     }
+    if (!op->index_bits && !sgi_soft_rgba_capable(rules, t, rgba_read)) {
+        return;
+    }
     if (colour && !op->index_bits) {
         double c[3] = { op->clear_rgba[0], op->clear_rgba[1],
                         op->clear_rgba[2] };
 
         mask = sgi_soft_colour_mask(rules, op->clear_colour_mask);
-        if (mask != sgi_soft_colour_bits(rules) && mask && !t->load_colour) {
+        if (!rgba && mask != sgi_soft_colour_bits(rules) &&
+            mask && !t->load_colour) {
             qemu_log_mask(LOG_UNIMP, "sgi-gl: a partial colour mask needs "
                           "planes that can be read back; cleared without "
                           "it\n");
             mask = sgi_soft_colour_bits(rules);
         }
-        colour = mask != 0;
+        colour = rgba ? rgba_mask != 0 : mask != 0;
         rgb = sgi_soft_rgb(rules, c);
+        /* Clears remain undithered: no dither state is submitted. */
+        clear = sgi_soft_rgba_value(rules, rgb, op->clear_rgba[3]);
     }
     for (int y = op->y0; y <= op->y1; y++) {
         for (int x = op->x0; x <= op->x1; x++) {
+            SGIRasterColour dest[2] = { 0 };
+
             if (op->clip.n > 1 && !sgi_clip_contains(&op->clip, x, y)) {
+                continue;
+            }
+
+            if (rgba && rgba_read &&
+                !sgi_soft_rgba_load(rules, t, op->targets,
+                                    MIN(op->ntargets, 2), x, y, dest,
+                                    &rgba_reported)) {
                 continue;
             }
             if (depth) {
@@ -2034,6 +2225,15 @@ void sgi_soft_raster(const SGIRasterRules *rules, const SGIRasterTarget *t,
                 if (op->index_bits) {
                     t->store_index(t->opaque, op->targets[i], x, y,
                                    op->clear_index, op->index_mask);
+                } else if (rgba) {
+                    SGIRasterColour out = clear;
+
+                    for (unsigned k = 0; k < 4; k++) {
+                        if (!(rgba_mask & (1u << k))) {
+                            out.component[k] = dest[i].component[k];
+                        }
+                    }
+                    t->store_rgba(t->opaque, op->targets[i], x, y, &out);
                 } else if (mask == sgi_soft_colour_bits(rules)) {
                     t->store_colour(t->opaque, op->targets[i], x, y, rgb);
                 } else {
