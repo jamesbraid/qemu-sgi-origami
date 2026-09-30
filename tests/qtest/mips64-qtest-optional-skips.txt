@@ -1,0 +1,36 @@
+# Meson-level skip reported for the selected MIPS64 CD-ROM target.
+qemu	qemu:qtest+qtest-mips64+slow / qtest-mips64/cdrom-test
+
+# Legacy IOC3 migrations need the separately supplied v15 QEMU binary.
+qtest-mips64/sn0-migration-test	/mips64/sn0/migration/legacy-count2-before-first-expiry
+qtest-mips64/sn0-migration-test	/mips64/sn0/migration/legacy-count2-high-migrates-onward
+
+# Tigon migration needs the separately supplied v3 QEMU binary.
+qtest-mips64/sn0-tigon-test	/mips64/sn0/tigon/transmit-coalesce-migration-from-v3
+
+# Xframe migration needs the separately supplied v7 QEMU binary.
+qtest-mips64/xframe-test	/mips64/xframe/interrupt-masking-migration-from-v7
+qtest-mips64/xframe-test	/mips64/xframe/gpio-interrupt-masking-migration-from-v7
+# Xframe migration also needs the separately supplied v5 QEMU binary.
+qtest-mips64/xframe-test	/mips64/xframe/traffic-migration-from-v5
+# These Xframe migration cases need the separately supplied v6 QEMU binary.
+qtest-mips64/xframe-test	/mips64/xframe/traffic-migration-v6-round-trip
+qtest-mips64/xframe-test	/mips64/xframe/traffic-migration-v6-deadlines
+qtest-mips64/xframe-test	/mips64/xframe/traffic-migration-v6-deferred
+
+# These tests require host TAP access through /dev/net/tun and CAP_NET_ADMIN.
+qtest-mips64/bcm570x-test	/mips64/bcm570x/transmit-vnet-plain
+qtest-mips64/bcm570x-test	/mips64/bcm570x/transmit-segmentation-vnet
+qtest-mips64/bcm570x-test	/mips64/bcm570x/receive-vnet-plain
+qtest-mips64/bcm570x-test	/mips64/bcm570x/transmit-segmentation-vnet-fallback/vlan
+qtest-mips64/bcm570x-test	/mips64/bcm570x/transmit-segmentation-vnet-fallback/mf
+qtest-mips64/bcm570x-test	/mips64/bcm570x/transmit-segmentation-vnet-fallback/offset
+qtest-mips64/bcm570x-test	/mips64/bcm570x/transmit-segmentation-vnet-fallback/length
+qtest-mips64/bcm570x-test	/mips64/bcm570x/transmit-segmentation-vnet-fallback/udp
+qtest-mips64/xframe-test	/mips64/xframe/transmit-offloads-lso-to-vnet-backend
+qtest-mips64/xframe-test	/mips64/xframe/transmit-adds-vnet-header-to-ordinary-frame
+qtest-mips64/xframe-test	/mips64/xframe/transmit-ordinary-frame-to-non-vnet-tap
+qtest-mips64/xframe-test	/mips64/xframe/receive-pads-after-vnet-header
+
+# MIPS64 has no PCIe endpoint to fragment a TIGON receive frame.
+qtest-mips64/tigon-test	/mips64/tigon/receive-iov-matches-flat
