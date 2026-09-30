@@ -910,6 +910,166 @@ static void test_a_pin_register_reaches_the_shared_data_word(const void *data)
     g_assert_cmphex(qtest_readl(qts, PIN_REG(4)), ==, 0);
 }
 
+/* The onboard IP30 IOC3, reached through its Bridge device window. */
+#define IP30_BRIDGE 0x1f000000ULL
+#define IP30_IOC3 (IP30_BRIDGE + 0x600000)
+#define IP30_IOC3_CFG (IP30_BRIDGE + 0x022000)
+#define IP30_PIN_DATA (IP30_IOC3 + 0x3c)
+#define IP30_PIN_REG(n) (IP30_IOC3 + 0x40 + 4 * (n))
+#define IP30_PIN_CONTROL_SET (IP30_IOC3 + 0x34)
+#define IP30_PIN_CONTROL_CLR (IP30_IOC3 + 0x38)
+
+static QTestState *ip30_ioc3_start(bool octane2, const char *extra)
+{
+    g_autofree char *path = NULL;
+    g_autofree char *quoted = NULL;
+    QTestState *s;
+    int fd = g_file_open_tmp("ioc3-ip30-flash-XXXXXX", &path, NULL);
+    const uint8_t bytes[] = { 0x12, 0x34, 0x56, 0x78 };
+
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(write(fd, bytes, sizeof(bytes)), ==, sizeof(bytes));
+    close(fd);
+    quoted = g_shell_quote(path);
+    s = qtest_initf("-M %s -m %s -cpu %s -bios %s -S %s",
+                    octane2 ? "octane2" : "octane",
+                    octane2 ? "256M" : "128M",
+                    octane2 ? "R12000,r12000-prid=0xe24,"
+                    "r12000-fpu-id=0x7654,r12000-reset-mode=0x1aa683,"
+                    "r12000-scache-bytes=2097152,r12000-scache-block-words=32"
+                    : "R10000", quoted, extra);
+    g_unlink(path);
+    return s;
+}
+
+static void ip30_ioc3_attach(QTestState *s)
+{
+    qtest_writel(s, IP30_IOC3_CFG + PCI_BAR0, IOC3_PCI_MMIO);
+    qtest_writel(s, IP30_IOC3_CFG + PCI_COMMAND, PCI_COMMAND_MEMORY);
+    qtest_writel(s, IP30_BRIDGE + 0x214,
+                 DEV_MEMORY_SPACE | (IOC3_PCI_MMIO >> 20));
+}
+
+static void ip30_ioc3_assert_input(QTestState *s, bool octane2)
+{
+    /* Pinned public OpenBSD IP30 wiring: Octane is one, Octane2 zero. */
+    g_assert_cmphex(qtest_readl(s, IP30_PIN_REG(2)), ==, octane2 ? 0 : 1);
+    g_assert_cmphex(qtest_readl(s, IP30_PIN_DATA) & 4, ==, octane2 ? 0 : 4);
+}
+
+static void ip30_ioc3_attempt_input_write(QTestState *s, bool octane2)
+{
+    qtest_writel(s, IP30_PIN_REG(2), octane2 ? 1 : 0);
+    ip30_ioc3_assert_input(s, octane2);
+    qtest_writel(s, IP30_PIN_DATA, octane2 ? 4 : 0);
+    ip30_ioc3_assert_input(s, octane2);
+    qtest_writel(s, IP30_PIN_CONTROL_SET, 4);
+    qtest_writel(s, IP30_PIN_REG(2), octane2 ? 1 : 0);
+    ip30_ioc3_assert_input(s, octane2);
+    qtest_writel(s, IP30_PIN_CONTROL_CLR, 4);
+    qtest_writel(s, IP30_PIN_DATA, octane2 ? 4 : 0);
+    ip30_ioc3_assert_input(s, octane2);
+
+    qtest_writel(s, IP30_PIN_REG(3), 1);
+    g_assert_cmphex(qtest_readl(s, IP30_PIN_REG(3)), ==, 1);
+    g_assert_cmphex(qtest_readl(s, IP30_PIN_DATA) & 8, ==, 8);
+    qtest_writel(s, IP30_PIN_DATA, 0);
+    g_assert_cmphex(qtest_readl(s, IP30_PIN_REG(3)), ==, 0);
+    ip30_ioc3_assert_input(s, octane2);
+}
+
+static void test_ip30_board_gpio_input(const void *data)
+{
+    bool octane2 = GPOINTER_TO_INT(data);
+    QTestState *s = ip30_ioc3_start(octane2, "");
+
+    ip30_ioc3_attach(s);
+    ip30_ioc3_assert_input(s, octane2);
+    ip30_ioc3_attempt_input_write(s, octane2);
+    qtest_writel(s, IP30_PIN_REG(3), 1);
+    qtest_system_reset(s);
+    /* PCI reset has disabled BAR decoding before the driver reattaches. */
+    g_assert_cmphex(qtest_readl(s, IP30_IOC3_CFG + PCI_COMMAND) &
+                    PCI_COMMAND_MEMORY, ==, 0);
+    ip30_ioc3_attach(s);
+    g_assert_cmphex(qtest_readl(s, IP30_PIN_REG(3)), ==, 0);
+    ip30_ioc3_assert_input(s, octane2);
+    ip30_ioc3_attempt_input_write(s, octane2);
+    qtest_quit(s);
+}
+
+static void test_ip30_board_gpio_migration(const void *data)
+{
+    bool octane2 = GPOINTER_TO_INT(data);
+    g_autofree char *dir = g_dir_make_tmp("ioc3-ip30-migrate-XXXXXX", NULL);
+    g_autofree char *uri = g_strdup_printf("unix:%s/migrate.sock", dir);
+    QTestState *from, *to;
+
+    g_assert_nonnull(dir);
+    from = ip30_ioc3_start(octane2, "");
+    ip30_ioc3_attach(from);
+    ip30_ioc3_attempt_input_write(from, octane2);
+    qtest_writel(from, IP30_PIN_CONTROL_SET, 4);
+    qtest_writel(from, IP30_PIN_REG(3), 1);
+    to = ip30_ioc3_start(octane2, "-incoming defer");
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    sgi_migrate_stopped(from, uri);
+    sgi_wait_migration_status(to, "completed", 30);
+    qtest_quit(from);
+
+    ip30_ioc3_assert_input(to, octane2);
+    g_assert_cmphex(qtest_readl(to, IP30_PIN_CONTROL_SET) & 4, ==, 4);
+    g_assert_cmphex(qtest_readl(to, IP30_PIN_REG(3)), ==, 1);
+    ip30_ioc3_attempt_input_write(to, octane2);
+    qtest_system_reset(to);
+    ip30_ioc3_attach(to);
+    ip30_ioc3_assert_input(to, octane2);
+    qtest_quit(to);
+    g_rmdir(dir);
+}
+
+static void test_gpio_input_migration_mismatch(const void *data)
+{
+    bool mask_mismatch = GPOINTER_TO_INT(data);
+    g_autofree char *dir = g_dir_make_tmp("ioc3-input-mismatch-XXXXXX", NULL);
+    g_autofree char *uri = g_strdup_printf("unix:%s/migrate.sock", dir);
+    QTestState *from, *to;
+    int64_t deadline = g_get_monotonic_time() + 30 * G_TIME_SPAN_SECOND;
+
+    g_assert_nonnull(dir);
+    from = qtest_init("-M origin200 -device sgi-ioc3,id=input-card,addr=3,"
+                      "gpio-input-mask=4,gpio-input-values=4");
+    to = qtest_initf("-M origin200 -incoming defer "
+                    "-device sgi-ioc3,id=input-card,addr=3,"
+                    "gpio-input-mask=%u,gpio-input-values=0",
+                    mask_mismatch ? 0 : 4);
+    qtest_set_expected_status(to, EXIT_FAILURE);
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    qtest_qmp_assert_success(from,
+        "{'execute':'migrate','arguments':{'uri':%s}}", uri);
+    while (qtest_probe_child(to)) {
+        g_assert_cmpint(g_get_monotonic_time(), <, deadline);
+        g_usleep(1000);
+    }
+    qtest_quit(to);
+    qtest_quit(from);
+    g_rmdir(dir);
+}
+
+static void test_non_ip30_gpio_defaults(const void *data)
+{
+    ioc3_reset();
+    sn0_ioc3_attach(qts);
+    g_assert_cmphex(qtest_readl(qts, PIN_DATA), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, PIN_REG(2)), ==, 0);
+    qtest_writel(qts, PIN_REG(2), 1);
+    g_assert_cmphex(qtest_readl(qts, PIN_DATA), ==, 4);
+    qtest_writel(qts, PIN_DATA, 0);
+    g_assert_cmphex(qtest_readl(qts, PIN_REG(2)), ==, 0);
+}
+
 /* The PS/2 controller's five registers. */
 #define KBC_CONTROL       (IOC3_BASE + 0x09c)
 #define KBC_KBD_RECEIVE   (IOC3_BASE + 0x0a0)
@@ -1562,19 +1722,22 @@ static void test_the_ethernet_interrupt_register_acknowledges(const void *data)
     g_assert_cmphex(qtest_readl(qts, ENET_INT_ENABLE), ==, 0x00010001);
 }
 
-static void test_the_ethernet_read_only_registers(const void *data)
+static void test_the_ethernet_stopped_registers(const void *data)
 {
     ioc3_reset();
 
     sn0_ioc3_attach(qts);
 
-    /* Read-to-clear counters; nothing sent yet, so this pins only that the
-     * read answers. A driver's reset path stops on a fault here. */
+    /* Reset stops the MAC, allowing the reviewed register storage policy. */
+    g_assert_cmphex(qtest_readl(qts, ENET_COUNTERS), ==, 0);
+    qtest_writel(qts, ENET_COUNTERS, 0x12345678);
+    g_assert_cmphex(qtest_readl(qts, ENET_COUNTERS), ==, 0x12345678);
     g_assert_cmphex(qtest_readl(qts, ENET_COUNTERS), ==, 0);
 
-    /* Software cannot place the block's engines, so a write does not take. */
+    /* Public buffer-position fields retain storage without driving DMA. */
     qtest_writel(qts, ENET_BUFFER_INDEX, 0xffffffff);
-    g_assert_cmphex(qtest_readl(qts, ENET_BUFFER_INDEX), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, ENET_BUFFER_INDEX), ==, 0xffffdf1f);
+    g_assert_cmphex(qtest_readl(qts, ENET_BUFFER_INDEX), ==, 0xffffdf1f);
 }
 
 /* The MAC control register and the two DMA rings it gates. */
@@ -5353,6 +5516,21 @@ int main(int argc, char **argv)
         "sn0/ioc3/addin-card-ps2-ports-are-independent-of-the-native-ones",
         NULL, test_the_addin_card_ps2_ports_are_independent_of_the_native_ones);
 
+    qtest_add_data_func("ip30/ioc3/octane-board-input", GINT_TO_POINTER(0),
+                        test_ip30_board_gpio_input);
+    qtest_add_data_func("ip30/ioc3/octane2-board-input", GINT_TO_POINTER(1),
+                        test_ip30_board_gpio_input);
+    qtest_add_data_func("ip30/ioc3/octane-board-input-migration",
+                        GINT_TO_POINTER(0), test_ip30_board_gpio_migration);
+    qtest_add_data_func("ip30/ioc3/octane2-board-input-migration",
+                        GINT_TO_POINTER(1), test_ip30_board_gpio_migration);
+    qtest_add_data_func("sn0/ioc3/gpio-input-value-migration-mismatch",
+                        GINT_TO_POINTER(0), test_gpio_input_migration_mismatch);
+    qtest_add_data_func("sn0/ioc3/gpio-input-mask-migration-mismatch",
+                        GINT_TO_POINTER(1), test_gpio_input_migration_mismatch);
+    qtest_add_data_func("sn0/ioc3/non-ip30-gpio-defaults", NULL,
+                        test_non_ip30_gpio_defaults);
+
     qtest_add_data_func("sn0/ioc3/pci-status-reset-value", NULL,
                         test_pci_status_reset_value);
     qtest_add_data_func("sn0/ioc3/default-board-is-the-system-board", NULL,
@@ -5441,8 +5619,8 @@ int main(int argc, char **argv)
                         test_the_serial_dma_shadow_is_read_only);
     qtest_add_data_func("sn0/ioc3/ethernet-interrupt-acknowledges", NULL,
                         test_the_ethernet_interrupt_register_acknowledges);
-    qtest_add_data_func("sn0/ioc3/ethernet-read-only-registers", NULL,
-                        test_the_ethernet_read_only_registers);
+    qtest_add_data_func("sn0/ioc3/ethernet-stopped-registers", NULL,
+                        test_the_ethernet_stopped_registers);
     qtest_add_data_func("sn0/ioc3/ethernet-mac-reset-reports-idle", NULL,
                         test_the_ethernet_mac_reset_reports_idle);
     qtest_add_data_func("sn0/ioc3/ethernet-transmit-sends-inline-frame", NULL,
