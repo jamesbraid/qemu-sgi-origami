@@ -251,10 +251,14 @@ typedef struct SGIRasterTarget {
  * rules. A rule set sgi_raster_rules_supported() refuses draws nothing.
  * Aliased dimensions round half up to at least one; zero defaults to one.
  * Rounded widths above INT32_MAX exceed the internal arithmetic domain, not
- * an established hardware maximum. Line stipple and smoothing are omitted.
+ * an established hardware maximum. Polygon LINE stipple uses a draw-local
+ * counter. Smoothing is omitted.
  * Filled samples use d's borrowed canonical window stipple rows.
+ * Borrowed modes select each polygon face's FILL/LINE/POINT policy; absent
+ * modes retain FILL. Boundary workspace failure returns OUT_OF_MEMORY
+ * before any fragment of that polygon. Callers must forward that result.
  */
-void sgi_soft_draw(const SGIRasterRules *r, const SGIRasterTarget *t,
+SGIGLDrawResult sgi_soft_draw(const SGIRasterRules *r, const SGIRasterTarget *t,
                    const SGIGLDraw *d);
 /* Carry out a raster op on the target, under the head's rules. */
 void sgi_soft_raster(const SGIRasterRules *r, const SGIRasterTarget *t,

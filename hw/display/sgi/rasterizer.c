@@ -1203,26 +1203,35 @@ static void sgi_soft_fragment(const SGISoftDraw *r, int px, int py, double z,
  * A triangle's polygon offset (3.5.5), o = m factor + r units, where m is
  * the larger magnitude of its window depth's slopes in x and y, which the
  * specification allows in place of their length, and r the rules' one
- * depth step; EXT_polygon_offset's bias adds in window depth. Only filled
- * polygons are drawn here, so GL_POLYGON_OFFSET_FILL alone applies.
+ * depth step; EXT_polygon_offset's bias adds in window depth. Boundary modes
+ * share this slope calculation and select their own offset enable.
  */
-static double sgi_soft_offset(const SGISoftDraw *r, const SGISoftVertex v[3])
+static double sgi_soft_slope(const SGISoftDraw *r, const SGISoftVertex v[3])
 {
-    const SGIGLDrawState *st = r->st;
     const double sub = 1 << r->rules->subpixel_bits;
-    double x1, y1, z1, x2, y2, z2, det, m, n, f;
+    double x1, y1, z1, x2, y2, z2, det, n, f;
 
-    if (!(st->polygon_offset & SGI_GL_OFFSET_FILL)) {
-        return 0;
-    }
-    sgi_soft_depth_range(st, &n, &f);
+    sgi_soft_depth_range(r->st, &n, &f);
     x1 = (v[1].x - v[0].x) / sub, y1 = (v[1].y - v[0].y) / sub;
     x2 = (v[2].x - v[0].x) / sub, y2 = (v[2].y - v[0].y) / sub;
     z1 = v[1].z - v[0].z, z2 = v[2].z - v[0].z;
     det = x1 * y2 - x2 * y1;
-    m = MAX(fabs(z1 * y2 - z2 * y1), fabs(x1 * z2 - x2 * z1)) / fabs(det) *
-        fabs(f - n);
-    return m * st->offset_factor +
+    /* Reviewed model choice for an entirely degenerate boundary: m = 0. */
+    if (det == 0) {
+        return 0;
+    }
+    return MAX(fabs(z1 * y2 - z2 * y1), fabs(x1 * z2 - x2 * z1)) /
+           fabs(det) * fabs(f - n);
+}
+
+static double sgi_soft_offset(const SGISoftDraw *r, const SGISoftVertex v[3])
+{
+    const SGIGLDrawState *st = r->st;
+
+    if (!(st->polygon_offset & SGI_GL_OFFSET_FILL)) {
+        return 0;
+    }
+    return sgi_soft_slope(r, v) * st->offset_factor +
            st->offset_units / sgi_soft_depth_max(r->rules) + st->offset_bias;
 }
 
@@ -1767,28 +1776,34 @@ static bool sgi_soft_line_covers(const SGISoftVertex *a,
  * centre's projection onto the clipped segment (equations 3.5 to 3.7),
  * the colour corrected for perspective. The fragments are also bounded by
  * the viewport, when there is one. Width follows the minor-axis shift and
- * replication of 3.4.3; stipple and antialiasing are not modelled.
+ * replication of 3.4.3. Polygon boundaries count stipple in submitted
+ * direction; standalone lines retain their legacy policy. Antialiasing is
+ * not modelled.
  */
-static void sgi_soft_line(const SGISoftDraw *r, const float *va,
-                          const float *vb, const float *provoking)
+typedef struct SGISoftLineStipple {
+    uint64_t counter;
+    uint32_t repeat, pattern;
+    bool enabled;
+} SGISoftLineStipple;
+
+static void sgi_soft_line_projected(const SGISoftDraw *r,
+                                    const SGISoftVertex *pa,
+                                    const SGISoftVertex *pb,
+                                    const float *provoking, double offset,
+                                    SGISoftLineStipple *stipple)
 {
     const SGIGLDrawState *st = r->st;
     bool smooth = st->shade_model != SGI_GL_FLAT;
     const int sub = r->rules->subpixel_bits;
     bool x_major;
-    SGIVolumeVertex ca, cb;
-    SGISoftVertex a, b, shifted_a, shifted_b;
+    SGISoftVertex a = *pa, b = *pb, shifted_a, shifted_b;
+    bool visible;
+    int step;
     double flat[4], len2;
-    int major0, major1, bx0, by0, bx1, by1;
+    int major0, major1, bx0 = 0, by0 = 0, bx1 = -1, by1 = -1;
 
-    if (!sgi_soft_bounds(r, &bx0, &by0, &bx1, &by1)) {
-        return;
-    }
-    sgi_soft_to_volume(r, va, &ca);
-    sgi_soft_to_volume(r, vb, &cb);
-    if (!sgi_volume_clip_segment(&ca, &cb) ||
-        !sgi_soft_project(r, &ca, &a) || !sgi_soft_project(r, &cb, &b) ||
-        (a.x == b.x && a.y == b.y)) {
+    visible = sgi_soft_bounds(r, &bx0, &by0, &bx1, &by1);
+    if ((!visible && !stipple) || (a.x == b.x && a.y == b.y)) {
         return;
     }
     for (int k = 0; k < 4; k++) {
@@ -1816,9 +1831,23 @@ static void sgi_soft_line(const SGISoftDraw *r, const float *va,
              sub;
     major1 = (x_major ? MAX(a.x, b.x) : MAX(a.y, b.y)) >>
              sub;
-    major0 = MAX(major0 - 1, x_major ? bx0 : by0);
-    major1 = MIN(major1 + 1, x_major ? bx1 : by1);
-    for (int m = major0; m <= major1; m++) {
+    major0--;
+    major1++;
+    step = 1;
+    if (stipple) {
+        /* Count coverage before ownership/scissor, in submitted direction. */
+        if (x_major ? b.x < a.x : b.y < a.y) {
+            int tmp = major0;
+
+            major0 = major1;
+            major1 = tmp;
+            step = -1;
+        }
+    } else {
+        major0 = MAX(major0, x_major ? bx0 : by0);
+        major1 = MIN(major1, x_major ? bx1 : by1);
+    }
+    for (int m = major0; step > 0 ? m <= major1 : m >= major1; m += step) {
         const SGISoftVertex *lo = x_major ?
             (a.x <= b.x ? &shifted_a : &shifted_b) :
             (a.y <= b.y ? &shifted_a : &shifted_b);
@@ -1847,9 +1876,20 @@ static void sgi_soft_line(const SGISoftDraw *r, const float *va,
             int64_t replica1 = MIN(n + r->line_width - 1,
                                    x_major ? by1 : bx1);
 
-            if (replica0 > replica1 ||
-                !sgi_soft_line_covers(&shifted_a, &shifted_b,
+            bool keep = true;
+
+            if (!sgi_soft_line_covers(&shifted_a, &shifted_b,
                                       base_x, base_y, sub)) {
+                continue;
+            }
+            if (stipple) {
+                unsigned bit = (stipple->counter / stipple->repeat) % 16;
+
+                keep = !stipple->enabled || (stipple->pattern & (1u << bit));
+                stipple->counter++;
+            }
+            if (!keep || !visible || replica0 > replica1 ||
+                m < (x_major ? bx0 : by0) || m > (x_major ? bx1 : by1)) {
                 continue;
             }
             /* Visit only drawable-visible replicas, never width entries. */
@@ -1874,7 +1914,7 @@ static void sgi_soft_line(const SGISoftDraw *r, const float *va,
                                         wb * b.texcoord[k]) / (wa + wb);
                 }
                 frag.fog = (wa * a.fog + wb * b.fog) / (wa + wb);
-                if (st->clip_planes) {
+                if (st->clip_planes && !stipple) {
                     double d[SGI_GL_CLIP_PLANES];
 
                     for (int i = 0; i < SGI_GL_CLIP_PLANES; i++) {
@@ -1889,9 +1929,29 @@ static void sgi_soft_line(const SGISoftDraw *r, const float *va,
                     (wa * a.rgba[k] + wb * b.rgba[k]) / (wa + wb) :
                                    flat[k];
                 }
-                sgi_soft_fragment(r, px, py, a.z + t * (b.z - a.z), 0, &frag);
+                sgi_soft_fragment(r, px, py, a.z + t * (b.z - a.z),
+                                  offset, &frag);
             }
         }
+    }
+}
+
+/* Standalone lines retain their original clipping and omit stipple. */
+static void sgi_soft_line(const SGISoftDraw *r, const float *va,
+                          const float *vb, const float *provoking)
+{
+    SGIVolumeVertex ca, cb;
+    SGISoftVertex a, b;
+    int bx0, by0, bx1, by1;
+
+    if (!sgi_soft_bounds(r, &bx0, &by0, &bx1, &by1)) {
+        return;
+    }
+    sgi_soft_to_volume(r, va, &ca);
+    sgi_soft_to_volume(r, vb, &cb);
+    if (sgi_volume_clip_segment(&ca, &cb) &&
+        sgi_soft_project(r, &ca, &a) && sgi_soft_project(r, &cb, &b)) {
+        sgi_soft_line_projected(r, &a, &b, provoking, 0, NULL);
     }
 }
 
@@ -1902,21 +1962,16 @@ static void sgi_soft_line(const SGISoftDraw *r, const float *va,
  * viewport, when there is one, which only a point on the volume's edge
  * can be. Point antialiasing is not modelled.
  */
-static void sgi_soft_point(const SGISoftDraw *r, const float *vp)
+static void sgi_soft_point_projected(const SGISoftDraw *r,
+                                     const SGISoftVertex *pv,
+                                     const float *provoking, double offset)
 {
-    const SGIGLDrawState *st = r->st;
     const int sub = r->rules->subpixel_bits;
-    SGIVolumeVertex cv;
-    SGISoftVertex v;
+    SGISoftVertex v = *pv;
     SGISoftFrag frag;
     int bx0, by0, bx1, by1;
     int64_t px, py, x0, y0, x1, y1;
 
-    sgi_soft_to_volume(r, vp, &cv);
-    if (!sgi_volume_contains(&cv) || !sgi_soft_project(r, &cv, &v) ||
-        sgi_soft_clipped(st, v.clip)) {
-        return;
-    }
     if (!sgi_soft_bounds(r, &bx0, &by0, &bx1, &by1)) {
         return;
     }
@@ -1929,12 +1984,30 @@ static void sgi_soft_point(const SGISoftDraw *r, const float *vp)
     y1 = MIN(py - r->point_size / 2 + r->point_size - 1, by1);
     memcpy(frag.rgba, v.rgba, sizeof(frag.rgba));
     frag.index = v.index;
+    if (provoking && r->st->shade_model == SGI_GL_FLAT) {
+        frag.index = provoking[SGI_GL_V_INDEX];
+        for (unsigned k = 0; k < 4; k++) {
+            frag.rgba[k] = provoking[SGI_GL_V_COLOR + k];
+        }
+    }
     frag.fog = v.fog;
     memcpy(frag.texcoord, v.texcoord, sizeof(frag.texcoord));
     for (int64_t y = y0; y <= y1; y++) {
         for (int64_t x = x0; x <= x1; x++) {
-            sgi_soft_fragment(r, x, y, v.z, 0, &frag);
+            sgi_soft_fragment(r, x, y, v.z, offset, &frag);
         }
+    }
+}
+
+static void sgi_soft_point(const SGISoftDraw *r, const float *vp)
+{
+    SGIVolumeVertex cv;
+    SGISoftVertex v;
+
+    sgi_soft_to_volume(r, vp, &cv);
+    if (sgi_volume_contains(&cv) && sgi_soft_project(r, &cv, &v) &&
+        !sgi_soft_clipped(r->st, v.clip)) {
+        sgi_soft_point_projected(r, &v, NULL, 0);
     }
 }
 
@@ -1952,6 +2025,323 @@ static bool sgi_soft_dimension(float requested, uint32_t *rounded)
     return true;
 }
 
+
+static bool sgi_soft_boundary_edge(const SGIVolumeVertex *v)
+{
+    uint32_t edge;
+
+    memcpy(&edge, &v->attr[SGI_GL_V_EDGE], sizeof(edge));
+    return edge != 0;
+}
+
+static void sgi_soft_boundary_set_edge(SGIVolumeVertex *v, bool enabled)
+{
+    uint32_t edge = enabled;
+
+    memcpy(&v->attr[SGI_GL_V_EDGE], &edge, sizeof(edge));
+}
+
+static double sgi_soft_boundary_plane(const SGISoftDraw *r,
+                                      const SGIVolumeVertex *v, unsigned p)
+{
+    if (p < SGI_VOLUME_PLANES) {
+        return sgi_volume_plane(v, p);
+    } else {
+        const float *plane = r->st->clip_plane[p - SGI_VOLUME_PLANES];
+
+        return plane[0] * v->eye[0] + plane[1] * v->eye[1] +
+               plane[2] * v->eye[2] + plane[3] * v->eye[3];
+    }
+}
+
+/*
+ * Carry outgoing flags through complete polygon clipping (2.11). Original
+ * retained edges keep their flags; the newly connecting cut edges are true.
+ * Exact-plane endpoints avoid duplicate intersections without merging distinct
+ * submitted records, whose coincident positions still matter in POINT mode.
+ */
+static bool sgi_soft_boundary_clip(const SGISoftDraw *r,
+                                   SGIVolumeVertex **poly,
+                                   SGIVolumeVertex *other, size_t *count,
+                                   size_t capacity)
+{
+    SGIVolumeVertex *src = *poly, *dst = other, *tmp;
+    size_t n = *count;
+
+    for (unsigned p = 0; p < SGI_VOLUME_PLANES + SGI_GL_CLIP_PLANES; p++) {
+        size_t m = 0;
+
+        if (p >= SGI_VOLUME_PLANES &&
+            !(r->st->clip_planes & (1u << (p - SGI_VOLUME_PLANES)))) {
+            continue;
+        }
+        for (size_t i = 0; i < n; i++) {
+            const SGIVolumeVertex *a = &src[i], *b = &src[(i + 1) % n];
+            double da = sgi_soft_boundary_plane(r, a, p);
+            double db = sgi_soft_boundary_plane(r, b, p);
+
+            if (da >= 0) {
+                if (m == capacity) {
+                    return false;
+                }
+                dst[m++] = *a;
+                if (!(db >= 0)) {
+                    if (da == 0) {
+                        sgi_soft_boundary_set_edge(&dst[m - 1], true);
+                    } else {
+                        if (m == capacity) {
+                            return false;
+                        }
+                        sgi_volume_cut(a, da, b, db, &dst[m]);
+                        sgi_soft_boundary_set_edge(&dst[m++], true);
+                    }
+                }
+            } else if (db > 0) {
+                if (m == capacity) {
+                    return false;
+                }
+                sgi_volume_cut(b, db, a, da, &dst[m]);
+                sgi_soft_boundary_set_edge(&dst[m++],
+                                            sgi_soft_boundary_edge(a));
+            }
+        }
+        n = m;
+        tmp = src, src = dst, dst = tmp;
+        if (!n) {
+            break;
+        }
+    }
+    *poly = src;
+    *count = n;
+    return true;
+}
+
+static const float *sgi_soft_polygon_vertex(const SGIGLDraw *d,
+                                            const uint32_t *indices, size_t i)
+{
+    size_t index = indices ? indices[i] : i;
+
+    return &d->vertices[index * SGI_GL_VERTEX_FLOATS];
+}
+
+/* Replay the original fan, including its validation and fragment ordering. */
+static void sgi_soft_polygon_fill(const SGISoftDraw *r, const SGIGLDraw *d,
+                                  const uint32_t *indices, size_t n,
+                                  const float *provoking)
+{
+    const float *v0 = sgi_soft_polygon_vertex(d, indices, 0);
+    bool prevalidate = r->texture &&
+                       !(d->mode == SGI_GL_POLYGON && d->fill_by_triangle);
+
+    if (prevalidate) {
+        for (size_t i = 1; i + 1 < n; i++) {
+            if (!sgi_soft_texture_triangle_valid(r, v0,
+                    sgi_soft_polygon_vertex(d, indices, i),
+                    sgi_soft_polygon_vertex(d, indices, i + 1))) {
+                return;
+            }
+        }
+    }
+    for (size_t i = 1; i + 1 < n; i++) {
+        sgi_soft_triangle(r, v0, sgi_soft_polygon_vertex(d, indices, i),
+                          sgi_soft_polygon_vertex(d, indices, i + 1),
+                          provoking);
+    }
+}
+
+/* Workspace bounds are internal representations, not hardware maxima. */
+static SGIGLDrawResult sgi_soft_polygon(const SGISoftDraw *r,
+                                       const SGIGLDraw *d,
+                                       const uint32_t *indices, size_t count,
+                                       const float *provoking, bool force_edges)
+{
+    SGIVolumeVertex local[2][4 + SGI_VOLUME_PLANES + SGI_GL_CLIP_PLANES];
+    SGIVolumeVertex *allocated = NULL, *poly, *other;
+    SGISoftDraw positions = *r, coverage = *r;
+    SGISoftVertex fan[3], first, previous, current;
+    SGISoftLineStipple stipple = {
+        .enabled = d->line_stipple_enabled,
+        .repeat = MAX(1, MIN(d->line_stipple_repeat, 256)),
+        .pattern = d->line_stipple_pattern,
+    };
+    float flat[SGI_GL_VERTEX_FLOATS];
+    size_t capacity, n = count;
+    double area = 0, slope = 0, offset = 0;
+    bool front;
+    uint32_t mode, offset_enable;
+
+    if (count < 3) {
+        return SGI_GL_DRAW_OK;
+    }
+    if (count > SIZE_MAX - SGI_VOLUME_PLANES - SGI_GL_CLIP_PLANES) {
+        return SGI_GL_DRAW_OUT_OF_MEMORY;
+    }
+    capacity = count + SGI_VOLUME_PLANES + SGI_GL_CLIP_PLANES;
+    if (capacity > SIZE_MAX / (2 * sizeof(*poly))) {
+        return SGI_GL_DRAW_OUT_OF_MEMORY;
+    }
+    if (count <= 4) {
+        poly = local[0];
+        other = local[1];
+    } else {
+        allocated = g_try_realloc_n(NULL, capacity, 2 * sizeof(*poly));
+        if (!allocated) {
+            return SGI_GL_DRAW_OUT_OF_MEMORY;
+        }
+        poly = allocated;
+        other = allocated + capacity;
+    }
+    /* Facing must not prevalidate texture Q and erase a valid FILL prefix. */
+    positions.texture = NULL;
+    for (size_t i = 0; i < count; i++) {
+        sgi_soft_to_volume(r, sgi_soft_polygon_vertex(d, indices, i), &poly[i]);
+        for (unsigned k = 0; k < 4; k++) {
+            if (!isfinite(poly[i].clip[k]) || !isfinite(poly[i].eye[k])) {
+                qemu_log_mask(LOG_UNIMP,
+                              "sgi-gl: invalid polygon position dropped\n");
+                goto out;
+            }
+        }
+        if (force_edges) {
+            sgi_soft_boundary_set_edge(&poly[i], true);
+        }
+    }
+    if (!sgi_soft_boundary_clip(r, &poly, other, &n, capacity)) {
+        qemu_log_mask(LOG_UNIMP,
+                      "sgi-gl: polygon exceeds convex clipping bound\n");
+        goto out;
+    }
+    if (!n || !sgi_soft_project(&positions, &poly[0], &first)) {
+        goto out;
+    }
+    previous = first;
+    fan[0] = first;
+    for (size_t i = 1; i < n; i++) {
+        if (!sgi_soft_project(&positions, &poly[i], &current)) {
+            goto out;
+        }
+        if (i >= 2) {
+            area += sgi_soft_edge(&first, &previous, current.x, current.y);
+            fan[1] = previous;
+            fan[2] = current;
+            slope = MAX(slope, sgi_soft_slope(r, fan));
+        }
+        previous = current;
+    }
+    if (r->st->window_matrix_given && r->st->window_rows_down) {
+        area = -area;
+    }
+    if (r->st->front_face == SGI_GL_CW) {
+        area = -area;
+    }
+    front = area > 0; /* Zero remains back-facing through both reversals. */
+    if (r->st->cull_face &&
+        (r->st->cull_face_mode == SGI_GL_FRONT_AND_BACK ||
+         r->st->cull_face_mode == (front ? SGI_GL_FRONT : SGI_GL_BACK))) {
+        goto out;
+    }
+    mode = d->polygon_modes[front ? 0 : 1];
+    if (mode == SGI_GL_FILL) {
+        sgi_soft_polygon_fill(r, d, indices, count, provoking);
+        goto out;
+    }
+    if (mode != SGI_GL_LINE && mode != SGI_GL_POINT) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sgi-gl: invalid polygon mode 0x%x ignored\n", mode);
+        goto out;
+    }
+    if ((mode == SGI_GL_LINE &&
+         !sgi_soft_dimension(d->line_width, &coverage.line_width)) ||
+        (mode == SGI_GL_POINT &&
+         !sgi_soft_dimension(d->point_size, &coverage.point_size))) {
+        goto out;
+    }
+    memcpy(flat, provoking, sizeof(flat));
+    if (!front && r->back_colors) {
+        memcpy(&flat[SGI_GL_V_COLOR], &provoking[SGI_GL_V_BACK_COLOR],
+               4 * sizeof(float));
+        for (size_t i = 0; i < n; i++) {
+            memcpy(&poly[i].attr[SGI_GL_V_COLOR],
+                   &poly[i].attr[SGI_GL_V_BACK_COLOR], 4 * sizeof(float));
+        }
+    }
+    /* Validate the entire boundary before any LINE/POINT fragment or sample. */
+    for (size_t i = 0; i < n; i++) {
+        if (!sgi_soft_project(r, &poly[i], &current)) {
+            goto out;
+        }
+    }
+    offset_enable = mode == SGI_GL_LINE ? SGI_GL_OFFSET_LINE :
+                                          SGI_GL_OFFSET_POINT;
+    if (r->st->polygon_offset & offset_enable) {
+        offset = slope * r->st->offset_factor +
+                 r->st->offset_units / sgi_soft_depth_max(r->rules) +
+                 r->st->offset_bias;
+    }
+    for (size_t i = 0; i < n; i++) {
+        SGISoftVertex next;
+
+        if (!sgi_soft_boundary_edge(&poly[i])) {
+            continue;
+        }
+        sgi_soft_project(r, &poly[i], &current);
+        if (mode == SGI_GL_POINT) {
+            sgi_soft_point_projected(&coverage, &current, flat, offset);
+        } else {
+            sgi_soft_project(r, &poly[(i + 1) % n], &next);
+            sgi_soft_line_projected(&coverage, &current, &next, flat,
+                                     offset, &stipple);
+        }
+    }
+out:
+    g_free(allocated);
+    return SGI_GL_DRAW_OK;
+}
+
+/* Dispatch each independently assembled polygon, preserving provoking rules. */
+static SGIGLDrawResult sgi_soft_polygon_modes(const SGISoftDraw *r,
+                                             const SGIGLDraw *d)
+{
+    uint32_t indices[4];
+    uint32_t n = d->count, stride;
+    SGIGLDrawResult result;
+
+    if (d->mode == SGI_GL_POLYGON) {
+        return sgi_soft_polygon(r, d, NULL, n, d->vertices, false);
+    }
+    stride = d->mode == SGI_GL_TRIANGLES ? 3 :
+             d->mode == SGI_GL_QUADS ? 4 :
+             d->mode == SGI_GL_QUAD_STRIP ? 2 : 1;
+    for (uint32_t i = 0; i < n; i += stride) {
+        unsigned count = d->mode == SGI_GL_QUADS ||
+                         d->mode == SGI_GL_QUAD_STRIP ? 4 : 3;
+        uint32_t provoking = i + count - 1;
+        bool force = stride < 3;
+
+        if (n - i < count) {
+            break;
+        }
+        for (unsigned k = 0; k < count; k++) {
+            indices[k] = i + k;
+        }
+        if (d->mode == SGI_GL_TRIANGLE_STRIP && (i & 1)) {
+            indices[0] = i + 1;
+            indices[1] = i;
+        } else if (d->mode == SGI_GL_TRIANGLE_FAN) {
+            indices[0] = 0;
+        } else if (d->mode == SGI_GL_QUAD_STRIP) {
+            indices[2] = i + 3;
+            indices[3] = i + 2;
+        }
+        result = sgi_soft_polygon(r, d, indices, count,
+                   &d->vertices[(size_t)provoking * SGI_GL_VERTEX_FLOATS],
+                   force);
+        if (result != SGI_GL_DRAW_OK) {
+            return result;
+        }
+    }
+    return SGI_GL_DRAW_OK;
+}
 
 /*
  * The pieces of a primitive (OpenGL 1.2.1, 2.6.1), each with its flat
@@ -1971,8 +2361,8 @@ static bool sgi_soft_dimension(float requested, uint32_t *rounded)
  * test is gl-quad-splits-from-its-first-vertex.
  */
 
-void sgi_soft_draw(const SGIRasterRules *rules, const SGIRasterTarget *t,
-                   const SGIGLDraw *d)
+SGIGLDrawResult sgi_soft_draw(const SGIRasterRules *rules,
+                             const SGIRasterTarget *t, const SGIGLDraw *d)
 {
     SGISoftDraw r = {
         .rules = rules, .t = t, .st = d->state,
@@ -1987,39 +2377,45 @@ void sgi_soft_draw(const SGIRasterRules *rules, const SGIRasterTarget *t,
     r.texture_reports = &texture_reports;
     r.rgba_reported = &rgba_reported;
 
-#define V(i) (&d->vertices[(i) * SGI_GL_VERTEX_FLOATS])
+#define V(i) (&d->vertices[(size_t)(i) * SGI_GL_VERTEX_FLOATS])
     r.ntargets = sgi_gl_draw_targets(d->state, r.targets);
     if (!sgi_soft_check_rules(rules) || !sgi_soft_window(d->state, &r.win) ||
         !sgi_soft_check_index(t, d->state->index_bits)) {
-        return;
+        return SGI_GL_DRAW_OK;
     }
     if (!sgi_soft_texture_setup(&r)) {
-        return;
+        return SGI_GL_DRAW_OK;
     }
     if (!sgi_soft_setup_ops(&r)) {
-        return;
+        return SGI_GL_DRAW_OK;
+    }
+    if (d->polygon_modes && d->mode >= SGI_GL_TRIANGLES &&
+        d->mode <= SGI_GL_POLYGON &&
+        (d->polygon_modes[0] != SGI_GL_FILL ||
+         d->polygon_modes[1] != SGI_GL_FILL)) {
+        return sgi_soft_polygon_modes(&r, d);
     }
     switch (d->mode) {
     case SGI_GL_POINTS:
         if (!sgi_soft_dimension(d->point_size, &r.point_size)) {
-            return;
+            return SGI_GL_DRAW_OK;
         }
         for (uint32_t i = 0; i < n; i++) {
             sgi_soft_point(&r, V(i));
         }
-        return;
+        return SGI_GL_DRAW_OK;
     case SGI_GL_LINES:
         if (!sgi_soft_dimension(d->line_width, &r.line_width)) {
-            return;
+            return SGI_GL_DRAW_OK;
         }
         for (uint32_t i = 0; i + 1 < n; i += 2) {
             sgi_soft_line(&r, V(i), V(i + 1), V(i + 1));
         }
-        return;
+        return SGI_GL_DRAW_OK;
     case SGI_GL_LINE_STRIP:
     case SGI_GL_LINE_LOOP:
         if (!sgi_soft_dimension(d->line_width, &r.line_width)) {
-            return;
+            return SGI_GL_DRAW_OK;
         }
         for (uint32_t i = 0; i + 1 < n; i++) {
             sgi_soft_line(&r, V(i), V(i + 1), V(i + 1));
@@ -2027,12 +2423,12 @@ void sgi_soft_draw(const SGIRasterRules *rules, const SGIRasterTarget *t,
         if (d->mode == SGI_GL_LINE_LOOP && n >= 2) {
             sgi_soft_line(&r, V(n - 1), V(0), V(0));
         }
-        return;
+        return SGI_GL_DRAW_OK;
     case SGI_GL_TRIANGLES:
         for (uint32_t i = 0; i + 2 < n; i += 3) {
             sgi_soft_triangle(&r, V(i), V(i + 1), V(i + 2), V(i + 2));
         }
-        return;
+        return SGI_GL_DRAW_OK;
     case SGI_GL_TRIANGLE_STRIP:
         for (uint32_t i = 0; i + 2 < n; i++) {
             if (i & 1) {
@@ -2041,14 +2437,14 @@ void sgi_soft_draw(const SGIRasterRules *rules, const SGIRasterTarget *t,
                 sgi_soft_triangle(&r, V(i), V(i + 1), V(i + 2), V(i + 2));
             }
         }
-        return;
+        return SGI_GL_DRAW_OK;
     case SGI_GL_TRIANGLE_FAN:
     case SGI_GL_POLYGON:
-        if (r.texture && d->mode == SGI_GL_POLYGON) {
+        if (r.texture && d->mode == SGI_GL_POLYGON && !d->fill_by_triangle) {
             for (uint32_t i = 0; i + 2 < n; i++) {
                 if (!sgi_soft_texture_triangle_valid(&r, V(0), V(i + 1),
                                                       V(i + 2))) {
-                    return;
+                    return SGI_GL_DRAW_OK;
                 }
             }
         }
@@ -2056,7 +2452,7 @@ void sgi_soft_draw(const SGIRasterRules *rules, const SGIRasterTarget *t,
             sgi_soft_triangle(&r, V(0), V(i + 1), V(i + 2),
                               d->mode == SGI_GL_POLYGON ? V(0) : V(i + 2));
         }
-        return;
+        return SGI_GL_DRAW_OK;
     case SGI_GL_QUADS:
         for (uint32_t i = 0; i + 3 < n; i += 4) {
             if (r.texture &&
@@ -2069,7 +2465,7 @@ void sgi_soft_draw(const SGIRasterRules *rules, const SGIRasterTarget *t,
             sgi_soft_triangle(&r, V(i), V(i + 1), V(i + 2), V(i + 3));
             sgi_soft_triangle(&r, V(i), V(i + 2), V(i + 3), V(i + 3));
         }
-        return;
+        return SGI_GL_DRAW_OK;
     case SGI_GL_QUAD_STRIP:
         /* Vertices 2i - 1, 2i, 2i + 2 and 2i + 1 in order (2.6.1). */
         for (uint32_t i = 0; i + 3 < n; i += 2) {
@@ -2083,11 +2479,11 @@ void sgi_soft_draw(const SGIRasterRules *rules, const SGIRasterTarget *t,
             sgi_soft_triangle(&r, V(i), V(i + 1), V(i + 3), V(i + 3));
             sgi_soft_triangle(&r, V(i), V(i + 3), V(i + 2), V(i + 3));
         }
-        return;
+        return SGI_GL_DRAW_OK;
     default:
         qemu_log_mask(LOG_GUEST_ERROR, "sgi-gl: draw of mode %u ignored\n",
                       d->mode);
-        return;
+        return SGI_GL_DRAW_OK;
     }
 #undef V
 }

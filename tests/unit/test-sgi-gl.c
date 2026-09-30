@@ -6131,6 +6131,760 @@ static void test_alpha_texture_fog_rejection(void)
     g_assert_cmpuint(s.stores, ==, 1);
 }
 
+static void polygon_mode_vertices(float v[][SGI_GL_VERTEX_FLOATS],
+                                  const float xy[][2], unsigned n)
+{
+    memset(v, 0, n * SGI_GL_VERTEX_FLOATS * sizeof(float));
+    for (unsigned i = 0; i < n; i++) {
+        uint32_t edge = 1;
+
+        v[i][SGI_GL_V_POSITION] = xy[i][0] / 32 - 1;
+        v[i][SGI_GL_V_POSITION + 1] = xy[i][1] / 32 - 1;
+        v[i][SGI_GL_V_POSITION + 3] = 1;
+        v[i][SGI_GL_V_TEXCOORD + 3] = 1;
+        for (unsigned k = 0; k < 4; k++) {
+            v[i][SGI_GL_V_COLOR + k] = 1;
+            v[i][SGI_GL_V_BACK_COLOR + k] = 1;
+        }
+        memcpy(&v[i][SGI_GL_V_EDGE], &edge, sizeof(edge));
+    }
+}
+
+static void polygon_mode_draw(FragScene *f, float v[][SGI_GL_VERTEX_FLOATS],
+                              unsigned n, uint32_t primitive,
+                              uint32_t front, uint32_t back)
+{
+    uint32_t modes[2] = { front, back };
+    SGIGLDraw d = {
+        .mode = primitive, .count = n, .vertices = &v[0][0],
+        .state = &f->c.cur, .polygon_modes = modes,
+        .line_width = f->c.line_width, .point_size = f->c.point_size,
+    };
+
+    sgi_soft_draw(f->rec.rules, &f->rec.target, &d);
+}
+
+static const float polygon_mode_square[4][2] = {
+    { 8.5, 8.5 }, { 24.5, 8.5 }, { 24.5, 24.5 }, { 8.5, 24.5 },
+};
+
+static void test_polygon_mode_boundary(void)
+{
+    FragScene f;
+    float v[4][SGI_GL_VERTEX_FLOATS];
+
+    frag_init(&f);
+    polygon_mode_vertices(v, polygon_mode_square, 4);
+    polygon_mode_draw(&f, v, 4, SGI_GL_POLYGON, SGI_GL_LINE, SGI_GL_LINE);
+    g_assert_cmphex(frag_pixel(&f, 16, 16), ==, 0);
+    g_assert_cmphex(frag_pixel(&f, 16, 8), ==, 0xffffff);
+    g_assert_cmphex(frag_pixel(&f, 8, 16), ==, 0xffffff);
+    memset(&f.p, 0, sizeof(f.p));
+    polygon_mode_draw(&f, v, 4, SGI_GL_QUADS, SGI_GL_LINE, SGI_GL_LINE);
+    g_assert_cmphex(frag_pixel(&f, 16, 16), ==, 0);
+    g_assert_cmphex(frag_pixel(&f, 16, 8), ==, 0xffffff);
+}
+
+static void test_polygon_mode_edge_flags(void)
+{
+    FragScene f;
+    float v[4][SGI_GL_VERTEX_FLOATS];
+    uint32_t off = 0;
+
+    frag_init(&f);
+    polygon_mode_vertices(v, polygon_mode_square, 4);
+    memcpy(&v[0][SGI_GL_V_EDGE], &off, sizeof(off));
+    polygon_mode_draw(&f, v, 4, SGI_GL_POLYGON, SGI_GL_POINT, SGI_GL_POINT);
+    g_assert_cmphex(frag_pixel(&f, 8, 8), ==, 0);
+    g_assert_cmphex(frag_pixel(&f, 24, 8), ==, 0xffffff);
+    g_assert_cmpuint(frag_count(&f, 0xffffff), ==, 3);
+    memset(&f.p, 0, sizeof(f.p));
+    polygon_mode_draw(&f, v, 4, SGI_GL_POLYGON, SGI_GL_LINE, SGI_GL_LINE);
+    g_assert_cmphex(frag_pixel(&f, 16, 8), ==, 0);
+    g_assert_cmphex(frag_pixel(&f, 24, 16), ==, 0xffffff);
+}
+
+static void test_polygon_mode_client_boundary(void)
+{
+    FragScene f;
+    float v[4][SGI_GL_VERTEX_FLOATS];
+    uint32_t off = 0;
+
+    frag_init(&f);
+    polygon_mode_vertices(v, polygon_mode_square, 4);
+    for (unsigned i = 0; i < 4; i++) {
+        memcpy(&v[i][SGI_GL_V_EDGE], &off, sizeof(off));
+    }
+    f.c.cur.clip_planes = 1;
+    f.c.cur.clip_plane[0][0] = 1;
+    f.c.cur.clip_plane[0][3] = 1 - 16.5f / 32;
+    polygon_mode_draw(&f, v, 4, SGI_GL_POLYGON, SGI_GL_LINE, SGI_GL_LINE);
+    g_assert_cmphex(frag_pixel(&f, 16, 16), ==, 0xffffff);
+    g_assert_cmphex(frag_pixel(&f, 24, 16), ==, 0);
+    g_assert_cmphex(frag_pixel(&f, 20, 8), ==, 0);
+}
+
+static void test_polygon_mode_facing(void)
+{
+    const float rows[4][4] = {
+        { 32, 0, 0, 32 }, { 0, 32, 0, 32 },
+        { 0, 0, 0.5, 0.5 }, { 0, 0, 0, 1 },
+    };
+
+    for (unsigned down = 0; down < 2; down++) {
+        for (unsigned cw = 0; cw < 2; cw++) {
+            for (unsigned reverse = 0; reverse < 2; reverse++) {
+                FragScene f;
+                float v[4][SGI_GL_VERTEX_FLOATS];
+                float xy[4][2];
+                bool front = !(down ^ cw ^ reverse);
+
+                frag_init(&f);
+                for (unsigned i = 0; i < 4; i++) {
+                    memcpy(xy[i], polygon_mode_square[reverse ? 3 - i : i],
+                           sizeof(xy[i]));
+                }
+                polygon_mode_vertices(v, xy, 4);
+                window_matrix(&f, rows, 1, down);
+                f.c.cur.front_face = cw ? SGI_GL_CW : SGI_GL_CCW;
+                polygon_mode_draw(&f, v, 4, SGI_GL_POLYGON,
+                                  SGI_GL_LINE, SGI_GL_POINT);
+                g_assert_cmphex(frag_pixel(&f, 16, 8), ==,
+                                front ? 0xffffff : 0);
+                memset(&f.p, 0, sizeof(f.p));
+                f.c.cur.cull_face = true;
+                f.c.cur.cull_face_mode = SGI_GL_FRONT;
+                polygon_mode_draw(&f, v, 4, SGI_GL_POLYGON,
+                                  SGI_GL_LINE, SGI_GL_POINT);
+                g_assert_cmpuint(frag_count(&f, 0xffffff), ==, front ? 0 : 4);
+            }
+        }
+    }
+}
+
+static void test_polygon_mode_zero_area(void)
+{
+    const float xy[3][2] = { { 8.5, 8.5 }, { 16.5, 8.5 }, { 24.5, 8.5 } };
+
+    for (unsigned cw = 0; cw < 2; cw++) {
+        FragScene f;
+        float v[3][SGI_GL_VERTEX_FLOATS];
+
+        frag_init(&f);
+        polygon_mode_vertices(v, xy, 3);
+        f.c.cur.front_face = cw ? SGI_GL_CW : SGI_GL_CCW;
+        polygon_mode_draw(&f, v, 3, SGI_GL_POLYGON,
+                          SGI_GL_LINE, SGI_GL_POINT);
+        g_assert_cmpuint(frag_count(&f, 0xffffff), ==, 3);
+        f.c.cur.depth_test = true;
+        f.c.cur.depth_func = SGI_GL_ALWAYS;
+        f.c.cur.polygon_offset = SGI_GL_OFFSET_POINT;
+        f.c.cur.offset_factor = 1000;
+        f.c.cur.offset_units = 2;
+        polygon_mode_draw(&f, v, 3, SGI_GL_POLYGON,
+                          SGI_GL_LINE, SGI_GL_POINT);
+        g_assert_cmpuint(f.p.depth[planes_index(8, 8)], ==, 8388610);
+        memset(&f.p, 0, sizeof(f.p));
+        f.c.cur.cull_face = true;
+        f.c.cur.cull_face_mode = SGI_GL_BACK;
+        polygon_mode_draw(&f, v, 3, SGI_GL_POLYGON,
+                          SGI_GL_LINE, SGI_GL_POINT);
+        g_assert_cmpuint(frag_count(&f, 0xffffff), ==, 0);
+    }
+}
+
+static void test_polygon_mode_strip_edges(void)
+{
+    const uint32_t primitives[] = {
+        SGI_GL_TRIANGLE_STRIP, SGI_GL_TRIANGLE_FAN, SGI_GL_QUAD_STRIP,
+    };
+    const float strip[4][2] = {
+        { 8.5, 8.5 }, { 24.5, 8.5 }, { 8.5, 24.5 }, { 24.5, 24.5 },
+    };
+    uint32_t off = 0;
+
+    for (unsigned m = 0; m < G_N_ELEMENTS(primitives); m++) {
+        FragScene f;
+        float v[4][SGI_GL_VERTEX_FLOATS];
+
+        frag_init(&f);
+        polygon_mode_vertices(v, primitives[m] == SGI_GL_TRIANGLE_FAN ?
+                              polygon_mode_square : strip, 4);
+        for (unsigned i = 0; i < 4; i++) {
+            memcpy(&v[i][SGI_GL_V_EDGE], &off, sizeof(off));
+        }
+        polygon_mode_draw(&f, v, 4, primitives[m], SGI_GL_LINE, SGI_GL_LINE);
+        g_assert_cmphex(frag_pixel(&f, 16, 8), ==, 0xffffff);
+        g_assert_cmphex(frag_pixel(&f, 16, 16), ==,
+                        primitives[m] == SGI_GL_QUAD_STRIP ? 0 : 0xffffff);
+    }
+}
+
+static void test_polygon_mode_volume_boundary(void)
+{
+    const float xy[4][2] = {
+        { -8.5, 8.5 }, { 24.5, 8.5 }, { 24.5, 24.5 }, { -8.5, 24.5 },
+    };
+    FragScene f;
+    float v[4][SGI_GL_VERTEX_FLOATS];
+    uint32_t off = 0;
+
+    frag_init(&f);
+    f.c.line_width = 3;
+    polygon_mode_vertices(v, xy, 4);
+    for (unsigned i = 0; i < 4; i++) {
+        memcpy(&v[i][SGI_GL_V_EDGE], &off, sizeof(off));
+    }
+    polygon_mode_draw(&f, v, 4, SGI_GL_POLYGON, SGI_GL_LINE, SGI_GL_LINE);
+    g_assert_cmphex(frag_pixel(&f, 0, 16), ==, 0xffffff);
+    g_assert_cmphex(frag_pixel(&f, 24, 16), ==, 0);
+    memset(&f.p, 0, sizeof(f.p));
+    f.c.point_size = 3;
+    polygon_mode_draw(&f, v, 4, SGI_GL_POLYGON, SGI_GL_POINT, SGI_GL_POINT);
+    g_assert_cmphex(frag_pixel(&f, 0, 24), ==, 0xffffff);
+    g_assert_cmphex(frag_pixel(&f, 0, 8), ==, 0);
+}
+
+static void test_polygon_mode_provoking(void)
+{
+    const uint32_t primitives[] = { SGI_GL_POLYGON, SGI_GL_QUADS };
+    const uint32_t modes[] = { SGI_GL_POINT, SGI_GL_LINE };
+
+    for (unsigned p = 0; p < G_N_ELEMENTS(primitives); p++) {
+        for (unsigned m = 0; m < G_N_ELEMENTS(modes); m++) {
+            for (unsigned back = 0; back < 2; back++) {
+                FragScene f;
+                float v[4][SGI_GL_VERTEX_FLOATS];
+                uint32_t both[2] = { modes[m], modes[m] };
+                SGIGLDraw d = {
+                    .mode = primitives[p], .count = 4, .vertices = &v[0][0],
+                    .state = &f.c.cur, .polygon_modes = both,
+                    .line_width = 1, .point_size = 1, .back_colors = true,
+                };
+
+                frag_init(&f);
+                polygon_mode_vertices(v, polygon_mode_square, 4);
+                f.c.cur.shade_model = SGI_GL_FLAT;
+                f.c.cur.front_face = back ? SGI_GL_CW : SGI_GL_CCW;
+                for (unsigned i = 0; i < 4; i++) {
+                    v[i][SGI_GL_V_COLOR] = 0;
+                    v[i][SGI_GL_V_COLOR + 1] = 0;
+                    v[i][SGI_GL_V_BACK_COLOR] = 0;
+                    v[i][SGI_GL_V_BACK_COLOR + 1] = 1;
+                    v[i][SGI_GL_V_BACK_COLOR + 2] = 0;
+                }
+                v[0][SGI_GL_V_COLOR] = 1;
+                v[0][SGI_GL_V_COLOR + 2] = 0;
+                v[0][SGI_GL_V_BACK_COLOR] = 1;
+                v[0][SGI_GL_V_BACK_COLOR + 1] = 0;
+                sgi_soft_draw(f.rec.rules, &f.rec.target, &d);
+                g_assert_cmphex(frag_pixel(&f, 24, 8), ==,
+                    back ? (p == 0 ? 0xff0000 : 0x00ff00) :
+                           (p == 0 ? 0xff0000 : 0x0000ff));
+            }
+        }
+    }
+}
+
+static void test_polygon_mode_offset(void)
+{
+    const uint32_t modes[] = { SGI_GL_POINT, SGI_GL_LINE };
+
+    for (unsigned m = 0; m < G_N_ELEMENTS(modes); m++) {
+        FragScene f;
+        float v[4][SGI_GL_VERTEX_FLOATS];
+        unsigned x = m == 0 ? 8 : 16;
+        uint32_t flag = m == 0 ? SGI_GL_OFFSET_POINT : SGI_GL_OFFSET_LINE;
+
+        frag_init(&f);
+        polygon_mode_vertices(v, polygon_mode_square, 4);
+        v[2][SGI_GL_V_POSITION + 2] = 1;
+        f.c.cur.depth_test = true;
+        f.c.cur.depth_func = SGI_GL_ALWAYS;
+        f.c.cur.offset_factor = 1;
+        f.c.cur.polygon_offset = SGI_GL_OFFSET_FILL;
+        polygon_mode_draw(&f, v, 4, SGI_GL_POLYGON, modes[m], modes[m]);
+        g_assert_cmpuint(f.p.depth[planes_index(x, 8)], ==, 8388608);
+        f.c.cur.polygon_offset = flag;
+        polygon_mode_draw(&f, v, 4, SGI_GL_POLYGON, modes[m], modes[m]);
+        g_assert_cmpuint(f.p.depth[planes_index(x, 8)], ==, 8912895);
+        f.c.cur.offset_bias = 1;
+        polygon_mode_draw(&f, v, 4, SGI_GL_POLYGON, modes[m], modes[m]);
+        g_assert_cmpuint(f.p.depth[planes_index(x, 8)], ==, 16777215);
+    }
+}
+
+static void test_polygon_mode_stipple(void)
+{
+    const float xy[4][2] = {
+        { 8.5, 8.5 }, { 16.5, 8.5 }, { 16.5, 16.5 }, { 8.5, 16.5 },
+    };
+    FragScene f;
+    float v[4][SGI_GL_VERTEX_FLOATS];
+    uint32_t modes[2] = { SGI_GL_LINE, SGI_GL_LINE };
+    uint32_t rows[32] = { 0 };
+    SGIGLDraw d = {
+        .mode = SGI_GL_POLYGON, .count = 4, .vertices = &v[0][0],
+        .state = &f.c.cur, .polygon_modes = modes, .line_width = 1,
+        .line_stipple_enabled = true, .line_stipple_repeat = 1,
+        .line_stipple_pattern = 1, .polygon_stipple_enabled = true,
+        .polygon_stipple = rows,
+    };
+
+    frag_init(&f);
+    polygon_mode_vertices(v, xy, 4);
+    sgi_soft_draw(f.rec.rules, &f.rec.target, &d);
+    g_assert_cmpuint(frag_count(&f, 0xffffff), ==, 2);
+    g_assert_cmphex(frag_pixel(&f, 8, 8), ==, 0xffffff);
+    g_assert_cmphex(frag_pixel(&f, 16, 16), ==, 0xffffff);
+    g_assert_cmphex(frag_pixel(&f, 16, 8), ==, 0);
+    memset(&f.p, 0, sizeof(f.p));
+    d.line_width = 3;
+    sgi_soft_draw(f.rec.rules, &f.rec.target, &d);
+    for (unsigned y = 7; y <= 9; y++) {
+        g_assert_cmphex(frag_pixel(&f, 8, y), ==, 0xffffff);
+        g_assert_cmphex(frag_pixel(&f, 9, y), ==, 0);
+    }
+    memset(&f.p, 0, sizeof(f.p));
+    d.line_width = 1;
+    d.line_stipple_pattern = 4;
+    frag_scissor(&f, 10, 8, 1, 1);
+    enable(&f.c, SGI_GL_SCISSOR_TEST, true);
+    sgi_soft_draw(f.rec.rules, &f.rec.target, &d);
+    g_assert_cmphex(frag_pixel(&f, 10, 8), ==, 0xffffff);
+    memset(&f.p, 0, sizeof(f.p));
+    enable(&f.c, SGI_GL_SCISSOR_TEST, false);
+    {
+        float reversed[4][2];
+
+        for (unsigned i = 0; i < 4; i++) {
+            memcpy(reversed[i], xy[(4 - i) % 4], sizeof(reversed[i]));
+        }
+        polygon_mode_vertices(v, reversed, 4);
+    }
+    sgi_soft_draw(f.rec.rules, &f.rec.target, &d);
+    g_assert_cmphex(frag_pixel(&f, 8, 10), ==, 0xffffff);
+    g_assert_cmphex(frag_pixel(&f, 8, 9), ==, 0);
+    memset(&f.p, 0, sizeof(f.p));
+    d.line_stipple_repeat = 2;
+    d.line_stipple_pattern = 1;
+    sgi_soft_draw(f.rec.rules, &f.rec.target, &d);
+    g_assert_cmphex(frag_pixel(&f, 8, 8), ==, 0xffffff);
+    g_assert_cmphex(frag_pixel(&f, 8, 9), ==, 0xffffff);
+    g_assert_cmphex(frag_pixel(&f, 8, 10), ==, 0);
+}
+
+static void test_polygon_mode_stipple_bounds(void)
+{
+    const float xy[4][2] = {
+        { 8.5, 8.5 }, { 16.5, 8.5 }, { 16.5, 16.5 }, { 8.5, 16.5 },
+    };
+    FragScene f;
+    float v[4][SGI_GL_VERTEX_FLOATS];
+    uint32_t modes[2] = { SGI_GL_LINE, SGI_GL_LINE };
+    uint32_t rows[32] = { 0 }, off = 0;
+    SGIGLDraw d = {
+        .mode = SGI_GL_POLYGON, .count = 4, .vertices = &v[0][0],
+        .state = &f.c.cur, .polygon_modes = modes, .line_width = 1,
+        .line_stipple_enabled = true, .line_stipple_repeat = 1,
+        .line_stipple_pattern = 4, .polygon_stipple_enabled = true,
+        .polygon_stipple = rows,
+    };
+
+    frag_init(&f);
+    polygon_mode_vertices(v, xy, 4);
+    f.c.cur.drawable.clip.r[0] = (SGIClipRect) { 10, 8, 10, 8 };
+    sgi_soft_draw(f.rec.rules, &f.rec.target, &d);
+    g_assert_cmphex(frag_pixel(&f, 10, 8), ==, 0xffffff);
+    memset(&f.p, 0, sizeof(f.p));
+    f.c.cur.drawable.origin[0] = 5;
+    f.c.cur.drawable.origin[1] = 7;
+    f.c.cur.drawable.clip.r[0] = (SGIClipRect) { 15, 15, 15, 15 };
+    sgi_soft_draw(f.rec.rules, &f.rec.target, &d);
+    g_assert_cmphex(frag_pixel(&f, 15, 15), ==, 0xffffff);
+    frag_init(&f);
+    d.line_stipple_pattern = 1;
+    memcpy(&v[0][SGI_GL_V_EDGE], &off, sizeof(off));
+    sgi_soft_draw(f.rec.rules, &f.rec.target, &d);
+    g_assert_cmphex(frag_pixel(&f, 16, 8), ==, 0xffffff);
+    g_assert_cmphex(frag_pixel(&f, 8, 8), ==, 0);
+    polygon_mode_vertices(v, xy, 4);
+    memset(&f.p, 0, sizeof(f.p));
+    d.line_stipple_enabled = false;
+    d.line_stipple_pattern = 0;
+    sgi_soft_draw(f.rec.rules, &f.rec.target, &d);
+    g_assert_cmpuint(frag_count(&f, 0xffffff), ==, 32);
+    memset(&f.p, 0, sizeof(f.p));
+    modes[0] = modes[1] = SGI_GL_POINT;
+    d.point_size = 3;
+    d.line_stipple_enabled = true;
+    sgi_soft_draw(f.rec.rules, &f.rec.target, &d);
+    g_assert_cmpuint(frag_count(&f, 0xffffff), ==, 36);
+    memset(&f.p, 0, sizeof(f.p));
+    modes[0] = modes[1] = SGI_GL_LINE;
+    d.line_stipple_enabled = false;
+    f.c.cur.draw_buffers = 0;
+    f.c.cur.colour_mask = 0;
+    f.c.cur.depth_test = true;
+    f.c.cur.depth_func = SGI_GL_ALWAYS;
+    f.c.cur.stencil_test = true;
+    f.c.cur.stencil_op[2] = SGI_GL_INCR;
+    sgi_soft_draw(f.rec.rules, &f.rec.target, &d);
+    g_assert_cmpuint(f.p.depth[planes_index(10, 8)], ==, 8388608);
+    g_assert_cmpuint(f.p.stencil[planes_index(10, 8)], ==, 1);
+    g_assert_cmpuint(frag_count(&f, 0), ==, W * H);
+}
+
+static void test_polygon_mode_fill_fan(void)
+{
+    const float xy[5][2] = {
+        { -8.5, 8.5 }, { 24.5, 8.5 }, { 32.5, 16.5 },
+        { 24.5, 24.5 }, { -8.5, 24.5 },
+    };
+
+    for (unsigned textured = 0; textured < 2; textured++) {
+        for (unsigned flat = 0; flat < 2; flat++) {
+            for (unsigned mixed = 0; mixed < 2; mixed++) {
+                for (unsigned back = 0; back < 2; back++) {
+                    FragScene expected, actual;
+                    float v[5][SGI_GL_VERTEX_FLOATS];
+                    uint32_t modes[2] = {
+                        back && mixed ? SGI_GL_POINT : SGI_GL_FILL,
+                        !back && mixed ? SGI_GL_POINT : SGI_GL_FILL,
+                    };
+                    TexturePixels pixels = { .pixel = {
+                        0xff0000ff, 0x00ff00ff, 0x0000ffff, 0xffffffff } };
+                    SGIGLTexImage image = texture_image(&pixels);
+                    SGIGLDraw d = {
+                        .mode = SGI_GL_POLYGON, .count = 5,
+                        .vertices = &v[0][0], .state = &actual.c.cur,
+                        .polygon_modes = modes, .fill_by_triangle = true,
+                        .back_colors = true,
+                    };
+
+                    frag_init(&expected);
+                    frag_init(&actual);
+                    polygon_mode_vertices(v, xy, 5);
+                    for (unsigned i = 0; i < 5; i++) {
+                        v[i][SGI_GL_V_COLOR] = i / 4.0f;
+                        v[i][SGI_GL_V_COLOR + 1] = 1 - i / 4.0f;
+                        v[i][SGI_GL_V_BACK_COLOR + 2] = i / 4.0f;
+                        v[i][SGI_GL_V_TEXCOORD] = i / 4.0f;
+                        v[i][SGI_GL_V_TEXCOORD + 1] = 1 - i / 4.0f;
+                    }
+                    expected.c.cur.shade_model = actual.c.cur.shade_model =
+                        flat ? SGI_GL_FLAT : SGI_GL_SMOOTH;
+                    expected.c.cur.front_face = actual.c.cur.front_face =
+                        back ? SGI_GL_CW : SGI_GL_CCW;
+                    expected.c.cur.texture_2d =
+                        actual.c.cur.texture_2d = textured;
+                    expected.rec.target.texture = actual.rec.target.texture =
+                        &image;
+                    expected.c.cur.polygon_offset =
+                        actual.c.cur.polygon_offset = SGI_GL_OFFSET_FILL;
+                    expected.c.cur.offset_units = actual.c.cur.offset_units = 2;
+                    sgi_soft_draw(actual.rec.rules, &actual.rec.target, &d);
+                    for (unsigned i = 1; i + 1 < 5; i++) {
+                        float tri[3][SGI_GL_VERTEX_FLOATS];
+                        SGIGLDraw old = d;
+
+                        memcpy(tri[0], v[0], sizeof(tri[0]));
+                        memcpy(tri[1], v[i], sizeof(tri[0]));
+                        memcpy(tri[2], v[i + 1], sizeof(tri[0]));
+                        old.count = 3;
+                        old.vertices = &tri[0][0];
+                        old.state = &expected.c.cur;
+                        old.polygon_modes = NULL;
+                        old.fill_by_triangle = false;
+                        sgi_soft_draw(expected.rec.rules,
+                                      &expected.rec.target, &old);
+                    }
+                    g_assert_cmpmem(&expected.p, sizeof(expected.p),
+                                    &actual.p, sizeof(actual.p));
+                    g_assert_cmpuint(frag_count(&actual, 0), <, W * H);
+                }
+            }
+        }
+    }
+}
+
+static void test_polygon_mode_invalid_fill(void)
+{
+    const float xy[5][2] = {
+        { 8.5, 8.5 }, { 24.5, 8.5 }, { 32.5, 16.5 },
+        { 24.5, 24.5 }, { 8.5, 24.5 },
+    };
+    TexturePixels pixels = { .pixel = {
+        0xff0000ff, 0xff0000ff, 0xff0000ff, 0xff0000ff } };
+    SGIGLTexImage image = texture_image(&pixels);
+
+    for (unsigned malformed = 0; malformed < 2; malformed++) {
+        for (unsigned mixed = 0; mixed < 2; mixed++) {
+            FragScene old, actual;
+            float v[5][SGI_GL_VERTEX_FLOATS];
+            uint32_t modes[2] = { SGI_GL_FILL,
+                                 mixed ? SGI_GL_POINT : SGI_GL_FILL };
+            SGIGLDraw d = {
+                .mode = SGI_GL_POLYGON, .count = 5, .vertices = &v[0][0],
+                .state = &actual.c.cur, .polygon_modes = modes,
+                .fill_by_triangle = true,
+            };
+
+            frag_init(&old);
+            frag_init(&actual);
+            old.c.cur.texture_2d = actual.c.cur.texture_2d = !malformed;
+            old.rec.target.texture = actual.rec.target.texture = &image;
+            polygon_mode_vertices(v, xy, 5);
+            if (malformed) {
+                v[4][SGI_GL_V_POSITION] = NAN;
+            } else {
+                v[4][SGI_GL_V_TEXCOORD + 3] = 0;
+            }
+            sgi_soft_draw(actual.rec.rules, &actual.rec.target, &d);
+            for (unsigned i = 1; i + 1 < 5; i++) {
+                float tri[3][SGI_GL_VERTEX_FLOATS];
+                SGIGLDraw streamed = d;
+
+                memcpy(tri[0], v[0], sizeof(tri[0]));
+                memcpy(tri[1], v[i], sizeof(tri[0]));
+                memcpy(tri[2], v[i + 1], sizeof(tri[0]));
+                streamed.count = 3;
+                streamed.vertices = &tri[0][0];
+                streamed.state = &old.c.cur;
+                streamed.polygon_modes = NULL;
+                streamed.fill_by_triangle = false;
+                sgi_soft_draw(old.rec.rules, &old.rec.target, &streamed);
+            }
+            if (malformed && mixed) {
+                g_assert_cmpuint(frag_count(&actual, 0), ==, W * H);
+            } else {
+                g_assert_cmpmem(&old.p, sizeof(old.p),
+                                &actual.p, sizeof(actual.p));
+                g_assert_cmpuint(frag_count(&actual, 0), <, W * H);
+            }
+            if (!malformed) {
+                memset(&actual.p, 0, sizeof(actual.p));
+                pixels.reads = 0;
+                d.fill_by_triangle = false;
+                sgi_soft_draw(actual.rec.rules, &actual.rec.target, &d);
+                g_assert_cmpuint(frag_count(&actual, 0), ==, W * H);
+                g_assert_cmpuint(pixels.reads, ==, 0);
+            }
+        }
+    }
+}
+
+static void test_polygon_mode_coincident_records(void)
+{
+    const float xy[4][2] = {
+        { 8.5, 8.5 }, { 8.5, 8.5 }, { 24.5, 8.5 }, { 24.5, 24.5 },
+    };
+    const float exact[4][2] = {
+        { 16.5, 8.5 }, { 8.5, 16.5 }, { 24.5, 24.5 }, { 24.5, 8.5 },
+    };
+    FragScene f;
+    float v[4][SGI_GL_VERTEX_FLOATS];
+
+    frag_init(&f);
+    f.c.cur.stencil_test = true;
+    f.c.cur.stencil_op[2] = SGI_GL_INCR;
+    polygon_mode_vertices(v, xy, 4);
+    polygon_mode_draw(&f, v, 4, SGI_GL_POLYGON, SGI_GL_POINT, SGI_GL_POINT);
+    g_assert_cmpuint(f.p.stencil[planes_index(8, 8)], ==, 2);
+    memset(&f.p, 0, sizeof(f.p));
+    f.c.cur.clip_planes = 1;
+    f.c.cur.clip_plane[0][0] = 1;
+    f.c.cur.clip_plane[0][3] = 1 - 16.5f / 32;
+    polygon_mode_vertices(v, exact, 4);
+    polygon_mode_draw(&f, v, 4, SGI_GL_POLYGON, SGI_GL_POINT, SGI_GL_POINT);
+    g_assert_cmpuint(f.p.stencil[planes_index(16, 8)], ==, 1);
+    g_assert_cmpuint(f.p.stencil[planes_index(16, 20)], ==, 1);
+}
+
+static void test_polygon_mode_texture_boundary(void)
+{
+    FragScene f;
+    float v[4][SGI_GL_VERTEX_FLOATS];
+    TexturePixels pixels = { .pixel = {
+        0xff0000ff, 0xff0000ff, 0xff0000ff, 0xff0000ff } };
+    SGIGLTexImage image = texture_image(&pixels);
+    uint32_t modes[2] = { SGI_GL_LINE, SGI_GL_LINE };
+    SGIGLDraw d = {
+        .mode = SGI_GL_POLYGON, .count = 4, .vertices = &v[0][0],
+        .state = &f.c.cur, .polygon_modes = modes, .line_width = 1,
+    };
+
+    frag_init(&f);
+    f.c.cur.texture_2d = true;
+    f.rec.target.texture = &image;
+    polygon_mode_vertices(v, polygon_mode_square, 4);
+    v[3][SGI_GL_V_TEXCOORD + 3] = 0;
+    f.c.cur.depth_test = true;
+    f.c.cur.depth_func = SGI_GL_ALWAYS;
+    f.c.cur.stencil_test = true;
+    f.c.cur.stencil_op[2] = SGI_GL_INCR;
+    sgi_soft_draw(f.rec.rules, &f.rec.target, &d);
+    g_assert_cmpuint(pixels.reads, ==, 0);
+    g_assert_cmpuint(frag_count(&f, 0), ==, W * H);
+    g_assert_cmpuint(f.p.depth[planes_index(16, 8)], ==, 0);
+    g_assert_cmpuint(f.p.stencil[planes_index(16, 8)], ==, 0);
+    v[3][SGI_GL_V_TEXCOORD + 3] = 1;
+    sgi_soft_draw(f.rec.rules, &f.rec.target, &d);
+    g_assert_cmphex(frag_pixel(&f, 16, 8), ==, 0xff0000);
+    g_assert_cmpuint(f.p.stencil[planes_index(16, 8)], ==, 1);
+    g_assert_cmpuint(f.p.depth[planes_index(16, 8)], ==, 8388608);
+    g_assert_cmpuint(pixels.reads, >, 0);
+}
+
+static int polygon_allocation_budget = -1;
+
+#ifdef SGI_GL_ALLOCATION_WRAP
+void *__real_g_try_realloc_n(void *mem, gsize blocks, gsize size);
+void *__wrap_g_try_realloc_n(void *mem, gsize blocks, gsize size);
+
+void *__wrap_g_try_realloc_n(void *mem, gsize blocks, gsize size)
+{
+    if (polygon_allocation_budget == 0) {
+        return NULL;
+    }
+    if (polygon_allocation_budget > 0) {
+        polygon_allocation_budget--;
+    }
+    return __real_g_try_realloc_n(mem, blocks, size);
+}
+#endif
+
+static void test_polygon_mode_workspace_failure(void)
+{
+    const float xy[5][2] = {
+        { 8.5, 8.5 }, { 24.5, 8.5 }, { 32.5, 16.5 },
+        { 24.5, 24.5 }, { 8.5, 24.5 },
+    };
+    FragScene f;
+    float v[5][SGI_GL_VERTEX_FLOATS];
+    uint32_t modes[2] = { SGI_GL_LINE, SGI_GL_LINE };
+    SGIGLDraw d = {
+        .mode = SGI_GL_POLYGON, .count = 5, .vertices = &v[0][0],
+        .state = &f.c.cur, .polygon_modes = modes, .line_width = 1,
+    };
+
+#ifndef SGI_GL_ALLOCATION_WRAP
+    g_test_skip("linker does not support allocation wrapping");
+    return;
+#endif
+    frag_init(&f);
+    polygon_mode_vertices(v, xy, 5);
+    f.c.cur.depth_test = true;
+    f.c.cur.depth_func = SGI_GL_ALWAYS;
+    f.c.cur.stencil_test = true;
+    f.c.cur.stencil_op[2] = SGI_GL_INCR;
+    polygon_allocation_budget = 0;
+    g_assert_cmpint(sgi_soft_draw(f.rec.rules, &f.rec.target, &d), ==,
+                    SGI_GL_DRAW_OUT_OF_MEMORY);
+    polygon_allocation_budget = -1;
+    g_assert_cmpuint(frag_count(&f, 0), ==, W * H);
+    for (unsigned i = 0; i < W * H; i++) {
+        g_assert_cmpuint(f.p.depth[i], ==, 0);
+        g_assert_cmpuint(f.p.stencil[i], ==, 0);
+    }
+    g_assert_cmpint(sgi_soft_draw(f.rec.rules, &f.rec.target, &d), ==,
+                    SGI_GL_DRAW_OK);
+    g_assert_cmphex(frag_pixel(&f, 16, 8), ==, 0xffffff);
+}
+
+static SGIGLDrawResult recorder_checked_draw(void *opaque, const SGIGLDraw *d)
+{
+    Recorder *r = opaque;
+    SGIGLDrawResult result;
+
+    g_assert_cmphex(d->context, ==, 0x1234);
+    result = sgi_soft_draw(r->rules, &r->target, d);
+    r->draws++;
+    return result;
+}
+
+static void test_polygon_mode_activation(void)
+{
+    FragScene f;
+    SGIGLSink missing = { 0 };
+    uint32_t mode = SGI_GL_POLYGON;
+
+    frag_init(&f);
+    g_assert_false(sgi_gl_enable_polygon_modes(&f.c, &missing));
+    g_assert_false(f.c.polygon.enabled);
+    f.sink.draw_checked = recorder_checked_draw;
+    g_assert_true(sgi_gl_enable_polygon_modes(&f.c, &f.sink));
+    frag_command(&f, SGI_GL_OP_POLYGON_MODE,
+                 (uint32_t[]) { SGI_GL_FRONT_AND_BACK, SGI_GL_LINE }, 2);
+    frag_command(&f, SGI_GL_OP_BEGIN, &mode, 1);
+    g_assert_false(sgi_gl_enable_polygon_modes(&f.c, &f.sink));
+    for (unsigned i = 0; i < 4; i++) {
+        wide_vertex(&f, polygon_mode_square[i][0], polygon_mode_square[i][1]);
+    }
+    g_assert_cmpuint(f.rec.draws, ==, 0);
+    g_assert_cmpuint(frag_count(&f, 0), ==, W * H);
+    frag_command(&f, SGI_GL_OP_END, NULL, 0);
+    g_assert_cmpuint(f.rec.draws, ==, 1);
+    g_assert_cmphex(frag_pixel(&f, 16, 16), ==, 0);
+    g_assert_cmphex(frag_pixel(&f, 16, 8), ==, 0xffffff);
+    g_assert_null(f.c.polygon.vertices);
+    memset(&f.p, 0, sizeof(f.p));
+    f.sink.draw_checked = NULL;
+    frag_command(&f, SGI_GL_OP_BEGIN, &mode, 1);
+    for (unsigned i = 0; i < 4; i++) {
+        wide_vertex(&f, polygon_mode_square[i][0], polygon_mode_square[i][1]);
+    }
+    frag_command(&f, SGI_GL_OP_END, NULL, 0);
+    g_assert_cmpuint(f.rec.draws, ==, 1);
+    g_assert_cmpuint(frag_count(&f, 0), ==, W * H);
+    g_assert_null(f.c.polygon.vertices);
+    g_assert_cmpuint(f.c.polygon.error, ==, 0);
+    sgi_gl_cleanup(&f.c);
+}
+
+static void test_polygon_mode_activation_oom(void)
+{
+    const float xy[5][2] = {
+        { 8.5, 8.5 }, { 24.5, 8.5 }, { 32.5, 16.5 },
+        { 24.5, 24.5 }, { 8.5, 24.5 },
+    };
+    FragScene f;
+    uint32_t mode = SGI_GL_POLYGON, error;
+
+#ifndef SGI_GL_ALLOCATION_WRAP
+    g_test_skip("linker does not support allocation wrapping");
+    return;
+#endif
+    frag_init(&f);
+    f.sink.draw_checked = recorder_checked_draw;
+    g_assert_true(sgi_gl_enable_polygon_modes(&f.c, &f.sink));
+    frag_command(&f, SGI_GL_OP_POLYGON_MODE,
+                 (uint32_t[]) { SGI_GL_FRONT_AND_BACK, SGI_GL_LINE }, 2);
+    frag_command(&f, SGI_GL_OP_BEGIN, &mode, 1);
+    for (unsigned i = 0; i < 5; i++) {
+        wide_vertex(&f, xy[i][0], xy[i][1]);
+    }
+    polygon_allocation_budget = 0;
+    frag_command(&f, SGI_GL_OP_END, NULL, 0);
+    polygon_allocation_budget = -1;
+    g_assert_cmpuint(f.rec.draws, ==, 1);
+    g_assert_null(f.c.polygon.vertices);
+    g_assert_false(f.c.in_begin);
+    g_assert_cmpuint(frag_count(&f, 0), ==, W * H);
+    g_assert_cmphex(f.c.polygon.error, ==, SGI_GL_OUT_OF_MEMORY);
+    frag_command(&f, SGI_GL_OP_BEGIN, &mode, 1);
+    for (unsigned i = 0; i < 5; i++) {
+        wide_vertex(&f, xy[i][0], xy[i][1]);
+    }
+    frag_command(&f, SGI_GL_OP_END, NULL, 0);
+    g_assert_cmphex(frag_pixel(&f, 16, 8), ==, 0xffffff);
+    g_assert_true(sgi_gl_consume_error(&f.c, &error));
+    g_assert_cmphex(error, ==, SGI_GL_OUT_OF_MEMORY);
+    g_assert_true(sgi_gl_consume_error(&f.c, &error));
+    g_assert_cmpuint(error, ==, 0);
+    sgi_gl_cleanup(&f.c);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -6290,5 +7044,41 @@ int main(int argc, char **argv)
                     test_window_matrix_rows_down_facing);
     g_test_add_func("/sgi-gl/window-matrix-off-is-unchanged",
                     test_window_matrix_off_is_unchanged);
+    g_test_add_func("/sgi-gl/polygon-mode-boundary",
+                    test_polygon_mode_boundary);
+    g_test_add_func("/sgi-gl/polygon-mode-edge-flags",
+                    test_polygon_mode_edge_flags);
+    g_test_add_func("/sgi-gl/polygon-mode-client-boundary",
+                    test_polygon_mode_client_boundary);
+    g_test_add_func("/sgi-gl/polygon-mode-facing",
+                    test_polygon_mode_facing);
+    g_test_add_func("/sgi-gl/polygon-mode-zero-area",
+                    test_polygon_mode_zero_area);
+    g_test_add_func("/sgi-gl/polygon-mode-strip-edges",
+                    test_polygon_mode_strip_edges);
+    g_test_add_func("/sgi-gl/polygon-mode-volume-boundary",
+                    test_polygon_mode_volume_boundary);
+    g_test_add_func("/sgi-gl/polygon-mode-provoking",
+                    test_polygon_mode_provoking);
+    g_test_add_func("/sgi-gl/polygon-mode-offset",
+                    test_polygon_mode_offset);
+    g_test_add_func("/sgi-gl/polygon-mode-stipple",
+                    test_polygon_mode_stipple);
+    g_test_add_func("/sgi-gl/polygon-mode-fill-fan",
+                    test_polygon_mode_fill_fan);
+    g_test_add_func("/sgi-gl/polygon-mode-invalid-fill",
+                    test_polygon_mode_invalid_fill);
+    g_test_add_func("/sgi-gl/polygon-mode-coincident-records",
+                    test_polygon_mode_coincident_records);
+    g_test_add_func("/sgi-gl/polygon-mode-texture-boundary",
+                    test_polygon_mode_texture_boundary);
+    g_test_add_func("/sgi-gl/polygon-mode-workspace-failure",
+                    test_polygon_mode_workspace_failure);
+    g_test_add_func("/sgi-gl/polygon-mode-activation",
+                    test_polygon_mode_activation);
+    g_test_add_func("/sgi-gl/polygon-mode-activation-oom",
+                    test_polygon_mode_activation_oom);
+    g_test_add_func("/sgi-gl/polygon-mode-stipple-bounds",
+                    test_polygon_mode_stipple_bounds);
     return g_test_run();
 }
