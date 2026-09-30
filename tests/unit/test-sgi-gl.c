@@ -5817,6 +5817,83 @@ static void test_alpha_read_failures(void)
 
 }
 
+/* DRAW_NONE removes colour work, not independently enabled plane writes. */
+static void test_alpha_zero_targets(void)
+{
+    AlphaScene s;
+    const uint8_t byte = 0x80;
+
+    for (unsigned operation = 0; operation < 3; operation++) {
+        for (unsigned blend = 0; blend < 2; blend++) {
+            alpha_init(&s);
+            alpha_depth_stencil(&s);
+            s.f.c.cur.draw_buffers = 0;
+            s.f.rec.target.load_rgba = NULL;
+            s.f.c.cur.colour_mask = SGI_GL_COLOUR_MASK_ALPHA;
+            s.f.c.cur.blend = blend;
+            if (operation == 0) {
+                alpha_point(&s, 255, 0, 0, 1);
+            } else {
+                SGIRasterOp op = {
+                    .kind = operation == 1 ? SGI_RASTER_BITMAP :
+                                             SGI_RASTER_CLEAR,
+                    .ntargets = 0,
+                    .x0 = 32, .y0 = 32, .x1 = 32, .y1 = 32,
+                    .clip = { .n = 1, .r = { {32, 32, 32, 32} } },
+                    .clear_buffers = SGI_GL_COLOR_BUFFER_BIT |
+                                     SGI_GL_DEPTH_BUFFER_BIT |
+                                     SGI_GL_STENCIL_BUFFER_BIT,
+                    .clear_colour_mask = SGI_GL_COLOUR_MASK_ALPHA,
+                    .clear_depth24 = 17, .clear_stencil = 9,
+                    .stencil_mask = 255,
+                    .bitmap = {
+                        .state = &s.f.c.cur, .x = 32, .y = 32,
+                        .width = 1, .height = 1, .count = 1,
+                        .bytes = &byte, .z = 0.5, .rgba = {1, 0, 0, 1},
+                    },
+                };
+
+                sgi_soft_raster(&s.rules, &s.f.rec.target, &op);
+            }
+            g_assert_cmpuint(s.stores, ==, 0);
+            g_assert_cmpuint(s.reads, ==, 0);
+            g_assert_cmpuint(s.f.p.depth[planes_index(32, 32)], ==,
+                            operation == 2 ? 17 : 8388608);
+            g_assert_cmpuint(s.f.p.stencil[planes_index(32, 32)], ==,
+                            operation == 2 ? 9 : 1);
+        }
+    }
+    /* Bitmap selection comes from the op, independently of DRAW_NONE. */
+    alpha_init(&s);
+    alpha_depth_stencil(&s);
+    s.f.c.cur.draw_buffers = 0;
+    s.f.c.cur.colour_mask = SGI_GL_COLOUR_MASK_ALPHA;
+    s.f.rec.target.load_rgba = NULL;
+    {
+        SGIRasterOp op = {
+            .kind = SGI_RASTER_BITMAP, .ntargets = 1,
+            .bitmap = {
+                .state = &s.f.c.cur, .x = 32, .y = 32,
+                .width = 1, .height = 1, .count = 1,
+                .bytes = &byte, .z = 0.5, .rgba = {1, 0, 0, 1},
+            },
+        };
+
+        sgi_soft_raster(&s.rules, &s.f.rec.target, &op);
+    }
+    g_assert_cmpuint(s.stores, ==, 0);
+    g_assert_cmpuint(s.f.p.depth[planes_index(32, 32)], ==, 0);
+    g_assert_cmpuint(s.f.p.stencil[planes_index(32, 32)], ==, 0);
+    /* Absent colour targets do not make a missing alpha store consistent. */
+    alpha_init(&s);
+    alpha_depth_stencil(&s);
+    s.f.c.cur.draw_buffers = 0;
+    s.f.rec.target.store_rgba = NULL;
+    s.f.rec.target.load_rgba = NULL;
+    alpha_point(&s, 255, 0, 0, 1);
+    g_assert_cmpuint(s.f.p.depth[planes_index(32, 32)], ==, 0);
+}
+
 static void test_alpha_texture_fog_rejection(void)
 {
     TexturePixels texels = { .pixel = {
@@ -5964,6 +6041,7 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-gl/alpha-clear-precision",
                     test_alpha_clear_precision);
     g_test_add_func("/sgi-gl/alpha-read-failures", test_alpha_read_failures);
+    g_test_add_func("/sgi-gl/alpha-zero-targets", test_alpha_zero_targets);
     g_test_add_func("/sgi-gl/alpha-texture-fog-rejection",
                     test_alpha_texture_fog_rejection);
     g_test_add_func("/sgi-gl/wide-coverage", test_wide_coverage);

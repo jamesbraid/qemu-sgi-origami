@@ -657,7 +657,8 @@ static bool sgi_soft_setup_ops(SGISoftDraw *r)
     r->dither = st->dither && r->rules->dither != SGI_DITHER_NONE;
     if (!st->index_bits) {
         r->rgba_mask = sgi_soft_rgba_mask(r->rules, st->colour_mask);
-        r->rgba_read = r->rgba_mask && (r->blend || r->logic_op ||
+        r->rgba_read = r->ntargets && r->rgba_mask &&
+            (r->blend || r->logic_op ||
             r->rgba_mask != sgi_soft_rgba_mask(r->rules,
                                               SGI_GL_COLOUR_MASK_ALL));
         if (!sgi_soft_rgba_capable(r->rules, r->t, r->rgba_read)) {
@@ -2105,11 +2106,11 @@ static void sgi_soft_bitmap(const SGIRasterRules *rules,
         !sgi_soft_check_index(t, b->state->index_bits)) {
         return;
     }
+    r.ntargets = MIN(op->ntargets, 2);
+    memcpy(r.targets, op->targets, sizeof(r.targets));
     if (!sgi_soft_setup_ops(&r)) {
         return;
     }
-    r.ntargets = MIN(op->ntargets, 2);
-    memcpy(r.targets, op->targets, sizeof(r.targets));
     for (uint32_t i = 0; i < b->count && row_bytes; i++) {
         uint32_t byte = b->first + i;
         int64_t row = byte / row_bytes, col0 = (byte % row_bytes) * 8;
@@ -2147,7 +2148,7 @@ void sgi_soft_raster(const SGIRasterRules *rules, const SGIRasterTarget *t,
     uint32_t rgb = 0, smax, mask = sgi_soft_colour_bits(rules);
     uint32_t rgba_mask = sgi_soft_rgba_mask(rules, op->clear_colour_mask);
     bool rgba = !op->index_bits && t->store_rgba;
-    bool rgba_read = colour && rgba_mask &&
+    bool rgba_read = colour && op->ntargets && rgba_mask &&
                      rgba_mask != sgi_soft_rgba_mask(rules,
                                                     SGI_GL_COLOUR_MASK_ALL);
     bool rgba_reported = false;
