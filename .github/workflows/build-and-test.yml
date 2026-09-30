@@ -1,0 +1,47 @@
+name: MIPS64 build and qtests
+
+on:
+  push:
+    branches: [sgi-origami]
+  pull_request:
+    branches: [sgi-origami]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-and-test-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-qtest:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            build-essential ca-certificates git libfdt-dev libglib2.0-dev \
+            libpixman-1-dev libsdl2-dev ninja-build pkg-config python3-venv \
+            zlib1g-dev
+      - name: Configure MIPS64
+        run: |
+          ./configure --target-list=mips64-softmmu --enable-tests --enable-hmp \
+            --enable-slirp --enable-sdl --enable-vnc --disable-docs --disable-gtk
+      - name: Build emulator and image tool
+        run: ninja -C build -j2 qemu-system-mips64 qemu-img
+      - name: Run MIPS64 qtests
+        run: QTEST_QEMU_ARGS="-L \"$PWD/pc-bios\"" make -C build -j2 check-qtest-mips64
+      - name: Upload build and test logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mips64-build-and-qtest-logs
+          path: build/meson-logs/
+          if-no-files-found: ignore
+          retention-days: 14
