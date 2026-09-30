@@ -7,6 +7,7 @@
 #include "libqtest.h"
 #include "qobject/qdict.h"
 #include "qobject/qlist.h"
+#include "sgi-migrate.h"
 
 #define CHIP "/machine/peripheral/xbridge"
 #define HOST_PORT 0xb
@@ -647,6 +648,232 @@ static void test_realize_needs_fabric(void)
     g_test_trap_assert_stderr("*needs the fabric link*");
 }
 
+#define ASSEMBLY "/machine/peripheral/assembly"
+#define ASSEMBLY_CMD "-M none -cpu R10000 -S " \
+    "-device sgi-xbridge-assembly-fixture,id=assembly," \
+    "chip1-e-port=8,chip1-f-port=9,chip2-e-port=0xc,chip2-f-port=0xd "
+
+static QTestState *assembly_start(const char *extra)
+{
+    QTestState *qts = qtest_initf(ASSEMBLY_CMD "%s", extra);
+    unsigned i;
+
+    qtest_sysbus_mmio_map(qts, ASSEMBLY, 0, FABRIC);
+    qtest_sysbus_mmio_map(qts, ASSEMBLY, 1, BASE);
+    for (i = 0; i < 8; i++) {
+        qtest_sysbus_mmio_map(qts, ASSEMBLY, 2 + i, VIEW(i));
+    }
+    return qts;
+}
+
+static void test_six_heads(void)
+{
+    QTestState *qts = assembly_start("");
+    const unsigned cable[] = { 8, 9, 0xc, 0xd };
+    unsigned i;
+
+    g_assert_cmphex(reg_read(qts, 0, 0), ==, XBOW_ID);
+    g_assert_cmphex(reg_read(qts, 0xb, 0), ==, 0);
+    for (i = 0; i < 6; i++) {
+        g_assert_cmphex(qtest_readl(qts, VIEW(i) + 4), ==, HEAD_ID);
+        g_assert_cmphex(qtest_readl(qts, VIEW(i) + 0x24) & 0xf, ==, 0xf);
+        qtest_writel(qts, VIEW(i) + 0x2c, 0x12340 + i);
+        qtest_writel(qts, VIEW(i) + 0x4c, 0x01234000 + i);
+        qtest_writel(qts, VIEW(i) + 0x24, 0x0f003208 + i);
+    }
+    for (i = 0; i < 6; i++) {
+        g_assert_cmphex(qtest_readl(qts, VIEW(i) + 0x2c), ==, 0x12340 + i);
+        g_assert_cmphex(qtest_readl(qts, VIEW(i) + 0x4c), ==, 0x01234000 + i);
+        g_assert_cmphex(qtest_readl(qts, VIEW(i) + 0x24) & 0xf, ==, 8 + i);
+    }
+    for (i = 0; i < 4; i++) {
+        g_assert_cmphex(reg_read(qts, cable[i], 0x28), ==, 0x12342 + i);
+        g_assert_true(link_aux(qts, cable[i]) & (1U << 5));
+    }
+    g_assert_cmphex(qtest_readl(qts, VIEW(6) + 4), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, VIEW(7) + 4), ==, 0);
+    qtest_system_reset(qts);
+    for (i = 0; i < 6; i++) {
+        g_assert_cmphex(qtest_readl(qts, VIEW(i) + 0x24) & 0xf, ==, 0xf);
+        g_assert_cmphex(qtest_readl(qts, VIEW(i) + 0x4c), ==, 0x03ff1810);
+    }
+    qtest_quit(qts);
+}
+
+static void test_assembly_ingress_routes(void)
+{
+    QTestState *qts = assembly_start("");
+    const unsigned cable[] = { 8, 9, 0xc, 0xd };
+    unsigned i, j;
+
+    for (i = 0; i < 4; i++) {
+        uint64_t base = 0x1000000000000000ULL +
+                        (uint64_t)i * 0x10000000000000ULL;
+
+        qtest_sysbus_mmio_map(qts, ASSEMBLY, 10 + i, base);
+        for (j = 0; j < 4; j++) {
+            uint64_t address = base + ((uint64_t)cable[j] << 48) + 4;
+
+            g_assert_cmphex(qtest_readl(qts, address), ==,
+                            i == j ? 0 : HEAD_ID);
+        }
+    }
+    qtest_quit(qts);
+}
+
+static void test_six_head_interrupts(void)
+{
+    QTestState *qts = assembly_start("");
+    unsigned i;
+
+    for (i = 0; i < 6; i++) {
+        g_autofree char *head = g_strdup_printf(
+            ASSEMBLY "/chip%u/head-%c", i / 2, i % 2 ? 'f' : 'e');
+        uint64_t scratch = SCRATCH + i * 8;
+
+        qtest_writel(qts, VIEW(i) + 0x34, 0xa << 16);
+        qtest_writel(qts, VIEW(i) + 0x3c, scratch);
+        qtest_writel(qts, VIEW(i) + 0x14c, 0x80 + i);
+        qtest_writel(qts, VIEW(i) + 0x10c, 8);
+        qtest_writel(qts, VIEW(i) + 0x11c, 8);
+        qtest_set_irq_in(qts, head, NULL, 3, 1);
+        g_assert_cmphex(qtest_readq(qts, FABRIC + scratch), ==, 0x180 + i);
+        qtest_set_irq_in(qts, head, NULL, 3, 0);
+        g_assert_cmphex(qtest_readq(qts, FABRIC + scratch), ==, 0x80 + i);
+    }
+    qtest_quit(qts);
+}
+
+static void test_six_head_dma(void)
+{
+    QTestState *qts = assembly_start(
+        "-device sgi-bridge-dma-test,bus=fixture0-head-e.0,addr=0 "
+        "-device sgi-bridge-dma-test,bus=fixture0-head-f.0,addr=0 "
+        "-device sgi-bridge-dma-test,bus=fixture1-head-e.0,addr=0 "
+        "-device sgi-bridge-dma-test,bus=fixture1-head-f.0,addr=0 "
+        "-device sgi-bridge-dma-test,bus=fixture2-head-e.0,addr=0 "
+        "-device sgi-bridge-dma-test,bus=fixture2-head-f.0,addr=0");
+    unsigned i;
+
+    for (i = 0; i < 6; i++) {
+        uint64_t base = VIEW(i);
+        uint64_t scratch = SCRATCH + i * 8;
+        uint64_t expected = 0x1011121314151617ULL +
+                            0x1010101010101010ULL * i;
+
+        qtest_writel(qts, base + 0x20010, 0x01000000);
+        qtest_writel(qts, base + 0x20004, 6);
+        qtest_writel(qts, base + 0x204, 0x81010);
+        qtest_writel(qts, base + 0x84, 0xa << 20);
+        qtest_writel(qts, base + 0x200000, 0x80000000 | scratch);
+        qtest_writel(qts, base + 0x200018, 0);
+        qtest_writel(qts, base + 0x200004, 8);
+        qtest_writel(qts, base + 0x200008, 0x10 * (i + 1));
+        qtest_writel(qts, base + 0x20000c, 1);
+        g_assert_cmphex(qtest_readq(qts, FABRIC + scratch), ==, expected);
+    }
+    qtest_quit(qts);
+}
+
+static void test_assembly_migration(void)
+{
+    GError *error = NULL;
+    g_autofree char *dir = g_dir_make_tmp("xbridge-assembly-XXXXXX", &error);
+    g_autofree char *socket = NULL, *uri = NULL;
+    QTestState *from = assembly_start("");
+    QTestState *to = assembly_start("-incoming defer");
+    unsigned i;
+
+    g_assert_no_error(error);
+    socket = g_build_filename(dir, "migration.sock", NULL);
+    uri = g_strdup_printf("unix:%s", socket);
+    for (i = 0; i < 6; i++) {
+        qtest_writel(from, VIEW(i) + 0x24, 0x0f003208 + i);
+        qtest_writel(from, VIEW(i) + 0x4c, 0x123400 + i);
+    }
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    sgi_migrate_stopped(from, uri);
+    sgi_wait_migration_status(to, "completed", 30);
+    for (i = 0; i < 6; i++) {
+        g_assert_cmphex(qtest_readl(to, VIEW(i) + 0x24) & 0xf, ==, 8 + i);
+        g_assert_cmphex(qtest_readl(to, VIEW(i) + 0x4c), ==, 0x123400 + i);
+    }
+    g_assert_cmphex(qtest_readl(to, VIEW(6) + 4), ==, 0);
+    g_assert_cmphex(qtest_readl(to, VIEW(7) + 4), ==, 0);
+    qtest_system_reset(to);
+    for (i = 0; i < 6; i++) {
+        g_assert_cmphex(qtest_readl(to, VIEW(i) + 0x24) & 0xf, ==, 0xf);
+    }
+    qtest_quit(from);
+    qtest_quit(to);
+    unlink(socket);
+    rmdir(dir);
+}
+
+static void test_assembly_duplicate_port(void)
+{
+    if (g_test_subprocess()) {
+        QTestState *qts = qtest_init("-M none -cpu R10000 -S "
+            "-device sgi-xbridge-assembly-fixture,id=assembly,"
+            "chip1-e-port=8,chip1-f-port=9,chip2-e-port=0xc,chip2-f-port=8");
+
+        qtest_quit(qts);
+        return;
+    }
+    g_test_trap_subprocess(NULL, 10 * G_TIME_SPAN_SECOND, 0);
+    g_test_trap_assert_failed();
+    g_test_trap_assert_stderr("*fixture cables share U0 port 8*");
+}
+
+static void test_superbridge_leaves(void)
+{
+    QTestState *qts = qtest_init("-M none -cpu R10000 -S "
+        "-device sgi-xbridge,id=xbridge,superbridge=on");
+
+    qtest_sysbus_mmio_map(qts, CHIP, 0, BASE);
+
+    g_assert_cmphex(reg_read(qts, 0, 0), ==, 0);
+    g_assert_cmphex(reg_read(qts, 0xe, 0), ==, HEAD_ID);
+    g_assert_cmphex(reg_read(qts, 0xf, 0), ==, HEAD_ID);
+    g_assert_cmphex(reg_read(qts, 0xe, 0x20) & 0xf, ==, 0xf);
+    g_assert_cmphex(reg_read(qts, 0xf, 0x20) & 0xf, ==, 0xf);
+    reg_write(qts, 0xe, 0x28, 0x12345);
+    reg_write(qts, 0xf, 0x28, 0x23456);
+    g_assert_cmphex(reg_read(qts, 0xe, 0x28), ==, 0x12345);
+    g_assert_cmphex(reg_read(qts, 0xf, 0x28), ==, 0x23456);
+    qtest_quit(qts);
+}
+
+static void test_superbridge_rejects_e_nic(void)
+{
+    if (g_test_subprocess()) {
+        QTestState *qts = qtest_init("-M none -cpu R10000 -S "
+            "-device sgi-xbridge,superbridge=on,board-part-e=NOT-OBSERVED");
+
+        qtest_quit(qts);
+        return;
+    }
+    g_test_trap_subprocess(NULL, 10 * G_TIME_SPAN_SECOND, 0);
+    g_test_trap_assert_failed();
+    g_test_trap_assert_stderr("*Super Bridge head E has no NIC*");
+}
+
+static void test_assembly_rejects_host_port(void)
+{
+    if (g_test_subprocess()) {
+        QTestState *qts = qtest_init("-M none -cpu R10000 -S "
+            "-device sgi-xbridge-assembly-fixture,id=assembly,"
+            "chip1-e-port=8,chip1-f-port=9,chip2-e-port=0xc,chip2-f-port=0xa");
+
+        qtest_quit(qts);
+        return;
+    }
+    g_test_trap_subprocess(NULL, 10 * G_TIME_SPAN_SECOND, 0);
+    g_test_trap_assert_failed();
+    g_test_trap_assert_stderr("*other than host port a*");
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -687,5 +914,21 @@ int main(int argc, char **argv)
     qtest_add_func("/sn1/xbridge-chip/realize-checks", test_realize_checks);
     qtest_add_func("/sn1/xbridge-chip/realize-needs-fabric",
                    test_realize_needs_fabric);
+    qtest_add_func("/sn1/xbridge-chip/superbridge-leaves",
+                   test_superbridge_leaves);
+    qtest_add_func("/sn1/xbridge-chip/six-heads", test_six_heads);
+    qtest_add_func("/sn1/xbridge-chip/six-head-interrupts",
+                   test_six_head_interrupts);
+    qtest_add_func("/sn1/xbridge-chip/six-head-dma", test_six_head_dma);
+    qtest_add_func("/sn1/xbridge-chip/assembly-migration",
+                   test_assembly_migration);
+    qtest_add_func("/sn1/xbridge-chip/assembly-duplicate-port",
+                   test_assembly_duplicate_port);
+    qtest_add_func("/sn1/xbridge-chip/assembly-ingress-routes",
+                   test_assembly_ingress_routes);
+    qtest_add_func("/sn1/xbridge-chip/superbridge-rejects-e-nic",
+                   test_superbridge_rejects_e_nic);
+    qtest_add_func("/sn1/xbridge-chip/assembly-rejects-host-port",
+                   test_assembly_rejects_host_port);
     return g_test_run();
 }

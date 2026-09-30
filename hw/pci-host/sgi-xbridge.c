@@ -1107,13 +1107,7 @@ static const TypeInfo xbridge_type = {
     },
 };
 
-/*
- * The chip: the crossbar half at widget 0, the two heads at widgets 0xe and
- * 0xf, and the routing between them and
- * the one host port. The machine instantiates this and gets the two PCI root
- * buses; it never composes the halves
- * itself.
- */
+/* XBridge crossbar mode and strap-selected independent Super Bridge heads. */
 
 #define CHIP_WIDGET_SHIFT 44
 #define CHIP_WIDGET_SPACE (1ULL << CHIP_WIDGET_SHIFT)
@@ -1125,6 +1119,18 @@ static const TypeInfo xbridge_type = {
 /* The widgets a machine gets a view of, in SysBus MMIO region order. */
 static const unsigned chip_view_widget[] = { 0, CHIP_HEAD_E, CHIP_HEAD_F };
 
+typedef struct SGIXBridgePort {
+    MemoryRegion face;
+    MemoryRegion packets;
+    MemoryRegion cpu_alias;
+    MemoryRegion packet_alias;
+    MemoryRegion view;
+    MemoryRegion routes;
+    MemoryRegion route_none;
+    MemoryRegion route_widget[SGI_XIO_WIDGETS];
+    bool present;
+} SGIXBridgePort;
+
 struct SGIXBridgeState {
     SysBusDevice parent_obj;
     SGIXBridgeXbowState xbow;
@@ -1132,40 +1138,15 @@ struct SGIXBridgeState {
     MemoryRegion xio;
     MemoryRegion unmapped;
     MemoryRegion view[ARRAY_SIZE(chip_view_widget)];
-    /*
-     * The external port's own two slots, and what a widget put in them
-     * is reached through. They are containers rather than the widget's
-     * own regions so that everything pointing at the port -- the
-     * XIO decode, the crossbar's and both heads' packet targets --
-     * can be wired before their owners realize, while the widget itself
-     * arrives whenever it arrives. Empty, they occlude nothing, so the
-     * port answers exactly as an unpopulated one.
-     */
-    MemoryRegion xio_face;
+    SGIXBridgePort external[SGI_XBRIDGE_EXTERNAL_PORTS];
     MemoryRegion xio_projection[2];
     bool xio_projection_built;
-    MemoryRegion xio_packets;
-    MemoryRegion xio_packet_alias;
-    MemoryRegion xio_view;
-    bool xio_view_built;
-    bool xio_present;
     MemoryRegion *xio_widget;
     MemoryRegion *xio_widget_packets;
-    /*
-     * What a widget on the external port sends into over its XIO link: a
-     * widget-addressed space, destination in bits 51:48, as a crossbar
-     * port presents it. The crossbar carries a packet from any link to any
-     * other (XBridge specification rev 0.5, printed page 68: "a link
-     * cannot send packets to itself"), so every destination the chip has
-     * is routed: widget 0, the host's port and both heads. Anything else
-     * -- the port itself, or an external port with nothing behind it --
-     * lands on xio_route_none, which logs it.
-     */
-    MemoryRegion xio_routes;
-    MemoryRegion xio_route_none;
-    MemoryRegion xio_route_host;
-    MemoryRegion xio_route_widget0;
-    MemoryRegion xio_route_head[2];
+    MemoryRegion *head_fabric[2];
+    MemoryRegion head_target[2][SGI_XIO_WIDGETS];
+    bool superbridge;
+    uint8_t mode;
     MemoryRegion *fabric;
     qemu_irq head_reset[2];
     /*
@@ -1192,14 +1173,18 @@ static MemoryRegion *chip_widget_view(SGIXBridgeState *s, unsigned widget)
 {
     unsigned i;
 
+    if (s->superbridge && widget == 0) {
+        return NULL;
+    }
     for (i = 0; i < ARRAY_SIZE(chip_view_widget); i++) {
         if (chip_view_widget[i] == widget) {
             return &s->view[i];
         }
     }
     /* Populated or not, the external port is a position the chip decodes. */
-    if (s->xio_view_built && widget == s->xio_port) {
-        return &s->xio_view;
+    if (!s->superbridge && widget >= CHIP_LINK_FIRST &&
+        widget <= CHIP_LINK_LAST && widget != s->host_port) {
+        return &s->external[widget - CHIP_LINK_FIRST].view;
     }
     return NULL;
 }
@@ -1285,44 +1270,45 @@ static const MemoryRegionOps chip_route_none_ops = {
     .valid = { .min_access_size = 1, .max_access_size = 8 },
 };
 
-/* One destination of the external widget's packets, at its widget number. */
-static void chip_route_one(SGIXBridgeState *s, MemoryRegion *route,
-                           const char *name, MemoryRegion *target,
-                           unsigned int widget)
+static void chip_route_one(SGIXBridgeState *s, SGIXBridgePort *port,
+                           MemoryRegion *target, unsigned widget)
 {
+    g_autofree char *name = g_strdup_printf("sgi-xbridge.route-%x", widget);
+    MemoryRegion *route = &port->route_widget[widget];
+
     memory_region_init_alias(route, OBJECT(s), name, target, 0,
                              MIN(memory_region_size(target),
                                  SGI_XIO_PACKET_SIZE));
-    memory_region_add_subregion(&s->xio_routes,
+    memory_region_add_subregion(&port->routes,
                                 (uint64_t)widget << SGI_XIO_PACKET_ADDRESS_BITS,
                                 route);
 }
 
-/*
- * Route the external widget's packets: widget 0 as the crossbar presents
- * itself to a request arriving on that port, the host's port, and each
- * head's widget space, the same regions the host reaches them through.
- */
-static void chip_route_external(SGIXBridgeState *s)
+static void chip_route_external(SGIXBridgeState *s, unsigned ingress)
 {
-    unsigned int i;
+    SGIXBridgePort *port = &s->external[ingress - CHIP_LINK_FIRST];
+    unsigned widget;
 
-    memory_region_init_io(&s->xio_route_none, OBJECT(s), &chip_route_none_ops,
-                          s, "sgi-xbridge.xio-route-none",
+    memory_region_init_io(&port->route_none, OBJECT(s), &chip_route_none_ops,
+                          s, "sgi-xbridge.route-none",
                           SGI_XIO_WIDGETS * SGI_XIO_PACKET_SIZE);
-    memory_region_add_subregion_overlap(&s->xio_routes, 0, &s->xio_route_none,
-                                        -1);
-    chip_route_one(s, &s->xio_route_widget0, "sgi-xbridge.xio-route-widget0",
+    memory_region_add_subregion_overlap(&port->routes, 0,
+                                        &port->route_none, -1);
+    chip_route_one(s, port,
                    sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->xbow),
-                                          s->xio_port - CHIP_LINK_FIRST), 0);
-    chip_route_one(s, &s->xio_route_host, "sgi-xbridge.xio-route-host",
-                   s->fabric, s->host_port);
-    for (i = 0; i < 2; i++) {
-        chip_route_one(s, &s->xio_route_head[i],
-                       i ? "sgi-xbridge.xio-route-head-f"
-                         : "sgi-xbridge.xio-route-head-e",
-                       sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->head[i]), 0),
-                       i ? CHIP_HEAD_F : CHIP_HEAD_E);
+                                          ingress - CHIP_LINK_FIRST), 0);
+    chip_route_one(s, port, s->fabric, s->host_port);
+    for (widget = CHIP_LINK_FIRST; widget <= CHIP_HEAD_F; widget++) {
+        MemoryRegion *target;
+
+        if (widget == ingress || widget == s->host_port) {
+            continue;
+        }
+        target = widget >= CHIP_HEAD_E ?
+            sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->head[widget -
+                                                         CHIP_HEAD_E]), 0) :
+            &s->external[widget - CHIP_LINK_FIRST].packets;
+        chip_route_one(s, port, target, widget);
     }
 }
 
@@ -1358,8 +1344,14 @@ static void chip_head_pin(void *opaque, int pin, int level)
 
 static void chip_warm_reset(void *opaque, int port, int level)
 {
-    qemu_set_irq(qdev_get_gpio_in_named(DEVICE(opaque), "warm-reset", port),
-                 level);
+    SGIXBridgeState *s = opaque;
+
+    if (!s->superbridge) {
+        qemu_irq input = qdev_get_gpio_in_named(DEVICE(&s->xbow),
+                                                 "warm-reset", port);
+
+        qemu_set_irq(input, level);
+    }
 }
 
 static void chip_realize(DeviceState *dev, Error **errp)
@@ -1367,85 +1359,100 @@ static void chip_realize(DeviceState *dev, Error **errp)
     SGIXBridgeState *s = SGI_XBRIDGE(dev);
     unsigned i, n;
 
-    if (!s->fabric) {
+    if (!s->superbridge && !s->fabric) {
         error_setg(errp, "XBridge needs the fabric link to its host");
         return;
     }
-    if (s->host_port < CHIP_LINK_FIRST || s->host_port > 0xf ||
-        s->host_port == CHIP_HEAD_E || s->host_port == CHIP_HEAD_F) {
+    if (!s->superbridge &&
+        (s->host_port < CHIP_LINK_FIRST || s->host_port > CHIP_LINK_LAST)) {
         error_setg(errp, "XBridge host port must be 8 to 0xd");
         return;
     }
-    if (s->xio_port < CHIP_LINK_FIRST || s->xio_port > CHIP_LINK_LAST) {
+    if (!s->superbridge &&
+        (s->xio_port < CHIP_LINK_FIRST || s->xio_port > CHIP_LINK_LAST)) {
         error_setg(errp, "XBridge external port must be 8 to 0xd");
         return;
     }
-    if (s->xio_port == s->host_port) {
+    if (!s->superbridge && s->xio_port == s->host_port) {
         error_setg(errp, "XBridge external port %x is the host's own port",
                    s->xio_port);
         return;
     }
 
-    /*
-     * The host and the two heads are present; the external ports are
-     * empty until a widget is attached, which is the state the crossbar
-     * reports and firmware reads before it addresses a port at all.
-     */
-    qdev_prop_set_uint8(DEVICE(&s->xbow), "links-present",
-                        (1U << (s->host_port - CHIP_LINK_FIRST)) |
-                        (1U << (CHIP_HEAD_E - CHIP_LINK_FIRST)) |
-                        (1U << (CHIP_HEAD_F - CHIP_LINK_FIRST)));
-    if (!chip_link_target(OBJECT(&s->xbow), s->host_port, s->fabric,
-                          errp) ||
-        !chip_link_target(OBJECT(&s->xbow), s->xio_port, &s->xio_packets,
-                          errp) ||
-        !sysbus_realize(SYS_BUS_DEVICE(&s->xbow), errp)) {
+    s->mode = s->superbridge;
+    if (s->superbridge && s->xio_widget) {
+        error_setg(errp, "Super Bridge has no external crossbar widget");
         return;
     }
-    memory_region_add_subregion(&s->xio, 0,
-                                sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->xbow),
-                                s->host_port - CHIP_LINK_FIRST));
-    /* The external ports' forwards go out; the heads' are wired below. */
-    for (n = 0; n < SGI_XBRIDGE_EXTERNAL_PORTS; n++) {
-        s->warm_reset_sink[n] = qemu_allocate_irq(chip_forward,
-                                                  s->warm_reset_out, n);
-        qdev_connect_gpio_out_named(DEVICE(&s->xbow), "warm-reset-out", n,
-                                    s->warm_reset_sink[n]);
+    if (s->superbridge && s->board_part[0]) {
+        error_setg(errp, "Super Bridge head E has no NIC");
+        return;
+    }
+    if (!s->superbridge) {
+        /*
+         * The host and the two heads are present; the external ports are
+         * empty until a widget is attached, which is the state the crossbar
+         * reports and firmware reads before it addresses a port at all.
+         */
+        qdev_prop_set_uint8(DEVICE(&s->xbow), "links-present",
+                            (1U << (s->host_port - CHIP_LINK_FIRST)) |
+                            (1U << (CHIP_HEAD_E - CHIP_LINK_FIRST)) |
+                            (1U << (CHIP_HEAD_F - CHIP_LINK_FIRST)));
+        for (n = CHIP_LINK_FIRST; n <= CHIP_LINK_LAST; n++) {
+            if (n != s->host_port &&
+                s->external[n - CHIP_LINK_FIRST].present) {
+                sgi_xbridge_xbow_set_link_present(&s->xbow, n, true);
+            }
+            if (n != s->host_port &&
+                !chip_link_target(OBJECT(&s->xbow), n,
+                                  &s->external[n - CHIP_LINK_FIRST].packets,
+                                  errp)) {
+                return;
+            }
+        }
+        if (!chip_link_target(OBJECT(&s->xbow), s->host_port, s->fabric,
+                              errp) ||
+            !sysbus_realize(SYS_BUS_DEVICE(&s->xbow), errp)) {
+            return;
+        }
+        memory_region_add_subregion(&s->xio, 0,
+            sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->xbow),
+                                   s->host_port - CHIP_LINK_FIRST));
+        /* The external ports' forwards go out; the heads' are wired below. */
+        for (n = 0; n < SGI_XBRIDGE_EXTERNAL_PORTS; n++) {
+            s->warm_reset_sink[n] = qemu_allocate_irq(chip_forward,
+                                                      s->warm_reset_out, n);
+            qdev_connect_gpio_out_named(DEVICE(&s->xbow), "warm-reset-out", n,
+                                        s->warm_reset_sink[n]);
+        }
+
+        /* Preserve the selected external view at SysBus region 4. */
+        sysbus_init_mmio(SYS_BUS_DEVICE(s),
+                         &s->external[s->xio_port - CHIP_LINK_FIRST].view);
+        /*
+         * The same region sgi_xbridge_xio_host_face() answers with, published
+         * so a widget's own outbound property can be pointed at it without a
+         * machine passing the region along by hand.
+         */
+        object_property_add_const_link(OBJECT(s), "xio-host-face",
+                                       OBJECT(s->fabric));
+        /*
+         * A widget attached before realize -- the "xio-widget" link, which a
+         * machine or a `-device` command line can set -- goes in now that the
+         * crossbar it reports itself present on has realized. One that
+         * arrives later calls the same function.
+         */
+        if (s->xio_widget &&
+            !sgi_xbridge_attach_xio(s, s->xio_widget,
+                                    s->xio_widget_packets ?: s->xio_widget,
+                                    errp)) {
+            return;
+        }
+
     }
 
-    /*
-     * The one external port a widget can be attached to takes its own
-     * slot in the XIO space, so a processor reaches it through the
-     * same widget decode the heads answer on rather than around the chip.
-     * The view exists only from here: which widget it covers is a
-     * property, and instance init runs before properties are set.
-     */
-    memory_region_add_subregion(&s->xio,
-                                (uint64_t)s->xio_port << CHIP_WIDGET_SHIFT,
-                                &s->xio_face);
-    memory_region_init_alias(&s->xio_view, OBJECT(s), "sgi-xbridge.widget-xio",
-                             &s->xio,
-                             (uint64_t)s->xio_port << CHIP_WIDGET_SHIFT,
-                             CHIP_WIDGET_SPACE);
-    sysbus_init_mmio(SYS_BUS_DEVICE(s), &s->xio_view);
-    s->xio_view_built = true;
-    /*
-     * The same region sgi_xbridge_xio_host_face() answers with, published
-     * so a widget's own outbound property can be pointed at it without a
-     * machine passing the region along by hand.
-     */
-    object_property_add_const_link(OBJECT(s), "xio-host-face",
-                                   OBJECT(s->fabric));
-    /*
-     * A widget attached before realize -- the "xio-widget" link, which a
-     * machine or a `-device` command line can set -- goes in now that the
-     * crossbar it reports itself present on has realized. One that
-     * arrives later calls the same function.
-     */
-    if (s->xio_widget &&
-        !sgi_xbridge_attach_xio(s, s->xio_widget,
-                                s->xio_widget_packets ? s->xio_widget_packets
-                                                      : s->xio_widget, errp)) {
+    /* QEMU requires every Device child realized, even an inaccessible one. */
+    if (s->superbridge && !sysbus_realize(SYS_BUS_DEVICE(&s->xbow), errp)) {
         return;
     }
 
@@ -1465,17 +1472,47 @@ static void chip_realize(DeviceState *dev, Error **errp)
 
             qdev_prop_set_string(DEVICE(&s->head[i]), "bus-name", bus_name);
         }
-        if (!chip_link_target(OBJECT(&s->head[i]), s->host_port, s->fabric,
-                              errp) ||
-            !chip_link_target(OBJECT(&s->head[i]), s->xio_port,
-                              &s->xio_packets, errp) ||
-            !sysbus_realize(SYS_BUS_DEVICE(&s->head[i]), errp)) {
+        if (s->superbridge) {
+            if (s->head_fabric[i]) {
+                for (n = 0; n < SGI_XIO_WIDGETS; n++) {
+                    g_autofree char *name = g_strdup_printf(
+                        "sgi-xbridge.head-%u-target-%x", i, n);
+                    MemoryRegion *target = &s->head_target[i][n];
+
+                    memory_region_init_alias(target, OBJECT(s), name,
+                        s->head_fabric[i],
+                        (uint64_t)n << SGI_XIO_PACKET_ADDRESS_BITS,
+                        SGI_XIO_PACKET_SIZE);
+                    if (!chip_link_target(OBJECT(&s->head[i]), n, target,
+                                          errp)) {
+                        return;
+                    }
+                }
+            }
+        } else {
+            if (!chip_link_target(OBJECT(&s->head[i]), s->host_port,
+                                  s->fabric, errp)) {
+                return;
+            }
+            for (n = CHIP_LINK_FIRST; n <= CHIP_LINK_LAST; n++) {
+                if (n != s->host_port &&
+                    !chip_link_target(OBJECT(&s->head[i]), n,
+                                      &s->external[n - CHIP_LINK_FIRST].packets,
+                                      errp)) {
+                    return;
+                }
+            }
+        }
+        if (!sysbus_realize(SYS_BUS_DEVICE(&s->head[i]), errp)) {
             return;
         }
-        s->head_reset[i] = qemu_allocate_irq(chip_head_reset, &s->head[i], 0);
-        qdev_connect_gpio_out_named(DEVICE(&s->xbow), "warm-reset-out",
-                                    widget - CHIP_LINK_FIRST,
-                                    s->head_reset[i]);
+        if (!s->superbridge) {
+            s->head_reset[i] = qemu_allocate_irq(chip_head_reset,
+                                                 &s->head[i], 0);
+            qdev_connect_gpio_out_named(DEVICE(&s->xbow), "warm-reset-out",
+                                        widget - CHIP_LINK_FIRST,
+                                        s->head_reset[i]);
+        }
         for (n = 0; n < SGI_XBRIDGE_HEAD_RAW_PCI_IRQS; n++) {
             s->head_intx_sink[i][n] = qemu_allocate_irq(chip_forward,
                                                         s->head_intx[i], n);
@@ -1487,44 +1524,66 @@ static void chip_realize(DeviceState *dev, Error **errp)
                                     sysbus_mmio_get_region(
                                     SYS_BUS_DEVICE(&s->head[i]), 0));
     }
-    chip_route_external(s);
+    if (!s->superbridge) {
+        for (n = CHIP_LINK_FIRST; n <= CHIP_LINK_LAST; n++) {
+            if (n != s->host_port) {
+                chip_route_external(s, n);
+            }
+        }
+    }
     /*
      * The sixth region: where a widget on the external port sends, for a
      * machine to hand that widget as its outbound space, the routed
      * counterpart of "xio-host-face".
      */
-    sysbus_init_mmio(SYS_BUS_DEVICE(s), &s->xio_routes);
+    if (!s->superbridge) {
+        sysbus_init_mmio(SYS_BUS_DEVICE(s),
+                         &s->external[s->xio_port - CHIP_LINK_FIRST].routes);
+    }
+}
+
+bool sgi_xbridge_attach_xio_port(SGIXBridgeState *s, unsigned index,
+                                 MemoryRegion *cpu_face,
+                                 MemoryRegion *packet_face, Error **errp)
+{
+    SGIXBridgePort *port;
+
+    if (s->superbridge || index < CHIP_LINK_FIRST || index > CHIP_LINK_LAST ||
+        index == s->host_port) {
+        error_setg(errp, "XBridge port %x is not an external crossbar port",
+                   index);
+        return false;
+    }
+    if (!cpu_face || !packet_face) {
+        error_setg(errp, "an XBridge external widget needs both faces");
+        return false;
+    }
+    port = &s->external[index - CHIP_LINK_FIRST];
+    if (port->present) {
+        error_setg(errp, "XBridge external port %x already carries a widget",
+                   index);
+        return false;
+    }
+    memory_region_init_alias(&port->cpu_alias, OBJECT(s),
+                             "sgi-xbridge.cpu-alias", cpu_face, 0,
+                             MIN(memory_region_size(cpu_face),
+                                 CHIP_WIDGET_SPACE));
+    memory_region_add_subregion(&port->face, 0, &port->cpu_alias);
+    memory_region_init_alias(&port->packet_alias, OBJECT(s),
+                             "sgi-xbridge.packet-alias", packet_face, 0,
+                             MIN(memory_region_size(packet_face),
+                                 SGI_XIO_PACKET_SIZE));
+    memory_region_add_subregion(&port->packets, 0, &port->packet_alias);
+    port->present = true;
+    sgi_xbridge_xbow_set_link_present(&s->xbow, index, true);
+    return true;
 }
 
 bool sgi_xbridge_attach_xio(SGIXBridgeState *s, MemoryRegion *cpu_face,
                             MemoryRegion *packet_face, Error **errp)
 {
-    if (!cpu_face) {
-        error_setg(errp, "an XBridge external widget needs a processor face");
-        return false;
-    }
-    if (s->xio_present) {
-        error_setg(errp, "XBridge external port %x already carries a widget",
-                   s->xio_port);
-        return false;
-    }
-    memory_region_add_subregion(&s->xio_face, 0, cpu_face);
-    /*
-     * A leaf widget answers both kinds of traffic at one region
-     * (hw/mips/sgi-xio-port.h), and one region cannot be a subregion of
-     * two containers, so the packet slot takes an alias of it.
-     */
-    if (packet_face == cpu_face) {
-        memory_region_init_alias(&s->xio_packet_alias, OBJECT(s),
-                                 "sgi-xbridge.xio-packets-alias", cpu_face, 0,
-                                 memory_region_size(cpu_face));
-        memory_region_add_subregion(&s->xio_packets, 0, &s->xio_packet_alias);
-    } else {
-        memory_region_add_subregion(&s->xio_packets, 0, packet_face);
-    }
-    s->xio_present = true;
-    sgi_xbridge_xbow_set_link_present(&s->xbow, s->xio_port, true);
-    return true;
+    return sgi_xbridge_attach_xio_port(s, s->xio_port, cpu_face, packet_face,
+                                      errp);
 }
 
 MemoryRegion *sgi_xbridge_xio_host_face(SGIXBridgeState *s)
@@ -1537,23 +1596,25 @@ void sgi_xbridge_project_vbrick_pio(SGIXBridgeState *s,
                                     MemoryRegion *crossbar_view,
                                     uint64_t half_size)
 {
+    SGIXBridgePort *port = &s->external[s->xio_port - CHIP_LINK_FIRST];
+
     g_assert(DEVICE(s)->realized);
-    g_assert(s->xio_present);
+    g_assert(port->present);
     g_assert(!s->xio_projection_built);
     g_assert(half_size && half_size <=
-             memory_region_size(&s->xio_face) / 2);
+             memory_region_size(&port->face) / 2);
     g_assert(half_size <= memory_region_size(v12_view));
     g_assert(half_size <= memory_region_size(crossbar_view));
 
     memory_region_init_alias(&s->xio_projection[0], OBJECT(s),
                              "sgi-xbridge.experimental-vbrick-v12",
                              v12_view, 0, half_size);
-    memory_region_add_subregion_overlap(&s->xio_face, 0,
+    memory_region_add_subregion_overlap(&port->face, 0,
                                         &s->xio_projection[0], 1);
     memory_region_init_alias(&s->xio_projection[1], OBJECT(s),
                              "sgi-xbridge.experimental-vbrick-crossbar",
                              crossbar_view, 0, half_size);
-    memory_region_add_subregion_overlap(&s->xio_face, half_size,
+    memory_region_add_subregion_overlap(&port->face, half_size,
                                         &s->xio_projection[1], 1);
     s->xio_projection_built = true;
 }
@@ -1581,6 +1642,7 @@ static void chip_unrealize(DeviceState *dev)
 
 /* Bus speeds as OpenBSD reads them on an IP45: 66 MHz at 0xe, 33 at 0xf. */
 static const Property chip_properties[] = {
+    DEFINE_PROP_BOOL("superbridge", SGIXBridgeState, superbridge, false),
     DEFINE_PROP_UINT8("host-port", SGIXBridgeState, host_port, 0),
     /* See SGI_XBRIDGE_XIO_PORT_DEFAULT for what does and does not fix it. */
     DEFINE_PROP_UINT8("xio-port", SGIXBridgeState, xio_port,
@@ -1601,12 +1663,22 @@ static const Property chip_properties[] = {
                        onewire_serial[1], SGI_XBRIDGE_NIC_PLACEHOLDER_SERIAL),
 };
 
-/* No state of its own; the children carry theirs. */
+static int chip_post_load(void *opaque, int version_id)
+{
+    SGIXBridgeState *s = opaque;
+
+    return version_id == 1 && s->superbridge ? -EINVAL : 0;
+}
+
+/* The mode is immutable; the children carry programmed state. */
 static const VMStateDescription vmstate_chip = {
     .name = TYPE_SGI_XBRIDGE,
-    .version_id = 1,
+    .post_load = chip_post_load,
+    .version_id = 2,
     .minimum_version_id = 1,
     .fields = (const VMStateField[]) {
+        VMSTATE_SINGLE(mode, SGIXBridgeState, 2,
+                       vmstate_info_uint8_equal, uint8_t),
         VMSTATE_END_OF_LIST()
     }
 };
@@ -1644,6 +1716,9 @@ static MemoryRegion *chip_xio_port_cpu_face(Object *port,
 {
     SGIXBridgeState *s = SGI_XBRIDGE(port);
 
+    if (s->superbridge && index != CHIP_HEAD_E && index != CHIP_HEAD_F) {
+        return NULL;
+    }
     if (index == s->host_port) {
         return chip_widget_view(s, 0);
     }
@@ -1659,11 +1734,15 @@ static MemoryRegion *chip_xio_port_packet_face(Object *port,
 {
     SGIXBridgeState *s = SGI_XBRIDGE(port);
 
-    if (index == s->host_port) {
-        return &s->xio_routes;
+    if (s->superbridge) {
+        return index == CHIP_HEAD_E || index == CHIP_HEAD_F ?
+            chip_widget_view(s, index) : NULL;
     }
-    if (index == s->xio_port) {
-        return DEVICE(s)->realized ? &s->xio_routes : NULL;
+    if (index == s->host_port) {
+        return &s->external[s->xio_port - CHIP_LINK_FIRST].routes;
+    }
+    if (index >= CHIP_LINK_FIRST && index <= CHIP_LINK_LAST) {
+        return &s->external[index - CHIP_LINK_FIRST].routes;
     }
     return chip_widget_view(s, index);
 }
@@ -1672,7 +1751,8 @@ static bool chip_xio_port_switched(Object *port, unsigned int index)
 {
     SGIXBridgeState *s = SGI_XBRIDGE(port);
 
-    return index == s->host_port || index == s->xio_port;
+    return !s->superbridge && index >= CHIP_LINK_FIRST &&
+        index <= CHIP_LINK_LAST;
 }
 
 /*
@@ -1687,7 +1767,7 @@ static void chip_xio_port_reset_output(Object *port, unsigned int index,
 {
     SGIXBridgeState *s = SGI_XBRIDGE(port);
 
-    if (index < CHIP_LINK_FIRST || index > CHIP_LINK_LAST ||
+    if (s->superbridge || index < CHIP_LINK_FIRST || index > CHIP_LINK_LAST ||
         index == s->host_port) {
         return;
     }
@@ -1695,29 +1775,30 @@ static void chip_xio_port_reset_output(Object *port, unsigned int index,
                                 index - CHIP_LINK_FIRST, target);
 }
 
-/*
- * The link on the host port brings the chip its host: the host's packet
- * face is where the crossbar's own conditions and both heads' interrupts
- * reach it. It must be in place before the chip realizes, which hands it
- * to the crossbar and both heads. The link on the external port brings
- * the widget plugged into it, attached as sgi_xbridge_attach_xio() would;
- * a board's faces exist only once it has realized, which the link waits
- * for. This model links no other port.
- */
+/* Super Bridge leaf links must precede realization of the PCI heads. */
 static bool chip_xio_port_connect(Object *port, unsigned int index,
                                   const SGIXioPeer *peer, Error **errp)
 {
     SGIXBridgeState *s = SGI_XBRIDGE(port);
 
-    if (index == s->xio_port && index != s->host_port) {
-        if (!DEVICE(s)->realized) {
-            error_setg(errp, "the XBridge takes a widget on its external "
-                       "port once it has realized");
+    if (s->superbridge) {
+        unsigned head = index - CHIP_HEAD_E;
+
+        if (index < CHIP_HEAD_E || index > CHIP_HEAD_F ||
+            DEVICE(s)->realized || !peer->packet_fabric ||
+            s->head_fabric[head]) {
+            error_setg(errp, "Super Bridge takes each head's link before "
+                       "realization, once");
             return false;
         }
-        return sgi_xbridge_attach_xio(s, peer->cpu_face,
-                                      peer->packet_face ?: peer->cpu_face,
-                                      errp);
+        s->head_fabric[head] = peer->packet_fabric;
+        return true;
+    }
+    if (index >= CHIP_LINK_FIRST && index <= CHIP_LINK_LAST &&
+        index != s->host_port) {
+        return sgi_xbridge_attach_xio_port(s, index, peer->cpu_face,
+                                           peer->packet_face ?: peer->cpu_face,
+                                           errp);
     }
     if (index != s->host_port) {
         error_setg(errp, "the XBridge links only its host port, 0x%x, and "
@@ -1786,12 +1867,20 @@ static void chip_init(Object *obj)
     memory_region_init_io(&s->unmapped, obj, &chip_unmapped_ops, s,
                           "sgi-xbridge.unmapped", 16 * CHIP_WIDGET_SPACE);
     memory_region_add_subregion_overlap(&s->xio, 0, &s->unmapped, -1);
-    memory_region_init(&s->xio_face, obj, "sgi-xbridge.xio",
-                       CHIP_WIDGET_SPACE);
-    memory_region_init(&s->xio_routes, obj, "sgi-xbridge.xio-routes",
-                       SGI_XIO_WIDGETS * SGI_XIO_PACKET_SIZE);
-    memory_region_init(&s->xio_packets, obj, "sgi-xbridge.xio-packets",
-                       CHIP_WIDGET_SPACE);
+    for (i = 0; i < SGI_XBRIDGE_EXTERNAL_PORTS; i++) {
+        SGIXBridgePort *port = &s->external[i];
+        g_autofree char *name = g_strdup_printf("sgi-xbridge.port-%x", i + 8);
+
+        memory_region_init(&port->face, obj, name, CHIP_WIDGET_SPACE);
+        memory_region_init(&port->packets, obj, name, SGI_XIO_PACKET_SIZE);
+        memory_region_init(&port->routes, obj, name,
+                           SGI_XIO_WIDGETS * SGI_XIO_PACKET_SIZE);
+        memory_region_init_alias(&port->view, obj, name, &port->face, 0,
+                                 CHIP_WIDGET_SPACE);
+        memory_region_add_subregion(&s->xio,
+                                    (uint64_t)(i + 8) << CHIP_WIDGET_SHIFT,
+                                    &port->face);
+    }
     sysbus_init_mmio(SYS_BUS_DEVICE(s), &s->xio);
     for (i = 0; i < ARRAY_SIZE(chip_view_widget); i++) {
         g_autofree char *name = g_strdup_printf("sgi-xbridge.widget-%x",
@@ -1811,7 +1900,7 @@ static void chip_init(Object *obj)
                              SGI_XBRIDGE_HEAD_RAW_PCI_IRQS);
     qdev_init_gpio_out_named(dev, s->head_intx[1], "head-f-pci-intx",
                              SGI_XBRIDGE_HEAD_RAW_PCI_IRQS);
-    qdev_init_gpio_in_named_with_opaque(dev, chip_warm_reset, &s->xbow,
+    qdev_init_gpio_in_named_with_opaque(dev, chip_warm_reset, s,
                                         "warm-reset",
                                         SGI_XBRIDGE_EXTERNAL_PORTS);
     qdev_init_gpio_out_named(dev, s->warm_reset_out, "warm-reset-out",

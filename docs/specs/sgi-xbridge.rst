@@ -309,11 +309,47 @@ forwards to the links is not settled by the datasheet, and the model
 forwards nothing in that case. The 1024-cycle window in which a port
 ignores further reset patterns is not modeled.
 
+Super Bridge and the six-head fixture
+====================================
+
+The ``superbridge`` property selects the strap mode at construction.
+It exposes two independent leaf endpoints, named by their physical
+E/F head origins. Widget 0 has no accessible crossbar, and neither
+head has an internal route to the other. Each head takes its own
+upstream packet fabric before realization. Logical widget-ID writes
+change register readback without changing the physical link pairing.
+Both control-register widget-ID fields reset to F. LLP configuration
+retains the existing writable register-storage subset.
+
+Only the physical F-origin head accepts a board NIC. Setting
+``board-part-e`` in Super Bridge mode is rejected. The implementation
+uses the existing revision-2 head; transfer of the revision-A mode,
+NIC and LLP facts to that revision is inferred in the reviewed
+contract. It does not implement renumbered packet filtering, packet
+header identities, or expansion-board link-reset propagation.
+
+In crossbar mode, ``sgi_xbridge_attach_xio_port`` attaches a leaf to
+any external port from 8 to D other than the host port. Each ingress
+has a separate destination router that excludes that ingress itself.
+The original ``sgi_xbridge_attach_xio`` wrapper and ``xio-port``
+property retain the selected-port interface and MMIO regions 4/5.
+
+The test-only ``sgi-xbridge-assembly-fixture`` composes one crossbar
+chip and two Super Bridge chips. The caller must supply four distinct
+``chip1-e-port``, ``chip1-f-port``, ``chip2-e-port`` and
+``chip2-f-port`` values. Port A is the synthetic host. These cables
+are fixture inputs, not a mapping for a physical expansion board.
+The chip qtest checks six independent head register blocks, all six
+DMA and interrupt paths to a synthetic host, inaccessible downstream
+crossbars, reset and migration. It establishes no PROM, OS, board
+identity, or enclosure acceptance.
+
 Migration
 =========
 
 The head's stream carries its register file, the translation table,
 the pin levels and the raw INTx levels, which are re-driven on load.
+The chip stream verifies the fixed construction mode on load.
 The crossbar's stream carries its register file and its latched
 status, so a pending assertion still clears on the far side.
 
@@ -323,5 +359,5 @@ Not yet modeled
 * routing between the two heads
 * the 4 MB flash section behind port 0xf
 * the performance counters and address-match buffers
-* Super Bridge mode and the PIC
+* the PIC and complete Super Bridge packet semantics
 * the 1024-cycle reset-ignore window

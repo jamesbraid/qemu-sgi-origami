@@ -70,6 +70,11 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIXBridgeState, SGI_XBRIDGE)
  * arrives once the machine is built attaches the same way an onboard
  * one does.
  */
+/* Attach any non-host external port in crossbar mode. */
+bool sgi_xbridge_attach_xio_port(SGIXBridgeState *s, unsigned index,
+                                 MemoryRegion *cpu_face,
+                                 MemoryRegion *packet_face, Error **errp);
+
 bool sgi_xbridge_attach_xio(SGIXBridgeState *s, MemoryRegion *cpu_face,
                             MemoryRegion *packet_face, Error **errp);
 
@@ -92,15 +97,16 @@ unsigned int sgi_xbridge_xio_port(SGIXBridgeState *s);
 /*
  * What a machine wires, keyed by XIO widget number: 0 is the
  * crossbar as the host's port sees it, 0xe and 0xf are the heads, and
- * "xio-port" is the one external port a widget can be attached to.
+ * 8 to 0xd are external ports, excluding the host. In Super Bridge mode,
+ * only the independent physical E/F head views are available.
  *
  * A widget view covers the widget's whole 16 TB slot, so an access past
  * a head's 16 MB face reaches nothing there too. The views for 0, 0xe and
  * 0xf exist from instance init, so a host can link them before either
  * side is realized, and are also SysBus MMIO regions 1 to 3 in that
  * order; region 0 is the whole XIO space. The external port's view
- * is region 4 and exists once the chip is realized, because which widget
- * it covers is a property. A head's PCI bus exists once the chip is
+ * is region 4 once realized; all external views exist from instance init.
+ * A head's PCI bus exists once the chip is
  * realized.
  *
  * GPIO groups, all on the chip:
@@ -108,7 +114,7 @@ unsigned int sgi_xbridge_xio_port(SGIXBridgeState *s);
  *       the head's raw INTx levels; slot-to-pin routing is board wiring
  *   "head-e-pin", "head-f-pin": 8 inputs each, the head's interrupt pins
  *   "warm-reset", "warm-reset-out": one line per external port, index
- *       port - 8; the heads' lines are wired inside the chip
+ *       port - 8; unused in Super Bridge mode
  */
 MemoryRegion *sgi_xbridge_widget_view(SGIXBridgeState *s, unsigned widget);
 PCIBus *sgi_xbridge_pci_bus(SGIXBridgeState *s, unsigned widget);
