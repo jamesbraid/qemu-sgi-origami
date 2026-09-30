@@ -917,6 +917,17 @@
 # @argument: the QEMU argument form this resource becomes, `N`
 #     standing for its instance index
 #
+# @part: fitted device part for a resource with part-specific backing
+#
+# @board-indices: I/O board indices owning the resource instances
+#
+# @drive-indices: NVRAM backend indices in board-indices order
+#
+# @clock-reference: whether each NVRAM backend needs a clock reference
+#
+# @requires-machine-option: explicit machine option required before
+#     provisioning this resource
+#
 # Since: 11.2
 ##
 { 'struct': 'SGIModelResource',
@@ -924,7 +935,12 @@
             'scope': 'str',
             'count': 'uint32',
             '*size': 'uint64',
-            'argument': 'str' } }
+            'argument': 'str',
+            '*part': 'str',
+            '*board-indices': ['uint32'],
+            '*drive-indices': ['uint32'],
+            '*clock-reference': 'bool',
+            '*requires-machine-option': 'str' } }
 
 ##
 # @SGIModelStorage:
