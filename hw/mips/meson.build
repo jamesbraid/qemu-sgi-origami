@@ -87,3 +87,6 @@ mips_ss.add(when: 'CONFIG_MIPS_BOSTON', if_true: files('boston.c'))
 endif
 
 hw_arch += {'mips': mips_ss}
+
+mips_ss.add(when: ['CONFIG_SGI_SN1', 'CONFIG_TEST_DEVICES'],
+            if_true: files('../../tests/qtest/xbridge-assembly-fixture.c'))
