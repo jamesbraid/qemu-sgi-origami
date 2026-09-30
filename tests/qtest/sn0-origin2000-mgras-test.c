@@ -15541,8 +15541,8 @@ static void test_gl_native_polygon_edge_flags(void)
     g_assert_cmphex(gl_window_pixel(qts, 24, 8), ==, 0xffffff);
 }
 
-/* Native activation retains queried stipple state without applying it. */
-static void test_gl_native_polygon_stipple_excluded(void)
+/* A zero pattern masks native outlines and standalone lines alike. */
+static void test_gl_native_polygon_stipple_applied(void)
 {
     gl_transform_start(qts);
     gl_width_clear(qts);
@@ -15552,14 +15552,402 @@ static void test_gl_native_polygon_stipple_excluded(void)
     gl_word(qts, 0);
     gl_one(qts, GL_LINE_STIPPLE_ON_HDR, 1);
     gl_polygon_quad(qts, false, true);
-    g_assert_cmphex(gl_window_pixel(qts, 16, 8), ==, 0xffffff);
+    g_assert_cmphex(gl_window_pixel(qts, 16, 8), ==, 0);
     g_assert_cmphex(gl_query(qts, GL_Q_LINE_STIPPLE, 1) & 0xffff, ==, 0);
     g_assert_cmphex(gl_query(qts, GL_Q_FILL_ENABLES, 1) & 0x20, ==, 0x20);
     gl_word(qts, GL_BEGIN_LINES);
     gl_vertex2f(qts, 40.5f, 8.5f);
     gl_vertex2f(qts, 56.5f, 8.5f);
     gl_word(qts, GL_END_OF(GL_BEGIN_LINES));
-    g_assert_cmphex(gl_window_pixel(qts, 48, 8), ==, 0xffffff);
+    g_assert_cmphex(gl_window_pixel(qts, 48, 8), ==, 0);
+}
+
+static void gl_native_stipple(QTestState *s, unsigned repeat,
+                              uint16_t packet_pattern)
+{
+    gl_word(s, GL_LINE_STIPPLE_HDR);
+    gl_word(s, repeat - 1);
+    gl_word(s, packet_pattern);
+    gl_one(s, GL_LINE_STIPPLE_ON_HDR, 1);
+}
+
+static void gl_native_stipple_bind(QTestState *s, uint32_t clip, bool outside)
+{
+    uint32_t rects[4][2];
+
+    for (unsigned i = 0; i < 4; i++) {
+        rects[i][0] = outside ? GL_CLIP_SPAN(1400, 1500) :
+                               GL_CLIP_SPAN(256, 383);
+        rects[i][1] = outside ? GL_CLIP_SPAN(1100, 1200) :
+                               GL_CLIP_SPAN(640, 767);
+        if (clip == 0x20) {
+            rects[i][0] = GL_CLIP_SPAN(0, 1279);
+            rects[i][1] = GL_CLIP_SPAN(0, 1023);
+        }
+    }
+    mgras_enter_gl_clip(s, (640 << 16) | 256, clip, rects);
+}
+
+static void gl_native_stipple_hidden_setup(QTestState *s, uint32_t clip,
+                                           bool outside, uint16_t pattern)
+{
+    mgras_enter_gl_window(s, 256, 640, 128, 128, 0x11);
+    gl_word(s, GL_CONTEXT_OPENER);
+    gl_viewport(s, 0, 0, 128, 128);
+    gl_window_projection(s);
+    gl_one(s, GL_MATRIX_MODE_HDR, GL_MODELVIEW);
+    gl_color3f(s, 1, 1, 1);
+    gl_draw_buffer(s, 3);
+    gl_one(s, GL_DEPTH_TEST_HDR, 1);
+    gl_one(s, GL_DEPTH_FUNC_HDR, GL_DEPTH_ALWAYS);
+    gl_stencil(s, GL_STENCIL_ALWAYS, 7, 0xff, GL_OP_KEEP, GL_OP_KEEP,
+                GL_OP_REPLACE);
+    gl_one(s, GL_STENCIL_TEST_HDR, 1);
+    gl_native_stipple(s, 1, pattern);
+    gl_native_stipple_bind(s, clip, outside);
+    gl_word(s, GL_BEGIN_LINE_STRIP);
+    gl_vertex2f(s, 8.5f, 8.5f);
+    gl_vertex2f(s, 13.5f, 8.5f);
+    for (unsigned x = 8; x < 13; x++) {
+        g_assert_cmphex(gl_window_pixel(s, x, 8), ==, 0);
+        g_assert_cmphex(mgras_qom_get_uint(s, "x-test-back-pixel"), ==, 0);
+        g_assert_cmphex(mgras_qom_get_uint(s, "x-test-depth-stencil"), ==, 0);
+    }
+}
+
+static void gl_native_stipple_hidden_check(QTestState *s)
+{
+    g_assert_cmpuint(mgras_qom_get_uint(s, "x-test-line-phase"), ==, 5);
+    gl_native_stipple_bind(s, 0x11, false);
+    gl_vertex2f(s, 17.5f, 8.5f);
+    g_assert_cmpuint(mgras_qom_get_uint(s, "x-test-line-phase"), ==, 9);
+    gl_word(s, GL_END_OF(GL_BEGIN_LINE_STRIP));
+    g_assert_cmpuint(mgras_qom_get_uint(s, "x-test-line-phase"), ==, 0);
+    for (unsigned x = 8; x < 18; x++) {
+        g_assert_cmphex(gl_window_pixel(s, x, 8), ==,
+                        x == 13 ? 0xffffff : 0);
+        g_assert_cmphex(mgras_qom_get_uint(s, "x-test-back-pixel"), ==,
+                        x == 13 ? 0xffffff : 0);
+        g_assert_cmphex(mgras_qom_get_uint(s, "x-test-depth-stencil"), ==,
+                        x == 13 ? 0x07800000 : 0);
+    }
+}
+
+static void test_gl_native_stipple_empty_binding(void)
+{
+    for (unsigned outside = 0; outside < 2; outside++) {
+        mgras_reset();
+        gl_native_stipple_hidden_setup(qts, outside ? 0x1f : 0x10,
+                                       outside, 0x0400);
+        gl_native_stipple_hidden_check(qts);
+    }
+}
+
+/* All-one patterns distinguish rectangle rejection from stipple rejection. */
+static void test_gl_native_stipple_no_write(void)
+{
+    static const uint32_t clips[] = { 0x10, 0x1f, 0x20, 0, 0x31 };
+
+    for (unsigned i = 0; i < ARRAY_SIZE(clips); i++) {
+        const uint32_t image[] = { 0xff000000 };
+
+        mgras_reset();
+        gl_native_stipple_hidden_setup(qts, clips[i], i == 1, 0xffff);
+        g_assert_cmpuint(mgras_qom_get_uint(qts, "x-test-line-phase"), ==,
+                         i < 2 ? 5 : 0);
+        gl_word(qts, GL_END_OF(GL_BEGIN_LINE_STRIP));
+        gl_clear_color(qts, 1, 1, 1, 1);
+        gl_word(qts, GL_CLEAR_COLOR_BUFFER);
+        gl_one(qts, GL_CLEAR_DEPTH_HDR, 0xffffff);
+        gl_word(qts, GL_CLEAR_DEPTH_BUFFER);
+        gl_one(qts, GL_CLEAR_STENCIL_HDR, 0xff);
+        gl_word(qts, GL_CLEAR_STENCIL_BUFFER);
+        gl_one(qts, GL_LINE_STIPPLE_ON_HDR, 0);
+        gl_word(qts, GL_BEGIN_LINES);
+        gl_vertex2f(qts, 8.5f, 8.5f);
+        gl_vertex2f(qts, 13.5f, 8.5f);
+        gl_word(qts, GL_END_OF(GL_BEGIN_LINES));
+        gl_raster_pos2f(qts, 8.5f, 8.5f);
+        gl_bitmap_packet(qts, 8, 1, 0, 0, 0, 0);
+        gl_bitmap_image(qts, image, ARRAY_SIZE(image));
+        for (unsigned x = 8; x < 16; x++) {
+            g_assert_cmphex(gl_window_pixel(qts, x, 8), ==, 0);
+            g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-back-pixel"),
+                            ==, 0);
+            g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-depth-stencil"),
+                            ==, 0);
+        }
+    }
+}
+
+static void test_gl_native_stipple_unbound(void)
+{
+    static const uint32_t clips[] = { 0x20, 0, 0x31 };
+
+    for (unsigned i = 0; i < ARRAY_SIZE(clips); i++) {
+        mgras_reset();
+        gl_native_stipple_hidden_setup(qts, clips[i], false, 0x8000);
+        g_assert_cmpuint(mgras_qom_get_uint(qts, "x-test-line-phase"), ==, 0);
+        gl_native_stipple_bind(qts, 0x11, false);
+        gl_vertex2f(qts, 17.5f, 8.5f);
+        g_assert_cmpuint(mgras_qom_get_uint(qts, "x-test-line-phase"), ==, 4);
+        gl_word(qts, GL_END_OF(GL_BEGIN_LINE_STRIP));
+        for (unsigned x = 8; x < 18; x++) {
+            g_assert_cmphex(gl_window_pixel(qts, x, 8), ==,
+                            x == 13 ? 0xffffff : 0);
+            g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-back-pixel"), ==,
+                            x == 13 ? 0xffffff : 0);
+            g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-depth-stencil"), ==,
+                            x == 13 ? 0x07800000 : 0);
+        }
+    }
+}
+
+/* Packet bit 15 becomes API bit zero; width replicas share each decision. */
+static void test_gl_native_stipple_axes(void)
+{
+    for (unsigned axis = 0; axis < 2; axis++) {
+        for (unsigned reverse = 0; reverse < 2; reverse++) {
+            gl_transform_start(qts);
+            gl_width_clear(qts);
+            gl_native_stipple(qts, 2, 0x8000);
+            gl_word(qts, GL_LINE_WIDTH_HDR);
+            gl_float(qts, 3);
+            gl_word(qts, GL_BEGIN_LINES);
+            float start = reverse ? 42.5f : 8.5f;
+            float end = reverse ? 8.5f : 42.5f;
+
+            gl_vertex2f(qts, axis ? 8.5f : start, axis ? start : 8.5f);
+            gl_vertex2f(qts, axis ? 8.5f : end, axis ? end : 8.5f);
+            gl_word(qts, GL_END_OF(GL_BEGIN_LINES));
+            for (unsigned pos = 7; pos <= 43; pos++) {
+                bool on = reverse ? (pos == 42 || pos == 41 ||
+                                      pos == 10 || pos == 9) :
+                                     (pos == 8 || pos == 9 ||
+                                      pos == 40 || pos == 41);
+
+                for (unsigned cross = 6; cross <= 10; cross++) {
+                    uint32_t pixel = gl_window_pixel(qts,
+                                        axis ? cross : pos,
+                                        axis ? pos : cross);
+
+                    g_assert_cmphex(pixel, ==,
+                                    on && cross >= 7 && cross <= 9 ?
+                                    0xffffff : 0);
+                }
+            }
+        }
+    }
+}
+
+static void test_gl_native_stipple_pairs(void)
+{
+    gl_transform_start(qts);
+    gl_width_clear(qts);
+    gl_native_stipple(qts, 1, 0x8000);
+    gl_word(qts, GL_BEGIN_LINES);
+    for (unsigned row = 8; row <= 16; row += 8) {
+        gl_vertex2f(qts, 8.5f, row + 0.5f);
+        gl_vertex2f(qts, 13.5f, row + 0.5f);
+    }
+    gl_word(qts, GL_END_OF(GL_BEGIN_LINES));
+    for (unsigned row = 8; row <= 16; row += 8) {
+        for (unsigned x = 8; x <= 13; x++) {
+            g_assert_cmphex(gl_window_pixel(qts, x, row), ==,
+                            x == 8 ? 0xffffff : 0);
+        }
+    }
+}
+
+static void test_gl_native_stipple_masks(void)
+{
+    for (unsigned scissor = 0; scissor < 2; scissor++) {
+        gl_transform_start(qts);
+        gl_width_clear(qts);
+        gl_native_stipple(qts, 1, 0x0400);
+        if (scissor) {
+            gl_scissor(qts, 13, 8, 4, 1);
+            gl_one(qts, GL_SCISSOR_TEST_HDR, 1);
+        } else {
+            uint32_t rects[4][2] = {
+                { GL_CLIP_SPAN(269, 272), GL_CLIP_SPAN(648, 648) },
+            };
+
+            mgras_enter_gl_clip(qts, (640 << 16) | 256, 0x11, rects);
+        }
+        gl_word(qts, GL_BEGIN_LINE_STRIP);
+        gl_vertex2f(qts, 8.5f, 8.5f);
+        gl_vertex2f(qts, 13.5f, 8.5f);
+        g_assert_cmpuint(mgras_qom_get_uint(qts, "x-test-line-phase"), ==, 5);
+        gl_vertex2f(qts, 17.5f, 8.5f);
+        gl_word(qts, GL_END_OF(GL_BEGIN_LINE_STRIP));
+        for (unsigned x = 8; x < 18; x++) {
+            g_assert_cmphex(gl_window_pixel(qts, x, 8), ==,
+                            x == 13 ? 0xffffff : 0);
+        }
+    }
+}
+
+static void gl_native_stipple_slot(QTestState *s, uint32_t slot)
+{
+    gl_enter_slot(s, slot);
+    gl_word(s, GL_CONTEXT_OPENER);
+    gl_viewport(s, 0, 0, 128, 128);
+    gl_window_projection(s);
+    gl_one(s, GL_MATRIX_MODE_HDR, GL_MODELVIEW);
+    gl_color3f(s, 1, 1, 1);
+}
+
+static void test_gl_native_stipple_contexts(void)
+{
+    mgras_reset();
+    gl_native_stipple_slot(qts, GL_SLOT_A);
+    gl_native_stipple(qts, 1, 0x0400);
+    gl_word(qts, GL_BEGIN_LINE_STRIP);
+    gl_vertex2f(qts, 8.5f, 8.5f);
+    gl_vertex2f(qts, 13.5f, 8.5f);
+    gl_native_stipple_slot(qts, GL_SLOT_B);
+    gl_native_stipple(qts, 1, 0x8000);
+    gl_word(qts, GL_BEGIN_LINE_STRIP);
+    gl_vertex2f(qts, 8.5f, 16.5f);
+    gl_vertex2f(qts, 11.5f, 16.5f);
+    g_assert_cmpuint(mgras_qom_get_uint(qts, "x-test-line-phase"), ==, 3);
+    gl_enter_slot(qts, GL_SLOT_A);
+    g_assert_cmpuint(mgras_qom_get_uint(qts, "x-test-line-phase"), ==, 5);
+    gl_vertex2f(qts, 17.5f, 8.5f);
+    gl_word(qts, GL_END_OF(GL_BEGIN_LINE_STRIP));
+    g_assert_cmphex(gl_window_pixel(qts, 13, 8), ==, 0xffffff);
+    gl_word(qts, GL_CONTEXT_OPENER);
+    g_assert_cmpuint(mgras_qom_get_uint(qts, "x-test-line-phase"), ==, 0);
+    g_assert_cmphex(gl_query(qts, GL_Q_FILL_ENABLES, 1) & 0x20, ==, 0);
+    gl_enter_slot(qts, GL_SLOT_B);
+    g_assert_cmpuint(mgras_qom_get_uint(qts, "x-test-line-phase"), ==, 3);
+    gl_vertex2f(qts, 14.5f, 16.5f);
+    gl_word(qts, GL_END_OF(GL_BEGIN_LINE_STRIP));
+    for (unsigned x = 8; x < 15; x++) {
+        g_assert_cmphex(gl_window_pixel(qts, x, 16), ==,
+                        x == 8 ? 0xffffff : 0);
+    }
+    mgras_reset();
+    g_assert_cmpuint(mgras_qom_get_uint(qts, "x-test-line-phase"), ==, 0);
+    gl_native_stipple_slot(qts, GL_SLOT_A);
+    gl_native_stipple(qts, 1, 0x8000);
+    gl_word(qts, GL_BEGIN_LINES);
+    gl_vertex2f(qts, 8.5f, 8.5f);
+    gl_vertex2f(qts, 13.5f, 8.5f);
+    gl_word(qts, GL_END_OF(GL_BEGIN_LINES));
+    g_assert_cmphex(gl_window_pixel(qts, 8, 8), ==, 0xffffff);
+}
+
+
+static void test_gl_native_stipple_parameters(void)
+{
+    gl_transform_start(qts);
+    gl_native_stipple(qts, 3, 0x8400);
+    g_assert_cmphex(gl_query(qts, GL_Q_LINE_STIPPLE, 1) & 0xffff,
+                    ==, 0x8400);
+    g_assert_cmpuint(gl_query(qts, GL_Q_LINE_STIPPLE + 1, 1), ==, 2);
+    g_assert_cmphex(gl_query(qts, GL_Q_FILL_ENABLES, 1) & 0x20, ==, 0x20);
+    gl_word(qts, GL_BEGIN_LINE_STRIP);
+    gl_native_stipple(qts, 7, 0xffff);
+    gl_one(qts, GL_LINE_STIPPLE_ON_HDR, 0);
+    gl_word(qts, GL_END_OF(GL_BEGIN_LINE_STRIP));
+    g_assert_cmphex(gl_query(qts, GL_Q_LINE_STIPPLE, 1) & 0xffff,
+                    ==, 0x8400);
+    g_assert_cmpuint(gl_query(qts, GL_Q_LINE_STIPPLE + 1, 1), ==, 2);
+    g_assert_cmphex(gl_query(qts, GL_Q_FILL_ENABLES, 1) & 0x20, ==, 0x20);
+}
+
+/* A 64-position boundary continues through corners without a diagonal. */
+static void test_gl_native_stipple_polygon(void)
+{
+    gl_transform_start(qts);
+    gl_width_clear(qts);
+    gl_native_stipple(qts, 3, 0x8000);
+    gl_polygon_mode(qts, GL_FRONT_AND_BACK, GL_LINE_MODE);
+    gl_polygon_quad(qts, false, true);
+    g_assert_cmpuint(mgras_qom_get_uint(qts, "x-test-line-phase"), ==, 0);
+    for (unsigned y = 7; y <= 25; y++) {
+        for (unsigned x = 7; x <= 25; x++) {
+            bool on = (y == 8 && x >= 8 && x <= 10) ||
+                      (x == 8 && y >= 22 && y <= 24);
+
+            g_assert_cmphex(gl_window_pixel(qts, x, y), ==,
+                            on ? 0xffffff : 0);
+        }
+    }
+    gl_native_stipple(qts, 1, 0);
+    gl_width_clear(qts);
+    gl_polygon_mode(qts, GL_FRONT_AND_BACK, GL_FILL_MODE);
+    gl_polygon_quad(qts, false, true);
+    g_assert_cmphex(gl_window_pixel(qts, 16, 16), ==, 0xffffff);
+    gl_width_clear(qts);
+    gl_polygon_mode(qts, GL_FRONT_AND_BACK, 0x1b00);
+    gl_polygon_quad(qts, false, true);
+    g_assert_cmphex(gl_window_pixel(qts, 8, 8), ==, 0xffffff);
+    gl_width_clear(qts);
+    gl_word(qts, GL_BEGIN_POINTS);
+    gl_vertex2f(qts, 16.5f, 16.5f);
+    gl_word(qts, GL_END_OF(GL_BEGIN_POINTS));
+    g_assert_cmphex(gl_window_pixel(qts, 16, 16), ==, 0xffffff);
+    gl_raster_pos2f(qts, 32.5f, 8.5f);
+    gl_bitmap_packet(qts, 8, 1, 0, 0, 0, 0);
+    const uint32_t image[] = { 0xff000000 };
+
+    gl_bitmap_image(qts, image, ARRAY_SIZE(image));
+    for (unsigned x = 32; x < 40; x++) {
+        g_assert_cmphex(gl_window_pixel(qts, x, 8), ==, 0xffffff);
+    }
+    gl_clear_color(qts, 1, 0, 0, 1);
+    gl_word(qts, GL_CLEAR_COLOR_BUFFER);
+    g_assert_cmphex(gl_window_pixel(qts, 16, 16), ==, 0xff0000);
+}
+
+static void gl_native_stipple_hidden_migrate_setup(QTestState *s)
+{
+    gl_native_stipple_hidden_setup(s, 0x1f, true, 0x0400);
+}
+
+static void test_gl_native_stipple_hidden_migration(void)
+{
+    gl_migrate(gl_native_stipple_hidden_migrate_setup,
+               gl_native_stipple_hidden_check);
+}
+
+static void gl_native_stipple_loop_setup(QTestState *s)
+{
+    gl_native_stipple_slot(s, GL_SLOT_A);
+    gl_native_stipple(s, 1, 0x0040); /* API bit nine selects the closure. */
+    gl_word(s, GL_BEGIN_LINE_LOOP);
+    gl_vertex2f(s, 8.5f, 8.5f);
+    gl_vertex2f(s, 13.5f, 8.5f);
+    g_assert_cmpuint(mgras_qom_get_uint(s, "x-test-line-phase"), ==, 5);
+}
+
+static void gl_native_stipple_loop_check(QTestState *s)
+{
+    g_assert_cmpuint(mgras_qom_get_uint(s, "x-test-line-phase"), ==, 5);
+    gl_vertex2f(s, 17.5f, 8.5f);
+    g_assert_cmpuint(mgras_qom_get_uint(s, "x-test-line-phase"), ==, 9);
+    g_assert_cmphex(gl_window_pixel(s, 17, 8), ==, 0);
+    gl_word(s, GL_END_OF(GL_BEGIN_LINE_LOOP));
+    g_assert_cmpuint(mgras_qom_get_uint(s, "x-test-line-phase"), ==, 0);
+    for (unsigned x = 8; x <= 18; x++) {
+        g_assert_cmphex(gl_window_pixel(s, x, 8), ==,
+                        x == 17 ? 0xffffff : 0);
+    }
+}
+
+static void test_gl_native_stipple_loop(void)
+{
+    mgras_reset();
+    gl_native_stipple_loop_setup(qts);
+    gl_native_stipple_loop_check(qts);
+}
+
+static void test_gl_native_stipple_loop_migration(void)
+{
+    gl_migrate(gl_native_stipple_loop_setup, gl_native_stipple_loop_check);
 }
 
 /* Collinear vertices keep an analytical rectangle while exceeding four. */
@@ -17501,6 +17889,30 @@ int main(int argc, char **argv)
                        test_credit_uncounted_store_returns_nothing);
     }
 
+    qtest_add_func("sn0/origin2000/mgras/gl-native-stipple/parameters",
+                    test_gl_native_stipple_parameters);
+    qtest_add_func("sn0/origin2000/mgras/gl-native-stipple/polygon",
+                    test_gl_native_stipple_polygon);
+    qtest_add_func("sn0/origin2000/mgras/gl-native-stipple/no-write",
+                    test_gl_native_stipple_no_write);
+    qtest_add_func("sn0/origin2000/mgras/gl-native-stipple/unbound",
+                    test_gl_native_stipple_unbound);
+    qtest_add_func("sn0/origin2000/mgras/gl-native-stipple/axes",
+                    test_gl_native_stipple_axes);
+    qtest_add_func("sn0/origin2000/mgras/gl-native-stipple/pairs",
+                    test_gl_native_stipple_pairs);
+    qtest_add_func("sn0/origin2000/mgras/gl-native-stipple/masks",
+                    test_gl_native_stipple_masks);
+    qtest_add_func("sn0/origin2000/mgras/gl-native-stipple/contexts",
+                    test_gl_native_stipple_contexts);
+    qtest_add_func("sn0/origin2000/mgras/gl-native-stipple/hidden-migration",
+                    test_gl_native_stipple_hidden_migration);
+    qtest_add_func("sn0/origin2000/mgras/gl-native-stipple/loop",
+                    test_gl_native_stipple_loop);
+    qtest_add_func("sn0/origin2000/mgras/gl-native-stipple/loop-migration",
+                    test_gl_native_stipple_loop_migration);
+    qtest_add_func("sn0/origin2000/mgras/gl-native-stipple/empty-binding",
+                    test_gl_native_stipple_empty_binding);
     qtest_add_func("sn0/origin2000/mgras/gl-native-texcoord/current",
                     test_gl_native_texcoord_current);
     qtest_add_func("sn0/origin2000/mgras/gl-native-texcoord/raster",
@@ -17509,8 +17921,8 @@ int main(int argc, char **argv)
                     test_gl_native_texcoord_contexts);
     qtest_add_func("sn0/origin2000/mgras/gl-native-texcoord/migration",
                     test_gl_native_texcoord_migration);
-    qtest_add_func("sn0/origin2000/mgras/gl-native-polygon/stipple-excluded",
-                    test_gl_native_polygon_stipple_excluded);
+    qtest_add_func("sn0/origin2000/mgras/gl-native-polygon/stipple-applied",
+                    test_gl_native_polygon_stipple_applied);
     qtest_add_func("sn0/origin2000/mgras/gl-native-polygon/facing",
                     test_gl_native_polygon_facing);
     qtest_add_func("sn0/origin2000/mgras/gl-native-polygon/clipped-boundary",
