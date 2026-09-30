@@ -242,6 +242,7 @@ struct SGIBridgeState {
     MemoryRegion *flash;
     MemoryRegion *flash_select1;
     bool flash_select;
+    bool flash_reject_invalid_writes;
 
     /* Configuration space window, type 0 only: no PCI-to-PCI bridge here. */
     MemoryRegion cfg0;

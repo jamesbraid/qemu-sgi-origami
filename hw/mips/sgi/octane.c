@@ -19,6 +19,7 @@
 #include "hw/core/qdev-properties.h"
 #include "hw/core/qdev-clock.h"
 #include "hw/core/sysbus.h"
+#include "hw/core/irq.h"
 #include "hw/audio/sgi-rad1-audio.h"
 #include "hw/mips/mips.h"
 #include "hw/mips/sgi-xtalk-port.h"
@@ -31,6 +32,7 @@
 #include "hw/scsi/qlogic-isp.h"
 #include "system/address-spaces.h"
 #include "system/system.h"
+#include "system/block-backend.h"
 #include "target/mips/cpu.h"
 
 #define OCTANE_SHORT_BASE 0x10000000ULL
@@ -52,7 +54,54 @@ typedef struct OctaneMachineState {
     MemoryRegion high_guard;
     uint64_t bank_size[HEART_BANKS];
     bool octane2;
+    char *flash_profile;
+    char *flash_drive;
+    char *flash_marker;
+    uint64_t flash_select;
+    uint64_t flash_strap;
 } OctaneMachineState;
+
+static char *octane_get_flash_profile(Object *obj, Error **errp)
+{
+    return g_strdup(((OctaneMachineState *)obj)->flash_profile);
+}
+
+static void octane_set_flash_profile(Object *obj, const char *value,
+                                     Error **errp)
+{
+    OctaneMachineState *s = (OctaneMachineState *)obj;
+
+    g_free(s->flash_profile);
+    s->flash_profile = g_strdup(value);
+}
+
+static char *octane_get_flash_drive(Object *obj, Error **errp)
+{
+    return g_strdup(((OctaneMachineState *)obj)->flash_drive);
+}
+
+static void octane_set_flash_drive(Object *obj, const char *value,
+                                   Error **errp)
+{
+    OctaneMachineState *s = (OctaneMachineState *)obj;
+
+    g_free(s->flash_drive);
+    s->flash_drive = g_strdup(value);
+}
+
+static char *octane_get_flash_marker(Object *obj, Error **errp)
+{
+    return g_strdup(((OctaneMachineState *)obj)->flash_marker);
+}
+
+static void octane_set_flash_marker(Object *obj, const char *value,
+                                    Error **errp)
+{
+    OctaneMachineState *s = (OctaneMachineState *)obj;
+
+    g_free(s->flash_marker);
+    s->flash_marker = g_strdup(value);
+}
 
 /* Virtual records from the reviewed IP30 board-identity contract. */
 static const SGIBoardRecord octane_board_records[2][4] = {
@@ -227,6 +276,8 @@ static void octane_fit_pci(MachineState *machine, SGIBridgeState *bridge)
                          SGI_IOC3_POPULATION_ONEWIRE_IDENTITY);
     qdev_prop_set_uint8(DEVICE(pci), "timekeeper-kind",
                        SGI_IOC3_TIMEKEEPER_DS1685);
+    qdev_prop_set_bit(DEVICE(pci), "phy-ics1890", true);
+    qdev_prop_set_uint8(DEVICE(pci), "phy-addr", 1);
     if (serial_hd(0)) {
         qdev_prop_set_chr(DEVICE(pci), "chardev-a", serial_hd(0));
     }
@@ -265,8 +316,8 @@ static void octane_init_common(MachineState *machine, bool octane2)
     MemoryRegion *system = get_system_memory();
     MemoryRegion *physical = g_new0(MemoryRegion, 1);
     MemoryRegion *attr0 = g_new0(MemoryRegion, 1);
-    MemoryRegion *firmware = g_new0(MemoryRegion, 1);
-    MemoryRegion *alternate_flash = g_new0(MemoryRegion, 1);
+    MemoryRegion *firmware = NULL;
+    MemoryRegion *alternate_flash = NULL;
     MemoryRegion *proxy = g_new0(MemoryRegion, 1);
     MemoryRegion *proxy_route = g_new0(MemoryRegion, 1);
     MemoryRegion *short_view = g_new0(MemoryRegion, 1);
@@ -277,7 +328,8 @@ static void octane_init_common(MachineState *machine, bool octane2)
     g_autofree char *path = NULL;
     int64_t size;
     int loaded;
-    uint8_t *flash_image = g_malloc(OCTANE_FLASH_SIZE);
+    uint8_t *flash_image = NULL;
+    bool sharp_flash = !strcmp(s->flash_profile, "sharp-lh28f800su");
 
     s->octane2 = octane2;
     if (machine->ram_size != (octane2 ? 256 : 128) * MiB ||
@@ -295,33 +347,69 @@ static void octane_init_common(MachineState *machine, bool octane2)
                           MIPS_CPU_TYPE_NAME("R12000"))) {
         error_setg(&error_fatal, "octane2 requires an R12000 CPU");
     }
-    if (!machine->firmware) {
-        error_setg(&error_fatal, "octane requires -bios with a raw image "
-                                 "of at most 2 MiB");
-    }
-    path = qemu_find_file(QEMU_FILE_TYPE_BIOS, machine->firmware);
-    size = path ? get_image_size(path, NULL) : -1;
-    if (size < 0) {
-        error_setg(&error_fatal, "octane cannot read firmware image '%s'",
-                   machine->firmware);
-    }
-    if (size > OCTANE_FLASH_SIZE) {
-        error_setg(&error_fatal, "octane firmware image '%s' exceeds 2 MiB",
-                   machine->firmware);
-    }
+    if (sharp_flash) {
+        DeviceState *chip;
+        BlockBackend *blk;
 
-    memset(flash_image, 0xff, OCTANE_FLASH_SIZE);
-    loaded = load_image_size(path, flash_image, OCTANE_FLASH_SIZE);
-    if (loaded != size) {
-        error_setg(&error_fatal, "octane cannot load firmware image '%s'",
-                   machine->firmware);
+        if (machine->firmware || !s->flash_drive || !s->flash_marker ||
+            s->flash_select > 1 || s->flash_strap > 1) {
+            error_setg(&error_fatal, "sharp flash requires flash-drive, "
+                       "flash-marker, flash-select=0|1 and flash-strap=0|1; "
+                       "do not combine it with -bios");
+        }
+        blk = blk_by_name(s->flash_drive);
+        if (!blk) {
+            error_setg(&error_fatal, "no flash drive named '%s'",
+                       s->flash_drive);
+        }
+        chip = qdev_new("lh28f800su");
+        object_property_add_child(OBJECT(machine), "sharp-flash", OBJECT(chip));
+        qdev_prop_set_drive_err(chip, "drive", blk, &error_fatal);
+        qdev_prop_set_string(chip, "failure-marker", s->flash_marker);
+        /* Flash is already out of reset when the CPU starts. */
+        qdev_prop_set_bit(chip, "initial-rp-high", true);
+        sysbus_realize(SYS_BUS_DEVICE(chip), &error_fatal);
+        firmware = sysbus_mmio_get_region(SYS_BUS_DEVICE(chip), 0);
+        qemu_set_irq(qdev_get_gpio_in_named(chip, "pins", 0), 1);
+        qemu_set_irq(qdev_get_gpio_in_named(chip, "pins", 1), 1);
+        qemu_set_irq(qdev_get_gpio_in_named(chip, "pins", 2), 1);
+        object_unref(OBJECT(chip));
+    } else {
+        if (strcmp(s->flash_profile, "raw") || s->flash_drive ||
+            s->flash_marker || s->flash_select != UINT64_MAX ||
+            s->flash_strap != UINT64_MAX) {
+            error_setg(&error_fatal, "raw flash cannot take Sharp flash "
+                       "properties");
+        }
+        if (!machine->firmware) {
+            error_setg(&error_fatal, "octane requires -bios with a raw image "
+                                     "of at most 2 MiB");
+        }
+        path = qemu_find_file(QEMU_FILE_TYPE_BIOS, machine->firmware);
+        size = path ? get_image_size(path, NULL) : -1;
+        if (size < 0) {
+            error_setg(&error_fatal, "octane cannot read firmware image '%s'",
+                       machine->firmware);
+        }
+        if (size > OCTANE_FLASH_SIZE) {
+            error_setg(&error_fatal, "octane firmware image '%s' exceeds 2 MiB",
+                       machine->firmware);
+        }
+        flash_image = g_malloc(OCTANE_FLASH_SIZE);
+        memset(flash_image, 0xff, OCTANE_FLASH_SIZE);
+        loaded = load_image_size(path, flash_image, OCTANE_FLASH_SIZE);
+        if (loaded != size) {
+            error_setg(&error_fatal, "octane cannot load firmware image '%s'",
+                       machine->firmware);
+        }
+        firmware = g_new0(MemoryRegion, 1);
+        memory_region_init_io(firmware, OBJECT(machine), &octane_flash_ops,
+                              flash_image, "octane.flash", OCTANE_FLASH_SIZE);
+        alternate_flash = g_new0(MemoryRegion, 1);
+        memory_region_init_io(alternate_flash, OBJECT(machine),
+                              &octane_blank_flash_ops, NULL,
+                              "octane.alternate-flash", OCTANE_FLASH_SIZE);
     }
-    /* Bridge dispatches into this chip while its own I/O guard is active. */
-    memory_region_init_io(firmware, OBJECT(machine), &octane_flash_ops,
-                          flash_image, "octane.flash", OCTANE_FLASH_SIZE);
-    memory_region_init_io(alternate_flash, OBJECT(machine),
-                          &octane_blank_flash_ops, NULL,
-                          "octane.alternate-flash", OCTANE_FLASH_SIZE);
 
     cpuclk = clock_new(OBJECT(machine), "cpu-refclk");
     /* The fitted Octane2 R12000 is reported at 360 MHz. */
@@ -416,12 +504,24 @@ static void octane_init_common(MachineState *machine, bool octane2)
     object_property_set_link(OBJECT(bridge), "fabric", OBJECT(proxy),
                              &error_fatal);
     qdev_prop_set_uint32(bridge, "fabric-widget-shift", 48);
-    object_property_set_link(OBJECT(bridge), "flash", OBJECT(firmware),
-                             &error_fatal);
-    object_property_set_link(OBJECT(bridge), "flash-select1",
-                             OBJECT(alternate_flash), &error_fatal);
+    if (!sharp_flash || s->flash_select == 0) {
+        object_property_set_link(OBJECT(bridge), "flash", OBJECT(firmware),
+                                 &error_fatal);
+    }
+    if (sharp_flash && s->flash_select == 1) {
+        object_property_set_link(OBJECT(bridge), "flash-select1",
+                                 OBJECT(firmware), &error_fatal);
+    } else if (!sharp_flash) {
+        object_property_set_link(OBJECT(bridge), "flash-select1",
+                                 OBJECT(alternate_flash), &error_fatal);
+    }
+    if (sharp_flash) {
+        qdev_prop_set_bit(bridge, "flash-select", s->flash_strap);
+        qdev_prop_set_bit(bridge, "flash-reject-invalid-writes", true);
+    }
     sysbus_realize(SYS_BUS_DEVICE(bridge), &error_fatal);
-    if (!sgi_bridge_install_flash_read_view(SGI_BRIDGE(bridge), flash_image,
+    if (!sharp_flash &&
+        !sgi_bridge_install_flash_read_view(SGI_BRIDGE(bridge), flash_image,
                                             OCTANE_FLASH_SIZE, &error_fatal)) {
         return;
     }
@@ -480,6 +580,19 @@ static void octane_instance_init_common(Object *obj, uint64_t default_bank)
 {
     OctaneMachineState *s = (OctaneMachineState *)obj;
 
+    s->flash_profile = g_strdup("raw");
+    s->flash_select = UINT64_MAX;
+    s->flash_strap = UINT64_MAX;
+    object_property_add_str(obj, "flash-profile", octane_get_flash_profile,
+                            octane_set_flash_profile);
+    object_property_add_str(obj, "flash-drive", octane_get_flash_drive,
+                            octane_set_flash_drive);
+    object_property_add_str(obj, "flash-marker", octane_get_flash_marker,
+                            octane_set_flash_marker);
+    object_property_add_uint64_ptr(obj, "flash-select", &s->flash_select,
+                                   OBJ_PROP_FLAG_READWRITE);
+    object_property_add_uint64_ptr(obj, "flash-strap", &s->flash_strap,
+                                   OBJ_PROP_FLAG_READWRITE);
     s->bank_size[0] = default_bank;
     for (unsigned bank = 0; bank < HEART_BANKS; bank++) {
         g_autofree char *name = g_strdup_printf("bank%u-size", bank);
@@ -499,6 +612,15 @@ static void octane_instance_init(Object *obj)
 static void octane2_instance_init(Object *obj)
 {
     octane_instance_init_common(obj, 256 * MiB);
+}
+
+static void octane_instance_finalize(Object *obj)
+{
+    OctaneMachineState *s = (OctaneMachineState *)obj;
+
+    g_free(s->flash_profile);
+    g_free(s->flash_drive);
+    g_free(s->flash_marker);
 }
 
 static void octane_class_init(ObjectClass *oc, const void *data)
@@ -533,6 +655,7 @@ static const TypeInfo octane2_machine = {
     .parent = TYPE_MACHINE,
     .instance_size = sizeof(OctaneMachineState),
     .instance_init = octane2_instance_init,
+    .instance_finalize = octane_instance_finalize,
     .class_init = octane2_class_init,
 };
 
@@ -541,6 +664,7 @@ static const TypeInfo octane_machine = {
     .parent = TYPE_MACHINE,
     .instance_size = sizeof(OctaneMachineState),
     .instance_init = octane_instance_init,
+    .instance_finalize = octane_instance_finalize,
     .class_init = octane_class_init,
 };
 

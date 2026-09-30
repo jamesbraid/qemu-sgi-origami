@@ -1,19 +1,25 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * Sharp LH28F800SU x16 commands (SMT96107, May 1996).
- * Page operations, queuing, x8 mode, and process-restart backing
- * are unsupported.
+ * Page operations, queuing, and x8 mode are unsupported.
  * The board owns chip selection, bus lanes, and physical pin wiring.
  */
 #include "qemu/osdep.h"
 #include "qemu/log.h"
 #include "qemu/timer.h"
 #include "qemu/units.h"
+#include "block/block_int.h"
+#include "qobject/qdict.h"
+#include "system/block-backend.h"
+#include "system/block-backend-io.h"
+#include "system/runstate.h"
 #include "hw/core/sysbus.h"
 #include "hw/core/irq.h"
 #include "hw/core/qdev-properties.h"
+#include "hw/core/qdev-properties-system.h"
 #include "migration/vmstate.h"
 #include "qapi/error.h"
+#include "qemu/error-report.h"
 
 #define TYPE_LH28F800SU "lh28f800su"
 OBJECT_DECLARE_SIMPLE_TYPE(LH28F800SUState, LH28F800SU)
@@ -82,7 +88,123 @@ struct LH28F800SUState {
     bool vpp_good;
     bool wp_high;
     bool rp_high;
+    bool initial_rp_high;
+    BlockBackend *blk;
+    char *failure_marker;
+    Notifier shutdown;
+    bool shutdown_registered;
+    bool storage_failed;
 };
+
+static int flash_marker_sync_dir(LH28F800SUState *s)
+{
+    g_autofree char *dir = g_path_get_dirname(s->failure_marker);
+    int fd = open(dir, O_RDONLY | O_DIRECTORY);
+    int ret;
+
+    if (fd < 0) {
+        return -errno;
+    }
+    ret = fsync(fd) < 0 ? -errno : 0;
+    close(fd);
+    return ret;
+}
+
+static int flash_marker_create(LH28F800SUState *s)
+{
+    int fd = open(s->failure_marker, O_WRONLY | O_CREAT | O_EXCL, 0600);
+    int ret;
+
+    if (fd < 0) {
+        return -errno;
+    }
+    ret = fsync(fd) < 0 ? -errno : 0;
+    close(fd);
+    return ret < 0 ? ret : flash_marker_sync_dir(s);
+}
+
+static void flash_failed_run_shutdown(Notifier *notifier, void *data)
+{
+    qemu_system_shutdown_request_with_code(*(ShutdownCause *)data,
+                                           EXIT_FAILURE);
+}
+
+static void flash_preserve_run_failure(void)
+{
+    static Notifier notifier = { .notify = flash_failed_run_shutdown };
+    static bool registered;
+
+    /* A failed run remains failed after the device is removed. */
+    if (!registered) {
+        qemu_register_shutdown_notifier(&notifier);
+        registered = true;
+    }
+}
+
+static void flash_storage_error(LH28F800SUState *s, int ret)
+{
+    int marker_fd;
+
+    marker_fd = open(s->failure_marker, O_WRONLY | O_CREAT, 0600);
+    if (marker_fd >= 0) {
+        fsync(marker_fd);
+        close(marker_fd);
+        flash_marker_sync_dir(s);
+    }
+    error_report("lh28f800su: working image may be incomplete: %s; "
+                 "exclude it from normal reopen", strerror(-ret));
+    s->storage_failed = true;
+    flash_preserve_run_failure();
+    timer_del(s->timer);
+    /* Keep the failed operation busy until the operator terminates the VM. */
+    /* Defer the stop until the current timer callback has returned. */
+    blk_error_action(s->blk, BLOCK_ERROR_ACTION_STOP, false, -ret);
+}
+
+static bool flash_store(LH28F800SUState *s, uint32_t offset,
+                        const uint8_t *bytes, size_t size)
+{
+    int ret;
+
+    if (!s->blk) {
+        return true;
+    }
+    ret = flash_marker_create(s);
+    if (ret >= 0) {
+        ret = blk_pwrite(s->blk, offset, size, bytes, 0);
+    }
+    if (ret >= 0) {
+        ret = blk_flush(s->blk);
+    }
+    if (ret >= 0 && unlink(s->failure_marker) < 0) {
+        ret = -errno;
+    }
+    if (ret >= 0) {
+        ret = flash_marker_sync_dir(s);
+    }
+    if (ret < 0) {
+        flash_storage_error(s, ret);
+        return false;
+    }
+    return true;
+}
+
+static void flash_shutdown(Notifier *notifier, void *data)
+{
+    LH28F800SUState *s = container_of(notifier, LH28F800SUState, shutdown);
+    int ret;
+
+    /* Interrupted operations never become completed writes at shutdown. */
+    timer_del(s->timer);
+    ret = blk_flush(s->blk);
+    if (ret < 0 && !s->storage_failed) {
+        flash_storage_error(s, ret);
+    }
+    if (s->storage_failed) {
+        qemu_system_shutdown_request_with_code(*(ShutdownCause *)data,
+                                               EXIT_FAILURE);
+    }
+}
 
 static void flash_update_outputs(LH28F800SUState *s)
 {
@@ -107,11 +229,26 @@ static void flash_finish(void *opaque)
 
     switch (s->operation) {
     case FLASH_OP_PROGRAM:
+        if (s->blk) {
+            uint8_t bytes[] = { s->program_data >> 8, s->program_data };
+
+            if (!flash_store(s, offset, bytes, sizeof(bytes))) {
+                return;
+            }
+        }
         s->storage[offset] = s->program_data >> 8;
         s->storage[offset + 1] = s->program_data;
         memory_region_set_dirty(&s->mem, offset, 2);
         break;
     case FLASH_OP_ERASE:
+        if (s->blk) {
+            g_autofree uint8_t *bytes = g_malloc(BLOCK_SIZE);
+
+            memset(bytes, 0xff, BLOCK_SIZE);
+            if (!flash_store(s, offset, bytes, BLOCK_SIZE)) {
+                return;
+            }
+        }
         memset(s->storage + offset, 0xff, BLOCK_SIZE);
         memory_region_set_dirty(&s->mem, offset, BLOCK_SIZE);
         break;
@@ -211,7 +348,10 @@ static MemTxResult flash_read(void *opaque, hwaddr offset, uint64_t *value,
     if (size != 2 || (offset & 1)) {
         return MEMTX_ERROR;
     }
-    if (!s->rp_high || s->operation == FLASH_OP_RECOVER) {
+    if (!s->rp_high) {
+        return MEMTX_DECODE_ERROR;
+    }
+    if (s->operation == FLASH_OP_RECOVER) {
         return MEMTX_ERROR;
     }
     switch (s->mode) {
@@ -276,6 +416,10 @@ static MemTxResult flash_write(void *opaque, hwaddr offset, uint64_t value,
     if (size != 2 || (offset & 1)) {
         return MEMTX_ERROR;
     }
+    if (s->storage_failed && cmd != 0xff && cmd != 0x90 &&
+        cmd != 0x70 && cmd != 0x71) {
+        return MEMTX_ERROR;
+    }
     if (!s->rp_high || s->operation == FLASH_OP_RECOVER) {
         return MEMTX_ERROR;
     }
@@ -298,7 +442,7 @@ static MemTxResult flash_write(void *opaque, hwaddr offset, uint64_t value,
         return MEMTX_OK;
     }
     if (s->operation != FLASH_OP_NONE && !s->suspended &&
-        cmd != 0x70 && cmd != 0x71) {
+        cmd != 0x70 && cmd != 0x71 && !s->storage_failed) {
         qemu_log_mask(LOG_UNIMP, "lh28f800su: command while busy\n");
         return MEMTX_ERROR;
     }
@@ -403,10 +547,28 @@ static int flash_pre_save(void *opaque)
 {
     LH28F800SUState *s = opaque;
 
+    if (s->blk) {
+        error_report("lh28f800su: migration with persistent backing "
+                     "is unsupported");
+        return -EINVAL;
+    }
+
     if (s->operation != FLASH_OP_NONE && !s->suspended) {
         s->remaining_ns = MAX((int64_t)1,
                               (int64_t)timer_expire_time_ns(s->timer) -
                               qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
+    }
+    return 0;
+}
+
+static int flash_pre_load(void *opaque)
+{
+    LH28F800SUState *s = opaque;
+
+    if (s->blk) {
+        error_report("lh28f800su: restore with persistent backing "
+                     "is unsupported");
+        return -EINVAL;
     }
     return 0;
 }
@@ -438,6 +600,7 @@ static const VMStateDescription vmstate_flash = {
     .version_id = 2,
     .minimum_version_id = 2,
     .pre_save = flash_pre_save,
+    .pre_load = flash_pre_load,
     .post_load = flash_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT16(lock_mask, LH28F800SUState),
@@ -460,35 +623,159 @@ static const VMStateDescription vmstate_flash = {
     },
 };
 
+/* Only the raw file path and QEMU's test fault filter are supported. */
+static bool flash_backend_valid(BlockDriverState *bs, Error **errp)
+{
+    GRAPH_RDLOCK_GUARD_MAINLOOP();
+
+    if (!bs || strcmp(bdrv_get_format_name(bs), "raw")) {
+        error_setg(errp, "persistent flash requires a raw file backend");
+        return false;
+    }
+    while (bs) {
+        const char *driver = bdrv_get_format_name(bs);
+
+        if ((bdrv_get_flags(bs) & BDRV_O_NO_FLUSH) || bs->force_share) {
+            error_setg(errp, "persistent flash requires flushing and "
+                       "exclusive file locking");
+            return false;
+        }
+        if (!strcmp(driver, "file")) {
+            const char *locking = qdict_get_try_str(bs->options, "locking");
+            const char *filename = qdict_get_try_str(bs->options, "filename");
+            struct stat st;
+
+            if ((locking && !strcmp(locking, "off")) ||
+                ((!locking || !strcmp(locking, "auto")) &&
+                 !qemu_has_ofd_lock())) {
+                error_setg(errp, "persistent flash requires file locking");
+                return false;
+            }
+            if (!filename || lstat(filename, &st) < 0 || !S_ISREG(st.st_mode)) {
+                error_setg(errp, "persistent flash requires a regular file "
+                           "without a symlink");
+                return false;
+            }
+            if (st.st_size != FLASH_SIZE) {
+                error_setg(errp, "persistent flash must be exactly 1 MiB");
+                return false;
+            }
+            return true;
+        }
+        if ((strcmp(driver, "raw") && strcmp(driver, "blkdebug")) ||
+            !bs->file || bs->backing ||
+            QLIST_NEXT(QLIST_FIRST(&bs->children), next)) {
+            error_setg(errp, "persistent flash requires a raw file backend");
+            return false;
+        }
+        if (!strcmp(driver, "raw") &&
+            bdrv_getlength(bs) != bdrv_getlength(bs->file->bs)) {
+            error_setg(errp, "persistent flash does not support "
+                       "raw subregions");
+            return false;
+        }
+        bs = bs->file->bs;
+    }
+    error_setg(errp, "persistent flash requires a raw file backend");
+    return false;
+}
+
 static void flash_realize(DeviceState *dev, Error **errp)
 {
     LH28F800SUState *s = LH28F800SU(dev);
+    int64_t size;
+    int ret;
+    struct stat marker_stat;
+
+    if (s->blk && !s->failure_marker) {
+        error_setg(errp, "persistent flash requires a failure-marker path");
+        return;
+    }
+    if (s->blk) {
+        if (!flash_backend_valid(blk_bs(s->blk), errp)) {
+            return;
+        }
+        if (!blk_supports_write_perm(s->blk)) {
+            error_setg(errp, "persistent flash requires a writable backend");
+            return;
+        }
+        ret = blk_set_perm(s->blk, BLK_PERM_CONSISTENT_READ | BLK_PERM_WRITE,
+                           BLK_PERM_CONSISTENT_READ, errp);
+        if (ret < 0) {
+            return;
+        }
+        size = blk_getlength(s->blk);
+        if (size != FLASH_SIZE) {
+            error_setg(errp, "persistent flash must be exactly 1 MiB");
+            return;
+        }
+        if (lstat(s->failure_marker, &marker_stat) == 0 || errno != ENOENT) {
+            error_setg(errp, "flash working image has an invalid marker");
+            return;
+        }
+    }
 
     if (!memory_region_init_rom_device(&s->mem, OBJECT(dev), &flash_ops, s,
                                        TYPE_LH28F800SU, FLASH_SIZE, errp)) {
         return;
     }
+    s->timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, flash_finish, s);
     s->storage = memory_region_get_ram_ptr(&s->mem);
     memset(s->storage, 0xff, FLASH_SIZE);
+    if (s->blk && blk_pread(s->blk, 0, FLASH_SIZE, s->storage, 0) < 0) {
+        error_setg(errp, "cannot read persistent flash image");
+        timer_free(s->timer);
+        s->timer = NULL;
+        object_unparent(OBJECT(&s->mem));
+        return;
+    }
     memory_region_set_dirty(&s->mem, 0, FLASH_SIZE);
     s->lock_mask = s->initial_lock_mask;
+    s->rp_high = s->initial_rp_high;
     s->status = STATUS_READY;
     s->mode = FLASH_ARRAY;
-    s->timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, flash_finish, s);
     sysbus_init_mmio(SYS_BUS_DEVICE(dev), &s->mem);
     flash_update_outputs(s);
+    if (s->blk) {
+        s->shutdown.notify = flash_shutdown;
+        blk_set_on_error(s->blk, BLOCKDEV_ON_ERROR_STOP,
+                         BLOCKDEV_ON_ERROR_STOP);
+        blk_iostatus_enable(s->blk);
+        qemu_register_shutdown_notifier(&s->shutdown);
+        s->shutdown_registered = true;
+    }
+}
+
+static void flash_cleanup(LH28F800SUState *s)
+{
+    if (s->shutdown_registered) {
+        notifier_remove(&s->shutdown);
+        s->shutdown_registered = false;
+    }
+    if (s->timer) {
+        timer_del(s->timer);
+        timer_free(s->timer);
+        s->timer = NULL;
+    }
+}
+
+static void flash_unrealize(DeviceState *dev)
+{
+    flash_cleanup(LH28F800SU(dev));
 }
 
 static void flash_finalize(Object *obj)
 {
-    LH28F800SUState *s = LH28F800SU(obj);
-
-    timer_free(s->timer);
+    flash_cleanup(LH28F800SU(obj));
 }
 
 static const Property flash_properties[] = {
+    DEFINE_PROP_BOOL("initial-rp-high", LH28F800SUState,
+                     initial_rp_high, false),
     DEFINE_PROP_UINT16("initial-lock-mask", LH28F800SUState,
                        initial_lock_mask, 0xffff),
+    DEFINE_PROP_DRIVE("drive", LH28F800SUState, blk),
+    DEFINE_PROP_STRING("failure-marker", LH28F800SUState, failure_marker),
 };
 
 static void flash_class_init(ObjectClass *klass, const void *data)
@@ -496,6 +783,7 @@ static void flash_class_init(ObjectClass *klass, const void *data)
     DeviceClass *dc = DEVICE_CLASS(klass);
 
     dc->realize = flash_realize;
+    dc->unrealize = flash_unrealize;
     dc->vmsd = &vmstate_flash;
     dc->user_creatable = false;
     device_class_set_props(dc, flash_properties);
