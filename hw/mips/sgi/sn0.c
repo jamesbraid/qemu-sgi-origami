@@ -1268,8 +1268,8 @@ void sn0_map_cpu_big_windows(Object *owner, SN0NodeState **nodes,
 /*
  * IP29's onboard base I/O: the System Board's own Bridge, cabled either
  * straight to this node's Hub or, in a GIGAchannel module, to one of the
- * cabinet Crossbow's ports (docs/datasheets/sgi-gigachannel.md, "Crossbow
- * link assignment"), and an sgi-baseio behind it with the "ip29" preset.
+ * cabinet Crossbow's ports, and an sgi-baseio behind it with the "ip29"
+ * preset.
  * Unlike the Origin 2000 BaseIO card (sgi-xio-baseio), this Bridge is not
  * wrapped in any board class: it is a fitted part of the System Board
  * itself, not a removable card, so it answers the XIO port interface

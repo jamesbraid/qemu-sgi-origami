@@ -206,7 +206,7 @@ bool sn1_node_attach_prom(SN1NodeState *node, unsigned int node_index,
  * (sgi_machine_instantiate_io8() in sn-machine.c) -- the same attachment
  * path Origin 200's direct board and Origin 2000's Crossbow board both
  * read their own XIO widget from, since node->xbridge is a fitted
- * part of this node's own board (decision D-0026) rather than something
+ * part of this node's own board rather than something
  * a board-owning attachment builds. The node must already be realized.
  */
 PCIBus *sn1_node_xbridge_pci_bus(SN1NodeState *node, unsigned int widget);

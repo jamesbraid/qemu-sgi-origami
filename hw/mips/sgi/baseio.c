@@ -3,34 +3,26 @@
  * sgi-baseio: see the header for what this device owns and what its
  * carrier owns instead.
  *
- * Facts and sources, consolidated from the three classes this device
- * replaces (sgi-ip29-io, sgi-baseio's own predecessor board-baseio.c,
- * and sgi-io8):
+ * Board configurations:
  *
  *   - ip29: Bridge revision 4, board part "030-1244-001", board
  *     revision H, name IP29. ISP1040 at devices 0 and 1, revision 5.
  *     IOC3 at device 2, revision 1, PCI
  *     subsystem device id left at the chip's own "IP29 System Board"
- *     default (docs/datasheets/ioc3.md's board-variant table). Full
+ *     default. Full
  *     population -- Ethernet, both serial ports, keyboard/mouse,
  *     parallel, the one-wire identity part -- and an M48T35-compatible
  *     Timekeeper. IOC3's own interrupt output reaches the chip's pin 3
  *     directly rather than the pin matching its device number; both
  *     ISP1040s use the chip's own ordinary per-slot INTA rule.
- *     (docs/machines/layers/modules/ip29.yaml; hw/mips/sn0-origin200-model.c
- *     base_io and pci[], carried into the deleted board-ip29-io.c.)
  *   - io6: Bridge revision 4, board part "030-1124-002", board
  *     revision J, name BASEIO. ISP1040 at devices 0 and 1, revision 5.
  *     IOC3 at device 2, revision 1,
  *     population Ethernet, both serial ports and the one-wire identity
  *     part (no keyboard/mouse or parallel), an M48T35-compatible
- *     Timekeeper, and the explicit "not observed" subsystem id 0xffff
- *     (docs/datasheets/baseio.md, "Facts this reference leaves open").
+ *     Timekeeper, and the explicit "not observed" subsystem id 0xffff.
  *     IOC3's own interrupt output reaches pin 4 directly; both ISP1040s
  *     use the ordinary per-slot rule.
- *     (docs/machines/layers/modules/ip27-origin2000.yaml;
- *     hw/mips/sn0-origin2000-model.c, carried into the deleted
- *     board-baseio.c.)
  *   - io8: XBridge head F, board part "030-1673-003" (this device's own
  *     carrier default; the head's fitted onewire-serial is a per-unit
  *     fact the carrier passes down separately). QLogic ISP12160 at
@@ -41,28 +33,22 @@
  *     keyboard/mouse, no one-wire identity -- the board's Ethernet
  *     address comes from the brick EEPROM through the L1, not from
  *     IOC3's own part), an M48T35-compatible Timekeeper, and the DP83843
- *     transceiver at MII address 1 (docs/datasheets/dp83840.md), unlike
+ *     transceiver at MII address 1, unlike
  *     the Origin 200/2000 boards' DP83840A at address 31. The AT&T/Lucent
  *     OHCI USB controller at device 5, revision 0x10, subsystem vendor
  *     and device unobserved. A head has no automatic per-slot INTx
  *     routing of its own, so every function's interrupt is wired
  *     explicitly, and IOC3's own internal SuperIO real-time event (not a
  *     PCI pin) reaches the head's own pin 0.
- *     (docs/datasheets/xbridge.md; docs/machines/layers/modules/
- *     origin300-base.yaml; hw/mips/sn1-origin300-model.c
- *     sn1_origin300_pci_devices[], carried into the deleted
- *     board-io8.c.)
  *   - menet: the MENET XIO board, Bridge revision 4, board part
  *     "030-0873-003", board revision J, name MENET. Four IOC3s at devices
  *     0-3, revision 1, no Timekeeper: devices 0-2 carry Ethernet, both
  *     serial ports and the one-wire MAC part, device 3 Ethernet and its
  *     MAC part alone. Each serial-carrying chip's SuperIO output reaches
  *     Bridge pin device + 4; Ethernet uses the ordinary per-slot rule.
- *     (docs/datasheets/sgi-ioc3-boards.md in the Origami tree.)
  *   - mscsi: the MSCSI XIO board, Bridge revision 3, board part
  *     "030-1243-001", board revision F, name MSCSI. ISP1040 at devices
  *     0-3, revision 5, each on the ordinary per-slot INTA rule; no IOC3.
- *     (docs/datasheets/sgi-mscsi.md in the Origami tree.)
  *
  * "onewire-serial" is the onboard IOC3's own one-wire identity part, a
  * fact about this specific fitted unit distinct from the carrier's own
@@ -473,8 +459,7 @@ static bool baseio_build_io6(SGIBaseioState *s, Error **errp)
  * of the board's four PS/2 ports, the MediaIO IOC3 above supplying the
  * other half. IRIX only enables this chip's keyboard/mouse when the
  * Bridge's own board-part record reads a "030-0734-" (io6g) prefix rather
- * than plain io6's "030-1124-" (docs/datasheets/baseio.md's
- * board-variant table); sgi_baseio_presets[]'s "io6g" entry below
+ * than plain io6's "030-1124-"; sgi_baseio_presets[]'s "io6g" entry below
  * carries that part.
  */
 #define BASEIO_G_IOC3_POPULATION (BASEIO_IOC3_POPULATION | \
@@ -482,8 +467,7 @@ static bool baseio_build_io6(SGIBaseioState *s, Error **errp)
 
 /*
  * The MediaIO daughtercard's own board-identity record on the Bridge's
- * one-wire bus (docs/datasheets/baseio.md, "Board-identity records on the
- * Bridge one-wire bus"). Without it, device 6's IOC3 has no board record
+ * one-wire bus. Without it, device 6's IOC3 has no board record
  * of its own on that bus, and IRIX's one-wire dispatch falls back to a
  * default population that turns ethernet on for a chip that was never
  * wired to one, driving pci/6 to probe a PHY that does not exist. The
@@ -508,10 +492,9 @@ static const SGIBridgeBoardRecord baseio_g_mio_record = {
  * The MediaIO daughtercard's RAD1 audio ASIC sits at Bridge PCI device 7.
  * A real BaseIO-G owner's hinv -v lists the RAD1 identity 0x10a9:0x0005 at
  * PCI slot 7 of this board's Bridge, beside the SCSI controllers at 0 and
- * 1 and the IOC3s at 2 and 6, with nothing at slot 5
- * (docs/datasheets/baseio.md, "BaseIO-G and MediaIO boundary").
+ * 1 and the IOC3s at 2 and 6, with nothing at slot 5.
  * It carries no interrupt wiring: the RAD1 driver registers no data-path
- * interrupt (docs/datasheets/mediaio-rad1-audio.md, "Interrupts").
+ * interrupt.
  */
 #define BASEIO_G_RAD1_DEVICE 7
 
@@ -520,9 +503,8 @@ static const SGIBridgeBoardRecord baseio_g_mio_record = {
  * keyboard/mouse pair of its own (BASEIO_G_IOC3_POPULATION), plus the
  * MediaIO daughtercard's own board-part record and second IOC3 at
  * device 6 -- PS/2 keyboard/mouse, two more serial ports and a parallel
- * port; no ethernet, no IOC3-level one-wire identity, no Timekeeper
- * (docs/datasheets/baseio.md, docs/datasheets/ioc3.md's board-variant
- * table, subsystem id 0xc301). Between the two IOC3s io6g exposes four
+ * port; no ethernet, no IOC3-level one-wire identity, no Timekeeper,
+ * subsystem id 0xc301. Between the two IOC3s io6g exposes four
  * PS/2 ports total. This chip's own two serial ports are peripheral
  * connections, not a console or record backend -- device 2's IOC3
  * already owns "chardev-a"/"chardev-b"/"record-a"/"record-b" for this
@@ -748,15 +730,10 @@ static bool baseio_build_mscsi(SGIBaseioState *s, Error **errp)
 
 /*
  * Each Bridge-based board's own record carries the real board's part,
- * revision and name, and a placeholder barcode: the IP29's in
- * docs/datasheets/bridge.md ("The Origin 200's IP29 record"), the plain
- * BaseIO's and BaseIO-G's in docs/datasheets/baseio.md ("Board-identity
- * records on the Bridge one-wire bus"). The io8's XBridge placeholder
- * keeps the older text layout (docs/datasheets/xbridge.md, "What an IO8
- * record would hold"). The MENET's part, revision and name are a real
- * board's, paired with the Bridge revision that board reports
- * (docs/datasheets/sgi-ioc3-boards.md in the Origami tree). So are the
- * MSCSI's (docs/datasheets/sgi-mscsi.md in the Origami tree).
+ * revision and name, and a placeholder barcode. The io8's XBridge
+ * placeholder keeps the older text layout. The MENET's and MSCSI's
+ * part, revision and name are real boards' identities, paired with the
+ * Bridge revision each board reports.
  */
 static const SGIBaseioPreset sgi_baseio_presets[] = {
     { "ip29", { "030-1244-001", 4, "OIP2900001", "H", "IP29" },
