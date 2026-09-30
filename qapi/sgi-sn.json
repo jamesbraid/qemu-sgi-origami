@@ -437,6 +437,33 @@
             'serial': 'uint64' } }
 
 ##
+# @SGIModelIoPeer:
+#
+# An I/O-only network endpoint carried by a module.  It has no
+# processor, memory-bank or boot-flash population.  Its runtime
+# construction is not yet supported.
+#
+# @id: catalogue id of this endpoint
+#
+# @module-index: position of its owning module in the topology
+#
+# @slot: physical slot within that module
+#
+# @asic-kind: fitted network ASIC kind
+#
+# @identity: explicitly authored model identity, which may be
+#     synthetic
+#
+# Since: 11.2
+##
+{ 'struct': 'SGIModelIoPeer',
+  'data': { 'id': 'str',
+            'module-index': 'uint32',
+            'slot': 'uint32',
+            'asic-kind': 'SGIModelAsicKind',
+            'identity': 'SGIModelAsicIdentity' } }
+
+##
 # @SGIModelLinkEndKind:
 #
 # What a cable's end plugs into.
@@ -445,10 +472,12 @@
 #
 # @router: a numbered Router port
 #
+# @io-peer: an I/O-only endpoint
+#
 # Since: 11.2
 ##
 { 'enum': 'SGIModelLinkEndKind',
-  'data': ['node', 'router'] }
+  'data': ['node', 'router', 'io-peer'] }
 
 ##
 # @SGIModelLinkEnd:
@@ -457,10 +486,10 @@
 #
 # @kind: what this end plugs into
 #
-# @index: which node or router, by position in the topology's own
-#     @nodes or @routers list
+# @index: which endpoint, by position in the topology's own
+#     @nodes, @routers or @io-peers list
 #
-# @port: port number on that node or router
+# @port: port number on that endpoint
 #
 # Since: 11.2
 ##
@@ -832,6 +861,9 @@
 #
 # @nodes: positions in the topology's own @nodes list, in slot order
 #
+# @io-peers: positions of this module's I/O-only endpoints in the
+#     topology's @io-peers list, omitted when none are fitted
+#
 # Since: 11.2
 ##
 { 'struct': 'SGIModelModule',
@@ -839,7 +871,8 @@
             'serial': 'str',
             'initial-module-number': 'uint8',
             'controller-index': 'int',
-            'nodes': ['uint32'] } }
+            'nodes': ['uint32'],
+            '*io-peers': ['uint32'] } }
 
 ##
 # @SGIModelCpuPopulation:
@@ -969,6 +1002,8 @@
 #
 # @modules: this topology's modules or bricks
 #
+# @io-peers: I/O-only network endpoints, omitted when none are fitted
+#
 # @routers: every Router any of this chassis's node counts fits
 #
 # @cables: every cable any of this chassis's node counts fits
@@ -1006,6 +1041,7 @@
             'description': 'str',
             'nodes': ['SGIModelNode'],
             'modules': ['SGIModelModule'],
+            '*io-peers': ['SGIModelIoPeer'],
             'routers': ['SGIModelRouter'],
             'cables': ['SGIModelCable'],
             'crossbars': ['SGIModelCrossbar'],

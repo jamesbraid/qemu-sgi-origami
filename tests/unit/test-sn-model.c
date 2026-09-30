@@ -10,11 +10,14 @@
 
 #include "qemu/osdep.h"
 #include "qapi/error.h"
+#include "hw/mips/sgi/sn-catalogue.h"
 #include "qapi/qapi-types-sgi-sn.h"
 #include "qapi/qapi-visit-sgi-sn.h"
 #include "qapi/qobject-input-visitor.h"
 #include "qapi/util.h"
 #include "qobject/qjson.h"
+#include "qobject/qdict.h"
+#include "qobject/qlist.h"
 #include "qobject/qobject.h"
 
 /*
@@ -627,6 +630,172 @@ static void test_origin300_graphics_attachment(gconstpointer data)
     g_error("%s is missing", name);
 }
 
+/* These identities are synthetic parser data, not a fitted hardware profile. */
+#define IO_PEER_JSON \
+    "{ 'id': 'io-bedrock', 'module-index': 1, 'slot': 0," \
+    " 'asic-kind': 'bedrock', 'identity': { 'ni-revision': 1," \
+    " 'widget-revision': 1, 'serial': 1193046," \
+    " 'i2c-controller': false, 'system-controller': false } }"
+
+static void test_io_peer_descriptor(void)
+{
+    g_autoptr(SGIModelIoPeer) peer = NULL;
+    g_autoptr(SGIModelModule) module = NULL;
+    g_autoptr(SGIModelLinkEnd) end = NULL;
+    QObject *object = qobject_from_json(IO_PEER_JSON, &error_abort);
+    Visitor *v = qobject_input_visitor_new(object);
+
+    visit_type_SGIModelIoPeer(v, NULL, &peer, &error_abort);
+    visit_free(v);
+    g_assert_cmpstr(peer->id, ==, "io-bedrock");
+    g_assert_cmpuint(peer->module_index, ==, 1);
+    g_assert_cmpuint(peer->slot, ==, 0);
+    g_assert_cmpint(peer->asic_kind, ==, SGI_MODEL_ASIC_KIND_BEDROCK);
+    g_assert_cmpuint(peer->identity->serial, ==, 1193046);
+
+    qobject_unref(object);
+    object = qobject_from_json(
+        "{ 'id': 'io-module', 'serial': 'SYNTHETIC',"
+        " 'initial-module-number': 2, 'controller-index': -1,"
+        " 'nodes': [], 'io-peers': [0] }", &error_abort);
+    v = qobject_input_visitor_new(object);
+    visit_type_SGIModelModule(v, NULL, &module, &error_abort);
+    visit_free(v);
+    g_assert_null(module->nodes);
+    g_assert_true(module->has_io_peers);
+    g_assert_cmpuint(module->io_peers->value, ==, 0);
+    g_assert_null(module->io_peers->next);
+
+    qobject_unref(object);
+    object = qobject_from_json(
+        "{ 'kind': 'io-peer', 'index': 0, 'port': 0 }", &error_abort);
+    v = qobject_input_visitor_new(object);
+    visit_type_SGIModelLinkEnd(v, NULL, &end, &error_abort);
+    visit_free(v);
+    g_assert_cmpint(end->kind, ==, SGI_MODEL_LINK_END_KIND_IO_PEER);
+    g_assert_cmpuint(end->index, ==, 0);
+    g_assert_cmpuint(end->port, ==, 0);
+    qobject_unref(object);
+}
+
+static void test_io_peer_requires_identity(void)
+{
+    g_autoptr(SGIModelIoPeer) peer = NULL;
+    Error *err = NULL;
+    QObject *object = qobject_from_json(
+        "{ 'id': 'io-bedrock', 'module-index': 1, 'slot': 0,"
+        " 'asic-kind': 'bedrock' }", &error_abort);
+    Visitor *v = qobject_input_visitor_new(object);
+
+    visit_type_SGIModelIoPeer(v, NULL, &peer, &err);
+    visit_free(v);
+    g_assert_nonnull(err);
+    g_assert_nonnull(strstr(error_get_pretty(err), "identity"));
+    error_free(err);
+    qobject_unref(object);
+}
+
+static void test_io_peer_rejects_processors(void)
+{
+    g_autoptr(SGIModelIoPeer) peer = NULL;
+    Error *err = NULL;
+    QObject *object = qobject_from_json(IO_PEER_JSON, &error_abort);
+    QDict *dict = qobject_to(QDict, object);
+    Visitor *v;
+
+    qdict_put_obj(dict, "cpu-slots", QOBJECT(qlist_new()));
+    v = qobject_input_visitor_new(object);
+    visit_type_SGIModelIoPeer(v, NULL, &peer, &err);
+    visit_free(v);
+    g_assert_nonnull(err);
+    g_assert_nonnull(strstr(error_get_pretty(err), "cpu-slots"));
+    error_free(err);
+    qobject_unref(object);
+}
+
+static void test_existing_topologies_have_no_io_peers(void)
+{
+    g_autoptr(SGIModelCatalogue) catalogue = load_catalogue();
+    const SGIModelTopologyList *entry;
+
+    for (entry = catalogue->topologies; entry; entry = entry->next) {
+        const SGIModelModuleList *module;
+
+        g_assert_false(entry->value->has_io_peers);
+        g_assert_null(entry->value->io_peers);
+        for (module = entry->value->modules; module; module = module->next) {
+            g_assert_false(module->value->has_io_peers);
+            g_assert_null(module->value->io_peers);
+        }
+    }
+}
+
+static void test_io_peer_runtime_refusal(const void *data)
+{
+    char name[] = "synthetic-io-peer";
+    SGIModelTopology topology = { .name = name };
+    SGIModelIoPeer peer = { 0 };
+    SGIModelIoPeerList peers = { .value = &peer };
+    uint32List membership = { .value = 0 };
+    SGIModelModule module = { .has_io_peers = true,
+                              .io_peers = &membership };
+    SGIModelModuleList modules = { .value = &module };
+    SGIModelLinkEnd end = { .kind = SGI_MODEL_LINK_END_KIND_IO_PEER };
+    SGIModelLinkEndList ends = { .value = &end };
+    SGIModelCable cable = { .ends = &ends };
+    SGIModelCableList cables = { .value = &cable };
+    Error *err = NULL;
+
+    switch (GPOINTER_TO_UINT(data)) {
+    case 0:
+        topology.has_io_peers = true;
+        topology.io_peers = &peers;
+        break;
+    case 1:
+        /* Module membership must not silently survive without its peers. */
+        topology.modules = &modules;
+        break;
+    case 2:
+        /* An orphan cable end must not be interpreted as a Router. */
+        topology.cables = &cables;
+        break;
+    default:
+        g_assert_not_reached();
+    }
+    g_assert_false(sgi_model_check_runtime_endpoints(&topology, &err));
+    g_assert_nonnull(err);
+    g_assert_nonnull(strstr(error_get_pretty(err), topology.name));
+    g_assert_nonnull(strstr(error_get_pretty(err), "not supported"));
+    error_free(err);
+}
+
+static void test_io_peer_runtime_accepts_absent_and_empty(void)
+{
+    char name[] = "no-io-peers";
+    SGIModelTopology topology = { .name = name };
+    SGIModelModule module = { .has_io_peers = true };
+    SGIModelModuleList modules = { .value = &module };
+    SGIModelLinkEnd end = { .kind = SGI_MODEL_LINK_END_KIND_NODE };
+    SGIModelLinkEndList ends = { .value = &end };
+    SGIModelCable cable = { .ends = &ends };
+    SGIModelCableList cables = { .value = &cable };
+    Error *err = NULL;
+    g_autoptr(SGIModelCatalogue) catalogue = load_catalogue();
+    const SGIModelTopologyList *entry;
+
+    g_assert_true(sgi_model_check_runtime_endpoints(&topology, &err));
+    g_assert_null(err);
+    topology.has_io_peers = true;
+    topology.modules = &modules;
+    topology.cables = &cables;
+    g_assert_true(sgi_model_check_runtime_endpoints(&topology, &err));
+    g_assert_null(err);
+    for (entry = catalogue->topologies; entry; entry = entry->next) {
+        g_assert_true(sgi_model_check_runtime_endpoints(entry->value, &err));
+        g_assert_null(err);
+    }
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -638,5 +807,20 @@ int main(int argc, char **argv)
     g_test_add_data_func("/sn-model/origin300-vbrick-attachment",
                          "origin300-vbrick",
                          test_origin300_graphics_attachment);
+    g_test_add_func("/sn-model/io-peer/descriptor", test_io_peer_descriptor);
+    g_test_add_func("/sn-model/io-peer/requires-identity",
+                    test_io_peer_requires_identity);
+    g_test_add_func("/sn-model/io-peer/rejects-processors",
+                    test_io_peer_rejects_processors);
+    g_test_add_func("/sn-model/io-peer/existing-topologies",
+                    test_existing_topologies_have_no_io_peers);
+    g_test_add_data_func("/sn-model/io-peer/runtime-refuses-peer", NULL,
+                         test_io_peer_runtime_refusal);
+    g_test_add_data_func("/sn-model/io-peer/runtime-refuses-module-only",
+                         GUINT_TO_POINTER(1), test_io_peer_runtime_refusal);
+    g_test_add_data_func("/sn-model/io-peer/runtime-refuses-orphan-cable",
+                         GUINT_TO_POINTER(2), test_io_peer_runtime_refusal);
+    g_test_add_func("/sn-model/io-peer/runtime-accepts-absent-and-empty",
+                    test_io_peer_runtime_accepts_absent_and_empty);
     return g_test_run();
 }

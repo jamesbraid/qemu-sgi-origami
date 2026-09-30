@@ -26,7 +26,8 @@ mips_ss.add(when: ['CONFIG_SGI_SN0', 'CONFIG_TEST_DEVICES'],
 mips_ss.add(when: 'CONFIG_SGI_SN0', if_true: files('sgi/sn-promdata.c'))
 # The family machine base and builder over the compiled catalogue
 # (qapi/sgi-sn.json, embedded and parsed by sgi/sn-catalogue.c below).
-mips_ss.add(when: 'CONFIG_SGI_SN0', if_true: files('sgi/sn-machine.c'))
+mips_ss.add(when: 'CONFIG_SGI_SN0',
+            if_true: files('sgi/sn-machine.c', 'sgi/sn-model-runtime.c'))
 mips_ss.add(when: 'CONFIG_SGI_SN1',
             if_true: files('sgi/sn1.c', 'sgi/sn1-node.c',
                            'sgi/sn1-topology.c', 'sgi/sn1-fabric.c'))

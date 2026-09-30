@@ -477,6 +477,9 @@ static const SGIModelTopology *sgi_machine_resolve(MachineState *machine,
         error_setg(errp, "unknown topology");
         return NULL;
     }
+    if (!sgi_model_check_runtime_endpoints(chassis, errp)) {
+        return NULL;
+    }
     row = s->nodes_requested ?
         sgi_model_find_population(chassis, s->nodes_requested) :
         sgi_model_default_population(chassis);
