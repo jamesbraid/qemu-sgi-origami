@@ -776,9 +776,10 @@ static void test_ioc3_parallel(gconstpointer data)
     qtest_quit(qts);
 }
 
-static void test_octane2_ioc3_parallel_fifo(void)
+static void test_ioc3_parallel_fifo(gconstpointer data)
 {
-    QTestState *qts = octane2_start_args("");
+    bool octane2 = GPOINTER_TO_INT(data);
+    QTestState *qts = octane2 ? octane2_start_args("") : octane_start();
 
     qtest_writel(qts, CFG(2) + 0x10, 0x10000000);
     qtest_writel(qts, CFG(2) + 0x04, 0x00000002);
@@ -4128,8 +4129,10 @@ int main(int argc, char **argv)
                         test_ioc3_parallel);
     qtest_add_data_func("/octane2/ioc3-parallel", GINT_TO_POINTER(1),
                         test_ioc3_parallel);
-    qtest_add_func("/octane2/ioc3-parallel-fifo",
-                   test_octane2_ioc3_parallel_fifo);
+    qtest_add_data_func("/octane/ioc3-parallel-fifo", GINT_TO_POINTER(0),
+                        test_ioc3_parallel_fifo);
+    qtest_add_data_func("/octane2/ioc3-parallel-fifo", GINT_TO_POINTER(1),
+                        test_ioc3_parallel_fifo);
     qtest_add_func("/octane/ioc3-ethernet-polled",
                    test_octane_ethernet_polled);
     qtest_add_func("/octane2/ioc3-ethernet-polled",
