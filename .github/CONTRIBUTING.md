@@ -8,7 +8,7 @@ For emulation changes, identify the machine, device and guest version. Include
 public references and tests for the behavior being changed. Keep proprietary
 firmware, IRIX media, vendor source and snapshots out of commits and uploads.
 
-GitHub runs builds and MIPS64 qtests for proposed changes. Accepted changes
+Proposed changes are tested before integration. Accepted changes
 retain contributor authorship. The maintainer closes the pull request with a
 link to the resulting commit.
 
