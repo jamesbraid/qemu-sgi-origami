@@ -1,82 +1,8 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * Every cache operation the R10000 defines must be accepted rather than
- * faulted.
- *
- * This is the quietest way an early boot can die. A guest kernel
- * initialises
- * its caches by walking every index of every cache with the CACHE
- * instruction,
- * hundreds of executions deep, and it does so before it has a console.
- * A
- * model
- * that raises a reserved-instruction or coprocessor-unusable exception
- * on one
- * of those operations produces a machine that hangs with nothing
- * printed and
- * no clue as to why.
- *
- * Oracle: the R10000 manual's CACHE instruction op field encoding table
- * (Table 10-1), which lists twenty-one operation and target-cache
- * combinations. The operation is instruction bits 20:16, the same field
- * an
- * ordinary load would use for its destination register. Its low two
- * bits name
- * the target cache — 0 the primary instruction cache, 1 the primary
- * data
- * cache, 3 the secondary cache — and its high three bits name the
- * operation.
- * The manual's notes on cache instruction operations are explicit that
- * "the
- * operation of any operation/cache combination not listed below is
- * undefined",
- * so this ROM exercises exactly the twenty-one listed combinations and
- * none
- * of
- * the ten the manual leaves undefined: an emulator is free to do
- * anything at
- * all with those, and a test that pinned them down would be inventing a
- * contract rather than checking one.
- *
- * Two constraints from the same notes shape the address every operation
- * is
- * given. First, "the operation of this instruction on uncached
- * addresses is
- * also undefined", so the address must not be an uncached one. Second,
- * TLB
- * refill and TLB invalid exceptions can occur on any cache operation,
- * and the
- * notes recommend unmapped addresses to avoid them. The address used
- * below is
- * therefore the unmapped cached view of the ROM's own scratch buffer:
- * the
- * same
- * physical memory the buffer occupies, reached through the
- * compatibility
- * segment that is unmapped and cached rather than the one that is
- * unmapped
- * and
- * uncached. The two views differ by one address bit.
- *
- * The manual's note on coprocessor 0 not being usable says a cache
- * operation
- * raises a coprocessor-unusable exception unless the processor is in
- * kernel
- * mode or the CU0 bit of the Status register is set. This ROM runs in
- * kernel
- * mode throughout, which is the case that must work; the user-mode side
- * of
- * that rule belongs with the other user-mode privilege checks and is
- * not
- * repeated here.
- *
- * Nothing in this ROM is specific to the R10000 — QEMU treats the whole
- * instruction as a no-operation for every processor of this generation
- * — so
- * it
- * runs against the R4000 model too, and passing there is what says the
- * ROM is
- * sound rather than the model being lenient.
+ * Check that the twenty-one defined R10000 CACHE operation and cache
+ * combinations execute without exceptions. See the R10000 User's Manual,
+ * Table 10-1.
  */
 
 #include "rom.h"

@@ -1,80 +1,11 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * The two page-table-pointer registers are packed for 44-bit addresses.
+ * Test Context and XContext field packing for 44-bit virtual addresses.
+ * R10000 XContext uses a wider page-number field than the R4400, and
+ * its base field is independent of Context.
  *
- * A refill handler does almost no work: it reads the page-table pointer
- * the
- * hardware just built for it, loads a pair of entries from there and
- * returns.
- * If the fields in that pointer are one bit out of place, every fault
- * lands
- * on
- * the wrong page table entry, and the failure looks like random memory
- * corruption rather than a broken register. The R10000 moved those
- * fields
- * relative to the R4400 because its virtual addresses are four bits
- * wider, so
- * a model that inherits the R4400 packing is wrong in exactly that way.
- *
- * Oracle: the MIPS R10000 User's Manual version 2.0.
- *
- * Its memory management chapter establishes the width: the processor
- * uses
- * virtual address bits 43 down to 0 with region bits 63 down to 59,
- * bits 58
- * down to 44 are sign extensions of bit 43, the 64-bit user segment is
- * 2 to
- * the 44 bytes, and a user address whose bits 63 down to 44 are not
- * zero
- * raises an address error. The R4400's segments are 2 to the 40 bytes.
- *
- * Its Context register section (section 14.4, Figure 14-4 and Table
- * 14-5)
- * gives that register as a 41-bit operating-system-owned page-table
- * base in
- * bits 63 down to 23, a 19-bit bad-virtual-page-number field in bits 22
- * down
- * to 4 holding virtual address bits 31 down to 13, and zeroes in bits 3
- * down
- * to 0. Hardware writes the page-number field on a miss; the base is
- * read/write. This layout is the same on both processors, because it
- * only
- * describes 32-bit addresses.
- *
- * Its XContext register section (section 14.17, Figure 14-19 and Table
- * 14-17)
- * gives the wide register as a 27-bit page-table base in bits 63 down
- * to 37,
- * a
- * two-bit region field in bits 36 and 35 holding virtual address bits
- * 63 and
- * 62 with 00 meaning user and 11 meaning kernel, a 31-bit
- * bad-virtual-page-number field in bits 34 down to 4 holding virtual
- * address
- * bits 43 down to 13, and zeroes in bits 3 down to 0. On the R4400 that
- * page-number field is 27 bits and the region field sits at bits 32 and
- * 31,
- * so
- * the base boundary is the discriminator between the two processors.
- * The same
- * section also records that the R10000 stopped sharing the base field
- * between
- * the two registers, which the R4400 did, and the refill vector
- * discussion
- * adds that every buffer exception loads the page-number field of both.
- *
- * Bit 12 of the faulting address never appears in either page-number
- * field,
- * because one buffer entry maps an even and an odd page and that bit
- * chooses
- * between them.
- *
- * The first few assertions describe behaviour both processors share, so
- * they
- * are checks on this ROM rather than on the model. The ROM then reaches
- * the
- * base-field boundary, which is where a processor that is not an R10000
- * stops.
+ * Source: MIPS R10000 User's Manual, version 2.0, sections 14.4 and
+ * 14.17, and the memory-management chapter.
  */
 
 #include "rom.h"

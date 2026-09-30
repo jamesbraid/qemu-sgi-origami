@@ -1,50 +1,8 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * Taking an exception breaks a load-linked sequence on the R10000.
- *
- * Oracle: the R10000 User's Manual version 2.0, which states the rule
- * twice
- * and without an escape clause both times. The LL/SC section of chapter
- * 1
- * lists the events the sequence "must not contain ... or the Store
- * Conditional will fail", beginning with "exception", and the
- * implementation notes at the end of the same chapter repeat that any
- * of
- * those events "will cause the Store Conditional to fail". The generic
- * instruction set reference leaves this case predictable only on
- * processors
- * that advertise the later link-bit behaviour in their fifth
- * configuration
- * register, which the R4000 does not have, so this ROM runs against the
- * R10000 alone and the shared llsc ROM stays silent about it.
- *
- * The shared ROM pins the return-from-exception rule, but an ERET
- * breaks
- * the sequence by itself, so a test that faults and comes back through
- * the
- * handler's ordinary exit cannot say anything about the entry. Here the
- * handler is asked to come back by a plain jump instead — the harness
- * grew
- * that return for this test — so no ERET runs between the load-linked
- * and
- * the store-conditional and what remains is the exception itself. A
- * breakpoint instruction provides one deliberately.
- *
- * One honest limit: the manual also names same-processor loads and
- * stores
- * between the pair as link breakers, and the handler does both to
- * record
- * the exception, so this ROM cannot separate "the entry broke the link"
- * from "the handler's bookkeeping broke it" — on the real processor
- * every
- * event in that window kills the sequence, which is exactly why the
- * assertion holds there too. What it pins is the observable contract: a
- * sequence a fault landed in must not succeed.
- *
- * The synchronisation word is reached through the cached view of
- * memory,
- * as in the shared llsc ROM: atomic sequences are restricted to cached
- * locations, so the harness data window's uncached bit is masked off.
+ * Check that an exception in an R10000 load-linked sequence prevents the
+ * following store-conditional from succeeding. See the R10000 User's
+ * Manual version 2.0.
  */
 
 #include "rom.h"
@@ -142,7 +100,9 @@ void rom_main(void)
     rom_assert_eq(2, NEW_WORD, peek_word(a));
 
     /*
-     * The same pair with a fault inside it must fail and leave the word
+     * The handler also accesses memory, so this does not isolate the
+     * exception entry. The same pair with a fault inside it must fail
+     * and leave the word alone.
      * alone.
      */
     rom_exc_reset();

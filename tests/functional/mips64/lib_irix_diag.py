@@ -380,10 +380,8 @@ DIAGS = {
          ('olenet info pass', re.compile(r'META\s+enet-info\s+1\s+0\b')),
          ('olenet summary all passed',
           re.compile(r'META\s+TOTAL\s+2\s+0\b')))),
-    # The Origin 300 package's diagnostics below run under -operator, as
-    # the project checkout's online-diagnostics driver runs them: the
-    # LOOP line's trailing word is then each one's verdict, beside a META
-    # row per subtest.
+    # The Origin 300 diagnostics below run under -operator; the LOOP line
+    # carries each verdict beside a META row per subtest.
     'olpci': _operator_diag('pciDiagList'),
     'olperi': _operator_diag('olperi'),
     'olsio': _operator_diag('sioTest'),
@@ -874,10 +872,8 @@ FLAVOURS = {
         olmem_args='MEM=128',
         scsi_card=ScsiCard(r'SCSI controller (\d+): Version QL12160',
                            ('2', '3'), f'{_CARRIER}/0'),
-        # The carrier's slots are empty; fit an ISP12160 and a Cad Duo,
-        # the card the shoehorn carries, by its placeholder subsystem id
-        # (docs/datasheets/sgi-cad-duo-pci-card.md in the project
-        # checkout).
+        # The carrier's slots are empty; fit an ISP12160 and a Cad Duo by
+        # the subsystem id used for this modeled card.
         extra_args=(
             '-device', 'sgi-pci-carrier,slot=io2',
             '-device', 'qlogic-isp12160,bus=io2.0,addr=0',
@@ -925,12 +921,10 @@ FLAVOURS['origin300_4cpu'] = replace(
     FLAVOURS['origin300'], title='Origin 300 with four processors: the IO8 '
     'IOC3')
 
-# Two chassis joined by NUMAlink, four processors each. IRIX numbers the
-# second chassis's IOC3 after the first's on this disk: tty5 and tty6, ef1,
-# external interrupts 2 (docs/boot-logs/irix.boot.2026-09-25T20:11:00-07:00
-# in the project checkout). Each chassis brings out five serial lines, its
-# L1 first, so the second chassis's IOC3 ports are lines 6 and 7 and its
-# L1, line 5, stays unconnected.
+# Two chassis joined by NUMAlink, four processors each. The test disk's
+# device numbering assigns the second chassis's IOC3 to tty5 and tty6,
+# ef1, and external interrupts 2. Its modeled serial ports are lines 6
+# and 7; line 5 is reserved for its L1.
 _IO8_2 = '/hw/module/001c02/Ibrick/xtalk/15/pci'
 FLAVOURS['origin300_pair'] = replace(
     FLAVOURS['origin300'],

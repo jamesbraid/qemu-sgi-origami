@@ -1,25 +1,19 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * Register-contract tests for the SGI MSCSI XIO board: a Bridge and four
- * QLogic ISP1040 SCSI controllers (docs/datasheets/sgi-mscsi.md in the
- * Origami tree). The board is the "mscsi" preset of sgi-xio-baseio, built
- * from the existing Bridge and ISP1040 models.
+ * QLogic ISP1040 SCSI controllers. It is the "mscsi" preset of
+ * sgi-xio-baseio, built from the Bridge and ISP1040 models.
  *
  * Two placements run the same checks. A `-device sgi-xio-baseio,
  * preset=mscsi` board attaches at an Origin 2000's empty XIO slot IO4,
  * crossbow0 widget 11, as the MENET's own test does. Two more are fitted
  * in a GIGAchannel cabinet, at io2 (Crossbow widget 11) and io4
  * (widget 13), with a MENET at io3 (widget 12) between them: the XIO
- * population of a captured one-module system
- * (docs/datasheets/sgi-gigachannel.md in the Origami tree, "Crossbow link
- * assignment").
+ * population used by this test's one-module configuration.
  *
- * The contract, from a real IP27 PROM inventory of an MSCSI board and
- * real IRIX inventories:
- *   - the board's Bridge is revision 3;
- *   - ISP1040s (0x1077:0x1020), PCI revision 5, at PCI devices 0-3, and
- *     nothing else: no IOC3, so no console, record, clock or MediaIO
- *     backend.
+ * These tests pin the model's MSCSI configuration: a revision-3 Bridge
+ * and four PCI-revision-5 ISP1040s at devices 0-3, with no IOC3 or MediaIO
+ * backend.
  */
 
 #include "qemu/osdep.h"

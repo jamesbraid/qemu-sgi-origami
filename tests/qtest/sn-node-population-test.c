@@ -4,10 +4,8 @@
  * node board up to its most, in the order SGI fills the node slots, and
  * the nodes= machine property picks the count. The fitted count decides
  * which Hubs exist, which Router boards and cables join them, and which
- * XIO slots a board can use. The expected wiring below is written out
- * from the manuals the Origami repository cites for each chassis
- * (docs/datasheets/origin2000-module.md and docs/datasheets/onyx2.md,
- * "Node-board populations"), not read back from the catalogue.
+ * XIO slots a board can use. The tests below check the topology
+ * configured by this QEMU model.
  */
 
 #include "qemu/osdep.h"

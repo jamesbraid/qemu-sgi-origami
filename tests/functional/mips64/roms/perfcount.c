@@ -1,84 +1,11 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * The performance counter registers: two counters and two control
- * registers
- * behind coprocessor 0 register 25, and the interrupt they share with
- * the
- * timer.
+ * Test the R10000 performance counters and their shared Cause.IP[7]
+ * interrupt. Counter event 0 counts cycles; other events must not be
+ * fabricated by the model. Checks cover selector decoding, mode
+ * qualifiers, overflow, and interaction with the timer interrupt.
  *
- * IRIX programs these for profiling, and its interrupt handler must be
- * able
- * to tell a counter overflow from a timer tick when both arrive on the
- * same
- * cause bit. A model that stores the registers without counting or
- * interrupting leaves that handler code dead; worse, one that lets a
- * Compare write clear a pending counter overflow silently drops
- * profiling
- * interrupts.
- *
- * Oracle: the R10000 User's Manual version 2.0.
- *  - Its Performance Counter Registers section (section 14.20, Figure
- * 14-22,
- *    Tables 14-19 through 14-22): two 32-bit counters and two control
- *    registers, selected by the low bits of the MTC0/MFC0 opcode — 0 is
- *    control 0, 1 is counter 0, 2 is control 1, 3 is counter 1. A
- * control
- *    register holds the event in bits 8:5, the interrupt enable in bit
- * 4 and
- *    the count enable bits U, S, K and EXL in bits 3:0; the rest is
- * reserved,
- *    written as zero and read as zero. A counter increments once per
- * its
- *    event, asserts IP[7] "when its most significant bit (bit 31)
- * becomes one
- *    (the counter overflows) and the associated performance control
- * register
- *    enables the interrupt", and "the counting continues after counter
- *    overflow whether or not an interrupt is signalled". Event 0 for
- * either
- *    counter is Cycles, incremented on each PClk cycle. The count
- * enable bits
- *    qualify by mode — U user, S supervisor, K kernel, each with EXL
- * and ERL
- *    clear, and the EXL bit for EXL set with ERL clear — and "all
- * counting is
- *    disabled when the ERL bit of the CP0 Status register is asserted".
- *  - Its interrupt exception section (chapter 17): IP[7] is set when
- * the
- *    Count register equals the Compare register or "either one of the
- * two
- *    performance counters overflows"; "writing a value to the Compare
- *    register clears the timer interrupt but it may not clear IP[7] if
- * one
- *    of the performance counters is simultaneously overflowing"; "the
- *    Performance Counter interrupt is cleared by writing a 0 to bit 31,
- * the
- *    overflow bit, of the counter". The handler determines the cause by
- *    querying each counter and its interrupt enable bit, which is what
- * makes
- *    the pending condition the pair (bit 31, enable) rather than a
- * latch.
- *  - Its reset section: the control registers' Event field is set to 0
- * by a
- *    reset; nothing more of the four registers is promised, so nothing
- * more
- *    is asserted about their reset state.
- *
- * What is asserted about counting is deliberately limited to the Cycles
- * event, checked as movement, ordering and mode gating rather than as a
- * rate: the emulator derives cycles from host-referenced virtual time,
- * so a
- * rate assertion would measure the host, as the timer ROM's header lays
- * out
- * for the Count register. An event the emulator cannot honestly derive
- * must
- * hold its written value rather than invent increments, and one such
- * event
- * is pinned exactly.
- *
- * The register set exists in this form on the R10000 family alone, so
- * this
- * ROM runs against the R10000 alone.
+ * Source: R10000 User's Manual, version 2.0, sections 14.20 and 17.
  */
 
 #include "rom.h"

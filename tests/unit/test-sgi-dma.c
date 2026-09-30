@@ -910,16 +910,9 @@ static void test_page_backed_plane(void)
 }
 
 /*
- * Command fetch over the list pool measured on an SI board, as the list
- * probe measurements in Origami's libGLcore analysis notes record it: a
- * 256-triangle list called once, the stock client and kernel driving the
- * model. The page list sat at physical 0x4d74018 and held 4 KiB frame
- * numbers 0x224bc to 0x224bf first; the invocation named pool offset 0 and
- * 0x3fa words. The words placed below are the dump's at the positions the
- * test reads:
- * page 0's header and first list words, its last list words and the zeros
- * after them, and page 1's header and first list words. The rest of each
- * page is a numbered filler, so an out-of-order or misaligned fetch shows.
+ * Command fetch through the list pool: a 256-triangle list with distinct
+ * page headers, boundary words, and numbered filler. These distinct values
+ * expose an out-of-order or misaligned fetch.
  */
 static const uint64_t pool_frames[4] = { 0x224bc, 0x224bd, 0x224be, 0x224bf };
 

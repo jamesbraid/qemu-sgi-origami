@@ -1,21 +1,11 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * R10000 secondary-cache index data operations preserve diagnostic
- * data.
+ * data. Index Store Data writes one doubleword and its check bits;
+ * Index Load Data returns the selected doubleword and check bits.
  *
- * Index Store Data (S) writes one doubleword from CP0 TagHi and TagLo
- * into a
- * secondary-cache quadword, pads the other doubleword with zeroes, and
- * stores
- * all ten bits of CP0 ECC.  Physical address bit three selects the
- * populated
- * doubleword and bit zero selects the cache way.  Index Load Data (S)
- * returns
- * the selected doubleword and the quadword's check bits.
- *
- * Oracle: MIPS R10000 Microprocessor User's Manual, version 2.0 of
- * January
- * 29, 1997, sections 10.19 and 10.22.
+ * Source: MIPS R10000 Microprocessor User's Manual, version 2.0,
+ * sections 10.19 and 10.22.
  */
 
 #include "rom.h"

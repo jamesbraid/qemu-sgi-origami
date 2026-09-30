@@ -10,21 +10,13 @@ QEMU's own `screendump` QMP/HMP command writes and judges it with two
 bounded, general checks rather than an exact pixel-for-pixel golden image:
 
   - NotAllBlackCheck: is any pixel above a small threshold at all. This is
-    the coarsest possible check and exactly what would have caught RAD4's
-    real BAR2-unreachable regression (docs/research/graphics/
-    rad4-xradsgi-connection-hang-20260916.md in the Origami research records):
-    with that gap in place, every framebuffer byte a booted guest produced
-    stayed zero for the whole run, confirmed live against the pre-fix
-    revision (QEMU commit c9d4b3d6e2's parent) while developing this
-    check -- screendump there yields exactly 0 non-zero bytes out of
-    1280x1024x3.
+    the coarsest possible check and detects a framebuffer with no lit
+    pixels.
   - RegionColorCheck: does a named rectangle's average color fall inside a
     recorded range. Loose enough to tolerate ordinary rendering variance
     (anti-aliasing, minor timing-dependent partial redraws at the moment
     the dump was taken), tight enough to catch a real channel/scaling bug
-    -- the kind of near-black, blue-channel-only image RAD4 produced
-    before QEMU commit e63c96c1a4 fixed the RGB561 color LUT port would
-    fail any check whose range requires a real gray or white.
+    -- a range can also detect channel or scaling errors.
 
 Deliberately not attempted here: exact pixel-for-pixel comparison against a
 saved reference image. This project's own terminology reserves "golden" for
@@ -39,17 +31,8 @@ Two more general checks, for a region where a flat average cannot tell a
 real bitmap from a solid fill of the same mean brightness:
 
   - ColorVarietyCheck: does a rectangle contain at least `min_colors`
-    distinct (r, g, b) values. A live measurement of the IRIX 6.5.30 SI
-    greeter's icon-chooser capture (docs/notebooks/
-    si-target-first-chooser-20260921/si-chooser.png in the Origami
-    research records) found this genuinely discriminating: the whole 1280x1024
-    frame carries only three colors total (black background, one cyan
-    foreground value, and a handful of white cursor pixels), yet the
-    account icon's own 98x98 rectangle -- a solid cyan fill crossed by a
-    one-pixel-wide black diagonal -- and its label's glyph-text rectangle
-    each carry exactly 2 distinct colors, where a flat, unbroken fill of
-    either would carry only 1. lib_mgras_greeter.py uses this check
-    against that same capture.
+    distinct (r, g, b) values. This distinguishes a patterned region
+    from a solid fill with the same average color.
   - DarkPixelFractionCheck: does at least `min_fraction` of a rectangle's
     pixels have every channel at or below `max_channel`. This suits a
     light-background render where glyph text or chrome shows up as a

@@ -208,8 +208,7 @@ class RunChecksTests(unittest.TestCase):
         self.assertEqual(results['timer'][0], 'pass')
 
 
-# Output shaped like the diagnostics' own, from the captures cited in the
-# project checkout's irix-online-diagnostics notebook.
+# Representative output used to test diagnostic transcript parsing.
 PASSES = {
     'oldisk': 'RSLT async-direct   PASS\n'
               'META                TOTAL             1              0\n',
@@ -239,8 +238,7 @@ def _operator(subtest, seconds='0.081'):
             'META                TOTAL             1              0\n')
 
 
-# The Origin 300 package's, from the project checkout's
-# irix.online-diag-origin300-4cpu-* captures.
+# Representative Origin 300 diagnostic output.
 PASSES.update({
     'olpci': _operator('pciDiagList'),
     'olperi': _operator('olperi', '0.029'),

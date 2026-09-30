@@ -1,56 +1,12 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * R10000 primary-cache index tag operations preserve each cache's tag
- * array.
+ * array. Loads return defined TagLo and TagHi fields; invalidation
+ * changes state fields while retaining the tag address.
  *
- * Index Store Tag copies the defined fields of CP0 TagLo and TagHi into
- * the
- * addressed primary cache's tag array, and Index Load Tag copies them
- * back,
- * clearing every reserved register bit.  The virtual address selects
- * the set
- * — VA[13:6] for the instruction cache's 64-byte blocks, VA[13:5] for
- * the
- * data cache's 32-byte blocks — and VA[0] selects one of the two ways.
- * The
- * least-recently-used bit belongs to the set rather than to either way,
- * the
- * same shape the secondary cache's most-recently-used bit has.
- *
- * The two caches keep different fields.  The instruction cache tag
- * holds a
- * single state bit at TagLo[6]; the data cache holds a two-bit state at
- * TagLo[7:6], a secondary-way bit at TagLo[1], and a three-bit state
- * modifier at TagHi[31:29].  Both hold the tag address in TagLo[31:8]
- * and
- * TagHi[3:0], a state parity bit at TagLo[2], a tag parity bit at
- * TagLo[0],
- * and the least-recently-used bit at TagLo[3].
- *
- * The invalidating operations act on the same arrays.  Index Invalidate
- * (I)
- * and Index WriteBack Invalidate (D) clear the addressed way's state
- * and
- * state parity — the data cache's also clears the secondary-way bit and
- * writes the state modifier back to normal — while the tag address, the
- * tag
- * parity bit and the set's least-recently-used bit stay.  The Hit forms
- * compare the physical address against both ways' tags first and
- * invalidate
- * only a way whose state is valid and whose tag matches.  What none of
- * them
- * do here is write anything back: the machine's memory is always
- * current in
- * this model and the diagnostic arrays sit beside it, so there is no
- * dirty
- * data for a write back to preserve.
- *
- * Oracle: MIPS R10000 Microprocessor User's Manual, version 2.0 of
- * October
- * 10, 1996, sections 10.2, 10.3, 10.5, 10.6, 10.8, 10.9, 10.11, 10.12
- * and
- * 10.15, and the TagLo/TagHi register formats of section 14.23 (Figures
- * 14-28 and 14-29).
+ * Source: MIPS R10000 Microprocessor User's Manual, version 2.0,
+ * sections 10.2, 10.3, 10.5, 10.6, 10.8, 10.9, 10.11, 10.12, 10.15
+ * and 14.23.
  */
 
 #include "rom.h"

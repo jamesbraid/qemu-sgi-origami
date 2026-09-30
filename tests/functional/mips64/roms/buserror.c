@@ -1,69 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * The bus error contract: a read that nothing answers faults, a write
- * posts.
- *
- * Oracle: the R10000 User's Manual version 2.0, the Bus Error exception
- * description. Its cause is exhaustive and every request kind in it is
- * a
- * read: "A Bus Error exception occurs when a processor block read,
- * upgrade,
- * or double/single/partial-word read request receives an external ERR
- * completion response, or a processor double/single/partial-word read
- * request receives an external ACK completion response where the
- * associated
- * external double/single/partial-word data response contains an
- * uncorrectable error." An uncached store leaves the processor as a
- * double/single/partial-word write request, which the System interface
- * chapter shows as one address cycle and one data cycle with no
- * completion
- * response at all: the write is posted, and whatever becomes of it is
- * the
- * memory system's to report, never a precise exception at the store.
- *
- * Why this is worth a ROM of its own: firmware leans on the asymmetry
- * from
- * the other side. The PROM's Bridge self-test deliberately writes to an
- * address nothing implements and expects to keep running, taking the
- * report
- * through the I/O system's error registers; a model that raises a
- * precise
- * bus error at the store hands its handler an exception real hardware
- * never
- * delivers. The load half is pinned beside it so losing the store
- * exception
- * can never quietly widen into losing the bus error itself.
- *
- * For the faulting load, what is pinned is what the manual pins: the
- * DBE
- * code — "Bus error exception (data reference: load or store)", code 7
- * in
- * the Cause register's exception code table — the recorded program
- * counter,
- * and the clear branch-delay bit. BadVAddr is deliberately not pinned:
- * the
- * BadVAddr description sets it for TLB and Address Error exceptions and
- * "otherwise, the architecture leaves this register undefined"; the Bus
- * Error description's servicing text computes the address from the
- * instruction instead.
- *
- * The probed address is the second node's Hub through the node window,
- * on
- * the suite's one-node machine: nothing decodes there, so a read is
- * refused
- * by the machine rather than answered. The foldback ROM leans on the
- * same
- * fact from the other direction, probing that address to detect a
- * one-node
- * machine by its bus error. If a second node ever becomes part of the
- * default suite machine, the load assertions here fail loudly and this
- * ROM
- * must move its hole.
- *
- * The R10000 alone: the posted-write half is that processor's System
- * interface contract. QEMU's R4000 model raises a precise bus error for
- * a
- * failed store, and this ROM asserts that the R10000 model must not.
+ * Check that unanswered R10000 reads raise bus errors while writes
+ * complete as posted writes. See the R10000 User's Manual version 2.0.
  */
 
 #include "rom.h"
@@ -147,6 +85,7 @@ void rom_main(void)
     rom_assert_eq(2, 0, rom_exc.count);
 
     /*
+     * BadVAddr is unspecified for Bus Error exceptions.
      * The doubleword load from the very same address is a read request
      * and
      * must still fault: one bus error, through the general vector, the

@@ -495,7 +495,7 @@ static void test_origin2000_one_node_reads_node_slot_one(const void *data)
  * node slot 2, which the stock PROM and IRIX decode as the deskside's own
  * n1 and n2 and which selects that chassis's Crossbow table. The Onyx2
  * rack's compute module is the eight-processor module and drives 7 to 4.
- * docs/datasheets/onyx2.md in the Origami repository, Node slot codes.
+ * the node-slot values used by this QEMU model.
  */
 static void test_onyx2_deskside_reads_its_own_slot_bits(const void *data)
 {

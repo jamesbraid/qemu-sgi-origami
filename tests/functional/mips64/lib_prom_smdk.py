@@ -20,9 +20,8 @@ does not run it yet. DIAGS holds each diagnostic's arguments and what it
 needs served. SmdkDriver is the dialogue.
 
 This QEMU functional-test helper implements the sMDK dialogue and
-verdict rules independently. Their evidence and rationale are recorded in
-the Origami repository's sMDK research notes; the comments here explain
-what each rule checks.
+verdict rules used by these tests. The comments explain what each rule
+checks.
 
 Plain Python with no qemu_test dependency, the same rule lib_prom.py
 follows: test_lib_prom_smdk.py exercises it under a bare python3.

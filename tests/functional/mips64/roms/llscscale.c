@@ -102,7 +102,7 @@
  * cached
  * view.
  *
- * Oracle: the MIPS64 instruction set reference (MD00087 revision 6.06)
+ * The MIPS64 instruction set reference (MD00087 revision 6.06)
  * for
  * the store-conditional rules this leans on -- on success the word is
  * written

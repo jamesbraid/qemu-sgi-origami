@@ -1,72 +1,12 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * A translated uncached page reaches the space its entry names.
+ * Test that a translated uncached page reaches the space selected by
+ * its TLB Uncached Attribute field. The R10000 manual distinguishes
+ * that field from the address-sourced attribute used for unmapped
+ * references.
  *
- * An unmapped reference takes its uncached attribute from the address,
- * and a
- * translated one takes it from the entry that translated it. The R10000
- * manual's uncached-attribute section says both in one breath: "For
- * unmapped
- * accesses, the uncached attribute is sourced from VA[58:57]. For
- * mapped
- * accesses, the uncached attribute is sourced from the TLB Uncached
- * Attribute
- * field. The TLB Uncached Attribute field may be initialized in 64-bit
- * mode
- * using bits 63:62 of the CP0 EntryLo0 and EntryLo1 registers." Its
- * EntryLo
- * section confirms where that field lives and that a TLB write carries
- * it:
- * "Two additional bits for the mapped space's uncached attribute can be
- * loaded
- * into bits 63:62 of the EntryLo register, which are then written into
- * the
- * TLB
- * with a TLB Write."
- *
- * Why this is worth a ROM of its own: when the mapped path ignores the
- * attribute, every translated uncached page reaches memory whatever it
- * names.
- * There is no exception and no log — a driver mapping a register window
- * reads
- * node memory and believes it. Silent wrong data is the failure this
- * guards
- * against, so the check has to be that an access lands somewhere
- * identifiable
- * rather than merely that it completes.
- *
- * The three spaces used here are identifiable because the bare machine
- * puts
- * something different in each at the offsets mapped. Memory holds
- * whatever
- * was
- * planted in it. The Hub's special space holds the boot flash, so a
- * mapping
- * that names it reads the same bytes the reset vector's own view of the
- * flash
- * reads. The routine 64 MiB population does not back ordinary memory at
- * the
- * flash offset, so a mapping that wrongly reached memory takes an
- * exception;
- * the ROM's exception checks catch it. The crosstalk space holds the
- * Hub's own registers, whose network-interface status register reports
- * M mode
- * and node zero.
- *
- * Note the flash is not checked against the configuration block this
- * machine
- * synthesizes, because a test ROM is handed to the machine as its
- * firmware
- * and
- * therefore *is* the flash content. Comparing two views of whatever the
- * flash
- * holds is the check that survives that.
- *
- * The R10000 alone: on the R4000 those two bits are the read-inhibit
- * and
- * execute-inhibit bits, and setting them makes a page unreadable rather
- * than
- * naming a space.
+ * Source: MIPS R10000 User's Manual, version 2.0, uncached-attribute
+ * and EntryLo sections.
  */
 
 #include "rom.h"

@@ -1,86 +1,8 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * The I/O bridge reached the way a guest reaches it, through the
- * crosstalk
- * bus.
- *
- * The bridge has a thorough register test of its own, and this is not a
- * second
- * copy of it. That test drives the machine's memory directly, with no
- * processor
- * executing: it proves the device answers when something writes to its
- * address.
- * What it cannot prove is that the address is reachable — a machine
- * that
- * placed
- * the bridge on no bus, or on a bus nothing routes to, passes every
- * assertion
- * in
- * it. Isolated green and system working are different claims and only
- * one of
- * them was being made.
- *
- * So this asks the other question, and asks it the way the guest does:
- * a
- * processor forms a crosstalk address, the memory system routes it
- * through
- * the
- * node's small window for widget 8 into crosstalk space, and the bridge
- * answers
- * at the far end. Every layer between the instruction and the register
- * is the
- * one a guest uses, rather than being stepped over.
- *
- * Three things are checked, in the order they have to work.
- *
- * The identification register, because it is what anything walking the
- * fabric
- * reads first and because its value is the machine's identity rather
- * than the
- * chip's alone: this bridge is what widget 0 also reports itself as, so
- * the
- * two
- * have to agree or the machine is describing two different chips.
- *
- * A register beyond the identity, because a model that answered only at
- * offset
- * zero — a stub, or a window mapped one register wide — would satisfy
- * the
- * first
- * check completely.
- *
- * And an address translation entry, written and read back, because that
- * table
- * is what a device's transfers pass through. It is the largest thing in
- * the
- * chip that a processor can reach without a device attached, and
- * reaching it
- * proves the window is the whole window rather than its first page.
- *
- * What this deliberately does not do is exercise a transfer.
- * Translation only
- * happens for an address a device issues, so testing it needs a device
- * that
- * issues one, and the bridge's own test has that with a DMA master it
- * attaches
- * on the command line. This checks the table is reachable and writable
- * through
- * the bus; that its entries steer a real transfer is the other test's.
- *
- * Plain `-M origin200` includes the bridge, so the R10000 suite runs
- * this
- * ROM.
- * It fails rather than skips if the bridge is absent.
- *
- * R10000 only, and for the same reason as the Hub's interrupt ROM
- * rather than
- * a
- * new one: the route to crosstalk space is the 64-bit unmapped window
- * with a
- * non-zero uncached attribute, which is an R10000-family extension. The
- * bus
- * is
- * the machine's; reaching it is the processor's.
+ * Check the I/O bridge's identity, register window, and translation table
+ * through the guest-visible crosstalk path. This verifies table access
+ * and writes, not whether its entries steer a DMA transfer.
  */
 
 #include "rom.h"

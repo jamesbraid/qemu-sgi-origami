@@ -10,40 +10,23 @@ and test_sn0_smp.py) rather than a raw QMP input command, so a captured
 QEMU log reads the same ordinary HMP text a human driving the monitor by
 hand would have typed.
 
-The one quirk worth a shared, tested home: QEMU's HMP `mouse_move` sends a
-*relative* delta, not an absolute position, and the generic PS/2 mouse
-model drains only a few queued packets per input-sync call. A single large
-move can leave an undelivered backlog that the guest only partially works
-through before the next command arrives, so a click or a scripted move
-lands somewhere other than where it was aimed. This was independently
-diagnosed live against RAD4's login screen this session (four calibrated
-click attempts missed their target for exactly this reason before it was
-understood): see docs/datasheets/psitech-rad4.md's "Mouse input works"
-section and QEMU commit 8d0899df18 ("hw/input/sgi-ioc3-kbc: add mouse
-register-contract coverage"). move_mouse() below
-bakes in the fix that investigation converged on -- walk the cursor in
-steps no larger than MOUSE_MOVE_STEP_MAX, with a short settle between
-steps -- so a future test that needs to move a guest's pointer does not
-have to rediscover it.
+HMP `mouse_move` sends a relative delta. Large moves can leave queued PS/2
+packets undelivered before the next command, so a scripted click may miss
+its target. `move_mouse()` splits movement into steps no larger than
+`MOUSE_MOVE_STEP_MAX` and waits briefly between them. The step size and
+settle interval are conservative values; this helper does not measure the
+guest's packet-drain rate.
 """
 
 import time
 
 
-# The largest single mouse_move delta, per axis, this helper will ever
-# send in one HMP command. Chosen to match the step size the RAD4
-# investigation found reliable (see this module's docstring); a QEMU or
-# guest driver change that raises the PS/2 model's per-sync drain could
-# make a larger step safe, but nothing currently measures that, so this
-# stays at the value known to work rather than a larger, unverified one.
+# The largest single mouse_move delta, per axis, sent in one HMP command.
+# Keep this conservative unless packet delivery is measured again.
 MOUSE_MOVE_STEP_MAX = 500
 
-# How long to let the guest drain one step's queued PS/2 packets before
-# the next step is sent. Not independently re-measured here -- the
-# investigation cited above verified delivery by tracing guest-side
-# registers, not by timing -- so this is a conservative default, not a
-# measured minimum; a caller with tighter timing evidence may pass its
-# own settle_seconds.
+# How long to wait between steps. This is a conservative default, not a
+# measured minimum; callers may pass their own settle_seconds.
 DEFAULT_SETTLE_SECONDS = 0.2
 
 

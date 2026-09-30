@@ -4,14 +4,11 @@
 # names
 #
 # SPDX-License-Identifier: GPL-2.0-or-later
-"""The Onyx2 rack's compute module is the Origin 2000 eight-processor
-module, so the stock IP27 PROM 6.156 names its slots exactly as an
-Origin 2000's: nodes n1 to n4, the BaseIO-G in io1 at widget 8, and the
-pipe under the slot its Xtown occupies, io3, where the real rack capture
-has it (documented in the Origami repository's Onyx2 datasheet).
+"""Boot the IP27 PROM with the rack topology and check its `hinv -v`
+output for the expected node, BaseIO, and graphics entries. This verifies
+the emulated configuration and PROM interaction.
 
-A recorded harness run reached the menu in about two minutes on
-2026-09-27; this test uses QEMU's functional-test framework.
+This test runs under QEMU's functional-test framework.
 """
 
 from lib_prom import FIRMWARE_REL

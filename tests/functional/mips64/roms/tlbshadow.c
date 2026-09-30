@@ -1,38 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * A replaced TLB entry must not answer once the guest has moved on.
- *
- * The emulator does not flush its cached translations when a random TLB
- * write displaces an entry. It copies the displaced entry into a slot
- * above the architectural array and keeps translating through it, which
- * is what avoids the flush. That is a deliberate approximation, and a
- * legitimate one: software cannot know which entry a random write took,
- * so no correct kernel may assume a particular mapping was evicted, and
- * any change to a live translation has to be published to the TLB
- * whether or not the entry is still cached.
- *
- * What the approximation may not do is outlive the guest's own
- * statements about the mapping. Two properties carry that, and this ROM
- * pins both:
- *
- *   - A live entry beats a displaced one. After the same page is mapped
- *     again, reads must see the new frame, never the frame the
- * displaced
- *     copy still holds.
- *   - Rewriting an entry to a different page clears the displaced
- * copies.
- *     After that, a read of the original page must fault, because
- * nothing
- *     maps it any more.
- *
- * Both are reachable only with a predictable victim, so the ROM wires
- * every entry but the last: with the wired count at one below the array
- * size, the random register can only produce the last index, and each
- * random write displaces exactly what the previous one left there.
- *
- * Nothing here is R10000-specific — the displaced-entry machinery is
- * R4000-family behaviour — so this runs against both processor models,
- * and passing on the R4000 is the check on the ROM itself.
+ * Test displaced TLB entries: a live translation takes precedence,
+ * and rewriting an entry removes its displaced copies.
  */
 
 #include "rom.h"

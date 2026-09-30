@@ -1743,26 +1743,9 @@ static void test_io8_ioc3_migration(const void *data)
 }
 
 /*
- * The DP83843 at MII address 1, the BASEIO PROM's diagnostic hard-code,
- * not the Origin 200's 31. hw/net/dp83840.c keeps 31 as its default;
- * hw/mips/sgi/sn1.c threads this board's address through sn1-model.h's
- * per-device descriptor into the eth child's "phy-addr" property, a
- * "sgi-ioc3" -> "sgi-ioc3-eth" -> "dp83840" alias chain whose last hop
- * already backs Origin 200's own default (tests/qtest/sn0-ioc3-test.c).
- *
- * A real Origin 300's OpenBSD capture confirms the address: "nsphyter0
- * at iec0 phy 1: DP83843 10/100 PHY" (docs/datasheets/dp83840.md). The
- * board's transceiver is also a different part, a DP83843 rather than
- * the Origin 200's DP83840A, selected the same way through a
- * "phy-dp83843" alias chain; this file pins its identity register and
- * that register 0x17 (its Loopback Register there) reads back what is
- * written. The behaviour that register selects -- turning a frame back
- * without reaching the backend -- is tests/qtest/sgi-ioc3-eth-test.c's,
- * reached through a plain sgi-ioc3 device rather than this board's full
- * XIO wiring. The rest of the transceiver's own register contract
- * -- reset, autonegotiation -- belongs to sn0-ioc3-test.c and is not
- * repeated here; this file pins only where and as what the IO-8 board's
- * copy answers.
+ * Pin the IO-8 model's PHY address and identity values. The register
+ * 0x17 test below checks read-after-write only; frame loopback and other
+ * PHY behavior are outside this test.
  */
 static void test_transceiver_identity(const void *data)
 {
@@ -1770,13 +1753,7 @@ static void test_transceiver_identity(const void *data)
 
     io8_ioc3_attach(qts);
 
-    /*
-     * PHYIDR1 is the OUI's upper bits, the same on every National
-     * Semiconductor PHY this project models, so it stays 0x2000 on both
-     * parts. PHYIDR2 is this board's own: 0x5c10 is the DP83843's, not the
-     * Origin 200 DP83840A's 0x5c01. The transceiver's own register contract
-     * otherwise belongs to sn0-ioc3-test.c.
-     */
+    /* Expected PHY identity values configured for this machine model. */
     g_assert_cmphex(phy_read(qts, PHY_ADDRESS, 2), ==, 0x2000);
     g_assert_cmphex(phy_read(qts, PHY_ADDRESS, 3), ==, 0x5c10);
 

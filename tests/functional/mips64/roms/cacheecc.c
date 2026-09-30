@@ -1,80 +1,8 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * The ECC register keeps its ten bits, and only its ten bits.
- *
- * Coprocessor 0 register 26 is not the same register on every MIPS
- * processor,
- * and that is the whole of this ROM's point. On the R10000 it is the
- * ECC
- * register: ten bits wide, read/write, holding the parity or
- * error-correcting
- * bits a cache operation loads from or stores to. Bit 9 is a secondary
- * cache
- * quadword's parity bit and bits 8:0 its nine ECC bits, with a primary
- * data
- * cache's four parity bits and a primary instruction cache's single
- * parity
- * bit
- * occupying the low end of that same nine. Bits 31:10 are reserved.
- * Oracle: MIPS R10000 Microprocessor User's Manual, version 2.0 of
- * October
- * 10,
- * 1996, section 14.21 "ECC Register (26)", page 273, and its Figure
- * 14-23 and
- * Table 14-23. The section's opening sentence calls it a 10-bit
- * read/write
- * register; the table's last row says of the reserved field "Must be
- * written
- * as zeroes, and returns zeroes when read."
- *
- * THE TWO ENDS ARE BOTH REAL CHECKS, AND THIS IS THE DIFFERENCE FROM
- * THE
- * TAGLO ROM BESIDE IT. TagLo is promised to round-trip all thirty-two
- * bits,
- * so
- * writing all ones and reading them back is the whole test there. Here
- * the
- * manual promises ten bits and says the other twenty-two read back as
- * zero,
- * so
- * a model can be wrong in two opposite directions: it can drop bits it
- * should
- * keep, or keep bits it should drop. Both are checked below, because a
- * test
- * for only the first would be passed by a model that never masks
- * anything.
- *
- * WHAT ELSE WOULD PASS THIS. The firmware whose failure prompted the
- * ROM
- * writes a single value with one bit set. A model masking this register
- * with
- * exactly that value would satisfy that firmware and still be wrong
- * about the
- * other nine bits, so the firmware's value appears here last and as a
- * regression anchor rather than as the evidence. The walking one below
- * covers
- * every one of the ten defined positions individually, so a mask that
- * drops
- * any single one of them is localised to that bit rather than merely
- * detected.
- *
- * This ROM is specific to the R10000 and is not listed against the
- * R4000,
- * whose register 26 is a different register with control fields in it.
- * The
- * harness-validating cross-check the shared ROMs get from a second
- * processor
- * is therefore unavailable here, as it is for the TagLo ROM; what
- * stands in
- * for it is that the defect was found by the vendor's own firmware
- * exercising
- * the part, before this ROM existed.
- *
- * No CACHE instruction appears below. The manual's read/write statement
- * is
- * about the register, and a cache operation is exactly the thing that
- * would
- * legitimately change its contents underneath a round-trip.
+ * Check that CP0 register 26 preserves the ten defined ECC bits and
+ * reads reserved bits as zero. See the MIPS R10000 Microprocessor User's
+ * Manual version 2.0, section 14.21.
  */
 
 #include "rom.h"

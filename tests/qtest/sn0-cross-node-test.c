@@ -7,8 +7,7 @@
  * local flash; the removed secondary halt and node-zero fetch redirect
  * leave no launch step or remote image fetch. The host seeds each node's
  * position-independent SN0_NODE_ID_PHYS window before CPU release; Hub PI
- * bit 0 gives the local slice. Their OR is the global CPU index (see
- * docs/component-taxonomy.md and sn0-user-image.h).
+ * bit 0 gives the local slice. Their OR is the global CPU index used here.
  * Unqualified uncached reads resolve to the caller's node. With Status.KX,
  * NASID 1 has physical bit 32 (node_stride 0x1_0000_0000) and xkphys address
  * 0x9600_0001_0000_0000 | P from any CPU; node zero has no independent

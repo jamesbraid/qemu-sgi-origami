@@ -262,12 +262,9 @@ static const uint8_t menet_record[RECORD_SIZE] = {
 };
 
 /*
- * The MSCSI XIO board, fitted here at the GIGAchannel cabinet's io2,
- * Crossbow widget 11
- * (docs/datasheets/sgi-mscsi.md in the Origami tree, "Board-identity
- * record"): a real board's part 030-1243-001, revision F and name MSCSI,
- * a placeholder barcode, and the Bridge revision 3 the same real board
- * reports.
+ * The MSCSI XIO board record used at GIGAchannel cabinet IO2, Crossbow
+ * widget 11: modeled part number, revision, name, placeholder barcode,
+ * and Bridge revision.
  */
 static const uint8_t mscsi_record[RECORD_SIZE] = {
     0x01, 0x4f, 0x4d, 0x53, 0x43, 0x53, 0x49, 0x30,

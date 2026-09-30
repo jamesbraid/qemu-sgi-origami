@@ -1,76 +1,10 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * The Count and Compare registers, and the interrupt they raise between
- * them.
+ * Test the Count and Compare registers and their shared timer
+ * interrupt. Interrupts remain masked so the pending bit is observed
+ * directly. The ROM checks matching and clearing, not timer rate.
  *
- * This pair is the only timekeeping a guest kernel has before any
- * device
- * model
- * exists, and it is the first thing a kernel programs after it takes
- * over
- * from
- * firmware. A Compare register that never matches leaves a kernel with
- * a
- * clock
- * that does not tick, which shows up as a boot that reaches its
- * scheduler and
- * then stops making progress — a failure that looks like a device
- * problem and
- * is not one.
- *
- * Oracle: the R10000 manual's Count and Compare registers section
- * (section
- * 14.8, Figure 14-9). Both are 32-bit read/write registers. Count acts
- * as a
- * real-time timer, incremented every other processor clock cycle.
- * Compare is
- * continuously compared against Count, and "whenever their values
- * equal, the
- * interrupt bit IP[7] in the Cause register is set. This interrupt bit
- * is
- * reset
- * whenever the Compare register is written." The same section records
- * that
- * the
- * R10000, unlike the R4400, has no timer-interrupt-enable mode bit, so
- * the
- * only
- * way to stop the timer interrupt is to clear interrupt mask bit 7 of
- * the
- * Status register — which also disables the performance-counter
- * interrupt,
- * because the two share that mask bit.
- *
- * What this ROM deliberately does not check is the rate at which Count
- * advances. Two separate reasons make a rate assertion meaningless
- * here. In
- * QEMU, Count is derived from host-referenced virtual time rather than
- * from a
- * count of executed instructions, so comparing it against a number of
- * instructions would be measuring the host clock. And on the real
- * processor
- * the
- * half-clock rate is not visible to software at all: the instruction
- * that
- * reports the counter's resolution, RDHWR, belongs to a later revision
- * of the
- * architecture than the R10000 implements, so a guest has no way to
- * ask. The
- * half-clock rate is a property of the processor definition, checked by
- * reading
- * that definition, not by a program running on it.
- *
- * Interrupts stay disabled in the Status register for the whole ROM, so
- * the
- * pending bit can be read straight out of the Cause register without
- * any
- * exception being delivered.
- *
- * None of this is specific to the R10000 — the R4000 has the same two
- * registers with the same match rule — so the ROM runs against QEMU's
- * R4000
- * model as well, and passing there is what says the ROM itself is
- * right.
+ * Source: R10000 User's Manual, version 2.0, section 14.8.
  */
 
 #include "rom.h"

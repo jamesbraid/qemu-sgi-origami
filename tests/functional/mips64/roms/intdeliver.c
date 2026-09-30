@@ -1,57 +1,8 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * Interrupt delivery around masked windows: a line that goes pending
- * while
- * the processor has it masked must be delivered the moment the
- * processor
- * unmasks, because the line is a level, not an edge.
- *
- * Every kernel leans on this: it masks with a Status write or by
- * holding
- * the exception level, takes an interrupt pending in the meantime, and
- * expects delivery at the instruction boundary after the write or the
- * ERET
- * that unmasks. The timer ROM proves the pending bit rises and the mask
- * bits hold it back; nothing before this ROM proved the held-back
- * interrupt is ever taken. A model that tracks deliverability with its
- * own
- * bookkeeping — deciding at the moment a line rises whether it is worth
- * waking for, and remembering that answer — silently drops exactly this
- * case if any unmasking path forgets to revisit the decision, and the
- * failure is a guest that hangs waiting for an interrupt that is
- * pending
- * the whole time.
- *
- * Oracle: the R10000 manual's interrupt exception section — the
- * interrupt
- * exception fires "when one of the eight interrupt conditions is
- * asserted"
- * and each can be masked by its IM bit, with IE and EXL gating all of
- * them; its Count and Compare registers section — the IP[7] bit is set
- * whenever the two match and "this interrupt bit is reset whenever the
- * Compare register is written", so the condition stays asserted until
- * software clears it; and its Status register section for IE, EXL and
- * the
- * IM field. Delivery on unmask follows: the condition is
- * level-asserted,
- * so the first instruction boundary at which the gates open takes the
- * exception.
- *
- * The unmask paths checked are the two the architecture gives a kernel:
- * a Status register write (opening IE, and opening the IM bit), and
- * ERET
- * clearing EXL. Nothing here is specific to the R10000 — the R4000 has
- * the same registers and the same rule — so the ROM is listed for
- * QEMU's
- * R4000 model as well, which is what checks the ROM itself.
- *
- * Each delivery is caught by the harness's handler with a resume
- * address
- * armed, and the handler installs a staged Status with interrupts off
- * on
- * its way out — the line is still asserted at that point, and without
- * the
- * staged mask the return would re-take the same interrupt forever.
+ * Check interrupt delivery after Status writes and ERET unmask a pending
+ * level interrupt. See the R10000 User's Manual interrupt, Count/Compare,
+ * and Status register sections.
  */
 
 #include "rom.h"

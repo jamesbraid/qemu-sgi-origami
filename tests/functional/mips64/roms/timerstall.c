@@ -1,12 +1,9 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * The timer-stall functional test runs this ROM under host GDB. It stops QEMU
- * between classifying a Compare write and arming its timer, long enough for
- * Count to pass the written value. The R10000 comparator must still pend IP7.
- *
- * An ordinary ROM run cannot force the host stall. Keep this payload outside
- * the 85-case ROM matrix and require the GDB breakpoint-hit marker alongside
- * its PASS result in test_timer_stall.py.
+ * The host GDB test stalls QEMU after classifying a Compare write and
+ * before arming its timer, letting Count pass Compare. Ordinary ROM
+ * execution cannot force this stall; test_timer_stall.py requires both
+ * the breakpoint-hit marker and this ROM's PASS result.
  */
 
 #include "rom.h"

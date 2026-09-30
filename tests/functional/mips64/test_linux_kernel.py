@@ -6,10 +6,7 @@
 #
 # SPDX-License-Identifier: GPL-2.0-or-later
 """
-Ports tools/linux-usercheck's one-, two-, and four-CPU checks, in the
-PROJECT checkout, into this fork's own functional-test framework, the same
-way test_prom_boot.py ports tools/boot-gate and test_diag.py ports
-tools/diag-gate. linux-usercheck boots the mainline Linux/IP27 kernel
+This test boots the mainline Linux/IP27 kernel
 (linux-ip27/vmlinux, built by tools/linux-userspace with an
 embedded freestanding userspace stub) -- no disk, no terminal device for
 the guest -- and requires the console transcript to contain Linux's own
@@ -33,44 +30,21 @@ test belongs to retires synthesized firmware, so no product boots any
 other way any more, and the mainline kernel is a 64-bit ELF the PROM
 loads directly, the same as sash64.
 
-The four-CPU case is IN scope. It boots the same kernel on the two-node
-topology (topology=origin200-dual, -smp 4;
--m splits evenly into 64 MiB per node) under the same deterministic
-thread=single
--icount regime the one- and two-CPU cells use -- shift=2 here, the
-four-CPU-only icount value -- and requires linux-usercheck's own eleven
-four-CPU markers: both nodes' CPUs executing, both nodes' memory, both
-crosstalk endpoints, and the 0x2c00 remote-memory exit sentinel. Two
-blockers once kept it out and are both resolved: a thread=single -icount
-pre-console hang, fixed by the fork's icount-translator revert (fork pull
-request 178); and a userspace-sentinel shortfall that proved to be a stale
-checked-in kernel predating the stub's four-CPU exit path, not a
-guest-model bug. An earlier stop_machine livelock at the Hub-RT
-clocksource switch was fixed by fork pull request 135. The finding is
-docs/notebooks/mttcg-4cpu-usercheck-two-bugs.md (project checkout).
+The four-CPU case uses the two-node topology and checks both nodes' CPUs,
+memory, crosstalk endpoints, and the 0x2c00 remote-memory exit sentinel.
 
-missing_assertions() below is a verbatim port of linux-usercheck's own
-function of the same name, for the one-, two-, and four-CPU cases.
+The test loads the PROM and kernel from QEMU_TEST_SGI_ASSET_DIR and serves
+the kernel over SLIRP TFTP. It supplies no -append argument because the
+embedded userspace configures its own console. It omits -no-reboot so the
+PROM can run after the machine's initial reset.
 
-This QEMU functional test runs the one-, two-, and four-CPU cases through
-QemuSystemTest. It loads the PROM and linux-ip27/vmlinux from
-QEMU_TEST_SGI_ASSET_DIR, then fetches the kernel over SLIRP TFTP through the
-PROM's netboot path. The embedded userspace binds its console without an
--append argument; the test therefore supplies none. It also omits
--no-reboot: with the PROM boot path that option shuts QEMU down during the
-machine's initial reset, before the PROM can print to the console.
+The guest does not exit after init panics, so the test reads the console
+until the required markers appear or a timeout expires, then stops QEMU.
+A fatal signal cannot pass the exit check because the full status value
+is matched, including its low byte.
 
-The guest never exits on its own: init's death panics the kernel, which
-spins rather than terminating the process, so this test drives the
-netboot dialogue and then keeps reading against missing_assertions()
-until it is satisfied or a timeout expires, then shuts the VM down hard.
-drive_console() (lib_prom.py) owns that loop; test_prom_sash.py's own
-docstring covers why it is the console driver every netboot test in this
-directory shares.
-
-The marker lists below are what this test scores a transcript against;
-lib_prom.verdict() does the scoring, and its own unit tests pin that
-behaviour without booting anything.
+missing_assertions() checks the expected markers for each CPU count. The
+full exit status is matched so a fatal signal cannot satisfy the check.
 """
 
 import os
@@ -83,9 +57,8 @@ from lib_prom import (FIRMWARE_REL, MACHINES, drive_console,
 from lib_prom_sash import RELEASES
 
 
-# What the kernel's own embedded userspace self-check prints, per CPU
-# count, ported from tools/linux-usercheck's own marker lists (project
-# checkout). The one-CPU case checks exactly two markers and deliberately
+# What the kernel's embedded userspace self-check prints, per CPU count.
+# The one-CPU case checks exactly two markers and deliberately
 # does NOT check a discovery line: a real one-CPU capture happening to
 # print one says nothing about whether every one must, and the shipped
 # tool's own contract does not require it.
@@ -158,7 +131,7 @@ NETBOOT_STEPS = prom_netboot_steps(NETBOOT_BOOTFILE)
 # host already busy running other work. Each of these times now covers a
 # real PROM power-on self-test and netboot on top of the kernel's own
 # boot, so it is well above tools/linux_topology.py's own default_timeout
-# (90s at one and two CPUs, project checkout), which timed only a direct
+# (90s at one and two CPUs), which timed only a direct
 # -kernel load with no firmware in front of it. 240 at one and two CPUs
 # keeps roughly four times the measured figure, the same margin this
 # directory's own meson.build keeps for sn0_smp; 900 at four CPUs keeps

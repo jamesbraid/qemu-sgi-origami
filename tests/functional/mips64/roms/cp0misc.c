@@ -1,66 +1,8 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * Coprocessor 0 register semantics the R10000 defines away from the
- * R4000
- * lineage: the Random register's reload-and-decrement behaviour, the
- * Cause
- * register's reserved field, and the load-linked address register that
- * no
- * longer records load-linked addresses.
- *
- * None of these is exotic. The Random register is what the manual
- * offers a
- * diagnostic for checking the processor is alive; the Cause register is
- * read
- * and written by every kernel's interrupt path; and a register that
- * changes
- * underneath software that treats it as scratch is exactly the kind of
- * divergence that corrupts a context switch nobody can reproduce.
- *
- * Oracle: the MIPS R10000 User's Manual version 2.0.
- *  - Its Random register section (section 14.2) says the register
- * decrements
- *    when an instruction graduates, ranges between the Wired register's
- * value
- *    and the number of entries minus one, is set to that upper bound by
- * reset
- *    and by every write to the Wired register, and is readable "to
- * verify
- *    proper operation of the processor".
- *  - Its Cause register section (section 14.11, Figure 14-13, Table
- * 14-12)
- *    makes every bit except the two software interrupt bits read-only,
- * and
- *    reserves bits 27:16 outright: "Must be written as zeroes, and
- * returns
- *    zeroes when read". The R10000 has none of the later architecture's
- *    fields there.
- *  - Its LLAddr register section (section 14.15): "Physical addresses
- * for
- *    Load Link instructions are no longer written into this register.
- * LLAddr
- *    is implemented as a read/write scratch register used for NT
- *    compatibility."
- *
- * The model approximates instruction graduation with elapsed
- * virtual-clock
- * nanoseconds. This is a deliberate approximation, protected by a
- * regression
- * check. It is not a hardware requirement that every observed
- * decrement exceed one: wrapping can produce a unit decrement after any
- * delay.
- * The suite runs this ROM with deterministic instruction counting so
- * its
- * elapsed-time check controls the interval and avoids host scheduling
- * noise.
- *
- * The R10000 is the only processor this ROM runs against: the fork
- * leaves the
- * other models' Cause writability and load-linked bookkeeping as QEMU
- * has
- * always had them, and the Random assertions encode this processor's
- * 64-entry
- * buffer.
+ * Check R10000 Random, Cause, and LLAddr register behavior. See the
+ * MIPS R10000 User's Manual version 2.0, sections 14.2, 14.11, and
+ * 14.15.
  */
 
 #include "rom.h"

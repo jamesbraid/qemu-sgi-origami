@@ -1,167 +1,8 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * Status register bit 31 enables the MIPS IV instruction set in user
- * mode,
- * and
- * is ignored everywhere else.
- *
- * The R10000 reaches the MIPS IV extension through the opcode the R4400
- * gave
- * to a fourth coprocessor, so it drops that coprocessor's usable bit
- * and puts
- * the MIPS IV user mode enable in its place. A model that leaves the
- * bit
- * unimplemented lets user code run MIPS IV instructions an operating
- * system
- * has not permitted; a model that lets the bit gate kernel code as well
- * breaks
- * the kernel itself, which never sets it before running its own MIPS IV
- * code.
- * Either way the symptom is a floating-point fault in userland long
- * after
- * boot, which is a miserable thing to debug backwards.
- *
- * Oracle: the MIPS R10000 User's Manual version 2.0.
- *
- * Its Status register section (section 14.10) states that the MIPS IV
- * extension uses the fourth coprocessor's opcode, "For this reason the
- * CU3
- * bit
- * is omitted in the R10000 processor, and is used as the XX bit", that
- * "To
- * enable execution of the MIPS IV instructions in User mode, the MIPS
- * IV User
- * Mode bit, (XX) of the CP0 Status register must be set", and that "In
- * Kernel
- * and Supervisor modes, the state of the XX bit is ignored, and MIPS IV
- * instructions are always available". Its instruction-set-and-mode
- * table
- * (Table 14-9) and the processor modes table (Table 16-1) tabulate the
- * same
- * rule, and the Status register figure (Figure 14-11) puts the bit at
- * 31.
- *
- * Its MIPS IV instructions section (section 17.4) says that in user
- * mode with
- * the bit clear "an attempt is made to execute MIPS IV instructions, an
- * exception will be taken", and its exception table (Table 17-4) gives
- * which,
- * class by class:
- *
- *  - The extended floating-point opcode -- the indexed loads and
- * stores, the
- *    indexed prefetch, and the multiply-add family -- takes a Reserved
- *    Instruction exception whatever the state of the first
- * coprocessor's
- *    usable bit, and a Coprocessor Unusable exception when MIPS IV is
- *    enabled but the coprocessor is not.
- *  - The integer conditional moves, both on a register value and on a
- *    floating-point condition bit, and the prefetch instruction take a
- *    Reserved Instruction exception; for the moves on a condition bit
- * the
- *    table marks the coprocessor bit a don't-care, so the refusal
- * stands
- *    even with the coprocessor unusable.
- *  - A floating-point branch naming a condition bit other than the
- * first
- *    takes a Reserved Instruction exception; naming the first is MIPS I
- * and
- *    is never gated.
- *  - A floating-point compare naming a condition bit other than the
- * first,
- *    the conditional moves of floating-point registers, and the
- * reciprocal
- *    and reciprocal-square-root estimates take the Unimplemented
- * Operation
- *    exception: a Floating-Point exception, code 15 in the exception
- * code
- *    table (Table 14-13), with the E bit of the Floating-Point Status
- *    register's cause field set. That register's figure (Figure 15-7)
- * puts
- *    the cause field at bits 17:12 with E at 17, the first condition
- * bit at
- *    23 and the rest at 31:25, and its bit descriptions say of E that
- * "This
- *    exception is always enabled".
- *
- * The Cause register section (section 14.11, Figure 14-13 and Table
- * 14-12)
- * puts
- * the coprocessor unit number in bits 29 and 28 for a Coprocessor
- * Unusable
- * exception, and its exception code table (Table 14-13) numbers a
- * Reserved
- * Instruction exception 10, a Coprocessor Unusable exception 11 and a
- * system
- * call 8.
- *
- * The first probe uses the indexed floating-point load and store, which
- * exist
- * only in MIPS IV. The very first assertion is that the bit can be
- * written at
- * all, because a processor without it can say nothing useful about the
- * rest
- * and a failure there names the real problem instead of reporting a
- * confusing
- * reserved-instruction fault several assertions later. The probes after
- * it
- * walk the remaining rows of the exception table, one instruction
- * standing
- * for each class the table separates, and each is run both refused and
- * permitted: the permitted leg checks a value the instruction computed,
- * not
- * merely the absence of a trap, so an instruction decoded as a no-op
- * cannot
- * pass for one that ran.
- *
- * One combination the manual covers is deliberately not tested for the
- * extended-opcode classes: user mode with both the MIPS IV bit and the
- * first
- * coprocessor's usable bit clear. The manual's exception table gives a
- * Reserved Instruction exception there, with the coprocessor bit a
- * don't-care, but QEMU checks coprocessor usability before it checks
- * the
- * instruction set for that opcode and so reports Coprocessor Unusable
- * instead. Nothing depends on which arrives: a kernel that handles the
- * coprocessor fault by enabling the unit and retrying gets the Reserved
- * Instruction exception on the retry, so it reaches the same conclusion
- * one
- * fault later. Correcting it would reorder two checks for every MIPS IV
- * processor in the fork, which is a wider change than this milestone
- * wants,
- * so the divergence is recorded here instead, and the extended-opcode
- * assertions keep one of the two bits set so that each isolates a
- * single
- * cause. The integer conditional move on a condition bit is decoded
- * ahead of
- * any coprocessor check, so for that class alone the both-bits-clear
- * row is
- * tested as the table writes it.
- *
- * User mode can only reach translated memory, so the user half of this
- * ROM
- * runs from a page this ROM maps. Extended user addressing is switched
- * on for
- * it, which enables the MIPS III instruction set in user mode as well,
- * so
- * that
- * the only thing being gated in the interesting assertions is the MIPS
- * IV
- * bit.
- * The mapping is cacheable, and this model has no caches, which is what
- * makes
- * it safe to write instructions into the page through a different
- * address and
- * jump to them with no cache maintenance; on real hardware, or a model
- * with
- * caches, they would have to be written back first. A cacheable mapping
- * also
- * keeps the entry's top two bits clear, which matters because they name
- * an
- * uncached space on the R10000 and inhibit reads and instruction
- * fetches on
- * the
- * R4000.
+ * Check that Status bit 31 gates MIPS IV instructions in user mode and
+ * is ignored in kernel and supervisor modes. See the MIPS R10000 User's
+ * Manual version 2.0.
  */
 
 #include "rom.h"
@@ -758,6 +599,10 @@ void rom_main(void)
      * instruction is refused for that reason instead, and the Cause
      * register
      * names the coprocessor it wanted.
+     * With XX and CU1 clear, the manual specifies Reserved Instruction,
+     * but QEMU checks CU1 first for extended FP opcodes and reports
+     * Coprocessor Unusable. That combination is omitted except for MOVF,
+     * whose decoder checks XX first.
      */
     run_user_probe((ustatus | ROM_ST_XX) & ~ROM_ST_CU1, kstatus);
     rom_assert_eq(11, 1, rom_exc.count);

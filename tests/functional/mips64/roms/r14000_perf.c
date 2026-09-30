@@ -1,21 +1,10 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * The reviewed R14000 four-pair performance-counter subset.
- *
- * Oracle: docs/datasheets/r14000-performance-counters.md and its
- * cleared
- * handoff at Origami commit 14dbec407f and reset amendment 9a32afa67b.
- * Ordinary MFC0/MTC0 selectors 0 through 7 address four independent
- * 32-bit
- * pairs.  Event zero counts cycles when the cleared kernel, user, or
- * EXL
- * qualifier enables the current mode; the five-bit event field reads
- * back
- * as written and a counter selecting any other event does not count
- * cycles.
- * The model's explicit compatibility approximation resets all eight
- * words to
- * zero.  Interrupt behavior remains open and is not tested.
+ * Check the four performance-counter pairs and selected cycle-counting
+ * behavior. The NEC VR10000 Series User's Manual, 4th edition
+ * (U10278EJ4V0UM, March 2001), documents the counter fields and event
+ * numbers used below. Zeroed reset values are an emulator compatibility
+ * choice. Interrupt behavior is not tested.
  */
 
 #include "rom.h"
@@ -27,9 +16,7 @@ const char rom_name[] = "r14000_perf";
 #define PC_K   (1u << 1)
 #define PC_EXL (1u << 0)
 #define PC_EVENT(n) ((uint32_t)(n) << 5)
-/*
- * Table 11-24 of the NEC manual: two events this ROM never produces.
- */
+/* Event numbers from the NEC manual, Table 11-24. */
 #define EV_SCACHE_ECC_CORRECTED 8
 #define EV_PREFETCH_EXECUTED    16
 #define POLL_LIMIT 50000000
@@ -131,20 +118,10 @@ void rom_main(void)
     rom_assert_eq(20, 0x24681357u, (uint32_t)rom_get_cnt2());
 
     /*
-     * The event select is bits 9:5 on the R12000 family (NEC
-     * U10278EJ4V0UM,
-     * Figure 11-23 and Table 11-27), and a counter advances only on its
-     * own
-     * event. IRIX watches for secondary-cache single-bit errors this
-     * way:
-     * event 8 on pair 3, preloaded one short of bit 31, so one
-     * corrected
-     * error sets bit 31. Neither event below happens while this ROM
-     * runs in
-     * kernel mode, so both counters must hold their preloads while pair
-     * 0
-     * counts cycles. Event 16 needs bit 9, which a four-bit event field
-     * would drop and read as Cycles.
+     * Event select occupies bits 9:5 (NEC manual, Figure 11-23 and
+     * Table 11-27). This ROM does not generate events 8 or 16, so their
+     * counters must retain their preloads while pair 0 counts cycles.
+     * Event 16 also checks that bit 9 is retained.
      */
     rom_set_ctl3(0);
     rom_set_ctl2(0);

@@ -1,78 +1,12 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * The unmapped 64-bit physical window, and the two address bits the SGI
- * machine
- * is built on.
+ * Test the unmapped 64-bit physical window and its uncached attribute.
+ * Uncached references use bits 58:57 as the attribute; bits 39:0 select
+ * the physical address.
  *
- * A kernel-mode 64-bit address whose top two bits are 10 reaches
- * physical
- * memory with no translation, carrying a cache algorithm in the three
- * bits
- * below. On the R10000 family two more bits go out to the system
- * interface
- * beside the address as an uncached attribute, and the SGI Origin
- * address map
- * spends them: they are how a processor says whether an uncached
- * reference is
- * meant for node memory, for the Hub's own registers, for a crossbar
- * widget,
- * or
- * for a special memory operation. All five of the address map's
- * processor-side
- * spaces are one of these windows, so a model that rejects them has no
- * way to
- * reach anything above the two compatibility segments — no Hub, no
- * crossbar,
- * no
- * bridge, no console.
- *
- * Oracle: the MIPS R10000 User's Manual version 2.0. Its 64-bit kernel
- * mode
- * physical spaces section (in the memory management chapter) states
- * that
- * "References to this space are not mapped; the physical address
- * selected is
- * taken directly from bits 39:0 of the virtual address. Bits 61:59 of
- * the
- * virtual address specify the cache algorithm", and then draws the
- * distinction
- * this ROM exists to check: "If the cache algorithm is either uncached
- * or
- * uncached accelerated (values of 2 or 7) the space contains four
- * physical
- * pages; access to addresses whose bits 56:40 are not equal to 0 cause
- * an
- * Address Error exception. Address bits 58:57 carry the uncached
- * attribute
- * ... and are not checked for address errors. If the cache algorithm is
- * neither
- * uncached nor uncached accelerated, the space contains a single
- * physical
- * page,
- * as on the R4400 processor. In this case, access to addresses whose
- * bits
- * 58:40
- * are not equal to a zero cause an Address Error exception."
- *
- * The uncached attribute section of the same manual says where those
- * two bits
- * go: the processor "supports a 2-bit user-defined Uncached Attribute,
- * which
- * is
- * driven on SysAD[59:58] during the address cycle", and "For unmapped
- * accesses,
- * the uncached attribute is sourced from VA[58:57]".
- *
- * The forty-bit width matters on its own account. It is architectural
- * on this
- * processor rather than an extension a guest switches on, so an address
- * inside
- * it must not be refused however much of it the machine has populated.
- *
- * This ROM is for the R10000 alone: the R4000 has neither the attribute
- * nor
- * the
- * wider address.
+ * Source: MIPS R10000 User's Manual, version 2.0, memory-management
+ * chapter, 64-bit kernel-mode physical spaces and uncached-attribute
+ * sections.
  */
 
 #include "rom.h"

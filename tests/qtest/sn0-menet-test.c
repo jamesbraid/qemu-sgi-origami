@@ -1,9 +1,8 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * Register-contract tests for the SGI MENET XIO board: a Bridge and four
- * IOC3s giving a module four Fast Ethernet ports and six serial ports
- * (docs/datasheets/sgi-ioc3-boards.md in the Origami tree). The board is
- * the "menet" preset of sgi-xio-baseio, built from the existing Bridge and
+ * IOC3s giving a module four Fast Ethernet ports and six serial ports.
+ * It is the "menet" preset of sgi-xio-baseio, built from the Bridge and
  * IOC3 models.
  *
  * Two placements run the same checks. A `-device sgi-xio-baseio,
@@ -12,17 +11,10 @@
  * crossbow0 widget 14, and a third in the GIGAchannel cabinet's io3
  * position, Crossbow widget 12.
  *
- * The contract, from real IRIX inventories and IRIX 6.5.30's own MENET
- * setup routine:
- *   - IOC3s (0x10a9:0x0003) at PCI devices 0-3;
- *   - devices 0-2 carry Ethernet and both serial ports, device 3
- *     Ethernet alone; none carries a clock;
- *   - each chip's SuperIO interrupt reaches Bridge pin d + 4 (device 3
- *     has none), away from its Ethernet pin d;
- *   - subsystem ids 0xc305 (devices 0-2) and 0xc306 (device 3), the values
- *     Linux substitutes for this board;
- *   - each chip's one-wire bus carries only its station-address part,
- *     each with its own serial.
+ * These tests pin the model's MENET configuration: IOC3 identities and
+ * PCI placement, Ethernet and serial functions, interrupt routing,
+ * subsystem IDs, and one-wire station-address parts. They do not test a
+ * physical MENET board.
  */
 
 #include "qemu/osdep.h"
@@ -328,9 +320,7 @@ static void test_io6_refuses_mediaio_ports(const void *data)
 
 /*
  * A board fitted at launch is attached once every Crossbow has realized:
- * its port then reads a widget present and the link alive
- * (docs/datasheets/xbow.md, link auxiliary status bit 5 and link status
- * bit 31, Crossbow 0's own registers at widget 0).
+ * its port then reads a widget present and the link alive in the model.
  */
 #define XBOW_LINK_STATUS(w) (SPACE_IO + 0x110 + ((w) - 8) * 0x40 + 4)
 #define XBOW_LINK_AUX(w)    (SPACE_IO + 0x138 + ((w) - 8) * 0x40 + 4)

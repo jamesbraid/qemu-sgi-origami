@@ -109,10 +109,8 @@ def reached_banner(transcript):
 # (MSC/ELSC) console path among it, where the boot once stalled at the "dark
 # point" -- so it is an earlier progress check than the banner and a
 # regression that re-darkens the console fails it. Matched on the kernel's
-# unconditional date-sanity warning, the earliest line present in every
-# recorded miniroot-to-banner boot (docs/boot-logs/irix.boot.2026-08-24T08:24
-# -07:00 and the later captures) and absent at the dark point (the 2026-08-22
-# wedge).
+# unconditional date-sanity warning, the earliest line observed in recorded
+# miniroot-to-banner boots and absent at the earlier dark point.
 MINIROOT_FIRST_CONSOLE_RE = re.compile(
     rb"WARNING: Check the date to make sure it is correct")
 

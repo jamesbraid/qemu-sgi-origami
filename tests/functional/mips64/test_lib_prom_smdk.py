@@ -5,11 +5,9 @@
 #
 # SPDX-License-Identifier: GPL-2.0-or-later
 """
-A plain unittest -- no QEMU, no qemu_test import. The status-table
-fixtures are the monitor's own bytes from the project checkout's runs
-prom-20260927T115350-ae27ac (sct) and prom-20260927T121420-ccf678
-(System_Level_Test); the dialogue cases play a scripted monitor over a
-socketpair.
+A plain unittest with no QEMU or qemu_test dependency. The status-table
+fixtures are captured monitor output; the dialogue cases use a scripted
+monitor over a socket pair.
 """
 
 import os

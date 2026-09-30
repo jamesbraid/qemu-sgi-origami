@@ -1,37 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * Instruction words the R10000 refuses at decode, and the exception
- * each
- * refusal carries.
- *
- * A processor is defined as much by what it refuses as by what it runs.
- * Software probes for optional instruction sets by executing a
- * candidate
- * and catching the trap, and a model that quietly executes — or quietly
- * ignores — a word the hardware refuses tells such a probe the machine
- * is
- * something it is not.
- *
- * Oracle: the R10000 User's Manual version 2.0. Its Reserved
- * Instruction
- * exception cause list opens with "an instruction with an undefined
- * major
- * opcode (bits 31:26)". Its hazards chapter closes the R4400's
- * undocumented use of the branch-on-coprocessor-0 encodings to test the
- * CH bit: "execution of a branch on Coprocessor 0 instruction takes a
- * Reserved Instruction exception." Its Cause register chapter and its
- * chapter on COP2 instructions define the one refusal that depends on
- * state: Coprocessor 2 "does not exist in the R10000; its instructions
- * (COP2, LWC2, LDC2, SWC2, SDC2) always cause an exception, but the
- * exception code depends upon whether the coprocessor, as indicated by
- * CU2, is enabled" — Coprocessor Unusable with CU2 clear, Reserved
- * Instruction with it set.
- *
- * Every word is spelled out in hex, because no assembler targeting this
- * processor emits them. Where an unfixed model would execute the word
- * instead of trapping, the destinations named by the encodings are the
- * two kernel scratch registers the compiler never allocates, so nothing
- * the surrounding code holds can be corrupted.
+ * Check that reserved and unavailable R10000 instructions trap with the
+ * expected exception state. See the R10000 User's Manual.
  */
 
 #include "rom.h"

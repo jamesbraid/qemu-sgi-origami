@@ -1,60 +1,8 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * The processor must identify itself as an R10000, describe itself
- * through
- * the
- * R10000's own Config register layout, and have a 64-entry address
- * translation
- * buffer.
- *
- * Every one of these is load-bearing for booting the Origin 200. A
- * guest
- * kernel
- * reads the implementation number and branches on it to pick its cache
- * routines, its workarounds and its translation-buffer size; it reads
- * the
- * Config register to work out how large the caches are; and it sizes
- * its
- * translation-buffer flush loop from the entry count. A model that
- * reported
- * the R4000's identity or the R4000's Config layout would send a kernel
- * down
- * the wrong path before it produced any output to diagnose that with.
- *
- * Oracle: the MIPS R10000 User's Manual version 2.0. Its Processor
- * Revision
- * Identifier register section (section 14.13, Figure 14-15, Table
- * 14-14)
- * gives
- * the identity fields; its Config register section (section 14.14,
- * Table
- * 14-15,
- * Figure 14-16) gives that register's layout, and the mode bits table
- * in the
- * initialisation chapter (Table 8-1) gives the encodings the reset
- * sequence
- * loads into it; its Index register section (section 14.1) gives the
- * width of
- * the entry index, and its memory management chapter states the buffer
- * holds
- * 64
- * entries.
- *
- * The R10000 is the only processor this ROM can run against, because
- * every
- * value here is one where the R10000 differs from the R4000 the fork
- * started
- * from.
- *
- * The 44-bit user virtual address width the manual's memory management
- * chapter
- * specifies is deliberately not checked here. The only clean way to
- * observe
- * it
- * from kernel mode is through the width of the extended-context
- * register's
- * bad
- * page number field, and a separate ROM covers that register.
+ * Check R10000 processor identity, Config fields, and 64-entry TLB
+ * size. See the MIPS R10000 User's Manual version 2.0. The 44-bit user
+ * address width is covered by the XContext register ROM.
  */
 
 #include "rom.h"

@@ -3,7 +3,7 @@
 /*
  * Register-contract tests for the SGI PCI-XTALK ADAPTER (the "PCI shoehorn",
  * hw/mips/sgi/board-pci-shoehorn.c) fitted with an SGI Cad Duo input card
- * (an sgi-ioc3, docs/datasheets/sgi-cad-duo-pci-card.md).
+ * (an sgi-ioc3).
  *
  * The board attaches at the empty XIO slot IO4 exactly as
  * sgi-pci-expansion does (tests/qtest/sn-builder-test.c): crossbow0's
@@ -20,11 +20,8 @@
  * sgi-pci-expansion, which does no such wiring, leaves that interrupt dead
  * -- the RED baseline the shoehorn's wiring turns GREEN.
  *
- * Third, the card carries its own board record: a DS2505-class part on the
- * IOC3's one-wire bus, beside the station-address part, holding the
- * PCI_ENET 030-1155-002 rev D record a real card reports
- * (docs/datasheets/sgi-cad-duo-pci-card.md, "Board-identity record on the
- * IOC3 one-wire bus"). The same card behind a plain sgi-pci-expansion
+ * Third, the model gives the card a board record on the IOC3's one-wire
+ * bus, beside the station-address part. Behind a plain sgi-pci-expansion,
  * carries only the station-address part.
  *
  * The same checks then run on a shoehorn fitted in Origin 2000's IO2
@@ -648,9 +645,7 @@ static void test_one_card_only(const void *data)
 
 /*
  * A board fitted at launch is attached once every Crossbow has realized:
- * its port then reads a widget present and the link alive
- * (docs/datasheets/xbow.md, link auxiliary status bit 5 and link status
- * bit 31, Crossbow 0's own registers at widget 0).
+ * its port then reads a widget present and the link alive in the model.
  */
 #define XBOW_LINK_STATUS(w) (SPACE_IO + 0x110 + ((w) - 8) * 0x40 + 4)
 #define XBOW_LINK_AUX(w)    (SPACE_IO + 0x138 + ((w) - 8) * 0x40 + 4)

@@ -1,44 +1,10 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * Word operations must leave a sign-extended 64-bit result.
+ * Word operations must leave a sign-extended 64-bit result. Inputs to
+ * arithmetic word operations are sign-extended; shifts also check
+ * truncation of values with nonzero high bits.
  *
- * On a 64-bit MIPS processor every instruction whose name says "word"
- * computes
- * 32 bits and writes the sign extension of that result into the full
- * 64-bit
- * register. Getting this wrong is the classic emulator defect for this
- * architecture, and it is invisible until a kernel compares a pointer
- * it
- * derived with a word instruction against one it derived with a
- * doubleword
- * instruction.
- *
- * Oracle: the MIPS64 instruction set reference (MD00087 revision 6.06),
- * which
- * states the rule per instruction: for SLL, "the word result is
- * sign-extended
- * and placed in GPR rd", and its programming note adds that a zero
- * shift
- * amount "truncates a 64-bit value to 32 bits and sign-extends it"; for
- * ADDU
- * and the rest, the operation writes sign_extend of bits 31 to 0.
- *
- * The same reference makes the result UNPREDICTABLE when a word
- * instruction
- * is
- * given an operand that is not already a sign-extended word, except for
- * the
- * shifts, which are defined for any input. So every addition,
- * subtraction,
- * multiplication and division below is fed properly sign-extended
- * words, and
- * only the shifts are handed a value with meaningful high bits.
- *
- * Nothing here is specific to the R10000; it is the shared 64-bit
- * behaviour a
- * mature model already gets right, which is exactly why this ROM is
- * also the
- * check that the harness itself is sound.
+ * Source: MIPS64 instruction set reference MD00087, revision 6.06.
  */
 
 #include "rom.h"
