@@ -2,43 +2,17 @@
 /*
  * SGI KONA: the InfiniteReality graphics pipe.
  *
- * An sgi-xio-board subclass, built the way hw/mips/sgi/xio-baseio.c
- * builds the BaseIO card: this file owns only the widget itself, attached
- * through the general XIO board framework at a free Origin 2000 XIO slot.
- * The widget answers the PROM's widget-header probe at `+0x4`, its
- * three-bit subsystem-classification probe at `+0x64`
- * (docs/datasheets/infinitereality-host-interface.md, docs/designs/
- * infinitereality-host-command-approximation.md), and the one-wire
- * identity chain at `+0x98` -- the geometry board's own record and,
- * unless the "other-identity-parts" property says otherwise, the Ktown
- * board's -- reusing hw/1wire's own DS2502 model and the shared MicroLAN
- * slot decode exactly as hw/pci-host/sgi-bridge.c's own NIC register
- * does. The kernel driver reaches the identical chain through a second
- * register offset, `+0x9c` (SGI_KONA_NIC): see that macro's header
- * comment for the established/inferred evidence.
+ * This sgi-xio-board subclass models the widget at an Origin 2000 XIO slot.
+ * It provides the widget-header and subsystem-classification registers,
+ * one-wire identity records, an additional register window, and a textport
+ * command port. The command port uses the shared QEMU framer and adds local
+ * handling for the variable-length bitmap transfer. The framebuffer uses a
+ * native 1280x1024 display surface.
  *
- * Increment 2 adds the register window at `+0x800xxx` (credit, mailbox,
- * cause, reset and EEPROM-fallback registers) and the PROM textport's own
- * command port at `+0xc10000`, framed through hw/misc/sgi-command-port.c
- * with a bulk-transfer layer of this file's own in front of it for the
- * bitmap/glyph blit command (0xa), plus a native 1280x1024 framebuffer
- * published as a display surface MGRAS-style: native storage first,
- * conversion on damage. See docs/designs/
- * infinitereality-host-command-approximation.md for what each of these
- * approximates and why. Every other offset still reads zero and accepts
- * any write, logged as unimplemented.
- *
- * Both one-wire parts this model seeds -- one geometry-board record, one
- * Ktown record -- are synthetic beyond their part field. No one-wire
- * capture of a real InfiniteReality pipe has been reviewed; only the
- * board part numbers (030-1398-001, 030-1067-001) come from the reviewed
- * rack capture. See the commit introducing this file and the
- * approximation ledger for the disclosure.
- *
- * Started from two spike trees, neither of whose logging or bespoke
- * glue survives here: the VPro stub (sgi-origami-vpro-stub-spike,
- * 7aa883ab0f, hw/misc/sgi-odyssey-stub.c) and the InfiniteReality stub
- * spike (sgi-origami-ir-stub-spike, 6e5f474fa3).
+ * Values beyond the widget-header and classification fields are synthetic
+ * or approximated. Identity serials and several board-record fields are
+ * placeholders. The command and register model has no real-device capture
+ * represented here. Unimplemented offsets read zero and accept writes.
  */
 
 #include "qemu/osdep.h"
@@ -71,31 +45,21 @@
 #define WIDGET_ID_ALWAYS_ONE         1
 
 /*
- * The DS2502's real family code (Dallas 1-Wire family list), not synthetic.
- * Bridge's own board-identity parts are the larger DS2505 (2048 bytes), but
- * no reviewed capture or datasheet says which part a real InfiniteReality
- * board carries, and the DS2502's 128 bytes hold the shared record with
- * room to spare, so this model keeps the part it already had rather than
- * switching for no evidenced reason.
+ * The DS2502 family code used by this model. The physical identity-part type
+ * is unresolved, so this is a model choice rather than a board claim.
  */
 #define SGI_KONA_ONEWIRE_FAMILY 0x09
 
-/* Two placeholder identities; no reviewed capture assigns real serials. */
+/* Placeholder serials; these are not hardware identifiers. */
 #define SGI_KONA_GEOMETRY_SERIAL 0x000000000001ULL
 #define SGI_KONA_KTOWN_SERIAL    0x000000000002ULL
 
 /*
- * Two board-identity records, built through hw/pci-host/sgi-bridge.c's own
- * shared fixed-offset record layout (docs/datasheets/bridge.md, "The
- * record layout, and every constraint on building it") rather than a
- * scanned ";Field:value;" text of this model's own invention. Only
- * barcode, part, revision and name are stored fields; the record's group,
- * capability and variety bytes are always 0xff (unprogrammed), and its
- * "Laser" display field is the part's own one-wire ROM number (the
- * "serial" property below), not a stored field at all -- so this model
- * carries none of those as a field of its own. Part carries the reviewed
- * rack capture's real board part number; barcode, revision and name are
- * synthetic placeholders pending a real one-wire capture.
+ * These records use the shared fixed-offset board-record representation.
+ * Barcode, part, revision, and name are stored fields. Group, capability,
+ * and variety bytes use the unprogrammed value. The displayed serial is the
+ * one-wire ROM number, not a separate stored field. Configured part numbers
+ * are retained; the other identity fields are synthetic placeholders.
  */
 static const SGIBridgeBoardRecord sgi_kona_geometry_record = {
     .barcode = "00000001",
@@ -111,13 +75,10 @@ static const SGIBridgeBoardRecord sgi_kona_ktown_record = {
 };
 
 /*
- * The identity chain the XIO board base builds at realize: the geometry
- * board's own record, whose part "board-part" replaces for a deskside
- * pipe's GE14-4 (030-1129-002), and Ktown, which "other-identity-parts"
- * names by default because a rack pipe carries it; a deskside pipe has no
- * Ktown and is built with an empty list. The part numbers mirror the
- * machine-model catalogue's own board records (tools/origami_lib/
- * model_emit.py).
+ * The XIO board base builds the identity chain at realize. The geometry
+ * record is the board's own record and its part can be selected with
+ * "board-part". One additional record is included by default; machine
+ * configurations without that part can provide an empty list.
  */
 static const SGIXioBoardIdentityPart sgi_kona_ktown_part = {
     .child_name = "onewire-ktown",
@@ -252,11 +213,7 @@ static void sgi_kona_textport_packet(void *opaque, unsigned port_id,
 
     switch (selector) {
     case 0x2:
-        /*
-         * Set color: approximated as a packed 0x00RRGGBB value, matching
-         * docs/designs/rad4-one-mode-functional-approximation.md's own
-         * RAD4 precedent.
-         */
+        /* Set color using the model's packed 0x00RRGGBB representation. */
         s->draw_color = args[0] & 0x00ffffff;
         break;
     case 0x6:
@@ -287,11 +244,7 @@ static void sgi_kona_textport_packet(void *opaque, unsigned port_id,
     case 0x4:
     case 0x5:
     case 0x7:
-        /*
-         * Argument shape is established; no rendering, blanking or
-         * cursor role is confirmed for any of these -- see docs/
-         * datasheets/infinitereality-display.md. Framed and traced only.
-         */
+        /* These commands are framed and traced without display effects. */
         break;
     default:
         g_assert_not_reached(); /* not in sgi_kona_textport_selectors[] */

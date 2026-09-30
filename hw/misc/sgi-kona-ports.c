@@ -39,8 +39,8 @@ const SGICommandPortSelector sgi_kona_doorbell_selectors[] = {
     { 0xc6,  1 }, /* glFinish / glXSwapBuffers */
     { 0x1cc, 1 }, /* glFlushRasterSGIX */
     { 0x116, 4 }, /* GetSingleCompFromPipe */
-    { 0x1d6, 1 }, /* __glkonResolveContext */
-    { 0x1ca, 1 }, /* __glkonResolveContext */
+    { 0x1d6, 1 }, /* context resolution */
+    { 0x1ca, 1 }, /* context resolution */
 };
 const unsigned sgi_kona_doorbell_num_selectors =
     ARRAY_SIZE(sgi_kona_doorbell_selectors);

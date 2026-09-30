@@ -1,10 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * Framing of the InfiniteReality OpenGL doorbell decoder. The expected
- * layouts below are written out by hand from the command grammar
- * datasheet's 3D-milestone subset and the catalogue rows it cites, not
- * read back from the generated table, so a regenerated table that
- * changes a count fails here.
+ * Expected OpenGL doorbell layouts are listed independently of the selector
+ * table. A changed argument count or layout status therefore fails here.
  */
 #include "qemu/osdep.h"
 #include "hw/misc/sgi-kona-gl-decode.h"

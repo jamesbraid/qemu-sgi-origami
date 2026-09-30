@@ -1,18 +1,13 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SGI KONA: the InfiniteReality graphics pipe.
- * An sgi-xio-board subclass whose widget answers the PROM's widget-header
- * probe, its `+0x64` classification probe, the `+0x98` one-wire identity
- * chain the driver reads during board discovery, and, from increment 2,
- * the `+0x800xxx` register window and the `+0xc10000` textport command
- * port the PROM's console path drives. See docs/datasheets/
- * infinitereality-host-interface.md and docs/datasheets/
- * infinitereality-command-grammar.md for the register and command-grammar
- * evidence, and docs/designs/infinitereality-host-command-approximation.md
- * for the approximation ledger this file implements. Every value this
- * file seeds beyond the widget-ID and `+0x64` fields is synthetic or
- * approximated: no register or one-wire capture of a real InfiniteReality
- * pipe exists.
+ *
+ * This sgi-xio-board subclass models widget probes, one-wire identity
+ * records, an additional register window, and a textport command port.
+ * Values beyond the widget-header and classification fields are synthetic
+ * or approximated. Identity serials and several board-record fields are
+ * placeholders. The register and one-wire behavior has not been fully
+ * characterized against physical hardware.
  */
 
 #ifndef HW_MISC_SGI_KONA_H
@@ -37,27 +32,17 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIKonaState, SGI_KONA)
 #define SGI_KONA_WIDGET_CONTROL 0x000024
 
 /*
- * The PROM's subsystem-classification probe: a 3-bit field read masked
- * with 7, established by docs/datasheets/infinitereality-host-interface.md
- * as the switch between a part-based classify (0), a one-wire-bypass path
- * (1) and "unknown subsystem" (else). This model always answers 0,
- * admitting the part-based path -- the only one the reviewed disassembly
- * traced completely.
+ * The 3-bit subsystem-classification register. This model returns
+ * probe_value; the default value selects its configured part-based path.
  */
 #define SGI_KONA_PROBE 0x000064
 
 /*
- * The one-wire identity chain: the same low-twenty-bit pulse/sample/done/
- * level layout the Bridge's own NIC register and the Hub's one-wire
- * register carry (docs/datasheets/hub-onewire.md), reused here rather than
- * invented. A 32-bit write starts one bit slot; completion is reported
- * synchronously, inside the write, exactly as the Bridge does. Established
- * by the PROM InfiniteReality-path note's own accessor (section 9): 7,388
- * accesses, all CPU 0, in the pre-kernel phase of every traced boot, which
- * builds the KLCONFIG board records a rack's `hinv -m` lists from it.
- * SGI_KONA_NIC below is the kernel driver's own register-offset view onto
- * this identical chain -- see that macro's own comment for the evidence
- * distinguishing established from inferred here.
+ * The one-wire bit-slot register. Its fields use the encoding shared by the
+ * Bridge NIC and Hub one-wire models. A 32-bit write starts a bit slot; this
+ * model reports completion synchronously. SGI_KONA_NIC is a second offset
+ * that the model aliases to the same state; its physical relationship to
+ * this register remains unresolved.
  */
 #define SGI_KONA_ONEWIRE 0x000098
 
@@ -71,35 +56,15 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIKonaState, SGI_KONA)
     (SGI_KONA_ONEWIRE_SAMPLE_MASK | SGI_KONA_ONEWIRE_PULSE_MASK)
 
 /*
- * The kernel driver's own register offset for the identical one-wire chain
- * SGI_KONA_ONEWIRE carries, not a second chain: established independently
- * by kona_attach()'s call into nic_xg_vertex_info(), corroborated by a full
- * disassembly trace into nic.o's generic one-wire NIC driver
- * (nic_presence/nic_match_rom/nic_write_byte/nic_read_byte -- the same
- * bit-banged pulse/sample/done/level primitive SGI_KONA_ONEWIRE's own
- * driver uses, not a plain-memory ASCII-record reader). That the two
- * offsets share one chain, rather than reaching two independent chains
- * with the same protocol, is inferred from a four-node boot capture: 403
- * write/read pairs at this offset cycling through the identical four
- * 32-bit control words SGI_KONA_ONEWIRE's own 1,847 pairs use in the same
- * run. The discriminating test neither capture settles: a register-level
- * capture of a real pipe showing whether both offsets return the same
- * presence and ROM-search sequence on true hardware, or a PROM
- * disassembly path that itself reaches this offset. This model has no
- * fields or reset/vmstate entry of its own: it reads and writes
- * onewire_reg/onewire_bus exactly as SGI_KONA_ONEWIRE does, because
- * nothing in the evidence distinguishes per-offset state.
+ * This model aliases the second register offset to the one-wire chain above.
+ * Whether physical hardware exposes one chain at both offsets remains
+ * unresolved. The model has no separate state for this offset.
  */
 #define SGI_KONA_NIC 0x00009c
 
 /*
- * Increment 2: the register window and textport command port the PROM's
- * console path drives before it ever touches the one-wire chain above.
- * See docs/datasheets/infinitereality-host-interface.md for the mailbox/
- * cause handshake and reset/EEPROM sequences, docs/datasheets/
- * infinitereality-command-grammar.md for the textport's own command
- * grammar, and docs/designs/infinitereality-host-command-approximation.md
- * for every approximation's disclosure.
+ * An additional register window and textport command port. Behavior
+ * below describes this model unless a limitation is stated explicitly.
  */
 
 /*
