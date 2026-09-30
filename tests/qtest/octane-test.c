@@ -317,29 +317,370 @@ static void test_memory_population_rejections(void)
     }
 }
 
-static bool octane_onewire_slot(QTestState *qts, unsigned int pulse,
-                                unsigned int sample)
+static bool octane_onewire_slot(QTestState *qts, uint64_t master,
+                                unsigned int pulse, unsigned int sample)
 {
-    qtest_writel(qts, IOC3_MICROLAN, (pulse << 10) | (sample << 2));
-    return qtest_readl(qts, IOC3_MICROLAN) & 1;
+    uint32_t command = (pulse << 10) | (sample << 2);
+    uint32_t result;
+
+    if (master == HEART + 0xb8) {
+        qtest_writeq(qts, master, command);
+    } else {
+        qtest_writel(qts, master, command);
+    }
+    if (master == HEART + 0xb8 || master == HEART + 0xbc) {
+        qtest_clock_step(qts, (pulse + sample) * 1000);
+    }
+    result = master == HEART + 0xb8 ? qtest_readq(qts, master) :
+        qtest_readl(qts, master);
+    g_assert_cmphex(result & 2, ==, 2);
+    return result & 1;
 }
 
-static void octane_onewire_write_byte(QTestState *qts, uint8_t value)
+static void octane_onewire_write_byte(QTestState *qts, uint64_t master,
+                                      uint8_t value)
 {
     for (unsigned int bit = 0; bit < 8; bit++) {
-        octane_onewire_slot(qts, value & (1u << bit) ? 6 : 80,
+        octane_onewire_slot(qts, master, value & (1u << bit) ? 6 : 80,
                             value & (1u << bit) ? 13 : 30);
     }
 }
 
-static uint8_t octane_onewire_read_byte(QTestState *qts)
+static uint8_t octane_onewire_read_byte(QTestState *qts, uint64_t master)
 {
     uint8_t value = 0;
 
     for (unsigned int bit = 0; bit < 8; bit++) {
-        value |= octane_onewire_slot(qts, 6, 13) << bit;
+        value |= octane_onewire_slot(qts, master, 6, 13) << bit;
     }
     return value;
+}
+
+
+typedef struct OctaneBoardIdentity {
+    uint64_t master;
+    uint64_t rom;
+    const char *barcode;
+    const char *part;
+    const char *revision;
+    const char *name;
+} OctaneBoardIdentity;
+
+/* Reviewed virtual identities; the ROM serials and barcodes are synthetic. */
+static const OctaneBoardIdentity octane_board_identities[2][4] = {
+    {
+        { HEART + 0xb8, 0x817a30010000010bULL, "SIM3010001",
+          "030-0888-004", "B", "PM10" },
+        { BRIDGE_NIC, 0xd87a30010000020bULL, "SIM3010002",
+          "030-0887-003", "F", "IP30" },
+        { IOC3_MICROLAN, 0xef7a30010000030bULL, "SIM3010003",
+          "030-0891-003", "A", "FP1" },
+        { IOC3_MICROLAN, 0x6a7a30010000040bULL, "SIM3010004",
+          "060-0028-003", "A", "PWR.SPPLY.SR" },
+    }, {
+        { HEART + 0xb8, 0x657a30020000010bULL, "SIM3020001",
+          "030-1590-002", "B", "PM10360MHZ" },
+        { BRIDGE_NIC, 0x3c7a30020000020bULL, "SIM3020002",
+          "030-1467-001", "B", "IP30" },
+        { IOC3_MICROLAN, 0x0b7a30020000030bULL, "SIM3020003",
+          "030-0891-003", "H", "FP1" },
+        { IOC3_MICROLAN, 0x8e7a30020000040bULL, "SIM3020004",
+          "060-0035-002", "A", "PWR.SPPLY.ER" },
+    },
+};
+
+static uint8_t octane_crc8(const uint8_t *bytes, size_t size)
+{
+    uint8_t crc = 0;
+
+    for (size_t i = 0; i < size; i++) {
+        crc ^= bytes[i];
+        for (unsigned bit = 0; bit < 8; bit++) {
+            crc = (crc >> 1) ^ (crc & 1 ? 0x8c : 0);
+        }
+    }
+    return crc;
+}
+
+static uint16_t octane_crc16(const uint8_t *bytes, size_t size)
+{
+    uint16_t crc = 0;
+
+    for (size_t i = 0; i < size; i++) {
+        crc ^= bytes[i];
+        for (unsigned bit = 0; bit < 8; bit++) {
+            crc = (crc >> 1) ^ (crc & 1 ? 0xa001 : 0);
+        }
+    }
+    return crc;
+}
+
+static void octane_identity_map(QTestState *qts)
+{
+    qtest_writel(qts, CFG(2) + 0x10, 0x10000000);
+    qtest_writel(qts, CFG(2) + 0x04, 0x00000002);
+    qtest_writel(qts, BRIDGE + 0x200 + 8 * 2 + 4, 0x1100);
+    qtest_writel(qts, IOC3_PIN_CONTROL_SET, 1u << 21);
+}
+
+static unsigned octane_onewire_search(QTestState *qts, uint64_t master,
+                                      uint64_t found[3])
+{
+    unsigned count = 0, last = 0;
+    uint64_t previous = 0;
+
+    do {
+        uint64_t rom = 0;
+        unsigned next = 0;
+        uint8_t bytes[8];
+
+        g_assert_false(octane_onewire_slot(qts, master, 520, 65));
+        octane_onewire_write_byte(qts, master, 0xf0);
+        for (unsigned i = 1; i <= 64; i++) {
+            bool bit = octane_onewire_slot(qts, master, 6, 13);
+            bool inverse = octane_onewire_slot(qts, master, 6, 13);
+            bool direction;
+
+            g_assert_false(bit && inverse);
+            if (bit != inverse) {
+                direction = bit;
+            } else {
+                direction = i < last ? (previous >> (i - 1)) & 1 : i == last;
+                if (!direction) {
+                    next = i;
+                }
+            }
+            rom |= (uint64_t)direction << (i - 1);
+            octane_onewire_slot(qts, master, direction ? 6 : 80,
+                                direction ? 110 : 30);
+        }
+        g_assert_cmpuint(count, <, 3);
+        found[count++] = rom;
+        previous = rom;
+        last = next;
+        stq_le_p(bytes, rom);
+        g_assert_cmphex(octane_crc8(bytes, sizeof(bytes)), ==, 0);
+    } while (last);
+
+    return count;
+}
+
+static void octane_onewire_address(QTestState *qts, uint64_t master,
+                                   uint64_t rom, uint8_t cmd, uint16_t addr)
+{
+    g_assert_false(octane_onewire_slot(qts, master, 520, 65));
+    octane_onewire_write_byte(qts, master, 0x55);
+    for (unsigned i = 0; i < 8; i++) {
+        octane_onewire_write_byte(qts, master, rom >> (8 * i));
+    }
+    octane_onewire_write_byte(qts, master, cmd);
+    octane_onewire_write_byte(qts, master, addr);
+    octane_onewire_write_byte(qts, master, addr >> 8);
+}
+
+static void octane_onewire_read(QTestState *qts, uint64_t master,
+                                uint8_t *bytes, size_t size)
+{
+    for (size_t i = 0; i < size; i++) {
+        bytes[i] = octane_onewire_read_byte(qts, master);
+    }
+}
+
+static void octane_identity_check(const OctaneBoardIdentity *want,
+                                  const uint8_t page[64])
+{
+    char part[13];
+    char revision[5];
+    char name[15];
+
+    g_assert_cmphex(page[0], ==, 1);
+    g_assert_cmpmem(page + 1, 10, want->barcode, 10);
+    for (unsigned i = 11; i < 21; i++) {
+        g_assert_cmphex(page[i], ==, ' ');
+    }
+    for (unsigned i = 32; i < 35; i++) {
+        g_assert_cmphex(page[i], ==, ' ');
+    }
+    memcpy(part, page + 21, 9);
+    memcpy(part + 9, page + 35, 3);
+    part[12] = 0;
+    memcpy(revision, page + 38, 4);
+    revision[4] = 0;
+    memcpy(name, page + 48, 14);
+    name[14] = 0;
+    g_assert_cmpstr(part, ==, want->part);
+    g_assert_cmpstr(g_strchomp(revision), ==, want->revision);
+    g_assert_cmpstr(g_strchomp(name), ==, want->name);
+    for (unsigned i = 42; i < 48; i++) {
+        g_assert_cmphex(page[i], ==, 0xff);
+    }
+    g_assert_cmphex(octane_crc16(page, 32), ==, 0xb001);
+    g_assert_cmphex(octane_crc16(page + 32, 32), ==, 0xb001);
+}
+
+static void octane_identity_read(QTestState *qts,
+                                 const OctaneBoardIdentity *want)
+{
+    uint8_t page[80];
+    uint8_t status[13] = { 0xaa, 0x00, 0x01 };
+    uint8_t extended[37];
+    uint8_t tail[7] = { 0xf0, 0xfe, 0x07 };
+
+    octane_onewire_address(qts, want->master, want->rom, 0xaa, 0x100);
+    for (unsigned i = 0; i < 8; i++) {
+        octane_onewire_read(qts, want->master, status + 3, 10);
+        for (unsigned j = 3; j < 11; j++) {
+            g_assert_cmphex(status[j], ==, 0xff);
+        }
+        g_assert_cmphex(octane_crc16(status + (i ? 3 : 0),
+                                    i ? 10 : 13), ==, 0xb001);
+    }
+
+    octane_onewire_address(qts, want->master, want->rom, 0xf0, 0);
+    octane_onewire_read(qts, want->master, page, sizeof(page));
+    octane_identity_check(want, page);
+    for (unsigned i = 64; i < sizeof(page); i++) {
+        g_assert_cmphex(page[i], ==, 0xff);
+    }
+
+    /* The terminal F0 check is distinct from the two stored page checks. */
+    octane_onewire_address(qts, want->master, want->rom, 0xf0, 0x7fe);
+    octane_onewire_read(qts, want->master, tail + 3, 4);
+    g_assert_cmphex(tail[3], ==, 0xff);
+    g_assert_cmphex(tail[4], ==, 0xff);
+    g_assert_cmphex(octane_crc16(tail, sizeof(tail)), ==, 0xb001);
+    g_assert_cmphex(octane_onewire_read_byte(qts, want->master), ==, 0xff);
+
+    octane_onewire_address(qts, want->master, want->rom, 0xa5, 0);
+    for (unsigned i = 0; i < 2; i++) {
+        uint8_t header[6] = { 0xa5, 0, 0 };
+
+        octane_onewire_read(qts, want->master, header + 3, 3);
+        g_assert_cmphex(header[3], ==, 0xff);
+        g_assert_cmphex(octane_crc16(header + (i ? 3 : 0),
+                                    i ? 3 : 6), ==, 0xb001);
+        octane_onewire_read(qts, want->master, extended, 34);
+        g_assert_cmpmem(extended, 32, page + 32 * i, 32);
+        g_assert_cmphex(octane_crc16(extended, 34), ==, 0xb001);
+    }
+}
+
+static void test_board_identities(gconstpointer data)
+{
+    bool octane2 = GPOINTER_TO_INT(data);
+    const OctaneBoardIdentity *boards = octane_board_identities[octane2];
+    QTestState *qts = octane2 ?
+        octane2_start_args("-nic user,mac=08:00:69:12:34:56") :
+        octane_start_args("-nic user,mac=08:00:69:12:34:56");
+    uint64_t found[3], ethernet = 0;
+    uint8_t reply[3][64], broadcast[64];
+    OctaneBoardIdentity low = boards[0];
+
+    octane_identity_map(qts);
+    for (unsigned bus = 0; bus < 3; bus++) {
+        unsigned count = octane_onewire_search(qts, boards[bus].master, found);
+
+        g_assert_cmpuint(count, ==, bus == 2 ? 3 : 1);
+        for (unsigned i = 0; i < count; i++) {
+            if (bus == 2 && (found[i] & 0xff) == 0x91) {
+                ethernet = found[i];
+                g_assert_cmphex((ethernet >> 8) & 0xffffffffffffULL, ==,
+                                0x5e7000000001ULL);
+            } else {
+                bool matched = false;
+
+                for (unsigned j = bus; j < (bus == 2 ? 4 : bus + 1); j++) {
+                    matched |= found[i] == boards[j].rom;
+                }
+                g_assert_true(matched);
+            }
+            for (unsigned j = 0; j < i; j++) {
+                g_assert_cmphex(found[j], !=, found[i]);
+            }
+        }
+    }
+    g_assert_cmphex(ethernet, !=, 0);
+    for (unsigned i = 0; i < 4; i++) {
+        uint8_t silence[8];
+
+        octane_identity_read(qts, &boards[i]);
+        octane_onewire_address(qts, boards[i].master,
+                               boards[i].rom ^ (1ULL << 63), 0xf0, 0);
+        octane_onewire_read(qts, boards[i].master, silence, sizeof(silence));
+        for (unsigned j = 0; j < sizeof(silence); j++) {
+            g_assert_cmphex(silence[j], ==, 0xff);
+        }
+    }
+    /* The low-word firmware path reaches the same HEART responder. */
+    low.master = HEART + 0xbc;
+    octane_identity_read(qts, &low);
+
+    for (unsigned i = 0; i < 3; i++) {
+        octane_onewire_address(qts, IOC3_MICROLAN,
+                               i == 2 ? ethernet : boards[2 + i].rom, 0xf0, 0);
+        octane_onewire_read(qts, IOC3_MICROLAN, reply[i], sizeof(reply[i]));
+    }
+    g_assert_cmpint(memcmp(reply[0], reply[1], sizeof(reply[0])), !=, 0);
+    g_assert_false(octane_onewire_slot(qts, IOC3_MICROLAN, 520, 65));
+    octane_onewire_write_byte(qts, IOC3_MICROLAN, 0xcc);
+    octane_onewire_write_byte(qts, IOC3_MICROLAN, 0xf0);
+    octane_onewire_write_byte(qts, IOC3_MICROLAN, 0);
+    octane_onewire_write_byte(qts, IOC3_MICROLAN, 0);
+    octane_onewire_read(qts, IOC3_MICROLAN, broadcast, sizeof(broadcast));
+    for (unsigned i = 0; i < sizeof(broadcast); i++) {
+        g_assert_cmphex(broadcast[i], ==,
+                        reply[0][i] & reply[1][i] & reply[2][i]);
+    }
+    g_assert_cmpuint(octane_onewire_search(qts, IOC3_MICROLAN, found), ==, 3);
+    octane_identity_read(qts, &boards[3]);
+    qtest_system_reset(qts);
+    octane_identity_map(qts);
+    for (unsigned i = 0; i < 4; i++) {
+        octane_identity_read(qts, &boards[i]);
+    }
+    qtest_quit(qts);
+}
+
+static void test_board_identity_migration(gconstpointer data)
+{
+    bool octane2 = GPOINTER_TO_INT(data);
+    const OctaneBoardIdentity *boards = octane_board_identities[octane2];
+    g_autoptr(GError) error = NULL;
+    g_autofree char *directory =
+        g_dir_make_tmp("octane-identity-migration-XXXXXX", &error);
+    g_autofree char *socket =
+        g_build_filename(directory, "migration.sock", NULL);
+    g_autofree char *uri = g_strdup_printf("unix:%s", socket);
+    QTestState *from = octane2 ? octane2_start_args("") : octane_start();
+    QTestState *to = octane2 ? octane2_start_args("-incoming defer") :
+        octane_start_args("-incoming defer");
+    uint8_t records[3][64];
+
+    g_assert_no_error(error);
+    octane_identity_map(from);
+    for (unsigned i = 0; i < 3; i++) {
+        octane_onewire_address(from, boards[i].master, boards[i].rom, 0xf0, 0);
+        octane_onewire_read(from, boards[i].master, records[i], 17);
+    }
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming', 'arguments':{'uri':%s}}", uri);
+    sgi_migrate_stopped(from, uri);
+    sgi_wait_migration_status(to, "completed", 30);
+    for (unsigned i = 0; i < 3; i++) {
+        octane_onewire_read(to, boards[i].master, records[i] + 17, 47);
+        octane_identity_check(&boards[i], records[i]);
+    }
+    qtest_system_reset(to);
+    octane_identity_map(to);
+    for (unsigned i = 0; i < 4; i++) {
+        octane_identity_read(to, &boards[i]);
+    }
+    qtest_quit(to);
+    qtest_quit(from);
+    if (g_file_test(socket, G_FILE_TEST_EXISTS)) {
+        g_assert_cmpint(g_unlink(socket), ==, 0);
+    }
+    g_assert_cmpint(g_rmdir(directory), ==, 0);
 }
 
 static void test_octane_ioc3_ethernet(bool octane2)
@@ -349,6 +690,7 @@ static void test_octane_ioc3_ethernet(bool octane2)
         octane2_start_args("-nic user,mac=08:00:69:12:34:56") :
         octane_start_args("-nic user,mac=08:00:69:12:34:56");
     uint8_t page[11];
+    uint64_t found[3], ethernet = 0;
 
     g_assert_cmphex(qtest_readl(qts, CFG(2)), ==, 0x000310a9);
     g_assert_cmphex(qtest_readl(qts, CFG(2) + 0x2c), ==, 0xc30410a9);
@@ -358,14 +700,17 @@ static void test_octane_ioc3_ethernet(bool octane2)
     g_assert_cmphex(qtest_readl(qts, IOC3_ENET_MII_DATA_R), ==, 0xffff);
 
     qtest_writel(qts, IOC3_PIN_CONTROL_SET, 1u << 21);
-    g_assert_false(octane_onewire_slot(qts, 520, 65));
-    octane_onewire_write_byte(qts, 0xcc); /* Skip ROM: one fitted part. */
-    octane_onewire_write_byte(qts, 0xf0); /* Read memory at byte zero. */
-    octane_onewire_write_byte(qts, 0);
-    octane_onewire_write_byte(qts, 0);
-    octane_onewire_read_byte(qts); /* Command/address CRC. */
+    g_assert_cmpuint(octane_onewire_search(qts, IOC3_MICROLAN, found), ==, 3);
+    for (unsigned i = 0; i < 3; i++) {
+        if ((found[i] & 0xff) == 0x91) {
+            ethernet = found[i];
+        }
+    }
+    g_assert_cmphex(ethernet, !=, 0);
+    octane_onewire_address(qts, IOC3_MICROLAN, ethernet, 0xf0, 0);
+    octane_onewire_read_byte(qts, IOC3_MICROLAN); /* Command/address CRC. */
     for (unsigned int i = 0; i < sizeof(page); i++) {
-        page[i] = octane_onewire_read_byte(qts);
+        page[i] = octane_onewire_read_byte(qts, IOC3_MICROLAN);
     }
     g_assert_cmphex(page[0], ==, 0x0a);
     for (unsigned int i = 0; i < sizeof(mac); i++) {
@@ -991,16 +1336,6 @@ static void test_flash_and_pci(void)
     uint32_t value;
     uint64_t last;
     g_autofree char *mtree = qtest_hmp(qts, "info mtree -f");
-    g_autoptr(QDict) listing = qtest_qmp(qts,
-        "{'execute':'qom-list','arguments':{'path':'/machine/bridge'}}");
-    QList *children = qdict_get_qlist(listing, "return");
-
-    for (const QListEntry *entry = qlist_first(children); entry;
-         entry = qlist_next(entry)) {
-        QDict *item = qobject_to(QDict, qlist_entry_obj(entry));
-        g_assert_cmpstr(qdict_get_str(item, "name"), !=, "onewire-part");
-    }
-
     g_assert_nonnull(strstr(mtree, "sgi-bridge.flash-read"));
 
     g_assert_cmpuint(qtest_readl_tx(qts, FLASH, &value), ==, MEMTX_OK);
@@ -1044,7 +1379,7 @@ static void test_flash_and_pci(void)
                      MEMTX_OK);
     /* An empty one-wire bus has no device to pull a reset slot low. */
     qtest_writel(qts, BRIDGE_NIC, (520u << 10) | (65u << 2));
-    g_assert_cmphex(qtest_readl(qts, BRIDGE_NIC) & 3, ==, 3);
+    g_assert_cmphex(qtest_readl(qts, BRIDGE_NIC) & 3, ==, 2);
     qtest_quit(qts);
 }
 
@@ -2147,6 +2482,14 @@ int main(int argc, char **argv)
     qtest_add_data_func("/octane2/cpu-clock", GINT_TO_POINTER(1),
                         test_cpu_clock);
     qtest_add_func("/octane2/population", test_octane2_population);
+    qtest_add_data_func("/octane/board-identities", GINT_TO_POINTER(0),
+                        test_board_identities);
+    qtest_add_data_func("/octane2/board-identities", GINT_TO_POINTER(1),
+                        test_board_identities);
+    qtest_add_data_func("/octane/board-identity-migration", GINT_TO_POINTER(0),
+                        test_board_identity_migration);
+    qtest_add_data_func("/octane2/board-identity-migration", GINT_TO_POINTER(1),
+                        test_board_identity_migration);
     qtest_add_func("/octane/memory-populations", test_memory_populations);
     qtest_add_func("/octane/memory-population-rejections",
                    test_memory_population_rejections);
