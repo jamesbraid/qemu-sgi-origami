@@ -10,8 +10,9 @@
  * engine's function, not of its program.
  *
  * What it preserves: the pixels that colour and depth clears, untextured
- * points, lines, triangles, strips, fans, quads and polygons, at size and
- * width 1, flat or smooth shaded, lit per vertex by OpenGL's lighting
+ * points, lines, triangles, strips, fans, quads and polygons, including
+ * point sizes, line widths and polygon raster modes, flat or smooth shaded,
+ * lit per vertex by OpenGL's lighting
  * equation, fogged, culled by facing, offset in depth, clipped by the
  * client clip planes, transformed by the modelview and projection
  * matrices and their stacks, and bitmaps, leave in the
@@ -274,9 +275,9 @@
  *   GL_POLYGON_STIPPLE (0xd97e7e4, 0xb42). GL_POLYGON_SMOOTH sends no
  *   token (0xd97e120-0xd97e164), so the model cannot follow it.
  *
- * The rasterizer draws lines of width 1, points of size 1 and filled,
- * unstippled polygons whatever this state holds, and logs a value it does
- * not draw. perfly reads all of it back at start; with zero answers it
+ * The rasterizer follows point size, line width and polygon mode.
+ * Native stipple and smoothing remain unsupported and are logged. perfly
+ * reads all of it back at start; with zero answers it
  * sent glPointSize(0) and glLineWidth(0), which the client rejects.
  */
 #define MGRAS_GL_LINE_WIDTH      0x00004504
@@ -1065,8 +1066,26 @@ static void mgras_gl_bind(SGIMgrasState *s)
     sgi_gl_set_drawable(mgras_gl(s), &d);
 }
 
+static SGIGLSink mgras_gl_sink(SGIMgrasState *s);
+
+void sgi_mgras_gl_init(SGIMgrasState *s)
+{
+    for (int i = 0; i < SGI_MGRAS_GL_CONTEXTS; i++) {
+        sgi_gl_init(&s->gl[i], 0);
+        s->gl_context[i].gl = &s->gl[i];
+    }
+}
+
+void sgi_mgras_gl_cleanup(SGIMgrasState *s)
+{
+    for (int i = 0; i < SGI_MGRAS_GL_CONTEXTS; i++) {
+        sgi_gl_cleanup(&s->gl[i]);
+    }
+}
+
 void sgi_mgras_gl_reset(SGIMgrasState *s)
 {
+    SGIGLSink sink = mgras_gl_sink(s);
     for (int i = 0; i < SGI_MGRAS_GL_CONTEXTS; i++) {
         s->gl_context[i].gl = &s->gl[i];
         memset(&s->gl_context[i].parser, 0, sizeof(s->gl_context[i].parser));
@@ -1074,8 +1093,13 @@ void sgi_mgras_gl_reset(SGIMgrasState *s)
                sizeof(s->gl_context[i].readback));
         memset(&s->gl_context[i].pixels, 0,
                sizeof(s->gl_context[i].pixels));
-        sgi_gl_init(&s->gl[i], 0);
+        sgi_gl_reset(&s->gl[i], 0);
+        if (!sgi_gl_enable_polygon_modes(&s->gl[i], &sink)) {
+            g_assert_not_reached();
+        }
     }
+    s->gl_oom_logged = false;
+    s->gl_stipple_logged = false;
     memset(s->ge_param, 0, sizeof(s->ge_param));
     s->ge_param_logged = false;
     memset(s->gl_slot, 0, sizeof(s->gl_slot));
@@ -1108,7 +1132,7 @@ static unsigned int mgras_gl_lookup(SGIMgrasState *s, uint32_t slot)
                       "state is lost\n", slot, s->gl_slot[oldest]);
         free = oldest;
     }
-    sgi_gl_init(&s->gl[free], slot);
+    sgi_gl_reset(&s->gl[free], slot);
     memset(&s->gl_context[free].parser, 0,
            sizeof(s->gl_context[free].parser));
     memset(s->gl_context[free].readback, 0,
@@ -1972,7 +1996,8 @@ bool sgi_mgras_gl_post_load(SGIMgrasState *s)
     for (int i = 0; i < SGI_MGRAS_GL_CONTEXTS; i++) {
         const SGIMgrasCmdParser *p = &s->gl_context[i].parser;
 
-        if (!sgi_mgras_cmd_parser_valid(p->cls, p->reg, p->words_remaining,
+        if (!sgi_gl_context_valid(&s->gl[i], NULL) ||
+            !sgi_mgras_cmd_parser_valid(p->cls, p->reg, p->words_remaining,
                                         p->payload_count) ||
             !mgras_gl_pixels_valid(&s->gl_context[i].pixels)) {
             return false;
@@ -2132,7 +2157,7 @@ static void mgras_gl_store_stencil(void *opaque, int x, int y,
  *   not published; a result that differs only in rounding is within the
  *   probe's margins.
  * - Lines cover the pixels the diamond-exit rule gives on the subpixel
- *   grid, with no endpoint perturbation (gl-reference/lines and
+ *   grid, with the declared endpoint perturbation (gl-reference/lines and
  *   gl-line-leaves-out-its-last-pixel).
  * - Primitives are clipped to the view volume as OpenGL 1.2.1, 2.11
  *   describes, in double arithmetic, not by the GE's own clipper, whose
@@ -2166,14 +2191,31 @@ static const SGIRasterTarget mgras_gl_target = {
 };
 
 /* A GL context's draw, rasterized into the banks and the depth plane. */
-static void mgras_gl_draw(void *opaque, const SGIGLDraw *d)
+static SGIGLDrawResult mgras_gl_draw_checked(void *opaque, const SGIGLDraw *d)
 {
     SGIMgrasState *s = opaque;
     SGIRasterTarget t = mgras_gl_target;
+    SGIGLDraw draw = *d;
+    SGIGLDrawResult result;
 
+    /* No reviewed native stipple applicability contract is available. */
+    if (draw.line_stipple_enabled) {
+        draw.line_stipple_enabled = false;
+        if (!s->gl_stipple_logged) {
+            qemu_log_mask(LOG_UNIMP, "sgi-mgras: native line stipple is "
+                          "unsupported; drawing without stipple\n");
+            s->gl_stipple_logged = true;
+        }
+    }
     t.opaque = s;
-    sgi_soft_draw(&mgras_gl_raster_rules, &t, d);
+    result = sgi_soft_draw(&mgras_gl_raster_rules, &t, &draw);
     s->dirty = true;
+    return result;
+}
+
+static void mgras_gl_draw(void *opaque, const SGIGLDraw *d)
+{
+    mgras_gl_draw_checked(opaque, d);
 }
 
 /* A GL context's clear or bitmap. */
@@ -2200,7 +2242,7 @@ static void mgras_gl_context_start(SGIMgrasState *s)
 {
     SGIGLContext *gl = mgras_gl(s);
 
-    sgi_gl_init(gl, gl->hw_id);
+    sgi_gl_reset(gl, gl->hw_id);
     mgras_gl_bind(s);
 }
 
@@ -2212,6 +2254,7 @@ static SGIGLSink mgras_gl_sink(SGIMgrasState *s)
 {
     return (SGIGLSink) {
         .draw = mgras_gl_draw,
+        .draw_checked = mgras_gl_draw_checked,
         .raster = mgras_gl_raster,
         .opaque = s,
     };
@@ -2224,6 +2267,12 @@ static void mgras_gl_command(SGIMgrasState *s, SGIGLOp op,
     SGIGLCmd cmd = { .op = op, .nargs = nargs, .args = args };
 
     sgi_gl_command(mgras_gl(s), &sink, &cmd);
+    if (mgras_gl(s)->polygon.error == SGI_GL_OUT_OF_MEMORY &&
+        !s->gl_oom_logged) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: GL draw allocation "
+                      "failed; shared GL error retained\n");
+        s->gl_oom_logged = true;
+    }
 }
 
 /* A colour index, as the float the shared context keeps. */

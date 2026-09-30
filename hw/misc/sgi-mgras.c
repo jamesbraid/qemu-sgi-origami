@@ -13,6 +13,7 @@
 #include "hw/mips/sgi/xio-link.h"
 #include "hw/mips/sgi/xio-widget.h"
 #include "migration/vmstate.h"
+#include "migration/register.h"
 #include "qapi/error.h"
 #include "qapi/visitor.h"
 #include "system/address-spaces.h"
@@ -1562,6 +1563,32 @@ static bool mgras_build_widget(SGIXioBoardState *board, Error **errp)
     return true;
 }
 
+#define MGRAS_LOAD_CLEANUP TYPE_SGI_MGRAS "/load-cleanup"
+
+static int mgras_load_cleanup(void *opaque)
+{
+    SGIMgrasState *s = opaque;
+
+    /* A later context or subsection may fail after earlier allocations. */
+    if (s->gl_restore_in_progress) {
+        sgi_mgras_gl_reset(s);
+        s->gl_restore_in_progress = false;
+    }
+    return 0;
+}
+
+static const SaveVMHandlers mgras_load_ops = {
+    .load_cleanup = mgras_load_cleanup,
+};
+
+static void mgras_unregister_cleanup(SGIMgrasState *s)
+{
+    if (s->gl_cleanup_registered) {
+        unregister_savevm(NULL, MGRAS_LOAD_CLEANUP, s);
+        s->gl_cleanup_registered = false;
+    }
+}
+
 /* Runs once the board sits at its final QOM path, which its console names. */
 static bool mgras_finish_realize(SGIXioBoardState *board, Error **errp)
 {
@@ -1571,6 +1598,9 @@ static bool mgras_finish_realize(SGIXioBoardState *board, Error **errp)
     sgi_scanout_init(&s->scanout, dev, &mgras_scanout_ops, s);
     mgras_update_timing(s, false);
     device_cold_reset(dev);
+    register_savevm_live(MGRAS_LOAD_CLEANUP, VMSTATE_INSTANCE_ID_ANY, 1,
+                         &mgras_load_ops, s);
+    s->gl_cleanup_registered = true;
     return true;
 }
 
@@ -1579,6 +1609,8 @@ static void mgras_unrealize(DeviceState *dev)
     SGIMgrasState *s = SGI_MGRAS(dev);
     SGIMgrasClass *mc = SGI_MGRAS_GET_CLASS(dev);
 
+    mgras_unregister_cleanup(s);
+    sgi_mgras_gl_cleanup(s);
     mc->parent_unrealize(dev);
     sgi_scanout_cleanup(&s->scanout);
     address_space_destroy(&s->fabric_as);
@@ -1597,6 +1629,14 @@ static bool mgras_xmap_indices_valid(SGIMgrasState *s)
         }
     }
     return true;
+}
+
+static int mgras_pre_load(void *opaque)
+{
+    SGIMgrasState *s = opaque;
+
+    s->gl_restore_in_progress = true;
+    return 0;
 }
 
 /* Rebuild host-only display state from migrated VC3 state and redraw it. */
@@ -1625,6 +1665,7 @@ static int mgras_post_load(void *opaque, int version_id)
     mgras_retrace_rephase(s);
     s->dirty = true;
     sgi_mgras_display_flush(s);
+    s->gl_restore_in_progress = false;
     return 0;
 }
 
@@ -1732,6 +1773,7 @@ DEFINE_VMSTATE_SGI_GL_CONTEXTS(vmstate_sgi_mgras_gl_contexts,
 
 static const VMStateDescription vmstate_sgi_mgras = {
     .name = TYPE_SGI_MGRAS, .version_id = 25, .minimum_version_id = 25,
+    .pre_load = mgras_pre_load,
     .post_load = mgras_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32(front_count, SGIMgrasState),
@@ -2049,9 +2091,41 @@ static void mgras_test_get_dma_map_control(Object *obj, Visitor *v,
     visit_type_uint32(v, name, &value, errp);
 }
 
+static void mgras_test_get_polygon_contexts(Object *obj, Visitor *v,
+                                           const char *name, void *opaque,
+                                           Error **errp)
+{
+    SGIMgrasState *s = SGI_MGRAS(obj);
+    uint32_t value = 0;
+
+    for (int i = 0; i < SGI_MGRAS_GL_CONTEXTS; i++) {
+        value += s->gl[i].polygon.vertices != NULL;
+    }
+    visit_type_uint32(v, name, &value, errp);
+}
+
+static void mgras_test_get_polygon_vertices(Object *obj, Visitor *v,
+                                           const char *name, void *opaque,
+                                           Error **errp)
+{
+    SGIMgrasState *s = SGI_MGRAS(obj);
+    uint64_t value = 0;
+
+    for (int i = 0; i < SGI_MGRAS_GL_CONTEXTS; i++) {
+        value += s->gl[i].polygon.count;
+    }
+    visit_type_uint64(v, name, &value, errp);
+}
+
 static void mgras_instance_init(Object *obj)
 {
     SGIMgrasState *s = SGI_MGRAS(obj);
+
+    sgi_mgras_gl_init(s);
+    object_property_add(obj, "x-test-polygon-contexts", "uint32",
+                        mgras_test_get_polygon_contexts, NULL, NULL, NULL);
+    object_property_add(obj, "x-test-polygon-vertices", "uint64",
+                        mgras_test_get_polygon_vertices, NULL, NULL, NULL);
 
     object_property_add_uint32_ptr(obj, "x-test-pixel-x", &s->test_pixel_x,
                                    OBJ_PROP_FLAG_READWRITE);
@@ -2106,6 +2180,14 @@ static void mgras_instance_init(Object *obj)
                         mgras_test_get_dma_map_control, NULL, NULL, NULL);
 }
 
+static void mgras_instance_finalize(Object *obj)
+{
+    SGIMgrasState *s = SGI_MGRAS(obj);
+
+    mgras_unregister_cleanup(s);
+    sgi_mgras_gl_cleanup(s);
+}
+
 static void mgras_class_init(ObjectClass *oc, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
@@ -2134,5 +2216,6 @@ static const TypeInfo mgras_types[] = {{
     .name = TYPE_SGI_MGRAS, .parent = TYPE_SGI_XIO_BOARD,
     .instance_size = sizeof(SGIMgrasState), .class_size = sizeof(SGIMgrasClass),
     .instance_init = mgras_instance_init,
+    .instance_finalize = mgras_instance_finalize,
     .class_init = mgras_class_init }};
 DEFINE_TYPES(mgras_types)
