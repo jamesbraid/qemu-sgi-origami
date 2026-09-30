@@ -1,0 +1,18 @@
+# IP35 C-brick board identity and documented slot capacity.
+layer_version: 1
+layer:
+  kind: assembly
+  id: ip35
+  platform: ip35
+  requires: {architecture: sn1}
+  contract: {board_ip: IP35}
+  capacity:
+    cpu_slots_per_node: 4
+    dimm_slots_per_node: 8
+    provenance: vendor-document
+    sources: ["108-0240-002 p.2-4..2-29, 2-40..2-47: IP35 C-brick, Bedrock, 2 or 4 on 1-2 PIMMs, R12000 360, R12000A 400; 8 DIMM slots, banks 0-7, 512 MB-8 GB"]
+    notes: >-
+      Two processors on one PIMM or four on two, per the closure record's family
+      table; cache size is not stated for the R12000/R12000A clocks the table
+      names, so no processors-catalogue entry or cpu_selection is authored for
+      this board, and CPU components carry no clock or cache identity.

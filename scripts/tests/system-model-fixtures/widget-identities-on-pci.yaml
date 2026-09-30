@@ -1,0 +1,63 @@
+model_version: 1
+evidence_policy: strict
+machine:
+  name: Invalid PCI identities
+  generation: SN0
+  board_ip: IP29
+  architecture_ip: IP27
+  kernel_ip: IP27
+  model_role: reference
+processors:
+  - part: r10000
+    variants: [{clock_mhz: 180, cache_mib: 1}]
+    provenance: derived
+    sources: ["test fixture"]
+space_selection: {mechanism: not-traced}
+address_spaces: [{id: pci, name: PCI}]
+components:
+  - {id: bridge, name: Bridge, kind: pci-host-bridge, provenance: vendor-document, pci_host_bridge: {heads: 1}}
+  - {id: isp0, name: QLogic ISP1040, kind: storage-hba, provenance: vendor-document}
+buses:
+- id: pci
+  name: PCI
+  kind: pci
+  master: bridge
+  provenance: unsourced
+  evidence_gap: Adversarial identity fixture.
+  sources: [Synthetic topology validation fixture]
+
+connections:
+- component: bridge
+  bus: pci
+  role: master
+  provenance: unsourced
+  evidence_gap: Adversarial identity fixture.
+  sources: &id001 [Synthetic topology validation fixture]
+- component: isp0
+  bus: pci
+  provenance: unsourced
+  evidence_gap: Adversarial identity fixture.
+  xio: {enumerated_widget: 8}
+  sources: *id001
+composition:
+  architecture: sn0
+  platform: ip27
+  assembly: fixture-board
+  product: fixture-product
+  layers:
+    - {kind: architecture, id: sn0}
+    - {kind: assembly, id: fixture-board}
+    - {kind: product, id: fixture-product}
+  topology:
+    min_nodes: 1
+    max_nodes: 1
+    supported_cpu_populations: [[1]]
+    provenance: derived
+    sources: [Synthetic topology validation fixture]
+  population: {"nodes":1,"cpus_per_node":[1],"memory_mib_per_node":[64],"provenance":"derived","sources":["Synthetic topology validation fixture"]}
+  limits:
+    nodes: 1
+    cpus_per_node: 2
+    dimms_per_node: 8
+    provenance: derived
+    sources: [Synthetic topology validation fixture]

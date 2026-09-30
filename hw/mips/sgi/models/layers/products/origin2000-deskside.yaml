@@ -1,0 +1,368 @@
+# The Origin 2000 deskside: the eight-processor module in a deskside
+# enclosure (docs/datasheets/onyx2.md, Telling an Onyx2 from an Origin 2000),
+# with a plain BaseIO in IO1 and no graphics, and one to four node boards
+# fitted in SGI's fill order. The composition describes the chassis with all
+# four fitted on two Standard Routers, the rack module's fabric, which one
+# enclosure may carry (007-3439-002 printed page 57). Fewer node boards take
+# fewer boards in the Router slots: none for one, a Null Router for two. SGI's
+# cheaper fit for three or four, a Router and a Star Router joined by a
+# jumper (007-3453-002 Figure 2-9), is not modelled:
+# docs/datasheets/origin2000-module.md, Node-board populations, says why and
+# grades each row below.
+layer_version: 1
+layer:
+  kind: product
+  id: origin2000-deskside
+  requires:
+    assembly: ip27
+  topology:
+    min_nodes: 1
+    max_nodes: 4
+    supported_cpu_populations:
+    - [2, 2, 2, 2]
+    provenance: vendor-document
+    sources: ["007-3439-002 printed page 57 PDF page 71: the Standard Router cables together 2 to 32 Node boards in 1 to 8 enclosures", "007-3453-002 printed page 1 PDF page 19: up to four node boards"]
+    node_populations:
+    - node_slots: [1]
+      routers: []
+      fabric_links: []
+      xio_slots: {xio-slot-2: 1, xio-slot-3: 1, xio-slot-4: 1, xio-slot-5: 1, xio-slot-6: 1}
+      supported_cpu_populations: [[2], [1]]
+      grade: inferred
+      sources: ["007-3453-002 printed page 21 PDF page 39, Table 2-2: without a router board only one Node board and XIO slots 1-6 work", "007-3453-002 printed page 22 PDF page 40, Figure 2-9: one node board needs no router board"]
+      notes: >-
+        Figure 2-9 draws one node board with no router board, but the same
+        guide's printed page 21 says every deskside ships with the first
+        router board installed. Which a one-node deskside carried is not
+        settled, so leaving both Router slots empty is inferred.
+    - node_slots: [1, 2]
+      routers: []
+      fabric_links: [null-router]
+      xio_slots: {xio-slot-2: 1, xio-slot-3: 1, xio-slot-4: 1, xio-slot-5: 1, xio-slot-6: 1, xio-slot-7: 2, xio-slot-8: 2, xio-slot-9: 2, xio-slot-10: 2, xio-slot-11: 2, xio-slot-12: 2}
+      supported_cpu_populations: [[2, 2], [1, 1], [2, 1]]
+      grade: established
+      sources: ["007-3453-002 printed page 22 PDF page 40, Figure 2-9: a two-node Origin 2000 deskside with a Null Router", "007-3453-002 printed page 21 PDF page 39, Table 2-2: XIO slots 7-12 work with a second Node board", "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf Table 41 printed page 130 PDF page 132: in a 2-node system N1 controls IO1-IO6 and N2 IO7-IO12"]
+    - node_slots: [1, 2, 3]
+      routers: [router-1, router-2]
+      fabric_links: [r1-node1, r1-node2, r1-r2, r2-node3]
+      xio_slots: {xio-slot-2: 3, xio-slot-3: 1, xio-slot-4: 3, xio-slot-5: 1, xio-slot-6: 3, xio-slot-7: 2, xio-slot-8: 2, xio-slot-9: 2, xio-slot-10: 2, xio-slot-11: 2, xio-slot-12: 2}
+      supported_cpu_populations: [[2, 2, 2], [1, 1, 1], [2, 1, 1], [2, 2, 1]]
+      grade: inferred
+      sources: ["108-0170-001 Figure 6-2 and Table 6-1 printed page 6-3 PDF page 97 mapping visually verified", "007-3439-002 printed page 57 PDF page 71: the Standard Router cables together 2 to 32 Node boards in 1 to 8 enclosures", "docs/datasheets/origin2000-module.md Node-board populations: the joint-buck capture boots PROM 6.156 on node slots 1-3 with both Routers", "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf Table 41 printed page 130 PDF page 132: the four-node quadrants"]
+      notes: >-
+        Which node controls IO8, IO10 and IO12 with node board 4 absent is
+        inferred: node 2 is the only Hub on Crossbow 1. Two Standard Routers
+        in a deskside is the model's choice among fits SGI documents; see
+        the four-node row.
+    - node_slots: [1, 2, 3, 4]
+      routers: [router-1, router-2]
+      fabric_links: [r1-node1, r1-node2, r1-r2, r2-node3, r2-node4]
+      xio_slots: {xio-slot-2: 3, xio-slot-3: 1, xio-slot-4: 3, xio-slot-5: 1, xio-slot-6: 3, xio-slot-7: 2, xio-slot-8: 4, xio-slot-9: 2, xio-slot-10: 4, xio-slot-11: 2, xio-slot-12: 4}
+      supported_cpu_populations: [[2, 2, 2, 2], [1, 1, 1, 1], [2, 1, 1, 1], [2, 2, 1, 1], [2, 2, 2, 1]]
+      grade: inferred
+      notes: >-
+        SGI shipped three- and four-node desksides with a Router and a Star
+        Router (007-3453-002 Figure 2-9), and 007-3439-002 printed page 57
+        says 3- and 4-node configurations are built that way. The two
+        Standard Routers here rest on a chain: the deskside is one module
+        (007-3456-003 printed page 30), 108-0170-001 section 6.2.1 gives a
+        fully populated single module two Routers, and 007-3439-002 printed
+        page 57 lets Standard Routers join node boards in one enclosure.
+        The Star is not modelled because the stock PROM's partner probe
+        does not finish on it in the model.
+      sources: ["108-0170-001 Figure 6-2 and Table 6-1 printed page 6-3 PDF page 97 mapping visually verified", "007-3439-002 printed page 57 PDF page 71: the Standard Router cables together 2 to 32 Node boards in 1 to 8 enclosures", "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf Table 41 printed page 130 PDF page 132: the four-node quadrants", "docs/datasheets/origin2000-module.md Node-board populations: the joint-buck capture's IRIX hinv lists four Hubs and both Routers, each with active ports 4, 5 and 6"]
+  population:
+    nodes: 4
+    cpus_per_node: [2, 2, 2, 2]
+    provenance: derived
+    sources: ["108-0170-001 Figure 6-2 and Table 6-1 printed page 6-3 PDF page 97 mapping visually verified", "007-3439-002 printed page 57 PDF page 71: the Standard Router cables together 2 to 32 Node boards in 1 to 8 enclosures"]
+  cpu_selection:
+    default: {clock_mhz: 180, cache_mib: 1}
+    slots: [cpu-a, cpu-b]
+  memory_kits_per_node: [kit-256, kit-256, kit-256, kit-256]
+  data:
+    machine:
+      name: Origin 2000 deskside
+      model_role: emulation-target
+      notes: >-
+        Four node boards, each with two processors and 256 MiB in two
+        128 MB banks, two Standard Routers, and a plain BaseIO (io6) in
+        IO1, and no graphics, as a shipped Origin 2000 deskside has none.
+        The Routers are the model's choice: SGI shipped three- and four-node
+        desksides with a Router and a Star Router. The
+        machine's nodes= property fits fewer node boards, in SGI's fill
+        order: one takes no Router board and two a Null Router
+        (007-3453-002 Figure 2-9). This is the eight-processor module, so
+        node 1 reaches Crossbow 0 at widget 9, node 2 Crossbow 1 at widget
+        A, node 3 Crossbow 0 at widget A and node 4 Crossbow 1 at widget 9.
+        This is a selected population, not a captured machine inventory.
+        The full processor mode word is not the full CP0 Config register;
+        only the reviewed low 25 bits transfer. Stock image configuration
+        must agree and is never rewritten by descriptor generation.
+      firmware_config:
+        cpu_clock_hz: 180000000
+        hub_clock_hz: 90000000
+        processor_reset_mode:
+          kseg0_cache_algorithm: cacheable-coherent-exclusive-on-write
+          processor_device_number: 0
+          coherent_request_target: external-agent
+          processor_eliminate_requests: false
+          maximum_outstanding_processor_requests: 4
+          system_clock_divisor: 2
+          secondary_cache_block_words: 32
+          secondary_cache_error_correction: retry-access-through-corrector
+          memory_endianness: big
+          secondary_cache_size_kib: 1024
+          secondary_cache_clock_divisor: 1.5
+          secondary_cache_clock_tap: 9
+          open_drain_system_interface: false
+          cache_test_mode: false
+        machine_type: 0
+        flash_read_cycles: 8
+        flash_write_cycles: 1
+        provenance: derived
+        sources: ["docs/datasheets/origin2000-cpu-reset-mode.md selects the documented 180 MHz R10000, 90 MHz Hub, 1 MiB cache composition matching the unchanged stock mode word.", "docs/reviews/origin2000-firmware-configuration-review-20260905.md independently cleared the stock firmware record and flash controller fields.", "docs/datasheets/hub-processor-interface.md shared RTC contract specifies 1250000 Hz."]
+      emulation:
+        machine_name: origin2000
+        display_description: SGI Origin 2000 deskside
+        profile: origin2000-deskside
+        lifecycle: implemented
+        emulator_constraints:
+          # Per-node totals -m may select. QEMU lays 256 MiB out as two
+          # 128 MB banks, never the single 256 MB bank the stock PROM refuses
+          # on this board.
+          accepted_bank_sizes_mib:
+          - 64
+          - 256
+        initial_module_numbers:
+        - component: compute-module
+          number: 1
+          reason: >-
+            Selected initial identity, matching the rack module. With 0 the
+            stock PROM votes a module number and resets once more before it
+            settles.
+        initially_operational_crossbow_links:
+        - component: crossbow-0
+          widgets: [8, 9, 10]
+          reason: >-
+            Static emulator startup health for the fitted BaseIO and the Hub
+            links of nodes 1 and 3. Machine launch and whole-machine reset
+            reapply it; migration restores runtime link state instead. This
+            does not model Crossbow training or establish diagnostic
+            acceptance.
+        - component: crossbow-1
+          widgets: [9, 10]
+          reason: >-
+            Static emulator startup health for the Hub links of nodes 2 and
+            4. Machine launch and whole-machine reset reapply it; migration
+            restores runtime link state instead.
+        hub_ni_revision_overrides:
+        - component: node-board-1-hub
+          ni_revision: 5
+          reason: >-
+            Stock Origin 2000 inventories report Hub revision code 5: the
+            two-node Origin 2200 capture model-toad (an 8P12_MPLN module
+            with no graphics) prints HUB Revision 5 on both node slots, and
+            no stock capture shows code 3. The reusable node-board module's
+            code 3 (Hub 2.1, the earliest IRIX 6.5.30 accepts) stays the
+            baseline for products this override does not name.
+        - component: node-board-2-hub
+          ni_revision: 5
+          reason: Matches node-board-1-hub; a module's Hubs share one manufactured revision.
+        - component: node-board-3-hub
+          ni_revision: 5
+          reason: Matches node-board-1-hub; a module's Hubs share one manufactured revision.
+        - component: node-board-4-hub
+          ni_revision: 5
+          reason: Matches node-board-1-hub; a module's Hubs share one manufactured revision.
+        module_semantic_serials:
+        - component: compute-module
+          serial: SGIMODULE2
+          reason: >-
+            Stable synthetic module identity for this selected emulated
+            installation, distinct from the rack module's SGIMODULE1 because
+            the two are separate selected installations of the same physical
+            module type, never running together.
+        module_responder_identities:
+        - component: node-board-1-hub
+          serial: '0x100000000009'
+          reason: Stable synthetic node-local module responder identity, the rack module's own value for the same node slot.
+        - component: node-board-2-hub
+          serial: '0x10000000000a'
+          reason: Stable synthetic node-local module responder identity, the rack module's own value for the same node slot.
+        - component: node-board-3-hub
+          serial: '0x10000000000b'
+          reason: Stable synthetic node-local module responder identity, the rack module's own value for the same node slot.
+        - component: node-board-4-hub
+          serial: '0x10000000000c'
+          reason: Stable synthetic node-local module responder identity, the rack module's own value for the same node slot.
+        synthetic_identities:
+        - component: node-board-1-hub
+          serial: '0x100000000001'
+          reason: Stable synthetic identity for this selected physical component; not hardware evidence. The rack module's own value for the same node slot.
+        - component: node-board-2-hub
+          serial: '0x100000000002'
+          reason: Stable synthetic identity for this selected physical component; not hardware evidence. The rack module's own value for the same node slot.
+        - component: node-board-3-hub
+          serial: '0x100000000003'
+          reason: Stable synthetic identity for this selected physical component; not hardware evidence. The rack module's own value for the same node slot.
+        - component: node-board-4-hub
+          serial: '0x100000000004'
+          reason: Stable synthetic identity for this selected physical component; not hardware evidence. The rack module's own value for the same node slot.
+        - component: router-1
+          serial: '0x100000000005'
+          reason: Stable synthetic identity for this selected physical component; not hardware evidence. The rack module's own value for its Router 1.
+        - component: router-2
+          serial: '0x100000000006'
+          reason: Stable synthetic identity for this selected physical component; not hardware evidence. The rack module's own value for its Router 2.
+        - component: baseio-bridge
+          serial: '0x100000000007'
+          reason: Stable synthetic identity for this selected physical component; not hardware evidence. The rack module's own value for its BaseIO Bridge.
+        - component: baseio-ioc3
+          serial: '0x100000000008'
+          reason: Stable synthetic identity for this selected physical component; not hardware evidence. The rack module's own value for its BaseIO IOC3.
+    evidence_policy: strict
+    components:
+      - {id: origin2000-chassis, name: Origin 2000 chassis, kind: chassis, provenance: vendor-document, sources: ["108-0175-001 Figures 3-5 printed pages 4-8 PDF pages 18-22 mapping trusted"]}
+      - {id: compute-module, name: system module, kind: module, provenance: vendor-document, parent: origin2000-chassis, sources: ["108-0175-001 Figures 3-5 printed pages 4-8 PDF pages 18-22 mapping trusted", "007-3453-002 printed page 22 PDF page 40, Figure 2-9: two node boards and a Null Router"]}
+      - {id: module-midplane, name: module midplane, kind: board, provenance: vendor-document, parent: compute-module, sources: ["108-0175-001 Figures 3-5 printed pages 4-8 PDF pages 18-22 mapping trusted"]}
+      - {id: crossbow-0, name: Crossbow 1, kind: crossbar, hardware_kind: xbow, crossbar: {kind: xbow}, identity: {widget_part: "0x0", widget_mfg: "0x0", widget_revision: 2, notes: "Select Crossbow 1.1, the earliest revision accepted by IRIX 6.5.30; not a captured chassis revision."}, datasheet_contracts: [docs/datasheets/xbow.md], provenance: vendor-document, parent: module-midplane, sources: ["108-0175-001 Figures 3-5 and Table 1 printed pages 4-8 PDF pages 18-22 mapping trusted"]}
+      - {id: crossbow-1, name: Crossbow 2, kind: crossbar, hardware_kind: xbow, crossbar: {kind: xbow}, identity: {widget_part: "0x0", widget_mfg: "0x0", widget_revision: 2, notes: "Select Crossbow 1.1, the earliest revision accepted by IRIX 6.5.30; not a captured chassis revision."}, datasheet_contracts: [docs/datasheets/xbow.md], provenance: vendor-document, parent: module-midplane, sources: ["108-0175-001 Figures 3-5 and Table 1 printed pages 4-8 PDF pages 18-22 mapping trusted"]}
+      - {id: router-board-1, name: Router board R1, kind: board, identity: {part: "030-0841-002", notes: "The Standard Router board the rack module's R1 fits (docs/machines/layers/modules/origin2000-module.yaml)."}, provenance: vendor-document, parent: compute-module, physical_slot: {kind: router, number: 1}, sources: ["108-0170-001 Figure 6-2 and Table 6-1 printed page 6-3 PDF page 97 mapping visually verified", "007-3439-002 printed page 57 PDF page 71: the Standard Router cables together 2 to 32 Node boards in 1 to 8 enclosures"]}
+      - {id: router-1, name: Router 1, kind: router-asic, hardware_kind: router, router_asic: {port_count: 6, role: router}, identity: {part: "0x1", hardware_revision: 1, chip_inputs: 15, notes: "The same part and R1 slot inputs as the rack module's Router 1."}, datasheet_contracts: [docs/datasheets/router.md], provenance: vendor-document, parent: router-board-1, sources: ["108-0170-001 Figure 6-2 and Table 6-1 printed page 6-3 PDF page 97 mapping visually verified"]}
+      - {id: router-board-2, name: Router board R2, kind: board, identity: {part: "030-0841-002", notes: "The Standard Router board the rack module's R2 fits (docs/machines/layers/modules/origin2000-module.yaml)."}, provenance: vendor-document, parent: compute-module, physical_slot: {kind: router, number: 2}, sources: ["108-0170-001 Figure 6-2 and Table 6-1 printed page 6-3 PDF page 97 mapping visually verified", "007-3439-002 printed page 57 PDF page 71: the Standard Router cables together 2 to 32 Node boards in 1 to 8 enclosures"]}
+      - {id: router-2, name: Router 2, kind: router-asic, hardware_kind: router, router_asic: {port_count: 6, role: router}, identity: {part: "0x1", hardware_revision: 1, chip_inputs: 14, notes: "The same part and R2 slot inputs as the rack module's Router 2."}, datasheet_contracts: [docs/datasheets/router.md], provenance: vendor-document, parent: router-board-2, sources: ["108-0170-001 Figure 6-2 and Table 6-1 printed page 6-3 PDF page 97 mapping visually verified"]}
+      - {id: baseio, name: BaseIO board in IO1, kind: board, identity: {part: "030-1124-002", notes: "The plain BaseIO part QEMU's io6 preset presents; docs/datasheets/baseio.md."}, provenance: vendor-document, parent: module-midplane, physical_slot: {kind: io, number: 1}, sources: ["108-0175-001 Figure 5 and configuration rules printed pages 6-8 PDF pages 20-22 mapping trusted; 007-3439-002 Figure 2-25 printed page 69 PDF page 83 mapping trusted"]}
+      - {id: baseio-bridge, name: Bridge, kind: pci-host-bridge, hardware_kind: bridge, pci_host_bridge: {heads: 1}, identity: {widget_part: "0xc002", widget_mfg: "0x36", widget_revision: 4, notes: "Select Bridge D; encodings independently cleared in docs/reviews/origin2000-component-revision-encoding-review-20260905.md."}, datasheet_contracts: [docs/datasheets/bridge.md], provenance: vendor-document, parent: baseio, sources: ["108-0175-001 Figure 5 and configuration rules printed pages 6-8 PDF pages 20-22 mapping trusted; 007-3439-002 Figure 2-25 printed page 69 PDF page 83 mapping trusted"]}
+      - {id: baseio-ioc3, name: IOC3, kind: io-controller, hardware_kind: ioc3, identity: {pci_revision: 1, notes: "Select the revision 1 component supported by docs/datasheets/ioc3.md; subsystem compatibility is a separate software policy."}, datasheet_contracts: [docs/datasheets/ioc3.md], provenance: vendor-document, parent: baseio, sources: ["108-0175-001 Figure 5 and configuration rules printed pages 6-8 PDF pages 20-22 mapping trusted; 007-3439-002 Figure 2-25 printed page 69 PDF page 83 mapping trusted"]}
+      - {id: baseio-scsi-0, name: SCSI controller 0, kind: storage-hba, hardware_kind: isp1040, identity: {pci_revision: 5, hardware_revision: 6, clock_mhz: 60, notes: "Select ISP1040C-compatible behavior cleared in docs/reviews/origin2000-scsi-component-selection-review-20260905.md; not a historical package identification."}, datasheet_contracts: [docs/datasheets/isp1040.md], provenance: vendor-document, parent: baseio, sources: ["108-0175-001 Figure 5 and configuration rules printed pages 6-8 PDF pages 20-22 mapping trusted; 007-3439-002 Figure 2-25 printed page 69 PDF page 83 mapping trusted"]}
+      - {id: baseio-scsi-1, name: SCSI controller 1, kind: storage-hba, hardware_kind: isp1040, identity: {pci_revision: 5, hardware_revision: 6, clock_mhz: 60, notes: "Select ISP1040C-compatible behavior cleared in docs/reviews/origin2000-scsi-component-selection-review-20260905.md; not a historical package identification."}, datasheet_contracts: [docs/datasheets/isp1040.md], provenance: vendor-document, parent: baseio, sources: ["108-0175-001 Figure 5 and configuration rules printed pages 6-8 PDF pages 20-22 mapping trusted; 007-3439-002 Figure 2-25 printed page 69 PDF page 83 mapping trusted"]}
+      - {id: xio-slot-3, name: XIO slot IO3, kind: connector, provenance: vendor-document, parent: module-midplane, connector: {interface: XIO, location: IO3, occupancy: empty}, sources: ["108-0175-001 Figures 3-5 and Table 1 printed pages 4-8 PDF pages 18-22 mapping trusted"]}
+      - {id: xio-slot-5, name: XIO slot IO5, kind: connector, provenance: vendor-document, parent: module-midplane, connector: {interface: XIO, location: IO5, occupancy: empty}, sources: ["108-0175-001 Figures 3-5 and Table 1 printed pages 4-8 PDF pages 18-22 mapping trusted"]}
+      - {id: xio-slot-2, name: XIO slot IO2, kind: connector, provenance: vendor-document, parent: module-midplane, connector: {interface: XIO, location: IO2, occupancy: empty}, sources: ["108-0175-001 Figures 3-5 and Table 1 printed pages 4-8 PDF pages 18-22 mapping trusted"]}
+      - {id: xio-slot-4, name: XIO slot IO4, kind: connector, provenance: vendor-document, parent: module-midplane, connector: {interface: XIO, location: IO4, occupancy: empty}, sources: ["108-0175-001 Figures 3-5 and Table 1 printed pages 4-8 PDF pages 18-22 mapping trusted"]}
+      - {id: xio-slot-6, name: XIO slot IO6, kind: connector, provenance: vendor-document, parent: module-midplane, connector: {interface: XIO, location: IO6, occupancy: empty}, sources: ["108-0175-001 Figures 3-5 and Table 1 printed pages 4-8 PDF pages 18-22 mapping trusted"]}
+      - {id: xio-slot-8, name: XIO slot IO8, kind: connector, provenance: vendor-document, parent: module-midplane, connector: {interface: XIO, location: IO8, occupancy: empty}, sources: ["108-0175-001 Figures 3-5 and Table 1 printed pages 4-8 PDF pages 18-22 mapping trusted"]}
+      - {id: xio-slot-10, name: XIO slot IO10, kind: connector, provenance: vendor-document, parent: module-midplane, connector: {interface: XIO, location: IO10, occupancy: empty}, sources: ["108-0175-001 Figures 3-5 and Table 1 printed pages 4-8 PDF pages 18-22 mapping trusted"]}
+      - {id: xio-slot-12, name: XIO slot IO12, kind: connector, provenance: vendor-document, parent: module-midplane, connector: {interface: XIO, location: IO12, occupancy: empty}, sources: ["108-0175-001 Figures 3-5 and Table 1 printed pages 4-8 PDF pages 18-22 mapping trusted"]}
+      - {id: xio-slot-7, name: XIO slot IO7, kind: connector, provenance: vendor-document, parent: module-midplane, connector: {interface: XIO, location: IO7, occupancy: empty}, sources: ["108-0175-001 Figures 3-5 and Table 1 printed pages 4-8 PDF pages 18-22 mapping trusted"]}
+      - {id: xio-slot-9, name: XIO slot IO9, kind: connector, provenance: vendor-document, parent: module-midplane, connector: {interface: XIO, location: IO9, occupancy: empty}, sources: ["108-0175-001 Figures 3-5 and Table 1 printed pages 4-8 PDF pages 18-22 mapping trusted"]}
+      - {id: xio-slot-11, name: XIO slot IO11, kind: connector, provenance: vendor-document, parent: module-midplane, connector: {interface: XIO, location: IO11, occupancy: empty}, sources: ["108-0175-001 Figures 3-5 and Table 1 printed pages 4-8 PDF pages 18-22 mapping trusted"]}
+      - {id: baseio-superio, name: Super I/O, kind: io-controller, parent: baseio-ioc3, provenance: derived, description: Separate serial support component on IOC3 byte bus., datasheet_contracts: [docs/datasheets/ioc3.md]}
+      - {id: baseio-serial-a, name: Serial port A, kind: subfunction, parent: baseio-superio, provenance: derived, hardware_kind: ioc3-serial-a}
+      - {id: baseio-serial-b, name: Serial port B, kind: subfunction, parent: baseio-superio, provenance: derived, hardware_kind: ioc3-serial-b}
+      - {id: baseio-ethernet, name: Ethernet MAC, kind: subfunction, parent: baseio-ioc3, provenance: derived, hardware_kind: ioc3-ethernet}
+      - {id: baseio-timekeeper, name: 32 KiB Timekeeper, kind: rtc, parent: baseio-ioc3, provenance: derived, hardware_kind: ioc3-timekeeper, description: 'Select the reviewed Timekeeper class, directly addressed on IOC3 byte select 0; no alternative indexed clock.', datasheet_contracts: [docs/datasheets/timekeeper.md]}
+      - {id: baseio-ioc3-nic, name: IOC3 identity path, kind: subfunction, parent: baseio-ioc3, provenance: derived, hardware_kind: ioc3-onewire-identity}
+      - {id: baseio-ioc3-ssram, name: 64K by 18 SSRAM, kind: memory, parent: baseio-ioc3, provenance: derived, description: Published board-local support memory; separate from system RAM.}
+      - {id: baseio-bridge-flash, datasheet_contracts: [docs/datasheets/baseio.md], name: 1 MiB Bridge flash EPROM, kind: flash, parent: baseio-bridge, provenance: derived, description: Published board-local flash with serial-number region. Exact part and register decode are not selected by the node boot-flash contract.}
+      - {id: baseio-bridge-nic, name: Bridge identity path, kind: subfunction, parent: baseio-bridge, provenance: derived}
+      - id: module-msc
+        name: Module system controller
+        kind: system-controller
+        hardware_kind: msc
+        system_controller: {kind: msc}
+        parent: compute-module
+        provenance: derived
+        datasheet_contracts: [docs/datasheets/pcf8584-elsc.md, docs/datasheets/origin2000-module-management.md]
+      - id: module-management-nvram
+        name: Shared management NVRAM address space
+        kind: flash
+        hardware_kind: i2c-management-nvram
+        parent: compute-module
+        provenance: derived
+        datasheet_contracts: [docs/datasheets/pcf8584-elsc.md, docs/datasheets/origin2000-module-management.md]
+        description: One logical 2048-byte store across eight slave addresses; physical package count is unknown.
+      - id: module-aux-console
+        name: Module alternate RS-232 console
+        kind: subfunction
+        hardware_kind: msc-serial
+        parent: module-msc
+        provenance: derived
+    buses:
+      - id: module-management-i2c
+        name: Shared module management I2C bus
+        kind: i2c
+        masters: [node-board-1-management-adapter, node-board-2-management-adapter, node-board-3-management-adapter, node-board-4-management-adapter, module-msc]
+        provenance: derived
+        sources: ["docs/datasheets/origin2000-module-management.md"]
+      - {id: xbow0-node1, name: Crossbow 1 host link to Node 1, kind: xio, master: crossbow-0, provenance: vendor-document, sources: ["108-0175-001 Figures 3-5 and Table 1 printed pages 4-8 PDF pages 18-22 mapping trusted"]}
+      - {id: xbow0-io1, name: Crossbow 1 XIO position IO1, kind: xio, master: crossbow-0, provenance: vendor-document, sources: ["108-0175-001 Figures 3-5 and Table 1 printed pages 4-8 PDF pages 18-22 mapping trusted"]}
+      - {id: xbow0-io3, name: Crossbow 1 XIO position IO3, kind: xio, master: crossbow-0, provenance: vendor-document, sources: ["108-0175-001 Figures 3-5 and Table 1 printed pages 4-8 PDF pages 18-22 mapping trusted"]}
+      - {id: xbow0-io5, name: Crossbow 1 XIO position IO5, kind: xio, master: crossbow-0, provenance: vendor-document, sources: ["108-0175-001 Figures 3-5 and Table 1 printed pages 4-8 PDF pages 18-22 mapping trusted"]}
+      - {id: xbow0-io2, name: Crossbow 1 XIO position IO2, kind: xio, master: crossbow-0, provenance: vendor-document, sources: ["108-0175-001 Figures 3-5 and Table 1 printed pages 4-8 PDF pages 18-22 mapping trusted"]}
+      - {id: xbow0-io4, name: Crossbow 1 XIO position IO4, kind: xio, master: crossbow-0, provenance: vendor-document, sources: ["108-0175-001 Figures 3-5 and Table 1 printed pages 4-8 PDF pages 18-22 mapping trusted"]}
+      - {id: xbow0-io6, name: Crossbow 1 XIO position IO6, kind: xio, master: crossbow-0, provenance: vendor-document, sources: ["108-0175-001 Figures 3-5 and Table 1 printed pages 4-8 PDF pages 18-22 mapping trusted"]}
+      - {id: xbow1-io8, name: Crossbow 2 XIO position IO8, kind: xio, master: crossbow-1, provenance: vendor-document, sources: ["108-0175-001 Figures 3-5 and Table 1 printed pages 4-8 PDF pages 18-22 mapping trusted"]}
+      - {id: xbow1-io10, name: Crossbow 2 XIO position IO10, kind: xio, master: crossbow-1, provenance: vendor-document, sources: ["108-0175-001 Figures 3-5 and Table 1 printed pages 4-8 PDF pages 18-22 mapping trusted"]}
+      - {id: xbow1-io12, name: Crossbow 2 XIO position IO12, kind: xio, master: crossbow-1, provenance: vendor-document, sources: ["108-0175-001 Figures 3-5 and Table 1 printed pages 4-8 PDF pages 18-22 mapping trusted"]}
+      - {id: r1-node1, name: Router 1 to Node 1, kind: fabric, link: {kind: midplane}, master: router-1, provenance: vendor-document, sources: ["108-0170-001 Figure 6-2 and Table 6-1 printed page 6-3 PDF page 97 mapping visually verified"]}
+      - {id: r1-node2, name: Router 1 to Node 2, kind: fabric, link: {kind: midplane}, master: router-1, provenance: vendor-document, sources: ["108-0170-001 Figure 6-2 and Table 6-1 printed page 6-3 PDF page 97 mapping visually verified"]}
+      - {id: r1-r2, name: inter-Router link, kind: fabric, link: {kind: midplane}, master: router-1, provenance: vendor-document, sources: ["108-0170-001 Figure 6-2 and Table 6-1 printed page 6-3 PDF page 97 mapping visually verified"]}
+      - {id: r2-node3, name: Router 2 to Node 3, kind: fabric, link: {kind: midplane}, master: router-2, provenance: vendor-document, sources: ["108-0170-001 Figure 6-2 and Table 6-1 printed page 6-3 PDF page 97 mapping visually verified"]}
+      - {id: r2-node4, name: Router 2 to Node 4, kind: fabric, link: {kind: midplane}, master: router-2, provenance: vendor-document, sources: ["108-0170-001 Figure 6-2 and Table 6-1 printed page 6-3 PDF page 97 mapping visually verified"]}
+      - {id: xbow0-node3, name: Crossbow 1 host link to Node 3, kind: xio, master: crossbow-0, provenance: vendor-document, sources: ["108-0175-001 Figures 3-5 and Table 1 printed pages 4-8 PDF pages 18-22 mapping trusted"]}
+      - {id: xbow1-node4, name: Crossbow 2 host link to Node 4, kind: xio, master: crossbow-1, provenance: vendor-document, sources: ["108-0175-001 Figures 3-5 and Table 1 printed pages 4-8 PDF pages 18-22 mapping trusted"]}
+      - id: null-router
+        name: Null Router between node slots 1 and 2
+        kind: fabric
+        master: node-board-1-hub
+        link: {kind: null-router}
+        provenance: vendor-document
+        sources: ["007-3453-002 printed page 22 PDF page 40, Figure 2-9: a two-node Origin 2000 deskside with a Null Router", "007-3439-002 printed page 57 PDF page 71: the Null Router joins two node boards in one deskside and cannot be expanded"]
+        notes: >-
+          A direct Hub-to-Hub link, fitted only with two node boards: three
+          or four take two Standard Routers instead. No PROM or
+          IRIX inventory lists the Null Router (docs/datasheets/onyx2.md,
+          The two-node deskside).
+      - {id: xbow1-node2, name: Crossbow 2 host link to Node 2, kind: xio, master: crossbow-1, provenance: vendor-document, sources: ["108-0175-001 Figures 3-5 and Table 1 printed pages 4-8 PDF pages 18-22 mapping trusted"]}
+      - {id: xbow1-io7, name: Crossbow 2 XIO position IO7, kind: xio, master: crossbow-1, provenance: vendor-document, sources: ["108-0175-001 Figures 3-5 and Table 1 printed pages 4-8 PDF pages 18-22 mapping trusted"]}
+      - {id: xbow1-io9, name: Crossbow 2 XIO position IO9, kind: xio, master: crossbow-1, provenance: vendor-document, sources: ["108-0175-001 Figures 3-5 and Table 1 printed pages 4-8 PDF pages 18-22 mapping trusted"]}
+      - {id: xbow1-io11, name: Crossbow 2 XIO position IO11, kind: xio, master: crossbow-1, provenance: vendor-document, sources: ["108-0175-001 Figures 3-5 and Table 1 printed pages 4-8 PDF pages 18-22 mapping trusted"]}
+      - {id: baseio-pci, name: BaseIO PCI, kind: pci, master: baseio-bridge, provenance: vendor-document, sources: ["108-0175-001 Figure 5 and configuration rules printed pages 6-8 PDF pages 20-22 mapping trusted; 007-3439-002 Figure 2-25 printed page 69 PDF page 83 mapping trusted"]}
+    connections:
+      - {component: node-board-1-management-adapter, bus: module-management-i2c, role: master, provenance: derived, sources: ["docs/datasheets/origin2000-module-management.md"]}
+      - {component: node-board-2-management-adapter, bus: module-management-i2c, role: master, provenance: derived, sources: ["docs/datasheets/origin2000-module-management.md"]}
+      - {component: node-board-3-management-adapter, bus: module-management-i2c, role: master, provenance: derived, sources: ["docs/datasheets/origin2000-module-management.md"]}
+      - {component: node-board-4-management-adapter, bus: module-management-i2c, role: master, provenance: derived, sources: ["docs/datasheets/origin2000-module-management.md"]}
+      - {component: router-1, bus: r1-node1, role: master, fabric_port: 5, provenance: vendor-document, sources: ["108-0170-001 Figure 6-2 and Table 6-1 printed page 6-3 PDF page 97 mapping visually verified"]}
+      - {component: node-board-1-hub, bus: r1-node1, role: endpoint, provenance: vendor-document, sources: ["108-0170-001 Figure 6-2 and Table 6-1 printed page 6-3 PDF page 97 mapping visually verified"]}
+      - {component: router-1, bus: r1-node2, role: master, fabric_port: 4, provenance: vendor-document, sources: ["108-0170-001 Figure 6-2 and Table 6-1 printed page 6-3 PDF page 97 mapping visually verified"]}
+      - {component: node-board-2-hub, bus: r1-node2, role: endpoint, provenance: vendor-document, sources: ["108-0170-001 Figure 6-2 and Table 6-1 printed page 6-3 PDF page 97 mapping visually verified"]}
+      - {component: router-1, bus: r1-r2, role: master, fabric_port: 6, provenance: vendor-document, sources: ["108-0170-001 Figure 6-2 and Table 6-1 printed page 6-3 PDF page 97 mapping visually verified"]}
+      - {component: router-2, bus: r1-r2, role: endpoint, fabric_port: 6, provenance: vendor-document, sources: ["108-0170-001 Figure 6-2 and Table 6-1 printed page 6-3 PDF page 97 mapping visually verified"]}
+      - {component: router-2, bus: r2-node3, role: master, fabric_port: 5, provenance: vendor-document, sources: ["108-0170-001 Figure 6-2 and Table 6-1 printed page 6-3 PDF page 97 mapping visually verified"]}
+      - {component: node-board-3-hub, bus: r2-node3, role: endpoint, provenance: vendor-document, sources: ["108-0170-001 Figure 6-2 and Table 6-1 printed page 6-3 PDF page 97 mapping visually verified"]}
+      - {component: router-2, bus: r2-node4, role: master, fabric_port: 4, provenance: vendor-document, sources: ["108-0170-001 Figure 6-2 and Table 6-1 printed page 6-3 PDF page 97 mapping visually verified"]}
+      - {component: node-board-4-hub, bus: r2-node4, role: endpoint, provenance: vendor-document, sources: ["108-0170-001 Figure 6-2 and Table 6-1 printed page 6-3 PDF page 97 mapping visually verified"]}
+      - {component: node-board-3-hub, bus: xbow0-node3, role: endpoint, widget: 10, xio: {physical_port: 2}, provenance: vendor-document, sources: ["sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf Crossbow example and port table printed pages 249-250 PDF pages 251-252"]}
+      - {component: node-board-4-hub, bus: xbow1-node4, role: endpoint, widget: 9, xio: {physical_port: 1}, provenance: vendor-document, sources: ["sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf Crossbow example and port table printed pages 249-250 PDF pages 251-252"]}
+      - {component: module-msc, bus: module-management-i2c, role: master, i2c_address: 8, provenance: derived, sources: ["docs/datasheets/origin2000-module-management.md"]}
+      - {component: module-management-nvram, bus: module-management-i2c, role: endpoint, i2c_address: 80, i2c_address_count: 8, provenance: derived, sources: ["docs/datasheets/origin2000-module-management.md"]}
+      - {component: node-board-1-hub, bus: xbow0-node1, role: endpoint, widget: 9, xio: {physical_port: 1}, provenance: vendor-document, sources: ["sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf Crossbow example and port table printed pages 249-250 PDF pages 251-252"]}
+      - {component: baseio-bridge, bus: xbow0-io1, role: bridge-upstream, controlled_by: node-board-1-node-board, widget: 8, xio: {physical_port: 0}, provenance: vendor-document, sources: ["sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf Crossbow example and port table printed pages 249-250 PDF pages 251-252"], notes: BaseIO is fixed at IO1; Bridge is the board's upstream Crossbow endpoint.}
+      - {component: xio-slot-3, bus: xbow0-io3, role: endpoint, controlled_by: node-board-1-node-board, widget: 15, xio: {physical_port: 7}, provenance: vendor-document, sources: ["sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf Crossbow example and port table printed pages 249-250 PDF pages 251-252", "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf Table 41 printed page 130 PDF page 132: the four-node quadrants"]}
+      - {component: xio-slot-5, bus: xbow0-io5, role: endpoint, controlled_by: node-board-1-node-board, widget: 14, xio: {physical_port: 6}, provenance: vendor-document, sources: ["sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf Crossbow example and port table printed pages 249-250 PDF pages 251-252", "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf Table 41 printed page 130 PDF page 132: the four-node quadrants"]}
+      - {component: xio-slot-2, bus: xbow0-io2, role: endpoint, controlled_by: node-board-3-node-board, widget: 12, xio: {physical_port: 4}, provenance: vendor-document, sources: ["sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf Crossbow example and port table printed pages 249-250 PDF pages 251-252", "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf Table 41 printed page 130 PDF page 132: the four-node quadrants"]}
+      - {component: xio-slot-4, bus: xbow0-io4, role: endpoint, controlled_by: node-board-3-node-board, widget: 11, xio: {physical_port: 3}, provenance: vendor-document, sources: ["sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf Crossbow example and port table printed pages 249-250 PDF pages 251-252", "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf Table 41 printed page 130 PDF page 132: the four-node quadrants"]}
+      - {component: xio-slot-6, bus: xbow0-io6, role: endpoint, controlled_by: node-board-3-node-board, widget: 13, xio: {physical_port: 5}, provenance: vendor-document, sources: ["sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf Crossbow example and port table printed pages 249-250 PDF pages 251-252", "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf Table 41 printed page 130 PDF page 132: the four-node quadrants"]}
+      - {component: xio-slot-8, bus: xbow1-io8, role: endpoint, controlled_by: node-board-4-node-board, widget: 11, xio: {physical_port: 3}, provenance: vendor-document, sources: ["sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf Crossbow example and port table printed pages 249-250 PDF pages 251-252", "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf Table 41 printed page 130 PDF page 132: the four-node quadrants"]}
+      - {component: xio-slot-10, bus: xbow1-io10, role: endpoint, controlled_by: node-board-4-node-board, widget: 12, xio: {physical_port: 4}, provenance: vendor-document, sources: ["sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf Crossbow example and port table printed pages 249-250 PDF pages 251-252", "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf Table 41 printed page 130 PDF page 132: the four-node quadrants"]}
+      - {component: xio-slot-12, bus: xbow1-io12, role: endpoint, controlled_by: node-board-4-node-board, widget: 13, xio: {physical_port: 5}, provenance: vendor-document, sources: ["sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf Crossbow example and port table printed pages 249-250 PDF pages 251-252", "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf Table 41 printed page 130 PDF page 132: the four-node quadrants"]}
+      - {component: node-board-1-hub, bus: null-router, role: master, provenance: vendor-document, sources: ["007-3439-002 printed page 57 PDF page 71"]}
+      - {component: node-board-2-hub, bus: null-router, role: endpoint, provenance: vendor-document, sources: ["007-3439-002 printed page 57 PDF page 71"]}
+      - {component: node-board-2-hub, bus: xbow1-node2, role: endpoint, widget: 10, xio: {physical_port: 2}, provenance: vendor-document, sources: ["sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf Crossbow example and port table printed pages 249-250 PDF pages 251-252"]}
+      - {component: xio-slot-7, bus: xbow1-io7, role: endpoint, controlled_by: node-board-2-node-board, widget: 14, xio: {physical_port: 6}, provenance: vendor-document, sources: ["sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf Crossbow example and port table printed pages 249-250 PDF pages 251-252", "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf Table 41 printed page 130 PDF page 132: the four-node quadrants"]}
+      - {component: xio-slot-9, bus: xbow1-io9, role: endpoint, controlled_by: node-board-2-node-board, widget: 15, xio: {physical_port: 7}, provenance: vendor-document, sources: ["sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf Crossbow example and port table printed pages 249-250 PDF pages 251-252", "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf Table 41 printed page 130 PDF page 132: the four-node quadrants"]}
+      - {component: xio-slot-11, bus: xbow1-io11, role: endpoint, controlled_by: node-board-2-node-board, widget: 8, xio: {physical_port: 0}, provenance: vendor-document, sources: ["sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf Crossbow example and port table printed pages 249-250 PDF pages 251-252", "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf Table 41 printed page 130 PDF page 132: the four-node quadrants"]}
+      - {component: baseio-bridge, bus: baseio-pci, role: bridge-downstream, provenance: vendor-document, sources: ["108-0175-001 Figure 5 and configuration rules printed pages 6-8 PDF pages 20-22 mapping trusted; 007-3439-002 Figure 2-25 printed page 69 PDF page 83 mapping trusted"]}
+      - {component: baseio-ioc3, bus: baseio-pci, role: endpoint, provenance: vendor-document, sources: ["108-0175-001 Figure 5 and configuration rules printed pages 6-8 PDF pages 20-22 mapping trusted; 007-3439-002 Figure 2-25 printed page 69 PDF page 83 mapping trusted"], notes: The public board diagram does not establish a universal PCI device number., pci_device: 2, pci_function: 0}
+      - {component: baseio-scsi-0, bus: baseio-pci, role: endpoint, provenance: vendor-document, sources: ["108-0175-001 Figure 5 and configuration rules printed pages 6-8 PDF pages 20-22 mapping trusted; 007-3439-002 Figure 2-25 printed page 69 PDF page 83 mapping trusted"], notes: The controller's exact part identity and PCI device number are not asserted here., pci_device: 0, pci_function: 0}
+      - {component: baseio-scsi-1, bus: baseio-pci, role: endpoint, provenance: vendor-document, sources: ["108-0175-001 Figure 5 and configuration rules printed pages 6-8 PDF pages 20-22 mapping trusted; 007-3439-002 Figure 2-25 printed page 69 PDF page 83 mapping trusted"], notes: The controller's exact part identity and PCI device number are not asserted here., pci_device: 1, pci_function: 0}
+    interrupts:
+      - id: baseio-ioc3-to-bridge
+        source: baseio-ioc3
+        provenance: public-header
+        sources: ["linux:db2ddb87143519e20a95aa36c60b36107b736a58 arch/mips/pci/pci-xtalk-bridge.c BaseIO PCI device 2 interrupt mapping selects Bridge input 4."]
+        chain:
+          - {at: baseio-bridge, mechanism: level, as: interrupt pin 4}

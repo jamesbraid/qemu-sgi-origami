@@ -1,0 +1,213 @@
+layer_version: 1
+layer:
+  kind: product
+  id: origin2000-rack
+  requires:
+    assembly: ip27
+  topology:
+    min_nodes: 1
+    max_nodes: 4
+    provenance: derived
+    sources: ["007-3439-002 Memory Specifications printed page 35 PDF page 49; 108-0170-001 printed page 1-4 PDF page 18", "007-3456-003 printed page 20 PDF page 40: a single-rack system can have between one and eight Node boards"]
+    supported_cpu_populations:
+    - [2, 2, 2, 2]
+    # One row per fitted node count, in SGI's fill order. Every row keeps
+    # the module's two Standard Routers but the one-node row, which needs
+    # none; docs/datasheets/origin2000-module.md, Node-board populations,
+    # grades each fact.
+    node_populations:
+    - node_slots: [1]
+      routers: []
+      fabric_links: []
+      xio_slots: {pci-expansion: 1, xio-slot-3: 1, xio-slot-4: 1, xio-slot-5: 1, xio-slot-6: 1}
+      supported_cpu_populations: [[2], [1]]
+      grade: inferred
+      sources: ["007-3456-003 printed page 30 PDF page 50: a module with only one Node board needs no Router", "007-3456-003 printed page 20 PDF page 40: with only one Node board, only XIO slots 1 through 6 are activated"]
+      notes: >-
+        The manual says a one-node module needs no Router, not that a rack
+        module ships without one; no capture of a one-node rack module is
+        held, so leaving both Router slots empty is inferred.
+    - node_slots: [1, 2]
+      routers: [router-1, router-2]
+      fabric_links: [r1-node1, r1-node2, r1-r2]
+      xio_slots: {pci-expansion: 1, xio-slot-3: 1, xio-slot-4: 1, xio-slot-5: 1, xio-slot-6: 1, xio-slot-7: 2, xio-slot-8: 2, xio-slot-9: 2, xio-slot-10: 2, xio-slot-11: 2, xio-slot-12: 2}
+      supported_cpu_populations: [[2, 2], [1, 1], [2, 1]]
+      grade: established
+      sources: ["sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf Table 41 printed page 130 PDF page 132: in a 2-node system N1 controls IO1-IO6 and N2 IO7-IO12", "docs/datasheets/origin2000-module.md Node-board populations: the true-wombat rack capture's two-node module keeps both Routers"]
+    - node_slots: [1, 2, 3]
+      routers: [router-1, router-2]
+      fabric_links: [r1-node1, r1-node2, r1-r2, r2-node3]
+      xio_slots: {pci-expansion: 3, xio-slot-3: 1, xio-slot-4: 3, xio-slot-5: 1, xio-slot-6: 3, xio-slot-7: 2, xio-slot-8: 2, xio-slot-9: 2, xio-slot-10: 2, xio-slot-11: 2, xio-slot-12: 2}
+      supported_cpu_populations: [[2, 2, 2], [1, 1, 1], [2, 1, 1], [2, 2, 1]]
+      grade: inferred
+      sources: ["docs/datasheets/origin2000-module.md Node-board populations: the joint-buck capture boots PROM 6.156 on node slots 1-3 with both Routers", "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf Table 41 printed page 130 PDF page 132: the four-node quadrants"]
+      notes: >-
+        Which node controls IO8, IO10 and IO12 with node board 4 absent
+        is inferred: node 2 is the only Hub on Crossbow 1.
+    - node_slots: [1, 2, 3, 4]
+      routers: [router-1, router-2]
+      fabric_links: [r1-node1, r1-node2, r1-r2, r2-node3, r2-node4]
+      xio_slots: {pci-expansion: 3, xio-slot-3: 1, xio-slot-4: 3, xio-slot-5: 1, xio-slot-6: 3, xio-slot-7: 2, xio-slot-8: 4, xio-slot-9: 2, xio-slot-10: 4, xio-slot-11: 2, xio-slot-12: 4}
+      supported_cpu_populations: [[2, 2, 2, 2], [1, 1, 1, 1], [2, 1, 1, 1], [2, 2, 1, 1], [2, 2, 2, 1]]
+      grade: established
+      sources: ["108-0170-001 Figure 6-2 and Table 6-1 printed page 6-3 PDF page 97 mapping visually verified", "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf Table 41 printed page 130 PDF page 132: the four-node quadrants", "docs/datasheets/origin2000-module.md Node-board populations: the joint-buck capture's IRIX hinv lists four Hubs and both Routers, each with active ports 4, 5 and 6"]
+  population:
+    nodes: 4
+    cpus_per_node:
+    - 2
+    - 2
+    - 2
+    - 2
+    provenance: derived
+    sources: ["007-3439-002 Memory Specifications printed page 35 PDF page 49; 108-0170-001 printed page 1-4 PDF page 18"]
+  cpu_selection:
+    default: {clock_mhz: 180, cache_mib: 1}
+    slots: [node-board-1-cpu-a, node-board-1-cpu-b, node-board-2-cpu-a, node-board-2-cpu-b,
+      node-board-3-cpu-a, node-board-3-cpu-b, node-board-4-cpu-a, node-board-4-cpu-b]
+  memory_kits_per_node: [kit-64, kit-64, kit-64, kit-64]
+  data:
+    machine:
+      name: Origin 2000 rack module
+      model_role: emulation-target
+      notes: Selected installation with two processors and one 64 MiB bank per node. Optional
+        I/O slots and external CrayLink connectors are empty. This is a selected population,
+        not a captured machine inventory. Selected hardware configuration. The full processor
+        mode word is not the full CP0 Config register; only the reviewed low 25 bits transfer.
+        Stock image configuration must agree and is never rewritten by descriptor generation.
+      firmware_config:
+        cpu_clock_hz: 180000000
+        hub_clock_hz: 90000000
+        processor_reset_mode:
+          kseg0_cache_algorithm: cacheable-coherent-exclusive-on-write
+          processor_device_number: 0
+          coherent_request_target: external-agent
+          processor_eliminate_requests: false
+          maximum_outstanding_processor_requests: 4
+          system_clock_divisor: 2
+          secondary_cache_block_words: 32
+          secondary_cache_error_correction: retry-access-through-corrector
+          memory_endianness: big
+          secondary_cache_size_kib: 1024
+          secondary_cache_clock_divisor: 1.5
+          secondary_cache_clock_tap: 9
+          open_drain_system_interface: false
+          cache_test_mode: false
+        machine_type: 0
+        flash_read_cycles: 8
+        flash_write_cycles: 1
+        provenance: derived
+        sources: ["docs/datasheets/origin2000-cpu-reset-mode.md selects the documented 180 MHz R10000, 90 MHz Hub, 1 MiB cache composition matching the unchanged stock mode word.", "docs/reviews/origin2000-firmware-configuration-review-20260905.md independently cleared the stock firmware record and flash controller fields.", "docs/datasheets/hub-processor-interface.md shared RTC contract specifies 1250000 Hz."]
+      emulation:
+        machine_name: origin2000
+        display_description: SGI Origin 2000 rack module
+        profile: origin2000-rack
+        lifecycle: implemented
+        emulator_constraints:
+          accepted_bank_sizes_mib:
+          - 64
+        initially_operational_crossbow_links:
+        - component: crossbow-0
+          widgets: [8, 9, 10]
+          reason: >-
+            Static emulator startup health for the fitted BaseIO and two Hub
+            links.
+            Machine launch and whole-machine reset reapply it; migration restores
+            runtime link state instead. This does not model Crossbow training or
+            establish diagnostic acceptance.
+        - component: crossbow-1
+          widgets: [9, 10]
+          reason: >-
+            Static emulator startup health for the two fitted Hub links. Machine
+            launch and whole-machine reset reapply it; migration restores runtime
+            link state instead. This does not model Crossbow training or establish
+            diagnostic acceptance.
+        hub_ni_revision_overrides:
+        - component: node-board-1-hub
+          ni_revision: 5
+          reason: >-
+            Stock Origin 2000 inventories report Hub revision code 5: the
+            two-node Origin 2200 capture model-toad (an 8P12_MPLN module
+            with no graphics) prints HUB Revision 5 on both node slots, and
+            no stock capture shows code 3. The reusable node-board module's
+            code 3 (Hub 2.1, the earliest IRIX 6.5.30 accepts) stays the
+            baseline for products this override does not name.
+        - component: node-board-2-hub
+          ni_revision: 5
+          reason: Matches node-board-1-hub; a module's Hubs share one manufactured revision.
+        - component: node-board-3-hub
+          ni_revision: 5
+          reason: Matches node-board-1-hub; a module's Hubs share one manufactured revision.
+        - component: node-board-4-hub
+          ni_revision: 5
+          reason: Matches node-board-1-hub; a module's Hubs share one manufactured revision.
+        initial_module_numbers:
+        - component: compute-module
+          number: 1
+          reason: >-
+            Selected initial identity for this emulated installation. This value is
+            not a measured or factory-default module number.
+        module_semantic_serials:
+        - component: compute-module
+          serial: SGIMODULE1
+          reason: Stable synthetic module identity for this selected emulated installation.
+        module_responder_identities:
+        - component: node-board-1-hub
+          serial: '0x100000000009'
+          reason: Stable synthetic node-local module responder identity.
+        - component: node-board-2-hub
+          serial: '0x10000000000a'
+          reason: Stable synthetic node-local module responder identity.
+        - component: node-board-3-hub
+          serial: '0x10000000000b'
+          reason: Stable synthetic node-local module responder identity.
+        - component: node-board-4-hub
+          serial: '0x10000000000c'
+          reason: Stable synthetic node-local module responder identity.
+        synthetic_identities:
+        - component: node-board-1-hub
+          serial: '0x100000000001'
+          reason: Stable synthetic identity for this selected physical component; not hardware
+            evidence.
+        - component: node-board-2-hub
+          serial: '0x100000000002'
+          reason: Stable synthetic identity for this selected physical component; not hardware
+            evidence.
+        - component: node-board-3-hub
+          serial: '0x100000000003'
+          reason: Stable synthetic identity for this selected physical component; not hardware
+            evidence.
+        - component: node-board-4-hub
+          serial: '0x100000000004'
+          reason: Stable synthetic identity for this selected physical component; not hardware
+            evidence.
+        - component: router-1
+          serial: '0x100000000005'
+          reason: Stable synthetic identity for this selected physical component; not hardware
+            evidence.
+        - component: router-2
+          serial: '0x100000000006'
+          reason: Stable synthetic identity for this selected physical component; not hardware
+            evidence.
+        - component: baseio-bridge
+          serial: '0x100000000007'
+          reason: Stable synthetic identity for this selected physical component; not hardware
+            evidence.
+        - component: baseio-ioc3
+          serial: '0x100000000008'
+          reason: Stable synthetic identity for this selected physical component; not hardware
+            evidence.
+      harness:
+        console: ioc3-serial-a
+        prom_dialogue: ip27-menu
+        default_cpu_model: R10000
+        disk_bus: scsi.0
+        netboot_adapter: ioc3-ethernet
+        default_firmware_asset: assets/firmware/6.5.30/ip27prom.payload.bin
+        default_topology: four-node-module
+        requires_per_node_flash: true
+        has_managed_boot_flash: false
+        supported_guests: [irix]
+        install_media: [disk-image]
+        provenance: derived
+        sources: ["tools/origami_lib/node_prom.py: node_prom_drives, the harness's own requirement that every launch seed four independent node flash images because the machine takes no -bios", "tools/origami_lib/launch.py: select_launch_profile's origin2000 branch, requires_node_proms=True", "tools/origami_lib/irix.py: run irix's --machine choices name origin200, origin2000 and origin300 for IRIX only; run sash and run mdk restrict --machine to origin200 and origin2000"]
+    evidence_policy: strict

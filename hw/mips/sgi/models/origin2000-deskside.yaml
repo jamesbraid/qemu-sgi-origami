@@ -1,0 +1,28 @@
+# The Origin 2000 deskside: the eight-processor module in a deskside
+# enclosure (docs/datasheets/onyx2.md, Telling an Onyx2 from an Origin 2000),
+# with one to four node boards, the Router boards that count takes, and a
+# plain BaseIO in IO1. A shipped Origin 2000 has no graphics. Launch it with
+# tools/origami run irix --machine origin2000 --topology origin2000-deskside
+# [--nodes N] (QEMU: -M origin2000,topology=origin2000-deskside[,nodes=N]).
+configuration_version: 1
+layers:
+  - layers/architectures/sn0.yaml
+  - layers/assemblies/ip27.yaml
+  - layers/products/origin2000-deskside.yaml
+module_instances:
+  - model: layers/modules/ip27-node-board.yaml
+    prefix: node-board-1-
+    parent: compute-module
+    physical_slot: {kind: node, number: 1}
+  - model: layers/modules/ip27-node-board.yaml
+    prefix: node-board-2-
+    parent: compute-module
+    physical_slot: {kind: node, number: 2}
+  - model: layers/modules/ip27-node-board.yaml
+    prefix: node-board-3-
+    parent: compute-module
+    physical_slot: {kind: node, number: 3}
+  - model: layers/modules/ip27-node-board.yaml
+    prefix: node-board-4-
+    parent: compute-module
+    physical_slot: {kind: node, number: 4}

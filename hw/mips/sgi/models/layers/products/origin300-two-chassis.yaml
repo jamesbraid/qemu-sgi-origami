@@ -1,0 +1,180 @@
+# Two-chassis Origin 300: two full base modules joined by one NUMAlink 3 cable.
+layer_version: 1
+layer:
+  kind: product
+  id: origin300-two-chassis
+  requires: {assembly: ip45}
+  topology:
+    min_nodes: 2
+    max_nodes: 2
+    # Table 1-2 gives four, six or eight processors for the pair, and each
+    # chassis ships two or four (the one-chassis product), so six is one
+    # chassis of each; the guide does not say which, and both placements
+    # are listed.
+    supported_cpu_populations: [[2, 2], [4, 2], [2, 4], [4, 4]]
+    provenance: vendor-document
+    sources: ["007-4365-002 printed page 14, Table 1-2: two-chassis system, 4, 6 or 8 processors and 1 GB to 8 GB", "007-4365-002 printed pages 1 and 10: two or four processors per server"]
+  population:
+    nodes: 2
+    cpus_per_node: [2, 2]
+    provenance: vendor-document
+    sources: ["007-4365-002 printed page 14, Table 1-2: two-chassis system, 4, 6 or 8 processors and 1 GB to 8 GB", "007-4365-002 printed page 38: two servers joined by one NUMAlink 3 cable between their LINK connectors"]
+  cpu_selection:
+    default: {clock_mhz: 500, cache_mib: 2}
+    slots: [cpu0, cpu2, cpu1, cpu3]
+  # Each chassis carries the one-chassis product's 512 MB kit, the smallest
+  # memory Table 1-2 allows for the pair (1 GB). Larger banks wait on the
+  # memory and directory contract for 1 GB banks.
+  memory_kits_per_node: [kit-512-at-banks-2-3, kit-512-at-banks-2-3]
+  data:
+    machine:
+      name: Two-chassis Origin 300
+      model_role: emulation-target
+      notes: >-
+        Two Origin 300 servers cabled LINK connector to LINK connector over one
+        NUMAlink 3 cable, with no router, as the User's Guide's "Connecting Two
+        Servers" procedure builds it: the operator designates one server master
+        and one slave, sets the slave's L1 to brick slot 02 so its module reads
+        001c02 above the master's 001c01, connects the console to the master
+        and sets both L1s' network mode to 422. Each chassis is a complete base
+        module, with its own IP45 node board, Bedrock, processors, memory,
+        XBridge, IO-8 and L1; two posted direct-cabled pairs show every one of
+        those per module (the OpenBSD list capture of 2014 and Nekochan thread
+        17314). The same cable carries the two L1s' RS-422 pair, which routes
+        console and diagnostic data and propagates reset, NMI and power
+        between the chassis (108-0240-002 printed page 2-47). This file fixes
+        no NASID: the stock IP35 PROM numbers the nodes by discovery at every
+        boot, and a routed pair's module 001c01 came up as NASID 1. The master
+        and slave designation is the L1's, not a NASID. Planned: the QEMU
+        family builder still refuses a second Bedrock node, so this topology
+        is not exported to the emulator until the NUMAlink cable between two
+        Bedrocks is modeled.
+      emulation:
+        machine_name: origin300
+        display_description: SGI Origin 300 (IP45), two chassis
+        profile: two-chassis
+        lifecycle: implemented
+        emulator_constraints:
+          accepted_bank_sizes_mib: [512]
+        firmware_payload:
+          argument: -bios
+          path: firmware/6.5.30/ip35prom.payload.bin
+          size: "0x1686a8"
+          sha256: 554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b
+          read_only: true
+          views:
+            - name: CPU reset view
+              address: "0x000_001fc00000"
+              payload_offset: "0x0"
+              size: "0x1686a8"
+            - name: local Hub-special boot view
+              address: "0x100_18000000"
+              payload_offset: "0x0"
+              size: "0x1686a8"
+            - name: bounded high local Hub-special boot view
+              address: "0x100_1fc00000"
+              payload_offset: "0x0"
+              size: "0x1686a8"
+            - name: node-zero remote Hub-special boot view
+              address: "0x100_38000000"
+              payload_offset: "0x0"
+              size: "0x1686a8"
+          second_selection:
+            address: "0x100_1a000000"
+            size: "0x0080_0000"
+          provenance: derived
+          sources: ["docs/library/ip35-source-map.md: measured container, payload, load address, entry address and ten trampolines", "docs/library/origin300-evidence-matrix.md: real IP35 PROM copy from local LBOOT for the exact payload length", "docs/library/origin300-reset-alias-evidence.md: stock firmware preserves the high local LBOOT address and offset", "D-0024: bounded emulator carrier with the physical decoder left unresolved"]
+          notes: >-
+            The one-chassis product's payload and views, carried by each
+            chassis's own node: both servers run the same stock IP35 PROM, and
+            each node's flash answers at its own node's window. Emulator
+            compatibility policy, as on one chassis; no fitted flash part or
+            physical reset decoder is claimed.
+        initial_module_numbers:
+          - component: master-module
+            number: 1
+            reason: >-
+              The master's L1 brick slot, 01, the factory setting the User's
+              Guide leaves it at (module 001c01). Seeds the chassis L1's
+              stored slot, which it reports as the bay of its rack-and-bay
+              reply.
+          - component: slave-module
+            number: 2
+            reason: >-
+              The slave's L1 brick slot, 02, which the User's Guide has the
+              operator set before cabling (module 001c02).
+        synthetic_identities:
+          - component: master-bedrock
+            serial: "0x0d0c0b0a0908"
+            reason: >-
+              Stable synthetic node identity; the master keeps the one-chassis
+              Origin 300's value.
+          - component: master-xbridge
+            serial: "0x0b0a090807"
+            reason: The master's IO-8 identity, the one-chassis Origin 300's value.
+          - component: master-ioc3
+            serial: "0x5e7000000002"
+            reason: The master's IOC3 identity, the one-chassis Origin 300's value.
+          - component: slave-bedrock
+            serial: "0x0d0c0b0a0909"
+            reason: >-
+              Stable synthetic node identity for the slave chassis, one past
+              the master's, as the dual-module Origin 200 strides its second
+              node. The captured pairs show distinct barcodes per module; the
+              values themselves are a model choice.
+          - component: slave-xbridge
+            serial: "0x0b0a090808"
+            reason: The slave's IO-8 identity, one past the master's.
+          - component: slave-ioc3
+            serial: "0x5e7000000003"
+            reason: The slave's IOC3 identity, one past the master's.
+        initially_operational_crossbow_links:
+          - component: master-xbridge-crossbar
+            widgets: [14, 15]
+            reason: >-
+              Static emulator startup health for the master XBridge's two PCI
+              bridge heads, as on one chassis.
+          - component: slave-xbridge-crossbar
+            widgets: [14, 15]
+            reason: >-
+              Static emulator startup health for the slave XBridge's two PCI
+              bridge heads, as on one chassis.
+    evidence_policy: strict
+    components:
+      - id: master-module
+        name: Origin 300 master server (module 001c01)
+        kind: module
+        provenance: vendor-document
+        description: >-
+          The server the operator designates master: console attached here,
+          L1 brick slot left at 01.
+        sources: ["007-4365-002 printed page 38: designate one server master and one slave; console on the master", "boot-logs/openbsd-sgi-list/marc-139223952727384-origin-300-numalink-1.html lines 17 to 62: IP35 Node Board, Module 001c01 and Module 001c02"]
+      - id: slave-module
+        name: Origin 300 slave server (module 001c02)
+        kind: module
+        provenance: vendor-document
+        description: >-
+          The server the operator designates slave, its L1 set to brick slot
+          02 before cabling. The slot is the L1's stored setting, reported as
+          the bay of its rack-and-bay reply, and becomes this module's
+          initial_module_numbers entry once the target is implemented (the
+          policy is refused on a planned target).
+        sources: ["007-4365-002 printed page 38: brick slot 02 on the slave's L1 before connecting the servers", "boot-logs/nekonomicon-thread-17314-origin300-8cpu-hinv-prom.html: IRIX hinv of a cabled pair, modules 001c01 and 001c02 each with a node, four processors and IO-8 at xtalk 14 and 15; the 001c02 L1's cfg v lists 001c01 as the attached C"]
+    buses:
+      - id: numalink-cable
+        name: NUMAlink 3 cable, master LINK connector to slave LINK connector
+        kind: fabric
+        master: master-bedrock
+        link: {kind: cable}
+        provenance: vendor-document
+        sources: ["007-4365-002 printed page 38: connect the NUMAlink 3 cable to the LINK connectors on both servers", "007-4365-002 printed page 8: the LINK connector connects the server to another SGI Origin 300", "108-0240-002 printed page 2-47: without an R brick the NUMAlink 3 cable links the two compute bricks and carries the L1s' RS-422 pair"]
+        notes: >-
+          The point-to-point link between the two Bedrocks' network-interface
+          ports. Each chassis's own numalink bus still carries its port out to
+          its LINK connector; this cable joins the two connectors. "cable" is
+          the direct Bedrock-to-Bedrock form; no router is present. The two
+          L1s' RS-422 pair in the same cable is a controller link, not a
+          fabric one, and is not a bus here.
+    connections:
+      - {component: master-bedrock, bus: numalink-cable, role: master, provenance: vendor-document, sources: ["007-4365-002 printed page 38: connect the NUMAlink 3 cable to the LINK connectors on both servers"]}
+      - {component: slave-bedrock, bus: numalink-cable, role: endpoint, provenance: vendor-document, sources: ["007-4365-002 printed page 38: connect the NUMAlink 3 cable to the LINK connectors on both servers"]}

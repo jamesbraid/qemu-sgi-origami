@@ -1,0 +1,138 @@
+model_version: 1
+evidence_policy: strict
+composition:
+  architecture: sn0
+  platform: ip27
+  assembly: ip29
+  product: origin200
+  layers:
+    - {kind: architecture, id: sn0}
+    - {kind: assembly, id: ip29}
+    - {kind: product, id: origin200}
+  topology:
+    min_nodes: 1
+    max_nodes: 2
+    supported_cpu_populations:
+      - [1]
+      - [2]
+      - total_cpus: 3
+        nodes: 2
+        node_counts: [1, 2]
+        orientation: unspecified
+      - [2, 2]
+    provenance: vendor-document
+    sources: [Origin 200 Owner's Guide]
+  population:
+    nodes: 1
+    cpus_per_node: [1]
+    memory_mib_per_node: [64]
+    provenance: vendor-document
+    sources: [Origin 200 Owner's Guide]
+  limits:
+    nodes: 2
+    cpus_per_node: 2
+    dimms_per_node: 8
+    provenance: derived
+    sources: [Task 5 synthetic target fixture]
+machine:
+  name: Origin 200
+  generation: SN0
+  board_ip: IP29
+  architecture_ip: IP27
+  kernel_ip: IP27
+  model_role: emulation-target
+  emulation:
+    machine_name: origin200
+    display_description: Fixture Origin 200
+    profile: base
+    lifecycle: planned
+processors:
+  - part: r10000
+    variants: [{clock_mhz: 180, cache_mib: 1}]
+    provenance: derived
+    sources: ["test fixture"]
+space_selection:
+  mechanism: not-traced
+address_spaces:
+  - id: xio
+    name: XIO
+components:
+  - id: tower
+    name: Tower chassis
+    kind: chassis
+    provenance: vendor-document
+  - id: module
+    name: CPU module
+    kind: module
+    provenance: vendor-document
+    parent: tower
+  - id: system-board
+    name: IP29 System Board
+    kind: board
+    provenance: vendor-document
+    parent: module
+  - id: hub
+    name: Hub
+    kind: node-asic
+    provenance: vendor-document
+    parent: system-board
+    node_asic: {processor_interfaces: 1, cpus_per_interface: 2}
+  - id: bridge
+    name: Bridge
+    kind: pci-host-bridge
+    provenance: vendor-document
+    parent: system-board
+    pci_host_bridge: {heads: 1}
+  - id: isp0
+    name: QLogic ISP1040 0
+    kind: storage-hba
+    provenance: vendor-document
+    parent: system-board
+  - id: isp1
+    name: QLogic ISP1040 1
+    kind: storage-hba
+    provenance: vendor-document
+    parent: system-board
+buses:
+  - id: xio
+    name: Direct XIO link
+    kind: xio
+    master: hub
+    provenance: vendor-document
+    sources: [Origin 200 Owner's Guide]
+connections:
+  - component: hub
+    bus: xio
+    role: master
+    provenance: vendor-document
+    sources: [Origin 200 Owner's Guide]
+  - component: bridge
+    bus: xio
+    role: endpoint
+    provenance: vendor-document
+    sources: [Origin 200 Owner's Guide]
+    xio:
+      physical_attachment: direct-link
+      discovery_widget: 0
+      enumerated_widget: 8
+      master_widget: 10
+      decoded_widgets: [0, 2, 8]
+      identity_aliases:
+        - {widget: 0, roles: [discovery, decoded]}
+        - {widget: 8, roles: [enumerated, decoded]}
+interrupts:
+  - id: scsi0
+    source: isp0
+    provenance: vendor-document
+    sources: [Bridge specification]
+    chain: &shared_irq
+      - at: bridge
+        as: PCI interrupt pin A
+      - at: hub
+        as: pending bit
+        mechanism: xio-write
+  - id: scsi1
+    source: isp1
+    provenance: vendor-document
+    sources: [Bridge specification]
+    chain: *shared_irq

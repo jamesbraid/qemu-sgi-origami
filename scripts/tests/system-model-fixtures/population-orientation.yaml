@@ -1,0 +1,62 @@
+model_version: 1
+evidence_policy: strict
+composition:
+  architecture: sn0
+  platform: ip27
+  assembly: ip29
+  product: origin200
+  layers:
+    - {kind: architecture, id: sn0}
+    - {kind: assembly, id: ip29}
+    - {kind: product, id: origin200}
+  topology:
+    min_nodes: 1
+    max_nodes: 2
+    supported_cpu_populations:
+      - total_cpus: 3
+        nodes: 2
+        node_counts: [1, 2]
+        orientation: unspecified
+    provenance: vendor-document
+    sources: [Origin 200 Owner's Guide]
+  population:
+    nodes: 2
+    cpus_per_node: [1, 2]
+    memory_mib_per_node: [64, 64]
+    provenance: vendor-document
+    sources: [Origin 200 Owner's Guide]
+  limits:
+    nodes: 2
+    cpus_per_node: 2
+    dimms_per_node: 8
+    provenance: derived
+    sources: [Task 5 synthetic population fixture]
+machine:
+  name: Origin 200 population reference
+  generation: SN0
+  board_ip: IP29
+  architecture_ip: IP27
+  kernel_ip: IP27
+  model_role: reference
+processors:
+  - part: r10000
+    variants: [{clock_mhz: 180, cache_mib: 1}]
+    provenance: derived
+    sources: ["test fixture"]
+space_selection: {mechanism: not-traced}
+address_spaces: [{id: xio, name: XIO}]
+components:
+  - {id: hub, name: Hub, kind: node-asic, provenance: vendor-document, node_asic: {processor_interfaces: 1, cpus_per_interface: 2}}
+buses:
+  - id: xio
+    name: XIO
+    kind: xio
+    master: hub
+    provenance: derived
+    sources: [Task 5 synthetic population fixture]
+connections:
+  - component: hub
+    bus: xio
+    role: master
+    provenance: derived
+    sources: [Task 5 synthetic population fixture]

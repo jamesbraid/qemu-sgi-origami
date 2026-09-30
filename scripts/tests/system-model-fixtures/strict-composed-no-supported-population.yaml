@@ -1,0 +1,62 @@
+model_version: 1
+evidence_policy: strict
+composition:
+  architecture: sn0
+  platform: ip27
+  assembly: ip29
+  product: strict-product
+  layers:
+    - {kind: architecture, id: sn0}
+    - {kind: assembly, id: ip29}
+    - {kind: product, id: strict-product}
+  topology:
+    min_nodes: 1
+    max_nodes: 2
+    provenance: derived
+    sources: [Task 5 strict population fixture]
+  population:
+    nodes: 1
+    cpus_per_node: [1]
+    memory_mib_per_node: [64]
+    provenance: derived
+    sources: [Task 5 strict population fixture]
+  limits:
+    nodes: 2
+    cpus_per_node: 2
+    dimms_per_node: 8
+    provenance: derived
+    sources: [Task 5 strict population fixture]
+machine:
+  name: Strict composed target
+  generation: SN0
+  board_ip: IP29
+  architecture_ip: IP27
+  kernel_ip: IP27
+  model_role: emulation-target
+  emulation:
+    machine_name: strict-composed
+    display_description: Strict composed target
+    profile: base
+    lifecycle: planned
+processors:
+  - part: r10000
+    variants: [{clock_mhz: 180, cache_mib: 1}]
+    provenance: derived
+    sources: ["test fixture"]
+space_selection: {mechanism: not-traced}
+address_spaces: [{id: xio, name: XIO}]
+components:
+  - {id: hub, name: Hub, kind: node-asic, provenance: vendor-document, node_asic: {processor_interfaces: 1, cpus_per_interface: 2}}
+buses:
+  - id: xio
+    name: XIO
+    kind: xio
+    master: hub
+    provenance: derived
+    sources: [Task 5 strict population fixture]
+connections:
+  - component: hub
+    bus: xio
+    role: master
+    provenance: derived
+    sources: [Task 5 strict population fixture]

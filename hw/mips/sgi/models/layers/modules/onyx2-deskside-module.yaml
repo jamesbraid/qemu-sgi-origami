@@ -1,0 +1,129 @@
+# The Onyx2 deskside chassis (CMN A015) on its own 4P1G5_MPLN midplane:
+# two node slots joined by a Null Router, one Crossbow, a BaseIO-G fixed in
+# XIO slot 1, four more XIO slots numbered 2, 3, 5 and 6, and the graphics
+# board set, whose geometry board takes XIO slot 4 directly with no Ktown
+# (docs/datasheets/onyx2.md, Deskside). The Crossbow's widget-to-slot table
+# exists only for this chassis: widget 8 is io4, 9 is n2, A is n1, B io2,
+# C io6, D io5, E io3 and F io1.
+#
+# A composition fits the two ip27-node-board.yaml instances itself, as
+# node-board-1 and node-board-2 in node slots 1 and 2. Each instance's
+# physical_slot states the Hub slot bits this midplane drives, 3 for n1 and
+# 2 for n2, where the eight-processor module drives 7 to 4; firmware and
+# IRIX decode 3 and 2 as the deskside's own slot codes 0x51 and 0x52. The
+# Null Router is a midplane link with no Router ASIC behind it: no
+# inventory lists it, so it is a `null-router` link between the two Hubs
+# and not a Router component.
+layer_version: 1
+sources:
+  onyx2-deskside-module-management: "docs/datasheets/origin2000-module-management.md"
+layer:
+  kind: module
+  id: onyx2-deskside-module
+  requires:
+    assembly: ip27
+  data:
+    components:
+      - {id: onyx2-chassis, name: Onyx2 deskside chassis, kind: chassis, provenance: vendor-document, sources: ["007-3454-005 printed pages 1-2 PDF pages 19-20: model CMN A015, one or two node boards"]}
+      - {id: compute-module, name: Onyx2 deskside module, kind: module, provenance: vendor-document, parent: onyx2-chassis, sources: ["007-3454-005 printed pages 1-2 PDF pages 19-20"]}
+      - id: module-midplane
+        name: 4P1G5 deskside midplane
+        kind: board
+        parent: compute-module
+        provenance: datasheet
+        sources: ["docs/datasheets/onyx2.md Product identity: 4P1G5_MPLN, part 013-1839-001, from the real deskside board lists"]
+        notes: >-
+          Part 013-1839-001 in the real deskside board lists. The model
+          presents no midplane record.
+      - {id: crossbow-0, name: Crossbow, kind: crossbar, hardware_kind: xbow, crossbar: {kind: xbow}, identity: {widget_part: "0x0", widget_mfg: "0x0", widget_revision: 2, notes: "Select Crossbow 1.1, the earliest revision accepted by IRIX 6.5.30; not a captured chassis revision."}, datasheet_contracts: [docs/datasheets/xbow.md], provenance: datasheet, parent: module-midplane, sources: ["docs/datasheets/onyx2.md Widget-to-slot map: a deskside has one Crossbow"]}
+      - {id: baseio, name: BaseIO-G board in IO1, kind: board, identity: {part: "030-0734-002", notes: "The BaseIO-G base board part in the real deskside board lists; docs/datasheets/baseio.md, BaseIO-G and MediaIO boundary."}, provenance: vendor-document, parent: module-midplane, physical_slot: {kind: io, number: 1}, sources: ["007-3454-005 printed page 24 PDF page 42: the BaseIO-G stays in XIO slot 1"]}
+      - {id: baseio-bridge, name: Bridge, kind: pci-host-bridge, hardware_kind: bridge, pci_host_bridge: {heads: 1}, identity: {widget_part: "0xc002", widget_mfg: "0x36", widget_revision: 4, notes: "Select Bridge D; encodings independently cleared in docs/reviews/origin2000-component-revision-encoding-review-20260905.md."}, datasheet_contracts: [docs/datasheets/bridge.md], provenance: datasheet, parent: baseio, sources: ["docs/datasheets/baseio.md"]}
+      - {id: baseio-ioc3, name: IOC3, kind: io-controller, hardware_kind: ioc3, identity: {pci_revision: 1, notes: "Select the revision 1 component supported by docs/datasheets/ioc3.md; subsystem compatibility is a separate software policy."}, datasheet_contracts: [docs/datasheets/ioc3.md], provenance: datasheet, parent: baseio, sources: ["docs/datasheets/baseio.md"]}
+      - {id: baseio-scsi-0, name: SCSI controller 0, kind: storage-hba, hardware_kind: isp1040, identity: {pci_revision: 5, hardware_revision: 6, clock_mhz: 60, notes: "Select ISP1040C-compatible behavior cleared in docs/reviews/origin2000-scsi-component-selection-review-20260905.md; not a historical package identification."}, datasheet_contracts: [docs/datasheets/isp1040.md], provenance: datasheet, parent: baseio, sources: ["docs/datasheets/baseio.md"]}
+      - {id: baseio-scsi-1, name: SCSI controller 1, kind: storage-hba, hardware_kind: isp1040, identity: {pci_revision: 5, hardware_revision: 6, clock_mhz: 60, notes: "Select ISP1040C-compatible behavior cleared in docs/reviews/origin2000-scsi-component-selection-review-20260905.md; not a historical package identification."}, datasheet_contracts: [docs/datasheets/isp1040.md], provenance: datasheet, parent: baseio, sources: ["docs/datasheets/baseio.md"]}
+      - {id: baseio-superio, name: Super I/O, kind: io-controller, parent: baseio-ioc3, provenance: derived, description: Separate serial support component on IOC3 byte bus., datasheet_contracts: [docs/datasheets/ioc3.md]}
+      - {id: baseio-serial-a, name: Serial port A, kind: subfunction, parent: baseio-superio, provenance: derived, hardware_kind: ioc3-serial-a}
+      - {id: baseio-serial-b, name: Serial port B, kind: subfunction, parent: baseio-superio, provenance: derived, hardware_kind: ioc3-serial-b}
+      - {id: baseio-ethernet, name: Ethernet MAC, kind: subfunction, parent: baseio-ioc3, provenance: derived, hardware_kind: ioc3-ethernet}
+      - {id: baseio-timekeeper, name: 32 KiB Timekeeper, kind: rtc, parent: baseio-ioc3, provenance: derived, hardware_kind: ioc3-timekeeper, description: 'Select the reviewed Timekeeper class, directly addressed on IOC3 byte select 0; no alternative indexed clock.', datasheet_contracts: [docs/datasheets/timekeeper.md]}
+      - {id: baseio-ioc3-nic, name: IOC3 identity path, kind: subfunction, parent: baseio-ioc3, provenance: derived, hardware_kind: ioc3-onewire-identity}
+      - {id: baseio-ioc3-ssram, name: 64K by 18 SSRAM, kind: memory, parent: baseio-ioc3, provenance: derived, description: Published board-local support memory; separate from system RAM.}
+      - {id: baseio-bridge-flash, datasheet_contracts: [docs/datasheets/baseio.md], name: 1 MiB Bridge flash EPROM, kind: flash, parent: baseio-bridge, provenance: derived, description: Published board-local flash with serial-number region. Exact part and register decode are not selected by the node boot-flash contract.}
+      - {id: baseio-bridge-nic, name: Bridge identity path, kind: subfunction, parent: baseio-bridge, provenance: derived}
+      - {id: mediaio-ioc3, name: MediaIO IOC3, kind: io-controller, hardware_kind: ioc3, identity: {pci_revision: 1, notes: "The MediaIO daughtercard's IOC3, part 030-0880-003 in the real deskside board lists; docs/datasheets/baseio.md, BaseIO-G and MediaIO boundary."}, datasheet_contracts: [docs/datasheets/baseio.md, docs/datasheets/ioc3.md], provenance: datasheet, parent: baseio}
+      - {id: mediaio-keyboard-mouse, name: MediaIO PS/2 keyboard and mouse, kind: subfunction, hardware_kind: ioc3-keyboard-mouse, parent: mediaio-ioc3, provenance: datasheet}
+      - {id: xio-slot-2, name: XIO slot IO2, kind: connector, provenance: vendor-document, parent: module-midplane, connector: {interface: XIO, location: IO2, occupancy: opaque}, sources: ["007-3454-005 printed page 24 PDF page 42: the optional PCI module goes in XIO slot 2"]}
+      - {id: xio-slot-3, name: XIO slot IO3, kind: connector, provenance: vendor-document, parent: module-midplane, connector: {interface: XIO, location: IO3, occupancy: opaque}, sources: ["007-3454-005 printed page 24 PDF page 42: five XIO slots, 3 and 5 fill first"]}
+      - {id: graphics-slots, name: Graphics board set on XIO4, kind: connector, provenance: vendor-document, parent: module-midplane, connector: {interface: XIO, location: IO4, occupancy: opaque}, sources: ["007-3454-005 printed pages 8-9 PDF pages 26-27: XIO4 is used by the graphics board set"]}
+      - {id: xio-slot-5, name: XIO slot IO5, kind: connector, provenance: vendor-document, parent: module-midplane, connector: {interface: XIO, location: IO5, occupancy: opaque}, sources: ["007-3454-005 printed page 24 PDF page 42: five XIO slots, 3 and 5 fill first"]}
+      - {id: xio-slot-6, name: XIO slot IO6, kind: connector, provenance: vendor-document, parent: module-midplane, connector: {interface: XIO, location: IO6, occupancy: opaque}, sources: ["007-3454-005 printed page 24 PDF page 42: five XIO slots"]}
+      - id: module-msc
+        name: Module system controller
+        kind: system-controller
+        hardware_kind: msc
+        system_controller: {kind: msc}
+        parent: compute-module
+        provenance: derived
+        datasheet_contracts: [docs/datasheets/pcf8584-elsc.md, docs/datasheets/origin2000-module-management.md]
+      - id: module-management-nvram
+        name: Shared management NVRAM address space
+        kind: flash
+        hardware_kind: i2c-management-nvram
+        parent: compute-module
+        provenance: derived
+        datasheet_contracts: [docs/datasheets/pcf8584-elsc.md, docs/datasheets/origin2000-module-management.md]
+        description: One logical 2048-byte store across eight slave addresses; physical package count is unknown.
+      - id: module-aux-console
+        name: Module alternate RS-232 console
+        kind: subfunction
+        hardware_kind: msc-serial
+        parent: module-msc
+        provenance: derived
+    buses:
+      - {id: module-management-i2c, name: Shared module management I2C bus, kind: i2c, masters: [node-board-1-management-adapter, node-board-2-management-adapter, module-msc], provenance: derived, sources: [onyx2-deskside-module-management]}
+      - id: null-router
+        name: Null Router between node slots 1 and 2
+        kind: fabric
+        master: node-board-1-hub
+        link: {kind: null-router}
+        provenance: vendor-document
+        sources: ["007-3439-002 printed page 57 PDF page 71: the Null Router joins two node boards in one deskside and cannot be expanded", "007-3454-005 printed page 19 PDF page 37: the Null-Router board"]
+        notes: >-
+          A direct Hub-to-Hub link. No PROM or IRIX inventory lists the Null
+          Router (docs/datasheets/onyx2.md, The two-node deskside).
+      - {id: xbow0-node1, name: Crossbow host link to node 1, kind: xio, master: crossbow-0, provenance: datasheet, sources: ["docs/datasheets/onyx2.md Widget-to-slot map"]}
+      - {id: xbow0-node2, name: Crossbow host link to node 2, kind: xio, master: crossbow-0, provenance: datasheet, sources: ["docs/datasheets/onyx2.md Widget-to-slot map"]}
+      - {id: xbow0-io1, name: Crossbow XIO position IO1, kind: xio, master: crossbow-0, provenance: datasheet, sources: ["docs/datasheets/onyx2.md Widget-to-slot map"]}
+      - {id: xbow0-io2, name: Crossbow XIO position IO2, kind: xio, master: crossbow-0, provenance: datasheet, sources: ["docs/datasheets/onyx2.md Widget-to-slot map"]}
+      - {id: xbow0-io3, name: Crossbow XIO position IO3, kind: xio, master: crossbow-0, provenance: datasheet, sources: ["docs/datasheets/onyx2.md Widget-to-slot map"]}
+      - {id: xbow0-io4, name: "Crossbow XIO position IO4, the graphics board set", kind: xio, master: crossbow-0, provenance: datasheet, sources: ["docs/datasheets/onyx2.md Widget-to-slot map"]}
+      - {id: xbow0-io5, name: Crossbow XIO position IO5, kind: xio, master: crossbow-0, provenance: datasheet, sources: ["docs/datasheets/onyx2.md Widget-to-slot map"]}
+      - {id: xbow0-io6, name: Crossbow XIO position IO6, kind: xio, master: crossbow-0, provenance: datasheet, sources: ["docs/datasheets/onyx2.md Widget-to-slot map"]}
+      - {id: baseio-pci, name: BaseIO PCI, kind: pci, master: baseio-bridge, provenance: datasheet, sources: ["docs/datasheets/baseio.md"]}
+    connections:
+      - {component: node-board-1-management-adapter, bus: module-management-i2c, role: master, provenance: derived, sources: [onyx2-deskside-module-management]}
+      - {component: node-board-2-management-adapter, bus: module-management-i2c, role: master, provenance: derived, sources: [onyx2-deskside-module-management]}
+      - {component: module-msc, bus: module-management-i2c, role: master, i2c_address: 8, provenance: derived, sources: [onyx2-deskside-module-management]}
+      - {component: module-management-nvram, bus: module-management-i2c, role: endpoint, i2c_address: 80, i2c_address_count: 8, provenance: derived, sources: [onyx2-deskside-module-management]}
+      - {component: node-board-1-hub, bus: null-router, role: master, provenance: vendor-document, sources: ["007-3439-002 printed page 57 PDF page 71"]}
+      - {component: node-board-2-hub, bus: null-router, role: endpoint, provenance: vendor-document, sources: ["007-3439-002 printed page 57 PDF page 71"]}
+      - {component: node-board-2-hub, bus: xbow0-node2, role: endpoint, widget: 9, xio: {physical_port: 1}, provenance: datasheet, sources: ["docs/datasheets/onyx2.md Widget-to-slot map: n2 at widget 9"]}
+      - {component: node-board-1-hub, bus: xbow0-node1, role: endpoint, widget: 10, xio: {physical_port: 2}, provenance: datasheet, sources: ["docs/datasheets/onyx2.md Widget-to-slot map: n1 at widget A"]}
+      - {component: graphics-slots, bus: xbow0-io4, role: endpoint, controlled_by: node-board-1-node-board, widget: 8, xio: {physical_port: 0}, provenance: datasheet, sources: ["docs/datasheets/onyx2.md Widget-to-slot map: io4 at widget 8"], notes: "Which node a deskside's XIO positions answer to is unpublished; node 1 is selected for every position."}
+      - {component: xio-slot-2, bus: xbow0-io2, role: endpoint, controlled_by: node-board-1-node-board, widget: 11, xio: {physical_port: 3}, provenance: datasheet, sources: ["docs/datasheets/onyx2.md Widget-to-slot map: io2 at widget B"]}
+      - {component: xio-slot-6, bus: xbow0-io6, role: endpoint, controlled_by: node-board-1-node-board, widget: 12, xio: {physical_port: 4}, provenance: datasheet, sources: ["docs/datasheets/onyx2.md Widget-to-slot map: io6 at widget C"]}
+      - {component: xio-slot-5, bus: xbow0-io5, role: endpoint, controlled_by: node-board-1-node-board, widget: 13, xio: {physical_port: 5}, provenance: datasheet, sources: ["docs/datasheets/onyx2.md Widget-to-slot map: io5 at widget D"]}
+      - {component: xio-slot-3, bus: xbow0-io3, role: endpoint, controlled_by: node-board-1-node-board, widget: 14, xio: {physical_port: 6}, provenance: datasheet, sources: ["docs/datasheets/onyx2.md Widget-to-slot map: io3 at widget E"]}
+      - {component: baseio-bridge, bus: xbow0-io1, role: bridge-upstream, controlled_by: node-board-1-node-board, widget: 15, xio: {physical_port: 7}, provenance: datasheet, sources: ["docs/datasheets/onyx2.md Widget-to-slot map: io1 at widget F"], notes: BaseIO-G is fixed at IO1; Bridge is the board's upstream Crossbow endpoint.}
+      - {component: baseio-bridge, bus: baseio-pci, role: bridge-downstream, provenance: datasheet, sources: ["docs/datasheets/baseio.md"]}
+      - {component: baseio-scsi-0, bus: baseio-pci, role: endpoint, pci_device: 0, pci_function: 0, provenance: datasheet, sources: ["docs/datasheets/baseio.md"]}
+      - {component: baseio-scsi-1, bus: baseio-pci, role: endpoint, pci_device: 1, pci_function: 0, provenance: datasheet, sources: ["docs/datasheets/baseio.md"]}
+      - {component: baseio-ioc3, bus: baseio-pci, role: endpoint, pci_device: 2, pci_function: 0, provenance: datasheet, sources: ["docs/datasheets/baseio.md"]}
+      - {component: mediaio-ioc3, bus: baseio-pci, role: endpoint, pci_device: 6, pci_function: 0, provenance: datasheet, sources: ["docs/datasheets/baseio.md BaseIO-G and MediaIO boundary, a real owner's hinv -v listing"], notes: "RAD1 at device 7 is built by QEMU's io6g preset and not authored here."}
+    interrupts:
+      - id: baseio-ioc3-to-bridge
+        source: baseio-ioc3
+        provenance: public-header
+        sources: ["linux:db2ddb87143519e20a95aa36c60b36107b736a58 arch/mips/pci/pci-xtalk-bridge.c BaseIO PCI device 2 interrupt mapping selects Bridge input 4."]
+        chain:
+          - {at: baseio-bridge, mechanism: level, as: interrupt pin 4}

@@ -1,0 +1,29 @@
+configuration_version: 1
+layers:
+  - layers/architectures/sn0.yaml
+  - layers/assemblies/ip29.yaml
+  - layers/products/origin200-dual.yaml
+module_instances:
+  - model: layers/modules/logic-carrier.yaml
+    prefix: node0-
+    module_role: MASTER
+    parent: origin200-system
+    omit_buses: [craylink]
+    observed_hardware:
+      mode: direct
+      sources: ["boot-logs/dmesgd-ip27/dmesgd-8994.html SHA-256 bce07195c21b8750189c22adb5b68a525fc60ab8f113105b1765a59cc740060f", "docs/library/boot-logs.md, OpenBSD 7.9 GENERIC-IP27 capture, source archive commit b6a76788b894308b8c46f217acca3e63af3bd7e9"]
+      note: >-
+        The node-0 module retains direct observations from the captured base
+        module; the capture does not establish the node-1 population.
+  - model: layers/modules/logic-carrier.yaml
+    prefix: node1-
+    module_role: SLAVE
+    parent: origin200-system
+    omit_buses: [craylink]
+    observed_hardware:
+      mode: projected
+      sources: ["007-3708-002 Figure 1-4 printed page 6 PDF page 32, two-module product drawing", "007-3708-002 Table 1-1 printed page 5 PDF page 31, module capacities", "boot-logs/dmesgd-ip27/dmesgd-8994.html SHA-256 bce07195c21b8750189c22adb5b68a525fc60ab8f113105b1765a59cc740060f"]
+      note: >-
+        Node-1 population and placement are projected from the captured base
+        module using the Owner's Guide's symmetric two-module product drawing;
+        no node-1 hardware capture is claimed.

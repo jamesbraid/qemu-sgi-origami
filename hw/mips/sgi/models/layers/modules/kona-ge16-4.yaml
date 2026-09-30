@@ -1,0 +1,39 @@
+# The GE16-4 geometry board of an InfiniteReality pipe, with its one-wire
+# record, part 030-1398-001 in the real rack (true-wombat) capture
+# (docs/datasheets/onyx2.md, One-wire records). A composition fits it beside
+# or under a layers/modules/kona-pipe.yaml instance and binds the
+# placeholder `pipe-one-wire` bus to that pipe's one-wire bus, before any
+# other record joins the chain. QEMU's sgi-kona presents its own geometry
+# record whatever this part says.
+layer_version: 1
+layer:
+  kind: module
+  id: kona-ge16-4
+  requires:
+    assembly: ip27
+  data:
+    components:
+      - id: geometry
+        name: GE16-4 geometry board
+        kind: board
+        hardware_kind: geometry-board
+        provenance: datasheet
+        sources: ["docs/datasheets/onyx2.md One-wire records"]
+        notes: The XG ASIC the host reaches sits on this board; the pipe layer carries it.
+
+      - id: geometry-identity
+        name: GE16-4 one-wire identity
+        kind: identity
+        parent: geometry
+        provenance: datasheet
+        identity:
+          part: "030-1398-001"
+        sources: ["docs/datasheets/onyx2.md One-wire records: GE16-4 030-1398-001 in the real rack (true-wombat) capture"]
+
+    connections:
+      - component: geometry-identity
+        bus: pipe-one-wire
+        role: endpoint
+        provenance: datasheet
+        sources: ["docs/datasheets/onyx2.md One-wire records"]
+        notes: A placeholder the composition binds to its pipe's own one-wire bus.

@@ -1,0 +1,72 @@
+# The Origin 300 NUMAlink module: an eight-port SN1 router in its own rack unit,
+# scaling a base-module population from two to eight (tall rack).
+layer_version: 1
+# The catalogue citation checker (tools/check-citations) resolves a sources: entry
+# directly against docs/library/docs.tsv or docs/library/techpubs.tsv, or against a
+# public commit; every component fact above has moved to that direct form. The one
+# key left here backs the eight router-to-port buses and their eight connections
+# only, whose strict evidence policy (tools/origami_lib/model_validation.py)
+# requires non-empty sources for every one regardless of provenance -- unlike a
+# component, which may carry none. It cites only the internal closure research
+# note's cabling paragraph, so the checker reports it under "facts whose only
+# sources are internal documents" rather than resolving it; replacing it with an
+# independently obtainable citation is follow-up work on the evidence itself, not
+# a citation-form change.
+sources:
+  sn-family-closure-tall-rack-cabling: "docs/research/sn-family-closure-20260913.md, same paragraph: port-to-U cabling read from the rendered figures and cross-checked against a live six-chassis rack (nekonomicon 16727514): tall rack (Figure 4-2) U28 to port 3, U26 to 2, U24 to 1, U22 to 8, U18 to 7, U16 to 6, U14 to 5, U12 to 4"
+layer:
+  kind: module
+  id: numalink-module
+  requires: {architecture: sn1}
+  data:
+    components:
+      - id: numalink-module
+        name: NUMAlink module
+        kind: module
+        provenance: vendor-document
+        sources: ["007-4498-002 p.4, 10, 11, 16, 87, 93, 96, 98, 132: two to eight base modules; ports 1, 6, 7, 8 (chip A, F, G, H) base modules only; ports 2-5 (B-E) base or PCI expansion modules and carry USB to the L2; global master is the lowest base module"]
+        notes: Tall-rack packaging (two to eight base modules); the short-rack and I/O-rack port-to-U tables in the closure record are not modeled here.
+      - id: router
+        name: SN1 Router
+        kind: router-asic
+        hardware_kind: router
+        router_asic: {port_count: 8, role: router}
+        provenance: vendor-document
+        parent: numalink-module
+        sources: ["108-0263-004 Table 2-3 p.2-20: the router ASIC is never named in the owner's guides; FRU 'PCA SN1 ROUTER'"]
+        notes: The router ASIC is never named by SGI's own guides; its FRU label is "PCA SN1 ROUTER".
+      - id: l2
+        name: L2 system controller
+        kind: system-controller
+        hardware_kind: l2
+        system_controller: {kind: l2}
+        provenance: vendor-document
+        parent: numalink-module
+        sources: ["108-0263-004 Table 2-3 p.2-20: L2 with the NUMAlink module"]
+        notes: Present only with the NUMAlink module; reached from ports 1, 6, 7 and 8 over USB.
+      - {id: port-1, name: "Port 1 (chip A), U24 tall rack", kind: connector, provenance: derived, parent: router, connector: {interface: NUMAlink 3, location: U24, occupancy: opaque, notes: Base modules only.}}
+      - {id: port-2, name: "Port 2 (chip B), U26 tall rack", kind: connector, provenance: derived, parent: router, connector: {interface: NUMAlink 3, location: U26, occupancy: opaque, notes: Base or PCI expansion module; carries USB to the L2.}}
+      - {id: port-3, name: "Port 3 (chip C), U28 tall rack", kind: connector, provenance: derived, parent: router, connector: {interface: NUMAlink 3, location: U28, occupancy: opaque, notes: Base or PCI expansion module; carries USB to the L2.}}
+      - {id: port-4, name: "Port 4 (chip D), U12 tall rack", kind: connector, provenance: derived, parent: router, connector: {interface: NUMAlink 3, location: U12, occupancy: opaque, notes: Base or PCI expansion module; carries USB to the L2.}}
+      - {id: port-5, name: "Port 5 (chip E), U14 tall rack", kind: connector, provenance: derived, parent: router, connector: {interface: NUMAlink 3, location: U14, occupancy: opaque, notes: Base or PCI expansion module; carries USB to the L2.}}
+      - {id: port-6, name: "Port 6 (chip F), U16 tall rack", kind: connector, provenance: derived, parent: router, connector: {interface: NUMAlink 3, location: U16, occupancy: opaque, notes: Base modules only.}}
+      - {id: port-7, name: "Port 7 (chip G), U18 tall rack", kind: connector, provenance: derived, parent: router, connector: {interface: NUMAlink 3, location: U18, occupancy: opaque, notes: Base modules only.}}
+      - {id: port-8, name: "Port 8 (chip H), U22 tall rack", kind: connector, provenance: derived, parent: router, connector: {interface: NUMAlink 3, location: U22, occupancy: opaque, notes: Base modules only.}}
+    buses:
+      - {id: router-port-1, name: Router to port 1, kind: fabric, master: router, provenance: vendor-document, sources: [sn-family-closure-tall-rack-cabling]}
+      - {id: router-port-2, name: Router to port 2, kind: fabric, master: router, provenance: vendor-document, sources: [sn-family-closure-tall-rack-cabling]}
+      - {id: router-port-3, name: Router to port 3, kind: fabric, master: router, provenance: vendor-document, sources: [sn-family-closure-tall-rack-cabling]}
+      - {id: router-port-4, name: Router to port 4, kind: fabric, master: router, provenance: vendor-document, sources: [sn-family-closure-tall-rack-cabling]}
+      - {id: router-port-5, name: Router to port 5, kind: fabric, master: router, provenance: vendor-document, sources: [sn-family-closure-tall-rack-cabling]}
+      - {id: router-port-6, name: Router to port 6, kind: fabric, master: router, provenance: vendor-document, sources: [sn-family-closure-tall-rack-cabling]}
+      - {id: router-port-7, name: Router to port 7, kind: fabric, master: router, provenance: vendor-document, sources: [sn-family-closure-tall-rack-cabling]}
+      - {id: router-port-8, name: Router to port 8, kind: fabric, master: router, provenance: vendor-document, sources: [sn-family-closure-tall-rack-cabling]}
+    connections:
+      - {component: port-1, bus: router-port-1, role: endpoint, provenance: vendor-document, sources: [sn-family-closure-tall-rack-cabling]}
+      - {component: port-2, bus: router-port-2, role: endpoint, provenance: vendor-document, sources: [sn-family-closure-tall-rack-cabling]}
+      - {component: port-3, bus: router-port-3, role: endpoint, provenance: vendor-document, sources: [sn-family-closure-tall-rack-cabling]}
+      - {component: port-4, bus: router-port-4, role: endpoint, provenance: vendor-document, sources: [sn-family-closure-tall-rack-cabling]}
+      - {component: port-5, bus: router-port-5, role: endpoint, provenance: vendor-document, sources: [sn-family-closure-tall-rack-cabling]}
+      - {component: port-6, bus: router-port-6, role: endpoint, provenance: vendor-document, sources: [sn-family-closure-tall-rack-cabling]}
+      - {component: port-7, bus: router-port-7, role: endpoint, provenance: vendor-document, sources: [sn-family-closure-tall-rack-cabling]}
+      - {component: port-8, bus: router-port-8, role: endpoint, provenance: vendor-document, sources: [sn-family-closure-tall-rack-cabling]}

@@ -1,0 +1,95 @@
+# Emulated Origin 300 with one V12 widget directly on its XBridge.
+layer_version: 1
+layer:
+  kind: product
+  id: origin300-v12-direct
+  requires: {assembly: ip45}
+  topology:
+    min_nodes: 1
+    max_nodes: 1
+    supported_cpu_populations: [[2], [4]]
+    provenance: derived
+    sources: ["007-4365-002 printed pages 8 and 10", "docs/datasheets/odyssey.md, Configuration identity"]
+  population:
+    nodes: 1
+    cpus_per_node: [2]
+    provenance: derived
+    sources: ["007-4365-002 printed pages 10 to 12"]
+  cpu_selection:
+    default: {clock_mhz: 500, cache_mib: 2}
+    slots: [cpu0, cpu2, cpu1, cpu3]
+  memory_kits_per_node: [kit-512-at-banks-2-3]
+  data:
+    machine:
+      name: Origin 300 with a direct V12 widget
+      model_role: emulation-target
+      notes: >-
+        One V12 is modeled directly on the compute module XBridge's port
+        0xb, without another enclosure or XBridge. No published inventory
+        shows this connection. The direct attachment is an emulator
+        approximation, not a physical V-brick or Onyx 3000 topology.
+        Stock PROM 6.210 hinv listed Graphics Controller on the emulator.
+        An IRIX 6.5.30 driver bound and reported the board on a separate
+        Odyssey-equipped disk. Graphics errors remained, and an interactive
+        display is unverified for this configuration.
+      emulation:
+        machine_name: origin300
+        display_description: SGI Origin 300 (IP45), approximate V12
+        profile: v12-direct
+        lifecycle: implemented
+        emulator_constraints:
+          accepted_bank_sizes_mib: [512]
+        firmware_payload:
+          argument: -bios
+          path: firmware/6.5.30/ip35prom.payload.bin
+          size: "0x1686a8"
+          sha256: 554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b
+          read_only: true
+          views:
+            - name: CPU reset view
+              address: "0x000_001fc00000"
+              payload_offset: "0x0"
+              size: "0x1686a8"
+            - name: local Hub-special boot view
+              address: "0x100_18000000"
+              payload_offset: "0x0"
+              size: "0x1686a8"
+            - name: bounded high local Hub-special boot view
+              address: "0x100_1fc00000"
+              payload_offset: "0x0"
+              size: "0x1686a8"
+            - name: node-zero remote Hub-special boot view
+              address: "0x100_38000000"
+              payload_offset: "0x0"
+              size: "0x1686a8"
+          second_selection:
+            address: "0x100_1a000000"
+            size: "0x0080_0000"
+          provenance: derived
+          sources: ["docs/library/ip35-source-map.md", "docs/library/origin300-evidence-matrix.md", "docs/library/origin300-reset-alias-evidence.md", "D-0024"]
+          notes: >-
+            The Origin 300's bounded emulator views alias one operator-supplied
+            payload. They do not identify a fitted flash part or physical decoder.
+        synthetic_identities:
+          - component: bedrock
+            serial: "0x0d0c0b0a0908"
+            reason: Reuse the one-chassis Origin 300's synthetic node identity.
+          - component: xbridge
+            serial: "0x0b0a090807"
+            reason: Reuse the one-chassis Origin 300's synthetic IO-8 identity.
+          - component: ioc3
+            serial: "0x5e7000000002"
+            reason: Reuse the one-chassis Origin 300's synthetic IOC3 identity.
+          - component: graphics-v12
+            serial: "0x0b0a090809"
+            reason: >-
+              Stable synthetic catalogue metadata for the uncaptured graphics
+              board. This value is not the Odyssey device's guest-visible NIC;
+              QEMU supplies that separately as 0x5d0000000001.
+        initially_operational_crossbow_links:
+          - component: xbridge-crossbar
+            widgets: [11, 14, 15]
+            reason: >-
+              The two IO-8 heads and the directly attached V12 widget answer
+              on this emulator topology; no physical cable is modeled.
+    evidence_policy: strict

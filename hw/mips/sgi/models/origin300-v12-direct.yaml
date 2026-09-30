@@ -1,0 +1,24 @@
+# Synthetic direct V12 attachment on the Origin 300 cable port.
+configuration_version: 1
+layers:
+  - layers/architectures/sn1.yaml
+  - layers/assemblies/ip45.yaml
+  - layers/modules/origin300-base.yaml
+  - layers/products/origin300-v12-direct.yaml
+module_instances:
+  - model: layers/modules/origin300-v12-direct.yaml
+    prefix: graphics-
+    parent: xio-connector
+    bus_bindings: {cable-xio: xio}
+connector_population:
+  - component: xio-connector
+    occupancy: occupied
+    occupant: graphics-v12
+    reason: One V12 is approximated as a direct widget on the Origin 300's XBridge port 0xb.
+    provenance: derived
+    sources: ["007-4365-002 printed page 8", "007-4264-002 printed pages 52 and 54"]
+  - component: link-connector
+    occupancy: empty
+    reason: This composition has one compute chassis and no NUMAlink peer.
+    provenance: derived
+    sources: ["007-4365-002 printed page 14"]

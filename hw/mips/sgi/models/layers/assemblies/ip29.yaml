@@ -1,0 +1,31 @@
+# One Origin 200 main system board and chassis. The product supplies the population.
+layer_version: 1
+layer:
+  kind: assembly
+  id: ip29
+  platform: ip27
+  contract: {board_ip: IP29}
+  requires:
+    architecture: sn0
+  capacity:
+    cpu_slots_per_node: 2
+    dimm_slots_per_node: 8
+    memory_banks_per_node: 4
+    dimms_per_bank: 2
+    supported_dimm_sizes_mib: [16, 32, 64, 256]
+    supported_bank_sizes_mib: [32, 64, 128, 512]
+    provenance: vendor-document
+    sources: ["007-3708-002 Table 1-1 printed page 5 PDF page 31 and Figure 1-4 printed page 6 PDF page 32 mapping trusted", "papers/origin200-2000-technical-report-7-chapters.tar.gz Chapter 2 section 2.2.2.3 Table 2-1 printed page 23 chapter PDF page 7, lists Origin200 DIMM and bank sizes"]
+  memory_kits:
+    - id: kit-64
+      dimms: 2
+      dimm_mib: 32
+      banks: [64]
+      provenance: derived
+      sources: ["007-3709-002 printed pages 46, 48, and 53, establishes paired DIMMs and bank 0 in sockets 1-2"]
+    - id: kit-128
+      dimms: 2
+      dimm_mib: 64
+      banks: [128]
+      provenance: derived
+      sources: ["108-0187-001 inventory section page 3-8 PDF page 34 records two CPUs and 128 MiB in bank 0 on the module carrying the GIGAchannel PCI_XIO board", "007-3709-002 printed pages 46 48 and 53 establishes paired DIMMs in bank 0"]

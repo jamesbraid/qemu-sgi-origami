@@ -1,0 +1,21 @@
+# IP53 Origin 350 compute module board identity and documented slot capacity.
+layer_version: 1
+layer:
+  kind: assembly
+  id: ip53
+  platform: ip35
+  requires: {architecture: sn1}
+  contract: {board_ip: IP53}
+  capacity:
+    cpu_slots_per_node: 4
+    dimm_slots_per_node: 8
+    provenance: vendor-document
+    sources: ["007-4566-001 p.68-75, 114-119: 2U compute module; 2 or 4 R16000 600/700 (E), 800 and 1000 (O); 8 DIMM slots as four pairs, 512 MB or 1 GB DIMMs, 1-8 GB"]
+    notes: >-
+      Two or four R16000 processors; eight DIMM slots as four pairs, first pair
+      required, equal density within a pair, 512 MB or 1 GB DIMMs, 1-8 GB. No
+      processors-catalogue entry for R16000 exists in the shared SN1 architecture
+      layer; adding one would change the resolved output of the existing
+      origin300 configuration, so this board's CPU components carry no clock or
+      cache identity even though the closure record names 600 and 700 MHz at
+      4 MiB as established.

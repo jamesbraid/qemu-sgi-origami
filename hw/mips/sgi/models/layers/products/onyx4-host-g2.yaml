@@ -1,0 +1,46 @@
+# Onyx4 boot host and a G2 I/O brick, with graphics internals omitted.
+layer_version: 1
+layer:
+  kind: product
+  id: onyx4-host-g2
+  requires: {assembly: ip53}
+  topology:
+    min_nodes: 1
+    max_nodes: 1
+    supported_cpu_populations: [[2], [4]]
+    provenance: vendor-document
+    sources: ["007-4632-001 printed page 48: Onyx 350 base has two or four CPUs", "007-4634-002 printed pages 1-2 and 14: G2 is an I/O brick connected over XIO"]
+  population:
+    nodes: 1
+    cpus_per_node: [2]
+    fitted_memory:
+      status: unknown
+      reason: The host guide gives capacity but no installed DIMMs for this selected pair.
+      provenance: derived
+      sources: ["007-4632-001 printed page 48: host local memory range"]
+    provenance: derived
+    sources: ["007-4632-001 printed page 48: two-processor host", "007-4634-002 printed pages 1-2: G2 is an I/O brick without a node board"]
+  data:
+    machine:
+      name: Onyx4 host with G2
+      model_role: reference
+      notes: >-
+        The selected Onyx 350 base compute module supplies boot IO9, CPUs and
+        memory. A G2 attaches as an I/O brick through the host's XIO
+        connector. It adds no compute node. The separate G2N product instead
+        adds a node board, processors and memory over NUMAlink. Graphics
+        internals, G2 widget identity, host ASIC revisions, PCI device numbers
+        and installed DIMMs are unknown or outside this reference.
+    evidence_policy: strict
+    components:
+      - {id: host, name: Onyx 350 boot host, kind: chassis, provenance: vendor-document, sources: ["007-4632-001 printed pages 47-48: base module and boot I/O"]}
+      - {id: g2, name: G2 I/O brick, kind: chassis, provenance: vendor-document, sources: ["007-4634-002 printed pages 1-2: G2 graphics-only I/O brick"]}
+      - {id: cpu0, name: host MIPS processor, kind: cpu, parent: host, provenance: vendor-document, sources: ["007-4632-001 printed page 48: two-processor base module"]}
+      - {id: cpu1, name: host MIPS processor, kind: cpu, parent: host, provenance: vendor-document, sources: ["007-4632-001 printed page 48: two-processor base module"]}
+      - {id: memory, name: host memory, kind: memory, parent: host, provenance: vendor-document, sources: ["007-4632-001 printed page 48: base module local memory"]}
+      - {id: io9, name: host IO9, kind: io-controller, parent: host, provenance: vendor-document, sources: ["007-4632-001 printed page 47: base module IO9"]}
+    buses:
+      - {id: xio, name: host-to-G2 XIO cable, kind: xio, provenance: vendor-document, sources: ["007-4634-002 printed pages 2, 14 and 20: G2 attaches to host over XIO"]}
+    connections:
+      - {component: host, bus: xio, role: master, provenance: vendor-document, sources: ["007-4634-002 printed page 20: host XIO port"]}
+      - {component: g2, bus: xio, role: endpoint, provenance: vendor-document, sources: ["007-4634-002 printed pages 2 and 14: G2 XIO cable"]}

@@ -1,0 +1,1266 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://origami.invalid/schema/system-model-v1.json",
+  "title": "origami system model",
+  "description": "A machine's physical components, buses, interrupt chains, installed identities, and static emulation configuration. Origami exports static descriptors independently. QEMU adopts and tracks those descriptors with its consumer changes; builds never regenerate them. QEMU owns device behavior and object lifetime.",
+
+  "type": "object",
+  "required": ["model_version", "evidence_policy", "composition", "machine", "space_selection", "processors", "address_spaces", "components", "buses", "connections"],
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "required": ["machine"],
+        "properties": {
+          "machine": {
+            "required": ["emulation"],
+            "properties": {
+              "emulation": {
+                "required": ["lifecycle"],
+                "properties": { "lifecycle": { "const": "implemented" } }
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "machine": {
+            "properties": {
+              "emulation": {
+                "required": ["emulator_constraints"]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": ["machine"],
+        "properties": { "machine": {
+          "required": ["generation", "emulation"],
+          "properties": {
+            "generation": { "const": "SN0" },
+            "emulation": {
+              "required": ["lifecycle"],
+              "properties": { "lifecycle": { "const": "implemented" } }
+            }
+          }
+        } }
+      },
+      "then": {
+        "properties": { "machine": { "required": ["firmware_config"] } },
+        "allOf": [{
+          "if": { "$ref": "#/$defs/routed-target" },
+          "then": {
+            "properties": { "machine": { "properties": {
+              "firmware_config": { "required": ["cpu_clock_hz", "hub_clock_hz"] },
+              "emulation": { "required": ["synthetic_identities", "module_semantic_serials", "module_responder_identities", "initially_operational_crossbow_links"] }
+            } } }
+          }
+        }]
+      }
+    },
+    {
+      "if": {
+        "required": ["machine"],
+        "properties": { "machine": {
+          "required": ["generation", "emulation"],
+          "properties": {
+            "generation": { "const": "SN1" },
+            "emulation": {
+              "required": ["lifecycle"],
+              "properties": { "lifecycle": { "const": "implemented" } }
+            }
+          }
+        } }
+      },
+      "then": {
+        "properties": { "machine": { "properties": { "emulation": {
+          "required": ["firmware_payload"]
+        } } } }
+      }
+    },
+    {
+      "if": {
+        "required": ["evidence_policy", "machine"],
+        "properties": {
+          "evidence_policy": { "const": "strict" },
+          "machine": {
+            "required": ["model_role", "firmware_config"],
+            "properties": {
+              "model_role": { "const": "emulation-target" }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "machine": {
+            "properties": {
+              "firmware_config": {
+                "required": ["provenance", "sources"]
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+
+  "properties": {
+    "model_version": { "const": 1 },
+    "evidence_policy": {
+      "const": "strict",
+      "description": "Every concrete topology, population, bus, connection, and interrupt claim must cite a source."
+    },
+
+    "composition": { "$ref": "#/$defs/composition" },
+    "excluded_components": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/component-exclusion" },
+      "description": "Physical components this projection must not contain. Selectors are conjunctive and checked after composition, so a later inventory cannot reintroduce forbidden topology."
+    },
+
+    "machine": {
+      "type": "object",
+      "required": ["name", "generation", "board_ip", "architecture_ip", "kernel_ip", "model_role"],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": { "model_role": { "const": "reference" } },
+            "required": ["model_role"]
+          },
+          "then": { "not": { "required": ["emulation"] } },
+          "else": { "required": ["emulation"] }
+        }
+      ],
+      "properties": {
+        "name": { "type": "string", "description": "Canonical machine name in prose, e.g. 'Origin 200'." },
+        "generation": { "enum": ["SN0", "SN1"] },
+        "board_ip": { "type": "string", "description": "Physical module IP number, e.g. IP29." },
+        "architecture_ip": { "type": "string", "description": "Platform family IP number, e.g. IP27." },
+        "kernel_ip": { "type": "string", "description": "Software port IP number. IP27 for everything origami targets." },
+        "model_role": { "enum": ["emulation-target", "reference"], "description": "Whether this projection is an Origami target or a hardware-only reference machine." },
+        "firmware_config": {
+          "type": "object",
+          "required": ["processor_reset_mode", "machine_type", "flash_read_cycles", "flash_write_cycles"],
+          "additionalProperties": false,
+          "properties": {
+            "cpu_clock_hz": { "type": "integer", "minimum": 1 },
+            "hub_clock_hz": { "type": "integer", "minimum": 1 },
+            "processor_reset_mode": { "$ref": "#/$defs/r10000-reset-mode" },
+            "machine_type": { "type": "integer", "minimum": 0 },
+            "flash_read_cycles": { "type": "integer", "minimum": 0 },
+            "flash_write_cycles": { "type": "integer", "minimum": 0 },
+            "provenance": { "$ref": "#/$defs/fact-provenance" },
+            "sources": { "$ref": "#/$defs/sources" }
+          },
+          "description": "Installed firmware-visible configuration selected for this product."
+        },
+        "emulation": {
+          "type": "object",
+          "required": ["machine_name", "display_description", "profile", "lifecycle"],
+          "additionalProperties": false,
+          "properties": {
+            "machine_name": { "type": "string", "description": "The -M name." },
+            "display_description": { "type": "string", "description": "The product description exposed by the emulator." },
+            "profile": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$", "description": "Stable emulated population profile within this machine." },
+            "lifecycle": { "enum": ["implemented", "planned"], "description": "Whether this whole machine target is compiled into the emulator or remains a design projection. Component-level implementation inventory does not belong here." },
+            "firmware_payload": {
+              "type": "object",
+              "required": ["argument", "path", "size", "sha256", "read_only", "views", "provenance", "sources", "notes"],
+              "additionalProperties": false,
+              "description": "Required operator-supplied firmware and its emulator mappings. This records compatibility policy, not a physical storage device or decoder.",
+              "properties": {
+                "argument": { "const": "-bios" },
+                "path": { "type": "string", "minLength": 1, "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+$", "description": "Path relative to the configured asset root." },
+                "size": { "$ref": "#/$defs/address" },
+                "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+                "read_only": { "const": true },
+                "views": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {
+                    "type": "object",
+                    "required": ["name", "address", "payload_offset", "size"],
+                    "additionalProperties": false,
+                    "properties": {
+                      "name": { "type": "string", "minLength": 1 },
+                      "address": { "$ref": "#/$defs/address", "description": "Absolute address on QEMU's machine bus." },
+                      "payload_offset": { "$ref": "#/$defs/address" },
+                      "size": { "$ref": "#/$defs/address" }
+                    }
+                  }
+                },
+                "second_selection": {
+                  "type": "object",
+                  "required": ["address", "size"],
+                  "additionalProperties": false,
+                  "description": "Separate static software PROM selection address and extent.",
+                  "properties": {
+                    "address": { "$ref": "#/$defs/address", "description": "Absolute address on QEMU's machine bus." },
+                    "size": { "$ref": "#/$defs/address" }
+                  }
+                },
+                "provenance": { "$ref": "#/$defs/fact-provenance" },
+                "sources": { "$ref": "#/$defs/sources" },
+                "notes": { "type": "string", "minLength": 1 }
+              }
+            },
+            "emulator_constraints": {
+              "type": "object",
+              "required": ["accepted_bank_sizes_mib"],
+              "additionalProperties": false,
+              "properties": {
+                "accepted_bank_sizes_mib": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "integer", "minimum": 1, "maximum": 65535 } }
+              },
+              "description": "Current emulator fitting rules. These are not asserted as IP29 hardware facts."
+            },
+            "initial_module_numbers": {
+              "type": "array",
+              "description": "Initial installation numbers for implemented routed emulation targets, keyed by final resolved module component IDs. Seed new MSC NVRAM only. Guest writes update its contents. Ordinary reset preserves them and migration restores saved contents. Zero is unassigned hardware state and is unsupported as an initial value for this target. Child module policy is not imported.",
+              "items": {
+                "type": "object",
+                "required": ["component", "number", "reason"],
+                "additionalProperties": false,
+                "properties": {
+                  "component": { "$ref": "#/$defs/identifier" },
+                  "number": { "type": "integer", "minimum": 1, "maximum": 255 },
+                  "reason": { "type": "string", "minLength": 1 }
+                }
+              }
+            },
+            "synthetic_identities": {
+              "type": "array",
+              "description": "Explicit outer-composition policy for synthetic physical chip identities. Component IDs are final resolved IDs; child module emulation defaults are not imported.",
+              "items": {
+                "type": "object",
+                "required": ["component", "serial", "reason"],
+                "additionalProperties": false,
+                "properties": {
+                  "component": { "$ref": "#/$defs/identifier" },
+                  "serial": { "type": "string", "pattern": "^0x[0-9a-f]+(?:_[0-9a-f]+)*$" },
+                  "reason": { "type": "string", "minLength": 1 }
+                }
+              }
+            },
+            "module_semantic_serials": {
+              "type": "array",
+              "description": "Semantic module serials for generated Hub-side module identity records, keyed by final resolved module component ID.",
+              "items": {
+                "type": "object",
+                "required": ["component", "serial", "reason"],
+                "additionalProperties": false,
+                "properties": {
+                  "component": { "$ref": "#/$defs/identifier" },
+                  "serial": { "type": "string", "pattern": "^[\\x20-\\x39\\x3c-\\x7e]{10}$" },
+                  "reason": { "type": "string", "minLength": 1 }
+                }
+              }
+            },
+            "module_responder_identities": {
+              "type": "array",
+              "description": "Explicit 48-bit ROM serials for node-local Hub module identity responders, keyed by final resolved node ASIC component ID.",
+              "items": {
+                "type": "object",
+                "required": ["component", "serial", "reason"],
+                "additionalProperties": false,
+                "properties": {
+                  "component": { "$ref": "#/$defs/identifier" },
+                  "serial": { "type": "string", "pattern": "^0x[0-9a-f](?:_?[0-9a-f]){0,11}$" },
+                  "reason": { "type": "string", "minLength": 1 }
+                }
+              }
+            },
+            "initially_operational_crossbow_links": {
+              "type": "array",
+              "description": "Per-Crossbow static emulator startup health. Each listed widget begins operational. Machine launch and whole-machine reset reapply this policy. Migration restores runtime link state and does not reapply it. Physical attachment is derived separately and does not by itself make a link operational. This policy does not model hardware link training, predict a physical training outcome, or establish diagnostic acceptance. The compiler requires every listed widget to be physically attached in the selected composition.",
+              "items": {
+                "type": "object",
+                "required": ["component", "widgets", "reason"],
+                "additionalProperties": false,
+                "properties": {
+                  "component": { "$ref": "#/$defs/identifier" },
+                  "widgets": {
+                    "type": "array",
+                    "minItems": 1,
+                    "uniqueItems": true,
+                    "items": { "type": "integer", "minimum": 8, "maximum": 15 }
+                  },
+                  "reason": { "type": "string", "minLength": 1 }
+                }
+              }
+            },
+            "hub_ni_revision_overrides": {
+              "type": "array",
+              "description": "Optional per-Hub override of NI_STATUS_REV_ID (bits 7:4), keyed by final resolved Hub component ID. A Hub named here reports this code instead of the reusable node-board module's own authored identity.ni_revision; a Hub not named here is unaffected. Does not touch the separate widget_revision field.",
+              "items": {
+                "type": "object",
+                "required": ["component", "ni_revision", "reason"],
+                "additionalProperties": false,
+                "properties": {
+                  "component": { "$ref": "#/$defs/identifier" },
+                  "ni_revision": { "type": "integer", "minimum": 0, "maximum": 15 },
+                  "reason": { "type": "string", "minLength": 1 }
+                }
+              }
+            },
+            "board_identity_overrides": {
+              "type": "array",
+              "description": "Optional per-board override of the compiled I/O board record's one-wire identity.part, keyed by final resolved board component ID (the kind: board component a Bridge's board ancestor resolves to, not the Bridge itself). A board named here reports this part instead of its own authored identity.part; a board not named here is unaffected. Lets a product selecting a reusable module's own board component (whose identity.part it cannot edit in place) still report a different fitted board revision, the way a product authoring its own board component does directly.",
+              "items": {
+                "type": "object",
+                "required": ["component", "part", "reason"],
+                "additionalProperties": false,
+                "properties": {
+                  "component": { "$ref": "#/$defs/identifier" },
+                  "part": { "type": "string", "minLength": 1 },
+                  "reason": { "type": "string", "minLength": 1 }
+                }
+              }
+            }
+          }
+        },
+        "harness": {
+          "type": "object",
+          "required": [
+            "console", "prom_dialogue", "disk_bus", "netboot_adapter",
+            "default_cpu_model", "default_topology", "requires_per_node_flash",
+            "has_managed_boot_flash", "supported_guests", "install_media",
+            "provenance", "sources"
+          ],
+          "additionalProperties": false,
+          "description": "Facts tools/origami_lib needs to launch this product without a per-product literal: which console line the stock firmware's own dialogue uses, how to reach it, and what the harness accepts. Not consumed by the QEMU model compiler or emitter; a change here never touches generated C.",
+          "properties": {
+            "default_cpu_model": { "type": "string", "minLength": 1, "description": "The -cpu argument a launcher passes when none is given, e.g. R10000." },
+            "console": { "enum": ["ioc3-serial-a", "l1-uart"], "description": "The console port the stock PROM's own command monitor and dialogue use." },
+            "prom_dialogue": { "enum": ["ip27-menu", "ip35-l1-prompt"], "description": "Which stock-firmware dialogue a launcher drives: the IP27 command monitor, or the IP35 L1 system controller's prompt in front of it." },
+            "disk_bus": { "type": "string", "minLength": 1, "description": "Default SCSI bus id guest launchers attach the boot disk to." },
+            "netboot_adapter": { "type": "string", "minLength": 1, "description": "Adapter kind the stock PROM's netboot command has been confirmed to drive." },
+            "default_firmware_asset": { "type": "string", "minLength": 1, "description": "Asset path of the firmware image a launcher uses when none is given. Absent when the product's real stock image is already named by emulation.firmware_payload.path." },
+            "default_topology": { "type": "string", "minLength": 1, "description": "Stable harness label for this product's one wiring shape today; not a selectable property." },
+            "requires_per_node_flash": { "type": "boolean", "description": "True when each node needs its own writable flash image rather than one shared -bios payload." },
+            "has_managed_boot_flash": { "type": "boolean", "description": "True when the harness prepares and can override one writable boot-flash image for this product, distinct from a plain -bios payload or per-node flash." },
+            "has_synthesized_firmware_toggle": { "type": "boolean", "description": "True when this product's QEMU machine accepts a synthesized-firmware= property a launcher can turn off. Omitted or false means the property does not exist on this machine." },
+            "needs_debug_leds_off": { "type": "boolean", "description": "True when a launch with no -display needs debug-leds=off, since the firmware's indicator-code display has nothing to show them on. Independent of has_synthesized_firmware_toggle." },
+            "identity_inputs": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": { "type": "string", "minLength": 1 },
+              "description": "Optional identity inputs this product accepts (EEPROMs, system-controller switches, a brick serial). Omitted or empty means none."
+            },
+            "supported_guests": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": { "type": "string", "minLength": 1 },
+              "description": "Guests the harness's own run commands support on this product today."
+            },
+            "install_media": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": { "type": "string", "minLength": 1 },
+              "description": "Install media kinds the harness drives for this product today."
+            },
+            "provenance": { "$ref": "#/$defs/fact-provenance" },
+            "sources": { "$ref": "#/$defs/sources" }
+          }
+        },
+        "notes": { "type": "string" }
+      }
+    },
+
+    "space_selection": {
+      "type": "object",
+      "description": "How this machine picks which address space a reference means. Required, and required for a reason: an optional field cannot distinguish a machine that selects spaces differently from one nobody has traced, which is how a model of one machine can validate as a deficient model of another. A machine whose mechanism is unknown says so.",
+      "required": ["mechanism"],
+      "additionalProperties": false,
+      "properties": {
+        "mechanism": {
+          "enum": ["processor-attribute", "address-field", "not-traced"],
+          "description": "processor-attribute: bits the processor drives beside the address, so the space is not part of the address. address-field: an ordinary field within the address. not-traced: nobody has established it."
+        },
+        "bits": { "type": "string", "description": "Which bits carry the selector, high:low." },
+        "count": { "type": "integer", "description": "How many spaces the selector can name." },
+        "provenance": { "$ref": "#/$defs/fact-provenance" },
+        "sources": { "$ref": "#/$defs/sources" },
+        "notes": { "type": "string" }
+      }
+    },
+
+    "processors": {
+      "type": "array",
+      "minItems": 1,
+      "description": "Catalogued CPU parts for this generation: the clock and cache SKUs a product may install. A product's cpu_selection names the default and, for each populated slot, the resolver copies the matching variant onto that CPU component as its identity.",
+      "items": {
+        "type": "object",
+        "required": ["part", "variants", "provenance", "sources"],
+        "additionalProperties": false,
+        "properties": {
+          "part": { "$ref": "#/$defs/identifier" },
+          "variants": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "required": ["clock_mhz", "cache_mib"],
+              "additionalProperties": false,
+              "properties": {
+                "clock_mhz": { "type": "integer", "minimum": 1 },
+                "cache_mib": { "type": "integer", "minimum": 1 },
+                "processor_identification": { "$ref": "#/$defs/address" },
+                "fpu_identification": { "$ref": "#/$defs/address" },
+                "cache_clock_mhz": { "type": "integer", "minimum": 1 },
+                "reset_mode": {
+                  "allOf": [{ "$ref": "#/$defs/r10000-reset-mode" }],
+                  "description": "Power-on and cold-reset mode fields for this exact clock and cache SKU. Products selecting this variant get this mode word without re-authoring it; a product may not also author firmware_config.processor_reset_mode directly when it disagrees."
+                },
+                "reset_mode_bits": {
+                  "$ref": "#/$defs/address",
+                  "description": "The established Config0 low-25-bit power-on reset word for this exact R14000/R12000A clock and cache SKU, as one packed value rather than r10000-reset-mode's named fields: the public NEC manual states the R12000/R14000 Config0 bit positions (PM, EC, SB, BE, SS, SC, DSD) but this project has not independently reviewed a complete field-by-field encoding table for them the way it has for R10000, so only the literal, independently reviewed word is carried here."
+                },
+                "notes": { "type": "string" }
+              },
+              "description": "processor_identification, fpu_identification and cache_clock_mhz are established for some clock/cache SKUs and not others; a product's CPU component may still author them directly (predating this catalogue field) and must agree when both are present."
+            }
+          },
+          "provenance": { "$ref": "#/$defs/fact-provenance" },
+          "sources": { "$ref": "#/$defs/sources" }
+        }
+      }
+    },
+
+    "address_spaces": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["id", "name"],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "$ref": "#/$defs/identifier" },
+          "name": { "type": "string" },
+          "selector": { "type": "integer", "minimum": 0, "description": "The selector value naming this space, in whatever mechanism space_selection declares. Mechanism-neutral on purpose: an attribute number and an address-field value are the same kind of fact about which space is meant." },
+          "unmapped_base": { "$ref": "#/$defs/address", "description": "The 64-bit unmapped virtual address a guest reaches this space through." },
+          "node_stride": { "$ref": "#/$defs/address" },
+          "provenance": { "$ref": "#/$defs/fact-provenance" },
+          "sources": { "$ref": "#/$defs/sources" },
+          "notes": { "type": "string" }
+        }
+      }
+    },
+
+    "components": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/component" }
+    },
+
+    "buses": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["id", "name", "kind"],
+        "additionalProperties": false,
+        "allOf": [
+          { "not": { "required": ["master", "masters"] } },
+          { "if": { "required": ["masters"] }, "then": { "properties": { "kind": { "const": "i2c" } } } },
+          { "if": { "required": ["link"] }, "then": { "properties": { "kind": { "const": "fabric" } } } }
+        ],
+        "properties": {
+          "id": { "$ref": "#/$defs/identifier" },
+          "name": { "type": "string", "description": "Canonical bus name from the component taxonomy." },
+          "kind": { "enum": ["sysad", "xio", "pci", "byte-bus", "one-wire", "i2c", "fabric", "directory-bus", "internal"] },
+          "master": { "$ref": "#/$defs/identifier", "description": "Component that owns or arbitrates the bus." },
+          "masters": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "$ref": "#/$defs/identifier" }, "description": "I2C components that can initiate transfers; alternative to master." },
+          "link": {
+            "type": "object",
+            "required": ["kind"],
+            "additionalProperties": false,
+            "description": "A physical SN0 link on a kind: fabric bus, joining exactly two ports. A midplane link joins ports inside a module, including node-to-Router and Router-to-Router connections; a cable joins Router ports between modules; an Xpress cable is the port-2 crossover variant; a carrier joins a Router port to a node Hub through a Star Router card; a null-router joins two node Hubs directly through a Null Router card. Cable and Xpress cable links carry the assembly part, length, and jacket colour.",
+            "properties": {
+              "kind": { "enum": ["midplane", "cable", "xpress-cable", "carrier", "null-router"] },
+              "part": { "type": "string", "minLength": 1, "description": "Cable assembly part number, e.g. 018-0564-001." },
+              "length_in": { "type": "integer", "minimum": 1, "description": "Cable length in inches." },
+              "color": { "type": "string", "minLength": 1, "description": "Cable jacket colour." }
+            }
+          },
+          "provenance": { "$ref": "#/$defs/fact-provenance" },
+          "sources": { "$ref": "#/$defs/sources" },
+          "evidence_gap": { "type": "string", "minLength": 1 },
+          "notes": { "type": "string" }
+        }
+      }
+    },
+
+    "connections": {
+      "type": "array",
+      "description": "Edges. Each attaches a component to a bus at a placement the bus type defines.",
+      "items": {
+        "type": "object",
+        "required": ["component", "bus"],
+        "additionalProperties": false,
+        "properties": {
+          "component": { "$ref": "#/$defs/identifier" },
+          "bus": { "$ref": "#/$defs/identifier" },
+          "role": { "enum": ["master", "endpoint", "bridge-upstream", "bridge-downstream"] },
+          "provenance": { "$ref": "#/$defs/fact-provenance" },
+          "sources": { "$ref": "#/$defs/sources" },
+          "evidence_gap": { "type": "string", "minLength": 1 },
+          "fabric_port": { "type": "integer", "minimum": 1, "maximum": 6, "description": "SN0 fabric link port on this component: a Router card port 1-6, or a Hub network-interface port. Valid only on a kind: fabric bus, and unique per (component, port) across all fabric buses. The Hub's own single network-interface port is implicit and needs no number." },
+          "widget": { "type": "integer", "minimum": 0, "maximum": 15, "description": "XIO widget number." },
+          "xio": {
+            "type": "object",
+            "additionalProperties": false,
+            "description": "Distinct physical and logical identities carried by one XIO attachment.",
+            "properties": {
+              "physical_attachment": { "type": "string" },
+              "physical_port": { "type": "integer", "minimum": 0, "maximum": 15 },
+              "host_port": { "type": "integer", "minimum": 0, "maximum": 3 },
+              "discovery_widget": { "type": "integer", "minimum": 0, "maximum": 15 },
+              "enumerated_widget": { "type": "integer", "minimum": 0, "maximum": 15 },
+              "master_widget": { "type": "integer", "minimum": 0, "maximum": 15 },
+              "decoded_widgets": {
+                "type": "array",
+                "minItems": 1,
+                "uniqueItems": true,
+                "items": { "type": "integer", "minimum": 0, "maximum": 15 }
+              },
+              "identity_aliases": {
+                "type": "array",
+                "uniqueItems": true,
+                "items": {
+                  "type": "object",
+                  "required": ["widget", "roles"],
+                  "additionalProperties": false,
+                  "properties": {
+                    "widget": { "type": "integer", "minimum": 0, "maximum": 15 },
+                    "roles": {
+                      "type": "array",
+                      "minItems": 2,
+                      "uniqueItems": true,
+                      "items": { "enum": ["discovery", "enumerated", "master", "decoded", "legacy"] }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "pci_device": { "type": "integer", "minimum": 0, "maximum": 31 },
+          "pci_function": { "type": "integer", "minimum": 0, "maximum": 7 },
+          "cpu_interrupt_inputs": {
+            "type": "object",
+            "required": ["bank0", "bank1", "rt"],
+            "additionalProperties": false,
+            "properties": {
+              "bank0": { "type": "integer", "minimum": 0, "maximum": 5 },
+              "bank1": { "type": "integer", "minimum": 0, "maximum": 5 },
+              "rt": { "type": "integer", "minimum": 0, "maximum": 5 }
+            }
+          },
+          "i2c_address": { "type": "integer", "minimum": 0, "maximum": 127 },
+          "i2c_address_count": { "type": "integer", "minimum": 1, "maximum": 128 },
+          "controlled_by": { "$ref": "#/$defs/identifier", "description": "Component whose node owns or controls this attachment." },
+          "chip_select": { "type": "integer", "description": "Byte-bus device select." },
+          "notes": { "type": "string" }
+        }
+      }
+    },
+
+    "open_questions": {
+      "type": "array",
+      "description": "Things the sources do not settle. Recorded rather than resolved, because a model that guesses is worse than one that admits a gap — and once a generator consumes it, a guess becomes false machine behavior. Each names the candidates and what argues for them.",
+      "items": {
+        "type": "object",
+        "required": ["id", "question", "candidates"],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "$ref": "#/$defs/identifier" },
+          "question": { "type": "string", "description": "What is not known, in one sentence." },
+          "about": { "type": "array", "items": { "$ref": "#/$defs/identifier" }, "description": "Components the question concerns." },
+          "candidates": {
+            "type": "array",
+            "minItems": 2,
+            "items": {
+              "type": "object",
+              "required": ["answer", "source"],
+              "additionalProperties": false,
+              "properties": {
+                "answer": { "type": "string" },
+                "source": { "type": "string", "description": "What says so." },
+                "notes": { "type": "string" }
+              }
+            }
+          },
+          "consequence": { "type": "string", "description": "What depends on the answer, and what is safe to do meanwhile." },
+          "settled_by": { "type": "string", "description": "What observation would close it." }
+        }
+      }
+    },
+
+    "interrupts": {
+      "type": "array",
+      "description": "One entry per source, each an ordered list of hops from the device to the processor. A hop names the component it passes through and how it is identified there.",
+      "items": {
+        "type": "object",
+        "required": ["id", "source", "chain"],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "$ref": "#/$defs/identifier" },
+          "source": { "$ref": "#/$defs/identifier" },
+          "provenance": { "$ref": "#/$defs/fact-provenance" },
+          "sources": { "$ref": "#/$defs/sources" },
+          "evidence_gap": { "type": "string", "minLength": 1 },
+          "description": { "type": "string" },
+          "chain": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "required": ["at", "as"],
+              "additionalProperties": false,
+              "properties": {
+                "at": { "$ref": "#/$defs/identifier", "description": "Component this hop passes through." },
+                "as": { "type": "string", "description": "How the interrupt is identified at this hop: a pin name, a bit, a register, a processor line." },
+                "mechanism": { "enum": ["level", "wire", "xio-write", "pending-bit", "cause-bit"] },
+                "notes": { "type": "string" }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+
+  "$defs": {
+    "r10000-reset-mode": {
+      "type": "object",
+      "required": ["kseg0_cache_algorithm", "processor_device_number", "coherent_request_target", "processor_eliminate_requests", "maximum_outstanding_processor_requests", "system_clock_divisor", "secondary_cache_block_words", "secondary_cache_error_correction", "memory_endianness", "secondary_cache_size_kib", "secondary_cache_clock_divisor", "secondary_cache_clock_tap", "open_drain_system_interface", "cache_test_mode"],
+      "additionalProperties": false,
+      "properties": {
+        "kseg0_cache_algorithm": { "enum": ["uncached", "cacheable-noncoherent", "cacheable-coherent-exclusive", "cacheable-coherent-exclusive-on-write", "uncached-accelerated"] },
+        "processor_device_number": { "type": "integer", "minimum": 0, "maximum": 3 },
+        "coherent_request_target": { "enum": ["external-agent", "broadcast"] },
+        "processor_eliminate_requests": { "type": "boolean" },
+        "maximum_outstanding_processor_requests": { "enum": [1, 2, 3, 4] },
+        "system_clock_divisor": { "enum": [1, 1.5, 2, 2.5, 3, 3.5, 4] },
+        "secondary_cache_block_words": { "enum": [16, 32] },
+        "secondary_cache_error_correction": { "enum": ["retry-access-through-corrector", "always-access-through-corrector"] },
+        "memory_endianness": { "enum": ["little", "big"] },
+        "secondary_cache_size_kib": { "enum": [512, 1024, 2048, 4096, 8192, 16384] },
+        "secondary_cache_clock_divisor": { "enum": [1, 1.5, 2, 2.5, 3] },
+        "secondary_cache_clock_tap": { "enum": [0, 1, 2, 3, 4, 5, 8, 9, 10, 11, 12, 13] },
+        "open_drain_system_interface": { "type": "boolean" },
+        "cache_test_mode": { "type": "boolean" }
+      },
+      "description": "R10000 power-on and cold-reset mode fields from SysAD bits 31:0. Reserved bits are always encoded as zero."
+    },
+    "routed-target": {
+      "required": ["machine", "components"],
+      "properties": {
+        "machine": { "required": ["model_role"], "properties": {
+          "model_role": { "const": "emulation-target" }
+        } },
+        "components": {
+          "contains": { "properties": { "kind": { "const": "router-asic" } } }
+        }
+      }
+    },
+    "composition": {
+      "type": "object",
+      "description": "How the complete model was resolved from reusable authoring layers. This block is generated by tools/system_model.py; consumers never infer omitted product facts from it.",
+      "required": ["architecture", "platform", "assembly", "product", "layers", "topology", "population", "limits"],
+      "additionalProperties": false,
+      "properties": {
+        "architecture": { "$ref": "#/$defs/identifier" },
+        "platform": { "$ref": "#/$defs/identifier" },
+        "assembly": { "$ref": "#/$defs/identifier" },
+        "product": { "$ref": "#/$defs/identifier" },
+        "layers": {
+          "type": "array",
+          "minItems": 3,
+          "items": {
+            "type": "object",
+            "required": ["kind", "id"],
+            "additionalProperties": false,
+            "properties": {
+              "kind": { "enum": ["architecture", "assembly", "module", "product"] },
+              "id": { "$ref": "#/$defs/identifier" }
+            }
+          }
+        },
+        "connector_population": {
+          "type": "array",
+          "description": "Explicit installation choices that preserve the inventory connector evidence. Occupied choices name an installed board attached through that connector.",
+          "items": {
+            "type": "object",
+            "required": ["component", "occupancy", "reason", "provenance", "sources"],
+            "additionalProperties": false,
+            "properties": {
+              "component": { "$ref": "#/$defs/identifier" },
+              "occupancy": { "enum": ["empty", "occupied"] },
+              "occupant": { "$ref": "#/$defs/identifier" },
+              "reason": { "type": "string", "minLength": 1 },
+              "provenance": { "$ref": "#/$defs/fact-provenance" },
+              "sources": { "$ref": "#/$defs/sources" }
+            },
+            "allOf": [{
+              "if": { "properties": { "occupancy": { "const": "occupied" } } },
+              "then": { "required": ["occupant"] },
+              "else": { "not": { "required": ["occupant"] } }
+            }]
+          }
+        },
+        "module_instances": {
+          "type": "array",
+          "minItems": 1,
+          "description": "Physical graph instances imported from a module layer or a complete machine contract. Product identity and address spaces remain local.",
+          "items": {
+            "type": "object",
+            "required": ["model", "prefix", "parent"],
+            "additionalProperties": false,
+            "properties": {
+              "model": { "type": "string", "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+\\.yaml$" },
+              "prefix": { "type": "string", "pattern": "^[a-z][a-z0-9-]*-$" },
+              "module_role": { "enum": ["MASTER", "SLAVE"] },
+              "parent": { "allOf": [{ "$ref": "#/$defs/identifier" }], "description": "An existing component in the enclosing composed graph. The imported root becomes its child." },
+              "physical_slot": {
+                "type": "object",
+                "required": ["kind", "number"],
+                "additionalProperties": false,
+                "description": "The published board position the imported root occupies, for a board fitted into a connector.",
+                "properties": {
+                  "kind": { "enum": ["node", "router", "io"] },
+                  "number": { "type": "integer", "minimum": 1 },
+                  "hub_slot_bits": { "$ref": "#/$defs/hub-slot-bits" }
+                }
+              },
+              "adopt_roots": {
+                "type": "boolean",
+                "description": "Accept a module layer authored flat, with several containment roots, and make every root a child of parent. For a unibody product's module layer that its one-chassis composition merges directly."
+              },
+              "bus_bindings": {
+                "type": "object",
+                "description": "Binds each bus the imported module names but does not declare (a fitted board's upstream bus) to a bus of the enclosing graph.",
+                "additionalProperties": { "$ref": "#/$defs/identifier" }
+              },
+              "omit_buses": {
+                "type": "array",
+                "uniqueItems": true,
+                "items": { "$ref": "#/$defs/identifier" }
+              },
+              "observed_hardware": {
+                "type": "object",
+                "required": ["mode", "sources", "note"],
+                "additionalProperties": false,
+                "description": "Instance-local treatment for observed-hardware claims copied from the source module. Direct means these sources capture this instance. Projected converts copied observations to derived claims based on the cited product symmetry.",
+                "properties": {
+                  "mode": { "enum": ["direct", "projected"] },
+                  "sources": { "$ref": "#/$defs/sources" },
+                  "note": { "type": "string", "minLength": 1 }
+                }
+              }
+            }
+          }
+        },
+        "topology": {
+          "type": "object",
+          "required": ["min_nodes", "max_nodes"],
+          "additionalProperties": false,
+          "properties": {
+            "min_nodes": { "type": "integer", "minimum": 1 },
+            "max_nodes": { "type": "integer", "minimum": 1 },
+            "supported_cpu_populations": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/supported-cpu-population" },
+              "description": "CPU populations supported by the physical product. For an emulation target this is also what the emulator accepts; a population the emulator cannot run belongs to a separate model_role: reference configuration, never a second list."
+            },
+            "node_populations": {
+              "type": "array",
+              "minItems": 1,
+              "items": { "$ref": "#/$defs/node-population" },
+              "description": "Every count of node boards this chassis accepts, smallest first, each fitting the previous row's node slots and more in SGI's fill order. The composition describes the chassis with every node slot fitted; a row names the part of it that count fits. The emulator refuses a row graded unknown."
+            },
+            "provenance": { "$ref": "#/$defs/fact-provenance" },
+            "sources": { "$ref": "#/$defs/sources" },
+            "evidence_gap": { "type": "string", "minLength": 1 }
+          }
+        },
+        "population": { "$ref": "#/$defs/population" },
+        "limits": {
+          "type": "object",
+          "required": ["nodes", "cpus_per_node", "dimms_per_node"],
+          "additionalProperties": false,
+          "properties": {
+            "nodes": { "type": "integer", "minimum": 1 },
+            "cpus_per_node": { "type": "integer", "minimum": 1 },
+            "dimms_per_node": { "type": "integer", "minimum": 1 },
+            "memory_banks_per_node": { "type": "integer", "minimum": 1 },
+            "supported_bank_sizes_mib": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": { "type": "integer", "minimum": 1 }
+            },
+            "main_memory_slots_per_node": { "type": "integer", "minimum": 1 },
+            "main_memory_dimm_positions_per_node": { "type": "integer", "minimum": 1 },
+            "directory_memory_slots_per_node": { "type": "integer", "minimum": 1 },
+            "provenance": { "$ref": "#/$defs/fact-provenance" },
+            "sources": { "$ref": "#/$defs/sources" },
+            "evidence_gap": { "type": "string", "minLength": 1 }
+          }
+        }
+      }
+    },
+
+    "population": {
+      "type": "object",
+      "required": ["nodes", "cpus_per_node"],
+      "additionalProperties": false,
+      "allOf": [
+        { "not": { "required": ["fitted_memory", "memory_mib_per_node"] } },
+        { "not": { "required": ["fitted_memory", "memory_bank_mib_per_node"] } },
+        { "not": { "required": ["fitted_memory", "dimms_per_node"] } }
+      ],
+      "properties": {
+        "nodes": { "type": "integer", "minimum": 1 },
+        "cpus_per_node": { "type": "array", "items": { "type": "integer", "minimum": 0 } },
+        "dimms_per_node": { "type": "array", "items": { "type": "integer", "minimum": 0 } },
+        "memory_mib_per_node": { "type": "array", "minItems": 1, "items": { "type": "integer", "minimum": 1 } },
+        "fitted_memory": {
+          "type": "object",
+          "required": ["status", "reason"],
+          "additionalProperties": false,
+          "properties": {
+            "status": { "enum": ["unknown", "unselected"] },
+            "reason": { "type": "string", "minLength": 1 },
+            "provenance": { "$ref": "#/$defs/fact-provenance" },
+            "sources": { "$ref": "#/$defs/sources" },
+            "evidence_gap": { "type": "string", "minLength": 1 }
+          }
+        },
+        "memory_bank_mib_per_node": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": { "type": "integer", "minimum": 0 }
+          }
+        },
+        "provenance": { "$ref": "#/$defs/fact-provenance" },
+        "sources": { "$ref": "#/$defs/sources" },
+        "evidence_gap": { "type": "string", "minLength": 1 }
+      }
+    },
+
+    "hub-slot-bits": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 7,
+      "description": "For a node slot only: the value the midplane drives on the Hub's slot-identity pins, the low three bits of the Hub's slot-identity register, where it differs from the eight-processor module's own wiring of 8 minus the slot number. The Onyx2 deskside's 4P1G5 midplane drives 3 for node slot 1 and 2 for node slot 2 (docs/datasheets/onyx2.md, Node slot codes)."
+    },
+    "identifier": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]*$",
+      "description": "Stable slug, referenced by connections and interrupt chains."
+    },
+
+    "cpu-population": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "integer", "minimum": 1 }
+    },
+
+    "node-population": {
+      "type": "object",
+      "required": ["node_slots", "supported_cpu_populations", "grade", "sources"],
+      "additionalProperties": false,
+      "properties": {
+        "node_slots": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "integer", "minimum": 1 },
+          "description": "The fitted node slots, in fill order."
+        },
+        "routers": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/identifier" },
+          "description": "The router-asic components this count fits."
+        },
+        "fabric_links": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/identifier" },
+          "description": "The fabric buses this count fits, between its node boards and Routers."
+        },
+        "xio_slots": {
+          "type": "object",
+          "additionalProperties": { "type": "integer", "minimum": 1 },
+          "description": "Every empty XIO connector this count can use, mapped to the node slot whose node board controls it."
+        },
+        "supported_cpu_populations": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/cpu-population" }
+        },
+        "grade": { "enum": ["established", "inferred", "unknown"] },
+        "sources": { "$ref": "#/$defs/sources" },
+        "notes": { "type": "string", "minLength": 1 }
+      }
+    },
+
+    "supported-cpu-population": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/cpu-population"
+        },
+        {
+          "type": "object",
+          "required": ["total_cpus", "nodes", "node_counts", "orientation"],
+          "additionalProperties": false,
+          "properties": {
+            "total_cpus": { "type": "integer", "minimum": 1 },
+            "nodes": { "type": "integer", "minimum": 1 },
+            "node_counts": {
+              "type": "array",
+              "minItems": 1,
+              "items": { "type": "integer", "minimum": 1 }
+            },
+            "orientation": { "const": "unspecified" }
+          }
+        }
+      ]
+    },
+
+    "fact-provenance": {
+      "enum": ["observed-hardware", "vendor-document", "public-header", "vendor-source", "guest-source", "measured-on-our-model", "derived", "unsourced", "datasheet"]
+    },
+
+    "sources": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string", "minLength": 1 }
+    },
+
+    "address": {
+      "type": "string",
+      "pattern": "^0x[0-9a-f_]+$",
+      "description": "Hexadecimal, lowercase, underscores permitted for readability. Consumers parse with a base-16 conversion that tolerates underscores."
+    },
+
+    "component-kind": {
+      "enum": ["chassis", "module", "carrier", "board", "connector", "cpu", "memory", "node-asic", "router-asic", "crossbar", "pci-host-bridge", "io-controller", "bus-controller", "system-controller", "storage-hba", "rtc", "identity", "flash", "subfunction"]
+    },
+
+    "node-asic-facts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["processor_interfaces", "cpus_per_interface"],
+      "description": "A node ASIC's processor-facing capacity: Hub carries one processor interface of two CPUs, Bedrock two interfaces of two CPUs each.",
+      "properties": {
+        "processor_interfaces": { "type": "integer", "minimum": 1 },
+        "cpus_per_interface": { "type": "integer", "minimum": 1 }
+      }
+    },
+
+    "router-asic-facts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["port_count", "role"],
+      "description": "A router-asic's port capacity and its role in the fabric: a full router, a Star Router carrying one node onto a router port, or a Null Router joining two node network interfaces directly.",
+      "properties": {
+        "port_count": { "type": "integer", "minimum": 1 },
+        "role": { "enum": ["router", "star", "null"] }
+      }
+    },
+
+    "crossbar-facts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind"],
+      "description": "Which crossbar chip this component is: a standalone Crossbow, or an XBridge's internal crossbar section.",
+      "properties": {
+        "kind": { "enum": ["xbow", "xbridge"] }
+      }
+    },
+
+    "pci-host-bridge-facts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["heads"],
+      "description": "How many independent PCI buses this bridge presents: one for Bridge and for XBridge in Super Bridge mode, two for XBridge in XBridge mode and for PIC, whose two heads share one widget number.",
+      "properties": {
+        "heads": { "type": "integer", "minimum": 1 }
+      }
+    },
+
+    "system-controller-facts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind"],
+      "description": "Which system-controller part this component is: MSC over I2C (ELSC is SGI's own older name for the same part), L1 over a UART, or the MMSC/L2 variants this catalogue does not yet populate.",
+      "properties": {
+        "kind": { "enum": ["msc", "l1", "mmsc", "l2"] }
+      }
+    },
+
+    "memory-facts": {
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "description": "Installable capacity and geometry for a memory component, populated only where a source states each field: most memory-kind components (directory memory, a board-local SSRAM) have no comparable geometry and carry none of this.",
+      "properties": {
+        "dimm_slots": { "type": "integer", "minimum": 1 },
+        "directory_dimm_slots": { "type": "integer", "minimum": 1 },
+        "banks": { "type": "integer", "minimum": 1 },
+        "dimms_per_bank": { "type": "integer", "minimum": 1 },
+        "bank_sizes_mib": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "integer", "minimum": 1 }
+        }
+      }
+    },
+
+    "component-exclusion": {
+      "type": "object",
+      "required": ["match", "reason"],
+      "additionalProperties": false,
+      "properties": {
+        "match": {
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": false,
+          "properties": {
+            "id": { "$ref": "#/$defs/identifier" },
+            "kind": { "$ref": "#/$defs/component-kind" }
+          }
+        },
+        "reason": { "type": "string", "minLength": 1 },
+        "provenance": { "$ref": "#/$defs/fact-provenance" },
+        "sources": { "$ref": "#/$defs/sources" },
+        "evidence_gap": { "type": "string", "minLength": 1 }
+      }
+    },
+
+    "region": {
+      "type": "object",
+      "required": ["name", "offset"],
+      "additionalProperties": false,
+      "oneOf": [
+        { "required": ["space"], "not": { "required": ["relative_to"] } },
+        { "required": ["relative_to"], "not": { "required": ["space"] } }
+      ],
+      "properties": {
+        "id": { "$ref": "#/$defs/identifier" },
+        "name": { "type": "string" },
+        "space": { "$ref": "#/$defs/identifier", "description": "Address space the offset is measured in. Mutually exclusive with relative_to." },
+        "relative_to": { "$ref": "#/$defs/identifier", "description": "Component whose own register block the offset is measured from, for chip-relative offsets that are not machine addresses. Mutually exclusive with space — a chip offset placed in an address space is a real trap, because the types are right and only the meaning is wrong." },
+        "offset": { "$ref": "#/$defs/address", "description": "Node-relative offset within the space, or chip-relative offset within relative_to." },
+        "size": { "$ref": "#/$defs/address" },
+        "notes": { "type": "string" }
+      }
+    },
+
+    "component": {
+      "type": "object",
+      "required": ["id", "name", "kind", "provenance"],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": { "kind": { "const": "connector" } },
+            "required": ["kind"]
+          },
+          "then": { "required": ["connector"] },
+          "else": { "not": { "required": ["connector"] } }
+        },
+        {
+          "if": {
+            "properties": { "kind": { "const": "node-asic" } },
+            "required": ["kind"]
+          },
+          "then": { "required": ["node_asic"] },
+          "else": { "not": { "required": ["node_asic"] } }
+        },
+        {
+          "if": {
+            "properties": { "kind": { "const": "router-asic" } },
+            "required": ["kind"]
+          },
+          "then": { "required": ["router_asic"] },
+          "else": { "not": { "required": ["router_asic"] } }
+        },
+        {
+          "if": {
+            "properties": { "kind": { "const": "crossbar" } },
+            "required": ["kind"]
+          },
+          "then": { "required": ["crossbar"] },
+          "else": { "not": { "required": ["crossbar"] } }
+        },
+        {
+          "if": {
+            "properties": { "kind": { "const": "pci-host-bridge" } },
+            "required": ["kind"]
+          },
+          "then": { "required": ["pci_host_bridge"] },
+          "else": { "not": { "required": ["pci_host_bridge"] } }
+        },
+        {
+          "if": {
+            "properties": { "kind": { "const": "system-controller" } },
+            "required": ["kind"]
+          },
+          "then": { "required": ["system_controller"] },
+          "else": { "not": { "required": ["system_controller"] } }
+        },
+        {
+          "if": {
+            "not": { "properties": { "kind": { "const": "memory" } } }
+          },
+          "then": { "not": { "required": ["memory"] } }
+        }
+      ],
+      "properties": {
+        "id": { "$ref": "#/$defs/identifier" },
+        "name": { "type": "string", "description": "Canonical name from the component taxonomy. Prose uses this exact string." },
+        "kind": { "$ref": "#/$defs/component-kind" },
+        "hardware_kind": { "$ref": "#/$defs/identifier", "description": "Stable hardware identity used by generated consumers. This names the part family, not a driver or implementation type." },
+        "node_asic": { "$ref": "#/$defs/node-asic-facts" },
+        "router_asic": { "$ref": "#/$defs/router-asic-facts" },
+        "crossbar": { "$ref": "#/$defs/crossbar-facts" },
+        "pci_host_bridge": { "$ref": "#/$defs/pci-host-bridge-facts" },
+        "system_controller": { "$ref": "#/$defs/system-controller-facts" },
+        "memory": { "$ref": "#/$defs/memory-facts" },
+        "processor_slice": { "enum": ["A", "B", "C", "D"], "description": "Fitted physical processor slice on an SN1 node, distinct from the dense CPU index; empty sockets have no component." },
+        "physical_slot": {
+          "type": "object",
+          "required": ["kind", "number"],
+          "additionalProperties": false,
+          "description": "Published board position. Numbers are unique within each containing module and slot kind, separate from runtime node or module identities.",
+          "properties": {
+            "kind": { "enum": ["node", "router", "io"] },
+            "number": { "type": "integer", "minimum": 1 },
+            "hub_slot_bits": { "$ref": "#/$defs/hub-slot-bits" }
+          }
+        },
+        "provenance": {
+          "enum": ["observed-hardware", "vendor-document", "public-header", "vendor-source", "guest-source", "measured-on-our-model", "derived", "unsourced", "datasheet"],
+          "description": "What this entry's existence and placement are checked against; register-level values are the datasheets' business and are not tracked here. Ordered by what it would take for the entry to be wrong. observed-hardware: a real Origin 200 reported it, wrong only if the capture is misread or the machine captured differs from ours. vendor-document: a vendor manual, specification or service figure states it - cite it to the page, because the commonest failure is a document describing an adjacent machine. public-header: a public source defines it so anyone can check it without our trees; the header itself can be wrong. vendor-source: read from vendor firmware or kernel code. guest-source: read from a guest driver, which is evidence about what its authors believed. measured-on-our-model: observed by running our own machine, which is evidence about the model and not the hardware, and must never be the sole provenance for a claim about the machine. derived: computed from other entries, named in derived_from. unsourced: nobody has checked, and this is the value the completeness audit exists to surface. datasheet: a claim retained from a reviewed datasheet; review records live in docs/reviews/. Required, because provenance does not travel with a claim when it moves between documents."
+        },
+        "aliases": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Other names this part goes by, recorded so a reader searching a source tree finds it. These are cross-references, not our names for the thing — the canonical name is `name`. Each entry says whose name it is, inside the string rather than beside it, so the attribution cannot be separated from the value by anything that consumes this field."
+        },
+        "description": { "type": "string" },
+        "parent": { "$ref": "#/$defs/identifier", "description": "Containing component, for subfunctions and internal units." },
+        "optional": {
+          "type": "object",
+          "required": ["node", "default_enabled"],
+          "additionalProperties": false,
+          "properties": {
+            "node": { "type": "integer", "minimum": 0 },
+            "default_enabled": { "type": "boolean" }
+          }
+        },
+        "connector": {
+          "type": "object",
+          "required": ["interface", "occupancy"],
+          "additionalProperties": false,
+          "description": "A physical slot or connector without an invented endpoint device.",
+          "properties": {
+            "interface": { "type": "string" },
+            "location": { "type": "string" },
+            "occupancy": { "enum": ["empty", "opaque", "occupied"] },
+            "notes": { "type": "string" }
+          }
+        },
+        "datasheet_contracts": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^docs/datasheets/[a-z0-9][a-z0-9-]*\\.md$"
+          },
+          "description": "Reviewed repository-relative behavior contracts for this hardware component."
+        },
+
+        "identity": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "What the part reports about itself when a guest asks.",
+          "properties": {
+            "widget_part": { "$ref": "#/$defs/address" },
+            "widget_mfg": { "$ref": "#/$defs/address" },
+            "processor_identification": { "$ref": "#/$defs/address" },
+            "fpu_identification": { "$ref": "#/$defs/address" },
+            "ni_revision": { "type": "integer", "minimum": 0, "maximum": 15 },
+            "widget_revision": { "type": "integer", "minimum": 0, "maximum": 15 },
+            "pci_vendor": { "$ref": "#/$defs/address" },
+            "pci_device": { "$ref": "#/$defs/address" },
+            "pci_subsystem_id": { "$ref": "#/$defs/address" },
+            "pci_revision": { "type": "integer", "minimum": 0, "maximum": 255 },
+            "mii_phy": {
+              "type": "object",
+              "required": ["address", "part"],
+              "additionalProperties": false,
+              "description": "Reviewed Origin 300 IO-8 IOC3 MII transceiver selection.",
+              "properties": {
+                "address": { "const": 1 },
+                "part": { "const": "dp83843" }
+              }
+            },
+            "hardware_revision": { "type": "integer", "minimum": 0, "maximum": 255 },
+            "chip_inputs": { "type": "integer", "minimum": 0, "maximum": 15 },
+            "part": { "type": "string", "minLength": 1 },
+            "clock_mhz": { "type": "integer", "minimum": 1 },
+            "clock_hz": { "type": "integer", "minimum": 1 },
+            "cache_mib": { "type": "integer", "minimum": 1 },
+            "variants": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "required": ["clock_mhz", "cache_mib"],
+                "additionalProperties": false,
+                "properties": {
+                  "clock_mhz": { "type": "integer", "minimum": 1 },
+                  "cache_mib": { "type": "integer", "minimum": 1 }
+                }
+              },
+              "description": "Supported CPU SKU choices for a replaceable fitted part. The product selection chooses one and firmware must agree."
+            },
+            "cache_clock_mhz": { "type": "integer", "minimum": 1 },
+            "notes": { "type": "string" }
+          }
+        },
+
+        "regions": {
+          "type": "array",
+          "description": "Memory regions the component answers at, as an offset within a named address space.",
+          "items": { "$ref": "#/$defs/region" }
+        },
+
+        "views": {
+          "type": "array",
+          "description": "Address aliases a flash component's one stored payload answers at (the reset vector, a local boot aperture, a remote boot aperture). Every view is the same underlying storage, unlike regions, which are distinct.",
+          "items": { "$ref": "#/$defs/region" }
+        },
+
+        "sources": { "type": "array", "items": { "type": "string" }, "description": "Where the facts in this entry came from." },
+        "notes": { "type": "string" }
+      }
+    }
+  }
+}

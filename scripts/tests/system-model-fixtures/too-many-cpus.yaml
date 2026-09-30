@@ -1,0 +1,5 @@
+configuration_version: 1
+layers:
+  - layers/sn0.yaml
+  - layers/ip29.yaml
+  - layers/origin200-too-many-cpus.yaml

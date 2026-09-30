@@ -1,0 +1,6 @@
+# Non-graphics Onyx 350 reference; resolve before validation.
+configuration_version: 1
+layers:
+  - layers/architectures/sn1.yaml
+  - layers/assemblies/ip53.yaml
+  - layers/products/onyx350-base.yaml

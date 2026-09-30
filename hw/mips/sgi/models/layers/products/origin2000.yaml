@@ -1,0 +1,31 @@
+# Origin 2000 product limits plus one four-node reference configuration.
+layer_version: 1
+layer:
+  kind: product
+  id: origin2000
+  requires: {assembly: ip27}
+  topology:
+    min_nodes: 1
+    max_nodes: 128
+    provenance: vendor-document
+    sources: ["007-3791-002 catalogue revision 002 internal revision 0B printed and PDF pages 6 and 34 mapping trusted"]
+  population:
+    nodes: 4
+    cpus_per_node: [2, 2, 2, 2]
+    fitted_memory:
+      status: unknown
+      reason: The four-node reference does not specify an installed memory capacity.
+      provenance: vendor-document
+      sources: ["108-0175-001 Figures 3-5 printed pages 4-8 PDF pages 18-22 mapping trusted"]
+    provenance: vendor-document
+    sources: ["108-0175-001 Figures 3-5 printed pages 4-8 PDF pages 18-22 mapping trusted"]
+  cpu_selection:
+    default: {clock_mhz: 180, cache_mib: 1}
+    slots: [node-board-1-cpu-a, node-board-1-cpu-b, node-board-2-cpu-a, node-board-2-cpu-b,
+      node-board-3-cpu-a, node-board-3-cpu-b, node-board-4-cpu-a, node-board-4-cpu-b]
+  data:
+    machine:
+      name: Origin 2000
+      model_role: reference
+      notes: The inventory describes one four-node module, not the 128-node-board product maximum.
+    evidence_policy: strict

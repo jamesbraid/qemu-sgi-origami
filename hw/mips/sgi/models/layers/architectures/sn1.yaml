@@ -1,0 +1,94 @@
+# Shared SN1 address architecture.
+layer_version: 1
+layer:
+  kind: architecture
+  id: sn1
+  contract: {generation: SN1, architecture_ip: IP35, kernel_ip: IP27}
+  data:
+    model_version: 1
+    evidence_policy: strict
+    space_selection:
+      mechanism: processor-attribute
+      bits: "58:57"
+      count: 4
+      provenance: public-header
+      sources: ["openbsd:2df91d80c1 sys/arch/mips64/include/cpu.h lines 92 to 113", "linux-ip35:9f613a321ea0 arch/mips/include/asm/mach-ip35/spaces.h lines 13 to 22", "linux-history:7570df54ef8c include/asm-ia64/sn/sn1/bedrock.h lines 40 to 44"]
+      notes: >-
+        Unchanged from the Origin 200: two uncached-attribute bits the R10000-family
+        processor drives beside the 40-bit physical address. The seven-space,
+        address-field encoding this file once carried matches no public source, MIPS
+        or Itanium; the Origin 200's two-bit emulation carrier therefore fits this
+        generation as it stands.
+
+    processors:
+      - part: r14000
+        variants:
+          - clock_mhz: 500
+            cache_mib: 2
+            reset_mode_bits: "0x009aa985"
+            notes: >-
+              QEMU's currently shipping 500 MHz/2 MiB Origin 300 configuration
+              writes this exact Config0 low-25-bit reset word (readback
+              0x6c9aa985), independently reviewed in
+              docs/reviews/origin300-config0-reset-word-review.md and recorded
+              in docs/datasheets/r14000.md. No product here yet reads this
+              field; it moves machine.firmware_config.processor_reset_mode
+              here for a future compiler once a Bedrock-node compile path
+              exists. The complete Config0 write mask remains unestablished
+              for R14000 (docs/datasheets/r14000.md), so only the literal
+              word is carried, not a named-field encoding.
+          - clock_mhz: 600
+            cache_mib: 2
+        provenance: observed-hardware
+        sources: ["108-0263-004 (Origin 300 scan tools guide), configuration names"]
+
+    address_spaces:
+      - id: cached
+        name: cached
+        unmapped_base: "0xa800_0000_0000_0000"
+        node_stride: "0x2_0000_0000"
+        provenance: datasheet
+        notes: The cached xkphys base, with no attribute; the same value as the Origin 200.
+
+      - id: hub-special
+        name: Hub special
+        selector: 0
+        unmapped_base: "0x9000_0000_0000_0000"
+        node_stride: "0x2_0000_0000"
+        provenance: datasheet
+        notes: >-
+          Attribute 0, as on the Origin 200. Split on IP35 into a 128 MB local
+          register window at 0x1000_0000 and a 128 MB boot window at 0x1800_0000,
+          with remote forms at 0x3000_0000 and 0x3800_0000. The L1 UART is inside
+          the register window. The OpenBSD board-identification read remains an
+          unresolved consumer requirement.
+
+      - id: io
+        name: I/O
+        selector: 1
+        unmapped_base: "0x9200_0000_0000_0000"
+        node_stride: "0x2_0000_0000"
+        provenance: datasheet
+        notes: >-
+          16 MB small windows at widget times 16 MB; 512 MB big windows in M mode at
+          (entry plus one) times 512 MB, selected by seven translation entries; the
+          Bedrock's own registers are widget 1 of the node.
+
+      - id: memory-special
+        name: memory special
+        selector: 2
+        unmapped_base: "0x9400_0000_0000_0000"
+        node_stride: "0x2_0000_0000"
+        provenance: datasheet
+        notes: Attribute 2.
+
+      - id: memory
+        name: uncached memory
+        selector: 3
+        unmapped_base: "0x9600_0000_0000_0000"
+        node_stride: "0x2_0000_0000"
+        provenance: datasheet
+        notes: >-
+          Attribute 3. The node number sits at physical bits 39:33 in M mode, seven
+          bits, an 8 GB node window and 128 nodes; N mode halves the window and is
+          out of scope.

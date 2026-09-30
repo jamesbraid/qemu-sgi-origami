@@ -1,0 +1,43 @@
+# Rack Tezro first enclosure, with no optional second enclosure fitted.
+layer_version: 1
+layer:
+  kind: product
+  id: tezro-rack-base
+  requires: {assembly: ip53-tezro}
+  topology:
+    min_nodes: 1
+    max_nodes: 1
+    supported_cpu_populations: [[1], [2], [4]]
+    provenance: vendor-document
+    sources: ["007-4643-003 printed pages 21, 27-29: first enclosure has one, two or four processors"]
+  population:
+    nodes: 1
+    cpus_per_node: [1]
+    fitted_memory:
+      status: unknown
+      reason: The guide gives memory limits, not the installed DIMMs in this reference.
+      provenance: derived
+      sources: ["007-4643-003 printed pages 21 and 28-29: 512 MB to 8 GB in one enclosure"]
+    provenance: vendor-document
+    sources: ["007-4643-003 printed pages 21 and 28: one-processor first enclosure"]
+  data:
+    machine:
+      name: Tezro rack, one enclosure
+      model_role: reference
+      notes: >-
+        One enclosure carries the processor board, memory, IO9 in the first
+        PCI slot, and four PCI/PCI-X slots on two buses. The guide depicts
+        Bedrock and PIC in its system architecture figure. The NUMAlink
+        connector is unoccupied in this selected configuration. ASIC
+        revisions, widget placement, PCI device numbers and fitted DIMMs
+        are unknown. Graphics hardware is outside this reference.
+    evidence_policy: strict
+    components:
+      - {id: first-enclosure, name: first rack enclosure, kind: chassis, provenance: vendor-document, sources: ["007-4643-003 printed pages 21-22: single enclosure"]}
+      - {id: cpu0, name: R16000, kind: cpu, hardware_kind: r16000, parent: first-enclosure, provenance: vendor-document, sources: ["007-4643-003 printed page 28: one-processor option"]}
+      - {id: memory, name: node memory, kind: memory, parent: first-enclosure, provenance: vendor-document, sources: ["007-4643-003 printed pages 28-29: eight DIMM sockets"]}
+      - {id: io9, name: IO9 card, kind: io-controller, parent: first-enclosure, provenance: vendor-document, sources: ["007-4643-003 printed pages 24 and 27: IO9 in first enclosure"]}
+    buses:
+      - {id: pci, name: PCI/PCI-X slots on two buses, kind: pci, provenance: vendor-document, sources: ["007-4643-003 printed pages 21 and 24: four slots on two buses"]}
+    connections:
+      - {component: io9, bus: pci, role: endpoint, provenance: vendor-document, sources: ["007-4643-003 printed page 24: IO9 in bottom slot"]}

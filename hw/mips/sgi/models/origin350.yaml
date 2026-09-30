@@ -1,0 +1,7 @@
+# Origin 350 reference composition. Resolve before validation or generation.
+configuration_version: 1
+layers:
+  - layers/architectures/sn1.yaml
+  - layers/assemblies/ip53.yaml
+  - layers/modules/origin350-module.yaml
+  - layers/products/origin350.yaml

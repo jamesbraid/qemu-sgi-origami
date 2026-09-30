@@ -1,0 +1,163 @@
+model_version: 1
+evidence_policy: strict
+machine:
+  name: Origin 2000 router reference
+  generation: SN0
+  board_ip: IP27
+  architecture_ip: IP27
+  kernel_ip: IP27
+  model_role: reference
+
+processors:
+  - part: r10000
+    variants: [{clock_mhz: 180, cache_mib: 1}]
+    provenance: derived
+    sources: ["test fixture"]
+space_selection: {mechanism: not-traced}
+address_spaces: [{id: fabric-space, name: CrayLink fabric}]
+components:
+  - id: router-board
+    name: Router board
+    kind: board
+    provenance: vendor-document
+    sources: [Origin Router fixture source]
+  - id: router
+    name: Router
+    kind: router-asic
+    provenance: vendor-document
+    sources: [Origin Router fixture source]
+    parent: router-board
+    router_asic: {port_count: 6, role: router}
+  - id: link-zero
+    name: Router link 0
+    kind: connector
+    provenance: vendor-document
+    sources: [Origin Router fixture source]
+    parent: router-board
+    connector: {interface: CrayLink, location: port 0, occupancy: opaque}
+  - id: link-one
+    name: Router link 1
+    kind: connector
+    provenance: vendor-document
+    sources: [Origin Router fixture source]
+    parent: router-board
+    connector: {interface: CrayLink, location: port 1, occupancy: opaque}
+  - id: link-two
+    name: Router link 2
+    kind: connector
+    provenance: vendor-document
+    sources: [Origin Router fixture source]
+    parent: router-board
+    connector: {interface: CrayLink, location: port 2, occupancy: opaque}
+  - id: link-three
+    name: Router link 3
+    kind: connector
+    provenance: vendor-document
+    sources: [Origin Router fixture source]
+    parent: router-board
+    connector: {interface: CrayLink, location: port 3, occupancy: opaque}
+  - id: link-four
+    name: Router link 4
+    kind: connector
+    provenance: vendor-document
+    sources: [Origin Router fixture source]
+    parent: router-board
+    connector: {interface: CrayLink, location: port 4, occupancy: opaque}
+  - id: link-five
+    name: Router link 5
+    kind: connector
+    provenance: vendor-document
+    sources: [Origin Router fixture source]
+    parent: router-board
+    connector: {interface: CrayLink, location: port 5, occupancy: opaque}
+buses:
+- id: fabric-zero
+  name: CrayLink 0
+  kind: fabric
+  master: router
+  provenance: vendor-document
+  sources: [Origin Router fixture source]
+- id: fabric-one
+  name: CrayLink 1
+  kind: fabric
+  master: router
+  provenance: vendor-document
+  sources: [Origin Router fixture source]
+- id: fabric-two
+  name: CrayLink 2
+  kind: fabric
+  master: router
+  provenance: vendor-document
+  sources: [Origin Router fixture source]
+- id: fabric-three
+  name: CrayLink 3
+  kind: fabric
+  master: router
+  provenance: vendor-document
+  sources: [Origin Router fixture source]
+- id: fabric-four
+  name: CrayLink 4
+  kind: fabric
+  master: router
+  provenance: vendor-document
+  sources: [Origin Router fixture source]
+- id: fabric-five
+  name: CrayLink 5
+  kind: fabric
+  master: router
+  provenance: vendor-document
+  sources: [Origin Router fixture source]
+
+connections:
+- component: link-zero
+  bus: fabric-zero
+  role: endpoint
+  provenance: vendor-document
+  sources: [Origin Router fixture source]
+- component: link-one
+  bus: fabric-one
+  role: endpoint
+  provenance: vendor-document
+  sources: [Origin Router fixture source]
+- component: link-two
+  bus: fabric-two
+  role: endpoint
+  provenance: vendor-document
+  sources: [Origin Router fixture source]
+- component: link-three
+  bus: fabric-three
+  role: endpoint
+  provenance: vendor-document
+  sources: [Origin Router fixture source]
+- component: link-four
+  bus: fabric-four
+  role: endpoint
+  provenance: vendor-document
+  sources: [Origin Router fixture source]
+- component: link-five
+  bus: fabric-five
+  role: endpoint
+  provenance: vendor-document
+  sources: [Origin Router fixture source]
+composition:
+  architecture: sn0
+  platform: ip27
+  assembly: fixture-board
+  product: fixture-product
+  layers:
+    - {kind: architecture, id: sn0}
+    - {kind: assembly, id: fixture-board}
+    - {kind: product, id: fixture-product}
+  topology:
+    min_nodes: 1
+    max_nodes: 1
+    supported_cpu_populations: [[1]]
+    provenance: derived
+    sources: [Synthetic topology validation fixture]
+  population: {"nodes":1,"cpus_per_node":[1],"fitted_memory":{"status":"unknown","reason":"This fixture describes fabric topology, not installed memory.","provenance":"vendor-document","sources":["Origin Router fixture source"]},"provenance":"vendor-document","sources":["Origin Router fixture source"]}
+  limits:
+    nodes: 1
+    cpus_per_node: 2
+    dimms_per_node: 8
+    provenance: derived
+    sources: [Synthetic topology validation fixture]

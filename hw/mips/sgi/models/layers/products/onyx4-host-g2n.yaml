@@ -1,0 +1,50 @@
+# An Onyx4 boot host plus a G2N compute brick; graphics internals omitted.
+layer_version: 1
+layer:
+  kind: product
+  id: onyx4-host-g2n
+  requires: {assembly: ip53}
+  topology:
+    min_nodes: 2
+    max_nodes: 2
+    supported_cpu_populations: [[2, 2], [2, 4], [4, 2], [4, 4]]
+    provenance: vendor-document
+    sources: ["007-4632-001 printed page 48: Onyx 350 base module has two or four CPUs", "007-4634-002 printed pages 1-2: G2N has two or four CPUs and joins the host compute fabric"]
+  population:
+    nodes: 2
+    cpus_per_node: [2, 2]
+    fitted_memory:
+      status: unknown
+      reason: Neither guide specifies the installed DIMMs for this selected host-and-G2N pair.
+      provenance: derived
+      sources: ["007-4632-001 printed page 48: host memory range", "007-4634-002 printed pages 97-98: G2N DIMM slots and kits"]
+    provenance: derived
+    sources: ["007-4632-001 printed page 48: two-processor Onyx 350 base host", "007-4634-002 printed pages 1-2: two-processor G2N"]
+  data:
+    machine:
+      name: Onyx4 host with G2N
+      model_role: reference
+      notes: >-
+        This selected host is an Onyx 350 base compute module with boot IO9.
+        A G2N contributes another node board, two selected processors and
+        memory over NUMAlink. G2N has no boot I/O and cannot run alone.
+        Graphics internals are outside this reference. The guide's G2 brick is an
+        I/O device attached over XIO and is not a compute node. G2N board
+        revision, fabric port numbers, ASIC widgets, PCI device numbers and
+        installed DIMMs are unknown.
+    evidence_policy: strict
+    components:
+      - {id: host, name: Onyx 350 boot host, kind: chassis, provenance: vendor-document, sources: ["007-4632-001 printed pages 47-48: base module and boot I/O"]}
+      - {id: g2n, name: G2N compute brick, kind: chassis, provenance: vendor-document, sources: ["007-4634-002 printed pages 1-2: G2N adds node board, CPUs and memory"]}
+      - {id: host-cpu0, name: host MIPS processor, kind: cpu, parent: host, provenance: vendor-document, sources: ["007-4632-001 printed page 48: base module two-processor option"]}
+      - {id: host-cpu1, name: host MIPS processor, kind: cpu, parent: host, provenance: vendor-document, sources: ["007-4632-001 printed page 48: base module two-processor option"]}
+      - {id: host-memory, name: host memory, kind: memory, parent: host, provenance: vendor-document, sources: ["007-4632-001 printed page 48: local memory"]}
+      - {id: host-io9, name: host IO9, kind: io-controller, parent: host, provenance: vendor-document, sources: ["007-4632-001 printed page 47: base IO9"]}
+      - {id: g2n-cpu0, name: G2N processor, kind: cpu, parent: g2n, provenance: vendor-document, sources: ["007-4634-002 printed page 1: G2N has two or four CPUs"]}
+      - {id: g2n-cpu1, name: G2N processor, kind: cpu, parent: g2n, provenance: vendor-document, sources: ["007-4634-002 printed page 1: G2N has two or four CPUs"]}
+      - {id: g2n-memory, name: G2N memory, kind: memory, parent: g2n, provenance: vendor-document, sources: ["007-4634-002 printed pages 1 and 97-98: G2N DIMMs"]}
+    buses:
+      - {id: numalink, name: host-to-G2N NUMAlink cable, kind: fabric, provenance: vendor-document, sources: ["007-4634-002 printed pages 2 and 15: direct NUMAlink host-to-G2N connection"]}
+    connections:
+      - {component: host, bus: numalink, role: master, provenance: vendor-document, sources: ["007-4634-002 printed pages 15 and 20: host NUMAlink connector"]}
+      - {component: g2n, bus: numalink, role: endpoint, provenance: vendor-document, sources: ["007-4634-002 printed pages 2 and 15: G2N NUMAlink connector"]}

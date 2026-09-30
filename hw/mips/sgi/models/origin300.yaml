@@ -1,0 +1,21 @@
+# Origin 300 authoring composition. Resolve before validation or generation.
+configuration_version: 1
+layers:
+  - layers/architectures/sn1.yaml
+  - layers/assemblies/ip45.yaml
+  - layers/modules/origin300-base.yaml
+  - layers/products/origin300.yaml
+connector_population:
+  - component: xio-connector
+    occupancy: empty
+    reason: The one-chassis Origin 300 configuration has no graphics enclosure attached.
+    provenance: derived
+    sources: ["007-4365-002 printed page 8: the rear XIO connector is for an external graphics pipeline"]
+  - component: link-connector
+    occupancy: empty
+    reason: >-
+      One chassis: its NUMAlink 3 port is cabled to nothing, as the User's
+      Guide's one-chassis system has it; the base module leaves the LINK
+      connector's occupancy to the composition.
+    provenance: vendor-document
+    sources: ["007-4365-002 printed page 14, Table 1-2: the one-chassis system's NUMAlink port"]

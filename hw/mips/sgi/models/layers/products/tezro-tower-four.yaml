@@ -1,0 +1,50 @@
+# Four-processor selection of the two/four-processor tower interface board.
+layer_version: 1
+layer:
+  kind: product
+  id: tezro-tower-four
+  requires: {assembly: ip53-tezro}
+  topology:
+    min_nodes: 1
+    max_nodes: 1
+    supported_cpu_populations: [[4]]
+    provenance: vendor-document
+    sources: ["007-4564-001 printed pages 27, 29, 38-39: two/four processors and eight PCI-X slots on four buses"]
+  population:
+    nodes: 1
+    cpus_per_node: [4]
+    fitted_memory:
+      status: unknown
+      reason: The guide states a 1 GB minimum but no installed DIMM population for this reference.
+      provenance: derived
+      sources: ["007-4564-001 printed page 28: two/four-processor memory minimum"]
+    provenance: vendor-document
+    sources: ["007-4564-001 printed page 27: four-processor option"]
+  data:
+    machine:
+      name: Tezro tower, four processors
+      model_role: reference
+      notes: >-
+        This reference selects four R16000 processors from the documented
+        two- or four-processor tower family. The interface board has eight
+        PCI-X slots on four buses, with IO9 fixed at bus 1 slot 1. Bus 4
+        slot 2 shares an opening with the second XIO slot. The one-processor
+        tower has a different interface board. Bedrock and PIC revision,
+        widget placement, PCI device numbers, and fitted DIMMs are unknown.
+        The overview on printed page 29 says three PCI buses, but the
+        detailed bus list and slot figure on printed pages 38-39 enumerate
+        four; this reference follows the detailed list. Graphics hardware
+        is outside this reference.
+    evidence_policy: strict
+    components:
+      - {id: chassis, name: Tezro tower, kind: chassis, provenance: vendor-document, sources: ["007-4564-001 printed pages 23-26: tower enclosure and IP53 board"]}
+      - {id: cpu0, name: R16000, kind: cpu, hardware_kind: r16000, parent: chassis, provenance: vendor-document, sources: ["007-4564-001 printed page 27: four-processor option"]}
+      - {id: cpu1, name: R16000, kind: cpu, hardware_kind: r16000, parent: chassis, provenance: vendor-document, sources: ["007-4564-001 printed page 27: four-processor option"]}
+      - {id: cpu2, name: R16000, kind: cpu, hardware_kind: r16000, parent: chassis, provenance: vendor-document, sources: ["007-4564-001 printed page 27: four-processor option"]}
+      - {id: cpu3, name: R16000, kind: cpu, hardware_kind: r16000, parent: chassis, provenance: vendor-document, sources: ["007-4564-001 printed page 27: four-processor option"]}
+      - {id: memory, name: node memory, kind: memory, parent: chassis, provenance: vendor-document, sources: ["007-4564-001 printed pages 27-28: eight DIMM slots"]}
+      - {id: io9, name: IO9 card, kind: io-controller, parent: chassis, provenance: vendor-document, sources: ["007-4564-001 printed pages 31 and 38: IO9 at bus 1 slot 1"]}
+    buses:
+      - {id: pci, name: PCI-X slots on four buses, kind: pci, provenance: vendor-document, sources: ["007-4564-001 printed pages 38-39: eight slots on four buses"]}
+    connections:
+      - {component: io9, bus: pci, role: endpoint, provenance: vendor-document, sources: ["007-4564-001 printed page 38: IO9 at bus 1 slot 1"]}

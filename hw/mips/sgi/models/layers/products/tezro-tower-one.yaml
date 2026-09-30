@@ -1,0 +1,43 @@
+# One-processor tower Tezro has a distinct interface board.
+layer_version: 1
+layer:
+  kind: product
+  id: tezro-tower-one
+  requires: {assembly: ip53-tezro}
+  topology:
+    min_nodes: 1
+    max_nodes: 1
+    supported_cpu_populations: [[1]]
+    provenance: vendor-document
+    sources: ["007-4564-001 printed pages 26-29, 38, 43: IP53 node board, one-processor interface and its upgrade limit, four PCI-X slots on two buses"]
+  population:
+    nodes: 1
+    cpus_per_node: [1]
+    fitted_memory:
+      status: unknown
+      reason: The guide states a 512 MB minimum but no installed DIMM population for this reference.
+      provenance: derived
+      sources: ["007-4564-001 printed pages 27-28: memory capacity and one-processor minimum"]
+    provenance: vendor-document
+    sources: ["007-4564-001 printed pages 27-29: one R16000 and one-processor interface board"]
+  data:
+    machine:
+      name: Tezro tower, one processor
+      model_role: reference
+      notes: >-
+        The IP53 node board carries one R16000. Its interface board has four
+        PCI-X slots on two buses and one XIO slot; IO9 occupies PCI bus 1,
+        slot 1. The guide rules out fitting a two- or four-processor board as
+        an upgrade to this one-processor workstation. Bedrock and PIC revision,
+        widget placement, PCI device numbers, and fitted DIMMs are unknown.
+        Graphics hardware is outside this reference.
+    evidence_policy: strict
+    components:
+      - {id: chassis, name: Tezro tower, kind: chassis, provenance: vendor-document, sources: ["007-4564-001 printed pages 23-26: tower enclosure and IP53 board"]}
+      - {id: cpu0, name: R16000, kind: cpu, hardware_kind: r16000, parent: chassis, provenance: vendor-document, sources: ["007-4564-001 printed page 27: one-processor option"]}
+      - {id: memory, name: node memory, kind: memory, parent: chassis, provenance: vendor-document, sources: ["007-4564-001 printed pages 27-28: eight DIMM slots and 512 MB one-processor minimum"]}
+      - {id: io9, name: IO9 card, kind: io-controller, parent: chassis, provenance: vendor-document, sources: ["007-4564-001 printed pages 31 and 38: IO9 at bus 1 slot 1"]}
+    buses:
+      - {id: pci, name: PCI-X slots on two buses, kind: pci, provenance: vendor-document, sources: ["007-4564-001 printed pages 29 and 38: four slots on two buses"]}
+    connections:
+      - {component: io9, bus: pci, role: endpoint, provenance: vendor-document, sources: ["007-4564-001 printed pages 31 and 38: IO9 at bus 1 slot 1"]}

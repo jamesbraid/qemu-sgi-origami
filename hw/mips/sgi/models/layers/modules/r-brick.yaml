@@ -1,0 +1,62 @@
+# Origin 3000 R-brick: an eight-port SN1 router, one port cabled to a C-brick.
+layer_version: 1
+layer:
+  kind: module
+  id: r-brick
+  requires: {architecture: sn1}
+  data:
+    components:
+      - id: brick
+        name: R-brick
+        kind: chassis
+        provenance: derived
+      - id: router
+        name: SN1 Router
+        kind: router-asic
+        hardware_kind: router
+        router_asic: {port_count: 8, role: router}
+        provenance: derived
+        parent: brick
+        notes: 3400 R-bricks disable ports 7 and 8; not modeled as a distinct variant here.
+      - {id: port-1, name: "Port 1 (chip A)", kind: connector, provenance: vendor-document, parent: router, connector: {interface: NUMAlink 3, location: chip A, occupancy: opaque, notes: Router-to-router normally.}, sources: ["007-4311-002 p.36-37: ports 1-8 are chip A-H; C-bricks must use 2-5; router to router normally 1, 6, 7, 8 but not restricted; 3400 R-bricks disable 7 and 8; 108-0266-001 p.40-41"]}
+      - {id: port-3, name: "Port 3 (chip C)", kind: connector, provenance: vendor-document, parent: router, connector: {interface: NUMAlink 3, location: chip C, occupancy: opaque, notes: C-brick port range (2-5).}, sources: ["007-4311-002 p.36-37: ports 1-8 are chip A-H; C-bricks must use 2-5; router to router normally 1, 6, 7, 8 but not restricted; 3400 R-bricks disable 7 and 8; 108-0266-001 p.40-41"]}
+      - {id: port-4, name: "Port 4 (chip D)", kind: connector, provenance: vendor-document, parent: router, connector: {interface: NUMAlink 3, location: chip D, occupancy: opaque, notes: C-brick port range (2-5).}, sources: ["007-4311-002 p.36-37: ports 1-8 are chip A-H; C-bricks must use 2-5; router to router normally 1, 6, 7, 8 but not restricted; 3400 R-bricks disable 7 and 8; 108-0266-001 p.40-41"]}
+      - {id: port-5, name: "Port 5 (chip E)", kind: connector, provenance: vendor-document, parent: router, connector: {interface: NUMAlink 3, location: chip E, occupancy: opaque, notes: C-brick port range (2-5).}, sources: ["007-4311-002 p.36-37: ports 1-8 are chip A-H; C-bricks must use 2-5; router to router normally 1, 6, 7, 8 but not restricted; 3400 R-bricks disable 7 and 8; 108-0266-001 p.40-41"]}
+      - {id: port-6, name: "Port 6 (chip F)", kind: connector, provenance: vendor-document, parent: router, connector: {interface: NUMAlink 3, location: chip F, occupancy: opaque, notes: Router-to-router normally.}, sources: ["007-4311-002 p.36-37: ports 1-8 are chip A-H; C-bricks must use 2-5; router to router normally 1, 6, 7, 8 but not restricted; 3400 R-bricks disable 7 and 8; 108-0266-001 p.40-41"]}
+      - {id: port-7, name: "Port 7 (chip G)", kind: connector, provenance: vendor-document, parent: router, connector: {interface: NUMAlink 3, location: chip G, occupancy: opaque, notes: Router-to-router normally; disabled on a 3400 R-brick.}, sources: ["007-4311-002 p.36-37: ports 1-8 are chip A-H; C-bricks must use 2-5; router to router normally 1, 6, 7, 8 but not restricted; 3400 R-bricks disable 7 and 8; 108-0266-001 p.40-41"]}
+      - {id: port-8, name: "Port 8 (chip H)", kind: connector, provenance: vendor-document, parent: router, connector: {interface: NUMAlink 3, location: chip H, occupancy: opaque, notes: Router-to-router normally; disabled on a 3400 R-brick.}, sources: ["007-4311-002 p.36-37: ports 1-8 are chip A-H; C-bricks must use 2-5; router to router normally 1, 6, 7, 8 but not restricted; 3400 R-bricks disable 7 and 8; 108-0266-001 p.40-41"]}
+    buses:
+      - {id: port-1-link, name: Router to port 1, kind: fabric, master: router, provenance: vendor-document, sources: ["007-4311-002 p.36-37: ports 1-8 are chip A-H; C-bricks must use 2-5; router to router normally 1, 6, 7, 8 but not restricted; 3400 R-bricks disable 7 and 8; 108-0266-001 p.40-41"]}
+      - {id: port-3-link, name: Router to port 3, kind: fabric, master: router, provenance: vendor-document, sources: ["007-4311-002 p.36-37: ports 1-8 are chip A-H; C-bricks must use 2-5; router to router normally 1, 6, 7, 8 but not restricted; 3400 R-bricks disable 7 and 8; 108-0266-001 p.40-41"]}
+      - {id: port-4-link, name: Router to port 4, kind: fabric, master: router, provenance: vendor-document, sources: ["007-4311-002 p.36-37: ports 1-8 are chip A-H; C-bricks must use 2-5; router to router normally 1, 6, 7, 8 but not restricted; 3400 R-bricks disable 7 and 8; 108-0266-001 p.40-41"]}
+      - {id: port-5-link, name: Router to port 5, kind: fabric, master: router, provenance: vendor-document, sources: ["007-4311-002 p.36-37: ports 1-8 are chip A-H; C-bricks must use 2-5; router to router normally 1, 6, 7, 8 but not restricted; 3400 R-bricks disable 7 and 8; 108-0266-001 p.40-41"]}
+      - {id: port-6-link, name: Router to port 6, kind: fabric, master: router, provenance: vendor-document, sources: ["007-4311-002 p.36-37: ports 1-8 are chip A-H; C-bricks must use 2-5; router to router normally 1, 6, 7, 8 but not restricted; 3400 R-bricks disable 7 and 8; 108-0266-001 p.40-41"]}
+      - {id: port-7-link, name: Router to port 7, kind: fabric, master: router, provenance: vendor-document, sources: ["007-4311-002 p.36-37: ports 1-8 are chip A-H; C-bricks must use 2-5; router to router normally 1, 6, 7, 8 but not restricted; 3400 R-bricks disable 7 and 8; 108-0266-001 p.40-41"]}
+      - {id: port-8-link, name: Router to port 8, kind: fabric, master: router, provenance: vendor-document, sources: ["007-4311-002 p.36-37: ports 1-8 are chip A-H; C-bricks must use 2-5; router to router normally 1, 6, 7, 8 but not restricted; 3400 R-bricks disable 7 and 8; 108-0266-001 p.40-41"]}
+      - id: c-brick-link
+        name: NUMAlink 3 cable, C-brick to R-brick
+        kind: fabric
+        link: {kind: cable}
+        master: bedrock
+        provenance: vendor-document
+        sources: ["007-4311-002 p.36-37: ports 1-8 are chip A-H; C-bricks must use 2-5; router to router normally 1, 6, 7, 8 but not restricted; 3400 R-bricks disable 7 and 8; 108-0266-001 p.40-41"]
+        notes: >-
+          "bedrock" names the C-brick's own Bedrock component, merged ahead of
+          this module instance; deliberately unprefixed so this bus reaches
+          outside the R-brick. Represented as reaching the router directly
+          rather than through a specific numbered port connector: which
+          numbered port a minimal one-C-brick, one-R-brick pairing actually
+          cables to is not a specific documented example (the closure record's
+          populated examples start at 8p, two C-bricks), so ports 1, 3, 4, 5,
+          6, 7 and 8 all stay opaque, and only their class (router-to-router,
+          or a C-brick port in the 2-5 range) is documented on each.
+    connections:
+      - {component: port-1, bus: port-1-link, role: endpoint, provenance: vendor-document, sources: ["007-4311-002 p.36-37: ports 1-8 are chip A-H; C-bricks must use 2-5; router to router normally 1, 6, 7, 8 but not restricted; 3400 R-bricks disable 7 and 8; 108-0266-001 p.40-41"]}
+      - {component: port-3, bus: port-3-link, role: endpoint, provenance: vendor-document, sources: ["007-4311-002 p.36-37: ports 1-8 are chip A-H; C-bricks must use 2-5; router to router normally 1, 6, 7, 8 but not restricted; 3400 R-bricks disable 7 and 8; 108-0266-001 p.40-41"]}
+      - {component: port-4, bus: port-4-link, role: endpoint, provenance: vendor-document, sources: ["007-4311-002 p.36-37: ports 1-8 are chip A-H; C-bricks must use 2-5; router to router normally 1, 6, 7, 8 but not restricted; 3400 R-bricks disable 7 and 8; 108-0266-001 p.40-41"]}
+      - {component: port-5, bus: port-5-link, role: endpoint, provenance: vendor-document, sources: ["007-4311-002 p.36-37: ports 1-8 are chip A-H; C-bricks must use 2-5; router to router normally 1, 6, 7, 8 but not restricted; 3400 R-bricks disable 7 and 8; 108-0266-001 p.40-41"]}
+      - {component: port-6, bus: port-6-link, role: endpoint, provenance: vendor-document, sources: ["007-4311-002 p.36-37: ports 1-8 are chip A-H; C-bricks must use 2-5; router to router normally 1, 6, 7, 8 but not restricted; 3400 R-bricks disable 7 and 8; 108-0266-001 p.40-41"]}
+      - {component: port-7, bus: port-7-link, role: endpoint, provenance: vendor-document, sources: ["007-4311-002 p.36-37: ports 1-8 are chip A-H; C-bricks must use 2-5; router to router normally 1, 6, 7, 8 but not restricted; 3400 R-bricks disable 7 and 8; 108-0266-001 p.40-41"]}
+      - {component: port-8, bus: port-8-link, role: endpoint, provenance: vendor-document, sources: ["007-4311-002 p.36-37: ports 1-8 are chip A-H; C-bricks must use 2-5; router to router normally 1, 6, 7, 8 but not restricted; 3400 R-bricks disable 7 and 8; 108-0266-001 p.40-41"]}
+      - {component: bedrock, bus: c-brick-link, role: master, provenance: vendor-document, sources: ["007-4311-002 p.36-37: ports 1-8 are chip A-H; C-bricks must use 2-5; router to router normally 1, 6, 7, 8 but not restricted; 3400 R-bricks disable 7 and 8; 108-0266-001 p.40-41"]}
+      - {component: router, bus: c-brick-link, role: endpoint, provenance: vendor-document, sources: ["007-4311-002 p.36-37: ports 1-8 are chip A-H; C-bricks must use 2-5; router to router normally 1, 6, 7, 8 but not restricted; 3400 R-bricks disable 7 and 8; 108-0266-001 p.40-41"]}

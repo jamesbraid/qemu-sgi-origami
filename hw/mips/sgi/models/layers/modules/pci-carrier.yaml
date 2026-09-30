@@ -1,0 +1,69 @@
+# The Origin 2000 PCI Carrier Assembly ("PCI module"): an XIO board whose
+# Bridge serves three PCI slots for third-party cards, two full-size and one
+# half-size, fitted in XIO slot 2 (007-3456-003 printed pages 34 and 98).
+# That it is the product SGI's kernels call the PCI "shoebox" is an
+# inference, not a naming fact the manual states: see
+# docs/datasheets/sgi-pci-shoebox.md. A composition fits it into the IO2
+# connector the way it fits the shoehorn (docs/designs/
+# 2026-09-05-origin2000-generated-descriptor.md, "A fitted board in an
+# occupied connector"). The slots are empty; a user fits cards with -device.
+layer_version: 1
+layer:
+  kind: module
+  id: pci-carrier
+  requires:
+    assembly: ip27
+  data:
+    components:
+      - id: pci-carrier
+        name: PCI Carrier Assembly
+        kind: board
+        hardware_kind: pci-carrier
+        identity:
+          part: "030-1062-002"
+          notes: >-
+            Inferred, not captured on this product: SGI's part table names
+            030-1062-002 the Origin 2000 PCI cardcage, PCI_XIO, and a real
+            Origin 2000's PCI XIO board in slot 2 prints part 030-1062-002
+            rev C, name PCI-XIO. The owner's guide names no part for the
+            carrier, so that the carrier is this cardcage is an inference.
+        provenance: vendor-document
+        datasheet_contracts: [docs/datasheets/sgi-pci-shoebox.md]
+        sources: ["007-3456-003 PCI Carrier Assembly and Figure 2-11 printed page 34 PDF page 54; XIO Board Slots printed page 98 PDF page 118", "forum/irixnet-post-32252-ip27-6.5.30-hinv.html real IP27 hinv: PCI-XIO Board part 030-1062-002 rev C at io2, Origin PCI XIO board module 1 slot 2 Revision 3", "reference/sgi-pca-numbers.html 030-1062-002 Origin 2000 PCI cardcage, PCI_XIO"]
+      - id: bridge
+        name: Bridge
+        kind: pci-host-bridge
+        hardware_kind: bridge
+        pci_host_bridge: {heads: 1}
+        identity:
+          widget_part: "0xc002"
+          widget_mfg: "0x36"
+          widget_revision: 3
+          notes: >-
+            Both real PCI_XIO boards observed report Bridge Revision 3
+            (forum/irixnet-post-32252-ip27-6.5.30-hinv.html and
+            forum/nekonomicon-thread-16727716-origin-is-sick-prom-pod.html).
+            Whether every one does is unknown. The model implements Bridge D behavior and only
+            reports this revision in the widget identification register.
+        datasheet_contracts: [docs/datasheets/bridge.md]
+        provenance: derived
+        parent: pci-carrier
+      - {id: slot-1, name: PCI slot 1 (full size), kind: connector, provenance: vendor-document, parent: pci-carrier, connector: {interface: PCI, location: carrier slot 1, occupancy: empty}, sources: ["007-3456-003 PCI Carrier Assembly printed page 34 PDF page 54, two full-size slots and one half-size slot"]}
+      - {id: slot-2, name: PCI slot 2 (full size), kind: connector, provenance: vendor-document, parent: pci-carrier, connector: {interface: PCI, location: carrier slot 2, occupancy: empty}, sources: ["007-3456-003 PCI Carrier Assembly printed page 34 PDF page 54, two full-size slots and one half-size slot"]}
+      - {id: slot-3, name: PCI slot 3 (half size), kind: connector, provenance: vendor-document, parent: pci-carrier, connector: {interface: PCI, location: carrier slot 3, occupancy: empty}, sources: ["007-3456-003 PCI Carrier Assembly printed page 34 PDF page 54, two full-size slots and one half-size slot"]}
+    buses:
+      - {id: pci, name: Carrier PCI, kind: pci, master: bridge, provenance: vendor-document, sources: ["007-3456-003 PCI Carrier Assembly printed page 34 PDF page 54"]}
+    connections:
+      - component: bridge
+        bus: upstream
+        role: bridge-upstream
+        provenance: vendor-document
+        sources: ["007-3456-003 XIO Board Slots printed page 98 PDF page 118, the PCI module goes in XIO slot 2"]
+        notes: >-
+          A placeholder each instance binds to its connector's XIO bus
+          (bus_bindings); the connector's own attachment carries the widget and
+          controlling node.
+      - {component: bridge, bus: pci, role: bridge-downstream, provenance: vendor-document, sources: ["007-3456-003 PCI Carrier Assembly printed page 34 PDF page 54"]}
+      - {component: slot-1, bus: pci, role: endpoint, pci_device: 0, provenance: derived, sources: ["007-3456-003 PCI Carrier Assembly printed page 34 PDF page 54"], notes: "Selected, not captured: no source gives a carrier slot's PCI device number."}
+      - {component: slot-2, bus: pci, role: endpoint, pci_device: 1, provenance: derived, sources: ["007-3456-003 PCI Carrier Assembly printed page 34 PDF page 54"], notes: "Selected, not captured: no source gives a carrier slot's PCI device number."}
+      - {component: slot-3, bus: pci, role: endpoint, pci_device: 2, provenance: derived, sources: ["007-3456-003 PCI Carrier Assembly printed page 34 PDF page 54"], notes: "Selected, not captured: no source gives a carrier slot's PCI device number."}

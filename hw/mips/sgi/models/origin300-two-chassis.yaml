@@ -1,0 +1,40 @@
+# Two-chassis Origin 300 authoring composition. Resolve before validation or generation.
+configuration_version: 1
+layers:
+  - layers/architectures/sn1.yaml
+  - layers/assemblies/ip45.yaml
+  - layers/products/origin300-two-chassis.yaml
+module_instances:
+  - model: layers/modules/origin300-base.yaml
+    prefix: master-
+    module_role: MASTER
+    parent: master-module
+    adopt_roots: true
+    observed_hardware:
+      mode: direct
+      sources: ["boot-logs/openbsd-sgi-list/marc-139223952727384-origin-300-numalink-1.html lines 17 to 62: a direct-cabled pair's PROM hinv, module 001c01 with four 500 MHz R14000s, 2 MB caches, and bridges at widgets 14 and 15", "boot-logs/nekonomicon-thread-17314-origin300-8cpu-hinv-prom.html: IRIX hinv of a direct-cabled pair, module 001c01 node and IO-8 at xtalk 14 and 15"]
+      note: >-
+        Both posted direct-cabled pairs capture the master module's own node,
+        processors, XBridge and IO-8 functions.
+  - model: layers/modules/origin300-base.yaml
+    prefix: slave-
+    module_role: SLAVE
+    parent: slave-module
+    adopt_roots: true
+    observed_hardware:
+      mode: direct
+      sources: ["boot-logs/openbsd-sgi-list/marc-139223952727384-origin-300-numalink-1.html lines 17 to 62: a direct-cabled pair's PROM hinv, module 001c02 with four 500 MHz R14000s, 2 MB caches, and bridges at widgets 14 and 15", "boot-logs/nekonomicon-thread-17314-origin300-8cpu-hinv-prom.html: IRIX hinv of a direct-cabled pair, module 001c02 node and IO-8 at xtalk 14 and 15"]
+      note: >-
+        Both posted direct-cabled pairs capture the slave module's own node,
+        processors, XBridge and IO-8 functions, distinct from the master's.
+connector_population:
+  - component: master-xio-connector
+    occupancy: empty
+    reason: The documented two-server connection uses the LINK ports and fits no graphics enclosure.
+    provenance: derived
+    sources: ["007-4365-002 printed page 38: the two-server cable joins the LINK ports"]
+  - component: slave-xio-connector
+    occupancy: empty
+    reason: The documented two-server connection uses the LINK ports and fits no graphics enclosure.
+    provenance: derived
+    sources: ["007-4365-002 printed page 38: the two-server cable joins the LINK ports"]

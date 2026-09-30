@@ -1,0 +1,87 @@
+# The SGI PCI-XTALK ADAPTER ("PCI shoehorn"): one XIO slot converted to one
+# PCI card position through a Bridge, here fitted with an SGI Cad Duo input
+# card. A composition fits it into an Origin 2000 IO2 connector with a
+# product-level module_instances entry whose parent is that connector and
+# selects the connector occupied; the connector supplies the XIO
+# widget, controlling node and physical port (docs/designs/
+# 2026-09-05-origin2000-generated-descriptor.md, "A fitted board in an
+# occupied connector"). The Bridge's upstream attachment names the
+# placeholder bus `upstream`, which the instance binds to its connector's
+# XIO bus, so the layer fits any XIO slot.
+# docs/datasheets/sgi-pci-shoehorn.md owns the product identity and its
+# open questions.
+layer_version: 1
+layer:
+  kind: module
+  id: pci-shoehorn
+  requires:
+    assembly: ip27
+  data:
+    components:
+      - id: pci-shoehorn
+        name: PCI-XTALK ADAPTER (PCI shoehorn)
+        kind: board
+        hardware_kind: pci-shoehorn
+        identity:
+          part: "030-1275-002"
+          notes: >-
+            SGI assembly read from the board's own label in the ingested
+            reseller photographs; a real Origin 2000 IP27 PROM capture reports
+            an I/O board with this nic. Which platform a given unit came from
+            is open (see the datasheet).
+        provenance: derived
+        datasheet_contracts: [docs/datasheets/sgi-pci-shoehorn.md]
+        sources: ["photos/ebay-277925514107-origin200-xio-pci-shoehorn/listing.html board label 030-1275-002 REV B, PCI-XTALK ADAPTER"]
+      - id: bridge
+        name: Bridge
+        kind: pci-host-bridge
+        hardware_kind: bridge
+        pci_host_bridge: {heads: 1}
+        identity:
+          widget_part: "0xc002"
+          widget_mfg: "0x36"
+          widget_revision: 4
+          notes: >-
+            The photographed ASIC is marked Bridge Rev D, SGI 099-0125-007;
+            the same Bridge D encoding the BaseIO's Bridge selects.
+        datasheet_contracts: [docs/datasheets/bridge.md]
+        provenance: derived
+        parent: pci-shoehorn
+        sources: ["photos/ebay-277925514107-origin200-xio-pci-shoehorn/listing.html board ASIC marked LSI L2A0710 Bridge Rev D, 099-0125-007"]
+      - id: cad-duo
+        name: SGI Cad Duo PCI card IOC3
+        kind: io-controller
+        hardware_kind: ioc3
+        identity:
+          pci_revision: 1
+          notes: >-
+            SGI option board 030-1155-002 carrying one IOC3 with Ethernet and
+            a PS/2 keyboard and mouse. Its PCI subsystem id is not captured.
+        datasheet_contracts: [docs/datasheets/sgi-cad-duo-pci-card.md, docs/datasheets/ioc3.md]
+        provenance: datasheet
+        parent: pci-shoehorn
+      - {id: cad-duo-ethernet, name: Cad Duo Ethernet MAC, kind: subfunction, hardware_kind: ioc3-ethernet, parent: cad-duo, provenance: datasheet}
+      - {id: cad-duo-keyboard-mouse, name: Cad Duo PS/2 keyboard and mouse, kind: subfunction, hardware_kind: ioc3-keyboard-mouse, parent: cad-duo, provenance: datasheet}
+    buses:
+      - {id: pci, name: Shoehorn PCI, kind: pci, master: bridge, provenance: derived, sources: ["photos/ebay-277925514107-origin200-xio-pci-shoehorn/listing.html one PCI daughter-card position on the adapter"]}
+    connections:
+      - component: bridge
+        bus: upstream
+        role: bridge-upstream
+        provenance: derived
+        sources: ["sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf Crossbow example and port table printed pages 249-250 PDF pages 251-252"]
+        notes: >-
+          A placeholder each instance binds to its connector's XIO bus
+          (bus_bindings); the connector's own attachment carries the widget and
+          controlling node.
+      - {component: bridge, bus: pci, role: bridge-downstream, provenance: derived, sources: ["photos/ebay-277925514107-origin200-xio-pci-shoehorn/listing.html one PCI daughter-card position on the adapter"]}
+      - component: cad-duo
+        bus: pci
+        role: endpoint
+        pci_device: 1
+        pci_function: 0
+        provenance: derived
+        sources: ["graphics/mgras-ip27/nekonomicon-thread-5749-page1.html real Origin 2000 hardware graph with a Cad Duo behind an XIO-to-PCI converter at /hw/module/1/slot/io5/xtalk_pci/pci/1/pckb and pcms", "forum/nekonomicon-thread-16727716-origin-is-sick-prom-pod.html real Origin 2000 IRIX console naming /hw/module/1/slot/io5/xtalk_pci/pci/1/scsi_ctlr/0 behind another adapter"]
+        notes: >-
+          Two real Origin 2000 captures show the card behind the adapter at
+          PCI device 1. QEMU's pci-shoehorn preset fixes the same number.

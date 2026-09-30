@@ -1,0 +1,10 @@
+layer_version: 1
+layer:
+  kind: assembly
+  id: ip29
+  platform: ip27
+  requires:
+    architecture: sn0
+  capacity:
+    cpu_slots_per_node: 2
+    dimm_slots_per_node: 8

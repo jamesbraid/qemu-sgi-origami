@@ -1,0 +1,60 @@
+# The BaseIO-G MediaIO daughtercard: a second IOC3 fitted only to the
+# BaseIO-G board variant, carrying the PS/2 keyboard and mouse controller a
+# plain BaseIO's own IOC3 lacks. docs/datasheets/baseio.md's "BaseIO-G and
+# MediaIO boundary" section is the datasheet contract this module follows: a
+# real owner's `hinv -v` places the BaseIO-G's two IOC3s at PCI devices 2 and
+# 6, and the MediaIO IOC3 at device 6 is the one that fits the keyboard and
+# mouse pair. tools/origami_lib/model_compile.py's `_ioc3_has_keyboard_mouse`
+# reads that fitted keyboard-mouse subfunction structurally: any board whose
+# IOC3 population includes one selects the BASEIO_G board kind and QEMU's
+# `io6g` preset (decision D-0026); a board naming none compiles as plain
+# BASEIO/`io6`. Fitting this module under a product's own `baseio` component
+# is what selects BaseIO-G, not a separate declared flag.
+#
+# A composition instances this under its own `baseio` component with
+# `parent: baseio` and binds the placeholder `upstream` bus to that
+# product's own BaseIO PCI bus, the way docs/machines/layers/modules/
+# onyx2-deskside-module.yaml's directly-authored mediaio-ioc3/
+# mediaio-keyboard-mouse components already do; this module exists so a
+# product built on a shared module layer (onyx2-rack) can select the same
+# fitted daughtercard.
+layer_version: 1
+layer:
+  kind: module
+  id: mediaio-g
+  requires:
+    assembly: ip27
+  data:
+    components:
+      - id: ioc3
+        name: MediaIO IOC3
+        kind: io-controller
+        hardware_kind: ioc3
+        identity:
+          pci_revision: 1
+          notes: >-
+            The MediaIO daughtercard's own IOC3; docs/datasheets/baseio.md,
+            "BaseIO-G and MediaIO boundary".
+        datasheet_contracts: [docs/datasheets/baseio.md, docs/datasheets/ioc3.md]
+        provenance: datasheet
+
+      - id: keyboard-mouse
+        name: MediaIO PS/2 keyboard and mouse
+        kind: subfunction
+        hardware_kind: ioc3-keyboard-mouse
+        parent: ioc3
+        provenance: datasheet
+
+    connections:
+      - component: ioc3
+        bus: upstream
+        role: endpoint
+        pci_device: 6
+        pci_function: 0
+        provenance: datasheet
+        sources: ["docs/datasheets/baseio.md BaseIO-G and MediaIO boundary, a real owner's hinv -v listing"]
+        notes: >-
+          A placeholder each instance binds to its own product's BaseIO PCI
+          bus (bus_bindings). A real owner's hinv -v places the BaseIO-G's
+          IOC3s at PCI devices 2 and 6; RAD1 at device 7 is built by QEMU's
+          io6g preset and not authored here.

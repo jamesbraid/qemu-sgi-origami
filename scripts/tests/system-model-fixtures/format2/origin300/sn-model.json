@@ -1,0 +1,8 @@
+{
+  "format": 4,
+  "format_key": "sgi-sn",
+  "outputs": {
+    "sn-catalogue.json": "17567b83b52b77c2aec33cbe022d451582b84b3802aaf2805d8d983b2fb40165"
+  },
+  "source_sha256": "0572655455e661a2ebbb9d2d0725d8e79592424419a1411182646a0bb44a1035"
+}

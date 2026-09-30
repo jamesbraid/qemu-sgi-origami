@@ -1,0 +1,299 @@
+layer_version: 1
+layer:
+  kind: product
+  id: origin200-gigachannel
+  requires: {assembly: ip29}
+  excluded_components:
+    - match: {id: baseio}
+      reason: GIGAchannel uses its external expansion cabinet and does not acquire the Origin 2000 BaseIO board.
+      provenance: vendor-document
+      sources: ["007-3708-002 Figure 1-5 printed page 7 PDF page 33 mapping trusted", "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"]
+  topology:
+    min_nodes: 1
+    max_nodes: 1
+    supported_cpu_populations: [[2], [1]]
+    provenance: vendor-document
+    sources: ["007-3708-002 Figure 1-5 printed page 7 PDF page 33 and attachment limits printed page 22 PDF page 48 mapping trusted"]
+  population:
+    nodes: 1
+    cpus_per_node: [2]
+    provenance: derived
+    sources: ["108-0187-001 inventory section page 3-8 PDF page 34 records two CPUs and 128 MiB in bank 0 on the module carrying the GIGAchannel PCI_XIO board", "007-3709-002 printed pages 46 48 and 53 establishes paired DIMMs in bank 0"]
+  cpu_selection:
+    default: {clock_mhz: 180, cache_mib: 1}
+    slots: [cpu0, base-cpu1]
+  memory_kits_per_node: [kit-128]
+  data:
+    machine:
+      name: Origin 200 GIGAchannel
+      model_role: emulation-target
+      firmware_config:
+        machine_type: 1
+        flash_read_cycles: 15
+        flash_write_cycles: 4
+        provenance: derived
+        sources: ["docs/datasheets/firmware-structures.md boot-flash configuration-block field table and Origin 200 values", "docs/datasheets/address-map.md reviewed Origin 200 firmware and flash address carriers"]
+      emulation:
+        machine_name: origin200
+        display_description: SGI Origin 200 (IP29)
+        profile: gigachannel
+        lifecycle: implemented
+        emulator_constraints:
+          accepted_bank_sizes_mib: [512, 256, 128, 64]
+        synthetic_identities:
+          - component: base-hub
+            serial: "0x0c0b0a090807"
+            reason: Stable synthetic node identity; the attached module keeps the base Origin 200 value.
+          - component: base-bridge
+            serial: "0x060504030201"
+            reason: Stable synthetic I/O board identity; the attached module's IP29 Bridge keeps the base Origin 200 value.
+          - component: base-ioc3
+            serial: "0x5e7000000001"
+            reason: Stable synthetic IOC3 identity; the attached module keeps the base Origin 200 value.
+          - component: gigachannel-bridge
+            serial: "0x060504030208"
+            reason: >-
+              Stable synthetic identity for the cabinet Bridge, distinct from
+              the IP29 Bridge's; its last byte names Crossbow link 8. No real
+              cabinet serial is captured.
+      notes: >-
+        The one-module GIGAchannel system: the two-CPU, 128 MiB attached
+        module from the upgrade guide with its cabinet. A cabinet may attach to
+        either module of a two-module system, but one cabinet cannot be shared
+        between modules and cabinets cannot be daisy-chained; this
+        configuration builds the one-module form only.
+    evidence_policy: strict
+    components:
+      - id: gigachannel-system
+        name: Origin 200 GIGAchannel system
+        kind: chassis
+        provenance: vendor-document
+        sources: ["007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted", "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"]
+      - id: crosstown-cpu
+        name: Crosstown adapter
+        kind: board
+        hardware_kind: crosstown
+        provenance: vendor-document
+        parent: base-ip29-system-board
+        description: >-
+          CPU-side adapter replacing the passive XTalk jumper board, PCA XBOX
+          EXTENSION BOARD O200.
+        identity:
+          part: "030-1264-001"
+        sources: ["108-0187-001 Tables 1-1 and 1-2 section page 1-2 PDF page 14 mapping trusted", "007-3708-002 Figure 1-5 printed page 7 PDF page 33 mapping trusted"]
+      - id: crosstown-identity
+        name: Crosstown board-identity NIC
+        kind: identity
+        provenance: observed-hardware
+        parent: crosstown-cpu
+        identity:
+          part: "030-1264-001"
+        description: >-
+          The XBOX_EXT board record, rev C, that real inventories list beside
+          the IP29 record under io1/MotherBoard. That it answers on the IP29
+          Bridge's own one-wire line is inferred from that grouping, the way
+          the BaseIO-G's MIO record shares its Bridge's line.
+        sources: ["docs/datasheets/sgi-gigachannel.md Product identity and Firmware and IRIX view, citing the Higher Intellect Origin 200 inventories and the 2003 comp.sys.sgi.marketplace owner post"]
+      - id: base-cpu1
+        name: R10000
+        kind: cpu
+        hardware_kind: r10000
+        provenance: vendor-document
+        parent: base-pimm
+        sources: ["007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted", "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"]
+        identity:
+          processor_identification: "0x0926"
+          fpu_identification: "0x0900"
+      - {id: gigachannel-chassis, name: GIGAchannel expansion cabinet, kind: chassis, provenance: vendor-document, parent: gigachannel-system, sources: ["007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted", "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"]}
+      - {id: crosstown-cabinet, name: Crosstown adapter, kind: board, provenance: vendor-document, parent: gigachannel-chassis, description: Cabinet-side paired-cable adapter., sources: ["007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted", "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"]}
+      - id: crossbow
+        name: Crossbow
+        kind: crossbar
+        hardware_kind: xbow
+        crossbar: {kind: xbow}
+        identity:
+          widget_part: "0x0"
+          widget_mfg: "0x0"
+          widget_revision: 2
+          notes: >-
+            Select Crossbow 1.1, the earliest revision accepted by IRIX 6.5.30,
+            as the Origin 2000 module does; no GIGAchannel capture prints the
+            cabinet Crossbow's revision. The part 0x0000 is the whole of the
+            IP27 PROM's cabinet detection.
+        datasheet_contracts: [docs/datasheets/xbow.md]
+        provenance: vendor-document
+        parent: gigachannel-chassis
+        description: >-
+          External cabinet Crossbow. Link A reaches the attached Hub, link 9
+          reaches the IP29 Bridge at io1, link 8 reaches the cabinet Bridge at
+          io7, and links B-F reach the optional positions io2-io6. Revision
+          12.0 retains a read/write NIC register but identifies its MicroLAN
+          controller as nonfunctional, so this reference exposes no Crossbow
+          one-wire bus or responder.
+        sources: ["asic/sgi-crossbow-asic-spec-rev12.0.pdf printed and PDF pages 13 14 29 63 93 and 129 mapping trusted", "007-3708-002 Figure 1-5 printed page 7 PDF page 33 mapping trusted"]
+      - id: gigachannel-midplane
+        name: GIGAchannel midplane
+        kind: board
+        hardware_kind: gigachannel-midplane
+        provenance: vendor-document
+        parent: gigachannel-chassis
+        description: >-
+          PCA XBOX MIDPLANE O200, part 030-1380-002 by two seller listings.
+          The XIO slots, the interface board and the PCI backplane plug into
+          it. That the cabinet Bridge sits on it is inferred: no photograph
+          shows the Bridge on the interface board or on the visible part of
+          the PCI backplane. The board record firmware reads through this
+          Bridge names the interface board instead (gigachannel-identity).
+        sources: ["007-3709-002 printed pages 107-123 PDF pages 123-139 mapping trusted", "docs/datasheets/sgi-gigachannel.md Physical composition"]
+      - id: gigachannel-bridge
+        name: Bridge
+        kind: pci-host-bridge
+        hardware_kind: bridge
+        pci_host_bridge: {heads: 1}
+        provenance: vendor-document
+        parent: gigachannel-midplane
+        description: >-
+          The cited two-module post-installation inventory reports this PCI_XIO
+          board in module 1, slot io7. Its external-flash window holds the
+          BASEIO PROM the IP27 PROM loads on a GIGAchannel; the flash part is
+          not established, so none is fitted.
+        identity:
+          widget_part: "0xc002"
+          widget_mfg: "0x036"
+          widget_revision: 4
+        datasheet_contracts: [docs/datasheets/bridge.md]
+        sources: ["007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted", "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"]
+      - id: gigachannel-identity
+        name: cabinet board-identity NIC
+        kind: identity
+        provenance: observed-hardware
+        parent: gigachannel-chassis
+        identity:
+          part: "030-1252-001"
+        description: >-
+          The XBOX_DUALXTOWN record, rev F, of the 030-1252-001 XBOX XTALK
+          INTERFACE board, which firmware reports at io7. Which one-wire line
+          carries it is not established; this model presents it on the
+          cabinet Bridge's own line, the one the firmware names io7 from.
+        sources: ["docs/datasheets/sgi-gigachannel.md Product identity and Firmware and IRIX view, citing the Higher Intellect Origin 200 inventories and the 2003 comp.sys.sgi.marketplace owner post"]
+      - {id: xio-slot-11, name: XIO slot 11, kind: connector, provenance: vendor-document, parent: gigachannel-chassis, connector: {interface: XIO, location: slot 11, occupancy: opaque}, sources: ["007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted", "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"]}
+      - {id: xio-slot-12, name: XIO slot 12, kind: connector, provenance: vendor-document, parent: gigachannel-chassis, connector: {interface: XIO, location: slot 12, occupancy: opaque}, sources: ["007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted", "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"]}
+      - {id: xio-slot-13, name: XIO slot 13, kind: connector, provenance: vendor-document, parent: gigachannel-chassis, connector: {interface: XIO, location: slot 13, occupancy: opaque}, sources: ["007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted", "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"]}
+      - {id: xio-slot-14, name: XIO slot 14, kind: connector, provenance: vendor-document, parent: gigachannel-chassis, connector: {interface: XIO, location: slot 14, occupancy: opaque}, sources: ["007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted", "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"]}
+      - {id: xio-slot-15, name: XIO slot 15, kind: connector, provenance: vendor-document, parent: gigachannel-chassis, connector: {interface: XIO, location: slot 15, occupancy: opaque}, sources: ["007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted", "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"]}
+      - {id: xio-position-io2, name: XIO position io2, kind: connector, provenance: datasheet, parent: gigachannel-chassis, connector: {interface: XIO, location: io2, occupancy: opaque}, description: The software position io2 on Crossbow link B; which physical slot among 11-15 it is remains unknown., sources: ["docs/datasheets/sgi-gigachannel.md Crossbow link assignment, established by disassembly of the IP27 PROM 6.156 widget-to-slot table"]}
+      - {id: xio-position-io3, name: XIO position io3, kind: connector, provenance: datasheet, parent: gigachannel-chassis, connector: {interface: XIO, location: io3, occupancy: opaque}, description: The software position io3 on Crossbow link C; which physical slot among 11-15 it is remains unknown., sources: ["docs/datasheets/sgi-gigachannel.md Crossbow link assignment, established by disassembly of the IP27 PROM 6.156 widget-to-slot table"]}
+      - {id: xio-position-io4, name: XIO position io4, kind: connector, provenance: datasheet, parent: gigachannel-chassis, connector: {interface: XIO, location: io4, occupancy: opaque}, description: The software position io4 on Crossbow link D; which physical slot among 11-15 it is remains unknown., sources: ["docs/datasheets/sgi-gigachannel.md Crossbow link assignment, established by disassembly of the IP27 PROM 6.156 widget-to-slot table"]}
+      - {id: xio-position-io5, name: XIO position io5, kind: connector, provenance: datasheet, parent: gigachannel-chassis, connector: {interface: XIO, location: io5, occupancy: opaque}, description: The software position io5 on Crossbow link E; which physical slot among 11-15 it is remains unknown., sources: ["docs/datasheets/sgi-gigachannel.md Crossbow link assignment, established by disassembly of the IP27 PROM 6.156 widget-to-slot table"]}
+      - {id: xio-position-io6, name: XIO position io6, kind: connector, provenance: datasheet, parent: gigachannel-chassis, connector: {interface: XIO, location: io6, occupancy: opaque}, description: The software position io6 on Crossbow link F; which physical slot among 11-15 it is remains unknown., sources: ["docs/datasheets/sgi-gigachannel.md Crossbow link assignment, established by disassembly of the IP27 PROM 6.156 widget-to-slot table"]}
+      - {id: pci-slot-1, name: PCI slot 1, kind: connector, provenance: vendor-document, parent: gigachannel-chassis, connector: {interface: PCI, location: slot 1, occupancy: opaque}, sources: ["007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted", "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"]}
+      - {id: pci-slot-2, name: PCI slot 2, kind: connector, provenance: vendor-document, parent: gigachannel-chassis, connector: {interface: PCI, location: slot 2, occupancy: opaque}, sources: ["007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted", "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"]}
+      - {id: pci-slot-3, name: PCI slot 3, kind: connector, provenance: vendor-document, parent: gigachannel-chassis, connector: {interface: PCI, location: slot 3, occupancy: opaque}, sources: ["007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted", "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"]}
+      - {id: pci-slot-4, name: PCI slot 4, kind: connector, provenance: vendor-document, parent: gigachannel-chassis, connector: {interface: PCI, location: slot 4, occupancy: opaque}, sources: ["007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted", "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"]}
+    buses:
+      - {id: cpu-xio, name: CPU-side XIO extension, kind: xio, master: base-hub, provenance: vendor-document, sources: ["007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted", "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"]}
+      - {id: gigachannel-cable-a, name: XIO cable A, kind: xio, master: crosstown-cpu, provenance: vendor-document, sources: ["007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted", "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"]}
+      - {id: gigachannel-cable-b, name: XIO cable B, kind: xio, master: crosstown-cpu, provenance: vendor-document, sources: ["007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted", "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"]}
+      - {id: cabinet-xio, name: cabinet XIO, kind: xio, master: crosstown-cabinet, provenance: vendor-document, sources: ["007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted", "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"]}
+      - {id: crossbow-link-a, name: Crossbow link A to attached Hub, kind: xio, master: crossbow, provenance: vendor-document, sources: ["007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted", "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"]}
+      - {id: crossbow-link-9, name: Crossbow link 9 to IP29 Bridge at io1, kind: xio, master: crossbow, provenance: vendor-document, sources: ["007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted", "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"]}
+      - {id: crossbow-link-8, name: Crossbow link 8 to cabinet Bridge at io7, kind: xio, master: crossbow, provenance: vendor-document, sources: ["007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted", "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"]}
+      - {id: crossbow-link-b, name: Crossbow link B to optional XIO position io2, kind: xio, master: crossbow, provenance: vendor-document, sources: ["007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted", "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"]}
+      - {id: crossbow-link-c, name: Crossbow link C to optional XIO position io3, kind: xio, master: crossbow, provenance: vendor-document, sources: ["007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted", "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"]}
+      - {id: crossbow-link-d, name: Crossbow link D to optional XIO position io4, kind: xio, master: crossbow, provenance: vendor-document, sources: ["007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted", "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"]}
+      - {id: crossbow-link-e, name: Crossbow link E to optional XIO position io5, kind: xio, master: crossbow, provenance: vendor-document, sources: ["007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted", "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"]}
+      - {id: crossbow-link-f, name: Crossbow link F to optional XIO position io6, kind: xio, master: crossbow, provenance: vendor-document, sources: ["007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted", "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"]}
+      - id: cabinet-xio-slot-set
+        name: GIGAchannel cabinet XIO slot set
+        kind: xio
+        master: crossbow
+        provenance: vendor-document
+        sources: ["007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted", "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"]
+        notes: >-
+          Slots 11-15 correspond as a set to links B-F and software positions
+          io2-io6, but the one-to-one physical slot mapping is not established.
+      - id: gigachannel-bridge-one-wire
+        name: cabinet Bridge one-wire line
+        kind: one-wire
+        master: gigachannel-bridge
+        provenance: derived
+        sources: ["docs/datasheets/bridge.md one-wire master", "docs/datasheets/sgi-gigachannel.md Firmware and IRIX view"]
+      - {id: gigachannel-pci, name: GIGAchannel PCI, kind: pci, master: gigachannel-bridge, provenance: vendor-document, sources: ["007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted", "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"]}
+    connections:
+      - {component: base-cpu1, bus: base-sysad, role: master, provenance: vendor-document, sources: ["007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted", "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"]}
+      - {component: base-hub, bus: cpu-xio, role: master, provenance: vendor-document, sources: ["007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted", "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"]}
+      - {component: crosstown-cpu, bus: cpu-xio, role: endpoint, provenance: vendor-document, sources: ["007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted", "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"]}
+      - {component: crosstown-cpu, bus: gigachannel-cable-a, role: master, provenance: vendor-document, sources: ["007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted", "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"]}
+      - {component: crosstown-cabinet, bus: gigachannel-cable-a, role: endpoint, provenance: vendor-document, sources: ["007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted", "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"]}
+      - {component: crosstown-cpu, bus: gigachannel-cable-b, role: master, provenance: vendor-document, sources: ["007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted", "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"]}
+      - {component: crosstown-cabinet, bus: gigachannel-cable-b, role: endpoint, provenance: vendor-document, sources: ["007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted", "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"]}
+      - {component: crosstown-cabinet, bus: cabinet-xio, role: master, provenance: vendor-document, sources: ["007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted", "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"]}
+      - {component: crossbow, bus: cabinet-xio, role: endpoint, provenance: vendor-document, sources: ["007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted", "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"]}
+      - component: base-hub
+        bus: crossbow-link-a
+        role: endpoint
+        provenance: vendor-document
+        sources: ["007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted", "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"]
+        widget: 10
+        notes: >-
+          Logical link A endpoint, inferred (docs/datasheets/sgi-gigachannel.md,
+          Crossbow link assignment); no physical XIO A/B cable is selected.
+      - component: base-bridge
+        bus: crossbow-link-9
+        role: endpoint
+        provenance: vendor-document
+        sources: ["007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted", "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"]
+        controlled_by: base-logic-carrier
+        widget: 9
+        notes: Attached module's IP29 Bridge at software position io1.
+      - component: gigachannel-bridge
+        bus: crossbow-link-8
+        role: endpoint
+        provenance: vendor-document
+        sources: ["007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted", "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"]
+        controlled_by: base-logic-carrier
+        widget: 8
+        notes: Cabinet Bridge at software position io7; installed widget-ID revision 4.
+      - {component: crossbow, bus: crossbow-link-b, role: master, provenance: vendor-document, sources: ["007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted", "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"], notes: Link B reaches software position io2; no physical slot is selected.}
+      - {component: xio-position-io2, bus: crossbow-link-b, role: endpoint, controlled_by: base-logic-carrier, widget: 11, provenance: datasheet, sources: ["docs/datasheets/sgi-gigachannel.md Crossbow link assignment, established by disassembly of the IP27 PROM 6.156 widget-to-slot table"], notes: The IP27 PROM names widget 11 io2 on an Origin 200.}
+      - {component: crossbow, bus: crossbow-link-c, role: master, provenance: vendor-document, sources: ["007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted", "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"], notes: Link C reaches software position io3; no physical slot is selected.}
+      - {component: xio-position-io3, bus: crossbow-link-c, role: endpoint, controlled_by: base-logic-carrier, widget: 12, provenance: datasheet, sources: ["docs/datasheets/sgi-gigachannel.md Crossbow link assignment, established by disassembly of the IP27 PROM 6.156 widget-to-slot table"], notes: The IP27 PROM names widget 12 io3 on an Origin 200.}
+      - {component: crossbow, bus: crossbow-link-d, role: master, provenance: vendor-document, sources: ["007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted", "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"], notes: Link D reaches software position io4; no physical slot is selected.}
+      - {component: xio-position-io4, bus: crossbow-link-d, role: endpoint, controlled_by: base-logic-carrier, widget: 13, provenance: datasheet, sources: ["docs/datasheets/sgi-gigachannel.md Crossbow link assignment, established by disassembly of the IP27 PROM 6.156 widget-to-slot table"], notes: The IP27 PROM names widget 13 io4 on an Origin 200.}
+      - {component: crossbow, bus: crossbow-link-e, role: master, provenance: vendor-document, sources: ["007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted", "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"], notes: Link E reaches software position io5; no physical slot is selected.}
+      - {component: xio-position-io5, bus: crossbow-link-e, role: endpoint, controlled_by: base-logic-carrier, widget: 14, provenance: datasheet, sources: ["docs/datasheets/sgi-gigachannel.md Crossbow link assignment, established by disassembly of the IP27 PROM 6.156 widget-to-slot table"], notes: The IP27 PROM names widget 14 io5 on an Origin 200.}
+      - {component: crossbow, bus: crossbow-link-f, role: master, provenance: vendor-document, sources: ["007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted", "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"], notes: Link F reaches software position io6; no physical slot is selected.}
+      - {component: xio-position-io6, bus: crossbow-link-f, role: endpoint, controlled_by: base-logic-carrier, widget: 15, provenance: datasheet, sources: ["docs/datasheets/sgi-gigachannel.md Crossbow link assignment, established by disassembly of the IP27 PROM 6.156 widget-to-slot table"], notes: The IP27 PROM names widget 15 io6 on an Origin 200.}
+      - {component: xio-slot-11, bus: cabinet-xio-slot-set, role: endpoint, provenance: vendor-document, sources: ["007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted", "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"], notes: Member of the physical slot set; the corresponding link among B-F and software position among io2-io6 are unresolved.}
+      - {component: xio-slot-12, bus: cabinet-xio-slot-set, role: endpoint, provenance: vendor-document, sources: ["007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted", "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"], notes: Member of the physical slot set; the corresponding link among B-F and software position among io2-io6 are unresolved.}
+      - {component: xio-slot-13, bus: cabinet-xio-slot-set, role: endpoint, provenance: vendor-document, sources: ["007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted", "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"], notes: Member of the physical slot set; the corresponding link among B-F and software position among io2-io6 are unresolved.}
+      - {component: xio-slot-14, bus: cabinet-xio-slot-set, role: endpoint, provenance: vendor-document, sources: ["007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted", "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"], notes: Member of the physical slot set; the corresponding link among B-F and software position among io2-io6 are unresolved.}
+      - {component: xio-slot-15, bus: cabinet-xio-slot-set, role: endpoint, provenance: vendor-document, sources: ["007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted", "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"], notes: Member of the physical slot set; the corresponding link among B-F and software position among io2-io6 are unresolved.}
+      - {component: gigachannel-bridge, bus: gigachannel-pci, role: bridge-downstream, provenance: vendor-document, sources: ["007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted", "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"]}
+      - {component: pci-slot-1, bus: gigachannel-pci, role: endpoint, provenance: vendor-document, sources: ["007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted", "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"], notes: Physical slot label only; no installed PCI card is selected.}
+      - {component: pci-slot-2, bus: gigachannel-pci, role: endpoint, provenance: vendor-document, sources: ["007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted", "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"], notes: Physical slot label only; no installed PCI card is selected.}
+      - {component: pci-slot-3, bus: gigachannel-pci, role: endpoint, provenance: vendor-document, sources: ["007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted", "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"], notes: Physical slot label only; no installed PCI card is selected.}
+      - {component: pci-slot-4, bus: gigachannel-pci, role: endpoint, provenance: vendor-document, sources: ["007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted", "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"], notes: Physical slot label only; no installed PCI card is selected.}
+      - {component: gigachannel-bridge, bus: gigachannel-bridge-one-wire, role: master, provenance: derived, sources: ["docs/datasheets/bridge.md one-wire master"]}
+      - component: gigachannel-identity
+        bus: gigachannel-bridge-one-wire
+        role: endpoint
+        provenance: derived
+        sources: ["docs/datasheets/sgi-gigachannel.md What a model needs, item 3: the record is presented without claiming a wiring"]
+      - component: crosstown-identity
+        bus: base-bridge-one-wire
+        role: endpoint
+        provenance: derived
+        sources: ["docs/datasheets/sgi-gigachannel.md Firmware and IRIX view: XBOX_EXT listed beside the IP29 record under io1/MotherBoard"]
+    interrupts:
+      - id: gigachannel-bridge-error
+        source: gigachannel-bridge
+        provenance: derived
+        sources: ["007-3708-002 Figure 1-5 printed page 7 PDF page 33 establishes the physical path"]
+        description: An enabled error in the cabinet Bridge follows the same XIO write protocol as another Bridge interrupt through Crossbow link 8, the fabric, and link A to Hub.
+        chain:
+          - {at: gigachannel-bridge, as: enabled Bridge error interrupt, mechanism: level}
+          - {at: crossbow, as: routed XIO interrupt write, mechanism: xio-write}
+          - {at: base-hub-ii, as: interrupt destination, mechanism: xio-write}
+          - {at: base-hub-pi, as: pending bit and processor mask, mechanism: pending-bit}
+          - {at: base-cpu0, as: hardware interrupt 0 or 1, mechanism: cause-bit}

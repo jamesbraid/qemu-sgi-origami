@@ -1,0 +1,44 @@
+# Origin 300 with the NUMAlink module: one base module on the eight-port SN1 router.
+layer_version: 1
+layer:
+  kind: product
+  id: origin300-numalink-module
+  requires: {assembly: ip45}
+  topology:
+    min_nodes: 1
+    max_nodes: 1
+    provenance: vendor-document
+    sources: ["007-4498-002 p.4, 10, 11, 16, 87, 93, 96, 98, 132: two to eight base modules; module at U20 (tall) or U8 (short); base modules at U18/U16 then U22, U24, U14, U12, U26, U28; global master is the lowest base module"]
+  population:
+    nodes: 1
+    cpus_per_node: [2]
+    fitted_memory:
+      status: unknown
+      reason: The closure record establishes the NUMAlink module's port classes and cabling, not an installed memory population for an attached base module.
+      provenance: derived
+      sources: ["007-4498-002 p.4, 10, 11, 16, 87, 93, 96, 98, 132: two to eight base modules; module at U20 (tall) or U8 (short); base modules at U18/U16 then U22, U24, U14, U12, U26, U28; global master is the lowest base module"]
+    provenance: vendor-document
+    sources: ["007-4498-002 p.4, 10, 11, 16, 87, 93, 96, 98, 132: two to eight base modules; module at U20 (tall) or U8 (short); base modules at U18/U16 then U22, U24, U14, U12, U26, U28; global master is the lowest base module"]
+  cpu_selection:
+    default: {clock_mhz: 500, cache_mib: 2}
+    slots: [cpu0, cpu1]
+  data:
+    machine:
+      name: Origin 300 with the NUMAlink module
+      model_role: reference
+      notes: >-
+        One Origin 300 base module on the NUMAlink module's eight-port SN1
+        Router, the tall-rack packaging that scales from two to eight base
+        modules (two to six in the short rack). Ports 1, 6, 7 and 8 accept base
+        modules only; ports 2 through 5 accept a base or a PCI expansion module
+        and carry USB to the L2; the global master is the lowest base module.
+        The one modeled base module reuses the one-chassis Origin 300 base
+        module's full captured hardware population unchanged. Which of the four
+        base-module-only ports a system with fewer than eight modules occupies
+        is not stated by any source read for this record, so this composition
+        does not wire the base module's LINK connector to a specific numbered
+        port; the port-to-U mapping itself is fully cited on the NUMAlink
+        module's own eight connectors. This configuration never compiles:
+        Origami's QEMU consumer accepts one Origin 300 chassis with no NUMAlink
+        module today.
+    evidence_policy: strict

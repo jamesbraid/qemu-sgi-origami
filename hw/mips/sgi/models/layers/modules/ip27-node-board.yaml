@@ -1,0 +1,46 @@
+# Reusable Origin 2000 IP27 node board: one Hub, two CPUs, main and
+# directory memory, the BX memory-interface ASIC, boot flash and the
+# module-management PCF8584 adapter. A module layer that carries one or
+# more physical node boards instantiates this once per board with a
+# nested module_instances entry, which supplies the board's own id and
+# physical_slot; this file authors neither.
+layer_version: 1
+layer:
+  kind: module
+  id: ip27-node-board
+  data:
+    components:
+      - {id: node-board, name: IP27 node board, kind: board, provenance: vendor-document, sources: ["108-0175-001 Figures 3-5 printed pages 4-8 PDF pages 18-22 mapping trusted"]}
+      - {id: cpu-a, name: R10000-family CPU, kind: cpu, hardware_kind: r10000, provenance: vendor-document, parent: node-board, sources: ["108-0175-001 Figures 3-5 printed pages 4-8 PDF pages 18-22 mapping trusted", "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf printed page 93 documents the 180 MHz R10000 and 1 MiB cache assembly"]}
+      - {id: cpu-b, name: R10000-family CPU, kind: cpu, hardware_kind: r10000, provenance: vendor-document, parent: node-board, sources: ["108-0175-001 Figures 3-5 printed pages 4-8 PDF pages 18-22 mapping trusted", "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf printed page 93 documents the 180 MHz R10000 and 1 MiB cache assembly"]}
+      - {id: main-memory, name: main memory, kind: memory, provenance: vendor-document, parent: node-board, memory: {dimm_slots: 32, directory_dimm_slots: 8, banks: 8, dimms_per_bank: 2, bank_sizes_mib: [64, 128, 512]}, sources: ["007-3439-002 Figure 2-1 and Memory Specifications/Figure 2-4 printed pages 32-36 PDF pages 46-50 mapping trusted"], regions: [{id: node-memory, name: Node memory address aperture, space: memory, offset: '0x0', size: '0x100000000'}]}
+      - {id: directory-memory, name: directory memory, kind: memory, provenance: vendor-document, parent: node-board, sources: ["007-3439-002 Figure 2-1 and Memory Specifications/Figure 2-4 printed pages 32-36 PDF pages 46-50 mapping trusted"]}
+      - {id: bx, name: BX memory-interface ASIC, kind: bus-controller, datasheet_contracts: [docs/datasheets/hub-memory-directory.md], notes: "The reviewed Hub memory contract owns the modeled memory data path. This is not a complete BX register contract or a separate emulated BX device.", provenance: vendor-document, parent: node-board, sources: ["007-3439-002 Figure 2-1 and Memory Specifications/Figure 2-4 printed pages 32-36 PDF pages 46-50 mapping trusted"]}
+      - {id: hub, name: Hub, kind: node-asic, hardware_kind: hub, node_asic: {processor_interfaces: 1, cpus_per_interface: 2}, identity: {ni_revision: 3, widget_revision: 1, notes: "Select Hub 2.1, the earliest revision accepted by IRIX 6.5.30; not a captured chassis revision."}, datasheet_contracts: [docs/datasheets/hub-network-interface.md, docs/datasheets/hub-processor-interface.md, docs/datasheets/hub-memory-directory.md, docs/datasheets/hub-io-interface.md], provenance: vendor-document, parent: node-board, sources: ["007-3439-002 Figure 2-1 and Memory Specifications/Figure 2-4 printed pages 32-36 PDF pages 46-50 mapping trusted"], regions: [{id: hub-registers-local, name: Local Hub registers, space: io, offset: '0x1000000', size: '0x800000'}, {id: hub-registers-node, name: Named Hub registers, space: io, offset: '0x1800000', size: '0x800000'}, {id: hub-local-memory, name: Local uncached memory, space: hub-special, offset: '0x0', size: '0x10000000'}, {id: hub-remote-memory, name: Named uncached memory, space: hub-special, offset: '0x20000000', size: '0x10000000'}, {id: ecc-backdoor, name: ECC backdoor, space: hub-special, offset: '0x80000000', size: '0x40000000'}, {id: directory-backdoor, name: Directory backdoor, space: hub-special, offset: '0xc0000000', size: '0x40000000'}]}
+      - {id: boot-flash, name: 1 MiB node boot flash, kind: flash, hardware_kind: am29f080, parent: node-board, provenance: derived, datasheet_contracts: [docs/datasheets/boot-flash.md], views: [{id: reset, name: Reset vector view, space: memory, offset: '0x1fc00000', size: '0x100000'}, {id: lboot, name: Local boot aperture, space: hub-special, offset: '0x10000000', size: '0x10000000'}, {id: rboot, name: Named boot aperture, space: hub-special, offset: '0x30000000', size: '0x10000000'}]}
+      - id: management-adapter
+        name: PCF8584 node interface
+        kind: bus-controller
+        hardware_kind: pcf8584
+        parent: node-board
+        provenance: derived
+        datasheet_contracts: [docs/datasheets/pcf8584-elsc.md, docs/datasheets/origin2000-module-management.md]
+        regions:
+          - {id: data-register, name: Data register, relative_to: hub, offset: '0x220000'}
+          - {id: control-status-register, name: Control/status register, relative_to: hub, offset: '0x220008'}
+    buses:
+      - {id: sysad, name: node SysAD, kind: sysad, master: cpu-a, provenance: vendor-document, sources: ["108-0175-001 Figures 3-5 printed pages 4-8 PDF pages 18-22 mapping trusted"]}
+      - {id: main-memory-link, name: node BX-to-main-memory data, kind: internal, master: bx, provenance: vendor-document, sources: ["007-3439-002 Figure 2-1 and Memory Specifications/Figure 2-4 printed pages 32-36 PDF pages 46-50 mapping trusted"], notes: "Downstream segment of Figure 2-1's bidirectional main-memory data path through BX."}
+      - {id: directory-memory-link, name: node Hub-to-directory-memory data, kind: directory-bus, master: hub, provenance: vendor-document, sources: ["007-3439-002 Figure 2-1 and Memory Specifications/Figure 2-4 printed pages 32-36 PDF pages 46-50 mapping trusted"], notes: "Figure 2-1's bidirectional directory-data path connects Hub directly to directory memory."}
+      - {id: bx-hub-link, name: node Hub-to-BX main-memory data, kind: internal, master: hub, provenance: vendor-document, sources: ["007-3439-002 Figure 2-1 and Memory Specifications/Figure 2-4 printed pages 32-36 PDF pages 46-50 mapping trusted"], notes: "Upstream segment of Figure 2-1's bidirectional main-memory data path through BX."}
+      - {id: main-memory-control-link, name: node main-memory address/control, kind: internal, master: hub, provenance: vendor-document, sources: ["007-3439-002 Figure 2-1 and Memory Specifications/Figure 2-4 printed pages 32-36 PDF pages 46-50 mapping trusted"], notes: "Figure 2-1 connects this unidirectional path from Hub directly to main memory, bypassing BX."}
+      - {id: directory-control-link, name: node directory address/control, kind: directory-bus, master: hub, provenance: vendor-document, sources: ["007-3439-002 Figure 2-1 and Memory Specifications/Figure 2-4 printed pages 32-36 PDF pages 46-50 mapping trusted"], notes: "Figure 2-1 connects this unidirectional path from Hub directly to directory memory, bypassing BX."}
+    connections:
+      - {component: cpu-a, bus: sysad, role: master, provenance: vendor-document, sources: ["108-0175-001 Figures 3-5 printed pages 4-8 PDF pages 18-22 mapping trusted"]}
+      - {component: cpu-b, bus: sysad, role: master, provenance: vendor-document, sources: ["108-0175-001 Figures 3-5 printed pages 4-8 PDF pages 18-22 mapping trusted"]}
+      - {component: hub, bus: sysad, role: endpoint, provenance: vendor-document, sources: ["108-0175-001 Figures 3-5 printed pages 4-8 PDF pages 18-22 mapping trusted"], cpu_interrupt_inputs: {bank0: 0, bank1: 1, rt: 2}}
+      - {component: main-memory, bus: main-memory-link, role: endpoint, provenance: vendor-document, sources: ["007-3439-002 Figure 2-1 and Memory Specifications/Figure 2-4 printed pages 32-36 PDF pages 46-50 mapping trusted"]}
+      - {component: directory-memory, bus: directory-memory-link, role: endpoint, provenance: vendor-document, sources: ["007-3439-002 Figure 2-1 and Memory Specifications/Figure 2-4 printed pages 32-36 PDF pages 46-50 mapping trusted"]}
+      - {component: bx, bus: bx-hub-link, role: endpoint, provenance: vendor-document, sources: ["007-3439-002 Figure 2-1 and Memory Specifications/Figure 2-4 printed pages 32-36 PDF pages 46-50 mapping trusted"]}
+      - {component: main-memory, bus: main-memory-control-link, role: endpoint, provenance: vendor-document, sources: ["007-3439-002 Figure 2-1 and Memory Specifications/Figure 2-4 printed pages 32-36 PDF pages 46-50 mapping trusted"]}
+      - {component: directory-memory, bus: directory-control-link, role: endpoint, provenance: vendor-document, sources: ["007-3439-002 Figure 2-1 and Memory Specifications/Figure 2-4 printed pages 32-36 PDF pages 46-50 mapping trusted"]}
