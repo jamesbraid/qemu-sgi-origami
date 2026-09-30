@@ -543,6 +543,11 @@ sgi_bedrock_md_watch_page(uint32_t index, uint64_t address, bool placed) "first 
 sgi_bedrock_md_directory_request(uint32_t index, uint16_t pointer, int request, uint64_t old, uint64_t word) "line %u pointer 0x%x request %d: 0x%" PRIx64 " -> 0x%" PRIx64
 
 # sgi-ioc3.c
+sgi_ioc3_chip_control_write(void *chip, uint32_t old, uint32_t value) "ioc3 %p SIO_CR 0x%08x -> 0x%08x"
+sgi_ioc3_serial_read(void *chip, int port, uint32_t reg, uint8_t value) "ioc3 %p serial %c reg %u -> 0x%02x"
+sgi_ioc3_serial_write(void *chip, int port, uint32_t reg, uint8_t value) "ioc3 %p serial %c reg %u <- 0x%02x"
+sgi_ioc3_serial_data_read(void *chip, int port, uint32_t reg) "ioc3 %p serial %c reg %u -> [data]"
+sgi_ioc3_serial_data_write(void *chip, int port, uint32_t reg) "ioc3 %p serial %c reg %u <- [data]"
 sgi_ioc3_sdma_read(uint32_t reg, uint32_t val) "reg 0x%03x -> 0x%08x"
 sgi_ioc3_sdma_write(uint32_t reg, uint32_t val) "reg 0x%03x <- 0x%08x"
 sgi_ioc3_sdma_write_refused(uint32_t reg, uint32_t val) "reg 0x%03x <- 0x%08x refused, hardware owns it"

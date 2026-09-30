@@ -391,6 +391,8 @@ static void sgi_ioc3_main_write(void *opaque, hwaddr addr, uint64_t val,
          * The port offsets aim the serial DMA engines (sdma_aimed()); an
          * engine aimed here may have work waiting that no event will start.
          */
+        trace_sgi_ioc3_chip_control_write(s, s->chip_control,
+                                          val & SGI_IOC3_CHIP_CTRL_MASK);
         s->chip_control = val & SGI_IOC3_CHIP_CTRL_MASK;
         sgi_ioc3_sdma_run(s, 0);
         sgi_ioc3_sdma_run(s, 1);
@@ -586,6 +588,8 @@ static bool sgi_ioc3_serial_flow_cts(SGIIOC3State *s, unsigned int port)
 static uint64_t sgi_ioc3_serial_read(void *opaque, hwaddr addr, unsigned size)
 {
     SGIIOC3SerialAlias *handle = opaque;
+    SerialState *serial = &handle->chip->serial[handle->port];
+    bool is_rbr = addr == UART_RBR_THR && !(serial->lcr & UART_LCR_DLAB);
     uint64_t val = serial_io_ops.read(&handle->chip->serial[handle->port],
                                       addr, 1);
 
@@ -612,6 +616,13 @@ static uint64_t sgi_ioc3_serial_read(void *opaque, hwaddr addr, unsigned size)
         }
     }
 
+    if (is_rbr) {
+        trace_sgi_ioc3_serial_data_read(handle->chip, 'A' + handle->port,
+                                        addr);
+    } else {
+        trace_sgi_ioc3_serial_read(handle->chip, 'A' + handle->port, addr,
+                                   val);
+    }
     return val;
 }
 
@@ -622,6 +633,14 @@ static void sgi_ioc3_serial_write(void *opaque, hwaddr addr, uint64_t val,
     SerialState *serial = &handle->chip->serial[handle->port];
     bool is_thr = addr == UART_RBR_THR && !(serial->lcr & UART_LCR_DLAB);
     bool is_predivider = addr == UART_SCR && (serial->lcr & UART_LCR_DLAB);
+
+    if (is_thr) {
+        trace_sgi_ioc3_serial_data_write(handle->chip, 'A' + handle->port,
+                                         addr);
+    } else {
+        trace_sgi_ioc3_serial_write(handle->chip, 'A' + handle->port,
+                                    addr, val & 0xff);
+    }
 
     /* The one modem-control bit the shared 16550 core masks away. */
     if (addr == UART_MCR) {
