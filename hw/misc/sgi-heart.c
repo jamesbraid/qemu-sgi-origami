@@ -107,6 +107,11 @@ static MemTxResult heart_widget_read(void *opaque, hwaddr offset,
                  (0xc001U << 12) | (0x0036U << 1);
         return MEMTX_OK;
     }
+    if (offset == 0x08 && size == 8 && s->widget_revision == 6 &&
+        s->widget_status_f_measured) {
+        *value = 0x60;
+        return MEMTX_OK;
+    }
     if (offset == 0x24 && size == 4) {
         *value = s->widget_control;
         return MEMTX_OK;
@@ -684,6 +689,8 @@ static const Property heart_properties[] = {
     DEFINE_PROP_UINT64("bank3-size", SGIHeartState, capacity[3], 0),
     DEFINE_PROP_UINT8("widget-revision", SGIHeartState, widget_revision, 0),
     DEFINE_PROP_UINT64("widget-id-64", SGIHeartState, widget_id_64, 0),
+    DEFINE_PROP_BOOL("widget-status-f-measured", SGIHeartState,
+                     widget_status_f_measured, false),
 };
 
 static void heart_init(Object *obj)

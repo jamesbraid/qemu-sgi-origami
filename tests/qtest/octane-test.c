@@ -959,6 +959,32 @@ static void test_octane2_heart_identity(void)
     qtest_quit(qts);
 }
 
+static void test_octane2_heart_widget_status(void)
+{
+    QTestState *qts = octane2_start_args("");
+    uint64_t wide;
+    uint32_t word;
+
+    g_assert_cmpuint(qtest_readq_tx(qts, HEART_WIDGET + 0x08, &wide), ==,
+                     MEMTX_OK);
+    g_assert_cmphex(wide, ==, 0x60);
+    g_assert_cmpuint(qtest_readl_tx(qts, HEART_WIDGET + 0x08, &word), !=,
+                     MEMTX_OK);
+    g_assert_cmpuint(qtest_readl_tx(qts, HEART_WIDGET + 0x0c, &word), !=,
+                     MEMTX_OK);
+    g_assert_cmpuint(qtest_writeq_tx(qts, HEART_WIDGET + 0x08, 0), !=,
+                     MEMTX_OK);
+    g_assert_cmpuint(qtest_writel_tx(qts, HEART_WIDGET + 0x0c, 0), !=,
+                     MEMTX_OK);
+    g_assert_cmphex(qtest_readq(qts, HEART_WIDGET + 0x08), ==, 0x60);
+    qtest_quit(qts);
+
+    qts = octane_start();
+    g_assert_cmpuint(qtest_readq_tx(qts, HEART_WIDGET + 0x08, &wide), !=,
+                     MEMTX_OK);
+    qtest_quit(qts);
+}
+
 static void test_flash_and_pci(void)
 {
     QTestState *qts = octane_start();
@@ -2150,6 +2176,8 @@ int main(int argc, char **argv)
     qtest_add_data_func("/octane/low-ram", GINT_TO_POINTER(0), test_low_ram);
     qtest_add_data_func("/octane2/low-ram", GINT_TO_POINTER(1), test_low_ram);
     qtest_add_func("/octane2/heart-identity", test_octane2_heart_identity);
+    qtest_add_func("/octane2/heart-widget-status",
+                   test_octane2_heart_widget_status);
     qtest_add_func("/octane/flash-and-pci", test_flash_and_pci);
     qtest_add_data_func("/octane/alternate-flash", GINT_TO_POINTER(0),
                         test_alternate_flash);
