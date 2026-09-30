@@ -35,14 +35,16 @@
 #define HEART_RAM_PACKET_SIZE ((HEART_MAX_UNITS + 0x1ffULL) * HEART_UNIT)
 
 #define HEART_ECC_REPORT (1ULL << 0)
+#define HEART_ECC_DOUBLE_REPORT (1ULL << 1)
 #define HEART_INTERRUPT_ENABLE (1ULL << 13)
 #define HEART_ECC_ENABLE (1ULL << 15)
 #define HEART_ECC_GENERATE (1ULL << 19)
 #define HEART_ECC_DOUBLE (1ULL << 20)
 #define HEART_ECC_FORCE_WRITE (1ULL << 21)
 #define HEART_ECC_LOCK (1ULL << 25)
-#define HEART_ECC_UNSUPPORTED \
-    (HEART_ECC_DOUBLE | HEART_ECC_FORCE_WRITE | HEART_ECC_LOCK)
+#define HEART_ECC_GENERATION (HEART_ECC_GENERATE | HEART_ECC_DOUBLE)
+/* Bit zero tags double-bit poison; backing-word keys are eight-byte aligned. */
+#define HEART_ECC_KEY(word) ((word) & ~7ULL)
 #define HEART_ECC_PENDING (1ULL << 63)
 
 static void heart_ecc_map(SGIHeartState *s);
@@ -409,7 +411,7 @@ static unsigned heart_ecc_find(SGIHeartState *s, uint64_t key)
     while (low < high) {
         unsigned middle = low + (high - low) / 2;
 
-        if (s->ecc_words[middle] < key) {
+        if (HEART_ECC_KEY(s->ecc_words[middle]) < key) {
             low = middle + 1;
         } else {
             high = middle;
@@ -418,22 +420,32 @@ static unsigned heart_ecc_find(SGIHeartState *s, uint64_t key)
     return low;
 }
 
-static bool heart_ecc_poisoned(SGIHeartState *s, uint64_t key)
+static unsigned heart_ecc_poisoned(SGIHeartState *s, uint64_t key)
 {
     unsigned index = heart_ecc_find(s, key);
 
-    return index < s->ecc_word_count && s->ecc_words[index] == key;
+    if (index < s->ecc_word_count &&
+        HEART_ECC_KEY(s->ecc_words[index]) == key) {
+        return (s->ecc_words[index] & 1) ? 2 : 1;
+    }
+    return 0;
 }
 
-static void heart_ecc_set(SGIHeartState *s, uint64_t key, bool poisoned)
+static void heart_ecc_set(SGIHeartState *s, uint64_t key, unsigned fault)
 {
     unsigned index = heart_ecc_find(s, key);
-    bool found = index < s->ecc_word_count && s->ecc_words[index] == key;
+    bool found = index < s->ecc_word_count &&
+                 HEART_ECC_KEY(s->ecc_words[index]) == key;
+    uint64_t word = key | (fault == 2);
 
-    if (poisoned == found) {
+    if (found && fault) {
+        s->ecc_words[index] = word;
         return;
     }
-    if (poisoned) {
+    if (!found && !fault) {
+        return;
+    }
+    if (fault) {
         if (s->ecc_word_count == s->ecc_word_capacity) {
             s->ecc_word_capacity = MAX(32, s->ecc_word_capacity * 2);
             s->ecc_words = g_renew(uint64_t, s->ecc_words,
@@ -441,7 +453,7 @@ static void heart_ecc_set(SGIHeartState *s, uint64_t key, bool poisoned)
         }
         memmove(&s->ecc_words[index + 1], &s->ecc_words[index],
                 (s->ecc_word_count - index) * sizeof(uint64_t));
-        s->ecc_words[index] = key;
+        s->ecc_words[index] = word;
         s->ecc_word_count++;
     } else {
         s->ecc_word_count--;
@@ -462,7 +474,7 @@ static MemTxResult heart_ecc_reject(hwaddr address, unsigned size,
 static bool heart_ecc_dma_allowed(SGIHeartState *s, hwaddr address,
                                   unsigned size, bool write)
 {
-    if (write && (s->mode & HEART_ECC_GENERATE)) {
+    if (write && (s->mode & HEART_ECC_GENERATION)) {
         heart_ecc_reject(address, size, "DMA injection");
         return false;
     }
@@ -496,19 +508,29 @@ static MemTxResult heart_ecc_access(SGIHeartState *s, hwaddr offset,
     uint8_t *bytes[8], data[8];
     uint64_t keys[8] = { 0 };
     int mapped[8];
-    bool poisoned = false;
-    bool inject = write && (s->mode & HEART_ECC_GENERATE);
+    unsigned poisoned = 0;
+    uint64_t generation = s->mode & HEART_ECC_GENERATION;
+    bool inject = write && generation;
+    bool force = write && (s->mode & HEART_ECC_FORCE_WRITE);
+    uint64_t required = HEART_ECC_ENABLE |
+                        (generation == HEART_ECC_DOUBLE ?
+                         HEART_ECC_DOUBLE_REPORT : HEART_ECC_REPORT);
 
     for (unsigned i = 0; i < size; i++) {
         mapped[i] = heart_ram_byte(s, address + i, &keys[i], &bytes[i]);
-        poisoned |= mapped[i] > 0 && heart_ecc_poisoned(s, keys[i]);
+        if (mapped[i] > 0) {
+            poisoned = MAX(poisoned, heart_ecc_poisoned(s, keys[i]));
+        }
     }
-    if (inject || poisoned) {
+    if (inject || poisoned || force) {
         if (size != 8 || (address & 7) || keys[0] != keys[7] ||
             mapped[0] <= 0 || mapped[7] <= 0 ||
-            (s->mode & HEART_ECC_UNSUPPORTED) ||
-            (inject && (s->mode & (HEART_ECC_ENABLE | HEART_ECC_REPORT)) !=
-                       (HEART_ECC_ENABLE | HEART_ECC_REPORT))) {
+            (s->mode & HEART_ECC_LOCK) ||
+            (inject && (force || generation == HEART_ECC_GENERATION ||
+                        (s->mode & required) != required)) ||
+            (!write && ((s->mode &
+                         (HEART_ECC_DOUBLE | HEART_ECC_FORCE_WRITE)) ||
+                        (poisoned == 2 && generation)))) {
             return heart_ecc_reject(address, size, write ? "write" : "read");
         }
     }
@@ -528,7 +550,10 @@ static MemTxResult heart_ecc_access(SGIHeartState *s, hwaddr offset,
                 (uint32_t)keys[i] + ((address + i) & 7), 1);
         }
         if (inject || poisoned) {
-            heart_ecc_set(s, keys[0], inject);
+            unsigned fault = inject ?
+                             (generation == HEART_ECC_DOUBLE ? 2 : 1) : 0;
+
+            heart_ecc_set(s, keys[0], fault);
         }
     } else {
         for (unsigned i = 0; i < size; i++) {
@@ -537,16 +562,21 @@ static MemTxResult heart_ecc_access(SGIHeartState *s, hwaddr offset,
         *value = ldn_be_p(data, size);
         if (poisoned) {
             if (!(s->mode & HEART_ECC_ENABLE)) {
-                *value ^= 1;
-            } else if (s->mode & HEART_ECC_REPORT) {
+                *value ^= poisoned == 2 ? 3 : 1;
+            } else if (s->mode & (poisoned == 2 ? HEART_ECC_DOUBLE_REPORT :
+                                  HEART_ECC_REPORT)) {
                 unsigned requester = current_cpu ? current_cpu->cpu_index : 0;
 
                 s->ecc_address = (address & ((1ULL << 34) - 1)) |
-                    (0x13ULL << 34) | ((uint64_t)(requester & 3) << 43);
-                s->ecc_data = *value ^ 1;
-                s->ecc_cause |= 1;
+                    ((poisoned == 2 ? 0x30ULL : 0x13ULL) << 34) |
+                    ((uint64_t)(requester & 3) << 43);
+                s->ecc_data = *value ^ (poisoned == 2 ? 3 : 1);
+                s->ecc_cause |= poisoned == 2 ? 2 : 1;
                 s->pending |= HEART_ECC_PENDING;
                 heart_update_irq(s);
+            }
+            if (poisoned == 2 && (s->mode & HEART_ECC_ENABLE)) {
+                return MEMTX_ERROR;
             }
         }
     }
@@ -606,7 +636,7 @@ static void heart_ecc_map(SGIHeartState *s)
         if (!(d & 0x80000000U) || !s->capacity[bank]) {
             continue;
         }
-        if (s->mode & HEART_ECC_GENERATE) {
+        if (s->mode & (HEART_ECC_GENERATION | HEART_ECC_FORCE_WRITE)) {
             HeartECCRange range = { base, base + units * HEART_UNIT };
 
             g_array_append_val(ranges, range);
@@ -620,14 +650,16 @@ static void heart_ecc_map(SGIHeartState *s)
 
             while (index < s->ecc_word_count &&
                    (s->ecc_words[index] >> 32) == bank &&
-                   (uint32_t)s->ecc_words[index] - backing < HEART_UNIT) {
+                   (uint32_t)HEART_ECC_KEY(s->ecc_words[index]) -
+                   backing < HEART_UNIT) {
                 hwaddr address = base + unit * HEART_UNIT +
-                                  (uint32_t)s->ecc_words[index] - backing;
+                                  (uint32_t)HEART_ECC_KEY(s->ecc_words[index]) -
+                                  backing;
                 uint64_t key;
                 uint8_t *byte;
 
                 if (heart_ram_byte(s, address, &key, &byte) > 0 &&
-                    key == s->ecc_words[index]) {
+                    key == HEART_ECC_KEY(s->ecc_words[index])) {
                     /* Avoid splitting a poisoned access before rejection. */
                     HeartECCRange range = { MAX(HEART_RAM_BASE, address - 8),
                                             address + 16 };
@@ -964,10 +996,12 @@ static int heart_post_load(void *opaque, int version_id)
     s->ecc_word_capacity = s->ecc_word_count;
     for (unsigned i = 0; i < s->ecc_word_count; i++) {
         unsigned bank = s->ecc_words[i] >> 32;
-        uint32_t offset = s->ecc_words[i];
+        uint32_t offset = HEART_ECC_KEY(s->ecc_words[i]);
 
         if (bank >= HEART_BANKS || offset >= s->capacity[bank] ||
-            (offset & 7) || (i && s->ecc_words[i - 1] >= s->ecc_words[i])) {
+            (s->ecc_words[i] & 6) ||
+            (i && HEART_ECC_KEY(s->ecc_words[i - 1]) >=
+                  HEART_ECC_KEY(s->ecc_words[i]))) {
             return -EINVAL;
         }
     }
@@ -986,8 +1020,8 @@ static int heart_post_load(void *opaque, int version_id)
 
 static const VMStateDescription vmstate_heart = {
     .name = TYPE_SGI_HEART,
-    .version_id = 2,
-    .minimum_version_id = 2,
+    .version_id = 3,
+    .minimum_version_id = 3,
     .pre_save = heart_pre_save,
     .pre_load = heart_pre_load,
     .post_load = heart_post_load,
