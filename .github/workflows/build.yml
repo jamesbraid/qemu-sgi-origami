@@ -238,6 +238,21 @@ jobs:
               --expect /src/build-ci/expected-unit.txt
           '
 
+      - name: retain failure diagnostics
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v3
+        with:
+          name: smoke-failure-diagnostics
+          # Keep text logs and test reports, excluding guest disks and assets.
+          path: |
+            build-ci/meson-logs/*.txt
+            build-ci/meson-logs/*.json
+            build-ci/meson-logs/*.xml
+            build-ci/tests/functional/**/*.log
+            !build-ci/tests/functional/**/scratch/**
+          if-no-files-found: warn
+          retention-days: 7
+
       - name: publish the failing step
         if: ${{ failure() }}
         run: |
@@ -452,6 +467,21 @@ jobs:
 
             make -j"$(nproc)" -C /src/build-ci check-qtest-mips64
           '
+
+      - name: retain failure diagnostics
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v3
+        with:
+          name: full-failure-diagnostics
+          # Keep text logs and test reports, excluding guest disks and assets.
+          path: |
+            build-ci/meson-logs/*.txt
+            build-ci/meson-logs/*.json
+            build-ci/meson-logs/*.xml
+            build-ci/tests/functional/**/*.log
+            !build-ci/tests/functional/**/scratch/**
+          if-no-files-found: warn
+          retention-days: 7
 
       - name: publish the failing step
         if: ${{ failure() }}
