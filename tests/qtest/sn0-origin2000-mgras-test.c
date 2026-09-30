@@ -15292,6 +15292,358 @@ static void gl_width_clear(QTestState *qts)
     gl_color3f(qts, 1, 1, 1);
 }
 
+static void gl_polygon_mode(QTestState *s, uint32_t face, uint32_t mode)
+{
+    gl_word(s, GL_POLYGON_MODE_HDR);
+    gl_word(s, face);
+    gl_word(s, mode);
+}
+
+static void gl_polygon_quad(QTestState *s, bool reverse, bool first_edge)
+{
+    static const float xy[4][2] = {
+        { 8.5f, 8.5f }, { 24.5f, 8.5f },
+        { 24.5f, 24.5f }, { 8.5f, 24.5f },
+    };
+
+    gl_word(s, GL_BEGIN_QUADS);
+    for (unsigned i = 0; i < 4; i++) {
+        unsigned v = reverse ? 3 - i : i;
+
+        gl_word(s, i || first_edge ? 0x00000f00 : 0x00001000);
+        gl_vertex2f(s, xy[v][0], xy[v][1]);
+    }
+    gl_word(s, GL_END_OF(GL_BEGIN_QUADS));
+}
+
+static void test_gl_native_polygon_line(void)
+{
+    gl_transform_start(qts);
+    gl_width_clear(qts);
+    gl_polygon_mode(qts, GL_FRONT_AND_BACK, GL_LINE_MODE);
+    gl_polygon_quad(qts, false, true);
+    for (unsigned y = 7; y <= 25; y++) {
+        for (unsigned x = 7; x <= 25; x++) {
+            bool boundary = x >= 8 && x <= 24 && y >= 8 && y <= 24 &&
+                            (x == 8 || x == 24 || y == 8 || y == 24);
+
+            g_assert_cmphex(gl_window_pixel(qts, x, y), ==,
+                            boundary ? 0xffffff : 0);
+        }
+    }
+}
+
+static void test_gl_native_polygon_point(void)
+{
+    gl_transform_start(qts);
+    gl_width_clear(qts);
+    gl_polygon_mode(qts, GL_FRONT_AND_BACK, 0x1b00);
+    gl_word(qts, GL_POINT_SIZE_HDR);
+    gl_float(qts, 3);
+    gl_polygon_quad(qts, false, true);
+    for (unsigned y = 6; y <= 26; y++) {
+        for (unsigned x = 6; x <= 26; x++) {
+            bool vertex = ((x >= 7 && x <= 9) || (x >= 23 && x <= 25)) &&
+                          ((y >= 7 && y <= 9) || (y >= 23 && y <= 25));
+
+            g_assert_cmphex(gl_window_pixel(qts, x, y), ==,
+                            vertex ? 0xffffff : 0);
+        }
+    }
+}
+
+static void test_gl_native_polygon_edge_flags(void)
+{
+    gl_transform_start(qts);
+    gl_width_clear(qts);
+    gl_polygon_mode(qts, GL_FRONT_AND_BACK, GL_LINE_MODE);
+    gl_polygon_quad(qts, false, false);
+    g_assert_cmphex(gl_window_pixel(qts, 16, 8), ==, 0);
+    g_assert_cmphex(gl_window_pixel(qts, 24, 16), ==, 0xffffff);
+    g_assert_cmphex(gl_window_pixel(qts, 16, 16), ==, 0);
+    gl_width_clear(qts);
+    gl_polygon_mode(qts, GL_FRONT_AND_BACK, 0x1b00);
+    gl_word(qts, GL_POINT_SIZE_HDR);
+    gl_float(qts, 3);
+    gl_polygon_quad(qts, false, false);
+    g_assert_cmphex(gl_window_pixel(qts, 8, 8), ==, 0);
+    g_assert_cmphex(gl_window_pixel(qts, 24, 8), ==, 0xffffff);
+}
+
+/* Native activation retains queried stipple state without applying it. */
+static void test_gl_native_polygon_stipple_excluded(void)
+{
+    gl_transform_start(qts);
+    gl_width_clear(qts);
+    gl_polygon_mode(qts, GL_FRONT_AND_BACK, GL_LINE_MODE);
+    gl_word(qts, GL_LINE_STIPPLE_HDR);
+    gl_word(qts, 0);
+    gl_word(qts, 0);
+    gl_one(qts, GL_LINE_STIPPLE_ON_HDR, 1);
+    gl_polygon_quad(qts, false, true);
+    g_assert_cmphex(gl_window_pixel(qts, 16, 8), ==, 0xffffff);
+    g_assert_cmphex(gl_query(qts, GL_Q_LINE_STIPPLE, 1) & 0xffff, ==, 0);
+    g_assert_cmphex(gl_query(qts, GL_Q_FILL_ENABLES, 1) & 0x20, ==, 0x20);
+    gl_word(qts, GL_BEGIN_LINES);
+    gl_vertex2f(qts, 40.5f, 8.5f);
+    gl_vertex2f(qts, 56.5f, 8.5f);
+    gl_word(qts, GL_END_OF(GL_BEGIN_LINES));
+    g_assert_cmphex(gl_window_pixel(qts, 48, 8), ==, 0xffffff);
+}
+
+/* Collinear vertices keep an analytical rectangle while exceeding four. */
+static void gl_polygon_open(QTestState *s, float dx)
+{
+    static const float xy[6][2] = {
+        { 8.5f, 8.5f }, { 16.5f, 8.5f }, { 24.5f, 8.5f },
+        { 24.5f, 24.5f }, { 16.5f, 24.5f }, { 8.5f, 24.5f },
+    };
+
+    gl_word(s, 0x00000f00);
+    gl_word(s, GL_BEGIN_POLYGON);
+    for (unsigned i = 0; i < ARRAY_SIZE(xy); i++) {
+        gl_vertex2f(s, xy[i][0] + dx, xy[i][1]);
+    }
+}
+
+static void gl_polygon_check_owned(QTestState *s, unsigned contexts,
+                                    unsigned vertices)
+{
+    g_assert_cmpuint(mgras_qom_get_uint(s, "x-test-polygon-contexts"), ==,
+                     contexts);
+    g_assert_cmpuint(mgras_qom_get_uint(s, "x-test-polygon-vertices"), ==,
+                     vertices);
+}
+
+static void test_gl_native_polygon_facing(void)
+{
+    for (unsigned cw = 0; cw < 2; cw++) {
+        gl_transform_start(qts);
+        gl_width_clear(qts);
+        gl_polygon_mode(qts, GL_FRONT_FACE, GL_LINE_MODE);
+        gl_polygon_mode(qts, GL_BACK_FACE, 0x1b00);
+        gl_polygon_quad(qts, cw, true);
+        g_assert_cmphex(gl_window_pixel(qts, 16, 8), ==,
+                        cw ? 0 : 0xffffff);
+        g_assert_cmphex(gl_window_pixel(qts, 8, 8), ==, 0xffffff);
+        g_assert_cmphex(gl_window_pixel(qts, 16, 16), ==, 0);
+
+        gl_width_clear(qts);
+        gl_word(qts, GL_CULL_ON);
+        gl_polygon_quad(qts, cw, true);
+        g_assert_cmphex(gl_window_pixel(qts, 8, 8), ==,
+                        cw ? 0 : 0xffffff);
+        gl_width_clear(qts);
+        gl_one(qts, GL_FRONT_FACE_HDR, GL_CW);
+        gl_polygon_quad(qts, cw, true);
+        g_assert_cmphex(gl_window_pixel(qts, 16, 8), ==,
+                        cw ? 0xffffff : 0);
+    }
+}
+
+/* The client plane generates a new boundary at x = 16.5. */
+static void test_gl_native_polygon_clipped_boundary(void)
+{
+    gl_transform_start(qts);
+    gl_width_clear(qts);
+    gl_polygon_mode(qts, GL_FRONT_AND_BACK, GL_LINE_MODE);
+    gl_clip_plane(qts, 0, 1, 0, 0, -16.5f);
+    gl_one(qts, GL_CLIP_PLANE_ON_HDR, GL_CLIP_PLANE0);
+    gl_polygon_quad(qts, false, true);
+    for (unsigned y = 7; y <= 25; y++) {
+        for (unsigned x = 7; x <= 25; x++) {
+            bool boundary = x >= 16 && x <= 24 && y >= 8 && y <= 24 &&
+                            (x == 16 || x == 24 || y == 8 || y == 24);
+
+            g_assert_cmphex(gl_window_pixel(qts, x, y), ==,
+                            boundary ? 0xffffff : 0);
+        }
+    }
+}
+
+/* Both LINE and FILL defer the complete polygon until End. */
+static void test_gl_native_polygon_deferred(void)
+{
+    for (unsigned fill = 0; fill < 2; fill++) {
+        gl_transform_start(qts);
+        gl_width_clear(qts);
+        gl_polygon_mode(qts, GL_FRONT_AND_BACK,
+                         fill ? GL_FILL_MODE : GL_LINE_MODE);
+        gl_polygon_open(qts, 0);
+        gl_polygon_check_owned(qts, 1, 6);
+        for (unsigned y = 7; y <= 25; y++) {
+            for (unsigned x = 7; x <= 25; x++) {
+                g_assert_cmphex(gl_window_pixel(qts, x, y), ==, 0);
+            }
+        }
+        gl_word(qts, GL_END_OF(GL_BEGIN_POLYGON));
+        gl_polygon_check_owned(qts, 0, 0);
+        g_assert_cmphex(gl_window_pixel(qts, 16, 16), ==,
+                        fill ? 0xffffff : 0);
+        /* FILL excludes the bottom tie; LINE covers its diamonds. */
+        g_assert_cmphex(gl_window_pixel(qts, 16, 8), ==,
+                        fill ? 0 : 0xffffff);
+        g_assert_cmphex(gl_window_pixel(qts, 16, 24), ==, 0xffffff);
+        g_assert_cmphex(gl_window_pixel(qts, 8, 16), ==, 0xffffff);
+        g_assert_cmphex(gl_window_pixel(qts, 23, 16), ==,
+                        fill ? 0xffffff : 0);
+    }
+}
+
+static void gl_polygon_slot(QTestState *s, uint32_t slot)
+{
+    gl_enter_slot(s, slot);
+    gl_word(s, GL_CONTEXT_OPENER);
+    gl_viewport(s, 0, 0, 128, 128);
+    gl_window_projection(s);
+    gl_one(s, GL_MATRIX_MODE_HDR, GL_MODELVIEW);
+    gl_polygon_mode(s, GL_FRONT_AND_BACK, GL_LINE_MODE);
+}
+
+static void gl_polygon_context_setup(QTestState *s)
+{
+    gl_polygon_slot(s, GL_SLOT_A);
+    gl_width_clear(s);
+    gl_color3f(s, 1, 0, 0);
+    gl_polygon_open(s, 0);
+    gl_polygon_slot(s, GL_SLOT_B);
+    gl_color3f(s, 0, 1, 0);
+    gl_polygon_open(s, 32);
+    gl_polygon_check_owned(s, 2, 12);
+    g_assert_cmphex(gl_window_pixel(s, 16, 8), ==, 0);
+    g_assert_cmphex(gl_window_pixel(s, 48, 8), ==, 0);
+}
+
+static void gl_polygon_context_check(QTestState *s)
+{
+    gl_polygon_check_owned(s, 2, 12);
+    gl_enter_slot(s, GL_SLOT_A);
+    gl_word(s, GL_END_OF(GL_BEGIN_POLYGON));
+    gl_polygon_check_owned(s, 1, 6);
+    g_assert_cmphex(gl_window_pixel(s, 16, 8), ==, 0xff0000);
+    g_assert_cmphex(gl_window_pixel(s, 48, 8), ==, 0);
+    gl_enter_slot(s, GL_SLOT_B);
+    gl_word(s, GL_END_OF(GL_BEGIN_POLYGON));
+    gl_polygon_check_owned(s, 0, 0);
+    g_assert_cmphex(gl_window_pixel(s, 16, 8), ==, 0xff0000);
+    g_assert_cmphex(gl_window_pixel(s, 48, 8), ==, 0x00ff00);
+    g_assert_cmphex(gl_window_pixel(s, 16, 16), ==, 0);
+    g_assert_cmphex(gl_window_pixel(s, 48, 16), ==, 0);
+}
+
+static void test_gl_native_polygon_contexts(void)
+{
+    mgras_reset();
+    gl_polygon_context_setup(qts);
+    gl_polygon_context_check(qts);
+}
+
+static void test_gl_native_polygon_migration(void)
+{
+    gl_migrate(gl_polygon_context_setup, gl_polygon_context_check);
+}
+
+static void test_gl_native_polygon_disposal(void)
+{
+    mgras_reset();
+    gl_polygon_context_setup(qts);
+    gl_word(qts, GL_CONTEXT_OPENER);
+    gl_polygon_check_owned(qts, 1, 6);
+    gl_enter_slot(qts, GL_SLOT_A);
+    gl_word(qts, GL_CONTEXT_OPENER);
+    gl_polygon_check_owned(qts, 0, 0);
+
+    for (unsigned i = 0; i < 32; i++) {
+        gl_polygon_slot(qts, 0x1000 + i);
+        gl_polygon_open(qts, 0);
+    }
+    gl_polygon_check_owned(qts, 32, 192);
+    gl_enter_slot(qts, 0x2000);
+    gl_polygon_check_owned(qts, 31, 186);
+    mgras_reset();
+    gl_polygon_check_owned(qts, 0, 0);
+    mgras_reset();
+    gl_polygon_check_owned(qts, 0, 0);
+    /* Reset preserves activation, including the default context. */
+    gl_transform_start(qts);
+    gl_width_clear(qts);
+    gl_polygon_mode(qts, GL_FRONT_AND_BACK, GL_LINE_MODE);
+    gl_polygon_quad(qts, false, true);
+    g_assert_cmphex(gl_window_pixel(qts, 16, 8), ==, 0xffffff);
+}
+
+/*
+ * A cleanup-only registration must not add a stream section. Corrupt only
+ * the second context's named assembly subsection in synthetic storage;
+ * the first context has already allocated when that name is refused.
+ */
+static void test_gl_native_polygon_failed_restore(void)
+{
+    static const char name[] = "sgi-gl-context/polygon-assembly";
+    g_autofree char *dir = NULL;
+    g_autofree char *path = NULL;
+    g_autofree char *cmdline = NULL;
+    g_autofree char *contents = NULL;
+    g_autofree char *ret = NULL;
+    GError *err = NULL;
+    QTestState *s;
+    char *first, *second;
+    gsize length;
+    int fd;
+
+    if (!have_qemu_img()) {
+        g_test_skip("QTEST_QEMU_IMG not set; cannot create snapshot storage");
+        return;
+    }
+    dir = g_dir_make_tmp("sn0-mgras-polygon-snapshot-XXXXXX", &err);
+    g_assert_no_error(err);
+    path = g_strdup_printf("%s/state.qcow2", dir);
+    g_assert_true(mkimg(path, "qcow2", 128));
+    cmdline = g_strdup_printf(MACHINE_ARGS
+                              " -drive file=%s,format=qcow2,if=none", path);
+    s = qtest_init(cmdline);
+    gl_polygon_context_setup(s);
+    ret = qtest_hmp(s, "savevm polygon");
+    g_assert_cmpstr(ret, ==, "");
+    g_clear_pointer(&ret, g_free);
+    /* Successful snapshot cleanup preserves both deferred boundaries. */
+    ret = qtest_hmp(s, "loadvm polygon");
+    g_assert_cmpstr(ret, ==, "");
+    g_clear_pointer(&ret, g_free);
+    gl_polygon_check_owned(s, 2, 12);
+    qtest_quit(s);
+
+    g_assert_true(g_file_get_contents(path, &contents, &length, &err));
+    g_assert_no_error(err);
+    g_assert_null(memmem(contents, length, "sgi-mgras/load-cleanup", 22));
+    first = memmem(contents, length, name, sizeof(name) - 1);
+    g_assert_nonnull(first);
+    second = memmem(first + sizeof(name) - 1,
+                    length - (first - contents) - (sizeof(name) - 1),
+                    name, sizeof(name) - 1);
+    g_assert_nonnull(second);
+    /* Refuse a same-length unknown name, without guessing field offsets. */
+    fd = open(path, O_RDWR);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(pwrite(fd, "X", 1, second - contents), ==, 1);
+    g_assert_cmpint(close(fd), ==, 0);
+
+    s = qtest_init(cmdline);
+    for (unsigned i = 0; i < 2; i++) {
+        ret = qtest_hmp(s, "loadvm polygon");
+        g_assert_nonnull(strstr(ret, "Error"));
+        g_clear_pointer(&ret, g_free);
+        gl_polygon_check_owned(s, 0, 0);
+    }
+    /* Teardown also disposes a live open polygon. */
+    gl_polygon_slot(s, GL_SLOT_A);
+    gl_polygon_open(s, 0);
+    gl_polygon_check_owned(s, 1, 6);
+    qtest_quit(s);
+    g_assert_cmpint(unlink(path), ==, 0);
+    g_assert_cmpint(g_rmdir(dir), ==, 0);
+}
+
 /* Halfway sizes round up by the renderer's declared arithmetic choice. */
 static void test_gl_native_width_points(void)
 {
@@ -16976,6 +17328,28 @@ int main(int argc, char **argv)
                        test_credit_uncounted_store_returns_nothing);
     }
 
+    qtest_add_func("sn0/origin2000/mgras/gl-native-polygon/stipple-excluded",
+                    test_gl_native_polygon_stipple_excluded);
+    qtest_add_func("sn0/origin2000/mgras/gl-native-polygon/facing",
+                    test_gl_native_polygon_facing);
+    qtest_add_func("sn0/origin2000/mgras/gl-native-polygon/clipped-boundary",
+                    test_gl_native_polygon_clipped_boundary);
+    qtest_add_func("sn0/origin2000/mgras/gl-native-polygon/deferred",
+                    test_gl_native_polygon_deferred);
+    qtest_add_func("sn0/origin2000/mgras/gl-native-polygon/contexts",
+                    test_gl_native_polygon_contexts);
+    qtest_add_func("sn0/origin2000/mgras/gl-native-polygon/migration",
+                    test_gl_native_polygon_migration);
+    qtest_add_func("sn0/origin2000/mgras/gl-native-polygon/disposal",
+                    test_gl_native_polygon_disposal);
+    qtest_add_func("sn0/origin2000/mgras/gl-native-polygon/failed-restore",
+                    test_gl_native_polygon_failed_restore);
+    qtest_add_func("sn0/origin2000/mgras/gl-native-polygon/edge-flags",
+                   test_gl_native_polygon_edge_flags);
+    qtest_add_func("sn0/origin2000/mgras/gl-native-polygon/point",
+                   test_gl_native_polygon_point);
+    qtest_add_func("sn0/origin2000/mgras/gl-native-polygon/line",
+                   test_gl_native_polygon_line);
     qtest_add_func("sn0/origin2000/mgras/gl-native-width/points",
                    test_gl_native_width_points);
     qtest_add_func("sn0/origin2000/mgras/gl-native-width/lines",

@@ -568,6 +568,11 @@ struct SGIMgrasState {
     uint64_t gl_selected[SGI_MGRAS_GL_CONTEXTS];
     uint64_t gl_selections;
     uint32_t gl_current;
+    /* Host ownership and bounded diagnostics; never serialized. */
+    bool gl_restore_in_progress;
+    bool gl_cleanup_registered;
+    bool gl_oom_logged;
+    bool gl_stipple_logged;
     /* GE-port traffic logged since the last switch; not migrated. */
     bool gl_ge_port_logged;
     /* The bank holding the back buffer, from 0x9808 or context words 16-17. */
