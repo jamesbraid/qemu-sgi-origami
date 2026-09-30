@@ -14,6 +14,14 @@
 
 #include "qemu/osdep.h"
 #include "qemu/bcd.h"
+#include "qemu/bswap.h"
+#include "qemu/error-report.h"
+#include "qemu/main-loop.h"
+#include "qapi/error.h"
+#include "hw/core/qdev-properties.h"
+#include "hw/core/qdev-properties-system.h"
+#include "system/block-backend.h"
+#include "migration/migration.h"
 #include "qemu/cutils.h"
 #include "qemu/log.h"
 #include "qemu/timer.h"
@@ -33,6 +41,8 @@
 /* Bank-1 registers are stored in one array based at 40h. */
 #define EXT(reg)                ((reg) - DS1685_UPPER_FIRST)
 
+static void ds1685_save(DS1685State *s);
+static bool ds1685_bank1_reserved(uint8_t reg);
 static void ds1685_schedule_update(DS1685State *s);
 static void ds1685_schedule_periodic(DS1685State *s);
 
@@ -156,12 +166,39 @@ static bool ds1685_uip(DS1685State *s)
            s->next_update_ns - now <= DS1685_UIP_HOLD_NS;
 }
 
+static int64_t ds1685_reference_seconds(void)
+{
+    struct tm tm;
+
+    qemu_get_timedate(&tm, 0);
+    return mktimegm(&tm);
+}
+
+static int64_t ds1685_counter_seconds(DS1685State *s)
+{
+    return s->counter_held ? s->held_seconds :
+           ds1685_reference_seconds() + s->time_offset;
+}
+
+static void ds1685_set_counting(DS1685State *s, int64_t seconds)
+{
+    bool held = !ds1685_counting(s);
+
+    if (s->counter_held && !held) {
+        s->time_offset = seconds - ds1685_reference_seconds();
+    }
+    s->held_seconds = seconds;
+    s->counter_held = held;
+}
+
 /* The visible bytes are a copy of the counters, rewritten once a second. */
 static void ds1685_publish_time(DS1685State *s)
 {
     struct tm tm;
 
-    qemu_get_timedate(&tm, s->time_offset);
+    time_t seconds = ds1685_counter_seconds(s);
+
+    gmtime_r(&seconds, &tm);
 
     s->common[DS1685_SECONDS] = ds1685_encode(s, tm.tm_sec) & 0x7f;
     s->common[DS1685_MINUTES] = ds1685_encode(s, tm.tm_min);
@@ -194,7 +231,288 @@ static void ds1685_commit_time(DS1685State *s)
      * Differencing through qemu_get_timedate() keeps both ends on one clock.
      */
     qemu_get_timedate(&now, 0);
-    s->time_offset = mktimegm(&tm) - mktimegm(&now);
+    s->held_seconds = mktimegm(&tm);
+    s->time_offset = s->held_seconds - mktimegm(&now);
+}
+
+/* Calendar encodings are validated before interpreting a host image. */
+static bool ds1685_calendar_field(DS1685State *s, uint8_t raw,
+                                  unsigned min, unsigned max)
+{
+    if (!ds1685_binary(s) && ((raw & 0xf) > 9 || (raw >> 4) > 9)) {
+        return false;
+    }
+    return ds1685_decode(s, raw) >= min && ds1685_decode(s, raw) <= max;
+}
+
+static bool ds1685_calendar_seconds(DS1685State *s, int64_t *seconds)
+{
+    uint8_t hour = s->common[DS1685_HOURS];
+    bool twelve = !(s->common[DS1685_REG_B] & DS1685_B_24_12);
+    struct tm tm = { 0 }, check;
+    time_t value;
+
+    if (!ds1685_calendar_field(s, s->common[DS1685_SECONDS], 0, 59) ||
+        !ds1685_calendar_field(s, s->common[DS1685_MINUTES], 0, 59) ||
+        !ds1685_calendar_field(s, twelve ? hour & 0x7f : hour,
+                               twelve ? 1 : 0, twelve ? 12 : 23) ||
+        !ds1685_calendar_field(s, s->common[DS1685_WEEKDAY], 1, 7) ||
+        !ds1685_calendar_field(s, s->common[DS1685_DAY], 1, 31) ||
+        !ds1685_calendar_field(s, s->common[DS1685_MONTH], 1, 12) ||
+        !ds1685_calendar_field(s, s->common[DS1685_YEAR], 0, 99) ||
+        !ds1685_calendar_field(s, s->ext[EXT(DS1685_CENTURY)], 0, 99)) {
+        return false;
+    }
+    tm.tm_sec = ds1685_decode(s, s->common[DS1685_SECONDS]);
+    tm.tm_min = ds1685_decode(s, s->common[DS1685_MINUTES]);
+    tm.tm_hour = ds1685_decode_hour(s, hour);
+    tm.tm_mday = ds1685_decode(s, s->common[DS1685_DAY]);
+    tm.tm_mon = ds1685_decode(s, s->common[DS1685_MONTH]) - 1;
+    tm.tm_year = ds1685_decode(s, s->ext[EXT(DS1685_CENTURY)]) * 100 +
+                 ds1685_decode(s, s->common[DS1685_YEAR]) - 1900;
+    value = mktimegm(&tm);
+    if (!gmtime_r(&value, &check) || check.tm_year != tm.tm_year ||
+        check.tm_mon != tm.tm_mon || check.tm_mday != tm.tm_mday) {
+        return false;
+    }
+    *seconds = value;
+    return true;
+}
+
+static bool ds1685_counter_valid(int64_t value)
+{
+    time_t seconds = value;
+    struct tm tm;
+
+    return seconds == value && gmtime_r(&seconds, &tm) &&
+           tm.tm_year >= -1900 && tm.tm_year <= 8099;
+}
+
+static void ds1685_copy_image(DS1685State *s, uint8_t *image, bool load)
+{
+    if (!load) {
+        memcpy(image, s->common, sizeof(s->common));
+        memcpy(image + 0x40, s->nvram, sizeof(s->nvram));
+        memcpy(image + 0x80, s->ext, sizeof(s->ext));
+        memcpy(image + 0xc0, s->extram, sizeof(s->extram));
+    }
+    memset(image + DS1685_PAYLOAD_SIZE, 0,
+           DS1685_IMAGE_SIZE - DS1685_PAYLOAD_SIZE);
+    /* Derived status and unused backing slots have canonical image values. */
+    image[DS1685_REG_A] &= ~DS1685_A_UIP;
+    image[DS1685_REG_C] &= DS1685_C_FLAGS;
+    image[DS1685_REG_D] = DS1685_D_VRT;
+    image[DS1685_SECONDS] &= 0x7f;
+    image[0x80 + EXT(DS1685_MODEL)] = DS1685_MODEL_NUMBER;
+    memset(image + 0x80 + EXT(DS1685_SERIAL_FIRST), 0, 7);
+    image[0x80 + EXT(DS1685_EXT_CTRL_4A)] &= ~DS1685_4A_INCR;
+    image[0x80 + EXT(DS1685_EXT_CTRL_4A)] |= DS1685_4A_VRT2;
+    for (int reg = DS1685_UPPER_FIRST; reg < 0x80; reg++) {
+        if (ds1685_bank1_reserved(reg) || reg == DS1685_EXTRAM_DATA ||
+            reg == DS1685_SMI_STACK_FIRST || reg == DS1685_SMI_STACK_LAST) {
+            image[0x80 + EXT(reg)] = 0;
+        }
+    }
+    if (load) {
+        memcpy(s->common, image, sizeof(s->common));
+        memcpy(s->nvram, image + 0x40, sizeof(s->nvram));
+        memcpy(s->ext, image + 0x80, sizeof(s->ext));
+        memcpy(s->extram, image + 0xc0, sizeof(s->extram));
+    }
+}
+
+/* A device post_load is earlier than the success of the whole stream. */
+static bool ds1685_can_save(DS1685State *s)
+{
+    RunState state = runstate_get();
+
+    if (state == RUN_STATE_INMIGRATE || state == RUN_STATE_RESTORE_VM) {
+        return false;
+    }
+    if (s->load_pending) {
+        if (s->incoming) {
+            if (migration_incoming_get_current()->state !=
+                MIGRATION_STATUS_COMPLETED) {
+                return false;
+            }
+        } else if (state != RUN_STATE_PAUSED && state != RUN_STATE_RUNNING) {
+            return false;
+        }
+        s->load_pending = false;
+        s->incoming = false;
+    }
+    return true;
+}
+
+static bool ds1685_write_backend(DS1685State *s, BlockBackend *blk,
+                                 const void *buffer, size_t size,
+                                 const char *what)
+{
+    int ret = blk_pwrite(blk, 0, size, buffer, 0);
+
+    if (ret >= 0) {
+        ret = blk_flush(blk);
+        if (ret < 0) {
+            error_report("ds1685: flushing %s failed: %s",
+                         what, strerror(-ret));
+        }
+    } else {
+        error_report("ds1685: writing %s failed: %s", what, strerror(-ret));
+    }
+    return ret >= 0;
+}
+
+static void ds1685_save(DS1685State *s)
+{
+    uint8_t image[DS1685_IMAGE_SIZE];
+    uint8_t reference[DS1685_CLOCK_REF_BYTES];
+    int64_t now, seconds;
+    bool success;
+
+    if (!s->blk || !ds1685_can_save(s)) {
+        return;
+    }
+    now = ds1685_reference_seconds();
+    seconds = s->counter_held ? s->held_seconds : now + s->time_offset;
+    ds1685_copy_image(s, image, false);
+    success = ds1685_write_backend(s, s->blk, image, sizeof(image),
+                                    "NVRAM image");
+    if (success && s->clock_blk) {
+        memcpy(reference, DS1685_CLOCK_REF_MAGIC, 8);
+        stq_le_p(reference + 8, now);
+        stq_le_p(reference + 16, seconds);
+        success = ds1685_write_backend(s, s->clock_blk, reference,
+                                        sizeof(reference), "clock reference");
+    }
+    if (s->storage_failed && success) {
+        error_report("ds1685: persistent storage recovered");
+    }
+    s->storage_failed = !success;
+}
+
+static void ds1685_save_after_load(void *opaque)
+{
+    ds1685_save(opaque);
+}
+
+static void ds1685_vm_state_change(void *opaque, bool running, RunState state)
+{
+    DS1685State *s = opaque;
+
+    if (!running || s->load_pending) {
+        ds1685_save(s);
+    }
+}
+
+static bool ds1685_backend_check(BlockBackend *blk, int64_t size, bool exact,
+                                 const char *what, Error **errp)
+{
+    int64_t length = blk_getlength(blk);
+
+    if (length < 0) {
+        error_setg_errno(errp, -length,
+                         "ds1685: reading %s length failed", what);
+        return false;
+    }
+    if (length < size || (exact && length != size)) {
+        error_setg(errp, "ds1685: %s has %" PRId64 " bytes, requires %s%"
+                   PRId64, what, length,
+                   exact ? "exactly " : "at least ", size);
+        return false;
+    }
+    return blk_set_perm(blk, BLK_PERM_CONSISTENT_READ | BLK_PERM_WRITE,
+                        BLK_PERM_ALL, errp) >= 0;
+}
+
+static bool ds1685_restore(DS1685State *s, Error **errp)
+{
+    uint8_t image[DS1685_IMAGE_SIZE];
+    uint8_t reference[DS1685_CLOCK_REF_BYTES] = { 0 };
+    int64_t now = ds1685_reference_seconds(), seconds, elapsed, saved_at;
+    bool fresh = true, valid_reference, valid_calendar;
+    int ret;
+
+    if (!ds1685_backend_check(s->blk, sizeof(image), true,
+                              "NVRAM image", errp)) {
+        return false;
+    }
+    if (!s->clock_blk && *blk_name(s->blk)) {
+        g_autofree char *id = g_strdup_printf("%s-clock", blk_name(s->blk));
+        BlockBackend *blk = blk_by_name(id);
+
+        if (blk && !qdev_prop_set_drive_err(DEVICE(s), "clock-drive", blk,
+                                            errp)) {
+            return false;
+        }
+    }
+    if (s->clock_blk) {
+        if (!ds1685_backend_check(s->clock_blk, sizeof(reference), false,
+                                  "clock reference", errp)) {
+            return false;
+        }
+        ret = blk_pread(s->clock_blk, 0, sizeof(reference), reference, 0);
+        if (ret < 0) {
+            error_setg_errno(errp, -ret,
+                             "ds1685: reading clock reference failed");
+            return false;
+        }
+    }
+    ret = blk_pread(s->blk, 0, sizeof(image), image, 0);
+    if (ret < 0) {
+        error_setg_errno(errp, -ret, "ds1685: reading NVRAM image failed");
+        return false;
+    }
+    for (int i = 0; i < DS1685_PAYLOAD_SIZE; i++) {
+        fresh &= image[i] == 0;
+    }
+    if (fresh) {
+        return true;
+    }
+    ds1685_copy_image(s, image, true);
+    valid_calendar = ds1685_calendar_seconds(s, &seconds);
+    valid_reference = s->clock_blk &&
+                      !memcmp(reference, DS1685_CLOCK_REF_MAGIC, 8) &&
+                      ds1685_counter_valid(ldq_le_p(reference + 16));
+    if (!valid_calendar &&
+        !(valid_reference && (s->common[DS1685_REG_B] & DS1685_B_SET))) {
+        qemu_log_mask(LOG_UNIMP, "ds1685: invalid saved calendar; "
+                      "initializing from the selected clock\n");
+        s->held_seconds = now;
+        s->time_offset = 0;
+        s->counter_held = !ds1685_counting(s);
+        ds1685_publish_time(s);
+        return true;
+    }
+    if (valid_reference) {
+        seconds = ldq_le_p(reference + 16);
+        saved_at = ldq_le_p(reference + 8);
+        if (__builtin_sub_overflow(now, saved_at, &elapsed) || elapsed < 0) {
+            qemu_log_mask(LOG_UNIMP, "ds1685: invalid elapsed-time difference; "
+                          "adding no offline time\n");
+            elapsed = 0;
+        }
+        if (ds1685_counting(s)) {
+            int64_t advanced;
+
+            if (!__builtin_add_overflow(seconds, elapsed, &advanced) &&
+                ds1685_counter_valid(advanced)) {
+                seconds = advanced;
+            } else {
+                qemu_log_mask(LOG_UNIMP, "ds1685: elapsed time exceeds "
+                              "calendar range; adding no offline time\n");
+            }
+        }
+    } else {
+        qemu_log_mask(LOG_UNIMP, "ds1685: no valid clock reference; "
+                      "restoring calendar without offline time\n");
+    }
+    s->held_seconds = seconds;
+    s->time_offset = seconds - now;
+    s->counter_held = !ds1685_counting(s);
+    if (!(s->common[DS1685_REG_B] & DS1685_B_SET) && ds1685_counting(s)) {
+        ds1685_publish_time(s);
+    }
+    return true;
 }
 
 /* Any alarm byte from C0h up matches every value of its own field. */
@@ -341,6 +659,7 @@ static uint8_t ds1685_read_reg(DS1685State *s, uint8_t reg)
              */
             s->common[reg] &= ~DS1685_C_FLAGS;
             ds1685_update_irq(s);
+            ds1685_save(s);
             return value;
         }
 
@@ -398,12 +717,14 @@ static void ds1685_write_reg(DS1685State *s, uint8_t reg, uint8_t val)
 
         case DS1685_REG_A: {
             uint8_t was = s->common[reg];
+            int64_t seconds = ds1685_counter_seconds(s);
 
             /*
              * Both kernels write back a value they just read, so a read-only
              * update bit that took a write would set itself.
              */
             s->common[reg] = val & ~DS1685_A_UIP;
+            ds1685_set_counting(s, seconds);
             if ((was ^ s->common[reg]) & DS1685_A_RS) {
                 ds1685_schedule_periodic(s);
             }
@@ -566,6 +887,9 @@ static uint64_t ds1685_data_read(void *opaque, hwaddr addr, unsigned size)
     bool bank1 = ds1685_bank1(s);
 
     /* The latch is untouched: a driver reads one register repeatedly. */
+    if (s->load_pending) {
+        ds1685_save(s);
+    }
     value = ds1685_read_reg(s, s->index);
     trace_ds1685_read(s->index, bank1, value);
     return value;
@@ -578,6 +902,7 @@ static void ds1685_data_write(void *opaque, hwaddr addr, uint64_t val,
 
     trace_ds1685_write(s->index, ds1685_bank1(s), val);
     ds1685_write_reg(s, s->index, val);
+    ds1685_save(s);
 }
 
 /*
@@ -619,6 +944,7 @@ static const MemoryRegionOps ds1685_data_ops = {
 static void ds1685_reset_hold(Object *obj, ResetType type)
 {
     DS1685State *s = DS1685(obj);
+    int64_t seconds = ds1685_counter_seconds(s);
 
     /*
      * A reset is VCC arriving at a part whose cell never went away, so it
@@ -627,6 +953,7 @@ static void ds1685_reset_hold(Object *obj, ResetType type)
      * running time survive it, as the Timekeeper's do.
      */
     s->common[DS1685_REG_A] |= DS1685_A_DV1;
+    ds1685_set_counting(s, seconds);
     s->ext[EXT(DS1685_EXT_CTRL_4B)] |= DS1685_4B_E32K;
     s->ext[EXT(DS1685_EXT_CTRL_4A)] &= ~DS1685_4A_PAB;
 
@@ -641,6 +968,7 @@ static void ds1685_reset_hold(Object *obj, ResetType type)
     ds1685_schedule_update(s);
     ds1685_schedule_periodic(s);
     ds1685_update_irq(s);
+    ds1685_save(s);
 }
 
 static void ds1685_realize(DeviceState *dev, Error **errp)
@@ -657,17 +985,33 @@ static void ds1685_realize(DeviceState *dev, Error **errp)
      * The serial number and its check byte stay zero. No public source gives
      * a value for either, and no driver on our paths validates them.
      */
+    s->held_seconds = ds1685_reference_seconds();
+    s->counter_held = true;
     s->common[DS1685_REG_D] = DS1685_D_VRT;
     s->common[DS1685_REG_B] = DS1685_B_DM | DS1685_B_24_12;
     s->ext[EXT(DS1685_MODEL)] = DS1685_MODEL_NUMBER;
     s->ext[EXT(DS1685_EXT_CTRL_4A)] = DS1685_4A_VRT2;
 
+    /* Format the first calendar before a guest can read or change mode. */
+    ds1685_publish_time(s);
+    s->incoming = runstate_check(RUN_STATE_INMIGRATE);
+    s->load_pending = s->incoming;
+    if (s->clock_blk && !s->blk) {
+        error_setg(errp, "ds1685: clock-drive requires drive");
+        return;
+    }
+    if (s->blk && !ds1685_restore(s, errp)) {
+        return;
+    }
     s->update_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, ds1685_update_cycle, s);
     s->periodic_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
                                      ds1685_periodic_tick, s);
 
-    /* Format the first calendar before a guest can read or change mode. */
-    ds1685_publish_time(s);
+    if (s->blk) {
+        s->save_bh = qemu_bh_new(ds1685_save_after_load, s);
+        s->vmstate_change =
+            qemu_add_vm_change_state_handler(ds1685_vm_state_change, s);
+    }
 
     memory_region_init_io(&s->index_port, OBJECT(dev), &ds1685_index_ops, s,
                           "ds1685.index", DS1685_PORT_SIZE);
@@ -682,18 +1026,50 @@ static void ds1685_unrealize(DeviceState *dev)
 {
     DS1685State *s = DS1685(dev);
 
+    ds1685_save(s);
+    if (s->vmstate_change) {
+        qemu_del_vm_change_state_handler(s->vmstate_change);
+        s->vmstate_change = NULL;
+    }
+    if (s->save_bh) {
+        qemu_bh_delete(s->save_bh);
+        s->save_bh = NULL;
+    }
     timer_free(s->update_timer);
     timer_free(s->periodic_timer);
     s->update_timer = NULL;
     s->periodic_timer = NULL;
 }
 
+static int ds1685_pre_save(void *opaque)
+{
+    DS1685State *s = opaque;
+
+    s->held_seconds = ds1685_counter_seconds(s);
+    return 0;
+}
+
+static int ds1685_pre_load(void *opaque)
+{
+    DS1685State *s = opaque;
+
+    s->load_pending = true;
+    return 0;
+}
+
 static int ds1685_post_load(void *opaque, int version_id)
 {
     DS1685State *s = opaque;
 
+    /* The destination's selected RTC reference may differ from the source. */
+    if (!s->counter_held) {
+        s->time_offset = s->held_seconds - ds1685_reference_seconds();
+    }
     /* Derived rather than carried, on both sides of the stream. */
     ds1685_update_irq(s);
+    if (s->save_bh) {
+        qemu_bh_schedule(s->save_bh);
+    }
     return 0;
 }
 
@@ -703,8 +1079,10 @@ static int ds1685_post_load(void *opaque, int version_id)
  */
 static const VMStateDescription vmstate_ds1685 = {
     .name = "ds1685",
-    .version_id = 1,
-    .minimum_version_id = 1,
+    .version_id = 2,
+    .minimum_version_id = 2,
+    .pre_save = ds1685_pre_save,
+    .pre_load = ds1685_pre_load,
     .post_load = ds1685_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT8(index, DS1685State),
@@ -713,12 +1091,19 @@ static const VMStateDescription vmstate_ds1685 = {
         VMSTATE_UINT8_ARRAY(ext, DS1685State, DS1685_UPPER_SIZE),
         VMSTATE_UINT8_ARRAY(extram, DS1685State, DS1685_EXTRAM_SIZE),
         VMSTATE_INT64(time_offset, DS1685State),
+        VMSTATE_INT64(held_seconds, DS1685State),
+        VMSTATE_BOOL(counter_held, DS1685State),
         VMSTATE_INT64(next_update_ns, DS1685State),
         VMSTATE_INT64(periodic_period_ns, DS1685State),
         VMSTATE_TIMER_PTR(update_timer, DS1685State),
         VMSTATE_TIMER_PTR(periodic_timer, DS1685State),
         VMSTATE_END_OF_LIST()
     }
+};
+
+static const Property ds1685_properties[] = {
+    DEFINE_PROP_DRIVE("drive", DS1685State, blk),
+    DEFINE_PROP_DRIVE("clock-drive", DS1685State, clock_blk),
 };
 
 static void ds1685_class_init(ObjectClass *oc, const void *data)
@@ -730,6 +1115,7 @@ static void ds1685_class_init(ObjectClass *oc, const void *data)
     dc->realize = ds1685_realize;
     dc->unrealize = ds1685_unrealize;
     dc->vmsd = &vmstate_ds1685;
+    device_class_set_props(dc, ds1685_properties);
     rc->phases.hold = ds1685_reset_hold;
 }
 

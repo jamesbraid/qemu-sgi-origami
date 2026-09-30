@@ -315,6 +315,10 @@ static void octane_fit_pci(MachineState *machine, SGIBridgeState *bridge)
                          s->octane2 ? 0 : 1u << 2);
     qdev_prop_set_uint8(DEVICE(pci), "timekeeper-kind",
                        SGI_IOC3_TIMEKEEPER_DS1685);
+    if (blk_by_name("sgi-nvram0")) {
+        qdev_prop_set_drive_err(DEVICE(pci), "ds1685-drive",
+                               blk_by_name("sgi-nvram0"), &error_fatal);
+    }
     qdev_prop_set_bit(DEVICE(pci), "phy-ics1890", true);
     qdev_prop_set_uint8(DEVICE(pci), "phy-addr", 1);
     if (serial_hd(0)) {
