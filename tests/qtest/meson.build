@@ -408,6 +408,12 @@ elif not config_all_devices.has_key('CONFIG_PCI_BRIDGE') or \
                         'sn1-xbridge-xbow-test']
 endif
 
+sn1_pci_expansion_qtests = \
+  (config_all_devices.has_key('CONFIG_SGI_BOARD_TEST') and
+   config_all_devices.has_key('CONFIG_IOMMU_TESTDEV') and
+   config_all_devices.has_key('CONFIG_SGI_SN1') ?
+    ['sn1-pci-expansion-module-test'] : [])
+
 sn0_mgras_qtests = \
   (config_all_devices.has_key('CONFIG_SGI_SN0') ?
     ['sn0-origin2000-mgras-test', 'sgi-replay-test'] : [])
@@ -568,6 +574,7 @@ sgi_qtests = \
   sn0_xbow_qtests + \
   sn0_xbow_transport_qtests + \
   sn1_xbridge_qtests + \
+  sn1_pci_expansion_qtests + \
   sn0_mgras_qtests + \
   sgi_board_qtests
 

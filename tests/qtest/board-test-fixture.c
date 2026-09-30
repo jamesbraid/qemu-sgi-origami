@@ -54,6 +54,8 @@
 #include "qemu/bswap.h"
 #include "qemu/units.h"
 #include "qom/object.h"
+#include "../../hw/mips/sgi/origin300-pci-expansion.h"
+#include "../../hw/mips/sgi/sn1-fabric.h"
 
 #define TYPE_SGI_BOARD_TEST_FIXTURE "sgi-board-test-fixture"
 OBJECT_DECLARE_SIMPLE_TYPE(SGIBoardTestFixtureState, SGI_BOARD_TEST_FIXTURE)
@@ -73,6 +75,12 @@ struct SGIBoardTestFixtureState {
     char *nvram_drive_id;
     uint32_t flash_select0_size;
     uint32_t flash_select1_size;
+    uint32_t placement;
+    uint8_t node_number;
+    uint8_t bedrock_revision;
+    uint8_t xbridge_revision;
+    uint8_t expansion_port[4];
+    char *bus_prefix;
 
     MemoryRegion sink;
     SGIXioLink cascade_link;
@@ -259,6 +267,59 @@ static void board_test_fixture_realize(DeviceState *dev, Error **errp)
         return;
     }
 
+    if (g_str_equal(s->board_type, TYPE_SGI_ORIGIN300_PCI_EXPANSION)) {
+        static const char *const ports[] = {
+            "chip1-e-port", "chip1-f-port", "chip2-e-port", "chip2-f-port",
+        };
+        unsigned i;
+
+        board = qdev_new(s->board_type);
+        object_property_add_child(OBJECT(s), "board", OBJECT(board));
+        qdev_prop_set_uint32(board, "placement", s->placement);
+        qdev_prop_set_uint8(board, "node-number", s->node_number);
+        qdev_prop_set_uint8(board, "bedrock-revision", s->bedrock_revision);
+        qdev_prop_set_uint8(board, "xbridge-revision", s->xbridge_revision);
+        if (s->bus_prefix) {
+            qdev_prop_set_string(board, "bus-prefix", s->bus_prefix);
+        }
+        for (i = 0; i < 4; i++) {
+            qdev_prop_set_uint8(board, ports[i], s->expansion_port[i]);
+        }
+        if (sysbus_realize(SYS_BUS_DEVICE(board), errp)) {
+            SN1FabricClass *fc = SGI_SN1_FABRIC_GET_CLASS(board);
+            SN1FabricEndpoint *endpoint = fc->endpoint(OBJECT(board));
+            SGIOrigin300PciExpansionState *chassis =
+                SGI_ORIGIN300_PCI_EXPANSION(board);
+
+            if (endpoint->owner != OBJECT(board) || !endpoint->ready ||
+                OBJECT(endpoint->bedrock)->parent != OBJECT(board) ||
+                endpoint->placement != s->placement) {
+                error_setg(errp, "PCI expansion endpoint ownership is invalid");
+                return;
+            }
+            for (i = 0; i < SGI_ORIGIN300_PCI_HEADS; i++) {
+                PCIBus *bus = sgi_origin300_pci_expansion_bus(chassis, i);
+                unsigned j;
+
+                if (!bus) {
+                    error_setg(errp, "PCI expansion head %u has no bus", i);
+                    return;
+                }
+                for (j = 0; j < i; j++) {
+                    if (bus == sgi_origin300_pci_expansion_bus(chassis, j)) {
+                        error_setg(errp, "PCI expansion heads share a bus");
+                        return;
+                    }
+                }
+            }
+            if (sgi_origin300_pci_expansion_bus(chassis,
+                                                SGI_ORIGIN300_PCI_HEADS)) {
+                error_setg(errp, "PCI expansion exposes an extra bus");
+            }
+        }
+        return;
+    }
+
     board = qdev_new(s->board_type);
     object_property_add_child(OBJECT(s), "board", OBJECT(board));
     qdev_prop_set_uint32(board, "module", s->module);
@@ -276,6 +337,23 @@ static void board_test_fixture_realize(DeviceState *dev, Error **errp)
 }
 
 static const Property board_test_fixture_properties[] = {
+    DEFINE_PROP_UINT32("placement", SGIBoardTestFixtureState,
+                       placement, UINT32_MAX),
+    DEFINE_PROP_UINT8("node-number", SGIBoardTestFixtureState,
+                      node_number, UINT8_MAX),
+    DEFINE_PROP_UINT8("bedrock-revision", SGIBoardTestFixtureState,
+                      bedrock_revision, 0),
+    DEFINE_PROP_UINT8("xbridge-revision", SGIBoardTestFixtureState,
+                      xbridge_revision, 0),
+    DEFINE_PROP_STRING("bus-prefix", SGIBoardTestFixtureState, bus_prefix),
+    DEFINE_PROP_UINT8("chip1-e-port", SGIBoardTestFixtureState,
+                      expansion_port[0], 0),
+    DEFINE_PROP_UINT8("chip1-f-port", SGIBoardTestFixtureState,
+                      expansion_port[1], 0),
+    DEFINE_PROP_UINT8("chip2-e-port", SGIBoardTestFixtureState,
+                      expansion_port[2], 0),
+    DEFINE_PROP_UINT8("chip2-f-port", SGIBoardTestFixtureState,
+                      expansion_port[3], 0),
     DEFINE_PROP_STRING("board-type", SGIBoardTestFixtureState, board_type),
     DEFINE_PROP_STRING("preset", SGIBoardTestFixtureState, preset),
     DEFINE_PROP_UINT32("module", SGIBoardTestFixtureState, module, 0),
