@@ -2493,6 +2493,51 @@ static void test_rad_status_direct(void)
     qtest_quit(qts);
 }
 
+static void test_rad_status_primary_only(gconstpointer data)
+{
+    bool secondary = GPOINTER_TO_INT(data);
+    QTestState *qts = octane_start();
+    const uint64_t buffer = RAM + 0x8000;
+    const uint64_t other = RAM + 0x9000;
+
+    octane_rad_map(qts);
+    qtest_writel(qts, CFG(3) + 4, 6);
+    qtest_writel(qts, BRIDGE_REG(0x080), 8u << 20);
+    qtest_memset(qts, buffer, 0xa5, 0x80);
+    qtest_memset(qts, other, 0xa5, 0x80);
+    qtest_writel(qts, RAD_BAR0 + 0x500, 0xa0008000);
+    qtest_writel(qts, RAD_BAR0 + 0x528, 0);
+    qtest_writel(qts, RAD_BAR0 + 0x504, 0xfffffffc);
+    if (secondary) {
+        qtest_writel(qts, RAD_BAR0 + 0x4b4, 0xa0009000);
+        qtest_writel(qts, RAD_BAR0 + 0x4b8, 0x12345678);
+        qtest_writel(qts, RAD_BAR0 + 0x4bc, 0xffffc078);
+    }
+    g_assert_cmpuint(qtest_writel_tx(qts, RAD_BAR0 + 0x5c, 0x40001), ==,
+                     MEMTX_OK);
+    g_assert_cmphex(qtest_readl(qts, buffer + 0x7c), ==, 0x80080000);
+    g_assert_cmphex(qtest_readl(qts, other + 0x7c), ==, 0xa5a5a5a5);
+    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x4b4), ==,
+                    secondary ? 0xa0009000 : 0);
+    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x4b8), ==,
+                    secondary ? 0x12345678 : 0);
+    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x4bc), ==,
+                    secondary ? 0xffffc078 : 0);
+
+    qtest_writel(qts, RAD_BAR0 + 0x5c, 0x1fffc);
+    qtest_writel(qts, buffer + 0x7c, 0xa5a5a5a5);
+    qtest_writel(qts, RAD_BAR0 + 0x504, 0xffffc078);
+    qtest_writel(qts, RAD_BAR0 + 0x5c, 0x40001);
+    g_assert_cmphex(qtest_readl(qts, buffer + 0x7c), ==, 0xa5a5a5a5);
+    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x5c), ==, 0x1fffc);
+    qtest_writel(qts, RAD_BAR0 + 0x504, 0xfffffffc);
+    qtest_writel(qts, RAD_BAR0 + 0x500, 0);
+    qtest_writel(qts, RAD_BAR0 + 0x5c, 0x40001);
+    g_assert_cmphex(qtest_readl(qts, buffer + 0x7c), ==, 0xa5a5a5a5);
+    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x5c), ==, 0x1fffc);
+    qtest_quit(qts);
+}
+
 static void octane_rad_output_program(QTestState *qts, uint64_t base)
 {
     qtest_writel(qts, RAD_BAR0 + 0x4f8, base);
@@ -2636,6 +2681,14 @@ static void test_rad_status_continuous(void)
     qtest_writel(qts, BRIDGE_REG(0x080), 8u << 20);
     qtest_qmp_assert_success(qts, "{'execute':'cont'}");
     qtest_memset(qts, buffer, 0xa5, 128 * 0x80);
+    for (unsigned i = 0; i < 3; i++) {
+        octane_rad_status_program(qts, 0xa0010000, 0xffffc078);
+        qtest_writel(qts, RAD_BAR0 + 0x4b4 + 4 * i, 1);
+        qtest_writel(qts, RAD_BAR0 + 0x5c, ctrl);
+        g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x5c), ==, 0);
+        qtest_clock_step(qts, 10000);
+        g_assert_cmphex(qtest_readl(qts, buffer + 0xfc), ==, 0xa5a5a5a5);
+    }
     octane_rad_status_program(qts, 0xa0010000, 0xffffc078);
     qtest_writel(qts, RAD_BAR0 + 0x5c, ctrl);
     g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x5c), ==, ctrl);
@@ -4056,6 +4109,10 @@ int main(int argc, char **argv)
                         test_sharp_flash_shutdown_pending);
     qtest_add_func("/octane/rad-pci", test_rad_pci);
     qtest_add_func("/octane/rad-status-direct", test_rad_status_direct);
+    qtest_add_data_func("/octane/rad-status-primary-only", GINT_TO_POINTER(0),
+                        test_rad_status_primary_only);
+    qtest_add_data_func("/octane/rad-status-unrelated-secondary",
+                        GINT_TO_POINTER(1), test_rad_status_primary_only);
     qtest_add_func("/octane/rad-status-routes", test_rad_status_routes);
     qtest_add_func("/octane/rad-output-clock", test_rad_output_clock);
     qtest_add_func("/octane/rad-status-continuous", test_rad_status_continuous);

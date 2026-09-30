@@ -1398,13 +1398,18 @@ static bool sgi_rad1_octane_ring_valid(SGIRad1AudioState *s, bool output,
                            SGI_RAD1_AUDIO_REG_STATUS_LIMIT2;
     uint32_t *bank = s->dma_bank;
 
-    return (bank[SGI_RAD1_AUDIO_DMA_IDX(lo)] ||
-            bank[SGI_RAD1_AUDIO_DMA_IDX(hi)]) &&
-           bank[SGI_RAD1_AUDIO_DMA_IDX(lo)] ==
+    if (!(bank[SGI_RAD1_AUDIO_DMA_IDX(lo)] ||
+          bank[SGI_RAD1_AUDIO_DMA_IDX(hi)]) ||
+        bank[SGI_RAD1_AUDIO_DMA_IDX(ctrl)] != limit) {
+        return false;
+    }
+    if (!output && limit == 0xfffffffc) {
+        return true;
+    }
+    return bank[SGI_RAD1_AUDIO_DMA_IDX(lo)] ==
            bank[SGI_RAD1_AUDIO_DMA_IDX(lo2)] &&
            bank[SGI_RAD1_AUDIO_DMA_IDX(hi)] ==
            bank[SGI_RAD1_AUDIO_DMA_IDX(hi2)] &&
-           bank[SGI_RAD1_AUDIO_DMA_IDX(ctrl)] == limit &&
            bank[SGI_RAD1_AUDIO_DMA_IDX(ctrl2)] == limit;
 }
 
