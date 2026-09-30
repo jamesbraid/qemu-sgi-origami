@@ -447,10 +447,9 @@ static const uint16_t mgras_gl_stencil_ops[] = {
  * integer coordinate unscaled, as OpenGL 1.2.1 does (2.7), is inferred.
  * blast and mview send glVertex3i, blast and buttonfly glTexCoord2f
  * (the 2026-09-28 demo survey's -d unimp logs), and mirrors and perfly
- * glTexCoord4f. The model draws no
- * texture and keeps no texture coordinate, so the texture forms are
- * consumed and logged, and the 0xa104 query still answers OpenGL's
- * initial texture coordinate.
+ * glTexCoord4f. The model retains coordinates for current-attribute
+ * queries and captures the texture-matrix result at raster-position
+ * updates. Native texture upload and sampling remain unsupported.
  */
 #define MGRAS_GL_VERTEX3I        0x3800000c
 #define MGRAS_GL_RASTER_POS3I    0x3800380c
@@ -1200,12 +1199,11 @@ void sgi_mgras_gl_context_loaded(SGIMgrasState *s)
  * four floats, 8 to 10 as GL_CURRENT_NORMAL's, 11 to 14 as
  * GL_CURRENT_TEXTURE_COORDS' and 15 as GL_EDGE_FLAG, true when the answer
  * has any of bits 0x01c00000 (notes-return-mode-queries.md in the Origami
- * repository). The model answers with the loaded context's colour, normal
- * and edge flag; that the board answers with its copy of that state is
- * inferred. Which of the edge flag's three bits the board sets is
- * unknown, so the model sets all three. Texture coordinates are not
- * modelled: the model answers OpenGL's initial (0, 0, 0, 1) (2.7), wrong
- * once a client has sent glTexCoord. Other indices answer zero, logged.
+ * repository). The model answers with the loaded context's colour,
+ * normal, texture coordinates and edge flag; that the board answers with
+ * its copy of that state is inferred. Which of the edge flag's three
+ * bits the board sets is unknown, so the model sets all three. Other
+ * indices answer zero, logged.
  * The discriminating tests are hq-attribute-queries-set-flag-after-arguments
  * and hq-attribute-query-answers-normal-and-edge-flag.
  *
@@ -3527,11 +3525,19 @@ void sgi_mgras_gl_execute(SGIMgrasState *s, uint32_t header,
                          word, 3);
         return;
     }
-    case MGRAS_GL_TEX_COORD3I:
+    case MGRAS_GL_TEX_COORD3I: {
+        float f[3] = { (int32_t)payload[0], (int32_t)payload[1],
+                       (int32_t)payload[2] };
+
+        memcpy(word, f, sizeof(f));
+        mgras_gl_command(s, SGI_GL_OP_TEXCOORD3F, word, 3);
+        return;
+    }
     case MGRAS_GL_TEX_COORD2F:
+        mgras_gl_command(s, SGI_GL_OP_TEXCOORD2F, payload, 2);
+        return;
     case MGRAS_GL_TEX_COORD4F:
-        qemu_log_mask(LOG_UNIMP, "sgi-mgras: glTexCoord is not kept; the "
-                      "model draws no texture\n");
+        mgras_gl_command(s, SGI_GL_OP_TEXCOORD4F, payload, 4);
         return;
     case MGRAS_GL_RASTER_POS2F:
         mgras_gl_command(s, SGI_GL_OP_RASTER_POS2F, payload, 2);
