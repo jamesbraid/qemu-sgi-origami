@@ -13,6 +13,19 @@ from qemu_test import LocalAsset
 
 
 MANIFEST_REL = 'assets/functional/fuel-irix-6.5.30.json'
+# Pin the regression fixture so CI can discover its inputs before boot.
+ASSET_SPECS = {
+    'manifest': (MANIFEST_REL.removeprefix('assets/'),
+                 '1326cba3698518fc19a40f8342b6771c79a2a6a67487961b7af9b09e1d66cbb6'),
+    'prom': ('functional/fuel/ip35prom.payload.bin',
+             '554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b'),
+    'boot_flash': ('functional/fuel/fuel-boot-flash.raw',
+                   '1941098333ff9e46fe72d97c3a3e466b992e8dcf1a7f0de904c3510572fb421a'),
+    'disk': ('functional/fuel/client.qcow2',
+             '545cd891e86a1e3d9d6111e9e72de93b4004643d5e02d4f3e21b5ab12eb04484'),
+    'fuel-mac-eeprom': ('functional/fuel/fuel-mac-eeprom.bin',
+                        'c9fd7d5af396de0a38560146b6c97940821fca5324d1cde9b39077c26ac87020'),
+}
 _REQUIRED_PROPERTIES = {
     'fuel-board-id-word', 'fuel-ioc3-subsystem-id',
     'fuel-l1-type-code', 'fuel-bedrock-revision',
@@ -30,8 +43,7 @@ def load_fixture(test):
     """Validate the fixed local manifest and every identified payload."""
     if not os.environ.get(LocalAsset.ENV_VAR):
         test.skipTest(f'{LocalAsset.ENV_VAR} is not set')
-    manifest_path = LocalAsset(
-        MANIFEST_REL.removeprefix('assets/'), None).fetch()
+    manifest_path = LocalAsset(*ASSET_SPECS['manifest']).fetch()
     with open(manifest_path, encoding='utf-8') as source:
         fixture = json.load(source)
     if not isinstance(fixture, dict) or set(fixture) != _FIELDS:

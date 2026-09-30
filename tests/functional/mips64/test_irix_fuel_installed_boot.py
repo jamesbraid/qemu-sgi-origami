@@ -11,7 +11,8 @@ import re
 
 import lib_fuel
 from lib_prom import FORK_ROOT, drive_console, run_record, utc_now
-from qemu_test import QemuSystemTest, skipBigDataTest, skipIfMissingEnv, skipSlowTest
+from qemu_test import (LocalAsset, QemuSystemTest, skipBigDataTest,
+                       skipIfMissingEnv, skipSlowTest)
 
 
 BOOT_TIMEOUT_SECONDS = 900
@@ -67,6 +68,12 @@ SHUTDOWN_TO_PROM_RE = re.compile(
 
 
 class IrixFuelInstalledBoot(QemuSystemTest):
+
+    ASSET_MANIFEST = LocalAsset(*lib_fuel.ASSET_SPECS['manifest'])
+    ASSET_PROM = LocalAsset(*lib_fuel.ASSET_SPECS['prom'])
+    ASSET_BOOT_FLASH = LocalAsset(*lib_fuel.ASSET_SPECS['boot_flash'])
+    ASSET_DISK = LocalAsset(*lib_fuel.ASSET_SPECS['disk'])
+    ASSET_MAC_EEPROM = LocalAsset(*lib_fuel.ASSET_SPECS['fuel-mac-eeprom'])
 
     @skipBigDataTest()
     @skipSlowTest()
