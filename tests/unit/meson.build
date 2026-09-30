@@ -292,7 +292,14 @@ foreach test_name, extra: tests
     src += test_ss.all_sources()
     deps += test_ss.all_dependencies()
   endif
-  exe = executable(test_name, src, genh, dependencies: deps)
+  test_link_args = []
+  test_c_args = []
+  if test_name == 'test-sgi-gl-vmstate' and meson.get_compiler('c').has_link_argument('-Wl,--wrap=g_try_realloc_n')
+    test_link_args = ['-Wl,--wrap=g_try_realloc_n']
+    test_c_args = ['-DSGI_GL_ALLOCATION_WRAP']
+  endif
+  exe = executable(test_name, src, genh, dependencies: deps,
+                   link_args: test_link_args, c_args: test_c_args)
 
   test(test_name, exe,
        depends: test_deps.get(test_name, []),

@@ -599,6 +599,22 @@ typedef struct SGIGLDrawState {
  */
 #define SGI_GL_WINDOW_GUARD     16384
 
+/* Host-owned deferred boundary. Never shallow-copy a live context. */
+typedef struct SGIGLPolygonAssembly {
+    float *vertices;
+    uint32_t count, capacity;
+    uint32_t failed, error;
+    /* Host activation and transient migration marker, never serialized. */
+    uint32_t enabled, loaded;
+} SGIGLPolygonAssembly;
+
+#define SGI_GL_OUT_OF_MEMORY 0x0505
+
+typedef enum SGIGLDrawResult {
+    SGI_GL_DRAW_OK,
+    SGI_GL_DRAW_OUT_OF_MEMORY,
+} SGIGLDrawResult;
+
 typedef struct SGIGLContext {
     /* The hardware identity the family keys this context by. */
     uint32_t hw_id;
@@ -680,6 +696,7 @@ typedef struct SGIGLContext {
     uint32_t raster_enables;
     /* Canonical window rows: bit x of row y (OpenGL 1.2.1, 3.5.2). */
     uint32_t polygon_stipple[32];
+    SGIGLPolygonAssembly polygon;
     /* The primitive open since glBegin, SGI_GL_POINTS to SGI_GL_POLYGON. */
     uint32_t begin_mode;
     uint32_t in_begin;          /* 0 or 1 */
@@ -823,6 +840,11 @@ typedef struct SGIGLDraw {
     /* Borrowed canonical rows; absent rows mean stipple is disabled. */
     const uint32_t *polygon_stipple;
     bool polygon_stipple_enabled;
+    /* Absent modes preserve legacy FILL; borrowed through synchronous draw. */
+    const uint32_t *polygon_modes;
+    bool fill_by_triangle;
+    bool line_stipple_enabled;
+    uint32_t line_stipple_repeat, line_stipple_pattern;
 } SGIGLDraw;
 
 /*
@@ -838,10 +860,19 @@ typedef struct SGIGLSink {
      */
     void (*fence)(void *opaque, uint32_t context);
     void *opaque;
+    /* Activated contexts require this result path and never use draw. */
+    SGIGLDrawResult (*draw_checked)(void *opaque, const SGIGLDraw *d);
 } SGIGLSink;
 
 /* OpenGL 1.2.1's initial state, for the context with identity hw_id. */
 void sgi_gl_init(SGIGLContext *c, uint32_t hw_id);
+/* Unavailable until renderer coverage is complete; reset preserves policy. */
+bool sgi_gl_enable_polygon_modes(SGIGLContext *c, const SGIGLSink *sink);
+void sgi_gl_cleanup(SGIGLContext *c);
+void sgi_gl_reset(SGIGLContext *c, uint32_t hw_id);
+/* Both contexts initialized and distinct; failure leaves both unchanged. */
+bool sgi_gl_clone(SGIGLContext *dst, const SGIGLContext *src);
+bool sgi_gl_consume_error(SGIGLContext *c, uint32_t *error);
 
 /*
  * Canonical 32x32 pattern, copied on upload. Bit x in row y names window

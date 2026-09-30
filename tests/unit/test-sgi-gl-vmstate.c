@@ -112,6 +112,9 @@ static void populate(SGIGLContext *c, bool other)
         b[i] = (uint8_t)(i * 131 + 29) ^ (other ? 0xff : 0);
     }
 
+    /* Host ownership is not populated with arbitrary pointer bytes. */
+    memset(&c->polygon, 0, sizeof(c->polygon));
+
     /* Everything sgi_gl_context_valid() limits, set inside its limits. */
     c->cur.depth_test = !other;
     c->cur.depth_mask = !other;
@@ -202,13 +205,25 @@ static void populate(SGIGLContext *c, bool other)
     g_assert_true(sgi_gl_context_valid(c, &error_abort));
 }
 
+/* Pointer alignment adds host padding before the owned assembly. */
+static bool context_padding(size_t at)
+{
+    size_t before = offsetof(SGIGLContext, polygon_stipple) +
+                    sizeof(((SGIGLContext *)0)->polygon_stipple);
+    size_t end = offsetof(SGIGLContext, raster_texcoord) +
+                 sizeof(((SGIGLContext *)0)->raster_texcoord);
+
+    return (at >= before && at < offsetof(SGIGLContext, polygon)) ||
+           at >= end;
+}
+
 /* The first byte at which two contexts differ, or -1. */
 static ssize_t first_difference(const SGIGLContext *a, const SGIGLContext *b)
 {
     const uint8_t *pa = (const uint8_t *)a, *pb = (const uint8_t *)b;
 
     for (size_t i = 0; i < sizeof(*a); i++) {
-        if (pa[i] != pb[i]) {
+        if (!context_padding(i) && pa[i] != pb[i]) {
             return i;
         }
     }
@@ -334,15 +349,19 @@ static void reset_optional(SGIGLContext *c)
 }
 
 /*
- * Every byte of SGIGLContext is migrated, once. A field added without a
- * description, or dropped from one, fails here, and so does padding, in
- * which a small field could otherwise hide.
+ * Every field is described once. The custom assembly serializer owns its
+ * logical payload; separate tests check its records and host ownership.
+ * Only padding required by its host pointer alignment is exempt.
  */
 static void test_every_byte_described(void)
 {
     g_autofree uint8_t *covered = g_malloc0(sizeof(SGIGLContext));
     cover(&vmstate_sgi_gl_context, 0, covered, sizeof(SGIGLContext));
     for (size_t i = 0; i < sizeof(SGIGLContext); i++) {
+        if (context_padding(i)) {
+            g_assert_false(covered[i]);
+            continue;
+        }
         if (!covered[i]) {
             g_test_message("byte %zu of SGIGLContext is not migrated", i);
         }
@@ -854,6 +873,435 @@ static void test_polygon_stipple_restore(void)
     g_assert_cmpuint(dst.gl[0].raster_enables, ==, 0);
 }
 
+/* Fail only the context's fallible growth, without a production test hook. */
+static int allocation_budget = -1;
+
+#ifdef SGI_GL_ALLOCATION_WRAP
+void *__real_g_try_realloc_n(void *mem, gsize blocks, gsize size);
+void *__wrap_g_try_realloc_n(void *mem, gsize blocks, gsize size);
+
+void *__wrap_g_try_realloc_n(void *mem, gsize blocks, gsize size)
+{
+    if (allocation_budget == 0) {
+        return NULL;
+    }
+    if (allocation_budget > 0) {
+        allocation_budget--;
+    }
+    return __real_g_try_realloc_n(mem, blocks, size);
+}
+#endif
+
+static bool allocation_failure_available(void)
+{
+#ifdef SGI_GL_ALLOCATION_WRAP
+    return true;
+#else
+    g_test_skip("linker does not support allocation wrapping");
+    return false;
+#endif
+}
+
+typedef struct PolygonDraw {
+    unsigned calls, count;
+    float vertices[64][SGI_GL_VERTEX_FLOATS];
+    bool stipple, fill_by_triangle;
+    SGIGLDrawResult result;
+} PolygonDraw;
+
+static SGIGLDrawResult polygon_draw(void *opaque, const SGIGLDraw *d)
+{
+    PolygonDraw *r = opaque;
+
+    g_assert_cmpuint(d->count, <=, G_N_ELEMENTS(r->vertices));
+    r->calls++;
+    r->count = d->count;
+    r->stipple = d->line_stipple_enabled;
+    r->fill_by_triangle = d->fill_by_triangle;
+    memcpy(r->vertices, d->vertices,
+           d->count * sizeof(r->vertices[0]));
+    return r->result;
+}
+
+static void polygon_command(SGIGLContext *c, PolygonDraw *r, uint16_t op,
+                            uint32_t count, const uint32_t *args)
+{
+    SGIGLSink sink = { .opaque = r, .draw_checked = polygon_draw };
+    SGIGLCmd cmd = { .op = op, .nargs = count, .args = args };
+
+    sgi_gl_command(c, &sink, &cmd);
+}
+
+static void polygon_vertex(SGIGLContext *c, PolygonDraw *r, unsigned n)
+{
+    uint32_t args[] = { float_bits(n / 64.0f), float_bits(0.25f) };
+
+    polygon_command(c, r, SGI_GL_OP_VERTEX2F, 2, args);
+}
+
+static void polygon_begin(SGIGLContext *c, PolygonDraw *r)
+{
+    uint32_t mode = SGI_GL_POLYGON;
+
+    polygon_command(c, r, SGI_GL_OP_BEGIN, 1, &mode);
+}
+
+static void polygon_heads_init(TestHead *src, TestHead *dst)
+{
+    for (unsigned i = 0; i < CONTEXTS; i++) {
+        sgi_gl_init(&src->gl[i], i);
+        sgi_gl_init(&dst->gl[i], i);
+    }
+    /* Staged ownership fixtures: the public opt-in remains unavailable. */
+    src->gl[0].polygon.enabled = dst->gl[0].polygon.enabled = 1;
+}
+
+static void test_polygon_lifecycle(void)
+{
+    SGIGLContext src, dst;
+    PolygonDraw r = { 0 };
+    SGIGLSink sink = { .draw_checked = polygon_draw, .opaque = &r };
+
+    sgi_gl_init(&src, 1);
+    sgi_gl_init(&dst, 2);
+    g_assert_false(sgi_gl_enable_polygon_modes(&src, &sink));
+    g_assert_false(src.polygon.enabled);
+    src.polygon.enabled = dst.polygon.enabled = 1;
+    polygon_begin(&src, &r);
+    for (unsigned n = 0; n < 40; n++) {
+        polygon_vertex(&src, &r, n);
+    }
+    g_assert_cmpuint(r.calls, ==, 0);
+    g_assert_true(sgi_gl_context_valid(&src, &error_abort));
+    g_assert_true(sgi_gl_clone(&dst, &src));
+    g_assert_true(dst.polygon.vertices != src.polygon.vertices);
+    g_assert_cmpmem(src.polygon.vertices, 40 * sizeof(r.vertices[0]),
+                    dst.polygon.vertices, 40 * sizeof(r.vertices[0]));
+#ifdef SGI_GL_ALLOCATION_WRAP
+    {
+        SGIGLContext old = dst;
+
+        allocation_budget = 0;
+        g_assert_false(sgi_gl_clone(&dst, &src));
+        allocation_budget = -1;
+        g_assert_cmpmem(&dst, sizeof(dst), &old, sizeof(old));
+    }
+#endif
+    g_assert_false(sgi_gl_clone(&src, &src));
+    sgi_gl_reset(&src, 7);
+    g_assert_cmpuint(src.hw_id, ==, 7);
+    g_assert_true(src.polygon.enabled);
+    g_assert_null(src.polygon.vertices);
+    g_assert_false(src.in_begin);
+    polygon_command(&dst, &r, SGI_GL_OP_END, 0, NULL);
+    g_assert_cmpuint(r.calls, ==, 1);
+    g_assert_cmpuint(r.count, ==, 40);
+    g_assert_true(r.fill_by_triangle);
+    g_assert_null(dst.polygon.vertices);
+    sgi_gl_cleanup(&src);
+    sgi_gl_cleanup(&dst);
+    g_assert_false(src.polygon.enabled);
+}
+
+static void polygon_legacy_draw(void *opaque, const SGIGLDraw *d)
+{
+    g_assert_null(d->polygon_modes);
+    g_assert_false(d->line_stipple_enabled);
+    g_assert_cmpuint(d->line_stipple_repeat, ==, 0);
+    g_assert_cmpuint(d->line_stipple_pattern, ==, 0);
+    polygon_draw(opaque, d);
+}
+
+static void test_polygon_sink_policy(void)
+{
+    SGIGLContext c;
+    PolygonDraw r = { 0 };
+    SGIGLSink sink = { .draw = polygon_legacy_draw, .opaque = &r };
+    uint32_t mode = SGI_GL_TRIANGLES;
+    SGIGLCmd begin = { .op = SGI_GL_OP_BEGIN, .nargs = 1, .args = &mode };
+    SGIGLCmd end = { .op = SGI_GL_OP_END };
+
+    sgi_gl_init(&c, 0);
+    c.raster_enables = SGI_GL_RASTER_LINE_STIPPLE;
+    sgi_gl_command(&c, &sink, &begin);
+    for (unsigned n = 0; n < 3; n++) {
+        uint32_t args[] = { float_bits(n / 64.0f), float_bits(0.25f) };
+        SGIGLCmd vertex = {
+            .op = SGI_GL_OP_VERTEX2F, .nargs = 2, .args = args,
+        };
+
+        sgi_gl_command(&c, &sink, &vertex);
+    }
+    sgi_gl_command(&c, &sink, &end);
+    g_assert_cmpuint(r.calls, ==, 1);
+    c.polygon.enabled = 1;
+    polygon_begin(&c, &r);
+    for (unsigned n = 0; n < 3; n++) {
+        c.cur_color[0] = n / 4.0f;
+        polygon_vertex(&c, &r, n);
+    }
+    g_assert_cmpfloat(c.polygon.vertices[SGI_GL_V_COLOR], ==, 0);
+    g_assert_cmpfloat(c.polygon.vertices[SGI_GL_VERTEX_FLOATS +
+                                        SGI_GL_V_COLOR], ==, 0.25f);
+    /* A missing checked callback suppresses the draw without a GL error. */
+    sgi_gl_command(&c, &sink, &end);
+    g_assert_cmpuint(r.calls, ==, 1);
+    g_assert_null(c.polygon.vertices);
+    g_assert_cmpuint(c.polygon.error, ==, 0);
+    sgi_gl_cleanup(&c);
+}
+
+static void test_polygon_growth_failure(void)
+{
+    SGIGLContext c, legacy;
+    PolygonDraw r = { 0 };
+    uint32_t error = 123;
+
+    if (!allocation_failure_available()) {
+        return;
+    }
+    sgi_gl_init(&c, 1);
+    sgi_gl_init(&legacy, 2);
+    c.polygon.enabled = 1;
+    polygon_begin(&c, &r);
+    for (unsigned n = 0; n < 8; n++) {
+        polygon_vertex(&c, &r, n);
+    }
+    allocation_budget = 0;
+    polygon_vertex(&c, &r, 8);
+    allocation_budget = -1;
+    g_assert_true(c.polygon.failed);
+    g_assert_null(c.polygon.vertices);
+    g_assert_cmpuint(c.polygon.count, ==, 0);
+    g_assert_false(sgi_gl_consume_error(&c, &error));
+    g_assert_cmpuint(error, ==, 123);
+    for (unsigned n = 9; n < 20; n++) {
+        polygon_vertex(&c, &r, n);
+    }
+    g_assert_false(sgi_gl_clone(&legacy, &c));
+    polygon_command(&c, &r, SGI_GL_OP_END, 0, NULL);
+    g_assert_cmpuint(r.calls, ==, 0);
+    g_assert_false(c.polygon.failed);
+    g_assert_false(sgi_gl_clone(&legacy, &c));
+    g_assert_true(sgi_gl_consume_error(&c, &error));
+    g_assert_cmphex(error, ==, SGI_GL_OUT_OF_MEMORY);
+    g_assert_true(sgi_gl_consume_error(&c, &error));
+    g_assert_cmpuint(error, ==, 0);
+    g_assert_true(sgi_gl_clone(&legacy, &c));
+    g_assert_false(legacy.polygon.enabled);
+    polygon_begin(&c, &r);
+    for (unsigned n = 0; n < 3; n++) {
+        polygon_vertex(&c, &r, n);
+    }
+    r.result = SGI_GL_DRAW_OUT_OF_MEMORY;
+    polygon_command(&c, &r, SGI_GL_OP_END, 0, NULL);
+    g_assert_true(sgi_gl_consume_error(&c, &error));
+    g_assert_cmphex(error, ==, SGI_GL_OUT_OF_MEMORY);
+    sgi_gl_cleanup(&c);
+    sgi_gl_cleanup(&legacy);
+}
+
+static void test_polygon_assembly_restore(void)
+{
+    static const unsigned counts[] = { 0, 2, 40 };
+
+    for (unsigned k = 0; k < G_N_ELEMENTS(counts); k++) {
+        TestHead src = { 0 }, dst = { 0 };
+        PolygonDraw before = { 0 }, after = { 0 };
+        GByteArray *stream;
+
+        polygon_heads_init(&src, &dst);
+        polygon_begin(&src.gl[0], &before);
+        for (unsigned n = 0; n < counts[k]; n++) {
+            polygon_vertex(&src.gl[0], &before, n);
+        }
+        stream = save_head(&src);
+        g_assert_cmpint(load_head(stream, &dst, NULL), ==, 0);
+        g_byte_array_unref(stream);
+        g_assert_cmpuint(dst.gl[0].polygon.count, ==, counts[k]);
+        g_assert_cmpuint(dst.gl[0].nheld, ==, 0);
+        if (counts[k]) {
+            g_assert_true(src.gl[0].polygon.vertices !=
+                          dst.gl[0].polygon.vertices);
+        }
+        for (unsigned n = counts[k]; n < counts[k] + 3; n++) {
+            polygon_vertex(&src.gl[0], &before, n);
+            polygon_vertex(&dst.gl[0], &after, n);
+        }
+        polygon_command(&src.gl[0], &before, SGI_GL_OP_END, 0, NULL);
+        polygon_command(&dst.gl[0], &after, SGI_GL_OP_END, 0, NULL);
+        g_assert_cmpuint(before.calls, ==, 1);
+        g_assert_cmpmem(&before, sizeof(before), &after, sizeof(after));
+        sgi_gl_cleanup(&src.gl[0]);
+        sgi_gl_cleanup(&dst.gl[0]);
+    }
+}
+
+static void test_polygon_stream_compatibility(void)
+{
+    TestHead src = { 0 }, dst = { 0 };
+    PolygonDraw r = { 0 };
+    Draws legacy = { 0 };
+    GByteArray *stream;
+    uint32_t mode = SGI_GL_POLYGON;
+
+    polygon_heads_init(&src, &dst);
+    polygon_begin(&src.gl[0], &r);
+    stream = save_head(&src);
+    dst.gl[0].polygon.enabled = 0;
+    g_assert_cmpint(load_head(stream, &dst, NULL), !=, 0);
+    g_assert_null(dst.gl[0].polygon.vertices);
+    g_byte_array_unref(stream);
+    sgi_gl_reset(&src.gl[0], 0);
+    src.gl[0].polygon.enabled = 0;
+    send_cmd(&src.gl[0], &legacy, SGI_GL_OP_BEGIN, 1, &mode);
+    send_vertex(&src.gl[0], &legacy, 0, 0);
+    stream = save_head(&src);
+    sgi_gl_init(&dst.gl[0], 0);
+    g_assert_cmpint(load_head(stream, &dst, NULL), ==, 0);
+    sgi_gl_init(&dst.gl[0], 0);
+    dst.gl[0].polygon.enabled = 1;
+    g_assert_cmpint(load_head(stream, &dst, NULL), !=, 0);
+    g_byte_array_unref(stream);
+    sgi_gl_cleanup(&src.gl[0]);
+    sgi_gl_cleanup(&dst.gl[0]);
+}
+
+static void test_polygon_failed_restore(void)
+{
+    TestHead src = { 0 }, dst = { 0 };
+    PolygonDraw r = { 0 };
+    GByteArray *stream;
+    uint32_t error;
+
+    if (!allocation_failure_available()) {
+        return;
+    }
+    polygon_heads_init(&src, &dst);
+    polygon_begin(&src.gl[0], &r);
+    allocation_budget = 0;
+    polygon_vertex(&src.gl[0], &r, 0);
+    allocation_budget = -1;
+    stream = save_head(&src);
+    g_assert_cmpint(load_head(stream, &dst, NULL), ==, 0);
+    g_byte_array_unref(stream);
+    g_assert_true(dst.gl[0].polygon.failed);
+    polygon_command(&dst.gl[0], &r, SGI_GL_OP_END, 0, NULL);
+    g_assert_cmpuint(r.calls, ==, 0);
+    g_assert_true(sgi_gl_consume_error(&dst.gl[0], &error));
+    g_assert_cmphex(error, ==, SGI_GL_OUT_OF_MEMORY);
+    polygon_command(&src.gl[0], &r, SGI_GL_OP_END, 0, NULL);
+    stream = save_head(&src);
+    sgi_gl_reset(&dst.gl[0], 0);
+    g_assert_cmpint(load_head(stream, &dst, NULL), ==, 0);
+    g_byte_array_unref(stream);
+    g_assert_false(dst.gl[0].in_begin);
+    g_assert_true(sgi_gl_consume_error(&dst.gl[0], &error));
+    g_assert_cmphex(error, ==, SGI_GL_OUT_OF_MEMORY);
+    sgi_gl_cleanup(&src.gl[0]);
+    sgi_gl_cleanup(&dst.gl[0]);
+}
+
+static void test_polygon_restore_failure(void)
+{
+    TestHead src = { 0 }, dst = { 0 };
+    PolygonDraw r = { 0 };
+    GByteArray *stream;
+
+    if (!allocation_failure_available()) {
+        return;
+    }
+    polygon_heads_init(&src, &dst);
+    polygon_begin(&src.gl[0], &r);
+    for (unsigned n = 0; n < 40; n++) {
+        polygon_vertex(&src.gl[0], &r, n);
+    }
+    stream = save_head(&src);
+    allocation_budget = 1;
+    g_assert_cmpint(load_head(stream, &dst, NULL), !=, 0);
+    allocation_budget = -1;
+    g_assert_null(dst.gl[0].polygon.vertices);
+    g_assert_cmpuint(dst.gl[0].polygon.count, ==, 0);
+    /* Find the first assembly payload, not the later table context. */
+    {
+        const char name[] = "sgi-gl-context/polygon-assembly";
+        size_t at;
+
+        for (at = 0; at + sizeof(name) - 1 < stream->len; at++) {
+            if (!memcmp(stream->data + at, name, sizeof(name) - 1)) {
+                break;
+            }
+        }
+        g_assert_cmpuint(at + sizeof(name) - 1, <, stream->len);
+        /* Name, version, three counters, then cut within vertex 2. */
+        g_byte_array_set_size(stream, at + sizeof(name) - 1 + 4 + 12 + 100);
+    }
+    g_assert_cmpint(load_head(stream, &dst, NULL), !=, 0);
+    g_assert_null(dst.gl[0].polygon.vertices);
+    g_byte_array_unref(stream);
+    sgi_gl_cleanup(&src.gl[0]);
+    sgi_gl_cleanup(&dst.gl[0]);
+}
+
+static void test_legacy_closed_end_restore(void)
+{
+    TestHead src = { 0 }, dst = { 0 };
+    Draws r = { 0 };
+    GByteArray *stream;
+
+    for (unsigned i = 0; i < CONTEXTS; i++) {
+        sgi_gl_init(&src.gl[i], i);
+        sgi_gl_init(&dst.gl[i], i);
+    }
+    src.gl[0].begin_mode = SGI_GL_TRIANGLE_STRIP;
+    src.gl[0].strip_odd = 1;
+    g_assert_true(sgi_gl_context_valid(&src.gl[0], &error_abort));
+    stream = save_head(&src);
+    g_assert_cmpint(load_head(stream, &dst, NULL), ==, 0);
+    g_byte_array_unref(stream);
+    g_assert_false(dst.gl[0].in_begin);
+    g_assert_cmpuint(dst.gl[0].strip_odd, ==, 1);
+    send_cmd(&dst.gl[0], &r, SGI_GL_OP_END, 0, NULL);
+    g_assert_cmpuint(dst.gl[0].begin_mode, ==, 0);
+    g_assert_cmpuint(dst.gl[0].nheld, ==, 0);
+    g_assert_cmpuint(dst.gl[0].strip_odd, ==, 0);
+    g_assert_cmpuint(r.n, ==, 0);
+}
+
+static void test_polygon_duplicate_subsection(void)
+{
+    TestHead src = { 0 }, dst = { 0 };
+    PolygonDraw r = { 0 };
+    GByteArray *stream;
+    const char name[] = "sgi-gl-context/polygon-assembly";
+    size_t at, start, end, size, oldlen;
+
+    polygon_heads_init(&src, &dst);
+    polygon_begin(&src.gl[0], &r);
+    polygon_vertex(&src.gl[0], &r, 0);
+    stream = save_head(&src);
+    for (at = 0; at + sizeof(name) - 1 < stream->len; at++) {
+        if (!memcmp(stream->data + at, name, sizeof(name) - 1)) {
+            break;
+        }
+    }
+    g_assert_cmpuint(at, >=, 2);
+    g_assert_cmpuint(at + sizeof(name) - 1, <, stream->len);
+    start = at - 2; /* Subsection tag and name length. */
+    end = at + sizeof(name) - 1 + 4 + 12 + sizeof(r.vertices[0]);
+    size = end - start;
+    oldlen = stream->len;
+    g_byte_array_set_size(stream, oldlen + size);
+    memmove(stream->data + end + size, stream->data + end, oldlen - end);
+    memcpy(stream->data + end, stream->data + start, size);
+    g_assert_cmpint(load_head(stream, &dst, NULL), !=, 0);
+    g_assert_null(dst.gl[0].polygon.vertices);
+    g_assert_cmpuint(dst.gl[0].polygon.count, ==, 0);
+    g_byte_array_unref(stream);
+    sgi_gl_cleanup(&src.gl[0]);
+    sgi_gl_cleanup(&dst.gl[0]);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -874,5 +1322,23 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-gl-vmstate/refuses-corrupt", test_refuses_corrupt);
     g_test_add_func("/sgi-gl-vmstate/nested-subsection-name",
                     test_nested_subsection_name);
+    g_test_add_func("/sgi-gl-vmstate/polygon-lifecycle",
+                    test_polygon_lifecycle);
+    g_test_add_func("/sgi-gl-vmstate/polygon-sink-policy",
+                    test_polygon_sink_policy);
+    g_test_add_func("/sgi-gl-vmstate/polygon-growth-failure",
+                    test_polygon_growth_failure);
+    g_test_add_func("/sgi-gl-vmstate/polygon-assembly-restore",
+                    test_polygon_assembly_restore);
+    g_test_add_func("/sgi-gl-vmstate/polygon-stream-compatibility",
+                    test_polygon_stream_compatibility);
+    g_test_add_func("/sgi-gl-vmstate/polygon-failed-restore",
+                    test_polygon_failed_restore);
+    g_test_add_func("/sgi-gl-vmstate/polygon-restore-failure",
+                    test_polygon_restore_failure);
+    g_test_add_func("/sgi-gl-vmstate/legacy-closed-end-restore",
+                    test_legacy_closed_end_restore);
+    g_test_add_func("/sgi-gl-vmstate/polygon-duplicate-subsection",
+                    test_polygon_duplicate_subsection);
     return g_test_run();
 }
