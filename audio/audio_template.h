@@ -229,7 +229,9 @@ static void glue (audio_pcm_hw_gc_, TYPE) (HW **hwp)
         audio_detach_capture(hw);
 #endif
         QLIST_REMOVE(hw, entries);
-        glue(k->fini_, TYPE)(hw);
+        if (!s->shutdown) {
+            glue(k->fini_, TYPE)(hw);
+        }
         glue(s->nb_hw_voices_, TYPE) += 1;
         glue(audio_pcm_hw_free_resources_ , TYPE) (hw);
         object_unref(hw->s);
@@ -496,6 +498,10 @@ static SW *glue(audio_mixeng_backend_open_, TYPE) (
     AudioMixengBackend *s = AUDIO_MIXENG_BACKEND(be);
     AudioMixengBackendClass *k;
     AudiodevPerDirectionOptions *pdo;
+
+    if (s->shutdown) {
+        return NULL;
+    }
 
     k = AUDIO_MIXENG_BACKEND_GET_CLASS(s);
     pdo = glue(audio_get_pdo_, TYPE)(s->dev);

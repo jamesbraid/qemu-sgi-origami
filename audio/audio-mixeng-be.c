@@ -689,7 +689,7 @@ static void audio_mixeng_backend_set_active_out(AudioBackend *be, SWVoiceOut *sw
 {
     HWVoiceOut *hw;
 
-    if (!sw) {
+    if (!sw || sw->s->shutdown) {
         return;
     }
 
@@ -740,7 +740,7 @@ static void audio_mixeng_backend_set_active_in(AudioBackend *be, SWVoiceIn *sw, 
 {
     HWVoiceIn *hw;
 
-    if (!sw) {
+    if (!sw || sw->s->shutdown) {
         return;
     }
 
@@ -1426,10 +1426,13 @@ static void audio_mixeng_backend_set_volume_out(AudioBackend *be, SWVoiceOut *sw
 static void audio_mixeng_backend_set_volume_in(AudioBackend *be, SWVoiceIn *sw,
                                                Volume *vol);
 
+static void audio_mixeng_backend_shutdown(Object *obj);
+
 static void audio_mixeng_backend_class_init(ObjectClass *klass, const void *data)
 {
     AudioBackendClass *be = AUDIO_BACKEND_CLASS(klass);
 
+    klass->unparent = audio_mixeng_backend_shutdown;
     be->realize = audio_mixeng_backend_realize;
     be->get_id = audio_mixeng_backend_get_id;
     be->open_in = audio_mixeng_backend_open_in;
@@ -1465,20 +1468,52 @@ static void audio_mixeng_backend_init(Object *obj)
     vmstate_register_any(NULL, &vmstate_audio, s);
 }
 
-static void audio_mixeng_backend_finalize(Object *obj)
+static void audio_mixeng_backend_shutdown(Object *obj)
 {
     AudioMixengBackend *s = AUDIO_MIXENG_BACKEND(obj);
     AudioMixengBackendClass *k = AUDIO_MIXENG_BACKEND_GET_CLASS(s);
-    HWVoiceOut *hwo, *hwon;
-    HWVoiceIn *hwi, *hwin;
+    HWVoiceOut *hwo;
+    HWVoiceIn *hwi;
 
-    QLIST_FOREACH_SAFE(hwo, &s->hw_head_out, entries, hwon) {
-        SWVoiceCap *sc;
+    if (s->shutdown) {
+        return;
+    }
+    /* Voices retain the backend, so shutdown cannot wait for finalization. */
+    s->shutdown = true;
+    timer_del(s->ts);
+    s->timer_running = false;
+    if (s->vmse) {
+        qemu_del_vm_change_state_handler(s->vmse);
+        s->vmse = NULL;
+    }
 
+    QLIST_FOREACH(hwo, &s->hw_head_out, entries) {
         if (hwo->enabled && k->enable_out) {
             k->enable_out(hwo, false);
         }
+        hwo->enabled = false;
         k->fini_out(hwo);
+    }
+
+    QLIST_FOREACH(hwi, &s->hw_head_in, entries) {
+        if (hwi->enabled && k->enable_in) {
+            k->enable_in(hwi, false);
+        }
+        hwi->enabled = false;
+        k->fini_in(hwi);
+    }
+}
+
+static void audio_mixeng_backend_finalize(Object *obj)
+{
+    AudioMixengBackend *s = AUDIO_MIXENG_BACKEND(obj);
+    HWVoiceOut *hwo, *hwon;
+    HWVoiceIn *hwi, *hwin;
+
+    audio_mixeng_backend_shutdown(obj);
+
+    QLIST_FOREACH_SAFE(hwo, &s->hw_head_out, entries, hwon) {
+        SWVoiceCap *sc;
 
         for (sc = hwo->cap_head.lh_first; sc; sc = sc->entries.le_next) {
             CaptureVoiceOut *cap = sc->cap;
@@ -1492,10 +1527,6 @@ static void audio_mixeng_backend_finalize(Object *obj)
     }
 
     QLIST_FOREACH_SAFE(hwi, &s->hw_head_in, entries, hwin) {
-        if (hwi->enabled && k->enable_in) {
-            k->enable_in(hwi, false);
-        }
-        k->fini_in(hwi);
         QLIST_REMOVE(hwi, entries);
     }
 
@@ -1655,7 +1686,7 @@ static void audio_mixeng_backend_del_capture(
 static void audio_mixeng_backend_set_volume_out(AudioBackend *be, SWVoiceOut *sw,
                                                 Volume *vol)
 {
-    if (sw) {
+    if (sw && !sw->s->shutdown) {
         HWVoiceOut *hw = sw->hw;
         AudioMixengBackendClass *k = AUDIO_MIXENG_BACKEND_GET_CLASS(hw->s);
 
@@ -1673,7 +1704,7 @@ static void audio_mixeng_backend_set_volume_out(AudioBackend *be, SWVoiceOut *sw
 static void audio_mixeng_backend_set_volume_in(AudioBackend *be, SWVoiceIn *sw,
                                                Volume *vol)
 {
-    if (sw) {
+    if (sw && !sw->s->shutdown) {
         HWVoiceIn *hw = sw->hw;
         AudioMixengBackendClass *k = AUDIO_MIXENG_BACKEND_GET_CLASS(hw->s);
 

@@ -57,9 +57,14 @@ static Object *get_audiodevs_root(void)
 
 void audio_cleanup(void)
 {
+    Object *root = object_resolve_path_component(object_get_root(),
+                                                "audiodevs");
+
     default_audio_be = NULL;
 
-    object_unparent(get_audiodevs_root());
+    if (root) {
+        object_unparent(root);
+    }
 }
 
 void audio_create_default_audiodevs(void)

@@ -20,6 +20,13 @@ endif
 
 # manual audio test - not part of automated test suite
 # as it relies on audio system
-executable('test-audio',
+test_audio = executable('test-audio',
     sources: [files('test-audio.c', 'audio-stubs.c'), dbus_display1],
     dependencies: [audio, qemuutil, modinfo_dep, gio, spice, sdl])
+
+# Cleanup tests use file and null backends and need no host audio service.
+foreach name : ['wav', 'voices', 'capture', 'volume-out', 'volume-in']
+    test('audio-cleanup-' + name, test_audio,
+         args: ['--audiodev', 'none', '-p', '/audio/cleanup/' + name],
+         suite: 'audio')
+endforeach

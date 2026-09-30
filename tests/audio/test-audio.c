@@ -8,6 +8,7 @@
 #include "qemu/main-loop.h"
 #include "qemu/audio.h"
 #include "qemu/log.h"
+#include "qemu/bswap.h"
 #include "qapi/error.h"
 #include "trace/control.h"
 #include "glib.h"
@@ -337,6 +338,7 @@ typedef struct TestCaptureState {
 static void test_capture_notify(void *opaque, audcnotification_e cmd)
 {
     TestCaptureState *s = opaque;
+    g_assert_false(s->destroy_called);
     s->notify_called = true;
     s->last_notify = cmd;
 }
@@ -360,6 +362,7 @@ static void test_capture_capture(void *opaque, const void *buf, int size)
 static void test_capture_destroy(void *opaque)
 {
     TestCaptureState *s = opaque;
+    g_assert_false(s->destroy_called);
     s->destroy_called = true;
 }
 
@@ -554,6 +557,181 @@ static void test_audio_invalid_settings(void)
     g_assert_null(voice);
 }
 
+static void test_audio_cleanup_wav(void)
+{
+    AudioBackend *be;
+    SWVoiceOut *voice;
+    g_autofree char *path = NULL;
+    g_autofree char *spec = NULL;
+    g_autofree char *contents = NULL;
+    gsize length;
+    int fd;
+    int16_t samples[128] = { 1, -1 };
+    size_t written;
+
+    if (!g_test_subprocess()) {
+        g_test_trap_subprocess(NULL, 10 * G_USEC_PER_SEC, 0);
+        g_test_trap_assert_passed();
+        return;
+    }
+
+    path = g_test_build_filename(G_TEST_BUILT, "..", "..",
+                                "audio-cleanup-XXXXXX", NULL);
+    fd = g_mkstemp(path);
+    g_test_message("WAV file: %s", path);
+    g_assert_cmpint(fd, >=, 0);
+    close(fd);
+    spec = g_strdup_printf("wav,id=cleanup,path=%s", path);
+    audio_parse_option(spec);
+    audio_init_audiodevs();
+    be = audio_be_by_name("cleanup", &error_abort);
+    voice = open_test_voice_out(be, "cleanup", NULL, dummy_audio_callback);
+    audio_be_set_active_out(be, voice, true);
+
+    g_usleep(10000);
+    written = AUDIO_MIXENG_BACKEND_GET_CLASS(voice->s)->write(
+        voice->hw, samples, sizeof(samples));
+    g_assert_cmpuint(written, >, 0);
+    g_assert_cmpint(fflush(NULL), ==, 0);
+    audio_cleanup();
+    g_assert_true(g_file_get_contents(path, &contents, &length, NULL));
+    g_assert_cmpuint(length, ==, 44 + written);
+    g_assert_cmpmem(contents + 44, written, samples, written);
+    g_assert_cmpuint(ldl_le_p(contents + 4), ==, length - 8);
+    g_assert_cmpuint(ldl_le_p(contents + 40), ==, length - 44);
+
+    audio_cleanup();
+    audio_be_close_out(be, voice);
+    g_assert_cmpint(unlink(path), ==, 0);
+}
+
+static void test_audio_cleanup_voices(void)
+{
+    AudioBackend *be;
+    SWVoiceOut *out;
+    SWVoiceIn *in;
+
+    if (!g_test_subprocess()) {
+        g_test_trap_subprocess(NULL, 10 * G_USEC_PER_SEC, 0);
+        g_test_trap_assert_passed();
+        return;
+    }
+
+    audio_parse_option("none,id=cleanup");
+    audio_init_audiodevs();
+    be = audio_be_by_name("cleanup", &error_abort);
+    out = open_test_voice_out(be, "cleanup", NULL, dummy_audio_callback);
+    in = open_test_voice_in(be, "cleanup", NULL, dummy_audio_callback);
+    g_assert_nonnull(in);
+    audio_be_set_active_out(be, out, true);
+    audio_be_set_active_in(be, in, true);
+
+    object_ref(be);
+    audio_cleanup();
+    g_assert_false(out->hw->enabled);
+    g_assert_false(in->hw->enabled);
+    audio_cleanup();
+    audio_be_close_out(be, out);
+    audio_be_close_in(be, in);
+    g_assert_true(QLIST_EMPTY(&AUDIO_MIXENG_BACKEND(be)->hw_head_out));
+    g_assert_true(QLIST_EMPTY(&AUDIO_MIXENG_BACKEND(be)->hw_head_in));
+    object_unref(be);
+}
+
+static void test_audio_cleanup_capture(void)
+{
+    AudioBackend *be;
+    SWVoiceOut *out;
+    CaptureVoiceOut *cap;
+    TestCaptureState state = {0};
+    struct audio_capture_ops ops = {
+        .notify = test_capture_notify,
+        .capture = test_capture_capture,
+        .destroy = test_capture_destroy,
+    };
+
+    if (!g_test_subprocess()) {
+        g_test_trap_subprocess(NULL, 10 * G_USEC_PER_SEC, 0);
+        g_test_trap_assert_passed();
+        return;
+    }
+
+    audio_parse_option("none,id=cleanup");
+    audio_init_audiodevs();
+    be = audio_be_by_name("cleanup", &error_abort);
+    object_ref(be);
+    out = open_test_voice_out(be, "cleanup", NULL, dummy_audio_callback);
+    cap = audio_be_add_capture(be, &default_test_settings, &ops, &state);
+    g_assert_nonnull(cap);
+    audio_be_set_active_out(be, out, true);
+    g_assert_true(state.notify_called);
+
+    audio_cleanup();
+    g_assert_false(out->hw->enabled);
+    g_assert_false(state.destroy_called);
+    audio_cleanup();
+    audio_be_close_out(be, out);
+    g_assert_false(state.destroy_called);
+    g_assert_cmpint(state.last_notify, ==, AUD_CNOTIFY_DISABLE);
+    audio_be_del_capture(be, cap, &state);
+    g_assert_true(state.destroy_called);
+    object_unref(be);
+}
+
+static unsigned int cleanup_volume_out_calls;
+static unsigned int cleanup_volume_in_calls;
+
+static void cleanup_volume_out(HWVoiceOut *hw, Volume *vol)
+{
+    cleanup_volume_out_calls++;
+}
+
+static void cleanup_volume_in(HWVoiceIn *hw, Volume *vol)
+{
+    cleanup_volume_in_calls++;
+}
+
+static void test_audio_cleanup_volume(gconstpointer data)
+{
+    AudioBackend *be;
+    AudioMixengBackendClass *k;
+    SWVoiceOut *out;
+    SWVoiceIn *in;
+    Volume vol = { .channels = 2, .vol = {128, 128} };
+
+    if (!g_test_subprocess()) {
+        g_test_trap_subprocess(NULL, 10 * G_USEC_PER_SEC, 0);
+        g_test_trap_assert_passed();
+        return;
+    }
+
+    audio_parse_option("none,id=cleanup");
+    audio_init_audiodevs();
+    be = audio_be_by_name("cleanup", &error_abort);
+    out = open_test_voice_out(be, "cleanup", NULL, dummy_audio_callback);
+    in = open_test_voice_in(be, "cleanup", NULL, dummy_audio_callback);
+    g_assert_nonnull(in);
+    k = AUDIO_MIXENG_BACKEND_GET_CLASS(be);
+    /* The subprocess isolates these hooks from other tests. */
+    k->volume_out = cleanup_volume_out;
+    k->volume_in = cleanup_volume_in;
+    audio_be_set_volume_out(be, out, &vol);
+    audio_be_set_volume_in(be, in, &vol);
+    g_assert_cmpuint(cleanup_volume_out_calls, ==, 1);
+    g_assert_cmpuint(cleanup_volume_in_calls, ==, 1);
+
+    audio_cleanup();
+    if (GPOINTER_TO_INT(data)) {
+        audio_be_set_volume_out(be, out, &vol);
+    } else {
+        audio_be_set_volume_in(be, in, &vol);
+    }
+    g_assert_cmpuint(cleanup_volume_out_calls, ==, 1);
+    g_assert_cmpuint(cleanup_volume_in_calls, ==, 1);
+    audio_be_close_out(be, out);
+    audio_be_close_in(be, in);
+}
+
 int main(int argc, char **argv)
 {
     GOptionContext *context;
@@ -563,6 +741,7 @@ int main(int argc, char **argv)
 
     context = g_option_context_new("- QEMU audio test");
     g_option_context_add_main_entries(context, test_options, NULL);
+    g_option_context_set_ignore_unknown_options(context, true);
 
     if (!g_option_context_parse(context, &argc, &argv, &error)) {
         g_printerr("Option parsing failed: %s\n", error->message);
@@ -610,6 +789,15 @@ int main(int argc, char **argv)
     g_test_add_func("/audio/null-handling", test_audio_null_handling);
     g_test_add_func("/audio/multiple-voices", test_audio_multiple_voices);
     g_test_add_func("/audio/invalid-settings", test_audio_invalid_settings);
+
+    g_test_add_func("/audio/cleanup/wav", test_audio_cleanup_wav);
+    g_test_add_func("/audio/cleanup/voices", test_audio_cleanup_voices);
+    g_test_add_func("/audio/cleanup/capture", test_audio_cleanup_capture);
+
+    g_test_add_data_func("/audio/cleanup/volume-out", GINT_TO_POINTER(1),
+                         test_audio_cleanup_volume);
+    g_test_add_data_func("/audio/cleanup/volume-in", GINT_TO_POINTER(0),
+                         test_audio_cleanup_volume);
 
     ret = g_test_run();
 
