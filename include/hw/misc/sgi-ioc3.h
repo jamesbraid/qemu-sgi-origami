@@ -474,6 +474,9 @@ struct SGIIOC3State {
     uint32_t microlan_control;
     uint32_t pin_control;
     uint32_t pin_data;
+    /* Population properties, checked rather than replaced on migration. */
+    uint32_t pin_input_mask;
+    uint32_t pin_input_values;
 
     /* A property: the firmware must not merge nodes that answer alike. */
     uint64_t onewire_serial;

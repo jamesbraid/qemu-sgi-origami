@@ -274,6 +274,10 @@ static void octane_fit_pci(MachineState *machine, SGIBridgeState *bridge)
                          SGI_IOC3_POPULATION_ETHERNET |
                          SGI_IOC3_POPULATION_PARALLEL |
                          SGI_IOC3_POPULATION_ONEWIRE_IDENTITY);
+    /* Public IP30 wiring assigns GPIO2 as the read-only product input. */
+    qdev_prop_set_uint32(DEVICE(pci), "gpio-input-mask", 1u << 2);
+    qdev_prop_set_uint32(DEVICE(pci), "gpio-input-values",
+                         s->octane2 ? 0 : 1u << 2);
     qdev_prop_set_uint8(DEVICE(pci), "timekeeper-kind",
                        SGI_IOC3_TIMEKEEPER_DS1685);
     qdev_prop_set_bit(DEVICE(pci), "phy-ics1890", true);

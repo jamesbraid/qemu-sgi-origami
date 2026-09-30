@@ -306,6 +306,12 @@ static bool sgi_ioc3_int_out_command_valid(uint32_t value)
             mode == SGI_IOC3_INT_OUT_SQUARE);
 }
 
+/* Fitted board inputs remain independent of the software output latch. */
+static uint32_t sgi_ioc3_pin_data(SGIIOC3State *s)
+{
+    return (s->pin_data & ~s->pin_input_mask) | s->pin_input_values;
+}
+
 static uint64_t sgi_ioc3_main_read(void *opaque, hwaddr addr, unsigned size)
 {
     SGIIOC3State *s = opaque;
@@ -314,7 +320,7 @@ static uint64_t sgi_ioc3_main_read(void *opaque, hwaddr addr, unsigned size)
         (addr & 3) == 0) {
         unsigned int pin = (addr - SGI_IOC3_PIN_REG_FIRST) / 4;
 
-        return (s->pin_data >> pin) & 1;
+        return (sgi_ioc3_pin_data(s) >> pin) & 1;
     }
 
     switch (addr) {
@@ -338,7 +344,7 @@ static uint64_t sgi_ioc3_main_read(void *opaque, hwaddr addr, unsigned size)
     case SGI_IOC3_PIN_CONTROL_SET:
         return s->pin_control;
     case SGI_IOC3_PIN_DATA:
-        return s->pin_data;
+        return sgi_ioc3_pin_data(s);
     default:
         qemu_log_mask(LOG_UNIMP,
                       "sgi-ioc3: read of main register 0x%" HWADDR_PRIx
@@ -1588,6 +1594,13 @@ static void sgi_ioc3_realize(PCIDevice *dev, Error **errp)
     SGIIOC3State *s = SGI_IOC3(dev);
     unsigned int i;
 
+    if ((s->pin_input_mask & ~0xffffu) ||
+        (s->pin_input_values & ~s->pin_input_mask)) {
+        error_setg(errp,
+                   "GPIO inputs must fit the pin registers and input mask");
+        return;
+    }
+
     if (!sgi_ioc3_resolve_population(s, errp)) {
         return;
     }
@@ -2122,11 +2135,13 @@ static const VMStateDescription vmstate_sgi_ioc3_sdma_loop = {
 
 static const VMStateDescription vmstate_sgi_ioc3 = {
     .name = "sgi-ioc3",
-    .version_id = 21,
+    .version_id = 22,
     .minimum_version_id = 14,
     .pre_load = sgi_ioc3_pre_load,
     .post_load = sgi_ioc3_post_load,
     .fields = (const VMStateField[]) {
+        VMSTATE_UINT32_EQUAL_V(pin_input_mask, SGIIOC3State, 22),
+        VMSTATE_UINT32_EQUAL_V(pin_input_values, SGIIOC3State, 22),
         VMSTATE_PCI_DEVICE(parent_obj, SGIIOC3State),
         VMSTATE_UINT32(int_status, SGIIOC3State),
         VMSTATE_UINT32(int_enable, SGIIOC3State),
@@ -2176,6 +2191,8 @@ static const VMStateDescription vmstate_sgi_ioc3 = {
 };
 
 static const Property sgi_ioc3_properties[] = {
+    DEFINE_PROP_UINT32("gpio-input-mask", SGIIOC3State, pin_input_mask, 0),
+    DEFINE_PROP_UINT32("gpio-input-values", SGIIOC3State, pin_input_values, 0),
     DEFINE_PROP_UINT64("onewire-serial", SGIIOC3State, onewire_serial,
                        SGI_IOC3_ONEWIRE_SERIAL),
     DEFINE_PROP_UINT16("subsystem-id", SGIIOC3State, subsystem_id,
