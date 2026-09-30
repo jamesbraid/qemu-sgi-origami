@@ -2259,20 +2259,24 @@ static void l1_expect_revision(QTestState *qts, int32_t major,
     uint8_t reply[131];
     size_t length;
 
-    l1_send_at(qts, L1_UART_LOCAL_BASE, request, sizeof(request));
-    length = l1_receive_at(qts, L1_UART_LOCAL_BASE, reply);
-    g_assert_cmphex(reply[0], ==, 0x30);
-    if (major < 0) {
-        g_assert_cmpuint(length, ==, 6);
-        g_assert_cmphex(reply[4], ==, L1_REPLY_ABSENT);
-        return;
-    }
-    g_assert_cmpuint(length, ==, 21);
-    g_assert_cmphex(reply[4], ==, 0);
-    g_assert_cmphex(reply[5], ==, 3);
-    for (size_t i = 0; i < 3; i++) {
-        g_assert_cmphex(reply[6 + i * 5], ==, 0);
-        g_assert_cmpuint(ldl_be_p(reply + 7 + i * 5), ==, expected[i]);
+    /* Zero-argument requests may omit the count byte. */
+    for (size_t request_length = sizeof(request) - 1;
+         request_length <= sizeof(request); request_length++) {
+        l1_send_at(qts, L1_UART_LOCAL_BASE, request, request_length);
+        length = l1_receive_at(qts, L1_UART_LOCAL_BASE, reply);
+        g_assert_cmpuint(length, ==, major < 0 ? 6 : 21);
+        g_assert_cmphex(reply[0], ==, 0x30);
+        if (major < 0) {
+            g_assert_cmpint((int32_t)ldl_be_p(reply + 1), ==, -104);
+            g_assert_cmphex(reply[5], ==, 0);
+            continue;
+        }
+        g_assert_cmpuint(ldl_be_p(reply + 1), ==, 0);
+        g_assert_cmphex(reply[5], ==, 3);
+        for (size_t i = 0; i < 3; i++) {
+            g_assert_cmphex(reply[6 + i * 5], ==, 0);
+            g_assert_cmpuint(ldl_be_p(reply + 7 + i * 5), ==, expected[i]);
+        }
     }
 }
 
