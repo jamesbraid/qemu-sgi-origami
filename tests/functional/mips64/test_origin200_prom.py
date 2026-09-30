@@ -96,6 +96,9 @@ def _boot_one_attempt(test, cell, attempt_index, first_seen=None):
         test.skipTest('QEMU_TEST_SGI_ASSET_DIR is not set: no PROM to run')
     vm.add_args(*prom_args(firmware_path))
 
+    # The PROM can reset the machine before QMP capability negotiation ends.
+    # Establish the monitor connection before letting the CPUs run.
+    vm.add_args('-S')
     try:
         vm.launch()
     except Exception as exc:  # pylint: disable=broad-except
@@ -107,6 +110,7 @@ def _boot_one_attempt(test, cell, attempt_index, first_seen=None):
 
     log_path = test.log_file(f'{name}.log')
     try:
+        vm.cmd('cont')
         result = _wait_for_pass(test, vm, cell, log_path, first_seen)
     finally:
         # _wait_for_pass() can itself raise (assert_translation_healthy()
