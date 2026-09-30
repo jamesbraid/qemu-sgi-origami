@@ -9989,6 +9989,151 @@ static void test_gl_integer_and_texture_forms(void)
     g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
 }
 
+static void gl_migrate(void (*setup)(QTestState *),
+                       void (*check)(QTestState *));
+
+static void gl_texcoord4f(QTestState *s, float a, float b, float c, float d)
+{
+    gl_word(s, GL_TEX_COORD4F_HDR);
+    gl_float(s, a);
+    gl_float(s, b);
+    gl_float(s, c);
+    gl_float(s, d);
+}
+
+static void gl_texcoord_check(QTestState *s, bool raster, const float v[4])
+{
+    for (unsigned i = 0; i < 4; i++) {
+        uint32_t value = raster ? gl_query(s, GL_Q_RASTER_TEXCOORD + i, 1) :
+                                gl_attribute_query(s, 11 + i);
+
+        g_assert_cmphex(value, ==, gl_bits(v[i]));
+    }
+}
+
+static void test_gl_native_texcoord_current(void)
+{
+    static const float initial[4] = { 0, 0, 0, 1 };
+    static const float four[4] = { 0.25f, -0.5f, 2, 0.5f };
+    static const float two[4] = { -0.25f, 0.75f, 0, 1 };
+    static const float integer[4] = { -3, 5, 7, 1 };
+
+    gl_transform_start(qts);
+    gl_texcoord_check(qts, false, initial);
+    gl_texcoord_check(qts, true, initial);
+    gl_texcoord4f(qts, four[0], four[1], four[2], four[3]);
+    gl_texcoord_check(qts, false, four);
+    gl_word(qts, GL_TEX_COORD2F_HDR);
+    gl_float(qts, two[0]);
+    gl_float(qts, two[1]);
+    gl_texcoord_check(qts, false, two);
+    gl_word(qts, GL_TEX_COORD3I_HDR);
+    gl_word(qts, -3);
+    gl_word(qts, 5);
+    gl_word(qts, 7);
+    gl_texcoord_check(qts, false, integer);
+    gl_word(qts, GL_BEGIN_LINES);
+    gl_texcoord4f(qts, four[0], four[1], four[2], four[3]);
+    gl_texcoord_check(qts, false, four);
+    gl_word(qts, GL_END_OF(GL_BEGIN_LINES));
+    gl_texcoord_check(qts, true, initial);
+}
+
+/* T * S preserves homogeneous q: (0.25, 0.5, -1, 2) maps as below. */
+static void test_gl_native_texcoord_raster(void)
+{
+    static const float current[4] = { 0.25f, 0.5f, -1, 2 };
+    static const float transformed[4] = { 6.5f, -2, 7.5f, 2 };
+    static const float changed[4] = { -1, -2, 0, 1 };
+
+    gl_transform_start(qts);
+    gl_texcoord4f(qts, current[0], current[1], current[2], current[3]);
+    gl_one(qts, GL_MATRIX_MODE_HDR, GL_TEXTURE);
+    gl_three(qts, GL_TRANSLATE_HDR, 3, -2, 4);
+    gl_three(qts, GL_SCALE_HDR, 2, 4, 0.5f);
+    gl_one(qts, GL_MATRIX_MODE_HDR, GL_MODELVIEW);
+    gl_raster_pos2f(qts, 16, 16);
+    g_assert_cmphex(gl_query(qts, GL_Q_RASTER_VALID, 1), ==, UINT32_MAX);
+    gl_texcoord_check(qts, false, current);
+    gl_texcoord_check(qts, true, transformed);
+    gl_word(qts, GL_TEX_COORD2F_HDR);
+    gl_float(qts, changed[0]);
+    gl_float(qts, changed[1]);
+    gl_texcoord_check(qts, false, changed);
+    gl_texcoord_check(qts, true, transformed);
+    gl_raster_pos2f(qts, 512, 16);
+    g_assert_cmphex(gl_query(qts, GL_Q_RASTER_VALID, 1), ==, 0);
+    gl_texcoord_check(qts, true, transformed);
+}
+
+static void gl_texcoord_context_setup(QTestState *s)
+{
+    gl_enter_slot(s, GL_SLOT_A);
+    gl_word(s, GL_CONTEXT_OPENER);
+    gl_viewport(s, 0, 0, 128, 128);
+    gl_window_projection(s);
+    gl_one(s, GL_MATRIX_MODE_HDR, GL_TEXTURE);
+    gl_three(s, GL_TRANSLATE_HDR, 3, -2, 4);
+    gl_one(s, GL_MATRIX_MODE_HDR, GL_MODELVIEW);
+    gl_texcoord4f(s, 0.25f, 0.5f, -1, 2);
+    gl_raster_pos2f(s, 16, 16);
+    gl_word(s, GL_BEGIN_LINES);
+    gl_vertex2f(s, 8.5f, 8.5f);
+    /* Current state changes independently of the saved raster snapshot. */
+    gl_word(s, GL_TEX_COORD2F_HDR);
+    gl_float(s, -0.25f);
+    gl_float(s, 0.75f);
+
+    gl_enter_slot(s, GL_SLOT_B);
+    gl_word(s, GL_CONTEXT_OPENER);
+    gl_viewport(s, 0, 0, 128, 128);
+    gl_window_projection(s);
+    gl_one(s, GL_MATRIX_MODE_HDR, GL_MODELVIEW);
+    gl_word(s, GL_TEX_COORD3I_HDR);
+    gl_word(s, -3);
+    gl_word(s, 5);
+    gl_word(s, 7);
+    gl_raster_pos2f(s, 16, 16);
+}
+
+static void gl_texcoord_context_check(QTestState *s)
+{
+    static const float acurrent[4] = { -0.25f, 0.75f, 0, 1 };
+    static const float araster[4] = { 6.25f, -3.5f, 7, 2 };
+    static const float b[4] = { -3, 5, 7, 1 };
+    static const float initial[4] = { 0, 0, 0, 1 };
+
+    gl_enter_slot(s, GL_SLOT_A);
+    gl_texcoord_check(s, false, acurrent);
+    gl_texcoord_check(s, true, araster);
+    gl_vertex2f(s, 24.5f, 8.5f);
+    gl_word(s, GL_END_OF(GL_BEGIN_LINES));
+    gl_texcoord_check(s, false, acurrent);
+    gl_texcoord_check(s, true, araster);
+    gl_enter_slot(s, GL_SLOT_B);
+    gl_texcoord_check(s, false, b);
+    gl_texcoord_check(s, true, b);
+    gl_enter_slot(s, GL_SLOT_A);
+    gl_word(s, GL_CONTEXT_OPENER);
+    gl_texcoord_check(s, false, initial);
+    gl_texcoord_check(s, true, initial);
+    gl_enter_slot(s, GL_SLOT_B);
+    gl_texcoord_check(s, false, b);
+    gl_texcoord_check(s, true, b);
+}
+
+static void test_gl_native_texcoord_contexts(void)
+{
+    mgras_reset();
+    gl_texcoord_context_setup(qts);
+    gl_texcoord_context_check(qts);
+}
+
+static void test_gl_native_texcoord_migration(void)
+{
+    gl_migrate(gl_texcoord_context_setup, gl_texcoord_context_check);
+}
+
 /*
  * glBitmap, as the IRIX 6.5.30 IP27GR532 client's __glMgrim_Bitmap forms
  * it for a small image: 0x9420, a flags word, the width and height, xorig,
@@ -17356,6 +17501,14 @@ int main(int argc, char **argv)
                        test_credit_uncounted_store_returns_nothing);
     }
 
+    qtest_add_func("sn0/origin2000/mgras/gl-native-texcoord/current",
+                    test_gl_native_texcoord_current);
+    qtest_add_func("sn0/origin2000/mgras/gl-native-texcoord/raster",
+                    test_gl_native_texcoord_raster);
+    qtest_add_func("sn0/origin2000/mgras/gl-native-texcoord/contexts",
+                    test_gl_native_texcoord_contexts);
+    qtest_add_func("sn0/origin2000/mgras/gl-native-texcoord/migration",
+                    test_gl_native_texcoord_migration);
     qtest_add_func("sn0/origin2000/mgras/gl-native-polygon/stipple-excluded",
                     test_gl_native_polygon_stipple_excluded);
     qtest_add_func("sn0/origin2000/mgras/gl-native-polygon/facing",
