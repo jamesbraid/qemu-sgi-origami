@@ -28,6 +28,7 @@
 #define TD_DATA1 (3U << 24)
 #define TD_IN (2U << 19)
 #define TD_OUT (1U << 19)
+#define TD_ROUND (1U << 18)
 
 static uint32_t dma_read(QTestState *qts, unsigned offset)
 {
@@ -58,7 +59,8 @@ static void write_td(QTestState *qts, unsigned offset, uint32_t flags,
 static void get_descriptor(QTestState *qts, unsigned length)
 {
     uint8_t setup[8] = { 0x80, 6, 0, 1, 0, 0, length, 0 };
-    uint8_t data[18];
+    uint8_t data[32];
+    unsigned received = MIN(length, 18);
     /* usb_desc_device() advertises USB 2.0 with the MS OS descriptor. */
     static const uint8_t prefix[] = { 18, 1, 0, 2, 0, 0, 0, 8 };
     unsigned attempt;
@@ -71,7 +73,8 @@ static void get_descriptor(QTestState *qts, unsigned length)
     dma_write(qts, ED + 8, DMA_IOVA + TD_SETUP);
     dma_write(qts, ED + 12, 0);
     write_td(qts, TD_SETUP, TD_DATA0, SETUP, TD_DATA, 8);
-    write_td(qts, TD_DATA, TD_DATA1 | TD_IN, DATA, TD_STATUS, length);
+    write_td(qts, TD_DATA, TD_DATA1 | TD_IN | TD_ROUND,
+             DATA, TD_STATUS, length);
     write_td(qts, TD_STATUS, TD_DATA1 | TD_OUT, 0, TD_TAIL, 0);
     g_assert_cmphex(dma_read(qts, ED + 8), ==, DMA_IOVA + TD_SETUP);
     qtest_writel(qts, OHCI + 0x20, DMA_IOVA + ED);
@@ -99,8 +102,11 @@ static void get_descriptor(QTestState *qts, unsigned length)
     g_assert_cmpuint(attempt, <, 64);
     g_assert_cmphex(dma_read(qts, ED + 8) & 1, ==, 0);
     for (unsigned offset = TD_SETUP; offset <= TD_STATUS; offset += 16) {
+        uint32_t remaining = offset == TD_DATA && received < length ?
+                             DMA_IOVA + DATA + received : 0;
+
         g_assert_cmphex(dma_read(qts, offset) >> 28, ==, 0);
-        g_assert_cmphex(dma_read(qts, offset + 4), ==, 0);
+        g_assert_cmphex(dma_read(qts, offset + 4), ==, remaining);
     }
     qtest_writel(qts, OHCI + 0x04, 0x80);
     qtest_memread(qts, DMA_PHYS + DATA, data, sizeof(data));
@@ -108,13 +114,15 @@ static void get_descriptor(QTestState *qts, unsigned length)
                    data[0], data[1], data[2], data[3],
                    data[4], data[5], data[6], data[7]);
     g_assert_cmpmem(data, sizeof(prefix), prefix, sizeof(prefix));
-    if (length == sizeof(data)) {
+    /* DATA1 toggles once per packet, including the final short packet. */
+    g_assert_cmphex((dma_read(qts, TD_DATA) >> 24) & 3, ==,
+                    3 ^ (((received + 7) / 8) & 1));
+    if (received == 18) {
         /* Native QEMU usb-kbd declares one configuration. */
         g_assert_cmphex(data[17], ==, 1);
-    } else {
-        for (unsigned i = length; i < sizeof(data); i++) {
-            g_assert_cmphex(data[i], ==, 0xa5);
-        }
+    }
+    for (unsigned i = received; i < sizeof(data); i++) {
+        g_assert_cmphex(data[i], ==, 0xa5);
     }
 }
 
@@ -162,7 +170,9 @@ static void test_port(const void *opaque)
     g_assert_cmphex(qtest_readl(qts, OHCI + PORT(port)) &
                     (PORT_PES | PORT_PRSC), ==, PORT_PES | PORT_PRSC);
     get_descriptor(qts, 8);
+    get_descriptor(qts, 16);
     get_descriptor(qts, 18);
+    get_descriptor(qts, 32);
     qtest_writel(qts, OHCI + PORT(port), PORT_CSC | PORT_PRSC);
     qtest_qmp_device_del(qts, "keyboard");
     g_assert_cmphex(qtest_readl(qts, OHCI + PORT(port)) &
