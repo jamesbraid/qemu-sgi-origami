@@ -14,6 +14,7 @@
 #include "qemu/log.h"
 #include "qapi/error.h"
 #include "hw/display/sgi/gl-context.h"
+#include "migration/qemu-file.h"
 
 static float sgi_gl_float(uint32_t bits)
 {
@@ -130,6 +131,124 @@ void sgi_gl_init(SGIGLContext *c, uint32_t hw_id)
     }
     c->raster_index = 1.0f;
     sgi_gl_lighting_init(c);
+}
+
+static bool sgi_gl_polygon_owned(const SGIGLContext *c)
+{
+    return c->polygon.error ||
+           (c->polygon.enabled && c->in_begin &&
+            c->begin_mode == SGI_GL_POLYGON);
+}
+
+static void sgi_gl_polygon_release(SGIGLPolygonAssembly *p)
+{
+    g_free(p->vertices);
+    p->vertices = NULL;
+    p->count = p->capacity = p->failed = p->loaded = 0;
+}
+
+bool sgi_gl_enable_polygon_modes(SGIGLContext *c, const SGIGLSink *sink)
+{
+    /* The renderer must implement every polygon mode before opting in. */
+    return false;
+}
+
+void sgi_gl_cleanup(SGIGLContext *c)
+{
+    sgi_gl_polygon_release(&c->polygon);
+    c->polygon.enabled = c->polygon.error = 0;
+}
+
+void sgi_gl_reset(SGIGLContext *c, uint32_t hw_id)
+{
+    uint32_t enabled = c->polygon.enabled;
+
+    sgi_gl_cleanup(c);
+    sgi_gl_init(c, hw_id);
+    c->polygon.enabled = enabled;
+}
+
+/* Count and bytes are representation bounds, not hardware size limits. */
+static bool sgi_gl_polygon_reserve(SGIGLPolygonAssembly *p, size_t count)
+{
+    size_t capacity = MAX(p->capacity, 8);
+    float *vertices;
+
+    if (count > UINT32_MAX ||
+        count > SIZE_MAX / SGI_GL_VERTEX_FLOATS / sizeof(float)) {
+        return false;
+    }
+    if (count <= p->capacity) {
+        return true;
+    }
+    while (capacity < count) {
+        if (capacity > UINT32_MAX / 2 ||
+            capacity > SIZE_MAX / SGI_GL_VERTEX_FLOATS / sizeof(float) / 2) {
+            capacity = count;
+            break;
+        }
+        capacity *= 2;
+    }
+    vertices = g_try_realloc_n(p->vertices, capacity,
+                               SGI_GL_VERTEX_FLOATS * sizeof(float));
+    if (!vertices) {
+        return false;
+    }
+    p->vertices = vertices;
+    p->capacity = capacity;
+    return true;
+}
+
+bool sgi_gl_clone(SGIGLContext *dst, const SGIGLContext *src)
+{
+    SGIGLContext copy;
+    bool open = src->in_begin && src->begin_mode == SGI_GL_POLYGON;
+
+    if (dst == src ||
+        (open && dst->polygon.enabled != src->polygon.enabled) ||
+        (!dst->polygon.enabled && sgi_gl_polygon_owned(src))) {
+        return false;
+    }
+    copy = *src; /* Ownership is replaced before the copy becomes visible. */
+    copy.polygon.vertices = NULL;
+    copy.polygon.capacity = 0;
+    copy.polygon.enabled = dst->polygon.enabled;
+    copy.polygon.loaded = 0;
+    if (!sgi_gl_polygon_reserve(&copy.polygon, src->polygon.count)) {
+        return false;
+    }
+    if (src->polygon.count) {
+        memcpy(copy.polygon.vertices, src->polygon.vertices,
+               (size_t)src->polygon.count *
+               SGI_GL_VERTEX_FLOATS * sizeof(float));
+    }
+    sgi_gl_cleanup(dst);
+    *dst = copy;
+    return true;
+}
+
+bool sgi_gl_consume_error(SGIGLContext *c, uint32_t *error)
+{
+    if (c->in_begin) {
+        return false;
+    }
+    *error = c->polygon.error;
+    c->polygon.error = 0;
+    return true;
+}
+
+static void sgi_gl_draw_result(SGIGLContext *c, const SGIGLSink *sink,
+                               const SGIGLDraw *d)
+{
+    if (!c->polygon.enabled) {
+        sink->draw(sink->opaque, d);
+    } else if (!sink->draw_checked) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sgi-gl: activated modes require checked draw callback\n");
+    } else if (sink->draw_checked(sink->opaque, d) ==
+               SGI_GL_DRAW_OUT_OF_MEMORY && !c->polygon.error) {
+        c->polygon.error = SGI_GL_OUT_OF_MEMORY;
+    }
 }
 
 bool sgi_gl_polygon_stipple(SGIGLContext *c, const uint32_t rows[32])
@@ -882,6 +1001,12 @@ static void sgi_gl_submit(SGIGLContext *c, const SGIGLSink *sink,
         .state = &c->cur,
         .point_size = c->point_size,
         .line_width = c->line_width,
+        .polygon_modes = c->polygon.enabled ? c->polygon_mode : NULL,
+        .line_stipple_enabled = c->polygon.enabled &&
+            !!(c->raster_enables & SGI_GL_RASTER_LINE_STIPPLE),
+        .line_stipple_repeat = c->polygon.enabled ? c->line_stipple_repeat : 0,
+        .line_stipple_pattern =
+            c->polygon.enabled ? c->line_stipple_pattern : 0,
         .polygon_stipple = c->polygon_stipple,
         .polygon_stipple_enabled =
             !!(c->raster_enables & SGI_GL_RASTER_POLYGON_STIPPLE),
@@ -890,7 +1015,7 @@ static void sgi_gl_submit(SGIGLContext *c, const SGIGLSink *sink,
     for (uint32_t i = 0; i < count; i++) {
         memcpy(verts[i], v[i], sizeof(verts[i]));
     }
-    sink->draw(sink->opaque, &d);
+    sgi_gl_draw_result(c, sink, &d);
 }
 
 /* Texture coordinates transform before clipping (OpenGL 1.2.1, 2.10.2). */
@@ -951,6 +1076,35 @@ static void sgi_gl_vertex(SGIGLContext *c, const SGIGLSink *sink,
     } else {
         memcpy(&cur[SGI_GL_V_BACK_COLOR], c->cur_color,
                sizeof(c->cur_color));
+    }
+
+    if (c->polygon.enabled &&
+        (c->begin_mode == SGI_GL_TRIANGLE_STRIP ||
+         c->begin_mode == SGI_GL_TRIANGLE_FAN ||
+         c->begin_mode == SGI_GL_QUAD_STRIP)) {
+        uint32_t edge = 1;
+
+        memcpy(&cur[SGI_GL_V_EDGE], &edge, sizeof(edge));
+    }
+    if (c->polygon.enabled && c->begin_mode == SGI_GL_POLYGON) {
+        SGIGLPolygonAssembly *p = &c->polygon;
+
+        if (p->failed) {
+            return;
+        }
+        if (p->count == UINT32_MAX ||
+            !sgi_gl_polygon_reserve(p, (size_t)p->count + 1)) {
+            sgi_gl_polygon_release(p);
+            p->failed = 1;
+            if (!p->error) {
+                p->error = SGI_GL_OUT_OF_MEMORY;
+            }
+            return;
+        }
+        memcpy(&p->vertices[(size_t)p->count * SGI_GL_VERTEX_FLOATS], cur,
+               sizeof(cur));
+        p->count++;
+        return;
     }
 
     switch (c->begin_mode) {
@@ -1647,7 +1801,7 @@ static void sgi_gl_raster_state(SGIGLContext *c, uint16_t op,
                 c->polygon_mode[i] = a[1];
             }
         }
-        if (a[1] != SGI_GL_FILL) {
+        if (a[1] != SGI_GL_FILL && !c->polygon.enabled) {
             qemu_log_mask(LOG_UNIMP, "sgi-gl: polygon mode 0x%x is kept; "
                           "polygons are drawn filled\n", a[1]);
         }
@@ -1668,7 +1822,8 @@ static void sgi_gl_capability(SGIGLContext *c, uint32_t cap, bool on)
         }
         c->raster_enables = on ? c->raster_enables | raster :
                                  c->raster_enables & ~raster;
-        if (on && cap != SGI_GL_POLYGON_STIPPLE) {
+        if (on && cap != SGI_GL_POLYGON_STIPPLE &&
+            !(cap == SGI_GL_LINE_STIPPLE && c->polygon.enabled)) {
             qemu_log_mask(LOG_UNIMP, "sgi-gl: capability 0x%x is kept; "
                           "drawn without it\n", cap);
         }
@@ -2060,6 +2215,10 @@ void sgi_gl_command(SGIGLContext *c, const SGIGLSink *sink,
         c->cur_edge = a[0] != 0;
         return;
     case SGI_GL_OP_BEGIN:
+        if (c->polygon.enabled && c->in_begin) {
+            qemu_log_mask(LOG_GUEST_ERROR, "sgi-gl: nested glBegin ignored\n");
+            return;
+        }
         if (a[0] > SGI_GL_POLYGON) {
             qemu_log_mask(LOG_GUEST_ERROR, "sgi-gl: glBegin of mode %u "
                           "ignored\n", a[0]);
@@ -2071,6 +2230,31 @@ void sgi_gl_command(SGIGLContext *c, const SGIGLSink *sink,
         c->strip_odd = 0;
         return;
     case SGI_GL_OP_END:
+        if (!c->in_begin && c->polygon.enabled) {
+            return;
+        }
+        if (c->polygon.enabled && c->begin_mode == SGI_GL_POLYGON) {
+            SGIGLDraw d = {
+                .context = c->hw_id, .mode = SGI_GL_POLYGON,
+                .count = c->polygon.count, .vertices = c->polygon.vertices,
+                .state = &c->cur,
+                .back_colors = sgi_gl_lit(c) && c->light_model_two_side,
+                .point_size = c->point_size, .line_width = c->line_width,
+                .polygon_modes = c->polygon_mode, .fill_by_triangle = true,
+                .polygon_stipple = c->polygon_stipple,
+                .polygon_stipple_enabled =
+                    !!(c->raster_enables & SGI_GL_RASTER_POLYGON_STIPPLE),
+                .line_stipple_enabled =
+                    !!(c->raster_enables & SGI_GL_RASTER_LINE_STIPPLE),
+                .line_stipple_repeat = c->line_stipple_repeat,
+                .line_stipple_pattern = c->line_stipple_pattern,
+            };
+
+            if (!c->polygon.failed && d.count >= 3) {
+                sgi_gl_draw_result(c, sink, &d);
+            }
+            sgi_gl_polygon_release(&c->polygon);
+        }
         /*
          * A line loop closes from its last vertex to its first, in the
          * first vertex's colour when flat (2.13.7).
@@ -2814,6 +2998,19 @@ bool sgi_gl_context_valid(const SGIGLContext *c, Error **errp)
                    c->raster_enables);
         return false;
     }
+    if (c->polygon.enabled > 1 || c->polygon.failed > 1 ||
+        c->polygon.count > c->polygon.capacity ||
+        (c->polygon.count && !c->polygon.vertices) ||
+        (c->polygon.failed && c->polygon.count) ||
+        (c->polygon.error && c->polygon.error != SGI_GL_OUT_OF_MEMORY) ||
+        ((c->polygon.count || c->polygon.failed) &&
+         (!c->polygon.enabled || !c->in_begin ||
+          c->begin_mode != SGI_GL_POLYGON)) ||
+        (c->polygon.enabled && c->in_begin &&
+         c->begin_mode == SGI_GL_POLYGON && c->nheld)) {
+        error_setg(errp, "sgi-gl: invalid owned polygon assembly");
+        return false;
+    }
     if (c->begin_mode > SGI_GL_POLYGON) {
         error_setg(errp, "sgi-gl: primitive mode %u", c->begin_mode);
         return false;
@@ -2829,7 +3026,20 @@ bool sgi_gl_context_valid(const SGIGLContext *c, Error **errp)
 static bool sgi_gl_context_post_load(void *opaque, int version_id,
                                      Error **errp)
 {
-    return sgi_gl_context_valid(opaque, errp);
+    SGIGLContext *c = opaque;
+    bool valid;
+
+    if (c->polygon.enabled && c->in_begin &&
+        c->begin_mode == SGI_GL_POLYGON && !c->polygon.loaded) {
+        error_setg(errp, "sgi-gl: old open polygon has no deferred boundary");
+        return false;
+    }
+    valid = sgi_gl_context_valid(c, errp);
+    if (!valid) {
+        sgi_gl_polygon_release(&c->polygon);
+    }
+    c->polygon.loaded = 0;
+    return valid;
 }
 
 /*
@@ -3263,6 +3473,97 @@ static const VMStateDescription vmstate_sgi_gl_clear_stencil = {
     },
 };
 
+static int sgi_gl_polygon_put(QEMUFile *f, void *pv, size_t size,
+                               const VMStateField *field, JSONWriter *vmdesc)
+{
+    const SGIGLPolygonAssembly *p = pv;
+
+    qemu_put_be32(f, p->count);
+    qemu_put_be32(f, p->failed);
+    qemu_put_be32(f, p->error);
+    for (uint32_t i = 0; i < p->count; i++) {
+        for (unsigned k = 0; k < SGI_GL_VERTEX_FLOATS; k++) {
+            qemu_put_be32(f, sgi_gl_bits(
+                p->vertices[(size_t)i * SGI_GL_VERTEX_FLOATS + k]));
+        }
+    }
+    return 0;
+}
+
+static int sgi_gl_polygon_get(QEMUFile *f, void *pv, size_t size,
+                               const VMStateField *field)
+{
+    SGIGLPolygonAssembly *dst = pv;
+    SGIGLPolygonAssembly p = { .enabled = dst->enabled, .loaded = 1 };
+    uint32_t count;
+    int ret = -EINVAL;
+
+    if (dst->loaded) {
+        /* A second marker must not overwrite the first owned payload. */
+        sgi_gl_polygon_release(dst);
+        return -EINVAL;
+    }
+    if (!dst->enabled) {
+        return -EINVAL;
+    }
+    count = qemu_get_be32(f);
+    p.failed = qemu_get_be32(f);
+    p.error = qemu_get_be32(f);
+    if (p.failed > 1 || (p.failed && count) ||
+        (p.error && p.error != SGI_GL_OUT_OF_MEMORY)) {
+        return -EINVAL;
+    }
+    /* Allocate only for records that arrive, not a claimed huge count. */
+    for (uint32_t i = 0; i < count; i++) {
+        float record[SGI_GL_VERTEX_FLOATS];
+
+        for (unsigned k = 0; k < SGI_GL_VERTEX_FLOATS; k++) {
+            record[k] = sgi_gl_float(qemu_get_be32(f));
+        }
+        if (qemu_file_get_error(f)) {
+            goto fail;
+        }
+        if (!sgi_gl_polygon_reserve(&p, (size_t)i + 1)) {
+            ret = -ENOMEM;
+            goto fail;
+        }
+        memcpy(&p.vertices[(size_t)i * SGI_GL_VERTEX_FLOATS], record,
+               sizeof(record));
+        p.count++;
+    }
+    if (qemu_file_get_error(f)) {
+        goto fail;
+    }
+    *dst = p;
+    return 0;
+fail:
+    sgi_gl_polygon_release(&p);
+    return ret;
+}
+
+static const VMStateInfo vmstate_info_sgi_gl_polygon = {
+    .name = "sgi-gl-owned-polygon",
+    .get = sgi_gl_polygon_get,
+    .put = sgi_gl_polygon_put,
+};
+
+static bool sgi_gl_polygon_needed(void *opaque)
+{
+    return sgi_gl_polygon_owned(opaque);
+}
+
+static const VMStateDescription vmstate_sgi_gl_polygon = {
+    .name = "sgi-gl-context/polygon-assembly",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = sgi_gl_polygon_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_SINGLE(polygon, SGIGLContext, 0, vmstate_info_sgi_gl_polygon,
+                       SGIGLPolygonAssembly),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
 static bool sgi_gl_polygon_stipple_needed(void *opaque)
 {
     const SGIGLContext *c = opaque;
@@ -3287,6 +3588,8 @@ static int sgi_gl_context_pre_load(void *opaque)
     SGIGLContext *c = opaque;
 
     memset(c->polygon_stipple, 0xff, sizeof(c->polygon_stipple));
+    sgi_gl_polygon_release(&c->polygon);
+    c->polygon.error = 0;
     return 0;
 }
 
@@ -3405,6 +3708,7 @@ const VMStateDescription vmstate_sgi_gl_context = {
         &vmstate_sgi_gl_clear_stencil,
         &vmstate_sgi_gl_rasterization,
         &vmstate_sgi_gl_polygon_stipple,
+        &vmstate_sgi_gl_polygon,
         &vmstate_sgi_gl_texture_coords,
         NULL
     },
