@@ -678,7 +678,7 @@ typedef struct SGIGLContext {
     uint32_t line_stipple_pattern;
     uint32_t polygon_mode[2];
     uint32_t raster_enables;
-    /* Canonical window rows: bit x of row y (OpenGL 1.2.1, 3.5.3). */
+    /* Canonical window rows: bit x of row y (OpenGL 1.2.1, 3.5.2). */
     uint32_t polygon_stipple[32];
     /* The primitive open since glBegin, SGI_GL_POINTS to SGI_GL_POLYGON. */
     uint32_t begin_mode;
