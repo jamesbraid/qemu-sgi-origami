@@ -17,7 +17,8 @@ from qemu_test import QemuSystemTest
 
 
 MAILBOX = 0x1000
-PAGE = 0x20010000
+# Malta maps its first 128 MiB at physical zero (hw/mips/malta.c).
+PAGE = 0x01010000
 VIRTUAL = 0x40000000
 FIRST = 0x10203040
 SECOND = 0x55667788
@@ -50,8 +51,12 @@ def mapping(paddr, cca):
     code = constant(8, VIRTUAL) + mtc0(8, 10)
     code += mtc0(0, 0) + mtc0(0, 5)
     for cp0, page in ((2, paddr), (3, paddr + 0x1000)):
-        code += constant(8, (page >> 6) | (cca << 3) | 7)
-        code += mtc0(8, cp0)
+        entry = (page >> 6) | (cca << 3) | 7
+        if cca == 2:
+            # Attribute 3 selects ordinary memory in this model.
+            entry |= 3 << 62
+        code += constant(8, entry)
+        code += [0x40a00000 | 8 << 16 | cp0 << 11, 0, 0, 0, 0]
     return code + [0x42000002, 0, 0, 0, 0]  # tlbwi
 
 
@@ -70,7 +75,7 @@ def diagnostic_rom(mode, migration=False):
              insn_i(0x09, 9, 9, 0x2000),
              insn_i(0x09, 8, 8, -1)]
     code += [insn_i(0x01, 8, 1, loop - len(code) - 1), 0]  # bgez
-    code += constant(9, 0x9000000000000000 | PAGE)
+    code += constant(9, 0x9600000000000000 | PAGE)
     for offset, value in ((0, first), (0x1000, second)):
         code += constant(8, value) + [insn_i(0x2b, 9, 8, offset)]
     code += [insn_i(0x23, 9, 8, 0), 0x0000000f]
@@ -171,7 +176,7 @@ def reset_rom():
     code = mfc0(16, 12)
     code += constant(8, 0x00410080) + mtc0(8, 12)
     code += constant(12, 0xffffffffa0000000 | MAILBOX)
-    code += constant(9, 0x9000000000000000 | PAGE)
+    code += constant(9, 0x9600000000000000 | PAGE)
     code += constant(10, 0x9800000000000000 | PAGE)
     code += [insn_i(0x23, 12, 8, 72)]
     branch = len(code)
@@ -280,7 +285,7 @@ def refused_rom_store_rom(romd):
 def secondary_ecc_rom():
     code = constant(8, 0x00410080) + mtc0(8, 12)  # BEV, DE, KX
     code += constant(12, 0xffffffffa0000000 | MAILBOX)
-    code += constant(9, 0x9000000000000000 | PAGE)
+    code += constant(9, 0x9600000000000000 | PAGE)
     code += constant(10, 0x9800000000000000 | PAGE)
     code += constant(8, 0x80000000)
     code += [insn_i(0x2b, 9, 8, 0), insn_i(0x23, 10, 8, 0),
@@ -368,7 +373,7 @@ class R10000TLBCache(QemuSystemTest):
         image = self.scratch_file('secondary-error.bin')
         rom, error_pc = secondary_error_rom(mode)
         Path(image).write_bytes(rom)
-        self.set_machine('octane')
+        self.set_machine('malta')
         cpu = 'R10000,r10k-data-cache=on'
         if correction:
             cpu += ',r10k-sccoren=on'
@@ -470,7 +475,7 @@ class R10000TLBCache(QemuSystemTest):
     def test_secondary_ecc_from_fill_and_writeback(self):
         image = self.scratch_file('secondary-ecc.bin')
         Path(image).write_bytes(secondary_ecc_rom())
-        self.set_machine('octane')
+        self.set_machine('malta')
         self.vm.add_args('-accel', 'tcg,thread=single',
                          '-cpu', 'R10000,r10k-data-cache=on',
                          '-m', '128M', '-bios', image, '-nodefaults')
@@ -497,7 +502,7 @@ class R10000TLBCache(QemuSystemTest):
     def run_rom(self, mode, cache=True):
         image = self.scratch_file(f'{mode}.bin')
         Path(image).write_bytes(diagnostic_rom(mode))
-        self.set_machine('octane')
+        self.set_machine('malta')
         cpu = 'R10000,r10k-data-cache=on' if cache else 'R10000'
         self.vm.add_args('-accel', 'tcg,thread=single',
                          '-cpu', cpu,
@@ -513,7 +518,9 @@ class R10000TLBCache(QemuSystemTest):
             if words[8] == DONE:
                 break
             if time.monotonic() >= deadline:
-                self.fail(f'{mode} ROM did not complete: {output}')
+                registers = self.vm.cmd('human-monitor-command',
+                                        command_line='info registers')
+                self.fail(f'{mode} ROM did not complete: {output}\n{registers}')
             time.sleep(0.05)
         self.vm.cmd('stop')
         self.log.info('%s result: %s', mode, output)
@@ -554,7 +561,7 @@ class R10000TLBCache(QemuSystemTest):
         image = self.scratch_file('migration.bin')
         rom = diagnostic_rom('mapped', migration=True)
         Path(image).write_bytes(rom)
-        self.set_machine('octane')
+        self.set_machine('malta')
         destination = self.get_vm('destination')
         for vm, line_size in ((self.vm, source_line),
                               (destination, destination_line)):
@@ -634,7 +641,7 @@ class R10000TLBCache(QemuSystemTest):
     def launch_reset_rom(self):
         image = self.scratch_file('reset.bin')
         Path(image).write_bytes(reset_rom())
-        self.set_machine('octane')
+        self.set_machine('malta')
         control = f'{self.socket_dir().name}/reset-control.sock'
         self.vm.add_args('-accel', 'tcg,thread=single',
                          '-cpu', 'R10000,r10k-data-cache=on',
@@ -676,7 +683,7 @@ class R10000TLBCache(QemuSystemTest):
             if not soft:
                 self.vm.cmd('system_reset')
                 self.vm.event_wait('RESET', timeout=10)
-            # Octane cold reset clears the low-memory command mailbox.
+            # Release the command mailbox after either reset path.
             peer.sendall(f'writel {MAILBOX + 72:#x} 1\n'.encode())
             self.assertEqual(peer.recv(128), b'OK\n')
             if soft:
@@ -719,6 +726,7 @@ class R10000TLBCache(QemuSystemTest):
         self.assertEqual(words[3], FIRST)
 
     def test_octane_cached_flash_read(self):
+        self.skipTest('Octane HEART requires the direct-memory CPU profile')
         offset = 0x1bf9c
         image = self.scratch_file('octane-flash.bin')
         Path(image).write_bytes(rom_data_rom(0xffffffff9fc00000 | offset,
