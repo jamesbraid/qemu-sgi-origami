@@ -286,8 +286,8 @@ child-bus idiom, ``<id>.0``: a card goes into the carrier in IO2 with
 These renames and the stock topologies break saved state from earlier
 builds: a default ``-M origin2000`` snapshot carries an ``sgi-mgras``
 section the stock machine no longer has, and board ids and bus names
-changed. Migration is supported only between identical builds (Origami
-decision D-0019), so no compatibility shim is kept.
+changed. Migration is supported only between identical builds, so no
+compatibility shim is kept.
 
 The Onyx2 deskside is a different midplane, not only a different
 population. Its two node slots drive Hub slot-identity bits 3 and 2, where

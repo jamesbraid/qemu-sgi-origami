@@ -3,7 +3,7 @@
  * The abstract SGI Scalable Node family machine and its builder over an
  * SGIModelTopology from the compiled catalogue (qapi/sgi-sn.json,
  * embedded and parsed by hw/mips/sgi/sn-catalogue.c). Origin 200 is the
- * first product on this base; see docs/plans/sn-machine-model.md, "QEMU".
+ * first product on this base; see docs/specs/sgi-sn.rst.
  *
  * Fixed here rather than carried in the descriptor, because they are Hub
  * hardware facts rather than per-configuration data: the Hub's physical
@@ -76,8 +76,7 @@
  * below still wants positional indexing (a node's own position in
  * t->nodes, a module's node by position in its own nodes list), so each
  * helper walks a list once into a freshly allocated array of pointers --
- * an index table built once per caller, per docs/plans/sn-machine-model.md's
- * own "list walks or index tables" instruction for this step -- rather
+ * an index table built once per caller -- rather
  * than threading list-walk logic through every call site below. Callers
  * hold the result no longer than their own scope (g_autofree).
  */
@@ -1080,7 +1079,7 @@ static void sgi_machine_build_crossbars(SGIMachineState *s,
          * The widgets this topology attaches: the only ports with a
          * widget physically present, and each reported alive at startup.
          * An empty XIO slot has no widget, so its port reads presence
-         * clear (docs/datasheets/xbow.md, link auxiliary status bit 5);
+         * clear (link auxiliary status bit 5);
          * reporting it present would make the PROM find a widget whose
          * link never came up and diagnose it as a bad IO link. An empty
          * slot becomes present only when a board fitted at launch claims
@@ -1204,8 +1203,7 @@ static const uint64_t *sgi_machine_io_board_ioc3_serial(
 
 /*
  * The GIGAchannel's Crosstown extension board, fitted in place of the
- * XTalk jumper, and its own board record (docs/datasheets/
- * sgi-gigachannel.md, "Product identity"): part 030-1264-001 rev C, named
+ * XTalk jumper, and its own board record: part 030-1264-001 rev C, named
  * XBOX_EXT, which real inventories list beside the IP29 record under
  * io1/MotherBoard. That it answers on the IP29 Bridge's own one-wire line
  * is inferred from that grouping, the way the BaseIO-G's MIO record shares
@@ -1711,7 +1709,7 @@ static bool sgi_machine_instantiate_vbrick(
  * crossbar_index -1, so sgi_machine_index_xio_attachments() already
  * buckets it as a board-owning entry rather than a Crossbow one). The
  * XBridge always answers both of its heads -- one carries the IO-8, the
- * other stays inert (docs/datasheets/xbridge.md) -- so an io_boards
+ * other stays inert -- so an io_boards
  * entry with no fitted IOC3 one-wire serial names the empty head, and
  * building nothing for it is correct, not a fault. Resolves every
  * backend id from this record and the command line, the policy

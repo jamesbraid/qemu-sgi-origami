@@ -1413,7 +1413,7 @@ static void sn1_node_request_reset(CPUState *cs, run_on_cpu_data data)
  * network interface's reset enable and then local plus port reset, and
  * branches back into a loop; IRIX 6.5.30's restart path repeats the same
  * two writes every 3 s; OpenBSD resets its IP35 nodes with local plus link
- * reset. docs/datasheets/bedrock-network-interface.md carries the evidence.
+ * reset.
  *
  * The model restarts the whole machine, as the Origin 200's Hub local reset
  * and the L1's reset command already do: the node's I/O, its L1 and, on a
