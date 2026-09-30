@@ -139,6 +139,10 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIIOC3ParallelState, SGI_IOC3_PARALLEL)
 #define SGI_IOC3_PAR_MODE_TEST        6
 #define SGI_IOC3_PAR_MODE_CONFIG      7
 
+#define SGI_IOC3_PAR_PART_GENERIC     0
+#define SGI_IOC3_PAR_PART_TL16PIR552 1
+#define SGI_IOC3_PAR_TL16_FIFO_DEPTH 16
+
 struct SGIIOC3ParallelState {
     SysBusDevice parent_obj;
 
@@ -171,6 +175,7 @@ struct SGIIOC3ParallelState {
     uint8_t config_a;
     uint8_t config_b;
     uint8_t extended;
+    uint16_t parallel_part;
     uint16_t fifo_depth;
     Fifo8 test_fifo;
 };

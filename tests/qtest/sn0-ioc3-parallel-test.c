@@ -126,6 +126,181 @@ static void test_ioc3_attach(QTestState *qts)
 #define MODE_TEST         6
 #define MODE_CONFIG       7
 
+#define TL16_ECP_FIFO     (TEST_IOC3_BASE + 0x20158)
+#define TL16_ECP_CONFIG_B (TEST_IOC3_BASE + 0x20159)
+#define TL16_ECP_EXTENDED (TEST_IOC3_BASE + 0x2015a)
+
+static QTestState *tl16_parallel_start(const char *extra)
+{
+    QTestState *qts = qtest_initf("-M origin200 "
+                                 "-device sgi-ioc3,addr=3,subsystem-id=0xc303 "
+                                 "-global sgi-ioc3-parallel.parallel-part=1 "
+                                 "-global sgi-ioc3-parallel.fifo-depth=16 %s",
+                                 extra);
+
+    test_ioc3_attach(qts);
+    return qts;
+}
+
+static void test_tl16_fifo_wraps_and_overruns(const void *data)
+{
+    QTestState *qts = tl16_parallel_start("");
+    unsigned int i;
+
+    qtest_writeb(qts, TL16_ECP_EXTENDED, ECR_MODE(MODE_TEST));
+    g_assert_cmphex(qtest_readb(qts, TL16_ECP_EXTENDED), ==,
+                    ECR_MODE(MODE_TEST) | ECR_FIFO_EMPTY);
+    qtest_readb(qts, TL16_ECP_FIFO);
+    g_assert_cmphex(qtest_readb(qts, TL16_ECP_EXTENDED), ==,
+                    ECR_MODE(MODE_TEST) | ECR_FIFO_EMPTY);
+    for (i = 0; i < 15; i++) {
+        qtest_writeb(qts, TL16_ECP_FIFO, 0x40 + i);
+        g_assert_cmphex(qtest_readb(qts, TL16_ECP_EXTENDED), ==,
+                        ECR_MODE(MODE_TEST));
+    }
+    qtest_writeb(qts, TL16_ECP_FIFO, 0x4f);
+    g_assert_cmphex(qtest_readb(qts, TL16_ECP_EXTENDED), ==,
+                    ECR_MODE(MODE_TEST) | ECR_FIFO_FULL);
+    for (i = 0; i < 16; i++) {
+        g_assert_cmphex(qtest_readb(qts, TL16_ECP_FIFO), ==, 0x40 + i);
+    }
+    g_assert_cmphex(qtest_readb(qts, TL16_ECP_EXTENDED), ==,
+                    ECR_MODE(MODE_TEST) | ECR_FIFO_EMPTY);
+
+    for (i = 0; i < 16; i++) {
+        qtest_writeb(qts, TL16_ECP_FIFO, 0x40 + i);
+    }
+    for (i = 0; i < 16; i++) {
+        qtest_writeb(qts, TL16_ECP_FIFO, 0x50 + i);
+        g_assert_cmphex(qtest_readb(qts, TL16_ECP_EXTENDED), ==,
+                        ECR_MODE(MODE_TEST) | ECR_FIFO_FULL);
+    }
+    for (i = 0; i < 16; i++) {
+        g_assert_cmphex(qtest_readb(qts, TL16_ECP_FIFO), ==, 0x50 + i);
+    }
+    g_assert_cmphex(qtest_readb(qts, TL16_ECP_EXTENDED), ==,
+                    ECR_MODE(MODE_TEST) | ECR_FIFO_EMPTY);
+    qtest_writeb(qts, TL16_ECP_FIFO, 0x99);
+    g_assert_cmphex(qtest_readb(qts, TL16_ECP_EXTENDED), ==,
+                    ECR_MODE(MODE_TEST));
+    qtest_system_reset(qts);
+    test_ioc3_attach(qts);
+    g_assert_cmphex(qtest_readb(qts, TL16_ECP_EXTENDED), ==, ECR_FIFO_EMPTY);
+    qtest_writeb(qts, TL16_ECP_EXTENDED, ECR_MODE(MODE_TEST));
+    g_assert_cmphex(qtest_readb(qts, TL16_ECP_EXTENDED), ==,
+                    ECR_MODE(MODE_TEST) | ECR_FIFO_EMPTY);
+    qtest_readb(qts, TL16_ECP_FIFO);
+    g_assert_cmphex(qtest_readb(qts, TL16_ECP_EXTENDED), ==,
+                    ECR_MODE(MODE_TEST) | ECR_FIFO_EMPTY);
+    qtest_quit(qts);
+}
+
+static void test_tl16_configuration_is_read_only(const void *data)
+{
+    QTestState *qts = tl16_parallel_start("");
+
+    qtest_writeb(qts, TL16_ECP_EXTENDED, ECR_MODE(MODE_CONFIG));
+    g_assert_cmphex(qtest_readb(qts, TL16_ECP_FIFO), ==, 0x1f);
+    g_assert_cmphex(qtest_readb(qts, TL16_ECP_CONFIG_B) & 0xbf, ==, 0x0b);
+    qtest_writeb(qts, TL16_ECP_FIFO, 0xa5);
+    qtest_writeb(qts, TL16_ECP_CONFIG_B, 0x55);
+    g_assert_cmphex(qtest_readb(qts, TL16_ECP_FIFO), ==, 0x1f);
+    g_assert_cmphex(qtest_readb(qts, TL16_ECP_CONFIG_B) & 0xbf, ==, 0x0b);
+    qtest_quit(qts);
+}
+
+static void test_tl16_fifo_survives_savevm_loadvm(const void *data)
+{
+    g_autofree char *tmpdir = NULL;
+    g_autofree char *image = NULL;
+    g_autofree char *drive = NULL;
+    g_autofree char *args = NULL;
+    GError *err = NULL;
+    QTestState *qts;
+    char *hmp_ret;
+
+    if (!have_qemu_img()) {
+        g_test_skip("QTEST_QEMU_IMG not set; cannot create snapshot storage");
+        return;
+    }
+
+    tmpdir = g_dir_make_tmp("tl16-parallel-fifo-XXXXXX", &err);
+    g_assert_no_error(err);
+    image = g_build_filename(tmpdir, "state.qcow2", NULL);
+    g_assert(mkimg(image, "qcow2", 128));
+    drive = g_strdup_printf("-drive file=%s,format=qcow2,if=none", image);
+    qts = tl16_parallel_start(drive);
+    qtest_writeb(qts, TL16_ECP_EXTENDED, ECR_MODE(MODE_TEST));
+    qtest_writeb(qts, TL16_ECP_FIFO, 0xa5);
+    qtest_writeb(qts, TL16_ECP_FIFO, 0x5a);
+    g_assert_cmphex(qtest_readb(qts, TL16_ECP_FIFO), ==, 0xa5);
+    hmp_ret = qtest_hmp(qts, "savevm tl16-fifo");
+    g_assert_nonnull(hmp_ret);
+    g_assert_null(strstr(hmp_ret, "Error:"));
+    g_free(hmp_ret);
+    qtest_quit(qts);
+
+    args = g_strdup_printf("%s -loadvm tl16-fifo", drive);
+    qts = tl16_parallel_start(args);
+    g_assert_cmphex(qtest_readb(qts, TL16_ECP_EXTENDED), ==,
+                    ECR_MODE(MODE_TEST));
+    g_assert_cmphex(qtest_readb(qts, TL16_ECP_FIFO), ==, 0x5a);
+    g_assert_cmphex(qtest_readb(qts, TL16_ECP_EXTENDED), ==,
+                    ECR_MODE(MODE_TEST) | ECR_FIFO_EMPTY);
+    qtest_quit(qts);
+    g_assert_cmpint(g_unlink(image), ==, 0);
+    g_assert_cmpint(g_rmdir(tmpdir), ==, 0);
+}
+
+static void test_parallel_part_must_match_when_loading(const void *data)
+{
+    g_autofree char *tmpdir = NULL;
+    g_autofree char *image = NULL;
+    g_autofree char *drive = NULL;
+    g_autofree char *args = NULL;
+    GError *err = NULL;
+    QTestState *qts;
+    char *hmp_ret;
+
+    if (!have_qemu_img()) {
+        g_test_skip("QTEST_QEMU_IMG not set; cannot create snapshot storage");
+        return;
+    }
+
+    tmpdir = g_dir_make_tmp("parallel-part-XXXXXX", &err);
+    g_assert_no_error(err);
+    image = g_build_filename(tmpdir, "state.qcow2", NULL);
+    g_assert(mkimg(image, "qcow2", 128));
+    drive = g_strdup_printf("-drive file=%s,format=qcow2,if=none", image);
+    args = g_strdup_printf("-M origin200 "
+                           "-device sgi-ioc3,addr=3,subsystem-id=0xc303 "
+                           "-global "
+                           "sgi-ioc3-parallel.fifo-depth=16 %s", drive);
+    qts = qtest_init(args);
+    test_ioc3_attach(qts);
+    hmp_ret = qtest_hmp(qts, "savevm parallel-part");
+    g_assert_nonnull(hmp_ret);
+    g_assert_null(strstr(hmp_ret, "Error:"));
+    g_free(hmp_ret);
+    qtest_quit(qts);
+
+    g_free(args);
+    args = g_strdup_printf("-M origin200 "
+                           "-device sgi-ioc3,addr=3,subsystem-id=0xc303 "
+                           "-global "
+                           "sgi-ioc3-parallel.fifo-depth=16 -global "
+                           "sgi-ioc3-parallel.parallel-part=1 %s", drive);
+    qts = qtest_init(args);
+    hmp_ret = qtest_hmp(qts, "loadvm parallel-part");
+    g_assert_nonnull(hmp_ret);
+    g_assert_nonnull(strstr(hmp_ret, "Error:"));
+    g_free(hmp_ret);
+    qtest_quit(qts);
+
+    g_assert_cmpint(g_unlink(image), ==, 0);
+    g_assert_cmpint(g_rmdir(tmpdir), ==, 0);
+}
+
 /*
  * The status register's peripheral lines. Only nFault's polarity is
  * specified: a clear level means a fault, so an idle port with no peripheral
@@ -1164,6 +1339,15 @@ int main(int argc, char **argv)
     unsigned int i;
 
     g_test_init(&argc, &argv, NULL);
+
+    qtest_add_data_func("sn0/ioc3/parallel-tl16-fifo-overrun", NULL,
+                        test_tl16_fifo_wraps_and_overruns);
+    qtest_add_data_func("sn0/ioc3/parallel-tl16-configuration-read-only", NULL,
+                        test_tl16_configuration_is_read_only);
+    qtest_add_data_func("sn0/ioc3/parallel-tl16-fifo-savevm-loadvm", NULL,
+                        test_tl16_fifo_survives_savevm_loadvm);
+    qtest_add_data_func("sn0/ioc3/parallel-part-must-match-on-load", NULL,
+                        test_parallel_part_must_match_when_loading);
 
     qtest_add_data_func("sn0/ioc3/parallel-presence-check-out-of-reset", NULL,
                         test_the_presence_check_reads_out_of_reset);
