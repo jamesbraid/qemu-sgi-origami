@@ -180,6 +180,9 @@ MemoryRegion *sgi_bridge_packet_face(SGIBridgeState *s);
 bool sgi_bridge_install_flash_read_view(SGIBridgeState *s,
                                         const uint8_t *image, size_t size,
                                         Error **errp);
+bool sgi_bridge_install_flash_device_read_view(SGIBridgeState *s,
+                                               MemoryRegion *part,
+                                               Error **errp);
 
 /*
  * The local register block: 64 KB decoded, the first 0x300 bytes defined, one
@@ -239,6 +242,8 @@ struct SGIBridgeState {
     MemoryRegion flash_window;
     MemoryRegion flash_read_view;
     MemoryRegion flash_boundary;
+    MemoryRegion *flash_read_source;
+    hwaddr flash_read_view_offset;
     MemoryRegion *flash;
     MemoryRegion *flash_select1;
     bool flash_select;

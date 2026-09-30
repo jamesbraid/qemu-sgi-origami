@@ -72,6 +72,7 @@ struct LH28F800SUState {
     uint8_t *storage;
     QEMUTimer *timer;
     qemu_irq ready_busy;
+    qemu_irq array_read;
     uint16_t initial_lock_mask;
     uint16_t lock_mask;
     uint16_t displayed_unlocked_mask;
@@ -141,6 +142,8 @@ static void flash_preserve_run_failure(void)
     }
 }
 
+static void flash_update_outputs(LH28F800SUState *s);
+
 static void flash_storage_error(LH28F800SUState *s, int ret)
 {
     int marker_fd;
@@ -154,6 +157,7 @@ static void flash_storage_error(LH28F800SUState *s, int ret)
     error_report("lh28f800su: working image may be incomplete: %s; "
                  "exclude it from normal reopen", strerror(-ret));
     s->storage_failed = true;
+    flash_update_outputs(s);
     flash_preserve_run_failure();
     timer_del(s->timer);
     /* Keep the failed operation busy until the operator terminates the VM. */
@@ -214,6 +218,8 @@ static void flash_update_outputs(LH28F800SUState *s)
     /* ROMD would bypass the chip's x16 access-width check on array reads. */
     memory_region_rom_device_set_romd(&s->mem, false);
     qemu_set_irq(s->ready_busy, ready);
+    qemu_set_irq(s->array_read, s->mode == FLASH_ARRAY && s->rp_high &&
+                 s->operation != FLASH_OP_RECOVER && !s->storage_failed);
 }
 
 static void flash_set_mode(LH28F800SUState *s, FlashMode mode)
@@ -290,6 +296,10 @@ static void flash_pin(void *opaque, int n, int level)
 {
     LH28F800SUState *s = opaque;
 
+    /* Board links can retain this object after device unrealize. */
+    if (!s->timer) {
+        return;
+    }
     switch (n) {
     case FLASH_PIN_VPP:
         if (!level && s->vpp_good &&
@@ -314,6 +324,7 @@ static void flash_pin(void *opaque, int n, int level)
         break;
     case FLASH_PIN_RP:
         if (s->rp_high == !!level) {
+            flash_update_outputs(s);
             break;
         }
         s->rp_high = level;
@@ -345,7 +356,7 @@ static MemTxResult flash_read(void *opaque, hwaddr offset, uint64_t *value,
 {
     LH28F800SUState *s = opaque;
 
-    if (size != 2 || (offset & 1)) {
+    if (!s->timer || size != 2 || (offset & 1)) {
         return MEMTX_ERROR;
     }
     if (!s->rp_high) {
@@ -413,7 +424,7 @@ static MemTxResult flash_write(void *opaque, hwaddr offset, uint64_t value,
     uint16_t old;
     uint32_t block = offset / BLOCK_SIZE;
 
-    if (size != 2 || (offset & 1)) {
+    if (!s->timer || size != 2 || (offset & 1)) {
         return MEMTX_ERROR;
     }
     if (s->storage_failed && cmd != 0xff && cmd != 0x90 &&
@@ -761,7 +772,11 @@ static void flash_cleanup(LH28F800SUState *s)
 
 static void flash_unrealize(DeviceState *dev)
 {
-    flash_cleanup(LH28F800SU(dev));
+    LH28F800SUState *s = LH28F800SU(dev);
+
+    qemu_set_irq(s->array_read, 0);
+    qdev_connect_gpio_out_named(dev, "array-read", 0, NULL);
+    flash_cleanup(s);
 }
 
 static void flash_finalize(Object *obj)
@@ -795,6 +810,7 @@ static void flash_instance_init(Object *obj)
 
     qdev_init_gpio_in_named(DEVICE(obj), flash_pin, "pins", 3);
     qdev_init_gpio_out_named(DEVICE(obj), &s->ready_busy, "ready-busy", 1);
+    qdev_init_gpio_out_named(DEVICE(obj), &s->array_read, "array-read", 1);
 }
 
 static const TypeInfo flash_type = {
