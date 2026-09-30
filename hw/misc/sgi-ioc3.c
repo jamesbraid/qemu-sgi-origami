@@ -834,7 +834,7 @@ static void sgi_ioc3_sdma_loop_expired(void *opaque)
  * loop next services the timer. The count field is read off the clock, so
  * without this a guest can read a spent count while the source it raises
  * is still clear: the IO-8 board test loads a two-tick reload, waits 10 ms
- * and requires the source set (docs/datasheets/ioc3.md). A loopback
+ * and requires the source set. A loopback
  * arrival already due goes first, since it is what starts the timer.
  */
 static void sgi_ioc3_sdma_rx_timer_catch_up(SGIIOC3State *s)

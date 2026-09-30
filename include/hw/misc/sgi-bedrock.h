@@ -171,7 +171,7 @@ struct SGIBedrockState {
      * publication of the interface's fitted processors. presence_abandoned:
      * a park on the join timed out, so the join is over for this reset
      * whether or not a publication ever arrives. See the presence comment
-     * in sgi-bedrock.c and docs/known-issues.md.
+     * in sgi-bedrock.c.
      *
      * The partner park's state, the same lifetime. hold_scratch1_released:
      * the reset-edge barrier is over, its release (the master's second
@@ -237,9 +237,8 @@ SGINetPacketResult sgi_bedrock_vector_send(SGIBedrockState *s,
 
 /*
  * The reset-barrier park's entry point, called from lb_write() for LB
- * scratch 1 (docs/known-issues.md and
- * docs/datasheets/bedrock-local-block.md). It applies or withholds the
- * write itself; the caller does not also store it.
+ * scratch 1. It applies or withholds the write itself; the caller does not
+ * also store it.
  */
 void sgi_bedrock_hold_reset(SGIBedrockState *s);
 void sgi_bedrock_hold_scratch1_write(SGIBedrockState *s, uint64_t value);
@@ -254,14 +253,14 @@ void sgi_bedrock_scratch1_read(SGIBedrockState *s);
 /*
  * The memory-directory unit latched a correctable read error: raise the
  * memory-correctable bit, pending bank 1 bit 61, on both processor
- * interfaces (docs/datasheets/bedrock-processor-interface.md).
+ * interfaces.
  */
 void sgi_bedrock_memory_correctable_error(SGIBedrockState *s);
 /*
  * The memory-directory unit latched an uncorrectable error: raise the
  * memory-uncorrectable bit, error-interrupt pending bit 24, on both
  * processor interfaces, whose error lines follow it through each
- * processor's error mask (docs/datasheets/bedrock-processor-interface.md).
+ * processor's error mask.
  */
 void sgi_bedrock_memory_uncorrectable_error(SGIBedrockState *s);
 
@@ -273,7 +272,7 @@ void sgi_bedrock_memory_uncorrectable_error(SGIBedrockState *s);
 void sgi_bedrock_scratch3_released(SGIBedrockState *s);
 
 /*
- * The presence-publication join, docs/known-issues.md: called from
+ * The presence-publication join: called from
  * ii_write() after a processor's write to II scratch 0 has landed. It only
  * records which interface has published and wakes processors parked on the
  * join; no value the guest reads changes.
@@ -281,7 +280,7 @@ void sgi_bedrock_scratch3_released(SGIBedrockState *s);
 void sgi_bedrock_presence_published(SGIBedrockState *s);
 
 /*
- * The presence join's liveness and partner parks, docs/known-issues.md:
+ * The presence join's liveness and partner parks:
  * called from pi_write() after a real-time compare write of processor @slot
  * of @interface has landed, and from pi_read() after a real-time counter
  * read has been sampled. They record the pair's liveness posts, park the

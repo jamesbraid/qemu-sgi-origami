@@ -48,8 +48,8 @@ bool sgi_bedrock_hub_registers_permitted(SGIBedrockState *s)
  * the ones it must follow have caught up. That is one approximation, not
  * hardware behaviour, and it is bounded: a park changes when the parked
  * processor runs next, never a value the guest reads, and every park ends
- * at SGI_BEDROCK_HOLD_MS of virtual time whether or not its condition came
- * (docs/known-issues.md). The four, in boot order:
+ * at SGI_BEDROCK_HOLD_MS of virtual time whether or not its condition
+ * arrives. The four, in boot order:
  *
  * - The reset barrier (SGI_BEDROCK_HOLD_SCRATCH1). Every processor clears
  *   LB scratch 1 on its reset path (0x1fc007ec in 6.210), and the master
@@ -104,8 +104,7 @@ bool sgi_bedrock_hub_registers_permitted(SGIBedrockState *s)
  * ahead of it for the rest of the boot: the two sides' barriers then pair
  * off by one, harmlessly until the copy barrier, where the peers switch to
  * the PROM's RAM copy while the publisher is still making it and fetch
- * zeros (docs/known-issues.md, "The presence-publication join";
- * docs/notebooks/origin300-copy-phase-stall-presence-race-20260924.md).
+ * zeros.
  *
  * The publisher park restores that ordering. It parks the publishers
  * only: a publisher whose own interface has published is parked at the hub
@@ -136,7 +135,7 @@ bool sgi_bedrock_hub_registers_permitted(SGIBedrockState *s)
  * its bounded poll disables the partner when it runs out ("peer_pled
  * failed: Other CPU on this node died"). Two earlier placements at the
  * partner's second LB scratch 1 write lost it that way in every boot
- * measured (docs/known-issues.md).
+ * measured.
  *
  * The liveness handshake itself gets a park too (SGI_BEDROCK_HOLD_LIVENESS):
  * the first of a pair to post is parked until its partner posts, since a
@@ -347,7 +346,7 @@ static void bedrock_hold_flush_scratch1(SGIBedrockState *s,
 /*
  * An access to scratch 1 from outside this node's processors: the peer's
  * vector engine, which is how the global master tells a node its NASID
- * (the local-block datasheet, "Node number assignment"), or a qtest. The
+ * during node number assignment, or a qtest. The
  * hold only delays when a local post becomes visible; on hardware that post
  * reached the register before anything that arrives now. So every withheld
  * value lands first, in the order its processor wrote it, and the external
@@ -783,7 +782,7 @@ static bool bedrock_remote_refused(SGIBedrockState *s, hwaddr addr,
 /*
  * Marshal one access to or from the attached L1 controller's UART, addr
  * already relative to its own eight registers. Both register-window forms
- * reach the same UART at offset 0x80 (docs/datasheets/l1-controller.md);
+ * reach the same UART at offset 0x80;
  * each form's own ops function gates the call with its own refusal check
  * and owns its own log wording, then shares this one forwarding path.
  */
@@ -1037,8 +1036,8 @@ void sgi_bedrock_memory_uncorrectable_error(SGIBedrockState *s)
 
 /*
  * The L1 controller's UART is one link per node, not one per processor
- * interface (docs/datasheets/l1-controller.md), so it is broadcast to both
- * PI0 and PI1's own pending bit 4 the same way lb-error, ni-error and
+ * interface, so it is broadcast to both PI0 and PI1's own pending bit 4
+ * the same way lb-error, ni-error and
  * xb-error already broadcast their single node-wide line to both.
  */
 static void bedrock_uart_irq(void *opaque, int n, int level)
@@ -1804,7 +1803,7 @@ void sgi_bedrock_port_reset_send(SGIBedrockState *s)
     }
     /*
      * Reset enable bit 0, "warm reset enable", lets a reset arriving over
-     * the link reset the Bedrock (the network-interface datasheet). The
+     * the link reset the Bedrock. The
      * arriving reset is the same one a local reset request makes, on the
      * model's reset equation.
      */

@@ -2456,8 +2456,7 @@ typedef struct MDDirectoryEntry {
 /*
  * A shared-fine vector bit stands for a processor interface: interface
  * one of node n is bit 2n + 1 across the tags. Inferred from the Origin
- * 300's directory diagnostic, which the memory-directory datasheet
- * records.
+ * 300's directory diagnostic.
  */
 static unsigned md_pointer_interface(uint16_t pointer)
 {
@@ -2773,7 +2772,7 @@ static uint8_t md_directory_request(SGIBedrockMDState *s,
      * check field is kept and a word that is then not a codeword starts
      * being checked; otherwise the check field is regenerated. That the
      * unit's own rewrite follows the backdoor rule is model policy, not an
-     * established hardware rule (the memory-directory datasheet).
+     * established hardware rule.
      */
     if (s->directory_config & 2) {
         word |= old & md_directory_check_mask(premium);
