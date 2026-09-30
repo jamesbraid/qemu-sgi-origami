@@ -24,6 +24,9 @@
  * The subcode channels, genlock and the interface-parameter registers are not
  * modeled. Those registers and the output subcode windows accept and shadow
  * writes with no signal path.
+ * The Octane variant supports its UST counter, bounded status DMA and
+ * internal-clock analog output. Other channels and general board controls
+ * remain unsupported.
  */
 
 #include "qemu/osdep.h"
@@ -52,10 +55,17 @@
  * returning a fixed or just-past-threshold value
  * keeps it a real counter, not a guest-specific reply.
  */
+static void sgi_rad1_octane_ust_update(SGIRad1AudioState *s);
+static uint32_t sgi_rad1_octane_ust_at(SGIRad1AudioState *s, int64_t ns);
+
 static uint32_t sgi_rad1_audio_ust_counter(SGIRad1AudioState *s)
 {
     int64_t elapsed = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) - s->ust_base_ns;
 
+    if (s->octane) {
+        sgi_rad1_octane_ust_update(s);
+        return s->octane_ust_count;
+    }
     if (elapsed < 0) {
         elapsed = 0;
     }
@@ -400,20 +410,33 @@ static bool sgi_rad1_audio_fill_slot(SGIRad1AudioState *s, uint64_t slot)
     for (i = 0; i < SGI_RAD1_AUDIO_NUM_CH; i++) {
         SGIRad1AudioChannel *c = &s->chan[i];
 
-        if (c->len) {
-            stl_le_p(word, sgi_rad1_audio_chan_pointer(c));
-            pci_dma_write(dev, slot + sgi_rad1_audio_channel_info[i].slot_ptr,
-                          word, sizeof(word));
+        if (c->len || s->octane) {
+            stl_le_p(word, c->len ? sgi_rad1_audio_chan_pointer(c) : 0);
+            if (pci_dma_write(dev,
+                              slot + sgi_rad1_audio_channel_info[i].slot_ptr,
+                              word, sizeof(word)) != MEMTX_OK && s->octane) {
+                goto failed;
+            }
         }
     }
 
     stl_le_p(word, sgi_rad1_audio_flags_word(s));
-    pci_dma_write(dev, slot + SGI_RAD1_AUDIO_SLOT_FLAGS_OFFSET,
-                  word, sizeof(word));
+    if (pci_dma_write(dev, slot + SGI_RAD1_AUDIO_SLOT_FLAGS_OFFSET,
+                      word, sizeof(word)) != MEMTX_OK && s->octane) {
+        goto failed;
+    }
     stl_le_p(word, sgi_rad1_audio_done_word(s));
-    pci_dma_write(dev, slot + SGI_RAD1_AUDIO_SLOT_DONE_OFFSET,
-                  word, sizeof(word));
+    if (pci_dma_write(dev, slot + SGI_RAD1_AUDIO_SLOT_DONE_OFFSET,
+                      word, sizeof(word)) != MEMTX_OK && s->octane) {
+        goto failed;
+    }
     return true;
+
+failed:
+    qemu_log_mask(LOG_GUEST_ERROR,
+                  "sgi-rad1-octane: status DMA at 0x%" PRIx64 " failed\n",
+                  slot);
+    return false;
 }
 
 /* The descriptor ring's host-memory PCI base, from the status base regs. */
@@ -538,7 +561,7 @@ static void sgi_rad1_audio_status_ring_start(SGIRad1AudioState *s,
         timer_del(s->status_timer);
         return;
     }
-    if (interval < SGI_RAD1_AUDIO_STATUS_INTERVAL_MIN) {
+    if (!s->octane && interval < SGI_RAD1_AUDIO_STATUS_INTERVAL_MIN) {
         qemu_log_mask(LOG_GUEST_ERROR,
                       "sgi-rad1-audio: status-DMA interval %u is below the "
                       "modeled floor; using %u\n",
@@ -721,9 +744,19 @@ static void sgi_rad1_audio_advance_pos(SGIRad1AudioChannel *c,
 
     sgi_rad1_audio_add_field(pos_a, ci->pos_a_shift, frames);
     if (ci->pos_a_shift == SGI_RAD1_AUDIO_SAMPLE_POS_SHIFT) {
+        uint32_t ust;
+
+        if (s->octane) {
+            int64_t boundary = c->start_ns +
+                muldiv64_round_up(c->frames, NANOSECONDS_PER_SECOND,
+                                  sgi_rad1_audio_chan_freq(c));
+
+            ust = sgi_rad1_octane_ust_at(s, boundary);
+        } else {
+            ust = sgi_rad1_audio_ust_counter(s);
+        }
         *pos_a = (*pos_a & ~SGI_RAD1_AUDIO_UST_LATCH_MASK) |
-                 (sgi_rad1_audio_ust_counter(s) &
-                  SGI_RAD1_AUDIO_UST_LATCH_MASK);
+                 (ust & SGI_RAD1_AUDIO_UST_LATCH_MASK);
     }
     if (!ci->pos_b_parent) {
         sgi_rad1_audio_add_field(pos_b, ci->pos_b_shift, frames);
@@ -827,6 +860,10 @@ static bool sgi_rad1_audio_chan_move(SGIRad1AudioChannel *c, uint64_t frames)
             return false;
         }
         c->offset += chunk;
+        if (c->dev->octane) {
+            c->frames += n;
+            sgi_rad1_audio_advance_pos(c, n);
+        }
         frames -= n;
         if (c->offset >= c->len) {
             c->offset = 0;
@@ -862,8 +899,10 @@ static void sgi_rad1_audio_chan_sync(SGIRad1AudioChannel *c)
             sgi_rad1_audio_chan_stop(c);
             return;
         }
-        c->frames = due;
-        sgi_rad1_audio_advance_pos(c, (uint32_t)frames);
+        if (!c->dev->octane) {
+            c->frames = due;
+            sgi_rad1_audio_advance_pos(c, (uint32_t)frames);
+        }
     }
 }
 
@@ -1306,12 +1345,96 @@ static void sgi_rad1_octane_ust_update(SGIRad1AudioState *s)
     s->octane_ust_last_ns = now;
 }
 
+static uint32_t sgi_rad1_octane_ust_at(SGIRad1AudioState *s, int64_t ns)
+{
+    int64_t ticks = s->octane_ust_phase;
+
+    if (s->octane_ust_enabled) {
+        ticks += ns - s->octane_ust_last_ns;
+    }
+    return s->octane_ust_count +
+           (ticks >= 0 ? ticks / SGI_RAD1_OCTANE_UST_NS_PER_TICK :
+            -DIV_ROUND_UP(-ticks, SGI_RAD1_OCTANE_UST_NS_PER_TICK));
+}
+
+static bool sgi_rad1_octane_descriptor(hwaddr addr, bool *output)
+{
+    switch (addr) {
+    case SGI_RAD1_AUDIO_REG_OUT_A_ADDR_LO:
+    case SGI_RAD1_AUDIO_REG_OUT_A_ADDR_HI:
+    case SGI_RAD1_AUDIO_REG_OUT_A_CTRL:
+    case SGI_RAD1_AUDIO_REG_OUT_B_ADDR_LO:
+    case SGI_RAD1_AUDIO_REG_OUT_B_ADDR_HI:
+    case SGI_RAD1_AUDIO_REG_OUT_B_CTRL:
+        *output = true;
+        return true;
+    case SGI_RAD1_AUDIO_REG_STATUS_BASE_LO:
+    case SGI_RAD1_AUDIO_REG_STATUS_BASE_HI:
+    case SGI_RAD1_AUDIO_REG_STATUS_LIMIT:
+    case SGI_RAD1_AUDIO_REG_STATUS_BASE2_LO:
+    case SGI_RAD1_AUDIO_REG_STATUS_BASE2_HI:
+    case SGI_RAD1_AUDIO_REG_STATUS_LIMIT2:
+        *output = false;
+        return true;
+    default:
+        return false;
+    }
+}
+
+static bool sgi_rad1_octane_ring_valid(SGIRad1AudioState *s, bool output,
+                                      uint32_t limit)
+{
+    hwaddr lo = output ? SGI_RAD1_AUDIO_REG_OUT_A_ADDR_LO :
+                        SGI_RAD1_AUDIO_REG_STATUS_BASE_LO;
+    hwaddr hi = output ? SGI_RAD1_AUDIO_REG_OUT_A_ADDR_HI :
+                        SGI_RAD1_AUDIO_REG_STATUS_BASE_HI;
+    hwaddr ctrl = output ? SGI_RAD1_AUDIO_REG_OUT_A_CTRL :
+                          SGI_RAD1_AUDIO_REG_STATUS_LIMIT;
+    hwaddr lo2 = output ? SGI_RAD1_AUDIO_REG_OUT_B_ADDR_LO :
+                         SGI_RAD1_AUDIO_REG_STATUS_BASE2_LO;
+    hwaddr hi2 = output ? SGI_RAD1_AUDIO_REG_OUT_B_ADDR_HI :
+                         SGI_RAD1_AUDIO_REG_STATUS_BASE2_HI;
+    hwaddr ctrl2 = output ? SGI_RAD1_AUDIO_REG_OUT_B_CTRL :
+                           SGI_RAD1_AUDIO_REG_STATUS_LIMIT2;
+    uint32_t *bank = s->dma_bank;
+
+    return (bank[SGI_RAD1_AUDIO_DMA_IDX(lo)] ||
+            bank[SGI_RAD1_AUDIO_DMA_IDX(hi)]) &&
+           bank[SGI_RAD1_AUDIO_DMA_IDX(lo)] ==
+           bank[SGI_RAD1_AUDIO_DMA_IDX(lo2)] &&
+           bank[SGI_RAD1_AUDIO_DMA_IDX(hi)] ==
+           bank[SGI_RAD1_AUDIO_DMA_IDX(hi2)] &&
+           bank[SGI_RAD1_AUDIO_DMA_IDX(ctrl)] == limit &&
+           bank[SGI_RAD1_AUDIO_DMA_IDX(ctrl2)] == limit;
+}
+
 static MemTxResult sgi_rad1_octane_read(void *opaque, hwaddr addr,
                                        uint64_t *value, unsigned size,
                                        MemTxAttrs attrs)
 {
     SGIRad1AudioState *s = opaque;
+    bool output;
 
+    if (size == 4 && !(addr & 3)) {
+        if (sgi_rad1_octane_descriptor(addr, &output)) {
+            *value = s->dma_bank[SGI_RAD1_AUDIO_DMA_IDX(addr)];
+            return MEMTX_OK;
+        }
+        if (addr >= SGI_RAD1_AUDIO_REG_SAMPLE_POS_FIRST &&
+            addr <= SGI_RAD1_AUDIO_REG_SAMPLE_POS_LAST) {
+            sgi_rad1_audio_sync_all(s);
+            *value = s->sample_pos[SGI_RAD1_AUDIO_POS_IDX(addr)];
+            return MEMTX_OK;
+        }
+        if (addr == SGI_RAD1_AUDIO_REG_ANALOG_OUT_EN) {
+            *value = s->analog_out_en;
+            return MEMTX_OK;
+        }
+        if (addr == SGI_RAD1_AUDIO_REG_STATUS_DMA_CTRL) {
+            *value = s->status_dma_ctrl;
+            return MEMTX_OK;
+        }
+    }
     if (addr == SGI_RAD1_AUDIO_REG_UST_COUNTER && size == 4) {
         sgi_rad1_octane_ust_update(s);
         *value = s->octane_ust_count;
@@ -1329,8 +1452,44 @@ static MemTxResult sgi_rad1_octane_write(void *opaque, hwaddr addr,
                                         MemTxAttrs attrs)
 {
     SGIRad1AudioState *s = opaque;
+    bool output;
 
+    if (size == 4 && !(addr & 3)) {
+        if (sgi_rad1_octane_descriptor(addr, &output)) {
+            if (!(output ? s->chan[SGI_RAD1_AUDIO_CH_OUT].running :
+                           s->status_running)) {
+                s->dma_bank[SGI_RAD1_AUDIO_DMA_IDX(addr)] = value;
+                return MEMTX_OK;
+            }
+        } else if (addr == SGI_RAD1_AUDIO_REG_ANALOG_OUT_EN &&
+                   (value == 0x20000000 || value == 0x20000001)) {
+            if (value == 0x20000000 ||
+                sgi_rad1_octane_ring_valid(s, true, 0xfffff008)) {
+                sgi_rad1_audio_enable_write(&s->chan[SGI_RAD1_AUDIO_CH_OUT],
+                                            value);
+                s->analog_out_en = value;
+                return MEMTX_OK;
+            }
+        } else if (addr == SGI_RAD1_AUDIO_REG_STATUS_DMA_CTRL) {
+            if (value == SGI_RAD1_AUDIO_STATUS_STOP) {
+                sgi_rad1_audio_status_ring_stop(s);
+            } else if (value == SGI_RAD1_AUDIO_STATUS_ONESHOT_START &&
+                       !s->status_running &&
+                       sgi_rad1_octane_ring_valid(s, false, 0xfffffffc)) {
+                sgi_rad1_audio_one_shot_status(s);
+            } else if ((value & ~0x1fffcULL) == SGI_RAD1_AUDIO_STATUS_START &&
+                       (value & 0x1fffc) && !s->status_running &&
+                       sgi_rad1_octane_ring_valid(s, false, 0xffffc078)) {
+                sgi_rad1_audio_status_ring_start(s, value);
+            } else {
+                goto unsupported;
+            }
+            s->status_dma_ctrl = value;
+            return MEMTX_OK;
+        }
+    }
     if (addr == SGI_RAD1_OCTANE_REG_UST_CONTROL && size == 4) {
+        sgi_rad1_audio_sync_all(s);
         switch (value) {
         case 0x0e:
             sgi_rad1_octane_ust_update(s);
@@ -1354,6 +1513,7 @@ static MemTxResult sgi_rad1_octane_write(void *opaque, hwaddr addr,
             break;
         }
     }
+unsupported:
     qemu_log_mask(LOG_UNIMP,
                   "sgi-rad1-octane: unsupported %u-byte BAR0 write at "
                   "0x%" HWADDR_PRIx " value 0x%" PRIx64 "\n",
@@ -1635,6 +1795,7 @@ static void sgi_rad1_octane_reset_hold(Object *obj, ResetType type)
 {
     SGIRad1AudioState *s = SGI_RAD1_AUDIO(obj);
 
+    sgi_rad1_audio_reset_hold(obj, type);
     s->octane_ust_count = 0;
     s->octane_ust_phase = 0;
     s->octane_ust_enabled = false;
@@ -1644,29 +1805,67 @@ static void sgi_rad1_octane_reset_hold(Object *obj, ResetType type)
 
 static int sgi_rad1_octane_pre_save(void *opaque)
 {
-    sgi_rad1_octane_ust_update(opaque);
+    SGIRad1AudioState *s = opaque;
+
+    sgi_rad1_audio_sync_all(s);
+    sgi_rad1_octane_ust_update(s);
+    s->octane_migration_ns =
+        qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
     return 0;
 }
 
 static int sgi_rad1_octane_post_load(void *opaque, int version_id)
 {
     SGIRad1AudioState *s = opaque;
+    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    int64_t delta = now - s->octane_migration_ns;
 
-    if (s->octane_ust_phase >= SGI_RAD1_OCTANE_UST_NS_PER_TICK) {
+    if (s->octane_ust_phase >= SGI_RAD1_OCTANE_UST_NS_PER_TICK ||
+        sgi_rad1_audio_post_load(opaque, version_id)) {
         return -EINVAL;
     }
-    s->octane_ust_last_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    for (unsigned i = 0; i < SGI_RAD1_AUDIO_NUM_CH; i++) {
+        SGIRad1AudioChannel *c = &s->chan[i];
+
+        c->start_ns += delta;
+        if (timer_pending(c->timer)) {
+            timer_mod(c->timer, timer_expire_time_ns(c->timer) + delta);
+        }
+    }
+    s->status_start_ns += delta;
+    if (timer_pending(s->status_timer)) {
+        timer_mod(s->status_timer,
+                  timer_expire_time_ns(s->status_timer) + delta);
+    }
+    s->octane_ust_last_ns = now;
     return 0;
 }
 
 static const VMStateDescription vmstate_sgi_rad1_octane = {
     .name = "sgi-rad1-octane",
-    .version_id = 2,
-    .minimum_version_id = 2,
+    .version_id = 3,
+    .minimum_version_id = 3,
     .pre_save = sgi_rad1_octane_pre_save,
     .post_load = sgi_rad1_octane_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_PCI_DEVICE(parent_obj, SGIRad1AudioState),
+        VMSTATE_UINT32_ARRAY(dma_bank, SGIRad1AudioState,
+                             SGI_RAD1_AUDIO_DMA_BANK_WORDS),
+        VMSTATE_UINT32_ARRAY(sample_pos, SGIRad1AudioState,
+                             SGI_RAD1_AUDIO_SAMPLE_POS_WORDS),
+        VMSTATE_UINT32(analog_out_en, SGIRad1AudioState),
+        VMSTATE_UINT32(status_dma_ctrl, SGIRad1AudioState),
+        VMSTATE_STRUCT_ARRAY(chan, SGIRad1AudioState, SGI_RAD1_AUDIO_NUM_CH,
+                             1, vmstate_sgi_rad1_audio_channel,
+                             SGIRad1AudioChannel),
+        VMSTATE_TIMER_PTR(status_timer, SGIRad1AudioState),
+        VMSTATE_UINT32(status_ring_cursor, SGIRad1AudioState),
+        VMSTATE_UINT32(status_ring_slots, SGIRad1AudioState),
+        VMSTATE_BOOL(status_running, SGIRad1AudioState),
+        VMSTATE_UINT32(status_interval, SGIRad1AudioState),
+        VMSTATE_INT64(status_start_ns, SGIRad1AudioState),
+        VMSTATE_UINT64(status_done, SGIRad1AudioState),
+        VMSTATE_INT64(octane_migration_ns, SGIRad1AudioState),
         VMSTATE_UINT32(octane_ust_count, SGIRad1AudioState),
         VMSTATE_UINT32(octane_ust_phase, SGIRad1AudioState),
         VMSTATE_BOOL(octane_ust_enabled, SGIRad1AudioState),
@@ -1678,7 +1877,29 @@ static const VMStateDescription vmstate_sgi_rad1_octane = {
 static void sgi_rad1_octane_realize(PCIDevice *dev, Error **errp)
 {
     SGIRad1AudioState *s = SGI_RAD1_AUDIO(dev);
+    Error *audio_err = NULL;
 
+    s->octane = true;
+    if (s->aes_input_rate || s->adat_input ||
+        (s->genlock && strcmp(s->genlock, "none"))) {
+        error_setg(errp, "sgi-rad1-octane: digital input and genlock "
+                   "unsupported");
+        return;
+    }
+    if (!audio_be_check(&s->audio_be, &audio_err)) {
+        warn_report_err(audio_err);
+        s->audio_be = NULL;
+    }
+    s->status_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
+                                   sgi_rad1_audio_status_tick, s);
+    for (unsigned i = 0; i < SGI_RAD1_AUDIO_NUM_CH; i++) {
+        SGIRad1AudioChannel *c = &s->chan[i];
+
+        c->dev = s;
+        c->timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
+                                sgi_rad1_audio_chan_tick, c);
+    }
+    sgi_rad1_audio_open_out(&s->chan[SGI_RAD1_AUDIO_CH_OUT]);
     memory_region_init_io(&s->bar0, OBJECT(dev), &sgi_rad1_octane_bar0_ops,
                           s, "sgi-rad1-octane.bar0",
                           SGI_RAD1_AUDIO_BAR0_SIZE);
@@ -1719,11 +1940,11 @@ static void sgi_rad1_octane_class_init(ObjectClass *klass, const void *data)
     PCIDeviceClass *pc = PCI_DEVICE_CLASS(klass);
     ResettableClass *rc = RESETTABLE_CLASS(klass);
 
-    dc->desc = "SGI Octane RAD UST register model";
+    dc->desc = "SGI Octane RAD status and analog output model";
     dc->vmsd = &vmstate_sgi_rad1_octane;
     pc->revision = 0xc0;
     pc->realize = sgi_rad1_octane_realize;
-    pc->exit = NULL;
+    pc->exit = sgi_rad1_audio_exit;
     rc->phases.hold = sgi_rad1_octane_reset_hold;
 }
 

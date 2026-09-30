@@ -663,7 +663,9 @@ struct SGIRad1AudioState {
     /* Virtual-clock time captured at reset; the 0x30 UST counter's origin. */
     int64_t ust_base_ns;
 
-    /* Octane's separate, synthetic UST state. */
+    /* Octane's bounded transfer and synthetic UST policy. */
+    bool octane;
+    int64_t octane_migration_ns;
     uint32_t octane_ust_count;
     uint32_t octane_ust_phase;
     int64_t octane_ust_last_ns;
