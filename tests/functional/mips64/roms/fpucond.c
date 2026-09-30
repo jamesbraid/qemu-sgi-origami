@@ -1,8 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
-/*
- * Check all eight R10000 floating-point condition bits through FSR
- * writes. See the R10000 User's Manual, FSR chapter.
- */
+/* Check R10000 FSR condition bits and floating-point result behavior. */
 
 #include "rom.h"
 
@@ -54,10 +51,8 @@ void rom_main(void)
     rom_assert_eq(1, 0, cfc1_fsr());
 
     /*
-     * A control write carrying results in all eight condition bits, the
-     * flush bit and a rounding mode reads back exactly; nothing outside
-     * the unimplemented field is dropped. This is the write a context
-     * restore performs, and the single-condition-bit mask fails it.
+     * Context-restore state exercises condition, flush, and rounding fields
+     * together; reserved bits must still read zero.
      */
     ctc1_fsr(0xff800003u);
     rom_assert_eq(2, 0xff800003u, cfc1_fsr());
@@ -122,26 +117,8 @@ void rom_main(void)
     rom_assert_eq(10, 0, rom_exc.count);
 
     /*
-     * The upper half of a 64-bit floating-point register after a single
-     * or
-     * word format write. The architecture leaves those bits undefined,
-     * but
-     * the manual documents what this processor does with them: "In the
-     * R10000 processor, the implementation clears the upper 32 bits,
-     * including MOV.S, whereas R4400 and R4200 processors preserve the
-     * upper 32 bits", the conditional moves MOVT.S, MOVF.S, MOVZ.S and
-     * MOVN.S clear them "even though the condition is false", and MTC1
-     * and
-     * LWC1 with the FR bit set clear them too. A model carrying the
-     * R4400
-     * behaviour merges every single-precision result into a register
-     * half,
-     * which no R10000 ever did.
-     *
-     * Everything below runs with FR set: with it clear the odd singles
-     * live in the upper halves of the even registers, and the pairing
-     * is
-     * the meaning of those bits rather than something a write clears.
+     * With FR set, R10000 single-precision writes clear the register's upper
+     * half. With FR clear, odd-register pairing would make that ambiguous.
      */
     rom_set_status(rom_get_status() | ROM_ST_FR);
     ctc1_fsr(0);
@@ -235,23 +212,9 @@ void rom_main(void)
     rom_assert_eq(18, 0, rom_exc.count);
 
     /*
-     * ABS.fmt and NEG.fmt are arithmetic on this processor: "This
-     * operation is arithmetic; a NaN operand signals invalid operation"
-     * (VR10000 Instruction Set User's Manual, ABS.fmt and NEG.fmt pages
-     * —
-     * the same silicon, and the R10000 manual's FPU chapter carries no
-     * contrary statement). A model that implements them as bare
-     * sign-bit
-     * moves signals nothing, so a NaN slips through with the status
-     * register untouched. With the invalid enable clear the operation
-     * completes and delivers a quiet NaN; with it set the operation
-     * traps.
-     *
-     * The NaN encodings are the pre-2008 ones this processor uses: a
-     * set
-     * most-significant mantissa bit marks a signalling NaN, a clear one
-     * a
-     * quiet NaN.
+     * ABS/NEG must signal invalid for a signaling NaN; a sign-bit-only
+     * implementation would leave FSR unchanged. The encodings use the
+     * processor's signaling-bit convention.
      */
     ctc1_fsr(0);
     __asm__ __volatile__(".set push\n\t.set mips4\n\t.set hardfloat\n\t"
@@ -387,13 +350,8 @@ void rom_main(void)
     rom_assert_eq(40, 0, cfc1_fsr());
 
     /*
-     * CVT.L.fmt, from the FPU instructions chapter's errata: "In the
-     * R10000, the conversion allows only up to 51 bits; otherwise an
-     * Unimplemented Operation exception is taken. The back-conversion
-     * from a 51-bit long integer to single/double no longer takes an
-     * Unimplemented Operation exception." The generic conversion runs
-     * to
-     * the full sixty-four and delivers results this hardware refuses.
+     * R10000 CVT.L accepts at most 51 significant bits; wider results
+     * must raise Unimplemented Operation.
      */
     ctc1_fsr(0);
     rom_exc_reset();
@@ -459,13 +417,8 @@ void rom_main(void)
     rom_assert_eq(52, 0, rom_exc.count);
 
     /*
-     * The undefined COP1 encodings, split by bits 25:24 of the word
-     * (chapter 17.6): "undefined opcodes (bits 25:24 are 0 or 1) take
-     * Reserved Instruction exceptions and undefined formats (bits 25:24
-     * are 2 or 3) take Unimplemented Operation exceptions", and the
-     * moves footnote gives an illegal-format move a cause field of
-     * 100000. The words are spelled out because no assembler emits
-     * them.
+     * Hand-encoded COP1 words distinguish reserved opcodes from
+     * unimplemented formats; the assembler cannot emit these cases.
      */
     /*
      * MOV.W — an illegal-format move: Unimplemented, cause E alone.

@@ -11,31 +11,12 @@
 
 const char rom_name[] = "sext";
 
-/*
- * Keeping the operands in variables the compiler cannot fold is the
- * whole
- * point: a constant-folded test proves nothing about the processor.
- */
+/* Volatile operands prevent compile-time folding of the instruction tests. */
 static volatile uint64_t v_wide = 0x0123456789abcdefull;
-/*
- * Volatile forces a memory load at the operand width under test.
- */
 static volatile uint64_t v_word_pos = 0x000000007fffffffull;
-/*
- * Volatile forces a memory load at the operand width under test.
- */
 static volatile uint64_t v_word_one = 0x0000000000000001ull;
-/*
- * Volatile forces a memory load at the operand width under test.
- */
 static volatile uint64_t v_word_neg = 0xffffffff80000000ull;
-/*
- * Volatile forces a memory load at the operand width under test.
- */
 static volatile uint64_t v_big = 0x0000000040000000ull;
-/*
- * Volatile forces a memory load at the operand width under test.
- */
 static volatile uint32_t v_mem_neg = 0x80000000u;
 
 void rom_main(void)

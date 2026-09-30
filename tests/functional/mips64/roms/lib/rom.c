@@ -1,23 +1,8 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * Reporting and exit for the bare-metal test ROMs.
- *
- * Output and exit both go through the Unified Hosting Interface, the
- * semihosting convention the MIPS target already implements: the
- * operation
- * number goes in register 25, the arguments in registers 4 to 6, and
- * the
- * instruction that traps into the host is a software debug breakpoint
- * with a
- * code field of one. The emulator must be started with semihosting
- * enabled or
- * that instruction raises an ordinary breakpoint exception instead.
- *
- * A ROM prints exactly one line before it exits, so a runner has a
- * single
- * thing to look for and a failure never scrolls. The exit status
- * repeats what
- * the line says.
+ * UHI semihosting uses $25 for the operation, $4-$6 for arguments, and a
+ * software breakpoint with code 1. Start QEMU with semihosting enabled. Each
+ * ROM prints one result line and returns the same status to the host.
  */
 
 #include "rom.h"
@@ -28,9 +13,7 @@ struct rom_exc rom_exc;
 #define UHI_WRITE 5
 
 /*
- * The trap instruction, spelled out because it is not in the MIPS IV
- * ISA the
- * rest of a ROM is assembled for.
+ * The UHI code-1 breakpoint is outside the ROM's MIPS IV assembler mode.
  */
 #define UHI_TRAP ".word 0x7000007f"
 
@@ -83,10 +66,7 @@ void rom_exit(int status)
 {
     uhi(UHI_EXIT, status, 0, 0);
     for (;;) {
-        /*
-         * The host is meant to have stopped us; if it did not, do not
-         * run on.
-         */
+        /* Do not continue if the host failed to exit the ROM. */
     }
 }
 
@@ -113,14 +93,7 @@ void rom_fail(int id, uint64_t expected, uint64_t actual)
 }
 
 /*
- * Reached from the exception handler when a test took an exception it
- * had not
- * armed a return address for. Everything the handler recorded is
- * printed,
- * because at that point the interesting question is which exception it
- * was
- * and
- * where it came from.
+ * Print recorded state when no resume address was armed for the exception.
  */
 void rom_report_unexpected_exception(void)
 {

@@ -1,36 +1,20 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * Check that the twenty-one defined R10000 CACHE operation and cache
- * combinations execute without exceptions. See the R10000 User's Manual,
- * Table 10-1.
+ * Check that all defined R10000 CACHE operation and cache combinations
+ * execute.
  */
 
 #include "rom.h"
 
 const char rom_name[] = "cacheops";
 
-/*
- * A block of scratch memory to point the cache operations at. It is
- * aligned
- * to
- * the largest block size the R10000 can be configured with, a 32-word
- * secondary cache block, so that an index operation addresses one whole
- * block
- * rather than straddling two.
- */
+/* Align scratch to the largest supported secondary-cache block. */
 static volatile unsigned char scratch[256] __attribute__((aligned(128)));
 
-/*
- * The unmapped cached view of an address in the unmapped uncached one.
- */
+/* Cached alias of the scratch physical address. */
 #define KSEG0_VIEW(p) ((unsigned long)(p) & ~0x20000000ul)
 
-/*
- * Run one cache operation and check that nothing was raised by it. The
- * operation field has to be spelled out at each use because it is an
- * instruction field rather than a register, so there is no loop to
- * write.
- */
+/* Execute one encoded CACHE operation and check the exception record. */
 #define CACHE_OK(id, op)                                                      \
     do {                                                                      \
         __asm__ __volatile__("cache " #op ", 0(%0)"                           \
@@ -100,12 +84,6 @@ void rom_main(void)
     __asm__ __volatile__("cache 0x01, 128(%0)" : : "r"(addr) : "memory");
     rom_assert_eq(22, 0, rom_exc.count);
 
-    /*
-     * No exception entry point ran at any point above. The record still
-     * holds
-     * the value rom_exc_reset() writes to mean that nothing has been
-     * recorded,
-     * so no vector fired and was then quietly resumed from.
-     */
+    /* Reject operations that faulted and resumed without changing results. */
     rom_assert_eq(23, ~0ull, rom_exc.vector);
 }

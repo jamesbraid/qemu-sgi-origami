@@ -29,15 +29,7 @@ const char rom_name[] = "xkphys";
  */
 #define SCRATCH_PA 0x00400000ull
 
-/*
- * Inside the forty bits the processor has, and far above the thirty-six
- * a
- * processor of the previous generation had, so nothing is likely to
- * answer.
- * Whether anything answers is not the point: an address error would
- * mean the
- * processor refused the address, which is the thing being measured.
- */
+/* Within the R10000's 40-bit physical range, beyond the R4400's 36 bits. */
 #define WIDE_PA 0x0000004000000000ull
 
 /*
@@ -95,28 +87,7 @@ void rom_main(void)
      */
     rom_assert_eq(1, 0, probe(XKPHYS(CCA_CACHEABLE, 0, SCRATCH_PA)));
 
-    /*
-     * All four values of the uncached attribute are legal addresses.
-     * Three of
-     * them have bits 58:57 set, which under the narrower rule would be
-     * an
-     * address error, and that is exactly the rule the manual exempts an
-     * uncached reference from.
-     *
-     * Only the refusal is asserted for three of the four, because what
-     * a
-     * machine puts behind an attribute is the machine's business: on
-     * this one
-     * the attribute that names memory reaches memory, and the other
-     * three
-     * name
-     * the Hub, the crossbar and special memory operations, so whether
-     * anything
-     * answers depends on what has been built. An address error would
-     * mean the
-     * processor rejected the address, which is the part the manual
-     * settles.
-     */
+    /* Uncached attributes are legal; only attribute 3 is backed by RAM here. */
     rom_assert(2, !refused(XKPHYS(CCA_UNCACHED, 0, SCRATCH_PA)));
     rom_assert(3, !refused(XKPHYS(CCA_UNCACHED, 1, SCRATCH_PA)));
     rom_assert(4, !refused(XKPHYS(CCA_UNCACHED, 2, SCRATCH_PA)));
@@ -144,13 +115,7 @@ void rom_main(void)
     rom_assert(10, refused(XKPHYS(CCA_UNCACHED_ACC, 0, ILLEGAL_PA)));
     rom_assert(11, refused(XKPHYS(CCA_CACHEABLE, 0, ILLEGAL_PA)));
 
-    /*
-     * An address inside the forty bits is not refused, whether or not
-     * anything
-     * answers it. This is what says the declared physical width is real
-     * rather
-     * than the narrower width of the previous generation.
-     */
+    /* The physical address width is 40 bits, even if no memory responds. */
     rom_assert(12, !refused(XKPHYS(CCA_UNCACHED, 3, WIDE_PA)));
     rom_assert(13, !refused(XKPHYS(CCA_CACHEABLE, 0, WIDE_PA)));
 

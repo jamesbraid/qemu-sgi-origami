@@ -10,11 +10,7 @@
 
 const char rom_name[] = "tlbconflict";
 
-/*
- * Physical pages nothing else in a ROM uses: the harness keeps its data
- * below
- * physical 0x200000 and its stack just under that.
- */
+/* Physical pages reserved above the harness data and stack. */
 #define PHYS_A      0x00300000ull
 #define PHYS_A_ODD  0x00301000ull
 #define PHYS_B      0x00302000ull
@@ -119,12 +115,7 @@ static void clear_ts(void)
     rom_set_status(rom_get_status() & ~ROM_ST_TS);
 }
 
-/*
- * Unmask by writing the Status register, then wait, bounded, for the
- * delivery; the resume address is armed past the wait. The pattern is
- * the
- * intdeliver ROM's.
- */
+/* Wait for delivery with a resume address armed past the bounded poll. */
 #define UNMASK_AND_WAIT(unmasked)                                             \
     do {                                                                      \
         uint64_t bound__ = 1000000;                                           \
@@ -145,16 +136,7 @@ static void clear_ts(void)
             : "$26", "memory");                                               \
     } while (0)
 
-/*
- * Arm the timer and wait for the line itself, so IP7 is a pending
- * level. A
- * host stall across the two arming writes lets Count pass Compare
- * before
- * Compare lands; that lost window is detected and re-armed, and the
- * wait
- * polls the line rather than the counter, the interrupt-delivery ROM's
- * shape. Holds whether or not the model matches a behind Compare write.
- */
+/* Poll IP[7]; rearm if a host stall passes Compare before its write. */
 static void raise_timer_line(void)
 {
     int i, tries;
@@ -322,18 +304,7 @@ void rom_main(void)
     rom_assert_eq(33, 0xb16b16b1u, load32(VIRT_IN));
     clear_ts();
 
-    /*
-     * The rule holds for the random write as well. An entry for the
-     * page
-     * under a foreign identifier sits in the wired area; a load misses
-     * past
-     * it and the harness's refill handler installs a global entry with
-     * a
-     * random write, which can only pick an index above the floor. That
-     * write
-     * must invalidate the wired entry and set the bit, exactly as the
-     * indexed one did.
-     */
+/* Random writes must also invalidate overlapping wired entries. */
     rom_tlb_park(ROM_TLB_ENTRIES);
     rom_set_wired(11);
     *phys(PHYS_B) = 0xfab0b0b0u;
@@ -362,17 +333,7 @@ void rom_main(void)
     rom_tlb_park(ROM_TLB_ENTRIES);
     rom_set_entryhi(0);
 
-    /*
-     * Writing register 23 must not enter a debug mode this processor
-     * does
-     * not have: a pending timer interrupt, unmasked afterwards, is
-     * still
-     * delivered. On a model that dispatches register 23 to the EJTAG
-     * debug
-     * register, the debug-mode bit masks all interrupts and the wait
-     * below
-     * runs out with nothing delivered.
-     */
+/* Register 23 must not enter EJTAG debug mode on this processor. */
     rom_exc_reset();
     base = rom_get_status() & ~(ROM_ST_IE | ROM_ST_IM7);
     rom_set_status(base);
@@ -391,26 +352,11 @@ void rom_main(void)
     rom_assert_eq(43, 1, rom_exc.count);
     rom_assert_eq(44, ROM_EXC_INT, ROM_CAUSE_EXC(rom_exc.cause));
 
-    /*
-     * Leave nothing pending and nothing open behind.
-     */
     rom_set_status(base);
     rom_set_compare(rom_get_count() + 0x40000000u);
     rom_assert_eq(45, 0, rom_get_cause() & ROM_CAUSE_IP7);
 
-    /*
-     * Reading back a conflict-invalidated entry loads the PageMask
-     * register
-     * with the entry's own stale mask, the way reading any entry does;
-     * a
-     * guest that sets PageMask once and relies on read-backs restoring
-     * the
-     * one size it ever writes must not inherit a zero mask. The
-     * sentinel
-     * below proves the read-back wrote the register rather than leaving
-     * it
-     * standing.
-     */
+/* TLBR must restore the invalidated entry's PageMask into the register. */
     rom_tlb_park(ROM_TLB_ENTRIES);
     clear_ts();
     tlb_write_index(6, VIRT_Y, lo0_a, lo1_a, ROM_PAGEMASK_16K);
@@ -421,18 +367,7 @@ void rom_main(void)
     rom_assert_eq(47, ROM_PAGEMASK_16K, rom_get_pagemask());
     rom_assert_eq(48, 0, rom_get_entrylo0() & ROM_ENTRYLO_V);
 
-    /*
-     * The read-back's other three destinations. The manual does not
-     * give the
-     * bit image an invalidated entry reads back as, only that the entry
-     * no
-     * longer matches; the model presents zeroes, so a guest that dumps
-     * entries and writes the dump back gets an entry that maps nothing
-     * rather than a resurrected stale translation. These pin that
-     * committed
-     * presentation - the full destination set of the read-back - so it
-     * cannot drift piecemeal.
-     */
+/* This model presents the other invalidated entry fields as zero. */
     rom_assert_eq(49, 0, rom_get_entryhi());
     rom_assert_eq(50, 0, rom_get_entrylo0());
     rom_assert_eq(51, 0, rom_get_entrylo1());

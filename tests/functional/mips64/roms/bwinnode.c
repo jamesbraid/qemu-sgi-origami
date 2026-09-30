@@ -1,9 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * Check which node's big-window table decodes addresses with no node
- * number. Opposite table entries let the two reads identify the decoder.
- * The first node's processors provide a control; a two-node,
- * four-processor configuration is required.
+ * Check which node's big-window table decodes unqualified addresses. Opposite
+ * entries identify the decoder; the test requires two nodes and four CPUs.
  */
 
 #include "rom.h"
@@ -21,21 +19,18 @@ const char rom_name[] = "bwinnode";
 #define BWIN_BASE       0x20000000ull   /* the seven big windows */
 #define BWIN_SIZE       0x20000000ull   /* 512 MiB each */
 
-/*
- * This node's own Hub, whichever node that is.
- */
+/* This processor's local Hub window. */
 #define OWN(off)        XKPHYS(CCA_UNCACHED, ATTR_XTALK, HUB_LOCAL + (off))
-/*
- * A big window, naming no node -- the address under test.
- */
+/* Big-window address with no node number. */
 #define NAMELESS(n) \
     XKPHYS(CCA_UNCACHED, ATTR_XTALK, BWIN_BASE + (n) * BWIN_SIZE)
 
 #define MD_SLOT_ID_USTAT     0x220048
 #define MD_SLOT_MASTER       (1ull << 7)  /* set on the first node only */
 
-/* Assign the peer a node number in the emulator before probing its window.
- * This setup does not establish physical Hub vector-routing behavior.
+/*
+ * Assign node 1 in the model; this does not establish physical vector
+ * routing.
  */
 #define SN0_NI_STATUS             0x600000
 #define SN0_NI_STATUS_REGION_SIZE (1ull << 17)
@@ -53,17 +48,8 @@ const char rom_name[] = "bwinnode";
 #define BWIN_DISABLED        (1ull << 12)
 
 /*
- * The Bridge and how to read it, taken from the ROM that already reads
- * this
- * device rather than derived again: it answers on widget 8, and each of
- * its
- * registers is 32 bits in the low half of an eight-byte slot, so the
- * data is
- * four bytes into the slot on this big-endian machine. Its
- * identification
- * cannot read zero -- a bit of it is wired to one -- which is what
- * makes
- * "something answered" distinguishable from "nothing did".
+ * Bridge identity through widget 8: 32-bit register data is in the low
+ * half of each big-endian eight-byte slot.
  */
 #define BRIDGE_WIDGET        8ull
 #define REG_DATA             4
@@ -72,16 +58,8 @@ const char rom_name[] = "bwinnode";
 #define BRIDGE_PART_MASK     0xffffu
 
 /*
- * The first node releases the second through this, and the second polls
- * it on
- * its OWN Hub -- a local read, which is the point: the second node must
- * not
- * have to reach across to learn that it may start, because reaching
- * across is
- * the very thing under test and it does not work on a machine that
- * folds.
- * This register masks all but its low bits, so the value is a small
- * one.
+ * Node 0 signals setup completion; node 1 polls locally so startup does
+ * not depend on the cross-node path under test.
  */
 #define IO_SCRATCH_0         0x400150
 #define GO                   0x0A5ull
@@ -149,25 +127,13 @@ void rom_main(void)
     rom_set_status(rom_get_status() | ROM_ST_KX);
 
     /*
-     * Refuse a machine that cannot express the question. Naming the
-     * second
-     * node's Hub on a single-node machine reaches a window that is not
-     * there
-     * and raises a bus error, which would otherwise surface as an
-     * unexplained
-     * exception in a test nobody would connect to node count.
+     * Refuse single-node machines before the absent-node probe looks like an
+     * unexplained bus error.
      */
     first_node = (get(OWN(MD_SLOT_ID_USTAT)) & MD_SLOT_MASTER) != 0;
     slice = (unsigned int)(get(OWN(0x20)) & 0xff);
 
-    /*
-     * The second processor of the first node has nothing to do here and
-     * must
-     * not touch the shared exception record below, which is one struct
-     * per
-     * node -- two processors probing through it at once race each
-     * other.
-     */
+    /* Only one processor may use the node-shared exception record. */
     if (first_node && slice != 0) {
         for (;;) {
         }

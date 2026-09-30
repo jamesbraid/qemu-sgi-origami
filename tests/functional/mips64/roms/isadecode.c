@@ -1,8 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
-/*
- * Check that reserved and unavailable R10000 instructions trap with the
- * expected exception state. See the R10000 User's Manual.
- */
+/* R10000 reserved and unavailable instruction exceptions. */
 
 #include "rom.h"
 
@@ -12,14 +9,7 @@ void rom_main(void)
 {
     uint32_t status;
 
-    /*
-     * The branch-on-coprocessor-0 encodings, all four condition forms.
-     * The model this pins decoded the slot as another architecture's
-     * per-thread register moves: an offset whose bits 15:11 are nonzero
-     * named a general register to write, and the companion slot at
-     * rs = 0x0C could write coprocessor 0 state. Here every form is a
-     * Reserved Instruction exception.
-     */
+    /* All four BC0 condition encodings are Reserved Instruction. */
     rom_exc_reset();
     ROM_TRY(".word 0x41000000");        /* bc0f, offset 0 */
     rom_assert_eq(1, 1, rom_exc.count);
@@ -40,52 +30,32 @@ void rom_main(void)
     rom_assert_eq(7, 1, rom_exc.count);
     rom_assert_eq(8, ROM_EXC_RI, ROM_CAUSE_EXC(rom_exc.cause));
 
-    /*
-     * The rs = 0x0C slot, whose foreign decode wrote CP0 state.
-     */
+    /* The rs=0x0c encoding is also Reserved Instruction. */
     rom_exc_reset();
     ROM_TRY(".word 0x41800000");
     rom_assert_eq(9, 1, rom_exc.count);
     rom_assert_eq(10, ROM_EXC_RI, ROM_CAUSE_EXC(rom_exc.cause));
 
-    /*
-     * Undefined major opcodes are the cause list's first entry. The
-     * model ignored the MDMX major outright and executed the MIPS32
-     * multiply from the SPECIAL2 major; the R10000 has neither.
-     */
+    /* Unsupported MDMX and SPECIAL2 encodings must trap. */
     rom_exc_reset();
     ROM_TRY(".word 0x78000000");        /* the MDMX major, 0x1e */
     rom_assert_eq(11, 1, rom_exc.count);
     rom_assert_eq(12, ROM_EXC_RI, ROM_CAUSE_EXC(rom_exc.cause));
 
-    /*
-     * SPECIAL2 MUL, spelled as $27 = $26 * $26 so an execution stays
-     * inside the scratch registers.
-     */
     rom_exc_reset();
     ROM_TRY("li $26, 6\n\t"
             ".word 0x735ad802");
     rom_assert_eq(13, 1, rom_exc.count);
     rom_assert_eq(14, ROM_EXC_RI, ROM_CAUSE_EXC(rom_exc.cause));
 
-    /*
-     * Coprocessor 2: defined, absent, and the one refusal that depends
-     * on state. CU2 is an ordinary read/write usability bit, and the
-     * five COP2-family opcodes always trap — Coprocessor Unusable
-     * naming unit 2 while CU2 is clear, Reserved Instruction once it is
-     * set. A model whose Status mask pins CU2 to zero can never show
-     * the second half, and a guest restoring a saved Status loses the
-     * bit on the way through.
-     */
+    /* CU2 must be writable to test both COP2 exception classes. */
     status = rom_get_status();
     rom_set_status(status | ROM_ST_CU2);
     rom_assert_eq(15, ROM_ST_CU2, rom_get_status() & ROM_ST_CU2);
     rom_set_status(status & ~ROM_ST_CU2);
     rom_assert_eq(16, 0, rom_get_status() & ROM_ST_CU2);
 
-    /*
-     * CU2 clear: every opcode of the family is Coprocessor Unusable.
-     */
+    /* With CU2 clear, each COP2 opcode reports unit 2 unusable. */
     rom_exc_reset();
     ROM_TRY(".word 0x481b0000");        /* MFC2 $27, $0 */
     rom_assert_eq(17, 1, rom_exc.count);
@@ -116,9 +86,7 @@ void rom_main(void)
     rom_assert_eq(30, ROM_EXC_CPU, ROM_CAUSE_EXC(rom_exc.cause));
     rom_assert_eq(31, 2, (rom_exc.cause >> ROM_CAUSE_CE_SHIFT) & 3);
 
-    /*
-     * CU2 set: the same words become Reserved Instruction.
-     */
+    /* With CU2 set, those encodings are Reserved Instruction. */
     rom_set_status(status | ROM_ST_CU2);
 
     rom_exc_reset();
@@ -148,11 +116,7 @@ void rom_main(void)
 
     rom_set_status(status & ~ROM_ST_CU2);
 
-    /*
-     * WAIT (COP0 function 0x20). The R10000's COP0 instruction set does
-     * not define it; a model that inherits it from later architectures
-     * halts here instead of refusing, and this routine never returns.
-     */
+    /* WAIT is undefined on R10000; accepting it would halt the ROM. */
     rom_exc_reset();
     ROM_TRY(".word 0x42000020");
     rom_assert_eq(42, 1, rom_exc.count);

@@ -1,18 +1,8 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * Startup for the bare-metal test ROMs.
- *
- * The processor arrives here from the reset vector with the Status register
- * holding only the boot-exception-vector and error-level bits, all general
- * registers undefined and no memory initialised. This code establishes the
- * one state every test starts from, then calls the test.
- *
- * Error level is cleared because while it is set the user segment is neither
- * translated nor cached, which would hide every TLB behaviour the suite
- * exists to check. The boot-exception-vector bit is kept set so exceptions
- * reach the entry points this ROM carries; the tests that care about the
- * other setting clear the bit themselves and use the copies this code places
- * in low memory.
+ * Reset leaves memory and general registers undefined. Clear ERL for TLB and
+ * cache tests, but keep BEV so exceptions use the ROM vectors. Tests that clear
+ * BEV use the vector copies placed at 0x80000000 below.
  */
 
 	.set	noreorder
@@ -68,13 +58,7 @@ _start:
 	 nop
 2:
 
-	/*
-	 * Place the second copy of the exception entry points at 0x80000000,
-	 * where the processor looks when the boot-exception-vector bit is
-	 * clear. Writing them through the cached compatibility segment is safe
-	 * only because no cache is enabled yet; a ROM that turned the caches on
-	 * would have to write them back before jumping to them.
-	 */
+	/* BEV-clear vectors go at 0x80000000 before caches are enabled. */
 	lui	$8, %hi(_tramp_start)
 	daddiu	$8, $8, %lo(_tramp_start)
 	lui	$9, %hi(_tramp_end)
@@ -91,35 +75,13 @@ _start:
 	 nop
 4:
 
-	/*
-	 * Stack, then the test itself.
-	 *
-		 * Every processor arrives here on a multiprocessor machine and
-		 * would overwrite the others' frames. Two of the four separate
-	 * themselves: this data lives at a node-local address, so the
-	 * processors of each node already have their own copy of it. What is
-	 * left is the two processors WITHIN a node, so each takes a slice
-	 * chosen by its own number.
-	 *
-	 * The number comes from the Hub, because the register that carries it
-	 * on later processors cannot be read here -- mfc0 from EBase raises
-	 * Reserved Instruction on this one, measured. The Hub answers each
-	 * reader with its own number, and the address below is the reader's
-	 * OWN Hub whichever node it sits on.
-	 *
-	 * Inert on a single-processor run: the number is zero and the stack is
-	 * exactly where it was.
+	/* Node-local stacks need a separate 4 KiB slice per processor. Read the
+	 * local Hub's processor number; EBase is not readable on R10000. A
+	 * single-processor run uses offset zero.
 	 */
 	lui	$29, %hi(_stack_top)
 	daddiu	$29, $29, %lo(_stack_top)
-	/*
-	 * Only the R10000 family is asked, because the address below carries
-	 * an uncached-space attribute in two bits the R4000 reads as physical
-	 * address. They place the access far beyond its physical range, so on
-	 * it the load takes an address error before any test begins. The
-	 * models without the attribute run this suite one processor at a
-	 * time, and their number is zero without asking.
-	 */
+	/* Only R10000 reads the Hub CPU number; other models run single-CPU. */
 	mfc0	$9, $15				/* PRId */
 	srl	$9, $9, 8
 	andi	$9, $9, 0xff			/* implementation number */
@@ -127,16 +89,8 @@ _start:
 	bne	$9, $10, 7f
 	 move	$9, $0				/* others: processor zero */
 	/*
-	 * The Hub is only reachable through the 64-bit unmapped space, which
-	 * needs 64-bit kernel addressing on -- without it this load takes an
-	 * address error rather than reading anything. Turn it on for the read
-	 * and put the register back exactly as it was, so every test still
-	 * begins from the state it began from before.	 *
-	 * The instructions between enabling it and the load happen to cover the
-	 * coprocessor hazard, because loading a 64-bit constant expands to
-	 * several. That is incidental rather than chosen: the emulator has no
-	 * hazard, and on silicon this would be resting on an expansion length
-	 * nobody picked. Shortening it wants the separation kept deliberately.
+	 * Temporarily enable KX for the Hub read, then restore Status. Keep CP0
+	 * hazard spacing explicit; do not rely on dli expansion for the delay.
 	 */
 	mfc0	$10, $12			/* Status */
 	ori	$11, $10, (1 << 7)		/* Status.KX */

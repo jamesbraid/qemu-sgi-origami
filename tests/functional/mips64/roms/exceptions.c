@@ -1,29 +1,14 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
-/*
- * Check exception vectors, recorded state, exception codes, and return
- * behavior. See the R10000 User's Manual version 2.0. The general rules
- * are also checked against QEMU's R4000 model.
- */
+/* Check exception vectors, recorded state, codes, and return behavior. */
 
 #include "rom.h"
 
 const char rom_name[] = "exceptions";
 
-/*
- * Somewhere in the uncached data window to make a badly aligned access
- * to.
- */
+/* Uncached storage for deliberately misaligned accesses. */
 static uint64_t scratch[4];
 
-/*
- * Run a block with a return address armed, and also report the address
- * of the
- * block's first instruction so a test can say where it expected the
- * exception
- * to be recorded. The label the return address is taken from sits after
- * the
- * block, so a fault anywhere inside it continues at the same place.
- */
+/* Record the block start and resume after it, regardless of faulting op. */
 #define TRY_AT(first, insns, ...)                                             \
     __asm__ __volatile__(".set push\n\t.set noreorder\n\t"                    \
                          "lui $26, %%hi(9f)\n\t"                              \
@@ -86,15 +71,7 @@ void rom_main(void)
     rom_assert_eq(11, 1, rom_exc.count);
     rom_assert_eq(12, ROM_EXC_ADEL, ROM_CAUSE_EXC(rom_exc.cause));
 
-    /*
-     * The same fault in the delay slot of a branch that is taken. The
-     * recorded
-     * program counter must point at the branch, not at the load, and
-     * the
-     * branch-delay bit must be set, so that re-executing from the
-     * recorded
-     * address re-evaluates the branch.
-     */
+    /* A delay-slot fault records the branch EPC and sets BD. */
     rom_exc_reset();
     TRY_AT(first,
            "beq $0, $0, 7f\n\t"
@@ -107,10 +84,8 @@ void rom_main(void)
     rom_assert_eq(16, first, rom_exc.epc);
 
     /*
-     * The delay slot of a branch-likely that falls through is
-     * nullified, so
-     * the
-     * load never runs and no exception is taken at all.
+     * A not-taken branch-likely nullifies its delay slot; no fault is
+     * expected.
      */
     rom_exc_reset();
     TRY_AT(first,
@@ -185,20 +160,8 @@ void rom_main(void)
     rom_assert_eq(27, VEC_BOOTSTRAP_GENERAL, rom_exc.vector);
 
     /*
-     * A translation miss normally goes to a refill entry point, but
-     * only
-     * while
-     * the exception-level bit is clear. With that bit already set the
-     * same
-     * miss
-     * goes to the general entry point instead, which is what stops a
-     * nested
-     * fault inside a refill handler from re-entering it. The address
-     * used
-     * here
-     * is in the user segment with nothing mapped, so it misses; the
-     * buffer is
-     * parked first so no stale entry can match.
+     * The unmapped address uses the refill vector with EXL clear and the
+     * general vector with EXL set. Park the TLB to exclude stale hits.
      */
     rom_tlb_park(ROM_TLB_ENTRIES);
 
@@ -227,22 +190,8 @@ void rom_main(void)
     rom_set_status(status);
 
     /*
-     * Returning from an exception while the error-level bit is set
-     * takes the
-     * program counter from the error program counter register rather
-     * than the
-     * exception one, and clears that bit. A kernel relies on this to
-     * come
-     * back
-     * from a reset or a cache error, and it is the one place the two
-     * saved
-     * program counters are not interchangeable.
-     *
-     * The marker records both which way the return went and that it
-     * went at
-     * all: 1 means the return jumped to the staged address, 3 means it
-     * fell
-     * through instead.
+     * With ERL set, return uses ErrorEPC and clears ERL. The marker
+     * distinguishes reaching the staged target from falling through.
      */
     __asm__ __volatile__(".set push\n\t.set noreorder\n\t"
                          "move %[r], $0\n\t"
@@ -263,14 +212,8 @@ void rom_main(void)
     rom_assert_eq(36, 0, rom_get_status() & ROM_ST_ERL);
 
     /*
-     * "The processor does not write to the EPC register when the EXL
-     * bit in
-     * the Status register is set to a 1" - the manual's EPC register
-     * section. The count says the miss was really taken, so a sentinel
-     * surviving in EPC shows the one register held back rather than a
-     * fault
-     * that never happened. The handler's return path installs its own
-     * resume address, so the sentinel is never jumped to.
+     * A handled miss with EXL already set must preserve EPC; the handler
+     * installs its own resume target, so this sentinel is never executed.
      */
     rom_set_epc(0x00000000abcd1230ull);
     rom_exc_reset();

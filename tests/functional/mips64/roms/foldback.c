@@ -1,9 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * Check that node-qualified Hub accesses reach the named node, in both
- * directions and from every processor. Scratch-register markers expose
- * accesses that fold to one node. A two-node, four-processor machine is
- * required; this ROM refuses other configurations.
+ * Check node-qualified Hub routing from all four processors. Scratch
+ * markers expose accesses folded to one node; other configurations fail.
  */
 
 #include "rom.h"
@@ -45,13 +43,8 @@ const char rom_name[] = "foldback";
 #define SN0_PIOTYPE_WRITE         1
 
 /*
- * Two pairs of scratch registers, both plain storage with no side
- * effects.
- * The markers and the verdicts use DIFFERENT pairs: a processor's
- * marker
- * write to the other node would otherwise land on the register that
- * node's
- * own processor had just published its verdict into, and erase it.
+ * Separate marker and verdict registers so remote marker writes cannot
+ * erase another processor's result.
  */
 #define IO_SCRATCH(slice)   (0x400150 + 8 * (slice))
 #define NI_SCRATCH(slice)   (0x600100 + 8 * (slice))
@@ -107,13 +100,7 @@ void rom_main(void)
     uint64_t seen[2][2];
     unsigned int node, s;
 
-    /*
-     * 64-bit kernel addressing on: every Hub window here is reached
-     * through
-     * the 64-bit unmapped space and nothing below it. Without this the
-     * first
-     * access takes an address error instead of reaching the Hub.
-     */
+    /* Hub windows require 64-bit unmapped addressing. */
     rom_set_status(rom_get_status() | ROM_ST_KX);
 
     /* Read this processor's slice from its local Hub window. */
@@ -151,9 +138,7 @@ void rom_main(void)
         rom_exit(ROM_STATUS_WRONG_MACHINE);
     }
 
-    /*
-     * Name each node explicitly, and read back through the same views.
-     */
+    /* Write distinct markers and read them through each named-node view. */
     put(AT(0, IO_SCRATCH(slice)), MARK_NODE0);
     put(AT(1, IO_SCRATCH(slice)), MARK_NODE1);
     r0 = get(AT(0, IO_SCRATCH(slice)));
@@ -168,9 +153,7 @@ void rom_main(void)
         verdict = VERDICT_OTHER;
     }
 
-    /*
-     * Publish into this processor's OWN Hub, which it can always reach.
-     */
+    /* Publish this processor's verdict through its local Hub. */
     put(OWN(NI_SCRATCH(slice)), verdict);
 
     /* Publish one complete verdict line from the first node's first processor. */
@@ -185,10 +168,7 @@ void rom_main(void)
         }
     }
 
-    /*
-     * The elected processor's own accesses arrive, so its view of both
-     * nodes is real and it can collect every verdict.
-     */
+    /* Collect all verdicts through the elected processor's node views. */
     for (;;) {
         unsigned int ready = 1;
 

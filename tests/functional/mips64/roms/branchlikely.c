@@ -1,8 +1,8 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * Check that untaken branch-likely instructions nullify their delay
- * slots and that the and-link forms still set the return address.
- * See the MIPS64 instruction set reference, MD00087 revision 6.06.
+ * Check delay-slot nullification and link values for MIPS branch-likely
+ * instructions (MIPS64 ISA reference MD00087 rev. 6.06). Ordinary branches
+ * provide the non-nullifying control.
  */
 
 #include "rom.h"
@@ -55,15 +55,8 @@ const char rom_name[] = "branchlikely";
     })
 
 /*
- * The and-link forms, which also report where they left the return
- * address.
- * Register 31 is saved and put back because the caller's return address
- * lives
- * there. The expected link is the address of the instruction after the
- * delay
- * slot, which the probe captures as a label so the check does not
- * depend on
- * how the compiler laid the block out.
+ * Capture the architectural link address and restore $31 so the probe
+ * does not overwrite its caller's return address.
  */
 #define PROBE_LINK(mnemonic, va, link_out, want_out)                          \
     ({                                                                        \

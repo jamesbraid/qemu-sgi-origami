@@ -12,9 +12,6 @@
 
 const char rom_name[] = "scachedata";
 
-/*
- * Volatile keeps the memory accesses visible to this cache test.
- */
 static volatile unsigned char scratch[256] __attribute__((aligned(128)));
 
 #define KSEG0_VIEW(p) ((unsigned long)(p) & ~0x20000000ul)

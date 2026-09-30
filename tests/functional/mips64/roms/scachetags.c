@@ -16,20 +16,11 @@ const char rom_name[] = "scachetags";
 #define SCACHE_TAGLO_MASK 0xffffcdffu
 #define SCACHE_TAGHI_MASK 0x8000000fu
 
-/*
- * Volatile keeps the memory accesses visible to this cache test.
- */
 static volatile unsigned char scratch[256] __attribute__((aligned(128)));
 
 #define KSEG0_VIEW(p) ((unsigned long)(p) & ~0x20000000ul)
 
-/*
- * The secondary tag fields a kseg0 view of an address produces:
- * PA[35:18]
- * into TagLo[31:14], a state at TagLo[11:10], the virtual index
- * VA[13:12]
- * at TagLo[8:7].  PA[39:36] of anything kseg0 reaches is zero.
- */
+/* kseg0 maps PA[35:18] to TagLo[31:14] and VA[13:12] to TagLo[8:7]. */
 #define STAG_LO(addr) ((uint32_t)((((addr) & 0x1ffffffful) >> 18) << 14))
 #define SST(s)        ((uint32_t)(s) << 10)
 #define SVIDX_OF(addr) ((uint32_t)((((addr) >> 12) & 3ul)) << 7)
@@ -123,25 +114,13 @@ void rom_main(void)
     assert_tag(9, set0, 0x55554555u, 0x00000005u);
     assert_tag(11, set0 | 1, 0x00000000u, 0x0000000au);
 
-    /*
-     * A Hit operation that misses — set zero holds one valid tag naming
-     * some other address and one invalid way — clears the CH bit and
-     * leaves
-     * every tag alone.
-     */
+    /* A miss clears CH and leaves both tags unchanged. */
     rom_set_status(rom_get_status() | ROM_ST_CH);
     scache_hit_inv(set0);
     rom_assert_eq(13, 0, rom_get_status() & ROM_ST_CH);
     assert_tag(14, set0, 0x55554555u, 0x00000005u);
 
-    /*
-     * A hit sets CH and rewrites the hit way's whole tag entry: state
-     * to
-     * invalid, the tag from the operation's physical address, the
-     * virtual
-     * index from its VA[13:12], and the MRU bit pointed away from the
-     * invalidated way. The other way is untouched.
-     */
+    /* A hit invalidates the matching way, rewrites its tag, and updates MRU. */
     store_tag(set1 | 1, STAG_LO(set1) | SST(2) | 0x2au, 0x00000000u);
     rom_set_status(rom_get_status() & ~ROM_ST_CH);
     scache_hit_inv(set1);
@@ -154,11 +133,7 @@ void rom_main(void)
     rom_assert_eq(18, 0, rom_get_taghi());
     assert_tag(19, set1, SCACHE_TAGLO_MASK, 0x0000000fu);
 
-    /*
-     * The invalidated way's tag now names this very address, but its
-     * state
-     * is invalid, so a second Hit operation misses and CH clears again.
-     */
+    /* The rewritten tag is invalid, so this second hit operation misses. */
     rom_set_status(rom_get_status() | ROM_ST_CH);
     scache_hit_wbinv(set1);
     rom_assert_eq(21, 0, rom_get_status() & ROM_ST_CH);
@@ -176,15 +151,7 @@ void rom_main(void)
                   rom_get_taglo() & ~SECC_MASK);
     rom_assert_eq(24, 0x80000000u, rom_get_taghi());
 
-    /*
-     * Index WriteBack Invalidate (S) takes the way from address bit
-     * zero
-     * without a tag compare, rewrites the entry the same way, and moves
-     * the
-     * MRU bit away from the invalidated way. CH belongs to the Hit
-     * forms
-     * alone and stays put.
-     */
+    /* Index invalidation selects by address bit 0 and leaves CH unchanged. */
     store_tag(set0 | 1, (0x2222u << 14) | SST(3), 0x80000000u);
     scache_index_wbinv(set0 | 1);
     rom_assert_eq(25, ROM_ST_CH, rom_get_status() & ROM_ST_CH);
@@ -195,13 +162,7 @@ void rom_main(void)
                   rom_get_taglo() & ~SECC_MASK);
     rom_assert_eq(27, 0, rom_get_taghi());
 
-    /*
-     * The same operation on a block already invalid does nothing at
-     * all:
-     * no tag rewrite, and the MRU bit — set by the plant below — does
-     * not
-     * move either, where an invalidation would have pointed it away.
-     */
+    /* Invalid ways are unchanged, including the set's MRU bit. */
     store_tag(set0, 0x00000000u, 0x80000000u);
     scache_index_wbinv(set0 | 1);
     rom_set_taglo(0xffffffffu);
@@ -211,15 +172,7 @@ void rom_main(void)
                   rom_get_taglo() & ~SECC_MASK);
     rom_assert_eq(29, 0x80000000u, rom_get_taghi());
 
-    /*
-     * Invalidating a secondary block extends to the primary blocks that
-     * are
-     * its subsets. The secondary tag's virtual index bits say where in
-     * the
-     * virtually indexed primary caches to look — planted here as this
-     * address's own VA[13:12], so the primary tags planted for the same
-     * address are found and invalidated with it.
-     */
+    /* Invalidation clears primary tags selected by the secondary VA index. */
     rom_set_taglo(PTAG_LO(set1) | PT_IVAL | PT_TP);
     rom_set_taghi(0);
     ICACHE_STORE_TAG(set1);
@@ -239,17 +192,7 @@ void rom_main(void)
     rom_assert_eq(32, PTAG_LO(set1) | PT_TP, rom_get_taglo());
     rom_assert_eq(33, 1u << 29, rom_get_taghi());
 
-    /*
-     * The MRU bit lives in the set's single way-prediction entry - the
-     * manual's secondary-cache chapter gives the prediction table one
-     * bit
-     * per pair of blocks - so a store whose TagHi[31] was set must not
-     * leave a private copy behind in the way it addressed. Point the
-     * set's
-     * bit back away through the other way: the first way then reads
-     * back
-     * the set's bit, not the bit its own store carried.
-     */
+    /* TagHi[31] is one MRU bit per set, shared by both ways. */
     store_tag(set0, STAG_LO(set0) | SST(1), 0x80000000u);
     store_tag(set0 | 1, 0, 0x00000000u);
     assert_tag(34, set0, STAG_LO(set0) | SST(1), 0x00000000u);

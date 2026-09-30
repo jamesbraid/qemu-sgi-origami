@@ -1,21 +1,13 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * R10000 primary-cache index data operations preserve diagnostic data.
- * Instruction-cache entries store 36-bit instructions and parity;
- * data-cache entries store words and byte parity. Loads return the
- * stored fields and clear reserved bits.
- *
- * Source: MIPS R10000 Microprocessor User's Manual, version 2.0,
- * sections 10.17, 10.18, 10.20, 10.21, 14.21 and 14.23.
+ * R10000 primary-cache index data operations
+ * (User's Manual 2.0, 10.17-10.21, 14.21, 14.23).
  */
 
 #include "rom.h"
 
 const char rom_name[] = "pcachedata";
 
-/*
- * Volatile keeps the memory accesses visible to this cache test.
- */
 static volatile unsigned char scratch[256] __attribute__((aligned(128)));
 
 #define KSEG0_VIEW(p) ((unsigned long)(p) & ~0x20000000ul)
@@ -43,14 +35,7 @@ void rom_main(void)
 
     rom_exc_reset();
 
-    /*
-     * Instruction cache: a 36-bit instruction and its parity bit
-     * round-trip,
-     * and the load zeroes what it does not fill — TagHi above the top
-     * nibble
-     * and every ECC bit above the parity bit, however hard they were
-     * staged.
-     */
+    /* I-cache data preserves the 36-bit instruction and parity. */
     stage(0x01234567u, 0xffffffffu, 0x3ffu);
     ICACHE_STORE_DATA(word0);
     stage(0xdeadbeefu, 0xdeadbeefu, 0x2aau);
@@ -59,9 +44,6 @@ void rom_main(void)
     rom_assert_eq(2, 0x0000000fu, rom_get_taghi());
     rom_assert_eq(3, 0x1u, rom_get_ecc());
 
-    /*
-     * A parity bit of zero comes back as exactly zero.
-     */
     stage(0x89abcdefu, 0x5u, 0x3feu);
     ICACHE_STORE_DATA(word0 | 1);
     stage(0xdeadbeefu, 0xdeadbeefu, 0x3ffu);
@@ -70,10 +52,7 @@ void rom_main(void)
     rom_assert_eq(5, 0x5u, rom_get_taghi());
     rom_assert_eq(6, 0, rom_get_ecc());
 
-    /*
-     * The neighboring word is its own entry, and way zero kept its
-     * value.
-     */
+    /* Adjacent words occupy independent entries. */
     stage(0x76543210u, 0xau, 0x1u);
     ICACHE_STORE_DATA(word1);
     stage(0, 0, 0);
@@ -84,11 +63,7 @@ void rom_main(void)
     rom_assert_eq(8, 0x01234567u, rom_get_taglo());
     rom_assert_eq(9, 0x0000000fu, rom_get_taghi());
 
-    /*
-     * Data cache: a word and its four byte-parity bits round-trip in an
-     * array independent of the instruction cache's, at the same
-     * addresses.
-     */
+    /* D-cache data and byte parity round-trip independently. */
     stage(0xcafebabeu, 0, 0x3f5u);
     DCACHE_STORE_DATA(word0);
     stage(0xdeadbeefu, 0, 0x3ffu);
@@ -110,9 +85,7 @@ void rom_main(void)
     rom_assert_eq(14, 0x0badf00du, rom_get_taglo());
     rom_assert_eq(15, 0, rom_get_ecc());
 
-    /*
-     * The instruction-cache entry at the shared address is untouched.
-     */
+    /* D-cache operations leave the I-cache entry untouched. */
     stage(0, 0, 0);
     ICACHE_LOAD_DATA(word0);
     rom_assert_eq(16, 0x01234567u, rom_get_taglo());

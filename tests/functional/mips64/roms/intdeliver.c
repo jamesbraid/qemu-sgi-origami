@@ -1,42 +1,23 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * Check interrupt delivery after Status writes and ERET unmask a pending
- * level interrupt. See the R10000 User's Manual interrupt, Count/Compare,
- * and Status register sections.
+ * A pending timer interrupt is delivered when Status unmasks it or ERET
+ * clears EXL.
  */
 
 #include "rom.h"
 
 const char rom_name[] = "intdeliver";
 
-/*
- * Interrupt mask bit 7 of the Status register, the timer's mask.
- */
+/* Status.IM7 enables the timer interrupt. */
 #define ROM_ST_IM7 (1u << 15)
 
-/*
- * The same arming distance and poll bound the timer ROM uses, for the
- * same
- * reason: the waits end on their condition; the bound only converts a
- * counter that never advances into a failed assertion.
- */
+/* Bound waits so a stopped Count fails instead of hanging. */
 #define TIMER_TARGET (1u << 22)
 #define POLL_LIMIT   50000000
 
 #define VEC_BOOTSTRAP_GENERAL (ROM_VEC_BOOTSTRAP | ROM_VEC_GENERAL)
 
-/*
- * Unmask by writing the Status register, then wait, bounded, for the
- * delivery. The resume address is armed at the label past the wait, so
- * the
- * handler returns there; if nothing is delivered the counter runs out
- * and
- * control falls to the same label with the exception count unchanged.
- * The
- * counter lives in a compiler-chosen register, never $26 or $27, which
- * the
- * handler owns.
- */
+/* The bounded wait resumes after the handler. Its counter avoids $26/$27. */
 #define UNMASK_AND_WAIT(unmasked)                                             \
     do {                                                                      \
         uint64_t bound__ = 1000000;                                           \
@@ -57,13 +38,7 @@ const char rom_name[] = "intdeliver";
             : "$26", "memory");                                               \
     } while (0)
 
-/*
- * Unmask by ERET: point EPC at the wait loop inside the block and
- * return
- * to it. The processor leaves the exception level at the ERET, so a
- * pending enabled interrupt is deliverable from the loop's first
- * instruction boundary on.
- */
+/* ERET clears EXL before the pending interrupt can arrive in the wait loop. */
 #define ERET_AND_WAIT()                                                       \
     do {                                                                      \
         uint64_t bound__ = 1000000;                                           \
@@ -86,20 +61,7 @@ const char rom_name[] = "intdeliver";
             : "$26", "memory");                                               \
     } while (0)
 
-/*
- * Arm the timer and wait for the line, so IP7 is a pending level. The
- * wait
- * is on the line itself, not on the counter: the two arming writes are
- * separate instructions, and a host that stalls the emulated processor
- * between them for longer than the arming distance lets Count cross
- * Compare before Compare is written — the match is then a whole counter
- * wrap away, and a wait on the counter returns with no line up, failing
- * the caller for the host's sins. A lost arming window is detectable
- * (Count is already past the target right after the writes) and is
- * simply
- * re-armed; a line that fails to rise from a cleanly armed crossing is
- * not forgiven and falls through to the caller's assertion.
- */
+/* Retry only if Count crosses Compare between the separate arming writes. */
 static void raise_timer_line(void)
 {
     int i, tries;
@@ -108,10 +70,7 @@ static void raise_timer_line(void)
         rom_set_count(0);
         rom_set_compare(TIMER_TARGET);
         if (rom_get_count() >= TIMER_TARGET) {
-            /*
-             * Stalled across the arming window. The Compare write above
-             * also took down any stale line, so re-arm from scratch.
-             */
+            /* Count crossed the target while arming; retry. */
             continue;
         }
         for (i = 0; i < POLL_LIMIT && !(rom_get_cause() & ROM_CAUSE_IP7);
@@ -121,16 +80,7 @@ static void raise_timer_line(void)
     }
 }
 
-/*
- * Park Compare far above Count so nothing crosses during a scenario,
- * and
- * take down a line already up. A stall between reading Count and
- * writing
- * Compare can let the parked value be crossed before it lands, which
- * leaves the line up — re-park until it is not. Bounded like every wait
- * here: a line that will not go down becomes the caller's assertion
- * failure, not a hang.
- */
+/* Move Compare ahead of Count and retry if IP7 remains asserted. */
 static void park_timer(void)
 {
     int tries;
@@ -149,11 +99,7 @@ void rom_main(void)
 
     rom_exc_reset();
 
-    /*
-     * The baseline the scenarios build on: kernel mode with the
-     * exception
-     * level clear and interrupts off, the state the harness hands over.
-     */
+    /* Start in kernel mode with EXL, ERL, IE, and IM7 clear. */
     base = rom_get_status() & ~(ROM_ST_IE | ROM_ST_IM7);
     rom_set_status(base);
     rom_assert_eq(1, 0, rom_get_status() &
@@ -161,22 +107,14 @@ void rom_main(void)
     park_timer();
     rom_assert_eq(2, 0, rom_get_cause() & ROM_CAUSE_IP7);
 
-    /*
-     * The line rises while IE is off: pending is observable, delivery
-     * is
-     * not. This is the state every scenario below starts from.
-     */
+    /* IP7 becomes pending while delivery is disabled. */
     raise_timer_line();
     rom_assert_eq(3, ROM_CAUSE_IP7, rom_get_cause() & ROM_CAUSE_IP7);
     rom_assert_eq(4, 0, rom_exc.count);
 
     /*
-     * Opening IE with the line already pending delivers it: exactly one
-     * interrupt exception, at the general entry point, carrying code
-     * zero
-     * and the pending bit. The staged Status takes interrupts back off
-     * on
-     * the way out, so one delivery is all there can be.
+     * Opening IE delivers the pending interrupt once through the general
+     * vector.
      */
     rom_exc.status_set = base;
     UNMASK_AND_WAIT(base | ROM_ST_IE | ROM_ST_IM7);
@@ -185,16 +123,11 @@ void rom_main(void)
     rom_assert_eq(7, ROM_EXC_INT, ROM_CAUSE_EXC(rom_exc.cause));
     rom_assert_eq(8, ROM_CAUSE_IP7, rom_exc.cause & ROM_CAUSE_IP7);
 
-    /*
-     * Writing Compare takes the line down again.
-     */
+    /* A Compare write clears IP7. */
     park_timer();
     rom_assert_eq(9, 0, rom_get_cause() & ROM_CAUSE_IP7);
 
-    /*
-     * The same crossing with IE on but the IM bit closed: pending, not
-     * delivered. Opening the IM bit alone is the unmask that delivers.
-     */
+    /* With IE set and IM7 clear, IP7 stays pending until IM7 is opened. */
     rom_set_status(base | ROM_ST_IE);
     raise_timer_line();
     rom_assert_eq(10, ROM_CAUSE_IP7, rom_get_cause() & ROM_CAUSE_IP7);
@@ -208,10 +141,8 @@ void rom_main(void)
     park_timer();
 
     /*
-     * The exception level masks even with IE and the IM bit open, and
-     * ERET is the unmask: the pending line is taken at the loop the
-     * ERET
-     * returns to, through the same handler-and-resume path as above.
+     * EXL masks the interrupt despite IE and IM7. ERET clears EXL and
+     * delivers it.
      */
     rom_set_status(base | ROM_ST_IE | ROM_ST_IM7 | ROM_ST_EXL);
     raise_timer_line();
@@ -223,9 +154,6 @@ void rom_main(void)
     rom_assert_eq(16, 3, rom_exc.count);
     rom_assert_eq(17, ROM_EXC_INT, ROM_CAUSE_EXC(rom_exc.cause));
 
-    /*
-     * Leave nothing pending and nothing open behind.
-     */
     rom_set_status(base);
     park_timer();
     rom_assert_eq(18, 0, rom_get_cause() & ROM_CAUSE_IP7);

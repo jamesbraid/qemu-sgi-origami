@@ -1,25 +1,18 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * Check that an exception in an R10000 load-linked sequence prevents the
- * following store-conditional from succeeding. See the R10000 User's
- * Manual version 2.0.
+ * A breakpoint between R10000 LL/SC must invalidate the reservation
+ * (User's Manual 2.0).
  */
 
 #include "rom.h"
 
 const char rom_name[] = "llscexc";
 
-/*
- * The uncached and cached views of the compatibility segments differ in
- * one
- * address bit.
- */
+/* Cached and uncached compatibility-segment addresses differ at this bit. */
 #define UNCACHED_BIT 0x20000000ull
 #define CACHED(p) ((uint64_t)(p) & ~UNCACHED_BIT)
 
-/*
- * Doubleword aligned so the doubleword forms can use the same word.
- */
+/* Shared by word and doubleword forms. */
 static volatile uint64_t sync_word __attribute__((aligned(8)));
 
 #define OLD_WORD 0x11112222u
@@ -53,14 +46,7 @@ static void poke_double(uint64_t addr, uint64_t v)
     __asm__ __volatile__("sd %1, 0(%0)" : : "r"(addr), "r"(v) : "memory");
 }
 
-/*
- * A load-linked/store-conditional pair with a breakpoint in the middle.
- * The resume address and the jump-return flag are armed before the
- * load-linked so that nothing but the fault itself sits inside the
- * sequence; the handler consumes both and jumps to the
- * store-conditional
- * with the exception level cleared by hand rather than by ERET.
- */
+/* Arm handler state before LL so only the breakpoint interrupts the pair. */
 #define LL_BREAK_SC(ll, sc)                                                   \
     __asm__ __volatile__(".set push\n\t.set noreorder\n\t"                    \
                          "lui $26, %%hi(8f)\n\t"                              \
@@ -82,11 +68,7 @@ void rom_main(void)
     uint64_t a = CACHED(&sync_word);
     uint64_t got, res;
 
-    /*
-     * An undisturbed pair succeeds, so a failure below is the
-     * exception's
-     * doing and not a sequence that could never complete.
-     */
+    /* Verify the pair succeeds without an exception. */
     poke_word(a, OLD_WORD);
     res = NEW_WORD;
     __asm__ __volatile__(".set push\n\t.set noreorder\n\t"
@@ -99,12 +81,7 @@ void rom_main(void)
     rom_assert_eq(1, 1, res);
     rom_assert_eq(2, NEW_WORD, peek_word(a));
 
-    /*
-     * The handler also accesses memory, so this does not isolate the
-     * exception entry. The same pair with a fault inside it must fail
-     * and leave the word alone.
-     * alone.
-     */
+    /* The handler accesses memory too; this checks the full exception path. */
     rom_exc_reset();
     poke_word(a, OLD_WORD);
     res = NEW_WORD;
@@ -117,9 +94,7 @@ void rom_main(void)
     rom_assert_eq(8, 0, res);
     rom_assert_eq(9, OLD_WORD, peek_word(a));
 
-    /*
-     * The doubleword forms follow the same rule.
-     */
+    /* The same exception must invalidate LLD/SCD. */
     rom_exc_reset();
     poke_double(a, OLD_DOUBLE);
     res = NEW_DOUBLE;
