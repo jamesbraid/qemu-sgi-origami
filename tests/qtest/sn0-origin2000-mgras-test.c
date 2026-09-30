@@ -14950,6 +14950,32 @@ static void test_gl_fog_blends_toward_the_fog_colour(void)
     g_assert_cmphex(gl_window_pixel(qts, 64, 64), ==, 0x0000ff);
 }
 
+/* The float-backed index must saturate before its native integer query. */
+static void test_gl_fog_index_integer_endpoints(void)
+{
+    static const int32_t values[] = {
+        INT32_MIN, -123, 0, 123, INT32_MAX - 127, INT32_MAX,
+    };
+
+    mgras_reset();
+    gl_enter_slot(qts, GL_SLOT_A);
+    gl_word(qts, GL_CONTEXT_OPENER);
+    gl_enter_slot(qts, GL_SLOT_B);
+    gl_word(qts, GL_CONTEXT_OPENER);
+    gl_one(qts, GL_FOG_INDEX_HDR, 17);
+    for (unsigned i = 0; i < ARRAY_SIZE(values); i++) {
+        gl_enter_slot(qts, GL_SLOT_A);
+        gl_one(qts, GL_FOG_INDEX_HDR, values[i]);
+        g_assert_cmphex(gl_query(qts, GL_Q_FOG_MODE + 8, 1), ==,
+                        (uint32_t)values[i]);
+        gl_enter_slot(qts, GL_SLOT_B);
+        g_assert_cmphex(gl_query(qts, GL_Q_FOG_MODE + 8, 1), ==, 17);
+    }
+    gl_enter_slot(qts, GL_SLOT_A);
+    gl_word(qts, GL_CONTEXT_OPENER);
+    g_assert_cmphex(gl_query(qts, GL_Q_FOG_MODE + 8, 1), ==, 0);
+}
+
 /* Slot A fogs from 0 to 2; slot B has fog off. */
 static void gl_fog_setup(QTestState *from)
 {
@@ -17263,6 +17289,8 @@ int main(int argc, char **argv)
                    test_gl_colour_mask_keeps_channels);
     qtest_add_func("sn0/origin2000/mgras/gl-colour-mask-migration",
                    test_gl_colour_mask_migration);
+    qtest_add_func("sn0/origin2000/mgras/gl-fog-index-integer-endpoints",
+                   test_gl_fog_index_integer_endpoints);
     qtest_add_func("sn0/origin2000/mgras/gl-fog-blends-toward-the-fog-colour",
                    test_gl_fog_blends_toward_the_fog_colour);
     qtest_add_func("sn0/origin2000/mgras/gl-fog-migration",
