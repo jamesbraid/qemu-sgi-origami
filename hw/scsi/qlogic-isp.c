@@ -546,13 +546,17 @@ static void qlogic_isp_reset_channel_buses(QLogicISPState *s)
     }
 }
 
-/* Where the four address words live, shared by every block transfer. */
+/* Only the extended RAM-load opcode consumes high address mailboxes. */
 static hwaddr qlogic_isp_ram_host_addr(QLogicISPState *s)
 {
-    return ISP_MBOX_ADDR_TOP(s->mailbox)
-         | ISP_MBOX_ADDR_HIGH(s->mailbox)
-         | ISP_MBOX_ADDR_MID(s->mailbox)
-         | ISP_MBOX_ADDR_LOW(s->mailbox);
+    hwaddr addr = ISP_MBOX_ADDR_MID(s->mailbox) |
+                  ISP_MBOX_ADDR_LOW(s->mailbox);
+
+    if (s->mailbox[0] == ISP_MBOX_CMD_LOAD_RAM_A64) {
+        addr |= ISP_MBOX_ADDR_TOP(s->mailbox) |
+                ISP_MBOX_ADDR_HIGH(s->mailbox);
+    }
+    return addr;
 }
 
 /*

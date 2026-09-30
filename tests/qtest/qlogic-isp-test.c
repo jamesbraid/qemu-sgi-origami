@@ -945,13 +945,7 @@ static void test_verify_checksum_failure(void *obj, void *data,
     qpci_iounmap(dev, io);
 }
 
-/*
- * Loads a block transfer's mailboxes. The high address halves are written
- * even when zero -- mailboxes persist between commands, and a stale half
- * would be reassembled into this transfer's address. The split (high half
- * in 2, low in 3) is driver-sourced, so a transposition should fail a
- * test rather than a firmware boot.
- */
+/* Initializes a block transfer's address mailboxes and word count. */
 static void qlogic_isp_ram_block_call(QPCIDevice *dev, QPCIBar io,
                                       uint16_t cmd, uint16_t base,
                                       uint64_t host, uint16_t count)
@@ -1040,18 +1034,26 @@ static void test_ram_block_dma_round_trip(void *obj, void *data,
     qtest_memwrite(qts, src, pattern, sizeof(pattern));
     qtest_memwrite(qts, dst, filler, sizeof(filler));
 
-    qlogic_isp_ram_block_call(dev, io, ISP_MBOX_CMD_LOAD_RAM, base, src,
-                              count);
+    /* Plain RAM commands must ignore high words left by earlier commands. */
+    qpci_io_writew(dev, io, ISP_MAILBOX(6), 0x6666);
+    qpci_io_writew(dev, io, ISP_MAILBOX(7), 0x7777);
+    qpci_io_writew(dev, io, ISP_MAILBOX(4), count);
+    qlogic_isp_mbox_call4(dev, io, ISP_MBOX_CMD_LOAD_RAM, base,
+                          src >> 16, src & 0xffff);
     g_assert_cmphex(qpci_io_readw(dev, io, ISP_MAILBOX(0)), ==,
                     ISP_MBOX_COMPLETE);
     qlogic_isp_ack(dev, io);
 
-    qlogic_isp_ram_block_call(dev, io, ISP_MBOX_CMD_DUMP_RAM, base, dst,
-                              count);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_MAILBOX(6)), ==, 0x6666);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_MAILBOX(7)), ==, 0x7777);
+    qlogic_isp_mbox_call4(dev, io, ISP_MBOX_CMD_DUMP_RAM, base,
+                          dst >> 16, dst & 0xffff);
     g_assert_cmphex(qpci_io_readw(dev, io, ISP_MAILBOX(0)), ==,
                     ISP_MBOX_COMPLETE);
     qlogic_isp_ack(dev, io);
 
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_MAILBOX(6)), ==, 0x6666);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_MAILBOX(7)), ==, 0x7777);
     qtest_memread(qts, dst, got, sizeof(got));
     g_assert_cmpmem(got, sizeof(got), pattern, sizeof(pattern));
 
