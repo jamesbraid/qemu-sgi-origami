@@ -88,11 +88,16 @@ rom_exc_entry:
 
 /*
  * EntryHi holds the faulting VPN; install the staged entry and retry.
+ * R10000 User's Manual p. 291 forbids memory or TLB operations next to DMTC0.
  */
 	ld	$27, EXC_ENTRYLO0($26)
+	nop
 	dmtc0	$27, $2				/* EntryLo0 */
+	nop
 	ld	$27, EXC_ENTRYLO1($26)
+	nop
 	dmtc0	$27, $3				/* EntryLo1 */
+	nop
 	ld	$27, EXC_PAGEMASK($26)
 	mtc0	$27, $5				/* PageMask */
 	tlbwr
@@ -103,7 +108,9 @@ rom_exc_resume:
 	beqz	$27, rom_exc_unexpected
 	 nop
 	sd	$0, EXC_RESUME($26)
+	nop
 	dmtc0	$27, $14			/* EPC */
+	nop
 
 	/*
 	 * Jump return preserves LL/SC state: ERET clears the link. Clear EXL
