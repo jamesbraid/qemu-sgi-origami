@@ -1002,13 +1002,14 @@ static void mgras_gl_color_bytes(uint32_t bytes[4], uint32_t word)
  * Image word 1 has both of bits 31 and 30 set only on the first delivery
  * of a new context. The IRIX 6.5.30 kernel's context allocator
  * (0xc0000000003f38c8 in unix.IP27) zeroes the new context, sets image word
- * 0 to -1 and ORs 0xc0000000 into word 1; MgrasCtxsw clears bits 31, 30,
- * 29, 27 and 26 of word 1 after writing the image, for every context but
- * the default, whose image keeps bit 31 (established from the
- * disassembly). In run irix-20260930T204826-66052a each of the 36 openers
- * the clients sent follows exactly one image with both bits in its slot
- * since that slot's previous opener, and the default context's images
- * carry 0x90000000 or 0x98000000.
+ * 0 to -1 and ORs 0xc0000000 into word 1. After writing the image
+ * MgrasCtxsw clears bit 27 of word 1 for every context and bits 31, 30,
+ * 29 and 26 for every context but the default, whose image keeps bit 31
+ * (established from the disassembly). In run
+ * irix-20260930T204826-66052a each of the 36 openers the clients sent
+ * follows exactly one image with both bits in its slot since that slot's
+ * previous opener, and the default context's images carry 0x90000000 or
+ * 0x98000000.
  *
  * The kernel gives a dead client's slot to the next new context, so the
  * entry kept under that slot can hold a packet the dead client never

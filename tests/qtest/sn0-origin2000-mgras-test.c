@@ -8086,12 +8086,12 @@ static void test_gl_packet_split_by_a_context_switch(void)
  * Image word 1 is 0xc0000000 or more only on the first delivery of a new
  * context. The IRIX 6.5.30 kernel's context allocator (0xc0000000003f38c8
  * in unix.IP27) zeroes the context, sets image word 0 to -1 and ORs
- * 0xc0000000 into word 1, and MgrasCtxsw clears bits 31, 30, 29, 27 and 26
- * of word 1 once it has written the image, for every context but the
- * default. In run irix-20260930T204826-66052a every first delivery of a
- * slot's new context carries both bits (0xe4000000 or 0xec000000) and no
- * later one does; the default context's image keeps bit 31 alone
- * (0x90000000, 0x98000000) on every switch.
+ * 0xc0000000 into word 1. Once MgrasCtxsw has written the image it clears
+ * bit 27 of word 1 for every context, and bits 31, 30, 29 and 26 for
+ * every context but the default. In run irix-20260930T204826-66052a every
+ * first delivery of a slot's new context carries both bits (0xe4000000 or
+ * 0xec000000) and no later one does; the default context's image keeps
+ * bit 31 alone (0x90000000, 0x98000000) on every switch.
  */
 #define GL_IMAGE_NEW_CONTEXT     0xec000000
 #define GL_IMAGE_DEFAULT_CONTEXT 0x98000000
