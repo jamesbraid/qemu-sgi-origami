@@ -1098,6 +1098,62 @@ static void test_origin300_direct_v12_builds_device(const void *data)
     g_unlink(path);
 }
 
+/* The two-chip experiment gives the remote XBridge and V12 distinct PIO. */
+static void test_origin300_vbrick_projects_v12(const void *data)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree uint8_t *image = g_malloc0(PROM_SIZE);
+    g_autofree char *path = NULL;
+    g_autofree char *type = NULL;
+    const uint64_t port = UINT64_C(0x20000000000) +
+                          11 * UINT64_C(0x1000000);
+    QTestState *qts;
+    int fd;
+
+    fd = g_file_open_tmp("sn-builder-o300-vbrick-prom-XXXXXX.bin", &path,
+                         &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(write(fd, image, PROM_SIZE), ==, (ssize_t)PROM_SIZE);
+    g_assert_cmpint(close(fd), ==, 0);
+
+    qts = qtest_initf("-M origin300,topology=origin300-vbrick "
+                      "-cpu R14000 -smp 2 -m 512M -bios %s -S", path);
+    type = qom_child_type(qts, "/machine/module1", "vbrick-xbridge");
+    g_assert_cmpstr(type, ==, "sgi-xbridge");
+    g_clear_pointer(&type, g_free);
+    type = qom_child_type(qts, "/machine/module1", "vbrick-l1");
+    g_assert_cmpstr(type, ==, "container");
+    g_clear_pointer(&type, g_free);
+    type = qom_child_type(qts, "/machine/module1", "vbrick-v12");
+    g_assert_cmpstr(type, ==, "sgi-odyssey");
+    /* The node cable and internal V12 link both report a live widget. */
+    g_assert_cmphex(qtest_readl(qts, UINT64_C(0x20000000000) +
+                                0x100 + (11 - 8) * 0x40 + 0x38 + 4) &
+                    (1U << 5), ==, 1U << 5);
+    g_assert_cmphex(qtest_readl(qts, UINT64_C(0x20000000000) +
+                                0x100 + (11 - 8) * 0x40 + 0x10 + 4) &
+                    (1U << 31), ==, 1U << 31);
+    g_assert_cmphex(qtest_readl(qts, port + 0x800000 +
+                                0x100 + 0x38 + 4) & (1U << 5), ==,
+                    1U << 5);
+    g_assert_cmphex(qtest_readl(qts, port + 0x800000 +
+                                0x100 + 0x10 + 4) & (1U << 31), ==,
+                    1U << 31);
+    g_assert_cmphex(qtest_readl(qts, port + 4), ==, 0x1c013047);
+    g_assert_cmphex(qtest_readl(qts, UINT64_C(0x20000000000) + 0x5c), ==,
+                    2);
+    qtest_writel(qts, port + 0x800000 + 0x5c, 0x1f);
+    g_assert_cmphex(qtest_readl(qts, port + 0x800000 + 0x5c), ==, 0x1f);
+    g_assert_cmphex(qtest_readl(qts, UINT64_C(0x20000000000) + 0x5c), ==,
+                    2);
+    g_assert_cmphex(qtest_readl(qts, port + 0x800000 + 4), ==, 0x2d000001);
+    qtest_writel(qts, port + 0x24, 0x0f003208);
+    g_assert_cmphex(qtest_readl(qts, port + 0x24), ==, 0x0f003208);
+    g_assert_cmphex(qtest_readl(qts, port + 0x800000 + 4), ==, 0x2d000001);
+    qtest_quit(qts);
+    g_unlink(path);
+}
+
 /*
  * A two-chassis Origin 300 fits six processors as 4:2 or 2:4, so -smp 6
  * alone is refused and population= names the one wanted; -smp 4 and 8 have
@@ -1792,6 +1848,8 @@ int main(int argc, char **argv)
                         NULL, test_origin200_dual_accepts_its_populations);
     qtest_add_data_func("sn/builder/origin300-direct-v12-builds-device",
                         NULL, test_origin300_direct_v12_builds_device);
+    qtest_add_data_func("sn/builder/origin300-vbrick-projects-v12",
+                        NULL, test_origin300_vbrick_projects_v12);
     qtest_add_data_func("sn/builder/origin300-two-chassis-population",
                         NULL, test_origin300_two_chassis_population);
     qtest_add_data_func(

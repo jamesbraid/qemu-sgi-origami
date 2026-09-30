@@ -200,6 +200,7 @@ struct SGIMachineState {
      */
     SGIXioLink *node_links;
     SGIXioLink *board_links;
+    SGIXioLink vbrick_link;
 
     /*
      * One link per empty XIO slot the topology names (t->xio_slots, in
@@ -1617,6 +1618,90 @@ static bool sgi_machine_instantiate_odyssey(
 }
 
 /*
+ * Experimental Origin 300-to-V-brick route. The published enclosure has
+ * its own XBridge, L1 and V12; the cable ports and nested processor address
+ * are not established. The 8 MiB split is a machine-local QEMU projection:
+ * V12 at the cable widget base, then the enclosure XBridge's crossbar.
+ */
+static bool sgi_machine_instantiate_vbrick(
+    SGIMachineState *s, const SGIModelIoBoard *record,
+    unsigned int board_index, const SGIModelXioAttachment *attachment,
+    Error **errp)
+{
+    SN1NodeState *node;
+    Object *module;
+    DeviceState *bridge, *v12;
+    Object *l1;
+    SGIXioLink *board_link = &s->board_links[board_index];
+    g_autofree char *module_name = NULL;
+    g_autofree char *board_link_name = NULL;
+
+    if (attachment->node_index != 0 || attachment->crossbar_index >= 0 ||
+        record->module_index != 1 || attachment->widget != 0xb) {
+        error_setg(errp, "the experimental V-brick requires node 0, "
+                   "module 1 and XBridge external port 0xb");
+        return false;
+    }
+    node = SN1_NODE(s->bedrock_nodes[0]);
+    if (attachment->widget !=
+        sgi_xbridge_xio_port(SGI_XBRIDGE(node->xbridge))) {
+        error_setg(errp, "the experimental V-brick needs the node "
+                   "XBridge external port at 0xb");
+        return false;
+    }
+    module_name = g_strdup_printf("module%u", record->module_index);
+    module = object_resolve_path_component(OBJECT(s), module_name);
+    g_assert(module);
+
+    bridge = qdev_new(TYPE_SGI_XBRIDGE);
+    object_property_add_child(module, "vbrick-xbridge", OBJECT(bridge));
+    object_unref(OBJECT(bridge));
+    qdev_prop_set_uint8(bridge, "host-port", 0xa);
+    qdev_prop_set_uint8(bridge, "xio-port", 8);
+    qdev_prop_set_string(bridge, "bus-prefix", "vbrick-");
+    sgi_xio_link_init(&s->vbrick_link, OBJECT(s), "vbrick-cable",
+                      OBJECT(node->xbridge), 0xb, OBJECT(bridge), 0xa);
+    if (!sgi_xio_link_connect(&s->vbrick_link, errp) ||
+        !sysbus_realize(SYS_BUS_DEVICE(bridge), errp) ||
+        !sgi_xio_link_connect(&s->vbrick_link, errp)) {
+        return false;
+    }
+    g_assert(sgi_xio_link_complete(&s->vbrick_link));
+
+    /* Preserve the physical L1 position without an invented IP45 identity. */
+    l1 = object_new(TYPE_CONTAINER);
+    object_property_add_child(module, "vbrick-l1", l1);
+    object_unref(l1);
+
+    v12 = qdev_try_new("sgi-odyssey");
+    if (!v12) {
+        error_setg(errp, "the experimental V-brick requires the "
+                   "sgi-odyssey device");
+        return false;
+    }
+    object_property_add_child(module, "vbrick-v12", OBJECT(v12));
+    object_unref(OBJECT(v12));
+    v12->id = g_strdup("vbrick-v12");
+    qdev_prop_set_uint32(v12, "module", record->module_index);
+    sgi_machine_set_board_widget(v12, 8);
+    board_link_name = g_strdup_printf("io-board%u-link", board_index);
+    sgi_xio_link_init(board_link, OBJECT(s), board_link_name,
+                      OBJECT(bridge), 8, OBJECT(v12), 0);
+    if (!sgi_xio_link_connect(board_link, errp) ||
+        !sysbus_realize(SYS_BUS_DEVICE(v12), errp) ||
+        !sgi_xio_link_connect(board_link, errp)) {
+        return false;
+    }
+    g_assert(sgi_xio_link_complete(board_link));
+    sgi_xbridge_project_vbrick_pio(
+        SGI_XBRIDGE(node->xbridge),
+        sgi_xbridge_widget_view(SGI_XBRIDGE(bridge), 8),
+        sgi_xbridge_widget_view(SGI_XBRIDGE(bridge), 0), 8 * MiB);
+    s->io_boards[board_index] = SGI_XIO_BOARD(v12);
+    return true;
+}
+
+/*
  * The IO-8's fixed devices: an sgi-baseio (the "io8" preset) on the
  * Bedrock node's own XBridge head F, reached through
  * sn1_node_xbridge_pci_bus() (sn1-node.c) with this attachment's own
@@ -1764,6 +1849,9 @@ static bool sgi_machine_instantiate_io_board(
     case SGI_MODEL_IO_BOARD_PRESET_ODYSSEY:
         return sgi_machine_instantiate_odyssey(s, record, board_index,
                                                 attachment, errp);
+    case SGI_MODEL_IO_BOARD_PRESET_VBRICK:
+        return sgi_machine_instantiate_vbrick(s, record, board_index,
+                                              attachment, errp);
     default:
         error_setg(errp, "topology '%s' io board %u names an unsupported "
                   "preset for this family", t->name, board_index);

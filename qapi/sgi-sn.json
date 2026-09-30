@@ -448,6 +448,10 @@
 # @odyssey: a synthetic direct V12 widget on the Origin 300 XBridge
 #     external port, without a physical V-brick enclosure
 #
+# @vbrick: an experimental Origin 300 attachment with a separate
+#     XBridge and V12 board; a neutral object marks the L1 position.
+#     Its processor route is a QEMU projection
+#
 # @mgras: the SI/MXI (MGRAS) graphics board, an XIO card whose widget
 #     answers XIO directly with no Bridge; the widget's own
 #     identity is fixed by the device, so the record's @part,
@@ -458,7 +462,7 @@
 { 'enum': 'SGIModelIoBoardPreset',
   'data': ['ip29-io', 'ip29-io-crosstown', 'io6', 'io6g', 'io8', 'io9',
            'pci-shoehorn', 'pci-carrier', 'gigachannel', 'menet', 'kona',
-           'mscsi', 'mgras', 'odyssey'] }
+           'mscsi', 'mgras', 'odyssey', 'vbrick'] }
 
 ##
 # @SGIModelIoBoardCarrier:

@@ -80,6 +80,12 @@ bool sgi_xbridge_attach_xio(SGIXBridgeState *s, MemoryRegion *cpu_face,
  */
 MemoryRegion *sgi_xbridge_xio_host_face(SGIXBridgeState *s);
 
+/* Machine-only projection for the experimental two-chip V-brick profile. */
+void sgi_xbridge_project_vbrick_pio(SGIXBridgeState *s,
+                                    MemoryRegion *v12_view,
+                                    MemoryRegion *crossbar_view,
+                                    uint64_t half_size);
+
 /* The widget number the external port answers on. */
 unsigned int sgi_xbridge_xio_port(SGIXBridgeState *s);
 

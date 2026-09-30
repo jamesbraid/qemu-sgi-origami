@@ -1142,6 +1142,8 @@ struct SGIXBridgeState {
      * port answers exactly as an unpopulated one.
      */
     MemoryRegion xio_face;
+    MemoryRegion xio_projection[2];
+    bool xio_projection_built;
     MemoryRegion xio_packets;
     MemoryRegion xio_packet_alias;
     MemoryRegion xio_view;
@@ -1528,6 +1530,32 @@ bool sgi_xbridge_attach_xio(SGIXBridgeState *s, MemoryRegion *cpu_face,
 MemoryRegion *sgi_xbridge_xio_host_face(SGIXBridgeState *s)
 {
     return s->fabric;
+}
+
+void sgi_xbridge_project_vbrick_pio(SGIXBridgeState *s,
+                                    MemoryRegion *v12_view,
+                                    MemoryRegion *crossbar_view,
+                                    uint64_t half_size)
+{
+    g_assert(DEVICE(s)->realized);
+    g_assert(s->xio_present);
+    g_assert(!s->xio_projection_built);
+    g_assert(half_size && half_size <=
+             memory_region_size(&s->xio_face) / 2);
+    g_assert(half_size <= memory_region_size(v12_view));
+    g_assert(half_size <= memory_region_size(crossbar_view));
+
+    memory_region_init_alias(&s->xio_projection[0], OBJECT(s),
+                             "sgi-xbridge.experimental-vbrick-v12",
+                             v12_view, 0, half_size);
+    memory_region_add_subregion_overlap(&s->xio_face, 0,
+                                        &s->xio_projection[0], 1);
+    memory_region_init_alias(&s->xio_projection[1], OBJECT(s),
+                             "sgi-xbridge.experimental-vbrick-crossbar",
+                             crossbar_view, 0, half_size);
+    memory_region_add_subregion_overlap(&s->xio_face, half_size,
+                                        &s->xio_projection[1], 1);
+    s->xio_projection_built = true;
 }
 
 unsigned int sgi_xbridge_xio_port(SGIXBridgeState *s)
