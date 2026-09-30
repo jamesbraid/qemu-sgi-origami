@@ -821,6 +821,12 @@ if dbus_display
   qtests += {'dbus-display-test': [dbus_display1, gio]}
 endif
 
+sharp_storage_fault = []
+if host_os == 'linux' and 'octane-test' in get_variable('qtests_mips64', [])
+  sharp_storage_fault = shared_library('sharp-storage-fault', 'sharp-storage-fault.c',
+                                     build_by_default: false)
+endif
+
 qtest_executables = {}
 foreach dir : target_dirs
   if not dir.endswith('-softmmu')
@@ -871,6 +877,12 @@ foreach dir : target_dirs
       }
     endif
 
+    extra_deps = []
+    if test == 'octane-test' and host_os == 'linux'
+      extra_deps += sharp_storage_fault
+      qtest_env.set('QTEST_SHARP_STORAGE_HELPER', sharp_storage_fault.full_path())
+    endif
+
     test_args = ['--tap', '-k']
 
     if test == 'migration-test' and has_kvm
@@ -879,7 +891,7 @@ foreach dir : target_dirs
 
     test('qtest-@0@/@1@'.format(target_base, test),
          qtest_executables[test],
-         depends: [test_deps, qtest_emulator, emulator_modules],
+         depends: [test_deps, extra_deps, qtest_emulator, emulator_modules],
          env: qtest_env,
          args: test_args,
          protocol: 'tap',

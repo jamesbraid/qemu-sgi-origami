@@ -1513,7 +1513,10 @@ static MemTxResult sgi_bridge_flash_read(void *opaque, hwaddr addr,
             upper_select != last_upper_select) {
             r = memory_region_dispatch_read(part, word_offset, &word,
                                             MO_BEUW, attrs);
-            if (r != MEMTX_OK) {
+            if (r == MEMTX_DECODE_ERROR) {
+                /* A fitted part with floating outputs leaves pulled-up data. */
+                word = 0xffff;
+            } else if (r != MEMTX_OK) {
                 return r;
             }
             last_part = part;
@@ -1528,9 +1531,10 @@ static MemTxResult sgi_bridge_flash_read(void *opaque, hwaddr addr,
 
 /*
  * The specification takes 16-bit writes only, on account of the parts'
- * command sequences, and completes none while the control register's flash
- * write enable is clear. How the chip reports the refused write is not
- * established; it is logged and dropped.
+ * command sequences, and completes none while the control register's
+ * flash write enable is clear. How the chip reports the refused write is
+ * not established. Boards can select a failed transaction result for
+ * rejected writes while the older logged/drop policy remains available.
  */
 static MemTxResult sgi_bridge_flash_write(void *opaque, hwaddr addr,
                                           uint64_t value, unsigned size,
@@ -1549,15 +1553,15 @@ static MemTxResult sgi_bridge_flash_write(void *opaque, hwaddr addr,
                       "sgi-bridge: flash write of 0x%" PRIx64 " at window "
                       "offset 0x%" HWADDR_PRIx " with the write enable "
                       "clear; not completed\n", value, addr);
-        return MEMTX_OK;
+        return s->flash_reject_invalid_writes ? MEMTX_ERROR : MEMTX_OK;
     }
-    if (size != 2) {
+    if (size != 2 || (s->flash_reject_invalid_writes && (addr & 1))) {
         qemu_log_mask(LOG_GUEST_ERROR,
                       "sgi-bridge: %u-byte flash write of 0x%" PRIx64 " at "
                       "window offset 0x%" HWADDR_PRIx "; the port takes "
                       "16-bit writes only, not completed\n", size, value,
                       addr);
-        return MEMTX_OK;
+        return s->flash_reject_invalid_writes ? MEMTX_ERROR : MEMTX_OK;
     }
     offset %= memory_region_size(part);
     return memory_region_dispatch_write(part, offset & ~(hwaddr)1, value,
@@ -2794,6 +2798,8 @@ static const Property sgi_bridge_properties[] = {
     DEFINE_PROP_LINK("flash-select1", SGIBridgeState, flash_select1,
                      TYPE_MEMORY_REGION, MemoryRegion *),
     DEFINE_PROP_BOOL("flash-select", SGIBridgeState, flash_select, false),
+    DEFINE_PROP_BOOL("flash-reject-invalid-writes", SGIBridgeState,
+                     flash_reject_invalid_writes, false),
     /*
      * Forces slots exempt whatever their cards say, for a test or a debug run
      * that wants the answer a card cannot be asked for. Cards declare

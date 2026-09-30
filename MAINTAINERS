@@ -1543,6 +1543,7 @@ F: tests/qtest/sgi-ioc3-eth-test.c
 F: tests/qtest/ics1890-test.c
 F: tests/qtest/sgi-heart-test.c
 F: tests/qtest/octane-test.c
+F: tests/qtest/sharp-storage-fault.c
 F: tests/qtest/r10000-identity-test.c
 F: tests/qtest/sgi-replay-test.c
 F: tests/qtest/sgi-*.h
