@@ -126,13 +126,123 @@ static void get_descriptor(QTestState *qts, unsigned length)
     }
 }
 
+typedef enum PayloadFault {
+    DMA_NONE,
+    DMA_SETUP,
+    DMA_OUT,
+    DMA_IN,
+} PayloadFault;
+
+typedef struct FuelUSBTest {
+    const char *name;
+    unsigned port;
+    PayloadFault fault;
+    bool periodic;
+} FuelUSBTest;
+
+/* Only payload page 2 lacks an XBridge ATE; descriptors stay in page 0. */
+static void test_payload_dma(QTestState *qts, PayloadFault fault, bool periodic)
+{
+    bool input = fault == DMA_IN;
+    unsigned failing = input ? TD_DATA : TD_SETUP;
+    uint32_t flags = input ? TD_DATA1 | TD_IN :
+                     fault == DMA_OUT ? TD_DATA1 | TD_OUT : TD_DATA0;
+    uint8_t setup[8] = { 0x80, 6, 0, 1, 0, 0, 8, 0 };
+    uint32_t saved[4];
+    uint32_t frame, hcca_frame;
+    QDict *response;
+
+    qtest_memwrite(qts, DMA_PHYS + SETUP, setup, sizeof(setup));
+    if (input) {
+        /* Finish SETUP before selecting an inaccessible IN destination. */
+        dma_write(qts, ED, 8U << 16);
+        dma_write(qts, ED + 4, DMA_IOVA + TD_TAIL);
+        dma_write(qts, ED + 8, DMA_IOVA + TD_SETUP);
+        dma_write(qts, ED + 12, 0);
+        write_td(qts, TD_SETUP, TD_DATA0, SETUP, TD_TAIL, 8);
+        qtest_writel(qts, OHCI + 0x20, DMA_IOVA + ED);
+        qtest_writel(qts, OHCI + 0x08, 2);
+        qtest_writel(qts, OHCI + 0x04, 0x90);
+        for (unsigned i = 0; i < 64; i++) {
+            qtest_clock_step_next(qts);
+            if ((dma_read(qts, ED + 8) & ~15U) == DMA_IOVA + TD_TAIL) {
+                break;
+            }
+        }
+        g_assert_cmphex(dma_read(qts, ED + 8) & ~15U,
+                        ==, DMA_IOVA + TD_TAIL);
+        qtest_writel(qts, OHCI + 0x04, 0x80);
+    }
+
+    /* Reachable later TD, next ED, control list and bulk list. */
+    dma_write(qts, ED, 8U << 16);
+    dma_write(qts, ED + 4, DMA_IOVA + TD_TAIL);
+    dma_write(qts, ED + 8, DMA_IOVA + failing);
+    dma_write(qts, ED + 12, DMA_IOVA + 0x400);
+    write_td(qts, failing, flags, 0x2000, TD_STATUS, 8);
+    write_td(qts, TD_STATUS, TD_DATA0, SETUP, TD_TAIL, 8);
+    for (unsigned ed = 0x400; ed <= 0x600; ed += 0x100) {
+        dma_write(qts, ed, 8U << 16);
+        dma_write(qts, ed + 4, DMA_IOVA + ed + 0x20);
+        dma_write(qts, ed + 8, DMA_IOVA + ed + 0x10);
+        dma_write(qts, ed + 12, 0);
+        write_td(qts, ed + 0x10, TD_DATA0, SETUP, ed + 0x20, 8);
+    }
+    for (unsigned i = 0; i < 4; i++) {
+        saved[i] = dma_read(qts, failing + 4 * i);
+    }
+    dma_write(qts, 0x84, 0); /* HCCA done head */
+    qtest_writel(qts, OHCI + 0x0c, 0xffffffff);
+    response = qtest_qmp(qts, "{ 'execute': 'trace-event-set-state', "
+                              "'arguments': { "
+                              "'name': 'usb_ohci_td_packet_status', "
+                              "'enable': true } }");
+    g_assert_true(qdict_haskey(response, "return"));
+    qobject_unref(response);
+    if (periodic) {
+        for (unsigned i = 0; i < 32; i++) {
+            dma_write(qts, 4 * i, DMA_IOVA + ED);
+        }
+    }
+    qtest_writel(qts, OHCI + 0x20,
+                 DMA_IOVA + (periodic ? 0x500 : ED));
+    qtest_writel(qts, OHCI + 0x28, DMA_IOVA + 0x600);
+    qtest_writel(qts, OHCI + 0x08, 6); /* ControlListFilled, BulkListFilled */
+    qtest_writel(qts, OHCI + 0x04, periodic ? 0xb4 : 0xb0);
+    frame = qtest_readl(qts, OHCI + 0x3c);
+    hcca_frame = dma_read(qts, 0x80);
+    qtest_clock_step_next(qts);
+    g_assert_cmphex(qtest_readl(qts, OHCI + 0x0c) & (1U << 4),
+                    ==, 1U << 4); /* UnrecoverableError */
+    for (unsigned i = 0; i < 4; i++) {
+        g_assert_cmphex(dma_read(qts, failing + 4 * i), ==, saved[i]);
+    }
+    g_assert_cmphex(dma_read(qts, ED + 8), ==, DMA_IOVA + failing);
+    g_assert_cmphex(dma_read(qts, TD_STATUS) >> 28, ==, 15);
+    for (unsigned ed = 0x400; ed <= 0x600; ed += 0x100) {
+        g_assert_cmphex(dma_read(qts, ed + 8), ==, DMA_IOVA + ed + 0x10);
+        g_assert_cmphex(dma_read(qts, ed + 0x10) >> 28, ==, 15);
+    }
+    g_assert_cmphex(dma_read(qts, 0x84), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, OHCI + 0x3c), ==, frame);
+    g_assert_cmphex(dma_read(qts, 0x80), ==, hcca_frame);
+    qtest_clock_step(qts, 10000000);
+    g_assert_cmphex(qtest_readl(qts, OHCI + 0x3c), ==, frame);
+    g_assert_cmphex(dma_read(qts, ED + 8), ==, DMA_IOVA + failing);
+}
+
 static void test_port(const void *opaque)
 {
-    unsigned port = GPOINTER_TO_UINT(opaque);
+    const FuelUSBTest *test = opaque;
+    unsigned port = test->port;
+    PayloadFault fault = test->fault;
     unsigned other = port == 1 ? 2 : 1;
     g_autoptr(GError) error = NULL;
     g_autofree char *prom = NULL;
     g_autofree char *quoted = NULL;
+    g_autofree char *trace_path = g_strdup_printf("fuel-usb-%u-%u.trace",
+                                                 getpid(), g_random_int());
+    g_autofree char *trace = NULL;
     g_autofree uint8_t *image = g_malloc0(PROM_SIZE);
     uint8_t page[4096] = { 0 };
     QTestState *qts;
@@ -146,7 +256,8 @@ static void test_port(const void *opaque)
     qts = qtest_initf("-M fuel,fuel-board-id-word=0x4abc,"
                       "fuel-ioc3-subsystem-id=0xc30a,fuel-l1-type-code=0x61,"
                       "fuel-bedrock-revision=0x2 -cpu R14000 -smp 1 "
-                      "-m 512M -bios %s -nodefaults", quoted);
+                      "-m 512M -bios %s -nodefaults -trace file=%s",
+                      quoted, trace_path);
     /* RAM banks need programming before CPU accesses or PCI DMA. */
     qtest_writeq(qts, SPACE_IO + 0x01000000 + 0x780008, 0x33);
     qtest_writel(qts, CONFIG + 0x10, 0x10000000);
@@ -169,10 +280,14 @@ static void test_port(const void *opaque)
     qtest_writel(qts, OHCI + PORT(port), 1U << 4); /* SetPortReset */
     g_assert_cmphex(qtest_readl(qts, OHCI + PORT(port)) &
                     (PORT_PES | PORT_PRSC), ==, PORT_PES | PORT_PRSC);
-    get_descriptor(qts, 8);
-    get_descriptor(qts, 16);
-    get_descriptor(qts, 18);
-    get_descriptor(qts, 32);
+    if (fault) {
+        test_payload_dma(qts, fault, test->periodic);
+    } else {
+        get_descriptor(qts, 8);
+        get_descriptor(qts, 16);
+        get_descriptor(qts, 18);
+        get_descriptor(qts, 32);
+    }
     qtest_writel(qts, OHCI + PORT(port), PORT_CSC | PORT_PRSC);
     qtest_qmp_device_del(qts, "keyboard");
     g_assert_cmphex(qtest_readl(qts, OHCI + PORT(port)) &
@@ -180,14 +295,38 @@ static void test_port(const void *opaque)
     g_assert_cmphex(qtest_readl(qts, OHCI + PORT(other)) & PORT_CCS, ==, 0);
     qtest_quit(qts);
     g_assert_cmpint(g_unlink(prom), ==, 0);
+    g_assert_true(g_file_get_contents(trace_path, &trace, NULL, NULL));
+    if (fault) {
+        unsigned packets = 0;
+        const char *cursor = trace;
+
+        while ((cursor = strstr(cursor, "usb_ohci_td_packet_status"))) {
+            packets++;
+            cursor++;
+        }
+        g_assert_cmpuint(packets, ==, fault == DMA_IN ? 1 : 0);
+    }
+    g_assert_cmpint(g_unlink(trace_path), ==, 0);
 }
 
 int main(int argc, char **argv)
 {
+    static const FuelUSBTest tests[] = {
+        { "port1-control-transfer", 1, DMA_NONE },
+        { "port2-control-transfer", 2, DMA_NONE },
+        { "control-setup-dma-error", 1, DMA_SETUP },
+        { "control-out-dma-error", 1, DMA_OUT },
+        { "control-in-dma-error", 1, DMA_IN },
+        { "periodic-setup-dma-error", 1, DMA_SETUP, true },
+        { "periodic-out-dma-error", 1, DMA_OUT, true },
+        { "periodic-in-dma-error", 1, DMA_IN, true },
+    };
+
     g_test_init(&argc, &argv, NULL);
-    qtest_add_data_func("/fuel/usb/port1-control-transfer",
-                        GUINT_TO_POINTER(1), test_port);
-    qtest_add_data_func("/fuel/usb/port2-control-transfer",
-                        GUINT_TO_POINTER(2), test_port);
+    for (unsigned i = 0; i < G_N_ELEMENTS(tests); i++) {
+        g_autofree char *name = g_strdup_printf("/fuel/usb/%s", tests[i].name);
+
+        qtest_add_data_func(name, &tests[i], test_port);
+    }
     return g_test_run();
 }
