@@ -997,6 +997,34 @@ static void mgras_gl_color_bytes(uint32_t bytes[4], uint32_t word)
  * gl-context-table-replaces-the-least-recent.
  */
 #define MGRAS_GL_IMAGE_SLOT      0
+
+/*
+ * Image word 1 has both of bits 31 and 30 set only on the first delivery
+ * of a new context. The IRIX 6.5.30 kernel's context allocator
+ * (0xc0000000003f38c8 in unix.IP27) zeroes the new context, sets image word
+ * 0 to -1 and ORs 0xc0000000 into word 1; MgrasCtxsw clears bits 31, 30,
+ * 29, 27 and 26 of word 1 after writing the image, for every context but
+ * the default, whose image keeps bit 31 (established from the
+ * disassembly). In run irix-20260930T204826-66052a each of the 36 openers
+ * the clients sent follows exactly one image with both bits in its slot
+ * since that slot's previous opener, and the default context's images
+ * carry 0x90000000 or 0x98000000.
+ *
+ * The kernel gives a dead client's slot to the next new context, so the
+ * entry kept under that slot can hold a packet the dead client never
+ * finished. In that run ivview was killed two words into a glVertex3f in
+ * slot 0x5420, and the model took the opener and 0x8c04 of amesh's next
+ * context, new under 0x5420, as the vertex's last two words. A new
+ * context's words start at a header and its GL state starts at OpenGL's
+ * initial state (inferred: the client's setup assumes both, and the board
+ * cannot resume a dead client's packet for a new one). What the board does
+ * with each bit is unknown. The discriminating tests are
+ * gl-new-context-starts-at-a-header,
+ * gl-new-context-starts-in-the-initial-state and
+ * gl-default-context-keeps-its-packet.
+ */
+#define MGRAS_GL_IMAGE_STATUS    1
+#define MGRAS_GL_IMAGE_NEW       0xc0000000u
 #define MGRAS_GL_NO_SLOT         0x80000000u
 #define MGRAS_GL_DEFAULT_SLOT    0xb27
 
@@ -1113,6 +1141,18 @@ void sgi_mgras_gl_reset(SGIMgrasState *s)
     mgras_gl_bind(s);
 }
 
+/*
+ * Start entry i afresh for hw_id: the initial GL state, no packet in
+ * progress, no query answer and no pixel draw.
+ */
+static void mgras_gl_forget(SGIMgrasState *s, unsigned int i, uint32_t hw_id)
+{
+    sgi_gl_reset(&s->gl[i], hw_id);
+    memset(&s->gl_context[i].parser, 0, sizeof(s->gl_context[i].parser));
+    memset(s->gl_context[i].readback, 0, sizeof(s->gl_context[i].readback));
+    memset(&s->gl_context[i].pixels, 0, sizeof(s->gl_context[i].pixels));
+}
+
 /* The entry holding slot's state, taking a new one if it has none. */
 static unsigned int mgras_gl_lookup(SGIMgrasState *s, uint32_t slot)
 {
@@ -1133,13 +1173,7 @@ static unsigned int mgras_gl_lookup(SGIMgrasState *s, uint32_t slot)
                       "state is lost\n", slot, s->gl_slot[oldest]);
         free = oldest;
     }
-    sgi_gl_reset(&s->gl[free], slot);
-    memset(&s->gl_context[free].parser, 0,
-           sizeof(s->gl_context[free].parser));
-    memset(s->gl_context[free].readback, 0,
-           sizeof(s->gl_context[free].readback));
-    memset(&s->gl_context[free].pixels, 0,
-           sizeof(s->gl_context[free].pixels));
+    mgras_gl_forget(s, free, slot);
     s->gl_slot[free] = slot;
     return free;
 }
@@ -1190,6 +1224,10 @@ void sgi_mgras_gl_context_loaded(SGIMgrasState *s)
     } else {
         s->gl_current = mgras_gl_lookup(s, slot);
         s->gl_selected[s->gl_current] = ++s->gl_selections;
+    }
+    if ((s->context[MGRAS_GL_IMAGE_STATUS] & MGRAS_GL_IMAGE_NEW) ==
+        MGRAS_GL_IMAGE_NEW) {
+        mgras_gl_forget(s, s->gl_current, s->gl[s->gl_current].hw_id);
     }
     sgi_mgras_cmd_parser_load(s, &s->gl_context[s->gl_current].parser);
     mgras_gl_bind(s);

@@ -6454,18 +6454,19 @@ static const uint32_t gl_context_image[MGRAS_CONTEXT_WORDS] = {
 };
 
 /*
- * Switch to the GL context whose image word 0 is slot and whose window has
- * its lower-left pixel at column x and at row y counted from the bottom of
- * the screen.
+ * Switch to the GL context whose image word 0 is slot and word 1 status,
+ * and whose window has its lower-left pixel at column x and at row y
+ * counted from the bottom of the screen.
  */
-static void mgras_enter_gl_slot(QTestState *qts, uint32_t slot, uint32_t x,
-                                uint32_t y, uint32_t w, uint32_t h,
-                                uint32_t clip)
+static void mgras_enter_gl_image(QTestState *qts, uint32_t slot,
+                                 uint32_t status, uint32_t x, uint32_t y,
+                                 uint32_t w, uint32_t h, uint32_t clip)
 {
     uint32_t image[MGRAS_CONTEXT_WORDS];
 
     memcpy(image, gl_context_image, sizeof(image));
     image[0] = slot;
+    image[1] = status;
     image[2] = image[14] = (y << 16) | x;
     image[3] = clip;
     image[11] = (x << 16) | (x + w - 1);
@@ -6480,6 +6481,13 @@ static void mgras_enter_gl_slot(QTestState *qts, uint32_t slot, uint32_t x,
     g_assert_cmphex(qtest_readl(qts, REG_PENDING) & MGRAS_PENDING_CONTEXT, ==,
                     MGRAS_PENDING_CONTEXT);
     qtest_writel(qts, REG_PENDING_ACK, MGRAS_PENDING_CONTEXT);
+}
+
+static void mgras_enter_gl_slot(QTestState *qts, uint32_t slot, uint32_t x,
+                                uint32_t y, uint32_t w, uint32_t h,
+                                uint32_t clip)
+{
+    mgras_enter_gl_image(qts, slot, gl_context_image[1], x, y, w, h, clip);
 }
 
 static void mgras_enter_gl_window(QTestState *qts, uint32_t x, uint32_t y,
@@ -8068,6 +8076,103 @@ static void test_gl_packet_split_by_a_context_switch(void)
     g_assert_cmphex(gl_window_pixel(qts, 1, 1), ==, 0x00ffff);
 
     gl_enter_slot(qts, GL_SLOT_A);
+    gl_float(qts, 1);
+    gl_float(qts, 1);
+    gl_word(qts, GL_CLEAR_COLOR_BUFFER);
+    g_assert_cmphex(gl_window_pixel(qts, 1, 1), ==, 0xff00ff);
+}
+
+/*
+ * Image word 1 is 0xc0000000 or more only on the first delivery of a new
+ * context. The IRIX 6.5.30 kernel's context allocator (0xc0000000003f38c8
+ * in unix.IP27) zeroes the context, sets image word 0 to -1 and ORs
+ * 0xc0000000 into word 1, and MgrasCtxsw clears bits 31, 30, 29, 27 and 26
+ * of word 1 once it has written the image, for every context but the
+ * default. In run irix-20260930T204826-66052a every first delivery of a
+ * slot's new context carries both bits (0xe4000000 or 0xec000000) and no
+ * later one does; the default context's image keeps bit 31 alone
+ * (0x90000000, 0x98000000) on every switch.
+ */
+#define GL_IMAGE_NEW_CONTEXT     0xec000000
+#define GL_IMAGE_DEFAULT_CONTEXT 0x98000000
+
+static void gl_enter_new_slot(QTestState *qts, uint32_t slot)
+{
+    mgras_enter_gl_image(qts, slot, GL_IMAGE_NEW_CONTEXT, 256, 640, 128, 128,
+                         0x11);
+}
+
+/*
+ * The kernel gives a dead client's slot to the next new context. In run
+ * irix-20260930T204826-66052a ivview was killed with its glVertex3f two
+ * words short in slot 0x5420 (seq 13911131), amesh's next context was
+ * given 0x5420 new (seq 14490524), and the model took that context's
+ * opener and 0x8c04 as the vertex's last two words. A new context's words
+ * start at a header: here the dead context's glClearColor is two words
+ * short, and the new one's opener and clear colour must not complete it.
+ */
+static void test_gl_new_context_starts_at_a_header(void)
+{
+    mgras_reset();
+
+    gl_enter_slot(qts, GL_SLOT_A);
+    gl_word(qts, GL_CONTEXT_OPENER);
+    gl_word(qts, GL_CLEAR_COLOR_HDR);
+    gl_float(qts, 1);
+    gl_float(qts, 0);
+
+    gl_enter_slot(qts, GL_SLOT_B);
+    gl_word(qts, GL_CONTEXT_OPENER);
+
+    gl_enter_new_slot(qts, GL_SLOT_A);
+    gl_word(qts, GL_CONTEXT_OPENER);
+    gl_clear_color(qts, 0, 1, 0, 1);
+    gl_word(qts, GL_CLEAR_COLOR_BUFFER);
+    g_assert_cmphex(gl_window_pixel(qts, 1, 1), ==, 0x00ff00);
+}
+
+/*
+ * A new context holds none of the dead one's GL state, before its opener
+ * as after: the clear colour a new context's glClear uses is the initial
+ * one, not the red the slot's last owner set.
+ */
+static void test_gl_new_context_starts_in_the_initial_state(void)
+{
+    mgras_reset();
+
+    gl_enter_slot(qts, GL_SLOT_A);
+    gl_word(qts, GL_CONTEXT_OPENER);
+    gl_clear_color(qts, 0, 0, 1, 1);
+    gl_word(qts, GL_CLEAR_COLOR_BUFFER);
+    gl_clear_color(qts, 1, 0, 0, 1);
+    g_assert_cmphex(gl_window_pixel(qts, 1, 1), ==, 0x0000ff);
+
+    gl_enter_new_slot(qts, GL_SLOT_A);
+    gl_word(qts, GL_CLEAR_COLOR_BUFFER);
+    g_assert_cmphex(gl_window_pixel(qts, 1, 1), ==, 0);
+}
+
+/*
+ * The default context's image keeps bit 31 of word 1 on every switch, so
+ * that bit alone does not start a new context: a packet the default
+ * context left short resumes when it is loaded again.
+ */
+static void test_gl_default_context_keeps_its_packet(void)
+{
+    mgras_reset();
+
+    mgras_enter_gl_image(qts, GL_SLOT_DEFAULT, GL_IMAGE_DEFAULT_CONTEXT, 256,
+                         640, 128, 128, 0x11);
+    gl_word(qts, GL_CONTEXT_OPENER);
+    gl_word(qts, GL_CLEAR_COLOR_HDR);
+    gl_float(qts, 1);
+    gl_float(qts, 0);
+
+    gl_enter_slot(qts, GL_SLOT_B);
+    gl_word(qts, GL_CONTEXT_OPENER);
+
+    mgras_enter_gl_image(qts, GL_SLOT_DEFAULT, GL_IMAGE_DEFAULT_CONTEXT, 256,
+                         640, 128, 128, 0x11);
     gl_float(qts, 1);
     gl_float(qts, 1);
     gl_word(qts, GL_CLEAR_COLOR_BUFFER);
@@ -17592,6 +17697,14 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/origin2000/mgras/"
                    "gl-packet-split-by-a-context-switch",
                    test_gl_packet_split_by_a_context_switch);
+    qtest_add_func("sn0/origin2000/mgras/gl-new-context-starts-at-a-header",
+                   test_gl_new_context_starts_at_a_header);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "gl-new-context-starts-in-the-initial-state",
+                   test_gl_new_context_starts_in_the_initial_state);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "gl-default-context-keeps-its-packet",
+                   test_gl_default_context_keeps_its_packet);
     qtest_add_func("sn0/origin2000/mgras/gl-color-bytes-unpack-red-first",
                    test_gl_color_bytes_unpack_red_first);
     qtest_add_func("sn0/origin2000/mgras/gl-vertex2i-matches-the-reference",
