@@ -10,6 +10,7 @@
 
 #include "hw/core/sysbus.h"
 #include "system/runstate.h"
+#include "qemu/notify.h"
 #include "qom/object.h"
 
 /*
@@ -156,6 +157,7 @@ struct DS1685State {
     BlockBackend *clock_blk;
     VMChangeStateEntry *vmstate_change;
     QEMUBH *save_bh;
+    Notifier incoming_complete;
     bool incoming;
     bool load_pending;
     bool storage_failed;
