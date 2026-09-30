@@ -112,6 +112,10 @@ void migration_add_notifier_modes(NotifierWithReturn *notify,
  */
 void migration_remove_notifier(NotifierWithReturn *notify);
 
+/* Successful incoming migration, including postcopy; callbacks hold the BQL. */
+void migration_add_incoming_completion_notifier(Notifier *notify);
+void migration_incoming_complete_notify(void);
+
 void migration_file_set_error(int ret, Error *err);
 
 /* True if incoming migration entered POSTCOPY_INCOMING_DISCARD */

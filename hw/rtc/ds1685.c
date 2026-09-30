@@ -22,6 +22,7 @@
 #include "hw/core/qdev-properties-system.h"
 #include "system/block-backend.h"
 #include "migration/migration.h"
+#include "migration/misc.h"
 #include "qemu/cutils.h"
 #include "qemu/log.h"
 #include "qemu/timer.h"
@@ -393,6 +394,15 @@ static void ds1685_save(DS1685State *s)
 static void ds1685_save_after_load(void *opaque)
 {
     ds1685_save(opaque);
+}
+
+static void ds1685_incoming_complete(Notifier *notify, void *data)
+{
+    DS1685State *s = container_of(notify, DS1685State, incoming_complete);
+
+    if (s->incoming && s->load_pending) {
+        ds1685_save(s);
+    }
 }
 
 static void ds1685_vm_state_change(void *opaque, bool running, RunState state)
@@ -1008,6 +1018,8 @@ static void ds1685_realize(DeviceState *dev, Error **errp)
                                      ds1685_periodic_tick, s);
 
     if (s->blk) {
+        s->incoming_complete.notify = ds1685_incoming_complete;
+        migration_add_incoming_completion_notifier(&s->incoming_complete);
         s->save_bh = qemu_bh_new(ds1685_save_after_load, s);
         s->vmstate_change =
             qemu_add_vm_change_state_handler(ds1685_vm_state_change, s);
@@ -1032,6 +1044,7 @@ static void ds1685_unrealize(DeviceState *dev)
         s->vmstate_change = NULL;
     }
     if (s->save_bh) {
+        notifier_remove(&s->incoming_complete);
         qemu_bh_delete(s->save_bh);
         s->save_bh = NULL;
     }
@@ -1067,7 +1080,7 @@ static int ds1685_post_load(void *opaque, int version_id)
     }
     /* Derived rather than carried, on both sides of the stream. */
     ds1685_update_irq(s);
-    if (s->save_bh) {
+    if (s->save_bh && !s->incoming) {
         qemu_bh_schedule(s->save_bh);
     }
     return 0;
