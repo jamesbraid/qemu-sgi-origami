@@ -952,8 +952,12 @@ static void polygon_heads_init(TestHead *src, TestHead *dst)
         sgi_gl_init(&src->gl[i], i);
         sgi_gl_init(&dst->gl[i], i);
     }
-    /* Staged ownership fixtures: the public opt-in remains unavailable. */
-    src->gl[0].polygon.enabled = dst->gl[0].polygon.enabled = 1;
+    {
+        SGIGLSink sink = { .draw_checked = polygon_draw };
+
+        g_assert_true(sgi_gl_enable_polygon_modes(&src->gl[0], &sink));
+        g_assert_true(sgi_gl_enable_polygon_modes(&dst->gl[0], &sink));
+    }
 }
 
 static void test_polygon_lifecycle(void)
@@ -964,9 +968,8 @@ static void test_polygon_lifecycle(void)
 
     sgi_gl_init(&src, 1);
     sgi_gl_init(&dst, 2);
-    g_assert_false(sgi_gl_enable_polygon_modes(&src, &sink));
-    g_assert_false(src.polygon.enabled);
-    src.polygon.enabled = dst.polygon.enabled = 1;
+    g_assert_true(sgi_gl_enable_polygon_modes(&src, &sink));
+    g_assert_true(sgi_gl_enable_polygon_modes(&dst, &sink));
     polygon_begin(&src, &r);
     for (unsigned n = 0; n < 40; n++) {
         polygon_vertex(&src, &r, n);

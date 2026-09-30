@@ -866,7 +866,7 @@ typedef struct SGIGLSink {
 
 /* OpenGL 1.2.1's initial state, for the context with identity hw_id. */
 void sgi_gl_init(SGIGLContext *c, uint32_t hw_id);
-/* Unavailable until renderer coverage is complete; reset preserves policy. */
+/* Audited host consumers opt in; reset preserves that host policy. */
 bool sgi_gl_enable_polygon_modes(SGIGLContext *c, const SGIGLSink *sink);
 void sgi_gl_cleanup(SGIGLContext *c);
 void sgi_gl_reset(SGIGLContext *c, uint32_t hw_id);

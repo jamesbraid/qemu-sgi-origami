@@ -149,8 +149,11 @@ static void sgi_gl_polygon_release(SGIGLPolygonAssembly *p)
 
 bool sgi_gl_enable_polygon_modes(SGIGLContext *c, const SGIGLSink *sink)
 {
-    /* The renderer must implement every polygon mode before opting in. */
-    return false;
+    if (c->in_begin || !sink || !sink->draw_checked) {
+        return false;
+    }
+    c->polygon.enabled = 1;
+    return true;
 }
 
 void sgi_gl_cleanup(SGIGLContext *c)
