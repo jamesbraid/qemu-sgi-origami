@@ -953,7 +953,7 @@ static int ohci_service_td(OHCIState *ohci, struct ohci_ed *ed)
         }
 
         pktlen = len;
-        if (len && dir != OHCI_TD_DIR_IN) {
+        if (len) {
             /* The endpoint may not allow us to transfer it all now */
             pktlen = (ed->flags & OHCI_ED_MPS_MASK) >> OHCI_ED_MPS_SHIFT;
             /*
@@ -970,7 +970,7 @@ static int ohci_service_td(OHCIState *ohci, struct ohci_ed *ed)
             if (pktlen > len) {
                 pktlen = len;
             }
-            if (!completion) {
+            if (!completion && dir != OHCI_TD_DIR_IN) {
                 if (ohci_copy_td(ohci, &td, ohci->usb_buf, pktlen,
                                  DMA_DIRECTION_TO_DEVICE)) {
                     ohci_die(ohci);
@@ -1051,8 +1051,8 @@ static int ohci_service_td(OHCIState *ohci, struct ohci_ed *ed)
         OHCI_SET_BM(td.flags, TD_CC, OHCI_CC_NOERROR);
         OHCI_SET_BM(td.flags, TD_EC, 0);
 
-        if ((dir != OHCI_TD_DIR_IN) && (ret != len)) {
-            /* Partial packet transfer: TD not ready to retire yet */
+        if (ret == pktlen && ret != len) {
+            /* A full packet with data remaining keeps the TD active. */
             goto exit_no_retire;
         }
 
