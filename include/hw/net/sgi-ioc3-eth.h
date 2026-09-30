@@ -11,6 +11,7 @@
 
 #include "hw/core/sysbus.h"
 #include "hw/net/dp83840.h"
+#include "hw/net/ics1890.h"
 #include "hw/net/net-rx-latency.h"
 #include "net/net.h"
 #include "qom/object.h"
@@ -185,6 +186,10 @@ struct SGIIOC3EthState {
     bool backend_rx_deferred;
 
     DP83840State phy;
+    ICS1890State ics_phy;
+    bool phy_ics1890;
+    bool phy_dp83843;
+    uint8_t phy_addr;
 
     uint16_t mii_data;
     uint16_t mii_data_w;
