@@ -11,7 +11,11 @@ if sgi_roms_available
   sgi_rom_headers = files('lib/rom.h', 'lib/exc-offsets.h', 'lib/rom.ld',
                           'lib/probe-symbols.h')
   sgi_rom_targets = []
-  foreach name : ['addrspace', 'branchlikely', 'bridgebus', 'buserror', 'bwinnode', 'cacheecc', 'cachefaults', 'cacheops', 'cachetags', 'cp0misc', 'cpuid', 'diagregs', 'exceptions', 'foldback', 'fpucond', 'framemask', 'hubint', 'icountslot', 'intchain', 'intdeliver', 'isadecode', 'llsc', 'llscexc', 'llscscale', 'mips4user', 'pcachedata', 'pcachetags', 'perfcount', 'r14000_cache', 'r14000_exceptions', 'r14000_identity', 'r14000_perf', 'scachedata', 'scachetags', 'sext', 'timer', 'timerstall', 'tlb', 'tlbconflict', 'tlbshadow', 'tlbspan', 'tlbuncached', 'watch', 'xcontext', 'xkphys', 'xtlbvector']
+  foreach name : ['addrspace', 'branchlikely', 'bridgebus', 'buserror', 'bwinnode', 'cacheecc', 'cachefaults', 'cacheops', 'cachetags', 'cp0misc', 'cpuid', 'diagregs', 'exceptions', 'foldback', 'fpucond', 'framemask', 'hubint', 'icountslot', 'intchain', 'intdeliver', 'isadecode', 'llsc', 'llscexc', 'llscscale', 'mips4user', 'pcachedata', 'pcachetags', 'perfcount', 'r10000_remap', 'r10000_cache_storage', 'r14000_cache', 'r14000_exceptions', 'r14000_identity', 'r14000_perf', 'scachedata', 'scachetags', 'sext', 'timer', 'timerstall', 'tlb', 'tlbconflict', 'tlbshadow', 'tlbspan', 'tlbuncached', 'watch', 'xcontext', 'xkphys', 'xtlbvector']
+    rom_headers = sgi_rom_headers
+    if name in ['r10000_remap', 'r10000_cache_storage']
+      rom_headers += files('r10000-remap.h')
+    endif
     elf = custom_target('sgi-rom-' + name + '-elf',
       input: files(name + '.c'),
       output: name + '.elf',
@@ -19,7 +23,7 @@ if sgi_roms_available
                 '-Wl,--no-warn-mismatch', '-Wl,--build-id=none',
                 '-T', meson.current_source_dir() / 'lib/rom.ld',
                 sgi_rom_lib, '@INPUT@', '-o', '@OUTPUT@'],
-      depend_files: [sgi_rom_lib, sgi_rom_headers],
+      depend_files: [sgi_rom_lib, rom_headers],
       build_by_default: false)
     rom_target = custom_target('sgi-rom-' + name,
       input: elf, output: name + '.bin',
