@@ -721,7 +721,8 @@ typedef struct SGIGLContext {
     uint32_t clear_stencil;     /* glClearStencil's value */
     /*
      * Aliased sizes and retained polygon modes (3.3 to 3.5).
-     * Smoothing and line stipple remain unimplemented.
+     * Activated polygon LINE supports stipple. Standalone line stipple and
+     * smoothing remain unimplemented.
      */
     float point_size;
     float line_width;
