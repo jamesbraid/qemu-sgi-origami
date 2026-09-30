@@ -1,8 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * sgi-gigachannel: the Origin 200 GIGAchannel expansion cabinet's own I/O,
- * as the cabinet's Crossbow sees it on link 8 (docs/datasheets/
- * sgi-gigachannel.md in the Origami repository): a Bridge with four PCI
+ * as the cabinet's Crossbow sees it on link 8: a Bridge with four PCI
  * openings, the board record the firmware names io7 from, and the
  * cabinet's system-controller status word on the Bridge's external-flash
  * port. The cabinet's Crossbow, and the attached module's own IP29 Bridge

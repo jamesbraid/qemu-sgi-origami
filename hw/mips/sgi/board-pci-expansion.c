@@ -227,9 +227,7 @@ static void pci_expansion_class_init(ObjectClass *oc, const void *data)
  * take PCI devices 0 to 2, an approximation: no source gives the
  * carrier's device wiring.
  *
- * Its board-identity record and Bridge revision
- * (docs/datasheets/sgi-pci-shoebox.md in the Origami repository,
- * "Board-identity record"): a real Origin 2000's PCI XIO board in slot 2
+ * A real Origin 2000's PCI XIO board in slot 2
  * prints part 030-1062-002, revision C and name PCI-XIO, and SGI's part
  * table names 030-1062-002 the Origin 2000 PCI cardcage. That this
  * carrier is that cardcage is inferred: the owner's guide names no part.
