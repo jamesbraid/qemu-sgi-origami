@@ -11957,6 +11957,311 @@ static void test_re_line_execute_rejects_out_of_range_xywin_origin(void)
 }
 
 
+/* Public OpenBSD FIFO packets, independent of the high-port helpers. */
+static void mgras_public_write(QTestState *s, unsigned reg, uint32_t value,
+                               bool execute)
+{
+    uint64_t packet = 0x0018000400000000ULL | ((uint64_t)reg << 40) | value;
+
+    if (execute) {
+        packet |= 0x0004000000000000ULL;
+    }
+    qtest_writeq(s, MGRAS_REG(0x020400), packet);
+}
+
+static void mgras_public_setup(QTestState *s, bool bitmap)
+{
+    mgras_public_write(s, 0x161, 0x0c006300, false);
+    mgras_public_write(s, 0x110, bitmap ? 0x00400018 : 0, false);
+    mgras_public_write(s, 0x163, 0xffffff, false);
+    mgras_public_write(s, 0x164, 0xffffff, false);
+    mgras_public_write(s, 0x162, 0, false);
+    mgras_public_write(s, 0x5b, 0x00332211, false);
+    mgras_public_write(s, 0x140, 0x00b00a00, false);
+    mgras_public_write(s, 0x141, 0x00000d00, false);
+    /* A distinct unrelated legacy fill colour catches source confusion. */
+    mgras_public_write(s, 0x176, 0x990, false);
+}
+
+static void mgras_public_rect(QTestState *s, unsigned x, unsigned y,
+                              unsigned width, unsigned height, bool execute)
+{
+    mgras_public_write(s, 0x46, (x << 16) | y, false);
+    mgras_public_write(s, 0x47, ((x + width - 1) << 16) | (y + height - 1),
+                       false);
+    mgras_public_write(s, 0x45, 0x18, execute);
+}
+
+static void test_public_fifo_fill(void)
+{
+    mgras_reset();
+    mgras_public_setup(qts, false);
+    mgras_public_write(qts, 0x5b, 0x00debc9a, false);
+    mgras_public_rect(qts, 30, 42, 5, 4, true);
+    mgras_public_write(qts, 0x5b, 0x00332211, false);
+    mgras_public_rect(qts, 31, 43, 3, 2, false);
+    g_assert_cmphex(mgras_test_pixel(qts, 31, 43), ==, 0x9abcde);
+    mgras_public_write(qts, 0x45, 0x18, true);
+    for (unsigned y = 42; y <= 45; y++) {
+        for (unsigned x = 30; x <= 34; x++) {
+            bool covered = x >= 31 && x <= 33 && y >= 43 && y <= 44;
+
+            g_assert_cmphex(mgras_test_pixel(qts, x, y), ==,
+                            covered ? 0x112233 : 0x9abcde);
+            g_assert_cmphex(mgras_test_wid(qts, x, y), ==, 0);
+        }
+    }
+    mgras_public_write(qts, 0x163, 0x0000ff, false);
+    mgras_public_write(qts, 0x5b, 0x00665544, false);
+    mgras_public_write(qts, 0x45, 0x18, true);
+    g_assert_cmphex(mgras_test_pixel(qts, 31, 43), ==, 0x112266);
+}
+
+static void test_public_fifo_xor(void)
+{
+    mgras_reset();
+    mgras_public_setup(qts, false);
+    for (unsigned i = 0; i < 6; i++) {
+        mgras_public_write(qts, 0x5b, MGRAS_PIXEL_WORD(0x102030 + i), false);
+        mgras_public_rect(qts, 31 + i % 3, 43 + i / 3, 1, 1, true);
+    }
+    mgras_public_write(qts, 0x161, 0x18006304, false);
+    mgras_public_write(qts, 0x5b, 0x005a3cc3, false);
+    mgras_public_rect(qts, 31, 43, 3, 2, true);
+    for (unsigned i = 0; i < 6; i++) {
+        g_assert_cmphex(mgras_test_pixel(qts, 31 + i % 3, 43 + i / 3), ==,
+                        (0x102030 + i) ^ 0xc33c5a);
+    }
+    mgras_public_write(qts, 0x45, 0x18, true);
+    for (unsigned i = 0; i < 6; i++) {
+        g_assert_cmphex(mgras_test_pixel(qts, 31 + i % 3, 43 + i / 3), ==,
+                        0x102030 + i);
+    }
+}
+
+static void test_public_fifo_glyph_narrow(void)
+{
+    mgras_reset();
+    mgras_public_setup(qts, true);
+    mgras_public_rect(qts, 31, 43, 5, 2, true);
+    g_assert_cmphex(mgras_test_pixel(qts, 31, 43), ==, 0);
+    mgras_public_write(qts, 0x70, 0x88000000, true);
+    mgras_public_write(qts, 0x70, 0x50000000, true);
+    mgras_public_write(qts, 0x70, 0xff000000, true);
+    for (unsigned y = 42; y <= 45; y++) {
+        for (unsigned x = 30; x <= 36; x++) {
+            uint32_t expected = 0;
+
+            if (x >= 31 && x <= 35 && y >= 43 && y <= 44) {
+                uint8_t row = y == 43 ? 0x88 : 0x50;
+                expected = row & (0x80 >> (x - 31)) ? 0x112233 : 0xa0b0d0;
+            }
+            g_assert_cmphex(mgras_test_pixel(qts, x, y), ==, expected);
+        }
+    }
+    mgras_public_rect(qts, 40, 43, 5, 1, true);
+    mgras_public_write(qts, 0x70, 0xff000000, true);
+    for (unsigned x = 40; x < 45; x++) {
+        g_assert_cmphex(mgras_test_pixel(qts, x, 43), ==, 0x112233);
+    }
+    mgras_public_rect(qts, 40, 44, 5, 1, true);
+    mgras_public_write(qts, 0x70, 0, true);
+    mgras_public_setup(qts, false);
+    mgras_public_write(qts, 0x5b, 0x00d0b0a0, false);
+    mgras_public_rect(qts, 40, 45, 5, 1, true);
+    g_assert_cmphex(mgras_test_pixel(qts, 40, 44), ==,
+                    mgras_test_pixel(qts, 40, 45));
+}
+
+static void test_public_fifo_glyph_wide(void)
+{
+    mgras_reset();
+    mgras_public_setup(qts, true);
+    mgras_public_rect(qts, 31, 43, 12, 1, true);
+    mgras_public_write(qts, 0x71, 0x24000000, true);
+    g_assert_cmphex(mgras_test_pixel(qts, 31, 43), ==, 0);
+    mgras_public_write(qts, 0x70, 0x81240000, false);
+    g_assert_cmphex(mgras_test_pixel(qts, 31, 43), ==, 0);
+    mgras_public_write(qts, 0x71, 0x24000000, true);
+    for (unsigned i = 0; i < 14; i++) {
+        uint32_t expected = i >= 12 ? 0 :
+                            (i == 0 || i == 7 || i == 10 ? 0x112233 : 0xa0b0d0);
+        g_assert_cmphex(mgras_test_pixel(qts, 31 + i, 43), ==, expected);
+    }
+    mgras_public_rect(qts, 31, 44, 12, 1, true);
+    mgras_public_write(qts, 0x71, 0xff000000, true);
+    g_assert_cmphex(mgras_test_pixel(qts, 31, 44), ==, 0);
+    mgras_public_write(qts, 0x70, 0xffff0000, false);
+    mgras_public_write(qts, 0x71, 0xff000000, true);
+    for (unsigned i = 0; i < 12; i++) {
+        g_assert_cmphex(mgras_test_pixel(qts, 31 + i, 44), ==, 0x112233);
+    }
+}
+
+static void test_public_fifo_glyph_mask(void)
+{
+    mgras_reset();
+    mgras_public_setup(qts, false);
+    mgras_public_write(qts, 0x5b, 0x008d6e4f, false);
+    mgras_public_rect(qts, 30, 43, 7, 1, true);
+    mgras_public_setup(qts, true);
+    mgras_public_write(qts, 0x163, 0x00ff00, false);
+    mgras_public_rect(qts, 31, 43, 5, 1, true);
+    mgras_public_write(qts, 0x70, 0x88000000, true);
+    for (unsigned i = 0; i < 5; i++) {
+        g_assert_cmphex(mgras_test_pixel(qts, 31 + i, 43), ==,
+                        i == 0 || i == 4 ? 0x4f228d : 0x4fb08d);
+        g_assert_cmphex(mgras_test_wid(qts, 31 + i, 43), ==, 0);
+    }
+    g_assert_cmphex(mgras_test_pixel(qts, 30, 43), ==, 0x4f6e8d);
+    g_assert_cmphex(mgras_test_pixel(qts, 36, 43), ==, 0x4f6e8d);
+}
+
+static void test_public_fifo_glyph_validity(void)
+{
+    mgras_reset();
+    mgras_public_setup(qts, true);
+    mgras_public_rect(qts, 31, 43, 12, 1, true);
+    mgras_public_write(qts, 0x70, 0x81240000, false);
+    mgras_public_write(qts, 0x47, (42 << 16) | 43, false);
+    mgras_public_write(qts, 0x71, 0x24000000, true);
+    g_assert_cmphex(mgras_test_pixel(qts, 31, 43), ==, 0);
+    mgras_public_write(qts, 0x45, 0x18, true);
+    mgras_public_write(qts, 0x71, 0x24000000, true);
+    g_assert_cmphex(mgras_test_pixel(qts, 31, 43), ==, 0);
+    mgras_public_write(qts, 0x70, 0x81240000, false);
+    mgras_public_write(qts, 0x110, 0x00400018, false);
+    mgras_public_write(qts, 0x45, 0x18, true);
+    mgras_public_write(qts, 0x71, 0x24000000, true);
+    g_assert_cmphex(mgras_test_pixel(qts, 31, 43), ==, 0);
+    mgras_public_write(qts, 0x70, 0x81240000, false);
+    mgras_reset();
+    mgras_public_setup(qts, true);
+    mgras_public_rect(qts, 31, 43, 12, 1, true);
+    mgras_public_write(qts, 0x71, 0x24000000, true);
+    g_assert_cmphex(mgras_test_pixel(qts, 31, 43), ==, 0);
+    mgras_public_rect(qts, 31, 43, 5, 2, true);
+    mgras_reset();
+    mgras_public_write(qts, 0x70, 0xff000000, true);
+    g_assert_cmphex(mgras_test_pixel(qts, 31, 43), ==, 0);
+}
+
+static void test_public_fifo_unsupported(void)
+{
+    mgras_reset();
+    mgras_public_setup(qts, false);
+    mgras_public_rect(qts, 31, 43, 3, 2, false);
+    mgras_public_write(qts, 0x45, 0x19, true);
+    g_assert_cmphex(mgras_test_pixel(qts, 31, 43), ==, 0);
+    mgras_public_write(qts, 0x110, 1, false);
+    mgras_public_write(qts, 0x45, 0x18, true);
+    g_assert_cmphex(mgras_test_pixel(qts, 31, 43), ==, 0);
+    mgras_public_write(qts, 0x110, 0, false);
+    mgras_public_write(qts, 0x161, 0x0c006301, false);
+    mgras_public_write(qts, 0x45, 0x18, true);
+    g_assert_cmphex(mgras_test_pixel(qts, 31, 43), ==, 0);
+    mgras_public_write(qts, 0x161, 0x0c006300, false);
+    mgras_public_write(qts, 0x47, (30 << 16) | 44, false);
+    mgras_public_write(qts, 0x45, 0x18, true);
+    g_assert_cmphex(mgras_test_pixel(qts, 31, 43), ==, 0);
+    mgras_public_write(qts, 0x47, (1280 << 16) | 44, false);
+    mgras_public_write(qts, 0x45, 0x18, true);
+    g_assert_cmphex(mgras_test_pixel(qts, 31, 43), ==, 0);
+    mgras_public_setup(qts, true);
+    mgras_public_rect(qts, 31, 43, 17, 1, true);
+    mgras_public_write(qts, 0x70, 0xffff0000, false);
+    mgras_public_write(qts, 0x71, 0xff000000, true);
+    g_assert_cmphex(mgras_test_pixel(qts, 31, 43), ==, 0);
+    mgras_public_rect(qts, 31, 43, 12, 2, true);
+    mgras_public_write(qts, 0x70, 0xffff0000, false);
+    mgras_public_write(qts, 0x71, 0xff000000, true);
+    g_assert_cmphex(mgras_test_pixel(qts, 31, 43), ==, 0);
+    mgras_public_rect(qts, 31, 43, 5, 1, true);
+    mgras_public_write(qts, 0x71, 0xff000000, true);
+    g_assert_cmphex(mgras_test_pixel(qts, 31, 43), ==, 0);
+    mgras_public_rect(qts, 31, 43, 12, 1, true);
+    mgras_public_write(qts, 0x70, 0xffff0000, true);
+    mgras_public_write(qts, 0x71, 0xff000000, true);
+    g_assert_cmphex(mgras_test_pixel(qts, 31, 43), ==, 0);
+    qtest_writeq(qts, MGRAS_REG(0x020400), 0x001c450800000018ULL);
+    g_assert_cmphex(mgras_test_pixel(qts, 31, 43), ==, 0);
+    qtest_writel(qts, MGRAS_REG(0x020400), 0x001c4504);
+    mgras_assert_width_error(qts, MGRAS_REG(0x020400));
+}
+
+static void test_public_fifo_glyph_widths(void)
+{
+    static const unsigned widths[] = { 1, 8, 9, 16 };
+
+    mgras_reset();
+    mgras_public_setup(qts, true);
+    for (unsigned j = 0; j < G_N_ELEMENTS(widths); j++) {
+        unsigned width = widths[j];
+
+        mgras_public_rect(qts, 31, 43 + j, width, 1, true);
+        if (width <= 8) {
+            mgras_public_write(qts, 0x70, 0x81000000, false);
+            g_assert_cmphex(mgras_test_pixel(qts, 31, 43 + j), ==, 0);
+            mgras_public_write(qts, 0x70, 0x81000000, true);
+        } else {
+            mgras_public_write(qts, 0x70, 0x81810000, false);
+            mgras_public_write(qts, 0x71, 0x81000000, true);
+        }
+        for (unsigned i = 0; i <= width; i++) {
+            uint32_t expected = i == width ? 0 :
+                (i % 8 == 0 || i % 8 == 7 ? 0x112233 : 0xa0b0d0);
+            g_assert_cmphex(mgras_test_pixel(qts, 31 + i, 43 + j), ==,
+                            expected);
+        }
+    }
+}
+
+static void mgras_public_pending_migration(bool wide)
+{
+    g_autofree char *tmpfs = NULL;
+    g_autofree char *uri = NULL;
+    g_autofree char *dest_cmdline = NULL;
+    GError *err = NULL;
+    QTestState *from, *to;
+
+    tmpfs = g_dir_make_tmp("sn0-mgras-public-glyph-XXXXXX", &err);
+    g_assert_no_error(err);
+    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+    from = qtest_init(MIGRATION_ARGS);
+    dest_cmdline = g_strdup_printf(MIGRATION_ARGS " -incoming %s", uri);
+    to = qtest_init(dest_cmdline);
+    mgras_public_setup(from, true);
+    mgras_public_rect(from, 31, 43, wide ? 12 : 5, wide ? 1 : 2, true);
+    mgras_public_write(from, 0x70, wide ? 0x81240000 : 0x88000000, !wide);
+    sgi_migrate_stopped(from, uri);
+    g_assert_cmphex(mgras_test_pixel(to, 31, 43), ==, wide ? 0 : 0x112233);
+    g_assert_cmphex(mgras_test_pixel(to, 31, 44), ==, 0);
+    mgras_public_write(to, wide ? 0x71 : 0x70,
+                       wide ? 0x24000000 : 0x50000000, true);
+    for (unsigned i = 0; i < (wide ? 12 : 5); i++) {
+        bool set = wide ? i == 0 || i == 7 || i == 10 : i == 1 || i == 3;
+        g_assert_cmphex(mgras_test_pixel(to, 31 + i, wide ? 43 : 44), ==,
+                        set ? 0x112233 : 0xa0b0d0);
+    }
+    mgras_public_write(to, wide ? 0x71 : 0x70, 0xff000000, true);
+    g_assert_cmphex(mgras_test_pixel(to, 32, wide ? 43 : 44), ==,
+                    wide ? 0xa0b0d0 : 0x112233);
+    g_assert_cmphex(mgras_test_pixel(to, 31, wide ? 44 : 45), ==, 0);
+    qtest_quit(to);
+    qtest_quit(from);
+    rmdir(tmpfs);
+}
+
+static void test_public_fifo_glyph_narrow_migration(void)
+{
+    mgras_public_pending_migration(false);
+}
+
+static void test_public_fifo_glyph_wide_migration(void)
+{
+    mgras_public_pending_migration(true);
+}
+
 static void test_re_char_h_execute(void)
 {
     mgras_reset();
@@ -16242,6 +16547,26 @@ int main(int argc, char **argv)
                    test_re_line_clip_follows_xywin_origin);
     qtest_add_func("sn0/origin2000/mgras/re-char-h-execute",
                    test_re_char_h_execute);
+    qtest_add_func("sn0/origin2000/mgras/public-fifo/glyph-wide",
+                   test_public_fifo_glyph_wide);
+    qtest_add_func("sn0/origin2000/mgras/public-fifo/glyph-narrow",
+                   test_public_fifo_glyph_narrow);
+    qtest_add_func("sn0/origin2000/mgras/public-fifo/xor",
+                   test_public_fifo_xor);
+    qtest_add_func("sn0/origin2000/mgras/public-fifo/fill",
+                   test_public_fifo_fill);
+    qtest_add_func("sn0/origin2000/mgras/public-fifo/glyph-wide-migration",
+                   test_public_fifo_glyph_wide_migration);
+    qtest_add_func("sn0/origin2000/mgras/public-fifo/glyph-narrow-migration",
+                   test_public_fifo_glyph_narrow_migration);
+    qtest_add_func("sn0/origin2000/mgras/public-fifo/glyph-widths",
+                   test_public_fifo_glyph_widths);
+    qtest_add_func("sn0/origin2000/mgras/public-fifo/unsupported",
+                   test_public_fifo_unsupported);
+    qtest_add_func("sn0/origin2000/mgras/public-fifo/glyph-mask",
+                   test_public_fifo_glyph_mask);
+    qtest_add_func("sn0/origin2000/mgras/public-fifo/glyph-validity",
+                   test_public_fifo_glyph_validity);
     qtest_add_func("sn0/origin2000/mgras/fifo-re-blockcopy-unsupported",
                    test_fifo_re_blockcopy_unsupported);
     qtest_add_func("sn0/origin2000/mgras/migration", test_migration);
