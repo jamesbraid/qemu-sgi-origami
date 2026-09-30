@@ -227,6 +227,7 @@ struct AudioMixengBackend {
     int nb_hw_voices_in;
     int64_t period_ticks;
 
+    bool shutdown;
     bool timer_running;
     uint64_t timer_last;
     VMChangeStateEntry *vmse;
