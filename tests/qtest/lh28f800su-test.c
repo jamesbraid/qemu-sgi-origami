@@ -6,6 +6,8 @@
 
 #define FLASH UINT64_C(0x50000000)
 #define BLOCK (64 * 1024)
+#define BSR(n) ((n) * BLOCK + 2)
+#define GSR(n) ((n) * BLOCK + 4)
 #define PROGRAM_NS 8000
 #define ERASE_NS 700000000
 #define PIN_VPP 0
@@ -42,6 +44,12 @@ static uint8_t status(QTestState *qts)
 {
     command(qts, 0, 0x70);
     return word(qts, 0);
+}
+
+static uint8_t extended_status(QTestState *qts, uint64_t offset)
+{
+    command(qts, BLOCK + 0x80, 0x71);
+    return word(qts, offset);
 }
 
 static void clear_status(QTestState *qts)
@@ -134,7 +142,7 @@ static void test_access_and_commands(void)
     uint16_t half;
     uint32_t wide;
     uint64_t quad;
-    const uint16_t unsupported[] = { 0x71, 0x77, 0x97, 0xa7, 0xee };
+    const uint16_t unsupported[] = { 0x77, 0xa7, 0xee };
 
     g_assert_cmpuint(qtest_readb_tx(qts, FLASH, &byte), !=, MEMTX_OK);
     g_assert_cmpuint(qtest_writeb_tx(qts, FLASH, 0xff), !=, MEMTX_OK);
@@ -150,6 +158,114 @@ static void test_access_and_commands(void)
                          MEMTX_OK);
     }
     g_assert_cmphex(word(qts, 0), ==, 0xffff);
+    qtest_quit(qts);
+}
+
+static void test_extended_addresses_and_upload(void)
+{
+    QTestState *qts = start("");
+    uint16_t half;
+
+    g_assert_cmphex(extended_status(qts, BSR(0)), ==, 0x80);
+    g_assert_cmphex(word(qts, GSR(0)), ==, 0x86);
+    g_assert_cmphex(word(qts, BSR(1)), ==, 0x80);
+    g_assert_cmphex(word(qts, GSR(15)), ==, 0x86);
+    g_assert_cmphex(word(qts, BSR(15)), ==, 0x80);
+    g_assert_cmpuint(qtest_readw_tx(qts, FLASH, &half), !=, MEMTX_OK);
+    g_assert_cmpuint(qtest_readw_tx(qts, FLASH + 6, &half), !=, MEMTX_OK);
+    g_assert_cmpuint(qtest_readw_tx(qts, FLASH + BSR(15) + 4, &half),
+                     !=, MEMTX_OK);
+
+    command(qts, BLOCK + 0x80, 0x97);
+    g_assert_cmphex(word(qts, BSR(0)), ==, 0x80);
+    command(qts, 2 * BLOCK + 0x80, 0xd0);
+    g_assert_cmphex(word(qts, BSR(0)), ==, 0xc0);
+    g_assert_cmphex(word(qts, BSR(1)), ==, 0x80);
+    g_assert_cmphex(word(qts, GSR(15)), ==, 0x86);
+
+    pin(qts, PIN_RP, 0);
+    pin(qts, PIN_RP, 1);
+    qtest_clock_step(qts, 400);
+    g_assert_cmphex(extended_status(qts, BSR(0)), ==, 0x80);
+    command(qts, 0, 0x97);
+    g_assert_cmpuint(qtest_writew_tx(qts, FLASH, 0x1212), !=, MEMTX_OK);
+    g_assert_cmphex(word(qts, BSR(0)), ==, 0x80);
+    g_assert_cmphex(word(qts, GSR(0)), ==, 0x86);
+    g_assert_cmpuint(qtest_writew_tx(qts, FLASH, 0xd0d0), !=, MEMTX_OK);
+    g_assert_cmphex(word(qts, BSR(0)), ==, 0x80);
+
+    qtest_quit(qts);
+}
+
+static void test_extended_operation_status(void)
+{
+    QTestState *qts = start("");
+
+    pin(qts, PIN_VPP, 0);
+    program(qts, 0x40, 0x1234);
+    g_assert_cmphex(status(qts), ==, 0x98);
+    g_assert_cmphex(extended_status(qts, GSR(0)), ==, 0xa6);
+    g_assert_cmphex(word(qts, BSR(0)), ==, 0xa4);
+    clear_status(qts);
+    g_assert_cmphex(extended_status(qts, GSR(0)), ==, 0x86);
+    g_assert_cmphex(word(qts, BSR(0)), ==, 0x80);
+
+    pin(qts, PIN_VPP, 1);
+    pin(qts, PIN_WP, 0);
+    program(qts, BLOCK + 0x40, 0x1234);
+    g_assert_cmphex(status(qts), ==, 0x90);
+    g_assert_cmphex(extended_status(qts, GSR(0)), ==, 0xa6);
+    g_assert_cmphex(word(qts, BSR(1)), ==, 0xa0);
+    g_assert_cmphex(word(qts, BSR(0)), ==, 0x80);
+    clear_status(qts);
+
+    command(qts, 0, 0x97);
+    command(qts, 0, 0xd0);
+    g_assert_cmphex(extended_status(qts, BSR(0)), ==, 0xc0);
+    program(qts, 0x40, 0x1234);
+    g_assert_cmphex(status(qts), ==, 0x00);
+    g_assert_cmphex(extended_status(qts, GSR(0)), ==, 0x06);
+    g_assert_cmphex(word(qts, BSR(0)), ==, 0x40);
+    g_assert_cmphex(word(qts, BSR(1)), ==, 0x80);
+    g_assert_cmpuint(qtest_writew_tx(qts, FLASH, 0x9797), !=, MEMTX_OK);
+    qtest_clock_step(qts, PROGRAM_NS);
+    g_assert_cmphex(word(qts, GSR(0)), ==, 0x86);
+    g_assert_cmphex(word(qts, BSR(0)), ==, 0xc0);
+    array_mode(qts);
+    g_assert_cmphex(word(qts, 0x40), ==, 0x1234);
+
+    pin(qts, PIN_RP, 0);
+    pin(qts, PIN_RP, 1);
+    qtest_clock_step(qts, 400);
+    g_assert_cmphex(extended_status(qts, BSR(0)), ==, 0x80);
+    program(qts, 0x42, 0x5678);
+    qtest_clock_step(qts, PROGRAM_NS);
+    array_mode(qts);
+    g_assert_cmphex(word(qts, 0x42), ==, 0x5678);
+    g_assert_cmphex(word(qts, 0x40), ==, 0x1234);
+    program(qts, BLOCK + 0x40, 0x1234);
+    g_assert_cmphex(status(qts), ==, 0x90);
+    g_assert_cmphex(extended_status(qts, GSR(0)), ==, 0xa6);
+    g_assert_cmphex(word(qts, BSR(1)), ==, 0xa0);
+    clear_status(qts);
+    array_mode(qts);
+    g_assert_cmphex(word(qts, BLOCK + 0x40), ==, 0xffff);
+
+    command(qts, 0, 0x20);
+    command(qts, 0x40, 0xd0);
+    g_assert_cmphex(extended_status(qts, GSR(0)), ==, 0x06);
+    g_assert_cmphex(word(qts, BSR(0)), ==, 0x00);
+    command(qts, 0, 0xb0);
+    g_assert_cmphex(extended_status(qts, GSR(0)), ==, 0xc6);
+    g_assert_cmphex(word(qts, BSR(0)), ==, 0x80);
+    command(qts, 0, 0xd0);
+    g_assert_cmphex(extended_status(qts, GSR(0)), ==, 0x06);
+    qtest_clock_step(qts, ERASE_NS);
+    g_assert_cmphex(word(qts, GSR(0)), ==, 0x86);
+    g_assert_cmphex(word(qts, BSR(0)), ==, 0x80);
+    array_mode(qts);
+    g_assert_cmphex(word(qts, 0x40), ==, 0xffff);
+
     qtest_quit(qts);
 }
 
@@ -342,11 +458,45 @@ static void test_migration_erase(gconstpointer opaque)
     g_assert_cmpint(g_rmdir(dir), ==, 0);
 }
 
+static void test_migration_extended(gconstpointer opaque)
+{
+    bool pending = GPOINTER_TO_INT(opaque);
+    g_autofree char *dir = g_dir_make_tmp("lh28f800su-status-XXXXXX", NULL);
+    g_autofree char *socket = g_build_filename(dir, "migration.sock", NULL);
+    g_autofree char *uri = g_strdup_printf("unix:%s", socket);
+    QTestState *from = start("");
+    QTestState *to = start("-incoming defer");
+
+    g_assert_cmphex(extended_status(from, BSR(0)), ==, 0x80);
+    command(from, 0, 0x97);
+    if (!pending) {
+        command(from, 0, 0xd0);
+    }
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    sgi_migrate_stopped(from, uri);
+    sgi_wait_migration_status(to, "completed", 30);
+    g_assert_cmphex(word(to, BSR(0)), ==, pending ? 0x80 : 0xc0);
+    g_assert_cmphex(word(to, GSR(15)), ==, 0x86);
+    if (pending) {
+        command(to, BLOCK + 0x40, 0xd0);
+        g_assert_cmphex(word(to, BSR(0)), ==, 0xc0);
+    }
+    qtest_quit(from);
+    qtest_quit(to);
+    g_unlink(socket);
+    g_assert_cmpint(g_rmdir(dir), ==, 0);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
     qtest_add_func("/lh28f800su/compatible-x16", test_compatible);
     qtest_add_func("/lh28f800su/access-commands", test_access_and_commands);
+    qtest_add_func("/lh28f800su/extended-addresses-upload",
+                   test_extended_addresses_and_upload);
+    qtest_add_func("/lh28f800su/extended-operation-status",
+                   test_extended_operation_status);
     qtest_add_func("/lh28f800su/protection-reset", test_protection_and_reset);
     qtest_add_func("/lh28f800su/migration", test_migration);
     g_test_add_data_func("/lh28f800su/migration-array",
@@ -359,5 +509,9 @@ int main(int argc, char **argv)
                          GINT_TO_POINTER(false), test_migration_erase);
     g_test_add_data_func("/lh28f800su/migration-suspended",
                          GINT_TO_POINTER(true), test_migration_erase);
+    g_test_add_data_func("/lh28f800su/migration-extended-uploaded",
+                         GINT_TO_POINTER(false), test_migration_extended);
+    g_test_add_data_func("/lh28f800su/migration-extended-setup",
+                         GINT_TO_POINTER(true), test_migration_extended);
     return g_test_run();
 }
