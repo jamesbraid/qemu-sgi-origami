@@ -187,6 +187,9 @@ static void populate(SGIGLContext *c, bool other)
     c->cur.window_matrix_given = !other;
     c->cur.window_rows_down = other;
     c->point_size = other ? 0.5f : 64.0f;
+    for (unsigned i = 0; i < 32; i++) {
+        c->polygon_stipple[i] = other ? 1u << i : ~(1u << i);
+    }
     c->line_width = other ? 3.0f : 0.0078125f;
     c->line_stipple_repeat = other ? 1 : 256;
     c->line_stipple_pattern = other ? 0xffff : 0x5a5a;
@@ -821,12 +824,44 @@ static void test_refuses_corrupt(void)
     }
 }
 
+static void test_polygon_stipple_restore(void)
+{
+    TestHead src = { 0 }, dst = { 0 };
+    uint32_t rows[32] = { 0 }, out[32];
+    GByteArray *stream;
+
+    for (int i = 0; i < CONTEXTS; i++) {
+        sgi_gl_init(&src.gl[i], i);
+        sgi_gl_init(&dst.gl[i], i);
+    }
+    /* An old-layout stream omits the pattern subsection entirely. */
+    stream = save_head(&src);
+    g_assert_true(sgi_gl_polygon_stipple(&dst.gl[0], rows));
+    g_assert_cmpint(load_head(stream, &dst, NULL), ==, 0);
+    g_byte_array_unref(stream);
+    g_assert_true(sgi_gl_get_polygon_stipple(&dst.gl[0], out));
+    for (unsigned i = 0; i < 32; i++) {
+        g_assert_cmphex(out[i], ==, UINT32_MAX);
+        rows[i] = 1u << i;
+    }
+    /* A disabled nondefault pattern is retained independently of enable. */
+    g_assert_true(sgi_gl_polygon_stipple(&src.gl[0], rows));
+    stream = save_head(&src);
+    g_assert_cmpint(load_head(stream, &dst, NULL), ==, 0);
+    g_byte_array_unref(stream);
+    g_assert_true(sgi_gl_get_polygon_stipple(&dst.gl[0], out));
+    g_assert_cmpmem(rows, sizeof(rows), out, sizeof(out));
+    g_assert_cmpuint(dst.gl[0].raster_enables, ==, 0);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
     module_call_init(MODULE_INIT_QOM);
     g_test_add_func("/sgi-gl-vmstate/every-byte-described",
                     test_every_byte_described);
+    g_test_add_func("/sgi-gl-vmstate/polygon-stipple-restore",
+                    test_polygon_stipple_restore);
     g_test_add_func("/sgi-gl-vmstate/round-trip", test_round_trip);
     g_test_add_func("/sgi-gl-vmstate/initial-needs-no-subsection",
                     test_initial_needs_no_subsection);
