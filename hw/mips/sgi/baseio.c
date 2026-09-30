@@ -771,6 +771,10 @@ static bool baseio_build_fuel(SGIBaseioState *s, Error **errp)
     if (s->fuel_mac) {
         qdev_prop_set_string(DEVICE(ioc3), "board-mac", s->fuel_mac);
     }
+    qdev_prop_set_uint16(DEVICE(&SGI_IOC3(ioc3)->parallel_dev),
+                        "parallel-part", SGI_IOC3_PAR_PART_TL16PIR552);
+    qdev_prop_set_uint16(DEVICE(&SGI_IOC3(ioc3)->parallel_dev),
+                        "fifo-depth", SGI_IOC3_PAR_TL16_FIFO_DEPTH);
     qdev_prop_set_uint8(DEVICE(ioc3), "phy-addr", 1);
     object_property_set_bool(OBJECT(ioc3), "phy-dp83843", true,
                              &error_abort);
