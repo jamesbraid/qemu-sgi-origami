@@ -2412,6 +2412,33 @@ static void test_sharp_flash_shutdown_pending(gconstpointer data)
     g_assert_cmpint(g_rmdir(dir), ==, 0);
 }
 
+static void test_rad_pci_identity(gconstpointer data)
+{
+    bool octane2 = GPOINTER_TO_INT(data);
+    QTestState *qts = octane2 ? octane2_start_args("") : octane_start();
+
+    g_assert_cmphex(qtest_readl(qts, CFG(3)), ==, RAD_PCI_ID);
+    g_assert_cmphex(qtest_readl(qts, CFG(3) + 8), ==, RAD_REVISION);
+    qtest_writel(qts, CFG(3) + 8, 0xffffffff);
+    g_assert_cmphex(qtest_readl(qts, CFG(3) + 8), ==, RAD_REVISION);
+    qtest_writel(qts, CFG(3) + 8, 0);
+    g_assert_cmphex(qtest_readl(qts, CFG(3) + 8), ==, RAD_REVISION);
+
+    qtest_writel(qts, CFG(3) + 0x10, RAD_PCI_BAR0);
+    qtest_writel(qts, CFG(3) + 4, 6);
+    g_assert_cmphex(qtest_readl(qts, CFG(3) + 0x10), ==, RAD_PCI_BAR0);
+    g_assert_cmphex(qtest_readl(qts, CFG(3) + 4) & 0xffff, ==, 6);
+    /* Machine reset also reaches PCI bus reset and clears writable config. */
+    qtest_system_reset(qts);
+    g_assert_cmphex(qtest_readl(qts, CFG(3) + 0x10), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, CFG(3) + 4) & 0xffff, ==, 0);
+    g_assert_cmphex(qtest_readl(qts, CFG(3)), ==, RAD_PCI_ID);
+    g_assert_cmphex(qtest_readl(qts, CFG(3) + 8), ==, RAD_REVISION);
+    qtest_writel(qts, CFG(3) + 8, 0x04010070);
+    g_assert_cmphex(qtest_readl(qts, CFG(3) + 8), ==, RAD_REVISION);
+    qtest_quit(qts);
+}
+
 static void test_rad_pci(void)
 {
     QTestState *qts = octane_start();
@@ -4145,6 +4172,10 @@ int main(int argc, char **argv)
     qtest_add_data_func("/octane/sharp-shutdown-suspended", GUINT_TO_POINTER(1),
                         test_sharp_flash_shutdown_pending);
     qtest_add_func("/octane/rad-pci", test_rad_pci);
+    qtest_add_data_func("/octane/rad-pci-identity", GINT_TO_POINTER(0),
+                        test_rad_pci_identity);
+    qtest_add_data_func("/octane2/rad-pci-identity", GINT_TO_POINTER(1),
+                        test_rad_pci_identity);
     qtest_add_func("/octane/rad-status-direct", test_rad_status_direct);
     qtest_add_data_func("/octane/rad-status-primary-only", GINT_TO_POINTER(0),
                         test_rad_status_primary_only);

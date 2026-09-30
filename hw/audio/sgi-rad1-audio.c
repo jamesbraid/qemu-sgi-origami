@@ -1948,6 +1948,7 @@ static void sgi_rad1_octane_class_init(ObjectClass *klass, const void *data)
     dc->desc = "SGI Octane RAD status and analog output model";
     dc->vmsd = &vmstate_sgi_rad1_octane;
     pc->revision = 0xc0;
+    pc->class_id = PCI_CLASS_NOT_DEFINED;
     pc->realize = sgi_rad1_octane_realize;
     pc->exit = sgi_rad1_audio_exit;
     rc->phases.hold = sgi_rad1_octane_reset_hold;
