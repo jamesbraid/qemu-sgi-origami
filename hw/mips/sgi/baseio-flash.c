@@ -1,7 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * The BASEIO PROM flash part (docs/datasheets/baseio.md, "The flash
- * part", in the Origami repository): a 1 MB, 512K x16 top-boot part
+ * The BASEIO PROM flash model uses a 1 MB, 512K x16 top-boot part
  * answering the AMD command set with manufacturer 0x01 and device
  * 0x22da, one of the three sixteen-bit identities the IP27 PROM's loader
  * accepts, and the one Linux's JEDEC table names AM29LV800BT. Which of
