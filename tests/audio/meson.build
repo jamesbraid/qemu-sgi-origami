@@ -30,3 +30,7 @@ foreach name : ['wav', 'voices', 'capture', 'volume-out', 'volume-in']
          args: ['--audiodev', 'none', '-p', '/audio/cleanup/' + name],
          suite: 'audio')
 endforeach
+
+test('audio-wav-drain', test_audio,
+     args: ['--audiodev', 'none', '-p', '/audio/out/wav-drain'],
+     suite: 'audio')
