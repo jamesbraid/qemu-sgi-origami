@@ -18,6 +18,13 @@
 #define BRIDGE_DEVICE3  0x700000
 #define IOC3_BASE       (SPACE_IO + ((uint64_t)CONSOLE_WIDGET << 24) + \
                          BRIDGE_DEVICE2)
+#define FUEL_WIDGET     15
+#define FUEL_IOC3_BASE  (SPACE_IO + ((uint64_t)FUEL_WIDGET << 24) + \
+                         0x800000)
+#define FUEL_PCI_CFG    (SPACE_IO + ((uint64_t)FUEL_WIDGET << 24) + \
+                         0x020000 + 4 * 0x1000)
+#define FUEL_BRIDGE_DEVICE4 (SPACE_IO + ((uint64_t)FUEL_WIDGET << 24) + \
+                             0x200 + 4 * 8 + 4)
 #define TEST_IOC3_BASE  (SPACE_IO + ((uint64_t)CONSOLE_WIDGET << 24) + \
                          BRIDGE_DEVICE3)
 
@@ -109,6 +116,9 @@ static void test_ioc3_attach(QTestState *qts)
 #define ECP_FIFO         (PAR_ECP + 0x08)
 #define ECP_CONFIG_B     (PAR_ECP + 0x09)
 #define ECP_EXTENDED     (PAR_ECP + 0x0a)
+#define FUEL_ECP_FIFO   (FUEL_IOC3_BASE + 0x20158)
+#define FUEL_ECP_CONFIG_B (FUEL_IOC3_BASE + 0x20159)
+#define FUEL_ECP_EXTENDED (FUEL_IOC3_BASE + 0x2015a)
 
 /* Extended control: two status bits, three control bits, then the mode. */
 #define ECR_FIFO_EMPTY   (1u << 0)
@@ -297,6 +307,158 @@ static void test_parallel_part_must_match_when_loading(const void *data)
     g_free(hmp_ret);
     qtest_quit(qts);
 
+    g_assert_cmpint(g_unlink(image), ==, 0);
+    g_assert_cmpint(g_rmdir(tmpdir), ==, 0);
+}
+
+static void fuel_parallel_map(QTestState *qts)
+{
+    qtest_writel(qts, FUEL_PCI_CFG + PCI_BAR0, IOC3_PCI_MMIO);
+    qtest_writel(qts, FUEL_PCI_CFG + PCI_COMMAND,
+                 PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER);
+    qtest_writel(qts, FUEL_BRIDGE_DEVICE4,
+                 DEV_MEMORY_SPACE | (IOC3_PCI_MMIO >> 20));
+}
+
+static QTestState *fuel_parallel_start(char **prom_path, const char *extra)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree uint8_t *image = g_malloc0(PROM_SIZE);
+    g_autofree char *quoted = NULL;
+    QTestState *qts;
+    int fd = g_file_open_tmp("fuel-parallel-prom-XXXXXX.bin", prom_path,
+                             &error);
+
+    g_assert_no_error(error);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(write(fd, image, PROM_SIZE), ==, (ssize_t)PROM_SIZE);
+    g_assert_cmpint(close(fd), ==, 0);
+    quoted = g_shell_quote(*prom_path);
+    qts = qtest_initf("-M fuel,fuel-board-id-word=0x4abc,"
+                      "fuel-ioc3-subsystem-id=0xc30a,"
+                      "fuel-l1-type-code=0x61,"
+                      "fuel-bedrock-revision=0x2 "
+                      "-cpu R14000 -smp 1 -m 512M -bios %s -S %s",
+                      quoted, extra);
+
+    fuel_parallel_map(qts);
+    return qts;
+}
+
+static void test_fuel_ti_fifo_wraps_and_overruns(const void *data)
+{
+    g_autofree char *prom_path = NULL;
+    QTestState *qts = fuel_parallel_start(&prom_path, "");
+    unsigned int i;
+
+    qtest_writeb(qts, FUEL_ECP_EXTENDED, ECR_MODE(MODE_TEST));
+    g_assert_cmphex(qtest_readb(qts, FUEL_ECP_EXTENDED), ==,
+                    ECR_MODE(MODE_TEST) | ECR_FIFO_EMPTY);
+    qtest_readb(qts, FUEL_ECP_FIFO);
+    g_assert_cmphex(qtest_readb(qts, FUEL_ECP_EXTENDED), ==,
+                    ECR_MODE(MODE_TEST) | ECR_FIFO_EMPTY);
+    for (i = 0; i < 15; i++) {
+        qtest_writeb(qts, FUEL_ECP_FIFO, 0x40 + i);
+        g_assert_cmphex(qtest_readb(qts, FUEL_ECP_EXTENDED), ==,
+                        ECR_MODE(MODE_TEST));
+    }
+    qtest_writeb(qts, FUEL_ECP_FIFO, 0x4f);
+    g_assert_cmphex(qtest_readb(qts, FUEL_ECP_EXTENDED), ==,
+                    ECR_MODE(MODE_TEST) | ECR_FIFO_FULL);
+    for (i = 0; i < 16; i++) {
+        g_assert_cmphex(qtest_readb(qts, FUEL_ECP_FIFO), ==, 0x40 + i);
+    }
+    g_assert_cmphex(qtest_readb(qts, FUEL_ECP_EXTENDED), ==,
+                    ECR_MODE(MODE_TEST) | ECR_FIFO_EMPTY);
+
+    for (i = 0; i < 16; i++) {
+        qtest_writeb(qts, FUEL_ECP_FIFO, 0x40 + i);
+    }
+    for (i = 0; i < 16; i++) {
+        qtest_writeb(qts, FUEL_ECP_FIFO, 0x50 + i);
+        g_assert_cmphex(qtest_readb(qts, FUEL_ECP_EXTENDED), ==,
+                        ECR_MODE(MODE_TEST) | ECR_FIFO_FULL);
+    }
+    for (i = 0; i < 16; i++) {
+        g_assert_cmphex(qtest_readb(qts, FUEL_ECP_FIFO), ==, 0x50 + i);
+    }
+    g_assert_cmphex(qtest_readb(qts, FUEL_ECP_EXTENDED), ==,
+                    ECR_MODE(MODE_TEST) | ECR_FIFO_EMPTY);
+    qtest_writeb(qts, FUEL_ECP_FIFO, 0x99);
+    g_assert_cmphex(qtest_readb(qts, FUEL_ECP_EXTENDED), ==,
+                    ECR_MODE(MODE_TEST));
+    qtest_system_reset(qts);
+    fuel_parallel_map(qts);
+    g_assert_cmphex(qtest_readb(qts, FUEL_ECP_EXTENDED), ==, ECR_FIFO_EMPTY);
+    qtest_writeb(qts, FUEL_ECP_EXTENDED, ECR_MODE(MODE_TEST));
+    g_assert_cmphex(qtest_readb(qts, FUEL_ECP_EXTENDED), ==,
+                    ECR_MODE(MODE_TEST) | ECR_FIFO_EMPTY);
+    qtest_readb(qts, FUEL_ECP_FIFO);
+    g_assert_cmphex(qtest_readb(qts, FUEL_ECP_EXTENDED), ==,
+                    ECR_MODE(MODE_TEST) | ECR_FIFO_EMPTY);
+    qtest_quit(qts);
+    g_assert_cmpint(g_unlink(prom_path), ==, 0);
+}
+
+static void test_fuel_ti_configuration_is_read_only(const void *data)
+{
+    g_autofree char *prom_path = NULL;
+    QTestState *qts = fuel_parallel_start(&prom_path, "");
+
+    qtest_writeb(qts, FUEL_ECP_EXTENDED, ECR_MODE(MODE_CONFIG));
+    g_assert_cmphex(qtest_readb(qts, FUEL_ECP_FIFO), ==, 0x1f);
+    g_assert_cmphex(qtest_readb(qts, FUEL_ECP_CONFIG_B) & 0xbf, ==, 0x0b);
+    qtest_writeb(qts, FUEL_ECP_FIFO, 0xa5);
+    qtest_writeb(qts, FUEL_ECP_CONFIG_B, 0x55);
+    g_assert_cmphex(qtest_readb(qts, FUEL_ECP_FIFO), ==, 0x1f);
+    g_assert_cmphex(qtest_readb(qts, FUEL_ECP_CONFIG_B) & 0xbf, ==, 0x0b);
+    qtest_quit(qts);
+    g_assert_cmpint(g_unlink(prom_path), ==, 0);
+}
+
+static void test_fuel_ti_fifo_survives_savevm_loadvm(const void *data)
+{
+    g_autofree char *tmpdir = NULL;
+    g_autofree char *image = NULL;
+    g_autofree char *drive = NULL;
+    g_autofree char *args = NULL;
+    g_autofree char *prom_path = NULL;
+    GError *err = NULL;
+    QTestState *qts;
+    char *hmp_ret;
+
+    if (!have_qemu_img()) {
+        g_test_skip("QTEST_QEMU_IMG not set; cannot create snapshot storage");
+        return;
+    }
+
+    tmpdir = g_dir_make_tmp("fuel-parallel-fifo-XXXXXX", &err);
+    g_assert_no_error(err);
+    image = g_build_filename(tmpdir, "state.qcow2", NULL);
+    g_assert(mkimg(image, "qcow2", 128));
+    drive = g_strdup_printf("-drive file=%s,format=qcow2,if=none", image);
+    qts = fuel_parallel_start(&prom_path, drive);
+    qtest_writeb(qts, FUEL_ECP_EXTENDED, ECR_MODE(MODE_TEST));
+    qtest_writeb(qts, FUEL_ECP_FIFO, 0xa5);
+    qtest_writeb(qts, FUEL_ECP_FIFO, 0x5a);
+    g_assert_cmphex(qtest_readb(qts, FUEL_ECP_FIFO), ==, 0xa5);
+    hmp_ret = qtest_hmp(qts, "savevm fuel-fifo");
+    g_assert_nonnull(hmp_ret);
+    g_assert_null(strstr(hmp_ret, "Error:"));
+    g_free(hmp_ret);
+    qtest_quit(qts);
+    g_assert_cmpint(g_unlink(prom_path), ==, 0);
+    g_clear_pointer(&prom_path, g_free);
+
+    args = g_strdup_printf("%s -loadvm fuel-fifo", drive);
+    qts = fuel_parallel_start(&prom_path, args);
+    g_assert_cmphex(qtest_readb(qts, FUEL_ECP_EXTENDED), ==,
+                    ECR_MODE(MODE_TEST));
+    g_assert_cmphex(qtest_readb(qts, FUEL_ECP_FIFO), ==, 0x5a);
+    g_assert_cmphex(qtest_readb(qts, FUEL_ECP_EXTENDED), ==,
+                    ECR_MODE(MODE_TEST) | ECR_FIFO_EMPTY);
+    qtest_quit(qts);
+    g_assert_cmpint(g_unlink(prom_path), ==, 0);
     g_assert_cmpint(g_unlink(image), ==, 0);
     g_assert_cmpint(g_rmdir(tmpdir), ==, 0);
 }
@@ -1348,6 +1510,13 @@ int main(int argc, char **argv)
                         test_tl16_fifo_survives_savevm_loadvm);
     qtest_add_data_func("sn0/ioc3/parallel-part-must-match-on-load", NULL,
                         test_parallel_part_must_match_when_loading);
+
+    qtest_add_data_func("fuel/parallel-ti-fifo-overrun", NULL,
+                        test_fuel_ti_fifo_wraps_and_overruns);
+    qtest_add_data_func("fuel/parallel-ti-configuration-read-only", NULL,
+                        test_fuel_ti_configuration_is_read_only);
+    qtest_add_data_func("fuel/parallel-ti-fifo-savevm-loadvm", NULL,
+                        test_fuel_ti_fifo_survives_savevm_loadvm);
 
     qtest_add_data_func("sn0/ioc3/parallel-presence-check-out-of-reset", NULL,
                         test_the_presence_check_reads_out_of_reset);
