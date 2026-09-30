@@ -1,8 +1,7 @@
 
 testblock = declare_dependency(dependencies: [block], sources: 'iothread.c')
 
-# Unit tests selected by the SGI Meson suite. Keep this list by test name:
-# test-sn-model has an empty source list but still belongs to that suite.
+# Unit tests selected by the SGI Meson suite, listed by test name.
 fork_unit_tests = [
   'test-onewire', 'test-i2c-masters', 'test-i2c-wire',
   'test-sgi-o2000-module-mgmt', 'test-sgi-o2000-module-mgmt-real',
@@ -111,7 +110,7 @@ tests = {
                             '../../hw/1wire/crc.c', '../../hw/1wire/ds2505.c',
                             qom, hwcore, migration, io],
   'test-sn1-topology': ['../../hw/mips/sgi/sn1-topology.c'],
-  'test-sn-model': [],
+  'test-sn-model': ['../../hw/mips/sgi/sn-model-runtime.c'],
   # all code tested by test-sgi-rad1-audio-pcm is inside sgi-rad1-audio-pcm.h
   'test-sgi-rad1-audio-pcm': [],
   'test-logging': [],

@@ -483,6 +483,9 @@ const SGIModelTopology *sgi_model_population_view(
     static GHashTable *views;
     SGIModelTopology *view;
 
+    if (!sgi_model_check_runtime_endpoints(t, errp)) {
+        return NULL;
+    }
     if (!views) {
         views = g_hash_table_new(NULL, NULL);
     }

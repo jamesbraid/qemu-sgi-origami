@@ -9,6 +9,7 @@
 #define HW_MIPS_SGI_SN_CATALOGUE_H
 
 #include "qapi/qapi-types-sgi-sn.h"
+#include "qapi/error.h"
 
 /*
  * The embedded catalogue, parsed on first use and kept for the process
@@ -27,6 +28,12 @@ const SGIModelTopology *sgi_model_find_topology(const char *name);
  * default regardless of its name.
  */
 const char *sgi_model_default_topology(const char *product);
+
+/*
+ * Refuse endpoints whose runtime construction is not implemented, before
+ * population selection can drop or misclassify their records.
+ */
+bool sgi_model_check_runtime_endpoints(const SGIModelTopology *t, Error **errp);
 
 /* @t's node-population row fitting exactly @nodes node boards, or NULL. */
 const SGIModelNodePopulation *sgi_model_find_population(
