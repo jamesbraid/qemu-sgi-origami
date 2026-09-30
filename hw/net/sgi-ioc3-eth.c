@@ -115,7 +115,9 @@ static bool sgi_ioc3_eth_mac_loopback(SGIIOC3EthState *s)
 
 static bool sgi_ioc3_eth_looping_back(SGIIOC3EthState *s)
 {
-    return sgi_ioc3_eth_mac_loopback(s) || dp83840_in_loopback(&s->phy);
+    return sgi_ioc3_eth_mac_loopback(s) ||
+           (s->phy_ics1890 ? ics1890_in_loopback(&s->ics_phy) :
+                            dp83840_in_loopback(&s->phy));
 }
 
 /*
@@ -159,6 +161,10 @@ static bool sgi_ioc3_eth_can_receive(NetClientState *nc)
         return false;
     }
     if ((mcr & need) != need) {
+        return false;
+    }
+
+    if (s->phy_ics1890 && !ics1890_data_enabled(&s->ics_phy)) {
         return false;
     }
 
@@ -506,7 +512,11 @@ static void sgi_ioc3_eth_set_link(NetClientState *nc)
 {
     SGIIOC3EthState *s = SGI_IOC3_ETH(qemu_get_nic_opaque(nc));
 
-    dp83840_update_link(&s->phy, nc->link_down);
+    if (s->phy_ics1890) {
+        ics1890_update_link(&s->ics_phy, nc->link_down);
+    } else {
+        dp83840_update_link(&s->phy, nc->link_down);
+    }
 }
 
 static NetClientInfo sgi_ioc3_eth_net_info = {
@@ -673,7 +683,8 @@ static void sgi_ioc3_eth_do_tx(SGIIOC3EthState *s, uint32_t produce)
             if (loopback) {
                 sgi_ioc3_eth_deliver(s, s->frame, len,
                                      sgi_ioc3_eth_mac_loopback(s), true);
-            } else {
+            } else if (!s->phy_ics1890 ||
+                       ics1890_data_enabled(&s->ics_phy)) {
                 s->defer_backend_rx = true;
                 qemu_send_packet(qemu_get_queue(s->nic), s->frame, len);
             }
@@ -788,13 +799,23 @@ static void sgi_ioc3_enet_write(void *opaque, hwaddr addr, uint64_t val,
 
         /* Only the configured address answers, or a scan finds phantoms. */
         if (val & SGI_IOC3_ENET_MII_READ) {
-            s->mii_data = phy == s->phy.addr
-                          ? dp83840_read(&s->phy, reg)
+            s->mii_data = phy == s->phy_addr
+                          ? (s->phy_ics1890 ? ics1890_read(&s->ics_phy, reg) :
+                             dp83840_read(&s->phy, reg))
                           : SGI_IOC3_ENET_MII_ABSENT;
-        } else if (phy == s->phy.addr) {
+        } else if (phy == s->phy_addr) {
             bool was_looping = sgi_ioc3_eth_looping_back(s);
+            bool phy_was_enabled = !s->phy_ics1890 ||
+                                   ics1890_data_enabled(&s->ics_phy);
 
-            dp83840_write(&s->phy, reg, s->mii_data_w);
+            if (s->phy_ics1890) {
+                ics1890_write(&s->ics_phy, reg, s->mii_data_w);
+            } else {
+                dp83840_write(&s->phy, reg, s->mii_data_w);
+            }
+            if (!phy_was_enabled && ics1890_data_enabled(&s->ics_phy)) {
+                qemu_bh_schedule(s->rx_flush_bh);
+            }
 
             /* Leaving loopback re-opens receive; defer what queued. */
             if (was_looping && !sgi_ioc3_eth_looping_back(s)) {
@@ -907,6 +928,10 @@ static void sgi_ioc3_eth_realize(DeviceState *dev, Error **errp)
     SGIIOC3EthState *s = SGI_IOC3_ETH(dev);
     SysBusDevice *sbd = SYS_BUS_DEVICE(dev);
 
+    if (s->phy_ics1890 && s->phy_dp83843) {
+        error_setg(errp, "IOC3 cannot select ICS1890 and DP83843 together");
+        return;
+    }
     if (!s->dma_mr) {
         error_setg(errp, TYPE_SGI_IOC3_ETH " 'dma-memory' link not set");
         return;
@@ -918,8 +943,19 @@ static void sgi_ioc3_eth_realize(DeviceState *dev, Error **errp)
     sysbus_init_mmio(sbd, &s->mmio);
     sysbus_init_irq(sbd, &s->irq);
 
-    if (!sysbus_realize(SYS_BUS_DEVICE(&s->phy), errp)) {
-        return;
+    if (s->phy_ics1890) {
+        object_initialize_child(OBJECT(dev), "phy", &s->ics_phy, TYPE_ICS1890);
+        qdev_prop_set_uint8(DEVICE(&s->ics_phy), "addr", s->phy_addr);
+        if (!sysbus_realize(SYS_BUS_DEVICE(&s->ics_phy), errp)) {
+            return;
+        }
+    } else {
+        object_initialize_child(OBJECT(dev), "phy", &s->phy, TYPE_DP83840);
+        qdev_prop_set_uint8(DEVICE(&s->phy), "addr", s->phy_addr);
+        qdev_prop_set_bit(DEVICE(&s->phy), "dp83843", s->phy_dp83843);
+        if (!sysbus_realize(SYS_BUS_DEVICE(&s->phy), errp)) {
+            return;
+        }
     }
 
     /*
@@ -946,7 +982,7 @@ static void sgi_ioc3_eth_realize(DeviceState *dev, Error **errp)
     qemu_format_nic_info_str(qemu_get_queue(s->nic), s->conf.macaddr.a);
 
     /* The callback fires on change only; read the initial link state. */
-    dp83840_update_link(&s->phy, qemu_get_queue(s->nic)->link_down);
+    sgi_ioc3_eth_set_link(qemu_get_queue(s->nic));
 }
 
 static void sgi_ioc3_eth_unrealize(DeviceState *dev)
@@ -964,7 +1000,7 @@ static void sgi_ioc3_eth_unrealize(DeviceState *dev)
      * through RCU, so the release arrives a grace period after the storage
      * it names has been freed with the rest of this object.
      */
-    object_unparent(OBJECT(&s->phy));
+    object_unparent(s->phy_ics1890 ? OBJECT(&s->ics_phy) : OBJECT(&s->phy));
 }
 
 static void sgi_ioc3_eth_reset_hold(Object *obj, ResetType type)
@@ -972,16 +1008,6 @@ static void sgi_ioc3_eth_reset_hold(Object *obj, ResetType type)
     SGIIOC3EthState *s = SGI_IOC3_ETH(obj);
 
     sgi_ioc3_eth_reset_registers(s, false);
-}
-
-static void sgi_ioc3_eth_init(Object *obj)
-{
-    SGIIOC3EthState *s = SGI_IOC3_ETH(obj);
-
-    object_initialize_child(obj, "phy", &s->phy, TYPE_DP83840);
-
-    object_property_add_alias(obj, "phy-addr", OBJECT(&s->phy), "addr");
-    object_property_add_alias(obj, "phy-dp83843", OBJECT(&s->phy), "dp83843");
 }
 
 static int sgi_ioc3_eth_post_load(void *opaque, int version_id)
@@ -1018,6 +1044,9 @@ static const VMStateDescription vmstate_sgi_ioc3_eth = {
 
 static const Property sgi_ioc3_eth_properties[] = {
     DEFINE_NIC_PROPERTIES(SGIIOC3EthState, conf),
+    DEFINE_PROP_BOOL("phy-ics1890", SGIIOC3EthState, phy_ics1890, false),
+    DEFINE_PROP_BOOL("phy-dp83843", SGIIOC3EthState, phy_dp83843, false),
+    DEFINE_PROP_UINT8("phy-addr", SGIIOC3EthState, phy_addr, 31),
     DEFINE_PROP_BOOL("mac-generated", SGIIOC3EthState, mac_generated, false),
     DEFINE_PROP_UINT32("rx-arrival-latency-us", SGIIOC3EthState,
                        rx_arrival_latency_us, SGI_NET_RX_LATENCY_DEFAULT_US),
@@ -1044,7 +1073,6 @@ static const TypeInfo sgi_ioc3_eth_types[] = {
         .name = TYPE_SGI_IOC3_ETH,
         .parent = TYPE_SYS_BUS_DEVICE,
         .instance_size = sizeof(SGIIOC3EthState),
-        .instance_init = sgi_ioc3_eth_init,
         .class_init = sgi_ioc3_eth_class_init,
     },
 };

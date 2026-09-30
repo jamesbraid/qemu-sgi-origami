@@ -1706,6 +1706,7 @@ static void sgi_ioc3_realize(PCIDevice *dev, Error **errp)
         object_property_del(OBJECT(dev), "mac");
         object_property_del(OBJECT(dev), "phy-addr");
         object_property_del(OBJECT(dev), "phy-dp83843");
+        object_property_del(OBJECT(dev), "phy-ics1890");
         object_unparent(OBJECT(&s->eth));
     }
 
@@ -1987,6 +1988,8 @@ static void sgi_ioc3_init(Object *obj)
     object_property_add_alias(obj, "netdev", OBJECT(&s->eth), "netdev");
     object_property_add_alias(obj, "mac", OBJECT(&s->eth), "mac");
     object_property_add_alias(obj, "phy-addr", OBJECT(&s->eth), "phy-addr");
+    object_property_add_alias(obj, "phy-ics1890", OBJECT(&s->eth),
+                              "phy-ics1890");
     object_property_add_alias(obj, "phy-dp83843", OBJECT(&s->eth),
                               "phy-dp83843");
 

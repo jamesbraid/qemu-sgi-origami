@@ -580,3 +580,8 @@ xframe_rx_completion_irq_recompute(void) ""
 
 # bcm570x.c
 bcm570x_rx_shortage_drop(const char *ring, uint32_t len) "%s ring empty, %u-byte frame dropped"
+
+# ics1890.c
+ics1890_read(uint16_t val, unsigned reg) "val 0x%04x reg %u"
+ics1890_write(uint16_t val, unsigned reg) "val 0x%04x reg %u"
+ics1890_negotiation(bool speed100, bool full_duplex) "speed100 %d full_duplex %d"

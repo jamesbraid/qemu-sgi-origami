@@ -22,6 +22,7 @@ system_ss.add(when: 'CONFIG_XFRAME_PCI', if_true: files('xframe.c',
 system_ss.add(when: 'CONFIG_SMC91C111', if_true: files('smc91c111.c'))
 system_ss.add(when: 'CONFIG_LAN9118', if_true: files('lan9118.c'))
 system_ss.add(when: 'CONFIG_DP83840', if_true: files('dp83840.c'))
+system_ss.add(when: 'CONFIG_ICS1890', if_true: files('ics1890.c'))
 system_ss.add(when: 'CONFIG_SGI_NET_RX_LATENCY',
               if_true: files('net-rx-latency.c'))
 system_ss.add(when: 'CONFIG_SGI_IOC3_ETH', if_true: files('sgi-ioc3-eth.c'))
