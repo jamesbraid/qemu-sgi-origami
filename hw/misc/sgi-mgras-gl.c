@@ -276,7 +276,8 @@
  *   token (0xd97e120-0xd97e164), so the model cannot follow it.
  *
  * The rasterizer follows point size, line width and polygon mode.
- * Native stipple and smoothing remain unsupported and are logged. perfly
+ * Line stipple follows the reviewed shared phase policy. Smoothing remains
+ * unsupported and is logged. perfly
  * reads all of it back at start; with zero answers it
  * sent glPointSize(0) and glLineWidth(0), which the client rejects.
  */
@@ -1011,7 +1012,8 @@ static SGIGLContext *mgras_gl(SGIMgrasState *s)
  * model's front[] plane and the one the X server draws in, and bank 1,
  * back[]. Only mgras_gl_store_colour() reads them. The window's pixels
  * are the enabled rectangles of a mode-1 clip word that are not empty on
- * the screen; with none, the context has no window.
+ * the screen. Mode 1 remains bound when that union is empty, so geometric
+ * stipple positions advance while every fragment is rejected.
  *
  * The drawable is bound when a context image completes, and at the other
  * points that change it, not read from the image at each draw. The two
@@ -1051,13 +1053,13 @@ static void mgras_gl_bind(SGIMgrasState *s)
             d.clip.r[d.clip.n++] = r;
         }
     }
-    d.bound = d.clip.n != 0;
+    d.bound = mode == MGRAS_GL_CLIP_INSIDE;
     if ((mode == MGRAS_GL_CLIP_INSIDE && !(clip & 0xf)) ||
         (mode != MGRAS_GL_CLIP_INSIDE && clip != 0 &&
          mode != MGRAS_GL_CLIP_NULL)) {
         qemu_log_mask(LOG_UNIMP, "sgi-mgras: context image clip word 0x%x "
-                      "gives no rectangle the model can bind; nothing "
-                      "draws\n", clip);
+                      "has unsupported bounds; no fragments are stored\n",
+                      clip);
     }
     trace_sgi_mgras_gl_bind(s->context[MGRAS_GL_IMAGE_SLOT], origin, clip,
                             s->context[11], s->context[12], s->context[9],
@@ -1093,12 +1095,12 @@ void sgi_mgras_gl_reset(SGIMgrasState *s)
         memset(&s->gl_context[i].pixels, 0,
                sizeof(s->gl_context[i].pixels));
         sgi_gl_reset(&s->gl[i], 0);
-        if (!sgi_gl_enable_polygon_modes(&s->gl[i], &sink)) {
+        if (!sgi_gl_enable_polygon_modes(&s->gl[i], &sink) ||
+            !sgi_gl_enable_line_stipple(&s->gl[i], &sink)) {
             g_assert_not_reached();
         }
     }
     s->gl_oom_logged = false;
-    s->gl_stipple_logged = false;
     memset(s->ge_param, 0, sizeof(s->ge_param));
     s->ge_param_logged = false;
     memset(s->gl_slot, 0, sizeof(s->gl_slot));
@@ -2195,20 +2197,10 @@ static SGIGLDrawResult mgras_gl_draw_checked(void *opaque, const SGIGLDraw *d)
 {
     SGIMgrasState *s = opaque;
     SGIRasterTarget t = mgras_gl_target;
-    SGIGLDraw draw = *d;
     SGIGLDrawResult result;
 
-    /* No reviewed native stipple applicability contract is available. */
-    if (draw.line_stipple_enabled) {
-        draw.line_stipple_enabled = false;
-        if (!s->gl_stipple_logged) {
-            qemu_log_mask(LOG_UNIMP, "sgi-mgras: native line stipple is "
-                          "unsupported; drawing without stipple\n");
-            s->gl_stipple_logged = true;
-        }
-    }
     t.opaque = s;
-    result = sgi_soft_draw(&mgras_gl_raster_rules, &t, &draw);
+    result = sgi_soft_draw(&mgras_gl_raster_rules, &t, d);
     s->dirty = true;
     return result;
 }
