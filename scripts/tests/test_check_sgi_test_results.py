@@ -101,8 +101,87 @@ class CheckSgiTestResults(unittest.TestCase):
             <skipped message="asset unavailable"/>
           </testcase>
         </testsuite>''')
-        with self.assertRaisesRegex(ResultError, 'skipped testcases'):
+        with self.assertRaisesRegex(
+                ResultError, 'skipped testcases'):
             read_report(self.junit)
+
+    def test_allows_listed_qtest_skip_after_normalizing_tap_counter(self):
+        suite = ('qemu.qemu:qtest+qtest-mips64+slow+sgi+sgi-qtest / '
+                 'qtest-mips64/sn0-migration-test')
+        case_name = ('99 /mips64/sn0/migration/'
+                     'legacy-count2-before-first-expiry')
+        self.write_report(f'''<testsuite name="{suite}" tests="1" skipped="1">
+          <testcase classname="{suite}"
+                    name="{case_name}">
+            <skipped message="QTEST_QEMU_BINARY_IOC3_V15 is not set"/>
+          </testcase>
+        </testsuite>''')
+        allowed = {('qtest-mips64/sn0-migration-test',
+                    '/mips64/sn0/migration/legacy-count2-before-first-expiry')}
+        report = read_report(self.junit, optional_skips=allowed)
+        validate(report, ['qtest-mips64/sn0-migration-test'])
+
+    def test_rejects_unlisted_qtest_skip_with_same_suite(self):
+        suite = ('qemu.qemu:qtest+qtest-mips64+slow+sgi+sgi-qtest / '
+                 'qtest-mips64/sn0-migration-test')
+        self.write_report(f'''<testsuite name="{suite}" tests="1" skipped="1">
+          <testcase classname="{suite}"
+                    name="99 /mips64/sn0/migration/unlisted-case">
+            <skipped message="not an approved prerequisite"/>
+          </testcase>
+        </testsuite>''')
+        allowed = {('qtest-mips64/sn0-migration-test',
+                    '/mips64/sn0/migration/legacy-count2-before-first-expiry')}
+        with self.assertRaisesRegex(ResultError, 'skipped testcases'):
+            read_report(self.junit, optional_skips=allowed)
+
+    def test_allows_only_exact_mesonskipped_qtest_target_identity(self):
+        identity = ('qemu', 'qemu:qtest+qtest-mips64+slow / '
+                    'qtest-mips64/cdrom-test')
+        self.write_report(f'''<testsuite name="qemu" tests="1" skipped="1">
+          <testcase classname="qemu"
+                    name="{identity[1]}">
+            <skipped/>
+          </testcase>
+        </testsuite>''')
+        report = read_report(self.junit, optional_skips={identity})
+        validate(report, ['qtest-mips64/cdrom-test'])
+
+        other_identity = ('qemu:qtest+qtest-mips64+slow / '
+                          'qtest-mips64/other-test')
+        self.write_report(f'''<testsuite name="qemu" tests="1" skipped="1">
+          <testcase classname="qemu"
+                    name="{other_identity}">
+            <skipped/>
+          </testcase>
+        </testsuite>''')
+        with self.assertRaisesRegex(ResultError, 'skipped testcases'):
+            read_report(self.junit, optional_skips={identity})
+
+    def test_reads_full_qtest_skip_manifest(self):
+        manifest = (Path(__file__).parents[2] / 'tests/qtest/'
+                    'mips64-qtest-optional-skips.txt')
+        identity = ('qemu', 'qemu:qtest+qtest-mips64+slow / '
+                    'qtest-mips64/cdrom-test')
+        identities = checker.read_skip_allowlist(manifest)
+        self.assertEqual(len(identities), 23)
+        self.assertIn(identity, identities)
+        self.assertIn(('qtest-mips64/sn0-migration-test',
+                       '/mips64/sn0/migration/'
+                       'legacy-count2-before-first-expiry'),
+                      identities)
+        self.write_report(f'''<testsuite name="qemu" tests="1" skipped="1">
+          <testcase classname="qemu"
+                    name="{identity[1]}">
+            <skipped/>
+          </testcase>
+        </testsuite>''')
+        self.write_expected('qtest-mips64/cdrom-test\n')
+        with redirect_stdout(StringIO()):
+            status = checker.main([
+                '--junit', str(self.junit), '--expect', str(self.expected),
+                '--allow-skips-from', str(manifest)])
+        self.assertEqual(status, 0)
 
     def test_allows_only_optional_v9_mgras_case(self):
         suite = ('qemu.qemu:qtest+qtest-mips64+slow+sgi+sgi-qtest / '
@@ -114,7 +193,8 @@ class CheckSgiTestResults(unittest.TestCase):
             with self.subTest(name=name):
                 self.write_report(f'''<testsuite name="{suite}" tests="1"
                     skipped="1">
-                  <testcase classname="{suite}" name="{name}">
+                  <testcase classname="{suite}"
+                            name="{name}">
                     <skipped message="QTEST_QEMU_BINARY_MGRAS_V9 is not set"/>
                   </testcase>
                 </testsuite>''')
@@ -133,7 +213,9 @@ class CheckSgiTestResults(unittest.TestCase):
                 errors = 1 if tag == 'error' else 0
                 self.write_report(f'''<testsuite tests="1" failures="{failures}"
                     errors="{errors}" skipped="0">
-                  <testcase name="required"><{tag}>bad</{tag}></testcase>
+                  <testcase name="required">
+                    <{tag}>bad</{tag}>
+                  </testcase>
                 </testsuite>''')
                 with self.assertRaisesRegex(ResultError, 'failed testcases'):
                     read_report(self.junit)
