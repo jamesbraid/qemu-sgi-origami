@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * Graphics-free Octane (IP30) functional profile.
+ * Octane (IP30) functional profile with optional textureless SI.
  * The public board sources fix the widget and PCI topology. The selected
  * RAM descriptor, firmware loading policy, PCI slot assignments, and SuperIO
  * interrupt pin are functional choices; firmware boot remains unverified.
@@ -26,6 +26,7 @@
 #include "hw/misc/sgi-board-record.h"
 #include "hw/misc/sgi-heart.h"
 #include "hw/misc/sgi-ioc3.h"
+#include "hw/misc/sgi-mgras.h"
 #include "hw/misc/sgi-xbow.h"
 #include "hw/pci-host/sgi-bridge.h"
 #include "hw/pci/pci.h"
@@ -37,6 +38,9 @@
 
 #define OCTANE_SHORT_BASE 0x10000000ULL
 #define OCTANE_SHORT_SPAN (16 * MiB)
+#define OCTANE_GRAPHICS_WIDGET 11
+#define OCTANE_LONG_GRAPHICS (OCTANE_GRAPHICS_WIDGET * (1ULL << 36))
+#define OCTANE_LONG_SPAN (1ULL << 36)
 #define OCTANE_LONG_BRIDGE (15ULL << 36)
 #define OCTANE_FLASH_SIZE (2 * MiB)
 #define OCTANE_HEART_REGS 0x0ff00000ULL
@@ -54,12 +58,34 @@ typedef struct OctaneMachineState {
     MemoryRegion high_guard;
     uint64_t bank_size[HEART_BANKS];
     bool octane2;
+    char *graphics_board;
+    MemoryRegion graphics_fabric;
+    MemoryRegion graphics_route;
+    MemoryRegion graphics_long;
     char *flash_profile;
     char *flash_drive;
     char *flash_marker;
     uint64_t flash_select;
     uint64_t flash_strap;
 } OctaneMachineState;
+
+static char *octane_get_graphics_board(Object *obj, Error **errp)
+{
+    return g_strdup(((OctaneMachineState *)obj)->graphics_board);
+}
+
+static void octane_set_graphics_board(Object *obj, const char *value,
+                                      Error **errp)
+{
+    OctaneMachineState *s = (OctaneMachineState *)obj;
+
+    if (strcmp(value, "none") && strcmp(value, "si")) {
+        error_setg(errp, "octane graphics must be none or si");
+        return;
+    }
+    g_free(s->graphics_board);
+    s->graphics_board = g_strdup(value);
+}
 
 static char *octane_get_flash_profile(Object *obj, Error **errp)
 {
@@ -335,6 +361,8 @@ static void octane_init_common(MachineState *machine, bool octane2)
     int loaded;
     uint8_t *flash_image = NULL;
     bool sharp_flash = !strcmp(s->flash_profile, "sharp-lh28f800su");
+    bool graphics = !strcmp(s->graphics_board, "si");
+    uint16_t links = (1 << 8) | (1 << 15);
 
     s->octane2 = octane2;
     if (machine->ram_size != (octane2 ? 256 : 128) * MiB ||
@@ -545,8 +573,30 @@ static void octane_init_common(MachineState *machine, bool octane2)
     object_property_add_child(OBJECT(machine), "crossbow", OBJECT(xbow));
     qdev_prop_set_uint32(xbow, "revision", octane2 ? 5 : 4);
     qdev_prop_set_uint64(xbow, "span", OCTANE_SHORT_SPAN);
-    qdev_prop_set_uint16(xbow, "links-present", (1 << 8) | (1 << 15));
-    qdev_prop_set_uint16(xbow, "startup-links-alive", (1 << 8) | (1 << 15));
+    if (graphics) {
+        DeviceState *mgras = qdev_new(TYPE_SGI_MGRAS);
+        MemoryRegion *face;
+
+        memory_region_init(&s->graphics_fabric, OBJECT(machine),
+                           "octane.graphics-fabric",
+                           SGI_XBOW_WIDGETS * SGI_XBOW_PACKET_SIZE);
+        object_property_add_child(OBJECT(machine), "mgras", OBJECT(mgras));
+        mgras->id = g_strdup("mgras");
+        qdev_prop_set_string(mgras, "board", "si");
+        object_property_set_link(OBJECT(mgras), "fabric",
+                                 OBJECT(&s->graphics_fabric), &error_fatal);
+        qdev_prop_set_uint32(mgras, "fabric-widget-shift", 48);
+        sysbus_realize(SYS_BUS_DEVICE(mgras), &error_fatal);
+        face = sysbus_mmio_get_region(SYS_BUS_DEVICE(mgras), 0);
+        if (!sgi_xbow_attach_endpoint(crossbow, OCTANE_GRAPHICS_WIDGET,
+                                      face, face, &error_fatal)) {
+            return;
+        }
+        object_unref(OBJECT(mgras));
+        links |= 1 << OCTANE_GRAPHICS_WIDGET;
+    }
+    qdev_prop_set_uint16(xbow, "links-present", links);
+    qdev_prop_set_uint16(xbow, "startup-links-alive", links);
     if (!sgi_xbow_attach_endpoint(crossbow, 8,
             sgi_xtalk_port_cpu_face(OBJECT(heart), 0),
             sgi_xtalk_port_packet_face(OBJECT(heart), 0), &error_fatal) ||
@@ -556,6 +606,23 @@ static void octane_init_common(MachineState *machine, bool octane2)
         return;
     }
     sysbus_realize(SYS_BUS_DEVICE(xbow), &error_fatal);
+
+    if (graphics) {
+        /* Packet ingress exists only after Crossbow realization. */
+        memory_region_init_alias(&s->graphics_route, OBJECT(machine),
+                                 "octane.graphics-fabric-route",
+                                 sgi_xbow_packet_ingress(crossbow,
+                                                        OCTANE_GRAPHICS_WIDGET),
+                                 0, SGI_XBOW_WIDGETS * SGI_XBOW_PACKET_SIZE);
+        memory_region_add_subregion(&s->graphics_fabric, 0, &s->graphics_route);
+        memory_region_init_alias(&s->graphics_long, OBJECT(machine),
+                                 "octane.graphics-long",
+                                 sgi_xbow_packet_ingress(crossbow, 8),
+                                 (uint64_t)OCTANE_GRAPHICS_WIDGET << 48,
+                                 OCTANE_LONG_SPAN);
+        memory_region_add_subregion(physical, OCTANE_LONG_GRAPHICS,
+                                    &s->graphics_long);
+    }
 
     memory_region_init_alias(proxy_route, OBJECT(machine),
                              "octane.bridge-fabric-route",
@@ -596,6 +663,11 @@ static void octane_instance_init_common(Object *obj, uint64_t default_bank)
 {
     OctaneMachineState *s = (OctaneMachineState *)obj;
 
+    s->graphics_board = g_strdup("none");
+    object_property_add_str(obj, "graphics-board", octane_get_graphics_board,
+                            octane_set_graphics_board);
+    object_property_set_description(obj, "graphics-board",
+                                    "Optional textureless SI board: none or si");
     s->flash_profile = g_strdup("raw");
     s->flash_select = UINT64_MAX;
     s->flash_strap = UINT64_MAX;
@@ -634,6 +706,7 @@ static void octane_instance_finalize(Object *obj)
 {
     OctaneMachineState *s = (OctaneMachineState *)obj;
 
+    g_free(s->graphics_board);
     g_free(s->flash_profile);
     g_free(s->flash_drive);
     g_free(s->flash_marker);
@@ -643,7 +716,7 @@ static void octane_class_init(ObjectClass *oc, const void *data)
 {
     MachineClass *mc = MACHINE_CLASS(oc);
 
-    mc->desc = "SGI Octane (IP30), graphics-free functional profile";
+    mc->desc = "SGI Octane (IP30), functional profile";
     mc->init = octane_init;
     mc->reset = octane_reset;
     mc->default_cpu_type = MIPS_CPU_TYPE_NAME("R10000");
@@ -660,7 +733,7 @@ static void octane2_class_init(ObjectClass *oc, const void *data)
     MachineClass *mc = MACHINE_CLASS(oc);
 
     octane_class_init(oc, data);
-    mc->desc = "SGI Octane2 (IP30), graphics-free functional profile";
+    mc->desc = "SGI Octane2 (IP30), functional profile";
     mc->init = octane2_init;
     mc->default_cpu_type = MIPS_CPU_TYPE_NAME("R12000");
     mc->default_ram_size = 256 * MiB;
