@@ -565,6 +565,15 @@ static bool sgi_soft_texture_setup(SGISoftDraw *r)
     if (!st->texture_2d || st->index_bits) {
         return true;
     }
+    if (st->texture_env_mode != SGI_GL_REPLACE &&
+        st->texture_env_mode != SGI_GL_MODULATE &&
+        st->texture_env_mode != SGI_GL_DECAL &&
+        st->texture_env_mode != SGI_GL_BLEND) {
+        qemu_log_mask(LOG_UNIMP, "sgi-gl: unsupported texture state "
+                      "environment 0x%x, draw dropped\n",
+                      st->texture_env_mode);
+        return false;
+    }
     if (im) {
         bool border_finite = true;
 
@@ -578,10 +587,6 @@ static bool sgi_soft_texture_setup(SGISoftDraw *r)
             im->min_filter != im->mag_filter ||
             (im->min_filter != SGI_GL_NEAREST &&
              im->min_filter != SGI_GL_LINEAR) ||
-            (st->texture_env_mode != SGI_GL_REPLACE &&
-             st->texture_env_mode != SGI_GL_MODULATE &&
-             st->texture_env_mode != SGI_GL_DECAL &&
-             st->texture_env_mode != SGI_GL_BLEND) ||
             (st->texture_env_mode == SGI_GL_DECAL &&
              im->base_format != SGI_GL_RGB && im->base_format != SGI_GL_RGBA)) {
             qemu_log_mask(LOG_UNIMP, "sgi-gl: unsupported texture state "
