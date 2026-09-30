@@ -67,6 +67,8 @@ sgi_rad1_audio_start(unsigned int ch, uint64_t base, uint32_t len, uint32_t tag)
 sgi_rad1_audio_stop(unsigned int ch, uint32_t ptr, uint64_t frames) "ch %u ptr 0x%08x after %"PRIu64" frames"
 sgi_rad1_audio_stop_reason(unsigned int ch, const char *reason, int64_t now_ns, int64_t epoch_ns, uint64_t frames, uint32_t ptr) "ch %u reason %s now %"PRId64" epoch %"PRId64" frames %"PRIu64" ptr 0x%08x"
 sgi_rad1_octane_output_control(uint32_t value, int64_t now_ns, int64_t epoch_ns, uint64_t frames, bool running) "accepted 0x58=0x%08x now %"PRId64" epoch %"PRId64" frames %"PRIu64" running %d"
+sgi_rad1_octane_status_snapshot(uint64_t slot, int64_t now_ns, int64_t epoch_ns, uint64_t frames, uint32_t ptr, uint32_t pos_a, uint32_t pos_b, uint32_t ust, bool continuous) "slot 0x%"PRIx64" now %"PRId64" epoch %"PRId64" frames %"PRIu64" ptr 0x%08x A=0x%08x B=0x%08x UST=0x%08x continuous %d"
+sgi_rad1_octane_status_control(uint32_t value, int64_t now_ns, bool running, int64_t epoch_ns, uint32_t interval, uint32_t cursor) "accepted 0x5c=0x%08x now %"PRId64" running %d status_epoch %"PRId64" interval %u cursor %u"
 sgi_rad1_audio_wrap(unsigned int ch, uint64_t base) "ch %u ring 0x%"PRIx64
 sgi_rad1_audio_position(unsigned int ch, uint32_t frames, uint32_t pos_a, uint32_t pos_b) "ch %u +%u frames, A=0x%08x B=0x%08x"
 sgi_rad1_audio_field_events(uint64_t fields, uint32_t bits) "field %"PRIu64" slot bits 0x%x"

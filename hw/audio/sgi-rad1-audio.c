@@ -381,6 +381,7 @@ static bool sgi_rad1_audio_fill_slot(SGIRad1AudioState *s, uint64_t slot)
     PCIDevice *dev = PCI_DEVICE(s);
     uint8_t mirror[SGI_RAD1_AUDIO_SLOT_MIRROR_WORDS * 4];
     uint8_t word[4];
+    uint32_t output_ptr = 0;
     unsigned int i;
 
     sgi_rad1_audio_sync_all(s);
@@ -412,6 +413,9 @@ static bool sgi_rad1_audio_fill_slot(SGIRad1AudioState *s, uint64_t slot)
 
         if (c->len || s->octane) {
             stl_le_p(word, c->len ? sgi_rad1_audio_chan_pointer(c) : 0);
+            if (i == SGI_RAD1_AUDIO_CH_OUT) {
+                output_ptr = ldl_le_p(word);
+            }
             if (pci_dma_write(dev,
                               slot + sgi_rad1_audio_channel_info[i].slot_ptr,
                               word, sizeof(word)) != MEMTX_OK && s->octane) {
@@ -429,6 +433,19 @@ static bool sgi_rad1_audio_fill_slot(SGIRad1AudioState *s, uint64_t slot)
     if (pci_dma_write(dev, slot + SGI_RAD1_AUDIO_SLOT_DONE_OFFSET,
                       word, sizeof(word)) != MEMTX_OK && s->octane) {
         goto failed;
+    }
+    if (s->octane) {
+        SGIRad1AudioChannel *c = &s->chan[SGI_RAD1_AUDIO_CH_OUT];
+
+        trace_sgi_rad1_octane_status_snapshot(slot,
+            qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL), c->start_ns, c->frames,
+            output_ptr,
+            ldl_le_p(mirror + SGI_RAD1_AUDIO_REG_OUT_POS_A -
+                     SGI_RAD1_AUDIO_SLOT_MIRROR_FIRST),
+            ldl_le_p(mirror + SGI_RAD1_AUDIO_REG_ANALOG_POS_B -
+                     SGI_RAD1_AUDIO_SLOT_MIRROR_FIRST),
+            ldl_le_p(mirror + SGI_RAD1_AUDIO_REG_UST_COUNTER -
+                     SGI_RAD1_AUDIO_SLOT_MIRROR_FIRST), s->status_running);
     }
     return true;
 
@@ -1499,6 +1516,9 @@ static MemTxResult sgi_rad1_octane_write(void *opaque, hwaddr addr,
                 goto unsupported;
             }
             s->status_dma_ctrl = value;
+            trace_sgi_rad1_octane_status_control(value,
+                qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL), s->status_running,
+                s->status_start_ns, s->status_interval, s->status_ring_cursor);
             return MEMTX_OK;
         }
     }
