@@ -14,6 +14,7 @@ from pathlib import Path
 from qemu_test import QemuSystemTest
 from test_r10000_tlb_cache import constant, insn_i, mtc0, mfc0
 
+# The synthetic agent overlays one page of Malta RAM (hw/mips/malta.c).
 PAGE = 0x100000
 MAILBOX = 0x1000
 DONE = 0xc0de
@@ -90,7 +91,7 @@ class R10000Coherence(QemuSystemTest):
         image = self.scratch_file(name + '.bin')
         Path(image).write_bytes(fixture(operations, cca, route))
         vm = self.get_vm(name=name)
-        vm.set_machine('octane')
+        vm.set_machine('malta')
         cpu = 'R10000,r10k-data-cache=on'
         if line64:
             cpu += ',r10k-scache-line-size=64'
