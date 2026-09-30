@@ -922,6 +922,98 @@ static void test_fuel_ps2(const void *data)
     qtest_quit(qts);
 }
 
+/* Reuse the standalone IOC3 test's QMP input path on the Fuel board. */
+static void fuel_ps2_key_down(QTestState *qts, const char *key)
+{
+    qtest_qmp_assert_success(qts,
+        "{'execute':'input-send-event','arguments':"
+        " {'events':[{'type':'key','data':"
+        " {'down':true,'key':{'type':'qcode','data':%s}}}]}}", key);
+}
+
+static void test_fuel_ps2_keyboard_host_input(const void *data)
+{
+    const unsigned int pin = 0, pending_bit = 18;
+    static const char *keys[] = { "a", "b", "c", "d", "e" };
+    QTestState *qts = fuel_start_running(data);
+
+    fuel_map_ioc3(qts);
+    qtest_writel(qts, IOC3_WINDOW + IOC3_KBC_CONTROL,
+                 IOC3_KBC_CLAMP_BOTH_3);
+    /* Select raw scan-code set 2 before injecting host keys. */
+    qtest_writel(qts, IOC3_WINDOW + IOC3_KBC_KBD_TRANSMIT, 0xf0);
+    g_assert_cmphex(qtest_readl(qts, IOC3_WINDOW + IOC3_KBC_KBD_RECEIVE),
+                    ==, 0x80fa0000);
+    qtest_writel(qts, IOC3_WINDOW + IOC3_KBC_KBD_TRANSMIT, 2);
+    g_assert_cmphex(qtest_readl(qts, IOC3_WINDOW + IOC3_KBC_KBD_RECEIVE),
+                    ==, 0x80fa0000);
+    qtest_writel(qts, IOC3_WINDOW + IOC3_INT_STATUS, IOC3_INT_KEYBOARD);
+    fuel_route_irq(qts, pin, pending_bit);
+    qtest_writel(qts, IOC3_WINDOW + IOC3_INT_ENABLE_SET, IOC3_INT_KEYBOARD);
+
+    for (unsigned int i = 0; i < ARRAY_SIZE(keys); i++) {
+        fuel_ps2_key_down(qts, keys[i]);
+    }
+    g_assert_cmphex(qtest_readl(qts, IOC3_WINDOW + IOC3_INT_STATUS) &
+                    IOC3_INT_KEYBOARD, ==, IOC3_INT_KEYBOARD);
+    fuel_expect_irq(qts, pin, pending_bit);
+
+    /* Linux acknowledges first; reading releases the two clamped keys. */
+    qtest_writel(qts, IOC3_WINDOW + IOC3_INT_STATUS, IOC3_INT_KEYBOARD);
+    fuel_ack_irq(qts, pending_bit);
+    g_assert_cmphex(qtest_readl(qts, IOC3_WINDOW + IOC3_KBC_KBD_RECEIVE),
+                    ==, 0xe01c3221);
+    g_assert_cmphex(qtest_readl(qts, IOC3_WINDOW + IOC3_INT_STATUS) &
+                    IOC3_INT_KEYBOARD, ==, IOC3_INT_KEYBOARD);
+    qtest_writeq(qts, BEDROCK_LOCAL + PI_MASK_0_A, 0);
+    fuel_expect_irq(qts, pin, pending_bit);
+    g_assert_cmphex(qtest_readl(qts, IOC3_WINDOW + IOC3_KBC_KBD_RECEIVE),
+                    ==, 0xc0232400);
+    g_assert_cmphex(qtest_readl(qts, IOC3_WINDOW + IOC3_KBC_KBD_RECEIVE),
+                    ==, 0);
+    g_assert_cmphex(qtest_readl(qts, IOC3_WINDOW + IOC3_KBC_AUX_RECEIVE),
+                    ==, 0);
+    qtest_writel(qts, IOC3_WINDOW + IOC3_INT_STATUS, IOC3_INT_KEYBOARD);
+    fuel_ack_irq(qts, pending_bit);
+    qtest_quit(qts);
+}
+
+static void test_fuel_ps2_mouse_host_input(const void *data)
+{
+    const unsigned int pin = 0, pending_bit = 18;
+    QTestState *qts = fuel_start_running(data);
+
+    fuel_map_ioc3(qts);
+    qtest_writel(qts, IOC3_WINDOW + IOC3_KBC_CONTROL,
+                 IOC3_KBC_CLAMP_BOTH_3);
+    qtest_writel(qts, IOC3_WINDOW + IOC3_KBC_AUX_TRANSMIT, 0xf4);
+    g_assert_cmphex(qtest_readl(qts, IOC3_WINDOW + IOC3_KBC_AUX_RECEIVE),
+                    ==, 0x88fa0000);
+    qtest_writel(qts, IOC3_WINDOW + IOC3_INT_STATUS, IOC3_INT_KEYBOARD);
+    fuel_route_irq(qts, pin, pending_bit);
+    qtest_writel(qts, IOC3_WINDOW + IOC3_INT_ENABLE_SET, IOC3_INT_KEYBOARD);
+    qtest_qmp_assert_success(qts,
+        "{'execute':'input-send-event','arguments':{'events':["
+        " {'type':'rel','data':{'axis':'x','value':4}},"
+        " {'type':'btn','data':{'down':true,'button':'left'}}]}}");
+    qtest_clock_step(qts, NS_PER_SEC / 100);
+    g_assert_cmphex(qtest_readl(qts, IOC3_WINDOW + IOC3_INT_STATUS) &
+                    IOC3_INT_KEYBOARD, ==, IOC3_INT_KEYBOARD);
+    fuel_expect_irq(qts, pin, pending_bit);
+    g_assert_cmphex(qtest_readl(qts, IOC3_WINDOW + IOC3_KBC_AUX_RECEIVE),
+                    ==, 0xe8090400);
+    g_assert_cmphex(qtest_readl(qts, IOC3_WINDOW + IOC3_KBC_KBD_RECEIVE),
+                    ==, 0);
+    g_assert_cmphex(qtest_readl(qts, IOC3_WINDOW + IOC3_KBC_AUX_RECEIVE),
+                    ==, 0);
+    /* A drained packet stays pending until the shared source is cleared. */
+    g_assert_cmphex(qtest_readl(qts, IOC3_WINDOW + IOC3_INT_STATUS) &
+                    IOC3_INT_KEYBOARD, ==, IOC3_INT_KEYBOARD);
+    qtest_writel(qts, IOC3_WINDOW + IOC3_INT_STATUS, IOC3_INT_KEYBOARD);
+    fuel_ack_irq(qts, pending_bit);
+    qtest_quit(qts);
+}
+
 static void test_fuel_memory(const void *data)
 {
     const char *prom = data;
@@ -1509,6 +1601,10 @@ int main(int argc, char **argv)
     qtest_add_data_func("fuel/ioc3-ethernet-interrupt", prom,
                         test_fuel_ioc3_ethernet_interrupt);
     qtest_add_data_func("fuel/ps2", prom, test_fuel_ps2);
+    qtest_add_data_func("fuel/ps2-keyboard-host-input", prom,
+                        test_fuel_ps2_keyboard_host_input);
+    qtest_add_data_func("fuel/ps2-mouse-host-input", prom,
+                        test_fuel_ps2_mouse_host_input);
     qtest_add_data_func("fuel/memory", prom, test_fuel_memory);
     qtest_add_data_func("fuel/rejects-other-board-code", prom,
                         test_fuel_rejects_other_board_code);
