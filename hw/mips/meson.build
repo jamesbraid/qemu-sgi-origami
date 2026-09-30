@@ -29,7 +29,7 @@ mips_ss.add(when: 'CONFIG_SGI_SN0', if_true: files('sgi/sn-promdata.c'))
 mips_ss.add(when: 'CONFIG_SGI_SN0', if_true: files('sgi/sn-machine.c'))
 mips_ss.add(when: 'CONFIG_SGI_SN1',
             if_true: files('sgi/sn1.c', 'sgi/sn1-node.c',
-                           'sgi/sn1-topology.c'))
+                           'sgi/sn1-topology.c', 'sgi/sn1-fabric.c'))
 # The XIO port interface and the two link kinds that connect it:
 # shared by whichever machines build XIO boards or links, so each
 # selects on its own Kconfig symbol rather than either machine's.

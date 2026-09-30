@@ -154,79 +154,30 @@ uint64_t sn1_node_canonical_address(const SN1NodeState *node,
  * On one node with number 0 every alias lands where the global map already
  * is, so the one-chassis machine decodes as before.
  */
-#define SN1_NODE_WINDOW_SIZE (UINT64_C(1) << SN1_NODE_ADDRESS_SHIFT)
-#define SN1_NODE_SPACE_SIZE UINT64_C(0x10000000000)
-/* Seven node bits in M mode, the only mode an Origin 300 runs. */
-#define SN1_NODE_NUMBER_MASK 0x7f
 #define SN1_HUB_LOCAL_FORMS_SIZE UINT64_C(0x20000000)
 #define SN1_CACHED_ALIAS_MAX (64 * MiB)
 
-static const uint64_t sn1_node_space_base[SN1_NODE_SPACES] = {
-    0, SN1_SPACE_HUB, SN1_IO_SPACE_ADDRESS, SN1_MEMORY_SPECIAL_ADDRESS,
-};
-
-static MemTxResult sn1_claim_floor_read(void *opaque, hwaddr offset,
-                                        uint64_t *value, unsigned size,
-                                        MemTxAttrs attrs)
-{
-    qemu_log_mask(LOG_GUEST_ERROR, "sn1: no reachable node carries number "
-                  "%u (space offset 0x%" HWADDR_PRIx ")\n",
-                  (unsigned)(offset >> SN1_NODE_ADDRESS_SHIFT), offset);
-    *value = 0;
-    return MEMTX_DECODE_ERROR;
-}
-
-static MemTxResult sn1_claim_floor_write(void *opaque, hwaddr offset,
-                                         uint64_t value, unsigned size,
-                                         MemTxAttrs attrs)
-{
-    qemu_log_mask(LOG_GUEST_ERROR, "sn1: write to number %u reaches no "
-                  "node (space offset 0x%" HWADDR_PRIx ")\n",
-                  (unsigned)(offset >> SN1_NODE_ADDRESS_SHIFT), offset);
-    return MEMTX_DECODE_ERROR;
-}
-
-static const MemoryRegionOps sn1_claim_floor_ops = {
-    .read_with_attrs = sn1_claim_floor_read,
-    .write_with_attrs = sn1_claim_floor_write,
-    .endianness = DEVICE_BIG_ENDIAN,
-    .valid = { .min_access_size = 1, .max_access_size = 8 },
-    .impl = { .min_access_size = 1, .max_access_size = 8 },
-};
-
 static unsigned int sn1_node_number(SN1NodeState *node)
 {
-    return sgi_bedrock_node_number(SGI_BEDROCK(node->bedrock)) &
-           SN1_NODE_NUMBER_MASK;
+    return sn1_fabric_number(&node->endpoint);
 }
 
 static SN1NodeState *sn1_node_peer(SN1NodeState *node)
 {
-    SGIBedrockState *bedrock = SGI_BEDROCK(node->bedrock);
-    Object *peer;
-    unsigned int index;
+    SN1FabricEndpoint *peer = sn1_fabric_peer(&node->endpoint);
 
-    if (!bedrock->net_cable ||
-        !sgi_net_cable_neighbor(bedrock->net_cable, OBJECT(bedrock), 0,
-                                &peer, &index)) {
-        return NULL;
-    }
-    return (SN1NodeState *)object_dynamic_cast(peer->parent,
-                                               TYPE_SGI_SN1_NODE);
+    return peer ? (SN1NodeState *)object_dynamic_cast(peer->owner,
+                                                     TYPE_SGI_SN1_NODE) : NULL;
 }
 
 SN1NodeState *sn1_node_claimant(SN1NodeState *node, unsigned int number)
 {
-    SN1NodeState *peer = sn1_node_peer(node);
-    unsigned int own = sn1_node_number(node);
+    SN1FabricEndpoint *target = sn1_fabric_claimant(&node->endpoint, number);
 
-    if (number == own) {
-        return node;
-    }
-    if (peer && peer->claims_ready && sn1_node_number(peer) == number) {
-        return peer;
-    }
-    return NULL;
+    /* Directory operations require a processor node, not an I/O endpoint. */
+    return target ?
+        (SN1NodeState *)object_dynamic_cast(target->owner, TYPE_SGI_SN1_NODE) :
+        NULL;
 }
 
 static uint64_t sn1_cached_alias_bytes(uint8_t code)
@@ -236,13 +187,12 @@ static uint64_t sn1_cached_alias_bytes(uint8_t code)
 
 static void sn1_node_place_claims(SN1NodeState *node)
 {
-    SN1NodeState *peer = sn1_node_peer(node);
+    SN1FabricEndpoint *peer = sn1_fabric_peer(&node->endpoint);
     unsigned int own = sn1_node_number(node);
-    unsigned int other = peer ? sn1_node_number(peer) : 0;
-    bool peer_reachable = peer && peer->claims_ready && other != own;
-    unsigned int view, space;
+    unsigned int other = peer ? sn1_fabric_number(peer) : 0;
+    unsigned int view;
 
-    if (peer && peer->claims_ready && other == own) {
+    if (peer && peer->ready && other == own) {
         qemu_log_mask(LOG_GUEST_ERROR, "sn1: node %u and its peer both carry "
                       "number %u; each reaches only itself there\n",
                       node->nasid, own);
@@ -251,22 +201,7 @@ static void sn1_node_place_claims(SN1NodeState *node)
         if (view < SN1_NODE_FABRIC_VIEW && view >= node->nr_cpus) {
             continue;
         }
-        for (space = 0; space < SN1_NODE_SPACES; space++) {
-            uint64_t base = sn1_node_space_base[space];
-            MemoryRegion *mine = &node->claim[view][space][0];
-            MemoryRegion *theirs = &node->claim[view][space][1];
-
-            memory_region_set_address(
-                mine, base + ((uint64_t)own << SN1_NODE_ADDRESS_SHIFT));
-            memory_region_set_enabled(theirs, peer_reachable);
-            if (peer_reachable) {
-                memory_region_set_alias_offset(
-                    theirs, sn1_node_address(peer, base));
-                memory_region_set_address(
-                    theirs,
-                    base + ((uint64_t)other << SN1_NODE_ADDRESS_SHIFT));
-            }
-        }
+        sn1_fabric_place_view(&node->endpoint, node->claim[view]);
     }
     for (view = 0; view < node->nr_cpus; view++) {
         unsigned physical = sn1_cpu_slot(node->model_node, view);
@@ -282,12 +217,16 @@ static void sn1_node_place_claims(SN1NodeState *node)
     }
 }
 
+static void sn1_node_place_endpoint_claims(SN1FabricEndpoint *endpoint)
+{
+    sn1_node_place_claims(SN1_NODE(endpoint->owner));
+}
+
 void sn1_node_update_claims(SN1NodeState *node)
 {
     SGIBedrockState *bedrock = SGI_BEDROCK(node->bedrock);
-    SN1NodeState *peer;
 
-    if (!node->claims_ready) {
+    if (!node->endpoint.ready) {
         return;
     }
     if (bedrock->net_cable && !node->cable_notifier_added) {
@@ -295,13 +234,7 @@ void sn1_node_update_claims(SN1NodeState *node)
                                           &node->cable_notifier);
         node->cable_notifier_added = true;
     }
-    memory_region_transaction_begin();
-    sn1_node_place_claims(node);
-    peer = sn1_node_peer(node);
-    if (peer && peer->claims_ready) {
-        sn1_node_place_claims(peer);
-    }
-    memory_region_transaction_commit();
+    sn1_fabric_update_claims(&node->endpoint);
 }
 
 /*
@@ -349,38 +282,8 @@ static void sn1_node_cable_changed(Notifier *notifier, void *data)
 static void sn1_node_view_claims(SN1NodeState *node, unsigned int view,
                                  MemoryRegion *container)
 {
-    MemoryRegion *system = get_system_memory();
-    unsigned int space;
-
-    for (space = 0; space < SN1_NODE_SPACES; space++) {
-        uint64_t base = sn1_node_space_base[space];
-        g_autofree char *floor_name =
-            g_strdup_printf("sn1.node%u.view%u.floor%u", node->nasid, view,
-                            space);
-        unsigned int slot;
-
-        memory_region_init_alias(&node->claim_floor_alias[view][space],
-                                 OBJECT(node), floor_name,
-                                 &node->claim_floor[space], 0,
-                                 SN1_NODE_SPACE_SIZE);
-        memory_region_add_subregion_overlap(
-            container, base, &node->claim_floor_alias[view][space], -1);
-        for (slot = 0; slot < SN1_NODE_CLAIMS; slot++) {
-            g_autofree char *name =
-                g_strdup_printf("sn1.node%u.view%u.claim%u.%s", node->nasid,
-                                view, space, slot ? "peer" : "own");
-
-            memory_region_init_alias(&node->claim[view][space][slot],
-                                     OBJECT(node), name, system,
-                                     sn1_node_address(node, base),
-                                     SN1_NODE_WINDOW_SIZE);
-            memory_region_set_enabled(&node->claim[view][space][slot],
-                                      slot == 0);
-            memory_region_add_subregion_overlap(
-                container, sn1_node_address(node, base),
-                &node->claim[view][space][slot], 0);
-        }
-    }
+    sn1_fabric_init_view(&node->endpoint, view, container, node->claim_floor,
+                        node->claim_floor_alias[view], node->claim[view]);
 }
 
 static void sn1_node_local_form(SN1NodeState *node, unsigned int cpu,
@@ -401,9 +304,10 @@ static void sn1_node_local_form(SN1NodeState *node, unsigned int cpu,
 static SGIBedrockIOState *sn1_node_io_claimant(void *opaque,
                                                unsigned int number)
 {
-    SN1NodeState *target = sn1_node_claimant(opaque, number);
+    SN1NodeState *node = opaque;
+    SN1FabricEndpoint *target = sn1_fabric_claimant(&node->endpoint, number);
 
-    return target ? &SGI_BEDROCK(target->bedrock)->io : NULL;
+    return target ? &target->bedrock->io : NULL;
 }
 
 static void sn1_node_cached_alias_changed(Notifier *notifier, void *data)
@@ -417,16 +321,13 @@ static void sn1_node_cached_alias_changed(Notifier *notifier, void *data)
 
 static void sn1_node_init_claims(SN1NodeState *node)
 {
-    unsigned int space, cpu, i;
+    unsigned int cpu, i;
 
-    for (space = 0; space < SN1_NODE_SPACES; space++) {
-        g_autofree char *name = g_strdup_printf("sn1.node%u.floor%u",
-                                                node->nasid, space);
-
-        memory_region_init_io(&node->claim_floor[space], OBJECT(node),
-                              &sn1_claim_floor_ops, node, name,
-                              SN1_NODE_SPACE_SIZE);
-    }
+    node->endpoint.owner = OBJECT(node);
+    node->endpoint.bedrock = SGI_BEDROCK(node->bedrock);
+    node->endpoint.placement = node->nasid;
+    node->endpoint.place_claims = sn1_node_place_endpoint_claims;
+    sn1_fabric_init_floor(&node->endpoint, node->claim_floor);
     for (cpu = 0; cpu < node->nr_cpus; cpu++) {
         sn1_node_view_claims(node, cpu, &node->cpu_sysmem[cpu]);
         sn1_node_local_form(node, cpu, 0, "reset", SN1_PROM_RESET,
@@ -453,7 +354,7 @@ static void sn1_node_init_claims(SN1NodeState *node)
             &SGI_BEDROCK(node->bedrock)->pi[i],
             &node->cached_alias_notifier[i]);
     }
-    node->claims_ready = true;
+    node->endpoint.ready = true;
     sn1_node_update_claims(node);
 }
 
@@ -2024,11 +1925,18 @@ static void sn1_node_reset_hold(Object *obj, ResetType type)
     memset(node->led, 0, sizeof(node->led));
 }
 
+static SN1FabricEndpoint *sn1_node_endpoint(Object *owner)
+{
+    return &SN1_NODE(owner)->endpoint;
+}
+
 static void sn1_node_class_init(ObjectClass *oc, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
     ResettableClass *rc = RESETTABLE_CLASS(oc);
+    SN1FabricClass *fc = SGI_SN1_FABRIC_CLASS(oc);
 
+    fc->endpoint = sn1_node_endpoint;
     dc->realize = sn1_node_realize;
     dc->unrealize = sn1_node_unrealize;
     dc->vmsd = &vmstate_sn1_node;
@@ -2046,6 +1954,10 @@ static const TypeInfo sn1_node_types[] = {
         .instance_init     = sn1_node_instance_init,
         .instance_finalize = sn1_node_instance_finalize,
         .class_init        = sn1_node_class_init,
+        .interfaces = (const InterfaceInfo[]) {
+            { TYPE_SGI_SN1_FABRIC },
+            { }
+        },
     },
 };
 

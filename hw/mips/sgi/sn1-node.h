@@ -21,6 +21,7 @@
 #include "hw/mips/sgi/xio-link.h"
 #include "cpu.h"
 #include "sn-promdata.h"
+#include "sn1-fabric.h"
 
 /*
  * Bedrock is fixed at four CPUs on two processor interfaces, two processors
@@ -33,9 +34,9 @@
  * special, I/O, memory special), each a 1 TiB carrier of 128 node
  * windows; see sn1-node.c's claim layer.
  */
-#define SN1_NODE_SPACES 4
+#define SN1_NODE_SPACES SN1_FABRIC_SPACES
 /* A node's window and its one cabled peer's. */
-#define SN1_NODE_CLAIMS 2
+#define SN1_NODE_CLAIMS SN1_FABRIC_CLAIMS
 /* The claim views: one per processor, then the node's fabric view. */
 #define SN1_NODE_VIEWS (SGI_SN1_NODE_MAX_CPUS + 1)
 #define SN1_NODE_FABRIC_VIEW SGI_SN1_NODE_MAX_CPUS
@@ -165,7 +166,7 @@ typedef struct SN1NodeState {
     Notifier cable_notifier;
     Notifier cached_alias_notifier[2];
     bool cable_notifier_added;
-    bool claims_ready;
+    SN1FabricEndpoint endpoint;
 } SN1NodeState;
 
 #define TYPE_SGI_SN1_NODE "sgi-sn1-node"
