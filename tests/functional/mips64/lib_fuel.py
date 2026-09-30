@@ -9,7 +9,7 @@ import re
 import shutil
 from pathlib import PurePosixPath
 
-from lib_prom import require_assets
+from qemu_test import LocalAsset
 
 
 MANIFEST_REL = 'assets/functional/fuel-irix-6.5.30.json'
@@ -28,7 +28,9 @@ _FIELDS = {
 
 def load_fixture(test):
     """Validate the fixed local manifest and every identified payload."""
-    manifest_path = require_assets(test, MANIFEST_REL)[MANIFEST_REL]
+    if not os.environ.get(LocalAsset.ENV_VAR):
+        test.skipTest(f'{LocalAsset.ENV_VAR} is not set')
+    manifest_path = LocalAsset(MANIFEST_REL, None).fetch()
     with open(manifest_path, encoding='utf-8') as source:
         fixture = json.load(source)
     if not isinstance(fixture, dict) or set(fixture) != _FIELDS:
@@ -72,7 +74,7 @@ def load_fixture(test):
                 or re.fullmatch(r'[0-9a-f]{64}', digest) is None):
             raise ValueError(f'Fuel fixture requires SHA-256 for {name}')
         specs.append((rel, digest))
-    assets = require_assets(test, *specs)
+    assets = {rel: LocalAsset(rel, digest).fetch() for rel, digest in specs}
     files = {name: assets[spec['path']] for name, spec in payloads.items()}
     files['manifest'] = manifest_path
     if os.path.getsize(files['boot_flash']) != 16 * 1024 * 1024:
