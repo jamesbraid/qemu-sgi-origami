@@ -62,6 +62,7 @@
 #define OHCI_COMMAND_STATUS_CLF    0x00000002
 #define OHCI_COMMAND_STATUS_BLF    0x00000004
 #define OHCI_INTERRUPT_SF          0x00000004
+#define OHCI_INTERRUPT_UE          0x00000010
 #define OHCI_INTERRUPT_RHSC        0x00000040
 #define OHCI_INTERRUPT_MIE         0x80000000
 #define OHCI_PORT_CCS              0x00000001
@@ -367,6 +368,38 @@ static void test_pci_command_status(void)
     qtest_qmp_eventwait(ohci.qts, "RESET");
     g_assert_cmphex(lucent_ohci_config_readl(&ohci, PCI_COMMAND), ==,
                     0x02000000);
+
+    lucent_ohci_close(&ohci);
+}
+
+static void test_dma_error_preserves_pci_status(void)
+{
+    LucentOHCI ohci = { 0 };
+    uint16_t status, error_status, reset_status;
+
+    lucent_ohci_open(&ohci, lucent_ohci_start("lucent-ohci", ""));
+    lucent_ohci_map_bar(&ohci);
+    status = lucent_ohci_config_readw(&ohci, PCI_STATUS);
+    g_assert_cmphex(status, ==, PCI_STATUS_DEVSEL_MEDIUM);
+
+    /* No ATE maps this HCCA, so its first DMA read must fail. */
+    lucent_ohci_writel(&ohci, OHCI_HC_HCCA, SGI_DMA_IOVA);
+    lucent_ohci_writel(&ohci, OHCI_HC_INTERRUPT_ENABLE,
+                       OHCI_INTERRUPT_MIE | OHCI_INTERRUPT_UE);
+    lucent_ohci_writel(&ohci, OHCI_HC_CONTROL, OHCI_CONTROL_OPERATIONAL);
+    qtest_clock_step(ohci.qts, OHCI_FRAME_TIME_NS);
+    g_assert_cmphex(lucent_ohci_readl(&ohci, OHCI_HC_INTERRUPT_STATUS) &
+                    OHCI_INTERRUPT_UE, ==, OHCI_INTERRUPT_UE);
+    error_status = lucent_ohci_config_readw(&ohci, PCI_STATUS);
+
+    qtest_qmp_assert_success(ohci.qts, "{'execute': 'system_reset'}");
+    qtest_qmp_eventwait(ohci.qts, "RESET");
+    reset_status = lucent_ohci_config_readw(&ohci, PCI_STATUS);
+    g_test_message("PCI Status: initial 0x%x, DMA error 0x%x, reset 0x%x",
+                   status, error_status, reset_status);
+    g_assert_cmphex(error_status, ==,
+                    status | PCI_STATUS_DETECTED_PARITY | PCI_STATUS_INTERRUPT);
+    g_assert_cmphex(reset_status, ==, status);
 
     lucent_ohci_close(&ohci);
 }
@@ -1160,6 +1193,8 @@ int main(int argc, char **argv)
                    test_wacom_input_handler_ready);
     qtest_add_func("/lucent-ohci/pci-command-status",
                    test_pci_command_status);
+    qtest_add_func("/lucent-ohci/dma-error-preserves-pci-status",
+                   test_dma_error_preserves_pci_status);
     qtest_add_func("/lucent-ohci/dma-and-inta-reuse",
                    test_dma_and_inta_reuse);
     qtest_add_func("/lucent-ohci/reset-reuse", test_reset_reuse);
