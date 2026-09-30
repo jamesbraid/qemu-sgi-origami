@@ -500,8 +500,10 @@ static void check_bedrock_has_populated_io(const SGIModelTopology *t)
         const SGIModelXioAttachmentList *attachment = t->xio_attachments;
         unsigned int index = entry->value->attachment;
 
-        g_assert_true(entry->value->preset == SGI_MODEL_IO_BOARD_PRESET_IO8 ||
-                      entry->value->preset == SGI_MODEL_IO_BOARD_PRESET_FUEL);
+        if (entry->value->preset != SGI_MODEL_IO_BOARD_PRESET_IO8 &&
+            entry->value->preset != SGI_MODEL_IO_BOARD_PRESET_FUEL) {
+            continue;
+        }
         while (index-- && attachment) {
             attachment = attachment->next;
         }
@@ -567,8 +569,11 @@ static void test_every_topology_is_well_formed(void)
     g_assert_cmpuint(topology_count, >, 0);
 }
 
-static void test_origin300_direct_v12_attachment(void)
+static void test_origin300_graphics_attachment(gconstpointer data)
 {
+    const char *name = data;
+    SGIModelIoBoardPreset preset = g_str_equal(name, "origin300-v12-direct") ?
+        SGI_MODEL_IO_BOARD_PRESET_ODYSSEY : SGI_MODEL_IO_BOARD_PRESET_VBRICK;
     g_autoptr(SGIModelCatalogue) catalogue = load_catalogue();
     const SGIModelTopologyList *entry;
 
@@ -576,31 +581,38 @@ static void test_origin300_direct_v12_attachment(void)
         const SGIModelTopology *t = entry->value;
         const SGIModelIoBoardList *board;
         const SGIModelXioAttachmentList *attachment;
+        const unsigned int widgets[] = { 14, 15, 11 };
         unsigned int index = 0;
+        unsigned int io8_count = 0, graphics_count = 0;
 
-        if (!g_str_equal(t->name, "origin300-v12-direct")) {
+        if (!g_str_equal(t->name, name)) {
             continue;
         }
         g_assert_null(t->xio_slots);
-        for (board = t->io_boards; board; board = board->next, index++) {
-            if (board->value->preset != SGI_MODEL_IO_BOARD_PRESET_ODYSSEY) {
-                continue;
-            }
-            g_assert_cmpuint(board->value->attachment, ==, index);
-            attachment = t->xio_attachments;
-            for (unsigned int i = 0; i < index; i++) {
-                g_assert_nonnull(attachment);
-                attachment = attachment->next;
-            }
-            g_assert_nonnull(attachment);
+        g_assert_cmpuint(io_board_count(t), ==, 2);
+        for (attachment = t->xio_attachments; attachment;
+             attachment = attachment->next, index++) {
+            g_assert_cmpuint(index, <, G_N_ELEMENTS(widgets));
             g_assert_cmpint(attachment->value->crossbar_index, ==, -1);
             g_assert_cmpuint(attachment->value->node_index, ==, 0);
-            g_assert_cmpuint(attachment->value->widget, ==, 0xb);
-            return;
+            g_assert_cmpuint(attachment->value->widget, ==, widgets[index]);
         }
-        g_error("origin300-v12-direct has no Odyssey board");
+        g_assert_cmpuint(index, ==, G_N_ELEMENTS(widgets));
+        for (board = t->io_boards; board; board = board->next) {
+            if (board->value->preset == SGI_MODEL_IO_BOARD_PRESET_IO8) {
+                g_assert_cmpuint(board->value->attachment, ==, 1);
+                io8_count++;
+                continue;
+            }
+            g_assert_cmpint(board->value->preset, ==, preset);
+            g_assert_cmpuint(board->value->attachment, ==, 2);
+            graphics_count++;
+        }
+        g_assert_cmpuint(io8_count, ==, 1);
+        g_assert_cmpuint(graphics_count, ==, 1);
+        return;
     }
-    g_error("origin300-v12-direct is missing");
+    g_error("%s is missing", name);
 }
 
 int main(int argc, char **argv)
@@ -608,7 +620,11 @@ int main(int argc, char **argv)
     g_test_init(&argc, &argv, NULL);
     g_test_add_func("/sn-model/every-topology-is-well-formed",
                     test_every_topology_is_well_formed);
-    g_test_add_func("/sn-model/origin300-direct-v12-attachment",
-                    test_origin300_direct_v12_attachment);
+    g_test_add_data_func("/sn-model/origin300-direct-v12-attachment",
+                         "origin300-v12-direct",
+                         test_origin300_graphics_attachment);
+    g_test_add_data_func("/sn-model/origin300-vbrick-attachment",
+                         "origin300-vbrick",
+                         test_origin300_graphics_attachment);
     return g_test_run();
 }
