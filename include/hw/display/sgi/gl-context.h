@@ -1036,7 +1036,7 @@ bool sgi_gl_context_valid(const SGIGLContext *c, Error **errp);
  * is refused by name rather than misread. The bare
  * VMSTATE_SGI_GL_CONTEXTS, embedded in a description of the family's own,
  * puts no GL version on the stream, which is enough while migration is
- * supported only between identical builds (Origami decision D-0019); the
+ * supported only between identical builds; the
  * DEFINE_ form carries it.
  */
 #define SGI_GL_VMSTATE_VERSION  1

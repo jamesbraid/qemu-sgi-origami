@@ -11,8 +11,7 @@
  * The VC3 cursor position registers hold the glyph's top-left pixel plus
  * 31 on each axis: the stock IRIX 6.5.30 server writes the pointer position
  * minus the hotspot plus 31, and the VC2's Linux console driver adds the
- * same 31 to its cursor Y. See the cursor section of
- * docs/datasheets/mgras-raster-display.md in the Origami repository.
+ * same 31 to its cursor Y.
  */
 #define MGRAS_CURSOR_ORIGIN 31
 
@@ -25,9 +24,7 @@
  * window ID in bits 4:0. The first entry applies from column 0 and each
  * later one from its own column; a column past the screen edge (0xffe0)
  * ends the line. Table layout and register assignment: MAME's Newport
- * model (refs/mame b1da4a1b278cf41300e95cce35b4d1f03a22023e). See
- * docs/datasheets/mgras-raster-display.md in the Origami repository for
- * the supporting evidence.
+ * model at commit b1da4a1b278cf41300e95cce35b4d1f03a22023e.
  */
 #define MGRAS_VC3_MAIN_DID_ENTRY 0x04
 #define MGRAS_VC3_OVERLAY_DID_ENTRY 0x05

@@ -5,8 +5,7 @@
  * On the board the HQ4 and GE11 run SGI programs that turn the OpenGL
  * client's command words into raster-engine work. Those programs are
  * opaque here, so the model reads the words at the boundary the IRIX
- * 6.5.30 client library defines (docs/datasheets/mgras-gl-commands.md in
- * the Origami repository) and draws what the OpenGL 1.2.1 specification
+ * 6.5.30 client library defines and draws what the OpenGL 1.2.1 specification
  * says those commands produce. This is an approximation of the geometry
  * engine's function, not of its program.
  *

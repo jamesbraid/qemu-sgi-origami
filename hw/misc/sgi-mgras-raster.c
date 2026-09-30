@@ -1480,8 +1480,8 @@ static bool mgras_raster_dma_select_slot(SGIMgrasState *s, uint32_t kick_byte,
 }
 
 /*
- * Host-memory source address formula (see docs/notebooks and the DMA-src
- * capture evidence this model is built from): va = addr_low + addr_high +
+ * Host-memory source address formula from DMA-source captures:
+ * va = addr_low + addr_high +
  * row*pitch + byte, page_ix = va >> 12, and the source page's physical
  * address is (list_node << 32) | (pagelist[page_ix] << 12) | (va & 0xfff).
  * The page list itself is `count` big-endian 64-bit page-frame-number
