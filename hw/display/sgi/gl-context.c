@@ -176,6 +176,7 @@ void sgi_gl_cleanup(SGIGLContext *c)
     sgi_gl_polygon_release(&c->polygon);
     c->polygon.enabled = c->polygon.error = 0;
     c->standalone_stipple = c->line_phase_loaded = false;
+    c->draw_error_loaded = false;
     c->line_phase = 0;
 }
 
@@ -230,7 +231,10 @@ bool sgi_gl_clone(SGIGLContext *dst, const SGIGLContext *src)
         (sgi_gl_open_line(src) &&
          dst->standalone_stipple != src->standalone_stipple) ||
         (open && dst->polygon.enabled != src->polygon.enabled) ||
-        (!dst->polygon.enabled && sgi_gl_polygon_owned(src))) {
+        (!dst->polygon.enabled &&
+         (src->polygon.count || src->polygon.failed ||
+          (sgi_gl_polygon_owned(src) &&
+           (src->polygon.enabled || !dst->standalone_stipple))))) {
         return false;
     }
     copy = *src; /* Ownership is replaced before the copy becomes visible. */
@@ -239,7 +243,7 @@ bool sgi_gl_clone(SGIGLContext *dst, const SGIGLContext *src)
     copy.polygon.enabled = dst->polygon.enabled;
     copy.polygon.loaded = 0;
     copy.standalone_stipple = dst->standalone_stipple;
-    copy.line_phase_loaded = false;
+    copy.line_phase_loaded = copy.draw_error_loaded = false;
     if (!sgi_gl_polygon_reserve(&copy.polygon, src->polygon.count)) {
         return false;
     }
@@ -3086,6 +3090,13 @@ static bool sgi_gl_context_post_load(void *opaque, int version_id,
         return false;
     }
     valid = sgi_gl_context_valid(c, errp);
+    if (valid && c->draw_error_loaded &&
+        ((!c->standalone_stipple && !c->polygon.enabled) || c->polygon.loaded ||
+         c->polygon.error != SGI_GL_OUT_OF_MEMORY)) {
+        error_setg(errp, "sgi-gl: incompatible standalone draw error");
+        valid = false;
+    }
+    c->draw_error_loaded = false;
     if (valid && (c->line_phase_loaded ?
                   !c->standalone_stipple || !sgi_gl_open_line(c) ||
                   c->line_phase >= 16 * c->line_stipple_repeat :
@@ -3608,7 +3619,9 @@ static const VMStateInfo vmstate_info_sgi_gl_polygon = {
 
 static bool sgi_gl_polygon_needed(void *opaque)
 {
-    return sgi_gl_polygon_owned(opaque);
+    const SGIGLContext *c = opaque;
+
+    return c->polygon.enabled && sgi_gl_polygon_owned(c);
 }
 
 static const VMStateDescription vmstate_sgi_gl_polygon = {
@@ -3619,6 +3632,37 @@ static const VMStateDescription vmstate_sgi_gl_polygon = {
     .fields = (const VMStateField[]) {
         VMSTATE_SINGLE(polygon, SGIGLContext, 0, vmstate_info_sgi_gl_polygon,
                        SGIGLPolygonAssembly),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
+static bool sgi_gl_draw_error_needed(void *opaque)
+{
+    const SGIGLContext *c = opaque;
+
+    return !c->polygon.enabled && c->polygon.error;
+}
+
+static int sgi_gl_draw_error_pre_load(void *opaque)
+{
+    SGIGLContext *c = opaque;
+
+    if (c->draw_error_loaded || c->polygon.loaded) {
+        sgi_gl_polygon_release(&c->polygon);
+        return -EINVAL;
+    }
+    c->draw_error_loaded = true;
+    return 0;
+}
+
+static const VMStateDescription vmstate_sgi_gl_draw_error = {
+    .name = "sgi-gl-context/draw-error",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = sgi_gl_draw_error_needed,
+    .pre_load = sgi_gl_draw_error_pre_load,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32(polygon.error, SGIGLContext),
         VMSTATE_END_OF_LIST()
     },
 };
@@ -3675,7 +3719,7 @@ static int sgi_gl_context_pre_load(void *opaque)
 
     memset(c->polygon_stipple, 0xff, sizeof(c->polygon_stipple));
     c->line_phase = 0;
-    c->line_phase_loaded = false;
+    c->line_phase_loaded = c->draw_error_loaded = false;
     sgi_gl_polygon_release(&c->polygon);
     c->polygon.error = 0;
     return 0;
@@ -3798,6 +3842,7 @@ const VMStateDescription vmstate_sgi_gl_context = {
         &vmstate_sgi_gl_polygon_stipple,
         &vmstate_sgi_gl_line_phase,
         &vmstate_sgi_gl_polygon,
+        &vmstate_sgi_gl_draw_error,
         &vmstate_sgi_gl_texture_coords,
         NULL
     },

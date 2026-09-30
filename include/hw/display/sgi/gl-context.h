@@ -747,9 +747,10 @@ typedef struct SGIGLContext {
     uint32_t strip_odd;
     float cur_texcoord[4];
     float raster_texcoord[4];
-    /* Host policy and migration-presence marker are never serialized. */
+    /* Host policy and migration-presence markers are never serialized. */
     bool standalone_stipple;
     bool line_phase_loaded;
+    bool draw_error_loaded;
     uint32_t line_phase;
 } SGIGLContext;
 
