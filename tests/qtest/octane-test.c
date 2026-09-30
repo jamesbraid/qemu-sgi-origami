@@ -52,6 +52,9 @@
 #define IOC3_PAR_BUFFER_LO_A (IOC3 + 0x084)
 #define IOC3_PAR_COUNT_A (IOC3 + 0x088)
 #define IOC3_PAR_ECP_DATA (IOC3 + 0x20150)
+#define IOC3_PAR_ECP_FIFO (IOC3 + 0x20158)
+#define IOC3_PAR_ECP_CONFIG_B (IOC3 + 0x20159)
+#define IOC3_PAR_ECP_EXTENDED (IOC3 + 0x2015a)
 #define RTC_INDEX (IOC3 + 0xa0000)
 #define RTC_DATA (IOC3 + 0xc0000)
 #define UART_A (IOC3 + 0x20178)
@@ -770,6 +773,50 @@ static void test_ioc3_parallel(gconstpointer data)
     g_assert_cmphex(qtest_readl(qts, IOC3_PAR_COUNT_A) & 0xffff, ==, 0x5a5a);
     qtest_writeb(qts, IOC3_PAR_ECP_DATA, 0x5a);
     g_assert_cmphex(qtest_readb(qts, IOC3_PAR_ECP_DATA), ==, 0x5a);
+    qtest_quit(qts);
+}
+
+static void test_octane2_ioc3_parallel_fifo(void)
+{
+    QTestState *qts = octane2_start_args("");
+
+    qtest_writel(qts, CFG(2) + 0x10, 0x10000000);
+    qtest_writel(qts, CFG(2) + 0x04, 0x00000002);
+    qtest_writel(qts, BRIDGE + 0x200 + 8 * 2 + 4, 0x1100);
+
+    /* TI test mode bypasses the cable handshake. */
+    qtest_writeb(qts, IOC3_PAR_ECP_EXTENDED, 0xc4);
+    g_assert_cmphex(qtest_readb(qts, IOC3_PAR_ECP_EXTENDED), ==, 0xc5);
+    for (unsigned i = 0; i < 16; i++) {
+        qtest_writeb(qts, IOC3_PAR_ECP_FIFO, 0x30 + i);
+        g_assert_cmphex(qtest_readb(qts, IOC3_PAR_ECP_EXTENDED), ==,
+                       i == 15 ? 0xc6 : 0xc4);
+    }
+    for (unsigned i = 0; i < 16; i++) {
+        g_assert_cmphex(qtest_readb(qts, IOC3_PAR_ECP_FIFO), ==, 0x30 + i);
+        g_assert_cmphex(qtest_readb(qts, IOC3_PAR_ECP_EXTENDED), ==,
+                       i == 15 ? 0xc5 : 0xc4);
+    }
+
+    qtest_writeb(qts, IOC3_PAR_ECP_EXTENDED, 0xf4);
+    g_assert_cmphex(qtest_readb(qts, IOC3_PAR_ECP_FIFO), ==, 0x1f);
+    /* CNFGB's IRQ sample remains outside the modeled wiring contract. */
+    g_assert_cmphex(qtest_readb(qts, IOC3_PAR_ECP_CONFIG_B) & ~0x40, ==, 0x0b);
+    qtest_writeb(qts, IOC3_PAR_ECP_FIFO, 0x55);
+    qtest_writeb(qts, IOC3_PAR_ECP_CONFIG_B, 0xff);
+    g_assert_cmphex(qtest_readb(qts, IOC3_PAR_ECP_FIFO), ==, 0x1f);
+    g_assert_cmphex(qtest_readb(qts, IOC3_PAR_ECP_CONFIG_B) & ~0x40, ==, 0x0b);
+
+    qtest_writeb(qts, IOC3_PAR_ECP_EXTENDED, 0x04);
+    qtest_writeb(qts, IOC3_PAR_ECP_EXTENDED, 0xc4);
+    qtest_writeb(qts, IOC3_PAR_ECP_FIFO, 0xa5);
+    g_assert_cmphex(qtest_readb(qts, IOC3_PAR_ECP_EXTENDED), ==, 0xc4);
+    qtest_system_reset(qts);
+    qtest_writel(qts, CFG(2) + 0x10, 0x10000000);
+    qtest_writel(qts, CFG(2) + 0x04, 0x00000002);
+    qtest_writel(qts, BRIDGE + 0x200 + 8 * 2 + 4, 0x1100);
+    qtest_writeb(qts, IOC3_PAR_ECP_EXTENDED, 0xc4);
+    g_assert_cmphex(qtest_readb(qts, IOC3_PAR_ECP_EXTENDED), ==, 0xc5);
     qtest_quit(qts);
 }
 
@@ -4081,6 +4128,8 @@ int main(int argc, char **argv)
                         test_ioc3_parallel);
     qtest_add_data_func("/octane2/ioc3-parallel", GINT_TO_POINTER(1),
                         test_ioc3_parallel);
+    qtest_add_func("/octane2/ioc3-parallel-fifo",
+                   test_octane2_ioc3_parallel_fifo);
     qtest_add_func("/octane/ioc3-ethernet-polled",
                    test_octane_ethernet_polled);
     qtest_add_func("/octane2/ioc3-ethernet-polled",
