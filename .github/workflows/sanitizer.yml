@@ -1,0 +1,175 @@
+# Build with address and undefined-behaviour sanitizers and run the MIPS64
+# register suite. This weekly, non-required check complements the faster
+# required suite and needs no guest assets.
+name: sanitizer register suite
+
+on:
+  # Weekly, offset from the nightly functional workload.
+  schedule:
+    - cron: "0 7 * * 0"
+  workflow_dispatch:
+
+concurrency:
+  # Run one sanitizer build at a time.
+  group: sanitizer
+  cancel-in-progress: false
+
+jobs:
+  sanitizer-register-suite:
+    if: ${{ github.server_url != 'https://github.com' }}
+    runs-on: ${{ vars.CI_RUNNER }}
+    env:
+      CI_STEP: /tmp/ci-current-step
+    container:
+      image: ${{ vars.CI_JOB_IMAGE }}
+      credentials:
+        username: ${{ vars.CI_REGISTRY_USER }}
+        password: ${{ secrets.CI_BOT_TOKEN }}
+    steps:
+      # Reaching the daemon is the property worth asserting; a pipeline into
+      # sed would hide its failure, so run the client alone and check it.
+      - name: docker client
+        run: |
+          echo "docker client" > "$CI_STEP"
+          command -v docker >/dev/null || {
+            apt-get update -qq && apt-get install -y -qq --no-install-recommends docker.io
+          }
+          if ! docker version --format '{{.Server.Version}}' >/dev/null; then
+            echo "The docker daemon is not reachable from this job; every step"
+            echo "below drives it."
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+
+      - name: build QEMU's MIPS64 test image
+        run: |
+          echo "build QEMU's MIPS64 test image" > "$CI_STEP"
+          image_id=$(docker build -q \
+              -f tests/docker/dockerfiles/debian-sgi.docker \
+              tests/docker/dockerfiles)
+          if [ -z "$image_id" ]; then
+            echo "QEMU test image build returned no image ID"
+            exit 1
+          fi
+          printf 'IMAGE_ID=%s\n' "$image_id" >> "$GITHUB_ENV"
+
+      # The workspace is a docker volume the guest's daemon knows by a per-run
+      # name; a sibling container is handed that, not this job's $PWD.
+      # build.yml discovers and asserts this the same way.
+      - name: find the workspace volume the guest knows
+        run: |
+          echo "find the workspace volume the guest knows" > "$CI_STEP"
+          sh scripts/ci/runner-setup volume
+
+      - name: check a sibling container can see the checkout
+        run: |
+          echo "check a sibling container can see the checkout" > "$CI_STEP"
+          sh scripts/ci/runner-setup check
+
+      # Configure directly with QEMU's supported options in the ephemeral
+      # build-asan directory. Ninja builds the system emulator; the make target
+      # below builds and runs the register tests.
+      #
+      # -fno-sanitize-recover=undefined is upstream QEMU's own choice in its
+      # clang-system job, which runs this same suite over mips64-softmmu among
+      # others. Without it the undefined-behaviour sanitizer prints its finding
+      # and lets the program continue, so the suite passes and the report sits
+      # unread in a log; with it the finding is the failure. The address
+      # sanitizer already aborts on its own.
+      #
+      # ASAN_OPTIONS is set for the build as well as the run: meson compiles
+      # and executes small probe programs during configure, and those pick up
+      # the sanitizer flags too. detect_leaks=0 is the setting QEMU's own
+      # sanitizer recipe uses (tests/docker/test-debug) -- the emulator does
+      # not free everything it allocates before exit, by design, so the leak
+      # detector reports intentional allocations and buries real findings.
+      - name: build the emulator with the sanitizers
+        run: |
+          echo "build the emulator with the sanitizers" > "$CI_STEP"
+          docker run --rm -v "$WORKSPACE_VOLUME:/src" -w /src \
+              -e ASAN_OPTIONS=detect_leaks=0 "$IMAGE_ID" sh -ec '
+                  mkdir -p build-asan
+                  cd build-asan
+                  ../configure --target-list=mips64-softmmu --disable-docs \
+                      --enable-tests --enable-hmp \
+                      --enable-slirp --enable-debug-tcg --enable-asan \
+                      --enable-ubsan \
+                      --extra-cflags=-fno-sanitize-recover=undefined
+                  ninja qemu-system-mips64
+              '
+
+      # The register suite, the same target build.yml's required check runs,
+      # against the sanitized binary instead of the ordinary one.
+      #
+      # TIMEOUT_MULTIPLIER=4 is not padding. Several of these tests already sit
+      # close to their meson budgets on an ordinary build -- the hub and IOC3
+      # suites were measured at 106-119 seconds against a 240-second entry, and
+      # four tests were widened this year after CI killed them at 120 -- and a
+      # sanitized binary is slower still. Left at 1, the slow tests would be
+      # killed by meson's clock and reported as failures with no failing
+      # subtest, which reads exactly like a real defect and is not one. The
+      # variable is QEMU's own knob for this (scripts/mtest2make.py); it scales
+      # every test's own budget rather than replacing them, so a test that
+      # genuinely wedges still stops.
+      #
+      # A failure is recorded, not blocking -- no later job depends on this
+      # -- so capture the status, print the record, and fail the job afterward.
+      - name: run the register suite under the sanitizers
+        run: |
+          echo "run the register suite under the sanitizers" > "$CI_STEP"
+          rc=0
+          docker run --rm -v "$WORKSPACE_VOLUME:/src" -w /src \
+              -e ASAN_OPTIONS=detect_leaks=0 "$IMAGE_ID" \
+              sh -c 'make -j$(( $(nproc) < 8 ? $(nproc) : 8 )) -C build-asan \
+                  check-qtest-mips64 TIMEOUT_MULTIPLIER=4' \
+              > /tmp/qtest-asan.out 2>&1 || rc=$?
+
+          # Enough lines to carry the failing test's NAME, not just the counts
+          # -- the same reasoning and the same 20 lines build.yml's register
+          # check settled on against a real failing suite.
+          echo "--- register suite (sanitized) ---"
+          tail -20 /tmp/qtest-asan.out
+
+          if [ "$rc" -ne 0 ]; then
+            # THE SANITIZER REPORT IS NOT ON STDOUT. It goes to the test
+            # process's stderr, which meson captures into its own testlog and
+            # not into the summary above; check-qtest does not pass
+            # --print-errorlogs, and the build directory is ephemeral. So the
+            # stack trace that names the offending access exists in exactly
+            # one place for exactly as long as this step runs. Surface it here
+            # or the run reports "Fail: 1" and nothing a reader can act on.
+            echo "--- meson testlog (the sanitizer's own report) ---"
+            docker run --rm -v "$WORKSPACE_VOLUME:/src" "$IMAGE_ID" \
+                cat /src/build-asan/meson-logs/testlog.txt > /tmp/qtest-asan-testlog.txt 2>/dev/null \
+                || : > /tmp/qtest-asan-testlog.txt
+            # meson writes each test's block when that test finishes, so a failing
+            # block can sit thousands of lines above the end, and a tail showed
+            # whichever tests happened to finish last. Print every block whose
+            # result is neither a pass nor a skip, cut to its last 150 lines, which
+            # is where the assertion and QEMU's exit status are. Fall back to the
+            # tail when no such block exists, so this never shows less than before.
+            if ! awk '
+                /^=+ [0-9]+\/[0-9]+ =+$/ { inblk = 1; n = 0; res = "" }
+                inblk { buf[++n] = $0 }
+                inblk && /^result:/ { res = $0; sub(/^result:[ \t]*/, "", res) }
+                inblk && /^=+$/ {
+                    inblk = 0
+                    if (res != "exit status 0" && res != "exit status 77") {
+                        found = 1
+                        for (i = 1; i <= 5 && i <= n; i++) print buf[i]
+                        from = n - 150
+                        if (from <= 5) from = 6
+                        else print "[... " from - 6 " earlier lines of this test log omitted ...]"
+                        for (i = from; i <= n; i++) print buf[i]
+                    }
+                }
+                END { exit found ? 0 : 3 }
+            ' /tmp/qtest-asan-testlog.txt; then
+                echo "(no failing test block in the testlog; its last 400 lines instead)"
+                tail -400 /tmp/qtest-asan-testlog.txt 2>/dev/null || echo "(no meson testlog to show)"
+            fi
+            echo "the sanitized register suite failed (rc=$rc); see the report above"
+            exit 1
+          fi
+          echo "the sanitized register suite passed"

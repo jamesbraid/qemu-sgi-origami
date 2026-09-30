@@ -1,0 +1,476 @@
+# Build QEMU and run native MIPS64 checks. Smoke covers changed qtests,
+# SGI unit tests, and one Linux boot; full adds register and functional tests
+# plus the source-built ROM suite. Guest assets are checksum-verified.
+name: build and register suite
+
+on:
+  # Pull requests run smoke; dispatch selects smoke or full. The merge queue
+  # dispatches full before landing a pull request.
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      suite:
+        description: >-
+          which job a manual or queue dispatch runs: smoke (the fast
+          per-pull-request subset, the default) or full (the complete register
+          suite plus every boot, the set the merge queue runs before a land).
+        type: choice
+        options: [smoke, full]
+        default: smoke
+
+# New commits supersede older runs for the same pull request. Runs use an
+# ephemeral workspace, so cancelling a superseded run is safe.
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-qtest:
+    if: ${{ github.server_url != 'https://github.com' && (github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && inputs.suite == 'smoke')) }}
+    runs-on: ${{ vars.CI_RUNNER }}
+    # Save the current step name for failure reporting.
+    env:
+      CI_STEP: /tmp/ci-current-step
+      CI_ASSET_BASE_URL: ${{ vars.CI_ASSET_BASE_URL }}
+    # Keep the checkout action's JavaScript runtime and provide the Docker
+    # client in the job image.
+    container:
+      image: ${{ vars.CI_JOB_IMAGE }}
+      credentials:
+        username: ${{ vars.CI_REGISTRY_USER }}
+        password: ${{ secrets.CI_BOT_TOKEN }}
+    steps:
+      # Install Docker only if absent and fail before build steps if its daemon
+      # cannot be reached.
+      - name: docker client
+        run: |
+          echo "docker client" > "$CI_STEP"
+          command -v docker >/dev/null || {
+            apt-get update -qq && apt-get install -y -qq --no-install-recommends docker.io
+          }
+          if ! version=$(docker version --format '{{.Server.Version}}'); then
+            echo "The docker daemon is not reachable from this job. Every step"
+            echo "below drives it, so they would fail further along and for"
+            echo "reasons that do not name this as the cause."
+            exit 1
+          fi
+          echo "  daemon $version"
+
+      # Record host load and container state for resource-failure diagnosis.
+      - name: name the runner
+        run: |
+          echo "runner VM: $(docker info --format '{{.Name}}' 2>/dev/null || echo unknown)"
+          # Sample CPU steal over one second to record the current rate.
+          s1=$(awk '/^cpu /{print $9}' /proc/stat); sleep 1
+          s2=$(awk '/^cpu /{print $9}' /proc/stat)
+          echo "cpus: $(nproc)  load at start: $(cut -d' ' -f1-3 /proc/loadavg)  steal: $((s2-s1)) ticks/s"
+          # Include names and ages so concurrent job containers are visible.
+          echo "containers now on this VM: $(docker ps -q 2>/dev/null | wc -l)"
+          docker ps --format '{{.Names}}	{{.RunningFor}}	{{.Image}}' 2>/dev/null | head -12
+          grep -E 'MemTotal|MemAvailable' /proc/meminfo | tr -s ' '
+
+      # Forgejo checks out the pull request head here. Fetch its event-time
+      # base commit separately so multi-commit pull requests select every
+      # changed test without downloading the branch's whole history.
+      - uses: actions/checkout@v4
+
+      - name: fetch the pull request base
+        if: ${{ github.event_name == 'pull_request' }}
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          case "$PR_BASE_SHA" in
+            ????????????????????????????????????????)
+              case "$PR_BASE_SHA" in *[!0-9a-f]*) exit 2 ;; esac ;;
+            *) echo "missing pull request base commit" >&2; exit 2 ;;
+          esac
+          git fetch --no-tags --depth=1 origin "$PR_BASE_SHA"
+          git cat-file -e "$PR_BASE_SHA^{commit}"
+
+      - name: every qtest source is one the suite runs
+        run: |
+          echo "every qtest source is one the suite runs" > "$CI_STEP"
+          python3 scripts/check-qtest-registered.py
+          python3 scripts/test_check_qtest_registered.py
+
+      - name: build the QEMU test image
+        run: |
+          echo "build the QEMU test image" > "$CI_STEP"
+          image_id=$(docker build -q -f tests/docker/dockerfiles/debian-sgi.docker \
+              tests/docker/dockerfiles)
+          test -n "$image_id"
+          echo "IMAGE_ID=$image_id" >> "$GITHUB_ENV"
+
+      - name: find the workspace volume
+        run: |
+          echo "find the workspace volume" > "$CI_STEP"
+          sh scripts/ci/runner-setup volume
+
+      - name: fetch SGI test assets
+        env:
+          ASSET_TOKEN: ${{ secrets.CI_BOT_TOKEN }}
+        run: |
+          echo "fetch SGI test assets" > "$CI_STEP"
+          set +x
+          : "${CI_ASSET_BASE_URL:?CI_ASSET_BASE_URL is required}"
+          download_asset() {
+            path=$1 package=$2 sha=$3 name=$4
+            mkdir -p "$(dirname "$path")"
+            temp="${path}.tmp.$$"
+            curl -fsS -H "Authorization: token ${ASSET_TOKEN}" \
+              -o "$temp" \
+              "${CI_ASSET_BASE_URL%/}/${package}/${sha}/${name}"
+            printf '%s  %s\n' "$sha" "$temp" | sha256sum -c --status -
+            mv "$temp" "$path"
+          }
+          download_asset sgi-assets/firmware/6.5.30/ip27prom.payload.bin \
+            firmware-6.5.30 c2c69bf33c375b43ec7ac511fab41ddf595be1b6838ae717e58a9a1273437fdd ip27prom.payload.bin
+          download_asset sgi-assets/linux-ip27/vmlinux \
+            linux-ip27 d095c9033e2f8aeca0a75adbbdc1d0acdf764230999b63eb6261574d65c77bd4 vmlinux
+          download_asset sgi-assets/boot/6.5.30/unix.IP27 \
+            boot-6.5.30 cbdb02ea5d334ecac949a6524a363e6c945f94baf438d41e8d9248eda0377bdf unix.IP27
+
+      - name: check the build container can see the checkout
+        run: |
+          echo "check the build container can see the checkout" > "$CI_STEP"
+          sh scripts/ci/runner-setup check
+
+      - name: configure and build QEMU
+        run: |
+          echo "configure and build QEMU" > "$CI_STEP"
+          docker run --rm -v "$WORKSPACE_VOLUME:/src" -w /src "$IMAGE_ID" \
+              sh -euxc 'git submodule update --init --depth=1; \
+                        mkdir -p build-ci; cd build-ci; \
+                        ../configure --target-list=mips64-softmmu --disable-docs \
+                          --enable-tests --enable-hmp --enable-slirp --enable-debug-tcg; \
+                        ninja'
+
+      - name: smoke checks
+        run: |
+          echo "smoke checks" > "$CI_STEP"
+          docker run --rm -v "$WORKSPACE_VOLUME:/src" -w /src \
+              -e PR_BASE_SHA="${{ github.event.pull_request.base.sha }}" \
+              -e QEMU_TEST_SGI_ASSET_DIR=/src/sgi-assets \
+              "$IMAGE_ID" sh -euxc '
+            meson=/src/build-ci/pyvenv/bin/meson
+            ninja -C /src/build-ci tests/functional/mips64-linux_kernel.tstamp
+            python3 - <<"PYTESTS"
+          import json
+          import os
+          import subprocess
+          from pathlib import Path
+
+          build = Path("/src/build-ci")
+          tests = json.loads(subprocess.check_output(
+              [str(build / "pyvenv/bin/meson"), "introspect", "--tests", str(build)], text=True))
+          registered = {item.get("name") for item in tests if isinstance(item, dict)}
+          all_mips64 = sorted(name for name in registered
+                              if isinstance(name, str) and name.startswith("qtest-mips64/"))
+          selected = {"qtest-mips64/sn0-forward-progress-test"}
+          base = os.environ.get("PR_BASE_SHA")
+          full = False
+          if base:
+              paths = subprocess.check_output(
+                  ["git", "diff", "--name-only", base, "HEAD", "--", "tests/qtest"], text=True).splitlines()
+              for path in paths:
+                  target = "qtest-mips64/" + Path(path).stem
+                  if path.endswith(".c") and Path(path).is_file() and target in registered:
+                      selected.add(target)
+                  else:
+                      full = True
+          if full:
+              selected = set(all_mips64)
+          full_marker = build / "full-qtest-selection"
+          full_marker.unlink(missing_ok=True)
+          if full:
+              full_marker.touch()
+          selected &= registered
+          if not selected:
+              raise SystemExit("no required MIPS64 qtest targets are registered")
+          (build / "expected-qtests.txt").write_text("\n".join(sorted(selected)) + "\n")
+          PYTESTS
+            set --
+            while IFS= read -r name; do set -- "$@" "$name"; done < /src/build-ci/expected-qtests.txt
+            "$meson" test -C /src/build-ci --setup qemu:thorough \
+              --logbase smoke-qtest --print-errorlogs "$@"
+            report=$(find /src/build-ci/meson-logs -maxdepth 1 -name "smoke-qtest*.junit.xml" -print)
+            test -n "$report"
+            test "$(printf "%s\n" "$report" | wc -l)" -eq 1
+            if test -f /src/build-ci/full-qtest-selection; then
+              python3 /src/scripts/check-sgi-test-results.py --junit "$report" \
+                --expect /src/build-ci/expected-qtests.txt \
+                --allow-skips-from /src/tests/qtest/mips64-qtest-optional-skips.txt
+            else
+              python3 /src/scripts/check-sgi-test-results.py --junit "$report" \
+                --expect /src/build-ci/expected-qtests.txt
+            fi
+
+            target=func-mips64-linux_kernel
+            printf "%s\n" "LinuxKernel.test_one_cpu" > /src/build-ci/expected-linux.txt
+            "$meson" test -C /src/build-ci --setup qemu:thorough \
+              --logbase smoke-linux --print-errorlogs --test-args LinuxKernel.test_one_cpu "$target"
+            report=$(find /src/build-ci/meson-logs -maxdepth 1 -name "smoke-linux*.junit.xml" -print)
+            test -n "$report"
+            test "$(printf "%s\n" "$report" | wc -l)" -eq 1
+            python3 /src/scripts/check-sgi-test-results.py --junit "$report" \
+              --expect /src/build-ci/expected-linux.txt
+
+            python3 /src/scripts/check-sgi-test-results.py --list-meson-tests /src/build-ci \
+              --suite qemu:sgi-unit > /src/build-ci/expected-unit.txt
+            "$meson" test -C /src/build-ci --setup qemu:thorough \
+              --logbase smoke-unit --print-errorlogs --suite qemu:sgi-unit
+            report=$(find /src/build-ci/meson-logs -maxdepth 1 -name "smoke-unit*.junit.xml" -print)
+            test -n "$report"
+            test "$(printf "%s\n" "$report" | wc -l)" -eq 1
+            python3 /src/scripts/check-sgi-test-results.py --junit "$report" \
+              --expect /src/build-ci/expected-unit.txt
+          '
+
+      - name: publish the failing step
+        if: ${{ failure() }}
+        run: |
+          # Report the step name when a setup failure occurs before a check does.
+          step=$(cat "$CI_STEP" 2>/dev/null || echo "before any step ran")
+          echo "failing step: $step"
+          curl -sS -X POST \
+            -H "Authorization: token ${{ secrets.CI_BOT_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            -d "{\"state\":\"failure\",\"context\":\"ci/failing-step\",\"description\":\"$step\",\"target_url\":\"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_number }}\"}" \
+            "${{ github.server_url }}/api/v1/repos/${{ github.repository }}/statuses/${{ github.sha }}" \
+            >/dev/null || echo "could not publish the failing step; the log is the only copy"
+
+      # Notify the queue after a successful build; its schedule is the fallback.
+      - name: tell the merge queue this build is green
+        if: ${{ success() }}
+        run: |
+          # An already-waiting run will see this result. If lookup fails, dispatch
+          # anyway; a duplicate notification is safer than a stalled queue.
+          waiting=$(curl -sS -H "Authorization: token ${{ secrets.CI_BOT_TOKEN }}" \
+              "${{ github.server_url }}/api/v1/repos/${{ github.repository }}/actions/runs?workflow_id=merge-queue.yml&status=waiting&limit=1" \
+              | grep -o '"total_count":[0-9]*' | cut -d: -f2)
+          if [ "${waiting:-0}" -gt 0 ] 2>/dev/null; then
+            echo "a queue run is already waiting and will see this green; not dispatching another"
+          else
+            curl -sS -X POST \
+              -H "Authorization: token ${{ secrets.CI_BOT_TOKEN }}" \
+              -H "Content-Type: application/json" \
+              -d '{"ref":"sgi-origami"}' \
+              "${{ github.server_url }}/api/v1/repos/${{ github.repository }}/actions/workflows/merge-queue.yml/dispatches" \
+              && echo "queue nudged" \
+              || echo "nudge failed; the scheduled backstop will advance the queue instead"
+          fi
+
+  full-suite:
+    if: ${{ github.server_url != 'https://github.com' && github.event_name == 'workflow_dispatch' && inputs.suite == 'full' }}
+    runs-on: ${{ vars.CI_RUNNER }}
+    # Save the current step name for failure reporting.
+    env:
+      CI_STEP: /tmp/ci-current-step
+      CI_ASSET_BASE_URL: ${{ vars.CI_ASSET_BASE_URL }}
+    # Keep the checkout action's JavaScript runtime and provide the Docker
+    # client in the job image.
+    container:
+      image: ${{ vars.CI_JOB_IMAGE }}
+      credentials:
+        username: ${{ vars.CI_REGISTRY_USER }}
+        password: ${{ secrets.CI_BOT_TOKEN }}
+    steps:
+      # Install Docker only if absent and fail before build steps if its daemon
+      # cannot be reached.
+      - name: docker client
+        run: |
+          echo "docker client" > "$CI_STEP"
+          command -v docker >/dev/null || {
+            apt-get update -qq && apt-get install -y -qq --no-install-recommends docker.io
+          }
+          if ! version=$(docker version --format '{{.Server.Version}}'); then
+            echo "The docker daemon is not reachable from this job. Every step"
+            echo "below drives it, so they would fail further along and for"
+            echo "reasons that do not name this as the cause."
+            exit 1
+          fi
+          echo "  daemon $version"
+
+      # Record host load and container state for resource-failure diagnosis.
+      - name: name the runner
+        run: |
+          echo "runner VM: $(docker info --format '{{.Name}}' 2>/dev/null || echo unknown)"
+          # Sample CPU steal over one second to record the current rate.
+          s1=$(awk '/^cpu /{print $9}' /proc/stat); sleep 1
+          s2=$(awk '/^cpu /{print $9}' /proc/stat)
+          echo "cpus: $(nproc)  load at start: $(cut -d' ' -f1-3 /proc/loadavg)  steal: $((s2-s1)) ticks/s"
+          # Include names and ages so concurrent job containers are visible.
+          echo "containers now on this VM: $(docker ps -q 2>/dev/null | wc -l)"
+          docker ps --format '{{.Names}}	{{.RunningFor}}	{{.Image}}' 2>/dev/null | head -12
+          grep -E 'MemTotal|MemAvailable' /proc/meminfo | tr -s ' '
+
+      # Keep the PR base available for changed-qtest selection.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: every qtest source is one the suite runs
+        run: |
+          echo "every qtest source is one the suite runs" > "$CI_STEP"
+          python3 scripts/check-qtest-registered.py
+          python3 scripts/test_check_qtest_registered.py
+
+      - name: build the QEMU test image
+        run: |
+          echo "build the QEMU test image" > "$CI_STEP"
+          image_id=$(docker build -q -f tests/docker/dockerfiles/debian-sgi.docker \
+              tests/docker/dockerfiles)
+          test -n "$image_id"
+          echo "IMAGE_ID=$image_id" >> "$GITHUB_ENV"
+
+      - name: find the workspace volume
+        run: |
+          echo "find the workspace volume" > "$CI_STEP"
+          sh scripts/ci/runner-setup volume
+
+      - name: fetch SGI test assets
+        env:
+          ASSET_TOKEN: ${{ secrets.CI_BOT_TOKEN }}
+        run: |
+          echo "fetch SGI test assets" > "$CI_STEP"
+          set +x
+          : "${CI_ASSET_BASE_URL:?CI_ASSET_BASE_URL is required}"
+          download_asset() {
+            path=$1 package=$2 sha=$3 name=$4
+            mkdir -p "$(dirname "$path")"
+            temp="${path}.tmp.$$"
+            curl -fsS -H "Authorization: token ${ASSET_TOKEN}" \
+              -o "$temp" \
+              "${CI_ASSET_BASE_URL%/}/${package}/${sha}/${name}"
+            printf '%s  %s\n' "$sha" "$temp" | sha256sum -c --status -
+            mv "$temp" "$path"
+          }
+          download_asset sgi-assets/firmware/6.5.30/ip27prom.payload.bin \
+            firmware-6.5.30 c2c69bf33c375b43ec7ac511fab41ddf595be1b6838ae717e58a9a1273437fdd ip27prom.payload.bin
+          download_asset sgi-assets/linux-ip27/vmlinux \
+            linux-ip27 d095c9033e2f8aeca0a75adbbdc1d0acdf764230999b63eb6261574d65c77bd4 vmlinux
+          download_asset sgi-assets/boot/6.5.30/unix.IP27 \
+            boot-6.5.30 cbdb02ea5d334ecac949a6524a363e6c945f94baf438d41e8d9248eda0377bdf unix.IP27
+
+      - name: check the build container can see the checkout
+        run: |
+          echo "check the build container can see the checkout" > "$CI_STEP"
+          sh scripts/ci/runner-setup check
+
+      - name: configure and build QEMU
+        run: |
+          echo "configure and build QEMU" > "$CI_STEP"
+          docker run --rm -v "$WORKSPACE_VOLUME:/src" -w /src "$IMAGE_ID" \
+              sh -euxc 'git submodule update --init --depth=1; \
+                        mkdir -p build-ci; cd build-ci; \
+                        ../configure --target-list=mips64-softmmu --disable-docs \
+                          --enable-tests --enable-hmp --enable-slirp --enable-debug-tcg; \
+                        ninja'
+
+      - name: run the SGI test suite
+        run: |
+          echo "run the SGI test suite" > "$CI_STEP"
+          docker run --rm -v "$WORKSPACE_VOLUME:/src" -w /src \
+              -e QEMU_TEST_SGI_ASSET_DIR=/src/sgi-assets \
+              "$IMAGE_ID" sh -euxc '
+            meson=/src/build-ci/pyvenv/bin/meson
+            ninja -C /src/build-ci \
+              tests/functional/mips64-linux_kernel.tstamp \
+              tests/functional/mips64-origin200_prom.tstamp \
+              tests/functional/mips64-irix_miniroot.tstamp
+            MESON_BUILD_ROOT=/src/build-ci \
+              PYTHONPATH=/src/python:/src/tests/functional:/src/tests/functional/mips64 \
+              /src/build-ci/pyvenv/bin/python3 - <<"PYCASES"
+          from test_irix_miniroot import IrixMiniroot
+          from test_linux_kernel import LinuxKernel
+          from test_origin200_prom import OriginPromMatrix
+
+          def required_cases(test_class):
+              return [f"{test_class.__name__}.{name}"
+                      for name in sorted(test_class.__dict__)
+                      if name.startswith("test_")]
+
+          from pathlib import Path
+          build = Path("/src/build-ci")
+          for test_class, filename in (
+                  (OriginPromMatrix, "full-prom.expected"),
+                  (LinuxKernel, "full-linux.expected"),
+                  (IrixMiniroot, "full-irix.expected")):
+              cases = required_cases(test_class)
+              if not cases:
+                  raise SystemExit(f"no required test cases registered for {test_class.__name__}")
+              (build / filename).write_text("\n".join(cases) + "\n")
+          PYCASES
+
+            run_target() {
+              target=$1; logbase=$2
+              "$meson" test -C /src/build-ci --setup qemu:thorough \
+                --logbase "$logbase" --print-errorlogs "$target"
+              report=$(find /src/build-ci/meson-logs -maxdepth 1 \
+                -name "$logbase*.junit.xml" -print)
+              test -n "$report"
+              test "$(printf "%s\n" "$report" | wc -l)" -eq 1
+              python3 /src/scripts/check-sgi-test-results.py --junit "$report" \
+                --expect "/src/build-ci/$logbase.expected"
+            }
+            run_target func-mips64-origin200_prom full-prom
+            run_target func-mips64-linux_kernel full-linux
+            run_target func-mips64-irix_miniroot full-irix
+
+            python3 /src/scripts/check-sgi-test-results.py \
+              --list-rom-identities /src/tests/functional/mips64/roms/suite \
+              --require-rom-target /src/build-ci > /src/build-ci/full-rom.expected
+            "$meson" test -C /src/build-ci --setup qemu:thorough \
+              --logbase full-rom --print-errorlogs func-mips64-sgi_roms
+            report=$(find /src/build-ci/meson-logs -maxdepth 1 -name "full-rom*.junit.xml" -print)
+            test -n "$report"
+            test "$(printf "%s\n" "$report" | wc -l)" -eq 1
+            python3 /src/scripts/check-sgi-test-results.py --junit "$report" \
+              --expect /src/build-ci/full-rom.expected
+
+            python3 /src/scripts/check-sgi-test-results.py --list-meson-tests /src/build-ci \
+              --suite qemu:sgi-unit > /src/build-ci/full-unit.expected
+            "$meson" test -C /src/build-ci --setup qemu:thorough \
+              --logbase full-unit --print-errorlogs --suite qemu:sgi-unit
+            report=$(find /src/build-ci/meson-logs -maxdepth 1 -name "full-unit*.junit.xml" -print)
+            test -n "$report"
+            test "$(printf "%s\n" "$report" | wc -l)" -eq 1
+            python3 /src/scripts/check-sgi-test-results.py --junit "$report" \
+              --expect /src/build-ci/full-unit.expected
+
+            make -j"$(nproc)" -C /src/build-ci check-qtest-mips64
+          '
+
+      - name: publish the failing step
+        if: ${{ failure() }}
+        run: |
+          # Report the step name when a setup failure occurs before a check does.
+          step=$(cat "$CI_STEP" 2>/dev/null || echo "before any step ran")
+          echo "failing step: $step"
+          curl -sS -X POST \
+            -H "Authorization: token ${{ secrets.CI_BOT_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            -d "{\"state\":\"failure\",\"context\":\"ci/failing-step\",\"description\":\"$step\",\"target_url\":\"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_number }}\"}" \
+            "${{ github.server_url }}/api/v1/repos/${{ github.repository }}/statuses/${{ github.sha }}" \
+            >/dev/null || echo "could not publish the failing step; the log is the only copy"
+
+      # Notify the queue after a successful build; its schedule is the fallback.
+      - name: tell the merge queue this build is green
+        if: ${{ success() }}
+        run: |
+          # An already-waiting run will see this result. If lookup fails, dispatch
+          # anyway; a duplicate notification is safer than a stalled queue.
+          waiting=$(curl -sS -H "Authorization: token ${{ secrets.CI_BOT_TOKEN }}" \
+              "${{ github.server_url }}/api/v1/repos/${{ github.repository }}/actions/runs?workflow_id=merge-queue.yml&status=waiting&limit=1" \
+              | grep -o '"total_count":[0-9]*' | cut -d: -f2)
+          if [ "${waiting:-0}" -gt 0 ] 2>/dev/null; then
+            echo "a queue run is already waiting and will see this green; not dispatching another"
+          else
+            curl -sS -X POST \
+              -H "Authorization: token ${{ secrets.CI_BOT_TOKEN }}" \
+              -H "Content-Type: application/json" \
+              -d '{"ref":"sgi-origami"}' \
+              "${{ github.server_url }}/api/v1/repos/${{ github.repository }}/actions/workflows/merge-queue.yml/dispatches" \
+              && echo "queue nudged" \
+              || echo "nudge failed; the scheduled backstop will advance the queue instead"
+          fi

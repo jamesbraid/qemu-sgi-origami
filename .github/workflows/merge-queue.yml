@@ -1,0 +1,55 @@
+# Rebase and land one eligible pull request at a time on the fast-forward-only trunk.
+# Green pull requests land unless they are drafts or carry the `hold` label.
+# The schedule backs up the green-build dispatch and catches changes that do
+# not start a build, such as removing a hold from an already-green pull request.
+# The schedule is registered from the default branch; do not add a
+# pull-request trigger that would run branch copies against the trunk.
+name: merge-queue
+
+on:
+  push:
+    branches: [sgi-origami]
+  schedule:
+    - cron: "11,41 * * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: merge-queue
+  cancel-in-progress: false
+
+jobs:
+  queue:
+    if: ${{ github.server_url != 'https://github.com' }}
+    runs-on: ${{ vars.CI_QUEUE_RUNNER }}
+    # A job that stops making progress must not hold the line for ever. The
+    # driver bounds its own work with RUN_BUDGET; nothing bounded the job around
+    # it, so when the runner cannot reach its container engine mid-job the run
+    # stays running until a person cancels it -- forty and sixty minutes on two
+    # runs in one morning on the project repository, with every other pull
+    # request waiting behind the group. Generous enough that only a stuck job
+    # reaches it, not a slow one.
+    timeout-minutes: 20
+    steps:
+      # Fetch the configured queue driver and reject an empty response.
+      - name: fetch the queue driver
+        env:
+          CI_QUEUE_URL: ${{ vars.CI_QUEUE_URL }}
+        run: |
+          : "${CI_QUEUE_URL:?CI_QUEUE_URL is required}"
+          mkdir -p .merge-queue
+          curl -sSf -H "Authorization: token ${{ secrets.CI_BOT_TOKEN }}" \
+            -o .merge-queue/merge-queue \
+            "$CI_QUEUE_URL"
+          test -s .merge-queue/merge-queue
+
+      - name: process the queue
+        env:
+          FORGE: ${{ github.server_url }}
+          REPO: ${{ github.repository }}
+          TRUNK: sgi-origami
+          CHECKS: build and register suite / build-and-qtest (pull_request)
+          TOKEN: ${{ secrets.CI_BOT_TOKEN }}
+          LAND_WORKFLOW: "build.yml"
+          LAND_INPUTS: "suite=full"
+          LAND_CHECK: "build and register suite / full-suite (workflow_dispatch)"
+        run: python3 .merge-queue/merge-queue

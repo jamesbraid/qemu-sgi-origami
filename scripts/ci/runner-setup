@@ -1,0 +1,34 @@
+#!/bin/sh
+# The Forgejo jobs share a Docker daemon. Pass its workspace volume to
+# sibling containers instead of a path inside the job container.
+set -eu
+
+case "${1-}" in
+  volume)
+    : "${GITHUB_ENV:?GITHUB_ENV is required}"
+    volume=$(docker inspect "$(hostname)" \
+      --format '{{range .Mounts}}{{if eq .Destination "'"$PWD"'"}}{{.Name}}{{end}}{{end}}')
+    if [ -z "$volume" ]; then
+      echo "The guest's daemon does not back this workspace with a named volume."
+      echo "Mounts it does know:"
+      docker inspect "$(hostname)" \
+        --format '{{range .Mounts}}  {{.Destination}} = {{.Source}}{{"\n"}}{{end}}'
+      exit 1
+    fi
+    echo "WORKSPACE_VOLUME=$volume" >> "$GITHUB_ENV"
+    echo "workspace volume: $volume"
+    ;;
+  check)
+    : "${WORKSPACE_VOLUME:?WORKSPACE_VOLUME is required}"
+    : "${IMAGE_ID:?IMAGE_ID is required}"
+    if ! docker run --rm -v "$WORKSPACE_VOLUME:/src" "$IMAGE_ID" \
+         test -f /src/meson.build; then
+      echo "The guest's Docker daemon cannot see this job's checkout."
+      exit 1
+    fi
+    ;;
+  *)
+    echo 'usage: runner-setup volume|check' >&2
+    exit 2
+    ;;
+esac
