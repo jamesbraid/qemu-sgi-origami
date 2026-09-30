@@ -18,6 +18,7 @@
 #include "qemu/osdep.h"
 #include "libqtest.h"
 #include "qobject/qdict.h"
+#include "qobject/qlist.h"
 #include "hw/pci/pci_regs.h"
 #include "sgi-migrate.h"
 #include <glib/gstdio.h>
@@ -316,6 +317,35 @@ static void test_parent_identity_unchanged(void)
     lucent_ohci_map_bar(&ohci);
     g_assert_cmphex(lucent_ohci_readl(&ohci, OHCI_HC_RH_DESCRIPTOR_A) &
                     OHCI_RH_DESCRIPTOR_A_NDP, ==, 3);
+
+    lucent_ohci_close(&ohci);
+}
+
+static void test_wacom_input_handler_ready(void)
+{
+    LucentOHCI ohci = { 0 };
+    QDict *response;
+    QList *mice;
+    const QListEntry *entry;
+    bool found = false;
+
+    lucent_ohci_open(&ohci, qtest_initf(
+        "-nodefaults -machine origin200"
+        " -device lucent-ohci,addr=%02x.0"
+        " -device usb-wacom-tablet,bus=usb-bus.0,port=1",
+        LUCENT_OHCI_SLOT));
+
+    response = qtest_qmp(ohci.qts, "{'execute': 'query-mice'}");
+    mice = qdict_get_qlist(response, "return");
+    for (entry = qlist_first(mice); entry; entry = qlist_next(entry)) {
+        QDict *mouse = qobject_to(QDict, qlist_entry_obj(entry));
+
+        if (!strcmp(qdict_get_str(mouse, "name"), "QEMU PenPartner tablet")) {
+            found = true;
+        }
+    }
+    g_assert_true(found);
+    qobject_unref(response);
 
     lucent_ohci_close(&ohci);
 }
@@ -1126,6 +1156,8 @@ int main(int argc, char **argv)
                    test_identity_and_window);
     qtest_add_func("/lucent-ohci/parent-identity-unchanged",
                    test_parent_identity_unchanged);
+    qtest_add_func("/lucent-ohci/wacom-input-handler-ready",
+                   test_wacom_input_handler_ready);
     qtest_add_func("/lucent-ohci/pci-command-status",
                    test_pci_command_status);
     qtest_add_func("/lucent-ohci/dma-and-inta-reuse",
