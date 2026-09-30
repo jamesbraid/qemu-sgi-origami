@@ -70,7 +70,7 @@ class IrixFuelInstalledBoot(QemuSystemTest):
 
     @skipBigDataTest()
     @skipSlowTest()
-    @skipIfMissingEnv('ORIGAMI_ASSETS')
+    @skipIfMissingEnv('QEMU_TEST_SGI_ASSET_DIR')
     def test_irix_fuel_installed_boot(self):
         fixture, files = lib_fuel.load_fixture(self)
         machine, args, private_flash = lib_fuel.launch_args(
