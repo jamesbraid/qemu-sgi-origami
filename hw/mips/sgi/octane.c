@@ -300,11 +300,11 @@ static void octane_fit_pci(MachineState *machine, SGIBridgeState *bridge)
                          SGI_IOC3_POPULATION_ETHERNET |
                          SGI_IOC3_POPULATION_PARALLEL |
                          SGI_IOC3_POPULATION_ONEWIRE_IDENTITY);
-    if (s->octane2) {
+    {
         DeviceState *parallel = DEVICE(object_resolve_path_component(
             OBJECT(pci), "parallel"));
 
-        /* The fitted Rev B part is inferred from a public Rev D photograph. */
+        /* Rev F is photographed; Octane2 Rev B is inferred from Rev D. */
         qdev_prop_set_uint16(parallel, "parallel-part",
                              SGI_IOC3_PAR_PART_TL16PIR552);
         qdev_prop_set_uint16(parallel, "fifo-depth", 16);
