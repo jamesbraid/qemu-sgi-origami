@@ -87,6 +87,7 @@ config SGI_SN1
     select SGI_BEDROCK_FLASH
     select SGI_IOC3
     select SGI_L1
+    select SGI_ODYSSEY
     select SGI_XBRIDGE
     select SGI_XIO_LINK
     select USB_OHCI_PCI

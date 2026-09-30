@@ -519,6 +519,9 @@ qtests_mips64 = \
   (config_all_devices.has_key('CONFIG_SGI_SN0') and
    config_all_devices.has_key('CONFIG_SGI_SN1') ?
     ['sn-promdata-window-test'] : []) + \
+  (config_all_devices.has_key('CONFIG_SGI_ODYSSEY') and
+   config_all_devices.has_key('CONFIG_SGI_SN1') ?
+    ['sn1-odyssey-test'] : []) + \
   sn0_xbow_qtests + \
   sn0_xbow_transport_qtests + \
   sn1_xbridge_qtests + \
