@@ -1,5 +1,5 @@
 /*
- * The Origin 300 IO-8 board's QLogic ISP12160, reached the way a guest
+ * The Origin 300 IO-8 and Fuel QLogic ISP12160, reached the way a guest
  * reaches it. Register cycles cross XIO into XBridge head F and out
  * of head F's programmed I/O window for slot 1; the adapter's own
  * transfers cross back through head F into Bedrock's memory.
@@ -211,6 +211,23 @@
 
 static char *prom_path;
 
+typedef struct MachineConfig {
+    const char *args;
+    uint64_t memory_config;
+} MachineConfig;
+
+static const MachineConfig origin300 = {
+    MACHINE_ARGS, MD_INSTALLED_SELECT2,
+};
+
+/* Match sn1-fuel-test.c's explicit synthetic inputs, not factory records. */
+static const MachineConfig fuel = {
+    "-M fuel,fuel-board-id-word=0x4abc,fuel-ioc3-subsystem-id=0xc30a,"
+    "fuel-l1-type-code=0x61,fuel-bedrock-revision=0x2 "
+    "-cpu R14000 -smp 1 -m 512M",
+    0x33,
+};
+
 /* The ring geometry the helpers work against; one test runs at a time. */
 static struct {
     uint64_t rqst_iova;
@@ -414,24 +431,30 @@ static QTestState *machine_start(void)
  * The only SCSI adapter names channel 0 scsi.0 and channel 1 scsi.1. A wrong
  * bus name fails startup instead of placing both disks on one bus.
  */
-static QTestState *machine_start_with_disks(DiskPair *disks)
+static QTestState *machine_start_with_disks(DiskPair *disks,
+                                          const MachineConfig *machine)
 {
     g_autofree char *prom = NULL;
     g_autofree char *file0 = NULL;
     g_autofree char *file1 = NULL;
     QTestState *qts;
 
+    if (!machine) {
+        machine = &origin300;
+    }
     disks_create(disks);
     prom = g_shell_quote(prom_path);
     file0 = g_shell_quote(disks->path[0]);
     file1 = g_shell_quote(disks->path[1]);
-    qts = qtest_initf(MACHINE_ARGS " -bios %s"
+    qts = qtest_initf("%s -bios %s"
                       " -drive if=none,id=d0,format=raw,file=%s"
                       " -device scsi-hd,bus=scsi.0,scsi-id=%u,drive=d0"
                       " -drive if=none,id=d1,format=raw,file=%s"
                       " -device scsi-hd,bus=scsi.1,scsi-id=%u,drive=d1",
-                      prom, file0, DISK_TARGET, file1, DISK_TARGET);
-    qtest_writeq(qts, BEDROCK_NODE0 + MD_MEMORY_CONFIG, MD_INSTALLED_SELECT2);
+                      machine->args, prom, file0, DISK_TARGET,
+                      file1, DISK_TARGET);
+    qtest_writeq(qts, BEDROCK_NODE0 + MD_MEMORY_CONFIG,
+                 machine->memory_config);
     io8_scsi_attach(qts);
     return qts;
 }
@@ -764,7 +787,7 @@ static void test_registers_through_the_fabric(const void *data)
 static void test_command_reaches_memory(const void *data)
 {
     DiskPair disks;
-    QTestState *qts = machine_start_with_disks(&disks);
+    QTestState *qts = machine_start_with_disks(&disks, data);
     uint8_t status[ISP_QUEUE_ENTRY_SIZE];
 
     init_queues(qts);
@@ -792,7 +815,7 @@ static void test_command_reaches_memory(const void *data)
 static void test_data_transfer_reaches_memory(const void *data)
 {
     DiskPair disks;
-    QTestState *qts = machine_start_with_disks(&disks);
+    QTestState *qts = machine_start_with_disks(&disks, data);
     uint8_t status[ISP_QUEUE_ENTRY_SIZE];
     uint8_t sector[SECTOR_BYTES];
 
@@ -818,6 +841,7 @@ static void test_data_transfer_reaches_memory(const void *data)
 }
 
 typedef struct InboundMaskCase {
+    const MachineConfig *machine;
     uint64_t denied_widget;
     bool permitted;
 } InboundMaskCase;
@@ -830,7 +854,7 @@ static void test_scsi_dma_with_inbound_mask(const void *data)
                                          0, 0, 1, 0 };
     const RingSeg seg = { DIRECT64(BUF_PHYS), SECTOR_BYTES };
     DiskPair disks;
-    QTestState *qts = machine_start_with_disks(&disks);
+    QTestState *qts = machine_start_with_disks(&disks, mask_case->machine);
     uint8_t status[ISP_QUEUE_ENTRY_SIZE];
     uint8_t sector[SECTOR_BYTES];
     uint8_t sentinel[SECTOR_BYTES];
@@ -873,7 +897,7 @@ static void test_scsi_dma_with_inbound_mask(const void *data)
 static void test_write_transfer_from_memory(const void *data)
 {
     DiskPair disks;
-    QTestState *qts = machine_start_with_disks(&disks);
+    QTestState *qts = machine_start_with_disks(&disks, data);
     uint8_t status[ISP_QUEUE_ENTRY_SIZE];
     uint8_t sent[SECTOR_BYTES];
     uint8_t got[SECTOR_BYTES];
@@ -916,7 +940,7 @@ static void test_write_transfer_from_memory(const void *data)
 static void test_channels_are_independent(const void *data)
 {
     DiskPair disks;
-    QTestState *qts = machine_start_with_disks(&disks);
+    QTestState *qts = machine_start_with_disks(&disks, data);
     uint8_t status[ISP_QUEUE_ENTRY_SIZE];
     uint8_t sector[SECTOR_BYTES];
 
@@ -947,7 +971,7 @@ static void test_completion_raises_head_f_pin(const void *data)
 {
     uint8_t cdb[SCSI_CDB6_LEN] = { SCSI_TEST_UNIT_READY };
     DiskPair disks;
-    QTestState *qts = machine_start_with_disks(&disks);
+    QTestState *qts = machine_start_with_disks(&disks, data);
     uint8_t status[ISP_QUEUE_ENTRY_SIZE];
 
     init_queues(qts);
@@ -975,9 +999,14 @@ static void test_completion_raises_head_f_pin(const void *data)
 int main(int argc, char **argv)
 {
     static const InboundMaskCase inbound_masks[] = {
-        { UINT64_C(1) << 15, false },
-        { UINT64_C(1) << 14, false },
-        { 0, true },
+        { &origin300, UINT64_C(1) << 15, false },
+        { &origin300, UINT64_C(1) << 14, false },
+        { &origin300, 0, true },
+    };
+    static const InboundMaskCase fuel_inbound_masks[] = {
+        { &fuel, UINT64_C(1) << 15, false },
+        { &fuel, UINT64_C(1) << 14, false },
+        { &fuel, 0, true },
     };
     int result;
 
@@ -1008,6 +1037,22 @@ int main(int argc, char **argv)
     qtest_add_data_func("origin300/io8-scsi/channels-are-independent", NULL,
                         test_channels_are_independent);
     qtest_add_data_func("origin300/io8-scsi/completion-raises-pin", NULL,
+                        test_completion_raises_head_f_pin);
+
+    qtest_add_data_func("fuel/scsi/data-transfer-reaches-memory", &fuel,
+                        test_data_transfer_reaches_memory);
+    qtest_add_data_func("fuel/scsi/inbound-deny-15-allow-14",
+                        &fuel_inbound_masks[0],
+                        test_scsi_dma_with_inbound_mask);
+    qtest_add_data_func("fuel/scsi/inbound-allow-15-deny-14",
+                        &fuel_inbound_masks[1],
+                        test_scsi_dma_with_inbound_mask);
+    qtest_add_data_func("fuel/scsi/inbound-allow-both",
+                        &fuel_inbound_masks[2],
+                        test_scsi_dma_with_inbound_mask);
+    qtest_add_data_func("fuel/scsi/write-transfer-from-memory", &fuel,
+                        test_write_transfer_from_memory);
+    qtest_add_data_func("fuel/scsi/completion-raises-pin", &fuel,
                         test_completion_raises_head_f_pin);
 
     result = g_test_run();
