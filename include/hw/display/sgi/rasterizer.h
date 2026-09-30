@@ -108,11 +108,13 @@ typedef struct SGIRasterRules {
     uint8_t dither_anchor;      /* SGIDitherAnchor */
     /* Where the values come from, for logs and reports. */
     const char *evidence;
+    uint8_t alpha_bits;         /* stored A width, zero means no alpha */
 } SGIRasterRules;
 
 /*
  * Whether the rasterizer implements a rule set. It implements subpixel_bits
- * 1 to 12, color_bits 1 to 10, depth_bits 1 to 32, stencil_bits 0 to 16,
+ * 1 to 12, color_bits 1 to 10, alpha_bits 0 to 10, depth_bits 1 to 32,
+ * stencil_bits 0 to 16,
  * every rounding and dither, and otherwise only
  * SGI_TIE_TOP_LEFT_BOTTOM_ORIGIN, SGI_ARITH_DOUBLE,
  * SGI_LINE_COVERAGE_DOUBLE and SGI_DITHER_SCREEN; the anchor is not
@@ -191,6 +193,11 @@ typedef struct SGIGLTexImage {
  * without colour-index planes leaves it NULL, and colour-index work then
  * draws nothing.
  */
+/* Quantized scalar channels, each normalized by its own declared maximum. */
+typedef struct SGIRasterColour {
+    uint32_t component[4];      /* R, G, B, A; absent alpha is canonical zero */
+} SGIRasterColour;
+
 typedef struct SGIRasterTarget {
     void (*store_colour)(void *opaque, SGIColourTarget target, int x, int y,
                          uint32_t colour);
@@ -224,6 +231,19 @@ typedef struct SGIRasterTarget {
     bool screen_rows_down;
     /* Current binding; resolved once by the family before drawing. */
     const SGIGLTexImage *texture;
+    /*
+     * Optional complete RGBA stores and reads. Positive alpha_bits requires
+     * this store. Destination-dependent RGBA work requires the matching read,
+     * which must return in-range components or false. Required reads for all
+     * selected targets precede any pixel writes; failures drop that pixel's
+     * colour, depth and stencil writes. Missing support drops the operation.
+     * Spatial alpha dithering and clear dithering remain unimplemented.
+     * Borrowed, never migrated.
+     */
+    void (*store_rgba)(void *opaque, SGIColourTarget target, int x, int y,
+                       const SGIRasterColour *colour);
+    bool (*load_rgba)(void *opaque, SGIColourTarget target, int x, int y,
+                      SGIRasterColour *colour);
 } SGIRasterTarget;
 
 /*

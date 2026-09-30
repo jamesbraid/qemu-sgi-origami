@@ -5534,6 +5534,328 @@ static void test_texture_invalid_quad_polygon(void)
     }
 }
 
+/* Synthetic scalar planes exercise the shared interface, not board storage. */
+typedef struct AlphaScene {
+    FragScene f;               /* planes first, for existing depth hooks */
+    SGIRasterRules rules;
+    SGIRasterColour pixel[2];
+    unsigned stores, reads;
+    int failed_target;
+} AlphaScene;
+
+static void alpha_store(void *opaque, SGIColourTarget target, int x, int y,
+                         const SGIRasterColour *colour)
+{
+    AlphaScene *s = opaque;
+
+    s->pixel[target] = *colour;
+    s->stores++;
+}
+
+static bool alpha_load(void *opaque, SGIColourTarget target, int x, int y,
+                        SGIRasterColour *colour)
+{
+    AlphaScene *s = opaque;
+
+    s->reads++;
+    *colour = s->pixel[target];
+    return target != s->failed_target;
+}
+
+static void alpha_init(AlphaScene *s)
+{
+    memset(s, 0, sizeof(*s));
+    frag_init(&s->f);
+    s->failed_target = -1;
+    s->rules = rules_stencil;
+    s->rules.alpha_bits = 8;
+    s->f.rec.rules = &s->rules;
+    s->f.rec.target.opaque = s;
+    s->f.rec.target.store_rgba = alpha_store;
+    s->f.rec.target.load_rgba = alpha_load;
+    s->f.c.cur.dither = false;
+}
+
+static void alpha_point(AlphaScene *s, unsigned r, unsigned g, unsigned b,
+                         double a)
+{
+    frag_command(&s->f, SGI_GL_OP_COLOR4F,
+                 (uint32_t[]) { bits(r / 255.0), bits(g / 255.0),
+                                bits(b / 255.0), bits(a) }, 4);
+    frag_command(&s->f, SGI_GL_OP_BEGIN, (uint32_t[]) { SGI_GL_POINTS }, 1);
+    wide_vertex(&s->f, 32.5, 32.5);
+    frag_command(&s->f, SGI_GL_OP_END, NULL, 0);
+}
+
+static void test_alpha_storage(void)
+{
+    AlphaScene s;
+
+    alpha_init(&s);
+    alpha_point(&s, 255, 0, 0, 64.0 / 255);
+    g_assert_cmpuint(s.stores, ==, 1);
+    g_assert_cmpuint(s.pixel[0].component[3], ==, 64);
+    alpha_point(&s, 255, 0, 0, 0.5);
+    g_assert_cmpuint(s.pixel[0].component[3], ==, 128);
+    s.rules.color_bits = 10;
+    alpha_point(&s, 255, 0, 0, 0.5);
+    g_assert_cmpuint(s.pixel[0].component[0], ==, 1023);
+    g_assert_cmpuint(s.pixel[0].component[3], ==, 127);
+}
+
+static void test_alpha_blend_masks(void)
+{
+    static const struct {
+        uint32_t equation, src, dst;
+        uint32_t expected[4];
+    } cases[] = {
+        { SGI_GL_FUNC_ADD, 1, 0, {255, 0, 0, 64} },
+        { SGI_GL_FUNC_ADD, SGI_GL_DST_ALPHA, 0, {128, 0, 0, 32} },
+        { SGI_GL_FUNC_ADD, SGI_GL_SRC_ALPHA, SGI_GL_ONE_MINUS_SRC_ALPHA,
+          {64, 0, 191, 112} },
+        { SGI_GL_FUNC_ADD, SGI_GL_SRC_ALPHA_SATURATE, 1,
+          {64, 0, 255, 192} },
+        { SGI_GL_MIN, 1, 1, {0, 0, 0, 64} },
+        { SGI_GL_MAX, 1, 1, {255, 0, 255, 128} },
+        { SGI_GL_FUNC_SUBTRACT, 1, 1, {255, 0, 0, 0} },
+        { SGI_GL_FUNC_REVERSE_SUBTRACT, 1, 1,
+          {0, 0, 255, 64} },
+    };
+    AlphaScene s;
+
+    for (unsigned i = 0; i < ARRAY_SIZE(cases); i++) {
+        alpha_init(&s);
+        s.pixel[0] = (SGIRasterColour) { {0, 0, 255, 128} };
+        s.f.c.cur.blend = true;
+        s.f.c.cur.blend_equation = cases[i].equation;
+        s.f.c.cur.blend_src = cases[i].src;
+        s.f.c.cur.blend_dst = cases[i].dst;
+        alpha_point(&s, 255, 0, 0, 64.0 / 255);
+        g_assert_cmpmem(s.pixel[0].component, sizeof(cases[i].expected),
+                        cases[i].expected, sizeof(cases[i].expected));
+    }
+    for (unsigned alpha_only = 0; alpha_only < 2; alpha_only++) {
+        uint32_t expected[4] = { alpha_only ? 10 : 200,
+                                alpha_only ? 20 : 150,
+                                alpha_only ? 30 : 100,
+                                alpha_only ? 90 : 40 };
+
+        alpha_init(&s);
+        s.pixel[0] = (SGIRasterColour) { {10, 20, 30, 40} };
+        s.f.c.cur.colour_mask = alpha_only ? SGI_GL_COLOUR_MASK_ALPHA : 7;
+        alpha_point(&s, 200, 150, 100, 90.0 / 255);
+        g_assert_cmpmem(s.pixel[0].component, sizeof(expected),
+                        expected, sizeof(expected));
+    }
+    alpha_init(&s);
+    s.pixel[0].component[3] = 0xaa;
+    s.f.c.cur.color_logic_op = true;
+    s.f.c.cur.blend = true;     /* Logic supersedes blending. */
+    s.f.c.cur.logic_op_mode = SGI_GL_CLEAR + 6;
+    alpha_point(&s, 0, 0, 0, 0x55 / 255.0);
+    g_assert_cmpuint(s.pixel[0].component[3], ==, 0xff);
+
+    alpha_init(&s);
+    s.f.c.cur.draw_buffers = SGI_GL_DRAW_FRONT | SGI_GL_DRAW_BACK;
+    s.pixel[0].component[3] = 64;
+    s.pixel[1].component[3] = 128;
+    s.f.c.cur.blend = true;
+    s.f.c.cur.blend_src = SGI_GL_DST_ALPHA;
+    s.f.c.cur.blend_dst = 0;
+    alpha_point(&s, 255, 0, 0, 1);
+    g_assert_cmpuint(s.pixel[0].component[0], ==, 64);
+    g_assert_cmpuint(s.pixel[1].component[0], ==, 128);
+    g_assert_cmpuint(s.stores, ==, 2);
+}
+
+static void alpha_clear(AlphaScene *s, double alpha)
+{
+    frag_command(&s->f, SGI_GL_OP_CLEAR_COLOR,
+                 (uint32_t[]) {0, 0, bits(1), bits(alpha)}, 4);
+    frag_command(&s->f, SGI_GL_OP_CLEAR,
+                 (uint32_t[]) {SGI_GL_COLOR_BUFFER_BIT}, 1);
+}
+
+static void test_alpha_clear_precision(void)
+{
+    AlphaScene s;
+
+    alpha_init(&s);
+    frag_scissor(&s.f, 32, 32, 1, 1);
+    enable(&s.f.c, SGI_GL_SCISSOR_TEST, true);
+    s.f.c.cur.drawable.clip = (SGIClipList) {
+        .n = 2, .r = { {0, 0, 32, 63}, {34, 0, 63, 63} },
+    };
+    s.f.c.cur.blend = s.f.c.cur.alpha_test = true;
+    s.f.c.cur.alpha_func = SGI_GL_NEVER;
+    alpha_clear(&s, 0);
+    g_assert_cmpuint(s.stores, ==, 1);
+    g_assert_cmpuint(s.pixel[0].component[2], ==, 255);
+    g_assert_cmpuint(s.pixel[0].component[3], ==, 0);
+    alpha_clear(&s, 1);
+    g_assert_cmpuint(s.pixel[0].component[3], ==, 255);
+    s.f.c.cur.colour_mask = SGI_GL_COLOUR_MASK_ALPHA;
+    s.pixel[0] = (SGIRasterColour) { {10, 20, 30, 40} };
+    alpha_clear(&s, 0);
+    g_assert_cmpuint(s.pixel[0].component[0], ==, 10);
+    g_assert_cmpuint(s.pixel[0].component[2], ==, 30);
+    g_assert_cmpuint(s.pixel[0].component[3], ==, 0);
+    alpha_clear(&s, 0.5);
+    g_assert_cmpuint(s.pixel[0].component[3], ==, 128);
+    s.rules.color_bits = 10;
+    alpha_clear(&s, 0.5);
+    g_assert_cmpuint(s.pixel[0].component[3], ==, 127);
+
+    alpha_init(&s);
+    s.rules.alpha_bits = 1;
+    s.f.c.cur.alpha_test = true;
+    s.f.c.cur.alpha_func = SGI_GL_GREATER;
+    s.f.c.cur.alpha_ref = 0.4;
+    alpha_point(&s, 255, 0, 0, 0.5);
+    g_assert_cmpuint(s.stores, ==, 1);
+    g_assert_cmpuint(s.pixel[0].component[3], ==, 0);
+    s.rules.alpha_bits = 10;
+    alpha_point(&s, 255, 0, 0, 0.5);
+    g_assert_cmpuint(s.pixel[0].component[3], ==, 512);
+    s.rules.color_bits = s.rules.alpha_bits = 1;
+    alpha_point(&s, 255, 0, 0, 0.5);
+    g_assert_cmpuint(s.stores, ==, 3); /* Internal alpha precision is two. */
+    s.rules.alpha_bits = 0;
+    s.pixel[0].component[3] = UINT32_MAX; /* Absent A must be ignored. */
+    s.f.c.cur.blend = true;
+    s.f.c.cur.blend_src = SGI_GL_DST_ALPHA;
+    s.f.c.cur.blend_dst = 0;
+    alpha_point(&s, 255, 0, 0, 0.5);
+    g_assert_cmpuint(s.pixel[0].component[0], ==, 1);
+    g_assert_cmpuint(s.pixel[0].component[3], ==, 0);
+    s.f.c.cur.colour_mask = SGI_GL_COLOUR_MASK_ALPHA;
+    alpha_point(&s, 255, 0, 0, 1);
+    g_assert_cmpuint(s.stores, ==, 4);
+}
+
+static void alpha_depth_stencil(AlphaScene *s)
+{
+    s->f.c.cur.depth_test = true;
+    s->f.c.cur.depth_func = SGI_GL_ALWAYS;
+    s->f.c.cur.stencil_test = true;
+    s->f.c.cur.stencil_op[2] = SGI_GL_INCR;
+}
+
+static AlphaScene alpha_error_scene;
+
+static void alpha_failed_square(void)
+{
+    alpha_point(&alpha_error_scene, 255, 0, 0, 1);
+}
+
+static void test_alpha_read_failures(void)
+{
+    AlphaScene s;
+    g_autofree char *log = NULL;
+    const char *report;
+
+    alpha_init(&s);
+    alpha_depth_stencil(&s);
+    s.f.c.cur.draw_buffers = SGI_GL_DRAW_FRONT | SGI_GL_DRAW_BACK;
+    s.f.c.cur.colour_mask = SGI_GL_COLOUR_MASK_ALPHA;
+    s.failed_target = 1;
+    alpha_point(&s, 255, 0, 0, 1);
+    g_assert_cmpuint(s.reads, ==, 2);
+    g_assert_cmpuint(s.stores, ==, 0);
+    g_assert_cmpuint(s.f.p.depth[planes_index(32, 32)], ==, 0);
+    g_assert_cmpuint(s.f.p.stencil[planes_index(32, 32)], ==, 0);
+    s.f.rec.target.load_rgba = NULL;
+    alpha_point(&s, 255, 0, 0, 1);
+    g_assert_cmpuint(s.stores, ==, 0);
+    g_assert_cmpuint(s.f.p.depth[planes_index(32, 32)], ==, 0);
+    g_assert_cmpuint(s.f.p.stencil[planes_index(32, 32)], ==, 0);
+    frag_scissor(&s.f, 32, 32, 1, 1);
+    enable(&s.f.c, SGI_GL_SCISSOR_TEST, true);
+    frag_command(&s.f, SGI_GL_OP_CLEAR,
+                 (uint32_t[]) {SGI_GL_COLOR_BUFFER_BIT |
+                               SGI_GL_DEPTH_BUFFER_BIT |
+                               SGI_GL_STENCIL_BUFFER_BIT}, 1);
+    g_assert_cmpuint(s.f.p.depth[planes_index(32, 32)], ==, 0);
+    s.f.rec.target.load_rgba = alpha_load;
+    frag_command(&s.f, SGI_GL_OP_CLEAR,
+                 (uint32_t[]) {SGI_GL_COLOR_BUFFER_BIT |
+                               SGI_GL_DEPTH_BUFFER_BIT |
+                               SGI_GL_STENCIL_BUFFER_BIT}, 1);
+    g_assert_cmpuint(s.stores, ==, 0);
+    g_assert_cmpuint(s.f.p.depth[planes_index(32, 32)], ==, 0);
+
+    alpha_init(&s);
+    alpha_depth_stencil(&s);
+    s.f.rec.target.store_rgba = NULL;
+    alpha_point(&s, 255, 0, 0, 1);
+    g_assert_cmpuint(s.f.p.depth[planes_index(32, 32)], ==, 0);
+    alpha_init(&s);
+    alpha_depth_stencil(&s);
+    s.f.c.cur.colour_mask = 0;
+    s.f.rec.target.load_rgba = NULL;
+    alpha_point(&s, 255, 0, 0, 1);
+    g_assert_cmpuint(s.stores, ==, 0);
+    g_assert_cmpuint(s.f.p.depth[planes_index(32, 32)], ==, 8388608);
+    g_assert_cmpuint(s.f.p.stencil[planes_index(32, 32)], ==, 1);
+    alpha_init(&s);
+    alpha_depth_stencil(&s);
+    s.f.c.cur.colour_mask = SGI_GL_COLOUR_MASK_ALPHA;
+    s.pixel[0].component[0] = 256; /* Successful hook, invalid component. */
+    alpha_point(&s, 255, 0, 0, 1);
+    g_assert_cmpuint(s.stores, ==, 0);
+    g_assert_cmpuint(s.f.p.depth[planes_index(32, 32)], ==, 0);
+    alpha_init(&alpha_error_scene);
+    alpha_error_scene.f.c.point_size = 2;
+    alpha_error_scene.f.c.cur.colour_mask = SGI_GL_COLOUR_MASK_ALPHA;
+    alpha_error_scene.failed_target = 0;
+    log = logged_by(alpha_failed_square);
+    report = strstr(log, "RGBA destination read failed");
+    g_assert_nonnull(report);
+    g_assert_null(strstr(report + 1, "RGBA destination read failed"));
+    g_assert_cmpuint(alpha_error_scene.reads, ==, 4);
+    g_assert_cmpuint(alpha_error_scene.stores, ==, 0);
+
+}
+
+static void test_alpha_texture_fog_rejection(void)
+{
+    TexturePixels texels = { .pixel = {
+        0xff000040, 0xff000040, 0xff000040, 0xff000040 } };
+    SGIGLTexImage image = texture_image(&texels);
+    AlphaScene s;
+
+    alpha_init(&s);
+    s.f.rec.target.texture = &image;
+    enable(&s.f.c, SGI_GL_TEXTURE_2D, true);
+    texture_env(&s.f, SGI_GL_TEXTURE_ENV_MODE, SGI_GL_REPLACE, 0, 0, 0);
+    texture_coord(&s.f, 0.25, 0.25, 0, 1);
+    s.f.c.cur.fog = true;
+    s.f.c.cur.fog_mode = SGI_GL_LINEAR;
+    s.f.c.cur.fog_start = -1;
+    s.f.c.cur.fog_end = 1;
+    s.f.c.cur.fog_color[2] = 1;
+    alpha_point(&s, 255, 255, 255, 1);
+    g_assert_cmpuint(s.pixel[0].component[0], ==, 128);
+    g_assert_cmpuint(s.pixel[0].component[2], ==, 128);
+    g_assert_cmpuint(s.pixel[0].component[3], ==, 64);
+    alpha_depth_stencil(&s);
+    s.f.c.cur.alpha_test = true;
+    s.f.c.cur.alpha_func = SGI_GL_GREATER;
+    s.f.c.cur.alpha_ref = 0.5;
+    alpha_point(&s, 255, 255, 255, 1);
+    g_assert_cmpuint(s.stores, ==, 1);
+    g_assert_cmpuint(s.f.p.depth[planes_index(32, 32)], ==, 0);
+    g_assert_cmpuint(s.f.p.stencil[planes_index(32, 32)], ==, 0);
+    s.f.c.cur.alpha_test = false;
+    s.f.c.cur.depth_func = SGI_GL_NEVER;
+    alpha_point(&s, 255, 255, 255, 1);
+    g_assert_cmpuint(s.stores, ==, 1);
+    s.f.c.cur.depth_test = false;
+    s.f.c.cur.stencil_func = SGI_GL_NEVER;
+    alpha_point(&s, 255, 255, 255, 1);
+    g_assert_cmpuint(s.stores, ==, 1);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -5637,6 +5959,13 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-gl/fog", test_fog);
     g_test_add_func("/sgi-gl/polygon-offset", test_polygon_offset);
     g_test_add_func("/sgi-gl/clip-planes", test_clip_planes);
+    g_test_add_func("/sgi-gl/alpha-storage", test_alpha_storage);
+    g_test_add_func("/sgi-gl/alpha-blend-masks", test_alpha_blend_masks);
+    g_test_add_func("/sgi-gl/alpha-clear-precision",
+                    test_alpha_clear_precision);
+    g_test_add_func("/sgi-gl/alpha-read-failures", test_alpha_read_failures);
+    g_test_add_func("/sgi-gl/alpha-texture-fog-rejection",
+                    test_alpha_texture_fog_rejection);
     g_test_add_func("/sgi-gl/wide-coverage", test_wide_coverage);
     g_test_add_func("/sgi-gl/wide-diagonal", test_wide_diagonal);
     g_test_add_func("/sgi-gl/wide-state", test_wide_state);
