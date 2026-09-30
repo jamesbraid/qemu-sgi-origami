@@ -64,8 +64,7 @@
 #define MGRAS_DAC_REG_REVISION 0x0b00
 
 /*
- * The eight XIO IMPACT variants, from the per-variant table in
- * docs/datasheets/mgras-board-identity.md. The labels are that document's:
+ * The eight XIO IMPACT variants:
  *
  * - SI+T and ESI+T come from owner gfxinfo captures of real boards. Their
  *   revisions are established; 0x072488 bit 7, which IRIX never reads, is

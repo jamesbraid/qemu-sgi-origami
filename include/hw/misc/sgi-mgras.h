@@ -135,7 +135,6 @@ OBJECT_DECLARE_TYPE(SGIMgrasState, SGIMgrasClass, SGI_MGRAS)
 #define SGI_MGRAS_XMAP_OVERLAY_MODE 0x071e80
 
 /*
- * Established (docs/datasheets/mgras-hq4.md, "Swap scheduling"):
  * MgrasSchedSwapBuf writes this XMAP-indexed port with the per-window swap
  * mask that takes effect at the next retrace. SGI's IDE XMAP test writes
  * and reads it back under index byte 0 (all 32 bits, the main buffer
@@ -208,8 +207,7 @@ struct SGIMgrasClass {
 
 /*
  * What one XIO IMPACT variant answers to the reads IRIX uses to tell the
- * variants apart (docs/datasheets/mgras-board-identity.md, "Per-variant
- * identity"). The two version bytes are the top bytes of 32-bit reads of
+ * variants apart. The two version bytes are the top bytes of 32-bit reads of
  * 0x072488 and 0x072408; the revisions land in the fields named beside
  * each member. The counts restate what those bytes decode to, so a board
  * the model cannot render is refused by name rather than by decoding.
@@ -342,8 +340,7 @@ struct SGIMgrasState {
      * four bits a channel). No register exposes a stored per-pixel format;
      * painting code derives it from PP1FILLMODE at the time each pixel is
      * written and records it here so scanout can resolve mixed-format
-     * content within one WID. Approximation: see
-     * docs/datasheets/mgras-raster-display.md.
+     * content within one WID. This is a model approximation.
      */
     uint8_t *format;
     /* Per-pixel overlay index. 0 is transparent and shows the main planes. */

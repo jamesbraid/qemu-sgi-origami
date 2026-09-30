@@ -3,8 +3,7 @@
  * The XIO port: a QOM interface for every chip one end of an XIO link
  * attaches to -- the Hub's and Bedrock's I/O interface (II), each
  * Crossbow or XBridge crossbar port, a Bridge, and an XIO board's
- * widget. See docs/designs/sn-machine-model-architecture.md, "Ports and
- * links", in the Origami tree.
+ * widget.
  *
  * A port receives through two faces, because the model keeps two
  * address forms apart:
