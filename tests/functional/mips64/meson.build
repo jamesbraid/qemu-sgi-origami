@@ -130,6 +130,8 @@ test_mips64_timeouts = {
   # Boot the two-processor Origin 300 from its installed IRIX 6.5.30
   # disk through the stock IP35 PROM to a root shell and run level 2.
   'irix_origin300_installed_boot' : 960,
+  # One Fuel boot through the supplied flash to an IRIX 6.5.30 root shell.
+  'irix_fuel_installed_boot' : 960,
   # One IRIX 6.5.30 boot checks the painted SI greeter before login,
   # then carries through a graphical login to check the desktop:
   # test_mgras_desktop.py's SERIAL_TIMEOUT_SECONDS (1320, the boot plus a
@@ -293,6 +295,7 @@ tests_mips64_system_thorough = [
   'irix_diag_origin300_4cpu_torpedo',
   'irix_installed_boot',
   'irix_origin300_installed_boot',
+  'irix_fuel_installed_boot',
   'mgras_desktop',
   'irix_eg',
   'irix_eg_arp',
