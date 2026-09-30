@@ -32,6 +32,15 @@ struct SGIHeartState {
     uint32_t widget_error_mask;
     bool mapped[HEART_BANKS][HEART_MAX_UNITS];
 
+    MemoryRegion ecc_memory;
+    GPtrArray *ecc_regions;
+    uint64_t *ecc_words;
+    uint32_t ecc_word_count;
+    uint32_t ecc_word_capacity;
+    uint64_t ecc_cause;
+    uint64_t ecc_address;
+    uint64_t ecc_data;
+
     uint64_t mode;
     uint64_t sdram_mode;
     uint64_t mem_refresh;

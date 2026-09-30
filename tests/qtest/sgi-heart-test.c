@@ -48,6 +48,398 @@ static QTestState *heart_start(unsigned mib, const char *extra)
     return s;
 }
 
+#define HEART_ECC_ENABLE ((1ULL << 15) | 1)
+#define HEART_ECC_GENERATE (1ULL << 19)
+#define HEART_ECC_IRQ (1ULL << 63)
+
+static void test_ecc_single_bit(void)
+{
+    QTestState *s = heart_start(64, "");
+    const uint64_t word = HEART_RAM + 0x128;
+    const uint64_t pattern = 0xa5762dcf89013be4ULL;
+
+    qtest_irq_intercept_out_named(s, HEART_PATH, "processor");
+    qtest_writel(s, HEART_REGS + 0x20, 0x80010000);
+    qtest_writeq(s, HEART_REGS, HEART_ECC_ENABLE | HEART_ECC_GENERATE);
+    qtest_writeq(s, word, pattern);
+    g_assert_cmphex(qtest_readq(s, HEART_REGS + 0x10040), ==, 0);
+    qtest_writeq(s, HEART_REGS, HEART_ECC_ENABLE);
+    g_assert_cmphex(qtest_readq(s, word), ==, pattern);
+    g_assert_cmphex(qtest_readq(s, HEART_REGS + 0x10040), ==, 1);
+    g_assert_cmphex(qtest_readq(s, HEART_REGS + 0x98), ==,
+                    word | (0x13ULL << 34));
+    g_assert_cmphex(qtest_readq(s, HEART_REGS + 0xa0), ==, pattern ^ 1);
+    g_assert_cmphex(qtest_readq(s, HEART_REGS + 0x10030), ==, HEART_ECC_IRQ);
+    qtest_writeq(s, HEART_REGS + 0x10000, HEART_ECC_IRQ);
+    g_assert_false(qtest_get_irq(s, 4));
+    qtest_writeq(s, HEART_REGS, HEART_ECC_ENABLE | (1ULL << 13));
+    g_assert_true(qtest_get_irq(s, 4));
+    qtest_writeq(s, HEART_REGS + 0x10040, 1);
+    g_assert_true(qtest_get_irq(s, 4));
+    qtest_writeq(s, HEART_REGS + 0x10028, HEART_ECC_IRQ);
+    g_assert_false(qtest_get_irq(s, 4));
+    g_assert_cmphex(qtest_readq(s, word), ==, pattern);
+    g_assert_true(qtest_get_irq(s, 4));
+    qtest_quit(s);
+}
+
+static void heart_ecc_clear(QTestState *s)
+{
+    qtest_writeq(s, HEART_REGS + 0x10040, 1);
+    qtest_writeq(s, HEART_REGS + 0x10028, HEART_ECC_IRQ);
+}
+
+static void test_ecc_words_aliases(void)
+{
+    QTestState *s = heart_start(64, "-global sgi-heart.bank1-size=67108864");
+    const uint64_t words[] = { HEART_RAM, HEART_RAM + 0x128,
+        HEART_RAM + UNIT + 0x40, HEART_RAM + 8 * UNIT + 0x880,
+        HEART_RAM + 9 * UNIT + 0x10 };
+    const uint64_t patterns[] = { 0, UINT64_MAX, 0x968734120bcefa55ULL,
+                                 0x1234567800000000ULL, 0x2a9c61e400081f30ULL };
+
+    /* Each physical 128 MiB window aliases a fitted 64 MiB bank. */
+    qtest_writel(s, HEART_REGS + 0x20, 0x80030000);
+    qtest_writel(s, HEART_REGS + 0x24, 0x80030008);
+    qtest_writeq(s, HEART_REGS, HEART_ECC_ENABLE | HEART_ECC_GENERATE);
+    for (unsigned i = 0; i < ARRAY_SIZE(words); i++) {
+        qtest_writeq(s, words[i], patterns[i]);
+    }
+    qtest_writeq(s, HEART_REGS, HEART_ECC_ENABLE);
+    for (unsigned i = 0; i < ARRAY_SIZE(words); i++) {
+        heart_ecc_clear(s);
+        g_assert_cmphex(qtest_readq(s, words[i] + 2 * UNIT), ==, patterns[i]);
+        g_assert_cmphex(qtest_readq(s, HEART_REGS + 0x98), ==,
+                        (words[i] + 2 * UNIT) | (0x13ULL << 34));
+        g_assert_cmphex(qtest_readq(s, HEART_REGS + 0xa0), ==, patterns[i] ^ 1);
+        g_assert_cmphex(qtest_readq(s, HEART_REGS + 0x10040), ==, 1);
+    }
+    /* Writing another word cannot repair any of the faults. */
+    qtest_writeq(s, HEART_RAM + 0x1000, 0x1b5698a21);
+    for (unsigned i = 0; i < ARRAY_SIZE(words); i++) {
+        qtest_writeq(s, words[i] + 2 * UNIT, patterns[i] ^ 0x729);
+        heart_ecc_clear(s);
+        g_assert_cmphex(qtest_readq(s, words[i]), ==, patterns[i] ^ 0x729);
+        g_assert_cmphex(qtest_readq(s, HEART_REGS + 0x10040), ==, 0);
+    }
+    g_assert_cmpuint(qtest_writel_tx(s, HEART_REGS + 0x20, 0x80010000), ==,
+                     MEMTX_OK);
+    qtest_quit(s);
+}
+
+static void test_ecc_controls(void)
+{
+    QTestState *s = heart_start(64, "");
+    const uint64_t word = HEART_RAM + 0x188;
+    const uint64_t pattern = 0xde37249580fab16cULL;
+    const uint64_t saved_address = word | (0x13ULL << 34);
+
+    qtest_writel(s, HEART_REGS + 0x20, 0x80010000);
+    qtest_writeq(s, HEART_REGS, HEART_ECC_ENABLE | HEART_ECC_GENERATE);
+    g_assert_cmphex(qtest_readq(s, HEART_REGS + 0x10040), ==, 0);
+    qtest_writeq(s, word, pattern);
+    qtest_writeq(s, HEART_REGS, 0);
+    g_assert_cmphex(qtest_readq(s, word), ==, pattern ^ 1);
+    g_assert_cmphex(qtest_readq(s, HEART_REGS + 0x10040), ==, 0);
+    g_assert_cmphex(qtest_readq(s, HEART_REGS + 0x98), ==, 0);
+    qtest_writeq(s, HEART_REGS, 1ULL << 15);
+    g_assert_cmphex(qtest_readq(s, word), ==, pattern);
+    g_assert_cmphex(qtest_readq(s, HEART_REGS + 0x10040), ==, 0);
+    qtest_writeq(s, HEART_REGS, HEART_ECC_ENABLE);
+    g_assert_cmphex(qtest_readq(s, word), ==, pattern);
+    qtest_writeq(s, HEART_REGS + 0x10028, HEART_ECC_IRQ);
+    g_assert_cmphex(qtest_readq(s, HEART_REGS + 0x10040), ==, 1);
+    g_assert_cmphex(qtest_readq(s, HEART_REGS + 0x10030), ==, 0);
+    qtest_writeq(s, HEART_REGS, 0);
+    g_assert_cmphex(qtest_readq(s, word), ==, pattern ^ 1);
+    g_assert_cmphex(qtest_readq(s, HEART_REGS + 0x98), ==, saved_address);
+    g_assert_cmphex(qtest_readq(s, HEART_REGS + 0xa0), ==, pattern ^ 1);
+    g_assert_cmphex(qtest_readq(s, HEART_REGS + 0x10040), ==, 1);
+    qtest_writeq(s, HEART_REGS, 1ULL << 15);
+    g_assert_cmphex(qtest_readq(s, word), ==, pattern);
+    g_assert_cmphex(qtest_readq(s, HEART_REGS + 0x10030), ==, 0);
+    qtest_writeq(s, word, pattern ^ 0x876);
+    qtest_writeq(s, HEART_REGS, HEART_ECC_ENABLE);
+    heart_ecc_clear(s);
+    g_assert_cmphex(qtest_readq(s, word), ==, pattern ^ 0x876);
+    g_assert_cmphex(qtest_readq(s, HEART_REGS + 0x10040), ==, 0);
+    g_assert_cmphex(qtest_readq(s, HEART_REGS + 0x98), ==, saved_address);
+    qtest_quit(s);
+}
+
+static void test_ecc_unsupported(void)
+{
+    QTestState *s = heart_start(64, "");
+    const uint64_t word = HEART_RAM + 0x800;
+    const uint64_t pattern = 0x5e972b80c416a3dfULL;
+    const uint64_t invalid[] = { HEART_ECC_GENERATE,
+        HEART_ECC_GENERATE | (1ULL << 15), HEART_ECC_GENERATE | 1,
+        HEART_ECC_ENABLE | HEART_ECC_GENERATE | (1ULL << 20),
+        HEART_ECC_ENABLE | HEART_ECC_GENERATE | (1ULL << 21),
+        HEART_ECC_ENABLE | HEART_ECC_GENERATE | (1ULL << 25) };
+    uint64_t value;
+    uint32_t part;
+
+    qtest_writel(s, HEART_REGS + 0x20, 0x80010000);
+    qtest_writeq(s, word - 8, 0x8231dca94180be76ULL);
+    qtest_writeq(s, word, pattern);
+    qtest_writeq(s, word + 8, 0xbc2697184ed305faULL);
+    for (unsigned i = 0; i < ARRAY_SIZE(invalid); i++) {
+        qtest_writeq(s, HEART_REGS, invalid[i]);
+        g_assert_cmpuint(qtest_writeq_tx(s, word, UINT64_MAX), ==, MEMTX_ERROR);
+        qtest_writeq(s, HEART_REGS, 0);
+        g_assert_cmphex(qtest_readq(s, word), ==, pattern);
+    }
+    qtest_writeq(s, HEART_REGS, HEART_ECC_ENABLE | HEART_ECC_GENERATE);
+    g_assert_cmpuint(qtest_writel_tx(s, word, 0x170349a8), ==, MEMTX_ERROR);
+    g_assert_cmpuint(qtest_writeq_tx(s, word - 4, UINT64_MAX), ==, MEMTX_ERROR);
+    g_assert_cmpuint(qtest_writeq_tx(s, HEART_PACKET + word, UINT64_MAX), ==,
+                     MEMTX_ERROR);
+    qtest_writeq(s, word, pattern);
+    qtest_writeq(s, HEART_REGS, HEART_ECC_ENABLE);
+    g_assert_cmphex(qtest_readq(s, word), ==, pattern);
+    for (unsigned control = 20; control <= 25; control++) {
+        if (control != 20 && control != 21 && control != 25) {
+            continue;
+        }
+        qtest_writeq(s, HEART_REGS, HEART_ECC_ENABLE | (1ULL << control));
+        g_assert_cmpuint(qtest_readq_tx(s, word, &value), ==, MEMTX_ERROR);
+        g_assert_cmpuint(qtest_writeq_tx(s, word, 0), ==, MEMTX_ERROR);
+        /* Unsupported ECC controls leave ordinary unpoisoned RAM usable. */
+        qtest_writeq(s, word + 0x40, 0x6bf09dc48);
+        g_assert_cmphex(qtest_readq(s, word + 0x40), ==, 0x6bf09dc48);
+    }
+    qtest_writeq(s, HEART_REGS, HEART_ECC_ENABLE);
+    g_assert_cmpuint(qtest_readl_tx(s, word, &part), ==, MEMTX_ERROR);
+    g_assert_cmpuint(qtest_writel_tx(s, word + 4, 0), ==, MEMTX_ERROR);
+    g_assert_cmpuint(qtest_writeq_tx(s, word - 4, 0), ==, MEMTX_ERROR);
+    g_assert_cmpuint(qtest_writeq_tx(s, word + 4, 0), ==, MEMTX_ERROR);
+    g_assert_cmpuint(qtest_readq_tx(s, word - 4, &value), ==, MEMTX_ERROR);
+    g_assert_cmpuint(qtest_readq_tx(s, HEART_PACKET + word, &value), ==,
+                     MEMTX_ERROR);
+    g_assert_cmpuint(qtest_writeq_tx(s, HEART_PACKET + word - 4, 0), ==,
+                     MEMTX_ERROR);
+    g_assert_cmpuint(qtest_writel_tx(s, HEART_REGS + 0x20, 0), ==, MEMTX_ERROR);
+    g_assert_cmpuint(qtest_writeq_tx(s, HEART_REGS + 0x20, 0), ==, MEMTX_ERROR);
+    g_assert_cmphex(qtest_readl(s, HEART_REGS + 0x20), ==, 0x80010000);
+    g_assert_cmphex(qtest_readq(s, word - 8), ==, 0x8231dca94180be76ULL);
+    g_assert_cmphex(qtest_readq(s, word + 8), ==, 0xbc2697184ed305faULL);
+    g_assert_cmphex(qtest_readq(s, HEART_REGS + 0x98), ==,
+                    word | (0x13ULL << 34));
+    g_assert_cmphex(qtest_readq(s, HEART_REGS + 0xa0), ==, pattern ^ 1);
+    g_assert_cmphex(qtest_readq(s, HEART_REGS + 0x10040), ==, 1);
+    g_assert_cmphex(qtest_readq(s, HEART_REGS + 0x10030), ==, HEART_ECC_IRQ);
+    g_assert_cmphex(qtest_readq(s, word), ==, pattern);
+    qtest_quit(s);
+}
+
+static unsigned heart_ecc_region_count(QTestState *s)
+{
+    QDict *response = qtest_qmp(s, "{'execute':'qom-list',"
+        "'arguments':{'path':%s}}", HEART_PATH);
+    QList *properties = qdict_get_qlist(response, "return");
+    const QListEntry *entry;
+    unsigned count = 0;
+
+    QLIST_FOREACH_ENTRY(properties, entry) {
+        QDict *property = qobject_to(QDict, qlist_entry_obj(entry));
+
+        count += g_str_has_prefix(qdict_get_str(property, "name"), "heart.ecc");
+    }
+    qobject_unref(response);
+    return count;
+}
+
+static void test_ecc_region_lifetime(void)
+{
+    QTestState *s = heart_start(64, "");
+    unsigned initial = heart_ecc_region_count(s);
+    unsigned retained;
+
+    qtest_writel(s, HEART_REGS + 0x20, 0x80010000);
+    for (unsigned batch = 0; batch < 2; batch++) {
+        for (unsigned i = 0; i < 256; i++) {
+            uint64_t word = HEART_RAM + 0x1000 + (batch * 256 + i) * 32;
+            uint64_t pattern = 0x83a6271cb09d5ef4ULL ^ word;
+
+            qtest_writeq(s, HEART_REGS, HEART_ECC_ENABLE | HEART_ECC_GENERATE);
+            qtest_writeq(s, word, pattern);
+            qtest_writeq(s, HEART_REGS, HEART_ECC_ENABLE);
+            heart_ecc_clear(s);
+            g_assert_cmphex(qtest_readq(s, word), ==, pattern);
+            g_assert_cmphex(qtest_readq(s, HEART_REGS + 0x98), ==,
+                            word | (0x13ULL << 34));
+            qtest_writeq(s, word, pattern ^ 0x721);
+            heart_ecc_clear(s);
+            g_assert_cmphex(qtest_readq(s, word), ==, pattern ^ 0x721);
+            g_assert_cmphex(qtest_readq(s, HEART_REGS + 0x10040), ==, 0);
+        }
+        /* Allocation must follow live coverage, not repaired addresses. */
+        g_assert_cmpuint(heart_ecc_region_count(s), <=, initial + 8);
+    }
+    retained = heart_ecc_region_count(s);
+    qtest_qmp_assert_success(s, "{'execute':'system_reset'}");
+    g_assert_cmpuint(heart_ecc_region_count(s), <=, retained);
+    qtest_quit(s);
+}
+
+static void test_ecc_reset(void)
+{
+    QTestState *s = heart_start(64, "");
+    const uint64_t word = HEART_RAM + 0x68;
+    const uint64_t pattern = 0xd986ed734fa58021ULL;
+
+    qtest_irq_intercept_out_named(s, HEART_PATH, "processor");
+    qtest_writel(s, HEART_REGS + 0x20, 0x80010000);
+    qtest_writeq(s, HEART_REGS, HEART_ECC_ENABLE | HEART_ECC_GENERATE);
+    qtest_writeq(s, word, pattern);
+    qtest_writeq(s, HEART_REGS, HEART_ECC_ENABLE | (1ULL << 13));
+    qtest_writeq(s, HEART_REGS + 0x10000, HEART_ECC_IRQ);
+    g_assert_cmphex(qtest_readq(s, word), ==, pattern);
+    g_assert_true(qtest_get_irq(s, 4));
+    qtest_qmp_assert_success(s, "{'execute':'system_reset'}");
+    g_assert_cmphex(qtest_readq(s, HEART_REGS), ==, 0);
+    g_assert_cmphex(qtest_readq(s, HEART_REGS + 0x98), ==, 0);
+    g_assert_cmphex(qtest_readq(s, HEART_REGS + 0xa0), ==, 0);
+    g_assert_cmphex(qtest_readq(s, HEART_REGS + 0x10040), ==, 0);
+    g_assert_false(qtest_get_irq(s, 4));
+    qtest_writel(s, HEART_REGS + 0x20, 0x80010000);
+    qtest_writeq(s, HEART_REGS, HEART_ECC_ENABLE);
+    g_assert_cmphex(qtest_readq(s, word), ==, pattern);
+    g_assert_cmphex(qtest_readq(s, HEART_REGS + 0x10040), ==, 0);
+    qtest_quit(s);
+}
+
+static void test_ecc_migration(gconstpointer data)
+{
+    GError *error = NULL;
+    g_autofree char *directory = g_dir_make_tmp("heart-ecc-XXXXXX", &error);
+    g_autofree char *socket = NULL;
+    g_autofree char *uri = NULL;
+    QTestState *from, *to;
+    const uint64_t word = HEART_RAM + 0x200;
+    const uint64_t other = HEART_RAM + UNIT + 0x888;
+    const uint64_t pattern = 0x391c5d78e0af246bULL;
+
+    g_assert_no_error(error);
+    socket = g_build_filename(directory, "migration.sock", NULL);
+    uri = g_strdup_printf("unix:%s", socket);
+    from = heart_start(64, "");
+    to = heart_start(64, "-incoming defer");
+    qtest_irq_intercept_out_named(to, HEART_PATH, "processor");
+    if (GPOINTER_TO_UINT(data)) {
+        qtest_writel(to, HEART_REGS + 0x20, 0x80010000);
+        qtest_writeq(to, HEART_REGS, HEART_ECC_ENABLE | HEART_ECC_GENERATE);
+        for (unsigned i = 0; i < 32; i++) {
+            qtest_writeq(to, HEART_RAM + 0x1000 + i * 8, UINT64_MAX - i);
+        }
+        qtest_writeq(to, HEART_REGS, HEART_ECC_ENABLE);
+        if (GPOINTER_TO_UINT(data) == 2) {
+            qtest_system_reset(to);
+        }
+    }
+    qtest_writel(from, HEART_REGS + 0x20, 0x80030000);
+    qtest_writeq(from, HEART_REGS, HEART_ECC_ENABLE | HEART_ECC_GENERATE);
+    qtest_writeq(from, word, pattern);
+    qtest_writeq(from, other, pattern ^ 0xab879);
+    qtest_writeq(from, HEART_REGS, HEART_ECC_ENABLE | (1ULL << 13));
+    qtest_writeq(from, HEART_REGS + 0x10000, HEART_ECC_IRQ);
+    g_assert_cmphex(qtest_readq(from, word), ==, pattern);
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    sgi_migrate_stopped(from, uri);
+    sgi_wait_migration_status(to, "completed", 30);
+    g_assert_cmphex(qtest_readq(to, HEART_REGS), ==,
+                    HEART_ECC_ENABLE | (1ULL << 13));
+    g_assert_cmphex(qtest_readq(to, HEART_REGS + 0x10040), ==, 1);
+    g_assert_cmphex(qtest_readq(to, HEART_REGS + 0x98), ==,
+                    word | (0x13ULL << 34));
+    g_assert_cmphex(qtest_readq(to, HEART_REGS + 0xa0), ==, pattern ^ 1);
+    g_assert_true(qtest_get_irq(to, 4));
+    heart_ecc_clear(to);
+    g_assert_false(qtest_get_irq(to, 4));
+    g_assert_cmphex(qtest_readq(to, HEART_RAM + 0x1000), ==, 0);
+    g_assert_cmphex(qtest_readq(to, HEART_REGS + 0x10040), ==, 0);
+    g_assert_cmphex(qtest_readq(to, other + 2 * UNIT), ==, pattern ^ 0xab879);
+    g_assert_true(qtest_get_irq(to, 4));
+    qtest_writeq(to, other + 2 * UNIT, 0x0192837465abcedfULL);
+    heart_ecc_clear(to);
+    g_assert_cmphex(qtest_readq(to, other), ==, 0x0192837465abcedfULL);
+    g_assert_cmphex(qtest_readq(to, HEART_REGS + 0x10040), ==, 0);
+    g_assert_cmphex(qtest_readq(to, word + 2 * UNIT), ==, pattern);
+    g_assert_cmphex(qtest_readq(to, HEART_REGS + 0x10040), ==, 1);
+    qtest_quit(to);
+    qtest_quit(from);
+    if (g_file_test(socket, G_FILE_TEST_EXISTS)) {
+        g_assert_cmpint(g_unlink(socket), ==, 0);
+    }
+    g_assert_cmpint(g_rmdir(directory), ==, 0);
+}
+
+static void test_ecc_cache_reject(gconstpointer data)
+{
+    const char *property = data;
+    QTestState *s;
+
+    if (!g_test_subprocess()) {
+        g_test_trap_subprocess(NULL, 0, 0);
+        g_test_trap_assert_failed();
+        g_test_trap_assert_stderr(
+            "*HEART memory ECC requires the direct-memory*");
+        return;
+    }
+    s = qtest_initf("-M none -cpu R10000,%s=on "
+                    "-device sgi-heart,bank0-size=67108864 -S", property);
+    qtest_quit(s);
+}
+
+static void test_ecc_projection(gconstpointer data)
+{
+    unsigned mib = GPOINTER_TO_UINT(data);
+    QTestState *s = heart_start(mib, "");
+    uint64_t alias = mib == 256 ? 4 * UNIT : UNIT;
+    const uint64_t pattern = 0x326019ac87de54bfULL;
+
+    qtest_writel(s, HEART_REGS + 0x20, PROBE_DESC);
+    qtest_writeq(s, HEART_REGS, HEART_ECC_ENABLE | HEART_ECC_GENERATE);
+    qtest_writeq(s, PROBE_RAM + alias + 0x100, pattern);
+    qtest_writeq(s, HEART_REGS, HEART_ECC_ENABLE);
+    g_assert_cmphex(qtest_readq(s, PROBE_RAM + 0x100), ==, pattern);
+    g_assert_cmphex(qtest_readq(s, HEART_REGS + 0x98), ==,
+                    (PROBE_RAM + 0x100) | (0x13ULL << 34));
+    qtest_writeq(s, PROBE_RAM + 0x100, pattern ^ 0x98);
+    heart_ecc_clear(s);
+    g_assert_cmphex(qtest_readq(s, PROBE_RAM + alias + 0x100), ==,
+                    pattern ^ 0x98);
+    g_assert_cmphex(qtest_readq(s, HEART_REGS + 0x10040), ==, 0);
+    qtest_quit(s);
+}
+
+static void test_ecc_guard_overlap(void)
+{
+    QTestState *s = heart_start(64, "");
+    const uint64_t word = HEART_RAM + UNIT - 8;
+    uint64_t value;
+
+    qtest_writel(s, HEART_REGS + 0x20, 0x80010000);
+    qtest_writeq(s, word - 8, 0x85bf014adc732968ULL);
+    qtest_writeq(s, word + 16, 0x315c402a87bd916eULL);
+    qtest_writeq(s, HEART_REGS, HEART_ECC_ENABLE | HEART_ECC_GENERATE);
+    qtest_writeq(s, word, 0x69f78da014e352bcULL);
+    qtest_writeq(s, word + 8, 0x451bea907cd326f8ULL);
+    qtest_writeq(s, HEART_REGS, HEART_ECC_ENABLE);
+    g_assert_cmpuint(qtest_writeq_tx(s, word - 1, UINT64_MAX), ==, MEMTX_ERROR);
+    g_assert_cmpuint(qtest_writeq_tx(s, word + 1, UINT64_MAX), ==, MEMTX_ERROR);
+    g_assert_cmpuint(qtest_writeq_tx(s, word + 15, UINT64_MAX), ==,
+                     MEMTX_ERROR);
+    g_assert_cmpuint(qtest_readq_tx(s, word + 1, &value), ==, MEMTX_ERROR);
+    g_assert_cmphex(qtest_readq(s, word - 8), ==, 0x85bf014adc732968ULL);
+    g_assert_cmphex(qtest_readq(s, word + 16), ==, 0x315c402a87bd916eULL);
+    g_assert_cmphex(qtest_readq(s, word), ==, 0x69f78da014e352bcULL);
+    g_assert_cmphex(qtest_readq(s, word + 8), ==, 0x451bea907cd326f8ULL);
+    qtest_quit(s);
+}
+
 static void test_onewire_empty(void)
 {
     QTestState *s = heart_start(64, "");
@@ -467,10 +859,13 @@ static void test_widget_timeout(void)
     g_assert_cmphex(qtest_readq(s, HEART_WIDGET + 0x28), ==, 0x12345678);
     g_assert_cmphex(qtest_readl(s, HEART_REGS + 0x2c), ==, 0);
     g_assert_cmpuint(qtest_writeq_tx(s, HEART_WIDGET + 0x28, 0), ==,
-                     MEMTX_ERROR);
+                     MEMTX_OK);
+    g_assert_cmphex(qtest_readq(s, HEART_WIDGET + 0x28), ==, 0);
+    g_assert_cmphex(qtest_readl(s, HEART_WIDGET + 0x2c), ==, 0);
     g_assert_cmpuint(qtest_writeq_tx(s, HEART_WIDGET + 0x28,
-                                    0x1234567887654321ULL), ==, MEMTX_ERROR);
-    g_assert_cmphex(qtest_readq(s, HEART_WIDGET + 0x28), ==, 0x12345678);
+                                    0x1234567887654321ULL), ==, MEMTX_OK);
+    g_assert_cmphex(qtest_readq(s, HEART_WIDGET + 0x28), ==, 0x87654321);
+    g_assert_cmphex(qtest_readl(s, HEART_WIDGET + 0x2c), ==, 0x87654321);
     g_assert_cmpuint(qtest_readl_tx(s, HEART_WIDGET + 0x28, &word), ==,
                      MEMTX_ERROR);
     g_assert_cmpuint(qtest_writel_tx(s, HEART_WIDGET + 0x30, 0), ==,
@@ -495,7 +890,7 @@ static void test_widget_timeout(void)
                      MEMTX_ERROR);
     g_assert_cmpuint(qtest_readl_tx(s, HEART_WIDGET + 0x48, &word), ==,
                      MEMTX_ERROR);
-    g_assert_cmphex(qtest_readl(s, HEART_WIDGET + 0x2c), ==, 0x12345678);
+    g_assert_cmphex(qtest_readl(s, HEART_WIDGET + 0x2c), ==, 0x87654321);
     g_assert_cmphex(qtest_readl(s, HEART_WIDGET + 0x44), ==, 0);
     qtest_system_reset(s);
     g_assert_cmphex(qtest_readl(s, HEART_WIDGET + 0x2c), ==, 0);
@@ -1148,6 +1543,29 @@ static void test_xtalk_migration(void)
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
+    qtest_add_func("/heart/ecc/single-bit", test_ecc_single_bit);
+    qtest_add_func("/heart/ecc/words-aliases", test_ecc_words_aliases);
+    qtest_add_func("/heart/ecc/controls", test_ecc_controls);
+    qtest_add_func("/heart/ecc/unsupported", test_ecc_unsupported);
+    qtest_add_func("/heart/ecc/reset", test_ecc_reset);
+    qtest_add_func("/heart/ecc/region-lifetime", test_ecc_region_lifetime);
+    qtest_add_data_func("/heart/ecc/migration", GUINT_TO_POINTER(0),
+                        test_ecc_migration);
+    qtest_add_data_func("/heart/ecc/migration-populated", GUINT_TO_POINTER(1),
+                        test_ecc_migration);
+    qtest_add_data_func("/heart/ecc/migration-populated-reset",
+                        GUINT_TO_POINTER(2), test_ecc_migration);
+    qtest_add_data_func("/heart/ecc/cache-reject", "r10k-data-cache",
+                        test_ecc_cache_reject);
+    qtest_add_data_func("/heart/ecc/coherence-reject", "r10k-sccoren",
+                        test_ecc_cache_reject);
+    qtest_add_data_func("/heart/ecc/projection-64m", GUINT_TO_POINTER(64),
+                        test_ecc_projection);
+    qtest_add_data_func("/heart/ecc/projection-128m", GUINT_TO_POINTER(128),
+                        test_ecc_projection);
+    qtest_add_data_func("/heart/ecc/projection-256m", GUINT_TO_POINTER(256),
+                        test_ecc_projection);
+    qtest_add_func("/heart/ecc/guard-overlap", test_ecc_guard_overlap);
     g_test_add_data_func("/heart/descriptor-64m", GUINT_TO_POINTER(64),
                          test_descriptors);
     g_test_add_func("/heart/two-64m-banks", test_two_64m_banks);
