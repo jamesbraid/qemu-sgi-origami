@@ -337,6 +337,8 @@ static void octane_init_common(MachineState *machine, bool octane2)
     if (octane2) {
         qdev_prop_set_uint64(heart, "widget-id-64",
                             UINT64_C(0x000000006c00106d));
+        /* This board returned 0x60 for one PROM-time 64-bit status read. */
+        qdev_prop_set_bit(heart, "widget-status-f-measured", true);
     }
     object_property_set_link(OBJECT(heart), "cpu-memory", OBJECT(physical),
                              &error_fatal);
