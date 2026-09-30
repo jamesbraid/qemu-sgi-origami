@@ -1711,7 +1711,9 @@ uint32_t sgi_mgras_gl_query_answer(SGIMgrasState *s, const uint32_t *args,
             return out[element] ? UINT32_MAX : 0;
         case MGRAS_GL_QUERY_INTEGER:
             memcpy(&f, &out[element], sizeof(f));
-            return (int32_t)MIN(MAX(f, (float)INT32_MIN), (float)INT32_MAX);
+            /* INT32_MAX rounds up to 2^31 in float: clamp in double. */
+            return (int32_t)MIN(MAX((double)f, (double)INT32_MIN),
+                                (double)INT32_MAX);
         default:
             return out[element];
         }
@@ -3498,7 +3500,7 @@ void sgi_mgras_gl_execute(SGIMgrasState *s, uint32_t header,
         return;
     case MGRAS_GL_EDGE_FLAG_TRUE:
     case MGRAS_GL_EDGE_FLAG_FALSE:
-        /* Kept for the 0xa104 query; polygon edge modes are not modelled. */
+        /* Retained for attribute queries and polygon boundary modes. */
         word[0] = header == MGRAS_GL_EDGE_FLAG_TRUE;
         mgras_gl_command(s, SGI_GL_OP_EDGE_FLAG, word, 1);
         return;
