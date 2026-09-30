@@ -3653,7 +3653,9 @@ static void test_clip_planes(void)
     word[0] = bits(1);
     frag_command(&f, SGI_GL_OP_VERTEX2F, word, 2);
     frag_command(&f, SGI_GL_OP_END, word, 0);
-    g_assert_cmpuint(frag_count(&f, 0xffffff), ==, 16);
+    /* The negative endpoint perturbation excludes the final diamond at 63. */
+    g_assert_cmpuint(frag_count(&f, 0xffffff), ==, 15);
+    g_assert_cmphex(frag_pixel(&f, 63, 10), ==, 0);
     g_assert_cmphex(frag_pixel(&f, 48, 10), ==, 0xffffff);
     word[0] = SGI_GL_POINTS;
     frag_command(&f, SGI_GL_OP_BEGIN, word, 1);
@@ -3662,7 +3664,7 @@ static void test_clip_planes(void)
     word[0] = bits(0.75f);
     frag_command(&f, SGI_GL_OP_VERTEX2F, word, 2);
     frag_command(&f, SGI_GL_OP_END, word, 0);
-    g_assert_cmpuint(frag_count(&f, 0xffffff), ==, 17);
+    g_assert_cmpuint(frag_count(&f, 0xffffff), ==, 16);
     g_assert_cmphex(frag_pixel(&f, 56, 48), ==, 0xffffff);
 
     word[0] = bits(0.25f), word[1] = bits(0);
@@ -3681,9 +3683,207 @@ static void test_clip_planes(void)
     g_assert_cmpuint(frag_count(&f, 0xffffff), ==, W * H);
 }
 
+/* Public OpenGL 1.2.1 aliased point and line footprints in window pixels. */
+static void wide_vertex(FragScene *f, float x, float y)
+{
+    frag_command(f, SGI_GL_OP_VERTEX2F,
+                 (uint32_t[]) { bits(x / 32 - 1), bits(y / 32 - 1) }, 2);
+}
+
+static void test_wide_coverage(void)
+{
+    static const struct {
+        unsigned mode;
+        float size;
+        float ax, ay, bx, by;
+        int x0, y0, x1, y1;
+    } cases[] = {
+        { SGI_GL_POINTS, 2, 4.25, 3.75, 0, 0, 3, 3, 4, 4 },
+        { SGI_GL_POINTS, 0.25, 4.25, 3.75, 0, 0, 4, 3, 4, 3 },
+        { SGI_GL_POINTS, 1.5, 4.25, 3.75, 0, 0, 3, 3, 4, 4 },
+        { SGI_GL_POINTS, 5, 4.25, 3.75, 0, 0, 2, 1, 6, 5 },
+        { SGI_GL_LINES, 2, 1.5, 3.5, 5.5, 3.5, 1, 2, 4, 3 },
+        { SGI_GL_LINES, 3, 1.5, 3.5, 5.5, 3.5, 1, 2, 4, 4 },
+        { SGI_GL_LINES, 2, 3.5, 1.5, 3.5, 5.5, 2, 1, 3, 4 },
+        { SGI_GL_LINES, 3, 3.5, 1.5, 3.5, 5.5, 2, 1, 4, 4 },
+        /* On a shifted diamond tip epsilon dominates epsilon squared. */
+        { SGI_GL_LINES, 2, 5.5, 3.5, 1.5, 3.5, 1, 2, 4, 3 },
+        { SGI_GL_LINES, 1, 1, 3.5, 5, 3.5, 0, 3, 3, 3 },
+        { SGI_GL_LINES, 1, 5, 3.5, 1, 3.5, 1, 3, 4, 3 },
+        { SGI_GL_LINES, 3, 3.5, 5.5, 3.5, 1.5, 2, 2, 4, 5 },
+        { SGI_GL_POINTS, 5, 0, 0, 0, 0, 0, 0, 2, 2 },
+        { SGI_GL_LINES, 3, -3, 3.5, 5.5, 3.5, 0, 2, 4, 4 },
+    };
+    FragScene f;
+
+    for (unsigned i = 0; i < ARRAY_SIZE(cases); i++) {
+        SGIGLOp setter = SGI_GL_OP_LINE_WIDTH;
+
+        frag_init(&f);
+        if (cases[i].mode == SGI_GL_POINTS) {
+            setter = SGI_GL_OP_POINT_SIZE;
+        }
+        frag_command(&f, setter, (uint32_t[]) { bits(cases[i].size) }, 1);
+        frag_command(&f, SGI_GL_OP_BEGIN,
+                     (uint32_t[]) { cases[i].mode }, 1);
+        wide_vertex(&f, cases[i].ax, cases[i].ay);
+        if (cases[i].mode == SGI_GL_LINES) {
+            wide_vertex(&f, cases[i].bx, cases[i].by);
+        }
+        frag_command(&f, SGI_GL_OP_END, NULL, 0);
+        for (int y = 0; y < H; y++) {
+            for (int x = 0; x < W; x++) {
+                bool inside = x >= cases[i].x0 && x <= cases[i].x1 &&
+                              y >= cases[i].y0 && y <= cases[i].y1;
+                g_assert_cmphex(frag_pixel(&f, x, y), ==,
+                                inside ? 0xffffff : 0);
+            }
+        }
+    }
+}
+
+/* Directed diagonal ties are x-major, including slopes exactly +/- one. */
+static void test_wide_diagonal(void)
+{
+    FragScene f;
+
+    for (int width = 2; width <= 3; width++) {
+        for (int direction = -1; direction <= 1; direction += 2) {
+            frag_init(&f);
+            f.c.line_width = width;
+            frag_command(&f, SGI_GL_OP_BEGIN,
+                         (uint32_t[]) { SGI_GL_LINES }, 1);
+            wide_vertex(&f, 1.5, direction > 0 ? 1.5 : 5.5);
+            wide_vertex(&f, 5.5, direction > 0 ? 5.5 : 1.5);
+            frag_command(&f, SGI_GL_OP_END, NULL, 0);
+            for (int y = 0; y < H; y++) {
+                for (int x = 0; x < W; x++) {
+                    int base = direction > 0 ? x - (width == 3) : 5 - x;
+                    bool covered = x >= 1 && x <= 4 &&
+                                   y >= base && y < base + width;
+
+                    g_assert_cmphex(frag_pixel(&f, x, y), ==,
+                                    covered ? 0xffffff : 0);
+                }
+            }
+        }
+    }
+    /* Stencil increments expose double ownership at a connected endpoint. */
+    frag_init(&f);
+    f.c.line_width = 2;
+    enable(&f.c, SGI_GL_STENCIL_TEST, true);
+    frag_command(&f, SGI_GL_OP_STENCIL_OP,
+                 (uint32_t[]) { SGI_GL_KEEP, SGI_GL_KEEP, SGI_GL_INCR }, 3);
+    frag_command(&f, SGI_GL_OP_BEGIN,
+                 (uint32_t[]) { SGI_GL_LINE_STRIP }, 1);
+    wide_vertex(&f, 1.5, 3.5);
+    wide_vertex(&f, 3.5, 3.5);
+    wide_vertex(&f, 5.5, 3.5);
+    frag_command(&f, SGI_GL_OP_END, NULL, 0);
+    g_assert_cmpuint(frag_count(&f, 0xffffff), ==, 8);
+    for (int x = 1; x <= 4; x++) {
+        g_assert_cmpuint(f.p.stencil[planes_index(x, 2)], ==, 1);
+        g_assert_cmpuint(f.p.stencil[planes_index(x, 3)], ==, 1);
+    }
+}
+
+/* Integer endpoint perturbations own the neighboring column exactly once. */
+static void test_line_integer_endpoints(void)
+{
+    FragScene f;
+
+    frag_init(&f);
+    enable(&f.c, SGI_GL_STENCIL_TEST, true);
+    frag_command(&f, SGI_GL_OP_STENCIL_OP,
+                 (uint32_t[]) { SGI_GL_KEEP, SGI_GL_KEEP, SGI_GL_INCR }, 3);
+    frag_command(&f, SGI_GL_OP_BEGIN,
+                 (uint32_t[]) { SGI_GL_LINE_STRIP }, 1);
+    wide_vertex(&f, 1, 3.5);
+    wide_vertex(&f, 3, 3.5);
+    wide_vertex(&f, 5, 3.5);
+    frag_command(&f, SGI_GL_OP_END, NULL, 0);
+    g_assert_cmpuint(frag_count(&f, 0xffffff), ==, 4);
+    for (int x = 0; x <= 3; x++) {
+        g_assert_cmpuint(f.p.stencil[planes_index(x, 3)], ==, 1);
+    }
+}
+
+static FragScene wide_state_scene;
+
+static void wide_invalid_setters(void)
+{
+    FragScene *f = &wide_state_scene;
+
+    frag_command(f, SGI_GL_OP_BEGIN, (uint32_t[]) { SGI_GL_POINTS }, 1);
+    frag_command(f, SGI_GL_OP_POINT_SIZE, (uint32_t[]) { bits(2) }, 1);
+    frag_command(f, SGI_GL_OP_LINE_WIDTH, (uint32_t[]) { bits(2) }, 1);
+    wide_vertex(f, 4.25, 3.75);
+    frag_command(f, SGI_GL_OP_END, NULL, 0);
+}
+
+static void test_wide_state(void)
+{
+    FragScene *f = &wide_state_scene;
+    g_autofree char *log = NULL;
+
+    frag_init(f);
+    f->c.point_size = 5;
+    f->c.line_width = 3;
+    log = logged_by(wide_invalid_setters);
+    g_assert_nonnull(strstr(log, "invalid operation"));
+    g_assert_cmpfloat(get_float(&f->c, SGI_GL_POINT_SIZE, 0), ==, 5);
+    g_assert_cmpfloat(get_float(&f->c, SGI_GL_LINE_WIDTH, 0), ==, 3);
+    g_assert_cmpuint(frag_count(f, 0xffffff), ==, 25);
+    for (unsigned i = 0; i < 3; i++) {
+        float invalid[] = { NAN, INFINITY, -1 };
+
+        frag_command(f, SGI_GL_OP_POINT_SIZE,
+                     (uint32_t[]) { bits(invalid[i]) }, 1);
+        frag_command(f, SGI_GL_OP_LINE_WIDTH,
+                     (uint32_t[]) { bits(invalid[i]) }, 1);
+    }
+    g_assert_cmpfloat(get_float(&f->c, SGI_GL_POINT_SIZE, 0), ==, 5);
+    g_assert_cmpfloat(get_float(&f->c, SGI_GL_LINE_WIDTH, 0), ==, 3);
+}
+
+/* Direct submissions test the compatibility sentinel and arithmetic domain. */
+static void test_wide_dimensions(void)
+{
+    const float sizes[] = { 0, 2147483520.0f, 2147483648.0f,
+                            FLT_MAX, INFINITY, NAN, -1 };
+    FragScene f;
+    float v[2][SGI_GL_VERTEX_FLOATS] = { 0 };
+
+    for (unsigned mode = SGI_GL_POINTS; mode <= SGI_GL_LINES; mode++) {
+        for (unsigned i = 0; i < ARRAY_SIZE(sizes); i++) {
+            SGIGLDraw d = {
+                .mode = mode, .count = mode == SGI_GL_POINTS ? 1 : 2,
+                .vertices = &v[0][0], .state = &f.c.cur,
+                .point_size = sizes[i], .line_width = sizes[i],
+            };
+
+            frag_init(&f);
+            for (unsigned j = 0; j < 2; j++) {
+                v[j][SGI_GL_V_POSITION] = (j ? 5.5f : 1.5f) / 32 - 1;
+                v[j][SGI_GL_V_POSITION + 1] = 3.5f / 32 - 1;
+                v[j][SGI_GL_V_POSITION + 3] = 1;
+                v[j][SGI_GL_V_TEXCOORD + 3] = 1;
+                for (unsigned k = 0; k < 4; k++) {
+                    v[j][SGI_GL_V_COLOR + k] = 1;
+                }
+            }
+            sgi_soft_draw(&rules_stencil, &f.rec.target, &d);
+            g_assert_cmpuint(frag_count(&f, 0xffffff), ==,
+                            i == 0 ? (mode == SGI_GL_POINTS ? 1 : 4) :
+                            i == 1 ?
+                            (mode == SGI_GL_POINTS ? W * H : 4 * H) : 0);
+        }
+    }
+}
+
 /*
- * The rasterization state kept and answered but not drawn with (OpenGL
- * 1.2.1, 3.3 to 3.5): point size and line width 1, stipple repeat 1 and
+ * The rasterization state kept and answered (OpenGL 1.2.1, 3.3 to 3.5):
+ * point size and line width 1, stipple repeat 1 and
  * pattern 0xffff, both polygon modes GL_FILL and the smoothing and
  * stipple enables off at first. A size or width of 0 and a bad face or
  * mode change nothing; the repeat clamps to [1, 256]; drawing is as the
@@ -4882,6 +5082,101 @@ static void texture_vertex(FragScene *f, float x, float y, float w,
                  (uint32_t[]) { bits(x * w), bits(y * w), 0, bits(w) }, 4);
 }
 
+/* Replicas use their own centres and the original, unshifted endpoints. */
+static void test_wide_interpolation(void)
+{
+    TexturePixels pixels = { .pixel = {
+        0x000000ff, 0xffffffff, 0x000000ff, 0xffffffff } };
+    SGIGLTexImage image = texture_image(&pixels);
+    FragScene f;
+    float v[2][SGI_GL_VERTEX_FLOATS] = { 0 };
+    SGIGLDraw d = {
+        .mode = SGI_GL_LINES, .count = 2, .vertices = &v[0][0],
+        .state = &f.c.cur, .line_width = 2,
+    };
+
+    frag_init(&f);
+    f.c.cur.depth_test = true;
+    f.c.cur.depth_func = SGI_GL_ALWAYS;
+    for (unsigned j = 0; j < 2; j++) {
+        float w = j + 1;
+
+        v[j][SGI_GL_V_POSITION] = ((j ? 5.5f : 1.5f) / 32 - 1) * w;
+        v[j][SGI_GL_V_POSITION + 1] = ((j ? 3.5f : 1.5f) / 32 - 1) * w;
+        v[j][SGI_GL_V_POSITION + 2] = (j ? 1 : -1) * w;
+        v[j][SGI_GL_V_POSITION + 3] = w;
+        v[j][SGI_GL_V_TEXCOORD] = j;
+        v[j][SGI_GL_V_TEXCOORD + 1] = 0.25f * w;
+        v[j][SGI_GL_V_TEXCOORD + 3] = w;
+        for (unsigned k = 0; k < 3; k++) {
+            v[j][SGI_GL_V_COLOR + k] = j;
+        }
+        v[j][SGI_GL_V_COLOR + 3] = 1;
+    }
+    sgi_soft_draw(&rules_stencil, &f.rec.target, &d);
+    /* t=1/5 and 3/10; inverse-W colour is 1/9 and 3/17. */
+    g_assert_cmphex(frag_pixel(&f, 2, 1), ==, 0x1c1c1c);
+    g_assert_cmphex(frag_pixel(&f, 2, 2), ==, 0x2d2d2d);
+    g_assert_cmpuint(f.p.depth[planes_index(2, 1)], ==, 3355443);
+    g_assert_cmpuint(f.p.depth[planes_index(2, 2)], ==, 5033165);
+
+    memset(&f.p, 0, sizeof(f.p));
+    f.rec.target.texture = &image;
+    image.min_filter = image.mag_filter = SGI_GL_LINEAR;
+    enable(&f.c, SGI_GL_TEXTURE_2D, true);
+    texture_env(&f, SGI_GL_TEXTURE_ENV_MODE, SGI_GL_REPLACE, 0, 0, 0);
+    sgi_soft_draw(&rules_stencil, &f.rec.target, &d);
+    /* S=1/10 and 3/20 blend the repeated white/black boundary differently. */
+    g_assert_cmphex(frag_pixel(&f, 2, 1), ==, 0x4d4d4d);
+    g_assert_cmphex(frag_pixel(&f, 2, 2), ==, 0x333333);
+
+    memset(&f.p, 0, sizeof(f.p));
+    enable(&f.c, SGI_GL_TEXTURE_2D, false);
+    d.line_width = 3;
+    v[0][SGI_GL_V_POSITION + 2] = -0.5f;
+    v[1][SGI_GL_V_POSITION + 2] = 1;
+    sgi_soft_draw(&rules_stencil, &f.rec.target, &d);
+    /* Raw t=-1/10: the retained clamp extends the first endpoint's values. */
+    g_assert_cmpuint(f.p.depth[planes_index(1, 0)], ==, 4194304);
+    g_assert_cmphex(frag_pixel(&f, 1, 0), ==, 0);
+    f.c.cur.shade_model = SGI_GL_FLAT;
+    sgi_soft_draw(&rules_stencil, &f.rec.target, &d);
+    g_assert_cmphex(frag_pixel(&f, 2, 1), ==, 0xffffff);
+}
+
+/* The square's fragments individually observe ownership, scissor and depth. */
+static void test_wide_fragment_ops(void)
+{
+    FragScene f;
+
+    frag_init(&f);
+    f.c.point_size = 5;
+    f.c.cur.drawable.clip = (SGIClipList) {
+        .n = 2, .r = { { 2, 1, 3, 5 }, { 5, 1, 6, 5 } },
+    };
+    frag_scissor(&f, 2, 2, 5, 2);
+    enable(&f.c, SGI_GL_SCISSOR_TEST, true);
+    f.c.cur.colour_mask = SGI_GL_COLOUR_MASK_RED;
+    frag_command(&f, SGI_GL_OP_BEGIN, (uint32_t[]) { SGI_GL_POINTS }, 1);
+    wide_vertex(&f, 4.25, 3.75);
+    frag_command(&f, SGI_GL_OP_END, NULL, 0);
+    g_assert_cmpuint(frag_count(&f, 0xff0000), ==, 8);
+    g_assert_cmphex(frag_pixel(&f, 4, 3), ==, 0);
+    enable(&f.c, SGI_GL_DEPTH_TEST, true);
+    memset(&f.p, 0, sizeof(f.p));
+    frag_command(&f, SGI_GL_OP_BEGIN, (uint32_t[]) { SGI_GL_POINTS }, 1);
+    wide_vertex(&f, 4.25, 3.75);
+    frag_command(&f, SGI_GL_OP_END, NULL, 0);
+    g_assert_cmpuint(frag_count(&f, 0xff0000), ==, 0);
+
+    frag_init(&f);
+    f.c.point_size = 5;
+    frag_command(&f, SGI_GL_OP_BEGIN, (uint32_t[]) { SGI_GL_POINTS }, 1);
+    wide_vertex(&f, -0.25, 3.75);
+    frag_command(&f, SGI_GL_OP_END, NULL, 0);
+    g_assert_cmpuint(frag_count(&f, 0xffffff), ==, 0);
+}
+
 /* At (16.5,16.5), weights 1/2,1/4,1/4 produce S=2/13, not 1/4. */
 static void test_texture_projective(void)
 {
@@ -5342,6 +5637,14 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-gl/fog", test_fog);
     g_test_add_func("/sgi-gl/polygon-offset", test_polygon_offset);
     g_test_add_func("/sgi-gl/clip-planes", test_clip_planes);
+    g_test_add_func("/sgi-gl/wide-coverage", test_wide_coverage);
+    g_test_add_func("/sgi-gl/wide-diagonal", test_wide_diagonal);
+    g_test_add_func("/sgi-gl/wide-state", test_wide_state);
+    g_test_add_func("/sgi-gl/line-integer-endpoints",
+                    test_line_integer_endpoints);
+    g_test_add_func("/sgi-gl/wide-interpolation", test_wide_interpolation);
+    g_test_add_func("/sgi-gl/wide-fragment-ops", test_wide_fragment_ops);
+    g_test_add_func("/sgi-gl/wide-dimensions", test_wide_dimensions);
     g_test_add_func("/sgi-gl/raster-state-kept", test_raster_state_kept);
     g_test_add_func("/sgi-gl/volume-clip-triangle-near-and-far",
                     test_volume_clip_triangle_near_and_far);

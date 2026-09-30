@@ -14,7 +14,7 @@
  * alpha test, the stencil test, the depth test, blending, dithering and
  * the logical operation, and is stored under the write masks through the
  * family's target. What it draws follows OpenGL 1.2.1 for
- * points, lines, polygons and untextured bitmaps at size and width 1,
+ * aliased points and lines, polygons and untextured bitmaps,
  * flat or smooth shaded, in RGBA or colour-index mode, from vertex colours
  * the context has already lit, with a back-facing polygon's back colours under
  * two-sided lighting, and polygons culled by facing. Where OpenGL leaves a
@@ -56,6 +56,7 @@ typedef struct SGISoftDraw {
     bool dither;
     const SGIGLTexImage *texture;
     unsigned *texture_reports;
+    uint32_t point_size, line_width;
 } SGISoftDraw;
 
 /* A vertex after transformation, ready to rasterize. */
@@ -1518,56 +1519,86 @@ static void sgi_soft_triangle(const SGISoftDraw *r, const float *va,
     }
 }
 
-/*
- * Whether a width-1 segment from a to b produces the fragment at pixel
- * (px, py): the diamond-exit rule of OpenGL 1.2.1, 3.4.1. The diamond is
- * the open square |x - xc| + |y - yc| < 1/2 about the pixel's centre, and
- * the segment produces the fragment when it meets the diamond, unless b
- * lies in it. The distance from the centre along the segment is convex
- * and piecewise linear, so its least value lies at an end or where the
- * segment crosses the centre's row or column; the test is exact in the
- * subpixel grid the vertices were snapped to.
- *
- * This is SGI_LINE_COVERAGE_DOUBLE's test. The specification lets an
- * implementation depart from this rule within stated bounds, and it
- * perturbs endpoints on a diamond's edge in an unstated direction; the
- * rule is applied as written with no perturbation.
- */
-static bool sgi_soft_line_covers(const SGISoftVertex *a,
-                                 const SGISoftVertex *b, int px, int py,
-                                 int sub)
+/* Sign of v + e1 * epsilon + e2 * epsilon squared as epsilon -> 0+. */
+static int sgi_soft_limit_sign(int64_t v, int64_t e1, int64_t e2)
 {
-    const int64_t half = 1 << (sub - 1);
-    int64_t cx = ((int64_t)px << sub) + half;
-    int64_t cy = ((int64_t)py << sub) + half;
-    int64_t dx = b->x - a->x, dy = b->y - a->y;
-    int64_t ex = cx - a->x, ey = cy - a->y;
+    int64_t first = v ? v : e1 ? e1 : e2;
 
-    if (llabs(b->x - cx) + llabs(b->y - cy) < half) {
-        return false;
-    }
-    if (llabs(ex) + llabs(ey) < half) {
-        return true;
-    }
-    /* Crossing the centre's column at t = ex / dx, scaled by |dx|. */
-    if (dx && (dx > 0 ? ex >= 0 && ex <= dx : ex <= 0 && ex >= dx) &&
-        llabs(dy * ex - ey * dx) < half * llabs(dx)) {
-        return true;
-    }
-    /* Crossing the centre's row at t = ey / dy, scaled by |dy|. */
-    return dy && (dy > 0 ? ey >= 0 && ey <= dy : ey <= 0 && ey >= dy) &&
-           llabs(dx * ey - ex * dy) < half * llabs(dy);
+    return (first > 0) - (first < 0);
+}
+
+/* Whether |v + e1*epsilon + e2*epsilon squared| is strictly below bound. */
+static bool sgi_soft_limit_abs(int64_t v, int64_t e1, int64_t e2,
+                               int64_t bound)
+{
+    int sign = sgi_soft_limit_sign(v, e1, e2);
+
+    return sgi_soft_limit_sign(sign * v - bound,
+                               sign * e1, sign * e2) < 0;
+}
+
+/* The endpoint minus (epsilon, epsilon squared) lies in the open diamond. */
+static bool sgi_soft_diamond_contains(int64_t x, int64_t y, int64_t half)
+{
+    int sx = sgi_soft_limit_sign(x, -1, 0);
+    int sy = sgi_soft_limit_sign(y, 0, -1);
+
+    return sgi_soft_limit_sign(sx * x + sy * y - half, -sx, -sy) < 0;
 }
 
 /*
- * Transform, clip, map and rasterize one width-1 segment (OpenGL 1.2.1,
+ * OpenGL 1.2.1, 3.4.1 subtracts (epsilon, epsilon squared) from both
+ * endpoints. Lexicographic coefficients implement that limiting perturbation
+ * on the snapped grid, including even-width shifts on diamond boundaries.
+ * A segment produces a fragment if it enters the open diamond and its final
+ * endpoint is outside. The minimum L1 distance occurs at an endpoint or a
+ * centre-row/column crossing.
+ *
+ * Projected coordinates have magnitude at most 2^28 (65536 pixels, at most
+ * 12 subpixel bits). The scanner tests base pixels within two pixels of the
+ * shifted segment's minor span. Subtracting the identical width shift leaves
+ * relative coordinates below 2^30, even for INT32_MAX width. Segment deltas
+ * are at most 2^29, so the difference of two products fits signed 64 bits.
+ */
+static bool sgi_soft_line_covers(const SGISoftVertex *a,
+                                 const SGISoftVertex *b, int64_t px,
+                                 int64_t py, int sub)
+{
+    const int64_t half = 1 << (sub - 1);
+    int64_t cx = px * (1 << sub) + half;
+    int64_t cy = py * (1 << sub) + half;
+    int64_t dx = b->x - a->x, dy = b->y - a->y;
+    int64_t ex = cx - a->x, ey = cy - a->y;
+
+    if (sgi_soft_diamond_contains(b->x - cx, b->y - cy, half)) {
+        return false;
+    }
+    if (sgi_soft_diamond_contains(-ex, -ey, half)) {
+        return true;
+    }
+    /* The perturbed column crossing has parameter (ex + epsilon) / dx. */
+    if (dx && sgi_soft_limit_sign(ex, 1, 0) * (dx > 0 ? 1 : -1) >= 0 &&
+        sgi_soft_limit_sign(dx - ex, -1, 0) * (dx > 0 ? 1 : -1) >= 0 &&
+        sgi_soft_limit_abs(dy * ex - ey * dx, dy, -dx,
+                           half * llabs(dx))) {
+        return true;
+    }
+    return dy &&
+           sgi_soft_limit_sign(ey, 0, 1) * (dy > 0 ? 1 : -1) >= 0 &&
+           sgi_soft_limit_sign(dy - ey, 0, -1) * (dy > 0 ? 1 : -1) >= 0 &&
+           sgi_soft_limit_abs(dx * ey - ex * dy, -dy, dx,
+                              half * llabs(dy));
+}
+
+/*
+ * Transform, clip, map and rasterize one aliased segment (OpenGL 1.2.1,
  * 3.4.1) with the provoking vertex's colour when flat shaded. The segment
  * is clipped to the view volume in clip coordinates (2.11), approximated
  * as a triangle is. A fragment's depth and smooth colour come from t, the
  * centre's projection onto the clipped segment (equations 3.5 to 3.7),
  * the colour corrected for perspective. The fragments are also bounded by
- * the viewport, when there is one. glLineWidth, glLineStipple and line
- * antialiasing are not modelled.
+ * the viewport, when there is one. Width follows the minor-axis shift and
+ * replication of 3.4.3; stipple and antialiasing are not modelled.
  */
 static void sgi_soft_line(const SGISoftDraw *r, const float *va,
                           const float *vb, const float *provoking)
@@ -1577,7 +1608,7 @@ static void sgi_soft_line(const SGISoftDraw *r, const float *va,
     const int sub = r->rules->subpixel_bits;
     bool x_major;
     SGIVolumeVertex ca, cb;
-    SGISoftVertex a, b;
+    SGISoftVertex a, b, shifted_a, shifted_b;
     double flat[4], len2;
     int major0, major1, bx0, by0, bx1, by1;
 
@@ -1597,6 +1628,16 @@ static void sgi_soft_line(const SGISoftDraw *r, const float *va,
     len2 = (double)(b.x - a.x) * (b.x - a.x) +
            (double)(b.y - a.y) * (b.y - a.y);
     x_major = llabs(b.x - a.x) >= llabs(b.y - a.y);
+    shifted_a = a;
+    shifted_b = b;
+    /* Width <= INT32_MAX and sub <= 12 give a shift below 2^42. */
+    if (x_major) {
+        shifted_a.y -= (int64_t)(r->line_width - 1) * (1 << (sub - 1));
+        shifted_b.y -= (int64_t)(r->line_width - 1) * (1 << (sub - 1));
+    } else {
+        shifted_a.x -= (int64_t)(r->line_width - 1) * (1 << (sub - 1));
+        shifted_b.x -= (int64_t)(r->line_width - 1) * (1 << (sub - 1));
+    }
 
     /*
      * Walk the major axis a pixel at a time, and in each step try the
@@ -1606,16 +1647,19 @@ static void sgi_soft_line(const SGISoftDraw *r, const float *va,
              sub;
     major1 = (x_major ? MAX(a.x, b.x) : MAX(a.y, b.y)) >>
              sub;
-    for (int m = major0 - 1; m <= major1 + 1; m++) {
-        const SGISoftVertex *lo = x_major ? (a.x <= b.x ? &a : &b) :
-                                            (a.y <= b.y ? &a : &b);
-        const SGISoftVertex *hi = lo == &a ? &b : &a;
+    major0 = MAX(major0 - 1, x_major ? bx0 : by0);
+    major1 = MIN(major1 + 1, x_major ? bx1 : by1);
+    for (int m = major0; m <= major1; m++) {
+        const SGISoftVertex *lo = x_major ?
+            (a.x <= b.x ? &shifted_a : &shifted_b) :
+            (a.y <= b.y ? &shifted_a : &shifted_b);
+        const SGISoftVertex *hi = lo == &shifted_a ? &shifted_b : &shifted_a;
         double l0 = x_major ? lo->x : lo->y, l1 = x_major ? hi->x : hi->y;
         double n0 = x_major ? lo->y : lo->x, n1 = x_major ? hi->y : hi->x;
         double e0 = MAX((double)m * (1 << sub), l0);
         double e1 = MIN((double)(m + 1) * (1 << sub), l1);
         double f0, f1;
-        int minor0, minor1;
+        int64_t minor0, minor1;
 
         if (l1 > l0) {
             e0 = MIN(e0, l1);
@@ -1626,57 +1670,68 @@ static void sgi_soft_line(const SGISoftDraw *r, const float *va,
             f0 = n0;
             f1 = n1;
         }
-        minor0 = (int)floor(MIN(f0, f1) / (1 << sub)) - 1;
-        minor1 = (int)floor(MAX(f0, f1) / (1 << sub)) + 1;
-        for (int n = minor0; n <= minor1; n++) {
-            int px = x_major ? m : n, py = x_major ? n : m;
-            double cx = (px + 0.5) * (1 << sub);
-            double cy = (py + 0.5) * (1 << sub);
-            double t, wa, wb;
-            SGISoftFrag frag;
+        minor0 = (int64_t)floor(MIN(f0, f1) / (1 << sub)) - 1;
+        minor1 = (int64_t)floor(MAX(f0, f1) / (1 << sub)) + 1;
+        for (int64_t n = minor0; n <= minor1; n++) {
+            int64_t base_x = x_major ? m : n, base_y = x_major ? n : m;
+            int64_t replica0 = MAX(n, x_major ? by0 : bx0);
+            int64_t replica1 = MIN(n + r->line_width - 1,
+                                   x_major ? by1 : bx1);
 
-            if (px < bx0 || px > bx1 || py < by0 || py > by1 ||
-                !sgi_soft_line_covers(&a, &b, px, py, sub)) {
+            if (replica0 > replica1 ||
+                !sgi_soft_line_covers(&shifted_a, &shifted_b,
+                                      base_x, base_y, sub)) {
                 continue;
             }
-            t = ((cx - a.x) * (b.x - a.x) + (cy - a.y) * (b.y - a.y)) / len2;
-            t = MIN(MAX(t, 0.0), 1.0);
-            wa = (1 - t) * a.inv_w;
-            wb = t * b.inv_w;
-            frag.index = smooth ? a.index + wb * (b.index - a.index) /
-                                  (wa + wb) :
-                         provoking[SGI_GL_V_INDEX];
-            for (int k = 0; k < 4; k++) {
-                frag.texcoord[k] = (wa * a.texcoord[k] +
-                                    wb * b.texcoord[k]) / (wa + wb);
-            }
-            frag.fog = (wa * a.fog + wb * b.fog) / (wa + wb);
-            if (st->clip_planes) {
-                double d[SGI_GL_CLIP_PLANES];
+            /* Visit only drawable-visible replicas, never width entries. */
+            for (int64_t replica = replica0; replica <= replica1; replica++) {
+                int px = x_major ? m : replica, py = x_major ? replica : m;
+                double cx = (px + 0.5) * (1 << sub);
+                double cy = (py + 0.5) * (1 << sub);
+                double t, wa, wb;
+                SGISoftFrag frag;
 
-                for (int i = 0; i < SGI_GL_CLIP_PLANES; i++) {
-                    d[i] = (wa * a.clip[i] + wb * b.clip[i]) / (wa + wb);
+                t = ((cx - a.x) * (b.x - a.x) +
+                     (cy - a.y) * (b.y - a.y)) / len2;
+                /* Approximation: retain endpoint values, not extrapolation. */
+                t = MIN(MAX(t, 0.0), 1.0);
+                wa = (1 - t) * a.inv_w;
+                wb = t * b.inv_w;
+                frag.index = smooth ? a.index + wb * (b.index - a.index) /
+                                      (wa + wb) :
+                             provoking[SGI_GL_V_INDEX];
+                for (int k = 0; k < 4; k++) {
+                    frag.texcoord[k] = (wa * a.texcoord[k] +
+                                        wb * b.texcoord[k]) / (wa + wb);
                 }
-                if (sgi_soft_clipped(st, d)) {
-                    continue;
+                frag.fog = (wa * a.fog + wb * b.fog) / (wa + wb);
+                if (st->clip_planes) {
+                    double d[SGI_GL_CLIP_PLANES];
+
+                    for (int i = 0; i < SGI_GL_CLIP_PLANES; i++) {
+                        d[i] = (wa * a.clip[i] + wb * b.clip[i]) / (wa + wb);
+                    }
+                    if (sgi_soft_clipped(st, d)) {
+                        continue;
+                    }
                 }
+                for (int k = 0; k < 4; k++) {
+                    frag.rgba[k] = smooth ?
+                    (wa * a.rgba[k] + wb * b.rgba[k]) / (wa + wb) :
+                                   flat[k];
+                }
+                sgi_soft_fragment(r, px, py, a.z + t * (b.z - a.z), 0, &frag);
             }
-            for (int k = 0; k < 4; k++) {
-                frag.rgba[k] = smooth ?
-                               (wa * a.rgba[k] + wb * b.rgba[k]) / (wa + wb) :
-                               flat[k];
-            }
-            sgi_soft_fragment(r, px, py, a.z + t * (b.z - a.z), 0, &frag);
         }
     }
 }
 
 /*
- * A size-1 point covers the pixel holding its window position (OpenGL
- * 1.2.1, 3.3), at the subpixel grid the vertex was snapped to. A point
+ * Aliased square-point centring follows OpenGL 1.2.1, 3.3, on the shared
+ * snapped subpixel grid rather than ideal unsnapped coordinates. A point
  * outside the view volume is dropped (2.11), and so is one outside the
  * viewport, when there is one, which only a point on the volume's edge
- * can be. glPointSize and point antialiasing are not modelled.
+ * can be. Point antialiasing is not modelled.
  */
 static void sgi_soft_point(const SGISoftDraw *r, const float *vp)
 {
@@ -1685,25 +1740,49 @@ static void sgi_soft_point(const SGISoftDraw *r, const float *vp)
     SGIVolumeVertex cv;
     SGISoftVertex v;
     SGISoftFrag frag;
-    int px, py, bx0, by0, bx1, by1;
+    int bx0, by0, bx1, by1;
+    int64_t px, py, x0, y0, x1, y1;
 
     sgi_soft_to_volume(r, vp, &cv);
     if (!sgi_volume_contains(&cv) || !sgi_soft_project(r, &cv, &v) ||
         sgi_soft_clipped(st, v.clip)) {
         return;
     }
-    px = v.x >> sub;
-    py = v.y >> sub;
-    if (!sgi_soft_bounds(r, &bx0, &by0, &bx1, &by1) ||
-        px < bx0 || px > bx1 || py < by0 || py > by1) {
+    if (!sgi_soft_bounds(r, &bx0, &by0, &bx1, &by1)) {
         return;
     }
+    /* Even dimensions centre on a pixel corner; odd ones on a centre. */
+    px = (v.x + (r->point_size % 2 ? 0 : 1 << (sub - 1))) >> sub;
+    py = (v.y + (r->point_size % 2 ? 0 : 1 << (sub - 1))) >> sub;
+    x0 = MAX(px - r->point_size / 2, bx0);
+    y0 = MAX(py - r->point_size / 2, by0);
+    x1 = MIN(px - r->point_size / 2 + r->point_size - 1, bx1);
+    y1 = MIN(py - r->point_size / 2 + r->point_size - 1, by1);
     memcpy(frag.rgba, v.rgba, sizeof(frag.rgba));
     frag.index = v.index;
     frag.fog = v.fog;
     memcpy(frag.texcoord, v.texcoord, sizeof(frag.texcoord));
-    sgi_soft_fragment(r, px, py, v.z, 0, &frag);
+    for (int64_t y = y0; y <= y1; y++) {
+        for (int64_t x = x0; x <= x1; x++) {
+            sgi_soft_fragment(r, x, y, v.z, 0, &frag);
+        }
+    }
 }
+
+/* Internal representation bound, not an SGI width range. Half ties round up. */
+static bool sgi_soft_dimension(float requested, uint32_t *rounded)
+{
+    double n = requested == 0 ? 1 : floor((double)requested + 0.5);
+
+    if (!isfinite(requested) || requested < 0 || n > INT32_MAX) {
+        qemu_log_mask(LOG_UNIMP,
+                      "sgi-gl: unsupported aliased dimension %g\n", requested);
+        return false;
+    }
+    *rounded = MAX(n, 1);
+    return true;
+}
+
 
 /*
  * The pieces of a primitive (OpenGL 1.2.1, 2.6.1), each with its flat
@@ -1722,6 +1801,7 @@ static void sgi_soft_point(const SGISoftDraw *r, const float *vp)
  * polygon is split into a fan from its first vertex. The discriminating
  * test is gl-quad-splits-from-its-first-vertex.
  */
+
 void sgi_soft_draw(const SGIRasterRules *rules, const SGIRasterTarget *t,
                    const SGIGLDraw *d)
 {
@@ -1746,17 +1826,26 @@ void sgi_soft_draw(const SGIRasterRules *rules, const SGIRasterTarget *t,
     sgi_soft_setup_ops(&r);
     switch (d->mode) {
     case SGI_GL_POINTS:
+        if (!sgi_soft_dimension(d->point_size, &r.point_size)) {
+            return;
+        }
         for (uint32_t i = 0; i < n; i++) {
             sgi_soft_point(&r, V(i));
         }
         return;
     case SGI_GL_LINES:
+        if (!sgi_soft_dimension(d->line_width, &r.line_width)) {
+            return;
+        }
         for (uint32_t i = 0; i + 1 < n; i += 2) {
             sgi_soft_line(&r, V(i), V(i + 1), V(i + 1));
         }
         return;
     case SGI_GL_LINE_STRIP:
     case SGI_GL_LINE_LOOP:
+        if (!sgi_soft_dimension(d->line_width, &r.line_width)) {
+            return;
+        }
         for (uint32_t i = 0; i + 1 < n; i++) {
             sgi_soft_line(&r, V(i), V(i + 1), V(i + 1));
         }

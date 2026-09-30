@@ -818,6 +818,9 @@ typedef struct SGIGLDraw {
      */
     bool back_colors;
     const SGIGLDrawState *state;
+    /* Borrowed dimensions; zero in direct submissions means one. */
+    float point_size;
+    float line_width;
 } SGIGLDraw;
 
 /*

@@ -855,6 +855,8 @@ static void sgi_gl_submit(SGIGLContext *c, const SGIGLSink *sink,
         .vertices = &verts[0][0],
         .back_colors = sgi_gl_lit(c) && c->light_model_two_side,
         .state = &c->cur,
+        .point_size = c->point_size,
+        .line_width = c->line_width,
     };
 
     for (uint32_t i = 0; i < count; i++) {
@@ -1579,18 +1581,19 @@ static void sgi_gl_raster_state(SGIGLContext *c, uint16_t op,
     switch (op) {
     case SGI_GL_OP_POINT_SIZE:
     case SGI_GL_OP_LINE_WIDTH:
-        if (!(f > 0.0f)) {
+        if (c->in_begin) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "sgi-gl: size setter inside glBegin: "
+                          "invalid operation\n");
+            return;
+        }
+        if (!isfinite(f) || !(f > 0.0f)) {
             qemu_log_mask(LOG_GUEST_ERROR, "sgi-gl: %s(%g) ignored\n",
                           op == SGI_GL_OP_POINT_SIZE ? "glPointSize" :
                           "glLineWidth", f);
             return;
         }
         *(op == SGI_GL_OP_POINT_SIZE ? &c->point_size : &c->line_width) = f;
-        if (f != 1.0f) {
-            qemu_log_mask(LOG_UNIMP, "sgi-gl: %s(%g) is kept; drawn at 1\n",
-                          op == SGI_GL_OP_POINT_SIZE ? "glPointSize" :
-                          "glLineWidth", f);
-        }
         return;
     case SGI_GL_OP_LINE_STIPPLE:
         repeat = a[0];
@@ -2739,7 +2742,8 @@ bool sgi_gl_context_valid(const SGIGLContext *c, Error **errp)
                    c->color_material_mode);
         return false;
     }
-    if (!(c->point_size > 0.0f) || !(c->line_width > 0.0f)) {
+    if (!isfinite(c->point_size) || !isfinite(c->line_width) ||
+        !(c->point_size > 0.0f) || !(c->line_width > 0.0f)) {
         error_setg(errp, "sgi-gl: point size %g or line width %g",
                    c->point_size, c->line_width);
         return false;
