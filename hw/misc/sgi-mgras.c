@@ -2117,11 +2117,55 @@ static void mgras_test_get_polygon_vertices(Object *obj, Visitor *v,
     visit_type_uint64(v, name, &value, errp);
 }
 
+static void mgras_test_get_line_phase(Object *obj, Visitor *v,
+                                     const char *name, void *opaque,
+                                     Error **errp)
+{
+    SGIMgrasState *s = SGI_MGRAS(obj);
+    uint32_t value = s->gl[s->gl_current].line_phase;
+
+    visit_type_uint32(v, name, &value, errp);
+}
+
+static void mgras_test_get_depth_stencil(Object *obj, Visitor *v,
+                                        const char *name, void *opaque,
+                                        Error **errp)
+{
+    SGIMgrasState *s = SGI_MGRAS(obj);
+    uint32_t value = 0;
+
+    if (DEVICE(obj)->realized && s->test_pixel_x < s->width &&
+        s->test_pixel_y < s->height) {
+        value = s->depth[s->test_pixel_y * s->width + s->test_pixel_x];
+    }
+    visit_type_uint32(v, name, &value, errp);
+}
+
+static void mgras_test_get_back_pixel(Object *obj, Visitor *v,
+                                     const char *name, void *opaque,
+                                     Error **errp)
+{
+    SGIMgrasState *s = SGI_MGRAS(obj);
+    uint32_t value = 0;
+
+    if (DEVICE(obj)->realized && s->test_pixel_x < s->width &&
+        s->test_pixel_y < s->height) {
+        value = s->back[s->test_pixel_y * s->width + s->test_pixel_x];
+    }
+    visit_type_uint32(v, name, &value, errp);
+}
+
 static void mgras_instance_init(Object *obj)
 {
     SGIMgrasState *s = SGI_MGRAS(obj);
 
     sgi_mgras_gl_init(s);
+    object_property_add(obj, "x-test-line-phase", "uint32",
+                        mgras_test_get_line_phase, NULL, NULL, NULL);
+    object_property_add(obj, "x-test-depth-stencil", "uint32",
+                        mgras_test_get_depth_stencil, NULL, NULL, NULL);
+    object_property_add(obj, "x-test-back-pixel", "uint32",
+                        mgras_test_get_back_pixel, NULL, NULL, NULL);
     object_property_add(obj, "x-test-polygon-contexts", "uint32",
                         mgras_test_get_polygon_contexts, NULL, NULL, NULL);
     object_property_add(obj, "x-test-polygon-vertices", "uint64",

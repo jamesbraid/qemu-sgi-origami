@@ -572,7 +572,6 @@ struct SGIMgrasState {
     bool gl_restore_in_progress;
     bool gl_cleanup_registered;
     bool gl_oom_logged;
-    bool gl_stipple_logged;
     /* GE-port traffic logged since the last switch; not migrated. */
     bool gl_ge_port_logged;
     /* The bank holding the back buffer, from 0x9808 or context words 16-17. */
