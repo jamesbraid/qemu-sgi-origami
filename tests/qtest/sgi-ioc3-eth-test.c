@@ -9,6 +9,7 @@
 
 #include "qemu/osdep.h"
 #include "libqtest.h"
+#include "sgi-migrate.h"
 #include "libqos/pci.h"
 #include "libqos/pci-sgi-bridge.h"
 #include "hw/pci/pci_regs.h"
@@ -34,6 +35,8 @@
 #define ENET_RX_CONSUME   0x10c
 #define ENET_RX_PRODUCE   0x110
 #define ENET_RX_TIMER     0x114
+#define ENET_COUNTERS     0x120
+#define ENET_BUFFER_INDEX 0x124
 #define ENET_TX_RING_HI   0x128
 #define ENET_TX_RING_LO   0x12c
 #define ENET_TX_CONSUME   0x130
@@ -211,6 +214,19 @@ static void ioc3_quit(QTestState *qts)
     qtest_quit(qts);
 }
 
+static void ioc3_attach(QTestState *qts)
+{
+    ioc3_bus = qpci_init_sgi_bridge(qts, NULL);
+    ioc3_dev = qpci_device_find(ioc3_bus, QPCI_DEVFN(IOC3_PCI_SLOT, 0));
+    g_assert_nonnull(ioc3_dev);
+    g_assert_cmphex(qpci_config_readl(ioc3_dev, PCI_VENDOR_ID), ==,
+                    0x000310a9u);
+
+    ioc3_window = qpci_iomap(ioc3_dev, 0, NULL);
+    qpci_device_enable(ioc3_dev);
+
+}
+
 /*
  * Driver-shaped bring-up shared by both attachments. Promiscuous, unlike a
  * real driver: the DMA-mechanics frames would otherwise be filtered for a
@@ -221,14 +237,7 @@ static void ioc3_bring_up(QTestState *qts, uint32_t ring, uint32_t rxbuf,
 {
     unsigned int i;
 
-    ioc3_bus = qpci_init_sgi_bridge(qts, NULL);
-    ioc3_dev = qpci_device_find(ioc3_bus, QPCI_DEVFN(IOC3_PCI_SLOT, 0));
-    g_assert_nonnull(ioc3_dev);
-    g_assert_cmphex(qpci_config_readl(ioc3_dev, PCI_VENDOR_ID), ==,
-                    0x000310a9u);
-
-    ioc3_window = qpci_iomap(ioc3_dev, 0, NULL);
-    qpci_device_enable(ioc3_dev);
+    ioc3_attach(qts);
 
     /* The one reset value that is not the same forwards and backwards. */
     g_assert_cmphex(ioc3_readl(qts, ENET_MII_DATA_R), ==, 0xffff);
@@ -2168,11 +2177,282 @@ static void test_dp83843_reset_clears_lbr_and_reopens_the_backend(
     close(sv[0]);
 }
 
+/* These storage tests do not start either MAC or DMA direction. */
+static QTestState *ioc3_storage_start(const char *extra)
+{
+    QTestState *qts = qtest_initf(
+        "-M none " QPCI_SGI_BRIDGE_HEAD "-display none "
+        "-netdev user,id=n0 "
+        "-device sgi-ioc3,id=ioc3,bus=pci,addr=%02x.0,netdev=n0 %s",
+        IOC3_PCI_SLOT, extra);
+
+    ioc3_attach(qts);
+    return qts;
+}
+
+static void test_stopped_counter_storage(const void *data)
+{
+    static const uint32_t words[] = {
+        0x13579bdf, 0xa6e2194b, 0x80000001, 0, 0xffffffff,
+    };
+    QTestState *qts = ioc3_storage_start("");
+    unsigned int i;
+
+    ioc3_writel(qts, ENET_BUFFER_INDEX, 0xabcddf15);
+    for (i = 0; i < ARRAY_SIZE(words); i++) {
+        ioc3_writel(qts, ENET_COUNTERS, words[i]);
+        ioc3_readl(qts, ENET_BUFFER_INDEX);
+        g_assert_cmphex(ioc3_readl(qts, ENET_COUNTERS), ==, words[i]);
+        g_assert_cmphex(ioc3_readl(qts, ENET_COUNTERS), ==, 0);
+        g_assert_cmphex(ioc3_readl(qts, ENET_BUFFER_INDEX), ==, 0xabcddf15);
+    }
+    ioc3_quit(qts);
+}
+
+static void test_stopped_buffer_fields(const void *data)
+{
+    static const struct {
+        uint32_t write;
+        uint32_t read;
+    } words[] = {
+        { 0xffffffff, 0xffffdf1f },
+        { 0x000020e0, 0 },
+        { 0x00000015, 0x00000015 },
+        { 0x00001200, 0x00001200 },
+        { 0x00554000, 0x00554000 },
+        { 0xab800000, 0xab800000 },
+        { 0xa6e2194b, 0xa6e2190b },
+        { 0, 0 },
+    };
+    QTestState *qts = ioc3_storage_start("");
+    unsigned int i;
+
+    for (i = 0; i < ARRAY_SIZE(words); i++) {
+        ioc3_writel(qts, ENET_BUFFER_INDEX, words[i].write);
+        ioc3_writel(qts, ENET_COUNTERS, 0x17a35c9e);
+        g_assert_cmphex(ioc3_readl(qts, ENET_BUFFER_INDEX), ==, words[i].read);
+        g_assert_cmphex(ioc3_readl(qts, ENET_BUFFER_INDEX), ==, words[i].read);
+        g_assert_cmphex(ioc3_readl(qts, ENET_COUNTERS), ==, 0x17a35c9e);
+        g_assert_cmphex(ioc3_readl(qts, ENET_BUFFER_INDEX), ==, words[i].read);
+    }
+    ioc3_quit(qts);
+}
+
+static void test_stopped_storage_controls(const void *data)
+{
+    static const uint32_t enabled[] = {
+        MCR_TX_DMA_EN, MCR_TX_EN, MCR_RX_DMA_EN, MCR_RX_EN,
+        MCR_TX_DMA_EN | MCR_TX_EN | MCR_RX_DMA_EN | MCR_RX_EN,
+    };
+    QTestState *qts = ioc3_storage_start("");
+    unsigned int i;
+
+    for (i = 0; i < ARRAY_SIZE(enabled); i++) {
+        /* Each ignored write starts with populated, unread storage. */
+        ioc3_writel(qts, ENET_MAC_CONTROL, 0);
+        ioc3_writel(qts, ENET_COUNTERS, 0x6d9217ab);
+        ioc3_writel(qts, ENET_BUFFER_INDEX, 0xa653c917);
+        ioc3_writel(qts, ENET_MAC_CONTROL, enabled[i]);
+        ioc3_writel(qts, ENET_COUNTERS, 0xffffffff);
+        ioc3_writel(qts, ENET_BUFFER_INDEX, 0xffffffff);
+        g_assert_cmphex(ioc3_readl(qts, ENET_BUFFER_INDEX), ==, 0xa653c917);
+        g_assert_cmphex(ioc3_readl(qts, ENET_COUNTERS), ==, 0x6d9217ab);
+        g_assert_cmphex(ioc3_readl(qts, ENET_COUNTERS), ==, 0);
+    }
+
+    /* Every other control bit, separately and together, permits storage. */
+    for (i = 0; i < 32; i++) {
+        if ((1u << i) & 0x8001e000u) {
+            continue;
+        }
+        ioc3_writel(qts, ENET_MAC_CONTROL, 1u << i);
+        ioc3_writel(qts, ENET_COUNTERS, 0x19a73d52);
+        ioc3_writel(qts, ENET_BUFFER_INDEX, 0xabcddf15);
+        g_assert_cmphex(ioc3_readl(qts, ENET_COUNTERS), ==, 0x19a73d52);
+        g_assert_cmphex(ioc3_readl(qts, ENET_BUFFER_INDEX), ==, 0xabcddf15);
+    }
+    ioc3_writel(qts, ENET_MAC_CONTROL, 0x7ffe1fff);
+    ioc3_writel(qts, ENET_COUNTERS, 0xb62d8139);
+    ioc3_writel(qts, ENET_BUFFER_INDEX, 0xa653c917);
+    g_assert_cmphex(ioc3_readl(qts, ENET_COUNTERS), ==, 0xb62d8139);
+    g_assert_cmphex(ioc3_readl(qts, ENET_BUFFER_INDEX), ==, 0xa653c917);
+    ioc3_quit(qts);
+}
+
+static void test_stopped_storage_invalid_accesses(const void *data)
+{
+    static const struct {
+        unsigned int size;
+        unsigned int offset;
+    } accesses[] = {
+        { 1, 0 }, { 1, 1 }, { 1, 2 }, { 1, 3 },
+        { 2, 0 }, { 2, 2 }, { 4, 1 }, { 4, 2 }, { 4, 3 },
+    };
+    static const uint32_t registers[] = { ENET_COUNTERS, ENET_BUFFER_INDEX };
+    QTestState *qts = ioc3_storage_start("");
+    unsigned int i, j;
+
+    for (i = 0; i < ARRAY_SIZE(accesses); i++) {
+        for (j = 0; j < ARRAY_SIZE(registers); j++) {
+            uint32_t off = registers[j] + accesses[i].offset;
+
+            ioc3_writel(qts, ENET_COUNTERS, 0x17a35c9e);
+            ioc3_writel(qts, ENET_BUFFER_INDEX, 0xa653c917);
+            switch (accesses[i].size) {
+            case 1:
+                qpci_io_writeb(ioc3_dev, ioc3_window, off, 0xff);
+                qpci_io_readb(ioc3_dev, ioc3_window, off);
+                break;
+            case 2:
+                qpci_io_writew(ioc3_dev, ioc3_window, off, 0xffff);
+                qpci_io_readw(ioc3_dev, ioc3_window, off);
+                break;
+            case 4:
+                ioc3_writel(qts, off, 0xffffffff);
+                ioc3_readl(qts, off);
+                break;
+            default:
+                g_assert_not_reached();
+            }
+            g_assert_cmphex(ioc3_readl(qts, ENET_BUFFER_INDEX), ==, 0xa653c917);
+            g_assert_cmphex(ioc3_readl(qts, ENET_COUNTERS), ==, 0x17a35c9e);
+            g_assert_cmphex(ioc3_readl(qts, ENET_COUNTERS), ==, 0);
+        }
+    }
+    ioc3_quit(qts);
+}
+
+static void test_stopped_storage_reset(const void *data)
+{
+    QTestState *qts = ioc3_storage_start("");
+
+    ioc3_writel(qts, ENET_COUNTERS, 0x17a35c9e);
+    ioc3_writel(qts, ENET_BUFFER_INDEX, 0xa653c917);
+    ioc3_writel(qts, ENET_MAC_CONTROL, MCR_RESET);
+    g_assert_cmphex(ioc3_readl(qts, ENET_COUNTERS), ==, 0);
+    g_assert_cmphex(ioc3_readl(qts, ENET_BUFFER_INDEX), ==, 0);
+
+    /* Holding reset must refuse reload after the reset cleared storage. */
+    ioc3_writel(qts, ENET_COUNTERS, 0x89abcdef);
+    ioc3_writel(qts, ENET_BUFFER_INDEX, 0xffffffff);
+    ioc3_writel(qts, ENET_MAC_CONTROL, 0);
+    g_assert_cmphex(ioc3_readl(qts, ENET_COUNTERS), ==, 0);
+    g_assert_cmphex(ioc3_readl(qts, ENET_BUFFER_INDEX), ==, 0);
+
+    ioc3_writel(qts, ENET_COUNTERS, 0x6d9217ab);
+    ioc3_writel(qts, ENET_BUFFER_INDEX, 0xabcddf15);
+    qtest_system_reset(qts);
+    /* Restore PCI decoding after reset before checking the device state. */
+    qpci_config_writel(ioc3_dev, PCI_BASE_ADDRESS_0, ioc3_window.addr);
+    qpci_device_enable(ioc3_dev);
+    g_assert_cmphex(ioc3_readl(qts, ENET_COUNTERS), ==, 0);
+    g_assert_cmphex(ioc3_readl(qts, ENET_BUFFER_INDEX), ==, 0);
+    ioc3_writel(qts, ENET_COUNTERS, 0xb62d8139);
+    ioc3_writel(qts, ENET_BUFFER_INDEX, 0xa653c917);
+    g_assert_cmphex(ioc3_readl(qts, ENET_COUNTERS), ==, 0xb62d8139);
+    g_assert_cmphex(ioc3_readl(qts, ENET_BUFFER_INDEX), ==, 0xa653c917);
+    ioc3_quit(qts);
+}
+
+static void test_stopped_storage_leaves_dma_and_irq(const void *data)
+{
+    static const struct {
+        uint32_t off;
+        uint32_t value;
+    } registers[] = {
+        { ENET_RX_RING_HI, 0x12345678 },
+        { ENET_RX_RING_LO, RAM_SCRATCH + 0x8000 },
+        { ENET_TX_RING_HI, 0x9abcdef0 },
+        { ENET_TX_RING_LO, RAM_SCRATCH },
+        { ENET_RX_CONSUME, 0x38 }, { ENET_RX_PRODUCE, 0x80 },
+        { ENET_TX_PRODUCE, 0x180 },
+    };
+    QTestState *qts = ioc3_storage_start("");
+    uint8_t before[256], after[256];
+    uint32_t tx_consume = ioc3_readl(qts, ENET_TX_CONSUME);
+    unsigned int i;
+
+    qtest_irq_intercept_out_named(qts, "/machine/peripheral/ioc3/eth",
+                                  "sysbus-irq");
+    for (i = 0; i < ARRAY_SIZE(registers); i++) {
+        ioc3_writel(qts, registers[i].off, registers[i].value);
+    }
+    for (i = 0; i < sizeof(before); i++) {
+        before[i] = i * 37 + 11;
+    }
+    qtest_memwrite(qts, RAM_SCRATCH, before, sizeof(before));
+    qtest_memwrite(qts, RAM_SCRATCH + 0x8000, before, sizeof(before));
+    ioc3_writel(qts, ENET_INT_ENABLE, 0xffffffff);
+    ioc3_writel(qts, ENET_COUNTERS, 0xffffffff);
+    ioc3_writel(qts, ENET_BUFFER_INDEX, 0xffffffff);
+    qtest_clock_step(qts, RX_ARRIVAL_LATENCY_NS);
+    g_assert_cmphex(ioc3_readl(qts, ENET_COUNTERS), ==, 0xffffffff);
+    g_assert_cmphex(ioc3_readl(qts, ENET_BUFFER_INDEX), ==, 0xffffdf1f);
+    for (i = 0; i < ARRAY_SIZE(registers); i++) {
+        g_assert_cmphex(ioc3_readl(qts, registers[i].off), ==,
+                        registers[i].value);
+    }
+    g_assert_cmphex(ioc3_readl(qts, ENET_TX_CONSUME), ==, tx_consume);
+    qtest_memread(qts, RAM_SCRATCH, after, sizeof(after));
+    g_assert_cmpmem(after, sizeof(after), before, sizeof(before));
+    qtest_memread(qts, RAM_SCRATCH + 0x8000, after, sizeof(after));
+    g_assert_cmpmem(after, sizeof(after), before, sizeof(before));
+    g_assert_cmphex(ioc3_readl(qts, ENET_INT_STATUS), ==, 0);
+    g_assert_cmphex(ioc3_readl(qts, ENET_INT_ENABLE), ==, 0xffffffff);
+    g_assert_false(qtest_get_irq(qts, 0));
+    g_assert_cmpuint(qtest_get_irq_raise_count(qts, 0), ==, 0);
+    ioc3_quit(qts);
+}
+
+static void test_stopped_storage_migration(const void *data)
+{
+    g_autofree char *dir = g_dir_make_tmp("ioc3-storage-XXXXXX", NULL);
+    g_autofree char *uri = NULL;
+    g_autofree char *incoming = NULL;
+    QTestState *from, *to;
+
+    g_assert_nonnull(dir);
+    uri = g_strdup_printf("unix:%s/migrate.sock", dir);
+    incoming = g_strdup_printf("-incoming %s", uri);
+    from = ioc3_storage_start("");
+    ioc3_writel(from, ENET_COUNTERS, 0x6d9217ab);
+    ioc3_writel(from, ENET_BUFFER_INDEX, 0xa653c917);
+    to = qtest_initf(
+        "-M none " QPCI_SGI_BRIDGE_HEAD "-display none "
+        "-netdev user,id=n0 "
+        "-device sgi-ioc3,id=ioc3,bus=pci,addr=%02x.0,netdev=n0 %s",
+        IOC3_PCI_SLOT, incoming);
+    sgi_migrate_stopped(from, uri);
+    ioc3_quit(from);
+    ioc3_attach(to);
+    g_assert_cmphex(ioc3_readl(to, ENET_BUFFER_INDEX), ==, 0xa653c917);
+    g_assert_cmphex(ioc3_readl(to, ENET_COUNTERS), ==, 0x6d9217ab);
+    g_assert_cmphex(ioc3_readl(to, ENET_COUNTERS), ==, 0);
+    g_assert_cmphex(ioc3_readl(to, ENET_BUFFER_INDEX), ==, 0xa653c917);
+    ioc3_quit(to);
+    g_rmdir(dir);
+}
+
 int main(int argc, char **argv)
 {
     unsigned int i;
 
     g_test_init(&argc, &argv, NULL);
+
+    qtest_add_data_func("sgi-ioc3-eth/stopped-counter-storage", NULL,
+                        test_stopped_counter_storage);
+    qtest_add_data_func("sgi-ioc3-eth/stopped-buffer-fields", NULL,
+                        test_stopped_buffer_fields);
+    qtest_add_data_func("sgi-ioc3-eth/stopped-storage-controls", NULL,
+                        test_stopped_storage_controls);
+    qtest_add_data_func("sgi-ioc3-eth/stopped-storage-invalid-accesses", NULL,
+                        test_stopped_storage_invalid_accesses);
+    qtest_add_data_func("sgi-ioc3-eth/stopped-storage-reset", NULL,
+                        test_stopped_storage_reset);
+    qtest_add_data_func("sgi-ioc3-eth/stopped-storage-leaves-dma-and-irq", NULL,
+                        test_stopped_storage_leaves_dma_and_irq);
+    qtest_add_data_func("sgi-ioc3-eth/stopped-storage-migration", NULL,
+                        test_stopped_storage_migration);
 
     /* The transmit path changes at 104; the receive size at each. */
     qtest_add_data_func("sgi-ioc3-eth/no-reply-raises-nothing", NULL,

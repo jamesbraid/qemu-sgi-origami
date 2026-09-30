@@ -725,10 +725,6 @@ static uint64_t sgi_ioc3_enet_read_impl(void *opaque, hwaddr addr,
     case SGI_IOC3_ENET_COUNTERS:
         return sgi_ioc3_take_counters(s);
 
-    case SGI_IOC3_ENET_BUFFER_INDEX:
-        /* The engines' positions in buffer memory; nothing is moving. */
-        return 0;
-
     case SGI_IOC3_ENET_MII_CONTROL:
         return s->enet_reg[index] & ~SGI_IOC3_ENET_MII_BUSY;
 
@@ -893,7 +889,28 @@ static void sgi_ioc3_enet_write(void *opaque, hwaddr addr, uint64_t val,
         return;
 
     case SGI_IOC3_ENET_COUNTERS:
-    case SGI_IOC3_ENET_BUFFER_INDEX:
+    case SGI_IOC3_ENET_BUFFER_INDEX: {
+        uint32_t mcr = sgi_ioc3_enet_get(s, SGI_IOC3_ENET_MAC_CONTROL);
+        uint32_t active = SGI_IOC3_ENET_MCR_TX_DMA_EN |
+                          SGI_IOC3_ENET_MCR_TX_EN |
+                          SGI_IOC3_ENET_MCR_RX_DMA_EN |
+                          SGI_IOC3_ENET_MCR_RX_EN |
+                          SGI_IOC3_ENET_MCR_RESET;
+
+        if (mcr & active) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "sgi-ioc3-eth: write to register 0x%03x with MAC"
+                          " enabled or in reset ignored\n",
+                          (unsigned)(SGI_IOC3_ENET_BASE + addr));
+            return;
+        }
+        /* Stopped-MAC storage approximation, not live buffer positions. */
+        s->enet_reg[index] = val &
+            (SGI_IOC3_ENET_BASE + addr == SGI_IOC3_ENET_BUFFER_INDEX ?
+             0xffffdf1fu : UINT32_MAX);
+        return;
+    }
+
     case SGI_IOC3_ENET_MII_DATA_R:
         qemu_log_mask(LOG_GUEST_ERROR,
                       "sgi-ioc3-eth: write to read-only register 0x%03x\n",
