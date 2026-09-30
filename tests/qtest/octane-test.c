@@ -2801,7 +2801,8 @@ static void test_rad_transfer_migration(void)
     g_assert_cmpint(g_rmdir(directory), ==, 0);
 }
 
-static void test_rad_output_samples(void)
+static void octane_rad_output_samples(uint64_t elapsed_ns,
+                                      bool read_before_disable)
 {
     g_autofree char *path = NULL;
     g_autofree char *quoted = NULL;
@@ -2809,7 +2810,9 @@ static void test_rad_output_samples(void)
     g_autofree char *wav = NULL;
     QTestState *qts;
     gsize length;
-    unsigned seeded = 0;
+    const uint32_t frames = elapsed_ns * 44100 / 1000000000;
+    const uint32_t pointer = 0xa000a000 + (frames * 8) % 4096;
+    uint32_t position_a, position_b;
     int fd = g_file_open_tmp("octane-rad-output-XXXXXX.wav", &path, NULL);
 
     g_assert_cmpint(fd, >=, 0);
@@ -2823,32 +2826,66 @@ static void test_rad_output_samples(void)
     octane_rad_map(qts);
     qtest_writel(qts, CFG(3) + 4, 6);
     qtest_writel(qts, BRIDGE_REG(0x080), 8u << 20);
-    for (unsigned i = 0; i < 4096; i += 8) {
-        qtest_writel(qts, RAM + 0xa000 + i, 0x00123456);
-        qtest_writel(qts, RAM + 0xa004 + i, 0xffabcd12);
+    for (unsigned i = 0; i < 512; i++) {
+        uint32_t left = 0x1000 + i;
+        uint32_t right = -(0x2000 + i);
+
+        qtest_writel(qts, RAM + 0xa000 + i * 8, (left << 8) | 0x5a);
+        qtest_writel(qts, RAM + 0xa004 + i * 8, (right << 8) | 0xa5);
     }
     octane_rad_output_program(qts, 0xa000a000);
     qtest_writel(qts, RAD_BAR0 + 0x58, 0x20000001);
-    qtest_clock_step(qts, 50000000);
+    qtest_clock_step(qts, elapsed_ns);
+    if (read_before_disable) {
+        g_assert_cmpuint(qtest_readl(qts, RAD_BAR0 + 0x2c) >> 18, ==, frames);
+    }
+    /* The disable write must transfer frames due since the last timer. */
     qtest_writel(qts, RAD_BAR0 + 0x58, 0x20000000);
+    position_a = qtest_readl(qts, RAD_BAR0 + 0x2c);
+    position_b = qtest_readl(qts, RAD_BAR0 + 0x18);
+    g_assert_cmpuint(position_a >> 18, ==, frames);
+    g_assert_cmphex(position_b, ==, frames << 4);
+    octane_rad_status_program(qts, 0xa0008000, 0xfffffffc);
+    qtest_writel(qts, RAD_BAR0 + 0x5c, 0x40001);
+    g_assert_cmphex(qtest_readl(qts, RAM + 0x8038), ==, pointer);
+
+    /* Give accepted host samples time to drain without advancing DMA. */
     qtest_clock_step(qts, 20000000);
+    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x2c), ==, position_a);
+    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x18), ==, position_b);
+    qtest_writel(qts, RAD_BAR0 + 0x5c, 0x40001);
+    g_assert_cmphex(qtest_readl(qts, RAM + 0x8038), ==, pointer);
     qtest_quit(qts);
     g_assert_true(g_file_get_contents(path, &wav, &length, NULL));
-    g_assert_cmpuint(length, >, 44);
+    g_assert_cmpuint(length, ==, 44 + frames * 4);
     g_assert_cmpmem(wav, 4, "RIFF", 4);
-    for (gsize i = 44; i + 4 <= length; i += 4) {
-        int16_t left = lduw_le_p(wav + i);
-        int16_t right = lduw_le_p(wav + i + 2);
+    g_assert_cmpmem(wav + 8, 8, "WAVEfmt ", 8);
+    g_assert_cmpmem(wav + 36, 4, "data", 4);
+    g_assert_cmpuint(ldl_le_p(wav + 4), ==, length - 8);
+    g_assert_cmpuint(ldl_le_p(wav + 40), ==, frames * 4);
+    g_assert_cmpuint(lduw_le_p(wav + 20), ==, 1);
+    g_assert_cmpuint(lduw_le_p(wav + 22), ==, 2);
+    g_assert_cmpuint(ldl_le_p(wav + 24), ==, 44100);
+    g_assert_cmpuint(lduw_le_p(wav + 34), ==, 16);
+    for (unsigned i = 0; i < frames; i++) {
+        int16_t left = lduw_le_p(wav + 44 + i * 4);
+        int16_t right = lduw_le_p(wav + 46 + i * 4);
 
-        if (left == 0x1234 && right == (int16_t)0xabcd) {
-            seeded++;
-        } else {
-            g_assert_cmpint(left, ==, 0);
-            g_assert_cmpint(right, ==, 0);
-        }
+        g_assert_cmpint(left, ==, 0x1000 + i % 512);
+        g_assert_cmpint(right, ==, -(int)(0x2000 + i % 512));
     }
-    g_assert_cmpuint(seeded, >=, 2000);
     g_assert_cmpint(g_unlink(path), ==, 0);
+}
+
+static void test_rad_output_samples(void)
+{
+    octane_rad_output_samples(50000000, false);
+}
+
+static void test_rad_output_tail(gconstpointer data)
+{
+    /* 44 frames are due at 1 ms, between eight-frame timer callbacks. */
+    octane_rad_output_samples(1000000, GPOINTER_TO_INT(data));
 }
 
 static void test_rad_transfer_unsupported(void)
@@ -4120,6 +4157,10 @@ int main(int argc, char **argv)
     qtest_add_func("/octane/rad-transfer-migration",
                    test_rad_transfer_migration);
     qtest_add_func("/octane/rad-output-samples", test_rad_output_samples);
+    qtest_add_data_func("/octane/rad-output-tail", GINT_TO_POINTER(0),
+                        test_rad_output_tail);
+    qtest_add_data_func("/octane/rad-output-tail-read-position",
+                        GINT_TO_POINTER(1), test_rad_output_tail);
     qtest_add_func("/octane/rad-transfer-failures", test_rad_transfer_failures);
     qtest_add_func("/octane/rad-transfer-unsupported",
                    test_rad_transfer_unsupported);
