@@ -17,7 +17,7 @@ typedef struct PHYTest {
     QPCIBar bar;
 } PHYTest;
 
-static PHYTest *start(const char *extra, int fd)
+static PHYTest *start_addr(const char *extra, int fd, unsigned addr)
 {
     PHYTest *t = g_new0(PHYTest, 1);
     g_autofree char *backend = fd >= 0 ?
@@ -26,12 +26,17 @@ static PHYTest *start(const char *extra, int fd)
 
     t->qts = qtest_initf("-M none " QPCI_SGI_BRIDGE_HEAD
         "-display none %s -device sgi-ioc3,id=ioc3,bus=pci,addr=04.0,"
-        "netdev=n0,phy-ics1890=on,phy-addr=1 %s", backend, extra);
+        "netdev=n0,phy-ics1890=on,phy-addr=%u %s", backend, addr, extra);
     t->bus = qpci_init_sgi_bridge(t->qts, NULL);
     t->dev = qpci_device_find(t->bus, QPCI_DEVFN(4, 0));
     t->bar = qpci_iomap(t->dev, 0, NULL);
     qpci_device_enable(t->dev);
     return t;
+}
+
+static PHYTest *start(const char *extra, int fd)
+{
+    return start_addr(extra, fd, 1);
 }
 
 static void stop(PHYTest *t)
@@ -40,6 +45,17 @@ static void stop(PHYTest *t)
     qpci_free_sgi_bridge(t->bus);
     qtest_quit(t->qts);
     g_free(t);
+}
+
+static void system_reset(PHYTest *t)
+{
+    qtest_system_reset(t->qts);
+    g_free(t->dev);
+    qpci_free_sgi_bridge(t->bus);
+    t->bus = qpci_init_sgi_bridge(t->qts, NULL);
+    t->dev = qpci_device_find(t->bus, QPCI_DEVFN(4, 0));
+    t->bar = qpci_iomap(t->dev, 0, NULL);
+    qpci_device_enable(t->dev);
 }
 
 static void wr(PHYTest *t, unsigned reg, uint32_t val)
@@ -95,7 +111,7 @@ static void test_identity(void)
     g_assert_cmphex(mread(t, 4), ==, 0x01e1);
     g_assert_cmphex(mread(t, 5), ==, 0);
     g_assert_cmphex(mread(t, 6), ==, 0);
-    g_assert_cmphex(mread(t, 16), ==, 0x0048);
+    g_assert_cmphex(mread(t, 16), ==, 0x0058);
     g_assert_cmphex(mread(t, 18), ==, 0x0010);
     g_assert_cmphex(mread(t, 19), ==, 0x4001);
     mwrite(t, 0, 0x2000);
@@ -137,7 +153,7 @@ static void test_masks_override_reset(void)
     g_assert_cmphex(mread(t, 2), ==, 0x0015);
     mwrite(t, 16, 0x8048);
     mwrite(t, 16, 0x8048); /* Consume rather than re-arm. */
-    g_assert_cmphex(mread(t, 16), ==, 0x0048);
+    g_assert_cmphex(mread(t, 16), ==, 0x0058);
     mwrite(t, 2, 0);
     g_assert_cmphex(mread(t, 2), ==, 0x0015);
     mwrite(t, 16, 0x8048);
@@ -148,23 +164,80 @@ static void test_masks_override_reset(void)
     mwrite(t, 19, 0xffff);
     g_assert_cmphex(mread(t, 19) & ~0x0400, ==, 0x4011);
     mwrite(t, 16, 0xffff);
-    g_assert_cmphex(mread(t, 16), ==, 0x806d);
+    g_assert_cmphex(mread(t, 16), ==, 0x807d);
     mwrite(t, 0, 0xffff);
     g_assert_cmphex(mread(t, 0), ==, 0x3000);
     g_assert_cmphex(mread(t, 2), ==, 0x0015);
     g_assert_cmphex(mread(t, 18), ==, 0x0010);
-    g_assert_cmphex(mread(t, 16), ==, 0x0048);
+    g_assert_cmphex(mread(t, 16), ==, 0x0058);
     mwrite(t, 0, 0x007f);
     g_assert_cmphex(mread(t, 0), ==, 0);
-    qtest_system_reset(t->qts);
-    g_free(t->dev);
-    qpci_free_sgi_bridge(t->bus);
-    t->bus = qpci_init_sgi_bridge(t->qts, NULL);
-    t->dev = qpci_device_find(t->bus, QPCI_DEVFN(4, 0));
-    t->bar = qpci_iomap(t->dev, 0, NULL);
-    qpci_device_enable(t->dev);
+    system_reset(t);
     g_assert_cmphex(mread(t, 0), ==, 0x3000);
     stop(t);
+}
+
+static void test_extended_control_reserved_read_bit(void)
+{
+    PHYTest *t = start("", -1);
+    static const struct { uint16_t write, read; } cases[] = {
+        { 0, 0x0050 }, { 0x0010, 0x0050 }, { 0x7812, 0x0050 },
+        { 0x002d, 0x007d }, { 0x3333, 0x0071 }, { 0x5aa5, 0x0075 },
+        { 0x7fff, 0x007d },
+    };
+
+    g_assert_cmphex(mread(t, 16), ==, 0x0058);
+    for (unsigned i = 0; i < G_N_ELEMENTS(cases); i++) {
+        mwrite(t, 16, cases[i].write);
+        g_assert_cmphex(mread(t, 16), ==, cases[i].read);
+    }
+    mwrite(t, 16, 0x802d);
+    for (unsigned i = 0; i < 3; i++) {
+        g_assert_cmphex(mread(t, 16), ==, 0x807d);
+    }
+    mwrite_addr(t, 31, 16, 0);
+    g_assert_cmphex(mread(t, 16), ==, 0x807d);
+    /* Override changes ordinary controls, but cannot store reserved bits. */
+    mwrite(t, 16, 0xffff);
+    g_assert_cmphex(mread(t, 16), ==, 0x007d);
+    mwrite(t, 2, 0);
+    g_assert_cmphex(mread(t, 2), ==, 0x0015);
+    mwrite(t, 16, 0x8000);
+    g_assert_cmphex(mread(t, 16), ==, 0x8050);
+    mwrite(t, 16, 0);
+    g_assert_cmphex(mread(t, 16), ==, 0x0050);
+    mwrite(t, 16, 0x802d);
+    g_assert_cmphex(mread(t, 16), ==, 0x807d);
+    mwrite(t, 2, 0x1234);
+    g_assert_cmphex(mread(t, 2), ==, 0x1234);
+    g_assert_cmphex(mread(t, 16), ==, 0x007d);
+    mwrite(t, 0, 0x8000);
+    g_assert_cmphex(mread(t, 16), ==, 0x0058);
+    mwrite(t, 16, 0x802d);
+    system_reset(t);
+    g_assert_cmphex(mread(t, 16), ==, 0x0058);
+    stop(t);
+}
+
+static void test_extended_control_address(void)
+{
+    static const unsigned addresses[] = { 0, 7, 31 };
+
+    for (unsigned i = 0; i < G_N_ELEMENTS(addresses); i++) {
+        unsigned addr = addresses[i];
+        PHYTest *t = start_addr("", -1, addr);
+
+        for (unsigned other = 0; other < 32; other++) {
+            g_assert_cmphex(mread_addr(t, other, 16), ==,
+                           other == addr ? (addr << 6) | 0x18 : 0xffff);
+        }
+        mwrite_addr(t, addr, 16, 0xffff);
+        g_assert_cmphex(mread_addr(t, addr, 16), ==,
+                       (addr << 6) | 0x803d);
+        mwrite_addr(t, addr, 16, 0);
+        g_assert_cmphex(mread_addr(t, addr, 16), ==, (addr << 6) | 0x10);
+        stop(t);
+    }
 }
 
 static void test_negotiation(void)
@@ -416,7 +489,8 @@ static void test_migration(void)
 
     link_set(from, true);
     source_clock = qtest_clock_step(from->qts, NEGOTIATION_NS / 2);
-    mwrite(from, 16, 0x8048);
+    mwrite(from, 16, 0x802d);
+    g_assert_cmphex(mread(from, 16), ==, 0x807d);
     qtest_qmp_assert_success(to->qts,
         "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
     sgi_migrate_stopped(from->qts, uri);
@@ -425,8 +499,10 @@ static void test_migration(void)
     qtest_clock_set(to->qts, source_clock);
     /* Resume timer callbacks. The qtest accelerator executes no guest code. */
     qtest_qmp_assert_success(to->qts, "{'execute':'cont'}");
+    g_assert_cmphex(mread(to, 16), ==, 0x807d);
     mwrite(to, 2, 0x1234);
     g_assert_cmphex(mread(to, 2), ==, 0x1234);
+    g_assert_cmphex(mread(to, 16), ==, 0x007d);
     g_assert_cmphex(mread(to, 1) & 0x20, ==, 0);
     qtest_clock_step(to->qts, NEGOTIATION_NS / 2 - 1);
     g_assert_cmphex(mread(to, 1) & 0x20, ==, 0);
@@ -434,6 +510,7 @@ static void test_migration(void)
     g_assert_cmphex(mread(to, 1) & 0x20, ==, 0x20);
     mwrite(to, 0, 0x8000);
     g_assert_cmphex(mread(to, 2), ==, 0x0015);
+    g_assert_cmphex(mread(to, 16), ==, 0x0058);
     stop(to);
     stop(from);
     unlink(socket);
@@ -457,6 +534,10 @@ int main(int argc, char **argv)
     g_test_init(&argc, &argv, NULL);
     qtest_add_func("/ics1890/identity", test_identity);
     qtest_add_func("/ics1890/masks-override-reset", test_masks_override_reset);
+    qtest_add_func("/ics1890/extended-control-reserved-read-bit",
+                   test_extended_control_reserved_read_bit);
+    qtest_add_func("/ics1890/extended-control-address",
+                   test_extended_control_address);
     qtest_add_func("/ics1890/negotiation", test_negotiation);
     qtest_add_func("/ics1890/powerdown", test_powerdown);
     qtest_add_data_func("/ics1890/loopback-10", GUINT_TO_POINTER(0x4000),
