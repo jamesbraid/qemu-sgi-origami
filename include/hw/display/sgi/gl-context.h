@@ -148,6 +148,23 @@ enum {
 #define SGI_GL_MODELVIEW        0x1700
 #define SGI_GL_PROJECTION       0x1701
 #define SGI_GL_TEXTURE          0x1702
+#define SGI_GL_TEXTURE_2D       0x0de1
+#define SGI_GL_TEXTURE_ENV_MODE 0x2200
+#define SGI_GL_TEXTURE_ENV_COLOR 0x2201
+#define SGI_GL_MODULATE         0x2100
+#define SGI_GL_DECAL            0x2101
+#define SGI_GL_NEAREST          0x2600
+#define SGI_GL_NEAREST_MIPMAP_LINEAR 0x2702
+#define SGI_GL_REPEAT           0x2901
+#define SGI_GL_CLAMP            0x2900
+#define SGI_GL_CLAMP_TO_EDGE    0x812f
+#define SGI_GL_CLAMP_TO_BORDER  0x812d
+#define SGI_GL_ALPHA            0x1906
+#define SGI_GL_RGB              0x1907
+#define SGI_GL_RGBA             0x1908
+#define SGI_GL_LUMINANCE        0x1909
+#define SGI_GL_LUMINANCE_ALPHA  0x190a
+#define SGI_GL_INTENSITY        0x8049
 #define SGI_GL_FLAT             0x1d00
 #define SGI_GL_SMOOTH           0x1d01
 /* The comparisons in GL_NEVER's order, as depth_func holds them. */
@@ -568,6 +585,10 @@ typedef struct SGIGLDrawState {
     float window_matrix[16];
     float window_depth_scale;
     uint32_t window_rows_down;          /* 0 or 1 */
+    /* The texture environment belongs to the context, not its objects. */
+    uint32_t texture_2d;
+    uint32_t texture_env_mode;
+    float texture_env_color[4];
 } SGIGLDrawState;
 
 /*
@@ -589,8 +610,7 @@ typedef struct SGIGLContext {
     uint32_t pr_depth;
     /*
      * The texture matrix and the ones glPushMatrix saved under it (2.10.2),
-     * kept and answered; no rasterizer textures, so nothing draws with
-     * them.
+     * applied to each vertex before clipping.
      */
     float texture[16];
     float tx_stack[SGI_GL_STACK_DEPTH - 1][16];
@@ -673,6 +693,8 @@ typedef struct SGIGLContext {
      * strip keeps the strip's orientation (2.6.1), which facing needs.
      */
     uint32_t strip_odd;
+    float cur_texcoord[4];
+    float raster_texcoord[4];
 } SGIGLContext;
 
 /* The GL entry points a family decodes to, one per command. */
@@ -758,6 +780,11 @@ typedef enum SGIGLOp {
     SGI_GL_OP_LINE_WIDTH,       /* the width */
     SGI_GL_OP_LINE_STIPPLE,     /* the repeat as int32, the pattern */
     SGI_GL_OP_POLYGON_MODE,     /* face, mode */
+    SGI_GL_OP_TEXCOORD2F,       /* s, t */
+    SGI_GL_OP_TEXCOORD3F,       /* s, t, r */
+    SGI_GL_OP_TEXCOORD4F,       /* s, t, r, q */
+    /* Parameter and four floats; mode's enumerant as a float. */
+    SGI_GL_OP_TEX_ENV,
 } SGIGLOp;
 
 /*
@@ -780,6 +807,7 @@ typedef struct SGIGLDraw {
     uint32_t context;           /* the context's hw_id */
     uint32_t mode;              /* SGI_GL_POINTS to SGI_GL_POLYGON */
     uint32_t count;
+    /* Includes texture-matrix-transformed strq, ready for clipping. */
     const float *vertices;      /* count * SGI_GL_VERTEX_FLOATS */
     const float *materials;
     uint32_t nmaterials;
