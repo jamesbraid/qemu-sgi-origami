@@ -156,19 +156,38 @@ bool sgi_gl_enable_polygon_modes(SGIGLContext *c, const SGIGLSink *sink)
     return true;
 }
 
+static bool sgi_gl_open_line(const SGIGLContext *c)
+{
+    return c->in_begin && (c->begin_mode == SGI_GL_LINE_STRIP ||
+                           c->begin_mode == SGI_GL_LINE_LOOP);
+}
+
+bool sgi_gl_enable_line_stipple(SGIGLContext *c, const SGIGLSink *sink)
+{
+    if (c->in_begin || !sink || !sink->draw_checked) {
+        return false;
+    }
+    c->standalone_stipple = true;
+    return true;
+}
+
 void sgi_gl_cleanup(SGIGLContext *c)
 {
     sgi_gl_polygon_release(&c->polygon);
     c->polygon.enabled = c->polygon.error = 0;
+    c->standalone_stipple = c->line_phase_loaded = false;
+    c->line_phase = 0;
 }
 
 void sgi_gl_reset(SGIGLContext *c, uint32_t hw_id)
 {
     uint32_t enabled = c->polygon.enabled;
+    bool standalone = c->standalone_stipple;
 
     sgi_gl_cleanup(c);
     sgi_gl_init(c, hw_id);
     c->polygon.enabled = enabled;
+    c->standalone_stipple = standalone;
 }
 
 /* Count and bytes are representation bounds, not hardware size limits. */
@@ -208,6 +227,8 @@ bool sgi_gl_clone(SGIGLContext *dst, const SGIGLContext *src)
     bool open = src->in_begin && src->begin_mode == SGI_GL_POLYGON;
 
     if (dst == src ||
+        (sgi_gl_open_line(src) &&
+         dst->standalone_stipple != src->standalone_stipple) ||
         (open && dst->polygon.enabled != src->polygon.enabled) ||
         (!dst->polygon.enabled && sgi_gl_polygon_owned(src))) {
         return false;
@@ -217,6 +238,8 @@ bool sgi_gl_clone(SGIGLContext *dst, const SGIGLContext *src)
     copy.polygon.capacity = 0;
     copy.polygon.enabled = dst->polygon.enabled;
     copy.polygon.loaded = 0;
+    copy.standalone_stipple = dst->standalone_stipple;
+    copy.line_phase_loaded = false;
     if (!sgi_gl_polygon_reserve(&copy.polygon, src->polygon.count)) {
         return false;
     }
@@ -243,7 +266,7 @@ bool sgi_gl_consume_error(SGIGLContext *c, uint32_t *error)
 static void sgi_gl_draw_result(SGIGLContext *c, const SGIGLSink *sink,
                                const SGIGLDraw *d)
 {
-    if (!c->polygon.enabled) {
+    if (!c->polygon.enabled && !c->standalone_stipple) {
         sink->draw(sink->opaque, d);
     } else if (!sink->draw_checked) {
         qemu_log_mask(LOG_GUEST_ERROR,
@@ -993,6 +1016,8 @@ static void sgi_gl_submit(SGIGLContext *c, const SGIGLSink *sink,
                           uint32_t mode, uint32_t count, const float *v0,
                           const float *v1, const float *v2, const float *v3)
 {
+    bool stipple = mode == SGI_GL_LINES ? c->standalone_stipple :
+                                        c->polygon.enabled;
     const float *v[4] = { v0, v1, v2, v3 };
     float verts[4][SGI_GL_VERTEX_FLOATS];
     SGIGLDraw d = {
@@ -1005,11 +1030,14 @@ static void sgi_gl_submit(SGIGLContext *c, const SGIGLSink *sink,
         .point_size = c->point_size,
         .line_width = c->line_width,
         .polygon_modes = c->polygon.enabled ? c->polygon_mode : NULL,
-        .line_stipple_enabled = c->polygon.enabled &&
+        .line_stipple_enabled = stipple &&
             !!(c->raster_enables & SGI_GL_RASTER_LINE_STIPPLE),
-        .line_stipple_repeat = c->polygon.enabled ? c->line_stipple_repeat : 0,
+        .line_stipple_repeat = stipple ? c->line_stipple_repeat : 0,
         .line_stipple_pattern =
-            c->polygon.enabled ? c->line_stipple_pattern : 0,
+            stipple ? c->line_stipple_pattern : 0,
+        .line_phase = mode == SGI_GL_LINES && c->standalone_stipple ?
+                      &c->line_phase : NULL,
+        .line_phase_reset = c->begin_mode == SGI_GL_LINES,
         .polygon_stipple = c->polygon_stipple,
         .polygon_stipple_enabled =
             !!(c->raster_enables & SGI_GL_RASTER_POLYGON_STIPPLE),
@@ -1781,6 +1809,12 @@ static void sgi_gl_raster_state(SGIGLContext *c, uint16_t op,
         *(op == SGI_GL_OP_POINT_SIZE ? &c->point_size : &c->line_width) = f;
         return;
     case SGI_GL_OP_LINE_STIPPLE:
+        if (c->in_begin) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "sgi-gl: line stipple inside glBegin: "
+                          "invalid operation\n");
+            return;
+        }
         repeat = a[0];
         c->line_stipple_repeat = MIN(MAX(repeat, 1), 256);
         c->line_stipple_pattern = a[1] & 0xffff;
@@ -1817,16 +1851,20 @@ static void sgi_gl_capability(SGIGLContext *c, uint32_t cap, bool on)
     uint32_t raster = sgi_gl_raster_enable(cap);
 
     if (raster) {
-        if (cap == SGI_GL_POLYGON_STIPPLE && c->in_begin) {
+        if ((cap == SGI_GL_POLYGON_STIPPLE || cap == SGI_GL_LINE_STIPPLE) &&
+            c->in_begin) {
             qemu_log_mask(LOG_GUEST_ERROR,
-                          "sgi-gl: polygon stipple enable inside glBegin: "
+                          "sgi-gl: stipple enable inside glBegin: "
                           "invalid operation\n");
             return;
         }
         c->raster_enables = on ? c->raster_enables | raster :
                                  c->raster_enables & ~raster;
-        if (on && cap != SGI_GL_POLYGON_STIPPLE &&
-            !(cap == SGI_GL_LINE_STIPPLE && c->polygon.enabled)) {
+        if (on && cap == SGI_GL_LINE_STIPPLE && !c->standalone_stipple) {
+            qemu_log_mask(LOG_UNIMP, "sgi-gl: standalone line stipple is "
+                          "kept; standalone lines are drawn without it\n");
+        } else if (on && cap != SGI_GL_POLYGON_STIPPLE &&
+                   cap != SGI_GL_LINE_STIPPLE) {
             qemu_log_mask(LOG_UNIMP, "sgi-gl: capability 0x%x is kept; "
                           "drawn without it\n", cap);
         }
@@ -2218,7 +2256,7 @@ void sgi_gl_command(SGIGLContext *c, const SGIGLSink *sink,
         c->cur_edge = a[0] != 0;
         return;
     case SGI_GL_OP_BEGIN:
-        if (c->polygon.enabled && c->in_begin) {
+        if (c->in_begin) {
             qemu_log_mask(LOG_GUEST_ERROR, "sgi-gl: nested glBegin ignored\n");
             return;
         }
@@ -2227,6 +2265,7 @@ void sgi_gl_command(SGIGLContext *c, const SGIGLSink *sink,
                           "ignored\n", a[0]);
             return;
         }
+        c->line_phase = 0;
         c->in_begin = true;
         c->begin_mode = a[0];
         c->nheld = 0;
@@ -2267,6 +2306,7 @@ void sgi_gl_command(SGIGLContext *c, const SGIGLSink *sink,
             sgi_gl_submit(c, sink, SGI_GL_LINES, 2, c->held[1], c->held[0],
                           NULL, NULL);
         }
+        c->line_phase = 0;
         c->in_begin = false;
         c->begin_mode = 0;
         c->nheld = 0;
@@ -2429,6 +2469,14 @@ bool sgi_gl_get_material(const SGIGLContext *c, uint32_t face,
 bool sgi_gl_get(const SGIGLContext *c, uint32_t pname, uint32_t *out,
                 unsigned *n)
 {
+    if (c->in_begin && (pname == SGI_GL_LINE_STIPPLE ||
+                        pname == SGI_GL_LINE_STIPPLE_REPEAT ||
+                        pname == SGI_GL_LINE_STIPPLE_PATTERN)) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sgi-gl: line stipple query inside glBegin: "
+                      "invalid operation\n");
+        return false;
+    }
     switch (pname) {
     case SGI_GL_CURRENT_COLOR:
         for (int i = 0; i < 4; i++) {
@@ -3038,6 +3086,14 @@ static bool sgi_gl_context_post_load(void *opaque, int version_id,
         return false;
     }
     valid = sgi_gl_context_valid(c, errp);
+    if (valid && (c->line_phase_loaded ?
+                  !c->standalone_stipple || !sgi_gl_open_line(c) ||
+                  c->line_phase >= 16 * c->line_stipple_repeat :
+                  c->standalone_stipple && sgi_gl_open_line(c))) {
+        error_setg(errp, "sgi-gl: incompatible standalone line phase");
+        valid = false;
+    }
+    c->line_phase_loaded = false;
     if (!valid) {
         sgi_gl_polygon_release(&c->polygon);
     }
@@ -3585,12 +3641,41 @@ static const VMStateDescription vmstate_sgi_gl_polygon_stipple = {
     },
 };
 
+static bool sgi_gl_line_phase_needed(void *opaque)
+{
+    SGIGLContext *c = opaque;
+
+    return c->standalone_stipple && sgi_gl_open_line(c);
+}
+
+static int sgi_gl_line_phase_pre_load(void *opaque)
+{
+    SGIGLContext *c = opaque;
+
+    c->line_phase_loaded = true;
+    return 0;
+}
+
+static const VMStateDescription vmstate_sgi_gl_line_phase = {
+    .name = "sgi-gl-context/line-phase",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = sgi_gl_line_phase_needed,
+    .pre_load = sgi_gl_line_phase_pre_load,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32(line_phase, SGIGLContext),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
 /* Old streams omit the optional pattern, including on a reused context. */
 static int sgi_gl_context_pre_load(void *opaque)
 {
     SGIGLContext *c = opaque;
 
     memset(c->polygon_stipple, 0xff, sizeof(c->polygon_stipple));
+    c->line_phase = 0;
+    c->line_phase_loaded = false;
     sgi_gl_polygon_release(&c->polygon);
     c->polygon.error = 0;
     return 0;
@@ -3711,6 +3796,7 @@ const VMStateDescription vmstate_sgi_gl_context = {
         &vmstate_sgi_gl_clear_stencil,
         &vmstate_sgi_gl_rasterization,
         &vmstate_sgi_gl_polygon_stipple,
+        &vmstate_sgi_gl_line_phase,
         &vmstate_sgi_gl_polygon,
         &vmstate_sgi_gl_texture_coords,
         NULL

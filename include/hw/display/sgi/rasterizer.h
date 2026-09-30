@@ -278,7 +278,8 @@ typedef struct SGIRasterTarget {
  * Aliased dimensions round half up to at least one; zero defaults to one.
  * Rounded widths above INT32_MAX exceed the internal arithmetic domain, not
  * an established hardware maximum. Polygon LINE stipple uses a draw-local
- * counter. Smoothing is omitted.
+ * counter. Standalone lines borrow and commit d's phase after coverage,
+ * or count locally when no phase is supplied. Smoothing is omitted.
  * Filled samples use d's borrowed canonical window stipple rows.
  * Borrowed modes select each polygon face's FILL/LINE/POINT policy; absent
  * modes retain FILL. Boundary workspace failure returns OUT_OF_MEMORY
