@@ -13,6 +13,7 @@
 #include "chardev/char-fe.h"
 #include "hw/core/irq.h"
 #include "hw/core/sysbus.h"
+#include "qemu/fifo8.h"
 #include "qom/object.h"
 
 #define TYPE_SGI_IOC3_PARALLEL "sgi-ioc3-parallel"
@@ -135,6 +136,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIIOC3ParallelState, SGI_IOC3_PARALLEL)
 #define SGI_IOC3_PAR_MODE_BYTE        1
 #define SGI_IOC3_PAR_MODE_COMPAT_FIFO 2     /* what the driver selects */
 #define SGI_IOC3_PAR_MODE_ECP         3
+#define SGI_IOC3_PAR_MODE_TEST        6
 #define SGI_IOC3_PAR_MODE_CONFIG      7
 
 struct SGIIOC3ParallelState {
@@ -169,6 +171,8 @@ struct SGIIOC3ParallelState {
     uint8_t config_a;
     uint8_t config_b;
     uint8_t extended;
+    uint16_t fifo_depth;
+    Fifo8 test_fifo;
 };
 
 #endif /* HW_CHAR_SGI_IOC3_PARALLEL_H */
