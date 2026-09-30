@@ -1,7 +1,8 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * Sharp LH28F800SU x16 compatible commands (SMT96107, May 1996).
- * Enhanced commands, x8 mode, and process-restart backing are unsupported.
+ * Sharp LH28F800SU x16 commands (SMT96107, May 1996).
+ * Page operations, queuing, x8 mode, and process-restart backing
+ * are unsupported.
  * The board owns chip selection, bus lanes, and physical pin wiring.
  */
 #include "qemu/osdep.h"
@@ -28,17 +29,22 @@ OBJECT_DECLARE_SIMPLE_TYPE(LH28F800SUState, LH28F800SU)
 #define STATUS_ERASE_ERROR 0x20
 #define STATUS_PROGRAM_ERROR 0x10
 #define STATUS_LOW_VPP 0x08
+#define GSR_BUFFER_READY 0x06
+#define BSR_OPERATION_ERROR 0x20
+#define BSR_LOW_VPP 0x04
 
 typedef enum FlashMode {
     FLASH_ARRAY,
     FLASH_ID,
     FLASH_STATUS,
+    FLASH_EXT_STATUS,
 } FlashMode;
 
 typedef enum FlashPending {
     FLASH_IDLE,
     FLASH_PROGRAM,
     FLASH_ERASE,
+    FLASH_UPLOAD,
 } FlashPending;
 
 typedef enum FlashOperation {
@@ -62,8 +68,11 @@ struct LH28F800SUState {
     qemu_irq ready_busy;
     uint16_t initial_lock_mask;
     uint16_t lock_mask;
+    uint16_t displayed_unlocked_mask;
     uint16_t program_data;
     uint8_t status;
+    uint8_t block_status[FLASH_SIZE / BLOCK_SIZE];
+    bool gsr_error;
     uint8_t mode;
     uint8_t pending;
     uint8_t operation;
@@ -129,9 +138,14 @@ static void flash_start(LH28F800SUState *s, FlashOperation operation,
     timer_mod(s->timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + duration_ns);
 }
 
-static void flash_failure(LH28F800SUState *s, uint8_t flags)
+static void flash_failure(LH28F800SUState *s, uint8_t flags, uint32_t block)
 {
     s->status |= STATUS_READY | flags;
+    s->gsr_error = true;
+    s->block_status[block] |= BSR_OPERATION_ERROR;
+    if (flags & STATUS_LOW_VPP) {
+        s->block_status[block] |= BSR_LOW_VPP;
+    }
     flash_set_mode(s, FLASH_STATUS);
 }
 
@@ -153,7 +167,8 @@ static void flash_pin(void *opaque, int n, int level)
             s->suspended = false;
             flash_failure(s, STATUS_LOW_VPP |
                           (interrupted == FLASH_OP_PROGRAM ?
-                           STATUS_PROGRAM_ERROR : STATUS_ERASE_ERROR));
+                           STATUS_PROGRAM_ERROR : STATUS_ERASE_ERROR),
+                          s->operation_offset / BLOCK_SIZE);
         }
         s->vpp_good = level;
         break;
@@ -171,6 +186,9 @@ static void flash_pin(void *opaque, int n, int level)
         s->remaining_ns = 0;
         s->suspended = false;
         s->status = STATUS_READY;
+        s->gsr_error = false;
+        memset(s->block_status, 0, sizeof(s->block_status));
+        s->displayed_unlocked_mask = 0;
         s->mode = FLASH_ARRAY;
         if (level) {
             s->operation = FLASH_OP_RECOVER;
@@ -215,6 +233,32 @@ static MemTxResult flash_read(void *opaque, hwaddr offset, uint64_t *value,
         /* The chip does not drive DQ8-DQ15 for status reads. */
         *value = s->status;
         break;
+    case FLASH_EXT_STATUS: {
+        uint32_t block = offset / BLOCK_SIZE;
+
+        switch (offset % BLOCK_SIZE) {
+        case 2:
+            *value = s->block_status[block] |
+                     ((s->displayed_unlocked_mask & (1u << block)) ?
+                      0x40 : 0) |
+                     (((s->operation == FLASH_OP_PROGRAM ||
+                        s->operation == FLASH_OP_ERASE) &&
+                       s->operation_offset / BLOCK_SIZE == block &&
+                       !s->suspended) ? 0 : STATUS_READY);
+            break;
+        case 4:
+            *value = GSR_BUFFER_READY |
+                     (s->status & (STATUS_READY | STATUS_SUSPEND)) |
+                     (s->gsr_error ? BSR_OPERATION_ERROR : 0);
+            break;
+        default:
+            qemu_log_mask(LOG_UNIMP,
+                          "lh28f800su: reserved extended status address "
+                          "0x%" HWADDR_PRIx "\n", offset);
+            return MEMTX_ERROR;
+        }
+        break;
+    }
     default:
         return MEMTX_ERROR;
     }
@@ -253,7 +297,8 @@ static MemTxResult flash_write(void *opaque, hwaddr offset, uint64_t value,
                   s->remaining_ns);
         return MEMTX_OK;
     }
-    if (s->operation != FLASH_OP_NONE && !s->suspended && cmd != 0x70) {
+    if (s->operation != FLASH_OP_NONE && !s->suspended &&
+        cmd != 0x70 && cmd != 0x71) {
         qemu_log_mask(LOG_UNIMP, "lh28f800su: command while busy\n");
         return MEMTX_ERROR;
     }
@@ -261,10 +306,10 @@ static MemTxResult flash_write(void *opaque, hwaddr offset, uint64_t value,
         s->pending = FLASH_IDLE;
         old = ((uint16_t)s->storage[offset] << 8) | s->storage[offset + 1];
         if (!s->vpp_good) {
-            flash_failure(s, STATUS_LOW_VPP | STATUS_PROGRAM_ERROR);
+            flash_failure(s, STATUS_LOW_VPP | STATUS_PROGRAM_ERROR, block);
         } else if ((!s->wp_high && (s->lock_mask & (1u << block))) ||
                    (value & ~old)) {
-            flash_failure(s, STATUS_PROGRAM_ERROR);
+            flash_failure(s, STATUS_PROGRAM_ERROR, block);
         } else {
             s->program_data = value;
             flash_start(s, FLASH_OP_PROGRAM, offset, PROGRAM_NS);
@@ -274,14 +319,26 @@ static MemTxResult flash_write(void *opaque, hwaddr offset, uint64_t value,
     if (s->pending == FLASH_ERASE) {
         s->pending = FLASH_IDLE;
         if (cmd != 0xd0) {
-            flash_failure(s, STATUS_ERASE_ERROR | STATUS_PROGRAM_ERROR);
+            flash_failure(s, STATUS_ERASE_ERROR | STATUS_PROGRAM_ERROR,
+                          block);
         } else if (!s->vpp_good) {
-            flash_failure(s, STATUS_LOW_VPP | STATUS_ERASE_ERROR);
+            flash_failure(s, STATUS_LOW_VPP | STATUS_ERASE_ERROR, block);
         } else if (!s->wp_high && (s->lock_mask & (1u << block))) {
-            flash_failure(s, STATUS_ERASE_ERROR);
+            flash_failure(s, STATUS_ERASE_ERROR, block);
         } else {
             flash_start(s, FLASH_OP_ERASE, block * BLOCK_SIZE, ERASE_NS);
         }
+        return MEMTX_OK;
+    }
+    if (s->pending == FLASH_UPLOAD) {
+        s->pending = FLASH_IDLE;
+        if (cmd != 0xd0) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "lh28f800su: invalid status upload confirmation "
+                          "0x%02x\n", cmd);
+            return MEMTX_ERROR;
+        }
+        s->displayed_unlocked_mask = ~s->lock_mask;
         return MEMTX_OK;
     }
 
@@ -295,10 +352,21 @@ static MemTxResult flash_write(void *opaque, hwaddr offset, uint64_t value,
     case 0x70:
         flash_set_mode(s, FLASH_STATUS);
         break;
+    case 0x71:
+        flash_set_mode(s, FLASH_EXT_STATUS);
+        break;
     case 0x50:
         s->status &= ~(STATUS_ERASE_ERROR | STATUS_PROGRAM_ERROR |
                        STATUS_LOW_VPP);
+        s->gsr_error = false;
+        memset(s->block_status, 0, sizeof(s->block_status));
         flash_set_mode(s, FLASH_STATUS);
+        break;
+    case 0x97:
+        if (s->operation != FLASH_OP_NONE) {
+            return MEMTX_ERROR;
+        }
+        s->pending = FLASH_UPLOAD;
         break;
     case 0x10:
     case 0x40:
@@ -347,7 +415,7 @@ static int flash_post_load(void *opaque, int version_id)
 {
     LH28F800SUState *s = opaque;
 
-    if (s->mode > FLASH_STATUS || s->pending > FLASH_ERASE ||
+    if (s->mode > FLASH_EXT_STATUS || s->pending > FLASH_UPLOAD ||
         s->operation > FLASH_OP_RECOVER || s->operation_offset >= FLASH_SIZE ||
         (s->operation == FLASH_OP_ERASE &&
          s->operation_offset % BLOCK_SIZE) ||
@@ -367,14 +435,18 @@ static int flash_post_load(void *opaque, int version_id)
 
 static const VMStateDescription vmstate_flash = {
     .name = TYPE_LH28F800SU,
-    .version_id = 1,
-    .minimum_version_id = 1,
+    .version_id = 2,
+    .minimum_version_id = 2,
     .pre_save = flash_pre_save,
     .post_load = flash_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT16(lock_mask, LH28F800SUState),
+        VMSTATE_UINT16(displayed_unlocked_mask, LH28F800SUState),
         VMSTATE_UINT16(program_data, LH28F800SUState),
         VMSTATE_UINT8(status, LH28F800SUState),
+        VMSTATE_UINT8_ARRAY(block_status, LH28F800SUState,
+                            FLASH_SIZE / BLOCK_SIZE),
+        VMSTATE_BOOL(gsr_error, LH28F800SUState),
         VMSTATE_UINT8(mode, LH28F800SUState),
         VMSTATE_UINT8(pending, LH28F800SUState),
         VMSTATE_UINT8(operation, LH28F800SUState),
