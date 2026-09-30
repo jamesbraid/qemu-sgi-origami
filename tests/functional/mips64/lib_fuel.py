@@ -103,3 +103,23 @@ def launch_args(fixture, files, scratch):
         '-audio', 'none',
     ]
     return machine, argv, private_flash
+
+
+def scsi_scratch_disks(scratch):
+    """Create private channel fixtures with distinct data outside label sectors."""
+    files = {}
+    argv = []
+    for channel, marker in enumerate((b'A', b'B')):
+        path = os.path.join(scratch, f'fuel-scsi-channel{channel}.raw')
+        with open(path, 'xb') as disk:
+            disk.truncate(64 * 1024 * 1024)
+            disk.seek(128 * 512)
+            disk.write(marker * 512)
+        name = f'qualification{channel}'
+        files[name] = path
+        argv += [
+            '-drive', f'if=none,id={name},file={path},format=raw',
+            '-device', f'scsi-hd,bus=scsi.{channel},scsi-id=2,lun=0,'
+                       f'drive={name},serial=fuel-qualification-{channel}',
+        ]
+    return files, argv
