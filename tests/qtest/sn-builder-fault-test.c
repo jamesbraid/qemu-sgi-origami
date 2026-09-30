@@ -288,7 +288,9 @@ static SGIModelCpuSlot console_test_cpu_slots[] = {
 static uint64_t console_test_accepted_mib[] = { 512, 256, 128, 64 };
 
 static SGIModelAsicIdentity console_test_identity0 = {
+    .has_ni_revision = true,
     .ni_revision = 3,
+    .has_widget_revision = true,
     .widget_revision = 1,
     .serial = 0xc0b0a090807,
     .i2c_controller = true,
@@ -296,7 +298,9 @@ static SGIModelAsicIdentity console_test_identity0 = {
 };
 
 static SGIModelAsicIdentity console_test_identity1 = {
+    .has_ni_revision = true,
     .ni_revision = 3,
+    .has_widget_revision = true,
     .widget_revision = 1,
     .serial = 0xc0b0a090808,
     .i2c_controller = true,
@@ -380,7 +384,9 @@ static SGIModelIoBoard console_test_io_boards[] = {
         .preset = SGI_MODEL_IO_BOARD_PRESET_IP29_IO,
         .carrier = SGI_MODEL_IO_BOARD_CARRIER_ONBOARD,
         .attachment = 0,
+        .has_revision = true,
         .revision = 4,
+        .has_serial = true,
         .serial = 0x60504030201,
         .part = (char *)"030-1244-001",
         .has_ioc3_serial = true,
@@ -392,7 +398,9 @@ static SGIModelIoBoard console_test_io_boards[] = {
         .preset = SGI_MODEL_IO_BOARD_PRESET_IP29_IO,
         .carrier = SGI_MODEL_IO_BOARD_CARRIER_ONBOARD,
         .attachment = 0,
+        .has_revision = true,
         .revision = 4,
+        .has_serial = true,
         .serial = 0x60504030202,
         .part = (char *)"030-1244-001",
         .has_ioc3_serial = true,
@@ -532,8 +540,11 @@ static SGIModelCpuSlot bank_test_cpu_slots[] = {
 
 static uint64_t bank_test_bank_mib[] = { 256, 512, 0, 0, 0, 0, 0, 0 };
 
-/* Zero-valued: this fixture exercises memory-bank placement, not identity. */
-static SGIModelAsicIdentity bank_test_identity;
+/* The fixture tests memory-bank placement, so revision values stay zero. */
+static SGIModelAsicIdentity bank_test_identity = {
+    .has_ni_revision = true,
+    .has_widget_revision = true,
+};
 
 static SGIModelNode bank_test_nodes[] = {
     {
@@ -670,7 +681,9 @@ static SGIModelIoBoard bedrock_test_io_boards[] = {
         .preset = SGI_MODEL_IO_BOARD_PRESET_IO8,
         .carrier = SGI_MODEL_IO_BOARD_CARRIER_MACHINE_PLACED,
         .attachment = 0,
+        .has_revision = true,
         .revision = 2,
+        .has_serial = true,
         .serial = 0x60504030201,
         .part = (char *)"030-1673-003",
         .has_ioc3_serial = true,
@@ -682,7 +695,9 @@ static SGIModelIoBoard bedrock_test_io_boards[] = {
         .preset = SGI_MODEL_IO_BOARD_PRESET_IO8,
         .carrier = SGI_MODEL_IO_BOARD_CARRIER_MACHINE_PLACED,
         .attachment = 1,
+        .has_revision = true,
         .revision = 2,
+        .has_serial = true,
         .serial = 0x60504030202,
         .part = (char *)"030-1673-003",
         .has_ioc3_serial = true,
