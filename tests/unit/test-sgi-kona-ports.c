@@ -172,8 +172,8 @@ static void test_doorbell_selectors_frame(void)
 }
 
 /*
- * glBegin, glClear, glVertex2f/3f, glReadPixels and one of
- * __glkonResolveContext's three call sites: excluded for no stated argc.
+ * These selectors have unresolved argument counts and remain excluded from
+ * the fixed-count doorbell table.
  */
 static void test_doorbell_excluded_selectors(void)
 {

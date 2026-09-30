@@ -2,18 +2,12 @@
 /*
  * InfiniteReality (KONA) OpenGL doorbell command decoder.
  *
- * Framing follows the command grammar datasheet: the doorbell is a
- * single write-only address taking selector-then-argument packets
- * ("The userspace doorbell, process VA 0x4000"), and the subset decoded
- * here is its "OpenGL selector catalogue (3D-milestone subset)". Which
- * layouts are established, inferred or unresolved is recorded per entry
- * in the generated table. The doorbell accepts 64-bit stores as well as
- * 32-bit ones, so the caller splits each store into big-endian words
- * before decoding.
+ * The doorbell takes selector-first packets. The table lists the decoded
+ * subset and marks each layout established, inferred, or unresolved. The
+ * caller splits 64-bit stores into big-endian words before decoding.
  *
- * No kick or length register for the doorbell is established; the
- * declared length exists for transports that do announce one, as the
- * kernel FIFO does ("The kernel FIFO push port, +0x7c").
+ * No doorbell kick or length register is modeled. The declared length is
+ * available for transports that provide one.
  */
 #include "qemu/osdep.h"
 #include "hw/misc/sgi-kona-gl-decode.h"

@@ -2,15 +2,9 @@
 /*
  * InfiniteReality (KONA) OpenGL doorbell command decoder.
  *
- * libGLcore.so pushes selector-then-argument packets as 32-bit words to
- * the userspace doorbell. This decodes one packet at a time from a word
- * buffer, with no device state, so the framing rules can be tested on
- * the host and shared by the device and its renderer.
- *
- * The selector table covers the 3D-milestone subset of the command
- * grammar datasheet (docs/datasheets/infinitereality-command-grammar.md,
- * "The OpenGL selector catalogue (3D-milestone subset)"). It is generated
- * from the doorbell selector catalogue; see sgi-kona-gl-selectors.c.inc.
+ * The table lists the decoded selector subset. The decoder holds no device
+ * state, so the framing rules can be tested on the host and shared by the
+ * device and its renderer.
  */
 #ifndef HW_MISC_SGI_KONA_GL_DECODE_H
 #define HW_MISC_SGI_KONA_GL_DECODE_H
@@ -18,7 +12,7 @@
 #define SGI_KONA_GL_MAX_ARGS 8
 
 typedef enum SGIKonaGLLayoutEvidence {
-    /* Literal words in the catalogue, or a count the datasheet states. */
+    /* The selector table records this layout as established. */
     SGI_KONA_GL_LAYOUT_ESTABLISHED,
     /* Counted from computed stores; one word per store unless shown wider. */
     SGI_KONA_GL_LAYOUT_INFERRED,

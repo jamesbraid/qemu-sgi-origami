@@ -41,13 +41,9 @@
 #define REG_ONEWIRE        KONA_REG(0x000098)
 
 /*
- * The kernel driver's own register offset onto the identical one-wire
- * chain REG_ONEWIRE carries -- SGI_KONA_NIC's own header comment
- * (include/hw/misc/sgi-kona.h) has the established/inferred evidence.
- * Every helper below that used to hardcode REG_ONEWIRE now takes a
- * register argument, so the same Match ROM/Read Memory/Search ROM
- * exchanges below can run against either offset without a second,
- * duplicated set of primitives.
+ * This model aliases the two offsets to one one-wire chain. The helpers take
+ * the register address so the same identity transactions exercise either
+ * offset without duplicating the protocol code.
  */
 #define REG_NIC            KONA_REG(0x00009c)
 
@@ -335,14 +331,9 @@ static void kona_match_rom(QTestState *s, uint64_t reg,
 /*
  * One pass of the standard one-wire Search ROM discrepancy walk (Maxim
  * AN187), taking the zero branch first. Chain each pass's result and
- * `*last_discrepancy` into the next, starting from 0 and 0.
- * sn0-bridge-identity-test.c's own nic_search_pass() runs the identical
- * algorithm over Bridge's NIC register; reused here rather than
- * reimplemented because REG_ONEWIRE and REG_NIC share the same one-wire
- * ROM-command state machine (hw/1wire/core.c) Bridge's NIC register does.
- * This is the walk the orchestrating datasheet note's discriminating test
- * asks for: whether +0x9c's own Search ROM finds the same parts +0x98
- * does on a rack, and only the geometry board on a deskside pipe.
+ * `*last_discrepancy` into the next, starting from 0 and 0. The same helper
+ * exercises either modeled register offset without duplicating the protocol
+ * code. The test checks the identity set returned by each configured model.
  */
 static uint64_t kona_search_pass(QTestState *s, uint64_t reg, uint64_t rom,
                                  unsigned int *last_discrepancy)
@@ -1132,15 +1123,9 @@ static void kona_check_search_hit(uint64_t rom, uint8_t *family,
 }
 
 /*
- * The ROM search through +0x9c walks both parts on the default rack
- * fixture (the geometry board plus Ktown, "other-identity-parts"'s own
- * default) and only the geometry board on a deskside pipe with an empty
- * "other-identity-parts" list -- the same configuration
- * test_onewire_other_identity_parts_empty() above uses. Which part the
- * search visits first is not asserted, matching
- * sn0-bridge-identity-test.c's own test_records_match_the_datasheet(): a
- * two-part bus's discovery order is not part of this register's
- * contract.
+ * The default fixture returns both configured identity records. A fixture
+ * with an empty "other-identity-parts" list returns only its own record.
+ * This test checks the returned set without asserting discovery order.
  */
 static void test_nic_search_rom_walks_rack_and_deskside(void)
 {
@@ -1192,14 +1177,10 @@ static void test_nic_search_rom_walks_rack_and_deskside(void)
 }
 
 /*
- * Must-fix 2: a mutated WIDGET_CONTROL and a one-wire transaction left
- * mid-slot both go back to zero on system reset (sgi_kona_reset_hold(),
- * hw/misc/sgi-kona.c), matching hw/pci-host/sgi-bridge.c's own
- * sgi_bridge_reset_hold(). KONA_ONEWIRE_RESET()'s pulse/sample bits are
- * nonzero on their own, so onewire_reg reads back nonzero here whether or
- * not a part answers the reset pulse. REG_NIC is checked too: it is the
- * identical onewire_reg, not a second field reset would need to know
- * about separately.
+ * Mutated widget control and a one-wire transaction left mid-slot both
+ * return to zero on system reset. The reset pulse writes nonzero control
+ * bits, so the register reads nonzero here even if no part answers. REG_NIC
+ * exposes the same model state as REG_ONEWIRE.
  */
 static void test_reset_clears_plain_storage(void)
 {
